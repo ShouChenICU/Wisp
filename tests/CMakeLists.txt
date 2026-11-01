@@ -21,3 +21,4 @@ endfunction()
 # are added.
 wisp_test(NAME result_test SRCS base/result_test.cpp LIBS wisp_base)
 wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
+wisp_test(NAME os_test SRCS os/os_test.cpp LIBS wisp_os wisp_port_sim_os)

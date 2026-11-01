@@ -10,6 +10,8 @@ include(${WISP_ROOT}/cmake/wisp_component.cmake)
 include(${WISP_ROOT}/cmake/wisp_host_deps.cmake)
 
 add_subdirectory(${WISP_ROOT}/components/wisp_base wisp_base)
+add_subdirectory(${WISP_ROOT}/components/wisp_os wisp_os)
+add_subdirectory(${WISP_ROOT}/components/wisp_port_sim wisp_port_sim)
 
 option(WISP_BUILD_TESTS "Build the PC unit test suite" ON)
 if(WISP_BUILD_TESTS)
