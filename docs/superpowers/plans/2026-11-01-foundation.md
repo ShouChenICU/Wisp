@@ -20,6 +20,7 @@
 6. 版本锁定：ESP-IDF **v6.0.3**，LVGL **9.5.0**。
 7. 字体：`lv_font_montserrat_16` 为主字体，回退到从 MyOS 移植的 `lv_font_cjk_16`（GB2312 全集，4bpp）。
 8. 模拟器截图用自带的极简 PNG 编码器（未压缩 deflate），不引入第三方图像库。
+9. 新增性能监视（spec 未要求）：`UiRuntime` 自行统计 FPS、UI 线程占用率、平均刷新耗时；自检界面显示，每 5 s 输出一行 `WISP_PERF <json>`；可选开启 LVGL 自带的 sysmon 浮层。作为后续场景运行时的性能回归基准。
 
 ## Global Constraints
 
@@ -32,6 +33,7 @@
 - 内置 `library` 配额默认 3 MB（3·1024·1024 字节）。
 - 分区表按 spec 7.4 节，偏移和大小一字不差。
 - 启动后 3 秒内进入自检界面（真机验收）。
+- UI 性能基准：真机上滚动自检列表时帧率 ≥ 30 fps（由 `UiRuntime::perf()` 和串口 `WISP_PERF` 行度量）。
 - Settings 的 namespace 与 key 长度均 ≤ 15 字符（NVS 限制，两端一致）。
 - 所有外部依赖锁定版本；固件提交 `firmware/dependencies.lock`。
 - 许可证 Apache-2.0；移植或参考的代码在文件头注明来源，并登记到 `THIRD_PARTY_NOTICES.md` / `docs/references.md`。
@@ -747,8 +749,9 @@ git commit -m "feat(core): add storage manager with tiered areas and atomic writ
   - `struct UiConfig { uint32_t buffer_lines = 48; uint32_t task_stack = 8192; int task_priority = 4; };`
   - `class UiRuntime { UiRuntime(std::shared_ptr<hal::Display>, std::shared_ptr<hal::Touch> /* 可空 */, UiConfig = {}); ~UiRuntime(); Result<void> start(); void stop(); bool post(std::function<void()>); /* 队列容量 32，满时返回 false */ bool on_ui_thread() const; Result<std::vector<uint8_t>> snapshot_rgb888(uint32_t timeout_ms = 2000); /* 可在任意线程调用，内部 post 到 UI 线程执行 lv_snapshot，返回 width*height*3 字节 */ };`
   - 行为：`start()` 调用 `lv_init`、`lv_tick_set_cb`（返回 `os::now_ms()` 的低 32 位）、`lv_log_register_print_cb`（转到 `WLOG_I("lvgl", ...)`）；创建显示，分辨率取 Display caps 的 `width`/`height`；两块局部缓冲，各 `width*buffer_lines*2` 字节，用 `os::alloc(Mem::Dma)` 分配；注册 `LV_EVENT_INVALIDATE_AREA` 回调，用 `align_area`（对齐取 caps 的 `area_align`，缺省为 1）对齐区域；flush 回调调用 `display->flush` 后 `lv_display_flush_ready`；Touch 非空时注册 pointer 输入设备，取第一个触点。UI 任务循环：取出 post 来的函数逐个执行，然后 `lv_timer_handler()`，再按其返回值睡眠，最长 10 ms。
+  - 性能统计：`struct UiPerf { float fps = 0; uint8_t cpu_percent = 0; float avg_flush_ms = 0; uint32_t frames = 0; };`，`UiPerf UiRuntime::perf() const;`（线程安全，统计最近 1 s 的滑动窗口）。帧数在 flush 回调中 `lv_display_flush_is_last()` 为真时加一；`cpu_percent` = UI 任务执行 post 函数与 `lv_timer_handler()` 的耗时 ÷ 窗口时长；`avg_flush_ms` = `display->flush` 调用平均耗时。`void UiRuntime::set_perf_overlay(bool)`：经 `post` 调用 `lv_sysmon_show_performance`/`lv_sysmon_hide_performance`。
   - 默认字体：`lv_font_montserrat_16`，其 `fallback` 设为 `&lv_font_cjk_16`，并设为默认主题字体。
-- `lv_conf.h` 固定项：`#define WISP_LV_CONF 1`、`LV_COLOR_DEPTH 16`、`LV_USE_OS LV_OS_NONE`、`LV_USE_STDLIB_MALLOC LV_STDLIB_CLIB`（字符串和格式化函数同样用 CLIB）、`LV_USE_LOG 1`、`LV_LOG_LEVEL LV_LOG_LEVEL_WARN`、`LV_USE_SNAPSHOT 1`、`LV_USE_MSGBOX 1`、`LV_FONT_MONTSERRAT_16 1`、`LV_FONT_MONTSERRAT_24 1`、`LV_FONT_DEFAULT &lv_font_montserrat_16`、`LV_USE_DRAW_SW 1`，不启用任何 LVGL 自带的平台驱动（SDL、Linux framebuffer 等）。`ui_runtime.cpp` 开头写 `#ifndef WISP_LV_CONF` → `#error "wisp lv_conf.h not in use"`，并 `static_assert(LV_COLOR_DEPTH == 16)`。
+- `lv_conf.h` 固定项：`#define WISP_LV_CONF 1`、`LV_COLOR_DEPTH 16`、`LV_USE_OS LV_OS_NONE`、`LV_USE_STDLIB_MALLOC LV_STDLIB_CLIB`（字符串和格式化函数同样用 CLIB）、`LV_USE_LOG 1`、`LV_LOG_LEVEL LV_LOG_LEVEL_WARN`、`LV_USE_SNAPSHOT 1`、`LV_USE_MSGBOX 1`、`LV_USE_SYSMON 1`、`LV_USE_PERF_MONITOR 1`（浮层默认隐藏，位置 `LV_ALIGN_BOTTOM_MID`，避开圆角）、`LV_FONT_MONTSERRAT_16 1`、`LV_FONT_MONTSERRAT_24 1`、`LV_FONT_DEFAULT &lv_font_montserrat_16`、`LV_USE_DRAW_SW 1`，不启用任何 LVGL 自带的平台驱动（SDL、Linux framebuffer 等）。`ui_runtime.cpp` 开头写 `#ifndef WISP_LV_CONF` → `#error "wisp lv_conf.h not in use"`，并 `static_assert(LV_COLOR_DEPTH == 16)`。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -780,6 +783,17 @@ TEST(UiRuntime, RendersPostedContentWithAlignedFlushes) {
     ASSERT_TRUE(shot); EXPECT_EQ(shot.value().size(), 480u * 480u * 3u);
     ui.stop();
 }
+TEST(UiRuntime, PerfCountsFramesUnderAnimation) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr); ASSERT_TRUE(ui.start());
+    ui.post([] { lv_obj_t* o = lv_obj_create(lv_screen_active()); lv_anim_t a; lv_anim_init(&a); lv_anim_set_var(&a, o);
+                 lv_anim_set_values(&a, 0, 300); lv_anim_set_duration(&a, 1000); lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+                 lv_anim_set_exec_cb(&a, [](void* v, int32_t x) { lv_obj_set_x(static_cast<lv_obj_t*>(v), x); }); lv_anim_start(&a); });
+    wisp::os::sleep_ms(1500);
+    auto p = ui.perf();
+    EXPECT_GT(p.fps, 5.0f); EXPECT_GT(p.frames, 5u); EXPECT_LE(p.cpu_percent, 100);
+    ui.stop();
+}
 ```
 
 （`wait_until(pred, timeout_ms)` 放进 `tests/support/wait.hpp`。）
@@ -806,7 +820,7 @@ git commit -m "feat(ui): add LVGL runtime over HAL display/touch"
 - Consumes: Task 4–10 的全部核心服务
 - Produces（`namespace wisp::app`）：
   - `class Board { public: virtual ~Board() = default; virtual std::string name() const = 0; /* 创建设备，成功的 add 进 registry，失败的写入 report（state Failed，附原因）；SD 卡离线时仍注册设备，report 记 Missing */ virtual void init(core::DeviceRegistry&, core::BootReport&) = 0; };`
-  - `struct Platform { std::unique_ptr<Board> board; std::unique_ptr<core::SettingsBackend> settings; std::function<void(const std::string& line)> emit_line; /* 输出一整行到串口或 stdout */ std::function<void()> request_power_off; /* 关机兜底，Power 设备缺失时使用 */ std::string firmware_version = "0.1.0"; };`
+  - `struct Platform { std::unique_ptr<Board> board; std::unique_ptr<core::SettingsBackend> settings; std::function<void(const std::string& line)> emit_line; /* 输出一整行到串口或 stdout */ std::function<void()> request_power_off; /* 关机兜底，Power 设备缺失时使用 */ std::function<Value()> heap_info; /* 可空；返回 {"internal_free":…, "large_free":…} */ std::string firmware_version = "0.1.0"; };`（`WISP_PERF` 首行在启动 5 s 后才输出，不影响下面"恰好两行"的断言）
   - `class App { explicit App(Platform); ~App(); Result<void> start(); void stop(); core::DeviceRegistry& registry(); core::BootReport& report(); core::EventBus& bus(); core::StorageManager& storage(); ui::UiRuntime* ui(); /* 无屏模式下为 nullptr */ };`
   - `start()` 顺序（spec 6.1）：①`log::init()`；②`board->init(registry, report)`，对每个已注册设备补记 `Ok`（board 已记录过的不覆盖）；③启动 `EventBus`，然后 `StorageManager::init()`（失败时 `report.set_note("storage", "readonly")`，系统继续），启动周期 2000 ms 的存储刷新 Timer，启动 `ButtonService`；④若有 `display.main`，启动 `UiRuntime` 并构建自检界面（Task 12 提供 `void build_self_check(App&)`，本任务先放一个空实现）；否则 `report.set_note("mode", "headless")`；⑤记录 `boot_ms`，然后依次 `emit_line("WISP_BOOT_REPORT " + to_json(report.to_value(board)))`、`emit_line("WISP_MANIFEST " + to_json(registry.manifest(board)))`，最后发布事件 `system.boot.completed`。
   - 从 Settings `display` 命名空间读取 `brightness`（默认 200）并应用到屏幕。
@@ -872,7 +886,7 @@ git commit -m "feat(app): add boot orchestration with boot report and manifest o
   - `std::string format_time(int64_t unix_s)` → `"YYYY-MM-DD HH:MM:SS"`（UTC）
   - `class PowerKeyController { enum class Action { None, ScreenOff, ScreenOn, ShowConfirm, ScreenOnAndConfirm, PowerOff, CancelConfirm }; Action on_short(); Action on_long(); Action on_confirm(bool yes); bool screen_on() const; bool confirming() const; };`，初始状态为亮屏、不在确认中
   - 状态转移：亮屏时短按 → `ScreenOff`；息屏时短按 → `ScreenOn`；确认中短按 → `CancelConfirm`；亮屏时长按 → `ShowConfirm`；息屏时长按 → `ScreenOnAndConfirm`；确认中长按 → `None`；确认"是" → `PowerOff`；确认"否" → `CancelConfirm`
-  - `void build_self_check(App&)`：在 UI 线程构建 spec 第 8 节描述的界面：板名/版本/启动耗时、设备列表（状态着色：正常 `#4FC3F7`、降级 `#FFB74D`、缺失 `#9E9E9E`、失败 `#E57373`）、IMU 数值与倾斜小球、电量与充电、RTC 时间、两个存储介质的状态与容量、触摸测试区、按键提示、"录音回放"按钮；用 `lv_timer` 每 100 ms 刷新一次，数据取自采样任务（任务名 `"wisp.sample"`，IMU 50 Hz，电源、时钟、存储 1 Hz）用 `os::Mutex` 保护的快照；订阅 `button.` 事件，经 `ui.post` 更新提示，并把电源键事件交给 `PowerKeyController`，执行对应动作（亮/灭屏调用 `Display::set_power`，确认框用 `lv_msgbox`，`PowerOff` 优先调用 `Power::power_off()`，没有 Power 设备时调用 `platform.request_power_off`）
+  - `void build_self_check(App&)`：在 UI 线程构建 spec 第 8 节描述的界面：板名/版本/启动耗时、设备列表（状态着色：正常 `#4FC3F7`、降级 `#FFB74D`、缺失 `#9E9E9E`、失败 `#E57373`）、IMU 数值与倾斜小球、电量与充电、RTC 时间、两个存储介质的状态与容量、触摸测试区、按键提示、"录音回放"按钮、性能行（`FPS 58 · CPU 23% · flush 4.1ms`，取自 `UiRuntime::perf()`）；长按性能行切换 LVGL sysmon 浮层，状态存入 Settings（namespace `ui`，key `perf_overlay`），启动时恢复；App 启动后创建周期 5000 ms 的 Timer，`emit_line("WISP_PERF " + to_json({fps, cpu, flush_ms, frames, heap_internal_free, heap_large_free}))`（堆信息由 `Platform` 新增的 `std::function<Value()> heap_info` 提供，可为空）；用 `lv_timer` 每 100 ms 刷新一次，数据取自采样任务（任务名 `"wisp.sample"`，IMU 50 Hz，电源、时钟、存储 1 Hz）用 `os::Mutex` 保护的快照；订阅 `button.` 事件，经 `ui.post` 更新提示，并把电源键事件交给 `PowerKeyController`，执行对应动作（亮/灭屏调用 `Display::set_power`，确认框用 `lv_msgbox`，`PowerOff` 优先调用 `Power::power_off()`，没有 Power 设备时调用 `platform.request_power_off`）
   - `loopback.cpp`：`void run_loopback(App&, std::function<void(const char* status)> on_status)`，在任务 `"wisp.loop"` 中录制 3 s（16 kHz 单声道，`os::alloc(Mem::Large)`，共 96000 字节），然后立即播放；依次回调状态 `"录音中"`、`"播放中"`、`"完成"`，出错时回调 `"失败: <错误码>"`；已在运行时再次触发直接忽略
   - 运行时读取失败（例如 IMU `read()` 返回错误）时，界面对应项显示 `"读取失败"`，不崩溃
 
@@ -1030,7 +1044,7 @@ git commit -m "test: add simulator smoke tests, layering check and CI"
   - `firmware/CMakeLists.txt`：`set(EXTRA_COMPONENT_DIRS ../components ../drivers)`；`set(WISP_BOARD waveshare_amoled_216 CACHE STRING "")`；`include($ENV{IDF_PATH}/tools/cmake/project.cmake)`；`project(wisp)`；在 `project()` 之前用 `idf_build_set_property(COMPILE_DEFINITIONS "LV_CONF_PATH=${CMAKE_CURRENT_LIST_DIR}/../components/wisp_ui/config/lv_conf.h" APPEND)` 指定 LVGL 配置
   - `firmware/main/CMakeLists.txt`：`idf_component_register(SRCS main.cpp ${CMAKE_CURRENT_LIST_DIR}/../../boards/${WISP_BOARD}/board.cpp REQUIRES wisp_app wisp_port_esp)`
   - `firmware/main/idf_component.yml`：`idf: ">=6.0.3,<6.1"`、`lvgl/lvgl: "9.5.0"`、`bblanchon/arduinojson: "7.4.3"`（后续任务追加其他依赖）
-  - `main.cpp`：`extern "C" void app_main()`，内容：`log::add_sink(EspLogSink)`；构造 `Platform`（board 来自 `create_board()`；`emit_line` 用 `printf("%s\n")` 后 `fflush`；`request_power_off` 调用 `esp_restart()`）；`App::start()`；然后 `vTaskDelete(NULL)`（App 对象为静态存储期，不随 app_main 返回而析构）
+  - `main.cpp`：`extern "C" void app_main()`，内容：`log::add_sink(EspLogSink)`；构造 `Platform`（board 来自 `create_board()`；`emit_line` 用 `printf("%s\n")` 后 `fflush`；`request_power_off` 调用 `esp_restart()`；`heap_info` 返回 `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` 与 `heap_caps_get_free_size(MALLOC_CAP_SPIRAM)`）；`App::start()`；然后 `vTaskDelete(NULL)`（App 对象为静态存储期，不随 app_main 返回而析构）
   - `sdkconfig.defaults`：CPU 240 MHz；Flash QIO 80 MHz 16 MB；`CONFIG_PARTITION_TABLE_CUSTOM=y`，文件名 `partitions.csv`；`CONFIG_SPIRAM=y`、`CONFIG_SPIRAM_MODE_OCT=y`、`CONFIG_SPIRAM_SPEED_80M=y`、`CONFIG_SPIRAM_USE_MALLOC=y`；控制台 USB-Serial-JTAG；`CONFIG_LV_CONF_SKIP=n`；`CONFIG_COMPILER_CXX_EXCEPTIONS=n`、`CONFIG_COMPILER_CXX_RTTI=n`；`CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192`
   - `partitions.csv` 与 spec 7.4 节完全一致：
 
@@ -1183,7 +1197,7 @@ git commit -m "feat(firmware): add audio codecs, LittleFS/SD storage and NVS set
 - [ ] **Step 1: 写文档**
 - [ ] **Step 2: 全量本机检查** — Run: `bash tools/ci.sh` → Expected: 退出码 0。
 - [ ] **Step 3: 固件构建** — Run: `bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py bmgr -c ../boards -b waveshare_amoled_216 && idf.py build'` → Expected: 成功。
-- [ ] **Step 4: 真机验收（需要真机，逐条对照 spec 第 10 节）** — 记录结果：①从上电到出现自检界面的时间 < 3 s（在串口日志中查看 `boot_ms`）；②8 类设备的状态与行为全部符合；③电源键的三种行为符合；④串口输出的 manifest 中 `imu.main.caps.magnetometer == false`。任何一项不通过，回到对应任务修复，不在本任务中绕过。
+- [ ] **Step 4: 真机验收（需要真机，逐条对照 spec 第 10 节）** — 记录结果：①从上电到出现自检界面的时间 < 3 s（在串口日志中查看 `boot_ms`）；②8 类设备的状态与行为全部符合；③电源键的三种行为符合；④串口输出的 manifest 中 `imu.main.caps.magnetometer == false`；⑤手指持续上下滚动自检列表 10 s，串口 `WISP_PERF` 的 fps ≥ 30，记录 fps、cpu、flush_ms 三个数值写入 `docs/hardware/waveshare_amoled_216.md` 的"性能基准"一节。任何一项不通过，回到对应任务修复，不在本任务中绕过。
 - [ ] **Step 5: Commit**
 
 ```bash
