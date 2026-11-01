@@ -133,6 +133,59 @@ TEST(Os, TimerDestructorGuaranteesCallbackStopped) {
     EXPECT_EQ(calls.load(), seen);
 }
 
+TEST(Os, TimerStopFromCallbackConcurrentWithExternalStop) {
+    // Fix-round-2 regression test: an external thread's stop() call must
+    // never block while holding a lock that the timer's own
+    // callback-internal stop() call also needs to make progress — that
+    // was exactly the round-1 fix's new deadlock (external stop() holding
+    // control_mtx while joining the timer thread, while cb()'s
+    // self->stop() blocked trying to take that same control_mtx). Both
+    // must recognize "this is the timer's own thread" before ever
+    // touching that lock. If this regresses, the test hangs; the os_test
+    // binary has a ctest TIMEOUT set so the suite fails this test instead
+    // of hanging forever.
+    Timer* self = nullptr;
+    std::atomic<bool> in_cb{false};
+    Timer tm("t", 5, /*periodic=*/true, [&] {
+        in_cb = true;
+        sleep_ms(50);
+        self->stop();
+    });
+    self = &tm;
+    tm.start();
+
+    while (!in_cb.load()) {
+        sleep_ms(1);
+    }
+    // cb() is now in the middle of its sleep_ms(50); calling stop() here,
+    // from this (external) thread, races the scenario above.
+    tm.stop();
+
+    EXPECT_FALSE(tm.active());
+}
+
+TEST(Os, TimerStopFromCallbackConcurrentWithDestructor) {
+    // Same scenario as above, but the external side is the destructor
+    // instead of an explicit stop() call.
+    std::atomic<bool> in_cb{false};
+    {
+        Timer* self = nullptr;
+        Timer tm("t", 5, /*periodic=*/true, [&] {
+            in_cb = true;
+            sleep_ms(50);
+            self->stop();
+        });
+        self = &tm;
+        tm.start();
+
+        while (!in_cb.load()) {
+            sleep_ms(1);
+        }
+        // ~Timer() runs here while cb() is still mid-sleep.
+    }
+    SUCCEED();
+}
+
 TEST(Os, TimerStartStopHammeredFromTwoThreads) {
     // Regression test for a race between start()/stop()/destructor over
     // the timer's thread handle; must not crash or hang.
@@ -163,7 +216,11 @@ TEST(Os, TimerStartStopHammeredFromTwoThreads) {
 }
 
 TEST(Queue, ZeroCapacityAsserts) {
-    EXPECT_DEATH({ Queue<int> q(0); }, "");
+    // EXPECT_DEBUG_DEATH (rather than EXPECT_DEATH) because the assert()
+    // in Queue's constructor compiles away entirely when NDEBUG is
+    // defined; in that configuration this macro just runs the statement
+    // normally instead of expecting a crash.
+    EXPECT_DEBUG_DEATH({ Queue<int> q(0); }, "");
 }
 
 TEST(Queue, PushDropOldestRaceWithConcurrentPops) {

@@ -149,6 +149,19 @@ struct Timer::Impl {
     std::atomic<bool> running{false};
     std::atomic<std::thread::id> runner_id{};
 
+    // True if the calling thread is this timer's own callback thread
+    // (i.e. this call happened synchronously from within cb() itself).
+    // Reads only atomics, so it is safe to call before ever touching
+    // control_mtx — which matters: control_mtx can be held by some
+    // *other* thread that is blocked inside join() waiting for this very
+    // timer thread to exit (a concurrent stop()/start()/destructor call
+    // from elsewhere), and acquiring it unconditionally would deadlock
+    // against that join() the moment cb() itself tries to call
+    // start()/stop() on the same Timer.
+    bool is_on_timer_thread() const {
+        return running.load() && runner_id.load() == std::this_thread::get_id();
+    }
+
     void run() {
         // Published first so stop()-from-within-cb() can recognize "this
         // is the timer's own thread" as soon as the thread exists.
@@ -181,6 +194,14 @@ Timer::Timer(const char* /*name*/, uint32_t period_ms, bool periodic, std::funct
 Timer::~Timer() { stop(); }
 
 void Timer::start() {
+    // On the timer's own thread, start() is always a no-op (the timer is
+    // necessarily already running) — return before ever touching
+    // control_mtx, for the deadlock reason explained on
+    // Impl::is_on_timer_thread() above.
+    if (impl_->is_on_timer_thread()) {
+        return;
+    }
+
     std::lock_guard<std::mutex> control_lock(impl_->control_mtx);
     if (impl_->running) {
         return;
@@ -195,29 +216,42 @@ void Timer::start() {
         std::lock_guard<std::mutex> lock(impl_->wait_mtx);
         impl_->stop_requested = false;
     }
+    // Invalidate runner_id before the new thread exists (and before
+    // `running` becomes visible as true), so there is no window where a
+    // concurrent caller could read running==true together with a stale
+    // runner_id left over from a previous, already-exited incarnation of
+    // this timer's thread — e.g. if the OS has since reused that exact
+    // thread id for the very thread calling start()/stop() right now,
+    // which would otherwise be misidentified as "the timer thread".
+    impl_->runner_id = std::thread::id();
     impl_->running = true;
     impl_->thread = std::thread([this] { impl_->run(); });
 }
 
 void Timer::stop() {
+    // Joining a thread with itself is undefined behavior (std::terminate
+    // under -fno-exceptions); detect that before touching control_mtx, for
+    // the deadlock reason explained on Impl::is_on_timer_thread() above.
+    // Only signal the thread to stop and return without blocking; the
+    // actual join happens later, from start() or the destructor, once
+    // called from a different thread.
+    if (impl_->is_on_timer_thread()) {
+        {
+            std::lock_guard<std::mutex> lock(impl_->wait_mtx);
+            impl_->stop_requested = true;
+        }
+        impl_->cv.notify_all();
+        return;
+    }
+
     std::lock_guard<std::mutex> control_lock(impl_->control_mtx);
-
-    // Detect whether we are being called from the timer's own callback
-    // thread (e.g. cb() itself calls stop()). Joining a thread with
-    // itself is undefined behavior (std::terminate under
-    // -fno-exceptions), so in that case we only signal the thread to stop
-    // and return without blocking; the actual join happens later, from
-    // start() or the destructor, once called from a different thread.
-    bool on_timer_thread =
-        impl_->running.load() && impl_->runner_id.load() == std::this_thread::get_id();
-
     {
         std::lock_guard<std::mutex> lock(impl_->wait_mtx);
         impl_->stop_requested = true;
     }
     impl_->cv.notify_all();
 
-    if (!on_timer_thread && impl_->thread.joinable()) {
+    if (impl_->thread.joinable()) {
         impl_->thread.join();
     }
 }
