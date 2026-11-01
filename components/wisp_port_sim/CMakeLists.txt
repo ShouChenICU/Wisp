@@ -27,3 +27,18 @@ wisp_component(
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_core wisp_os
 )
+
+# Simulated HAL devices (Task 13): SimDisplay/SimTouch/SimImu/SimPower/
+# SimClock/SimButton/SimAudioOut/SimAudioIn/SimStorage, SimBoard (the
+# wisp::app::Board that constructs them) and the --screenshot PNG
+# encoder. None of these touch SDL themselves -- see wisp/port/sim/
+# sim_board.hpp's file header: only simulator/main.cpp's SDL render loop
+# reads SimDisplay's framebuffer -- so this library does not link SDL2.
+wisp_component(
+    NAME wisp_port_sim_dev
+    SRCS dev/sim_display.cpp dev/sim_touch.cpp dev/sim_imu.cpp dev/sim_power.cpp
+         dev/sim_clock.cpp dev/sim_button.cpp dev/sim_audio.cpp dev/sim_storage.cpp
+         sim_board.cpp png_writer.cpp
+    INCLUDE_DIRS include
+    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_app
+)
