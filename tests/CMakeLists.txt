@@ -30,6 +30,7 @@ endfunction()
 # Later tasks append further wisp_test(...) calls here as new test binaries
 # are added.
 wisp_test(NAME result_test SRCS base/result_test.cpp LIBS wisp_base)
+wisp_test(NAME display_geometry_test SRCS hal/display_geometry_test.cpp LIBS wisp_hal)
 wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
 wisp_test(NAME os_test SRCS os/os_test.cpp LIBS wisp_os wisp_port_sim_os TIMEOUT 10)
 wisp_test(NAME log_test SRCS core/log_test.cpp LIBS wisp_core wisp_port_sim_os)

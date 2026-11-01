@@ -63,16 +63,6 @@ Result<void> App::start() {
     impl_->storage_timer->start();
     impl_->buttons.start();
 
-    // boot_ms is recorded here -- right before Step 4 builds the
-    // self-check screen (spec 8's header shows it) -- rather than in
-    // Step 5 below: the self-check screen is built synchronously
-    // (blocking) within this same start() call, so a later
-    // set_boot_ms() would run *after* the screen already read (and
-    // rendered) whatever set_boot_ms() had defaulted to (0), making the
-    // displayed "启动 .. ms" permanently wrong. Step 5 below relies on
-    // this already having been set and does not call it again.
-    impl_->report.set_boot_ms(os::now_ms() - boot_t0);
-
     // Step 4: UI (or headless).
     auto display = impl_->registry.get<hal::Display>("display.main");
     if (display) {
@@ -113,8 +103,22 @@ Result<void> App::start() {
         impl_->report.set_note("mode", "headless");
     }
 
-    // Step 5: finalize and report. boot_ms was already set above, before
-    // Step 4 built the self-check screen.
+    // boot_ms is recorded here -- right after Step 4, once the self-check
+    // screen (when there is one) has actually finished building -- per
+    // spec 6.1's boot sequence, which only *ends* at step ⑤ (the
+    // self-check screen going up). The screen's header already rendered
+    // once with whatever set_boot_ms() had defaulted to (0) during
+    // build(), so refresh_self_check_header() below re-renders it with
+    // this now-final value (review round N1: an earlier version of this
+    // code set boot_ms right before Step 4 specifically so the header's
+    // *first* render would show a non-zero value, but that under-counted
+    // actual boot time by excluding the screen's own build time).
+    impl_->report.set_boot_ms(os::now_ms() - boot_t0);
+    if (impl_->ui) {
+        refresh_self_check_header(*impl_->ui, impl_->self_check);
+    }
+
+    // Step 5: finalize and report.
     const std::string board_name = impl_->platform.board->name();
     impl_->platform.emit_line("WISP_BOOT_REPORT " + to_json(impl_->report.to_value(board_name)));
     impl_->platform.emit_line("WISP_MANIFEST " + to_json(impl_->registry.manifest(board_name)));

@@ -9,6 +9,9 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,6 +27,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -88,8 +92,10 @@ struct Harness {
     std::vector<std::string> lines;
     wisp::app::App app;
 
-    explicit Harness(std::string settings_path_in, uint32_t init_sleep_ms = 0)
-        : display(std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/1)),
+    explicit Harness(std::string settings_path_in, uint32_t init_sleep_ms = 0,
+                     std::string display_shape = "rounded_rect")
+        : display(std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/1,
+                                                std::move(display_shape))),
           imu(std::make_shared<FakeImu>("imu.main")),
           settings_path(std::move(settings_path_in)),
           app(build_platform(init_sleep_ms)) {}
@@ -111,6 +117,48 @@ private:
         return platform;
     }
 };
+
+// Recursively searches `obj`'s subtree for the first lv_label whose
+// current text contains `needle`, returning a copy of its text (empty if
+// none found). Used below to check specific rows' rendered text (N2, Task
+// 12b review round) without needing any test-only accessor into
+// SelfCheck's internals -- it's entirely opaque to this test file (see
+// self_check.hpp's forward declaration) -- or a snapshot pixel diff of
+// the whole screen.
+std::string find_label_text_containing(lv_obj_t* obj, const char* needle) {
+    if (lv_obj_check_type(obj, &lv_label_class)) {
+        const char* text = lv_label_get_text(obj);
+        if (text != nullptr && std::string(text).find(needle) != std::string::npos) {
+            return text;
+        }
+    }
+    uint32_t count = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < count; ++i) {
+        std::string found = find_label_text_containing(lv_obj_get_child(obj, i), needle);
+        if (!found.empty()) {
+            return found;
+        }
+    }
+    return {};
+}
+
+// Runs `probe` (which must itself only call lv_* -- it's invoked on the UI
+// task) and blocks until it has returned, regardless of which thread
+// calls this -- the same pattern self_check_screen.cpp's own
+// run_on_ui_thread_blocking() uses internally, reimplemented here since
+// that helper isn't reachable from outside self_check_screen.cpp.
+std::string run_on_ui_thread(wisp::ui::UiRuntime* ui, const std::function<std::string()>& probe) {
+    std::string result;
+    wisp::os::Semaphore done(1, 0);
+    if (!ui->post([&] {
+            result = probe();
+            done.give();
+        })) {
+        return {};
+    }
+    done.take(wisp::os::kForever);
+    return result;
+}
 
 }  // namespace
 
@@ -145,47 +193,60 @@ TEST(SelfCheckScreen, RendersNonUniformFrame) {
     h.app.stop();
 }
 
-// Fix round 1, issue 3: build_header() used to read BootReport::to_value()
-// before App::start() had called set_boot_ms() on it (that happened in a
-// later step), so the self-check header's "启动 .. ms" was always "启动 0
-// ms" regardless of how long boot actually took. set_boot_ms() is now
-// called before the screen is built; this asserts the *report* --  which
-// the header reads from -- already reflects a real, non-zero duration by
-// the time start() returns (FullFakeBoard's deliberate sleep makes this
-// non-flaky: without it, a sub-millisecond boot could legitimately still
-// round to 0ms on a fast machine).
-TEST(SelfCheckScreen, BootTimeIsSetBeforeScreenIsBuilt) {
+// Task 12b review round, issue N1: boot_ms is now recorded right after
+// Step 4 (UI bring-up) finishes -- i.e. after the self-check screen is
+// already built, per spec 6.1's boot sequence, which only *ends* once the
+// screen is up -- rather than right before, as fix round 1 (issue 3) had
+// it. The header renders once during build() (with boot_ms still at its
+// default, 0) and is then explicitly refreshed (refresh_self_check_header()
+// in self_check.hpp) once the real value is known; this checks both the
+// *report* (used for WISP_BOOT_REPORT) and the header label itself end up
+// showing that same real value by the time start() returns (FullFakeBoard's
+// deliberate sleep makes this non-flaky: without it, a sub-millisecond boot
+// could legitimately still round to 0ms on a fast machine, and any 0 would
+// then be indistinguishable from the stale pre-refresh header text).
+TEST(SelfCheckScreen, BootTimeIsSetAndHeaderRefreshedAfterScreenIsBuilt) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/20);
     ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
 
     auto rep = h.app.report().to_value(h.app.platform().board->name());
     const wisp::Value* boot_ms = rep.find("boot_ms");
     ASSERT_NE(boot_ms, nullptr);
     EXPECT_GT(boot_ms->as_int(), 0);
 
+    std::string header_text = run_on_ui_thread(
+        h.app.ui(), [] { return find_label_text_containing(lv_screen_active(), "启动"); });
+    EXPECT_NE(header_text.find(std::to_string(boot_ms->as_int())), std::string::npos)
+        << "header: " << header_text << " boot_ms: " << boot_ms->as_int();
+
     h.app.stop();
 }
 
 // Spec 8: a runtime IMU read failure must show "读取失败" for that row,
-// not crash. Toggling FakeImu mid-run (rather than comparing two separate
-// App instances, whose headers would differ anyway from run to run just
-// because of boot_ms/timing) isolates the IMU row specifically: within
-// one App, only injecting the error should change anything rendered.
+// not crash. Task 12b review round, issue N2: this now reads the IMU
+// row's own label text (on the UI thread) rather than diffing the whole
+// screen's snapshot_rgb888() -- a full-frame diff only proved *something*
+// changed (it could just as easily have been boot_ms jitter or an
+// unrelated timer tick), not specifically that the IMU row renders the
+// error text.
 TEST(SelfCheckScreen, ImuReadFailureRendersDifferentlyAndDoesNotCrash) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
     ASSERT_TRUE(h.app.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
-    auto healthy = h.app.ui()->snapshot_rgb888();
-    ASSERT_TRUE(healthy);
+    auto imu_row_text = [&] {
+        return run_on_ui_thread(
+            h.app.ui(), [] { return find_label_text_containing(lv_screen_active(), "IMU:"); });
+    };
+
+    EXPECT_NE(imu_row_text(), "IMU: 读取失败");
 
     h.imu->set_next_error(wisp::ErrorCode::IoError, "boom");
     size_t flush_before_error = h.display->flush_count();
     ASSERT_TRUE(h.wait_for_flushes(flush_before_error + 5));
 
-    auto errored = h.app.ui()->snapshot_rgb888();
-    ASSERT_TRUE(errored);
-    EXPECT_NE(healthy.value(), errored.value());
+    EXPECT_EQ(imu_row_text(), "IMU: 读取失败");
 
     // Still alive and rendering -- the "不崩溃" half of spec 8's
     // requirement.
@@ -193,6 +254,52 @@ TEST(SelfCheckScreen, ImuReadFailureRendersDifferentlyAndDoesNotCrash) {
     EXPECT_TRUE(h.wait_for_flushes(flush_before_more + 5));
 
     h.app.stop();
+}
+
+// Task 12b (spec 5.6): on a non-rectangular screen, nothing the self-check
+// screen draws may land outside its safe_rect() -- the root column itself
+// is now sized/positioned to exactly that rect (see self_check_screen.cpp's
+// build()), so every pixel outside it should be untouched screen
+// background. Checked against a pixel known to always be outside any
+// safe_rect (the very corner, (0, 0)) rather than a hardcoded guess at the
+// theme's background color.
+TEST(SelfCheckScreen, NoContentOutsideSafeRect) {
+    for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
+        Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0, shape);
+        ASSERT_TRUE(h.app.start());
+        ASSERT_TRUE(h.wait_for_flushes(5));
+
+        auto snapshot = h.app.ui()->snapshot_rgb888();
+        ASSERT_TRUE(snapshot);
+        const auto& pixels = snapshot.value();
+        constexpr int32_t kSize = 480;
+        ASSERT_EQ(pixels.size(), static_cast<size_t>(kSize) * kSize * 3u);
+
+        auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
+        ASSERT_TRUE(shape_result) << shape;
+        wisp::hal::Area safe = wisp::hal::safe_rect(shape_result.value());
+
+        auto pixel_at = [&](int32_t x, int32_t y) {
+            size_t idx = (static_cast<size_t>(y) * kSize + x) * 3;
+            return std::array<uint8_t, 3>{pixels[idx], pixels[idx + 1], pixels[idx + 2]};
+        };
+        // (0, 0) is outside safe_rect() for both shapes under test (margin
+        // 12 for rounded_rect, 71 for circle), so it's always the screen's
+        // own background -- see self_check_screen.cpp's build(): nothing
+        // is placed outside the root column.
+        auto background = pixel_at(0, 0);
+
+        for (int32_t y = 0; y < kSize; ++y) {
+            for (int32_t x = 0; x < kSize; ++x) {
+                if (x >= safe.x1 && x <= safe.x2 && y >= safe.y1 && y <= safe.y2) {
+                    continue;
+                }
+                ASSERT_EQ(pixel_at(x, y), background) << shape << " " << x << "," << y;
+            }
+        }
+
+        h.app.stop();
+    }
 }
 
 // M6, fix round 1: the perf-overlay toggle persists to Settings

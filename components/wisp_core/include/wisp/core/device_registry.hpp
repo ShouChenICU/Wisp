@@ -70,9 +70,15 @@ public:
     std::vector<std::shared_ptr<hal::Device>> all() const;
 
     // Builds a manifest Value describing every registered device:
-    // {"board": <board>, "devices": [{"id","class","model","caps"}, ...]},
-    // devices sorted by id. Intended for the WISP_MANIFEST diagnostics line
-    // (see AGENTS.md) via wisp::to_json().
+    // {"board": <board>, "devices": [{"id","class","model","caps",
+    // "safe_area"?}, ...]}, devices sorted by id. A Display-class entry's
+    // "safe_area" ({"x1","y1","x2","y2"}, int) is derived from its caps
+    // via wisp::hal::screen_shape_from_caps()/safe_rect() (spec 5.6); it
+    // is omitted if those caps don't even carry a usable width/height (an
+    // invalid "shape"/"corner_radius" instead falls back to treating the
+    // panel as circular -- the most conservative shape -- with a WLOG_W).
+    // Intended for the WISP_MANIFEST diagnostics line (see AGENTS.md) via
+    // wisp::to_json().
     Value manifest(const std::string& board) const;
 
 private:

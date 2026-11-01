@@ -9,6 +9,9 @@
 // These fakes may freely use std::mutex/std::atomic (ordinary host-only
 // test code, unlike the portable wisp_* components they stand in for).
 
+#include <dirent.h>
+#include <sys/stat.h>
+
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -16,9 +19,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <dirent.h>
-#include <sys/stat.h>
 
 #include "wisp/base/error.hpp"
 #include "wisp/base/result.hpp"
@@ -36,20 +36,20 @@ namespace wisp::test {
 // Records every flush() call's Area; otherwise behaves like a display
 // that's always ready (flush() returns ok immediately, with no simulated
 // transfer delay). Caps mirror the simulator's actual panel: 480x480,
-// rounded_square, corner_radius 40, panel "amoled", brightness supported.
+// rounded_rect, corner_radius 40, panel "amoled", brightness supported
+// (pass `shape` to simulate a different wisp::hal::display_geometry shape,
+// e.g. "circle" or "rect").
 class FakeDisplay : public wisp::hal::Display {
 public:
-    explicit FakeDisplay(std::string id, int width, int height, int area_align = 1) {
+    explicit FakeDisplay(std::string id, int width, int height, int area_align = 1,
+                         std::string shape = "rounded_rect") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
         info_.caps = wisp::Properties{
-            {"width", width},
-            {"height", height},
-            {"area_align", area_align},
-            {"shape", wisp::Value("rounded_square")},
-            {"corner_radius", 40},
-            {"panel", wisp::Value("amoled")},
+            {"width", width},           {"height", height},
+            {"area_align", area_align}, {"shape", wisp::Value(std::move(shape))},
+            {"corner_radius", 40},      {"panel", wisp::Value("amoled")},
             {"brightness", true},
         };
     }

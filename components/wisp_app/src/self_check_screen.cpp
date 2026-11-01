@@ -21,9 +21,11 @@
 #include "wisp/app/power_key_controller.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/display.hpp"
+#include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/imu.hpp"
 #include "wisp/hal/power.hpp"
 #include "wisp/os/os.hpp"
@@ -87,6 +89,16 @@ public:
     // (see start_self_check() below).
     void build();
 
+    // Re-renders the header's "启动 .. ms" text from BootReport's current
+    // boot_ms. Must be called from the UI thread; see
+    // refresh_self_check_header() in self_check.hpp for why this exists --
+    // build_header() runs before App::start() has called
+    // BootReport::set_boot_ms() (spec 6.1's boot sequence only finishes,
+    // and boot_ms is only final, once this screen is already built), so
+    // the header initially shows a stale (zero) value that this corrects
+    // once the real one is known.
+    void refresh_header();
+
 private:
     // A snapshot of the "wisp.sample" task's latest readings, protected
     // by sample_mutex_ -- see start_sampling()/refresh_ui().
@@ -98,6 +110,18 @@ private:
         int64_t rtc_unix = 0;
         bool rtc_ok = true;
     };
+
+    // Returns the string build_header()/refresh_header() should show.
+    std::string header_text() const;
+
+    // The safe area (spec 5.6) to lay the root column out in: derived
+    // from display_'s caps via wisp::hal::screen_shape_from_caps()/
+    // safe_rect(), with the same fallback rule as
+    // DeviceRegistry::manifest() (see device_registry.cpp) -- an invalid
+    // "shape"/"corner_radius" falls back to treating the panel as
+    // circular (the most conservative shape, logged via WLOG_W); missing/
+    // invalid width/height falls back to the full screen.
+    hal::Area compute_safe_area() const;
 
     // --- build() helpers; each appends one section to `col`. ---
     void build_header(lv_obj_t* col);
@@ -152,6 +176,7 @@ private:
     bool overlay_enabled_ = false;
 
     // --- widgets (valid only while this App's UiRuntime is alive). ---
+    lv_obj_t* header_label_ = nullptr;
     lv_obj_t* imu_label_ = nullptr;
     lv_obj_t* imu_ball_ = nullptr;
     lv_obj_t* power_label_ = nullptr;
@@ -272,15 +297,18 @@ void SelfCheck::build() {
     lv_obj_t* screen = lv_screen_active();
     lv_obj_t* col = lv_obj_create(screen);
     root_ = col;
-    lv_obj_set_size(col, LV_PCT(100), LV_PCT(100));
+    // The root column's position and size are exactly the display's safe
+    // area (spec 5.6), not the full screen -- LVGL clips children to
+    // their parent's box by default, so nothing any build_*_section()
+    // below adds can ever land outside it. An 8px inner padding on all
+    // four sides keeps text off the safe area's own edge; no separate
+    // corner margin is needed since the safe area already accounts for
+    // the screen's shape.
+    hal::Area safe = compute_safe_area();
+    lv_obj_set_pos(col, safe.x1, safe.y1);
+    lv_obj_set_size(col, safe.x2 - safe.x1 + 1, safe.y2 - safe.y1 + 1);
     lv_obj_set_style_border_width(col, 0, 0);
-    // Left/right 40px per the brief; top/bottom 40px too, and a row gap,
-    // so content never sits under the rounded screen's corners even at
-    // the very top/bottom of the scrollable list.
-    lv_obj_set_style_pad_left(col, 40, 0);
-    lv_obj_set_style_pad_right(col, 40, 0);
-    lv_obj_set_style_pad_top(col, 40, 0);
-    lv_obj_set_style_pad_bottom(col, 40, 0);
+    lv_obj_set_style_pad_all(col, 8, 0);
     lv_obj_set_style_pad_row(col, 10, 0);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(col, LV_DIR_VER);
@@ -312,7 +340,7 @@ void SelfCheck::build() {
     }
 }
 
-void SelfCheck::build_header(lv_obj_t* col) {
+std::string SelfCheck::header_text() const {
     uint64_t boot_ms = 0;
     Value rep = app_.report().to_value(app_.platform().board->name());
     if (const Value* v = rep.find("boot_ms")) {
@@ -323,7 +351,52 @@ void SelfCheck::build_header(lv_obj_t* col) {
     std::snprintf(buf, sizeof(buf), "%s  v%s  启动 %llu ms", app_.platform().board->name().c_str(),
                   app_.platform().firmware_version.c_str(),
                   static_cast<unsigned long long>(boot_ms));
-    lv_label_set_text(make_row_label(col), buf);
+    return buf;
+}
+
+void SelfCheck::build_header(lv_obj_t* col) {
+    header_label_ = make_row_label(col);
+    lv_label_set_text(header_label_, header_text().c_str());
+}
+
+void SelfCheck::refresh_header() { lv_label_set_text(header_label_, header_text().c_str()); }
+
+hal::Area SelfCheck::compute_safe_area() const {
+    int32_t screen_w = lv_display_get_horizontal_resolution(nullptr);
+    int32_t screen_h = lv_display_get_vertical_resolution(nullptr);
+    hal::Area full_screen{0, 0, screen_w - 1, screen_h - 1};
+    if (!display_) {
+        return full_screen;
+    }
+
+    const Properties& caps = display_->info().caps;
+    auto shape = hal::screen_shape_from_caps(caps);
+    if (shape) {
+        return hal::safe_rect(shape.value());
+    }
+
+    // Parse failed -- same fallback rule as DeviceRegistry::manifest()
+    // (see device_registry.cpp): treat the panel as circular (the most
+    // conservative shape) if width/height are at least usable, otherwise
+    // give up on a safe area and use the full screen.
+    auto width_it = caps.find("width");
+    auto height_it = caps.find("height");
+    if (width_it == caps.end() || width_it->second.as_int() <= 0 || height_it == caps.end() ||
+        height_it->second.as_int() <= 0) {
+        WLOG_W("self_check",
+               "display.main: invalid shape caps (%s) and no usable width/height; "
+               "using the full screen",
+               shape.error().message.c_str());
+        return full_screen;
+    }
+
+    WLOG_W("self_check", "display.main: invalid shape caps (%s); treating as circle",
+           shape.error().message.c_str());
+    hal::ScreenShape fallback;
+    fallback.kind = hal::ScreenShapeKind::Circle;
+    fallback.width = static_cast<int32_t>(width_it->second.as_int());
+    fallback.height = static_cast<int32_t>(height_it->second.as_int());
+    return hal::safe_rect(fallback);
 }
 
 void SelfCheck::build_device_list(lv_obj_t* col) {
@@ -749,6 +822,14 @@ void start_self_check(App& app, std::unique_ptr<SelfCheck>& slot) {
 }
 
 void stop_self_check(std::unique_ptr<SelfCheck>& self_check) { self_check.reset(); }
+
+void refresh_self_check_header(ui::UiRuntime& ui, std::unique_ptr<SelfCheck>& self_check) {
+    if (!self_check) {
+        return;
+    }
+    SelfCheck* self = self_check.get();
+    ui.post([self] { self->refresh_header(); });
+}
 
 App::Impl::Impl(Platform p)
     : platform(std::move(p)), storage(registry, bus), buttons(registry, bus) {}

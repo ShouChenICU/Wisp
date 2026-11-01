@@ -15,10 +15,13 @@ struct Area {
     int32_t y2 = 0;
 };
 
-// caps keys: "width" (int), "height" (int), "shape" (string), "corner_radius"
-// (int), "panel" (string), "brightness" (bool, true if set_brightness() is
-// supported), "area_align" (int, flush()'s required alignment -- see
-// align_area() in a later task).
+// caps keys: "width" (int), "height" (int), "shape" (string, one of
+// "rect"/"rounded_rect"/"circle"; see wisp/hal/display_geometry.hpp for
+// how these -- plus "corner_radius" below for "rounded_rect" -- turn into
+// a ScreenShape/safe area), "corner_radius" (int), "panel" (string),
+// "brightness" (bool, true if set_brightness() is supported),
+// "area_align" (int, flush()'s required alignment -- see align_area() in
+// a later task).
 class Display : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Display;

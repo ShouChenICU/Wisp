@@ -25,9 +25,13 @@
 //      start_self_check(), spec 8) on it, blocking until that has
 //      actually run. Otherwise records the "mode": "headless" boot-report
 //      note.
-//   5. Records the elapsed boot_ms, emits "WISP_BOOT_REPORT <json>" and
-//      "WISP_MANIFEST <json>" (in that order) via Platform::emit_line,
-//      then publishes "system.boot.completed".
+//   5. Records the elapsed boot_ms (now that step 4 -- the self-check
+//      screen included -- has actually finished, per spec 6.1; the
+//      screen's header, which already rendered once with boot_ms still
+//      at its default, is then re-rendered with this final value), emits
+//      "WISP_BOOT_REPORT <json>" and "WISP_MANIFEST <json>" (in that
+//      order) via Platform::emit_line, then publishes
+//      "system.boot.completed".
 
 #include <functional>
 #include <memory>
