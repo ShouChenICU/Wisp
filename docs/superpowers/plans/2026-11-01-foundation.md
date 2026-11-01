@@ -21,13 +21,14 @@
 7. 字体：`lv_font_montserrat_16` 为主字体，回退到从 MyOS 移植的 `lv_font_cjk_16`（GB2312 全集，4bpp）。
 8. 模拟器截图用自带的极简 PNG 编码器（未压缩 deflate），不引入第三方图像库。
 9. 新增性能监视（spec 未要求）：`UiRuntime` 自行统计 FPS、UI 线程占用率、平均刷新耗时；自检界面显示，每 5 s 输出一行 `WISP_PERF <json>`；可选开启 LVGL 自带的 sysmon 浮层。作为后续场景运行时的性能回归基准。
+10. 屏幕形状与安全区（执行期由用户批准加入，spec 5.6 节）：Display caps 的 `shape` 取 `rect`/`rounded_rect`/`circle`（原 `rounded_square` 改名为 `rounded_rect`），`wisp_hal` 提供 `visible`/`safe_rect`/`row_span` 几何函数，能力清单为 Display 条目附带 `safe_area`，自检界面与模拟器遮罩都以此为准。见 Task 12b。
 
 ## Global Constraints
 
 - 可移植组件禁止 include：`esp_*`、`freertos/*`、`driver/*`、`hal/`（IDF 的）、`soc/*`、`sdkconfig.h`、`SDL*`（spec 3.2）。
 - 语言 C++20；`wisp_*` 目标编译选项 `-fno-exceptions -fno-rtti`；不使用 `dynamic_cast`/`typeid`。
 - 命名：组件前缀 `wisp_`，命名空间 `wisp::<层>`，日志宏 `WLOG_D/I/W/E`，头文件路径 `wisp/<层>/<名>.hpp`。
-- 像素格式 RGB565；屏幕 480×480，圆角半径 40，四角安全边距 ≥ 40 px。
+- 像素格式 RGB565；屏幕 480×480，形状 `rounded_rect`，圆角半径 40。界面内容一律放在 `hal::safe_rect()` 算出的安全区内，不得假设屏幕是完整矩形（spec 5.6）。
 - 事件队列默认容量 64，满时丢弃最旧并计数。
 - 日志环形缓冲 32 KB（真机放 PSRAM）。
 - 内置 `library` 配额默认 3 MB（3·1024·1024 字节）。
@@ -60,7 +61,7 @@ wisp/
 ├── components/
 │   ├── wisp_base/   include/wisp/base/{error,result,value,json}.hpp  src/{error,value,json}.cpp
 │   ├── wisp_os/     include/wisp/os/os.hpp  include/wisp/os/queue.hpp
-│   ├── wisp_hal/    include/wisp/hal/{device,display,touch,imu,power,clock,button,audio,storage}.hpp  src/device.cpp
+│   ├── wisp_hal/    include/wisp/hal/{device,display,display_geometry,touch,imu,power,clock,button,audio,storage}.hpp  src/{device,display_geometry}.cpp
 │   ├── wisp_core/   include/wisp/core/{log,event_bus,device_registry,boot_report,button_service,settings,storage_manager}.hpp  src/*.cpp
 │   ├── wisp_ui/     include/wisp/ui/{ui_runtime,align}.hpp  src/*.cpp  config/lv_conf.h  fonts/lv_font_cjk_16.c
 │   ├── wisp_app/    include/wisp/app/{board,app,power_key_controller,format}.hpp  src/{app,self_check_screen,power_key_controller,format,loopback}.cpp
@@ -926,13 +927,108 @@ TEST(Format, TimeAndState) {
 ```
 
 - [ ] **Step 2: 运行，确认失败** — Expected: 找不到 `power_key_controller.hpp`。
-- [ ] **Step 3: 实现上述模块与自检界面**（界面布局：竖向滚动的单列容器，左右内边距 40 px；圆角屏的四角不放内容）
+- [ ] **Step 3: 实现上述模块与自检界面**（界面布局：竖向滚动的单列容器，左右内边距 40 px；圆角屏的四角不放内容。注：之后由 Task 12b 改为按安全区布局）
 - [ ] **Step 4: 运行，确认通过** — Run: `ctest --test-dir build/sim -R "PowerKey|Format|AppBoot" --output-on-failure` → PASS（AppBoot 用例此时会渲染真实界面，必须仍然通过）。
 - [ ] **Step 5: Commit**
 
 ```bash
 git add components/wisp_app tests
 git commit -m "feat(app): add self-check screen, power key controller and audio loopback"
+```
+
+---
+
+### Task 12b: 屏幕形状与安全区
+
+（执行期由用户批准插入，spec 5.6 节。顺带处理 Task 12 复审遗留的两个问题。）
+
+**Files:**
+- Create: `components/wisp_hal/include/wisp/hal/display_geometry.hpp`、`components/wisp_hal/src/display_geometry.cpp`
+- Modify: `components/wisp_hal/CMakeLists.txt`、`components/wisp_hal/include/wisp/hal/display.hpp`（caps 注释写明 shape 取值）、`components/wisp_core/src/device_registry.cpp`（manifest 附带 `safe_area`）、`components/wisp_app/src/self_check_screen.cpp`、`components/wisp_app/src/app.cpp`、`tests/support/fake_devices.hpp`（`rounded_square` → `rounded_rect`，构造函数增加可选参数 `std::string shape = "rounded_rect"`）、`tests/CMakeLists.txt`
+- Test: `tests/hal/display_geometry_test.cpp`、`tests/core/device_registry_test.cpp`、`tests/app/self_check_screen_test.cpp`
+
+**Interfaces:**
+- Produces（`namespace wisp::hal`，纯函数，不依赖 LVGL）：
+  - `enum class ScreenShapeKind { Rect, RoundedRect, Circle };`
+  - `struct ScreenShape { ScreenShapeKind kind = ScreenShapeKind::Rect; int32_t width = 0; int32_t height = 0; int32_t corner_radius = 0; };`
+  - `Result<ScreenShape> screen_shape_from_caps(const Properties& caps);`：`width`/`height` 缺失或 ≤ 0 → `InvalidArgument`；`shape` 缺失 → `Rect`；`"rect"`/`"rounded_rect"`/`"circle"` 对应三种；其他值 → `InvalidArgument`，消息中包含该值；`rounded_rect` 缺少 `corner_radius` 或其值 < 0 → `InvalidArgument`；半径大于 `min(w, h) / 2` 时夹到 `min(w, h) / 2`
+  - `bool visible(const ScreenShape&, int32_t x, int32_t y);`：以像素中心 `(x + 0.5, y + 0.5)` 判断；坐标超出 `[0, w) × [0, h)` 返回 false；`RoundedRect` 在四个 r×r 角区内要求到角圆心的距离 ≤ r；`Circle` 以 `(w/2, h/2)` 为圆心、`min(w, h)/2` 为半径
+  - `Area safe_rect(const ScreenShape&);`：`Rect` → 整屏；`RoundedRect` 四边各缩进 `ceil(r · (1 − 1/√2))`；`Circle` 横向缩进 `ceil(w/2 − R/√2)`、纵向缩进 `ceil(h/2 − R/√2)`
+  - `struct Span { int32_t x1 = 0; int32_t x2 = -1; bool empty() const { return x1 > x2; } };`，`Span row_span(const ScreenShape&, int32_t y);`：第 y 行 `visible` 为真的最左、最右像素；整行不可见或 y 越界时返回空 Span
+- 回退规则（manifest 与自检界面共用）：`screen_shape_from_caps` 失败时，若 caps 中 `width`/`height` 有效则按 `Circle` 处理并 `WLOG_W`；否则 manifest 不输出 `safe_area`，自检界面使用整屏
+- `DeviceRegistry::manifest`：class 为 display 的条目增加与 `caps` 平级的 `"safe_area": {"x1", "y1", "x2", "y2"}`（int）
+- 自检界面：单列容器的位置和尺寸设为 `safe_rect()`（不再是整屏加 40 px 内边距），容器内四边内边距 8 px；容器外不放任何控件。LVGL sysmon 浮层是调试用途，不受此约束
+- 复审遗留 N1：`set_boot_ms` 恢复到自检界面构建完成之后调用（spec 6.1 的计时终点）；界面保存表头 label 指针，`set_boot_ms` 之后 post 一次刷新表头文字
+- 复审遗留 N2：`ImuReadFailureRendersDifferentlyAndDoesNotCrash` 改为在 UI 线程读取 IMU 那一行 label 的文字，断言为 `"读取失败"`（不再比较整屏快照）
+
+- [ ] **Step 1: 写失败的测试**
+
+```cpp
+using namespace wisp::hal;
+static ScreenShape shape(const char* s, int w = 480, int h = 480, int r = 40) {
+    return screen_shape_from_caps(wisp::Properties{{"width", w}, {"height", h},
+                                  {"shape", wisp::Value(s)}, {"corner_radius", r}}).value();
+}
+TEST(DisplayGeometry, ParsesCaps) {
+    EXPECT_EQ(screen_shape_from_caps(wisp::Properties{{"width", 320}, {"height", 240}}).value().kind, ScreenShapeKind::Rect);
+    EXPECT_EQ(shape("circle").kind, ScreenShapeKind::Circle);
+    auto bad = screen_shape_from_caps(wisp::Properties{{"width", 480}, {"height", 480}, {"shape", wisp::Value("triangle")}});
+    EXPECT_NE(bad.error().message.find("triangle"), std::string::npos);
+    EXPECT_FALSE(screen_shape_from_caps(wisp::Properties{{"width", 480}, {"height", 480}, {"shape", wisp::Value("rounded_rect")}}));
+    EXPECT_FALSE(screen_shape_from_caps(wisp::Properties{{"height", 480}}));
+    EXPECT_EQ(shape("rounded_rect", 480, 480, 1000).corner_radius, 240);
+}
+TEST(DisplayGeometry, RoundedRect) {
+    auto s = shape("rounded_rect");
+    EXPECT_FALSE(visible(s, 0, 0)); EXPECT_FALSE(visible(s, 11, 11)); EXPECT_TRUE(visible(s, 12, 12));
+    EXPECT_TRUE(visible(s, 240, 0)); EXPECT_TRUE(visible(s, 0, 240)); EXPECT_FALSE(visible(s, 480, 240));
+    auto a = safe_rect(s);
+    EXPECT_EQ(a.x1, 12); EXPECT_EQ(a.y1, 12); EXPECT_EQ(a.x2, 467); EXPECT_EQ(a.y2, 467);
+    auto r = row_span(s, 0); EXPECT_EQ(r.x1, 34); EXPECT_EQ(r.x2, 445);
+}
+TEST(DisplayGeometry, Circle) {
+    auto s = shape("circle");
+    EXPECT_FALSE(visible(s, 0, 0)); EXPECT_TRUE(visible(s, 240, 0)); EXPECT_TRUE(visible(s, 240, 240));
+    auto a = safe_rect(s);
+    EXPECT_EQ(a.x1, 71); EXPECT_EQ(a.y1, 71); EXPECT_EQ(a.x2, 408); EXPECT_EQ(a.y2, 408);
+    auto r = row_span(s, 0); EXPECT_EQ(r.x1, 225); EXPECT_EQ(r.x2, 254);
+    EXPECT_TRUE(row_span(s, -1).empty()); EXPECT_TRUE(row_span(s, 480).empty());
+}
+TEST(DisplayGeometry, RectIsFullScreen) {
+    auto s = shape("rect", 320, 240);
+    auto a = safe_rect(s);
+    EXPECT_EQ(a.x1, 0); EXPECT_EQ(a.y1, 0); EXPECT_EQ(a.x2, 319); EXPECT_EQ(a.y2, 239);
+    EXPECT_TRUE(visible(s, 0, 0)); EXPECT_EQ(row_span(s, 10).x2, 319);
+}
+TEST(DisplayGeometry, ConsistentWithVisible) {        // 三种形状逐像素核对
+    for (const char* k : {"rect", "rounded_rect", "circle"}) {
+        auto s = shape(k);
+        auto a = safe_rect(s);
+        for (int32_t y = 0; y < 480; ++y) {
+            auto sp = row_span(s, y);
+            for (int32_t x = 0; x < 480; ++x) {
+                bool in_span = !sp.empty() && x >= sp.x1 && x <= sp.x2;
+                ASSERT_EQ(visible(s, x, y), in_span) << k << " " << x << "," << y;
+                if (x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2) ASSERT_TRUE(visible(s, x, y)) << k;
+            }
+        }
+    }
+}
+```
+
+另外三处测试：
+- `device_registry_test`：注册一个 `FakeDisplay("display.main", 480, 480)`，manifest 里该条目的 `safe_area` 为 `{"x1":12,"y1":12,"x2":467,"y2":467}`；`shape` 为 `"circle"` 时为 `{71,71,408,408}`；非 display 设备没有 `safe_area` 键。
+- `self_check_screen_test`，`NoContentOutsideSafeRect`：分别用 `rounded_rect` 和 `circle` 的 FakeDisplay 启动 App，等界面渲染完成后 `snapshot_rgb888()`，`safe_rect()` 之外的每个像素都等于屏幕背景色。
+- `self_check_screen_test`：表头文字包含 `report().to_value()` 中的 `boot_ms` 值；按上面 N2 的要求修改 IMU 读取失败测试。
+
+- [ ] **Step 2: 运行，确认失败** — Expected: 找不到 `display_geometry.hpp`。
+- [ ] **Step 3: 实现几何函数、manifest 的 `safe_area`、自检界面布局与两个遗留问题**
+- [ ] **Step 4: 运行，确认通过** — Run: `cmake --build build/sim && ctest --test-dir build/sim --output-on-failure` → 全部 PASS。
+- [ ] **Step 5: Commit**
+
+```bash
+git add components/wisp_hal components/wisp_core components/wisp_app tests
+git commit -m "feat(hal): add display shape geometry and lay out self-check in the safe area"
 ```
 
 ---
@@ -947,12 +1043,12 @@ git commit -m "feat(app): add self-check screen, power key controller and audio 
 
 **Interfaces:**
 - Produces：
-  - `struct SimOptions { bool headless = false; std::string screenshot; uint32_t exit_after_ms = 0; std::vector<std::string> disabled; bool no_sd = false; std::string data_dir = "./sim-data"; };`，`wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv);`：未知参数或缺少参数值 → `InvalidArgument`，消息中包含该参数名
+  - `struct SimOptions { bool headless = false; std::string screenshot; uint32_t exit_after_ms = 0; std::vector<std::string> disabled; bool no_sd = false; std::string data_dir = "./sim-data"; std::string shape = "rounded_rect"; };`，`wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv);`：未知参数或缺少参数值 → `InvalidArgument`，消息中包含该参数名；`--shape` 只接受 `rect`、`rounded_rect`、`circle`，其他值 → `InvalidArgument`，消息中包含该值
   - `wisp::Result<void> wisp::port::sim::write_png_rgb888(const std::string& path, const uint8_t* rgb, uint32_t w, uint32_t h);`：PNG 签名，IHDR（8 位、颜色类型 2），IDAT 为 zlib 存储块（每块 ≤ 65535 字节，每行前加滤波字节 0）、Adler-32，IEND，每个块带 CRC-32
   - `class SimInput`（线程安全的输入状态）：`mouse(x, y, down)`、`key_power(bool)`、`key_vol_up(bool)`、`key_vol_down(bool)`、`tilt(dx, dy)`（每次 ±0.1 g，ax/ay 夹在 [-1, 1]，az = sqrt(max(0, 1 - ax² - ay²))）、`toggle_sd()`
-  - `class SimBoard : public app::Board { SimBoard(SimOptions, std::shared_ptr<SimInput>, std::function<void()> on_power_off); }`，`name()` 返回 `"simulator"`。设备 id 与 model：`display.main`/`sdl-display`（caps width 480、height 480、shape `rounded_square`、corner_radius 40、panel `amoled`、brightness true、area_align 2）、`touch.main`/`sdl-mouse`（max_points 1）、`imu.main`/`sim-imu`（accel true、gyro true、magnetometer false、max_rate_hz 1000）、`power.main`/`sim-battery`（固定 80%、3900 mV、未充电、USB 在位；`power_off` 调用 on_power_off）、`clock.main`/`system-clock`（`set_unix` 保存相对系统时间的偏移）、`button.power`、`button.vol_up`、`button.vol_down`/`sdl-key`、`audio_out.main`、`audio_in.main`/`sdl-audio`、`storage.int`/`host-dir`（`<data>/int`，caps removable false、fs `littlefs`；total 固定为 6160384，free = total - 目录已用）、`storage.sd`/`host-dir`（`<data>/sd`，removable true、fs `fat`；total 32 GiB；`--no-sd` 时初始离线，S 键切换）
+  - `class SimBoard : public app::Board { SimBoard(SimOptions, std::shared_ptr<SimInput>, std::function<void()> on_power_off); }`，`name()` 返回 `"simulator"`。设备 id 与 model：`display.main`/`sdl-display`（caps width 480、height 480、shape 取 `SimOptions::shape`（默认 `rounded_rect`）、corner_radius 40、panel `amoled`、brightness true、area_align 2）、`touch.main`/`sdl-mouse`（max_points 1）、`imu.main`/`sim-imu`（accel true、gyro true、magnetometer false、max_rate_hz 1000）、`power.main`/`sim-battery`（固定 80%、3900 mV、未充电、USB 在位；`power_off` 调用 on_power_off）、`clock.main`/`system-clock`（`set_unix` 保存相对系统时间的偏移）、`button.power`、`button.vol_up`、`button.vol_down`/`sdl-key`、`audio_out.main`、`audio_in.main`/`sdl-audio`、`storage.int`/`host-dir`（`<data>/int`，caps removable false、fs `littlefs`；total 固定为 6160384，free = total - 目录已用）、`storage.sd`/`host-dir`（`<data>/sd`，removable true、fs `fat`；total 32 GiB；`--no-sd` 时初始离线，S 键切换）
   - `--disable <x>` 匹配设备 id 或类别名（`imu` 匹配 `imu.main`）：不创建该设备，report 记 `Failed`、原因 `"disabled by --disable"`；未匹配到任何设备的 `--disable` 值打 `WLOG_W`
-  - 主循环（`simulator/main.cpp`，主线程）：非无窗口模式下创建 480×480 的 SDL 窗口；以约 60 Hz 把 SimDisplay 的帧缓冲（RGB565，flush 时在互斥锁下写入）上传到纹理，叠加圆角遮罩（半径 40，遮罩外为黑色），然后呈现；处理 SDL 事件并更新 SimInput（鼠标 → 触摸；P → 电源键；`+`/`=` 与 `-` → 音量键；方向键 → 倾斜；S → SD 卡切换；关闭窗口 → 退出）。无窗口模式下不初始化 SDL 视频，音频使用 dummy 驱动（启动 SDL 前 `SDL_SetHint(SDL_HINT_AUDIODRIVER, "dummy")`）。`exit_after_ms` 到期后：如设置了 `screenshot`，调用 `app.ui()->snapshot_rgb888()` 并 `write_png_rgb888`；然后 `app.stop()`，退出码 0。电源关机回调使主循环以退出码 0 结束。`emit_line` 写 stdout 并立即 flush。设置后端为 `<data>/settings.json`。
+  - 主循环（`simulator/main.cpp`，主线程）：非无窗口模式下创建 480×480 的 SDL 窗口；以约 60 Hz 把 SimDisplay 的帧缓冲（RGB565，flush 时在互斥锁下写入）上传到纹理，叠加形状遮罩（启动时按 display caps 用 `hal::visible()` 逐像素预计算一次，不可见像素画成黑色），然后呈现；处理 SDL 事件并更新 SimInput（鼠标 → 触摸；P → 电源键；`+`/`=` 与 `-` → 音量键；方向键 → 倾斜；S → SD 卡切换；关闭窗口 → 退出）。无窗口模式下不初始化 SDL 视频，音频使用 dummy 驱动（启动 SDL 前 `SDL_SetHint(SDL_HINT_AUDIODRIVER, "dummy")`）。`exit_after_ms` 到期后：如设置了 `screenshot`，调用 `app.ui()->snapshot_rgb888()` 并 `write_png_rgb888`；然后 `app.stop()`，退出码 0。电源关机回调使主循环以退出码 0 结束。`emit_line` 写 stdout 并立即 flush。设置后端为 `<data>/settings.json`。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -980,6 +1076,14 @@ TEST(SimOptions, RejectsUnknownAndMissingValue) {
     const char* a2[] = {"wisp_sim", "--screenshot"};
     EXPECT_EQ(parse_sim_options(2, a2).error().code, wisp::ErrorCode::InvalidArgument);
 }
+TEST(SimOptions, Shape) {
+    const char* a1[] = {"wisp_sim"};
+    EXPECT_EQ(parse_sim_options(1, a1).value().shape, "rounded_rect");
+    const char* a2[] = {"wisp_sim", "--shape", "circle"};
+    EXPECT_EQ(parse_sim_options(3, a2).value().shape, "circle");
+    const char* a3[] = {"wisp_sim", "--shape", "hexagon"};
+    EXPECT_NE(parse_sim_options(3, a3).error().message.find("hexagon"), std::string::npos);
+}
 ```
 
 - [ ] **Step 2: 运行，确认失败** — Expected: 找不到 `png_writer.hpp`。
@@ -988,7 +1092,7 @@ TEST(SimOptions, RejectsUnknownAndMissingValue) {
 - [ ] **Step 5: 手动运行窗口模式**
 
 Run: `./build/sim/wisp_sim --data-dir build/sim-data`
-Expected: 弹出 480×480 圆角窗口，显示自检界面；鼠标拖动时触摸区显示坐标；方向键让小球移动；P 短按灭屏、再按亮屏；按住 P 超过 1 秒弹出关机确认，选"是"后进程退出；S 键切换 SD 卡状态，界面同步更新；终端打印 `WISP_BOOT_REPORT` 和 `WISP_MANIFEST` 两行。
+Expected: 弹出 480×480 圆角窗口，显示自检界面（再用 `--shape circle` 运行一次：圆形遮罩，内容全部在圆内、没有被裁掉）；鼠标拖动时触摸区显示坐标；方向键让小球移动；P 短按灭屏、再按亮屏；按住 P 超过 1 秒弹出关机确认，选"是"后进程退出；S 键切换 SD 卡状态，界面同步更新；终端打印 `WISP_BOOT_REPORT` 和 `WISP_MANIFEST` 两行。
 
 - [ ] **Step 6: Commit**
 
@@ -1103,7 +1207,7 @@ git commit -m "feat(firmware): add ESP-IDF project, ESP OS backend and headless 
 **Interfaces:**
 - Consumes: `esp_board_manager_init()`、`esp_board_manager_get_device_handle(name, &handle)`、`esp_board_manager_get_device_config(name, &cfg)`、`esp_board_periph_get_handle("i2c_master", (void**)&bus)`；结构体 `dev_display_lcd_handles_t`（字段 `panel_handle`、`io_handle`）、`dev_display_lcd_config_t`（字段 `lcd_width`、`lcd_height`），以及 lcd_touch 设备句柄中的 `esp_lcd_touch_handle_t`（具体字段名以 `firmware/managed_components/espressif__esp_board_manager` 中的头文件为准）
 - Produces：
-  - `class wisp::port::esp::EspDisplay : public hal::Display { EspDisplay(esp_lcd_panel_handle_t, esp_lcd_panel_io_handle_t, int w, int h); }`，model `"CO5300"`，caps 与 spec 5.5 节一致（width 480、height 480、shape `rounded_square`、corner_radius 40、panel `amoled`、brightness true、area_align 2）；`flush` 调用 `esp_lcd_panel_draw_bitmap(x1, y1, x2+1, y2+1)`，用 `esp_lcd_panel_io_register_event_callbacks` 的传输完成回调 give 信号量，等待最多 250 ms，超时返回 `Timeout`；`set_brightness` 用 `esp_lcd_panel_io_tx_param` 写寄存器 `0x51`；`set_power` 调用 `esp_lcd_panel_disp_on_off`
+  - `class wisp::port::esp::EspDisplay : public hal::Display { EspDisplay(esp_lcd_panel_handle_t, esp_lcd_panel_io_handle_t, int w, int h); }`，model `"CO5300"`，caps 与 spec 5.5 节一致（width 480、height 480、shape `rounded_rect`、corner_radius 40、panel `amoled`、brightness true、area_align 2）；`flush` 调用 `esp_lcd_panel_draw_bitmap(x1, y1, x2+1, y2+1)`，用 `esp_lcd_panel_io_register_event_callbacks` 的传输完成回调 give 信号量，等待最多 250 ms，超时返回 `Timeout`；`set_brightness` 用 `esp_lcd_panel_io_tx_param` 写寄存器 `0x51`；`set_power` 调用 `esp_lcd_panel_disp_on_off`
   - `class wisp::port::esp::EspTouch : public hal::Touch { explicit EspTouch(esp_lcd_touch_handle_t); }`，model `"CST9217"`，caps max_points 1；`read` 先调用 `esp_lcd_touch_read_data`，再用 `esp_lcd_touch_get_data` 取数据
   - YAML：三份文件的内容取自 ESP-Claw 同款板定义，修改为：`board: waveshare_amoled_216`；去掉其中的 `imu_sensor`、`axp2101_power_manager` 两个 `custom` 设备（由 Wisp 自己的驱动处理）；其余（i2c_master SDA15/SCL14；I2S MCLK42/BCLK9/WS45/DOUT8/DIN10，16 kHz；spi_display QSPI D0–D3=4/5/6/7、SCLK38；gpio_pa_control 46；audio_dac es8311 地址 0x30；audio_adc es7210 地址 0x80、mask `"0011"`；fs_sdcard sdmmc 1-bit CLK2/CMD1/D0=3、`format_if_mount_failed: false`；display_lcd co5300 CS12、RST39、quad_mode、`bits_per_pixel: 16`、swap_xy true、mirror_y true；lcd_touch cst9217 RST40、INT11、地址 0xB4）保持不变。`setup_device.c` 保留 Espressif 版权头，把 TAG 改为 `"wisp_board"`，在文件头追加说明"Adapted for Wisp"。
   - `board.cpp` 在本任务中：调用 `esp_board_manager_init()`（失败时把所有依赖 bmgr 的设备记为 `Failed` 并附错误名后返回）；从 bmgr 取 display_lcd，注册 `display.main`；取 lcd_touch，注册 `touch.main`；任何一步失败都记入 report，然后继续下一步。
