@@ -4,14 +4,16 @@
 #
 #   - wisp_port_sim_os: implements wisp::os on top of the host's threading
 #     and clock facilities (std::thread/mutex/condition_variable, no SDL),
-#     so the unit test suite can link it without pulling in display/audio.
+#     plus the stdout wisp::log sink (wisp::port::sim::StdoutLogSink), so
+#     the unit test suite can link it without pulling in display/audio.
 #   - wisp_port_sim_dev: SDL-backed device port, added in Task 13.
 
 find_package(Threads REQUIRED)
 
 wisp_component(
     NAME wisp_port_sim_os
-    SRCS os/os_sim.cpp
-    REQUIRES wisp_os
+    SRCS os/os_sim.cpp log_stdout.cpp
+    INCLUDE_DIRS include
+    REQUIRES wisp_os wisp_core
     HOST_LIBS Threads::Threads
 )
