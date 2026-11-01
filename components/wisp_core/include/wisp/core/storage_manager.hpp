@@ -29,13 +29,28 @@
 // write -- it's the name that's safe to resurrect. ".tmp" can be a half
 // -written file at any time (e.g. power lost mid-fwrite on a *first*
 // write to a path, before any ".new"/target ever existed) and is never
-// treated as valid data: read_file() recovers a missing target by
-// promoting a leftover "<path>.new" if present, and otherwise discards
-// any leftover "<path>.tmp" as garbage (best-effort, errors ignored) and
-// reports the file as not found. See AGENTS.md's "FAT 上的原子写" trap
-// and global-constraints.md Review Focus #1; the two-name scheme was a
-// fix-round-1 ruling after review found the single-".tmp" version could
-// promote a torn first write.
+// treated as valid data: both write_atomic() and read_file() recover a
+// missing target by promoting a leftover "<path>.new" if present (at the
+// very start of write_atomic(), before anything else -- fix round 2,
+// item 2: otherwise a *second* power cut, between one write's completed-
+// and-synced ".new" and its final rename, followed by a fresh
+// write_atomic() call to the same path, would have that fresh call's own
+// `remove("<path>.new")` bookkeeping silently discard the still-good
+// orphaned data instead of recovering it), and otherwise discard any
+// leftover "<path>.tmp" as garbage (best-effort, errors ignored) and
+// report the file as not found (ErrorCode::NotFound). See AGENTS.md's
+// "FAT 上的原子写" trap and global-constraints.md Review Focus #1; the
+// two-name scheme was a fix-round-1 ruling after review found the
+// single-".tmp" version could promote a torn first write.
+//
+// Because ".tmp" and ".new" are reserved for this bookkeeping, a caller
+// may not write_atomic()/read_file() a path whose last component itself
+// ends in ".tmp" or ".new" -- fix round 2, item 1: such a file would
+// silently escape the library quota (dir_size_recursive() excludes those
+// suffixes), get clobbered by another write to the same base name's own
+// "<path>.new"/".tmp" juggling, or be promoted/discarded as if it were
+// write_atomic()'s own bookkeeping. Rejected with
+// ErrorCode::InvalidArgument before any other check.
 //
 // Quota: writes under "<int>/library/" are accounted against
 // StorageConfig::internal_library_quota (recursively summing that
@@ -131,7 +146,11 @@ public:
     // will surface its own clear IoError) -- internal storage being fine
     // shouldn't be reported as "storage unavailable" just because a write
     // -protected or corrupt SD card couldn't be prepared, and this matches
-    // refresh()'s same-situation handling below.
+    // refresh()'s same-situation handling below. Calling init() again
+    // (e.g. to pick up a storage.int that was re-registered) first marks
+    // this manager not-ready, so if the re-init itself fails partway, it
+    // is left unusable rather than silently still operating on the
+    // previous call's now-stale mount points.
     Result<void> init();
 
     // Returns the current root directories for `area`, most-preferred
@@ -154,9 +173,14 @@ public:
     // if it has a ".." component (checked before normalization, since
     // resolving one isn't attempted) this fails with
     // ErrorCode::InvalidArgument, so a caller can't use one to escape its
-    // intended area root (e.g. to dodge the library quota below). If the
-    // normalized path falls under "<int>/library/", the write is
-    // additionally accounted against
+    // intended area root (e.g. to dodge the library quota below) --
+    // likewise if its last component ends in the reserved ".tmp" or
+    // ".new" suffix (see file header). If `path` doesn't exist but
+    // "<path>.new" does (an earlier write_atomic() call that completed
+    // and synced but whose final rename was interrupted -- see file
+    // header), that leftover is promoted to `path` first, before
+    // anything else. If the normalized path falls under
+    // "<int>/library/", the write is additionally accounted against
     // StorageConfig::internal_library_quota (see file header); exceeding
     // it fails with ErrorCode::QuotaExceeded and performs no write.
     // Any other I/O failure fails with ErrorCode::IoError, with
@@ -164,7 +188,8 @@ public:
     Result<void> write_atomic(const std::string& path, std::span<const uint8_t> data);
 
     // Reads the full contents of `path` (normalized the same way as
-    // write_atomic(); a ".." component fails with
+    // write_atomic(); a ".." component, or a last component ending in
+    // the reserved ".tmp"/".new" suffix, fails with
     // ErrorCode::InvalidArgument). Fails with ErrorCode::StorageUnavailable
     // if init() hasn't succeeded yet. If `path` doesn't exist but
     // "<path>.new" does (a write_atomic() that was interrupted after

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <cstdint>
@@ -43,6 +44,30 @@ void write_raw(const std::string& path, const std::string& contents) {
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     f << contents;
 }
+
+// Fix round 2, item 4: RAII guard that chmod()s `path` to `temp_mode` on
+// construction and restores its original permissions on destruction --
+// so a test that ASSERTs (and so returns early, skipping any manual
+// cleanup written after the assertion) never leaves a read-only
+// directory behind for temp_dir()'s process-exit cleanup to choke on.
+class ChmodGuard {
+public:
+    ChmodGuard(std::string path, mode_t temp_mode) : path_(std::move(path)) {
+        struct stat st{};
+        stat(path_.c_str(), &st);
+        original_mode_ = st.st_mode & 07777;
+        chmod(path_.c_str(), temp_mode);
+    }
+
+    ~ChmodGuard() { chmod(path_.c_str(), original_mode_); }
+
+    ChmodGuard(const ChmodGuard&) = delete;
+    ChmodGuard& operator=(const ChmodGuard&) = delete;
+
+private:
+    std::string path_;
+    mode_t original_mode_ = 0755;
+};
 
 // registry has two FakeStorage devices, "storage.int" (always online, not
 // removable, mount point `in`) and "storage.sd" (removable, mount point
@@ -245,7 +270,8 @@ TEST(StorageManager, InitContinuesWhenSdDirsCannotBeCreated) {
         GTEST_SKIP() << "running as root: chmod-based read-only test would not be meaningful";
     }
     Fixture f(/*sd_online=*/true);
-    ASSERT_EQ(chmod(f.sd.c_str(), 0500), 0);  // read-only: mkdir_p() under it must fail
+    ChmodGuard guard(f.sd,
+                     0500);  // read-only: mkdir_p() under it must fail; restored on scope exit
 
     EXPECT_TRUE(f.mgr->init());
 
@@ -253,8 +279,6 @@ TEST(StorageManager, InitContinuesWhenSdDirsCannotBeCreated) {
     auto p = f.in + "/system/ok.txt";
     ASSERT_TRUE(f.mgr->write_atomic(p, bytes("ok")));
     EXPECT_EQ(str(f.mgr->read_file(p).value()), "ok");
-
-    chmod(f.sd.c_str(), 0700);  // restore so temp_dir()'s cleanup can remove it
 }
 
 // Fix round 1, item 8: before init() has succeeded, roots() must not
@@ -269,13 +293,19 @@ TEST(StorageManager, OperationsBeforeInitFail) {
     StorageManager mgr(registry, bus);
     // init() deliberately not called.
 
+    // Fix round 2, item 4: use a fresh temp_dir() for the probe paths
+    // instead of a hardcoded "/tmp/..." literal, so this test can't ever
+    // collide with another process/run and self-cleans like every other
+    // test here.
+    auto scratch = wisp::test::temp_dir().string();
+    auto p = scratch + "/should-not-be-created";
+
     EXPECT_TRUE(mgr.roots(Area::System).empty());
     EXPECT_EQ(mgr.write_root(Area::System).error().code, wisp::ErrorCode::StorageUnavailable);
-    EXPECT_EQ(mgr.write_atomic("/tmp/wisp-should-not-be-created", bytes("x")).error().code,
+    EXPECT_EQ(mgr.write_atomic(p, bytes("x")).error().code, wisp::ErrorCode::StorageUnavailable);
+    EXPECT_EQ(mgr.read_file(scratch + "/should-not-exist").error().code,
               wisp::ErrorCode::StorageUnavailable);
-    EXPECT_EQ(mgr.read_file("/tmp/wisp-should-not-exist").error().code,
-              wisp::ErrorCode::StorageUnavailable);
-    EXPECT_FALSE(exists("/tmp/wisp-should-not-be-created"));
+    EXPECT_FALSE(exists(p));
 }
 
 // Fix round 1, item 12: reading a directory must fail cleanly rather than
@@ -300,4 +330,62 @@ TEST(StorageManager, MkdirPFailsOnNonDirectoryComponent) {
     StorageManager mgr(registry, bus);
 
     EXPECT_EQ(mgr.init().error().code, wisp::ErrorCode::IoError);
+}
+
+// Fix round 2, item 1: a caller must not be able to write/read a path
+// ending in the reserved ".tmp"/".new" suffix -- see has_reserved_suffix()
+// in the .cpp for the three ways that would otherwise go wrong (invisible
+// to the quota, clobbered by write_atomic()'s own bookkeeping, or
+// mis-subtracted from "old_target_size").
+TEST(StorageManager, RejectsReservedSuffixOnWrite) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+
+    EXPECT_EQ(f.mgr->write_atomic(f.in + "/library/a.new", bytes("x")).error().code,
+              wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(f.mgr->write_atomic(f.in + "/library/a.tmp", bytes("x")).error().code,
+              wisp::ErrorCode::InvalidArgument);
+}
+
+TEST(StorageManager, RejectsReservedSuffixOnRead) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+
+    EXPECT_EQ(f.mgr->read_file(f.in + "/library/a.new").error().code,
+              wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(f.mgr->read_file(f.in + "/library/a.tmp").error().code,
+              wisp::ErrorCode::InvalidArgument);
+}
+
+// Fix round 2, item 2: a "<path>.new" orphaned by a double power cut (one
+// write completed and synced but its final rename never happened) must
+// be recovered, not silently discarded by a later write_atomic() call to
+// the same path. write_atomic() promotes it to `path` before doing
+// anything else, so the data is never lost even though this particular
+// call immediately overwrites it with fresh data afterwards.
+TEST(StorageManager, WriteAtomicPromotesPendingNewBeforeOverwriting) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+
+    auto p = f.in + "/system/d.json";
+    write_raw(p + ".new", "orphaned-from-double-power-cut");
+
+    ASSERT_TRUE(f.mgr->write_atomic(p, bytes("fresh")));
+    EXPECT_EQ(str(f.mgr->read_file(p).value()), "fresh");
+    EXPECT_FALSE(exists(p + ".new"));
+    EXPECT_FALSE(exists(p + ".tmp"));
+}
+
+// Fix round 2, item 4: a stray ".tmp" sitting in the library directory
+// (e.g. left over from an interrupted write to some other path) must not
+// inflate the quota accounting -- dir_size_recursive() excludes it.
+TEST(StorageManager, StrayTmpInLibraryDoesNotCountTowardQuota) {
+    Fixture f(false, StorageConfig{.internal_library_quota = 1000});
+    ASSERT_TRUE(f.mgr->init());
+
+    write_raw(f.in + "/library/leftover.tmp", std::string(900, 'x'));
+
+    // If the 900-byte stray ".tmp" counted, this 900-byte write would
+    // push the total to 1800 and exceed the 1000-byte quota.
+    ASSERT_TRUE(f.mgr->write_atomic(f.in + "/library/real.bin", std::vector<uint8_t>(900)));
 }

@@ -21,16 +21,20 @@ constexpr const char* kIntId = "storage.int";
 constexpr const char* kSdId = "storage.sd";
 
 // Lexically normalizes `path`: collapses repeated '/', drops '.'
-// components, and drops a trailing '/' (so the result never has one,
-// matching int_mount_/sd_mount_ -- see strip_trailing_slash() and
-// storage_manager.hpp's file header). A ".." component is never resolved
-// -- it's rejected outright with ErrorCode::InvalidArgument, since
-// resolving one correctly would require knowing the filesystem's current
-// state (e.g. what a symlink points at), which this lexical pass
-// deliberately doesn't attempt. Used by write_atomic()/read_file() so
-// that a non-canonical alias of a path (a doubled slash, a "." segment)
-// can't be used to dodge the library quota or otherwise be treated
-// differently from its canonical form.
+// components, and drops a trailing '/' (so the result never has one).
+// Applied both to every caller-supplied path in write_atomic()/
+// read_file(), and to both devices' mount_point() values in init() (fix
+// round 2, item 3: not just a trailing-slash strip, in case a driver's
+// mount point itself has a doubled slash or a '.' component) -- so
+// int_mount_/sd_mount_ and every normalized caller path compose and
+// prefix-compare consistently. A ".." component is never resolved -- it's
+// rejected outright with ErrorCode::InvalidArgument, since resolving one
+// correctly would require knowing the filesystem's current state (e.g.
+// what a symlink points at), which this lexical pass deliberately doesn't
+// attempt. Used by write_atomic()/read_file() so that a non-canonical
+// alias of a path (a doubled slash, a "." segment) can't be used to dodge
+// the library quota or otherwise be treated differently from its
+// canonical form.
 Result<std::string> normalize_path(const std::string& path) {
     bool absolute = !path.empty() && path.front() == '/';
     std::vector<std::string> parts;
@@ -65,24 +69,30 @@ Result<std::string> normalize_path(const std::string& path) {
     return Result<std::string>::ok(std::move(out));
 }
 
-// Drops a single trailing '/' from `dir`, if any (but never reduces a
-// bare "/" to an empty string). Applied to every device's mount_point()
-// in init(), so a driver that reports one with a trailing slash still
-// composes correctly with the "/library", "/system" etc. suffixes this
-// file appends, and still matches is_under()'s prefix checks against a
-// normalize_path()'d caller path (which never has one either).
-std::string strip_trailing_slash(std::string dir) {
-    while (dir.size() > 1 && dir.back() == '/') {
-        dir.pop_back();
-    }
-    return dir;
+// True if `s` ends with `suffix`. Used both on bare filenames (quota
+// accounting's "*.tmp"/"*.new" exclusion) and on full paths (the
+// reserved-suffix rejection in write_atomic()/read_file()) -- a suffix
+// that doesn't itself contain '/' can't straddle a path separator, so
+// both uses are equivalent to checking the last path component.
+bool has_suffix(const std::string& s, const char* suffix) {
+    size_t len = std::strlen(suffix);
+    return s.size() >= len && s.compare(s.size() - len, len, suffix) == 0;
 }
 
-// True if `name` (a bare filename, no directory component) ends with
-// `suffix`.
-bool has_suffix(const std::string& name, const char* suffix) {
-    size_t len = std::strlen(suffix);
-    return name.size() >= len && name.compare(name.size() - len, len, suffix) == 0;
+// True if `path`'s final component ends with ".tmp" or ".new" --
+// write_atomic()'s own reserved suffixes (see file header). Rejected by
+// write_atomic()/read_file() with ErrorCode::InvalidArgument so a caller
+// can never create/read a file under one of these names itself: doing so
+// would let it (a) sit in "<int>/library/" uncounted by the quota (which
+// deliberately excludes these suffixes -- see dir_size_recursive()),
+// (b) have write_atomic()'s own bookkeeping silently delete it (the
+// unconditional `remove(neu)` before `rename(tmp, neu)`, or the
+// leftover-".tmp" cleanup in read_file()), or (c) have its size
+// mis-subtracted from the quota's "old_target_size" (file_size() assumes
+// `path` -- never one of these suffixes -- is the thing being
+// overwritten).
+bool has_reserved_suffix(const std::string& path) {
+    return has_suffix(path, ".tmp") || has_suffix(path, ".new");
 }
 
 // True if `path` is exactly `dir` or is nested under it (i.e. `path` ==
@@ -248,6 +258,32 @@ Result<void> write_synced_file(const std::string& tmp, std::span<const uint8_t> 
     return Result<void>::ok();
 }
 
+// If `path` doesn't exist but `path + ".new"` does, promotes it (renames
+// it to `path`) -- recovers a write whose data was fully flushed/synced
+// but whose final rename to `path` was interrupted by power loss (see
+// file header). A no-op (not an error) if `path` already exists or
+// neither it nor its ".new" does; callers that care about the
+// "truly missing" case (read_file()) check path_exists() themselves
+// after calling this. Called at the start of both write_atomic() and
+// read_file() so that a *second* write to a path whose previous write
+// left an orphaned ".new" recovers that data into `path` first, instead
+// of write_atomic()'s own best-effort `remove(path + ".new")` (see
+// write_atomic()) silently discarding it -- fix round 2, item 2.
+Result<void> promote_pending_new(const std::string& path) {
+    if (path_exists(path)) {
+        return Result<void>::ok();
+    }
+    std::string neu = path + ".new";
+    if (!path_exists(neu)) {
+        return Result<void>::ok();
+    }
+    if (rename(neu.c_str(), path.c_str()) != 0) {
+        return Result<void>::err(ErrorCode::IoError, "rename " + neu + " -> " + path + ": " +
+                                                         std::string(strerror(errno)));
+    }
+    return Result<void>::ok();
+}
+
 }  // namespace
 
 StorageManager::StorageManager(DeviceRegistry& registry, EventBus& bus, StorageConfig config)
@@ -256,18 +292,35 @@ StorageManager::StorageManager(DeviceRegistry& registry, EventBus& bus, StorageC
 Result<void> StorageManager::init() {
     std::lock_guard<os::Mutex> lock(mutex_);
 
+    // Fix round 2, item 3: set this false up front, before anything else
+    // -- so that if this call is a *re*-init that fails partway (e.g.
+    // storage.int was unplugged since a previous successful init()), the
+    // manager is left unusable (StorageUnavailable/empty roots) rather
+    // than silently continuing to operate on the previous, now-stale
+    // int_mount_/sd_mount_/sd_online_ state. It's only set back to true
+    // at the very end, once every step below has actually succeeded.
+    ready_ = false;
+
     int_dev_ = registry_.get<hal::Storage>(kIntId);
     if (!int_dev_) {
         return Result<void>::err(ErrorCode::StorageUnavailable,
                                  std::string(kIntId) + " not registered");
     }
-    int_mount_ = strip_trailing_slash(int_dev_->mount_point());
+    Result<std::string> int_norm = normalize_path(int_dev_->mount_point());
+    if (!int_norm) {
+        return Result<void>::err(int_norm.error().code, int_norm.error().message);
+    }
+    int_mount_ = int_norm.value();
     WISP_TRY(mkdir_p(int_mount_ + "/system"));
     WISP_TRY(mkdir_p(int_mount_ + "/library"));
 
     sd_dev_ = registry_.get<hal::Storage>(kSdId);
     if (sd_dev_) {
-        sd_mount_ = strip_trailing_slash(sd_dev_->mount_point());
+        Result<std::string> sd_norm = normalize_path(sd_dev_->mount_point());
+        if (!sd_norm) {
+            return Result<void>::err(sd_norm.error().code, sd_norm.error().message);
+        }
+        sd_mount_ = sd_norm.value();
         sd_online_ = sd_dev_->online();
         if (sd_online_) {
             // Best-effort: a write-protected/corrupt SD card must not
@@ -329,9 +382,28 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
     }
     const std::string& path = normalized.value();
 
+    // Fix round 2, item 1: a caller writing directly to one of
+    // write_atomic()'s own reserved names would be invisible to the
+    // quota, and would be clobbered by this very function's "<path>.new"
+    // bookkeeping below -- see has_reserved_suffix()'s doc comment.
+    if (has_reserved_suffix(path)) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "path must not end in '.tmp' or '.new': " + path);
+    }
+
     if (sd_dev_ && !sd_mount_.empty() && is_under(path, sd_mount_) && !sd_online_) {
         return Result<void>::err(ErrorCode::StorageUnavailable, "sd card offline: " + path);
     }
+
+    // Fix round 2, item 2: recover a "<path>.new" orphaned by a *double*
+    // power cut (first write completed and synced, but the final rename
+    // to `path` never happened; then this write_atomic() call starts
+    // before anything noticed) before this call's own bookkeeping -- in
+    // particular before the unconditional `remove(neu)` a few lines
+    // below -- would otherwise discard that data without ever exposing
+    // it. This also makes the quota calculation right below see the
+    // recovered file's size.
+    WISP_TRY(promote_pending_new(path));
 
     std::string library_root = int_mount_ + "/library";
     if (!int_mount_.empty() && is_under(path, library_root)) {
@@ -393,24 +465,28 @@ Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_pa
     }
     const std::string& path = normalized.value();
 
+    // Fix round 2, item 1: see the matching check in write_atomic().
+    if (has_reserved_suffix(path)) {
+        return Result<std::vector<uint8_t>>::err(ErrorCode::InvalidArgument,
+                                                 "path must not end in '.tmp' or '.new': " + path);
+    }
+
+    // Promote a leftover ".new" (a complete, synced write that was
+    // interrupted before the final rename -- see file header and
+    // promote_pending_new()'s doc comment).
+    Result<void> promoted = promote_pending_new(path);
+    if (!promoted) {
+        return Result<std::vector<uint8_t>>::err(promoted.error().code, promoted.error().message);
+    }
+
     if (!path_exists(path)) {
-        // Promote a leftover ".new" (a complete, synced write that was
-        // interrupted before the final rename -- see file header). A
-        // lone ".tmp" is never promoted -- it can be a torn write from
-        // any point in write_synced_file(), including the very first
-        // write to this path -- so it's discarded here as garbage
-        // (best-effort; its removal failing doesn't change the result).
-        std::string neu = path + ".new";
-        if (path_exists(neu)) {
-            if (rename(neu.c_str(), path.c_str()) != 0) {
-                return Result<std::vector<uint8_t>>::err(
-                    ErrorCode::IoError,
-                    "rename " + neu + " -> " + path + ": " + std::string(strerror(errno)));
-            }
-        } else {
-            remove((path + ".tmp").c_str());
-            return Result<std::vector<uint8_t>>::err(ErrorCode::NotFound, "no such file: " + path);
-        }
+        // Neither `path` nor a promotable ".new" existed. A lone ".tmp"
+        // is never promoted -- it can be a torn write from any point in
+        // write_synced_file(), including the very first write to this
+        // path -- so it's discarded here as garbage (best-effort; its
+        // removal failing doesn't change the result).
+        remove((path + ".tmp").c_str());
+        return Result<std::vector<uint8_t>>::err(ErrorCode::NotFound, "no such file: " + path);
     }
 
     struct stat st;
