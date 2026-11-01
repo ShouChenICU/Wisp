@@ -1,0 +1,410 @@
+#include "wisp/ui/ui_runtime.hpp"
+
+// Sanity check: this translation unit must be compiled against wisp_ui's
+// own components/wisp_ui/config/lv_conf.h (see AGENTS.md's "LVGL 配置"
+// trap and cmake/wisp_host_deps.cmake's LV_BUILD_CONF_PATH wiring), not
+// some other lv_conf.h LVGL happened to find via its __has_include probe.
+#ifndef WISP_LV_CONF
+#error "wisp lv_conf.h not in use"
+#endif
+
+static_assert(LV_COLOR_DEPTH == 16, "wisp_ui requires LV_COLOR_DEPTH == 16 (RGB565)");
+
+#include <algorithm>
+#include <atomic>
+#include <cstring>
+#include <deque>
+#include <mutex>
+#include <utility>
+
+#include "wisp/base/error.hpp"
+#include "wisp/core/log.hpp"
+#include "wisp/os/os.hpp"
+#include "wisp/os/queue.hpp"
+#include "wisp/ui/align.hpp"
+
+// lv_font_cjk_16.c is a plain C translation unit (ported from MyOS; see
+// components/wisp_ui/fonts/lv_font_cjk_16.c), so its one exported symbol
+// has C linkage.
+extern "C" {
+extern const lv_font_t lv_font_cjk_16;
+}
+
+namespace wisp::ui {
+
+namespace {
+
+constexpr size_t kPostQueueCapacity = 32;
+constexpr uint64_t kPerfWindowMs = 1000;
+
+int cap_int(const wisp::Properties& caps, const char* key, int fallback) {
+    auto it = caps.find(key);
+    if (it == caps.end()) {
+        return fallback;
+    }
+    return static_cast<int>(it->second.as_int());
+}
+
+void prune_frame_times(std::deque<uint64_t>& samples, uint64_t now) {
+    uint64_t cutoff = now > kPerfWindowMs ? now - kPerfWindowMs : 0;
+    while (!samples.empty() && samples.front() < cutoff) {
+        samples.pop_front();
+    }
+}
+
+void prune_duration_samples(std::deque<std::pair<uint64_t, uint32_t>>& samples, uint64_t now) {
+    uint64_t cutoff = now > kPerfWindowMs ? now - kPerfWindowMs : 0;
+    while (!samples.empty() && samples.front().first < cutoff) {
+        samples.pop_front();
+    }
+}
+
+}  // namespace
+
+const lv_font_t* default_font() {
+    // lv_font_montserrat_16 is `const`, so it can't be modified in place;
+    // this is a mutable copy with `fallback` pointed at the CJK font.
+    // Function-local static: lazily constructed exactly once (C++11 magic
+    // statics are thread-safe), the first time anyone (UiRuntime::start()
+    // or an outside caller, e.g. Task 12) asks for it.
+    static lv_font_t s_ui_font = [] {
+        lv_font_t font = lv_font_montserrat_16;
+        font.fallback = &lv_font_cjk_16;
+        return font;
+    }();
+    return &s_ui_font;
+}
+
+struct UiRuntime::Impl {
+    std::shared_ptr<hal::Display> display;
+    std::shared_ptr<hal::Touch> touch;
+    UiConfig config;
+
+    os::Queue<std::function<void()>> post_queue{kPostQueueCapacity};
+    std::unique_ptr<os::Task> task;
+    std::atomic<bool> running{false};
+
+    int width = 0;
+    int height = 0;
+    int area_align = 1;
+
+    void* buf1 = nullptr;
+    void* buf2 = nullptr;
+
+    lv_display_t* lv_disp = nullptr;
+    lv_indev_t* lv_indev = nullptr;
+    bool sysmon_shown = false;
+
+    // --- perf (protected by perf_mutex) ---
+    mutable os::Mutex perf_mutex;
+    uint32_t frames_total = 0;
+    std::deque<uint64_t> frame_times;                         // ms timestamps
+    std::deque<std::pair<uint64_t, uint32_t>> flush_samples;  // (ts_ms, duration_ms)
+    std::deque<std::pair<uint64_t, uint32_t>> busy_samples;   // (ts_ms, duration_ms)
+
+    void ui_main();
+    void drain_post_queue();
+    void record_busy(uint32_t duration_ms);
+    void record_flush(uint32_t duration_ms);
+    void record_frame();
+    Result<std::vector<uint8_t>> take_snapshot();
+
+    static void flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map);
+    static void invalidate_area_cb(lv_event_t* e);
+    static void indev_read_cb(lv_indev_t* indev, lv_indev_data_t* data);
+};
+
+void UiRuntime::Impl::drain_post_queue() {
+    std::function<void()> fn;
+    while (post_queue.pop(fn, 0)) {
+        fn();
+        fn = nullptr;  // release captured state before the next pop
+    }
+}
+
+void UiRuntime::Impl::ui_main() {
+    while (running.load(std::memory_order_acquire)) {
+        uint64_t loop_start = os::now_ms();
+        drain_post_queue();
+        uint32_t next_ms = lv_timer_handler();
+        uint64_t loop_end = os::now_ms();
+        record_busy(static_cast<uint32_t>(loop_end - loop_start));
+
+        uint32_t sleep_ms = std::min<uint32_t>(next_ms, 10);
+        os::sleep_ms(sleep_ms);
+    }
+    // stop() may have post()'d a final piece of work (or one may already
+    // have been queued) right before flipping `running` to false; drain it
+    // now so it still runs before the caller tears LVGL down.
+    drain_post_queue();
+}
+
+void UiRuntime::Impl::record_busy(uint32_t duration_ms) {
+    uint64_t now = os::now_ms();
+    std::lock_guard<os::Mutex> lock(perf_mutex);
+    busy_samples.emplace_back(now, duration_ms);
+    prune_duration_samples(busy_samples, now);
+}
+
+void UiRuntime::Impl::record_flush(uint32_t duration_ms) {
+    uint64_t now = os::now_ms();
+    std::lock_guard<os::Mutex> lock(perf_mutex);
+    flush_samples.emplace_back(now, duration_ms);
+    prune_duration_samples(flush_samples, now);
+}
+
+void UiRuntime::Impl::record_frame() {
+    uint64_t now = os::now_ms();
+    std::lock_guard<os::Mutex> lock(perf_mutex);
+    ++frames_total;
+    frame_times.push_back(now);
+    prune_frame_times(frame_times, now);
+}
+
+Result<std::vector<uint8_t>> UiRuntime::Impl::take_snapshot() {
+    lv_draw_buf_t* buf = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB888);
+    if (buf == nullptr) {
+        return Result<std::vector<uint8_t>>::err(ErrorCode::DeviceFailure,
+                                                 "lv_snapshot_take failed");
+    }
+
+    size_t row_bytes = static_cast<size_t>(width) * 3;
+    std::vector<uint8_t> out(row_bytes * static_cast<size_t>(height));
+    for (int y = 0; y < height; ++y) {
+        const uint8_t* src = buf->data + static_cast<size_t>(y) * buf->header.stride;
+        std::memcpy(out.data() + static_cast<size_t>(y) * row_bytes, src, row_bytes);
+    }
+
+    lv_draw_buf_destroy(buf);
+    return Result<std::vector<uint8_t>>::ok(std::move(out));
+}
+
+void UiRuntime::Impl::flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
+    auto* impl = static_cast<Impl*>(lv_display_get_user_data(disp));
+    hal::Area hal_area{area->x1, area->y1, area->x2, area->y2};
+
+    uint64_t t0 = os::now_ms();
+    impl->display->flush(hal_area, reinterpret_cast<const uint16_t*>(px_map));
+    uint64_t t1 = os::now_ms();
+    impl->record_flush(static_cast<uint32_t>(t1 - t0));
+
+    lv_display_flush_ready(disp);
+
+    if (lv_display_flush_is_last(disp)) {
+        impl->record_frame();
+    }
+}
+
+void UiRuntime::Impl::invalidate_area_cb(lv_event_t* e) {
+    auto* impl = static_cast<Impl*>(lv_event_get_user_data(e));
+    lv_area_t* area = lv_event_get_invalidated_area(e);
+
+    hal::Area in{area->x1, area->y1, area->x2, area->y2};
+    hal::Area aligned = align_area(in, impl->area_align, impl->width, impl->height);
+
+    area->x1 = aligned.x1;
+    area->y1 = aligned.y1;
+    area->x2 = aligned.x2;
+    area->y2 = aligned.y2;
+}
+
+void UiRuntime::Impl::indev_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
+    auto* impl = static_cast<Impl*>(lv_indev_get_user_data(indev));
+    auto points = impl->touch->read();
+    if (points && !points.value().empty()) {
+        const hal::TouchPoint& pt = points.value().front();
+        data->point.x = pt.x;
+        data->point.y = pt.y;
+        data->state = LV_INDEV_STATE_PRESSED;
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+}
+
+UiRuntime::UiRuntime(std::shared_ptr<hal::Display> display, std::shared_ptr<hal::Touch> touch,
+                     UiConfig config)
+    : impl_(std::make_unique<Impl>()) {
+    impl_->display = std::move(display);
+    impl_->touch = std::move(touch);
+    impl_->config = config;
+}
+
+UiRuntime::~UiRuntime() { stop(); }
+
+Result<void> UiRuntime::start() {
+    if (impl_->running.load()) {
+        return Result<void>::err(ErrorCode::AlreadyExists, "UiRuntime already started");
+    }
+    if (!impl_->display) {
+        return Result<void>::err(ErrorCode::InvalidArgument, "display must not be null");
+    }
+    if (lv_is_initialized()) {
+        WLOG_W("ui", "lv_init() already active; a previous UiRuntime was not stopped");
+        return Result<void>::err(
+            ErrorCode::Busy, "LVGL is already initialized by another UiRuntime in this process");
+    }
+
+    const wisp::Properties& caps = impl_->display->info().caps;
+    impl_->width = cap_int(caps, "width", 0);
+    impl_->height = cap_int(caps, "height", 0);
+    impl_->area_align = cap_int(caps, "area_align", 1);
+    if (impl_->width <= 0 || impl_->height <= 0) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "display caps missing a usable width/height");
+    }
+
+    size_t buf_bytes = static_cast<size_t>(impl_->width) * impl_->config.buffer_lines * 2;
+    impl_->buf1 = os::alloc(buf_bytes, os::Mem::Dma);
+    impl_->buf2 = os::alloc(buf_bytes, os::Mem::Dma);
+    if (impl_->buf1 == nullptr || impl_->buf2 == nullptr) {
+        if (impl_->buf1 != nullptr) {
+            os::dealloc(impl_->buf1);
+            impl_->buf1 = nullptr;
+        }
+        if (impl_->buf2 != nullptr) {
+            os::dealloc(impl_->buf2);
+            impl_->buf2 = nullptr;
+        }
+        return Result<void>::err(ErrorCode::NoMemory, "failed to allocate LVGL draw buffers");
+    }
+
+    lv_init();
+    lv_tick_set_cb([]() -> uint32_t { return static_cast<uint32_t>(os::now_ms()); });
+    lv_log_register_print_cb([](lv_log_level_t level, const char* buf) {
+        (void)level;
+        WLOG_I("lvgl", "%s", buf);
+    });
+
+    impl_->lv_disp = lv_display_create(impl_->width, impl_->height);
+    lv_display_set_user_data(impl_->lv_disp, impl_.get());
+    lv_display_set_buffers(impl_->lv_disp, impl_->buf1, impl_->buf2,
+                           static_cast<uint32_t>(buf_bytes), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(impl_->lv_disp, &Impl::flush_cb);
+    lv_display_add_event_cb(impl_->lv_disp, &Impl::invalidate_area_cb, LV_EVENT_INVALIDATE_AREA,
+                            impl_.get());
+    lv_display_set_default(impl_->lv_disp);
+
+    lv_theme_t* theme =
+        lv_theme_default_init(impl_->lv_disp, lv_palette_main(LV_PALETTE_BLUE),
+                              lv_palette_main(LV_PALETTE_RED), false, default_font());
+    lv_display_set_theme(impl_->lv_disp, theme);
+
+    if (impl_->touch) {
+        impl_->lv_indev = lv_indev_create();
+        lv_indev_set_type(impl_->lv_indev, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_display(impl_->lv_indev, impl_->lv_disp);
+        lv_indev_set_user_data(impl_->lv_indev, impl_.get());
+        lv_indev_set_read_cb(impl_->lv_indev, &Impl::indev_read_cb);
+    }
+
+    impl_->running.store(true, std::memory_order_release);
+    os::TaskConfig task_config;
+    task_config.name = "wisp_ui";
+    task_config.stack_bytes = impl_->config.task_stack;
+    task_config.priority = impl_->config.task_priority;
+    Impl* impl = impl_.get();
+    impl_->task = os::Task::spawn(task_config, [impl] { impl->ui_main(); });
+
+    return Result<void>::ok();
+}
+
+void UiRuntime::stop() {
+    if (!impl_->running.exchange(false, std::memory_order_acq_rel)) {
+        return;
+    }
+    if (impl_->task) {
+        impl_->task->join();
+        impl_->task.reset();
+    }
+
+    // The UI task has fully exited: no further lv_* call is in flight, so
+    // tearing LVGL down now is safe.
+    lv_deinit();
+    impl_->lv_disp = nullptr;
+    impl_->lv_indev = nullptr;
+    impl_->sysmon_shown = false;
+
+    if (impl_->buf1 != nullptr) {
+        os::dealloc(impl_->buf1);
+        impl_->buf1 = nullptr;
+    }
+    if (impl_->buf2 != nullptr) {
+        os::dealloc(impl_->buf2);
+        impl_->buf2 = nullptr;
+    }
+}
+
+bool UiRuntime::post(std::function<void()> fn) { return impl_->post_queue.push(std::move(fn), 0); }
+
+bool UiRuntime::on_ui_thread() const { return impl_->task && impl_->task->is_current(); }
+
+Result<std::vector<uint8_t>> UiRuntime::snapshot_rgb888(uint32_t timeout_ms) {
+    struct SnapshotState {
+        os::Semaphore done{1, 0};
+        Result<std::vector<uint8_t>> result =
+            Result<std::vector<uint8_t>>::err(ErrorCode::Timeout, "snapshot did not complete");
+    };
+    auto state = std::make_shared<SnapshotState>();
+    Impl* impl = impl_.get();
+
+    bool posted = post([impl, state] {
+        state->result = impl->take_snapshot();
+        state->done.give();
+    });
+    if (!posted) {
+        return Result<std::vector<uint8_t>>::err(ErrorCode::Busy, "UI post queue full");
+    }
+    if (!state->done.take(timeout_ms)) {
+        return Result<std::vector<uint8_t>>::err(ErrorCode::Timeout, "snapshot timed out");
+    }
+    return state->result;
+}
+
+UiPerf UiRuntime::perf() const {
+    uint64_t now = os::now_ms();
+    std::lock_guard<os::Mutex> lock(impl_->perf_mutex);
+
+    prune_frame_times(impl_->frame_times, now);
+    prune_duration_samples(impl_->flush_samples, now);
+    prune_duration_samples(impl_->busy_samples, now);
+
+    UiPerf p;
+    p.frames = impl_->frames_total;
+    // The window is exactly kPerfWindowMs (1s) by construction, so the
+    // frame count already *is* the rate (frames per second).
+    p.fps = static_cast<float>(impl_->frame_times.size());
+
+    uint32_t busy_total_ms = 0;
+    for (const auto& sample : impl_->busy_samples) {
+        busy_total_ms += sample.second;
+    }
+    float cpu = static_cast<float>(busy_total_ms) / static_cast<float>(kPerfWindowMs) * 100.0f;
+    cpu = std::max(0.0f, std::min(100.0f, cpu));
+    p.cpu_percent = static_cast<uint8_t>(cpu + 0.5f);
+
+    if (!impl_->flush_samples.empty()) {
+        uint32_t flush_total_ms = 0;
+        for (const auto& sample : impl_->flush_samples) {
+            flush_total_ms += sample.second;
+        }
+        p.avg_flush_ms =
+            static_cast<float>(flush_total_ms) / static_cast<float>(impl_->flush_samples.size());
+    }
+
+    return p;
+}
+
+void UiRuntime::set_perf_overlay(bool enabled) {
+    Impl* impl = impl_.get();
+    post([impl, enabled] {
+        if (enabled) {
+            lv_sysmon_show_performance(impl->lv_disp);
+            impl->sysmon_shown = true;
+        } else if (impl->sysmon_shown) {
+            lv_sysmon_hide_performance(impl->lv_disp);
+            impl->sysmon_shown = false;
+        }
+    });
+}
+
+}  // namespace wisp::ui
