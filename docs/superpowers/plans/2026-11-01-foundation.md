@@ -251,7 +251,7 @@ git commit -m "feat(base): add Value/Properties with JSON conversion"
 - Produces（`namespace wisp::os`，声明在 `os.hpp`，实现由 port 在链接期提供）：
   - `uint64_t now_ms();`、`void sleep_ms(uint32_t ms);`
   - `constexpr uint32_t kForever = UINT32_MAX;`
-  - `enum class Mem { Fast, Large, Dma };`、`void* alloc(size_t bytes, Mem kind);`、`void free(void* p);`
+  - `enum class Mem { Fast, Large, Dma };`、`void* alloc(size_t bytes, Mem kind);`、`void dealloc(void* p);`（不叫 `free`，避免与 `::free` 在 `using namespace` 下二义）
   - `class Mutex`：`lock()`、`unlock()`、`bool try_lock()`（满足 BasicLockable，可用于 `std::lock_guard`）；PIMPL：`struct Impl; std::unique_ptr<Impl> impl_;`
   - `class Semaphore`：`Semaphore(uint32_t max_count, uint32_t initial)`、`bool take(uint32_t timeout_ms)`、`void give()`
   - `struct TaskConfig { const char* name = "wisp"; size_t stack_bytes = 4096; int priority = 5; int core = -1; };`
@@ -299,7 +299,7 @@ TEST(Queue, DropOldestWhenFull) {
     EXPECT_TRUE(q.push_drop_oldest(3));
     int v; q.pop(v, 0); EXPECT_EQ(v, 2); q.pop(v, 0); EXPECT_EQ(v, 3);
 }
-TEST(Os, AllocKinds) { for (auto m : {Mem::Fast, Mem::Large, Mem::Dma}) { void* p = alloc(64, m); ASSERT_NE(p, nullptr); free(p); } }
+TEST(Os, AllocKinds) { for (auto m : {Mem::Fast, Mem::Large, Mem::Dma}) { void* p = alloc(64, m); ASSERT_NE(p, nullptr); dealloc(p); } }
 ```
 
 - [ ] **Step 2: 运行，确认失败**
