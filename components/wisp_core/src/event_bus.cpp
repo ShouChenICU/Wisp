@@ -12,6 +12,18 @@ constexpr uint32_t kWaitIdlePollMs = 2;
 // Log the overflow warning for the first drop, then only every Nth one
 // after that, so sustained overflow can't flood the log.
 constexpr uint64_t kDropLogInterval = 64;
+
+// Identifies "am I the dispatcher task for this specific EventBus?"
+// independent of the dispatcher_ handle. dispatcher_ gets moved out (by
+// stop()/start()/~EventBus()) *before* the dispatcher task actually
+// finishes running -- see run_dispatcher()'s TlsGuard -- so checking
+// `dispatcher_->is_current()` from a thread that just took ownership of
+// (or already saw null for) that handle is unreliable: it would see
+// "not the dispatcher thread" even when called from a handler that *is*
+// still running on it. This thread_local, set only by run_dispatcher()
+// itself for the duration of that call, stays correct regardless of what
+// any other thread does to dispatcher_ in the meantime.
+thread_local const EventBus* tls_dispatching = nullptr;
 }  // namespace
 
 EventBus::EventBus(size_t capacity)
@@ -20,27 +32,48 @@ EventBus::EventBus(size_t capacity)
 EventBus::~EventBus() { stop(); }
 
 Result<void> EventBus::start() {
+    if (tls_dispatching == this) {
+        return Result<void>::err(ErrorCode::Busy,
+                                 "start() called from within the dispatcher's own handler");
+    }
+
     std::unique_ptr<os::Task> stale;
     uint64_t my_generation;
     {
         std::lock_guard<os::Mutex> lock(lifecycle_mutex_);
-        if (dispatcher_ && dispatcher_->is_current()) {
-            return Result<void>::err(ErrorCode::Busy,
-                                     "start() called from within the dispatcher's own handler");
+        if (dispatcher_ && running_.load(std::memory_order_acquire)) {
+            // Already started and still live (nobody has asked it to
+            // stop since): idempotent no-op, per start()'s documented
+            // contract. Getting this right matters -- treating a live
+            // dispatcher as "stale" here would retire a perfectly good
+            // dispatcher task for no reason, and if it happened to be
+            // idly blocked in ready_.take(kForever) with nothing else
+            // around to publish and wake it, joining it below would
+            // hang this call forever.
+            return Result<void>::ok();
         }
-        // Take ownership of any existing dispatcher (e.g. one that a
-        // previous stop()-from-within-a-handler call marked as stopping
-        // but could not join itself) so it's guaranteed joined before a
-        // new one is spawned -- never destroying/overwriting an unjoined
-        // Task. Bumping generation_ here (while still under the lock)
-        // ensures that stale dispatcher's loop will see a mismatch and
-        // exit on its own if it hasn't already, even though the actual
-        // join below happens outside the lock.
+        // Take ownership of any existing (but no longer live) dispatcher
+        // -- e.g. one that a previous stop()-from-within-a-handler call
+        // marked as stopping but could not join itself -- so it's
+        // guaranteed joined before a new one is spawned, never
+        // destroying/overwriting an unjoined Task. Bumping generation_
+        // here (while still under the lock) ensures that stale
+        // dispatcher's loop will see a mismatch and exit on its own if
+        // it hasn't already, even though the actual join below happens
+        // outside the lock.
         stale = std::move(dispatcher_);
         running_.store(true, std::memory_order_release);
         my_generation = generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
     }
     if (stale) {
+        // Wake it -- it may be idly blocked in ready_.take(kForever),
+        // with nothing else around to publish() and wake it on its own
+        // -- *before* joining, or this could block forever. Giving the
+        // token *before* the join (not after) also means run_dispatcher()
+        // sees running_/generation_ already updated by the time it wakes
+        // and gives this same token back (see run_dispatcher()), rather
+        // than racing the lock update.
+        ready_.give();
         // Outside the lock: if the stale dispatcher is itself blocked
         // trying to acquire lifecycle_mutex_ (e.g. from a handler calling
         // stop()/start()/unsubscribe()), joining it while holding the
@@ -56,18 +89,16 @@ Result<void> EventBus::start() {
 }
 
 void EventBus::stop() {
-    running_.store(false, std::memory_order_release);
+    bool self = (tls_dispatching == this);
 
     std::unique_ptr<os::Task> to_join;
-    bool self = false;
     {
         std::lock_guard<os::Mutex> lock(lifecycle_mutex_);
+        running_.store(false, std::memory_order_release);
         if (!dispatcher_) {
             return;
         }
-        if (dispatcher_->is_current()) {
-            self = true;
-        } else {
+        if (!self) {
             to_join = std::move(dispatcher_);
         }
     }
@@ -96,11 +127,7 @@ SubscriptionId EventBus::subscribe(std::string prefix, EventHandler handler) {
 }
 
 void EventBus::unsubscribe(SubscriptionId id) {
-    bool on_dispatcher_thread;
-    {
-        std::lock_guard<os::Mutex> lock(lifecycle_mutex_);
-        on_dispatcher_thread = dispatcher_ && dispatcher_->is_current();
-    }
+    bool on_dispatcher_thread = (tls_dispatching == this);
 
     // See the doc comment on unsubscribe(): wait out any in-flight
     // dispatch when called from outside the dispatcher task, but never
@@ -201,18 +228,38 @@ void EventBus::dispatch(const Event& e) {
 }
 
 void EventBus::run_dispatcher(uint64_t my_generation) {
+    // Set only for the duration of this call -- see tls_dispatching's
+    // doc comment above for why this (rather than checking the
+    // dispatcher_ handle) is what start()/stop()/unsubscribe() use to
+    // tell whether they're running on the dispatcher task.
+    struct TlsGuard {
+        explicit TlsGuard(const EventBus* self) { tls_dispatching = self; }
+        ~TlsGuard() { tls_dispatching = nullptr; }
+    } tls_guard(this);
+
     while (true) {
         ready_.take(os::kForever);
         if (!running_.load(std::memory_order_acquire) ||
             generation_.load(std::memory_order_acquire) != my_generation) {
+            // Give the token we just took back before exiting: it may
+            // have been a synthetic stop()/start() wake (harmless to
+            // return -- some dispatcher's next pop(e, 0) will just find
+            // nothing and loop again) or it may have belonged to a real,
+            // still-undelivered event. Either way, nothing else is going
+            // to give a replacement for it, so returning without giving
+            // it back would leave the count of available tokens
+            // permanently short of the number of real undelivered
+            // events -- stranding the last one until some unrelated
+            // future publish() happens to cover for it.
+            ready_.give();
             return;
         }
         Event e;
         if (!queue_.pop(e, 0)) {
-            // A spurious wake with nothing to pop: either stop()'s wake
-            // token (handled above) or a ready_ token whose event was
-            // later evicted by push_drop_oldest() before we got to it.
-            // Either way, just wait for the next one.
+            // A spurious wake with nothing to pop: either a stop()/
+            // start() wake token (handled above) or a ready_ token whose
+            // event was later evicted by push_drop_oldest() before we
+            // got to it. Either way, just wait for the next one.
             continue;
         }
         dispatch(e);

@@ -58,12 +58,15 @@ public:
     EventBus(const EventBus&) = delete;
     EventBus& operator=(const EventBus&) = delete;
 
-    // Starts the dispatcher task (named "wisp.bus"). If a previous
-    // dispatcher is still shutting down (e.g. stop() was called from
-    // within a handler and hasn't finished exiting yet), this blocks
-    // until it has fully exited before starting the new one -- so it's
-    // never possible for two dispatcher tasks to be delivering events at
-    // the same time.
+    // Starts the dispatcher task (named "wisp.bus"). Idempotent: calling
+    // start() again while a dispatcher from a previous start() is still
+    // live (i.e. nothing has called stop() since) is a safe no-op.
+    //
+    // If a previous dispatcher is still shutting down instead (e.g.
+    // stop() was called from within a handler and hasn't finished
+    // exiting yet), this blocks until it has fully exited before
+    // starting the new one -- so it's never possible for two dispatcher
+    // tasks to be delivering events at the same time.
     //
     // Returns an error (ErrorCode::Busy) without doing anything if called
     // from within a handler on the dispatcher task's own thread -- in
@@ -104,6 +107,17 @@ public:
     // never to run again, so it's safe to immediately free/destroy
     // anything it captured (e.g. "unsubscribe in a destructor, then
     // finish destroying the rest of the object").
+    //
+    // Note that the wait is for *whichever* dispatch is currently in
+    // flight, not specifically for a dispatch that includes `handler` --
+    // unsubscribe() has no cheap way to know in advance which handlers a
+    // yet-to-be-copied matched list will contain. Callers must not call
+    // unsubscribe() (from a non-dispatcher thread) while holding a lock
+    // that *some other* currently-running handler might itself try to
+    // acquire, and must not call it from a thread that a currently-
+    // running handler is, in turn, waiting on -- either would deadlock
+    // against that unrelated handler, not just against the one being
+    // removed.
     //
     // When called from within a handler on the dispatcher task's own
     // thread -- including from the very handler being unsubscribed --
