@@ -107,8 +107,13 @@
    HAL SETTINGS
  *====================*/
 
-/** Default display refresh, input device read and animation step period. */
-#define LV_DEF_REFR_PERIOD  33      /**< [ms] */
+/** Default display refresh, input device read and animation step period.
+ *  wisp: 16ms (~60fps ceiling), not the LVGL default of 33ms (~30fps
+ *  ceiling) -- the on-device perf benchmark requires >= 30fps while
+ *  scrolling (see global-constraints.md), which needs headroom above the
+ *  refresh timer's own ceiling, not a refresh period already capped right
+ *  at the target. */
+#define LV_DEF_REFR_PERIOD  16      /**< [ms] */
 
 /** Default Dots Per Inch. Used to initialize default sizes such as widgets sized, style paddings.
  * (Not so important, you can adjust it to modify default sizes and spaces.) */
@@ -673,7 +678,9 @@
 #define LV_FONT_MONTSERRAT_8  0
 #define LV_FONT_MONTSERRAT_10 0
 #define LV_FONT_MONTSERRAT_12 0
-#define LV_FONT_MONTSERRAT_14 1
+/* wisp: off -- LV_FONT_DEFAULT (below) points at lv_font_montserrat_16,
+ * not _14, and nothing else in this config needs _14. */
+#define LV_FONT_MONTSERRAT_14 0
 #define LV_FONT_MONTSERRAT_16 1
 #define LV_FONT_MONTSERRAT_18 0
 #define LV_FONT_MONTSERRAT_20 0

@@ -1,9 +1,8 @@
 /*
  * Wisp note: ported from MyOS (src/config/lv_font_cjk_16.c), unmodified.
- * Glyphs generated from Noto Sans CJK SC (SIL Open Font License 1.1) via
- * LVGL's font conversion tool; see docs/references.md / THIRD_PARTY_NOTICES.md.
- * GB2312 character set, 16px, 4bpp. Registered as
- * `docs/references.md`/`THIRD_PARTY_NOTICES.md`: Noto Sans CJK SC, SIL OFL 1.1.
+ * GB2312 character set, 16px, 4bpp; glyphs generated from Noto Sans CJK SC
+ * (SIL Open Font License 1.1) via LVGL's font conversion tool. See
+ * docs/references.md and THIRD_PARTY_NOTICES.md for the license text.
  */
 /*******************************************************************************
  * Size: 16 px

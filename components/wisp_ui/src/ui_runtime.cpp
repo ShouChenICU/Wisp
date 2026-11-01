@@ -84,6 +84,15 @@ struct UiRuntime::Impl {
     std::unique_ptr<os::Task> task;
     std::atomic<bool> running{false};
 
+    // on_ui_thread() reads this instead of `task` directly: `task` itself
+    // (the unique_ptr) is only ever written by whichever thread calls
+    // start()/stop(), with no synchronization against a concurrent reader
+    // -- a real data race if on_ui_thread() dereferenced it directly. This
+    // atomic mirror is written once, right after `task` is assigned in
+    // start(), and cleared in stop() before `task` is reset, so every read
+    // through it is race-free regardless of which thread is asking.
+    std::atomic<os::Task*> active_task{nullptr};
+
     int width = 0;
     int height = 0;
     int area_align = 1;
@@ -93,7 +102,6 @@ struct UiRuntime::Impl {
 
     lv_display_t* lv_disp = nullptr;
     lv_indev_t* lv_indev = nullptr;
-    bool sysmon_shown = false;
 
     // --- perf (protected by perf_mutex) ---
     mutable os::Mutex perf_mutex;
@@ -172,7 +180,16 @@ Result<std::vector<uint8_t>> UiRuntime::Impl::take_snapshot() {
     std::vector<uint8_t> out(row_bytes * static_cast<size_t>(height));
     for (int y = 0; y < height; ++y) {
         const uint8_t* src = buf->data + static_cast<size_t>(y) * buf->header.stride;
-        std::memcpy(out.data() + static_cast<size_t>(y) * row_bytes, src, row_bytes);
+        uint8_t* dst = out.data() + static_cast<size_t>(y) * row_bytes;
+        for (int x = 0; x < width; ++x) {
+            // LVGL's LV_COLOR_FORMAT_RGB888 draw buffers store each pixel
+            // as (blue, green, red) -- see lv_color_t in lv_color.h and
+            // the fill loop in lv_draw_sw_blend_to_rgb888.c -- but this
+            // function is documented (and tested) to return (R, G, B).
+            dst[x * 3 + 0] = src[x * 3 + 2];  // R
+            dst[x * 3 + 1] = src[x * 3 + 1];  // G
+            dst[x * 3 + 2] = src[x * 3 + 0];  // B
+        }
     }
 
     lv_draw_buf_destroy(buf);
@@ -272,10 +289,34 @@ Result<void> UiRuntime::start() {
     lv_tick_set_cb([]() -> uint32_t { return static_cast<uint32_t>(os::now_ms()); });
     lv_log_register_print_cb([](lv_log_level_t level, const char* buf) {
         (void)level;
-        WLOG_I("lvgl", "%s", buf);
+        // LVGL's print callback hands us a line that already ends in
+        // '\n' (sometimes "\r\n"); trim it so WLOG_I doesn't produce a
+        // blank line underneath every LVGL log message.
+        size_t len = std::strlen(buf);
+        while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+            --len;
+        }
+        WLOG_I("lvgl", "%.*s", static_cast<int>(len), buf);
     });
 
+    // Tears down everything lv_init() above (and whatever ran before this
+    // point in start()) set up, for a failure partway through the rest of
+    // setup below.
+    auto fail_after_lv_init = [this](ErrorCode code, const char* message) {
+        lv_deinit();
+        impl_->lv_disp = nullptr;
+        impl_->lv_indev = nullptr;
+        os::dealloc(impl_->buf1);
+        impl_->buf1 = nullptr;
+        os::dealloc(impl_->buf2);
+        impl_->buf2 = nullptr;
+        return Result<void>::err(code, message);
+    };
+
     impl_->lv_disp = lv_display_create(impl_->width, impl_->height);
+    if (impl_->lv_disp == nullptr) {
+        return fail_after_lv_init(ErrorCode::NoMemory, "lv_display_create failed");
+    }
     lv_display_set_user_data(impl_->lv_disp, impl_.get());
     lv_display_set_buffers(impl_->lv_disp, impl_->buf1, impl_->buf2,
                            static_cast<uint32_t>(buf_bytes), LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -284,6 +325,14 @@ Result<void> UiRuntime::start() {
                             impl_.get());
     lv_display_set_default(impl_->lv_disp);
 
+    // lv_display_create() itself calls lv_sysmon_show_performance() when
+    // LV_USE_PERF_MONITOR is on (see src/display/lv_display.c), so the
+    // overlay is visible the moment the display exists -- undo that here
+    // so it starts hidden, as lv_conf.h's comment promises; the label it
+    // just created stays around, so later show/hide calls (from
+    // set_perf_overlay()) can use it unconditionally.
+    lv_sysmon_hide_performance(impl_->lv_disp);
+
     lv_theme_t* theme =
         lv_theme_default_init(impl_->lv_disp, lv_palette_main(LV_PALETTE_BLUE),
                               lv_palette_main(LV_PALETTE_RED), false, default_font());
@@ -291,6 +340,9 @@ Result<void> UiRuntime::start() {
 
     if (impl_->touch) {
         impl_->lv_indev = lv_indev_create();
+        if (impl_->lv_indev == nullptr) {
+            return fail_after_lv_init(ErrorCode::NoMemory, "lv_indev_create failed");
+        }
         lv_indev_set_type(impl_->lv_indev, LV_INDEV_TYPE_POINTER);
         lv_indev_set_display(impl_->lv_indev, impl_->lv_disp);
         lv_indev_set_user_data(impl_->lv_indev, impl_.get());
@@ -304,25 +356,33 @@ Result<void> UiRuntime::start() {
     task_config.priority = impl_->config.task_priority;
     Impl* impl = impl_.get();
     impl_->task = os::Task::spawn(task_config, [impl] { impl->ui_main(); });
+    impl_->active_task.store(impl_->task.get(), std::memory_order_release);
 
     return Result<void>::ok();
 }
 
 void UiRuntime::stop() {
+    if (on_ui_thread()) {
+        // task->join() below would be a self-join (deadlock): the UI task
+        // can't wait for itself to finish. There's no safe way to honor
+        // this call from here, so refuse it instead of hanging.
+        WLOG_E("ui", "UiRuntime::stop() called from the UI task itself; ignoring");
+        return;
+    }
     if (!impl_->running.exchange(false, std::memory_order_acq_rel)) {
         return;
     }
     if (impl_->task) {
         impl_->task->join();
-        impl_->task.reset();
     }
+    impl_->active_task.store(nullptr, std::memory_order_release);
+    impl_->task.reset();
 
     // The UI task has fully exited: no further lv_* call is in flight, so
     // tearing LVGL down now is safe.
     lv_deinit();
     impl_->lv_disp = nullptr;
     impl_->lv_indev = nullptr;
-    impl_->sysmon_shown = false;
 
     if (impl_->buf1 != nullptr) {
         os::dealloc(impl_->buf1);
@@ -336,9 +396,20 @@ void UiRuntime::stop() {
 
 bool UiRuntime::post(std::function<void()> fn) { return impl_->post_queue.push(std::move(fn), 0); }
 
-bool UiRuntime::on_ui_thread() const { return impl_->task && impl_->task->is_current(); }
+bool UiRuntime::on_ui_thread() const {
+    os::Task* task = impl_->active_task.load(std::memory_order_acquire);
+    return task != nullptr && task->is_current();
+}
 
 Result<std::vector<uint8_t>> UiRuntime::snapshot_rgb888(uint32_t timeout_ms) {
+    if (on_ui_thread()) {
+        // Posting-and-blocking here would deadlock: the posted lambda can
+        // only run once this same UI task reaches its next
+        // drain_post_queue() call, which can't happen while this call is
+        // still blocked waiting for it. Just take the snapshot directly.
+        return impl_->take_snapshot();
+    }
+
     struct SnapshotState {
         os::Semaphore done{1, 0};
         Result<std::vector<uint8_t>> result =
@@ -395,14 +466,15 @@ UiPerf UiRuntime::perf() const {
 }
 
 void UiRuntime::set_perf_overlay(bool enabled) {
+    // The sysmon label already exists by the time start() returns (see
+    // the lv_sysmon_hide_performance() call there), so both of these are
+    // always safe to call unconditionally.
     Impl* impl = impl_.get();
     post([impl, enabled] {
         if (enabled) {
             lv_sysmon_show_performance(impl->lv_disp);
-            impl->sysmon_shown = true;
-        } else if (impl->sysmon_shown) {
+        } else {
             lv_sysmon_hide_performance(impl->lv_disp);
-            impl->sysmon_shown = false;
         }
     });
 }

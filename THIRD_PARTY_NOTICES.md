@@ -10,28 +10,18 @@ is used.
 - Version: 9.5.0 (fetched via CMake FetchContent, not vendored/forked)
 - License: MIT
 
+Copied verbatim from `build/sim/_deps/lvgl-src/LICENCE.txt` (fetched source
+tree; not committed to this repo):
+
 ```
-MIT License
+MIT licence
+Copyright (c) 2025 LVGL Kft
 
-Copyright (c) 2021 LVGL Kft
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to
-deal in the Software without restriction, including without limitation the
-rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
-sell copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ## Noto Sans CJK SC (via `lv_font_cjk_16.c`)
@@ -44,9 +34,14 @@ DEALINGS IN THE SOFTWARE.
 - Typeface project: https://github.com/notofonts/noto-cjk
 - License: SIL Open Font License, Version 1.1
 
+We have not independently verified every detail of the upstream copyright
+notice (the font was ported into this repo via the MyOS project rather than
+fetched directly from notofonts/noto-cjk); the line below is as given to us
+and should be checked against the upstream OFL.txt before a release build:
+
 ```
 Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name
-'Source'. Copyright 2014-2021 Google Inc. All Rights Reserved.
+'Source'.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

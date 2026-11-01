@@ -35,13 +35,15 @@ struct UiConfig {
     int task_priority = 4;
 };
 
-// A thread-safe snapshot of the UI task's activity over the last ~1s.
+// A thread-safe snapshot of the UI task's activity. `fps`, `cpu_percent`
+// and `avg_flush_ms` are all computed over a rolling ~1s window (see
+// UiRuntime::perf()); `frames` is the odd one out -- a lifetime total
+// (not windowed): lv_display_flush_is_last() became true this many times
+// since start().
 struct UiPerf {
     float fps = 0;
     uint8_t cpu_percent = 0;
     float avg_flush_ms = 0;
-    // Total frames rendered since start() (lifetime count, not windowed --
-    // lv_display_flush_is_last() became true this many times).
     uint32_t frames = 0;
 };
 
@@ -77,14 +79,18 @@ public:
     // task. Fails with Busy if another UiRuntime in this process is
     // already started (LVGL 9.5 has only one global instance under
     // LV_USE_OS == LV_OS_NONE); fails with InvalidArgument if `display`'s
-    // caps don't carry a usable width/height.
+    // caps don't carry a usable width/height; fails with NoMemory if the
+    // draw buffers, the LVGL display, or (when `touch` is non-null) the
+    // LVGL input device can't be allocated.
     Result<void> start();
 
     // Stops the UI task -- after it finishes draining any in-flight
     // post()'d work and the current lv_timer_handler() call -- then calls
     // lv_deinit() and frees the draw buffers. Idempotent; safe to call
-    // even if start() was never called or failed. Must not be called from
-    // the UI task itself (e.g. from inside a post()'d function).
+    // even if start() was never called or failed. Calling it from the UI
+    // task itself (e.g. from inside a post()'d function) would deadlock on
+    // self-join, so that case is detected instead: it logs via WLOG_E and
+    // returns immediately without stopping anything.
     void stop();
 
     // Queues `fn` to run on the UI task on its next loop iteration.
@@ -97,13 +103,16 @@ public:
     // post()'d function, or an LVGL event/timer callback it triggered).
     bool on_ui_thread() const;
 
-    // Posts an lv_snapshot_take() of the active screen to the UI task and
-    // blocks the calling thread for up to `timeout_ms` for it to finish.
-    // Safe to call from any thread, including the UI task itself (where it
-    // still blocks, but the post()'d snapshot work runs synchronously
-    // underneath it via the same queue-drain loop, so it does not
-    // deadlock). On success, returns width*height*3 bytes: row-major,
-    // 3 bytes/pixel (R, G, B), no padding between rows.
+    // Takes an lv_snapshot_take() of the active screen. Safe to call from
+    // any thread: off the UI task, it posts the snapshot work and blocks
+    // the calling thread for up to `timeout_ms` for it to finish; called
+    // from the UI task itself (e.g. from inside a post()'d function), it
+    // runs immediately instead of posting -- posting-and-blocking there
+    // would freeze the UI task waiting on its own queue, which can only
+    // drain by... the UI task running it, i.e. a deadlock. On success,
+    // returns width*height*3 bytes: row-major, 3 bytes/pixel (R, G, B, in
+    // that order -- LVGL's own RGB888 draw buffers store B,G,R, which this
+    // swaps back), no padding between rows.
     Result<std::vector<uint8_t>> snapshot_rgb888(uint32_t timeout_ms = 2000);
 
     // A thread-safe snapshot of the last ~1s of UI task activity; see
