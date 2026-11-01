@@ -21,9 +21,10 @@
 //   4. If "display.main" is registered: applies the `display` settings
 //      namespace's `brightness` key (default 200) to it, starts a
 //      UiRuntime over it (plus "touch.main" if also registered), and
-//      posts build_self_check() (see src/self_check.hpp; an empty
-//      placeholder until Task 12) onto it. Otherwise records the "mode":
-//      "headless" boot-report note.
+//      builds the self-check screen (see src/self_check.hpp's
+//      start_self_check(), spec 8) on it, blocking until that has
+//      actually run. Otherwise records the "mode": "headless" boot-report
+//      note.
 //   5. Records the elapsed boot_ms, emits "WISP_BOOT_REPORT <json>" and
 //      "WISP_MANIFEST <json>" (in that order) via Platform::emit_line,
 //      then publishes "system.boot.completed".
@@ -110,7 +111,22 @@ public:
     // nullptr in headless mode (no "display.main" device registered).
     ui::UiRuntime* ui();
 
+    // The Platform this App was constructed from (Task 12 controller
+    // ruling: the self-check screen needs it for request_power_off,
+    // heap_info, firmware_version, board->name() and the settings
+    // backend -- see src/self_check_screen.cpp). Valid for the whole
+    // lifetime of this App, independent of start()/stop().
+    const Platform& platform() const;
+
 private:
+    // Grants loopback.cpp's run_loopback()/join_loopback() (spec 8's
+    // "录音回放" button) access to a per-App task handle stored in Impl,
+    // so each App's "wisp.loop" task is tracked on that App itself
+    // (torn down by App::stop() before EventBus/UiRuntime stop -- see
+    // app.hpp's Lifetime note) rather than in a process-wide static.
+    friend void run_loopback(App&, std::function<void(const char* status)>);
+    friend void join_loopback(App&);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

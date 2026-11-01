@@ -4,6 +4,8 @@
 #include <memory>
 #include <utility>
 
+#include "app_impl.hpp"
+#include "loopback.hpp"
 #include "self_check.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/button_service.hpp"
@@ -20,24 +22,6 @@ namespace {
 constexpr uint32_t kStorageRefreshMs = 2000;
 
 }  // namespace
-
-struct App::Impl {
-    Platform platform;
-    core::DeviceRegistry registry;
-    core::BootReport report;
-    core::EventBus bus;
-    core::StorageManager storage;
-    core::ButtonService buttons;
-
-    // Only constructed by start() -- see App::start()/App::stop().
-    std::unique_ptr<ui::UiRuntime> ui;
-    std::unique_ptr<os::Timer> storage_timer;
-
-    bool started = false;
-
-    explicit Impl(Platform p)
-        : platform(std::move(p)), storage(registry, bus), buttons(registry, bus) {}
-};
 
 App::App(Platform platform) : impl_(std::make_unique<Impl>(std::move(platform))) {}
 
@@ -84,7 +68,26 @@ Result<void> App::start() {
         auto touch = impl_->registry.get<hal::Touch>("touch.main");
         impl_->ui = std::make_unique<ui::UiRuntime>(display, touch);
         if (impl_->ui->start()) {
-            impl_->ui->post([this] { build_self_check(*this); });
+            // Block until start_self_check() has actually run on the UI
+            // thread (rather than merely queued) before start() returns:
+            // otherwise a caller that calls stop() right after start()
+            // returns could race a still-pending post() (see
+            // app_impl.hpp's Lifetime note) -- stop() would find
+            // impl_->self_check still null and skip tearing it down, and
+            // the queued start_self_check() would then run during
+            // UiRuntime::stop()'s own final post-queue drain, leaving a
+            // freshly built screen (task, timer, subscription) with
+            // nothing left to tear it down afterwards.
+            os::Semaphore done(1, 0);
+            bool posted = impl_->ui->post([this, &done] {
+                start_self_check(*this, impl_->self_check);
+                done.give();
+            });
+            if (posted) {
+                done.take(os::kForever);
+            } else {
+                WLOG_E("app", "UI post queue full; self-check screen not built");
+            }
         } else {
             WLOG_E("app", "UiRuntime failed to start; continuing headless");
             impl_->ui.reset();
@@ -112,6 +115,24 @@ void App::stop() {
     // (e.g. stop() called before start(), or called again after an
     // earlier stop()), so no `started` guard is needed here -- that flag
     // only gates start() itself.
+    //
+    // The self-check screen (and any in-flight "录音回放" loopback task)
+    // is torn down first, before ButtonService/UiRuntime/EventBus -- see
+    // app_impl.hpp's Lifetime note: it holds a bus subscription and a
+    // reference to `ui`/`registry`, so it must release those before the
+    // things it references go away. join_loopback() runs first and
+    // specifically *before* stop_self_check(): the "wisp.loop" task's
+    // on_status callback (see loopback.hpp) posts back onto the UI
+    // thread through a SelfCheck-owned label, so that post must be fully
+    // enqueued (join_loopback() waits for the task itself to return)
+    // before SelfCheck's own destructor enqueues its UI-thread teardown
+    // -- the post queue is FIFO, so ordering these two posts this way
+    // guarantees the loopback callback's queued work runs (while
+    // SelfCheck is still alive) strictly before SelfCheck's teardown
+    // lambda does.
+    join_loopback(*this);
+    stop_self_check(impl_->self_check);
+
     if (impl_->storage_timer) {
         impl_->storage_timer->stop();
         impl_->storage_timer.reset();
@@ -131,5 +152,6 @@ core::BootReport& App::report() { return impl_->report; }
 core::EventBus& App::bus() { return impl_->bus; }
 core::StorageManager& App::storage() { return impl_->storage; }
 ui::UiRuntime* App::ui() { return impl_->ui.get(); }
+const Platform& App::platform() const { return impl_->platform; }
 
 }  // namespace wisp::app

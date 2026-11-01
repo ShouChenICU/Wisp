@@ -42,3 +42,7 @@ wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui)
 wisp_test(NAME ui_runtime_test SRCS ui/ui_runtime_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME app_boot_test SRCS app/app_boot_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
+wisp_test(NAME power_key_controller_test SRCS app/power_key_controller_test.cpp LIBS wisp_app)
+wisp_test(NAME format_test SRCS app/format_test.cpp LIBS wisp_app wisp_core)
+wisp_test(NAME self_check_screen_test SRCS app/self_check_screen_test.cpp
+          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)

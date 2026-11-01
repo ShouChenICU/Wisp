@@ -3,7 +3,7 @@
 # wisp/app/app.hpp, src/self_check.hpp).
 wisp_component(
     NAME wisp_app
-    SRCS src/app.cpp src/self_check.cpp
+    SRCS src/app.cpp src/self_check_screen.cpp src/loopback.cpp src/power_key_controller.cpp src/format.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_ui
 )

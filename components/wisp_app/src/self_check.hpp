@@ -2,15 +2,44 @@
 
 // Internal (not under include/, so nothing outside wisp_app's own .cpp
 // files can see this) hook for the self-check UI shown right after boot
-// on any board with a display. App::start() posts build_self_check(*this)
-// onto the UiRuntime as soon as it starts one (see app.cpp). Task 11
-// leaves this an empty placeholder; Task 12 replaces its implementation
-// with the real screen (device list, storage status, perf readout).
+// on any board with a display (spec 8). App::start() posts
+// start_self_check(*this, impl_->self_check) onto the UiRuntime as soon
+// as it starts one (see app.cpp), which builds the screen and stores its
+// teardown handle into App::Impl::self_check; App::stop() calls
+// stop_self_check() on that same member before stopping UiRuntime/
+// EventBus -- see app_impl.hpp's Lifetime note and app.hpp's file header.
+//
+// SelfCheck itself is only forward-declared here (its full definition,
+// and everything it owns -- the "wisp.sample" task, the 100ms lv_timer,
+// the "button." bus subscription, the 5000ms WISP_PERF timer -- lives in
+// self_check_screen.cpp) so that app.cpp and app_impl.hpp, which only
+// need to hold/forward a `std::unique_ptr<SelfCheck>` without touching
+// its insides, don't need to include any LVGL/HAL headers at all.
+
+#include <memory>
 
 namespace wisp::app {
 
 class App;
+class SelfCheck;
 
-void build_self_check(App& app);
+// Builds the self-check screen (spec 8's device list, IMU/power/RTC/
+// storage readouts, touch test area, button hints, "录音回放" button and
+// performance row) on the UI thread, and stores the owner object for its
+// non-LVGL resources into `slot` (see stop_self_check() below). Callers
+// must already be inside a ui()->post()'d callback (see app.cpp).
+// Equivalent to `slot = build_self_check(app)`, except that assignment
+// itself (destroying `slot`'s previous value, if any, which needs
+// SelfCheck's full definition) is done here, in the one TU where that's
+// available -- app.cpp only ever forward-declares SelfCheck.
+void start_self_check(App& app, std::unique_ptr<SelfCheck>& slot);
+
+// Tears down everything `self_check` owns (see the class-level comment
+// above) and resets the pointer to null. A no-op if `self_check` is
+// already null. Safe to call from any thread (not just the UI thread) --
+// see self_check_screen.cpp's ~SelfCheck() for how it marshals the LVGL-
+// specific teardown (deleting the lv_timer, closing any open confirm
+// msgbox) onto the UI thread regardless of which thread calls this.
+void stop_self_check(std::unique_ptr<SelfCheck>& self_check);
 
 }  // namespace wisp::app
