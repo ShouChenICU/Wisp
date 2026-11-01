@@ -20,3 +20,4 @@ endfunction()
 # Later tasks append further wisp_test(...) calls here as new test binaries
 # are added.
 wisp_test(NAME result_test SRCS base/result_test.cpp LIBS wisp_base)
+wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
