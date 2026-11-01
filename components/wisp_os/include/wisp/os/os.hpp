@@ -33,7 +33,7 @@ constexpr uint32_t kForever = UINT32_MAX;
 enum class Mem { Fast, Large, Dma };
 
 void* alloc(size_t bytes, Mem kind);
-void free(void* p);
+void dealloc(void* p);
 
 // A mutual-exclusion lock satisfying BasicLockable (lock/unlock/try_lock),
 // so it can be used directly with std::lock_guard / std::unique_lock.
@@ -119,18 +119,30 @@ class Timer {
 public:
     Timer(const char* name, uint32_t period_ms, bool periodic, std::function<void()> cb);
 
-    // Stops the timer (see stop()) if it is still active.
+    // Stops the timer (see stop()) if it is still active. Must not be
+    // called from within cb() itself (destroying a Timer from inside its
+    // own callback is not supported).
     ~Timer();
 
     Timer(const Timer&) = delete;
     Timer& operator=(const Timer&) = delete;
 
-    // Idempotent: starting an already-active timer is a no-op.
+    // Idempotent: starting an already-active timer is a no-op. This
+    // includes a call made from within cb() itself (e.g. an attempt to
+    // re-arm a one-shot timer so it fires again) — the timer is still
+    // "active" for the duration of that cb() invocation, so start() just
+    // returns without doing anything. To have a timer fire repeatedly,
+    // construct it with periodic=true; re-arming a one-shot timer from
+    // inside its own callback is not supported.
     void start();
 
-    // Stops the timer and blocks until any in-flight invocation of cb has
+    // Stops the timer. If called from a thread other than the timer's own
+    // callback thread, blocks until any in-flight invocation of cb has
     // returned, so cb is guaranteed not to be running once stop() returns.
-    // Idempotent. Must not be called from within cb itself.
+    // If called from within cb() itself, returns immediately without
+    // blocking — joining the calling thread with itself would deadlock —
+    // but cb is still guaranteed not to be invoked again after this
+    // particular invocation returns. Idempotent either way.
     void stop();
 
     bool active() const;

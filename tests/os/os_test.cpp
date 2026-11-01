@@ -5,6 +5,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "wisp/os/queue.hpp"
 
@@ -77,10 +78,140 @@ TEST(Os, AllocKinds) {
     for (auto m : {Mem::Fast, Mem::Large, Mem::Dma}) {
         void* p = alloc(64, m);
         ASSERT_NE(p, nullptr);
-        // Qualified: under `using namespace wisp::os;`, unqualified free(p)
-        // is ambiguous against ::free(void*) from <cstdlib> (pulled in
-        // transitively by <memory>, which os.hpp itself needs for
-        // std::unique_ptr) — both are exact-match candidates in scope.
-        wisp::os::free(p);
+        dealloc(p);
     }
+}
+
+// --- Fix-round-1 coverage ---------------------------------------------
+//
+// Added in response to code review of the first implementation: a race in
+// Queue::push_drop_oldest(), a deadlock in Timer::stop() when called from
+// within its own callback, and a race between Timer::start()/stop() and
+// the destructor over the timer thread.
+
+TEST(Os, TimerStopFromCallbackDoesNotDeadlock) {
+    // cb() calls stop() on its own Timer. Joining a thread with itself
+    // would be undefined behavior (std::terminate under -fno-exceptions);
+    // stop() must detect this and return without blocking, guaranteeing
+    // cb never fires again after this particular invocation returns.
+    Timer* self = nullptr;
+    std::atomic<int> calls{0};
+    std::atomic<bool> stopped_from_cb{false};
+    Timer tm("tm", 5, /*periodic=*/true, [&] {
+        ++calls;
+        self->stop();
+        stopped_from_cb = true;
+    });
+    self = &tm;
+
+    tm.start();
+    sleep_ms(100);
+
+    EXPECT_TRUE(stopped_from_cb.load());
+    int seen = calls.load();
+    EXPECT_EQ(seen, 1);
+    sleep_ms(30);
+    EXPECT_EQ(calls.load(), seen);
+    EXPECT_FALSE(tm.active());
+}
+
+TEST(Os, TimerDestructorGuaranteesCallbackStopped) {
+    std::atomic<int> calls{0};
+    {
+        Timer tm("tm", 5, /*periodic=*/true, [&] {
+            ++calls;
+            sleep_ms(5);
+        });
+        tm.start();
+        sleep_ms(30);
+        // ~Timer() runs here and must block until any in-flight cb()
+        // invocation has returned.
+    }
+    int seen = calls.load();
+    EXPECT_GT(seen, 0);
+    sleep_ms(30);
+    EXPECT_EQ(calls.load(), seen);
+}
+
+TEST(Os, TimerStartStopHammeredFromTwoThreads) {
+    // Regression test for a race between start()/stop()/destructor over
+    // the timer's thread handle; must not crash or hang.
+    std::atomic<int> calls{0};
+    Timer tm("tm", 2, /*periodic=*/true, [&] { ++calls; });
+
+    std::atomic<bool> keep_going{true};
+    auto starter = Task::spawn({.name = "starter"}, [&] {
+        while (keep_going.load()) {
+            tm.start();
+        }
+    });
+    auto stopper = Task::spawn({.name = "stopper"}, [&] {
+        for (int i = 0; i < 300; ++i) {
+            tm.stop();
+        }
+    });
+
+    stopper->join();
+    keep_going = false;
+    starter->join();
+    tm.stop();
+
+    int seen = calls.load();
+    sleep_ms(30);
+    EXPECT_EQ(calls.load(), seen);
+    EXPECT_FALSE(tm.active());
+}
+
+TEST(Queue, ZeroCapacityAsserts) {
+    EXPECT_DEATH({ Queue<int> q(0); }, "");
+}
+
+TEST(Queue, PushDropOldestRaceWithConcurrentPops) {
+    // Regression test: push_drop_oldest() used to ignore the return value
+    // of filled_slots_.take(0) when racing with a concurrent pop() that
+    // had already claimed the same removal right, corrupting tail_/size_
+    // (and eventually handing a consumer a moved-from value). Payloads are
+    // std::string (not int) so a moved-from value is actually observable
+    // as an empty string, rather than silently copying an unmoved int.
+    // With the fix, every element ever pushed is accounted for by exactly
+    // one of "popped" or "dropped", and size() never goes negative/corrupt.
+    constexpr int kCapacity = 1;
+    constexpr int kConsumers = 4;
+    constexpr int kItems = 3000;
+
+    Queue<std::string> q(kCapacity);
+    std::atomic<int> dropped_count{0};
+    std::atomic<int> popped_count{0};
+    std::atomic<bool> producer_done{false};
+
+    std::vector<std::unique_ptr<Task>> consumers;
+    for (int i = 0; i < kConsumers; ++i) {
+        consumers.push_back(Task::spawn({.name = "consumer"}, [&] {
+            while (true) {
+                std::string v;
+                if (q.pop(v, 2)) {
+                    EXPECT_FALSE(v.empty());  // never a moved-from value
+                    ++popped_count;
+                    continue;
+                }
+                if (producer_done.load() && q.size() == 0) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    for (int i = 0; i < kItems; ++i) {
+        if (q.push_drop_oldest(std::to_string(i))) {
+            ++dropped_count;
+        }
+    }
+    producer_done = true;
+
+    for (auto& c : consumers) {
+        c->join();
+    }
+
+    EXPECT_EQ(q.size(), 0u);
+    EXPECT_EQ(dropped_count.load() + popped_count.load(), kItems);
 }

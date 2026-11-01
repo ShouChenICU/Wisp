@@ -28,7 +28,7 @@ void* alloc(size_t bytes, Mem /*kind*/) {
     return std::malloc(bytes);
 }
 
-void free(void* p) { std::free(p); }
+void dealloc(void* p) { std::free(p); }
 
 // ---------------------------------------------------------------------------
 // Mutex
@@ -129,16 +129,33 @@ struct Timer::Impl {
     bool periodic;
     std::function<void()> cb;
 
+    // `thread` and the start/stop/join choreography are guarded by
+    // control_mtx, which is held for the whole duration of start(), stop()
+    // and the destructor (including the join() call itself) so the three
+    // can never race on `thread`. `wait_mtx`/`cv`/`stop_requested` are a
+    // separate pair used only by run()'s own wait loop; `running` and
+    // `runner_id` are atomics so run() can update them without ever
+    // needing control_mtx (control_mtx may be held by a concurrent
+    // stop()/destructor that is blocked inside join() waiting for this
+    // very thread to finish — if run() also needed control_mtx to finish,
+    // that would deadlock).
     std::thread thread;
-    std::mutex mtx;
+    std::mutex control_mtx;
+
+    std::mutex wait_mtx;
     std::condition_variable cv;
     bool stop_requested = false;
+
     std::atomic<bool> running{false};
+    std::atomic<std::thread::id> runner_id{};
 
     void run() {
+        // Published first so stop()-from-within-cb() can recognize "this
+        // is the timer's own thread" as soon as the thread exists.
+        runner_id = std::this_thread::get_id();
         while (true) {
             {
-                std::unique_lock<std::mutex> lock(mtx);
+                std::unique_lock<std::mutex> lock(wait_mtx);
                 bool stopped = cv.wait_for(lock, std::chrono::milliseconds(period_ms),
                                            [this] { return stop_requested; });
                 if (stopped) {
@@ -164,27 +181,43 @@ Timer::Timer(const char* /*name*/, uint32_t period_ms, bool periodic, std::funct
 Timer::~Timer() { stop(); }
 
 void Timer::start() {
-    std::lock_guard<std::mutex> lock(impl_->mtx);
+    std::lock_guard<std::mutex> control_lock(impl_->control_mtx);
     if (impl_->running) {
         return;
     }
     if (impl_->thread.joinable()) {
-        // A previous (non-periodic) run finished on its own; clean it up
-        // before starting a new one.
+        // A previous run finished (naturally, or via a stop() called from
+        // within its own cb()) but was never joined; clean it up before
+        // starting a new one.
         impl_->thread.join();
     }
-    impl_->stop_requested = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->wait_mtx);
+        impl_->stop_requested = false;
+    }
     impl_->running = true;
     impl_->thread = std::thread([this] { impl_->run(); });
 }
 
 void Timer::stop() {
+    std::lock_guard<std::mutex> control_lock(impl_->control_mtx);
+
+    // Detect whether we are being called from the timer's own callback
+    // thread (e.g. cb() itself calls stop()). Joining a thread with
+    // itself is undefined behavior (std::terminate under
+    // -fno-exceptions), so in that case we only signal the thread to stop
+    // and return without blocking; the actual join happens later, from
+    // start() or the destructor, once called from a different thread.
+    bool on_timer_thread =
+        impl_->running.load() && impl_->runner_id.load() == std::this_thread::get_id();
+
     {
-        std::lock_guard<std::mutex> lock(impl_->mtx);
+        std::lock_guard<std::mutex> lock(impl_->wait_mtx);
         impl_->stop_requested = true;
     }
     impl_->cv.notify_all();
-    if (impl_->thread.joinable()) {
+
+    if (!on_timer_thread && impl_->thread.joinable()) {
         impl_->thread.join();
     }
 }
