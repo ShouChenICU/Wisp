@@ -1,6 +1,11 @@
 # wisp_app: boot orchestration (wisp::app::Board/Platform/App) over every
 # wisp_core service, plus the self-check UI hook (see
 # wisp/app/app.hpp, src/self_check.hpp).
+#
+# Self-contained include -- see cmake/wisp_component.cmake's header
+# comment.
+include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
+
 wisp_component(
     NAME wisp_app
     SRCS src/app.cpp src/self_check_screen.cpp src/loopback.cpp src/power_key_controller.cpp src/format.cpp

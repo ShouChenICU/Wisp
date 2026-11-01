@@ -1,0 +1,26 @@
+dependencies:
+  bblanchon/arduinojson:
+    component_hash: 5e6aff2bc5bc988b36c8e90c01e637495ee895ad3af93911860c21ec6da79b6a
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 7.4.3
+  idf:
+    source:
+      type: idf
+    version: 6.0.3
+  lvgl/lvgl:
+    component_hash: 184e532558c1c45fefed631f3e235423d22582aafb4630f3e8885c35281a49ae
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 9.5.0
+direct_dependencies:
+- bblanchon/arduinojson
+- idf
+- lvgl/lvgl
+manifest_hash: f64c5d2c3428446c118b865fe522b69494c1e006f72df9bde2e435a53a9d4194
+target: esp32s3
+version: 3.0.0

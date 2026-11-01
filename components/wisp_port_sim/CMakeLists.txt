@@ -11,6 +11,23 @@
 #     host-only and SDL-free, so unit tests can link it on its own.
 #   - wisp_port_sim_dev: SDL-backed device port, added in Task 13.
 
+# Task 15 fix: ESP-IDF's component discovery (EXTRA_COMPONENT_DIRS in
+# firmware/CMakeLists.txt) still finds this directory and -- during the
+# early, isolated requirements-extraction pass described in
+# cmake/wisp_component.cmake's header comment -- include()s this whole
+# file, even though nothing in firmware/ ever REQUIRES any of the
+# targets below. Guarding the entire file behind `if(NOT ESP_PLATFORM)`
+# (rather than relying on wisp_component()'s own per-target ESP_PLATFORM
+# branch, as every other wisp_* component does) means this file simply
+# never calls idf_component_register()/register_component() for any of
+# these three targets when ESP_PLATFORM is set; they are then silently
+# absent from the dependency graph (see tools/cmake/build.cmake's
+# __build_expand_requirements(), which just skips an unregistered
+# component rather than erroring -- it only errors if something actually
+# REQUIRES one, which nothing here does) instead of attempting
+# find_package(Threads)/SDL2 in that minimal cross-compiling environment.
+if(NOT ESP_PLATFORM)
+
 find_package(Threads REQUIRED)
 
 wisp_component(
@@ -48,3 +65,5 @@ wisp_component(
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_app
     HOST_LIBS SDL2::SDL2
 )
+
+endif()

@@ -1,0 +1,52 @@
+# ESP-IDF firmware project (Task 15 -- see
+# .superpowers/sdd/2026-11-01-foundation/task-15-brief.md). Builds
+# firmware/main (which pulls in wisp_app + wisp_port_esp, and -- via
+# WISP_BOARD -- exactly one boards/<name>/board.cpp) against every
+# portable wisp_* component plus the ESP-only wisp_port_esp port.
+#
+# Activate the pinned ESP-IDF v6.0.3 environment first (export.sh is a
+# bash script; the user's shell is fish):
+#   bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py set-target esp32s3 && idf.py build'
+
+cmake_minimum_required(VERSION 3.16)
+
+# Portable components (wisp_base/os/hal/core/ui/app) plus the ESP-only
+# wisp_port_esp port both live under components/; board-specific code
+# (selected below via WISP_BOARD) lives under drivers/ (per-chip drivers,
+# added by later tasks -- the directory may not exist yet, which
+# EXTRA_COMPONENT_DIRS tolerates: it is just an extra place to look for
+# component subdirectories, not a required path).
+set(EXTRA_COMPONENT_DIRS ${CMAKE_CURRENT_LIST_DIR}/../components ${CMAKE_CURRENT_LIST_DIR}/../drivers)
+
+# Selects which boards/<name>/board.cpp firmware/main/CMakeLists.txt
+# compiles into this binary (see wisp::board::create_board(), declared in
+# components/wisp_app/include/wisp/app/board.hpp). Override on the
+# command line (idf.py -DWISP_BOARD=<name> build) to build for a
+# different board.
+set(WISP_BOARD waveshare_amoled_216 CACHE STRING "Board to build for (boards/<name>/board.cpp)")
+
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+# LVGL configuration (AGENTS.md's "LVGL 配置" trap): the lvgl/lvgl
+# component's own CMake (env_support/cmake/esp.cmake) publicly defines
+# LV_CONF_INCLUDE_SIMPLE, but lv_conf_internal.h checks LV_CONF_PATH
+# *first* -- if it is defined (as it is here), that wins and LVGL
+# #includes wisp's own components/wisp_ui/config/lv_conf.h instead of
+# generating one from Kconfig. This must be set as a build-wide
+# COMPILE_DEFINITIONS property (rather than e.g. a per-component
+# target_compile_definitions call) between including project.cmake and
+# calling project() below -- see that file's own header comment -- so it
+# reaches every component's compile flags, including lvgl's own sources
+# (idf_component_register() applies this property to each component it
+# registers; see tools/cmake/component.cmake) and wisp_ui's
+# ui_runtime.cpp, which both need to agree on the same lv_conf.h. The
+# value must be the macro's literal replacement text, i.e. a
+# double-quoted path (for `#include LV_CONF_PATH` to expand to
+# `#include "<path>"`), not a bare path.
+idf_build_set_property(
+    COMPILE_DEFINITIONS
+    "LV_CONF_PATH=\"${CMAKE_CURRENT_LIST_DIR}/../components/wisp_ui/config/lv_conf.h\""
+    APPEND
+)
+
+project(wisp)

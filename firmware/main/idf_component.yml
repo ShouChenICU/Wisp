@@ -1,0 +1,10 @@
+# Pinned third-party dependencies for the firmware build (AGENTS.md: "所有
+# 外部依赖锁定版本"). lvgl/lvgl matches components/wisp_ui's LVGL 9.5.0 (see
+# cmake/wisp_host_deps.cmake for the host-side pin); bblanchon/arduinojson
+# matches components/wisp_base's host-side pin (cmake/wisp_host_deps.cmake).
+# Later tasks append further entries here (e.g. esp_board_manager, the
+# touch/SD/audio driver components) as those features are ported.
+dependencies:
+  idf: ">=6.0.3,<6.1"
+  lvgl/lvgl: "9.5.0"
+  bblanchon/arduinojson: "7.4.3"

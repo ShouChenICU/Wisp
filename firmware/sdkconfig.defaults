@@ -1,0 +1,54 @@
+# Wisp firmware defaults for the Waveshare ESP32-S3-Touch-AMOLED-2.16
+# (ESP32-S3R8: 16 MB QIO flash, 8 MB octal PSRAM @ 80 MHz -- see
+# docs/hardware/waveshare_amoled_216.md). Committed (unlike sdkconfig/
+# sdkconfig.old, which idf.py generates and which are gitignored); idf.py
+# set-target/build regenerates the real sdkconfig from this file plus
+# Kconfig defaults.
+
+# CPU frequency.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# Flash: QIO, 80 MHz, 16 MB.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Custom partition table (firmware/partitions.csv, spec 7.4).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# External octal PSRAM, 80 MHz, usable via malloc() (os::alloc(Mem::Large) --
+# see components/wisp_port_esp/os/os_esp.cpp).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# Console over USB-Serial-JTAG (no external UART-to-USB bridge on this
+# board -- see docs/hardware/waveshare_amoled_216.md).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# LVGL must use wisp_ui's own lv_conf.h (see firmware/CMakeLists.txt's
+# LV_CONF_PATH wiring and AGENTS.md's "LVGL 配置" trap), not LVGL's
+# Kconfig-generated one.
+CONFIG_LV_CONF_SKIP=n
+
+# The lvgl/lvgl IDF component (env_support/cmake/kconfig.cmake) builds its
+# own examples/demos tree by default (CONFIG_LV_BUILD_EXAMPLES/_DEMOS
+# default y) -- those reference fonts and features wisp_ui's lv_conf.h
+# doesn't enable (e.g. lv_font_montserrat_14) and aren't needed anyway.
+# Mirrors cmake/wisp_host_deps.cmake's CONFIG_LV_BUILD_DEMOS/EXAMPLES/
+# THORVG_INTERNAL OFF for the host build.
+CONFIG_LV_BUILD_EXAMPLES=n
+CONFIG_LV_BUILD_DEMOS=n
+CONFIG_LV_USE_THORVG_INTERNAL=n
+
+# C++20, no exceptions/RTTI (AGENTS.md section 5 / global-constraints.md).
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_RTTI=n
+
+# wisp::app::App's main-thread work (board/device bring-up, EventBus,
+# StorageManager, ButtonService, UiRuntime start) all currently runs
+# inline from app_main(), on the main task.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

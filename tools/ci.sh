@@ -30,11 +30,15 @@ if [[ "${CLANG_FORMAT_ACTUAL%%.*}" != "${CLANG_FORMAT_VERSION%%.*}" ]]; then
          "formatting here may disagree with CI" >&2
 fi
 
-# Every C/C++ source file in the repo, except build output and
+# Every C/C++ source file in the repo, except build output,
 # components/wisp_ui/fonts/ (a ported third-party font -- see
-# AGENTS.md section 6 / docs/references.md).
+# AGENTS.md section 6 / docs/references.md), and (Task 15)
+# firmware/build/ and firmware/managed_components/ (ESP-IDF build
+# output and third-party sources fetched by the component manager --
+# both gitignored, neither ours to format).
 mapfile -t SOURCE_FILES < <(find . \
-    \( -path './build' -o -path './.git' -o -path './components/wisp_ui/fonts' \) -prune -o \
+    \( -path './build' -o -path './.git' -o -path './components/wisp_ui/fonts' \
+       -o -path './firmware/build' -o -path './firmware/managed_components' \) -prune -o \
     -type f \( -name '*.hpp' -o -name '*.cpp' -o -name '*.h' -o -name '*.c' \) -print)
 
 echo "==> clang-format --dry-run --Werror (${#SOURCE_FILES[@]} files)"

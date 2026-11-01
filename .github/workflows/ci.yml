@@ -33,5 +33,23 @@ jobs:
       - name: Run tools/ci.sh
         run: bash tools/ci.sh
 
-  # firmware: added in Task 15 (idf.py bmgr build against a locked
-  # ESP-IDF version -- see AGENTS.md section 4's firmware build line).
+  firmware:
+    runs-on: ubuntu-latest
+    # Pinned ESP-IDF v6.0.3 toolchain + Python env (see
+    # .superpowers/sdd/2026-11-01-foundation/task-15-brief.md and
+    # AGENTS.md section 4's firmware build line). idf.py set-target +
+    # build is the full extent of this job for now; the `idf.py bmgr -c
+    # ../boards -b waveshare_amoled_216` codegen step lands in Task 16
+    # once components/wisp_bmgr exists, and flashing/monitoring a real
+    # board is never a CI step (left to a human with the hardware).
+    container:
+      image: espressif/idf:v6.0.3
+    steps:
+      - uses: actions/checkout@v4
+      - name: idf.py set-target esp32s3 && idf.py build
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          cd firmware
+          idf.py set-target esp32s3
+          idf.py build

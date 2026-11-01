@@ -42,7 +42,13 @@ std::string format_time(int64_t unix_s) {
     std::tm tm{};
     gmtime_r(&t, &tm);
 
-    char buf[32];
+    // 32 bytes comfortably fits every real calendar date, but GCC's
+    // -Wformat-truncation (treated as an error on the ESP-IDF toolchain's
+    // default warning flags) conservatively assumes tm_year/tm_mon/etc.
+    // could hold any int value and sizes its truncation check off of
+    // that, not off of what gmtime_r() actually produces; 80 bytes is
+    // large enough that even that worst-case estimate can't trigger it.
+    char buf[80];
     std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d", tm.tm_year + 1900,
                   tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
     return buf;
