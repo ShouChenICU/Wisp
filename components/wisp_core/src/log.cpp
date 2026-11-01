@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -32,6 +33,19 @@ char level_char(LogLevel level) {
 // only ever touched while holding it), except `level`, which is read on
 // every write() call and so is kept as a plain atomic instead of forcing
 // an extra lock just to filter out a message that will be dropped anyway.
+//
+// This struct is never heap-allocated or freed (see state() below): the
+// one instance lives for the life of the process, and init()/
+// reset_for_test() only ever swap its *contents* (the ring storage
+// pointer, sink list, level) in place, under `mutex`. This means a
+// concurrent write()/add_sink()/set_level()/ring_snapshot() can never
+// observe a dangling State or a freed ring buffer -- it either runs
+// before or after a given init()/reset_for_test() call (serialized by
+// `mutex`), never during a half-updated one. Before the first init() (or
+// right after reset_for_test()), ring_capacity == 0 and sinks is empty,
+// so write() just records nothing into the ring and delivers to no
+// sinks -- a safe, documented no-op rather than a special "not
+// initialized" state.
 struct State {
     os::Mutex mutex;
     char* ring_storage = nullptr;
@@ -49,11 +63,12 @@ struct State {
             return;
         }
         if (len > ring_capacity) {
-            // Can never fit as a whole line; drop it rather than storing
-            // a newline-less fragment, which would break every other
-            // line's "ends in \n" invariant that eviction relies on.
-            ring_head = 0;
-            ring_len = 0;
+            // Can never fit as a whole line, even in an empty ring.
+            // Drop just this line and leave the existing contents alone
+            // (storing a newline-less fragment instead would break
+            // every other line's "ends in \n" invariant that eviction
+            // relies on, and clearing the ring would needlessly destroy
+            // perfectly good, unrelated history).
             return;
         }
         while (ring_len + len > ring_capacity) {
@@ -79,6 +94,25 @@ struct State {
         return out;
     }
 
+    // Resets the ring to `new_capacity` bytes (dropping any existing
+    // contents) and, if `clear_sinks_and_level` is set, also clears the
+    // sink list and restores the default level. Must be called with
+    // `mutex` held.
+    void reinit_ring(size_t new_capacity, os::Mem mem, bool clear_sinks_and_level) {
+        if (ring_storage != nullptr) {
+            os::dealloc(ring_storage);
+        }
+        ring_storage =
+            new_capacity > 0 ? static_cast<char*>(os::alloc(new_capacity, mem)) : nullptr;
+        ring_capacity = new_capacity;
+        ring_head = 0;
+        ring_len = 0;
+        if (clear_sinks_and_level) {
+            sinks.clear();
+            level.store(static_cast<int>(LogLevel::Debug), std::memory_order_relaxed);
+        }
+    }
+
 private:
     // Drops the oldest stored line (up to and including its '\n'). Must
     // be called with `mutex` held, and only when ring_len > 0.
@@ -99,7 +133,15 @@ private:
     }
 };
 
-State* g_state = nullptr;
+// A single, function-local-static instance: constructed on first use,
+// never destroyed or reallocated, so no caller ever holds a pointer to a
+// State that init()/reset_for_test() could free out from under it (see
+// State's own comment above for why that makes the whole thing race- and
+// use-after-free-safe).
+State& state() {
+    static State instance;
+    return instance;
+}
 
 // Set while a sink's write() is running, so that a log call made from
 // within a sink (which would otherwise re-enter write() below) is still
@@ -112,38 +154,24 @@ thread_local bool g_in_sink = false;
 }  // namespace
 
 void init(size_t ring_bytes, os::Mem mem) {
-    if (g_state != nullptr) {
-        reset_for_test();
-    }
-    State* state = new State();
-    state->ring_capacity = ring_bytes;
-    state->ring_storage = ring_bytes > 0 ? static_cast<char*>(os::alloc(ring_bytes, mem)) : nullptr;
-    g_state = state;
+    State& s = state();
+    std::lock_guard<os::Mutex> lock(s.mutex);
+    s.reinit_ring(ring_bytes, mem, /*clear_sinks_and_level=*/false);
 }
 
 void add_sink(LogSink* sink) {
-    State* state = g_state;
-    if (state == nullptr) {
-        return;
-    }
-    std::lock_guard<os::Mutex> lock(state->mutex);
-    state->sinks.push_back(sink);
+    State& s = state();
+    std::lock_guard<os::Mutex> lock(s.mutex);
+    s.sinks.push_back(sink);
 }
 
 void set_level(LogLevel level) {
-    State* state = g_state;
-    if (state == nullptr) {
-        return;
-    }
-    state->level.store(static_cast<int>(level), std::memory_order_relaxed);
+    state().level.store(static_cast<int>(level), std::memory_order_relaxed);
 }
 
 void write(LogLevel level, const char* tag, const char* fmt, ...) {
-    State* state = g_state;
-    if (state == nullptr) {
-        return;
-    }
-    if (static_cast<int>(level) < state->level.load(std::memory_order_relaxed)) {
+    State& s = state();
+    if (static_cast<int>(level) < s.level.load(std::memory_order_relaxed)) {
         return;
     }
 
@@ -170,8 +198,8 @@ void write(LogLevel level, const char* tag, const char* fmt, ...) {
     line += '\n';
 
     {
-        std::lock_guard<os::Mutex> lock(state->mutex);
-        state->push_line(line.data(), line.size());
+        std::lock_guard<os::Mutex> lock(s.mutex);
+        s.push_line(line.data(), line.size());
     }
 
     // Deliver to sinks outside the lock, so a sink that does its own
@@ -183,8 +211,8 @@ void write(LogLevel level, const char* tag, const char* fmt, ...) {
     g_in_sink = true;
     std::vector<LogSink*> sinks_copy;
     {
-        std::lock_guard<os::Mutex> lock(state->mutex);
-        sinks_copy = state->sinks;
+        std::lock_guard<os::Mutex> lock(s.mutex);
+        sinks_copy = s.sinks;
     }
     for (LogSink* sink : sinks_copy) {
         sink->write(level, tag, msg);
@@ -193,24 +221,15 @@ void write(LogLevel level, const char* tag, const char* fmt, ...) {
 }
 
 std::string ring_snapshot() {
-    State* state = g_state;
-    if (state == nullptr) {
-        return {};
-    }
-    std::lock_guard<os::Mutex> lock(state->mutex);
-    return state->snapshot();
+    State& s = state();
+    std::lock_guard<os::Mutex> lock(s.mutex);
+    return s.snapshot();
 }
 
 void reset_for_test() {
-    State* state = g_state;
-    g_state = nullptr;
-    if (state == nullptr) {
-        return;
-    }
-    if (state->ring_storage != nullptr) {
-        os::dealloc(state->ring_storage);
-    }
-    delete state;
+    State& s = state();
+    std::lock_guard<os::Mutex> lock(s.mutex);
+    s.reinit_ring(0, os::Mem::Large, /*clear_sinks_and_level=*/true);
 }
 
 }  // namespace wisp::log

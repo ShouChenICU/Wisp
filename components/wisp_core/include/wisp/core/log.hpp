@@ -34,8 +34,16 @@ public:
 namespace log {
 
 // (Re)initializes the logging subsystem with a ring buffer of
-// `ring_bytes`, allocated via os::alloc(ring_bytes, mem). Must be called
-// before any other wisp::log function (other than reset_for_test()).
+// `ring_bytes`, allocated via os::alloc(ring_bytes, mem), replacing any
+// previous ring (existing sinks and the current level are left as-is;
+// see reset_for_test() to clear those too). Safe to call concurrently
+// with write()/add_sink()/set_level()/ring_snapshot() from other
+// threads/tasks (e.g. other tasks logging during startup, before or
+// during this call) -- those calls are simply serialized against it, not
+// racing it. A write() call made before the first init() (or after
+// reset_for_test(), before the next init()) is a safe no-op: it records
+// nothing into the ring (capacity 0) and is delivered to no sinks (none
+// registered yet / cleared).
 void init(size_t ring_bytes = 32 * 1024, os::Mem mem = os::Mem::Large);
 
 // Registers `sink` to receive every log line accepted by the current
