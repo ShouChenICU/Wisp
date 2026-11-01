@@ -98,7 +98,7 @@ cd firmware && idf.py bmgr -c ../boards -b <板名> && idf.py build
 
 ## 8. 通用陷阱
 
-- **FAT 上的原子写**：FAT 文件系统的 `rename` 不能覆盖已存在的文件。原子写的顺序是：写 `.tmp` → fsync → 删除目标 → 改名；读取时如果发现残留的 `.tmp`，先把它恢复为目标文件。
+- **FAT 上的原子写**：FAT 文件系统的 `rename` 不能覆盖已存在的文件。原子写采用两阶段命名：写 `.tmp` → fsync → 改名为 `.new`（此时 `.new` 一定完整）→ 删除目标 → `.new` 改名为目标。读取时目标缺失而 `.new` 存在则用 `.new` 恢复；`.tmp` 可能写了一半，一律视为垃圾丢弃。
 - **LVGL 配置**：LVGL 必须使用 `components/wisp_ui/config/lv_conf.h`（由 `WISP_LV_CONF` 宏守卫）。
 - **生成代码**：`idf.py bmgr` 生成的代码已被 git 忽略，不要手改。
 

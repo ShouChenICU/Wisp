@@ -41,7 +41,7 @@
 
 ## Review Focus
 
-1. **FAT 上的原子写**：目标文件已存在时 FatFS 的 `rename` 会失败；`write_atomic` 必须"写 `.tmp` → fsync → 删除目标 → 改名"，并且 `read_file` 在目标缺失、`.tmp` 存在时自动恢复。测试见 Task 9。
+1. **FAT 上的原子写**：目标文件已存在时 FatFS 的 `rename` 会失败；`write_atomic` 必须"写 `.tmp` → fsync → 改名为 `.new` → 删除目标 → `.new` 改名为目标"，并且 `read_file` 在目标缺失、`.new` 存在时自动恢复（`.tmp` 视为未完成写入，丢弃）。（执行期裁定：原方案会把首次写入中途断电留下的半截 `.tmp` 当成有效数据。）测试见 Task 9。
 2. **刷新区域越界**：`align_area` 在区域贴着右/下边缘（x2=479）且对齐为 2 时，不能扩到 480。测试见 Task 10。
 3. **事件处理函数里再发布事件**：不能死锁，也不能乱序。测试见 Task 5。
 4. **电源键长按重复**：一次按住只触发一次 `long`；确认框已打开时再次长按不能叠加第二个确认框；息屏时长按先亮屏再弹框。测试见 Task 7、Task 12。
@@ -663,8 +663,8 @@ git commit -m "feat(core): add settings with JSON file backend for simulator"
   - `struct MediaStatus { std::string id; bool online; uint64_t total_bytes; uint64_t free_bytes; };`、`struct StorageStatus { std::vector<MediaStatus> media; };`
   - `class StorageManager { StorageManager(DeviceRegistry&, EventBus&, StorageConfig = {}); Result<void> init(); /* 缺少 storage.int → StorageUnavailable；创建 <int>/system、<int>/library，SD 在线时创建 <sd>/wisp/library、<sd>/wisp/backup */ std::vector<std::string> roots(Area) const; Result<std::string> write_root(Area) const; /* 列表为空 → StorageUnavailable */ Result<void> write_atomic(const std::string& path, std::span<const uint8_t> data); Result<std::vector<uint8_t>> read_file(const std::string& path); void refresh(); /* 探测 SD 在线状态变化 */ StorageStatus status() const; };`
   - 根目录规则（spec 7.2）：`System` = `[<int>/system]`；`Library` = SD 在线时 `[<sd>/wisp/library, <int>/library]`，否则 `[<int>/library]`；`Backup` = SD 在线时 `[<sd>/wisp/backup]`，否则 `[]`。`<int>`/`<sd>` 为设备 `mount_point()`。
-  - `write_atomic` 算法：路径以 `<int>/library/` 开头时，先统计该目录现有大小（递归遍历，扣除目标文件旧大小）加上新数据大小，超过配额返回 `QuotaExceeded`；路径位于离线 SD 下返回 `StorageUnavailable`；写入 `<path>.tmp`，`fflush` + `fsync`，若目标存在则 `remove`，再 `rename(tmp, path)`；失败返回 `IoError`，消息带 `strerror(errno)`。
-  - `read_file`：目标不存在但 `<path>.tmp` 存在时，先把 `.tmp` 改名为目标再读取。
+  - `write_atomic` 算法：路径以 `<int>/library/` 开头时，先统计该目录现有大小（递归遍历，扣除目标文件旧大小）加上新数据大小，超过配额返回 `QuotaExceeded`；路径位于离线 SD 下返回 `StorageUnavailable`；写入 `<path>.tmp`，`fflush` + `fsync`，`rename(tmp, <path>.new)`，若目标存在则 `remove`，再 `rename(new, path)`；失败返回 `IoError`，消息带 `strerror(errno)`。
+  - `read_file`：目标不存在但 `<path>.new` 存在时，先把 `.new` 改名为目标再读取；残留的 `.tmp` 不用于恢复。
   - `refresh`：SD 由离线变在线时创建目录并发布 `storage.sd.inserted`；由在线变离线时发布 `storage.sd.removed`；`source` 为 `storage.sd`。
   - 只使用 `<cstdio>`、`<dirent.h>`、`<sys/stat.h>`、`<unistd.h>`（Linux 与 ESP-IDF newlib 都有），不使用 `std::filesystem`。
 
