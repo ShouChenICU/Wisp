@@ -7,6 +7,7 @@
 // wisp_test() targets link against -fno-exceptions libraries, every call
 // below uses the std::error_code overloads instead of the throwing ones.
 
+#include <gtest/gtest.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -68,6 +69,9 @@ inline std::filesystem::path temp_dir() {
     std::filesystem::path dir = base / ("wisp_test_" + std::to_string(static_cast<long>(getpid())) +
                                         "_" + std::to_string(n));
     std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        ADD_FAILURE() << "temp_dir(): failed to create " << dir << ": " << ec.message();
+    }
 
     detail::TempDirRegistry::instance().track(dir);
     return dir;

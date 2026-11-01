@@ -1,6 +1,8 @@
 #include "wisp/port/sim/settings_json_file.hpp"
 
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -17,9 +19,15 @@ constexpr const char* kTag = "settings";
 
 JsonFileSettingsBackend::JsonFileSettingsBackend(std::string file_path)
     : file_path_(std::move(file_path)) {
+    errno = 0;
     std::ifstream in(file_path_, std::ios::binary);
     if (!in.is_open()) {
-        WLOG_W(kTag, "settings file missing, starting empty: %s", file_path_.c_str());
+        if (errno == ENOENT) {
+            WLOG_W(kTag, "settings file missing, starting empty: %s", file_path_.c_str());
+        } else {
+            WLOG_W(kTag, "settings file open failed (%s), starting empty: %s", strerror(errno),
+                   file_path_.c_str());
+        }
         return;
     }
 
@@ -63,8 +71,39 @@ Result<void> JsonFileSettingsBackend::set(const std::string& ns, const std::stri
     WISP_TRY(core::validate_settings_name(key));
 
     std::lock_guard<os::Mutex> lock(mutex_);
+
+    // Snapshot whatever was there before (or its absence) so a write
+    // failure below can be rolled back: callers must be able to rely on
+    // an IoError from set() meaning nothing changed, in memory or on
+    // disk.
+    auto ns_it = store_.find(ns);
+    const bool had_ns = ns_it != store_.end();
+    bool had_key = false;
+    Value previous_value;
+    if (had_ns) {
+        auto key_it = ns_it->second.find(key);
+        had_key = key_it != ns_it->second.end();
+        if (had_key) {
+            previous_value = key_it->second;
+        }
+    }
+
     store_[ns][key] = value;
-    return write_through();
+    Result<void> result = write_through();
+    if (!result) {
+        if (had_key) {
+            store_[ns][key] = previous_value;
+        } else {
+            auto it = store_.find(ns);
+            if (it != store_.end()) {
+                it->second.erase(key);
+                if (!had_ns) {
+                    store_.erase(it);
+                }
+            }
+        }
+    }
+    return result;
 }
 
 Result<void> JsonFileSettingsBackend::erase(const std::string& ns, const std::string& key) {
@@ -72,14 +111,30 @@ Result<void> JsonFileSettingsBackend::erase(const std::string& ns, const std::st
     WISP_TRY(core::validate_settings_name(key));
 
     std::lock_guard<os::Mutex> lock(mutex_);
+
     auto ns_it = store_.find(ns);
-    if (ns_it != store_.end()) {
-        ns_it->second.erase(key);
-        if (ns_it->second.empty()) {
-            store_.erase(ns_it);
-        }
+    if (ns_it == store_.end()) {
+        return Result<void>::ok();  // nothing to erase, nothing to persist
     }
-    return write_through();
+    auto key_it = ns_it->second.find(key);
+    if (key_it == ns_it->second.end()) {
+        return Result<void>::ok();  // key already absent
+    }
+
+    Value previous_value = key_it->second;
+    ns_it->second.erase(key_it);
+    const bool ns_emptied = ns_it->second.empty();
+    if (ns_emptied) {
+        store_.erase(ns_it);
+    }
+
+    Result<void> result = write_through();
+    if (!result) {
+        // Roll back: put the erased key (and its ns entry, if removed)
+        // back so an IoError from erase() means nothing changed.
+        store_[ns][key] = previous_value;
+    }
+    return result;
 }
 
 Result<void> JsonFileSettingsBackend::write_through() {
@@ -106,6 +161,7 @@ Result<void> JsonFileSettingsBackend::write_through() {
         }
     }
     if (std::rename(tmp_path.c_str(), file_path_.c_str()) != 0) {
+        std::remove(tmp_path.c_str());  // best-effort cleanup; ignore any failure
         return Result<void>::err(ErrorCode::IoError,
                                  "failed to rename " + tmp_path + " to " + file_path_);
     }

@@ -5,6 +5,12 @@
 // This is host-only platform code (not built for the ESP port); a later
 // task adds an NVS-backed wisp::core::SettingsBackend for ESP-IDF with the
 // same validate_settings_name() behavior (see wisp/core/settings.hpp).
+//
+// os::Mutex only guards concurrent access from *within this process*: a
+// JsonFileSettingsBackend instance is safe to share across threads, but
+// there is no file locking, so two backend instances (in this process or
+// another) pointed at the same file_path will race and can corrupt each
+// other's writes. Construct exactly one backend per settings file.
 
 #include <map>
 #include <string>
@@ -33,7 +39,10 @@ private:
     // it to a sibling "<file_path_>.tmp" file, then renames that temp file
     // over file_path_ (POSIX rename overwrites the destination on Linux).
     // Called with mutex_ already held. Returns ErrorCode::IoError if the
-    // temp file can't be written or the rename fails.
+    // temp file can't be written or the rename fails; on either failure,
+    // the .tmp file is removed (best-effort) and the in-memory store_ is
+    // left exactly as the caller found it (see set()/erase(), which roll
+    // back their mutation to store_ before returning this error).
     Result<void> write_through();
 
     std::string file_path_;
