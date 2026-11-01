@@ -1,16 +1,16 @@
-# Pocko 子项目 1：基础骨架 设计文档
+# Wisp 子项目 1：基础骨架 设计文档
 
 - 日期：2026-11-01
 - 状态：待审阅
-- 范围：Pocko 整体路线中的第 1 个子项目（基础骨架）
+- 范围：Wisp 整体路线中的第 1 个子项目（基础骨架）
 
 ---
 
 ## 1. 背景与目标
 
-### 1.1 Pocko 是什么
+### 1.1 Wisp 是什么
 
-Pocko 是一个基于 ESP32-S3 的掌上个人全能 Agent 系统。它没有传统意义上的 App、桌面和锁屏，而是由 Agent 根据主人的需求动态创建、编辑和保存"场景"（场景 = 元信息 + 声明式 UI + Lua 逻辑）。出厂时只有一个用于对话的"主场景"，其他场景随着使用逐渐积累。
+Wisp 是一个基于 ESP32-S3 的掌上个人全能 Agent 系统。它没有传统意义上的 App、桌面和锁屏，而是由 Agent 根据主人的需求动态创建、编辑和保存"场景"（场景 = 元信息 + 声明式 UI + Lua 逻辑）。出厂时只有一个用于对话的"主场景"，其他场景随着使用逐渐积累。
 
 已确定的全局约束：
 
@@ -67,10 +67,10 @@ Wi-Fi 与网络、HTTP 服务与后台网页、场景运行时与 Lua、Agent �
 不 fork、不以 submodule 依赖 xiaozhi-esp32 或 ESP-Claw。分三层处理：
 
 1. **通用基础库**：LVGL、ESP-SR、esp_codec_dev、esp_audio_codec、esp_board_manager、Lua、ArduinoJson 等，通过 IDF 组件管理器（固件侧）或 FetchContent（模拟器侧）引入，锁定版本并提交 `dependencies.lock`；
-2. **参考项目（xiaozhi、ESP-Claw）**：只参考设计，按 Pocko 的接口重新实现，在文件头和 `docs/references.md` 注明参考来源；
-3. **细节价值高的小片段**（如 AFE 配置、Opus 参数、字体映射加载）：以函数或片段为单位移植并改写为 Pocko 接口，保留原版权声明，记入 `THIRD_PARTY_NOTICES.md`；Apache-2.0 来源需注明修改。
+2. **参考项目（xiaozhi、ESP-Claw）**：只参考设计，按 Wisp 的接口重新实现，在文件头和 `docs/references.md` 注明参考来源；
+3. **细节价值高的小片段**（如 AFE 配置、Opus 参数、字体映射加载）：以函数或片段为单位移植并改写为 Wisp 接口，保留原版权声明，记入 `THIRD_PARTY_NOTICES.md`；Apache-2.0 来源需注明修改。
 
-**MyOS**（用户本人的项目，MIT 许可）中的 CO5300、CST9220、AXP2101 驱动和电源键、功耗相关逻辑，可直接移植并包装为 Pocko HAL。移植时同步迁移其中涉及的第三方声明（Noto 字体 OFL、Fluent 图标 MIT）。
+**MyOS**（用户本人的项目，MIT 许可）中的 CO5300、CST9220、AXP2101 驱动和电源键、功耗相关逻辑，可直接移植并包装为 Wisp HAL。移植时同步迁移其中涉及的第三方声明（Noto 字体 OFL、Fluent 图标 MIT）。
 
 ---
 
@@ -82,14 +82,14 @@ Wi-Fi 与网络、HTTP 服务与后台网页、场景运行时与 Lua、Agent �
 ┌─────────────────────────────────────────────────────┐
 │  入口层   firmware/main (真机)   │  simulator/ (PC)   │
 ├─────────────────────────────────────────────────────┤
-│  pocko_ui      LVGL 驱动对接、UI 任务、自检界面          │
+│  wisp_ui      LVGL 驱动对接、UI 任务、自检界面          │
 ├─────────────────────────────────────────────────────┤
-│  pocko_core    日志 · 事件总线 · 设备注册表 · 配置 · 存储 │  ← 可移植
+│  wisp_core    日志 · 事件总线 · 设备注册表 · 配置 · 存储 │  ← 可移植
 ├─────────────────────────────────────────────────────┤
-│  pocko_hal     外设接口 + 能力描述（纯接口）            │  ← 可移植
-│  pocko_os      任务/队列/锁/定时器/时钟/内存（纯接口）    │  ← 可移植
+│  wisp_hal     外设接口 + 能力描述（纯接口）            │  ← 可移植
+│  wisp_os      任务/队列/锁/定时器/时钟/内存（纯接口）    │  ← 可移植
 ├──────────────────────────┬──────────────────────────┤
-│  pocko_port_esp           │  pocko_port_sim           │
+│  wisp_port_esp           │  wisp_port_sim           │
 │  FreeRTOS + IDF 驱动实现   │  std::thread + SDL2 实现   │
 │  + boards/<板>            │  + 模拟外设               │
 └──────────────────────────┴──────────────────────────┘
@@ -97,8 +97,8 @@ Wi-Fi 与网络、HTTP 服务与后台网页、场景运行时与 Lua、Agent �
 
 ### 3.2 依赖规则
 
-1. 可移植组件（`pocko_os`、`pocko_hal`、`pocko_core`、`pocko_ui`）**禁止 include 任何平台头文件**（`esp_*`、`freertos/*`、`driver/*`、`hal/*` 中的 IDF 头、`sdkconfig.h`、`SDL*`），只能依赖 C++20 标准库、LVGL、ArduinoJson，以及按层次自上而下依赖其他可移植组件；
-2. 只有 `pocko_port_esp`、`pocko_port_sim`、`boards/*`、`drivers/*` 和入口层可以接触平台；
+1. 可移植组件（`wisp_os`、`wisp_hal`、`wisp_core`、`wisp_ui`）**禁止 include 任何平台头文件**（`esp_*`、`freertos/*`、`driver/*`、`hal/*` 中的 IDF 头、`sdkconfig.h`、`SDL*`），只能依赖 C++20 标准库、LVGL、ArduinoJson，以及按层次自上而下依赖其他可移植组件；
+2. 只有 `wisp_port_esp`、`wisp_port_sim`、`boards/*`、`drivers/*` 和入口层可以接触平台；
 3. 入口层在启动时选择 port 并注入可移植层；
 4. 规则由 `tools/check_layering.py` 在 CI 中强制检查；
 5. 后续子项目（scene、agent、voice、memory、web 等）作为新的可移植组件加入，遵守同样的规则。
@@ -112,7 +112,7 @@ Wi-Fi 与网络、HTTP 服务与后台网页、场景运行时与 Lua、Agent �
 ## 4. 目录结构
 
 ```
-pocko/
+wisp/
 ├── firmware/                  # ESP-IDF 工程：idf.py build/flash
 │   ├── main/                  # app_main：选择板子 → 注入 port → 启动
 │   ├── CMakeLists.txt
@@ -123,12 +123,12 @@ pocko/
 │   ├── CMakeLists.txt         # LVGL 等依赖用 FetchContent 拉取，版本与固件一致
 │   └── main.cpp
 ├── components/
-│   ├── pocko_os/
-│   ├── pocko_hal/
-│   ├── pocko_core/
-│   ├── pocko_ui/
-│   ├── pocko_port_esp/
-│   └── pocko_port_sim/
+│   ├── wisp_os/
+│   ├── wisp_hal/
+│   ├── wisp_core/
+│   ├── wisp_ui/
+│   ├── wisp_port_esp/
+│   └── wisp_port_sim/
 ├── boards/
 │   └── waveshare_amoled_216/  # esp_board_manager YAML + setup_device.c + board.cpp
 ├── drivers/                   # 组件库中没有的芯片驱动（从 MyOS 移植）
@@ -184,7 +184,7 @@ pocko/
 ### 5.3 接口风格
 
 ```cpp
-namespace pocko::hal {
+namespace wisp::hal {
 
 struct DeviceInfo {
     std::string id;        // "imu.main"
@@ -205,15 +205,15 @@ public:
     virtual Result<void> set_rate(uint32_t hz) = 0;
 };
 
-}  // namespace pocko::hal
+}  // namespace wisp::hal
 ```
 
-- **`Result<T>`**：Pocko 自带的轻量实现，错误为统一的 `ErrorCode` 枚举加说明文字，便于以后原样交给 Agent；
+- **`Result<T>`**：Wisp 自带的轻量实现，错误为统一的 `ErrorCode` 枚举加说明文字，便于以后原样交给 Agent；
 - **`Properties`**：键值结构，值可以是 null、bool、int64、double、string、列表或嵌套映射，可与 JSON 互转。能力清单、事件负载、配置共用这一类型；
 - **线程约定**：设备内部保证线程安全；`Display` 例外，只允许 UI 任务调用，调试构建中用断言检查；
 - **Display 能力字段**包含 `area_align`（刷新区域坐标对齐要求）。UI 层据此自动对齐刷新区域，适配 CO5300 一类 QSPI AMOLED 的对齐限制。
 
-### 5.4 设备注册表（`pocko_core`）
+### 5.4 设备注册表（`wisp_core`）
 
 - 启动时板级代码把设备注册进 `DeviceRegistry`，可按 id 查找，也可按类别列出；
 - 同一类别允许多个实例（如以后的 `display.external`）；
@@ -266,7 +266,7 @@ public:
 - 内置 Flash 存储挂载失败：自动格式化一次再重试，仍失败则进入只读降级（配置不持久化），并在启动报告中标明；
 - **启动报告**为 JSON（每个设备的状态：ok / degraded / missing / failed，失败原因），启动完成后输出到串口或 stdout。
 
-### 6.2 OS 抽象（`pocko_os`）
+### 6.2 OS 抽象（`wisp_os`）
 
 | 抽象 | ESP 实现 | 模拟器实现 |
 |---|---|---|
@@ -279,7 +279,7 @@ public:
 
 只封装上表内容，不做成通用 RTOS 抽象。
 
-### 6.3 事件总线（`pocko_core`）
+### 6.3 事件总线（`wisp_core`）
 
 ```cpp
 struct Event {
@@ -296,16 +296,16 @@ bus.publish(event);                  // 异步：入队后由分发任务派发
 - 队列有界（默认 64）；满时丢弃最旧的事件，计数并记录警告日志；
 - 子项目 1 的主题：`button.<id>.{down,up,short,long}`、`power.charging.changed`、`power.battery.low`、`storage.sd.{inserted,removed}`、`system.boot.completed`。
 
-### 6.4 UI 线程模型（`pocko_ui`）
+### 6.4 UI 线程模型（`wisp_ui`）
 
 - **只有 UI 任务可以调用 LVGL**；其他任务通过 `ui::post(fn)` 投递；
-- `pocko_ui` 基于 `hal::Display` 和 `hal::Touch` 实现 LVGL 的显示驱动和输入驱动，因此不依赖 esp_lvgl_port，两个目标共用；
+- `wisp_ui` 基于 `hal::Display` 和 `hal::Touch` 实现 LVGL 的显示驱动和输入驱动，因此不依赖 esp_lvgl_port，两个目标共用；
 - 像素格式 RGB565；显示缓冲区按 `Mem::Dma`/`Mem::Large` 分配，采用局部刷新和双缓冲，缓冲区大小在真机上根据帧率调优；
-- LVGL tick 由 `pocko_os` 时钟提供。
+- LVGL tick 由 `wisp_os` 时钟提供。
 
 ### 6.5 日志
 
-- 宏 `PLOG_D/I/W/E(tag, fmt, ...)`；
+- 宏 `WLOG_D/I/W/E(tag, fmt, ...)`；
 - 输出：ESP 日志或 stdout，以及 PSRAM 中 32KB 的内存环形缓冲区（模拟器侧为普通内存）；
 - 环形缓冲区提供读取接口，供后续子项目的后台网页与 Agent 读取。
 
@@ -331,8 +331,8 @@ bus.publish(event);                  // 异步：入队后由分发任务派发
 | 逻辑区 | 内容（含后续子项目） | 位置规则 |
 |---|---|---|
 | `System` | 主场景、系统配置、身份与密钥、记忆核心索引 | 固定在内置 Flash：`/int/system` |
-| `Library` | 场景库、记忆完整内容与归档、日志、录音 | 有序根目录列表：SD 卡在线时为 `[/sd/pocko/library, /int/library]`，否则为 `[/int/library]`；**写入**总是进入列表第一个根；**读取**按顺序枚举所有根 |
-| `Backup` | 内置数据备份、导出包 | 仅 SD 卡：`/sd/pocko/backup`；SD 卡不在时不可用 |
+| `Library` | 场景库、记忆完整内容与归档、日志、录音 | 有序根目录列表：SD 卡在线时为 `[/sd/wisp/library, /int/library]`，否则为 `[/int/library]`；**写入**总是进入列表第一个根；**读取**按顺序枚举所有根 |
+| `Backup` | 内置数据备份、导出包 | 仅 SD 卡：`/sd/wisp/backup`；SD 卡不在时不可用 |
 
 - `/int/library` 设置容量上限（默认 3MB），超过后写入返回 `ErrorCode::QuotaExceeded`；
 - 上层代码只通过 `StorageManager` 获取逻辑区路径，不写死路径。
@@ -413,7 +413,7 @@ OTA 功能本身不在子项目 1 中实现，只预留双分区。
 
 ### 9.2 测试分层
 
-1. **PC 单元测试**（GoogleTest）：`Result`、`Properties` 与 JSON 互转、事件总线（前缀订阅、顺序、溢出策略、取消订阅）、`DeviceRegistry`（注册、查找、注销、能力清单导出）、`StorageManager`（逻辑区解析、原子写、SD 插拔后根目录变化、容量上限）、`Settings`（模拟器实现）、`pocko_os` 的队列与定时器；
+1. **PC 单元测试**（GoogleTest）：`Result`、`Properties` 与 JSON 互转、事件总线（前缀订阅、顺序、溢出策略、取消订阅）、`DeviceRegistry`（注册、查找、注销、能力清单导出）、`StorageManager`（逻辑区解析、原子写、SD 插拔后根目录变化、容量上限）、`Settings`（模拟器实现）、`wisp_os` 的队列与定时器；
 2. **模拟器冒烟测试**：`--headless --screenshot out.png --exit-after-ms 3000` 启动，检查进程正常退出、启动报告和能力清单 JSON 与预期一致、截图为 480×480 且非空；降级用例 `--disable imu` 时启动报告标记 IMU 为失败且进程不崩溃；`--no-sd` 时 `Library` 只有内置根；
 3. **真机验收**：固件编译由 CI 使用乐鑫官方 `espressif/idf` 镜像（与本机同一版本）完成；烧录和硬件功能按第 10 节清单人工验证。
 
