@@ -26,7 +26,7 @@ using Properties = Map;
 // Value deep-copies any List/Map it holds, so independent copies never
 // alias each other's storage.
 class Value {
-   public:
+public:
     enum class Type { Null, Bool, Int, Double, String, List, Map };
 
     Value();
@@ -66,7 +66,7 @@ class Value {
     bool operator==(const Value& other) const;
     bool operator!=(const Value& other) const { return !(*this == other); }
 
-   private:
+private:
     using Storage = std::variant<std::monostate, bool, int64_t, double, std::string,
                                  std::shared_ptr<wisp::List>, std::shared_ptr<wisp::Map>>;
 

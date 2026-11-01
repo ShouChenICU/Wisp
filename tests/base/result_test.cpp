@@ -1,6 +1,6 @@
-#include <gtest/gtest.h>
-
 #include "wisp/base/result.hpp"
+
+#include <gtest/gtest.h>
 
 TEST(Result, OkHoldsValue) {
     auto r = wisp::Result<int>::ok(42);
@@ -20,7 +20,10 @@ TEST(Result, VoidSpecialization) {
 }
 TEST(Result, TryPropagates) {
     auto inner = [] { return wisp::Result<int>::err(wisp::ErrorCode::IoError, "disk"); };
-    auto outer = [&]() -> wisp::Result<void> { WISP_TRY(inner()); return wisp::Result<void>::ok(); };
+    auto outer = [&]() -> wisp::Result<void> {
+        WISP_TRY(inner());
+        return wisp::Result<void>::ok();
+    };
     auto r = outer();
     EXPECT_EQ(r.error().code, wisp::ErrorCode::IoError);
     EXPECT_EQ(r.error().message, "disk");
