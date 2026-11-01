@@ -18,14 +18,20 @@ TEST(UiRuntime, RendersPostedContentWithAlignedFlushes) {
     wisp::ui::UiRuntime ui(disp, nullptr);
     ASSERT_TRUE(ui.start());
 
+    std::atomic<bool> ran{false};
     std::atomic<bool> on_ui{false};
+    std::atomic<size_t> flushes_before{0};
     ui.post([&] {
         on_ui = ui.on_ui_thread();
         lv_obj_t* l = lv_label_create(lv_screen_active());
         lv_label_set_text(l, "Wisp 你好");
+        // The initial screen render may already have flushed before this
+        // runs; only flushes after this point show the label.
+        flushes_before = disp->flush_count();
+        ran = true;
     });
 
-    ASSERT_TRUE(wait_until([&] { return disp->flush_count() > 0; }, 2000));
+    ASSERT_TRUE(wait_until([&] { return ran && disp->flush_count() > flushes_before; }, 5000));
     EXPECT_TRUE(on_ui);
     EXPECT_FALSE(ui.on_ui_thread());
 
@@ -35,7 +41,7 @@ TEST(UiRuntime, RendersPostedContentWithAlignedFlushes) {
         EXPECT_EQ((a.x2 + 1) % 2, 0);
     }
 
-    auto shot = ui.snapshot_rgb888();
+    auto shot = ui.snapshot_rgb888(5000);
     ASSERT_TRUE(shot);
     EXPECT_EQ(shot.value().size(), 480u * 480u * 3u);
 
