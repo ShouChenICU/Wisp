@@ -8,48 +8,110 @@ namespace wisp::core {
 
 namespace {
 constexpr const char* kTag = "event_bus";
-// How long the dispatcher task blocks in queue_.pop() before re-checking
-// running_. This is what lets stop()/~EventBus() join a dispatcher that is
-// currently blocked waiting for the next event, instead of hanging.
-constexpr uint32_t kDispatcherPollMs = 50;
 constexpr uint32_t kWaitIdlePollMs = 2;
+// Log the overflow warning for the first drop, then only every Nth one
+// after that, so sustained overflow can't flood the log.
+constexpr uint64_t kDropLogInterval = 64;
 }  // namespace
 
-EventBus::EventBus(size_t capacity) : queue_(capacity) {}
+EventBus::EventBus(size_t capacity)
+    : queue_(capacity), ready_(static_cast<uint32_t>(capacity) + 1, 0) {}
 
 EventBus::~EventBus() { stop(); }
 
 Result<void> EventBus::start() {
-    if (running_.exchange(true, std::memory_order_acq_rel)) {
-        return Result<void>::ok();  // already running: idempotent no-op
+    std::unique_ptr<os::Task> stale;
+    uint64_t my_generation;
+    {
+        std::lock_guard<os::Mutex> lock(lifecycle_mutex_);
+        if (dispatcher_ && dispatcher_->is_current()) {
+            return Result<void>::err(ErrorCode::Busy,
+                                     "start() called from within the dispatcher's own handler");
+        }
+        // Take ownership of any existing dispatcher (e.g. one that a
+        // previous stop()-from-within-a-handler call marked as stopping
+        // but could not join itself) so it's guaranteed joined before a
+        // new one is spawned -- never destroying/overwriting an unjoined
+        // Task. Bumping generation_ here (while still under the lock)
+        // ensures that stale dispatcher's loop will see a mismatch and
+        // exit on its own if it hasn't already, even though the actual
+        // join below happens outside the lock.
+        stale = std::move(dispatcher_);
+        running_.store(true, std::memory_order_release);
+        my_generation = generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
     }
-    dispatcher_ = os::Task::spawn({.name = "wisp.bus", .stack_bytes = 6144, .priority = 5},
-                                  [this] { run_dispatcher(); });
+    if (stale) {
+        // Outside the lock: if the stale dispatcher is itself blocked
+        // trying to acquire lifecycle_mutex_ (e.g. from a handler calling
+        // stop()/start()/unsubscribe()), joining it while holding the
+        // lock would deadlock.
+        stale->join();
+    }
+
+    auto task = os::Task::spawn({.name = "wisp.bus", .stack_bytes = 6144, .priority = 5},
+                                [this, my_generation] { run_dispatcher(my_generation); });
+    std::lock_guard<os::Mutex> lock(lifecycle_mutex_);
+    dispatcher_ = std::move(task);
     return Result<void>::ok();
 }
 
 void EventBus::stop() {
     running_.store(false, std::memory_order_release);
-    if (!dispatcher_) {
-        return;
+
+    std::unique_ptr<os::Task> to_join;
+    bool self = false;
+    {
+        std::lock_guard<os::Mutex> lock(lifecycle_mutex_);
+        if (!dispatcher_) {
+            return;
+        }
+        if (dispatcher_->is_current()) {
+            self = true;
+        } else {
+            to_join = std::move(dispatcher_);
+        }
     }
-    if (dispatcher_->is_current()) {
-        // Called from within a handler running on the dispatcher task
-        // itself. See the doc comment on stop() for why we must not join
-        // here, and who ends up joining instead.
-        return;
+
+    // Wake a dispatcher that might be idly blocked waiting for work (see
+    // ready_'s doc comment), so it notices running_ is now false instead
+    // of blocking forever. Done outside the lock and regardless of
+    // `self`: even when stop() is called from within a handler, the
+    // dispatcher isn't blocked on ready_ *right now* (it's busy running
+    // this handler), but it will be the next time its loop comes around,
+    // and there may be no new publish() left to wake it naturally.
+    ready_.give();
+
+    if (self || !to_join) {
+        return;  // self-join would deadlock; see stop()'s doc comment
     }
-    dispatcher_->join();
+    to_join->join();
 }
 
 SubscriptionId EventBus::subscribe(std::string prefix, EventHandler handler) {
+    auto shared_handler = std::make_shared<EventHandler>(std::move(handler));
     std::lock_guard<os::Mutex> lock(subs_mutex_);
     SubscriptionId id = next_id_++;
-    subs_.push_back(Subscription{id, std::move(prefix), std::move(handler)});
+    subs_.push_back(Subscription{id, std::move(prefix), std::move(shared_handler)});
     return id;
 }
 
 void EventBus::unsubscribe(SubscriptionId id) {
+    bool on_dispatcher_thread;
+    {
+        std::lock_guard<os::Mutex> lock(lifecycle_mutex_);
+        on_dispatcher_thread = dispatcher_ && dispatcher_->is_current();
+    }
+
+    // See the doc comment on unsubscribe(): wait out any in-flight
+    // dispatch when called from outside the dispatcher task, but never
+    // self-wait when called from within a handler on the dispatcher's
+    // own thread (that would deadlock against the dispatch we're
+    // currently inside of).
+    std::unique_lock<os::Mutex> dispatch_lock;
+    if (!on_dispatcher_thread) {
+        dispatch_lock = std::unique_lock<os::Mutex>(dispatch_mutex_);
+    }
+
     std::lock_guard<os::Mutex> lock(subs_mutex_);
     for (auto it = subs_.begin(); it != subs_.end(); ++it) {
         if (it->id == id) {
@@ -70,17 +132,30 @@ void EventBus::publish(Event e) {
         // does not support concurrent callers, so we serialize them here
         // to present the queue with a single logical producer.
         std::lock_guard<os::Mutex> lock(publish_mutex_);
+        // Increment *before* push_drop_oldest() -- see inflight_'s doc
+        // comment for why the ordering matters under concurrent
+        // publishers.
+        inflight_.fetch_add(1, std::memory_order_acq_rel);
         dropped_one = queue_.push_drop_oldest(std::move(e));
+        if (dropped_one) {
+            // The oldest queued event was evicted without ever being
+            // dispatched; undo the increment for *that* slot (the new
+            // event keeps its own increment above).
+            inflight_.fetch_sub(1, std::memory_order_acq_rel);
+        }
     }
 
+    // Exactly one new deliverable item was added above, whether or not
+    // it also evicted an older one, so the dispatcher always gets woken
+    // exactly once per publish() call.
+    ready_.give();
+
     if (dropped_one) {
-        // A drop means one previously-enqueued event was evicted (net
-        // queue occupancy unchanged), so inflight_ does not change: the
-        // new event's slot replaces the dropped one's.
-        dropped_.fetch_add(1, std::memory_order_relaxed);
-        WLOG_W(kTag, "event queue full, dropped oldest event");
-    } else {
-        inflight_.fetch_add(1, std::memory_order_acq_rel);
+        uint64_t total_dropped = dropped_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (total_dropped == 1 || total_dropped % kDropLogInterval == 0) {
+            WLOG_W(kTag, "event queue full, dropped oldest event (dropped=%llu total)",
+                   static_cast<unsigned long long>(total_dropped));
+        }
     }
 }
 
@@ -98,13 +173,19 @@ bool EventBus::wait_idle(uint32_t timeout_ms) {
 uint64_t EventBus::dropped() const { return dropped_.load(std::memory_order_relaxed); }
 
 void EventBus::dispatch(const Event& e) {
+    // Held for the whole call (copy + invoke), so unsubscribe() from a
+    // non-dispatcher thread can block on it to know "no dispatch is
+    // currently in flight" -- see dispatch_mutex_'s and unsubscribe()'s
+    // doc comments.
+    std::lock_guard<os::Mutex> dispatch_lock(dispatch_mutex_);
+
     // Copy the matching handlers out while holding subs_mutex_, then
     // invoke them outside the lock -- so a handler that itself calls
     // subscribe()/unsubscribe() (on this or another subscription) never
     // re-enters subs_mutex_ while it is held, and so a slow handler never
     // blocks a concurrent subscribe()/unsubscribe() call from another
     // thread.
-    std::vector<EventHandler> matched;
+    std::vector<std::shared_ptr<EventHandler>> matched;
     {
         std::lock_guard<os::Mutex> lock(subs_mutex_);
         matched.reserve(subs_.size());
@@ -115,15 +196,24 @@ void EventBus::dispatch(const Event& e) {
         }
     }
     for (auto& handler : matched) {
-        handler(e);
+        (*handler)(e);
     }
 }
 
-void EventBus::run_dispatcher() {
-    while (running_.load(std::memory_order_acquire)) {
+void EventBus::run_dispatcher(uint64_t my_generation) {
+    while (true) {
+        ready_.take(os::kForever);
+        if (!running_.load(std::memory_order_acquire) ||
+            generation_.load(std::memory_order_acquire) != my_generation) {
+            return;
+        }
         Event e;
-        if (!queue_.pop(e, kDispatcherPollMs)) {
-            continue;  // timed out; re-check running_
+        if (!queue_.pop(e, 0)) {
+            // A spurious wake with nothing to pop: either stop()'s wake
+            // token (handled above) or a ready_ token whose event was
+            // later evicted by push_drop_oldest() before we got to it.
+            // Either way, just wait for the next one.
+            continue;
         }
         dispatch(e);
         inflight_.fetch_sub(1, std::memory_order_acq_rel);

@@ -101,8 +101,13 @@ public:
             // Back off briefly and retry; it will finish shortly and give
             // back either a free slot (via free_slots_) — in which case
             // we won't even need to drop — or let us claim the filled
-            // slot on a later iteration.
-            sleep_ms(0);
+            // slot on a later iteration. Use sleep_ms(1), not
+            // sleep_ms(0): on FreeRTOS, vTaskDelay(0) does not yield to
+            // lower-priority tasks, so a higher-priority caller stuck in
+            // this loop could spin forever waiting on a lower-priority
+            // pop() that never gets scheduled (livelock). sleep_ms(1)
+            // actually yields the CPU for at least one tick.
+            sleep_ms(1);
         }
     }
 
