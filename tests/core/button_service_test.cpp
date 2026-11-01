@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -9,6 +10,7 @@
 #include "support/fake_devices.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/os/os.hpp"
 
 using wisp::core::ButtonService;
 using wisp::core::DeviceRegistry;
@@ -81,4 +83,42 @@ TEST(ButtonService, IndependentButtons) {
     f.svc.poll(50);
     f.bus.wait_idle(1000);
     EXPECT_EQ(f.topics.back(), "button.vol_up.short");
+}
+
+// Review fix round 1, item 1: a second start() call while the Timer is
+// already running (and the button is mid-hold) used to re-run
+// refresh_buttons() -- unsynchronized against the Timer thread's
+// concurrent poll(), and discarding every button's in-progress
+// pressed/down_at/long_sent state, which made the next poll() see a
+// "fresh" press and re-publish `down` (and, if already past threshold,
+// `long` again too). start() must now be a true no-op whenever the
+// Timer is already active, and poll()/the buttons_ it touches must be
+// safe against being invoked by the Timer thread while another thread
+// calls start() at the same time. This test drives the real Timer (not
+// synthetic poll() calls) so the two threads genuinely race.
+TEST(ButtonService, StartCalledTwiceWhileHeldDoesNotDuplicateEvents) {
+    DeviceRegistry registry;
+    auto btn = std::make_shared<FakeButton>("button.power");
+    registry.add(btn);
+    EventBus bus;
+    bus.start();
+    std::vector<std::string> topics;
+    bus.subscribe("", [&](const Event& e) { topics.push_back(e.topic); });
+
+    ButtonService svc(registry, bus, /*long_press_ms=*/50, /*poll_ms=*/5);
+    svc.start();
+    btn->down = true;
+    wisp::os::sleep_ms(20);  // several polls have observed `down` and are timing the hold
+    svc.start();             // idempotent while mid-hold: must not reset state
+    wisp::os::sleep_ms(60);  // cross the 50ms long_press_ms threshold
+    svc.start();             // idempotent again, now with `long` already latched
+    btn->down = false;
+    wisp::os::sleep_ms(20);
+    svc.stop();
+    ASSERT_TRUE(bus.wait_idle(1000));
+
+    EXPECT_EQ(std::count(topics.begin(), topics.end(), "button.power.down"), 1);
+    EXPECT_EQ(std::count(topics.begin(), topics.end(), "button.power.long"), 1);
+    EXPECT_EQ(topics, (std::vector<std::string>{"button.power.down", "button.power.long",
+                                                "button.power.up"}));
 }

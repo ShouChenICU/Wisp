@@ -21,6 +21,11 @@
 // Buttons added to the registry after that point are not picked up; this
 // keeps poll() itself allocation-free and free of registry locking on the
 // hot path. See device_registry.hpp and task-7-brief.md.
+//
+// Detection is poll-driven: a press that goes down and back up again
+// between two polls (i.e. shorter than poll_ms) is never observed and so
+// produces no events at all. This is intentional -- poll_ms is the
+// service's deliberate debounce/resolution floor, not a bug.
 
 #include <cstdint>
 #include <memory>
@@ -45,7 +50,16 @@ public:
     // Refreshes the tracked button list from the registry (see file
     // header) and starts the periodic poll Timer, which calls
     // poll(os::now_ms()) on its own dedicated thread every poll_ms.
-    // Idempotent the same way os::Timer::start() is.
+    //
+    // Truly idempotent: if the Timer is already active (i.e. a previous
+    // start() wasn't followed by stop()), this returns immediately
+    // without touching the button list at all. This matters because the
+    // Timer thread may be concurrently inside poll() at the exact moment
+    // a second start() is called from another thread -- re-running
+    // refresh_buttons() in that window would both race poll()'s reads of
+    // buttons_ (see mutex_ below) and silently discard in-progress
+    // press/hold state for every tracked button, as if they'd just been
+    // released and re-pressed.
     void start();
 
     // Stops the poll Timer. Per os::Timer::stop(), once this returns
@@ -61,6 +75,13 @@ public:
     // how this is unit tested. On the very first call, if the button list
     // hasn't been populated yet (start() was never called first), it is
     // refreshed from the registry before polling.
+    //
+    // Thread-safe: holds mutex_ for the whole call (both the button-state
+    // scan and the publish() calls it makes -- safe to hold a lock across
+    // those since EventBus::publish() never blocks on subscriber
+    // handlers, per its own doc comment), so a poll() driven by the
+    // Timer thread and one called directly/concurrently from elsewhere
+    // never interleave their reads/writes of per-button state.
     void poll(uint64_t now_ms);
 
 private:
@@ -80,6 +101,10 @@ private:
     uint32_t long_press_ms_;
     uint32_t poll_ms_;
 
+    // Guards buttons_/buttons_loaded_ against concurrent poll()/start()
+    // calls (see their doc comments above). refresh_buttons() is always
+    // called with this already held by its caller.
+    os::Mutex mutex_;
     std::vector<ButtonState> buttons_;
     bool buttons_loaded_ = false;
 

@@ -1,8 +1,17 @@
 #include "wisp/core/button_service.hpp"
 
+#include <cstring>
+#include <mutex>
 #include <utility>
 
+#include "wisp/core/log.hpp"
+
 namespace wisp::core {
+
+namespace {
+constexpr const char* kTag = "button_service";
+constexpr const char* kIdPrefix = "button.";
+}  // namespace
 
 ButtonService::ButtonService(DeviceRegistry& registry, EventBus& bus, uint32_t long_press_ms,
                              uint32_t poll_ms)
@@ -13,7 +22,17 @@ ButtonService::ButtonService(DeviceRegistry& registry, EventBus& bus, uint32_t l
       timer_("wisp.button", poll_ms, /*periodic=*/true, [this] { poll(os::now_ms()); }) {}
 
 void ButtonService::start() {
-    refresh_buttons();
+    if (timer_.active()) {
+        // Already running: a second start() must be a true no-op,
+        // including leaving buttons_ untouched -- see the doc comment on
+        // start() for why re-running refresh_buttons() here would be
+        // unsafe.
+        return;
+    }
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        refresh_buttons();
+    }
     timer_.start();
 }
 
@@ -22,8 +41,13 @@ void ButtonService::stop() { timer_.stop(); }
 void ButtonService::refresh_buttons() {
     std::vector<ButtonState> fresh;
     for (auto& button : registry_.list<hal::Button>()) {
+        const std::string& id = button->info().id;
+        if (id.compare(0, std::strlen(kIdPrefix), kIdPrefix) != 0) {
+            WLOG_W(kTag, "button device id '%s' does not start with '%s'; topic will be malformed",
+                   id.c_str(), kIdPrefix);
+        }
         ButtonState state;
-        state.id = button->info().id;
+        state.id = id;
         state.button = std::move(button);
         fresh.push_back(std::move(state));
     }
@@ -39,6 +63,8 @@ void ButtonService::publish_event(const ButtonState& state, const char* suffix) 
 }
 
 void ButtonService::poll(uint64_t now_ms) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+
     if (!buttons_loaded_) {
         refresh_buttons();
     }
