@@ -14,6 +14,7 @@ add_subdirectory(${WISP_ROOT}/components/wisp_os wisp_os)
 add_subdirectory(${WISP_ROOT}/components/wisp_hal wisp_hal)
 add_subdirectory(${WISP_ROOT}/components/wisp_core wisp_core)
 add_subdirectory(${WISP_ROOT}/components/wisp_ui wisp_ui)
+add_subdirectory(${WISP_ROOT}/components/wisp_app wisp_app)
 add_subdirectory(${WISP_ROOT}/components/wisp_port_sim wisp_port_sim)
 
 option(WISP_BUILD_TESTS "Build the PC unit test suite" ON)
