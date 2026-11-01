@@ -94,19 +94,41 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
     make_or_fail("button.vol_down", wisp::hal::DeviceClass::Button, [&] {
         return std::make_shared<SimButton>("button.vol_down", SimButton::Kind::VolDown, input_);
     });
-    make_or_fail("audio_out.main", wisp::hal::DeviceClass::AudioOut,
-                 [&] { return std::make_shared<SimAudioOut>("audio_out.main"); });
+    // Fix round 2, item N2: main.cpp no longer aborts the simulator if
+    // SDL_Init(SDL_INIT_AUDIO) failed (a host with no audio backend at
+    // all, e.g. a minimal container image) -- it just warns and
+    // continues, so this checks whether the audio subsystem actually
+    // came up before trying to construct either audio device, and
+    // degrades both to Failed/"SDL audio unavailable" if not.
+    bool audio_available = SDL_WasInit(SDL_INIT_AUDIO) != 0;
 
-    // audio_in.main needs a real SDL capture device; the "dummy" driver
-    // the simulator selects in --headless mode (and some hosts) have
-    // none. Rather than letting SimAudioIn::open() fail at "录音回放"
-    // time with no explanation, probe up front (fix round 1, item 1)
-    // and simply don't register the device if there's nothing to
-    // capture from -- a missing device already degrades the rest of
+    if (is_disabled("audio_out.main", wisp::hal::DeviceClass::AudioOut)) {
+        record_disabled("audio_out.main", wisp::hal::DeviceClass::AudioOut);
+    } else if (!audio_available) {
+        record_disabled("audio_out.main", wisp::hal::DeviceClass::AudioOut,
+                        "SDL audio unavailable");
+    } else {
+        registry.add(std::make_shared<SimAudioOut>("audio_out.main"));
+    }
+
+    // audio_in.main also needs a real SDL capture device; the "dummy"
+    // driver the simulator selects in --headless mode (and some hosts)
+    // may have none. Rather than letting SimAudioIn::open() fail at
+    // "录音回放" time with no explanation, probe up front (fix round 1,
+    // item 1) and simply don't register the device if there's nothing
+    // to capture from -- a missing device already degrades the rest of
     // the system gracefully instead of crashing (see board.hpp).
     if (is_disabled("audio_in.main", wisp::hal::DeviceClass::AudioIn)) {
         record_disabled("audio_in.main", wisp::hal::DeviceClass::AudioIn);
-    } else if (SDL_GetNumAudioDevices(/*iscapture=*/1) <= 0) {
+    } else if (!audio_available) {
+        record_disabled("audio_in.main", wisp::hal::DeviceClass::AudioIn, "SDL audio unavailable");
+    } else if (SDL_GetNumAudioDevices(/*iscapture=*/1) == 0) {
+        // Fix round 2, item N3: a confirmed zero means no capture
+        // device, so don't even try opening one. A *negative* return
+        // ("can't enumerate" -- some backends never implement device
+        // enumeration) is not the same as zero: still register the
+        // device and let open() itself report whatever error SDL gives
+        // at that point, rather than assuming there's nothing to use.
         record_disabled("audio_in.main", wisp::hal::DeviceClass::AudioIn, "no capture device");
     } else {
         registry.add(std::make_shared<SimAudioIn>("audio_in.main"));

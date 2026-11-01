@@ -23,6 +23,7 @@
 
 #include "dev/sim_devices.hpp"
 #include "wisp/hal/audio.hpp"
+#include "wisp/os/os.hpp"
 
 namespace {
 
@@ -62,6 +63,50 @@ TEST_F(SimAudioTest, PlaybackOpenWriteCloseDoesNotHang) {
     out.close();
 }
 
+TEST_F(SimAudioTest, WriteThrottlesAndCloseDrainsRatherThanDroppingAudio) {
+    // Fix round 2, item N1's regression test: the original write()
+    // checked the ~200ms queued-bytes cap only once before a single
+    // SDL_QueueAudio() call for the *whole* buffer, so a 300ms clip
+    // queued (and thus "wrote") near-instantly; close() then called
+    // SDL_CloseAudioDevice() immediately, which discards whatever
+    // hadn't played yet -- together, a multi-hundred-ms clip played for
+    // only a few ms (or not at all) before being cut off.
+    //
+    // With the chunked throttle (write() can't queue more than ~200ms
+    // ahead of real playback) and close() draining the remainder before
+    // closing, writing 300ms of audio and then closing must together
+    // take close to the full 300ms of wall-clock time. Tolerances are
+    // loose (not tied to the exact 200ms/20ms constants) so this stays
+    // robust on a loaded CI box.
+    wisp::port::sim::SimAudioOut out("audio_out.main");
+    wisp::hal::AudioFormat format;
+    format.sample_rate = 16000;
+    format.channels = 1;
+    ASSERT_TRUE(out.open(format));
+
+    std::vector<int16_t> clip(4800, 0);  // 300ms at 16kHz mono
+
+    uint64_t t0 = wisp::os::now_ms();
+    auto written = out.write(clip.data(), clip.size());
+    uint64_t after_write = wisp::os::now_ms();
+    ASSERT_TRUE(written) << written.error().message;
+    EXPECT_EQ(written.value(), clip.size());
+    // The first ~200ms can queue instantly; only the remaining ~100ms
+    // must wait for playback to drain, so write() alone should already
+    // take a visible fraction of that -- loose lower bound to avoid
+    // CI flakiness.
+    EXPECT_GE(after_write - t0, 80u);
+
+    out.close();
+    uint64_t after_close = wisp::os::now_ms();
+    // close() must drain whatever was still queued (up to ~200ms worth)
+    // before returning, so the total elapsed time since the first byte
+    // was written should approach the clip's actual 300ms duration.
+    EXPECT_GE(after_close - t0, 250u);
+
+    out.close();  // safe to call again
+}
+
 TEST_F(SimAudioTest, SetVolumeClampsAndDoesNotFail) {
     wisp::port::sim::SimAudioOut out("audio_out.main");
     EXPECT_TRUE(out.set_volume(50));
@@ -72,6 +117,24 @@ TEST_F(SimAudioTest, WriteBeforeOpenFails) {
     wisp::port::sim::SimAudioOut out("audio_out.main");
     std::vector<int16_t> chunk(160, 0);
     EXPECT_FALSE(out.write(chunk.data(), chunk.size()));
+}
+
+TEST_F(SimAudioTest, OpenTwiceFailsInsteadOfLeakingTheFirstDevice) {
+    // Fix round 2, item N5: a second open() while already open must
+    // fail (rather than silently overwriting `device_` with a new SDL
+    // device and leaking the first one).
+    wisp::port::sim::SimAudioOut out("audio_out.main");
+    wisp::hal::AudioFormat format;
+    format.sample_rate = 16000;
+    format.channels = 1;
+    ASSERT_TRUE(out.open(format));
+
+    auto reopened = out.open(format);
+    EXPECT_FALSE(reopened);
+    if (!reopened) {
+        EXPECT_EQ(reopened.error().code, wisp::ErrorCode::AlreadyExists);
+    }
+    out.close();
 }
 
 TEST_F(SimAudioTest, CaptureAbsenceOrPresenceIsHandledWithoutHanging) {

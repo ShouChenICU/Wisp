@@ -54,3 +54,5 @@ target_include_directories(sim_options_test PRIVATE ${WISP_ROOT}/simulator)
 wisp_test(NAME sim_audio_test SRCS sim/sim_audio_test.cpp
           LIBS wisp_port_sim_dev wisp_os wisp_port_sim_os TIMEOUT 20)
 target_include_directories(sim_audio_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
+wisp_test(NAME sim_board_test SRCS sim/sim_board_test.cpp
+          LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os TIMEOUT 20)

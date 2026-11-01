@@ -352,8 +352,14 @@ int main(int argc, char** argv) {
         SDL_SetHint(SDL_HINT_AUDIODRIVER, "dummy");
     }
     if (SDL_Init(SDL_INIT_AUDIO) != 0) {
-        std::fprintf(stderr, "wisp_sim: SDL_Init(AUDIO) failed: %s\n", SDL_GetError());
-        return 1;
+        // Fix round 2, item N2: a host with no audio backend at all
+        // (e.g. a minimal container image) shouldn't stop the whole
+        // simulator from running -- warn and continue.
+        // SimBoard::init() checks SDL_WasInit(SDL_INIT_AUDIO) and
+        // degrades audio_out.main/audio_in.main to Failed/"SDL audio
+        // unavailable" instead (see sim_board.cpp).
+        WLOG_W(kLogTag, "SDL_Init(AUDIO) failed: %s; audio devices will be unavailable",
+               SDL_GetError());
     }
 
     std::atomic<bool> should_exit{false};
