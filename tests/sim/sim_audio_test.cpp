@@ -91,11 +91,17 @@ TEST_F(SimAudioTest, WriteThrottlesAndCloseDrainsRatherThanDroppingAudio) {
     uint64_t after_write = wisp::os::now_ms();
     ASSERT_TRUE(written) << written.error().message;
     EXPECT_EQ(written.value(), clip.size());
-    // The first ~200ms can queue instantly; only the remaining ~100ms
-    // must wait for playback to drain, so write() alone should already
-    // take a visible fraction of that -- loose lower bound to avoid
-    // CI flakiness.
-    EXPECT_GE(after_write - t0, 80u);
+    // Fix round 3, item R1: 80ms was the theoretical max (300ms clip -
+    // 200ms cap = 100ms, minus polling slop), not a realistic floor --
+    // the device actually starts pulling queued bytes into its own
+    // ~64ms internal buffer as soon as playback begins, so write()
+    // routinely returns in ~75-80ms. A reviewer measured 13-36/40
+    // failures at --gtest_repeat=40 against the old 80ms floor. This
+    // bound only needs to prove write() actually blocked at least a
+    // little instead of queuing the whole clip instantly (the original
+    // bug); the real regression coverage is the close()-must-drain
+    // assertion below.
+    EXPECT_GE(after_write - t0, 20u);
 
     out.close();
     uint64_t after_close = wisp::os::now_ms();

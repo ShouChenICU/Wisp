@@ -101,14 +101,21 @@ private:
 // queues each one via SDL_QueueAudio only once the queue has drained
 // below ~200ms (fix round 2, item N1 -- the original one-shot version
 // let a whole clip queue instantly and then get dropped by close());
-// close() drains the remaining queue (bounded by its expected playback
-// duration) before actually closing the device, so unplayed audio isn't
-// discarded. Every wait loop bails out with ErrorCode::Timeout if the
-// device stops playing or a deadline passes, rather than blocking
-// forever. See dev/sim_audio.cpp. `device_` is the SDL_AudioDeviceID of
-// the open device (0 if not open) stored as a plain uint32_t --
-// SDL_AudioDeviceID is just a typedef for Uint32 -- so this shared
-// header never has to include <SDL.h>; only dev/sim_audio.cpp does.
+// close() drains the remaining queue, then waits out the device's own
+// internal buffer (`buffer_frames_`, fix round 3, item R3 -- a drained
+// queue doesn't mean the device's hardware/callback buffer is empty
+// too), before actually closing the device, so unplayed audio isn't
+// discarded. write()'s wait loop uses a progress-based stall deadline
+// (fix round 3, item R2: reset whenever a chunk is actually queued,
+// rather than one fixed deadline for the whole call). If the device
+// stops playing or the stall deadline passes, write() returns whatever
+// was written so far (ok, with a short count) once at least one chunk
+// was queued, and only reports ErrorCode::Timeout if nothing was
+// written at all. See dev/sim_audio.cpp.
+// `device_` is the SDL_AudioDeviceID of the open device (0 if not open)
+// stored as a plain uint32_t -- SDL_AudioDeviceID is just a typedef for
+// Uint32 -- so this shared header never has to include <SDL.h>; only
+// dev/sim_audio.cpp does.
 class SimAudioOut : public wisp::hal::AudioOut {
 public:
     explicit SimAudioOut(std::string id);
@@ -124,20 +131,29 @@ private:
     uint32_t device_ = 0;
     int channels_ = 1;
     int sample_rate_ = 16000;
+    // SDL's `have.samples` from open(): the device's own internal
+    // buffer size in frames, used by close() (fix round 3, item R3) to
+    // wait out whatever that buffer may still hold after the queue
+    // itself has drained to zero.
+    uint16_t buffer_frames_ = 0;
     std::atomic<uint8_t> volume_{100};
 };
 
 // Backed by a real SDL capture device (fix round 1, item 1): open()
 // calls SDL_OpenAudioDevice(nullptr, 1, ...) and fails with
 // ErrorCode::AlreadyExists if already open (fix round 2, item N5);
-// read() polls SDL_DequeueAudio until `count` frames have arrived,
-// returning ErrorCode::Timeout (instead of a short read) if the device
-// stops playing or a bounded deadline passes first (fix round 2, item
-// N1/N3); close() closes the device. SimBoard::init() only ever
-// constructs this when SDL audio is up and SDL_GetNumAudioDevices(1)
-// says a capture device actually exists (see sim_board.cpp), but
-// open() still fails cleanly with ErrorCode::DeviceFailure if called
-// without one, rather than hanging or crashing.
+// read() polls SDL_DequeueAudio until `count` frames have arrived, using
+// a progress-based stall deadline (fix round 3, item R2: reset whenever
+// data is actually dequeued, rather than one fixed deadline for the
+// whole call). If the device stops playing or the stall deadline
+// passes, read() returns whatever was captured so far (ok, with a short
+// count) when at least one frame was captured, and only reports
+// ErrorCode::Timeout if nothing was captured at all; close() closes the
+// device. SimBoard::init() only ever constructs this when SDL audio is
+// up and SDL_GetNumAudioDevices(1) says a capture device actually
+// exists (see sim_board.cpp), but open() still fails cleanly with
+// ErrorCode::DeviceFailure if called without one, rather than hanging
+// or crashing.
 class SimAudioIn : public wisp::hal::AudioIn {
 public:
     explicit SimAudioIn(std::string id);
