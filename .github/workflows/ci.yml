@@ -9,8 +9,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # A setup-python interpreter is not "externally managed" (PEP 668),
+      # so pip can install into it directly.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev ninja-build python3-pip
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev ninja-build
       - name: Install pinned clang-format
         # ubuntu-latest's apt clang-format package is a much older
         # major version than the one this repo is formatted against,
@@ -23,8 +28,8 @@ jobs:
         run: |
           CLANG_FORMAT_VERSION="$(grep -m1 '^CLANG_FORMAT_VERSION=' tools/ci.sh | sed -E 's/^CLANG_FORMAT_VERSION="([^"]+)".*/\1/')"
           echo "Installing clang-format==${CLANG_FORMAT_VERSION} (pinned in tools/ci.sh)"
-          pip3 install --user "clang-format==${CLANG_FORMAT_VERSION}"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          python -m pip install "clang-format==${CLANG_FORMAT_VERSION}"
+          clang-format --version
       - name: Run tools/ci.sh
         run: bash tools/ci.sh
 
