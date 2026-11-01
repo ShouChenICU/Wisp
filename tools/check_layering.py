@@ -64,8 +64,55 @@ def is_forbidden_reverse_dep(include_path):
     return any(include_path.startswith(prefix) for prefix in REVERSE_DEP_PREFIXES)
 
 
+def strip_comments(text):
+    """Blanks out // line comments and /* ... */ block comments
+    (replacing their characters with spaces, newlines kept as-is), so
+    a commented-out #include isn't mistaken for a real one. A simple
+    character-by-character state machine; doesn't special-case string
+    or char literals (fine for this check -- a '//' or '/*' inside a
+    string literal on an #include line isn't a pattern Wisp's own
+    source uses)."""
+    out = []
+    in_block_comment = False
+    in_line_comment = False
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if in_block_comment:
+            if c == "*" and i + 1 < n and text[i + 1] == "/":
+                out.append("  ")
+                i += 2
+                in_block_comment = False
+                continue
+            out.append(c if c == "\n" else " ")
+            i += 1
+            continue
+        if in_line_comment:
+            if c == "\n":
+                in_line_comment = False
+                out.append(c)
+            else:
+                out.append(" ")
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            in_line_comment = True
+            out.append("  ")
+            i += 2
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            in_block_comment = True
+            out.append("  ")
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def check_file(path, component, errors):
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = strip_comments(path.read_text(encoding="utf-8", errors="replace"))
     for lineno, line in enumerate(text.splitlines(), start=1):
         match = INCLUDE_RE.search(line)
         if not match:

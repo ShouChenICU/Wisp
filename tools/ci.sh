@@ -12,6 +12,24 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# The clang-format version this repo is formatted against -- this is
+# the single place that version is recorded (see Task 14 fix round 1):
+# .github/workflows/ci.yml's "Install pinned clang-format" step reads
+# this exact line (by grep) to install the matching PyPI package,
+# rather than duplicating the literal. Different clang-format major
+# versions format the same source differently, so a mismatch here (a
+# locally installed clang-format from apt/brew/etc. that isn't this
+# one) can make --dry-run --Werror below disagree with CI -- warn,
+# don't fail, since the actual authority is whatever CI has pinned.
+CLANG_FORMAT_VERSION="23.1.3"
+
+CLANG_FORMAT_ACTUAL="$(clang-format --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+echo "==> clang-format --version: ${CLANG_FORMAT_ACTUAL} (pinned: ${CLANG_FORMAT_VERSION})"
+if [[ "${CLANG_FORMAT_ACTUAL%%.*}" != "${CLANG_FORMAT_VERSION%%.*}" ]]; then
+    echo "warning: clang-format major version differs from the pin (${CLANG_FORMAT_ACTUAL} vs ${CLANG_FORMAT_VERSION});" \
+         "formatting here may disagree with CI" >&2
+fi
+
 # Every C/C++ source file in the repo, except build output and
 # components/wisp_ui/fonts/ (a ported third-party font -- see
 # AGENTS.md section 6 / docs/references.md).

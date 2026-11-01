@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import traceback
 
 TIMEOUT_S = 20
 EXIT_AFTER_MS = 3000
@@ -97,6 +98,50 @@ def devices_by_id(value):
     return {entry["id"]: entry for entry in value["devices"]}
 
 
+def expected_manifest_ids(boot_report):
+    """Returns the device ids WISP_MANIFEST should carry for this run,
+    given its boot report. Normally that's exactly EXPECTED_DEVICE_IDS,
+    but ruling 1's audio_in.main leniency (ok-or-failed) has a
+    manifest-side consequence: when SimBoard::init() can't find an SDL
+    capture device it never calls registry.add() for audio_in.main at
+    all (see sim_board.cpp), so a "failed" audio_in.main in the boot
+    report means the manifest must NOT contain it either -- a strict
+    12-id equality would wrongly fail on hosts without a capture
+    device. A missing/ok audio_in.main entry (or no entry at all)
+    leaves the full set untouched."""
+    ids = set(EXPECTED_DEVICE_IDS)
+    audio_in = devices_by_id(boot_report).get("audio_in.main")
+    if audio_in is not None and audio_in["state"] == "failed":
+        ids.discard("audio_in.main")
+    return ids
+
+
+def case_expected_manifest_ids_unit(_sim_path, _tmp_root):
+    """Not a wisp_sim case: a synthetic-data unit check for
+    expected_manifest_ids() itself, since case_default alone only ever
+    exercises whichever one of its two branches this particular host
+    happens to hit for audio_in.main."""
+    ok_report = {"devices": [{"id": "audio_in.main", "state": "ok", "reason": ""}]}
+    expect(
+        expected_manifest_ids(ok_report) == EXPECTED_DEVICE_IDS,
+        "expected_manifest_ids(): an ok audio_in.main must not change EXPECTED_DEVICE_IDS",
+    )
+
+    failed_report = {
+        "devices": [{"id": "audio_in.main", "state": "failed", "reason": "no capture device"}]
+    }
+    expect(
+        expected_manifest_ids(failed_report) == EXPECTED_DEVICE_IDS - {"audio_in.main"},
+        "expected_manifest_ids(): a failed audio_in.main must drop it from the expected set",
+    )
+
+    no_entry_report = {"devices": []}
+    expect(
+        expected_manifest_ids(no_entry_report) == EXPECTED_DEVICE_IDS,
+        "expected_manifest_ids(): no audio_in.main entry at all must not change EXPECTED_DEVICE_IDS",
+    )
+
+
 def read_png_chunks(path):
     """Returns (width, height, idat) for the PNG at `path`: idat is the
     concatenation of every IDAT chunk's data. Only walks the chunk
@@ -172,9 +217,12 @@ def case_default(sim_path, tmp_root):
 
     manifest_devices = devices_by_id(manifest)
     manifest_ids = set(manifest_devices.keys())
+    # audio_in.main is only in the manifest if the boot report didn't
+    # just say it's "failed" -- see expected_manifest_ids()'s comment.
+    expected_ids = expected_manifest_ids(boot_report)
     expect(
-        manifest_ids == EXPECTED_DEVICE_IDS,
-        f"manifest device ids {sorted(manifest_ids)} != expected {sorted(EXPECTED_DEVICE_IDS)}",
+        manifest_ids == expected_ids,
+        f"manifest device ids {sorted(manifest_ids)} != expected {sorted(expected_ids)}",
     )
 
     imu_caps = manifest_devices["imu.main"]["caps"]
@@ -280,6 +328,7 @@ def case_shape_circle(sim_path, tmp_root):
 
 
 CASES = (
+    ("expected_manifest_ids_unit", case_expected_manifest_ids_unit),
     ("default", case_default),
     ("disable_imu", case_disable_imu),
     ("no_sd", case_no_sd),
@@ -301,8 +350,12 @@ def main(argv):
         for name, case in CASES:
             try:
                 case(sim_path, tmp_root)
-            except SmokeError as exc:
+            except Exception as exc:  # noqa: BLE001 -- any case failure (an
+                # assertion from expect()/SmokeError, or a plain bug like a
+                # KeyError/json decode error) should produce a readable FAIL
+                # line plus the traceback, not an unhandled crash.
                 print(f"FAIL {name}: {exc}", file=sys.stderr)
+                print(traceback.format_exc(), file=sys.stderr)
                 return 1
             print(f"PASS {name}")
     finally:

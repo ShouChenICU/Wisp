@@ -10,7 +10,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev ninja-build clang-format
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev ninja-build python3-pip
+      - name: Install pinned clang-format
+        # ubuntu-latest's apt clang-format package is a much older
+        # major version than the one this repo is formatted against,
+        # and the two disagree on formatting enough that
+        # --dry-run --Werror would spuriously fail here. Install the
+        # exact pinned version from PyPI instead. tools/ci.sh's
+        # CLANG_FORMAT_VERSION line is the single place that version
+        # is recorded -- read it from there rather than duplicating
+        # the literal in this workflow.
+        run: |
+          CLANG_FORMAT_VERSION="$(grep -m1 '^CLANG_FORMAT_VERSION=' tools/ci.sh | sed -E 's/^CLANG_FORMAT_VERSION="([^"]+)".*/\1/')"
+          echo "Installing clang-format==${CLANG_FORMAT_VERSION} (pinned in tools/ci.sh)"
+          pip3 install --user "clang-format==${CLANG_FORMAT_VERSION}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Run tools/ci.sh
         run: bash tools/ci.sh
 
