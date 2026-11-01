@@ -7,9 +7,18 @@
 // wisp/port/sim/sim_board.hpp's file header on why SimDisplay itself
 // stays SDL-free, and AGENTS.md's layering rule ("只有 wisp_port_sim 和
 // simulator/ 可以 include SDL*").
+//
+// Fix round 1, item 1: the audio subsystem (and, for --headless, its
+// dummy-driver hint) is initialized here, before app.start() runs --
+// SimBoard::init() (called from inside it) needs SDL audio already up
+// to probe for a capture device via SDL_GetNumAudioDevices(1), deciding
+// whether to register audio_in.main at all (see sim_board.cpp). Video
+// stays separate: only run_windowed() below ever initializes it, and
+// only on this (the main) thread.
 
 #include <SDL.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -36,6 +45,7 @@ namespace {
 
 constexpr int kScreenSize = 480;
 constexpr uint32_t kFrameMs = 16;  // ~60 Hz
+constexpr const char* kLogTag = "sim";
 
 wisp::port::sim::SimBoardConfig to_board_config(const SimOptions& opts) {
     wisp::port::sim::SimBoardConfig config;
@@ -95,14 +105,13 @@ std::vector<uint8_t> build_visible_mask(wisp::app::App& app) {
 // Runs the headless loop: sleeps until exit_after_ms elapses or
 // should_exit becomes true (e.g. the power-off callback fired), then
 // optionally screenshots (only on the exit_after_ms path -- spec 8.1)
-// and returns.
-void run_headless(wisp::app::App& app, const SimOptions& opts, const bool& should_exit) {
-    SDL_SetHint(SDL_HINT_AUDIODRIVER, "dummy");
-    SDL_Init(SDL_INIT_AUDIO);
-
+// and returns. The audio subsystem is already up (see main()); this
+// function doesn't touch SDL init/teardown at all.
+void run_headless(wisp::app::App& app, const SimOptions& opts,
+                  const std::atomic<bool>& should_exit) {
     uint64_t t0 = wisp::os::now_ms();
     bool timed_out = false;
-    while (!should_exit) {
+    while (!should_exit.load()) {
         if (opts.exit_after_ms != 0 && wisp::os::now_ms() - t0 >= opts.exit_after_ms) {
             timed_out = true;
             break;
@@ -113,12 +122,14 @@ void run_headless(wisp::app::App& app, const SimOptions& opts, const bool& shoul
     if (timed_out && !opts.screenshot.empty()) {
         take_screenshot(app, opts.screenshot);
     }
-    SDL_Quit();
 }
 
 // Translates one SDL event into SimInput state. Mouse motion only
 // updates the touch point while a button is held (dragging); key repeat
 // events are ignored (SimInput only cares about down/up transitions).
+// Fix round 1, item 9: captures the mouse while the (simulated touch)
+// button is held, so a drag that leaves the window still keeps
+// delivering motion events instead of silently losing the touch.
 void handle_event(const SDL_Event& ev, wisp::port::sim::SimInput& input, bool& running) {
     switch (ev.type) {
         case SDL_QUIT:
@@ -127,11 +138,13 @@ void handle_event(const SDL_Event& ev, wisp::port::sim::SimInput& input, bool& r
         case SDL_MOUSEBUTTONDOWN:
             if (ev.button.button == SDL_BUTTON_LEFT) {
                 input.mouse(ev.button.x, ev.button.y, true);
+                SDL_CaptureMouse(SDL_TRUE);
             }
             break;
         case SDL_MOUSEBUTTONUP:
             if (ev.button.button == SDL_BUTTON_LEFT) {
                 input.mouse(ev.button.x, ev.button.y, false);
+                SDL_CaptureMouse(SDL_FALSE);
             }
             break;
         case SDL_MOUSEMOTION:
@@ -198,7 +211,8 @@ void handle_event(const SDL_Event& ev, wisp::port::sim::SimInput& input, bool& r
 }
 
 // Copies SimDisplay's framebuffer, blacks out whatever the shape mask
-// (or a powered-off screen) hides, and presents it.
+// (or a powered-off screen) hides, applies the display's software
+// brightness, and presents it.
 void render_frame(wisp::port::sim::SimDisplay& display, const std::vector<uint8_t>& mask,
                   std::vector<uint16_t>& framebuffer, SDL_Renderer* renderer,
                   SDL_Texture* texture) {
@@ -221,6 +235,13 @@ void render_frame(wisp::port::sim::SimDisplay& display, const std::vector<uint8_
         }
         SDL_UnlockTexture(texture);
     }
+
+    // Fix round 1, item 6: apply the display's software brightness by
+    // modulating the texture's color channels at blit time (rather than
+    // rescaling every RGB565 pixel on the CPU each frame).
+    uint8_t brightness = display.brightness();
+    SDL_SetTextureColorMod(texture, brightness, brightness, brightness);
+
     SDL_RenderClear(renderer);
     SDL_RenderCopy(renderer, texture, nullptr, nullptr);
     SDL_RenderPresent(renderer);
@@ -228,12 +249,15 @@ void render_frame(wisp::port::sim::SimDisplay& display, const std::vector<uint8_
 
 // Runs the windowed loop: pumps SDL events into `input`, renders
 // SimDisplay's framebuffer at ~60 Hz, and returns once the window is
-// closed, exit_after_ms elapses, or should_exit becomes true.
-void run_windowed(wisp::app::App& app, const SimOptions& opts, wisp::port::sim::SimBoard& board,
-                  wisp::port::sim::SimInput& input, const bool& should_exit) {
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
-        std::fprintf(stderr, "wisp_sim: SDL_Init failed: %s\n", SDL_GetError());
-        return;
+// closed, exit_after_ms elapses, or should_exit becomes true. Returns
+// false (having already reported the failure to stderr) if SDL's video
+// subsystem or the window/renderer/texture couldn't be created (fix
+// round 1, item 3) -- the audio subsystem is already up (see main()).
+bool run_windowed(wisp::app::App& app, const SimOptions& opts, wisp::port::sim::SimBoard& board,
+                  wisp::port::sim::SimInput& input, const std::atomic<bool>& should_exit) {
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
+        std::fprintf(stderr, "wisp_sim: SDL_InitSubSystem(VIDEO) failed: %s\n", SDL_GetError());
+        return false;
     }
 
     SDL_Window* window =
@@ -249,8 +273,8 @@ void run_windowed(wisp::app::App& app, const SimOptions& opts, wisp::port::sim::
         if (texture != nullptr) SDL_DestroyTexture(texture);
         if (renderer != nullptr) SDL_DestroyRenderer(renderer);
         if (window != nullptr) SDL_DestroyWindow(window);
-        SDL_Quit();
-        return;
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        return false;
     }
 
     std::vector<uint8_t> mask = build_visible_mask(app);
@@ -260,7 +284,7 @@ void run_windowed(wisp::app::App& app, const SimOptions& opts, wisp::port::sim::
     uint64_t t0 = wisp::os::now_ms();
     bool running = true;
     bool timed_out = false;
-    while (running && !should_exit) {
+    while (running && !should_exit.load()) {
         uint64_t frame_start = wisp::os::now_ms();
 
         SDL_Event ev;
@@ -290,7 +314,8 @@ void run_windowed(wisp::app::App& app, const SimOptions& opts, wisp::port::sim::
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
-    SDL_Quit();
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    return true;
 }
 
 }  // namespace
@@ -306,16 +331,45 @@ int main(int argc, char** argv) {
     std::error_code ec;
     std::filesystem::create_directories(opts.data_dir, ec);
 
+    // log::init() is called again (harmlessly -- see log.hpp) inside
+    // App::start(); it's called here too, first, so the WLOG_W below
+    // (fix round 1, item 5) is actually recorded/delivered instead of
+    // being a silent no-op before the first init() (see log.hpp).
     static wisp::port::sim::StdoutLogSink log_sink;
+    wisp::log::init();
     wisp::log::add_sink(&log_sink);
 
-    bool should_exit = false;
+    if (!opts.screenshot.empty() && opts.exit_after_ms == 0) {
+        // A screenshot is only ever taken on the exit_after_ms timeout
+        // path (see take_screenshot()'s call sites above) -- without
+        // one, --screenshot would silently never fire.
+        WLOG_W(kLogTag, "--screenshot given without --exit-after-ms; no screenshot will be taken");
+    }
+
+    // Fix round 1, item 1: audio must be up before app.start() runs --
+    // see this file's header comment.
+    if (opts.headless) {
+        SDL_SetHint(SDL_HINT_AUDIODRIVER, "dummy");
+    }
+    if (SDL_Init(SDL_INIT_AUDIO) != 0) {
+        std::fprintf(stderr, "wisp_sim: SDL_Init(AUDIO) failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    std::atomic<bool> should_exit{false};
     auto input = std::make_shared<wisp::port::sim::SimInput>(/*sd_present_initial=*/!opts.no_sd);
-    auto on_power_off = [&should_exit] { should_exit = true; };
+    auto on_power_off = [&should_exit] { should_exit.store(true); };
+
+    // Fix round 1, item 7: keep the concrete SimBoard* from make_unique
+    // directly, before it's moved into Platform::board (a
+    // unique_ptr<Board>) -- a plain upcast on construction, no
+    // static_cast needed later to get it back.
+    auto board =
+        std::make_unique<wisp::port::sim::SimBoard>(to_board_config(opts), input, on_power_off);
+    wisp::port::sim::SimBoard* board_ptr = board.get();
 
     wisp::app::Platform platform;
-    platform.board =
-        std::make_unique<wisp::port::sim::SimBoard>(to_board_config(opts), input, on_power_off);
+    platform.board = std::move(board);
     platform.settings = std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(
         opts.data_dir + "/settings.json");
     platform.emit_line = [](const std::string& line) {
@@ -327,22 +381,23 @@ int main(int argc, char** argv) {
     platform.heap_info = [] { return wisp::Value(wisp::Map{}); };
     platform.firmware_version = "0.1.0";
 
-    auto* board_ptr = static_cast<wisp::port::sim::SimBoard*>(platform.board.get());
-
     wisp::app::App app(std::move(platform));
     auto started = app.start();
     if (!started) {
         std::fprintf(stderr, "wisp_sim: App::start() failed: %s\n",
                      started.error().message.c_str());
+        SDL_Quit();
         return 1;
     }
 
+    int exit_code = 0;
     if (opts.headless) {
         run_headless(app, opts, should_exit);
-    } else {
-        run_windowed(app, opts, *board_ptr, *input, should_exit);
+    } else if (!run_windowed(app, opts, *board_ptr, *input, should_exit)) {
+        exit_code = 1;
     }
 
     app.stop();
-    return 0;
+    SDL_Quit();
+    return exit_code;
 }

@@ -31,9 +31,14 @@ wisp_component(
 # Simulated HAL devices (Task 13): SimDisplay/SimTouch/SimImu/SimPower/
 # SimClock/SimButton/SimAudioOut/SimAudioIn/SimStorage, SimBoard (the
 # wisp::app::Board that constructs them) and the --screenshot PNG
-# encoder. None of these touch SDL themselves -- see wisp/port/sim/
+# encoder. SimDisplay itself still never touches SDL (see wisp/port/sim/
 # sim_board.hpp's file header: only simulator/main.cpp's SDL render loop
-# reads SimDisplay's framebuffer -- so this library does not link SDL2.
+# reads its framebuffer), but as of fix round 1 (task-13-report.md),
+# SimAudioOut/SimAudioIn are backed by real SDL playback/capture devices
+# and SimBoard::init() probes SDL_GetNumAudioDevices() -- both only ever
+# in .cpp files, never in a header -- so this library does need SDL2.
+# Only *portable* layers (wisp_base/os/hal/core/ui/app) are forbidden
+# from linking it; wisp_port_sim_dev is platform code (see AGENTS.md).
 wisp_component(
     NAME wisp_port_sim_dev
     SRCS dev/sim_display.cpp dev/sim_touch.cpp dev/sim_imu.cpp dev/sim_power.cpp
@@ -41,4 +46,5 @@ wisp_component(
          sim_board.cpp png_writer.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_app
+    HOST_LIBS SDL2::SDL2
 )

@@ -1,5 +1,7 @@
 #include "wisp/port/sim/sim_board.hpp"
 
+#include <SDL.h>
+
 #include <filesystem>
 #include <utility>
 
@@ -49,16 +51,22 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
     auto is_disabled = [&](const std::string& id, wisp::hal::DeviceClass cls) {
         return matches_disable(id, cls, config_.disabled, used);
     };
-    auto record_disabled = [&](const std::string& id, wisp::hal::DeviceClass cls) {
-        report.record({id, cls, wisp::core::DeviceState::Failed, "disabled by --disable"});
+    auto record_disabled = [&](const std::string& id, wisp::hal::DeviceClass cls,
+                               const std::string& reason = "disabled by --disable") {
+        report.record({id, cls, wisp::core::DeviceState::Failed, reason});
     };
-    auto register_or_fail = [&](const std::shared_ptr<wisp::hal::Device>& device) {
-        const auto& info = device->info();
-        if (is_disabled(info.id, info.cls)) {
-            record_disabled(info.id, info.cls);
+    // Checks --disable *before* constructing the device (fix round 1,
+    // item 10): avoids doing any device-construction work for an id the
+    // caller explicitly disabled, rather than building it and throwing
+    // it away.
+    using Factory = std::function<std::shared_ptr<wisp::hal::Device>()>;
+    auto make_or_fail = [&](const std::string& id, wisp::hal::DeviceClass cls,
+                            const Factory& factory) {
+        if (is_disabled(id, cls)) {
+            record_disabled(id, cls);
             return;
         }
-        registry.add(device);
+        registry.add(factory());
     };
 
     if (is_disabled("display.main", wisp::hal::DeviceClass::Display)) {
@@ -69,16 +77,40 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         registry.add(display_);
     }
 
-    register_or_fail(std::make_shared<SimTouch>("touch.main", input_));
-    register_or_fail(std::make_shared<SimImu>("imu.main", input_));
-    register_or_fail(std::make_shared<SimPower>("power.main", on_power_off_));
-    register_or_fail(std::make_shared<SimClock>("clock.main"));
-    register_or_fail(std::make_shared<SimButton>("button.power", SimButton::Kind::Power, input_));
-    register_or_fail(std::make_shared<SimButton>("button.vol_up", SimButton::Kind::VolUp, input_));
-    register_or_fail(
-        std::make_shared<SimButton>("button.vol_down", SimButton::Kind::VolDown, input_));
-    register_or_fail(std::make_shared<SimAudioOut>("audio_out.main"));
-    register_or_fail(std::make_shared<SimAudioIn>("audio_in.main"));
+    make_or_fail("touch.main", wisp::hal::DeviceClass::Touch,
+                 [&] { return std::make_shared<SimTouch>("touch.main", input_); });
+    make_or_fail("imu.main", wisp::hal::DeviceClass::Imu,
+                 [&] { return std::make_shared<SimImu>("imu.main", input_); });
+    make_or_fail("power.main", wisp::hal::DeviceClass::Power,
+                 [&] { return std::make_shared<SimPower>("power.main", on_power_off_); });
+    make_or_fail("clock.main", wisp::hal::DeviceClass::Clock,
+                 [&] { return std::make_shared<SimClock>("clock.main"); });
+    make_or_fail("button.power", wisp::hal::DeviceClass::Button, [&] {
+        return std::make_shared<SimButton>("button.power", SimButton::Kind::Power, input_);
+    });
+    make_or_fail("button.vol_up", wisp::hal::DeviceClass::Button, [&] {
+        return std::make_shared<SimButton>("button.vol_up", SimButton::Kind::VolUp, input_);
+    });
+    make_or_fail("button.vol_down", wisp::hal::DeviceClass::Button, [&] {
+        return std::make_shared<SimButton>("button.vol_down", SimButton::Kind::VolDown, input_);
+    });
+    make_or_fail("audio_out.main", wisp::hal::DeviceClass::AudioOut,
+                 [&] { return std::make_shared<SimAudioOut>("audio_out.main"); });
+
+    // audio_in.main needs a real SDL capture device; the "dummy" driver
+    // the simulator selects in --headless mode (and some hosts) have
+    // none. Rather than letting SimAudioIn::open() fail at "录音回放"
+    // time with no explanation, probe up front (fix round 1, item 1)
+    // and simply don't register the device if there's nothing to
+    // capture from -- a missing device already degrades the rest of
+    // the system gracefully instead of crashing (see board.hpp).
+    if (is_disabled("audio_in.main", wisp::hal::DeviceClass::AudioIn)) {
+        record_disabled("audio_in.main", wisp::hal::DeviceClass::AudioIn);
+    } else if (SDL_GetNumAudioDevices(/*iscapture=*/1) <= 0) {
+        record_disabled("audio_in.main", wisp::hal::DeviceClass::AudioIn, "no capture device");
+    } else {
+        registry.add(std::make_shared<SimAudioIn>("audio_in.main"));
+    }
 
     std::error_code ec;
     std::filesystem::create_directories(config_.data_dir + "/int", ec);

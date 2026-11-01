@@ -58,3 +58,29 @@ TEST(SimOptions, DisableIsRepeatable) {
     auto o = parse_sim_options(5, argv).value();
     EXPECT_EQ(o.disabled, (std::vector<std::string>{"touch.main", "storage.sd"}));
 }
+
+// Fix round 1, item 4: --exit-after-ms must be a plain non-negative
+// base-10 integer -- not "-5" (which a bare strtoul() would silently
+// wrap around to a huge positive value) and not "123abc" (trailing
+// garbage silently ignored).
+TEST(SimOptions, ExitAfterMsValidation) {
+    const char* ok[] = {"wisp_sim", "--exit-after-ms", "1500"};
+    auto parsed_ok = parse_sim_options(3, ok);
+    ASSERT_TRUE(parsed_ok);
+    EXPECT_EQ(parsed_ok.value().exit_after_ms, 1500u);
+
+    const char* negative[] = {"wisp_sim", "--exit-after-ms", "-5"};
+    auto parsed_negative = parse_sim_options(3, negative);
+    ASSERT_FALSE(parsed_negative);
+    EXPECT_EQ(parsed_negative.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_NE(parsed_negative.error().message.find("-5"), std::string::npos);
+
+    const char* trailing_garbage[] = {"wisp_sim", "--exit-after-ms", "123abc"};
+    auto parsed_garbage = parse_sim_options(3, trailing_garbage);
+    ASSERT_FALSE(parsed_garbage);
+    EXPECT_EQ(parsed_garbage.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_NE(parsed_garbage.error().message.find("123abc"), std::string::npos);
+
+    const char* empty[] = {"wisp_sim", "--exit-after-ms", ""};
+    EXPECT_FALSE(parse_sim_options(3, empty));
+}

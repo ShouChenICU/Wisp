@@ -42,5 +42,8 @@ struct SimOptions {
 //     follows it (the message includes the flag name, e.g. "missing
 //     value for --screenshot");
 //   - --shape's value is not one of "rect"/"rounded_rect"/"circle" (the
-//     message includes the offending value).
+//     message includes the offending value);
+//   - --exit-after-ms's value is not a plain non-negative base-10
+//     integer that fits in uint32_t (the message includes the offending
+//     value, e.g. "invalid --exit-after-ms value: -5").
 wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv);
