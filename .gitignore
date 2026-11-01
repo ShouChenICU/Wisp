@@ -1,0 +1,18 @@
+# Build outputs
+build/
+firmware/build/
+firmware/managed_components/
+firmware/components/gen_bmgr_codes/
+firmware/sdkconfig
+firmware/sdkconfig.old
+
+# Simulator runtime data
+sim-data/
+
+# Generated images (screenshots etc.), except reference images kept in docs/
+*.png
+!docs/**/*.png
+
+# Build tooling artifacts
+compile_commands.json
+.cache/
