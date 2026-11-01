@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev ninja-build clang-format
+      - name: Run tools/ci.sh
+        run: bash tools/ci.sh
+
+  # firmware: added in Task 15 (idf.py bmgr build against a locked
+  # ESP-IDF version -- see AGENTS.md section 4's firmware build line).

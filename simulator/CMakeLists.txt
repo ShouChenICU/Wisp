@@ -14,6 +14,10 @@ include(${WISP_ROOT}/cmake/wisp_host_deps.cmake)
 # simulator/ may include SDL*.
 find_package(SDL2 REQUIRED)
 
+# Needed by tests/CMakeLists.txt to run the sim_smoke ctest case
+# (tests/smoke/sim_smoke.py) via ${Python3_EXECUTABLE}.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 add_subdirectory(${WISP_ROOT}/components/wisp_base wisp_base)
 add_subdirectory(${WISP_ROOT}/components/wisp_os wisp_os)
 add_subdirectory(${WISP_ROOT}/components/wisp_hal wisp_hal)

@@ -56,3 +56,10 @@ wisp_test(NAME sim_audio_test SRCS sim/sim_audio_test.cpp
 target_include_directories(sim_audio_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 wisp_test(NAME sim_board_test SRCS sim/sim_board_test.cpp
           LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os TIMEOUT 20)
+
+# End-to-end smoke test (Task 14): runs the actual wisp_sim executable
+# through a handful of --headless scenarios and checks its
+# WISP_BOOT_REPORT/WISP_MANIFEST stdout and screenshot. See
+# tests/smoke/sim_smoke.py's file header.
+add_test(NAME sim_smoke COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tests/smoke/sim_smoke.py
+         $<TARGET_FILE:wisp_sim>)
