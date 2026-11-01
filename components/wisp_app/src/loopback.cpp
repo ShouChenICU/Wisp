@@ -1,6 +1,8 @@
 #include "loopback.hpp"
 
 #include <cstdint>
+#include <mutex>
+#include <string>
 #include <utility>
 
 #include "app_impl.hpp"
@@ -104,33 +106,74 @@ void record_and_play(App& app, std::function<void(const char* status)> on_status
 
 void run_loopback(App& app, std::function<void(const char* status)> on_status) {
     App::Impl* impl = app.impl_.get();
-    if (impl->loop_running.exchange(true)) {
-        // Already running -- ignore this trigger (spec 8).
-        return;
-    }
-    if (impl->loop_task) {
-        // A previous run finished but hasn't been joined yet; join it now
-        // (it's guaranteed not running, since loop_running was false)
-        // before replacing the handle.
-        impl->loop_task->join();
-        impl->loop_task.reset();
+
+    bool spawn_failed = false;
+    {
+        std::lock_guard<os::Mutex> lock(impl->loop_mutex);
+        if (impl->loop_stopping || impl->loop_running) {
+            // Either App::stop() has already begun (join_loopback() set
+            // loop_stopping as its first action -- fix round 1, issue 1)
+            // or a previous run is still in flight (spec 8's "已在运行时
+            // 再次触发直接忽略"). Either way, ignore this trigger
+            // entirely -- no task spawned, no on_status call.
+            return;
+        }
+        if (impl->loop_task) {
+            // A previous run finished but hasn't been joined yet; join it
+            // now (it's guaranteed not running, since loop_running was
+            // false) before replacing the handle.
+            impl->loop_task->join();
+            impl->loop_task.reset();
+        }
+
+        impl->loop_running = true;
+        os::TaskConfig config;
+        config.name = "wisp.loop";
+        // Copied (not moved) so the original `on_status` is still usable
+        // below if os::Task::spawn() itself fails (M2).
+        auto on_status_copy = on_status;
+        impl->loop_task = os::Task::spawn(config, [&app, impl, on_status_copy]() mutable {
+            record_and_play(app, on_status_copy);
+            std::lock_guard<os::Mutex> lock(impl->loop_mutex);
+            impl->loop_running = false;
+        });
+        if (impl->loop_task == nullptr) {
+            impl->loop_running = false;
+            spawn_failed = true;
+        }
     }
 
-    os::TaskConfig config;
-    config.name = "wisp.loop";
-    auto on_status_copy = std::move(on_status);
-    impl->loop_task = os::Task::spawn(config, [&app, impl, on_status_copy]() mutable {
-        record_and_play(app, on_status_copy);
-        impl->loop_running.store(false);
-    });
+    if (spawn_failed) {
+        std::string msg = std::string("失败: ") + to_string(ErrorCode::NoMemory);
+        on_status(msg.c_str());
+    }
 }
 
 void join_loopback(App& app) {
     App::Impl* impl = app.impl_.get();
-    if (impl->loop_task) {
-        impl->loop_task->join();
-        impl->loop_task.reset();
+    std::unique_ptr<os::Task> task_to_join;
+    {
+        std::lock_guard<os::Mutex> lock(impl->loop_mutex);
+        // Set first, before anything else below (including inspecting
+        // loop_task) -- see loopback.hpp/app_impl.hpp: this is what
+        // serializes against a concurrent run_loopback() call so no new
+        // "wisp.loop" task can ever be spawned after this point without
+        // also being the exact task we go on to join just below.
+        impl->loop_stopping = true;
+        task_to_join = std::move(impl->loop_task);
     }
+    if (task_to_join) {
+        // Joined outside the lock: the task's own completion lambda
+        // above takes loop_mutex too, so holding it here while joining
+        // would deadlock against that.
+        task_to_join->join();
+    }
+}
+
+void reset_loopback(App& app) {
+    App::Impl* impl = app.impl_.get();
+    std::lock_guard<os::Mutex> lock(impl->loop_mutex);
+    impl->loop_stopping = false;
 }
 
 }  // namespace wisp::app

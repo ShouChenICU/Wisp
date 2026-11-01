@@ -32,6 +32,12 @@ Result<void> App::start() {
         return Result<void>::err(ErrorCode::Busy, "App already started");
     }
 
+    // A previous start()/stop() cycle on this same App may have left
+    // loopback permanently refusing new "wisp.loop" tasks (see
+    // join_loopback() in loopback.cpp, called from stop()); clear that
+    // now so "录音回放" works again after a restart.
+    reset_loopback(*this);
+
     uint64_t boot_t0 = os::now_ms();
 
     // Step 1: logging.
@@ -56,6 +62,16 @@ Result<void> App::start() {
         "wisp.storage", kStorageRefreshMs, /*periodic=*/true, [this] { impl_->storage.refresh(); });
     impl_->storage_timer->start();
     impl_->buttons.start();
+
+    // boot_ms is recorded here -- right before Step 4 builds the
+    // self-check screen (spec 8's header shows it) -- rather than in
+    // Step 5 below: the self-check screen is built synchronously
+    // (blocking) within this same start() call, so a later
+    // set_boot_ms() would run *after* the screen already read (and
+    // rendered) whatever set_boot_ms() had defaulted to (0), making the
+    // displayed "启动 .. ms" permanently wrong. Step 5 below relies on
+    // this already having been set and does not call it again.
+    impl_->report.set_boot_ms(os::now_ms() - boot_t0);
 
     // Step 4: UI (or headless).
     auto display = impl_->registry.get<hal::Display>("display.main");
@@ -97,8 +113,8 @@ Result<void> App::start() {
         impl_->report.set_note("mode", "headless");
     }
 
-    // Step 5: finalize and report.
-    impl_->report.set_boot_ms(os::now_ms() - boot_t0);
+    // Step 5: finalize and report. boot_ms was already set above, before
+    // Step 4 built the self-check screen.
     const std::string board_name = impl_->platform.board->name();
     impl_->platform.emit_line("WISP_BOOT_REPORT " + to_json(impl_->report.to_value(board_name)));
     impl_->platform.emit_line("WISP_MANIFEST " + to_json(impl_->registry.manifest(board_name)));

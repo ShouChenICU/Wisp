@@ -124,6 +124,17 @@ public:
     // task; returns immediately without waiting for it to run.
     void set_perf_overlay(bool enabled);
 
+    // Whether the sysmon overlay set_perf_overlay() last requested has
+    // actually taken effect yet. Thread-safe. Note this is *not*
+    // reflected in snapshot_rgb888(): the overlay lives in LVGL's
+    // always-on-top "sys layer", a sibling of the active screen, and
+    // lv_snapshot_take() only renders the one object (and its own
+    // children) it's given -- it never touches the display's separate
+    // top/sys layers, so no pixel comparison of snapshot_rgb888() output
+    // can ever detect the overlay. This accessor is the only way to
+    // observe it.
+    bool perf_overlay_enabled() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

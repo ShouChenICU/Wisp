@@ -103,6 +103,12 @@ struct UiRuntime::Impl {
     lv_display_t* lv_disp = nullptr;
     lv_indev_t* lv_indev = nullptr;
 
+    // Mirrors whatever the sysmon overlay's hidden flag actually is,
+    // written from inside the very lambda set_perf_overlay() posts (so it
+    // reflects reality, not just "a call was requested") -- see
+    // perf_overlay_enabled() below. Readable from any thread.
+    std::atomic<bool> perf_overlay_enabled{false};
+
     // --- perf (protected by perf_mutex) ---
     mutable os::Mutex perf_mutex;
     uint32_t frames_total = 0;
@@ -476,7 +482,17 @@ void UiRuntime::set_perf_overlay(bool enabled) {
         } else {
             lv_sysmon_hide_performance(impl->lv_disp);
         }
+        // Written here (inside the posted lambda, after the LVGL call
+        // above has actually run), not synchronously in set_perf_overlay()
+        // itself -- a caller of perf_overlay_enabled() right after
+        // set_perf_overlay() returns is asking "has it taken effect yet",
+        // not "was it requested".
+        impl->perf_overlay_enabled.store(enabled, std::memory_order_release);
     });
+}
+
+bool UiRuntime::perf_overlay_enabled() const {
+    return impl_->perf_overlay_enabled.load(std::memory_order_acquire);
 }
 
 }  // namespace wisp::ui

@@ -165,6 +165,18 @@ private:
     lv_obj_t* msgbox_ = nullptr;
     lv_obj_t* msgbox_yes_ = nullptr;
     lv_timer_t* refresh_timer_ = nullptr;
+    // The single root container build() creates everything else under
+    // (see build()). Deleted (lv_obj_delete(), recursively deleting every
+    // child -- the touch test box, the "录音回放" button, the perf row,
+    // etc.) in ~SelfCheck()'s UI-thread teardown step, specifically so
+    // that none of those widgets' LV_EVENT_* callbacks (all registered
+    // with `this` as user_data) can still fire after this SelfCheck is
+    // freed -- fix round 1, issue 1: deleting only refresh_timer_/msgbox_
+    // left every other widget (and their callbacks) alive until the next
+    // lv_deinit(), so a touch/click between stop_self_check() returning
+    // and UiRuntime::stop() actually running could call back into
+    // already-freed memory.
+    lv_obj_t* root_ = nullptr;
 
     // --- "wisp.sample" task + its mutex-protected snapshot. ---
     os::Mutex sample_mutex_;
@@ -226,6 +238,13 @@ SelfCheck::~SelfCheck() {
             lv_timer_delete(refresh_timer_);
             refresh_timer_ = nullptr;
         }
+        if (root_ != nullptr) {
+            // Recursively deletes every widget build() created under it
+            // (and, with them, every LV_EVENT_* callback registered with
+            // `this` as user_data) -- see root_'s doc comment above.
+            lv_obj_delete(root_);
+            root_ = nullptr;
+        }
     });
 }
 
@@ -235,21 +254,24 @@ void SelfCheck::run_on_ui_thread_blocking(std::function<void()> fn) {
         return;
     }
     auto done = std::make_shared<os::Semaphore>(1, 0);
-    bool posted = ui_->post([fn, done] {
+    // Retry (rather than give up) if the post queue is momentarily full:
+    // this teardown step must actually run -- see root_'s doc comment --
+    // not merely be attempted once. UiRuntime's own UI task continuously
+    // drains that queue, so a slot frees up promptly; this never spins
+    // forever in practice (M1, fix round 1).
+    while (!ui_->post([fn, done] {
         fn();
         done->give();
-    });
-    if (posted) {
-        done->take(os::kForever);
+    })) {
+        os::sleep_ms(1);
     }
-    // If the post queue was full, there's no further action to take here
-    // -- whatever UiRuntime::stop() does next (lv_deinit()) will still
-    // release every LVGL resource regardless.
+    done->take(os::kForever);
 }
 
 void SelfCheck::build() {
     lv_obj_t* screen = lv_screen_active();
     lv_obj_t* col = lv_obj_create(screen);
+    root_ = col;
     lv_obj_set_size(col, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_border_width(col, 0, 0);
     // Left/right 40px per the brief; top/bottom 40px too, and a row gap,
@@ -262,6 +284,10 @@ void SelfCheck::build() {
     lv_obj_set_style_pad_row(col, 10, 0);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(col, LV_DIR_VER);
+    // No scrollbar: on this rounded-corner screen a bar hugging the right
+    // edge would sit under/near the top-right and bottom-right corners
+    // (M4, fix round 1).
+    lv_obj_set_scrollbar_mode(col, LV_SCROLLBAR_MODE_OFF);
 
     build_header(col);
     build_device_list(col);
@@ -482,20 +508,30 @@ void SelfCheck::subscribe_buttons() {
 }
 
 void SelfCheck::on_button_event(const core::Event& e) {
+    // on_button_event() itself runs on the EventBus dispatcher thread
+    // (see subscribe_buttons()), but PowerKeyController is not
+    // thread-safe against concurrent callers -- msgbox_btn_cb() (below)
+    // also drives it, from the UI thread, via on_confirm(). Posting the
+    // *whole* decision (on_short()/on_long() included, not just the
+    // resulting Action) onto the UI thread, rather than calling those
+    // here and only posting the result, is what makes every
+    // PowerKeyController call happen on one single thread (fix round 1,
+    // issue 2).
     std::string topic = e.topic;
-    PowerKeyController::Action action = PowerKeyController::Action::None;
-    if (e.source == "button.power") {
-        if (topic == "button.power.short") {
-            action = power_key_.on_short();
-        } else if (topic == "button.power.long") {
-            action = power_key_.on_long();
-        }
-    }
-
-    ui_->post([this, topic, action] {
+    std::string source = e.source;
+    ui_->post([this, topic, source] {
         char buf[96];
         std::snprintf(buf, sizeof(buf), "按键: %s", topic.c_str());
         lv_label_set_text(button_label_, buf);
+
+        PowerKeyController::Action action = PowerKeyController::Action::None;
+        if (source == "button.power") {
+            if (topic == "button.power.short") {
+                action = power_key_.on_short();
+            } else if (topic == "button.power.long") {
+                action = power_key_.on_long();
+            }
+        }
         if (action != PowerKeyController::Action::None) {
             handle_power_key_action(action);
         }
@@ -558,8 +594,14 @@ void SelfCheck::close_confirm_dialog() {
 
 void SelfCheck::do_power_off() {
     if (power_) {
-        power_->power_off();
-        return;
+        auto result = power_->power_off();
+        if (result) {
+            return;
+        }
+        // Fall through to the platform fallback below (M3, fix round 1)
+        // rather than silently doing nothing -- the user already
+        // confirmed shutdown, so a failed Power::power_off() shouldn't
+        // leave the device stuck on.
     }
     if (app_.platform().request_power_off) {
         app_.platform().request_power_off();

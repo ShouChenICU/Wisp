@@ -4,9 +4,8 @@
 // "录音回放" button (spec 8): records 3s of 16kHz mono audio into a
 // os::alloc(Mem::Large) buffer on a dedicated "wisp.loop" task, then
 // immediately plays it back. See self_check_screen.cpp for how it's
-// wired to the button and to SelfCheck's lifetime (the task this spawns
-// is joined by whatever owns the run_loopback() call before the App's
-// EventBus/UiRuntime are stopped -- see app.hpp's Lifetime note).
+// wired to the button; see app.cpp's start()/stop() for how its
+// lifetime is tied to the owning App (reset_loopback()/join_loopback()).
 
 #include <functional>
 
@@ -24,24 +23,37 @@ class App;
 //      right before playback starts, writes the recorded buffer, closes
 //      audio_out;
 //   3. calls on_status("完成").
-// On any failure (device missing, open()/read()/write() erroring), calls
-// on_status("失败: <error code>") and stops early (skipping whichever
-// steps hadn't started yet). `on_status` runs on the "wisp.loop" task,
-// not the caller's thread -- the caller (self_check_screen.cpp) marshals
-// it back to the UI thread itself via ui::UiRuntime::post().
+// On any failure (device missing, open()/read()/write() erroring, or
+// os::Task::spawn() itself failing), calls on_status("失败: <error
+// code>") and stops early (skipping whichever steps hadn't started
+// yet). `on_status` runs on the "wisp.loop" task, not the caller's
+// thread -- the caller (self_check_screen.cpp) marshals it back to the
+// UI thread itself via ui::UiRuntime::post().
 //
-// If a previous run_loopback() task for this `App` is still running when
-// this is called again, the new call is ignored (no task spawned, no
-// on_status call at all) -- see spec 8's "已在运行时再次触发直接忽略".
-// Call join_loopback() (e.g. from SelfCheck's destructor) to make sure no
-// "wisp.loop" task is left running before the App that owns it is torn
-// down further.
+// This call is ignored outright (no task spawned, no on_status call at
+// all) if a previous run_loopback() task for this `App` is still running
+// (see spec 8's "已在运行时再次触发直接忽略") -- or if join_loopback()
+// has already been called for this App and reset_loopback() hasn't run
+// since (see fix round 1, issue 1: this is what makes it safe to trigger
+// "录音回放" concurrently with App::stop(), without risking a "wisp.loop"
+// task that starts after join_loopback() has already returned and so
+// never gets joined, outliving the SelfCheck whose label its on_status
+// callback would otherwise touch after it's been freed).
 void run_loopback(App& app, std::function<void(const char* status)> on_status);
 
-// Blocks until any in-flight run_loopback() task for `app` has finished,
-// then releases its handle. Safe to call even if no loopback ever ran, or
-// one already finished on its own. Not safe to call from within
-// on_status() itself (the task can't join itself).
+// Marks `app` as stopping (so every subsequent run_loopback() call on it
+// is ignored, per the note above) and blocks until any in-flight
+// run_loopback() task for it has finished, then releases its handle.
+// Safe to call even if no loopback ever ran, or one already finished on
+// its own. Not safe to call from within on_status() itself (the task
+// can't join itself). Call this (from App::stop()) before tearing down
+// anything a running loopback task's on_status callback might touch.
 void join_loopback(App& app);
+
+// Clears the "stopping" state join_loopback() set, so run_loopback()
+// works again. Call this from App::start(), before anything else, so a
+// start()/stop()/start() cycle on the same App doesn't leave "录音回放"
+// permanently disabled after the first stop().
+void reset_loopback(App& app);
 
 }  // namespace wisp::app

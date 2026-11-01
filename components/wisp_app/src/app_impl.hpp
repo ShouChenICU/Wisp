@@ -16,7 +16,6 @@
 // on why that (rather than a process-wide static) is required for tests
 // that construct several Apps in one process, one after another.
 
-#include <atomic>
 #include <memory>
 #include <utility>
 
@@ -49,12 +48,27 @@ struct App::Impl {
     // alive to be torn down against.
     std::unique_ptr<SelfCheck> self_check;
 
-    // The "wisp.loop" task handle for the self-check screen's "录音回放"
-    // button (see loopback.cpp's run_loopback()/join_loopback()). Lives
-    // here -- on this App's own Impl -- rather than in a process-wide
-    // static, again so tests constructing several Apps in one process
-    // never have one App's loopback state bleed into another's.
-    std::atomic<bool> loop_running{false};
+    // The "wisp.loop" task state for the self-check screen's "录音回放"
+    // button (see loopback.cpp's run_loopback()/join_loopback()/
+    // reset_loopback()). Lives here -- on this App's own Impl -- rather
+    // than in a process-wide static, again so tests constructing several
+    // Apps in one process never have one App's loopback state bleed into
+    // another's.
+    //
+    // loop_mutex guards all three fields below. join_loopback() sets
+    // loop_stopping under this lock as its very first action (before
+    // even taking loop_task to join), so a run_loopback() call racing
+    // against it is fully serialized by the same lock: it either
+    // completes spawning a task entirely before loop_stopping flips (and
+    // that task is then exactly the one join_loopback() goes on to join),
+    // or it observes loop_stopping already true and refuses outright --
+    // there is no window in which a new "wisp.loop" task gets spawned
+    // that nothing will ever join (fix round 1, issue 1: a click
+    // triggering "录音回放" concurrently with App::stop() must not be
+    // able to start a task that outlives SelfCheck).
+    os::Mutex loop_mutex;
+    bool loop_running = false;
+    bool loop_stopping = false;
     std::unique_ptr<os::Task> loop_task;
 
     bool started = false;

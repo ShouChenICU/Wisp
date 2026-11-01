@@ -126,6 +126,10 @@ private:
     // app.hpp's Lifetime note) rather than in a process-wide static.
     friend void run_loopback(App&, std::function<void(const char* status)>);
     friend void join_loopback(App&);
+    // Clears the "stopping" flag join_loopback() sets, so loopback works
+    // again after a start()/stop()/start() cycle on the same App -- see
+    // app.cpp's start() and loopback.cpp.
+    friend void reset_loopback(App&);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
