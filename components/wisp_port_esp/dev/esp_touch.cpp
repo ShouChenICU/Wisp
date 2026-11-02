@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "esp_err.h"
+#include "esp_lcd_touch.h"
 #include "wisp/base/error.hpp"
 
 namespace wisp::port::esp {
@@ -53,6 +54,32 @@ Result<std::vector<wisp::hal::TouchPoint>> EspTouch::read() {
         points.push_back(pt);
     }
     return R::ok(std::move(points));
+}
+
+Result<void> EspTouch::set_power(bool on) {
+    using R = Result<void>;
+    if (handle_ == nullptr) {
+        return R::err(ErrorCode::DeviceFailure, "null touch handle");
+    }
+    // esp_lcd_touch_enter_sleep()/exit_sleep() themselves ESP_LOGE and
+    // return ESP_FAIL when the driver's vtable has no implementation
+    // (see components/espressif__esp_lcd_touch/esp_lcd_touch.c) -- every
+    // standby transition would otherwise spam an error log on a
+    // controller (e.g. this board's CST9217 -- see
+    // docs/hardware/waveshare_amoled_216.md) that simply never wired one
+    // up. `enter_sleep`/`exit_sleep` are plain public struct fields (see
+    // esp_lcd_touch.h's esp_lcd_touch_s), so checking them directly
+    // avoids ever making that call at all when unsupported, instead of
+    // just swallowing the resulting log line.
+    if ((on && handle_->exit_sleep == nullptr) || (!on && handle_->enter_sleep == nullptr)) {
+        return R::err(ErrorCode::Unsupported, "touch controller has no sleep mode");
+    }
+    esp_err_t err = on ? esp_lcd_touch_exit_sleep(handle_) : esp_lcd_touch_enter_sleep(handle_);
+    if (err != ESP_OK) {
+        return R::err(ErrorCode::DeviceFailure,
+                      std::string(on ? "exit_sleep: " : "enter_sleep: ") + esp_err_to_name(err));
+    }
+    return R::ok();
 }
 
 }  // namespace wisp::port::esp

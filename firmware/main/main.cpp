@@ -15,7 +15,9 @@
 #include <memory>
 #include <string>
 
+#include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_pm.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -25,6 +27,31 @@
 #include "wisp/core/log.hpp"
 #include "wisp/port/esp/log_esp.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
+
+namespace {
+
+// Task 18b/spec 6.7: DFS (dynamic frequency scaling, 240<->80 MHz) is
+// always on; only automatic tickless light sleep is toggled, by
+// PowerManager via Platform::set_standby -- entering standby turns it
+// on, exiting turns it back off. Requires CONFIG_PM_ENABLE and
+// CONFIG_FREERTOS_USE_TICKLESS_IDLE (firmware/sdkconfig.defaults);
+// CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION there additionally keeps light
+// sleep from firing while a USB-Serial-JTAG debug session is actually
+// connected, without this code needing to know or care (see
+// docs/hardware/waveshare_amoled_216.md).
+void apply_pm_config(bool light_sleep_enable) {
+    esp_pm_config_t cfg = {};
+    cfg.max_freq_mhz = 240;
+    cfg.min_freq_mhz = 80;
+    cfg.light_sleep_enable = light_sleep_enable;
+    esp_err_t err = esp_pm_configure(&cfg);
+    if (err != ESP_OK) {
+        WLOG_W("main", "esp_pm_configure(light_sleep_enable=%d) failed: %s", light_sleep_enable,
+               esp_err_to_name(err));
+    }
+}
+
+}  // namespace
 
 extern "C" void app_main() {
     // Static storage duration: add_sink() requires `sink` to outlive the
@@ -53,6 +80,11 @@ extern "C" void app_main() {
         info["large_free"] = static_cast<int64_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         return wisp::Value(std::move(info));
     };
+    platform.set_standby = [](bool standby) { apply_pm_config(/*light_sleep_enable=*/standby); };
+
+    // DFS always on; light sleep off until the first enter_standby()
+    // (see apply_pm_config()'s comment above).
+    apply_pm_config(/*light_sleep_enable=*/false);
 
     // Static storage duration (per this task's brief): app_main() returns
     // by deleting its own task below rather than by a normal function

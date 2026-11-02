@@ -36,6 +36,13 @@ public:
     // is 1).
     Result<std::vector<wisp::hal::TouchPoint>> read() override;
 
+    // esp_lcd_touch_enter_sleep()/exit_sleep(), if the underlying driver
+    // implements them (checked directly against the handle's vtable
+    // fields rather than just calling through and catching the error --
+    // see esp_touch.cpp); returns ErrorCode::Unsupported otherwise (true
+    // for every touch driver this codebase has ported so far).
+    Result<void> set_power(bool on) override;
+
 private:
     wisp::hal::DeviceInfo info_;
     esp_lcd_touch_handle_t handle_;

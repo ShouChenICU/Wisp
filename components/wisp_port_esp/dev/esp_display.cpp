@@ -174,10 +174,40 @@ Result<void> EspDisplay::set_brightness(uint8_t level) {
 
 Result<void> EspDisplay::set_power(bool on) {
     std::lock_guard<wisp::os::Mutex> lock(mutex_);
-    esp_err_t err = esp_lcd_panel_disp_on_off(panel_, on);
-    if (err != ESP_OK) {
-        return Result<void>::err(ErrorCode::DeviceFailure,
-                                 std::string("disp_on_off: ") + esp_err_to_name(err));
+    esp_err_t err;
+    // Task 18b/spec 6.7: set_power(false) is "panel sleep", not just
+    // "display off" -- turn the pixel output off first, then put the
+    // controller itself to sleep (co5300: SLPIN, settling, and -- on a
+    // board wired with a reset GPIO -- deep standby); set_power(true)
+    // reverses that order, waking the controller before turning pixel
+    // output back on. Either op can fail with ESP_ERR_NOT_SUPPORTED on a
+    // panel driver that doesn't implement disp_sleep; that's a real
+    // DeviceFailure here (unlike hal::Touch::set_power(), there's no
+    // "Unsupported is expected" carve-out for the display -- every panel
+    // this codebase targets does implement it; see
+    // docs/hardware/waveshare_amoled_216.md).
+    if (on) {
+        err = esp_lcd_panel_disp_sleep(panel_, false);
+        if (err != ESP_OK) {
+            return Result<void>::err(ErrorCode::DeviceFailure,
+                                     std::string("disp_sleep(false): ") + esp_err_to_name(err));
+        }
+        err = esp_lcd_panel_disp_on_off(panel_, true);
+        if (err != ESP_OK) {
+            return Result<void>::err(ErrorCode::DeviceFailure,
+                                     std::string("disp_on_off(true): ") + esp_err_to_name(err));
+        }
+    } else {
+        err = esp_lcd_panel_disp_on_off(panel_, false);
+        if (err != ESP_OK) {
+            return Result<void>::err(ErrorCode::DeviceFailure,
+                                     std::string("disp_on_off(false): ") + esp_err_to_name(err));
+        }
+        err = esp_lcd_panel_disp_sleep(panel_, true);
+        if (err != ESP_OK) {
+            return Result<void>::err(ErrorCode::DeviceFailure,
+                                     std::string("disp_sleep(true): ") + esp_err_to_name(err));
+        }
     }
     powered_ = on;
     return Result<void>::ok();

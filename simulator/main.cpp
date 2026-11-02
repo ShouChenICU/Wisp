@@ -385,6 +385,12 @@ int main(int argc, char** argv) {
     };
     platform.request_power_off = on_power_off;
     platform.heap_info = [] { return wisp::Value(wisp::Map{}); };
+    // Task 18b/spec 6.7: no real power states to flip in the simulator --
+    // just log it, so a --headless smoke test can confirm the hook fired
+    // without needing any hardware-specific behavior to observe.
+    platform.set_standby = [](bool standby) {
+        WLOG_I(kLogTag, "set_standby(%s)", standby ? "true" : "false");
+    };
     platform.firmware_version = "0.1.0";
 
     wisp::app::App app(std::move(platform));

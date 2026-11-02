@@ -70,7 +70,10 @@ public:
     Result<void> flush(const wisp::hal::Area& area, const uint16_t* rgb565) override;
     // Writes the DCS "write display brightness" register (0x51).
     Result<void> set_brightness(uint8_t level) override;
-    // esp_lcd_panel_disp_on_off().
+    // Panel sleep (spec 6.7), not just display-off: set_power(false)
+    // calls esp_lcd_panel_disp_on_off(false) then
+    // esp_lcd_panel_disp_sleep(true); set_power(true) reverses the order
+    // (disp_sleep(false) then disp_on_off(true)).
     Result<void> set_power(bool on) override;
     bool powered() const override;
 
