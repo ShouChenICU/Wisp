@@ -269,10 +269,14 @@ TEST(UiRuntime, PausingInsideAPostedJobSkipsThatIterationsFlush) {
     wisp::ui::UiRuntime ui(disp, nullptr);
     ASSERT_TRUE(ui.start());
     ASSERT_TRUE(wait_until([&] { return disp->flush_count() > 0; }, 2000));
-    size_t flushes_before = disp->flush_count();
 
+    // Sampled on the UI task, inside the job: the initial frame may still
+    // be flushing in chunks when the wait above returns, so a baseline
+    // taken on the test thread could miss a legitimate earlier flush.
+    std::atomic<size_t> flushes_before{0};
     std::atomic<bool> ran{false};
     ASSERT_TRUE(ui.post([&] {
+        flushes_before = disp->flush_count();
         lv_obj_invalidate(lv_screen_active());
         // LVGL's own refresh timer (LV_DEF_REFR_PERIOD, 16ms) only
         // actually redraws a dirty area once it's due -- sleeping here,
@@ -298,7 +302,7 @@ TEST(UiRuntime, PausingInsideAPostedJobSkipsThatIterationsFlush) {
     ASSERT_TRUE(ui.post([&] { barrier_ran = true; }));
     ASSERT_TRUE(wait_until([&] { return barrier_ran.load(); }, 2000));
 
-    EXPECT_EQ(disp->flush_count(), flushes_before);
+    EXPECT_EQ(disp->flush_count(), flushes_before.load());
 
     ui.stop();
 }
