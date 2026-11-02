@@ -287,6 +287,17 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
 
     pm->enter_standby();
     ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
+    // R2-2 (re-review 2): pm->standby() flips synchronously inside
+    // enter_standby(), but SelfCheck's own standby_ flag (consulted by
+    // sample_loop(), which runs on its own task) only catches up once the
+    // EventBus dispatcher has actually delivered the "power/state" event
+    // to on_power_event() -- asynchronously, on the bus's own dispatcher
+    // task. Without waiting for that dispatch to finish first, there's a
+    // race (task-18b-review.md's R2-2) where sample_loop() still takes one
+    // more real IMU read() between the wait_until() above and the
+    // snapshot below, making this assertion flaky under scheduler
+    // pressure.
+    ASSERT_TRUE(h.app.bus().wait_idle(2000));
 
     size_t reads_at_standby = h.imu->read_count();
     // Real time for the (now-paused) sampling task to prove it does NOT

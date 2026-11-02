@@ -38,6 +38,10 @@ namespace {
 
 constexpr uint32_t kSampleTaskPeriodMs = 20;      // ~50Hz IMU sampling.
 constexpr uint64_t kSlowSampleIntervalMs = 1000;  // power/clock/storage.
+// Re-review 2 (R2-1): how often sample_loop() still takes one power/
+// clock "slow sample" while standby_ is true -- spec 6.7 asks for "约
+// 30s", not a full stop (see sample_loop()'s standby branch).
+constexpr uint32_t kStandbySlowSampleMs = 30000;
 constexpr uint32_t kUiRefreshMs = 100;
 constexpr uint32_t kPerfReportMs = 5000;
 constexpr int kBallTravelPx = 20;
@@ -138,6 +142,10 @@ private:
 
     void start_sampling();
     void sample_loop();
+    // R2-1 (re-review 2): the power/clock "slow sample" -- factored out of
+    // sample_loop() so the standby branch can call it on its own ~30s
+    // cadence instead of the active-loop cadence (kSlowSampleIntervalMs).
+    void sample_slow();
 
     void start_perf_timer();
     void emit_perf_line();
@@ -217,15 +225,17 @@ private:
     // from PowerManager itself -- sample_loop() runs on its own thread
     // with no UI-task affinity to synchronize against, so this is its
     // own atomic snapshot (same pattern as PowerManager's own standby_).
-    // While true, sample_loop() blocks on standby_wake_ instead of
-    // reading the IMU at kSampleTaskPeriodMs -- spec 6.7's "待机时...
-    // 没有高频轮询" applies to this task too, not just UiRuntime's.
+    // While true, sample_loop() stops reading the IMU at
+    // kSampleTaskPeriodMs entirely -- spec 6.7's "待机时...没有高频轮询"
+    // applies to this task too, not just UiRuntime's -- but (re-review 2,
+    // R2-1) still takes one power/clock "slow sample" about every
+    // kStandbySlowSampleMs; see sample_loop()'s standby branch.
     std::atomic<bool> standby_{false};
     // Given (woken) by the "power/state":"active" handler so sample_loop
     // () resumes promptly on wake, rather than waiting out its own
-    // bounded poll -- see sample_loop()'s doc comment. Also given by
-    // ~SelfCheck() so a sample_running_ that just went false is noticed
-    // immediately even if this task is currently blocked here.
+    // kStandbySlowSampleMs poll -- see sample_loop()'s doc comment. Also
+    // given by ~SelfCheck() so a sample_running_ that just went false is
+    // noticed immediately even if this task is currently blocked here.
     os::Semaphore standby_wake_{1, 0};
 
     // --- WISP_PERF emission. ---
@@ -277,6 +287,21 @@ SelfCheck::~SelfCheck() {
     if (button_sub_ != 0) {
         app_.bus().unsubscribe(button_sub_);
         button_sub_ = 0;
+    }
+
+    // R2-6 (re-review 2): give PowerManager's generic "any button wakes
+    // standby" handler back ownership of "button.power" now that this
+    // screen's own PowerKeyController (the thing set_power_key_owned(true)
+    // in subscribe_buttons() handed it off to) is going away -- see
+    // PowerManager::set_power_key_owned()'s doc comment. A no-op today
+    // (App::stop() destroys PowerManager right after this object), but a
+    // future scene that can replace the self-check screen without also
+    // tearing down PowerManager would otherwise be left with "button.power"
+    // permanently un-owned: PowerManager skips it forever, and nothing else
+    // picks it back up, so the power key would stop waking the device from
+    // standby.
+    if (PowerManager* pm = app_.power_manager()) {
+        pm->set_power_key_owned(false);
     }
 
     // LVGL-specific teardown must run on the UI thread -- see
@@ -547,50 +572,71 @@ void SelfCheck::sample_loop() {
     uint64_t last_slow = 0;
     while (sample_running_.load(std::memory_order_acquire)) {
         // Re-review 1 (N3): standby means "no periodic high-frequency
-        // polling" (spec 6.7) -- this applies to this task's IMU
-        // sampling too, not just UiRuntime's rendering. Block on
-        // standby_wake_ instead of reading the IMU at
-        // kSampleTaskPeriodMs (~50Hz). The bounded 1s wait (rather than
-        // os::kForever) is just so sample_running_ going false is
-        // noticed within a second even if, somehow, nothing ever gives
-        // standby_wake_ again (the normal paths -- "power/state":
-        // "active" and ~SelfCheck() -- both do, so this is a safety net,
-        // not the expected wake path).
+        // polling" (spec 6.7) -- IMU sampling at kSampleTaskPeriodMs
+        // (~50Hz) stops entirely while standby_ is true.
+        //
+        // Re-review 2 (R2-1): spec 6.7 asks for power/charging status
+        // (and the clock) to keep being read "约 30s" during standby, not
+        // stopped outright the way the fix-round-2 version of this branch
+        // did -- see task-18b-review.md's R2-1 and the "App 定时器保持
+        // 不变" table above it. take() returning false means
+        // kStandbySlowSampleMs elapsed with no wake signal -- exactly the
+        // "about 30s, take one slow sample" case; true means something
+        // actually woke this task (sample_running_ went false, or standby
+        // ended) and there is nothing to sample right now.
         if (standby_.load(std::memory_order_acquire)) {
-            standby_wake_.take(1000);
+            if (!standby_wake_.take(kStandbySlowSampleMs)) {
+                sample_slow();
+            }
             continue;
         }
         if (imu_) {
             auto r = imu_->read();
-            std::lock_guard<os::Mutex> lock(sample_mutex_);
-            snapshot_.imu_ok = static_cast<bool>(r);
-            if (r) {
-                snapshot_.imu = r.value();
+            // R2-2 (re-review 2): enter_standby() can power the IMU off
+            // while this read() (which runs with no lock held) is still
+            // in flight. Publishing a resulting DeviceFailure into
+            // snapshot_ after the fact would leave one bogus "IMU 异常"
+            // frame visible right after waking -- refresh_ui() only ever
+            // shows whatever is already in snapshot_, it has no way to
+            // tell a stale failure from a fresh one. Drop this result
+            // once standby_ has flipped true in the meantime instead; the
+            // next iteration takes the standby branch above rather than
+            // trying to read again.
+            if (!standby_.load(std::memory_order_acquire)) {
+                std::lock_guard<os::Mutex> lock(sample_mutex_);
+                snapshot_.imu_ok = static_cast<bool>(r);
+                if (r) {
+                    snapshot_.imu = r.value();
+                }
             }
         }
 
         uint64_t now = os::now_ms();
         if (now - last_slow >= kSlowSampleIntervalMs) {
             last_slow = now;
-            if (power_) {
-                auto r = power_->status();
-                std::lock_guard<os::Mutex> lock(sample_mutex_);
-                snapshot_.power_ok = static_cast<bool>(r);
-                if (r) {
-                    snapshot_.power = r.value();
-                }
-            }
-            if (clock_) {
-                auto r = clock_->get_unix();
-                std::lock_guard<os::Mutex> lock(sample_mutex_);
-                snapshot_.rtc_ok = static_cast<bool>(r);
-                if (r) {
-                    snapshot_.rtc_unix = r.value();
-                }
-            }
+            sample_slow();
         }
 
         os::sleep_ms(kSampleTaskPeriodMs);
+    }
+}
+
+void SelfCheck::sample_slow() {
+    if (power_) {
+        auto r = power_->status();
+        std::lock_guard<os::Mutex> lock(sample_mutex_);
+        snapshot_.power_ok = static_cast<bool>(r);
+        if (r) {
+            snapshot_.power = r.value();
+        }
+    }
+    if (clock_) {
+        auto r = clock_->get_unix();
+        std::lock_guard<os::Mutex> lock(sample_mutex_);
+        snapshot_.rtc_ok = static_cast<bool>(r);
+        if (r) {
+            snapshot_.rtc_unix = r.value();
+        }
     }
 }
 
