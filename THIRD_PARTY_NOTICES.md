@@ -145,6 +145,41 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
   `LICENSE`)
 - Copyright: 2026 Espressif Systems (Shanghai) CO LTD
 
+## ESP-IDF
+
+- Project: https://github.com/espressif/esp-idf
+- Version: v6.0.3 (official toolchain/SDK, installed outside this repo
+  per `docs/architecture.md`'s version lock, e.g. to `~/esp/esp-idf-v6.0.3/`;
+  invoked via `idf.py`; not vendored or forked)
+- License: Apache License 2.0 (full text in `LICENSE`, same as this
+  project)
+- Copyright: 2015-2023 Espressif Systems, per ESP-IDF's own
+  `docs/en/COPYRIGHT.rst`
+
+This project is a thin application on top of the ESP-IDF framework, which
+itself bundles a number of third-party components under their own
+licenses -- authoritative per ESP-IDF's own `docs/en/COPYRIGHT.rst`
+(narrative summary) and `tools/ci/check_copyright_config.yaml` (the
+per-file license each ESP-IDF source file actually declares), neither of
+which this project vendors or reproduces here. The table below lists
+only the ones actually linked into this firmware's build (checked
+against `firmware/build/wisp.map`'s "Archive member included" section,
+which lists every object file the linker actually pulled in -- not every
+component ESP-IDF compiles, since many go unreferenced and are dropped):
+
+| Component | License | Notes |
+|---|---|---|
+| FreeRTOS kernel (`components/freertos`) | MIT | Copyright (C) 2017 Amazon.com, Inc. or its affiliates |
+| Picolibc (`components/esp_libc`) | BSD-style | This firmware's `sdkconfig` selects `CONFIG_LIBC_PICOLIBC` (not Newlib) |
+| Mbed TLS (`components/mbedtls`) | Apache License 2.0 | Only a small allocator/PSA-crypto-init shim is actually linked in this build (sub-project 1 has no networking/TLS usage yet); Copyright (C) 2006-2018 ARM Limited |
+
+ESP-IDF also bundles lwIP, wpa_supplicant, and various other
+networking/Bluetooth components under their own licenses, but none of
+their object files appear in this build's link -- sub-project 1 has no
+networking yet (see `AGENTS.md`'s roadmap) -- so they are not listed
+here; this note should be revisited once a later sub-project adds
+networking and actually links one of them in.
+
 ## ESP-IDF components used by the firmware
 
 Fetched by the ESP-IDF component manager at build time (direct

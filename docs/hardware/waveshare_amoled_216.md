@@ -36,9 +36,9 @@
 
 ## 真机验收清单
 
-汇总 Task 15–18b 各任务报告（`.superpowers/sdd/2026-11-01-foundation/task-*-report.md`）里"需要用户在真机上执行"的手动验证项，以及 spec 第 10 节的验收标准。本板尚未上过真机，以下全部待测；"结果"栏留空，验收时填写实测结果（通过/不通过 + 简短说明），不通过的项回到对应任务修复，不在本任务绕过。
+汇总各子任务实现过程中记录下来的"需要用户在真机上执行"的手动验证项，以及 spec 第 10 节的验收标准。本板尚未上过真机，以下全部待测；"结果"栏留空，验收时填写实测结果（通过/不通过 + 简短说明），不通过的项回到对应实现修复。
 
-每项前标注的任务号，对应该检查来自哪个任务的实现；标 "spec 10.n" 的是设计文档第 10 节的验收标准原文。
+每项前标注的来源，对应该检查来自哪部分实现；标 "spec 10.n" 的是设计文档第 10 节的验收标准原文。
 
 | # | 项目（来自） | 怎么测 | 预期结果 | 结果 |
 |---|---|---|---|---|
@@ -54,13 +54,13 @@
 | 10 | 亮度初始化（Task 16） | 对比刚上电瞬间与自检界面稳定后的亮度 | 启动后设为 200，应比初始化时的 0xFF 略暗 |  |
 | 11 | IMU 跟随倾斜（spec 10.2） | 倾斜设备，看自检界面小球；水平放置看 `az` | 小球平稳跟随倾斜；水平时 `az` 接近 1.0g |  |
 | 12 | 陀螺仪数值合理（Task 17，新写寄存器配置，重点核实） | 静止与转动设备，看自检界面 `gx/gy/gz` | 静止时接近 0 dps；转动时方向与幅度符合直觉；若轴向颠倒或量程异常，检查 `drivers/qmi8658/qmi8658.c` 的 CTRL3 FS/ODR 编码 |  |
-| 13 | 电量与充电状态更新（spec 10.2，Task 17） | 看自检界面电量百分比；插拔 USB 电源 | 百分比在合理范围；插拔后 `charging`/`vbus_present` 在 1 秒内更新 |  |
+| 13 | 电量与充电状态更新（spec 10.2，Task 17） | 看自检界面电量百分比和"充电中/未充电"状态；插拔 USB 电源；也可以看串口上 `power_monitor` 的 `power.charging.changed` 日志行（Task 19a，见下面第 35 项） | 百分比在合理范围；插拔后充电状态在 1 秒内更新 |  |
 | 14 | 三个按键事件（spec 10.2，Task 17） | 分别短按/长按 power、vol_up、vol_down | 自检界面均有对应事件提示 |  |
 | 15 | 电源键短按（spec 10.3） | 亮屏时短按电源键，再短按一次 | 第一次灭屏（进入待机），第二次重新点亮 |  |
 | 16 | 电源键长按关机（spec 10.3，Task 17） | 长按电源键约 1 秒 | 弹出关机确认框；确认后整机断电（用电流表或指示灯判断，不能只看屏幕熄灭） |  |
 | 17 | 关机状态开机（spec 10.3） | 关机状态下长按电源键 | 重新开机 |  |
-| 18 | RTC 持续计时（spec 10.2，Task 17） | 看启动日志是否有 "system clock set from clock.main RTC"；断电（拔 USB 和电池）重启后再看一次时间 | 日志出现该行；重启后时间连续，不跳回 1970 或固定值 |  |
-| 19 | 充电电流曲线（Task 17 fix round 1） | 用一块电量明显偏低的电池，经 USB 功率计供电，观察充电过程电流 | 恒流阶段稳定在约 400mA；接近 4.2V 时电流渐降；充满后 `charging` 翻 `false`，电流降到维持量级，不持续大电流过充 |  |
+| 18 | RTC 持续计时（spec 10.2，Task 17） | 看启动日志是否有 "system clock set from clock.main RTC"；断电（拔 USB 和电池）重启后再看一次时间。如果 RTC 从未设置过（芯片第一次通电），`get_unix()` 会失败，日志只有一条 `WLOG_W`，系统时间不会被设置——此时需要临时在 `board.cpp` 的 `init_clock` 成功之后插入一行 `clock.value()->set_unix(<当前 UTC 时间戳>)` 写入一次当前时间，重新编译烧录后再验证本项，验证完成后删除这段临时代码 | 日志出现 "system clock set from clock.main RTC"；重启后时间连续，不跳回 1970 或固定值 |  |
+| 19 | 充电电流曲线（Task 17） | 用一块电量明显偏低的电池，经 USB 功率计供电，观察充电过程电流；同时看启动日志是否出现 `power.main: charging configuration failed: ...`（`board.cpp` 的 `WLOG_W`） | 恒流阶段稳定在约 400mA；接近 4.2V 时电流渐降；充满后 `charging` 翻 `false`，电流降到维持量级，不持续大电流过充；不出现 `charging configuration failed` 日志（出现则说明 `axp2101_charging_config_status()` 返回非 `ESP_OK`，充电参数可能停留在芯片出厂默认值） |  |
 | 20 | 音频/存储设备状态（Task 18） | 看 `WISP_BOOT_REPORT` 中 `audio_out.main`/`audio_in.main`/`storage.int`/`storage.sd` | 前三者为 `ok`；`storage.sd` 视是否插卡为 `ok` 或 `missing`（"no card"） |  |
 | 21 | 开机无爆音（Task 16/18） | 接好喇叭，听开机瞬间 | 自检界面出现前无可闻的啪声/爆音 |  |
 | 22 | 录音回放（spec 10.2，Task 18） | 自检界面触发"录音回放"按钮 | 录 3 秒后播放，音量合适，声音正确，不失真、不卡顿、不静音 |  |
@@ -75,12 +75,13 @@
 | 31 | SD 探测暂停（Task 18b） | 插卡待机若干分钟后唤醒；可选在待机期间物理插拔 SD 卡 | 唤醒后 `online()` 仍正确；待机期间的插拔只在唤醒后才被发现（预期行为，不是 bug，见"验收第 5 条"第 5 条） |  |
 | 32 | 触摸复位引脚功耗（可选测量，Task 18b） | 待机期间尝试拉低触摸复位引脚（GPIO40），对比前后电流 | 仅用于评估是否值得做后续省电项，不代表现在代码需要改动（见"验收第 5 条"第 6 条） |  |
 | 33 | UI 帧率基准（spec 10 性能基准，global constraints） | 手指持续滚动自检列表 10 秒，看串口 `WISP_PERF` | fps ≥ 30；把 fps/cpu/flush_ms 三个数值记入下方"性能基准"一节 |  |
-| 34 | DFS 不拖累帧率（Task 18b M3） | 对比开启/关闭 `CONFIG_PM_ENABLE` 前后的 `WISP_PERF` | 开启 DFS 后帧率仍不低于上一项的基准 |  |
+| 34 | DFS 不拖累帧率（Task 18b） | 对比开启/关闭 `CONFIG_PM_ENABLE` 前后的 `WISP_PERF` | 开启 DFS 后帧率仍不低于上一项的基准 |  |
+| 35 | `power.charging.changed` 事件（spec 6.3，Task 19a） | 插拔 USB 电源，看串口上 `power_monitor` 的 `power.charging.changed: charging=... usb_present=... battery_percent=...` 日志行 | 插拔后 1 秒内出现该日志行，`charging`/`usb_present` 的值与实际状态一致 |  |
+| 36 | `power.battery.low` 事件（spec 6.3，Task 19a） | 电量明显偏低时观察串口日志；也可以临时把 Settings `power`/`low_batt_pct` 改成 100 来快速触发 | 只出现一次 `power_monitor` 的 `power.battery.low: battery_percent=... (threshold=...)` 日志行（不持续重复）；电量回升超过阈值+5 后再降回阈值以下会再出现一次；没有接电池、只接 USB 供电时不出现该日志 |  |
 
-## 待机与省电（Task 18b，spec 6.7）
+## 待机与省电（spec 6.7）
 
-- **屏幕睡眠（CO5300）——改用标准 MIPI DCS 睡眠，不走厂商深度待机（Task 18b 审查 I2，
-  用户已拍板）**：
+- **屏幕睡眠（CO5300）——改用标准 MIPI DCS 睡眠，不走厂商深度待机（经用户确认采用）**：
   - 最初的实现直接依次调用 `esp_lcd_panel_disp_on_off()`/`esp_lcd_panel_disp_sleep()`。
     但本板 `board_devices.yaml` 给 `display_lcd` 配了 `reset_gpio_num: 39`（屏幕确实接了
     硬件 RST），这会让 `espressif__esp_lcd_co5300` 驱动（`esp_lcd_co5300_spi.c`）在
@@ -105,7 +106,7 @@
   - 一旦选了 `DcsSleep`，`EspDisplay` 就再也不会调用 `esp_lcd_panel_disp_sleep()`/
     `disp_on_off()`（会和它们内部的 `sleep_mode` 记录状态冲突）；深度待机（DSTB）留给
     spec 1.6 的"深度待机"一级，不在子项目 1 范围内。
-  - **亮度丢失（I3）**：无论哪种睡眠方式，唤醒后面板的亮度寄存器都可能被重置（本板
+  - **亮度丢失**：无论哪种睡眠方式，唤醒后面板的亮度寄存器都可能被重置（本板
     init 序列里 `0x51` 被写成 `0xFF`，`DcsSleep` 路径虽然不走这段 init，但为了稳妥仍然
     保留这层防护）。`EspDisplay::set_brightness()` 现在会记住最后一次设置的值，
     `set_power(true)` 成功后自动重发一次该亮度，用户设置不会在每次待机后被重置为
@@ -119,12 +120,12 @@
   `components/wisp_port_esp/dev/esp_touch.cpp`）。也就是说本板触摸芯片**没有**硬件睡眠：
   待机时触摸确实不会再产生触点（因为 `UiRuntime` 暂停后不再调用 `Touch::read()`），但
   CST9217 本身的功耗在待机期间不会下降。
-- **自动浅睡眠期间 GPIO 会被隔离（Task 18b 审查 I4）**：`CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`
+- **自动浅睡眠期间 GPIO 会被隔离**：`CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`
   在 ESP32-S3 上会自动选中 `CONFIG_PM_SLP_DISABLE_GPIO`（`ESP_SLEEP_GPIO_RESET_WORKAROUND`
   的 Kconfig 默认依赖；生成的 `firmware/sdkconfig` 里也确实是 `y`）——每次自动浅睡眠时，
   **所有** GPIO 的方向、电平和上下拉都会被禁用（浮空），直到浅睡眠结束才恢复。面板 RST
   （GPIO39）、触摸 RST（GPIO40）、功放使能（GPIO46）、**面板 SPI 的 CS（GPIO12，
-  `board_devices.yaml` 的 `io_spi_config.cs_gpio_num`——Task 18b 再审查 N7）**这四个必须
+  `board_devices.yaml` 的 `io_spi_config.cs_gpio_num`）**这四个必须
   在睡眠期间保持电平的输出如果浮空：面板/触摸可能被意外复位（配合上面的 `DcsSleep` 会
   直接抵消它要避免的那次重新初始化），CS 浮空还可能让面板在浅睡眠期间误采样到总线上的
   随机电平、把无关的 SPI 数据当成发给自己的命令，功放浮空可能有爆音或漏电风险。
@@ -132,7 +133,7 @@
   `init()` 的最后调用）对这四个引脚分别调用 `gpio_sleep_sel_dis()`，让它们在浅睡眠期间
   继续保持配置好的电平/方向。**待验证**：真机上连续经历多次自动浅睡眠/唤醒循环（例如
   待机 10 分钟以上，确保期间发生过几十次自动浅睡眠-唤醒）后，确认面板画面正常（没有
-  花屏、没有被意外复位过的痕迹，例如亮度被重置——见下面 I3 的说明）、触摸依旧能正常
+  花屏、没有被意外复位过的痕迹，例如亮度被重置——见上面"亮度丢失"一条）、触摸依旧能正常
   响应、扬声器没有异常噗声或底噪——见下面"验收第 5 条"的验证步骤。
 - **USB-Serial-JTAG 与自动浅睡眠**：本板用 USB-Serial-JTAG 做控制台（没有外置
   UART 转 USB 芯片），而 ESP32-S3 上 `SOC_USB_SERIAL_JTAG_SUPPORT_LIGHT_SLEEP` 未定义
@@ -148,45 +149,40 @@
   这把锁）；只用电池供电、或者只接 USB 供电但不接数据线（哪怕是只充电的 USB 线，没有
   数据引脚）时，没有 SOF、锁会被释放，才会真正睡下去**。验收第 5 条的电流测量必须真的
   让数据线处于未连接状态（断开数据线本身，不是"只是没打开串口监视器"）。
-- **后台仍在运行、会限制浅睡眠深度/频率的任务**（Task 18b 任务说明要求记录，不要求重新
-  设计；下面的分类是 Task 18b 再审查 2 轮（R2-1/R2-3/R2-4）整理后的最新状态，修正了
-  早先"ButtonService 50 ms 是系统里最短的周期性唤醒源"这条结论——那条结论当时漏算了
-  自检屏幕自己的采样任务，见下面第二条）：
+- **后台仍在运行、会限制浅睡眠深度/频率的任务**（下面按"待机期间的行为"分类；记录现状，
+  不代表现在就要再去改动）：
   - **已在待机期间完全暂停、只在真正被 `give()` 唤醒时才醒的**：
     - 自检屏幕采样任务的 IMU 读取分支（`SelfCheck::sample_loop()`，原本以
       `kSampleTaskPeriodMs` = 20 ms 的周期读取 IMU）：订阅了 `power.state`，进入待机
-      后完全停止读 IMU——这曾是修正前文档漏记的、实际上系统里最快的周期性唤醒源
-      （20 ms，比 ButtonService 的 50 ms 还快）。`PowerManager::exit_standby()` 唤醒
-      时立即 `give()` 恢复采样。电源状态/RTC 的"慢采样"分支**不**完全停止，见下一条
-      分类（Task 18b 再审查 R2-1）。
-    - `wisp::hal::Imu::set_power(false)`（Task 18b fix round 2 第一批附加范围）：
-      `PowerManager::enter_standby()` 关闭 QMI8658 的加速度计/陀螺仪使能位
-      （`CTRL7`），待机期间芯片本身也不再采样，`exit_standby()` 时恢复到之前选定的
-      ODR。
+      后完全停止读 IMU——这是系统里最快的周期性唤醒源（20 ms，比 ButtonService 的
+      50 ms 还快），待机时完全消除。`PowerManager::exit_standby()` 唤醒时立即
+      `give()` 恢复采样。电源状态/RTC 的"慢采样"分支**不**完全停止，见下一条分类。
+    - `wisp::hal::Imu::set_power(false)`：`PowerManager::enter_standby()` 关闭
+      QMI8658 的加速度计/陀螺仪使能位（`CTRL7`），待机期间芯片本身也不再采样，
+      `exit_standby()` 时恢复到之前选定的 ODR。
     - `EspSdStorage` 的 SD 卡探测 worker（`components/wisp_port_esp/dev/esp_storage.cpp`）
       原本固定以 `kWorkerPollMs` = 100 ms 的粒度轮询（`Mounted` 态下每 ~1 s 探测一次卡
       是否还在，`Unmounted` 态下每 2 s 重试一次 mount，但循环本身每 100 ms 就醒一次
-      检查状态/`worker_running_`，即以 10 Hz 唤醒 CPU）。Task 18b fix round 2 第二批
-      附加范围给它加了 `set_standby()`（经 `StorageManager::set_standby()` 转发，
-      `PowerManager` 在 `enter_standby()`/`exit_standby()` 时调用）：待机期间这个
-      worker 完全阻塞在自己的信号量上，不再探测/重试；`online()`/`capacity()` 不受
-      影响，一直返回缓存的上一次状态，不会在待机期间卡住或报错。Task 18b 再审查第 2
-      轮进一步修正了两处细节：R2-3，这个等待原来带了 1 s 的"兜底"超时，但
-      `set_standby(false)` 和析构都保证一定会 `give()`，不存在漏收信号的情形，所以
-      改成了无限等待（`os::kForever`），彻底不再每秒醒一次；R2-4，`Mounted` 态下
-      探测间隔之间原本以 `kWorkerPollMs` 粒度睡眠等待下一次探测，这段等待现在也会
-      检查待机标志，一旦在等待期间进入待机就直接跳过这次探测，不会多发一次 CMD13。
-  - **降频到约 30 s 一次，而不是完全停止（Task 18b 再审查 R2-1，按 spec 6.7 字面
-    要求修正）**：
+      检查状态/`worker_running_`，即以 10 Hz 唤醒 CPU）。待机期间关闭的方式是给它加了
+      `set_standby()`（经 `StorageManager::set_standby()` 转发，`PowerManager` 在
+      `enter_standby()`/`exit_standby()` 时调用）：worker 完全阻塞在自己的信号量上
+      （无超时的 `os::kForever` 等待——`set_standby(false)` 和析构都保证一定会
+      `give()`，不存在漏收信号的情形），不再探测/重试；`online()`/`capacity()` 不受
+      影响，一直返回缓存的上一次状态，不会在待机期间卡住或报错。`Mounted` 态下探测
+      间隔之间的等待也会检查待机标志，一旦在等待期间进入待机就直接跳过这次探测，不会
+      多发一次 CMD13。
+  - **降频到约 30 s 一次，而不是完全停止（按 spec 6.7 字面要求）**：
     - 自检屏幕采样任务的电源状态/RTC"慢采样"分支（原本以 `kSlowSampleIntervalMs`
-      = 1000 ms 读一次）：fix round 2 的版本曾把这个分支和上面的 IMU 分支一起在待机
-      期间完全停掉，但 spec 6.7 的字面要求是"待机时约 30 s 读一次电量/充电状态"，不是
-      完全停止。现在待机期间改为每 `kStandbySlowSampleMs` = 30000 ms 读一次（阻塞在
-      `standby_wake_` 上，超时就读一次，被 `give()` 唤醒就直接跳过），退出待机时同样
-      立即 `give()` 恢复到原来 1 s 一次的节奏。子项目 1 目前没有任何消费者会据此做出
-      决策（没有低电量告警/自动关机，读到的值只用于自检界面显示，界面本身已经暂停
-      渲染），所以这项修正目前只是让实现与 spec 文字保持一致，不影响实际功能；一旦
-      后续子项目加入低电量保护，这个约 30 s 的读取就是必需的。
+      = 1000 ms 读一次）：待机期间改为每 `kStandbySlowSampleMs` = 30000 ms 读一次
+      （阻塞在 `standby_wake_` 上，超时就读一次，被 `give()` 唤醒就直接跳过），退出
+      待机时同样立即 `give()` 恢复到原来 1 s 一次的节奏。这个分支读到的值只用于自检
+      界面显示（界面本身已经暂停渲染）。
+    - `wisp::core::PowerMonitor` 自己的采样定时器（`"wisp.pwrmon"`，见 spec 6.3/6.7）：
+      亮屏时 1 s、待机时 30 s 轮询一次 `power.main`（每次最多 5 次 I2C 读 + 1 次 NVS
+      读，用于缓存的 `low_batt_pct` 阈值），发布 `power.charging.changed`/
+      `power.battery.low`。这是一个真正的消费者：`power.battery.low` 在电量降到
+      Settings `power`/`low_batt_pct`（默认 15）以下时发布一次（带滞后重新武装），
+      两个事件发布时都会打一行 `WLOG_I`，串口上可以直接观察到。
   - **待机期间仍按原周期继续唤醒 CPU（有意保留，见下面的说明）**：
     - `wisp::os::Timer` 在 ESP 口径下全部跑在同一个 esp_timer 任务上：`App` 的
       `wisp.storage`（2000 ms 一次，`StorageManager::refresh()`）和 `wisp.power`
@@ -205,15 +201,14 @@
       照常打印一行 `WISP_PERF`，只是其中的 `fps`/`frames`/`flush_ms` 会是 0（因为
       `UiRuntime` 暂停后没有任何帧被渲染）。这属于预期行为，不是 bug：待机期间的
       `WISP_PERF` 日志本身就是用来确认"确实没有渲染"的信号之一；真机验收时如果
-      发现待机日志里 `WISP_PERF` 的 `fps` 不是 0，才说明 N1/M1 的暂停渲染修复出现
-      了回归。
+      发现待机日志里 `WISP_PERF` 的 `fps` 不是 0，才说明暂停渲染这个处理出现了回归。
     - `core::ButtonService` 待机时以 50 ms 轮询一次按键（`PowerManager::enter_standby()`
-      放宽的间隔）；`ui::UiRuntime` 暂停后（Task 18b 审查 M1，fix round 1）**不再**自己
-      周期性醒来——它的待机循环现在无限等待 `post()` 任务，没有事可做时完全不会主动醒来。
-  - 经过以上几轮修复，`core::ButtonService` 的 **50 ms** 轮询现在才真正是系统里最短的
-    周期性唤醒源（自检采样任务的 IMU 分支 20 ms 已被消除；电源/RTC 慢采样分支降到了
-    30 s；SD worker 从 10 Hz 降到了待机期间完全不主动醒来）。以上都只是"周期性唤醒
-    CPU 一下就继续睡"，不会阻止自动浅睡眠本身发生（没有常驻的 `ESP_PM_NO_LIGHT_SLEEP`/
+      放宽的间隔）；`ui::UiRuntime` 暂停后**不再**自己周期性醒来——它的待机循环现在
+      无限等待 `post()` 任务，没有事可做时完全不会主动醒来。
+  - 目前，`core::ButtonService` 的 **50 ms** 轮询是系统里最短的周期性唤醒源（自检
+    采样任务的 IMU 分支 20 ms 已被消除；电源/RTC 慢采样分支和 `wisp.pwrmon` 都降到
+    了 30 s；SD worker 待机期间完全不主动醒来）。以上都只是"周期性唤醒 CPU 一下就
+    继续睡"，不会阻止自动浅睡眠本身发生（没有常驻的 `ESP_PM_NO_LIGHT_SLEEP`/
     `ESP_PM_CPU_FREQ_MAX` 锁），但会把浅睡眠的最长连续时长限制在 `ButtonService` 的
     50 ms 量级，略微拉高平均功耗。真机测得的待机电流如果明显高于预期，这些仍是优先
     排查的来源。
@@ -222,7 +217,7 @@
 
 （真机验收后填写：滚动自检列表时的 fps / cpu / flush_ms。另外对比开启动态调频（DFS，
 `firmware/sdkconfig.defaults` 的 `CONFIG_PM_ENABLE`）前后的 `WISP_PERF`，确认 DFS 本身
-没有把渲染路径的帧率拖到 spec/计划约定的基准以下——Task 18b 审查 M3。）
+没有把渲染路径的帧率拖到 spec/计划约定的基准以下。）
 
 ## 验收第 5 条：待机耗电实测
 
@@ -234,24 +229,23 @@
 
 另外几项验证：
 1. 待机若干分钟（确保发生过自动浅睡眠）后，用音量键或电源键唤醒，确认触摸依旧正常
-   响应、扬声器没有异常噗声或持续底噪——验证 I4 的 `gpio_sleep_sel_dis()` 处理是否真的
-   覆盖了面板 RST、触摸 RST、功放使能、面板 CS（Task 18b 再审查 N7）这四个引脚。
+   响应、扬声器没有异常噗声或持续底噪——验证 `gpio_sleep_sel_dis()` 处理是否真的
+   覆盖了面板 RST、触摸 RST、功放使能、面板 CS 这四个引脚。
 2. 自动熄屏后短按电源键唤醒，确认屏幕不会先闪亮一下又熄灭；电源键熄屏后用音量键唤醒，
-   确认下一次电源键短按能正常关屏——验证 C1 的修复（PowerManager 是屏幕状态的唯一真相
-   来源）在真机上同样成立。
+   确认下一次电源键短按能正常关屏——验证 PowerManager 是屏幕状态的唯一真相来源，在
+   真机上同样成立。
 3. 开着电源键确认对话框（长按电源键）的状态下，等待自动熄屏触发，再分别用短按/长按
    电源键唤醒——确认两种按法都能唤醒屏幕（对话框可能仍留在界面上），不会因为"唤醒"
-   和"确认对话框"两套逻辑抢着处理同一次按键而出现异常——验证 N2 的修复
-   （`PowerKeyController::on_short()`/`on_long()` 现在总是先检查"屏幕是否已经是
-   关的"，唤醒优先于确认对话框逻辑）。
-4. IMU 掉电/恢复（Task 18b fix round 2 第一批附加范围）：待机前读一次自检屏幕上的
-   IMU 数值，进入待机，唤醒后确认 IMU 数值恢复正常更新（不是卡在掉电前的最后一次
-   读数，也不是全零/明显错误的数值）——验证 `qmi8658_set_power()` 唤醒时正确恢复了
-   之前选定的 ODR，不是恢复成了驱动的默认值。
-5. SD 卡探测暂停（Task 18b fix round 2 第二批附加范围）：插着 SD 卡待机若干分钟后
-   唤醒，确认卡仍然在线（`online()` 没有被误判为掉线）；另外可以在待机期间物理
-   拔掉/插入 SD 卡，确认热插拔检测在**唤醒后**才会被重新注意到（待机期间 worker
-   已暂停，不会在待机过程中探测到这次插拔）——这是预期行为，不是 bug。
+   和"确认对话框"两套逻辑抢着处理同一次按键而出现异常（`PowerKeyController::
+   on_short()`/`on_long()` 总是先检查"屏幕是否已经是关的"，唤醒优先于确认对话框
+   逻辑）。
+4. IMU 掉电/恢复：待机前读一次自检屏幕上的 IMU 数值，进入待机，唤醒后确认 IMU 数值
+   恢复正常更新（不是卡在掉电前的最后一次读数，也不是全零/明显错误的数值）——验证
+   `qmi8658_set_power()` 唤醒时正确恢复了之前选定的 ODR，不是恢复成了驱动的默认值。
+5. SD 卡探测暂停：插着 SD 卡待机若干分钟后唤醒，确认卡仍然在线（`online()` 没有被
+   误判为掉线）；另外可以在待机期间物理拔掉/插入 SD 卡，确认热插拔检测在**唤醒后**
+   才会被重新注意到（待机期间 worker 已暂停，不会在待机过程中探测到这次插拔）——这是
+   预期行为，不是 bug。
 6. 待机电流的进一步拆解（可选，仅测量，不需要改代码）：如果上面测得的待机电流仍
    明显偏高，可以尝试在待机期间额外把触摸芯片 CST9217 的复位引脚（GPIO40）拉低
    （而不是像现在这样保持上电前的电平），单独测量这一项操作前后的电流差异，评估

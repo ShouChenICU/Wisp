@@ -8,7 +8,7 @@ Wisp 是一个运行在 ESP32 系列芯片上、完全由 AI 驱动的掌上个�
 
 模拟器是日常开发的主力：可移植层的全部逻辑都先在这里开发和测试，再搬到真机上验证。
 
-**依赖**：CMake ≥ 3.24、Ninja、支持 C++20 的编译器（GCC 或 Clang）、SDL2 开发库、Python 3。
+**依赖**：CMake ≥ 3.24、Ninja、支持 C++20 的编译器（GCC 或 Clang）、SDL2 开发库、Python 3。提交前检查（`bash tools/ci.sh`）额外需要 `clang-format==23.1.3`（`pip install clang-format==23.1.3`；版本必须与这个一致，否则本机的格式检查结论可能和 CI 不一样，见 `tools/ci.sh` 的说明）。
 
 ```bash
 # Arch Linux
