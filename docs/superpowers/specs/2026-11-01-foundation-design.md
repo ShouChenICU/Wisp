@@ -425,13 +425,13 @@ bus.subscribe("button.", handler);   // 前缀订阅，返回订阅句柄，可�
 bus.publish(event);                  // 异步：入队后由分发任务派发
 ```
 
-- 单个分发任务，按发布顺序派发；处理函数必须快速返回，需要更新界面时用 `ui::post()`；
+- 单个分发任务，按发布顺序派发；处理函数必须快速返回，需要更新界面时用 `UiRuntime::post()`；
 - 队列有界（默认 64）；满时丢弃最旧的事件，计数并记录警告日志；
 - 子项目 1 的主题：`button.<id>.{down,up,short,long}`、`power.charging.changed`、`power.battery.low`、`storage.sd.{inserted,removed}`、`system.boot.completed`。
 
 ### 6.4 UI 线程模型（`wisp_ui`）
 
-- **只有 UI 任务可以调用 LVGL**；其他任务通过 `ui::post(fn)` 投递；
+- **只有 UI 任务可以调用 LVGL**；其他任务通过 `UiRuntime::post(fn)` 投递；
 - `wisp_ui` 基于 `hal::Display` 和 `hal::Touch` 实现 LVGL 的显示驱动和输入驱动，因此不依赖 esp_lvgl_port，两个目标共用；
 - 像素格式 RGB565；显示缓冲区按 `Mem::Dma`/`Mem::Large` 分配，采用局部刷新和双缓冲，缓冲区大小在真机上根据帧率调优；
 - LVGL tick 由 `wisp_os` 时钟提供。
