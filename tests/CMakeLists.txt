@@ -57,6 +57,19 @@ target_include_directories(sim_audio_test PRIVATE ${WISP_ROOT}/components/wisp_p
 wisp_test(NAME sim_board_test SRCS sim/sim_board_test.cpp
           LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os TIMEOUT 20)
 
+# Host-testable conversion helpers ported from MyOS into drivers/*/include/
+# *_conv.h (Task 17 -- see docs/references.md and each header's own
+# comment). The drivers themselves are pure ESP-IDF components (driver/
+# i2c_master.h) and only ever build under idf.py; these targets compile
+# only the header-only, platform-free conversion math, so each needs its
+# driver's include/ added explicitly (wisp_test() only adds tests/ itself).
+wisp_test(NAME axp2101_conv_test SRCS drivers/axp2101_conv_test.cpp)
+target_include_directories(axp2101_conv_test PRIVATE ${WISP_ROOT}/drivers/axp2101/include)
+wisp_test(NAME pcf85063_conv_test SRCS drivers/pcf85063_conv_test.cpp)
+target_include_directories(pcf85063_conv_test PRIVATE ${WISP_ROOT}/drivers/pcf85063/include)
+wisp_test(NAME qmi8658_conv_test SRCS drivers/qmi8658_conv_test.cpp)
+target_include_directories(qmi8658_conv_test PRIVATE ${WISP_ROOT}/drivers/qmi8658/include)
+
 # End-to-end smoke test (Task 14): runs the actual wisp_sim executable
 # through a handful of --headless scenarios and checks its
 # WISP_BOOT_REPORT/WISP_MANIFEST stdout and screenshot. See

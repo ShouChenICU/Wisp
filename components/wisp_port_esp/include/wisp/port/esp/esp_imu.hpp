@@ -1,0 +1,48 @@
+#pragma once
+
+// ESP-IDF wisp::hal::Imu backed by drivers/qmi8658 (the board's own bmgr
+// i2c_master bus handle -- see boards/waveshare_amoled_216/board.cpp).
+// The chip model string is passed in by the board (AGENTS.md "板子无关"
+// rule); caps ("accel", "gyro", "magnetometer", "max_rate_hz") describe
+// facts about the QMI8658 chip this class wraps (no magnetometer on this
+// part) and spec 5.5's fixed max_rate_hz, so they're fixed here rather
+// than configured per board, the same way EspTouch fixes "max_points".
+
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include "driver/i2c_master.h"
+#include "qmi8658.h"
+#include "wisp/base/result.hpp"
+#include "wisp/hal/imu.hpp"
+
+namespace wisp::port::esp {
+
+class EspImu : public wisp::hal::Imu {
+public:
+    // Calls qmi8658_init(bus) and wraps the resulting handle. Fails with
+    // DeviceFailure if that returns anything other than ESP_OK.
+    static Result<std::shared_ptr<EspImu>> create(i2c_master_bus_handle_t bus, std::string model);
+
+    ~EspImu() override;
+
+    EspImu(const EspImu&) = delete;
+    EspImu& operator=(const EspImu&) = delete;
+
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+
+    // qmi8658_read(); ImuSample::ts_ms is wisp::os::now_ms() at the time
+    // of the call (the chip has no timestamp register Wisp reads).
+    Result<wisp::hal::ImuSample> read() override;
+    // qmi8658_set_odr().
+    Result<void> set_rate(uint32_t hz) override;
+
+private:
+    EspImu(qmi8658_handle_t handle, std::string model);
+
+    wisp::hal::DeviceInfo info_;
+    qmi8658_handle_t handle_;
+};
+
+}  // namespace wisp::port::esp
