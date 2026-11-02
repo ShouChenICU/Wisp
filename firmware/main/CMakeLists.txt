@@ -6,7 +6,7 @@
 idf_component_register(
     SRCS main.cpp ${CMAKE_CURRENT_LIST_DIR}/../../boards/${WISP_BOARD}/board.cpp
     REQUIRES wisp_app wisp_port_esp esp_board_manager esp_lcd esp_lcd_touch esp_driver_i2c
-             esp_driver_gpio esp_pm
+             esp_driver_gpio esp_pm esp_app_format
 )
 
 # Every wisp_* component already pins itself to C++20/-fno-exceptions/

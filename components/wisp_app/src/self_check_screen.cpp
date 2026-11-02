@@ -194,6 +194,16 @@ private:
     lv_obj_t* rtc_label_ = nullptr;
     lv_obj_t* storage_int_label_ = nullptr;
     lv_obj_t* storage_sd_label_ = nullptr;
+    // The device list's own "storage.sd" row (see build_device_list()):
+    // kept live by update_storage_labels(), rather than left at
+    // whatever DeviceState build_device_list() saw once at startup, so
+    // it can't disagree with the dedicated storage section below it
+    // about whether the card is actually online right now. id/model are
+    // cached from build_device_list() since the row's text is otherwise
+    // only ever derived once, from BootReport, not from StorageManager.
+    lv_obj_t* device_list_sd_row_ = nullptr;
+    std::string device_list_sd_id_;
+    std::string device_list_sd_model_;
     lv_obj_t* touch_label_ = nullptr;
     lv_obj_t* button_label_ = nullptr;
     lv_obj_t* loop_status_label_ = nullptr;
@@ -481,6 +491,24 @@ void SelfCheck::build_device_list(lv_obj_t* col) {
         lv_obj_t* row = make_row_label(col);
         lv_label_set_text(row, buf);
         lv_obj_set_style_text_color(row, color_for_state(state), 0);
+
+        if (id == "storage.sd" && device != nullptr) {
+            // BootReport only ever reflects whether the card was present
+            // at boot (spec 6.1: devices aren't re-registered after
+            // init()), so this row would otherwise keep saying "缺失"
+            // forever once a card is inserted later -- update_storage_
+            // labels() (below, driven by the live StorageManager::
+            // status()) re-renders it every kUiRefreshMs instead. Only
+            // when the device actually exists in the registry: a
+            // "storage.sd" boot-report entry with no backing device
+            // (e.g. `--disable storage.sd`) is a real, permanent
+            // Failed/Missing that StorageManager::status() can't ever
+            // contradict (it simply won't have an entry for it either),
+            // so that original coloring must stick.
+            device_list_sd_row_ = row;
+            device_list_sd_id_ = id;
+            device_list_sd_model_ = model;
+        }
     }
 }
 
@@ -799,6 +827,15 @@ void SelfCheck::show_confirm_dialog() {
         return;  // Already up -- see global-constraints.md Review Focus #4.
     }
     msgbox_ = lv_msgbox_create(nullptr);
+    // lv_msgbox_class's own default width is a fixed LV_DPI_DEF * 2 (see
+    // lv_msgbox.c), unrelated to this screen's actual safe area -- fine
+    // on this board's 480px circular screen (where it happens to fit
+    // comfortably inside the inscribed safe square), but spec 8/AGENTS.
+    // md require every UI element to respect safe_rect(), and a smaller
+    // round screen would clip it. Clamp to whichever is smaller.
+    hal::Area safe = compute_safe_area();
+    int32_t safe_width = safe.x2 - safe.x1 + 1;
+    lv_obj_set_width(msgbox_, std::min<int32_t>(LV_DPI_DEF * 2, safe_width));
     lv_msgbox_add_title(msgbox_, "关机确认");
     lv_msgbox_add_text(msgbox_, "是否关机？");
     msgbox_yes_ = lv_msgbox_add_footer_button(msgbox_, "是");
@@ -933,6 +970,27 @@ void SelfCheck::update_storage_labels() {
 
     lv_label_set_text(storage_int_label_, format_row("内置 Flash", int_status).c_str());
     lv_label_set_text(storage_sd_label_, format_row("SD 卡", sd_status).c_str());
+
+    if (device_list_sd_row_ != nullptr) {
+        // sd_status == nullptr means "storage.sd" isn't in the registry
+        // at all (never happens once BootReport already has a row for
+        // it, since that implies the device was registered), so this
+        // only ever distinguishes online (Ok, "正常") from offline/
+        // not-yet-mounted (Missing, "缺失" -- the same label this row
+        // already had at boot, when every registered-but-cardless SD
+        // device starts out). Never Degraded/Failed: this row keeps its
+        // original boot-time coloring for those, since a device that
+        // actually failed, or was never registered in the first place,
+        // can't suddenly come online later.
+        core::DeviceState state = (sd_status != nullptr && sd_status->online)
+                                      ? core::DeviceState::Ok
+                                      : core::DeviceState::Missing;
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "%s · %s · %s", device_list_sd_id_.c_str(),
+                      device_list_sd_model_.c_str(), state_label(state));
+        lv_label_set_text(device_list_sd_row_, buf);
+        lv_obj_set_style_text_color(device_list_sd_row_, color_for_state(state), 0);
+    }
 }
 
 void SelfCheck::touch_event_cb(lv_event_t* e) {

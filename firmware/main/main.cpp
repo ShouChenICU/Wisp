@@ -15,9 +15,11 @@
 #include <memory>
 #include <string>
 
+#include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_pm.h"
+#include "esp_sleep.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -80,7 +82,15 @@ extern "C" void app_main() {
         std::printf("%s\n", line.c_str());
         std::fflush(stdout);
     };
-    platform.request_power_off = [] { esp_restart(); };
+    // Fallback for the self-check UI's power-off confirm dialog (see
+    // self_check_screen.cpp's do_power_off()): reached only when the
+    // board's own Power::power_off() either doesn't exist or just
+    // failed. The user already confirmed shutdown at that point, so
+    // restarting the device (the old behavior) is the opposite of what
+    // they asked for; enter deep sleep with no wakeup source configured
+    // instead -- the closest approximation of "off" this chip has, and
+    // generic across every ESP32 variant (no per-chip wakeup config).
+    platform.request_power_off = [] { esp_deep_sleep_start(); };
     platform.heap_info = [] {
         wisp::Map info;
         info["internal_free"] = static_cast<int64_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
@@ -88,6 +98,12 @@ extern "C" void app_main() {
         return wisp::Value(std::move(info));
     };
     platform.set_standby = [](bool standby) { apply_pm_config(/*light_sleep_enable=*/standby); };
+    // The single source for this (rather than a literal duplicated here
+    // and in the build config): esp_app_desc_t is filled in at build
+    // time from PROJECT_VER (itself git-describe by default -- see the
+    // IDF build system docs), so this always reports exactly what was
+    // actually flashed.
+    platform.firmware_version = esp_app_get_description()->version;
 
     // DFS always on; light sleep off until the first enter_standby()
     // (see apply_pm_config()'s comment above).

@@ -55,12 +55,15 @@ namespace {
 class FullFakeBoard : public wisp::app::Board {
 public:
     FullFakeBoard(std::shared_ptr<FakeDisplay> display, std::shared_ptr<FakeImu> imu,
-                  uint32_t init_sleep_ms = 0)
-        : display_(std::move(display)), imu_(std::move(imu)), init_sleep_ms_(init_sleep_ms) {}
+                  uint32_t init_sleep_ms = 0, std::shared_ptr<FakeStorage> sd = nullptr)
+        : display_(std::move(display)),
+          imu_(std::move(imu)),
+          init_sleep_ms_(init_sleep_ms),
+          sd_(std::move(sd)) {}
 
     std::string name() const override { return "fake-full"; }
 
-    void init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& /*report*/) override {
+    void init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) override {
         if (init_sleep_ms_ > 0) {
             // Gives boot_ms (used by both WISP_BOOT_REPORT and the
             // self-check header) a deterministic, non-flaky non-zero
@@ -75,12 +78,20 @@ public:
         registry.add(std::make_shared<FakeButton>("button.power"));
         registry.add(std::make_shared<FakePower>("power.main"));
         registry.add(std::make_shared<FakeClock>("clock.main"));
+        if (sd_) {
+            registry.add(sd_);
+            if (!sd_->online()) {
+                report.record({"storage.sd", wisp::hal::DeviceClass::Storage,
+                               wisp::core::DeviceState::Missing, "no SD card"});
+            }
+        }
     }
 
 private:
     std::shared_ptr<FakeDisplay> display_;
     std::shared_ptr<FakeImu> imu_;
     uint32_t init_sleep_ms_;
+    std::shared_ptr<FakeStorage> sd_;
 };
 
 // Bundles everything a test needs to build one App over FullFakeBoard: the
@@ -89,18 +100,27 @@ private:
 struct Harness {
     std::shared_ptr<FakeDisplay> display;
     std::shared_ptr<FakeImu> imu;
+    std::shared_ptr<FakeStorage> sd;
     std::string settings_path;
     std::mutex lines_mutex;
     std::vector<std::string> lines;
     wisp::app::App app;
 
     explicit Harness(std::string settings_path_in, uint32_t init_sleep_ms = 0,
-                     std::string display_shape = "rounded_rect")
-        : display(std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/1,
-                                                std::move(display_shape))),
+                     std::string display_shape = "rounded_rect", bool with_sd = false,
+                     int display_size = 480)
+        : display(std::make_shared<FakeDisplay>("display.main", display_size, display_size,
+                                                /*area_align=*/1, std::move(display_shape))),
           imu(std::make_shared<FakeImu>("imu.main")),
+          sd(with_sd ? std::make_shared<FakeStorage>("storage.sd", wisp::test::temp_dir().string(),
+                                                     /*removable=*/true)
+                     : nullptr),
           settings_path(std::move(settings_path_in)),
-          app(build_platform(init_sleep_ms)) {}
+          app(build_platform(init_sleep_ms)) {
+        if (sd) {
+            sd->online_flag = false;
+        }
+    }
 
     bool wait_for_flushes(size_t more_than, uint32_t timeout_ms = 3000) {
         return wait_until([&] { return display->flush_count() > more_than; }, timeout_ms);
@@ -109,7 +129,7 @@ struct Harness {
 private:
     wisp::app::Platform build_platform(uint32_t init_sleep_ms) {
         wisp::app::Platform platform;
-        platform.board = std::make_unique<FullFakeBoard>(display, imu, init_sleep_ms);
+        platform.board = std::make_unique<FullFakeBoard>(display, imu, init_sleep_ms, sd);
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path);
         platform.emit_line = [this](const std::string& line) {
@@ -119,6 +139,25 @@ private:
         return platform;
     }
 };
+
+// Recursively searches `obj`'s subtree for the first lv_msgbox, returning
+// its width in pixels (-1 if none is open). lv_msgbox_create(nullptr) (see
+// show_confirm_dialog() in self_check_screen.cpp) parents the msgbox under
+// a full-screen backdrop on lv_layer_top(), not under the active screen,
+// so callers must search from there rather than from lv_screen_active().
+int32_t find_msgbox_width(lv_obj_t* obj) {
+    if (lv_obj_check_type(obj, &lv_msgbox_class)) {
+        return lv_obj_get_width(obj);
+    }
+    uint32_t count = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < count; ++i) {
+        int32_t found = find_msgbox_width(lv_obj_get_child(obj, i));
+        if (found >= 0) {
+            return found;
+        }
+    }
+    return -1;
+}
 
 // Recursively searches `obj`'s subtree for the first lv_label whose
 // current text contains `needle`, returning a copy of its text (empty if
@@ -487,6 +526,77 @@ TEST(SelfCheckScreen, EmitsWispPerfLine) {
     const wisp::Value* heap_large_free = v.find("heap_large_free");
     ASSERT_NE(heap_large_free, nullptr);
     EXPECT_EQ(heap_large_free->type(), wisp::Value::Type::Int);
+
+    h.app.stop();
+}
+
+// M8 (final review): the device list's own "storage.sd" row used to be
+// rendered once from BootReport at boot and never touched again, so it
+// kept saying "缺失" even after a card was inserted later and the
+// dedicated storage section below it started reporting it online --
+// two sections of the same screen visibly disagreeing. It must track
+// StorageManager::status() live instead.
+TEST(SelfCheckScreen, DeviceListSdRowTracksLiveStorageStatus) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
+              "rounded_rect", /*with_sd=*/true);
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    std::string row_text = run_on_ui_thread(
+        h.app.ui(), [] { return find_label_text_containing(lv_screen_active(), "storage.sd"); });
+    EXPECT_NE(row_text.find("缺失"), std::string::npos) << row_text;
+
+    h.sd->online_flag = true;
+    ASSERT_TRUE(wait_until(
+        [&] {
+            std::string text = run_on_ui_thread(h.app.ui(), [] {
+                return find_label_text_containing(lv_screen_active(), "storage.sd");
+            });
+            return text.find("正常") != std::string::npos;
+        },
+        3000));
+
+    h.app.stop();
+}
+
+// The confirm dialog's width must respect compute_safe_area(), not LVGL's
+// fixed LV_DPI_DEF*2 default (see show_confirm_dialog()): a 480px screen's
+// safe area is wide enough that the default alone never clips, so this
+// uses a deliberately small 220x220 circular display (safe width well
+// under LV_DPI_DEF*2) to actually exercise the clamp. A long press on
+// button.power while the screen is on opens the dialog (see
+// PowerKeyController::on_long()); publishing that event directly on the
+// bus drives exactly the same on_button_event()/PowerKeyController path a
+// real press would, without needing the ButtonService's own debounce
+// timing.
+TEST(SelfCheckScreen, ConfirmDialogWidthClampedToSafeArea) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0, "circle",
+              /*with_sd=*/false, /*display_size=*/220);
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    h.app.bus().publish(wisp::core::Event{"button.power.long", "button.power"});
+
+    int32_t width = -1;
+    ASSERT_TRUE(wait_until(
+        [&] {
+            std::string text = run_on_ui_thread(
+                h.app.ui(), [] { return std::to_string(find_msgbox_width(lv_layer_top())); });
+            width = text.empty() ? -1 : std::stoi(text);
+            // > 0, not >= 0: the msgbox object exists (and so is found)
+            // for a moment before LVGL's layout pass has resolved its
+            // lv_obj_set_width() call into real coords, during which
+            // lv_obj_get_width() reads back 0 -- wait past that too.
+            return width > 0;
+        },
+        3000));
+
+    auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
+    ASSERT_TRUE(shape_result);
+    wisp::hal::Area safe = wisp::hal::safe_rect(shape_result.value());
+    int32_t safe_width = safe.x2 - safe.x1 + 1;
+    ASSERT_LT(safe_width, LV_DPI_DEF * 2) << "test fixture no longer exercises the clamp";
+    EXPECT_EQ(width, safe_width);
 
     h.app.stop();
 }
