@@ -253,6 +253,56 @@ TEST(UiRuntime, SetPausedStopsRenderingButKeepsRunningPostedWork) {
     ui.stop();
 }
 
+// Task 18b re-review 1 (N1): a post()'d job that invalidates something
+// and then pauses (set_paused(true)) -- e.g. PowerManager::enter_standby
+// () runs entirely inside one post()'d job, and could easily run right
+// after some other posted job dirtied a widget -- must not have that
+// dirty area flushed against a display ui_main()'s own loop already
+// considers paused. Before this fix, drain_post_queue() (where the job
+// below runs) was unconditionally followed by one more
+// lv_timer_handler() call on the very same loop iteration, flushing
+// whatever the job just invalidated even though paused was already true
+// by the time that call ran -- the paused check at the top of the loop
+// only takes effect starting the *next* iteration.
+TEST(UiRuntime, PausingInsideAPostedJobSkipsThatIterationsFlush) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    ASSERT_TRUE(wait_until([&] { return disp->flush_count() > 0; }, 2000));
+    size_t flushes_before = disp->flush_count();
+
+    std::atomic<bool> ran{false};
+    ASSERT_TRUE(ui.post([&] {
+        lv_obj_invalidate(lv_screen_active());
+        // LVGL's own refresh timer (LV_DEF_REFR_PERIOD, 16ms) only
+        // actually redraws a dirty area once it's due -- sleeping here,
+        // on the UI task, past that period before set_paused(true)
+        // guarantees it is overdue by the time ui_main() would call
+        // lv_timer_handler() again right after this job returns (the
+        // call this test exists to prove does NOT happen), rather than
+        // leaving that race up to however this test host happens to
+        // schedule the surrounding 10ms-ish loop iterations.
+        wisp::os::sleep_ms(50);
+        ui.set_paused(true);
+        ran = true;
+    }));
+    ASSERT_TRUE(wait_until([&] { return ran.load(); }, 2000));
+
+    // Barrier: a second job can only run once ui_main() has looped back
+    // around and reached the paused branch -- which, in turn, can only
+    // happen once this iteration's lv_timer_handler() call (the one this
+    // test is checking did NOT happen) has already returned, if it ran
+    // at all. So by the time this barrier job runs, any such flush from
+    // this iteration is guaranteed to have already happened.
+    std::atomic<bool> barrier_ran{false};
+    ASSERT_TRUE(ui.post([&] { barrier_ran = true; }));
+    ASSERT_TRUE(wait_until([&] { return barrier_ran.load(); }, 2000));
+
+    EXPECT_EQ(disp->flush_count(), flushes_before);
+
+    ui.stop();
+}
+
 // Task 18b review round 1 (M4): UiRuntime::set_touch_activity_cb() had
 // no direct test -- only PowerManager's own tests exercised it
 // indirectly. This drives it directly: a touch point appearing makes

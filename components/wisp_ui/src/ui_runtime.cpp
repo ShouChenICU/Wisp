@@ -195,6 +195,20 @@ void UiRuntime::Impl::ui_main() {
 
         uint64_t loop_start = os::now_ms();
         drain_post_queue();
+        if (paused.load(std::memory_order_acquire)) {
+            // N1 (re-review 1): a job drained just above may itself have
+            // called set_paused(true) (e.g. PowerManager::enter_standby()
+            // running entirely inside one post()'d job, right after some
+            // other posted job dirtied a widget) -- the unconditional
+            // lv_timer_handler() call below used to still run once more
+            // on this same loop iteration, flushing whatever was dirty
+            // against a display the caller already considers asleep.
+            // The paused check at the top of this loop only takes effect
+            // starting the *next* iteration, so it alone doesn't catch
+            // this; skip straight back there instead of calling
+            // lv_timer_handler() this time.
+            continue;
+        }
         uint32_t next_ms = lv_timer_handler();
         uint64_t loop_end = os::now_ms();
         record_busy(static_cast<uint32_t>(loop_end - loop_start));
