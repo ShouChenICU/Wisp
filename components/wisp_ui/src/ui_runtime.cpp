@@ -36,11 +36,6 @@ namespace {
 
 constexpr size_t kPostQueueCapacity = 32;
 constexpr uint64_t kPerfWindowMs = 1000;
-// How long the paused branch of ui_main() blocks waiting for post()'d
-// work before re-checking `running`/`paused` -- bounds stop()'s worst
-// -case wait while paused (a concurrent post() wakes it immediately
-// regardless of this value; this is only the idle-case ceiling).
-constexpr uint32_t kPausedPollMs = 50;
 
 int cap_int(const wisp::Properties& caps, const char* key, int fallback) {
     auto it = caps.find(key);
@@ -169,14 +164,21 @@ void UiRuntime::Impl::ui_main() {
     while (running.load(std::memory_order_acquire)) {
         if (paused.load(std::memory_order_acquire)) {
             was_paused = true;
-            // Blocks waiting for post()'d work (woken immediately by a
-            // concurrent post()), without ever calling
-            // lv_timer_handler() -- no LVGL timer fires and no flush
-            // happens while paused. The timeout bounds how long stop()
-            // (which only flips `running`; it doesn't touch `paused`)
-            // can be kept waiting by this branch.
+            // Blocks indefinitely waiting for post()'d work -- no LVGL
+            // timer fires and no flush happens while paused, and (M1,
+            // fix round 1) no periodic wake happens either: spec 6.7
+            // requires standby to have "没有周期性的 UI 定时器，也没有
+            // 高频轮询", so this must not poll on any fixed interval of
+            // its own. A concurrent post() wakes this immediately
+            // (Queue::push() signals the same semaphore pop() waits on);
+            // stop() additionally pushes a no-op job after flipping
+            // `running` to false specifically to wake a UI task that
+            // might currently be blocked right here (see
+            // UiRuntime::stop()) -- without that, a paused UI task would
+            // never notice `running` went false until the next
+            // post()'d job happened to arrive, which might be never.
             std::function<void()> fn;
-            if (post_queue.pop(fn, kPausedPollMs)) {
+            if (post_queue.pop(fn, os::kForever)) {
                 fn();
                 fn = nullptr;
             }
@@ -440,6 +442,14 @@ void UiRuntime::stop() {
     if (!impl_->running.exchange(false, std::memory_order_acq_rel)) {
         return;
     }
+    // M1 (fix round 1): ui_main()'s paused branch now blocks forever
+    // (os::kForever) waiting for post()'d work, rather than polling
+    // every kPausedPollMs -- so if the UI task happens to be paused and
+    // sitting in that wait right now, it will never notice `running`
+    // just went false on its own. Push a no-op to wake it; if the queue
+    // is already full, there is pending work that will wake it on its
+    // own (either way, join() below will see it exit promptly).
+    impl_->post_queue.push([] {}, 0);
     if (impl_->task) {
         impl_->task->join();
     }
@@ -469,7 +479,22 @@ bool UiRuntime::on_ui_thread() const {
     return task != nullptr && task->is_current();
 }
 
-void UiRuntime::set_paused(bool paused) { impl_->paused.store(paused, std::memory_order_release); }
+void UiRuntime::set_paused(bool paused) {
+    bool was_paused = impl_->paused.exchange(paused, std::memory_order_acq_rel);
+    // M1 (fix round 1): ui_main()'s paused branch blocks forever
+    // (os::kForever) waiting for post()'d work, rather than polling --
+    // so unpausing (paused: true -> false) must itself wake a UI task
+    // that might be sitting in that wait right now, or it would never
+    // notice `paused` went false until some *other* post()'d job
+    // happened to arrive on its own. Only needed on an actual true->
+    // false transition (not a redundant set_paused(false) while already
+    // unpaused, nor set_paused(true), which doesn't need waking
+    // anything up). If the queue is already full, there is pending work
+    // that will wake it on its own either way.
+    if (was_paused && !paused) {
+        impl_->post_queue.push([] {}, 0);
+    }
+}
 
 bool UiRuntime::paused() const { return impl_->paused.load(std::memory_order_acquire); }
 

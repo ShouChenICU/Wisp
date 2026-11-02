@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 
@@ -199,13 +200,17 @@ TEST(UiRuntime, SetPausedStopsRenderingButKeepsRunningPostedWork) {
     // run this job once that same thread is done with whatever it was
     // doing before. Capturing flush_count() only *after* that point is
     // what makes the following check deterministic.
+    //
+    // Task 18b review round 1 (M4): this job deliberately does NOT
+    // invalidate anything (an earlier version did, with
+    // lv_obj_invalidate(lv_screen_active())) -- so the flush this test
+    // observes after resuming below can only be attributed to
+    // set_paused(false)'s own forced redraw, not to this job having
+    // invalidated something itself (which would have produced a flush
+    // on resume even if set_paused(false) forgot to force one of its
+    // own, defeating the point of the check).
     std::atomic<bool> ran{false};
-    ASSERT_TRUE(ui.post([&] {
-        // Invalidating while paused must not produce a flush: the paused
-        // UI task never calls lv_timer_handler() to act on it.
-        lv_obj_invalidate(lv_screen_active());
-        ran = true;
-    }));
+    ASSERT_TRUE(ui.post([&] { ran = true; }));
     EXPECT_TRUE(wait_until([&] { return ran.load(); }, 2000));
     size_t flushes_at_pause = disp->flush_count();
 
@@ -217,7 +222,57 @@ TEST(UiRuntime, SetPausedStopsRenderingButKeepsRunningPostedWork) {
     size_t flushes_before_resume = disp->flush_count();
     ui.set_paused(false);
     EXPECT_TRUE(wait_until([&] { return !ui.paused(); }, 2000));
-    EXPECT_TRUE(wait_until([&] { return disp->flush_count() > flushes_before_resume; }, 2000));
+    ASSERT_TRUE(wait_until([&] { return disp->flush_count() > flushes_before_resume; }, 2000));
+
+    // The resume redraw must cover the *whole* screen (lv_obj_invalidate
+    // (lv_screen_active()) -- see UiRuntime::set_paused()'s doc comment
+    // -- not just whatever had been invalidated before pausing), proving
+    // it really is set_paused(false)'s own forced full redraw. LVGL may
+    // split it across more than one flush() call, so this checks the
+    // union of every flush area since resuming rather than assuming a
+    // single call covers it.
+    auto areas = disp->areas();
+    ASSERT_GE(areas.size(), flushes_before_resume + 1);
+    constexpr int kDisplayWidth = 480;
+    constexpr int kDisplayHeight = 480;
+    int min_x1 = kDisplayWidth;
+    int min_y1 = kDisplayHeight;
+    int max_x2 = -1;
+    int max_y2 = -1;
+    for (size_t i = flushes_before_resume; i < areas.size(); ++i) {
+        min_x1 = std::min(min_x1, static_cast<int>(areas[i].x1));
+        min_y1 = std::min(min_y1, static_cast<int>(areas[i].y1));
+        max_x2 = std::max(max_x2, static_cast<int>(areas[i].x2));
+        max_y2 = std::max(max_y2, static_cast<int>(areas[i].y2));
+    }
+    EXPECT_EQ(min_x1, 0);
+    EXPECT_EQ(min_y1, 0);
+    EXPECT_EQ(max_x2, 479);
+    EXPECT_EQ(max_y2, 479);
+
+    ui.stop();
+}
+
+// Task 18b review round 1 (M4): UiRuntime::set_touch_activity_cb() had
+// no direct test -- only PowerManager's own tests exercised it
+// indirectly. This drives it directly: a touch point appearing makes
+// indev_read_cb() (run from inside lv_timer_handler(), on the UI task)
+// invoke the installed callback.
+TEST(UiRuntime, TouchActivityCallbackFiresWhenATouchPointAppears) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    auto touch = std::make_shared<wisp::test::FakeTouch>("touch.main");
+    wisp::ui::UiRuntime ui(disp, touch);
+    ASSERT_TRUE(ui.start());
+
+    std::atomic<int> calls{0};
+    ui.set_touch_activity_cb([&] { ++calls; });
+
+    // No callback yet: nothing has touched the (empty) FakeTouch.
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(calls.load(), 0);
+
+    touch->set_points({{100, 100, 0}});
+    EXPECT_TRUE(wait_until([&] { return calls.load() > 0; }, 2000));
 
     ui.stop();
 }
