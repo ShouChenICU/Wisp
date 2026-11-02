@@ -144,6 +144,8 @@ private:
 
     void subscribe_buttons();
     void on_button_event(const core::Event& e);
+    void subscribe_power();
+    void on_power_event(const core::Event& e);
     void handle_power_key_action(PowerKeyController::Action action);
     void show_confirm_dialog();
     void close_confirm_dialog();
@@ -210,11 +212,28 @@ private:
     std::atomic<bool> sample_running_{false};
     std::unique_ptr<os::Task> sample_task_;
 
+    // Re-review 1 (N3): mirrors PowerManager::standby(), kept up to date
+    // by subscribe_power()'s "power/state" handler rather than read live
+    // from PowerManager itself -- sample_loop() runs on its own thread
+    // with no UI-task affinity to synchronize against, so this is its
+    // own atomic snapshot (same pattern as PowerManager's own standby_).
+    // While true, sample_loop() blocks on standby_wake_ instead of
+    // reading the IMU at kSampleTaskPeriodMs -- spec 6.7's "待机时...
+    // 没有高频轮询" applies to this task too, not just UiRuntime's.
+    std::atomic<bool> standby_{false};
+    // Given (woken) by the "power/state":"active" handler so sample_loop
+    // () resumes promptly on wake, rather than waiting out its own
+    // bounded poll -- see sample_loop()'s doc comment. Also given by
+    // ~SelfCheck() so a sample_running_ that just went false is noticed
+    // immediately even if this task is currently blocked here.
+    os::Semaphore standby_wake_{1, 0};
+
     // --- WISP_PERF emission. ---
     std::unique_ptr<os::Timer> perf_timer_;
 
-    // --- "button." bus subscription. ---
+    // --- "button."/"power/state" bus subscriptions. ---
     core::SubscriptionId button_sub_ = 0;
+    core::SubscriptionId power_sub_ = 0;
 };
 
 SelfCheck::SelfCheck(App& app)
@@ -227,10 +246,24 @@ SelfCheck::SelfCheck(App& app)
       ui_settings_(*app.platform().settings, "ui") {}
 
 SelfCheck::~SelfCheck() {
-    // Stop the sampling task first -- thread-agnostic, and nothing it
-    // touches (snapshot_, the hal:: device shared_ptrs) requires the UI
-    // thread.
+    // N3: unsubscribe from "power/state" before anything else, so
+    // standby_ can't change (and nothing else calls standby_wake_.give())
+    // from this point on -- EventBus::unsubscribe()'s own contract
+    // guarantees the handler never runs again once this returns.
+    if (power_sub_ != 0) {
+        app_.bus().unsubscribe(power_sub_);
+        power_sub_ = 0;
+    }
+
+    // Stop the sampling task -- thread-agnostic, and nothing it touches
+    // (snapshot_, the hal:: device shared_ptrs) requires the UI thread.
     sample_running_.store(false, std::memory_order_release);
+    // sample_loop() may currently be blocked on standby_wake_ (if
+    // standby_ was true when this destructor started) -- wake it
+    // unconditionally so it notices sample_running_ went false promptly
+    // rather than waiting out its own bounded poll (see sample_loop()'s
+    // doc comment).
+    standby_wake_.give();
     if (sample_task_) {
         sample_task_->join();
         sample_task_.reset();
@@ -332,6 +365,7 @@ void SelfCheck::build() {
     start_sampling();
     start_perf_timer();
     subscribe_buttons();
+    subscribe_power();
 
     refresh_timer_ = lv_timer_create(&SelfCheck::refresh_timer_cb, kUiRefreshMs, this);
 
@@ -512,6 +546,20 @@ void SelfCheck::start_sampling() {
 void SelfCheck::sample_loop() {
     uint64_t last_slow = 0;
     while (sample_running_.load(std::memory_order_acquire)) {
+        // Re-review 1 (N3): standby means "no periodic high-frequency
+        // polling" (spec 6.7) -- this applies to this task's IMU
+        // sampling too, not just UiRuntime's rendering. Block on
+        // standby_wake_ instead of reading the IMU at
+        // kSampleTaskPeriodMs (~50Hz). The bounded 1s wait (rather than
+        // os::kForever) is just so sample_running_ going false is
+        // noticed within a second even if, somehow, nothing ever gives
+        // standby_wake_ again (the normal paths -- "power/state":
+        // "active" and ~SelfCheck() -- both do, so this is a safety net,
+        // not the expected wake path).
+        if (standby_.load(std::memory_order_acquire)) {
+            standby_wake_.take(1000);
+            continue;
+        }
         if (imu_) {
             auto r = imu_->read();
             std::lock_guard<os::Mutex> lock(sample_mutex_);
@@ -634,6 +682,28 @@ void SelfCheck::on_button_event(const core::Event& e) {
             handle_power_key_action(action);
         }
     });
+}
+
+void SelfCheck::subscribe_power() {
+    // Re-review 1 (N3): mirrors subscribe_buttons()'s pattern, but for
+    // PowerManager's own "power/state" broadcast rather than raw button
+    // events -- lets sample_loop() (running on its own thread, not the
+    // UI task) stop polling the IMU while in standby without reaching
+    // into PowerManager itself.
+    power_sub_ = app_.bus().subscribe("power/state", [this](const core::Event& e) {
+        on_power_event(e);
+    });
+}
+
+void SelfCheck::on_power_event(const core::Event& e) {
+    auto it = e.payload.find("state");
+    bool standby = it != e.payload.end() && it->second.as_string() == "standby";
+    bool was_standby = standby_.exchange(standby, std::memory_order_acq_rel);
+    if (was_standby && !standby) {
+        // Wake sample_loop() promptly instead of leaving it to notice on
+        // its own, up to 1s later (see sample_loop()'s doc comment).
+        standby_wake_.give();
+    }
 }
 
 void SelfCheck::handle_power_key_action(PowerKeyController::Action action) {

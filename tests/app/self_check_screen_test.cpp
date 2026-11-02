@@ -23,6 +23,7 @@
 #include "support/wait.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/board.hpp"
+#include "wisp/app/power_manager.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/device_registry.hpp"
@@ -260,6 +261,42 @@ TEST(SelfCheckScreen, ImuReadFailureRendersDifferentlyAndDoesNotCrash) {
     // requirement.
     size_t flush_before_more = h.display->flush_count();
     EXPECT_TRUE(h.wait_for_flushes(flush_before_more + 5));
+
+    h.app.stop();
+}
+
+// Re-review 1 (N3): standby must stop this screen's own "wisp.sample"
+// IMU polling task, not just UiRuntime's rendering -- spec 6.7's "待机
+// 时... 没有高频轮询" applies to it too (it was previously still
+// reading the IMU at ~50Hz throughout standby). Drives
+// PowerManager::enter_standby()/exit_standby() directly (the same calls
+// a power-key press makes) rather than simulating a button press, since
+// that wiring is already covered by power_manager_test.cpp's own tests.
+TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    wisp::app::PowerManager* pm = h.app.power_manager();
+    ASSERT_NE(pm, nullptr);
+
+    // Let a few IMU reads happen first, so the check below proves
+    // sampling actually *stopped*, not merely that it "hasn't started
+    // yet".
+    ASSERT_TRUE(wait_until([&] { return h.imu->read_count() > 0; }, 2000));
+
+    pm->enter_standby();
+    ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
+
+    size_t reads_at_standby = h.imu->read_count();
+    // Real time for the (now-paused) sampling task to prove it does NOT
+    // keep reading the IMU while in standby.
+    wisp::os::sleep_ms(300);
+    EXPECT_EQ(h.imu->read_count(), reads_at_standby);
+
+    pm->exit_standby();
+    ASSERT_TRUE(wait_until([&] { return !pm->standby(); }, 2000));
+    EXPECT_TRUE(wait_until([&] { return h.imu->read_count() > reads_at_standby; }, 2000));
 
     h.app.stop();
 }
