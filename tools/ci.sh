@@ -55,6 +55,9 @@ if grep -vnE '^(#.*|CONFIG_[A-Z0-9_]+=.*)?$' firmware/sdkconfig.defaults; then
     exit 1
 fi
 
+echo "==> tools/check_layering_test.py (self-test)"
+python3 tools/check_layering_test.py
+
 echo "==> tools/check_layering.py"
 python3 tools/check_layering.py
 

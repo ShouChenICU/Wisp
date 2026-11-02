@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Self-test for tools/check_layering.py (final review M1): builds small
+scratch component trees under a tempdir and asserts the checker both
+flags each kind of violation it claims to catch and stays silent on
+code that doesn't have one, so a future edit to the checker that
+silently drops a check (e.g. the M1 CMake-whitelist regex matching too
+loosely) fails loudly here instead of only showing up as a missed
+violation much later in some real component.
+
+Run directly: python3 tools/check_layering_test.py
+"""
+
+import pathlib
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import check_layering  # noqa: E402
+
+
+def write(root, rel_path, text):
+    path = root / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def minimal_cmake(name, idf_requires="", host_libs=""):
+    return (
+        f"wisp_component(\n"
+        f"    NAME {name}\n"
+        f"    SRCS src/{name}.cpp\n"
+        f"    INCLUDE_DIRS include\n"
+        f"    IDF_REQUIRES {idf_requires}\n"
+        f"    HOST_LIBS {host_libs}\n"
+        f")\n"
+    )
+
+
+class CheckLayeringTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_clean_tree_has_no_errors(self):
+        write(self.root, "components/wisp_base/include/wisp/base/x.hpp", "// nothing\n")
+        write(
+            self.root,
+            "components/wisp_hal/include/wisp/hal/y.hpp",
+            '#include "wisp/base/x.hpp"\n',
+        )
+        write(self.root, "components/wisp_base/CMakeLists.txt", minimal_cmake("wisp_base"))
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_platform_header_is_flagged(self):
+        write(
+            self.root,
+            "components/wisp_core/include/wisp/core/z.hpp",
+            '#include "esp_system.h"\n',
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("esp_system.h", errors[0])
+
+    def test_posix_file_headers_are_not_flagged(self):
+        # docs/architecture.md: portable layers may use POSIX file APIs
+        # (provided by ESP-IDF's VFS on the device, and natively on the
+        # host) -- these must stay allowed, unlike the esp_/driver/...
+        # platform headers above.
+        write(
+            self.root,
+            "components/wisp_core/src/storage_manager.cpp",
+            "#include <unistd.h>\n#include <sys/stat.h>\n#include <dirent.h>\n",
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_newly_added_forbidden_headers_are_flagged(self):
+        for header in ("nvs.h", "nvs_flash.h", "sdmmc_cmd.h", "rom/ets_sys.h", "lwip/sockets.h",
+                        "mbedtls/aes.h", "dev_display_lcd.h", "gen_board_device_handles.h"):
+            with self.subTest(header=header):
+                write(
+                    self.root,
+                    "components/wisp_hal/include/wisp/hal/probe.hpp",
+                    f'#include "{header}"\n',
+                )
+                errors = check_layering.run(self.root)
+                self.assertEqual(len(errors), 1, f"{header}: {errors}")
+                (self.root / "components/wisp_hal/include/wisp/hal/probe.hpp").unlink()
+
+    def test_reverse_dependency_is_flagged_for_every_layer_not_just_os_and_hal(self):
+        # Before M1, this check only ran for wisp_os/wisp_hal; a
+        # wisp_core -> wisp/ui reverse dependency (the kind C1-era bugs
+        # in self_check_screen.cpp's own layering could have
+        # introduced) used to pass silently.
+        write(
+            self.root,
+            "components/wisp_core/include/wisp/core/z.hpp",
+            '#include "wisp/ui/ui_runtime.hpp"\n',
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("reverse dependency", errors[0])
+
+    def test_same_or_lower_layer_includes_are_not_reverse_dependencies(self):
+        write(
+            self.root,
+            "components/wisp_app/include/wisp/app/a.hpp",
+            '#include "wisp/app/b.hpp"\n#include "wisp/ui/ui_runtime.hpp"\n'
+            '#include "wisp/core/event_bus.hpp"\n',
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_cmake_idf_requires_outside_whitelist_is_flagged(self):
+        write(
+            self.root,
+            "components/wisp_core/CMakeLists.txt",
+            minimal_cmake("wisp_core", idf_requires="esp_timer"),
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("esp_timer", errors[0])
+
+    def test_cmake_host_libs_outside_whitelist_is_flagged(self):
+        write(
+            self.root,
+            "components/wisp_core/CMakeLists.txt",
+            minimal_cmake("wisp_core", host_libs="SDL2::SDL2"),
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("SDL2::SDL2", errors[0])
+
+    def test_cmake_whitelisted_dependencies_are_not_flagged(self):
+        write(
+            self.root,
+            "components/wisp_base/CMakeLists.txt",
+            minimal_cmake("wisp_base", idf_requires="bblanchon__arduinojson",
+                          host_libs="ArduinoJson"),
+        )
+        write(
+            self.root,
+            "components/wisp_ui/CMakeLists.txt",
+            minimal_cmake("wisp_ui", idf_requires="lvgl__lvgl", host_libs="lvgl"),
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

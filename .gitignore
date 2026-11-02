@@ -16,3 +16,4 @@ sim-data/
 # Build tooling artifacts
 compile_commands.json
 .cache/
+__pycache__/

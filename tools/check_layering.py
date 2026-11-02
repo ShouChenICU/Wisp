@@ -1,17 +1,31 @@
 #!/usr/bin/env python3
 """Enforces Wisp's portable-layer layering rule (AGENTS.md section 3,
-global-constraints.md):
+docs/architecture.md):
 
   - The portable layers (wisp_base, wisp_os, wisp_hal, wisp_core,
     wisp_ui, wisp_app) must never #include a platform header: anything
     starting with esp_, freertos/, driver/, hal/ (ESP-IDF's, as
-    opposed to wisp_hal's own wisp/hal/ headers), soc/ or SDL, or
-    exactly sdkconfig.h.
-  - wisp_os and wisp_hal additionally must never depend "upward" on
-    wisp_core, wisp_ui or wisp_app (no reverse dependencies).
+    opposed to wisp_hal's own wisp/hal/ headers), soc/, rom/, lwip/,
+    mbedtls/ or SDL, or exactly sdkconfig.h, nvs.h, nvs_flash.h or
+    sdmmc_cmd.h, or a bmgr-generated header (basename starting with
+    dev_ or gen_board_ -- see AGENTS.md section 8). POSIX file APIs
+    (<unistd.h>, <sys/stat.h>, <dirent.h>, ...) are *not* forbidden:
+    both ESP-IDF (via its VFS) and the host simulator provide them, so
+    portable code may use them directly (docs/architecture.md).
+  - Each portable layer must only #include headers from its own layer
+    or a strictly lower one in AGENTS.md's order (wisp_base < wisp_os
+    < wisp_hal < wisp_core < wisp_ui < wisp_app) -- no reverse
+    dependencies "upward". This used to be checked only for wisp_os/
+    wisp_hal against wisp_core/ui/app; it now applies to every layer.
+  - Each components/wisp_{base..app}/CMakeLists.txt's wisp_component()
+    call may only declare the two external dependencies the portable
+    stack actually has (ArduinoJson for wisp_base, LVGL for wisp_ui) in
+    its IDF_REQUIRES/HOST_LIBS lists -- catches a new platform or
+    host-only dependency slipped in that way instead of via #include,
+    which the checks above can't see at all.
 
-Prints one "path:line: forbidden include <x>" line per violation and
-exits 1 if any were found, else exits 0 with no output.
+Prints one "path:line: <message>" line per violation and exits 1 if
+any were found, else exits 0 with no output.
 
 Usage: python3 tools/check_layering.py [--root <repo-root>]
 """
@@ -25,18 +39,57 @@ import sys
 COMPONENTS = ("wisp_base", "wisp_os", "wisp_hal", "wisp_core", "wisp_ui", "wisp_app")
 SOURCE_SUFFIXES = (".hpp", ".cpp", ".h", ".c")
 
+# Each component's header namespace (AGENTS.md section 5: "头文件路径
+# wisp/<层>/<名>.hpp"), in the same order as COMPONENTS -- used to
+# generalize the reverse-dependency check below.
+LAYER_INCLUDE_PREFIX = {
+    "wisp_base": "wisp/base/",
+    "wisp_os": "wisp/os/",
+    "wisp_hal": "wisp/hal/",
+    "wisp_core": "wisp/core/",
+    "wisp_ui": "wisp/ui/",
+    "wisp_app": "wisp/app/",
+}
+
 # components/wisp_ui/fonts/ holds a ported third-party font (see
 # AGENTS.md section 6 / docs/references.md) and isn't Wisp's own code,
 # so it's excluded from the scan.
 SKIPPED_DIR_NAMES = ("fonts",)
 
-FORBIDDEN_PREFIXES = ("esp_", "freertos/", "driver/", "hal/", "soc/", "SDL")
-FORBIDDEN_EXACT = ("sdkconfig.h",)
-
-REVERSE_DEP_COMPONENTS = ("wisp_os", "wisp_hal")
-REVERSE_DEP_PREFIXES = ("wisp/core/", "wisp/ui/", "wisp/app/")
+FORBIDDEN_PREFIXES = (
+    "esp_",
+    "freertos/",
+    "driver/",
+    "hal/",
+    "soc/",
+    "rom/",
+    "lwip/",
+    "mbedtls/",
+    "SDL",
+)
+FORBIDDEN_EXACT = ("sdkconfig.h", "nvs.h", "nvs_flash.h", "sdmmc_cmd.h")
+# esp_board_manager's own per-device headers (dev_*.h) and the board-
+# specific code `idf.py bmgr` generates (gen_board_*.*) are matched by
+# basename, not full path, since boards include them as bare quoted
+# filenames (see e.g. boards/waveshare_amoled_216/board.cpp's
+# #include "dev_display_lcd.h") with no fixed directory prefix to
+# anchor on -- both are gitignored (AGENTS.md section 8) so they can't
+# be listed by exact name either.
+FORBIDDEN_BASENAME_PREFIXES = ("dev_", "gen_board_")
 
 INCLUDE_RE = re.compile(r'#include\s*[<"]([^">]+)[">]')
+
+# The only external (non-wisp_*) dependencies the portable stack
+# actually has: ArduinoJson (wisp_base) and LVGL (wisp_ui) -- see each
+# component's wisp_component() call. Anything else added to a
+# components/wisp_{base..app}/CMakeLists.txt's IDF_REQUIRES/HOST_LIBS
+# is either a platform dependency (which belongs in wisp_port_esp, not
+# a portable layer) or a host-only one (which belongs in
+# wisp_port_sim) smuggled in through CMake instead of #include, so the
+# #include-based checks above can't catch it.
+ALLOWED_IDF_REQUIRES = {"bblanchon__arduinojson", "lvgl__lvgl"}
+ALLOWED_HOST_LIBS = {"ArduinoJson", "lvgl"}
+CMAKE_LIST_KEYWORDS = ("NAME", "SRCS", "INCLUDE_DIRS", "REQUIRES", "IDF_REQUIRES", "HOST_LIBS")
 
 
 def iter_source_files(root, component):
@@ -54,14 +107,20 @@ def iter_source_files(root, component):
         yield path
 
 
+def reverse_dep_prefixes_for(component):
+    """The set of #include prefixes `component` must never use: every
+    layer strictly above it in COMPONENTS' order."""
+    idx = COMPONENTS.index(component)
+    return tuple(LAYER_INCLUDE_PREFIX[c] for c in COMPONENTS[idx + 1 :])
+
+
 def is_forbidden_platform_include(include_path):
-    return include_path in FORBIDDEN_EXACT or any(
-        include_path.startswith(prefix) for prefix in FORBIDDEN_PREFIXES
-    )
-
-
-def is_forbidden_reverse_dep(include_path):
-    return any(include_path.startswith(prefix) for prefix in REVERSE_DEP_PREFIXES)
+    if include_path in FORBIDDEN_EXACT:
+        return True
+    if any(include_path.startswith(prefix) for prefix in FORBIDDEN_PREFIXES):
+        return True
+    basename = include_path.rsplit("/", 1)[-1]
+    return any(basename.startswith(prefix) for prefix in FORBIDDEN_BASENAME_PREFIXES)
 
 
 def strip_comments(text):
@@ -112,17 +171,94 @@ def strip_comments(text):
 
 
 def check_file(path, component, errors):
+    reverse_prefixes = reverse_dep_prefixes_for(component)
     text = strip_comments(path.read_text(encoding="utf-8", errors="replace"))
     for lineno, line in enumerate(text.splitlines(), start=1):
         match = INCLUDE_RE.search(line)
         if not match:
             continue
         include_path = match.group(1)
-        forbidden = is_forbidden_platform_include(include_path)
-        if not forbidden and component in REVERSE_DEP_COMPONENTS:
-            forbidden = is_forbidden_reverse_dep(include_path)
-        if forbidden:
+        if is_forbidden_platform_include(include_path):
             errors.append(f"{path}:{lineno}: forbidden include <{include_path}>")
+        elif include_path.startswith(reverse_prefixes):
+            errors.append(
+                f"{path}:{lineno}: reverse dependency: {component} must not include "
+                f"<{include_path}>"
+            )
+
+
+def _extract_wisp_component_call(text):
+    """Returns the argument text inside this file's one wisp_component(...)
+    call, or None if there isn't one. Finds the matching close paren by
+    depth counting rather than a non-greedy regex, since REQUIRES/SRCS
+    values are plain component/file names that never themselves contain
+    parens -- a flat scan is enough and doesn't need a real CMake
+    parser."""
+    start = text.find("wisp_component(")
+    if start == -1:
+        return None
+    depth = 0
+    i = start + len("wisp_component(")
+    depth = 1
+    args_start = i
+    while i < len(text) and depth > 0:
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+        i += 1
+    return text[args_start : i - 1]
+
+
+def _parse_keyword_lists(args_text, keywords):
+    """Splits whitespace-separated `args_text` into {keyword: [values]},
+    attributing each token to the keyword most recently seen before it."""
+    result = {kw: [] for kw in keywords}
+    current = None
+    for tok in args_text.split():
+        if tok in keywords:
+            current = tok
+            continue
+        if current is not None:
+            result[current].append(tok)
+    return result
+
+
+def check_component_cmake(path, errors):
+    text = strip_comments(path.read_text(encoding="utf-8", errors="replace"))
+    args_text = _extract_wisp_component_call(text)
+    if args_text is None:
+        # Not every portable component necessarily has one yet; the
+        # #include-based checks above still apply regardless.
+        return
+    lists = _parse_keyword_lists(args_text, CMAKE_LIST_KEYWORDS)
+    for value in lists["IDF_REQUIRES"]:
+        if value not in ALLOWED_IDF_REQUIRES:
+            errors.append(
+                f"{path}: forbidden IDF_REQUIRES <{value}> (portable layers may only "
+                f"require {sorted(ALLOWED_IDF_REQUIRES)})"
+            )
+    for value in lists["HOST_LIBS"]:
+        if value not in ALLOWED_HOST_LIBS:
+            errors.append(
+                f"{path}: forbidden HOST_LIBS <{value}> (portable layers may only "
+                f"link {sorted(ALLOWED_HOST_LIBS)})"
+            )
+
+
+def run(root):
+    """Runs every check against `root` and returns the list of error
+    strings found (empty if clean). Importable so tools/check_layering_
+    test.py can drive it against a scratch directory tree instead of
+    shelling out."""
+    errors = []
+    for component in COMPONENTS:
+        for path in iter_source_files(root, component):
+            check_file(path, component, errors)
+        cmake_path = root / "components" / component / "CMakeLists.txt"
+        if cmake_path.is_file():
+            check_component_cmake(cmake_path, errors)
+    return errors
 
 
 def main(argv=None):
@@ -136,11 +272,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     root = pathlib.Path(args.root).resolve()
 
-    errors = []
-    for component in COMPONENTS:
-        for path in iter_source_files(root, component):
-            check_file(path, component, errors)
-
+    errors = run(root)
     for error in errors:
         print(error)
     return 1 if errors else 0
