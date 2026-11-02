@@ -230,6 +230,17 @@ TEST(SelfCheckScreen, BootTimeIsSetAndHeaderRefreshedAfterScreenIsBuilt) {
 // changed (it could just as easily have been boot_ms jitter or an
 // unrelated timer tick), not specifically that the IMU row renders the
 // error text.
+//
+// Task 18b review: waiting for "N more flushes" to infer that the 100ms
+// refresh_timer_ has ticked since the error was injected is only a
+// coincidental proxy -- any other source of a same-sized flush burst
+// (e.g. a full-screen redraw triggered by unrelated background work,
+// such as another os::Timer thread starting up around the same time)
+// satisfies the flush-count threshold just as well without the IMU row
+// having actually been refreshed yet, making the test flaky. Polling the
+// label text itself with a bounded timeout (as done below) checks the
+// thing the test actually cares about, directly, instead of inferring it
+// from an unrelated side channel.
 TEST(SelfCheckScreen, ImuReadFailureRendersDifferentlyAndDoesNotCrash) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
     ASSERT_TRUE(h.app.start());
@@ -243,10 +254,7 @@ TEST(SelfCheckScreen, ImuReadFailureRendersDifferentlyAndDoesNotCrash) {
     EXPECT_NE(imu_row_text(), "IMU: 读取失败");
 
     h.imu->set_next_error(wisp::ErrorCode::IoError, "boom");
-    size_t flush_before_error = h.display->flush_count();
-    ASSERT_TRUE(h.wait_for_flushes(flush_before_error + 5));
-
-    EXPECT_EQ(imu_row_text(), "IMU: 读取失败");
+    ASSERT_TRUE(wait_until([&] { return imu_row_text() == "IMU: 读取失败"; }, 3000));
 
     // Still alive and rendering -- the "不崩溃" half of spec 8's
     // requirement.

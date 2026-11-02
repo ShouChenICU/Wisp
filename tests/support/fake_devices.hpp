@@ -30,6 +30,7 @@
 #include "wisp/hal/imu.hpp"
 #include "wisp/hal/power.hpp"
 #include "wisp/hal/storage.hpp"
+#include "wisp/hal/touch.hpp"
 
 namespace wisp::test {
 
@@ -69,6 +70,7 @@ public:
     }
 
     wisp::Result<void> set_power(bool on) override {
+        ++set_power_calls_;
         powered_.store(on);
         return wisp::Result<void>::ok();
     }
@@ -87,6 +89,12 @@ public:
 
     uint8_t brightness() const { return brightness_.load(); }
 
+    // Task 18b: lets PowerManager tests check that enter_standby()/
+    // exit_standby() call set_power() exactly once per real transition
+    // (idempotency -- a second enter_standby() while already in standby
+    // must not call it again).
+    int set_power_calls() const { return set_power_calls_.load(); }
+
 private:
     wisp::hal::DeviceInfo info_;
 
@@ -96,6 +104,61 @@ private:
 
     std::atomic<uint8_t> brightness_{0};
     std::atomic<bool> powered_{true};
+    std::atomic<int> set_power_calls_{0};
+};
+
+// A touch device test double: read() returns whatever was last set via
+// set_points() (empty by default). set_power() records every call
+// (set_power_calls()/powered()) like FakeDisplay's, and -- unlike
+// FakeDisplay's, which always succeeds -- can be made to simulate a
+// touch controller with no sleep mode at all (the common case; see
+// wisp::hal::Touch::set_power()'s default) by setting `unsupported`.
+class FakeTouch : public wisp::hal::Touch {
+public:
+    explicit FakeTouch(std::string id, int max_points = 1) {
+        info_.id = std::move(id);
+        info_.cls = kClass;
+        info_.model = "FAKE";
+        info_.caps = wisp::Properties{{"max_points", max_points}};
+    }
+
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+
+    wisp::Result<std::vector<wisp::hal::TouchPoint>> read() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return wisp::Result<std::vector<wisp::hal::TouchPoint>>::ok(points_);
+    }
+
+    wisp::Result<void> set_power(bool on) override {
+        ++set_power_calls_;
+        if (unsupported.load()) {
+            return wisp::Result<void>::err(wisp::ErrorCode::Unsupported,
+                                           "fake touch sleep unsupported");
+        }
+        powered_.store(on);
+        return wisp::Result<void>::ok();
+    }
+
+    void set_points(std::vector<wisp::hal::TouchPoint> points) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        points_ = std::move(points);
+    }
+
+    bool powered() const { return powered_.load(); }
+    int set_power_calls() const { return set_power_calls_.load(); }
+
+    // When true, set_power() always fails with ErrorCode::Unsupported
+    // (default false -- the fake supports sleep).
+    std::atomic<bool> unsupported{false};
+
+private:
+    wisp::hal::DeviceInfo info_;
+
+    mutable std::mutex mutex_;
+    std::vector<wisp::hal::TouchPoint> points_;
+
+    std::atomic<bool> powered_{true};
+    std::atomic<int> set_power_calls_{0};
 };
 
 // read() returns whatever was last set via set_next_sample()/set_next_error()

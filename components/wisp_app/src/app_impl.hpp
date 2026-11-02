@@ -21,6 +21,7 @@
 
 #include "self_check.hpp"
 #include "wisp/app/app.hpp"
+#include "wisp/app/power_manager.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -38,6 +39,15 @@ struct App::Impl {
     // Only constructed by start() -- see App::start()/App::stop().
     std::unique_ptr<ui::UiRuntime> ui;
     std::unique_ptr<os::Timer> storage_timer;
+
+    // Task 18b: constructed once `ui` is known either way (started, or
+    // headless), right before the self-check screen (which depends on
+    // it) -- see App::start()'s Step 4. power_timer drives its
+    // periodic tick() (the idle-timeout check); both are torn down in
+    // App::stop(), before `buttons`/`ui`/`bus` (which power_manager
+    // holds pointers/a reference into) are themselves stopped.
+    std::unique_ptr<PowerManager> power_manager;
+    std::unique_ptr<os::Timer> power_timer;
 
     // The self-check screen's own teardown hook (Task 12) -- see
     // self_check.hpp. Constructed (via start_self_check(), posted onto

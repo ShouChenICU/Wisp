@@ -20,6 +20,12 @@ namespace wisp::app {
 namespace {
 
 constexpr uint32_t kStorageRefreshMs = 2000;
+// How often PowerManager::tick() is driven (Task 18b). Settings
+// "power"/"screen_off_s" is specified (and set, default 60) in whole
+// seconds, so sub-second resolution here would be pointless; 1s keeps
+// the idle-timeout check's own overhead (and the "wisp.power" Timer
+// callback's wake rate) negligible.
+constexpr uint32_t kPowerTickMs = 1000;
 
 }  // namespace
 
@@ -65,42 +71,62 @@ Result<void> App::start() {
 
     // Step 4: UI (or headless).
     auto display = impl_->registry.get<hal::Display>("display.main");
+    std::shared_ptr<hal::Touch> touch;
     if (display) {
         core::Settings display_settings(*impl_->platform.settings, "display");
         int64_t brightness = display_settings.get_int("brightness", 200);
         brightness = std::clamp<int64_t>(brightness, 0, 255);
         display->set_brightness(static_cast<uint8_t>(brightness));
 
-        auto touch = impl_->registry.get<hal::Touch>("touch.main");
+        touch = impl_->registry.get<hal::Touch>("touch.main");
         impl_->ui = std::make_unique<ui::UiRuntime>(display, touch);
-        if (impl_->ui->start()) {
-            // Block until start_self_check() has actually run on the UI
-            // thread (rather than merely queued) before start() returns:
-            // otherwise a caller that calls stop() right after start()
-            // returns could race a still-pending post() (see
-            // app_impl.hpp's Lifetime note) -- stop() would find
-            // impl_->self_check still null and skip tearing it down, and
-            // the queued start_self_check() would then run during
-            // UiRuntime::stop()'s own final post-queue drain, leaving a
-            // freshly built screen (task, timer, subscription) with
-            // nothing left to tear it down afterwards.
-            os::Semaphore done(1, 0);
-            bool posted = impl_->ui->post([this, &done] {
-                start_self_check(*this, impl_->self_check);
-                done.give();
-            });
-            if (posted) {
-                done.take(os::kForever);
-            } else {
-                WLOG_E("app", "UI post queue full; self-check screen not built");
-            }
-        } else {
+        if (!impl_->ui->start()) {
             WLOG_E("app", "UiRuntime failed to start; continuing headless");
             impl_->ui.reset();
             impl_->report.set_note("mode", "headless");
         }
     } else {
         impl_->report.set_note("mode", "headless");
+    }
+
+    // PowerManager (Task 18b, spec 6.7) is constructed here -- once `ui`
+    // is settled either way -- rather than inside the `if (display)`
+    // branch above, so it also exists (minus the display/touch/UI
+    // pieces, which all tolerate being null) in headless mode: the
+    // idle-timeout/platform-power-hook half of its job is useful
+    // regardless of whether there's a screen. It must exist before the
+    // self-check screen is built below, since that screen's power-key
+    // handling calls into it.
+    core::Settings power_settings(*impl_->platform.settings, "power");
+    impl_->power_manager =
+        std::make_unique<PowerManager>(impl_->bus, display, touch, impl_->ui.get(), &impl_->buttons,
+                                       impl_->platform.set_standby, std::move(power_settings));
+    impl_->power_timer =
+        std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true,
+                                    [this] { impl_->power_manager->tick(os::now_ms()); });
+    impl_->power_timer->start();
+
+    if (impl_->ui) {
+        // Block until start_self_check() has actually run on the UI
+        // thread (rather than merely queued) before start() returns:
+        // otherwise a caller that calls stop() right after start()
+        // returns could race a still-pending post() (see
+        // app_impl.hpp's Lifetime note) -- stop() would find
+        // impl_->self_check still null and skip tearing it down, and
+        // the queued start_self_check() would then run during
+        // UiRuntime::stop()'s own final post-queue drain, leaving a
+        // freshly built screen (task, timer, subscription) with
+        // nothing left to tear it down afterwards.
+        os::Semaphore done(1, 0);
+        bool posted = impl_->ui->post([this, &done] {
+            start_self_check(*this, impl_->self_check);
+            done.give();
+        });
+        if (posted) {
+            done.take(os::kForever);
+        } else {
+            WLOG_E("app", "UI post queue full; self-check screen not built");
+        }
     }
 
     // boot_ms is recorded here -- right after Step 4, once the self-check
@@ -153,6 +179,15 @@ void App::stop() {
     join_loopback(*this);
     stop_self_check(impl_->self_check);
 
+    // PowerManager is torn down next -- after the self-check screen
+    // (which calls into it), before buttons/ui/bus (which it in turn
+    // holds pointers/a reference into) are themselves stopped/reset.
+    if (impl_->power_timer) {
+        impl_->power_timer->stop();
+        impl_->power_timer.reset();
+    }
+    impl_->power_manager.reset();
+
     if (impl_->storage_timer) {
         impl_->storage_timer->stop();
         impl_->storage_timer.reset();
@@ -172,6 +207,7 @@ core::BootReport& App::report() { return impl_->report; }
 core::EventBus& App::bus() { return impl_->bus; }
 core::StorageManager& App::storage() { return impl_->storage; }
 ui::UiRuntime* App::ui() { return impl_->ui.get(); }
+PowerManager* App::power_manager() { return impl_->power_manager.get(); }
 const Platform& App::platform() const { return impl_->platform; }
 
 }  // namespace wisp::app

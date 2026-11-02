@@ -8,7 +8,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 
 wisp_component(
     NAME wisp_app
-    SRCS src/app.cpp src/self_check_screen.cpp src/loopback.cpp src/power_key_controller.cpp src/format.cpp
+    SRCS src/app.cpp src/self_check_screen.cpp src/loopback.cpp src/power_key_controller.cpp
+         src/power_manager.cpp src/format.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_ui
 )

@@ -19,6 +19,7 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/format.hpp"
 #include "wisp/app/power_key_controller.hpp"
+#include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
@@ -612,25 +613,30 @@ void SelfCheck::on_button_event(const core::Event& e) {
 }
 
 void SelfCheck::handle_power_key_action(PowerKeyController::Action action) {
+    // Task 18b: screen on/off now goes through PowerManager (panel/touch
+    // sleep, UI pause, button poll widening, the platform DFS/light
+    // -sleep hook -- spec 6.7), not a direct hal::Display::set_power()
+    // call.
+    PowerManager* pm = app_.power_manager();
     switch (action) {
         case PowerKeyController::Action::None:
             break;
         case PowerKeyController::Action::ScreenOff:
-            if (display_) {
-                display_->set_power(false);
+            if (pm != nullptr) {
+                pm->enter_standby();
             }
             break;
         case PowerKeyController::Action::ScreenOn:
-            if (display_) {
-                display_->set_power(true);
+            if (pm != nullptr) {
+                pm->exit_standby();
             }
             break;
         case PowerKeyController::Action::ShowConfirm:
             show_confirm_dialog();
             break;
         case PowerKeyController::Action::ScreenOnAndConfirm:
-            if (display_) {
-                display_->set_power(true);
+            if (pm != nullptr) {
+                pm->exit_standby();
             }
             show_confirm_dialog();
             break;

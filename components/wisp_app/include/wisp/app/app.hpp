@@ -20,11 +20,15 @@
 //      2000ms StorageManager::refresh() timer, and starts ButtonService.
 //   4. If "display.main" is registered: applies the `display` settings
 //      namespace's `brightness` key (default 200) to it, starts a
-//      UiRuntime over it (plus "touch.main" if also registered), and
-//      builds the self-check screen (see src/self_check.hpp's
+//      UiRuntime over it (plus "touch.main" if also registered).
+//      Otherwise records the "mode": "headless" boot-report note.
+//      Either way, constructs the PowerManager (Task 18b, spec 6.7) and
+//      starts its periodic idle-check Timer, then -- if a UiRuntime was
+//      started -- builds the self-check screen (see src/self_check.hpp's
 //      start_self_check(), spec 8) on it, blocking until that has
-//      actually run. Otherwise records the "mode": "headless" boot-report
-//      note.
+//      actually run. PowerManager is constructed before the self-check
+//      screen specifically because the screen's power-key handling
+//      calls into it (see src/self_check_screen.cpp).
 //   5. Records the elapsed boot_ms (now that step 4 -- the self-check
 //      screen included -- has actually finished, per spec 6.1; the
 //      screen's header, which already rendered once with boot_ms still
@@ -52,6 +56,8 @@ class UiRuntime;
 
 namespace wisp::app {
 
+class PowerManager;
+
 // Everything App needs that varies by port/board. Constructed by the
 // simulator main (Task 13) or the ESP firmware main (Task 15) and handed
 // to App by value (App takes ownership of `board`/`settings`).
@@ -74,6 +80,16 @@ struct Platform {
     // ...}, for the self-check UI (Task 12). May be empty (no heap
     // diagnostics available).
     std::function<Value()> heap_info;
+
+    // Task 18b/spec 6.7: called by wisp::app::PowerManager with `true`
+    // when entering standby, `false` when exiting. On real hardware,
+    // the implementation keeps dynamic frequency scaling (DFS) always
+    // on and only toggles automatic tickless light sleep on top of it
+    // (see firmware/main/main.cpp's esp_pm_configure() call); the
+    // simulator just logs. May be empty (no platform power hook at
+    // all -- PowerManager still does everything else: panel/touch
+    // sleep, UI pause, button poll widening).
+    std::function<void(bool standby)> set_standby;
 
     std::string firmware_version = "0.1.0";
 };
@@ -114,6 +130,16 @@ public:
 
     // nullptr in headless mode (no "display.main" device registered).
     ui::UiRuntime* ui();
+
+    // Task 18b: non-null for the whole lifetime of a started App (see
+    // start()'s Step 4) -- constructed regardless of headless mode,
+    // since the idle-timeout/platform-power-hook half of PowerManager's
+    // job (see power_manager.hpp) is useful even without a display.
+    // Used by the self-check screen's power-key handling (see
+    // src/self_check_screen.cpp) to route screen on/off through it
+    // instead of calling hal::Display::set_power() directly. nullptr
+    // before start() (or after stop()).
+    PowerManager* power_manager();
 
     // The Platform this App was constructed from (Task 12 controller
     // ruling: the self-check screen needs it for request_power_off,
