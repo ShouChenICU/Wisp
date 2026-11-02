@@ -21,6 +21,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 #include "wisp/app/app.hpp"
 #include "wisp/app/board.hpp"
 #include "wisp/base/value.hpp"
@@ -30,10 +31,10 @@
 
 namespace {
 
-// Task 18b/spec 6.7: DFS (dynamic frequency scaling, 240<->80 MHz) is
-// always on; only automatic tickless light sleep is toggled, by
-// PowerManager via Platform::set_standby -- entering standby turns it
-// on, exiting turns it back off. Requires CONFIG_PM_ENABLE and
+// Task 18b/spec 6.7: DFS (dynamic frequency scaling) is always on; only
+// automatic tickless light sleep is toggled, by PowerManager via
+// Platform::set_standby -- entering standby turns it on, exiting turns
+// it back off. Requires CONFIG_PM_ENABLE and
 // CONFIG_FREERTOS_USE_TICKLESS_IDLE (firmware/sdkconfig.defaults);
 // CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION there additionally keeps light
 // sleep from firing while a USB-Serial-JTAG debug session is actually
@@ -41,7 +42,13 @@ namespace {
 // docs/hardware/waveshare_amoled_216.md).
 void apply_pm_config(bool light_sleep_enable) {
     esp_pm_config_t cfg = {};
-    cfg.max_freq_mhz = 240;
+    // Task 18b review round 1 (M3): this file is shared by every ESP
+    // board firmware/CMakeLists.txt's WISP_BOARD can select, not just
+    // this board's S3 (max 240MHz) -- a different chip (e.g. an C3,
+    // whose max is 160MHz) would fail esp_pm_configure() outright if
+    // this stayed hard-coded to 240. CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ is
+    // each target's own Kconfig-validated default max frequency.
+    cfg.max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
     cfg.min_freq_mhz = 80;
     cfg.light_sleep_enable = light_sleep_enable;
     esp_err_t err = esp_pm_configure(&cfg);
