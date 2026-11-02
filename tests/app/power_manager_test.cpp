@@ -184,6 +184,18 @@ void press_short(ButtonService& buttons, FakeButton& btn) {
     buttons.poll(t + 5);
 }
 
+// Simulates one physical long press on `btn` (down, held past
+// ButtonService's default 1000ms long_press_ms, then up -- no trailing
+// `short`, since `long` already fired for this press).
+void press_long(ButtonService& buttons, FakeButton& btn) {
+    uint64_t t = wisp::os::now_ms();
+    btn.down = true;
+    buttons.poll(t);
+    buttons.poll(t + 1001);
+    btn.down = false;
+    buttons.poll(t + 1010);
+}
+
 }  // namespace
 
 TEST(PowerManager, EnterStandbySleepsEverythingAndPublishesState) {
@@ -392,4 +404,54 @@ TEST(PowerManager, PowerKeyScreenOffThenVolumeKeyWakeThenNextPowerShortTurnsItOf
     // not treat it as still "off" from its own last action.
     press_short(*f.buttons, *f.btn);
     EXPECT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+}
+
+// Re-review 1 (N2): a confirm dialog left open when automatic standby
+// kicks in must not swallow the next power-key press as a dialog
+// decision -- spec 6.7's "待机中按任意键或长按电源键都会唤醒" requires
+// a short press (or a long press) to wake the screen first regardless
+// (the dialog itself may stay open; see power_key_controller_test.cpp's
+// own tests for that half). Before this fix, PowerKeyController checked
+// `confirming_` before `screen_on`, so the first post-standby press just
+// cancelled/no-opped on the dialog instead of waking anything at all,
+// needing a second press.
+TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyShortWakes) {
+    Fixture f(/*screen_off_s=*/1);
+    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
+
+    // Open the power-off confirm dialog with a long press while active.
+    press_long(*f.buttons, *f.btn);
+    // Wait for the bus to have dispatched (and, inside that dispatch,
+    // posted to the UI task) the resulting on_long() decision, so it is
+    // guaranteed to already be queued -- and so guaranteed to run --
+    // ahead of the auto-standby tick() below's own posted job (the UI
+    // task's post queue is FIFO).
+    f.bus.wait_idle(1000);
+
+    // Idle out into automatic standby while the dialog is still "open".
+    f.pm->note_activity();
+    uint64_t t0 = wisp::os::now_ms();
+    f.pm->tick(t0 + 1001);
+    ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+
+    // A short press must wake the screen, not act on the dialog.
+    press_short(*f.buttons, *f.btn);
+    EXPECT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
+}
+
+// Same scenario, but the wake comes from a long press instead.
+TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyLongWakes) {
+    Fixture f(/*screen_off_s=*/1);
+    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
+
+    press_long(*f.buttons, *f.btn);
+    f.bus.wait_idle(1000);
+
+    f.pm->note_activity();
+    uint64_t t0 = wisp::os::now_ms();
+    f.pm->tick(t0 + 1001);
+    ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+
+    press_long(*f.buttons, *f.btn);
+    EXPECT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
 }

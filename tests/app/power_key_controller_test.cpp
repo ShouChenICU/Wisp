@@ -32,14 +32,46 @@ TEST(PowerKey, LongWhileScreenOffWakesAndConfirms) {
     EXPECT_EQ(c.on_confirm(true), A::PowerOff);
 }
 
-TEST(PowerKey, ShortCancelsConfirm) {
+TEST(PowerKey, ShortCancelsConfirmOnlyWhileScreenIsOn) {
     wisp::app::PowerKeyController c;
     c.on_long(/*screen_on=*/true);
-    // Even if the caller's live state already disagrees with what this
-    // class last assumed (e.g. some *other* path turned the screen off
-    // while the confirm dialog was up), cancelling a confirm dialog
-    // always wins over the screen_on-dependent branches.
-    EXPECT_EQ(c.on_short(/*screen_on=*/false), A::CancelConfirm);
+    ASSERT_TRUE(c.confirming());
+    // Cancelling a confirm dialog only wins once the screen is actually
+    // on; while it's off, waking takes priority (see
+    // ShortWhileScreenOffWakesEvenWithAConfirmDialogAlreadyOpen below --
+    // re-review 1, N2, a correction to this test's own previous
+    // assumption that cancelling always won).
+    EXPECT_EQ(c.on_short(/*screen_on=*/true), A::CancelConfirm);
+}
+
+// Re-review 1 (N2): a confirm dialog left open when automatic standby
+// turns the screen off must not swallow the next power-key press as a
+// dialog decision -- spec 6.7's "待机中按任意键都会唤醒" requires that
+// press to wake the screen first. The dialog itself is left open (not
+// cancelled) so a UI can leave it exactly as the user last saw it.
+TEST(PowerKey, ShortWhileScreenOffWakesEvenWithAConfirmDialogAlreadyOpen) {
+    wisp::app::PowerKeyController c;
+    c.on_long(/*screen_on=*/true);  // opens the confirm dialog.
+    ASSERT_TRUE(c.confirming());
+
+    EXPECT_EQ(c.on_short(/*screen_on=*/false), A::ScreenOn);
+    EXPECT_TRUE(c.confirming());  // dialog is left open, not cancelled.
+
+    // Once the screen really is back on, the next short press cancels
+    // the dialog exactly as before.
+    EXPECT_EQ(c.on_short(/*screen_on=*/true), A::CancelConfirm);
+}
+
+// Re-review 1 (N2): same wake-first priority for a long press -- it
+// must not stack a second confirm dialog on top of one left open by
+// automatic standby.
+TEST(PowerKey, LongWhileScreenOffWithConfirmAlreadyOpenJustWakes) {
+    wisp::app::PowerKeyController c;
+    c.on_long(/*screen_on=*/true);  // opens the confirm dialog.
+    ASSERT_TRUE(c.confirming());
+
+    EXPECT_EQ(c.on_long(/*screen_on=*/false), A::ScreenOn);
+    EXPECT_TRUE(c.confirming());
 }
 
 // The scenario C1's fix makes possible to express at all: the caller's
