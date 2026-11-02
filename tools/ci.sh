@@ -57,24 +57,38 @@ fi
 
 # AGENTS.md section 5: comments/docs must explain why the code is the
 # way it is, not which review round changed it -- that history belongs
-# in commit messages. Scans the directories that hold Wisp's own code
-# and docs (not docs/superpowers/, which is the spec/plan archive and
-# legitimately full of round-by-round history) for the two symptoms
-# that kept recurring before this guard existed: references to files
-# under the gitignored .superpowers/ directory (dead links on a fresh
-# checkout, since those files are never committed) and review/round
-# markers ("Fix round N", "Re-review N", "R2-N", "Task N").
+# in commit messages. Scans the directories/files that hold Wisp's own
+# code and docs (not docs/superpowers/, which is the spec/plan archive
+# and legitimately full of round-by-round history) for two symptoms:
+# references to files under the gitignored .superpowers/ directory
+# (dead links on a fresh checkout, since those files are never
+# committed), and review/round markers -- both spelled-out phrases
+# ("Fix round N", "Re-review N", "review round N", "round N, item M",
+# "(final review)") and bare finding IDs (a letter from
+# I/M/N/C immediately followed by digits, immediately followed by ':'
+# or wrapped alone in parens, e.g. "N3:" or "(M8)") -- narrow enough
+# that a real identifier like "I2C" or an unrelated "(I1)" sharing the
+# same shape (see lv_conf.h's color-depth comment, excluded below)
+# doesn't trip it.
 echo "==> process-history / review-marker guard (AGENTS.md section 5)"
 # --exclude=ci.sh: this very script has to spell out the strings above
 # to document what it's checking for, so it would otherwise flag
-# itself.
+# itself. --exclude=AGENTS.md: section 5 itself quotes these same
+# patterns as examples of what's forbidden (using a literal "N" rather
+# than a digit, so none of the *other* patterns below ever match it
+# either -- deliberately, so this exclusion only needs to cover the
+# bare-ID examples). --exclude=lv_conf.h: LVGL's own color-depth
+# comment ("1 (I1), 8 (L8), ...") is the one real identifier in this
+# tree shaped like a bare finding ID.
 GUARD_MATCHES="$(grep -rnE \
-    '\.superpowers/|task-[0-9a-zA-Z]+-(brief|report|review)\.md|global-constraints\.md|[Ff]ix round|[Rr]e-review|\bR2-[0-9]|\bTask [0-9]+[a-z]?\b' \
+    '\.superpowers/|task-[0-9a-zA-Z]+-(brief|report|review)\.md|global-constraints\.md|[Ff]ix round|[Rr]e-review|[Rr]eview round|\bround [0-9]+, item|\bR2-[0-9]|\bTask [0-9]+[a-z]?\b|\((final review|[CIMN][0-9]+)\)|\b[CIMN][0-9]+:' \
     --include='*.cpp' --include='*.hpp' --include='*.h' --include='*.c' \
     --include='*.md' --include='*.yaml' --include='*.yml' --include='*.py' \
     --include='CMakeLists.txt' --include='*.cmake' --include='*.sh' \
-    --exclude='ci.sh' \
-    components boards drivers firmware/main simulator tests tools docs \
+    --include='sdkconfig.defaults' \
+    --exclude='ci.sh' --exclude='AGENTS.md' --exclude='lv_conf.h' \
+    components boards drivers firmware/main firmware/sdkconfig.defaults \
+    firmware/CMakeLists.txt simulator tests tools docs cmake .github *.md \
     2>/dev/null | grep -v '^docs/superpowers/' || true)"
 if [[ -n "$GUARD_MATCHES" ]]; then
     echo "$GUARD_MATCHES"
