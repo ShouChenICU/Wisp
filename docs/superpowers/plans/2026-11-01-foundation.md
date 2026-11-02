@@ -39,7 +39,7 @@
 - Settings 的 namespace 与 key 长度均 ≤ 15 字符（NVS 限制，两端一致）。
 - 所有外部依赖锁定版本；固件提交 `firmware/dependencies.lock`。
 - 许可证 Apache-2.0；移植或参考的代码在文件头注明来源，并登记到 `THIRD_PARTY_NOTICES.md` / `docs/references.md`。
-- 提交信息结尾附：`Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`。
+- 提交信息结尾附 `Co-Authored-By` 行，按提交者（控制方或子 agent）当前环境的署名要求填写（AGENTS.md 第 7 节）。
 
 ## Review Focus
 
