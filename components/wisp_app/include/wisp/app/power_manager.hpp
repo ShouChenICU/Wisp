@@ -9,15 +9,17 @@
 // touch controller and IMU to sleep (fix round 2: the IMU power-down
 // stopgap), pauses the SD card's background presence-detection worker
 // (fix round 2, second addendum -- StorageManager::set_standby(true)),
-// widens ButtonService's poll interval, and calls the platform's
-// set_standby(true) hook (real hardware: keeps DFS always on,
-// additionally enables tickless light sleep; simulator: logs).
-// exit_standby() reverses all six, in the opposite order (so the panel
-// is already awake again before UiRuntime resumes and -- via
-// UiRuntime::set_paused(false)) -- forces a full redraw against it).
+// widens the power monitor's sample period (Task 19a, spec 6.3/6.7 --
+// core::PowerMonitor::set_standby(true)), widens ButtonService's poll
+// interval, and calls the platform's set_standby(true) hook (real
+// hardware: keeps DFS always on, additionally enables tickless light
+// sleep; simulator: logs). exit_standby() reverses all seven, in the
+// opposite order (so the panel is already awake again before UiRuntime
+// resumes and -- via UiRuntime::set_paused(false)) -- forces a full
+// redraw against it).
 // Both are idempotent -- calling either while already in that state does
 // nothing (no device calls, no event). Every transition that actually
-// happens publishes "power/state" ({"state": "active"|"standby"}) on
+// happens publishes "power.state" ({"state": "active"|"standby"}) on
 // `bus`.
 //
 // PowerManager also owns the idle-timeout policy that triggers an
@@ -68,6 +70,7 @@
 
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/power_monitor.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/hal/display.hpp"
@@ -84,19 +87,20 @@ namespace wisp::app {
 class PowerManager {
 public:
     // `display`/`touch`/`imu` may be null (headless, no touch panel, or
-    // no IMU). `storage` (fix round 2, second addendum) may also be
-    // null -- it is a raw, non-owning pointer, like `ui`/`buttons`,
-    // since App owns the StorageManager for its own (much longer)
-    // lifetime. `ui`/`buttons` may be null in headless mode (no
-    // UiRuntime); every call below tolerates any of these being null.
-    // `set_standby` may be an empty std::function (no platform hook).
-    // `settings` should already be bound to the "power" namespace (see
-    // wisp::core::Settings); screen_off_s is read fresh on every tick(),
-    // so a later Settings change (e.g. from a future settings UI) takes
-    // effect without reconstructing this object.
+    // no IMU). `storage` (fix round 2, second addendum) and
+    // `power_monitor` (Task 19a) may also be null -- both are raw,
+    // non-owning pointers, like `ui`/`buttons`, since App owns them for
+    // its own (much longer) lifetime. `ui`/`buttons` may be null in
+    // headless mode (no UiRuntime); every call below tolerates any of
+    // these being null. `set_standby` may be an empty std::function (no
+    // platform hook). `settings` should already be bound to the "power"
+    // namespace (see wisp::core::Settings); screen_off_s is read fresh on
+    // every tick(), so a later Settings change (e.g. from a future
+    // settings UI) takes effect without reconstructing this object.
     PowerManager(core::EventBus& bus, std::shared_ptr<hal::Display> display,
                  std::shared_ptr<hal::Touch> touch, std::shared_ptr<hal::Imu> imu,
-                 core::StorageManager* storage, ui::UiRuntime* ui, core::ButtonService* buttons,
+                 core::StorageManager* storage, core::PowerMonitor* power_monitor,
+                 ui::UiRuntime* ui, core::ButtonService* buttons,
                  std::function<void(bool)> set_standby, core::Settings settings);
 
     // Unsubscribes from `bus` and clears the UiRuntime touch-activity
@@ -127,25 +131,30 @@ public:
     //      addendum -- pauses storage.sd's background CMD13 presence
     //      probe and mount-retry worker, if any; a pure software hint,
     //      never fails).
-    //   6. ButtonService::set_poll_interval_ms(50) (the poll interval in
+    //   6. PowerMonitor::set_standby(true) (Task 19a, spec 6.3/6.7 --
+    //      widens the power-status sample period from ~1s to ~30s; see
+    //      wisp::core::PowerMonitor's own doc comment for why, unlike
+    //      step 5, this one *can* block for a moment, the same way step
+    //      7 below can -- both swap an os::Timer for a new one).
+    //   7. ButtonService::set_poll_interval_ms(50) (the poll interval in
     //      effect right before this call is remembered and restored by
     //      exit_standby(), so this works correctly even if the caller
     //      didn't construct ButtonService with the spec's 20ms default).
-    //   7. The platform set_standby(true) hook, if any.
-    // Then publishes "power/state":"standby" on the bus.
+    //   8. The platform set_standby(true) hook, if any.
+    // Then publishes "power.state":"standby" on the bus.
     void enter_standby();
 
     // Idempotent: a no-op if already active. Reverses enter_standby()'s
-    // seven steps in the opposite order -- the platform hook runs first,
-    // ButtonService's poll interval is restored, then StorageManager::
-    // set_standby(false), then Imu::set_power(true), then Touch::
-    // set_power(true), then Display::set_power(true) (panel wake), and
-    // only once the panel is actually awake again does UiRuntime::
-    // set_paused(false) run last, forcing a full redraw against an
-    // already-awake panel (UiRuntime::set_paused()'s own doc comment).
-    // Then publishes "power/state":"active" and calls note_activity()
-    // (waking resets the idle clock, so tick() doesn't immediately
-    // re-enter standby).
+    // eight steps in the opposite order -- the platform hook runs first,
+    // ButtonService's poll interval is restored, then PowerMonitor::
+    // set_standby(false), then StorageManager::set_standby(false), then
+    // Imu::set_power(true), then Touch::set_power(true), then Display::
+    // set_power(true) (panel wake), and only once the panel is actually
+    // awake again does UiRuntime::set_paused(false) run last, forcing a
+    // full redraw against an already-awake panel (UiRuntime::
+    // set_paused()'s own doc comment). Then publishes "power.state":
+    // "active" and calls note_activity() (waking resets the idle clock,
+    // so tick() doesn't immediately re-enter standby).
     void exit_standby();
 
     bool standby() const;
@@ -225,6 +234,7 @@ private:
     std::shared_ptr<hal::Touch> touch_;
     std::shared_ptr<hal::Imu> imu_;
     core::StorageManager* storage_;
+    core::PowerMonitor* power_monitor_;
     ui::UiRuntime* ui_;
     core::ButtonService* buttons_;
     std::function<void(bool)> set_standby_;
@@ -242,8 +252,9 @@ private:
     // purely so standby() const stays cheap and lock-free for callers
     // that just want to know the current state.
     //
-    // task-18b-review.md I1: this is released for the one step
-    // (ButtonService::set_poll_interval_ms()) that can block waiting on
+    // task-18b-review.md I1 (and Task 19a, same reasoning): this is
+    // released for the two steps (PowerMonitor::set_standby() and
+    // ButtonService::set_poll_interval_ms()) that can block waiting on
     // the shared esp_timer task's own fence -- never hold this lock
     // across that wait, since (on real hardware) the esp_timer task is
     // also where every wisp::os::Timer callback -- including tick()'s

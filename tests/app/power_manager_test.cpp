@@ -14,6 +14,7 @@
 #include "wisp/app/power_key_controller.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/power_monitor.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/os/os.hpp"
@@ -26,12 +27,14 @@ using wisp::core::ButtonService;
 using wisp::core::DeviceRegistry;
 using wisp::core::Event;
 using wisp::core::EventBus;
+using wisp::core::PowerMonitor;
 using wisp::core::Settings;
 using wisp::core::StorageManager;
 using wisp::port::sim::JsonFileSettingsBackend;
 using wisp::test::FakeButton;
 using wisp::test::FakeDisplay;
 using wisp::test::FakeImu;
+using wisp::test::FakePower;
 using wisp::test::FakeStorage;
 using wisp::test::FakeTouch;
 using wisp::test::temp_dir;
@@ -52,15 +55,23 @@ struct Fixture {
     // `with_storage=false` (fix round 2, second addendum) passes a null
     // StorageManager* into PowerManager, the same way a headless build
     // would pass null display/touch/ui/buttons -- see
-    // NullStorageManagerIsToleratedByStandbyTransitions below.
-    explicit Fixture(int64_t screen_off_s = 60, bool with_storage = true) {
+    // NullStorageManagerIsToleratedByStandbyTransitions below. Likewise
+    // `with_power_monitor=false` (Task 19a) passes a null PowerMonitor*;
+    // see NullPowerMonitorIsToleratedByStandbyTransitions below.
+    explicit Fixture(int64_t screen_off_s = 60, bool with_storage = true,
+                     bool with_power_monitor = true) {
         settings_path = (temp_dir() / "power_settings.json").string();
         backend = std::make_unique<JsonFileSettingsBackend>(settings_path);
         Settings power_settings(*backend, "power");
         power_settings.set("screen_off_s", screen_off_s);
 
         bus.start();
-        bus.subscribe("power/", [this](const Event& e) {
+        // Task 19a: an exact-topic subscribe, not a "power."-prefix one --
+        // these tests only care about PowerManager's own "power.state"
+        // topic, and a prefix subscribe would also pick up
+        // wisp::core::PowerMonitor's "power.charging.changed"/"power.
+        // battery.low" topics on a bus a future test shares with one.
+        bus.subscribe("power.state", [this](const Event& e) {
             std::lock_guard<std::mutex> lock(power_events_mutex);
             power_events.push_back(e);
         });
@@ -86,9 +97,21 @@ struct Fixture {
         buttons = std::make_unique<ButtonService>(registry, bus);
         buttons->start();
 
+        // Task 19a: a real PowerMonitor (Fake-backed), so PowerManager's
+        // set_standby() forwarding to it can be exercised the same way as
+        // storage above -- see
+        // EnterAndExitStandbyWidenAndRestorePowerMonitorSampleInterval
+        // below. Deliberately never start()ed: these tests only
+        // check the standby-period hook (sample_interval_ms()), not the
+        // Timer actually firing, so there's no reason to add a real
+        // background Timer's scheduling noise to every other test in this
+        // file that doesn't care about it either way.
+        power_monitor = std::make_unique<PowerMonitor>(bus, power, Settings(*backend, "power"));
+
         pm = std::make_unique<PowerManager>(
-            bus, display, touch, imu, with_storage ? storage.get() : nullptr, ui.get(),
-            buttons.get(), [this](bool standby) { set_standby_calls.push_back(standby); },
+            bus, display, touch, imu, with_storage ? storage.get() : nullptr,
+            with_power_monitor ? power_monitor.get() : nullptr, ui.get(), buttons.get(),
+            [this](bool standby) { set_standby_calls.push_back(standby); },
             Settings(*backend, "power"));
     }
 
@@ -142,6 +165,8 @@ struct Fixture {
     std::shared_ptr<FakeDisplay> display = std::make_shared<FakeDisplay>("display.main", 480, 480);
     std::shared_ptr<FakeTouch> touch = std::make_shared<FakeTouch>("touch.main");
     std::shared_ptr<FakeImu> imu = std::make_shared<FakeImu>("imu.main");
+    std::shared_ptr<FakePower> power = std::make_shared<FakePower>("power.main");
+    std::unique_ptr<PowerMonitor> power_monitor;
     std::shared_ptr<FakeButton> btn = std::make_shared<FakeButton>("button.power");
     std::shared_ptr<FakeButton> vol_btn = std::make_shared<FakeButton>("button.vol_up");
 
@@ -259,7 +284,7 @@ TEST(PowerManager, EnterStandbySleepsEverythingAndPublishesState) {
 
     ASSERT_EQ(f.power_event_count(), 1u);
     Event e = f.power_event_at(0);
-    EXPECT_EQ(e.topic, "power/state");
+    EXPECT_EQ(e.topic, "power.state");
     auto state = e.payload.find("state");
     ASSERT_NE(state, e.payload.end());
     EXPECT_EQ(state->second.as_string(), "standby");
@@ -368,6 +393,39 @@ TEST(PowerManager, NullStorageManagerIsToleratedByStandbyTransitions) {
     ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
     EXPECT_TRUE(f.display->powered());
     EXPECT_EQ(f.sd_storage->set_standby_calls(), 0);
+}
+
+// Task 19a: PowerMonitor* is nullable the same way StorageManager* is (see
+// NullStorageManagerIsToleratedByStandbyTransitions above) -- a PowerManager
+// built without a "power.main" device must still complete both
+// transitions normally.
+TEST(PowerManager, NullPowerMonitorIsToleratedByStandbyTransitions) {
+    Fixture f(/*screen_off_s=*/60, /*with_storage=*/true, /*with_power_monitor=*/false);
+
+    f.pm->enter_standby();
+    ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+    EXPECT_FALSE(f.display->powered());
+
+    f.pm->exit_standby();
+    ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
+    EXPECT_TRUE(f.display->powered());
+}
+
+// Task 19a, spec 6.3/6.7: enter_standby()/exit_standby() must widen/
+// restore the power monitor's sample period the same way they already do
+// for ButtonService's poll period -- see power_manager.cpp's
+// PowerMonitor::set_standby() hook.
+TEST(PowerManager, EnterAndExitStandbyWidenAndRestorePowerMonitorSampleInterval) {
+    Fixture f;
+    EXPECT_EQ(f.power_monitor->sample_interval_ms(), 1000u);
+
+    f.pm->enter_standby();
+    ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+    EXPECT_EQ(f.power_monitor->sample_interval_ms(), 30000u);
+
+    f.pm->exit_standby();
+    ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
+    EXPECT_EQ(f.power_monitor->sample_interval_ms(), 1000u);
 }
 
 TEST(PowerManager, TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt) {

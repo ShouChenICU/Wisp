@@ -22,13 +22,16 @@
 //      namespace's `brightness` key (default 200) to it, starts a
 //      UiRuntime over it (plus "touch.main" if also registered).
 //      Otherwise records the "mode": "headless" boot-report note.
-//      Either way, constructs the PowerManager (Task 18b, spec 6.7) and
-//      starts its periodic idle-check Timer, then -- if a UiRuntime was
-//      started -- builds the self-check screen (see src/self_check.hpp's
-//      start_self_check(), spec 8) on it, blocking until that has
-//      actually run. PowerManager is constructed before the self-check
-//      screen specifically because the screen's power-key handling
-//      calls into it (see src/self_check_screen.cpp).
+//      Either way, constructs the PowerMonitor (Task 19a, spec 6.3/6.7)
+//      and starts its own internal sample Timer, then constructs the
+//      PowerManager (Task 18b, spec 6.7, handed a pointer to the
+//      PowerMonitor just built) and starts its periodic idle-check
+//      Timer, then -- if a UiRuntime was started -- builds the
+//      self-check screen (see src/self_check.hpp's start_self_check(),
+//      spec 8) on it, blocking until that has actually run. PowerManager
+//      is constructed before the self-check screen specifically because
+//      the screen's power-key handling calls into it (see
+//      src/self_check_screen.cpp).
 //   5. Records the elapsed boot_ms (now that step 4 -- the self-check
 //      screen included -- has actually finished, per spec 6.1; the
 //      screen's header, which already rendered once with boot_ms still

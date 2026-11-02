@@ -23,6 +23,7 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/core/button_service.hpp"
+#include "wisp/core/power_monitor.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -39,6 +40,17 @@ struct App::Impl {
     // Only constructed by start() -- see App::start()/App::stop().
     std::unique_ptr<ui::UiRuntime> ui;
     std::unique_ptr<os::Timer> storage_timer;
+
+    // Task 19a: constructed just before power_manager (which holds a
+    // non-owning pointer into it -- see PowerManager::enter_standby()/
+    // exit_standby()'s PowerMonitor::set_standby() hook), right alongside
+    // the "power.main" device lookup App::start() already does for
+    // power_manager's own `imu` parameter. Owns its own internal sample
+    // Timer (see power_monitor.hpp), so -- unlike storage_timer below --
+    // there is no separate App-owned Timer object for it. Torn down in
+    // App::stop() right after power_manager (which points into it), same
+    // relative order as storage/storage_timer vs. power_manager.
+    std::unique_ptr<core::PowerMonitor> power_monitor;
 
     // Task 18b: constructed once `ui` is known either way (started, or
     // headless), right before the self-check screen (which depends on

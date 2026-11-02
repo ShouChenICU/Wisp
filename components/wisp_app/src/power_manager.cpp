@@ -18,14 +18,15 @@ constexpr uint32_t kStandbyPollMs = 50;
 
 PowerManager::PowerManager(core::EventBus& bus, std::shared_ptr<hal::Display> display,
                            std::shared_ptr<hal::Touch> touch, std::shared_ptr<hal::Imu> imu,
-                           core::StorageManager* storage, ui::UiRuntime* ui,
-                           core::ButtonService* buttons, std::function<void(bool)> set_standby,
-                           core::Settings settings)
+                           core::StorageManager* storage, core::PowerMonitor* power_monitor,
+                           ui::UiRuntime* ui, core::ButtonService* buttons,
+                           std::function<void(bool)> set_standby, core::Settings settings)
     : bus_(bus),
       display_(std::move(display)),
       touch_(std::move(touch)),
       imu_(std::move(imu)),
       storage_(storage),
+      power_monitor_(power_monitor),
       ui_(ui),
       buttons_(buttons),
       set_standby_(std::move(set_standby)),
@@ -172,6 +173,20 @@ void PowerManager::enter_standby() {
         // there is nothing to log here.
         storage_->set_standby(true);
     }
+    if (power_monitor_ != nullptr) {
+        // Task 19a: like buttons_->set_poll_interval_ms() below,
+        // PowerMonitor::set_standby() swaps an os::Timer for a new one,
+        // which can block waiting for the shared esp_timer task's fence
+        // -- release transition_mutex_ for this one call, same reasoning
+        // as the button one just below (see transition_mutex_'s own doc
+        // comment). `power_monitor_` is never reassigned after
+        // construction, so reading it before unlocking is safe without
+        // the lock.
+        core::PowerMonitor* monitor = power_monitor_;
+        lock.unlock();
+        monitor->set_standby(true);
+        lock.lock();
+    }
     if (buttons_ != nullptr) {
         saved_poll_ms_ = buttons_->poll_interval_ms();
         // I1 (fix round 1): release transition_mutex_ for this one call.
@@ -209,6 +224,14 @@ void PowerManager::exit_standby() {
         core::ButtonService* buttons = buttons_;  // see enter_standby()'s identical unlock/lock.
         lock.unlock();
         buttons->set_poll_interval_ms(restore_ms);
+        lock.lock();
+    }
+    if (power_monitor_ != nullptr) {
+        // Task 19a: see enter_standby()'s identical unlock/lock around
+        // the matching call.
+        core::PowerMonitor* monitor = power_monitor_;
+        lock.unlock();
+        monitor->set_standby(false);
         lock.lock();
     }
     if (storage_ != nullptr) {
@@ -293,7 +316,7 @@ void PowerManager::set_power_key_owned(bool owned) {
 
 void PowerManager::publish_state() {
     core::Event e;
-    e.topic = "power/state";
+    e.topic = "power.state";
     e.source = "app.power";
     e.payload = wisp::Properties{
         {"state",

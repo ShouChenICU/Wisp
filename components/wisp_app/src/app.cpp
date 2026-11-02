@@ -12,6 +12,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/imu.hpp"
+#include "wisp/hal/power.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -100,9 +101,22 @@ Result<void> App::start() {
     // handling calls into it.
     core::Settings power_settings(*impl_->platform.settings, "power");
     auto imu = impl_->registry.get<hal::Imu>("imu.main");
+
+    // Task 19a: PowerMonitor is constructed here too -- before
+    // PowerManager, which holds a non-owning pointer into it -- and, like
+    // PowerManager itself, regardless of headless mode: polling
+    // "power.main" and publishing power.charging.changed/power.battery.
+    // low has nothing to do with whether there's a screen. It's
+    // completely inert if no "power.main" device is registered (see
+    // power_monitor.hpp).
+    auto power_dev = impl_->registry.get<hal::Power>("power.main");
+    impl_->power_monitor = std::make_unique<core::PowerMonitor>(
+        impl_->bus, power_dev, core::Settings(*impl_->platform.settings, "power"));
+    impl_->power_monitor->start();
+
     impl_->power_manager = std::make_unique<PowerManager>(
-        impl_->bus, display, touch, imu, &impl_->storage, impl_->ui.get(), &impl_->buttons,
-        impl_->platform.set_standby, std::move(power_settings));
+        impl_->bus, display, touch, imu, &impl_->storage, impl_->power_monitor.get(),
+        impl_->ui.get(), &impl_->buttons, impl_->platform.set_standby, std::move(power_settings));
     impl_->power_timer =
         std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true,
                                     [this] { impl_->power_manager->tick(os::now_ms()); });
@@ -189,6 +203,11 @@ void App::stop() {
         impl_->power_timer.reset();
     }
     impl_->power_manager.reset();
+
+    // Task 19a: power_monitor is torn down right after power_manager
+    // (which points into it, like storage/storage_timer below) -- its
+    // own stop() tears down its internal Timer; see power_monitor.hpp.
+    impl_->power_monitor.reset();
 
     if (impl_->storage_timer) {
         impl_->storage_timer->stop();

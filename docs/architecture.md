@@ -51,11 +51,13 @@
 | 主题 | 发布方 | 说明 |
 |---|---|---|
 | `button.<id>.down` / `.up` / `.short` / `.long` | `core::ButtonService` | `<id>` 为按键设备 id（`button.power`、`button.vol_up`、`button.vol_down`），同时是 `Event::source` |
-| `power/state` | `app::PowerManager` | `payload = {"state": "active"\|"standby"}`；注意用的是 `/` 而不是其他主题统一的 `.`（spec 原文写的是 `.`，实现用了 `/`，未改回） |
+| `power.state` | `app::PowerManager` | `payload = {"state": "active"\|"standby"}` |
+| `power.charging.changed` | `core::PowerMonitor` | `power.main` 设备缺失时不发布；`charging`/`usb_present` 任一变化时发布（首次采样不算"变化"，不发布），`payload = {"charging": bool, "usb_present": bool, "battery_percent": int}`；`Event::source` 为设备 id（`power.main`） |
+| `power.battery.low` | `core::PowerMonitor` | `battery_percent`（已知，即不是 -1）降到 ≤ Settings `power`/`low_batt_pct`（默认 15）时发布一次；回升超过阈值 +5 才重新武装，`payload = {"battery_percent": int}`，`Event::source` 为设备 id |
 | `storage.sd.inserted` / `storage.sd.removed` | `core::StorageManager` | SD 卡插拔检测 |
 | `system.boot.completed` | `app::App` | 启动流程第 5 步收尾时发布 |
 
-spec 草案里还提到 `power.charging.changed`、`power.battery.low` 两个主题，子项目 1 **没有实现**（没有消费者需要它们，电量只用于自检界面显示）；新增主题前先确认是否已有消费者需要。
+`power.charging.changed`/`power.battery.low` 的字段名跟随 `wisp::hal::PowerStatus` 本身的成员名（`charging`/`usb_present`/`battery_percent`），不是 spec 草案行文里出现的 "vbus_present" 措辞——后者只是 spec 的非正式表述，没有在任何接口里出现，沿用 hal 已有的字段名更一致。
 
 事件总线本身（`wisp_core/event_bus.hpp`）：前缀订阅（空串匹配所有主题）、按发布顺序派发、单个分发任务、队列默认容量 64（满时丢弃最旧并计数，见 `dropped()`）、处理函数里可以安全地再 `publish`/`subscribe`/`unsubscribe`。
 
