@@ -221,7 +221,7 @@ private:
     std::unique_ptr<os::Task> sample_task_;
 
     // Re-review 1 (N3): mirrors PowerManager::standby(), kept up to date
-    // by subscribe_power()'s "power/state" handler rather than read live
+    // by subscribe_power()'s "power.state" handler rather than read live
     // from PowerManager itself -- sample_loop() runs on its own thread
     // with no UI-task affinity to synchronize against, so this is its
     // own atomic snapshot (same pattern as PowerManager's own standby_).
@@ -231,7 +231,7 @@ private:
     // R2-1) still takes one power/clock "slow sample" about every
     // kStandbySlowSampleMs; see sample_loop()'s standby branch.
     std::atomic<bool> standby_{false};
-    // Given (woken) by the "power/state":"active" handler so sample_loop
+    // Given (woken) by the "power.state":"active" handler so sample_loop
     // () resumes promptly on wake, rather than waiting out its own
     // kStandbySlowSampleMs poll -- see sample_loop()'s doc comment. Also
     // given by ~SelfCheck() so a sample_running_ that just went false is
@@ -241,7 +241,7 @@ private:
     // --- WISP_PERF emission. ---
     std::unique_ptr<os::Timer> perf_timer_;
 
-    // --- "button."/"power/state" bus subscriptions. ---
+    // --- "button."/"power.state" bus subscriptions. ---
     core::SubscriptionId button_sub_ = 0;
     core::SubscriptionId power_sub_ = 0;
 };
@@ -256,7 +256,7 @@ SelfCheck::SelfCheck(App& app)
       ui_settings_(*app.platform().settings, "ui") {}
 
 SelfCheck::~SelfCheck() {
-    // N3: unsubscribe from "power/state" before anything else, so
+    // N3: unsubscribe from "power.state" before anything else, so
     // standby_ can't change (and nothing else calls standby_wake_.give())
     // from this point on -- EventBus::unsubscribe()'s own contract
     // guarantees the handler never runs again once this returns.
@@ -732,12 +732,12 @@ void SelfCheck::on_button_event(const core::Event& e) {
 
 void SelfCheck::subscribe_power() {
     // Re-review 1 (N3): mirrors subscribe_buttons()'s pattern, but for
-    // PowerManager's own "power/state" broadcast rather than raw button
+    // PowerManager's own "power.state" broadcast rather than raw button
     // events -- lets sample_loop() (running on its own thread, not the
     // UI task) stop polling the IMU while in standby without reaching
     // into PowerManager itself.
     power_sub_ =
-        app_.bus().subscribe("power/state", [this](const core::Event& e) { on_power_event(e); });
+        app_.bus().subscribe("power.state", [this](const core::Event& e) { on_power_event(e); });
 }
 
 void SelfCheck::on_power_event(const core::Event& e) {

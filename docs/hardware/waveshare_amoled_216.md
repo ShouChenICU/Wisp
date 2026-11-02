@@ -154,7 +154,7 @@
   自检屏幕自己的采样任务，见下面第二条）：
   - **已在待机期间完全暂停、只在真正被 `give()` 唤醒时才醒的**：
     - 自检屏幕采样任务的 IMU 读取分支（`SelfCheck::sample_loop()`，原本以
-      `kSampleTaskPeriodMs` = 20 ms 的周期读取 IMU）：订阅了 `power/state`，进入待机
+      `kSampleTaskPeriodMs` = 20 ms 的周期读取 IMU）：订阅了 `power.state`，进入待机
       后完全停止读 IMU——这曾是修正前文档漏记的、实际上系统里最快的周期性唤醒源
       （20 ms，比 ButtonService 的 50 ms 还快）。`PowerManager::exit_standby()` 唤醒
       时立即 `give()` 恢复采样。电源状态/RTC 的"慢采样"分支**不**完全停止，见下一条
@@ -200,7 +200,7 @@
       本身唤醒 CPU 的开销已经是这几个后台源里最小的一个，进一步拉长它的周期对实测
       待机电流的收益预计微乎其微，在"最小改动"的原则下没有跟着改。
     - 自检屏幕的性能上报定时器（`"wisp.perf"`，`kPerfReportMs` = 5000 ms，
-      `SelfCheck::emit_perf_line()`）**不会**被上面的 `power/state` 订阅暂停——它和
+      `SelfCheck::emit_perf_line()`）**不会**被上面的 `power.state` 订阅暂停——它和
       采样任务是两个独立的 `wisp::os::Timer`/任务。待机期间它仍然每 5 s 唤醒一次、
       照常打印一行 `WISP_PERF`，只是其中的 `fps`/`frames`/`flush_ms` 会是 0（因为
       `UiRuntime` 暂停后没有任何帧被渲染）。这属于预期行为，不是 bug：待机期间的
