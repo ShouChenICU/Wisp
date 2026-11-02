@@ -61,6 +61,30 @@
 
 事件总线本身（`wisp_core/event_bus.hpp`）：前缀订阅（空串匹配所有主题）、按发布顺序派发、单个分发任务、队列默认容量 64（满时丢弃最旧并计数，见 `dropped()`）、处理函数里可以安全地再 `publish`/`subscribe`/`unsubscribe`。
 
+## 机器可读输出
+
+三条都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）：改动下面任一字段集合时，要同步更新 `tests/smoke/sim_smoke.py` 和本节。
+
+- **`WISP_BOOT_REPORT <json>`**（启动流程第 5 步；`core::BootReport::to_value()`）：
+  ```
+  {"board": string, "boot_ms": int, "fw": string,
+   "devices": [{"id": string, "class": string, "state": "ok"|"degraded"|"missing"|"failed", "reason": string}, ...],
+   "notes": {...}}
+  ```
+  `fw` 是 `Platform::firmware_version`（真机：`esp_app_get_description()->version`，即 IDF 的 `PROJECT_VER`；模拟器：常量 `"0.1.0"`）。`notes` 是自由格式的诊断备注，目前用到的键：`mode`（值 `"headless"`，无 `display.main` 时）、`storage`（值 `"readonly"`，内置 Flash 挂载失败时）、`library_roots`（`core::StorageManager::roots(Area::Library)` 的字符串数组，spec 9.2 的"`--no-sd` 时 Library 只有内置根"就是靠这个字段机器可读地核实的）。
+- **`WISP_MANIFEST <json>`**（启动流程第 5 步；`core::DeviceRegistry::manifest()`）：
+  ```
+  {"board": string,
+   "devices": [{"id": string, "class": string, "model": string, "caps": {...}, "safe_area"?: {"x1","y1","x2","y2": int}}, ...]}
+  ```
+  `caps` 的键因设备类别而不同（见各 `wisp/hal/*.hpp` 头文件的说明）。`safe_area` 只出现在 `class` 为 `"display"` 的条目上（spec 5.6）。
+- **`WISP_PERF <json>`**（自检界面，每 5 s 一行；`SelfCheck::emit_perf_line()`）：
+  ```
+  {"fps": number, "cpu": int, "flush_ms": number, "frames": int,
+   "heap_internal_free": int, "heap_large_free": int}
+  ```
+  `fps`/`flush_ms` 来自 `ui::UiRuntime::perf()`，本质是浮点数，但 JSON 往返时整数值会被识别为 `Int` 而非 `Double`（`Value`/JSON 对 Int/Double 的区分按实际值而非来源类型，见 `tests/base/value_json_test.cpp`）；解析方不应假设其中任何一个字段固定是哪一种 JSON 数字形式。`heap_internal_free`/`heap_large_free` 来自 `Platform::heap_info`（可能为空，此时都是 0）。
+
 ## 存储逻辑区
 
 `core::StorageManager`（`enum class Area { System, Library, Backup }`）：

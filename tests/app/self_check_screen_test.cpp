@@ -25,6 +25,7 @@
 #include "wisp/app/board.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/error.hpp"
+#include "wisp/base/json.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/settings.hpp"
@@ -431,22 +432,61 @@ TEST(SelfCheckScreen, PerfOverlaySettingPersistsAcrossRestarts) {
 // Not "cheap" in wall-clock terms, but bounded and worth the ~5s to cover
 // end to end (format, device lookups, heap_info being empty) rather than
 // only unit-testing pieces of it.
+// docs/architecture.md's "机器可读输出" section documents WISP_PERF's
+// six fields; parse the line (not just its prefix) and check each one
+// is present with the expected type, so a future change to this set is
+// caught here rather than silently drifting out of sync with that doc.
 TEST(SelfCheckScreen, EmitsWispPerfLine) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
     ASSERT_TRUE(h.app.start());
 
+    std::string perf_line;
     bool saw_perf_line = wait_until(
         [&] {
             std::lock_guard<std::mutex> lock(h.lines_mutex);
             for (const auto& line : h.lines) {
                 if (line.rfind("WISP_PERF ", 0) == 0) {
+                    perf_line = line;
                     return true;
                 }
             }
             return false;
         },
         6000);
-    EXPECT_TRUE(saw_perf_line);
+    ASSERT_TRUE(saw_perf_line);
+
+    auto parsed = wisp::from_json(perf_line.substr(std::string("WISP_PERF ").size()));
+    ASSERT_TRUE(parsed);
+    const wisp::Value& v = parsed.value();
+
+    // fps/flush_ms are computed as doubles, but Value/JSON round-tripping
+    // keeps Int and Double distinct based on the actual value (see
+    // value_json_test.cpp's Json.IntAndDoubleStayDistinct) -- a
+    // momentarily whole-number measurement (e.g. "fps":5) comes back as
+    // Int, not Double, so this accepts either rather than asserting one
+    // specific Value::Type for them.
+    auto is_number = [](const wisp::Value* value) {
+        return value != nullptr && (value->type() == wisp::Value::Type::Int ||
+                                    value->type() == wisp::Value::Type::Double);
+    };
+    EXPECT_TRUE(is_number(v.find("fps")));
+    EXPECT_TRUE(is_number(v.find("flush_ms")));
+
+    const wisp::Value* cpu = v.find("cpu");
+    ASSERT_NE(cpu, nullptr);
+    EXPECT_EQ(cpu->type(), wisp::Value::Type::Int);
+
+    const wisp::Value* frames = v.find("frames");
+    ASSERT_NE(frames, nullptr);
+    EXPECT_EQ(frames->type(), wisp::Value::Type::Int);
+
+    const wisp::Value* heap_internal_free = v.find("heap_internal_free");
+    ASSERT_NE(heap_internal_free, nullptr);
+    EXPECT_EQ(heap_internal_free->type(), wisp::Value::Type::Int);
+
+    const wisp::Value* heap_large_free = v.find("heap_large_free");
+    ASSERT_NE(heap_large_free, nullptr);
+    EXPECT_EQ(heap_large_free->type(), wisp::Value::Type::Int);
 
     h.app.stop();
 }

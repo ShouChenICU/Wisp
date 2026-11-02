@@ -35,7 +35,7 @@ std::optional<DeviceReport> BootReport::find(const std::string& id) const {
     return std::nullopt;
 }
 
-Value BootReport::to_value(const std::string& board) const {
+Value BootReport::to_value(const std::string& board, const std::string& fw) const {
     wisp::List devices_list;
     for (const auto& entry : entries_) {
         wisp::Map device;
@@ -48,6 +48,7 @@ Value BootReport::to_value(const std::string& board) const {
     wisp::Map root;
     root["board"] = board;
     root["boot_ms"] = static_cast<int64_t>(boot_ms_);
+    root["fw"] = fw;
     root["devices"] = std::move(devices_list);
     root["notes"] = notes_;
     return Value(std::move(root));

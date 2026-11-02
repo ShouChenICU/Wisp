@@ -308,6 +308,16 @@ def case_no_sd(sim_path, tmp_root):
         f"storage.sd state == {report_devices['storage.sd']['state']!r}, expected missing",
     )
 
+    # spec 9.2: "--no-sd 时 Library 只有内置根" -- boot_report.hpp's
+    # "notes"."library_roots" is what makes that machine-readable rather
+    # than only checkable by a unit test.
+    library_roots = boot_report.get("notes", {}).get("library_roots")
+    expect(library_roots is not None, "notes.library_roots missing from boot report")
+    expect(
+        library_roots == [str(data_dir / "int" / "library")],
+        f"notes.library_roots == {library_roots!r}, expected only the internal root",
+    )
+
 
 def case_shape_circle(sim_path, tmp_root):
     data_dir = tmp_root / "shape-circle"

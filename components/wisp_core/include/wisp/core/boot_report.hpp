@@ -50,10 +50,14 @@ public:
     // std::nullopt if none was ever recorded.
     std::optional<DeviceReport> find(const std::string& id) const;
 
-    // Builds a Value: {"board", "boot_ms", "devices":
+    // Builds a Value: {"board", "boot_ms", "fw", "devices":
     // [{"id","class","state","reason"}, ...], "notes": {...}}. `devices`
-    // is in record() order (not sorted).
-    Value to_value(const std::string& board) const;
+    // is in record() order (not sorted). `fw` (the running firmware/app
+    // version, e.g. Platform::firmware_version) defaults to "" for
+    // callers that don't have one to hand (e.g. a unit test building a
+    // BootReport in isolation) -- see docs/architecture.md's "机器可读
+    // 输出" section for this format's full field list.
+    Value to_value(const std::string& board, const std::string& fw = "") const;
 
 private:
     std::vector<DeviceReport> entries_;

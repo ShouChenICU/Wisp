@@ -162,7 +162,20 @@ Result<void> App::start() {
 
     // Step 5: finalize and report.
     const std::string board_name = impl_->platform.board->name();
-    impl_->platform.emit_line("WISP_BOOT_REPORT " + to_json(impl_->report.to_value(board_name)));
+    // spec 9.2 ("--no-sd 时 Library 只有内置根"): surfaces the actual
+    // root list, rather than leaving it something only a unit test can
+    // see, so a smoke test can assert on it directly without depending
+    // on whether "storage.sd" happened to be registered.
+    {
+        wisp::List library_roots;
+        for (const std::string& root : impl_->storage.roots(core::Area::Library)) {
+            library_roots.emplace_back(root);
+        }
+        impl_->report.set_note("library_roots", Value(std::move(library_roots)));
+    }
+    impl_->platform.emit_line(
+        "WISP_BOOT_REPORT " +
+        to_json(impl_->report.to_value(board_name, impl_->platform.firmware_version)));
     impl_->platform.emit_line("WISP_MANIFEST " + to_json(impl_->registry.manifest(board_name)));
 
     impl_->bus.publish({"system.boot.completed", "app", 0, {}});
