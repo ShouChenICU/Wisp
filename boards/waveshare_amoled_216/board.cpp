@@ -22,11 +22,16 @@
 //     audio_out.main/audio_in.main (wisp::port::esp::EspAudioOut/
 //     EspAudioIn, ES8311/ES7210; Task 18)
 //   - esp_vfs_littlefs_register() directly (not a bmgr device) ->
-//     storage.int (wisp::port::esp::EspInternalStorage; Task 18)
+//     storage.int (wisp::port::esp::EspInternalStorage; Task 18).
+//     Registered before esp_board_manager_init() below, since it doesn't
+//     depend on bmgr at all -- a bmgr/peripheral failure must not force
+//     storage.int missing too (fix round 1).
 //   - bmgr's fs_sdcard SDMMC device -> storage.sd (wisp::port::esp::
 //     EspSdStorage; Task 18) -- registered even when no card is present
 //     at boot (DeviceState::Missing/"no card"), since it hot-plugs later
-//     (see that class's comment)
+//     via a worker task EspSdStorage itself owns (see that class's
+//     comment on why: online()/capacity() must stay cheap, since they're
+//     polled by the UI thread and by a shared-dispatch Timer task)
 //
 // Every failure is recorded in the boot report and bring-up continues
 // with the next device -- a missing panel or touch controller degrades
@@ -82,6 +87,10 @@ constexpr const char* kBmgrSdcard = "fs_sdcard";
 
 // Must match board_devices.yaml's fs_sdcard device's config.mount_point.
 constexpr const char* kSdMountPoint = "/sd";
+// Chip/module string reported as storage.sd's DeviceInfo::model. Passed
+// into EspSdStorage's constructor rather than hard-coded in wisp_port_esp
+// (AGENTS.md's "板子无关" rule -- fix round 1).
+constexpr const char* kSdModel = "sdcard-sdmmc";
 
 // Shared I2C bus peripheral name as declared in board_peripherals.yaml
 // (touch, AXP2101, QMI8658, PCF85063 and the audio codecs all share it).
@@ -356,22 +365,33 @@ void init_audio(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& re
                                                    &wisp::port::esp::EspAudioIn::create);
 }
 
-// Internal LittleFS storage (esp_vfs_littlefs_register() directly, not a
-// bmgr device -- see EspInternalStorage's comment) and the SD card (bmgr's
-// fs_sdcard device, already attempted by esp_board_manager_init() just
-// before this is called). storage.sd is always registered, even absent a
-// card at boot -- see EspSdStorage's comment -- so the app can observe it
-// being hot-plugged in later; a missing card degrades to
-// DeviceState::Missing, never Failed, and never blocks boot.
-void init_storage(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
-    constexpr auto cls = wisp::hal::DeviceClass::Storage;
-
+// Internal LittleFS storage: esp_vfs_littlefs_register() directly, not a
+// bmgr device at all (see EspInternalStorage's comment) -- so this must
+// run *before* esp_board_manager_init() below, not after it. Previously
+// this ran only on the success path of that call, so a bmgr/peripheral
+// failure (e.g. the display bus) fell through to a blanket
+// record_failed("storage.int", ...) even though internal storage was
+// never actually attempted, forcing the app's read-only degrade for a
+// reason unrelated to storage (fix round 1).
+void init_internal_storage(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
     auto internal = wisp::port::esp::EspInternalStorage::create();
     if (!internal) {
-        record_failed(report, "storage.int", cls, internal.error().message);
-    } else {
-        add_device(registry, report, internal.value());
+        record_failed(report, "storage.int", wisp::hal::DeviceClass::Storage,
+                      internal.error().message);
+        return;
     }
+    add_device(registry, report, internal.value());
+}
+
+// The SD card: bmgr's fs_sdcard device, already attempted by
+// esp_board_manager_init() just before this is called (so only called on
+// that success path -- unlike init_internal_storage() above). storage.sd
+// is always registered, even absent a card at boot -- see EspSdStorage's
+// comment -- so the app can observe it being hot-plugged in later; a
+// missing card degrades to DeviceState::Missing, never Failed, and never
+// blocks boot.
+void init_sd_storage(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
+    constexpr auto cls = wisp::hal::DeviceClass::Storage;
 
     void* handle = nullptr;
     esp_err_t err = esp_board_manager_get_device_handle(kBmgrSdcard, &handle);
@@ -380,7 +400,8 @@ void init_storage(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
     if (mounted) {
         card = static_cast<dev_fs_fat_handle_t*>(handle)->card;
     }
-    auto sd = std::make_shared<wisp::port::esp::EspSdStorage>(kSdMountPoint, mounted, card);
+    auto sd = std::make_shared<wisp::port::esp::EspSdStorage>(kSdMountPoint, kBmgrSdcard, kSdModel,
+                                                              mounted, card);
     auto added = registry.add(sd);
     if (!added) {
         record_failed(report, "storage.sd", cls, "registry.add: " + added.error().message);
@@ -419,6 +440,10 @@ public:
     std::string name() const override { return "waveshare_amoled_216"; }
 
     void init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) override {
+        // Independent of esp_board_manager entirely -- see
+        // init_internal_storage()'s comment on why this must run first.
+        init_internal_storage(registry, report);
+
         // esp_board_manager_init() only fails if a *peripheral* (bus) or
         // its own setup fails -- an individual device that fails to come
         // up is logged by bmgr and simply has no handle afterwards, which
@@ -436,7 +461,7 @@ public:
             record_failed(report, "button.vol_down", wisp::hal::DeviceClass::Button, reason);
             record_failed(report, "audio_out.main", wisp::hal::DeviceClass::AudioOut, reason);
             record_failed(report, "audio_in.main", wisp::hal::DeviceClass::AudioIn, reason);
-            record_failed(report, "storage.int", wisp::hal::DeviceClass::Storage, reason);
+            // storage.int was already handled above, independent of bmgr.
             record_failed(report, "storage.sd", wisp::hal::DeviceClass::Storage, reason);
             return;
         }
@@ -453,7 +478,7 @@ public:
         sync_system_clock_from_rtc(registry);
         init_buttons(registry, report);
         init_audio(registry, report);
-        init_storage(registry, report);
+        init_sd_storage(registry, report);
     }
 };
 

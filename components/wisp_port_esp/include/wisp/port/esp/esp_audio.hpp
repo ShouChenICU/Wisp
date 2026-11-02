@@ -29,7 +29,20 @@
 // every read() to mono with wisp/port/esp/audio_downmix.hpp before
 // handing samples back: wisp::hal::AudioIn's contract (and loopback.cpp's
 // only caller) is mono (AudioFormat::channels == 1) -- see that header's
-// comment.
+// comment. Both open()s below validate that the *caller's* requested
+// format.channels is 1 and fail with ErrorCode::InvalidArgument
+// otherwise (fix round 1) -- the 2-physical-channel ES7210 open above is
+// this class's own internal implementation detail, never something a
+// caller can ask to change.
+//
+// EspAudioOut::close() drains before calling esp_codec_dev_close() (fix
+// round 1): esp_codec_dev_write()/i2s_channel_write() returns as soon as
+// data is handed to the I2S DMA ring, not once it's actually been
+// clocked out -- closing (which also cuts PA power, via the "pa_name"
+// binding above) immediately after a write would truncate the audible
+// tail. See dev/esp_audio.cpp's kDrainFrames comment for how the drain
+// amount is derived and wisp::hal::AudioOut's close() contract (matched
+// by wisp::port::sim::SimAudioOut::close(), which also drains).
 
 #include <atomic>
 #include <cstddef>
@@ -58,10 +71,10 @@ public:
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
 
-    // esp_codec_dev_open() with {bits_per_sample=16, channel=1,
-    // channel_mask=0x1, sample_rate=format.sample_rate} (format.channels
-    // is otherwise unused: this device is always mono -- see
-    // wisp::hal::AudioOut's contract). Fails with
+    // Fails with ErrorCode::InvalidArgument if format.channels != 1 (see
+    // file comment). Otherwise, esp_codec_dev_open() with
+    // {bits_per_sample=16, channel=1, channel_mask=0x1,
+    // sample_rate=format.sample_rate}. Fails with
     // ErrorCode::AlreadyExists if already open (mirrors
     // wisp::port::sim::SimAudioOut), or ErrorCode::DeviceFailure if
     // esp_codec_dev_open() itself fails. Re-applies the current volume
@@ -72,8 +85,8 @@ public:
     // (returned as ok(count)) or fails -- esp_codec_dev's I2S data path
     // has no concept of a partial write.
     Result<size_t> write(const int16_t* frames, size_t count) override;
-    // esp_codec_dev_close(). Safe to call when not open (no-op), mirrors
-    // every other AudioOut.
+    // Drains (see file comment), then esp_codec_dev_close(). Safe to
+    // call when not open (no-op), mirrors every other AudioOut.
     void close() override;
     // esp_codec_dev_set_out_vol(). Stored even while closed, and
     // re-applied by the next open().
@@ -82,9 +95,14 @@ public:
 private:
     EspAudioOut(esp_codec_dev_handle_t codec_dev, std::string model);
 
+    // Writes enough silence to flush any real audio out of the I2S DMA
+    // ring before close() actually closes the codec device -- see file
+    // comment and dev/esp_audio.cpp's kDrainFrames.
+    void drain();
+
     wisp::hal::DeviceInfo info_;
     esp_codec_dev_handle_t codec_dev_;
-    bool open_ = false;
+    std::atomic<bool> open_{false};
     std::atomic<uint8_t> volume_percent_;
 };
 
@@ -103,13 +121,16 @@ public:
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
 
-    // esp_codec_dev_open() with {bits_per_sample=16, channel=2,
-    // channel_mask=0x3, sample_rate=format.sample_rate} -- see this
-    // header's file comment on why 2 channels regardless of
-    // format.channels. Fails with ErrorCode::AlreadyExists if already
-    // open, or ErrorCode::DeviceFailure if esp_codec_dev_open() fails.
-    // Re-applies the current mic gain (see set_gain()) immediately after
-    // a successful open, for the same reason as EspAudioOut::open().
+    // Fails with ErrorCode::InvalidArgument if format.channels != 1 (see
+    // file comment -- the caller-facing contract is still mono even
+    // though the codec itself is always opened with 2 physical
+    // channels). Otherwise, esp_codec_dev_open() with
+    // {bits_per_sample=16, channel=2, channel_mask=0x3,
+    // sample_rate=format.sample_rate}. Fails with
+    // ErrorCode::AlreadyExists if already open, or
+    // ErrorCode::DeviceFailure if esp_codec_dev_open() fails. Re-applies
+    // the current mic gain (see set_gain()) immediately after a
+    // successful open, for the same reason as EspAudioOut::open().
     Result<void> open(const wisp::hal::AudioFormat& format) override;
     // Reads in fixed-size internal chunks (kScratchFrames stereo frames
     // at a time, downmixed into `frames` as each chunk completes) rather
@@ -135,7 +156,7 @@ private:
 
     wisp::hal::DeviceInfo info_;
     esp_codec_dev_handle_t codec_dev_;
-    bool open_ = false;
+    std::atomic<bool> open_{false};
     std::atomic<float> mic_gain_db_;
     int16_t scratch_[kScratchFrames * 2];  // interleaved stereo
 };

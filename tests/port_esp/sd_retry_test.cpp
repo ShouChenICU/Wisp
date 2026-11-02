@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+using wisp::port::esp::SdCardState;
 using wisp::port::esp::SdRetryState;
 
 TEST(SdRetry, StartsNotMountedAndRetriesImmediately) {
@@ -55,4 +56,51 @@ TEST(SdRetry, RepeatedFailuresKeepPushingTheWindowOut) {
     state.mark_unmounted(2000);
     EXPECT_FALSE(state.should_retry(3999));
     EXPECT_TRUE(state.should_retry(4000));
+}
+
+// --- Fix round 1: the worker-thread Mounted/Removed/Unmounted cycle. ---
+
+TEST(SdRetry, MarkRemovedTransitionsFromMountedAndStopsNeitherMountedNorRetrying) {
+    SdRetryState state(2000);
+    state.mark_mounted();
+    state.mark_removed();
+    EXPECT_EQ(state.state(), SdCardState::Removed);
+    EXPECT_FALSE(state.mounted());
+    EXPECT_TRUE(state.removed());
+    // Removed is not a retry candidate yet -- online() must unmount
+    // (mark_unmounted()) before a new attempt is allowed.
+    EXPECT_FALSE(state.should_retry(0));
+    EXPECT_FALSE(state.should_retry(999999));
+}
+
+TEST(SdRetry, MarkRemovedIsANoOpUnlessCurrentlyMounted) {
+    SdRetryState state(2000);
+    // Not mounted yet: mark_removed() must not fabricate a Removed state
+    // (the worker only ever calls it from its own Mounted-branch code
+    // path, but the guard is defensive).
+    state.mark_removed();
+    EXPECT_EQ(state.state(), SdCardState::Unmounted);
+    EXPECT_TRUE(state.should_retry(0));
+}
+
+TEST(SdRetry, FullMountedRemovedUnmountedRetryCycle) {
+    SdRetryState state(2000);
+    state.mark_mounted();
+    EXPECT_TRUE(state.mounted());
+
+    // Worker's presence probe fails.
+    state.mark_removed();
+    EXPECT_TRUE(state.removed());
+
+    // online() unmounts and transitions to Unmounted at t=5000.
+    state.mark_unmounted(5000);
+    EXPECT_EQ(state.state(), SdCardState::Unmounted);
+    EXPECT_FALSE(state.should_retry(5000));
+    EXPECT_FALSE(state.should_retry(6999));
+    EXPECT_TRUE(state.should_retry(7000));
+
+    // Worker remounts successfully.
+    state.mark_mounted();
+    EXPECT_TRUE(state.mounted());
+    EXPECT_FALSE(state.should_retry(7000));
 }

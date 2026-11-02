@@ -42,6 +42,19 @@ TEST(AudioDownmix, NoOverflowAtExtremes) {
     EXPECT_EQ(mono[1], -32768);
 }
 
+TEST(AudioDownmix, TruncatesTowardZeroRatherThanRounding) {
+    // Fix round 1: the file comment used to (incorrectly) say "round";
+    // plain C++ integer division truncates toward zero, so an odd sum
+    // is *not* rounded to the nearest integer.
+    //   (3 + 4) / 2 = 3 (truncated), not 4 (rounded to nearest).
+    //   (-3 + -4) / 2 = -7 / 2 = -3 (truncated toward zero), not -4.
+    const int16_t stereo[] = {3, 4, -3, -4};
+    int16_t mono[2] = {};
+    downmix_stereo_to_mono(stereo, mono, 2);
+    EXPECT_EQ(mono[0], 3);
+    EXPECT_EQ(mono[1], -3);
+}
+
 TEST(AudioDownmix, ZeroFramesIsNoOp) {
     const int16_t stereo[] = {1, 2};
     int16_t mono[1] = {42};

@@ -5,9 +5,11 @@
 // is serialized with wisp::to_json() and stored as a single NVS string
 // entry (nvs_set_str), decoded back with wisp::from_json() on get(). Both
 // `ns` and `key` are validated with core::validate_settings_name() before
-// touching NVS, same as every other SettingsBackend (RamSettingsBackend's
-// host/PC equivalent is wisp::port::sim::JsonFileSettingsBackend) -- see
-// wisp/core/settings.hpp.
+// touching NVS, same as every other SettingsBackend -- this class's
+// host/PC equivalent is wisp::port::sim::JsonFileSettingsBackend (fix
+// round 1: this used to describe that equivalence via the deleted Task
+// 15 RamSettingsBackend, which no longer exists to be anyone's
+// counterpart) -- see wisp/core/settings.hpp.
 //
 // NVS_KEY_NAME_MAX_SIZE is 16 (15 usable characters including the null
 // terminator), which is exactly validate_settings_name()'s 15-character

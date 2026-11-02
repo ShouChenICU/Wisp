@@ -21,10 +21,11 @@ namespace wisp::port::esp {
 
 // Downmixes `frames` stereo frames (L,R interleaved, `stereo` holding
 // `frames*2` samples) into `frames` mono samples in `mono`:
-// mono[i] = round((L[i] + R[i]) / 2), computed with a 32-bit intermediate
-// so the L+R sum never overflows an int16_t. `mono` and `stereo` must not
-// overlap (the caller always downmixes into a separate buffer -- see
-// EspAudioIn::read()).
+// mono[i] = (L[i] + R[i]) / 2, truncated toward zero (plain C++ integer
+// division -- not rounded to nearest), computed with a 32-bit
+// intermediate so the L+R sum never overflows an int16_t. `mono` and
+// `stereo` must not overlap (the caller always downmixes into a separate
+// buffer -- see EspAudioIn::read()).
 inline void downmix_stereo_to_mono(const int16_t* stereo, int16_t* mono, size_t frames) {
     for (size_t i = 0; i < frames; ++i) {
         int32_t l = stereo[2 * i];
