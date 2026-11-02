@@ -237,10 +237,25 @@ void PowerManager::tick(uint64_t now_ms) {
         // I1 (fix round 1): never call enter_standby() directly from
         // here -- see tick()'s own doc comment in the header for why.
         if (ui_ != nullptr) {
-            ui_->post([this] { enter_standby(); });
+            // N5 (re-review 1): recheck idle_ms, against the same
+            // now_ms, once the posted job actually runs -- see
+            // enter_standby_if_still_idle()'s own doc comment.
+            ui_->post([this, now_ms] { enter_standby_if_still_idle(now_ms); });
         } else {
             enter_standby();
         }
+    }
+}
+
+void PowerManager::enter_standby_if_still_idle(uint64_t now_ms) {
+    int64_t screen_off_s = settings_.get_int("screen_off_s", 60);
+    if (screen_off_s <= 0) {
+        return;
+    }
+    uint64_t last = last_activity_ms_.load(std::memory_order_relaxed);
+    uint64_t idle_ms = now_ms > last ? now_ms - last : 0;
+    if (idle_ms >= static_cast<uint64_t>(screen_off_s) * 1000) {
+        enter_standby();
     }
 }
 

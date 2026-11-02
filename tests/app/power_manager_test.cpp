@@ -97,6 +97,24 @@ struct Fixture {
         return power_events.at(index);
     }
 
+    // Re-review 1 (N4): blocks until every job posted to `ui` so far has
+    // actually run, by posting one more and waiting for it -- UiRuntime's
+    // post queue is FIFO/single-consumer, so this guarantees any earlier
+    // tick()-posted enter_standby_if_still_idle() job has already run (or
+    // never existed) by the time this returns. Without draining first, a
+    // negative assertion (EXPECT_FALSE(standby())) right after tick()
+    // can't tell "the idle-timeout logic correctly decided not to enter
+    // standby" apart from "it decided to, but the UI task just hasn't
+    // gotten to the posted job yet" -- tick() itself only ever posts,
+    // never blocks.
+    void drain_ui() {
+        auto done = std::make_shared<wisp::os::Semaphore>(1, 0);
+        while (!ui->post([done] { done->give(); })) {
+            wisp::os::sleep_ms(1);
+        }
+        done->take(wisp::os::kForever);
+    }
+
     std::string settings_path;
     std::unique_ptr<JsonFileSettingsBackend> backend;
 
@@ -285,8 +303,10 @@ TEST(PowerManager, TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt) {
     uint64_t t0 = wisp::os::now_ms();
 
     f.pm->tick(t0);
+    f.drain_ui();  // N4: so a buggy false-positive post would already show up.
     EXPECT_FALSE(f.pm->standby());
     f.pm->tick(t0 + 999);
+    f.drain_ui();
     EXPECT_FALSE(f.pm->standby());
 
     f.pm->tick(t0 + 1001);
@@ -313,6 +333,14 @@ TEST(PowerManager, NoteActivityResetsTheIdleClock) {
     // didn't actually happen would enter standby here), but well short
     // of the *second* activity's deadline (~t0+1300).
     f.pm->tick(t0 + 1000);
+    // N4 (re-review 1): tick() only ever posts the decision onto the UI
+    // task (see tick()'s doc comment) -- without draining the queue
+    // first, this assertion can't tell "the reset correctly kept this
+    // idle" apart from "it didn't, but the posted enter_standby_if_
+    // still_idle() job just hasn't run yet", which would pass even with
+    // the second note_activity() call above deleted entirely (verified:
+    // reverting this fix alone makes that regression pass undetected).
+    f.drain_ui();
     EXPECT_FALSE(f.pm->standby());
 }
 
@@ -322,6 +350,10 @@ TEST(PowerManager, ZeroScreenOffSecondsDisablesAutoStandby) {
     uint64_t t0 = wisp::os::now_ms();
 
     f.pm->tick(t0 + 1000000);
+    // N4: see NoteActivityResetsTheIdleClock's comment -- without this,
+    // deleting the `screen_off_s <= 0` early-return above would still
+    // pass this assertion (the posted job just wouldn't have run yet).
+    f.drain_ui();
     EXPECT_FALSE(f.pm->standby());
 }
 

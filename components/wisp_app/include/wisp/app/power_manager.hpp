@@ -187,6 +187,21 @@ public:
 private:
     void publish_state();
 
+    // Re-review 1 (N5): the body of what tick() posts onto the UI task
+    // once it decides idle_ms has crossed the threshold. tick()'s own
+    // decision is based on `now_ms` and last_activity_ms_ as of the
+    // *call* to tick() -- but, when posted (see tick()'s doc comment),
+    // actually entering standby only happens once that job runs, which
+    // can lag tick() by up to one UI loop iteration. A button press
+    // arriving in that window already calls note_activity() (the
+    // constructor's "button." subscriber), but standby_ is still false
+    // at that point, so nothing posts a counteracting exit_standby() --
+    // without this recheck, the screen would still turn off right after
+    // that press. Re-reads the *current* last_activity_ms_ (which that
+    // press would have updated) against the same `now_ms` tick() was
+    // told about, and only then calls enter_standby().
+    void enter_standby_if_still_idle(uint64_t now_ms);
+
     core::EventBus& bus_;
     std::shared_ptr<hal::Display> display_;
     std::shared_ptr<hal::Touch> touch_;
