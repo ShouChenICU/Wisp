@@ -54,6 +54,20 @@
 #      target_compile_features() calls after it see the same COMPONENT_LIB
 #      it just defined via PARENT_SCOPE, one level up from wherever
 #      wisp_component() itself was invoked.
+#
+# Fix round 1, M8: being a macro() (not a function()) cuts both ways --
+# macro()s have no scope of their own, so every variable this body sets
+# (the cmake_parse_arguments() outputs: WISP_COMPONENT_NAME,
+# WISP_COMPONENT_SRCS, WISP_COMPONENT_INCLUDE_DIRS, WISP_COMPONENT_REQUIRES,
+# WISP_COMPONENT_IDF_REQUIRES, WISP_COMPONENT_HOST_LIBS, plus the local
+# _wisp_component_scope/_wisp_component_iface_scope) leaks into whichever
+# scope *called* wisp_component() -- typically a component's own
+# CMakeLists.txt, i.e. effectively global for that file. Callers must
+# not read or rely on any of these after calling wisp_component(); they
+# are this macro's own working variables, not part of its interface, and
+# a second wisp_component() call (nothing currently does this, but
+# nothing stops it either) would silently overwrite them with its own
+# arguments.
 include_guard()
 
 macro(wisp_component)

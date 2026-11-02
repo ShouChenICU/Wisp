@@ -52,3 +52,37 @@ CONFIG_COMPILER_CXX_RTTI=n
 # StorageManager, ButtonService, UiRuntime start) all currently runs
 # inline from app_main(), on the main task.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Fix round 1 (controller ruling, M-notes in task-15-report.md): FreeRTOS's
+# default 100 Hz tick (10 ms/tick) is too coarse for LVGL/UI timing and,
+# combined with components/wisp_port_esp/os/os_esp.cpp's ms->ticks
+# rounding, makes any os::sleep_ms()/Semaphore::take() call under ~10 ms
+# round to a near-zero wait even after that file's round-up fix (1 tick
+# minimum, but 1 tick is still up to 10 ms of error at 100 Hz). 1000 Hz
+# (1 ms/tick) gives LVGL's animation/tick timing and short retry/backoff
+# loops much finer granularity; os_esp.cpp's ms_to_ticks() rounds up
+# regardless of this value, so correctness does not depend on this
+# setting, only precision/latency does.
+CONFIG_FREERTOS_HZ=1000
+
+# Fix round 1, M5: every wisp::os::Timer in the process shares the one
+# esp_timer dispatch task (see os_esp.cpp's Timer section); the default
+# stack is sized for ESP-IDF's own light internal callbacks, not
+# necessarily wisp's. Raised with headroom for wisp Timer callbacks
+# (which are documented as expected to stay short/non-blocking, but
+# still run deeper call stacks than a typical internal one-liner).
+CONFIG_ESP_TIMER_TASK_STACK_SIZE=6144
+
+# Fix round 1, M6: wisp::log (components/wisp_core/include/wisp/core/log.hpp)
+# is the single intended source of truth for which log levels are
+# visible -- it defaults to LogLevel::Debug (nothing filtered) and is
+# meant to be the only filter callers need to think about. esp_log has
+# its own, independent runtime level check inside esp_log_write()
+# (wisp::port::esp::EspLogSink's backend -- see log_esp.cpp) that
+# defaults to "Info" and would otherwise silently re-filter out Debug
+# lines wisp::log already decided to deliver. Raising esp_log's own
+# default (and, since CONFIG_LOG_MAXIMUM_LEVEL defaults to "equals
+# default", its ceiling too) to Debug makes esp_log's layer effectively
+# a pass-through, leaving wisp::log::set_level() as the only level
+# decision that actually matters.
+CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y

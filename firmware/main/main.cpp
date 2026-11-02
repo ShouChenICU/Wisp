@@ -32,9 +32,15 @@ extern "C" void app_main() {
 
     wisp::app::Platform platform;
     platform.board = wisp::board::create_board();
-    // Task 15 controller ruling: App::start() dereferences
-    // Platform::settings unconditionally, and the NVS-backed backend is
-    // Task 18's job -- see wisp/port/esp/ram_settings_backend.hpp.
+    // Fix round 1, M7: this board has zero devices, so App::start() (see
+    // app.cpp) never actually reaches the `if (display)` branch that is
+    // the only place it dereferences Platform::settings -- the previous
+    // comment here claiming it does so "unconditionally" was wrong.
+    // Still wired up (per the Task 15 controller ruling) because
+    // Platform requires *some* non-null settings backend regardless,
+    // and to not leave a null-pointer trap for the next board that adds
+    // a display. The NVS-backed replacement is Task 18's job -- see
+    // wisp/port/esp/ram_settings_backend.hpp.
     platform.settings = std::make_unique<wisp::port::esp::RamSettingsBackend>();
     platform.emit_line = [](const std::string& line) {
         std::printf("%s\n", line.c_str());

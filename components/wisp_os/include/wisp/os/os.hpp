@@ -80,6 +80,12 @@ private:
 struct TaskConfig {
     const char* name = "wisp";
     size_t stack_bytes = 4096;
+    // Higher runs preferentially over lower, relative to other wisp
+    // tasks; the valid range and its meaning (idle/highest priority, how
+    // many levels exist) is platform-defined. A port clamps an
+    // out-of-range value into its own valid range rather than passing it
+    // through uninterpreted -- see e.g. components/wisp_port_esp/os/os_esp.cpp's
+    // Task::spawn(), which clamps to FreeRTOS's [0, configMAX_PRIORITIES - 1].
     int priority = 5;
     int core = -1;
 };
@@ -114,7 +120,10 @@ private:
 };
 
 // A one-shot or periodic timer that invokes `cb` on a dedicated
-// task/thread.
+// task/thread. Keep `cb` short and non-blocking: some ports (e.g.
+// ESP-IDF, via esp_timer's ESP_TIMER_TASK dispatch) run every Timer in
+// the whole process on one shared dispatch task, so a slow `cb` delays
+// every other Timer too, not just this one's own next period.
 class Timer {
 public:
     Timer(const char* name, uint32_t period_ms, bool periodic, std::function<void()> cb);
