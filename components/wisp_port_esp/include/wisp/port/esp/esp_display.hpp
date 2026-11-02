@@ -7,8 +7,10 @@
 // byte order) are not hard-coded here -- AGENTS.md's "板子无关" rule --
 // but passed in via EspDisplayConfig by the board.
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "esp_lcd_panel_io.h"
@@ -30,15 +32,65 @@ struct EspDisplayConfig {
     std::string panel = "lcd";   // caps "panel"
     int area_align = 1;          // caps "area_align"
     // Panel IO command framing for the raw register writes this class
-    // issues itself (set_brightness()): when true, a DCS register `reg`
-    // is sent as the QSPI "write command" frame (0x02 << 24) | (reg << 8)
-    // (the framing esp_lcd's QSPI panel drivers use for tx_param); when
-    // false it is sent as the bare register number.
+    // issues itself (set_brightness(), and -- with panel_sleep ==
+    // DcsSleep below -- the sleep/wake DCS commands): when true, a DCS
+    // register `reg` is sent as the QSPI "write command" frame
+    // (0x02 << 24) | (reg << 8) (the framing esp_lcd's QSPI panel
+    // drivers use for tx_param); when false it is sent as the bare
+    // register number.
     bool qspi_cmd_framing = false;
     // True if the panel expects RGB565 pixels most-significant byte first
     // (big-endian on the wire) -- flush() then byte-swaps the native
     // little-endian pixels around the transfer.
     bool swap_rgb565_bytes = false;
+
+    // How set_power(false)/set_power(true) put the panel to/from sleep
+    // (task-18b-review.md I2 -- see docs/hardware/waveshare_amoled_216.md
+    // for the finding that motivated this). Chosen per board, not per
+    // chip model: both options are implemented entirely in terms of the
+    // standard esp_lcd_panel_* API and standard MIPI DCS commands, never
+    // anything chip-specific -- that stays board-agnostic regardless of
+    // which one a given board picks (AGENTS.md's "板子无关" rule).
+    enum class PanelSleep {
+        // esp_lcd_panel_disp_on_off(false) + esp_lcd_panel_disp_sleep
+        // (true) to sleep, reversed to wake -- the esp_lcd panel
+        // driver's own notion of "sleep". On a panel wired with a
+        // hardware reset GPIO in its esp_lcd_panel_dev_config_t (e.g.
+        // this board's CO5300), some vendor drivers escalate this to a
+        // *deep* standby that clears GRAM and forces a full re-init on
+        // wake (slow, and visibly flashes uninitialized memory until
+        // init finishes) -- this option does not work around that; see
+        // DcsSleep below.
+        VendorDispSleep,
+        // Sends the standard MIPI DCS commands directly via
+        // esp_lcd_panel_io_tx_param() -- the same path set_brightness()
+        // already uses -- bypassing esp_lcd_panel_disp_sleep()/
+        // disp_on_off() entirely: DISPOFF (0x28) then SLPIN (0x10) to
+        // sleep; SLPOUT (0x11), a sleep_out_settle_ms wait, then DISPON
+        // (0x29) to wake. This is ordinary MIPI DCS sleep, which
+        // preserves GRAM (the panel shows its last frame immediately on
+        // wake, rather than uninitialized memory) and never touches the
+        // panel's hardware reset line -- so it never re-triggers
+        // whatever deep-standby/full-reinit behavior VendorDispSleep
+        // can trigger on some panels.
+        //
+        // Once this is selected, esp_lcd_panel_disp_sleep()/
+        // disp_on_off() must never be called on this same panel handle
+        // by anyone else either -- their internal sleep_mode bookkeeping
+        // would get out of sync with the panel's real state (which this
+        // class is now managing directly via raw DCS commands instead).
+        DcsSleep,
+    };
+    PanelSleep panel_sleep = PanelSleep::VendorDispSleep;
+
+    // DcsSleep only: how long to wait, after sending SLPOUT, before
+    // sending DISPON on wake (the panel's own settle time; the MIPI DCS
+    // spec's own floor for this is 120ms). This class also enforces it
+    // as the minimum spacing between a SLPOUT and the *next* SLPIN (most
+    // panels are out of spec if put back to sleep sooner than that after
+    // waking) -- see set_power()'s comment. Board-configured, since it
+    // is a panel-specific timing constant, not a chip-family one.
+    uint32_t sleep_out_settle_ms = 120;
 };
 
 class EspDisplay : public wisp::hal::Display {
@@ -68,12 +120,27 @@ public:
     // draw_bitmap failure, where the DMA may still be reading it and it is
     // left swapped).
     Result<void> flush(const wisp::hal::Area& area, const uint16_t* rgb565) override;
-    // Writes the DCS "write display brightness" register (0x51).
+    // Writes the DCS "write display brightness" register (0x51), and
+    // remembers `level` (see set_power()'s I3 note below).
     Result<void> set_brightness(uint8_t level) override;
-    // Panel sleep (spec 6.7), not just display-off: set_power(false)
-    // calls esp_lcd_panel_disp_on_off(false) then
-    // esp_lcd_panel_disp_sleep(true); set_power(true) reverses the order
-    // (disp_sleep(false) then disp_on_off(true)).
+    // Panel sleep (spec 6.7), not just display-off. Dispatches to one of
+    // two implementations per config_.panel_sleep (see
+    // EspDisplayConfig::PanelSleep's doc comment):
+    //   - VendorDispSleep: set_power(false) calls
+    //     esp_lcd_panel_disp_on_off(false) then
+    //     esp_lcd_panel_disp_sleep(true); set_power(true) reverses the
+    //     order (disp_sleep(false) then disp_on_off(true)).
+    //   - DcsSleep: set_power(false) sends DISPOFF then SLPIN;
+    //     set_power(true) sends SLPOUT, waits
+    //     config_.sleep_out_settle_ms, then sends DISPON.
+    // Either way, a successful set_power(true) re-sends the last
+    // brightness set_brightness() was called with, if any (I3,
+    // task-18b-review.md): some panels reset their brightness register
+    // on wake regardless of which sleep mode put them there (e.g. this
+    // board's CO5300 board-level init sequence, which VendorDispSleep's
+    // deep-standby wake re-runs in full, ends with brightness = 0xFF)
+    // -- without this, every wake would silently override whatever
+    // brightness the user had configured.
     Result<void> set_power(bool on) override;
     bool powered() const override;
 
@@ -83,6 +150,18 @@ private:
 
     static bool on_color_trans_done(esp_lcd_panel_io_handle_t io,
                                     esp_lcd_panel_io_event_data_t* edata, void* user_ctx);
+
+    // Sends one DCS command (optionally with parameter bytes) via
+    // esp_lcd_panel_io_tx_param(), applying config_.qspi_cmd_framing the
+    // same way set_brightness() always has. Assumes mutex_ is already
+    // held by the caller.
+    Result<void> tx_dcs_locked(int reg, const uint8_t* param = nullptr, size_t param_len = 0);
+    // The two set_power() implementations (see EspDisplayConfig::
+    // PanelSleep). Assume mutex_ is already held; neither touches
+    // powered_ or re-applies brightness -- set_power() itself does both,
+    // once, after whichever of these succeeds.
+    Result<void> set_power_vendor_locked(bool on);
+    Result<void> set_power_dcs_locked(bool on);
 
     wisp::hal::DeviceInfo info_;
     esp_lcd_panel_handle_t panel_;
@@ -95,6 +174,19 @@ private:
     mutable wisp::os::Mutex mutex_;
     bool pending_ = false;  // a timed-out transfer may still be in flight
     bool powered_ = true;   // esp_board_manager turns the panel on during init
+
+    // The last level set_brightness() was called with, re-applied by a
+    // successful set_power(true) (I3 -- see set_power()'s doc comment).
+    // Unset until the first set_brightness() call (board init sequences
+    // set an initial brightness themselves, outside this class).
+    std::optional<uint8_t> last_brightness_;
+    // DcsSleep only: when the last SLPOUT was sent (os::now_ms()), used
+    // to enforce sleep_out_settle_ms as the minimum spacing before the
+    // next SLPIN (EspDisplayConfig::PanelSleep's doc comment). Unset
+    // once that minimum has clearly already elapsed (so repeated
+    // set_power(false) calls long after waking don't all pay a
+    // sleep_out_settle_ms-sized check for nothing).
+    std::optional<uint64_t> last_sleep_out_ms_;
 };
 
 }  // namespace wisp::port::esp

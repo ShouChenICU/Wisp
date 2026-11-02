@@ -100,6 +100,18 @@ constexpr const char* kBmgrI2cMaster = "i2c_master";
 constexpr int kCornerRadius = 40;
 // CO5300 partial updates must start/end on even coordinates.
 constexpr int kAreaAlign = 2;
+// Task 18b review round 1 (I2, user-approved deviation from the brief's
+// literal "call esp_lcd_panel_disp_sleep()" -- see
+// docs/hardware/waveshare_amoled_216.md's "待机与省电" section): this
+// board's CO5300 is wired with a hardware reset GPIO
+// (board_devices.yaml's lcd_panel_config.reset_gpio_num), which makes
+// esp_lcd_panel_disp_sleep() escalate to a deep standby that clears GRAM
+// and forces a full ~1.36s re-init sequence on wake. Standard MIPI DCS
+// sleep (EspDisplayConfig::PanelSleep::DcsSleep) avoids both: wake is
+// just SLPOUT + settle + DISPON, with GRAM intact. 120ms is the MIPI DCS
+// spec's own floor for the SLPOUT-to-DISPON wait; this panel's datasheet
+// gives no tighter number, so this board uses that floor as-is.
+constexpr uint32_t kDisplaySleepOutSettleMs = 120;
 
 // Button GPIOs (see the hardware doc): all active-low. The power key's
 // detect pin already has an external pull-up on this board, so it must
@@ -108,6 +120,21 @@ constexpr int kAreaAlign = 2;
 constexpr gpio_num_t kPinBtnPower = GPIO_NUM_16;
 constexpr gpio_num_t kPinBtnVolUp = GPIO_NUM_18;
 constexpr gpio_num_t kPinBtnVolDown = GPIO_NUM_0;
+
+// Task 18b review round 1 (I4): outputs that must keep driving their pin
+// through every automatic light sleep, not just the gpio_config() these
+// are set up with once at boot -- see hold_outputs_during_light_sleep()'s
+// comment below for why this is needed at all. Pin numbers match
+// board_devices.yaml's lcd_panel_config.reset_gpio_num (display reset),
+// setup_device.c's touch_cfg.rst_gpio_num (touch reset), and
+// board_peripherals.yaml's gpio_pa_control.config.pin (speaker PA
+// enable) -- duplicated here as plain numbers (rather than shared
+// constants with those YAML/C files) because bmgr's generated code and
+// this hand-written file have no shared header to put one in; keep
+// these three in sync if any of those three pins ever changes.
+constexpr gpio_num_t kPinDisplayReset = GPIO_NUM_39;
+constexpr gpio_num_t kPinTouchReset = GPIO_NUM_40;
+constexpr gpio_num_t kPinAudioPaEnable = GPIO_NUM_46;
 
 std::string err_name(esp_err_t err) {
     if (err >= ESP_BOARD_ERR_BASE) {
@@ -174,6 +201,12 @@ void init_display(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
     dc.area_align = kAreaAlign;
     dc.qspi_cmd_framing = uses_qspi(cfg);
     dc.swap_rgb565_bytes = cfg->frame_format == DEV_DISPLAY_LCD_FRAME_FORMAT_RGB565_BE;
+    // I2 (user-approved deviation, see kDisplaySleepOutSettleMs's comment
+    // above): standard MIPI DCS sleep instead of this panel's deep
+    // -standby path, so EspDisplay must never call
+    // esp_lcd_panel_disp_sleep()/disp_on_off() on this handle either.
+    dc.panel_sleep = wisp::port::esp::EspDisplayConfig::PanelSleep::DcsSleep;
+    dc.sleep_out_settle_ms = kDisplaySleepOutSettleMs;
 
     auto display =
         wisp::port::esp::EspDisplay::create(handles->panel_handle, handles->io_handle, dc);
@@ -322,6 +355,38 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
         add_device(registry, report,
                    std::make_shared<wisp::port::esp::EspGpioButton>(spec.pin, /*active_low=*/true,
                                                                     spec.id, spec.model));
+    }
+}
+
+// Task 18b review round 1 (I4): firmware/sdkconfig.defaults'
+// CONFIG_FREERTOS_USE_TICKLESS_IDLE=y pulls in
+// CONFIG_PM_SLP_DISABLE_GPIO on this chip (ESP-IDF's
+// ESP_SLEEP_GPIO_RESET_WORKAROUND Kconfig default for S3), which
+// isolates *every* GPIO -- direction, level and pull all disabled, i.e.
+// floating -- for the duration of each automatic light sleep. Any output
+// this board needs to keep actually driving through that must opt out
+// with gpio_sleep_sel_dis(); otherwise it floats for as long as the chip
+// is light-sleeping, repeatedly, for the entire time the device is in
+// standby:
+//   - the display panel's RST: with EspDisplayConfig::PanelSleep::
+//     DcsSleep (see kDisplaySleepOutSettleMs's comment), an unexpected
+//     reset pulse while asleep would undo the whole point of that
+//     option -- the panel would come back needing a full re-init,
+//     exactly the slow/flashing wake this board chose DcsSleep to avoid;
+//   - the touch controller's RST: same risk, for CST9217;
+//   - the speaker PA's enable line: floating (rather than held low, its
+//     configured default) risks an audible pop or needless leakage
+//     current through the amplifier while in standby.
+// See docs/hardware/waveshare_amoled_216.md's "待机与省电" section for
+// the on-device verification step this motivates.
+void hold_outputs_during_light_sleep() {
+    constexpr gpio_num_t kPins[] = {kPinDisplayReset, kPinTouchReset, kPinAudioPaEnable};
+    for (gpio_num_t pin : kPins) {
+        esp_err_t err = gpio_sleep_sel_dis(pin);
+        if (err != ESP_OK) {
+            WLOG_W(kTag, "gpio_sleep_sel_dis(%d) failed: %s", static_cast<int>(pin),
+                   err_name(err).c_str());
+        }
     }
 }
 
@@ -479,6 +544,12 @@ public:
         init_buttons(registry, report);
         init_audio(registry, report);
         init_sd_storage(registry, report);
+
+        // Independent of whether any of the above actually succeeded --
+        // these pins must not float during light sleep regardless of
+        // which devices came up (see hold_outputs_during_light_sleep()'s
+        // comment).
+        hold_outputs_during_light_sleep();
     }
 };
 

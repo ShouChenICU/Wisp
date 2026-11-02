@@ -1,5 +1,6 @@
 #include "wisp/port/esp/esp_display.hpp"
 
+#include <cstdio>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -8,18 +9,29 @@
 #include "esp_err.h"
 #include "esp_lcd_panel_ops.h"
 #include "wisp/base/error.hpp"
+#include "wisp/core/log.hpp"
 
 namespace wisp::port::esp {
 
 namespace {
+
+constexpr const char* kTag = "esp_display";
 
 // Upper bound on one flush()'s wait for the color-transfer-done callback.
 // A full 480x480 RGB565 frame at 40 MHz QSPI takes ~12 ms, so this only
 // trips if the panel IO is genuinely stuck.
 constexpr uint32_t kFlushTimeoutMs = 250;
 
-// MIPI DCS "write display brightness".
+// Standard MIPI DCS commands used by set_brightness() and, with
+// EspDisplayConfig::PanelSleep::DcsSleep, set_power() -- see
+// EspDisplayConfig::PanelSleep's doc comment. None of these are chip
+// -specific (AGENTS.md's "板子无关" rule): every panel this codebase
+// targets implements the standard MIPI DCS command set.
 constexpr int kDcsWriteBrightness = 0x51;
+constexpr int kDcsDispOff = 0x28;
+constexpr int kDcsSleepIn = 0x10;
+constexpr int kDcsSleepOut = 0x11;
+constexpr int kDcsDispOn = 0x29;
 // esp_lcd QSPI panel drivers' "write command" opcode (see e.g.
 // esp_lcd_co5300's tx_param()).
 constexpr uint32_t kQspiOpcodeWriteCmd = 0x02;
@@ -157,24 +169,30 @@ Result<void> EspDisplay::flush(const wisp::hal::Area& area, const uint16_t* rgb5
     return Result<void>::ok();
 }
 
-Result<void> EspDisplay::set_brightness(uint8_t level) {
-    std::lock_guard<wisp::os::Mutex> lock(mutex_);
-    int cmd = kDcsWriteBrightness;
+Result<void> EspDisplay::tx_dcs_locked(int reg, const uint8_t* param, size_t param_len) {
+    int cmd = reg;
     if (config_.qspi_cmd_framing) {
-        cmd = static_cast<int>((kQspiOpcodeWriteCmd << 24) |
-                               (static_cast<uint32_t>(kDcsWriteBrightness) << 8));
+        cmd = static_cast<int>((kQspiOpcodeWriteCmd << 24) | (static_cast<uint32_t>(reg) << 8));
     }
-    esp_err_t err = esp_lcd_panel_io_tx_param(io_, cmd, &level, 1);
+    esp_err_t err = esp_lcd_panel_io_tx_param(io_, cmd, param, param_len);
     if (err != ESP_OK) {
-        return Result<void>::err(ErrorCode::DeviceFailure,
-                                 std::string("tx_param(0x51): ") + esp_err_to_name(err));
+        char msg[64];
+        std::snprintf(msg, sizeof(msg), "tx_param(0x%02x): %s", reg, esp_err_to_name(err));
+        return Result<void>::err(ErrorCode::DeviceFailure, msg);
     }
     return Result<void>::ok();
 }
 
-Result<void> EspDisplay::set_power(bool on) {
+Result<void> EspDisplay::set_brightness(uint8_t level) {
     std::lock_guard<wisp::os::Mutex> lock(mutex_);
-    esp_err_t err;
+    auto r = tx_dcs_locked(kDcsWriteBrightness, &level, 1);
+    if (r) {
+        last_brightness_ = level;  // re-applied by a later set_power(true) -- see I3.
+    }
+    return r;
+}
+
+Result<void> EspDisplay::set_power_vendor_locked(bool on) {
     // Task 18b/spec 6.7: set_power(false) is "panel sleep", not just
     // "display off" -- turn the pixel output off first, then put the
     // controller itself to sleep (co5300: SLPIN, settling, and -- on a
@@ -186,6 +204,7 @@ Result<void> EspDisplay::set_power(bool on) {
     // "Unsupported is expected" carve-out for the display -- every panel
     // this codebase targets does implement it; see
     // docs/hardware/waveshare_amoled_216.md).
+    esp_err_t err;
     if (on) {
         err = esp_lcd_panel_disp_sleep(panel_, false);
         if (err != ESP_OK) {
@@ -209,7 +228,64 @@ Result<void> EspDisplay::set_power(bool on) {
                                      std::string("disp_sleep(true): ") + esp_err_to_name(err));
         }
     }
+    return Result<void>::ok();
+}
+
+Result<void> EspDisplay::set_power_dcs_locked(bool on) {
+    // EspDisplayConfig::PanelSleep::DcsSleep (task-18b-review.md I2):
+    // ordinary MIPI DCS sleep sent directly via tx_dcs_locked(), never
+    // esp_lcd_panel_disp_sleep()/disp_on_off() (see that enum value's
+    // doc comment for why the two must never be mixed on one panel).
+    if (on) {
+        auto r = tx_dcs_locked(kDcsSleepOut);
+        if (!r) {
+            return r;
+        }
+        last_sleep_out_ms_ = wisp::os::now_ms();
+        wisp::os::sleep_ms(config_.sleep_out_settle_ms);
+        return tx_dcs_locked(kDcsDispOn);
+    }
+    // Enforce sleep_out_settle_ms as the minimum spacing between the
+    // last SLPOUT and this SLPIN -- see EspDisplayConfig::PanelSleep's
+    // doc comment. Only matters for a rapid wake-then-immediately
+    // -resleep; last_sleep_out_ms_ is otherwise unset (the common case:
+    // no SLPOUT since construction, or long enough ago that there is
+    // nothing left to wait out).
+    if (last_sleep_out_ms_.has_value()) {
+        uint64_t elapsed = wisp::os::now_ms() - *last_sleep_out_ms_;
+        if (elapsed < config_.sleep_out_settle_ms) {
+            wisp::os::sleep_ms(static_cast<uint32_t>(config_.sleep_out_settle_ms - elapsed));
+        }
+        last_sleep_out_ms_.reset();
+    }
+    auto r = tx_dcs_locked(kDcsDispOff);
+    if (!r) {
+        return r;
+    }
+    return tx_dcs_locked(kDcsSleepIn);
+}
+
+Result<void> EspDisplay::set_power(bool on) {
+    std::lock_guard<wisp::os::Mutex> lock(mutex_);
+    Result<void> r = config_.panel_sleep == EspDisplayConfig::PanelSleep::DcsSleep
+                         ? set_power_dcs_locked(on)
+                         : set_power_vendor_locked(on);
+    if (!r) {
+        return r;
+    }
     powered_ = on;
+
+    // I3 (task-18b-review.md): re-apply the last brightness the caller
+    // asked for. Not fatal to set_power() itself if this fails -- the
+    // panel is already awake and displaying, just possibly at the wrong
+    // brightness.
+    if (on && last_brightness_.has_value()) {
+        auto br = tx_dcs_locked(kDcsWriteBrightness, &*last_brightness_, 1);
+        if (!br) {
+            WLOG_W(kTag, "re-apply brightness 0x%02x after wake failed: %s", *last_brightness_,
+                   br.error().message.c_str());
+        }
+    }
     return Result<void>::ok();
 }
 
