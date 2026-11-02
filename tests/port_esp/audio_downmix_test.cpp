@@ -43,8 +43,7 @@ TEST(AudioDownmix, NoOverflowAtExtremes) {
 }
 
 TEST(AudioDownmix, TruncatesTowardZeroRatherThanRounding) {
-    // Fix round 1: the file comment used to (incorrectly) say "round";
-    // plain C++ integer division truncates toward zero, so an odd sum
+    // Plain C++ integer division truncates toward zero, so an odd sum
     // is *not* rounded to the nearest integer.
     //   (3 + 4) / 2 = 3 (truncated), not 4 (rounded to nearest).
     //   (-3 + -4) / 2 = -7 / 2 = -3 (truncated toward zero), not -4.

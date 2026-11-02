@@ -51,7 +51,7 @@ private:
     std::atomic<uint32_t> rate_hz_{100};
 };
 
-// Fixed status (80%, 3900 mV, not charging, USB present -- task-13-brief.md).
+// Fixed status (80%, 3900 mV, not charging, USB present).
 class SimPower : public wisp::hal::Power {
 public:
     SimPower(std::string id, std::function<void()> on_power_off);
@@ -67,7 +67,7 @@ private:
 // get_unix() tracks the host's wall-clock time plus an offset;
 // set_unix(seconds) recomputes that offset so later get_unix() calls
 // return `seconds` plus however much wall-clock time has since elapsed
-// ("保存相对系统时间的偏移" -- task-13-brief.md).
+// ("保存相对系统时间的偏移").
 class SimClock : public wisp::hal::Clock {
 public:
     explicit SimClock(std::string id);
@@ -94,24 +94,24 @@ private:
     std::shared_ptr<SimInput> input_;
 };
 
-// Backed by a real SDL playback device (fix round 1, item 1): open()
-// calls SDL_OpenAudioDevice(nullptr, 0, ...) and fails with
-// ErrorCode::AlreadyExists if already open (fix round 2, item N5);
-// write() applies `volume_`, splits the buffer into ~20ms chunks, and
-// queues each one via SDL_QueueAudio only once the queue has drained
-// below ~200ms (fix round 2, item N1 -- the original one-shot version
-// let a whole clip queue instantly and then get dropped by close());
-// close() drains the remaining queue, then waits out the device's own
-// internal buffer (`buffer_frames_`, fix round 3, item R3 -- a drained
-// queue doesn't mean the device's hardware/callback buffer is empty
-// too), before actually closing the device, so unplayed audio isn't
-// discarded. write()'s wait loop uses a progress-based stall deadline
-// (fix round 3, item R2: reset whenever a chunk is actually queued,
-// rather than one fixed deadline for the whole call). If the device
-// stops playing or the stall deadline passes, write() returns whatever
-// was written so far (ok, with a short count) once at least one chunk
-// was queued, and only reports ErrorCode::Timeout if nothing was
-// written at all. See dev/sim_audio.cpp.
+// Backed by a real SDL playback device: open() calls
+// SDL_OpenAudioDevice(nullptr, 0, ...) and fails with
+// ErrorCode::AlreadyExists if already open; write() applies
+// `volume_`, splits the buffer into ~20ms chunks, and queues each one
+// via SDL_QueueAudio only once the queue has drained below ~200ms --
+// queuing a whole clip instantly lets close() drop almost all of it
+// by closing the device before playback has caught up. close()
+// drains the remaining queue, then waits out the device's own
+// internal buffer (`buffer_frames_`) too -- a drained queue doesn't
+// mean the device's hardware/callback buffer is empty -- before
+// actually closing the device, so unplayed audio isn't discarded.
+// write()'s wait loop uses a progress-based stall deadline, reset
+// whenever a chunk is actually queued, rather than one fixed
+// deadline for the whole call. If the device stops playing or the
+// stall deadline passes, write() returns whatever was written so far
+// (ok, with a short count) once at least one chunk was queued, and
+// only reports ErrorCode::Timeout if nothing was written at all. See
+// dev/sim_audio.cpp.
 // `device_` is the SDL_AudioDeviceID of the open device (0 if not open)
 // stored as a plain uint32_t -- SDL_AudioDeviceID is just a typedef for
 // Uint32 -- so this shared header never has to include <SDL.h>; only
@@ -132,20 +132,20 @@ private:
     int channels_ = 1;
     int sample_rate_ = 16000;
     // SDL's `have.samples` from open(): the device's own internal
-    // buffer size in frames, used by close() (fix round 3, item R3) to
-    // wait out whatever that buffer may still hold after the queue
-    // itself has drained to zero.
+    // buffer size in frames, used by close() to wait out whatever
+    // that buffer may still hold after the queue itself has drained
+    // to zero.
     uint16_t buffer_frames_ = 0;
     std::atomic<uint8_t> volume_{100};
 };
 
-// Backed by a real SDL capture device (fix round 1, item 1): open()
-// calls SDL_OpenAudioDevice(nullptr, 1, ...) and fails with
-// ErrorCode::AlreadyExists if already open (fix round 2, item N5);
-// read() polls SDL_DequeueAudio until `count` frames have arrived, using
-// a progress-based stall deadline (fix round 3, item R2: reset whenever
-// data is actually dequeued, rather than one fixed deadline for the
-// whole call). If the device stops playing or the stall deadline
+// Backed by a real SDL capture device: open() calls
+// SDL_OpenAudioDevice(nullptr, 1, ...) and fails with
+// ErrorCode::AlreadyExists if already open; read() polls
+// SDL_DequeueAudio until `count` frames have arrived, using a
+// progress-based stall deadline, reset whenever data is actually
+// dequeued, rather than one fixed deadline for the whole call. If
+// the device stops playing or the stall deadline
 // passes, read() returns whatever was captured so far (ok, with a short
 // count) when at least one frame was captured, and only reports
 // ErrorCode::Timeout if nothing was captured at all; close() closes the

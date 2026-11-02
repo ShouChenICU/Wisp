@@ -1,4 +1,4 @@
-// PC simulator entry point (spec 6.1/8.1, task-13-brief.md): parses
+// PC simulator entry point (spec 6.1/8.1): parses
 // SimOptions, builds the wisp::app::Platform around a SimBoard, runs
 // wisp::app::App::start() (which builds the same self-check UI the ESP
 // firmware will), and then either loops headless or drives an SDL2
@@ -8,8 +8,8 @@
 // stays SDL-free, and AGENTS.md's layering rule ("只有 wisp_port_sim 和
 // simulator/ 可以 include SDL*").
 //
-// Fix round 1, item 1: the audio subsystem (and, for --headless, its
-// dummy-driver hint) is initialized here, before app.start() runs --
+// The audio subsystem (and, for --headless, its dummy-driver hint) is
+// initialized here, before app.start() runs --
 // SimBoard::init() (called from inside it) needs SDL audio already up
 // to probe for a capture device via SDL_GetNumAudioDevices(1), deciding
 // whether to register audio_in.main at all (see sim_board.cpp). Video
@@ -127,9 +127,9 @@ void run_headless(wisp::app::App& app, const SimOptions& opts,
 // Translates one SDL event into SimInput state. Mouse motion only
 // updates the touch point while a button is held (dragging); key repeat
 // events are ignored (SimInput only cares about down/up transitions).
-// Fix round 1, item 9: captures the mouse while the (simulated touch)
-// button is held, so a drag that leaves the window still keeps
-// delivering motion events instead of silently losing the touch.
+// Captures the mouse while the (simulated touch) button is held, so a
+// drag that leaves the window still keeps delivering motion events
+// instead of silently losing the touch.
 void handle_event(const SDL_Event& ev, wisp::port::sim::SimInput& input, bool& running) {
     switch (ev.type) {
         case SDL_QUIT:
@@ -236,9 +236,9 @@ void render_frame(wisp::port::sim::SimDisplay& display, const std::vector<uint8_
         SDL_UnlockTexture(texture);
     }
 
-    // Fix round 1, item 6: apply the display's software brightness by
-    // modulating the texture's color channels at blit time (rather than
-    // rescaling every RGB565 pixel on the CPU each frame).
+    // Apply the display's software brightness by modulating the
+    // texture's color channels at blit time (rather than rescaling
+    // every RGB565 pixel on the CPU each frame).
     uint8_t brightness = display.brightness();
     SDL_SetTextureColorMod(texture, brightness, brightness, brightness);
 
@@ -333,8 +333,8 @@ int main(int argc, char** argv) {
 
     // log::init() is called again (harmlessly -- see log.hpp) inside
     // App::start(); it's called here too, first, so the WLOG_W below
-    // (fix round 1, item 5) is actually recorded/delivered instead of
-    // being a silent no-op before the first init() (see log.hpp).
+    // is actually recorded/delivered instead of being a silent no-op
+    // before the first init() (see log.hpp).
     static wisp::port::sim::StdoutLogSink log_sink;
     wisp::log::init();
     wisp::log::add_sink(&log_sink);
@@ -346,14 +346,14 @@ int main(int argc, char** argv) {
         WLOG_W(kLogTag, "--screenshot given without --exit-after-ms; no screenshot will be taken");
     }
 
-    // Fix round 1, item 1: audio must be up before app.start() runs --
-    // see this file's header comment.
+    // Audio must be up before app.start() runs -- see this file's
+    // header comment.
     if (opts.headless) {
         SDL_SetHint(SDL_HINT_AUDIODRIVER, "dummy");
     }
     if (SDL_Init(SDL_INIT_AUDIO) != 0) {
-        // Fix round 2, item N2: a host with no audio backend at all
-        // (e.g. a minimal container image) shouldn't stop the whole
+        // A host with no audio backend at all (e.g. a minimal
+        // container image) shouldn't stop the whole
         // simulator from running -- warn and continue.
         // SimBoard::init() checks SDL_WasInit(SDL_INIT_AUDIO) and
         // degrades audio_out.main/audio_in.main to Failed/"SDL audio
@@ -366,8 +366,8 @@ int main(int argc, char** argv) {
     auto input = std::make_shared<wisp::port::sim::SimInput>(/*sd_present_initial=*/!opts.no_sd);
     auto on_power_off = [&should_exit] { should_exit.store(true); };
 
-    // Fix round 1, item 7: keep the concrete SimBoard* from make_unique
-    // directly, before it's moved into Platform::board (a
+    // Keep the concrete SimBoard* from make_unique directly, before
+    // it's moved into Platform::board (a
     // unique_ptr<Board>) -- a plain upcast on construction, no
     // static_cast needed later to get it back.
     auto board =
@@ -389,7 +389,7 @@ int main(int argc, char** argv) {
     };
     platform.request_power_off = on_power_off;
     platform.heap_info = [] { return wisp::Value(wisp::Map{}); };
-    // Task 18b/spec 6.7: no real power states to flip in the simulator --
+    // spec 6.7: no real power states to flip in the simulator --
     // just log it, so a --headless smoke test can confirm the hook fired
     // without needing any hardware-specific behavior to observe.
     platform.set_standby = [](bool standby) {

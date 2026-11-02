@@ -27,8 +27,8 @@ public:
 
     virtual Result<Capacity> capacity() = 0;
 
-    // Fix round 2 (task-18b-review.md, second addendum): a hint, not a
-    // hardware operation -- unlike hal::Imu/Touch::set_power(), there is
+    // A hint, not a hardware operation -- unlike hal::Imu/Touch::
+    // set_power(), there is
     // nothing here that can fail, so this returns void rather than
     // Result<void>. A removable-media device whose online()/capacity()
     // bookkeeping is kept fresh by a background worker polling real

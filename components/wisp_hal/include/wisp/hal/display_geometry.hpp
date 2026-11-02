@@ -10,8 +10,8 @@
 // This header (like display_geometry.cpp) must stay free of LVGL and
 // platform headers -- it depends only on wisp_base -- and must never log
 // (wisp_hal has no wisp_core dependency); callers that need a WLOG_W on
-// the fallback path below do that themselves (see global-constraints.md
-// and DeviceRegistry::manifest()/the self-check screen).
+// the fallback path below do that themselves (see
+// DeviceRegistry::manifest()/the self-check screen).
 
 #include <cstdint>
 

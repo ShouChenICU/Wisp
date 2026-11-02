@@ -21,8 +21,8 @@ Value area_to_value(const hal::Area& area) {
     });
 }
 
-// Shared "manifest and self-check screen" fallback rule (spec 5.6, see
-// global-constraints.md): screen_shape_from_caps() failed, but if `caps`
+// Shared "manifest and self-check screen" fallback rule (spec 5.6):
+// screen_shape_from_caps() failed, but if `caps`
 // at least carries a usable width/height, treat the panel as circular --
 // the most conservative shape -- rather than giving up on a safe area
 // entirely. Returns std::nullopt (no safe area at all) if even

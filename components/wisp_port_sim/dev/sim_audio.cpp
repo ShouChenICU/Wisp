@@ -12,9 +12,9 @@ namespace wisp::port::sim {
 
 namespace {
 constexpr uint16_t kBufferedSamples = 1024;
-// Fix round 3, item R2/R4: how long write()/read() may go *without
-// making any progress* (a chunk queued / data dequeued) before giving
-// up, rather than one fixed deadline for the entire call -- a 3s
+// How long write()/read() may go *without making any progress* (a
+// chunk queued / data dequeued) before giving up, rather than one
+// fixed deadline for the entire call -- a 3s
 // "录音回放" clip legitimately takes 3s of real wall-clock time to
 // write/read via the ~200ms throttle, so a single whole-call deadline
 // either has to be very generous (letting a truly stalled device hang
@@ -36,8 +36,8 @@ SimAudioOut::~SimAudioOut() { close(); }
 
 wisp::Result<void> SimAudioOut::open(const wisp::hal::AudioFormat& format) {
     if (device_ != 0) {
-        // Fix round 2, item N5: refuse a second open() instead of
-        // silently overwriting `device_` and leaking the first device.
+        // Refuse a second open() instead of silently overwriting
+        // `device_` and leaking the first device.
         return wisp::Result<void>::err(wisp::ErrorCode::AlreadyExists, "audio_out already open");
     }
 
@@ -52,7 +52,7 @@ wisp::Result<void> SimAudioOut::open(const wisp::hal::AudioFormat& format) {
     SDL_zero(have);
     // allowed_changes=0: SDL converts internally rather than handing
     // back a different format/rate/channel count, so `have` always
-    // matches what was requested (task-13-brief fix round 1, item 1).
+    // matches what was requested.
     SDL_AudioDeviceID dev = SDL_OpenAudioDevice(nullptr, /*iscapture=*/0, &want, &have, 0);
     if (dev == 0) {
         return wisp::Result<void>::err(wisp::ErrorCode::DeviceFailure, SDL_GetError());
@@ -76,8 +76,8 @@ wisp::Result<size_t> SimAudioOut::write(const int16_t* frames, size_t count) {
     const uint32_t max_queued_bytes = bytes_per_ms * 200;
     int vol = volume_.load();
 
-    // Fix round 2, item N1: split into ~20ms chunks and throttle *before
-    // each one* instead of checking the queued-bytes cap once and then
+    // Split into ~20ms chunks and throttle *before each one* instead
+    // of checking the queued-bytes cap once and then
     // queuing the entire buffer in a single SDL_QueueAudio() call. The
     // original one-shot version let a whole 3s "录音回放" clip get
     // queued (and therefore "written") near-instantly; close() then
@@ -87,8 +87,8 @@ wisp::Result<size_t> SimAudioOut::write(const int16_t* frames, size_t count) {
     constexpr uint32_t kChunkMs = 20;
     size_t chunk_frames = std::max<size_t>(1, static_cast<size_t>(sample_rate_) * kChunkMs / 1000);
 
-    // Fix round 3, item R2: a progress-based stall deadline, reset every
-    // time a chunk is actually queued -- see kStallTimeoutMs's comment.
+    // A progress-based stall deadline, reset every time a chunk is
+    // actually queued -- see kStallTimeoutMs's comment.
     uint64_t stall_deadline = wisp::os::now_ms() + kStallTimeoutMs;
 
     size_t done = 0;
@@ -101,10 +101,10 @@ wisp::Result<size_t> SimAudioOut::write(const int16_t* frames, size_t count) {
             scaled[i] = static_cast<int16_t>((static_cast<int32_t>(frames[src]) * vol) / 100);
         }
 
-        // Fix round 2/3, item N1/N3/R2: bail out -- instead of waiting
-        // forever -- if the device stops playing or this call stalls
-        // (no progress within kStallTimeoutMs) while waiting for room
-        // in the queue. Once at least one chunk has been queued, a
+        // Bail out -- instead of waiting forever -- if the device
+        // stops playing or this call stalls (no progress within
+        // kStallTimeoutMs) while waiting for room in the queue. Once
+        // at least one chunk has been queued, a
         // stall is reported by returning what was written so far
         // (`done` frames) rather than an error, since the caller
         // already has a partial, usable write; only a stall before any
@@ -140,9 +140,8 @@ void SimAudioOut::close() {
     }
     auto device = static_cast<SDL_AudioDeviceID>(device_);
 
-    // Fix round 2, item N1 (extended in fix round 3, item R3): drain
-    // whatever is still queued before actually closing the device --
-    // SDL_CloseAudioDevice() otherwise discards any unplayed audio
+    // Drain whatever is still queued before actually closing the
+    // device -- SDL_CloseAudioDevice() otherwise discards any unplayed audio
     // immediately, which (combined with the old one-shot write()) made
     // "录音回放" playback silent. Bounded by how long the remaining
     // queued audio plus the device's own internal buffer should take to
@@ -165,9 +164,9 @@ void SimAudioOut::close() {
         SDL_Delay(5);
     }
 
-    // Fix round 3, item R3: SDL_GetQueuedAudioSize() reaching 0 only
-    // means the *queue* is empty -- the device's own internal
-    // hardware/callback buffer (`buffer_frames_` frames, from `have` in
+    // SDL_GetQueuedAudioSize() reaching 0 only means the *queue* is
+    // empty -- the device's own internal hardware/callback buffer
+    // (`buffer_frames_` frames, from `have` in
     // open()) can still hold audio that hasn't actually reached the
     // speaker yet. There's no SDL API to ask "has that buffer drained
     // too", so just wait out its duration, still bounded by `deadline`
@@ -196,8 +195,8 @@ SimAudioIn::~SimAudioIn() { close(); }
 
 wisp::Result<void> SimAudioIn::open(const wisp::hal::AudioFormat& format) {
     if (device_ != 0) {
-        // Fix round 2, item N5: refuse a second open() instead of
-        // silently overwriting `device_` and leaking the first device.
+        // Refuse a second open() instead of silently overwriting
+        // `device_` and leaking the first device.
         return wisp::Result<void>::err(wisp::ErrorCode::AlreadyExists, "audio_in already open");
     }
 
@@ -235,10 +234,9 @@ wisp::Result<size_t> SimAudioIn::read(int16_t* frames, size_t count) {
     size_t have_bytes = 0;
     auto* dest = reinterpret_cast<uint8_t*>(frames);
 
-    // Bounded wait (fix round 1, item 1; tightened in fix round 2, item
-    // N1/N3, then made progress-based in fix round 3, item R2/R4):
-    // SDL_DequeueAudio is non-blocking, so this polls it until `count`
-    // frames have arrived, the device stops playing, or the call stalls
+    // Bounded wait: SDL_DequeueAudio is non-blocking, so this polls it
+    // until `count` frames have arrived, the device stops playing, or
+    // the call stalls
     // (no new bytes within kStallTimeoutMs, reset on every bit of
     // progress). Once at least one byte has been captured, a stall is
     // reported by returning what was captured so far instead of an

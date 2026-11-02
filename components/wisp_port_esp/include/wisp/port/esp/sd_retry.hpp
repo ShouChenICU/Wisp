@@ -10,9 +10,9 @@
 // (tests/port_esp/sd_retry_test.cpp) even though wisp_port_esp itself is
 // an ESP-only component (never built for the host).
 //
-// Fix round 1 (task-18-report.md): originally this only tracked
-// "mounted?" / "when was the last attempt?", and EspSdStorage::online()
-// itself did every transition, including the slow esp_board_manager_*/
+// A simpler version of this once only tracked "mounted?" / "when was
+// the last attempt?", and EspSdStorage::online() itself did every
+// transition, including the slow esp_board_manager_*/
 // sdmmc_* calls -- called from whatever thread asked (the UI thread every
 // 100ms, or the shared esp_timer task every 2s), which stalled the UI and
 // risked blocking os_esp.cpp's "Timer callbacks must be short" rule. Now

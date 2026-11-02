@@ -22,7 +22,7 @@ namespace wisp::app {
 namespace {
 
 constexpr uint32_t kStorageRefreshMs = 2000;
-// How often PowerManager::tick() is driven (Task 18b). Settings
+// How often PowerManager::tick() is driven. Settings
 // "power"/"screen_off_s" is specified (and set, default 60) in whole
 // seconds, so sub-second resolution here would be pointless; 1s keeps
 // the idle-timeout check's own overhead (and the "wisp.power" Timer
@@ -91,7 +91,7 @@ Result<void> App::start() {
         impl_->report.set_note("mode", "headless");
     }
 
-    // PowerManager (Task 18b, spec 6.7) is constructed here -- once `ui`
+    // PowerManager (spec 6.7) is constructed here -- once `ui`
     // is settled either way -- rather than inside the `if (display)`
     // branch above, so it also exists (minus the display/touch/UI
     // pieces, which all tolerate being null) in headless mode: the
@@ -102,7 +102,7 @@ Result<void> App::start() {
     core::Settings power_settings(*impl_->platform.settings, "power");
     auto imu = impl_->registry.get<hal::Imu>("imu.main");
 
-    // Task 19a: PowerMonitor is constructed here too -- before
+    // PowerMonitor is constructed here too -- before
     // PowerManager, which holds a non-owning pointer into it -- and, like
     // PowerManager itself, regardless of headless mode: polling
     // "power.main" and publishing power.charging.changed/power.battery.
@@ -239,7 +239,7 @@ void App::stop() {
     }
     impl_->power_manager.reset();
 
-    // Task 19a: power_monitor is torn down right after power_manager
+    // power_monitor is torn down right after power_manager
     // (which points into it, like storage/storage_timer below) -- its
     // own stop() tears down its internal Timer; see power_monitor.hpp.
     impl_->power_monitor.reset();

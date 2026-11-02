@@ -4,12 +4,11 @@
 
 using A = wisp::app::PowerKeyController::Action;
 
-// Task 18b review round 1 (C1): screen_on is now passed in by the caller
-// on every call (the single source of truth is PowerManager::standby(),
-// not this class) -- these tests drive it explicitly to cover the same
-// scenarios the old self-tracking version covered, plus the
-// previously-impossible-to-express case of the caller's state
-// disagreeing with whatever this class would have guessed on its own.
+// screen_on is passed in by the caller on every call (the single source
+// of truth is PowerManager::standby(), not this class) -- these tests
+// drive it explicitly to cover the same scenarios a self-tracking
+// version would need, plus the case of the caller's state disagreeing
+// with whatever this class would otherwise have guessed on its own.
 
 TEST(PowerKey, ShortTogglesScreen) {
     wisp::app::PowerKeyController c;
@@ -39,12 +38,12 @@ TEST(PowerKey, ShortCancelsConfirmOnlyWhileScreenIsOn) {
     // Cancelling a confirm dialog only wins once the screen is actually
     // on; while it's off, waking takes priority (see
     // ShortWhileScreenOffWakesEvenWithAConfirmDialogAlreadyOpen below --
-    // re-review 1, N2, a correction to this test's own previous
+    // a correction to this test's own previous
     // assumption that cancelling always won).
     EXPECT_EQ(c.on_short(/*screen_on=*/true), A::CancelConfirm);
 }
 
-// Re-review 1 (N2): a confirm dialog left open when automatic standby
+// A confirm dialog left open when automatic standby
 // turns the screen off must not swallow the next power-key press as a
 // dialog decision -- spec 6.7's "待机中按任意键都会唤醒" requires that
 // press to wake the screen first. The dialog itself is left open (not
@@ -62,7 +61,7 @@ TEST(PowerKey, ShortWhileScreenOffWakesEvenWithAConfirmDialogAlreadyOpen) {
     EXPECT_EQ(c.on_short(/*screen_on=*/true), A::CancelConfirm);
 }
 
-// Re-review 1 (N2): same wake-first priority for a long press -- it
+// Same wake-first priority for a long press -- it
 // must not stack a second confirm dialog on top of one left open by
 // automatic standby.
 TEST(PowerKey, LongWhileScreenOffWithConfirmAlreadyOpenJustWakes) {

@@ -9,9 +9,10 @@
 // not touched here at all: it is wired into audio_dac's "pa_name"
 // peripheral binding (board_devices.yaml), so esp_codec_dev's ES8311
 // driver itself drives PA_EN low/high in step with
-// esp_codec_dev_open()/close() and each dac_enable() transition --
-// task-18-brief.md's "若 bmgr 让 PA 跟随 codec open/close，则优先选用该
-// 方式". Chip models, pins and the PA GPIO are board-level facts
+// esp_codec_dev_open()/close() and each dac_enable() transition -- the
+// preferred way to tie PA power to codec state whenever bmgr makes it
+// available for a board's PA. Chip models, pins and the PA GPIO are
+// board-level facts
 // (AGENTS.md's "板子无关" rule) and never appear here.
 //
 // esp_codec_dev's own output volume/mic gain both start at 0 (muted) on a
@@ -21,7 +22,7 @@
 // components/wisp_app/src/loopback.cpp's "录音回放" self-check (which
 // never calls set_volume()/set_gain() itself) is actually audible. These
 // defaults (kDefaultVolumePercent/kDefaultMicGainDb) are a starting point
-// for real-hardware tuning, not calibrated values -- see task-18-report.md.
+// for real-hardware tuning, not calibrated values.
 //
 // EspAudioIn always opens the ES7210 codec with 2 physical channels
 // (channel_mask 0x3 -- the board wires two analog mics, migrated from
@@ -31,12 +32,12 @@
 // only caller) is mono (AudioFormat::channels == 1) -- see that header's
 // comment. Both open()s below validate that the *caller's* requested
 // format.channels is 1 and fail with ErrorCode::InvalidArgument
-// otherwise (fix round 1) -- the 2-physical-channel ES7210 open above is
+// otherwise -- the 2-physical-channel ES7210 open above is
 // this class's own internal implementation detail, never something a
 // caller can ask to change.
 //
-// EspAudioOut::close() drains before calling esp_codec_dev_close() (fix
-// round 1): esp_codec_dev_write()/i2s_channel_write() returns as soon as
+// EspAudioOut::close() drains before calling esp_codec_dev_close():
+// esp_codec_dev_write()/i2s_channel_write() returns as soon as
 // data is handed to the I2S DMA ring, not once it's actually been
 // clocked out -- closing (which also cuts PA power, via the "pa_name"
 // binding above) immediately after a write would truncate the audible

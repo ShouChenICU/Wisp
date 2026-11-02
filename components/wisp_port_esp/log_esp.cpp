@@ -29,19 +29,18 @@ char level_char(wisp::LogLevel level) {
 }  // namespace
 
 void EspLogSink::write(wisp::LogLevel level, const char* tag, const char* msg) {
-    // Fix round 1, M6: build the same "<ts_ms> <D|I|W|E> <tag>: <msg>"
+    // Build the same "<ts_ms> <D|I|W|E> <tag>: <msg>"
     // line the other ports' sinks use (wisp_port_sim's StdoutLogSink;
     // see wisp/core/log.hpp's ring_snapshot() doc comment) ourselves,
     // rather than relying on esp_log to render it.
     //
-    // Fix round 2 (controller ruling, following on from fix round 1,
-    // M6): this is written directly via std::printf() -- the same
+    // This is written directly via std::printf() -- the same
     // console transport firmware/main.cpp's boot-report output and
     // os_esp.cpp's fatal() already use, since this board's stdout is
     // already routed to the console (see
     // firmware/sdkconfig.defaults's CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG)
-    // -- instead of going through esp_log_write(). Fix round 1 had used
-    // esp_log_write(), but that applies esp_log's *own*, independent
+    // -- instead of going through esp_log_write(). esp_log_write()
+    // applies esp_log's *own*, independent
     // runtime per-tag level filter (is_level_loggable() in
     // components/log/src/log.c) on top of wisp::log's own filter
     // (wisp::log::set_level(), the intended single source of truth

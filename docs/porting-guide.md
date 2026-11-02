@@ -18,7 +18,7 @@
 
 ## 步骤 2：补驱动（`drivers/`）
 
-esp_board_manager 组件库里没有的芯片，在 `drivers/<芯片名>/` 下新建一个纯 C 的 ESP-IDF 组件（CMakeLists 用 `wisp_component(...)`）。如果 MyOS 项目（`~/Projects/MyOS`，MIT）里已经有对应驱动，优先移植：保留寄存器序列和换算公式，去掉 MyOS 特有的睡眠/电源轨控制等与本板无关的逻辑；文件头写明 "Ported from MyOS (MIT, Copyright (c) 2026 ShouChen)"，并登记到 `docs/references.md`。全新寄存器配置（MyOS 没驱动过的功能，例如陀螺仪）要在文件头写明"新写，未经验证"，并在真机验收清单里加一条重点核实。
+esp_board_manager 组件库里没有的芯片，在 `drivers/<芯片名>/` 下新建一个纯 C 的 ESP-IDF 组件（CMakeLists 直接用 `idf_component_register(...)`，不是 `cmake/wisp_component.cmake` 的 `wisp_component()`——那个宏是为了让可移植层（`wisp_base`/`os`/`hal`/`core`/`ui`/`app`）同时在 `idf.py` 和宿主机模拟器两种构建下都能用，驱动只会在 `idf.py` 固件构建下编译，直接用 ESP-IDF 的 `driver/*` 头文件，不需要这个双构建切换）。如果 MyOS 项目（MIT，作者 ShouChen）里已经有对应驱动，优先移植：保留寄存器序列和换算公式，去掉 MyOS 特有的睡眠/电源轨控制等与本板无关的逻辑；文件头写明 "Ported from MyOS (MIT, Copyright (c) 2026 ShouChen)"，并登记到 `docs/references.md`。全新寄存器配置（MyOS 没驱动过的功能，例如陀螺仪）要在文件头写明"新写，未经验证"，并在真机验收清单里加一条重点核实。
 
 ## 步骤 3：写 `board.cpp`
 

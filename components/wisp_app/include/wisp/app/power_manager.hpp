@@ -6,10 +6,10 @@
 // direction later sub-projects take this in.
 //
 // enter_standby() pauses UiRuntime's rendering, puts the display panel,
-// touch controller and IMU to sleep (fix round 2: the IMU power-down
-// stopgap), pauses the SD card's background presence-detection worker
-// (fix round 2, second addendum -- StorageManager::set_standby(true)),
-// widens the power monitor's sample period (Task 19a, spec 6.3/6.7 --
+// touch controller and IMU to sleep (a software power-down stopgap, not
+// a real low-power mode), pauses the SD card's background presence-
+// detection worker (StorageManager::set_standby(true)), widens the power
+// monitor's sample period (spec 6.3/6.7 --
 // core::PowerMonitor::set_standby(true)), widens ButtonService's poll
 // interval, and calls the platform's set_standby(true) hook (real
 // hardware: keeps DFS always on, additionally enables tickless light
@@ -40,7 +40,7 @@
 // self-check screen) has taken over deciding what button.power does
 // with its own, more specific state machine -- see that method's doc
 // comment for why both of these reacting to the same button.power press
-// is a bug (task-18b-review.md C1), not a belt-and-suspenders safety
+// is a bug, not a belt-and-suspenders safety
 // net. The owner additionally wires UiRuntime's touch-activity hook (see
 // UiRuntime::set_touch_activity_cb()) to note_activity() when both `ui`
 // and `touch` are non-null, so touch input resets the idle clock too
@@ -87,8 +87,7 @@ namespace wisp::app {
 class PowerManager {
 public:
     // `display`/`touch`/`imu` may be null (headless, no touch panel, or
-    // no IMU). `storage` (fix round 2, second addendum) and
-    // `power_monitor` (Task 19a) may also be null -- both are raw,
+    // no IMU). `storage` and `power_monitor` may also be null -- both are raw,
     // non-owning pointers, like `ui`/`buttons`, since App owns them for
     // its own (much longer) lifetime. `ui`/`buttons` may be null in
     // headless mode (no UiRuntime); every call below tolerates any of
@@ -115,7 +114,7 @@ public:
 
     // Idempotent: a no-op if already in standby. Otherwise, in order:
     //   1. UiRuntime::set_paused(true) -- stop rendering *before*
-    //      touching the panel (task-18b-review.md I1): since this always
+    //      touching the panel: since this always
     //      runs on the UI task itself in practice (see the class-level
     //      comment), there is never a concurrent lv_timer_handler()/
     //      flush() straddling the panel-sleep call below regardless of
@@ -124,14 +123,14 @@ public:
     //   2. Display::set_power(false) (panel sleep).
     //   3. Touch::set_power(false) (ErrorCode::Unsupported is expected,
     //      not an error -- most touch drivers have no sleep mode).
-    //   4. Imu::set_power(false) (fix round 2 -- same ErrorCode::
+    //   4. Imu::set_power(false) (same ErrorCode::
     //      Unsupported carve-out as Touch: not every IMU driver can
     //      power its sensors down independently).
-    //   5. StorageManager::set_standby(true) (fix round 2, second
-    //      addendum -- pauses storage.sd's background CMD13 presence
+    //   5. StorageManager::set_standby(true) (pauses storage.sd's
+    //      background CMD13 presence
     //      probe and mount-retry worker, if any; a pure software hint,
     //      never fails).
-    //   6. PowerMonitor::set_standby(true) (Task 19a, spec 6.3/6.7 --
+    //   6. PowerMonitor::set_standby(true) (spec 6.3/6.7 --
     //      widens the power-status sample period from ~1s to ~30s; see
     //      wisp::core::PowerMonitor's own doc comment for why, unlike
     //      step 5, this one *can* block for a moment, the same way step
@@ -170,7 +169,7 @@ public:
     // called periodically (e.g. every ~1s) by the owner -- see
     // App::start()'s "wisp.power" Timer.
     //
-    // task-18b-review.md I1: tick() itself never calls enter_standby()
+    // tick() itself never calls enter_standby()
     // directly when a UiRuntime exists. On real hardware, every
     // wisp::os::Timer (including the one driving this call) shares a
     // single esp_timer task; enter_standby() can block for a while (the
@@ -193,7 +192,7 @@ public:
     // presses do to the screen on its own -- see
     // self_check_screen.cpp's subscribe_buttons().
     //
-    // Why this exists (task-18b-review.md C1): without it, a single
+    // Why this exists: without it, a single
     // physical short press on the power key while in standby produces,
     // in order, "button.power.down" then "button.power.short". If this
     // class's generic handler reacted to the `down` half by waking the
@@ -214,7 +213,7 @@ public:
 private:
     void publish_state();
 
-    // Re-review 1 (N5): the body of what tick() posts onto the UI task
+    // The body of what tick() posts onto the UI task
     // once it decides idle_ms has crossed the threshold. tick()'s own
     // decision is based on `now_ms` and last_activity_ms_ as of the
     // *call* to tick() -- but, when posted (see tick()'s doc comment),
@@ -252,8 +251,7 @@ private:
     // purely so standby() const stays cheap and lock-free for callers
     // that just want to know the current state.
     //
-    // task-18b-review.md I1 (and Task 19a, same reasoning): this is
-    // released for the two steps (PowerMonitor::set_standby() and
+    // This is released for the two steps (PowerMonitor::set_standby() and
     // ButtonService::set_poll_interval_ms()) that can block waiting on
     // the shared esp_timer task's own fence -- never hold this lock
     // across that wait, since (on real hardware) the esp_timer task is

@@ -110,7 +110,7 @@
 /** Default display refresh, input device read and animation step period.
  *  wisp: 16ms (~60fps ceiling), not the LVGL default of 33ms (~30fps
  *  ceiling) -- the on-device perf benchmark requires >= 30fps while
- *  scrolling (see global-constraints.md), which needs headroom above the
+ *  scrolling (AGENTS.md section 4), which needs headroom above the
  *  refresh timer's own ceiling, not a refresh period already capped right
  *  at the target. */
 #define LV_DEF_REFR_PERIOD  16      /**< [ms] */

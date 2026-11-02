@@ -41,7 +41,7 @@ struct App::Impl {
     std::unique_ptr<ui::UiRuntime> ui;
     std::unique_ptr<os::Timer> storage_timer;
 
-    // Task 19a: constructed just before power_manager (which holds a
+    // Constructed just before power_manager (which holds a
     // non-owning pointer into it -- see PowerManager::enter_standby()/
     // exit_standby()'s PowerMonitor::set_standby() hook), via its own new
     // "power.main" device lookup in App::start() -- separate from, and
@@ -54,7 +54,7 @@ struct App::Impl {
     // power_manager.
     std::unique_ptr<core::PowerMonitor> power_monitor;
 
-    // Task 18b: constructed once `ui` is known either way (started, or
+    // Constructed once `ui` is known either way (started, or
     // headless), right before the self-check screen (which depends on
     // it) -- see App::start()'s Step 4. power_timer drives its
     // periodic tick() (the idle-timeout check); both are torn down in
@@ -63,7 +63,7 @@ struct App::Impl {
     std::unique_ptr<PowerManager> power_manager;
     std::unique_ptr<os::Timer> power_timer;
 
-    // The self-check screen's own teardown hook (Task 12) -- see
+    // The self-check screen's own teardown hook -- see
     // self_check.hpp. Constructed (via start_self_check(), posted onto
     // `ui`) only when `ui` is started; destroyed by App::stop() before
     // `ui`/`bus` are stopped, so every task/timer/subscription it owns
@@ -87,9 +87,9 @@ struct App::Impl {
     // that task is then exactly the one join_loopback() goes on to join),
     // or it observes loop_stopping already true and refuses outright --
     // there is no window in which a new "wisp.loop" task gets spawned
-    // that nothing will ever join (fix round 1, issue 1: a click
-    // triggering "录音回放" concurrently with App::stop() must not be
-    // able to start a task that outlives SelfCheck).
+    // that nothing will ever join -- a click triggering "录音回放"
+    // concurrently with App::stop() must not be able to start a task
+    // that outlives SelfCheck.
     os::Mutex loop_mutex;
     bool loop_running = false;
     bool loop_stopping = false;

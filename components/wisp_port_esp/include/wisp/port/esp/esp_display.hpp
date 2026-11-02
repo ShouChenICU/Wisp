@@ -45,8 +45,8 @@ struct EspDisplayConfig {
     bool swap_rgb565_bytes = false;
 
     // How set_power(false)/set_power(true) put the panel to/from sleep
-    // (task-18b-review.md I2 -- see docs/hardware/waveshare_amoled_216.md
-    // for the finding that motivated this). Chosen per board, not per
+    // -- see docs/hardware/waveshare_amoled_216.md for this panel's own
+    // sleep behavior. Chosen per board, not per
     // chip model: both options are implemented entirely in terms of the
     // standard esp_lcd_panel_* API and standard MIPI DCS commands, never
     // anything chip-specific -- that stays board-agnostic regardless of
@@ -88,7 +88,7 @@ struct EspDisplayConfig {
     // spec's own floor for this is 120ms). This class also enforces it
     // as the minimum spacing between a SLPIN and the *next* SLPOUT (most
     // panels are out of spec if woken sooner than that after being put
-    // to sleep -- re-review 1, N6) -- see set_power_dcs_locked()'s
+    // to sleep) -- see set_power_dcs_locked()'s
     // comment. Board-configured, since it is a panel-specific timing
     // constant, not a chip-family one.
     uint32_t sleep_out_settle_ms = 120;
@@ -135,9 +135,9 @@ public:
     //     set_power(true) sends SLPOUT, waits
     //     config_.sleep_out_settle_ms, then sends DISPON.
     // Either way, a successful set_power(true) re-sends the last
-    // brightness set_brightness() was called with, if any (I3,
-    // task-18b-review.md): some panels reset their brightness register
-    // on wake regardless of which sleep mode put them there (e.g. this
+    // brightness set_brightness() was called with, if any: some panels
+    // reset their brightness register on wake regardless of which sleep
+    // mode put them there (e.g. this
     // board's CO5300 board-level init sequence, which VendorDispSleep's
     // deep-standby wake re-runs in full, ends with brightness = 0xFF)
     // -- without this, every wake would silently override whatever
@@ -177,13 +177,13 @@ private:
     bool powered_ = true;   // esp_board_manager turns the panel on during init
 
     // The last level set_brightness() was called with, re-applied by a
-    // successful set_power(true) (I3 -- see set_power()'s doc comment).
-    // Unset until the first set_brightness() call (board init sequences
+    // successful set_power(true) (see set_power()'s doc comment). Unset
+    // until the first set_brightness() call (board init sequences
     // set an initial brightness themselves, outside this class).
     std::optional<uint8_t> last_brightness_;
     // DcsSleep only: when the last SLPIN was sent (os::now_ms()), used to
     // enforce sleep_out_settle_ms as the minimum spacing before the next
-    // SLPOUT (re-review 1, N6 -- see EspDisplayConfig::PanelSleep's doc
+    // SLPOUT (see EspDisplayConfig::PanelSleep's doc
     // comment). Unset once that minimum has clearly already elapsed (so
     // repeated set_power(true) calls long after sleeping don't all pay a
     // sleep_out_settle_ms-sized check for nothing).

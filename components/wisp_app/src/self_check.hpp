@@ -49,10 +49,10 @@ void stop_self_check(std::unique_ptr<SelfCheck>& self_check);
 // Re-renders the header's "启动 .. ms" text (spec 8) from BootReport's
 // current boot_ms. A no-op if `self_check` is null (headless boot).
 // Posts the refresh onto `ui` and returns immediately, without waiting
-// for it to run -- see App::start()'s N1 fix (Task 12b review round):
-// boot_ms is only known once start_self_check() above has already run
-// (spec 6.1's boot sequence ends with the self-check screen on screen),
-// so the header it built shows a stale value until this corrects it.
+// for it to run. boot_ms is only known once start_self_check() above has
+// already run (spec 6.1's boot sequence ends with the self-check screen
+// on screen), so the header it built shows a stale value until this
+// corrects it.
 void refresh_self_check_header(ui::UiRuntime& ui, std::unique_ptr<SelfCheck>& self_check);
 
 }  // namespace wisp::app

@@ -1,4 +1,4 @@
-// Task 12b: pure-geometry tests for wisp::hal's display-shape/safe-area
+// Pure-geometry tests for wisp::hal's display-shape/safe-area
 // model (spec 5.6). No LVGL, no App -- just screen_shape_from_caps(),
 // visible(), safe_rect() and row_span() against literal caps Properties.
 

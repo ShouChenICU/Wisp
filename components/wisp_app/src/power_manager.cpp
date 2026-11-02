@@ -38,8 +38,8 @@ PowerManager::PowerManager(core::EventBus& bus, std::shared_ptr<hal::Display> di
 
     // Any button event -- not just "button.power" -- resets the idle
     // clock, and (unless set_power_key_owned(true) says otherwise for
-    // "button.power" specifically -- see that method's doc comment,
-    // task-18b-review.md C1) wakes the device if it's currently in
+    // "button.power" specifically -- see that method's doc comment)
+    // wakes the device if it's currently in
     // standby (spec 6.7/8's "待机中按任意键都会唤醒"), independently of
     // whatever button-specific handling (e.g. the self-check screen's
     // PowerKeyController, which drives its own enter_standby()/
@@ -113,8 +113,8 @@ PowerManager::~PowerManager() {
             //      queue is FIFO, so that job -- if present -- is
             //      guaranteed to run strictly before this one.
             //   2. set_touch_activity_cb(nullptr) must itself run *on
-            //      the UI task*, not merely be called from here (fix
-            //      round 1 -- see task-18b-report.md): indev_read_cb()
+            //      the UI task*, not merely be called from here:
+            //      indev_read_cb()
             //      copies the installed callback under a lock and calls
             //      the copy *after releasing it*, so simply calling
             //      set_touch_activity_cb(nullptr) from this (non-UI)
@@ -146,7 +146,7 @@ void PowerManager::enter_standby() {
         return;  // Already in standby -- idempotent, no device calls repeated.
     }
 
-    // I1 (fix round 1): pause the UI *before* sending the panel to
+    // Pause the UI *before* sending the panel to
     // sleep -- see the header's doc comment on why ordering only
     // matters for self-documentation purposes in the configuration this
     // actually ships in (ui_ != nullptr), not for correctness.
@@ -166,7 +166,7 @@ void PowerManager::enter_standby() {
         }
     }
     if (imu_) {
-        // Fix round 2 (IMU power-down stopgap): same ErrorCode::
+        // Software power-down stopgap: same ErrorCode::
         // Unsupported carve-out as touch_ above -- not every IMU driver
         // can power its sensors down independently of the rest of the
         // chip.
@@ -176,13 +176,13 @@ void PowerManager::enter_standby() {
         }
     }
     if (storage_ != nullptr) {
-        // Fix round 2, second addendum: a pure software hint (see
+        // A pure software hint (see
         // hal::Storage::set_standby()'s doc comment) -- never fails, so
         // there is nothing to log here.
         storage_->set_standby(true);
     }
     if (power_monitor_ != nullptr) {
-        // Task 19a: like buttons_->set_poll_interval_ms() below,
+        // Like buttons_->set_poll_interval_ms() below,
         // PowerMonitor::set_standby() swaps an os::Timer for a new one,
         // which can block waiting for the shared esp_timer task's fence
         // -- release transition_mutex_ for this one call, same reasoning
@@ -197,7 +197,7 @@ void PowerManager::enter_standby() {
     }
     if (buttons_ != nullptr) {
         saved_poll_ms_ = buttons_->poll_interval_ms();
-        // I1 (fix round 1): release transition_mutex_ for this one call.
+        // Release transition_mutex_ for this one call.
         // ButtonService::set_poll_interval_ms() stops/recreates a Timer;
         // off the esp_timer task, that blocks waiting for the esp_timer
         // task to run a fence callback for it -- see transition_mutex_'s
@@ -235,7 +235,7 @@ void PowerManager::exit_standby() {
         lock.lock();
     }
     if (power_monitor_ != nullptr) {
-        // Task 19a: see enter_standby()'s identical unlock/lock around
+        // See enter_standby()'s identical unlock/lock around
         // the matching call.
         core::PowerMonitor* monitor = power_monitor_;
         lock.unlock();
@@ -263,7 +263,7 @@ void PowerManager::exit_standby() {
             WLOG_W(kTag, "display set_power(true) failed: %s", r.error().message.c_str());
         }
     }
-    // I1 (fix round 1): resume the UI only after the panel is already
+    // Resume the UI only after the panel is already
     // awake again (the mirror image of enter_standby() pausing it
     // first), so the full redraw set_paused(false) forces lands against
     // an already-woken panel.
@@ -293,10 +293,10 @@ void PowerManager::tick(uint64_t now_ms) {
     uint64_t last = last_activity_ms_.load(std::memory_order_relaxed);
     uint64_t idle_ms = now_ms > last ? now_ms - last : 0;
     if (idle_ms >= static_cast<uint64_t>(screen_off_s) * 1000) {
-        // I1 (fix round 1): never call enter_standby() directly from
+        // Never call enter_standby() directly from
         // here -- see tick()'s own doc comment in the header for why.
         if (ui_ != nullptr) {
-            // N5 (re-review 1): recheck idle_ms, against the same
+            // Recheck idle_ms, against the same
             // now_ms, once the posted job actually runs -- see
             // enter_standby_if_still_idle()'s own doc comment.
             ui_->post([this, now_ms] { enter_standby_if_still_idle(now_ms); });

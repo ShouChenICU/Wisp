@@ -10,8 +10,7 @@
 // Rules, per button, independently of every other button:
 //   - a transition to pressed publishes `down`;
 //   - once held continuously for `long_press_ms`, publishes `long` exactly
-//     once for that press (not repeated while still held -- see
-//     global-constraints.md Review Focus #4);
+//     once for that press (not repeated while still held);
 //   - on release, publishes `up`, followed by `short` only if `long` was
 //     not already sent for this press.
 //
@@ -20,7 +19,7 @@
 // (e.g. a test driving poll() directly with synthetic timestamps).
 // Buttons added to the registry after that point are not picked up; this
 // keeps poll() itself allocation-free and free of registry locking on the
-// hot path. See device_registry.hpp and task-7-brief.md.
+// hot path. See device_registry.hpp.
 //
 // Detection is poll-driven: a press that goes down and back up again
 // between two polls (i.e. shorter than poll_ms) is never observed and so
@@ -95,9 +94,9 @@ public:
     // it never races poll() the way a second start() would (see
     // start()'s doc comment) -- only the Timer itself is swapped.
     //
-    // Task 18b: the default 20ms poll period is widened to 50ms while
-    // the device is in standby (see wisp::app::PowerManager) and
-    // restored on wake.
+    // The default 20ms poll period is widened to 50ms while the
+    // device is in standby (see wisp::app::PowerManager) and restored
+    // on wake.
     void set_poll_interval_ms(uint32_t poll_ms);
 
     // The current poll period (see set_poll_interval_ms()). Mainly for

@@ -3,8 +3,10 @@
 // Minimal, self-contained PNG encoder for the simulator's --screenshot
 // flag (spec 8.1). Writes an 8-bit RGB PNG whose IDAT stream is a zlib-
 // wrapped, *uncompressed* ("stored" block type) deflate stream -- no
-// third-party image/zlib dependency (see global-constraints.md: "模拟器
-// 截图用自带的极简 PNG 编码器（未压缩 deflate），不引入第三方图像库").
+// third-party image/zlib dependency: --screenshot is a host-only
+// developer convenience, not worth taking on an external image/zlib
+// dependency for (AGENTS.md section 6: don't fork or hard-depend on
+// upstream projects when a narrowly-scoped reimplementation suffices).
 // Host-only (built into wisp_port_sim_dev); never used by any portable
 // layer.
 

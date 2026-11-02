@@ -39,8 +39,8 @@ constexpr uint8_t kBitsPerSample = 16;
 // there is room for it, by the time all of them have returned, the
 // DMA ring can hold at most this many frames, so every frame of *real*
 // audio queued before the drain started is guaranteed to have already
-// been clocked out over I2S (fix round 1 -- see esp_audio.hpp's file
-// comment and wisp::hal::AudioOut's close() contract).
+// been clocked out over I2S (see esp_audio.hpp's file comment and
+// wisp::hal::AudioOut's close() contract).
 constexpr size_t kI2sDmaDescNum = 6;
 constexpr size_t kI2sDmaFrameNum = 240;
 constexpr size_t kDrainFrames = kI2sDmaDescNum * kI2sDmaFrameNum;  // 1440 frames (~90ms @ 16kHz)

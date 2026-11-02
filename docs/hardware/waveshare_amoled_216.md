@@ -2,7 +2,7 @@
 
 板名（`WISP_BOARD` / bmgr）：`waveshare_amoled_216`。板级代码：`boards/waveshare_amoled_216/`。
 
-资料来源：用户自己的项目 `~/Projects/MyOS`（MIT，只读参考，**以其代码为准，它的文档有误**）、Waveshare 官方 BSP、ESP-Claw 中同款板的板级定义（Apache-2.0）。
+资料来源：MyOS 项目（MIT，作者 ShouChen，只读参考，**以其代码为准，它的文档有误**）、Waveshare 官方 BSP、ESP-Claw 中同款板的板级定义（Apache-2.0）。
 
 ## 主控与存储
 
@@ -43,41 +43,41 @@
 | # | 项目（来自） | 怎么测 | 预期结果 | 结果 |
 |---|---|---|---|---|
 | 1 | 启动耗时（spec 10.1） | `idf.py -p <PORT> flash monitor`，从上电到自检界面出现用肉眼或串口时间戳计时；同时看 `WISP_BOOT_REPORT` 的 `boot_ms` | `boot_ms` < 3000 | |
-| 2 | 启动报告/能力清单格式（spec 10.4，Task 11/15） | 串口查看 `WISP_BOOT_REPORT <json>`、`WISP_MANIFEST <json>` 两行 | 均为合法单行 JSON；设备状态符合预期（没插 SD 卡时 `storage.sd` 报缺失是正常的） |  |
+| 2 | 启动报告/能力清单格式（spec 10.4，wisp_core::BootReport/DeviceRegistry::manifest()） | 串口查看 `WISP_BOOT_REPORT <json>`、`WISP_MANIFEST <json>` 两行 | 均为合法单行 JSON；设备状态符合预期（没插 SD 卡时 `storage.sd` 报缺失是正常的） |  |
 | 3 | IMU 无磁力计（spec 10.4） | 查看 `WISP_MANIFEST` 中 `imu.main.caps` | `magnetometer` 为 `false` |  |
-| 4 | Display 能力清单（Task 16） | 查看 `WISP_MANIFEST` 中 `display.main` | `model` 为 `CO5300`；`caps` 含 `width:480 height:480 shape:"rounded_rect" corner_radius:40 panel:"amoled" brightness:true area_align:2`；`safe_area` 为 `{12,12,467,467}` |  |
-| 5 | Touch 型号（Task 16） | 查看 `WISP_MANIFEST` 中 `touch.main` | `model` 为 `CST9217` |  |
-| 6 | 屏幕颜色（Task 16） | 自检界面显示纯色色块或背景，目视核对纯红、纯蓝 | 红蓝不互换、不发花；如互换说明字节序判断有误 |  |
+| 4 | Display 能力清单（屏幕驱动：esp_display） | 查看 `WISP_MANIFEST` 中 `display.main` | `model` 为 `CO5300`；`caps` 含 `width:480 height:480 shape:"rounded_rect" corner_radius:40 panel:"amoled" brightness:true area_align:2`；`safe_area` 为 `{12,12,467,467}` |  |
+| 5 | Touch 型号（触摸驱动：bmgr dev_lcd_touch） | 查看 `WISP_MANIFEST` 中 `touch.main` | `model` 为 `CST9217` |  |
+| 6 | 屏幕颜色（屏幕驱动：esp_display 字节序） | 自检界面显示纯色色块或背景，目视核对纯红、纯蓝 | 红蓝不互换、不发花；如互换说明字节序判断有误 |  |
 | 7 | 四角不裁切（spec 8，10.2） | 目视自检界面四角 | 内容不被圆角裁掉 |  |
-| 8 | 触摸坐标方向（Task 16） | 手指依次点触屏幕四角 | 左上角坐标接近 (0,0)，右下角接近 (479,479)；不镜像、不 XY 互换 |  |
-| 9 | 局部刷新无错位（Task 16） | 上下滚动自检设备列表 | 不出现条纹或错位 |  |
-| 10 | 亮度初始化（Task 16） | 对比刚上电瞬间与自检界面稳定后的亮度 | 启动后设为 200，应比初始化时的 0xFF 略暗 |  |
+| 8 | 触摸坐标方向（触摸驱动：esp_display_touch 坐标映射） | 手指依次点触屏幕四角 | 左上角坐标接近 (0,0)，右下角接近 (479,479)；不镜像、不 XY 互换 |  |
+| 9 | 局部刷新无错位（屏幕驱动：esp_display flush()/area 对齐） | 上下滚动自检设备列表 | 不出现条纹或错位 |  |
+| 10 | 亮度初始化（屏幕驱动：esp_display set_brightness()） | 对比刚上电瞬间与自检界面稳定后的亮度 | 启动后设为 200，应比初始化时的 0xFF 略暗 |  |
 | 11 | IMU 跟随倾斜（spec 10.2） | 倾斜设备，看自检界面小球；水平放置看 `az` | 小球平稳跟随倾斜；水平时 `az` 接近 1.0g |  |
-| 12 | 陀螺仪数值合理（Task 17，新写寄存器配置，重点核实） | 静止与转动设备，看自检界面 `gx/gy/gz` | 静止时接近 0 dps；转动时方向与幅度符合直觉；若轴向颠倒或量程异常，检查 `drivers/qmi8658/qmi8658.c` 的 CTRL3 FS/ODR 编码 |  |
-| 13 | 电量与充电状态更新（spec 10.2，Task 17） | 看自检界面电量百分比和"充电中/未充电"状态；插拔 USB 电源；也可以看串口上 `power_monitor` 的 `power.charging.changed` 日志行（Task 19a，见下面第 35 项） | 百分比在合理范围；插拔后充电状态在 1 秒内更新 |  |
-| 14 | 三个按键事件（spec 10.2，Task 17） | 分别短按/长按 power、vol_up、vol_down | 自检界面均有对应事件提示 |  |
+| 12 | 陀螺仪数值合理（drivers/qmi8658，新写寄存器配置，重点核实） | 静止与转动设备，看自检界面 `gx/gy/gz` | 静止时接近 0 dps；转动时方向与幅度符合直觉；若轴向颠倒或量程异常，检查 `drivers/qmi8658/qmi8658.c` 的 CTRL3 FS/ODR 编码 |  |
+| 13 | 电量与充电状态更新（spec 10.2，drivers/axp2101） | 看自检界面电量百分比和"充电中/未充电"状态；插拔 USB 电源；也可以看串口上 `power_monitor` 的 `power.charging.changed` 日志行（见下面第 35 项） | 百分比在合理范围；插拔后充电状态在 1 秒内更新 |  |
+| 14 | 三个按键事件（spec 10.2，wisp_core::ButtonService） | 分别短按/长按 power、vol_up、vol_down | 自检界面均有对应事件提示 |  |
 | 15 | 电源键短按（spec 10.3） | 亮屏时短按电源键，再短按一次 | 第一次灭屏（进入待机），第二次重新点亮 |  |
-| 16 | 电源键长按关机（spec 10.3，Task 17） | 长按电源键约 1 秒 | 弹出关机确认框；确认后整机断电（用电流表或指示灯判断，不能只看屏幕熄灭） |  |
+| 16 | 电源键长按关机（spec 10.3，drivers/axp2101 power_off，wisp_app::PowerKeyController） | 长按电源键约 1 秒 | 弹出关机确认框；确认后整机断电（用电流表或指示灯判断，不能只看屏幕熄灭） |  |
 | 17 | 关机状态开机（spec 10.3） | 关机状态下长按电源键 | 重新开机 |  |
-| 18 | RTC 持续计时（spec 10.2，Task 17） | 看启动日志是否有 "system clock set from clock.main RTC"；断电（拔 USB 和电池）重启后再看一次时间。如果 RTC 从未设置过（芯片第一次通电），`get_unix()` 会失败，日志只有一条 `WLOG_W`，系统时间不会被设置——此时需要临时在 `board.cpp` 的 `init_clock` 成功之后插入一行 `clock.value()->set_unix(<当前 UTC 时间戳>)` 写入一次当前时间，重新编译烧录后再验证本项，验证完成后删除这段临时代码 | 日志出现 "system clock set from clock.main RTC"；重启后时间连续，不跳回 1970 或固定值 |  |
-| 19 | 充电电流曲线（Task 17） | 用一块电量明显偏低的电池，经 USB 功率计供电，观察充电过程电流；同时看启动日志是否出现 `power.main: charging configuration failed: ...`（`board.cpp` 的 `WLOG_W`） | 恒流阶段稳定在约 400mA；接近 4.2V 时电流渐降；充满后 `charging` 翻 `false`，电流降到维持量级，不持续大电流过充；不出现 `charging configuration failed` 日志（出现则说明 `axp2101_charging_config_status()` 返回非 `ESP_OK`，充电参数可能停留在芯片出厂默认值） |  |
-| 20 | 音频/存储设备状态（Task 18） | 看 `WISP_BOOT_REPORT` 中 `audio_out.main`/`audio_in.main`/`storage.int`/`storage.sd` | 前三者为 `ok`；`storage.sd` 视是否插卡为 `ok` 或 `missing`（"no card"） |  |
-| 21 | 开机无爆音（Task 16/18） | 接好喇叭，听开机瞬间 | 自检界面出现前无可闻的啪声/爆音 |  |
-| 22 | 录音回放（spec 10.2，Task 18） | 自检界面触发"录音回放"按钮 | 录 3 秒后播放，音量合适，声音正确，不失真、不卡顿、不静音 |  |
-| 23 | 存储容量与 SD 热插拔（spec 10.2，Task 18） | 看自检界面内置 Flash/SD 卡容量；运行中插入/拔出 SD 卡 | 容量数字正确；插入约 2 秒内上线，不需要重启；拔出后几秒内被检测为离线 |  |
-| 24 | NVS 设置持久化（Task 18） | 改一项会在启动时读取的设置（如亮度），整机断电重启（不是软重启） | 修改值在重启后仍生效 |  |
-| 25 | 内部存储降级路径（可选，Task 18） | 如方便的话，人为让 `storage.int` 挂载失败 | 系统仍以降级/只读模式启动，不中止 |  |
-| 26 | 待机进入/退出与唤醒（spec 6.7/10.3，Task 18b） | 亮屏时短按电源键进入待机；按任意键唤醒；再测试：电源键确认框打开时等待自动熄屏触发，分别用短按/长按唤醒 | 待机后任意键均可唤醒；确认框场景下两种按法都能唤醒（对话框可能仍留在界面上），不会因为"唤醒"和"确认框"逻辑冲突而异常 |  |
+| 18 | RTC 持续计时（spec 10.2，drivers/pcf85063） | 看启动日志是否有 "system clock set from clock.main RTC"；断电（拔 USB 和电池）重启后再看一次时间。如果 RTC 从未设置过（芯片第一次通电），`get_unix()` 会失败，日志只有一条 `WLOG_W`，系统时间不会被设置——此时需要临时在 `board.cpp` 的 `init_clock` 成功之后插入一行 `clock.value()->set_unix(<当前 UTC 时间戳>)` 写入一次当前时间，重新编译烧录后再验证本项，验证完成后删除这段临时代码 | 日志出现 "system clock set from clock.main RTC"；重启后时间连续，不跳回 1970 或固定值 |  |
+| 19 | 充电电流曲线（drivers/axp2101 充电参数配置） | 用一块电量明显偏低的电池，经 USB 功率计供电，观察充电过程电流；同时看启动日志是否出现 `power.main: charging configuration failed: ...`（`board.cpp` 的 `WLOG_W`） | 恒流阶段稳定在约 400mA；接近 4.2V 时电流渐降；充满后 `charging` 翻 `false`，电流降到维持量级，不持续大电流过充；不出现 `charging configuration failed` 日志（出现则说明 `axp2101_charging_config_status()` 返回非 `ESP_OK`，充电参数可能停留在芯片出厂默认值） |  |
+| 20 | 音频/存储设备状态（wisp_port_esp::EspAudio/EspStorage） | 看 `WISP_BOOT_REPORT` 中 `audio_out.main`/`audio_in.main`/`storage.int`/`storage.sd` | 前三者为 `ok`；`storage.sd` 视是否插卡为 `ok` 或 `missing`（"no card"） |  |
+| 21 | 开机无爆音（屏幕驱动上电顺序，wisp_port_esp::EspAudio 初始化） | 接好喇叭，听开机瞬间 | 自检界面出现前无可闻的啪声/爆音 |  |
+| 22 | 录音回放（spec 10.2，wisp_app::loopback） | 自检界面触发"录音回放"按钮 | 录 3 秒后播放，音量合适，声音正确，不失真、不卡顿、不静音 |  |
+| 23 | 存储容量与 SD 热插拔（spec 10.2，wisp_port_esp::EspStorage/sd_retry） | 看自检界面内置 Flash/SD 卡容量；运行中插入/拔出 SD 卡 | 容量数字正确；插入约 2 秒内上线，不需要重启；拔出后几秒内被检测为离线 |  |
+| 24 | NVS 设置持久化（wisp_port_esp::NvsSettingsBackend） | 改一项会在启动时读取的设置（如亮度），整机断电重启（不是软重启） | 修改值在重启后仍生效 |  |
+| 25 | 内部存储降级路径（可选，wisp_port_esp::EspStorage 降级路径） | 如方便的话，人为让 `storage.int` 挂载失败 | 系统仍以降级/只读模式启动，不中止 |  |
+| 26 | 待机进入/退出与唤醒（spec 6.7/10.3，wisp_app::PowerManager/PowerKeyController） | 亮屏时短按电源键进入待机；按任意键唤醒；再测试：电源键确认框打开时等待自动熄屏触发，分别用短按/长按唤醒 | 待机后任意键均可唤醒；确认框场景下两种按法都能唤醒（对话框可能仍留在界面上），不会因为"唤醒"和"确认框"逻辑冲突而异常 |  |
 | 27 | 唤醒延迟（spec 10.5） | 从按电源键到面板实际重新点亮计时（秒表或逻辑分析仪） | ≤ 300 ms（见下方"待机与省电"一节的 `DcsSleep` 估算，约 200 ms，仅为估算） |  |
 | 28 | 待机电流（spec 10.5） | 见下方"验收第 5 条"的详细测量方法 | 待机平均电流 ≤ 亮屏静止平均电流的 1/10 |  |
-| 29 | 多次浅睡眠后无异常（Task 18b） | 待机 10 分钟以上（确保发生过多次自动浅睡眠）后唤醒 | 面板无花屏、亮度未被意外重置；触摸正常响应；扬声器无异常噗声或底噪（见下方"验收第 5 条"第 1 条） |  |
-| 30 | IMU 掉电恢复（Task 18b） | 待机前记一次 IMU 读数，唤醒后再看 | 读数恢复正常更新，不是待机前最后一次读数，也不是全零/明显错误值（见"验收第 5 条"第 4 条） |  |
-| 31 | SD 探测暂停（Task 18b） | 插卡待机若干分钟后唤醒；可选在待机期间物理插拔 SD 卡 | 唤醒后 `online()` 仍正确；待机期间的插拔只在唤醒后才被发现（预期行为，不是 bug，见"验收第 5 条"第 5 条） |  |
-| 32 | 触摸复位引脚功耗（可选测量，Task 18b） | 待机期间尝试拉低触摸复位引脚（GPIO40），对比前后电流 | 仅用于评估是否值得做后续省电项，不代表现在代码需要改动（见"验收第 5 条"第 6 条） |  |
-| 33 | UI 帧率基准（spec 10 性能基准，global constraints） | 手指持续滚动自检列表 10 秒，看串口 `WISP_PERF` | fps ≥ 30；把 fps/cpu/flush_ms 三个数值记入下方"性能基准"一节 |  |
-| 34 | DFS 不拖累帧率（Task 18b） | 对比开启/关闭 `CONFIG_PM_ENABLE` 前后的 `WISP_PERF` | 开启 DFS 后帧率仍不低于上一项的基准 |  |
-| 35 | `power.charging.changed` 事件（spec 6.3，Task 19a） | 插拔 USB 电源，看串口上 `power_monitor` 的 `power.charging.changed: charging=... usb_present=... battery_percent=...` 日志行 | 插拔后 1 秒内出现该日志行，`charging`/`usb_present` 的值与实际状态一致 |  |
-| 36 | `power.battery.low` 事件（spec 6.3，Task 19a） | 电量明显偏低时观察串口日志；子项目 1 还没有 CLI/REST 能改 Settings，想快速触发可以临时在 `components/wisp_app/src/app.cpp` 里 `core::Settings power_settings(*impl_->platform.settings, "power");`（约第 102 行）之后加一行 `power_settings.set("low_batt_pct", int64_t{100});`，重新编译固件验证完后删掉这行（不要提交） | 只出现一次 `power_monitor` 的 `power.battery.low: battery_percent=... (threshold=...)` 日志行（不持续重复）；电量回升超过阈值+5 后再降回阈值以下会再出现一次；没有接电池、只接 USB 供电时不出现该日志 |  |
+| 29 | 多次浅睡眠后无异常（wisp_app::PowerManager 轻睡眠） | 待机 10 分钟以上（确保发生过多次自动浅睡眠）后唤醒 | 面板无花屏、亮度未被意外重置；触摸正常响应；扬声器无异常噗声或底噪（见下方"验收第 5 条"第 1 条） |  |
+| 30 | IMU 掉电恢复（wisp_app::PowerManager 待机，drivers/qmi8658） | 待机前记一次 IMU 读数，唤醒后再看 | 读数恢复正常更新，不是待机前最后一次读数，也不是全零/明显错误值（见"验收第 5 条"第 4 条） |  |
+| 31 | SD 探测暂停（wisp_port_esp::sd_retry 待机期间暂停探测） | 插卡待机若干分钟后唤醒；可选在待机期间物理插拔 SD 卡 | 唤醒后 `online()` 仍正确；待机期间的插拔只在唤醒后才被发现（预期行为，不是 bug，见"验收第 5 条"第 5 条） |  |
+| 32 | 触摸复位引脚功耗（可选测量，待机功耗评估） | 待机期间尝试拉低触摸复位引脚（GPIO40），对比前后电流 | 仅用于评估是否值得做后续省电项，不代表现在代码需要改动（见"验收第 5 条"第 6 条） |  |
+| 33 | UI 帧率基准（spec 10 性能基准） | 手指持续滚动自检列表 10 秒，看串口 `WISP_PERF` | fps ≥ 30；把 fps/cpu/flush_ms 三个数值记入下方"性能基准"一节 |  |
+| 34 | DFS 不拖累帧率（firmware/main.cpp apply_pm_config，DFS/light sleep） | 对比开启/关闭 `CONFIG_PM_ENABLE` 前后的 `WISP_PERF` | 开启 DFS 后帧率仍不低于上一项的基准 |  |
+| 35 | `power.charging.changed` 事件（spec 6.3，wisp_core::PowerMonitor） | 插拔 USB 电源，看串口上 `power_monitor` 的 `power.charging.changed: charging=... usb_present=... battery_percent=...` 日志行 | 插拔后 1 秒内出现该日志行，`charging`/`usb_present` 的值与实际状态一致 |  |
+| 36 | `power.battery.low` 事件（spec 6.3，wisp_core::PowerMonitor） | 电量明显偏低时观察串口日志；子项目 1 还没有 CLI/REST 能改 Settings，想快速触发可以临时在 `components/wisp_app/src/app.cpp` 里 `core::Settings power_settings(*impl_->platform.settings, "power");`（约第 102 行）之后加一行 `power_settings.set("low_batt_pct", int64_t{100});`，重新编译固件验证完后删掉这行（不要提交） | 只出现一次 `power_monitor` 的 `power.battery.low: battery_percent=... (threshold=...)` 日志行（不持续重复）；电量回升超过阈值+5 后再降回阈值以下会再出现一次；没有接电池、只接 USB 供电时不出现该日志 |  |
 
 ## 待机与省电（spec 6.7）
 

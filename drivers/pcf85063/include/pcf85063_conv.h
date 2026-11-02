@@ -58,8 +58,8 @@ static inline bool pcf85063_bcd_valid(uint8_t v) {
 // decodes to an invalid BCD digit or an out-of-range calendar field
 // (e.g. minute 75, hour 31): either indicates garbage registers, not a
 // real time, and callers must not treat it as valid. Ported from MyOS's
-// HalRtc::get_time(); the BCD/range validation is not from MyOS -- see
-// task-17-report.md's "Fix round 1".
+// HalRtc::get_time(); the BCD/range validation is not from MyOS -- MyOS
+// never checked for invalid BCD digits or out-of-range calendar fields.
 static inline bool pcf85063_decode(const uint8_t regs[7], struct tm* t) {
     if (regs[0] & PCF85063_SECONDS_OS) {
         return false;
@@ -97,7 +97,7 @@ static inline bool pcf85063_decode(const uint8_t regs[7], struct tm* t) {
 // an RTC that has never been set (powers up with a plausible-looking but
 // wrong date on some PCF85063 units) even when the OS flag somehow isn't
 // set. Not from MyOS -- MyOS never validated the decoded year beyond the
-// OS flag; see task-17-report.md.
+// OS flag.
 static inline bool pcf85063_year_plausible(int full_year) { return full_year >= 2024; }
 
 #ifdef __cplusplus

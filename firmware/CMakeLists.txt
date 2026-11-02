@@ -1,8 +1,7 @@
-# ESP-IDF firmware project (Task 15 -- see
-# .superpowers/sdd/2026-11-01-foundation/task-15-brief.md). Builds
-# firmware/main (which pulls in wisp_app + wisp_port_esp, and -- via
-# WISP_BOARD -- exactly one boards/<name>/board.cpp) against every
-# portable wisp_* component plus the ESP-only wisp_port_esp port.
+# ESP-IDF firmware project. Builds firmware/main (which pulls in
+# wisp_app + wisp_port_esp, and -- via WISP_BOARD -- exactly one
+# boards/<name>/board.cpp) against every portable wisp_* component plus
+# the ESP-only wisp_port_esp port.
 #
 # Activate the pinned ESP-IDF v6.0.3 environment first (export.sh is a
 # bash script; the user's shell is fish). Order: set-target -> bmgr ->
@@ -19,10 +18,9 @@ cmake_minimum_required(VERSION 3.16)
 
 # Portable components (wisp_base/os/hal/core/ui/app) plus the ESP-only
 # wisp_port_esp port both live under components/; board-specific code
-# (selected below via WISP_BOARD) lives under drivers/ (per-chip drivers,
-# added by later tasks -- the directory may not exist yet, which
-# EXTRA_COMPONENT_DIRS tolerates: it is just an extra place to look for
-# component subdirectories, not a required path).
+# (selected below via WISP_BOARD) lives under drivers/ (per-chip
+# drivers); EXTRA_COMPONENT_DIRS tolerates a path that doesn't exist, so
+# a board that needs no extra chip drivers still builds without one.
 set(EXTRA_COMPONENT_DIRS ${CMAKE_CURRENT_LIST_DIR}/../components ${CMAKE_CURRENT_LIST_DIR}/../drivers)
 
 # Selects which boards/<name>/board.cpp firmware/main/CMakeLists.txt

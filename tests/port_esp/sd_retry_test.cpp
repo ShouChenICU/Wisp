@@ -58,7 +58,7 @@ TEST(SdRetry, RepeatedFailuresKeepPushingTheWindowOut) {
     EXPECT_TRUE(state.should_retry(4000));
 }
 
-// --- Fix round 1: the worker-thread Mounted/Removed/Unmounted cycle. ---
+// --- The worker-thread Mounted/Removed/Unmounted cycle. ---
 
 TEST(SdRetry, MarkRemovedTransitionsFromMountedAndStopsNeitherMountedNorRetrying) {
     SdRetryState state(2000);

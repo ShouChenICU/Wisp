@@ -1,7 +1,7 @@
 #pragma once
 
-// Command-line options for the PC simulator executable (spec 8.1,
-// task-13-brief.md). Declared at global scope -- not under any wisp::
+// Command-line options for the PC simulator executable (spec 8.1).
+// Declared at global scope -- not under any wisp::
 // namespace -- because this struct and its parser belong to the
 // simulator *executable* itself, not to a portable or platform library.
 // In particular, wisp::port::sim::SimBoard (see

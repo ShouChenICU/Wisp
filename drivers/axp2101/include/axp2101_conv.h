@@ -9,9 +9,9 @@
 // (HalPower) -- see docs/references.md. The charging-parameter encoders
 // below (axp2101_icc_code/axp2101_iterm_code/axp2101_cv_code/
 // axp2101_iprechg_code) are NOT from MyOS: MyOS's original encodings for
-// REG 0x62/0x63/0x64 were wrong (task-17-report.md's "Fix round 1" --
-// e.g. MyOS wrote 0x10 to REG 0x62 meaning to request 400 mA, but 0x10
-// is actually the AXP2101's code for 1000 mA). These are rewritten from
+// REG 0x62/0x63/0x64 were wrong -- e.g. MyOS wrote 0x10 to REG 0x62
+// meaning to request 400 mA, but 0x10 is actually the AXP2101's code
+// for 1000 mA. These are rewritten from
 // scratch against lewisxhe/XPowersLib's XPowersAXP2101.hpp/
 // XPowersParams.hpp (the xpowers_axp2101_chg_curr_t/chg_iterm_t/chg_vol_t
 // enums and setChargerConstantCurr()/setChargerTerminationCurr()/

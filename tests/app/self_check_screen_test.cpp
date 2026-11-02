@@ -1,4 +1,4 @@
-// Smoke/regression tests for the real self-check screen (Task 12), on top
+// Smoke/regression tests for the real self-check screen, on top
 // of the same App/Board test harness app_boot_test.cpp uses. Boots an App
 // with every fake device wired up, waits for the UI to actually render,
 // and checks on *behavior* (does it render at all, does it render
@@ -67,8 +67,8 @@ public:
         if (init_sleep_ms_ > 0) {
             // Gives boot_ms (used by both WISP_BOOT_REPORT and the
             // self-check header) a deterministic, non-flaky non-zero
-            // floor to assert against -- see BootTimeIsSetBeforeBuild
-            // below (fix round 1, issue 3).
+            // floor to assert against -- see
+            // BootTimeIsSetAndHeaderRefreshedAfterScreenIsBuilt below.
             wisp::os::sleep_ms(init_sleep_ms_);
         }
         registry.add(display_);
@@ -161,11 +161,10 @@ int32_t find_msgbox_width(lv_obj_t* obj) {
 
 // Recursively searches `obj`'s subtree for the first lv_label whose
 // current text contains `needle`, returning a copy of its text (empty if
-// none found). Used below to check specific rows' rendered text (N2, Task
-// 12b review round) without needing any test-only accessor into
-// SelfCheck's internals -- it's entirely opaque to this test file (see
-// self_check.hpp's forward declaration) -- or a snapshot pixel diff of
-// the whole screen.
+// none found). Used below to check specific rows' rendered text without
+// needing any test-only accessor into SelfCheck's internals -- it's
+// entirely opaque to this test file (see self_check.hpp's forward
+// declaration) -- or a snapshot pixel diff of the whole screen.
 std::string find_label_text_containing(lv_obj_t* obj, const char* needle) {
     if (lv_obj_check_type(obj, &lv_label_class)) {
         const char* text = lv_label_get_text(obj);
@@ -253,11 +252,11 @@ TEST(SelfCheckScreen, RendersNonUniformFrame) {
     h.app.stop();
 }
 
-// Task 12b review round, issue N1: boot_ms is now recorded right after
-// Step 4 (UI bring-up) finishes -- i.e. after the self-check screen is
-// already built, per spec 6.1's boot sequence, which only *ends* once the
-// screen is up -- rather than right before, as fix round 1 (issue 3) had
-// it. The header renders once during build() (with boot_ms still at its
+// boot_ms is recorded right after Step 4 (UI bring-up) finishes -- i.e.
+// after the self-check screen is already built, per spec 6.1's boot
+// sequence, which only *ends* once the screen is up -- not any earlier,
+// since the header needs a real value to show. The header renders once
+// during build() (with boot_ms still at its
 // default, 0) and is then explicitly refreshed (refresh_self_check_header()
 // in self_check.hpp) once the real value is known; this checks both the
 // *report* (used for WISP_BOOT_REPORT) and the header label itself end up
@@ -284,15 +283,15 @@ TEST(SelfCheckScreen, BootTimeIsSetAndHeaderRefreshedAfterScreenIsBuilt) {
 }
 
 // Spec 8: a runtime IMU read failure must show "读取失败" for that row,
-// not crash. Task 12b review round, issue N2: this now reads the IMU
-// row's own label text (on the UI thread) rather than diffing the whole
+// not crash. This reads the IMU row's own label text (on the UI thread)
+// rather than diffing the whole
 // screen's snapshot_rgb888() -- a full-frame diff only proved *something*
 // changed (it could just as easily have been boot_ms jitter or an
 // unrelated timer tick), not specifically that the IMU row renders the
 // error text.
 //
-// Task 18b review: waiting for "N more flushes" to infer that the 100ms
-// refresh_timer_ has ticked since the error was injected is only a
+// Waiting for "N more flushes" to infer that the 100ms refresh_timer_
+// has ticked since the error was injected is only a
 // coincidental proxy -- any other source of a same-sized flush burst
 // (e.g. a full-screen redraw triggered by unrelated background work,
 // such as another os::Timer thread starting up around the same time)
@@ -324,8 +323,8 @@ TEST(SelfCheckScreen, ImuReadFailureRendersDifferentlyAndDoesNotCrash) {
     h.app.stop();
 }
 
-// Re-review 1 (N3): standby must stop this screen's own "wisp.sample"
-// IMU polling task, not just UiRuntime's rendering -- spec 6.7's "待机
+// Standby must stop this screen's own "wisp.sample" IMU polling task,
+// not just UiRuntime's rendering -- spec 6.7's "待机
 // 时... 没有高频轮询" applies to it too (it was previously still
 // reading the IMU at ~50Hz throughout standby). Drives
 // PowerManager::enter_standby()/exit_standby() directly (the same calls
@@ -370,7 +369,7 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
     h.app.stop();
 }
 
-// Task 12b (spec 5.6): on a non-rectangular screen, nothing the self-check
+// Spec 5.6: on a non-rectangular screen, nothing the self-check
 // screen draws may land outside its safe_rect() -- the root column itself
 // is now sized/positioned to exactly that rect (see self_check_screen.cpp's
 // build()), so every pixel outside it should be untouched screen
@@ -416,7 +415,7 @@ TEST(SelfCheckScreen, NoContentOutsideSafeRect) {
     }
 }
 
-// M6, fix round 1: the perf-overlay toggle persists to Settings
+// The perf-overlay toggle persists to Settings
 // (ns="ui", key="perf_overlay") and is restored on the next boot. This
 // drives that restore path directly (writing the setting the same way a
 // prior session's long-press would have left it) rather than simulating
@@ -467,7 +466,7 @@ TEST(SelfCheckScreen, PerfOverlaySettingPersistsAcrossRestarts) {
     }
 }
 
-// M6, fix round 1: WISP_PERF is emitted every 5s via Platform::emit_line.
+// WISP_PERF is emitted every 5s via Platform::emit_line.
 // Not "cheap" in wall-clock terms, but bounded and worth the ~5s to cover
 // end to end (format, device lookups, heap_info being empty) rather than
 // only unit-testing pieces of it.

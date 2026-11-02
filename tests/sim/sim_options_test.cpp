@@ -1,4 +1,4 @@
-// TDD step 1 (task-13-brief.md): simulator command-line parsing.
+// Tests for simulator command-line parsing.
 // sim_options.hpp/.cpp live under simulator/ (not any wisp_* component --
 // see that header's file comment), so this test compiles
 // simulator/sim_options.cpp directly (see tests/CMakeLists.txt) rather
@@ -59,7 +59,7 @@ TEST(SimOptions, DisableIsRepeatable) {
     EXPECT_EQ(o.disabled, (std::vector<std::string>{"touch.main", "storage.sd"}));
 }
 
-// Fix round 1, item 4: --exit-after-ms must be a plain non-negative
+// --exit-after-ms must be a plain non-negative
 // base-10 integer -- not "-5" (which a bare strtoul() would silently
 // wrap around to a huge positive value) and not "123abc" (trailing
 // garbage silently ignored).

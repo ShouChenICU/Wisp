@@ -129,8 +129,8 @@ void run_loopback(App& app, std::function<void(const char* status)> on_status) {
     {
         std::lock_guard<os::Mutex> lock(impl->loop_mutex);
         if (impl->loop_stopping || impl->loop_running) {
-            // Either App::stop() has already begun (join_loopback() set
-            // loop_stopping as its first action -- fix round 1, issue 1)
+            // Either App::stop() has already begun (join_loopback() sets
+            // loop_stopping as its first action, before anything else)
             // or a previous run is still in flight (spec 8's "已在运行时
             // 再次触发直接忽略"). Either way, ignore this trigger
             // entirely -- no task spawned, no on_status call.
@@ -148,7 +148,7 @@ void run_loopback(App& app, std::function<void(const char* status)> on_status) {
         os::TaskConfig config;
         config.name = "wisp.loop";
         // Copied (not moved) so the original `on_status` is still usable
-        // below if os::Task::spawn() itself fails (M2).
+        // below if os::Task::spawn() itself fails.
         auto on_status_copy = on_status;
         core::SettingsBackend* settings_backend = impl->platform.settings.get();
         impl->loop_task =

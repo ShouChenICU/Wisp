@@ -3,8 +3,8 @@
 namespace wisp::app {
 
 PowerKeyController::Action PowerKeyController::on_short(bool screen_on) {
-    // Re-review 1 (N2): waking takes priority over a dormant confirm
-    // -dialog decision -- spec 6.7's "待机中按任意键都会唤醒" applies even
+    // Waking takes priority over a dormant confirm-dialog decision --
+    // spec 6.7's "待机中按任意键都会唤醒" applies even
     // if a confirm dialog was already open when automatic standby kicked
     // in (e.g. the user opened it, then left the device idle). The
     // dialog itself (if the caller's UI still has it up) is left alone
@@ -23,7 +23,7 @@ PowerKeyController::Action PowerKeyController::on_short(bool screen_on) {
 }
 
 PowerKeyController::Action PowerKeyController::on_long(bool screen_on) {
-    // Re-review 1 (N2): same wake-first priority as on_short() above.
+    // Same wake-first priority as on_short() above.
     if (!screen_on) {
         if (confirming_) {
             // A dialog was already open before standby -- just wake,

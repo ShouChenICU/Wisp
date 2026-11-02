@@ -45,7 +45,7 @@ void write_raw(const std::string& path, const std::string& contents) {
     f << contents;
 }
 
-// Fix round 2, item 4: RAII guard that chmod()s `path` to `temp_mode` on
+// RAII guard that chmod()s `path` to `temp_mode` on
 // construction and restores its original permissions on destruction --
 // so a test that ASSERTs (and so returns early, skipping any manual
 // cleanup written after the assertion) never leaves a read-only
@@ -150,7 +150,7 @@ TEST(StorageManager, AtomicWriteLeavesNoTmpAndOverwrites) {
     EXPECT_FALSE(exists(p + ".new"));
 }
 
-// Fix round 1, item 1 (controller ruling): a plain ".tmp" can be a torn
+// A plain ".tmp" can be a torn
 // write from any point -- including the very first write to a path, with
 // no prior target and no ".new" ever created -- so it must never be
 // promoted. read_file() recovers only from a leftover ".new" (always a
@@ -234,7 +234,7 @@ TEST(StorageManager, RejectsDotDotPath) {
     EXPECT_EQ(f.mgr->write_atomic(p, bytes("x")).error().code, wisp::ErrorCode::InvalidArgument);
 }
 
-// Fix round 1, item 2 (controller ruling): a non-canonical alias of a
+// A non-canonical alias of a
 // quota-checked path (a doubled slash, or a "." component) must not
 // bypass the internal library quota -- write_atomic() normalizes the
 // path before any prefix check or size accounting.
@@ -255,7 +255,7 @@ TEST(StorageManager, NonCanonicalPathStillCountsAgainstQuota) {
         wisp::ErrorCode::QuotaExceeded);
 }
 
-// Fix round 1, item 2: a driver that reports a mount point with a
+// A driver that reports a mount point with a
 // trailing slash must not break the quota's prefix check -- init() strips
 // it before storing int_mount_/sd_mount_.
 TEST(StorageManager, TrailingSlashMountPointIsNormalized) {
@@ -272,7 +272,7 @@ TEST(StorageManager, TrailingSlashMountPointIsNormalized) {
               wisp::ErrorCode::QuotaExceeded);
 }
 
-// Fix round 1, item 3 (controller ruling): a write-protected/corrupt SD
+// A write-protected/corrupt SD
 // card must not fail init() for internal storage, which is otherwise
 // fine -- it only logs a warning, the same as refresh().
 TEST(StorageManager, InitContinuesWhenSdDirsCannotBeCreated) {
@@ -291,7 +291,7 @@ TEST(StorageManager, InitContinuesWhenSdDirsCannotBeCreated) {
     EXPECT_EQ(str(f.mgr->read_file(p).value()), "ok");
 }
 
-// Fix round 1, item 8: before init() has succeeded, roots() must not
+// Before init() has succeeded, roots() must not
 // fall back to a bogus "/system" built from an empty mount point, and
 // write_atomic()/read_file() must refuse outright.
 TEST(StorageManager, OperationsBeforeInitFail) {
@@ -303,7 +303,7 @@ TEST(StorageManager, OperationsBeforeInitFail) {
     StorageManager mgr(registry, bus);
     // init() deliberately not called.
 
-    // Fix round 2, item 4: use a fresh temp_dir() for the probe paths
+    // Use a fresh temp_dir() for the probe paths
     // instead of a hardcoded "/tmp/..." literal, so this test can't ever
     // collide with another process/run and self-cleans like every other
     // test here.
@@ -318,7 +318,7 @@ TEST(StorageManager, OperationsBeforeInitFail) {
     EXPECT_FALSE(exists(p));
 }
 
-// Fix round 1, item 12: reading a directory must fail cleanly rather than
+// Reading a directory must fail cleanly rather than
 // attempting fopen()/fread() on it.
 TEST(StorageManager, ReadFileOnDirectoryIsInvalidArgument) {
     Fixture f(false);
@@ -327,7 +327,7 @@ TEST(StorageManager, ReadFileOnDirectoryIsInvalidArgument) {
     EXPECT_EQ(f.mgr->read_file(f.in + "/system").error().code, wisp::ErrorCode::InvalidArgument);
 }
 
-// Fix round 1, item 13: mkdir_p() must not silently treat an existing
+// Mkdir_p() must not silently treat an existing
 // non-directory file at a path component as "already there".
 TEST(StorageManager, MkdirPFailsOnNonDirectoryComponent) {
     auto base = wisp::test::temp_dir().string();
@@ -342,7 +342,7 @@ TEST(StorageManager, MkdirPFailsOnNonDirectoryComponent) {
     EXPECT_EQ(mgr.init().error().code, wisp::ErrorCode::IoError);
 }
 
-// Fix round 2, item 1: a caller must not be able to write/read a path
+// A caller must not be able to write/read a path
 // ending in the reserved ".tmp"/".new" suffix -- see has_reserved_suffix()
 // in the .cpp for the three ways that would otherwise go wrong (invisible
 // to the quota, clobbered by write_atomic()'s own bookkeeping, or
@@ -367,7 +367,7 @@ TEST(StorageManager, RejectsReservedSuffixOnRead) {
               wisp::ErrorCode::InvalidArgument);
 }
 
-// Fix round 2, item 2: a "<path>.new" orphaned by a double power cut (one
+// A "<path>.new" orphaned by a double power cut (one
 // write completed and synced but its final rename never happened) must
 // be recovered, not silently discarded by a later write_atomic() call to
 // the same path. write_atomic() promotes it to `path` before doing
@@ -386,7 +386,7 @@ TEST(StorageManager, WriteAtomicPromotesPendingNewBeforeOverwriting) {
     EXPECT_FALSE(exists(p + ".tmp"));
 }
 
-// Fix round 2, item 4: a stray ".tmp" sitting in the library directory
+// A stray ".tmp" sitting in the library directory
 // (e.g. left over from an interrupted write to some other path) must not
 // inflate the quota accounting -- dir_size_recursive() excludes it.
 TEST(StorageManager, StrayTmpInLibraryDoesNotCountTowardQuota) {
@@ -400,7 +400,7 @@ TEST(StorageManager, StrayTmpInLibraryDoesNotCountTowardQuota) {
     ASSERT_TRUE(f.mgr->write_atomic(f.in + "/library/real.bin", std::vector<uint8_t>(900)));
 }
 
-// Fix round 2 (task-18b-review.md, second addendum): set_standby()
+// set_standby()
 // forwards to storage.sd only -- storage.int has no background polling
 // to pause, so it must never see a call at all.
 TEST(StorageManager, SetStandbyForwardsToSdOnlyAndIsIdempotentToObserve) {

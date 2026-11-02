@@ -1,14 +1,13 @@
 # ESP-IDF-only platform port: implements wisp::os on FreeRTOS/esp_timer/
 # heap_caps (os/os_esp.cpp), wisp::port::esp::EspLogSink (log_esp.cpp) and
-# wisp::port::esp::NvsSettingsBackend (settings_nvs.cpp -- replaces the
-# Task 15 RAM-only placeholder, deleted in Task 18), plus the HAL devices
-# boards construct from esp_board_manager's handles and drivers/'s
-# AXP2101/PCF85063/QMI8658 handles: wisp::port::esp::EspDisplay
-# (dev/esp_display.cpp), EspTouch (dev/esp_touch.cpp), EspPower
+# wisp::port::esp::NvsSettingsBackend (settings_nvs.cpp, backed by NVS),
+# plus the HAL devices boards construct from esp_board_manager's handles
+# and drivers/'s AXP2101/PCF85063/QMI8658 handles: wisp::port::esp::
+# EspDisplay (dev/esp_display.cpp), EspTouch (dev/esp_touch.cpp), EspPower
 # (dev/esp_power.cpp), EspClock (dev/esp_clock.cpp), EspImu
 # (dev/esp_imu.cpp), EspGpioButton (dev/esp_button.cpp), EspAudioOut/
-# EspAudioIn (dev/esp_audio.cpp, Task 18) and EspInternalStorage/
-# EspSdStorage (dev/esp_storage.cpp, Task 18). Like wisp_port_sim, this
+# EspAudioIn (dev/esp_audio.cpp) and EspInternalStorage/
+# EspSdStorage (dev/esp_storage.cpp). Like wisp_port_sim, this
 # component is never built on the host (ESP_PLATFORM is never defined for
 # it there, and no host CMakeLists adds it) -- only firmware/main pulls it
 # in. (A handful of pure, platform-free headers factored out of the audio/

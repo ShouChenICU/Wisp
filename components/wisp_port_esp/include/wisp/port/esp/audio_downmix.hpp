@@ -1,9 +1,9 @@
 #pragma once
 
 // Pure, platform-free helper for wisp::port::esp::EspAudioIn (dev/esp_audio.cpp):
-// ES7210 is wired on this board as a 2-channel (stereo) capture path (see
-// docs/hardware/waveshare_amoled_216.md and task-18-brief.md's interface
-// note), but wisp::hal::AudioIn's contract -- and the one caller,
+// ES7210 is wired on this board as a 2-channel (stereo) capture path
+// (see docs/hardware/waveshare_amoled_216.md), but wisp::hal::AudioIn's
+// contract -- and the one caller,
 // components/wisp_app/src/loopback.cpp's "录音回放" self-check -- is mono
 // (AudioFormat::channels == 1). EspAudioIn therefore always opens the
 // codec with 2 physical channels and downmixes every read() here before

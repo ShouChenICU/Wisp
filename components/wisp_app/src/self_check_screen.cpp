@@ -38,9 +38,9 @@ namespace {
 
 constexpr uint32_t kSampleTaskPeriodMs = 20;      // ~50Hz IMU sampling.
 constexpr uint64_t kSlowSampleIntervalMs = 1000;  // power/clock/storage.
-// Re-review 2 (R2-1): how often sample_loop() still takes one power/
-// clock "slow sample" while standby_ is true -- spec 6.7 asks for "约
-// 30s", not a full stop (see sample_loop()'s standby branch).
+// How often sample_loop() still takes one power/clock "slow sample"
+// while standby_ is true -- spec 6.7 asks for "约 30s", not a full stop
+// (see sample_loop()'s standby branch).
 constexpr uint32_t kStandbySlowSampleMs = 30000;
 constexpr uint32_t kUiRefreshMs = 100;
 constexpr uint32_t kPerfReportMs = 5000;
@@ -142,7 +142,7 @@ private:
 
     void start_sampling();
     void sample_loop();
-    // R2-1 (re-review 2): the power/clock "slow sample" -- factored out of
+    // The power/clock "slow sample" -- factored out of
     // sample_loop() so the standby branch can call it on its own ~30s
     // cadence instead of the active-loop cadence (kSlowSampleIntervalMs).
     void sample_slow();
@@ -217,7 +217,7 @@ private:
     // etc.) in ~SelfCheck()'s UI-thread teardown step, specifically so
     // that none of those widgets' LV_EVENT_* callbacks (all registered
     // with `this` as user_data) can still fire after this SelfCheck is
-    // freed -- fix round 1, issue 1: deleting only refresh_timer_/msgbox_
+    // freed -- deleting only refresh_timer_/msgbox_
     // left every other widget (and their callbacks) alive until the next
     // lv_deinit(), so a touch/click between stop_self_check() returning
     // and UiRuntime::stop() actually running could call back into
@@ -230,16 +230,16 @@ private:
     std::atomic<bool> sample_running_{false};
     std::unique_ptr<os::Task> sample_task_;
 
-    // Re-review 1 (N3): mirrors PowerManager::standby(), kept up to date
+    // Mirrors PowerManager::standby(), kept up to date
     // by subscribe_power()'s "power.state" handler rather than read live
     // from PowerManager itself -- sample_loop() runs on its own thread
     // with no UI-task affinity to synchronize against, so this is its
     // own atomic snapshot (same pattern as PowerManager's own standby_).
     // While true, sample_loop() stops reading the IMU at
     // kSampleTaskPeriodMs entirely -- spec 6.7's "待机时...没有高频轮询"
-    // applies to this task too, not just UiRuntime's -- but (re-review 2,
-    // R2-1) still takes one power/clock "slow sample" about every
-    // kStandbySlowSampleMs; see sample_loop()'s standby branch.
+    // applies to this task too, not just UiRuntime's -- but still takes
+    // one power/clock "slow sample" about every kStandbySlowSampleMs;
+    // see sample_loop()'s standby branch.
     std::atomic<bool> standby_{false};
     // Given (woken) by the "power.state":"active" handler so sample_loop
     // () resumes promptly on wake, rather than waiting out its own
@@ -299,7 +299,7 @@ SelfCheck::~SelfCheck() {
         button_sub_ = 0;
     }
 
-    // R2-6 (re-review 2): give PowerManager's generic "any button wakes
+    // Give PowerManager's generic "any button wakes
     // standby" handler back ownership of "button.power" now that this
     // screen's own PowerKeyController (the thing set_power_key_owned(true)
     // in subscribe_buttons() handed it off to) is going away -- see
@@ -352,7 +352,7 @@ void SelfCheck::run_on_ui_thread_blocking(std::function<void()> fn) {
     // this teardown step must actually run -- see root_'s doc comment --
     // not merely be attempted once. UiRuntime's own UI task continuously
     // drains that queue, so a slot frees up promptly; this never spins
-    // forever in practice (M1, fix round 1).
+    // forever in practice.
     while (!ui_->post([fn, done] {
         fn();
         done->give();
@@ -382,8 +382,7 @@ void SelfCheck::build() {
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(col, LV_DIR_VER);
     // No scrollbar: on this rounded-corner screen a bar hugging the right
-    // edge would sit under/near the top-right and bottom-right corners
-    // (M4, fix round 1).
+    // edge would sit under/near the top-right and bottom-right corners.
     lv_obj_set_scrollbar_mode(col, LV_SCROLLBAR_MODE_OFF);
 
     build_header(col);
@@ -599,19 +598,18 @@ void SelfCheck::start_sampling() {
 void SelfCheck::sample_loop() {
     uint64_t last_slow = 0;
     while (sample_running_.load(std::memory_order_acquire)) {
-        // Re-review 1 (N3): standby means "no periodic high-frequency
-        // polling" (spec 6.7) -- IMU sampling at kSampleTaskPeriodMs
-        // (~50Hz) stops entirely while standby_ is true.
+        // Standby means "no periodic high-frequency polling" (spec 6.7)
+        // -- IMU sampling at kSampleTaskPeriodMs (~50Hz) stops entirely
+        // while standby_ is true.
         //
-        // Re-review 2 (R2-1): spec 6.7 asks for power/charging status
-        // (and the clock) to keep being read "约 30s" during standby, not
-        // stopped outright the way the fix-round-2 version of this branch
-        // did -- see task-18b-review.md's R2-1 and the "App 定时器保持
-        // 不变" table above it. take() returning false means
-        // kStandbySlowSampleMs elapsed with no wake signal -- exactly the
-        // "about 30s, take one slow sample" case; true means something
-        // actually woke this task (sample_running_ went false, or standby
-        // ended) and there is nothing to sample right now.
+        // spec 6.7 also asks for power/charging status (and the clock)
+        // to keep being read "约 30s" during standby rather than stopped
+        // outright, unlike IMU sampling above -- see sample_slow().
+        // take() returning false means kStandbySlowSampleMs elapsed with
+        // no wake signal -- exactly the "about 30s, take one slow
+        // sample" case; true means something actually woke this task
+        // (sample_running_ went false, or standby ended) and there is
+        // nothing to sample right now.
         if (standby_.load(std::memory_order_acquire)) {
             if (!standby_wake_.take(kStandbySlowSampleMs)) {
                 sample_slow();
@@ -620,7 +618,7 @@ void SelfCheck::sample_loop() {
         }
         if (imu_) {
             auto r = imu_->read();
-            // R2-2 (re-review 2): enter_standby() can power the IMU off
+            // enter_standby() can power the IMU off
             // while this read() (which runs with no lock held) is still
             // in flight. Publishing a resulting DeviceFailure into
             // snapshot_ after the fact would leave one bogus "IMU 异常"
@@ -702,7 +700,7 @@ void SelfCheck::subscribe_buttons() {
     button_sub_ =
         app_.bus().subscribe("button.", [this](const core::Event& e) { on_button_event(e); });
 
-    // Task 18b review round 1 (C1): from here on, this screen's own
+    // From here on, this screen's own
     // PowerKeyController is the *only* thing that decides what a
     // "button.power" event does to the screen -- PowerManager's own
     // generic "any button wakes standby" handler (power_manager.cpp)
@@ -725,8 +723,7 @@ void SelfCheck::on_button_event(const core::Event& e) {
     // *whole* decision (on_short()/on_long() included, not just the
     // resulting Action) onto the UI thread, rather than calling those
     // here and only posting the result, is what makes every
-    // PowerKeyController call happen on one single thread (fix round 1,
-    // issue 2).
+    // PowerKeyController call happen on one single thread.
     std::string topic = e.topic;
     std::string source = e.source;
     // A dropped post() here silently loses whatever power-key action
@@ -740,8 +737,8 @@ void SelfCheck::on_button_event(const core::Event& e) {
 
             PowerKeyController::Action action = PowerKeyController::Action::None;
             if (source == "button.power") {
-                // Task 18b review round 1 (C1): PowerManager::standby() --
-                // not any state PowerKeyController tracks itself -- is the
+                // PowerManager::standby() -- not any state
+                // PowerKeyController tracks itself -- is the
                 // single source of truth for "is the screen on"; read it
                 // fresh right before deciding, on this same UI thread (the
                 // only thread that ever calls into PowerManager's
@@ -765,7 +762,7 @@ void SelfCheck::on_button_event(const core::Event& e) {
 }
 
 void SelfCheck::subscribe_power() {
-    // Re-review 1 (N3): mirrors subscribe_buttons()'s pattern, but for
+    // Mirrors subscribe_buttons()'s pattern, but for
     // PowerManager's own "power.state" broadcast rather than raw button
     // events -- lets sample_loop() (running on its own thread, not the
     // UI task) stop polling the IMU while in standby without reaching
@@ -786,10 +783,9 @@ void SelfCheck::on_power_event(const core::Event& e) {
 }
 
 void SelfCheck::handle_power_key_action(PowerKeyController::Action action) {
-    // Task 18b: screen on/off now goes through PowerManager (panel/touch
-    // sleep, UI pause, button poll widening, the platform DFS/light
-    // -sleep hook -- spec 6.7), not a direct hal::Display::set_power()
-    // call.
+    // Screen on/off now goes through PowerManager (panel/touch sleep, UI
+    // pause, button poll widening, the platform DFS/light-sleep hook --
+    // spec 6.7), not a direct hal::Display::set_power() call.
     PowerManager* pm = app_.power_manager();
     switch (action) {
         case PowerKeyController::Action::None:
@@ -824,7 +820,7 @@ void SelfCheck::handle_power_key_action(PowerKeyController::Action action) {
 
 void SelfCheck::show_confirm_dialog() {
     if (msgbox_ != nullptr) {
-        return;  // Already up -- see global-constraints.md Review Focus #4.
+        return;  // Already up -- spec 8: no stacked confirm dialogs.
     }
     msgbox_ = lv_msgbox_create(nullptr);
     // lv_msgbox_class's own default width is a fixed LV_DPI_DEF * 2 (see
@@ -859,7 +855,7 @@ void SelfCheck::do_power_off() {
         if (result) {
             return;
         }
-        // Fall through to the platform fallback below (M3, fix round 1)
+        // Fall through to the platform fallback below
         // rather than silently doing nothing -- the user already
         // confirmed shutdown, so a failed Power::power_off() shouldn't
         // leave the device stuck on.

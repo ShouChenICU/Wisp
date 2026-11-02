@@ -9,8 +9,9 @@
 // (tilt) indicator; Wisp additionally enables the gyroscope and uses
 // +/-4g/+/-512dps at a default ODR of 125Hz (spec 5.5's imu.main caps).
 // The gyroscope register sequence and the ODR table in qmi8658_conv.h
-// are new, not ported -- see that header's comment and
-// task-17-report.md for the real-hardware check this needs.
+// are new, not ported -- see that header's comment, and
+// docs/hardware/waveshare_amoled_216.md's acceptance table (row 12) for
+// the real-hardware check this needs.
 //
 // Not a wisp_* portable component: this is a pure-C ESP-IDF component
 // (drivers/), consumed only by wisp::port::esp::EspImu
@@ -53,8 +54,8 @@ esp_err_t qmi8658_read(qmi8658_handle_t handle, qmi8658_sample_t* out);
 // unchanged.
 esp_err_t qmi8658_set_odr(qmi8658_handle_t handle, uint32_t hz);
 
-// IMU power-down stopgap (spec 6.7 standby; see task-18b-report.md's
-// fix round 2): `on == false` clears CTRL7's sensor-enable bits
+// IMU power-down stopgap (spec 6.7 standby): `on == false` clears
+// CTRL7's sensor-enable bits
 // (accelerometer + gyroscope off, lowest-power state short of a full
 // reset/power rail cut); `on == true` re-runs the full sensor
 // configuration sequence at the currently-selected output data rate

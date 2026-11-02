@@ -21,9 +21,9 @@ wisp::Result<std::string> take_value(int argc, const char* const* argv, int& i, 
 }
 
 // Parses `s` as a non-negative, base-10 uint32_t with no trailing
-// garbage (fix round 1, item 4 -- a bare std::strtoul() call silently
-// accepts "-5" by wrapping it around, and silently accepts "5abc" by
-// just ignoring the "abc"). Returns false (leaving `out` untouched) for
+// garbage -- a bare std::strtoul() call silently accepts "-5" by
+// wrapping it around, and silently accepts "5abc" by just ignoring the
+// "abc". Returns false (leaving `out` untouched) for
 // anything else, including an empty string or one that doesn't fit in
 // 32 bits.
 bool parse_uint32(const std::string& s, uint32_t& out) {

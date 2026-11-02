@@ -54,7 +54,7 @@ struct UiPerf {
 // C++11 magic statics); safe to call from any thread, before or after any
 // UiRuntime exists. UiRuntime::start() installs this as the default theme
 // font; exposed at namespace scope since it doesn't depend on any
-// UiRuntime instance (e.g. for Task 12's self-check UI).
+// UiRuntime instance (e.g. for wisp_app's self-check UI).
 const lv_font_t* default_font();
 
 // Runs a single-threaded LVGL 9.5 instance over a wisp::hal::Display (and,
@@ -127,7 +127,7 @@ public:
     // loop iteration of lag, same as on_ui_thread()'s active_task mirror).
     bool paused() const;
 
-    // Task 18b/spec 6.7: installs `cb`, called (on the UI task, from
+    // spec 6.7: installs `cb`, called (on the UI task, from
     // inside the pointer input device's read callback) every time a
     // touch read returns at least one point. Used by
     // wisp::app::PowerManager to reset its idle clock on touch activity

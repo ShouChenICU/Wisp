@@ -1,9 +1,9 @@
 #pragma once
 
-// Task 19a / spec 6.3: publishes the two sub-project-1 power topics the
-// design spec lists but Task 18b never implemented -- "power.charging.
-// changed" and "power.battery.low" -- by polling wisp::hal::Power (device
-// id "power.main") on its own periodic os::Timer. Lives in wisp_core (not
+// Spec 6.3: publishes the two sub-project-1 power topics --
+// "power.charging.changed" and "power.battery.low" -- by polling
+// wisp::hal::Power (device id "power.main") on its own periodic
+// os::Timer. Lives in wisp_core (not
 // wisp_app) for the same reason wisp::core::StorageManager does: it only
 // needs a hal:: device, an EventBus and Settings, nothing from wisp_app/
 // wisp_ui.

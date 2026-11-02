@@ -66,9 +66,8 @@ TEST(Pcf85063Conv, YearPlausibility) {
     EXPECT_TRUE(pcf85063_year_plausible(2099));
 }
 
-// Fix round 1: pcf85063_decode() now rejects garbage registers beyond
-// just the OS flag -- an invalid BCD nibble, or a BCD-valid but
-// out-of-calendar-range field (see task-17-report.md).
+// pcf85063_decode() rejects garbage registers beyond just the OS flag --
+// an invalid BCD nibble, or a BCD-valid but out-of-calendar-range field.
 
 TEST(Pcf85063Conv, BcdValidRejectsNibbleAboveNine) {
     EXPECT_FALSE(pcf85063_bcd_valid(0x1A));  // low nibble 0xA

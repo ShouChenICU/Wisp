@@ -35,9 +35,8 @@ jobs:
 
   firmware:
     runs-on: ubuntu-latest
-    # Pinned ESP-IDF v6.0.3 toolchain + Python env (see
-    # .superpowers/sdd/2026-11-01-foundation/task-15-brief.md and
-    # AGENTS.md section 4's firmware build line). set-target runs first so
+    # Pinned ESP-IDF v6.0.3 toolchain + Python env (see AGENTS.md
+    # section 4's firmware build line). set-target runs first so
     # the component manager fetches esp_board_manager, whose idf.py
     # extension provides `idf.py bmgr`; bmgr then generates the
     # (gitignored) firmware/components/gen_bmgr_codes/ from

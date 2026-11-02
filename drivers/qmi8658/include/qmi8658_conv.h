@@ -7,8 +7,8 @@
 // gyroscope conversion and the ODR-code lookup table are NOT from MyOS,
 // which only ever drove the accelerometer: they follow the QMI8658
 // register map's publicly documented encoding, and should be checked
-// against real hardware (see task-17-report.md's manual verification
-// steps) since MyOS never exercised them.
+// against real hardware (see docs/hardware/waveshare_amoled_216.md's
+// acceptance table, row 12) since MyOS never exercised them.
 //
 // Kept header-only/pure so these can be unit-tested on the host without
 // pulling in driver/i2c_master.h -- see tests/drivers/qmi8658_conv_test.cpp.

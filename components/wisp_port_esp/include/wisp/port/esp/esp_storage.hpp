@@ -1,14 +1,14 @@
 #pragma once
 
-// ESP-IDF wisp::hal::Storage devices (task-18-brief.md):
+// ESP-IDF wisp::hal::Storage devices:
 //
 //   - EspInternalStorage ("storage.int"/"littlefs", caps removable=false,
 //     fs="littlefs"): mounts the "storage" flash partition (see
 //     firmware/partitions.csv, spec 7.4) with esp_vfs_littlefs_register()
 //     directly -- this is *not* a bmgr device (board_devices.yaml has no
-//     fs_littlefs entry): bmgr's own littlefs device type exists but
-//     task-18-brief.md calls for esp_vfs_littlefs_register() directly, so
-//     that is what EspInternalStorage::create() does. Always mounted at
+//     fs_littlefs entry): EspInternalStorage::create() calls
+//     esp_vfs_littlefs_register() directly instead of going through
+//     bmgr. Always mounted at
 //     "/int"; never removable, so online() is always true once
 //     constructed. A mount failure (even after esp_littlefs's own
 //     internal format-and-retry, format_if_mount_failed=true) means this
@@ -23,12 +23,10 @@
 //     see the constructor; AGENTS.md's "板子无关" rule keeps the actual
 //     bmgr device name/chip model string out of this ESP-only *portable*
 //     component). Always registered, even when no card is present at
-//     boot (board.cpp then records DeviceState::Missing/"no card" --
-//     task-18-brief.md).
+//     boot (board.cpp then records DeviceState::Missing/"no card").
 //
-//     Threading (fix round 1 -- see task-18-report.md's "Fix round 1"
-//     section for the review this responds to): every slow/blocking
-//     operation -- esp_board_manager_{,de}init_device_by_name(),
+//     Threading: every slow/blocking operation --
+//     esp_board_manager_{,de}init_device_by_name(),
 //     sdmmc_get_status() (a CMD13 round-trip), esp_vfs_fat_info() (can
 //     scan the FAT table on some cards) -- runs on a dedicated,
 //     low-priority worker os::Task this class owns, *never* on whichever
@@ -153,8 +151,8 @@ public:
     // ("/sd" -- board_devices.yaml). `bmgr_device_name`/`model` are
     // board-specific facts board.cpp passes in (AGENTS.md's "板子无关"
     // rule: this ESP-only *portable* component must not itself name a
-    // specific board's bmgr device or chip model -- fix round 1, these
-    // used to be hard-coded here). `already_mounted`/`card` reflect
+    // specific board's bmgr device or chip model). `already_mounted`/
+    // `card` reflect
     // whether esp_board_manager_init() (called by board.cpp before
     // constructing this device) already succeeded in mounting the device
     // at boot; `card` must be non-null whenever `already_mounted` is
@@ -182,14 +180,13 @@ public:
     // Fails with ErrorCode::StorageUnavailable if not currently mounted.
     Result<wisp::hal::Capacity> capacity() override;
 
-    // Fix round 2 (task-18b-review.md, second addendum): pauses the
-    // worker's CMD13 presence probe and mount-retry attempts while
-    // `standby` is true -- see wisp::hal::Storage::set_standby()'s doc
-    // comment for the contract (online()/capacity() are unaffected,
+    // Pauses the worker's CMD13 presence probe and mount-retry attempts
+    // while `standby` is true -- see wisp::hal::Storage::set_standby()'s
+    // doc comment for the contract (online()/capacity() are unaffected,
     // always cheap, never touch hardware either way). The worker blocks
-    // on a semaphore while paused rather than continuing to poll at
-    // kWorkerPollMs (task-18b-review.md's "must block, not spin, while
-    // paused") -- see worker_main(). set_standby(false) wakes it
+    // on a semaphore while paused, rather than continuing to poll at
+    // kWorkerPollMs, so it blocks rather than spins while paused -- see
+    // worker_main(). set_standby(false) wakes it
     // immediately; set_standby(true) doesn't need to wake anything (the
     // worker notices the flag itself, at latest the next time its
     // bounded wait -- or whatever kWorkerPollMs-granularity sleep it was
@@ -230,7 +227,7 @@ private:
     bool logged_absent_ = false;
 
     std::atomic<bool> worker_running_{true};
-    // Fix round 2, second addendum: standby_ is read by the worker task
+    // standby_ is read by the worker task
     // and written by whichever thread calls set_standby() (PowerManager,
     // via StorageManager::set_standby() -- see that chain's own doc
     // comments); standby_wake_ wakes the worker promptly out of its

@@ -1,4 +1,4 @@
-// Task 13 fix round 1, item 1: exercises the real SDL-backed
+// Exercises the real SDL-backed
 // SimAudioOut/SimAudioIn devices under SDL's "dummy" audio driver --
 // the same driver simulator/main.cpp selects in --headless mode. The
 // dummy driver always provides a (fake, but functional) playback
@@ -64,8 +64,8 @@ TEST_F(SimAudioTest, PlaybackOpenWriteCloseDoesNotHang) {
 }
 
 TEST_F(SimAudioTest, WriteThrottlesAndCloseDrainsRatherThanDroppingAudio) {
-    // Fix round 2, item N1's regression test: the original write()
-    // checked the ~200ms queued-bytes cap only once before a single
+    // A naive write() implementation checks the ~200ms queued-bytes cap
+    // only once before a single
     // SDL_QueueAudio() call for the *whole* buffer, so a 300ms clip
     // queued (and thus "wrote") near-instantly; close() then called
     // SDL_CloseAudioDevice() immediately, which discards whatever
@@ -91,8 +91,8 @@ TEST_F(SimAudioTest, WriteThrottlesAndCloseDrainsRatherThanDroppingAudio) {
     uint64_t after_write = wisp::os::now_ms();
     ASSERT_TRUE(written) << written.error().message;
     EXPECT_EQ(written.value(), clip.size());
-    // Fix round 3, item R1: 80ms was the theoretical max (300ms clip -
-    // 200ms cap = 100ms, minus polling slop), not a realistic floor --
+    // 80ms is the theoretical max (300ms clip - 200ms cap = 100ms, minus
+    // polling slop), not a realistic floor --
     // the device actually starts pulling queued bytes into its own
     // ~64ms internal buffer as soon as playback begins, so write()
     // routinely returns in ~75-80ms. A reviewer measured 13-36/40
@@ -126,8 +126,8 @@ TEST_F(SimAudioTest, WriteBeforeOpenFails) {
 }
 
 TEST_F(SimAudioTest, OpenTwiceFailsInsteadOfLeakingTheFirstDevice) {
-    // Fix round 2, item N5: a second open() while already open must
-    // fail (rather than silently overwriting `device_` with a new SDL
+    // A second open() while already open must fail (rather than
+    // silently overwriting `device_` with a new SDL
     // device and leaking the first one).
     wisp::port::sim::SimAudioOut out("audio_out.main");
     wisp::hal::AudioFormat format;
@@ -146,9 +146,9 @@ TEST_F(SimAudioTest, OpenTwiceFailsInsteadOfLeakingTheFirstDevice) {
 TEST_F(SimAudioTest, CaptureAbsenceOrPresenceIsHandledWithoutHanging) {
     // Mirrors SimBoard::init()'s own probe (sim_board.cpp): on hosts
     // where the dummy driver has no capture device, open() must fail
-    // cleanly (DeviceFailure) rather than hang or crash -- exercising
-    // the fallback fix round 1, item 1 requires even though
-    // SimBoard::init() itself is expected to avoid ever reaching it.
+    // cleanly (DeviceFailure) rather than hang or crash -- a path this
+    // test exercises directly even though SimBoard::init() itself is
+    // expected to avoid ever reaching it.
     // On hosts where the dummy driver does emulate a microphone, a full
     // open/read/close round trip must complete (bounded by read()'s own
     // timeout) without hanging.

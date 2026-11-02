@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simulator smoke tests (task-14-brief.md).
+"""Simulator smoke tests.
 
 Runs the wisp_sim executable (simulator/CMakeLists.txt, built by the
 host CMake project) through a handful of --headless scenarios and
@@ -170,9 +170,11 @@ def read_png_chunks(path):
 def inflate_stored_blocks(zlib_data):
     """Decodes a zlib stream made only of uncompressed ("stored")
     deflate blocks (RFC 1950/1951) -- exactly what
-    components/wisp_port_sim/png_writer.cpp emits (task-14-brief.md:
-    "只需跳过 zlib 头、逐块读取，不需要真正的 inflate"). Skips the
-    2-byte zlib header, then walks each stored block's 1-byte header
+    components/wisp_port_sim/png_writer.cpp emits: it only ever writes
+    stored blocks, never a real deflate compressor, so this only needs
+    to skip the zlib header and walk the blocks, not actually inflate
+    anything. Skips the 2-byte zlib header, then walks each stored block's
+    1-byte header
     (final bit + BTYPE) and 4-byte length/~length pair."""
     pos = 2  # CMF, FLG
     raw = bytearray()

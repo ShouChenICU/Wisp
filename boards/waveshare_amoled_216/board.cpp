@@ -20,14 +20,14 @@
 //     EspGpioButton)
 //   - bmgr's audio_dac/audio_adc esp_codec_dev handles ->
 //     audio_out.main/audio_in.main (wisp::port::esp::EspAudioOut/
-//     EspAudioIn, ES8311/ES7210; Task 18)
+//     EspAudioIn, ES8311/ES7210)
 //   - esp_vfs_littlefs_register() directly (not a bmgr device) ->
-//     storage.int (wisp::port::esp::EspInternalStorage; Task 18).
+//     storage.int (wisp::port::esp::EspInternalStorage).
 //     Registered before esp_board_manager_init() below, since it doesn't
 //     depend on bmgr at all -- a bmgr/peripheral failure must not force
-//     storage.int missing too (fix round 1).
+//     storage.int missing too.
 //   - bmgr's fs_sdcard SDMMC device -> storage.sd (wisp::port::esp::
-//     EspSdStorage; Task 18) -- registered even when no card is present
+//     EspSdStorage) -- registered even when no card is present
 //     at boot (DeviceState::Missing/"no card"), since it hot-plugs later
 //     via a worker task EspSdStorage itself owns (see that class's
 //     comment on why: online()/capacity() must stay cheap, since they're
@@ -89,7 +89,7 @@ constexpr const char* kBmgrSdcard = "fs_sdcard";
 constexpr const char* kSdMountPoint = "/sd";
 // Chip/module string reported as storage.sd's DeviceInfo::model. Passed
 // into EspSdStorage's constructor rather than hard-coded in wisp_port_esp
-// (AGENTS.md's "板子无关" rule -- fix round 1).
+// (AGENTS.md's "板子无关" rule).
 constexpr const char* kSdModel = "sdcard-sdmmc";
 
 // Shared I2C bus peripheral name as declared in board_peripherals.yaml
@@ -100,9 +100,9 @@ constexpr const char* kBmgrI2cMaster = "i2c_master";
 constexpr int kCornerRadius = 40;
 // CO5300 partial updates must start/end on even coordinates.
 constexpr int kAreaAlign = 2;
-// Task 18b review round 1 (I2, user-approved deviation from the brief's
-// literal "call esp_lcd_panel_disp_sleep()" -- see
-// docs/hardware/waveshare_amoled_216.md's "待机与省电" section): this
+// Deliberate, user-approved deviation from calling
+// esp_lcd_panel_disp_sleep() directly -- see
+// docs/hardware/waveshare_amoled_216.md's "待机与省电" section: this
 // board's CO5300 is wired with a hardware reset GPIO
 // (board_devices.yaml's lcd_panel_config.reset_gpio_num), which makes
 // esp_lcd_panel_disp_sleep() escalate to a deep standby that clears GRAM
@@ -121,8 +121,8 @@ constexpr gpio_num_t kPinBtnPower = GPIO_NUM_16;
 constexpr gpio_num_t kPinBtnVolUp = GPIO_NUM_18;
 constexpr gpio_num_t kPinBtnVolDown = GPIO_NUM_0;
 
-// Task 18b review round 1 (I4) / re-review 1 (N7): outputs that must
-// keep driving their pin through every automatic light sleep, not just
+// Outputs that must keep driving their pin through every automatic
+// light sleep, not just
 // the gpio_config() these are set up with once at boot -- see
 // hold_outputs_during_light_sleep()'s comment below for why this is
 // needed at all. Pin numbers match board_devices.yaml's
@@ -137,7 +137,7 @@ constexpr gpio_num_t kPinBtnVolDown = GPIO_NUM_0;
 constexpr gpio_num_t kPinDisplayReset = GPIO_NUM_39;
 constexpr gpio_num_t kPinTouchReset = GPIO_NUM_40;
 constexpr gpio_num_t kPinAudioPaEnable = GPIO_NUM_46;
-// N7: with EspDisplayConfig::PanelSleep::DcsSleep, the panel stays
+// With EspDisplayConfig::PanelSleep::DcsSleep, the panel stays
 // powered and keeps its register/GRAM state through standby -- CS
 // floating (rather than held at its idle-high level) while SPI's SCLK
 // also floats risks noise on SCLK being latched as spurious command
@@ -367,7 +367,7 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
     }
 }
 
-// Task 18b review round 1 (I4): firmware/sdkconfig.defaults'
+// firmware/sdkconfig.defaults'
 // CONFIG_FREERTOS_USE_TICKLESS_IDLE=y pulls in
 // CONFIG_PM_SLP_DISABLE_GPIO on this chip (ESP-IDF's
 // ESP_SLEEP_GPIO_RESET_WORKAROUND Kconfig default for S3), which
@@ -386,7 +386,7 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
 //   - the speaker PA's enable line: floating (rather than held low, its
 //     configured default) risks an audible pop or needless leakage
 //     current through the amplifier while in standby;
-//   - the display panel's CS (re-review 1, N7): see kPinDisplayCs's
+//   - the display panel's CS: see kPinDisplayCs's
 //     comment -- low risk, but cheap to hold at its idle-high level
 //     alongside the other three.
 // See docs/hardware/waveshare_amoled_216.md's "待机与省电" section for
@@ -450,7 +450,7 @@ void init_audio(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& re
 // failure (e.g. the display bus) fell through to a blanket
 // record_failed("storage.int", ...) even though internal storage was
 // never actually attempted, forcing the app's read-only degrade for a
-// reason unrelated to storage (fix round 1).
+// reason unrelated to storage.
 void init_internal_storage(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
     auto internal = wisp::port::esp::EspInternalStorage::create();
     if (!internal) {

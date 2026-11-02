@@ -31,22 +31,22 @@
 // write to a path, before any ".new"/target ever existed) and is never
 // treated as valid data: both write_atomic() and read_file() recover a
 // missing target by promoting a leftover "<path>.new" if present (at the
-// very start of write_atomic(), before anything else -- fix round 2,
-// item 2: otherwise a *second* power cut, between one write's completed-
-// and-synced ".new" and its final rename, followed by a fresh
-// write_atomic() call to the same path, would have that fresh call's own
-// `remove("<path>.new")` bookkeeping silently discard the still-good
-// orphaned data instead of recovering it), and otherwise discard any
-// leftover "<path>.tmp" as garbage (best-effort, errors ignored) and
-// report the file as not found (ErrorCode::NotFound). See AGENTS.md's
-// "FAT 上的原子写" trap and global-constraints.md Review Focus #1; the
-// two-name scheme was a fix-round-1 ruling after review found the
-// single-".tmp" version could promote a torn first write.
+// very start of write_atomic(), before anything else: otherwise a
+// *second* power cut, between one write's completed-and-synced ".new"
+// and its final rename, followed by a fresh write_atomic() call to the
+// same path, would have that fresh call's own `remove("<path>.new")`
+// bookkeeping silently discard the still-good orphaned data instead of
+// recovering it), and otherwise discard any leftover "<path>.tmp" as
+// garbage (best-effort, errors ignored) and report the file as not
+// found (ErrorCode::NotFound). See AGENTS.md's "FAT 上的原子写" trap;
+// two temp names (rather than just ".tmp") are what let this recovery
+// distinguish a complete-but-unrenamed write from a torn first write --
+// a single-".tmp" scheme can't tell those apart.
 //
 // Because ".tmp" and ".new" are reserved for this bookkeeping, a caller
 // may not write_atomic()/read_file() a path whose last component itself
-// ends in ".tmp" or ".new" -- fix round 2, item 1: such a file would
-// silently escape the library quota (dir_size_recursive() excludes those
+// ends in ".tmp" or ".new": such a file would silently escape the
+// library quota (dir_size_recursive() excludes those
 // suffixes), get clobbered by another write to the same base name's own
 // "<path>.new"/".tmp" juggling, or be promoted/discarded as if it were
 // write_atomic()'s own bookkeeping. Rejected with
@@ -88,8 +88,9 @@
 //
 // Only <cstdio>, <dirent.h>, <sys/stat.h>, <unistd.h> are used for all
 // filesystem access (no std::filesystem) -- those are available in both
-// the host simulator's libc and ESP-IDF's newlib, so the exact same code
-// runs on both ports; see global-constraints.md's portable-layer rule.
+// the host simulator's libc and ESP-IDF's newlib (via its VFS), so the
+// exact same code runs on both ports -- see docs/architecture.md's
+// dependency rules on why POSIX file APIs are allowed here.
 
 #include <cstdint>
 #include <span>
@@ -219,8 +220,7 @@ public:
     // capacity, for diagnostics (e.g. a self-check screen).
     StorageStatus status() const;
 
-    // Fix round 2 (task-18b-review.md, second addendum): forwards to
-    // storage.sd's hal::Storage::set_standby() (a no-op if "storage.sd"
+    // Forwards to storage.sd's hal::Storage::set_standby() (a no-op if "storage.sd"
     // isn't registered, or if its implementation doesn't override the
     // hal::Storage default) -- see that method's doc comment. A no-op
     // for "storage.int": internal flash has no background polling to
@@ -231,9 +231,9 @@ public:
     // observes whatever online() returns while the underlying device's
     // own detection is paused.
     //
-    // Re-review 2 (R2-5): unlike every other method here, this one does
-    // NOT take mutex_ -- see its own doc comment in storage_manager.cpp
-    // for why that's still safe.
+    // Unlike every other method here, this one does NOT take mutex_ --
+    // see its own doc comment in storage_manager.cpp for why that's
+    // still safe.
     void set_standby(bool standby);
 
 private:

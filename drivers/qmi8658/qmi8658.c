@@ -2,7 +2,7 @@
 // handling and the accelerometer register sequence are taken from
 // src/hal/hal_imu.cpp (HalImu) -- see docs/references.md. The gyroscope
 // sequence and the ODR table (qmi8658_conv.h) are new; see this
-// component's qmi8658.h file header and task-17-report.md.
+// component's qmi8658.h file header.
 
 #include "qmi8658.h"
 
@@ -18,9 +18,8 @@ static const char* TAG = "qmi8658";
 
 #define QMI8658_I2C_ADDR 0x6B
 #define QMI8658_I2C_FREQ_HZ 400000
-/* Despite the unit in its old name, this already held a tick count
- * (pdMS_TO_TICKS() converts once, at this macro's expansion site) --
- * fix round 1 renames it to match. */
+/* Named _TICKS, not _MS: this already holds a tick count --
+ * pdMS_TO_TICKS() converts once, at this macro's expansion site. */
 #define QMI8658_I2C_TIMEOUT_TICKS pdMS_TO_TICKS(20)
 
 /* qmi8658_set_odr()/the HAL's EspImu::set_rate() clamp requested rates to

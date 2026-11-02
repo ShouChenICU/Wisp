@@ -85,7 +85,7 @@ TEST(ButtonService, LongPressFiresOnceWhileHeld) {
                                                   "button.power.up"}));
 }
 
-// Task 18b: PowerManager widens the poll period to 50ms while in
+// PowerManager widens the poll period to 50ms while in
 // standby. The short/long press semantics (including the 1000ms long
 // threshold) must keep working identically at the new period -- only the
 // detection resolution (how quickly a transition is noticed) changes.
@@ -162,7 +162,7 @@ TEST(ButtonService, IndependentButtons) {
     EXPECT_EQ(f.topics.back(), "button.vol_up.short");
 }
 
-// Review fix round 1, item 1: a second start() call while the Timer is
+// A second start() call while the Timer is
 // already running (and the button is mid-hold) used to re-run
 // refresh_buttons() -- unsynchronized against the Timer thread's
 // concurrent poll(), and discarding every button's in-progress

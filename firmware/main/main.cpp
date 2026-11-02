@@ -1,15 +1,12 @@
-// ESP32-S3 firmware entry point (Task 15 -- see
-// .superpowers/sdd/2026-11-01-foundation/task-15-brief.md): wires up the
-// ESP-only pieces of wisp::app::Platform (EspLogSink,
-// wisp::port::esp::NvsSettingsBackend -- Task 18, replacing Task 15's RAM
-// -only placeholder -- emit_line/request_power_off/heap_info) around
-// whichever board firmware/CMakeLists.txt's WISP_BOARD selected, then
-// runs the same wisp::app::App boot sequence the PC simulator runs (see
+// ESP32-S3 firmware entry point: wires up the ESP-only pieces of
+// wisp::app::Platform (EspLogSink, wisp::port::esp::NvsSettingsBackend,
+// emit_line/request_power_off/heap_info) around whichever board
+// firmware/CMakeLists.txt's WISP_BOARD selected, then runs the same
+// wisp::app::App boot sequence the PC simulator runs (see
 // simulator/main.cpp and wisp/app/app.hpp). The board registers
-// display.main/touch.main (Task 16 -- see
-// boards/waveshare_amoled_216/board.cpp), so App::start() brings up the
-// UI and the self-check screen; if the panel fails to come up it falls
-// back to the headless path instead.
+// display.main/touch.main (see boards/waveshare_amoled_216/board.cpp),
+// so App::start() brings up the UI and the self-check screen; if the
+// panel fails to come up it falls back to the headless path instead.
 
 #include <cstdio>
 #include <memory>
@@ -33,7 +30,7 @@
 
 namespace {
 
-// Task 18b/spec 6.7: DFS (dynamic frequency scaling) is always on; only
+// Spec 6.7: DFS (dynamic frequency scaling) is always on; only
 // automatic tickless light sleep is toggled, by PowerManager via
 // Platform::set_standby -- entering standby turns it on, exiting turns
 // it back off. Requires CONFIG_PM_ENABLE and
@@ -44,7 +41,7 @@ namespace {
 // docs/hardware/waveshare_amoled_216.md).
 void apply_pm_config(bool light_sleep_enable) {
     esp_pm_config_t cfg = {};
-    // Task 18b review round 1 (M3): this file is shared by every ESP
+    // This file is shared by every ESP
     // board firmware/CMakeLists.txt's WISP_BOARD can select, not just
     // this board's S3 (max 240MHz) -- a different chip (e.g. an C3,
     // whose max is 160MHz) would fail esp_pm_configure() outright if

@@ -1,7 +1,7 @@
 #pragma once
 
-// The PC simulator's wisp::app::Board (spec 6.1/8.1, task-13-brief.md):
-// constructs every simulated HAL device and registers them into the
+// The PC simulator's wisp::app::Board (spec 6.1/8.1): constructs every
+// simulated HAL device and registers them into the
 // DeviceRegistry wisp::app::App::start() hands to Board::init(). The
 // other simulated devices (touch/imu/power/clock/button/audio/storage)
 // are declared in a private header (dev/sim_devices.hpp) shared by their
@@ -50,9 +50,9 @@ namespace wisp::port::sim {
 
 // Simulated 480x480 panel. flush() only ever copies into an internal
 // RGB565 framebuffer under mutex_ -- it never touches SDL -- because
-// flush() runs on wisp_ui's UI task, and "only the main thread touches
-// SDL video" (task-13-brief.md); simulator/main.cpp's SDL render loop
-// instead polls copy_framebuffer() at ~60 Hz from the main thread.
+// flush() runs on wisp_ui's UI task, and only the main thread may touch
+// SDL video; simulator/main.cpp's SDL render loop instead polls
+// copy_framebuffer() at ~60 Hz from the main thread.
 class SimDisplay : public wisp::hal::Display {
 public:
     SimDisplay(std::string id, int32_t width, int32_t height, std::string shape,

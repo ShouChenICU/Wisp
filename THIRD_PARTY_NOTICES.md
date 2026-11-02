@@ -278,7 +278,7 @@ license file under `firmware/managed_components/`:
 | `bblanchon/arduinojson` | 7.4.3 | `firmware/main` (see the ArduinoJson section below) | MIT |
 | `espressif/esp_board_manager` | 0.7.5 | `firmware/main` | Espressif Modified MIT License (`LicenseRef-Espressif-Modified-MIT`, below) |
 | `espressif/esp_boards` | 0.7.2 | esp_board_manager | Espressif Modified MIT License (same text, copyright 2026) |
-| `espressif/esp_codec_dev` | 2.0.0-beta5 | `firmware/main` (direct dependency, Task 18 -- esp_board_manager only pulls this in conditionally on a Kconfig option that doesn't exist yet on a from-scratch configure, the same bootstrap issue esp_lcd_touch/esp_lcd_co5300 below already avoid this way; used directly by `wisp::port::esp::EspAudioOut`/`EspAudioIn`, `components/wisp_port_esp/dev/esp_audio.cpp`) | Espressif Modified MIT License (same text, copyright 2023-2026) |
+| `espressif/esp_codec_dev` | 2.0.0-beta5 | `firmware/main` (direct dependency -- esp_board_manager only pulls this in conditionally on a Kconfig option that doesn't exist yet on a from-scratch configure, the same bootstrap issue esp_lcd_touch/esp_lcd_co5300 below also avoid by depending on it directly; used directly by `wisp::port::esp::EspAudioOut`/`EspAudioIn`, `components/wisp_port_esp/dev/esp_audio.cpp`) | Espressif Modified MIT License (same text, copyright 2023-2026) |
 | `espressif/esp_lcd_co5300` | 2.2.0 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
 | `espressif/esp_lcd_touch` | 1.2.1 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
 | `waveshare/esp_lcd_touch_cst9217` | 2.0.0 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
@@ -287,7 +287,7 @@ license file under `firmware/managed_components/`:
 | `espressif/usb` | 1.6.0 | esp_board_manager (via usb_host_uac) | Apache-2.0 |
 | `espressif/usb_host_uac` | 1.5.0 | esp_board_manager | Apache-2.0 |
 | `espressif/cmake_utilities` | 0.5.3 | esp_board_manager (build-time CMake helpers only) | Apache-2.0 |
-| `joltwallet/littlefs` | 1.23.1 | `firmware/main` (Task 18, backs `wisp::port::esp::EspInternalStorage`, `components/wisp_port_esp/dev/esp_storage.cpp`) | MIT (ESP-IDF wrapper) + BSD-3-Clause (vendored littlefs core) -- both texts below |
+| `joltwallet/littlefs` | 1.23.1 | `firmware/main` (direct dependency, backs `wisp::port::esp::EspInternalStorage`, `components/wisp_port_esp/dev/esp_storage.cpp`) | MIT (ESP-IDF wrapper) + BSD-3-Clause (vendored littlefs core) -- both texts below |
 
 The Apache-2.0 components are under the same license as this project
 (full text in `LICENSE`).
@@ -324,8 +324,7 @@ Espressif Modified MIT License
 
 ## MyOS (drivers for AXP2101, PCF85063, QMI8658)
 
-- Project: the user's own `~/Projects/MyOS` (not published; same author as
-  this project)
+- Project: MyOS (not published; same author as this project)
 - Files ported: `src/hal/hal_power.{hpp,cpp}`, `src/hal/hal_rtc.{hpp,cpp}`,
   `src/hal/hal_imu.{hpp,cpp}` -> `drivers/axp2101/`, `drivers/pcf85063/`,
   `drivers/qmi8658/` (register sequences and conversion formulas; see
@@ -473,7 +472,7 @@ freely, subject to the following restrictions:
   pins the exact version; `firmware/dependencies.lock` is the authority;
   not vendored or forked in this repo)
 - Used by: `wisp::port::esp::EspInternalStorage`
-  (`components/wisp_port_esp/dev/esp_storage.cpp`, Task 18) for
+  (`components/wisp_port_esp/dev/esp_storage.cpp`) for
   `storage.int` via `esp_vfs_littlefs_register()`/`esp_littlefs_info()`
 - License: MIT (wrapper) + BSD-3-Clause (vendored littlefs core)
 

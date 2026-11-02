@@ -6,7 +6,7 @@
 // how the same contract is realized on top of FreeRTOS instead of
 // <thread>/<mutex>/<condition_variable>.
 //
-// Fix round 1, M5: every Timer in the whole process shares one real
+// Every Timer in the whole process shares one real
 // FreeRTOS task to run its cb() on (ESP_TIMER_TASK dispatch -- see the
 // Timer section below), sized by CONFIG_ESP_TIMER_TASK_STACK_SIZE (raised
 // to 6144 in sdkconfig.defaults). Keep every Timer cb() short and
@@ -160,7 +160,7 @@ void Semaphore::give() {
 // ---------------------------------------------------------------------------
 
 struct Task::Impl {
-    // std::atomic, not a plain TaskHandle_t (fix round 1, M4): join()
+    // std::atomic, not a plain TaskHandle_t: join()
     // nulls this out once the task has actually finished and its TCB is
     // gone, so a *later* is_current() call can't spuriously match a
     // brand-new, unrelated task whose TCB FreeRTOS happened to recycle
@@ -195,7 +195,7 @@ Task::Task() = default;
 
 Task::~Task() { join(); }
 
-// Fix round 1, M2: TaskConfig::priority (os.hpp) is a portable int with no
+// TaskConfig::priority (os.hpp) is a portable int with no
 // documented range -- clamped here (the ESP-IDF-specific mapping) to
 // FreeRTOS's valid [0, configMAX_PRIORITIES - 1] range rather than
 // passing an out-of-range value straight to xTaskCreatePinnedToCore(),
@@ -208,14 +208,14 @@ std::unique_ptr<Task> Task::spawn(const TaskConfig& config, std::function<void()
     task->impl_->fn = std::move(fn);
     task->impl_->done = xSemaphoreCreateBinary();
     if (task->impl_->done == nullptr) {
-        // Fix round 1, M1: unlike Mutex/Semaphore/Timer (which have no
+        // Unlike Mutex/Semaphore/Timer (which have no
         // failure channel and abort via fatal()), spawn() already has a
         // documented "returns nullptr" failure path (for
         // xTaskCreatePinnedToCore() below) -- reuse it here instead of
         // aborting, since a task that was never created is exactly what
         // nullptr already means.
         //
-        // Fix round 2, N3: `task` (a unique_ptr<Task>) goes out of scope
+        // `task` (a unique_ptr<Task>) goes out of scope
         // on this `return` and runs ~Task(), which calls join(). join()'s
         // fast path only applies once `joined` is already true -- without
         // marking it here, join() would instead fall into its normal path
@@ -269,7 +269,7 @@ void Task::join() {
     if (!impl_) {
         return;
     }
-    // Fix round 1, M3: joining a task from within that very task would
+    // Joining a task from within that very task would
     // deadlock forever (it can never give `done` -- it's parked here
     // waiting for itself). configASSERT() (not a plain comment) so a
     // debug/assert-enabled build catches the bug immediately instead of
@@ -285,7 +285,7 @@ void Task::join() {
     if (!impl_->joined.exchange(true)) {
         xSemaphoreTake(impl_->done, portMAX_DELAY);
         vSemaphoreDelete(impl_->done);
-        // Fix round 1, M4: see Impl::handle's comment above.
+        // See Impl::handle's comment above.
         impl_->handle.store(nullptr);
     }
 }
@@ -325,7 +325,7 @@ bool Task::is_current() const {
 //     list lock before invoking the callback and only re-acquires it
 //     after, so there is no self-deadlock on that lock either.
 //
-// Fix round 1 (M2 in the controller's review): the running_mutex_ dance
+// The running_mutex_ dance
 // above has a real race against that same lock-release-before-invoking
 // behavior. esp_timer's dispatcher pops a due timer off its internal
 // list (releasing the list lock) and only *then* calls trampoline(),
@@ -354,7 +354,7 @@ bool Task::is_current() const {
 // oneself would deadlock (the fence could never run while we block
 // waiting for it, since we *are* the esp_timer task).
 //
-// Fix round 2 (N1 in the controller's review): is_on_timer_thread() above
+// is_on_timer_thread() above
 // is scoped to *this* Timer -- it only answers "is this Timer's own cb()
 // currently on the call stack of the task we're running on". That misses
 // a real case: Timer Y's cb() (running on the esp_timer task) calls
@@ -387,7 +387,7 @@ bool Task::is_current() const {
 
 namespace {
 
-// Fix round 2, N1: true if the calling task is esp_timer's own shared
+// True if the calling task is esp_timer's own shared
 // dispatch task, regardless of which Timer (if any) owns the cb()
 // currently on its call stack. Looked up by name (esp_timer registers
 // its dispatch task under this exact name -- see esp_timer.c's
@@ -418,7 +418,7 @@ struct Timer::Impl {
     // called from different tasks (mirrors the sim port's control_mtx).
     SemaphoreHandle_t control_mutex = nullptr;
 
-    // Fix round 1 (M2): the "fence" used by stop() to synchronize with
+    // The "fence" used by stop() to synchronize with
     // the esp_timer task itself -- see the file-header comment above for
     // why running_mutex_ alone isn't enough. A dedicated one-shot timer
     // (not e.g. reusing `handle` below) so arming it never disturbs this
@@ -468,7 +468,7 @@ Timer::Timer(const char* name, uint32_t period_ms, bool periodic, std::function<
     impl_->running_mutex = xSemaphoreCreateMutex();
     impl_->control_mutex = xSemaphoreCreateMutex();
     impl_->fence_sem = xSemaphoreCreateBinary();
-    // Fix round 1, M1: Timer is constructed directly (no factory/nullptr
+    // Timer is constructed directly (no factory/nullptr
     // -return convention the way Task::spawn() has), so a resource
     // failure here has no graceful way to be reported -- abort via
     // fatal() rather than continuing with a null handle every start()/
@@ -551,7 +551,7 @@ void Timer::stop() {
     xSemaphoreTake(impl_->control_mutex, portMAX_DELAY);
     esp_timer_stop(impl_->handle);  // no-op (ESP_ERR_INVALID_STATE) if already unarmed
 
-    // Fix round 2, N1: is_on_timer_thread() above already ruled out
+    // is_on_timer_thread() above already ruled out
     // "this Timer's own cb() is calling its own stop()". This check
     // catches the other case that can reach here while still on the
     // esp_timer task: some *other* Timer's cb() (synchronously, still on
@@ -572,7 +572,7 @@ void Timer::stop() {
         // before esp_timer_stop() above could prevent it) has returned.
         xSemaphoreTake(impl_->running_mutex, portMAX_DELAY);
         xSemaphoreGive(impl_->running_mutex);
-        // Fix round 1, M2: the running_mutex_ wait above is not by
+        // The running_mutex_ wait above is not by
         // itself enough to rule out the race described in this
         // section's file-header comment (a callback already popped off
         // esp_timer's list, but not yet far enough into trampoline() to

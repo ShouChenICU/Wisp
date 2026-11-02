@@ -137,7 +137,7 @@ TEST(EventBus, WaitIdleFalseOnTimeoutWhenNeverStarted) {
     EXPECT_FALSE(bus.wait_idle(50));
 }
 
-// Covers fix round 1, issue 1: inflight_ used to be incremented *after*
+// inflight_ used to be incremented *after*
 // push_drop_oldest() returned, so under concurrent publishers the
 // dispatcher could pop and start running a handler for one publisher's
 // event before that publisher's own increment ran, letting wait_idle()
@@ -153,7 +153,7 @@ TEST(EventBus, WaitIdleFalseOnTimeoutWhenNeverStarted) {
 // on the old code, 0/30 on the fix) while finishing in well under a
 // second against the fix.
 //
-// Fix round 2, issue 4: the watcher's "idle, yet a handler is running"
+// The watcher's "idle, yet a handler is running"
 // check must not read wait_idle() and a separate "is a handler running"
 // flag as two independent, non-atomic snapshots -- a brand new handler
 // invocation (for a different, legitimately-just-published event) could
@@ -214,7 +214,7 @@ TEST(EventBus, WaitIdleNeverTrueWhileHandlerRunningUnderConcurrentPublish) {
               static_cast<uint64_t>(kThreads * kPerThread));
 }
 
-// Covers fix round 1, issue 2: a handler calling stop() on itself used to
+// A handler calling stop() on itself used to
 // leave the (soon to exit) dispatcher Task unjoined; a subsequent start()
 // from another thread would then overwrite that unique_ptr<Task> with a
 // freshly spawned one -- destroying an unjoined Task -- and the old loop
@@ -261,7 +261,7 @@ TEST(EventBus, StartFromWithinHandlerReturnsError) {
     EXPECT_TRUE(got_error);
 }
 
-// Covers fix round 1, issue 4: unsubscribe() from a thread other than the
+// Unsubscribe() from a thread other than the
 // dispatcher's own must block until any in-flight dispatch has finished,
 // so that once it returns, the handler is guaranteed not to be running
 // (and never will run again) -- making "unsubscribe(), then free
@@ -291,7 +291,7 @@ TEST(EventBus, UnsubscribeFromExternalThreadWaitsForInFlightDispatch) {
     EXPECT_EQ(n, 1);  // never invoked again once unsubscribe() had returned
 }
 
-// Covers fix round 1, issue 7: the overflow warning is throttled (logged
+// The overflow warning is throttled (logged
 // for the first drop, then every 64th), rather than once per drop.
 TEST(EventBus, OverflowWarningIsThrottled) {
     wisp::log::reset_for_test();
@@ -315,7 +315,7 @@ TEST(EventBus, OverflowWarningIsThrottled) {
     wisp::log::reset_for_test();
 }
 
-// Covers fix round 2, issue 1: "am I on the dispatcher thread?" used to
+// "am I on the dispatcher thread?" used to
 // be derived from the dispatcher_ handle (dispatcher_->is_current()),
 // but stop()/~EventBus()/start() move that handle out *before* the
 // dispatcher task actually finishes exiting. So a handler that
@@ -397,7 +397,7 @@ TEST(EventBus, StartFromWithinHandlerReturnsErrorDuringExternalStop) {
     EXPECT_TRUE(got_busy_error.load());
 }
 
-// Covers fix round 2, issue 2(a): start() used to treat *any* existing
+// start() used to treat *any* existing
 // dispatcher_ as stale, even one that was still live and idle (blocked
 // in ready_.take(kForever), nothing else around to wake it) -- joining
 // it would then hang forever. start() called on an already-running bus
@@ -418,7 +418,7 @@ TEST(EventBus, StartCalledTwiceThenPublishDeliversPromptly) {
     EXPECT_EQ(got, std::vector<std::string>{"x"});
 }
 
-// Covers fix round 2, issue 2(b)/(c): when start() does retire a stale
+// When start() does retire a stale
 // (no-longer-live) dispatcher, it must wake it (give a ready_ token)
 // *before* joining, and a dispatcher exiting because it's stale must
 // give back whatever token woke it -- otherwise the token count falls
@@ -476,7 +476,8 @@ TEST(EventBus, StopFromHandlerThenStartRepeatedlyNeverStrandsAnEvent) {
         }
         // Wait for the handler to have actually called stop() before
         // restarting -- stop() itself is safe to call concurrently with
-        // a start() racing in (see the other fix round 2 tests), but
+        // a start() racing in (see the other dispatcher-retirement tests
+        // in this file), but
         // this test is specifically about the stale-retirement path, so
         // drive it deterministically rather than also racing stop() vs
         // start() against each other here.

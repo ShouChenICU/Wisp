@@ -2,7 +2,7 @@
 # 外部依赖锁定版本"). lvgl/lvgl matches components/wisp_ui's LVGL 9.5.0 (see
 # cmake/wisp_host_deps.cmake for the host-side pin); bblanchon/arduinojson
 # matches components/wisp_base's host-side pin (cmake/wisp_host_deps.cmake).
-# Task 16 (board bring-up): esp_board_manager plus the CO5300 panel and
+# Board bring-up: esp_board_manager plus the CO5300 panel and
 # CST9217 touch drivers its board YAML uses, and esp_lcd_touch (pulled in
 # by those, but board.cpp/wisp_port_esp use its API directly). Each was
 # first requested as the plan's range ("~0.7.5", "~2.2.0", "*") and then
@@ -16,7 +16,7 @@ dependencies:
   espressif/esp_lcd_co5300: "2.2.0"
   espressif/esp_lcd_touch: "1.2.1"
   waveshare/esp_lcd_touch_cst9217: "2.0.0"
-  # Task 18 (audio/storage/NVS): backs wisp::port::esp::EspInternalStorage
+  # Backs wisp::port::esp::EspInternalStorage
   # (components/wisp_port_esp/dev/esp_storage.cpp) directly via
   # esp_vfs_littlefs_register() -- not a bmgr fs_littlefs device. First
   # requested as the plan's "~1.23.1" and then pinned to the exact version

@@ -52,7 +52,7 @@ TEST(BootReport, ToValue) {
     EXPECT_EQ(r.find("imu.main")->reason, "disabled");
 }
 
-// Task 12b (spec 5.6): a Display-class manifest entry gets a "safe_area"
+// Spec 5.6: a Display-class manifest entry gets a "safe_area"
 // derived from its caps, alongside (not inside) "caps"; a non-display
 // device gets none at all.
 TEST(DeviceRegistry, ManifestSafeArea) {

@@ -20,8 +20,7 @@
 #     PUBLIC/INTERFACE as appropriate. The target always gets C++20 and
 #     -fno-exceptions -fno-rtti.
 #
-# Must be a macro(), not a function() (Task 15 fix -- see
-# task-15-report.md): ESP-IDF's build extracts each component's
+# Must be a macro(), not a function(): ESP-IDF's build extracts each component's
 # REQUIRES/PRIV_REQUIRES by running a throwaway `cmake -P` *subprocess*
 # (tools/cmake/scripts/component_get_requirements.cmake) that defines only
 # a handful of stub macros (idf_component_register among them) and then
@@ -55,8 +54,8 @@
 #      it just defined via PARENT_SCOPE, one level up from wherever
 #      wisp_component() itself was invoked.
 #
-# Fix round 1, M8: being a macro() (not a function()) cuts both ways --
-# macro()s have no scope of their own, so every variable this body sets
+# Being a macro() (not a function()) cuts both ways -- macro()s have
+# no scope of their own, so every variable this body sets
 # (the cmake_parse_arguments() outputs: WISP_COMPONENT_NAME,
 # WISP_COMPONENT_SRCS, WISP_COMPONENT_INCLUDE_DIRS, WISP_COMPONENT_REQUIRES,
 # WISP_COMPONENT_IDF_REQUIRES, WISP_COMPONENT_HOST_LIBS, plus the local

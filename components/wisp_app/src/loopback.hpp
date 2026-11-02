@@ -34,7 +34,7 @@ class App;
 // all) if a previous run_loopback() task for this `App` is still running
 // (see spec 8's "已在运行时再次触发直接忽略") -- or if join_loopback()
 // has already been called for this App and reset_loopback() hasn't run
-// since (see fix round 1, issue 1: this is what makes it safe to trigger
+// since -- this is what makes it safe to trigger
 // "录音回放" concurrently with App::stop(), without risking a "wisp.loop"
 // task that starts after join_loopback() has already returned and so
 // never gets joined, outliving the SelfCheck whose label its on_status

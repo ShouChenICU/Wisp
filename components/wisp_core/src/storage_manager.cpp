@@ -268,7 +268,7 @@ Result<void> write_synced_file(const std::string& tmp, std::span<const uint8_t> 
 // read_file() so that a *second* write to a path whose previous write
 // left an orphaned ".new" recovers that data into `path` first, instead
 // of write_atomic()'s own best-effort `remove(path + ".new")` (see
-// write_atomic()) silently discarding it -- fix round 2, item 2.
+// write_atomic()) silently discarding it.
 Result<void> promote_pending_new(const std::string& path) {
     if (path_exists(path)) {
         return Result<void>::ok();
@@ -292,7 +292,7 @@ StorageManager::StorageManager(DeviceRegistry& registry, EventBus& bus, StorageC
 Result<void> StorageManager::init() {
     std::lock_guard<os::Mutex> lock(mutex_);
 
-    // Fix round 2, item 3: set this false up front, before anything else
+    // Set this false up front, before anything else
     // -- so that if this call is a *re*-init that fails partway (e.g.
     // storage.int was unplugged since a previous successful init()), the
     // manager is left unusable (StorageUnavailable/empty roots) rather
@@ -382,7 +382,7 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
     }
     const std::string& path = normalized.value();
 
-    // Fix round 2, item 1: a caller writing directly to one of
+    // A caller writing directly to one of
     // write_atomic()'s own reserved names would be invisible to the
     // quota, and would be clobbered by this very function's "<path>.new"
     // bookkeeping below -- see has_reserved_suffix()'s doc comment.
@@ -395,7 +395,7 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
         return Result<void>::err(ErrorCode::StorageUnavailable, "sd card offline: " + path);
     }
 
-    // Fix round 2, item 2: recover a "<path>.new" orphaned by a *double*
+    // Recover a "<path>.new" orphaned by a *double*
     // power cut (first write completed and synced, but the final rename
     // to `path` never happened; then this write_atomic() call starts
     // before anything noticed) before this call's own bookkeeping -- in
@@ -465,7 +465,7 @@ Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_pa
     }
     const std::string& path = normalized.value();
 
-    // Fix round 2, item 1: see the matching check in write_atomic().
+    // See the matching check in write_atomic().
     if (has_reserved_suffix(path)) {
         return Result<std::vector<uint8_t>>::err(ErrorCode::InvalidArgument,
                                                  "path must not end in '.tmp' or '.new': " + path);
@@ -567,7 +567,7 @@ StorageStatus StorageManager::status() const {
 }
 
 void StorageManager::set_standby(bool standby) {
-    // R2-5 (re-review 2): deliberately not taking mutex_ here. PowerManager
+    // Deliberately not taking mutex_ here. PowerManager
     // calls this from the UI thread while holding its own transition_
     // mutex_, and mutex_ can be held elsewhere (write_atomic()'s fsync +
     // rename) for up to the duration of an SD write -- taking it here too

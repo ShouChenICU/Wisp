@@ -49,9 +49,10 @@ public:
 namespace wisp::board {
 
 // Constructs the Board for whichever single board this binary was built
-// for. Defined by the concrete board/platform target (e.g. Task 15's ESP
-// port, or the simulator's own board), never by wisp_app itself; nothing
-// calls this yet as of Task 11.
+// for. Defined by the concrete board/platform target (e.g.
+// firmware/main/main.cpp for the ESP port), never by wisp_app itself --
+// the PC simulator instead builds its own SimBoard directly (see
+// simulator/main.cpp), since it isn't tied to any one physical board.
 std::unique_ptr<wisp::app::Board> create_board();
 
 }  // namespace wisp::board

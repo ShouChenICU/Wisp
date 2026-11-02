@@ -189,13 +189,13 @@ Result<void> EspDisplay::set_brightness(uint8_t level) {
     std::lock_guard<wisp::os::Mutex> lock(mutex_);
     auto r = tx_dcs_locked(kDcsWriteBrightness, &level, 1);
     if (r) {
-        last_brightness_ = level;  // re-applied by a later set_power(true) -- see I3.
+        last_brightness_ = level;  // re-applied by a later set_power(true); see below.
     }
     return r;
 }
 
 Result<void> EspDisplay::set_power_vendor_locked(bool on) {
-    // Task 18b/spec 6.7: set_power(false) is "panel sleep", not just
+    // Spec 6.7: set_power(false) is "panel sleep", not just
     // "display off" -- turn the pixel output off first, then put the
     // controller itself to sleep (co5300: SLPIN, settling, and -- on a
     // board wired with a reset GPIO -- deep standby); set_power(true)
@@ -234,13 +234,13 @@ Result<void> EspDisplay::set_power_vendor_locked(bool on) {
 }
 
 Result<void> EspDisplay::set_power_dcs_locked(bool on) {
-    // EspDisplayConfig::PanelSleep::DcsSleep (task-18b-review.md I2):
-    // ordinary MIPI DCS sleep sent directly via tx_dcs_locked(), never
+    // EspDisplayConfig::PanelSleep::DcsSleep: ordinary MIPI DCS sleep
+    // sent directly via tx_dcs_locked(), never
     // esp_lcd_panel_disp_sleep()/disp_on_off() (see that enum value's
     // doc comment for why the two must never be mixed on one panel).
     if (on) {
-        // N6 (re-review 1): enforce sleep_out_settle_ms as the minimum
-        // spacing between the last SLPIN and this SLPOUT -- see
+        // Enforce sleep_out_settle_ms as the minimum spacing between
+        // the last SLPIN and this SLPOUT -- see
         // EspDisplayConfig::sleep_out_settle_ms's doc comment. Only
         // matters for a rapid sleep-then-immediately-wake (e.g. two
         // power-key presses within the ~50ms standby poll interval);
@@ -283,8 +283,9 @@ Result<void> EspDisplay::set_power(bool on) {
     }
     powered_ = on;
 
-    // I3 (task-18b-review.md): re-apply the last brightness the caller
-    // asked for. Not fatal to set_power() itself if this fails -- the
+    // Re-apply the last brightness the caller asked for (some panels
+    // reset their brightness register across a sleep/wake cycle). Not
+    // fatal to set_power() itself if this fails -- the
     // panel is already awake and displaying, just possibly at the wrong
     // brightness.
     if (on && last_brightness_.has_value()) {

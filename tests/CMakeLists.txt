@@ -67,8 +67,8 @@ wisp_test(NAME sim_board_test SRCS sim/sim_board_test.cpp
           LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os TIMEOUT 20)
 
 # Host-testable conversion helpers ported from MyOS into drivers/*/include/
-# *_conv.h (Task 17 -- see docs/references.md and each header's own
-# comment). The drivers themselves are pure ESP-IDF components (driver/
+# *_conv.h (see docs/references.md and each header's own comment). The
+# drivers themselves are pure ESP-IDF components (driver/
 # i2c_master.h) and only ever build under idf.py; these targets compile
 # only the header-only, platform-free conversion math, so each needs its
 # driver's include/ added explicitly (wisp_test() only adds tests/ itself).
@@ -80,8 +80,8 @@ wisp_test(NAME qmi8658_conv_test SRCS drivers/qmi8658_conv_test.cpp)
 target_include_directories(qmi8658_conv_test PRIVATE ${WISP_ROOT}/drivers/qmi8658/include)
 
 # Host-testable pure logic factored out of wisp_port_esp's ESP-only audio/
-# SD-storage code (Task 18 -- see task-18-report.md): the stereo->mono
-# downmix and the SD-card retry/backoff policy live in plain headers under
+# SD-storage code: the stereo->mono downmix and the SD-card retry/backoff
+# policy live in plain headers under
 # components/wisp_port_esp/include/ with no ESP-IDF include, so (like the
 # drivers/*_conv.h tests above) only that include dir is needed here, not
 # the whole wisp_port_esp component (which never builds on the host).
@@ -90,7 +90,7 @@ target_include_directories(audio_downmix_test PRIVATE ${WISP_ROOT}/components/wi
 wisp_test(NAME sd_retry_test SRCS port_esp/sd_retry_test.cpp)
 target_include_directories(sd_retry_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 
-# End-to-end smoke test (Task 14): runs the actual wisp_sim executable
+# End-to-end smoke test: runs the actual wisp_sim executable
 # through a handful of --headless scenarios and checks its
 # WISP_BOOT_REPORT/WISP_MANIFEST stdout and screenshot. See
 # tests/smoke/sim_smoke.py's file header.

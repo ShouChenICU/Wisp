@@ -94,7 +94,7 @@ public:
 
     uint8_t brightness() const { return brightness_.load(); }
 
-    // Task 18b: lets PowerManager tests check that enter_standby()/
+    // Lets PowerManager tests check that enter_standby()/
     // exit_standby() call set_power() exactly once per real transition
     // (idempotency -- a second enter_standby() while already in standby
     // must not call it again).
@@ -308,7 +308,7 @@ public:
         return wisp::Result<wisp::hal::Capacity>::ok(cap);
     }
 
-    // Fix round 2 (task-18b-review.md, second addendum): records every
+    // Records every
     // set_standby() call, mirroring FakeImu/FakeTouch::set_power()'s
     // set_power_calls()/powered() pattern.
     void set_standby(bool standby) override {

@@ -36,9 +36,9 @@ TEST(Axp2101Conv, CombineH5L8UsesLow5BitsOfHigh) {
     EXPECT_EQ(axp2101_combine_h5l8(0x00, 0x00), 0);
 }
 
-// Fix round 1: these four encoders were rewritten from scratch against
-// XPowersLib after MyOS's original REG 0x62/0x63/0x64 encodings were
-// found to be wrong (see axp2101_conv.h's file comment). Expected values
+// These four encoders are written against XPowersLib, not MyOS's
+// original REG 0x62/0x63/0x64 encodings, which were found to be wrong
+// (see axp2101_conv.h's file comment). Expected values
 // below are taken directly from XPowersLib's xpowers_axp2101_chg_curr_t/
 // chg_iterm_t/chg_vol_t enums.
 

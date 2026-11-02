@@ -66,7 +66,7 @@ const lv_font_t* default_font() {
     // this is a mutable copy with `fallback` pointed at the CJK font.
     // Function-local static: lazily constructed exactly once (C++11 magic
     // statics are thread-safe), the first time anyone (UiRuntime::start()
-    // or an outside caller, e.g. Task 12) asks for it.
+    // or an outside caller, e.g. wisp_app's self-check UI) asks for it.
     static lv_font_t s_ui_font = [] {
         lv_font_t font = lv_font_montserrat_16;
         font.fallback = &lv_font_cjk_16;
@@ -109,7 +109,7 @@ struct UiRuntime::Impl {
     // perf_overlay_enabled() below. Readable from any thread.
     std::atomic<bool> perf_overlay_enabled{false};
 
-    // Task 18b/spec 6.7: set by set_paused(), read at the top of every
+    // spec 6.7: set by set_paused(), read at the top of every
     // ui_main() loop iteration. Just an atomic flag -- see
     // UiRuntime::set_paused()'s doc comment for why that's enough (no
     // extra synchronization needed against stop(), post(), or the
@@ -165,8 +165,8 @@ void UiRuntime::Impl::ui_main() {
         if (paused.load(std::memory_order_acquire)) {
             was_paused = true;
             // Blocks indefinitely waiting for post()'d work -- no LVGL
-            // timer fires and no flush happens while paused, and (M1,
-            // fix round 1) no periodic wake happens either: spec 6.7
+            // timer fires and no flush happens while paused, and no
+            // periodic wake happens either: spec 6.7
             // requires standby to have "没有周期性的 UI 定时器，也没有
             // 高频轮询", so this must not poll on any fixed interval of
             // its own. A concurrent post() wakes this immediately
@@ -196,8 +196,8 @@ void UiRuntime::Impl::ui_main() {
         uint64_t loop_start = os::now_ms();
         drain_post_queue();
         if (paused.load(std::memory_order_acquire)) {
-            // N1 (re-review 1): a job drained just above may itself have
-            // called set_paused(true) (e.g. PowerManager::enter_standby()
+            // A job drained just above may itself have called
+            // set_paused(true) (e.g. PowerManager::enter_standby()
             // running entirely inside one post()'d job, right after some
             // other posted job dirtied a widget) -- the unconditional
             // lv_timer_handler() call below used to still run once more
@@ -460,9 +460,9 @@ void UiRuntime::stop() {
     if (!impl_->running.exchange(false, std::memory_order_acq_rel)) {
         return;
     }
-    // M1 (fix round 1): ui_main()'s paused branch now blocks forever
-    // (os::kForever) waiting for post()'d work, rather than polling
-    // every kPausedPollMs -- so if the UI task happens to be paused and
+    // ui_main()'s paused branch blocks forever (os::kForever) waiting
+    // for post()'d work, rather than polling every kPausedPollMs --
+    // so if the UI task happens to be paused and
     // sitting in that wait right now, it will never notice `running`
     // just went false on its own. Push a no-op to wake it; if the queue
     // is already full, there is pending work that will wake it on its
@@ -505,9 +505,9 @@ bool UiRuntime::on_ui_thread() const {
 
 void UiRuntime::set_paused(bool paused) {
     bool was_paused = impl_->paused.exchange(paused, std::memory_order_acq_rel);
-    // M1 (fix round 1): ui_main()'s paused branch blocks forever
-    // (os::kForever) waiting for post()'d work, rather than polling --
-    // so unpausing (paused: true -> false) must itself wake a UI task
+    // ui_main()'s paused branch blocks forever (os::kForever) waiting
+    // for post()'d work, rather than polling -- so unpausing (paused:
+    // true -> false) must itself wake a UI task
     // that might be sitting in that wait right now, or it would never
     // notice `paused` went false until some *other* post()'d job
     // happened to arrive on its own. Only needed on an actual true->
@@ -568,7 +568,7 @@ UiPerf UiRuntime::perf() const {
     UiPerf p;
     p.frames = impl_->frames_total;
 
-    // Task 18b/spec 6.7: while paused, ui_main() never runs
+    // spec 6.7: while paused, ui_main() never runs
     // lv_timer_handler()/flush_cb(), so busy_samples/flush_samples
     // simply decay to empty (and frame_times stop growing) as the 1s
     // window slides past the last real activity -- fps/cpu_percent/

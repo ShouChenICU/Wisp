@@ -2,7 +2,7 @@
 
 // Boot orchestration: wires every wisp_core service (and, when a display
 // is present, wisp_ui) together behind one App object that both the PC
-// simulator (Task 13) and the ESP firmware (Task 15) construct from a
+// simulator and the ESP firmware both construct from a
 // Platform. See AGENTS.md's layering rule -- wisp_app sits above wisp_ui,
 // so this header may include wisp_core/wisp_ui headers freely, but (like
 // every portable layer) must never include platform headers.
@@ -22,9 +22,9 @@
 //      namespace's `brightness` key (default 200) to it, starts a
 //      UiRuntime over it (plus "touch.main" if also registered).
 //      Otherwise records the "mode": "headless" boot-report note.
-//      Either way, constructs the PowerMonitor (Task 19a, spec 6.3/6.7)
+//      Either way, constructs the PowerMonitor (spec 6.3/6.7)
 //      and starts its own internal sample Timer, then constructs the
-//      PowerManager (Task 18b, spec 6.7, handed a pointer to the
+//      PowerManager (spec 6.7, handed a pointer to the
 //      PowerMonitor just built) and starts its periodic idle-check
 //      Timer, then -- if a UiRuntime was started -- builds the
 //      self-check screen (see src/self_check.hpp's start_self_check(),
@@ -66,7 +66,7 @@ namespace wisp::app {
 class PowerManager;
 
 // Everything App needs that varies by port/board. Constructed by the
-// simulator main (Task 13) or the ESP firmware main (Task 15) and handed
+// simulator main or the ESP firmware main and handed
 // to App by value (App takes ownership of `board`/`settings`).
 struct Platform {
     std::unique_ptr<Board> board;
@@ -78,17 +78,17 @@ struct Platform {
     // line ending its destination needs.
     std::function<void(const std::string& line)> emit_line;
 
-    // Fallback shutdown, for the self-check UI's power-off handling (Task
-    // 12) when no "power.*" device capable of powering itself off is
+    // Fallback shutdown, for the self-check UI's power-off handling when no
+    // "power.*" device capable of powering itself off is
     // registered. May be empty if the platform has no such fallback.
     std::function<void()> request_power_off;
 
     // Returns heap diagnostics, e.g. {"internal_free": ..., "large_free":
-    // ...}, for the self-check UI (Task 12). May be empty (no heap
+    // ...}, for the self-check UI. May be empty (no heap
     // diagnostics available).
     std::function<Value()> heap_info;
 
-    // Task 18b/spec 6.7: called by wisp::app::PowerManager with `true`
+    // spec 6.7: called by wisp::app::PowerManager with `true`
     // when entering standby, `false` when exiting. On real hardware,
     // the implementation keeps dynamic frequency scaling (DFS) always
     // on and only toggles automatic tickless light sleep on top of it
@@ -139,7 +139,7 @@ public:
     // nullptr in headless mode (no "display.main" device registered).
     ui::UiRuntime* ui();
 
-    // Task 18b: non-null for the whole lifetime of a started App (see
+    // Non-null for the whole lifetime of a started App (see
     // start()'s Step 4) -- constructed regardless of headless mode,
     // since the idle-timeout/platform-power-hook half of PowerManager's
     // job (see power_manager.hpp) is useful even without a display.
@@ -149,11 +149,11 @@ public:
     // before start() (or after stop()).
     PowerManager* power_manager();
 
-    // The Platform this App was constructed from (Task 12 controller
-    // ruling: the self-check screen needs it for request_power_off,
-    // heap_info, firmware_version, board->name() and the settings
-    // backend -- see src/self_check_screen.cpp). Valid for the whole
-    // lifetime of this App, independent of start()/stop().
+    // The Platform this App was constructed from (needed by the
+    // self-check screen for request_power_off, heap_info,
+    // firmware_version, board->name() and the settings backend -- see
+    // src/self_check_screen.cpp). Valid for the whole lifetime of this
+    // App, independent of start()/stop().
     const Platform& platform() const;
 
 private:

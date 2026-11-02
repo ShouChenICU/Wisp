@@ -29,9 +29,11 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(ArduinoJson)
 
 # ---------------------------------------------------------------------------
-# LVGL — declared now, but only usable once components/wisp_ui/config/lv_conf.h
-# exists (added in Task 10). Skip fetching it until then so earlier tasks are
-# not blocked on a config file that doesn't exist yet.
+# LVGL -- guarded on components/wisp_ui/config/lv_conf.h actually existing
+# (checked below) so this file degrades instead of hard-failing if that
+# config header is ever missing, since LV_BUILD_CONF_PATH pointing at a
+# nonexistent file would otherwise break every target that links `lvgl`,
+# not just wisp_ui.
 #
 # LVGL 9.5's own CMakeLists.txt (env_support/cmake/os_desktop.cmake) reads the
 # cache variable `LV_BUILD_CONF_PATH` -- NOT `LV_CONF_PATH` -- to decide which

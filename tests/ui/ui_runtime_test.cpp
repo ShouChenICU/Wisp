@@ -76,7 +76,7 @@ TEST(UiRuntime, PerfCountsFramesUnderAnimation) {
     ui.stop();
 }
 
-// Fix round 1, review finding #1: lv_display_create() (called from
+// lv_display_create() (called from
 // start()) itself calls lv_sysmon_show_performance() when
 // LV_USE_PERF_MONITOR is on, so without the lv_sysmon_hide_performance()
 // fix in start(), the overlay would default to visible and
@@ -112,7 +112,7 @@ TEST(UiRuntime, PerfOverlayDefaultsHiddenAndToggles) {
     ui.stop();
 }
 
-// Fix round 1, review finding #2: calling snapshot_rgb888() from inside a
+// Calling snapshot_rgb888() from inside a
 // post()'d function (i.e. on the UI task) used to post-and-block, which
 // deadlocks (the posted work can only run once the UI task's own loop
 // drains its queue, which can't happen while that same loop is stuck
@@ -141,7 +141,7 @@ TEST(UiRuntime, SnapshotFromUiThreadDoesNotDeadlock) {
     ui.stop();
 }
 
-// Fix round 1, review finding #3: LVGL's own LV_COLOR_FORMAT_RGB888 draw
+// LVGL's own LV_COLOR_FORMAT_RGB888 draw
 // buffers store each pixel as (blue, green, red), not (red, green, blue);
 // snapshot_rgb888() must swap bytes 0 and 2 per pixel so its documented
 // (R, G, B) byte order is actually correct. Paints the active screen pure
@@ -170,7 +170,7 @@ TEST(UiRuntime, SnapshotBytesAreRgbNotBgr) {
     ui.stop();
 }
 
-// Task 18b, spec 6.7: while paused, the UI task must not call
+// Spec 6.7: while paused, the UI task must not call
 // lv_timer_handler() (so no flush happens, even if something posted
 // invalidates the screen), but post()'d work must still run -- and
 // promptly, not just eventually. Unpausing must produce a flush shortly
@@ -201,7 +201,7 @@ TEST(UiRuntime, SetPausedStopsRenderingButKeepsRunningPostedWork) {
     // doing before. Capturing flush_count() only *after* that point is
     // what makes the following check deterministic.
     //
-    // Task 18b review round 1 (M4): this job deliberately does NOT
+    // This job deliberately does NOT
     // invalidate anything (an earlier version did, with
     // lv_obj_invalidate(lv_screen_active())) -- so the flush this test
     // observes after resuming below can only be attributed to
@@ -263,7 +263,7 @@ TEST(UiRuntime, SetPausedStopsRenderingButKeepsRunningPostedWork) {
     ui.stop();
 }
 
-// Task 18b re-review 1 (N1): a post()'d job that invalidates something
+// A post()'d job that invalidates something
 // and then pauses (set_paused(true)) -- e.g. PowerManager::enter_standby
 // () runs entirely inside one post()'d job, and could easily run right
 // after some other posted job dirtied a widget -- must not have that
@@ -317,7 +317,7 @@ TEST(UiRuntime, PausingInsideAPostedJobSkipsThatIterationsFlush) {
     ui.stop();
 }
 
-// Task 18b review round 1 (M4): UiRuntime::set_touch_activity_cb() had
+// UiRuntime::set_touch_activity_cb() had
 // no direct test -- only PowerManager's own tests exercised it
 // indirectly. This drives it directly: a touch point appearing makes
 // indev_read_cb() (run from inside lv_timer_handler(), on the UI task)

@@ -43,7 +43,7 @@ constexpr const char* kInternalPartitionLabel = "storage";
 //   - "BOARD_DEVICE": esp_board_manager_init_device_by_name()'s own
 //     "Failed to init device: %s" (src/esp_board_device.c) -- fired on
 //     every failed try_mount() alongside the sub-device's own log line,
-//     one layer up (task-18b-brief.md, Task 18 review round 2).
+//     one layer up.
 //   - "DEV_FS_FAT": the fs_fat device type's own "Failed to initialize
 //     sub device: %s" (devices/dev_fs_fat/dev_fs_fat.c), one layer below
 //     DEV_FS_FAT_SUB_SDMMC.
@@ -166,22 +166,22 @@ EspSdStorage::EspSdStorage(std::string mount_point, std::string bmgr_device_name
     EspSdStorage* self = this;
     worker_ = wisp::os::Task::spawn(config, [self] { self->worker_main(); });
     if (!worker_) {
-        // Task 18 review round 2: this used to fail silently, leaving
-        // online()/capacity() permanently reporting "no card" (retry_
-        // stuck at Unmounted, nothing ever calls try_mount() again) with
-        // no indication why -- hot-plug (and the very first mount
-        // attempt) would just never happen.
+        // Without this log line, a failed spawn leaves online()/
+        // capacity() permanently reporting "no card" (retry_ stuck at
+        // Unmounted, nothing ever calls try_mount() again) with no
+        // indication why -- hot-plug (and the very first mount attempt)
+        // would just never happen.
         WLOG_E(kTag, "storage.sd: failed to spawn worker task; hot-plug detection disabled");
     }
 }
 
 EspSdStorage::~EspSdStorage() {
     worker_running_.store(false, std::memory_order_release);
-    // Fix round 2, second addendum: the worker may currently be blocked
-    // on standby_wake_ (if set_standby(true) was called and never
-    // undone before shutdown) -- wake it now so this join() below
-    // notices worker_running_ promptly, rather than waiting out
-    // standby_wake_.take()'s own bounded timeout in worker_main().
+    // The worker may currently be blocked on standby_wake_ (if
+    // set_standby(true) was called and never undone before shutdown) --
+    // wake it now so this join() below notices worker_running_
+    // promptly, rather than waiting out standby_wake_.take()'s own
+    // bounded timeout in worker_main().
     standby_wake_.give();
     if (worker_) {
         worker_->join();
@@ -286,19 +286,19 @@ void EspSdStorage::refresh_capacity_cache() {
 
 void EspSdStorage::worker_main() {
     while (worker_running_.load(std::memory_order_acquire)) {
-        // Fix round 2, second addendum: skip presence probing and mount
-        // retry entirely while in standby -- block on standby_wake_
-        // instead of falling through into the switch below at the usual
+        // Skip presence probing and mount retry entirely while in
+        // standby -- block on standby_wake_ instead of falling through
+        // into the switch below at the usual
         // kWorkerPollMs/kProbeIntervalMs/kRetryIntervalMs cadence.
         // set_standby(false) gives standby_wake_ to resume immediately;
-        // the destructor also gives it unconditionally. Re-review 2
-        // (R2-3): both of those give() paths are unconditional, so
-        // unlike kProbeIntervalMs-style loops elsewhere in this function
-        // (which do need a bounded poll, to notice worker_running_ going
-        // false without anyone giving anything), there's no missed-wake-
-        // up scenario here to guard against with a bounded "safety net"
-        // wait -- wait indefinitely instead of waking once a second for
-        // nothing while standby holds.
+        // the destructor also gives it unconditionally. Both of those
+        // give() paths are unconditional, so unlike kProbeIntervalMs
+        // -style loops elsewhere in this function (which do need a
+        // bounded poll, to notice worker_running_ going false without
+        // anyone giving anything), there's no missed-wake-up scenario
+        // here to guard against with a bounded "safety net" wait --
+        // wait indefinitely instead of waking once a second for nothing
+        // while standby holds.
         if (standby_.load(std::memory_order_acquire)) {
             standby_wake_.take(wisp::os::kForever);
             continue;
@@ -314,9 +314,9 @@ void EspSdStorage::worker_main() {
 
         switch (state) {
             case SdCardState::Mounted: {
-                // R2-4 (re-review 2): also bail out of this wait the
-                // moment standby begins, not just when worker_running_
-                // goes false -- without this, standby starting partway
+                // Also bail out of this wait the moment standby begins,
+                // not just when worker_running_ goes false -- without
+                // this, standby starting partway
                 // through the wait still let one more CMD13 probe (and
                 // capacity refresh) through below before the standby_
                 // check at the top of the outer loop got another chance

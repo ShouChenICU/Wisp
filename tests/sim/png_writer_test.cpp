@@ -1,4 +1,4 @@
-// TDD step 1 (task-13-brief.md): the simulator's screenshot PNG encoder.
+// Tests for the simulator's screenshot PNG encoder.
 // Verifies the file-level framing (signature, IHDR width/height, IHDR
 // CRC, trailing IEND) that write_png_rgb888() must produce; it does not
 // re-verify every chunk's CRC/Adler-32 bit for bit (that's exercised
@@ -55,8 +55,8 @@ uint32_t crc32_of(const uint8_t* data, size_t len) {
 }
 
 // Independent Adler-32 (RFC 1950), kept separate from png_writer.cpp's
-// own implementation for the same reason as crc32_of() above (fix round
-// 1, item 8).
+// own implementation for the same reason as crc32_of() above -- so this
+// test doesn't just compare the production code against itself.
 uint32_t adler32_of(const uint8_t* data, size_t len) {
     uint32_t a = 1;
     uint32_t b = 0;
@@ -116,11 +116,9 @@ TEST(PngWriter, LargerImageSplitsAcrossStoredDeflateBlocks) {
     // 200x200x3 = 120000 bytes of pixel data, plus one filter byte per
     // row (200 rows) = 120200 raw bytes -- over the 65535-byte limit a
     // single deflate "stored" block can hold (see png_writer.cpp's file
-    // header), so this requires exactly two stored blocks. Fix round 1,
-    // item 8: the previous version of this test used a 128x128 image,
-    // whose 49280 raw bytes never actually exceeded 65535 -- it only
-    // ever produced a single block and so never exercised this path at
-    // all.
+    // header), so this requires exactly two stored blocks. A smaller
+    // image (e.g. 128x128, 49280 raw bytes) would stay under 65535 and
+    // so never exercise this path at all.
     constexpr uint32_t w = 200, h = 200;
     constexpr size_t kExpectedRawBytes = static_cast<size_t>(h) * (1 + static_cast<size_t>(w) * 3);
     ASSERT_GT(kExpectedRawBytes, 65535u);

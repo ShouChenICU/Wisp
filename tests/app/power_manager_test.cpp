@@ -49,16 +49,17 @@ namespace {
 // backend under a fresh temp dir -- see tests/core/settings_test.cpp for
 // the same backend used the same way. `set_standby_calls` records every
 // Platform::set_standby() call PowerManager makes. `btn` is
-// "button.power"; `vol_btn` ("button.vol_up") exists so C1's integration
-// tests can distinguish "woken via the owned power key path" from
-// "woken via PowerManager's own generic any-button-wakes-it path".
+// "button.power"; `vol_btn` ("button.vol_up") exists so the power-key-
+// ownership integration tests below can distinguish "woken via the
+// owned power key path" from "woken via PowerManager's own generic
+// any-button-wakes-it path".
 struct Fixture {
-    // `with_storage=false` (fix round 2, second addendum) passes a null
-    // StorageManager* into PowerManager, the same way a headless build
-    // would pass null display/touch/ui/buttons -- see
+    // `with_storage=false` passes a null StorageManager* into
+    // PowerManager, the same way a headless build would pass null
+    // display/touch/ui/buttons -- see
     // NullStorageManagerIsToleratedByStandbyTransitions below. Likewise
-    // `with_power_monitor=false` (Task 19a) passes a null PowerMonitor*;
-    // see NullPowerMonitorIsToleratedByStandbyTransitions below.
+    // `with_power_monitor=false` passes a null PowerMonitor*; see
+    // NullPowerMonitorIsToleratedByStandbyTransitions below.
     explicit Fixture(int64_t screen_off_s = 60, bool with_storage = true,
                      bool with_power_monitor = true) {
         settings_path = (temp_dir() / "power_settings.json").string();
@@ -67,8 +68,8 @@ struct Fixture {
         power_settings.set("screen_off_s", screen_off_s);
 
         bus.start();
-        // Task 19a: an exact-topic subscribe, not a "power."-prefix one --
-        // these tests only care about PowerManager's own "power.state"
+        // An exact-topic subscribe, not a "power."-prefix one -- these
+        // tests only care about PowerManager's own "power.state"
         // topic, and a prefix subscribe would also pick up
         // wisp::core::PowerMonitor's "power.charging.changed"/"power.
         // battery.low" topics on a bus a future test shares with one.
@@ -80,8 +81,8 @@ struct Fixture {
         registry.add(btn);
         registry.add(vol_btn);
 
-        // Fix round 2, second addendum: a real (Fake-backed)
-        // StorageManager, so PowerManager's set_standby() forwarding can
+        // A real (Fake-backed) StorageManager, so PowerManager's
+        // set_standby() forwarding can
         // be exercised the same way as display/touch/imu above.
         registry.add(int_storage);
         registry.add(sd_storage);
@@ -98,7 +99,7 @@ struct Fixture {
         buttons = std::make_unique<ButtonService>(registry, bus);
         buttons->start();
 
-        // Task 19a: a real PowerMonitor (Fake-backed), so PowerManager's
+        // A real PowerMonitor (Fake-backed), so PowerManager's
         // set_standby() forwarding to it can be exercised the same way as
         // storage above -- see
         // EnterAndExitStandbyWidenAndRestorePowerMonitorSampleInterval
@@ -123,8 +124,8 @@ struct Fixture {
         bus.stop();
     }
 
-    // Task 18b review round 1 (M4): power_events is written from the
-    // EventBus's dispatch thread (the subscriber above) and read from
+    // power_events is written from the EventBus's dispatch thread (the
+    // subscriber above) and read from
     // the test thread with no synchronization otherwise -- a real data
     // race (TSan-visible) that happened to "work" only because the races
     // never changed what the already-sampled snapshot looked like by
@@ -139,7 +140,7 @@ struct Fixture {
         return power_events.at(index);
     }
 
-    // Re-review 1 (N4): blocks until every job posted to `ui` so far has
+    // Blocks until every job posted to `ui` so far has
     // actually run, by posting one more and waiting for it -- UiRuntime's
     // post queue is FIFO/single-consumer, so this guarantees any earlier
     // tick()-posted enter_standby_if_still_idle() job has already run (or
@@ -208,8 +209,8 @@ private:
     std::vector<Event> power_events;
 };
 
-// Task 18b review round 1 (C1): a minimal replica of
-// self_check_screen.cpp's own PowerManager/PowerKeyController
+// A minimal replica of self_check_screen.cpp's own
+// PowerManager/PowerKeyController
 // integration glue (on_button_event()/handle_power_key_action()), just
 // enough to exercise the fix end to end without building the full
 // self-check LVGL screen. Must stay in sync with that file's actual
@@ -396,8 +397,8 @@ TEST(PowerManager, UnsupportedImuSleepIsNotAnErrorAndStandbyStillSucceeds) {
     EXPECT_EQ(f.buttons->poll_interval_ms(), 50u);
 }
 
-// Fix round 2, second addendum: `storage` is nullable (headless-style),
-// just like display/touch/imu/ui/buttons already are -- a PowerManager
+// `storage` is nullable (headless-style), just like
+// display/touch/imu/ui/buttons already are -- a PowerManager
 // built without one (e.g. a board that registers no "storage.int" at
 // all) must still complete both transitions normally.
 TEST(PowerManager, NullStorageManagerIsToleratedByStandbyTransitions) {
@@ -416,7 +417,7 @@ TEST(PowerManager, NullStorageManagerIsToleratedByStandbyTransitions) {
     EXPECT_EQ(f.sd_storage->set_standby_calls(), 0);
 }
 
-// Task 19a: PowerMonitor* is nullable the same way StorageManager* is (see
+// PowerMonitor* is nullable the same way StorageManager* is (see
 // NullStorageManagerIsToleratedByStandbyTransitions above) -- a PowerManager
 // built without a "power.main" device must still complete both
 // transitions normally.
@@ -432,7 +433,7 @@ TEST(PowerManager, NullPowerMonitorIsToleratedByStandbyTransitions) {
     EXPECT_TRUE(f.display->powered());
 }
 
-// Task 19a, spec 6.3/6.7: enter_standby()/exit_standby() must widen/
+// spec 6.3/6.7: enter_standby()/exit_standby() must widen/
 // restore the power monitor's sample period the same way they already do
 // for ButtonService's poll period -- see power_manager.cpp's
 // PowerMonitor::set_standby() hook.
@@ -455,7 +456,7 @@ TEST(PowerManager, TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt) {
     uint64_t t0 = wisp::os::now_ms();
 
     f.pm->tick(t0);
-    f.drain_ui();  // N4: so a buggy false-positive post would already show up.
+    f.drain_ui();  // so a buggy false-positive post would already show up.
     EXPECT_FALSE(f.pm->standby());
     f.pm->tick(t0 + 999);
     f.drain_ui();
@@ -465,10 +466,10 @@ TEST(PowerManager, TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt) {
     EXPECT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 }
 
-// Task 18b review round 1 (M4): the previous version of this test called
-// tick(t0 + 999) after the second note_activity() -- but that is already
-// < 1000ms past the *first* note_activity() (~t0) too, so it passed even
-// with the reset deleted entirely (idle_ms never reached the threshold
+// A tick() at t0 + 999, right after the second note_activity(), is
+// already < 1000ms past the *first* note_activity() (~t0) too, so it
+// passed even with the reset deleted entirely (idle_ms never reached
+// the threshold
 // either way). This version picks a tick() time that is past the first
 // activity's own deadline (proving a reset is actually needed to stay
 // active) but still short of the second activity's deadline (proving
@@ -485,8 +486,8 @@ TEST(PowerManager, NoteActivityResetsTheIdleClock) {
     // didn't actually happen would enter standby here), but well short
     // of the *second* activity's deadline (~t0+1300).
     f.pm->tick(t0 + 1000);
-    // N4 (re-review 1): tick() only ever posts the decision onto the UI
-    // task (see tick()'s doc comment) -- without draining the queue
+    // tick() only ever posts the decision onto the UI task (see
+    // tick()'s doc comment) -- without draining the queue
     // first, this assertion can't tell "the reset correctly kept this
     // idle" apart from "it didn't, but the posted enter_standby_if_
     // still_idle() job just hasn't run yet", which would pass even with
@@ -502,7 +503,7 @@ TEST(PowerManager, ZeroScreenOffSecondsDisablesAutoStandby) {
     uint64_t t0 = wisp::os::now_ms();
 
     f.pm->tick(t0 + 1000000);
-    // N4: see NoteActivityResetsTheIdleClock's comment -- without this,
+    // See NoteActivityResetsTheIdleClock's comment above -- without this,
     // deleting the `screen_off_s <= 0` early-return above would still
     // pass this assertion (the posted job just wouldn't have run yet).
     f.drain_ui();
@@ -523,8 +524,8 @@ TEST(PowerManager, AnyButtonEventWhileInStandbyWakesIt) {
     EXPECT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
 }
 
-// Task 18b review round 1 (C1): the bug this guards against. A single
-// physical short press on the power key, while in an *automatic*
+// The bug this guards against: a single physical short press on the
+// power key, while in an *automatic*
 // idle-timeout standby, produces "button.power.down" then
 // "button.power.short" in quick succession. Before this fix,
 // PowerManager's own generic handler woke the device on `down` (as it
@@ -562,10 +563,9 @@ TEST(PowerManager, AutoScreenOffThenPowerKeyPressWakesWithoutFlashingBackOff) {
     EXPECT_EQ(state->second.as_string(), "active");
 }
 
-// Task 18b review round 1 (C1): the other scenario the review's fix
-// explicitly calls out -- waking via a button PowerKeyController never
-// sees (a volume key, handled entirely by PowerManager's own generic
-// subscriber) must not leave the owned power-key wiring with a stale
+// Waking via a button PowerKeyController never sees (a volume key,
+// handled entirely by PowerManager's own generic subscriber) must not
+// leave the owned power-key wiring with a stale
 // idea of "screen on": the very next power-key short press must still
 // correctly turn it back off.
 TEST(PowerManager, PowerKeyScreenOffThenVolumeKeyWakeThenNextPowerShortTurnsItOff) {
@@ -590,8 +590,8 @@ TEST(PowerManager, PowerKeyScreenOffThenVolumeKeyWakeThenNextPowerShortTurnsItOf
     EXPECT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 }
 
-// Re-review 1 (N2): a confirm dialog left open when automatic standby
-// kicks in must not swallow the next power-key press as a dialog
+// A confirm dialog left open when automatic standby kicks in must not
+// swallow the next power-key press as a dialog
 // decision -- spec 6.7's "待机中按任意键或长按电源键都会唤醒" requires
 // a short press (or a long press) to wake the screen first regardless
 // (the dialog itself may stay open; see power_key_controller_test.cpp's

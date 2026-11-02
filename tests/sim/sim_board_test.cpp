@@ -1,4 +1,4 @@
-// Task 13 fix round 2, items N2/N3: SimBoard::init() must degrade
+// SimBoard::init() must degrade
 // audio_out.main/audio_in.main (rather than crash, or silently register
 // a device that will fail every open() call) when SDL's audio subsystem
 // never came up at all -- main.cpp now warns and continues instead of

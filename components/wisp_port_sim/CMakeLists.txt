@@ -9,9 +9,9 @@
 #   - wisp_port_sim_settings: JsonFileSettingsBackend, a
 #     wisp::core::SettingsBackend that persists to a JSON file -- also
 #     host-only and SDL-free, so unit tests can link it on its own.
-#   - wisp_port_sim_dev: SDL-backed device port, added in Task 13.
+#   - wisp_port_sim_dev: SDL-backed device port.
 
-# Task 15 fix: ESP-IDF's component discovery (EXTRA_COMPONENT_DIRS in
+# ESP-IDF's component discovery (EXTRA_COMPONENT_DIRS in
 # firmware/CMakeLists.txt) still finds this directory and -- during the
 # early, isolated requirements-extraction pass described in
 # cmake/wisp_component.cmake's header comment -- include()s this whole
@@ -45,15 +45,15 @@ wisp_component(
     REQUIRES wisp_base wisp_core wisp_os
 )
 
-# Simulated HAL devices (Task 13): SimDisplay/SimTouch/SimImu/SimPower/
+# Simulated HAL devices: SimDisplay/SimTouch/SimImu/SimPower/
 # SimClock/SimButton/SimAudioOut/SimAudioIn/SimStorage, SimBoard (the
 # wisp::app::Board that constructs them) and the --screenshot PNG
 # encoder. SimDisplay itself still never touches SDL (see wisp/port/sim/
 # sim_board.hpp's file header: only simulator/main.cpp's SDL render loop
-# reads its framebuffer), but as of fix round 1 (task-13-report.md),
-# SimAudioOut/SimAudioIn are backed by real SDL playback/capture devices
-# and SimBoard::init() probes SDL_GetNumAudioDevices() -- both only ever
-# in .cpp files, never in a header -- so this library does need SDL2.
+# reads its framebuffer), but SimAudioOut/SimAudioIn are backed by real
+# SDL playback/capture devices and SimBoard::init() probes
+# SDL_GetNumAudioDevices() -- both only ever in .cpp files, never in a
+# header -- so this library does need SDL2.
 # Only *portable* layers (wisp_base/os/hal/core/ui/app) are forbidden
 # from linking it; wisp_port_sim_dev is platform code (see AGENTS.md).
 wisp_component(
