@@ -37,19 +37,21 @@ jobs:
     runs-on: ubuntu-latest
     # Pinned ESP-IDF v6.0.3 toolchain + Python env (see
     # .superpowers/sdd/2026-11-01-foundation/task-15-brief.md and
-    # AGENTS.md section 4's firmware build line). idf.py set-target +
-    # build is the full extent of this job for now; the `idf.py bmgr -c
-    # ../boards -b waveshare_amoled_216` codegen step lands in Task 16
-    # once components/wisp_bmgr exists, and flashing/monitoring a real
-    # board is never a CI step (left to a human with the hardware).
+    # AGENTS.md section 4's firmware build line). set-target runs first so
+    # the component manager fetches esp_board_manager, whose idf.py
+    # extension provides `idf.py bmgr`; bmgr then generates the
+    # (gitignored) firmware/components/gen_bmgr_codes/ from
+    # boards/waveshare_amoled_216/ before the build. Flashing/monitoring a
+    # real board is never a CI step (left to a human with the hardware).
     container:
       image: espressif/idf:v6.0.3
     steps:
       - uses: actions/checkout@v4
-      - name: idf.py set-target esp32s3 && idf.py build
+      - name: idf.py set-target esp32s3 && idf.py bmgr && idf.py build
         shell: bash
         run: |
           . $IDF_PATH/export.sh
           cd firmware
           idf.py set-target esp32s3
+          idf.py bmgr -c ../boards -b waveshare_amoled_216
           idf.py build

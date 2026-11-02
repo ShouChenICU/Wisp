@@ -64,7 +64,8 @@ ctest --test-dir build/sim --output-on-failure
 bash tools/ci.sh
 
 # 固件：先激活计划锁定版本的 ESP-IDF 环境（export.sh 是 bash 脚本）
-cd firmware && idf.py bmgr -c ../boards -b <板名> && idf.py build
+# 全新检出时先 set-target：bmgr 子命令来自组件管理器拉取的 esp_board_manager
+cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <板名> && idf.py build
 ```
 
 - 能在模拟器里验证的，就不要依赖真机。需要真机的验证步骤要明确写出来交给用户执行，不得声称已经验证过。
@@ -102,6 +103,7 @@ cd firmware && idf.py bmgr -c ../boards -b <板名> && idf.py build
 - **FAT 上的原子写**：FAT 文件系统的 `rename` 不能覆盖已存在的文件。原子写采用两阶段命名：写 `.tmp` → fsync → 改名为 `.new`（此时 `.new` 一定完整）→ 删除目标 → `.new` 改名为目标。读取时目标缺失而 `.new` 存在则用 `.new` 恢复；`.tmp` 可能写了一半，一律视为垃圾丢弃。
 - **LVGL 配置**：LVGL 必须使用 `components/wisp_ui/config/lv_conf.h`（由 `WISP_LV_CONF` 宏守卫）。
 - **生成代码**：`idf.py bmgr` 生成的代码已被 git 忽略，不要手改。
+- **bmgr 会编译板目录下的全部源文件**：生成的 `gen_bmgr_codes` 用 `SRC_DIRS` 扫描 `boards/<板名>/`，会把 Wisp 自己的 `board.cpp` 也编进去；`firmware/CMakeLists.txt` 负责把它剔除。板目录里新增的 `.c`/`.cpp` 默认都会进入 `gen_bmgr_codes`。
 
 ## 9. 维护本文件
 

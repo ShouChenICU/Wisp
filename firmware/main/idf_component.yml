@@ -2,9 +2,17 @@
 # 外部依赖锁定版本"). lvgl/lvgl matches components/wisp_ui's LVGL 9.5.0 (see
 # cmake/wisp_host_deps.cmake for the host-side pin); bblanchon/arduinojson
 # matches components/wisp_base's host-side pin (cmake/wisp_host_deps.cmake).
-# Later tasks append further entries here (e.g. esp_board_manager, the
-# touch/SD/audio driver components) as those features are ported.
+# Task 16 (board bring-up): esp_board_manager plus the CO5300 panel and
+# CST9217 touch drivers its board YAML uses, and esp_lcd_touch (pulled in
+# by those, but board.cpp/wisp_port_esp use its API directly). Each was
+# first requested as the plan's range ("~0.7.5", "~2.2.0", "*") and then
+# pinned to the exact version dependencies.lock resolved. Later tasks
+# append further entries (e.g. the SD/audio driver components).
 dependencies:
   idf: ">=6.0.3,<6.1"
   lvgl/lvgl: "9.5.0"
   bblanchon/arduinojson: "7.4.3"
+  espressif/esp_board_manager: "0.7.5"
+  espressif/esp_lcd_co5300: "2.2.0"
+  espressif/esp_lcd_touch: "1.2.1"
+  waveshare/esp_lcd_touch_cst9217: "2.0.0"

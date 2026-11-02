@@ -132,3 +132,59 @@ DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
+
+## ESP-Claw (board definition for `boards/waveshare_amoled_216/`)
+
+- Project: https://github.com/espressif/esp-claw (commit
+  `36b377f0a46688916e4f6458a87dd92bee42aa92`)
+- Files adapted: `application/edge_agent/boards/waveshare/waveshare_ESP32_S3_Touch_AMOLED_2_16/`
+  `board_info.yaml`, `board_peripherals.yaml`, `board_devices.yaml`,
+  `setup_device.c` (modifications listed in `docs/references.md`; each
+  file's header notes its origin)
+- License: Apache License 2.0 (same as this project; full text in
+  `LICENSE`)
+- Copyright: 2026 Espressif Systems (Shanghai) CO LTD
+
+## ESP-IDF components used by the firmware
+
+Fetched by the ESP-IDF component manager at build time (pinned in
+`firmware/main/idf_component.yml` / `firmware/dependencies.lock`; not
+vendored or forked):
+
+| Component | Version | License |
+|---|---|---|
+| `espressif/esp_board_manager` | 0.7.5 | Espressif Modified MIT License (`LicenseRef-Espressif-Modified-MIT`, below) |
+| `espressif/esp_boards` (dependency of esp_board_manager) | 0.7.1 | Espressif Modified MIT License |
+| `espressif/esp_lcd_co5300` | 2.2.0 | Apache-2.0 |
+| `espressif/esp_lcd_touch` | 1.2.1 | Apache-2.0 |
+| `waveshare/esp_lcd_touch_cst9217` | 2.0.0 | Apache-2.0 |
+
+esp_board_manager's license restricts use to Espressif products, which
+matches its role here (it is only linked into the ESP32 firmware, never
+into the portable layers or the simulator). Copied verbatim from
+`firmware/managed_components/espressif__esp_board_manager/LICENSE`:
+
+```
+Espressif Modified MIT License
+
+ Copyright (c) 2025 Espressif Systems (Shanghai) CO., LTD
+
+ Permission is hereby granted for use EXCLUSIVELY with Espressif Systems products.
+ This includes the right to use, copy, modify, merge, publish, distribute, and sublicense
+ the Software, subject to the following conditions:
+
+ 1. This Software MUST BE USED IN CONJUNCTION WITH ESPRESSIF SYSTEMS PRODUCTS.
+ 2. The above copyright notice and this permission notice shall be included in all copies
+    or substantial portions of the Software.
+ 3. Redistribution of the Software in source or binary form FOR USE WITH NON-ESPRESSIF PRODUCTS
+    is strictly prohibited.
+
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+ INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+ PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+ FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+ OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ DEALINGS IN THE SOFTWARE.
+
+ SPDX-License-Identifier: LicenseRef-Espressif-Modified-MIT
+```
