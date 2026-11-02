@@ -18,7 +18,15 @@
 //     QMI8658)
 //   - plain GPIOs -> button.power/vol_up/vol_down (wisp::port::esp::
 //     EspGpioButton)
-// Audio/SD are added by later tasks.
+//   - bmgr's audio_dac/audio_adc esp_codec_dev handles ->
+//     audio_out.main/audio_in.main (wisp::port::esp::EspAudioOut/
+//     EspAudioIn, ES8311/ES7210; Task 18)
+//   - esp_vfs_littlefs_register() directly (not a bmgr device) ->
+//     storage.int (wisp::port::esp::EspInternalStorage; Task 18)
+//   - bmgr's fs_sdcard SDMMC device -> storage.sd (wisp::port::esp::
+//     EspSdStorage; Task 18) -- registered even when no card is present
+//     at boot (DeviceState::Missing/"no card"), since it hot-plugs later
+//     (see that class's comment)
 //
 // Every failure is recorded in the boot report and bring-up continues
 // with the next device -- a missing panel or touch controller degrades
@@ -41,7 +49,9 @@
 #include <string>
 #include <utility>
 
+#include "dev_audio_codec.h"
 #include "dev_display_lcd.h"
+#include "dev_fs_fat.h"
 #include "dev_lcd_touch.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -50,11 +60,13 @@
 #include "esp_board_periph.h"
 #include "esp_err.h"
 #include "wisp/core/log.hpp"
+#include "wisp/port/esp/esp_audio.hpp"
 #include "wisp/port/esp/esp_button.hpp"
 #include "wisp/port/esp/esp_clock.hpp"
 #include "wisp/port/esp/esp_display.hpp"
 #include "wisp/port/esp/esp_imu.hpp"
 #include "wisp/port/esp/esp_power.hpp"
+#include "wisp/port/esp/esp_storage.hpp"
 #include "wisp/port/esp/esp_touch.hpp"
 
 namespace {
@@ -64,6 +76,12 @@ constexpr const char* kTag = "board";
 // Device names as declared in board_devices.yaml.
 constexpr const char* kBmgrDisplay = "display_lcd";
 constexpr const char* kBmgrTouch = "lcd_touch";
+constexpr const char* kBmgrAudioDac = "audio_dac";
+constexpr const char* kBmgrAudioAdc = "audio_adc";
+constexpr const char* kBmgrSdcard = "fs_sdcard";
+
+// Must match board_devices.yaml's fs_sdcard device's config.mount_point.
+constexpr const char* kSdMountPoint = "/sd";
 
 // Shared I2C bus peripheral name as declared in board_peripherals.yaml
 // (touch, AXP2101, QMI8658, PCF85063 and the audio codecs all share it).
@@ -298,6 +316,79 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
     }
 }
 
+// Fetches bmgr's dev_audio_codec_handles_t for `dev_name` and wraps its
+// codec_dev in an EspAudioOut/EspAudioIn via `make`. Shared by
+// init_audio_out()/init_audio_in() below -- the only difference between
+// the two is which wisp::port::esp::Esp* type and HAL id/class `make`
+// builds.
+template <class Device>
+void init_audio_device(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report,
+                       const char* dev_name, const char* id, wisp::hal::DeviceClass cls,
+                       const char* model,
+                       wisp::Result<std::shared_ptr<Device>> (*make)(esp_codec_dev_handle_t,
+                                                                     std::string)) {
+    void* handle = nullptr;
+    esp_err_t err = esp_board_manager_get_device_handle(dev_name, &handle);
+    if (err != ESP_OK || handle == nullptr) {
+        record_failed(report, id, cls,
+                      std::string("bmgr ") + dev_name + " handle: " + err_name(err));
+        return;
+    }
+    auto* handles = static_cast<dev_audio_codec_handles_t*>(handle);
+    if (handles->codec_dev == nullptr) {
+        record_failed(report, id, cls, std::string("bmgr ") + dev_name + ": null codec_dev handle");
+        return;
+    }
+    auto device = make(handles->codec_dev, model);
+    if (!device) {
+        record_failed(report, id, cls, device.error().message);
+        return;
+    }
+    add_device(registry, report, device.value());
+}
+
+void init_audio(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
+    init_audio_device<wisp::port::esp::EspAudioOut>(
+        registry, report, kBmgrAudioDac, "audio_out.main", wisp::hal::DeviceClass::AudioOut,
+        "ES8311", &wisp::port::esp::EspAudioOut::create);
+    init_audio_device<wisp::port::esp::EspAudioIn>(registry, report, kBmgrAudioAdc, "audio_in.main",
+                                                   wisp::hal::DeviceClass::AudioIn, "ES7210",
+                                                   &wisp::port::esp::EspAudioIn::create);
+}
+
+// Internal LittleFS storage (esp_vfs_littlefs_register() directly, not a
+// bmgr device -- see EspInternalStorage's comment) and the SD card (bmgr's
+// fs_sdcard device, already attempted by esp_board_manager_init() just
+// before this is called). storage.sd is always registered, even absent a
+// card at boot -- see EspSdStorage's comment -- so the app can observe it
+// being hot-plugged in later; a missing card degrades to
+// DeviceState::Missing, never Failed, and never blocks boot.
+void init_storage(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
+    constexpr auto cls = wisp::hal::DeviceClass::Storage;
+
+    auto internal = wisp::port::esp::EspInternalStorage::create();
+    if (!internal) {
+        record_failed(report, "storage.int", cls, internal.error().message);
+    } else {
+        add_device(registry, report, internal.value());
+    }
+
+    void* handle = nullptr;
+    esp_err_t err = esp_board_manager_get_device_handle(kBmgrSdcard, &handle);
+    sdmmc_card_t* card = nullptr;
+    bool mounted = (err == ESP_OK && handle != nullptr);
+    if (mounted) {
+        card = static_cast<dev_fs_fat_handle_t*>(handle)->card;
+    }
+    auto sd = std::make_shared<wisp::port::esp::EspSdStorage>(kSdMountPoint, mounted, card);
+    auto added = registry.add(sd);
+    if (!added) {
+        record_failed(report, "storage.sd", cls, "registry.add: " + added.error().message);
+    } else if (!mounted) {
+        report.record({"storage.sd", cls, wisp::core::DeviceState::Missing, "no card"});
+    }
+}
+
 // Sets the system clock from clock.main's RTC, if (and only if) it was
 // registered and currently holds a plausible time -- EspClock::get_unix()
 // (drivers/pcf85063) already fails rather than return a bogus reading
@@ -343,6 +434,10 @@ public:
             record_failed(report, "button.power", wisp::hal::DeviceClass::Button, reason);
             record_failed(report, "button.vol_up", wisp::hal::DeviceClass::Button, reason);
             record_failed(report, "button.vol_down", wisp::hal::DeviceClass::Button, reason);
+            record_failed(report, "audio_out.main", wisp::hal::DeviceClass::AudioOut, reason);
+            record_failed(report, "audio_in.main", wisp::hal::DeviceClass::AudioIn, reason);
+            record_failed(report, "storage.int", wisp::hal::DeviceClass::Storage, reason);
+            record_failed(report, "storage.sd", wisp::hal::DeviceClass::Storage, reason);
             return;
         }
 
@@ -357,6 +452,8 @@ public:
         // sync_system_clock_from_rtc()'s own comment.
         sync_system_clock_from_rtc(registry);
         init_buttons(registry, report);
+        init_audio(registry, report);
+        init_storage(registry, report);
     }
 };
 

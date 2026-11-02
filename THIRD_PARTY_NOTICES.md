@@ -160,8 +160,8 @@ license file under `firmware/managed_components/`:
 | `lvgl/lvgl` | 9.5.0 | `firmware/main` (see the LVGL section above) | MIT |
 | `bblanchon/arduinojson` | 7.4.3 | `firmware/main` (see the ArduinoJson section below) | MIT |
 | `espressif/esp_board_manager` | 0.7.5 | `firmware/main` | Espressif Modified MIT License (`LicenseRef-Espressif-Modified-MIT`, below) |
-| `espressif/esp_boards` | 0.7.1 | esp_board_manager | Espressif Modified MIT License (same text, copyright 2026) |
-| `espressif/esp_codec_dev` | 2.0.0-beta5 | esp_board_manager (audio_codec devices) | Espressif Modified MIT License (same text, copyright 2023-2026) |
+| `espressif/esp_boards` | 0.7.2 | esp_board_manager | Espressif Modified MIT License (same text, copyright 2026) |
+| `espressif/esp_codec_dev` | 2.0.0-beta5 | `firmware/main` (direct dependency, Task 18 -- esp_board_manager only pulls this in conditionally on a Kconfig option that doesn't exist yet on a from-scratch configure, the same bootstrap issue esp_lcd_touch/esp_lcd_co5300 below already avoid this way; used directly by `wisp::port::esp::EspAudioOut`/`EspAudioIn`, `components/wisp_port_esp/dev/esp_audio.cpp`) | Espressif Modified MIT License (same text, copyright 2023-2026) |
 | `espressif/esp_lcd_co5300` | 2.2.0 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
 | `espressif/esp_lcd_touch` | 1.2.1 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
 | `waveshare/esp_lcd_touch_cst9217` | 2.0.0 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
@@ -170,6 +170,7 @@ license file under `firmware/managed_components/`:
 | `espressif/usb` | 1.6.0 | esp_board_manager (via usb_host_uac) | Apache-2.0 |
 | `espressif/usb_host_uac` | 1.5.0 | esp_board_manager | Apache-2.0 |
 | `espressif/cmake_utilities` | 0.5.3 | esp_board_manager (build-time CMake helpers only) | Apache-2.0 |
+| `joltwallet/littlefs` | 1.23.1 | `firmware/main` (Task 18, backs `wisp::port::esp::EspInternalStorage`, `components/wisp_port_esp/dev/esp_storage.cpp`) | MIT (ESP-IDF wrapper) + BSD-3-Clause (vendored littlefs core) -- both texts below |
 
 The Apache-2.0 components are under the same license as this project
 (full text in `LICENSE`).
@@ -261,4 +262,54 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+## littlefs (via joltwallet/littlefs, ESP-IDF wrapper)
+
+- Project: https://github.com/joltwallet/esp_littlefs (ESP-IDF VFS wrapper
+  around https://github.com/littlefs-project/littlefs, the vendored core)
+- Version: 1.23.1 (ESP component registry, `firmware/main/idf_component.yml`
+  pins the exact version; `firmware/dependencies.lock` is the authority;
+  not vendored or forked in this repo)
+- Used by: `wisp::port::esp::EspInternalStorage`
+  (`components/wisp_port_esp/dev/esp_storage.cpp`, Task 18) for
+  `storage.int` via `esp_vfs_littlefs_register()`/`esp_littlefs_info()`
+- License: MIT (wrapper) + BSD-3-Clause (vendored littlefs core)
+
+Copied verbatim from
+`firmware/managed_components/joltwallet__littlefs/LICENSE`:
+
+```
+Copyright 2020 Brian Pugh
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+Copyright (c) 2022, The littlefs authors.
+Copyright (c) 2017, Arm Limited. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+-  Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+-  Redistributions in binary form must reproduce the above copyright notice, this
+   list of conditions and the following disclaimer in the documentation and/or
+   other materials provided with the distribution.
+-  Neither the name of ARM nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific prior
+   written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```

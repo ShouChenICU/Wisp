@@ -1,9 +1,10 @@
 // ESP32-S3 firmware entry point (Task 15 -- see
 // .superpowers/sdd/2026-11-01-foundation/task-15-brief.md): wires up the
-// ESP-only pieces of wisp::app::Platform (EspLogSink, RamSettingsBackend,
-// emit_line/request_power_off/heap_info) around whichever board
-// firmware/CMakeLists.txt's WISP_BOARD selected, then runs the same
-// wisp::app::App boot sequence the PC simulator runs (see
+// ESP-only pieces of wisp::app::Platform (EspLogSink,
+// wisp::port::esp::NvsSettingsBackend -- Task 18, replacing Task 15's RAM
+// -only placeholder -- emit_line/request_power_off/heap_info) around
+// whichever board firmware/CMakeLists.txt's WISP_BOARD selected, then
+// runs the same wisp::app::App boot sequence the PC simulator runs (see
 // simulator/main.cpp and wisp/app/app.hpp). The board registers
 // display.main/touch.main (Task 16 -- see
 // boards/waveshare_amoled_216/board.cpp), so App::start() brings up the
@@ -23,7 +24,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/port/esp/log_esp.hpp"
-#include "wisp/port/esp/ram_settings_backend.hpp"
+#include "wisp/port/esp/settings_nvs.hpp"
 
 extern "C" void app_main() {
     // Static storage duration: add_sink() requires `sink` to outlive the
@@ -36,10 +37,11 @@ extern "C" void app_main() {
     platform.board = wisp::board::create_board();
     // App::start() (see app.cpp) reads Platform::settings in its
     // `if (display)` branch (e.g. the stored display brightness), which
-    // this board now reaches once display.main is registered. Settings
-    // are RAM-only for now; the NVS-backed replacement is Task 18's job
-    // -- see wisp/port/esp/ram_settings_backend.hpp.
-    platform.settings = std::make_unique<wisp::port::esp::RamSettingsBackend>();
+    // this board now reaches once display.main is registered. Backed by
+    // NVS -- see wisp/port/esp/settings_nvs.hpp; create() never returns
+    // null (even if NVS itself fails to initialize) so Platform::settings
+    // is always safe to dereference.
+    platform.settings = wisp::port::esp::NvsSettingsBackend::create();
     platform.emit_line = [](const std::string& line) {
         std::printf("%s\n", line.c_str());
         std::fflush(stdout);

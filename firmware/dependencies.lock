@@ -82,12 +82,12 @@ dependencies:
       type: service
     version: 0.7.5
   espressif/esp_boards:
-    component_hash: 32a19d0c0c87bb9265facc02c1e84aa234cb307791e87feb0f18f36f61419ae4
+    component_hash: 216e7a5dfe4b9ee53e840fea74dadd7aedf097f6bbb1b60800f2046f3d72d9de
     dependencies: []
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 0.7.1
+    version: 0.7.2
   espressif/esp_codec_dev:
     component_hash: 59036ca9e5dccffef1c54ae28361536c87f0fbacad709d1c2192831b0111a2e5
     dependencies:
@@ -101,7 +101,7 @@ dependencies:
       require: private
       version: '>=5.4.4,!=5.5.0,!=5.5.1,!=5.5.2'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 2.0.0-beta5
   espressif/esp_io_expander:
@@ -205,6 +205,16 @@ dependencies:
     source:
       type: idf
     version: 6.0.3
+  joltwallet/littlefs:
+    component_hash: e1a0f4a6adf821759cb34703a91107bbdce5d7ff6f4728f40ab012bb87842974
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.23.1
   lvgl/lvgl:
     component_hash: 184e532558c1c45fefed631f3e235423d22582aafb4630f3e8885c35281a49ae
     dependencies: []
@@ -229,12 +239,14 @@ dependencies:
 direct_dependencies:
 - bblanchon/arduinojson
 - espressif/esp_board_manager
+- espressif/esp_codec_dev
 - espressif/esp_lcd_co5300
 - espressif/esp_lcd_panel_io_additions
 - espressif/esp_lcd_touch
 - idf
+- joltwallet/littlefs
 - lvgl/lvgl
 - waveshare/esp_lcd_touch_cst9217
-manifest_hash: c8a2fe72d56d9b150136276da95f2f32486b74d4f4ba5504fd3e5787b5ba0e93
+manifest_hash: fe8aa63d09f4737906976d44fe60ce1392facfb68b8cc183d65ac9ccd34d2095
 target: esp32s3
 version: 3.0.0

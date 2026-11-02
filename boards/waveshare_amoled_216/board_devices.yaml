@@ -8,7 +8,16 @@ version: 1.0.0
 # Devices Configuration for Waveshare ESP32-S3-Touch-AMOLED-2.16
 
 devices:
-  # ES8311 speaker playback path.
+  # ES8311 speaker playback path. Channel count/mask (1ch) and init gain
+  # are no longer device-init config in esp_codec_dev 2.0 (dev_audio_codec
+  # warns if the old dac_max_channel/dac_channel_mask/dac_init_gain keys
+  # are present and ignores them) -- channel count/mask move to
+  # esp_codec_dev_open()'s sample info, and gain moves to a post-open
+  # esp_codec_dev_set_out_vol() call; both are done at runtime by
+  # wisp::port::esp::EspAudioOut (components/wisp_port_esp/dev/esp_audio.cpp).
+  # sys_cfg.no_mclk: false replaces the deprecated mclk_enabled: true (this
+  # board's I2S config supplies an external MCLK on pin 42 -- see
+  # board_peripherals.yaml's i2s_audio_out/i2s_audio_in).
   - name: audio_dac
     chip: es8311
     type: audio_codec
@@ -16,38 +25,48 @@ devices:
     config:
       adc_enabled: false
       dac_enabled: true
-      dac_max_channel: 1
-      dac_channel_mask: "1"
-      dac_init_gain: 0
-      mclk_enabled: true
+      sys_cfg:
+        is_master: false
+        no_mclk: false
     peripherals:
-      - name: i2s_audio_out
-      - name: i2c_master
+      - pa_name: gpio_pa_control
+        active_level: 1
+      - i2s_name: i2s_audio_out
+      - i2c_name: i2c_master
         address: 0x30
         frequency: 400000
 
-  # ES7210 dual microphone capture path.
+  # ES7210 dual microphone capture path. Channel count/mask (2ch, the two
+  # wired mics) move to esp_codec_dev_open()'s sample info and init gain
+  # to a post-open esp_codec_dev_set_in_gain() call, both done at runtime
+  # by wisp::port::esp::EspAudioIn (same file as EspAudioOut above) -- see
+  # that device's comment for why 2 physical channels downmixed to mono.
   - name: audio_adc
     chip: es7210
     type: audio_codec
     version: default
     config:
       adc_enabled: true
-      adc_max_channel: 4
-      adc_channel_mask: "0011"
-      adc_init_gain: 0
+      dac_enabled: false
+      sys_cfg:
+        is_master: false
+        no_mclk: false
     peripherals:
-      - name: i2s_audio_in
-      - name: i2c_master
+      - i2s_name: i2s_audio_in
+      - i2c_name: i2c_master
         address: 0x80
         frequency: 400000
 
   # Optional microSD slot, wired as 1-bit SDMMC in Waveshare's ESP-IDF BSP.
+  # mount_point is spec 7.1's "/sd" (defaults to "/sdcard" if omitted) --
+  # wisp::port::esp::EspSdStorage (components/wisp_port_esp/dev/esp_storage.cpp)
+  # reports this same path as storage.sd's mount_point().
   - name: fs_sdcard
     type: fs_fat
     sub_type: sdmmc
     version: default
     config:
+      mount_point: "/sd"
       vfs_config:
         format_if_mount_failed: false
         max_files: 5

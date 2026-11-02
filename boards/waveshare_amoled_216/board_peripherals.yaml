@@ -56,11 +56,19 @@ peripherals:
         sclk_io_num: 38
         max_transfer_sz: 460800
 
-  # ES8311 speaker power amplifier enable, active high.
+  # ES8311 speaker power amplifier enable, active high. default_level is 0
+  # (PA off) rather than 1: board_devices.yaml's audio_dac device binds
+  # this peripheral as its pa_name, so esp_codec_dev's ES8311 driver takes
+  # over driving this pin in step with codec open()/close()/dac_enable()
+  # (task-18-brief.md: "若 bmgr 让 PA 跟随 codec open/close，则优先选用该
+  # 方式") -- starting it at 1 left the PA energized from this
+  # peripheral's own bring-up (long before the codec is ever opened),
+  # which is an audible pop at boot (Task 16 finding, fixed here in Task
+  # 18).
   - name: gpio_pa_control
     type: gpio
     role: io
     config:
       pin: 46
       mode: GPIO_MODE_OUTPUT
-      default_level: 1
+      default_level: 0

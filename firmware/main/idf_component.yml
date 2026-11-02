@@ -16,3 +16,20 @@ dependencies:
   espressif/esp_lcd_co5300: "2.2.0"
   espressif/esp_lcd_touch: "1.2.1"
   waveshare/esp_lcd_touch_cst9217: "2.0.0"
+  # Task 18 (audio/storage/NVS): backs wisp::port::esp::EspInternalStorage
+  # (components/wisp_port_esp/dev/esp_storage.cpp) directly via
+  # esp_vfs_littlefs_register() -- not a bmgr fs_littlefs device. First
+  # requested as the plan's "~1.23.1" and then pinned to the exact version
+  # dependencies.lock resolved.
+  joltwallet/littlefs: "1.23.1"
+  # esp_board_manager only depends on this conditionally (matches: if
+  # CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT == True), and that Kconfig
+  # option isn't known yet on a from-scratch configure (before `idf.py
+  # bmgr` has ever generated components/gen_bmgr_codes/'s Kconfig) --
+  # same bootstrap issue esp_lcd_touch/esp_lcd_co5300 above avoid by being
+  # direct, unconditional dependencies here rather than relying on
+  # esp_board_manager's conditional pull. wisp::port::esp::EspAudioOut/
+  # EspAudioIn (dev/esp_audio.cpp) use its esp_codec_dev.h API directly,
+  # so it needs the same treatment. Pinned to the exact version
+  # dependencies.lock already resolved transitively (THIRD_PARTY_NOTICES.md).
+  espressif/esp_codec_dev: "2.0.0-beta5"

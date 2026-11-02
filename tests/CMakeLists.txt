@@ -70,6 +70,17 @@ target_include_directories(pcf85063_conv_test PRIVATE ${WISP_ROOT}/drivers/pcf85
 wisp_test(NAME qmi8658_conv_test SRCS drivers/qmi8658_conv_test.cpp)
 target_include_directories(qmi8658_conv_test PRIVATE ${WISP_ROOT}/drivers/qmi8658/include)
 
+# Host-testable pure logic factored out of wisp_port_esp's ESP-only audio/
+# SD-storage code (Task 18 -- see task-18-report.md): the stereo->mono
+# downmix and the SD-card retry/backoff policy live in plain headers under
+# components/wisp_port_esp/include/ with no ESP-IDF include, so (like the
+# drivers/*_conv.h tests above) only that include dir is needed here, not
+# the whole wisp_port_esp component (which never builds on the host).
+wisp_test(NAME audio_downmix_test SRCS port_esp/audio_downmix_test.cpp)
+target_include_directories(audio_downmix_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
+wisp_test(NAME sd_retry_test SRCS port_esp/sd_retry_test.cpp)
+target_include_directories(sd_retry_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
+
 # End-to-end smoke test (Task 14): runs the actual wisp_sim executable
 # through a handful of --headless scenarios and checks its
 # WISP_BOOT_REPORT/WISP_MANIFEST stdout and screenshot. See
