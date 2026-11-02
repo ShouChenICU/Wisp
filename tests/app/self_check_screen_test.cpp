@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -55,9 +56,11 @@ namespace {
 class FullFakeBoard : public wisp::app::Board {
 public:
     FullFakeBoard(std::shared_ptr<FakeDisplay> display, std::shared_ptr<FakeImu> imu,
-                  uint32_t init_sleep_ms = 0, std::shared_ptr<FakeStorage> sd = nullptr)
+                  std::shared_ptr<FakePower> power, uint32_t init_sleep_ms = 0,
+                  std::shared_ptr<FakeStorage> sd = nullptr)
         : display_(std::move(display)),
           imu_(std::move(imu)),
+          power_(std::move(power)),
           init_sleep_ms_(init_sleep_ms),
           sd_(std::move(sd)) {}
 
@@ -76,7 +79,7 @@ public:
                                                    /*removable=*/false));
         registry.add(imu_);
         registry.add(std::make_shared<FakeButton>("button.power"));
-        registry.add(std::make_shared<FakePower>("power.main"));
+        registry.add(power_);
         registry.add(std::make_shared<FakeClock>("clock.main"));
         if (sd_) {
             registry.add(sd_);
@@ -90,6 +93,7 @@ public:
 private:
     std::shared_ptr<FakeDisplay> display_;
     std::shared_ptr<FakeImu> imu_;
+    std::shared_ptr<FakePower> power_;
     uint32_t init_sleep_ms_;
     std::shared_ptr<FakeStorage> sd_;
 };
@@ -100,10 +104,14 @@ private:
 struct Harness {
     std::shared_ptr<FakeDisplay> display;
     std::shared_ptr<FakeImu> imu;
+    std::shared_ptr<FakePower> power;
     std::shared_ptr<FakeStorage> sd;
     std::string settings_path;
     std::mutex lines_mutex;
     std::vector<std::string> lines;
+    // Platform::request_power_off call count -- see
+    // RequestsPlatformPowerOffAndTurnsPanelOffWhenPowerOffFails below.
+    std::atomic<int> request_power_off_calls{0};
     wisp::app::App app;
 
     explicit Harness(std::string settings_path_in, uint32_t init_sleep_ms = 0,
@@ -112,6 +120,7 @@ struct Harness {
         : display(std::make_shared<FakeDisplay>("display.main", display_size, display_size,
                                                 /*area_align=*/1, std::move(display_shape))),
           imu(std::make_shared<FakeImu>("imu.main")),
+          power(std::make_shared<FakePower>("power.main")),
           sd(with_sd ? std::make_shared<FakeStorage>("storage.sd", wisp::test::temp_dir().string(),
                                                      /*removable=*/true)
                      : nullptr),
@@ -129,9 +138,10 @@ struct Harness {
 private:
     wisp::app::Platform build_platform(uint32_t init_sleep_ms) {
         wisp::app::Platform platform;
-        platform.board = std::make_unique<FullFakeBoard>(display, imu, init_sleep_ms, sd);
+        platform.board = std::make_unique<FullFakeBoard>(display, imu, power, init_sleep_ms, sd);
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path);
+        platform.request_power_off = [this] { request_power_off_calls.fetch_add(1); };
         platform.emit_line = [this](const std::string& line) {
             std::lock_guard<std::mutex> lock(lines_mutex);
             lines.push_back(line);
@@ -180,6 +190,31 @@ std::string find_label_text_containing(lv_obj_t* obj, const char* needle) {
         }
     }
     return {};
+}
+
+// Recursively searches `obj`'s subtree for the footer button whose own
+// direct child label reads exactly `text` (see show_confirm_dialog()'s
+// "是"/"否" buttons), returning the button object itself (not the label)
+// so a test can lv_obj_send_event() a click to it -- nullptr if none
+// found.
+lv_obj_t* find_button_with_label(lv_obj_t* obj, const char* text) {
+    uint32_t count = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < count; ++i) {
+        lv_obj_t* child = lv_obj_get_child(obj, i);
+        if (lv_obj_check_type(child, &lv_label_class)) {
+            const char* label_text = lv_label_get_text(child);
+            if (label_text != nullptr && std::string(label_text) == text) {
+                return obj;
+            }
+        }
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        lv_obj_t* found = find_button_with_label(lv_obj_get_child(obj, i), text);
+        if (found != nullptr) {
+            return found;
+        }
+    }
+    return nullptr;
 }
 
 // Runs `probe` (which must itself only call lv_* -- it's invoked on the UI
@@ -596,6 +631,45 @@ TEST(SelfCheckScreen, ConfirmDialogWidthClampedToSafeArea) {
     int32_t safe_width = safe.x2 - safe.x1 + 1;
     ASSERT_LT(safe_width, LV_DPI_DEF * 2) << "test fixture no longer exercises the clamp";
     EXPECT_EQ(width, safe_width);
+
+    h.app.stop();
+}
+
+// When Power::power_off() fails, do_power_off() must fall through to
+// Platform::request_power_off() -- the ESP fallback is
+// esp_deep_sleep_start(), which never actually powers the panel/PMIC
+// down (see docs/hardware/waveshare_amoled_216.md and main.cpp's own
+// comment on request_power_off), so do_power_off() must turn the panel
+// off itself first. Confirms the dialog via a simulated click on its
+// "是" button, the same path a real touch does (rather than publishing
+// Action::PowerOff directly), so this also exercises
+// PowerKeyController::on_confirm()'s own routing.
+TEST(SelfCheckScreen, RequestsPlatformPowerOffAndTurnsPanelOffWhenPowerOffFails) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+    h.power->set_fail_power_off(true);
+
+    h.app.bus().publish(wisp::core::Event{"button.power.long", "button.power"});
+    ASSERT_TRUE(wait_until(
+        [&] {
+            return run_on_ui_thread(h.app.ui(), [] {
+                       return find_button_with_label(lv_layer_top(), "是") != nullptr
+                                  ? std::string("found")
+                                  : std::string();
+                   }) == "found";
+        },
+        3000));
+
+    run_on_ui_blocking(h.app.ui(), [] {
+        lv_obj_t* yes = find_button_with_label(lv_layer_top(), "是");
+        ASSERT_NE(yes, nullptr);
+        lv_obj_send_event(yes, LV_EVENT_CLICKED, nullptr);
+    });
+
+    EXPECT_TRUE(wait_until([&] { return h.request_power_off_calls.load() > 0; }, 3000));
+    EXPECT_FALSE(h.power->powered_off());
+    EXPECT_FALSE(h.display->powered());
 
     h.app.stop();
 }

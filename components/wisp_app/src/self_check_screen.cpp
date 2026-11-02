@@ -855,12 +855,30 @@ void SelfCheck::do_power_off() {
         if (result) {
             return;
         }
+        // Logged, rather than silently falling through, so a device
+        // that ends up stuck running the deep-sleep fallback below (the
+        // PMIC can't be told to cut power) leaves a trace of *why* --
+        // otherwise the only symptom is the screen going dark and
+        // nothing else happening.
+        WLOG_E("self_check", "Power::power_off() failed: %s", result.error().message.c_str());
         // Fall through to the platform fallback below
         // rather than silently doing nothing -- the user already
         // confirmed shutdown, so a failed Power::power_off() shouldn't
         // leave the device stuck on.
     }
     if (app_.platform().request_power_off) {
+        // The ESP fallback (esp_deep_sleep_start(), no wakeup source)
+        // does not power down the AMOLED panel or its PMIC rail (see
+        // docs/hardware/waveshare_amoled_216.md) -- deep sleep only
+        // stops the SoC. Without turning the panel off first, this
+        // confirm dialog (its own GRAM contents) would stay lit,
+        // indistinguishable from a hang, and keep drawing power for as
+        // long as the battery lasts. set_power(false) runs here, on
+        // this (UI) thread, as spec 5.3 requires for every Display
+        // call.
+        if (display_) {
+            display_->set_power(false);
+        }
         app_.platform().request_power_off();
     }
 }

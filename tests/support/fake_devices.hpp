@@ -380,6 +380,10 @@ public:
     }
 
     wisp::Result<void> power_off() override {
+        if (fail_power_off_.load()) {
+            return wisp::Result<void>::err(wisp::ErrorCode::DeviceFailure,
+                                           "simulated PMIC failure");
+        }
         powered_off_.store(true);
         return wisp::Result<void>::ok();
     }
@@ -389,6 +393,11 @@ public:
         status_ = status;
         next_error_.reset();
     }
+
+    // Test control: makes every subsequent power_off() call fail instead
+    // of succeeding -- exercises SelfCheck::do_power_off()'s
+    // Platform::request_power_off fallback path.
+    void set_fail_power_off(bool fail) { fail_power_off_.store(fail); }
 
     // Test control: makes the next (and every subsequent, until
     // set_status()/this is called again) status() call fail with `code`/
@@ -410,6 +419,7 @@ private:
     std::optional<wisp::ErrorCode> next_error_;
     std::string next_error_message_;
     std::atomic<bool> powered_off_{false};
+    std::atomic<bool> fail_power_off_{false};
 };
 
 class FakeClock : public wisp::hal::Clock {
