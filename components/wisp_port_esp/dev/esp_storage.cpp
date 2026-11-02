@@ -288,15 +288,19 @@ void EspSdStorage::worker_main() {
     while (worker_running_.load(std::memory_order_acquire)) {
         // Fix round 2, second addendum: skip presence probing and mount
         // retry entirely while in standby -- block on standby_wake_
-        // (bounded, as a safety net against a missed wake-up signal --
-        // same pattern as self_check_screen.cpp's sample_loop()) instead
-        // of falling through into the switch below at the usual
+        // instead of falling through into the switch below at the usual
         // kWorkerPollMs/kProbeIntervalMs/kRetryIntervalMs cadence.
         // set_standby(false) gives standby_wake_ to resume immediately;
-        // the destructor also gives it unconditionally, so a pending
-        // shutdown is never stuck waiting out this wait's full timeout.
+        // the destructor also gives it unconditionally. Re-review 2
+        // (R2-3): both of those give() paths are unconditional, so
+        // unlike kProbeIntervalMs-style loops elsewhere in this function
+        // (which do need a bounded poll, to notice worker_running_ going
+        // false without anyone giving anything), there's no missed-wake-
+        // up scenario here to guard against with a bounded "safety net"
+        // wait -- wait indefinitely instead of waking once a second for
+        // nothing while standby holds.
         if (standby_.load(std::memory_order_acquire)) {
-            standby_wake_.take(1000);
+            standby_wake_.take(wisp::os::kForever);
             continue;
         }
 
@@ -310,12 +314,26 @@ void EspSdStorage::worker_main() {
 
         switch (state) {
             case SdCardState::Mounted: {
+                // R2-4 (re-review 2): also bail out of this wait the
+                // moment standby begins, not just when worker_running_
+                // goes false -- without this, standby starting partway
+                // through the wait still let one more CMD13 probe (and
+                // capacity refresh) through below before the standby_
+                // check at the top of the outer loop got another chance
+                // to run.
                 for (uint32_t waited = 0;
-                     waited < kProbeIntervalMs && worker_running_.load(std::memory_order_acquire);
+                     waited < kProbeIntervalMs && worker_running_.load(std::memory_order_acquire) &&
+                     !standby_.load(std::memory_order_acquire);
                      waited += kWorkerPollMs) {
                     wisp::os::sleep_ms(kWorkerPollMs);
                 }
                 if (!worker_running_.load(std::memory_order_acquire)) {
+                    break;
+                }
+                if (standby_.load(std::memory_order_acquire)) {
+                    // Standby began during the wait above -- skip the
+                    // probe entirely and loop back around to the
+                    // standby_wake_ wait at the top of worker_main().
                     break;
                 }
                 // CMD13; safe to run concurrently with FATFS I/O on
