@@ -55,6 +55,34 @@ if grep -vnE '^(#.*|CONFIG_[A-Z0-9_]+=.*)?$' firmware/sdkconfig.defaults; then
     exit 1
 fi
 
+# AGENTS.md section 5: comments/docs must explain why the code is the
+# way it is, not which review round changed it -- that history belongs
+# in commit messages. Scans the directories that hold Wisp's own code
+# and docs (not docs/superpowers/, which is the spec/plan archive and
+# legitimately full of round-by-round history) for the two symptoms
+# that kept recurring before this guard existed: references to files
+# under the gitignored .superpowers/ directory (dead links on a fresh
+# checkout, since those files are never committed) and review/round
+# markers ("Fix round N", "Re-review N", "R2-N", "Task N").
+echo "==> process-history / review-marker guard (AGENTS.md section 5)"
+# --exclude=ci.sh: this very script has to spell out the strings above
+# to document what it's checking for, so it would otherwise flag
+# itself.
+GUARD_MATCHES="$(grep -rnE \
+    '\.superpowers/|task-[0-9a-zA-Z]+-(brief|report|review)\.md|global-constraints\.md|[Ff]ix round|[Rr]e-review|\bR2-[0-9]|\bTask [0-9]+[a-z]?\b' \
+    --include='*.cpp' --include='*.hpp' --include='*.h' --include='*.c' \
+    --include='*.md' --include='*.yaml' --include='*.yml' --include='*.py' \
+    --include='CMakeLists.txt' --include='*.cmake' --include='*.sh' \
+    --exclude='ci.sh' \
+    components boards drivers firmware/main simulator tests tools docs \
+    2>/dev/null | grep -v '^docs/superpowers/' || true)"
+if [[ -n "$GUARD_MATCHES" ]]; then
+    echo "$GUARD_MATCHES"
+    echo "error: process-history or review-marker reference found above -- strip it," \
+         "keeping only the technical rationale (AGENTS.md section 5)" >&2
+    exit 1
+fi
+
 echo "==> tools/check_layering_test.py (self-test)"
 python3 tools/check_layering_test.py
 

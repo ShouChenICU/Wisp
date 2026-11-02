@@ -47,7 +47,7 @@ Wisp（小鬼火）是一个运行在 ESP32 系列芯片上、完全由 AI 驱�
 - **板子无关**：可移植层和平台层里不得出现具体板子的引脚、芯片型号或常量。这些只能写在 `boards/` 和 `drivers/` 中，通过设备的 caps 对外暴露。
 - **服务层约定**：Agent 工具、REST 接口、Lua 绑定都只是同一组服务 API 的薄适配层，不允许绕过服务层直接调用驱动。
 - **屏幕形状**：屏幕不一定是完整矩形（圆角屏、圆形屏）。任何界面（包括场景、Agent 生成的界面）都必须按 Display caps 的 `shape` 和 `hal::safe_rect()`/`row_span()` 布局，不得写死边距或假设整屏可见。
-- **UI 单线程**：只有 UI 线程可以调用 LVGL，其他线程一律通过 `ui::post()` 把操作交给 UI 线程；脚本也不直接调用 LVGL。
+- **UI 单线程**：只有 UI 线程可以调用 LVGL，其他线程一律通过 `UiRuntime::post()` 把操作交给 UI 线程；脚本也不直接调用 LVGL。
 - **设备模型**：
   - 设备注册在 `DeviceRegistry` 里，id 的格式为 `<类别>.<名字>`。
   - 设备能力通过 caps 声明，由 manifest 对外暴露。
@@ -83,6 +83,7 @@ cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <板名>
 - **依赖**：外部依赖锁定精确版本，固件提交 `dependencies.lock`。
 - **配置键**：Settings 的 namespace 和 key 都不能超过 15 个字符，以兼容 NVS。
 - **内存分配**：大块缓冲用 `os::alloc(Mem::Large)`，DMA 缓冲用 `Mem::Dma`，不要直接调用平台的分配函数。
+- **注释**：只解释现在的代码为什么这样写（约束、不变量、踩过的坑），不写"哪一轮评审/哪次修复改了什么"——修改历史属于提交信息，不属于注释。禁止引用 `.superpowers/` 下的任何文件（`task-*-brief/report/review.md`、`global-constraints.md` 等，这些不提交到 git，新检出后是死链），禁止评审编号式引用（"Fix round N"、"Re-review N"、"R2-N"、"Task N"、裸的发现编号如 "M8"/"N3"/"I1"）。需要引用上下文时改为指向已提交的权威来源：spec 某节（"spec 6.7" 可以保留）、AGENTS.md 某节、`docs/hardware/*.md`，或仓库里的另一个函数/文件。`tools/ci.sh` 对此有 grep 守卫。
 
 ## 6. 参考与许可
 
