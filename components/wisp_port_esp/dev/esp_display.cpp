@@ -237,32 +237,37 @@ Result<void> EspDisplay::set_power_dcs_locked(bool on) {
     // esp_lcd_panel_disp_sleep()/disp_on_off() (see that enum value's
     // doc comment for why the two must never be mixed on one panel).
     if (on) {
+        // N6 (re-review 1): enforce sleep_out_settle_ms as the minimum
+        // spacing between the last SLPIN and this SLPOUT -- see
+        // EspDisplayConfig::sleep_out_settle_ms's doc comment. Only
+        // matters for a rapid sleep-then-immediately-wake (e.g. two
+        // power-key presses within the ~50ms standby poll interval);
+        // last_sleep_in_ms_ is otherwise unset (the common case: no
+        // SLPIN since construction, or long enough ago that there is
+        // nothing left to wait out).
+        if (last_sleep_in_ms_.has_value()) {
+            uint64_t elapsed = wisp::os::now_ms() - *last_sleep_in_ms_;
+            if (elapsed < config_.sleep_out_settle_ms) {
+                wisp::os::sleep_ms(static_cast<uint32_t>(config_.sleep_out_settle_ms - elapsed));
+            }
+            last_sleep_in_ms_.reset();
+        }
         auto r = tx_dcs_locked(kDcsSleepOut);
         if (!r) {
             return r;
         }
-        last_sleep_out_ms_ = wisp::os::now_ms();
         wisp::os::sleep_ms(config_.sleep_out_settle_ms);
         return tx_dcs_locked(kDcsDispOn);
-    }
-    // Enforce sleep_out_settle_ms as the minimum spacing between the
-    // last SLPOUT and this SLPIN -- see EspDisplayConfig::PanelSleep's
-    // doc comment. Only matters for a rapid wake-then-immediately
-    // -resleep; last_sleep_out_ms_ is otherwise unset (the common case:
-    // no SLPOUT since construction, or long enough ago that there is
-    // nothing left to wait out).
-    if (last_sleep_out_ms_.has_value()) {
-        uint64_t elapsed = wisp::os::now_ms() - *last_sleep_out_ms_;
-        if (elapsed < config_.sleep_out_settle_ms) {
-            wisp::os::sleep_ms(static_cast<uint32_t>(config_.sleep_out_settle_ms - elapsed));
-        }
-        last_sleep_out_ms_.reset();
     }
     auto r = tx_dcs_locked(kDcsDispOff);
     if (!r) {
         return r;
     }
-    return tx_dcs_locked(kDcsSleepIn);
+    r = tx_dcs_locked(kDcsSleepIn);
+    if (r) {
+        last_sleep_in_ms_ = wisp::os::now_ms();
+    }
+    return r;
 }
 
 Result<void> EspDisplay::set_power(bool on) {
