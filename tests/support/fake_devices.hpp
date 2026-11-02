@@ -180,9 +180,17 @@ public:
     const wisp::hal::DeviceInfo& info() const override { return info_; }
 
     wisp::Result<wisp::hal::ImuSample> read() override {
+        read_count_.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(mutex_);
         if (next_error_) {
             return wisp::Result<wisp::hal::ImuSample>::err(*next_error_, next_error_message_);
+        }
+        // Mirrors wisp::port::esp::EspImu's real contract (IMU power-down
+        // stopgap): reading while powered off must fail, not return a
+        // stale/frozen sample.
+        if (!powered_.load()) {
+            return wisp::Result<wisp::hal::ImuSample>::err(wisp::ErrorCode::DeviceFailure,
+                                                           "fake imu is powered off");
         }
         return wisp::Result<wisp::hal::ImuSample>::ok(next_sample_);
     }
@@ -191,6 +199,31 @@ public:
         rate_hz_.store(hz);
         return wisp::Result<void>::ok();
     }
+
+    // IMU power-down stopgap (mirrors FakeTouch::set_power() above):
+    // records every call (set_power_calls()/powered()); set `unsupported`
+    // to simulate an IMU driver with no power-down support at all.
+    wisp::Result<void> set_power(bool on) override {
+        ++set_power_calls_;
+        if (unsupported.load()) {
+            return wisp::Result<void>::err(wisp::ErrorCode::Unsupported,
+                                           "fake imu sleep unsupported");
+        }
+        powered_.store(on);
+        return wisp::Result<void>::ok();
+    }
+
+    bool powered() const { return powered_.load(); }
+    int set_power_calls() const { return set_power_calls_.load(); }
+
+    // Total number of read() calls so far, regardless of outcome -- lets
+    // tests prove a sampling loop actually stopped polling (rather than
+    // just that its last-seen result stopped updating).
+    size_t read_count() const { return read_count_.load(std::memory_order_relaxed); }
+
+    // When true, set_power() always fails with ErrorCode::Unsupported
+    // (default false -- the fake supports power-down).
+    std::atomic<bool> unsupported{false};
 
     // Test control: makes the next (and every subsequent, until changed
     // again) read() return `sample`.
@@ -219,6 +252,9 @@ private:
     std::string next_error_message_;
 
     std::atomic<uint32_t> rate_hz_{0};
+    std::atomic<bool> powered_{true};
+    std::atomic<int> set_power_calls_{0};
+    std::atomic<size_t> read_count_{0};
 };
 
 class FakeButton : public wisp::hal::Button {

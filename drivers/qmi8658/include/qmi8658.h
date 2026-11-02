@@ -16,6 +16,7 @@
 // (drivers/), consumed only by wisp::port::esp::EspImu
 // (components/wisp_port_esp/dev/esp_imu.cpp).
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "driver/i2c_master.h"
@@ -51,6 +52,19 @@ esp_err_t qmi8658_read(qmi8658_handle_t handle, qmi8658_sample_t* out);
 // qmi8658_conv.h's qmi8658_odr_code_for_hz()); full-scale ranges are
 // unchanged.
 esp_err_t qmi8658_set_odr(qmi8658_handle_t handle, uint32_t hz);
+
+// IMU power-down stopgap (spec 6.7 standby; see task-18b-report.md's
+// fix round 2): `on == false` clears CTRL7's sensor-enable bits
+// (accelerometer + gyroscope off, lowest-power state short of a full
+// reset/power rail cut); `on == true` re-runs the full sensor
+// configuration sequence at the currently-selected output data rate
+// (whatever qmi8658_set_odr() last set it to, or the init-time default
+// if it was never called) -- not just re-enabling CTRL7, so the FS/ODR
+// registers are guaranteed correct even if anything about being
+// "powered off" ever changes to also affect them. Does not touch
+// WHO_AM_I/soft-reset; the handle itself stays valid and reusable
+// across a power() off/on cycle.
+esp_err_t qmi8658_set_power(qmi8658_handle_t handle, bool on);
 
 #ifdef __cplusplus
 }

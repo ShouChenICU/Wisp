@@ -29,6 +29,7 @@ using wisp::core::Settings;
 using wisp::port::sim::JsonFileSettingsBackend;
 using wisp::test::FakeButton;
 using wisp::test::FakeDisplay;
+using wisp::test::FakeImu;
 using wisp::test::FakeTouch;
 using wisp::test::temp_dir;
 using wisp::test::wait_until;
@@ -69,7 +70,7 @@ struct Fixture {
         buttons->start();
 
         pm = std::make_unique<PowerManager>(
-            bus, display, touch, ui.get(), buttons.get(),
+            bus, display, touch, imu, ui.get(), buttons.get(),
             [this](bool standby) { set_standby_calls.push_back(standby); },
             Settings(*backend, "power"));
     }
@@ -123,6 +124,7 @@ struct Fixture {
 
     std::shared_ptr<FakeDisplay> display = std::make_shared<FakeDisplay>("display.main", 480, 480);
     std::shared_ptr<FakeTouch> touch = std::make_shared<FakeTouch>("touch.main");
+    std::shared_ptr<FakeImu> imu = std::make_shared<FakeImu>("imu.main");
     std::shared_ptr<FakeButton> btn = std::make_shared<FakeButton>("button.power");
     std::shared_ptr<FakeButton> vol_btn = std::make_shared<FakeButton>("button.vol_up");
 
@@ -224,6 +226,7 @@ TEST(PowerManager, EnterStandbySleepsEverythingAndPublishesState) {
     EXPECT_TRUE(f.pm->standby());
     EXPECT_FALSE(f.display->powered());
     EXPECT_FALSE(f.touch->powered());
+    EXPECT_FALSE(f.imu->powered());
     EXPECT_TRUE(wait_until([&] { return f.ui->paused(); }, 2000));
     EXPECT_EQ(f.buttons->poll_interval_ms(), 50u);
     ASSERT_EQ(f.set_standby_calls.size(), 1u);
@@ -247,6 +250,7 @@ TEST(PowerManager, ExitStandbyRestoresEverything) {
 
     EXPECT_TRUE(f.display->powered());
     EXPECT_TRUE(f.touch->powered());
+    EXPECT_TRUE(f.imu->powered());
     EXPECT_TRUE(wait_until([&] { return !f.ui->paused(); }, 2000));
     EXPECT_EQ(f.buttons->poll_interval_ms(), 20u);
     ASSERT_EQ(f.set_standby_calls.size(), 2u);
@@ -269,6 +273,7 @@ TEST(PowerManager, EnterStandbyTwiceOnlyTakesEffectOnce) {
 
     EXPECT_EQ(f.display->set_power_calls(), 1);
     EXPECT_EQ(f.touch->set_power_calls(), 1);
+    EXPECT_EQ(f.imu->set_power_calls(), 1);
     EXPECT_EQ(f.set_standby_calls.size(), 1u);
     EXPECT_EQ(f.power_event_count(), 1u);
 }
@@ -293,6 +298,27 @@ TEST(PowerManager, UnsupportedTouchSleepIsNotAnErrorAndStandbyStillSucceeds) {
 
     EXPECT_TRUE(f.pm->standby());
     EXPECT_FALSE(f.display->powered());
+    EXPECT_TRUE(wait_until([&] { return f.ui->paused(); }, 2000));
+    EXPECT_EQ(f.buttons->poll_interval_ms(), 50u);
+}
+
+// IMU power-down stopgap: mirrors UnsupportedTouchSleepIsNotAnError
+// AndStandbyStillSucceeds above -- most of this codebase's -- well, so
+// far its only -- IMU driver hasn't actually hit this case (QMI8658
+// does support it), but the contract (ErrorCode::Unsupported is
+// expected, not an error) is identical to Touch's, for the same reason:
+// not every IMU driver can power its sensors down independently.
+TEST(PowerManager, UnsupportedImuSleepIsNotAnErrorAndStandbyStillSucceeds) {
+    Fixture f;
+    f.imu->unsupported = true;
+
+    f.pm->enter_standby();
+    ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+
+    EXPECT_TRUE(f.pm->standby());
+    EXPECT_FALSE(f.display->powered());
+    EXPECT_FALSE(f.touch->powered());
+    EXPECT_TRUE(f.imu->powered());  // set_power() failed, so unchanged.
     EXPECT_TRUE(wait_until([&] { return f.ui->paused(); }, 2000));
     EXPECT_EQ(f.buttons->poll_interval_ms(), 50u);
 }

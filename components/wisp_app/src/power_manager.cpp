@@ -17,12 +17,13 @@ constexpr uint32_t kStandbyPollMs = 50;
 }  // namespace
 
 PowerManager::PowerManager(core::EventBus& bus, std::shared_ptr<hal::Display> display,
-                           std::shared_ptr<hal::Touch> touch, ui::UiRuntime* ui,
-                           core::ButtonService* buttons, std::function<void(bool)> set_standby,
-                           core::Settings settings)
+                           std::shared_ptr<hal::Touch> touch, std::shared_ptr<hal::Imu> imu,
+                           ui::UiRuntime* ui, core::ButtonService* buttons,
+                           std::function<void(bool)> set_standby, core::Settings settings)
     : bus_(bus),
       display_(std::move(display)),
       touch_(std::move(touch)),
+      imu_(std::move(imu)),
       ui_(ui),
       buttons_(buttons),
       set_standby_(std::move(set_standby)),
@@ -153,6 +154,16 @@ void PowerManager::enter_standby() {
             WLOG_W(kTag, "touch set_power(false) failed: %s", r.error().message.c_str());
         }
     }
+    if (imu_) {
+        // Fix round 2 (IMU power-down stopgap): same ErrorCode::
+        // Unsupported carve-out as touch_ above -- not every IMU driver
+        // can power its sensors down independently of the rest of the
+        // chip.
+        auto r = imu_->set_power(false);
+        if (!r && r.error().code != ErrorCode::Unsupported) {
+            WLOG_W(kTag, "imu set_power(false) failed: %s", r.error().message.c_str());
+        }
+    }
     if (buttons_ != nullptr) {
         saved_poll_ms_ = buttons_->poll_interval_ms();
         // I1 (fix round 1): release transition_mutex_ for this one call.
@@ -191,6 +202,12 @@ void PowerManager::exit_standby() {
         lock.unlock();
         buttons->set_poll_interval_ms(restore_ms);
         lock.lock();
+    }
+    if (imu_) {
+        auto r = imu_->set_power(true);
+        if (!r && r.error().code != ErrorCode::Unsupported) {
+            WLOG_W(kTag, "imu set_power(true) failed: %s", r.error().message.c_str());
+        }
     }
     if (touch_) {
         auto r = touch_->set_power(true);

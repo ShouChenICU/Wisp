@@ -66,6 +66,11 @@ static const char* TAG = "qmi8658";
 
 struct qmi8658_dev {
     i2c_master_dev_handle_t dev;
+    /* The ODR register code configure_sensors() was last called with --
+     * updated by qmi8658_init() (the default) and qmi8658_set_odr(), and
+     * read back by qmi8658_set_power(true) so waking restores the
+     * currently-selected rate, not the default. */
+    uint8_t odr_code;
 };
 
 static esp_err_t qmi_read_reg(qmi8658_handle_t h, uint8_t reg, uint8_t* data, size_t len) {
@@ -93,6 +98,7 @@ static esp_err_t configure_sensors(qmi8658_handle_t h, uint8_t odr_code) {
     ESP_RETURN_ON_ERROR(qmi_write_reg(h, REG_CTRL7, CTRL7_ENABLE_ACCEL_GYRO_POLLING), TAG,
                         "enable sensors failed");
 
+    h->odr_code = odr_code; /* remembered for qmi8658_set_power(true). */
     vTaskDelay(pdMS_TO_TICKS(20));
     return ESP_OK;
 }
@@ -186,4 +192,21 @@ esp_err_t qmi8658_set_odr(qmi8658_handle_t handle, uint32_t hz) {
         hz = QMI8658_MAX_ODR_HZ;
     }
     return configure_sensors(handle, qmi8658_odr_code_for_hz(hz));
+}
+
+esp_err_t qmi8658_set_power(qmi8658_handle_t handle, bool on) {
+    if (handle == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!on) {
+        /* CTRL7 = 0x00: disable both sensors, nothing else touched --
+         * see qmi8658_set_power()'s doc comment. FS/ODR (CTRL2/CTRL3)
+         * are left as-is; configure_sensors() below restores them from
+         * h->odr_code on the way back on regardless, as extra insurance
+         * against any future power state that *does* clear them. */
+        return qmi_write_reg(handle, REG_CTRL7, 0x00);
+    }
+    /* Re-run the full sequence at the last-selected ODR (not necessarily
+     * DEFAULT_ODR_HZ) -- see qmi8658_set_power()'s doc comment. */
+    return configure_sensors(handle, handle->odr_code);
 }

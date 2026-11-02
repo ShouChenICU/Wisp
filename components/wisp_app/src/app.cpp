@@ -11,6 +11,7 @@
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/display.hpp"
+#include "wisp/hal/imu.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -98,9 +99,10 @@ Result<void> App::start() {
     // self-check screen is built below, since that screen's power-key
     // handling calls into it.
     core::Settings power_settings(*impl_->platform.settings, "power");
-    impl_->power_manager =
-        std::make_unique<PowerManager>(impl_->bus, display, touch, impl_->ui.get(), &impl_->buttons,
-                                       impl_->platform.set_standby, std::move(power_settings));
+    auto imu = impl_->registry.get<hal::Imu>("imu.main");
+    impl_->power_manager = std::make_unique<PowerManager>(
+        impl_->bus, display, touch, imu, impl_->ui.get(), &impl_->buttons,
+        impl_->platform.set_standby, std::move(power_settings));
     impl_->power_timer =
         std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true,
                                     [this] { impl_->power_manager->tick(os::now_ms()); });

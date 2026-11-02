@@ -44,6 +44,9 @@ EspImu::~EspImu() = default;
 
 Result<wisp::hal::ImuSample> EspImu::read() {
     using R = Result<wisp::hal::ImuSample>;
+    if (!powered_.load(std::memory_order_acquire)) {
+        return R::err(ErrorCode::DeviceFailure, "imu is powered off");
+    }
     qmi8658_sample_t raw = {};
     esp_err_t err = qmi8658_read(handle_, &raw);
     if (err != ESP_OK) {
@@ -75,6 +78,18 @@ Result<void> EspImu::set_rate(uint32_t hz) {
         return Result<void>::err(ErrorCode::DeviceFailure,
                                  std::string("qmi8658_set_odr: ") + esp_err_to_name(err));
     }
+    return Result<void>::ok();
+}
+
+Result<void> EspImu::set_power(bool on) {
+    esp_err_t err = qmi8658_set_power(handle_, on);
+    if (err != ESP_OK) {
+        return Result<void>::err(ErrorCode::DeviceFailure,
+                                 std::string("qmi8658_set_power: ") + esp_err_to_name(err));
+    }
+    // Only flip the cached flag read() checks once the chip call itself
+    // actually succeeded, same as EspDisplay::set_power()'s powered_.
+    powered_.store(on, std::memory_order_release);
     return Result<void>::ok();
 }
 
