@@ -1,0 +1,86 @@
+# 架构（子项目 1：基础骨架）
+
+最高权威是 `docs/superpowers/specs/2026-11-01-foundation-design.md`；本文档是对当前代码的概述，两者冲突以 spec 为准，但本文档只记录已经落地的内容。
+
+## 分层
+
+```
+┌─────────────────────────────────────────────────────┐
+│  入口层   firmware/main (真机)   │  simulator/ (PC)   │
+├─────────────────────────────────────────────────────┤
+│  wisp_app     启动编排 · 自检界面 · PowerManager         │  ← 可移植
+│  wisp_ui      LVGL 驱动对接、UI 任务                     │  ← 可移植
+├─────────────────────────────────────────────────────┤
+│  wisp_core    日志 · 事件总线 · 设备注册表 · 配置 · 存储 │  ← 可移植
+├─────────────────────────────────────────────────────┤
+│  wisp_hal     外设接口 + 能力描述（纯接口）            │  ← 可移植
+│  wisp_base    Result/ErrorCode · Value/Properties · JSON │  ← 可移植
+│  wisp_os      任务/队列/锁/定时器/时钟/内存（纯接口）    │  ← 可移植
+├──────────────────────────┬──────────────────────────┤
+│  wisp_port_esp           │  wisp_port_sim           │
+│  FreeRTOS + IDF 驱动实现   │  std::thread + SDL2 实现   │
+│  + boards/<板>            │  + 模拟外设               │
+└──────────────────────────┴──────────────────────────┘
+```
+
+`wisp_base`、`wisp_app` 是相对 spec 的新增（见下面"相对 spec 的细化"第 1 条）；spec 原文把 `Result`/`Value` 归在 `wisp_hal` 之下、把启动编排归在 `wisp_ui` 里，实际实现拆成了两个独立组件。
+
+## 依赖规则
+
+1. 可移植组件（`wisp_base`、`wisp_os`、`wisp_hal`、`wisp_core`、`wisp_ui`、`wisp_app`）禁止 include 任何平台头文件：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/*`、`soc/*`、`sdkconfig.h`、`SDL*`；只能依赖 C++20 标准库、LVGL、ArduinoJson，以及按层次自上而下依赖其他可移植组件。
+2. `wisp_os`、`wisp_hal` 额外禁止反向依赖 `wisp_core`/`wisp_ui`/`wisp_app`。
+3. 只有 `wisp_port_esp`、`wisp_port_sim`、`boards/*`、`drivers/*` 和入口层（`firmware/main`、`simulator/`）可以接触平台。
+4. 规则由 `tools/check_layering.py` 强制检查（`bash tools/ci.sh` 会跑它），扫描每个可移植组件下的 `.hpp/.cpp/.h/.c`（`wisp_ui/fonts/` 下的移植字体数据除外）。
+
+## 启动流程
+
+真机（`firmware/main/main.cpp`）和模拟器（`simulator/main.cpp`）共用同一套 `wisp::app::App::start()`（`components/wisp_app/src/app.cpp`），区别只在各自提供的 `Platform`（日志 sink、设置后端、`emit_line`、`request_power_off`、`heap_info`、`set_standby`）：
+
+1. **日志初始化**：`wisp::log::init()`，建立 32 KB 的内存环形缓冲（真机落在 PSRAM，模拟器为普通内存）。
+2. **板级初始化**：调用 `Platform::board->init()`（真机对应 `boards/<板>/board.cpp`，模拟器对应 `wisp::port::sim::SimBoard`），构造各设备并注册进 `DeviceRegistry`；`init()` 自己只记录非 `Ok` 的 `DeviceReport`（缺失/失败），`App::start()` 随后为注册表里没有报告过的设备补一条 `Ok`。
+3. **核心服务**：启动 `EventBus`，调用 `StorageManager::init()`（挂载失败时把启动报告的 `storage` 备注设为 `"readonly"`，降级继续而不中止），启动一个 2000 ms 周期的 `StorageManager::refresh()` 定时器，启动 `ButtonService`。
+4. **UI 与自检界面**：若 `display.main` 已注册，把 `display` 这个 Settings 命名空间的 `brightness`（默认 200）应用到它，基于它（和 `touch.main`，如果也在）启动 `UiRuntime`；否则在启动报告里记一条 `"mode": "headless"`。无论哪种情况都构造 `PowerManager`（spec 6.7）并启动它的周期性闲置检查定时器；如果启动了 `UiRuntime`，再在其上构建自检界面（`self_check_screen.cpp`，spec 8 节），阻塞到它真正跑完一次。
+5. **收尾**：记录 `boot_ms`，依次输出 `"WISP_BOOT_REPORT <json>"`、`"WISP_MANIFEST <json>"`（通过 `Platform::emit_line`），再发布 `system.boot.completed` 事件。
+
+**失败处理**（spec 6.1）：设备初始化失败只记录、不注册，系统降级继续；`Display` 失败则不启动 UI，走 headless 路径；内置 Flash 挂载失败走只读降级。`WISP_BOOT_REPORT`、`WISP_MANIFEST`、`WISP_PERF` 都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）。
+
+## 事件主题清单
+
+当前代码里实际发布的主题（`grep -rn` 核实，不是 spec 草案）：
+
+| 主题 | 发布方 | 说明 |
+|---|---|---|
+| `button.<id>.down` / `.up` / `.short` / `.long` | `core::ButtonService` | `<id>` 为按键设备 id（`button.power`、`button.vol_up`、`button.vol_down`），同时是 `Event::source` |
+| `power/state` | `app::PowerManager` | `payload = {"state": "active"\|"standby"}`；注意用的是 `/` 而不是其他主题统一的 `.`（spec 原文写的是 `.`，实现用了 `/`，未改回） |
+| `storage.sd.inserted` / `storage.sd.removed` | `core::StorageManager` | SD 卡插拔检测 |
+| `system.boot.completed` | `app::App` | 启动流程第 5 步收尾时发布 |
+
+spec 草案里还提到 `power.charging.changed`、`power.battery.low` 两个主题，子项目 1 **没有实现**（没有消费者需要它们，电量只用于自检界面显示）；新增主题前先确认是否已有消费者需要。
+
+事件总线本身（`wisp_core/event_bus.hpp`）：前缀订阅（空串匹配所有主题）、按发布顺序派发、单个分发任务、队列默认容量 64（满时丢弃最旧并计数，见 `dropped()`）、处理函数里可以安全地再 `publish`/`subscribe`/`unsubscribe`。
+
+## 存储逻辑区
+
+`core::StorageManager`（`enum class Area { System, Library, Backup }`）：
+
+| 逻辑区 | 根目录列表 | 配额 |
+|---|---|---|
+| `System` | `[<int>/system]` | — |
+| `Library` | SD 在线：`[<sd>/wisp/library, <int>/library]`；否则：`[<int>/library]` | `<int>/library` 默认 3 MiB（`StorageConfig::internal_library_quota`），超出返回 `QuotaExceeded`；SD 卡那一层不限额 |
+| `Backup` | SD 在线：`[<sd>/wisp/backup]`；否则：`[]`（不可用） | — |
+
+写入永远进列表第一个根；读取按顺序枚举所有根。真机挂载点：内置 Flash（LittleFS）在 `/int`，SD 卡（FAT，1-bit SDMMC）在 `/sd`；模拟器对应 `<data-dir>/int/`、`<data-dir>/sd/`。原子写（`write_atomic`）和 FAT 上 `rename` 不能覆盖已存在文件的坑，见 `AGENTS.md` 第 8 节。
+
+## 相对 spec 的细化（实施前已核实，经用户确认）
+
+1. 新增两个可移植组件：`wisp_base`（`Result`、`ErrorCode`、`Value`/`Properties`、JSON 互转，位于 os/hal 之下）和 `wisp_app`（启动编排 + 自检界面，位于 ui 之上）。spec 的 `wisp_ui` 只保留 LVGL 运行时。
+2. 触摸芯片实际为 **CST9217**（MyOS 代码与 Waveshare 官方 BSP 均如此，MyOS 硬件文档写的 CST9220 有误），驱动用 `waveshare/esp_lcd_touch_cst9217`。
+3. SD 卡按 Waveshare 官方 BSP 走 **1-bit SDMMC**（CLK=GPIO2、CMD=GPIO1、D0=GPIO3），不是 spec 写的 SPI。
+4. 屏幕、触摸、音频编解码器、SD 卡由 esp_board_manager 的设备初始化（YAML 参照 ESP-Claw 中已验证的同款板定义，Apache-2.0，需标注来源）；IMU、PMU、RTC、按键、内置 LittleFS 由 Wisp 自己的驱动初始化，挂在 bmgr 提供的 I2C 总线上。
+5. `hal::Button` 只提供电平 `pressed()`；短按/长按由可移植的 `ButtonService` 统一判定（长按阈值 1000 ms）。
+6. 版本锁定：ESP-IDF **v6.0.3**，LVGL **9.5.0**。
+7. 字体：`lv_font_montserrat_16` 为主字体，回退到从 MyOS 移植的 `lv_font_cjk_16`（GB2312 全集，4bpp）。
+8. 模拟器截图用自带的极简 PNG 编码器（未压缩 deflate），不引入第三方图像库。
+9. 新增性能监视（spec 未要求）：`UiRuntime` 自行统计 FPS、UI 线程占用率、平均刷新耗时；自检界面显示，每 5 s 输出一行 `WISP_PERF <json>`；可选开启 LVGL 自带的 sysmon 浮层。作为后续场景运行时的性能回归基准。
+10. 屏幕形状与安全区（执行期由用户批准加入，spec 5.6 节）：Display caps 的 `shape` 取 `rect`/`rounded_rect`/`circle`（原 `rounded_square` 改名为 `rounded_rect`），`wisp_hal` 提供 `visible`/`safe_rect`/`row_span` 几何函数，能力清单为 Display 条目附带 `safe_area`，自检界面与模拟器遮罩都以此为准。
+11. 熄屏省电（执行期由用户批准加入，spec 6.7 节、验收第 5 条）：新增 `PowerManager`，熄屏进入待机，此时屏幕和触摸进入睡眠、UI 暂停渲染、按键放慢轮询，真机开启 DFS 和待机自动浅睡眠；同时支持闲置自动熄屏。后台场景和唤醒锁留到子项目 3（spec 1.6）。
