@@ -210,3 +210,68 @@ TEST(AppBoot, RestartAfterStoppingWhileInStandbyResetsScreenAndButtons) {
 
     h.app.stop();
 }
+
+// Regression test for the race described on App::stop()'s exit-standby
+// post (app.cpp): power_timer's last tick may have already posted
+// enter_standby_if_still_idle() onto the UI task (see
+// PowerManager::tick()) by the time power_timer->stop() returns, without
+// that job having run yet -- so a standby() read taken on the
+// stop()-calling thread right then cannot be trusted.
+//
+// Reproducing this needs enter_standby() to still be queued, unexecuted,
+// at the exact moment stop() runs its check -- a one-instruction-wide
+// window in production. Two gates turn it into a structural guarantee
+// instead of a real-time race:
+//   - Gate 1 (`release1`) freezes the post queue *before* stop() is
+//     called, so stop_self_check()'s own UI-thread teardown post (always
+//     the first thing App::stop() does to the UI task) is guaranteed to
+//     land behind it rather than run immediately.
+//   - A short sleep then lets that teardown job actually get enqueued
+//     (a plain queue push, done in microseconds -- the sleep is a
+//     generous margin, not a tight race), after which enter_standby()
+//     is posted behind a *second* gate (`release2`). Because the UI
+//     task drains its queue strictly in order, enter_standby() now
+//     cannot run before the teardown job -- the thing stop() is
+//     actually waiting on -- regardless of real scheduling.
+//   - Releasing gate 1 lets stop() past the teardown wait and into
+//     power_timer->stop() + the standby() check (and, in the fixed
+//     code, its own guarded post) -- a few non-blocking instructions
+//     that need no further queue progress to complete. A second short
+//     sleep lets that run to completion before gate 2 is released, so
+//     enter_standby() -- still frozen behind it until then -- cannot
+//     possibly run before the check does.
+TEST(AppBoot, StopUndoesStandbyQueuedJustBeforeTheCheck) {
+    auto h = make_app({.with_display = true});
+    ASSERT_TRUE(h.app.start());
+    wisp::ui::UiRuntime* ui = h.app.ui();
+    wisp::app::PowerManager* pm = h.app.power_manager();
+    ASSERT_NE(ui, nullptr);
+    ASSERT_NE(pm, nullptr);
+
+    auto release1 = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(ui->post([release1] { release1->take(wisp::os::kForever); }));
+
+    auto stopped = std::make_shared<wisp::os::Semaphore>(1, 0);
+    wisp::os::TaskConfig stopper_config;
+    stopper_config.name = "stopper";
+    auto task = wisp::os::Task::spawn(stopper_config, [&h, stopped] {
+        h.app.stop();
+        stopped->give();
+    });
+
+    wisp::os::sleep_ms(50);
+
+    auto release2 = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(ui->post([release2] { release2->take(wisp::os::kForever); }));
+    ASSERT_TRUE(ui->post([pm] { pm->enter_standby(); }));
+
+    release1->give();
+    wisp::os::sleep_ms(50);
+    release2->give();
+
+    stopped->take(wisp::os::kForever);
+    task->join();
+
+    EXPECT_TRUE(h.display->powered());
+    EXPECT_EQ(h.app.buttons().poll_interval_ms(), 20u);
+}

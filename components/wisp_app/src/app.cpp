@@ -222,18 +222,37 @@ void App::stop() {
     // start()/stop()/start() -- see reset_loopback()'s own doc comment)
     // would resume with the screen still asleep, SD probing still
     // paused, and the button/power-monitor poll periods still widened.
-    if (impl_->power_manager && impl_->power_manager->standby()) {
+    //
+    // The standby() check below must run on the UI task, not here: the
+    // power_timer tick that was in flight (or already queued onto the UI
+    // task, via ui_->post([this] { enter_standby_if_still_idle(...); })
+    // in power_manager.cpp) when power_timer->stop() above returned may
+    // not have run yet, so standby() read from this (stop()'s own)
+    // thread could still say false even though that queued tick is
+    // about to flip it true. Checking it here and skipping the post
+    // below when it reads false would race: that queued tick would then
+    // run anyway (UiRuntime's post queue is FIFO, so strictly before
+    // ~PowerManager()'s own post() a few lines down), leaving the device
+    // in standby with nothing left to undo it, since power_manager.reset()
+    // destroys the only thing that could. Posting unconditionally and
+    // checking standby() from *inside* the posted job instead sidesteps
+    // the race entirely: FIFO guarantees that job runs after any
+    // already-queued enter_standby_if_still_idle(), so it always sees
+    // the final state.
+    if (impl_->power_manager) {
         PowerManager* pm = impl_->power_manager.get();
         if (impl_->ui && !impl_->ui->on_ui_thread()) {
             auto done = std::make_shared<os::Semaphore>(1, 0);
             while (!impl_->ui->post([pm, done] {
-                pm->exit_standby();
+                if (pm->standby()) {
+                    pm->exit_standby();
+                }
                 done->give();
             })) {
                 os::sleep_ms(1);
             }
             done->take(os::kForever);
-        } else {
+        } else if (pm->standby()) {
             pm->exit_standby();
         }
     }
