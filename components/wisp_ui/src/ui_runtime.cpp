@@ -36,6 +36,11 @@ namespace {
 
 constexpr size_t kPostQueueCapacity = 32;
 constexpr uint64_t kPerfWindowMs = 1000;
+// How long the paused branch of ui_main() blocks waiting for post()'d
+// work before re-checking `running`/`paused` -- bounds stop()'s worst
+// -case wait while paused (a concurrent post() wakes it immediately
+// regardless of this value; this is only the idle-case ceiling).
+constexpr uint32_t kPausedPollMs = 50;
 
 int cap_int(const wisp::Properties& caps, const char* key, int fallback) {
     auto it = caps.find(key);
@@ -109,6 +114,23 @@ struct UiRuntime::Impl {
     // perf_overlay_enabled() below. Readable from any thread.
     std::atomic<bool> perf_overlay_enabled{false};
 
+    // Task 18b/spec 6.7: set by set_paused(), read at the top of every
+    // ui_main() loop iteration. Just an atomic flag -- see
+    // UiRuntime::set_paused()'s doc comment for why that's enough (no
+    // extra synchronization needed against stop(), post(), or the
+    // normal lv_timer_handler() path).
+    std::atomic<bool> paused{false};
+
+    // Guards touch_activity_cb against a set_touch_activity_cb() call
+    // racing indev_read_cb() reading/invoking it (both can happen from
+    // any thread/the UI task respectively). Taken only briefly on each
+    // side -- see indev_read_cb(), which copies the std::function out
+    // under the lock and invokes the copy after releasing it, so a
+    // reentrant call from inside the callback itself (e.g. back into
+    // this UiRuntime) can't deadlock on it.
+    os::Mutex touch_activity_mutex;
+    std::function<void()> touch_activity_cb;
+
     // --- perf (protected by perf_mutex) ---
     mutable os::Mutex perf_mutex;
     uint32_t frames_total = 0;
@@ -137,7 +159,38 @@ void UiRuntime::Impl::drain_post_queue() {
 }
 
 void UiRuntime::Impl::ui_main() {
+    // Tracks whether the *previous* iteration was in the paused branch
+    // below, so the exact loop iteration where paused flips true->false
+    // is detected here (on the UI task, the only place lv_* may be
+    // called) and gets exactly one lv_obj_invalidate() -- see
+    // UiRuntime::set_paused()'s doc comment.
+    bool was_paused = false;
+
     while (running.load(std::memory_order_acquire)) {
+        if (paused.load(std::memory_order_acquire)) {
+            was_paused = true;
+            // Blocks waiting for post()'d work (woken immediately by a
+            // concurrent post()), without ever calling
+            // lv_timer_handler() -- no LVGL timer fires and no flush
+            // happens while paused. The timeout bounds how long stop()
+            // (which only flips `running`; it doesn't touch `paused`)
+            // can be kept waiting by this branch.
+            std::function<void()> fn;
+            if (post_queue.pop(fn, kPausedPollMs)) {
+                fn();
+                fn = nullptr;
+            }
+            continue;
+        }
+        if (was_paused) {
+            // Just resumed: whatever was invalidated while paused was
+            // never actually drawn (lv_timer_handler() never ran), so
+            // force one full redraw now, before the normal loop below
+            // resumes calling it.
+            lv_obj_invalidate(lv_screen_active());
+            was_paused = false;
+        }
+
         uint64_t loop_start = os::now_ms();
         drain_post_queue();
         uint32_t next_ms = lv_timer_handler();
@@ -239,6 +292,15 @@ void UiRuntime::Impl::indev_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
         data->point.x = pt.x;
         data->point.y = pt.y;
         data->state = LV_INDEV_STATE_PRESSED;
+
+        std::function<void()> cb;
+        {
+            std::lock_guard<os::Mutex> lock(impl->touch_activity_mutex);
+            cb = impl->touch_activity_cb;
+        }
+        if (cb) {
+            cb();
+        }
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
@@ -407,6 +469,15 @@ bool UiRuntime::on_ui_thread() const {
     return task != nullptr && task->is_current();
 }
 
+void UiRuntime::set_paused(bool paused) { impl_->paused.store(paused, std::memory_order_release); }
+
+bool UiRuntime::paused() const { return impl_->paused.load(std::memory_order_acquire); }
+
+void UiRuntime::set_touch_activity_cb(std::function<void()> cb) {
+    std::lock_guard<os::Mutex> lock(impl_->touch_activity_mutex);
+    impl_->touch_activity_cb = std::move(cb);
+}
+
 Result<std::vector<uint8_t>> UiRuntime::snapshot_rgb888(uint32_t timeout_ms) {
     if (on_ui_thread()) {
         // Posting-and-blocking here would deadlock: the posted lambda can
@@ -447,6 +518,20 @@ UiPerf UiRuntime::perf() const {
 
     UiPerf p;
     p.frames = impl_->frames_total;
+
+    // Task 18b/spec 6.7: while paused, ui_main() never runs
+    // lv_timer_handler()/flush_cb(), so busy_samples/flush_samples
+    // simply decay to empty (and frame_times stop growing) as the 1s
+    // window slides past the last real activity -- fps/cpu_percent/
+    // avg_flush_ms would eventually read 0 on their own, but only after
+    // up to kPerfWindowMs of a stale, decaying reading in the meantime.
+    // Reporting the window as empty immediately instead avoids ever
+    // showing a bogus non-zero FPS/CPU% for a UI that is not currently
+    // rendering at all. `frames` is a lifetime total (see UiPerf's doc
+    // comment), so it is reported as-is either way.
+    if (impl_->paused.load(std::memory_order_acquire)) {
+        return p;
+    }
     // The window is exactly kPerfWindowMs (1s) by construction, so the
     // frame count already *is* the rate (frames per second).
     p.fps = static_cast<float>(impl_->frame_times.size());

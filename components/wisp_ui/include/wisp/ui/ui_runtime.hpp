@@ -103,6 +103,41 @@ public:
     // post()'d function, or an LVGL event/timer callback it triggered).
     bool on_ui_thread() const;
 
+    // Pauses/resumes rendering (spec 6.7's standby). Safe to call from
+    // any thread, including the UI task itself. While paused, the UI
+    // task never calls lv_timer_handler() (so no LVGL timer fires and no
+    // flush happens) -- it only blocks waiting for, and running,
+    // whatever is post()'d to it, exactly like the unpaused loop already
+    // does on top of its own lv_timer_handler() call. This is purely an
+    // atomic flag: pausing never blocks, and never fights stop() for the
+    // UI task (ui_main() keeps checking `running` -- see
+    // ui_runtime.cpp -- even while the paused branch is blocked waiting
+    // for post()'d work, so stop() still completes promptly).
+    //
+    // Unpausing (set_paused(false)) is picked up by the UI task itself
+    // on its next loop iteration, which first calls
+    // lv_obj_invalidate(lv_screen_active()) (forcing a full redraw --
+    // whatever was invalidated while paused was never actually drawn)
+    // before resuming the normal lv_timer_handler() loop.
+    void set_paused(bool paused);
+
+    // Thread-safe. Reflects what set_paused() last requested -- see its
+    // doc comment for why this is *not* the same as "ui_main() has
+    // actually reached its paused branch yet" (there can be up to one
+    // loop iteration of lag, same as on_ui_thread()'s active_task mirror).
+    bool paused() const;
+
+    // Task 18b/spec 6.7: installs `cb`, called (on the UI task, from
+    // inside the pointer input device's read callback) every time a
+    // touch read returns at least one point. Used by
+    // wisp::app::PowerManager to reset its idle clock on touch activity
+    // without adding a second reader of `touch` (PowerManager still owns
+    // Touch::set_power(), but never calls Touch::read() itself). A no-op
+    // if this UiRuntime has no touch indev (constructed with
+    // `touch == nullptr`). Thread-safe; pass an empty std::function to
+    // remove a previously installed callback.
+    void set_touch_activity_cb(std::function<void()> cb);
+
     // Takes an lv_snapshot_take() of the active screen. Safe to call from
     // any thread: off the UI task, it posts the snapshot work and blocks
     // the calling thread for up to `timeout_ms` for it to finish; called
