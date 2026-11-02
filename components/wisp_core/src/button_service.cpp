@@ -19,10 +19,12 @@ ButtonService::ButtonService(DeviceRegistry& registry, EventBus& bus, uint32_t l
       bus_(bus),
       long_press_ms_(long_press_ms),
       poll_ms_(poll_ms),
-      timer_("wisp.button", poll_ms, /*periodic=*/true, [this] { poll(os::now_ms()); }) {}
+      timer_(std::make_unique<os::Timer>("wisp.button", poll_ms_, /*periodic=*/true,
+                                         [this] { poll(os::now_ms()); })) {}
 
 void ButtonService::start() {
-    if (timer_.active()) {
+    std::lock_guard<os::Mutex> timer_lock(timer_mutex_);
+    if (timer_->active()) {
         // Already running: a second start() must be a true no-op,
         // including leaving buttons_ untouched -- see the doc comment on
         // start() for why re-running refresh_buttons() here would be
@@ -33,10 +35,35 @@ void ButtonService::start() {
         std::lock_guard<os::Mutex> lock(mutex_);
         refresh_buttons();
     }
-    timer_.start();
+    timer_->start();
 }
 
-void ButtonService::stop() { timer_.stop(); }
+void ButtonService::stop() {
+    std::lock_guard<os::Mutex> timer_lock(timer_mutex_);
+    timer_->stop();
+}
+
+void ButtonService::set_poll_interval_ms(uint32_t poll_ms) {
+    std::lock_guard<os::Mutex> timer_lock(timer_mutex_);
+    if (poll_ms_ == poll_ms) {
+        return;
+    }
+    bool was_active = timer_->active();
+    if (was_active) {
+        timer_->stop();
+    }
+    poll_ms_ = poll_ms;
+    timer_ = std::make_unique<os::Timer>("wisp.button", poll_ms_, /*periodic=*/true,
+                                         [this] { poll(os::now_ms()); });
+    if (was_active) {
+        timer_->start();
+    }
+}
+
+uint32_t ButtonService::poll_interval_ms() const {
+    std::lock_guard<os::Mutex> timer_lock(timer_mutex_);
+    return poll_ms_;
+}
 
 void ButtonService::refresh_buttons() {
     std::vector<ButtonState> fresh;

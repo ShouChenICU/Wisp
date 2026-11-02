@@ -84,6 +84,26 @@ public:
     // never interleave their reads/writes of per-button state.
     void poll(uint64_t now_ms);
 
+    // Changes the poll period, taking effect immediately: if the Timer
+    // is currently active, it is stopped and replaced with a new one at
+    // the new period (then restarted); if not (start() hasn't been
+    // called, or stop() has), only poll_ms_ itself is updated, and the
+    // new period takes effect the next time start() creates/starts the
+    // timer. A no-op if `poll_ms` already equals the current period.
+    // Thread-safe, including against a concurrent start()/stop() (see
+    // timer_mutex_ below); does not touch buttons_/buttons_loaded_, so
+    // it never races poll() the way a second start() would (see
+    // start()'s doc comment) -- only the Timer itself is swapped.
+    //
+    // Task 18b: the default 20ms poll period is widened to 50ms while
+    // the device is in standby (see wisp::app::PowerManager) and
+    // restored on wake.
+    void set_poll_interval_ms(uint32_t poll_ms);
+
+    // The current poll period (see set_poll_interval_ms()). Mainly for
+    // tests; thread-safe.
+    uint32_t poll_interval_ms() const;
+
 private:
     struct ButtonState {
         std::shared_ptr<hal::Button> button;
@@ -99,7 +119,6 @@ private:
     DeviceRegistry& registry_;
     EventBus& bus_;
     uint32_t long_press_ms_;
-    uint32_t poll_ms_;
 
     // Guards buttons_/buttons_loaded_ against concurrent poll()/start()
     // calls (see their doc comments above). refresh_buttons() is always
@@ -108,7 +127,15 @@ private:
     std::vector<ButtonState> buttons_;
     bool buttons_loaded_ = false;
 
-    os::Timer timer_;
+    // Guards poll_ms_ and timer_ itself (the pointer, not what it does
+    // internally) against concurrent start()/stop()/set_poll_interval_ms()
+    // calls. Never held across anything that takes mutex_ above (poll(),
+    // the Timer's own callback, never touches timer_mutex_), so holding
+    // it across a (possibly blocking) Timer::stop()/start() call below
+    // cannot deadlock against poll().
+    mutable os::Mutex timer_mutex_;
+    uint32_t poll_ms_;
+    std::unique_ptr<os::Timer> timer_;
 };
 
 }  // namespace wisp::core
