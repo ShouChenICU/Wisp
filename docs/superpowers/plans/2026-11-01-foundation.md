@@ -22,6 +22,7 @@
 8. 模拟器截图用自带的极简 PNG 编码器（未压缩 deflate），不引入第三方图像库。
 9. 新增性能监视（spec 未要求）：`UiRuntime` 自行统计 FPS、UI 线程占用率、平均刷新耗时；自检界面显示，每 5 s 输出一行 `WISP_PERF <json>`；可选开启 LVGL 自带的 sysmon 浮层。作为后续场景运行时的性能回归基准。
 10. 屏幕形状与安全区（执行期由用户批准加入，spec 5.6 节）：Display caps 的 `shape` 取 `rect`/`rounded_rect`/`circle`（原 `rounded_square` 改名为 `rounded_rect`），`wisp_hal` 提供 `visible`/`safe_rect`/`row_span` 几何函数，能力清单为 Display 条目附带 `safe_area`，自检界面与模拟器遮罩都以此为准。见 Task 12b。
+11. 熄屏省电（执行期由用户批准加入，spec 6.7 节、验收第 5 条）：新增 `PowerManager`，熄屏进入待机，此时屏幕和触摸进入睡眠、UI 暂停渲染、按键放慢轮询，真机开启 DFS 和待机自动浅睡眠；同时支持闲置自动熄屏。后台场景和唤醒锁留到子项目 3（spec 1.6）。见 Task 18b。
 
 ## Global Constraints
 
@@ -1281,6 +1282,73 @@ git commit -m "feat(drivers): port AXP2101, PCF85063, QMI8658 and add GPIO butto
 ```bash
 git add components/wisp_port_esp boards firmware
 git commit -m "feat(firmware): add audio codecs, LittleFS/SD storage and NVS settings"
+```
+
+---
+
+### Task 18b: 熄屏待机与省电
+
+（执行期由用户批准插入，见 spec 6.7 节和验收第 5 条。范围只有"亮屏 ↔ 待机"两态，不含后台场景和唤醒锁，这两项见 spec 1.6。）
+
+**Files:**
+- Create：
+  - `components/wisp_app/include/wisp/app/power_manager.hpp`
+  - `components/wisp_app/src/power_manager.cpp`
+  - `tests/app/power_manager_test.cpp`
+- Modify：
+  - `components/wisp_hal/include/wisp/hal/touch.hpp`（新增带默认实现的 `set_power`）
+  - `components/wisp_ui`（`UiRuntime::set_paused`）
+  - `components/wisp_core`（`ButtonService::set_poll_interval_ms`）
+  - `components/wisp_app/include/wisp/app/app.hpp`（`Platform::set_standby`）
+  - `components/wisp_app/src/{app.cpp,self_check_screen.cpp}`
+  - `components/wisp_port_esp/dev/{esp_display,esp_touch}.cpp`
+  - `firmware/main/main.cpp`、`firmware/sdkconfig.defaults`
+  - `simulator/main.cpp`
+  - `tests/support/fake_devices.hpp`
+  - `tests/ui/*`、`tests/core/button_service_test.cpp`
+
+**Interfaces:**
+- **`hal::Touch`**：新增 `virtual Result<void> set_power(bool on) { return Result<void>::err(ErrorCode::Unsupported, "touch sleep unsupported"); }`。这是非纯虚函数，现有实现不用改动。
+- **`hal::Display::set_power(false)`**：语义扩展为"面板进入睡眠模式"。ESP 实现依次调用 `esp_lcd_panel_disp_on_off(false)` 和 `esp_lcd_panel_disp_sleep(true)`；`set_power(true)` 按相反顺序恢复。
+- **`EspTouch::set_power`**：使用 `esp_lcd_touch_enter_sleep`/`exit_sleep`。如果 CST9217 驱动不支持，就返回 `Unsupported`。
+- **`ui::UiRuntime::set_paused(bool)`**：可以在任意线程调用。
+  - 暂停期间，UI 任务不再调用 `lv_timer_handler`，也不刷新屏幕，只阻塞等待并执行 `post()` 进来的任务；
+  - 恢复时先 `lv_obj_invalidate(lv_screen_active())`，再继续正常循环；
+  - 提供 `bool paused() const`。
+- **`core::ButtonService::set_poll_interval_ms(uint32_t)`**：可以在运行中切换。默认 20 ms，待机时用 50 ms。
+- **`app::Platform`**：新增 `std::function<void(bool standby)> set_standby;`，可以为空。
+  - ESP 端：启动时 `esp_pm_configure({max 240, min 80, light_sleep_enable=false})`；待机时改为 `light_sleep_enable=true`，退出待机后改回。
+  - 模拟器端：只输出一条 `WLOG_I`。
+- **`app::PowerManager`**：
+  - 构造：`PowerManager(core::EventBus&, std::shared_ptr<hal::Display>, std::shared_ptr<hal::Touch>, ui::UiRuntime*, core::ButtonService*, std::function<void(bool)> set_standby, core::Settings settings)`；
+  - 成员函数：`enter_standby()`、`exit_standby()`、`bool standby() const`、`note_activity()`、`tick(uint64_t now_ms)`；
+  - 进入或退出待机时，在事件总线上发布 `power/state`，载荷为 `{"state":"standby"|"active"}`；
+  - 进入和退出都是幂等的，Touch 返回 `Unsupported` 时不算错误；
+  - 自动熄屏时长读取 Settings 的 `power`/`screen_off_s`，默认 60，0 表示关闭；
+  - 闲置的判定依据是距离上一次 `note_activity()` 超过该时长。触摸输入（UiRuntime 的 indev 读到触点时）和任意按键事件都要调用 `note_activity()`。
+- **电源键**：`PowerKeyController` 的 `ScreenOff`/`ScreenOn` 动作改为调用 `PowerManager` 的 `enter_standby`/`exit_standby`，不再直接调用 `Display::set_power`。待机时按任意键都会唤醒。
+- **sdkconfig.defaults**：新增 `CONFIG_PM_ENABLE=y`、`CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`。
+  - 需要核实 USB-Serial-JTAG 与自动浅睡眠的相互影响，例如 `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`。原则是：连着 USB 调试时可以不睡，但用电池供电时必须能睡；
+  - 结论写进 `docs/hardware/waveshare_amoled_216.md`。
+
+- [ ] **Step 1: 写失败的测试**
+  - `PowerManager`：`enter_standby` 之后，FakeDisplay `powered()==false`，UiRuntime `paused()`，按键轮询周期为 50，`set_standby(true)` 被调用一次，并收到 `power/state` 事件；`exit_standby` 全部恢复；连续两次 enter 只生效一次；FakeTouch 返回 Unsupported 时 `enter_standby` 仍然成功；`screen_off_s=1` 时，`tick` 超过 1000 ms 后进入待机，`note_activity` 会重置计时；`screen_off_s=0` 时永不自动熄屏。
+  - `UiRuntime`：暂停期间 `post()` 的任务照样执行，但 flush 计数不增加；恢复后会有 flush。
+  - `ButtonService`：切到 50 ms 后，短按和长按的判定仍然正确，长按阈值仍是 1000 ms。
+- [ ] **Step 2: 运行，确认失败**
+- [ ] **Step 3: 实现 PowerManager、UiRuntime 暂停、按键轮询切换和 Touch 睡眠接口，接入 App 和自检界面；然后实现 ESP 端（面板睡眠、触摸睡眠、esp_pm 与 tickless idle），并接上模拟器的钩子**
+- [ ] **Step 4: 运行，确认通过**
+  - `bash tools/ci.sh` 全部 PASS；
+  - 固件从干净状态执行 set-target → bmgr → build，构建成功。
+- [ ] **Step 5: 烧录验证（需要真机）**
+  - 短按电源键后，屏幕熄灭、触摸无响应；再短按，300 ms 内亮屏，界面完整重绘；
+  - 闲置 60 s 后自动熄屏；
+  - 断开 USB 数据线，只用电池供电，在电池端串接电流表，分别测亮屏静止和熄屏待机的平均电流。待机电流应不超过亮屏的 1/10。实测值记入硬件文档。
+- [ ] **Step 6: Commit**
+
+```bash
+git add components boards firmware simulator tests docs/hardware
+git commit -m "feat(app): add screen-off standby with panel/touch sleep and light sleep"
 ```
 
 ---
