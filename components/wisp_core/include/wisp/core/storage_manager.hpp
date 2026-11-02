@@ -217,7 +217,16 @@ public:
     void refresh();
 
     // A snapshot of every registered storage device's current id/online/
-    // capacity, for diagnostics (e.g. a self-check screen).
+    // capacity, for diagnostics (e.g. a self-check screen). Takes mutex_,
+    // the same lock write_atomic() holds across its fsync()+rename()
+    // calls (see file header) -- a caller on the UI thread (the
+    // self-check screen, today) therefore blocks for as long as a
+    // concurrent write_atomic() call takes to fsync and rename, which can
+    // be well past one frame's budget on slow storage. Sub-project 1 has
+    // no writer that runs while the UI is live, so it's harmless here;
+    // sub-project 3, which does write while the UI is live, should read a
+    // snapshot refreshed outside this lock instead of calling status()
+    // directly from the UI thread.
     StorageStatus status() const;
 
     // Forwards to storage.sd's hal::Storage::set_standby() (a no-op if "storage.sd"

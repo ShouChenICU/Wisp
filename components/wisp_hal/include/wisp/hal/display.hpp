@@ -55,9 +55,14 @@ public:
     }
 
 protected:
-    // Compiles out entirely under NDEBUG (a release/firmware build), so
-    // this never costs anything there; concrete implementations call it
-    // at the top of flush()/set_brightness()/set_power().
+    // Compiles out entirely when NDEBUG is defined. That is not the same
+    // as "release" or "firmware": firmware/sdkconfig.defaults enables
+    // CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE, which does not
+    // define NDEBUG, so this check stays compiled in (and active) on
+    // real hardware too, catching a cross-thread call there with an
+    // abort+reboot instead of a silently torn frame. Concrete
+    // implementations call it at the top of flush()/set_brightness()/
+    // set_power().
     void assert_owner_thread() const {
 #ifndef NDEBUG
         assert(!owner_thread_check_ || owner_thread_check_());
