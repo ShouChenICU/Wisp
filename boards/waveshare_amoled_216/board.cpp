@@ -225,6 +225,13 @@ void init_power(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& re
         record_failed(report, id, cls, power.error().message);
         return;
     }
+    // Charging-parameter configuration is best-effort (see
+    // axp2101_init()'s header comment): it must not stop this device
+    // from registering, but a failure must still be reported.
+    esp_err_t chg_err = power.value()->charging_config_status();
+    if (chg_err != ESP_OK) {
+        WLOG_W(kTag, "power.main: charging configuration failed: %s", err_name(chg_err).c_str());
+    }
     add_device(registry, report, power.value());
 }
 

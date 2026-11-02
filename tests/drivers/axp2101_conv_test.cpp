@@ -35,3 +35,49 @@ TEST(Axp2101Conv, CombineH5L8UsesLow5BitsOfHigh) {
     EXPECT_EQ(axp2101_combine_h5l8(0xFF, 0x00), 0x1F00);
     EXPECT_EQ(axp2101_combine_h5l8(0x00, 0x00), 0);
 }
+
+// Fix round 1: these four encoders were rewritten from scratch against
+// XPowersLib after MyOS's original REG 0x62/0x63/0x64 encodings were
+// found to be wrong (see axp2101_conv.h's file comment). Expected values
+// below are taken directly from XPowersLib's xpowers_axp2101_chg_curr_t/
+// chg_iterm_t/chg_vol_t enums.
+
+TEST(Axp2101Conv, IccCodeStepsBy25maBelow200) {
+    EXPECT_EQ(axp2101_icc_code(0), 0);
+    EXPECT_EQ(axp2101_icc_code(100), 4);
+    EXPECT_EQ(axp2101_icc_code(200), 8);
+}
+
+TEST(Axp2101Conv, IccCodeStepsBy100maAbove200) {
+    EXPECT_EQ(axp2101_icc_code(300), 9);
+    EXPECT_EQ(axp2101_icc_code(400), 0x0A);
+    EXPECT_EQ(axp2101_icc_code(1000), 0x10);
+}
+
+TEST(Axp2101Conv, IccCodeClampsAboveMax) { EXPECT_EQ(axp2101_icc_code(5000), 0x10); }
+
+TEST(Axp2101Conv, ItermCodeStepsBy25ma) {
+    EXPECT_EQ(axp2101_iterm_code(0), 0);
+    EXPECT_EQ(axp2101_iterm_code(25), 1);
+    EXPECT_EQ(axp2101_iterm_code(200), 8);
+}
+
+TEST(Axp2101Conv, ItermCodeClampsAboveMax) { EXPECT_EQ(axp2101_iterm_code(1000), 8); }
+
+TEST(Axp2101Conv, CvCodeMatchesXPowersLibThresholds) {
+    EXPECT_EQ(axp2101_cv_code(4000), 1);
+    EXPECT_EQ(axp2101_cv_code(4100), 2);
+    EXPECT_EQ(axp2101_cv_code(4200), 3);
+    EXPECT_EQ(axp2101_cv_code(4350), 4);
+    EXPECT_EQ(axp2101_cv_code(4400), 5);
+}
+
+TEST(Axp2101Conv, CvCodeClampsAboveMax) { EXPECT_EQ(axp2101_cv_code(5000), 5); }
+
+TEST(Axp2101Conv, IprechgCodeStepsBy25ma) {
+    EXPECT_EQ(axp2101_iprechg_code(0), 0);
+    EXPECT_EQ(axp2101_iprechg_code(50), 2);
+    EXPECT_EQ(axp2101_iprechg_code(375), 15);
+}
+
+TEST(Axp2101Conv, IprechgCodeClampsAboveMax) { EXPECT_EQ(axp2101_iprechg_code(1000), 15); }

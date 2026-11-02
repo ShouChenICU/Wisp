@@ -46,6 +46,14 @@ static inline float qmi8658_raw_to_dps(int16_t raw, int fs_dps) {
 // ODR register code (CTRL2/CTRL3 bits[3:0] -- the encoding is shared by
 // the accelerometer and gyroscope). Not from MyOS, which never changed
 // the ODR after init; see this file's header comment.
+//
+// This table is the *nominal* accelerometer-only ODR for each code. This
+// driver always runs in 6DOF mode (accelerometer and gyroscope both
+// enabled -- see configure_sensors() in qmi8658.c), and in that mode the
+// QMI8658 derives the actual sample rate from the gyroscope's internal
+// clock, which is not identical to the nominal table: e.g. code 3 is
+// listed as 1000Hz but in 6DOF mode actually runs at ~896.8Hz. Callers
+// needing the precise rate should treat this table as an approximation.
 static inline uint8_t qmi8658_odr_code_for_hz(uint32_t hz) {
     static const struct {
         uint32_t hz;

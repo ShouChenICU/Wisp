@@ -63,6 +63,13 @@ Result<wisp::hal::ImuSample> EspImu::read() {
 }
 
 Result<void> EspImu::set_rate(uint32_t hz) {
+    // Clamp to the "max_rate_hz" cap advertised in info_.caps above
+    // (qmi8658_set_odr() clamps the same way internally, but this keeps
+    // the HAL-level contract self-evident without reading the driver).
+    constexpr uint32_t kMaxRateHz = 1000;
+    if (hz > kMaxRateHz) {
+        hz = kMaxRateHz;
+    }
     esp_err_t err = qmi8658_set_odr(handle_, hz);
     if (err != ESP_OK) {
         return Result<void>::err(ErrorCode::DeviceFailure,

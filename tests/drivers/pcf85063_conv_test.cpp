@@ -65,3 +65,44 @@ TEST(Pcf85063Conv, YearPlausibility) {
     EXPECT_TRUE(pcf85063_year_plausible(2024));
     EXPECT_TRUE(pcf85063_year_plausible(2099));
 }
+
+// Fix round 1: pcf85063_decode() now rejects garbage registers beyond
+// just the OS flag -- an invalid BCD nibble, or a BCD-valid but
+// out-of-calendar-range field (see task-17-report.md).
+
+TEST(Pcf85063Conv, BcdValidRejectsNibbleAboveNine) {
+    EXPECT_FALSE(pcf85063_bcd_valid(0x1A));  // low nibble 0xA
+    EXPECT_FALSE(pcf85063_bcd_valid(0xF0));  // high nibble 0xF
+    EXPECT_TRUE(pcf85063_bcd_valid(0x59));
+}
+
+TEST(Pcf85063Conv, DecodeFailsOnInvalidBcdNibble) {
+    // Valid seconds/minutes/hours/day/weekday/month, but a minutes
+    // register with an invalid low nibble (0xA).
+    uint8_t regs[7] = {0x45, 0x1A, 0x12, 0x02, 0x01, 0x11, 0x26};
+    struct tm decoded;
+    memset(&decoded, 0, sizeof(decoded));
+    EXPECT_FALSE(pcf85063_decode(regs, &decoded));
+}
+
+TEST(Pcf85063Conv, DecodeFailsOnOutOfRangeMinutes) {
+    // 0x75 is valid BCD (decodes to 75), but there is no 75th minute.
+    uint8_t regs[7] = {0x45, 0x75, 0x12, 0x02, 0x01, 0x11, 0x26};
+    struct tm decoded;
+    memset(&decoded, 0, sizeof(decoded));
+    EXPECT_FALSE(pcf85063_decode(regs, &decoded));
+}
+
+TEST(Pcf85063Conv, DecodeFailsOnZeroDayOfMonth) {
+    uint8_t regs[7] = {0x45, 0x30, 0x12, 0x00, 0x01, 0x11, 0x26};
+    struct tm decoded;
+    memset(&decoded, 0, sizeof(decoded));
+    EXPECT_FALSE(pcf85063_decode(regs, &decoded));
+}
+
+TEST(Pcf85063Conv, DecodeFailsOnZeroMonth) {
+    uint8_t regs[7] = {0x45, 0x30, 0x12, 0x02, 0x01, 0x00, 0x26};
+    struct tm decoded;
+    memset(&decoded, 0, sizeof(decoded));
+    EXPECT_FALSE(pcf85063_decode(regs, &decoded));
+}

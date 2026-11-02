@@ -18,7 +18,15 @@ static const char* TAG = "qmi8658";
 
 #define QMI8658_I2C_ADDR 0x6B
 #define QMI8658_I2C_FREQ_HZ 400000
-#define QMI8658_I2C_TIMEOUT_MS pdMS_TO_TICKS(20)
+/* Despite the unit in its old name, this already held a tick count
+ * (pdMS_TO_TICKS() converts once, at this macro's expansion site) --
+ * fix round 1 renames it to match. */
+#define QMI8658_I2C_TIMEOUT_TICKS pdMS_TO_TICKS(20)
+
+/* qmi8658_set_odr()/the HAL's EspImu::set_rate() clamp requested rates to
+ * this; see qmi8658_conv.h's ODR table comment for why the nominal code
+ * doesn't always mean an exact Hz in this driver's always-6DOF mode. */
+#define QMI8658_MAX_ODR_HZ 1000
 
 /* ==================== QMI8658 registers (see hal_imu.cpp) ==================== */
 #define REG_WHO_AM_I 0x00
@@ -61,12 +69,12 @@ struct qmi8658_dev {
 };
 
 static esp_err_t qmi_read_reg(qmi8658_handle_t h, uint8_t reg, uint8_t* data, size_t len) {
-    return i2c_master_transmit_receive(h->dev, &reg, 1, data, len, QMI8658_I2C_TIMEOUT_MS);
+    return i2c_master_transmit_receive(h->dev, &reg, 1, data, len, QMI8658_I2C_TIMEOUT_TICKS);
 }
 
 static esp_err_t qmi_write_reg(qmi8658_handle_t h, uint8_t reg, uint8_t val) {
     uint8_t buf[2] = {reg, val};
-    return i2c_master_transmit(h->dev, buf, sizeof(buf), QMI8658_I2C_TIMEOUT_MS);
+    return i2c_master_transmit(h->dev, buf, sizeof(buf), QMI8658_I2C_TIMEOUT_TICKS);
 }
 
 static esp_err_t configure_sensors(qmi8658_handle_t h, uint8_t odr_code) {
@@ -173,6 +181,9 @@ esp_err_t qmi8658_read(qmi8658_handle_t handle, qmi8658_sample_t* out) {
 esp_err_t qmi8658_set_odr(qmi8658_handle_t handle, uint32_t hz) {
     if (handle == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (hz > QMI8658_MAX_ODR_HZ) {
+        hz = QMI8658_MAX_ODR_HZ;
     }
     return configure_sensors(handle, qmi8658_odr_code_for_hz(hz));
 }

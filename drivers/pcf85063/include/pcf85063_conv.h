@@ -43,20 +43,51 @@ static inline void pcf85063_encode(const struct tm* t, uint8_t regs[7]) {
     regs[6] = pcf85063_dec_to_bcd((uint8_t)(t->tm_year - 100));
 }
 
+// True if both nibbles of a BCD byte are valid decimal digits (0-9). A
+// corrupted/uninitialized register (e.g. 0xFF, or a stray high nibble
+// like the 0x75 in a botched minutes byte) fails this even though the
+// OS flag might not be set. Not from MyOS -- see pcf85063_decode()'s
+// comment below.
+static inline bool pcf85063_bcd_valid(uint8_t v) {
+    return (v & 0x0F) <= 9 && ((v >> 4) & 0x0F) <= 9;
+}
+
 // Decodes the 7 PCF85063 time registers into `t` (UTC). Returns false
 // (leaving `*t` untouched) if the oscillator-stop flag is set -- the
-// chip has no valid time since it last lost power. Ported from MyOS's
-// HalRtc::get_time().
+// chip has no valid time since it last lost power -- or if any register
+// decodes to an invalid BCD digit or an out-of-range calendar field
+// (e.g. minute 75, hour 31): either indicates garbage registers, not a
+// real time, and callers must not treat it as valid. Ported from MyOS's
+// HalRtc::get_time(); the BCD/range validation is not from MyOS -- see
+// task-17-report.md's "Fix round 1".
 static inline bool pcf85063_decode(const uint8_t regs[7], struct tm* t) {
     if (regs[0] & PCF85063_SECONDS_OS) {
         return false;
     }
-    t->tm_sec = pcf85063_bcd_to_dec(regs[0] & 0x7F);
-    t->tm_min = pcf85063_bcd_to_dec(regs[1] & 0x7F);
-    t->tm_hour = pcf85063_bcd_to_dec(regs[2] & 0x3F);
-    t->tm_mday = pcf85063_bcd_to_dec(regs[3] & 0x3F);
-    t->tm_wday = pcf85063_bcd_to_dec(regs[4] & 0x07);
-    t->tm_mon = pcf85063_bcd_to_dec(regs[5] & 0x1F) - 1;
+    for (int i = 0; i < 7; i++) {
+        uint8_t masked = i == 6 ? regs[i] : (uint8_t)(regs[i] & 0x7F);
+        if (!pcf85063_bcd_valid(masked)) {
+            return false;
+        }
+    }
+
+    uint8_t sec = pcf85063_bcd_to_dec(regs[0] & 0x7F);
+    uint8_t min = pcf85063_bcd_to_dec(regs[1] & 0x7F);
+    uint8_t hour = pcf85063_bcd_to_dec(regs[2] & 0x3F);
+    uint8_t mday = pcf85063_bcd_to_dec(regs[3] & 0x3F);
+    uint8_t wday = pcf85063_bcd_to_dec(regs[4] & 0x07);
+    uint8_t mon = pcf85063_bcd_to_dec(regs[5] & 0x1F);
+    if (sec > 59 || min > 59 || hour > 23 || mday < 1 || mday > 31 || wday > 6 || mon < 1 ||
+        mon > 12) {
+        return false;
+    }
+
+    t->tm_sec = sec;
+    t->tm_min = min;
+    t->tm_hour = hour;
+    t->tm_mday = mday;
+    t->tm_wday = wday;
+    t->tm_mon = mon - 1;
     t->tm_year = 100 + pcf85063_bcd_to_dec(regs[6]);
     t->tm_isdst = 0;
     return true;

@@ -49,7 +49,10 @@ Result<wisp::hal::PowerStatus> EspPower::status() {
     }
 
     wisp::hal::PowerStatus out;
-    out.battery_percent = raw.battery_percent;
+    // wisp/hal/power.hpp: battery_percent is -1 when unknown, e.g. no
+    // battery present. battery_mv/charging/usb_present are still
+    // meaningful (or at least harmlessly zero) without a battery.
+    out.battery_percent = raw.battery_present ? static_cast<int>(raw.battery_percent) : -1;
     out.battery_mv = raw.battery_mv;
     out.charging = raw.charging;
     out.usb_present = raw.vbus_present;
@@ -63,6 +66,10 @@ Result<void> EspPower::power_off() {
                                  std::string("axp2101_power_off: ") + esp_err_to_name(err));
     }
     return Result<void>::ok();
+}
+
+esp_err_t EspPower::charging_config_status() const {
+    return axp2101_charging_config_status(handle_);
 }
 
 }  // namespace wisp::port::esp

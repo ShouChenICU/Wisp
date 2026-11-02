@@ -33,8 +33,16 @@ public:
 
     // axp2101_read_status().
     Result<wisp::hal::PowerStatus> status() override;
-    // axp2101_power_off(); never returns ok (the chip cuts power).
+    // axp2101_power_off(). Returns ok once the shutdown request has been
+    // written successfully; the chip then cuts power shortly afterwards,
+    // so the caller never observes further code running on success.
     Result<void> power_off() override;
+
+    // axp2101_charging_config_status(): ESP_OK if axp2101_init()'s
+    // best-effort charging-parameter configuration succeeded, otherwise
+    // the esp_err_t it failed with. Purely diagnostic -- the device is
+    // registered either way; the board decides whether/how to log this.
+    esp_err_t charging_config_status() const;
 
 private:
     EspPower(axp2101_handle_t handle, std::string model);
