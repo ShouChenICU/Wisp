@@ -64,8 +64,9 @@ public:
     // first waits for it again (failing with Timeout if it still hasn't
     // finished) before starting a new transfer. With swap_rgb565_bytes,
     // the buffer is byte-swapped in place for the duration of the
-    // transfer and restored before returning (except on Timeout, where
-    // the DMA may still be reading it and it is left swapped).
+    // transfer and restored before returning (except on Timeout or a
+    // draw_bitmap failure, where the DMA may still be reading it and it is
+    // left swapped).
     Result<void> flush(const wisp::hal::Area& area, const uint16_t* rgb565) override;
     // Writes the DCS "write display brightness" register (0x51).
     Result<void> set_brightness(uint8_t level) override;

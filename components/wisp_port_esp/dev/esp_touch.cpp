@@ -36,11 +36,19 @@ Result<std::vector<wisp::hal::TouchPoint>> EspTouch::read() {
 
     std::vector<wisp::hal::TouchPoint> points;
     if (count > 0) {
-        int max_x = std::max(config_.width - 1, 0);
-        int max_y = std::max(config_.height - 1, 0);
+        // A non-positive width/height means the range is unknown: pass
+        // the driver's coordinates through unclamped.
+        int x = point.x;
+        int y = point.y;
+        if (config_.width > 0) {
+            x = std::clamp(x, 0, config_.width - 1);
+        }
+        if (config_.height > 0) {
+            y = std::clamp(y, 0, config_.height - 1);
+        }
         wisp::hal::TouchPoint pt;
-        pt.x = static_cast<int16_t>(std::clamp<int>(point.x, 0, max_x));
-        pt.y = static_cast<int16_t>(std::clamp<int>(point.y, 0, max_y));
+        pt.x = static_cast<int16_t>(x);
+        pt.y = static_cast<int16_t>(y);
         pt.id = point.track_id;
         points.push_back(pt);
     }

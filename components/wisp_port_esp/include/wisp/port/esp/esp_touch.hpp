@@ -19,8 +19,10 @@ namespace wisp::port::esp {
 
 struct EspTouchConfig {
     std::string model;  // DeviceInfo::model, e.g. the touch controller chip
-    int width = 0;      // reported x is clamped to [0, width - 1]
-    int height = 0;     // reported y is clamped to [0, height - 1]
+    // Reported x/y are clamped to [0, width - 1] x [0, height - 1]; a
+    // non-positive width/height means "range unknown" (no clamping).
+    int width = 0;
+    int height = 0;
 };
 
 class EspTouch : public wisp::hal::Touch {

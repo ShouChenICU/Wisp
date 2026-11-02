@@ -147,19 +147,34 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ## ESP-IDF components used by the firmware
 
-Fetched by the ESP-IDF component manager at build time (pinned in
-`firmware/main/idf_component.yml` / `firmware/dependencies.lock`; not
-vendored or forked):
+Fetched by the ESP-IDF component manager at build time (direct
+dependencies pinned in `firmware/main/idf_component.yml`; every entry
+below, including the transitive ones pulled in by esp_board_manager and
+by the bmgr-generated `gen_bmgr_codes` component, is locked in
+`firmware/dependencies.lock`, which is the authority for this list; not
+vendored or forked). License checked against each component's own
+license file under `firmware/managed_components/`:
 
-| Component | Version | License |
-|---|---|---|
-| `espressif/esp_board_manager` | 0.7.5 | Espressif Modified MIT License (`LicenseRef-Espressif-Modified-MIT`, below) |
-| `espressif/esp_boards` (dependency of esp_board_manager) | 0.7.1 | Espressif Modified MIT License |
-| `espressif/esp_lcd_co5300` | 2.2.0 | Apache-2.0 |
-| `espressif/esp_lcd_touch` | 1.2.1 | Apache-2.0 |
-| `waveshare/esp_lcd_touch_cst9217` | 2.0.0 | Apache-2.0 |
+| Component | Version | Pulled in by | License |
+|---|---|---|---|
+| `lvgl/lvgl` | 9.5.0 | `firmware/main` (see the LVGL section above) | MIT |
+| `bblanchon/arduinojson` | 7.4.3 | `firmware/main` (see the ArduinoJson section below) | MIT |
+| `espressif/esp_board_manager` | 0.7.5 | `firmware/main` | Espressif Modified MIT License (`LicenseRef-Espressif-Modified-MIT`, below) |
+| `espressif/esp_boards` | 0.7.1 | esp_board_manager | Espressif Modified MIT License (same text, copyright 2026) |
+| `espressif/esp_codec_dev` | 2.0.0-beta5 | esp_board_manager (audio_codec devices) | Espressif Modified MIT License (same text, copyright 2023-2026) |
+| `espressif/esp_lcd_co5300` | 2.2.0 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
+| `espressif/esp_lcd_touch` | 1.2.1 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
+| `waveshare/esp_lcd_touch_cst9217` | 2.0.0 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
+| `espressif/esp_lcd_panel_io_additions` | 1.0.1~1 | esp_board_manager, gen_bmgr_codes | Apache-2.0 |
+| `espressif/esp_io_expander` | 1.2.1 | esp_lcd_panel_io_additions | Apache-2.0 |
+| `espressif/usb` | 1.6.0 | esp_board_manager (via usb_host_uac) | Apache-2.0 |
+| `espressif/usb_host_uac` | 1.5.0 | esp_board_manager | Apache-2.0 |
+| `espressif/cmake_utilities` | 0.5.3 | esp_board_manager (build-time CMake helpers only) | Apache-2.0 |
 
-esp_board_manager's license restricts use to Espressif products, which
+The Apache-2.0 components are under the same license as this project
+(full text in `LICENSE`).
+
+esp_board_manager's (and esp_boards'/esp_codec_dev's) license restricts use to Espressif products, which
 matches its role here (it is only linked into the ESP32 firmware, never
 into the portable layers or the simulator). Copied verbatim from
 `firmware/managed_components/espressif__esp_board_manager/LICENSE`:
@@ -187,4 +202,28 @@ Espressif Modified MIT License
  DEALINGS IN THE SOFTWARE.
 
  SPDX-License-Identifier: LicenseRef-Espressif-Modified-MIT
+```
+
+## ArduinoJson
+
+- Project: https://github.com/bblanchon/ArduinoJson
+- Version: 7.4.3 (host: CMake FetchContent, `cmake/wisp_host_deps.cmake`;
+  firmware: `bblanchon/arduinojson` from the ESP component registry; not
+  vendored or forked)
+- License: MIT
+
+Copied verbatim from
+`firmware/managed_components/bblanchon__arduinojson/LICENSE.txt`:
+
+```
+The MIT License (MIT)
+---------------------
+
+Copyright © 2014-2026, Benoit BLANCHON
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```

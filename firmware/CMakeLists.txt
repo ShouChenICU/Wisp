@@ -5,12 +5,15 @@
 # portable wisp_* component plus the ESP-only wisp_port_esp port.
 #
 # Activate the pinned ESP-IDF v6.0.3 environment first (export.sh is a
-# bash script; the user's shell is fish):
-#   bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py bmgr -c ../boards -b waveshare_amoled_216 && idf.py build'
-# (`idf.py bmgr` -- esp_board_manager's idf.py extension -- generates the
-# gitignored components/gen_bmgr_codes/ from boards/<name>/board_*.yaml +
-# setup_device.c, and also selects the esp32s3 target; it must run before
-# the first build and again whenever the board YAML changes.)
+# bash script; the user's shell is fish). Order: set-target -> bmgr ->
+# build (see AGENTS.md section 4):
+#   bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b waveshare_amoled_216 && idf.py build'
+# set-target selects the esp32s3 target and (via the component manager)
+# fetches esp_board_manager, whose idf.py extension provides `idf.py bmgr`
+# -- on a fresh checkout bmgr isn't available before that. bmgr then
+# generates the gitignored components/gen_bmgr_codes/ from
+# boards/<name>/board_*.yaml + setup_device.c; rerun it whenever the
+# board YAML changes.
 
 cmake_minimum_required(VERSION 3.16)
 

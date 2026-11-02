@@ -24,6 +24,7 @@
 
 #include "wisp/app/board.hpp"
 
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -55,6 +56,20 @@ std::string err_name(esp_err_t err) {
         return esp_board_manager_err_to_name(err);
     }
     return esp_err_to_name(err);
+}
+
+// Whether the panel IO runs in QSPI mode (board_devices.yaml's
+// io_spi_config.flags.quad_mode): QSPI panels frame raw register writes
+// as (0x02 << 24) | (reg << 8), see EspDisplayConfig::qspi_cmd_framing.
+bool uses_qspi(const dev_display_lcd_config_t* cfg) {
+#ifdef CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUB_SPI_SUPPORT
+    if (cfg->sub_type != nullptr && std::strcmp(cfg->sub_type, "spi") == 0) {
+        return cfg->sub_cfg.spi.io_spi_config.flags.quad_mode;
+    }
+#else
+    (void)cfg;
+#endif
+    return false;
 }
 
 void record_failed(wisp::core::BootReport& report, const char* id, wisp::hal::DeviceClass cls,
@@ -99,7 +114,7 @@ void init_display(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
     dc.corner_radius = kCornerRadius;
     dc.panel = "amoled";
     dc.area_align = kAreaAlign;
-    dc.qspi_cmd_framing = true;  // io_spi_config.flags.quad_mode
+    dc.qspi_cmd_framing = uses_qspi(cfg);
     dc.swap_rgb565_bytes = cfg->frame_format == DEV_DISPLAY_LCD_FRAME_FORMAT_RGB565_BE;
 
     auto display =
@@ -127,15 +142,21 @@ void init_touch(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& re
         return;
     }
 
-    // Coordinate range: the panel's (480x480; the touch driver applies
-    // the swap_xy/mirror_y that setup_device.c configures).
+    // Coordinate range: the touch driver's own x_max/y_max (480x480 here;
+    // the driver applies the swap_xy/mirror_y that setup_device.c
+    // configures). If bmgr can't give us its config the range stays 0x0,
+    // which EspTouch treats as "unknown, don't clamp".
     int width = 0;
     int height = 0;
     void* config = nullptr;
-    if (esp_board_manager_get_device_config(kBmgrDisplay, &config) == ESP_OK && config) {
-        auto* cfg = static_cast<const dev_display_lcd_config_t*>(config);
-        width = cfg->lcd_width;
-        height = cfg->lcd_height;
+    err = esp_board_manager_get_device_config(kBmgrTouch, &config);
+    if (err == ESP_OK && config != nullptr) {
+        auto* cfg = static_cast<const dev_lcd_touch_config_t*>(config);
+        width = cfg->touch_config.x_max;
+        height = cfg->touch_config.y_max;
+    } else {
+        WLOG_W(kTag, "touch.main: no bmgr lcd_touch config (%s); coordinates won't be clamped",
+               err_name(err).c_str());
     }
 
     wisp::port::esp::EspTouchConfig tc;

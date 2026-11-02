@@ -55,3 +55,12 @@ jobs:
           idf.py set-target esp32s3
           idf.py bmgr -c ../boards -b waveshare_amoled_216
           idf.py build
+      # set-target resolves dependencies before gen_bmgr_codes exists and
+      # temporarily drops bmgr's entries from the lock file; the build
+      # (after bmgr) restores them. The committed lock must match the
+      # final state exactly -- fail if the build rewrote it.
+      - name: dependencies.lock unchanged
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git diff --exit-code firmware/dependencies.lock

@@ -135,9 +135,13 @@ Result<void> EspDisplay::flush(const wisp::hal::Area& area, const uint16_t* rgb5
     esp_err_t err =
         esp_lcd_panel_draw_bitmap(panel_, area.x1, area.y1, area.x2 + 1, area.y2 + 1, px);
     if (err != ESP_OK) {
-        if (config_.swap_rgb565_bytes) {
-            swap_bytes(px, count);
-        }
+        // Don't swap the buffer back: draw_bitmap may have failed after
+        // tx_color already queued some of the pixel chunks, so the DMA can
+        // still be reading `px`. Leaving it swapped is harmless (LVGL
+        // re-renders the area) and the next panel IO call waits for those
+        // in-flight chunks itself. No pending_ either: a partially queued
+        // transfer never fires on_color_trans_done (it only fires for the
+        // last chunk), and a stray give is drained at the top of flush().
         return Result<void>::err(ErrorCode::DeviceFailure,
                                  std::string("draw_bitmap: ") + esp_err_to_name(err));
     }
