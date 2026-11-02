@@ -566,4 +566,11 @@ StorageStatus StorageManager::status() const {
     return result;
 }
 
+void StorageManager::set_standby(bool standby) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    if (sd_dev_) {
+        sd_dev_->set_standby(standby);
+    }
+}
+
 }  // namespace wisp::core

@@ -303,9 +303,22 @@ public:
         return wisp::Result<wisp::hal::Capacity>::ok(cap);
     }
 
+    // Fix round 2 (task-18b-review.md, second addendum): records every
+    // set_standby() call, mirroring FakeImu/FakeTouch::set_power()'s
+    // set_power_calls()/powered() pattern.
+    void set_standby(bool standby) override {
+        ++set_standby_calls_;
+        standby_.store(standby);
+    }
+    int set_standby_calls() const { return set_standby_calls_.load(); }
+    bool standby() const { return standby_.load(); }
+
     std::atomic<bool> online_flag{true};
 
 private:
+    std::atomic<int> set_standby_calls_{0};
+    std::atomic<bool> standby_{false};
+
     static constexpr uint64_t kTotalBytes = 1ull * 1024 * 1024 * 1024;  // 1 GiB
 
     static uint64_t dir_size(const std::string& path) {

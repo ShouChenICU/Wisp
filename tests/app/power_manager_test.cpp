@@ -15,6 +15,7 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/core/storage_manager.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -26,10 +27,12 @@ using wisp::core::DeviceRegistry;
 using wisp::core::Event;
 using wisp::core::EventBus;
 using wisp::core::Settings;
+using wisp::core::StorageManager;
 using wisp::port::sim::JsonFileSettingsBackend;
 using wisp::test::FakeButton;
 using wisp::test::FakeDisplay;
 using wisp::test::FakeImu;
+using wisp::test::FakeStorage;
 using wisp::test::FakeTouch;
 using wisp::test::temp_dir;
 using wisp::test::wait_until;
@@ -46,7 +49,11 @@ namespace {
 // tests can distinguish "woken via the owned power key path" from
 // "woken via PowerManager's own generic any-button-wakes-it path".
 struct Fixture {
-    explicit Fixture(int64_t screen_off_s = 60) {
+    // `with_storage=false` (fix round 2, second addendum) passes a null
+    // StorageManager* into PowerManager, the same way a headless build
+    // would pass null display/touch/ui/buttons -- see
+    // NullStorageManagerIsToleratedByStandbyTransitions below.
+    explicit Fixture(int64_t screen_off_s = 60, bool with_storage = true) {
         settings_path = (temp_dir() / "power_settings.json").string();
         backend = std::make_unique<JsonFileSettingsBackend>(settings_path);
         Settings power_settings(*backend, "power");
@@ -61,6 +68,16 @@ struct Fixture {
         registry.add(btn);
         registry.add(vol_btn);
 
+        // Fix round 2, second addendum: a real (Fake-backed)
+        // StorageManager, so PowerManager's set_standby() forwarding can
+        // be exercised the same way as display/touch/imu above.
+        registry.add(int_storage);
+        registry.add(sd_storage);
+        storage = std::make_unique<StorageManager>(registry, bus);
+        if (!storage->init()) {
+            ADD_FAILURE() << "StorageManager::init() failed";
+        }
+
         ui = std::make_unique<UiRuntime>(display, touch);
         if (!ui->start()) {
             ADD_FAILURE() << "UiRuntime::start() failed";
@@ -70,8 +87,8 @@ struct Fixture {
         buttons->start();
 
         pm = std::make_unique<PowerManager>(
-            bus, display, touch, imu, ui.get(), buttons.get(),
-            [this](bool standby) { set_standby_calls.push_back(standby); },
+            bus, display, touch, imu, with_storage ? storage.get() : nullptr, ui.get(),
+            buttons.get(), [this](bool standby) { set_standby_calls.push_back(standby); },
             Settings(*backend, "power"));
     }
 
@@ -127,6 +144,12 @@ struct Fixture {
     std::shared_ptr<FakeImu> imu = std::make_shared<FakeImu>("imu.main");
     std::shared_ptr<FakeButton> btn = std::make_shared<FakeButton>("button.power");
     std::shared_ptr<FakeButton> vol_btn = std::make_shared<FakeButton>("button.vol_up");
+
+    std::shared_ptr<FakeStorage> int_storage =
+        std::make_shared<FakeStorage>("storage.int", temp_dir().string(), /*removable=*/false);
+    std::shared_ptr<FakeStorage> sd_storage =
+        std::make_shared<FakeStorage>("storage.sd", temp_dir().string(), /*removable=*/true);
+    std::unique_ptr<StorageManager> storage;
 
     std::unique_ptr<UiRuntime> ui;
     std::unique_ptr<ButtonService> buttons;
@@ -227,6 +250,8 @@ TEST(PowerManager, EnterStandbySleepsEverythingAndPublishesState) {
     EXPECT_FALSE(f.display->powered());
     EXPECT_FALSE(f.touch->powered());
     EXPECT_FALSE(f.imu->powered());
+    EXPECT_TRUE(f.sd_storage->standby());
+    EXPECT_EQ(f.int_storage->set_standby_calls(), 0);
     EXPECT_TRUE(wait_until([&] { return f.ui->paused(); }, 2000));
     EXPECT_EQ(f.buttons->poll_interval_ms(), 50u);
     ASSERT_EQ(f.set_standby_calls.size(), 1u);
@@ -251,6 +276,7 @@ TEST(PowerManager, ExitStandbyRestoresEverything) {
     EXPECT_TRUE(f.display->powered());
     EXPECT_TRUE(f.touch->powered());
     EXPECT_TRUE(f.imu->powered());
+    EXPECT_FALSE(f.sd_storage->standby());
     EXPECT_TRUE(wait_until([&] { return !f.ui->paused(); }, 2000));
     EXPECT_EQ(f.buttons->poll_interval_ms(), 20u);
     ASSERT_EQ(f.set_standby_calls.size(), 2u);
@@ -274,6 +300,7 @@ TEST(PowerManager, EnterStandbyTwiceOnlyTakesEffectOnce) {
     EXPECT_EQ(f.display->set_power_calls(), 1);
     EXPECT_EQ(f.touch->set_power_calls(), 1);
     EXPECT_EQ(f.imu->set_power_calls(), 1);
+    EXPECT_EQ(f.sd_storage->set_standby_calls(), 1);
     EXPECT_EQ(f.set_standby_calls.size(), 1u);
     EXPECT_EQ(f.power_event_count(), 1u);
 }
@@ -321,6 +348,26 @@ TEST(PowerManager, UnsupportedImuSleepIsNotAnErrorAndStandbyStillSucceeds) {
     EXPECT_TRUE(f.imu->powered());  // set_power() failed, so unchanged.
     EXPECT_TRUE(wait_until([&] { return f.ui->paused(); }, 2000));
     EXPECT_EQ(f.buttons->poll_interval_ms(), 50u);
+}
+
+// Fix round 2, second addendum: `storage` is nullable (headless-style),
+// just like display/touch/imu/ui/buttons already are -- a PowerManager
+// built without one (e.g. a board that registers no "storage.int" at
+// all) must still complete both transitions normally.
+TEST(PowerManager, NullStorageManagerIsToleratedByStandbyTransitions) {
+    Fixture f(/*screen_off_s=*/60, /*with_storage=*/false);
+
+    f.pm->enter_standby();
+    ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+    EXPECT_FALSE(f.display->powered());
+    // Nothing reached FakeStorage below PowerManager at all -- confirms
+    // this isn't accidentally still forwarding through some other path.
+    EXPECT_EQ(f.sd_storage->set_standby_calls(), 0);
+
+    f.pm->exit_standby();
+    ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
+    EXPECT_TRUE(f.display->powered());
+    EXPECT_EQ(f.sd_storage->set_standby_calls(), 0);
 }
 
 TEST(PowerManager, TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt) {

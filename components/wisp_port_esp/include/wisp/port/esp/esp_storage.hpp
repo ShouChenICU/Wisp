@@ -182,6 +182,20 @@ public:
     // Fails with ErrorCode::StorageUnavailable if not currently mounted.
     Result<wisp::hal::Capacity> capacity() override;
 
+    // Fix round 2 (task-18b-review.md, second addendum): pauses the
+    // worker's CMD13 presence probe and mount-retry attempts while
+    // `standby` is true -- see wisp::hal::Storage::set_standby()'s doc
+    // comment for the contract (online()/capacity() are unaffected,
+    // always cheap, never touch hardware either way). The worker blocks
+    // on a semaphore while paused rather than continuing to poll at
+    // kWorkerPollMs (task-18b-review.md's "must block, not spin, while
+    // paused") -- see worker_main(). set_standby(false) wakes it
+    // immediately; set_standby(true) doesn't need to wake anything (the
+    // worker notices the flag itself, at latest the next time its
+    // bounded wait -- or whatever kWorkerPollMs-granularity sleep it was
+    // already in the middle of -- returns).
+    void set_standby(bool standby) override;
+
 private:
     static constexpr uint32_t kRetryIntervalMs = 2000;
     static constexpr uint32_t kProbeIntervalMs = 1000;
@@ -216,6 +230,15 @@ private:
     bool logged_absent_ = false;
 
     std::atomic<bool> worker_running_{true};
+    // Fix round 2, second addendum: standby_ is read by the worker task
+    // and written by whichever thread calls set_standby() (PowerManager,
+    // via StorageManager::set_standby() -- see that chain's own doc
+    // comments); standby_wake_ wakes the worker promptly out of its
+    // bounded wait on a false->... transition, the same pattern
+    // self_check_screen.cpp's sample_loop()/standby_wake_ uses for the
+    // IMU.
+    std::atomic<bool> standby_{false};
+    wisp::os::Semaphore standby_wake_{1, 0};
     std::unique_ptr<wisp::os::Task> worker_;
 };
 

@@ -18,12 +18,14 @@ constexpr uint32_t kStandbyPollMs = 50;
 
 PowerManager::PowerManager(core::EventBus& bus, std::shared_ptr<hal::Display> display,
                            std::shared_ptr<hal::Touch> touch, std::shared_ptr<hal::Imu> imu,
-                           ui::UiRuntime* ui, core::ButtonService* buttons,
-                           std::function<void(bool)> set_standby, core::Settings settings)
+                           core::StorageManager* storage, ui::UiRuntime* ui,
+                           core::ButtonService* buttons, std::function<void(bool)> set_standby,
+                           core::Settings settings)
     : bus_(bus),
       display_(std::move(display)),
       touch_(std::move(touch)),
       imu_(std::move(imu)),
+      storage_(storage),
       ui_(ui),
       buttons_(buttons),
       set_standby_(std::move(set_standby)),
@@ -164,6 +166,12 @@ void PowerManager::enter_standby() {
             WLOG_W(kTag, "imu set_power(false) failed: %s", r.error().message.c_str());
         }
     }
+    if (storage_ != nullptr) {
+        // Fix round 2, second addendum: a pure software hint (see
+        // hal::Storage::set_standby()'s doc comment) -- never fails, so
+        // there is nothing to log here.
+        storage_->set_standby(true);
+    }
     if (buttons_ != nullptr) {
         saved_poll_ms_ = buttons_->poll_interval_ms();
         // I1 (fix round 1): release transition_mutex_ for this one call.
@@ -202,6 +210,9 @@ void PowerManager::exit_standby() {
         lock.unlock();
         buttons->set_poll_interval_ms(restore_ms);
         lock.lock();
+    }
+    if (storage_ != nullptr) {
+        storage_->set_standby(false);
     }
     if (imu_) {
         auto r = imu_->set_power(true);

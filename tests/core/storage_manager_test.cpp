@@ -389,3 +389,39 @@ TEST(StorageManager, StrayTmpInLibraryDoesNotCountTowardQuota) {
     // push the total to 1800 and exceed the 1000-byte quota.
     ASSERT_TRUE(f.mgr->write_atomic(f.in + "/library/real.bin", std::vector<uint8_t>(900)));
 }
+
+// Fix round 2 (task-18b-review.md, second addendum): set_standby()
+// forwards to storage.sd only -- storage.int has no background polling
+// to pause, so it must never see a call at all.
+TEST(StorageManager, SetStandbyForwardsToSdOnlyAndIsIdempotentToObserve) {
+    Fixture f(true);
+    ASSERT_TRUE(f.mgr->init());
+
+    f.mgr->set_standby(true);
+    EXPECT_TRUE(f.sd_dev->standby());
+    EXPECT_EQ(f.sd_dev->set_standby_calls(), 1);
+    EXPECT_EQ(f.int_dev->set_standby_calls(), 0);
+
+    f.mgr->set_standby(false);
+    EXPECT_FALSE(f.sd_dev->standby());
+    EXPECT_EQ(f.sd_dev->set_standby_calls(), 2);
+    EXPECT_EQ(f.int_dev->set_standby_calls(), 0);
+}
+
+// No "storage.sd" registered at all: set_standby() must not crash or
+// otherwise misbehave -- mirrors refresh()'s own "no-op if storage.sd
+// isn't registered" contract.
+TEST(StorageManager, SetStandbyIsANoOpWithoutAnSdCard) {
+    DeviceRegistry registry;
+    EventBus bus;
+    bus.start();
+    auto int_dev = std::make_shared<FakeStorage>("storage.int", wisp::test::temp_dir().string(),
+                                                 /*removable=*/false);
+    registry.add(int_dev);
+    StorageManager mgr(registry, bus);
+    ASSERT_TRUE(mgr.init());
+
+    mgr.set_standby(true);
+    mgr.set_standby(false);
+    EXPECT_EQ(int_dev->set_standby_calls(), 0);
+}

@@ -101,7 +101,7 @@ Result<void> App::start() {
     core::Settings power_settings(*impl_->platform.settings, "power");
     auto imu = impl_->registry.get<hal::Imu>("imu.main");
     impl_->power_manager = std::make_unique<PowerManager>(
-        impl_->bus, display, touch, imu, impl_->ui.get(), &impl_->buttons,
+        impl_->bus, display, touch, imu, &impl_->storage, impl_->ui.get(), &impl_->buttons,
         impl_->platform.set_standby, std::move(power_settings));
     impl_->power_timer =
         std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true,

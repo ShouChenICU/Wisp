@@ -219,6 +219,19 @@ public:
     // capacity, for diagnostics (e.g. a self-check screen).
     StorageStatus status() const;
 
+    // Fix round 2 (task-18b-review.md, second addendum): forwards to
+    // storage.sd's hal::Storage::set_standby() (a no-op if "storage.sd"
+    // isn't registered, or if its implementation doesn't override the
+    // hal::Storage default) -- see that method's doc comment. A no-op
+    // for "storage.int": internal flash has no background polling to
+    // pause in the first place. Called by PowerManager on enter_standby()
+    // (standby=true) and exit_standby() (standby=false); does not change
+    // sd_online_ or publish any event -- refresh() keeps running exactly
+    // as before (spec: "StorageManager 的 2 s 状态刷新保持不变"), it just
+    // observes whatever online() returns while the underlying device's
+    // own detection is paused.
+    void set_standby(bool standby);
+
 private:
     DeviceRegistry& registry_;
     EventBus& bus_;

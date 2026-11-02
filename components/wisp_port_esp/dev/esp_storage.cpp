@@ -177,6 +177,12 @@ EspSdStorage::EspSdStorage(std::string mount_point, std::string bmgr_device_name
 
 EspSdStorage::~EspSdStorage() {
     worker_running_.store(false, std::memory_order_release);
+    // Fix round 2, second addendum: the worker may currently be blocked
+    // on standby_wake_ (if set_standby(true) was called and never
+    // undone before shutdown) -- wake it now so this join() below
+    // notices worker_running_ promptly, rather than waiting out
+    // standby_wake_.take()'s own bounded timeout in worker_main().
+    standby_wake_.give();
     if (worker_) {
         worker_->join();
     }
@@ -209,6 +215,13 @@ Result<wisp::hal::Capacity> EspSdStorage::capacity() {
                                                 "sd card not mounted");
     }
     return Result<wisp::hal::Capacity>::ok(cached_capacity_);
+}
+
+void EspSdStorage::set_standby(bool standby) {
+    standby_.store(standby, std::memory_order_release);
+    if (!standby) {
+        standby_wake_.give();
+    }
 }
 
 bool EspSdStorage::try_mount(uint64_t now) {
@@ -273,6 +286,20 @@ void EspSdStorage::refresh_capacity_cache() {
 
 void EspSdStorage::worker_main() {
     while (worker_running_.load(std::memory_order_acquire)) {
+        // Fix round 2, second addendum: skip presence probing and mount
+        // retry entirely while in standby -- block on standby_wake_
+        // (bounded, as a safety net against a missed wake-up signal --
+        // same pattern as self_check_screen.cpp's sample_loop()) instead
+        // of falling through into the switch below at the usual
+        // kWorkerPollMs/kProbeIntervalMs/kRetryIntervalMs cadence.
+        // set_standby(false) gives standby_wake_ to resume immediately;
+        // the destructor also gives it unconditionally, so a pending
+        // shutdown is never stuck waiting out this wait's full timeout.
+        if (standby_.load(std::memory_order_acquire)) {
+            standby_wake_.take(1000);
+            continue;
+        }
+
         SdCardState state;
         sdmmc_card_t* card_snapshot;
         {
