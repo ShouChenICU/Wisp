@@ -701,33 +701,39 @@ void SelfCheck::on_button_event(const core::Event& e) {
     // issue 2).
     std::string topic = e.topic;
     std::string source = e.source;
-    ui_->post([this, topic, source] {
-        char buf[96];
-        std::snprintf(buf, sizeof(buf), "按键: %s", topic.c_str());
-        lv_label_set_text(button_label_, buf);
+    // A dropped post() here silently loses whatever power-key action
+    // (screen off/on) this event was about to decide -- log it so that
+    // isn't invisible (see event_bus.hpp for why this must not block
+    // waiting for a slot instead).
+    if (!ui_->post([this, topic, source] {
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "按键: %s", topic.c_str());
+            lv_label_set_text(button_label_, buf);
 
-        PowerKeyController::Action action = PowerKeyController::Action::None;
-        if (source == "button.power") {
-            // Task 18b review round 1 (C1): PowerManager::standby() --
-            // not any state PowerKeyController tracks itself -- is the
-            // single source of truth for "is the screen on"; read it
-            // fresh right before deciding, on this same UI thread (the
-            // only thread that ever calls into PowerManager's
-            // enter_standby()/exit_standby() on this screen's behalf, so
-            // there is no race between this read and this screen's own
-            // handle_power_key_action() below acting on the result).
-            PowerManager* pm = app_.power_manager();
-            bool screen_on = pm == nullptr || !pm->standby();
-            if (topic == "button.power.short") {
-                action = power_key_.on_short(screen_on);
-            } else if (topic == "button.power.long") {
-                action = power_key_.on_long(screen_on);
+            PowerKeyController::Action action = PowerKeyController::Action::None;
+            if (source == "button.power") {
+                // Task 18b review round 1 (C1): PowerManager::standby() --
+                // not any state PowerKeyController tracks itself -- is the
+                // single source of truth for "is the screen on"; read it
+                // fresh right before deciding, on this same UI thread (the
+                // only thread that ever calls into PowerManager's
+                // enter_standby()/exit_standby() on this screen's behalf, so
+                // there is no race between this read and this screen's own
+                // handle_power_key_action() below acting on the result).
+                PowerManager* pm = app_.power_manager();
+                bool screen_on = pm == nullptr || !pm->standby();
+                if (topic == "button.power.short") {
+                    action = power_key_.on_short(screen_on);
+                } else if (topic == "button.power.long") {
+                    action = power_key_.on_long(screen_on);
+                }
             }
-        }
-        if (action != PowerKeyController::Action::None) {
-            handle_power_key_action(action);
-        }
-    });
+            if (action != PowerKeyController::Action::None) {
+                handle_power_key_action(action);
+            }
+        })) {
+        WLOG_W("self_check", "post(power key action) dropped (post queue full)");
+    }
 }
 
 void SelfCheck::subscribe_power() {

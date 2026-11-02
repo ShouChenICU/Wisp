@@ -65,7 +65,15 @@ PowerManager::PowerManager(core::EventBus& bus, std::shared_ptr<hal::Display> di
             return;  // The owner's own logic decides what this does -- see set_power_key_owned().
         }
         if (ui_ != nullptr) {
-            ui_->post([this] { exit_standby(); });
+            // A button-driven wake must not just get silently dropped if
+            // the post queue happens to be momentarily full -- log it so
+            // a "device didn't wake up" report has something to point
+            // at (see event_bus.hpp: the caller still must not block
+            // here waiting for a slot, since that would delay every
+            // other event queued behind this one).
+            if (!ui_->post([this] { exit_standby(); })) {
+                WLOG_W(kTag, "post(exit_standby) dropped (post queue full)");
+            }
         } else {
             exit_standby();
         }

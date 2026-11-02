@@ -11,10 +11,14 @@
 #include "support/wait.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/board.hpp"
+#include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/boot_report.hpp"
+#include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+#include "wisp/ui/ui_runtime.hpp"
 
 using wisp::test::FakeButton;
 using wisp::test::FakeDisplay;
@@ -166,5 +170,43 @@ TEST(AppBoot, StopBeforeStartAndStopTwiceAreSafe) {
     h.app.stop();
     ASSERT_TRUE(h.app.start());
     h.app.stop();
+    h.app.stop();
+}
+
+// App::stop() while in standby must leave standby first: buttons/storage
+// are members of App::Impl (not torn down by stop() itself), so without
+// this, a subsequent start() on the same App instance would resume with
+// the screen asleep and the poll period still widened to the standby
+// value -- see app.cpp's doc comment on the exit_standby() call stop()
+// makes.
+TEST(AppBoot, RestartAfterStoppingWhileInStandbyResetsScreenAndButtons) {
+    auto h = make_app({.with_display = true});
+    ASSERT_TRUE(h.app.start());
+    ASSERT_NE(h.app.ui(), nullptr);
+    ASSERT_NE(h.app.power_manager(), nullptr);
+
+    // enter_standby() calls Display::set_power() directly (not via
+    // post()); spec 5.3 requires that come from the UI thread (debug-
+    // asserted -- see wisp/hal/display.hpp), so it's driven through
+    // ui()->post() here rather than called straight from the test
+    // thread, the same way production callers always reach it.
+    wisp::ui::UiRuntime* ui = h.app.ui();
+    wisp::app::PowerManager* pm = h.app.power_manager();
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(ui->post([pm, entered] {
+        pm->enter_standby();
+        entered->give();
+    }));
+    entered->take(wisp::os::kForever);
+    ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
+    ASSERT_TRUE(wait_until([&] { return h.app.buttons().poll_interval_ms() == 50u; }, 2000));
+
+    h.app.stop();
+    ASSERT_TRUE(h.app.start());
+
+    ASSERT_NE(h.app.ui(), nullptr);
+    EXPECT_FALSE(h.app.ui()->paused());
+    EXPECT_EQ(h.app.buttons().poll_interval_ms(), 20u);
+
     h.app.stop();
 }

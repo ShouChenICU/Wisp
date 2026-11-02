@@ -379,8 +379,12 @@ int main(int argc, char** argv) {
     platform.settings = std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(
         opts.data_dir + "/settings.json");
     platform.emit_line = [](const std::string& line) {
-        std::fputs(line.c_str(), stdout);
-        std::fputc('\n', stdout);
+        // One stdio call, not fputs()+fputc(): StdoutLogSink::printf()
+        // can run on another thread between two separate calls and land
+        // its own line in between them, splitting this one across two
+        // lines of output -- fatal for a reader (e.g. the smoke test)
+        // that expects "WISP_BOOT_REPORT {...}" as a single whole line.
+        std::printf("%s\n", line.c_str());
         std::fflush(stdout);
     };
     platform.request_power_off = on_power_off;

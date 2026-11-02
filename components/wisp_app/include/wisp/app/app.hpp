@@ -57,6 +57,10 @@ namespace wisp::ui {
 class UiRuntime;
 }
 
+namespace wisp::core {
+class ButtonService;
+}
+
 namespace wisp::app {
 
 class PowerManager;
@@ -130,6 +134,7 @@ public:
     core::BootReport& report();
     core::EventBus& bus();
     core::StorageManager& storage();
+    core::ButtonService& buttons();
 
     // nullptr in headless mode (no "display.main" device registered).
     ui::UiRuntime* ui();

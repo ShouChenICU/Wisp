@@ -261,6 +261,22 @@ private:
     // own -- runs; holding this lock while blocked waiting on that same
     // task would deadlock if that task ever needed this lock itself to
     // make progress. See enter_standby()/exit_standby()'s definitions.
+    // Known gap, headless only (ui_ == nullptr): transition_mutex_ is
+    // unlocked -- see above -- around the PowerMonitor::set_standby()/
+    // ButtonService::set_poll_interval_ms() calls inside
+    // enter_standby(), and standby_ itself isn't set true until after
+    // both have returned. If a button-driven exit_standby() lands on
+    // another thread inside that window, it observes standby_ == false
+    // and returns early (already idempotent-active), so the wake is
+    // dropped -- the device stays in standby until the next button
+    // press. This cannot happen whenever a UiRuntime exists: every
+    // enter_standby()/exit_standby() call is then posted onto that one
+    // UI task (see the class comment above), so two transitions can
+    // never run concurrently in the first place. Not fixed here because
+    // sub-project 1 never ships headless on real hardware (every board
+    // registers a display); if a headless configuration becomes a real
+    // target, serialize these calls onto one dedicated task instead of
+    // relying on transition_mutex_ alone.
     mutable os::Mutex transition_mutex_;
     std::atomic<bool> standby_{false};
     std::atomic<uint64_t> last_activity_ms_;

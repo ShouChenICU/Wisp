@@ -202,6 +202,28 @@ void App::stop() {
         impl_->power_timer->stop();
         impl_->power_timer.reset();
     }
+    // If stop() happens while in standby, leave standby first: buttons/
+    // storage/display are members of Impl (buttons, storage) or held by
+    // shared_ptr past this App's lifetime (display), so without this, a
+    // later start() on the very same App instance (App supports
+    // start()/stop()/start() -- see reset_loopback()'s own doc comment)
+    // would resume with the screen still asleep, SD probing still
+    // paused, and the button/power-monitor poll periods still widened.
+    if (impl_->power_manager && impl_->power_manager->standby()) {
+        PowerManager* pm = impl_->power_manager.get();
+        if (impl_->ui && !impl_->ui->on_ui_thread()) {
+            auto done = std::make_shared<os::Semaphore>(1, 0);
+            while (!impl_->ui->post([pm, done] {
+                pm->exit_standby();
+                done->give();
+            })) {
+                os::sleep_ms(1);
+            }
+            done->take(os::kForever);
+        } else {
+            pm->exit_standby();
+        }
+    }
     impl_->power_manager.reset();
 
     // Task 19a: power_monitor is torn down right after power_manager
@@ -227,6 +249,7 @@ core::DeviceRegistry& App::registry() { return impl_->registry; }
 core::BootReport& App::report() { return impl_->report; }
 core::EventBus& App::bus() { return impl_->bus; }
 core::StorageManager& App::storage() { return impl_->storage; }
+core::ButtonService& App::buttons() { return impl_->buttons; }
 ui::UiRuntime* App::ui() { return impl_->ui.get(); }
 PowerManager* App::power_manager() { return impl_->power_manager.get(); }
 const Platform& App::platform() const { return impl_->platform; }

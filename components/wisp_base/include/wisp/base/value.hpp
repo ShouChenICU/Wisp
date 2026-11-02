@@ -40,9 +40,18 @@ public:
     Value(wisp::Map map);    // NOLINT(google-explicit-constructor)
 
     Value(const Value& other);
-    Value(Value&& other) noexcept = default;
+    // Not = default: a defaulted move would copy `other.type_` (a plain
+    // enum, trivially copyable) as-is while moving `other.storage_`'s
+    // active shared_ptr<List>/shared_ptr<Map> out of it -- leaving
+    // `other` claiming Type::List/Map while its storage_ actually holds
+    // a null shared_ptr. A subsequent as_list()/as_map()/find() on that
+    // moved-from Value would then dereference a null pointer (the
+    // Type::List/Map check that guards them would still pass). Resets
+    // `other` to Type::Null instead, so it's observably just an empty
+    // Value afterwards, like any other moved-from standard type.
+    Value(Value&& other) noexcept;
     Value& operator=(const Value& other);
-    Value& operator=(Value&& other) noexcept = default;
+    Value& operator=(Value&& other) noexcept;
     ~Value() = default;
 
     Type type() const { return type_; }

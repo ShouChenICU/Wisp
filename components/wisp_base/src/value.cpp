@@ -41,6 +41,22 @@ Value::Value(const Value& other) : type_(other.type_) {
     }
 }
 
+Value::Value(Value&& other) noexcept : type_(other.type_), storage_(std::move(other.storage_)) {
+    other.type_ = Type::Null;
+    other.storage_ = std::monostate{};
+}
+
+Value& Value::operator=(Value&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+    type_ = other.type_;
+    storage_ = std::move(other.storage_);
+    other.type_ = Type::Null;
+    other.storage_ = std::monostate{};
+    return *this;
+}
+
 Value& Value::operator=(const Value& other) {
     if (this == &other) {
         return *this;
