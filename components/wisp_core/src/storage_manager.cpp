@@ -567,7 +567,18 @@ StorageStatus StorageManager::status() const {
 }
 
 void StorageManager::set_standby(bool standby) {
-    std::lock_guard<os::Mutex> lock(mutex_);
+    // R2-5 (re-review 2): deliberately not taking mutex_ here. PowerManager
+    // calls this from the UI thread while holding its own transition_
+    // mutex_, and mutex_ can be held elsewhere (write_atomic()'s fsync +
+    // rename) for up to the duration of an SD write -- taking it here too
+    // would make a standby transition wait out whatever write happens to
+    // be in flight, eating into the wake-latency budget for no reason.
+    // Safe without it: sd_dev_ is assigned exactly once, inside init()
+    // (never reassigned afterwards -- see sd_dev_'s own comment), and
+    // hal::Storage::set_standby() (EspSdStorage::set_standby(), in
+    // practice) is itself just an atomic store plus a semaphore give(),
+    // already safe to call concurrently with anything else touching the
+    // same device.
     if (sd_dev_) {
         sd_dev_->set_standby(standby);
     }

@@ -230,6 +230,10 @@ public:
     // as before (spec: "StorageManager 的 2 s 状态刷新保持不变"), it just
     // observes whatever online() returns while the underlying device's
     // own detection is paused.
+    //
+    // Re-review 2 (R2-5): unlike every other method here, this one does
+    // NOT take mutex_ -- see its own doc comment in storage_manager.cpp
+    // for why that's still safe.
     void set_standby(bool standby);
 
 private:
@@ -246,6 +250,11 @@ private:
     mutable os::Mutex mutex_;
 
     std::shared_ptr<hal::Storage> int_dev_;
+    // Assigned exactly once, inside init() (re-init()ing re-assigns it,
+    // but no caller does that concurrently with set_standby() in
+    // practice -- App::start() calls init() once, before anything can
+    // call set_standby()); set_standby() above relies on that to read it
+    // without mutex_.
     std::shared_ptr<hal::Storage> sd_dev_;
     std::string int_mount_;  // never has a trailing '/'; see init()
     std::string sd_mount_;   // ditto; empty if storage.sd isn't registered
