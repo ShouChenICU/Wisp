@@ -33,9 +33,11 @@ PowerManager::PowerManager(core::EventBus& bus, std::shared_ptr<hal::Display> di
     }
 
     // Any button event -- not just "button.power" -- resets the idle
-    // clock, and wakes the device if it's currently in standby (spec
-    // 6.7/8's "待机中按任意键都会唤醒"), independently of whatever
-    // button-specific handling (e.g. the self-check screen's
+    // clock, and (unless set_power_key_owned(true) says otherwise for
+    // "button.power" specifically -- see that method's doc comment,
+    // task-18b-review.md C1) wakes the device if it's currently in
+    // standby (spec 6.7/8's "待机中按任意键都会唤醒"), independently of
+    // whatever button-specific handling (e.g. the self-check screen's
     // PowerKeyController, which drives its own enter_standby()/
     // exit_standby() calls for "button.power" specifically) also runs
     // off the same events.
@@ -50,10 +52,13 @@ PowerManager::PowerManager(core::EventBus& bus, std::shared_ptr<hal::Display> di
     // no UI task to post onto, so it just runs here directly -- fine,
     // since a headless exit_standby() never touches any lv_* call and
     // has materially less to do (no display either, typically).
-    button_sub_ = bus_.subscribe("button.", [this](const core::Event&) {
+    button_sub_ = bus_.subscribe("button.", [this](const core::Event& e) {
         note_activity();
         if (!standby_.load(std::memory_order_acquire)) {
             return;
+        }
+        if (power_key_owned_.load(std::memory_order_acquire) && e.source == "button.power") {
+            return;  // The owner's own logic decides what this does -- see set_power_key_owned().
         }
         if (ui_ != nullptr) {
             ui_->post([this] { exit_standby(); });
@@ -124,11 +129,18 @@ PowerManager::~PowerManager() {
 }
 
 void PowerManager::enter_standby() {
-    std::lock_guard<os::Mutex> lock(transition_mutex_);
+    std::unique_lock<os::Mutex> lock(transition_mutex_);
     if (standby_.load(std::memory_order_acquire)) {
         return;  // Already in standby -- idempotent, no device calls repeated.
     }
 
+    // I1 (fix round 1): pause the UI *before* sending the panel to
+    // sleep -- see the header's doc comment on why ordering only
+    // matters for self-documentation purposes in the configuration this
+    // actually ships in (ui_ != nullptr), not for correctness.
+    if (ui_ != nullptr) {
+        ui_->set_paused(true);
+    }
     if (display_) {
         auto r = display_->set_power(false);
         if (!r) {
@@ -141,12 +153,20 @@ void PowerManager::enter_standby() {
             WLOG_W(kTag, "touch set_power(false) failed: %s", r.error().message.c_str());
         }
     }
-    if (ui_ != nullptr) {
-        ui_->set_paused(true);
-    }
     if (buttons_ != nullptr) {
         saved_poll_ms_ = buttons_->poll_interval_ms();
-        buttons_->set_poll_interval_ms(kStandbyPollMs);
+        // I1 (fix round 1): release transition_mutex_ for this one call.
+        // ButtonService::set_poll_interval_ms() stops/recreates a Timer;
+        // off the esp_timer task, that blocks waiting for the esp_timer
+        // task to run a fence callback for it -- see transition_mutex_'s
+        // own doc comment for why holding this lock across that wait is
+        // never safe. `buttons_` itself is never reassigned after
+        // construction, so reading it before unlocking and calling
+        // through the raw pointer afterwards is safe without the lock.
+        core::ButtonService* buttons = buttons_;
+        lock.unlock();
+        buttons->set_poll_interval_ms(kStandbyPollMs);
+        lock.lock();
     }
     if (set_standby_) {
         set_standby_(true);
@@ -157,7 +177,7 @@ void PowerManager::enter_standby() {
 }
 
 void PowerManager::exit_standby() {
-    std::lock_guard<os::Mutex> lock(transition_mutex_);
+    std::unique_lock<os::Mutex> lock(transition_mutex_);
     if (!standby_.load(std::memory_order_acquire)) {
         return;  // Already active -- idempotent.
     }
@@ -166,10 +186,11 @@ void PowerManager::exit_standby() {
         set_standby_(false);
     }
     if (buttons_ != nullptr) {
-        buttons_->set_poll_interval_ms(saved_poll_ms_);
-    }
-    if (ui_ != nullptr) {
-        ui_->set_paused(false);
+        uint32_t restore_ms = saved_poll_ms_;
+        core::ButtonService* buttons = buttons_;  // see enter_standby()'s identical unlock/lock.
+        lock.unlock();
+        buttons->set_poll_interval_ms(restore_ms);
+        lock.lock();
     }
     if (touch_) {
         auto r = touch_->set_power(true);
@@ -182,6 +203,13 @@ void PowerManager::exit_standby() {
         if (!r) {
             WLOG_W(kTag, "display set_power(true) failed: %s", r.error().message.c_str());
         }
+    }
+    // I1 (fix round 1): resume the UI only after the panel is already
+    // awake again (the mirror image of enter_standby() pausing it
+    // first), so the full redraw set_paused(false) forces lands against
+    // an already-woken panel.
+    if (ui_ != nullptr) {
+        ui_->set_paused(false);
     }
 
     standby_.store(false, std::memory_order_release);
@@ -206,8 +234,18 @@ void PowerManager::tick(uint64_t now_ms) {
     uint64_t last = last_activity_ms_.load(std::memory_order_relaxed);
     uint64_t idle_ms = now_ms > last ? now_ms - last : 0;
     if (idle_ms >= static_cast<uint64_t>(screen_off_s) * 1000) {
-        enter_standby();
+        // I1 (fix round 1): never call enter_standby() directly from
+        // here -- see tick()'s own doc comment in the header for why.
+        if (ui_ != nullptr) {
+            ui_->post([this] { enter_standby(); });
+        } else {
+            enter_standby();
+        }
     }
+}
+
+void PowerManager::set_power_key_owned(bool owned) {
+    power_key_owned_.store(owned, std::memory_order_release);
 }
 
 void PowerManager::publish_state() {

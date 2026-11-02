@@ -579,6 +579,20 @@ void SelfCheck::emit_perf_line() {
 void SelfCheck::subscribe_buttons() {
     button_sub_ =
         app_.bus().subscribe("button.", [this](const core::Event& e) { on_button_event(e); });
+
+    // Task 18b review round 1 (C1): from here on, this screen's own
+    // PowerKeyController is the *only* thing that decides what a
+    // "button.power" event does to the screen -- PowerManager's own
+    // generic "any button wakes standby" handler (power_manager.cpp)
+    // must leave button.power alone, or the two could each independently
+    // decide to flip the screen for the very same physical press (one
+    // reacting to `down`, the other -- with its own, now-stale idea of
+    // "is the screen on" -- reacting to the `short`/`long` that follows
+    // it), producing a wake-then-immediately-resleep flash. See
+    // PowerManager::set_power_key_owned()'s doc comment.
+    if (PowerManager* pm = app_.power_manager()) {
+        pm->set_power_key_owned(true);
+    }
 }
 
 void SelfCheck::on_button_event(const core::Event& e) {
@@ -600,10 +614,20 @@ void SelfCheck::on_button_event(const core::Event& e) {
 
         PowerKeyController::Action action = PowerKeyController::Action::None;
         if (source == "button.power") {
+            // Task 18b review round 1 (C1): PowerManager::standby() --
+            // not any state PowerKeyController tracks itself -- is the
+            // single source of truth for "is the screen on"; read it
+            // fresh right before deciding, on this same UI thread (the
+            // only thread that ever calls into PowerManager's
+            // enter_standby()/exit_standby() on this screen's behalf, so
+            // there is no race between this read and this screen's own
+            // handle_power_key_action() below acting on the result).
+            PowerManager* pm = app_.power_manager();
+            bool screen_on = pm == nullptr || !pm->standby();
             if (topic == "button.power.short") {
-                action = power_key_.on_short();
+                action = power_key_.on_short(screen_on);
             } else if (topic == "button.power.long") {
-                action = power_key_.on_long();
+                action = power_key_.on_long(screen_on);
             }
         }
         if (action != PowerKeyController::Action::None) {
