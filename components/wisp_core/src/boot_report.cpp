@@ -1,5 +1,6 @@
 #include "wisp/core/boot_report.hpp"
 
+#include <mutex>
 #include <utility>
 
 namespace wisp::core {
@@ -18,15 +19,28 @@ const char* to_string(DeviceState state) {
     return "unknown";
 }
 
-void BootReport::record(DeviceReport report) { entries_.push_back(std::move(report)); }
+void BootReport::record(DeviceReport report) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    entries_.push_back(std::move(report));
+}
 
-void BootReport::set_boot_ms(uint64_t ms) { boot_ms_ = ms; }
+void BootReport::set_boot_ms(uint64_t ms) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    boot_ms_ = ms;
+}
 
-void BootReport::set_note(std::string key, Value v) { notes_[std::move(key)] = std::move(v); }
+void BootReport::set_note(std::string key, Value v) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    notes_[std::move(key)] = std::move(v);
+}
 
-const std::vector<DeviceReport>& BootReport::entries() const { return entries_; }
+std::vector<DeviceReport> BootReport::entries() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return entries_;
+}
 
 std::optional<DeviceReport> BootReport::find(const std::string& id) const {
+    std::lock_guard<os::Mutex> lock(mutex_);
     for (auto it = entries_.rbegin(); it != entries_.rend(); ++it) {
         if (it->id == id) {
             return *it;
@@ -36,6 +50,7 @@ std::optional<DeviceReport> BootReport::find(const std::string& id) const {
 }
 
 Value BootReport::to_value(const std::string& board, const std::string& fw) const {
+    std::lock_guard<os::Mutex> lock(mutex_);
     wisp::List devices_list;
     for (const auto& entry : entries_) {
         wisp::Map device;

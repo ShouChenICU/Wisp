@@ -12,6 +12,7 @@
 
 #include "wisp/base/value.hpp"
 #include "wisp/hal/device.hpp"
+#include "wisp/os/os.hpp"
 
 namespace wisp::core {
 
@@ -28,6 +29,15 @@ struct DeviceReport {
     std::string reason;
 };
 
+// Thread-safe: App::start() keeps writing to its BootReport (record(),
+// set_boot_ms(), set_note()) on the calling thread after the self-check
+// screen has gone up and started posting periodic header refreshes
+// (SelfCheck::refresh_header() -> header_text() -> to_value()) onto the
+// UI thread, with no happens-before edge between the two -- a TSan
+// finding during sanitizer verification. Every method below takes
+// mutex_, including entries(), which therefore returns a copy rather
+// than a reference (a reference would outlive the lock that made it
+// safe to read).
 class BootReport {
 public:
     BootReport() = default;
@@ -44,7 +54,7 @@ public:
     // key overwrites the previous value.
     void set_note(std::string key, Value v);
 
-    const std::vector<DeviceReport>& entries() const;
+    std::vector<DeviceReport> entries() const;
 
     // Returns the most recently record()ed entry for `id`, or
     // std::nullopt if none was ever recorded.
@@ -60,6 +70,7 @@ public:
     Value to_value(const std::string& board, const std::string& fw = "") const;
 
 private:
+    mutable os::Mutex mutex_;
     std::vector<DeviceReport> entries_;
     uint64_t boot_ms_ = 0;
     Map notes_;
