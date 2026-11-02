@@ -22,7 +22,12 @@ docs/architecture.md):
     stack actually has (ArduinoJson for wisp_base, LVGL for wisp_ui) in
     its IDF_REQUIRES/HOST_LIBS lists -- catches a new platform or
     host-only dependency slipped in that way instead of via #include,
-    which the checks above can't see at all.
+    which the checks above can't see at all. Its REQUIRES list is
+    checked the same way as a reverse #include dependency above: on the
+    ESP build, wisp_component() forwards REQUIRES straight into
+    idf_component_register()'s own REQUIRES, so a platform or
+    higher-layer component could otherwise be pulled in there without
+    ever being #include'd.
 
 Prints one "path:line: <message>" line per violation and exits 1 if
 any were found, else exits 0 with no output.
@@ -66,6 +71,12 @@ FORBIDDEN_PREFIXES = (
     "lwip/",
     "mbedtls/",
     "SDL",
+    # wisp_port_sim/wisp_port_esp headers: a portable layer including one
+    # of these compiles fine on the host (wisp/port/sim/* has no
+    # platform headers of its own), so only a firmware build -- which
+    # this checker never runs -- would actually fail; forbidding the
+    # #include itself here catches it on the host instead.
+    "wisp/port/",
 )
 FORBIDDEN_EXACT = ("sdkconfig.h", "nvs.h", "nvs_flash.h", "sdmmc_cmd.h")
 # esp_board_manager's own per-device headers (dev_*.h) and the board-
@@ -77,7 +88,7 @@ FORBIDDEN_EXACT = ("sdkconfig.h", "nvs.h", "nvs_flash.h", "sdmmc_cmd.h")
 # be listed by exact name either.
 FORBIDDEN_BASENAME_PREFIXES = ("dev_", "gen_board_")
 
-INCLUDE_RE = re.compile(r'#include\s*[<"]([^">]+)[">]')
+INCLUDE_RE = re.compile(r'#\s*include\s*[<"]([^">]+)[">]')
 
 # The only external (non-wisp_*) dependencies the portable stack
 # actually has: ArduinoJson (wisp_base) and LVGL (wisp_ui) -- see each
@@ -224,7 +235,7 @@ def _parse_keyword_lists(args_text, keywords):
     return result
 
 
-def check_component_cmake(path, errors):
+def check_component_cmake(path, component, errors):
     text = strip_comments(path.read_text(encoding="utf-8", errors="replace"))
     args_text = _extract_wisp_component_call(text)
     if args_text is None:
@@ -232,6 +243,13 @@ def check_component_cmake(path, errors):
         # #include-based checks above still apply regardless.
         return
     lists = _parse_keyword_lists(args_text, CMAKE_LIST_KEYWORDS)
+    allowed_requires = set(COMPONENTS[: COMPONENTS.index(component)])
+    for value in lists["REQUIRES"]:
+        if value not in allowed_requires:
+            errors.append(
+                f"{path}: forbidden REQUIRES <{value}> ({component} may only require "
+                f"{sorted(allowed_requires) or '(nothing)'})"
+            )
     for value in lists["IDF_REQUIRES"]:
         if value not in ALLOWED_IDF_REQUIRES:
             errors.append(
@@ -257,7 +275,7 @@ def run(root):
             check_file(path, component, errors)
         cmake_path = root / "components" / component / "CMakeLists.txt"
         if cmake_path.is_file():
-            check_component_cmake(cmake_path, errors)
+            check_component_cmake(cmake_path, component, errors)
     return errors
 
 

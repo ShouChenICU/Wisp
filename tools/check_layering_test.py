@@ -26,12 +26,13 @@ def write(root, rel_path, text):
     return path
 
 
-def minimal_cmake(name, idf_requires="", host_libs=""):
+def minimal_cmake(name, idf_requires="", host_libs="", requires=""):
     return (
         f"wisp_component(\n"
         f"    NAME {name}\n"
         f"    SRCS src/{name}.cpp\n"
         f"    INCLUDE_DIRS include\n"
+        f"    REQUIRES {requires}\n"
         f"    IDF_REQUIRES {idf_requires}\n"
         f"    HOST_LIBS {host_libs}\n"
         f")\n"
@@ -133,6 +134,68 @@ class CheckLayeringTest(unittest.TestCase):
         errors = check_layering.run(self.root)
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("SDL2::SDL2", errors[0])
+
+    def test_cmake_requires_of_platform_component_is_flagged(self):
+        # wisp_component() forwards REQUIRES straight into
+        # idf_component_register() on the ESP build, so a platform
+        # component slipped in there would bypass the #include-based
+        # checks above entirely.
+        write(
+            self.root,
+            "components/wisp_core/CMakeLists.txt",
+            minimal_cmake("wisp_core", requires="esp_timer"),
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("esp_timer", errors[0])
+
+    def test_cmake_requires_of_higher_layer_is_flagged(self):
+        # Same hazard as the reverse-#include-dependency check above,
+        # but via REQUIRES instead of #include.
+        write(
+            self.root,
+            "components/wisp_core/CMakeLists.txt",
+            minimal_cmake("wisp_core", requires="wisp_app"),
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("wisp_app", errors[0])
+
+    def test_cmake_requires_of_strictly_lower_layer_is_not_flagged(self):
+        write(
+            self.root,
+            "components/wisp_core/CMakeLists.txt",
+            minimal_cmake("wisp_core", requires="wisp_base wisp_os wisp_hal"),
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_include_with_whitespace_after_hash_is_detected(self):
+        # Some formatters/editors can leave "#  include" (extra
+        # whitespace between '#' and 'include'); the checker must still
+        # recognize it as an #include directive rather than silently
+        # skipping the line.
+        write(
+            self.root,
+            "components/wisp_core/include/wisp/core/z.hpp",
+            '#   include "esp_system.h"\n',
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("esp_system.h", errors[0])
+
+    def test_wisp_port_include_is_flagged(self):
+        # wisp/port/sim/* compiles fine on the host build this checker
+        # runs under (it has no platform headers of its own), so only a
+        # firmware build -- which ci.sh never does -- would actually
+        # fail; the #include itself must be forbidden here instead.
+        write(
+            self.root,
+            "components/wisp_core/src/z.cpp",
+            '#include "wisp/port/esp/esp_display.hpp"\n',
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("wisp/port/esp/esp_display.hpp", errors[0])
 
     def test_cmake_whitelisted_dependencies_are_not_flagged(self):
         write(
