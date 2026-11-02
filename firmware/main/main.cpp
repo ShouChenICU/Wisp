@@ -4,9 +4,11 @@
 // emit_line/request_power_off/heap_info) around whichever board
 // firmware/CMakeLists.txt's WISP_BOARD selected, then runs the same
 // wisp::app::App boot sequence the PC simulator runs (see
-// simulator/main.cpp and wisp/app/app.hpp). This board (Task 15) has zero
-// devices (see boards/waveshare_amoled_216/board.cpp), so App::start()
-// takes the headless path -- no UI, no self-check screen.
+// simulator/main.cpp and wisp/app/app.hpp). The board registers
+// display.main/touch.main (Task 16 -- see
+// boards/waveshare_amoled_216/board.cpp), so App::start() brings up the
+// UI and the self-check screen; if the panel fails to come up it falls
+// back to the headless path instead.
 
 #include <cstdio>
 #include <memory>
@@ -32,15 +34,11 @@ extern "C" void app_main() {
 
     wisp::app::Platform platform;
     platform.board = wisp::board::create_board();
-    // Fix round 1, M7: this board has zero devices, so App::start() (see
-    // app.cpp) never actually reaches the `if (display)` branch that is
-    // the only place it dereferences Platform::settings -- the previous
-    // comment here claiming it does so "unconditionally" was wrong.
-    // Still wired up (per the Task 15 controller ruling) because
-    // Platform requires *some* non-null settings backend regardless,
-    // and to not leave a null-pointer trap for the next board that adds
-    // a display. The NVS-backed replacement is Task 18's job -- see
-    // wisp/port/esp/ram_settings_backend.hpp.
+    // App::start() (see app.cpp) reads Platform::settings in its
+    // `if (display)` branch (e.g. the stored display brightness), which
+    // this board now reaches once display.main is registered. Settings
+    // are RAM-only for now; the NVS-backed replacement is Task 18's job
+    // -- see wisp/port/esp/ram_settings_backend.hpp.
     platform.settings = std::make_unique<wisp::port::esp::RamSettingsBackend>();
     platform.emit_line = [](const std::string& line) {
         std::printf("%s\n", line.c_str());
