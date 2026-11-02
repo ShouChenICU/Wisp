@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -23,6 +24,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/hal/audio.hpp"
 #include "wisp/hal/button.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/device.hpp"
@@ -58,6 +60,7 @@ public:
     const wisp::hal::DeviceInfo& info() const override { return info_; }
 
     wisp::Result<void> flush(const wisp::hal::Area& area, const uint16_t* /*rgb565*/) override {
+        assert_owner_thread();
         std::lock_guard<std::mutex> lock(mutex_);
         ++flush_count_;
         areas_.push_back(area);
@@ -65,11 +68,13 @@ public:
     }
 
     wisp::Result<void> set_brightness(uint8_t level) override {
+        assert_owner_thread();
         brightness_.store(level);
         return wisp::Result<void>::ok();
     }
 
     wisp::Result<void> set_power(bool on) override {
+        assert_owner_thread();
         ++set_power_calls_;
         powered_.store(on);
         return wisp::Result<void>::ok();
@@ -429,6 +434,85 @@ public:
 private:
     wisp::hal::DeviceInfo info_;
     std::atomic<int64_t> unix_seconds_{0};
+};
+
+// Fills every read() with silence and reports every frame as delivered
+// immediately -- no simulated capture delay, so a caller looping until
+// it has read a fixed frame count (e.g. loopback.cpp's record_and_play())
+// completes in one call instead of real-time.
+class FakeAudioIn : public wisp::hal::AudioIn {
+public:
+    explicit FakeAudioIn(std::string id) {
+        info_.id = std::move(id);
+        info_.cls = kClass;
+        info_.model = "FAKE";
+    }
+
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+
+    wisp::Result<void> open(const wisp::hal::AudioFormat&) override {
+        return wisp::Result<void>::ok();
+    }
+
+    wisp::Result<size_t> read(int16_t* frames, size_t count) override {
+        std::fill(frames, frames + count, 0);
+        return wisp::Result<size_t>::ok(count);
+    }
+
+    void close() override {}
+
+    wisp::Result<void> set_gain(float) override { return wisp::Result<void>::ok(); }
+
+private:
+    wisp::hal::DeviceInfo info_;
+};
+
+// Reports every write() as consumed immediately (no simulated playback
+// delay) and records every set_volume() call, so a test can assert what
+// volume loopback.cpp's record_and_play() applied.
+class FakeAudioOut : public wisp::hal::AudioOut {
+public:
+    explicit FakeAudioOut(std::string id) {
+        info_.id = std::move(id);
+        info_.cls = kClass;
+        info_.model = "FAKE";
+    }
+
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+
+    wisp::Result<void> open(const wisp::hal::AudioFormat&) override {
+        return wisp::Result<void>::ok();
+    }
+
+    wisp::Result<size_t> write(const int16_t*, size_t count) override {
+        return wisp::Result<size_t>::ok(count);
+    }
+
+    void close() override {}
+
+    wisp::Result<void> set_volume(uint8_t percent) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_volume_ = percent;
+        ++set_volume_calls_;
+        return wisp::Result<void>::ok();
+    }
+
+    uint8_t last_volume() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return last_volume_;
+    }
+
+    int set_volume_calls() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return set_volume_calls_;
+    }
+
+private:
+    wisp::hal::DeviceInfo info_;
+
+    mutable std::mutex mutex_;
+    uint8_t last_volume_ = 0;
+    int set_volume_calls_ = 0;
 };
 
 }  // namespace wisp::test

@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -156,6 +157,26 @@ struct Fixture {
         done->take(wisp::os::kForever);
     }
 
+    // Runs `fn` on the UI task and blocks until it has returned. Needed
+    // for any direct enter_standby()/exit_standby() call from a test:
+    // spec 5.3 requires every Display call to come from the UI thread
+    // (debug-asserted -- see display.hpp), and both methods call
+    // display_->set_power() directly, not via post(). Production code
+    // only ever reaches them already on the UI task (PowerManager always
+    // posts first when ui_ != nullptr -- see power_manager.cpp); this
+    // reproduces that same calling convention for tests that drive them
+    // directly instead of through a simulated button press.
+    void run_on_ui(std::function<void()> fn) {
+        auto done = std::make_shared<wisp::os::Semaphore>(1, 0);
+        while (!ui->post([fn, done] {
+            fn();
+            done->give();
+        })) {
+            wisp::os::sleep_ms(1);
+        }
+        done->take(wisp::os::kForever);
+    }
+
     std::string settings_path;
     std::unique_ptr<JsonFileSettingsBackend> backend;
 
@@ -268,7 +289,7 @@ void press_long(ButtonService& buttons, FakeButton& btn) {
 
 TEST(PowerManager, EnterStandbySleepsEverythingAndPublishesState) {
     Fixture f;
-    f.pm->enter_standby();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return f.power_event_count() != 0; }, 2000));
 
     EXPECT_TRUE(f.pm->standby());
@@ -292,10 +313,10 @@ TEST(PowerManager, EnterStandbySleepsEverythingAndPublishesState) {
 
 TEST(PowerManager, ExitStandbyRestoresEverything) {
     Fixture f;
-    f.pm->enter_standby();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 
-    f.pm->exit_standby();
+    f.run_on_ui([&] { f.pm->exit_standby(); });
     ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
 
     EXPECT_TRUE(f.display->powered());
@@ -317,9 +338,9 @@ TEST(PowerManager, ExitStandbyRestoresEverything) {
 
 TEST(PowerManager, EnterStandbyTwiceOnlyTakesEffectOnce) {
     Fixture f;
-    f.pm->enter_standby();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return f.power_event_count() != 0; }, 2000));
-    f.pm->enter_standby();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
     f.bus.wait_idle(1000);
 
     EXPECT_EQ(f.display->set_power_calls(), 1);
@@ -332,7 +353,7 @@ TEST(PowerManager, EnterStandbyTwiceOnlyTakesEffectOnce) {
 
 TEST(PowerManager, ExitStandbyWhileAlreadyActiveIsANoOp) {
     Fixture f;
-    f.pm->exit_standby();
+    f.run_on_ui([&] { f.pm->exit_standby(); });
 
     EXPECT_FALSE(f.pm->standby());
     EXPECT_EQ(f.display->set_power_calls(), 0);
@@ -345,7 +366,7 @@ TEST(PowerManager, UnsupportedTouchSleepIsNotAnErrorAndStandbyStillSucceeds) {
     Fixture f;
     f.touch->unsupported = true;
 
-    f.pm->enter_standby();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 
     EXPECT_TRUE(f.pm->standby());
@@ -364,7 +385,7 @@ TEST(PowerManager, UnsupportedImuSleepIsNotAnErrorAndStandbyStillSucceeds) {
     Fixture f;
     f.imu->unsupported = true;
 
-    f.pm->enter_standby();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 
     EXPECT_TRUE(f.pm->standby());
@@ -382,14 +403,14 @@ TEST(PowerManager, UnsupportedImuSleepIsNotAnErrorAndStandbyStillSucceeds) {
 TEST(PowerManager, NullStorageManagerIsToleratedByStandbyTransitions) {
     Fixture f(/*screen_off_s=*/60, /*with_storage=*/false);
 
-    f.pm->enter_standby();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
     EXPECT_FALSE(f.display->powered());
     // Nothing reached FakeStorage below PowerManager at all -- confirms
     // this isn't accidentally still forwarding through some other path.
     EXPECT_EQ(f.sd_storage->set_standby_calls(), 0);
 
-    f.pm->exit_standby();
+    f.run_on_ui([&] { f.pm->exit_standby(); });
     ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
     EXPECT_TRUE(f.display->powered());
     EXPECT_EQ(f.sd_storage->set_standby_calls(), 0);
@@ -402,11 +423,11 @@ TEST(PowerManager, NullStorageManagerIsToleratedByStandbyTransitions) {
 TEST(PowerManager, NullPowerMonitorIsToleratedByStandbyTransitions) {
     Fixture f(/*screen_off_s=*/60, /*with_storage=*/true, /*with_power_monitor=*/false);
 
-    f.pm->enter_standby();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
     EXPECT_FALSE(f.display->powered());
 
-    f.pm->exit_standby();
+    f.run_on_ui([&] { f.pm->exit_standby(); });
     ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
     EXPECT_TRUE(f.display->powered());
 }
@@ -419,11 +440,11 @@ TEST(PowerManager, EnterAndExitStandbyWidenAndRestorePowerMonitorSampleInterval)
     Fixture f;
     EXPECT_EQ(f.power_monitor->sample_interval_ms(), 1000u);
 
-    f.pm->enter_standby();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
     EXPECT_EQ(f.power_monitor->sample_interval_ms(), 30000u);
 
-    f.pm->exit_standby();
+    f.run_on_ui([&] { f.pm->exit_standby(); });
     ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
     EXPECT_EQ(f.power_monitor->sample_interval_ms(), 1000u);
 }
@@ -492,7 +513,7 @@ TEST(PowerManager, ZeroScreenOffSecondsDisablesAutoStandby) {
 // standby wakes the device.
 TEST(PowerManager, AnyButtonEventWhileInStandbyWakesIt) {
     Fixture f;
-    f.pm->enter_standby();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 
     f.btn->down = true;

@@ -52,6 +52,9 @@ wisp_test(NAME power_manager_test SRCS app/power_manager_test.cpp
 wisp_test(NAME format_test SRCS app/format_test.cpp LIBS wisp_app wisp_core)
 wisp_test(NAME self_check_screen_test SRCS app/self_check_screen_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
+wisp_test(NAME loopback_test SRCS app/loopback_test.cpp
+          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
+target_include_directories(loopback_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME png_writer_test SRCS sim/png_writer_test.cpp LIBS wisp_port_sim_dev)
 wisp_test(NAME sim_options_test SRCS sim/sim_options_test.cpp ${WISP_ROOT}/simulator/sim_options.cpp
           LIBS wisp_base)

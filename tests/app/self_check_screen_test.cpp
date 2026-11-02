@@ -161,6 +161,25 @@ std::string run_on_ui_thread(wisp::ui::UiRuntime* ui, const std::function<std::s
     return result;
 }
 
+// Like run_on_ui_thread() above but for a void `fn` -- used to call
+// PowerManager::enter_standby()/exit_standby() directly from a test:
+// both call display->set_power() straight through (not via post()), and
+// spec 5.3 requires every Display call to come from the UI thread
+// (debug-asserted -- see display.hpp). Production code only ever
+// reaches them already on the UI task (PowerManager posts first when it
+// has a UiRuntime), so tests driving them directly need to reproduce
+// that same calling convention.
+void run_on_ui_blocking(wisp::ui::UiRuntime* ui, const std::function<void()>& fn) {
+    wisp::os::Semaphore done(1, 0);
+    if (!ui->post([&] {
+            fn();
+            done.give();
+        })) {
+        return;
+    }
+    done.take(wisp::os::kForever);
+}
+
 }  // namespace
 
 TEST(SelfCheckScreen, RendersNonUniformFrame) {
@@ -285,18 +304,17 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
     // yet".
     ASSERT_TRUE(wait_until([&] { return h.imu->read_count() > 0; }, 2000));
 
-    pm->enter_standby();
+    run_on_ui_blocking(h.app.ui(), [&] { pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
-    // R2-2 (re-review 2): pm->standby() flips synchronously inside
-    // enter_standby(), but SelfCheck's own standby_ flag (consulted by
-    // sample_loop(), which runs on its own task) only catches up once the
-    // EventBus dispatcher has actually delivered the "power.state" event
-    // to on_power_event() -- asynchronously, on the bus's own dispatcher
-    // task. Without waiting for that dispatch to finish first, there's a
-    // race (task-18b-review.md's R2-2) where sample_loop() still takes one
-    // more real IMU read() between the wait_until() above and the
-    // snapshot below, making this assertion flaky under scheduler
-    // pressure.
+    // pm->standby() flips synchronously inside enter_standby(), but
+    // SelfCheck's own standby_ flag (consulted by sample_loop(), which
+    // runs on its own task) only catches up once the EventBus dispatcher
+    // has actually delivered the "power.state" event to on_power_event()
+    // -- asynchronously, on the bus's own dispatcher task. Without
+    // waiting for that dispatch to finish first, there's a race where
+    // sample_loop() still takes one more real IMU read() between the
+    // wait_until() above and the snapshot below, making this assertion
+    // flaky under scheduler pressure.
     ASSERT_TRUE(h.app.bus().wait_idle(2000));
 
     size_t reads_at_standby = h.imu->read_count();
@@ -305,7 +323,7 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
     wisp::os::sleep_ms(300);
     EXPECT_EQ(h.imu->read_count(), reads_at_standby);
 
-    pm->exit_standby();
+    run_on_ui_blocking(h.app.ui(), [&] { pm->exit_standby(); });
     ASSERT_TRUE(wait_until([&] { return !pm->standby(); }, 2000));
     EXPECT_TRUE(wait_until([&] { return h.imu->read_count() > reads_at_standby; }, 2000));
 

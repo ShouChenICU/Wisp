@@ -118,6 +118,7 @@ bool IRAM_ATTR EspDisplay::on_color_trans_done(esp_lcd_panel_io_handle_t /*io*/,
 }
 
 Result<void> EspDisplay::flush(const wisp::hal::Area& area, const uint16_t* rgb565) {
+    assert_owner_thread();
     if (rgb565 == nullptr || area.x1 > area.x2 || area.y1 > area.y2 || area.x1 < 0 || area.y1 < 0 ||
         area.x2 >= config_.width || area.y2 >= config_.height) {
         return Result<void>::err(ErrorCode::InvalidArgument, "invalid flush area or buffer");
@@ -184,6 +185,7 @@ Result<void> EspDisplay::tx_dcs_locked(int reg, const uint8_t* param, size_t par
 }
 
 Result<void> EspDisplay::set_brightness(uint8_t level) {
+    assert_owner_thread();
     std::lock_guard<wisp::os::Mutex> lock(mutex_);
     auto r = tx_dcs_locked(kDcsWriteBrightness, &level, 1);
     if (r) {
@@ -271,6 +273,7 @@ Result<void> EspDisplay::set_power_dcs_locked(bool on) {
 }
 
 Result<void> EspDisplay::set_power(bool on) {
+    assert_owner_thread();
     std::lock_guard<wisp::os::Mutex> lock(mutex_);
     Result<void> r = config_.panel_sleep == EspDisplayConfig::PanelSleep::DcsSleep
                          ? set_power_dcs_locked(on)

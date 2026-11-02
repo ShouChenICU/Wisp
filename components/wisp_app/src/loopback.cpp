@@ -1,5 +1,6 @@
 #include "loopback.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -8,6 +9,7 @@
 #include "app_impl.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/base/error.hpp"
+#include "wisp/core/settings.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/os/os.hpp"
 
@@ -20,7 +22,12 @@ constexpr uint32_t kDurationS = 3;
 constexpr size_t kFrameCount = kSampleRateHz * kDurationS;      // 48000 frames
 constexpr size_t kBufferBytes = kFrameCount * sizeof(int16_t);  // 96000 bytes
 
-void record_and_play(App& app, std::function<void(const char* status)> on_status) {
+// Default volume (percent) applied when Settings has no "audio"/"volume"
+// entry yet (e.g. first boot, or a settings backend that failed to open).
+constexpr int64_t kDefaultVolumePercent = 60;
+
+void record_and_play(App& app, core::SettingsBackend* settings_backend,
+                     std::function<void(const char* status)> on_status) {
     auto fail = [&on_status](ErrorCode code) {
         std::string msg = std::string("失败: ") + to_string(code);
         on_status(msg.c_str());
@@ -77,6 +84,17 @@ void record_and_play(App& app, std::function<void(const char* status)> on_status
             fail(opened.error().code);
             return false;
         }
+        // spec 6.6: volume is one of sub-project 1's three Settings-backed
+        // items (brightness, volume, screen_off_s). Applied here, once per
+        // open(), rather than once at startup, so a change takes effect on
+        // the very next playback -- there is no separate "apply settings"
+        // hook for audio the way there is for display at App::start().
+        if (settings_backend != nullptr) {
+            core::Settings audio_settings(*settings_backend, "audio");
+            int64_t volume = std::clamp<int64_t>(
+                audio_settings.get_int("volume", kDefaultVolumePercent), 0, 100);
+            audio_out->set_volume(static_cast<uint8_t>(volume));
+        }
         on_status("播放中");
         size_t total = 0;
         while (total < kFrameCount) {
@@ -132,11 +150,13 @@ void run_loopback(App& app, std::function<void(const char* status)> on_status) {
         // Copied (not moved) so the original `on_status` is still usable
         // below if os::Task::spawn() itself fails (M2).
         auto on_status_copy = on_status;
-        impl->loop_task = os::Task::spawn(config, [&app, impl, on_status_copy]() mutable {
-            record_and_play(app, on_status_copy);
-            std::lock_guard<os::Mutex> lock(impl->loop_mutex);
-            impl->loop_running = false;
-        });
+        core::SettingsBackend* settings_backend = impl->platform.settings.get();
+        impl->loop_task =
+            os::Task::spawn(config, [&app, impl, settings_backend, on_status_copy]() mutable {
+                record_and_play(app, settings_backend, on_status_copy);
+                std::lock_guard<os::Mutex> lock(impl->loop_mutex);
+                impl->loop_running = false;
+            });
         if (impl->loop_task == nullptr) {
             impl->loop_running = false;
             spawn_failed = true;

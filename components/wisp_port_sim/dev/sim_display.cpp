@@ -26,6 +26,7 @@ SimDisplay::SimDisplay(std::string id, int32_t width, int32_t height, std::strin
 }
 
 wisp::Result<void> SimDisplay::flush(const wisp::hal::Area& area, const uint16_t* rgb565) {
+    assert_owner_thread();
     std::lock_guard<std::mutex> lock(mutex_);
     int32_t x1 = std::max<int32_t>(0, area.x1);
     int32_t x2 = std::min<int32_t>(width_ - 1, area.x2);
@@ -45,11 +46,13 @@ wisp::Result<void> SimDisplay::flush(const wisp::hal::Area& area, const uint16_t
 }
 
 wisp::Result<void> SimDisplay::set_brightness(uint8_t level) {
+    assert_owner_thread();
     brightness_.store(level);
     return wisp::Result<void>::ok();
 }
 
 wisp::Result<void> SimDisplay::set_power(bool on) {
+    assert_owner_thread();
     powered_.store(on);
     return wisp::Result<void>::ok();
 }

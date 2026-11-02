@@ -442,6 +442,10 @@ Result<void> UiRuntime::start() {
     impl_->task = os::Task::spawn(task_config, [impl] { impl->ui_main(); });
     impl_->active_task.store(impl_->task.get(), std::memory_order_release);
 
+    // spec 5.3: now that the UI task exists, every further Display call
+    // must come from it (debug-build assertion; see display.hpp).
+    impl_->display->set_owner_thread_check([this] { return on_ui_thread(); });
+
     return Result<void>::ok();
 }
 
@@ -469,6 +473,12 @@ void UiRuntime::stop() {
     }
     impl_->active_task.store(nullptr, std::memory_order_release);
     impl_->task.reset();
+
+    // The check installed in start() captures `this`, which must not
+    // outlive this UiRuntime -- the Display itself usually does (it's
+    // owned by the board/platform, not by UiRuntime). Clear it now that
+    // no further Display call from the UI task is possible.
+    impl_->display->set_owner_thread_check(nullptr);
 
     // The UI task has fully exited: no further lv_* call is in flight, so
     // tearing LVGL down now is safe.
