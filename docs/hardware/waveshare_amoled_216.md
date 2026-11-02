@@ -106,17 +106,16 @@
   数据引脚）时，没有 SOF、锁会被释放，才会真正睡下去**。验收第 5 条的电流测量必须真的
   让数据线处于未连接状态（断开数据线本身，不是"只是没打开串口监视器"）。
 - **后台仍在运行、会限制浅睡眠深度/频率的任务**（Task 18b 任务说明要求记录，不要求重新
-  设计；下面的分类是 Task 18b 再审查 N3/fix round 2 第二批附加范围整理后的最新状态，
-  修正了早先"ButtonService 50 ms 是系统里最短的周期性唤醒源"这条结论——那条结论当时
-  漏算了自检屏幕自己的采样任务，见下面第二条）：
-  - **已在待机期间完全暂停、不再唤醒 CPU 的**：
-    - 自检屏幕的采样任务（`SelfCheck::sample_loop()`，原本以
-      `kSampleTaskPeriodMs` = 20 ms 的周期读取 IMU，附带每 `kSlowSampleIntervalMs`
-      = 1000 ms 读一次电源状态/RTC）订阅了 `power/state`，进入待机后阻塞在
-      `standby_wake_`（有 1 s 的兜底超时，防止漏收唤醒事件），完全不再轮询——这才是
-      修正前文档漏记的、实际上系统里最快的周期性唤醒源（20 ms，比 ButtonService 的
-      50 ms 还快）。`PowerManager::exit_standby()` 唤醒时立即 `give()` 该信号量恢复
-      采样。
+  设计；下面的分类是 Task 18b 再审查 2 轮（R2-1/R2-3/R2-4）整理后的最新状态，修正了
+  早先"ButtonService 50 ms 是系统里最短的周期性唤醒源"这条结论——那条结论当时漏算了
+  自检屏幕自己的采样任务，见下面第二条）：
+  - **已在待机期间完全暂停、只在真正被 `give()` 唤醒时才醒的**：
+    - 自检屏幕采样任务的 IMU 读取分支（`SelfCheck::sample_loop()`，原本以
+      `kSampleTaskPeriodMs` = 20 ms 的周期读取 IMU）：订阅了 `power/state`，进入待机
+      后完全停止读 IMU——这曾是修正前文档漏记的、实际上系统里最快的周期性唤醒源
+      （20 ms，比 ButtonService 的 50 ms 还快）。`PowerManager::exit_standby()` 唤醒
+      时立即 `give()` 恢复采样。电源状态/RTC 的"慢采样"分支**不**完全停止，见下一条
+      分类（Task 18b 再审查 R2-1）。
     - `wisp::hal::Imu::set_power(false)`（Task 18b fix round 2 第一批附加范围）：
       `PowerManager::enter_standby()` 关闭 QMI8658 的加速度计/陀螺仪使能位
       （`CTRL7`），待机期间芯片本身也不再采样，`exit_standby()` 时恢复到之前选定的
@@ -127,9 +126,24 @@
       检查状态/`worker_running_`，即以 10 Hz 唤醒 CPU）。Task 18b fix round 2 第二批
       附加范围给它加了 `set_standby()`（经 `StorageManager::set_standby()` 转发，
       `PowerManager` 在 `enter_standby()`/`exit_standby()` 时调用）：待机期间这个
-      worker 完全阻塞在自己的信号量上（同样有 1 s 兜底超时），不再探测/重试；
-      `online()`/`capacity()` 不受影响，一直返回缓存的上一次状态，不会在待机期间
-      卡住或报错。
+      worker 完全阻塞在自己的信号量上，不再探测/重试；`online()`/`capacity()` 不受
+      影响，一直返回缓存的上一次状态，不会在待机期间卡住或报错。Task 18b 再审查第 2
+      轮进一步修正了两处细节：R2-3，这个等待原来带了 1 s 的"兜底"超时，但
+      `set_standby(false)` 和析构都保证一定会 `give()`，不存在漏收信号的情形，所以
+      改成了无限等待（`os::kForever`），彻底不再每秒醒一次；R2-4，`Mounted` 态下
+      探测间隔之间原本以 `kWorkerPollMs` 粒度睡眠等待下一次探测，这段等待现在也会
+      检查待机标志，一旦在等待期间进入待机就直接跳过这次探测，不会多发一次 CMD13。
+  - **降频到约 30 s 一次，而不是完全停止（Task 18b 再审查 R2-1，按 spec 6.7 字面
+    要求修正）**：
+    - 自检屏幕采样任务的电源状态/RTC"慢采样"分支（原本以 `kSlowSampleIntervalMs`
+      = 1000 ms 读一次）：fix round 2 的版本曾把这个分支和上面的 IMU 分支一起在待机
+      期间完全停掉，但 spec 6.7 的字面要求是"待机时约 30 s 读一次电量/充电状态"，不是
+      完全停止。现在待机期间改为每 `kStandbySlowSampleMs` = 30000 ms 读一次（阻塞在
+      `standby_wake_` 上，超时就读一次，被 `give()` 唤醒就直接跳过），退出待机时同样
+      立即 `give()` 恢复到原来 1 s 一次的节奏。子项目 1 目前没有任何消费者会据此做出
+      决策（没有低电量告警/自动关机，读到的值只用于自检界面显示，界面本身已经暂停
+      渲染），所以这项修正目前只是让实现与 spec 文字保持一致，不影响实际功能；一旦
+      后续子项目加入低电量保护，这个约 30 s 的读取就是必需的。
   - **待机期间仍按原周期继续唤醒 CPU（有意保留，见下面的说明）**：
     - `wisp::os::Timer` 在 ESP 口径下全部跑在同一个 esp_timer 任务上：`App` 的
       `wisp.storage`（2000 ms 一次，`StorageManager::refresh()`）和 `wisp.power`
@@ -153,9 +167,10 @@
     - `core::ButtonService` 待机时以 50 ms 轮询一次按键（`PowerManager::enter_standby()`
       放宽的间隔）；`ui::UiRuntime` 暂停后（Task 18b 审查 M1，fix round 1）**不再**自己
       周期性醒来——它的待机循环现在无限等待 `post()` 任务，没有事可做时完全不会主动醒来。
-  - 经过以上两批修复，`core::ButtonService` 的 **50 ms** 轮询现在才真正是系统里最短的
-    周期性唤醒源（自检采样任务的 20 ms 已被消除）。以上都只是"周期性唤醒 CPU 一下就
-    继续睡"，不会阻止自动浅睡眠本身发生（没有常驻的 `ESP_PM_NO_LIGHT_SLEEP`/
+  - 经过以上几轮修复，`core::ButtonService` 的 **50 ms** 轮询现在才真正是系统里最短的
+    周期性唤醒源（自检采样任务的 IMU 分支 20 ms 已被消除；电源/RTC 慢采样分支降到了
+    30 s；SD worker 从 10 Hz 降到了待机期间完全不主动醒来）。以上都只是"周期性唤醒
+    CPU 一下就继续睡"，不会阻止自动浅睡眠本身发生（没有常驻的 `ESP_PM_NO_LIGHT_SLEEP`/
     `ESP_PM_CPU_FREQ_MAX` 锁），但会把浅睡眠的最长连续时长限制在 `ButtonService` 的
     50 ms 量级，略微拉高平均功耗。真机测得的待机电流如果明显高于预期，这些仍是优先
     排查的来源。
