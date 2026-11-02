@@ -162,23 +162,105 @@ licenses -- authoritative per ESP-IDF's own `docs/en/COPYRIGHT.rst`
 (narrative summary) and `tools/ci/check_copyright_config.yaml` (the
 per-file license each ESP-IDF source file actually declares), neither of
 which this project vendors or reproduces here. The table below lists
-only the ones actually linked into this firmware's build (checked
-against `firmware/build/wisp.map`'s "Archive member included" section,
-which lists every object file the linker actually pulled in -- not every
-component ESP-IDF compiles, since many go unreferenced and are dropped):
+every one of those bundled third-party components that is actually
+linked into this firmware's build: counted by whether at least one of
+their object files appears in `firmware/build/wisp.map`'s "Archive
+member included" section, which lists every archive member the linker
+actually pulled in before dead-code elimination -- not every component
+ESP-IDF compiles, since many go unreferenced at that stage and are
+dropped. Where the linker's own garbage collection (`--gc-sections`)
+later discards most of a pulled-in archive member, that is noted
+per-component below; the "linked" determination itself is always made
+against "Archive member included", not against the smaller amount of
+code that survives gc:
 
 | Component | License | Notes |
 |---|---|---|
 | FreeRTOS kernel (`components/freertos`) | MIT | Copyright (C) 2017 Amazon.com, Inc. or its affiliates |
-| Picolibc (`components/esp_libc`) | BSD-style | This firmware's `sdkconfig` selects `CONFIG_LIBC_PICOLIBC` (not Newlib) |
-| Mbed TLS (`components/mbedtls`) | Apache License 2.0 | Only a small allocator/PSA-crypto-init shim is actually linked in this build (sub-project 1 has no networking/TLS usage yet); Copyright (C) 2006-2018 ARM Limited |
+| Picolibc (`components/esp_libc`) | BSD-style | This firmware's `sdkconfig` selects `CONFIG_LIBC_PICOLIBC` (not Newlib; confirmed via `sdkconfig`'s `CONFIG_LIBC_PICOLIBC=y` / `# CONFIG_LIBC_NEWLIB is not set`, and the linked `libc.a` resolving to the toolchain's `picolibc/xtensa-esp-elf/lib/esp32s3/no-rtti/libc.a`) |
+| TLSF allocator (`components/heap/tlsf`) | BSD-3-Clause | `libheap.a(tlsf.c.obj)` -- the block allocator backing `heap_caps`/`multi_heap`; Copyright (C) 2006-2016 Matthew Conte (full text below) |
+| FatFs (`components/fatfs`) | BSD-style (ChaN license) | `libfatfs.a(ff.c.obj, ffunicode.c.obj, ffsystem.c.obj, diskio.c.obj, diskio_sdmmc.c.obj, vfs_fat.c.obj, vfs_fat_sdmmc.c.obj)` -- backs the SD card FAT filesystem (`storage.sd`); Copyright (C) 2022, ChaN, all right reserved (full text below) |
+| Xtensa/Cadence HAL (`components/xtensa`) | MIT | `libxt_hal.a(windowspill_asm.o, int_asm--set_intclear.o, interrupts--intlevel.o, state_asm--save_extra_nw.o, state_asm--restore_extra_nw.o)` -- the vendor-supplied low-level Xtensa HAL (register window spill/fill, interrupt level primitives), distinct from ESP-IDF's own Apache-2.0 glue code in the same component (`libxtensa.a`); Copyright (C) 2003, 2006, 2010 Tensilica Inc, per `check_copyright_config.yaml`'s `xtensa` section and `docs/en/COPYRIGHT.rst` lines 26/88 (full text below) |
+| Mbed TLS / TF-PSA-Crypto (`components/mbedtls`) | Apache License 2.0 | By the "Archive member included" count, `libtfpsacrypto.a` alone contributes 137 archive members (aes/gcm/rsa/ecdsa/psa_crypto/...) and `libmbedtls.a`'s own `esp-idf/mbedtls/mbedtls/library/libmbedtls.a(esp_psa_crypto_init.c.obj)` and `esp-idf/mbedtls/libmbedtls.a(esp_mem.c.obj)` are also pulled in. Most of that is discarded by the linker's `--gc-sections`; what actually survives into `wisp.bin` is a small amount of PSA core code (key slot management, the init/free paths, and the ESP RSA-DS opaque-key driver) from `psa_crypto.c`, `psa_crypto_slot_management.c`, and `psa_crypto_driver_esp_rsa_ds.c`, plus the allocator/mutex shim in `esp_mem.c.obj`/`esp_psa_crypto_init.c.obj` -- sub-project 1 has no networking/TLS usage yet, so none of this is exercised at runtime; Copyright (C) 2006-2018 ARM Limited |
 
 ESP-IDF also bundles lwIP, wpa_supplicant, and various other
 networking/Bluetooth components under their own licenses, but none of
-their object files appear in this build's link -- sub-project 1 has no
-networking yet (see `AGENTS.md`'s roadmap) -- so they are not listed
-here; this note should be revisited once a later sub-project adds
-networking and actually links one of them in.
+their object files appear in this build's "Archive member included"
+section -- sub-project 1 has no networking yet (see `AGENTS.md`'s
+roadmap) -- so they are not listed here; this note should be revisited
+once a later sub-project adds networking and actually links one of them
+in.
+
+Copied verbatim from `components/heap/tlsf/include/tlsf.h`'s SPDX header
+(`~/esp/esp-idf-v6.0.3`; Copyright (C) 2006-2016 Matthew Conte,
+SPDX-License-Identifier: BSD-3-Clause) plus the standard BSD-3-Clause
+template text -- ESP-IDF does not vendor a separate `LICENSE` file for
+this component, only the SPDX header and the narrative entry in
+`docs/en/COPYRIGHT.rst`:
+
+```
+Copyright (c) 2006-2016, Matthew Conte
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+    * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+    * Neither the name of the copyright holder nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+Copied verbatim from `components/fatfs/src/ff.h`'s header comment
+(`~/esp/esp-idf-v6.0.3`; same text ESP-IDF's own
+`docs/en/COPYRIGHT.rst` line 46 points at):
+
+```
+Copyright (C) 2022, ChaN, all right reserved.
+
+FatFs module is an open source software. Redistribution and use of FatFs in
+source and binary forms, with or without modification, are permitted provided
+that the following condition is met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this condition and the following disclaimer.
+
+This software is provided by the copyright holder and contributors "AS IS"
+and any warranties related to this software are DISCLAIMED.
+The copyright owner or contributors be NOT LIABLE for any damages caused
+by use of this software.
+```
+
+Copied verbatim from `docs/en/COPYRIGHT.rst`'s "Xtensa libhal MIT
+License" section (`~/esp/esp-idf-v6.0.3`):
+
+```
+Copyright (C) 2003, 2006, 2010 Tensilica Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
 
 ## ESP-IDF components used by the firmware
 
