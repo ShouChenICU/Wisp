@@ -121,20 +121,29 @@ constexpr gpio_num_t kPinBtnPower = GPIO_NUM_16;
 constexpr gpio_num_t kPinBtnVolUp = GPIO_NUM_18;
 constexpr gpio_num_t kPinBtnVolDown = GPIO_NUM_0;
 
-// Task 18b review round 1 (I4): outputs that must keep driving their pin
-// through every automatic light sleep, not just the gpio_config() these
-// are set up with once at boot -- see hold_outputs_during_light_sleep()'s
-// comment below for why this is needed at all. Pin numbers match
-// board_devices.yaml's lcd_panel_config.reset_gpio_num (display reset),
-// setup_device.c's touch_cfg.rst_gpio_num (touch reset), and
-// board_peripherals.yaml's gpio_pa_control.config.pin (speaker PA
-// enable) -- duplicated here as plain numbers (rather than shared
-// constants with those YAML/C files) because bmgr's generated code and
-// this hand-written file have no shared header to put one in; keep
-// these three in sync if any of those three pins ever changes.
+// Task 18b review round 1 (I4) / re-review 1 (N7): outputs that must
+// keep driving their pin through every automatic light sleep, not just
+// the gpio_config() these are set up with once at boot -- see
+// hold_outputs_during_light_sleep()'s comment below for why this is
+// needed at all. Pin numbers match board_devices.yaml's
+// lcd_panel_config.reset_gpio_num (display reset), setup_device.c's
+// touch_cfg.rst_gpio_num (touch reset), board_peripherals.yaml's
+// gpio_pa_control.config.pin (speaker PA enable), and
+// board_devices.yaml's io_spi_config.cs_gpio_num (panel chip-select) --
+// duplicated here as plain numbers (rather than shared constants with
+// those YAML/C files) because bmgr's generated code and this
+// hand-written file have no shared header to put one in; keep these
+// four in sync if any of those four pins ever changes.
 constexpr gpio_num_t kPinDisplayReset = GPIO_NUM_39;
 constexpr gpio_num_t kPinTouchReset = GPIO_NUM_40;
 constexpr gpio_num_t kPinAudioPaEnable = GPIO_NUM_46;
+// N7: with EspDisplayConfig::PanelSleep::DcsSleep, the panel stays
+// powered and keeps its register/GRAM state through standby -- CS
+// floating (rather than held at its idle-high level) while SPI's SCLK
+// also floats risks noise on SCLK being latched as spurious command
+// bits if CS happens to glitch low. Low risk (this board's panel is
+// otherwise untouched during light sleep), but cheap to close.
+constexpr gpio_num_t kPinDisplayCs = GPIO_NUM_12;
 
 std::string err_name(esp_err_t err) {
     if (err >= ESP_BOARD_ERR_BASE) {
@@ -376,11 +385,15 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
 //   - the touch controller's RST: same risk, for CST9217;
 //   - the speaker PA's enable line: floating (rather than held low, its
 //     configured default) risks an audible pop or needless leakage
-//     current through the amplifier while in standby.
+//     current through the amplifier while in standby;
+//   - the display panel's CS (re-review 1, N7): see kPinDisplayCs's
+//     comment -- low risk, but cheap to hold at its idle-high level
+//     alongside the other three.
 // See docs/hardware/waveshare_amoled_216.md's "待机与省电" section for
 // the on-device verification step this motivates.
 void hold_outputs_during_light_sleep() {
-    constexpr gpio_num_t kPins[] = {kPinDisplayReset, kPinTouchReset, kPinAudioPaEnable};
+    constexpr gpio_num_t kPins[] = {kPinDisplayReset, kPinTouchReset, kPinAudioPaEnable,
+                                    kPinDisplayCs};
     for (gpio_num_t pin : kPins) {
         esp_err_t err = gpio_sleep_sel_dis(pin);
         if (err != ESP_OK) {
