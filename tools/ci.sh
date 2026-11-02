@@ -44,6 +44,14 @@ mapfile -t SOURCE_FILES < <(find . \
 echo "==> clang-format --dry-run --Werror (${#SOURCE_FILES[@]} files)"
 clang-format --dry-run --Werror "${SOURCE_FILES[@]}"
 
+# sdkconfig.defaults is a Kconfig fragment, not C/C++: kconfgen silently
+# ignores malformed lines (e.g. "CONFIG_X = y"), dropping the setting.
+echo "==> firmware/sdkconfig.defaults line format"
+if grep -vnE '^(#.*|CONFIG_[A-Z0-9_]+=.*)?$' firmware/sdkconfig.defaults; then
+    echo "error: malformed lines in firmware/sdkconfig.defaults (see above)" >&2
+    exit 1
+fi
+
 echo "==> tools/check_layering.py"
 python3 tools/check_layering.py
 
