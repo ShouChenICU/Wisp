@@ -331,6 +331,72 @@ TEST(PowerMonitor, ThresholdCacheIsNotRereadOnTheVeryNextSample) {
     EXPECT_EQ(f.event_count(), 0u);  // still the cached 15 -- no event.
 }
 
+TEST(PowerMonitor, ThresholdCacheIsRereadAfterRefreshWindow) {
+    // The flip side of ThresholdCacheIsNotRereadOnTheVeryNextSample
+    // above: the cache is re-read once every kThresholdRefreshSamples
+    // (20, power_monitor.cpp) samples, not just once at construction and
+    // then never again. Deleting the periodic-refresh half of that
+    // logic (while keeping the "not on the very next sample" half) would
+    // pass every other test in this file but fail this one.
+    Fixture f;
+    f.power->set_status(PowerStatus{20, 0, false, false});
+
+    // Call #1 is the construction-time forced refresh (reads the
+    // default 15); 20 > 15, so no event yet.
+    f.mon->sample();
+    f.wait_idle();
+    ASSERT_EQ(f.event_count(), 0u);
+
+    Settings power_settings(*f.backend, "power");
+    power_settings.set("low_batt_pct", int64_t{50});  // would fire if re-read now.
+
+    // 19 more calls (#2-#20) stay on the stale cached 15: still no
+    // event, even though Settings now says 50.
+    for (int i = 0; i < 19; ++i) {
+        f.mon->sample();
+    }
+    f.wait_idle();
+    EXPECT_EQ(f.event_count(), 0u);
+
+    // Call #21 crosses the refresh window and re-reads "low_batt_pct":
+    // now 50, so 20 <= 50 fires.
+    f.mon->sample();
+    f.wait_idle();
+
+    ASSERT_EQ(f.event_count(), 1u);
+    EXPECT_EQ(f.event_at(0).topic, "power.battery.low");
+}
+
+TEST(PowerMonitor, ThresholdCacheIsRereadAfterStart) {
+    // start() forces the very next sample() to re-read "low_batt_pct",
+    // same as the construction-time forced refresh -- proven the same
+    // way as the refresh-window test above: a Settings change that only
+    // takes effect if actually re-read, shown to take effect right after
+    // start() without waiting out the refresh window. This test runs
+    // fast enough (no waiting) that start()'s real ~1s os::Timer never
+    // gets a chance to fire sample() on its own before the assertions
+    // below run, so it can't interfere with the manual sample() calls.
+    Fixture f;
+    f.power->set_status(PowerStatus{20, 0, false, false});
+    f.mon->sample();  // construction-time forced refresh (default 15); 20 > 15, no event.
+    f.wait_idle();
+    ASSERT_EQ(f.event_count(), 0u);
+
+    Settings power_settings(*f.backend, "power");
+    power_settings.set("low_batt_pct", int64_t{50});
+
+    f.mon->sample();  // no start() yet -- still the stale cached 15: no event.
+    f.wait_idle();
+    ASSERT_EQ(f.event_count(), 0u);
+
+    f.mon->start();   // forces the next sample() to re-read.
+    f.mon->sample();  // picks up the new 50: 20 <= 50 fires.
+    f.wait_idle();
+
+    ASSERT_EQ(f.event_count(), 1u);
+    EXPECT_EQ(f.event_at(0).topic, "power.battery.low");
+}
+
 TEST(PowerMonitor, SampleIntervalSwitchesBetweenActiveAndStandby) {
     Fixture f;
     EXPECT_EQ(f.mon->sample_interval_ms(), 1000u);
