@@ -75,8 +75,13 @@ private:
 // bus is started and subscribed to every topic, collecting them (in
 // delivery order) into `topics`. `topics` is only written by the bus's
 // dispatcher thread and is read by tests only after bus.wait_idle()
-// confirms that thread is idle, so no extra locking is needed here -- same
-// pattern as button_service_test.cpp's Fixture.
+// confirms that thread is idle, so no extra locking is needed here.
+//
+// The explicit destructor stops the bus's dispatcher thread before
+// `mutex`/`topics` are torn down. Members destruct in reverse declaration
+// order, so without this, `topics`/`mutex` (declared last) would be
+// destroyed while the dispatcher could still be delivering an event into
+// the subscriber callback above -- a use-after-destroy race.
 struct Fixture {
     explicit Fixture(bool sd_online, StorageConfig config = {})
         : in(wisp::test::temp_dir().string()), sd(wisp::test::temp_dir().string()) {
@@ -91,6 +96,11 @@ struct Fixture {
             topics.push_back(e.topic);
         });
         mgr = std::make_unique<StorageManager>(registry, bus, config);
+    }
+
+    ~Fixture() {
+        mgr.reset();
+        bus.stop();
     }
 
     std::vector<std::string> collected_topics() {

@@ -222,33 +222,43 @@ TEST(UiRuntime, SetPausedStopsRenderingButKeepsRunningPostedWork) {
     size_t flushes_before_resume = disp->flush_count();
     ui.set_paused(false);
     EXPECT_TRUE(wait_until([&] { return !ui.paused(); }, 2000));
-    ASSERT_TRUE(wait_until([&] { return disp->flush_count() > flushes_before_resume; }, 2000));
 
     // The resume redraw must cover the *whole* screen (lv_obj_invalidate
     // (lv_screen_active()) -- see UiRuntime::set_paused()'s doc comment
     // -- not just whatever had been invalidated before pausing), proving
-    // it really is set_paused(false)'s own forced full redraw. LVGL may
-    // split it across more than one flush() call, so this checks the
-    // union of every flush area since resuming rather than assuming a
-    // single call covers it.
-    auto areas = disp->areas();
-    ASSERT_GE(areas.size(), flushes_before_resume + 1);
+    // it really is set_paused(false)'s own forced full redraw. LVGL
+    // splits a full-screen redraw across multiple flush() calls (one per
+    // buffer-height row stripe), so a single flush_count() increment is
+    // not enough to know the whole frame has landed: wait for the union
+    // of every flush area since resuming to cover the full screen before
+    // reading it for the exact assertion below, rather than reading
+    // areas() as soon as the first stripe arrives.
     constexpr int kDisplayWidth = 480;
     constexpr int kDisplayHeight = 480;
     int min_x1 = kDisplayWidth;
     int min_y1 = kDisplayHeight;
     int max_x2 = -1;
     int max_y2 = -1;
-    for (size_t i = flushes_before_resume; i < areas.size(); ++i) {
-        min_x1 = std::min(min_x1, static_cast<int>(areas[i].x1));
-        min_y1 = std::min(min_y1, static_cast<int>(areas[i].y1));
-        max_x2 = std::max(max_x2, static_cast<int>(areas[i].x2));
-        max_y2 = std::max(max_y2, static_cast<int>(areas[i].y2));
-    }
+    auto union_covers_screen = [&] {
+        auto areas = disp->areas();
+        min_x1 = kDisplayWidth;
+        min_y1 = kDisplayHeight;
+        max_x2 = -1;
+        max_y2 = -1;
+        for (size_t i = flushes_before_resume; i < areas.size(); ++i) {
+            min_x1 = std::min(min_x1, static_cast<int>(areas[i].x1));
+            min_y1 = std::min(min_y1, static_cast<int>(areas[i].y1));
+            max_x2 = std::max(max_x2, static_cast<int>(areas[i].x2));
+            max_y2 = std::max(max_y2, static_cast<int>(areas[i].y2));
+        }
+        return min_x1 == 0 && min_y1 == 0 && max_x2 == kDisplayWidth - 1 &&
+               max_y2 == kDisplayHeight - 1;
+    };
+    ASSERT_TRUE(wait_until(union_covers_screen, 2000));
     EXPECT_EQ(min_x1, 0);
     EXPECT_EQ(min_y1, 0);
-    EXPECT_EQ(max_x2, 479);
-    EXPECT_EQ(max_y2, 479);
+    EXPECT_EQ(max_x2, kDisplayWidth - 1);
+    EXPECT_EQ(max_y2, kDisplayHeight - 1);
 
     ui.stop();
 }

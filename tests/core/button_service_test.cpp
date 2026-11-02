@@ -25,12 +25,23 @@ namespace {
 // `topics`. `topics` is only written by the bus's dispatcher thread and
 // is read by tests only after bus.wait_idle() confirms that thread is
 // idle, so no extra locking is needed here.
+//
+// The explicit destructor stops the service and the bus's dispatcher
+// thread before `topics` is torn down. Members destruct in reverse
+// declaration order, so without this, `topics` (declared last) would be
+// destroyed while the dispatcher could still be delivering an event into
+// the subscriber callback above -- a use-after-destroy race.
 struct Fixture {
     Fixture() {
         btn = std::make_shared<FakeButton>("button.power");
         registry.add(btn);
         bus.start();
         bus.subscribe("", [this](const Event& e) { topics.push_back(e.topic); });
+    }
+
+    ~Fixture() {
+        svc.stop();
+        bus.stop();
     }
 
     std::shared_ptr<FakeButton> add_button(const std::string& id) {
