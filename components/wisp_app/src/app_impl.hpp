@@ -43,13 +43,15 @@ struct App::Impl {
 
     // Task 19a: constructed just before power_manager (which holds a
     // non-owning pointer into it -- see PowerManager::enter_standby()/
-    // exit_standby()'s PowerMonitor::set_standby() hook), right alongside
-    // the "power.main" device lookup App::start() already does for
-    // power_manager's own `imu` parameter. Owns its own internal sample
-    // Timer (see power_monitor.hpp), so -- unlike storage_timer below --
-    // there is no separate App-owned Timer object for it. Torn down in
-    // App::stop() right after power_manager (which points into it), same
-    // relative order as storage/storage_timer vs. power_manager.
+    // exit_standby()'s PowerMonitor::set_standby() hook), via its own new
+    // "power.main" device lookup in App::start() -- separate from, and
+    // parallel to, the existing "imu.main" lookup that App::start()
+    // already did for power_manager's own `imu` parameter. Owns its own
+    // internal sample Timer (see power_monitor.hpp), so -- unlike
+    // storage_timer below -- there is no separate App-owned Timer object
+    // for it. Torn down in App::stop() right after power_manager (which
+    // points into it), same relative order as storage/storage_timer vs.
+    // power_manager.
     std::unique_ptr<core::PowerMonitor> power_monitor;
 
     // Task 18b: constructed once `ui` is known either way (started, or
