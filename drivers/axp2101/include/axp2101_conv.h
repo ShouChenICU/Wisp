@@ -112,6 +112,20 @@ static inline uint8_t axp2101_iprechg_code(uint16_t ma) {
     return (uint8_t)(code > 15 ? 15 : code);
 }
 
+// Decides axp2101_read_status()'s final axp2101_status_t::battery_present:
+// `preliminary_present` is whatever status1's battery bit or a nonzero
+// battery-voltage ADC reading already indicated, and `pct_read_ok` is
+// whether the REG_BAT_PCT (0xA4) read that follows actually succeeded. A
+// failed PCT read must be reported the same way as "no battery wired" --
+// wisp::port::esp::EspPower::status() maps !battery_present to
+// PowerStatus::battery_percent == -1 (unknown) -- rather than leaving
+// battery_percent at 0, which looks like a real empty battery and would
+// spuriously fire wisp::core::PowerMonitor's power.battery.low.
+static inline bool axp2101_battery_present_after_pct_read(bool preliminary_present,
+                                                          bool pct_read_ok) {
+    return preliminary_present && pct_read_ok;
+}
+
 #ifdef __cplusplus
 }
 #endif

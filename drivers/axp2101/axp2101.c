@@ -252,13 +252,21 @@ esp_err_t axp2101_read_status(axp2101_handle_t handle, axp2101_status_t* out) {
      * one): battery_percent/battery_mv stay 0 and are not meaningful --
      * EspPower::status() maps this to PowerStatus::battery_percent == -1
      * (wisp/hal/power.hpp's "unknown" contract). */
-    out->battery_present = battery_connected || out->battery_mv != 0;
-    if (!out->battery_present) {
+    bool preliminary_present = battery_connected || out->battery_mv != 0;
+    if (!preliminary_present) {
+        out->battery_present = false;
         return ESP_OK;
     }
 
     uint8_t pct_reg = 0;
-    if (axp_read_reg(handle, REG_BAT_PCT, &pct_reg, 1) == ESP_OK) {
+    esp_err_t pct_ret = axp_read_reg(handle, REG_BAT_PCT, &pct_reg, 1);
+    /* A failed PCT read must not be reported as battery_percent == 0 (a
+     * real empty battery looks the same) -- downgrade to "not present"
+     * instead, same as the no-battery case above (axp2101_conv.h's
+     * axp2101_battery_present_after_pct_read()). */
+    out->battery_present =
+        axp2101_battery_present_after_pct_read(preliminary_present, pct_ret == ESP_OK);
+    if (out->battery_present) {
         out->battery_percent = axp2101_normalize_battery_pct(pct_reg);
     }
     return ESP_OK;

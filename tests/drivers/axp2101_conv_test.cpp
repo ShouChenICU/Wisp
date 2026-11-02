@@ -81,3 +81,31 @@ TEST(Axp2101Conv, IprechgCodeStepsBy25ma) {
 }
 
 TEST(Axp2101Conv, IprechgCodeClampsAboveMax) { EXPECT_EQ(axp2101_iprechg_code(1000), 15); }
+
+// A failed REG_BAT_PCT (0xA4) read must never be reported as a present
+// battery with battery_percent == 0 -- that looks exactly like a real
+// empty battery and would spuriously fire wisp::core::PowerMonitor's
+// power.battery.low. Downgrading axp2101_status_t::battery_present to
+// false on that failure routes it through the same "no battery" path
+// wisp::port::esp::EspPower::status() already maps to
+// PowerStatus::battery_percent == -1 (unknown), rather than leaving
+// battery_percent at whatever axp2101_read_status() memset it to (0).
+TEST(Axp2101Conv, BatteryPresentAfterPctReadIsTrueOnlyWhenBothHold) {
+    EXPECT_TRUE(axp2101_battery_present_after_pct_read(/*preliminary_present=*/true,
+                                                       /*pct_read_ok=*/true));
+}
+
+TEST(Axp2101Conv, BatteryPresentAfterPctReadIsFalseWhenPctReadFails) {
+    EXPECT_FALSE(axp2101_battery_present_after_pct_read(/*preliminary_present=*/true,
+                                                        /*pct_read_ok=*/false));
+}
+
+TEST(Axp2101Conv, BatteryPresentAfterPctReadStaysFalseWhenNoBatteryWasWired) {
+    // Whatever pct_read_ok is -- axp2101_read_status() never actually
+    // attempts the PCT read in this case (returns early), but the
+    // function's own logic should still be false || anything == false.
+    EXPECT_FALSE(axp2101_battery_present_after_pct_read(/*preliminary_present=*/false,
+                                                        /*pct_read_ok=*/true));
+    EXPECT_FALSE(axp2101_battery_present_after_pct_read(/*preliminary_present=*/false,
+                                                        /*pct_read_ok=*/false));
+}

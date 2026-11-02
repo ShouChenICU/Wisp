@@ -60,7 +60,10 @@ esp_err_t axp2101_init(i2c_master_bus_handle_t bus, axp2101_handle_t* out);
 // `out->battery_present` distinguishes "no battery wired to this PMU"
 // (battery_percent/battery_mv are then 0 and not meaningful) from an
 // actual reading; see EspPower::status() (wisp/hal/power.hpp's
-// PowerStatus::battery_percent contract: -1 when unknown/no battery).
+// PowerStatus::battery_percent contract: -1 when unknown/no battery). A
+// failed REG_BAT_PCT read is also reported as !battery_present (not as
+// battery_percent == 0) -- see axp2101_conv.h's
+// axp2101_battery_present_after_pct_read().
 esp_err_t axp2101_read_status(axp2101_handle_t handle, axp2101_status_t* out);
 
 // ESP_OK if axp2101_init()'s charging-parameter configuration (the
