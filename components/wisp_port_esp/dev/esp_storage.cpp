@@ -40,12 +40,24 @@ constexpr const char* kInternalPartitionLabel = "storage";
 //   - "DEV_FS_FAT_SUB_SDMMC": esp_board_manager's fs_fat/sdmmc device
 //     (managed_components/espressif__esp_board_manager/devices/dev_fs_fat/
 //     dev_fs_fat_sub_sdmmc.c)
-//   - "sdmmc_cmd", "sdmmc_init": components/sdmmc/{sdmmc_cmd,sdmmc_init}.c
+//   - "BOARD_DEVICE": esp_board_manager_init_device_by_name()'s own
+//     "Failed to init device: %s" (src/esp_board_device.c) -- fired on
+//     every failed try_mount() alongside the sub-device's own log line,
+//     one layer up (task-18b-brief.md, Task 18 review round 2).
+//   - "DEV_FS_FAT": the fs_fat device type's own "Failed to initialize
+//     sub device: %s" (devices/dev_fs_fat/dev_fs_fat.c), one layer below
+//     DEV_FS_FAT_SUB_SDMMC.
+//   - "sdmmc_cmd", "sdmmc_init", "sdmmc_common", "sdmmc_sd": components/
+//     sdmmc/{sdmmc_cmd,sdmmc_init,sdmmc_common,sdmmc_sd}.c -- the ACMD41/
+//     CMD8 probes that come back empty when no card is present log
+//     ESP_LOGE from sdmmc_common.c and sdmmc_sd.c, not just sdmmc_cmd.c/
+//     sdmmc_init.c.
 //   - "SD_TRANS", "SD_HOST": components/esp_driver_sdmmc/src/
 //     {sd_trans_sdmmc,sd_host_sdmmc}.c
 //   - "vfs_fat_sdmmc": components/fatfs/vfs/vfs_fat_sdmmc.c
 constexpr const char* kChattyMountTags[] = {
-    "DEV_FS_FAT_SUB_SDMMC", "sdmmc_cmd", "sdmmc_init", "SD_TRANS", "SD_HOST", "vfs_fat_sdmmc",
+    "DEV_FS_FAT_SUB_SDMMC", "BOARD_DEVICE", "DEV_FS_FAT", "sdmmc_cmd", "sdmmc_init",
+    "sdmmc_common",         "sdmmc_sd",     "SD_TRANS",   "SD_HOST",   "vfs_fat_sdmmc",
 };
 constexpr size_t kChattyMountTagCount = sizeof(kChattyMountTags) / sizeof(kChattyMountTags[0]);
 
@@ -153,6 +165,14 @@ EspSdStorage::EspSdStorage(std::string mount_point, std::string bmgr_device_name
     config.priority = 2;  // low: this never blocks anything else on it
     EspSdStorage* self = this;
     worker_ = wisp::os::Task::spawn(config, [self] { self->worker_main(); });
+    if (!worker_) {
+        // Task 18 review round 2: this used to fail silently, leaving
+        // online()/capacity() permanently reporting "no card" (retry_
+        // stuck at Unmounted, nothing ever calls try_mount() again) with
+        // no indication why -- hot-plug (and the very first mount
+        // attempt) would just never happen.
+        WLOG_E(kTag, "storage.sd: failed to spawn worker task; hot-plug detection disabled");
+    }
 }
 
 EspSdStorage::~EspSdStorage() {
