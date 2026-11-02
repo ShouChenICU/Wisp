@@ -459,6 +459,16 @@ Result<void> UiRuntime::start() {
     task_config.priority = impl_->config.task_priority;
     Impl* impl = impl_.get();
     impl_->task = os::Task::spawn(task_config, [impl] { impl->ui_main(); });
+    if (impl_->task == nullptr) {
+        // Must not fall through to installing the owner-thread check or
+        // giving ui_ready below: with no task, active_task stays null,
+        // on_ui_thread() would then permanently return false, and every
+        // subsequent Display call (from any thread, including a headless
+        // fallback's own cleanup) would trip assert_owner_thread() (see
+        // display.hpp) instead of this start() call simply failing.
+        impl_->running.store(false, std::memory_order_release);
+        return fail_after_lv_init(ErrorCode::NoMemory, "failed to spawn UI task");
+    }
     impl_->active_task.store(impl_->task.get(), std::memory_order_release);
 
     // spec 5.3: now that the UI task exists, every further Display call
