@@ -15,8 +15,7 @@ docs/architecture.md):
   - Each portable layer must only #include headers from its own layer
     or a strictly lower one in AGENTS.md's order (wisp_base < wisp_os
     < wisp_hal < wisp_core < wisp_ui < wisp_app) -- no reverse
-    dependencies "upward". This used to be checked only for wisp_os/
-    wisp_hal against wisp_core/ui/app; it now applies to every layer.
+    dependencies "upward", checked for every layer against every other.
   - Each components/wisp_{base..app}/CMakeLists.txt's wisp_component()
     call may only declare the two external dependencies the portable
     stack actually has (ArduinoJson for wisp_base, LVGL for wisp_ui) in

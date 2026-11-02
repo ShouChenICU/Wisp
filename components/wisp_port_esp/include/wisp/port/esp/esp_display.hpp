@@ -122,7 +122,8 @@ public:
     // left swapped).
     Result<void> flush(const wisp::hal::Area& area, const uint16_t* rgb565) override;
     // Writes the DCS "write display brightness" register (0x51), and
-    // remembers `level` (see set_power()'s I3 note below).
+    // remembers `level` (see set_power()'s doc comment below on why a
+    // successful set_power(true) re-sends it).
     Result<void> set_brightness(uint8_t level) override;
     // Panel sleep (spec 6.7), not just display-off. Dispatches to one of
     // two implementations per config_.panel_sleep (see
@@ -183,22 +184,23 @@ private:
     std::optional<uint8_t> last_brightness_;
     // DcsSleep only: when the last SLPIN was sent (os::now_ms()), used to
     // enforce sleep_out_settle_ms as the minimum spacing before the next
-    // SLPOUT (see EspDisplayConfig::PanelSleep's doc
-    // comment). Unset once that minimum has clearly already elapsed (so
-    // repeated set_power(true) calls long after sleeping don't all pay a
+    // SLPOUT (see EspDisplayConfig::PanelSleep's doc comment). Unset
+    // once that minimum has clearly already elapsed (so repeated
+    // set_power(true) calls long after sleeping don't all pay a
     // sleep_out_settle_ms-sized check for nothing).
     //
-    // N6: this used to instead record the last SLPOUT time and check it
-    // on the *next* SLPIN -- but set_power_dcs_locked(true) itself
-    // always already waits out sleep_out_settle_ms (between SLPOUT and
-    // DISPON) before returning, so by the time another SLPIN could ever
-    // run, that minimum had necessarily already elapsed: the check could
-    // never actually trip. The real MIPI DCS requirement this needs to
-    // enforce is the other direction -- at least sleep_out_settle_ms
-    // between a SLPIN and the *next* SLPOUT -- which nothing previously
-    // guarded at all (a user pressing the power key to wake the panel
-    // right after pressing it to sleep -- e.g. two presses within the
-    // ~50ms standby button-poll interval -- could send SLPOUT less than
+    // Recording the last SLPIN time (rather than the last SLPOUT time,
+    // checked on the next SLPIN) is deliberate: set_power_dcs_locked(true)
+    // itself always already waits out sleep_out_settle_ms (between
+    // SLPOUT and DISPON) before returning, so by the time another SLPIN
+    // could ever run, that minimum had necessarily already elapsed -- a
+    // check on the next SLPIN could never actually trip. The real MIPI
+    // DCS requirement this needs to enforce is the other direction --
+    // at least sleep_out_settle_ms between a SLPIN and the *next*
+    // SLPOUT -- which nothing previously guarded at all (a user
+    // pressing the power key to wake the panel right after pressing it
+    // to sleep -- e.g. two presses within the ~50ms standby
+    // button-poll interval -- could send SLPOUT less than
     // sleep_out_settle_ms after SLPIN).
     std::optional<uint64_t> last_sleep_in_ms_;
 };

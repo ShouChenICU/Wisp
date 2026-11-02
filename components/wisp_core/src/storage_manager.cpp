@@ -23,11 +23,11 @@ constexpr const char* kSdId = "storage.sd";
 // Lexically normalizes `path`: collapses repeated '/', drops '.'
 // components, and drops a trailing '/' (so the result never has one).
 // Applied both to every caller-supplied path in write_atomic()/
-// read_file(), and to both devices' mount_point() values in init() (fix
-// round 2, item 3: not just a trailing-slash strip, in case a driver's
-// mount point itself has a doubled slash or a '.' component) -- so
-// int_mount_/sd_mount_ and every normalized caller path compose and
-// prefix-compare consistently. A ".." component is never resolved -- it's
+// read_file(), and to both devices' mount_point() values in init(): not
+// just a trailing-slash strip, since a driver's mount point itself could
+// have a doubled slash or a '.' component -- so int_mount_/sd_mount_
+// and every normalized caller path compose and prefix-compare
+// consistently. A ".." component is never resolved -- it's
 // rejected outright with ErrorCode::InvalidArgument, since resolving one
 // correctly would require knowing the filesystem's current state (e.g.
 // what a symlink points at), which this lexical pass deliberately doesn't

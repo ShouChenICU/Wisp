@@ -73,11 +73,13 @@ TEST(PowerKey, LongWhileScreenOffWithConfirmAlreadyOpenJustWakes) {
     EXPECT_TRUE(c.confirming());
 }
 
-// The scenario C1's fix makes possible to express at all: the caller's
-// live screen state can differ from whatever this class would have
-// tracked internally (e.g. woken by a different button, or by an
-// automatic idle-timeout standby) -- on_short()/on_long() must always
-// follow the state they're handed, not any state of their own.
+// PowerKeyController takes the caller's live screen state as a
+// parameter on every call rather than tracking its own copy, precisely
+// so this scenario is expressible: the caller's live screen state can
+// differ from whatever this class would have tracked internally (e.g.
+// woken by a different button, or by an automatic idle-timeout
+// standby) -- on_short()/on_long() must always follow the state they're
+// handed, not any state of their own.
 TEST(PowerKey, FollowsWhateverScreenOnStateItIsHandedEachCall) {
     wisp::app::PowerKeyController c;
     EXPECT_EQ(c.on_short(/*screen_on=*/false), A::ScreenOn);

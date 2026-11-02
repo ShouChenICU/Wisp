@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Self-test for tools/check_layering.py (final review M1): builds small
-scratch component trees under a tempdir and asserts the checker both
-flags each kind of violation it claims to catch and stays silent on
-code that doesn't have one, so a future edit to the checker that
-silently drops a check (e.g. the M1 CMake-whitelist regex matching too
-loosely) fails loudly here instead of only showing up as a missed
-violation much later in some real component.
+"""Self-test for tools/check_layering.py: builds small scratch component
+trees under a tempdir and asserts the checker both flags each kind of
+violation it claims to catch and stays silent on code that doesn't have
+one, so a future edit to the checker that silently drops a check (e.g.
+its CMake-whitelist regex matching too loosely) fails loudly here
+instead of only showing up as a missed violation much later in some
+real component.
 
 Run directly: python3 tools/check_layering_test.py
 """
@@ -93,10 +93,10 @@ class CheckLayeringTest(unittest.TestCase):
                 (self.root / "components/wisp_hal/include/wisp/hal/probe.hpp").unlink()
 
     def test_reverse_dependency_is_flagged_for_every_layer_not_just_os_and_hal(self):
-        # Before M1, this check only ran for wisp_os/wisp_hal; a
-        # wisp_core -> wisp/ui reverse dependency (the kind C1-era bugs
-        # in self_check_screen.cpp's own layering could have
-        # introduced) used to pass silently.
+        # AGENTS.md section 3's layering order applies to every portable
+        # layer, not just wisp_os/wisp_hal -- a wisp_core -> wisp/ui
+        # reverse dependency must be flagged exactly like one from
+        # wisp_os or wisp_hal would be.
         write(
             self.root,
             "components/wisp_core/include/wisp/core/z.hpp",

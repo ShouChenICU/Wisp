@@ -33,11 +33,10 @@ struct DeviceReport {
 // set_boot_ms(), set_note()) on the calling thread after the self-check
 // screen has gone up and started posting periodic header refreshes
 // (SelfCheck::refresh_header() -> header_text() -> to_value()) onto the
-// UI thread, with no happens-before edge between the two -- a TSan
-// finding during sanitizer verification. Every method below takes
-// mutex_, including entries(), which therefore returns a copy rather
-// than a reference (a reference would outlive the lock that made it
-// safe to read).
+// UI thread, with no happens-before edge between the two. Every method
+// below takes mutex_, including entries(), which therefore returns a
+// copy rather than a reference (a reference would outlive the lock
+// that made it safe to read).
 class BootReport {
 public:
     BootReport() = default;

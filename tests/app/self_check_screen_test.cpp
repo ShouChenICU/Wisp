@@ -564,11 +564,11 @@ TEST(SelfCheckScreen, EmitsWispPerfLine) {
     h.app.stop();
 }
 
-// M8 (final review): the device list's own "storage.sd" row used to be
-// rendered once from BootReport at boot and never touched again, so it
-// kept saying "缺失" even after a card was inserted later and the
-// dedicated storage section below it started reporting it online --
-// two sections of the same screen visibly disagreeing. It must track
+// The device list's own "storage.sd" row is rendered from BootReport,
+// which is a boot-time snapshot: without a live update, it would keep
+// saying "缺失" even after a card was inserted later and the dedicated
+// storage section below it started reporting it online -- two sections
+// of the same screen visibly disagreeing. It must track
 // StorageManager::status() live instead.
 TEST(SelfCheckScreen, DeviceListSdRowTracksLiveStorageStatus) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,

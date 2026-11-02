@@ -151,10 +151,10 @@ Result<void> App::start() {
     // self-check screen going up). The screen's header already rendered
     // once with whatever set_boot_ms() had defaulted to (0) during
     // build(), so refresh_self_check_header() below re-renders it with
-    // this now-final value (review round N1: an earlier version of this
-    // code set boot_ms right before Step 4 specifically so the header's
-    // *first* render would show a non-zero value, but that under-counted
-    // actual boot time by excluding the screen's own build time).
+    // this now-final value. Setting boot_ms any earlier (e.g. right
+    // before Step 4, so the header's *first* render already showed a
+    // non-zero value) would under-count actual boot time by excluding
+    // the screen's own build time.
     impl_->report.set_boot_ms(os::now_ms() - boot_t0);
     if (impl_->ui) {
         refresh_self_check_header(*impl_->ui, impl_->self_check);

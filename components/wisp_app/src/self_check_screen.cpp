@@ -266,10 +266,10 @@ SelfCheck::SelfCheck(App& app)
       ui_settings_(*app.platform().settings, "ui") {}
 
 SelfCheck::~SelfCheck() {
-    // N3: unsubscribe from "power.state" before anything else, so
-    // standby_ can't change (and nothing else calls standby_wake_.give())
-    // from this point on -- EventBus::unsubscribe()'s own contract
-    // guarantees the handler never runs again once this returns.
+    // Unsubscribe from "power.state" before anything else, so standby_
+    // can't change (and nothing else calls standby_wake_.give()) from
+    // this point on -- EventBus::unsubscribe()'s own contract guarantees
+    // the handler never runs again once this returns.
     if (power_sub_ != 0) {
         app_.bus().unsubscribe(power_sub_);
         power_sub_ = 0;

@@ -251,8 +251,8 @@ void render_frame(wisp::port::sim::SimDisplay& display, const std::vector<uint8_
 // SimDisplay's framebuffer at ~60 Hz, and returns once the window is
 // closed, exit_after_ms elapses, or should_exit becomes true. Returns
 // false (having already reported the failure to stderr) if SDL's video
-// subsystem or the window/renderer/texture couldn't be created (fix
-// round 1, item 3) -- the audio subsystem is already up (see main()).
+// subsystem or the window/renderer/texture couldn't be created -- the
+// audio subsystem is already up (see main()).
 bool run_windowed(wisp::app::App& app, const SimOptions& opts, wisp::port::sim::SimBoard& board,
                   wisp::port::sim::SimInput& input, const std::atomic<bool>& should_exit) {
     if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {

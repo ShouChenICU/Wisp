@@ -1,11 +1,11 @@
-// SimBoard::init() must degrade
-// audio_out.main/audio_in.main (rather than crash, or silently register
-// a device that will fail every open() call) when SDL's audio subsystem
-// never came up at all -- main.cpp now warns and continues instead of
-// aborting if SDL_Init(SDL_INIT_AUDIO) fails (item N2). This test file
-// deliberately never calls SDL_Init() itself, so SDL_WasInit(AUDIO)
-// reliably reports "not initialized" within this process -- the same
-// condition SimBoard::init() must handle.
+// SimBoard::init() must degrade audio_out.main/audio_in.main (rather
+// than crash, or silently register a device that will fail every
+// open() call) when SDL's audio subsystem never came up at all --
+// main.cpp warns and continues rather than aborting if
+// SDL_Init(SDL_INIT_AUDIO) fails. This test file deliberately never
+// calls SDL_Init() itself, so SDL_WasInit(AUDIO) reliably reports "not
+// initialized" within this process -- the same condition
+// SimBoard::init() must handle.
 
 #include "wisp/port/sim/sim_board.hpp"
 

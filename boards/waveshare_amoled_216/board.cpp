@@ -210,10 +210,10 @@ void init_display(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
     dc.area_align = kAreaAlign;
     dc.qspi_cmd_framing = uses_qspi(cfg);
     dc.swap_rgb565_bytes = cfg->frame_format == DEV_DISPLAY_LCD_FRAME_FORMAT_RGB565_BE;
-    // I2 (user-approved deviation, see kDisplaySleepOutSettleMs's comment
-    // above): standard MIPI DCS sleep instead of this panel's deep
-    // -standby path, so EspDisplay must never call
-    // esp_lcd_panel_disp_sleep()/disp_on_off() on this handle either.
+    // Standard MIPI DCS sleep instead of this panel's deep-standby path
+    // (see kDisplaySleepOutSettleMs's comment above), so EspDisplay must
+    // never call esp_lcd_panel_disp_sleep()/disp_on_off() on this handle
+    // either.
     dc.panel_sleep = wisp::port::esp::EspDisplayConfig::PanelSleep::DcsSleep;
     dc.sleep_out_settle_ms = kDisplaySleepOutSettleMs;
 
