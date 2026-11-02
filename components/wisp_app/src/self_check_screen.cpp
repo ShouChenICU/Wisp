@@ -690,9 +690,8 @@ void SelfCheck::subscribe_power() {
     // events -- lets sample_loop() (running on its own thread, not the
     // UI task) stop polling the IMU while in standby without reaching
     // into PowerManager itself.
-    power_sub_ = app_.bus().subscribe("power/state", [this](const core::Event& e) {
-        on_power_event(e);
-    });
+    power_sub_ =
+        app_.bus().subscribe("power/state", [this](const core::Event& e) { on_power_event(e); });
 }
 
 void SelfCheck::on_power_event(const core::Event& e) {
