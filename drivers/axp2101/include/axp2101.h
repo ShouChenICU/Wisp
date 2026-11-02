@@ -32,9 +32,17 @@ extern "C" {
 typedef struct axp2101_dev* axp2101_handle_t;
 
 typedef struct {
-    bool battery_present;     // False if no battery is wired to this PMU.
+    bool battery_present;     // False if no battery is wired to this PMU,
+                              // *or* if reading REG_BAT_PCT failed (see
+                              // axp2101_read_status()'s doc comment) --
+                              // in that second case battery_mv below may
+                              // still hold a real reading.
     uint8_t battery_percent;  // 0-100; meaningless (0) if !battery_present.
-    uint16_t battery_mv;      // Battery voltage, millivolts; 0 if !battery_present.
+    uint16_t battery_mv;      // Battery voltage, millivolts; 0 if no
+                              // battery is wired, but may still be a
+                              // real (nonzero) reading when
+                              // battery_present was forced false purely
+                              // because the REG_BAT_PCT read failed.
     bool charging;
     bool vbus_present;  // USB/VBUS currently connected.
 } axp2101_status_t;
@@ -58,12 +66,14 @@ esp_err_t axp2101_init(i2c_master_bus_handle_t bus, axp2101_handle_t* out);
 
 // Reads battery percentage/voltage and charging/VBUS status.
 // `out->battery_present` distinguishes "no battery wired to this PMU"
-// (battery_percent/battery_mv are then 0 and not meaningful) from an
-// actual reading; see EspPower::status() (wisp/hal/power.hpp's
-// PowerStatus::battery_percent contract: -1 when unknown/no battery). A
-// failed REG_BAT_PCT read is also reported as !battery_present (not as
+// (battery_percent is then 0 and not meaningful) from an actual reading;
+// see EspPower::status() (wisp/hal/power.hpp's PowerStatus::
+// battery_percent contract: -1 when unknown/no battery). A failed
+// REG_BAT_PCT read is also reported as !battery_present (not as
 // battery_percent == 0) -- see axp2101_conv.h's
-// axp2101_battery_present_after_pct_read().
+// axp2101_battery_present_after_pct_read() -- but unlike the "no battery
+// wired" case, battery_mv is not forced to 0 here: it may still hold a
+// real voltage reading even though battery_present is false.
 esp_err_t axp2101_read_status(axp2101_handle_t handle, axp2101_status_t* out);
 
 // ESP_OK if axp2101_init()'s charging-parameter configuration (the

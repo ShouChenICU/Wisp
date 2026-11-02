@@ -91,7 +91,8 @@ public:
     // header's "device-optional" note). `settings` should already be
     // bound to the "power" namespace (the same namespace wisp::app::
     // PowerManager binds its own Settings to for "screen_off_s"); this
-    // class reads "low_batt_pct" (default 15) once here, caches it, and
+    // class reads "low_batt_pct" (default 15) lazily, on the first
+    // successful sample() (not here in the constructor), caches it, and
     // re-reads it at most once every kThresholdRefreshSamples samples
     // thereafter (also forced on the next sample() after a start() call)
     // -- not fresh on every sample() -- so a later Settings change still
