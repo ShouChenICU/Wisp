@@ -368,6 +368,9 @@ public:
 
     wisp::Result<wisp::hal::PowerStatus> status() override {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (next_error_) {
+            return wisp::Result<wisp::hal::PowerStatus>::err(*next_error_, next_error_message_);
+        }
         return wisp::Result<wisp::hal::PowerStatus>::ok(status_);
     }
 
@@ -379,6 +382,17 @@ public:
     void set_status(wisp::hal::PowerStatus status) {
         std::lock_guard<std::mutex> lock(mutex_);
         status_ = status;
+        next_error_.reset();
+    }
+
+    // Test control: makes the next (and every subsequent, until
+    // set_status()/this is called again) status() call fail with `code`/
+    // `message` instead -- mirrors FakeImu::set_next_error() (see its doc
+    // comment).
+    void set_next_error(wisp::ErrorCode code, std::string message = {}) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        next_error_ = code;
+        next_error_message_ = std::move(message);
     }
 
     bool powered_off() const { return powered_off_.load(); }
@@ -388,6 +402,8 @@ private:
 
     std::mutex mutex_;
     wisp::hal::PowerStatus status_{};
+    std::optional<wisp::ErrorCode> next_error_;
+    std::string next_error_message_;
     std::atomic<bool> powered_off_{false};
 };
 
