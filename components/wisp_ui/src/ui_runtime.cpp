@@ -93,6 +93,20 @@ struct UiRuntime::Impl {
     // through it is race-free regardless of which thread is asking.
     std::atomic<os::Task*> active_task{nullptr};
 
+    // os::Task::spawn() starts the new thread running ui_main() as part
+    // of the spawn() call itself, so that thread can already be calling
+    // into LVGL (and, through flush_cb()/etc., the Display) before
+    // start() has finished storing `active_task` and installing the
+    // Display's owner-thread check below -- both unsynchronized against
+    // a concurrent reader on that thread otherwise (the active_task
+    // store is atomic, so not a data race by itself, but still logically
+    // too late; the owner-thread check is a plain std::function, so a
+    // concurrent install and first read of it from the new thread *is*
+    // a genuine data race). ui_main()'s very first action is to wait on
+    // this; start() gives it only after both are fully set up, so
+    // nothing on the UI thread runs until the handoff is complete.
+    os::Semaphore ui_ready{1, 0};
+
     int width = 0;
     int height = 0;
     int area_align = 1;
@@ -154,6 +168,11 @@ void UiRuntime::Impl::drain_post_queue() {
 }
 
 void UiRuntime::Impl::ui_main() {
+    // Waits for start() to finish storing `active_task` and installing
+    // the Display's owner-thread check (see ui_ready's doc comment)
+    // before touching anything LVGL/Display-related below.
+    ui_ready.take(os::kForever);
+
     // Tracks whether the *previous* iteration was in the paused branch
     // below, so the exact loop iteration where paused flips true->false
     // is detected here (on the UI task, the only place lv_* may be
@@ -445,6 +464,11 @@ Result<void> UiRuntime::start() {
     // spec 5.3: now that the UI task exists, every further Display call
     // must come from it (debug-build assertion; see display.hpp).
     impl_->display->set_owner_thread_check([this] { return on_ui_thread(); });
+
+    // Only now may the UI task (already running, blocked on this since
+    // before either store above) actually proceed -- see ui_ready's doc
+    // comment on Impl.
+    impl_->ui_ready.give();
 
     return Result<void>::ok();
 }
