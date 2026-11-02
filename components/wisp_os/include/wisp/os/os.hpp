@@ -152,6 +152,16 @@ public:
     // blocking — joining the calling thread with itself would deadlock —
     // but cb is still guaranteed not to be invoked again after this
     // particular invocation returns. Idempotent either way.
+    //
+    // Do not call stop() (or destroy the Timer) while holding a lock that
+    // any Timer's cb() might itself try to take. On ports that dispatch
+    // every Timer's cb() from one shared task (see the class comment
+    // above), the "blocks until any in-flight invocation has returned"
+    // wait above may need to wait for that shared dispatch task to finish
+    // whatever cb() (of this Timer, or — on such ports — any other due
+    // Timer ahead of it in the dispatch order) is currently running; if
+    // that cb() is itself blocked trying to take a lock the caller of
+    // stop() is still holding, this becomes a deadlock, not just a delay.
     void stop();
 
     bool active() const;

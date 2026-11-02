@@ -2,14 +2,16 @@
 
 // ESP-IDF sink for wisp::log: formats each line the same way as the
 // in-memory ring buffer (see wisp/core/log.hpp) and wisp_port_sim's
-// StdoutLogSink -- "<ts_ms> <D|I|W|E> <tag>: <msg>" -- and hands it to
-// esp_log_write() (which the IDF console/UART-JTAG log backend then
-// renders over the serial monitor). See log_esp.cpp for why the line is
-// formatted here rather than left to esp_log_write() itself (it adds no
-// formatting when called this way, not even the tag) and for the
-// interaction between esp_log's own runtime level filter and
-// wisp::log's. See wisp/port/sim/log_stdout.hpp for the simulator's
-// equivalent.
+// StdoutLogSink -- "<ts_ms> <D|I|W|E> <tag>: <msg>" -- and writes it
+// directly to the console (std::printf(), same transport as
+// firmware/main.cpp's boot-report output) rather than through
+// esp_log_write(). See log_esp.cpp for why: esp_log applies its own,
+// independent runtime per-tag level filter that would otherwise
+// re-filter lines wisp::log already decided to deliver, on top of (and
+// inconsistently with) wisp::log's own filter -- bypassing esp_log
+// avoids that without having to raise esp_log's own levels (which would
+// also make unrelated IDF-internal logging visible). See
+// wisp/port/sim/log_stdout.hpp for the simulator's equivalent.
 
 #include "wisp/core/log.hpp"
 

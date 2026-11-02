@@ -214,6 +214,16 @@ std::unique_ptr<Task> Task::spawn(const TaskConfig& config, std::function<void()
         // xTaskCreatePinnedToCore() below) -- reuse it here instead of
         // aborting, since a task that was never created is exactly what
         // nullptr already means.
+        //
+        // Fix round 2, N3: `task` (a unique_ptr<Task>) goes out of scope
+        // on this `return` and runs ~Task(), which calls join(). join()'s
+        // fast path only applies once `joined` is already true -- without
+        // marking it here, join() would instead fall into its normal path
+        // and call xSemaphoreTake() on `impl_->done`, which is nullptr
+        // (the very failure being handled), crashing. Mark joined before
+        // returning, same as the xTaskCreatePinnedToCore() failure path
+        // below.
+        task->impl_->joined.store(true);
         return nullptr;
     }
 
@@ -343,6 +353,54 @@ bool Task::is_current() const {
 // is_on_timer_thread() already returns early there, and fencing against
 // oneself would deadlock (the fence could never run while we block
 // waiting for it, since we *are* the esp_timer task).
+//
+// Fix round 2 (N1 in the controller's review): is_on_timer_thread() above
+// is scoped to *this* Timer -- it only answers "is this Timer's own cb()
+// currently on the call stack of the task we're running on". That misses
+// a real case: Timer Y's cb() (running on the esp_timer task) calls
+// X.stop() (or destroys X) for some *other* Timer X. From X's point of
+// view, is_on_timer_thread() is false (X's own cb_running_task_ is
+// nullptr -- X isn't the one running), so stop() took the "different
+// thread" branch above: it would arm X's fence and block on fence_sem_,
+// waiting for the esp_timer task to run the fence callback. But the
+// esp_timer task is *itself* blocked right there, inside Y's cb(), on
+// this very call stack -- it cannot service X's fence (or anything else)
+// until Y's cb() returns, which it never will. Deadlock.
+//
+// Fixed by recognizing "currently running on the esp_timer task at all"
+// (is_on_esp_timer_task() below), not just "currently running *this*
+// Timer's own cb()". When stop()/the destructor is reached from the
+// esp_timer task but not via this Timer's own cb() (i.e.
+// is_on_timer_thread() is false but is_on_esp_timer_task() is true), both
+// the running_mutex_ wait and the fence are skipped. This is safe, not
+// just deadlock-avoiding: esp_timer dispatch is strictly one callback at
+// a time on that one task (the same fact the fence relies on above), so
+// if *this* call stack is on the esp_timer task running some other
+// timer's (Y's) cb(), then X's own trampoline() cannot *also* be
+// executing right now -- there is only one call stack on that task, and
+// it is this one. X's running_mutex_ is therefore unconditionally free
+// already (nothing to wait for), and esp_timer_stop(X) just above this
+// already removed any future scheduled firing of X from the list before
+// the dispatcher could ever pop it (dispatch hasn't returned to the list
+// yet -- it's parked here inside Y's cb()), so there is nothing left for
+// a fence to synchronize against either.
+
+namespace {
+
+// Fix round 2, N1: true if the calling task is esp_timer's own shared
+// dispatch task, regardless of which Timer (if any) owns the cb()
+// currently on its call stack. Looked up by name (esp_timer registers
+// its dispatch task under this exact name -- see esp_timer.c's
+// esp_timer_init()/timer_task()) rather than cached once in a static,
+// so this doesn't depend on ordering between esp_timer's own init and
+// the construction of the first wisp::os::Timer; xTaskGetHandle() is a
+// cheap linear scan of the task list, fine to call on every stop().
+bool is_on_esp_timer_task() {
+    TaskHandle_t esp_timer_task = xTaskGetHandle("esp_timer");
+    return esp_timer_task != nullptr && xTaskGetCurrentTaskHandle() == esp_timer_task;
+}
+
+}  // namespace
 
 struct Timer::Impl {
     esp_timer_handle_t handle = nullptr;
@@ -492,32 +550,51 @@ void Timer::stop() {
 
     xSemaphoreTake(impl_->control_mutex, portMAX_DELAY);
     esp_timer_stop(impl_->handle);  // no-op (ESP_ERR_INVALID_STATE) if already unarmed
-    // Block until any cb() invocation already in flight (started before
-    // esp_timer_stop() above could prevent it) has returned.
-    xSemaphoreTake(impl_->running_mutex, portMAX_DELAY);
-    xSemaphoreGive(impl_->running_mutex);
-    // Fix round 1, M2: the running_mutex_ wait above is not by itself
-    // enough to rule out the race described in this section's
-    // file-header comment (a callback already popped off esp_timer's
-    // list, but not yet far enough into trampoline() to have taken
-    // running_mutex_, at the moment esp_timer_stop() and the
-    // running_mutex_ check above both ran). Fence against the esp_timer
-    // task itself: arming fence_handle_ for 0 delay and waiting for it
-    // to fire cannot return until the esp_timer task has processed
-    // everything that was already ahead of it in the dispatch order,
-    // which -- because dispatch is strictly one callback at a time on
-    // one task -- includes fully finishing any trampoline() call that
-    // was already in progress or already popped off the list when this
-    // stop() call reached this point.
-    esp_err_t fence_err = esp_timer_start_once(impl_->fence_handle, 0);
-    if (fence_err == ESP_OK) {
-        xSemaphoreTake(impl_->fence_sem, portMAX_DELAY);
+
+    // Fix round 2, N1: is_on_timer_thread() above already ruled out
+    // "this Timer's own cb() is calling its own stop()". This check
+    // catches the other case that can reach here while still on the
+    // esp_timer task: some *other* Timer's cb() (synchronously, still on
+    // the esp_timer task's call stack) calling this Timer's stop() or
+    // destructor. Waiting on running_mutex_/the fence in that case would
+    // deadlock (see this section's file-header comment: the esp_timer
+    // task cannot service the fence it's blocked waiting on, since
+    // servicing it requires returning to the dispatch loop this call
+    // stack is itself parked inside of) -- and is provably unnecessary:
+    // esp_timer dispatch is one callback at a time on one task, so if
+    // *this* call stack is already on that task, this Timer's own
+    // trampoline() cannot be concurrently running, and esp_timer_stop()
+    // just above already prevented it from being dispatched later from
+    // the list (dispatch can't have returned to the list yet -- we're
+    // still inside the other callback).
+    if (!is_on_esp_timer_task()) {
+        // Block until any cb() invocation already in flight (started
+        // before esp_timer_stop() above could prevent it) has returned.
+        xSemaphoreTake(impl_->running_mutex, portMAX_DELAY);
+        xSemaphoreGive(impl_->running_mutex);
+        // Fix round 1, M2: the running_mutex_ wait above is not by
+        // itself enough to rule out the race described in this
+        // section's file-header comment (a callback already popped off
+        // esp_timer's list, but not yet far enough into trampoline() to
+        // have taken running_mutex_, at the moment esp_timer_stop() and
+        // the running_mutex_ check above both ran). Fence against the
+        // esp_timer task itself: arming fence_handle_ for 0 delay and
+        // waiting for it to fire cannot return until the esp_timer task
+        // has processed everything that was already ahead of it in the
+        // dispatch order, which -- because dispatch is strictly one
+        // callback at a time on one task -- includes fully finishing
+        // any trampoline() call that was already in progress or already
+        // popped off the list when this stop() call reached this point.
+        esp_err_t fence_err = esp_timer_start_once(impl_->fence_handle, 0);
+        if (fence_err == ESP_OK) {
+            xSemaphoreTake(impl_->fence_sem, portMAX_DELAY);
+        }
+        // (If starting the fence itself failed -- e.g. transient
+        // ESP_ERR_INVALID_STATE if it somehow raced its own still-pending
+        // instance -- there is nothing more stop() can do to wait
+        // further; this is the same best-effort posture as
+        // esp_timer_stop()'s return value, already ignored above.)
     }
-    // (If starting the fence itself failed -- e.g. transient
-    // ESP_ERR_INVALID_STATE if it somehow raced its own still-pending
-    // instance -- there is nothing more stop() can do to wait further;
-    // this is the same best-effort posture as esp_timer_stop()'s return
-    // value, already ignored above.)
     impl_->active.store(false);
     xSemaphoreGive(impl_->control_mutex);
 }

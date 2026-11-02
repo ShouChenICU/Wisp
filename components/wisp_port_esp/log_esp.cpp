@@ -1,25 +1,12 @@
 #include "wisp/port/esp/log_esp.hpp"
 
-#include "esp_log.h"
+#include <cstdio>
+
 #include "wisp/os/os.hpp"
 
 namespace wisp::port::esp {
 
 namespace {
-
-esp_log_level_t map_level(wisp::LogLevel level) {
-    switch (level) {
-        case wisp::LogLevel::Debug:
-            return ESP_LOG_DEBUG;
-        case wisp::LogLevel::Info:
-            return ESP_LOG_INFO;
-        case wisp::LogLevel::Warn:
-            return ESP_LOG_WARN;
-        case wisp::LogLevel::Error:
-            return ESP_LOG_ERROR;
-    }
-    return ESP_LOG_INFO;
-}
 
 // Same one-letter convention as wisp::core::log's own ring buffer format
 // ("<ts_ms> <D|I|W|E> <tag>: <msg>", see wisp/core/log.hpp's
@@ -42,25 +29,39 @@ char level_char(wisp::LogLevel level) {
 }  // namespace
 
 void EspLogSink::write(wisp::LogLevel level, const char* tag, const char* msg) {
-    // Fix round 1, M6: esp_log_write() is documented (esp_log_write.h)
-    // to add no formatting of its own -- no timestamp, no level letter,
-    // and (confirmed by reading esp_log_va()/esp_log_format() in
-    // components/log/src/log.c and log_format_text.c) when called this
-    // way (as opposed to via the ESP_LOGx macros) it doesn't even print
-    // `tag`, only using it internally for the runtime level check below.
-    // Build the same "<ts_ms> <D|I|W|E> <tag>: <msg>" line the other
-    // ports' sinks use instead of silently dropping the tag from the
-    // actual serial output.
+    // Fix round 1, M6: build the same "<ts_ms> <D|I|W|E> <tag>: <msg>"
+    // line the other ports' sinks use (wisp_port_sim's StdoutLogSink;
+    // see wisp/core/log.hpp's ring_snapshot() doc comment) ourselves,
+    // rather than relying on esp_log to render it.
     //
-    // esp_log_write()'s *own* runtime level check (is_level_loggable() /
-    // esp_log_is_tag_loggable() in log.c) is independent of -- and would
-    // otherwise re-filter on top of -- wisp::log's own level filter
-    // (wisp::log::set_level(), the intended single source of truth here,
-    // defaulting to LogLevel::Debug i.e. nothing filtered): see
-    // firmware/sdkconfig.defaults's CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y for
-    // why that second filter is kept wide open instead.
-    esp_log_write(map_level(level), tag, "%llu %c %s: %s\n",
-                  static_cast<unsigned long long>(wisp::os::now_ms()), level_char(level), tag, msg);
+    // Fix round 2 (controller ruling, following on from fix round 1,
+    // M6): this is written directly via std::printf() -- the same
+    // console transport firmware/main.cpp's boot-report output and
+    // os_esp.cpp's fatal() already use, since this board's stdout is
+    // already routed to the console (see
+    // firmware/sdkconfig.defaults's CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG)
+    // -- instead of going through esp_log_write(). Fix round 1 had used
+    // esp_log_write(), but that applies esp_log's *own*, independent
+    // runtime per-tag level filter (is_level_loggable() in
+    // components/log/src/log.c) on top of wisp::log's own filter
+    // (wisp::log::set_level(), the intended single source of truth
+    // here, defaulting to LogLevel::Debug i.e. nothing filtered).
+    // Working around that by raising esp_log's own default level also
+    // made every IDF-internal component's unrelated ESP_LOGD() traffic
+    // visible, not just wisp's own. Every call reaching this function
+    // has, by construction, already passed wisp::log's own filter (see
+    // wisp/core/log.hpp's LogSink doc comment: sinks only receive
+    // already-accepted lines), so there is nothing left for a second,
+    // independent filter to usefully decide here -- bypassing esp_log
+    // entirely removes that redundant (and, for Debug, actively
+    // unwanted) filtering without having to touch esp_log's per-tag
+    // runtime levels at all. IDF's own ESP_LOGx call sites are
+    // untouched and still go through esp_log's normal, independent
+    // filtering (left at its Kconfig default, Info -- see
+    // firmware/sdkconfig.defaults), so IDF's own Debug-level logging
+    // stays quiet.
+    std::printf("%llu %c %s: %s\n", static_cast<unsigned long long>(wisp::os::now_ms()),
+                level_char(level), tag, msg);
 }
 
 }  // namespace wisp::port::esp

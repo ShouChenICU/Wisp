@@ -1,88 +1,94 @@
-# Wisp firmware defaults for the Waveshare ESP32-S3-Touch-AMOLED-2.16
-# (ESP32-S3R8: 16 MB QIO flash, 8 MB octal PSRAM @ 80 MHz -- see
-# docs/hardware/waveshare_amoled_216.md). Committed (unlike sdkconfig/
-# sdkconfig.old, which idf.py generates and which are gitignored); idf.py
-# set-target/build regenerates the real sdkconfig from this file plus
-# Kconfig defaults.
+#Wisp firmware defaults for the Waveshare ESP32 - S3 - Touch - AMOLED - 2.16
+#(ESP32 - S3R8 : 16 MB QIO flash, 8 MB octal PSRAM @80 MHz -- see
+#docs / hardware / waveshare_amoled_216.md).Committed(unlike sdkconfig /
+#sdkconfig.old, which idf.py generates and which are gitignored); idf.py
+#set - target / build regenerates the real sdkconfig from this file plus
+#Kconfig defaults.
 
-# CPU frequency.
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+#CPU frequency.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240 = y
 
-# Flash: QIO, 80 MHz, 16 MB.
-CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
-CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+#Flash : QIO, 80 MHz, 16 MB.
+    CONFIG_ESPTOOLPY_FLASHMODE_QIO = y CONFIG_ESPTOOLPY_FLASHFREQ_80M =
+        y CONFIG_ESPTOOLPY_FLASHSIZE_16MB = y
 
-# Custom partition table (firmware/partitions.csv, spec 7.4).
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+#Custom partition table(firmware / partitions.csv, spec 7.4).
+            CONFIG_PARTITION_TABLE_CUSTOM = y CONFIG_PARTITION_TABLE_CUSTOM_FILENAME =
+                "partitions.csv"
 
-# External octal PSRAM, 80 MHz, usable via malloc() (os::alloc(Mem::Large) --
-# see components/wisp_port_esp/os/os_esp.cpp).
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_SPIRAM_USE_MALLOC=y
+#External octal PSRAM, 80 MHz, usable via malloc()(os::alloc(Mem::Large)--
+#see components / wisp_port_esp / os / os_esp.cpp).
+    CONFIG_SPIRAM = y CONFIG_SPIRAM_MODE_OCT = y CONFIG_SPIRAM_SPEED_80M =
+        y CONFIG_SPIRAM_USE_MALLOC = y
 
-# Console over USB-Serial-JTAG (no external UART-to-USB bridge on this
-# board -- see docs/hardware/waveshare_amoled_216.md).
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
-CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+#Console over USB - Serial - JTAG(no external UART - to - USB bridge on this
+#board-- see docs / hardware / waveshare_amoled_216.md).
+            CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG = y CONFIG_ESP_CONSOLE_SECONDARY_NONE = y
 
-# LVGL must use wisp_ui's own lv_conf.h (see firmware/CMakeLists.txt's
-# LV_CONF_PATH wiring and AGENTS.md's "LVGL 配置" trap), not LVGL's
-# Kconfig-generated one.
-CONFIG_LV_CONF_SKIP=n
+#LVGL must use wisp_ui 's own lv_conf.h (see firmware/CMakeLists.txt' s
+#LV_CONF_PATH wiring and AGENTS.md 's "LVGL 配置" trap), not LVGL' s
+#Kconfig - generated one.
+                CONFIG_LV_CONF_SKIP = n
 
-# The lvgl/lvgl IDF component (env_support/cmake/kconfig.cmake) builds its
-# own examples/demos tree by default (CONFIG_LV_BUILD_EXAMPLES/_DEMOS
-# default y) -- those reference fonts and features wisp_ui's lv_conf.h
-# doesn't enable (e.g. lv_font_montserrat_14) and aren't needed anyway.
-# Mirrors cmake/wisp_host_deps.cmake's CONFIG_LV_BUILD_DEMOS/EXAMPLES/
-# THORVG_INTERNAL OFF for the host build.
-CONFIG_LV_BUILD_EXAMPLES=n
-CONFIG_LV_BUILD_DEMOS=n
-CONFIG_LV_USE_THORVG_INTERNAL=n
+#The lvgl / lvgl IDF component(env_support / cmake / kconfig.cmake) builds its
+#own examples / demos tree by default(CONFIG_LV_BUILD_EXAMPLES / _DEMOS
+#default y)-- those reference fonts and features wisp_ui's lv_conf.h
+#doesn 't enable (e.g. lv_font_montserrat_14) and aren' t needed anyway.
+#Mirrors cmake / wisp_host_deps.cmake's CONFIG_LV_BUILD_DEMOS/EXAMPLES/
+#THORVG_INTERNAL OFF for the host build.
+                    CONFIG_LV_BUILD_EXAMPLES = n CONFIG_LV_BUILD_DEMOS =
+                        n CONFIG_LV_USE_THORVG_INTERNAL = n
 
-# C++20, no exceptions/RTTI (AGENTS.md section 5 / global-constraints.md).
-CONFIG_COMPILER_CXX_EXCEPTIONS=n
-CONFIG_COMPILER_CXX_RTTI=n
+#C++ 20, no exceptions / RTTI(AGENTS.md section 5 / global - constraints.md).
+                            CONFIG_COMPILER_CXX_EXCEPTIONS = n CONFIG_COMPILER_CXX_RTTI = n
 
-# wisp::app::App's main-thread work (board/device bring-up, EventBus,
-# StorageManager, ButtonService, UiRuntime start) all currently runs
-# inline from app_main(), on the main task.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+#wisp::app::App's main-thread work (board/device bring-up, EventBus,
+#StorageManager, ButtonService, UiRuntime start) all currently runs
+#inline from app_main(), on the main task.
+                                CONFIG_ESP_MAIN_TASK_STACK_SIZE = 8192
 
-# Fix round 1 (controller ruling, M-notes in task-15-report.md): FreeRTOS's
-# default 100 Hz tick (10 ms/tick) is too coarse for LVGL/UI timing and,
-# combined with components/wisp_port_esp/os/os_esp.cpp's ms->ticks
-# rounding, makes any os::sleep_ms()/Semaphore::take() call under ~10 ms
-# round to a near-zero wait even after that file's round-up fix (1 tick
-# minimum, but 1 tick is still up to 10 ms of error at 100 Hz). 1000 Hz
-# (1 ms/tick) gives LVGL's animation/tick timing and short retry/backoff
-# loops much finer granularity; os_esp.cpp's ms_to_ticks() rounds up
-# regardless of this value, so correctness does not depend on this
-# setting, only precision/latency does.
-CONFIG_FREERTOS_HZ=1000
+#Fix round 1(controller ruling, M - notes in task - 15 - report.md) : FreeRTOS's
+#default 100 Hz tick(10 ms / tick) is too coarse for LVGL / UI timing.1000 Hz
+#(1 ms / tick) gives LVGL's animation/tick timing and short retry/backoff
+#loops much finer granularity.components / wisp_port_esp / os / os_esp.cpp's
+#ms_to_ticks() rounds ms up to whole ticks regardless of this setting(fix
+#round 1), so correctness never depended on this value, only precision
+#does.
+#
+#Fix round 2(controller ruling) : no change to that round - up behavior--
+#at 1000 Hz, granularity is 1 ms and vTaskDelay(n) may be up to 1 tick
+#shorter than requested.That residual slack is FreeRTOS's own
+#vTaskDelay() semantics(it cannot know how far into the * current * tick
+#period the caller already is when it's called, so the actual wall-clock
+#wait is somewhere in(n - 1, n] ticks), not something this setting or
+#ms_to_ticks()'s rounding direction changes either way.
+    CONFIG_FREERTOS_HZ = 1000
 
-# Fix round 1, M5: every wisp::os::Timer in the process shares the one
-# esp_timer dispatch task (see os_esp.cpp's Timer section); the default
-# stack is sized for ESP-IDF's own light internal callbacks, not
-# necessarily wisp's. Raised with headroom for wisp Timer callbacks
-# (which are documented as expected to stay short/non-blocking, but
-# still run deeper call stacks than a typical internal one-liner).
-CONFIG_ESP_TIMER_TASK_STACK_SIZE=6144
+#Fix round 1, M5 : every wisp::os::Timer in the process shares the one
+#esp_timer dispatch task(see os_esp.cpp's Timer section); the default
+#stack is sized for ESP - IDF's own light internal callbacks, not
+#necessarily wisp's. Raised with headroom for wisp Timer callbacks
+#(which are documented as expected to stay short / non - blocking, but
+#still run deeper call stacks than a typical internal one - liner).
+    CONFIG_ESP_TIMER_TASK_STACK_SIZE = 6144
 
-# Fix round 1, M6: wisp::log (components/wisp_core/include/wisp/core/log.hpp)
-# is the single intended source of truth for which log levels are
-# visible -- it defaults to LogLevel::Debug (nothing filtered) and is
-# meant to be the only filter callers need to think about. esp_log has
-# its own, independent runtime level check inside esp_log_write()
-# (wisp::port::esp::EspLogSink's backend -- see log_esp.cpp) that
-# defaults to "Info" and would otherwise silently re-filter out Debug
-# lines wisp::log already decided to deliver. Raising esp_log's own
-# default (and, since CONFIG_LOG_MAXIMUM_LEVEL defaults to "equals
-# default", its ceiling too) to Debug makes esp_log's layer effectively
-# a pass-through, leaving wisp::log::set_level() as the only level
-# decision that actually matters.
-CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
+#Fix round 1, M6 / fix round 2(controller ruling) : wisp::log
+#(components / wisp_core / include / wisp / core / log.hpp) is the single intended
+#source of truth for which log levels are visible-- it defaults to
+#LogLevel::Debug(nothing filtered) and is meant to be the only filter
+#callers need to think about.esp_log has its own, independent runtime
+#level check that would otherwise silently re - filter wisp's log lines on
+#top of wisp::log's own filter. Fix round 1 raised CONFIG_LOG_DEFAULT_LEVEL
+#itself to Debug to work around this, but that also made every IDF - internal
+#component 's own ESP_LOGD() traffic visible, not just wisp' s-- not what
+#was wanted.Fix round 2's ruling : leave CONFIG_LOG_DEFAULT_LEVEL at its
+#Kconfig default(Info), so IDF's own Debug-level logging stays quiet, and
+#instead have wisp::port::esp::EspLogSink(log_esp.cpp) bypass esp_log's
+#filtering for wisp's own output entirely (writes directly via
+#std::printf(), the same console transport, rather than going through
+#esp_log_write() and its per - tag runtime check-- see log_esp.cpp for why).
+#CONFIG_LOG_MAXIMUM_LEVEL_DEBUG = y below only keeps Debug - level esp_log
+#code compiled in(so a future esp_log_level_set() on some specific IDF
+#tag could still raise it at runtime); wisp's own Debug output no longer
+#depends on it either way.
+    CONFIG_LOG_MAXIMUM_LEVEL_DEBUG = y
