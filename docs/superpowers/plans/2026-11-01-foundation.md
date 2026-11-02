@@ -1322,7 +1322,7 @@ git commit -m "feat(firmware): add audio codecs, LittleFS/SD storage and NVS set
 - **`app::PowerManager`**：
   - 构造：`PowerManager(core::EventBus&, std::shared_ptr<hal::Display>, std::shared_ptr<hal::Touch>, ui::UiRuntime*, core::ButtonService*, std::function<void(bool)> set_standby, core::Settings settings)`；
   - 成员函数：`enter_standby()`、`exit_standby()`、`bool standby() const`、`note_activity()`、`tick(uint64_t now_ms)`；
-  - 进入或退出待机时，在事件总线上发布 `power/state`，载荷为 `{"state":"standby"|"active"}`；
+  - 进入或退出待机时，在事件总线上发布 `power.state`，载荷为 `{"state":"standby"|"active"}`；
   - 进入和退出都是幂等的，Touch 返回 `Unsupported` 时不算错误；
   - 自动熄屏时长读取 Settings 的 `power`/`screen_off_s`，默认 60，0 表示关闭；
   - 闲置的判定依据是距离上一次 `note_activity()` 超过该时长。触摸输入（UiRuntime 的 indev 读到触点时）和任意按键事件都要调用 `note_activity()`。
@@ -1332,7 +1332,7 @@ git commit -m "feat(firmware): add audio codecs, LittleFS/SD storage and NVS set
   - 结论写进 `docs/hardware/waveshare_amoled_216.md`。
 
 - [ ] **Step 1: 写失败的测试**
-  - `PowerManager`：`enter_standby` 之后，FakeDisplay `powered()==false`，UiRuntime `paused()`，按键轮询周期为 50，`set_standby(true)` 被调用一次，并收到 `power/state` 事件；`exit_standby` 全部恢复；连续两次 enter 只生效一次；FakeTouch 返回 Unsupported 时 `enter_standby` 仍然成功；`screen_off_s=1` 时，`tick` 超过 1000 ms 后进入待机，`note_activity` 会重置计时；`screen_off_s=0` 时永不自动熄屏。
+  - `PowerManager`：`enter_standby` 之后，FakeDisplay `powered()==false`，UiRuntime `paused()`，按键轮询周期为 50，`set_standby(true)` 被调用一次，并收到 `power.state` 事件；`exit_standby` 全部恢复；连续两次 enter 只生效一次；FakeTouch 返回 Unsupported 时 `enter_standby` 仍然成功；`screen_off_s=1` 时，`tick` 超过 1000 ms 后进入待机，`note_activity` 会重置计时；`screen_off_s=0` 时永不自动熄屏。
   - `UiRuntime`：暂停期间 `post()` 的任务照样执行，但 flush 计数不增加；恢复后会有 flush。
   - `ButtonService`：切到 50 ms 后，短按和长按的判定仍然正确，长按阈值仍是 1000 ms。
 - [ ] **Step 2: 运行，确认失败**
