@@ -77,7 +77,7 @@
 | 33 | UI 帧率基准（spec 10 性能基准，global constraints） | 手指持续滚动自检列表 10 秒，看串口 `WISP_PERF` | fps ≥ 30；把 fps/cpu/flush_ms 三个数值记入下方"性能基准"一节 |  |
 | 34 | DFS 不拖累帧率（Task 18b） | 对比开启/关闭 `CONFIG_PM_ENABLE` 前后的 `WISP_PERF` | 开启 DFS 后帧率仍不低于上一项的基准 |  |
 | 35 | `power.charging.changed` 事件（spec 6.3，Task 19a） | 插拔 USB 电源，看串口上 `power_monitor` 的 `power.charging.changed: charging=... usb_present=... battery_percent=...` 日志行 | 插拔后 1 秒内出现该日志行，`charging`/`usb_present` 的值与实际状态一致 |  |
-| 36 | `power.battery.low` 事件（spec 6.3，Task 19a） | 电量明显偏低时观察串口日志；也可以临时把 Settings `power`/`low_batt_pct` 改成 100 来快速触发 | 只出现一次 `power_monitor` 的 `power.battery.low: battery_percent=... (threshold=...)` 日志行（不持续重复）；电量回升超过阈值+5 后再降回阈值以下会再出现一次；没有接电池、只接 USB 供电时不出现该日志 |  |
+| 36 | `power.battery.low` 事件（spec 6.3，Task 19a） | 电量明显偏低时观察串口日志；子项目 1 还没有 CLI/REST 能改 Settings，想快速触发可以临时在 `components/wisp_app/src/app.cpp` 里 `core::Settings power_settings(*impl_->platform.settings, "power");`（约第 102 行）之后加一行 `power_settings.set("low_batt_pct", int64_t{100});`，重新编译固件验证完后删掉这行（不要提交） | 只出现一次 `power_monitor` 的 `power.battery.low: battery_percent=... (threshold=...)` 日志行（不持续重复）；电量回升超过阈值+5 后再降回阈值以下会再出现一次；没有接电池、只接 USB 供电时不出现该日志 |  |
 
 ## 待机与省电（spec 6.7）
 
@@ -178,8 +178,9 @@
       待机时同样立即 `give()` 恢复到原来 1 s 一次的节奏。这个分支读到的值只用于自检
       界面显示（界面本身已经暂停渲染）。
     - `wisp::core::PowerMonitor` 自己的采样定时器（`"wisp.pwrmon"`，见 spec 6.3/6.7）：
-      亮屏时 1 s、待机时 30 s 轮询一次 `power.main`（每次最多 5 次 I2C 读 + 1 次 NVS
-      读，用于缓存的 `low_batt_pct` 阈值），发布 `power.charging.changed`/
+      亮屏时 1 s、待机时 30 s 轮询一次 `power.main`（每次最多 5 次 I2C 读；
+      `low_batt_pct` 阈值做了缓存，每 20 次采样（或每次 `start()`）才重读 1 次
+      NVS，不是每次采样都读），发布 `power.charging.changed`/
       `power.battery.low`。这是一个真正的消费者：`power.battery.low` 在电量降到
       Settings `power`/`low_batt_pct`（默认 15）以下时发布一次（带滞后重新武装），
       两个事件发布时都会打一行 `WLOG_I`，串口上可以直接观察到。
