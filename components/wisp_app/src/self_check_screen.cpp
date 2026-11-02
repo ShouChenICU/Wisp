@@ -871,8 +871,13 @@ void SelfCheck::refresh_ui() {
     if (power_) {
         char buf[96];
         if (snap.power_ok) {
-            std::snprintf(buf, sizeof(buf), "电源: %d%% %s", snap.power.battery_percent,
-                          snap.power.charging ? "充电中" : "未充电");
+            if (snap.power.battery_percent < 0) {
+                std::snprintf(buf, sizeof(buf), "电源: 电量未知 %s",
+                              snap.power.charging ? "充电中" : "未充电");
+            } else {
+                std::snprintf(buf, sizeof(buf), "电源: %d%% %s", snap.power.battery_percent,
+                              snap.power.charging ? "充电中" : "未充电");
+            }
         } else {
             std::snprintf(buf, sizeof(buf), "电源: 读取失败");
         }
