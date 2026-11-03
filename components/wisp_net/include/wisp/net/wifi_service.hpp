@@ -56,7 +56,9 @@ struct WifiStatus {
     int rssi = 0;      // only in Connected
     // Why the last attempt failed ("not_found"/"auth_failed"/"other");
     // only set in Backoff, "" otherwise. Same value as net.wifi.state's
-    // "reason".
+    // "reason". When every saved network is auth_failed (SavedNetwork),
+    // the backoff reports "auth_failed" with `ssid` naming one of them:
+    // no automatic attempt can succeed until new credentials arrive.
     std::string reason;
     // When the next attempt is due (now_ms timebase); only set in Backoff,
     // 0 otherwise. The device screen counts down to it.
@@ -86,10 +88,12 @@ struct ScanResult {
 // A saved network as callers may see it: no password.
 struct SavedNetwork {
     std::string ssid;
-    // The last attempt on this network was rejected for its password. Such
-    // a network is left out of automatic selection until add_network()
-    // gives it new credentials, so a wrong password on a stronger network
-    // cannot keep the device away from one that works (spec 4.2).
+    // This network rejected its password on three attempts in a row (with
+    // no successful connect in between). Such a network is left out of
+    // automatic selection until add_network() gives it credentials again,
+    // so a wrong password on a stronger network cannot keep the device
+    // away from one that works (spec 4.2). One rejection is not enough: a
+    // lost handshake frame looks the same.
     bool auth_failed = false;
 };
 
@@ -138,7 +142,7 @@ public:
 
     // SSID 1-32 bytes; password empty (open network) or 8-63 bytes, else
     // InvalidArgument. Re-adding a saved SSID replaces its password and
-    // clears its auth_failed flag. A sixth distinct SSID fails with
+    // clears its auth_failed flag and its count of rejections. A sixth distinct SSID fails with
     // QuotaExceeded. On success the list is persisted and the next tick()
     // connects to exactly this network.
     Result<void> add_network(std::string_view ssid, std::string_view password, uint64_t now_ms);
@@ -171,6 +175,9 @@ private:
         std::string ssid;
         std::string password;
         bool auth_failed = false;  // see SavedNetwork::auth_failed
+        // Rejections since the last successful connect or add_network();
+        // memory only, so a reboot starts the count over.
+        uint8_t rejections = 0;
     };
 
     // What tick() decided to do with the radio, computed under mutex_ and
@@ -184,9 +191,10 @@ private:
     std::string wifi_path() const;
     Result<void> persist_locked(const std::vector<Network>& networks);
     const Network* find_locked(std::string_view ssid) const;
-    // Flags a saved network after its password was rejected and persists
-    // the flag; no-op for unsaved or already flagged networks.
-    void mark_auth_failed_locked(const std::string& ssid);
+    // Counts a rejected password; the third in a row flags the network
+    // auth_failed and persists the flag. No-op for unsaved or already
+    // flagged networks.
+    void note_rejection_locked(const std::string& ssid);
 
     void set_state_locked(WifiState state, std::string ssid, std::string ip, int rssi);
     void publish_ap_locked(bool active, const std::string& ssid);

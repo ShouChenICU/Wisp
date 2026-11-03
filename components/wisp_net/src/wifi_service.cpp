@@ -23,6 +23,10 @@ constexpr size_t kMinPasswordBytes = 8;
 constexpr size_t kMaxPasswordBytes = 63;
 constexpr int64_t kDefaultIdleOffMin = 10;
 constexpr size_t kApPasswordLen = 8;
+// A single rejected handshake can be a lost EAPOL frame (router reboot,
+// busy channel), so a network is parked only after this many rejections
+// in a row (spec 4.2).
+constexpr uint8_t kRejectionsToPark = 3;
 constexpr char kApAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 constexpr size_t kApAlphabetLen = sizeof(kApAlphabet) - 1;
 static_assert(kApAlphabetLen == 62);
@@ -125,13 +129,21 @@ Result<void> WifiService::persist_locked(const std::vector<Network>& networks) {
     return r;
 }
 
-void WifiService::mark_auth_failed_locked(const std::string& ssid) {
+void WifiService::note_rejection_locked(const std::string& ssid) {
     auto it = std::find_if(networks_.begin(), networks_.end(),
                            [&](const Network& n) { return n.ssid == ssid; });
     if (it == networks_.end() || it->auth_failed) return;
+    if (it->rejections < kRejectionsToPark) ++it->rejections;
+    if (it->rejections < kRejectionsToPark) {
+        WLOG_W(kTag, "'%s' rejected the password (%u of %u before giving up on it)", ssid.c_str(),
+               static_cast<unsigned>(it->rejections), static_cast<unsigned>(kRejectionsToPark));
+        return;
+    }
     it->auth_failed = true;
-    WLOG_W(kTag, "'%s' rejected the password; not retrying it until it is re-entered",
-           ssid.c_str());
+    WLOG_W(kTag,
+           "'%s' rejected the password %u times in a row; not retrying it until it is "
+           "re-entered",
+           ssid.c_str(), static_cast<unsigned>(kRejectionsToPark));
     // On a failed write the flag still holds until reboot; persist_locked()
     // has logged the storage error.
     (void)persist_locked(networks_);
@@ -242,7 +254,6 @@ void WifiService::fail_attempt_locked(uint64_t now_ms, const char* why, const ch
     in_flight_ = false;
     in_flight_ssid_.clear();
     direct_ssid_.reset();
-    if (reason == kReasonAuthFailed) mark_auth_failed_locked(ssid);
 
     uint32_t wait = backoff_ms_;
     backoff_ms_ = static_cast<uint32_t>(
@@ -275,6 +286,9 @@ void WifiService::poll_link_locked(uint64_t now_ms) {
             in_flight_ssid_.clear();
             direct_ssid_.reset();
             backoff_ms_ = config_.backoff_min_ms;
+            for (auto& n : networks_) {
+                if (n.ssid == link.ssid) n.rejections = 0;
+            }
             WLOG_I(kTag, "connected to '%s' ip=%s rssi=%d", link.ssid.c_str(), link.ip.c_str(),
                    link.rssi);
             if (auto ps = wifi_->set_power_save(true); !ps) {
@@ -290,6 +304,9 @@ void WifiService::poll_link_locked(uint64_t now_ms) {
                    (link.ssid.empty() || link.ssid == in_flight_ssid_)) {
             // A Failed naming another SSID is left over from an earlier
             // attempt; this one's outcome (or the timeout) is still to come.
+            if (link.reason == hal::WifiFailReason::AuthFailed) {
+                note_rejection_locked(in_flight_ssid_);
+            }
             fail_attempt_locked(now_ms, reason_text(link.reason), reason_code(link.reason));
         } else if (now_ms >= in_flight_deadline_ms_) {
             (void)wifi_->disconnect();  // stop the driver from retrying on its own
@@ -373,6 +390,28 @@ void WifiService::finish_attempt_locked(const AttemptPlan& plan,
                 best_rssi = entry.rssi;
             }
         }
+    }
+    if (target == nullptr && scan != nullptr && *scan && !networks_.empty() &&
+        std::all_of(networks_.begin(), networks_.end(),
+                    [](const Network& n) { return n.auth_failed; })) {
+        // Only new credentials can help, so say so ("auth_failed") instead
+        // of "not_found", naming the strongest rejected network in range
+        // (else the first saved one) for the screen and the admin page.
+        why = "every saved network rejected its password";
+        reason = kReasonAuthFailed;
+        std::string named = networks_.front().ssid;
+        int best_rssi = 0;
+        bool found = false;
+        for (const auto& entry : scan->value()) {
+            if (find_locked(entry.ssid) != nullptr && (!found || entry.rssi > best_rssi)) {
+                named = entry.ssid;
+                best_rssi = entry.rssi;
+                found = true;
+            }
+        }
+        in_flight_ssid_ = std::move(named);
+        fail_attempt_locked(now_ms, why, reason);
+        return;
     }
     if (target == nullptr) {
         in_flight_ssid_ = plan.direct_ssid;
@@ -472,6 +511,7 @@ Result<void> WifiService::add_network(std::string_view ssid, std::string_view pa
     if (it != updated.end()) {
         it->password = std::string(password);
         it->auth_failed = false;
+        it->rejections = 0;
     } else {
         if (updated.size() >= config_.max_networks) {
             return Result<void>::err(

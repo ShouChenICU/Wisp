@@ -9,9 +9,9 @@
 // esp_wifi.cpp.
 //
 // AuthFailed has a lasting effect: WifiService takes a network that
-// failed that way out of automatic selection until the user re-enters
-// its password (connectivity spec 4.2). So only failures that really
-// mean "wrong credentials" map to it. The driver cannot tell a rejected
+// failed that way three times in a row out of automatic selection until
+// the user re-enters its password (connectivity spec 4.2). So only
+// failures that really mean "wrong credentials" map to it. The driver cannot tell a rejected
 // WPA2/WPA3 password from frames lost on a weak link -- both surface as
 // an authentication failure or a handshake timeout -- so those count as
 // AuthFailed only while the access point was heard clearly; on a weak

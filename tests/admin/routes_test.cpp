@@ -295,13 +295,22 @@ TEST(Routes, WifiStatusReportsFailureReason) {
     f.fake_wifi->networks = {{"Home", -50, true}};
     f.fake_wifi->passwords["Home"] = "correct-horse";
     ASSERT_TRUE(f.wifi->add_network("Home", "wrong-password", f.now));
-    f.wifi->tick(f.now);  // connect()
-    f.wifi->tick(f.now);  // link() reports the failure
+    uint64_t now = f.now;
+    for (int rejection = 1; rejection <= 3; ++rejection) {
+        f.wifi->tick(now);  // connect()
+        f.wifi->tick(now);  // link() reports the failure
+        Value status = body_json(f.srv->handle(authed(token, Get, "/api/v1/wifi")));
+        EXPECT_EQ(field(status, "state"), Value("backoff"));
+        EXPECT_EQ(field(status, "reason"), Value("auth_failed"));
+        if (rejection < 3) {
+            EXPECT_EQ(field(field(status, "saved").as_list().at(0), "auth_failed"), Value(false));
+        }
+        now = f.wifi->status().retry_at_ms;
+    }
 
+    // After the third rejection in a row the network says so, so the page
+    // can ask for the password.
     Value status = body_json(f.srv->handle(authed(token, Get, "/api/v1/wifi")));
-    EXPECT_EQ(field(status, "state"), Value("backoff"));
-    EXPECT_EQ(field(status, "reason"), Value("auth_failed"));
-    // The rejected network says so, so the page can ask for the password.
     EXPECT_EQ(field(status, "saved"), Value(List{Value(Map{{"ssid", Value("Home")},
                                                            {"ssid_hex", Value("486f6d65")},
                                                            {"auth_failed", Value(true)}})}));

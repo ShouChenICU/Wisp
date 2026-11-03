@@ -8,6 +8,8 @@
 
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -230,6 +232,12 @@ TEST(Console, StatusEscapesSsidAndListsSaved) {
 
 TEST(Console, StatusShowsReasonAndAuthFailed) {
     ConsoleHarness h;
+    // A network parked by an earlier boot (three rejections in a row).
+    std::filesystem::create_directories(h.root + "/system/net");
+    {
+        std::ofstream(h.root + "/system/net/wifi.json")
+            << R"({"networks":[{"ssid":"My Home","password":"password2","auth_failed":true}]})";
+    }
     ASSERT_TRUE(h.app->start());
     ASSERT_EQ(run_command(*h.app, "wifi add Home wrongpass"), "ok");
     ASSERT_TRUE(wait_until(
@@ -237,8 +245,13 @@ TEST(Console, StatusShowsReasonAndAuthFailed) {
     const std::string out = run_command(*h.app, "wifi status");
     EXPECT_EQ(out.rfind("state=backoff ssid=\"Home\" ip= rssi=0 reason=auth_failed\n", 0), 0u)
         << out;
-    EXPECT_NE(out.find("saved ssid=\"Home\" auth_failed"), std::string::npos) << out;
+    // One rejection does not park "Home" yet.
+    EXPECT_NE(out.find("saved ssid=\"My Home\" auth_failed\nsaved ssid=\"Home\""),
+              std::string::npos)
+        << out;
+    EXPECT_EQ(out.find("saved ssid=\"Home\" auth_failed"), std::string::npos) << out;
     EXPECT_EQ(out.find("wrongpass"), std::string::npos);
+    ASSERT_EQ(run_command(*h.app, "wifi forget \"My Home\""), "ok");
 
     ASSERT_EQ(run_command(*h.app, "wifi add Home password1"), "ok");
     ASSERT_TRUE(wait_until(

@@ -658,8 +658,8 @@ TEST(WifiService, BackoffEventsCarryFailureReason) {
     auto& svc = f.make();
     ASSERT_TRUE(svc.init(0));
 
-    // A rejected network is not retried automatically, so the password
-    // failure comes last.
+    // The password failure comes last: new credentials follow it before
+    // the backoff retries the old ones.
     f.wifi->reachable = false;
     tick2(svc, 0);  // router unreachable
     f.wifi->networks.clear();
@@ -901,6 +901,102 @@ TEST(WifiService, NonUtf8SsidSurvivesRestart) {
     EXPECT_EQ(again.saved_ssids(), (std::vector<std::string>{gbk}));
 }
 
+// Rejects the password of `ssid` `times` times in a row, starting at
+// `now`; each attempt is the one the backoff schedules next. Returns the
+// time just after the last attempt.
+uint64_t reject_times(Fixture& f, WifiService& svc, int times, uint64_t now) {
+    for (int i = 0; i < times; ++i) {
+        tick2(svc, now);
+        EXPECT_EQ(svc.status().reason, "auth_failed");
+        now = svc.status().retry_at_ms;
+    }
+    (void)f;
+    return now;
+}
+
+// One rejected handshake can be a lost EAPOL frame (router reboot, busy
+// channel), so a network is only left out of automatic selection after
+// three rejections in a row (spec 4.2).
+TEST(WifiService, ParksANetworkOnlyAfterThreeConsecutiveRejections) {
+    Fixture f;
+    f.in_range("B", -40, "passwordB");
+    f.seed({{"B", "wrongpassB"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+
+    uint64_t now = reject_times(f, svc, 2, 0);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 2);
+    EXPECT_FALSE(svc.saved_networks()[0].auth_failed);
+
+    now = reject_times(f, svc, 1, now);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 3);
+    EXPECT_TRUE(svc.saved_networks()[0].auth_failed);
+
+    // Parked: later attempts scan but never retry the rejected password.
+    tick2(svc, now);
+    tick2(svc, svc.status().retry_at_ms);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 3);
+    EXPECT_EQ(svc.status().state, WifiState::Backoff);
+}
+
+TEST(WifiService, ASuccessfulConnectResetsTheRejectionCount) {
+    Fixture f;
+    f.in_range("B", -40, "passwordB");
+    f.seed({{"B", "samepassB"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    uint64_t now = reject_times(f, svc, 2, 0);
+
+    f.wifi->passwords["B"] = "samepassB";  // the handshake goes through
+    tick2(svc, now);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+
+    f.wifi->passwords["B"] = "passwordB";
+    f.wifi->set_link(WifiLink{});
+    now = reject_times(f, svc, 2, now + 1000);
+    EXPECT_FALSE(svc.saved_networks()[0].auth_failed);
+    reject_times(f, svc, 1, now);
+    EXPECT_TRUE(svc.saved_networks()[0].auth_failed);
+}
+
+// Failures for other reasons say nothing about the password: they neither
+// count towards parking nor interrupt a run of rejections.
+TEST(WifiService, OtherFailuresDoNotCountAsRejections) {
+    Fixture f;
+    f.in_range("B", -40, "passwordB");
+    f.seed({{"B", "wrongpassB"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    uint64_t now = reject_times(f, svc, 2, 0);
+
+    f.wifi->reachable = false;
+    tick2(svc, now);
+    EXPECT_EQ(svc.status().reason, "other");
+    now = svc.status().retry_at_ms;
+    EXPECT_FALSE(svc.saved_networks()[0].auth_failed);
+
+    f.wifi->reachable = true;
+    reject_times(f, svc, 1, now);
+    EXPECT_TRUE(svc.saved_networks()[0].auth_failed);
+}
+
+// Re-adding a network (the user picking it again, with the same or a new
+// password) starts its count over.
+TEST(WifiService, ReAddingResetsTheRejectionCount) {
+    Fixture f;
+    f.in_range("B", -40, "passwordB");
+    f.seed({{"B", "wrongpassB"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    uint64_t now = reject_times(f, svc, 2, 0);
+
+    ASSERT_TRUE(svc.add_network("B", "wrongpassB", now));
+    now = reject_times(f, svc, 2, now);
+    EXPECT_FALSE(svc.saved_networks()[0].auth_failed);
+    reject_times(f, svc, 1, now);
+    EXPECT_TRUE(svc.saved_networks()[0].auth_failed);
+}
+
 // A wrong password must not strand the device: the rejected network is left
 // out of automatic selection, so the device falls back to another saved
 // network instead of retrying the stronger, rejected one forever.
@@ -915,11 +1011,11 @@ TEST(WifiService, AuthFailedNetworkIsSkippedUntilReAdded) {
     ASSERT_EQ(svc.status().state, WifiState::Connected);
     ASSERT_EQ(svc.status().ssid, "A");
 
+    // The direct attempt on B and the two scans after it all pick B (the
+    // stronger one) until its third rejection parks it.
     ASSERT_TRUE(svc.add_network("B", "wrongpassB", 1000));
-    tick2(svc, 1000);  // the direct attempt on B is rejected
-    EXPECT_EQ(svc.status().state, WifiState::Backoff);
-    EXPECT_EQ(svc.status().reason, "auth_failed");
-    EXPECT_EQ(f.wifi->connect_calls.load(), 2);
+    uint64_t now = reject_times(f, svc, 3, 1000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 4);
     auto saved = svc.saved_networks();
     ASSERT_EQ(saved.size(), 2u);
     EXPECT_EQ(saved[0].ssid, "A");
@@ -927,26 +1023,26 @@ TEST(WifiService, AuthFailedNetworkIsSkippedUntilReAdded) {
     EXPECT_EQ(saved[1].ssid, "B");
     EXPECT_TRUE(saved[1].auth_failed);
 
-    tick2(svc, 6000);  // B is stronger, but excluded: back to A
-    EXPECT_EQ(f.wifi->connect_calls.load(), 3);
+    tick2(svc, now);  // B is stronger, but excluded: back to A
+    EXPECT_EQ(f.wifi->connect_calls.load(), 5);
     EXPECT_EQ(svc.status().state, WifiState::Connected);
     EXPECT_EQ(svc.status().ssid, "A");
 
     f.wifi->set_link(WifiLink{});  // A drops; the reconnect still skips B
-    tick2(svc, 7000);
-    EXPECT_EQ(f.wifi->connect_calls.load(), 4);
+    tick2(svc, now + 1000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 6);
     EXPECT_EQ(svc.status().ssid, "A");
 
     // New credentials clear the flag and B is tried straight away.
-    ASSERT_TRUE(svc.add_network("B", "passwordB", 8000));
+    ASSERT_TRUE(svc.add_network("B", "passwordB", now + 2000));
     EXPECT_FALSE(svc.saved_networks()[1].auth_failed);
-    tick2(svc, 8000);
+    tick2(svc, now + 2000);
     EXPECT_EQ(svc.status().state, WifiState::Connected);
     EXPECT_EQ(svc.status().ssid, "B");
 
     // Later automatic selection considers B again (and prefers it).
     f.wifi->set_link(WifiLink{});
-    tick2(svc, 9000);
+    tick2(svc, now + 3000);
     EXPECT_EQ(svc.status().ssid, "B");
 }
 
@@ -957,8 +1053,8 @@ TEST(WifiService, AuthFailedFlagSurvivesRestart) {
     f.seed({{"A", "passwordA"}, {"B", "wrongpassB"}});
     auto& svc = f.make();
     ASSERT_TRUE(svc.init(0));
-    tick2(svc, 0);  // strongest saved network first: B, rejected
-    ASSERT_EQ(svc.status().reason, "auth_failed");
+    reject_times(f, svc, 3, 0);  // strongest saved network first: B, rejected
+    ASSERT_TRUE(svc.saved_networks()[1].auth_failed);
 
     auto& again = f.make();
     ASSERT_TRUE(again.init(0));
@@ -969,24 +1065,33 @@ TEST(WifiService, AuthFailedFlagSurvivesRestart) {
     tick2(again, 0);
     EXPECT_EQ(again.status().state, WifiState::Connected);
     EXPECT_EQ(again.status().ssid, "A");
-    EXPECT_EQ(f.wifi->connect_calls.load(), 2);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 4);
 }
 
 // With every saved network rejected, the service keeps scanning on the
-// usual backoff schedule but never retries the rejected credentials.
+// usual backoff schedule but never retries the rejected credentials, and
+// its status names a rejected network with reason "auth_failed" (not
+// "not_found"): only new credentials can help.
 TEST(WifiService, OnlyAuthFailedNetworksMeansBackoffWithoutAttempts) {
     Fixture f;
     f.in_range("B", -40, "passwordB");
-    f.seed({{"B", "wrongpassB"}});
+    f.seed({{"B", "wrongpassB"}, {"C", "passwordC"}});
     auto& svc = f.make();
     ASSERT_TRUE(svc.init(0));
-    tick2(svc, 0);
-    EXPECT_EQ(f.wifi->connect_calls.load(), 1);
-    tick2(svc, 5000);
-    tick2(svc, 15000);
-    EXPECT_EQ(f.wifi->connect_calls.load(), 1);
-    EXPECT_EQ(f.wifi->scan_calls.load(), 3);
+    uint64_t now = reject_times(f, svc, 3, 0);
+    ASSERT_EQ(f.wifi->connect_calls.load(), 3);
+    // C is out of range and not rejected: an ordinary "not found" wait.
+    tick2(svc, now);
+    EXPECT_EQ(svc.status().reason, "not_found");
+
+    ASSERT_TRUE(svc.forget_network("C"));
+    tick2(svc, svc.status().retry_at_ms);
+    tick2(svc, svc.status().retry_at_ms);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 3);
+    EXPECT_EQ(f.wifi->scan_calls.load(), 6);
     EXPECT_EQ(svc.status().state, WifiState::Backoff);
+    EXPECT_EQ(svc.status().reason, "auth_failed");
+    EXPECT_EQ(svc.status().ssid, "B");
 }
 
 // Browsers only see SSIDs through JSON, which cannot carry bytes that are
