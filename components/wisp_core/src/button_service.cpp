@@ -34,6 +34,9 @@ void ButtonService::start() {
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         refresh_buttons();
+        for (auto& state : buttons_) {
+            state.ignore_until_release = state.button->pressed();
+        }
     }
     timer_->start();
 }
@@ -98,6 +101,11 @@ void ButtonService::poll(uint64_t now_ms) {
 
     for (auto& state : buttons_) {
         bool down = state.button->pressed();
+
+        if (state.ignore_until_release) {
+            state.ignore_until_release = down;
+            continue;
+        }
 
         if (down && !state.pressed) {
             // Freshly pressed.

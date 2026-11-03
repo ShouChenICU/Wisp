@@ -110,6 +110,12 @@ private:
         bool pressed = false;
         uint64_t down_at = 0;
         bool long_sent = false;
+        // Set for a button found already pressed when start() runs: that
+        // press began before anyone was watching (typically the power key
+        // still held from powering the board on), so it is swallowed
+        // until released rather than reported as a press of unknown
+        // length.
+        bool ignore_until_release = false;
     };
 
     void refresh_buttons();

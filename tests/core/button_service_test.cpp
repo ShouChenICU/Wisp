@@ -199,3 +199,32 @@ TEST(ButtonService, StartCalledTwiceWhileHeldDoesNotDuplicateEvents) {
     EXPECT_EQ(topics, (std::vector<std::string>{"button.power.down", "button.power.long",
                                                 "button.power.up"}));
 }
+
+// A button already held when start() runs (e.g. the power key still
+// down from the press that powered the board on) produces no events for
+// that press; the next press after its release is reported normally.
+TEST(ButtonService, ButtonHeldAtStartIsIgnoredUntilReleased) {
+    DeviceRegistry registry;
+    auto btn = std::make_shared<FakeButton>("button.power");
+    registry.add(btn);
+    EventBus bus;
+    bus.start();
+    std::vector<std::string> topics;
+    bus.subscribe("", [&](const Event& e) { topics.push_back(e.topic); });
+
+    ButtonService svc(registry, bus, /*long_press_ms=*/50, /*poll_ms=*/5);
+    btn->down = true;
+    svc.start();
+    wisp::os::sleep_ms(100);  // well past long_press_ms while still held
+    btn->down = false;
+    wisp::os::sleep_ms(20);
+    btn->down = true;
+    wisp::os::sleep_ms(20);
+    btn->down = false;
+    wisp::os::sleep_ms(20);
+    svc.stop();
+    ASSERT_TRUE(bus.wait_idle(1000));
+
+    EXPECT_EQ(topics, (std::vector<std::string>{"button.power.down", "button.power.up",
+                                                "button.power.short"}));
+}
