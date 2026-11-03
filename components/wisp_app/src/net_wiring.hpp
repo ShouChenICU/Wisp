@@ -41,6 +41,7 @@
 
 #include "wisp/admin/admin_server.hpp"
 #include "wisp/app/app.hpp"
+#include "wisp/app/power_manager.hpp"
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
@@ -65,6 +66,9 @@ struct NetWiringDeps {
     core::SystemSettings& system_settings;
     // GET /device reports its last battery sample; null: battery unknown.
     const core::PowerMonitor* power_monitor = nullptr;
+    // Read every tick so a lost power.state event cannot leave Wi-Fi in
+    // the wrong standby mode; null: only the event is followed.
+    const PowerManager* power_manager = nullptr;
     // Shows the factory-reset confirmation on the device (AdminDeps::
     // request_factory_reset). Empty when there is no screen to confirm on:
     // the route then answers 503.

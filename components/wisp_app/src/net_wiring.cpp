@@ -155,6 +155,9 @@ void NetWiring::run() {
     while (!stopping_.load()) {
         const uint64_t now = os::now_ms();
         if (wifi_) {
+            if (deps_.power_manager != nullptr) {
+                wifi_->set_standby(deps_.power_manager->standby(), now);  // no-op if unchanged
+            }
             wifi_->tick(now);
             sta_up_.store(wifi_->status().state == net::WifiState::Connected);
             ap_up_.store(wifi_->ap_status().active);

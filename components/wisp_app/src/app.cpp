@@ -145,6 +145,7 @@ Result<void> App::start() {
         .llm = impl_->llm,
         .system_settings = impl_->system_settings,
         .power_monitor = impl_->power_monitor.get(),
+        .power_manager = impl_->power_manager.get(),
         // Only a device with a screen can confirm a factory reset.
         .request_factory_reset =
             impl_->ui ? std::function<void()>([this] { request_factory_reset(*this); }) : nullptr,

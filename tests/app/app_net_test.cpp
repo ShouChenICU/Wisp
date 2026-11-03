@@ -305,6 +305,36 @@ TEST(AppNet, StandbyEventReachesWifiService) {
         wait_until([&] { return h.app->wifi()->status().state == WifiState::Connected; }, 3000));
 }
 
+// Standby reaches the Wi-Fi service even when its power.state event is
+// lost: the net task also reads PowerManager::standby() each tick.
+TEST(AppNet, StandbyReachesWifiServiceWhenTheEventIsLost) {
+    NetHarness h({.saved = {{"Home", "password1"}}, .idle_off_min = 0});
+    ASSERT_TRUE(h.app->start());
+    ASSERT_TRUE(
+        wait_until([&] { return h.app->wifi()->status().state == WifiState::Connected; }, 3000));
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    auto block = h.app->bus().subscribe("test.block", [&](const wisp::core::Event&) {
+        entered.give();
+        release.take(wisp::os::kForever);
+    });
+    h.app->bus().publish(wisp::core::Event{"test.block", "test"});
+    ASSERT_TRUE(entered.take(3000));
+
+    h.app->power_manager()->enter_standby();
+    for (int i = 0; i < 256; ++i) h.app->bus().publish(wisp::core::Event{"test.flood", "test"});
+    const bool off =
+        wait_until([&] { return h.app->wifi()->status().state == WifiState::Off; }, 3000);
+    h.app->power_manager()->exit_standby();
+    const bool back =
+        wait_until([&] { return h.app->wifi()->status().state == WifiState::Connected; }, 3000);
+
+    release.give();
+    h.app->bus().unsubscribe(block);
+    EXPECT_TRUE(off);
+    EXPECT_TRUE(back);
+}
+
 TEST(AppNet, BootDoesNotWaitForWifi) {
     NetHarness h({.saved = {{"Home", "password1"}}});
     h.wifi->on_scan = [] { wisp::os::sleep_ms(3000); };
