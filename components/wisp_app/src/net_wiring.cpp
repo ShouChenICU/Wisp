@@ -16,12 +16,6 @@ namespace {
 
 constexpr const char* kTag = "net";
 
-bool payload_string_is(const core::Event& e, const char* key, const char* want) {
-    auto it = e.payload.find(key);
-    return it != e.payload.end() && it->second.type() == Value::Type::String &&
-           it->second.as_string() == want;
-}
-
 }  // namespace
 
 NetWiring::NetWiring(NetWiringDeps deps) : deps_(deps) {}
@@ -63,12 +57,9 @@ void NetWiring::start() {
         deps_.report.set_note(
             "net", wifi_->status().state == net::WifiState::Connecting ? "connecting" : "off");
 
-        net::WifiService* wifi = wifi_.get();
-        subscriptions_.push_back(deps_.bus.subscribe("power.state", [wifi](const core::Event& e) {
-            wifi->set_standby(payload_string_is(e, "state", "standby"), os::now_ms());
-        }));
-        // Only for a prompt reaction: run() reads the state itself.
-        for (const char* topic : {"net.wifi.state", "net.ap.state"}) {
+        // Only for a prompt reaction: run() reads the state itself, standby
+        // from PowerManager, so a late event cannot flip it.
+        for (const char* topic : {"power.state", "net.wifi.state", "net.ap.state"}) {
             subscriptions_.push_back(
                 deps_.bus.subscribe(topic, [this](const core::Event&) { wake_.give(); }));
         }

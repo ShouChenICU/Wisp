@@ -335,6 +335,27 @@ TEST(AppNet, StandbyReachesWifiServiceWhenTheEventIsLost) {
     EXPECT_TRUE(back);
 }
 
+// PowerManager is the only source of truth for standby: a stale or stray
+// power.state event (delivered late by the bus) must not switch Wi-Fi off
+// while the device is active.
+TEST(AppNet, AStalePowerStateEventDoesNotFlipStandby) {
+    NetHarness h({.saved = {{"Home", "password1"}}, .idle_off_min = 0});
+    ASSERT_TRUE(h.app->start());
+    ASSERT_TRUE(
+        wait_until([&] { return h.app->wifi()->status().state == WifiState::Connected; }, 3000));
+    ASSERT_FALSE(h.app->power_manager()->standby());
+    const int before = h.wifi->disconnect_calls.load();
+    for (int i = 0; i < 40; ++i) {
+        h.app->bus().publish(wisp::core::Event{
+            "power.state", "test", 0, wisp::Properties{{"state", wisp::Value("standby")}}});
+        wisp::os::sleep_ms(25);
+    }
+    ASSERT_TRUE(h.app->bus().wait_idle(2000));
+    wisp::os::sleep_ms(300);  // a few net-task ticks
+    EXPECT_EQ(h.wifi->disconnect_calls.load(), before);
+    EXPECT_EQ(h.app->wifi()->status().state, WifiState::Connected);
+}
+
 TEST(AppNet, BootDoesNotWaitForWifi) {
     NetHarness h({.saved = {{"Home", "password1"}}});
     h.wifi->on_scan = [] { wisp::os::sleep_ms(3000); };

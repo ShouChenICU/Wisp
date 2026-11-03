@@ -7,10 +7,11 @@
 //   - builds PairingService (and, with a "net.wifi" device, WifiService)
 //     and init()s them -- WifiService::init() only loads the saved list,
 //     so nothing here touches the radio;
-//   - subscribes to power.state (-> WifiService::set_standby()) and to
-//     net.wifi.state / net.ap.state (only to wake the task: which
-//     interfaces are up is read from WifiService each tick, so a dropped
-//     event cannot leave the servers in the wrong state);
+//   - subscribes to power.state, net.wifi.state and net.ap.state, only to
+//     wake the task: each tick it applies PowerManager::standby() to
+//     WifiService::set_standby() and reads which interfaces are up from
+//     WifiService, so a dropped or late event cannot leave standby or the
+//     servers in the wrong state;
 //   - with Platform::http_server, builds the AdminServer and, when
 //     http_always_on, starts serving right away. Platform::captive_server
 //     (if any) runs AdminServer::captive_handler() on port 80 exactly
@@ -66,8 +67,8 @@ struct NetWiringDeps {
     core::SystemSettings& system_settings;
     // GET /device reports its last battery sample; null: battery unknown.
     const core::PowerMonitor* power_monitor = nullptr;
-    // Read every tick so a lost power.state event cannot leave Wi-Fi in
-    // the wrong standby mode; null: only the event is followed.
+    // The standby state, applied to WifiService every tick; null: Wi-Fi
+    // never enters standby.
     const PowerManager* power_manager = nullptr;
     // Shows the factory-reset confirmation on the device (AdminDeps::
     // request_factory_reset). Empty when there is no screen to confirm on:
