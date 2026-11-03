@@ -123,3 +123,5 @@ target_compile_definitions(asset_pack_test PRIVATE
     WISP_FIXTURE_WPAK="${WISP_FIXTURE_WPAK}"
     WISP_FIXTURE_WEB_DIR="${WISP_FIXTURE_WEB_DIR}"
 )
+wisp_test(NAME wifi_service_test SRCS net/wifi_service_test.cpp
+          LIBS wisp_net wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)

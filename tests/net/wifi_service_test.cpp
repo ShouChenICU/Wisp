@@ -1,0 +1,759 @@
+#include "wisp/net/wifi_service.hpp"
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <random>
+#include <regex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "support/fake_devices.hpp"
+#include "support/fake_wifi.hpp"
+#include "support/temp_dir.hpp"
+#include "wisp/base/error.hpp"
+#include "wisp/base/json.hpp"
+#include "wisp/base/value.hpp"
+#include "wisp/core/device_registry.hpp"
+#include "wisp/core/event_bus.hpp"
+#include "wisp/core/log.hpp"
+#include "wisp/core/settings.hpp"
+#include "wisp/core/storage_manager.hpp"
+#include "wisp/port/sim/settings_json_file.hpp"
+
+using wisp::ErrorCode;
+using wisp::core::DeviceRegistry;
+using wisp::core::Event;
+using wisp::core::EventBus;
+using wisp::core::Settings;
+using wisp::core::StorageManager;
+using wisp::hal::WifiLink;
+using wisp::hal::WifiLinkState;
+using wisp::net::ApSession;
+using wisp::net::WifiService;
+using wisp::net::WifiServiceConfig;
+using wisp::net::WifiState;
+using wisp::port::sim::JsonFileSettingsBackend;
+using wisp::test::FakeStorage;
+using wisp::test::FakeWifi;
+
+namespace {
+
+// A started bus collecting every "net."-prefixed event, a StorageManager
+// over a temp dir, a JSON settings backend and a FakeWifi. Tests advance
+// time by passing explicit now_ms values to the service.
+struct Fixture {
+    Fixture() : dir(wisp::test::temp_dir().string()) {
+        registry.add(std::make_shared<FakeStorage>("storage.int", dir, /*removable=*/false));
+        storage = std::make_unique<StorageManager>(registry, bus);
+        EXPECT_TRUE(storage->init());
+        backend = std::make_unique<JsonFileSettingsBackend>(dir + "/settings.json");
+        wifi = std::make_shared<FakeWifi>("net.wifi");
+        bus.start();
+        bus.subscribe("net.", [this](const Event& e) {
+            std::lock_guard<std::mutex> lock(mutex);
+            events.push_back(e);
+        });
+    }
+
+    ~Fixture() {
+        svc.reset();
+        bus.stop();
+    }
+
+    WifiService& make(WifiServiceConfig config = {}) {
+        svc.reset();
+        svc = std::make_unique<WifiService>(
+            wifi, *storage, bus, Settings(*backend, "net"),
+            [this](uint8_t* out, size_t len) {
+                std::lock_guard<std::mutex> lock(mutex);
+                for (size_t i = 0; i < len; ++i) {
+                    if (!scripted_random.empty()) {
+                        out[i] = scripted_random.front();
+                        scripted_random.erase(scripted_random.begin());
+                    } else {
+                        out[i] = static_cast<uint8_t>(rng());
+                    }
+                }
+            },
+            config);
+        return *svc;
+    }
+
+    // Puts a network in the fake radio's range. Empty password = open.
+    void in_range(const std::string& ssid, int rssi, const std::string& password = "") {
+        wifi->networks.push_back({ssid, rssi, !password.empty()});
+        if (!password.empty()) {
+            wifi->passwords[ssid] = password;
+        }
+    }
+
+    std::string wifi_json_path() const { return dir + "/system/net/wifi.json"; }
+
+    // Writes net/wifi.json directly, as a previous boot would have left it.
+    void seed(const std::vector<std::pair<std::string, std::string>>& nets) {
+        wisp::List list;
+        for (const auto& [ssid, pw] : nets) {
+            list.push_back(wisp::Map{{"ssid", ssid}, {"password", pw}});
+        }
+        std::string json = wisp::to_json(wisp::Map{{"networks", list}});
+        ASSERT_TRUE(storage->write_atomic(wifi_json_path(),
+                                          std::vector<uint8_t>(json.begin(), json.end())));
+    }
+
+    std::vector<Event> topic(const std::string& t) {
+        bus.wait_idle(2000);
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<Event> out;
+        for (const auto& e : events) {
+            if (e.topic == t) out.push_back(e);
+        }
+        return out;
+    }
+
+    std::vector<Event> all_events() {
+        bus.wait_idle(2000);
+        std::lock_guard<std::mutex> lock(mutex);
+        return events;
+    }
+
+    void clear_events() {
+        bus.wait_idle(2000);
+        std::lock_guard<std::mutex> lock(mutex);
+        events.clear();
+    }
+
+    std::string dir;
+    DeviceRegistry registry;
+    EventBus bus;
+    std::unique_ptr<StorageManager> storage;
+    std::unique_ptr<JsonFileSettingsBackend> backend;
+    std::shared_ptr<FakeWifi> wifi;
+    std::unique_ptr<WifiService> svc;
+
+    std::mutex mutex;
+    std::vector<Event> events;
+    std::mt19937 rng{12345};
+    std::vector<uint8_t> scripted_random;
+};
+
+std::string str_of(const wisp::Properties& p, const char* key) {
+    auto it = p.find(key);
+    return it == p.end() ? std::string() : it->second.as_string();
+}
+
+// FakeWifi resolves connect() on the next link() poll, so ticking twice at
+// the same timestamp runs "start attempt" and "observe outcome" without
+// letting time pass in between -- keeps backoff intervals exact.
+void tick2(WifiService& svc, uint64_t now) {
+    svc.tick(now);
+    svc.tick(now);
+}
+
+}  // namespace
+
+TEST(WifiService, PicksStrongestSavedNetwork) {
+    Fixture f;
+    f.in_range("A", -70, "passwordA");
+    f.in_range("B", -40, "passwordB");
+    f.in_range("Stranger", -20);  // strongest, but not saved
+    f.seed({{"A", "passwordA"}, {"B", "passwordB"}});
+    auto& svc = f.make();
+
+    ASSERT_TRUE(svc.init(0));
+    EXPECT_EQ(svc.status().state, WifiState::Connecting);
+    // init() never touches the radio; boot must not wait for a scan.
+    EXPECT_EQ(f.wifi->scan_calls.load(), 0);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 0);
+
+    svc.tick(0);
+    EXPECT_EQ(f.wifi->scan_calls.load(), 1);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 1);
+    EXPECT_EQ(f.wifi->link().ssid, "B");
+
+    svc.tick(250);
+    auto st = svc.status();
+    EXPECT_EQ(st.state, WifiState::Connected);
+    EXPECT_EQ(st.ssid, "B");
+    EXPECT_EQ(st.ip, "192.168.1.50");
+    EXPECT_EQ(st.rssi, -40);
+    EXPECT_TRUE(f.wifi->power_save.load());
+}
+
+TEST(WifiService, BackoffDoublesAndCaps) {
+    Fixture f;
+    f.in_range("A", -50, "passwordA");
+    f.wifi->reachable = false;
+    f.seed({{"A", "passwordA"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+
+    std::vector<uint64_t> connect_times;
+    int seen = 0;
+    for (uint64_t now = 0; connect_times.size() < 11; now += 250) {
+        tick2(svc, now);
+        if (f.wifi->connect_calls.load() != seen) {
+            seen = f.wifi->connect_calls.load();
+            connect_times.push_back(now);
+        }
+        if (connect_times.size() == 3) {
+            EXPECT_EQ(svc.status().state, WifiState::Backoff);
+        }
+        ASSERT_LT(now, 5'000'000u);
+    }
+
+    std::vector<uint64_t> expected = {5000,   10000,  20000,  40000,  80000,
+                                      160000, 300000, 300000, 300000, 300000};
+    std::vector<uint64_t> intervals;
+    for (size_t i = 1; i < connect_times.size(); ++i) {
+        intervals.push_back(connect_times[i] - connect_times[i - 1]);
+    }
+    EXPECT_EQ(intervals, expected);
+    // Each retry announces exactly one connecting and one backoff.
+    auto states = f.topic("net.wifi.state");
+    ASSERT_GE(states.size(), 4u);
+    EXPECT_EQ(str_of(states[0].payload, "state"), "connecting");
+    EXPECT_EQ(str_of(states[1].payload, "state"), "backoff");
+    EXPECT_EQ(str_of(states[2].payload, "state"), "connecting");
+    EXPECT_EQ(str_of(states[3].payload, "state"), "backoff");
+}
+
+TEST(WifiService, NoSavedNetworkInRangeCountsAsFailure) {
+    Fixture f;
+    f.in_range("Other", -50);
+    f.seed({{"Away", "passwordX"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+
+    tick2(svc, 0);
+    EXPECT_EQ(f.wifi->scan_calls.load(), 1);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 0);
+    EXPECT_EQ(svc.status().state, WifiState::Backoff);
+
+    tick2(svc, 4999);
+    EXPECT_EQ(f.wifi->scan_calls.load(), 1);
+    tick2(svc, 5000);
+    EXPECT_EQ(f.wifi->scan_calls.load(), 2);
+    tick2(svc, 14999);
+    EXPECT_EQ(f.wifi->scan_calls.load(), 2);
+    tick2(svc, 15000);
+    EXPECT_EQ(f.wifi->scan_calls.load(), 3);
+}
+
+TEST(WifiService, ResetsBackoffAfterConnect) {
+    Fixture f;
+    f.in_range("A", -50, "passwordA");
+    f.wifi->reachable = false;
+    f.seed({{"A", "passwordA"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+
+    tick2(svc, 0);      // attempt 1 fails -> wait 5 s
+    tick2(svc, 5000);   // attempt 2 fails -> wait 10 s
+    tick2(svc, 14999);  // still waiting
+    EXPECT_EQ(f.wifi->connect_calls.load(), 2);
+
+    f.wifi->reachable = true;
+    tick2(svc, 15000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 3);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+
+    // Drop, and the immediate reconnect fails: the wait is back to 5 s.
+    f.wifi->reachable = false;
+    f.wifi->set_link(WifiLink{});
+    tick2(svc, 16000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 4);
+    EXPECT_EQ(svc.status().state, WifiState::Backoff);
+    tick2(svc, 20999);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 4);
+    tick2(svc, 21000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 5);
+}
+
+TEST(WifiService, DropFromConnectedReconnectsImmediately) {
+    Fixture f;
+    f.in_range("A", -50, "passwordA");
+    f.seed({{"A", "passwordA"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    svc.tick(0);
+    svc.tick(250);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    f.clear_events();
+
+    f.wifi->set_link(WifiLink{});  // Idle: signal lost
+    svc.tick(500);
+    EXPECT_EQ(svc.status().state, WifiState::Connecting);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 2);
+    EXPECT_EQ(f.wifi->scan_calls.load(), 2);
+    svc.tick(750);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+
+    WifiLink failed;
+    failed.state = WifiLinkState::Failed;
+    failed.ssid = "A";
+    f.wifi->set_link(failed);
+    svc.tick(1000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 3);
+    svc.tick(1250);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+
+    auto states = f.topic("net.wifi.state");
+    ASSERT_EQ(states.size(), 4u);
+    EXPECT_EQ(str_of(states[0].payload, "state"), "connecting");
+    EXPECT_EQ(str_of(states[1].payload, "state"), "connected");
+    EXPECT_EQ(str_of(states[2].payload, "state"), "connecting");
+    EXPECT_EQ(str_of(states[3].payload, "state"), "connected");
+}
+
+TEST(WifiService, ConnectTimeoutCountsAsFailure) {
+    Fixture f;
+    f.in_range("A", -50, "passwordA");
+    f.seed({{"A", "passwordA"}});
+    WifiServiceConfig config;
+    config.connect_timeout_ms = 15000;
+    auto& svc = f.make(config);
+    ASSERT_TRUE(svc.init(0));
+
+    svc.tick(0);
+    WifiLink stuck;
+    stuck.state = WifiLinkState::Connecting;
+    stuck.ssid = "A";
+    f.wifi->set_link(stuck);
+    svc.tick(14999);
+    EXPECT_EQ(svc.status().state, WifiState::Connecting);
+    EXPECT_EQ(f.wifi->disconnect_calls.load(), 0);
+    svc.tick(15000);
+    EXPECT_EQ(svc.status().state, WifiState::Backoff);
+    EXPECT_EQ(f.wifi->disconnect_calls.load(), 1);  // abandon the stuck attempt
+    svc.tick(19999);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 1);
+    svc.tick(20000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 2);
+}
+
+TEST(WifiService, AddNetworkValidatesAndCapsAtFive) {
+    Fixture f;
+    f.in_range("N5", -60, "password5");
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+
+    EXPECT_EQ(svc.add_network("", "", 0).error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(svc.add_network(std::string(33, 's'), "", 0).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(svc.add_network("N1", "1234567", 0).error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(svc.add_network("N1", std::string(64, 'p'), 0).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_TRUE(svc.saved_ssids().empty());
+
+    EXPECT_TRUE(svc.add_network(std::string(32, 's'), "12345678", 0));
+    EXPECT_TRUE(svc.add_network("N2", std::string(63, 'p'), 0));
+    EXPECT_TRUE(svc.add_network("N3", "", 0));  // open network
+    EXPECT_TRUE(svc.add_network("N4", "password4", 0));
+    EXPECT_TRUE(svc.add_network("N5", "password5", 0));
+    EXPECT_EQ(svc.add_network("N6", "password6", 0).error().code, ErrorCode::QuotaExceeded);
+    EXPECT_TRUE(svc.add_network("N3", "newpassword", 0));  // overwrite still allowed
+    EXPECT_EQ(svc.saved_ssids(),
+              (std::vector<std::string>{std::string(32, 's'), "N2", "N3", "N4", "N5"}));
+
+    // The last successful add is tried directly, without a scan.
+    EXPECT_TRUE(svc.add_network("N5", "password5", 0));
+    EXPECT_EQ(svc.status().state, WifiState::Connecting);
+    svc.tick(0);
+    EXPECT_EQ(f.wifi->scan_calls.load(), 0);
+    EXPECT_EQ(f.wifi->link().ssid, "N5");
+    svc.tick(250);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+    EXPECT_EQ(svc.status().ssid, "N5");
+}
+
+TEST(WifiService, PersistsNetworksAcrossInstancesWithoutLoggingPasswords) {
+    wisp::log::reset_for_test();
+    wisp::log::init(64 * 1024);
+    {
+        Fixture f;
+        f.in_range("Home", -50, "homeSecret42");
+        f.wifi->reachable = false;  // exercise the failure log lines too
+        auto& svc = f.make();
+        ASSERT_TRUE(svc.init(0));
+        ASSERT_TRUE(svc.add_network("Home", "homeSecret42", 0));
+        ASSERT_TRUE(svc.add_network("Cafe", "", 0));
+        ASSERT_TRUE(svc.add_network("Work", "workSecret77", 0));
+        ASSERT_TRUE(svc.forget_network("Cafe"));
+        EXPECT_EQ(svc.forget_network("Cafe").error().code, ErrorCode::NotFound);
+        tick2(svc, 0);
+        tick2(svc, 5000);
+        ASSERT_TRUE(svc.start_provisioning(6000));
+        auto ap_password = svc.ap_session()->password;
+
+        auto bytes = f.storage->read_file(f.wifi_json_path());
+        ASSERT_TRUE(bytes);
+        auto doc = wisp::from_json(std::string(bytes.value().begin(), bytes.value().end()));
+        ASSERT_TRUE(doc);
+        const auto& nets = doc.value().find("networks")->as_list();
+        ASSERT_EQ(nets.size(), 2u);
+        EXPECT_EQ(nets[0].find("ssid")->as_string(), "Home");
+        EXPECT_EQ(nets[0].find("password")->as_string(), "homeSecret42");
+        EXPECT_EQ(nets[1].find("ssid")->as_string(), "Work");
+
+        // Second instance over the same storage.
+        auto& again = f.make();
+        ASSERT_TRUE(again.init(10000));
+        EXPECT_EQ(again.saved_ssids(), (std::vector<std::string>{"Home", "Work"}));
+        EXPECT_EQ(again.status().state, WifiState::Connecting);
+
+        std::string log = wisp::log::ring_snapshot();
+        EXPECT_FALSE(log.empty());
+        EXPECT_EQ(log.find("homeSecret42"), std::string::npos) << log;
+        EXPECT_EQ(log.find("workSecret77"), std::string::npos) << log;
+        EXPECT_EQ(log.find(ap_password), std::string::npos) << log;
+    }
+    wisp::log::reset_for_test();
+}
+
+TEST(WifiService, CorruptFileIsReportedButServiceStaysUsable) {
+    Fixture f;
+    std::string junk = "{not json";
+    ASSERT_TRUE(f.storage->write_atomic(f.wifi_json_path(),
+                                        std::vector<uint8_t>(junk.begin(), junk.end())));
+    auto& svc = f.make();
+    EXPECT_FALSE(svc.init(0));
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    EXPECT_TRUE(svc.add_network("Home", "password1", 0));
+    EXPECT_EQ(svc.saved_ssids(), (std::vector<std::string>{"Home"}));
+}
+
+TEST(WifiService, ProvisioningSsidAndPasswordFormat) {
+    Fixture f;
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    // 0->'A', 25->'Z', 26->'a', 51->'z', 52->'0', 61->'9', 62 wraps to 'A',
+    // 255 % 62 = 7 -> 'H'.
+    f.scripted_random = {0, 25, 26, 51, 52, 61, 62, 255};
+
+    auto first = svc.start_provisioning(0);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first.value().ssid, "Wisp-3F2A");
+    EXPECT_EQ(first.value().password, "AZaz09AH");
+    EXPECT_EQ(first.value().ip, "192.168.4.1");
+    EXPECT_TRUE(f.wifi->ap_active.load());
+    EXPECT_EQ(f.wifi->ap_ssid(), "Wisp-3F2A");
+    EXPECT_EQ(f.wifi->ap_password(), "AZaz09AH");
+    ASSERT_TRUE(svc.ap_session().has_value());
+    EXPECT_EQ(svc.ap_session()->password, "AZaz09AH");
+
+    // Starting again while active keeps the running session.
+    EXPECT_EQ(svc.start_provisioning(10).value().password, "AZaz09AH");
+
+    ASSERT_TRUE(svc.stop_provisioning());
+    EXPECT_FALSE(f.wifi->ap_active.load());
+    EXPECT_FALSE(svc.ap_session().has_value());
+    EXPECT_TRUE(svc.stop_provisioning());  // idempotent
+
+    f.wifi->mac_bytes = {0x02, 0x00, 0x00, 0x00, 0xAB, 0x05};
+    auto second = svc.start_provisioning(20);
+    ASSERT_TRUE(second);
+    EXPECT_EQ(second.value().ssid, "Wisp-AB05");
+    EXPECT_TRUE(std::regex_match(second.value().password, std::regex("^[A-Za-z0-9]{8}$")));
+    EXPECT_NE(second.value().password, first.value().password);
+}
+
+TEST(WifiService, ApClosesAfterTenIdleMinutes) {
+    Fixture f;
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.start_provisioning(0));
+
+    svc.tick(599999);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+    svc.tick(600000);
+    EXPECT_FALSE(f.wifi->ap_active.load());
+    EXPECT_FALSE(svc.ap_session().has_value());
+
+    auto ap = f.topic("net.ap.state");
+    ASSERT_EQ(ap.size(), 2u);
+    EXPECT_TRUE(ap[0].payload.at("active").as_bool());
+    EXPECT_EQ(str_of(ap[0].payload, "ssid"), "Wisp-3F2A");
+    EXPECT_FALSE(ap[1].payload.at("active").as_bool());
+
+    // A client resets the idle clock; it restarts when the last one leaves.
+    f.clear_events();
+    ASSERT_TRUE(svc.start_provisioning(1'000'000));
+    f.wifi->ap_client_count = 1;
+    svc.tick(1'100'000);
+    f.wifi->ap_client_count = 0;
+    svc.tick(1'200'000);
+    svc.tick(1'799'999);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+    svc.tick(1'800'000);
+    EXPECT_FALSE(f.wifi->ap_active.load());
+
+    ap = f.topic("net.ap.state");
+    ASSERT_EQ(ap.size(), 4u);
+    EXPECT_EQ(ap[1].payload.at("clients").as_int(), 1);
+    EXPECT_EQ(ap[2].payload.at("clients").as_int(), 0);
+    EXPECT_FALSE(ap[3].payload.at("active").as_bool());
+}
+
+TEST(WifiService, ApLingersThirtySecondsAfterProvisionedConnect) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.start_provisioning(0));
+    f.wifi->ap_client_count = 1;
+    svc.tick(1000);
+
+    ASSERT_TRUE(svc.add_network("Home", "homepass1", 2000));
+    svc.tick(2000);
+    svc.tick(2250);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+
+    svc.tick(32249);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+    svc.tick(32250);
+    EXPECT_FALSE(f.wifi->ap_active.load());
+    auto ap = f.topic("net.ap.state");
+    ASSERT_FALSE(ap.empty());
+    EXPECT_FALSE(ap.back().payload.at("active").as_bool());
+}
+
+TEST(WifiService, ApStaysOpenWhenOldNetworkReconnectsDuringProvisioning) {
+    Fixture f;
+    f.in_range("Old", -50, "oldpass11");
+    f.in_range("New", -60, "newpass22");
+    f.seed({{"Old", "oldpass11"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    svc.tick(0);
+    svc.tick(250);
+    ASSERT_EQ(svc.status().ssid, "Old");
+
+    ASSERT_TRUE(svc.start_provisioning(1000));
+    f.wifi->ap_client_count = 1;
+    f.wifi->set_link(WifiLink{});  // the old network drops and comes back
+    svc.tick(2000);
+    svc.tick(2250);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    ASSERT_EQ(svc.status().ssid, "Old");
+
+    svc.tick(100'000);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+
+    // Only the network the user is provisioning ends the session.
+    ASSERT_TRUE(svc.add_network("New", "newpass22", 200'000));
+    svc.tick(200'000);
+    svc.tick(200'250);
+    ASSERT_EQ(svc.status().ssid, "New");
+    svc.tick(230'249);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+    svc.tick(230'250);
+    EXPECT_FALSE(f.wifi->ap_active.load());
+}
+
+TEST(WifiService, StandbyDisconnectsAfterIdleMinutesAndWakeReconnects) {
+    Fixture f;
+    ASSERT_TRUE(Settings(*f.backend, "net").set("idle_off_min", 10));
+    f.in_range("Home", -50, "homepass1");
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    svc.tick(0);
+    svc.tick(250);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+
+    // A short standby does nothing.
+    svc.set_standby(true, 1000);
+    svc.tick(300'000);
+    svc.set_standby(false, 300'000);
+    svc.tick(1'000'000);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+    EXPECT_EQ(f.wifi->disconnect_calls.load(), 0);
+
+    svc.set_standby(true, 1'000'000);
+    svc.tick(1'599'999);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+    svc.tick(1'600'000);
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    EXPECT_EQ(f.wifi->disconnect_calls.load(), 1);
+
+    // Off because of standby is not a failure: no retries while asleep.
+    int connects = f.wifi->connect_calls.load();
+    svc.tick(2'000'000);
+    svc.tick(3'000'000);
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    EXPECT_EQ(f.wifi->connect_calls.load(), connects);
+
+    svc.set_standby(false, 3'100'000);
+    EXPECT_EQ(svc.status().state, WifiState::Connecting);
+    svc.tick(3'100'000);
+    svc.tick(3'100'250);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+
+    // The setting is read when standby starts.
+    ASSERT_TRUE(Settings(*f.backend, "net").set("idle_off_min", 1));
+    svc.set_standby(true, 4'000'000);
+    svc.tick(4'059'999);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+    svc.tick(4'060'000);
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+}
+
+TEST(WifiService, StateEventsCarryNoPassword) {
+    Fixture f;
+    f.in_range("Home", -50, "wifiSecret99");
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    auto session = svc.start_provisioning(0);
+    ASSERT_TRUE(session);
+    f.wifi->ap_client_count = 1;
+    ASSERT_TRUE(svc.add_network("Home", "wifiSecret99", 100));
+    svc.tick(100);
+    svc.tick(350);
+    svc.tick(40'000);  // linger expires, AP closes
+
+    auto events = f.all_events();
+    int wifi_events = 0;
+    int ap_events = 0;
+    for (const auto& e : events) {
+        std::string json = wisp::to_json(wisp::Value(e.payload));
+        EXPECT_EQ(json.find("wifiSecret99"), std::string::npos) << e.topic << " " << json;
+        EXPECT_EQ(json.find(session.value().password), std::string::npos) << e.topic << " " << json;
+        EXPECT_EQ(json.find("password"), std::string::npos) << e.topic << " " << json;
+        if (e.topic == "net.wifi.state") {
+            ++wifi_events;
+            EXPECT_EQ(e.source, "net.wifi");
+            EXPECT_EQ(e.payload.size(), 4u) << json;
+            EXPECT_TRUE(e.payload.count("state") && e.payload.count("ssid") &&
+                        e.payload.count("ip") && e.payload.count("rssi"))
+                << json;
+        } else if (e.topic == "net.ap.state") {
+            ++ap_events;
+            EXPECT_EQ(e.payload.size(), 3u) << json;
+            EXPECT_TRUE(e.payload.count("active") && e.payload.count("ssid") &&
+                        e.payload.count("clients"))
+                << json;
+        }
+    }
+    EXPECT_GE(wifi_events, 2);
+    EXPECT_GE(ap_events, 3);  // start, client joined, closed
+    auto connected = f.topic("net.wifi.state").back();
+    EXPECT_EQ(str_of(connected.payload, "state"), "connected");
+    EXPECT_EQ(str_of(connected.payload, "ip"), "192.168.1.50");
+    EXPECT_EQ(connected.payload.at("rssi").as_int(), -50);
+}
+
+TEST(WifiService, ScanMarksSavedAndKeepsStrongestDuplicate) {
+    Fixture f;
+    f.in_range("Home", -70, "homepass1");
+    f.in_range("Home", -40, "homepass1");
+    f.in_range("Cafe", -60);
+    f.in_range("", -30);  // hidden
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.add_network("Home", "homepass1", 0));
+
+    auto r = svc.scan();
+    ASSERT_TRUE(r);
+    ASSERT_EQ(r.value().size(), 2u);
+    EXPECT_EQ(r.value()[0].ssid, "Home");
+    EXPECT_EQ(r.value()[0].rssi, -40);
+    EXPECT_TRUE(r.value()[0].saved);
+    EXPECT_TRUE(r.value()[0].secured);
+    EXPECT_EQ(r.value()[1].ssid, "Cafe");
+    EXPECT_FALSE(r.value()[1].saved);
+    EXPECT_FALSE(r.value()[1].secured);
+}
+
+TEST(WifiService, ForgettingCurrentNetworkDisconnects) {
+    Fixture f;
+    f.in_range("A", -40, "passwordA");
+    f.in_range("B", -60, "passwordB");
+    f.seed({{"A", "passwordA"}, {"B", "passwordB"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    svc.tick(0);
+    svc.tick(250);
+    ASSERT_EQ(svc.status().ssid, "A");
+
+    ASSERT_TRUE(svc.forget_network("A"));
+    EXPECT_EQ(f.wifi->disconnect_calls.load(), 1);
+    EXPECT_EQ(svc.status().state, WifiState::Connecting);
+    svc.tick(500);
+    svc.tick(750);
+    EXPECT_EQ(svc.status().ssid, "B");
+
+    ASSERT_TRUE(svc.forget_network("B"));
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    svc.tick(1000);
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+}
+
+TEST(WifiService, ForgetAllClearsEverything) {
+    Fixture f;
+    f.in_range("A", -40, "passwordA");
+    f.seed({{"A", "passwordA"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    svc.tick(0);
+    svc.tick(250);
+    ASSERT_TRUE(svc.start_provisioning(300));
+
+    svc.forget_all();
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    EXPECT_TRUE(svc.saved_ssids().empty());
+    EXPECT_FALSE(f.wifi->ap_active.load());
+    EXPECT_GE(f.wifi->disconnect_calls.load(), 1);
+
+    auto& again = f.make();
+    ASSERT_TRUE(again.init(1000));
+    EXPECT_TRUE(again.saved_ssids().empty());
+    EXPECT_EQ(again.status().state, WifiState::Off);
+}
+
+// Public calls from other threads (HTTP, console, UI) race the tick task.
+// The assertions are weak on purpose; the point is that nothing deadlocks
+// or corrupts state (run under TSan/ASan to make this bite harder).
+TEST(WifiService, ConcurrentCallsAreSafe) {
+    Fixture f;
+    f.in_range("A", -40, "passwordA");
+    f.in_range("B", -60, "passwordB");
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> now{0};
+    std::thread ticker([&] {
+        while (!stop.load()) {
+            svc.tick(now.fetch_add(250));
+        }
+    });
+    std::thread http([&] {
+        for (int i = 0; i < 200; ++i) {
+            (void)svc.add_network(i % 2 ? "A" : "B", i % 2 ? "passwordA" : "passwordB", now.load());
+            (void)svc.scan();
+            if (i % 7 == 0) (void)svc.forget_network("A");
+        }
+    });
+    std::thread ui([&] {
+        for (int i = 0; i < 200; ++i) {
+            (void)svc.status();
+            (void)svc.saved_ssids();
+            (void)svc.ap_session();
+            if (i % 50 == 0) (void)svc.start_provisioning(now.load());
+            if (i % 50 == 25) (void)svc.stop_provisioning();
+            svc.set_standby(i % 2 == 0, now.load());
+        }
+    });
+    http.join();
+    ui.join();
+    stop = true;
+    ticker.join();
+
+    svc.set_standby(false, now.load());
+    EXPECT_LE(svc.saved_ssids().size(), 2u);
+}
