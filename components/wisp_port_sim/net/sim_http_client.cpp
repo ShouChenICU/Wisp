@@ -14,8 +14,12 @@ namespace {
 constexpr const char* kTag = "http_client";
 
 size_t append_body(char* data, size_t size, size_t nmemb, void* user) {
-    static_cast<std::string*>(user)->append(data, size * nmemb);
-    return size * nmemb;
+    auto* body = static_cast<std::string*>(user);
+    const size_t n = size * nmemb;
+    // Returning less than n makes curl fail with CURLE_WRITE_ERROR.
+    if (body->size() + n > SimHttpClient::kMaxResponseBytes) return 0;
+    body->append(data, n);
+    return n;
 }
 
 // "https://host:port" without user info, path or query, any of which may
@@ -127,6 +131,10 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
     // Same scope as the device's client: plain http and https only, no
     // redirects (a redirect could carry the Authorization header elsewhere).
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+    // Explicit, so no build or environment default can turn off the
+    // certificate checks that keep the API key from reaching an impostor.
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
 #if LIBCURL_VERSION_NUM >= 0x075500
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
 #else

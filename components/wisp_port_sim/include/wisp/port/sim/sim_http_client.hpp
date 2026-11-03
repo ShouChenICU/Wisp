@@ -9,12 +9,18 @@
 // the LLM API key) are never logged; a failed request logs only the
 // method, scheme://host part of the URL and curl's error code.
 
+#include <cstddef>
+
 #include "wisp/net/http.hpp"
 
 namespace wisp::port::sim {
 
 class SimHttpClient : public net::HttpClient {
 public:
+    // A larger response body aborts the transfer (transport Other), so a
+    // misbehaving endpoint cannot exhaust memory.
+    static constexpr size_t kMaxResponseBytes = 1024 * 1024;
+
     // Initializes libcurl's global state once per process; construct the
     // first client before spawning threads that use it.
     SimHttpClient();

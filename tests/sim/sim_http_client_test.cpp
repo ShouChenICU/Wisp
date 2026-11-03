@@ -3,7 +3,10 @@
 #include <curl/curl.h>
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "wisp/net/http.hpp"
 #include "wisp/os/os.hpp"
@@ -90,6 +93,37 @@ TEST(SimHttpClient, SlowServerTimesOut) {
     auto res = client.request(req);
     EXPECT_EQ(res.transport, TransportError::Timeout);
     EXPECT_LT(wisp::os::now_ms() - t0, 1400u);
+}
+
+TEST(SimHttpClient, OversizedResponseIsRefused) {
+    // Outlives every response that points into it.
+    static const std::vector<uint8_t> big(SimHttpClient::kMaxResponseBytes + 4096, 'x');
+    static const std::vector<uint8_t> fits(SimHttpClient::kMaxResponseBytes, 'y');
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0,
+                             [](const HttpRequest& req) {
+                                 HttpResponse res;
+                                 res.content_type = "text/plain";
+                                 res.static_body = req.path == "/big"
+                                                       ? std::span<const uint8_t>(big)
+                                                       : std::span<const uint8_t>(fits);
+                                 return res;
+                             },
+                             {}));
+
+    SimHttpClient client;
+    HttpClientRequest req;
+    req.url = url(server.port(), "/big");
+    auto res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::Other);
+    EXPECT_EQ(res.status, 0);
+    EXPECT_TRUE(res.body.empty());
+
+    req.url = url(server.port(), "/fits");
+    res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::None);
+    EXPECT_EQ(res.status, 200);
+    EXPECT_EQ(res.body.size(), SimHttpClient::kMaxResponseBytes);
 }
 
 TEST(SimHttpClient, MapsCurlErrors) {
