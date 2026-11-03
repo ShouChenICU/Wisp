@@ -28,6 +28,10 @@ const char* to_string(ErrorCode code) {
             return "device_failure";
         case ErrorCode::Busy:
             return "busy";
+        case ErrorCode::PermissionDenied:
+            return "permission_denied";
+        case ErrorCode::RateLimited:
+            return "rate_limited";
     }
     return "unknown";
 }

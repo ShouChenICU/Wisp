@@ -32,3 +32,7 @@ TEST(ErrorCode, SnakeCaseNames) {
     EXPECT_STREQ(wisp::to_string(wisp::ErrorCode::StorageUnavailable), "storage_unavailable");
     EXPECT_STREQ(wisp::to_string(wisp::ErrorCode::InvalidArgument), "invalid_argument");
 }
+TEST(ErrorCode, NewCodesHaveNames) {
+    EXPECT_STREQ(wisp::to_string(wisp::ErrorCode::PermissionDenied), "permission_denied");
+    EXPECT_STREQ(wisp::to_string(wisp::ErrorCode::RateLimited), "rate_limited");
+}

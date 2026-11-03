@@ -5,7 +5,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 
 wisp_component(
     NAME wisp_base
-    SRCS src/error.cpp src/value.cpp src/json.cpp
+    SRCS src/error.cpp src/value.cpp src/json.cpp src/sha256.cpp src/base64.cpp
     INCLUDE_DIRS include
     IDF_REQUIRES bblanchon__arduinojson
     HOST_LIBS ArduinoJson

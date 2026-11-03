@@ -19,6 +19,8 @@ enum class ErrorCode {
     QuotaExceeded,
     DeviceFailure,
     Busy,
+    PermissionDenied,
+    RateLimited,
 };
 
 // Returns the snake_case name of `code`, e.g. ErrorCode::InvalidArgument ->
