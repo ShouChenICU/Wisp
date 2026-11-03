@@ -72,8 +72,7 @@ enum class ConfirmFailure { None, WrongCode, ExpiredCode, Locked };
 
 struct PairingConfig {
     uint32_t code_ttl_ms = 120000;
-    // A request_code() within this long of the active code being drawn
-    // keeps that code (see request_code()).
+    // At most one new code per this long (see request_code()).
     uint32_t min_code_interval_ms = 10000;
     int max_attempts = 5;
     uint32_t lock_ms = 300000;
@@ -97,11 +96,13 @@ public:
     // Issues a fresh code valid for code_ttl_ms, replacing any active one,
     // and publishes net.pairing.code {active:true, expires_ms} where
     // expires_ms is the deadline in the now_ms timebase. RateLimited while
-    // locked. The request route needs no authentication, so while the
-    // active code is younger than min_code_interval_ms a request keeps it
-    // and publishes nothing: repeated requests can neither replace the
-    // code the owner is typing nor keep waking the screen faster than
-    // that.
+    // locked. The request route needs no authentication, so a valid code
+    // is reused for its whole lifetime: the call succeeds and publishes
+    // nothing, so repeated requests can neither replace the code the owner
+    // is typing nor wake the screen. Only without a valid code (expired,
+    // cancelled, used, or dropped by a lock) is a new one issued, at most
+    // one per min_code_interval_ms; sooner is RateLimited (code_wait_ms()
+    // says for how long).
     Result<void> request_code(uint64_t now_ms);
 
     // The current code, for the device's screen only. Empty when none is
@@ -135,6 +136,10 @@ public:
 
     // How long code pairing stays locked, 0 when it is not.
     uint64_t lock_remaining_ms(uint64_t now_ms) const;
+
+    // How long until request_code() may issue a new code; 0 when it may
+    // now or when a valid code would be reused. Ignores the lock.
+    uint64_t code_wait_ms(uint64_t now_ms) const;
 
     // Pairs without a code; only for requests that arrived on the setup
     // hotspot (client.iface == Iface::Ap), else PermissionDenied.
@@ -209,7 +214,7 @@ private:
 
     std::optional<std::string> code_;
     uint64_t code_expires_ms_ = 0;
-    uint64_t code_drawn_ms_ = 0;
+    std::optional<uint64_t> code_issued_ms_;  // the last request_code() that drew
     // The code that last timed out, so typing it late reads as "expired"
     // rather than "wrong"; dropped by a new code, a lock or a pairing.
     std::optional<std::string> expired_code_;

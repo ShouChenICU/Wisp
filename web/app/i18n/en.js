@@ -37,6 +37,7 @@ export default {
   'pair.err_expired': 'That code has expired. Get a new one.',
   'pair.err_locked': 'Too many wrong codes, so pairing is locked for a few minutes. Try again later.',
   'pair.err_locked_now': 'Too many wrong codes, so pairing is locked for now.',
+  'pair.err_too_soon': 'A code was shown on the device moments ago. Wait a few seconds, then ask for a new one.',
   'pair.locked_retry_in': 'You can try again in {time}.',
   'pair.success': 'This browser is now paired.',
   'ov.loading_info': 'Reading device info…',

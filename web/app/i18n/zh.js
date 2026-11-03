@@ -36,6 +36,7 @@ export default {
   'pair.err_expired': '配对码已过期，请重新获取。',
   'pair.err_locked': '错误次数过多，配对已暂时锁定几分钟，请稍后再试。',
   'pair.err_locked_now': '错误次数过多，配对已暂时锁定。',
+  'pair.err_too_soon': '设备刚刚显示过配对码，请等几秒再获取新的配对码。',
   'pair.locked_retry_in': '{time} 后可以再试。',
   'pair.success': '此浏览器已完成配对',
   'ov.loading_info': '正在读取设备信息…',

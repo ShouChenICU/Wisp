@@ -257,12 +257,13 @@ Result<void> PairingService::request_code(uint64_t now_ms) {
     if (locked_until_ms_) {
         return Result<void>::err(ErrorCode::RateLimited, "too many wrong codes; try again later");
     }
-    if (code_ && now_ms < code_expires_ms_ &&
-        now_ms - code_drawn_ms_ < config_.min_code_interval_ms) {
-        return Result<void>::ok();
+    if (code_ && now_ms < code_expires_ms_) return Result<void>::ok();
+    if (code_issued_ms_ && now_ms - *code_issued_ms_ < config_.min_code_interval_ms) {
+        return Result<void>::err(ErrorCode::RateLimited,
+                                 "a pairing code was issued moments ago; try again shortly");
     }
     code_ = draw_code_locked();
-    code_drawn_ms_ = now_ms;
+    code_issued_ms_ = now_ms;
     code_expires_ms_ = now_ms + config_.code_ttl_ms;
     expired_code_.reset();
     WLOG_I(kTag, "pairing code shown on screen (valid %u s)",
@@ -292,6 +293,13 @@ void PairingService::cancel_code() {
 void PairingService::tick(uint64_t now_ms) {
     std::lock_guard<os::Mutex> lock(mutex_);
     observe_locked(now_ms);
+}
+
+uint64_t PairingService::code_wait_ms(uint64_t now_ms) const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    if (code_ && now_ms < code_expires_ms_) return 0;
+    if (!code_issued_ms_ || now_ms - *code_issued_ms_ >= config_.min_code_interval_ms) return 0;
+    return *code_issued_ms_ + config_.min_code_interval_ms - now_ms;
 }
 
 uint64_t PairingService::lock_remaining_ms(uint64_t now_ms) const {

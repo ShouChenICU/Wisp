@@ -61,6 +61,10 @@ ClientInfo browser(Iface iface = Iface::Sta, std::string ua = kChromeAndroid) {
     return ClientInfo{std::move(ua), "192.168.1.23", iface};
 }
 
+// For tests that pair several browsers a few milliseconds apart: no
+// minimum interval between codes.
+const PairingConfig kBackToBack{.min_code_interval_ms = 0};
+
 // A started bus collecting every "net."-prefixed event, a StorageManager
 // over a temp dir, a seeded (or scripted) random source and a settable
 // wall clock. Tests advance monotonic time by passing explicit now_ms.
@@ -270,7 +274,7 @@ TEST(Pairing, LockReportsTimeRemaining) {
     EXPECT_EQ(svc.lock_remaining_ms(1005 + 300000), 0u);
 }
 
-TEST(Pairing, NewRequestInvalidatesOldCode) {
+TEST(Pairing, ANewCodeInvalidatesTheOldOne) {
     Fixture f;
     auto& svc = f.make();
     f.scripted_random = {0, 0, 0, 0};
@@ -278,6 +282,8 @@ TEST(Pairing, NewRequestInvalidatesOldCode) {
     std::string first = svc.active_code(1000).value_or("");
     ASSERT_EQ(first, "000000");
 
+    // A new code is only issued once the first is gone (here: turned down).
+    svc.cancel_code();
     f.scripted_random = {0, 0, 0, 7};
     ASSERT_TRUE(svc.request_code(12000));
     std::string second = svc.active_code(12000).value_or("");
@@ -297,33 +303,43 @@ TEST(Pairing, NewRequestInvalidatesOldCode) {
     EXPECT_FALSE(evs.back().payload.at("active").as_bool());
 }
 
-// POST /pair/start needs no authentication. Requests arriving while a code
-// is still fresh keep it (the owner may be typing it) and stay quiet (no
-// event, so the screen is not woken); only after the minimum interval does
-// a request draw a new one.
-TEST(Pairing, RepeatedRequestsKeepAFreshCode) {
+// POST /pair/start needs no authentication. A valid code is reused for its
+// whole lifetime: repeated requests neither replace the code the owner is
+// typing nor publish anything (which would wake the screen). Once there is
+// no valid code (expired, turned down, used), a new one may be issued, at
+// most one per min_code_interval_ms.
+TEST(Pairing, RepeatedRequestsReuseTheValidCode) {
     Fixture f;
-    auto& svc = f.make();
+    auto& svc = f.make();  // code_ttl_ms 120000, min_code_interval_ms 10000
     ASSERT_TRUE(svc.request_code(1000));
     const std::string code = svc.active_code(1000).value_or("");
     ASSERT_EQ(f.topic("net.pairing.code").size(), 1u);
 
-    for (uint64_t t : {2000u, 5000u, 10999u}) {
-        ASSERT_TRUE(svc.request_code(t));
+    for (uint64_t t : {2000u, 11000u, 60000u, 120999u}) {
+        ASSERT_TRUE(svc.request_code(t)) << t;
         EXPECT_EQ(svc.active_code(t).value_or(""), code) << t;
     }
     EXPECT_EQ(f.topic("net.pairing.code").size(), 1u);
 
+    // Expired: the next request issues a new code.
     f.scripted_random = {0, 0, 0, 9};
-    ASSERT_TRUE(svc.request_code(11000));
-    EXPECT_EQ(svc.active_code(11000).value_or(""), "000009");
-    EXPECT_EQ(f.topic("net.pairing.code").size(), 2u);
+    ASSERT_TRUE(svc.request_code(121000));
+    EXPECT_EQ(svc.active_code(121000).value_or(""), "000009");
+    const size_t events = f.topic("net.pairing.code").size();
+    EXPECT_EQ(events, 3u);  // the expiry {active:false}, then the new code
 
-    // The owner turning a code down lets the next request draw at once.
+    // Turned down on the device 2 s later: another code only once 10 s
+    // have passed since the last one was issued.
     svc.cancel_code();
+    auto early = svc.request_code(123000);
+    ASSERT_FALSE(early);
+    EXPECT_EQ(early.error().code, ErrorCode::RateLimited);
+    EXPECT_EQ(svc.code_wait_ms(123000), 8000u);
+    EXPECT_FALSE(svc.active_code(123000).has_value());
     f.scripted_random = {0, 0, 0, 3};
-    ASSERT_TRUE(svc.request_code(11500));
-    EXPECT_EQ(svc.active_code(11500).value_or(""), "000003");
+    ASSERT_TRUE(svc.request_code(131000));
+    EXPECT_EQ(svc.active_code(131000).value_or(""), "000003");
+    EXPECT_EQ(svc.code_wait_ms(131000), 0u);
 }
 
 TEST(Pairing, LocksAfterFiveWrongCodes) {
@@ -470,7 +486,7 @@ TEST(Pairing, StartsEmptyOnCorruptFile) {
 
 TEST(Pairing, EvictsLeastRecentlySeenNinthClient) {
     Fixture f;
-    auto& svc = f.make();
+    auto& svc = f.make(kBackToBack);
     std::vector<std::string> tokens;
     for (int i = 0; i < 8; ++i) {
         f.unix_now = 100 + i;  // created == last_seen == 100 + i
@@ -573,7 +589,7 @@ TEST(Pairing, LastSeenFlushIsThrottled) {
 
 TEST(Pairing, RevokeAllClearsFile) {
     Fixture f;
-    auto& svc = f.make();
+    auto& svc = f.make(kBackToBack);
     std::string a = f.pair(1000);
     std::string b = f.pair(2000);
     ASSERT_EQ(svc.clients().size(), 2u);
@@ -750,7 +766,7 @@ TEST(Pairing, ConcurrentAuthenticateAndRequestCode) {
 // (spec 6.4: revocation is the remedy for a captured token).
 TEST(Pairing, RevokeListenersHearRevocations) {
     Fixture f;
-    auto& svc = f.make();
+    auto& svc = f.make(kBackToBack);
     std::string a = f.pair(1000);
     f.pair(2000);
     const std::string a_id = hash_hex(a).substr(0, 12);
@@ -785,7 +801,7 @@ TEST(Pairing, RevokeListenersHearRevocations) {
 // its WebSocket must be closed just like after an explicit revoke().
 TEST(Pairing, EvictionNotifiesRevokeListeners) {
     Fixture f;
-    auto& svc = f.make();
+    auto& svc = f.make(kBackToBack);
     std::vector<std::string> tokens;
     for (int i = 0; i < 8; ++i) {
         f.unix_now = 100 + i;

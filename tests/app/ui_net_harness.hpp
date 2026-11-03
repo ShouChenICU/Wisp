@@ -45,6 +45,8 @@ struct UiNetOptions {
     bool with_server = false;
     // Platform::pairing.code_ttl_ms; 0 keeps the two-minute default.
     uint32_t pairing_ttl_ms = 0;
+    // Platform::pairing.min_code_interval_ms; -1 keeps the 10 s default.
+    int64_t pairing_interval_ms = -1;
 };
 
 class UiNetBoard : public wisp::app::Board {
@@ -131,6 +133,9 @@ struct UiNetHarness {
             platform.http_always_on = true;
         }
         if (opts.pairing_ttl_ms != 0) platform.pairing.code_ttl_ms = opts.pairing_ttl_ms;
+        if (opts.pairing_interval_ms >= 0) {
+            platform.pairing.min_code_interval_ms = static_cast<uint32_t>(opts.pairing_interval_ms);
+        }
         app = std::make_unique<wisp::app::App>(std::move(platform));
     }
 

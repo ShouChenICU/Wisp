@@ -190,6 +190,27 @@ TEST(PairRoutes, WrongCodeIs403AndLockIs429) {
     EXPECT_EQ(srv.handle(with_csrf(make_req(Post, "/api/v1/pair/start"))).status, 202);
 }
 
+// Repeating /pair/start keeps the code on the screen; a new code right
+// after the device turned one down waits out the 10 s issuing interval,
+// as a 429 saying how long.
+TEST(PairRoutes, RepeatedStartReusesTheCodeAndThrottlesNewOnes) {
+    AdminFixture f;
+    const std::string code = start_pairing(f);
+    f.now += 4000;
+    EXPECT_EQ(start_pairing(f), code);
+
+    f.pairing->cancel_code();
+    auto early = f.srv->handle(with_csrf(make_req(Post, "/api/v1/pair/start")));
+    EXPECT_EQ(early.status, 429);
+    // Not "rate_limited": nobody typed a wrong code, so the page must not
+    // say pairing is locked.
+    EXPECT_EQ(error_code(early), "too_soon");
+    EXPECT_EQ(header(early, "Retry-After"), "6");
+    EXPECT_EQ(retry_after_s(early), 6);
+    f.now += 6000;
+    EXPECT_NE(start_pairing(f), "");
+}
+
 TEST(PairRoutes, ExpiredCodeHasItsOwnErrorCode) {
     AdminFixture f;
     const std::string code = start_pairing(f);

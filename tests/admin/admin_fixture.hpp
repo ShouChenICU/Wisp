@@ -107,6 +107,9 @@ struct AdminFixture {
     // Pairs through the service directly (not the routes) and returns the
     // token, for tests that only need an authenticated browser.
     std::string token() {
+        // Codes are issued at most once per 10 s: step the clock past that
+        // when an earlier token() just used one.
+        now += pairing->code_wait_ms(now);
         EXPECT_TRUE(pairing->request_code(now));
         auto code = pairing->active_code(now);
         EXPECT_TRUE(code.has_value());

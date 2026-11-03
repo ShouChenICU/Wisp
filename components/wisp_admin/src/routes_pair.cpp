@@ -28,14 +28,18 @@ net::HttpResponse paired(const std::string& token) {
     return res;
 }
 
-// 429 for a locked pairing, saying when to try again (spec 6.1): whole
-// seconds, rounded up, at least 1, as Retry-After and in the body.
+// 429 for a locked pairing ("rate_limited"), or for a new code asked for
+// within 10 s of the last one ("too_soon"), saying when to try again (spec
+// 6.1): whole seconds, rounded up, at least 1, as Retry-After and in the
+// body.
 net::HttpResponse locked(AdminDeps& deps, const RequestContext& ctx, const Error& error) {
-    const uint64_t remaining_ms = deps.pairing.lock_remaining_ms(ctx.now_ms);
+    const uint64_t lock_ms = deps.pairing.lock_remaining_ms(ctx.now_ms);
+    const uint64_t remaining_ms = std::max(lock_ms, deps.pairing.code_wait_ms(ctx.now_ms));
+    const std::string code = lock_ms == 0 ? "too_soon" : to_string(error.code);
     const auto seconds = static_cast<int64_t>(std::max<uint64_t>(1, (remaining_ms + 999) / 1000));
     net::HttpResponse res =
         net::HttpResponse::json(429, Value(Map{{"error", Value(Map{
-                                                             {"code", Value(to_string(error.code))},
+                                                             {"code", Value(code)},
                                                              {"message", Value(error.message)},
                                                              {"retry_after_s", Value(seconds)},
                                                          })}}));

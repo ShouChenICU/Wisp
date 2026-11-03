@@ -347,7 +347,9 @@ TEST(NetUi, ProvisioningCardClosesWhenTheHotspotStopsElsewhere) {
 }
 
 TEST(NetUi, PairingCardCountsDownAndCloses) {
-    UiNetHarness h;
+    UiNetOptions opts;
+    opts.pairing_interval_ms = 0;  // a second code right after the first
+    UiNetHarness h(opts);
     ASSERT_TRUE(h.start());
     wisp::net::PairingService* pairing = h.app->pairing();
     ASSERT_NE(pairing, nullptr);

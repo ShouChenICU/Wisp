@@ -96,7 +96,9 @@ export function PairPage({ onPaired, notice } = {}) {
       // Re-requesting while already on the code step keeps focus useful.
       setTimeout(() => inputRef.current?.focus(), 0);
     } catch (e) {
-      setError(e.status === 429 ? lockError(e) : apiError(e));
+      // too_soon: a code was issued moments ago (spec 5.2); not a lock.
+      if (e.code === 'too_soon') setError({ key: 'pair.err_too_soon', tone: 'warn' });
+      else setError(e.status === 429 ? lockError(e) : apiError(e));
     } finally {
       setBusy(false);
     }
