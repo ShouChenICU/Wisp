@@ -23,6 +23,14 @@ import { Badge } from './badge.js';
 
 /** Join attempts give up after this long (spec 7.3 wizard). */
 export const JOIN_TIMEOUT_MS = 60000;
+// ...unless the page has lost the device by then: it may still be on its
+// way back. The slowest way back is a wrong password for a network stronger
+// than the one it left (spec 4.2): the direct attempt (rejected after ~4 s),
+// 5 s backoff, scan + attempt (~7 s), 10 s, scan + attempt (~7 s, now
+// parked), 20 s, then scan + connecting to the old network (~7 s): about
+// 60 s, plus a poll to notice. This leaves half a minute for slow scans
+// and handshakes.
+const JOIN_AWAY_TIMEOUT_MS = 90000;
 // The event stream is the fast path; this poll covers a socket that is
 // down or full (the device allows two).
 const JOIN_POLL_MS = 3000;
@@ -34,6 +42,11 @@ const JOIN_POLL_TIMEOUT_MS = 4000;
 // This many failed polls in a row at the end of the window mean the page
 // lost the device, most likely because it moved to the new network.
 const JOIN_LOST_POLLS = 2;
+// After a poll finds the device back on another network, how long to wait
+// for the target's own outcome: its events, sent while the device was away,
+// arrive only when TCP retransmits them, typically after the poll that
+// found it back.
+const JOIN_RETURN_GRACE_MS = 10000;
 
 /** The admin page's port and mDNS address on any network (spec 6.1). */
 export const ADMIN_PORT = 8900;
@@ -356,11 +369,16 @@ export function JoinForm({ network, busy, error, submitText, onSubmit, onCancel,
  *
  * Joining another network while the device is on one makes the device
  * leave the network this page reaches it through, so the outcome may never
- * arrive: a timeout whose last polls all failed is reported as `lost`. If
- * the device comes back instead (it returns to a working network after the
- * new one failed, spec 4.2), a poll shows it connected elsewhere: the join
- * ends there, as `auth_failed` when the target's saved entry says its
- * password was rejected, with `returnedTo` naming where the device is.
+ * arrive: when the last polls all failed, the join waits until
+ * JOIN_AWAY_TIMEOUT_MS instead of JOIN_TIMEOUT_MS and is then `lost`. If the
+ * device comes back instead (it returns to a working network after the new
+ * one failed, spec 4.2), a poll shows it connected elsewhere, with
+ * `returnedTo` naming where. The reason comes from the target's backoff
+ * event: one rejection does not mark the saved entry (only three in a row
+ * park it), so "auth_failed" is only in that event, which the device sent
+ * while away and which usually arrives after the poll. The join waits
+ * JOIN_RETURN_GRACE_MS for it, then ends without a reason. A saved entry
+ * already marked `auth_failed` (parked) ends it at once.
  *
  * @param {{ssid: string, ssid_hex?: string}} target  a scan or saved entry,
  *   or a typed name
@@ -383,6 +401,8 @@ export function joinNetwork(target, password, onResult) {
   let failedPolls = 0;
   let polling = false;
   let wentAway = false;
+  let returnedTo = '';
+  let graceTimer = 0;
   let pollTimer = 0;
   let openWait = 0;
   let timeout = 0;
@@ -391,6 +411,7 @@ export function joinNetwork(target, password, onResult) {
   function stop() {
     clearTimeout(timeout);
     clearTimeout(openWait);
+    clearTimeout(graceTimer);
     clearInterval(pollTimer);
     unsubscribe();
   }
@@ -409,21 +430,30 @@ export function joinNetwork(target, password, onResult) {
       return;
     }
     if (fromEvent && !armed) return;
-    if (st.state === 'connected') finish({ ok: true, ip: st.ip || '', ssid: target.ssid });
-    else if (st.state === 'backoff') finish({ ok: false, reason: st.reason || 'other' });
+    if (st.state === 'backoff') {
+      const result = { ok: false, reason: st.reason || 'other' };
+      if (returnedTo) result.returnedTo = returnedTo;
+      finish(result);
+    } else if (st.state === 'connected' && !returnedTo) {
+      // Once a poll has found the device elsewhere, a "connected" for the
+      // target is older than that poll.
+      finish({ ok: true, ip: st.ip || '', ssid: target.ssid });
+    }
   }
 
   // A polled status not about the target can still settle the join once
   // the device has given up on it: see the doc comment above.
   function judgeElsewhere(st) {
     const saved = Array.isArray(st.saved) ? st.saved.find((n) => ssidKey(n) === key) : null;
-    const rejected = !!saved?.auth_failed;
     const back = wentAway && st.state === 'connected' && st.ssid ? st.ssid : '';
-    if (!rejected && !back) return;
-    const result = { ok: false };
-    if (rejected) result.reason = 'auth_failed';
-    if (back) result.returnedTo = back;
-    finish(result);
+    if (back) returnedTo = back;
+    if (saved?.auth_failed) {
+      const result = { ok: false, reason: 'auth_failed' };
+      if (returnedTo) result.returnedTo = returnedTo;
+      finish(result);
+    } else if (returnedTo && !graceTimer) {
+      graceTimer = setTimeout(() => finish({ ok: false, returnedTo }), JOIN_RETURN_GRACE_MS);
+    }
   }
 
   async function poll() {
@@ -478,10 +508,15 @@ export function joinNetwork(target, password, onResult) {
     },
   );
   if (!sent) openWait = setTimeout(send, JOIN_OPEN_WAIT_MS);
-  timeout = setTimeout(
-    () => finish(failedPolls >= JOIN_LOST_POLLS ? { ok: false, timeout: true, lost: true } : { ok: false, timeout: true }),
-    JOIN_TIMEOUT_MS,
-  );
+  const startedAt = Date.now();
+  function giveUp() {
+    if (graceTimer) return; // back elsewhere: the grace period ends the join
+    const left = JOIN_AWAY_TIMEOUT_MS - (Date.now() - startedAt);
+    if (failedPolls < JOIN_LOST_POLLS) finish({ ok: false, timeout: true });
+    else if (left > 0) timeout = setTimeout(giveUp, left);
+    else finish({ ok: false, timeout: true, lost: true });
+  }
+  timeout = setTimeout(giveUp, JOIN_TIMEOUT_MS);
 
   return () => {
     done = true;
