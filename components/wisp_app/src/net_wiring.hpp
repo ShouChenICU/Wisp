@@ -40,6 +40,7 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/llm_config.hpp"
+#include "wisp/core/power_monitor.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/asset_pack.hpp"
@@ -57,6 +58,8 @@ struct NetWiringDeps {
     core::StorageManager& storage;
     core::LlmConfigService& llm;
     core::SystemSettings& system_settings;
+    // GET /device reports its last battery sample; null: battery unknown.
+    const core::PowerMonitor* power_monitor = nullptr;
     // Shows the factory-reset confirmation on the device (AdminDeps::
     // request_factory_reset). Empty when there is no screen to confirm on:
     // the route then answers 503.

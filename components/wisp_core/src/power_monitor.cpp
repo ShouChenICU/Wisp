@@ -95,6 +95,11 @@ uint32_t PowerMonitor::sample_interval_ms() const {
     return interval_for(standby_);
 }
 
+std::optional<hal::PowerStatus> PowerMonitor::last_status() const {
+    std::lock_guard<os::Mutex> lock(sample_mutex_);
+    return last_status_;
+}
+
 void PowerMonitor::sample() {
     if (power_ == nullptr) {
         return;
@@ -112,6 +117,8 @@ void PowerMonitor::sample() {
         if (status_ok_.exchange(false, std::memory_order_relaxed)) {
             WLOG_W(kTag, "status() failed: %s", result.error().message.c_str());
         }
+        std::lock_guard<os::Mutex> lock(sample_mutex_);
+        last_status_.reset();
         return;
     }
     if (!status_ok_.exchange(true, std::memory_order_relaxed)) {
@@ -120,6 +127,7 @@ void PowerMonitor::sample() {
     hal::PowerStatus status = result.value();
 
     std::lock_guard<os::Mutex> lock(sample_mutex_);
+    last_status_ = status;
 
     if (samples_until_threshold_refresh_ == 0) {
         cached_low_batt_pct_ = settings_.get_int("low_batt_pct", kDefaultLowBattPct);

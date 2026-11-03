@@ -76,6 +76,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "wisp/core/event_bus.hpp"
@@ -135,6 +136,11 @@ public:
     // ever calling start().
     void sample();
 
+    // What the last sample() read: nullopt before the first one, after a
+    // failed read, or without a device. For callers that want the battery
+    // state without touching the power chip themselves (GET /device).
+    std::optional<hal::PowerStatus> last_status() const;
+
     // The sample period currently in effect (1000 or 30000), regardless
     // of whether the Timer has actually been start()ed yet. Mainly for
     // tests; thread-safe.
@@ -155,11 +161,12 @@ private:
     // information.
     std::atomic<bool> status_ok_{true};
 
-    os::Mutex sample_mutex_;
+    mutable os::Mutex sample_mutex_;
     bool have_sample_ = false;
     bool last_charging_ = false;
     bool last_usb_present_ = false;
     bool low_fired_ = false;
+    std::optional<hal::PowerStatus> last_status_;  // guarded by sample_mutex_
 
     // Threshold cache (constructor's doc comment on why this isn't a
     // fresh Settings read every sample): cached_low_batt_pct_ is read in

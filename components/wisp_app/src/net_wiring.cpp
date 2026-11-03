@@ -7,7 +7,6 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/hal/clock.hpp"
-#include "wisp/hal/power.hpp"
 #include "wisp/hal/wifi.hpp"
 
 namespace wisp::app {
@@ -235,13 +234,15 @@ Value NetWiring::device_status() const {
         {"uptime_ms", Value(static_cast<int64_t>(os::now_ms()))},
         {"heap", deps_.platform.heap_info ? deps_.platform.heap_info() : Value(Map{})},
     };
+    // PowerMonitor's last sample rather than a read of the power chip: the
+    // monitor owns that device and samples it every second anyway.
     Value battery;  // null when unknown
-    if (auto power = deps_.registry.get<hal::Power>("power.main")) {
-        if (auto st = power->status(); st) {
+    if (deps_.power_monitor != nullptr) {
+        if (auto st = deps_.power_monitor->last_status()) {
             battery = Value(Map{
-                {"percent", Value(st.value().battery_percent)},
-                {"charging", Value(st.value().charging)},
-                {"usb_present", Value(st.value().usb_present)},
+                {"percent", Value(st->battery_percent)},
+                {"charging", Value(st->charging)},
+                {"usb_present", Value(st->usb_present)},
             });
         }
     }

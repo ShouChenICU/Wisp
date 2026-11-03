@@ -459,3 +459,28 @@ TEST(PowerMonitor, StartedTimerActuallySamplesAndSetStandbyActuallyRetunesIt) {
     ASSERT_TRUE(f.wait_for_event_count(2, 2500));
     EXPECT_EQ(f.event_at(1).topic, "power.charging.changed");
 }
+
+// The admin page's GET /device serves the last sample instead of reading
+// the power chip itself (the service layer owns the device, AGENTS.md 3).
+TEST(PowerMonitor, LastStatusIsTheLatestSample) {
+    Fixture f;
+    EXPECT_FALSE(f.mon->last_status().has_value());  // nothing sampled yet
+
+    f.power->set_status(PowerStatus{/*battery_percent=*/64, /*battery_mv=*/3900,
+                                    /*charging=*/true, /*usb_present=*/true});
+    f.mon->sample();
+    auto last = f.mon->last_status();
+    ASSERT_TRUE(last.has_value());
+    EXPECT_EQ(last->battery_percent, 64);
+    EXPECT_TRUE(last->charging);
+    EXPECT_TRUE(last->usb_present);
+
+    // A failed read means the battery state is unknown again.
+    f.power->set_next_error(ErrorCode::DeviceFailure, "injected");
+    f.mon->sample();
+    EXPECT_FALSE(f.mon->last_status().has_value());
+
+    Fixture none(nullptr);
+    none.mon->sample();
+    EXPECT_FALSE(none.mon->last_status().has_value());
+}
