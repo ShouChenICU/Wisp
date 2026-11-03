@@ -42,6 +42,9 @@ wisp_test(NAME event_bus_test SRCS core/event_bus_test.cpp LIBS wisp_core wisp_p
 wisp_test(NAME device_registry_test SRCS core/device_registry_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME button_service_test SRCS core/button_service_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 20)
 wisp_test(NAME settings_test SRCS core/settings_test.cpp LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings)
+wisp_test(NAME llm_config_test SRCS core/llm_config_test.cpp LIBS wisp_core wisp_port_sim_os)
+wisp_test(NAME system_settings_test SRCS core/system_settings_test.cpp
+          LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings)
 wisp_test(NAME storage_manager_test SRCS core/storage_manager_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 20)
 wisp_test(NAME power_monitor_test SRCS core/power_monitor_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings TIMEOUT 20)

@@ -137,6 +137,17 @@ Result<void> JsonFileSettingsBackend::erase(const std::string& ns, const std::st
     return result;
 }
 
+Result<void> JsonFileSettingsBackend::erase_all() {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    auto previous = std::move(store_);
+    store_.clear();
+    Result<void> result = write_through();
+    if (!result) {
+        store_ = std::move(previous);
+    }
+    return result;
+}
+
 Result<void> JsonFileSettingsBackend::write_through() {
     Map root;
     for (const auto& [ns, keys] : store_) {

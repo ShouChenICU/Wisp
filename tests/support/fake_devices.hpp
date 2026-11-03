@@ -69,6 +69,7 @@ public:
 
     wisp::Result<void> set_brightness(uint8_t level) override {
         assert_owner_thread();
+        ++set_brightness_calls_;
         brightness_.store(level);
         return wisp::Result<void>::ok();
     }
@@ -99,6 +100,7 @@ public:
     // (idempotency -- a second enter_standby() while already in standby
     // must not call it again).
     int set_power_calls() const { return set_power_calls_.load(); }
+    int set_brightness_calls() const { return set_brightness_calls_.load(); }
 
 private:
     wisp::hal::DeviceInfo info_;
@@ -110,6 +112,7 @@ private:
     std::atomic<uint8_t> brightness_{0};
     std::atomic<bool> powered_{true};
     std::atomic<int> set_power_calls_{0};
+    std::atomic<int> set_brightness_calls_{0};
 };
 
 // A touch device test double: read() returns whatever was last set via

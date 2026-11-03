@@ -158,6 +158,15 @@ public:
 
     bool standby() const;
 
+    // Sets the panel brightness (core::SystemSettings' apply hook). While
+    // the panel is on, Display::set_brightness() runs right away; while it
+    // is asleep, the level is only remembered and applied by exit_standby()
+    // after Display::set_power(true) -- changing brightness must never wake
+    // the screen. Callable from any thread: off the UI task (when one
+    // exists) the work is posted to it, since every Display call must come
+    // from the UI thread (spec 5.3).
+    void set_brightness(uint8_t level);
+
     // Resets the idle clock to "now" (wisp::os::now_ms()).
     void note_activity();
 
@@ -228,6 +237,10 @@ private:
     // told about, and only then calls enter_standby().
     void enter_standby_if_still_idle(uint64_t now_ms);
 
+    // set_brightness()'s body; runs on the UI task (or the caller's thread
+    // when headless).
+    void apply_brightness(uint8_t level);
+
     core::EventBus& bus_;
     std::shared_ptr<hal::Display> display_;
     std::shared_ptr<hal::Touch> touch_;
@@ -284,6 +297,16 @@ private:
     // enter_standby() last widened it, restored by exit_standby().
     // Guarded by transition_mutex_ (see above).
     uint32_t saved_poll_ms_ = 20;
+
+    // True from just before enter_standby()'s Display::set_power(false)
+    // until just after exit_standby()'s set_power(true). Tracked separately
+    // from standby_ because both transitions drop transition_mutex_ partway
+    // (see above) while standby_ still has its old value, and a brightness
+    // write in that window must follow the panel's actual state. Guarded
+    // by transition_mutex_, as is pending_brightness_ (the level to apply
+    // on wake; -1 for none).
+    bool panel_asleep_ = false;
+    int pending_brightness_ = -1;
 
     core::SubscriptionId button_sub_ = 0;
 };

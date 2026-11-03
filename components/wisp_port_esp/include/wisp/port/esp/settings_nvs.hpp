@@ -49,6 +49,12 @@ public:
     Result<Value> get(const std::string& ns, const std::string& key) override;
     Result<void> set(const std::string& ns, const std::string& key, const Value& value) override;
     Result<void> erase(const std::string& ns, const std::string& key) override;
+    // Erases every namespace in the default NVS partition (nvs_erase_all +
+    // nvs_commit on each), including ones owned by ESP-IDF itself such as
+    // the Wi-Fi driver's: a factory reset must not leave old credentials
+    // behind. Not atomic across namespaces -- a failure partway leaves the
+    // namespaces already erased empty; the caller reboots either way.
+    Result<void> erase_all() override;
 
 private:
     explicit NvsSettingsBackend(bool ready) : ready_(ready) {}

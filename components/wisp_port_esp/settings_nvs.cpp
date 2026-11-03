@@ -1,5 +1,6 @@
 #include "wisp/port/esp/settings_nvs.hpp"
 
+#include <set>
 #include <string>
 #include <utility>
 
@@ -163,6 +164,54 @@ Result<void> NvsSettingsBackend::erase(const std::string& ns, const std::string&
         return Result<void>::err(ErrorCode::IoError,
                                  std::string("nvs_commit: ") + esp_err_to_name(err));
     }
+    return Result<void>::ok();
+}
+
+Result<void> NvsSettingsBackend::erase_all() {
+    if (!ready_) {
+        return Result<void>::err(ErrorCode::IoError, "nvs not initialized");
+    }
+
+    // NVS has no "erase every namespace" call short of nvs_flash_erase(),
+    // which would also need a re-init while other components hold handles.
+    // Collect the namespace names first: erasing while iterating would
+    // invalidate the iterator.
+    std::set<std::string> namespaces;
+    nvs_iterator_t it = nullptr;
+    esp_err_t err = nvs_entry_find(NVS_DEFAULT_PART_NAME, nullptr, NVS_TYPE_ANY, &it);
+    while (err == ESP_OK) {
+        nvs_entry_info_t info;
+        nvs_entry_info(it, &info);
+        namespaces.insert(info.namespace_name);
+        err = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+    if (err != ESP_ERR_NVS_NOT_FOUND) {
+        return Result<void>::err(ErrorCode::IoError,
+                                 std::string("nvs_entry_find: ") + esp_err_to_name(err));
+    }
+
+    for (const auto& ns : namespaces) {
+        nvs_handle_t handle = 0;
+        err = nvs_open(ns.c_str(), NVS_READWRITE, &handle);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            continue;
+        }
+        if (err != ESP_OK) {
+            return Result<void>::err(ErrorCode::IoError,
+                                     std::string("nvs_open: ") + esp_err_to_name(err));
+        }
+        err = nvs_erase_all(handle);
+        if (err == ESP_OK) {
+            err = nvs_commit(handle);
+        }
+        nvs_close(handle);
+        if (err != ESP_OK) {
+            return Result<void>::err(ErrorCode::IoError,
+                                     std::string("nvs_erase_all: ") + esp_err_to_name(err));
+        }
+    }
+    WLOG_I(kTag, "erased %u namespaces", static_cast<unsigned>(namespaces.size()));
     return Result<void>::ok();
 }
 

@@ -44,6 +44,11 @@ public:
     // Removes `ns`/`key` if present; erasing a key that doesn't exist is
     // not an error.
     virtual Result<void> erase(const std::string& ns, const std::string& key) = 0;
+
+    // Removes every key in every namespace (factory reset). On failure the
+    // stored values are left as they were wherever the backend can
+    // guarantee it; see each implementation.
+    virtual Result<void> erase_all() = 0;
 };
 
 // Convenience wrapper that binds a SettingsBackend to one fixed namespace.

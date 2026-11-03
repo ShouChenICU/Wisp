@@ -639,3 +639,66 @@ TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyLongWakes) {
     press_long(*f.buttons, *f.btn);
     EXPECT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
 }
+
+TEST(PowerManager, SetBrightnessWhileActiveAppliesImmediately) {
+    Fixture f;
+    // Called from a non-UI thread (as the admin HTTP handler would): the
+    // write is handed to the UI task, so the owner-thread assert holds.
+    f.pm->set_brightness(80);
+    f.drain_ui();
+    EXPECT_EQ(f.display->brightness(), 80);
+    EXPECT_EQ(f.display->set_brightness_calls(), 1);
+
+    f.run_on_ui([&] { f.pm->set_brightness(90); });
+    EXPECT_EQ(f.display->brightness(), 90);
+}
+
+TEST(PowerManager, BrightnessChangedInStandbyAppliesOnWake) {
+    Fixture f;
+    f.run_on_ui([&] { f.pm->enter_standby(); });
+    ASSERT_TRUE(f.pm->standby());
+    int power_calls = f.display->set_power_calls();
+
+    f.pm->set_brightness(50);
+    f.drain_ui();
+    EXPECT_EQ(f.display->set_brightness_calls(), 0);
+    EXPECT_FALSE(f.display->powered());
+    EXPECT_EQ(f.display->set_power_calls(), power_calls);
+    EXPECT_TRUE(f.pm->standby());
+
+    // Only the last value set during standby is applied, once.
+    f.pm->set_brightness(60);
+    f.drain_ui();
+    f.run_on_ui([&] { f.pm->exit_standby(); });
+    EXPECT_TRUE(f.display->powered());
+    EXPECT_EQ(f.display->brightness(), 60);
+    EXPECT_EQ(f.display->set_brightness_calls(), 1);
+
+    // A second standby cycle with no change does not re-apply anything.
+    f.run_on_ui([&] { f.pm->enter_standby(); });
+    f.run_on_ui([&] { f.pm->exit_standby(); });
+    EXPECT_EQ(f.display->set_brightness_calls(), 1);
+}
+
+TEST(PowerManager, HeadlessSetBrightnessHonoursStandby) {
+    EventBus bus;
+    auto backend =
+        std::make_unique<JsonFileSettingsBackend>((temp_dir() / "headless.json").string());
+    auto display = std::make_shared<FakeDisplay>("display.main", 480, 480);
+    PowerManager pm(bus, display, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, {},
+                    Settings(*backend, "power"));
+    pm.set_brightness(70);
+    EXPECT_EQ(display->brightness(), 70);
+
+    pm.enter_standby();
+    pm.set_brightness(40);
+    EXPECT_EQ(display->brightness(), 70);
+    EXPECT_FALSE(display->powered());
+    pm.exit_standby();
+    EXPECT_EQ(display->brightness(), 40);
+
+    // Headless PowerManager owns no display at all: set_brightness is a no-op.
+    PowerManager no_display(bus, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, {},
+                            Settings(*backend, "power"));
+    no_display.set_brightness(10);
+}

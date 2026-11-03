@@ -33,6 +33,9 @@ public:
     Result<Value> get(const std::string& ns, const std::string& key) override;
     Result<void> set(const std::string& ns, const std::string& key, const Value& value) override;
     Result<void> erase(const std::string& ns, const std::string& key) override;
+    // Rewrites the file as an empty store; on an IoError nothing changes,
+    // in memory or on disk.
+    Result<void> erase_all() override;
 
 private:
     // Rewrites the whole store to file_path_: serializes to JSON, writes

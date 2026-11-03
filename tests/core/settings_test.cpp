@@ -86,3 +86,39 @@ TEST(Settings, EraseWriteFailureRestoresPreviousValue) {
     ASSERT_TRUE(got);
     EXPECT_EQ(got.value().as_int(), 128);
 }
+
+TEST(Settings, EraseAllRemovesEveryNamespace) {
+    auto path = temp_dir() / "s5.json";
+    {
+        wisp::port::sim::JsonFileSettingsBackend be(path.string());
+        ASSERT_TRUE(be.set("display", "brightness", 128));
+        ASSERT_TRUE(be.set("audio", "volume", 30));
+        ASSERT_TRUE(be.set("net", "idle_off_min", 5));
+        ASSERT_TRUE(be.erase_all());
+        EXPECT_EQ(be.get("display", "brightness").error().code, wisp::ErrorCode::NotFound);
+        EXPECT_EQ(be.get("audio", "volume").error().code, wisp::ErrorCode::NotFound);
+        EXPECT_EQ(be.get("net", "idle_off_min").error().code, wisp::ErrorCode::NotFound);
+        // The backend stays usable afterwards.
+        ASSERT_TRUE(be.set("audio", "volume", 70));
+        ASSERT_TRUE(be.erase_all());
+    }
+    {
+        wisp::port::sim::JsonFileSettingsBackend be(path.string());
+        EXPECT_EQ(be.get("display", "brightness").error().code, wisp::ErrorCode::NotFound);
+        EXPECT_EQ(be.get("audio", "volume").error().code, wisp::ErrorCode::NotFound);
+    }
+}
+
+TEST(Settings, EraseAllWriteFailureKeepsValues) {
+    if (geteuid() == 0) {
+        GTEST_SKIP() << "running as root: a read-only directory wouldn't block the write";
+    }
+    auto dir = temp_dir();
+    wisp::port::sim::JsonFileSettingsBackend be((dir / "settings.json").string());
+    ASSERT_TRUE(be.set("display", "brightness", 128));
+    ASSERT_EQ(chmod(dir.string().c_str(), 0500), 0);
+    wisp::Result<void> result = be.erase_all();
+    chmod(dir.string().c_str(), 0700);
+    ASSERT_EQ(result.error().code, wisp::ErrorCode::IoError);
+    EXPECT_EQ(be.get("display", "brightness").value().as_int(), 128);
+}

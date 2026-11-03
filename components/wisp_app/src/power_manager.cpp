@@ -154,6 +154,7 @@ void PowerManager::enter_standby() {
         ui_->set_paused(true);
     }
     if (display_) {
+        panel_asleep_ = true;
         auto r = display_->set_power(false);
         if (!r) {
             WLOG_W(kTag, "display set_power(false) failed: %s", r.error().message.c_str());
@@ -262,6 +263,14 @@ void PowerManager::exit_standby() {
         if (!r) {
             WLOG_W(kTag, "display set_power(true) failed: %s", r.error().message.c_str());
         }
+        panel_asleep_ = false;
+        if (pending_brightness_ >= 0) {
+            auto b = display_->set_brightness(static_cast<uint8_t>(pending_brightness_));
+            if (!b) {
+                WLOG_W(kTag, "display set_brightness failed: %s", b.error().message.c_str());
+            }
+            pending_brightness_ = -1;
+        }
     }
     // Resume the UI only after the panel is already
     // awake again (the mirror image of enter_standby() pausing it
@@ -277,6 +286,33 @@ void PowerManager::exit_standby() {
 }
 
 bool PowerManager::standby() const { return standby_.load(std::memory_order_acquire); }
+
+void PowerManager::set_brightness(uint8_t level) {
+    if (!display_) {
+        return;
+    }
+    if (ui_ != nullptr && !ui_->on_ui_thread()) {
+        // The queue only fills briefly; the destructor drains it on the UI
+        // task, so a job posted here never outlives `this`.
+        while (!ui_->post([this, level] { apply_brightness(level); })) {
+            os::sleep_ms(1);
+        }
+        return;
+    }
+    apply_brightness(level);
+}
+
+void PowerManager::apply_brightness(uint8_t level) {
+    std::lock_guard<os::Mutex> lock(transition_mutex_);
+    if (panel_asleep_) {
+        pending_brightness_ = level;
+        return;
+    }
+    auto r = display_->set_brightness(level);
+    if (!r) {
+        WLOG_W(kTag, "display set_brightness failed: %s", r.error().message.c_str());
+    }
+}
 
 void PowerManager::note_activity() {
     last_activity_ms_.store(os::now_ms(), std::memory_order_relaxed);
