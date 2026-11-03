@@ -22,6 +22,8 @@ const char* to_string(DeviceClass cls) {
             return "audio_in";
         case DeviceClass::Storage:
             return "storage";
+        case DeviceClass::Network:
+            return "network";
     }
     return "unknown";
 }
@@ -36,6 +38,7 @@ std::optional<DeviceClass> class_from_string(std::string_view s) {
     if (s == "audio_out") return DeviceClass::AudioOut;
     if (s == "audio_in") return DeviceClass::AudioIn;
     if (s == "storage") return DeviceClass::Storage;
+    if (s == "network") return DeviceClass::Network;
     return std::nullopt;
 }
 

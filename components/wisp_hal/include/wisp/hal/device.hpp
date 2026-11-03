@@ -2,7 +2,7 @@
 
 // Portable HAL device model shared by every device interface in this
 // component (Display, Touch, Imu, Power, Clock, Button, AudioOut, AudioIn,
-// Storage; see the sibling headers). This header declares types and
+// Storage, Network; see the sibling headers). This header declares types and
 // functions only; it must never include platform headers (esp_*,
 // freertos/*, driver/*, IDF hal/, soc/*, sdkconfig.h, SDL*) or expose
 // platform types -- see wisp/os/os.hpp for the same rule.
@@ -33,6 +33,7 @@ enum class DeviceClass {
     AudioOut,
     AudioIn,
     Storage,
+    Network,
 };
 
 // Returns the snake_case name of `cls`, e.g. DeviceClass::AudioOut ->
@@ -58,7 +59,7 @@ struct DeviceInfo {
 
 // Base interface every HAL device implements. Concrete interfaces (see
 // display.hpp, touch.hpp, imu.hpp, power.hpp, clock.hpp, button.hpp,
-// audio.hpp, storage.hpp) add the operations for their device class.
+// audio.hpp, storage.hpp, wifi.hpp) add the operations for their device class.
 class Device {
 public:
     virtual ~Device() = default;

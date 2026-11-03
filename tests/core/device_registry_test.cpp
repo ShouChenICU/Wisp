@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "support/fake_devices.hpp"
+#include "support/fake_wifi.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/boot_report.hpp"
@@ -37,6 +38,22 @@ TEST(DeviceRegistry, ManifestJson) {
     EXPECT_EQ(
         wisp::to_json(reg.manifest("b")),
         R"({"board":"b","devices":[{"caps":{"accel":true,"gyro":true,"magnetometer":false,"max_rate_hz":1000},"class":"imu","id":"imu.main","model":"FAKE"}]})");
+}
+
+TEST(DeviceRegistry, ManifestListsNetworkDevice) {
+    wisp::core::DeviceRegistry reg;
+    auto wifi = std::make_shared<wisp::test::FakeWifi>("net.wifi");
+    ASSERT_TRUE(reg.add(wifi));
+    EXPECT_EQ(reg.get<wisp::hal::Wifi>("net.wifi"), wifi);
+
+    wisp::Value manifest = reg.manifest("b");
+    const auto& devices = manifest.find("devices")->as_list();
+    ASSERT_EQ(devices.size(), 1u);
+    EXPECT_EQ(devices[0].find("id")->as_string(), "net.wifi");
+    EXPECT_EQ(devices[0].find("class")->as_string(), "network");
+    const wisp::Value* ap = devices[0].find("caps")->find("ap");
+    ASSERT_NE(ap, nullptr);
+    EXPECT_TRUE(ap->as_bool());
 }
 
 TEST(BootReport, ToValue) {

@@ -44,7 +44,7 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 
 `App::start()` 会在 `init()` 之后自动为注册表里没有报告过的设备补一条 `DeviceState::Ok`，`init()` 只需要主动记录失败/缺失的情况。
 
-**设备 id 命名约定**：`<类别>.<名字>`，类别用 `wisp::hal::DeviceClass`（`display`/`touch`/`imu`/`power`/`clock`/`button`/`audio_out`/`audio_in`/`storage`）对应的小写名。本板用的 id：`display.main`、`touch.main`、`imu.main`、`power.main`、`clock.main`、`button.power`/`button.vol_up`/`button.vol_down`、`audio_out.main`、`audio_in.main`、`storage.int`、`storage.sd`。新板子优先沿用同一套 id，除非确有多实例需要区分（如以后的 `display.external`）。
+**设备 id 命名约定**：`<类别>.<名字>`，类别用 `wisp::hal::DeviceClass`（`display`/`touch`/`imu`/`power`/`clock`/`button`/`audio_out`/`audio_in`/`storage`/`network`）对应的小写名；例外是 Wi-Fi 设备按子项目 2 的 spec 固定注册为 `net.wifi`（类别 `network`）。本板用的 id：`display.main`、`touch.main`、`imu.main`、`power.main`、`clock.main`、`button.power`/`button.vol_up`/`button.vol_down`、`audio_out.main`、`audio_in.main`、`storage.int`、`storage.sd`。新板子优先沿用同一套 id，除非确有多实例需要区分（如以后的 `display.external`）。
 
 **能力字段（caps）约定**：每个设备在构造时自己填写 `DeviceInfo::caps`，这是能力信息的唯一来源（板级 YAML 只管引脚和总线）。各类别的必填字段：
 

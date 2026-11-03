@@ -31,6 +31,7 @@ endfunction()
 # are added.
 wisp_test(NAME result_test SRCS base/result_test.cpp LIBS wisp_base)
 wisp_test(NAME display_geometry_test SRCS hal/display_geometry_test.cpp LIBS wisp_hal)
+wisp_test(NAME wifi_types_test SRCS hal/wifi_types_test.cpp LIBS wisp_hal)
 wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
 wisp_test(NAME value_test SRCS base/value_test.cpp LIBS wisp_base)
 wisp_test(NAME sha256_test SRCS base/sha256_test.cpp LIBS wisp_base)
