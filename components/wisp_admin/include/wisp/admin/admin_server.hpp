@@ -26,10 +26,15 @@
 //      "X-Wisp: 1" (403 csrf, whitelist included), then the body must be
 //      at most 8 KiB (413) and, when non-empty, valid JSON (400 bad_json).
 //
+// WebSocket (/api/v1/ws): the upgrade passes the same Host check and needs
+// the same wisp_token cookie as the API; accepted connections are handed
+// to a WsHub (wisp/admin/ws_hub.hpp) that AdminServer owns and whose
+// sender task runs for the AdminServer's lifetime.
+//
 // Threading: handle() runs on HTTP server threads, possibly several at
-// once. AdminServer's only mutable state is the reboot timer (os::Timer
-// is safe to start from any thread); every service it calls is
-// thread-safe. The reboot route only arms that timer, which calls
+// once. AdminServer's own mutable state is the reboot timer (os::Timer
+// is safe to start from any thread) and the WsHub (thread-safe); every
+// service it calls is thread-safe. The reboot route only arms that timer, which calls
 // AdminDeps::reboot about 500 ms later on the timer's thread so the 202
 // is sent first; destroying the AdminServer cancels a pending reboot.
 //
@@ -42,6 +47,7 @@
 #include <string>
 #include <vector>
 
+#include "wisp/admin/ws_hub.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/device_registry.hpp"
@@ -95,8 +101,11 @@ public:
 
     net::HttpResponse handle(const net::HttpRequest& req);
 
-    // WebSocket callbacks for /api/v1/ws. Until the log/event hub exists
-    // every upgrade is rejected.
+    // WebSocket callbacks for /api/v1/ws. on_open refuses an upgrade with
+    // a foreign Host or without a valid wisp_token cookie, and otherwise
+    // lets the hub decide (at most two connections). The handlers capture
+    // this AdminServer, so the HttpServer must be stopped before it is
+    // destroyed.
     net::WsHandlers ws_handlers();
 
 private:
@@ -106,6 +115,7 @@ private:
     std::vector<detail::Route> routes_;
     // Declared after deps_ so it is destroyed (stopped) first.
     std::unique_ptr<os::Timer> reboot_timer_;
+    std::unique_ptr<WsHub> hub_;
 };
 
 }  // namespace wisp::admin

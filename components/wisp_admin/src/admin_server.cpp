@@ -154,9 +154,12 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_wifi_routes(routes_);
     detail::add_llm_routes(routes_);
     detail::add_system_routes(routes_);
+    hub_ = std::make_unique<WsHub>(deps_.bus);
+    hub_->start();
 }
 
 AdminServer::~AdminServer() {
+    hub_.reset();
     // Cancels a reboot that has not fired yet and waits out one in
     // progress, so the callback never sees a destroyed deps_.
     reboot_timer_.reset();
@@ -246,12 +249,24 @@ net::HttpResponse AdminServer::handle_api(const net::HttpRequest& req) {
 }
 
 net::WsHandlers AdminServer::ws_handlers() {
-    // WebSocket support arrives with the log/event hub; until then every
-    // upgrade is refused.
     net::WsHandlers ws;
-    ws.on_open = [](std::shared_ptr<net::WsConnection>, const net::HttpRequest&) { return false; };
-    ws.on_message = [](int, std::string_view) {};
-    ws.on_close = [](int) {};
+    ws.on_open = [this](std::shared_ptr<net::WsConnection> conn, const net::HttpRequest& req) {
+        // A WebSocket upgrade is a GET the browser makes with the page's
+        // cookies, so it gets the API's Host check and token check; the
+        // hotspot's captive-portal leniency does not apply here.
+        if (!detail::host_allowed(req)) {
+            WLOG_D(kTag, "refused a WebSocket upgrade with a foreign Host header");
+            return false;
+        }
+        const std::string token = req.cookie("wisp_token");
+        if (token.empty() || !deps_.pairing.authenticate(token, deps_.now_ms())) {
+            WLOG_D(kTag, "refused an unauthenticated WebSocket upgrade");
+            return false;
+        }
+        return hub_->open(std::move(conn));
+    };
+    ws.on_message = [this](int id, std::string_view text) { hub_->on_message(id, text); };
+    ws.on_close = [this](int id) { hub_->close(id); };
     return ws;
 }
 

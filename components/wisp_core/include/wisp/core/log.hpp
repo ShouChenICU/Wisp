@@ -47,10 +47,15 @@ namespace log {
 void init(size_t ring_bytes = 32 * 1024, os::Mem mem = os::Mem::Large);
 
 // Registers `sink` to receive every log line accepted by the current
-// level filter, for as long as the process/test runs. `sink` must outlive
-// the logging subsystem (or be removed via reset_for_test()); ownership is
-// not taken.
+// level filter. `sink` must stay alive until it is removed with
+// remove_sink() (or reset_for_test()); ownership is not taken.
 void add_sink(LogSink* sink);
+
+// Unregisters `sink` (a no-op if it is not registered) and waits for any
+// delivery to it already in progress on other threads to return, so the
+// caller may destroy the sink as soon as this returns. Must not be called
+// from within a LogSink::write() call, which would wait for itself.
+void remove_sink(LogSink* sink);
 
 // Sets the minimum level that reaches both the ring buffer and the
 // sinks; messages below `level` are dropped entirely. Defaults to

@@ -55,6 +55,19 @@ struct State {
     std::vector<LogSink*> sinks;
     std::atomic<int> level{static_cast<int>(LogLevel::Debug)};
 
+    // Sink deliveries in progress, counted per epoch. write() delivers to
+    // a copy of `sinks` outside the lock, so removing a sink from the list
+    // is not enough to stop it being called: remove_sink() flips the epoch
+    // (deliveries starting afterwards copy a list without the sink) and
+    // then waits for the old epoch's count to reach zero. remove_mutex
+    // serializes removals, so the epoch being waited on only ever holds
+    // deliveries that started before the flip and the wait cannot starve
+    // under continuous logging. Never reset: in-flight writes still
+    // decrement the slot they incremented.
+    uint32_t delivery_epoch = 0;
+    uint32_t deliveries[2] = {0, 0};
+    os::Mutex remove_mutex;
+
     // Appends `line` (length `len`, including its trailing '\n'),
     // dropping whole lines from the front first to make room if needed.
     // Must be called with `mutex` held.
@@ -165,6 +178,25 @@ void add_sink(LogSink* sink) {
     s.sinks.push_back(sink);
 }
 
+void remove_sink(LogSink* sink) {
+    State& s = state();
+    std::lock_guard<os::Mutex> serialize(s.remove_mutex);
+    uint32_t old_epoch = 0;
+    {
+        std::lock_guard<os::Mutex> lock(s.mutex);
+        s.sinks.erase(std::remove(s.sinks.begin(), s.sinks.end(), sink), s.sinks.end());
+        old_epoch = s.delivery_epoch;
+        s.delivery_epoch ^= 1;
+    }
+    while (true) {
+        {
+            std::lock_guard<os::Mutex> lock(s.mutex);
+            if (s.deliveries[old_epoch] == 0) return;
+        }
+        os::sleep_ms(1);
+    }
+}
+
 void set_level(LogLevel level) {
     state().level.store(static_cast<int>(level), std::memory_order_relaxed);
 }
@@ -197,27 +229,34 @@ void write(LogLevel level, const char* tag, const char* fmt, ...) {
     line += msg;
     line += '\n';
 
+    // Deliver to sinks outside the lock, so a sink that does its own
+    // (possibly slow) I/O never holds up concurrent logging from other
+    // threads. See g_in_sink's comment for the reentrancy rule and
+    // State::deliveries for how remove_sink() waits these out.
+    const bool deliver = !g_in_sink;
+    std::vector<LogSink*> sinks_copy;
+    uint32_t epoch = 0;
     {
         std::lock_guard<os::Mutex> lock(s.mutex);
         s.push_line(line.data(), line.size());
+        if (deliver && !s.sinks.empty()) {
+            sinks_copy = s.sinks;
+            epoch = s.delivery_epoch;
+            ++s.deliveries[epoch];
+        }
     }
-
-    // Deliver to sinks outside the lock, so a sink that does its own
-    // (possibly slow) I/O never holds up concurrent logging from other
-    // threads. See g_in_sink's comment for the reentrancy rule.
-    if (g_in_sink) {
+    if (sinks_copy.empty()) {
         return;
     }
     g_in_sink = true;
-    std::vector<LogSink*> sinks_copy;
-    {
-        std::lock_guard<os::Mutex> lock(s.mutex);
-        sinks_copy = s.sinks;
-    }
     for (LogSink* sink : sinks_copy) {
         sink->write(level, tag, msg);
     }
     g_in_sink = false;
+    {
+        std::lock_guard<os::Mutex> lock(s.mutex);
+        --s.deliveries[epoch];
+    }
 }
 
 std::string ring_snapshot() {

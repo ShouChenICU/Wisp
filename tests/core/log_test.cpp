@@ -141,3 +141,46 @@ TEST(Log, ConcurrentLoggingDuringReinitDoesNotCrash) {
 
     SUCCEED();  // Reaching here without crashing/hanging is the point.
 }
+
+TEST(Log, RemovedSinkReceivesNothing) {
+    wisp::log::reset_for_test();
+    wisp::log::init(1024);
+    CaptureSink kept;
+    CaptureSink removed;
+    wisp::log::add_sink(&kept);
+    wisp::log::add_sink(&removed);
+
+    WLOG_I("t", "before");
+    wisp::log::remove_sink(&removed);
+    WLOG_I("t", "after");
+    // Removing a sink that is not registered is a no-op.
+    wisp::log::remove_sink(&removed);
+
+    EXPECT_EQ(kept.lines, (std::vector<std::string>{"t|before", "t|after"}));
+    EXPECT_EQ(removed.lines, (std::vector<std::string>{"t|before"}));
+}
+
+TEST(Log, RemoveSinkWaitsForInFlightDelivery) {
+    wisp::log::reset_for_test();
+    wisp::log::init(1024);
+
+    // A sink whose write() is slow: remove_sink() on another thread must
+    // not return while it is still running, so the owner can destroy the
+    // sink right after remove_sink() returns.
+    struct SlowSink : wisp::LogSink {
+        std::atomic<bool> entered{false};
+        std::atomic<bool> finished{false};
+        void write(wisp::LogLevel, const char*, const char*) override {
+            entered = true;
+            wisp::os::sleep_ms(200);
+            finished = true;
+        }
+    } sink;
+    wisp::log::add_sink(&sink);
+
+    auto writer = wisp::os::Task::spawn({.name = "log_writer"}, [] { WLOG_I("t", "slow"); });
+    while (!sink.entered) wisp::os::sleep_ms(1);
+    wisp::log::remove_sink(&sink);
+    EXPECT_TRUE(sink.finished);
+    writer->join();
+}
