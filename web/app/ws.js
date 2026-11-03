@@ -13,6 +13,11 @@
 // once while the tab is hidden (reopened when it becomes visible again),
 // so a forgotten background tab does not hold one of the two slots.
 //
+// The device opens every connection with {"t":"hello","boot"} (spec 6.2).
+// It is kept for the life of the socket and handed to each "log"
+// subscriber when it joins, so a subscriber that joins an open socket
+// still learns the boot before its replay arrives.
+//
 // Backoff resets only once a connection proves healthy -- a first message
 // from the device, or STABLE_MS open -- because a server can complete the
 // handshake and close right away (ESP-IDF httpd does when it is full), and
@@ -46,6 +51,8 @@ let backoff = BACKOFF_FIRST_MS;
 /** @type {WsState} */
 let state = 'closed';
 let sentKey = '';
+/** The current socket's hello, once it arrived. */
+let hello = null;
 
 function wanted() {
   const kinds = new Set();
@@ -94,6 +101,7 @@ function closeSocket() {
   if (!socket) return;
   const s = socket;
   socket = null;
+  hello = null;
   s.onopen = s.onmessage = s.onclose = s.onerror = null;
   try {
     s.close(1000);
@@ -108,6 +116,7 @@ function open() {
   const s = new WebSocket(proto + '//' + location.host + PATH);
   socket = s;
   sentKey = '';
+  hello = null;
   setState('connecting');
 
   s.onopen = () => {
@@ -125,6 +134,7 @@ function open() {
       return;
     }
     if (!msg || typeof msg !== 'object') return;
+    if (msg.t === 'hello') hello = msg;
     for (const sub of [...subscribers]) {
       if (deliverable(sub, msg)) sub.onMessage(msg);
     }
@@ -132,6 +142,7 @@ function open() {
   s.onclose = () => {
     if (socket !== s) return;
     socket = null;
+    hello = null;
     clearStable();
     clearLinger();
     onUnexpectedClose();
@@ -139,7 +150,7 @@ function open() {
 }
 
 function deliverable(sub, msg) {
-  if (msg.t === 'log') return sub.kinds.has('log');
+  if (msg.t === 'log' || msg.t === 'hello') return sub.kinds.has('log');
   if (msg.t === 'event') return sub.kinds.has('events');
   // The device dropped queued messages; an events subscriber may have
   // missed a state change and should refetch.
@@ -221,9 +232,12 @@ document.addEventListener('visibilitychange', () => {
  * Subscribes to the device's live stream.
  *
  * `onMessage` gets the decoded messages for the requested kinds:
- *   - "log":    {t:"log", ts, level, tag, msg} and {t:"dropped", count};
- *               every subscription (each Start, each reconnect) replays
- *               the device's recent log ring first, so callers dedupe.
+ *   - "log":    {t:"hello", boot} first (on joining, and again from
+ *               each new connection), then {t:"log", seq, ts, level, tag,
+ *               msg[, replay]} and {t:"dropped", count}; every
+ *               subscription (each Start, each reconnect) replays the
+ *               device's recent log ring first, so callers dedupe by
+ *               (boot, seq).
  *   - "events": {t:"event", topic, payload}, and {t:"dropped", count}
  *               when the device had to drop queued messages.
  *
@@ -246,6 +260,7 @@ export function subscribe(kinds, onMessage, opts = {}) {
   const joined = socket !== null || retryTimer !== 0;
   sync();
   if (joined) sub.onState?.(state);
+  if (hello && socket && sub.kinds.has('log')) sub.onMessage(hello);
   return () => {
     if (!subscribers.delete(sub)) return;
     sync();

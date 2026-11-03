@@ -5,19 +5,18 @@
 //
 // The device replays its recent log ring first, then streams new lines --
 // on every subscription, so each Start after a Stop and each reconnect
-// replays lines this page already shows. Timestamps are ms since boot
-// (spec 6.2), so a replayed line no newer than the newest line already
-// seen is a repeat and is dropped; so is a live line that the replay just
-// delivered (the device may send a line written during the replay twice).
-// A reboot resets the device's clock, which would make every new line look
-// old: after each (re)subscription the page holds incoming lines until
-// /device's uptime_ms says whether the clock went back, and starts over if
-// it did. At most MAX_LINES are kept. The line list is written straight to the DOM
-// (text nodes only -- log text is untrusted) in one batch per animation
-// frame instead of being diffed by Preact, so a chatty device stays smooth.
+// replays lines this page already shows, and a line logged while the
+// replay is queued may arrive twice. Every line carries its seq, numbered
+// per boot, and every connection opens with a hello naming the boot
+// (spec 6.2), so (boot, seq) identifies a line exactly: the page keeps the
+// highest seq shown for the current boot and drops any line at or below
+// it. A hello with a different boot means the device restarted: a marker
+// goes in, the seq count starts over, and the history stays. At most
+// MAX_LINES are kept. The line list is written straight to the DOM (text
+// nodes only -- log text is untrusted) in one batch per animation frame
+// instead of being diffed by Preact, so a chatty device stays smooth.
 
 import { Component, html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
-import { api } from '../api.js';
 import { subscribe } from '../ws.js';
 import { t, useLang } from '../i18n/index.js';
 import { Badge } from '../components/badge.js';
@@ -32,19 +31,8 @@ const FILTERS = [
   { id: 'W', label: 'logs.level_warn' },
   { id: 'E', label: 'logs.level_error' },
 ];
-// Replayed ring lines arrive as {ts:0, level:"I", tag:"", msg:<raw line>}
-// with the raw line formatted "<ts> <L> <tag>: <msg>" by the device's log
-// module; parsing it back recovers the real time, level and tag.
-const RING_LINE = /^(\d+) ([DIWE]) ([^:]*): ([\s\S]*)$/;
 // How close to the bottom still counts as "following" the stream.
 const STICK_PX = 32;
-// A live line repeating a replayed one carries a slightly later stamp (the
-// ring and the stream read the clock separately).
-const BOUNDARY_MS = 1000;
-// Replayed lines remembered for that live/replay boundary check.
-const RECENT_REPLAY = 64;
-// Lines are held at most this long waiting for the reboot check.
-const HOLD_MAX_MS = 5000;
 
 /**
  * @typedef {Object} LogEntry
@@ -60,59 +48,15 @@ const HOLD_MAX_MS = 5000;
 
 function toEntry(msg, id) {
   if (msg.t === 'dropped') return { id, kind: 'dropped', count: Number(msg.count) || 0 };
-  let ts = Number(msg.ts) || 0;
-  let level = typeof msg.level === 'string' ? msg.level : 'I';
-  let tag = typeof msg.tag === 'string' ? msg.tag : '';
-  let text = typeof msg.msg === 'string' ? msg.msg : String(msg.msg ?? '');
-  let replay = false;
-  if (!ts && !tag) {
-    const m = RING_LINE.exec(text);
-    if (m) {
-      ts = Number(m[1]);
-      level = m[2];
-      tag = m[3];
-      text = m[4];
-      replay = true;
-    }
-  }
-  return { id, kind: 'log', ts, level, tag, text, replay };
-}
-
-function freshSeen() {
-  return { maxTs: -1, atMax: new Set(), recent: [] };
-}
-
-function entryKey(e) {
-  return e.level + '\u0000' + e.tag + '\u0000' + e.text;
-}
-
-/**
- * Whether `e` is new to this page, recording it in `seen` if so (see the
- * file header).
- */
-function firstSight(seen, e) {
-  if (e.kind !== 'log') return true;
-  const key = entryKey(e);
-  if (e.replay) {
-    // Remembered even when it is a repeat, so a live copy right after the
-    // replay is caught too.
-    seen.recent.push({ key, ts: e.ts });
-    if (seen.recent.length > RECENT_REPLAY) seen.recent.shift();
-    if (e.ts < seen.maxTs || (e.ts === seen.maxTs && seen.atMax.has(key))) return false;
-  } else {
-    const i = seen.recent.findIndex((r) => r.key === key && e.ts >= r.ts && e.ts - r.ts <= BOUNDARY_MS);
-    if (i >= 0) {
-      seen.recent.splice(i, 1);
-      return false;
-    }
-  }
-  if (e.ts > seen.maxTs) {
-    seen.maxTs = e.ts;
-    seen.atMax = new Set([key]);
-  } else if (e.ts === seen.maxTs) {
-    seen.atMax.add(key);
-  }
-  return true;
+  return {
+    id,
+    kind: 'log',
+    ts: Number(msg.ts) || 0,
+    level: typeof msg.level === 'string' ? msg.level : 'I',
+    tag: typeof msg.tag === 'string' ? msg.tag : '',
+    text: typeof msg.msg === 'string' ? msg.msg : String(msg.msg ?? ''),
+    replay: msg.replay === true,
+  };
 }
 
 function makeFilter(minLevel, query) {
@@ -218,11 +162,10 @@ export function LogsPage() {
   const stick = useRef(true);
   // Where scrollToEnd() last left the list; scrolling above it is the user.
   const autoTop = useRef(0);
-  // Dedupe state (see the file header), and lines held while the reboot
-  // check after a (re)subscription is in flight.
-  const seen = useRef(freshSeen());
-  const held = useRef(/** @type {any[]|null} */ (null));
-  const holdGen = useRef(0);
+  // Dedupe state (see the file header): the boot the lines on screen came
+  // from, and the highest seq shown for it.
+  const boot = useRef(/** @type {string|null} */ (null));
+  const lastSeq = useRef(0);
   // Mirrors of state read from callbacks that outlive a render.
   const pausedRef = useRef(false);
   const filterRef = useRef(makeFilter('D', ''));
@@ -255,43 +198,23 @@ export function LogsPage() {
   }
 
   function onMessage(msg) {
-    if (held.current) held.current.push(msg);
-    else ingest(msg);
-  }
-
-  // A replay is on its way. If this page has seen lines before, hold the
-  // stream until /device says whether the device rebooted since.
-  function onSubscribed() {
-    if (seen.current.maxTs < 0) return;
-    const gen = ++holdGen.current;
-    held.current = held.current || [];
-    let done = false;
-    const release = (rebooted) => {
-      if (done || gen !== holdGen.current) return;
-      done = true;
-      clearTimeout(timer);
-      if (rebooted) {
-        seen.current = freshSeen();
+    if (msg.t === 'hello') {
+      const id = String(msg.boot ?? '');
+      if (boot.current !== null && id !== boot.current) {
+        lastSeq.current = 0;
         addEntry({ id: 0, kind: 'restart' });
       }
-      const msgs = held.current || [];
-      held.current = null;
-      for (const m of msgs) ingest(m);
-    };
-    const timer = setTimeout(() => release(false), HOLD_MAX_MS);
-    api('GET', '/device').then(
-      (d) => {
-        const up = Number(d?.status?.uptime_ms);
-        release(Number.isFinite(up) && up < seen.current.maxTs);
-      },
-      () => release(false),
-    );
-  }
-
-  function ingest(msg) {
-    const entry = toEntry(msg, 0);
-    if (!firstSight(seen.current, entry)) return;
-    addEntry(entry);
+      boot.current = id;
+      return;
+    }
+    if (msg.t === 'log') {
+      const seq = Number(msg.seq);
+      if (Number.isFinite(seq)) {
+        if (seq <= lastSeq.current) return;
+        lastSeq.current = seq;
+      }
+    }
+    addEntry(toEntry(msg, 0));
   }
 
   function addEntry(entry) {
@@ -312,11 +235,6 @@ export function LogsPage() {
       unsub.current();
       unsub.current = null;
     }
-    // Lines held for a reboot check that will no longer matter.
-    holdGen.current++;
-    const msgs = held.current || [];
-    held.current = null;
-    for (const m of msgs) ingest(m);
     setStatus('stopped');
     setStopNote(note);
   }
@@ -329,10 +247,7 @@ export function LogsPage() {
     setFollowing(true);
     unsub.current = subscribe(['log'], onMessage, {
       onState: (st) => {
-        if (st === 'open') {
-          onSubscribed();
-          setStatus('live');
-        }
+        if (st === 'open') setStatus('live');
         else if (st === 'connecting') setStatus('connecting');
         else if (st === 'retrying') setStatus('retrying');
         else if (st === 'unauthorized') stop('logs.stopped_unpaired');
