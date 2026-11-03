@@ -101,6 +101,13 @@ public:
     // active, it has expired, or pairing is locked.
     std::optional<std::string> active_code(uint64_t now_ms) const;
 
+    // Drops the active code at once (the device's "reject" button) and
+    // publishes net.pairing.code {active:false}, as an expiry would. Typing
+    // it afterwards is a wrong code, not an expired one: nobody should be
+    // told to fetch a fresh code for a request the device turned down. A
+    // no-op without an active code.
+    void cancel_code();
+
     // Publishes net.pairing.code {active:false} once an active code has
     // expired. Every other method taking now_ms does the same, so a caller
     // that needs the event promptly (the screen) drives this periodically.

@@ -428,7 +428,9 @@ void WifiService::set_standby(bool standby, uint64_t now_ms) {
 
 WifiStatus WifiService::status() const {
     std::lock_guard<os::Mutex> lock(mutex_);
-    return status_;
+    WifiStatus s = status_;
+    if (s.state == WifiState::Backoff && attempt_due_) s.retry_at_ms = next_attempt_ms_;
+    return s;
 }
 
 // ---------------------------------------------------------------------------

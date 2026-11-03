@@ -1004,3 +1004,24 @@ TEST(WifiService, StateEventsCarrySsidHex) {
     ASSERT_FALSE(states.empty());
     EXPECT_EQ(str_of(states.back().payload, "ssid_hex"), "c4e3bac3");
 }
+
+// The device screen counts down to the next attempt ("retrying in N s"),
+// so status() says when that is -- only while backing off.
+TEST(WifiService, StatusSaysWhenBackoffRetries) {
+    Fixture f;
+    f.in_range("A", -50, "passwordA");
+    f.wifi->reachable = false;
+    f.seed({{"A", "passwordA"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    EXPECT_EQ(svc.status().retry_at_ms, 0u);
+
+    tick2(svc, 1000);
+    ASSERT_EQ(svc.status().state, WifiState::Backoff);
+    EXPECT_EQ(svc.status().retry_at_ms, 1000u + 5000u);
+
+    f.wifi->reachable = true;
+    tick2(svc, 6000);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    EXPECT_EQ(svc.status().retry_at_ms, 0u);
+}

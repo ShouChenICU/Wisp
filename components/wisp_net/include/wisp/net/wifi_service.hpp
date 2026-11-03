@@ -58,6 +58,9 @@ struct WifiStatus {
     // only set in Backoff, "" otherwise. Same value as net.wifi.state's
     // "reason".
     std::string reason;
+    // When the next attempt is due (now_ms timebase); only set in Backoff,
+    // 0 otherwise. The device screen counts down to it.
+    uint64_t retry_at_ms = 0;
 };
 
 struct ApSession {

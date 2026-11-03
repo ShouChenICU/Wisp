@@ -272,6 +272,14 @@ std::optional<std::string> PairingService::active_code(uint64_t now_ms) const {
     return code_;
 }
 
+void PairingService::cancel_code() {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    if (!code_) return;
+    WLOG_I(kTag, "pairing code dismissed on the device");
+    expired_code_.reset();
+    clear_code_locked();
+}
+
 void PairingService::tick(uint64_t now_ms) {
     std::lock_guard<os::Mutex> lock(mutex_);
     observe_locked(now_ms);

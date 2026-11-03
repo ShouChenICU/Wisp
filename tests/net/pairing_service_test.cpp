@@ -777,3 +777,36 @@ TEST(Pairing, EvictionNotifiesRevokeListeners) {
     EXPECT_EQ(heard[1], std::optional<std::string>(hash_hex(tokens[1]).substr(0, 12)));
     svc.remove_revoke_listener(h);
 }
+
+// The device's "reject" button: the code stops working at once and the
+// screen hears about it like an expiry, but typing it afterwards is a
+// plain wrong code (it never expired).
+TEST(Pairing, CancelCodeInvalidatesItAtOnce) {
+    Fixture f;
+    auto& svc = f.make();
+    svc.cancel_code();  // nothing active: no event
+    EXPECT_TRUE(f.topic("net.pairing.code").empty());
+
+    ASSERT_TRUE(svc.request_code(1000));
+    const std::string code = svc.active_code(1000).value_or("");
+    ASSERT_EQ(code.size(), 6u);
+
+    svc.cancel_code();
+    EXPECT_FALSE(svc.active_code(1001).has_value());
+    auto evs = f.topic("net.pairing.code");
+    ASSERT_EQ(evs.size(), 2u);
+    EXPECT_FALSE(evs[1].payload.at("active").as_bool());
+    EXPECT_EQ(evs[1].payload.at("expires_ms").as_int(), 0);
+
+    ConfirmFailure why = ConfirmFailure::None;
+    auto late = svc.confirm(code, browser(), 1002, &why);
+    ASSERT_FALSE(late);
+    EXPECT_EQ(late.error().code, ErrorCode::PermissionDenied);
+    EXPECT_EQ(why, ConfirmFailure::WrongCode);
+    EXPECT_TRUE(svc.clients().empty());
+
+    // Cancelling twice, or after expiry, publishes nothing more.
+    svc.cancel_code();
+    svc.tick(1000 + 120000);
+    EXPECT_EQ(f.topic("net.pairing.code").size(), 2u);
+}
