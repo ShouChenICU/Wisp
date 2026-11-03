@@ -77,6 +77,8 @@ const char* strings_zh(StrId id) {
             return "重试中（{} 秒后）";
         case StrId::NetRejected:
             return "{} 的密码被拒绝，请重新配网";
+        case StrId::NetRejectedNoName:
+            return "密码被拒绝，请重新配网";
         case StrId::NetConnected:
             return "已连接";
         case StrId::NetNoHardware:

@@ -14,6 +14,7 @@
 
 #include "app/ui_net_harness.hpp"
 #include "net_cards.hpp"
+#include "net_section.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
@@ -259,6 +260,27 @@ TEST(NetUi, SectionSaysWhenEveryPasswordWasRejected) {
                         return all_label_glyphs_resolvable(lv_screen_active()) ? "yes" : "";
                     }) == "yes");
     }
+}
+
+// Every network parked but no name in the status (e.g. a backoff that is
+// not about one network): the line still asks to set Wi-Fi up again,
+// without a blank where the name would go.
+TEST(NetUi, RejectedLineWithoutAName) {
+    wisp::net::WifiStatus st;
+    st.state = wisp::net::WifiState::Backoff;
+    st.reason = "auth_failed";
+    st.retry_at_ms = 5000;
+    for (Lang lang : kLangs) {
+        SCOPED_TRACE(wisp::ui::lang_code(lang));
+        wisp::ui::set_lang(lang);
+        EXPECT_EQ(wisp::app::wifi_status_text(st, true, true, 0),
+                  text_of(StrId::NetRejectedNoName, lang));
+        st.ssid = "Home";
+        EXPECT_EQ(wisp::app::wifi_status_text(st, true, true, 0),
+                  wisp::ui::tr_fill(StrId::NetRejected, "Home"));
+        st.ssid.clear();
+    }
+    wisp::ui::set_lang(Lang::Zh);
 }
 
 // Bytes that are not UTF-8 (a GBK router) show as "?", not as garbage.

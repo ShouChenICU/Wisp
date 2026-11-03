@@ -28,7 +28,9 @@ std::string wifi_status_text(const net::WifiStatus& status, bool has_saved, bool
         case net::WifiState::Backoff: {
             // Retrying cannot help; only new credentials can.
             if (all_rejected) {
-                return ui::tr_fill(ui::StrId::NetRejected, displayable_ssid(status.ssid));
+                return status.ssid.empty()
+                           ? std::string(ui::tr(ui::StrId::NetRejectedNoName))
+                           : ui::tr_fill(ui::StrId::NetRejected, displayable_ssid(status.ssid));
             }
             // Rounded up, so it reads 1 (not 0) in the last second.
             uint64_t left_ms = status.retry_at_ms > now_ms ? status.retry_at_ms - now_ms : 0;

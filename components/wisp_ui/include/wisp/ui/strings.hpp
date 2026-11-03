@@ -71,13 +71,15 @@ enum class StrId : uint16_t {
 
     // Network section (connectivity spec 8.1). NetLine carries "{}" (one
     // of the states below), NetRetrying "{}" (seconds; see tr_fill()),
-    // NetRejected "{}" (the SSID whose password was rejected).
+    // NetRejected "{}" (the SSID whose password was rejected);
+    // NetRejectedNoName is the same sentence for when no SSID is known.
     NetLine,
     NetNotSetUp,
     NetOff,
     NetConnecting,
     NetRetrying,
     NetRejected,
+    NetRejectedNoName,
     NetConnected,
     NetNoHardware,
     StartSetup,
