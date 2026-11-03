@@ -150,6 +150,19 @@ TEST(Filters, CaptiveHandlerRedirectsEverything) {
     EXPECT_EQ(captive(make_req(Get, "/", {}, Iface::Ap)).status, 503);
 }
 
+// The port-80 server listens on every interface, but only hotspot clients
+// may be sent to the hotspot address: a LAN client could not reach it.
+TEST(Filters, CaptiveHandlerAnswersOnlyTheHotspot) {
+    AdminFixture f;
+    ASSERT_TRUE(f.wifi->start_provisioning(f.now));
+    wisp::net::HttpHandler captive = f.srv->captive_handler();
+    for (Iface iface : {Iface::Sta, Iface::Loopback}) {
+        HttpResponse res = captive(host(make_req(Get, "/generate_204", {}, iface), "192.168.1.88"));
+        EXPECT_EQ(res.status, 404);
+        EXPECT_EQ(response_header(res, "Location"), "");
+    }
+}
+
 // The router reads the lowercase "x-wisp" key and accepts only the exact
 // value "1".
 TEST(Filters, CsrfHeaderRequiredAnyCase) {

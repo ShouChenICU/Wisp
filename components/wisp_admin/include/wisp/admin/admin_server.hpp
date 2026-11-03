@@ -120,8 +120,11 @@ public:
     // phones' captive-portal probes open the setup page: every request,
     // whatever its method, path or Host, is a 302 (Cache-Control:
     // no-store) to http://<hotspot ip>:<http_port>/setup.html, or 503
-    // while no hotspot is up. No API, static files or WebSocket. Captures
-    // this AdminServer, like ws_handlers().
+    // while no hotspot is up. Requests that did not arrive over the
+    // hotspot (iface != Ap) get 404 instead: the server listens on every
+    // interface, and a LAN client cannot reach the hotspot address. No
+    // API, static files or WebSocket. Captures this AdminServer, like
+    // ws_handlers().
     net::HttpHandler captive_handler();
 
     // WebSocket callbacks for /api/v1/ws. on_open refuses an upgrade with

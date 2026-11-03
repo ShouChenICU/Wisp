@@ -278,7 +278,12 @@ net::HttpResponse AdminServer::handle_api(const net::HttpRequest& req) {
 }
 
 net::HttpHandler AdminServer::captive_handler() {
-    return [this](const net::HttpRequest&) {
+    return [this](const net::HttpRequest& req) {
+        // The server behind this listens on every interface; a client on
+        // another network could not follow a redirect to the hotspot.
+        if (req.iface != net::Iface::Ap) {
+            return net::HttpResponse::error(404, "not_found", "no such resource");
+        }
         if (auto redirect = detail::setup_redirect(deps_)) return std::move(*redirect);
         return net::HttpResponse::error(503, "unavailable", "setup hotspot is not running");
     };
