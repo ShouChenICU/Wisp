@@ -1094,6 +1094,26 @@ TEST(WifiService, OnlyAuthFailedNetworksMeansBackoffWithoutAttempts) {
     EXPECT_EQ(svc.status().ssid, "B");
 }
 
+// Forgetting the network a backoff is about must not leave the status
+// naming it ("retrying <forgotten network>") until the next attempt.
+TEST(WifiService, ForgettingTheNetworkInBackoffClearsItFromTheStatus) {
+    Fixture f;
+    f.in_range("A", -40, "passwordA");
+    f.seed({{"A", "wrongpassA"}, {"B", "passwordB"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    ASSERT_EQ(svc.status().state, WifiState::Backoff);
+    ASSERT_EQ(svc.status().ssid, "A");
+
+    ASSERT_TRUE(svc.forget_network("A"));
+    EXPECT_EQ(svc.status().state, WifiState::Backoff);
+    EXPECT_EQ(svc.status().ssid, "");
+    auto states = f.topic("net.wifi.state");
+    ASSERT_FALSE(states.empty());
+    EXPECT_EQ(str_of(states.back().payload, "ssid"), "");
+}
+
 // Browsers only see SSIDs through JSON, which cannot carry bytes that are
 // not UTF-8; the state event names the network byte-exactly as hex too.
 TEST(WifiService, StateEventsCarrySsidHex) {

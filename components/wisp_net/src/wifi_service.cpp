@@ -576,6 +576,10 @@ Result<void> WifiService::forget_network(std::string_view ssid) {
     } else if (in_use) {
         schedule_attempt_locked(0);  // due on the very next tick()
         set_state_locked(WifiState::Connecting, "", "", 0);
+    } else if (status_.ssid == ssid) {
+        // A backoff (or a planned attempt) about the forgotten network:
+        // keep the schedule but stop naming it.
+        set_state_locked(status_.state, "", status_.ip, status_.rssi);
     }
     return Result<void>::ok();
 }
