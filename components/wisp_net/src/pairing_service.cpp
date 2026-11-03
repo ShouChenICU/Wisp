@@ -218,6 +218,7 @@ void PairingService::observe_locked(uint64_t now_ms) {
     latest_now_ms_ = std::max(latest_now_ms_, now_ms);
     if (code_ && now_ms >= code_expires_ms_) {
         WLOG_I(kTag, "pairing code expired");
+        expired_code_ = code_;
         clear_code_locked();
     }
     if (locked_until_ms_ && now_ms >= *locked_until_ms_) {
@@ -256,6 +257,7 @@ Result<void> PairingService::request_code(uint64_t now_ms) {
     }
     code_ = draw_code_locked();
     code_expires_ms_ = now_ms + config_.code_ttl_ms;
+    expired_code_.reset();
     WLOG_I(kTag, "pairing code shown on screen (valid %u s)",
            static_cast<unsigned>(config_.code_ttl_ms / 1000));
     bus_.publish(core::Event{
@@ -275,10 +277,18 @@ void PairingService::tick(uint64_t now_ms) {
     observe_locked(now_ms);
 }
 
+uint64_t PairingService::lock_remaining_ms(uint64_t now_ms) const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    if (!locked_until_ms_ || now_ms >= *locked_until_ms_) return 0;
+    return *locked_until_ms_ - now_ms;
+}
+
 Result<std::string> PairingService::confirm(std::string_view code, const ClientInfo& client,
-                                            uint64_t now_ms) {
+                                            uint64_t now_ms, ConfirmFailure* why) {
+    ConfirmFailure ignored = ConfirmFailure::None;
     std::string evicted;
-    auto token = confirm_unnotified(code, client, now_ms, &evicted);
+    auto token =
+        confirm_unnotified(code, client, now_ms, &evicted, why != nullptr ? why : &ignored);
     // An eviction is a revocation too (outside mutex_, as in revoke()).
     if (!evicted.empty()) notify_revoked(evicted);
     return token;
@@ -286,22 +296,31 @@ Result<std::string> PairingService::confirm(std::string_view code, const ClientI
 
 Result<std::string> PairingService::confirm_unnotified(std::string_view code,
                                                        const ClientInfo& client, uint64_t now_ms,
-                                                       std::string* evicted) {
+                                                       std::string* evicted, ConfirmFailure* why) {
     std::lock_guard<os::Mutex> lock(mutex_);
     observe_locked(now_ms);
+    *why = ConfirmFailure::None;
     if (locked_until_ms_) {
+        *why = ConfirmFailure::Locked;
         return Result<std::string>::err(ErrorCode::RateLimited,
                                         "too many wrong codes; try again later");
     }
     // Compare even when no code is active, so a missing code and a wrong
-    // one take the same time and both count toward the lock.
-    bool match = ct_equal(code_ ? std::string_view(*code_) : std::string_view(), code);
+    // one take the same time and both count toward the lock. With no
+    // active code the comparison is against the one that expired: a
+    // match is still a failure, reported as expired.
+    const std::string_view expected = code_           ? std::string_view(*code_)
+                                      : expired_code_ ? std::string_view(*expired_code_)
+                                                      : std::string_view();
+    const bool match = ct_equal(expected, code);
     if (!match || !code_) {
+        *why = match && expired_code_ ? ConfirmFailure::ExpiredCode : ConfirmFailure::WrongCode;
         ++failures_;
         bool now_locked = failures_ >= config_.max_attempts;
         WLOG_W(kTag, "wrong pairing code (%d/%d)", failures_, config_.max_attempts);
         if (now_locked) {
             locked_until_ms_ = now_ms + config_.lock_ms;
+            expired_code_.reset();
             WLOG_W(kTag, "pairing locked for %u s", static_cast<unsigned>(config_.lock_ms / 1000));
             clear_code_locked();
         }
@@ -315,6 +334,7 @@ Result<std::string> PairingService::confirm_unnotified(std::string_view code,
     if (!token) return token;
     failures_ = 0;
     clear_code_locked();
+    expired_code_.reset();
     return token;
 }
 

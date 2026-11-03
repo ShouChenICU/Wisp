@@ -66,6 +66,10 @@ struct PairedClient {
     int64_t last_seen_unix = 0;
 };
 
+// Why confirm() refused a code, for an error the browser can act on
+// (spec 6.1): an expired code needs a fresh one, a wrong one a retry.
+enum class ConfirmFailure { None, WrongCode, ExpiredCode, Locked };
+
 struct PairingConfig {
     uint32_t code_ttl_ms = 120000;
     int max_attempts = 5;
@@ -106,7 +110,14 @@ public:
     // wrong, expired or missing code is PermissionDenied and counts toward
     // the lock (publishing net.pairing.failed {attempts, locked}); while
     // locked, RateLimited. Success consumes the code and resets the count.
-    Result<std::string> confirm(std::string_view code, const ClientInfo& client, uint64_t now_ms);
+    // On failure, *why (when given) says which: ExpiredCode only for the
+    // code that most recently timed out, while no newer code has been
+    // issued and pairing has not locked since.
+    Result<std::string> confirm(std::string_view code, const ClientInfo& client, uint64_t now_ms,
+                                ConfirmFailure* why = nullptr);
+
+    // How long code pairing stays locked, 0 when it is not.
+    uint64_t lock_remaining_ms(uint64_t now_ms) const;
 
     // Pairs without a code; only for requests that arrived on the setup
     // hotspot (client.iface == Iface::Ap), else PermissionDenied.
@@ -160,7 +171,8 @@ private:
                                           std::string* evicted);
     // confirm() minus the listener call, under mutex_.
     Result<std::string> confirm_unnotified(std::string_view code, const ClientInfo& client,
-                                           uint64_t now_ms, std::string* evicted);
+                                           uint64_t now_ms, std::string* evicted,
+                                           ConfirmFailure* why);
 
     core::StorageManager& storage_;
     core::EventBus& bus_;
@@ -180,6 +192,9 @@ private:
 
     std::optional<std::string> code_;
     uint64_t code_expires_ms_ = 0;
+    // The code that last timed out, so typing it late reads as "expired"
+    // rather than "wrong"; dropped by a new code, a lock or a pairing.
+    std::optional<std::string> expired_code_;
     int failures_ = 0;
     std::optional<uint64_t> locked_until_ms_;
 

@@ -33,6 +33,7 @@ using wisp::core::Event;
 using wisp::core::EventBus;
 using wisp::core::StorageManager;
 using wisp::net::ClientInfo;
+using wisp::net::ConfirmFailure;
 using wisp::net::Iface;
 using wisp::net::PairedClient;
 using wisp::net::PairingConfig;
@@ -213,6 +214,56 @@ TEST(Pairing, CodeIsSixDigitsAndExpires) {
     f.scripted_random = {0, 0, 0, 0};
     ASSERT_TRUE(svc.request_code(200000));
     EXPECT_EQ(svc.active_code(200000).value_or(""), "000000");
+}
+
+TEST(Pairing, ExpiredCodeIsToldApartFromAWrongOne) {
+    Fixture f;
+    auto& svc = f.make();
+    f.scripted_random = {0, 0, 0, 0};
+    ASSERT_TRUE(svc.request_code(1000));
+    const std::string code = svc.active_code(1000).value_or("");
+    ASSERT_EQ(code, "000000");
+
+    ConfirmFailure why = ConfirmFailure::None;
+    auto wrong = svc.confirm(wrong_code(code), browser(), 2000, &why);
+    ASSERT_FALSE(wrong);
+    EXPECT_EQ(wrong.error().code, ErrorCode::PermissionDenied);
+    EXPECT_EQ(why, ConfirmFailure::WrongCode);
+
+    // The right code, typed after it expired.
+    auto late = svc.confirm(code, browser(), 1000 + 120000, &why);
+    ASSERT_FALSE(late);
+    EXPECT_EQ(late.error().code, ErrorCode::PermissionDenied);
+    EXPECT_EQ(why, ConfirmFailure::ExpiredCode);
+    // A different code after expiry is still just wrong.
+    ASSERT_FALSE(svc.confirm(wrong_code(code), browser(), 1000 + 120001, &why));
+    EXPECT_EQ(why, ConfirmFailure::WrongCode);
+    // Both count toward the lock like any other miss.
+    EXPECT_EQ(f.topic("net.pairing.failed").back().payload.at("attempts").as_int(), 3);
+
+    // Once a new code is issued the old one is merely wrong.
+    f.scripted_random = {0, 0, 0, 7};
+    ASSERT_TRUE(svc.request_code(200000));
+    ASSERT_NE(svc.active_code(200000).value_or(code), code);
+    ASSERT_FALSE(svc.confirm(code, browser(), 200001, &why));
+    EXPECT_EQ(why, ConfirmFailure::WrongCode);
+}
+
+TEST(Pairing, LockReportsTimeRemaining) {
+    Fixture f;
+    auto& svc = f.make();
+    EXPECT_EQ(svc.lock_remaining_ms(0), 0u);
+    ASSERT_TRUE(svc.request_code(1000));
+    const std::string bad = wrong_code(svc.active_code(1000).value_or(""));
+    ConfirmFailure why = ConfirmFailure::None;
+    for (int i = 1; i <= 5; ++i) ASSERT_FALSE(svc.confirm(bad, browser(), 1000 + i, &why));
+    EXPECT_EQ(why, ConfirmFailure::WrongCode);  // the fifth miss is still a wrong code
+
+    EXPECT_EQ(svc.lock_remaining_ms(1005), 300000u);
+    EXPECT_EQ(svc.lock_remaining_ms(1005 + 120000), 180000u);
+    ASSERT_FALSE(svc.confirm(bad, browser(), 1006, &why));
+    EXPECT_EQ(why, ConfirmFailure::Locked);
+    EXPECT_EQ(svc.lock_remaining_ms(1005 + 300000), 0u);
 }
 
 TEST(Pairing, NewRequestInvalidatesOldCode) {

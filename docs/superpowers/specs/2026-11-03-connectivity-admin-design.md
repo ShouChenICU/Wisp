@@ -242,6 +242,8 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 
 **错误格式**：`{"error": {"code": "...", "message": "..."}}`，配合相应的 HTTP 状态码（400/401/403/404/409/413/500/503），由 `wisp::Result` 的错误码映射得到。
 
+配对接口的错误要能让浏览器给出明确提示：配对码错误返回 403 `permission_denied`；输入的正是刚过期的那个码（之后没有新码、也没有被锁定）时返回 403 `code_expired`；锁定期间 `POST /pair/start` 和 `POST /pair/confirm` 都返回 429 `rate_limited`，带 `Retry-After` 响应头（剩余秒数，向上取整，至少 1），`error` 对象里同时给出 `retry_after_s`。`message` 只是英文说明，前端按 `code` 显示本地化文字（见 7.4）。
+
 ### 6.2 WebSocket
 
 - 客户端连接后发送 `{"sub": ["log", "events"]}` 订阅。

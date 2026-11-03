@@ -47,6 +47,20 @@ std::string start_pairing(AdminFixture& f) {
     return code.value_or("");
 }
 
+std::string header(const HttpResponse& res, const std::string& name) {
+    for (const auto& [k, v] : res.headers) {
+        if (k == name) return v;
+    }
+    return {};
+}
+
+int64_t retry_after_s(const HttpResponse& res) {
+    const Value v = body_json(res);
+    const Value* err = v.find("error");
+    const Value* s = err != nullptr ? err->find("retry_after_s") : nullptr;
+    return s != nullptr && s->type() == Value::Type::Int ? s->as_int() : -1;
+}
+
 TEST(PairRoutes, ConfirmSetsHttpOnlyCookie) {
     AdminFixture f;
     auto& srv = *f.srv;
@@ -126,12 +140,34 @@ TEST(PairRoutes, WrongCodeIs403AndLockIs429) {
     auto locked = srv.handle(with_csrf(make_req(Post, "/api/v1/pair/confirm", confirm_body(code))));
     EXPECT_EQ(locked.status, 429);
     EXPECT_EQ(error_code(locked), "rate_limited");
+    // How long the lock still holds, as a header and in the body.
+    EXPECT_EQ(header(locked, "Retry-After"), "300");
+    EXPECT_EQ(retry_after_s(locked), 300);
+    f.now += 120500;
     auto restart = srv.handle(with_csrf(make_req(Post, "/api/v1/pair/start")));
     EXPECT_EQ(restart.status, 429);
+    EXPECT_EQ(header(restart, "Retry-After"), "180");  // 179.5 s, rounded up
+    EXPECT_EQ(retry_after_s(restart), 180);
+    f.now -= 120500;
 
     // The router's clock is deps.now_ms: five minutes later it unlocks.
     f.now += 300000;
     EXPECT_EQ(srv.handle(with_csrf(make_req(Post, "/api/v1/pair/start"))).status, 202);
+}
+
+TEST(PairRoutes, ExpiredCodeHasItsOwnErrorCode) {
+    AdminFixture f;
+    const std::string code = start_pairing(f);
+    f.now += 120000;
+    auto res = f.srv->handle(with_csrf(make_req(Post, "/api/v1/pair/confirm", confirm_body(code))));
+    EXPECT_EQ(res.status, 403);
+    EXPECT_EQ(error_code(res), "code_expired");
+    EXPECT_TRUE(set_cookie(res).empty());
+
+    const std::string wrong = code == "000000" ? "111111" : "000000";
+    auto miss =
+        f.srv->handle(with_csrf(make_req(Post, "/api/v1/pair/confirm", confirm_body(wrong))));
+    EXPECT_EQ(error_code(miss), "permission_denied");
 }
 
 TEST(PairRoutes, ApPairOnlyFromApInterface) {
