@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -158,6 +159,22 @@ std::string hash_hex(const std::string& token) {
     auto digest = wisp::sha256(
         std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(token.data()), token.size()));
     return wisp::to_hex(digest);
+}
+
+// Whether `secret` occurs in `hay`. A 6-digit code is only matched as a
+// whole number: log lines and event payloads carry timestamps and other
+// numbers that contain any given digit run by chance.
+bool leaks(const std::string& hay, const std::string& secret) {
+    auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+    bool numeric = std::all_of(secret.begin(), secret.end(), is_digit);
+    for (size_t pos = hay.find(secret); pos != std::string::npos; pos = hay.find(secret, pos + 1)) {
+        if (!numeric) return true;
+        size_t end = pos + secret.size();
+        bool digit_before = pos > 0 && is_digit(hay[pos - 1]);
+        bool digit_after = end < hay.size() && is_digit(hay[end]);
+        if (!digit_before && !digit_after) return true;
+    }
+    return false;
 }
 
 std::optional<PairedClient> find_client(const PairingService& svc, const std::string& id) {
@@ -499,6 +516,80 @@ TEST(Pairing, RevokeAllClearsFile) {
     EXPECT_TRUE(again.clients().empty());
 }
 
+TEST(Pairing, NewCodeDoesNotResetFailureCount) {
+    // /pair/start needs no authentication, so a fresh code must not hand
+    // a guesser a fresh attempt budget.
+    Fixture f;
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.request_code(1000));
+    std::string code = svc.active_code(1000).value_or("");
+    for (int i = 1; i <= 4; ++i) {
+        EXPECT_FALSE(svc.confirm(wrong_code(code), browser(), 1000 + i));
+    }
+    ASSERT_TRUE(svc.request_code(2000));
+    std::string fresh = svc.active_code(2000).value_or("");
+    auto fifth = svc.confirm(wrong_code(fresh), browser(), 2001);
+    ASSERT_FALSE(fifth);
+    EXPECT_EQ(fifth.error().code, ErrorCode::PermissionDenied);
+
+    auto failed = f.topic("net.pairing.failed");
+    ASSERT_EQ(failed.size(), 5u);
+    EXPECT_EQ(failed.back().payload.at("attempts").as_int(), 5);
+    EXPECT_TRUE(failed.back().payload.at("locked").as_bool());
+    auto locked = svc.confirm(fresh, browser(), 2002);
+    ASSERT_FALSE(locked);
+    EXPECT_EQ(locked.error().code, ErrorCode::RateLimited);
+}
+
+TEST(Pairing, ConfirmWithoutActiveCodeCountsAsFailure) {
+    Fixture f;
+    auto& svc = f.make();
+    auto r = svc.confirm("123456", browser(), 1000);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::PermissionDenied);
+    auto failed = f.topic("net.pairing.failed");
+    ASSERT_EQ(failed.size(), 1u);
+    EXPECT_EQ(failed[0].payload.at("attempts").as_int(), 1);
+    EXPECT_FALSE(failed[0].payload.at("locked").as_bool());
+
+    for (int i = 1; i <= 4; ++i) {
+        EXPECT_FALSE(svc.confirm("", browser(), 1000 + i));
+    }
+    EXPECT_TRUE(f.topic("net.pairing.failed").back().payload.at("locked").as_bool());
+    auto req = svc.request_code(1010);
+    ASSERT_FALSE(req);
+    EXPECT_EQ(req.error().code, ErrorCode::RateLimited);
+}
+
+TEST(Pairing, RevokeAllRemovesFileWhenRewriteFails) {
+    wisp::log::reset_for_test();
+    wisp::log::init(64 * 1024);
+    {
+        Fixture f;
+        auto& svc = f.make();
+        std::string token = f.pair(1000);
+        ASSERT_NE(f.read_clients().find(hash_hex(token)), std::string::npos);
+
+        // A non-empty directory where write_atomic() puts its temp file
+        // makes the rewrite fail while leaving the old file in place.
+        std::filesystem::create_directories(f.clients_path() + ".tmp/blocker");
+
+        svc.revoke_all();
+        EXPECT_TRUE(svc.clients().empty());
+        EXPECT_FALSE(std::filesystem::exists(f.clients_path()));
+
+        // Nothing revives after a reboot.
+        std::filesystem::remove_all(f.clients_path() + ".tmp");
+        auto& again = f.make();
+        EXPECT_TRUE(again.clients().empty());
+        EXPECT_FALSE(again.authenticate(token, 2000));
+
+        std::string log = wisp::log::ring_snapshot();
+        EXPECT_NE(log.find("not persisted"), std::string::npos) << log;
+    }
+    wisp::log::reset_for_test();
+}
+
 TEST(Pairing, CodeNeverAppearsInEventsOrLog) {
     wisp::log::reset_for_test();
     wisp::log::init(64 * 1024);
@@ -535,10 +626,10 @@ TEST(Pairing, CodeNeverAppearsInEventsOrLog) {
         EXPECT_FALSE(log.empty());
         for (const auto& secret : secrets) {
             ASSERT_FALSE(secret.empty());
-            EXPECT_EQ(log.find(secret), std::string::npos) << secret << "\n" << log;
+            EXPECT_FALSE(leaks(log, secret)) << secret << "\n" << log;
             for (const auto& e : events) {
                 std::string json = wisp::to_json(wisp::Value(e.payload));
-                EXPECT_EQ(json.find(secret), std::string::npos) << e.topic << " " << json;
+                EXPECT_FALSE(leaks(json, secret)) << e.topic << " " << json;
             }
         }
     }

@@ -120,7 +120,9 @@ public:
     // if writing clients.json fails (the error is still returned).
     Result<void> revoke(std::string_view id);
 
-    // Factory reset: forgets every client and writes an empty list.
+    // Factory reset: forgets every client and writes an empty list. If
+    // that write fails, clients.json is deleted instead so no old hash
+    // survives a reboot.
     void revoke_all();
 
 private:

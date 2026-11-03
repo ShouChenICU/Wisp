@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <span>
 #include <utility>
@@ -431,7 +433,14 @@ void PairingService::revoke_all() {
     std::lock_guard<os::Mutex> lock(mutex_);
     clients_.clear();
     if (!persist_locked(clients_)) {
-        WLOG_E(kTag, "factory reset of paired clients was not persisted");
+        WLOG_E(kTag, "factory reset of paired clients was not persisted; removing the file");
+        // The old hashes would otherwise come back on the next boot. A
+        // missing file loads as "no clients", so deleting it is enough.
+        std::string path = clients_path();
+        if (path.empty() || (std::remove(path.c_str()) != 0 && errno != ENOENT)) {
+            WLOG_E(kTag, "removing net/clients.json failed: %s",
+                   path.empty() ? "system storage unavailable" : std::strerror(errno));
+        }
         return;
     }
     WLOG_I(kTag, "all paired clients revoked");
