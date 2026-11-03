@@ -1,0 +1,384 @@
+# Wisp 子项目 2：连接与管理后台 设计文档
+
+- 日期：2026-11-03
+- 状态：待审阅
+- 范围：Wisp 整体路线中的第 2 个子项目（连接与管理后台）
+- 前置：子项目 1 基础骨架（`2026-11-01-foundation-design.md`，下文简称"基础 spec"）
+
+---
+
+## 1. 背景与目标
+
+### 1.1 目标
+
+子项目 2 让 Wisp 能**联网并被主人从浏览器管理**，同时为子项目 4（Agent）准备好 LLM 配置：
+
+1. Wi-Fi 连接管理与配网（热点 + 强制门户为主，串口命令为补充）；
+2. 跨真机与模拟器的 HTTP/WebSocket 服务；
+3. 屏幕配对码 + 长期令牌的配对鉴权；
+4. 管理后台网页：概览、外设、网络、模型（LLM 配置与连通测试）、系统设置、实时日志；
+5. 板级分区表与 sdkconfig 迁移到 `boards/<板名>/`，确立分区约定。
+
+### 1.2 使用场景与原则
+
+- **单一主人、只在局域网**：后台只给设备主人自己用，不支持多用户，不经过公网。
+- **离线优先**：Wi-Fi 是可选能力，不是开机前提。没配过网或者连不上网时，设备照常开机、照常使用，已有场景等本地功能不受影响；只有需要联网的功能不可用，并在界面上提示。
+- **后台网页是这一阶段的主要配置入口**：设备上的设置页属于子项目 8，在那之前 LLM 端点、Key 等都从后台网页填写。
+- **服务层约定**（基础 spec 3.3）：REST/WebSocket 只是服务层之上的薄适配层，不允许绕过服务层直接调驱动。这次新增的服务以后也供 Agent 工具、Lua 绑定和设置页复用。
+
+### 1.3 已定决策
+
+| 议题 | 决策 | 理由 |
+|---|---|---|
+| 前端技术栈 | Preact + htm，免构建，原生 ES 模块 | 不引入 Node 工具链；改完刷新即可看到效果，迭代快；运行时约 5KB |
+| 样式 | 手写小型 CSS，不用 UI 框架 | 体积可控；用设计令牌延续鬼火视觉方向 |
+| 配网 | 热点 + 强制门户，**按需开启**；串口命令补充 | 不需要 App；配网页复用后台的前端与 HTTP 服务 |
+| 鉴权 | 屏幕配对码 + 长期令牌（HttpOnly Cookie） | 能看到实物屏幕才能配对，相当于"物理在场"即授权；没有密码可忘 |
+| 传输 | 普通 HTTP | 自签名证书会让浏览器反复弹警告；风险与缓解措施见 6.4，HTTPS 留给子项目 7 评估 |
+| 跨平台 HTTP | 可移植接口 + 真机和模拟器两套薄实现 | 与现有 HAL/port 模式一致；业务逻辑都能在主机上测试；排除 Mongoose（GPLv2，与 Apache-2.0 冲突） |
+
+### 1.4 不在本子项目范围内
+
+HTTPS 与 Flash 加密（子项目 7 评估）、OTA 升级功能（分区已预留）、场景和记忆相关的后台页面（子项目 3、6）、Agent 对话本身（子项目 4；这次只做 LLM 配置与连通测试）、蓝牙、远程或公网访问、设备上的设置页（子项目 8）。
+
+---
+
+## 2. 组件与分层
+
+### 2.1 新增与改动的组件
+
+| 层 | 新增内容 | 职责 |
+|---|---|---|
+| `wisp_hal` | `hal::Wifi` 设备接口 | 扫描、连接、断开、开关热点、查询状态。注册为 `net.wifi`（新设备类别 `Network`），caps 写进能力清单；初始化失败时只降级运行 |
+| `wisp_net`（新，可移植） | `HttpServer`、`HttpClient` 接口；`WifiService`、`PairingService`、`AssetPack` | 网络服务层：连接管理、配网会话、配对码与令牌、静态资源包读取 |
+| `wisp_core` | `LlmConfigService`、`SystemSettings` | LLM 端点、模型名和 API Key（只写不读）；亮度、音量、自动熄屏时间的校验与立即生效 |
+| `wisp_admin`（新，可移植） | 路由表、REST 处理、WebSocket 推送 | 管理后台适配层：只把 HTTP 请求翻译成服务调用，不含业务逻辑 |
+| `wisp_app` | 装配、网络区块与配网/配对卡片、串口命令 | 构造并连接上述服务；设备端界面 |
+| `wisp_port_esp` | `EspWifi`、`EspHttpServer`、`EspHttpClient`、mDNS | 分别封装 `esp_wifi`、`esp_http_server`、`esp_http_client`（加 `esp_crt_bundle`，LLM 端点都是 HTTPS）和乐鑫 mDNS 组件（`wisp.local`） |
+| `wisp_port_sim` | `SimWifi`、`SimHttpServer`、`SimHttpClient` | 假 Wi-Fi；用 POSIX socket 手写的精简 HTTP/1.1 + WebSocket 服务（只监听 `127.0.0.1`）；基于系统 libcurl 的 HTTPS 客户端 |
+| `web/`（新目录） | 前端源码 | 原生 ES 模块；第三方库锁定版本放在 `web/vendor/` |
+| `tools/` | `pack_assets.py` | 生成 WispPack 资源包并做检查（见 2.3） |
+
+### 2.2 依赖方向
+
+`wisp_admin` → `wisp_net` → `wisp_core` → `wisp_hal`，由 `wisp_app` 负责装配。`tools/check_layering.py` 把 `wisp_net`、`wisp_admin` 加入可移植层名单：它们和其他可移植组件一样，不得 include 平台头文件（`lwip/*`、`esp_http_*`、`curl/*` 等）。
+
+`HttpServer`/`HttpClient` 接口放在 `wisp_net` 而不是 `wisp_hal`：它们不是硬件，而是平台服务，由 `app::Platform` 注入（与 `Platform::settings` 相同）。`Wifi` 是射频设备，按设备模型放在 HAL，经 `DeviceRegistry` 注册。
+
+新增外部依赖只有两个：乐鑫 mDNS 组件（真机，组件管理器锁定精确版本）和 libcurl（只在模拟器使用，取系统包，记录最低版本）。Preact 与 htm 以锁定版本的文件放入仓库，并登记到 `docs/references.md` 与 `THIRD_PARTY_NOTICES.md`（均为 MIT 许可）。
+
+### 2.3 WispPack 资源包
+
+`assets` 分区用自定义的极简只读包格式，不用 SPIFFS/LittleFS：资源只读，用不上文件系统的写入和磨损均衡。
+
+- **格式**：头部（魔数 `WPAK`、版本号、文件数），文件表（路径、偏移、长度、MIME 类型、是否 gzip、内容哈希），然后是连续存放的文件内容。所有多字节整数用小端序，文件内容按 4 字节对齐。
+- **生成**：`tools/pack_assets.py` 把 `web/` 等目录打成包。文本类文件（html/js/css/svg/json）逐个 gzip，已压缩的格式原样存放。脚本同时检查：每个 JS 模块的相对 import 都能在包内解析；包的总大小不超过本板 `assets` 分区的大小（从板级分区表读取），超出即构建失败。
+- **读取**：可移植的 `AssetPack` 接收一段只读字节区间，解析并校验头部和文件表；包损坏或被截断时返回错误，不崩溃。真机用 `esp_partition_mmap` 映射 `assets` 分区，零拷贝发送；模拟器读取构建目录下的同一个包文件，或用 `--web-dir web/` 直接读源码目录，改完刷新就生效。
+- **发送**：gzip 文件带 `Content-Encoding: gzip`，由浏览器解压；用内容哈希做 `ETag`，命中时返回 304。
+- **烧录**：固件构建把资源包作为 `assets` 分区的镜像，`idf.py flash` 时一并写入。
+
+---
+
+## 3. 板级分区表与配置
+
+子项目 1 只有一块板子，`firmware/partitions.csv` 和 `firmware/sdkconfig.defaults` 名义上是公共文件，内容却完全属于这块板子（16MB Flash、八线 PSRAM、USB 串口控制台），不符合"板子无关"的规则。从本子项目开始，`assets` 分区真正投入使用，分区和板级配置随之迁移到各自的板目录。
+
+### 3.1 文件位置
+
+- `boards/<板名>/partitions.csv`：本板分区表。
+- `boards/<板名>/sdkconfig.defaults.board`：Flash 大小与模式、PSRAM、控制台，以及指向本板分区表的 `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME`。esp_board_manager 在 `idf.py bmgr -b <板名>` 时把它合并进生成的 `board_manager.defaults`，优先级高于项目级 `sdkconfig.defaults`。
+- `firmware/sdkconfig.defaults`：只保留与板子无关的公共配置（LVGL、日志级别、mbedTLS 证书包、HTTP 服务参数等）。
+
+### 3.2 分区约定（新板子必须遵守）
+
+代码只按**分区名**查找分区，不依赖偏移和大小。
+
+| 分区名 | 是否必需 | 说明 |
+|---|---|---|
+| `nvs` | 必需 | 配置 |
+| `phy_init` | 必需 | 射频校准 |
+| `assets` | 必需，≥ 1MB | WispPack 资源包 |
+| `storage` | 必需 | LittleFS（`/int`） |
+| `ota_0`、`ota_1`、`otadata` | 可选 | Flash 足够时提供双 OTA 分区；没有时用单个 `factory` 应用分区，固件检测到缺少 OTA 分区就关闭 OTA 功能，只降级运行 |
+
+分区大小由各板自行决定，例如 32MB 的板子可以把多出的空间分给 `storage` 或 `assets`。基础 spec 7.4 的分区表改为"参考板（Waveshare 2.16）的分区表"，并引用本节约定；`docs/porting-guide.md` 同步补充。
+
+---
+
+## 4. 启动与 Wi-Fi
+
+### 4.1 启动流程的变化
+
+- 在基础 spec 6.1 的第 4 步之后：如果 `net.wifi` 已注册，`App` 构造 `WifiService` 并在后台启动，立即返回，开机不等待联网。
+- HTTP 服务在任意一个网络接口就绪时启动（STA 拿到 IP，或者热点开启），两者都断开时停止。
+- `WISP_BOOT_REPORT` 的 `notes` 增加 `net` 键，记录开机那一刻的网络状态（`"off"` / `"connecting"`，或 `"missing"` 表示没有 `net.wifi`）。修改格式时同步更新冒烟测试与 `docs/architecture.md`。
+
+### 4.2 Wi-Fi 状态机
+
+```
+         没有已保存网络 / 用户关闭
+   ┌──────────► Off ◄───────────────┐
+   │             │ 有已保存网络       │
+   │             ▼                   │
+   │        Connecting ──失败──► Backoff（5s→10s→…→上限 5min）
+   │             │ 拿到 IP      ▲        │
+   │             ▼             │        └─到点─► Connecting
+   │        Connected ──断开───┘
+   │
+   └ Provisioning（热点）：与上面的状态并存（APSTA）
+```
+
+- **连接**：扫描后，在已保存的网络里选信号最强的连接。最多保存 5 个网络。
+- **退避**：每次失败后等待时间翻倍，从 5 秒开始，上限 5 分钟；连接成功后重置。退避期间不打扰前台。
+- **省电**：已连接时默认开启 modem sleep。设备进入待机（`power.state = standby`）超过 Settings `net`/`idle_off_min`（默认 10 分钟）后断开 Wi-Fi，唤醒后自动重连。更细的唤醒锁属于子项目 3。
+
+### 4.3 配网会话（热点）
+
+- **按需开启**，不会自动弹出：通过设备上的"开始配网"按钮或串口命令 `wifi ap on`。
+- 热点名为 `Wisp-` 加 MAC 地址末 4 位十六进制；密码为随机 8 位字母数字，每次开启热点都重新生成。
+- 热点与 STA 并存，配网过程中可以边扫描边尝试连接。
+- 配网成功后热点再保留 30 秒，让手机页面能显示"已连接，新地址是 …"，然后自动关闭。
+- 10 分钟内一直没有设备连上热点就自动关闭；关闭时 `net.ap.state` 发布 `active: false`。
+- 热点运行期间提供 DNS 劫持（所有域名都解析到设备自身），配合 6.1 的探测路径触发手机的强制门户弹窗。
+
+### 4.4 网络的保存
+
+已保存的网络写在 System 区的 `net/wifi.json`，走 `StorageManager::write_atomic`。Wi-Fi 密码明文存放在内置 Flash 上（本子项目不开启 Flash 加密，留给子项目 7 评估），只在设备内部使用：任何接口都不回传，日志也不打印。
+
+### 4.5 模拟器
+
+`SimWifi` 默认提供几个虚拟网络（信号强度不同，其中一个的密码固定），可以模拟连接成功、密码错误和信号丢失。用命令行参数 `--wifi-fail` 模拟"路由器不可达"，以便验证退避逻辑。模拟器的"热点"不开真实射频，只改变状态并启用配网路由。
+
+---
+
+## 5. 服务接口
+
+### 5.1 `WifiService`（`wisp_net`）
+
+```cpp
+Result<WifiStatus> status();                 // state, ssid, ip, rssi
+Result<std::vector<ScanResult>> scan();      // ssid, rssi, auth, 是否已保存
+Result<void> add_network(std::string_view ssid, std::string_view password);
+Result<void> forget_network(std::string_view ssid);
+std::vector<std::string> saved_ssids();      // 只有 SSID，没有密码
+Result<ApSession> start_provisioning();      // ssid、密码（只交给屏幕显示）、地址
+Result<void> stop_provisioning();
+```
+
+### 5.2 `PairingService`（`wisp_net`）
+
+```cpp
+Result<void> request_code();                 // 生成配对码并通知屏幕显示
+Result<Token> confirm(std::string_view code, const ClientInfo& client);
+Result<Token> pair_from_ap(const ClientInfo& client);  // 只允许来自热点网段的请求
+Result<ClientId> authenticate(std::string_view token);
+std::vector<PairedClient> clients();
+Result<void> revoke(ClientId id);
+void revoke_all();                           // 恢复出厂设置时调用
+```
+
+- 配对码为 6 位数字，2 分钟内有效，同一时刻只有一个。连续输错 5 次锁定 5 分钟，并发布 `net.pairing.failed`。
+- 令牌为 32 字节随机数（base64url 编码），设备上只存它的 SHA-256 哈希，写在 System 区的 `net/clients.json`。最多保存 8 个已配对的浏览器，超出时淘汰最久未使用的那个。
+- 配对码本身只交给屏幕显示，不进事件、不进日志。
+
+### 5.3 `LlmConfigService`（`wisp_core`）
+
+```cpp
+LlmConfig get();                             // base_url, model, has_key —— 不含 Key
+Result<void> set(const LlmConfigUpdate& u);  // api_key: 不提供 = 保留，空串 = 清除
+Result<LlmProbe> test();                     // 请求 {base_url}/models
+```
+
+- API Key 存放在 System 区的 `secrets/llm.json`。服务对外**没有任何能读出 Key 的接口**，连部分字符也不给；只有子项目 4 的 Agent 客户端通过内部接口在发请求时取用。
+- `test()` 通过 `HttpClient` 以 `Authorization: Bearer <key>` 请求 `/models`，超时 10 秒，返回是否成功、延迟、模型 id 列表，或错误类别（DNS、TLS、超时、HTTP 状态码）。错误信息里不得带上 Key。
+
+### 5.4 `SystemSettings`（`wisp_core`）
+
+封装亮度（`display`/`brightness`）、音量、自动熄屏时间这些 Settings 键：校验取值范围，写入后立即生效（例如亮度立即应用到 `display.main`）。后台网页、以后的 Agent 工具和设置页都调用它。
+
+### 5.5 事件主题（同步写入 `docs/architecture.md`）
+
+| 主题 | 发布者 | payload |
+|---|---|---|
+| `net.wifi.state` | `WifiService` | `{state, ssid, ip, rssi}`，`state` 取值为 `off`/`connecting`/`backoff`/`connected` |
+| `net.ap.state` | `WifiService` | `{active, ssid, clients}`（不含密码） |
+| `net.pairing.code` | `PairingService` | `{active, expires_ms}`（不含配对码） |
+| `net.pairing.failed` | `PairingService` | `{attempts, locked}` |
+
+---
+
+## 6. HTTP 接口
+
+### 6.1 REST 接口
+
+统一前缀 `/api/v1`，请求和响应都是 JSON。
+
+| 分组 | 接口 | 鉴权 | 说明 |
+|---|---|---|---|
+| 基础 | `GET /info` | 否 | 设备名、固件版本、是否已配对 |
+| 配对 | `POST /pair/start` | 否 | 让屏幕显示配对码 |
+| | `POST /pair/confirm {code}` | 否 | 校验通过后用 `Set-Cookie` 下发令牌 |
+| | `POST /pair/ap` | 否，仅限热点网段 | 配网期间免配对码直接配对 |
+| | `POST /logout` | 是 | 撤销当前令牌 |
+| | `GET /clients`、`DELETE /clients/{id}` | 是 | 已配对的浏览器列表与撤销 |
+| 概览 | `GET /device` | 是 | 能力清单、启动报告、运行时长、内存、电量 |
+| 外设 | `GET /devices` | 是 | 设备注册表：id、类别、状态、caps |
+| 设置 | `GET /settings`、`PUT /settings` | 是 | 经 `SystemSettings` 校验并立即生效 |
+| Wi-Fi | `GET /wifi`、`GET /wifi/scan` | 是 | 当前状态、已保存的 SSID、扫描结果 |
+| | `POST /wifi/networks`、`DELETE /wifi/networks/{ssid}` | 是 | 添加 / 删除网络 |
+| 模型 | `GET /llm`、`PUT /llm`、`POST /llm/test` | 是 | 见 5.3 |
+| 系统 | `POST /system/reboot` | 是 | 直接执行 |
+| | `POST /system/factory-reset` | 是 | 先在设备上弹确认框，接口返回 202，结果通过 WebSocket 推送；范围见下文 |
+| 实时 | `WS /ws` | 是 | 见 6.2 |
+
+配网向导（`/setup`）先调用 `POST /pair/ap` 拿到令牌，之后与后台一样走需要鉴权的接口，不另设免鉴权的例外。
+
+**强制门户探测路径**（`/generate_204`、`/hotspot-detect.html`、`/connecttest.txt`、`/ncsi.txt` 等）在热点模式下一律重定向到 `/setup`；非热点模式下返回 404。
+
+**恢复出厂设置的范围**：清除 Settings、已保存的网络、全部令牌和 LLM 配置（含 Key），然后重启；不删除 Library 和 Backup 区的数据（以后的场景与用户数据）。完整擦除留给子项目 7。
+
+**错误格式**：`{"error": {"code": "...", "message": "..."}}`，配合相应的 HTTP 状态码（400/401/403/404/409/413/500/503），由 `wisp::Result` 的错误码映射得到。
+
+### 6.2 WebSocket
+
+- 客户端连接后发送 `{"sub": ["log", "events"]}` 订阅。
+- `log`：先补发日志环形缓冲区（基础 spec 6.5）里现有的记录，再实时推送新日志，每条为 `{"t":"log","ts","level","tag","msg"}`。
+- `events`：转发 `net.*`、`power.*`、`storage.*`、`system.*` 主题，每条为 `{"t":"event","topic","payload"}`。
+- 最多同时 2 个 WebSocket 连接，超出时拒绝新连接。发送队列积压超过上限时丢弃最旧的日志，并推送一条 `{"t":"dropped","count"}`。
+
+### 6.3 鉴权与请求过滤
+
+处理顺序：Host 校验 → 鉴权 → CSRF 检查 → 路由。
+
+- **Host 校验（防 DNS 重绑定）**：只接受 `Host` 为 IPv4 地址、`wisp.local` 或热点地址的请求，其余返回 403。热点模式下的探测路径不受此限制。
+- **令牌**：Cookie 名为 `wisp_token`，属性 `HttpOnly; SameSite=Strict; Path=/`，有效期 1 年；每次访问更新"最近访问时间"。
+- **CSRF**：所有修改类请求（POST/PUT/DELETE）必须带请求头 `X-Wisp: 1`。设备不响应任何 CORS 预检，所以别的网站无法跨域带上这个头。
+- **资源限制**：请求体最大 8KB（超出返回 413），同时最多 7 个连接。
+
+### 6.4 HTTP 的风险与缓解
+
+使用普通 HTTP 时，同一局域网内的抓包者可以看到令牌，以及填写 API Key 那一次请求的内容。缓解措施：
+
+- API Key 只在写入那一次传输，之后任何接口都不再发出；
+- 令牌可以随时在后台或恢复出厂设置时撤销；
+- 配对必须看到实物屏幕。
+
+HTTPS 是否引入、如何解决证书信任问题，留给子项目 7 评估。
+
+---
+
+## 7. 前端
+
+### 7.1 技术栈与目录
+
+- Preact + htm，原生 ES 模块，无构建步骤；第三方库放在 `web/vendor/`，锁定版本，文件头标注来源与许可。
+- 不使用 TypeScript；在关键数据结构上用 JSDoc 注释说明类型。接口契约以 C++ 侧的路由测试为准。
+- 不引用任何外部资源（没有 CDN、在线字体或在线图标）：热点模式下手机没有外网。
+- 体积预算：整个资源包里网页部分 gzip 后不超过 150KB。
+
+```
+web/
+  index.html        # 后台入口
+  setup.html        # 配网向导入口
+  app/              # 页面与组件（.js）
+  styles/           # tokens.css（设计令牌）、components.css
+  vendor/           # preact、htm（锁定版本）
+```
+
+### 7.2 视觉
+
+- 用 CSS 变量定义设计令牌（颜色、圆角、间距、字号），延续鬼火的视觉方向：深色底配幽蓝色强调色，跟随系统自动适配浅色和深色模式。
+- 自带十来个基础组件：卡片、表单、开关、滑块、状态徽章、列表、对话框、提示条、日志面板等。
+- 手机竖屏优先，底部标签栏导航；屏幕宽度 ≥ 768px 时切换为侧栏布局。
+- 图标为少量内联 SVG。
+
+### 7.3 页面
+
+| 页面 | 内容 |
+|---|---|
+| 配对 | 未配对时显示：按下"获取配对码"，再输入屏幕上显示的 6 位数字 |
+| 概览 | 电量与充电、Wi-Fi、存储、运行时长、固件版本等状态卡片，通过 WebSocket 事件实时刷新 |
+| 外设 | 设备列表（id、类别、状态），展开可查看 caps |
+| 网络 | 当前连接、已保存的网络（可删除）、扫描并添加网络 |
+| 模型 | 端点地址、API Key（只能写入的密码框，已设置时显示"已设置"）、模型下拉框（来自测试结果）、"测试连接"按钮 |
+| 系统 | 亮度、音量、自动熄屏时间；已配对的浏览器列表；重启；恢复出厂设置 |
+| 日志 | 实时滚动，可按级别过滤、暂停、清屏 |
+| `/setup` 配网向导 | 选择网络 → 输入密码 → 连接中 → 显示新地址并提供"进入后台"按钮 |
+
+---
+
+## 8. 设备端界面与串口命令
+
+### 8.1 界面（本子项目临时放在自检界面中，子项目 8 移到"设置 → Wi-Fi"）
+
+- 自检界面新增"网络"区块：状态、SSID、IP、信号强度，以及"开始配网 / 停止配网"按钮。
+- **配网卡片**：热点开启时显示在顶层，包含二维码（`WIFI:T:WPA;S:<ssid>;P:<password>;;`，扫码直接连热点）、热点名、密码和配网页地址；热点关闭后自动消失。
+- **配对码卡片**：有人请求配对时显示在顶层，带 2 分钟倒计时；配对成功或过期后消失。
+- **恢复出厂确认框**：复用现有确认框样式。
+- 所有卡片都按基础 spec 5.6 的安全区规则布局。二维码用 LVGL 自带的 `lv_qrcode` 控件生成（需要在 `lv_conf.h` 中开启 `LV_USE_QRCODE`）。
+
+### 8.2 串口命令
+
+真机走 USB 串口的 stdin，模拟器走进程 stdin，按行读取：
+
+| 命令 | 作用 |
+|---|---|
+| `wifi status` | 打印当前状态 |
+| `wifi add <ssid> <password>` | 添加网络（SSID 中有空格时用双引号括起来） |
+| `wifi forget <ssid>` | 删除网络 |
+| `wifi ap on` / `wifi ap off` | 开启 / 关闭配网热点 |
+
+命令解析放在可移植层，读取输入的部分放在平台层。输入的密码不回显，也不写进日志。
+
+---
+
+## 9. 测试与验收
+
+### 9.1 测试分层（TDD，全部能在主机上运行）
+
+| 层 | 测什么 | 怎么测 |
+|---|---|---|
+| `wisp_net` 服务 | Wi-Fi 状态机（选最强网络、退避间隔、热点超时、配网成功后保留 30 秒、待机断开与唤醒重连）；配对（过期、锁定、令牌哈希、淘汰最旧令牌）；WispPack 解析（损坏或截断的包） | GoogleTest，用 `FakeWifi` 和可注入的假时钟 |
+| `wisp_core` 服务 | `LlmConfigService` 的只写语义；`SystemSettings` 的校验与立即生效 | GoogleTest |
+| `wisp_admin` 路由 | 每个接口的鉴权、CSRF 请求头、Host 校验、错误格式、`/pair/ap` 只接受热点网段；**`GET /llm` 等所有响应里都不出现 Key** | 对内存中的假请求直接调路由表，不经过 socket |
+| 模拟器 HTTP 服务 | HTTP/1.1 解析、gzip 静态文件与 304、WebSocket 握手和帧收发、连接上限 | 用真实 socket 连 `127.0.0.1` |
+| 串口命令 | 命令解析、引号、错误提示 | GoogleTest |
+| 端到端冒烟 | 启动模拟器 → 配对 → 走一遍主要接口 → WebSocket 收到日志 → `/llm/test` 成功 | 扩展 `tests/smoke/`，只用 Python 标准库；LLM 用本机起的假 OpenAI 兼容服务器（只实现 `/models`），不访问外网 |
+| 前端与资源包 | import 能否解析、体积预算、分区容量 | `tools/pack_assets.py` 的检查，纳入 `tools/ci.sh` |
+
+### 9.2 真机验收清单（由用户执行）
+
+1. 不配网开机：各项功能正常，网络区块显示"未配网"。
+2. 点"开始配网"：屏幕显示二维码；手机扫码连上热点后自动弹出配网页；配网成功后显示新地址，热点约 30 秒后关闭。
+3. 浏览器访问 `http://wisp.local` 或显示的 IP 地址，用屏幕上的配对码完成配对。
+4. 各页面正常显示；修改亮度后屏幕立即变化；日志页实时滚动。
+5. 填写 LLM 端点与 Key 后，"测试连接"成功并列出模型；刷新页面后 Key 只显示"已设置"。
+6. 关掉路由器：设备退避重试，界面不卡；路由器恢复后自动重连。
+7. 待机超过 10 分钟后 Wi-Fi 断开，唤醒后自动重连。
+8. 恢复出厂设置：网页发起后，必须在设备上确认才会执行；执行后已配对的浏览器全部失效。
+9. 性能：后台页面首次加载不超过 2 秒；Wi-Fi 连接期间自检界面滚动的 `WISP_PERF` 帧率不低于基础 spec 约定的基准。
+
+### 9.3 实施顺序
+
+实施计划按以下顺序拆分，每块完成后都能在模拟器中独立验证：
+
+1. 板级分区表与 sdkconfig 迁移、分区约定
+2. `hal::Wifi` 接口与 `wisp_net` 服务（Wi-Fi、配对、WispPack）
+3. `LlmConfigService`、`SystemSettings`
+4. 两套平台实现（HTTP 服务端/客户端、Wi-Fi、mDNS）
+5. `wisp_admin` 路由与 WebSocket
+6. 前端与打包脚本
+7. 设备端界面与串口命令
+8. 真机联调
+
+---
+
+## 10. 风险与对策
+
+| 风险 | 对策 |
+|---|---|
+| Wi-Fi 占用内部 RAM，挤压 LVGL 和其他任务 | Wi-Fi/LWIP 缓冲尽量放进 PSRAM（`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`）；联调时记录空闲内存，写入硬件文档 |
+| Wi-Fi 射频与 Flash 访问影响帧率 | 用验收第 9 项对比 `WISP_PERF`；必要时降低 HTTP 任务优先级 |
+| 手机系统对强制门户的探测方式各不相同 | 覆盖主流探测路径；即使门户没有自动弹出，配网卡片上也显示配网页地址，可以手动打开 |
+| 模拟器的手写 HTTP 服务与 `esp_http_server` 行为不一致 | 路由层只依赖 `HttpServer` 接口的最小语义；端到端冒烟在模拟器上跑，关键接口在真机验收时再走一遍 |
+| 明文 HTTP 下令牌被同网段抓取 | 见 6.4；令牌可撤销，HTTPS 留给子项目 7 |
