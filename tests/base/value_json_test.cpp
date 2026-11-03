@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <string>
+
+#include "support/utf8.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/base/value.hpp"
 
@@ -102,4 +105,45 @@ TEST(Json, TopLevelScalarRoundTrips) {
     auto back = wisp::from_json("true");
     ASSERT_TRUE(back);
     EXPECT_EQ(back.value(), wisp::Value(true));
+}
+
+// ArduinoJson leaves most C0 control bytes raw, which JSON.parse() in the
+// browser rejects; every one of them must come out as a unicode escape.
+TEST(Json, EscapesEveryControlByte) {
+    EXPECT_EQ(wisp::to_json(wisp::Value("\x1b[31mred")), "\"\\u001b[31mred\"");
+    std::string all;
+    for (int c = 1; c < 0x20; ++c) all.push_back(static_cast<char>(c));
+    const std::string json = wisp::to_json(wisp::Value(wisp::Map{{all, wisp::Value(all)}}));
+    EXPECT_FALSE(wisp::test::has_control_bytes(json)) << json;
+    auto back = wisp::from_json(json);
+    ASSERT_TRUE(back) << json;
+    const wisp::Value* v = back.value().find(all);
+    ASSERT_NE(v, nullptr) << json;
+    EXPECT_EQ(v->as_string(), all);
+
+    const std::string nul = wisp::to_json(wisp::Value(std::string("a\0b", 3)));
+    EXPECT_FALSE(wisp::test::has_control_bytes(nul)) << nul;
+    EXPECT_EQ(nul, "\"a\\u0000b\"");
+}
+
+// Strings can hold arbitrary bytes (a log line cut mid-character, an SSID);
+// a WebSocket text frame must be valid UTF-8, so bad sequences become
+// U+FFFD while valid multi-byte characters pass through unchanged.
+TEST(Json, ReplacesInvalidUtf8) {
+    const std::string fffd = "\xEF\xBF\xBD";
+    EXPECT_EQ(wisp::to_json(wisp::Value("a\xe4\xb8")), "\"a" + fffd + "\"");
+    EXPECT_EQ(wisp::to_json(wisp::Value("\xe4\xb8x")), "\"" + fffd + "x\"");
+    EXPECT_EQ(wisp::to_json(wisp::Value("\x80")), "\"" + fffd + "\"");
+    // Overlong, surrogate, past U+10FFFF and never-valid bytes.
+    for (const char* bad : {"\xc0\x80", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xf5", "\xff"}) {
+        const std::string json = wisp::to_json(wisp::Value(bad));
+        EXPECT_TRUE(wisp::test::is_valid_utf8(json)) << json;
+        EXPECT_NE(json.find(fffd), std::string::npos) << json;
+    }
+    // Keys get the same treatment.
+    const std::string key_json = wisp::to_json(wisp::Value(wisp::Map{{"k\xe4", wisp::Value(1)}}));
+    EXPECT_EQ(key_json, "{\"k" + fffd + "\":1}");
+
+    const std::string good = "中文 \xF0\x9F\x94\xA5 \xC3\xA9 \x7f";
+    EXPECT_EQ(wisp::to_json(wisp::Value(good)), "\"" + good + "\"");
 }

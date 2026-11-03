@@ -15,6 +15,22 @@ namespace {
 
 constexpr size_t kMaxMsgBytes = 255;
 
+bool is_utf8_continuation(char c) { return (static_cast<uint8_t>(c) & 0xC0) == 0x80; }
+
+// Where to cut `text` (at least limit + 1 bytes long) to keep at most
+// `limit` bytes without splitting a UTF-8 character: the sinks (the admin
+// WebSocket among them) pass messages to browsers, which reject truncated
+// sequences. If the first dropped byte continues a character, that
+// character's lead byte is at most 3 bytes back and the cut moves to it.
+// Bytes that are not well-formed UTF-8 to begin with are cut at `limit`.
+size_t cut_at_char_boundary(const char* text, size_t limit) {
+    if (!is_utf8_continuation(text[limit])) return limit;
+    size_t lead = limit;
+    while (lead > 0 && limit - lead < 3 && is_utf8_continuation(text[lead - 1])) --lead;
+    if (lead > 0 && (static_cast<uint8_t>(text[lead - 1]) & 0xC0) == 0xC0) return lead - 1;
+    return limit;
+}
+
 char level_char(LogLevel level) {
     switch (level) {
         case LogLevel::Debug:
@@ -207,12 +223,16 @@ void write(LogLevel level, const char* tag, const char* fmt, ...) {
         return;
     }
 
-    char msg[kMaxMsgBytes + 1];
+    // One byte past the limit is rendered too, so the cut can tell whether
+    // it would split a character.
+    char msg[kMaxMsgBytes + 2];
     va_list args;
     va_start(args, fmt);
-    std::vsnprintf(msg, sizeof(msg), fmt, args);
+    const int full = std::vsnprintf(msg, sizeof(msg), fmt, args);
     va_end(args);
-    msg[kMaxMsgBytes] = '\0';  // guarantee truncation to kMaxMsgBytes bytes
+    if (full > static_cast<int>(kMaxMsgBytes)) {
+        msg[cut_at_char_boundary(msg, kMaxMsgBytes)] = '\0';
+    }
 
     uint64_t ts = os::now_ms();
     char ts_buf[24];

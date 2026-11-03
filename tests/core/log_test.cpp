@@ -184,3 +184,31 @@ TEST(Log, RemoveSinkWaitsForInFlightDelivery) {
     EXPECT_TRUE(sink.finished);
     writer->join();
 }
+
+// The 255-byte cut must not split a multi-byte character: the sinks (the
+// admin WebSocket among them) and the ring would otherwise carry a
+// truncated UTF-8 sequence.
+TEST(Log, TruncationKeepsWholeCodePoints) {
+    wisp::log::reset_for_test();
+    wisp::log::init(2048);
+    CaptureSink s;
+    wisp::log::add_sink(&s);
+
+    // 1 + 100 * 3 bytes: a plain byte cut at 255 lands inside a character.
+    std::string text = "a";
+    for (int i = 0; i < 100; ++i) text += "\xe4\xb8\xad";
+    WLOG_I("t", "%s", text.c_str());
+
+    ASSERT_EQ(s.lines.size(), 1u);
+    const std::string msg = s.lines[0].substr(2);  // drop "t|"
+    EXPECT_EQ(msg, text.substr(0, 1 + 84 * 3));
+    const std::string ring = wisp::log::ring_snapshot();
+    EXPECT_NE(ring.find(": " + msg + "\n"), std::string::npos) << ring;
+
+    // An ASCII message is still cut at exactly 255 bytes.
+    s.lines.clear();
+    WLOG_I("t", "%s", std::string(300, 'x').c_str());
+    ASSERT_EQ(s.lines.size(), 1u);
+    EXPECT_EQ(s.lines[0].size(), 2u + 255u);
+    wisp::log::remove_sink(&s);
+}
