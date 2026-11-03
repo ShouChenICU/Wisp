@@ -8,9 +8,14 @@
 
 #include <gtest/gtest.h>
 
+#include <vector>
+
 using wisp::hal::WifiFailReason;
+using wisp::hal::WifiScanEntry;
 using wisp::port::esp::fail_reason_for;
 using wisp::port::esp::is_own_leave;
+using wisp::port::esp::kScanRssiMaxAgeMs;
+using wisp::port::esp::scan_rssi_for;
 
 namespace {
 
@@ -46,6 +51,40 @@ TEST(WifiReason, HandshakeTimeoutsAreAuthFailedOnlyWithGoodSignal) {
 TEST(WifiReason, UnknownSignalIsNotGood) {
     EXPECT_EQ(fail_reason_for(15, 0), WifiFailReason::Other);
     EXPECT_EQ(fail_reason_for(204, 0), WifiFailReason::Other);
+}
+
+// With no reading in the event, a recent scan of the same network stands
+// in for it: a wrong password at a strong signal must still be reported.
+TEST(WifiReason, RecentScanStandsInForAMissingReading) {
+    EXPECT_EQ(fail_reason_for(15, 0, kStrong), WifiFailReason::AuthFailed);
+    EXPECT_EQ(fail_reason_for(202, 0, -75), WifiFailReason::AuthFailed);
+    EXPECT_EQ(fail_reason_for(204, 0, kWeak), WifiFailReason::Other);
+    // Nothing known either way keeps the safe answer.
+    EXPECT_EQ(fail_reason_for(15, 0, 0), WifiFailReason::Other);
+}
+
+// The event's own reading wins over an older scan.
+TEST(WifiReason, EventReadingBeatsTheScan) {
+    EXPECT_EQ(fail_reason_for(15, kWeak, kStrong), WifiFailReason::Other);
+    EXPECT_EQ(fail_reason_for(15, kStrong, kWeak), WifiFailReason::AuthFailed);
+}
+
+TEST(WifiReason, ScanRssiIsTheStrongestMatchingEntry) {
+    const std::vector<WifiScanEntry> scan = {
+        {"home", -80, true}, {"cafe", -40, true}, {"home", -55, true}, {"Home", -30, true}};
+    EXPECT_EQ(scan_rssi_for(scan, "home", 1000), -55);
+    EXPECT_EQ(scan_rssi_for(scan, "cafe", 0), -40);
+    // SSIDs are bytes: no case folding.
+    EXPECT_EQ(scan_rssi_for(scan, "HOME", 0), 0);
+    EXPECT_EQ(scan_rssi_for(scan, "office", 0), 0);
+    EXPECT_EQ(scan_rssi_for({}, "home", 0), 0);
+}
+
+// A reading from long ago says nothing about the link now.
+TEST(WifiReason, StaleScanIsIgnored) {
+    const std::vector<WifiScanEntry> scan = {{"home", -50, true}};
+    EXPECT_EQ(scan_rssi_for(scan, "home", kScanRssiMaxAgeMs), -50);
+    EXPECT_EQ(scan_rssi_for(scan, "home", kScanRssiMaxAgeMs + 1), 0);
 }
 
 TEST(WifiReason, EverythingElseIsOther) {

@@ -5,7 +5,8 @@
 // "net.wifi".
 //
 // create() brings up esp_netif (default station + access-point
-// interfaces), the default event loop and the driver in station mode, and
+// interfaces, built step by step so a failure degrades net.wifi instead
+// of aborting), the default event loop and the driver in station mode, and
 // starts the radio right away: Platform::random (esp_fill_random) is only
 // a true RNG while the RF subsystem is on, and every caller of it depends
 // on net.wifi being registered (firmware/main/main.cpp). The driver keeps
@@ -25,6 +26,10 @@
 // 1 (the station's channel instead while it is connected; one radio), at
 // most 4 clients, and a captive DNS responder that answers every name
 // with the hotspot's address. stop_ap() returns to station-only mode.
+// Whenever the hotspot is off, the AP interface holds a hidden WPA2
+// placeholder with a random passphrase, so the moment start_ap() spends
+// in AP+STA before its own configuration lands never shows an open (or
+// the previous) network.
 //
 // mDNS: the first time link() sees the station connected it starts the
 // mDNS responder as `<hostname>.local` advertising _http._tcp on the

@@ -9,11 +9,14 @@
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_wifi.h"
+#include "esp_wifi_default.h"
 #include "lwip/inet.h"
 #include "mdns.h"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/os.hpp"
 #include "wisp/port/esp/wifi_reason.hpp"
 
 namespace wisp::port::esp {
@@ -98,6 +101,66 @@ void wipe(wifi_config_t& cfg) {
     for (size_t i = 0; i < sizeof(cfg); ++i) p[i] = 0;
 }
 
+// esp_netif_create_default_wifi_sta()/_ap() without their internal
+// abort-on-failure: a netif that cannot be created leaves net.wifi
+// failed and the rest of the device running (AGENTS.md section 3).
+esp_err_t create_wifi_netif(bool ap, esp_netif_t** out) {
+    *out = nullptr;
+    const esp_netif_config_t ap_cfg = ESP_NETIF_DEFAULT_WIFI_AP();
+    const esp_netif_config_t sta_cfg = ESP_NETIF_DEFAULT_WIFI_STA();
+    esp_netif_t* netif = esp_netif_new(ap ? &ap_cfg : &sta_cfg);
+    if (netif == nullptr) return ESP_ERR_NO_MEM;
+    esp_err_t err = ap ? esp_netif_attach_wifi_ap(netif) : esp_netif_attach_wifi_station(netif);
+    if (err == ESP_OK) {
+        err =
+            ap ? esp_wifi_set_default_wifi_ap_handlers() : esp_wifi_set_default_wifi_sta_handlers();
+    }
+    if (err != ESP_OK) {
+        esp_netif_destroy_default_wifi(netif);
+        return err;
+    }
+    *out = netif;
+    return ESP_OK;
+}
+
+// Leaves the access point interface with a hidden WPA2 configuration and
+// a throwaway passphrase, then returns to station-only mode. The driver
+// keeps an interface's configuration across mode changes, and
+// esp_wifi_set_config(WIFI_IF_AP) is only accepted while the AP
+// interface is enabled, so start_ap() has to switch to AP+STA first and
+// the driver briefly beacons whatever the AP interface last held: the
+// default open "ESP_xxxxxx" network on a fresh driver, or the previous
+// hotspot with a password that was shown on screen. Called before the
+// radio starts (no beacon then) and when the hotspot stops. At the first
+// call the RNG is not yet seeded by the radio; the passphrase is never
+// shown or used, it only has to be unguessable for that brief window.
+esp_err_t install_placeholder_ap() {
+    static constexpr char kSsid[] = "wisp-off";
+    static constexpr char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (err == ESP_OK) {
+        wifi_config_t ac = {};
+        std::memcpy(ac.ap.ssid, kSsid, sizeof(kSsid) - 1);
+        ac.ap.ssid_len = sizeof(kSsid) - 1;
+        uint8_t raw[kMaxPassphrase];
+        esp_fill_random(raw, sizeof(raw));
+        for (size_t i = 0; i < kMaxPassphrase; ++i) {
+            ac.ap.password[i] = static_cast<uint8_t>(kAlphabet[raw[i] % (sizeof(kAlphabet) - 1)]);
+        }
+        ac.ap.password[kMaxPassphrase] = 0;
+        std::memset(raw, 0, sizeof(raw));
+        ac.ap.authmode = WIFI_AUTH_WPA2_PSK;
+        ac.ap.ssid_hidden = 1;
+        ac.ap.channel = kApChannel;
+        ac.ap.max_connection = kApMaxClients;
+        err = esp_wifi_set_config(WIFI_IF_AP, &ac);
+        wipe(ac);
+    }
+    const esp_err_t back = esp_wifi_set_mode(WIFI_MODE_STA);
+    return err != ESP_OK ? err : back;
+}
+
 }  // namespace
 
 struct EspWifi::Impl {
@@ -115,6 +178,10 @@ struct EspWifi::Impl {
     hal::WifiLink link;
     // The SSID of the attempt in flight or of the current connection.
     std::string attempt_ssid;
+    // The last scan and when it finished (os::now_ms()), for an
+    // authentication failure reported without a signal reading.
+    std::vector<hal::WifiScanEntry> last_scan;
+    uint64_t last_scan_ms = 0;
 
     // Only touched from start_ap()/stop_ap(), which WifiService serializes.
     CaptiveDns dns;
@@ -132,6 +199,7 @@ void EspWifi::Impl::on_wifi_event(void* arg, esp_event_base_t, int32_t id, void*
     if (id != WIFI_EVENT_STA_DISCONNECTED || data == nullptr) return;
     const auto* ev = static_cast<const wifi_event_sta_disconnected_t*>(data);
     enum class Outcome { None, Failed, Lost } outcome = Outcome::None;
+    int scan_rssi = 0;
     {
         std::lock_guard<std::mutex> lock(self->mutex);
         hal::WifiLink& link = self->link;
@@ -139,11 +207,15 @@ void EspWifi::Impl::on_wifi_event(void* arg, esp_event_base_t, int32_t id, void*
         // reported later and is not the new attempt's outcome.
         if (link.state == hal::WifiLinkState::Connecting && !is_own_leave(ev->reason)) {
             link.state = hal::WifiLinkState::Failed;
-            link.reason = fail_reason_for(ev->reason, ev->rssi);
             link.ssid.assign(reinterpret_cast<const char*>(ev->ssid),
                              std::min<size_t>(ev->ssid_len, kMaxSsid));
+            if (ev->rssi == 0) {
+                scan_rssi =
+                    scan_rssi_for(self->last_scan, link.ssid, os::now_ms() - self->last_scan_ms);
+            }
+            link.reason = fail_reason_for(ev->reason, ev->rssi, scan_rssi);
             link.ip.clear();
-            link.rssi = ev->rssi;
+            link.rssi = ev->rssi != 0 ? ev->rssi : scan_rssi;
             outcome = Outcome::Failed;
         } else if (link.state == hal::WifiLinkState::Connected) {
             link = hal::WifiLink{};
@@ -153,8 +225,8 @@ void EspWifi::Impl::on_wifi_event(void* arg, esp_event_base_t, int32_t id, void*
     // Only the numeric reason, outside the lock: never anything that came
     // with the credentials.
     if (outcome == Outcome::Failed) {
-        WLOG_I(kTag, "connect attempt failed: reason %u rssi %d", static_cast<unsigned>(ev->reason),
-               static_cast<int>(ev->rssi));
+        WLOG_I(kTag, "connect attempt failed: reason %u rssi %d (scan %d)",
+               static_cast<unsigned>(ev->reason), static_cast<int>(ev->rssi), scan_rssi);
     } else if (outcome == Outcome::Lost) {
         WLOG_I(kTag, "station disconnected: reason %u", static_cast<unsigned>(ev->reason));
     }
@@ -211,6 +283,14 @@ void EspWifi::Impl::teardown() {
         esp_wifi_deinit();
         driver_ready = false;
     }
+    if (sta != nullptr) {
+        esp_netif_destroy_default_wifi(sta);
+        sta = nullptr;
+    }
+    if (ap != nullptr) {
+        esp_netif_destroy_default_wifi(ap);
+        ap = nullptr;
+    }
 }
 
 Result<std::shared_ptr<EspWifi>> EspWifi::create(EspWifiConfig config) {
@@ -236,11 +316,10 @@ Result<std::shared_ptr<EspWifi>> EspWifi::create(EspWifiConfig config) {
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         return failed("esp_event_loop_create_default", err);
     }
-    impl->sta = esp_netif_create_default_wifi_sta();
-    impl->ap = esp_netif_create_default_wifi_ap();
-    if (impl->sta == nullptr || impl->ap == nullptr) {
-        return failed("esp_netif_create_default_wifi", ESP_FAIL);
-    }
+    err = create_wifi_netif(/*ap=*/false, &impl->sta);
+    if (err != ESP_OK) return failed("station netif", err);
+    err = create_wifi_netif(/*ap=*/true, &impl->ap);
+    if (err != ESP_OK) return failed("access point netif", err);
     esp_netif_set_hostname(impl->sta, impl->config.hostname.c_str());
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
@@ -258,11 +337,11 @@ Result<std::shared_ptr<EspWifi>> EspWifi::create(EspWifiConfig config) {
                                               impl.get(), &impl->ip_handler);
     if (err != ESP_OK) return failed("register IP_EVENT", err);
 
-    // Station only until the hotspot is asked for: in AP+STA mode the
-    // driver would broadcast an access point with its default (open)
-    // configuration.
-    err = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (err != ESP_OK) return failed("esp_wifi_set_mode", err);
+    // Station only until the hotspot is asked for, and the AP interface
+    // pre-configured so that switching to AP+STA never exposes an open
+    // network.
+    err = install_placeholder_ap();
+    if (err != ESP_OK) return failed("access point placeholder", err);
     // Radio on now: esp_fill_random() is a true RNG only from here on.
     err = esp_wifi_start();
     if (err != ESP_OK) return failed("esp_wifi_start", err);
@@ -307,6 +386,11 @@ Result<std::vector<hal::WifiScanEntry>> EspWifi::scan() {
         // OWE ("enhanced open") needs no password either.
         e.secured = r.authmode != WIFI_AUTH_OPEN && r.authmode != WIFI_AUTH_OWE;
         out.push_back(std::move(e));
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->last_scan = out;
+        impl_->last_scan_ms = os::now_ms();
     }
     return R::ok(std::move(out));
 }
@@ -426,7 +510,7 @@ Result<std::string> EspWifi::start_ap(const std::string& ssid, const std::string
 
 Result<void> EspWifi::stop_ap() {
     impl_->dns.stop();
-    const esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    const esp_err_t err = install_placeholder_ap();
     if (err != ESP_OK) return fail(code_for(err), "stopping the access point", err);
     return Result<void>::ok();
 }
