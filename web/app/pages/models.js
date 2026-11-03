@@ -552,6 +552,10 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
         ? await api('PUT', `/ai/profiles/${encodeURIComponent(profile.id)}`, body)
         : await api('POST', '/ai/profiles', { kind, ...body });
       if (!alive.current) return;
+      // The device normalizes what it stores (trailing slashes, spaces);
+      // show that, or the form would stay "changed" after a save.
+      setUrl(saved.base_url);
+      setName(saved.name);
       setKey('');
       setKeySource('new');
       const dropped = hasKey && !saved.has_key && !('api_key' in body) && !('api_key_from' in body);
@@ -728,7 +732,7 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
                     id=${idp + 'key'}
                     class="input mono-input"
                     type="password"
-                    autocomplete="off"
+                    autocomplete="new-password"
                     autocapitalize="off"
                     spellcheck=${false}
                     placeholder=${hasKey ? t('models.key_keep_ph') : t('models.key_ph')}
