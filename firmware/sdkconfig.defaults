@@ -73,18 +73,37 @@ CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
 # log; 4 KiB leaves room for the log path.
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+# mDNS's packets and records likewise.
+CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
+# WPA2/WPA3-Enterprise (802.1X) is not offered: WifiService only stores a
+# passphrase per network.
+# CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT is not set
 
 # HTTPS for the LLM connectivity test: verify servers against the IDF
-# certificate bundle (wisp::port::esp::EspHttpClient).
+# certificate bundle (wisp::port::esp::EspHttpClient). The full bundle,
+# not the "common" subset: that one lacks roots that LLM endpoints and
+# gateways chain to (SSL.com, used by Cloudflare's edge certificates;
+# TrustAsia), and a user-chosen base URL can be anywhere.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# mbedTLS allocates through malloc(), so its 16 KiB record buffer and other
+# large blocks land in PSRAM (above CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL)
+# instead of taking ~20 KiB of internal RAM per connection; small ones stay
+# internal. The plaintext of a request (including the API key) then passes
+# through PSRAM, which is unencrypted unless flash encryption is on.
+CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
 
 # Admin server (wisp::port::esp::EspHttpServer): the /api/v1/ws WebSocket,
 # with the pre-handshake hook that lets an unauthorized upgrade be refused
-# with a plain 403 before the 101; and room for browser request headers
-# (cookie, user agent, If-None-Match) beyond httpd's 512-byte default.
+# with a plain 403 before the 101. The header limit caps a request's whole
+# header block (anything longer is a 431); httpd allocates only what a
+# request actually uses, so the limit costs nothing until it is reached.
+# A browser request with the session cookie and If-None-Match is about
+# 600 bytes; 2048 leaves room for extra cookies set by other services on
+# the same host name.
 CONFIG_HTTPD_WS_SUPPORT=y
 CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT=y
-CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
 
 # Sockets: the admin httpd (7 clients + 3 of its own), the hotspot's
 # port-80 httpd (4 + 3), the captive DNS responder (1) and the LLM test's
