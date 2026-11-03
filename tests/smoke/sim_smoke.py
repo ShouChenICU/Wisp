@@ -26,6 +26,7 @@ import hashlib
 import os
 import http.client
 import json
+import re
 import pathlib
 import select
 import socket
@@ -430,7 +431,10 @@ def case_http(sim_path, tmp_root):
         status, body = api_request(port, "GET", "/api/v1/info")
         expect(status == 200, f"GET /api/v1/info -> {status} {body}")
         info = json.loads(body)
-        expect(info.get("fw") == "0.1.0" and info.get("paired") is False, f"/info == {info}")
+        # The build's version (cmake/wisp_version.cmake): X.Y.Z, then
+        # optionally -N-gHASH and -dirty.
+        expect(re.fullmatch(r"\d+\.\d+\.\d+(-\d+-g[0-9a-f]+)?(-dirty)?", str(info.get("fw")))
+               is not None and info.get("paired") is False, f"/info == {info}")
 
         auth = {"Cookie": f"wisp_token={token}"}
         status, body = api_request(port, "GET", "/api/v1/device", auth)

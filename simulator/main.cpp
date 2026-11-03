@@ -20,7 +20,8 @@
 // the assets.wpak the build packs next to this executable, or from
 // --web-dir. Platform::reboot prints "WISP_REBOOT" and makes the main
 // loop return, ending the process with exit code 0 after a normal
-// App::stop().
+// App::stop(). A firmware upload is written to <data-dir>/firmware.bin;
+// confirming it on the screen ends in that same reboot.
 //
 // stdin: one StdinReader (sim_stdin.hpp) owns it for the whole run, with
 // or without --headless and whether or not it is a terminal. "tap"/"swipe"
@@ -78,6 +79,7 @@
 #include "wisp/port/sim/png_writer.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/port/sim/sim_board.hpp"
+#include "wisp/port/sim/sim_firmware.hpp"
 #include "wisp/port/sim/sim_http_client.hpp"
 #include "wisp/port/sim/sim_http_server.hpp"
 #include "wisp/port/sim/sim_input.hpp"
@@ -619,7 +621,10 @@ int main(int argc, char** argv) {
     platform.set_standby = [](bool standby) {
         WLOG_I(kLogTag, "set_standby(%s)", standby ? "true" : "false");
     };
-    platform.firmware_version = "0.1.0";
+    platform.firmware_version = WISP_VERSION;
+    // Uploads land in <data-dir>/firmware.bin; images must be built for
+    // board "simulator" (connectivity spec 6.5).
+    platform.firmware = std::make_unique<wisp::port::sim::SimFirmwareUpdater>(opts.data_dir);
     platform.random = [](uint8_t* out, size_t len) {
         // Read the OS entropy source on every call; this is only the
         // simulator, so the cost does not matter.
