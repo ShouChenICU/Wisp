@@ -8,7 +8,7 @@ jobs:
   host:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # A setup-python interpreter is not "externally managed" (PEP 668),
       # so pip can install into it directly.
       - uses: actions/setup-python@v5
@@ -42,24 +42,31 @@ jobs:
     # (gitignored) firmware/components/gen_bmgr_codes/ from
     # boards/waveshare_amoled_216/ before the build. Flashing/monitoring a
     # real board is never a CI step (left to a human with the hardware).
-    container:
-      image: espressif/idf:v6.0.3
+    #
+    # The IDF image runs via `docker run` rather than a job-level
+    # `container:` so preinstalled runner toolchains can be deleted first:
+    # the image plus the unpacked managed components (LVGL etc.) do not
+    # fit in the runner's default free disk space.
     steps:
-      - uses: actions/checkout@v4
-      - name: idf.py set-target esp32s3 && idf.py bmgr && idf.py build
-        shell: bash
+      - name: Free runner disk space
         run: |
-          . $IDF_PATH/export.sh
-          cd firmware
-          idf.py set-target esp32s3
-          idf.py bmgr -c ../boards -b waveshare_amoled_216
-          idf.py build
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+      - uses: actions/checkout@v5
+      - name: idf.py set-target esp32s3 && idf.py bmgr && idf.py build
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/project" -w /project/firmware \
+            espressif/idf:v6.0.3 bash -c '
+              set -eo pipefail
+              . $IDF_PATH/export.sh
+              idf.py set-target esp32s3
+              idf.py bmgr -c ../boards -b waveshare_amoled_216
+              idf.py build'
       # set-target resolves dependencies before gen_bmgr_codes exists and
       # temporarily drops bmgr's entries from the lock file; the build
       # (after bmgr) restores them. The committed lock must match the
       # final state exactly -- fail if the build rewrote it.
       - name: dependencies.lock unchanged
-        shell: bash
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git diff --exit-code firmware/dependencies.lock
+        run: git diff --exit-code firmware/dependencies.lock
