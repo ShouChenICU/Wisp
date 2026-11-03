@@ -556,7 +556,7 @@ public:
 - `tests/support/fake_http.hpp`：`net::HttpRequest make_req(net::Method, std::string path, std::string body = {}, net::Iface = net::Iface::Sta)`，默认带 `host: 192.168.1.50`；`with_token(req, token)`、`with_csrf(req)` 两个辅助函数。
 - 处理顺序（spec 6.3）：
   1. **Host 校验**：去掉端口后，必须是 IPv4 点分十进制、`wisp.local`、`localhost`，或者（`iface == Ap` 时）任意值，否则返回 403 `bad_host`。热点模式下 DNS 已被劫持，探测请求的 Host 会是 `connectivitycheck.gstatic.com` 之类的域名，必须放行。
-  2. **探测路径**：`/generate_204`、`/gen_204`、`/hotspot-detect.html`、`/library/test/success.html`、`/connecttest.txt`、`/ncsi.txt`、`/canonical.html`、`/success.txt`。来自热点的请求返回 302，跳转到 `http://<热点 IP>/setup.html`；其他来源返回 404。
+  2. **探测路径**：`/generate_204`、`/gen_204`、`/hotspot-detect.html`、`/library/test/success.html`、`/connecttest.txt`、`/ncsi.txt`、`/canonical.html`、`/success.txt`。来自热点的请求返回 302，跳转到 `http://<热点 IP>:<http_port>/setup.html`（端口为 80 时省略）；其他来源返回 404。
   3. **静态文件**：非 `/api/` 路径从 `assets` 查找，返回 gzip 内容加 `ETag`；请求带的 `If-None-Match` 相同时返回 304；找不到返回 404。
   4. **API**：免鉴权白名单为 `GET /api/v1/info`、`POST /api/v1/pair/start`、`POST /api/v1/pair/confirm`、`POST /api/v1/pair/ap`；其余接口没有有效 `wisp_token` 时返回 401 `unauthorized`。
   5. **CSRF**：POST/PUT/DELETE 请求没有 `x-wisp: 1` 请求头时返回 403 `csrf`（白名单接口同样要求）。
