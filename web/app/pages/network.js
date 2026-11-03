@@ -15,6 +15,7 @@ import { Badge } from '../components/badge.js';
 import { confirmDialog } from '../components/dialog.js';
 import { toast } from '../components/toast.js';
 import {
+  allRejected,
   JoinForm,
   ScanList,
   SignalBars,
@@ -90,7 +91,12 @@ export function NetworkPage() {
       return;
     }
     const p = msg.payload || {};
-    if (msg.topic === 'net.wifi.state') setWifi((w) => (w ? { ...w, ...p } : w));
+    if (msg.topic === 'net.wifi.state') {
+      setWifi((w) => (w ? { ...w, ...p } : w));
+      // A rejected password may have parked a network: the saved list's
+      // flags are only in GET /wifi.
+      if (p.state === 'backoff' && p.reason === 'auth_failed') load();
+    }
     else if (msg.topic === 'net.ap.state') setWifi((w) => (w ? { ...w, ap: { ...w.ap, ...p } } : w));
   }
 
@@ -325,6 +331,10 @@ function CurrentCard({ wifi, join }) {
     badge = html`<${Badge} tone="warn" dot pulse>${t('wifi.connecting')}</${Badge}>`;
     body = html`<div class="stat-text">${wifi.ssid ? html`<${Ssid} ssid=${wifi.ssid} />` : t('wifi.connecting')}</div>
       <p class="muted">${t('net.connecting_hint')}</p>`;
+  } else if (wifi.state === 'backoff' && allRejected(wifi)) {
+    badge = html`<${Badge} tone="err" dot>${t('wifi.rejected')}</${Badge}>`;
+    body = html`<div class="stat-text">${wifi.ssid ? html`<${Ssid} ssid=${wifi.ssid} />` : t('wifi.off')}</div>
+      <p class="muted">${t('net.rejected_hint')}</p>`;
   } else if (wifi.state === 'backoff') {
     badge = html`<${Badge} tone="warn" dot>${t('wifi.backoff')}</${Badge}>`;
     body = html`<div class="stat-text">${wifi.ssid ? html`<${Ssid} ssid=${wifi.ssid} />` : t('wifi.off')}</div>

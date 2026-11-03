@@ -8,7 +8,7 @@ import { t } from '../i18n/index.js';
 import { subscribe } from '../ws.js';
 import { Card } from '../components/card.js';
 import { Badge } from '../components/badge.js';
-import { SignalBars, Ssid, reasonText } from '../components/wifi.js';
+import { SignalBars, Ssid, allRejected, reasonText } from '../components/wifi.js';
 import {
   IconAlert,
   IconBattery,
@@ -281,6 +281,11 @@ function WifiCard({ wifi }) {
     badge = html`<${Badge} tone="warn" dot pulse>${t('wifi.connecting')}</${Badge}>`;
     body = html`<div class="stat-text">${w.ssid ? html`<${Ssid} ssid=${w.ssid} />` : t('wifi.connecting')}</div>
       <p class="muted">${t('wifi.connecting_hint')}</p>`;
+  } else if (w.state === 'backoff' && allRejected(w)) {
+    badge = html`<${Badge} tone="err" dot>${t('wifi.rejected')}</${Badge}>`;
+    body = html`<div class="stat-text">${w.ssid ? html`<${Ssid} ssid=${w.ssid} />` : t('wifi.off')}</div>
+      <p class="muted">${t('wifi.rejected_hint')}</p>
+      <a href="#/network" class="link card-link">${t('wifi.settings_link')}<${IconChevronRight} size=${14} /></a>`;
   } else if (w.state === 'backoff') {
     badge = html`<${Badge} tone="warn" dot>${t('wifi.backoff')}</${Badge}>`;
     body = html`<div class="stat-text">${w.ssid ? html`<${Ssid} ssid=${w.ssid} />` : t('wifi.off')}</div>

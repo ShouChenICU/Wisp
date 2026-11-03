@@ -113,6 +113,17 @@ export function SignalBars({ rssi }) {
   </span>`;
 }
 
+/**
+ * Every saved network has had its password rejected three times in a row
+ * (spec 4.2): the device keeps scanning but will not try any of them until
+ * a password is re-entered, so "it will retry" would be wrong.
+ * @param {{saved?: {auth_failed: boolean}[]}} wifi  GET /wifi
+ */
+export function allRejected(wifi) {
+  const saved = wifi?.saved;
+  return Array.isArray(saved) && saved.length > 0 && saved.every((n) => n.auth_failed);
+}
+
 /** The localized cause of a failed join ("not_found", "auth_failed", ...). */
 export function reasonText(reason) {
   return t('wifi.reason_' + (['not_found', 'auth_failed'].includes(reason) ? reason : 'other'));
