@@ -824,7 +824,7 @@ TEST(AppNet, BootDoesNotWaitForWifi)             // FakeWifi::scan 阻塞 3 s �
   - `enum class StrId : uint16_t`、`enum class Lang : uint8_t { Zh, Ja, En }`、`const char* ui::tr(StrId)`、`void ui::set_lang(Lang)`、`Lang ui::lang()`、`std::optional<Lang> ui::parse_lang(std::string_view)`（"zh"/"ja"/"en"）。`tr` 线程安全（语言存为原子量），但文字只在 UI 线程上使用。
   - `SystemSettings` 的 `language` 键：取值 `"zh"`/`"ja"`/`"en"`，默认 `"zh"`，存为 `sys`/`lang`；非法值返回 `InvalidArgument`。`GET /settings` 返回它，`PUT /settings` 可以修改。
   - 语言变化时，App 在 UI 线程上调用 `ui::set_lang` 并重建当前界面的文字（自检界面重建即可）。
-- 字体：`tools/gen_cjk_font.py` 只用 Python 标准库生成字符清单：ASCII、GB2312（`gb2312` 编解码器枚举）、JIS X 0208 第 1–8 区符号与假名、第 16–47 区第一水准汉字（`euc_jp` 编解码器枚举），去重排序后调用固定版本的 `lv_font_conv`（`npx lv_font_conv@1.5.2`），参数与现字体一致（16 px、4 bpp、Noto Sans CJK SC Regular，固定上游版本并校验 SHA-256）。生成的 `.c` 文件头写明来源、许可与生成命令。
+- 字体：`tools/gen_cjk_font.py` 只用 Python 标准库生成字符清单：ASCII、GB2312（`gb2312` 编解码器枚举）、JIS X 0208 第 1–8 区符号与假名、第 16–47 区第一水准汉字（`euc_jp` 编解码器枚举），去重排序后调用固定版本的 `lv_font_conv`（`npx lv_font_conv@1.5.3`；1.5.2 不支持 `--lv-font-name`），参数与现字体一致（16 px、4 bpp、Noto Sans CJK SC Regular，固定上游版本并校验 SHA-256）。生成的 `.c` 文件头写明来源、许可与生成命令。
 
 - [ ] **Step 1: 写失败的测试**
 

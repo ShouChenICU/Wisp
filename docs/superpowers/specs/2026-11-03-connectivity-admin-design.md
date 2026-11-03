@@ -205,6 +205,7 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 | `net.ap.state` | `WifiService` | `{active, ssid, clients}`（不含密码） |
 | `net.pairing.code` | `PairingService` | `{active, expires_ms}`（不含配对码） |
 | `net.pairing.failed` | `PairingService` | `{attempts, locked}` |
+| `system.settings` | `App`（`SystemSettings` 的 `on_changed`） | `{brightness, volume, screen_off_s, language}`：每批设置写入成功后的全部当前值（与 `GET /settings` 同形） |
 
 ---
 
@@ -349,7 +350,7 @@ web/
 - **范围**：只覆盖系统自带的界面——自检界面、本子项目的网络区块与各卡片，以及子项目 8 的主场景外壳。Agent 生成的场景不在范围内，由场景自己决定显示什么文字。
 - **语言设置**：`SystemSettings` 的 `language`（存为 `sys`/`lang`，`zh`/`ja`/`en`，默认 `zh`）。后台"系统"页可以修改；修改后发布 `system.settings` 事件，设备界面在 UI 线程上立即重建文字，不需要重启。设备语言与网页语言相互独立：网页跟随浏览器（7.4），设备跟随这个设置。
 - **字符串表**：`wisp_ui` 提供 `ui::tr(StrId)`，三种语言的文字编译进固件（`components/wisp_ui/src/strings_{zh,ja,en}.cpp`），缺失时退回中文。单元测试检查每个 `StrId` 在三种语言里都有非空文字，并且全部字形都能由内置字体渲染。
-- **字体**：仍只用一套 16 px、4 bpp 的内置字体，字符集为 GB2312 ∪ 日文假名与 JIS X 0208 符号区 ∪ JIS X 0208 第一水准汉字（预计比现在多约 150 KB Flash）。字体由 `tools/gen_cjk_font.py` 生成（固定版本的 Noto Sans CJK SC 与 `lv_font_conv`），生成命令与来源写进 `docs/references.md`。日文汉字暂用 SC 字形；按语言加载日文字形字体（放在 `assets` 分区）留到子项目 8。
+- **字体**：仍只用一套 16 px、4 bpp 的内置字体，字符集为 GB2312 ∪ 日文假名与 JIS X 0208 符号区 ∪ JIS X 0208 第一水准汉字（实测比原字体多约 222 KiB Flash：除日文字符外，还补齐了原字体缺少的 GB2312 非汉字各区——°、×、→、①、希腊字母、拼音等，Agent 输出中常见）。字体由 `tools/gen_cjk_font.py` 生成（固定版本的 Noto Sans CJK SC 与 `lv_font_conv`），生成命令与来源写进 `docs/references.md`。日文汉字暂用 SC 字形；按语言加载日文字形字体（放在 `assets` 分区）留到子项目 8。
 
 ---
 
