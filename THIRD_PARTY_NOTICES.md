@@ -513,3 +513,45 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+## htm and Preact (via `web/vendor/htm-preact-3.1.1.mjs`)
+
+- Projects: https://github.com/developit/htm (htm) and
+  https://github.com/preactjs/preact (Preact)
+- Version: htm 3.1.1; file `preact/standalone.module.js` from the npm
+  tarball https://registry.npmjs.org/htm/-/htm-3.1.1.tgz (integrity
+  `sha512-983Vyg8NwUE7JkZ6NmOqpCZ+sh1bKv2iYTlUkzlWmA5JD2acKoxd4KVxbMmxX/85mtfdnDmTFoNKcg5DGAvxNQ==`),
+  vendored unmodified below an added header comment. The file bundles a
+  minified Preact 10.x runtime; htm's build declares `preact ^10.2.0`, so
+  the exact 10.x release is not recorded upstream.
+- Used by: the browser admin UI under `web/` (served from the device's
+  asset pack; never linked into the firmware's C/C++ code).
+- License: htm is Apache License 2.0 (same as this project; full text in
+  `LICENSE`), Copyright 2018 Google Inc. The bundled Preact runtime is MIT.
+
+Preact's license, copied verbatim from `LICENSE` in the npm package
+preact@10.6.6 (the copyright line is the same across the 10.x line):
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2015-present Jason Miller
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

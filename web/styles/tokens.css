@@ -1,0 +1,111 @@
+/* Design tokens for the Wisp admin UI (spec 7.2). Dark is the default
+   look -- a night-blue base with the wisp's pale blue glow -- and the light
+   set follows the system preference. Every colour, radius and spacing
+   value in components.css comes from here, so a theme is just this file. */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0b0f17;
+  --bg-raised: #0e1420;
+  --surface: #121926;
+  --surface-2: #19212f;
+  --surface-3: #212b3c;
+  --border: rgba(148, 170, 205, 0.12);
+  --border-strong: rgba(148, 170, 205, 0.22);
+
+  --text: #e6edf7;
+  --text-dim: #93a0b4;
+  --text-faint: #6b778b;
+
+  --accent: #5ab4ff;
+  --accent-strong: #84c7ff;
+  --accent-ink: #04121f;
+  --accent-soft: rgba(90, 180, 255, 0.12);
+  --accent-glow: rgba(90, 180, 255, 0.35);
+
+  --ok: #3dd68c;
+  --ok-soft: rgba(61, 214, 140, 0.13);
+  --warn: #f5b74f;
+  --warn-soft: rgba(245, 183, 79, 0.13);
+  --err: #ff6b6b;
+  --err-soft: rgba(255, 107, 107, 0.13);
+  --muted-soft: rgba(148, 170, 205, 0.1);
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  --gap: 16px;
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 12px;
+  --gap-lg: 24px;
+  --gap-xl: 32px;
+
+  --font: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 24px;
+  --fs-2xl: 32px;
+
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.28);
+  --shadow-pop: 0 18px 48px rgba(0, 0, 0, 0.5);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+
+  --sidebar-w: 240px;
+  --topbar-h: 56px;
+  --tabbar-h: 64px;
+  --content-max: 1080px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur: 180ms;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --bg: #f4f6fa;
+    --bg-raised: #eef2f7;
+    --surface: #ffffff;
+    --surface-2: #f1f4f9;
+    --surface-3: #e6ebf3;
+    --border: rgba(30, 50, 85, 0.1);
+    --border-strong: rgba(30, 50, 85, 0.2);
+
+    --text: #111a2b;
+    --text-dim: #536076;
+    --text-faint: #7b8699;
+
+    --accent: #1a76cc;
+    --accent-strong: #135ea6;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(26, 118, 204, 0.1);
+    --accent-glow: rgba(26, 118, 204, 0.22);
+
+    --ok: #18895a;
+    --ok-soft: rgba(24, 137, 90, 0.11);
+    --warn: #a86a10;
+    --warn-soft: rgba(168, 106, 16, 0.12);
+    --err: #c93b3b;
+    --err-soft: rgba(201, 59, 59, 0.1);
+    --muted-soft: rgba(30, 50, 85, 0.07);
+
+    --shadow: 0 1px 2px rgba(17, 26, 43, 0.05), 0 6px 20px rgba(17, 26, 43, 0.06);
+    --shadow-pop: 0 18px 48px rgba(17, 26, 43, 0.18);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur: 0ms;
+  }
+}

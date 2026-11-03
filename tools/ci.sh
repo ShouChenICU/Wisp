@@ -106,6 +106,14 @@ python3 tools/check_layering.py
 echo "==> tools/pack_assets_test.py"
 python3 tools/pack_assets_test.py
 
+# The admin UI's zh/ja/en dictionaries must carry identical key sets
+# (spec 7.4).
+echo "==> tools/check_i18n_test.py"
+python3 tools/check_i18n_test.py
+
+echo "==> tools/check_i18n.py"
+python3 tools/check_i18n.py
+
 echo "==> cmake -S simulator -B build/sim -G Ninja"
 cmake -S simulator -B build/sim -G Ninja
 
