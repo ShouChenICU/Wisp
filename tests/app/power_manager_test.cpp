@@ -740,3 +740,25 @@ TEST(PowerManager, SetBrightnessCoalescesWhileUiIsBusy) {
     EXPECT_EQ(f.display->brightness(), 100);
     EXPECT_EQ(f.display->set_brightness_calls(), 1);
 }
+
+TEST(PowerManager, UiThreadBrightnessIsNotOverwrittenByAnOlderQueuedJob) {
+    Fixture f;
+    // Park the UI task; once released it sets 50 directly on the UI thread.
+    auto started = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto gate = std::make_shared<wisp::os::Semaphore>(1, 0);
+    PowerManager* pm = f.pm.get();
+    ASSERT_TRUE(f.ui->post([started, gate, pm] {
+        started->give();
+        gate->take(wisp::os::kForever);
+        pm->set_brightness(50);
+    }));
+    started->take(wisp::os::kForever);
+
+    // Queued behind the parked job, so it runs after the UI-thread call
+    // above even though it was requested earlier.
+    f.pm->set_brightness(100);
+    gate->give();
+    f.drain_ui();
+
+    EXPECT_EQ(f.display->brightness(), 50);
+}

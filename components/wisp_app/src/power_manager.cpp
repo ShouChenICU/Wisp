@@ -300,8 +300,10 @@ void PowerManager::set_brightness(uint8_t level) {
         }
         bool posted = ui_->post([this] {
             // Clear the flag before reading the level: a call landing after
-            // the read then queues a fresh job instead of being lost.
-            brightness_job_queued_.store(false, std::memory_order_release);
+            // the read then queues a fresh job instead of being lost. An
+            // acq_rel exchange (not a release store) keeps the level load
+            // below from being reordered ahead of the flag clear.
+            brightness_job_queued_.exchange(false, std::memory_order_acq_rel);
             apply_brightness(requested_brightness_.load(std::memory_order_acquire));
         });
         if (!posted) {
@@ -311,6 +313,9 @@ void PowerManager::set_brightness(uint8_t level) {
         }
         return;
     }
+    // Record the level on this path too: a job queued earlier from another
+    // thread may still be pending and must not re-apply an older level.
+    requested_brightness_.store(level, std::memory_order_release);
     apply_brightness(level);
 }
 
