@@ -130,3 +130,12 @@ wisp_test(NAME wifi_service_test SRCS net/wifi_service_test.cpp
           LIBS wisp_net wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 wisp_test(NAME pairing_service_test SRCS net/pairing_service_test.cpp
           LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
+
+# wisp_admin: the router is driven with in-memory requests
+# (support/fake_http.hpp) over real services and the fixture WispPack.
+foreach(admin_test filters_test pair_routes_test)
+    wisp_test(NAME ${admin_test} SRCS admin/${admin_test}.cpp
+              LIBS wisp_admin wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
+    add_dependencies(${admin_test} wisp_fixture_wpak)
+    target_compile_definitions(${admin_test} PRIVATE WISP_FIXTURE_WPAK="${WISP_FIXTURE_WPAK}")
+endforeach()

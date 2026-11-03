@@ -1,0 +1,75 @@
+#pragma once
+
+// Pieces shared by AdminServer's pipeline (admin_server.cpp), its request
+// filters (filters.cpp) and the route groups (routes_*.cpp). Not part of
+// wisp_admin's public interface.
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "wisp/admin/admin_server.hpp"
+#include "wisp/base/error.hpp"
+#include "wisp/base/value.hpp"
+#include "wisp/net/http.hpp"
+
+namespace wisp::admin::detail {
+
+// Spec 6.3: larger request bodies are refused with 413.
+constexpr size_t kMaxBodyBytes = 8192;
+
+constexpr std::string_view kApiPrefix = "/api/v1";
+
+// What a route handler gets besides the services: the request, the clock
+// reading taken once for it, the caller's identity and the decoded body.
+struct RequestContext {
+    const net::HttpRequest& req;
+    uint64_t now_ms = 0;
+    // Paired client id when the request carried a valid wisp_token; empty
+    // otherwise (only possible on whitelisted routes).
+    std::string client_id;
+    // The trailing path segment of a "/*" route, still URL-encoded.
+    std::string param;
+    // The JSON body; Null when the body was empty.
+    Value body;
+};
+
+using RouteFn = net::HttpResponse (*)(AdminDeps& deps, const RequestContext& ctx);
+
+struct Route {
+    net::Method method;
+    // Path after kApiPrefix. A trailing "/*" matches exactly one more
+    // non-empty segment, handed to the handler as RequestContext::param.
+    std::string_view path;
+    // Reachable without a token (the pairing whitelist). CSRF still applies.
+    bool is_public;
+    RouteFn fn;
+};
+
+// Route groups; each appends its routes to the table.
+void add_pair_routes(std::vector<Route>& routes);
+
+// --- filters.cpp ---
+
+// Host check (spec 6.3), ignoring a ":port" suffix. Requests from the
+// setup hotspot pass with any Host.
+bool host_allowed(const net::HttpRequest& req);
+bool is_probe_path(std::string_view path);
+// 302 to the hotspot's setup page when the request came from the hotspot,
+// else 404.
+net::HttpResponse probe_response(const AdminDeps& deps, const net::HttpRequest& req);
+bool is_mutating(net::Method m);
+// "X-Wisp: 1" present (header names arrive lowercased).
+bool csrf_ok(const net::HttpRequest& req);
+
+// --- admin_server.cpp ---
+
+// The {"error":{...}} envelope for a service error, with the status from
+// net::http_status_for() and the snake_case ErrorCode name as "code".
+net::HttpResponse service_error(const Error& error);
+// Empty-object JSON body with the given status.
+net::HttpResponse ok_json(int status = 200);
+
+}  // namespace wisp::admin::detail
