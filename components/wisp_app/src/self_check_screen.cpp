@@ -485,7 +485,7 @@ void SelfCheck::build_device_list(lv_obj_t* col) {
         std::string model = device ? device->info().model : std::string("-");
 
         char buf[160];
-        std::snprintf(buf, sizeof(buf), "%s · %s · %s", id.c_str(), model.c_str(),
+        std::snprintf(buf, sizeof(buf), "%s | %s | %s", id.c_str(), model.c_str(),
                       state_label(state));
         lv_obj_t* row = make_row_label(col);
         lv_label_set_text(row, buf);
@@ -582,7 +582,7 @@ void SelfCheck::build_loopback_section(lv_obj_t* col) {
 
 void SelfCheck::build_perf_section(lv_obj_t* col) {
     perf_label_ = make_row_label(col);
-    lv_label_set_text(perf_label_, "FPS 0 · CPU 0% · flush 0.0ms");
+    lv_label_set_text(perf_label_, "FPS 0 | CPU 0% | flush 0.0ms");
     lv_obj_add_flag(perf_label_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(perf_label_, &SelfCheck::perf_long_press_cb, LV_EVENT_LONG_PRESSED, this);
 }
@@ -951,7 +951,7 @@ void SelfCheck::refresh_ui() {
 
     ui::UiPerf perf = ui_->perf();
     char perf_buf[96];
-    std::snprintf(perf_buf, sizeof(perf_buf), "FPS %.0f · CPU %u%% · flush %.1fms", perf.fps,
+    std::snprintf(perf_buf, sizeof(perf_buf), "FPS %.0f | CPU %u%% | flush %.1fms", perf.fps,
                   perf.cpu_percent, perf.avg_flush_ms);
     lv_label_set_text(perf_label_, perf_buf);
 }
@@ -1000,7 +1000,7 @@ void SelfCheck::update_storage_labels() {
                                       ? core::DeviceState::Ok
                                       : core::DeviceState::Missing;
         char buf[160];
-        std::snprintf(buf, sizeof(buf), "%s · %s · %s", device_list_sd_id_.c_str(),
+        std::snprintf(buf, sizeof(buf), "%s | %s | %s", device_list_sd_id_.c_str(),
                       device_list_sd_model_.c_str(), state_label(state));
         lv_label_set_text(device_list_sd_row_, buf);
         lv_obj_set_style_text_color(device_list_sd_row_, color_for_state(state), 0);
