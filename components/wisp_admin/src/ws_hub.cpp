@@ -51,16 +51,23 @@ std::string log_json(int64_t ts, const char* level, std::string tag, std::string
 struct WsHub::Client {
     std::shared_ptr<net::WsConnection> conn;
     int id = 0;
+    std::string client_id;  // the paired client whose token opened it
     bool log = false;
     bool events = false;
-    // Set by close(); pump() may still hold a reference to this client.
+    // Set once the client is forgotten (close(), close_client(),
+    // close_all()); pump() may still hold a reference to this client.
     bool closed = false;
     std::deque<std::string> queue;
+    size_t queued_bytes = 0;  // sum of queue's message sizes
     uint64_t dropped = 0;
 };
 
-WsHub::WsHub(core::EventBus& bus, size_t max_clients, size_t max_queue)
-    : bus_(bus), max_clients_(max_clients), max_queue_(max_queue), wake_(1, 0) {
+WsHub::WsHub(core::EventBus& bus, size_t max_clients, size_t max_queue, size_t max_queue_bytes)
+    : bus_(bus),
+      max_clients_(max_clients),
+      max_queue_(max_queue),
+      max_queue_bytes_(max_queue_bytes),
+      wake_(1, 0) {
     for (const char* prefix : kForwardedPrefixes) {
         subscriptions_.push_back(
             bus_.subscribe(prefix, [this](const core::Event& e) { on_event(e); }));
@@ -106,30 +113,40 @@ void WsHub::run() {
     }
 }
 
-bool WsHub::open(std::shared_ptr<net::WsConnection> conn) {
+bool WsHub::open(std::shared_ptr<net::WsConnection> conn, std::string client_id) {
     if (!conn) return false;
     const int id = conn->id();
-    bool accepted = false;
+    enum class Outcome { Accepted, IdTaken, Full } outcome = Outcome::Accepted;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         const bool taken = std::any_of(clients_.begin(), clients_.end(),
                                        [id](const auto& c) { return c->id == id; });
-        if (!taken && clients_.size() < max_clients_) {
+        if (taken) {
+            outcome = Outcome::IdTaken;
+        } else if (clients_.size() >= max_clients_) {
+            outcome = Outcome::Full;
+        } else {
             auto c = std::make_shared<Client>();
             c->conn = std::move(conn);
             c->id = id;
+            c->client_id = std::move(client_id);
             clients_.push_back(std::move(c));
-            accepted = true;
         }
     }
     // Logged outside mutex_: write() takes it.
-    if (accepted) {
-        WLOG_I(kTag, "client %d connected", id);
-    } else {
-        WLOG_W(kTag, "client %d refused (at most %u connections)", id,
-               static_cast<unsigned>(max_clients_));
+    switch (outcome) {
+        case Outcome::Accepted:
+            WLOG_I(kTag, "client %d connected", id);
+            break;
+        case Outcome::IdTaken:
+            WLOG_W(kTag, "client %d refused: id already open", id);
+            break;
+        case Outcome::Full:
+            WLOG_W(kTag, "client %d refused: at most %u connections", id,
+                   static_cast<unsigned>(max_clients_));
+            break;
     }
-    return accepted;
+    return outcome == Outcome::Accepted;
 }
 
 void WsHub::on_message(int id, std::string_view text) {
@@ -173,15 +190,31 @@ void WsHub::on_message(int id, std::string_view text) {
                     lines.push_back(std::string_view(ring).substr(start, nl - start));
                     start = nl + 1;
                 }
-                const size_t skip = lines.size() > max_queue_ ? lines.size() - max_queue_ : 0;
-                for (size_t i = skip; i < lines.size(); ++i) {
-                    enqueue_locked(c, log_json(0, "I", std::string(), std::string(lines[i])));
+                // Newest first, as many as an empty queue holds.
+                std::vector<std::string> replay;
+                size_t bytes = 0;
+                for (size_t i = lines.size(); i > 0 && replay.size() < max_queue_; --i) {
+                    std::string msg = log_json(0, "I", std::string(), std::string(lines[i - 1]));
+                    if (bytes + msg.size() > max_queue_bytes_) break;
+                    bytes += msg.size();
+                    replay.push_back(std::move(msg));
+                }
+                for (auto it = replay.rbegin(); it != replay.rend(); ++it) {
+                    enqueue_locked(c, std::move(*it));
                     queued = true;
                 }
             }
         }
     }
     if (queued) wake_.give();
+}
+
+void WsHub::forget_locked(Client& c) {
+    if (c.log) --log_subscribers_;
+    if (c.events) --event_subscribers_;
+    c.closed = true;
+    c.queue.clear();
+    c.queued_bytes = 0;
 }
 
 void WsHub::close(int id) {
@@ -191,16 +224,43 @@ void WsHub::close(int id) {
         auto it = std::find_if(clients_.begin(), clients_.end(),
                                [id](const auto& c) { return c->id == id; });
         if (it != clients_.end()) {
-            Client& c = **it;
-            if (c.log) --log_subscribers_;
-            if (c.events) --event_subscribers_;
-            c.closed = true;
-            c.queue.clear();
+            forget_locked(**it);
             clients_.erase(it);
             found = true;
         }
     }
     if (found) WLOG_I(kTag, "client %d disconnected", id);
+}
+
+void WsHub::close_matching(const std::function<bool(const Client&)>& match) {
+    std::vector<std::shared_ptr<Client>> closing;
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        for (auto it = clients_.begin(); it != clients_.end();) {
+            if (match(**it)) {
+                forget_locked(**it);
+                closing.push_back(std::move(*it));
+                it = clients_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    // Outside mutex_: a server may report the close straight back through
+    // close(), and the log line goes through write().
+    for (const auto& c : closing) {
+        c->conn->close();
+        WLOG_I(kTag, "client %d closed: its pairing was revoked", c->id);
+    }
+}
+
+void WsHub::close_client(std::string_view client_id) {
+    if (client_id.empty()) return;
+    close_matching([client_id](const Client& c) { return c.client_id == client_id; });
+}
+
+void WsHub::close_all() {
+    close_matching([](const Client&) { return true; });
 }
 
 void WsHub::write(LogLevel level, const char* tag, const char* msg) {
@@ -232,10 +292,17 @@ void WsHub::on_event(const core::Event& e) {
 }
 
 void WsHub::enqueue_locked(Client& c, std::string msg) {
-    if (c.queue.size() >= max_queue_) {
+    if (msg.size() > max_queue_bytes_) {
+        ++c.dropped;
+        return;
+    }
+    while (!c.queue.empty() &&
+           (c.queue.size() >= max_queue_ || c.queued_bytes + msg.size() > max_queue_bytes_)) {
+        c.queued_bytes -= c.queue.front().size();
         c.queue.pop_front();
         ++c.dropped;
     }
+    c.queued_bytes += msg.size();
     c.queue.push_back(std::move(msg));
 }
 
@@ -268,6 +335,7 @@ void WsHub::pump() {
                 } else if (!c->queue.empty()) {
                     msg = std::move(c->queue.front());
                     c->queue.pop_front();
+                    c->queued_bytes -= msg.size();
                 } else {
                     break;
                 }
@@ -282,9 +350,11 @@ void WsHub::pump() {
             } else if (!sent && !c->closed) {
                 // Back to the head. If write() filled the queue meanwhile,
                 // this message is now the oldest one and is the one dropped.
-                if (c->queue.size() >= max_queue_) {
+                if (c->queue.size() >= max_queue_ ||
+                    c->queued_bytes + msg.size() > max_queue_bytes_) {
                     ++c->dropped;
                 } else {
+                    c->queued_bytes += msg.size();
                     c->queue.push_front(std::move(msg));
                 }
             }

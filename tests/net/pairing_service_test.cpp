@@ -661,3 +661,38 @@ TEST(Pairing, ConcurrentAuthenticateAndRequestCode) {
     for (auto& th : threads) th.join();
     EXPECT_TRUE(ok.load());
 }
+
+// The admin backend closes a revoked browser's WebSocket through this hook
+// (spec 6.4: revocation is the remedy for a captured token).
+TEST(Pairing, RevokeListenersHearRevocations) {
+    Fixture f;
+    auto& svc = f.make();
+    std::string a = f.pair(1000);
+    f.pair(2000);
+    const std::string a_id = hash_hex(a).substr(0, 12);
+
+    std::vector<std::optional<std::string>> heard;
+    std::vector<std::optional<std::string>> heard2;
+    const int h1 = svc.add_revoke_listener([&](const std::optional<std::string>& id) {
+        heard.push_back(id);
+        // Runs outside the service's lock, so calling back in is fine.
+        (void)svc.clients();
+    });
+    const int h2 = svc.add_revoke_listener(
+        [&](const std::optional<std::string>& id) { heard2.push_back(id); });
+    EXPECT_NE(h1, h2);
+
+    ASSERT_FALSE(svc.revoke("000000000000"));
+    EXPECT_TRUE(heard.empty());
+
+    ASSERT_TRUE(svc.revoke(a_id));
+    ASSERT_EQ(heard.size(), 1u);
+    EXPECT_EQ(heard[0], std::optional<std::string>(a_id));
+
+    svc.remove_revoke_listener(h2);
+    svc.revoke_all();
+    ASSERT_EQ(heard.size(), 2u);
+    EXPECT_EQ(heard[1], std::nullopt);
+    EXPECT_EQ(heard2.size(), 1u);
+    svc.remove_revoke_listener(h1);
+}

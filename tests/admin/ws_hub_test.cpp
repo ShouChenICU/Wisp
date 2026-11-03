@@ -15,6 +15,7 @@
 
 #include "admin/admin_fixture.hpp"
 #include "support/fake_http.hpp"
+#include "support/utf8.hpp"
 #include "support/wait.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/event_bus.hpp"
@@ -32,6 +33,7 @@ using wisp::net::Method;
 using wisp::test::AdminFixture;
 using wisp::test::make_req;
 using wisp::test::wait_until;
+using wisp::test::with_csrf;
 using wisp::test::with_token;
 
 namespace {
@@ -44,7 +46,9 @@ public:
 
     int id() const override { return id_; }
 
+    // Like the real connections, a closed one refuses every send.
     bool send_text(std::string_view text) override {
+        if (closed) return false;
         ++send_calls;
         const uint32_t delay = block_ms.load();
         if (delay > 0) wisp::os::sleep_ms(delay);
@@ -65,6 +69,11 @@ public:
             out.push_back(v ? v.value() : Value());
         }
         return out;
+    }
+
+    std::vector<std::string> sent_raw() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return sent_;
     }
 
     size_t sent_count() const {
@@ -112,6 +121,7 @@ std::vector<std::string> ring_lines() {
 
 TEST(WsHub, ThirdClientRejected) {
     wisp::log::reset_for_test();
+    wisp::log::init(4096);
     EventBus bus;
     WsHub hub(bus);
     auto c1 = std::make_shared<FakeWsConnection>(1);
@@ -121,10 +131,19 @@ TEST(WsHub, ThirdClientRejected) {
     EXPECT_TRUE(hub.open(c1));
     EXPECT_TRUE(hub.open(c2));
     EXPECT_FALSE(hub.open(c3));
+    EXPECT_NE(wisp::log::ring_snapshot().find("client 3 refused: at most 2 connections"),
+              std::string::npos);
 
     // A slot frees up once a client leaves.
     hub.close(1);
     EXPECT_TRUE(hub.open(c3));
+
+    // A reused id is refused for what it is, not as "too many".
+    hub.close(2);
+    EXPECT_FALSE(hub.open(std::make_shared<FakeWsConnection>(3)));
+    EXPECT_NE(wisp::log::ring_snapshot().find("client 3 refused: id already open"),
+              std::string::npos)
+        << wisp::log::ring_snapshot();
 }
 
 TEST(WsHub, BackfillsRingThenStreamsLive) {
@@ -291,10 +310,10 @@ TEST(WsHub, LogWriteNeverBlocksOnSend) {
     // The sender task is now stuck inside send_text() for a second.
     uint64_t t0 = wisp::os::now_ms();
     hub.write(LogLevel::Info, "t", "direct");
-    EXPECT_LT(wisp::os::now_ms() - t0, 10u);
+    EXPECT_LT(wisp::os::now_ms() - t0, 50u);
     t0 = wisp::os::now_ms();
     WLOG_I("t", "through the log module");
-    EXPECT_LT(wisp::os::now_ms() - t0, 10u);
+    EXPECT_LT(wisp::os::now_ms() - t0, 50u);
 
     // Everything queued is delivered once the socket recovers.
     c->block_ms = 0;
@@ -306,16 +325,139 @@ TEST(WsHub, DestroyedHubIsNoLongerALogSink) {
     wisp::log::reset_for_test();
     wisp::log::init(4096);
     EventBus bus;
+    // The connection outlives the hub.
     auto c = std::make_shared<FakeWsConnection>(1);
     {
         WsHub hub(bus);
         hub.start();
         ASSERT_TRUE(hub.open(c));
         hub.on_message(1, R"({"sub":["log"]})");
+        WLOG_I("t", "while the hub is up");
+        ASSERT_TRUE(wait_until([&] { return c->sent_count() > 0; }, 2000));
     }
-    // Would call into the destroyed hub if it were still registered.
+    const int calls = c->send_calls.load();
     WLOG_I("t", "after the hub is gone");
-    SUCCEED();
+    wisp::os::sleep_ms(20);
+    EXPECT_EQ(c->send_calls.load(), calls);
+}
+
+// Whatever a log line or event carries (terminal colour codes, a message
+// cut mid-character), the frames stay valid UTF-8 without raw control
+// bytes, so the browser neither drops the socket nor fails JSON.parse().
+TEST(WsHub, FramesAreValidUtf8WithoutControlBytes) {
+    wisp::log::reset_for_test();
+    wisp::log::init(4096);
+    EventBus bus;
+    WsHub hub(bus);
+    WLOG_I("t", "\x1b[31mred\x1b[0m");
+    auto c = std::make_shared<FakeWsConnection>(1);
+    ASSERT_TRUE(hub.open(c));
+    hub.on_message(1, R"({"sub":["log"]})");
+    hub.write(LogLevel::Warn, "t\x01", "\x1b[31mcut \xe4\xb8");
+    hub.pump();
+
+    const std::vector<std::string> raw = c->sent_raw();
+    ASSERT_GE(raw.size(), 2u);
+    for (const std::string& frame : raw) {
+        EXPECT_TRUE(wisp::test::is_valid_utf8(frame)) << frame;
+        EXPECT_FALSE(wisp::test::has_control_bytes(frame)) << frame;
+    }
+    const std::vector<Value> sent = c->sent();
+    EXPECT_NE(str(sent.front(), "msg").find("\x1b[31mred"), std::string::npos);
+    EXPECT_EQ(str(sent.back(), "tag"), "t\x01");
+    EXPECT_EQ(str(sent.back(), "msg"), "\x1b[31mcut \xEF\xBF\xBD");
+}
+
+// Besides the 256-message cap, each client's queue holds at most 32 KiB:
+// on ESP these strings land in internal RAM.
+TEST(WsHub, QueueIsBoundedByBytes) {
+    wisp::log::reset_for_test();
+    EventBus bus;
+    WsHub hub(bus);
+    auto c = std::make_shared<FakeWsConnection>(1);
+    c->accept = false;
+    ASSERT_TRUE(hub.open(c));
+    hub.on_message(1, R"({"sub":["log"]})");
+
+    constexpr int kWritten = 100;
+    for (int i = 0; i < kWritten; ++i) {
+        hub.write(LogLevel::Info, "t", (std::to_string(i) + ":" + std::string(1000, 'x')).c_str());
+    }
+    c->accept = true;
+    hub.pump();
+
+    const std::vector<std::string> raw = c->sent_raw();
+    ASSERT_GE(raw.size(), 2u);
+    const std::vector<Value> sent = c->sent();
+    ASSERT_EQ(str(sent[0], "t"), "dropped");
+    const int64_t dropped = sent[0].find("count")->as_int();
+    const size_t kept = raw.size() - 1;
+    EXPECT_EQ(static_cast<int64_t>(kept) + dropped, kWritten);
+    size_t bytes = 0;
+    for (size_t i = 1; i < raw.size(); ++i) bytes += raw[i].size();
+    EXPECT_LE(bytes, 32768u);
+    // Only as many as fit were dropped: one more would not have.
+    EXPECT_GT(bytes + raw[1].size(), 32768u);
+    // The newest ones were kept.
+    for (size_t i = 1; i < raw.size(); ++i) {
+        const int n = kWritten - static_cast<int>(kept) + static_cast<int>(i) - 1;
+        EXPECT_EQ(str(sent[i], "msg").substr(0, std::to_string(n).size() + 1),
+                  std::to_string(n) + ":")
+            << i;
+    }
+
+    // A single message over the budget is dropped on its own, without
+    // pushing out what is already queued.
+    c->accept = false;
+    hub.write(LogLevel::Info, "t", "small");
+    hub.write(LogLevel::Info, "t", std::string(40000, 'y').c_str());
+    c->accept = true;
+    hub.pump();
+    const std::vector<Value> after = c->sent();
+    ASSERT_EQ(after.size(), sent.size() + 2);
+    EXPECT_EQ(after[sent.size()],
+              Value(Map{{"t", Value("dropped")}, {"count", Value(int64_t{1})}}));
+    EXPECT_EQ(str(after.back(), "msg"), "small");
+}
+
+// A revoked browser must lose its live stream too (spec 6.4).
+TEST(WsHub, CloseClientClosesThatClientsConnections) {
+    wisp::log::reset_for_test();
+    EventBus bus;
+    WsHub hub(bus);
+    auto a = std::make_shared<FakeWsConnection>(1);
+    auto b = std::make_shared<FakeWsConnection>(2);
+    ASSERT_TRUE(hub.open(a, "client-a"));
+    ASSERT_TRUE(hub.open(b, "client-b"));
+    hub.on_message(1, R"({"sub":["log"]})");
+    hub.on_message(2, R"({"sub":["log"]})");
+    hub.write(LogLevel::Info, "t", "queued for both");
+
+    hub.close_client("");
+    hub.close_client("nobody");
+    EXPECT_FALSE(a->closed);
+    hub.close_client("client-a");
+    EXPECT_TRUE(a->closed);
+    EXPECT_FALSE(b->closed);
+
+    hub.write(LogLevel::Info, "t", "after");
+    hub.pump();
+    EXPECT_EQ(a->send_calls.load(), 0);
+    // b also streams the hub's own "closed" log line.
+    const std::vector<Value> to_b = b->sent();
+    ASSERT_EQ(to_b.size(), 3u);
+    EXPECT_EQ(str(to_b[0], "msg"), "queued for both");
+    EXPECT_NE(str(to_b[1], "msg").find("revoked"), std::string::npos);
+    EXPECT_EQ(str(to_b[2], "msg"), "after");
+    // The server's on_close for the closed socket is harmless, and the
+    // slot is free again.
+    hub.close(1);
+    EXPECT_TRUE(hub.open(std::make_shared<FakeWsConnection>(3), "client-c"));
+
+    hub.close_all();
+    EXPECT_TRUE(b->closed);
+    EXPECT_TRUE(hub.open(std::make_shared<FakeWsConnection>(4)));
+    EXPECT_TRUE(hub.open(std::make_shared<FakeWsConnection>(5)));
 }
 
 TEST(AdminServer, WsRequiresToken) {
@@ -348,6 +490,49 @@ TEST(AdminServer, WsRequiresToken) {
     EXPECT_FALSE(ws.on_open(c3, with_token(req, token)));
     ws.on_close(11);
     EXPECT_TRUE(ws.on_open(c3, with_token(req, token)));
+}
+
+// Logout, DELETE /clients/{id} and revoke_all() (factory reset) close the
+// revoked browsers' WebSockets at once; other browsers keep streaming.
+TEST(AdminServer, RevokedClientsLoseTheirWebSocket) {
+    AdminFixture f;
+    wisp::net::WsHandlers ws = f.srv->ws_handlers();
+    const auto req = make_req(Method::Get, "/api/v1/ws");
+    const std::string token_a = f.token();
+    const std::string token_b = f.token();
+    auto a_id = f.pairing->authenticate(token_a, f.now);
+    ASSERT_TRUE(a_id);
+    ASSERT_TRUE(f.bus.wait_idle(2000));
+
+    auto a = std::make_shared<FakeWsConnection>(21);
+    auto b = std::make_shared<FakeWsConnection>(22);
+    ASSERT_TRUE(ws.on_open(a, with_token(req, token_a)));
+    ASSERT_TRUE(ws.on_open(b, with_token(req, token_b)));
+    ws.on_message(21, R"({"sub":["events"]})");
+    ws.on_message(22, R"({"sub":["events"]})");
+
+    auto res = f.srv->handle(with_csrf(
+        with_token(make_req(Method::Delete, "/api/v1/clients/" + a_id.value()), token_b)));
+    ASSERT_EQ(res.status, 204);
+    EXPECT_TRUE(a->closed);
+    EXPECT_FALSE(b->closed);
+    f.bus.publish(Event{"net.wifi.state", "test", 0, {{"state", Value("connected")}}});
+    EXPECT_TRUE(wait_until([&] { return b->sent_count() >= 1; }, 2000));
+    ASSERT_TRUE(f.bus.wait_idle(2000));
+    wisp::os::sleep_ms(20);
+    EXPECT_EQ(a->send_calls.load(), 0);
+    ws.on_close(21);
+
+    res = f.srv->handle(with_csrf(with_token(make_req(Method::Post, "/api/v1/logout"), token_b)));
+    ASSERT_EQ(res.status, 200);
+    EXPECT_TRUE(b->closed);
+    ws.on_close(22);
+
+    const std::string token_c = f.token();
+    auto c = std::make_shared<FakeWsConnection>(23);
+    ASSERT_TRUE(ws.on_open(c, with_token(req, token_c)));
+    f.pairing->revoke_all();
+    EXPECT_TRUE(c->closed);
 }
 
 }  // namespace

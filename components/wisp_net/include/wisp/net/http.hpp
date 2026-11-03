@@ -66,7 +66,13 @@ public:
     virtual ~WsConnection() = default;
     virtual int id() const = 0;
     // Never blocks: returns false when the connection's send queue is full.
+    // Must stay safe to call after close() and after the server has
+    // reported the connection closed (on_close): it then returns false.
+    // Callers may hold their reference past either point.
     virtual bool send_text(std::string_view text) = 0;
+    // Starts closing the connection; callable from any thread, never
+    // blocks. The server reports the close through on_close as usual
+    // (possibly from within this call).
     virtual void close() = 0;
 };
 

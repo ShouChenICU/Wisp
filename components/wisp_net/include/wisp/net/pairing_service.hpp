@@ -27,7 +27,9 @@
 // Threading: confirm()/authenticate() run on HTTP server threads while
 // request_code()/active_code()/tick() run on the UI or console; one
 // mutex guards all state. EventBus::publish() never blocks on handlers,
-// so events are published while holding it.
+// so events are published while holding it. Revoke listeners have a lock
+// of their own and are called without the state mutex (see
+// add_revoke_listener()).
 //
 // Time: every `now_ms` is the monotonic os::now_ms() timebase. Wall-clock
 // stamps (created/last_seen) come from `unix_now`, which returns 0 while
@@ -39,6 +41,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "wisp/base/result.hpp"
@@ -125,6 +128,20 @@ public:
     // survives a reboot.
     void revoke_all();
 
+    // Told about every revocation, so whoever holds sessions opened with a
+    // token (the admin WebSocket) can end them (spec 6.4). Gets the
+    // revoked id from revoke() and nullopt from revoke_all() (every
+    // client). Called on the revoking thread once the client is already
+    // forgotten, outside the service's lock (so it may call back into the
+    // service) but under the listeners' own lock: it must not add or
+    // remove listeners.
+    using RevokeListener = std::function<void(const std::optional<std::string>& id)>;
+    // Returns a handle for remove_revoke_listener().
+    int add_revoke_listener(RevokeListener fn);
+    // Waits out a call to that listener still running on another thread,
+    // so what it captured may be destroyed once this returns.
+    void remove_revoke_listener(int handle);
+
 private:
     struct Entry {
         PairedClient info;
@@ -160,6 +177,13 @@ private:
     uint64_t code_expires_ms_ = 0;
     int failures_ = 0;
     std::optional<uint64_t> locked_until_ms_;
+
+    void notify_revoked(const std::optional<std::string>& id);
+
+    // Separate from mutex_ so listeners run without it.
+    os::Mutex listeners_mutex_;
+    std::vector<std::pair<int, RevokeListener>> listeners_;
+    int next_listener_ = 1;
 };
 
 }  // namespace wisp::net

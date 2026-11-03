@@ -29,7 +29,9 @@
 // WebSocket (/api/v1/ws): the upgrade passes the same Host check and needs
 // the same wisp_token cookie as the API; accepted connections are handed
 // to a WsHub (wisp/admin/ws_hub.hpp) that AdminServer owns and whose
-// sender task runs for the AdminServer's lifetime.
+// sender task runs for the AdminServer's lifetime. Revoking a client
+// (logout, DELETE /clients/{id}, factory reset) closes the connections
+// its token opened, through a PairingService revoke listener.
 //
 // Threading: handle() runs on HTTP server threads, possibly several at
 // once. AdminServer's own mutable state is the reboot timer (os::Timer
@@ -116,6 +118,10 @@ private:
     // Declared after deps_ so it is destroyed (stopped) first.
     std::unique_ptr<os::Timer> reboot_timer_;
     std::unique_ptr<WsHub> hub_;
+    // Serializes a WebSocket upgrade's token check + hub_->open() against
+    // the revoke listener closing connections.
+    os::Mutex ws_auth_mutex_;
+    int revoke_listener_ = 0;
 };
 
 }  // namespace wisp::admin

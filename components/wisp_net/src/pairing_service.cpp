@@ -416,35 +416,63 @@ std::vector<PairedClient> PairingService::clients() const {
 }
 
 Result<void> PairingService::revoke(std::string_view id) {
-    std::lock_guard<os::Mutex> lock(mutex_);
-    auto it = std::find_if(clients_.begin(), clients_.end(),
-                           [&](const Entry& e) { return e.info.id == id; });
-    if (it == clients_.end()) {
-        return Result<void>::err(ErrorCode::NotFound, "no such paired client");
+    Result<void> persisted = Result<void>::ok();
+    std::string removed;
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        auto it = std::find_if(clients_.begin(), clients_.end(),
+                               [&](const Entry& e) { return e.info.id == id; });
+        if (it == clients_.end()) {
+            return Result<void>::err(ErrorCode::NotFound, "no such paired client");
+        }
+        removed = it->info.id;
+        // Forget it in memory first: a revoked token must stop working even
+        // if the file cannot be rewritten.
+        clients_.erase(it);
+        WLOG_I(kTag, "revoked client %s", removed.c_str());
+        persisted = persist_locked(clients_);
     }
-    std::string removed = it->info.id;
-    // Forget it in memory first: a revoked token must stop working even
-    // if the file cannot be rewritten.
-    clients_.erase(it);
-    WLOG_I(kTag, "revoked client %s", removed.c_str());
-    return persist_locked(clients_);
+    notify_revoked(removed);
+    return persisted;
 }
 
 void PairingService::revoke_all() {
-    std::lock_guard<os::Mutex> lock(mutex_);
-    clients_.clear();
-    if (!persist_locked(clients_)) {
-        WLOG_E(kTag, "factory reset of paired clients was not persisted; removing the file");
-        // The old hashes would otherwise come back on the next boot. A
-        // missing file loads as "no clients", so deleting it is enough.
-        std::string path = clients_path();
-        if (path.empty() || (std::remove(path.c_str()) != 0 && errno != ENOENT)) {
-            WLOG_E(kTag, "removing net/clients.json failed: %s",
-                   path.empty() ? "system storage unavailable" : std::strerror(errno));
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        clients_.clear();
+        if (!persist_locked(clients_)) {
+            WLOG_E(kTag, "factory reset of paired clients was not persisted; removing the file");
+            // The old hashes would otherwise come back on the next boot. A
+            // missing file loads as "no clients", so deleting it is enough.
+            std::string path = clients_path();
+            if (path.empty() || (std::remove(path.c_str()) != 0 && errno != ENOENT)) {
+                WLOG_E(kTag, "removing net/clients.json failed: %s",
+                       path.empty() ? "system storage unavailable" : std::strerror(errno));
+            }
+        } else {
+            WLOG_I(kTag, "all paired clients revoked");
         }
-        return;
     }
-    WLOG_I(kTag, "all paired clients revoked");
+    notify_revoked(std::nullopt);
+}
+
+int PairingService::add_revoke_listener(RevokeListener fn) {
+    std::lock_guard<os::Mutex> lock(listeners_mutex_);
+    const int handle = next_listener_++;
+    listeners_.emplace_back(handle, std::move(fn));
+    return handle;
+}
+
+void PairingService::remove_revoke_listener(int handle) {
+    std::lock_guard<os::Mutex> lock(listeners_mutex_);
+    std::erase_if(listeners_, [handle](const auto& l) { return l.first == handle; });
+}
+
+void PairingService::notify_revoked(const std::optional<std::string>& id) {
+    std::lock_guard<os::Mutex> lock(listeners_mutex_);
+    for (const auto& [handle, fn] : listeners_) {
+        if (fn) fn(id);
+    }
 }
 
 }  // namespace wisp::net

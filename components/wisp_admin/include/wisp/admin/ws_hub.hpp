@@ -9,13 +9,20 @@
 //   - "events": events under net., power., storage. and system. arrive as
 //     {"t":"event","topic","payload"}.
 //
-// Backpressure: each client has a bounded queue (max_queue messages). When
-// it is full the oldest message is dropped and counted; the next send to
-// that client is {"t":"dropped","count":N}. A send_text() that reports a
-// full socket queue keeps the message at the head for the next pump().
-// The replay is limited to the newest max_queue ring lines; older ones are
-// skipped without being reported as dropped, since the client never fell
-// behind on them.
+// Backpressure: each client has a bounded queue, at most max_queue
+// messages and max_queue_bytes bytes in total (on ESP these small strings
+// come from internal RAM). When a message does not fit, the oldest ones
+// are dropped and counted until it does; a message larger than the whole
+// byte budget is itself dropped and counted. The next send to that client
+// is {"t":"dropped","count":N}. A send_text() that reports a full socket
+// queue keeps the message at the head for the next pump(). The replay is
+// limited to the newest ring lines that fit in an empty queue; older ones
+// are skipped without being reported as dropped, since the client never
+// fell behind on them.
+//
+// Revocation: each connection remembers the paired client whose token
+// opened it; close_client() ends that client's connections when its
+// token is revoked (spec 6.4).
 //
 // Threading:
 //   - write() (LogSink) runs on whichever thread logs. It only formats the
@@ -28,13 +35,17 @@
 //     hub's mutex, so a slow socket never stalls a logging thread. In
 //     production it runs on the hub's own "wisp.ws" task (start()/stop());
 //     tests call it directly. Concurrent pump() calls are serialized.
-//   - open()/on_message()/close() come from HTTP server threads.
+//   - open()/on_message()/close() come from HTTP server threads,
+//     close_client()/close_all() from whichever thread revokes a pairing.
+//     The latter call WsConnection::close() without holding the hub's
+//     mutex, so a server may report the close back through close().
 // Lock order: the hub's mutex may be held while taking the log module's
 // mutex (ring replay), never the other way round; the log module calls
 // sinks outside its own lock.
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -51,7 +62,8 @@ class WsHub : public LogSink {
 public:
     // Registers itself as a log sink and subscribes to the forwarded event
     // prefixes; does not start the sender task.
-    WsHub(core::EventBus& bus, size_t max_clients = 2, size_t max_queue = 256);
+    WsHub(core::EventBus& bus, size_t max_clients = 2, size_t max_queue = 256,
+          size_t max_queue_bytes = 32768);
     // Stops the sender task, unsubscribes and unregisters the log sink,
     // waiting out any write() or event handler still running.
     ~WsHub() override;
@@ -66,13 +78,21 @@ public:
     // Idempotent.
     void stop();
 
-    // Admits a connection; false when max_clients are already open or the
-    // id is taken. New connections are subscribed to nothing.
-    bool open(std::shared_ptr<net::WsConnection> conn);
+    // Admits a connection opened with `client_id`'s token; false when
+    // max_clients are already open or the id is taken. New connections are
+    // subscribed to nothing.
+    bool open(std::shared_ptr<net::WsConnection> conn, std::string client_id = {});
     // Handles a client's {"sub":[...]} message; anything else is ignored.
     void on_message(int id, std::string_view text);
-    // Forgets the connection and drops whatever is still queued for it.
+    // The server reports a closed connection: forgets it and drops
+    // whatever is still queued for it. Unknown ids are ignored.
     void close(int id);
+    // Closes (WsConnection::close()) and forgets every connection opened
+    // by that paired client; an empty id matches nothing. No send to them
+    // starts afterwards; one already in progress may finish.
+    void close_client(std::string_view client_id);
+    // The same for every connection.
+    void close_all();
 
     // Only enqueues; never blocks on a connection.
     void write(LogLevel level, const char* tag, const char* msg) override;
@@ -86,12 +106,16 @@ private:
 
     void on_event(const core::Event& e);
     void enqueue_locked(Client& c, std::string msg);
+    // Detaches the matching clients and closes their connections.
+    void close_matching(const std::function<bool(const Client&)>& match);
+    void forget_locked(Client& c);
     bool has_pending() const;
     void run();
 
     core::EventBus& bus_;
     const size_t max_clients_;
     const size_t max_queue_;
+    const size_t max_queue_bytes_;
 
     mutable os::Mutex mutex_;  // guards clients_ and every Client's fields
     std::vector<std::shared_ptr<Client>> clients_;

@@ -156,9 +156,22 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_system_routes(routes_);
     hub_ = std::make_unique<WsHub>(deps_.bus);
     hub_->start();
+    // Logout, DELETE /clients/{id} and the factory reset's revoke_all()
+    // all end here, so a revoked token also loses its live stream.
+    revoke_listener_ =
+        deps_.pairing.add_revoke_listener([this](const std::optional<std::string>& id) {
+            std::lock_guard<os::Mutex> lock(ws_auth_mutex_);
+            if (id) {
+                hub_->close_client(*id);
+            } else {
+                hub_->close_all();
+            }
+        });
 }
 
 AdminServer::~AdminServer() {
+    // Waits out a revocation still closing connections through hub_.
+    deps_.pairing.remove_revoke_listener(revoke_listener_);
     hub_.reset();
     // Cancels a reboot that has not fired yet and waits out one in
     // progress, so the callback never sees a destroyed deps_.
@@ -259,11 +272,20 @@ net::WsHandlers AdminServer::ws_handlers() {
             return false;
         }
         const std::string token = req.cookie("wisp_token");
-        if (token.empty() || !deps_.pairing.authenticate(token, deps_.now_ms())) {
+        // Held from the token check until the hub has the connection: a
+        // revocation racing this upgrade either fails the check or finds
+        // the connection to close, never neither.
+        std::lock_guard<os::Mutex> lock(ws_auth_mutex_);
+        std::string client_id;
+        if (!token.empty()) {
+            auto who = deps_.pairing.authenticate(token, deps_.now_ms());
+            if (who) client_id = std::move(who.value());
+        }
+        if (client_id.empty()) {
             WLOG_D(kTag, "refused an unauthenticated WebSocket upgrade");
             return false;
         }
-        return hub_->open(std::move(conn));
+        return hub_->open(std::move(conn), std::move(client_id));
     };
     ws.on_message = [this](int id, std::string_view text) { hub_->on_message(id, text); };
     ws.on_close = [this](int id) { hub_->close(id); };
