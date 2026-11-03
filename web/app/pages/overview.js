@@ -63,9 +63,10 @@ export function OverviewPage() {
     load();
   }
 
-  // The device dropped messages, so events may have been missed: load
-  // again, after the running load if there is one (it may predate them).
-  function reloadAfterDrop() {
+  // Load again, after the running load if there is one: it may predate
+  // what prompted this (dropped messages, or an event about state only a
+  // load returns).
+  function reload() {
     if (inFlight.current) again.current = true;
     else load();
   }
@@ -103,10 +104,19 @@ export function OverviewPage() {
 
   function onEvent(msg) {
     if (msg.t === 'dropped') {
-      reloadAfterDrop();
+      reload();
       return;
     }
     const p = msg.payload || {};
+    // The saved list is only in GET /wifi: a rejected password may have
+    // parked a network (the card then asks for a new password), and a
+    // connection may follow a network added or re-entered elsewhere.
+    if (
+      msg.topic === 'net.wifi.state' &&
+      ((p.state === 'backoff' && p.reason === 'auth_failed') || p.state === 'connected')
+    ) {
+      reload();
+    }
     setSnap((s) => {
       if (!s) return s;
       switch (msg.topic) {
