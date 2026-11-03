@@ -671,7 +671,7 @@ void SimHttpServer::Impl::serve(const std::shared_ptr<Connection>& conn_ptr,
         }
         // Refused from the header alone: the body is never read.
         if (content_length > kMaxBodyBytes) {
-            return reject(conn, 413, "body_too_large", "request body exceeds 8192 bytes");
+            return reject(conn, 413, "payload_too_large", "request body exceeds 8192 bytes");
         }
         if (content_length > 0) {
             if (http11 && has_token(req.header("expect"), "100-continue") &&

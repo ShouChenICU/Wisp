@@ -479,6 +479,8 @@ TEST_F(SimHttpServerTest, RejectsOversizedBody) {
     auto res = c.read_response();
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 413);
+    // The same code the admin router uses, so the web page can say it.
+    EXPECT_NE(res->body.find("\"payload_too_large\""), std::string::npos) << res->body;
     EXPECT_TRUE(c.closed_by_peer());
     EXPECT_EQ(rec.request_count(), 0u);
 }

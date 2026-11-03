@@ -444,7 +444,7 @@ esp_err_t EspHttpServer::Impl::serve(httpd_req_t* r) {
     }
     // Refused from the header alone: the body is never buffered.
     if (r->content_len > EspHttpServer::kMaxBodyBytes) {
-        reject(r, 413, "body_too_large", "request body exceeds 8192 bytes");
+        reject(r, 413, "payload_too_large", "request body exceeds 8192 bytes");
         // httpd discards up to kDrainLimit unread bytes itself before the
         // next request; a bigger body is not worth waiting for.
         return r->content_len <= kDrainLimit ? ESP_OK : ESP_FAIL;
