@@ -1025,6 +1025,41 @@ TEST(AdminAi, OldLlmRoutesAreGone)                        // /llm → 401 未鉴
 
 ---
 
+### Task 18c: 分区调整、发布构建、网页打包进固件、网页上传固件（spec 2.3、3.2、6.5）
+
+**Files:**
+- Modify: `boards/waveshare_amoled_216/partitions.csv`（spec 3.2 的表）、`firmware/CMakeLists.txt`（`pack_assets.py` 输出链接进应用，例如 `target_add_binary_data(... BINARY)` 或 `EMBED_FILES`，保证 4 字节对齐；删除 `esptool_py_flash_to_partition(... assets ...)`）、`tools/pack_assets.py`（预算改为固定 256 KB，去掉分区表读取）、`firmware/main/main.cpp`（`Platform::assets` 指向嵌入数据；新增 `Platform::firmware`）、`firmware/sdkconfig.defaults`（`CONFIG_COMPILER_OPTIMIZATION_SIZE`、`CONFIG_LOG_MAXIMUM_LEVEL_INFO`、断言静默、`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`、`CONFIG_APP_PROJECT_VER_FROM_CONFIG` 或等价的版本来源）、渲染组件的 CMakeLists（LVGL 组件、`wisp_ui`、显示/触摸驱动与刷屏路径：`-O2`）、`components/wisp_net`（`HttpServer` 增加流式请求体处理接口）、`components/wisp_port_sim/net/sim_http_server.cpp`、`components/wisp_port_esp/net/esp_http_server.cpp`、`components/wisp_admin`（`/system/firmware` 路由）、`components/wisp_app`（确认框、回滚标记时机、事件）、`web/app/pages/system.js` 与 i18n、`tests/smoke/`、`docs/architecture.md`、`docs/porting-guide.md`、`docs/hardware/waveshare_amoled_216.md`（分区表）、`README.md` 的刷机说明（去掉 assets 相关说法，加上网页上传固件）
+- Create: `firmware/sdkconfig.debug`、可移植的固件镜像头解析（`wisp_core` 或 `wisp_net`，如 `firmware_image.hpp`，只解析 ESP 应用镜像头与 `esp_app_desc_t` 布局的字节，不 include 平台头）、`FirmwareUpdater` 平台接口及 ESP（`esp_ota_*`）/模拟器（写 `<data-dir>/firmware.bin`）两套实现、`FirmwareUpdateService`（服务层：状态机、单次上传、2 分钟确认超时、事件）
+- Test: `tests/core/firmware_image_test.cpp`、`tests/core/firmware_update_test.cpp`（或所在层）、`tests/admin/routes_firmware_test.cpp`、`tests/sim/sim_http_server_test.cpp`（流式请求体）、冒烟用例 `firmware_upload`
+
+**Interfaces:**
+- 板名：编译进固件（例如 `esp_app_desc_t` 之外的自定义描述段或固定格式的版本字符串后缀），镜像头解析能从上传的镜像里取出板名与版本，用于 `wrong_board` 检查和确认框文字。
+- `HttpServer` 流式请求体：路由可声明"流式"，按块收到数据（每块 ≤ 4 KB），连接断开时得到中止回调；sim 与 ESP 语义一致；其他路由仍受 8192 字节上限。
+- `Platform::firmware`（可空）：`begin(size)`、`write(chunk)`、`finish() -> Result<ImageInfo>`、`abort()`、`activate()`（设启动分区，随后由 App 走 `Platform::reboot`）、`mark_valid()`；没有 OTA 分区时为空，`GET /system/firmware` 报 `supported:false`。
+- 事件 `system.firmware`（spec 5.5）；确认框复用恢复出厂确认框样式，文字走 `ui::tr`（zh/ja/en，字形在字体内）。
+
+- [ ] **Step 1: 写失败的测试**
+
+```cpp
+TEST(FirmwareImage, ParsesVersionAndBoardFromHeader)
+TEST(FirmwareImage, RejectsBadMagicWrongChipWrongProject)
+TEST(FirmwareUpdate, OneUploadAtATime)                 // 第二次 begin → busy
+TEST(FirmwareUpdate, WrongBoardRejectedBeforeWriting)  // 不调用 Platform::firmware.write
+TEST(FirmwareUpdate, ConfirmActivatesAndReboots)
+TEST(FirmwareUpdate, DeclineOrTimeoutDiscards)         // 2 分钟超时 → rejected，再次上传可行
+TEST(FirmwareUpdate, AbortedUploadFreesTheSlot)        // 连接中断 → failed，busy 解除
+TEST(FirmwareUpdate, MarkValidOnlyAfterStart)
+TEST(AdminFirmware, InfoAndUploadRoutes)               // 鉴权、X-Wisp、413、400 wrong_board、409 busy、202
+TEST(SimHttpServer, StreamsLargeRequestBody)           // 1 MB 请求体分块到达，其他路由仍 413
+```
+
+- [ ] **Step 2: 运行，确认失败。**
+- [ ] **Step 3: 实现**；冒烟用例 `firmware_upload`：配对 → 上传一个由测试构造、板名为模拟器板名的最小合法镜像 → 收到 `received` → 经 stdin 点设备确认框"是" → 看到 `WISP_REBOOT`；另一次上传错误板名 → 400。
+- [ ] **Step 4: 验证**：全量 ctest、`bash tools/ci.sh`；发布构建与调试构建都能 `idf.py build`；记录发布构建的 `idf.py size`（应用占 `ota_0` 的比例，目标 ≤ 80%，预期约 50–60%）以及 `-O2` 组件的体积；确认 `build/` 里不再有 assets 分区镜像；模拟器里浏览器实际走一遍系统页上传（Playwright），截图 zh/ja/en。真机项（整片烧录新分区表后设置与数据仍在、上传/确认/拒绝/回滚、`WISP_PERF` ≥ 30 fps）写进报告交给用户。
+- [ ] **Step 5: Commit**（可分多次）— 例如 `feat(firmware): embed the web pack and switch to the release build`、`feat(admin): install firmware uploaded from the admin page`
+
+---
+
 ### Task 19: 真机联调、验收与文档
 
 **Files:**
