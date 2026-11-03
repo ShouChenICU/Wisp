@@ -8,10 +8,12 @@
 // replays lines this page already shows, and a line logged while the
 // replay is queued may arrive twice. Every line carries its seq, numbered
 // per boot, and every connection opens with a hello naming the boot
-// (spec 6.2), so (boot, seq) identifies a line exactly: the page keeps the
-// highest seq shown for the current boot and drops any line at or below
-// it. A hello with a different boot means the device restarted: a marker
-// goes in, the seq count starts over, and the history stays. At most
+// (spec 6.2), so (boot_id, seq) identifies a line exactly. Lines from
+// different threads can arrive a few places out of seq order, so the page
+// remembers which seqs it has shown (SeenSeqs) rather than only the
+// highest, and shows lines in arrival order. A hello with a different
+// boot_id means the device restarted: a marker goes in, the seen seqs are
+// forgotten, and the history stays. At most
 // MAX_LINES are kept. The line list is written straight to the DOM (text
 // nodes only -- log text is untrusted) in one batch per animation frame
 // instead of being diffed by Preact, so a chatty device stays smooth.
@@ -33,6 +35,42 @@ const FILTERS = [
 ];
 // How close to the bottom still counts as "following" the stream.
 const STICK_PX = 32;
+
+// Seen seqs remembered individually before the oldest half is folded
+// into the floor.
+const SEEN_MAX = 4096;
+
+/**
+ * The seqs of one boot already shown: every seq at or below `floor`, plus
+ * those in `set`. Out-of-order arrival spans a few lines, never thousands,
+ * so folding the oldest half into the floor cannot hide a line still on
+ * its way.
+ */
+export class SeenSeqs {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.floor = 0;
+    this.set = new Set();
+  }
+
+  /** True the first time `seq` is offered, false for a repeat. */
+  add(seq) {
+    if (seq <= this.floor || this.set.has(seq)) return false;
+    this.set.add(seq);
+    if (this.set.size > SEEN_MAX) {
+      const sorted = [...this.set].sort((a, b) => a - b);
+      this.floor = sorted[(sorted.length >> 1) - 1];
+      for (const v of sorted) {
+        if (v > this.floor) break;
+        this.set.delete(v);
+      }
+    }
+    return true;
+  }
+}
 
 /**
  * @typedef {Object} LogEntry
@@ -163,9 +201,9 @@ export function LogsPage() {
   // Where scrollToEnd() last left the list; scrolling above it is the user.
   const autoTop = useRef(0);
   // Dedupe state (see the file header): the boot the lines on screen came
-  // from, and the highest seq shown for it.
+  // from, and the seqs shown for it.
   const boot = useRef(/** @type {string|null} */ (null));
-  const lastSeq = useRef(0);
+  const seen = useRef(new SeenSeqs());
   // Mirrors of state read from callbacks that outlive a render.
   const pausedRef = useRef(false);
   const filterRef = useRef(makeFilter('D', ''));
@@ -199,9 +237,9 @@ export function LogsPage() {
 
   function onMessage(msg) {
     if (msg.t === 'hello') {
-      const id = String(msg.boot ?? '');
+      const id = String(msg.boot_id ?? '');
       if (boot.current !== null && id !== boot.current) {
-        lastSeq.current = 0;
+        seen.current.reset();
         addEntry({ id: 0, kind: 'restart' });
       }
       boot.current = id;
@@ -209,10 +247,7 @@ export function LogsPage() {
     }
     if (msg.t === 'log') {
       const seq = Number(msg.seq);
-      if (Number.isFinite(seq)) {
-        if (seq <= lastSeq.current) return;
-        lastSeq.current = seq;
-      }
+      if (Number.isFinite(seq) && !seen.current.add(seq)) return;
     }
     addEntry(toEntry(msg, 0));
   }

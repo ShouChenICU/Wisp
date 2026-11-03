@@ -13,7 +13,7 @@
 // once while the tab is hidden (reopened when it becomes visible again),
 // so a forgotten background tab does not hold one of the two slots.
 //
-// The device opens every connection with {"t":"hello","boot"} (spec 6.2).
+// The device opens every connection with {"t":"hello","boot_id"} (spec 6.2).
 // It is kept for the life of the socket and handed to each "log"
 // subscriber when it joins, so a subscriber that joins an open socket
 // still learns the boot before its replay arrives.
@@ -232,12 +232,12 @@ document.addEventListener('visibilitychange', () => {
  * Subscribes to the device's live stream.
  *
  * `onMessage` gets the decoded messages for the requested kinds:
- *   - "log":    {t:"hello", boot} first (on joining, and again from
+ *   - "log":    {t:"hello", boot_id} first (on joining, and again from
  *               each new connection), then {t:"log", seq, ts, level, tag,
  *               msg[, replay]} and {t:"dropped", count}; every
  *               subscription (each Start, each reconnect) replays the
  *               device's recent log ring first, so callers dedupe by
- *               (boot, seq).
+ *               (boot_id, seq).
  *   - "events": {t:"event", topic, payload}, and {t:"dropped", count}
  *               when the device had to drop queued messages.
  *
