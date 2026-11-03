@@ -11,19 +11,19 @@
 
 ### 1.1 目标
 
-子项目 2 让 Wisp 能**联网并被主人从浏览器管理**，同时为子项目 4（Agent）准备好 LLM 配置：
+子项目 2 让 Wisp 能**联网并被主人从浏览器管理**，同时为子项目 4（Agent）和子项目 5（语音）准备好模型配置：
 
 1. Wi-Fi 连接管理与配网（热点 + 强制门户为主，串口命令为补充）；
 2. 跨真机与模拟器的 HTTP/WebSocket 服务；
 3. 屏幕配对码 + 长期令牌的配对鉴权；
-4. 管理后台网页：概览、外设、网络、模型（LLM 配置与连通测试）、系统设置、实时日志；
+4. 管理后台网页：概览、外设、网络、模型（对话 / 语音识别 / 语音合成的多套配置与连通测试）、系统设置、实时日志；
 5. 板级分区表与 sdkconfig 迁移到 `boards/<板名>/`，确立分区约定。
 
 ### 1.2 使用场景与原则
 
 - **单一主人、只在局域网**：后台只给设备主人自己用，不支持多用户，不经过公网。
 - **离线优先**：Wi-Fi 是可选能力，不是开机前提。没配过网或者连不上网时，设备照常开机、照常使用，已有场景等本地功能不受影响；只有需要联网的功能不可用，并在界面上提示。
-- **后台网页是这一阶段的主要配置入口**：设备上的设置页属于子项目 8，在那之前 LLM 端点、Key 等都从后台网页填写。
+- **后台网页是这一阶段的主要配置入口**：设备上的设置页属于子项目 8，在那之前模型端点、Key 等都从后台网页填写。
 - **服务层约定**（基础 spec 3.3）：REST/WebSocket 只是服务层之上的薄适配层，不允许绕过服务层直接调驱动。这次新增的服务以后也供 Agent 工具、Lua 绑定和设置页复用。
 
 ### 1.3 已定决策
@@ -35,11 +35,13 @@
 | 配网 | 热点 + 强制门户，**按需开启**；串口命令补充 | 不需要 App；配网页复用后台的前端与 HTTP 服务 |
 | 鉴权 | 屏幕配对码 + 长期令牌（HttpOnly Cookie） | 能看到实物屏幕才能配对，相当于"物理在场"即授权；没有密码可忘 |
 | 传输 | 普通 HTTP | 自签名证书会让浏览器反复弹警告；风险与缓解措施见 6.4，HTTPS 留给子项目 7 评估 |
+| 模型配置 | 多套配置（profile），按类型 `llm`/`asr`/`tts` 分开，各自激活；预设平台表编译进固件 | 换平台、对比模型不用反复填写；加平台只需加一行表项 |
+| ASR/TTS 协议 | 不限定为 OpenAI 兼容；本子项目只提供兼容预设，私有流式协议在子项目 5 接入 | 国内主流语音服务多为私有流式协议，限定兼容协议会让可选平台很少、延迟也差 |
 | 跨平台 HTTP | 可移植接口 + 真机和模拟器两套薄实现 | 与现有 HAL/port 模式一致；业务逻辑都能在主机上测试；排除 Mongoose（GPLv2，与 Apache-2.0 冲突） |
 
 ### 1.4 不在本子项目范围内
 
-HTTPS 与 Flash 加密（子项目 7 评估）、OTA 升级功能（分区已预留）、场景和记忆相关的后台页面（子项目 3、6）、Agent 对话本身（子项目 4；这次只做 LLM 配置与连通测试）、蓝牙、远程或公网访问、设备上的设置页（子项目 8）。
+HTTPS 与 Flash 加密（子项目 7 评估）、OTA 升级功能（分区已预留）、场景和记忆相关的后台页面（子项目 3、6）、Agent 对话本身（子项目 4；这次只做模型配置与连通测试）、语音识别与合成的调用及私有协议客户端（子项目 5）、蓝牙、远程或公网访问、设备上的设置页（子项目 8）。
 
 ---
 
@@ -51,7 +53,7 @@ HTTPS 与 Flash 加密（子项目 7 评估）、OTA 升级功能（分区已预
 |---|---|---|
 | `wisp_hal` | `hal::Wifi` 设备接口 | 扫描、连接、断开、开关热点、查询状态。注册为 `net.wifi`（新设备类别 `Network`），caps 写进能力清单；初始化失败时只降级运行 |
 | `wisp_net`（新，可移植） | `HttpServer`、`HttpClient` 接口；`WifiService`、`PairingService`、`AssetPack` | 网络服务层：连接管理、配网会话、配对码与令牌、静态资源包读取 |
-| `wisp_core` | `LlmConfigService`、`SystemSettings` | LLM 端点、模型名和 API Key（只写不读）；亮度、音量、自动熄屏时间的校验与立即生效 |
+| `wisp_core` | `ModelProfileService`、`SystemSettings` | 对话 / 语音识别 / 语音合成的多套模型配置与预设表，API Key 只写不读；亮度、音量、自动熄屏时间的校验与立即生效 |
 | `wisp_admin`（新，可移植） | 路由表、REST 处理、WebSocket 推送 | 管理后台适配层：只把 HTTP 请求翻译成服务调用，不含业务逻辑 |
 | `wisp_app` | 装配、网络区块与配网/配对卡片、串口命令 | 构造并连接上述服务；设备端界面 |
 | `wisp_port_esp` | `EspWifi`、`EspHttpServer`、`EspHttpClient`、mDNS | 分别封装 `esp_wifi`、`esp_http_server`、`esp_http_client`（加 `esp_crt_bundle`，LLM 端点都是 HTTPS）和乐鑫 mDNS 组件（`wisp.local`，广播 `_http._tcp` 端口 8900） |
@@ -186,17 +188,49 @@ void revoke_all();                           // 恢复出厂设置时调用
 - 令牌为 32 字节随机数（base64url 编码），设备上只存它的 SHA-256 哈希，写在 System 区的 `net/clients.json`。最多保存 8 个已配对的浏览器，超出时淘汰最久未使用的那个。
 - 配对码本身只交给屏幕显示，不进事件、不进日志。
 
-### 5.3 `LlmConfigService`（`wisp_core`）
+### 5.3 `ModelProfileService`（`wisp_core`）：模型配置（对话 / 语音识别 / 语音合成）
+
+用户可以保存多套模型配置（profile），每套属于一种类型 `kind`：`llm`（对话）、`asr`（语音识别）、`tts`（语音合成）。新建时从预设平台选起，三种类型**各自**指定一套"当前激活"，互不影响。子项目 4 的 Agent 只用 `llm` 的激活配置，子项目 5 的语音链路只用 `asr`/`tts` 的激活配置。
 
 ```cpp
-LlmConfig get();                             // base_url, model, has_key —— 不含 Key
-Result<void> set(const LlmConfigUpdate& u);  // api_key: 不提供 = 保留，空串 = 清除
-Result<LlmProbe> test();                     // 请求 {base_url}/models
+ProfilesState get();                                    // {active:{llm,asr,tts}, profiles[]}；每项 {id, kind, name, preset, base_url, model, options, has_key}，不含 Key
+std::span<const ModelPreset> presets();                 // 编译进固件的预设表
+Result<ModelProfile> create(const ProfileInput& in);    // 新建；该类型还没有激活配置时自动设为激活
+Result<ModelProfile> update(std::string_view id, const ProfileUpdate& u);
+                                                        // 部分更新；api_key: 不提供 = 保留，空串 = 清除
+Result<void> remove(std::string_view id);
+Result<void> activate(std::string_view id);             // 设为其所属类型的激活配置
+Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {base_url}/models
 ```
 
-- API Key 存放在 System 区的 `secrets/llm.json`。服务对外**没有任何能读出 Key 的接口**，连部分字符也不给；只有子项目 4 的 Agent 客户端通过内部接口在发请求时取用。
-- Key 只属于保存它时的 `base_url` 源（scheme://host:port，scheme 与 host 不区分大小写，省略的默认端口按 80/443 补齐，路径不算）。一次 `set()` 把 `base_url` 改到另一个源、却没有同时提供 `api_key` 时，服务**清除已存的 Key**（`has_key` 变为 false），之后的 `test()` 和 Agent 请求都不带 Key；在还没有 `base_url` 时存下的 Key 不属于任何源，第一次设置 `base_url` 时同样清除。这样无论是换服务商、填错主机名，还是已配对的浏览器把地址改成自己控制的主机，Key 都不会被发到保存它时以外的服务器。后台网页在这种情况下提示用户重新输入 Key。
-- `test()` 通过 `HttpClient` 以 `Authorization: Bearer <key>` 请求 `/models`，超时 10 秒，返回是否成功、延迟、模型 id 列表，或错误类别（DNS、TLS、超时、HTTP 状态码）。错误信息里不得带上 Key。
+- **配置项**：`id` 由服务生成（8 位小写十六进制随机数，创建后不变）；`kind` 创建后不可改；`name` 1–32 字节 UTF-8，可重名；`preset` 为预设 id，且该预设必须支持此 `kind`；`base_url`；`model`（可空，使用方在各自子项目要求非空）；`options` 为扩展字段（扁平对象，值为字符串，最多 8 个键，键不超过 15 字节，值不超过 64 字节），本子项目只定义 `tts` 的 `voice`（音色），其余键由子项目 5 按平台定义，未知键原样保存。全部类型合计最多 16 套，超出返回 409 `limit_reached`。
+- **协议**：`llm` 只用 OpenAI 兼容协议（1.3 已定）。`asr`/`tts` **不限定协议**：本子项目只提供 OpenAI 兼容语音接口（`/audio/transcriptions`、`/audio/speech`）的预设；通义、火山、讯飞等私有流式协议的客户端、预设与专属字段（经 `options` 承载）在子项目 5 设计时加入，存储格式不变。
+- **预设表**：编译进 `wisp_core` 的常量表，每项 `{id, name, kinds, base_url, key_required}`。`name` 是平台品牌名，不翻译。新建时 `base_url` 未给出就取预设值；之后地址、模型都可自由修改，`preset` 只用于显示和默认值。不预填模型名（各平台更新太快），模型从"测试连接"返回的列表里选，也可以手动输入。以后增加平台只需在表中加一行。首批预设：
+
+  | id | 名称 | 类型 | 默认 base_url | 需要 Key |
+  |---|---|---|---|---|
+  | `custom` | OpenAI 兼容（自定义） | llm asr tts | （空，必须填写） | 否 |
+  | `openai` | OpenAI | llm asr tts | `https://api.openai.com/v1` | 是 |
+  | `anthropic` | Anthropic | llm | `https://api.anthropic.com/v1` | 是 |
+  | `gemini` | Google Gemini | llm | `https://generativelanguage.googleapis.com/v1beta/openai` | 是 |
+  | `deepseek` | DeepSeek | llm | `https://api.deepseek.com/v1` | 是 |
+  | `qwen` | 通义千问 | llm | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 是 |
+  | `moonshot` | Kimi | llm | `https://api.moonshot.cn/v1` | 是 |
+  | `zhipu` | 智谱 GLM | llm | `https://open.bigmodel.cn/api/paas/v4` | 是 |
+  | `ark` | 火山方舟 | llm | `https://ark.cn-beijing.volces.com/api/v3` | 是 |
+  | `siliconflow` | 硅基流动 | llm asr tts | `https://api.siliconflow.cn/v1` | 是 |
+  | `groq` | Groq | llm asr | `https://api.groq.com/openai/v1` | 是 |
+  | `openrouter` | OpenRouter | llm | `https://openrouter.ai/api/v1` | 是 |
+  | `ollama` | Ollama（局域网） | llm | `http://<主机>:11434/v1`（占位） | 否 |
+
+  含 `<` 的占位地址不能保存，返回 400 `invalid_argument`。
+- **激活**：`active` 对每个类型给出激活配置的 id，该类型没有配置时为空。删除某类型当前激活的配置时，如果该类型还有别的配置返回 409 `active_profile`（先激活另一套）；如果是该类型最后一套则删除，该类型的激活变为空。
+- **存储**：全部配置连同 Key 存放在 System 区的 `secrets/models.json`（`{"version":2, "active":{...}, "profiles":[...]}`），经 `write_atomic` 写入。读到子项目 2 早期的 `secrets/llm.json`（`{base_url, model, api_key}`）时迁移为一套 `kind = llm`、`preset = custom`、名称 "Default" 的激活配置，写入新文件成功后删除旧文件。
+- **Key 只写不读**：服务对外**没有任何能读出 Key 的接口**，连部分字符也不给；只有使用方（Agent、语音链路）通过内部接口在发请求时取用激活配置的 Key。
+- **Key 绑定源**：每套配置的 Key 只属于保存它时该配置的 `base_url` 源（scheme://host:port，scheme 与 host 不区分大小写，省略的默认端口按 80/443 补齐，路径不算）。一次 `update()` 把 `base_url` 改到另一个源、却没有同时提供 `api_key` 时，服务**清除这套配置已存的 Key**；在还没有 `base_url` 时存下的 Key 第一次设置 `base_url` 时同样清除。后台网页在这种情况下提示重新输入 Key。
+- **沿用 Key**：`create`/`update` 可以用 `api_key_from: <另一套配置的 id>` 代替 `api_key`，由服务在设备内部复制 Key（Key 不经过浏览器）。只有两套配置的 `base_url` 源相同且来源配置有 Key 时才允许，否则返回 400 `key_origin_mismatch`；`api_key` 与 `api_key_from` 同时给出返回 400。
+- `test(id)` 通过 `HttpClient` 以 `Authorization: Bearer <key>`（没有 Key 时不带）请求该配置的 `/models`，超时 10 秒，返回是否成功、延迟、模型 id 列表，或错误类别（DNS、TLS、超时、HTTP 状态码）。HTTP 404 单独报告为 `no_model_list`，网页提示"该平台不提供模型列表，请手动填写模型名"。错误信息里不得带上 Key。
+- 每次成功修改后发布 `model.profiles` 事件（见 5.5）。
 
 ### 5.4 `SystemSettings`（`wisp_core`）
 
@@ -211,6 +245,7 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 | `net.pairing.code` | `PairingService` | `{active, expires_ms}`（不含配对码） |
 | `net.pairing.failed` | `PairingService` | `{attempts, locked}` |
 | `system.settings` | `App`（`SystemSettings` 的 `on_changed`） | `{brightness, volume, screen_off_s, language}`：每批设置写入成功后的全部当前值（与 `GET /settings` 同形） |
+| `model.profiles` | `ModelProfileService` | `{active:{llm,asr,tts}, count}`：任何配置被新建、修改、删除或激活后（不含 Key、地址） |
 
 ---
 
@@ -235,7 +270,13 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 | 设置 | `GET /settings`、`PUT /settings` | 是 | 经 `SystemSettings` 校验并立即生效 |
 | Wi-Fi | `GET /wifi`、`GET /wifi/scan` | 是 | `GET /wifi`：`{state, ssid, ssid_hex, ip, rssi, reason, saved, ap}`，`saved` 的每项为 `{ssid, ssid_hex, auth_failed}`（`auth_failed` 见 4.2）；扫描结果每项为 `{ssid, ssid_hex, rssi, secured, saved}` |
 | | `POST /wifi/networks {ssid \| ssid_hex, password?}`、`DELETE /wifi/networks/{ssid}` | 是 | 添加 / 删除网络；`ssid` 与 `ssid_hex` 必须且只能给一个，`ssid_hex` 不是偶数位十六进制时返回 400；`DELETE` 的路径段按 `%XX` 解码成原始字节 |
-| 模型 | `GET /llm`、`PUT /llm`、`POST /llm/test` | 是 | 见 5.3 |
+| 模型 | `GET /ai/profiles` | 是 | `{active, profiles}`，见 5.3 |
+| | `GET /ai/presets` | 是 | 预设表 |
+| | `POST /ai/profiles {kind, name, preset, base_url?, model?, options?, api_key? \| api_key_from?}` | 是 | 201，返回新配置（不含 Key） |
+| | `PUT /ai/profiles/{id} {name?, preset?, base_url?, model?, options?, api_key? \| api_key_from?}` | 是 | 部分更新，未知字段 400；返回更新后的配置 |
+| | `DELETE /ai/profiles/{id}` | 是 | 见 5.3 的删除规则 |
+| | `POST /ai/active {id}` | 是 | 设为其类型的激活配置 |
+| | `POST /ai/profiles/{id}/test` | 是 | 测试该配置的连通性 |
 | 系统 | `POST /system/reboot` | 是 | 直接执行 |
 | | `POST /system/factory-reset` | 是 | 先在设备上弹确认框，接口返回 202，结果通过 WebSocket 推送；范围见下文 |
 | 实时 | `WS /ws` | 是 | 见 6.2 |
@@ -244,7 +285,7 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 
 **强制门户探测路径**（`/generate_204`、`/hotspot-detect.html`、`/connecttest.txt`、`/ncsi.txt` 等）在热点模式下一律重定向到 `http://<热点地址>:8900/setup.html`；非热点模式下返回 404。
 
-**恢复出厂设置的范围**：清除 Settings、已保存的网络、全部令牌和 LLM 配置（含 Key），然后重启；不删除 Library 和 Backup 区的数据（以后的场景与用户数据）。完整擦除留给子项目 7。
+**恢复出厂设置的范围**：清除 Settings、已保存的网络、全部令牌和全部模型配置（含 Key），然后重启；不删除 Library 和 Backup 区的数据（以后的场景与用户数据）。完整擦除留给子项目 7。
 
 **SSID 的字节**：SSID 是最多 32 字节的原始字节，不一定是 UTF-8（GBK 编码的路由器很常见），而 JSON 字符串里的非法 UTF-8 会被替换成 U+FFFD。所以响应和事件里的每个 SSID 都附带 `ssid_hex`（原始字节的小写十六进制），前端遇到含 U+FFFD 的 SSID 时用 `ssid_hex` 回传。
 
@@ -319,7 +360,7 @@ web/
 | 概览 | 电量与充电、Wi-Fi、存储、运行时长、固件版本等状态卡片，通过 WebSocket 事件实时刷新 |
 | 外设 | 设备列表（id、类别、状态），展开可查看 caps |
 | 网络 | 当前连接、已保存的网络（可删除）、扫描并添加网络 |
-| 模型 | 端点地址、API Key（只能写入的密码框，已设置时显示"已设置"）、模型下拉框（来自测试结果）、"测试连接"按钮 |
+| 模型 | 「对话 / 语音识别 / 语音合成」三个标签页，三类配置严格分开、互不混列：每个标签页只列出、新建、编辑、测试、激活和删除本类型的配置，"设为当前"只影响本类型；所选标签记在地址的 hash 中（如 `#/models/asr`）。各标签页显示该类型的配置列表（名称、平台、地址、模型、Key 已设置/未设置，激活的有标记）；"新建配置"：先选该类型可用的预设，自动填入地址，再填名称、Key（或"沿用某套配置的 Key"，只列出同源的配置）；`tts` 多一个音色输入框；每套配置可编辑、测试连接（成功后模型下拉框列出可选模型，也可手动输入）、设为当前、删除 |
 | 系统 | 亮度、音量、自动熄屏时间；已配对的浏览器列表；重启；恢复出厂设置 |
 | 日志 | 实时滚动，可按级别过滤、暂停、清屏 |
 | `/setup` 配网向导 | 选择网络 → 输入密码 → 连接中 → 显示新地址并提供"进入后台"按钮 |
@@ -369,11 +410,11 @@ web/
 | 层 | 测什么 | 怎么测 |
 |---|---|---|
 | `wisp_net` 服务 | Wi-Fi 状态机（选最强网络、退避间隔、热点超时、配网成功后保留 30 秒、待机断开与唤醒重连）；配对（过期、锁定、令牌哈希、淘汰最旧令牌）；WispPack 解析（损坏或截断的包） | GoogleTest，用 `FakeWifi` 和可注入的假时钟 |
-| `wisp_core` 服务 | `LlmConfigService` 的只写语义；`SystemSettings` 的校验与立即生效 | GoogleTest |
-| `wisp_admin` 路由 | 每个接口的鉴权、CSRF 请求头、Host 校验、错误格式、`/pair/ap` 只接受热点网段；**`GET /llm` 等所有响应里都不出现 Key** | 对内存中的假请求直接调路由表，不经过 socket |
+| `wisp_core` 服务 | `ModelProfileService` 的只写语义、Key 绑定源与沿用、按类型激活与删除规则、旧格式迁移；`SystemSettings` 的校验与立即生效 | GoogleTest |
+| `wisp_admin` 路由 | 每个接口的鉴权、CSRF 请求头、Host 校验、错误格式、`/pair/ap` 只接受热点网段；**`GET /ai/profiles` 等所有响应里都不出现 Key** | 对内存中的假请求直接调路由表，不经过 socket |
 | 模拟器 HTTP 服务 | HTTP/1.1 解析、gzip 静态文件与 304、WebSocket 握手和帧收发、连接上限 | 用真实 socket 连 `127.0.0.1` |
 | 串口命令 | 命令解析、引号、错误提示 | GoogleTest |
-| 端到端冒烟 | 启动模拟器 → 配对 → 走一遍主要接口 → WebSocket 收到日志 → `/llm/test` 成功 | 扩展 `tests/smoke/`，只用 Python 标准库；LLM 用本机起的假 OpenAI 兼容服务器（只实现 `/models`），不访问外网 |
+| 端到端冒烟 | 启动模拟器 → 配对 → 走一遍主要接口 → WebSocket 收到日志 → 新建 `llm` 配置并 `/ai/profiles/{id}/test` 成功 | 扩展 `tests/smoke/`，只用 Python 标准库；LLM 用本机起的假 OpenAI 兼容服务器（只实现 `/models`），不访问外网 |
 | 前端与资源包 | import 能否解析、体积预算、分区容量 | `tools/pack_assets.py` 的检查，纳入 `tools/ci.sh` |
 
 ### 9.2 真机验收清单（由用户执行）
@@ -382,7 +423,7 @@ web/
 2. 点"开始配网"：屏幕显示二维码；手机扫码连上热点后自动弹出配网页；配网成功后显示新地址，热点约 30 秒后关闭。
 3. 浏览器访问 `http://wisp.local:8900` 或 `http://<显示的 IP 地址>:8900`，用屏幕上的配对码完成配对。
 4. 各页面正常显示；修改亮度后屏幕立即变化；日志页实时滚动。
-5. 填写 LLM 端点与 Key 后，"测试连接"成功并列出模型；刷新页面后 Key 只显示"已设置"。
+5. 在"对话"标签页从预设新建一套配置并填 Key，"测试连接"成功并列出模型；刷新页面后 Key 只显示"已设置"。再新建第二套并设为当前，第一套的激活标记移走；"语音识别"和"语音合成"标签页的激活不受影响。在"语音识别"标签页用"沿用 Key"新建同平台配置，测试连接成功。
 6. 关掉路由器：设备退避重试，界面不卡；路由器恢复后自动重连。
 7. 待机超过 10 分钟后 Wi-Fi 断开，唤醒后自动重连。
 8. 恢复出厂设置：网页发起后，必须在设备上确认才会执行；执行后已配对的浏览器全部失效。
@@ -394,7 +435,7 @@ web/
 
 1. 板级分区表与 sdkconfig 迁移、分区约定
 2. `hal::Wifi` 接口与 `wisp_net` 服务（Wi-Fi、配对、WispPack）
-3. `LlmConfigService`、`SystemSettings`
+3. `ModelProfileService`、`SystemSettings`
 4. 两套平台实现（HTTP 服务端/客户端、Wi-Fi、mDNS）
 5. `wisp_admin` 路由与 WebSocket
 6. 前端与打包脚本
