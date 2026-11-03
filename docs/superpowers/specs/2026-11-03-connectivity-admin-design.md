@@ -41,7 +41,7 @@
 
 ### 1.4 不在本子项目范围内
 
-HTTPS 与 Flash 加密（子项目 7 评估）、OTA 升级功能（分区已预留）、场景和记忆相关的后台页面（子项目 3、6）、Agent 对话本身（子项目 4；这次只做模型配置与连通测试）、语音识别与合成的调用及私有协议客户端（子项目 5）、蓝牙、远程或公网访问、设备上的设置页（子项目 8）。
+HTTPS 与 Flash 加密（子项目 7 评估）、设备自动联网拉取更新与固件签名（子项目 7；本子项目只做局域网网页上传固件，见 6.5）、场景和记忆相关的后台页面（子项目 3、6）、Agent 对话本身（子项目 4；这次只做模型配置与连通测试）、语音识别与合成的调用及私有协议客户端（子项目 5）、蓝牙、远程或公网访问、设备上的设置页（子项目 8）。
 
 ---
 
@@ -71,19 +71,19 @@ HTTPS 与 Flash 加密（子项目 7 评估）、OTA 升级功能（分区已预
 
 ### 2.3 WispPack 资源包
 
-`assets` 分区用自定义的极简只读包格式，不用 SPIFFS/LittleFS：资源只读，用不上文件系统的写入和磨损均衡。
+管理后台网页打包成自定义的极简只读包格式，**链接进应用镜像**（不再占用单独的分区）：网页与固件永远是同一版本，网页上传固件（6.5）时两者一起在 A/B 分区间切换、一起回滚。资源只读，用不上文件系统。
 
 - **格式**：头部（魔数 `WPAK`、版本号、文件数），文件表（路径、偏移、长度、MIME 类型、是否 gzip、内容哈希），然后是连续存放的文件内容。所有多字节整数用小端序，文件内容按 4 字节对齐。
-- **生成**：`tools/pack_assets.py` 把 `web/` 等目录打成包。文本类文件（html/js/css/svg/json）逐个 gzip，已压缩的格式原样存放。脚本同时检查：每个 JS 模块的相对 import 都能在包内解析；包的总大小不超过本板 `assets` 分区的大小（从板级分区表读取），超出即构建失败。
-- **读取**：可移植的 `AssetPack` 接收一段只读字节区间，解析并校验头部和文件表；包损坏或被截断时返回错误，不崩溃。真机用 `esp_partition_mmap` 映射 `assets` 分区，零拷贝发送；模拟器读取构建目录下的同一个包文件，或用 `--web-dir web/` 直接读源码目录，改完刷新就生效。
+- **生成**：`tools/pack_assets.py` 把 `web/` 等目录打成包。文本类文件（html/js/css/svg/json）逐个 gzip，已压缩的格式原样存放。脚本同时检查：每个 JS 模块的相对 import 都能在包内解析；包的总大小不超过 256 KB，超出即构建失败。
+- **读取**：可移植的 `AssetPack` 接收一段只读字节区间，解析并校验头部和文件表；包损坏或被截断时返回错误，不崩溃。真机直接使用链接进固件的只读数据（4 字节对齐），零拷贝发送；模拟器读取构建目录下的同一个包文件，或用 `--web-dir web/` 直接读源码目录，改完刷新就生效。
 - **发送**：gzip 文件带 `Content-Encoding: gzip`，由浏览器解压；用内容哈希做 `ETag`，命中时返回 304。
-- **烧录**：固件构建把资源包作为 `assets` 分区的镜像，`idf.py flash` 时一并写入。
+- **构建**：固件构建先运行 `pack_assets.py`，再把生成的包作为二进制数据链接进应用；不需要单独烧录。以后较大的只读资源（提示音、更大的字体）放进固件或 `storage`/SD 卡，不再设专门分区。
 
 ---
 
 ## 3. 板级分区表与配置
 
-子项目 1 只有一块板子，`firmware/partitions.csv` 和 `firmware/sdkconfig.defaults` 名义上是公共文件，内容却完全属于这块板子（16MB Flash、八线 PSRAM、USB 串口控制台），不符合"板子无关"的规则。从本子项目开始，`assets` 分区真正投入使用，分区和板级配置随之迁移到各自的板目录。
+子项目 1 只有一块板子，`firmware/partitions.csv` 和 `firmware/sdkconfig.defaults` 名义上是公共文件，内容却完全属于这块板子（16MB Flash、八线 PSRAM、USB 串口控制台），不符合"板子无关"的规则。从本子项目开始，分区和板级配置迁移到各自的板目录。
 
 ### 3.1 文件位置
 
@@ -99,11 +99,23 @@ HTTPS 与 Flash 加密（子项目 7 评估）、OTA 升级功能（分区已预
 |---|---|---|
 | `nvs` | 必需 | 配置 |
 | `phy_init` | 必需 | 射频校准 |
-| `assets` | 必需，≥ 1MB | WispPack 资源包 |
 | `storage` | 必需 | LittleFS（`/int`） |
-| `ota_0`、`ota_1`、`otadata` | 可选 | Flash 足够时提供双 OTA 分区；没有时用单个 `factory` 应用分区，固件检测到缺少 OTA 分区就关闭 OTA 功能，只降级运行 |
+| `ota_0`、`ota_1`、`otadata` | 可选 | Flash 足够时提供双 OTA 分区；没有时用单个 `factory` 应用分区，固件检测到缺少 OTA 分区就关闭固件更新（`GET /system/firmware` 返回 `supported: false`），只降级运行 |
 
-分区大小由各板自行决定，例如 32MB 的板子可以把多出的空间分给 `storage` 或 `assets`。基础 spec 7.4 的分区表改为"参考板（Waveshare 2.16）的分区表"，并引用本节约定；`docs/porting-guide.md` 同步补充。
+分区大小由各板自行决定，例如 32MB 的板子可以把多出的空间分给 `storage`。参考板（16MB）的分区表：
+
+| 分区 | 偏移 | 大小 |
+|---|---|---|
+| `nvs` | 0x9000 | 0x6000 |
+| `otadata` | 0xF000 | 0x2000 |
+| `phy_init` | 0x11000 | 0x1000 |
+| `ota_0` | 0x20000 | 0x500000（5 MB） |
+| `ota_1` | 0x520000 | 0x500000（5 MB） |
+| `storage` | 0xA20000 | 0x5E0000 |
+
+`nvs` 与 `storage` 的偏移和大小与之前相同，重新整片烧录后设置与数据仍在。配置的存放位置：亮度、音量、自动熄屏、语言等键值设置在 `nvs`；已保存的网络、已配对浏览器、模型配置等结构化文件在 System 区（`storage` 上的 LittleFS，`/int/system`）。
+
+**发布构建**：`firmware/sdkconfig.defaults` 即发布配置——全局按体积优化（`-Os`），日志最高编译到 INFO，断言静默；**渲染路径固定 `-O2`**（LVGL 组件、`wisp_ui`、显示与触摸驱动及刷屏路径，在各自组件里单独指定，覆盖全局选项）。调试时叠加 `firmware/sdkconfig.debug`（`-Og`、DEBUG 日志、断言开启）：`idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.debug" build`。预算：应用不超过 `ota_0` 的 80%；`WISP_PERF` 帧率不低于基础 spec 的基准。基础 spec 7.4 的分区表改为"参考板（Waveshare 2.16）的分区表"，并引用本节约定；`docs/porting-guide.md` 同步补充。
 
 ---
 
@@ -246,6 +258,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | `net.pairing.failed` | `PairingService` | `{attempts, locked}` |
 | `system.settings` | `App`（`SystemSettings` 的 `on_changed`） | `{brightness, volume, screen_off_s, language}`：每批设置写入成功后的全部当前值（与 `GET /settings` 同形） |
 | `model.profiles` | `ModelProfileService` | `{active:{llm,asr,tts}, count}`：任何配置被新建、修改、删除或激活后（不含 Key、地址） |
+| `system.firmware` | 固件更新服务 | `{state, version}`：`state` 为 `received`（已写入并校验，等待设备确认）/`confirmed`（即将重启）/`rejected`（设备上点了否或 2 分钟未确认）/`failed`（写入或校验失败，附 `error`） |
 
 ---
 
@@ -279,6 +292,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | | `POST /ai/profiles/{id}/test` | 是 | 测试该配置的连通性 |
 | 系统 | `POST /system/reboot` | 是 | 直接执行 |
 | | `POST /system/factory-reset` | 是 | 先在设备上弹确认框，接口返回 202，结果通过 WebSocket 推送；范围见下文 |
+| | `GET /system/firmware`、`POST /system/firmware` | 是 | 固件信息与网页上传固件，见 6.5 |
 | 实时 | `WS /ws` | 是 | 见 6.2 |
 
 配网向导（`/setup`）先调用 `POST /pair/ap` 拿到令牌，之后与后台一样走需要鉴权的接口，不另设免鉴权的例外。
@@ -325,6 +339,18 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 
 HTTPS 是否引入、如何解决证书信任问题，留给子项目 7 评估。
 
+### 6.5 网页上传固件（局域网 OTA）
+
+本子项目的固件更新只有一种方式：从已配对的浏览器上传固件文件。设备不主动联网检查或下载更新（留给子项目 7）。
+
+- `GET /system/firmware` → `{supported, version, board, running, pending}`：`supported` 在板子没有 OTA 分区时为 false；`board` 是编译进固件的板名；`pending` 为已上传、等待设备确认的版本（没有时为空）。
+- `POST /system/firmware`：请求体为固件镜像（`application/octet-stream`，必须带 `Content-Length`），以流的方式边收边写，不受 6.1 的 8192 字节请求体上限约束。`HttpServer` 为此增加流式请求体处理（真机与模拟器两套实现）。
+  - 收到镜像头时立刻检查：魔数、芯片型号、项目名 `wisp`、编译进固件描述的板名，不符返回 400 `wrong_board`（或 `invalid_image`）；`Content-Length` 超过空闲 OTA 分区返回 413。同一时间只允许一次上传，否则 409 `busy`。
+  - 写入当前未运行的 OTA 分区，结束时校验整个镜像（SHA-256）；成功返回 202，并在设备上弹出确认框："当前版本 → 新版本"，新版本更旧时额外提示"降级"。点"是"后把它设为启动分区并重启；点"否"或 2 分钟无人确认则丢弃。结果经 `system.firmware` 事件推送。
+- **回滚**：开启 bootloader 的应用回滚。新固件只有在 `App::start()` 完成、启动报告已输出后才标记为有效；在此之前崩溃或复位，下次启动自动回到旧固件。
+- **签名**：网页上传**不要求签名**，自己构建的固件同样可以安装；信任来自"已配对的浏览器 + 设备上有人确认"。签名只用于子项目 7 的自动拉取更新（Ed25519 签名的发布清单，私钥放在 GitHub Environment 的 Secret 中并需人工审批，支持自定义更新源与公钥）；默认不开启 Secure Boot。
+- **模拟器**：固件更新服务写到 `<data-dir>/firmware.bin`，确认后输出 `WISP_REBOOT` 并退出，供冒烟测试覆盖完整流程；镜像头检查使用同一套可移植解析代码。
+
 ---
 
 ## 7. 前端
@@ -361,7 +387,7 @@ web/
 | 外设 | 设备列表（id、类别、状态），展开可查看 caps |
 | 网络 | 当前连接、已保存的网络（可删除）、扫描并添加网络 |
 | 模型 | 「对话 / 语音识别 / 语音合成」三个标签页，三类配置严格分开、互不混列：每个标签页只列出、新建、编辑、测试、激活和删除本类型的配置，"设为当前"只影响本类型；所选标签记在地址的 hash 中（如 `#/models/asr`）。各标签页显示该类型的配置列表（名称、平台、地址、模型、Key 已设置/未设置，激活的有标记）；"新建配置"：先选该类型可用的预设，自动填入地址，再填名称、Key（或"沿用某套配置的 Key"，只列出同源的配置）；`tts` 多一个音色输入框；每套配置可编辑、测试连接（成功后模型下拉框列出可选模型，也可手动输入）、设为当前、删除 |
-| 系统 | 亮度、音量、自动熄屏时间；已配对的浏览器列表；重启；恢复出厂设置 |
+| 系统 | 亮度、音量、自动熄屏时间、设备语言；已配对的浏览器列表；重启；恢复出厂设置；固件：当前版本与板名、选择文件上传（进度条）、"请在设备上确认"、结果 |
 | 日志 | 实时滚动，可按级别过滤、暂停、清屏 |
 | `/setup` 配网向导 | 选择网络 → 输入密码 → 连接中 → 显示新地址并提供"进入后台"按钮 |
 
@@ -399,7 +425,7 @@ web/
 - **范围**：只覆盖系统自带的界面——自检界面、本子项目的网络区块与各卡片，以及子项目 8 的主场景外壳。Agent 生成的场景不在范围内，由场景自己决定显示什么文字。
 - **语言设置**：`SystemSettings` 的 `language`（存为 `sys`/`lang`，`zh`/`ja`/`en`，默认 `zh`）。后台"系统"页可以修改；修改后发布 `system.settings` 事件，设备界面在 UI 线程上立即重建文字，不需要重启。设备语言与网页语言相互独立：网页跟随浏览器（7.4），设备跟随这个设置。
 - **字符串表**：`wisp_ui` 提供 `ui::tr(StrId)`，三种语言的文字编译进固件（`components/wisp_ui/src/strings_{zh,ja,en}.cpp`），缺失时退回中文。单元测试检查每个 `StrId` 在三种语言里都有非空文字，并且全部字形都能由内置字体渲染。
-- **字体**：仍只用一套 16 px、4 bpp 的内置字体，字符集为 GB2312 ∪ 日文假名与 JIS X 0208 符号区 ∪ JIS X 0208 第一水准汉字（实测比原字体多约 222 KiB Flash：除日文字符外，还补齐了原字体缺少的 GB2312 非汉字各区——°、×、→、①、希腊字母、拼音等，Agent 输出中常见）。字体由 `tools/gen_cjk_font.py` 生成（固定版本的 Noto Sans CJK SC 与 `lv_font_conv`），生成命令与来源写进 `docs/references.md`。日文汉字暂用 SC 字形；按语言加载日文字形字体（放在 `assets` 分区）留到子项目 8。
+- **字体**：仍只用一套 16 px、4 bpp 的内置字体，字符集为 GB2312 ∪ 日文假名与 JIS X 0208 符号区 ∪ JIS X 0208 第一水准汉字（实测比原字体多约 222 KiB Flash：除日文字符外，还补齐了原字体缺少的 GB2312 非汉字各区——°、×、→、①、希腊字母、拼音等，Agent 输出中常见）。字体由 `tools/gen_cjk_font.py` 生成（固定版本的 Noto Sans CJK SC 与 `lv_font_conv`），生成命令与来源写进 `docs/references.md`。日文汉字暂用 SC 字形；按语言加载日文字形字体（放在固件或 `storage` 中）留到子项目 8。
 
 ---
 
@@ -415,7 +441,7 @@ web/
 | 模拟器 HTTP 服务 | HTTP/1.1 解析、gzip 静态文件与 304、WebSocket 握手和帧收发、连接上限 | 用真实 socket 连 `127.0.0.1` |
 | 串口命令 | 命令解析、引号、错误提示 | GoogleTest |
 | 端到端冒烟 | 启动模拟器 → 配对 → 走一遍主要接口 → WebSocket 收到日志 → 新建 `llm` 配置并 `/ai/profiles/{id}/test` 成功 | 扩展 `tests/smoke/`，只用 Python 标准库；LLM 用本机起的假 OpenAI 兼容服务器（只实现 `/models`），不访问外网 |
-| 前端与资源包 | import 能否解析、体积预算、分区容量 | `tools/pack_assets.py` 的检查，纳入 `tools/ci.sh` |
+| 前端与资源包 | import 能否解析、体积预算 | `tools/pack_assets.py` 的检查（含 256 KB 预算），纳入 `tools/ci.sh` |
 
 ### 9.2 真机验收清单（由用户执行）
 
@@ -427,7 +453,8 @@ web/
 6. 关掉路由器：设备退避重试，界面不卡；路由器恢复后自动重连。
 7. 待机超过 10 分钟后 Wi-Fi 断开，唤醒后自动重连。
 8. 恢复出厂设置：网页发起后，必须在设备上确认才会执行；执行后已配对的浏览器全部失效。
-9. 性能：后台页面首次加载不超过 2 秒；Wi-Fi 连接期间自检界面滚动的 `WISP_PERF` 帧率不低于基础 spec 约定的基准。
+9. 性能：后台页面首次加载不超过 2 秒；Wi-Fi 连接期间自检界面滚动的 `WISP_PERF` 帧率不低于基础 spec 约定的基准（发布构建，渲染路径 `-O2`）。
+10. 网页上传固件：上传一个自己构建的固件 → 设备弹确认框 → 点"是"后重启进入新版本，设置与数据仍在；再上传一次并点"否"，设备继续运行旧版本；上传其他板子的固件被拒绝。
 
 ### 9.3 实施顺序
 
