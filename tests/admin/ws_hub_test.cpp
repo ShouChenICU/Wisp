@@ -169,7 +169,9 @@ TEST(WsHub, BackfillsRingThenStreamsLive) {
 
     // Live lines follow, with their real level, tag and timestamp; tag and
     // message are JSON-escaped.
+    const auto before = static_cast<int64_t>(wisp::os::now_ms());
     hub.write(LogLevel::Error, "t\"ag", "live \"one\"\n\\done");
+    const auto after = static_cast<int64_t>(wisp::os::now_ms());
     WLOG_D("net", "via the log module");
     hub.pump();
     sent = c->sent();
@@ -180,7 +182,9 @@ TEST(WsHub, BackfillsRingThenStreamsLive) {
     EXPECT_EQ(str(live, "tag"), "t\"ag");
     EXPECT_EQ(str(live, "msg"), "live \"one\"\n\\done");
     ASSERT_NE(live.find("ts"), nullptr);
-    EXPECT_GT(live.find("ts")->as_int(), 0);
+    // ms since boot, the same clock as /device's uptime_ms (spec 6.2).
+    EXPECT_GE(live.find("ts")->as_int(), before);
+    EXPECT_LE(live.find("ts")->as_int(), after);
     EXPECT_EQ(str(sent.back(), "level"), "D");
     EXPECT_EQ(str(sent.back(), "tag"), "net");
     EXPECT_EQ(str(sent.back(), "msg"), "via the log module");

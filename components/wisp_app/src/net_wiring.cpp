@@ -225,7 +225,8 @@ void NetWiring::reconcile_captive() {
 
 Value NetWiring::device_status() const {
     Map status{
-        {"uptime_ms", Value(static_cast<int64_t>(os::now_ms() - deps_.boot_t0_ms))},
+        // Same base as the log timestamps (os::now_ms(), spec 6.2).
+        {"uptime_ms", Value(static_cast<int64_t>(os::now_ms()))},
         {"heap", deps_.platform.heap_info ? deps_.platform.heap_info() : Value(Map{})},
     };
     Value battery;  // null when unknown

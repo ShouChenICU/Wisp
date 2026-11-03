@@ -14,10 +14,25 @@
 
 namespace wisp::os {
 
+namespace {
+
+// The simulator's "boot" is process start. A function-local static is
+// safe to reach from other translation units' static initializers; the
+// namespace-scope read below pins it to static-init time even if nothing
+// calls now_ms() until much later.
+std::chrono::steady_clock::time_point boot_epoch() {
+    static const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    return t0;
+}
+
+[[maybe_unused]] const std::chrono::steady_clock::time_point g_boot_epoch_at_startup = boot_epoch();
+
+}  // namespace
+
 uint64_t now_ms() {
     using namespace std::chrono;
     return static_cast<uint64_t>(
-        duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+        duration_cast<milliseconds>(steady_clock::now() - boot_epoch()).count());
 }
 
 void sleep_ms(uint32_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }

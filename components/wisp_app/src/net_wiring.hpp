@@ -56,8 +56,6 @@ struct NetWiringDeps {
     core::StorageManager& storage;
     core::LlmConfigService& llm;
     core::SystemSettings& system_settings;
-    // os::now_ms() when App::start() began; uptime is measured from it.
-    uint64_t boot_t0_ms = 0;
 };
 
 class NetWiring {

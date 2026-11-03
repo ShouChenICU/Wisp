@@ -246,6 +246,7 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 
 - 客户端连接后发送 `{"sub": ["log", "events"]}` 订阅。
 - `log`：先补发日志环形缓冲区（基础 spec 6.5）里现有的记录，再实时推送新日志，每条为 `{"t":"log","ts","level","tag","msg"}`。
+  - `ts` 是**开机以来的毫秒数**（模拟器为进程启动以来），单调递增，与 `GET /device` 的 `status.uptime_ms` 同一基准（即 `os::now_ms()`）。补发的环形缓冲区记录以 `ts: 0`、`level: "I"`、空 `tag` 发出，原始的 `"<ts> <级别> <tag>: <消息>"` 整行放在 `msg` 里，其中的 `<ts>` 同样是开机以来的毫秒数。每次订阅 `log`（包括重连后）都会重新补发，前端按时间戳去重。
 - `events`：转发 `net.*`、`power.*`、`storage.*`、`system.*` 主题，每条为 `{"t":"event","topic","payload"}`。
 - 最多同时 2 个 WebSocket 连接，超出时拒绝新连接。发送队列积压超过上限时丢弃最旧的日志，并推送一条 `{"t":"dropped","count"}`。
 

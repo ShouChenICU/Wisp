@@ -16,6 +16,13 @@ TEST(Os, ClockIsMonotonic) {
     sleep_ms(20);
     EXPECT_GE(now_ms() - a, 19u);
 }
+TEST(Os, ClockCountsFromProcessStart) {
+    // The simulator's boot is process start (os.hpp). ctest gives this
+    // binary a 10 s timeout; a host-boot epoch would put the value at the
+    // host's uptime, far above this bound on any machine up for more than
+    // ten minutes.
+    EXPECT_LT(now_ms(), 10u * 60u * 1000u);
+}
 TEST(Os, SemaphoreTimeout) {
     Semaphore s(1, 0);
     auto t0 = now_ms();

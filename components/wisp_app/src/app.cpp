@@ -136,7 +136,6 @@ Result<void> App::start() {
         .storage = impl_->storage,
         .llm = impl_->llm,
         .system_settings = impl_->system_settings,
-        .boot_t0_ms = boot_t0,
     });
     impl_->net->start();
 

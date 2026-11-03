@@ -18,8 +18,9 @@
 
 namespace wisp::os {
 
-// Milliseconds since an arbitrary, monotonic epoch (not wall-clock time).
-// Only differences between calls are meaningful.
+// Milliseconds since boot (since process start in the simulator);
+// monotonic, not wall-clock time. Log timestamps and the admin API's
+// `uptime_ms` share this base, so a browser can compare them (spec 6.2).
 uint64_t now_ms();
 
 // Blocks the calling thread/task for at least `ms` milliseconds.

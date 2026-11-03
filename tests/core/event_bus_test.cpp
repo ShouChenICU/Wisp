@@ -95,9 +95,14 @@ TEST(EventBus, FillsTimestamp) {
     bus.start();
     uint64_t ts = 0;
     bus.subscribe("", [&](const Event& e) { ts = e.ts_ms; });
+    // now_ms() counts from boot (process start here), so it can still be
+    // 0; step past that so a filled stamp is distinguishable from "unset".
+    while (wisp::os::now_ms() < 2) wisp::os::sleep_ms(1);
+    const uint64_t before = wisp::os::now_ms();
     bus.publish({.topic = "t"});
     bus.wait_idle(1000);
-    EXPECT_GT(ts, 0u);
+    EXPECT_GE(ts, before);
+    EXPECT_LE(ts, wisp::os::now_ms());
 }
 
 TEST(EventBus, UnsubscribeFromWithinHandlerIsSafe) {
