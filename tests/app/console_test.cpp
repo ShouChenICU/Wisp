@@ -67,6 +67,7 @@ public:
     }
     LineRead read(std::string& line, uint32_t timeout_ms) {
         std::unique_lock<std::mutex> lock(mutex_);
+        ++reads_;
         cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
                      [this] { return closed_ || !lines_.empty(); });
         if (!lines_.empty()) {
@@ -76,9 +77,14 @@ public:
         }
         return closed_ ? LineRead::Closed : LineRead::Timeout;
     }
+    int reads() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return reads_;
+    }
 
 private:
     std::mutex mutex_;
+    int reads_ = 0;
     std::condition_variable cv_;
     std::deque<std::string> lines_;
     bool closed_ = false;
@@ -336,7 +342,17 @@ TEST(Console, ClosedInputEndsTheTask) {
     ConsoleHarness h({.with_reader = true});
     ASSERT_TRUE(h.app->start());
     h.feed->close();
-    wisp::os::sleep_ms(100);
+    // The task logs and returns on its own, before stop() is asked.
+    EXPECT_TRUE(wait_until(
+        [] {
+            for (const auto& e : wisp::log::ring_entries()) {
+                if (e.tag == "console" && e.msg == "input closed") return true;
+            }
+            return false;
+        },
+        2000));
+    const int reads = h.feed->reads();
+    wisp::os::sleep_ms(300);
+    EXPECT_EQ(h.feed->reads(), reads);
     h.app->stop();
-    SUCCEED();
 }
