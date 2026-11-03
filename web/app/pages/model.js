@@ -7,6 +7,11 @@
 // only when the input has something in it -- an empty input keeps the
 // key. "Clear" is a separate, confirmed action that sends api_key "".
 //
+// The key belongs to the origin (scheme://host:port) it was saved for: a
+// base_url on another origin saved without a new key makes the device
+// forget the key (spec 5.3). The page warns before saving and, when that
+// happens, asks for the key again instead of running the test.
+//
 // The test (POST /llm/test) runs against the saved settings, so with
 // unsaved edits the button saves them first and says so.
 
@@ -43,6 +48,16 @@ function validUrl(s) {
   return /^https?:\/\/[^\s/?#]+/i.test(s);
 }
 
+// The URL's origin as the device compares it (lowercase host, default port
+// left out, user info ignored); '' when it does not parse.
+function originOf(s) {
+  try {
+    return new URL(s).origin;
+  } catch {
+    return '';
+  }
+}
+
 // Printable ASCII without spaces, as LlmConfigService requires.
 function validKey(s) {
   return /^[\x21-\x7e]*$/.test(s);
@@ -55,6 +70,9 @@ export function ModelPage() {
   const [model, setModel] = useState('');
   const [key, setKey] = useState('');
   const [problem, setProblem] = useState(null); // {field, text}
+  // The last save moved the endpoint to another origin and the device
+  // forgot the key.
+  const [keyDropped, setKeyDropped] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState(/** @type {LlmTest|null} */ (null));
@@ -89,6 +107,9 @@ export function ModelPage() {
   }, []);
 
   const dirty = !!config && (url.trim() !== config.base_url || model !== config.model || key !== '');
+  // Saving now would drop the stored key.
+  const willDropKey =
+    !!config && config.has_key && key === '' && url.trim() !== config.base_url && originOf(url.trim()) !== originOf(config.base_url);
 
   function check() {
     const u = url.trim();
@@ -103,7 +124,8 @@ export function ModelPage() {
 
   // Saves the form; true on success. Only changed fields are sent, and
   // api_key only when something was typed. `quiet` skips the toast when
-  // a test follows and reports for itself.
+  // a test follows and reports for itself. Returns 'key_dropped' when the
+  // device forgot the key because the endpoint moved to another origin.
   async function save(quiet = false) {
     const bad = check();
     setProblem(bad);
@@ -116,15 +138,19 @@ export function ModelPage() {
     if (!Object.keys(body).length) return true;
     setSaving(true);
     try {
+      const hadKey = config.has_key;
       const c = await api('PUT', '/llm', body);
       if (!alive.current) return false;
       setKey('');
       adopt(c);
+      const dropped = hadKey && !c.has_key && !('api_key' in body);
+      setKeyDropped(dropped);
       // A different endpoint has a different model list.
       if ('base_url' in body) {
         setModels([]);
         setResult(null);
       }
+      if (dropped) return 'key_dropped';
       if (!quiet) toast(t('model.saved'), 'ok');
       return true;
     } catch (e) {
@@ -136,7 +162,11 @@ export function ModelPage() {
   }
 
   async function test() {
-    if (dirty && !(await save(true))) return;
+    if (dirty) {
+      const saved = await save(true);
+      // Without a key the test would only report 401; ask for the key.
+      if (saved !== true) return;
+    }
     setTesting(true);
     setTestError(null);
     setResult(null);
@@ -256,6 +286,7 @@ export function ModelPage() {
                     onInput=${(e) => {
                       setKey(e.currentTarget.value);
                       setProblem(null);
+                      setKeyDropped(false);
                     }}
                     disabled=${busy}
                     aria-invalid=${fieldError('key') ? 'true' : 'false'}
@@ -267,10 +298,15 @@ export function ModelPage() {
                       </button>`
                     : null}
                 </div>
-                <p id="llm-key-hint" class=${fieldError('key') ? 'field-hint is-error' : 'field-hint'}>
-                  ${fieldError('key') || (config.has_key ? t('model.key_hint_set') : t('model.key_hint'))}
+                <p id="llm-key-hint" class=${fieldError('key') ? 'field-hint is-error' : willDropKey ? 'field-hint is-warn' : 'field-hint'}>
+                  ${fieldError('key') ||
+                  (willDropKey ? t('model.key_hint_origin') : config.has_key ? t('model.key_hint_set') : t('model.key_hint'))}
                 </p>
               </div>
+
+              ${keyDropped && !config.has_key
+                ? html`<div class="alert tone-warn" role="alert"><${IconAlert} size=${18} /><span>${t('model.key_dropped')}</span></div>`
+                : null}
 
               <div class="field">
                 <label class="field-label" for="llm-model">${t('model.model')}</label>

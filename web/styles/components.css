@@ -1939,6 +1939,10 @@ textarea {
   color: var(--err);
 }
 
+.field-hint.is-warn {
+  color: var(--warn);
+}
+
 .input {
   width: 100%;
   min-width: 0;
