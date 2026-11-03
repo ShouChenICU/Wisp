@@ -69,7 +69,9 @@ constexpr std::string_view kProbePaths[] = {
 }  // namespace
 
 bool host_allowed(const net::HttpRequest& req) {
-    auto name = strip_port(req.header("host"));
+    // header() returns by value; strip_port() returns a view into it.
+    const std::string host = req.header("host");
+    auto name = strip_port(host);
     if (!name || name->empty()) return false;
     return is_ipv4(*name) || iequals(*name, "wisp.local") || iequals(*name, "localhost");
 }
