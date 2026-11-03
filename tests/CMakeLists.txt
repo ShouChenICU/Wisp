@@ -121,6 +121,14 @@ wisp_test(NAME audio_downmix_test SRCS port_esp/audio_downmix_test.cpp)
 target_include_directories(audio_downmix_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 wisp_test(NAME sd_retry_test SRCS port_esp/sd_retry_test.cpp)
 target_include_directories(sd_retry_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
+# The networking port's pure pieces: Wi-Fi disconnect-reason mapping,
+# request interface classification and the hotspot's DNS answers.
+wisp_test(NAME wifi_reason_test SRCS port_esp/wifi_reason_test.cpp LIBS wisp_hal)
+target_include_directories(wifi_reason_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
+wisp_test(NAME net_iface_test SRCS port_esp/net_iface_test.cpp LIBS wisp_net)
+target_include_directories(net_iface_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
+wisp_test(NAME dns_reply_test SRCS port_esp/dns_reply_test.cpp)
+target_include_directories(dns_reply_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 
 # End-to-end smoke test: runs the actual wisp_sim executable
 # through a handful of --headless scenarios and checks its
