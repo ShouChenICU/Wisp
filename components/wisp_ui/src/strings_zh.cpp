@@ -20,7 +20,7 @@ const char* strings_zh(StrId id) {
         case StrId::StateFailed:
             return "失败";
         case StrId::Battery:
-            return "电源";
+            return "电池";
         case StrId::Time:
             return "时间";
         case StrId::InternalFlash:

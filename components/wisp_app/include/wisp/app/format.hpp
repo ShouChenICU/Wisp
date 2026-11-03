@@ -1,9 +1,9 @@
 #pragma once
 
-// Portable formatting helpers used by the self-check
-// screen (spec 8) -- kept in their own pure, dependency-light header/cpp
-// pair so they're trivially unit-testable (see tests/app/format_test.cpp)
-// without needing a UiRuntime or any wisp::hal device at all.
+// Portable formatting helpers used by the self-check screen (spec 8) --
+// kept in their own pure, dependency-light header/cpp pair so they're
+// trivially unit-testable (see tests/app/format_test.cpp) without needing
+// a UiRuntime or any wisp::hal device at all.
 
 #include <cstdint>
 #include <string>

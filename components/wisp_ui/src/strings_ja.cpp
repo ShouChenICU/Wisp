@@ -27,7 +27,7 @@ const char* strings_ja(StrId id) {
         case StrId::InternalFlash:
             return "内蔵フラッシュ";
         case StrId::SdCard:
-            return "SD カード";
+            return "SDカード";
         case StrId::Button:
             return "ボタン";
         case StrId::Touch:
@@ -39,7 +39,7 @@ const char* strings_ja(StrId id) {
         case StrId::Charging:
             return "充電中";
         case StrId::NotCharging:
-            return "未充電";
+            return "充電なし";
         case StrId::Online:
             return "オンライン";
         case StrId::Offline:
@@ -57,7 +57,7 @@ const char* strings_ja(StrId id) {
         case StrId::LoopDone:
             return "完了";
         case StrId::LoopFailed:
-            return "失敗";
+            return "エラー";
         case StrId::PowerOffTitle:
             return "電源オフ";
         case StrId::PowerOffPrompt:

@@ -200,8 +200,11 @@ def fetch_font(workdir, font_arg):
         shutil.copyfile(font_arg, target)
     else:
         print(f"downloading {FONT_URL}", file=sys.stderr)
-        with urllib.request.urlopen(FONT_URL) as response, open(target, "wb") as out:
-            shutil.copyfileobj(response, out)
+        # The timeout bounds each blocking socket operation, so a stalled
+        # connection fails instead of hanging the run.
+        with urllib.request.urlopen(FONT_URL, timeout=60) as response:
+            with open(target, "wb") as out:
+                shutil.copyfileobj(response, out)
     actual = sha256_of(target)
     if actual != FONT_SHA256:
         sys.exit(f"error: {FONT_FILE} SHA-256 is {actual}, expected {FONT_SHA256}")
