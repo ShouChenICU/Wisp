@@ -118,6 +118,12 @@ struct App::Impl {
     bool loop_stopping = false;
     std::unique_ptr<os::Task> loop_task;
 
+    // The one-shot "wisp.reset" task that runs a confirmed factory reset
+    // (see factory_reset.hpp), joined by App::stop() before networking is
+    // torn down. reset_mutex guards reset_task.
+    os::Mutex reset_mutex;
+    std::unique_ptr<os::Task> reset_task;
+
     bool started = false;
 
     // Both the constructor and destructor are declared here but defined

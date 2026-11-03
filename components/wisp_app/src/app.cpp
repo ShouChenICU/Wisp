@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "app_impl.hpp"
+#include "factory_reset.hpp"
 #include "loopback.hpp"
 #include "self_check.hpp"
 #include "wisp/base/json.hpp"
@@ -142,6 +143,9 @@ Result<void> App::start() {
         .storage = impl_->storage,
         .llm = impl_->llm,
         .system_settings = impl_->system_settings,
+        // Only a device with a screen can confirm a factory reset.
+        .request_factory_reset =
+            impl_->ui ? std::function<void()>([this] { request_factory_reset(*this); }) : nullptr,
     });
     impl_->net->start();
 
@@ -230,6 +234,9 @@ void App::stop() {
     // lambda does.
     join_loopback(*this);
     stop_self_check(impl_->self_check);
+    // A confirmed factory reset still running uses the bus, storage and
+    // the net services; let it finish (it ends in Platform::reboot).
+    join_factory_reset(*this);
 
     // Networking next: the HTTP server's handlers and the "wisp.net" task
     // call into PowerManager (brightness), the net services and storage,

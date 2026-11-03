@@ -1042,7 +1042,9 @@
 #define LV_USE_RLE 0
 
 /** QR code library */
-#define LV_USE_QRCODE 0
+/* wisp: on -- the provisioning card's "join this hotspot" code
+ * (connectivity spec 8.1). */
+#define LV_USE_QRCODE 1
 
 /** Barcode code library */
 #define LV_USE_BARCODE 0

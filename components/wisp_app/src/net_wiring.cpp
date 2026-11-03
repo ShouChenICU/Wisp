@@ -119,9 +119,7 @@ void NetWiring::start() {
             .http_port = platform.http_port,
             .device_status = [this] { return device_status(); },
             .reboot = platform.reboot,
-            // The on-device confirmation dialog is not wired yet; the route
-            // answers 503 until it is.
-            .request_factory_reset = {},
+            .request_factory_reset = deps_.request_factory_reset,
         });
         reconcile_http();  // http_always_on serves from boot
     }
@@ -156,6 +154,10 @@ void NetWiring::stop() {
     pairing_.reset();
     assets_ = net::AssetPack();
     has_assets_ = false;
+}
+
+bool NetWiring::flush_admin_ws(uint32_t timeout_ms) {
+    return admin_ ? admin_->flush_ws(timeout_ms) : true;
 }
 
 void NetWiring::run() {

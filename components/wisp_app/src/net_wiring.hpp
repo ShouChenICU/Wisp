@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -56,6 +57,10 @@ struct NetWiringDeps {
     core::StorageManager& storage;
     core::LlmConfigService& llm;
     core::SystemSettings& system_settings;
+    // Shows the factory-reset confirmation on the device (AdminDeps::
+    // request_factory_reset). Empty when there is no screen to confirm on:
+    // the route then answers 503.
+    std::function<void()> request_factory_reset;
 };
 
 class NetWiring {
@@ -75,6 +80,11 @@ public:
     void start();
     // Idempotent.
     void stop();
+
+    // Waits up to timeout_ms for the admin WebSocket sender to put every
+    // queued message on the wire (AdminServer::flush_ws()); true at once
+    // without an admin server. Not concurrently with stop().
+    bool flush_admin_ws(uint32_t timeout_ms);
 
     net::WifiService* wifi() const { return wifi_.get(); }
     net::PairingService* pairing() const { return pairing_.get(); }

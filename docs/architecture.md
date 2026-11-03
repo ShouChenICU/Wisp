@@ -62,10 +62,11 @@
 | `power.battery.low` | `core::PowerMonitor` | `battery_percent`（已知，即不是 -1）降到 ≤ Settings `power`/`low_batt_pct`（默认 15）时发布一次；回升超过阈值 +5 才重新武装，`payload = {"battery_percent": int}`，`Event::source` 为设备 id |
 | `storage.sd.inserted` / `storage.sd.removed` | `core::StorageManager` | SD 卡插拔检测 |
 | `system.boot.completed` | `app::App` | 启动流程第 5 步收尾时发布 |
+| `system.factory_reset` | `app::App`（`components/wisp_app/src/factory_reset.cpp`） | `payload = {"state": "requested"\|"cancelled"\|"done"}`。`POST /system/factory-reset` 发 `requested`，自检界面据此弹出确认框（已有确认框时不叠加）；点"否"发 `cancelled`；点"是"后在一次性任务 `wisp.reset` 上先发 `done`，最多等 500 ms 让事件总线和管理后台 WebSocket 发送线程把它送出，再清空 Settings、忘记全部 Wi-Fi、撤销全部配对浏览器、清除 LLM 配置，最后 `Platform::reboot`。Library/Backup 数据保留 |
 | `system.settings` | `app::App`（`core::SystemSettings` 的 `on_changed` 回调） | 每批设置写入成功后发布（连接 spec 8.3），`payload = {"brightness": int, "volume": int, "screen_off_s": int, "language": "zh"\|"ja"\|"en"}`，即写入后的全部当前值（与 `GET /settings` 同形）；自检界面据 `language` 在 UI 线程上 `ui::set_lang()` 并重建文字 |
 | `net.wifi.state` | `net::WifiService` | 状态变化时发布，`payload = {"state": "off"\|"connecting"\|"backoff"\|"connected", "ssid": string, "ssid_hex": string（SSID 原始字节的小写十六进制，见连接 spec 6.1）, "ip": string, "rssi": int, "reason": ""\|"not_found"\|"auth_failed"\|"other"}`；`reason` 只在 `backoff` 时非空；`Event::source` 为设备 id（`net.wifi`）。不含密码 |
 | `net.ap.state` | `net::WifiService` | 配网热点开关时发布，`payload = {"active": bool, "ssid": string, "clients": int}`，不含热点密码 |
-| `net.pairing.code` | `net::PairingService` | 发出配对码时 `{"active": true, "expires_ms": int}`（`os::now_ms()` 时间基准下的截止时刻），失效时 `{"active": false, "expires_ms": 0}`；不含配对码 |
+| `net.pairing.code` | `net::PairingService` | 发出配对码时 `{"active": true, "expires_ms": int}`（`os::now_ms()` 时间基准下的截止时刻），失效时（过期、配对成功、改发新码前，或在设备的配对卡片上点"拒绝"即 `PairingService::cancel_code()`）`{"active": false, "expires_ms": 0}`；不含配对码 |
 | `net.pairing.failed` | `net::PairingService` | 配对码错误时 `{"attempts": int, "locked": bool}` |
 
 `power.charging.changed`/`power.battery.low` 的字段名跟随 `wisp::hal::PowerStatus` 本身的成员名（`charging`/`usb_present`/`battery_percent`），不是 "vbus_present" 这个措辞——后者出自计划中驱动结构体 `axp2101_status_t` 的字段名（`drivers/axp2101/include/axp2101.h`），不是 spec 原文；spec 本身没有提到这个字段名，沿用 hal 已有的字段名更一致。
@@ -97,12 +98,14 @@
   `fps`/`flush_ms` 来自 `ui::UiRuntime::perf()`，本质是浮点数，但 JSON 往返时整数值会被识别为 `Int` 而非 `Double`（`Value`/JSON 对 Int/Double 的区分按实际值而非来源类型，见 `tests/base/value_json_test.cpp`）；解析方不应假设其中任何一个字段固定是哪一种 JSON 数字形式。`heap_internal_free`/`heap_large_free` 来自 `Platform::heap_info`（可能为空，此时都是 0）。
 
 - **`WISP_HTTP <json>`**（网络步骤；`NetWiring::reconcile_http()`）：管理后台 HTTP 服务每次启动成功时一行，`{"port": int}`，是 `HttpServer::port()` 报告的实际端口。可能出现在 `WISP_BOOT_REPORT` 之前（`http_always_on` 时开机即启动）。模拟器 `--http-port 0` 时不启动服务，也就没有这一行。
-- **`WISP_REBOOT`**（仅模拟器，无 JSON）：`Platform::reboot` 被调用（例如 `POST /api/v1/system/reboot`）时输出，随后主循环返回，经正常的 `App::stop()` 以退出码 0 结束进程（不在定时器线程里直接 `exit()`，以免静态析构与其他线程竞争）。真机对应 `esp_restart()`。
+- **`WISP_REBOOT`**（仅模拟器，无 JSON）：`Platform::reboot` 被调用（例如 `POST /api/v1/system/reboot`，或恢复出厂设置完成时）时输出，随后主循环返回，经正常的 `App::stop()` 以退出码 0 结束进程（不在定时器线程里直接 `exit()`，以免静态析构与其他线程竞争）。真机对应 `esp_restart()`。
 
 ## 模拟器的网络
 
 - `net.wifi` 是 `wisp::port::sim::SimWifi`（model `sim-wifi`）：内置 `WispLab`（-45 dBm，密码 `wisp1234`）、`Neighbor`（-70，`neighbor99`）、`OpenCafe`（-80，开放）；`--wifi-fail` 让所有连接以 `not_found` 失败；热点只改状态，`ap_clients()` 在热点开启时恒为 1。
 - 管理后台由 `SimHttpServer` 提供，只监听 `127.0.0.1`，端口 `--http-port`（默认 8900，与真机后台端口相同；0 表示不启动）。模拟器没有 80 端口的强制门户服务（`Platform::captive_server` 为空）。出站请求（`/llm/test`）走 `SimHttpClient`（libcurl，主机构建 `find_package(CURL 7.80 REQUIRED)`；可移植层禁止 include `curl/`）。
+- 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。冒烟测试 `factory_reset` 用它点确认框的"是"。
+- `--screenshot` 的截图（`UiRuntime::take_snapshot`）包含活动屏幕和 `lv_layer_top()`（确认框、配网卡片、配对卡片都在这一层），不含 `lv_layer_sys()`。
 - 网页资源：构建时用 `tools/pack_assets.py` 把 `web/` 打包成 `wisp_sim` 旁边的 `assets.wpak`（`web/` 不存在时打包一个空目录，只提供 API）；`--web-dir <目录>` 改为启动时在内存里按同一套 MIME/gzip 规则打包该目录（`wisp::port::sim::pack_web_dir()`）。
 
 ## 存储逻辑区

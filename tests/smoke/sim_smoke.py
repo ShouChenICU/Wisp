@@ -7,17 +7,21 @@ checks its machine-readable stdout (the single-line-JSON
 "WISP_BOOT_REPORT ", "WISP_MANIFEST " and "WISP_HTTP " lines -- see
 AGENTS.md section 4 and docs/architecture.md) and, for the default
 case, the PNG screenshot it writes. Each case runs wisp_sim in a fresh
-temporary data directory. Every case except "http" passes
---http-port 0 (no admin server), so the suite never depends on a free
-port; the "http" case picks one, talks to the admin API over loopback
-and reboots the simulator through it.
+temporary data directory. Every case except "http" and
+"factory_reset" passes --http-port 0 (no admin server), so the rest of
+the suite never depends on a free port; those two pick one, talk to the
+admin API over loopback and end the run with a reboot through it
+("factory_reset" also confirms on the screen with a scripted --tap and
+listens on the admin WebSocket).
 
 Registered with ctest as the "sim_smoke" test (tests/CMakeLists.txt).
 
 Usage: python3 tests/smoke/sim_smoke.py <path-to-wisp_sim>
 """
 
+import base64
 import hashlib
+import os
 import http.client
 import json
 import pathlib
@@ -27,6 +31,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 
 TIMEOUT_S = 20
@@ -322,20 +327,83 @@ def api_request(port, method, path, headers=None):
         conn.close()
 
 
-def case_http(sim_path, tmp_root):
-    """The admin server comes up on the requested loopback port at boot
-    (Platform::http_always_on), announces it with WISP_HTTP, answers the
-    API, and POST /system/reboot ends the process with WISP_REBOOT and
-    exit code 0. The browser is "paired" by seeding net/clients.json with
-    the SHA-256 of a known token, which is all the device stores."""
-    data_dir = tmp_root / "http"
-    token = "smoke-test-token"
+def seed_paired_client(data_dir, token, label):
+    """Pairs a browser by seeding net/clients.json with the SHA-256 of a
+    known token, which is all the device stores."""
     digest = hashlib.sha256(token.encode()).hexdigest()
     clients = data_dir / "int" / "system" / "net" / "clients.json"
     clients.parent.mkdir(parents=True)
     clients.write_text(json.dumps({"clients": [
-        {"id": digest[:12], "hash": digest, "label": "smoke", "created": 0, "last_seen": 0},
+        {"id": digest[:12], "hash": digest, "label": label, "created": 0, "last_seen": 0},
     ]}))
+    return clients
+
+
+class WsClient:
+    """Just enough of RFC 6455 for the admin socket: one handshake, masked
+    text frames out, unmasked text/close frames in."""
+
+    def __init__(self, port, cookie):
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall((
+            "GET /api/v1/ws HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+            f"Cookie: {cookie}\r\n\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(1)
+            expect(chunk, f"socket closed during the WebSocket handshake: {head!r}")
+            head += chunk
+        expect(head.startswith(b"HTTP/1.1 101"), f"WebSocket upgrade refused: {head!r}")
+
+    def _read_exact(self, n):
+        data = b""
+        while len(data) < n:
+            chunk = self.sock.recv(n - len(data))
+            if not chunk:
+                return None
+            data += chunk
+        return data
+
+    def send_text(self, text):
+        payload = text.encode()
+        expect(len(payload) < 126, "WsClient only sends short frames")
+        mask = os.urandom(4)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self.sock.sendall(bytes([0x81, 0x80 | len(payload)]) + mask + masked)
+
+    def recv_text(self):
+        """The next text message, or None once the device closes."""
+        while True:
+            head = self._read_exact(2)
+            if head is None:
+                return None
+            opcode, size = head[0] & 0x0F, head[1] & 0x7F
+            if size == 126:
+                size = struct.unpack(">H", self._read_exact(2))[0]
+            elif size == 127:
+                size = struct.unpack(">Q", self._read_exact(8))[0]
+            body = self._read_exact(size)
+            if body is None or opcode == 0x8:
+                return None
+            if opcode == 0x1:
+                return body.decode("utf-8")
+
+    def close(self):
+        self.sock.close()
+
+
+def case_http(sim_path, tmp_root):
+    """The admin server comes up on the requested loopback port at boot
+    (Platform::http_always_on), announces it with WISP_HTTP, answers the
+    API, and POST /system/reboot ends the process with WISP_REBOOT and
+    exit code 0. The browser is paired with seed_paired_client()."""
+    data_dir = tmp_root / "http"
+    token = "smoke-test-token"
+    seed_paired_client(data_dir, token, "smoke")
 
     port = free_port()
     args = sim_args(sim_path, data_dir, [], http_port=port)
@@ -374,6 +442,67 @@ def case_http(sim_path, tmp_root):
             proc.communicate()
     expect("WISP_REBOOT" in rest.splitlines(), f"no WISP_REBOOT line after reboot:\n{rest}")
     expect(proc.returncode == 0, f"exit code {proc.returncode} after reboot, stderr:\n{err}")
+
+
+def case_factory_reset(sim_path, tmp_root):
+    """POST /system/factory-reset puts a confirmation dialog on the device;
+    a scripted tap on its "Yes" button resets. The browser's socket hears
+    {state:"done"} before its token is revoked, the pairing and the
+    settings are gone afterwards, and the process ends with WISP_REBOOT
+    and exit code 0."""
+    data_dir = tmp_root / "factory-reset"
+    token = "smoke-reset-token"
+    clients = seed_paired_client(data_dir, token, "smoke")
+    # English, so the dialog's "Yes" button is where the tap below lands
+    # (the dialog is centred in the safe area: about (188, 298) on a
+    # 480x480 rounded_rect screen).
+    (data_dir / "settings.json").write_text(json.dumps({"sys": {"lang": "en"}}))
+
+    port = free_port()
+    args = sim_args(sim_path, data_dir, ["--tap", "188,298@2500"], http_port=port)
+    args[args.index("--exit-after-ms") + 1] = str(TIMEOUT_S * 1000)
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    ws = None
+    states = []
+    try:
+        for line in proc.stdout:
+            if line.startswith("WISP_HTTP "):
+                break
+        cookie = f"wisp_token={token}"
+        ws = WsClient(port, cookie)
+        ws.send_text(json.dumps({"sub": ["events"]}))
+        # The hub has the subscription once it is processed; give it a beat
+        # so "requested" is forwarded too.
+        time.sleep(0.2)
+
+        status, body = api_request(port, "POST", "/api/v1/system/factory-reset",
+                                   {"Cookie": cookie, "X-Wisp": "1"})
+        expect(status == 202, f"POST /api/v1/system/factory-reset -> {status} {body}")
+
+        ws.sock.settimeout(TIMEOUT_S)
+        while True:
+            text = ws.recv_text()
+            if text is None:
+                break
+            msg = json.loads(text)
+            if msg.get("t") == "event" and msg.get("topic") == "system.factory_reset":
+                states.append(msg["payload"].get("state"))
+        rest, err = proc.communicate(timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired as exc:
+        raise SmokeError(f"wisp_sim did not exit after the factory reset; states {states}") from exc
+    finally:
+        if ws is not None:
+            ws.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+    expect(states == ["requested", "done"], f"system.factory_reset states over the socket: {states}")
+    expect("WISP_REBOOT" in rest.splitlines(), f"no WISP_REBOOT line after the reset:\n{rest}")
+    expect(proc.returncode == 0, f"exit code {proc.returncode} after the reset, stderr:\n{err}")
+    expect(json.loads(clients.read_text()).get("clients") == [],
+           f"clients.json after the reset: {clients.read_text()}")
+    settings = json.loads((data_dir / "settings.json").read_text())
+    expect("lang" not in settings.get("sys", {}), f"settings.json after the reset: {settings}")
 
 
 def case_disable_imu(sim_path, tmp_root):
@@ -459,6 +588,7 @@ CASES = (
     ("shape_circle", case_shape_circle),
     ("disable_wifi", case_disable_wifi),
     ("http", case_http),
+    ("factory_reset", case_factory_reset),
 )
 
 

@@ -238,6 +238,11 @@ private:
     // again after a start()/stop()/start() cycle on the same App -- see
     // app.cpp's start() and loopback.cpp.
     friend void reset_loopback(App&);
+    // The factory reset (src/factory_reset.hpp) flushes the admin
+    // WebSocket through NetWiring and keeps its "wisp.reset" task here.
+    friend void factory_reset(App&);
+    friend void start_factory_reset(App&);
+    friend void join_factory_reset(App&);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

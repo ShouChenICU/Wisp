@@ -14,8 +14,11 @@
 #include <vector>
 
 #include "app_impl.hpp"
+#include "factory_reset.hpp"
 #include "loopback.hpp"
 #include "lvgl.h"
+#include "net_cards.hpp"
+#include "net_section.hpp"
 #include "self_check.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/format.hpp"
@@ -31,6 +34,8 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/imu.hpp"
 #include "wisp/hal/power.hpp"
+#include "wisp/net/pairing_service.hpp"
+#include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -155,6 +160,7 @@ private:
     void build_button_hint_section(lv_obj_t* col);
     void build_loopback_section(lv_obj_t* col);
     void build_perf_section(lv_obj_t* col);
+    void build_net_section(lv_obj_t* col);
 
     void start_sampling();
     void sample_loop();
@@ -172,6 +178,27 @@ private:
     void on_power_event(const core::Event& e);
     void subscribe_settings();
     void on_settings_event(const core::Event& e);
+    // net.wifi.state / net.ap.state / net.pairing.code (connectivity spec
+    // 5.5) and system.factory_reset {state:"requested"}: each posts the
+    // matching sync onto the UI thread, which reads the services' current
+    // state rather than trusting a possibly stale payload.
+    void subscribe_net();
+    void on_net_event(const core::Event& e);
+    void on_reset_event(const core::Event& e);
+    // UI thread: re-reads the Wi-Fi state into the network section and
+    // opens, refreshes or closes the provisioning card to match.
+    void sync_wifi();
+    // UI thread: shows the active pairing code (if any) with a countdown to
+    // `expires_ms`, or closes the card.
+    void sync_pairing(bool active, uint64_t expires_ms);
+    // Keeps the stacking order on the top layer: provisioning card, then
+    // pairing card, then the dialogs.
+    void raise_overlays();
+    // Turns a sleeping screen on for something the user is waiting to see
+    // (a pairing code, the factory-reset question). UI thread.
+    void wake_screen();
+    void show_reset_dialog();
+    void close_reset_dialog();
     // Brings ui::lang() in line with the stored language, rebuilding if it
     // changed. UI thread only.
     void sync_language();
@@ -195,6 +222,13 @@ private:
     static void loopback_btn_cb(lv_event_t* e);
     static void perf_long_press_cb(lv_event_t* e);
     static void msgbox_btn_cb(lv_event_t* e);
+    static void reset_btn_cb(lv_event_t* e);
+
+    // A confirm box in show_confirm_dialog()'s style (the msgbox's default
+    // width clamped to the safe area) with Yes/No footer buttons, both
+    // wired to `cb` with this screen as user data. Returns the box; *yes
+    // receives its Yes button.
+    lv_obj_t* make_confirm_box(ui::StrId title, ui::StrId text, lv_event_cb_t cb, lv_obj_t** yes);
 
     App& app_;
     ui::UiRuntime* ui_;
@@ -238,6 +272,19 @@ private:
     lv_obj_t* perf_label_ = nullptr;
     lv_obj_t* msgbox_ = nullptr;
     lv_obj_t* msgbox_yes_ = nullptr;
+    // The factory-reset confirmation, kept apart from the power-off dialog
+    // above so neither one's buttons (or the power key) can answer the
+    // other. At most one of each is open.
+    lv_obj_t* reset_box_ = nullptr;
+    lv_obj_t* reset_yes_ = nullptr;
+    // Set once the user confirmed: later requests are ignored while the
+    // reset runs towards its restart.
+    bool reset_confirmed_ = false;
+
+    // --- Network block and cards (connectivity spec 8.1). UI thread only.
+    NetSection net_section_;
+    ProvisioningCard setup_card_;
+    PairingCard pair_card_;
     lv_timer_t* refresh_timer_ = nullptr;
     // The single root container build() creates everything else under
     // (see build()). Deleted (lv_obj_delete(), recursively deleting every
@@ -283,6 +330,8 @@ private:
     core::SubscriptionId button_sub_ = 0;
     core::SubscriptionId power_sub_ = 0;
     core::SubscriptionId settings_sub_ = 0;
+    core::SubscriptionId net_sub_ = 0;
+    core::SubscriptionId reset_sub_ = 0;
 };
 
 SelfCheck::SelfCheck(App& app)
@@ -292,7 +341,19 @@ SelfCheck::SelfCheck(App& app)
       imu_(app.registry().get<hal::Imu>("imu.main")),
       power_(app.registry().get<hal::Power>("power.main")),
       clock_(app.registry().get<hal::Clock>("clock.main")),
-      ui_settings_(*app.platform().settings, "ui") {}
+      ui_settings_(*app.platform().settings, "ui"),
+      net_section_(app.wifi()),
+      setup_card_([this] {
+          if (net::WifiService* wifi = app_.wifi()) {
+              if (auto r = wifi->stop_provisioning(); !r) {
+                  WLOG_W("self_check", "stopping the setup hotspot failed: %s",
+                         r.error().message.c_str());
+              }
+          }
+      }),
+      pair_card_([this] {
+          if (net::PairingService* pairing = app_.pairing()) pairing->cancel_code();
+      }) {}
 
 SelfCheck::~SelfCheck() {
     // Unsubscribe from "power.state" before anything else, so standby_
@@ -309,6 +370,16 @@ SelfCheck::~SelfCheck() {
     if (settings_sub_ != 0) {
         app_.bus().unsubscribe(settings_sub_);
         settings_sub_ = 0;
+    }
+    // Same for the network and factory-reset syncs: whatever they already
+    // posted runs before the teardown below.
+    if (net_sub_ != 0) {
+        app_.bus().unsubscribe(net_sub_);
+        net_sub_ = 0;
+    }
+    if (reset_sub_ != 0) {
+        app_.bus().unsubscribe(reset_sub_);
+        reset_sub_ = 0;
     }
 
     // Stop the sampling task -- thread-agnostic, and nothing it touches
@@ -364,6 +435,10 @@ SelfCheck::~SelfCheck() {
             msgbox_ = nullptr;
             msgbox_yes_ = nullptr;
         }
+        close_reset_dialog();
+        // The cards live on the top layer, outside root_.
+        setup_card_.close();
+        pair_card_.close();
         if (refresh_timer_ != nullptr) {
             lv_timer_delete(refresh_timer_);
             refresh_timer_ = nullptr;
@@ -406,6 +481,10 @@ void SelfCheck::build() {
     subscribe_buttons();
     subscribe_power();
     subscribe_settings();
+    subscribe_net();
+    // Anything the net services announced before the subscription above
+    // (the build runs after networking has started).
+    sync_wifi();
 
     refresh_timer_ = lv_timer_create(&SelfCheck::refresh_timer_cb, kUiRefreshMs, this);
 
@@ -418,7 +497,15 @@ void SelfCheck::build() {
 void SelfCheck::rebuild() {
     int32_t scroll_y = root_ != nullptr ? lv_obj_get_scroll_y(root_) : 0;
     bool dialog_open = msgbox_ != nullptr;
+    bool reset_open = reset_box_ != nullptr;
+    bool setup_open = setup_card_.is_open();
+    bool pair_open = pair_card_.is_open();
+    std::string pair_code = pair_card_.code();
+    uint64_t pair_expires = pair_card_.expires_ms();
     close_confirm_dialog();
+    close_reset_dialog();
+    setup_card_.close();
+    pair_card_.close();
     if (root_ != nullptr) {
         lv_obj_delete(root_);
         root_ = nullptr;
@@ -431,8 +518,18 @@ void SelfCheck::rebuild() {
     refresh_ui();
     lv_obj_update_layout(root_);
     lv_obj_scroll_to_y(root_, scroll_y, LV_ANIM_OFF);
+    // Reopen in stacking order (see raise_overlays()).
+    if (setup_open) {
+        sync_wifi();
+    }
+    if (pair_open) {
+        pair_card_.open(std::move(pair_code), pair_expires, os::now_ms(), compute_safe_area());
+    }
     if (dialog_open) {
         show_confirm_dialog();
+    }
+    if (reset_open) {
+        show_reset_dialog();
     }
 }
 
@@ -469,6 +566,7 @@ void SelfCheck::build_widgets() {
 
     build_header(col);
     build_device_list(col);
+    build_net_section(col);
     build_imu_section(col);
     build_power_section(col);
     build_rtc_section(col);
@@ -580,6 +678,8 @@ void SelfCheck::build_device_list(lv_obj_t* col) {
         }
     }
 }
+
+void SelfCheck::build_net_section(lv_obj_t* col) { net_section_.build(col, os::now_ms()); }
 
 void SelfCheck::build_imu_section(lv_obj_t* col) {
     lv_obj_t* row = make_row_container(col);
@@ -893,6 +993,113 @@ void SelfCheck::sync_language() {
     rebuild();
 }
 
+void SelfCheck::subscribe_net() {
+    net_sub_ = app_.bus().subscribe("net.", [this](const core::Event& e) { on_net_event(e); });
+    reset_sub_ = app_.bus().subscribe("system.factory_reset",
+                                      [this](const core::Event& e) { on_reset_event(e); });
+}
+
+void SelfCheck::on_net_event(const core::Event& e) {
+    bool posted = true;
+    if (e.topic == "net.wifi.state" || e.topic == "net.ap.state") {
+        posted = ui_->post([this] { sync_wifi(); });
+    } else if (e.topic == "net.pairing.code") {
+        auto active_it = e.payload.find("active");
+        auto expires_it = e.payload.find("expires_ms");
+        bool active = active_it != e.payload.end() &&
+                      active_it->second.type() == Value::Type::Bool && active_it->second.as_bool();
+        uint64_t expires = expires_it != e.payload.end() &&
+                                   expires_it->second.type() == Value::Type::Int &&
+                                   expires_it->second.as_int() > 0
+                               ? static_cast<uint64_t>(expires_it->second.as_int())
+                               : 0;
+        posted = ui_->post([this, active, expires] { sync_pairing(active, expires); });
+    }
+    if (!posted) {
+        WLOG_W("self_check", "post(%s) dropped (post queue full)", e.topic.c_str());
+    }
+}
+
+void SelfCheck::on_reset_event(const core::Event& e) {
+    auto it = e.payload.find("state");
+    if (it == e.payload.end() || it->second.type() != Value::Type::String ||
+        it->second.as_string() != "requested") {
+        return;
+    }
+    if (!ui_->post([this] { show_reset_dialog(); })) {
+        WLOG_W("self_check", "post(factory reset dialog) dropped (post queue full)");
+    }
+}
+
+void SelfCheck::sync_wifi() {
+    const uint64_t now = os::now_ms();
+    net_section_.refresh(now);
+    net::WifiService* wifi = app_.wifi();
+    std::optional<net::ApSession> ap = wifi != nullptr ? wifi->ap_session() : std::nullopt;
+    if (!ap) {
+        setup_card_.close();
+        return;
+    }
+    const net::ApSession& shown = setup_card_.session();
+    if (setup_card_.is_open() && shown.ssid == ap->ssid && shown.password == ap->password &&
+        shown.ip == ap->ip) {
+        return;
+    }
+    setup_card_.open(*ap, compute_safe_area());
+    raise_overlays();
+}
+
+void SelfCheck::sync_pairing(bool active, uint64_t expires_ms) {
+    const uint64_t now = os::now_ms();
+    net::PairingService* pairing = app_.pairing();
+    std::optional<std::string> code =
+        active && pairing != nullptr ? pairing->active_code(now) : std::nullopt;
+    if (!code || expires_ms <= now) {
+        pair_card_.close();
+        return;
+    }
+    if (pair_card_.is_open() && pair_card_.code() == *code &&
+        pair_card_.expires_ms() == expires_ms) {
+        return;
+    }
+    pair_card_.open(std::move(*code), expires_ms, now, compute_safe_area());
+    raise_overlays();
+    wake_screen();
+}
+
+void SelfCheck::raise_overlays() {
+    pair_card_.raise();
+    // A msgbox lives under its own full-screen backdrop on the top layer.
+    for (lv_obj_t* box : {msgbox_, reset_box_}) {
+        if (box != nullptr) lv_obj_move_foreground(lv_obj_get_parent(box));
+    }
+}
+
+void SelfCheck::wake_screen() {
+    PowerManager* pm = app_.power_manager();
+    if (pm != nullptr && pm->standby()) {
+        pm->exit_standby();
+    }
+}
+
+void SelfCheck::show_reset_dialog() {
+    if (reset_box_ != nullptr || reset_confirmed_) {
+        return;  // one dialog per request at a time; nothing once confirmed
+    }
+    reset_box_ = make_confirm_box(ui::StrId::ResetTitle, ui::StrId::ResetPrompt,
+                                  &SelfCheck::reset_btn_cb, &reset_yes_);
+    wake_screen();
+}
+
+void SelfCheck::close_reset_dialog() {
+    if (reset_box_ == nullptr) {
+        return;
+    }
+    lv_msgbox_close(reset_box_);
+    reset_box_ = nullptr;
+    reset_yes_ = nullptr;
+}
+
 void SelfCheck::handle_power_key_action(PowerKeyController::Action action) {
     // Screen on/off now goes through PowerManager (panel/touch sleep, UI
     // pause, button poll widening, the platform DFS/light-sleep hook --
@@ -933,7 +1140,13 @@ void SelfCheck::show_confirm_dialog() {
     if (msgbox_ != nullptr) {
         return;  // Already up -- spec 8: no stacked confirm dialogs.
     }
-    msgbox_ = lv_msgbox_create(nullptr);
+    msgbox_ = make_confirm_box(ui::StrId::PowerOffTitle, ui::StrId::PowerOffPrompt,
+                               &SelfCheck::msgbox_btn_cb, &msgbox_yes_);
+}
+
+lv_obj_t* SelfCheck::make_confirm_box(ui::StrId title, ui::StrId text, lv_event_cb_t cb,
+                                      lv_obj_t** yes) {
+    lv_obj_t* box = lv_msgbox_create(nullptr);
     // lv_msgbox_class's own default width is a fixed LV_DPI_DEF * 2 (see
     // lv_msgbox.c), unrelated to this screen's actual safe area -- fine
     // on this board's 480px circular screen (where it happens to fit
@@ -942,13 +1155,14 @@ void SelfCheck::show_confirm_dialog() {
     // round screen would clip it. Clamp to whichever is smaller.
     hal::Area safe = compute_safe_area();
     int32_t safe_width = safe.x2 - safe.x1 + 1;
-    lv_obj_set_width(msgbox_, std::min<int32_t>(LV_DPI_DEF * 2, safe_width));
-    lv_msgbox_add_title(msgbox_, ui::tr(ui::StrId::PowerOffTitle));
-    lv_msgbox_add_text(msgbox_, ui::tr(ui::StrId::PowerOffPrompt));
-    msgbox_yes_ = lv_msgbox_add_footer_button(msgbox_, ui::tr(ui::StrId::Yes));
-    lv_obj_t* no_btn = lv_msgbox_add_footer_button(msgbox_, ui::tr(ui::StrId::No));
-    lv_obj_add_event_cb(msgbox_yes_, &SelfCheck::msgbox_btn_cb, LV_EVENT_CLICKED, this);
-    lv_obj_add_event_cb(no_btn, &SelfCheck::msgbox_btn_cb, LV_EVENT_CLICKED, this);
+    lv_obj_set_width(box, std::min<int32_t>(LV_DPI_DEF * 2, safe_width));
+    lv_msgbox_add_title(box, ui::tr(title));
+    lv_msgbox_add_text(box, ui::tr(text));
+    *yes = lv_msgbox_add_footer_button(box, ui::tr(ui::StrId::Yes));
+    lv_obj_t* no_btn = lv_msgbox_add_footer_button(box, ui::tr(ui::StrId::No));
+    lv_obj_add_event_cb(*yes, cb, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(no_btn, cb, LV_EVENT_CLICKED, this);
+    return box;
 }
 
 void SelfCheck::close_confirm_dialog() {
@@ -1015,6 +1229,9 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     // tick while nothing changes.
     self->sync_language();
     self->refresh_ui();
+    const uint64_t now = os::now_ms();
+    self->net_section_.tick(now);
+    self->pair_card_.tick(now);
 }
 
 void SelfCheck::refresh_ui() {
@@ -1156,6 +1373,21 @@ void SelfCheck::msgbox_btn_cb(lv_event_t* e) {
     PowerKeyController::Action action = self->power_key_.on_confirm(yes);
     self->close_confirm_dialog();
     self->handle_power_key_action(action);
+}
+
+void SelfCheck::reset_btn_cb(lv_event_t* e) {
+    auto* self = static_cast<SelfCheck*>(lv_event_get_user_data(e));
+    auto* target = static_cast<lv_obj_t*>(lv_event_get_target(e));
+    bool yes = (target == self->reset_yes_);
+    self->close_reset_dialog();
+    if (yes) {
+        self->reset_confirmed_ = true;
+        // Off the UI thread: the reset waits for the network and writes
+        // flash before it restarts the device.
+        start_factory_reset(self->app_);
+    } else {
+        cancel_factory_reset(self->app_);
+    }
 }
 
 void start_self_check(App& app, std::unique_ptr<SelfCheck>& slot) {

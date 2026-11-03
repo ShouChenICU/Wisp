@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "support/fake_devices.hpp"
+#include "support/lvgl_probe.hpp"
 #include "support/temp_dir.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/app.hpp"
@@ -41,12 +42,19 @@
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
+using wisp::test::all_label_glyphs_resolvable;
+using wisp::test::collect_labels;
 using wisp::test::FakeButton;
 using wisp::test::FakeClock;
 using wisp::test::FakeDisplay;
 using wisp::test::FakeImu;
 using wisp::test::FakePower;
 using wisp::test::FakeStorage;
+using wisp::test::find_button_with_label;
+using wisp::test::find_label_text_containing;
+using wisp::test::find_msgbox_width;
+using wisp::test::run_on_ui_blocking;
+using wisp::test::run_on_ui_thread;
 using wisp::test::wait_until;
 
 namespace {
@@ -156,145 +164,6 @@ private:
     }
 };
 
-// Recursively searches `obj`'s subtree for the first lv_msgbox, returning
-// its width in pixels (-1 if none is open). lv_msgbox_create(nullptr) (see
-// show_confirm_dialog() in self_check_screen.cpp) parents the msgbox under
-// a full-screen backdrop on lv_layer_top(), not under the active screen,
-// so callers must search from there rather than from lv_screen_active().
-int32_t find_msgbox_width(lv_obj_t* obj) {
-    if (lv_obj_check_type(obj, &lv_msgbox_class)) {
-        return lv_obj_get_width(obj);
-    }
-    uint32_t count = lv_obj_get_child_count(obj);
-    for (uint32_t i = 0; i < count; ++i) {
-        int32_t found = find_msgbox_width(lv_obj_get_child(obj, i));
-        if (found >= 0) {
-            return found;
-        }
-    }
-    return -1;
-}
-
-// Returns true if every label in `obj`'s subtree can render every
-// codepoint of its text with the font it actually resolves to (including
-// that font's fallback chain). Catches widgets created outside the active
-// screen (e.g. on lv_layer_top()) that do not inherit the CJK fallback.
-bool all_label_glyphs_resolvable(lv_obj_t* obj) {
-    if (lv_obj_check_type(obj, &lv_label_class)) {
-        const lv_font_t* font = lv_obj_get_style_text_font(obj, LV_PART_MAIN);
-        const char* text = lv_label_get_text(obj);
-        const auto* p = reinterpret_cast<const unsigned char*>(text != nullptr ? text : "");
-        while (*p != 0) {
-            uint32_t letter = *p;
-            int extra = letter >= 0xF0 ? 3 : letter >= 0xE0 ? 2 : letter >= 0xC0 ? 1 : 0;
-            letter &= extra == 0 ? 0x7F : (0x3F >> extra);
-            ++p;
-            for (int k = 0; k < extra && *p != 0; ++k, ++p) {
-                letter = (letter << 6) | (*p & 0x3F);
-            }
-            if (letter == ' ' || letter == '\n') {
-                continue;
-            }
-            lv_font_glyph_dsc_t dsc;
-            if (!lv_font_get_glyph_dsc(font, &dsc, letter, 0)) {
-                return false;
-            }
-        }
-    }
-    uint32_t count = lv_obj_get_child_count(obj);
-    for (uint32_t i = 0; i < count; ++i) {
-        if (!all_label_glyphs_resolvable(lv_obj_get_child(obj, i))) {
-            return false;
-        }
-    }
-    return true;
-}
-
-// Recursively searches `obj`'s subtree for the first lv_label whose
-// current text contains `needle`, returning a copy of its text (empty if
-// none found). Used below to check specific rows' rendered text without
-// needing any test-only accessor into SelfCheck's internals -- it's
-// entirely opaque to this test file (see self_check.hpp's forward
-// declaration) -- or a snapshot pixel diff of the whole screen.
-std::string find_label_text_containing(lv_obj_t* obj, const char* needle) {
-    if (lv_obj_check_type(obj, &lv_label_class)) {
-        const char* text = lv_label_get_text(obj);
-        if (text != nullptr && std::string(text).find(needle) != std::string::npos) {
-            return text;
-        }
-    }
-    uint32_t count = lv_obj_get_child_count(obj);
-    for (uint32_t i = 0; i < count; ++i) {
-        std::string found = find_label_text_containing(lv_obj_get_child(obj, i), needle);
-        if (!found.empty()) {
-            return found;
-        }
-    }
-    return {};
-}
-
-// Recursively searches `obj`'s subtree for the footer button whose own
-// direct child label reads exactly `text` (see show_confirm_dialog()'s
-// "是"/"否" buttons), returning the button object itself (not the label)
-// so a test can lv_obj_send_event() a click to it -- nullptr if none
-// found.
-lv_obj_t* find_button_with_label(lv_obj_t* obj, const char* text) {
-    uint32_t count = lv_obj_get_child_count(obj);
-    for (uint32_t i = 0; i < count; ++i) {
-        lv_obj_t* child = lv_obj_get_child(obj, i);
-        if (lv_obj_check_type(child, &lv_label_class)) {
-            const char* label_text = lv_label_get_text(child);
-            if (label_text != nullptr && std::string(label_text) == text) {
-                return obj;
-            }
-        }
-    }
-    for (uint32_t i = 0; i < count; ++i) {
-        lv_obj_t* found = find_button_with_label(lv_obj_get_child(obj, i), text);
-        if (found != nullptr) {
-            return found;
-        }
-    }
-    return nullptr;
-}
-
-// Runs `probe` (which must itself only call lv_* -- it's invoked on the UI
-// task) and blocks until it has returned, regardless of which thread
-// calls this -- the same pattern self_check_screen.cpp's own
-// run_on_ui_thread_blocking() uses internally, reimplemented here since
-// that helper isn't reachable from outside self_check_screen.cpp.
-std::string run_on_ui_thread(wisp::ui::UiRuntime* ui, const std::function<std::string()>& probe) {
-    std::string result;
-    wisp::os::Semaphore done(1, 0);
-    if (!ui->post([&] {
-            result = probe();
-            done.give();
-        })) {
-        return {};
-    }
-    done.take(wisp::os::kForever);
-    return result;
-}
-
-// Like run_on_ui_thread() above but for a void `fn` -- used to call
-// PowerManager::enter_standby()/exit_standby() directly from a test:
-// both call display->set_power() straight through (not via post()), and
-// spec 5.3 requires every Display call to come from the UI thread
-// (debug-asserted -- see display.hpp). Production code only ever
-// reaches them already on the UI task (PowerManager posts first when it
-// has a UiRuntime), so tests driving them directly need to reproduce
-// that same calling convention.
-void run_on_ui_blocking(wisp::ui::UiRuntime* ui, const std::function<void()>& fn) {
-    wisp::os::Semaphore done(1, 0);
-    if (!ui->post([&] {
-            fn();
-            done.give();
-        })) {
-        return;
-    }
-    done.take(wisp::os::kForever);
-}
-
 // The device-list title in each language, used to tell which language the
 // screen was built in.
 struct LangCase {
@@ -312,21 +181,6 @@ constexpr LangCase kLangCases[] = {
 void seed_language(const std::string& settings_path, const char* code) {
     wisp::port::sim::JsonFileSettingsBackend backend(settings_path);
     ASSERT_TRUE(wisp::core::Settings(backend, "sys").set("lang", code));
-}
-
-// Every label in `obj`'s subtree, as "text" -> its screen coordinates, so a
-// test can check them against the safe area.
-void collect_labels(lv_obj_t* obj, std::vector<std::pair<std::string, lv_area_t>>& out) {
-    if (lv_obj_check_type(obj, &lv_label_class)) {
-        lv_area_t a;
-        lv_obj_get_coords(obj, &a);
-        const char* text = lv_label_get_text(obj);
-        out.emplace_back(text != nullptr ? text : "", a);
-    }
-    uint32_t count = lv_obj_get_child_count(obj);
-    for (uint32_t i = 0; i < count; ++i) {
-        collect_labels(lv_obj_get_child(obj, i), out);
-    }
 }
 
 }  // namespace
