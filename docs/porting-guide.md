@@ -9,7 +9,7 @@
 1. **esp_board_manager YAML**（`boards/<板名>/board_info.yaml`、`board_peripherals.yaml`、`board_devices.yaml`）：描述板子型号、总线（I2C/I2S/SPI/GPIO）和 esp_board_manager 已支持的设备（显示、触摸、音频编解码器、SD 卡等）。只负责把芯片接上总线、分配引脚，**不**填写 Wisp 的能力清单。
 2. **`setup_device.c`**（可选，仅当板上有 esp_board_manager 还没有内置工厂函数的设备类型时才需要）：给 bmgr 提供自定义设备的构造入口。
 3. **`board.cpp`**：实现 `wisp::board::create_board()`，返回一个 `wisp::app::Board`。它的 `init()` 把 bmgr 已经建好的设备句柄（屏幕、触摸、音频、SD 卡）包一层 `wisp::hal::Device` 接口，并用 Wisp 自己的驱动（通过 bmgr 暴露的总线）点亮 bmgr 不管的设备（IMU、PMU、RTC、按键等），统一注册进 `DeviceRegistry`。
-4. **`partitions.csv` 与 `sdkconfig.defaults.board`**：本板的分区表和板级 sdkconfig（见下文"分区与板级配置"）。
+4. **`partitions.csv` 与 `sdkconfig.defaults.board`**：本板的分区表和板级 sdkconfig（见下文"分区与板级配置"和"固件与分区"）。
 
 ## 步骤 1：写 bmgr YAML
 
@@ -80,11 +80,48 @@ sdkconfig 的默认值只在 `firmware/sdkconfig` 不存在时生效。切换板
 |---|---|---|
 | `nvs` | 必需 | 配置 |
 | `phy_init` | 必需 | 射频校准 |
-| `assets` | 必需，≥ 1MB | WispPack 资源包 |
 | `storage` | 必需 | LittleFS（`/int`） |
-| `ota_0`、`ota_1`、`otadata` | 可选 | Flash 足够时提供双 OTA 分区；没有时用单个 `factory` 应用分区，固件检测到缺少 OTA 分区就关闭 OTA 功能，只降级运行 |
+| `ota_0`、`ota_1`、`otadata` | 可选（网页固件上传需要） | 双 OTA 应用分区，两个一样大，要装得下整个应用镜像（网页资源包也链接在镜像里）；没有时用单个 `factory` 应用分区，`EspFirmwareUpdater::create()` 找不到第二个槽就返回空，`GET /system/firmware` 报告 `supported: false`，只降级运行 |
 
-分区大小由各板自行决定，例如 32MB 的板子可以把多出的空间分给 `storage` 或 `assets`。参考板的分区表见基础 spec 7.4 和 `boards/waveshare_amoled_216/partitions.csv`。
+没有单独的 `assets` 分区：网页资源包（WispPack，≤ 256 KiB）链接在应用镜像里（见下文"固件与分区"）。分区大小由各板自行决定，例如 32MB 的板子可以把多出的空间分给 `storage`。参考板的分区表见 `boards/waveshare_amoled_216/partitions.csv` 和 `docs/hardware/waveshare_amoled_216.md`。
+
+**改分区表的规则**：已经出货的板子改分区表时，`nvs` 和 `storage` 保持原来的偏移和大小，设置和数据才能保留。分区表和引导程序不在 OTA 范围内，网页上传只换应用镜像；所以改了分区表（或首次打开回滚功能、换了引导程序）之后，必须用 USB 完整烧录一次（`idf.py flash`，写入引导程序、分区表、`otadata` 和 `ota_0`），之后才能用网页上传。
+
+## 固件与分区
+
+### 板名描述符
+
+每个 Wisp 应用镜像都在 `esp_app_desc_t` 之后带一个 48 字节的板名描述符（`firmware/main/board_desc.c`，段 `.rodata_custom_desc`，所以总在镜像偏移 288 处）：
+
+| 偏移（相对描述符） | 类型 | 内容 |
+|---|---|---|
+| 0 | `u32` | 魔数 `0x42505357`（小端 `"WSPB"`） |
+| 4 | `u16` | 版本，当前为 1 |
+| 6 | `u16` | 保留，0 |
+| 8 | `char[40]` | 板名（`WISP_BOARD`，以 NUL 结尾，最多 39 个字符） |
+
+网页上传收到镜像的前 336 字节时（`core::parse_firmware_head()`）就核对项目名（`wisp`）、芯片 id（`esp_image_header_t` 偏移 12，对比 `CONFIG_IDF_FIRMWARE_CHIP_ID`）和这个板名，任何一项不符都以 400 `wrong_board` 拒绝，一个字节都不写进 Flash；没有描述符的镜像（不是 Wisp 构建的）同样拒绝。整份镜像写完后再按引导程序的规则校验段长、校验和与 SHA-256（`invalid_image`）。网页上传**从不要求签名**：自己构建的镜像必须能装。新板子不需要做任何事，`WISP_BOARD` 会自动写进描述符；`firmware/main/CMakeLists.txt` 还会核对 `idf.py bmgr` 选中的板子（`CONFIG_ESP_BOARD_NAME`）与 `WISP_BOARD` 一致。
+
+### 版本号
+
+`cmake/wisp_version.cmake` 在配置时从 git 得出版本号并作为 `PROJECT_VER` 写进 `esp_app_desc_t`（模拟器用同一函数）：在 `vX.Y.Z` 标签上或之后是 `X.Y.Z[-N-g<hash>]`，没有标签时是 `0.1.0-<提交数>-g<hash>`，有未提交改动时加 `-dirty`。设备用它区分升级和降级（降级时确认框多一行提示）。配置只在提交或切换分支后自动重跑，只改文件不会刷新 `-dirty`。
+
+### 确认与回滚
+
+`sdkconfig.defaults` 打开了 `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`：网页上传、设备上确认后，新镜像以"待验证"状态启动；`App::start()` 跑完、输出启动报告并启动控制台之后才调用 `FirmwareUpdater::mark_valid()`（启动流程第 7 步，见 `docs/architecture.md`）。在这之前崩溃、看门狗复位或断电，引导程序都会回到旧镜像。
+
+### 构建配置：发布版与调试版
+
+- 默认（`sdkconfig.defaults`）是发布版：全局 `-Os`（`CONFIG_COMPILER_OPTIMIZATION_SIZE`）、日志最高 INFO、断言静默。
+- **渲染路径总是 `-O2`**，不论全局优化级别：`lvgl` 组件、`wisp_ui`、`esp_lcd*` 组件（面板与触摸驱动，由 `firmware/CMakeLists.txt` 按组件名匹配）、以及 `wisp_port_esp` 的 `dev/esp_display.cpp`、`dev/esp_touch.cpp`（LCD 刷新路径）。新板子的显示或触摸驱动如果不叫 `esp_lcd*`，要在 `firmware/CMakeLists.txt` 的匹配规则里补上，否则帧率会下降；构建时 CMake 会打印 `Rendering path built with -O2: ...` 供核对。
+- 调试版叠加 `firmware/sdkconfig.debug`（`-Og`、日志到 DEBUG、断言开启），用单独的构建目录，不碰发布版的 `sdkconfig`：
+
+```bash
+cd firmware && idf.py -B build-debug -D SDKCONFIG=build-debug/sdkconfig \
+    -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;components/gen_bmgr_codes/board_manager.defaults;sdkconfig.debug" build
+```
+
+`SDKCONFIG_DEFAULTS` 一旦给出就替换默认列表，所以 bmgr 生成的 `board_manager.defaults` 要显式写进去，并放在 `sdkconfig.debug` 之前。
 
 ## 步骤 4：构建
 
@@ -95,7 +132,9 @@ bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware \
     && idf.py build -DWISP_BOARD=<板名>'
 ```
 
-`firmware/CMakeLists.txt` 的 `WISP_BOARD` 缓存变量决定编译哪个 `boards/<名>/board.cpp`（默认 `waveshare_amoled_216`），用 `-DWISP_BOARD=<板名>` 覆盖。只要没改板子 YAML，后续重新 `idf.py build` 不需要重复 set-target/bmgr。
+`firmware/CMakeLists.txt` 的 `WISP_BOARD` 缓存变量决定编译哪个 `boards/<名>/board.cpp`（默认 `waveshare_amoled_216`），用 `-DWISP_BOARD=<板名>` 覆盖。只要没改板子 YAML，后续重新 `idf.py build` 不需要重复 set-target/bmgr。调试版的构建命令见上文"构建配置：发布版与调试版"。
+
+第一次烧录用 `idf.py -p <端口> flash`（引导程序、分区表和应用一起写）；之后可以在管理后台"系统"页上传 `build/wisp.bin` 更新，设备上确认后重启进入新版本。
 
 ## 步骤 5：验收
 

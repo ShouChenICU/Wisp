@@ -37,16 +37,19 @@
 
 ## 启动流程
 
-真机（`firmware/main/main.cpp`）和模拟器（`simulator/main.cpp`）共用同一套 `wisp::app::App::start()`（`components/wisp_app/src/app.cpp`），区别只在各自提供的 `Platform`（日志 sink、设置后端、`emit_line`、`request_power_off`、`heap_info`、`set_standby`，以及子项目 2 新增的 `random`、`http_server`、`http_client`、`assets`、`http_port`（默认 8900）、`captive_server`、`http_always_on`、`reboot`、`read_line`）：
+真机（`firmware/main/main.cpp`）和模拟器（`simulator/main.cpp`）共用同一套 `wisp::app::App::start()`（`components/wisp_app/src/app.cpp`），区别只在各自提供的 `Platform`（日志 sink、设置后端、`emit_line`、`request_power_off`、`heap_info`、`set_standby`，以及子项目 2 新增的 `random`、`http_server`、`http_client`、`assets`、`http_port`（默认 8900）、`captive_server`、`http_always_on`、`reboot`、`read_line`、`firmware`（固件上传写入器 `core::FirmwareUpdater`，连接 spec 6.5；为空时不支持网页上传）、`firmware_version`）：
 
 1. **日志初始化**：`wisp::log::init()`，建立 32 KB 的内存环形缓冲（真机落在 PSRAM，模拟器为普通内存）。每条记录是 16 字节头（`ts`、`seq`、长度、级别）加 tag 和消息，按整条淘汰；读取时只在锁内拷贝原始字节，解码在锁外；再次以相同大小和内存类型调用 `init()` 会保留已有记录；`seq` 与 `ts` 在同一把锁里分配，sink 收到的 `LogRecord` 与缓冲区里的完全一致（连接 spec 6.2）。
 2. **板级初始化**：调用 `Platform::board->init()`（真机对应 `boards/<板>/board.cpp`，模拟器对应 `wisp::port::sim::SimBoard`），构造各设备并注册进 `DeviceRegistry`；`init()` 自己只记录非 `Ok` 的 `DeviceReport`（缺失/失败），`App::start()` 随后为注册表里没有报告过的设备补一条 `Ok`。
 3. **核心服务**：启动 `EventBus`，调用 `StorageManager::init()`（挂载失败时把启动报告的 `storage` 备注设为 `"readonly"`，降级继续而不中止），启动一个 2000 ms 周期的 `StorageManager::refresh()` 定时器，启动 `ButtonService`，加载模型配置（`core::ModelProfileService::init()`，读 System 区的 `secrets/models.json`；只有旧的 `secrets/llm.json` 时把它迁移成一份对话配置）。
 4. **UI 与自检界面**：若 `display.main` 已注册，把 `display` 这个 Settings 命名空间的 `brightness`（默认 200）应用到它，基于它（和 `touch.main`，如果也在）启动 `UiRuntime`；否则在启动报告里记一条 `"mode": "headless"`。无论哪种情况都查找 `power.main` 设备、构造 `core::PowerMonitor` 并 `start()`它自己的采样定时器（spec 6.3/6.7，发布下表的 `power.charging.changed`/`power.battery.low`；缺少 `power.main` 时完全惰性），再构造 `PowerManager`（spec 6.7，持有指向 `PowerMonitor` 的非持有指针）并启动它的周期性闲置检查定时器；如果启动了 `UiRuntime`，再在其上构建自检界面（`self_check_screen.cpp`，spec 8 节），阻塞到它真正跑完一次。
    **网络**（连接 spec 4.1，`components/wisp_app/src/net_wiring.{hpp,cpp}`，在 `PowerManager` 之后、自检界面之前）：有 `Platform::random` 时构造 `net::PairingService`；若 `net.wifi` 已注册，再构造 `net::WifiService` 并 `init()`（只读取已保存的网络并安排第一次尝试，不碰射频）。`WifiService::tick()` 与 `PairingService::tick()` 都在独立任务 `wisp.net` 里每 250 ms 跑一次——扫描可能阻塞约 3 s，不能放进共享的 `os::Timer` 分发任务，所以开机从不等待联网。`wisp.net` 任务每次循环把 `PowerManager::standby()` 交给 `WifiService::set_standby()`（`power.state` 只用来及时唤醒任务，事件丢了或迟到都不会弄错待机状态）。有 `Platform::http_server` 且有 `WifiService` 时构造 `admin::AdminServer`（含 `WsHub`；本次开机的标识 `boot_id` 在这里用 `Platform::random` 生成一次，见连接 spec 6.2）：STA 拿到 IP 或热点开启时由 `wisp.net` 任务启动 HTTP 服务、两者都断开时停止（接口状态每次循环都从 `WifiService::status()`/`ap_status()` 读取；`net.wifi.state`/`net.ap.state` 只用来及时唤醒任务，丢了事件也不会让服务停在错误状态）；`http_always_on`（模拟器）则开机即启动、断网也不停。另外，只要热点开着，`wisp.net` 任务就在 80 端口运行 `Platform::captive_server`（真机才有），处理函数是 `AdminServer::captive_handler()`：从热点接口来的任何请求都 `302`（其他接口返回 404）到 `http://<热点地址>:<http_port>/setup.html`，让手机的强制门户探测打开配网页；热点关闭时停止。启动失败记日志，并在接口仍然开着时退避重试（2 s 起翻倍，上限 60 s）。每次启动成功输出一行 `WISP_HTTP {"port": n}`。启动报告记录 `notes.net`。
+   **固件上传服务**（连接 spec 6.5，在网络之前构造，因为后台路由要把上传流写进它）：`core::FirmwareUpdateService` 包着 `Platform::firmware`，没有 UI 时不设确认回调（上传在 `begin` 时就以 `unavailable` 拒绝，因为没有屏幕可以确认）；`wisp.net` 任务每次循环调用它的 `tick()`，未确认的镜像 2 分钟后丢弃。
 5. **收尾**：记录 `boot_ms`，依次输出 `"WISP_BOOT_REPORT <json>"`、`"WISP_MANIFEST <json>"`（通过 `Platform::emit_line`），再发布 `system.boot.completed` 事件。
+6. **串口控制台**：有 `Platform::read_line` 时启动 `wisp.console` 任务（见下文"串口控制台"）。
+7. **确认镜像可用**：`FirmwareUpdater::mark_valid()`。真机上新装的镜像在这一步之前崩溃或复位，引导程序都会回滚到旧镜像（`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`，见 `docs/porting-guide.md`"固件与分区"）；模拟器什么都不做。
 
-**停止顺序**（`App::stop()`）：自检界面 → 网络（先 join `wisp.net` 任务，再停强制门户服务和 HTTP 服务——`SimHttpServer::stop()` 会在 join 连接线程时回调 `on_close`，所以调用时不持有任何锁——然后退订事件、销毁 `AdminServer`、`WifiService`、`PairingService`）→ `PowerManager` → `PowerMonitor` → 存储定时器 → `ButtonService` → `UiRuntime` → `EventBus`。HTTP 处理函数会经 `SystemSettings` 调用 `PowerManager::set_brightness()`，所以网络必须先于 `PowerManager` 停止。
+**停止顺序**（`App::stop()`）：串口控制台 → 自检界面 → 等待已确认的恢复出厂（`wisp.reset`）和固件安装（`wisp.fwup`）任务结束 → 网络（先 join `wisp.net` 任务，再停强制门户服务和 HTTP 服务——`SimHttpServer::stop()` 会在 join 连接线程时回调 `on_close`，所以调用时不持有任何锁——然后退订事件、销毁 `AdminServer`、`WifiService`、`PairingService`）→ 固件上传服务 → `PowerManager` → `PowerMonitor` → 存储定时器 → `ButtonService` → `UiRuntime` → `EventBus`。HTTP 处理函数会经 `SystemSettings` 调用 `PowerManager::set_brightness()`，所以网络必须先于 `PowerManager` 停止。
 
 **失败处理**（spec 6.1）：设备初始化失败只记录、不注册，系统降级继续；`Display` 失败则不启动 UI，走 headless 路径；内置 Flash 挂载失败走只读降级。`WISP_BOOT_REPORT`、`WISP_MANIFEST`、`WISP_PERF` 都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）。
 
@@ -63,6 +66,7 @@
 | `storage.sd.inserted` / `storage.sd.removed` | `core::StorageManager` | SD 卡插拔检测 |
 | `system.boot.completed` | `app::App` | 启动流程第 5 步收尾时发布 |
 | `system.factory_reset` | `app::App`（`components/wisp_app/src/factory_reset.cpp`） | `payload = {"state": "requested"\|"cancelled"\|"done"}`。`POST /system/factory-reset` 发 `requested`，自检界面据此弹出确认框（请求同时记为 pending，自检界面在收到事件、建好界面时和每秒的重新同步里取走它，所以界面尚未订阅或事件被总线丢弃时请求也不会丢；同一时间只有一个确认框：重置框已开时重复请求被忽略，关机确认框开着时直接回 `cancelled`；反过来重置框开着时长按电源键不弹关机框）；点"否"发 `cancelled`；点"是"后在一次性任务 `wisp.reset` 上先发 `done`，最多等 500 ms 让事件总线和管理后台 WebSocket 发送线程把它送出，再清空 Settings、忘记全部 Wi-Fi、撤销全部配对浏览器、清除全部模型配置（`secrets/models.json`），最后 `Platform::reboot`；`wisp.reset` 任务创建失败时什么都不清除、发 `cancelled`，之后的请求可以重新弹框。Library/Backup 数据保留 |
+| `system.firmware` | `app::App`（`core::FirmwareUpdateService`，`components/wisp_core/src/firmware_update.cpp`） | 连接 spec 6.5，`payload = {"state": "received"\|"confirmed"\|"rejected"\|"failed", "version": string, "error": string（仅 `failed`）}`，`version` 为上传镜像的版本。`POST /system/firmware` 把镜像流式写完并校验通过后发 `received`，同时记为 pending 并请自检界面弹出确认框（与恢复出厂同一套 pending/每秒重新同步机制；同一时间只有一个确认框，已有其他确认框时直接 `rejected`）；点"是"后在一次性任务 `wisp.fwup` 上把它设为启动镜像，成功则发 `confirmed`，等事件总线空闲并最多 500 ms 让后台 WebSocket 送出，再 `Platform::reboot`；点"否"或 2 分钟无人确认发 `rejected` 并丢弃镜像。上传开始后的失败发 `failed`，`error` 为 `wrong_board`、`invalid_image`、`payload_too_large`、`write_failed`，或连接中途断开时的 `aborted` |
 | `system.settings` | `app::App`（`core::SystemSettings` 的 `on_changed` 回调） | 每批设置写入成功后发布（连接 spec 8.3），`payload = {"brightness": int, "volume": int, "screen_off_s": int, "language": "zh"\|"ja"\|"en"}`，即写入后的全部当前值（与 `GET /settings` 同形）；自检界面据 `language` 在 UI 线程上 `ui::set_lang()` 并重建文字 |
 | `net.wifi.state` | `net::WifiService` | 状态变化时发布，`payload = {"state": "off"\|"connecting"\|"backoff"\|"connected", "ssid": string, "ssid_hex": string（SSID 原始字节的小写十六进制，见连接 spec 6.1）, "ip": string, "rssi": int, "reason": ""\|"not_found"\|"auth_failed"\|"other"}`；`reason` 只在 `backoff` 时非空；`Event::source` 为设备 id（`net.wifi`）。不含密码 |
 | `net.ap.state` | `net::WifiService` | 配网热点开关时发布，`payload = {"active": bool, "ssid": string, "clients": int}`，不含热点密码 |
@@ -99,14 +103,14 @@
   `fps`/`flush_ms` 来自 `ui::UiRuntime::perf()`，本质是浮点数，但 JSON 往返时整数值会被识别为 `Int` 而非 `Double`（`Value`/JSON 对 Int/Double 的区分按实际值而非来源类型，见 `tests/base/value_json_test.cpp`）；解析方不应假设其中任何一个字段固定是哪一种 JSON 数字形式。`heap_internal_free`/`heap_large_free` 来自 `Platform::heap_info`（可能为空，此时都是 0）。
 
 - **`WISP_HTTP <json>`**（网络步骤；`NetWiring::reconcile_http()`）：管理后台 HTTP 服务每次启动成功时一行，`{"port": int}`，是 `HttpServer::port()` 报告的实际端口。可能出现在 `WISP_BOOT_REPORT` 之前（`http_always_on` 时开机即启动）。模拟器 `--http-port 0` 时不启动服务，也就没有这一行；需要后台的冒烟测试自己挑一个空闲端口传进去（`admin_smoke.py` 在端口被抢走、日志出现 `admin server failed to start` 时换端口重试）。
-- **`WISP_REBOOT`**（仅模拟器，无 JSON）：`Platform::reboot` 被调用（例如 `POST /api/v1/system/reboot`，或恢复出厂设置完成时）时输出，随后主循环返回，经正常的 `App::stop()` 以退出码 0 结束进程（不在定时器线程里直接 `exit()`，以免静态析构与其他线程竞争）。真机对应 `esp_restart()`。
+- **`WISP_REBOOT`**（仅模拟器，无 JSON）：`Platform::reboot` 被调用（例如 `POST /api/v1/system/reboot`，或恢复出厂设置完成、固件更新确认后）时输出，随后主循环返回，经正常的 `App::stop()` 以退出码 0 结束进程（不在定时器线程里直接 `exit()`，以免静态析构与其他线程竞争）。真机对应 `esp_restart()`。
 - **`pair-code=<6 位数字>`**（仅模拟器调试命令，无 JSON）：控制台命令 `debug pair-code` 的回答，当前没有有效配对码时为 `pair-code=none`。只在 `wisp_sim` 目标定义了 `WISP_SIM_DEBUG_COMMANDS` 时经 `Platform::console_commands` 编译进去（`simulator/main.cpp`），可移植层和固件都没有；供 `tests/smoke/admin_smoke.py` 不看屏幕完成配对。
 
 ## 模拟器的网络
 
 - `net.wifi` 是 `wisp::port::sim::SimWifi`（model `sim-wifi`）：内置 `WispLab`（-45 dBm，密码 `wisp1234`）、`Neighbor`（-70，`neighbor99`）、`OpenCafe`（-80，开放）；`--wifi-fail` 让所有连接以 `not_found` 失败；热点只改状态，`ap_clients()` 在热点开启时恒为 1。
 - 管理后台由 `SimHttpServer` 提供，只监听 `127.0.0.1`，端口 `--http-port`（默认 8900，与真机后台端口相同；0 表示不启动）。模拟器没有 80 端口的强制门户服务（`Platform::captive_server` 为空）。出站请求（模型连通测试 `POST /ai/profiles/{id}/test`）走 `SimHttpClient`（libcurl，主机构建 `find_package(CURL 7.80 REQUIRED)`；可移植层禁止 include `curl/`）。
-- 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。标准输入里以 `tap` / `swipe` 开头的行（`tap X,Y` / `swipe X1,Y1,X2,Y2`）也立即执行，供需要先等设备上某件事发生再点的脚本使用：冒烟测试 `factory_reset` 等到 WebSocket 日志里出现确认框的日志行，再经标准输入点"Yes"。
+- 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。标准输入里以 `tap` / `swipe` 开头的行（`tap X,Y` / `swipe X1,Y1,X2,Y2`）也立即执行，供需要先等设备上某件事发生再点的脚本使用：冒烟测试 `factory_reset` 和 `firmware` 等到 WebSocket 日志里出现确认框的日志行，再经标准输入点"Yes"。
 - 标准输入只有一个读取者（`simulator/sim_stdin.hpp` 的 `StdinReader`，带超时轮询，退出时不会卡在阻塞读上）：不论是否 `--headless`、stdin 是不是终端都会读取；触摸行交给触摸脚本，其余每行都是串口控制台（serial console）命令，经 `Platform::read_line` 交给控制台任务；控制台没有 `tap`/`swipe` 命令。`tap`/`swipe` 与坐标之间可以是空格或制表符。stdin 是控制终端且进程在后台进程组（`wisp_sim &`）时读取者暂不读，`fg` 后恢复；模拟器忽略 `SIGTTIN`，所以不会被作业控制停住。
 - 信号：`SIGINT`/`SIGTERM` 让主循环像重启一样返回，经正常的 `App::stop()` 以退出码 0 结束（SDL 自己的信号处理被 `SDL_HINT_NO_SIGNAL_HANDLERS` 关掉，否则无头模式收不到）；处理是一次性的，关机卡住时再发一次信号按默认方式结束进程。
 
@@ -115,7 +119,8 @@
 - `net.wifi` 是 `wisp::port::esp::EspWifi`（`components/wisp_port_esp/net/esp_wifi.cpp`），由板级 `init()` 最后注册，并在那里就打开射频（`Platform::random` 依赖它）。驱动配置只放 RAM（`WIFI_STORAGE_RAM`），已保存的网络只由 `WifiService` 管。`link()` 读取事件回调维护的快照；断开原因按 `wifi_reason.hpp` 映射，握手失败只在信号足够好（RSSI ≥ -75 dBm）时才算 `auth_failed`；断开事件没带 RSSI 时，用两分钟内最近一次扫描里同名网络的最强信号代替，都没有就不算。热点：AP+STA、WPA2-PSK、信道 1、最多 4 台，热点关着时 AP 接口留着一份隐藏、随机密码的 WPA2 占位配置，切到 AP+STA 的瞬间不会广播开放网络；同时在热点地址的 UDP 53 端口运行强制门户 DNS（`net/captive_dns.cpp`，所有 A 查询都答热点地址）。STA 第一次拿到 IP 时启动 mDNS：`wisp.local`，广播 `_http._tcp` 端口 8900。
 - 管理后台是 `EspHttpServer`（`esp_http_server`）：端口 8900，最多 7 个连接（`lru_purge_enable`；每个请求都把打开的 WebSocket 标为最近使用，连接满时先关空闲的 keep-alive 连接），`/api/v1/ws` 的升级在握手前交给 `WsHandlers::on_open`（`CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT`），拒绝就是普通的 403；任务优先级 3，低于 UI。80 端口的强制门户是第二个实例（另一个控制端口、4 个连接、无 WebSocket），`AdminServer::captive_handler()` 只对热点接口的请求重定向，其余返回 404。请求所在接口按连接的本地地址和对端地址判断（`net_iface.hpp`），不看请求头。
 - 出站请求走 `EspHttpClient`：HTTPS 用 IDF 证书包校验（含主机名），不跟随重定向，响应体上限 64 KB。
-- 网页资源：固件构建时 `tools/pack_assets.py` 把 `web/` 打成 `build/assets.wpak`（超出本板 `assets` 分区或 150 KB gzip 预算即构建失败），`idf.py flash` 一并写入 `assets` 分区；开机时按包头的总长度只映射包本身（`esp_partition_mmap`），静态文件直接从映射的 Flash 发送。
+- 网页资源：固件构建时 `tools/pack_assets.py` 把 `web/` 打成 `wisp_web.wpak`（超过 256 KiB 或 150 KB gzip 预算即构建失败），按 4 字节对齐链接进应用镜像（`firmware/main/CMakeLists.txt` 的 `target_add_binary_data`，符号 `_binary_wisp_web_pack_start/_end`），静态文件直接从映射的 Flash 发送。网页与固件因此总是同一版本，随 OTA 一起切换，不再有单独的 `assets` 分区。
+- 固件上传（连接 spec 6.5）：`POST /api/v1/system/firmware` 的请求体不缓存，由 `EspHttpServer` 按 `HttpServer::StreamHandler` 以 4 KB 一块交给 `FirmwareUpdateService`，再由 `EspFirmwareUpdater` 用 `esp_ota_*`（顺序写）写进没在运行的 `ota_N` 槽；头 336 字节到齐时就核对项目名 `wisp`、芯片（`CONFIG_IDF_FIRMWARE_CHIP_ID`）和板名描述符（见 `docs/porting-guide.md`"固件与分区"），不符的镜像一个字节都不写。网页上传从不要求签名。上传期间 httpd 的单个任务被这个请求占着，WebSocket 日志推送会暂停到上传结束。
 
 ## 串口控制台
 
@@ -125,6 +130,7 @@
 - 平台扩展：`Platform::console_commands` 追加平台专用命令（出现在 `help` 末尾，不能覆盖内置命令），例如模拟器专用的调试命令 `debug pair-code`。
 - 真机：`wisp::port::esp::EspConsole`（`components/wisp_port_esp/console_esp.cpp`）安装 USB-Serial-JTAG（或 UART）驱动并让 VFS 走驱动，日志输出照常；`read_line` 用驱动的带超时读取，不忙等。
 - `--screenshot` 的截图（`UiRuntime::take_snapshot`）包含活动屏幕和 `lv_layer_top()`（确认框、配网卡片、配对卡片都在这一层），不含 `lv_layer_sys()`。
+- 固件上传：`wisp::port::sim::SimFirmwareUpdater` 把上传的镜像写到数据目录的 `firmware.bin`，目标板名为 `simulator`、不限芯片，容量按 5 MB 计；确认后照常重启（`WISP_REBOOT`），但模拟器不能运行 ESP 镜像，重启后仍是原来的版本（网页会显示"已回滚"）。版本号来自 `cmake/wisp_version.cmake`（与固件同一规则，见 `docs/porting-guide.md`）。
 - 网页资源：构建时用 `tools/pack_assets.py` 把 `web/` 打包成 `wisp_sim` 旁边的 `assets.wpak`（`web/` 不存在时打包一个空目录，只提供 API）；`--web-dir <目录>` 改为启动时在内存里按同一套 MIME/gzip 规则打包该目录（`wisp::port::sim::pack_web_dir()`）。
 
 ## 存储逻辑区

@@ -7,7 +7,19 @@
 ## 主控与存储
 
 - ESP32-S3R8：16 MB QIO flash，8 MB octal PSRAM（80 MHz）
-- 分区表见 `boards/waveshare_amoled_216/partitions.csv`（Flash、PSRAM、控制台等板级 sdkconfig 见同目录的 `sdkconfig.defaults.board`）
+- 分区表见 `boards/waveshare_amoled_216/partitions.csv`（Flash、PSRAM、控制台等板级 sdkconfig 见同目录的 `sdkconfig.defaults.board`）：
+
+  | 分区 | 偏移 | 大小 |
+  |---|---|---|
+  | `nvs` | 0x9000 | 24 KB |
+  | `otadata` | 0xF000 | 8 KB |
+  | `phy_init` | 0x11000 | 4 KB |
+  | `ota_0` | 0x20000 | 5 MB |
+  | `ota_1` | 0x520000 | 5 MB |
+  | `storage`（LittleFS） | 0xA20000 | 5.875 MB |
+
+  网页资源包链接在应用镜像里，没有 `assets` 分区；`nvs` 和 `storage` 保持了早先分区表里的偏移和大小，所以换成这张表时设置和数据都保留。从旧分区表（两个 4 MB 应用槽加 2 MB 的 `assets` 分区）换过来时，以及第一次用上打开了回滚功能的引导程序时，都必须用 USB 完整烧录一次（`idf.py -p <PORT> flash`，写入引导程序、分区表、`otadata` 和 `ota_0`），之后才能在网页上传固件。
+- 镜像大小（ESP-IDF v6.0.3，`idf.py size`）：发布版 3,164,688 B（`ota_0` 的 60.4%），调试版（`sdkconfig.debug`）3,463,520 B（66.1%）；预算为单个 OTA 槽的 80%。
 
 ## 外设与引脚
 
@@ -80,6 +92,13 @@
 | 34 | DFS 不拖累帧率（firmware/main.cpp apply_pm_config，DFS/light sleep） | 对比开启/关闭 `CONFIG_PM_ENABLE` 前后的 `WISP_PERF` | 开启 DFS 后帧率仍不低于上一项的基准 |  |
 | 35 | `power.charging.changed` 事件（spec 6.3，wisp_core::PowerMonitor） | 插拔 USB 电源，看串口上 `power_monitor` 的 `power.charging.changed: charging=... usb_present=... battery_percent=...` 日志行 | 插拔后 1 秒内出现该日志行，`charging`/`usb_present` 的值与实际状态一致 |  |
 | 36 | `power.battery.low` 事件（spec 6.3，wisp_core::PowerMonitor） | 电量明显偏低时观察串口日志；子项目 1 还没有 CLI/REST 能改 Settings，想快速触发可以临时在 `components/wisp_app/src/app.cpp` 里 `core::Settings power_settings(*impl_->platform.settings, "power");`（约第 102 行）之后加一行 `power_settings.set("low_batt_pct", int64_t{100});`，重新编译固件验证完后删掉这行（不要提交） | 只出现一次 `power_monitor` 的 `power.battery.low: battery_percent=... (threshold=...)` 日志行（不持续重复）；电量回升超过阈值+5 后再降回阈值以下会再出现一次；没有接电池、只接 USB 供电时不出现该日志 |  |
+| 37 | 新分区表首次完整烧录（connectivity spec 3.2） | 在已经有设置和数据（配过 Wi-Fi、配对过浏览器、改过亮度、`/int` 里有文件）的板子上执行 `idf.py -p <PORT> flash` | 正常启动；串口没有分区相关报错；Wi-Fi、配对、亮度等设置和 `/int` 数据都还在；管理后台"系统"页的固件卡片显示版本、`waveshare_amoled_216` 和运行分区 `ota_0` |  |
+| 38 | 网页上传并确认（connectivity spec 6.5） | 改一点代码再构建，在"系统"页上传 `firmware/build/wisp.bin`；设备上弹出确认框后点"是" | 进度条走完后网页提示"请在设备上确认"；确认框显示旧版本 → 新版本；点"是"后设备重启，网页提示正在运行新版本；固件卡片的运行分区变成 `ota_1`；串口没有回滚日志 |  |
+| 39 | 网页上传后拒绝 | 再上传一次，设备上点"否"；再上传一次，2 分钟内不操作 | 两次网页都提示"已在设备上拒绝"；设备不重启，版本与运行分区不变 |  |
+| 40 | 拒绝其他板子的镜像 | 用 `-DWISP_BOARD=<另一块板>` 构建（或上传任何非 Wisp 的 ESP-IDF 应用 `.bin`）后上传 | 网页立即提示"这个固件是为其他开发板或芯片构建的"（400 `wrong_board`），设备上不弹确认框，Flash 未被写入（再上传一次正确镜像仍然正常） |  |
+| 41 | 启动失败自动回滚（`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`） | 临时在 `firmware/main/main.cpp` 的 `app_main()` 开头加一行 `abort();` 构建（不要提交），上传并在设备上确认 | 新镜像崩溃复位后，引导程序回到旧镜像；网页提示"设备重启后运行的仍是旧版本，已回滚"；之后上传正常镜像仍能装上 |  |
+| 42 | 发布版帧率（全局 `-Os`、渲染路径 `-O2`） | 用默认（发布版）配置构建烧录，重复第 33 项 | `WISP_PERF` 的 fps ≥ 30，不低于第 33 项记下的基准 |  |
+| 43 | 上传期间的日志推送 | 上传固件时打开"日志"页 | 上传期间日志暂停推送（httpd 只有一个任务，被上传请求占着），上传结束后恢复推送，WebSocket 不断开 |  |
 
 ## 待机与省电（spec 6.7）
 
