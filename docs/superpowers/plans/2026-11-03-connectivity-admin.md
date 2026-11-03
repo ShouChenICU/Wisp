@@ -981,6 +981,50 @@ TEST(Console, UnknownCommand)
 
 ---
 
+### Task 18b: 多套模型配置（spec 5.3 修订）
+
+**Files:**
+- Create: `components/wisp_core/include/wisp/core/model_profiles.hpp`、`components/wisp_core/src/model_profiles.cpp`、`components/wisp_core/src/model_presets.cpp`、`components/wisp_admin/src/routes_ai.cpp`、`web/app/pages/models.js`（替换 `model.js`）
+- Delete: `components/wisp_core/{include/wisp/core/llm_config.hpp,src/llm_config.cpp}`、`components/wisp_admin/src/routes_llm.cpp`、`tests/core/llm_config_test.cpp`（Key 绑定源等已有用例迁到新测试）
+- Modify: `components/wisp_net/{include/wisp/net/llm_probe.hpp,src/llm_probe.cpp}`（改为按配置探测，可改名 `model_probe`，404 → `no_model_list`）、`components/wisp_app/src/{app_impl.hpp,net_wiring.*,factory_reset.*}`、`components/wisp_app/include/wisp/app/app.hpp`、`web/app/i18n/{zh,ja,en}.js`、web 导航、`tests/smoke/admin_smoke.py`、`tools/fake_openai.py`（如需）、`docs/architecture.md`（启动步骤、事件表、`system.factory_reset` 说明、模拟器出站请求）
+- Test: `tests/core/model_profiles_test.cpp`、`tests/admin/routes_ai_test.cpp`、`tests/net/llm_probe_test.cpp`（或改名后的文件）
+
+**Interfaces:**
+- Produces：spec 5.3 的 `ModelProfileService`（`wisp::core`），API 与语义以 spec 5.3 为准；内部接口 `std::optional<ResolvedProfile> active_for_request(Kind)` 返回激活配置的 `base_url`、`model`、`options` 与 Key，只供子项目 4/5 的客户端与 `test()` 使用，任何路由都不得调用。`enum class ModelKind { Llm, Asr, Tts }`，字符串 `"llm"`/`"asr"`/`"tts"`。
+- REST：spec 6.1 的 `/ai/*` 行；删除 `/llm*`。错误码沿用 R11 的格式，新增 `limit_reached`(409)、`active_profile`(409)、`key_origin_mismatch`(400)、`no_model_list`（test 结果的错误类别）。
+- 事件：`model.profiles`（spec 5.5）。
+- 前端：模型页三个标签页严格分开（spec 7.3），标签记在 hash `#/models/<kind>`；只经 `t()` 取文字，三份字典键一致。
+
+- [ ] **Step 1: 写失败的测试**
+
+```cpp
+TEST(ModelProfiles, CreateFillsPresetBaseUrlAndActivatesFirstOfKind)
+TEST(ModelProfiles, ActiveIsPerKind)                      // 激活 llm 的第二套不影响 asr/tts 的激活
+TEST(ModelProfiles, PresetMustSupportKind)                // deepseek + asr → InvalidArgument
+TEST(ModelProfiles, PlaceholderBaseUrlRejected)           // ollama 默认地址含 '<' → InvalidArgument
+TEST(ModelProfiles, LimitIsSixteen)                       // 第 17 套 → limit_reached
+TEST(ModelProfiles, RemoveActiveNeedsAnotherActivatedFirst) // 同类还有别的 → active_profile；最后一套 → 删除且激活为空
+TEST(ModelProfiles, KeyNeverReadable)                     // get()/create()/update() 的结果序列化后不含 Key
+TEST(ModelProfiles, OriginChangeWithoutKeyClearsKey)      // 迁移自原 LlmConfig 用例，含默认端口与大小写
+TEST(ModelProfiles, KeyFromSameOriginCopies)              // api_key_from 同源 → has_key；不同源或来源无 Key → key_origin_mismatch；与 api_key 同给 → InvalidArgument
+TEST(ModelProfiles, OptionsLimits)                        // >8 键、键 >15 字节、值 >64 字节 → InvalidArgument；未知键保留
+TEST(ModelProfiles, MigratesLegacyLlmJson)                // 旧 secrets/llm.json → 一套 llm/custom/"Default" 激活配置；写新文件后旧文件删除
+TEST(ModelProfiles, PersistsAcrossReload)                 // write_atomic 后重新加载内容一致
+TEST(ModelProfiles, PublishesEventWithoutSecrets)         // model.profiles payload 只有 active 与 count
+TEST(ModelProfiles, ClearAllForFactoryReset)
+TEST(ModelProbe, NotFoundIsNoModelList)
+TEST(AdminAi, CrudActivateAndTestRoutes)                  // 201/200/409/400 形状；未知字段 400；鉴权与 X-Wisp
+TEST(AdminAi, NoResponseEverContainsApiKey)
+TEST(AdminAi, OldLlmRoutesAreGone)                        // /llm → 401 未鉴权 / 404 已鉴权
+```
+
+- [ ] **Step 2: 运行，确认失败。**
+- [ ] **Step 3: 实现** 服务、预设表（spec 5.3 首批 13 个，顺序照表）、路由、App 接线与恢复出厂；前端模型页三标签页（新建时先选本类型可用的预设并自动填地址；"沿用 Key"只列同源配置；`tts` 多一个音色输入；测试成功后模型下拉框，也可手填；404 时提示手动填写）；冒烟测试改走 `/ai/*`：新建 `llm` 配置 → test 成功并列出 `fake-1`/`fake-2` → 用 `api_key_from` 新建 `asr` 配置 → 两类激活互不影响 → 所有响应与 WS 帧都不含 `test-key`。
+- [ ] **Step 4: 验证**：全量 ctest、`bash tools/ci.sh`、固件 `idf.py build`（记录体积变化，`assets.wpak` 仍在预算内）；模拟器 + 浏览器实际操作三个标签页（Playwright 或手动），截图 zh/ja/en。
+- [ ] **Step 5: Commit** — `feat(core): manage per-kind model profiles with platform presets`（可拆成 core / admin / web 多个提交）
+
+---
+
 ### Task 19: 真机联调、验收与文档
 
 **Files:**
