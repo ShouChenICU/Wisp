@@ -39,6 +39,7 @@
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/hal/wifi.hpp"
+#include "wisp/net/random.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::net {
@@ -77,8 +78,6 @@ struct WifiServiceConfig {
     // indefinitely when the AP vanishes mid-handshake).
     uint32_t connect_timeout_ms = 15000;
 };
-
-using RandomFn = std::function<void(uint8_t* out, size_t len)>;
 
 class WifiService {
 public:
