@@ -145,11 +145,10 @@ TEST(SimOptions, RejectsMalformedTouches) {
     EXPECT_FALSE(parse_sim_options(3, argv));
 }
 
-TEST(SimOptions, ParsesTouchStdinAndItsCommands) {
+TEST(SimOptions, ParsesStdinTouchCommands) {
+    // stdin is always read (sim_stdin.hpp); the old switch is gone.
     const char* argv[] = {"wisp_sim", "--touch-stdin"};
-    EXPECT_TRUE(parse_sim_options(2, argv).value().touch_stdin);
-    const char* none[] = {"wisp_sim"};
-    EXPECT_FALSE(parse_sim_options(1, none).value().touch_stdin);
+    EXPECT_FALSE(parse_sim_options(2, argv));
 
     auto tap = parse_touch_command("tap 188,298").value();
     EXPECT_EQ(tap.kind, SimTouchStep::Kind::Tap);

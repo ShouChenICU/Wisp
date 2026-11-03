@@ -134,6 +134,11 @@ struct App::Impl {
     // still reaches the screen.
     std::atomic<bool> reset_pending{false};
 
+    // The "wisp.console" task (console_task.hpp): started last by
+    // App::start(), stopped first by App::stop().
+    std::unique_ptr<os::Task> console_task;
+    std::atomic<bool> console_stopping{false};
+
     bool started = false;
 
     // Both the constructor and destructor are declared here but defined

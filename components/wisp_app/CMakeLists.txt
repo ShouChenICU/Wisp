@@ -10,7 +10,7 @@ wisp_component(
     NAME wisp_app
     SRCS src/app.cpp src/self_check_screen.cpp src/loopback.cpp src/power_key_controller.cpp
          src/power_manager.cpp src/format.cpp src/net_wiring.cpp src/net_section.cpp
-         src/net_cards.cpp src/factory_reset.cpp
+         src/net_cards.cpp src/factory_reset.cpp src/console.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_admin wisp_ui
 )

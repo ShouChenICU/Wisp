@@ -12,7 +12,9 @@ temporary data directory. Every case except "http" and
 the suite never depends on a free port; those two pick one, talk to the
 admin API over loopback and end the run with a reboot through it
 ("factory_reset" also listens on the admin WebSocket and confirms on
-the screen with a tap sent over --touch-stdin).
+the screen with a "tap" line written to the simulator's stdin). "console"
+feeds serial console commands through stdin; every other case gives the
+simulator an empty stdin.
 
 Registered with ctest as the "sim_smoke" test (tests/CMakeLists.txt).
 
@@ -88,10 +90,13 @@ def sim_args(sim_path, data_dir, extra_args, http_port=0):
     ]
 
 
-def run_sim(sim_path, data_dir, extra_args):
+def run_sim(sim_path, data_dir, extra_args, stdin_text=""):
+    """stdin_text is the simulator's whole stdin (it then sees end of
+    input), so a case never reads from the terminal ctest runs in."""
     args = sim_args(sim_path, data_dir, extra_args)
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=TIMEOUT_S)
+        return subprocess.run(args, input=stdin_text, capture_output=True, text=True,
+                              timeout=TIMEOUT_S)
     except subprocess.TimeoutExpired as exc:
         raise SmokeError(f"{' '.join(args)} timed out after {TIMEOUT_S}s") from exc
 
@@ -465,7 +470,7 @@ def case_factory_reset(sim_path, tmp_root):
     Nothing here waits on a fixed delay: the socket subscribes to the log
     as well as to events, so the replayed log shows the subscription is
     live before the POST, and the dialog's own log line says when to tap
-    (sent to the simulator's stdin, --touch-stdin). The POST goes out as
+    (a "tap" line on the simulator's stdin). The POST goes out as
     soon as the server answers, typically before the boot has finished
     and the screen is listening: the request must still reach the dialog
     (the app keeps it pending until the screen takes it up)."""
@@ -476,7 +481,7 @@ def case_factory_reset(sim_path, tmp_root):
     (data_dir / "settings.json").write_text(json.dumps({"sys": {"lang": "en"}}))
 
     port = free_port()
-    args = sim_args(sim_path, data_dir, ["--touch-stdin"], http_port=port)
+    args = sim_args(sim_path, data_dir, [], http_port=port)
     args[args.index("--exit-after-ms") + 1] = str(TIMEOUT_S * 1000)
     proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True)
@@ -564,6 +569,39 @@ def case_factory_reset(sim_path, tmp_root):
     expect("lang" not in settings.get("sys", {}), f"settings.json after the reset: {settings}")
 
 
+CONSOLE_PASSWORD = "wisp1234"
+
+
+def case_console(sim_path, tmp_root):
+    """Serial console commands on stdin (connectivity spec 8.2) are
+    answered on stdout, touch lines never reach the console, and neither
+    the Wi-Fi password typed into "wifi add" nor anything else secret is
+    ever printed or logged."""
+    commands = [
+        "help",
+        "wifi status",
+        f"wifi add WispLab {CONSOLE_PASSWORD}",
+        "tap 10,10",
+        "wifi status",
+        "wifi ap on",
+        "wifi ap off",
+        "bogus",
+    ]
+    result = run_sim(sim_path, tmp_root / "console", [], "\n".join(commands) + "\n")
+    expect(result.returncode == 0, f"exit code {result.returncode}, stderr:\n{result.stderr}")
+    lines = result.stdout.splitlines()
+    expect('saved ssid="WispLab"' in lines, f"no saved network line:\n{result.stdout}")
+    expect(any(l.startswith("state=") for l in lines), f"no wifi status line:\n{result.stdout}")
+    expect(any(l.startswith('ap ssid="Wisp-') and " ip=" in l for l in lines),
+           f"no hotspot line:\n{result.stdout}")
+    expect(lines.count("ok") == 2, f"expected two ok lines:\n{result.stdout}")
+    # Only "bogus" is unknown: "tap 10,10" went to the touch screen.
+    expect(lines.count("error: unknown command") == 1,
+           f"expected one unknown command:\n{result.stdout}")
+    for stream in (result.stdout, result.stderr):
+        expect(CONSOLE_PASSWORD not in stream, f"the Wi-Fi password was printed:\n{stream}")
+
+
 def case_disable_imu(sim_path, tmp_root):
     data_dir = tmp_root / "disable-imu"
     data_dir.mkdir()
@@ -648,6 +686,7 @@ CASES = (
     ("disable_wifi", case_disable_wifi),
     ("http", case_http),
     ("factory_reset", case_factory_reset),
+    ("console", case_console),
 )
 
 

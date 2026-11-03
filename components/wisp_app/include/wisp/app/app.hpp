@@ -52,6 +52,8 @@
 //      "WISP_BOOT_REPORT <json>" and "WISP_MANIFEST <json>" (in that
 //      order) via Platform::emit_line, then publishes
 //      "system.boot.completed".
+//   6. Given Platform::read_line, starts the serial console task
+//      (console.hpp, src/console_task.hpp).
 
 #include <cstddef>
 #include <cstdint>
@@ -59,6 +61,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "wisp/app/board.hpp"
 #include "wisp/base/result.hpp"
@@ -88,8 +91,23 @@ class PairingService;
 
 namespace wisp::app {
 
+class App;
 class PowerManager;
 struct LoopbackStatus;
+
+// Outcome of one Platform::read_line call.
+enum class LineRead { Line, Timeout, Closed };
+
+// One extra console command (Platform::console_commands).
+struct ConsoleCommand {
+    // The first word that selects it.
+    std::string name;
+    // Its line in `help`.
+    std::string usage;
+    // Gets every word of the line, args[0] == name; returns the text to
+    // print (possibly several lines).
+    std::function<std::string(App& app, const std::vector<std::string>& args)> run;
+};
 
 // Everything App needs that varies by port/board. Constructed by the
 // simulator main or the ESP firmware main and handed
@@ -156,9 +174,17 @@ struct Platform {
 
     // Restarts the device (admin "reboot", factory reset). May be empty.
     std::function<void()> reboot;
-    // Blocks for one line of serial console input (without the line
-    // ending); false at end of input. Empty: no console.
-    std::function<bool(std::string& line)> read_line;
+    // Serial console input (spec 8.2; see console.hpp). Waits up to
+    // timeout_ms for one line (stored without its line ending): Line when
+    // one arrived, Timeout when none did, Closed once the input has ended
+    // for good. The bounded wait is what lets App::stop() end the console
+    // task without a way to interrupt a blocked read. Must not echo what
+    // it reads. Empty: no console.
+    std::function<LineRead(std::string& line, uint32_t timeout_ms)> read_line;
+    // Platform-specific console commands (e.g. simulator-only debugging),
+    // listed by `help` after the built-in ones. An entry named like a
+    // built-in command is ignored.
+    std::vector<ConsoleCommand> console_commands;
 };
 
 class App {
@@ -178,7 +204,8 @@ public:
     // stop() first to run the sequence again.
     Result<void> start();
 
-    // Stops the self-check screen, then networking -- the "wisp.net" task,
+    // Stops the serial console task, then the self-check screen, then
+    // networking -- the "wisp.net" task,
     // then the HTTP server (whose handlers call into PowerManager and the
     // net services), then the net services themselves -- and then (in
     // reverse order) PowerManager, the storage-refresh timer, ButtonService,
@@ -250,6 +277,9 @@ private:
     friend bool start_factory_reset(App&);
     friend void join_factory_reset(App&);
     friend bool take_factory_reset_request(App&);
+    // The console task (src/console_task.hpp) lives on Impl.
+    friend void start_console(App&);
+    friend void stop_console(App&);
     friend void set_reset_spawner(
         App&,
         std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>);

@@ -32,7 +32,7 @@ add_subdirectory(${WISP_ROOT}/components/wisp_port_sim wisp_port_sim)
 # The simulator executable itself: parses SimOptions
 # (simulator/sim_options.{hpp,cpp}) and runs the SDL main loop
 # (simulator/main.cpp) over a SimBoard from wisp_port_sim_dev.
-add_executable(wisp_sim main.cpp sim_options.cpp)
+add_executable(wisp_sim main.cpp sim_options.cpp sim_stdin.cpp)
 target_compile_features(wisp_sim PRIVATE cxx_std_20)
 target_link_libraries(wisp_sim PRIVATE
     wisp_app wisp_core wisp_hal wisp_os wisp_base wisp_ui

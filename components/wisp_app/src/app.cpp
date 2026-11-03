@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "app_impl.hpp"
+#include "console_task.hpp"
 #include "factory_reset.hpp"
 #include "loopback.hpp"
 #include "self_check.hpp"
@@ -207,6 +208,9 @@ Result<void> App::start() {
 
     impl_->bus.publish({"system.boot.completed", "app", 0, {}});
 
+    // Last, so a command never sees a half-built App.
+    start_console(*this);
+
     impl_->started = true;
     return Result<void>::ok();
 }
@@ -232,6 +236,8 @@ void App::stop() {
     // guarantees the loopback callback's queued work runs (while
     // SelfCheck is still alive) strictly before SelfCheck's teardown
     // lambda does.
+    // The console first: its commands reach the net services.
+    stop_console(*this);
     join_loopback(*this);
     stop_self_check(impl_->self_check);
     // A confirmed factory reset still running uses the bus, storage and

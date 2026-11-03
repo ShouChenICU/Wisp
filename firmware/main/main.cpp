@@ -26,6 +26,7 @@
 #include "wisp/app/board.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/port/esp/console_esp.hpp"
 #include "wisp/port/esp/log_esp.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
 
@@ -115,8 +116,19 @@ extern "C" void app_main() {
     // has to enable that source itself.
     platform.random = [](uint8_t* out, size_t len) { esp_fill_random(out, len); };
     platform.reboot = [] { esp_restart(); };
-    // http_server/http_client/assets/read_line stay empty: no admin backend
-    // or serial console on the device yet.
+    // Serial console (connectivity spec 8.2). Created before App::start(),
+    // and so before any task logs heavily: the stdio VFS switches to the
+    // console driver here.
+    static std::unique_ptr<wisp::port::esp::EspConsole> console =
+        wisp::port::esp::EspConsole::create();
+    if (console) {
+        platform.read_line = [](std::string& line, uint32_t timeout_ms) {
+            return console->read_line(line, timeout_ms) ? wisp::app::LineRead::Line
+                                                        : wisp::app::LineRead::Timeout;
+        };
+    }
+    // http_server/http_client/assets stay empty: no admin backend on the
+    // device yet.
 
     // DFS always on; light sleep off until the first enter_standby()
     // (see apply_pm_config()'s comment above).

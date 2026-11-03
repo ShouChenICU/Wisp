@@ -1,0 +1,94 @@
+#include "sim_stdin.hpp"
+
+#include <poll.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <chrono>
+#include <utility>
+
+bool is_touch_line(std::string_view line) {
+    const std::string_view word = line.substr(0, line.find(' '));
+    return word == "tap" || word == "swipe";
+}
+
+void ConsoleLines::push(std::string line) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    lines_.push_back(std::move(line));
+    cv_.notify_all();
+}
+
+void ConsoleLines::close() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    closed_ = true;
+    cv_.notify_all();
+}
+
+wisp::app::LineRead ConsoleLines::read(std::string& line, uint32_t timeout_ms) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                 [this] { return closed_ || !lines_.empty(); });
+    if (!lines_.empty()) {
+        line = std::move(lines_.front());
+        lines_.pop_front();
+        return wisp::app::LineRead::Line;
+    }
+    return closed_ ? wisp::app::LineRead::Closed : wisp::app::LineRead::Timeout;
+}
+
+StdinReader::StdinReader(int fd, std::function<void(const std::string&)> on_touch,
+                         ConsoleLines& console)
+    : fd_(fd), on_touch_(std::move(on_touch)), console_(console) {
+    thread_ = std::thread([this] { run(); });
+}
+
+StdinReader::~StdinReader() {
+    stop_.store(true);
+    if (thread_.joinable()) thread_.join();
+}
+
+void StdinReader::route(std::string line) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty()) return;
+    if (is_touch_line(line)) {
+        if (on_touch_) on_touch_(line);
+    } else {
+        console_.push(std::move(line));
+    }
+}
+
+void StdinReader::run() {
+    std::string pending;
+    bool overlong = false;  // dropping the rest of a line past kMaxLine
+    while (!stop_.load()) {
+        pollfd pfd{fd_, POLLIN, 0};
+        const int ready = ::poll(&pfd, 1, 50);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0) {
+            if (ready < 0) break;
+            continue;
+        }
+        char buf[512];
+        const ssize_t n = ::read(fd_, buf, sizeof(buf));
+        if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        if (n <= 0) {
+            // End of input: a last line without a newline still counts.
+            if (!overlong) route(std::move(pending));
+            break;
+        }
+        for (ssize_t i = 0; i < n; ++i) {
+            if (buf[i] == '\n') {
+                if (!overlong) route(std::move(pending));
+                pending.clear();
+                overlong = false;
+            } else if (!overlong) {
+                pending += buf[i];
+                if (pending.size() > kMaxLine) {
+                    pending.clear();
+                    overlong = true;
+                }
+            }
+        }
+    }
+    console_.close();
+}

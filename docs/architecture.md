@@ -104,7 +104,16 @@
 
 - `net.wifi` 是 `wisp::port::sim::SimWifi`（model `sim-wifi`）：内置 `WispLab`（-45 dBm，密码 `wisp1234`）、`Neighbor`（-70，`neighbor99`）、`OpenCafe`（-80，开放）；`--wifi-fail` 让所有连接以 `not_found` 失败；热点只改状态，`ap_clients()` 在热点开启时恒为 1。
 - 管理后台由 `SimHttpServer` 提供，只监听 `127.0.0.1`，端口 `--http-port`（默认 8900，与真机后台端口相同；0 表示不启动）。模拟器没有 80 端口的强制门户服务（`Platform::captive_server` 为空）。出站请求（`/llm/test`）走 `SimHttpClient`（libcurl，主机构建 `find_package(CURL 7.80 REQUIRED)`；可移植层禁止 include `curl/`）。
-- 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。`--touch-stdin` 另外从标准输入逐行读 `tap X,Y` / `swipe X1,Y1,X2,Y2` 并立即执行，供需要先等设备上某件事发生再点的脚本使用：冒烟测试 `factory_reset` 等到 WebSocket 日志里出现确认框的日志行，再经标准输入点"Yes"。
+- 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。标准输入里以 `tap` / `swipe` 开头的行（`tap X,Y` / `swipe X1,Y1,X2,Y2`）也立即执行，供需要先等设备上某件事发生再点的脚本使用：冒烟测试 `factory_reset` 等到 WebSocket 日志里出现确认框的日志行，再经标准输入点"Yes"。
+- 标准输入只有一个读取者（`simulator/sim_stdin.hpp` 的 `StdinReader`，带超时轮询，退出时不会卡在阻塞读上）：不论是否 `--headless`、stdin 是不是终端都会读取；触摸行交给触摸脚本，其余每行都是串口控制台（serial console）命令，经 `Platform::read_line` 交给控制台任务；控制台没有 `tap`/`swipe` 命令。
+
+## 串口控制台
+
+- 连接 spec 8.2：命令解析在可移植层（`wisp/app/console.hpp`：`split_command()`、`run_command()`），读输入在平台层（`Platform::read_line`：最多等待 `timeout_ms`，返回 `Line`/`Timeout`/`Closed`）。控制台跑在自己的 `wisp.console` 任务上（可能阻塞几秒的命令不占用 UI 线程），`App::start()` 最后启动、`App::stop()` 最先停止。
+- 命令：`help`；`wifi status`（`state=… ssid="…" ip=… rssi=…`，Backoff 时加 `reason=…`；之后每个已保存网络一行 `saved ssid="…"`，密码被拒的加 ` auth_failed`；热点开着时一行 `ap ssid="…" clients=n`）；`wifi add <ssid> [password]`；`wifi forget <ssid>`；`wifi ap on|off`。含空格的参数用双引号，引号内 `\"`、`\\` 转义；`hex:<字节>` 按十六进制字节给出 SSID（对应 API 的 `ssid_hex`）。输出的 SSID 一律加双引号，控制字符和非法 UTF-8 字节写成 `\xNN`。
+- 保密：控制台不回显输入、不把输入行写进日志（输出走 `emit_line`，不经 `WLOG`），任何输出都不含 Wi-Fi 密码、热点密码、配对码、令牌或 API Key；`wifi ap on` 只打印热点 SSID 和地址，密码只显示在屏幕上。终端程序自己的本地回显不受设备控制。
+- 平台扩展：`Platform::console_commands` 追加平台专用命令（出现在 `help` 末尾，不能覆盖内置命令），例如模拟器专用的调试命令。
+- 真机：`wisp::port::esp::EspConsole`（`components/wisp_port_esp/console_esp.cpp`）安装 USB-Serial-JTAG（或 UART）驱动并让 VFS 走驱动，日志输出照常；`read_line` 用驱动的带超时读取，不忙等。
 - `--screenshot` 的截图（`UiRuntime::take_snapshot`）包含活动屏幕和 `lv_layer_top()`（确认框、配网卡片、配对卡片都在这一层），不含 `lv_layer_sys()`。
 - 网页资源：构建时用 `tools/pack_assets.py` 把 `web/` 打包成 `wisp_sim` 旁边的 `assets.wpak`（`web/` 不存在时打包一个空目录，只提供 API）；`--web-dir <目录>` 改为启动时在内存里按同一套 MIME/gzip 规则打包该目录（`wisp::port::sim::pack_web_dir()`）。
 

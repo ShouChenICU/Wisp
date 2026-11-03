@@ -117,8 +117,6 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
             opts.touches.push_back(step);
         } else if (arg == "--wifi-fail") {
             opts.wifi_fail = true;
-        } else if (arg == "--touch-stdin") {
-            opts.touch_stdin = true;
         } else if (arg == "--http-port") {
             auto v = take_value(argc, argv, i, "--http-port");
             if (!v) {
