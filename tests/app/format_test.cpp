@@ -29,7 +29,7 @@ TEST(Format, DisplayableSsid) {
     EXPECT_EQ(displayable_ssid("Home"), "Home");
     EXPECT_EQ(displayable_ssid("\xe5\x92\x96\xe5\x95\xa1 5G"), "\xe5\x92\x96\xe5\x95\xa1 5G");
     EXPECT_EQ(displayable_ssid("\xc4\xe3\xba\xc3"), "????");  // "你好" in GBK
-    EXPECT_EQ(displayable_ssid("a\xff" "b"), "a?b");
+    EXPECT_EQ(displayable_ssid(std::string("a\xff") + "b"), "a?b");
     EXPECT_EQ(displayable_ssid("x\xe4\xbd"), "x??");     // cut-off sequence
     EXPECT_EQ(displayable_ssid("\xed\xa0\x80"), "???");  // a UTF-16 surrogate
     EXPECT_EQ(displayable_ssid(std::string("a\x01\x7f", 3)), "a??");
