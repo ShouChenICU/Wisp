@@ -46,7 +46,7 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
-#include "wisp/core/llm_config.hpp"
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -63,7 +63,7 @@ struct NetWiringDeps {
     core::BootReport& report;
     core::EventBus& bus;
     core::StorageManager& storage;
-    core::LlmConfigService& llm;
+    core::ModelProfileService& models;
     core::SystemSettings& system_settings;
     // GET /device reports its last battery sample; null: battery unknown.
     const core::PowerMonitor* power_monitor = nullptr;

@@ -20,7 +20,7 @@
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
-#include "wisp/core/llm_config.hpp"
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -108,10 +108,13 @@ TEST(FactoryReset, ClearsEverythingButLibraryAndReboots) {
     ASSERT_EQ(app.wifi()->saved_ssids().size(), 1u);
     pair_browser(h);
     ASSERT_EQ(app.pairing()->clients().size(), 1u);
-    ASSERT_TRUE(app.llm().set(
-        {.base_url = "https://api.example.com/v1", .model = "m", .api_key = "sk-test"}));
+    ASSERT_TRUE(app.models().create({.kind = wisp::core::ModelKind::Llm,
+                                     .name = "Chat",
+                                     .preset = "openai",
+                                     .model = "m",
+                                     .api_key = "sk-test"}));
     const std::string system = app.storage().write_root(wisp::core::Area::System).value();
-    ASSERT_TRUE(std::filesystem::exists(system + "/secrets/llm.json"));
+    ASSERT_TRUE(std::filesystem::exists(system + "/secrets/models.json"));
     const std::string library =
         app.storage().write_root(wisp::core::Area::Library).value() + "/scene.json";
     const std::string kept = R"({"keep":true})";
@@ -129,7 +132,7 @@ TEST(FactoryReset, ClearsEverythingButLibraryAndReboots) {
         EXPECT_EQ(wisp::core::Settings(fresh, "sys").get_string("lang", "none"), "none");
         EXPECT_EQ(wisp::core::Settings(fresh, "power").get_int("screen_off_s", -1), -1);
     }
-    // Wi-Fi, pairings and the LLM config, in memory and on disk.
+    // Wi-Fi, pairings and the model profiles, in memory and on disk.
     EXPECT_TRUE(app.wifi()->saved_ssids().empty());
     auto wifi_json = app.storage().read_file(system + "/net/wifi.json");
     ASSERT_TRUE(wifi_json);
@@ -142,9 +145,9 @@ TEST(FactoryReset, ClearsEverythingButLibraryAndReboots) {
             std::string(clients_json.value().begin(), clients_json.value().end()).find("hash"),
             std::string::npos);
     }
-    EXPECT_FALSE(app.llm().get().has_key);
-    EXPECT_TRUE(app.llm().get().base_url.empty());
-    EXPECT_FALSE(std::filesystem::exists(system + "/secrets/llm.json"));
+    EXPECT_TRUE(app.models().get().profiles.empty());
+    EXPECT_FALSE(app.models().active_for_request(wisp::core::ModelKind::Llm).has_value());
+    EXPECT_FALSE(std::filesystem::exists(system + "/secrets/models.json"));
     // Library data stays.
     auto scene = app.storage().read_file(library);
     ASSERT_TRUE(scene);

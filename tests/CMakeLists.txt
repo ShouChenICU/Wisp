@@ -42,7 +42,6 @@ wisp_test(NAME event_bus_test SRCS core/event_bus_test.cpp LIBS wisp_core wisp_p
 wisp_test(NAME device_registry_test SRCS core/device_registry_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME button_service_test SRCS core/button_service_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 20)
 wisp_test(NAME settings_test SRCS core/settings_test.cpp LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings)
-wisp_test(NAME llm_config_test SRCS core/llm_config_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME model_profiles_test SRCS core/model_profiles_test.cpp LIBS wisp_core wisp_port_sim_os
           TIMEOUT 20)
 wisp_test(NAME system_settings_test SRCS core/system_settings_test.cpp
@@ -140,7 +139,7 @@ add_test(NAME sim_smoke COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tests/smoke/s
          $<TARGET_FILE:wisp_sim>)
 
 # End-to-end admin API smoke test: pairs over HTTP with the simulator-only
-# "debug pair-code" console command, exercises the routes, the LLM probe
+# "debug pair-code" console command, exercises the routes, the model probe
 # (against tools/fake_openai.py) and the WebSocket log, then stops wisp_sim
 # with SIGTERM. See tests/smoke/admin_smoke.py's file header.
 add_test(NAME admin_smoke COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tests/smoke/admin_smoke.py
@@ -174,11 +173,11 @@ wisp_test(NAME wifi_service_test SRCS net/wifi_service_test.cpp
           LIBS wisp_net wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 wisp_test(NAME pairing_service_test SRCS net/pairing_service_test.cpp
           LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
-wisp_test(NAME llm_probe_test SRCS net/llm_probe_test.cpp LIBS wisp_net wisp_port_sim_os)
+wisp_test(NAME model_probe_test SRCS net/model_probe_test.cpp LIBS wisp_net wisp_core wisp_port_sim_os)
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.
-foreach(admin_test filters_test pair_routes_test routes_test ws_hub_test)
+foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test ws_hub_test)
     wisp_test(NAME ${admin_test} SRCS admin/${admin_test}.cpp
               LIBS wisp_admin wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
     add_dependencies(${admin_test} wisp_fixture_wpak)

@@ -1,8 +1,9 @@
 #pragma once
 
 // Shared fixture for the wisp_admin router tests: real services (Wi-Fi
-// over a FakeWifi, pairing, LLM config, system settings) over a temp
-// directory, a FakeHttpClient for the LLM probe, counters for the reboot
+// over a FakeWifi, pairing, model profiles, system settings) over a temp
+// directory, a FakeHttpClient behind the model profiles' connectivity
+// test, counters for the reboot
 // and factory-reset hooks, the fixture WispPack that tools/pack_assets.py
 // builds from tests/net/fixtures/web, and a settable monotonic clock.
 
@@ -27,11 +28,12 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
-#include "wisp/core/llm_config.hpp"
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/asset_pack.hpp"
+#include "wisp/net/model_probe.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
@@ -55,8 +57,9 @@ struct AdminFixture {
         pairing = std::make_unique<net::PairingService>(*storage, bus, random,
                                                         [] { return int64_t{1767225600}; });
         EXPECT_TRUE(pairing->init());
-        llm = std::make_unique<core::LlmConfigService>(*storage);
-        EXPECT_TRUE(llm->init());
+        models = std::make_unique<core::ModelProfileService>(*storage, bus, random);
+        EXPECT_TRUE(models->init());
+        models->set_prober(net::make_model_prober(http, [this] { return now.load(); }));
         settings = std::make_unique<core::SystemSettings>(*backend, nullptr);
 
         if (with_assets) {
@@ -81,9 +84,8 @@ struct AdminFixture {
             .bus = bus,
             .wifi = *wifi,
             .pairing = *pairing,
-            .llm = *llm,
+            .models = *models,
             .settings = *settings,
-            .http_client = &http,
             .assets = assets ? &*assets : nullptr,
             .board = "sim",
             .firmware_version = "0.2.0-test",
@@ -127,7 +129,7 @@ struct AdminFixture {
     std::shared_ptr<FakeWifi> fake_wifi;
     std::unique_ptr<net::WifiService> wifi;
     std::unique_ptr<net::PairingService> pairing;
-    std::unique_ptr<core::LlmConfigService> llm;
+    std::unique_ptr<core::ModelProfileService> models;
     std::unique_ptr<core::SystemSettings> settings;
     std::vector<uint8_t> pack_bytes;
     std::optional<net::AssetPack> assets;

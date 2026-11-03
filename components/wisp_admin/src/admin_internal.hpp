@@ -32,7 +32,7 @@ struct RequestContext {
     // Paired client id when the request carried a valid wisp_token; empty
     // otherwise (only possible on whitelisted routes).
     std::string client_id;
-    // The trailing path segment of a "/*" route, still URL-encoded.
+    // The path segment a route's "*" matched, still URL-encoded.
     std::string param;
     // The JSON body; Null when the body was empty.
     Value body;
@@ -45,8 +45,8 @@ using RouteFn = net::HttpResponse (*)(AdminDeps& deps, const RequestContext& ctx
 
 struct Route {
     net::Method method;
-    // Path after kApiPrefix. A trailing "/*" matches exactly one more
-    // non-empty segment, handed to the handler as RequestContext::param.
+    // Path after kApiPrefix. One segment may be "*", which matches exactly
+    // one non-empty segment, handed to the handler as RequestContext::param.
     std::string_view path;
     // Reachable without a token (the pairing whitelist). CSRF still applies.
     bool is_public;
@@ -57,7 +57,7 @@ struct Route {
 void add_pair_routes(std::vector<Route>& routes);
 void add_device_routes(std::vector<Route>& routes);  // /device, /devices, /settings
 void add_wifi_routes(std::vector<Route>& routes);
-void add_llm_routes(std::vector<Route>& routes);
+void add_ai_routes(std::vector<Route>& routes);      // /ai/*
 void add_system_routes(std::vector<Route>& routes);  // /clients, /system/*
 
 // How long the reboot route waits before calling AdminDeps::reboot, so its

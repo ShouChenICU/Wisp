@@ -32,8 +32,8 @@
 //      is constructed before the self-check screen specifically because
 //      the screen's power-key handling calls into it (see
 //      src/self_check_screen.cpp).
-//   4b. Networking (connectivity spec 4.1; src/net_wiring.hpp): loads the
-//      LLM config, builds PairingService and -- when "net.wifi" is
+//   4b. Networking (connectivity spec 4.1; src/net_wiring.hpp): builds
+//      PairingService and -- when "net.wifi" is
 //      registered -- WifiService, whose tick() runs on a "wisp.net" task
 //      every 250 ms so boot never waits for Wi-Fi; mirrors power.state
 //      into WifiService::set_standby(); and, given Platform::http_server,
@@ -80,7 +80,7 @@ class UiRuntime;
 
 namespace wisp::core {
 class ButtonService;
-class LlmConfigService;
+class ModelProfileService;
 class SystemSettings;
 }  // namespace wisp::core
 
@@ -151,8 +151,8 @@ struct Platform {
 
     // The admin page's HTTP server. Empty: no admin backend at all.
     std::unique_ptr<net::HttpServer> http_server;
-    // Outgoing HTTP (the LLM connectivity test). Empty: /llm/test reports
-    // transport "other".
+    // Outgoing HTTP (the model profiles' connectivity test). Empty: that
+    // test answers 503 unavailable.
     std::unique_ptr<net::HttpClient> http_client;
     // A WispPack with the web UI (spec 2.3). The bytes must outlive the
     // App. Empty, or not a valid pack: the API is served without a page.
@@ -234,8 +234,8 @@ public:
     // or after stop().
     net::WifiService* wifi();
     net::PairingService* pairing();
-    // Always available; llm() is loaded from storage by start().
-    core::LlmConfigService& llm();
+    // Always available; loaded from storage by start() (step 3).
+    core::ModelProfileService& models();
     // Applies brightness through PowerManager::set_brightness() while
     // started (otherwise the stored value takes effect at the next boot).
     core::SystemSettings& system_settings();

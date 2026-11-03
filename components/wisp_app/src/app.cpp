@@ -16,6 +16,7 @@
 #include "wisp/hal/imu.hpp"
 #include "wisp/hal/power.hpp"
 #include "wisp/hal/touch.hpp"
+#include "wisp/net/model_probe.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -73,8 +74,12 @@ Result<void> App::start() {
         "wisp.storage", kStorageRefreshMs, /*periodic=*/true, [this] { impl_->storage.refresh(); });
     impl_->storage_timer->start();
     impl_->buttons.start();
-    if (auto r = impl_->llm.init(); !r) {
-        WLOG_W("app", "LLM config unavailable: %s", r.error().message.c_str());
+    if (auto r = impl_->models.init(); !r) {
+        WLOG_W("app", "model profiles unavailable: %s", r.error().message.c_str());
+    }
+    if (impl_->platform.http_client) {
+        impl_->models.set_prober(
+            net::make_model_prober(*impl_->platform.http_client, [] { return os::now_ms(); }));
     }
 
     // Step 4: UI (or headless). The device UI language comes first so the
@@ -142,7 +147,7 @@ Result<void> App::start() {
         .report = impl_->report,
         .bus = impl_->bus,
         .storage = impl_->storage,
-        .llm = impl_->llm,
+        .models = impl_->models,
         .system_settings = impl_->system_settings,
         .power_monitor = impl_->power_monitor.get(),
         .power_manager = impl_->power_manager.get(),
@@ -332,7 +337,7 @@ ui::UiRuntime* App::ui() { return impl_->ui.get(); }
 PowerManager* App::power_manager() { return impl_->power_manager.get(); }
 net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr; }
 net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }
-core::LlmConfigService& App::llm() { return impl_->llm; }
+core::ModelProfileService& App::models() { return impl_->models; }
 core::SystemSettings& App::system_settings() { return impl_->system_settings; }
 const Platform& App::platform() const { return impl_->platform; }
 

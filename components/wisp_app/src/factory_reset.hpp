@@ -1,8 +1,8 @@
 #pragma once
 
 // Factory reset (connectivity spec 6.1): erases Settings, the saved Wi-Fi
-// networks, every paired browser and the LLM config (key included), then
-// restarts. Library and Backup data stay.
+// networks, every paired browser and every model profile (keys included),
+// then restarts. Library and Backup data stay.
 //
 // Flow: POST /system/factory-reset only asks for it (request_factory_reset()
 // publishes system.factory_reset {state:"requested"}); the self-check
@@ -45,7 +45,7 @@ void cancel_factory_reset(App& app);
 //   2. waits (at most 500 ms in all) for the event bus to deliver it and
 //      the admin WebSocket sender to put it on the wire;
 //   3. erases Settings, forgets the Wi-Fi networks, revokes every paired
-//      browser (closing their sockets) and clears the LLM config;
+//      browser (closing their sockets) and clears the model profiles;
 //   4. calls Platform::reboot (if any).
 // Blocks; must not run on the UI thread.
 void factory_reset(App& app);

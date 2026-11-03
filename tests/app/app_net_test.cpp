@@ -22,7 +22,7 @@
 #include "wisp/app/board.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
-#include "wisp/core/llm_config.hpp"
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/wifi_service.hpp"
@@ -375,7 +375,7 @@ TEST(AppNet, BrightnessSettingReachesTheDisplay) {
     ASSERT_TRUE(h.app->system_settings().set({{"brightness", 120}}));
     EXPECT_EQ(h.app->system_settings().get().brightness, 120);
     EXPECT_TRUE(wait_until([&] { return h.display->brightness() == 120; }, 2000));
-    EXPECT_FALSE(h.app->llm().get().has_key);
+    EXPECT_TRUE(h.app->models().get().profiles.empty());
 }
 
 TEST(AppNet, AdminPortDefaultsTo8900) {

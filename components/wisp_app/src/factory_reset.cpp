@@ -45,7 +45,7 @@ void cancel_factory_reset(App& app) {
 }
 
 void factory_reset(App& app) {
-    WLOG_W(kTag, "factory reset: erasing settings, Wi-Fi, pairings and the model config");
+    WLOG_W(kTag, "factory reset: erasing settings, Wi-Fi, pairings and the model profiles");
     publish_state(app, "done");
 
     const uint64_t deadline = os::now_ms() + kFlushMs;
@@ -63,7 +63,7 @@ void factory_reset(App& app) {
     }
     if (net::WifiService* wifi = app.wifi()) wifi->forget_all();
     if (net::PairingService* pairing = app.pairing()) pairing->revoke_all();
-    app.llm().clear();
+    app.models().clear();
 
     if (app.impl_->platform.reboot) {
         WLOG_W(kTag, "factory reset complete; restarting");

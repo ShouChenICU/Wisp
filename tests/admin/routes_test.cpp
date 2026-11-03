@@ -1,5 +1,5 @@
 // The authenticated business routes: device, devices, settings, Wi-Fi,
-// LLM, clients and system (spec 6.1).
+// clients and system (spec 6.1). The model routes are in routes_ai_test.cpp.
 
 #include <gtest/gtest.h>
 
@@ -25,7 +25,6 @@ using wisp::Value;
 using wisp::net::HttpRequest;
 using wisp::net::HttpResponse;
 using wisp::net::Method;
-using wisp::net::TransportError;
 using wisp::test::AdminFixture;
 using wisp::test::body_json;
 using wisp::test::contains;
@@ -51,8 +50,8 @@ HttpRequest authed(const std::string& token, Method m, const std::string& path,
 
 const std::vector<std::string>& every_authenticated_get_route() {
     static const std::vector<std::string> paths = {
-        "/api/v1/info", "/api/v1/device",    "/api/v1/devices", "/api/v1/settings",
-        "/api/v1/wifi", "/api/v1/wifi/scan", "/api/v1/llm",     "/api/v1/clients",
+        "/api/v1/info", "/api/v1/device",    "/api/v1/devices",     "/api/v1/settings",
+        "/api/v1/wifi", "/api/v1/wifi/scan", "/api/v1/ai/profiles", "/api/v1/clients",
     };
     return paths;
 }
@@ -64,15 +63,10 @@ const Value& field(const Value& v, const char* key) {
     return f != nullptr ? *f : null;
 }
 
-// Typed reads that fail the test instead of asserting on a wrong type.
+// A typed read that fails the test instead of asserting on a wrong type.
 bool is_true(const Value& v) {
     EXPECT_EQ(v.type(), Value::Type::Bool) << wisp::to_json(v);
     return v.type() == Value::Type::Bool && v.as_bool();
-}
-
-int64_t int_of(const Value& v) {
-    EXPECT_EQ(v.type(), Value::Type::Int) << wisp::to_json(v);
-    return v.type() == Value::Type::Int ? v.as_int() : -1;
 }
 
 TEST(Routes, BusinessRoutesNeedAToken) {
@@ -83,118 +77,6 @@ TEST(Routes, BusinessRoutesNeedAToken) {
     }
     EXPECT_EQ(f.srv->handle(with_csrf(make_req(Post, "/api/v1/system/reboot"))).status, 401);
     EXPECT_EQ(f.reboots.load(), 0);
-}
-
-TEST(Routes, NoResponseEverContainsApiKey) {
-    AdminFixture f;
-    const std::string token = f.token();
-    ASSERT_TRUE(f.llm->set({.base_url = "https://x/v1", .api_key = "sk-NEVERLEAK"}));
-    f.http.next = {.status = 401, .body = R"({"error":"bad key sk-NEVERLEAK"})"};
-
-    std::vector<HttpRequest> reqs;
-    for (const std::string& path : every_authenticated_get_route()) {
-        reqs.push_back(authed(token, Get, path));
-    }
-    reqs.push_back(authed(token, Post, "/api/v1/llm/test"));
-    reqs.push_back(authed(token, Put, "/api/v1/llm", R"({"model":"gpt-x"})"));
-    // A rejected key must not be echoed back in the error either.
-    reqs.push_back(authed(token, Put, "/api/v1/llm", R"({"api_key":"sk-NEVERLEAK x"})"));
-    for (const HttpRequest& req : reqs) {
-        HttpResponse res = f.srv->handle(req);
-        EXPECT_LT(res.status, 500) << req.path;
-        EXPECT_EQ(res.body.find("NEVERLEAK"), std::string::npos) << req.path << ": " << res.body;
-        for (const auto& [k, v] : res.headers) {
-            EXPECT_EQ(v.find("NEVERLEAK"), std::string::npos) << req.path << " header " << k;
-        }
-    }
-    // The probe really ran, and its key went only into the header.
-    auto sent = f.http.last();
-    ASSERT_TRUE(sent.has_value());
-    EXPECT_EQ(sent->url, "https://x/v1/models");
-}
-
-TEST(Routes, LlmGetPutAndTest) {
-    AdminFixture f;
-    const std::string token = f.token();
-
-    Value empty = body_json(f.srv->handle(authed(token, Get, "/api/v1/llm")));
-    EXPECT_EQ(empty,
-              Value(Map{{"base_url", Value("")}, {"model", Value("")}, {"has_key", Value(false)}}));
-
-    HttpResponse put = f.srv->handle(
-        authed(token, Put, "/api/v1/llm",
-               R"({"base_url":"https://api.example.com/v1/","model":"m1","api_key":"sk-1"})"));
-    EXPECT_EQ(put.status, 200);
-    Value expected(Map{{"base_url", Value("https://api.example.com/v1")},
-                       {"model", Value("m1")},
-                       {"has_key", Value(true)}});
-    EXPECT_EQ(body_json(put), expected);
-    EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/llm"))), expected);
-
-    // Validation failures change nothing.
-    EXPECT_EQ(f.srv->handle(authed(token, Put, "/api/v1/llm", R"({"base_url":"ftp://x"})")).status,
-              400);
-    EXPECT_EQ(f.srv->handle(authed(token, Put, "/api/v1/llm", R"({"model":5})")).status, 400);
-    EXPECT_EQ(f.srv->handle(authed(token, Put, "/api/v1/llm", R"({"temperature":"1"})")).status,
-              400);
-    EXPECT_EQ(f.srv->handle(authed(token, Put, "/api/v1/llm", "[]")).status, 400);
-    EXPECT_EQ(f.srv->handle(authed(token, Put, "/api/v1/llm")).status, 400);
-    EXPECT_EQ(f.llm->get().base_url, "https://api.example.com/v1");
-
-    f.http.next = {.status = 200, .body = R"({"data":[{"id":"m1"},{"id":"m2"}]})"};
-    HttpResponse ok = f.srv->handle(authed(token, Post, "/api/v1/llm/test"));
-    EXPECT_EQ(ok.status, 200);
-    Value okv = body_json(ok);
-    EXPECT_TRUE(is_true(field(okv, "ok")));
-    EXPECT_TRUE(field(okv, "error").is_null());
-    EXPECT_EQ(int_of(field(okv, "http_status")), 200);
-    EXPECT_EQ(field(okv, "models"), Value(List{Value("m1"), Value("m2")}));
-    EXPECT_EQ(field(okv, "latency_ms").type(), Value::Type::Int);
-
-    struct Case {
-        TransportError transport;
-        int status;
-        const char* error;
-    };
-    for (const Case& c :
-         {Case{TransportError::Dns, 0, "dns"}, Case{TransportError::Connect, 0, "connect"},
-          Case{TransportError::Tls, 0, "tls"}, Case{TransportError::Timeout, 0, "timeout"},
-          Case{TransportError::Other, 0, "other"}, Case{TransportError::None, 503, "http"}}) {
-        f.http.next = {.transport = c.transport, .status = c.status, .body = "upstream-body"};
-        HttpResponse res = f.srv->handle(authed(token, Post, "/api/v1/llm/test"));
-        EXPECT_EQ(res.status, 200);
-        Value v = body_json(res);
-        EXPECT_FALSE(is_true(field(v, "ok")));
-        EXPECT_EQ(field(v, "error"), Value(c.error));
-        EXPECT_EQ(int_of(field(v, "http_status")), c.status);
-        EXPECT_EQ(field(v, "models"), Value(List{}));
-        EXPECT_FALSE(contains(res.body, "upstream-body"));
-    }
-}
-
-// Moving the endpoint to another origin without retyping the key forgets
-// the key, says so in the response, and the test then sends no key to the
-// new host.
-TEST(Routes, LlmOriginChangeDropsTheKeyBeforeTheTest) {
-    AdminFixture f;
-    const std::string token = f.token();
-    ASSERT_TRUE(f.llm->set({.base_url = "https://api.example.com/v1", .api_key = "sk-OLDHOST"}));
-
-    HttpResponse put = f.srv->handle(
-        authed(token, Put, "/api/v1/llm", R"({"base_url":"http://192.168.1.9:8000/v1"})"));
-    EXPECT_EQ(put.status, 200);
-    EXPECT_EQ(field(body_json(put), "has_key"), Value(false));
-    EXPECT_EQ(field(body_json(f.srv->handle(authed(token, Get, "/api/v1/llm"))), "has_key"),
-              Value(false));
-
-    f.http.next = {.status = 401, .body = "{}"};
-    f.srv->handle(authed(token, Post, "/api/v1/llm/test"));
-    auto sent = f.http.last();
-    ASSERT_TRUE(sent.has_value());
-    EXPECT_EQ(sent->url, "http://192.168.1.9:8000/v1/models");
-    for (const auto& [k, v] : sent->headers) {
-        EXPECT_EQ(v.find("OLDHOST"), std::string::npos) << k;
-    }
 }
 
 TEST(Routes, WifiStatusNeverContainsApPassword) {
@@ -526,14 +408,15 @@ TEST(Routes, FactoryResetDelegatesToDevice) {
     AdminFixture f;
     const std::string token = f.token();
     ASSERT_TRUE(f.wifi->add_network("Home", "", f.now));
-    ASSERT_TRUE(f.llm->set({.base_url = "https://x/v1", .api_key = "sk-1"}));
+    ASSERT_TRUE(f.models->create(
+        {.kind = wisp::core::ModelKind::Llm, .name = "x", .preset = "openai", .api_key = "sk-1"}));
 
     HttpResponse res = f.srv->handle(authed(token, Post, "/api/v1/system/factory-reset"));
     EXPECT_EQ(res.status, 202);
     EXPECT_EQ(f.factory_resets.load(), 1);
     // The device asks for confirmation; the route itself erases nothing.
     EXPECT_EQ(f.wifi->saved_ssids().size(), 1u);
-    EXPECT_TRUE(f.llm->get().has_key);
+    EXPECT_EQ(f.models->get().profiles.size(), 1u);
     EXPECT_EQ(f.pairing->clients().size(), 1u);
     EXPECT_EQ(f.reboots.load(), 0);
 }
@@ -559,17 +442,6 @@ TEST(Routes, DestroyingTheServerCancelsAPendingReboot) {
     f.srv.reset();
     wisp::os::sleep_ms(700);
     EXPECT_EQ(f.reboots.load(), 0);
-}
-
-TEST(Routes, LlmTestWithoutHttpClientIsUnavailable) {
-    AdminFixture f;
-    f.srv.reset();
-    auto deps = f.make_deps();
-    deps.http_client = nullptr;
-    f.srv = std::make_unique<wisp::admin::AdminServer>(std::move(deps));
-    const std::string token = f.token();
-    HttpResponse res = f.srv->handle(authed(token, Post, "/api/v1/llm/test"));
-    EXPECT_EQ(res.status, 503);
 }
 
 }  // namespace

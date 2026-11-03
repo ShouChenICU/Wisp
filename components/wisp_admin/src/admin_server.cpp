@@ -1,5 +1,6 @@
 #include "wisp/admin/admin_server.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -114,24 +115,34 @@ struct RouteMatch {
     bool path_known = false;  // some route has this path, under another method
 };
 
+// `sub` against a route path whose segments are literal or "*" (one
+// non-empty segment, captured into `param`).
+bool path_matches(std::string_view pattern, std::string_view sub, std::string& param) {
+    while (!pattern.empty() || !sub.empty()) {
+        if (pattern.empty() || sub.empty() || pattern[0] != '/' || sub[0] != '/') return false;
+        pattern.remove_prefix(1);
+        sub.remove_prefix(1);
+        const size_t pe = std::min(pattern.find('/'), pattern.size());
+        const size_t se = std::min(sub.find('/'), sub.size());
+        const std::string_view want = pattern.substr(0, pe);
+        const std::string_view got = sub.substr(0, se);
+        if (want == "*") {
+            if (got.empty()) return false;
+            param = std::string(got);
+        } else if (want != got) {
+            return false;
+        }
+        pattern.remove_prefix(pe);
+        sub.remove_prefix(se);
+    }
+    return true;
+}
+
 RouteMatch match_route(const std::vector<Route>& routes, net::Method method, std::string_view sub) {
     RouteMatch m;
     for (const Route& r : routes) {
         std::string param;
-        bool path_ok = false;
-        if (r.path.size() >= 2 && r.path.substr(r.path.size() - 2) == "/*") {
-            std::string_view prefix = r.path.substr(0, r.path.size() - 1);
-            if (sub.size() > prefix.size() && sub.substr(0, prefix.size()) == prefix) {
-                std::string_view rest = sub.substr(prefix.size());
-                if (rest.find('/') == std::string_view::npos) {
-                    path_ok = true;
-                    param = std::string(rest);
-                }
-            }
-        } else {
-            path_ok = sub == r.path;
-        }
-        if (!path_ok) continue;
+        if (!path_matches(r.path, sub, param)) continue;
         if (r.method == method) {
             m.route = &r;
             m.param = std::move(param);
@@ -153,7 +164,7 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_pair_routes(routes_);
     detail::add_device_routes(routes_);
     detail::add_wifi_routes(routes_);
-    detail::add_llm_routes(routes_);
+    detail::add_ai_routes(routes_);
     detail::add_system_routes(routes_);
     hub_ = std::make_unique<WsHub>(deps_.bus, deps_.boot_id);
     hub_->start();

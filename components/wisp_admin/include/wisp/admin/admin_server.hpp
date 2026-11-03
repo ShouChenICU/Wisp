@@ -41,8 +41,8 @@
 // AdminDeps::reboot about 500 ms later on the timer's thread so the 202
 // is sent first; destroying the AdminServer cancels a pending reboot.
 //
-// Secrets: tokens, pairing codes and cookie values never reach a log line
-// or a response body.
+// Secrets: tokens, pairing codes, cookie values and API keys never reach a
+// log line or a response body.
 
 #include <cstdint>
 #include <functional>
@@ -55,7 +55,7 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
-#include "wisp/core/llm_config.hpp"
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/asset_pack.hpp"
@@ -74,9 +74,10 @@ struct AdminDeps {
     core::EventBus& bus;
     net::WifiService& wifi;
     net::PairingService& pairing;
-    core::LlmConfigService& llm;
+    // Its connectivity test needs the prober App sets on it (without one,
+    // POST /ai/profiles/{id}/test answers 503).
+    core::ModelProfileService& models;
     core::SystemSettings& settings;
-    net::HttpClient* http_client;
     const net::AssetPack* assets;  // may be null: API only, every static path is 404
     std::string board;
     std::string firmware_version;

@@ -10,8 +10,14 @@ temporary data dir) and then, over loopback:
      simulator-only console command "debug pair-code" written to the
      simulator's stdin, POST /pair/confirm for the wisp_token cookie;
   3. reads /device, /devices and /wifi, and round-trips a setting;
-  4. points the LLM config at the fake endpoint and runs /llm/test, once
-     with a wrong key (http 401) and once with "test-key" (both models);
+  4. model profiles (/ai/*): creates an llm profile on the fake endpoint
+     and tests it, once with a wrong key (http 401) and once with
+     "test-key" (both models); creates an asr profile that reuses that key
+     through api_key_from and tests it; checks that activating a second
+     llm profile leaves the asr one active, that the active profile of a
+     kind with others cannot be deleted (409 active_profile), that a
+     platform without /models reports no_model_list and that the old /llm
+     routes are gone;
   5. subscribes to the log over the WebSocket and waits for an entry;
   6. checks the CSRF guard (no X-Wisp: 403), the Host check (a foreign
      Host: 403) and the pairing lock (wrong codes until 429 with
@@ -232,20 +238,52 @@ def check_routes(api):
     expect(settings.get("brightness") == 120, f"/settings after PUT: {settings}")
 
 
-def check_llm(api, llm_port):
+def check_models(api, llm_port):
     base_url = f"http://127.0.0.1:{llm_port}/v1"
-    llm = api.ok_json("PUT", "/llm", {"base_url": base_url, "api_key": "wrong-key"})
-    expect(llm.get("base_url") == base_url and llm.get("has_key") is True, f"PUT /llm: {llm}")
-    probe = api.ok_json("POST", "/llm/test", {})
-    expect(probe.get("ok") is False and probe.get("error") == "http"
-           and probe.get("http_status") == 401, f"/llm/test with a wrong key: {probe}")
+    presets = [p["id"] for p in api.ok_json("GET", "/ai/presets")["presets"]]
+    expect(presets[:2] == ["custom", "openai"] and len(presets) == 13, f"/ai/presets: {presets}")
 
-    api.ok_json("PUT", "/llm", {"api_key": API_KEY})
-    probe = api.ok_json("POST", "/llm/test", {})
+    chat = api.ok_json("POST", "/ai/profiles", {
+        "kind": "llm", "name": "Chat", "preset": "custom", "base_url": base_url,
+        "api_key": "wrong-key"}, status=201)
+    expect(chat.get("base_url") == base_url and chat.get("has_key") is True
+           and "api_key" not in chat, f"POST /ai/profiles: {chat}")
+    probe = api.ok_json("POST", f"/ai/profiles/{chat['id']}/test", {})
+    expect(probe.get("ok") is False and probe.get("error") == "http"
+           and probe.get("http_status") == 401, f"test with a wrong key: {probe}")
+    api.ok_json("PUT", f"/ai/profiles/{chat['id']}", {"api_key": API_KEY})
+    probe = api.ok_json("POST", f"/ai/profiles/{chat['id']}/test", {})
     expect(probe.get("ok") is True and probe.get("models") == ["fake-1", "fake-2"],
-           f"/llm/test: {probe}")
-    llm = api.ok_json("GET", "/llm")
-    expect(llm.get("has_key") is True and llm.get("base_url") == base_url, f"GET /llm: {llm}")
+           f"test: {probe}")
+    chat = api.ok_json("PUT", f"/ai/profiles/{chat['id']}", {"model": "fake-2"})
+    expect(chat.get("model") == "fake-2" and chat.get("has_key") is True, f"PUT: {chat}")
+
+    # The key reaches a same-origin asr profile without passing through
+    # this client.
+    asr = api.ok_json("POST", "/ai/profiles", {
+        "kind": "asr", "name": "Whisper", "preset": "custom", "base_url": base_url,
+        "api_key_from": chat["id"]}, status=201)
+    expect(asr.get("has_key") is True, f"asr with api_key_from: {asr}")
+    probe = api.ok_json("POST", f"/ai/profiles/{asr['id']}/test", {})
+    expect(probe.get("ok") is True, f"asr test: {probe}")
+
+    # Per-kind activation.
+    second = api.ok_json("POST", "/ai/profiles", {
+        "kind": "llm", "name": "No list", "preset": "custom",
+        "base_url": f"http://127.0.0.1:{llm_port}/nolist"}, status=201)
+    state = api.ok_json("GET", "/ai/profiles")
+    expect(state["active"] == {"llm": chat["id"], "asr": asr["id"], "tts": ""}, f"{state}")
+    state = api.ok_json("POST", "/ai/active", {"id": second["id"]})
+    expect(state["active"] == {"llm": second["id"], "asr": asr["id"], "tts": ""}, f"{state}")
+    status, _, text = api.call("DELETE", f"/ai/profiles/{second['id']}")
+    expect(status == 409 and '"active_profile"' in text, f"DELETE active -> {status} {text}")
+    probe = api.ok_json("POST", f"/ai/profiles/{second['id']}/test", {})
+    expect(probe.get("ok") is False and probe.get("error") == "no_model_list",
+           f"test without /models: {probe}")
+
+    for method in ("GET", "PUT"):
+        status, _, _ = api.call(method, "/llm", {} if method == "PUT" else None)
+        expect(status == 404, f"{method} /llm -> {status}")
 
 
 def check_ws_log(port, cookie):
@@ -254,7 +292,7 @@ def check_ws_log(port, cookie):
     texts = []
     try:
         ws.sock.settimeout(WS_LOG_TIMEOUT_S)
-        ws.send_text(json.dumps({"sub": ["log"]}))
+        ws.send_text(json.dumps({"sub": ["log", "events"]}))
         deadline = time.monotonic() + WS_LOG_TIMEOUT_S
         got_log = False
         while not got_log:
@@ -346,8 +384,8 @@ def run(sim_path, tmp_root):
         print("PASS pairing")
         check_routes(api)
         print("PASS routes")
-        check_llm(api, llm_port)
-        print("PASS llm")
+        check_models(api, llm_port)
+        print("PASS models")
         ws_texts = check_ws_log(port, token)
         print("PASS websocket log")
         check_guards(api)

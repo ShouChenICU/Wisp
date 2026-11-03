@@ -25,7 +25,7 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/core/button_service.hpp"
-#include "wisp/core/llm_config.hpp"
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/os/os.hpp"
@@ -40,7 +40,8 @@ struct App::Impl {
     core::EventBus bus;
     core::StorageManager storage;
     core::ButtonService buttons;
-    core::LlmConfigService llm{storage};
+    // Profile ids come from Platform::random (a weak fallback without it).
+    core::ModelProfileService models{storage, bus, platform.random};
     // Brightness goes through PowerManager so a change made in standby
     // waits for the wake-up (spec 5.4). power_manager is only reset after
     // the HTTP server and the net task have stopped (App::stop()), so no
