@@ -20,6 +20,18 @@
 
 #include "wisp/base/result.hpp"
 
+// One scripted touch (--tap/--swipe), run against the simulated touch
+// panel `at_ms` after App::start() returns. A tap presses (x1, y1) for
+// 100 ms. A swipe presses (x1, y1), drags to (x2, y2) over 400 ms and
+// rests there 200 ms before lifting, so the list stops where it was
+// dragged instead of flinging on.
+struct SimTouchStep {
+    enum class Kind { Tap, Swipe };
+    Kind kind = Kind::Tap;
+    uint32_t at_ms = 0;
+    int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+};
+
 struct SimOptions {
     bool headless = false;
     std::string screenshot;
@@ -34,6 +46,8 @@ struct SimOptions {
     // startup) instead of the assets.wpak next to the executable.
     std::string web_dir;
     bool wifi_fail = false;
+    // In command-line order; see SimTouchStep.
+    std::vector<SimTouchStep> touches;
 };
 
 // Parses argv[1..argc) (argv[0], the program name, is ignored) into a
@@ -55,5 +69,8 @@ struct SimOptions {
 //     integer that fits in uint32_t (the message includes the offending
 //     value, e.g. "invalid --exit-after-ms value: -5");
 //   - --http-port's value is not such an integer or exceeds 65535 (the
-//     message includes the offending value).
+//     message includes the offending value);
+//   - a --tap/--swipe value is not exactly that many comma-separated
+//     coordinates, each 0-479, then '@' and a --exit-after-ms-style
+//     integer (the message includes the flag and the value).
 wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv);

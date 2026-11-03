@@ -41,6 +41,33 @@ bool parse_uint32(const std::string& s, uint32_t& out) {
     return true;
 }
 
+// Parses "<c1>,<c2>,...@<ms>" with exactly `coords` coordinates, each a
+// pixel on the 480x480 simulated screen.
+bool parse_touch(const std::string& s, size_t coords, int* xy, uint32_t& at_ms) {
+    constexpr uint32_t kScreenSize = 480;
+    size_t at = s.find('@');
+    if (at == std::string::npos || !parse_uint32(s.substr(at + 1), at_ms)) {
+        return false;
+    }
+    std::string list = s.substr(0, at);
+    for (size_t i = 0; i < coords; ++i) {
+        size_t comma = list.find(',');
+        bool last = i + 1 == coords;
+        if (last != (comma == std::string::npos)) {
+            return false;
+        }
+        uint32_t v = 0;
+        if (!parse_uint32(last ? list : list.substr(0, comma), v) || v >= kScreenSize) {
+            return false;
+        }
+        xy[i] = static_cast<int>(v);
+        if (!last) {
+            list = list.substr(comma + 1);
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
@@ -70,6 +97,24 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
                                                      "invalid --exit-after-ms value: " + v.value());
             }
             opts.exit_after_ms = parsed;
+        } else if (arg == "--tap" || arg == "--swipe") {
+            auto v = take_value(argc, argv, i, arg.c_str());
+            if (!v) {
+                return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
+            }
+            SimTouchStep step;
+            const bool tap = arg == "--tap";
+            step.kind = tap ? SimTouchStep::Kind::Tap : SimTouchStep::Kind::Swipe;
+            int xy[4] = {};
+            if (!parse_touch(v.value(), tap ? 2 : 4, xy, step.at_ms)) {
+                return wisp::Result<SimOptions>::err(wisp::ErrorCode::InvalidArgument,
+                                                     "invalid " + arg + " value: " + v.value());
+            }
+            step.x1 = xy[0];
+            step.y1 = xy[1];
+            step.x2 = tap ? xy[0] : xy[2];
+            step.y2 = tap ? xy[1] : xy[3];
+            opts.touches.push_back(step);
         } else if (arg == "--wifi-fail") {
             opts.wifi_fail = true;
         } else if (arg == "--http-port") {

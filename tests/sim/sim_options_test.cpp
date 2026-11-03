@@ -112,3 +112,35 @@ TEST(SimOptions, ParsesNetFlags) {
     const char* missing[] = {"wisp_sim", "--web-dir"};
     EXPECT_EQ(parse_sim_options(2, missing).error().code, wisp::ErrorCode::InvalidArgument);
 }
+
+// Scripted touches drive the UI in headless runs (screenshots, end-to-end
+// checks): taps and swipes at a time after boot, in the given order.
+TEST(SimOptions, ParsesTouchScript) {
+    const char* argv[] = {"wisp_sim", "--tap", "120,340@1500", "--swipe", "240,400,240,100@500",
+                          "--tap",    "1,2@0"};
+    auto o = parse_sim_options(7, argv).value();
+    ASSERT_EQ(o.touches.size(), 3u);
+    EXPECT_EQ(o.touches[0].kind, SimTouchStep::Kind::Tap);
+    EXPECT_EQ(o.touches[0].at_ms, 1500u);
+    EXPECT_EQ(o.touches[0].x1, 120);
+    EXPECT_EQ(o.touches[0].y1, 340);
+    EXPECT_EQ(o.touches[1].kind, SimTouchStep::Kind::Swipe);
+    EXPECT_EQ(o.touches[1].at_ms, 500u);
+    EXPECT_EQ(o.touches[1].x1, 240);
+    EXPECT_EQ(o.touches[1].y1, 400);
+    EXPECT_EQ(o.touches[1].x2, 240);
+    EXPECT_EQ(o.touches[1].y2, 100);
+    EXPECT_EQ(o.touches[2].at_ms, 0u);
+}
+
+TEST(SimOptions, RejectsMalformedTouches) {
+    for (const char* bad :
+         {"", "1,2", "1,2@", "@5", "1@5", "1,2,3@5", "-1,2@5", "1,2@x", "480,2@5", "1,2@5 "}) {
+        const char* argv[] = {"wisp_sim", "--tap", bad};
+        auto r = parse_sim_options(3, argv);
+        ASSERT_FALSE(r) << bad;
+        EXPECT_NE(r.error().message.find("--tap"), std::string::npos) << bad;
+    }
+    const char* argv[] = {"wisp_sim", "--swipe", "1,2@5"};
+    EXPECT_FALSE(parse_sim_options(3, argv));
+}

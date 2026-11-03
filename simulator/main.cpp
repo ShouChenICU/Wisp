@@ -1,12 +1,10 @@
 // PC simulator entry point (spec 6.1/8.1): parses
-// SimOptions, builds the wisp::app::Platform around a SimBoard, runs
-// wisp::app::App::start() (which builds the same self-check UI the ESP
-// firmware will), and then either loops headless or drives an SDL2
-// window at ~60 Hz. This is the only translation unit in the project
-// that creates an SDL window or pumps SDL events -- see
-// wisp/port/sim/sim_board.hpp's file header on why SimDisplay itself
-// stays SDL-free, and AGENTS.md's layering rule ("只有 wisp_port_sim 和
-// simulator/ 可以 include SDL*").
+// SimOptions (including scripted --tap/--swipe touches, see TouchScript), builds the
+// wisp::app::Platform around a SimBoard, runs wisp::app::App::start() (which builds the same
+// self-check UI the ESP firmware will), and then either loops headless or drives an SDL2 window at
+// ~60 Hz. This is the only translation unit in the project that creates an SDL window or pumps SDL
+// events -- see wisp/port/sim/sim_board.hpp's file header on why SimDisplay itself stays SDL-free,
+// and AGENTS.md's layering rule ("只有 wisp_port_sim 和 simulator/ 可以 include SDL*").
 //
 // The audio subsystem (and, for --headless, its dummy-driver hint) is
 // initialized here, before app.start() runs --
@@ -38,6 +36,8 @@
 #include <span>
 #include <string>
 #include <system_error>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "sim_options.hpp"
@@ -141,6 +141,75 @@ std::vector<uint8_t> build_visible_mask(wisp::app::App& app) {
     }
     return mask;
 }
+
+// Plays --tap/--swipe (SimTouchStep) against SimInput on its own thread,
+// timed from construction (right after App::start()), so both the
+// headless and the SDL loop keep running meanwhile. In a windowed run a
+// real mouse press in between would overwrite the scripted point. The
+// destructor stops early and joins.
+class TouchScript {
+public:
+    TouchScript(std::vector<SimTouchStep> steps, wisp::port::sim::SimInput& input)
+        : steps_(std::move(steps)), input_(input) {
+        if (!steps_.empty()) {
+            thread_ = std::thread([this] { run(); });
+        }
+    }
+    ~TouchScript() {
+        stop_.store(true);
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+    TouchScript(const TouchScript&) = delete;
+    TouchScript& operator=(const TouchScript&) = delete;
+
+private:
+    static constexpr uint32_t kTapMs = 100;
+    static constexpr int kSwipeSteps = 20;
+    static constexpr uint32_t kSwipeMs = 400;
+    static constexpr uint32_t kSwipeRestMs = 200;
+
+    // False once stop_ is set, so a long wait never delays shutdown.
+    bool wait_until(uint64_t at) {
+        while (wisp::os::now_ms() < at) {
+            if (stop_.load()) {
+                return false;
+            }
+            wisp::os::sleep_ms(5);
+        }
+        return !stop_.load();
+    }
+
+    void run() {
+        const uint64_t t0 = wisp::os::now_ms();
+        for (const SimTouchStep& step : steps_) {
+            if (!wait_until(t0 + step.at_ms)) {
+                return;
+            }
+            input_.mouse(step.x1, step.y1, true);
+            if (step.kind == SimTouchStep::Kind::Tap) {
+                wait_until(wisp::os::now_ms() + kTapMs);
+            } else {
+                const uint64_t start = wisp::os::now_ms();
+                for (int i = 1; i <= kSwipeSteps; ++i) {
+                    if (!wait_until(start + kSwipeMs * i / kSwipeSteps)) {
+                        break;
+                    }
+                    input_.mouse(step.x1 + (step.x2 - step.x1) * i / kSwipeSteps,
+                                 step.y1 + (step.y2 - step.y1) * i / kSwipeSteps, true);
+                }
+                wait_until(wisp::os::now_ms() + kSwipeRestMs);
+            }
+            input_.mouse(step.x2, step.y2, false);
+        }
+    }
+
+    const std::vector<SimTouchStep> steps_;
+    wisp::port::sim::SimInput& input_;
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+};
 
 // Runs the headless loop: sleeps until exit_after_ms elapses or
 // should_exit becomes true (e.g. the power-off callback fired), then
@@ -471,10 +540,13 @@ int main(int argc, char** argv) {
     }
 
     int exit_code = 0;
-    if (opts.headless) {
-        run_headless(app, opts, should_exit);
-    } else if (!run_windowed(app, opts, *board_ptr, *input, should_exit)) {
-        exit_code = 1;
+    {
+        TouchScript touches(opts.touches, *input);
+        if (opts.headless) {
+            run_headless(app, opts, should_exit);
+        } else if (!run_windowed(app, opts, *board_ptr, *input, should_exit)) {
+            exit_code = 1;
+        }
     }
 
     app.stop();
