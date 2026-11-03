@@ -18,17 +18,18 @@ temporary data dir) and then, over loopback:
      Retry-After), after which the paired cookie still works;
   7. stops the simulator with SIGTERM, which must end it cleanly (exit 0).
 
-Neither the API key nor the pairing token may appear in any HTTP or
-WebSocket body or in the simulator's output; the pairing code may appear
-only on the "debug pair-code" line.
+The API key may appear in no HTTP response, WebSocket message or
+simulator output; the pairing token only in the one Set-Cookie that
+delivered it; the pairing code only on the "debug pair-code" line.
 
 --http-port 0 disables the simulator's admin server, so the port is picked
 here (bind to port 0, read it, close) and passed in; if the simulator then
 loses the race for it ("admin server failed to start"), the run is retried
 on a new port. fake_openai.py binds port 0 itself and reports its port.
 
-Both child processes are killed on any failure, and wisp_sim also gets
---exit-after-ms as a backstop in case this script itself is killed.
+Both child processes are killed on any failure. In case this script itself
+is killed, wisp_sim gets --exit-after-ms as a backstop and fake_openai.py
+runs with --exit-on-eof on a stdin pipe that dies with this process.
 
 Registered with ctest as "admin_smoke" (tests/CMakeLists.txt).
 
@@ -109,6 +110,13 @@ class Child:
         self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()
 
+    def join_output(self):
+        """Waits for the collector threads to read the process's last
+        output; call only once the process has exited."""
+        for t in self.threads:
+            t.join(timeout=STEP_TIMEOUT_S)
+            expect(not t.is_alive(), "the output pipes did not close after the process exited")
+
     def output(self):
         with self.cond:
             return "\n".join(self.lines), "\n".join(self.err_lines)
@@ -172,15 +180,19 @@ def start_sim(sim_path, data_dir):
         port = free_port()
         sim = Child([str(sim_path), "--headless", "--data-dir", str(data_dir),
                      "--http-port", str(port), "--exit-after-ms", str(BACKSTOP_MS)], stdin=True)
-        line = sim.wait_line(
-            lambda l: l.startswith("WISP_HTTP ") or HTTP_FAILED_LOG in l, STEP_TIMEOUT_S)
-        if line is not None and line.startswith("WISP_HTTP "):
-            announced = json.loads(line[len("WISP_HTTP "):])
-            expect(announced == {"port": port}, f"WISP_HTTP == {announced!r}, asked for {port}")
-            return sim, port
+        try:
+            line = sim.wait_line(
+                lambda l: l.startswith("WISP_HTTP ") or HTTP_FAILED_LOG in l, STEP_TIMEOUT_S)
+            expect(line is not None, f"no WISP_HTTP line from wisp_sim:\n{sim.tail()}")
+            if line.startswith("WISP_HTTP "):
+                announced = json.loads(line[len("WISP_HTTP "):])
+                expect(announced == {"port": port},
+                       f"WISP_HTTP == {announced!r}, asked for {port}")
+                return sim, port
+        except BaseException:
+            sim.kill()
+            raise
         sim.kill()
-        if line is None:
-            raise SmokeError(f"no WISP_HTTP line from wisp_sim:\n{sim.tail()}")
     raise SmokeError(f"the admin server failed to bind {PORT_ATTEMPTS} free ports in a row")
 
 
@@ -296,8 +308,10 @@ def check_secrets(api, ws_texts, sim, code, token):
                "wisp_sim stdout": out, "wisp_sim stderr": err}
     for where, text in scanned.items():
         expect(API_KEY not in text and "wrong-key" not in text, f"an API key is in the {where}")
-        if where != "HTTP responses":  # the token's own Set-Cookie is there
-            expect(token not in text, f"the pairing token is in the {where}")
+        # Only the Set-Cookie that delivered it may carry the token.
+        allowed = 1 if where == "HTTP responses" else 0
+        expect(text.count(token) == allowed,
+               f"the pairing token is in the {where} {text.count(token)} time(s)")
     code_lines = [l for l in (out + "\n" + err).splitlines()
                   if re.search(rf"\b{code}\b", l) and l != f"pair-code={code}"]
     expect(not code_lines, f"the pairing code was printed: {code_lines}")
@@ -312,6 +326,7 @@ def stop_sim(sim):
         sim.proc.wait(timeout=STEP_TIMEOUT_S)
     except subprocess.TimeoutExpired as exc:
         raise SmokeError(f"wisp_sim ignored SIGTERM:\n{sim.tail()}") from exc
+    sim.join_output()
     expect(sim.proc.returncode == 0,
            f"exit code {sim.proc.returncode} after SIGTERM:\n{sim.output()[1]}")
 
@@ -319,7 +334,8 @@ def stop_sim(sim):
 def run(sim_path, tmp_root):
     fake = sim = None
     try:
-        fake = Child([sys.executable, "-I", str(FAKE_OPENAI), "--port", "0"])
+        fake = Child([sys.executable, "-I", str(FAKE_OPENAI), "--port", "0", "--exit-on-eof"],
+                     stdin=True)
         line = fake.wait_line(lambda l: l.startswith("FAKE_OPENAI "), STEP_TIMEOUT_S)
         expect(line is not None, f"fake_openai.py did not start: {fake.output()[1]}")
         llm_port = json.loads(line[len("FAKE_OPENAI "):])["port"]
