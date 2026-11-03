@@ -7,6 +7,7 @@ Run directly: python3 tools/pack_assets_test.py
 """
 
 import pathlib
+import shutil
 import struct
 import subprocess
 import sys
@@ -136,6 +137,30 @@ class PackAssetsTest(unittest.TestCase):
         proc = run_pack(src, self.tmp / "out.wpak")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("cdn.example.com", proc.stdout + proc.stderr)
+
+    def test_unquoted_html_reference_is_checked(self):
+        src = self.tmp / "src"
+        src.mkdir()
+        (src / "a.js").write_text("export const a = 1;\n")
+        (src / "page.html").write_text(
+            "<link rel=stylesheet href=/gone.css>\n"
+            "<script type=module src=./a.js></script>\n"
+        )
+        proc = run_pack(src, self.tmp / "out.wpak")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("gone.css", proc.stdout + proc.stderr)
+        self.assertNotIn("a.js", proc.stdout + proc.stderr)
+
+    def test_protocol_relative_html_reference_fails(self):
+        for attr in ('"//cdn.example.com/x.js"', "//cdn.example.com/x.js"):
+            with self.subTest(attr=attr):
+                src = self.tmp / "src"
+                shutil.rmtree(src, ignore_errors=True)
+                src.mkdir()
+                (src / "page.html").write_text(f"<script src={attr}></script>\n")
+                proc = run_pack(src, self.tmp / "out.wpak")
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("//cdn.example.com/x.js", proc.stdout + proc.stderr)
 
     def test_html_data_and_local_references_pass(self):
         src = self.tmp / "src"

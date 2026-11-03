@@ -41,7 +41,7 @@ const RELOAD_GAP_MS = 2000;
  * @property {string} ip
  * @property {number} rssi
  * @property {''|'not_found'|'auth_failed'|'other'} reason
- * @property {string[]} saved
+ * @property {{ssid: string, ssid_hex: string, auth_failed: boolean}[]} saved
  * @property {{active: boolean, ssid: string, clients: number}} ap
  */
 

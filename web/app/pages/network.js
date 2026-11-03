@@ -2,6 +2,9 @@
 // five, each removable) and a scan to add one. While the tab is visible
 // the page follows net.wifi.state / net.ap.state, so a join started here
 // (or anywhere else) shows up as it happens.
+//
+// Networks are identified by ssidKey() (their bytes in hex), never by the
+// displayed name, which is lossy for SSIDs that are not UTF-8.
 
 import { html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
 import { api, describeError, errorDetail } from '../api.js';
@@ -19,24 +22,34 @@ import {
   displaySsid,
   joinFailureText,
   joinNetwork,
+  networkPath,
   prepareScan,
   reasonText,
+  ssidKey,
 } from '../components/wifi.js';
-import { IconAlert, IconCheck, IconPlus, IconRefresh, IconSearch, IconTrash, IconWifi } from '../icons.js';
+import { IconAlert, IconCheck, IconKey, IconPlus, IconRefresh, IconSearch, IconTrash, IconWifi } from '../icons.js';
 import { useVisible } from '../util.js';
 
 // WifiService keeps at most this many networks (spec 4.2).
 const MAX_SAVED = 5;
-const MANUAL = '\u0000manual';
+
+/**
+ * @typedef {Object} SavedEntry  one of GET /wifi "saved"
+ * @property {string} ssid
+ * @property {string} ssid_hex
+ * @property {boolean} auth_failed  rejected password; not retried until
+ *   it is re-entered (spec 4.2)
+ */
 
 /**
  * @typedef {Object} WifiStatus  GET /wifi
  * @property {'off'|'connecting'|'backoff'|'connected'} state
  * @property {string} ssid
+ * @property {string} ssid_hex
  * @property {string} ip
  * @property {number} rssi
  * @property {''|'not_found'|'auth_failed'|'other'} reason
- * @property {string[]} saved
+ * @property {SavedEntry[]} saved
  * @property {{active: boolean, ssid: string, clients: number}} ap
  */
 
@@ -48,10 +61,12 @@ export function NetworkPage() {
   const [scan, setScan] = useState(null); // {list, hidden}
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState(null);
-  const [selected, setSelected] = useState('');
-  // {ssid, phase: 'busy'|'ok'|'fail', text?, ip?}
+  // Where the join form is open: {where: 'scan'|'saved', key} or
+  // {where: 'manual'} for a hidden network; null when closed.
+  const [selected, setSelected] = useState(null);
+  // {ssid, key, phase: 'busy'|'ok'|'fail', text?, ip?}
   const [join, setJoin] = useState(null);
-  const [removing, setRemoving] = useState('');
+  const [removing, setRemoving] = useState(''); // ssidKey being forgotten
   const alive = useRef(true);
   const stopJoin = useRef(null);
 
@@ -112,32 +127,38 @@ export function NetworkPage() {
     }
   }
 
-  function pick(ssid) {
+  function pick(where, key = '') {
     if (join?.phase === 'busy') return;
-    setSelected(selected === ssid ? '' : ssid);
+    const same = selected && selected.where === where && selected.key === key;
+    setSelected(same ? null : { where, key });
     setJoin(null);
   }
 
-  function startJoin(ssid, password) {
+  function startJoin(target, password) {
     stopJoin.current?.();
-    setJoin({ ssid, phase: 'busy' });
-    stopJoin.current = joinNetwork(ssid, password, (r) => {
+    const key = ssidKey(target);
+    const ssid = target.ssid;
+    setJoin({ ssid, key, phase: 'busy' });
+    stopJoin.current = joinNetwork(target, password, (r) => {
       stopJoin.current = null;
       if (!alive.current) return;
       if (r.ok) {
-        setJoin({ ssid, phase: 'ok', ip: r.ip });
-        setSelected('');
+        setJoin({ ssid, key, phase: 'ok', ip: r.ip });
+        setSelected(null);
         toast(t('net.join_ok_toast', { ssid: displaySsid(ssid) }), 'ok');
-        setScan((s) => (s ? { ...s, list: s.list.map((n) => (n.ssid === ssid ? { ...n, saved: true } : n)) } : s));
+        setScan((s) => (s ? { ...s, list: s.list.map((n) => (n.ssid_hex === key ? { ...n, saved: true } : n)) } : s));
       } else {
-        setJoin({ ssid, phase: 'fail', text: joinFailureText(r) });
+        setJoin({ ssid, key, phase: 'fail', text: joinFailureText(r) });
       }
       load();
     });
   }
 
-  async function forget(ssid) {
-    const inUse = wifi && wifi.ssid === ssid && (wifi.state === 'connected' || wifi.state === 'connecting');
+  /** @param {SavedEntry} entry */
+  async function forget(entry) {
+    const { ssid } = entry;
+    const key = ssidKey(entry);
+    const inUse = wifi && ssidKey(wifi) === key && (wifi.state === 'connected' || wifi.state === 'connecting');
     const ok = await confirmDialog({
       title: t('net.forget_title', { ssid: displaySsid(ssid) }),
       body: inUse ? t('net.forget_body_current') : t('net.forget_body'),
@@ -145,12 +166,12 @@ export function NetworkPage() {
       danger: true,
     });
     if (!ok) return;
-    setRemoving(ssid);
+    setRemoving(key);
     try {
-      await api('DELETE', '/wifi/networks/' + encodeURIComponent(ssid));
+      await api('DELETE', '/wifi/networks/' + networkPath(entry));
       if (!alive.current) return;
       toast(t('net.forgot_toast', { ssid: displaySsid(ssid) }), 'ok');
-      setScan((s) => (s ? { ...s, list: s.list.map((n) => (n.ssid === ssid ? { ...n, saved: false } : n)) } : s));
+      setScan((s) => (s ? { ...s, list: s.list.map((n) => (n.ssid_hex === key ? { ...n, saved: false } : n)) } : s));
     } catch (e) {
       if (e.status !== 401) toast(t('net.forget_failed', { reason: describeError(e) }), 'err');
     } finally {
@@ -161,8 +182,16 @@ export function NetworkPage() {
 
   const busy = join?.phase === 'busy';
   const joinError = join?.phase === 'fail' ? join.text : '';
+  const currentKey = wifi?.state === 'connected' ? ssidKey(wifi) : '';
+  // Joining another network takes the device off the one this page
+  // reaches it through.
   const form = (network) =>
     html`<div class="scan-join">
+      ${currentKey && (!network || network.ssid_hex !== currentKey)
+        ? html`<div class="inline-note tone-warn">
+            <${IconAlert} size=${15} /><span>${t('net.switch_note')}</span>
+          </div>`
+        : null}
       ${busy
         ? html`<p class="join-progress" role="status">
             <span class="spinner" aria-hidden="true"></span>
@@ -170,7 +199,7 @@ export function NetworkPage() {
           </p>`
         : null}
       <${JoinForm}
-        key=${network ? network.ssid : MANUAL}
+        key=${network ? network.ssid_hex : 'manual'}
         network=${network}
         busy=${busy}
         error=${joinError}
@@ -179,7 +208,7 @@ export function NetworkPage() {
         onCancel=${() => {
           stopJoin.current?.();
           stopJoin.current = null;
-          setSelected('');
+          setSelected(null);
           setJoin(null);
         }}
       />
@@ -215,7 +244,15 @@ export function NetworkPage() {
 
     <div class="grid grid-2">
       <${CurrentCard} wifi=${wifi} join=${join} />
-      <${SavedCard} wifi=${wifi} removing=${removing} onForget=${forget} />
+      <${SavedCard}
+        wifi=${wifi}
+        removing=${removing}
+        onForget=${forget}
+        retyping=${selected?.where === 'saved' ? selected.key : ''}
+        onRetype=${(entry) => pick('saved', ssidKey(entry))}
+        form=${(entry) => form({ ssid: entry.ssid, ssid_hex: ssidKey(entry), secured: true, saved: true })}
+        busy=${busy}
+      />
     </div>
 
     <${Card}
@@ -242,21 +279,21 @@ export function NetworkPage() {
         ? html`<${ScanList}
             networks=${scan.list}
             hidden=${scan.hidden}
-            selected=${selected}
-            current=${wifi?.state === 'connected' ? wifi.ssid : ''}
-            onPick=${(n) => pick(n.ssid)}
+            selected=${selected?.where === 'scan' ? selected.key : ''}
+            current=${currentKey}
+            onPick=${(n) => pick('scan', n.ssid_hex)}
             disabled=${busy}
           >
-            ${form(scan.list.find((n) => n.ssid === selected))}
+            ${selected?.where === 'scan' ? form(scan.list.find((n) => n.ssid_hex === selected.key)) : null}
           </${ScanList}>`
         : null}
       <div class="scan-manual">
-        ${selected === MANUAL
+        ${selected?.where === 'manual'
           ? html`<div class="scan-item is-selected">
               <p class="scan-manual-title">${t('net.manual_title')}</p>
               ${form(undefined)}
             </div>`
-          : html`<button type="button" class="btn btn-link" onClick=${() => pick(MANUAL)} disabled=${busy}>
+          : html`<button type="button" class="btn btn-link" onClick=${() => pick('manual')} disabled=${busy}>
               <${IconPlus} size=${16} />${t('net.manual')}
             </button>`}
       </div>
@@ -297,7 +334,7 @@ function CurrentCard({ wifi, join }) {
     body = html`<div class="stat-text dim">${t('wifi.off')}</div>
       <p class="muted">${wifi.saved?.length ? t('net.off_hint_saved') : t('net.off_hint_none')}</p>`;
   }
-  const ok = join?.phase === 'ok' && wifi.state === 'connected' && wifi.ssid === join.ssid;
+  const ok = join?.phase === 'ok' && wifi.state === 'connected' && ssidKey(wifi) === join.key;
   return html`<${Card}
     title=${t('net.current_title')}
     icon=${IconWifi}
@@ -319,8 +356,9 @@ function CurrentCard({ wifi, join }) {
   </${Card}>`;
 }
 
-function SavedCard({ wifi, removing, onForget }) {
+function SavedCard({ wifi, removing, onForget, retyping, onRetype, form, busy }) {
   const saved = wifi?.saved || [];
+  const hereKey = wifi && wifi.state !== 'off' ? ssidKey(wifi) : '';
   return html`<${Card}
     title=${t('net.saved_title')}
     icon=${IconWifi}
@@ -331,32 +369,54 @@ function SavedCard({ wifi, removing, onForget }) {
       : saved.length === 0
         ? html`<p class="stat-empty">${t('wifi.none_saved')}</p>`
         : html`<ul class="rows">
-            ${saved.map((ssid) => {
-              const here = wifi.ssid === ssid && wifi.state !== 'off';
-              const status = here
-                ? wifi.state === 'connected'
-                  ? html`<${Badge} tone="ok" dot>${t('wifi.connected')}</${Badge}>`
-                  : wifi.state === 'connecting'
+            ${saved.map((entry) => {
+              const key = ssidKey(entry);
+              const here = key === hereKey;
+              const open = retyping === key;
+              let status = null;
+              if (here && wifi.state === 'connected') {
+                status = html`<${Badge} tone="ok" dot>${t('wifi.connected')}</${Badge}>`;
+              } else if (entry.auth_failed) {
+                status = html`<${Badge} tone="err">${t('net.wrong_password')}</${Badge}>`;
+              } else if (here) {
+                status =
+                  wifi.state === 'connecting'
                     ? html`<${Badge} tone="warn" dot pulse>${t('wifi.connecting')}</${Badge}>`
-                    : html`<${Badge} tone="warn" dot>${t('wifi.backoff')}</${Badge}>`
-                : null;
-              return html`<li key=${'s:' + ssid} class="row">
-                <div class="row-main">
-                  <${Ssid} ssid=${ssid} class="row-title" />
+                    : html`<${Badge} tone="warn" dot>${t('wifi.backoff')}</${Badge}>`;
+              }
+              return html`<li key=${'s:' + key} class=${open ? 'row row-saved is-open' : 'row row-saved'}>
+                <div class="row-line">
+                  <div class="row-main">
+                    <${Ssid} ssid=${entry.ssid} class="row-title" />
+                    ${entry.auth_failed ? html`<span class="row-sub">${t('net.wrong_password_hint')}</span>` : null}
+                  </div>
+                  <div class="row-actions">
+                    ${status}
+                    ${entry.auth_failed
+                      ? html`<button
+                          type="button"
+                          class="btn btn-secondary btn-sm"
+                          onClick=${() => onRetype(entry)}
+                          disabled=${busy}
+                          aria-expanded=${open ? 'true' : 'false'}
+                          aria-label=${t('net.retype_label', { ssid: displaySsid(entry.ssid) })}
+                        >
+                          <${IconKey} size=${15} />${t('net.retype')}
+                        </button>`
+                      : null}
+                    <button
+                      type="button"
+                      class="btn btn-icon btn-ghost btn-sm"
+                      onClick=${() => onForget(entry)}
+                      disabled=${removing === key}
+                      aria-label=${t('net.forget_label', { ssid: displaySsid(entry.ssid) })}
+                      title=${t('net.forget_confirm')}
+                    >
+                      ${removing === key ? html`<span class="spinner" aria-hidden="true"></span>` : html`<${IconTrash} size=${17} />`}
+                    </button>
+                  </div>
                 </div>
-                <div class="row-actions">
-                  ${status}
-                  <button
-                    type="button"
-                    class="btn btn-icon btn-ghost btn-sm"
-                    onClick=${() => onForget(ssid)}
-                    disabled=${removing === ssid}
-                    aria-label=${t('net.forget_label', { ssid: displaySsid(ssid) })}
-                    title=${t('net.forget_confirm')}
-                  >
-                    ${removing === ssid ? html`<span class="spinner" aria-hidden="true"></span>` : html`<${IconTrash} size=${17} />`}
-                  </button>
-                </div>
+                ${open ? form(entry) : null}
               </li>`;
             })}
           </ul>`}

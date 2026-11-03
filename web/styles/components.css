@@ -2188,6 +2188,39 @@ textarea {
   color: var(--ok);
 }
 
+.inline-note.tone-warn {
+  background: var(--warn-soft);
+}
+
+.inline-note.tone-warn .icon {
+  color: var(--warn);
+}
+
+.scan-join .inline-note {
+  margin-top: 0;
+}
+
+/* Saved networks: the row's line, then (re-entering a password) the form. */
+.row.row-saved {
+  display: block;
+}
+
+.row-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-sm) var(--gap-md);
+}
+
+.row-line .row-main {
+  flex: 1 1 8em;
+}
+
+.row-saved .scan-join {
+  padding: var(--gap-md) 0 var(--gap-sm);
+}
+
 .ssid {
   overflow-wrap: anywhere;
   unicode-bidi: isolate;

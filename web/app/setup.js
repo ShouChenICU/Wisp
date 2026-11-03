@@ -8,16 +8,23 @@
 // (following net.wifi.state for up to a minute) -> the device's new
 // address, or the reason it failed with a way to try again.
 //
+// From the network list on, the wizard holds an `events` subscription, so
+// the shared socket is already open when a join is sent and the join's own
+// net.wifi.state events are not missed.
+//
 // Only files from the device's own pack are loaded: on the hotspot the
 // phone has no internet.
 
 import { html, render, useEffect, useRef, useState } from '../vendor/htm-preact-3.1.1.mjs';
 import { api, describeError, errorDetail, setUnauthorizedHandler } from './api.js';
 import { t, useLang } from './i18n/index.js';
+import { subscribe } from './ws.js';
 import { Toaster } from './components/toast.js';
 import { LangSwitch } from './components/lang.js';
 import {
+  ADMIN_PORT,
   JOIN_TIMEOUT_MS,
+  MDNS_URL,
   JoinForm,
   ScanList,
   Ssid,
@@ -30,8 +37,6 @@ import { PairPage } from './pages/pair.js';
 import { IconAlert, IconCheck, IconChevronLeft, IconPlus, IconRefresh, WispGlyph } from './icons.js';
 import { useNow } from './util.js';
 
-const ADMIN_PORT = 8900;
-const MDNS_URL = `http://wisp.local:${ADMIN_PORT}`;
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
 function adminUrl(ip) {
@@ -40,6 +45,8 @@ function adminUrl(ip) {
 
 const STEPS = ['setup.step_pick', 'setup.step_password', 'setup.step_connect'];
 const STEP_OF = { pick: 0, password: 1, connecting: 2, failed: 2, done: 3 };
+// Phases that hold the events subscription (see the file comment).
+const LIVE = new Set(['pick', 'password', 'connecting', 'failed']);
 
 function Wizard() {
   useLang();
@@ -90,6 +97,9 @@ function Wizard() {
     if (phase === 'pick' && !scan && !scanning) runScan();
   }, [phase]);
 
+  const live = LIVE.has(phase);
+  useEffect(() => (live ? subscribe(['events'], () => {}) : undefined), [live]);
+
   async function runScan() {
     setScanning(true);
     setScanError(null);
@@ -107,16 +117,17 @@ function Wizard() {
     setManual(false);
     setNetwork(n);
     if (n.secured) setPhase('password');
-    else connect(n.ssid, '');
+    else connect(n, '');
   }
 
-  function connect(ssid, password) {
+  // `target`: a scan entry, or the typed hidden network (JoinForm).
+  function connect(target, password) {
     lastPassword.current = password;
-    setNetwork((n) => (n && n.ssid === ssid ? n : { ssid, secured: password !== '', manual: true }));
+    setNetwork(target);
     setResult(null);
     setJoinStart(Date.now());
     setPhase('connecting');
-    const stop = joinNetwork(ssid, password, (r) => {
+    const stop = joinNetwork(target, password, (r) => {
       setStopJoin(null);
       setResult(r);
       setPhase(r.ok ? 'done' : 'failed');
@@ -192,7 +203,7 @@ function Wizard() {
         ? html`<h2 class="setup-h2">${t('net.manual_title')}</h2>`
         : html`<h2 class="setup-h2 setup-ssid"><${Ssid} ssid=${network.ssid} /></h2>`}
       <${JoinForm}
-        key=${manual ? 'manual' : network.ssid}
+        key=${manual ? 'manual' : network.ssid_hex}
         network=${manual ? undefined : network}
         idPrefix="setup-join"
         submitText=${t('join.connect')}
@@ -220,7 +231,7 @@ function Wizard() {
           : html`<button
               type="button"
               class="btn btn-primary btn-lg btn-block"
-              onClick=${() => connect(network.ssid, lastPassword.current)}
+              onClick=${() => connect(network, lastPassword.current)}
             >
               ${t('common.retry')}
             </button>`}

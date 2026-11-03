@@ -5,8 +5,14 @@
 // SSIDs come from the air, so they are untrusted text: they are only ever
 // rendered as text nodes (never as HTML), wrapped in <bdi> so their
 // direction cannot reorder the text around them, with control and bidi
-// override characters shown as U+FFFD. The raw string is what goes back
-// to the device.
+// override characters shown as U+FFFD.
+//
+// An SSID is up to 32 raw bytes and need not be UTF-8 (GBK routers are
+// common). The device's JSON turns bytes that are not UTF-8 into U+FFFD,
+// so such a name cannot be sent back as text; every SSID from the device
+// also comes as `ssid_hex` (its bytes in lowercase hex, spec 6.1). Networks
+// are told apart by that hex, and a name that shows U+FFFD goes back to the
+// device as hex (ssidField(), networkPath()).
 
 import { html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
 import { api, describeError } from '../api.js';
@@ -20,6 +26,15 @@ export const JOIN_TIMEOUT_MS = 60000;
 // The event stream is the fast path; this poll covers a socket that is
 // down or full (the device allows two).
 const JOIN_POLL_MS = 3000;
+// How long a join waits for the event socket before sending anyway.
+const JOIN_OPEN_WAIT_MS = 2000;
+// This many failed polls in a row at the end of the window mean the page
+// lost the device, most likely because it moved to the new network.
+const JOIN_LOST_POLLS = 2;
+
+/** The admin page's port and mDNS address on any network (spec 6.1). */
+export const ADMIN_PORT = 8900;
+export const MDNS_URL = `http://wisp.local:${ADMIN_PORT}`;
 
 // The device's limits (WifiService::validate): SSID 1-32 bytes, password
 // empty (open network) or 8-63 bytes, counted in UTF-8.
@@ -32,6 +47,37 @@ const encoder = new TextEncoder();
 /** UTF-8 length of `s`. */
 export function byteLength(s) {
   return encoder.encode(s).length;
+}
+
+/** Lowercase hex of the UTF-8 bytes of `s`. */
+export function hexOf(s) {
+  let out = '';
+  for (const b of encoder.encode(s)) out += b.toString(16).padStart(2, '0');
+  return out;
+}
+
+/**
+ * The byte-exact identity of a network ({ssid, ssid_hex?}): the device's
+ * ssid_hex, or the hex of a name typed into the page.
+ */
+export function ssidKey(n) {
+  if (!n) return '';
+  return typeof n.ssid_hex === 'string' && n.ssid_hex ? n.ssid_hex : hexOf(String(n.ssid ?? ''));
+}
+
+// The device could not render this name as UTF-8: its text is lossy.
+function lossy(n) {
+  return String(n.ssid).includes('\uFFFD') && typeof n.ssid_hex === 'string' && n.ssid_hex !== '';
+}
+
+/** The SSID part of a POST /wifi/networks body for network `n`. */
+export function ssidField(n) {
+  return lossy(n) ? { ssid_hex: n.ssid_hex } : { ssid: n.ssid };
+}
+
+/** The path segment that names network `n` in DELETE /wifi/networks/{ssid}. */
+export function networkPath(n) {
+  return lossy(n) ? n.ssid_hex.replace(/../g, '%$&') : encodeURIComponent(n.ssid);
 }
 
 /**
@@ -72,6 +118,7 @@ export function reasonText(reason) {
 /**
  * @typedef {Object} ScanEntry  one network from GET /wifi/scan
  * @property {string} ssid
+ * @property {string} ssid_hex
  * @property {number} rssi
  * @property {boolean} secured
  * @property {boolean} saved
@@ -80,8 +127,8 @@ export function reasonText(reason) {
 /**
  * Cleans a scan result for display: entries without an SSID (hidden
  * networks, which can only be joined by name) are counted, not listed;
- * repeats of one SSID (several access points) keep the strongest; the
- * rest are sorted strongest first.
+ * repeats of one SSID (several access points, compared byte for byte)
+ * keep the strongest; the rest are sorted strongest first.
  *
  * @param {ScanEntry[]} networks
  * @returns {{list: ScanEntry[], hidden: number}}
@@ -96,9 +143,15 @@ export function prepareScan(networks) {
       continue;
     }
     const rssi = Number(n.rssi);
-    const entry = { ssid: n.ssid, rssi: Number.isFinite(rssi) ? rssi : -100, secured: !!n.secured, saved: !!n.saved };
-    const seen = best.get(n.ssid);
-    if (!seen) best.set(n.ssid, entry);
+    const entry = {
+      ssid: n.ssid,
+      ssid_hex: ssidKey(n),
+      rssi: Number.isFinite(rssi) ? rssi : -100,
+      secured: !!n.secured,
+      saved: !!n.saved,
+    };
+    const seen = best.get(entry.ssid_hex);
+    if (!seen) best.set(entry.ssid_hex, entry);
     else {
       seen.saved = seen.saved || entry.saved;
       seen.secured = seen.secured || entry.secured;
@@ -110,8 +163,8 @@ export function prepareScan(networks) {
 }
 
 /**
- * The networks from a scan, each a button. `selected` (an SSID) marks the
- * one being joined; `current` the one the device is on.
+ * The networks from a scan, each a button. `selected` (an ssidKey()) marks
+ * the one being joined; `current` (an ssidKey()) the one the device is on.
  *
  * @param {{networks: ScanEntry[], hidden?: number, selected?: string,
  *          current?: string, onPick: (n: ScanEntry) => void,
@@ -121,9 +174,9 @@ export function prepareScan(networks) {
 export function ScanList({ networks, hidden = 0, selected, current, onPick, disabled, children }) {
   return html`<ul class="scan-list" aria-label=${t('scan.list_label')}>
     ${networks.map((n) => {
-      const isSel = selected === n.ssid;
-      const isCur = current === n.ssid;
-      return html`<li key=${'n:' + n.ssid} class=${isSel ? 'scan-item is-selected' : 'scan-item'}>
+      const isSel = selected === n.ssid_hex;
+      const isCur = current === n.ssid_hex;
+      return html`<li key=${'n:' + n.ssid_hex} class=${isSel ? 'scan-item is-selected' : 'scan-item'}>
         <button
           type="button"
           class="scan-row"
@@ -161,8 +214,11 @@ export function ScanList({ networks, hidden = 0, selected, current, onPick, disa
  * network); without one it also asks for the SSID (a hidden network).
  *
  * @param {{network?: ScanEntry, busy?: boolean, error?: string,
- *          submitText?: string, onSubmit: (ssid: string, password: string) => void,
- *          onCancel?: () => void, idPrefix?: string}} props
+ *          submitText?: string, onCancel?: () => void, idPrefix?: string,
+ *          onSubmit: (target: {ssid: string, ssid_hex?: string,
+ *                              secured: boolean, manual?: boolean},
+ *                     password: string) => void}} props
+ *   `target` is `network` itself, or the typed hidden network.
  */
 export function JoinForm({ network, busy, error, submitText, onSubmit, onCancel, idPrefix = 'join' }) {
   const manual = !network;
@@ -175,7 +231,7 @@ export function JoinForm({ network, busy, error, submitText, onSubmit, onCancel,
 
   useEffect(() => {
     first.current?.focus();
-  }, [network?.ssid, manual]);
+  }, [network?.ssid_hex, manual]);
 
   function submit(e) {
     e.preventDefault();
@@ -192,7 +248,8 @@ export function JoinForm({ network, busy, error, submitText, onSubmit, onCancel,
       }
     }
     setProblem('');
-    onSubmit(name, needsPassword ? password : '');
+    const pw = needsPassword ? password : '';
+    onSubmit(manual ? { ssid: name, ssid_hex: hexOf(name), secured: pw !== '', manual: true } : network, pw);
   }
 
   const shown = problem || error;
@@ -275,81 +332,114 @@ export function JoinForm({ network, busy, error, submitText, onSubmit, onCancel,
  * Sends a join (POST /wifi/networks) and follows it to an outcome.
  *
  * The device answers 202 and connects on its own task, announcing each
- * step as net.wifi.state. Events for the same SSID published before the
- * request may still be in flight on the socket, so an event only counts
- * after this join's own "connecting" event has been seen; GET /wifi
- * (polled, and fetched whenever the socket reopens) is always current
- * and counts at once.
+ * step as net.wifi.state. The request goes out once the event socket is
+ * open (or after JOIN_OPEN_WAIT_MS without it), so this join's own events
+ * are not published before anyone listens. Events for the same network
+ * published before the request may still be in flight on the socket, so an
+ * event only counts after this join's own "connecting" event has been
+ * seen; GET /wifi (polled, and fetched whenever the socket reopens) is
+ * always current and counts at once.
  *
- * @param {string} ssid
+ * Joining another network while the device is on one makes the device
+ * leave the network this page reaches it through, so the outcome may never
+ * arrive: a timeout whose last polls all failed is reported as `lost`.
+ *
+ * @param {{ssid: string, ssid_hex?: string}} target  a scan or saved entry,
+ *   or a typed name
  * @param {string} password  "" for an open network
  * @param {(result: {ok: true, ip: string, ssid: string}
  *                 | {ok: false, reason: string}
- *                 | {ok: false, timeout: true}
+ *                 | {ok: false, timeout: true, lost?: true}
  *                 | {ok: false, error: any}) => void} onResult
  *   called once; `error` is an ApiError from the request itself
  * @returns {() => void} stops following (no result is reported after)
  */
-export function joinNetwork(ssid, password, onResult) {
+export function joinNetwork(target, password, onResult) {
+  const key = ssidKey(target);
+  // Declared before subscribe(): it may report "open" synchronously.
   let done = false;
+  let sent = false;
   let posted = false;
   let armed = false;
+  let failedPolls = 0;
   let pollTimer = 0;
+  let openWait = 0;
+  let timeout = 0;
   let unsubscribe = () => {};
 
-  const finish = (result) => {
+  function stop() {
+    clearTimeout(timeout);
+    clearTimeout(openWait);
+    clearInterval(pollTimer);
+    unsubscribe();
+  }
+
+  function finish(result) {
     if (done) return;
     done = true;
     stop();
     onResult(result);
-  };
+  }
 
   function judge(st, fromEvent) {
-    if (!st || st.ssid !== ssid) return;
+    if (!st || ssidKey(st) !== key) return;
     if (st.state === 'connecting') {
       if (fromEvent) armed = true;
       return;
     }
     if (fromEvent && !armed) return;
-    if (st.state === 'connected') finish({ ok: true, ip: st.ip || '', ssid });
+    if (st.state === 'connected') finish({ ok: true, ip: st.ip || '', ssid: target.ssid });
     else if (st.state === 'backoff') finish({ ok: false, reason: st.reason || 'other' });
   }
 
   async function poll() {
     if (done || !posted) return;
+    let st;
     try {
-      judge(await api('GET', '/wifi'), false);
+      st = await api('GET', '/wifi');
     } catch {
       // A failed poll is not a failed join; the next one may get through.
+      failedPolls++;
+      return;
     }
+    failedPolls = 0;
+    judge(st, false);
   }
 
-  // Subscribe before sending, so this join's own events are not missed.
+  function send() {
+    if (sent || done) return;
+    sent = true;
+    clearTimeout(openWait);
+    const body = { ...ssidField(target), ...(password ? { password } : {}) };
+    api('POST', '/wifi/networks', body)
+      .then(() => {
+        if (done) return;
+        posted = true;
+        pollTimer = setInterval(poll, JOIN_POLL_MS);
+        poll();
+      })
+      .catch((e) => finish({ ok: false, error: e }));
+  }
+
   unsubscribe = subscribe(
     ['events'],
     (msg) => {
       if (msg.t === 'dropped') poll();
       else if (msg.topic === 'net.wifi.state') judge(msg.payload || {}, true);
     },
-    { onState: (st) => st === 'open' && poll() },
+    {
+      onState: (st) => {
+        if (st !== 'open') return;
+        send();
+        poll();
+      },
+    },
   );
-  const timeout = setTimeout(() => finish({ ok: false, timeout: true }), JOIN_TIMEOUT_MS);
-
-  function stop() {
-    clearTimeout(timeout);
-    clearInterval(pollTimer);
-    unsubscribe();
-  }
-
-  const body = password ? { ssid, password } : { ssid };
-  api('POST', '/wifi/networks', body)
-    .then(() => {
-      if (done) return;
-      posted = true;
-      pollTimer = setInterval(poll, JOIN_POLL_MS);
-      poll();
-    })
-    .catch((e) => finish({ ok: false, error: e }));
+  if (!sent) openWait = setTimeout(send, JOIN_OPEN_WAIT_MS);
+  timeout = setTimeout(
+    () => finish(failedPolls >= JOIN_LOST_POLLS ? { ok: false, timeout: true, lost: true } : { ok: false, timeout: true }),
+    JOIN_TIMEOUT_MS,
+  );
 
   return () => {
     done = true;
@@ -359,6 +449,7 @@ export function joinNetwork(ssid, password, onResult) {
 
 /** A sentence for a failed join result from joinNetwork(). */
 export function joinFailureText(result) {
+  if (result.lost) return t('join.err_lost', { url: MDNS_URL });
   if (result.timeout) return t('join.err_timeout');
   if (result.error) {
     if (result.error.code === 'quota_exceeded') return t('join.err_quota');

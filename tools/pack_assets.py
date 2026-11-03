@@ -81,8 +81,12 @@ IMPORT_RES = (
 )
 
 # <script src="..."> and <link href="..."> in HTML pages.
+# The value may be double-quoted, single-quoted or unquoted (HTML allows
+# all three); exactly one of the three groups matches.
 HTML_REF_RE = re.compile(
-    r"""<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*(['"])([^'"]*)\1""", re.IGNORECASE
+    r"""<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*"""
+    r"""(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""",
+    re.IGNORECASE,
 )
 URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
@@ -136,7 +140,7 @@ def check_html_refs(files):
             continue
         text = data.decode("utf-8", errors="replace")
         for match in HTML_REF_RE.finditer(text):
-            ref = match.group(2).strip()
+            ref = next(g for g in match.groups() if g is not None).strip()
             if not ref or ref.startswith("#") or ref.lower().startswith("data:"):
                 continue
             if ref.startswith("//") or URL_SCHEME_RE.match(ref):

@@ -223,7 +223,7 @@ function DisplayCard({ settings, put }) {
         min=${BRIGHTNESS_MIN}
         max=${BRIGHTNESS_MAX}
         value=${settings.brightness}
-        format=${(v) => percent(v, 0, BRIGHTNESS_MAX)}
+        format=${(v) => percent(v, BRIGHTNESS_MIN, BRIGHTNESS_MAX)}
         onCommit=${(v) => put({ brightness: v })}
       />
       <${RangeField}
