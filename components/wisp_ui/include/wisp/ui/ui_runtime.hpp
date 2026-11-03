@@ -139,7 +139,9 @@ public:
     // remove a previously installed callback.
     void set_touch_activity_cb(std::function<void()> cb);
 
-    // Takes an lv_snapshot_take() of the active screen. Safe to call from
+    // Takes an lv_snapshot_take() of the active screen with the top layer
+    // (cards, dialogs) blended over it -- what the panel shows, minus the
+    // sys layer (see perf_overlay_enabled()). Safe to call from
     // any thread: off the UI task, it posts the snapshot work and blocks
     // the calling thread for up to `timeout_ms` for it to finish; called
     // from the UI task itself (e.g. from inside a post()'d function), it
@@ -164,11 +166,9 @@ public:
     // actually taken effect yet. Thread-safe. Note this is *not*
     // reflected in snapshot_rgb888(): the overlay lives in LVGL's
     // always-on-top "sys layer", a sibling of the active screen, and
-    // lv_snapshot_take() only renders the one object (and its own
-    // children) it's given -- it never touches the display's separate
-    // top/sys layers, so no pixel comparison of snapshot_rgb888() output
-    // can ever detect the overlay. This accessor is the only way to
-    // observe it.
+    // snapshot_rgb888() composites the top layer but never the sys layer,
+    // so no pixel comparison of its output can ever detect the overlay. This accessor is the only
+    // way to observe it.
     bool perf_overlay_enabled() const;
 
 private:

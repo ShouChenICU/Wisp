@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 #include "lvgl.h"
 #include "wisp/ui/ui_runtime.hpp"
@@ -108,4 +109,38 @@ TEST_F(Strings, TrFollowsTheCurrentLanguage) {
 TEST_F(Strings, OutOfRangeIdFallsBackToEmptyText) {
     EXPECT_STREQ(wisp::ui::tr(StrId::Count), "");
     EXPECT_EQ(wisp::ui::detail::table_text(StrId::Count, Lang::Zh), nullptr);
+}
+
+namespace {
+
+size_t count_placeholders(std::string_view text) {
+    size_t n = 0;
+    for (size_t pos = text.find("{}"); pos != std::string_view::npos;
+         pos = text.find("{}", pos + 2)) {
+        ++n;
+    }
+    return n;
+}
+
+}  // namespace
+
+// A translation may move the "{}" but never drop or add one, or a number
+// would vanish (or a literal "{}" show) in that language.
+TEST_F(Strings, PlaceholdersMatchAcrossLanguages) {
+    for (size_t i = 0; i < wisp::ui::kStrCount; ++i) {
+        const size_t zh = count_placeholders(wisp::ui::tr(id_at(i), Lang::Zh));
+        EXPECT_LE(zh, 1u) << "id " << i;
+        for (Lang lang : wisp::ui::kAllLangs) {
+            EXPECT_EQ(count_placeholders(wisp::ui::tr(id_at(i), lang)), zh)
+                << "id " << i << " lang " << wisp::ui::lang_code(lang);
+        }
+    }
+}
+
+TEST_F(Strings, TrFillReplacesThePlaceholder) {
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::PairRemaining, "42"), "剩余 42 秒");
+    wisp::ui::set_lang(Lang::En);
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::PairRemaining, "42"), "42 s left");
+    // Text without a placeholder comes back unchanged.
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::Yes, "42"), "Yes");
 }

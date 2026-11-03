@@ -66,6 +66,41 @@ const char* strings_ja(StrId id) {
             return "はい";
         case StrId::No:
             return "いいえ";
+        case StrId::NetNotSetUp:
+            return "未設定";
+        case StrId::NetOff:
+            return "未接続";
+        case StrId::NetConnecting:
+            return "接続中…";
+        case StrId::NetRetrying:
+            return "再試行（{} 秒後）";
+        case StrId::NetConnected:
+            return "接続済み";
+        case StrId::NetNoHardware:
+            return "Wi-Fi なし";
+        case StrId::StartSetup:
+            return "Wi-Fi 設定を開始";
+        case StrId::StopSetup:
+            return "Wi-Fi 設定を終了";
+        case StrId::SetupTitle:
+            return "Wi-Fi 設定";
+        case StrId::Hotspot:
+            return "ネットワーク";
+        case StrId::Password:
+            return "パスワード";
+        case StrId::OpenAddress:
+            return "接続後に {} を開く";
+        case StrId::PairTitle:
+            return "ペアリング要求";
+        case StrId::PairRemaining:
+            return "残り {} 秒";
+        case StrId::Reject:
+            return "拒否";
+        case StrId::ResetTitle:
+            return "初期化";
+        case StrId::ResetPrompt:
+            return "Wi-"
+                   "Fi・ペアリング・モデル設定を消去して再起動します。シーンのデータは残ります。";
         case StrId::Count:
             break;
     }

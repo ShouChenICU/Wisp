@@ -287,6 +287,35 @@ Result<std::vector<uint8_t>> UiRuntime::Impl::take_snapshot() {
     }
 
     lv_draw_buf_destroy(buf);
+
+    // Cards and dialogs sit on the top layer, which lv_snapshot_take() of
+    // the screen leaves out; blend it on so the snapshot shows what the
+    // panel shows. Skipped when empty, the common case.
+    lv_obj_t* top = lv_layer_top();
+    if (top != nullptr && lv_obj_get_child_count(top) > 0) {
+        lv_draw_buf_t* overlay = lv_snapshot_take(top, LV_COLOR_FORMAT_ARGB8888);
+        if (overlay == nullptr) {
+            return Result<std::vector<uint8_t>>::err(ErrorCode::DeviceFailure,
+                                                     "lv_snapshot_take(top layer) failed");
+        }
+        const int ow = std::min<int>(overlay->header.w, width);
+        const int oh = std::min<int>(overlay->header.h, height);
+        for (int y = 0; y < oh; ++y) {
+            const uint8_t* src = overlay->data + static_cast<size_t>(y) * overlay->header.stride;
+            uint8_t* dst = out.data() + static_cast<size_t>(y) * row_bytes;
+            for (int x = 0; x < ow; ++x) {
+                // ARGB8888 is stored as (B, G, R, A), like RGB888 above.
+                const uint32_t a = src[x * 4 + 3];
+                if (a == 0) continue;
+                for (int c = 0; c < 3; ++c) {
+                    const uint32_t over = src[x * 4 + 2 - c];
+                    uint8_t& under = dst[x * 3 + c];
+                    under = static_cast<uint8_t>((over * a + under * (255 - a) + 127) / 255);
+                }
+            }
+        }
+        lv_draw_buf_destroy(overlay);
+    }
     return Result<std::vector<uint8_t>>::ok(std::move(out));
 }
 

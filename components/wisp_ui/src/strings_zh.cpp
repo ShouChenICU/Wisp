@@ -65,6 +65,40 @@ const char* strings_zh(StrId id) {
             return "是";
         case StrId::No:
             return "否";
+        case StrId::NetNotSetUp:
+            return "未配网";
+        case StrId::NetOff:
+            return "未连接";
+        case StrId::NetConnecting:
+            return "连接中…";
+        case StrId::NetRetrying:
+            return "重试中（{} 秒后）";
+        case StrId::NetConnected:
+            return "已连接";
+        case StrId::NetNoHardware:
+            return "无 Wi-Fi 硬件";
+        case StrId::StartSetup:
+            return "开始配网";
+        case StrId::StopSetup:
+            return "停止配网";
+        case StrId::SetupTitle:
+            return "配网";
+        case StrId::Hotspot:
+            return "热点";
+        case StrId::Password:
+            return "密码";
+        case StrId::OpenAddress:
+            return "连上后打开 {}";
+        case StrId::PairTitle:
+            return "配对请求";
+        case StrId::PairRemaining:
+            return "剩余 {} 秒";
+        case StrId::Reject:
+            return "拒绝";
+        case StrId::ResetTitle:
+            return "恢复出厂设置";
+        case StrId::ResetPrompt:
+            return "将清除 Wi-Fi、配对和模型配置并重启，场景数据保留。";
         case StrId::Count:
             break;
     }

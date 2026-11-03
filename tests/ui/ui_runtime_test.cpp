@@ -170,6 +170,47 @@ TEST(UiRuntime, SnapshotBytesAreRgbNotBgr) {
     ui.stop();
 }
 
+// Cards and dialogs live on the top layer; a snapshot shows what the panel
+// shows, so they are composited over the screen (blended where
+// translucent). The sys layer (the perf overlay) stays out.
+TEST(UiRuntime, SnapshotIncludesTheTopLayer) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+
+    ui.post([] {
+        lv_obj_t* scr = lv_screen_active();
+        lv_obj_set_style_bg_color(scr, lv_color_hex(0xFF0000), 0);
+        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+        lv_obj_t* box = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(box);
+        lv_obj_set_pos(box, 100, 100);
+        lv_obj_set_size(box, 50, 50);
+        lv_obj_set_style_bg_color(box, lv_color_hex(0x0000FF), 0);
+        lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+        lv_obj_t* veil = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(veil);
+        lv_obj_set_pos(veil, 300, 300);
+        lv_obj_set_size(veil, 50, 50);
+        lv_obj_set_style_bg_color(veil, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(veil, LV_OPA_50, 0);
+    });
+    ASSERT_TRUE(wait_until([&] { return disp->flush_count() > 0; }, 2000));
+
+    auto shot = ui.snapshot_rgb888();
+    ASSERT_TRUE(shot);
+    const auto& bytes = shot.value();
+    auto px = [&](int x, int y) { return &bytes[(static_cast<size_t>(y) * 480 + x) * 3]; };
+    EXPECT_NEAR(px(10, 10)[0], 255, 5);  // screen: red
+    EXPECT_NEAR(px(10, 10)[2], 0, 5);
+    EXPECT_NEAR(px(120, 120)[0], 0, 5);  // opaque top-layer box: blue
+    EXPECT_NEAR(px(120, 120)[2], 255, 5);
+    EXPECT_NEAR(px(320, 320)[0], 128, 8);  // 50% black over red
+    EXPECT_NEAR(px(320, 320)[1], 0, 5);
+
+    ui.stop();
+}
+
 // Spec 6.7: while paused, the UI task must not call
 // lv_timer_handler() (so no flush happens, even if something posted
 // invalidates the screen), but post()'d work must still run -- and

@@ -13,10 +13,14 @@
 //
 // Strings are fragments without printf conversions; callers compose them
 // (e.g. "<Battery>: 85%"), so a translation can never mismatch a format.
+// Where word order differs between languages a string carries one "{}"
+// that tr_fill() replaces (every language has the same count, which
+// tests/ui/strings_test.cpp checks).
 
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace wisp::ui {
@@ -65,6 +69,32 @@ enum class StrId : uint16_t {
     Yes,
     No,
 
+    // Network section (connectivity spec 8.1). NetRetrying carries "{}"
+    // (seconds; see tr_fill()).
+    NetNotSetUp,
+    NetOff,
+    NetConnecting,
+    NetRetrying,
+    NetConnected,
+    NetNoHardware,
+    StartSetup,
+    StopSetup,
+
+    // Provisioning card. OpenAddress carries "{}" (the setup page URL).
+    SetupTitle,
+    Hotspot,
+    Password,
+    OpenAddress,
+
+    // Pairing-code card. PairRemaining carries "{}" (seconds).
+    PairTitle,
+    PairRemaining,
+    Reject,
+
+    // Factory-reset confirmation dialog (answered with Yes/No).
+    ResetTitle,
+    ResetPrompt,
+
     Count,  // not a string; keep last
 };
 
@@ -78,6 +108,10 @@ const char* tr(StrId id);
 
 // The text for `id` in `lang`, with the same Chinese fallback.
 const char* tr(StrId id, Lang lang);
+
+// tr(id) with its "{}" replaced by `value`; text without one comes back
+// unchanged.
+std::string tr_fill(StrId id, std::string_view value);
 
 // Sets the language tr(StrId) uses. Call on the UI thread (or before any
 // UI exists), then rebuild the visible screen's text.

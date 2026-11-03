@@ -64,6 +64,40 @@ const char* strings_en(StrId id) {
             return "Yes";
         case StrId::No:
             return "No";
+        case StrId::NetNotSetUp:
+            return "Not set up";
+        case StrId::NetOff:
+            return "Not connected";
+        case StrId::NetConnecting:
+            return "Connecting…";
+        case StrId::NetRetrying:
+            return "Retrying in {} s";
+        case StrId::NetConnected:
+            return "Connected";
+        case StrId::NetNoHardware:
+            return "No Wi-Fi hardware";
+        case StrId::StartSetup:
+            return "Set up Wi-Fi";
+        case StrId::StopSetup:
+            return "Stop setup";
+        case StrId::SetupTitle:
+            return "Wi-Fi setup";
+        case StrId::Hotspot:
+            return "Hotspot";
+        case StrId::Password:
+            return "Password";
+        case StrId::OpenAddress:
+            return "Then open {}";
+        case StrId::PairTitle:
+            return "Pairing request";
+        case StrId::PairRemaining:
+            return "{} s left";
+        case StrId::Reject:
+            return "Reject";
+        case StrId::ResetTitle:
+            return "Factory reset";
+        case StrId::ResetPrompt:
+            return "Clears Wi-Fi, pairings and model settings, then restarts. Scene data is kept.";
         case StrId::Count:
             break;
     }

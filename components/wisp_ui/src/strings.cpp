@@ -41,6 +41,15 @@ const char* tr(StrId id, Lang lang) {
 
 const char* tr(StrId id) { return tr(id, g_lang.load(std::memory_order_relaxed)); }
 
+std::string tr_fill(StrId id, std::string_view value) {
+    std::string text = tr(id);
+    size_t pos = text.find("{}");
+    if (pos != std::string::npos) {
+        text.replace(pos, 2, value);
+    }
+    return text;
+}
+
 void set_lang(Lang lang) { g_lang.store(lang, std::memory_order_relaxed); }
 
 Lang lang() { return g_lang.load(std::memory_order_relaxed); }
