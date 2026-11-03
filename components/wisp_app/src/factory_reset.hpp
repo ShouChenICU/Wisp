@@ -23,10 +23,20 @@ class App;
 using TaskSpawner =
     std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>;
 
-// Asks the device to confirm a factory reset on its screen. Any thread.
+// Asks the device to confirm a factory reset on its screen: marks the
+// request pending, then publishes system.factory_reset
+// {state:"requested"}. Any thread.
 void request_factory_reset(App& app);
 
-// Publishes system.factory_reset {state:"cancelled"}. Any thread.
+// Clears a pending request and returns whether there was one. The screen
+// calls it on the "requested" event, when it is built and on its periodic
+// resync, and shows the dialog when it returns true -- so a request is
+// shown once even if the screen did not exist yet or the bus dropped the
+// event. Any thread.
+bool take_factory_reset_request(App& app);
+
+// Clears any pending request and publishes system.factory_reset
+// {state:"cancelled"}. Any thread.
 void cancel_factory_reset(App& app);
 
 // The reset itself, in this order:

@@ -16,6 +16,7 @@
 // on why that (rather than a process-wide static) is required for tests
 // that construct several Apps in one process, one after another.
 
+#include <atomic>
 #include <memory>
 #include <utility>
 
@@ -127,6 +128,11 @@ struct App::Impl {
     // one that fails (set_reset_spawner()).
     std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>
         reset_spawner;
+    // A factory reset was requested and no screen has taken it up yet (see
+    // take_factory_reset_request()). Kept beside the event so a request
+    // made before the screen subscribes, or whose event the bus dropped,
+    // still reaches the screen.
+    std::atomic<bool> reset_pending{false};
 
     bool started = false;
 

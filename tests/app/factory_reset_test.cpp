@@ -337,6 +337,79 @@ TEST(FactoryReset, PowerKeyDuringResetDialogIsIgnored) {
     EXPECT_EQ(reset_states(h), (std::vector<std::string>{"requested"}));
 }
 
+// A request made before the screen exists (its event published before
+// anyone listens) is shown once the screen is built, exactly once.
+TEST(FactoryReset, RequestBeforeTheScreenExistsIsShown) {
+    UiNetHarness h;
+    wisp::app::request_factory_reset(*h.app);
+    ASSERT_TRUE(h.start("system."));
+    // Already up when start() returns (the screen's build took it), not
+    // only after the next resync.
+    EXPECT_TRUE(dialog_says(h, "恢复出厂设置"));
+    // Past the event and at least one resync: still one dialog.
+    h.app->bus().wait_idle(2000);
+    wisp::os::sleep_ms(1200);
+    EXPECT_EQ(msgboxes(h), 1);
+}
+
+// The bus drops its oldest events when full: a request whose event was
+// lost still shows the dialog through the screen's periodic resync.
+TEST(FactoryReset, RequestWithALostEventIsShown) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    auto block_sub = h.app->bus().subscribe("test.block", [&](const wisp::core::Event&) {
+        entered.give();
+        release.take(wisp::os::kForever);
+    });
+    h.app->bus().publish(wisp::core::Event{"test.block", "test"});
+    ASSERT_TRUE(entered.take(3000));
+
+    wisp::app::request_factory_reset(*h.app);
+    for (int i = 0; i < 256; ++i) {
+        h.app->bus().publish(wisp::core::Event{"test.flood", "test"});
+    }
+    bool shown = wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000);
+    release.give();
+    h.app->bus().unsubscribe(block_sub);
+    EXPECT_TRUE(shown);
+    h.app->bus().wait_idle(2000);
+    run_on_ui_blocking(h.app->ui(), [] {});
+    EXPECT_EQ(msgboxes(h), 1);
+}
+
+// When the resync shows the dialog first and the event arrives late --
+// after the user already said "no" -- the event finds the request taken:
+// the dialog does not come back.
+TEST(FactoryReset, LateEventDoesNotReopenTheDialog) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    auto block_sub = h.app->bus().subscribe("test.block", [&](const wisp::core::Event&) {
+        entered.give();
+        release.take(wisp::os::kForever);
+    });
+    h.app->bus().publish(wisp::core::Event{"test.block", "test"});
+    ASSERT_TRUE(entered.take(3000));
+
+    wisp::app::request_factory_reset(*h.app);  // event held back, not dropped
+    bool shown = wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000);
+    bool clicked = shown && click(h, "否");
+    release.give();
+    h.app->bus().unsubscribe(block_sub);
+    ASSERT_TRUE(shown);
+    ASSERT_TRUE(clicked);
+
+    ASSERT_TRUE(wait_until([&] { return reset_states(h).size() == 2; }, 3000));
+    EXPECT_EQ(reset_states(h), (std::vector<std::string>{"requested", "cancelled"}));
+    h.app->bus().wait_idle(2000);
+    run_on_ui_blocking(h.app->ui(), [] {});
+    wisp::os::sleep_ms(1200);  // and one more resync
+    EXPECT_EQ(msgboxes(h), 0);
+}
+
 // Without a screen nobody could confirm, so the route says so up front.
 TEST(FactoryReset, HeadlessDeviceRefusesTheRequest) {
     UiNetOptions opts;

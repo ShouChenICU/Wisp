@@ -51,10 +51,11 @@ constexpr uint64_t kSlowSampleIntervalMs = 1000;  // power/clock/storage.
 // (see sample_loop()'s standby branch).
 constexpr uint32_t kStandbySlowSampleMs = 30000;
 constexpr uint32_t kUiRefreshMs = 100;
-// How often the refresh timer re-reads the network services even without
-// an event: the bus drops its oldest events when full, and a lost
-// net.ap.state or net.pairing.code must not leave a card up (or missing)
-// for good. The reads are a few short lock-protected copies.
+// How often the refresh timer re-reads the network services (and the
+// pending factory-reset request) even without an event: the bus drops its
+// oldest events when full, and a lost net.ap.state, net.pairing.code or
+// system.factory_reset must not leave a card up (or missing) for good.
+// The reads are a few short lock-protected copies and an atomic.
 constexpr uint64_t kNetResyncMs = 1000;
 constexpr uint32_t kPerfReportMs = 5000;
 constexpr int kBallTravelPx = 20;
@@ -202,6 +203,9 @@ private:
     // Turns a sleeping screen on for something the user is waiting to see
     // (a pairing code, the factory-reset question). UI thread.
     void wake_screen();
+    // UI thread: takes a pending factory-reset request (see
+    // take_factory_reset_request()) and shows the dialog for it.
+    void sync_reset();
     void show_reset_dialog();
     void close_reset_dialog();
     // Brings ui::lang() in line with the stored language, rebuilding if it
@@ -493,6 +497,7 @@ void SelfCheck::build() {
     // (the build runs after networking has started).
     sync_wifi();
     sync_pairing();
+    sync_reset();
 
     refresh_timer_ = lv_timer_create(&SelfCheck::refresh_timer_cb, kUiRefreshMs, this);
 
@@ -1025,7 +1030,9 @@ void SelfCheck::on_reset_event(const core::Event& e) {
         it->second.as_string() != "requested") {
         return;
     }
-    if (!ui_->post([this] { show_reset_dialog(); })) {
+    // The pending flag is taken on the UI thread, not here: if this post
+    // is dropped, the flag is still set for the periodic resync.
+    if (!ui_->post([this] { sync_reset(); })) {
         WLOG_W("self_check", "post(factory reset dialog) dropped (post queue full)");
     }
 }
@@ -1079,6 +1086,12 @@ void SelfCheck::wake_screen() {
     PowerManager* pm = app_.power_manager();
     if (pm != nullptr && pm->standby()) {
         pm->exit_standby();
+    }
+}
+
+void SelfCheck::sync_reset() {
+    if (take_factory_reset_request(app_)) {
+        show_reset_dialog();
     }
 }
 
@@ -1255,6 +1268,7 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
         self->last_net_resync_ms_ = now;
         self->sync_wifi();
         self->sync_pairing();
+        self->sync_reset();
     }
     self->net_section_.tick(now);
     self->pair_card_.tick(now);

@@ -30,10 +30,17 @@ void publish_state(App& app, const char* state) {
 
 }  // namespace
 
-void request_factory_reset(App& app) { publish_state(app, "requested"); }
+void request_factory_reset(App& app) {
+    // Set before the event goes out, so whoever handles the event finds it.
+    app.impl_->reset_pending.store(true);
+    publish_state(app, "requested");
+}
+
+bool take_factory_reset_request(App& app) { return app.impl_->reset_pending.exchange(false); }
 
 void cancel_factory_reset(App& app) {
     WLOG_I(kTag, "factory reset cancelled on the device");
+    app.impl_->reset_pending.store(false);
     publish_state(app, "cancelled");
 }
 
@@ -69,6 +76,7 @@ void factory_reset(App& app) {
 bool start_factory_reset(App& app) {
     App::Impl& impl = *app.impl_;
     std::lock_guard<os::Mutex> lock(impl.reset_mutex);
+    impl.reset_pending.store(false);
     if (impl.reset_task) {
         WLOG_W(kTag, "factory reset already running");
         return true;

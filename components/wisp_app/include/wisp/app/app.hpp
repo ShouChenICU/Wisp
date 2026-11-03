@@ -244,9 +244,12 @@ private:
     friend void reset_loopback(App&);
     // The factory reset (src/factory_reset.hpp) flushes the admin
     // WebSocket through NetWiring and keeps its "wisp.reset" task here.
+    friend void request_factory_reset(App&);
+    friend void cancel_factory_reset(App&);
     friend void factory_reset(App&);
     friend bool start_factory_reset(App&);
     friend void join_factory_reset(App&);
+    friend bool take_factory_reset_request(App&);
     friend void set_reset_spawner(
         App&,
         std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>);

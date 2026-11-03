@@ -462,11 +462,13 @@ def case_factory_reset(sim_path, tmp_root):
     settings are gone afterwards, and the process ends with WISP_REBOOT
     and exit code 0.
 
-    Nothing here waits on a fixed delay: the POST waits for the boot to
-    finish (WISP_MANIFEST), the socket subscribes to the log as well as to
-    events, so the replayed log shows the subscription is live before the
-    POST, and the dialog's own log line says when to tap (sent to the
-    simulator's stdin, --touch-stdin)."""
+    Nothing here waits on a fixed delay: the socket subscribes to the log
+    as well as to events, so the replayed log shows the subscription is
+    live before the POST, and the dialog's own log line says when to tap
+    (sent to the simulator's stdin, --touch-stdin). The POST goes out as
+    soon as the server answers, typically before the boot has finished
+    and the screen is listening: the request must still reach the dialog
+    (the app keeps it pending until the screen takes it up)."""
     data_dir = tmp_root / "factory-reset"
     token = "smoke-reset-token"
     clients = seed_paired_client(data_dir, token, "smoke")
@@ -481,15 +483,13 @@ def case_factory_reset(sim_path, tmp_root):
     # Drained on a thread from the start, so a chatty log can never fill
     # the pipe and stall the simulator while this waits on the socket.
     stdout_lines = []
-    booted = threading.Event()
+    http_ready = threading.Event()
 
     def drain():
         for line in proc.stdout:
             stdout_lines.append(line)
-            # Printed once the self-check screen is up and listening for
-            # reset requests; the admin server answers well before that.
-            if line.startswith("WISP_MANIFEST "):
-                booted.set()
+            if line.startswith("WISP_HTTP "):
+                http_ready.set()
 
     drainer = threading.Thread(target=drain, daemon=True)
     drainer.start()
@@ -498,7 +498,7 @@ def case_factory_reset(sim_path, tmp_root):
     tapped_at = None
     deadline = time.monotonic() + TIMEOUT_S
     try:
-        expect(booted.wait(TIMEOUT_S), f"no WISP_MANIFEST line:\n{''.join(stdout_lines)}")
+        expect(http_ready.wait(TIMEOUT_S), f"no WISP_HTTP line:\n{''.join(stdout_lines)}")
         cookie = f"wisp_token={token}"
         ws = WsClient(port, cookie)
         ws.sock.settimeout(TIMEOUT_S)
@@ -539,6 +539,14 @@ def case_factory_reset(sim_path, tmp_root):
         err = proc.stderr.read()
     except subprocess.TimeoutExpired as exc:
         raise SmokeError(f"wisp_sim did not exit after the factory reset; states {states}") from exc
+    except OSError as exc:
+        # socket.timeout (TimeoutError), BrokenPipeError on the sim's stdin,
+        # a reset or refused connection: say where the case was.
+        step = ("waiting for the reset after the tap" if tapped_at is not None
+                else "waiting for the reset dialog" if states else "before the POST was answered")
+        tail = "".join(stdout_lines[-15:])
+        raise SmokeError(f"{type(exc).__name__} {step}: {exc}; states {states}; "
+                         f"wisp_sim exit code {proc.poll()}; last output:\n{tail}") from exc
     finally:
         if ws is not None:
             ws.close()
