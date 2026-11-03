@@ -69,7 +69,9 @@ bool contains(std::string_view hay, std::string_view needle) {
 
 // A short, human-readable name for the paired-clients list. Order matters:
 // Edge and Opera UAs also say "Chrome", Chrome's says "Safari", Android's
-// says "Linux" and iOS's says "Mac OS X".
+// says "Linux" and iOS's says "Mac OS X". "" when neither is recognised:
+// the admin page shows its own localized "unknown browser" then, which a
+// stored fallback word could not follow.
 std::string label_for(std::string_view ua) {
     const char* browser = nullptr;
     if (contains(ua, "Edg/") || contains(ua, "EdgA/") || contains(ua, "EdgiOS/")) {
@@ -104,7 +106,7 @@ std::string label_for(std::string_view ua) {
     if (browser != nullptr && os != nullptr) return std::string(browser) + " · " + os;
     if (browser != nullptr) return browser;
     if (os != nullptr) return os;
-    return "浏览器";
+    return {};
 }
 
 }  // namespace

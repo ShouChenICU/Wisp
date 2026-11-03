@@ -61,7 +61,7 @@ struct ClientInfo {
 
 struct PairedClient {
     std::string id;     // first 12 hex chars of the token's SHA-256
-    std::string label;  // e.g. "Chrome · Android", summarised from the User-Agent
+    std::string label;  // e.g. "Chrome · Android", summarised from the User-Agent; may be ""
     int64_t created_unix = 0;
     int64_t last_seen_unix = 0;
 };

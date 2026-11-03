@@ -388,8 +388,8 @@ TEST(Pairing, LabelSummarisesUserAgent) {
         {kFirefoxWindows, "Firefox · Windows"},
         {kEdgeWindows, "Edge · Windows"},
         {kChromeMac, "Chrome · macOS"},
-        {"curl/8.5.0", "浏览器"},
-        {"", "浏览器"},
+        {"curl/8.5.0", ""},
+        {"", ""},
     };
     uint64_t now = 1000;
     for (const auto& c : cases) {
