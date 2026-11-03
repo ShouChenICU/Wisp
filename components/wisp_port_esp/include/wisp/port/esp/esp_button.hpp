@@ -7,10 +7,10 @@
 // "gpio-button" vs. the power key's "axp2101-pwrkey") are all supplied
 // by the board (AGENTS.md "板子无关" rule).
 //
-// This class does not itself call gpio_config(): pull-up/pull-down needs
-// differ per pin (e.g. the power key's GPIO already has an external
-// pull-up on this board and must not also enable the internal one --
-// see the hardware doc), which is exactly the kind of per-pin fact
+// This class does not itself call gpio_config(): polarity and
+// pull-up/pull-down needs differ per pin (e.g. this board's power-key
+// pin reads high while pressed -- see the hardware doc), which is
+// exactly the kind of per-pin fact
 // AGENTS.md keeps out of the portable/port layers. The board configures
 // each pin as an input (with whatever pull resistor it needs) before
 // constructing the EspGpioButton that reads it.

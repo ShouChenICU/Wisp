@@ -113,10 +113,12 @@ constexpr int kAreaAlign = 2;
 // gives no tighter number, so this board uses that floor as-is.
 constexpr uint32_t kDisplaySleepOutSettleMs = 120;
 
-// Button GPIOs (see the hardware doc): all active-low. The power key's
-// detect pin already has an external pull-up on this board, so it must
-// not also enable the internal one; Vol+/Vol- have no external pull-up
-// and need the internal one enabled.
+// Button GPIOs (see the hardware doc). GPIO16 follows the PWR key's
+// state, measured on this board: driven low while released and high
+// while held -- it is not the AXP2101 IRQ output. The internal pull-down
+// only keeps it defined should the driver ever release the line.
+// Vol+/Vol- are active-low with no external pull-up, so they need the
+// internal pull-up.
 constexpr gpio_num_t kPinBtnPower = GPIO_NUM_16;
 constexpr gpio_num_t kPinBtnVolUp = GPIO_NUM_18;
 constexpr gpio_num_t kPinBtnVolDown = GPIO_NUM_0;
@@ -338,7 +340,7 @@ void init_imu(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& repo
 
 struct ButtonSpec {
     gpio_num_t pin;
-    bool pull_up;  // Internal pull-up: see kPinBtnPower's comment above.
+    bool active_low;  // Pressed reads 0; also selects pull-up vs. pull-down.
     const char* id;
     const char* model;
 };
@@ -354,15 +356,15 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
         gpio_config_t cfg = {};
         cfg.pin_bit_mask = 1ULL << spec.pin;
         cfg.mode = GPIO_MODE_INPUT;
-        cfg.pull_up_en = spec.pull_up ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE;
-        cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        cfg.pull_up_en = spec.active_low ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE;
+        cfg.pull_down_en = spec.active_low ? GPIO_PULLDOWN_DISABLE : GPIO_PULLDOWN_ENABLE;
         esp_err_t err = gpio_config(&cfg);
         if (err != ESP_OK) {
             record_failed(report, spec.id, cls, "gpio_config: " + err_name(err));
             continue;
         }
         add_device(registry, report,
-                   std::make_shared<wisp::port::esp::EspGpioButton>(spec.pin, /*active_low=*/true,
+                   std::make_shared<wisp::port::esp::EspGpioButton>(spec.pin, spec.active_low,
                                                                     spec.id, spec.model));
     }
 }

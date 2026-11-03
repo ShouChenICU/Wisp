@@ -15,7 +15,7 @@
 |---|---|---|---|
 | 屏幕 | CO5300，480×480 AMOLED，圆角半径 40 | QSPI：CS 12、SCLK 38、D0–D3 = 4/5/6/7、RST 39 | — |
 | 触摸 | **CST9217**（MyOS 文档误写为 CST9220） | I2C；INT 11、RST 40 | 0x5A |
-| 电源管理 | AXP2101 | I2C；电源键接 GPIO16（按下时为低电平） | 0x34 |
+| 电源管理 | AXP2101 | I2C；PWR 键状态由 GPIO16 读出（**按下时为高电平**） | 0x34 |
 | IMU | QMI8658（无磁力计） | I2C；INT1 17、INT2 21 | 0x6B |
 | RTC | PCF85063 | I2C；INT 13 | 0x51 |
 | 音频 DAC | ES8311 | I2S + I2C | 0x18 |
@@ -33,6 +33,8 @@
 - SD 卡走 SDMMC 而不是 SPI。
 - 屏幕的局部刷新区域需要按 2 像素对齐（`area_align = 2`）；四角留出 ≥ 40 px 的安全边距。
 - AXP2101 初始化时不要改动任何电源轨的电压或开关。
+- GPIO16 反映 PWR 键的状态：松开时被驱动为低电平，按住时为高电平（实测，官方资料只把它标为 `SYS_OUT`）。它不是 AXP2101 的中断输出，按普通按键读取即可，短按/长按由 `ButtonService` 计时判断，不需要读 AXP2101 的 IRQ 寄存器。实测时 AXP2101 的 PWRON 长按 IRQ 也恰好在按住 1 s 时置位，与 GPIO16 的电平一致。
+- 按住 PWR 键数秒（AXP2101 的 OFFLEVEL）会触发芯片的硬件强制关机，与软件无关。
 
 ## 真机验收清单
 
@@ -57,7 +59,7 @@
 | 13 | 电量与充电状态更新（spec 10.2，drivers/axp2101） | 看自检界面电量百分比和"充电中/未充电"状态；插拔 USB 电源；也可以看串口上 `power_monitor` 的 `power.charging.changed` 日志行（见下面第 35 项） | 百分比在合理范围；插拔后充电状态在 1 秒内更新 |  |
 | 14 | 三个按键事件（spec 10.2，wisp_core::ButtonService） | 分别短按/长按 power、vol_up、vol_down | 自检界面均有对应事件提示 |  |
 | 15 | 电源键短按（spec 10.3） | 亮屏时短按电源键，再短按一次 | 第一次灭屏（进入待机），第二次重新点亮 |  |
-| 16 | 电源键长按关机（spec 10.3，drivers/axp2101 power_off，wisp_app::PowerKeyController） | 长按电源键约 1 秒 | 弹出关机确认框；确认后整机断电（用电流表或指示灯判断，不能只看屏幕熄灭） |  |
+| 16 | 电源键长按关机（spec 10.3，drivers/axp2101 power_off，wisp_app::PowerKeyController） | 亮屏时按住电源键约 1 秒（不松手） | 按住时即弹出关机确认框；开机时为开机而按住的那一次不会触发；确认后整机断电（用电流表或指示灯判断，不能只看屏幕熄灭） |  |
 | 17 | 关机状态开机（spec 10.3） | 关机状态下长按电源键 | 重新开机 |  |
 | 18 | RTC 持续计时（spec 10.2，drivers/pcf85063） | 看启动日志是否有 "system clock set from clock.main RTC"；断电（拔 USB 和电池）重启后再看一次时间。如果 RTC 从未设置过（芯片第一次通电），`get_unix()` 会失败，日志只有一条 `WLOG_W`，系统时间不会被设置——此时需要临时在 `board.cpp` 的 `init_clock` 成功之后插入一行 `clock.value()->set_unix(<当前 UTC 时间戳>)` 写入一次当前时间，重新编译烧录后再验证本项，验证完成后删除这段临时代码 | 日志出现 "system clock set from clock.main RTC"；重启后时间连续，不跳回 1970 或固定值 |  |
 | 19 | 充电电流曲线（drivers/axp2101 充电参数配置） | 用一块电量明显偏低的电池，经 USB 功率计供电，观察充电过程电流；同时看启动日志是否出现 `power.main: charging configuration failed: ...`（`board.cpp` 的 `WLOG_W`） | 恒流阶段稳定在约 400mA；接近 4.2V 时电流渐降；充满后 `charging` 翻 `false`，电流降到维持量级，不持续大电流过充；不出现 `charging configuration failed` 日志（出现则说明 `axp2101_charging_config_status()` 返回非 `ESP_OK`，充电参数可能停留在芯片出厂默认值） |  |
