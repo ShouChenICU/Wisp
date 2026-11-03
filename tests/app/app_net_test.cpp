@@ -251,9 +251,43 @@ TEST(AppNet, FailedServerStartDoesNotFailBoot) {
     ASSERT_TRUE(h.app->start());
     EXPECT_FALSE(h.server->running());
     EXPECT_EQ(h.http_lines(), 0);
-    // Not retried in a loop while nothing changed.
+    // Not retried every tick: the retries back off from a couple of seconds.
     wisp::os::sleep_ms(600);
     EXPECT_EQ(h.server->start_calls.load(), 1);
+
+    // A start that fails once (a port still in use, say) is retried, so
+    // the admin page does not stay unreachable until the next Wi-Fi change.
+    h.server->fail_start = false;
+    EXPECT_TRUE(wait_until([&] { return h.server->running(); }, 5000));
+    EXPECT_EQ(h.server->start_calls.load(), 2);
+    EXPECT_TRUE(wait_until([&] { return h.http_lines() == 1; }, 1000));
+}
+
+// The server follows the Wi-Fi service's state, not only its events: the
+// bus drops the oldest events when full, and a lost net.ap.state must not
+// leave the setup page unreachable while the hotspot is up.
+TEST(AppNet, ServerFollowsTheHotspotWhenEventsAreLost) {
+    NetHarness h({});
+    ASSERT_TRUE(h.app->start());
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    auto block = h.app->bus().subscribe("test.block", [&](const wisp::core::Event&) {
+        entered.give();
+        release.take(wisp::os::kForever);
+    });
+    h.app->bus().publish(wisp::core::Event{"test.block", "test"});
+    ASSERT_TRUE(entered.take(3000));
+
+    ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+    for (int i = 0; i < 256; ++i) h.app->bus().publish(wisp::core::Event{"test.flood", "test"});
+    const bool up = wait_until([&] { return h.server->running(); }, 3000);
+    ASSERT_TRUE(h.app->wifi()->stop_provisioning());
+    const bool down = wait_until([&] { return !h.server->running(); }, 3000);
+
+    release.give();
+    h.app->bus().unsubscribe(block);
+    EXPECT_TRUE(up);
+    EXPECT_TRUE(down);
 }
 
 TEST(AppNet, StandbyEventReachesWifiService) {

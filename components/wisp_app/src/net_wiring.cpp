@@ -1,5 +1,6 @@
 #include "net_wiring.hpp"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -19,11 +20,6 @@ bool payload_string_is(const core::Event& e, const char* key, const char* want) 
     auto it = e.payload.find(key);
     return it != e.payload.end() && it->second.type() == Value::Type::String &&
            it->second.as_string() == want;
-}
-
-bool payload_bool(const core::Event& e, const char* key) {
-    auto it = e.payload.find(key);
-    return it != e.payload.end() && it->second.type() == Value::Type::Bool && it->second.as_bool();
 }
 
 }  // namespace
@@ -71,15 +67,11 @@ void NetWiring::start() {
         subscriptions_.push_back(deps_.bus.subscribe("power.state", [wifi](const core::Event& e) {
             wifi->set_standby(payload_string_is(e, "state", "standby"), os::now_ms());
         }));
-        subscriptions_.push_back(
-            deps_.bus.subscribe("net.wifi.state", [this](const core::Event& e) {
-                sta_up_.store(payload_string_is(e, "state", "connected"));
-                wake_.give();
-            }));
-        subscriptions_.push_back(deps_.bus.subscribe("net.ap.state", [this](const core::Event& e) {
-            ap_up_.store(payload_bool(e, "active"));
-            wake_.give();
-        }));
+        // Only for a prompt reaction: run() reads the state itself.
+        for (const char* topic : {"net.wifi.state", "net.ap.state"}) {
+            subscriptions_.push_back(
+                deps_.bus.subscribe(topic, [this](const core::Event&) { wake_.give(); }));
+        }
     } else {
         deps_.report.set_note("net", "missing");
     }
@@ -120,7 +112,7 @@ void NetWiring::start() {
             .reboot = platform.reboot,
             .request_factory_reset = deps_.request_factory_reset,
         });
-        reconcile_http();  // http_always_on serves from boot
+        reconcile_http(now);  // http_always_on serves from boot
     }
 
     stopping_.store(false);
@@ -138,12 +130,12 @@ void NetWiring::stop() {
         deps_.platform.captive_server->stop();
         captive_serving_ = false;
     }
-    captive_failed_ = false;
+    captive_retry_.reset();
     if (serving_) {
         deps_.platform.http_server->stop();
         serving_ = false;
     }
-    start_failed_ = false;
+    start_retry_.reset();
     for (core::SubscriptionId id : subscriptions_) deps_.bus.unsubscribe(id);
     subscriptions_.clear();
     sta_up_.store(false);
@@ -162,21 +154,30 @@ bool NetWiring::flush_admin_ws(uint32_t timeout_ms) {
 void NetWiring::run() {
     while (!stopping_.load()) {
         const uint64_t now = os::now_ms();
-        if (wifi_) wifi_->tick(now);
+        if (wifi_) {
+            wifi_->tick(now);
+            sta_up_.store(wifi_->status().state == net::WifiState::Connected);
+            ap_up_.store(wifi_->ap_status().active);
+        }
         pairing_->tick(now);
-        reconcile_http();
+        reconcile_http(now);
         (void)wake_.take(kNetTickMs);
     }
 }
 
-void NetWiring::reconcile_http() {
-    reconcile_captive();
+void NetWiring::StartRetry::failed(uint64_t now_ms) {
+    at_ms = now_ms + wait_ms;
+    wait_ms = std::min(wait_ms * 2, kStartRetryMaxMs);
+}
+
+void NetWiring::reconcile_http(uint64_t now_ms) {
+    reconcile_captive(now_ms);
     net::HttpServer* server = deps_.platform.http_server.get();
     if (server == nullptr || !admin_) return;
 
     const bool want = deps_.platform.http_always_on || sta_up_.load() || ap_up_.load();
     if (!want) {
-        start_failed_ = false;
+        start_retry_.reset();
         if (serving_) {
             server->stop();
             serving_ = false;
@@ -184,30 +185,32 @@ void NetWiring::reconcile_http() {
         }
         return;
     }
-    if (serving_ || start_failed_) return;
+    if (serving_ || !start_retry_.due(now_ms)) return;
 
     admin::AdminServer* admin = admin_.get();
     auto r = server->start(
         deps_.platform.http_port,
         [admin](const net::HttpRequest& req) { return admin->handle(req); }, admin->ws_handlers());
     if (!r) {
-        start_failed_ = true;
-        WLOG_E(kTag, "admin server failed to start on port %u: %s",
-               static_cast<unsigned>(deps_.platform.http_port), r.error().message.c_str());
+        WLOG_E(kTag, "admin server failed to start on port %u: %s; retrying in %u s",
+               static_cast<unsigned>(deps_.platform.http_port), r.error().message.c_str(),
+               static_cast<unsigned>(start_retry_.wait_ms / 1000));
+        start_retry_.failed(now_ms);
         return;
     }
+    start_retry_.reset();
     serving_ = true;
     WLOG_I(kTag, "admin server listening on port %u", static_cast<unsigned>(server->port()));
     deps_.platform.emit_line(
         "WISP_HTTP " + to_json(Value(Map{{"port", Value(static_cast<int64_t>(server->port()))}})));
 }
 
-void NetWiring::reconcile_captive() {
+void NetWiring::reconcile_captive(uint64_t now_ms) {
     net::HttpServer* server = deps_.platform.captive_server.get();
     if (server == nullptr || !admin_) return;
 
     if (!ap_up_.load()) {
-        captive_failed_ = false;
+        captive_retry_.reset();
         if (captive_serving_) {
             server->stop();
             captive_serving_ = false;
@@ -215,15 +218,17 @@ void NetWiring::reconcile_captive() {
         }
         return;
     }
-    if (captive_serving_ || captive_failed_) return;
+    if (captive_serving_ || !captive_retry_.due(now_ms)) return;
 
     auto r = server->start(kCaptivePort, admin_->captive_handler(), net::WsHandlers{});
     if (!r) {
-        captive_failed_ = true;
-        WLOG_E(kTag, "captive redirect failed to start on port %u: %s",
-               static_cast<unsigned>(kCaptivePort), r.error().message.c_str());
+        WLOG_E(kTag, "captive redirect failed to start on port %u: %s; retrying in %u s",
+               static_cast<unsigned>(kCaptivePort), r.error().message.c_str(),
+               static_cast<unsigned>(captive_retry_.wait_ms / 1000));
+        captive_retry_.failed(now_ms);
         return;
     }
+    captive_retry_.reset();
     captive_serving_ = true;
     WLOG_I(kTag, "captive redirect listening on port %u", static_cast<unsigned>(kCaptivePort));
 }

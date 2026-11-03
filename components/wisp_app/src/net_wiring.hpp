@@ -8,7 +8,9 @@
 //     and init()s them -- WifiService::init() only loads the saved list,
 //     so nothing here touches the radio;
 //   - subscribes to power.state (-> WifiService::set_standby()) and to
-//     net.wifi.state / net.ap.state (which interfaces are up);
+//     net.wifi.state / net.ap.state (only to wake the task: which
+//     interfaces are up is read from WifiService each tick, so a dropped
+//     event cannot leave the servers in the wrong state);
 //   - with Platform::http_server, builds the AdminServer and, when
 //     http_always_on, starts serving right away. Platform::captive_server
 //     (if any) runs AdminServer::captive_handler() on port 80 exactly
@@ -20,8 +22,10 @@
 // starts or stops the HTTP servers once start() has returned. It has its
 // own task rather than an os::Timer because tick() may block for a ~3 s
 // scan, and on ESP every Timer shares one dispatch task. Event handlers
-// only record interface state and wake the task, so no blocking server
-// call ever runs on the EventBus dispatcher.
+// only wake the task, so no blocking server call ever runs on the
+// EventBus dispatcher. A server whose start() failed is retried with a
+// backoff (kStartRetryMinMs doubling up to kStartRetryMaxMs) while its
+// interface stays up.
 //
 // stop() joins the task, stops both servers (their on_close callbacks run
 // while they join connection threads; nothing here holds a lock then),
@@ -32,6 +36,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "wisp/admin/admin_server.hpp"
@@ -71,6 +76,8 @@ public:
     static constexpr uint32_t kNetTickMs = 250;
     // Where phones' captive-portal probes go.
     static constexpr uint16_t kCaptivePort = 80;
+    static constexpr uint32_t kStartRetryMinMs = 2000;
+    static constexpr uint32_t kStartRetryMaxMs = 60000;
 
     explicit NetWiring(NetWiringDeps deps);
     // Calls stop().
@@ -97,8 +104,8 @@ private:
     // Starts or stops the HTTP servers to match the interface state. Runs
     // on the "wisp.net" task, or on start()/stop()'s thread while that
     // task is not running.
-    void reconcile_http();
-    void reconcile_captive();
+    void reconcile_http(uint64_t now_ms);
+    void reconcile_captive(uint64_t now_ms);
     Value device_status() const;
 
     NetWiringDeps deps_;
@@ -115,12 +122,20 @@ private:
 
     // Owned by whoever runs reconcile_http() (see there).
     bool serving_ = false;
-    // A start() that failed is not retried until the interfaces go down
-    // and come back, so a busy port does not spam the log every tick.
-    bool start_failed_ = false;
+    // After a failed start(): when to try again and the wait after the
+    // next failure, so a busy port is neither given up on nor retried
+    // (and logged) every tick. Reset once the interfaces go down.
+    struct StartRetry {
+        std::optional<uint64_t> at_ms;
+        uint32_t wait_ms = kStartRetryMinMs;
+        bool due(uint64_t now_ms) const { return !at_ms || now_ms >= *at_ms; }
+        void failed(uint64_t now_ms);
+        void reset() { *this = StartRetry{}; }
+    };
+    StartRetry start_retry_;
     // The same pair for the captive (port-80) server.
     bool captive_serving_ = false;
-    bool captive_failed_ = false;
+    StartRetry captive_retry_;
 
     os::Semaphore wake_{1, 0};
     std::atomic<bool> stopping_{false};
