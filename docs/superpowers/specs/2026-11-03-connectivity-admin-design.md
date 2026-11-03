@@ -115,7 +115,7 @@ HTTPS 与 Flash 加密（子项目 7 评估）、设备自动联网拉取更新�
 
 `nvs` 与 `storage` 的偏移和大小与之前相同，重新整片烧录后设置与数据仍在。配置的存放位置：亮度、音量、自动熄屏、语言等键值设置在 `nvs`；已保存的网络、已配对浏览器、模型配置等结构化文件在 System 区（`storage` 上的 LittleFS，`/int/system`）。
 
-**发布构建**：`firmware/sdkconfig.defaults` 即发布配置——全局按体积优化（`-Os`），日志最高编译到 INFO，断言静默；**渲染路径固定 `-O2`**（LVGL 组件、`wisp_ui`、显示与触摸驱动及刷屏路径，在各自组件里单独指定，覆盖全局选项）。调试时叠加 `firmware/sdkconfig.debug`（`-Og`、DEBUG 日志、断言开启）：`idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.debug" build`。预算：应用不超过 `ota_0` 的 80%；`WISP_PERF` 帧率不低于基础 spec 的基准。基础 spec 7.4 的分区表改为"参考板（Waveshare 2.16）的分区表"，并引用本节约定；`docs/porting-guide.md` 同步补充。
+**发布构建**：`firmware/sdkconfig.defaults` 即发布配置——全局按体积优化（`-Os`），日志最高编译到 INFO，断言静默；**渲染路径固定 `-O2`**（LVGL 组件、`wisp_ui`、显示与触摸驱动及刷屏路径，在各自组件里单独指定，覆盖全局选项）。调试时叠加 `firmware/sdkconfig.debug`（`-Og`、DEBUG 日志、断言开启），用单独的构建目录：`idf.py -B build-debug -D SDKCONFIG=build-debug/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;components/gen_bmgr_codes/board_manager.defaults;sdkconfig.debug" build`。`SDKCONFIG_DEFAULTS` 一旦给出就替换 esp_board_manager 默认加入的列表，所以 bmgr 生成的 `board_manager.defaults`（含本板的 Flash、PSRAM 与分区表配置，见 3.1）必须显式列出，否则调试版会丢掉板级配置。预算：应用不超过 `ota_0` 的 80%；`WISP_PERF` 帧率不低于基础 spec 的基准。基础 spec 7.4 的分区表改为"参考板（Waveshare 2.16）的分区表"，并引用本节约定；`docs/porting-guide.md` 同步补充。
 
 ---
 

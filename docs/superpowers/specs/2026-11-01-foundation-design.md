@@ -504,21 +504,22 @@ StorageStatus status();                        // 各介质在线状态、容量
 - **SD 卡热插拔**：通过 SD 卡检测或周期性探测发现插拔，发布 `storage.sd.inserted` / `storage.sd.removed`。拔出后 SD 上的 `Library` 根从列表中移除，相关写入返回 `ErrorCode::StorageUnavailable`；插回后重新挂载并恢复列表，数据不删除；
 - 模拟器中按 `S` 键切换"SD 卡插入/拔出"，或用 `--no-sd` 启动。
 
-### 7.4 参考板分区表（Waveshare 2.16，16MB）
+### 7.4 参考板（Waveshare 2.16）的分区表
+
+16MB Flash，即 `boards/waveshare_amoled_216/partitions.csv`：
 
 | 分区 | 类型 | 偏移 | 大小 | 用途 |
 |---|---|---|---|---|
 | nvs | data/nvs | 0x9000 | 24KB | 配置 |
 | otadata | data/ota | 0xF000 | 8KB | OTA 状态 |
 | phy_init | data/phy | 0x11000 | 4KB | 射频校准 |
-| ota_0 | app/ota_0 | 0x20000 | 4MB | 固件 A |
-| ota_1 | app/ota_1 | 0x420000 | 4MB | 固件 B |
-| assets | data/spiffs（原始映射） | 0x820000 | 2MB | 字体、图标、开机资源、后台网页（子项目 2） |
+| ota_0 | app/ota_0 | 0x20000 | 5MB | 固件 A |
+| ota_1 | app/ota_1 | 0x520000 | 5MB | 固件 B |
 | storage | data/littlefs | 0xA20000 | 约 5.9MB（0x5E0000） | LittleFS（`/int`） |
 
-OTA 功能本身不在子项目 1 中实现，只预留双分区。
+没有 `assets` 分区：后台网页资源包链接在应用镜像里，随固件一起更新（子项目 2 spec 2.3）。网页上传固件用两个 OTA 分区（子项目 2 spec 6.5）。
 
-这张表是参考板 `boards/waveshare_amoled_216/partitions.csv` 的内容，不是所有板子的统一布局。各板的分区表放在各自的板目录，必须遵守的分区约定（按分区名查找、`assets` ≥ 1MB、OTA 分区可选等）见子项目 2 spec（`2026-11-03-connectivity-admin-design.md`）第 3 节。
+这张表只是参考板的布局，不是所有板子的统一布局。各板的分区表放在各自的板目录，必须遵守的分区约定见子项目 2 spec（`2026-11-03-connectivity-admin-design.md`）3.2 节：按分区名查找；`nvs`、`phy_init`、`storage` 必需；`ota_0`、`ota_1`、`otadata` 可选，只有单个 `factory` 应用分区的板子关闭固件更新（`GET /system/firmware` 返回 `supported: false`），其余照常运行。
 
 ---
 
