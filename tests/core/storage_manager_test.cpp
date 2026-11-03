@@ -7,10 +7,12 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "support/fake_devices.hpp"
@@ -414,6 +416,28 @@ TEST(StorageManager, StrayTmpInLibraryDoesNotCountTowardQuota) {
     // If the 900-byte stray ".tmp" counted, this 900-byte write would
     // push the total to 1800 and exceed the 1000-byte quota.
     ASSERT_TRUE(f.mgr->write_atomic(f.in + "/library/real.bin", std::vector<uint8_t>(900)));
+}
+
+// On the host the quota walk follows symlinks (stat, for ESP-IDF's sake),
+// so a directory symlink pointing back up must not recurse until the stack
+// overflows: the walk stops descending at a fixed depth.
+TEST(StorageManager, SymlinkLoopInLibraryDoesNotOverflowTheQuotaWalk) {
+    Fixture f(false, StorageConfig{.internal_library_quota = 1000});
+    ASSERT_TRUE(f.mgr->init());
+    ASSERT_TRUE(f.mgr->write_atomic(f.in + "/library/a.bin", std::vector<uint8_t>(10)));
+    // Two links back to the parent: the kernel's per-lookup symlink limit
+    // (ELOOP) alone would still leave 2^40 paths to walk.
+    for (const char* name : {"/library/loop1", "/library/loop2"}) {
+        std::error_code ec;
+        std::filesystem::create_directory_symlink(f.in + "/library", f.in + name, ec);
+        ASSERT_FALSE(ec) << ec.message();
+    }
+
+    // The walk sees a.bin again on every path through the links, so the
+    // write is refused -- but it returns.
+    auto r = f.mgr->write_atomic(f.in + "/library/b.bin", std::vector<uint8_t>(10));
+    EXPECT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::QuotaExceeded);
 }
 
 // set_standby()

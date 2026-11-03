@@ -133,7 +133,14 @@ uint64_t file_size(const std::string& path) {
 // std::filesystem) -- mirrors tests/support/fake_devices.hpp's
 // FakeStorage::dir_size(), which a production StorageManager can't itself
 // depend on.
-uint64_t dir_size_recursive(const std::string& dir) {
+//
+// Descends at most kMaxQuotaWalkDepth directory levels: stat() follows
+// symlinks, so on the host a link back up the tree would otherwise recurse
+// until the stack overflows, and several such links multiply the paths
+// walked per level (the device's filesystems have no symlinks).
+constexpr int kMaxQuotaWalkDepth = 16;
+
+uint64_t dir_size_recursive(const std::string& dir, int depth = 0) {
     DIR* d = opendir(dir.c_str());
     if (!d) {
         return 0;
@@ -153,7 +160,7 @@ uint64_t dir_size_recursive(const std::string& dir) {
             continue;
         }
         if (S_ISDIR(st.st_mode)) {
-            total += dir_size_recursive(full);
+            if (depth < kMaxQuotaWalkDepth) total += dir_size_recursive(full, depth + 1);
         } else if (S_ISREG(st.st_mode)) {
             if (has_suffix(name, ".tmp") || has_suffix(name, ".new")) {
                 continue;
