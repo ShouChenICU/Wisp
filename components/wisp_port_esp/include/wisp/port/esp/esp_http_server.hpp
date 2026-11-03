@@ -17,9 +17,9 @@
 //     alone, before any of it is read; a chunked body (Transfer-Encoding)
 //     is refused with 411. Either way the connection is then closed, as
 //     what is left of the body cannot be parsed as the next request;
-//   - iface is decided from the connection's local address (the address
-//     the client connected to): the hotspot's own address means Ap,
-//     loopback means Loopback, anything else Sta (net_iface.hpp).
+//   - iface is decided from the connection's addresses: loopback means
+//     Loopback; the hotspot's own address reached from a peer inside the
+//     hotspot subnet means Ap; anything else Sta (net_iface.hpp).
 //
 // WebSocket (only with Config::websocket): an upgrade on /api/v1/ws is
 // offered to WsHandlers::on_open before the handshake, so a refusal is an
