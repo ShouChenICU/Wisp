@@ -292,10 +292,22 @@ void PowerManager::set_brightness(uint8_t level) {
         return;
     }
     if (ui_ != nullptr && !ui_->on_ui_thread()) {
-        // The queue only fills briefly; the destructor drains it on the UI
-        // task, so a job posted here never outlives `this`.
-        while (!ui_->post([this, level] { apply_brightness(level); })) {
-            os::sleep_ms(1);
+        // Never retry or block here: the caller may hold its own lock (e.g.
+        // core::SystemSettings::set()) that the UI task could be waiting on.
+        requested_brightness_.store(level, std::memory_order_release);
+        if (brightness_job_queued_.exchange(true, std::memory_order_acq_rel)) {
+            return;  // the queued job will pick up the new level
+        }
+        bool posted = ui_->post([this] {
+            // Clear the flag before reading the level: a call landing after
+            // the read then queues a fresh job instead of being lost.
+            brightness_job_queued_.store(false, std::memory_order_release);
+            apply_brightness(requested_brightness_.load(std::memory_order_acquire));
+        });
+        if (!posted) {
+            brightness_job_queued_.store(false, std::memory_order_release);
+            WLOG_W(kTag, "UI queue full; brightness change to %u dropped",
+                   static_cast<unsigned>(level));
         }
         return;
     }

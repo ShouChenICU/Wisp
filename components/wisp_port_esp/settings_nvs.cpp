@@ -180,15 +180,18 @@ Result<void> NvsSettingsBackend::erase_all() {
     nvs_iterator_t it = nullptr;
     esp_err_t err = nvs_entry_find(NVS_DEFAULT_PART_NAME, nullptr, NVS_TYPE_ANY, &it);
     while (err == ESP_OK) {
-        nvs_entry_info_t info;
-        nvs_entry_info(it, &info);
+        nvs_entry_info_t info = {};
+        err = nvs_entry_info(it, &info);
+        if (err != ESP_OK) {
+            break;
+        }
         namespaces.insert(info.namespace_name);
         err = nvs_entry_next(&it);
     }
     nvs_release_iterator(it);
     if (err != ESP_ERR_NVS_NOT_FOUND) {
         return Result<void>::err(ErrorCode::IoError,
-                                 std::string("nvs_entry_find: ") + esp_err_to_name(err));
+                                 std::string("listing nvs namespaces: ") + esp_err_to_name(err));
     }
 
     for (const auto& ns : namespaces) {

@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "support/fake_devices.hpp"
@@ -701,4 +702,41 @@ TEST(PowerManager, HeadlessSetBrightnessHonoursStandby) {
     PowerManager no_display(bus, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, {},
                             Settings(*backend, "power"));
     no_display.set_brightness(10);
+}
+
+TEST(PowerManager, SetBrightnessCoalescesWhileUiIsBusy) {
+    Fixture f;
+    // Park the UI task inside a job so nothing posted afterwards can run.
+    auto started = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto gate = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(f.ui->post([started, gate] {
+        started->give();
+        gate->take(wisp::os::kForever);
+    }));
+    started->take(wisp::os::kForever);
+
+    // Far more calls than the post queue holds; none may block.
+    std::atomic<bool> done{false};
+    std::thread setter([&] {
+        for (int level = 1; level <= 100; ++level) {
+            f.pm->set_brightness(static_cast<uint8_t>(level));
+        }
+        done = true;
+    });
+    bool finished = wait_until([&] { return done.load(); }, 2000);
+
+    // Everything still free in the queue: at most one slot may be taken by
+    // the brightness calls above.
+    int free_slots = 0;
+    while (f.ui->post([] {})) {
+        ++free_slots;
+    }
+    gate->give();
+    setter.join();
+    ASSERT_TRUE(finished) << "set_brightness blocked while the UI task was busy";
+    EXPECT_GE(free_slots, 31);
+
+    f.drain_ui();
+    EXPECT_EQ(f.display->brightness(), 100);
+    EXPECT_EQ(f.display->set_brightness_calls(), 1);
 }

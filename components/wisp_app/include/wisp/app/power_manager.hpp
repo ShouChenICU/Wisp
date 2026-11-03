@@ -162,9 +162,18 @@ public:
     // the panel is on, Display::set_brightness() runs right away; while it
     // is asleep, the level is only remembered and applied by exit_standby()
     // after Display::set_power(true) -- changing brightness must never wake
-    // the screen. Callable from any thread: off the UI task (when one
-    // exists) the work is posted to it, since every Display call must come
-    // from the UI thread (spec 5.3).
+    // the screen. Callable from any thread and never blocks: off the UI
+    // task (when one exists) the level is stored and a single "apply the
+    // latest level" job is posted to the UI task, since every Display call
+    // must come from the UI thread (spec 5.3). Calls made while that job
+    // is still queued only replace the level (last write wins), so a busy
+    // UI task never sees more than one such job. If the post queue is
+    // full the change is dropped with a warning; the stored setting is
+    // still applied at the next boot.
+    //
+    // That job captures `this`: callers must stop calling set_brightness()
+    // before the PowerManager is destroyed. (The destructor drains jobs
+    // already posted, but cannot stop a call racing with it.)
     void set_brightness(uint8_t level);
 
     // Resets the idle clock to "now" (wisp::os::now_ms()).
@@ -240,6 +249,11 @@ private:
     // set_brightness()'s body; runs on the UI task (or the caller's thread
     // when headless).
     void apply_brightness(uint8_t level);
+
+    // The level most recently requested from off the UI task, and whether
+    // a job that will apply it is already queued (see set_brightness()).
+    std::atomic<uint8_t> requested_brightness_{0};
+    std::atomic<bool> brightness_job_queued_{false};
 
     core::EventBus& bus_;
     std::shared_ptr<hal::Display> display_;
