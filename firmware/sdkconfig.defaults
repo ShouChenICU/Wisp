@@ -86,11 +86,12 @@ CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
 # TrustAsia), and a user-chosen base URL can be anywhere.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
-# mbedTLS allocates through malloc(), so its 16 KiB record buffer and other
-# large blocks land in PSRAM (above CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL)
-# instead of taking ~20 KiB of internal RAM per connection; small ones stay
-# internal. The plaintext of a request (including the API key) then passes
-# through PSRAM, which is unencrypted unless flash encryption is on.
+# mbedTLS allocates through malloc(), so its 16 KiB incoming record buffer
+# lands in PSRAM (above CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL) instead of
+# internal RAM; smaller blocks, including the 4 KiB outgoing buffer that
+# carries the request and its Authorization header, stay internal. What
+# goes to PSRAM is mainly response data, unencrypted there unless flash
+# encryption is on.
 CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
 
 # Admin server (wisp::port::esp::EspHttpServer): the /api/v1/ws WebSocket,

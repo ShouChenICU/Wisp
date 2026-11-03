@@ -43,6 +43,9 @@ inline constexpr int kAuthTrustRssiDbm = -75;
 
 // How old a scan may be and still stand in for a missing reading. Long
 // enough to cover picking a network from the list and typing its password.
+// WifiService scans right before its automatic attempts, so in practice
+// almost every attempt has a fresh scan: whenever the driver leaves the
+// event's reading at 0, this fallback is what decides AuthFailed.
 inline constexpr uint64_t kScanRssiMaxAgeMs = 120000;
 
 // The strongest reading for `ssid` in a scan taken `age_ms` ago (the

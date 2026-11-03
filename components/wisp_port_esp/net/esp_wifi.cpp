@@ -185,6 +185,11 @@ struct EspWifi::Impl {
 
     // Only touched from start_ap()/stop_ap(), which WifiService serializes.
     CaptiveDns dns;
+    // The AP interface may still hold the last hotspot's configuration
+    // (its password was on screen) because replacing it with the
+    // placeholder was refused; the next start_ap() then configures the
+    // interface with the radio stopped, so that configuration never beacons.
+    bool ap_config_stale = false;
     // Only touched from link(), which WifiService calls from its one tick.
     bool mdns_started = false;
 
@@ -192,6 +197,19 @@ struct EspWifi::Impl {
     static void on_ip_event(void* arg, esp_event_base_t, int32_t id, void* data);
     void start_mdns();
     void teardown();
+
+    // Installs the placeholder AP configuration and returns to station
+    // mode; if the driver refuses the placeholder, remembers that the
+    // interface still holds a real one.
+    void park_ap() {
+        const esp_err_t err = install_placeholder_ap();
+        if (err != ESP_OK) {
+            ap_config_stale = true;
+            WLOG_W(kTag, "hotspot configuration not replaced (%s); reconfigured on next start",
+                   esp_err_to_name(err));
+        }
+    }
+    esp_err_t revert_to_station() { return esp_wifi_set_mode(WIFI_MODE_STA); }
 };
 
 void EspWifi::Impl::on_wifi_event(void* arg, esp_event_base_t, int32_t id, void* data) {
@@ -485,11 +503,30 @@ Result<std::string> EspWifi::start_ap(const std::string& ssid, const std::string
     ac.ap.authmode = WIFI_AUTH_WPA2_PSK;
     ac.ap.max_connection = kApMaxClients;
 
+    // Restarting the radio drops the station; WifiService sees the link
+    // go idle (a reconnect, or an attempt that times out and is retried).
+    const bool restart = impl_->ap_config_stale;
+    if (restart) {
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            impl_->link = hal::WifiLink{};
+            impl_->attempt_ssid.clear();
+        }
+        esp_wifi_stop();
+    }
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_AP, &ac);
     wipe(ac);
+    if (err == ESP_OK) impl_->ap_config_stale = false;
+    if (restart) {
+        if (err != ESP_OK) esp_wifi_set_mode(WIFI_MODE_STA);
+        const esp_err_t started = esp_wifi_start();
+        if (err == ESP_OK) err = started;
+    }
     if (err != ESP_OK) {
-        esp_wifi_set_mode(WIFI_MODE_STA);
+        // The AP interface was not given the new configuration (or the
+        // radio did not come back), so it holds what it held before.
+        impl_->revert_to_station();
         return R::err(code_for(err),
                       std::string("starting the access point: ") + esp_err_to_name(err));
     }
@@ -497,7 +534,9 @@ Result<std::string> EspWifi::start_ap(const std::string& ssid, const std::string
     esp_netif_ip_info_t ip = {};
     err = esp_netif_get_ip_info(impl_->ap, &ip);
     if (err != ESP_OK || ip.ip.addr == 0) {
-        esp_wifi_set_mode(WIFI_MODE_STA);
+        // The new configuration (with the password about to be shown) is
+        // in place: replace it before leaving AP+STA.
+        impl_->park_ap();
         return R::err(ErrorCode::DeviceFailure, "the access point has no address");
     }
     // Without it the portal does not pop up by itself, but the setup page
@@ -510,7 +549,8 @@ Result<std::string> EspWifi::start_ap(const std::string& ssid, const std::string
 
 Result<void> EspWifi::stop_ap() {
     impl_->dns.stop();
-    const esp_err_t err = install_placeholder_ap();
+    impl_->park_ap();
+    const esp_err_t err = impl_->revert_to_station();
     if (err != ESP_OK) return fail(code_for(err), "stopping the access point", err);
     return Result<void>::ok();
 }
