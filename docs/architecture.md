@@ -111,8 +111,8 @@
 
 ## 真机的网络
 
-- `net.wifi` 是 `wisp::port::esp::EspWifi`（`components/wisp_port_esp/net/esp_wifi.cpp`），由板级 `init()` 最后注册，并在那里就打开射频（`Platform::random` 依赖它）。驱动配置只放 RAM（`WIFI_STORAGE_RAM`），已保存的网络只由 `WifiService` 管。`link()` 读取事件回调维护的快照；断开原因按 `wifi_reason.hpp` 映射，握手失败只在信号足够好（RSSI ≥ -75 dBm）时才算 `auth_failed`。热点：AP+STA、WPA2-PSK、信道 1、最多 4 台，同时在热点地址的 UDP 53 端口运行强制门户 DNS（`net/captive_dns.cpp`，所有 A 查询都答热点地址）。STA 第一次拿到 IP 时启动 mDNS：`wisp.local`，广播 `_http._tcp` 端口 8900。
-- 管理后台是 `EspHttpServer`（`esp_http_server`）：端口 8900，最多 7 个连接（`lru_purge_enable`），`/api/v1/ws` 的升级在握手前交给 `WsHandlers::on_open`（`CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT`），拒绝就是普通的 403；任务优先级 3，低于 UI。80 端口的强制门户是第二个实例（另一个控制端口、4 个连接、无 WebSocket），`AdminServer::captive_handler()` 只对热点接口的请求重定向，其余返回 404。请求所在接口按连接的本地地址和对端地址判断（`net_iface.hpp`），不看请求头。
+- `net.wifi` 是 `wisp::port::esp::EspWifi`（`components/wisp_port_esp/net/esp_wifi.cpp`），由板级 `init()` 最后注册，并在那里就打开射频（`Platform::random` 依赖它）。驱动配置只放 RAM（`WIFI_STORAGE_RAM`），已保存的网络只由 `WifiService` 管。`link()` 读取事件回调维护的快照；断开原因按 `wifi_reason.hpp` 映射，握手失败只在信号足够好（RSSI ≥ -75 dBm）时才算 `auth_failed`；断开事件没带 RSSI 时，用两分钟内最近一次扫描里同名网络的最强信号代替，都没有就不算。热点：AP+STA、WPA2-PSK、信道 1、最多 4 台，热点关着时 AP 接口留着一份隐藏、随机密码的 WPA2 占位配置，切到 AP+STA 的瞬间不会广播开放网络；同时在热点地址的 UDP 53 端口运行强制门户 DNS（`net/captive_dns.cpp`，所有 A 查询都答热点地址）。STA 第一次拿到 IP 时启动 mDNS：`wisp.local`，广播 `_http._tcp` 端口 8900。
+- 管理后台是 `EspHttpServer`（`esp_http_server`）：端口 8900，最多 7 个连接（`lru_purge_enable`；每个请求都把打开的 WebSocket 标为最近使用，连接满时先关空闲的 keep-alive 连接），`/api/v1/ws` 的升级在握手前交给 `WsHandlers::on_open`（`CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT`），拒绝就是普通的 403；任务优先级 3，低于 UI。80 端口的强制门户是第二个实例（另一个控制端口、4 个连接、无 WebSocket），`AdminServer::captive_handler()` 只对热点接口的请求重定向，其余返回 404。请求所在接口按连接的本地地址和对端地址判断（`net_iface.hpp`），不看请求头。
 - 出站请求走 `EspHttpClient`：HTTPS 用 IDF 证书包校验（含主机名），不跟随重定向，响应体上限 64 KB。
 - 网页资源：固件构建时 `tools/pack_assets.py` 把 `web/` 打成 `build/assets.wpak`（超出本板 `assets` 分区或 150 KB gzip 预算即构建失败），`idf.py flash` 一并写入 `assets` 分区；开机时按包头的总长度只映射包本身（`esp_partition_mmap`），静态文件直接从映射的 Flash 发送。
 

@@ -44,7 +44,9 @@ Result<void> CaptiveDns::start(uint32_t ip) {
     lwip_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     stop_.store(false);
-    task_ = os::Task::spawn({.name = "wisp.dns", .stack_bytes = 3072, .priority = 4},
+    // Below the UI task (4), like the httpd instances: a phone's burst of
+    // lookups must not take turns with LVGL.
+    task_ = os::Task::spawn({.name = "wisp.dns", .stack_bytes = 3072, .priority = 3},
                             [this, sock, ip] { run(sock, ip); });
     if (!task_) {
         lwip_close(sock);

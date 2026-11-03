@@ -425,6 +425,14 @@ esp_err_t EspHttpServer::Impl::reject(httpd_req_t* r, int status, const char* co
 }
 
 esp_err_t EspHttpServer::Impl::serve(httpd_req_t* r) {
+    // When every socket is taken, httpd's LRU purge closes the session
+    // touched least recently. httpd has already marked this request's
+    // session; marking the live WebSockets after it makes an idle
+    // keep-alive socket (which the browser silently reopens) the one to
+    // go, not a quiet log stream. conns holds only the open
+    // WebSockets (WsHub admits few) and is only touched on this task.
+    for (const auto& [fd, conn] : conns) httpd_sess_update_lru_counter(r->handle, fd);
+
     net::HttpRequest req;
     fill_request(r, req);
 

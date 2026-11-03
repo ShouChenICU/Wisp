@@ -35,8 +35,9 @@
 // closes the connection.
 //
 // httpd's own least-recently-used purge (lru_purge_enable) frees a socket
-// for a new connection when all are taken; WebSocket traffic refreshes a
-// connection's position so an active log stream is the last to go.
+// for a new connection when all are taken. Every request and every
+// WebSocket frame sent or received also marks the open WebSockets as
+// used, so the purge picks an idle keep-alive socket before a log stream.
 
 #include <cstddef>
 #include <cstdint>
