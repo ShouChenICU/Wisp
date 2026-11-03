@@ -8,6 +8,7 @@ import { t } from '../i18n/index.js';
 import { subscribe } from '../ws.js';
 import { Card } from '../components/card.js';
 import { Badge } from '../components/badge.js';
+import { SignalBars, Ssid, reasonText } from '../components/wifi.js';
 import {
   IconAlert,
   IconBattery,
@@ -262,29 +263,13 @@ function BatteryCard({ battery }) {
   </${Card}>`;
 }
 
-function signalLevel(rssi) {
-  if (!Number.isFinite(rssi) || rssi === 0) return 0;
-  if (rssi >= -55) return 4;
-  if (rssi >= -67) return 3;
-  if (rssi >= -75) return 2;
-  return 1;
-}
-
-function SignalBars({ rssi }) {
-  const level = signalLevel(rssi);
-  return html`<span class="bars" role="img" aria-label=${t('wifi.signal_bars', { level })}>
-    ${[1, 2, 3, 4].map((i) => html`<i key=${i} class=${i <= level ? 'on' : ''}></i>`)}
-  </span>`;
-}
-
-
 function WifiCard({ wifi }) {
   const w = wifi || {};
   let badge;
   let body;
   if (w.state === 'connected') {
     badge = html`<${Badge} tone="ok" dot>${t('wifi.connected')}</${Badge}>`;
-    body = html`<div class="stat-text">${w.ssid}</div>
+    body = html`<div class="stat-text"><${Ssid} ssid=${w.ssid} /></div>
       <dl class="kv">
         <div><dt>${t('wifi.ip')}</dt><dd class="mono">${w.ip || '—'}</dd></div>
         <div>
@@ -294,13 +279,12 @@ function WifiCard({ wifi }) {
       </dl>`;
   } else if (w.state === 'connecting') {
     badge = html`<${Badge} tone="warn" dot pulse>${t('wifi.connecting')}</${Badge}>`;
-    body = html`<div class="stat-text">${w.ssid || t('wifi.connecting')}</div>
+    body = html`<div class="stat-text">${w.ssid ? html`<${Ssid} ssid=${w.ssid} />` : t('wifi.connecting')}</div>
       <p class="muted">${t('wifi.connecting_hint')}</p>`;
   } else if (w.state === 'backoff') {
     badge = html`<${Badge} tone="warn" dot>${t('wifi.backoff')}</${Badge}>`;
-    const reason = ['not_found', 'auth_failed'].includes(w.reason) ? w.reason : 'other';
-    body = html`<div class="stat-text">${w.ssid || t('wifi.off')}</div>
-      <p class="muted">${t('wifi.retry_hint', { reason: t('wifi.reason_' + reason) })}</p>`;
+    body = html`<div class="stat-text">${w.ssid ? html`<${Ssid} ssid=${w.ssid} />` : t('wifi.off')}</div>
+      <p class="muted">${t('wifi.retry_hint', { reason: reasonText(w.reason) })}</p>`;
   } else {
     badge = html`<${Badge} tone="muted" dot>${t('wifi.off')}</${Badge}>`;
     body = html`<div class="stat-text dim">${t('wifi.off')}</div>

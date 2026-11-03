@@ -6,7 +6,7 @@ import { html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1
 import { api, describeError, getInfo } from '../api.js';
 import { navigate } from '../router.js';
 import { t, useLang } from '../i18n/index.js';
-import { IconAlert, IconLock, WispGlyph } from '../icons.js';
+import { IconAlert, IconInfo, IconLock, WispGlyph } from '../icons.js';
 import { toast } from '../components/toast.js';
 import { LangSwitch } from '../components/lang.js';
 import { useNow } from '../util.js';
@@ -21,8 +21,15 @@ function clock(ms) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-export function PairPage() {
+/**
+ * @param {{onPaired?: () => void, notice?: string}} props
+ *   `onPaired` replaces going to the overview once this browser is paired
+ *   (the setup wizard continues instead); `notice` is shown above the
+ *   steps.
+ */
+export function PairPage({ onPaired, notice } = {}) {
   useLang();
+  const done = onPaired || (() => navigate('/overview'));
   const [info, setInfo] = useState(null);
   const [phase, setPhase] = useState('start'); // 'start' | 'code'
   const [code, setCode] = useState('');
@@ -45,7 +52,7 @@ export function PairPage() {
       .then((i) => {
         if (!alive) return;
         setInfo(i);
-        if (i && i.paired) navigate('/overview');
+        if (i && i.paired) done();
       })
       .catch(() => {});
     return () => {
@@ -102,7 +109,7 @@ export function PairPage() {
     try {
       await api('POST', '/pair/confirm', { code: value });
       toast(t('pair.success'), 'ok');
-      navigate('/overview');
+      done();
     } catch (e) {
       setCode('');
       if (e.status === 429) {
@@ -138,6 +145,9 @@ export function PairPage() {
       <div class="pair-glyph"><${WispGlyph} size=${68} /></div>
       <h1 class="pair-title">${t('pair.title', { name })}</h1>
       <p class="pair-sub">${t('pair.intro')}</p>
+      ${notice
+        ? html`<div class="alert tone-accent"><${IconInfo} size=${18} /><span>${notice}</span></div>`
+        : null}
 
       <ol class="pair-steps" aria-label=${t('pair.steps')}>
         <li class=${phase === 'start' ? 'is-current' : 'is-done'}>

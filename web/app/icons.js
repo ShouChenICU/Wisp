@@ -142,6 +142,38 @@ export const IconMic = make(
     ${paths('M5.5 11a6.5 6.5 0 0 0 13 0', 'M12 17.5V21')}`,
 );
 
+export const IconPower = make(() => paths('M12 3.5v8', 'M7 6.4a7.5 7.5 0 1 0 10 0'));
+export const IconReset = make(() => paths('M4 12a8 8 0 1 0 2.4-5.7', 'M4 4.5v5h5'));
+export const IconSun = make(
+  () => html`<circle cx="12" cy="12" r="3.8" />
+    ${paths('M12 2.5v2', 'M12 19.5v2', 'M2.5 12h2', 'M19.5 12h2', 'M5.3 5.3l1.4 1.4', 'M17.3 17.3l1.4 1.4', 'M5.3 18.7l1.4-1.4', 'M17.3 6.7l1.4-1.4')}`,
+);
+export const IconMoon = make(() => paths('M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z'));
+export const IconKey = make(
+  () => html`<circle cx="8" cy="15" r="4.2" />
+    ${paths('M11 12l8.5-8.5', 'M16 7l2.5 2.5', 'M14 9l1.8 1.8')}`,
+);
+export const IconPlus = make(() => paths('M12 5v14', 'M5 12h14'));
+export const IconEye = make(
+  () => html`${paths('M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z')}
+    <circle cx="12" cy="12" r="3" />`,
+);
+export const IconEyeOff = make(() =>
+  paths(
+    'M4 4l16 16',
+    'M10 6a9.6 9.6 0 0 1 2-.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-2.6 3.4',
+    'M6.6 7.6A16.6 16.6 0 0 0 2.5 12S6 18.5 12 18.5a9 9 0 0 0 4.4-1.1',
+    'M9.9 9.9a3 3 0 0 0 4.2 4.2',
+  ),
+);
+export const IconLink = make(() =>
+  paths('M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1', 'M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1'),
+);
+export const IconBrowser = make(
+  () => html`<rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+    ${paths('M3 9h18', 'M6.5 6.8h.01', 'M9 6.8h.01')}`,
+);
+
 let glyphCount = 0;
 
 /**

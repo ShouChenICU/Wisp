@@ -116,6 +116,39 @@ class PackAssetsTest(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("gone.mjs", proc.stdout + proc.stderr)
 
+    def test_html_reference_outside_pack_fails(self):
+        src = self.tmp / "src"
+        src.mkdir()
+        (src / "a.js").write_text("export const a = 1;\n")
+        (src / "page.html").write_text(
+            '<link rel="stylesheet" href="/gone.css">\n'
+            '<script type="module" src="./a.js"></script>\n'
+        )
+        proc = run_pack(src, self.tmp / "out.wpak")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("gone.css", proc.stdout + proc.stderr)
+        self.assertNotIn("a.js", proc.stdout + proc.stderr)
+
+    def test_html_reference_to_another_host_fails(self):
+        src = self.tmp / "src"
+        src.mkdir()
+        (src / "page.html").write_text('<script src="https://cdn.example.com/x.js"></script>\n')
+        proc = run_pack(src, self.tmp / "out.wpak")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("cdn.example.com", proc.stdout + proc.stderr)
+
+    def test_html_data_and_local_references_pass(self):
+        src = self.tmp / "src"
+        (src / "app").mkdir(parents=True)
+        (src / "app" / "a.js").write_text("export const a = 1;\n")
+        (src / "page.html").write_text(
+            '<link rel="icon" href="data:image/svg+xml,%3Csvg%3E">\n'
+            '<script type="module" src="/app/a.js?v=1"></script>\n'
+            '<a href="https://example.com/">plain links are not loaded</a>\n'
+        )
+        proc = run_pack(src, self.tmp / "out.wpak")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
     def test_partition_overflow_fails(self):
         csv = self.tmp / "partitions.csv"
         csv.write_text(

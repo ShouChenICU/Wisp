@@ -106,6 +106,12 @@ python3 tools/check_layering.py
 echo "==> tools/pack_assets_test.py"
 python3 tools/pack_assets_test.py
 
+# The admin web UI must fit its gzip budget (spec 7.1) and reference only
+# files inside the pack. The pack written here is a throwaway; the
+# simulator and firmware builds pack web/ themselves.
+echo "==> tools/pack_assets.py web --budget-kb 150"
+python3 tools/pack_assets.py web -o build/ci/web-budget.wpak --budget-kb 150
+
 # The admin UI's zh/ja/en dictionaries must carry identical key sets
 # (spec 7.4).
 echo "==> tools/check_i18n_test.py"

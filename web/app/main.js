@@ -26,14 +26,16 @@ import { PairPage } from './pages/pair.js';
 import { OverviewPage } from './pages/overview.js';
 import { DevicesPage } from './pages/devices.js';
 import { LogsPage } from './pages/logs.js';
-import { confirmLogout, modelStub, networkStub, systemStub } from './pages/stub.js';
+import { NetworkPage } from './pages/network.js';
+import { ModelPage } from './pages/model.js';
+import { SystemPage, confirmLogout } from './pages/system.js';
 
 route('/pair', PairPage);
 route('/overview', OverviewPage);
 route('/devices', DevicesPage);
-route('/network', networkStub(IconWifi));
-route('/model', modelStub(IconModel));
-route('/system', systemStub(IconSystem));
+route('/network', NetworkPage);
+route('/model', ModelPage);
+route('/system', SystemPage);
 route('/logs', LogsPage);
 
 /** Navigation entries; `wide` ones only appear in the sidebar. */

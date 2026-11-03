@@ -24,6 +24,9 @@ Checks, each failing with a non-zero exit and a message on stderr:
   - every relative/absolute module specifier in a .js/.mjs file
     (`import ... from '...'`, `export ... from '...'`, `import '...'`,
     `import('...')`) resolves to a file inside the pack;
+  - every <script src> and <link href> in an .html file is a data: URL or
+    resolves to a file inside the pack -- never another host, since a
+    phone on the setup hotspot has no internet (spec 7.1);
   - --partitions: the pack fits the board's `assets` partition;
   - --budget-kb: the gzipped files together fit the budget.
 
@@ -77,6 +80,12 @@ IMPORT_RES = (
     re.compile(r"""\bimport\s*\(\s*(['"])([^'"\n]+)\1\s*\)"""),
 )
 
+# <script src="..."> and <link href="..."> in HTML pages.
+HTML_REF_RE = re.compile(
+    r"""<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*(['"])([^'"]*)\1""", re.IGNORECASE
+)
+URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
 
 class PackError(Exception):
     pass
@@ -117,6 +126,31 @@ def check_imports(files):
                     missing.append(f"{path}: import '{spec}' does not resolve inside the pack")
     if missing:
         raise PackError("\n".join(sorted(set(missing))))
+
+
+def check_html_refs(files):
+    present = {path for path, _ in files}
+    problems = []
+    for path, data in files:
+        if suffix_of(path) != "html":
+            continue
+        text = data.decode("utf-8", errors="replace")
+        for match in HTML_REF_RE.finditer(text):
+            ref = match.group(2).strip()
+            if not ref or ref.startswith("#") or ref.lower().startswith("data:"):
+                continue
+            if ref.startswith("//") or URL_SCHEME_RE.match(ref):
+                problems.append(f"{path}: '{ref}' is not inside the pack")
+                continue
+            ref = ref.split("#", 1)[0].split("?", 1)[0]
+            if ref.startswith("/"):
+                target = posixpath.normpath(ref)
+            else:
+                target = posixpath.normpath(posixpath.join(posixpath.dirname(path), ref))
+            if target not in present:
+                problems.append(f"{path}: '{ref}' does not resolve inside the pack")
+    if problems:
+        raise PackError("\n".join(sorted(set(problems))))
 
 
 def encode(path, data):
@@ -207,6 +241,7 @@ def main(argv=None):
             raise PackError(f"{src}: not a directory")
         files = collect(src)
         check_imports(files)
+        check_html_refs(files)
         blob, gzip_total = build_pack(files)
         if args.partitions:
             limit = assets_partition_size(args.partitions)

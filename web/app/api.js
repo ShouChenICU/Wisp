@@ -7,6 +7,29 @@ import { has, t } from './i18n/index.js';
 
 const PREFIX = '/api/v1';
 
+// What a 401 does. The admin app goes to its pairing page; the setup
+// wizard (setup.html, no hash routes) and a page that expects its token to
+// vanish (a factory reset revokes every token) install their own.
+const goToPairing = () => {
+  if (currentPath() !== '/pair') navigate('/pair');
+};
+let onUnauthorized = goToPairing;
+
+/**
+ * Replaces what a 401 from any request does (by default: go to the
+ * pairing page).
+ *
+ * @param {() => void} fn
+ * @returns {() => void} restores the handler that was there before
+ */
+export function setUnauthorizedHandler(fn) {
+  const before = onUnauthorized;
+  onUnauthorized = fn;
+  return () => {
+    if (onUnauthorized === fn) onUnauthorized = before;
+  };
+}
+
 /**
  * @typedef {Object} ApiError
  * @property {number} status  HTTP status, or 0 when the device was unreachable
@@ -19,7 +42,8 @@ const PREFIX = '/api/v1';
  * Calls the device API. Every request carries `X-Wisp: 1`: the device
  * refuses mutating requests without it (spec 6.3, CSRF) and it is harmless
  * on reads. A 401 means this browser is not (or no longer) paired, so the
- * app goes to the pairing page before the error is thrown.
+ * unauthorized handler (see setUnauthorizedHandler) runs before the error
+ * is thrown.
  *
  * @param {'GET'|'POST'|'PUT'|'DELETE'} method
  * @param {string} path   path below /api/v1, e.g. "/device"
@@ -54,7 +78,7 @@ export async function api(method, path, body) {
 
   if (res.ok) return data;
 
-  if (res.status === 401 && currentPath() !== '/pair') navigate('/pair');
+  if (res.status === 401) onUnauthorized();
   const err = (data && data.error) || {};
   /** @type {ApiError} */
   const thrown = {
@@ -76,7 +100,7 @@ let infoCache = null;
  * GET /info, shared with any other caller within the last couple of
  * seconds (including one still in flight).
  *
- * @returns {Promise<{name: string, fw: string, paired: boolean}>}
+ * @returns {Promise<{name: string, fw: string, paired: boolean, boot_id: string}>}
  */
 export function getInfo() {
   const now = Date.now();
