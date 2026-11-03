@@ -7,15 +7,24 @@
 // each {"sub": [...]} message, so the full union is resent on every change.
 //
 // The socket exists only while it is needed: it opens when the first kind
-// is subscribed, closes when the last subscriber leaves, and is also closed
-// while the tab is hidden (reopened when it becomes visible again), so a
-// forgotten background tab does not hold one of the device's two slots.
+// is subscribed and closes shortly after the last subscriber leaves (the
+// short linger lets a page switch between two subscribing pages reuse it
+// instead of briefly holding two of the device's slots). It is closed at
+// once while the tab is hidden (reopened when it becomes visible again),
+// so a forgotten background tab does not hold one of the two slots.
+//
+// Backoff resets only once a connection proves healthy -- a first message
+// from the device, or STABLE_MS open -- because a server can complete the
+// handshake and close right away (ESP-IDF httpd does when it is full), and
+// resetting on open would then retry every second forever.
 
 import { api } from './api.js';
 
 const PATH = '/api/v1/ws';
 const BACKOFF_FIRST_MS = 1000;
 const BACKOFF_MAX_MS = 30000;
+const STABLE_MS = 5000;
+const LINGER_MS = 1500;
 
 /**
  * @typedef {'connecting'|'open'|'retrying'|'closed'|'unauthorized'} WsState
@@ -31,6 +40,8 @@ const subscribers = new Set();
 /** @type {WebSocket|null} */
 let socket = null;
 let retryTimer = 0;
+let lingerTimer = 0;
+let stableTimer = 0;
 let backoff = BACKOFF_FIRST_MS;
 /** @type {WsState} */
 let state = 'closed';
@@ -61,8 +72,25 @@ function clearRetry() {
   retryTimer = 0;
 }
 
+function clearLinger() {
+  if (lingerTimer) clearTimeout(lingerTimer);
+  lingerTimer = 0;
+}
+
+function clearStable() {
+  if (stableTimer) clearTimeout(stableTimer);
+  stableTimer = 0;
+}
+
+function markHealthy() {
+  clearStable();
+  backoff = BACKOFF_FIRST_MS;
+}
+
 function closeSocket() {
   clearRetry();
+  clearLinger();
+  clearStable();
   if (!socket) return;
   const s = socket;
   socket = null;
@@ -83,11 +111,13 @@ function open() {
   setState('connecting');
 
   s.onopen = () => {
-    backoff = BACKOFF_FIRST_MS;
+    clearStable();
+    stableTimer = setTimeout(markHealthy, STABLE_MS);
     sendSubscription();
     setState('open');
   };
   s.onmessage = (ev) => {
+    if (stableTimer) markHealthy();
     let msg;
     try {
       msg = JSON.parse(ev.data);
@@ -102,13 +132,18 @@ function open() {
   s.onclose = () => {
     if (socket !== s) return;
     socket = null;
+    clearStable();
+    clearLinger();
     onUnexpectedClose();
   };
 }
 
 function deliverable(sub, msg) {
-  if (msg.t === 'log' || msg.t === 'dropped') return sub.kinds.has('log');
+  if (msg.t === 'log') return sub.kinds.has('log');
   if (msg.t === 'event') return sub.kinds.has('events');
+  // The device dropped queued messages; an events subscriber may have
+  // missed a state change and should refetch.
+  if (msg.t === 'dropped') return sub.kinds.has('log') || sub.kinds.has('events');
   return false;
 }
 
@@ -142,13 +177,34 @@ async function onUnexpectedClose() {
   }, delay);
 }
 
+function closeNow() {
+  const hadSocket = socket !== null || retryTimer !== 0;
+  closeSocket();
+  if (hadSocket || state !== 'closed') setState('closed');
+}
+
 function sync() {
-  if (!subscribers.size || document.hidden) {
-    const hadSocket = socket !== null || retryTimer !== 0;
-    closeSocket();
-    if (hadSocket || state !== 'closed') setState('closed');
+  if (document.hidden) {
+    closeNow();
     return;
   }
+  if (!subscribers.size) {
+    if (!socket) {
+      closeNow();
+      return;
+    }
+    // Stop the device streaming now; close only if nobody resubscribes
+    // within the linger.
+    sendSubscription();
+    if (!lingerTimer) {
+      lingerTimer = setTimeout(() => {
+        lingerTimer = 0;
+        if (!subscribers.size) closeNow();
+      }, LINGER_MS);
+    }
+    return;
+  }
+  clearLinger();
   if (!socket && !retryTimer) {
     open();
     return;
@@ -166,8 +222,10 @@ document.addEventListener('visibilitychange', () => {
  *
  * `onMessage` gets the decoded messages for the requested kinds:
  *   - "log":    {t:"log", ts, level, tag, msg} and {t:"dropped", count};
- *               subscribing replays the device's recent log ring first.
- *   - "events": {t:"event", topic, payload}.
+ *               every subscription (each Start, each reconnect) replays
+ *               the device's recent log ring first, so callers dedupe.
+ *   - "events": {t:"event", topic, payload}, and {t:"dropped", count}
+ *               when the device had to drop queued messages.
  *
  * `opts.onState` follows the shared socket: "connecting", "open" (also
  * after every reconnect, so callers can refetch what they missed),

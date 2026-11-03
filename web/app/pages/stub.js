@@ -3,9 +3,10 @@
 // route registration.
 
 import { html } from '../../vendor/htm-preact-3.1.1.mjs';
-import { logout } from '../api.js';
+import { describeError, logout } from '../api.js';
 import { t } from '../i18n/index.js';
 import { confirmDialog } from '../components/dialog.js';
+import { toast } from '../components/toast.js';
 import { IconChevronRight, IconLogout, IconLogs } from '../icons.js';
 
 function Soon({ title, sub, icon: Icon, children }) {
@@ -39,7 +40,12 @@ export async function confirmLogout() {
     okText: t('logout.confirm'),
     danger: true,
   });
-  if (ok) await logout().catch(() => {});
+  if (!ok) return;
+  try {
+    await logout();
+  } catch (e) {
+    if (e?.status !== 401) toast(t('logout.failed', { reason: describeError(e) }), 'err');
+  }
 }
 
 // The system page is also where the phone layout keeps the way to the logs.

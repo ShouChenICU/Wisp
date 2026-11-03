@@ -58,8 +58,12 @@ textarea {
   color: inherit;
 }
 
+/* The ring is a box-shadow so it follows rounded corners; the transparent
+   outline is what forced-colors (high contrast) mode paints instead, since
+   it drops box-shadows. */
 :focus-visible {
-  outline: none;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
   box-shadow: var(--focus);
 }
 
@@ -277,8 +281,8 @@ textarea {
   align-items: center;
   justify-content: center;
   gap: 3px;
-  color: var(--text-faint);
-  font-size: 11px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
   font-weight: 500;
   transition: color var(--dur) var(--ease);
 }
@@ -455,6 +459,7 @@ textarea {
 }
 
 .lang-switch:focus-within {
+  outline: 2px solid transparent;
   box-shadow: var(--focus);
 }
 
@@ -1443,7 +1448,7 @@ textarea {
 }
 
 .code-input:focus {
-  outline: none;
+  outline: 2px solid transparent;
   border-color: var(--accent);
   box-shadow: 0 0 0 4px var(--accent-soft), 0 0 24px -6px var(--accent-glow);
 }
@@ -1586,6 +1591,7 @@ textarea {
 }
 
 .search:focus-within {
+  outline: 2px solid transparent;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
@@ -1735,8 +1741,10 @@ textarea {
   color: var(--err);
 }
 
-.log-row.is-replay {
-  opacity: 0.82;
+.log-restart {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .log-dropped {
@@ -1908,4 +1916,11 @@ textarea {
   .skel {
     animation: none;
   }
+}
+
+.alert-timer {
+  display: block;
+  margin-top: 2px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }

@@ -3,12 +3,21 @@
 // the page or the tab goes to the background, so an idle browser never
 // keeps the device busy formatting log lines for it.
 //
-// The device replays its recent log ring first, then streams new lines.
-// At most MAX_LINES are kept. The line list is written straight to the DOM
+// The device replays its recent log ring first, then streams new lines --
+// on every subscription, so each Start after a Stop and each reconnect
+// replays lines this page already shows. Timestamps are ms since boot
+// (spec 6.2), so a replayed line no newer than the newest line already
+// seen is a repeat and is dropped; so is a live line that the replay just
+// delivered (the device may send a line written during the replay twice).
+// A reboot resets the device's clock, which would make every new line look
+// old: after each (re)subscription the page holds incoming lines until
+// /device's uptime_ms says whether the clock went back, and starts over if
+// it did. At most MAX_LINES are kept. The line list is written straight to the DOM
 // (text nodes only -- log text is untrusted) in one batch per animation
 // frame instead of being diffed by Preact, so a chatty device stays smooth.
 
 import { Component, html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
+import { api } from '../api.js';
 import { subscribe } from '../ws.js';
 import { t, useLang } from '../i18n/index.js';
 import { Badge } from '../components/badge.js';
@@ -29,11 +38,18 @@ const FILTERS = [
 const RING_LINE = /^(\d+) ([DIWE]) ([^:]*): ([\s\S]*)$/;
 // How close to the bottom still counts as "following" the stream.
 const STICK_PX = 32;
+// A live line repeating a replayed one carries a slightly later stamp (the
+// ring and the stream read the clock separately).
+const BOUNDARY_MS = 1000;
+// Replayed lines remembered for that live/replay boundary check.
+const RECENT_REPLAY = 64;
+// Lines are held at most this long waiting for the reboot check.
+const HOLD_MAX_MS = 5000;
 
 /**
  * @typedef {Object} LogEntry
  * @property {number} id      increasing, assigned on arrival
- * @property {'log'|'dropped'} kind
+ * @property {'log'|'dropped'|'restart'} kind
  * @property {number} [ts]    ms since the device booted
  * @property {string} [level] D/I/W/E
  * @property {string} [tag]
@@ -62,11 +78,48 @@ function toEntry(msg, id) {
   return { id, kind: 'log', ts, level, tag, text, replay };
 }
 
+function freshSeen() {
+  return { maxTs: -1, atMax: new Set(), recent: [] };
+}
+
+function entryKey(e) {
+  return e.level + '\u0000' + e.tag + '\u0000' + e.text;
+}
+
+/**
+ * Whether `e` is new to this page, recording it in `seen` if so (see the
+ * file header).
+ */
+function firstSight(seen, e) {
+  if (e.kind !== 'log') return true;
+  const key = entryKey(e);
+  if (e.replay) {
+    // Remembered even when it is a repeat, so a live copy right after the
+    // replay is caught too.
+    seen.recent.push({ key, ts: e.ts });
+    if (seen.recent.length > RECENT_REPLAY) seen.recent.shift();
+    if (e.ts < seen.maxTs || (e.ts === seen.maxTs && seen.atMax.has(key))) return false;
+  } else {
+    const i = seen.recent.findIndex((r) => r.key === key && e.ts >= r.ts && e.ts - r.ts <= BOUNDARY_MS);
+    if (i >= 0) {
+      seen.recent.splice(i, 1);
+      return false;
+    }
+  }
+  if (e.ts > seen.maxTs) {
+    seen.maxTs = e.ts;
+    seen.atMax = new Set([key]);
+  } else if (e.ts === seen.maxTs) {
+    seen.atMax.add(key);
+  }
+  return true;
+}
+
 function makeFilter(minLevel, query) {
   const q = query.trim().toLowerCase();
   const min = RANK[minLevel] ?? 0;
   return (e) => {
-    if (e.kind === 'dropped') return true;
+    if (e.kind !== 'log') return true;
     if ((RANK[e.level] ?? 1) < min) return false;
     if (!q) return true;
     return e.tag.toLowerCase().includes(q) || e.text.toLowerCase().includes(q);
@@ -86,6 +139,11 @@ function makeRow(e) {
   if (e.kind === 'dropped') {
     row.className = 'log-row log-dropped';
     row.textContent = t('logs.dropped', { count: formatCount(e.count) });
+    return row;
+  }
+  if (e.kind === 'restart') {
+    row.className = 'log-row log-dropped log-restart';
+    row.textContent = t('logs.restarted');
     return row;
   }
   row.className = 'log-row lv-' + e.level + (e.replay ? ' is-replay' : '');
@@ -160,6 +218,11 @@ export function LogsPage() {
   const stick = useRef(true);
   // Where scrollToEnd() last left the list; scrolling above it is the user.
   const autoTop = useRef(0);
+  // Dedupe state (see the file header), and lines held while the reboot
+  // check after a (re)subscription is in flight.
+  const seen = useRef(freshSeen());
+  const held = useRef(/** @type {any[]|null} */ (null));
+  const holdGen = useRef(0);
   // Mirrors of state read from callbacks that outlive a render.
   const pausedRef = useRef(false);
   const filterRef = useRef(makeFilter('D', ''));
@@ -192,7 +255,47 @@ export function LogsPage() {
   }
 
   function onMessage(msg) {
-    const entry = toEntry(msg, nextId.current++);
+    if (held.current) held.current.push(msg);
+    else ingest(msg);
+  }
+
+  // A replay is on its way. If this page has seen lines before, hold the
+  // stream until /device says whether the device rebooted since.
+  function onSubscribed() {
+    if (seen.current.maxTs < 0) return;
+    const gen = ++holdGen.current;
+    held.current = held.current || [];
+    let done = false;
+    const release = (rebooted) => {
+      if (done || gen !== holdGen.current) return;
+      done = true;
+      clearTimeout(timer);
+      if (rebooted) {
+        seen.current = freshSeen();
+        addEntry({ id: 0, kind: 'restart' });
+      }
+      const msgs = held.current || [];
+      held.current = null;
+      for (const m of msgs) ingest(m);
+    };
+    const timer = setTimeout(() => release(false), HOLD_MAX_MS);
+    api('GET', '/device').then(
+      (d) => {
+        const up = Number(d?.status?.uptime_ms);
+        release(Number.isFinite(up) && up < seen.current.maxTs);
+      },
+      () => release(false),
+    );
+  }
+
+  function ingest(msg) {
+    const entry = toEntry(msg, 0);
+    if (!firstSight(seen.current, entry)) return;
+    addEntry(entry);
+  }
+
+  function addEntry(entry) {
+    entry.id = nextId.current++;
     const buf = buffer.current;
     buf.push(entry);
     if (buf.length > MAX_LINES) buf.splice(0, buf.length - MAX_LINES);
@@ -209,8 +312,13 @@ export function LogsPage() {
       unsub.current();
       unsub.current = null;
     }
-    setStatus(note === null ? 'idle' : 'stopped');
-    setStopNote(note || '');
+    // Lines held for a reboot check that will no longer matter.
+    holdGen.current++;
+    const msgs = held.current || [];
+    held.current = null;
+    for (const m of msgs) ingest(m);
+    setStatus('stopped');
+    setStopNote(note);
   }
 
   function start() {
@@ -221,7 +329,10 @@ export function LogsPage() {
     setFollowing(true);
     unsub.current = subscribe(['log'], onMessage, {
       onState: (st) => {
-        if (st === 'open') setStatus('live');
+        if (st === 'open') {
+          onSubscribed();
+          setStatus('live');
+        }
         else if (st === 'connecting') setStatus('connecting');
         else if (st === 'retrying') setStatus('retrying');
         else if (st === 'unauthorized') stop('logs.stopped_unpaired');

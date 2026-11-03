@@ -6,7 +6,7 @@
 // CSS shows the one that fits, so resizing never remounts the page.
 
 import { html, render, useEffect, useRef, useState } from '../vendor/htm-preact-3.1.1.mjs';
-import { api } from './api.js';
+import { getInfo } from './api.js';
 import { DEFAULT_PATH, currentPath, lookup, navigate, route, useRoute } from './router.js';
 import { Toaster } from './components/toast.js';
 import { LangSwitch } from './components/lang.js';
@@ -75,7 +75,7 @@ function Shell({ path, children }) {
   const tab = PARENT[path] || path;
 
   useEffect(() => {
-    api('GET', '/info')
+    getInfo()
       .then(setInfo)
       .catch(() => {});
   }, []);
@@ -167,7 +167,7 @@ async function boot() {
   // Decide where to start before the first paint, so an unpaired browser
   // does not flash an overview full of errors.
   try {
-    const info = await api('GET', '/info');
+    const info = await getInfo();
     if (info && info.paired === false) navigate('/pair');
     else if (currentPath() === '/pair') navigate(DEFAULT_PATH);
   } catch {

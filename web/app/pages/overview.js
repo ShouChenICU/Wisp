@@ -3,7 +3,7 @@
 // also follows the device's events and patches the snapshot in place.
 
 import { html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
-import { api, describeError, errorDetail } from '../api.js';
+import { api, describeError, errorDetail, getInfo } from '../api.js';
 import { t } from '../i18n/index.js';
 import { subscribe } from '../ws.js';
 import { Card } from '../components/card.js';
@@ -25,6 +25,8 @@ import { formatBytes, formatCount, formatUptime, useNow, useVisible } from '../u
 // Battery percentage and heap have no events, so the snapshot is
 // refreshed this often while the page is visible.
 const REFRESH_MS = 30000;
+// A socket (re)opening right after a load does not trigger another one.
+const RELOAD_GAP_MS = 2000;
 
 /**
  * @typedef {Object} Battery
@@ -49,12 +51,32 @@ export function OverviewPage() {
   const [live, setLive] = useState('closed');
   const [loading, setLoading] = useState(false);
   const alive = useRef(true);
+  const inFlight = useRef(false);
+  const again = useRef(false);
+  const lastDone = useRef(0);
+
+  // Catching up after the socket (re)opens: skipped when a load is running
+  // or has just finished, since that one already saw the current state.
+  function catchUp() {
+    if (inFlight.current || Date.now() - lastDone.current < RELOAD_GAP_MS) return;
+    load();
+  }
+
+  // The device dropped messages, so events may have been missed: load
+  // again, after the running load if there is one (it may predate them).
+  function reloadAfterDrop() {
+    if (inFlight.current) again.current = true;
+    else load();
+  }
 
   async function load() {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    again.current = false;
     setLoading(true);
     try {
       const [info, device, wifi] = await Promise.all([
-        api('GET', '/info'),
+        getInfo(),
         api('GET', '/device'),
         api('GET', '/wifi'),
       ]);
@@ -71,11 +93,18 @@ export function OverviewPage() {
     } catch (e) {
       if (alive.current && e.status !== 401) setError(e);
     } finally {
+      inFlight.current = false;
+      lastDone.current = Date.now();
       if (alive.current) setLoading(false);
     }
+    if (again.current && alive.current) load();
   }
 
   function onEvent(msg) {
+    if (msg.t === 'dropped') {
+      reloadAfterDrop();
+      return;
+    }
     const p = msg.payload || {};
     setSnap((s) => {
       if (!s) return s;
@@ -121,7 +150,7 @@ export function OverviewPage() {
       onState: (st) => {
         setLive(st);
         // Events sent while the socket was down are lost; catch up.
-        if (st === 'open') load();
+        if (st === 'open') catchUp();
       },
     });
     const timer = setInterval(load, REFRESH_MS);

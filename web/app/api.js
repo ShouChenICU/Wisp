@@ -12,6 +12,7 @@ const PREFIX = '/api/v1';
  * @property {number} status  HTTP status, or 0 when the device was unreachable
  * @property {string} code    the server's error code ("network" when unreachable)
  * @property {string} message the server's (English) message
+ * @property {number} [retryAfterS] seconds until a rate limit lifts (429)
  */
 
 /**
@@ -55,11 +56,38 @@ export async function api(method, path, body) {
 
   if (res.status === 401 && currentPath() !== '/pair') navigate('/pair');
   const err = (data && data.error) || {};
-  throw {
+  /** @type {ApiError} */
+  const thrown = {
     status: res.status,
     code: typeof err.code === 'string' ? err.code : 'http_' + res.status,
     message: typeof err.message === 'string' ? err.message : res.statusText,
   };
+  const retry = Number(err.retry_after_s ?? res.headers.get('Retry-After'));
+  if (res.status === 429 && Number.isFinite(retry) && retry > 0) thrown.retryAfterS = Math.ceil(retry);
+  throw thrown;
+}
+
+// Several parts of the app want /info at start-up (boot, the shell, the
+// overview); one request serves them all.
+const INFO_MAX_AGE_MS = 2000;
+let infoCache = null;
+
+/**
+ * GET /info, shared with any other caller within the last couple of
+ * seconds (including one still in flight).
+ *
+ * @returns {Promise<{name: string, fw: string, paired: boolean}>}
+ */
+export function getInfo() {
+  const now = Date.now();
+  if (infoCache && now - infoCache.at < INFO_MAX_AGE_MS) return infoCache.promise;
+  const promise = api('GET', '/info');
+  const entry = { at: now, promise };
+  infoCache = entry;
+  promise.catch(() => {
+    if (infoCache === entry) infoCache = null;
+  });
+  return promise;
 }
 
 // Codes for which a 5xx status still says something specific; any other
@@ -94,11 +122,13 @@ export function errorDetail(e) {
   return [e.status, e.code, e.message].filter(Boolean).join(' · ');
 }
 
-/** Revokes this browser's pairing and returns to the pairing page. */
+/**
+ * Revokes this browser's pairing and returns to the pairing page. On
+ * failure the error is thrown and the page stays (a 401 has already sent
+ * the app to pairing: the token was gone anyway).
+ */
 export async function logout() {
-  try {
-    await api('POST', '/logout');
-  } finally {
-    navigate('/pair');
-  }
+  await api('POST', '/logout');
+  infoCache = null;
+  navigate('/pair');
 }

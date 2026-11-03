@@ -3,7 +3,7 @@
 // to the overview.
 
 import { html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
-import { api, describeError } from '../api.js';
+import { api, describeError, getInfo } from '../api.js';
 import { navigate } from '../router.js';
 import { t, useLang } from '../i18n/index.js';
 import { IconAlert, IconLock, WispGlyph } from '../icons.js';
@@ -11,10 +11,15 @@ import { toast } from '../components/toast.js';
 import { LangSwitch } from '../components/lang.js';
 import { useNow } from '../util.js';
 
-// Spec 4.4: a code is valid for 2 minutes. The device does not say when
-// its code expires, so the page times it from the moment it asked.
-const CODE_TTL_MS = 120000;
+// The device tells a wrong code (permission_denied) from an expired one
+// (code_expired), and a locked pairing (429) says how long it stays
+// locked (spec 6.1), so the page keeps no clock of its own for the code.
 const CODE_LEN = 6;
+
+function clock(ms) {
+  const total = Math.ceil(ms / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
 
 export function PairPage() {
   useLang();
@@ -25,13 +30,18 @@ export function PairPage() {
   // {key, tone} or {text, tone}; a key is translated at render time so the
   // message follows a language switch.
   const [error, setError] = useState(null);
-  const [expiresAt, setExpiresAt] = useState(0);
+  const [expired, setExpired] = useState(false);
+  const [lockedUntil, setLockedUntil] = useState(0);
   const inputRef = useRef(null);
-  const now = useNow(1000);
+  // useNow() only re-renders every second; the countdown reads the clock
+  // itself so it never shows more than the device said.
+  useNow(1000);
+  const lockLeft = Math.max(0, lockedUntil - Date.now());
+  const locked = lockLeft > 0;
 
   useEffect(() => {
     let alive = true;
-    api('GET', '/info')
+    getInfo()
       .then((i) => {
         if (!alive) return;
         setInfo(i);
@@ -47,11 +57,24 @@ export function PairPage() {
     if (phase === 'code') inputRef.current?.focus();
   }, [phase]);
 
-  const remaining = Math.max(0, expiresAt - now);
-  const expired = phase === 'code' && remaining === 0;
+  // The lock has run out: the countdown message goes, the buttons return.
+  useEffect(() => {
+    if (lockedUntil && !locked) {
+      setLockedUntil(0);
+      setError((e) => (e && e.lock ? null : e));
+    }
+  }, [locked, lockedUntil]);
 
   function apiError(e) {
     return { err: e, tone: 'err' };
+  }
+
+  function lockError(e) {
+    if (e.retryAfterS) {
+      setLockedUntil(Date.now() + e.retryAfterS * 1000);
+      return { key: 'pair.err_locked_now', tone: 'warn', lock: true };
+    }
+    return { key: 'pair.err_locked', tone: 'warn' };
   }
 
   async function requestCode() {
@@ -61,12 +84,12 @@ export function PairPage() {
     try {
       await api('POST', '/pair/start');
       setCode('');
-      setExpiresAt(Date.now() + CODE_TTL_MS);
+      setExpired(false);
       setPhase('code');
       // Re-requesting while already on the code step keeps focus useful.
       setTimeout(() => inputRef.current?.focus(), 0);
     } catch (e) {
-      setError(e.status === 429 ? { key: 'pair.err_locked', tone: 'warn' } : apiError(e));
+      setError(e.status === 429 ? lockError(e) : apiError(e));
     } finally {
       setBusy(false);
     }
@@ -83,14 +106,12 @@ export function PairPage() {
     } catch (e) {
       setCode('');
       if (e.status === 429) {
-        setError({ key: 'pair.err_locked', tone: 'warn' });
+        setError(lockError(e));
+      } else if (e.code === 'code_expired') {
+        setExpired(true);
+        setError({ key: 'pair.err_expired', tone: 'warn' });
       } else if (e.status === 403 && e.code === 'permission_denied') {
-        // The device answers a wrong code and an expired one the same way.
-        setError(
-          Date.now() >= expiresAt
-            ? { key: 'pair.err_expired', tone: 'warn' }
-            : { key: 'pair.err_wrong', tone: 'err' },
-        );
+        setError({ key: 'pair.err_wrong', tone: 'err' });
       } else {
         setError(apiError(e));
       }
@@ -105,11 +126,9 @@ export function PairPage() {
     e.currentTarget.value = v;
     setCode(v);
     if (error) setError(null);
-    if (v.length === CODE_LEN && !expired) confirm(v);
+    if (v.length === CODE_LEN && !expired && !locked) confirm(v);
   }
 
-  const mm = Math.floor(remaining / 60000);
-  const ss = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
   const name = info?.name || 'Wisp';
   const errorText = error ? (error.key ? t(error.key) : describeError(error.err)) : '';
 
@@ -130,7 +149,7 @@ export function PairPage() {
       </ol>
 
       ${phase === 'start'
-        ? html`<button type="button" class="btn btn-primary btn-lg btn-block" onClick=${requestCode} disabled=${busy}>
+        ? html`<button type="button" class="btn btn-primary btn-lg btn-block" onClick=${requestCode} disabled=${busy || locked}>
             ${busy ? html`<span class="spinner" aria-hidden="true"></span>` : null}
             ${t('pair.get_code')}
           </button>`
@@ -154,22 +173,26 @@ export function PairPage() {
               placeholder="••••••"
               value=${code}
               onInput=${onInput}
-              disabled=${busy || expired}
+              disabled=${busy || expired || locked}
               aria-describedby="pair-hint"
               aria-invalid=${error ? 'true' : 'false'}
               spellcheck=${false}
             />
             <p id="pair-hint" class=${expired ? 'pair-hint is-expired' : 'pair-hint'}>
-              ${expired ? t('pair.expired') : t('pair.expires_in', { time: `${mm}:${ss}` })}
+              ${expired ? t('pair.expired') : t('pair.code_ttl')}
             </p>
             ${expired
-              ? html`<button type="button" class="btn btn-primary btn-lg btn-block" onClick=${requestCode} disabled=${busy}>
+              ? html`<button type="button" class="btn btn-primary btn-lg btn-block" onClick=${requestCode} disabled=${busy || locked}>
                   ${t('pair.get_new')}
                 </button>`
-              : html`<button type="submit" class="btn btn-primary btn-lg btn-block" disabled=${busy || code.length !== CODE_LEN}>
+              : html`<button
+                    type="submit"
+                    class="btn btn-primary btn-lg btn-block"
+                    disabled=${busy || locked || code.length !== CODE_LEN}
+                  >
                     ${busy ? html`<span class="spinner" aria-hidden="true"></span>` : null} ${t('pair.submit')}
                   </button>
-                  <button type="button" class="btn btn-link" onClick=${requestCode} disabled=${busy}>
+                  <button type="button" class="btn btn-link" onClick=${requestCode} disabled=${busy || locked}>
                     ${t('pair.resend')}
                   </button>`}
           </form>`}
@@ -177,7 +200,12 @@ export function PairPage() {
       ${error
         ? html`<div class=${'alert tone-' + error.tone} role="alert">
             <${error.tone === 'warn' ? IconLock : IconAlert} size=${18} />
-            <span>${errorText}</span>
+            <span>
+              ${errorText}
+              ${error.lock && locked
+                ? html`<span class="alert-timer" role="timer">${t('pair.locked_retry_in', { time: clock(lockLeft) })}</span>`
+                : null}
+            </span>
           </div>`
         : null}
     </div>
