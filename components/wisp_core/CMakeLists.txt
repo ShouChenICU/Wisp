@@ -7,6 +7,7 @@ wisp_component(
     SRCS src/log.cpp src/event_bus.cpp src/device_registry.cpp src/boot_report.cpp
          src/button_service.cpp src/settings.cpp src/storage_manager.cpp src/power_monitor.cpp
          src/model_profiles.cpp src/model_presets.cpp src/system_settings.cpp
+         src/firmware_image.cpp src/firmware_update.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal
 )
