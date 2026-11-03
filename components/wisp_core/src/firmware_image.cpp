@@ -38,6 +38,16 @@ std::string c_string_at(std::span<const uint8_t> b, size_t at, size_t field) {
     return std::string(p, n);
 }
 
+// What may reach a log line, an event or the screen: an uploaded image's
+// strings are the uploader's, and a control character could forge a log
+// line (WISP_* included).
+bool printable_ascii(std::string_view s) {
+    for (char c : s) {
+        if (c < 0x20 || c > 0x7E) return false;
+    }
+    return true;
+}
+
 Result<void> invalid(const char* why) { return Result<void>::err(ErrorCode::InvalidArgument, why); }
 
 struct Version {
@@ -96,6 +106,11 @@ Result<FirmwareImageInfo> parse_firmware_head(std::span<const uint8_t> head) {
     if (u32_at(head, kBoardDescOffset) == kBoardDescMagic &&
         u16_at(head, kBoardDescOffset + 4) == kBoardDescVersion) {
         info.board = c_string_at(head, kBoardDescOffset + kBoardDescNameOffset, kBoardNameBytes);
+    }
+    if (!printable_ascii(info.version) || !printable_ascii(info.project) ||
+        !printable_ascii(info.board)) {
+        return R::err(ErrorCode::InvalidArgument,
+                      "version, project or board name is not printable ASCII");
     }
     return R::ok(std::move(info));
 }

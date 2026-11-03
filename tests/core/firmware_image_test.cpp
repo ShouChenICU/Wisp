@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "support/fake_firmware.hpp"
@@ -51,6 +52,42 @@ TEST(FirmwareImage, LongestFieldsStopAtTheirSize) {
     ASSERT_TRUE(info);
     EXPECT_EQ(info.value().version, std::string(31, 'v'));
     EXPECT_EQ(info.value().board, std::string(39, 'b'));
+}
+
+TEST(FirmwareImage, RefusesFieldsThatAreNotPrintableAscii) {
+    // Version, project and board reach logs, events and the screen: a
+    // newline in one could forge a log line, so only printable ASCII is
+    // accepted.
+    struct Case {
+        const char* what;
+        ImageSpec spec;
+    };
+    std::vector<Case> cases;
+    cases.push_back({"newline in version", {}});
+    cases.back().spec.version = "1.0.0\nWISP_REBOOT";
+    cases.push_back({"DEL in version", {}});
+    cases.back().spec.version = "1.0.0\x7f";
+    cases.push_back({"UTF-8 in version", {}});
+    cases.back().spec.version = "1.0.0-\xc3\xa9";
+    cases.push_back({"escape in board", {}});
+    cases.back().spec.board = "test_board\x1b[2J";
+    cases.push_back({"tab in project", {}});
+    cases.back().spec.project = "wi\tsp";
+    for (const Case& c : cases) {
+        const auto image = make_firmware_image(c.spec);
+        auto info = parse_firmware_head(head_of(image));
+        ASSERT_FALSE(info) << c.what;
+        EXPECT_EQ(info.error().code, ErrorCode::InvalidArgument) << c.what;
+        EXPECT_EQ(info.error().message.find_first_of("\n\x1b\x7f"), std::string::npos) << c.what;
+    }
+
+    // Printable punctuation and spaces are fine.
+    ImageSpec ok;
+    ok.version = "1.0.0+build.7 (rc~1)";
+    const auto image = make_firmware_image(ok);
+    auto info = parse_firmware_head(head_of(image));
+    ASSERT_TRUE(info) << info.error().message;
+    EXPECT_EQ(info.value().version, "1.0.0+build.7 (rc~1)");
 }
 
 TEST(FirmwareImage, RejectsBadMagicWrongChipWrongProject) {

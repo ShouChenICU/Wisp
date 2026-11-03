@@ -71,8 +71,11 @@ struct FirmwareTarget {
 // Identifies an image from its first kFirmwareHeadBytes bytes. Fails with
 // InvalidArgument when they are not an ESP application image: too few
 // bytes, a wrong header magic, a segment count of 0 or over 16, or no
-// esp_app_desc_t where it belongs. A missing board descriptor is not an
-// error here (`board` stays empty): matches_target() refuses it.
+// esp_app_desc_t where it belongs; or when its version, project or board
+// name holds anything but printable ASCII (they end up in logs, events and
+// on the screen). The fields' sizes bound their lengths (31 and 39). A
+// missing board descriptor is not an error here (`board` stays empty):
+// matches_target() refuses it.
 Result<FirmwareImageInfo> parse_firmware_head(std::span<const uint8_t> head);
 
 // Same project, same board name and (when the target names one) same chip.
