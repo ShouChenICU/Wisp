@@ -453,7 +453,8 @@ TEST(ModelProfiles, ValidatesNameUrlModelAndKey) {
     for (const char* bad : {"ftp://x", "api.example.com", "", "https://", "http:///",
                             "javascript:1", "https://ex ample.com", "https://a.example/\r\nX: y",
                             // No host once user info and port are gone.
-                            "https://@/", "https://:443", "https://user@:443/v1", "http://@"}) {
+                            "https://@/", "https://:443", "https://user@:443/v1", "http://@",
+                            "https://[]/v1", "https://[]:443/v1"}) {
         auto r = fx.svc->update(p.id, {.base_url = std::string(bad), .api_key = "sk-new"});
         ASSERT_FALSE(r) << bad;
         EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << bad;
@@ -554,16 +555,25 @@ TEST(ModelProfiles, MigratedPlaceholderUrlBecomesUnbound) {
     EXPECT_FALSE(r.value().has_key);
 }
 
-// An unreadable models.json says nothing about whether the migration
-// finished, so the legacy file (possibly the only copy of the key) stays.
-TEST(ModelProfiles, CorruptModelsFileKeepsTheLegacyFile) {
+// An unreadable models.json next to a legacy file: the legacy file may hold
+// the only good copy of the key, so the migration runs again and replaces
+// the unreadable file.
+TEST(ModelProfiles, CorruptModelsFileIsRebuiltFromTheLegacyFile) {
     Fixture fx;
     fx.svc.reset();
     Fixture::write(fx.models_path(), "{not json");
     Fixture::write(fx.legacy_path(), R"({"base_url":"https://a.example/v1","api_key":"sk-only"})");
     fx.start();
-    EXPECT_TRUE(fx.svc->get().profiles.empty());
-    EXPECT_TRUE(std::filesystem::exists(fx.legacy_path()));
+    auto s = fx.svc->get();
+    ASSERT_EQ(s.profiles.size(), 1u);
+    EXPECT_TRUE(s.profiles[0].has_key);
+    EXPECT_EQ(s.profiles[0].base_url, "https://a.example/v1");
+    EXPECT_FALSE(std::filesystem::exists(fx.legacy_path()));
+    EXPECT_EQ(fx.key_of(s.profiles[0].id), "sk-only");
+
+    fx.restart();
+    ASSERT_EQ(fx.svc->get().profiles.size(), 1u);
+    EXPECT_EQ(fx.svc->get().profiles[0].id, s.profiles[0].id);
 }
 
 TEST(ModelProfiles, EmptyLegacyFileMigratesToNothing) {
@@ -602,6 +612,8 @@ TEST(ModelProfiles, CorruptFileStartsEmpty) {
     Fixture::write(fx.models_path(), "{not json");
     fx.start();
     EXPECT_TRUE(fx.svc->get().profiles.empty());
+    // With nothing to rebuild from, the file is left for a person to look at.
+    EXPECT_EQ(Fixture::read(fx.models_path()), "{not json");
 }
 
 // Hand-edited entries that create() would refuse are dropped, and an

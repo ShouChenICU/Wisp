@@ -257,7 +257,9 @@ private:
     const Stored* find(const State& state, std::string_view id) const;
     // false: the file did not parse and the state is empty.
     Result<bool> load_models(const std::vector<uint8_t>& bytes);
-    Result<void> migrate_legacy(const std::string& root);
+    // Migrates secrets/llm.json if it exists; `over_corrupt` when that
+    // replaces an unreadable secrets/models.json.
+    Result<void> migrate_legacy(const std::string& root, bool over_corrupt = false);
 
     StorageManager& storage_;
     EventBus& bus_;

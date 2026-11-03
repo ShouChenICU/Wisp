@@ -106,6 +106,7 @@ std::optional<std::string> normalize_base_url(std::string_view url) {
     if (colon != std::string_view::npos && (bracket == std::string_view::npos || colon > bracket)) {
         host = host.substr(0, colon);
     }
+    if (host.starts_with('[') && host.ends_with(']')) host = host.substr(1, host.size() - 2);
     if (host.empty()) return std::nullopt;
 
     std::string out(url);
@@ -458,13 +459,16 @@ Result<bool> ModelProfileService::load_models(const std::vector<uint8_t>& bytes)
     return Result<bool>::ok(true);
 }
 
-Result<void> ModelProfileService::migrate_legacy(const std::string& root) {
+Result<void> ModelProfileService::migrate_legacy(const std::string& root, bool over_corrupt) {
     const std::string legacy = root + kLegacyFile;
     auto bytes = storage_.read_file(legacy);
     if (!bytes) {
         if (bytes.error().code == ErrorCode::NotFound) return Result<void>::ok();
         return Result<void>::err(bytes.error().code,
                                  "reading secrets/llm.json: " + bytes.error().message);
+    }
+    if (over_corrupt) {
+        WLOG_W(kTag, "replacing the unreadable secrets/models.json from secrets/llm.json");
     }
     auto doc = from_json(std::string_view(reinterpret_cast<const char*>(bytes.value().data()),
                                           bytes.value().size()));
@@ -520,9 +524,12 @@ Result<void> ModelProfileService::init() {
     }
     auto parsed = load_models(bytes.value());
     if (!parsed) return Result<void>::err(parsed.error().code, parsed.error().message);
-    // A migration interrupted after writing the new file. An unreadable
-    // new file proves nothing, and the old one may hold the only good key.
-    if (parsed.value()) remove_file(root + kLegacyFile);
+    // An unreadable new file next to a legacy one: the legacy file may hold
+    // the only good key, so migrate it again over the unreadable file. With
+    // no legacy file the unreadable one is left alone.
+    if (!parsed.value()) return migrate_legacy(root, /*over_corrupt=*/true);
+    // A migration interrupted after writing the new file.
+    remove_file(root + kLegacyFile);
     WLOG_I(kTag, "loaded %u model profiles", unsigned(state_.profiles.size()));
     return Result<void>::ok();
 }
