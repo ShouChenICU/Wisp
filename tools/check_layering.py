@@ -68,9 +68,9 @@ LAYER_INCLUDE_PREFIX = {
     "wisp_app": "wisp/app/",
 }
 
-# components/wisp_ui/fonts/ holds a ported third-party font (see
-# AGENTS.md section 6 / docs/references.md) and isn't Wisp's own code,
-# so it's excluded from the scan.
+# components/wisp_ui/fonts/ holds generated font data (see
+# tools/gen_cjk_font.py / docs/references.md), not hand-written code, so
+# it's excluded from the scan.
 SKIPPED_DIR_NAMES = ("fonts",)
 
 FORBIDDEN_PREFIXES = (

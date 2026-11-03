@@ -26,26 +26,37 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 ## Noto Sans CJK SC (via `lv_font_cjk_16.c`)
 
-- `components/wisp_ui/fonts/lv_font_cjk_16.c` embeds glyph bitmap data for a
-  GB2312 character set generated from the Noto Sans CJK SC typeface,
-  ported unmodified from the MyOS project's
-  `src/config/lv_font_cjk_16.c` (itself generated with LVGL's own font
-  conversion tool).
-- Typeface project: https://github.com/notofonts/noto-cjk
-- License: SIL Open Font License, Version 1.1
+- `components/wisp_ui/fonts/lv_font_cjk_16.c` embeds glyph bitmap data
+  (16 px, 4 bpp; GB2312, Japanese kana and symbols, JIS X 0208 level-1
+  kanji) rendered from Noto Sans CJK SC Regular by `tools/gen_cjk_font.py`
+  with lv_font_conv 1.5.3.
+- Source font: `Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf` at
+  release tag `Sans2.004` of https://github.com/notofonts/noto-cjk
+  (SHA-256 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`),
+  fetched directly from upstream.
+- License: SIL Open Font License, Version 1.1 (the repository's `LICENSE`
+  file at that tag). No Reserved Font Name is declared; the converted font
+  is named `lv_font_cjk_16`, not after the source font.
 
-We have not independently verified every detail of the upstream copyright
-notice (the font was ported into this repo via the MyOS project rather than
-fetched directly from notofonts/noto-cjk); the line below is as given to us
-and should be checked against the upstream OFL.txt before a release build:
+The source font's own copyright notice (OpenType `name` table, ID 0) and
+license description (IDs 13 and 14), verbatim, followed by the license text
+from the upstream `LICENSE` file:
 
 ```
-Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name
-'Source'.
+© 2014-2021 Adobe (http://www.adobe.com/).
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This Font Software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font
+License for the specific language, permissions and limitations governing your
+use of this Font Software.
+http://scripts.sil.org/OFL
+
+This Font Software is licensed under the SIL Open Font License,
+Version 1.1.
+
 This license is copied below, and is also available with a FAQ at:
-https://scripts.sil.org/OFL
+http://scripts.sil.org/OFL
 
 -----------------------------------------------------------
 SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
@@ -53,19 +64,19 @@ SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
 
 PREAMBLE
 The goals of the Open Font License (OFL) are to stimulate worldwide
-development of collaborative font projects, to support the font creation
-efforts of academic and linguistic communities, and to provide a free and
-open framework in which fonts may be shared and improved in partnership
-with others.
+development of collaborative font projects, to support the font
+creation efforts of academic and linguistic communities, and to
+provide a free and open framework in which fonts may be shared and
+improved in partnership with others.
 
 The OFL allows the licensed fonts to be used, studied, modified and
 redistributed freely as long as they are not sold by themselves. The
-fonts, including any derivative works, can be bundled, embedded, 
+fonts, including any derivative works, can be bundled, embedded,
 redistributed and/or sold with any software provided that any reserved
 names are not used by derivative works. The fonts and derivatives,
 however, cannot be released under any other type of license. The
-requirement for fonts to remain under this license does not apply
-to any document created using the fonts or their derivatives.
+requirement for fonts to remain under this license does not apply to
+any document created using the fonts or their derivatives.
 
 DEFINITIONS
 "Font Software" refers to the set of files released by the Copyright
@@ -75,22 +86,22 @@ include source files, build scripts and documentation.
 "Reserved Font Name" refers to any names specified as such after the
 copyright statement(s).
 
-"Original Version" refers to the collection of Font Software components as
-distributed by the Copyright Holder(s).
+"Original Version" refers to the collection of Font Software
+components as distributed by the Copyright Holder(s).
 
-"Modified Version" refers to any derivative made by adding to, deleting,
-or substituting -- in part or in whole -- any of the components of the
-Original Version, by changing formats or by porting the Font Software to a
-new environment.
+"Modified Version" refers to any derivative made by adding to,
+deleting, or substituting -- in part or in whole -- any of the
+components of the Original Version, by changing formats or by porting
+the Font Software to a new environment.
 
-"Author" refers to any designer, engineer, programmer, technical writer or
-other person who contributed to the Font Software.
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
 
 PERMISSION & CONDITIONS
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of the Font Software, to use, study, copy, merge, embed, modify,
-redistribute, and sell modified and unmodified copies of the Font
-Software, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed,
+modify, redistribute, and sell modified and unmodified copies of the
+Font Software, subject to the following conditions:
 
 1) Neither the Font Software nor any of its individual components, in
 Original or Modified Versions, may be sold by itself.
@@ -103,29 +114,31 @@ in the appropriate machine-readable metadata fields within text or
 binary files as long as those fields can be easily viewed by the user.
 
 3) No Modified Version of the Font Software may use the Reserved Font
-Name(s) unless explicit written permission is granted by the corresponding
-Copyright Holder. This restriction only applies to the primary font name as
-presented to the users.
+Name(s) unless explicit written permission is granted by the
+corresponding Copyright Holder. This restriction only applies to the
+primary font name as presented to the users.
 
 4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
-Software shall not be used to promote, endorse or advertise any Modified
-Version, except to acknowledge the contribution(s) of the Copyright
-Holder(s) and the Author(s) or with their explicit written permission.
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
 
-5) The Font Software, modified or unmodified, in part or in whole, must be
-distributed entirely under this license, and must not be distributed
-under any other license. The requirement for fonts to remain under this
-license does not apply to any document created using the Font Software.
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created using
+the Font Software.
 
 TERMINATION
-This license becomes null and void if any of the above conditions are not
-met.
+This license becomes null and void if any of the above conditions are
+not met.
 
 DISCLAIMER
 THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
-COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
 COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING

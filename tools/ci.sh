@@ -31,8 +31,8 @@ if [[ "${CLANG_FORMAT_ACTUAL%%.*}" != "${CLANG_FORMAT_VERSION%%.*}" ]]; then
 fi
 
 # Every C/C++ source file in the repo, except build output,
-# components/wisp_ui/fonts/ (a ported third-party font -- see
-# AGENTS.md section 6 / docs/references.md),
+# components/wisp_ui/fonts/ (generated font data -- see
+# tools/gen_cjk_font.py / docs/references.md),
 # firmware/build/ and firmware/managed_components/ (ESP-IDF build
 # output and third-party sources fetched by the component manager --
 # both gitignored, neither ours to format), and
@@ -113,6 +113,11 @@ python3 tools/check_i18n_test.py
 
 echo "==> tools/check_i18n.py"
 python3 tools/check_i18n.py
+
+# The committed CJK font must match tools/gen_cjk_font.py's character set
+# (including every character the device UI string tables use; spec 8.3).
+echo "==> tools/gen_cjk_font_test.py"
+python3 tools/gen_cjk_font_test.py
 
 echo "==> cmake -S simulator -B build/sim -G Ninja"
 cmake -S simulator -B build/sim -G Ninja

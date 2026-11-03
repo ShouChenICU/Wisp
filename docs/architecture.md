@@ -124,7 +124,7 @@
 4. 屏幕、触摸、音频编解码器、SD 卡由 esp_board_manager 的设备初始化（YAML 参照 ESP-Claw 中已验证的同款板定义，Apache-2.0，需标注来源）；IMU、PMU、RTC、按键、内置 LittleFS 由 Wisp 自己的驱动初始化，挂在 bmgr 提供的 I2C 总线上。
 5. `hal::Button` 只提供电平 `pressed()`；短按/长按由可移植的 `ButtonService` 统一判定（长按阈值 1000 ms）。
 6. 版本锁定：ESP-IDF **v6.0.3**，LVGL **9.5.0**。
-7. 字体：`lv_font_montserrat_16` 为主字体，回退到从 MyOS 移植的 `lv_font_cjk_16`（GB2312 全集，4bpp）。
+7. 字体：`lv_font_montserrat_16` 为主字体，回退到 `lv_font_cjk_16`（16 px、4bpp；GB2312 ∪ 日文假名与符号 ∪ JIS X 0208 第一水准汉字，由 `tools/gen_cjk_font.py` 从上游 Noto Sans CJK SC 生成，见连接 spec 8.3 与 `docs/references.md`）。
 8. 模拟器截图用自带的极简 PNG 编码器（未压缩 deflate），不引入第三方图像库。
 9. 新增性能监视（spec 未要求）：`UiRuntime` 自行统计 FPS、UI 线程占用率、平均刷新耗时；自检界面显示，每 5 s 输出一行 `WISP_PERF <json>`；可选开启 LVGL 自带的 sysmon 浮层。作为后续场景运行时的性能回归基准。
 10. 屏幕形状与安全区（执行期由用户批准加入，spec 5.6 节）：Display caps 的 `shape` 取 `rect`/`rounded_rect`/`circle`（原 `rounded_square` 改名为 `rounded_rect`），`wisp_hal` 提供 `visible`/`safe_rect`/`row_span` 几何函数，能力清单为 Display 条目附带 `safe_area`，自检界面与模拟器遮罩都以此为准。

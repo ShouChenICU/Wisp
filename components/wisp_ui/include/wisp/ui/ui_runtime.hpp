@@ -48,8 +48,9 @@ struct UiPerf {
 };
 
 // The default UI font: a mutable copy of the built-in (and otherwise
-// `const`) lv_font_montserrat_16, with `fallback` pointed at the ported
-// lv_font_cjk_16 (GB2312, 4bpp) so Chinese text falls back to it
+// `const`) lv_font_montserrat_16, with `fallback` pointed at the built-in
+// lv_font_cjk_16 (GB2312 plus Japanese kana and level-1 kanji, 4bpp; see
+// tools/gen_cjk_font.py) so Chinese and Japanese text falls back to it
 // glyph-by-glyph. Lazily constructed on first call (thread-safe,
 // C++11 magic statics); safe to call from any thread, before or after any
 // UiRuntime exists. UiRuntime::start() installs this as the default theme
