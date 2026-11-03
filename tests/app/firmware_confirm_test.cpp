@@ -134,7 +134,7 @@ TEST(FirmwareConfirm, YesInstallsAndRestartsOffTheUiThread) {
 
     EXPECT_EQ(upload(h, token, image_of("0.3.0")), 202);
     ASSERT_TRUE(wait_until([&] { return dialog_says(h, "固件更新"); }, 3000));
-    EXPECT_TRUE(dialog_says(h, "0.2.0 → 0.3.0"));
+    EXPECT_TRUE(dialog_says(h, "0.2.0\n→ 0.3.0"));
     EXPECT_FALSE(dialog_says(h, wisp::ui::tr(StrId::FirmwareDowngrade, Lang::Zh)));
     ASSERT_TRUE(click(h, "是"));
     ASSERT_TRUE(wait_until([&] { return h.reboots.load() == 1; }, 5000));
@@ -160,7 +160,7 @@ TEST(FirmwareConfirm, NoKeepsTheRunningImage) {
 
     // The slot is free again, and the dialog comes back for the next one.
     EXPECT_EQ(upload(h, token, image_of("0.3.1")), 202);
-    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "0.2.0 → 0.3.1"); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "0.2.0\n→ 0.3.1"); }, 3000));
     EXPECT_EQ(msgboxes(h), 1);
 }
 

@@ -1185,8 +1185,10 @@ void SelfCheck::show_firmware_dialog() {
         decline_firmware(app_);
         return;
     }
+    // One version per line: a git-described version is about as wide as
+    // the box, and LVGL would otherwise break it mid-number.
     std::string text = ui::tr(ui::StrId::FirmwarePrompt);
-    text += "\n" + pending->current + " → " + pending->next;
+    text += "\n" + pending->current + "\n→ " + pending->next;
     if (pending->downgrade) {
         text += "\n";
         text += ui::tr(ui::StrId::FirmwareDowngrade);
