@@ -78,13 +78,17 @@ using HttpHandler = std::function<HttpResponse(const HttpRequest&)>;
 //   - on_data() gets the body in order, at most kBodyChunkBytes at a time;
 //     then exactly one of on_end() (every byte arrived) or on_abort() (the
 //     connection closed, stalled past the server's receive timeout, or the
-//     server is stopping) -- unless on_data() ended the request early;
+//     server is stopping) -- unless on_data() ended the request early.
+//     Stopping aborts at once on the simulator; on the device stop() cannot
+//     interrupt the httpd task, so it waits until the body is complete or a
+//     receive fails (see EspHttpServer);
 //   - every callback runs on the connection's own thread (the httpd task on
 //     the device), one at a time, so a slow write delays only that client.
 // An early response (StreamStart::response, or one returned from on_data)
 // is sent at once; the server then reads and discards the rest of the body
 // (up to kBodyDrainBytes, so the client sees the response rather than a
-// reset) and closes the connection.
+// reset) and closes the connection. Past kBodyDrainBytes the device does
+// not drain: the client may see a reset instead of the response.
 inline constexpr size_t kBodyChunkBytes = 4096;
 inline constexpr size_t kBodyDrainBytes = 8 * 1024 * 1024;
 

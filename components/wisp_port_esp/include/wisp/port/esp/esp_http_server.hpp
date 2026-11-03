@@ -23,6 +23,14 @@
 //     5-second receive timeouts aborts it, and an early answer is sent
 //     with Connection: close after which httpd discards the rest of the
 //     body (up to kBodyDrainBytes) before closing;
+//   - known limits of the single httpd task, accepted as they are
+//     (docs/architecture.md "真机的网络"): a body larger than
+//     kBodyDrainBytes is answered but not drained, so the client usually
+//     sees a connection reset rather than the 413; requests are served one
+//     at a time, so a second upload waits for the first to finish and
+//     only then gets its 409 (after its own body is drained), and stop()
+//     returns only once a running stream has ended (at most two receive
+//     timeouts after its client goes quiet);
 //   - iface is decided from the connection's addresses: loopback means
 //     Loopback; the hotspot's own address reached from a peer inside the
 //     hotspot subnet means Ap; anything else Sta (net_iface.hpp).

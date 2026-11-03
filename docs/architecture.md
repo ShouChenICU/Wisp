@@ -120,7 +120,7 @@
 - 管理后台是 `EspHttpServer`（`esp_http_server`）：端口 8900，最多 7 个连接（`lru_purge_enable`；每个请求都把打开的 WebSocket 标为最近使用，连接满时先关空闲的 keep-alive 连接），`/api/v1/ws` 的升级在握手前交给 `WsHandlers::on_open`（`CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT`），拒绝就是普通的 403；任务优先级 3，低于 UI。80 端口的强制门户是第二个实例（另一个控制端口、4 个连接、无 WebSocket），`AdminServer::captive_handler()` 只对热点接口的请求重定向，其余返回 404。请求所在接口按连接的本地地址和对端地址判断（`net_iface.hpp`），不看请求头。
 - 出站请求走 `EspHttpClient`：HTTPS 用 IDF 证书包校验（含主机名），不跟随重定向，响应体上限 64 KB。
 - 网页资源：固件构建时 `tools/pack_assets.py` 把 `web/` 打成 `wisp_web.wpak`（超过 256 KiB 或 150 KB gzip 预算即构建失败），按 4 字节对齐链接进应用镜像（`firmware/main/CMakeLists.txt` 的 `target_add_binary_data`，符号 `_binary_wisp_web_pack_start/_end`），静态文件直接从映射的 Flash 发送。网页与固件因此总是同一版本，随 OTA 一起切换，不再有单独的 `assets` 分区。
-- 固件上传（连接 spec 6.5）：`POST /api/v1/system/firmware` 的请求体不缓存，由 `EspHttpServer` 按 `HttpServer::StreamHandler` 以 4 KB 一块交给 `FirmwareUpdateService`，再由 `EspFirmwareUpdater` 用 `esp_ota_*`（顺序写）写进没在运行的 `ota_N` 槽；头 336 字节到齐时就核对项目名 `wisp`、芯片（`CONFIG_IDF_FIRMWARE_CHIP_ID`）和板名描述符（见 `docs/porting-guide.md`"固件与分区"），不符的镜像一个字节都不写。网页上传从不要求签名。上传期间 httpd 的单个任务被这个请求占着，WebSocket 日志推送会暂停到上传结束。
+- 固件上传（连接 spec 6.5）：`POST /api/v1/system/firmware` 的请求体不缓存，由 `EspHttpServer` 按 `HttpServer::StreamHandler` 以 4 KB 一块交给 `FirmwareUpdateService`，再由 `EspFirmwareUpdater` 用 `esp_ota_*`（顺序写）写进没在运行的 `ota_N` 槽；头 336 字节到齐时就核对项目名 `wisp`、芯片（`CONFIG_IDF_FIRMWARE_CHIP_ID`）和板名描述符（见 `docs/porting-guide.md`"固件与分区"），不符的镜像一个字节都不写。网页上传从不要求签名。httpd 只有一个任务，由此带来几条已知限制（接受现状，不在代码里绕开）：上传期间 WebSocket 日志推送暂停到上传结束；提前应答时剩余请求体超过 8 MiB（`kBodyDrainBytes`）就不再读完丢弃，应答（例如超过 8 MiB 的文件得到的 413）写出后连接直接被重置，浏览器多半只看到"无法连接"而不是 `payload_too_large`；同时发起的第二个上传不会立即得到 409，而是排在第一个后面，等第一个结束（进入待确认）、自己的请求体被读完丢弃后才得到 409 `busy`；`stop()` 要等正在进行的上传结束（客户端不再发送时最多两次 5 s 接收超时）。模拟器每个连接一个线程，以上情况都会立即应答。
 
 ## 串口控制台
 
