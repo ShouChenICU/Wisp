@@ -32,7 +32,10 @@ public:
     void init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) override {
         // 1. 从 bmgr 取已经建好的句柄（显示/触摸/音频/SD），包一层 hal::Device 子类，add() 进 registry。
         // 2. 用 drivers/ 里的驱动，在 bmgr 暴露的 I2C 总线上初始化 IMU/PMU/RTC/按键，add() 进 registry。
-        // 3. 任何一步失败：report.record({id, class, DeviceState::Failed, "原因"})，不要 add() 这个设备，
+        // 3. 芯片自带 Wi-Fi 时：wisp::port::esp::EspWifi::create() 注册 net.wifi。放在最后（在显示之后，
+        //    免得 Wi-Fi 驱动先占走屏幕 DMA 缓冲要用的内部 RAM），并且 bmgr 失败的提前返回路径上也要调用：
+        //    射频开着是 Platform::random（esp_fill_random）给出真随机数的前提。
+        // 4. 任何一步失败：report.record({id, class, DeviceState::Failed, "原因"})，不要 add() 这个设备，
         //    不要让 init() 本身失败或中止——缺失的设备只是降级，不阻止启动（AGENTS.md 第 3 节"设备模型"）。
     }
 };

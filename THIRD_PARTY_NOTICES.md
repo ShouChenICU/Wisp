@@ -194,15 +194,116 @@ code that survives gc:
 | TLSF allocator (`components/heap/tlsf`) | BSD-3-Clause | `libheap.a(tlsf.c.obj)` -- the block allocator backing `heap_caps`/`multi_heap`; Copyright (C) 2006-2016 Matthew Conte (full text below) |
 | FatFs (`components/fatfs`) | BSD-style (ChaN license) | `libfatfs.a(ff.c.obj, ffunicode.c.obj, ffsystem.c.obj, diskio.c.obj, diskio_sdmmc.c.obj, vfs_fat.c.obj, vfs_fat_sdmmc.c.obj)` -- backs the SD card FAT filesystem (`storage.sd`); Copyright (C) 2022, ChaN, all right reserved (full text below) |
 | Xtensa/Cadence HAL (`components/xtensa`) | MIT | `libxt_hal.a(windowspill_asm.o, int_asm--set_intclear.o, interrupts--intlevel.o, state_asm--save_extra_nw.o, state_asm--restore_extra_nw.o)` -- the vendor-supplied low-level Xtensa HAL (register window spill/fill, interrupt level primitives), distinct from ESP-IDF's own Apache-2.0 glue code in the same component (`libxtensa.a`); Copyright (C) 2003, 2006, 2010 Tensilica Inc, per `check_copyright_config.yaml`'s `xtensa` section and `docs/en/COPYRIGHT.rst` lines 26/88 (full text below) |
-| Mbed TLS / TF-PSA-Crypto (`components/mbedtls`) | Apache License 2.0 | By the "Archive member included" count, `libtfpsacrypto.a` alone contributes 137 archive members (aes/gcm/rsa/ecdsa/psa_crypto/...) and `libmbedtls.a`'s own `esp-idf/mbedtls/mbedtls/library/libmbedtls.a(esp_psa_crypto_init.c.obj)` and `esp-idf/mbedtls/libmbedtls.a(esp_mem.c.obj)` are also pulled in. Most of that is discarded by the linker's `--gc-sections`; what actually survives into `wisp.bin` is a small amount of PSA core code (key slot management, the init/free paths, and the ESP RSA-DS opaque-key driver) from `psa_crypto.c`, `psa_crypto_slot_management.c`, and `psa_crypto_driver_esp_rsa_ds.c`, plus the allocator/mutex shim in `esp_mem.c.obj`/`esp_psa_crypto_init.c.obj` -- sub-project 1 has no networking/TLS usage yet, so none of this is exercised at runtime; Copyright (C) 2006-2018 ARM Limited |
+| Mbed TLS / TF-PSA-Crypto (`components/mbedtls`) | Apache License 2.0 | By the "Archive member included" count, `libtfpsacrypto.a` alone contributes 137 archive members (aes/gcm/rsa/ecdsa/psa_crypto/...) and `libmbedtls.a`'s own `esp-idf/mbedtls/mbedtls/library/libmbedtls.a(esp_psa_crypto_init.c.obj)` and `esp-idf/mbedtls/libmbedtls.a(esp_mem.c.obj)` are also pulled in. Most of that is discarded by the linker's `--gc-sections`; what actually survives into `wisp.bin` is a small amount of PSA core code (key slot management, the init/free paths, and the ESP RSA-DS opaque-key driver) from `psa_crypto.c`, `psa_crypto_slot_management.c`, and `psa_crypto_driver_esp_rsa_ds.c`, plus the allocator/mutex shim in `esp_mem.c.obj`/`esp_psa_crypto_init.c.obj` -- since networking landed, `libmbedtls.a`/`libmbedx509.a`/`libtfpsacrypto.a` also carry the TLS client and X.509 verification that `wisp::port::esp::EspHttpClient` (`components/wisp_port_esp/net/esp_http_client.cpp`, via esp-tls) uses for the LLM connectivity test, and the crypto that wpa_supplicant uses for WPA2/WPA3; Copyright (C) 2006-2018 ARM Limited |
+| lwIP (`components/lwip`) | BSD-3-Clause | `liblwip.a` (84 archive members: TCP/IP stack, sockets, DHCP client/server, DNS) -- the network stack under Wi-Fi, both HTTP servers, the captive DNS responder and mDNS; Copyright (C) 2001, 2002 Swedish Institute of Computer Science (full text below) |
+| wpa_supplicant (`components/wpa_supplicant`) | BSD-3-Clause | `libwpa_supplicant.a` (137 archive members: WPA2/WPA3 station and soft-AP key management, SAE, crypto glue over Mbed TLS) -- `CONFIG_FAST_PBKDF2` is off in this build, so the CC0 "Fast PBKDF2" code ESP-IDF's `COPYRIGHT.rst` also lists is not compiled in; Copyright (c) 2002-2022, Jouni Malinen and contributors (full text below) |
+| FreeBSD net80211 (inside `components/esp_wifi`'s binary `libnet80211.a`) | BSD | Per ESP-IDF's `docs/en/COPYRIGHT.rst`, the closed-source Wi-Fi library contains code derived from FreeBSD net80211, Copyright (C) 2004-2008 Sam Leffler, Errno Consulting; ESP-IDF ships no separate license file for it. The Wi-Fi/PHY binary libraries themselves (`libnet80211.a`, `libpp.a`, `libphy.a`, `libcore.a`, `libmesh.a`, ...) are Espressif's own, under Apache-2.0 (`components/esp_wifi/lib/LICENSE`, `components/esp_phy/lib/LICENSE`) |
+| HTTP Parser (`components/http_parser`) | MIT | `libhttp_parser.a(http_parser.c.obj)` -- request/response parsing inside esp_http_server and esp_http_client; based on NGINX's parser, Copyright Igor Sysoev, additional changes Copyright Joyent, Inc. and other Node contributors (full text below) |
 
-ESP-IDF also bundles lwIP, wpa_supplicant, and various other
-networking/Bluetooth components under their own licenses, but none of
-their object files appear in this build's "Archive member included"
-section -- sub-project 1 has no networking yet (see `AGENTS.md`'s
-roadmap) -- so they are not listed here; this note should be revisited
-once a later sub-project adds networking and actually links one of them
-in.
+ESP-IDF's Bluetooth stacks, OpenThread and the other bundled
+components not listed above have no object files in this build's
+"Archive member included" section, so they are not listed here.
+
+lwIP: copied verbatim from `components/lwip/lwip/COPYING`
+(`~/esp/esp-idf-v6.0.3`):
+
+```
+Copyright (c) 2001, 2002 Swedish Institute of Computer Science.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. The name of the author may not be used to endorse or promote products
+   derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR IMPLIED
+WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT
+SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+OF SUCH DAMAGE.
+```
+
+wpa_supplicant: the copyright line from `components/wpa_supplicant/COPYING`
+followed by the license terms that file points to, copied verbatim from
+`components/wpa_supplicant/README` (`~/esp/esp-idf-v6.0.3`):
+
+```
+wpa_supplicant and hostapd
+--------------------------
+
+Copyright (c) 2002-2022, Jouni Malinen <j@w1.fi> and contributors
+All Rights Reserved.
+
+This software may be distributed, used, and modified under the terms of
+BSD license:
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+3. Neither the name(s) of the above-listed copyright holder(s) nor the
+   names of its contributors may be used to endorse or promote products
+   derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+HTTP Parser: copied verbatim from `components/http_parser/LICENSE.txt`
+(`~/esp/esp-idf-v6.0.3`):
+
+```
+/* Based on src/http/ngx_http_parse.c from NGINX copyright Igor Sysoev
+ *
+ * Additional changes are licensed under the same terms as NGINX and
+ * copyright Joyent, Inc. and other Node contributors. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ */
+```
 
 Copied verbatim from `components/heap/tlsf/include/tlsf.h`'s SPDX header
 (`~/esp/esp-idf-v6.0.3`; Copyright (C) 2006-2016 Matthew Conte,
@@ -300,6 +401,7 @@ license file under `firmware/managed_components/`:
 | `espressif/usb` | 1.6.0 | esp_board_manager (via usb_host_uac) | Apache-2.0 |
 | `espressif/usb_host_uac` | 1.5.0 | esp_board_manager | Apache-2.0 |
 | `espressif/cmake_utilities` | 0.5.3 | esp_board_manager (build-time CMake helpers only) | Apache-2.0 |
+| `espressif/mdns` | 1.14.0 | `firmware/main` (direct dependency; the `wisp.local` responder started by `wisp::port::esp::EspWifi`, `components/wisp_port_esp/net/esp_wifi.cpp`) | Apache-2.0 |
 | `joltwallet/littlefs` | 1.23.1 | `firmware/main` (direct dependency, backs `wisp::port::esp::EspInternalStorage`, `components/wisp_port_esp/dev/esp_storage.cpp`) | MIT (ESP-IDF wrapper) + BSD-3-Clause (vendored littlefs core) -- both texts below |
 
 The Apache-2.0 components are under the same license as this project
