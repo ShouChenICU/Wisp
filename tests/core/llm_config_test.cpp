@@ -109,6 +109,68 @@ TEST(LlmConfig, OmittedKeyIsKeptEmptyKeyClears) {
     EXPECT_EQ(fx.file_contents().find("sk-1"), std::string::npos);
 }
 
+// The key belongs to the origin (scheme://host:port) it was saved for:
+// moving base_url to another origin without a new key forgets the key, so
+// it is never sent to a host the owner did not give it to.
+TEST(LlmConfig, ChangingTheOriginWithoutAKeyClearsTheKey) {
+    Fixture fx;
+    ASSERT_TRUE(fx.svc->set({.base_url = "https://a.example/v1", .api_key = "sk-old"}));
+
+    ASSERT_TRUE(fx.svc->set({.base_url = "https://b.example/v1"}));
+    auto c = fx.svc->get();
+    EXPECT_EQ(c.base_url, "https://b.example/v1");
+    EXPECT_FALSE(c.has_key);
+    EXPECT_EQ(fx.svc->authorization_for_request(), "");
+    EXPECT_EQ(fx.file_contents().find("sk-old"), std::string::npos);
+    fx.restart();
+    EXPECT_FALSE(fx.svc->get().has_key);
+}
+
+TEST(LlmConfig, EveryOriginComponentCounts) {
+    for (const char* next : {"http://a.example/v1", "https://a.example:8443/v1",
+                             "https://a.example.evil/v1", "https://evil@b.example/v1"}) {
+        Fixture fx;
+        ASSERT_TRUE(fx.svc->set({.base_url = "https://a.example/v1", .api_key = "sk-1"}));
+        ASSERT_TRUE(fx.svc->set({.base_url = std::string(next)}));
+        EXPECT_FALSE(fx.svc->get().has_key) << next;
+    }
+}
+
+TEST(LlmConfig, SameOriginKeepsTheKey) {
+    Fixture fx;
+    ASSERT_TRUE(fx.svc->set({.base_url = "https://a.example/v1", .api_key = "sk-1"}));
+    // Path, case of the host, an explicit default port and user info do
+    // not change where the request goes.
+    for (const char* next : {"https://a.example/v2", "https://A.Example/v1",
+                             "https://a.example:443/v1", "https://user@a.example/v1"}) {
+        ASSERT_TRUE(fx.svc->set({.base_url = std::string(next)}));
+        EXPECT_EQ(fx.svc->authorization_for_request(), "Bearer sk-1") << next;
+    }
+    ASSERT_TRUE(fx.svc->set({.base_url = "http://10.0.0.2/v1", .api_key = "sk-2"}));
+    ASSERT_TRUE(fx.svc->set({.base_url = "http://10.0.0.2:80"}));
+    EXPECT_EQ(fx.svc->authorization_for_request(), "Bearer sk-2");
+    ASSERT_TRUE(fx.svc->set({.base_url = "http://[fd00::2]:8000/v1", .api_key = "sk-3"}));
+    ASSERT_TRUE(fx.svc->set({.base_url = "http://[FD00::2]:8000/v2"}));
+    EXPECT_EQ(fx.svc->authorization_for_request(), "Bearer sk-3");
+    ASSERT_TRUE(fx.svc->set({.base_url = "http://[fd00::3]:8000/v2"}));
+    EXPECT_FALSE(fx.svc->get().has_key);
+}
+
+TEST(LlmConfig, NewOriginWithANewKeyKeepsTheNewKey) {
+    Fixture fx;
+    ASSERT_TRUE(fx.svc->set({.base_url = "https://a.example/v1", .api_key = "sk-a"}));
+    ASSERT_TRUE(fx.svc->set({.base_url = "https://b.example/v1", .api_key = "sk-b"}));
+    EXPECT_EQ(fx.svc->authorization_for_request(), "Bearer sk-b");
+}
+
+// A key stored before any base_url was saved for no origin at all.
+TEST(LlmConfig, FirstBaseUrlWithoutAKeyClearsAnUnboundKey) {
+    Fixture fx;
+    ASSERT_TRUE(fx.svc->set({.api_key = "sk-early"}));
+    ASSERT_TRUE(fx.svc->set({.base_url = "https://a.example/v1"}));
+    EXPECT_FALSE(fx.svc->get().has_key);
+}
+
 TEST(LlmConfig, RejectsNonHttpUrl) {
     Fixture fx;
     ASSERT_TRUE(fx.svc->set({.base_url = "http://10.0.0.2:8000/v1", .api_key = "sk-keep"}));

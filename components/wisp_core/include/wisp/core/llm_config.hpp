@@ -31,8 +31,11 @@ struct LlmConfig {
     bool has_key = false;
 };
 
-// Fields left as nullopt keep their current value. api_key "" clears the
-// stored key.
+// Fields left as nullopt keep their current value, with one exception: a
+// base_url on a different origin (scheme://host:port) than the stored one,
+// with api_key left as nullopt, clears the stored key -- the key is never
+// sent to a server other than the one it was saved for. api_key "" clears
+// the stored key.
 struct LlmConfigUpdate {
     std::optional<std::string> base_url, model, api_key;
 };

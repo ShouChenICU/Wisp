@@ -56,6 +56,34 @@ std::optional<std::string> normalize_base_url(std::string_view url) {
     return out;
 }
 
+// "scheme://host:port" of a URL normalize_base_url() accepted, with the
+// scheme and host lowercased, user info dropped and the default port made
+// explicit, so two URLs that reach the same server compare equal. "" for
+// "" (no endpoint configured yet).
+std::string origin_of(std::string_view url) {
+    if (url.empty()) return {};
+    const bool https = url.starts_with("https://");
+    std::string_view authority = url.substr(https ? 8 : 7);
+    authority = authority.substr(0, authority.find_first_of("/?#"));
+    if (size_t at = authority.rfind('@'); at != std::string_view::npos) {
+        authority.remove_prefix(at + 1);
+    }
+    std::string_view host = authority;
+    std::string_view port;
+    size_t colon = authority.rfind(':');
+    size_t bracket = authority.rfind(']');
+    if (colon != std::string_view::npos && (bracket == std::string_view::npos || colon > bracket)) {
+        host = authority.substr(0, colon);
+        port = authority.substr(colon + 1);
+    }
+    if (port.empty()) port = https ? "443" : "80";
+    std::string out = https ? "https://" : "http://";
+    for (char c : host) out += (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    out += ':';
+    out += port;
+    return out;
+}
+
 // API keys go into an Authorization header verbatim: only visible ASCII
 // (no spaces, CR, LF or other control bytes) is accepted.
 bool valid_api_key(std::string_view key) {
@@ -133,6 +161,12 @@ Result<void> LlmConfigService::set(const LlmConfigUpdate& u) {
                                      "base_url must be an http:// or https:// URL");
         }
         next.base_url = std::move(*url);
+        // The key belongs to the server it was saved for. Moving to another
+        // origin without a new key forgets it rather than sending it to a
+        // host the owner never gave it to.
+        if (!u.api_key && origin_of(next.base_url) != origin_of(current_.base_url)) {
+            next.api_key.clear();
+        }
     }
     if (u.model) {
         if (u.model->size() > kMaxModelBytes || has_control(*u.model)) {
@@ -150,7 +184,7 @@ Result<void> LlmConfigService::set(const LlmConfigUpdate& u) {
     }
 
     WISP_TRY(persist(next));
-    bool key_changed = u.api_key.has_value() && next.api_key != current_.api_key;
+    bool key_changed = next.api_key != current_.api_key;
     current_ = std::move(next);
     WLOG_I(kTag, "LLM config updated (key %s%s)", current_.api_key.empty() ? "unset" : "set",
            key_changed ? ", changed" : "");

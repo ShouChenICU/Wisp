@@ -193,6 +193,7 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 ```
 
 - API Key 存放在 System 区的 `secrets/llm.json`。服务对外**没有任何能读出 Key 的接口**，连部分字符也不给；只有子项目 4 的 Agent 客户端通过内部接口在发请求时取用。
+- Key 只属于保存它时的 `base_url` 源（scheme://host:port，scheme 与 host 不区分大小写，省略的默认端口按 80/443 补齐，路径不算）。一次 `set()` 把 `base_url` 改到另一个源、却没有同时提供 `api_key` 时，服务**清除已存的 Key**（`has_key` 变为 false），之后的 `test()` 和 Agent 请求都不带 Key；在还没有 `base_url` 时存下的 Key 不属于任何源，第一次设置 `base_url` 时同样清除。这样无论是换服务商、填错主机名，还是已配对的浏览器把地址改成自己控制的主机，Key 都不会被发到保存它时以外的服务器。后台网页在这种情况下提示用户重新输入 Key。
 - `test()` 通过 `HttpClient` 以 `Authorization: Bearer <key>` 请求 `/models`，超时 10 秒，返回是否成功、延迟、模型 id 列表，或错误类别（DNS、TLS、超时、HTTP 状态码）。错误信息里不得带上 Key。
 
 ### 5.4 `SystemSettings`（`wisp_core`）

@@ -172,6 +172,31 @@ TEST(Routes, LlmGetPutAndTest) {
     }
 }
 
+// Moving the endpoint to another origin without retyping the key forgets
+// the key, says so in the response, and the test then sends no key to the
+// new host.
+TEST(Routes, LlmOriginChangeDropsTheKeyBeforeTheTest) {
+    AdminFixture f;
+    const std::string token = f.token();
+    ASSERT_TRUE(f.llm->set({.base_url = "https://api.example.com/v1", .api_key = "sk-OLDHOST"}));
+
+    HttpResponse put = f.srv->handle(
+        authed(token, Put, "/api/v1/llm", R"({"base_url":"http://192.168.1.9:8000/v1"})"));
+    EXPECT_EQ(put.status, 200);
+    EXPECT_EQ(field(body_json(put), "has_key"), Value(false));
+    EXPECT_EQ(field(body_json(f.srv->handle(authed(token, Get, "/api/v1/llm"))), "has_key"),
+              Value(false));
+
+    f.http.next = {.status = 401, .body = "{}"};
+    f.srv->handle(authed(token, Post, "/api/v1/llm/test"));
+    auto sent = f.http.last();
+    ASSERT_TRUE(sent.has_value());
+    EXPECT_EQ(sent->url, "http://192.168.1.9:8000/v1/models");
+    for (const auto& [k, v] : sent->headers) {
+        EXPECT_EQ(v.find("OLDHOST"), std::string::npos) << k;
+    }
+}
+
 TEST(Routes, WifiStatusNeverContainsApPassword) {
     AdminFixture f;
     const std::string token = f.token();
