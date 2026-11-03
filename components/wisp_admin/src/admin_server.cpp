@@ -166,6 +166,7 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_wifi_routes(routes_);
     detail::add_ai_routes(routes_);
     detail::add_system_routes(routes_);
+    detail::add_firmware_routes(routes_);
     hub_ = std::make_unique<WsHub>(deps_.bus, deps_.boot_id);
     hub_->start();
     // Logout, DELETE /clients/{id} and the factory reset's revoke_all()
@@ -298,6 +299,10 @@ net::HttpHandler AdminServer::captive_handler() {
         if (auto redirect = detail::setup_redirect(deps_)) return std::move(*redirect);
         return net::HttpResponse::error(503, "unavailable", "setup hotspot is not running");
     };
+}
+
+net::StreamHandler AdminServer::stream_handler() {
+    return [this](const net::HttpRequest& head) { return detail::firmware_stream(deps_, head); };
 }
 
 net::WsHandlers AdminServer::ws_handlers() {

@@ -180,7 +180,8 @@ wisp_test(NAME model_probe_test SRCS net/model_probe_test.cpp LIBS wisp_net wisp
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.
-foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test ws_hub_test)
+foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test routes_firmware_test
+                   ws_hub_test)
     wisp_test(NAME ${admin_test} SRCS admin/${admin_test}.cpp
               LIBS wisp_admin wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
     add_dependencies(${admin_test} wisp_fixture_wpak)

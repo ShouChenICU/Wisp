@@ -26,6 +26,8 @@
 //      wisp_token cookie (401 unauthorized), then POST/PUT/DELETE need
 //      "X-Wisp: 1" (403 csrf, whitelist included), then the body must be
 //      at most 8 KiB (413) and, when non-empty, valid JSON (400 bad_json).
+//      The firmware upload is the exception: its body is streamed (see
+//      stream_handler()) and never reaches handle().
 //
 // WebSocket (/api/v1/ws): the upgrade passes the same Host check and needs
 // the same wisp_token cookie as the API; accepted connections are handed
@@ -55,6 +57,7 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/firmware_update.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -94,6 +97,9 @@ struct AdminDeps {
     // Shows a confirmation dialog on the device; the outcome is published
     // as an event rather than returned.
     std::function<void()> request_factory_reset;
+    // Firmware upload (spec 6.5). Null: GET /system/firmware reports
+    // supported false and every upload is 501.
+    core::FirmwareUpdateService* firmware = nullptr;
     // Monotonic os::now_ms() timebase; the only clock the router uses.
     // Tests inject their own; left empty, AdminServer uses os::now_ms().
     std::function<uint64_t()> now_ms = [] { return os::now_ms(); };
@@ -134,6 +140,13 @@ public:
     // this AdminServer, so the HttpServer must be stopped before it is
     // destroyed.
     net::WsHandlers ws_handlers();
+
+    // The HttpServer's StreamHandler: takes POST /api/v1/system/firmware
+    // (the firmware image, streamed into AdminDeps::firmware after the
+    // same Host, token and X-Wisp checks as any API call; 411 without a
+    // Content-Length) and leaves every other request to handle(). Captures
+    // this AdminServer, like ws_handlers().
+    net::StreamHandler stream_handler();
 
     // WsHub::flush() on this server's hub.
     bool flush_ws(uint32_t timeout_ms);

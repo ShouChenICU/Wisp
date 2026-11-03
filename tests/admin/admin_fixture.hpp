@@ -146,9 +146,9 @@ struct AdminFixture {
 // that walk all of them: a new GET route belongs here.
 inline const std::vector<std::string>& every_authenticated_get_route() {
     static const std::vector<std::string> paths = {
-        "/api/v1/info",        "/api/v1/device",     "/api/v1/devices",
-        "/api/v1/settings",    "/api/v1/wifi",       "/api/v1/wifi/scan",
-        "/api/v1/ai/profiles", "/api/v1/ai/presets", "/api/v1/clients",
+        "/api/v1/info",    "/api/v1/device",          "/api/v1/devices",     "/api/v1/settings",
+        "/api/v1/wifi",    "/api/v1/wifi/scan",       "/api/v1/ai/profiles", "/api/v1/ai/presets",
+        "/api/v1/clients", "/api/v1/system/firmware",
     };
     return paths;
 }

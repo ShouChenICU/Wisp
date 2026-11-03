@@ -57,8 +57,14 @@ struct Route {
 void add_pair_routes(std::vector<Route>& routes);
 void add_device_routes(std::vector<Route>& routes);  // /device, /devices, /settings
 void add_wifi_routes(std::vector<Route>& routes);
-void add_ai_routes(std::vector<Route>& routes);      // /ai/*
-void add_system_routes(std::vector<Route>& routes);  // /clients, /system/*
+void add_ai_routes(std::vector<Route>& routes);        // /ai/*
+void add_system_routes(std::vector<Route>& routes);    // /clients, /system/*
+void add_firmware_routes(std::vector<Route>& routes);  // /system/firmware
+
+// The firmware upload, the one streamed request (routes_firmware.cpp).
+constexpr std::string_view kFirmwarePath = "/api/v1/system/firmware";
+// AdminServer::stream_handler(): nullopt for every other request.
+std::optional<net::StreamStart> firmware_stream(AdminDeps& deps, const net::HttpRequest& head);
 
 // How long the reboot route waits before calling AdminDeps::reboot, so its
 // 202 reaches the browser first.
