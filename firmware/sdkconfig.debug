@@ -1,0 +1,9 @@
+# Debug build, layered over the release defaults (connectivity spec 3.2):
+#   idf.py -B build-debug -D SDKCONFIG=build-debug/sdkconfig \
+#     -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;components/gen_bmgr_codes/board_manager.defaults;sdkconfig.debug" build
+# (see docs/porting-guide.md). Optimized for debugging, full assertions,
+# and Debug logs compiled in (esp_log's runtime level stays Info; raise a
+# tag with esp_log_level_set()). The rendering path stays -O2 either way.
+CONFIG_COMPILER_OPTIMIZATION_DEBUG=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

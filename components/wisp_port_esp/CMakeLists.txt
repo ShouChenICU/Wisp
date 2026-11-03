@@ -41,3 +41,9 @@ wisp_component(
                  esp_wifi esp_netif esp_event lwip esp_http_server esp_http_client esp-tls
                  mbedtls mdns app_update esp_partition
 )
+
+# Rendering path: the display flush and touch read are always -O2,
+# whatever the global level (connectivity spec 3.2; see
+# firmware/CMakeLists.txt). Source options come after the target's on the
+# compiler command line, so they win.
+set_source_files_properties(dev/esp_display.cpp dev/esp_touch.cpp PROPERTIES COMPILE_OPTIONS -O2)

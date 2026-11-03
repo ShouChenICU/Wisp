@@ -1,6 +1,8 @@
 # Build outputs
 build/
 firmware/build/
+# Extra build directories, e.g. the debug build (firmware/sdkconfig.debug).
+firmware/build-*/
 firmware/managed_components/
 firmware/components/gen_bmgr_codes/
 firmware/sdkconfig

@@ -1,8 +1,11 @@
 # Name,    Type, SubType,  Offset,   Size
+# Two 5 MB OTA slots for the admin page's firmware upload (connectivity
+# spec 3.2, 6.5); the web pack is linked into the app image, so there is
+# no assets partition. nvs and storage keep the offsets and sizes they
+# had, so an update that brings this table keeps settings and data.
 nvs,       data, nvs,      0x9000,   0x6000
 otadata,   data, ota,      0xF000,   0x2000
 phy_init,  data, phy,      0x11000,  0x1000
-ota_0,     app,  ota_0,    0x20000,  0x400000
-ota_1,     app,  ota_1,    0x420000, 0x400000
-assets,    data, spiffs,   0x820000, 0x200000
+ota_0,     app,  ota_0,    0x20000,  0x500000
+ota_1,     app,  ota_1,    0x520000, 0x500000
 storage,   data, littlefs, 0xA20000, 0x5E0000

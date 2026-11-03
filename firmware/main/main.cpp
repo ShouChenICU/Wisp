@@ -1,7 +1,8 @@
 // ESP32-S3 firmware entry point: wires up the ESP-only pieces of
 // wisp::app::Platform (EspLogSink, wisp::port::esp::NvsSettingsBackend,
 // emit_line/request_power_off/heap_info, and the networking services:
-// EspHttpServer/EspHttpClient and the mapped web asset pack) around
+// EspHttpServer/EspHttpClient, the linked-in web asset pack and the
+// EspFirmwareUpdater behind the admin page's firmware upload) around
 // whichever board
 // firmware/CMakeLists.txt's WISP_BOARD selected, then runs the same
 // wisp::app::App boot sequence the PC simulator runs (see
@@ -11,7 +12,6 @@
 // panel fails to come up it falls back to the headless path instead.
 
 #include <cstdio>
-#include <cstring>
 #include <memory>
 #include <span>
 #include <string>
@@ -19,7 +19,6 @@
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
-#include "esp_partition.h"
 #include "esp_pm.h"
 #include "esp_random.h"
 #include "esp_sleep.h"
@@ -32,10 +31,15 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/port/esp/console_esp.hpp"
+#include "wisp/port/esp/esp_firmware.hpp"
 #include "wisp/port/esp/esp_http_client.hpp"
 #include "wisp/port/esp/esp_http_server.hpp"
 #include "wisp/port/esp/log_esp.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
+#include "wisp_board_desc.h"
+
+extern "C" const uint8_t _binary_wisp_web_pack_start[];
+extern "C" const uint8_t _binary_wisp_web_pack_end[];
 
 namespace {
 
@@ -66,39 +70,14 @@ void apply_pm_config(bool light_sleep_enable) {
     }
 }
 
-// The web UI's WispPack (connectivity spec 2.3), mapped read-only from
-// the "assets" partition (found by name, spec 3.2) and left mapped for the
-// life of the firmware, so the admin server can send files straight from
-// flash. Only the pack itself is mapped, sized from its header (bytes
-// 12..15: total_bytes, see tools/pack_assets.py); an erased or foreign
-// partition yields an empty span and the API is served without a page.
-std::span<const uint8_t> map_assets() {
-    const esp_partition_t* part =
-        esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "assets");
-    if (part == nullptr) {
-        WLOG_W("main", "no \"assets\" partition; admin page unavailable");
-        return {};
-    }
-    uint8_t header[16] = {};
-    if (esp_partition_read(part, 0, header, sizeof(header)) != ESP_OK ||
-        std::memcmp(header, "WPAK", 4) != 0) {
-        WLOG_W("main", "\"assets\" holds no web pack (flash it with idf.py flash)");
-        return {};
-    }
-    uint32_t total = 0;
-    std::memcpy(&total, header + 12, sizeof(total));  // little-endian, like the chip
-    if (total < sizeof(header) || total > part->size) {
-        WLOG_W("main", "\"assets\" pack size %u is out of range", static_cast<unsigned>(total));
-        return {};
-    }
-    const void* data = nullptr;
-    esp_partition_mmap_handle_t handle = 0;
-    esp_err_t err = esp_partition_mmap(part, 0, total, ESP_PARTITION_MMAP_DATA, &data, &handle);
-    if (err != ESP_OK) {
-        WLOG_W("main", "mapping \"assets\" failed: %s", esp_err_to_name(err));
-        return {};
-    }
-    return {static_cast<const uint8_t*>(data), total};
+// The web UI's WispPack (connectivity spec 2.3), linked into the app image
+// by firmware/main/CMakeLists.txt (target_add_binary_data, 4-byte
+// aligned; the symbols are declared above, outside the anonymous
+// namespace, so they keep their C names), read straight from mapped flash
+// and always matching this firmware.
+std::span<const uint8_t> web_pack() {
+    return {_binary_wisp_web_pack_start,
+            static_cast<size_t>(_binary_wisp_web_pack_end - _binary_wisp_web_pack_start)};
 }
 
 }  // namespace
@@ -141,8 +120,8 @@ extern "C" void app_main() {
     platform.set_standby = [](bool standby) { apply_pm_config(/*light_sleep_enable=*/standby); };
     // The single source for this (rather than a literal duplicated here
     // and in the build config): esp_app_desc_t is filled in at build
-    // time from PROJECT_VER (itself git-describe by default -- see the
-    // IDF build system docs), so this always reports exactly what was
+    // time from PROJECT_VER (cmake/wisp_version.cmake, via
+    // firmware/CMakeLists.txt), so this always reports exactly what was
     // actually flashed.
     platform.firmware_version = esp_app_get_description()->version;
     // esp_fill_random() is a true RNG only while the RF subsystem (Wi-Fi/BT)
@@ -173,7 +152,11 @@ extern "C" void app_main() {
     // (8900) while the station has an address or the hotspot is up.
     platform.http_server = std::make_unique<wisp::port::esp::EspHttpServer>();
     platform.http_client = std::make_unique<wisp::port::esp::EspHttpClient>();
-    platform.assets = map_assets();
+    platform.assets = web_pack();
+    // Firmware upload into the OTA slot not running (connectivity spec
+    // 6.5); null without a second slot. Its board name is the one this
+    // image's own descriptor carries, which uploads must match.
+    platform.firmware = wisp::port::esp::EspFirmwareUpdater::create(wisp_board_desc.board);
     // The hotspot's port-80 captive redirect (spec 4.3): a second httpd
     // instance, so it needs its own control port; it only ever redirects,
     // so it gets few sockets, a small stack and no WebSocket. Both

@@ -30,6 +30,12 @@ set(EXTRA_COMPONENT_DIRS ${CMAKE_CURRENT_LIST_DIR}/../components ${CMAKE_CURRENT
 # different board.
 set(WISP_BOARD waveshare_amoled_216 CACHE STRING "Board to build for (boards/<name>/board.cpp)")
 
+# The image's version (esp_app_desc_t::version, what the admin page and
+# the firmware upload compare): X.Y.Z[-N-gHASH][-dirty] from git, see
+# cmake/wisp_version.cmake. Must be set before project().
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/wisp_version.cmake)
+wisp_version(PROJECT_VER)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 # LVGL configuration (AGENTS.md's "LVGL 配置" trap): the lvgl/lvgl
@@ -71,33 +77,22 @@ if(TARGET __idf_gen_bmgr_codes)
     set_target_properties(__idf_gen_bmgr_codes PROPERTIES SOURCES "${_wisp_bmgr_srcs}")
 endif()
 
-# The admin web UI (connectivity spec 2.3): tools/pack_assets.py packs web/
-# into build/assets.wpak, failing the build when it does not fit this
-# board's `assets` partition or the gzip budget (spec 7.1), and `idf.py
-# flash` writes it to that partition along with the app. The pack depends
-# on every file and directory under web/: deleting or renaming a file only
-# bumps its directory's mtime (same scheme as simulator/CMakeLists.txt).
-set(WISP_WEB_DIR ${CMAKE_CURRENT_LIST_DIR}/../web)
-set(WISP_ASSETS_WPAK ${CMAKE_BINARY_DIR}/assets.wpak)
-file(GLOB_RECURSE WISP_WEB_FILES CONFIGURE_DEPENDS ${WISP_WEB_DIR}/*)
-file(GLOB_RECURSE WISP_WEB_ENTRIES LIST_DIRECTORIES true CONFIGURE_DEPENDS ${WISP_WEB_DIR}/*)
-list(APPEND WISP_WEB_FILES ${WISP_WEB_DIR})
-foreach(entry IN LISTS WISP_WEB_ENTRIES)
-    if(IS_DIRECTORY ${entry})
-        list(APPEND WISP_WEB_FILES ${entry})
+# The rendering path is always built with -O2, whatever the global
+# optimization level (connectivity spec 3.2: the release build is -Os,
+# the debug build -Og). IDF adds the global level as a directory-wide
+# compile option, so a target's own option, which comes later on the
+# command line, wins. wisp_ui and wisp_port_esp's display/touch sources
+# set it themselves; LVGL and the esp_lcd* components (the panel and touch
+# drivers and the LCD flush path) are third-party, so it is set here.
+idf_build_get_property(_wisp_components BUILD_COMPONENTS)
+foreach(_wisp_component IN LISTS _wisp_components)
+    if(_wisp_component MATCHES "^lvgl__lvgl$|(^|__)esp_lcd")
+        idf_component_get_property(_wisp_lib ${_wisp_component} COMPONENT_LIB)
+        get_target_property(_wisp_type ${_wisp_lib} TYPE)
+        if(NOT _wisp_type STREQUAL "INTERFACE_LIBRARY")
+            target_compile_options(${_wisp_lib} PRIVATE -O2)
+            list(APPEND _wisp_o2_components ${_wisp_component})
+        endif()
     endif()
 endforeach()
-idf_build_get_property(_wisp_python PYTHON)
-set(WISP_BOARD_PARTITIONS ${CMAKE_CURRENT_LIST_DIR}/../boards/${WISP_BOARD}/partitions.csv)
-add_custom_command(
-    OUTPUT ${WISP_ASSETS_WPAK}
-    COMMAND ${_wisp_python} ${CMAKE_CURRENT_LIST_DIR}/../tools/pack_assets.py ${WISP_WEB_DIR}
-            -o ${WISP_ASSETS_WPAK} --partitions ${WISP_BOARD_PARTITIONS} --budget-kb 150
-    DEPENDS ${CMAKE_CURRENT_LIST_DIR}/../tools/pack_assets.py ${WISP_BOARD_PARTITIONS}
-            ${WISP_WEB_FILES}
-    COMMENT "Packing web/ into assets.wpak"
-    VERBATIM
-)
-add_custom_target(wisp_assets ALL DEPENDS ${WISP_ASSETS_WPAK})
-esptool_py_flash_to_partition(flash assets ${WISP_ASSETS_WPAK})
-add_dependencies(flash wisp_assets)
+message(STATUS "Rendering path built with -O2: ${_wisp_o2_components}")

@@ -43,12 +43,24 @@ CONFIG_FREERTOS_HZ=1000
 # own light callbacks. Raised with headroom for wisp Timer callbacks.
 CONFIG_ESP_TIMER_TASK_STACK_SIZE=6144
 
-# esp_log keeps its default runtime level (Info) so ESP-IDF's own Debug
-# logs stay quiet. wisp::log is the only filter for wisp output:
-# EspLogSink (log_esp.cpp) writes directly to the console and bypasses
-# esp_log's per-tag filtering. The maximum level is raised to Debug only
-# so an IDF tag can still be raised at runtime via esp_log_level_set().
-CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+# Release build (connectivity spec 3.2): this file is the release
+# configuration; firmware/sdkconfig.debug layers a debug build on top.
+# Optimized for size, except the rendering path (LVGL, wisp_ui, the
+# display/touch drivers and the LCD flush path), which pins -O2 in its own
+# component (see docs/porting-guide.md). Assertions stay compiled but
+# silent: a failed one aborts without the file/line strings.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+# esp_log keeps its default runtime level (Info). wisp::log is the only
+# filter for wisp output: EspLogSink (log_esp.cpp) writes directly to the
+# console and bypasses esp_log's per-tag filtering. Nothing above Info is
+# compiled in; the debug build raises the maximum to Debug.
+CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
+
+# Firmware upload (connectivity spec 6.5): the bootloader boots a freshly
+# installed image in a pending state and returns to the previous one if it
+# resets before App::start() has marked it valid.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # Power management (spec 6.7): PM_ENABLE compiles in DFS/light
 # -sleep support; firmware/main/main.cpp's apply_pm_config() keeps DFS

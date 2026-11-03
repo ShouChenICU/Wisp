@@ -17,3 +17,10 @@ wisp_component(
     IDF_REQUIRES lvgl__lvgl
     HOST_LIBS lvgl
 )
+
+# Rendering path: always -O2 on the device, whatever the global level
+# (connectivity spec 3.2; see firmware/CMakeLists.txt). The host build
+# keeps its own flags.
+if(ESP_PLATFORM)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+endif()

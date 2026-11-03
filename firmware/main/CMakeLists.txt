@@ -4,10 +4,50 @@
 # board.cpp drives esp_board_manager (bmgr) and the esp_lcd/esp_lcd_touch
 # handles it creates (see boards/waveshare_amoled_216/board.cpp).
 idf_component_register(
-    SRCS main.cpp ${CMAKE_CURRENT_LIST_DIR}/../../boards/${WISP_BOARD}/board.cpp
+    SRCS main.cpp board_desc.c ${CMAKE_CURRENT_LIST_DIR}/../../boards/${WISP_BOARD}/board.cpp
     REQUIRES wisp_app wisp_port_esp esp_board_manager esp_lcd esp_lcd_touch esp_driver_i2c
-             esp_driver_gpio esp_pm esp_app_format esp_partition
+             esp_driver_gpio esp_pm esp_app_format
 )
+
+# The board descriptor (board_desc.c) names the board this image is for,
+# right after esp_app_desc_t, where the firmware upload reads it from an
+# image's first bytes (connectivity spec 6.5, docs/porting-guide.md).
+# Nothing references the symbol, so the linker is told to keep it.
+target_compile_definitions(${COMPONENT_LIB} PRIVATE WISP_BOARD_NAME="${WISP_BOARD}")
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u wisp_board_desc")
+if(DEFINED CONFIG_ESP_BOARD_NAME AND NOT CONFIG_ESP_BOARD_NAME STREQUAL WISP_BOARD)
+    message(FATAL_ERROR "idf.py bmgr selected board \"${CONFIG_ESP_BOARD_NAME}\" but WISP_BOARD is "
+                        "\"${WISP_BOARD}\"; rerun bmgr with -b ${WISP_BOARD} or pass -DWISP_BOARD")
+endif()
+
+# The admin web UI (connectivity spec 2.3): tools/pack_assets.py packs web/
+# into wisp_web.wpak (failing the build over the pack's 256 KiB or the
+# 150 KiB gzip budget), which is linked into the app image, 4-byte aligned,
+# as _binary_wisp_web_pack_start/_end. The web page and the firmware are
+# thus always the same version, and switch OTA slots together. The pack
+# depends on every file and directory under web/: deleting or renaming a
+# file only bumps its directory's mtime (same scheme as
+# simulator/CMakeLists.txt).
+set(WISP_WEB_DIR ${CMAKE_CURRENT_LIST_DIR}/../../web)
+set(WISP_WEB_WPAK ${CMAKE_CURRENT_BINARY_DIR}/wisp_web.wpak)
+file(GLOB_RECURSE WISP_WEB_FILES CONFIGURE_DEPENDS ${WISP_WEB_DIR}/*)
+file(GLOB_RECURSE WISP_WEB_ENTRIES LIST_DIRECTORIES true CONFIGURE_DEPENDS ${WISP_WEB_DIR}/*)
+list(APPEND WISP_WEB_FILES ${WISP_WEB_DIR})
+foreach(entry IN LISTS WISP_WEB_ENTRIES)
+    if(IS_DIRECTORY ${entry})
+        list(APPEND WISP_WEB_FILES ${entry})
+    endif()
+endforeach()
+idf_build_get_property(_wisp_python PYTHON)
+add_custom_command(
+    OUTPUT ${WISP_WEB_WPAK}
+    COMMAND ${_wisp_python} ${CMAKE_CURRENT_LIST_DIR}/../../tools/pack_assets.py ${WISP_WEB_DIR}
+            -o ${WISP_WEB_WPAK} --budget-kb 150
+    DEPENDS ${CMAKE_CURRENT_LIST_DIR}/../../tools/pack_assets.py ${WISP_WEB_FILES}
+    COMMENT "Packing web/ into wisp_web.wpak"
+    VERBATIM
+)
+target_add_binary_data(${COMPONENT_LIB} ${WISP_WEB_WPAK} BINARY RENAME_TO wisp_web_pack ALIGN 4)
 
 # Every wisp_* component already pins itself to C++20/-fno-exceptions/
 # -fno-rtti via cmake/wisp_component.cmake (see AGENTS.md section 5); this
