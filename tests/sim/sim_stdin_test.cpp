@@ -137,3 +137,23 @@ TEST(SimStdin, ReadsATerminal) {
     ::close(slave);
     ::close(master);
 }
+
+// A terminal that hangs up (here: its master side closes) ends the input.
+// Linux reports this hangup as end of file; an EIO from a terminal we are
+// not in the background of is treated the same way.
+TEST(SimStdin, TerminalHangupClosesTheInput) {
+    const int master = ::posix_openpt(O_RDWR | O_NOCTTY);
+    ASSERT_GE(master, 0);
+    ASSERT_EQ(::grantpt(master), 0);
+    ASSERT_EQ(::unlockpt(master), 0);
+    const int slave = ::open(::ptsname(master), O_RDWR | O_NOCTTY);
+    ASSERT_GE(slave, 0);
+    {
+        ConsoleLines console;
+        StdinReader reader(slave, nullptr, console);
+        ::close(master);
+        std::string line;
+        EXPECT_EQ(console.read(line, 2000), LineRead::Closed);
+    }
+    ::close(slave);
+}

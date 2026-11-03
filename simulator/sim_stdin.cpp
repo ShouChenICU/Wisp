@@ -85,12 +85,11 @@ void StdinReader::run() {
         char buf[512];
         const ssize_t n = ::read(fd_, buf, sizeof(buf));
         if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
-        // EIO: moved to the background between the check above and the
-        // read (SIGTTIN is ignored, see the header). Not the end of input.
-        if (n < 0 && errno == EIO && is_tty_) {
-            ::poll(nullptr, 0, kPollMs);
-            continue;
-        }
+        // EIO while we are in the background: moved there between the check
+        // above and the read (SIGTTIN is ignored, see the header); the next
+        // turn waits in the background branch instead of reading again. Any
+        // other EIO (a hung-up terminal) falls through to end of input.
+        if (n < 0 && errno == EIO && in_background()) continue;
         if (n <= 0) {
             // End of input: a last line without a newline still counts.
             if (!overlong) route(std::move(pending));

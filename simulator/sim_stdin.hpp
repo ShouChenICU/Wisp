@@ -22,7 +22,8 @@
 // and resumes once the job is brought to the foreground (`fg`). The
 // simulator also ignores SIGTTIN, which turns the remaining race (sent to
 // the background between that check and read()) into an EIO the reader
-// retries instead of a stopped process.
+// retries instead of a stopped process. An EIO while not in the background
+// (a hung-up terminal) ends the input like end of file.
 
 #include <atomic>
 #include <condition_variable>

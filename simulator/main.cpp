@@ -97,7 +97,9 @@ void install_signal_handlers() {
     struct sigaction action{};
     action.sa_handler = on_stop_signal;
     sigemptyset(&action.sa_mask);
-    action.sa_flags = SA_RESETHAND;
+    // SA_RESTART: the signal lands on whichever thread, which must not see
+    // an interrupted syscall because of it.
+    action.sa_flags = SA_RESETHAND | SA_RESTART;
     sigaction(SIGINT, &action, nullptr);
     sigaction(SIGTERM, &action, nullptr);
     signal(SIGTTIN, SIG_IGN);
