@@ -675,13 +675,15 @@ Result<void> ModelProfileService::activate(std::string_view id) {
     std::lock_guard<os::Mutex> lock(mutex_);
     const Stored* s = find(state_, id);
     if (s == nullptr) return Result<void>::err(ErrorCode::NotFound, "no such model profile");
+    // `s` points into state_, which the move below frees.
+    const ModelKind kind = s->profile.kind;
     State next = state_;
-    next.active[static_cast<size_t>(s->profile.kind)] = s->profile.id;
+    next.active[static_cast<size_t>(kind)] = s->profile.id;
 
     WISP_TRY(persist(next));
     state_ = std::move(next);
-    WLOG_I(kTag, "activated %s profile %.*s", to_string(s->profile.kind),
-           static_cast<int>(id.size()), id.data());
+    WLOG_I(kTag, "activated %s profile %.*s", to_string(kind), static_cast<int>(id.size()),
+           id.data());
     publish(state_);
     return Result<void>::ok();
 }
