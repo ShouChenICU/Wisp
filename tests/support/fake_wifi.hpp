@@ -23,6 +23,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -52,6 +53,9 @@ public:
 
     wisp::Result<std::vector<wisp::hal::WifiScanEntry>> scan() override {
         ++scan_calls;
+        if (on_scan) {
+            on_scan();  // outside mutex_, so the hook may call back into the fake
+        }
         std::lock_guard<std::mutex> lock(mutex_);
         return wisp::Result<std::vector<wisp::hal::WifiScanEntry>>::ok(networks);
     }
@@ -145,6 +149,10 @@ public:
     std::vector<wisp::hal::WifiScanEntry> networks;
     std::map<std::string, std::string> passwords;  // SSID -> correct password
     std::array<uint8_t, 6> mac_bytes{0x02, 0x00, 0x00, 0x00, 0x3F, 0x2A};
+    // Called at the start of every scan(), on the scanning thread -- lets a
+    // test act deterministically "while the radio is scanning". Set it
+    // before handing the fake to a service, like the fields above.
+    std::function<void()> on_scan;
 
     std::atomic<bool> reachable{true};
     std::atomic<int> ap_client_count{0};

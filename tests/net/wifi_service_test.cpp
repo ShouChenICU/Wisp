@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -627,9 +628,10 @@ TEST(WifiService, StateEventsCarryNoPassword) {
         if (e.topic == "net.wifi.state") {
             ++wifi_events;
             EXPECT_EQ(e.source, "net.wifi");
-            EXPECT_EQ(e.payload.size(), 4u) << json;
+            EXPECT_EQ(e.payload.size(), 5u) << json;
             EXPECT_TRUE(e.payload.count("state") && e.payload.count("ssid") &&
-                        e.payload.count("ip") && e.payload.count("rssi"))
+                        e.payload.count("ip") && e.payload.count("rssi") &&
+                        e.payload.count("reason"))
                 << json;
         } else if (e.topic == "net.ap.state") {
             ++ap_events;
@@ -645,6 +647,130 @@ TEST(WifiService, StateEventsCarryNoPassword) {
     EXPECT_EQ(str_of(connected.payload, "state"), "connected");
     EXPECT_EQ(str_of(connected.payload, "ip"), "192.168.1.50");
     EXPECT_EQ(connected.payload.at("rssi").as_int(), -50);
+}
+
+// The setup wizard shows why an attempt failed; "reason" is only set in
+// backoff and never carries the password.
+TEST(WifiService, BackoffEventsCarryFailureReason) {
+    Fixture f;
+    f.in_range("Home", -50, "rightpass1");
+    f.seed({{"Home", "wrongpass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+
+    tick2(svc, 0);  // wrong password
+    f.wifi->reachable = false;
+    tick2(svc, 5000);  // router unreachable
+    f.wifi->networks.clear();
+    tick2(svc, 15000);  // nothing saved in range
+    f.wifi->networks.push_back({"Home", -50, true});
+    f.wifi->reachable = true;
+    ASSERT_TRUE(svc.add_network("Home", "rightpass1", 20000));
+    tick2(svc, 20000);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+
+    std::vector<std::string> backoff_reasons;
+    for (const auto& e : f.topic("net.wifi.state")) {
+        std::string json = wisp::to_json(wisp::Value(e.payload));
+        EXPECT_EQ(json.find("rightpass1"), std::string::npos) << json;
+        EXPECT_EQ(json.find("wrongpass1"), std::string::npos) << json;
+        if (str_of(e.payload, "state") == "backoff") {
+            backoff_reasons.push_back(str_of(e.payload, "reason"));
+        } else {
+            EXPECT_EQ(str_of(e.payload, "reason"), "") << json;
+        }
+    }
+    EXPECT_EQ(backoff_reasons, (std::vector<std::string>{"auth_failed", "other", "not_found"}));
+}
+
+// A Failed snapshot left over from an attempt on another network must not
+// be taken as the outcome of the attempt in flight.
+TEST(WifiService, StaleFailedFromAnotherNetworkIsIgnored) {
+    Fixture f;
+    f.in_range("A", -50, "passwordA");
+    f.seed({{"A", "passwordA"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    svc.tick(0);  // connect("A") in flight
+
+    WifiLink stale;
+    stale.state = WifiLinkState::Failed;
+    stale.ssid = "B";
+    stale.reason = wisp::hal::WifiFailReason::AuthFailed;
+    f.wifi->set_link(stale);
+    svc.tick(250);
+    EXPECT_EQ(svc.status().state, WifiState::Connecting);
+
+    WifiLink ok;
+    ok.state = WifiLinkState::Connected;
+    ok.ssid = "A";
+    ok.ip = "192.168.1.50";
+    f.wifi->set_link(ok);
+    svc.tick(500);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+
+    // A Failed with no SSID (drivers that don't report one) still counts.
+    f.wifi->reachable = false;
+    f.wifi->set_link(WifiLink{});
+    svc.tick(750);  // drop -> reconnect attempt in flight
+    WifiLink anonymous;
+    anonymous.state = WifiLinkState::Failed;
+    f.wifi->set_link(anonymous);
+    svc.tick(1000);
+    EXPECT_EQ(svc.status().state, WifiState::Backoff);
+}
+
+// add_network() landing while tick() has mutex_ released for its scan must
+// win: the stale scan-based plan is dropped and the next tick connects to
+// the network the user just added, not the strongest old one.
+TEST(WifiService, AddNetworkDuringScanSupersedesThePlannedAttempt) {
+    Fixture f;
+    f.in_range("Old", -40, "oldpass11");
+    f.in_range("New", -70, "newpass22");
+    f.seed({{"Old", "oldpass11"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+
+    bool fired = false;
+    f.wifi->on_scan = [&] {
+        if (fired) return;
+        fired = true;
+        EXPECT_TRUE(svc.add_network("New", "newpass22", 0));
+    };
+    svc.tick(0);
+    ASSERT_TRUE(fired);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 0);
+
+    svc.tick(250);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 1);
+    EXPECT_EQ(f.wifi->link().ssid, "New");
+    svc.tick(500);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+    EXPECT_EQ(svc.status().ssid, "New");
+}
+
+TEST(WifiService, ForgetAllReportsAFailedPersist) {
+    wisp::log::reset_for_test();
+    wisp::log::init(64 * 1024);
+    {
+        Fixture f;
+        auto& svc = f.make();
+        ASSERT_TRUE(svc.init(0));
+        ASSERT_TRUE(svc.add_network("Home", "homeSecret42", 0));
+
+        // A non-empty directory where wifi.json goes makes the write fail.
+        std::filesystem::remove(f.wifi_json_path());
+        std::filesystem::create_directories(f.wifi_json_path() + "/blocker");
+
+        svc.forget_all();
+        EXPECT_TRUE(svc.saved_ssids().empty());
+        EXPECT_EQ(svc.status().state, WifiState::Off);
+
+        std::string log = wisp::log::ring_snapshot();
+        EXPECT_NE(log.find("not persisted"), std::string::npos) << log;
+        EXPECT_EQ(log.find("homeSecret42"), std::string::npos) << log;
+    }
+    wisp::log::reset_for_test();
 }
 
 TEST(WifiService, ScanMarksSavedAndKeepsStrongestDuplicate) {

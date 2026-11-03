@@ -160,7 +160,7 @@ private:
     void publish_ap_locked(bool active, const std::string& ssid);
     Result<void> close_ap_locked(const char* why);
     void schedule_attempt_locked(uint64_t at_ms);
-    void fail_attempt_locked(uint64_t now_ms, const char* why);
+    void fail_attempt_locked(uint64_t now_ms, const char* why, const char* reason);
     void start_connect_locked(const Network& net, uint64_t now_ms);
     void poll_link_locked(uint64_t now_ms);
     void tick_standby_locked(uint64_t now_ms);
@@ -191,7 +191,11 @@ private:
 
     bool attempt_due_ = false;  // Connecting/Backoff: an attempt is scheduled
     uint64_t next_attempt_ms_ = 0;
-    uint32_t backoff_ms_ = 0;                 // wait applied after the next failure
+    uint32_t backoff_ms_ = 0;  // wait applied after the next failure
+    // Cause of the last failed attempt ("not_found"/"auth_failed"/"other"),
+    // published as net.wifi.state's "reason" while in Backoff.
+    const char* fail_reason_ = "";
+    std::string published_reason_;            // "reason" of the last published event
     std::optional<std::string> direct_ssid_;  // next attempt skips the scan
 
     bool in_flight_ = false;  // connect() issued, waiting for the link

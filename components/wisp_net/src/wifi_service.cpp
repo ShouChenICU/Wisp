@@ -51,6 +51,24 @@ const char* reason_text(hal::WifiFailReason r) {
     return "connection failed";
 }
 
+// Values of net.wifi.state's "reason" (see WifiService::fail_reason_).
+constexpr const char* kReasonNotFound = "not_found";
+constexpr const char* kReasonAuthFailed = "auth_failed";
+constexpr const char* kReasonOther = "other";
+
+const char* reason_code(hal::WifiFailReason r) {
+    switch (r) {
+        case hal::WifiFailReason::NotFound:
+            return kReasonNotFound;
+        case hal::WifiFailReason::AuthFailed:
+            return kReasonAuthFailed;
+        case hal::WifiFailReason::Other:
+        case hal::WifiFailReason::None:
+            break;
+    }
+    return kReasonOther;
+}
+
 }  // namespace
 
 const char* to_string(WifiState s) {
@@ -172,17 +190,23 @@ Result<void> WifiService::init(uint64_t now_ms) {
 // State machine
 
 void WifiService::set_state_locked(WifiState state, std::string ssid, std::string ip, int rssi) {
-    bool changed = state != status_.state || ssid != status_.ssid || ip != status_.ip;
+    // The reason only describes a failed attempt, so it is only reported
+    // while waiting to retry one.
+    const char* reason = state == WifiState::Backoff ? fail_reason_ : "";
+    bool changed = state != status_.state || ssid != status_.ssid || ip != status_.ip ||
+                   std::string_view(reason) != published_reason_;
     status_.state = state;
     status_.ssid = std::move(ssid);
     status_.ip = std::move(ip);
     status_.rssi = rssi;
     if (!changed) return;
+    published_reason_ = reason;
     bus_.publish(core::Event{"net.wifi.state", source_, 0,
                              Properties{{"state", to_string(state)},
                                         {"ssid", status_.ssid},
                                         {"ip", status_.ip},
-                                        {"rssi", status_.rssi}}});
+                                        {"rssi", status_.rssi},
+                                        {"reason", reason}}});
 }
 
 void WifiService::schedule_attempt_locked(uint64_t at_ms) {
@@ -190,8 +214,9 @@ void WifiService::schedule_attempt_locked(uint64_t at_ms) {
     next_attempt_ms_ = at_ms;
 }
 
-void WifiService::fail_attempt_locked(uint64_t now_ms, const char* why) {
+void WifiService::fail_attempt_locked(uint64_t now_ms, const char* why, const char* reason) {
     std::string ssid = in_flight_ssid_;
+    fail_reason_ = reason;
     in_flight_ = false;
     in_flight_ssid_.clear();
     direct_ssid_.reset();
@@ -215,7 +240,7 @@ void WifiService::start_connect_locked(const Network& net, uint64_t now_ms) {
     if (!r) {
         // Only the code: a driver message is not guaranteed free of the
         // credentials it was handed.
-        fail_attempt_locked(now_ms, to_string(r.error().code));
+        fail_attempt_locked(now_ms, to_string(r.error().code), kReasonOther);
     }
 }
 
@@ -238,11 +263,14 @@ void WifiService::poll_link_locked(uint64_t now_ms) {
                        static_cast<unsigned>(config_.ap_linger_ms));
             }
             set_state_locked(WifiState::Connected, link.ssid, link.ip, link.rssi);
-        } else if (link.state == hal::WifiLinkState::Failed) {
-            fail_attempt_locked(now_ms, reason_text(link.reason));
+        } else if (link.state == hal::WifiLinkState::Failed &&
+                   (link.ssid.empty() || link.ssid == in_flight_ssid_)) {
+            // A Failed naming another SSID is left over from an earlier
+            // attempt; this one's outcome (or the timeout) is still to come.
+            fail_attempt_locked(now_ms, reason_text(link.reason), reason_code(link.reason));
         } else if (now_ms >= in_flight_deadline_ms_) {
             (void)wifi_->disconnect();  // stop the driver from retrying on its own
-            fail_attempt_locked(now_ms, "timed out");
+            fail_attempt_locked(now_ms, "timed out", kReasonOther);
         }
         return;
     }
@@ -306,10 +334,12 @@ void WifiService::finish_attempt_locked(const AttemptPlan& plan,
 
     const Network* target = nullptr;
     const char* why = "no saved network in range";
+    const char* reason = kReasonNotFound;
     if (!plan.direct_ssid.empty()) {
         target = find_locked(plan.direct_ssid);
     } else if (scan != nullptr && !*scan) {
         why = "scan failed";
+        reason = kReasonOther;
     } else if (scan != nullptr) {
         int best_rssi = 0;
         for (const auto& entry : scan->value()) {
@@ -322,7 +352,7 @@ void WifiService::finish_attempt_locked(const AttemptPlan& plan,
     }
     if (target == nullptr) {
         in_flight_ssid_ = plan.direct_ssid;
-        fail_attempt_locked(now_ms, why);
+        fail_attempt_locked(now_ms, why, reason);
         return;
     }
     start_connect_locked(*target, now_ms);
@@ -469,7 +499,8 @@ Result<void> WifiService::forget_network(std::string_view ssid) {
         in_flight_ssid_.clear();
     }
     if (networks_.empty()) {
-        if (in_flight_) (void)wifi_->disconnect();
+        // Every attempt targets a saved network, so with none left any
+        // attempt in flight was for `ssid` and was dropped just above.
         attempt_due_ = false;
         in_flight_ = false;
         in_flight_ssid_.clear();
@@ -494,7 +525,11 @@ void WifiService::forget_all() {
     std::lock_guard<os::Mutex> lock(mutex_);
     ++generation_;
     networks_.clear();
-    (void)persist_locked(networks_);
+    if (!persist_locked(networks_)) {
+        // persist_locked() already logged the storage error; say what it
+        // means: the networks come back after a reboot.
+        WLOG_E(kTag, "factory reset of saved networks was not persisted");
+    }
     if (ap_) (void)close_ap_locked("factory reset");
     if (in_flight_ || status_.state != WifiState::Off) (void)wifi_->disconnect();
     attempt_due_ = false;
