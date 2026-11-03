@@ -616,16 +616,17 @@ def post_firmware(port, cookie, image):
         conn.close()
 
 
-# Where the firmware dialog's "Yes" button may be, in English on the
-# default screen: its x, and the y values tried in turn. The dialog is
-# make_confirm_box() like the reset dialog, but its text holds the
-# running version, whose length follows the git history and can wrap, so
-# the button moves by a line or so; a column of taps keeps the case from
-# depending on it. Nothing else in the modal dialog reacts to a tap at
-# that x ("No" is to the right).
-FIRMWARE_YES_X = 188
-FIRMWARE_YES_YS = (307, 297, 317, 287, 327, 277, 337)
-FIRMWARE_DIALOG_LOG = "waiting for confirmation on the screen"
+# The firmware dialog's "Yes" button, in English on the default 480x480
+# rounded_rect screen. The dialog is make_confirm_box() like the reset
+# dialog; its text is the prompt, the running version and "-> new", one
+# version per line (SelfCheck::show_firmware_dialog()). A git-described
+# version fits one line, and FIRMWARE_VERSION is newer than any version
+# this repository will reach, so no downgrade line is added: the layout
+# does not depend on the checkout. Move this when that layout or the
+# "Yes" text changes.
+FIRMWARE_YES_TAP = (188, 307)
+FIRMWARE_VERSION = "999.0.0"
+FIRMWARE_DIALOG_LOG = f"firmware {FIRMWARE_VERSION}: waiting for confirmation on the screen"
 
 
 def case_firmware(sim_path, tmp_root):
@@ -639,7 +640,7 @@ def case_firmware(sim_path, tmp_root):
     token = "smoke-firmware-token"
     seed_paired_client(data_dir, token, "smoke")
     (data_dir / "settings.json").write_text(json.dumps({"sys": {"lang": "en"}}))
-    image = make_firmware_image("9.9.9")
+    image = make_firmware_image(FIRMWARE_VERSION)
 
     port = free_port()
     args = sim_args(sim_path, data_dir, [], http_port=port)
@@ -659,8 +660,7 @@ def case_firmware(sim_path, tmp_root):
     drainer.start()
     ws = None
     states = []
-    taps = []
-    dialog_open = False
+    tapped_at = None
     deadline = time.monotonic() + TIMEOUT_S
     try:
         expect(http_ready.wait(TIMEOUT_S), f"no WISP_HTTP line:\n{''.join(stdout_lines)}")
@@ -674,43 +674,38 @@ def case_firmware(sim_path, tmp_root):
             if json.loads(text).get("t") == "log":
                 break
 
-        status, body = post_firmware(port, cookie, make_firmware_image("9.9.9", board="other"))
+        status, body = post_firmware(port, cookie,
+                                     make_firmware_image(FIRMWARE_VERSION, board="other"))
         expect(status == 400 and json.loads(body)["error"]["code"] == "wrong_board",
                f"POST another board's image -> {status} {body}")
         expect(not (data_dir / "firmware.bin").exists(), "a refused image was kept")
 
         status, body = post_firmware(port, cookie, image)
-        expect(status == 202 and json.loads(body) == {"version": "9.9.9"},
+        expect(status == 202 and json.loads(body) == {"version": FIRMWARE_VERSION},
                f"POST /api/v1/system/firmware -> {status} {body}")
 
-        last_tap = None
         while True:
             expect(time.monotonic() < deadline, f"no restart within {TIMEOUT_S}s; states {states}")
-            if dialog_open and "confirmed" not in states and (
-                    last_tap is None or time.monotonic() - last_tap > 0.5):
-                expect(len(taps) < len(FIRMWARE_YES_YS),
-                       f"tapped {taps} but the update was not confirmed: the dialog's Yes "
-                       f"button is not there any more (see FIRMWARE_YES_YS); states {states}")
-                y = FIRMWARE_YES_YS[len(taps)]
-                proc.stdin.write(f"tap {FIRMWARE_YES_X},{y}\n")
-                proc.stdin.flush()
-                taps.append(y)
-                last_tap = time.monotonic()
-            if not select.select([ws.sock], [], [], 0.1)[0]:
+            expect(tapped_at is None or "confirmed" in states or time.monotonic() - tapped_at < 5,
+                   f"tapped {FIRMWARE_YES_TAP} but the update was not confirmed: the dialog's "
+                   f"Yes button is not there any more (see FIRMWARE_YES_TAP); states {states}")
+            if not select.select([ws.sock], [], [], 0.5)[0]:
                 continue
             text = ws.recv_text()
             if text is None:
                 break
             msg = json.loads(text)
             if msg.get("t") == "event" and msg.get("topic") == "system.firmware":
-                expect(msg["payload"].get("version") == "9.9.9", f"event {msg}")
+                expect(msg["payload"].get("version") == FIRMWARE_VERSION, f"event {msg}")
                 state = msg["payload"].get("state")
                 states.append(state if state != "failed" else
                               f"failed:{msg['payload'].get('error')}")
-            elif msg.get("t") == "log" and FIRMWARE_DIALOG_LOG in msg.get("msg", "") \
-                    and "firmware 9.9.9" in msg.get("msg", ""):
-                dialog_open = True
-        expect(dialog_open, f"the firmware dialog never opened; states {states}")
+            elif (msg.get("t") == "log" and tapped_at is None
+                  and FIRMWARE_DIALOG_LOG in msg.get("msg", "")):
+                proc.stdin.write("tap {},{}\n".format(*FIRMWARE_YES_TAP))
+                proc.stdin.flush()
+                tapped_at = time.monotonic()
+        expect(tapped_at is not None, f"the firmware dialog never opened; states {states}")
         proc.wait(timeout=TIMEOUT_S)
         drainer.join(timeout=TIMEOUT_S)
         err = proc.stderr.read()
@@ -718,7 +713,7 @@ def case_firmware(sim_path, tmp_root):
         raise SmokeError(f"wisp_sim did not exit after the update; states {states}") from exc
     except OSError as exc:
         tail = "".join(stdout_lines[-15:])
-        raise SmokeError(f"{type(exc).__name__}: {exc}; states {states}; taps {taps}; "
+        raise SmokeError(f"{type(exc).__name__}: {exc}; states {states}; tapped {tapped_at is not None}; "
                          f"wisp_sim exit code {proc.poll()}; last output:\n{tail}") from exc
     finally:
         if ws is not None:
