@@ -812,6 +812,38 @@ TEST(AppNet, BootDoesNotWaitForWifi)             // FakeWifi::scan 阻塞 3 s �
 
 ---
 
+### Task 13b: 设备端多语言基础（spec 8.3）
+
+**Files:**
+- Create: `components/wisp_ui/include/wisp/ui/strings.hpp`、`components/wisp_ui/src/strings.cpp`、`components/wisp_ui/src/strings_{zh,ja,en}.cpp`、`tools/gen_cjk_font.py`
+- Modify: `components/wisp_core/{include/wisp/core/system_settings.hpp,src/system_settings.cpp}`（新增字符串键 `language`）、`components/wisp_admin/src/routes_*.cpp`（`/settings` 读写 `language`）、`components/wisp_app/src/self_check_screen.cpp` 与其他设备端中文文字、`components/wisp_ui/fonts/lv_font_cjk_16.c`（重新生成）、`docs/references.md`、`THIRD_PARTY_NOTICES.md`
+- Test: `tests/ui/strings_test.cpp`、`tests/core/system_settings_test.cpp`、`tests/admin/routes_settings_test.cpp`（或现有对应文件）、`tests/app/self_check_screen_test.cpp`
+
+**Interfaces:**
+- Produces：
+  - `enum class StrId : uint16_t`、`enum class Lang : uint8_t { Zh, Ja, En }`、`const char* ui::tr(StrId)`、`void ui::set_lang(Lang)`、`Lang ui::lang()`、`std::optional<Lang> ui::parse_lang(std::string_view)`（"zh"/"ja"/"en"）。`tr` 线程安全（语言存为原子量），但文字只在 UI 线程上使用。
+  - `SystemSettings` 的 `language` 键：取值 `"zh"`/`"ja"`/`"en"`，默认 `"zh"`，存为 `sys`/`lang`；非法值返回 `InvalidArgument`。`GET /settings` 返回它，`PUT /settings` 可以修改。
+  - 语言变化时，App 在 UI 线程上调用 `ui::set_lang` 并重建当前界面的文字（自检界面重建即可）。
+- 字体：`tools/gen_cjk_font.py` 只用 Python 标准库生成字符清单：ASCII、GB2312（`gb2312` 编解码器枚举）、JIS X 0208 第 1–8 区符号与假名、第 16–47 区第一水准汉字（`euc_jp` 编解码器枚举），去重排序后调用固定版本的 `lv_font_conv`（`npx lv_font_conv@1.5.2`），参数与现字体一致（16 px、4 bpp、Noto Sans CJK SC Regular，固定上游版本并校验 SHA-256）。生成的 `.c` 文件头写明来源、许可与生成命令。
+
+- [ ] **Step 1: 写失败的测试**
+
+```cpp
+TEST(Strings, EveryIdHasTextInEveryLanguage)          // 遍历全部 StrId × 3 种语言：非空
+TEST(Strings, EveryGlyphIsInTheBuiltInFont)           // 遍历全部文字的每个码点：lv_font_get_glyph_dsc 成功
+TEST(Strings, ParseLang)                              // "zh"/"ja"/"en" 解析成功，"fr"、"" 失败
+TEST(SystemSettings, LanguageDefaultsToZhAndValidates)
+TEST(AdminSettings, LanguageRoundTrips)               // PUT {"language":"ja"} 后 GET 返回 "ja"；"fr" → 400
+TEST(SelfCheckScreen, RebuildsInNewLanguage)          // 切到 en 后，屏幕上的标题文字变成英文
+```
+
+- [ ] **Step 2: 运行，确认失败。**
+- [ ] **Step 3: 实现**：先生成字体（确认新增的 ja 字形都在），再把设备端的中文文字全部迁到字符串表。
+- [ ] **Step 4: 验证**：全量 ctest、`bash tools/ci.sh`、固件 `idf.py build`，记录固件大小变化；模拟器分别用三种语言截图自检界面（`--screenshot`）。
+- [ ] **Step 5: Commit** — `feat(ui): add device UI strings in Chinese, Japanese and English`
+
+---
+
 ### Task 14: 网络、模型、系统页面与配网向导
 
 **Files:**
@@ -823,7 +855,7 @@ TEST(AppNet, BootDoesNotWaitForWifi)             // FakeWifi::scan 阻塞 3 s �
 
 - [ ] **Step 1: 网络页**：当前连接（SSID、IP、信号格数）；已保存的网络（删除前用 `confirmDialog` 确认）；"扫描"按钮列出网络，点击后输入密码（开放网络不显示密码框），提交后订阅 `net.wifi.state` 显示结果。
 - [ ] **Step 2: 模型页**：端点输入框（placeholder 为 `https://api.openai.com/v1`）；API Key 用 `type=password`，已设置时显示"已设置（不可查看）"和"清除"按钮，输入框留空提交表示保留原 Key；"测试连接"显示延迟与错误类别（中文）；测试成功后模型变为下拉框，也可以手动输入。
-- [ ] **Step 3: 系统页**：亮度、音量滑块（松手时 `PUT`）、熄屏时间下拉框（永不、15 s、30 s、60 s、2 min、5 min、10 min）；已配对的浏览器（当前浏览器带标记，可撤销）；重启；恢复出厂设置（先在网页上确认，再提示"请在设备上确认"，等待 `system.factory_reset` 事件）。
+- [ ] **Step 3: 系统页**：亮度、音量滑块（松手时 `PUT`）、熄屏时间下拉框（永不、15 s、30 s、60 s、2 min、5 min、10 min）、设备语言下拉框（中文 / 日本語 / English，对应 `language`，与网页自身的语言切换分开）；已配对的浏览器（当前浏览器带标记，可撤销）；重启；恢复出厂设置（先在网页上确认，再提示"请在设备上确认"，等待 `system.factory_reset` 事件）。
 - [ ] **Step 4: 配网向导 `setup.html`**：先调用 `POST /pair/ap`，然后依次为选择网络 → 输入密码 → 连接中（订阅 `net.wifi.state`，60 s 超时）→ 成功时显示 `http://<新 IP>:8900` 与 `http://wisp.local:8900`，失败时显示原因并允许重试。只引用包内资源。
 - [ ] **Step 5: 验证**：同 Task 13 的 Step 3，加上：模拟器里用 `WispLab`/`wisp1234` 走一遍配网向导（模拟器中 `iface` 为 `Loopback`，向导检测到 `/pair/ap` 返回 403 时退回到配对码流程）；用 `--wifi-fail` 验证失败提示；`bash tools/ci.sh` 通过。
 - [ ] **Step 6: Commit** — `feat(web): add network, model and system pages and the setup wizard`
@@ -846,6 +878,7 @@ TEST(AppNet, BootDoesNotWaitForWifi)             // FakeWifi::scan 阻塞 3 s �
   - 配对码卡片：标题 `配对请求`、大号 6 位数字（字间留空）、`剩余 N 秒` 每秒刷新、按钮 `拒绝`（使配对码立即失效）。码失效或配对成功后关闭。配网卡片打开时，配对码卡片叠在它之上。
   - 恢复出厂确认框复用 `show_confirm_dialog` 的样式：标题 `恢复出厂设置`，正文 `将清除 Wi-Fi、配对和模型配置并重启，场景数据保留。`。
   - 所有 LVGL 调用都经 `UiRuntime::post()`。
+  - 上面列出的中文文字是 `zh` 的文案；全部文字经 Task 13b 的 `ui::tr()` 取用，同时补齐 `ja`/`en`，语言切换后卡片随之重建。
 
 - [ ] **Step 1: 写失败的测试**（沿用 `self_check_screen_test.cpp` 的 Harness，加上 `FakeWifi`）
 
