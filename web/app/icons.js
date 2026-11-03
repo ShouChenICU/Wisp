@@ -144,6 +144,9 @@ export const IconMic = make(
 
 export const IconPower = make(() => paths('M12 3.5v8', 'M7 6.4a7.5 7.5 0 1 0 10 0'));
 export const IconReset = make(() => paths('M4 12a8 8 0 1 0 2.4-5.7', 'M4 4.5v5h5'));
+export const IconUpload = make(() =>
+  paths('M12 15V4.5', 'M7.5 9L12 4.5 16.5 9', 'M4.5 15v3.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V15'),
+);
 export const IconSun = make(
   () => html`<circle cx="12" cy="12" r="3.8" />
     ${paths('M12 2.5v2', 'M12 19.5v2', 'M2.5 12h2', 'M19.5 12h2', 'M5.3 5.3l1.4 1.4', 'M17.3 17.3l1.4 1.4', 'M5.3 18.7l1.4-1.4', 'M17.3 6.7l1.4-1.4')}`,

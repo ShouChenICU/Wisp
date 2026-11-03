@@ -83,28 +83,72 @@ export async function api(method, path, body, opts = {}) {
     clearTimeout(timer);
   }
 
-  let data = null;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = null;
-    }
-  }
-
+  const data = parseJson(text);
   if (res.ok) return data;
+  throw toApiError(res.status, res.statusText, data, res.headers.get('Retry-After'));
+}
 
-  if (res.status === 401) onUnauthorized();
+function parseJson(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+// The ApiError for a failed response; a 401 runs the unauthorized handler.
+function toApiError(status, statusText, data, retryAfter) {
+  if (status === 401) onUnauthorized();
   const err = (data && data.error) || {};
   /** @type {ApiError} */
   const thrown = {
-    status: res.status,
-    code: typeof err.code === 'string' ? err.code : 'http_' + res.status,
-    message: typeof err.message === 'string' ? err.message : res.statusText,
+    status,
+    code: typeof err.code === 'string' ? err.code : 'http_' + status,
+    message: typeof err.message === 'string' ? err.message : statusText,
   };
-  const retry = Number(err.retry_after_s ?? res.headers.get('Retry-After'));
-  if (res.status === 429 && Number.isFinite(retry) && retry > 0) thrown.retryAfterS = Math.ceil(retry);
-  throw thrown;
+  const retry = Number(err.retry_after_s ?? retryAfter);
+  if (status === 429 && Number.isFinite(retry) && retry > 0) thrown.retryAfterS = Math.ceil(retry);
+  return thrown;
+}
+
+/**
+ * POSTs a file as the raw request body (application/octet-stream, with
+ * its Content-Length), reporting upload progress -- fetch() cannot, hence
+ * XMLHttpRequest. Same X-Wisp header, errors and 401 handling as api().
+ *
+ * @param {string} path  path below /api/v1
+ * @param {Blob} file
+ * @param {{onProgress?: (sent: number, total: number) => void}} [opts]
+ * @returns {{done: Promise<any>, abort: () => void}}  `done` resolves to
+ *   the decoded JSON body and rejects with an ApiError (status 0 when the
+ *   device was unreachable or the upload was aborted)
+ */
+export function upload(path, file, opts = {}) {
+  const xhr = new XMLHttpRequest();
+  const done = new Promise((resolve, reject) => {
+    xhr.open('POST', PREFIX + path);
+    xhr.setRequestHeader('X-Wisp', '1');
+    xhr.setRequestHeader('Accept', 'application/json');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.withCredentials = true;
+    if (opts.onProgress) {
+      xhr.upload.onprogress = (e) => opts.onProgress(e.loaded, e.lengthComputable ? e.total : file.size);
+    }
+    const unreachable = () => reject({ status: 0, code: 'network', message: 'device unreachable' });
+    xhr.onerror = unreachable;
+    xhr.onabort = unreachable;
+    xhr.onload = () => {
+      const data = parseJson(xhr.responseText);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data);
+      } else {
+        reject(toApiError(xhr.status, xhr.statusText, data, xhr.getResponseHeader('Retry-After')));
+      }
+    };
+    xhr.send(file);
+  });
+  return { done, abort: () => xhr.abort() };
 }
 
 // Several parts of the app want /info at start-up (boot, the shell, the
@@ -132,7 +176,14 @@ export function getInfo() {
 
 // Codes for which a 5xx status still says something specific; any other
 // server-side failure is just "internal" (the device hides its details).
-const SPECIFIC_5XX = new Set(['unsupported', 'timeout', 'unavailable', 'storage_unavailable', 'no_memory']);
+const SPECIFIC_5XX = new Set([
+  'unsupported',
+  'timeout',
+  'unavailable',
+  'storage_unavailable',
+  'no_memory',
+  'write_failed',
+]);
 
 /**
  * A localized sentence for an ApiError, from its `code` (keys `err.<code>`

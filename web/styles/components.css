@@ -2041,6 +2041,13 @@ textarea {
   color: var(--err);
 }
 
+/* The firmware card's upload form, below its version list. */
+.fw-form {
+  margin-top: var(--gap-md);
+  padding-top: var(--gap-md);
+  border-top: 1px solid var(--border);
+}
+
 .form-actions {
   display: flex;
   flex-wrap: wrap;

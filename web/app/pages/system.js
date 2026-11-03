@@ -1,6 +1,6 @@
 // System (spec 7.3): display and sound settings, the device's own screen
-// language, paired browsers, restart and factory reset. The phone layout
-// also reaches the log page from here.
+// language, paired browsers, firmware, restart and factory reset. The phone
+// layout also reaches the log page from here.
 //
 // Restart: the device answers 202 and restarts a moment later; the page
 // then polls GET /info until it answers with a different boot_id, which
@@ -13,11 +13,20 @@
 // browser's socket may be closed (and its next request refused with 401)
 // before the "done" event gets out; while waiting, either one counts as
 // done. The page subscribes to events only for that wait.
+//
+// Firmware (spec 6.5): the file is streamed to POST /system/firmware with
+// upload progress. The device checks it is a Wisp image for its own board
+// and answers 202 once it is written and verified; its user then confirms
+// on the screen. The outcome arrives as system.firmware events
+// (received / confirmed / rejected / failed). After "confirmed" the device
+// restarts: the page waits for a new boot_id, then reads the running
+// version again -- a different one than uploaded means the new image did
+// not start and the bootloader went back to the old one.
 
 import { html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
-import { api, describeError, errorDetail, logout, setUnauthorizedHandler } from '../api.js';
+import { api, describeError, errorDetail, logout, setUnauthorizedHandler, upload } from '../api.js';
 import { navigate } from '../router.js';
-import { LANGS, locale, t } from '../i18n/index.js';
+import { LANGS, has, locale, t } from '../i18n/index.js';
 import { subscribe } from '../ws.js';
 import { Card } from '../components/card.js';
 import { Badge } from '../components/badge.js';
@@ -34,11 +43,13 @@ import {
   IconLogout,
   IconLogs,
   IconMoon,
+  IconPackage,
   IconPower,
   IconReset,
   IconSpeaker,
   IconSun,
   IconSystem,
+  IconUpload,
 } from '../icons.js';
 
 // SystemSettings' accepted ranges (spec 5.4).
@@ -163,6 +174,7 @@ export function SystemPage() {
       <${LanguageCard} settings=${settings} put=${put} />
     </div>
     <${ClientsCard} clients=${clients} error=${clientsError} reload=${loadClients} />
+    <${FirmwareCard} />
     <${MaintenanceCard} onBack=${loadAll} />
   </div>`;
 }
@@ -371,6 +383,308 @@ function ClientsCard({ clients, error, reload }) {
               })}
             </ul>`}
   </${Card}>`;
+}
+
+// An ESP application image starts with this byte (esp_image_header_t).
+const ESP_IMAGE_MAGIC = 0xe9;
+
+/**
+ * @typedef {Object} FirmwareInfo  GET /system/firmware
+ * @property {boolean} supported  false: the board has no OTA slots
+ * @property {string} version     the running image's
+ * @property {string} board       the board it was built for
+ * @property {string} running     the slot it runs from
+ * @property {string|null} pending  uploaded, awaiting the device's answer
+ */
+
+/** A sentence for a system.firmware "failed" event's error code. */
+function firmwareError(code) {
+  if (code === 'aborted') return t('fw.aborted');
+  return has('err.' + code) ? t('err.' + code) : t('err.unknown');
+}
+
+/**
+ * Waits for the device to come back from a restart: polls GET /info until
+ * a different boot answers. Returns a function that stops waiting.
+ */
+function waitForNewBoot(before, onBack, onSlow) {
+  let stopped = false;
+  const started = Date.now();
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const info = await api('GET', '/info');
+      if (stopped) return;
+      if (info?.boot_id && info.boot_id !== before) {
+        onBack();
+        return;
+      }
+    } catch {
+      // Down while restarting: keep asking.
+    }
+    if (stopped) return;
+    if (Date.now() - started > REBOOT_SLOW_MS) onSlow();
+    setTimeout(tick, REBOOT_POLL_MS);
+  };
+  setTimeout(tick, REBOOT_POLL_MS);
+  return () => {
+    stopped = true;
+  };
+}
+
+function FirmwareCard() {
+  const [info, setInfo] = useState(/** @type {FirmwareInfo|null} */ (null));
+  const [loadError, setLoadError] = useState(null);
+  const [file, setFile] = useState(/** @type {File|null} */ (null));
+  // null
+  // | {phase: 'uploading', pct: number}
+  // | {phase: 'confirm', version: string}       written, waiting for the device
+  // | {phase: 'installing', version: string, slow?: boolean}  restarting into it
+  // | {phase: 'done', version: string, running: string}
+  // | {phase: 'rejected'}
+  // | {phase: 'failed', reason: string, detail?: string}
+  const [job, setJob] = useState(null);
+  const alive = useRef(true);
+  const cleanup = useRef([]);
+  const input = useRef(null);
+
+  async function load() {
+    try {
+      const r = await api('GET', '/system/firmware');
+      if (!alive.current) return r;
+      setInfo(r);
+      setLoadError(null);
+      return r;
+    } catch (e) {
+      if (alive.current && e.status !== 401) setLoadError(e);
+      return null;
+    }
+  }
+
+  function stopAll() {
+    for (const fn of cleanup.current.splice(0)) fn();
+  }
+
+  useEffect(() => {
+    alive.current = true;
+    load();
+    return () => {
+      alive.current = false;
+      stopAll();
+    };
+  }, []);
+
+  async function pick(e) {
+    const f = e.currentTarget.files?.[0] || null;
+    setJob(null);
+    if (!f) {
+      setFile(null);
+      return;
+    }
+    let first = -1;
+    try {
+      first = new Uint8Array(await f.slice(0, 1).arrayBuffer())[0] ?? -1;
+    } catch {
+      first = -1;
+    }
+    if (f.size === 0 || first !== ESP_IMAGE_MAGIC) {
+      setFile(null);
+      if (input.current) input.current.value = '';
+      setJob({ phase: 'failed', reason: t('fw.not_image') });
+      return;
+    }
+    setFile(f);
+  }
+
+  async function start() {
+    if (!file) return;
+    stopAll();
+    let before = '';
+    try {
+      before = (await api('GET', '/info'))?.boot_id || '';
+    } catch (e) {
+      if (e.status !== 401) setJob({ phase: 'failed', reason: describeError(e) });
+      return;
+    }
+    let expected = '';
+    const set = (next) => alive.current && setJob(next);
+    const finish = async () => {
+      const now = await load();
+      set({ phase: 'done', version: expected, running: now?.version || '' });
+    };
+    // Listening before uploading, so the device's answer is never missed.
+    const unsubscribe = subscribe(['events'], (msg) => {
+      if (msg.t !== 'event' || msg.topic !== 'system.firmware') return;
+      const st = msg.payload?.state;
+      const version = typeof msg.payload?.version === 'string' ? msg.payload.version : '';
+      if (version) expected = version;
+      if (st === 'received') {
+        setJob((j) => (j?.phase === 'uploading' ? { phase: 'confirm', version } : j));
+      } else if (st === 'confirmed') {
+        set({ phase: 'installing', version: expected });
+        cleanup.current.push(
+          waitForNewBoot(
+            before,
+            () => {
+              unsubscribe();
+              finish();
+            },
+            () => setJob((j) => (j?.phase === 'installing' ? { ...j, slow: true } : j)),
+          ),
+        );
+      } else if (st === 'rejected') {
+        set({ phase: 'rejected' });
+        load();
+      } else if (st === 'failed') {
+        setJob((j) =>
+          j?.phase === 'failed' ? j : { phase: 'failed', reason: firmwareError(msg.payload?.error) },
+        );
+      }
+    });
+    cleanup.current.push(unsubscribe);
+
+    set({ phase: 'uploading', pct: 0 });
+    const req = upload('/system/firmware', file, {
+      onProgress: (sent, total) => {
+        const pct = total > 0 ? Math.min(100, Math.floor((sent / total) * 100)) : 0;
+        setJob((j) => (j?.phase === 'uploading' ? { phase: 'uploading', pct } : j));
+      },
+    });
+    cleanup.current.push(req.abort);
+    try {
+      const r = await req.done;
+      if (typeof r?.version === 'string' && r.version) expected = r.version;
+      setJob((j) => (j?.phase === 'uploading' ? { phase: 'confirm', version: expected } : j));
+      load();
+    } catch (e) {
+      if (!alive.current || e.status === 401) return;
+      set({ phase: 'failed', reason: describeError(e), detail: errorDetail(e) });
+    }
+  }
+
+  function reset() {
+    stopAll();
+    setJob(null);
+    setFile(null);
+    if (input.current) input.current.value = '';
+    load();
+  }
+
+  if (!info) {
+    return loadError
+      ? html`<${Card} title=${t('fw.title')} icon=${IconPackage}>
+          <div class="alert tone-err" role="alert">
+            <${IconAlert} size=${18} /><span>${t('fw.load_failed', { reason: describeError(loadError) })}</span>
+          </div>
+        </${Card}>`
+      : html`<${SkeletonCard} />`;
+  }
+
+  const busy = job && (job.phase === 'uploading' || job.phase === 'confirm' || job.phase === 'installing');
+  const waiting = !job && info.pending;
+  return html`<${Card} title=${t('fw.title')} icon=${IconPackage}>
+    <dl class="kv">
+      <div><dt>${t('fw.version')}</dt><dd class="mono">${info.version || '—'}</dd></div>
+      <div><dt>${t('fw.board')}</dt><dd class="mono">${info.board || '—'}</dd></div>
+      ${info.running ? html`<div><dt>${t('fw.slot')}</dt><dd class="mono">${info.running}</dd></div>` : null}
+    </dl>
+    ${!info.supported
+      ? html`<div class="inline-note"><${IconInfo} size=${15} /><span>${t('fw.unsupported')}</span></div>`
+      : html`<div class="form fw-form">
+          <div class="field">
+            <label class="field-label" for="fw-file">${t('fw.file')}</label>
+            <input
+              id="fw-file"
+              ref=${input}
+              class="input"
+              type="file"
+              accept=".bin,application/octet-stream"
+              disabled=${busy}
+              onChange=${pick}
+              aria-describedby="fw-file-hint"
+            />
+            <p id="fw-file-hint" class="field-hint">${t('fw.file_hint', { board: info.board })}</p>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-primary" onClick=${start} disabled=${!file || busy}>
+              <${IconUpload} size=${16} />${t('fw.upload')}
+            </button>
+          </div>
+          ${waiting
+            ? html`<div class="alert tone-warn" role="status">
+                <${IconInfo} size=${18} />
+                <span class="alert-body">${t('fw.pending', { version: info.pending })}</span>
+              </div>`
+            : null}
+          ${job ? html`<${FirmwareStatus} job=${job} current=${info.version} onClose=${reset} />` : null}
+        </div>`}
+  </${Card}>`;
+}
+
+function FirmwareStatus({ job, current, onClose }) {
+  if (job.phase === 'uploading') {
+    return html`<div class="fw-progress" role="status">
+      <div class="field-row">
+        <span>${t('fw.uploading')}</span>
+        <span class="mono">${new Intl.NumberFormat(locale(), { style: 'percent' }).format(job.pct / 100)}</span>
+      </div>
+      <div
+        class="meter tone-accent"
+        role="progressbar"
+        aria-label=${t('fw.uploading')}
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow=${job.pct}
+      >
+        <div class="meter-fill" style=${{ width: job.pct + '%' }}></div>
+      </div>
+    </div>`;
+  }
+  if (job.phase === 'confirm') {
+    return html`<div class="alert tone-warn" role="status">
+      <span class="spinner" aria-hidden="true"></span>
+      <span class="alert-body">
+        <strong>${t('fw.on_device')}</strong><br />
+        ${t('fw.on_device_body', { from: current, to: job.version || '?' })}
+      </span>
+    </div>`;
+  }
+  if (job.phase === 'installing') {
+    return html`<div class="alert tone-accent" role="status">
+      <span class="spinner" aria-hidden="true"></span>
+      <span class="alert-body">
+        <strong>${t('fw.installing')}</strong><br />
+        ${job.slow ? t('sys.reboot_slow') : t('sys.reboot_wait')}
+      </span>
+    </div>`;
+  }
+  if (job.phase === 'done') {
+    const ok = !job.version || job.running === job.version;
+    return html`<div class=${ok ? 'alert tone-ok' : 'alert tone-err'} role="status">
+      <${ok ? IconCheck : IconAlert} size=${18} />
+      <span class="alert-body">
+        ${ok ? t('fw.done', { version: job.running }) : t('fw.rolled_back', { version: job.running })}
+        <button type="button" class="btn btn-link btn-inline" onClick=${onClose}>${t('common.ok')}</button>
+      </span>
+    </div>`;
+  }
+  if (job.phase === 'rejected') {
+    return html`<div class="alert tone-muted" role="status">
+      <${IconInfo} size=${18} />
+      <span class="alert-body">
+        ${t('fw.rejected')}
+        <button type="button" class="btn btn-link btn-inline" onClick=${onClose}>${t('common.ok')}</button>
+      </span>
+    </div>`;
+  }
+  return html`<div class="alert tone-err" role="alert">
+    <${IconAlert} size=${18} />
+    <span class="alert-body">
+      ${t('fw.failed', { reason: job.reason })}
+      ${job.detail ? html`<br /><span class="err-detail mono">${job.detail}</span>` : null}
+      <button type="button" class="btn btn-link btn-inline" onClick=${onClose}>${t('common.ok')}</button>
+    </span>
+  </div>`;
 }
 
 function MaintenanceCard({ onBack }) {
