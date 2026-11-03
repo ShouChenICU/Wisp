@@ -44,6 +44,9 @@ constexpr const char* kInternalPartitionLabel = "storage";
 //     "Failed to init device: %s" (src/esp_board_device.c) -- fired on
 //     every failed try_mount() alongside the sub-device's own log line,
 //     one layer up.
+//   - "BOARD_MANAGER": esp_board_manager_init_device_by_name()'s
+//     "Failed to initialize device %s" (src/esp_board_manager.c), the
+//     outermost layer.
 //   - "DEV_FS_FAT": the fs_fat device type's own "Failed to initialize
 //     sub device: %s" (devices/dev_fs_fat/dev_fs_fat.c), one layer below
 //     DEV_FS_FAT_SUB_SDMMC.
@@ -56,8 +59,9 @@ constexpr const char* kInternalPartitionLabel = "storage";
 //     {sd_trans_sdmmc,sd_host_sdmmc}.c
 //   - "vfs_fat_sdmmc": components/fatfs/vfs/vfs_fat_sdmmc.c
 constexpr const char* kChattyMountTags[] = {
-    "DEV_FS_FAT_SUB_SDMMC", "BOARD_DEVICE", "DEV_FS_FAT", "sdmmc_cmd", "sdmmc_init",
-    "sdmmc_common",         "sdmmc_sd",     "SD_TRANS",   "SD_HOST",   "vfs_fat_sdmmc",
+    "DEV_FS_FAT_SUB_SDMMC", "BOARD_MANAGER", "BOARD_DEVICE", "DEV_FS_FAT", "sdmmc_cmd",
+    "sdmmc_init",           "sdmmc_common",  "sdmmc_sd",     "SD_TRANS",   "SD_HOST",
+    "vfs_fat_sdmmc",
 };
 constexpr size_t kChattyMountTagCount = sizeof(kChattyMountTags) / sizeof(kChattyMountTags[0]);
 
