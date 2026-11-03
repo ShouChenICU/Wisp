@@ -22,13 +22,13 @@ using wisp::test::make_firmware_image;
 namespace {
 
 struct Fixture {
-    explicit Fixture(bool with_updater = true, bool can_confirm = true) {
+    explicit Fixture(bool with_updater = true, bool can_confirm = true, bool can_restart = true) {
         FirmwareUpdateService::Deps deps;
         deps.updater = with_updater ? &updater : nullptr;
         deps.running_version = "0.1.0-10-g1111111";
         deps.publish = [this](Properties p) { events.push_back(std::move(p)); };
         if (can_confirm) deps.request_confirm = [this] { ++confirm_requests; };
-        deps.restart = [this] { ++restarts; };
+        if (can_restart) deps.restart = [this] { ++restarts; };
         deps.now_ms = [this] { return now; };
         service = std::make_unique<FirmwareUpdateService>(std::move(deps));
     }
@@ -214,6 +214,31 @@ TEST(FirmwareUpdate, ReceivedAsksTheDevice) {
     EXPECT_EQ(fx.service->status().pending, "0.1.0-20-g2222222");
 }
 
+TEST(FirmwareUpdate, EndNamesTheReceivedVersion) {
+    // The route answers 202 with it; pending() may already be empty by
+    // then if the device answered at once.
+    Fixture fx;
+    ImageSpec spec;
+    spec.version = "0.1.0-20-g2222222";
+    FirmwareOutcome r = fx.upload(make_firmware_image(spec));
+    ASSERT_TRUE(r.ok()) << r.message;
+    EXPECT_EQ(r.version, "0.1.0-20-g2222222");
+}
+
+TEST(FirmwareUpdate, UnprintableVersionRejectedBeforeWriting) {
+    Fixture fx;
+    ImageSpec spec;
+    spec.version = "1.0.0\nWISP_REBOOT";
+    FirmwareOutcome r = fx.upload(make_firmware_image(spec));
+    EXPECT_EQ(r.failure, FirmwareFailure::InvalidImage);
+    EXPECT_EQ(r.message.find('\n'), std::string::npos) << r.message;
+    EXPECT_EQ(fx.updater.begins, 0);
+    ASSERT_EQ(fx.events.size(), 1u);
+    EXPECT_EQ(fx.state(0), "failed");
+    EXPECT_EQ(fx.events[0].at("version").as_string(), "");
+    EXPECT_EQ(fx.confirm_requests, 0);
+}
+
 TEST(FirmwareUpdate, OlderImageIsMarkedDowngrade) {
     Fixture fx;
     ImageSpec spec;
@@ -237,6 +262,18 @@ TEST(FirmwareUpdate, ConfirmActivatesAndReboots) {
     EXPECT_EQ(fx.service->begin(4096, &id).failure, FirmwareFailure::Busy);
     EXPECT_EQ(fx.service->confirm().failure, FirmwareFailure::NotPending);
     EXPECT_EQ(fx.restarts, 1);
+}
+
+TEST(FirmwareUpdate, ConfirmWithoutRestartFreesTheSlot) {
+    // Nothing can restart the device: the activated image boots at the
+    // next restart, and the slot must not stay Installing for ever.
+    Fixture fx(true, true, false);
+    ASSERT_TRUE(fx.upload(make_firmware_image()).ok());
+    FirmwareOutcome r = fx.service->confirm();
+    EXPECT_TRUE(r.ok()) << r.message;
+    EXPECT_EQ(fx.updater.activations, 1);
+    EXPECT_EQ(fx.last_state(), "confirmed");
+    EXPECT_TRUE(fx.upload(make_firmware_image()).ok());
 }
 
 TEST(FirmwareUpdate, FailedActivationReportsAndFreesTheSlot) {

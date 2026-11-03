@@ -218,7 +218,9 @@ FirmwareOutcome FirmwareUpdateService::end(uint32_t id) {
     WLOG_I(kTag, "firmware %s received; waiting for confirmation on the device", version.c_str());
     publish("received", version);
     deps_.request_confirm();
-    return {};
+    FirmwareOutcome done;
+    done.version = std::move(version);
+    return done;
 }
 
 void FirmwareUpdateService::abort(uint32_t id) {
@@ -250,7 +252,14 @@ FirmwareOutcome FirmwareUpdateService::confirm() {
     }
     WLOG_W(kTag, "firmware %s confirmed; restarting into it", version.c_str());
     publish("confirmed", version);
-    if (deps_.restart) deps_.restart();
+    if (deps_.restart) {
+        deps_.restart();
+    } else {
+        // Installing would refuse every later upload until someone
+        // restarts the device by hand.
+        std::lock_guard<os::Mutex> lock(mutex_);
+        reset_locked();
+    }
     return {};
 }
 

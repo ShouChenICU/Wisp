@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -54,7 +55,10 @@ struct FirmwareFixture {
             deps.updater = &updater;
             deps.running_version = "0.2.0-test";
             deps.publish = [this](Properties p) { events.push_back(std::move(p)); };
-            deps.request_confirm = [this] { ++confirm_requests; };
+            deps.request_confirm = [this] {
+                ++confirm_requests;
+                if (on_confirm_request) on_confirm_request();
+            };
             service = std::make_unique<FirmwareUpdateService>(std::move(deps));
         }
         f.srv.reset();
@@ -102,6 +106,9 @@ struct FirmwareFixture {
     FakeFirmwareUpdater updater;
     std::vector<Properties> events;
     int confirm_requests = 0;
+    // Runs inside the service's request_confirm, like a screen that
+    // answers at once.
+    std::function<void()> on_confirm_request;
     std::unique_ptr<FirmwareUpdateService> service;
     std::string token;
     wisp::net::StreamHandler stream;
@@ -149,6 +156,20 @@ TEST(AdminFirmware, InfoAndUploadRoutes) {
     EXPECT_FALSE(fx.stream(make_req(Method::Get, kPath)).has_value());
     EXPECT_FALSE(fx.stream(make_req(Method::Post, "/api/v1/system/reboot")).has_value());
     EXPECT_FALSE(fx.stream(make_req(Method::Post, "/api/v1/system/firmware/x")).has_value());
+}
+
+TEST(AdminFirmware, AcceptedVersionSurvivesAnImmediateAnswer) {
+    // Another dialog is open, so the device declines inside end(): the
+    // 202 still names the image that was received.
+    FirmwareFixture fx;
+    fx.on_confirm_request = [&fx] { (void)fx.service->decline(); };
+    ImageSpec spec;
+    spec.version = "0.3.0";
+    HttpResponse res = fx.upload(make_firmware_image(spec));
+    EXPECT_EQ(res.status, 202) << res.body;
+    EXPECT_EQ(at(body_json(res), "version").as_string(), "0.3.0");
+    ASSERT_EQ(fx.events.size(), 2u);
+    EXPECT_EQ(fx.events[1].at("state").as_string(), "rejected");
 }
 
 TEST(AdminFirmware, UploadPassesTheSameChecksAsTheApi) {

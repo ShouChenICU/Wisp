@@ -99,9 +99,7 @@ public:
         done_ = true;
         FirmwareOutcome r = service_.end(id_);
         if (!r.ok()) return no_store(failure_response(r));
-        auto pending = service_.pending();
-        return no_store(net::HttpResponse::json(
-            202, Value(Map{{"version", Value(pending ? pending->next : std::string())}})));
+        return no_store(net::HttpResponse::json(202, Value(Map{{"version", Value(r.version)}})));
     }
 
     void on_abort() override {

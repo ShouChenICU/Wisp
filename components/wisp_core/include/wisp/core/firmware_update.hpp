@@ -96,6 +96,10 @@ const char* to_string(FirmwareFailure failure);
 struct FirmwareOutcome {
     FirmwareFailure failure = FirmwareFailure::None;
     std::string message;  // English detail; never names a path
+    // end(): the version of the image now awaiting confirmation. Read it
+    // here rather than from pending(), which the device may already have
+    // answered.
+    std::string version;
     bool ok() const { return failure == FirmwareFailure::None; }
 };
 
@@ -161,6 +165,8 @@ public:
 
     // --- The device's answer. ---
     // Activates the pending image, publishes "confirmed" and restarts.
+    // Without Deps::restart the image boots at the next restart and the
+    // slot is free again.
     // Blocks while the platform checks the image again (seconds on the
     // device): never call it on the UI thread.
     FirmwareOutcome confirm();
