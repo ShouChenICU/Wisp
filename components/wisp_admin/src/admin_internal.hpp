@@ -70,6 +70,11 @@ constexpr uint32_t kRebootDelayMs = 500;
 // address, "wisp.local" or "localhost". The interface is not considered;
 // AdminServer::handle() decides what a foreign Host on the hotspot gets.
 bool host_allowed(const net::HttpRequest& req);
+// No Origin header (a non-browser client), or an http(s) Origin whose
+// host[:port] is exactly the Host header (case-insensitive). Browsers
+// send Origin on every WebSocket upgrade, so this refuses a cross-site
+// page's upgrade even if a cookie were to come along with it.
+bool origin_matches_host(const net::HttpRequest& req);
 bool is_probe_path(std::string_view path);
 // 302 to the hotspot's setup page; nullopt when no hotspot is up.
 std::optional<net::HttpResponse> setup_redirect(const AdminDeps& deps);

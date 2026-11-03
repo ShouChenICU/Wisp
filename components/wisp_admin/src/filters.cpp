@@ -74,6 +74,20 @@ bool host_allowed(const net::HttpRequest& req) {
     return is_ipv4(*name) || iequals(*name, "wisp.local") || iequals(*name, "localhost");
 }
 
+bool origin_matches_host(const net::HttpRequest& req) {
+    const std::string header = req.header("origin");
+    std::string_view origin = header;
+    if (origin.empty()) return true;
+    if (origin.starts_with("http://")) {
+        origin.remove_prefix(7);
+    } else if (origin.starts_with("https://")) {
+        origin.remove_prefix(8);
+    } else {
+        return false;  // includes "null" (sandboxed or file: pages)
+    }
+    return !origin.empty() && iequals(origin, req.header("host"));
+}
+
 bool is_probe_path(std::string_view path) {
     for (std::string_view p : kProbePaths) {
         if (path == p) return true;

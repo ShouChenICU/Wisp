@@ -299,6 +299,10 @@ net::WsHandlers AdminServer::ws_handlers() {
             WLOG_D(kTag, "refused a WebSocket upgrade with a foreign Host header");
             return false;
         }
+        if (!detail::origin_matches_host(req)) {
+            WLOG_D(kTag, "refused a WebSocket upgrade from a foreign Origin");
+            return false;
+        }
         const std::string token = req.cookie("wisp_token");
         // Held from the token check until the hub has the connection: a
         // revocation racing this upgrade either fails the check or finds

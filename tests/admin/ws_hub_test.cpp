@@ -593,6 +593,31 @@ TEST(AdminServer, WsRequiresToken) {
     EXPECT_TRUE(ws.on_open(c3, with_token(req, token)));
 }
 
+// A browser always sends Origin on a WebSocket upgrade, and cross-site
+// pages can open one: the cookie's SameSite=Strict should keep the token
+// out of such a request, and an Origin that is not this device refuses it
+// as well. Clients that send no Origin (scripts) are unaffected.
+TEST(AdminServer, WsRefusesAForeignOrigin) {
+    AdminFixture f;
+    wisp::net::WsHandlers ws = f.srv->ws_handlers();
+    const std::string token = f.token();
+    const auto req = with_token(make_req(Method::Get, "/api/v1/ws"), token);
+    auto origin = [&](wisp::net::HttpRequest r, const char* value) {
+        r.headers["origin"] = value;
+        return r;
+    };
+    auto c = std::make_shared<FakeWsConnection>(21);
+    for (const char* bad :
+         {"http://evil.example", "http://192.168.1.50:8080", "null",
+          "http://192.168.1.50.evil.example", "ws://192.168.1.50", "http://192.168.1.5"}) {
+        EXPECT_FALSE(ws.on_open(c, origin(req, bad))) << bad;
+    }
+    EXPECT_TRUE(ws.on_open(c, origin(req, "http://192.168.1.50")));
+    auto c2 = std::make_shared<FakeWsConnection>(22);
+    EXPECT_TRUE(
+        ws.on_open(c2, origin(wisp::test::host(req, "WISP.local:8900"), "http://wisp.local:8900")));
+}
+
 // Logout, DELETE /clients/{id} and revoke_all() (factory reset) close the
 // revoked browsers' WebSockets at once; other browsers keep streaming.
 TEST(AdminServer, RevokedClientsLoseTheirWebSocket) {
