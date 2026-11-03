@@ -7,7 +7,8 @@
 #     plus the stdout wisp::log sink (wisp::port::sim::StdoutLogSink), so
 #     the unit test suite can link it without pulling in display/audio.
 #   - wisp_port_sim_settings: JsonFileSettingsBackend, a
-#     wisp::core::SettingsBackend that persists to a JSON file -- also
+#     wisp::core::SettingsBackend that persists to a JSON file, and
+#     SimFirmwareUpdater, which writes uploaded firmware to a file -- also
 #     host-only and SDL-free, so unit tests can link it on its own.
 #   - wisp_port_sim_dev: SDL-backed device port.
 #   - wisp_port_sim_net: SimHttpServer, the loopback HTTP/1.1 + WebSocket
@@ -44,7 +45,7 @@ wisp_component(
 
 wisp_component(
     NAME wisp_port_sim_settings
-    SRCS settings_json_file.cpp
+    SRCS settings_json_file.cpp sim_firmware.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_core wisp_os
 )

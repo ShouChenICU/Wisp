@@ -11,7 +11,9 @@
 # wisp::port::esp::EspConsole (console_esp.cpp) and the networking
 # platform services: EspWifi (net/esp_wifi.cpp, with the hotspot's
 # captive DNS in net/captive_dns.cpp and mDNS), EspHttpServer
-# (net/esp_http_server.cpp) and EspHttpClient (net/esp_http_client.cpp).
+# (net/esp_http_server.cpp) and EspHttpClient (net/esp_http_client.cpp),
+# plus EspFirmwareUpdater (esp_firmware.cpp, the OTA writer behind the
+# admin page's firmware upload).
 # Like wisp_port_sim, this component is never built on the host
 # (ESP_PLATFORM is never defined for it there, and no host CMakeLists adds
 # it) -- only firmware/main pulls it in. (A handful of pure, platform-free headers factored out of the audio/
@@ -30,12 +32,12 @@ wisp_component(
     SRCS os/os_esp.cpp log_esp.cpp settings_nvs.cpp dev/esp_display.cpp dev/esp_touch.cpp
          dev/esp_power.cpp dev/esp_clock.cpp dev/esp_imu.cpp dev/esp_button.cpp dev/esp_audio.cpp
          dev/esp_storage.cpp console_esp.cpp net/esp_wifi.cpp net/captive_dns.cpp
-         net/esp_http_server.cpp net/esp_http_client.cpp
+         net/esp_http_server.cpp net/esp_http_client.cpp esp_firmware.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net
     IDF_REQUIRES freertos esp_timer heap log esp_lcd esp_lcd_touch esp_driver_i2c esp_driver_gpio
                  axp2101 pcf85063 qmi8658 esp_codec_dev nvs_flash fatfs sdmmc esp_driver_sdmmc
                  littlefs esp_board_manager esp_driver_usb_serial_jtag esp_driver_uart
                  esp_wifi esp_netif esp_event lwip esp_http_server esp_http_client esp-tls
-                 mbedtls mdns
+                 mbedtls mdns app_update esp_partition
 )

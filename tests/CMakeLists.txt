@@ -93,6 +93,8 @@ wisp_test(NAME sim_http_server_test SRCS sim/sim_http_server_test.cpp
           LIBS wisp_port_sim_net TIMEOUT 30)
 target_include_directories(sim_http_server_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 wisp_test(NAME sim_wifi_test SRCS sim/sim_wifi_test.cpp LIBS wisp_port_sim_net)
+wisp_test(NAME sim_firmware_test SRCS sim/sim_firmware_test.cpp
+          LIBS wisp_port_sim_settings wisp_core wisp_port_sim_os)
 # Talks to a real SimHttpServer over loopback; includes curl/curl.h for the
 # error constants.
 wisp_test(NAME sim_http_client_test SRCS sim/sim_http_client_test.cpp
