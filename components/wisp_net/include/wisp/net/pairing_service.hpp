@@ -72,6 +72,9 @@ enum class ConfirmFailure { None, WrongCode, ExpiredCode, Locked };
 
 struct PairingConfig {
     uint32_t code_ttl_ms = 120000;
+    // A request_code() within this long of the active code being drawn
+    // keeps that code (see request_code()).
+    uint32_t min_code_interval_ms = 10000;
     int max_attempts = 5;
     uint32_t lock_ms = 300000;
     size_t max_clients = 8;
@@ -94,7 +97,11 @@ public:
     // Issues a fresh code valid for code_ttl_ms, replacing any active one,
     // and publishes net.pairing.code {active:true, expires_ms} where
     // expires_ms is the deadline in the now_ms timebase. RateLimited while
-    // locked.
+    // locked. The request route needs no authentication, so while the
+    // active code is younger than min_code_interval_ms a request keeps it
+    // and publishes nothing: repeated requests can neither replace the
+    // code the owner is typing nor keep waking the screen faster than
+    // that.
     Result<void> request_code(uint64_t now_ms);
 
     // The current code, for the device's screen only. Empty when none is
@@ -202,6 +209,7 @@ private:
 
     std::optional<std::string> code_;
     uint64_t code_expires_ms_ = 0;
+    uint64_t code_drawn_ms_ = 0;
     // The code that last timed out, so typing it late reads as "expired"
     // rather than "wrong"; dropped by a new code, a lock or a pairing.
     std::optional<std::string> expired_code_;

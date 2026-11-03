@@ -279,22 +279,51 @@ TEST(Pairing, NewRequestInvalidatesOldCode) {
     ASSERT_EQ(first, "000000");
 
     f.scripted_random = {0, 0, 0, 7};
-    ASSERT_TRUE(svc.request_code(2000));
-    std::string second = svc.active_code(2000).value_or("");
+    ASSERT_TRUE(svc.request_code(12000));
+    std::string second = svc.active_code(12000).value_or("");
     ASSERT_EQ(second.size(), 6u);
     ASSERT_NE(second, first);
 
-    auto old = svc.confirm(first, browser(), 3000);
+    auto old = svc.confirm(first, browser(), 13000);
     ASSERT_FALSE(old);
     EXPECT_EQ(old.error().code, ErrorCode::PermissionDenied);
-    EXPECT_TRUE(svc.confirm(second, browser(), 3000));
+    EXPECT_TRUE(svc.confirm(second, browser(), 13000));
     // A code works only once.
-    EXPECT_FALSE(svc.active_code(3000).has_value());
-    EXPECT_FALSE(svc.confirm(second, browser(), 3000));
+    EXPECT_FALSE(svc.active_code(13000).has_value());
+    EXPECT_FALSE(svc.confirm(second, browser(), 13000));
 
     auto evs = f.topic("net.pairing.code");
     ASSERT_FALSE(evs.empty());
     EXPECT_FALSE(evs.back().payload.at("active").as_bool());
+}
+
+// POST /pair/start needs no authentication. Requests arriving while a code
+// is still fresh keep it (the owner may be typing it) and stay quiet (no
+// event, so the screen is not woken); only after the minimum interval does
+// a request draw a new one.
+TEST(Pairing, RepeatedRequestsKeepAFreshCode) {
+    Fixture f;
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.request_code(1000));
+    const std::string code = svc.active_code(1000).value_or("");
+    ASSERT_EQ(f.topic("net.pairing.code").size(), 1u);
+
+    for (uint64_t t : {2000u, 5000u, 10999u}) {
+        ASSERT_TRUE(svc.request_code(t));
+        EXPECT_EQ(svc.active_code(t).value_or(""), code) << t;
+    }
+    EXPECT_EQ(f.topic("net.pairing.code").size(), 1u);
+
+    f.scripted_random = {0, 0, 0, 9};
+    ASSERT_TRUE(svc.request_code(11000));
+    EXPECT_EQ(svc.active_code(11000).value_or(""), "000009");
+    EXPECT_EQ(f.topic("net.pairing.code").size(), 2u);
+
+    // The owner turning a code down lets the next request draw at once.
+    svc.cancel_code();
+    f.scripted_random = {0, 0, 0, 3};
+    ASSERT_TRUE(svc.request_code(11500));
+    EXPECT_EQ(svc.active_code(11500).value_or(""), "000003");
 }
 
 TEST(Pairing, LocksAfterFiveWrongCodes) {

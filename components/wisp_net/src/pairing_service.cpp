@@ -257,7 +257,12 @@ Result<void> PairingService::request_code(uint64_t now_ms) {
     if (locked_until_ms_) {
         return Result<void>::err(ErrorCode::RateLimited, "too many wrong codes; try again later");
     }
+    if (code_ && now_ms < code_expires_ms_ &&
+        now_ms - code_drawn_ms_ < config_.min_code_interval_ms) {
+        return Result<void>::ok();
+    }
     code_ = draw_code_locked();
+    code_drawn_ms_ = now_ms;
     code_expires_ms_ = now_ms + config_.code_ttl_ms;
     expired_code_.reset();
     WLOG_I(kTag, "pairing code shown on screen (valid %u s)",
