@@ -57,7 +57,7 @@ struct EspHttpServerConfig {
     // instances must fit CONFIG_LWIP_MAX_SOCKETS with the other users.
     uint16_t max_open_sockets = 7;
     // The httpd task's stack, in internal RAM. Handlers run on it,
-    // including the LLM connectivity test's TLS handshake on the admin
+    // including the model connectivity test's TLS handshake on the admin
     // instance.
     size_t stack_bytes = 10240;
     // Below the UI task (wisp::ui::UiRuntime, 4) so serving a page never

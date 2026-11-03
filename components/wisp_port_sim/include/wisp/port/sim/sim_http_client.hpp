@@ -6,7 +6,7 @@
 // several HTTP server threads are fine.
 //
 // Secrets: request bodies and headers (an Authorization header carries
-// the LLM API key) are never logged; a failed request logs only the
+// a model API key) are never logged; a failed request logs only the
 // method, scheme://host part of the URL and curl's error code.
 
 #include <cstddef>

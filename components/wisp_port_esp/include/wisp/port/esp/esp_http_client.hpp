@@ -1,7 +1,7 @@
 #pragma once
 
 // net::HttpClient on ESP-IDF's esp_http_client (connectivity spec 2.1):
-// the LLM connectivity test's outgoing requests. HTTPS servers are
+// the model connectivity test's outgoing requests. HTTPS servers are
 // verified against the IDF certificate bundle (esp_crt_bundle), host
 // name included; there is no way to turn verification off. Plain http
 // is allowed (a gateway on the LAN). Redirects are not followed: one
