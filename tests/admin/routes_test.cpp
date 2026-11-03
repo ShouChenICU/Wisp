@@ -29,6 +29,7 @@ using wisp::test::AdminFixture;
 using wisp::test::body_json;
 using wisp::test::contains;
 using wisp::test::error_code;
+using wisp::test::every_authenticated_get_route;
 using wisp::test::make_req;
 using wisp::test::with_csrf;
 using wisp::test::with_token;
@@ -46,14 +47,6 @@ HttpRequest authed(const std::string& token, Method m, const std::string& path,
     HttpRequest req = with_token(make_req(m, path, std::move(body)), token);
     if (m != Get) req = with_csrf(std::move(req));
     return req;
-}
-
-const std::vector<std::string>& every_authenticated_get_route() {
-    static const std::vector<std::string> paths = {
-        "/api/v1/info", "/api/v1/device",    "/api/v1/devices",     "/api/v1/settings",
-        "/api/v1/wifi", "/api/v1/wifi/scan", "/api/v1/ai/profiles", "/api/v1/clients",
-    };
-    return paths;
 }
 
 const Value& field(const Value& v, const char* key) {

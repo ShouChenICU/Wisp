@@ -142,6 +142,17 @@ struct AdminFixture {
     std::unique_ptr<admin::AdminServer> srv;
 };
 
+// Every GET route behind a token (plus the public /info), for the checks
+// that walk all of them: a new GET route belongs here.
+inline const std::vector<std::string>& every_authenticated_get_route() {
+    static const std::vector<std::string> paths = {
+        "/api/v1/info",        "/api/v1/device",     "/api/v1/devices",
+        "/api/v1/settings",    "/api/v1/wifi",       "/api/v1/wifi/scan",
+        "/api/v1/ai/profiles", "/api/v1/ai/presets", "/api/v1/clients",
+    };
+    return paths;
+}
+
 // Parses a response body; a non-JSON body yields Null (and a failure).
 inline Value body_json(const net::HttpResponse& res) {
     auto v = from_json(res.body);

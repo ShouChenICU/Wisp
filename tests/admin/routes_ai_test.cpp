@@ -28,6 +28,7 @@ using wisp::test::AdminFixture;
 using wisp::test::body_json;
 using wisp::test::contains;
 using wisp::test::error_code;
+using wisp::test::every_authenticated_get_route;
 using wisp::test::make_req;
 using wisp::test::with_csrf;
 using wisp::test::with_token;
@@ -51,6 +52,13 @@ const Value& field(const Value& v, const char* key) {
     const Value* f = v.find(key);
     EXPECT_NE(f, nullptr) << "missing \"" << key << "\" in " << wisp::to_json(v);
     return f != nullptr ? *f : null;
+}
+
+std::string header_of(const wisp::net::HttpClientRequest& req, const std::string& name) {
+    for (const auto& [k, v] : req.headers) {
+        if (k == name) return v;
+    }
+    return {};
 }
 
 std::string str(const Value& v) {
@@ -275,9 +283,7 @@ TEST(AdminAi, NoResponseEverContainsApiKey) {
     f.http.next = {.status = 401, .body = R"({"error":"bad key sk-NEVERLEAK"})"};
 
     std::vector<HttpRequest> reqs;
-    for (const char* path :
-         {"/api/v1/info", "/api/v1/device", "/api/v1/devices", "/api/v1/settings", "/api/v1/wifi",
-          "/api/v1/wifi/scan", "/api/v1/clients", "/api/v1/ai/profiles", "/api/v1/ai/presets"}) {
+    for (const std::string& path : every_authenticated_get_route()) {
         reqs.push_back(authed(token, Get, path));
     }
     reqs.push_back(authed(token, Post, "/api/v1/ai/profiles/" + id + "/test"));
@@ -305,6 +311,42 @@ TEST(AdminAi, NoResponseEverContainsApiKey) {
     auto sent = f.http.last();
     ASSERT_TRUE(sent.has_value());
     EXPECT_EQ(sent->url, "https://x/v1/models");
+}
+
+// Moving a profile to another origin without retyping the key forgets the
+// key, says so in the response, and the test then sends no key to the new
+// host.
+TEST(AdminAi, OriginChangeDropsTheKeyBeforeTheTest) {
+    AdminFixture f;
+    const std::string token = f.token();
+    auto p = f.models->create({.kind = ModelKind::Llm,
+                               .name = "x",
+                               .preset = "custom",
+                               .base_url = "https://api.example.com/v1",
+                               .api_key = "sk-OLDHOST"});
+    ASSERT_TRUE(p);
+    const std::string path = "/api/v1/ai/profiles/" + p.value().id;
+
+    // Before the move the key does go to its own server.
+    f.http.next = {.status = 200, .body = R"({"data":[]})"};
+    f.srv->handle(authed(token, Post, path + "/test"));
+    ASSERT_TRUE(f.http.last().has_value());
+    EXPECT_EQ(header_of(*f.http.last(), "Authorization"), "Bearer sk-OLDHOST");
+
+    HttpResponse put =
+        f.srv->handle(authed(token, Put, path, R"({"base_url":"http://192.168.1.9:8000/v1"})"));
+    EXPECT_EQ(put.status, 200);
+    EXPECT_EQ(field(body_json(put), "has_key"), Value(false));
+
+    f.http.next = {.status = 401, .body = "{}"};
+    f.srv->handle(authed(token, Post, path + "/test"));
+    auto sent = f.http.last();
+    ASSERT_TRUE(sent.has_value());
+    EXPECT_EQ(sent->url, "http://192.168.1.9:8000/v1/models");
+    EXPECT_EQ(header_of(*sent, "Authorization"), "");
+    for (const auto& [k, v] : sent->headers) {
+        EXPECT_EQ(v.find("OLDHOST"), std::string::npos) << k;
+    }
 }
 
 TEST(AdminAi, OldLlmRoutesAreGone) {
