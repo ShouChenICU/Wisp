@@ -17,6 +17,13 @@
 // as ESP-IDF httpd's lru_purge_enable does), request bodies
 // up to kMaxBodyBytes (checked against Content-Length before anything is
 // read), and no chunked request bodies.
+//
+// Streamed requests (net::StreamHandler, see wisp/net/http.hpp): the
+// handler is asked once a request's head is parsed; a request it takes has
+// no body limit and its body goes to the BodySink in pieces of at most
+// net::kBodyChunkBytes, read straight off the socket. A client that stays
+// silent for the idle timeout (10 s), hangs up or is cut off by stop()
+// mid-body ends in on_abort().
 
 #include <cstddef>
 #include <cstdint>
@@ -49,7 +56,8 @@ public:
     SimHttpServer(const SimHttpServer&) = delete;
     SimHttpServer& operator=(const SimHttpServer&) = delete;
 
-    Result<void> start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws) override;
+    Result<void> start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws,
+                       net::StreamHandler stream = {}) override;
     void stop() override;
     bool running() const override;
     // 0 while not running.

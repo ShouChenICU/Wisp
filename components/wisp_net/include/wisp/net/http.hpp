@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -33,6 +35,9 @@ struct HttpRequest {
     std::string query;
     std::map<std::string, std::string> headers;  // keys are always lowercase
     std::string body;
+    // The Content-Length the client announced (0 without one). Mostly for
+    // streamed requests, whose `body` stays empty.
+    uint64_t content_length = 0;
     std::string remote_ip;
     Iface iface = Iface::Sta;
 
@@ -61,6 +66,51 @@ struct HttpResponse {
 
 using HttpHandler = std::function<HttpResponse(const HttpRequest&)>;
 
+// Streamed request bodies (spec 6.5: the firmware upload). A request the
+// server's StreamHandler takes is not buffered and has no size limit of its
+// own: its body reaches a BodySink in pieces as it arrives. Both servers
+// (SimHttpServer, EspHttpServer) give the same guarantees:
+//   - the StreamHandler sees the request head (method, path, headers,
+//     content_length; `body` empty) before any of the body is read;
+//   - a chunked request never gets there: the server answers 411 as for
+//     any other route. One without a Content-Length arrives with
+//     content_length 0 (the handler decides whether that is an error);
+//   - on_data() gets the body in order, at most kBodyChunkBytes at a time;
+//     then exactly one of on_end() (every byte arrived) or on_abort() (the
+//     connection closed, stalled past the server's receive timeout, or the
+//     server is stopping) -- unless on_data() ended the request early;
+//   - every callback runs on the connection's own thread (the httpd task on
+//     the device), one at a time, so a slow write delays only that client.
+// An early response (StreamStart::response, or one returned from on_data)
+// is sent at once; the server then reads and discards the rest of the body
+// (up to kBodyDrainBytes, so the client sees the response rather than a
+// reset) and closes the connection.
+inline constexpr size_t kBodyChunkBytes = 4096;
+inline constexpr size_t kBodyDrainBytes = 8 * 1024 * 1024;
+
+class BodySink {
+public:
+    virtual ~BodySink() = default;
+    // The next piece of the body. A response ends the request with it.
+    virtual std::optional<HttpResponse> on_data(std::span<const uint8_t> chunk) = 0;
+    // The whole body arrived; what to answer.
+    virtual HttpResponse on_end() = 0;
+    // The body will never be complete; nothing is sent.
+    virtual void on_abort() = 0;
+};
+
+// What the StreamHandler decided for a request it takes: stream the body
+// into `sink`, or (sink null) answer `response` without reading the body.
+struct StreamStart {
+    std::unique_ptr<BodySink> sink;
+    HttpResponse response;
+};
+
+// Consulted for every request once its head is parsed. nullopt: not a
+// streamed request; it is buffered and handed to the HttpHandler as usual
+// (8 KiB body limit).
+using StreamHandler = std::function<std::optional<StreamStart>(const HttpRequest& head)>;
+
 class WsConnection {
 public:
     virtual ~WsConnection() = default;
@@ -86,7 +136,9 @@ struct WsHandlers {
 class HttpServer {
 public:
     virtual ~HttpServer() = default;
-    virtual Result<void> start(uint16_t port, HttpHandler handler, WsHandlers ws) = 0;
+    // `stream` may be empty: no request is streamed.
+    virtual Result<void> start(uint16_t port, HttpHandler handler, WsHandlers ws,
+                               StreamHandler stream = {}) = 0;
     virtual void stop() = 0;
     virtual bool running() const = 0;
     // The port actually listened on (assigned by the OS after start(0, ...)).

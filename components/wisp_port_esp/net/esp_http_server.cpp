@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "esp_err.h"
 #include "esp_http_server.h"
@@ -403,6 +404,7 @@ struct EspHttpServer::Impl {
     std::atomic<uint16_t> port{0};
     net::HttpHandler handler;
     net::WsHandlers ws;
+    net::StreamHandler stream;
     // Never reset, not even across restarts: a late on_close(id) must
     // never name a newer connection.
     std::atomic<int> next_id{1};
@@ -417,6 +419,46 @@ struct EspHttpServer::Impl {
     esp_err_t serve(httpd_req_t* r);
     esp_err_t reject(httpd_req_t* r, int status, const char* code, const char* message);
 };
+
+namespace {
+
+// An answer before the end of the body (`left` bytes still unread): sent
+// with Connection: close, and the session closes once the handler returns.
+// Returning ESP_OK lets httpd read and discard what is left first, so the
+// client gets to read the answer instead of a reset; past kBodyDrainBytes
+// that is not worth waiting for.
+esp_err_t answer_early(httpd_req_t* r, const net::HttpResponse& res, size_t left) {
+    httpd_resp_set_hdr(r, "Connection", "close");
+    send_response(r, res);
+    if (left > net::kBodyDrainBytes) return ESP_FAIL;
+    httpd_sess_trigger_close(r->handle, httpd_req_to_sockfd(r));
+    return ESP_OK;
+}
+
+esp_err_t stream_body(httpd_req_t* r, net::BodySink& sink) {
+    // On the heap: the httpd stack also carries the sink's flash writes.
+    std::vector<uint8_t> chunk(net::kBodyChunkBytes);
+    size_t left = r->content_len;
+    int timeouts = 0;
+    while (left > 0) {
+        const size_t want = left < chunk.size() ? left : chunk.size();
+        const int n = httpd_req_recv(r, reinterpret_cast<char*>(chunk.data()), want);
+        if (n == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < kBodyRecvTimeouts) continue;
+        if (n <= 0) {
+            sink.on_abort();
+            return ESP_FAIL;
+        }
+        timeouts = 0;
+        left -= static_cast<size_t>(n);
+        if (auto early =
+                sink.on_data(std::span<const uint8_t>(chunk.data(), static_cast<size_t>(n)))) {
+            return answer_early(r, *early, left);
+        }
+    }
+    return send_response(r, sink.on_end());
+}
+
+}  // namespace
 
 esp_err_t EspHttpServer::Impl::reject(httpd_req_t* r, int status, const char* code,
                                       const char* message) {
@@ -441,6 +483,13 @@ esp_err_t EspHttpServer::Impl::serve(httpd_req_t* r) {
         reject(r, 411, "length_required", "chunked request bodies are not supported");
         // The chunked body is still on the wire and cannot be skipped.
         return ESP_FAIL;
+    }
+    if (stream) {
+        req.content_length = r->content_len;
+        if (auto start = stream(req)) {
+            if (!start->sink) return answer_early(r, start->response, r->content_len);
+            return stream_body(r, *start->sink);
+        }
     }
     // Refused from the header alone: the body is never buffered.
     if (r->content_len > EspHttpServer::kMaxBodyBytes) {
@@ -586,10 +635,12 @@ EspHttpServer::EspHttpServer(EspHttpServerConfig config) : impl_(std::make_uniqu
 
 EspHttpServer::~EspHttpServer() { stop(); }
 
-Result<void> EspHttpServer::start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws) {
+Result<void> EspHttpServer::start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws,
+                                  net::StreamHandler stream) {
     if (impl_->hd != nullptr) return Result<void>::err(ErrorCode::Busy, "already running");
     impl_->handler = std::move(handler);
     impl_->ws = std::move(ws);
+    impl_->stream = std::move(stream);
 
     httpd_config_t c = HTTPD_DEFAULT_CONFIG();
     c.server_port = port;
@@ -613,6 +664,7 @@ Result<void> EspHttpServer::start(uint16_t port, net::HttpHandler handler, net::
     if (err != ESP_OK) {
         impl_->handler = nullptr;
         impl_->ws = {};
+        impl_->stream = nullptr;
         return Result<void>::err(ErrorCode::IoError,
                                  std::string("httpd_start: ") + esp_err_to_name(err));
     }
@@ -645,6 +697,7 @@ Result<void> EspHttpServer::start(uint16_t port, net::HttpHandler handler, net::
         impl_->conns.clear();
         impl_->handler = nullptr;
         impl_->ws = {};
+        impl_->stream = nullptr;
         return Result<void>::err(
             ErrorCode::IoError, std::string("httpd_register_uri_handler: ") + esp_err_to_name(err));
     }
@@ -666,6 +719,7 @@ void EspHttpServer::stop() {
     impl_->port.store(0);
     impl_->handler = nullptr;
     impl_->ws = {};
+    impl_->stream = nullptr;
 }
 
 bool EspHttpServer::running() const { return impl_->running.load(); }

@@ -17,6 +17,12 @@
 //     alone, before any of it is read; a chunked body (Transfer-Encoding)
 //     is refused with 411. Either way the connection is then closed, as
 //     what is left of the body cannot be parsed as the next request;
+//   - a request the StreamHandler takes (net::BodySink) is exempt from
+//     the 413: its body is read in kBodyChunkBytes pieces on the httpd
+//     task, a connection that drops or stays silent for two of httpd's
+//     5-second receive timeouts aborts it, and an early answer is sent
+//     with Connection: close after which httpd discards the rest of the
+//     body (up to kBodyDrainBytes) before closing;
 //   - iface is decided from the connection's addresses: loopback means
 //     Loopback; the hotspot's own address reached from a peer inside the
 //     hotspot subnet means Ap; anything else Sta (net_iface.hpp).
@@ -81,7 +87,8 @@ public:
     EspHttpServer(const EspHttpServer&) = delete;
     EspHttpServer& operator=(const EspHttpServer&) = delete;
 
-    Result<void> start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws) override;
+    Result<void> start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws,
+                       net::StreamHandler stream = {}) override;
     // Closes every connection (reporting WebSocket closes) and stops the
     // task; must not be called from a handler.
     void stop() override;

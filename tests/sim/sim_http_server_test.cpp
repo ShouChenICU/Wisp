@@ -975,3 +975,206 @@ TEST(SimHttpServer, StartErrors) {
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 200);
 }
+
+namespace {
+
+// Streams POST /upload bodies into a shared record; everything else is
+// left to the buffered handler. `reject_after` > 0 answers 400 once that
+// many bytes arrived.
+struct StreamRecord {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<HttpRequest> heads;
+    std::string body;
+    size_t chunks = 0;
+    size_t largest_chunk = 0;
+    int ends = 0;
+    int aborts = 0;
+
+    template <class Pred>
+    bool wait(Pred pred) {
+        std::unique_lock<std::mutex> lock(mutex);
+        return cv.wait_for(lock, kWait, pred);
+    }
+};
+
+class RecordingSink : public wisp::net::BodySink {
+public:
+    RecordingSink(StreamRecord& rec, size_t reject_after)
+        : rec_(rec), reject_after_(reject_after) {}
+
+    std::optional<HttpResponse> on_data(std::span<const uint8_t> chunk) override {
+        std::lock_guard<std::mutex> lock(rec_.mutex);
+        rec_.body.append(reinterpret_cast<const char*>(chunk.data()), chunk.size());
+        ++rec_.chunks;
+        rec_.largest_chunk = std::max(rec_.largest_chunk, chunk.size());
+        if (reject_after_ > 0 && rec_.body.size() >= reject_after_) {
+            return HttpResponse::error(400, "wrong_board", "not for this device");
+        }
+        return std::nullopt;
+    }
+    HttpResponse on_end() override {
+        {
+            std::lock_guard<std::mutex> lock(rec_.mutex);
+            ++rec_.ends;
+        }
+        rec_.cv.notify_all();
+        HttpResponse res;
+        res.status = 202;
+        res.body = "{\"received\":" + std::to_string(rec_.body.size()) + "}";
+        return res;
+    }
+    void on_abort() override {
+        {
+            std::lock_guard<std::mutex> lock(rec_.mutex);
+            ++rec_.aborts;
+        }
+        rec_.cv.notify_all();
+    }
+
+private:
+    StreamRecord& rec_;
+    size_t reject_after_;
+};
+
+wisp::net::StreamHandler upload_streams(StreamRecord& rec, size_t reject_after = 0) {
+    return [&rec, reject_after](const HttpRequest& head) -> std::optional<wisp::net::StreamStart> {
+        if (head.method != Method::Post || head.path != "/upload") return std::nullopt;
+        {
+            std::lock_guard<std::mutex> lock(rec.mutex);
+            rec.heads.push_back(head);
+        }
+        if (head.header("x-refuse") == "1") {
+            return wisp::net::StreamStart{nullptr, HttpResponse::error(409, "busy", "busy")};
+        }
+        return wisp::net::StreamStart{std::make_unique<RecordingSink>(rec, reject_after), {}};
+    };
+}
+
+std::string post_head(std::string_view path, size_t length, std::string_view extra = {}) {
+    std::string req = "POST ";
+    req += path;
+    req += " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: " + std::to_string(length) + "\r\n";
+    req += extra;
+    req += "\r\n";
+    return req;
+}
+
+std::string pattern(size_t size) {
+    std::string s(size, '\0');
+    for (size_t i = 0; i < size; ++i) s[i] = static_cast<char>((i * 31 + 7) & 0xff);
+    return s;
+}
+
+}  // namespace
+
+TEST(SimHttpServer, StreamsLargeRequestBody) {
+    Recorder rec;
+    StreamRecord streamed;
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0, rec.handler(), rec.ws(), upload_streams(streamed)).is_ok());
+
+    const std::string body = pattern(1024 * 1024);
+    Client c(server.port());
+    ASSERT_TRUE(c.send(post_head("/upload", body.size(), "X-Wisp: 1\r\n") + body));
+    auto res = c.read_response();
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 202);
+    EXPECT_EQ(res->body, "{\"received\":1048576}");
+    {
+        std::lock_guard<std::mutex> lock(streamed.mutex);
+        ASSERT_EQ(streamed.heads.size(), 1u);
+        EXPECT_EQ(streamed.heads[0].content_length, body.size());
+        EXPECT_EQ(streamed.heads[0].header("x-wisp"), "1");
+        EXPECT_TRUE(streamed.heads[0].body.empty());
+        EXPECT_EQ(streamed.body, body);
+        EXPECT_GT(streamed.chunks, 1u);
+        EXPECT_LE(streamed.largest_chunk, wisp::net::kBodyChunkBytes);
+        EXPECT_EQ(streamed.ends, 1);
+        EXPECT_EQ(streamed.aborts, 0);
+    }
+    // The buffered handler never saw it.
+    EXPECT_EQ(rec.request_count(), 0u);
+
+    // The connection stays usable, and every other route keeps its limit.
+    ASSERT_TRUE(c.send(post_head("/other", 8193)));
+    auto other = c.read_response();
+    ASSERT_TRUE(other);
+    EXPECT_EQ(other->status, 413);
+    EXPECT_EQ(rec.request_count(), 0u);
+}
+
+TEST(SimHttpServer, StreamedRequestCanBeAnsweredEarly) {
+    Recorder rec;
+    StreamRecord streamed;
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0, rec.handler(), rec.ws(), upload_streams(streamed, 6000)).is_ok());
+
+    // Refused from the head: no body byte reaches a sink.
+    {
+        Client c(server.port());
+        const std::string body = pattern(64 * 1024);
+        ASSERT_TRUE(c.send(post_head("/upload", body.size(), "X-Refuse: 1\r\n") + body));
+        auto res = c.read_response();
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res->status, 409);
+        EXPECT_EQ(res->headers["connection"], "close");
+        EXPECT_TRUE(c.closed_by_peer());
+    }
+    // Refused by the sink part way: the client can still send the rest
+    // and read the answer.
+    {
+        Client c(server.port());
+        const std::string body = pattern(512 * 1024);
+        ASSERT_TRUE(c.send(post_head("/upload", body.size()) + body));
+        auto res = c.read_response();
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res->status, 400);
+        EXPECT_NE(res->body.find("wrong_board"), std::string::npos);
+        EXPECT_TRUE(c.closed_by_peer());
+    }
+    std::lock_guard<std::mutex> lock(streamed.mutex);
+    // Answered on the piece that crossed 6000 bytes; nothing after it.
+    EXPECT_GE(streamed.body.size(), 6000u);
+    EXPECT_LT(streamed.body.size(), 6000u + wisp::net::kBodyChunkBytes);
+    EXPECT_EQ(streamed.ends, 0);
+    EXPECT_EQ(streamed.aborts, 0);
+}
+
+TEST(SimHttpServer, DroppedUploadAborts) {
+    Recorder rec;
+    StreamRecord streamed;
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0, rec.handler(), rec.ws(), upload_streams(streamed)).is_ok());
+    {
+        Client c(server.port());
+        ASSERT_TRUE(c.send(post_head("/upload", 100000) + pattern(30000)));
+        ASSERT_TRUE(streamed.wait([&] { return streamed.body.size() == 30000; }));
+    }  // the client goes away mid-body
+    ASSERT_TRUE(streamed.wait([&] { return streamed.aborts == 1; }));
+    EXPECT_EQ(streamed.ends, 0);
+
+    // Stopping the server mid-body aborts too.
+    Client c(server.port());
+    ASSERT_TRUE(c.send(post_head("/upload", 100000) + pattern(1000)));
+    ASSERT_TRUE(streamed.wait([&] { return streamed.body.size() == 31000; }));
+    server.stop();
+    std::lock_guard<std::mutex> lock(streamed.mutex);
+    EXPECT_EQ(streamed.aborts, 2);
+    EXPECT_EQ(streamed.ends, 0);
+}
+
+TEST(SimHttpServer, StreamedRouteNeedsContentLength) {
+    Recorder rec;
+    StreamRecord streamed;
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0, rec.handler(), rec.ws(), upload_streams(streamed)).is_ok());
+    Client c(server.port());
+    ASSERT_TRUE(
+        c.send("POST /upload HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n"));
+    auto res = c.read_response();
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 411);
+    std::lock_guard<std::mutex> lock(streamed.mutex);
+    EXPECT_TRUE(streamed.heads.empty());
+}

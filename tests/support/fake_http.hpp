@@ -120,7 +120,8 @@ private:
 // thread polls them.
 class FakeHttpServer : public net::HttpServer {
 public:
-    Result<void> start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws) override {
+    Result<void> start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws,
+                       net::StreamHandler stream = {}) override {
         ++start_calls;
         if (fail_start.load()) {
             return Result<void>::err(ErrorCode::IoError, "fake start failure");
@@ -129,6 +130,7 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             handler_ = std::move(handler);
             ws_ = std::move(ws);
+            stream_ = std::move(stream);
         }
         port_.store(port == 0 ? 4242 : port);
         running_.store(true);
@@ -142,6 +144,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         handler_ = nullptr;
         ws_ = {};
+        stream_ = nullptr;
     }
 
     bool running() const override { return running_.load(); }
@@ -159,6 +162,12 @@ public:
         return h(req);
     }
 
+    // The StreamHandler start() received (empty when none or not running).
+    net::StreamHandler stream_handler() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return stream_;
+    }
+
     std::atomic<int> start_calls{0};
     std::atomic<int> stop_calls{0};
     std::atomic<bool> fail_start{false};
@@ -167,6 +176,7 @@ private:
     mutable std::mutex mutex_;
     net::HttpHandler handler_;
     net::WsHandlers ws_;
+    net::StreamHandler stream_;
     std::atomic<bool> running_{false};
     std::atomic<uint16_t> port_{0};
 };

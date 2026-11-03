@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -469,6 +470,16 @@ struct SimHttpServer::Impl {
     void ws_loop(Connection& conn, std::string in);
     // Sends a close frame with `code` and closes once the peer hangs up.
     void ws_close(Connection& conn, uint16_t code);
+    // A request the StreamHandler took: feeds its body (what `buf` already
+    // holds first) to the sink, or answers early. True when the connection
+    // may serve its next request; `buf` then holds whatever followed the
+    // body.
+    bool serve_stream(Connection& conn, net::StreamStart start, std::string& buf,
+                      size_t content_length, bool keep_alive, bool expect_continue);
+    // Sends `res` with Connection: close, reads and discards up to
+    // net::kBodyDrainBytes of the `remaining` body bytes (those already in
+    // `buf` first) so the client gets to read the answer, then closes.
+    void answer_early(Connection& conn, net::HttpResponse res, std::string& buf, size_t remaining);
     // Sends an error response and closes the connection gracefully.
     void reject(Connection& conn, int status, const char* code, const char* message,
                 std::vector<std::pair<std::string, std::string>> headers = {});
@@ -482,6 +493,7 @@ struct SimHttpServer::Impl {
     // after all are joined, so connection threads read them unlocked.
     net::HttpHandler handler;
     net::WsHandlers ws;
+    net::StreamHandler stream;
     int listen_fd = -1;
     int wake_rd = -1;
     int wake_wr = -1;
@@ -649,10 +661,12 @@ void SimHttpServer::Impl::serve(const std::shared_ptr<Connection>& conn_ptr,
                 it->second += value;
             }
         }
+        // `version` views into `buf`, so it is read before the erase below
+        // moves the body bytes over it.
+        const bool http11 = version == "HTTP/1.1";
         buf.erase(0, head_end + 4);
         if (bad_header) return reject(conn, 400, "bad_request", "malformed header line");
 
-        const bool http11 = version == "HTTP/1.1";
         const std::string connection = req.header("connection");
         const bool keep_alive =
             http11 ? !has_token(connection, "close") : has_token(connection, "keep-alive");
@@ -668,6 +682,18 @@ void SimHttpServer::Impl::serve(const std::shared_ptr<Connection>& conn_ptr,
                 return reject(conn, 400, "bad_request", "invalid Content-Length");
             }
             content_length = std::stoul(v);
+        }
+        req.content_length = content_length;
+        if (stream) {
+            if (auto start = stream(req)) {
+                const bool expect_continue =
+                    http11 && has_token(req.header("expect"), "100-continue");
+                if (!serve_stream(conn, std::move(*start), buf, content_length, keep_alive,
+                                  expect_continue)) {
+                    return conn.finish();
+                }
+                continue;
+            }
         }
         // Refused from the header alone: the body is never read.
         if (content_length > kMaxBodyBytes) {
@@ -693,6 +719,57 @@ void SimHttpServer::Impl::serve(const std::shared_ptr<Connection>& conn_ptr,
             handler ? handler(req) : net::HttpResponse::error(404, "not_found", "no handler");
         if (!write_response(fd, res, keep_alive) || !keep_alive) return conn.finish();
     }
+}
+
+bool SimHttpServer::Impl::serve_stream(Connection& conn, net::StreamStart start, std::string& buf,
+                                       size_t content_length, bool keep_alive,
+                                       bool expect_continue) {
+    if (!start.sink) {
+        answer_early(conn, std::move(start.response), buf, content_length);
+        return false;
+    }
+    const int fd = conn.fd();
+    if (expect_continue && buf.size() < content_length) {
+        if (!send_all(fd, "HTTP/1.1 100 Continue\r\n\r\n")) {
+            start.sink->on_abort();
+            return false;
+        }
+    }
+    size_t remaining = content_length;
+    while (remaining > 0) {
+        if (buf.empty() && !recv_some(fd, buf, kIdleTimeoutMs)) {
+            start.sink->on_abort();
+            return false;
+        }
+        const size_t n = std::min({buf.size(), remaining, net::kBodyChunkBytes});
+        auto early = start.sink->on_data({reinterpret_cast<const uint8_t*>(buf.data()), n});
+        buf.erase(0, n);
+        remaining -= n;
+        if (early) {
+            answer_early(conn, std::move(*early), buf, remaining);
+            return false;
+        }
+    }
+    const net::HttpResponse res = start.sink->on_end();
+    return write_response(fd, res, keep_alive) && keep_alive;
+}
+
+void SimHttpServer::Impl::answer_early(Connection& conn, net::HttpResponse res, std::string& buf,
+                                       size_t remaining) {
+    const int fd = conn.fd();
+    if (!write_response(fd, res, /*keep_alive=*/false)) return;
+    const size_t buffered = std::min(buf.size(), remaining);
+    buf.erase(0, buffered);
+    remaining -= buffered;
+    if (remaining <= net::kBodyDrainBytes) {
+        while (remaining > 0) {
+            buf.clear();
+            if (!recv_some(fd, buf, kIdleTimeoutMs)) break;
+            remaining -= std::min(buf.size(), remaining);
+        }
+    }
+    buf.clear();
+    linger_close(fd);
 }
 
 void SimHttpServer::Impl::serve_ws(const std::shared_ptr<Connection>& conn_ptr,
@@ -805,7 +882,8 @@ SimHttpServer::SimHttpServer(std::string bind) : impl_(std::make_unique<Impl>(st
 
 SimHttpServer::~SimHttpServer() { stop(); }
 
-Result<void> SimHttpServer::start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws) {
+Result<void> SimHttpServer::start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws,
+                                  net::StreamHandler stream) {
     Impl& s = *impl_;
     std::lock_guard<std::mutex> lock(s.lifecycle);
     if (s.is_running.load()) return Result<void>::err(ErrorCode::Busy, "server already running");
@@ -841,6 +919,7 @@ Result<void> SimHttpServer::start(uint16_t port, net::HttpHandler handler, net::
     s.wake_wr = pipe_fds[1];
     s.handler = std::move(handler);
     s.ws = std::move(ws);
+    s.stream = std::move(stream);
     s.bound_port.store(ntohs(bound.sin_port));
     s.is_running.store(true);
     s.acceptor = std::thread([&s] { s.accept_loop(); });
@@ -873,6 +952,7 @@ void SimHttpServer::stop() {
     close_fd(s.wake_wr);
     s.handler = nullptr;
     s.ws = {};
+    s.stream = nullptr;
     s.bound_port.store(0);
     s.is_running.store(false);
 }
