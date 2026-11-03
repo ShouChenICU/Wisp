@@ -104,6 +104,12 @@ const char* strings_en(StrId id) {
             return "Factory reset";
         case StrId::ResetPrompt:
             return "Clears Wi-Fi, pairings and model settings, then restarts. Scene data is kept.";
+        case StrId::FirmwareTitle:
+            return "Firmware update";
+        case StrId::FirmwarePrompt:
+            return "Install the new firmware and restart?";
+        case StrId::FirmwareDowngrade:
+            return "Note: this is older than the running version (a downgrade).";
         case StrId::Count:
             break;
     }

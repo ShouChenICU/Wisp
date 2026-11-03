@@ -15,6 +15,7 @@
 
 #include "app_impl.hpp"
 #include "factory_reset.hpp"
+#include "firmware_confirm.hpp"
 #include "loopback.hpp"
 #include "lvgl.h"
 #include "net_cards.hpp"
@@ -52,9 +53,10 @@ constexpr uint64_t kSlowSampleIntervalMs = 1000;  // power/clock/storage.
 constexpr uint32_t kStandbySlowSampleMs = 30000;
 constexpr uint32_t kUiRefreshMs = 100;
 // How often the refresh timer re-reads the network services (and the
-// pending factory-reset request) even without an event: the bus drops its
-// oldest events when full, and a lost net.ap.state, net.pairing.code or
-// system.factory_reset must not leave a card up (or missing) for good.
+// pending factory-reset and firmware requests) even without an event: the
+// bus drops its oldest events when full, and a lost net.ap.state,
+// net.pairing.code, system.factory_reset or system.firmware must not leave
+// a card up (or missing) for good.
 // The reads are a few short lock-protected copies and an atomic.
 constexpr uint64_t kNetResyncMs = 1000;
 constexpr uint32_t kPerfReportMs = 5000;
@@ -191,6 +193,8 @@ private:
     void subscribe_net();
     void on_net_event(const core::Event& e);
     void on_reset_event(const core::Event& e);
+    // system.firmware: any state may open or close the update dialog.
+    void on_firmware_event(const core::Event& e);
     // UI thread: re-reads the Wi-Fi state into the network section and
     // opens, refreshes or closes the provisioning card to match.
     void sync_wifi();
@@ -208,6 +212,12 @@ private:
     void sync_reset();
     void show_reset_dialog();
     void close_reset_dialog();
+    // UI thread: takes a pending firmware request and shows the dialog for
+    // it, or closes the dialog once nothing awaits an answer (declined
+    // elsewhere, timed out).
+    void sync_firmware();
+    void show_firmware_dialog();
+    void close_firmware_dialog();
     // Brings ui::lang() in line with the stored language, rebuilding if it
     // changed. UI thread only.
     void sync_language();
@@ -232,12 +242,15 @@ private:
     static void perf_long_press_cb(lv_event_t* e);
     static void msgbox_btn_cb(lv_event_t* e);
     static void reset_btn_cb(lv_event_t* e);
+    static void firmware_btn_cb(lv_event_t* e);
 
     // A confirm box in show_confirm_dialog()'s style (the msgbox's default
     // width clamped to the safe area) with Yes/No footer buttons, both
     // wired to `cb` with this screen as user data. Returns the box; *yes
     // receives its Yes button.
     lv_obj_t* make_confirm_box(ui::StrId title, ui::StrId text, lv_event_cb_t cb, lv_obj_t** yes);
+    lv_obj_t* make_confirm_box(ui::StrId title, const std::string& text, lv_event_cb_t cb,
+                               lv_obj_t** yes);
 
     App& app_;
     ui::UiRuntime* ui_;
@@ -289,6 +302,10 @@ private:
     // Set once the user confirmed and the reset task started: later
     // requests are ignored while the reset runs towards its restart.
     bool reset_confirmed_ = false;
+    // The firmware-update confirmation; the third kind of dialog, likewise
+    // never stacked on the other two.
+    lv_obj_t* fw_box_ = nullptr;
+    lv_obj_t* fw_yes_ = nullptr;
     // os::now_ms() of the last periodic network resync (see kNetResyncMs).
     uint64_t last_net_resync_ms_ = 0;
 
@@ -343,6 +360,7 @@ private:
     core::SubscriptionId settings_sub_ = 0;
     core::SubscriptionId net_sub_ = 0;
     core::SubscriptionId reset_sub_ = 0;
+    core::SubscriptionId fw_sub_ = 0;
 };
 
 SelfCheck::SelfCheck(App& app)
@@ -391,6 +409,10 @@ SelfCheck::~SelfCheck() {
     if (reset_sub_ != 0) {
         app_.bus().unsubscribe(reset_sub_);
         reset_sub_ = 0;
+    }
+    if (fw_sub_ != 0) {
+        app_.bus().unsubscribe(fw_sub_);
+        fw_sub_ = 0;
     }
 
     // Stop the sampling task -- thread-agnostic, and nothing it touches
@@ -447,6 +469,7 @@ SelfCheck::~SelfCheck() {
             msgbox_yes_ = nullptr;
         }
         close_reset_dialog();
+        close_firmware_dialog();
         // The cards live on the top layer, outside root_.
         setup_card_.close();
         pair_card_.close();
@@ -498,6 +521,7 @@ void SelfCheck::build() {
     sync_wifi();
     sync_pairing();
     sync_reset();
+    sync_firmware();
 
     refresh_timer_ = lv_timer_create(&SelfCheck::refresh_timer_cb, kUiRefreshMs, this);
 
@@ -511,12 +535,14 @@ void SelfCheck::rebuild() {
     int32_t scroll_y = root_ != nullptr ? lv_obj_get_scroll_y(root_) : 0;
     bool dialog_open = msgbox_ != nullptr;
     bool reset_open = reset_box_ != nullptr;
+    bool fw_open = fw_box_ != nullptr;
     bool setup_open = setup_card_.is_open();
     bool pair_open = pair_card_.is_open();
     std::string pair_code = pair_card_.code();
     uint64_t pair_expires = pair_card_.expires_ms();
     close_confirm_dialog();
     close_reset_dialog();
+    close_firmware_dialog();
     setup_card_.close();
     pair_card_.close();
     if (root_ != nullptr) {
@@ -543,6 +569,9 @@ void SelfCheck::rebuild() {
     }
     if (reset_open) {
         show_reset_dialog();
+    }
+    if (fw_open) {
+        show_firmware_dialog();
     }
 }
 
@@ -1010,6 +1039,8 @@ void SelfCheck::subscribe_net() {
     net_sub_ = app_.bus().subscribe("net.", [this](const core::Event& e) { on_net_event(e); });
     reset_sub_ = app_.bus().subscribe("system.factory_reset",
                                       [this](const core::Event& e) { on_reset_event(e); });
+    fw_sub_ = app_.bus().subscribe("system.firmware",
+                                   [this](const core::Event& e) { on_firmware_event(e); });
 }
 
 void SelfCheck::on_net_event(const core::Event& e) {
@@ -1034,6 +1065,14 @@ void SelfCheck::on_reset_event(const core::Event& e) {
     // is dropped, the flag is still set for the periodic resync.
     if (!ui_->post([this] { sync_reset(); })) {
         WLOG_W("self_check", "post(factory reset dialog) dropped (post queue full)");
+    }
+}
+
+void SelfCheck::on_firmware_event(const core::Event&) {
+    // The state is re-read on the UI thread; a dropped post is made up for
+    // by the periodic resync.
+    if (!ui_->post([this] { sync_firmware(); })) {
+        WLOG_W("self_check", "post(firmware dialog) dropped (post queue full)");
     }
 }
 
@@ -1077,7 +1116,7 @@ void SelfCheck::sync_pairing() {
 void SelfCheck::raise_overlays() {
     pair_card_.raise();
     // A msgbox lives under its own full-screen backdrop on the top layer.
-    for (lv_obj_t* box : {msgbox_, reset_box_}) {
+    for (lv_obj_t* box : {msgbox_, reset_box_, fw_box_}) {
         if (box != nullptr) lv_obj_move_foreground(lv_obj_get_parent(box));
     }
 }
@@ -1099,11 +1138,11 @@ void SelfCheck::show_reset_dialog() {
     if (reset_box_ != nullptr || reset_confirmed_) {
         return;  // one dialog per request at a time; nothing once confirmed
     }
-    if (msgbox_ != nullptr) {
+    if (msgbox_ != nullptr || fw_box_ != nullptr) {
         // One confirm dialog at a time (spec 8). The person at the device
-        // is already answering the power-off question, so the browser gets
-        // a definite "no" now rather than a dialog that may never show.
-        WLOG_I("self_check", "factory reset request refused: power-off dialog is open");
+        // is already answering another question, so the browser gets a
+        // definite "no" now rather than a dialog that may never show.
+        WLOG_I("self_check", "factory reset request refused: another dialog is open");
         cancel_factory_reset(app_);
         return;
     }
@@ -1120,6 +1159,53 @@ void SelfCheck::close_reset_dialog() {
     lv_msgbox_close(reset_box_);
     reset_box_ = nullptr;
     reset_yes_ = nullptr;
+}
+
+void SelfCheck::sync_firmware() {
+    if (take_firmware_request(app_)) {
+        show_firmware_dialog();
+    }
+    if (fw_box_ != nullptr && !pending_firmware(app_)) {
+        close_firmware_dialog();
+    }
+}
+
+void SelfCheck::show_firmware_dialog() {
+    if (fw_box_ != nullptr) {
+        return;
+    }
+    std::optional<core::FirmwarePending> pending = pending_firmware(app_);
+    if (!pending) {
+        return;
+    }
+    if (msgbox_ != nullptr || reset_box_ != nullptr) {
+        // As for the factory reset: one confirm dialog at a time, and the
+        // browser hears "rejected" now.
+        WLOG_I("self_check", "firmware update refused: another dialog is open");
+        decline_firmware(app_);
+        return;
+    }
+    std::string text = ui::tr(ui::StrId::FirmwarePrompt);
+    text += "\n" + pending->current + " → " + pending->next;
+    if (pending->downgrade) {
+        text += "\n";
+        text += ui::tr(ui::StrId::FirmwareDowngrade);
+    }
+    fw_box_ =
+        make_confirm_box(ui::StrId::FirmwareTitle, text, &SelfCheck::firmware_btn_cb, &fw_yes_);
+    raise_overlays();
+    wake_screen();
+    WLOG_I("self_check", "firmware %s: waiting for confirmation on the screen",
+           pending->next.c_str());
+}
+
+void SelfCheck::close_firmware_dialog() {
+    if (fw_box_ == nullptr) {
+        return;
+    }
+    lv_msgbox_close(fw_box_);
+    fw_box_ = nullptr;
+    fw_yes_ = nullptr;
 }
 
 void SelfCheck::handle_power_key_action(PowerKeyController::Action action) {
@@ -1162,11 +1248,11 @@ void SelfCheck::show_confirm_dialog() {
     if (msgbox_ != nullptr) {
         return;  // Already up -- spec 8: no stacked confirm dialogs.
     }
-    if (reset_box_ != nullptr) {
-        // Nor on top of the factory-reset question: the long press is
-        // ignored, and the key controller is told no dialog came up, so the
-        // next short press turns the screen off as usual.
-        WLOG_I("self_check", "power-off dialog not shown: factory reset dialog is open");
+    if (reset_box_ != nullptr || fw_box_ != nullptr) {
+        // Nor on top of the factory-reset or firmware question: the long
+        // press is ignored, and the key controller is told no dialog came
+        // up, so the next short press turns the screen off as usual.
+        WLOG_I("self_check", "power-off dialog not shown: another dialog is open");
         (void)power_key_.on_confirm(false);
         return;
     }
@@ -1175,6 +1261,11 @@ void SelfCheck::show_confirm_dialog() {
 }
 
 lv_obj_t* SelfCheck::make_confirm_box(ui::StrId title, ui::StrId text, lv_event_cb_t cb,
+                                      lv_obj_t** yes) {
+    return make_confirm_box(title, std::string(ui::tr(text)), cb, yes);
+}
+
+lv_obj_t* SelfCheck::make_confirm_box(ui::StrId title, const std::string& text, lv_event_cb_t cb,
                                       lv_obj_t** yes) {
     lv_obj_t* box = lv_msgbox_create(nullptr);
     // lv_msgbox_class's own default width is a fixed LV_DPI_DEF * 2 (see
@@ -1187,7 +1278,7 @@ lv_obj_t* SelfCheck::make_confirm_box(ui::StrId title, ui::StrId text, lv_event_
     int32_t safe_width = safe.x2 - safe.x1 + 1;
     lv_obj_set_width(box, std::min<int32_t>(LV_DPI_DEF * 2, safe_width));
     lv_msgbox_add_title(box, ui::tr(title));
-    lv_msgbox_add_text(box, ui::tr(text));
+    lv_msgbox_add_text(box, text.c_str());
     *yes = lv_msgbox_add_footer_button(box, ui::tr(ui::StrId::Yes));
     lv_obj_t* no_btn = lv_msgbox_add_footer_button(box, ui::tr(ui::StrId::No));
     lv_obj_add_event_cb(*yes, cb, LV_EVENT_CLICKED, this);
@@ -1269,6 +1360,7 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
         self->sync_wifi();
         self->sync_pairing();
         self->sync_reset();
+        self->sync_firmware();
     }
     self->net_section_.tick(now);
     self->pair_card_.tick(now);
@@ -1428,6 +1520,19 @@ void SelfCheck::reset_btn_cb(lv_event_t* e) {
         self->reset_confirmed_ = start_factory_reset(self->app_);
     } else {
         cancel_factory_reset(self->app_);
+    }
+}
+
+void SelfCheck::firmware_btn_cb(lv_event_t* e) {
+    auto* self = static_cast<SelfCheck*>(lv_event_get_user_data(e));
+    auto* target = static_cast<lv_obj_t*>(lv_event_get_target(e));
+    bool yes = (target == self->fw_yes_);
+    self->close_firmware_dialog();
+    if (yes) {
+        // Off the UI thread: switching the boot slot re-verifies the image.
+        (void)start_firmware_install(self->app_);
+    } else {
+        decline_firmware(self->app_);
     }
 }
 

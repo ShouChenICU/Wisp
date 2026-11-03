@@ -25,6 +25,7 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/core/button_service.hpp"
+#include "wisp/core/firmware_update.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -134,6 +135,18 @@ struct App::Impl {
     // made before the screen subscribes, or whose event the bus dropped,
     // still reaches the screen.
     std::atomic<bool> reset_pending{false};
+
+    // The firmware update service (connectivity spec 6.5) over
+    // Platform::firmware, built by start() before networking (the admin
+    // route streams into it) and reset by stop() after networking and the
+    // "wisp.fwup" task are gone. firmware_mutex guards firmware_task; see
+    // firmware_confirm.hpp for the rest.
+    std::unique_ptr<core::FirmwareUpdateService> firmware;
+    os::Mutex firmware_mutex;
+    std::unique_ptr<os::Task> firmware_task;
+    // An image awaits the user's answer and no screen has taken it up yet
+    // (take_firmware_request()), kept for the same reason as reset_pending.
+    std::atomic<bool> firmware_pending{false};
 
     // The "wisp.console" task (console_task.hpp): started last by
     // App::start(), stopped first by App::stop().

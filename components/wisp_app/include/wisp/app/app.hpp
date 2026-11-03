@@ -54,11 +54,15 @@
 //      "system.boot.completed".
 //   6. Given Platform::read_line, starts the serial console task
 //      (console.hpp, src/console_task.hpp).
+//   7. Marks the running image valid (FirmwareUpdater::mark_valid()): a
+//      freshly updated image that crashes or resets anywhere before this
+//      point is rolled back by the bootloader (connectivity spec 6.5).
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -69,6 +73,7 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/firmware_update.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/net/http.hpp"
@@ -172,7 +177,13 @@ struct Platform {
     // minutes). Tests shorten code_ttl_ms to watch a code expire.
     net::PairingConfig pairing;
 
-    // Restarts the device (admin "reboot", factory reset). May be empty.
+    // Writes an uploaded firmware image to the OTA slot not running
+    // (connectivity spec 6.5). Empty: the board has no OTA slots, and
+    // GET /system/firmware reports supported false.
+    std::unique_ptr<core::FirmwareUpdater> firmware;
+
+    // Restarts the device (admin "reboot", factory reset, a confirmed
+    // firmware update). May be empty.
     std::function<void()> reboot;
     // Serial console input (spec 8.2; see console.hpp). Waits up to
     // timeout_ms for one line (stored without its line ending): Line when
@@ -277,6 +288,15 @@ private:
     friend bool start_factory_reset(App&);
     friend void join_factory_reset(App&);
     friend bool take_factory_reset_request(App&);
+    // The firmware update's confirmation (src/firmware_confirm.hpp) keeps
+    // its state and "wisp.fwup" task here.
+    friend void request_firmware_confirm(App&);
+    friend bool take_firmware_request(App&);
+    friend std::optional<core::FirmwarePending> pending_firmware(App&);
+    friend bool start_firmware_install(App&);
+    friend void decline_firmware(App&);
+    friend void restart_for_firmware(App&);
+    friend void join_firmware_install(App&);
     // The console task (src/console_task.hpp) lives on Impl.
     friend void start_console(App&);
     friend void stop_console(App&);

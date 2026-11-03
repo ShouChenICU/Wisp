@@ -4,8 +4,9 @@
 // the device-side network UI and factory-reset tests. Unlike
 // self_check_screen_test.cpp's harness it supplies Platform::random (so
 // WifiService/PairingService exist), a reboot hook that counts calls and
-// records whether it ran on the UI thread, and optionally a FakeHttpServer
-// serving the admin router.
+// records whether it ran on the UI thread, every emitted line, and
+// optionally a FakeHttpServer serving the admin router and a
+// FakeFirmwareUpdater behind the firmware upload.
 
 #include <atomic>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include <vector>
 
 #include "support/fake_devices.hpp"
+#include "support/fake_firmware.hpp"
 #include "support/fake_http.hpp"
 #include "support/fake_wifi.hpp"
 #include "support/temp_dir.hpp"
@@ -47,6 +49,9 @@ struct UiNetOptions {
     uint32_t pairing_ttl_ms = 0;
     // Platform::pairing.min_code_interval_ms; -1 keeps the 10 s default.
     int64_t pairing_interval_ms = -1;
+    // Platform::firmware (a FakeFirmwareUpdater for board "test_board").
+    bool with_firmware = false;
+    std::string firmware_version = "0.2.0";
 };
 
 class UiNetBoard : public wisp::app::Board {
@@ -74,10 +79,14 @@ struct UiNetHarness {
     std::string root = temp_dir().string();
     std::shared_ptr<FakeWifi> wifi;
     std::shared_ptr<FakeDisplay> display;
-    FakeHttpServer* server = nullptr;  // owned by the App's Platform
+    FakeHttpServer* server = nullptr;         // owned by the App's Platform
+    FakeFirmwareUpdater* firmware = nullptr;  // likewise
     std::atomic<int> reboots{0};
     std::atomic<bool> rebooted_on_ui_thread{false};
     std::unique_ptr<wisp::app::App> app;
+
+    std::mutex lines_mutex;
+    std::vector<std::string> lines;  // Platform::emit_line's output
 
     std::mutex events_mutex;
     std::vector<wisp::core::Event> events;
@@ -113,7 +122,16 @@ struct UiNetHarness {
         if (!opts.lang.empty()) {
             (void)wisp::core::Settings(*platform.settings, "sys").set("lang", opts.lang);
         }
-        platform.emit_line = [](const std::string&) {};
+        platform.emit_line = [this](const std::string& line) {
+            std::lock_guard<std::mutex> lock(lines_mutex);
+            lines.push_back(line);
+        };
+        platform.firmware_version = opts.firmware_version;
+        if (opts.with_firmware) {
+            auto fw = std::make_unique<FakeFirmwareUpdater>();
+            firmware = fw.get();
+            platform.firmware = std::move(fw);
+        }
         platform.random = [](uint8_t* out, size_t len) {
             static std::atomic<uint32_t> counter{1};
             for (size_t i = 0; i < len; ++i) {
@@ -145,6 +163,15 @@ struct UiNetHarness {
     }
 
     std::string settings_path() const { return root + "/settings.json"; }
+
+    // Whether a line starting with `prefix` has been emitted.
+    bool emitted(const std::string& prefix) {
+        std::lock_guard<std::mutex> lock(lines_mutex);
+        for (const auto& l : lines) {
+            if (l.rfind(prefix, 0) == 0) return true;
+        }
+        return false;
+    }
 
     // Starts the App and records every event under `prefix` from then on.
     bool start(const std::string& prefix = "") {

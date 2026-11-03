@@ -18,8 +18,9 @@
 //     while the hotspot is up;
 //   - spawns the "wisp.net" task.
 //
-// The "wisp.net" task is the only caller of WifiService::tick() and
-// PairingService::tick() (every kNetTickMs) and the only thread that
+// The "wisp.net" task is the only caller of WifiService::tick(),
+// PairingService::tick() and FirmwareUpdateService::tick() (every
+// kNetTickMs) and the only thread that
 // starts or stops the HTTP servers once start() has returned. It has its
 // own task rather than an os::Timer because tick() may block for a ~3 s
 // scan, and on ESP every Timer shares one dispatch task. Event handlers
@@ -46,6 +47,7 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/firmware_update.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/storage_manager.hpp"
@@ -74,6 +76,9 @@ struct NetWiringDeps {
     // request_factory_reset). Empty when there is no screen to confirm on:
     // the route then answers 503.
     std::function<void()> request_factory_reset;
+    // The firmware upload's service (AdminDeps::firmware); ticked by the
+    // "wisp.net" task so an unanswered update times out. Null: no upload.
+    core::FirmwareUpdateService* firmware = nullptr;
 };
 
 class NetWiring {

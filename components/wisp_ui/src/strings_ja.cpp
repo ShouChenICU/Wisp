@@ -107,6 +107,12 @@ const char* strings_ja(StrId id) {
         case StrId::ResetPrompt:
             return "Wi-"
                    "Fi・ペアリング・モデル設定を消去して再起動します。シーンのデータは残ります。";
+        case StrId::FirmwareTitle:
+            return "ファームウェア更新";
+        case StrId::FirmwarePrompt:
+            return "新しいファームウェアを入れて再起動しますか？";
+        case StrId::FirmwareDowngrade:
+            return "注意：今より古い版です（ダウングレード）。";
         case StrId::Count:
             break;
     }

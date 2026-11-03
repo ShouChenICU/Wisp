@@ -101,6 +101,7 @@ void NetWiring::start() {
             .device_status = [this] { return device_status(); },
             .reboot = platform.reboot,
             .request_factory_reset = deps_.request_factory_reset,
+            .firmware = deps_.firmware,
         });
         reconcile_http(now);  // http_always_on serves from boot
     }
@@ -153,6 +154,7 @@ void NetWiring::run() {
             ap_up_.store(wifi_->ap_status().active);
         }
         pairing_->tick(now);
+        if (deps_.firmware != nullptr) deps_.firmware->tick(now);
         reconcile_http(now);
         (void)wake_.take(kNetTickMs);
     }
@@ -183,7 +185,8 @@ void NetWiring::reconcile_http(uint64_t now_ms) {
     admin::AdminServer* admin = admin_.get();
     auto r = server->start(
         deps_.platform.http_port,
-        [admin](const net::HttpRequest& req) { return admin->handle(req); }, admin->ws_handlers());
+        [admin](const net::HttpRequest& req) { return admin->handle(req); }, admin->ws_handlers(),
+        admin->stream_handler());
     if (!r) {
         WLOG_E(kTag, "admin server failed to start on port %u: %s; retrying in %u s",
                static_cast<unsigned>(deps_.platform.http_port), r.error().message.c_str(),

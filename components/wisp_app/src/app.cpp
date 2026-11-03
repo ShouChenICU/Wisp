@@ -7,6 +7,7 @@
 #include "app_impl.hpp"
 #include "console_task.hpp"
 #include "factory_reset.hpp"
+#include "firmware_confirm.hpp"
 #include "loopback.hpp"
 #include "self_check.hpp"
 #include "wisp/base/json.hpp"
@@ -138,6 +139,23 @@ Result<void> App::start() {
                                     [this] { impl_->power_manager->tick(os::now_ms()); });
     impl_->power_timer->start();
 
+    // The firmware update service, before networking routes uploads to
+    // it. Only a device with a screen can confirm an update.
+    impl_->firmware_pending.store(false);
+    impl_->firmware =
+        std::make_unique<core::FirmwareUpdateService>(core::FirmwareUpdateService::Deps{
+            .updater = impl_->platform.firmware.get(),
+            .running_version = impl_->platform.firmware_version,
+            .publish =
+                [this](Properties p) {
+                    impl_->bus.publish({"system.firmware", "app", 0, std::move(p)});
+                },
+            .request_confirm =
+                impl_->ui ? std::function<void()>([this] { request_firmware_confirm(*this); })
+                          : nullptr,
+            .restart = [this] { restart_for_firmware(*this); },
+        });
+
     // Step 4b: networking (connectivity spec 4.1), before the self-check
     // screen so that screen can show the network state. Never waits for
     // Wi-Fi -- see net_wiring.hpp.
@@ -154,6 +172,7 @@ Result<void> App::start() {
         // Only a device with a screen can confirm a factory reset.
         .request_factory_reset =
             impl_->ui ? std::function<void()>([this] { request_factory_reset(*this); }) : nullptr,
+        .firmware = impl_->firmware.get(),
     });
     impl_->net->start();
 
@@ -218,6 +237,9 @@ Result<void> App::start() {
     // Last, so a command never sees a half-built App.
     start_console(*this);
 
+    // Step 7: this image booted all the way; a fresh update stays.
+    impl_->firmware->mark_running_valid();
+
     impl_->started = true;
     return Result<void>::ok();
 }
@@ -250,6 +272,8 @@ void App::stop() {
     // A confirmed factory reset still running uses the bus, storage and
     // the net services; let it finish (it ends in Platform::reboot).
     join_factory_reset(*this);
+    // Likewise a confirmed firmware update on its way to the restart.
+    join_firmware_install(*this);
 
     // Networking next: the HTTP server's handlers and the "wisp.net" task
     // call into PowerManager (brightness), the net services and storage,
@@ -258,6 +282,8 @@ void App::stop() {
         impl_->net->stop();
         impl_->net.reset();
     }
+    // Nothing streams into it any more.
+    impl_->firmware.reset();
 
     // PowerManager is torn down next -- after the self-check screen
     // (which calls into it), before buttons/ui/bus (which it in turn

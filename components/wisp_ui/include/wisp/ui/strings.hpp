@@ -101,6 +101,12 @@ enum class StrId : uint16_t {
     ResetTitle,
     ResetPrompt,
 
+    // Firmware-update confirmation dialog (answered with Yes/No); the
+    // screen puts "<current> → <new>" under FirmwarePrompt.
+    FirmwareTitle,
+    FirmwarePrompt,
+    FirmwareDowngrade,
+
     Count,  // not a string; keep last
 };
 

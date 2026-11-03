@@ -105,6 +105,12 @@ const char* strings_zh(StrId id) {
             return "恢复出厂设置";
         case StrId::ResetPrompt:
             return "将清除 Wi-Fi、配对和模型配置并重启，场景数据保留。";
+        case StrId::FirmwareTitle:
+            return "固件更新";
+        case StrId::FirmwarePrompt:
+            return "安装新固件并重启？";
+        case StrId::FirmwareDowngrade:
+            return "注意：新固件比当前版本旧（降级）。";
         case StrId::Count:
             break;
     }
