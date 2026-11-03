@@ -71,6 +71,10 @@ wisp_test(NAME sim_audio_test SRCS sim/sim_audio_test.cpp
 target_include_directories(sim_audio_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 wisp_test(NAME sim_board_test SRCS sim/sim_board_test.cpp
           LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os TIMEOUT 20)
+# Real loopback sockets; net/sha1.hpp is private to wisp_port_sim.
+wisp_test(NAME sim_http_server_test SRCS sim/sim_http_server_test.cpp
+          LIBS wisp_port_sim_net TIMEOUT 30)
+target_include_directories(sim_http_server_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 
 # Host-testable conversion helpers ported from MyOS into drivers/*/include/
 # *_conv.h (see docs/references.md and each header's own comment). The

@@ -10,6 +10,9 @@
 #     wisp::core::SettingsBackend that persists to a JSON file -- also
 #     host-only and SDL-free, so unit tests can link it on its own.
 #   - wisp_port_sim_dev: SDL-backed device port.
+#   - wisp_port_sim_net: SimHttpServer, the loopback HTTP/1.1 + WebSocket
+#     net::HttpServer on POSIX sockets (SDL-free, so its tests link it
+#     on its own).
 
 # ESP-IDF's component discovery (EXTRA_COMPONENT_DIRS in
 # firmware/CMakeLists.txt) still finds this directory and -- during the
@@ -20,7 +23,7 @@
 # (rather than relying on wisp_component()'s own per-target ESP_PLATFORM
 # branch, as every other wisp_* component does) means this file simply
 # never calls idf_component_register()/register_component() for any of
-# these three targets when ESP_PLATFORM is set; they are then silently
+# these targets when ESP_PLATFORM is set; they are then silently
 # absent from the dependency graph (see tools/cmake/build.cmake's
 # __build_expand_requirements(), which just skips an unregistered
 # component rather than erroring -- it only errors if something actually
@@ -43,6 +46,14 @@ wisp_component(
     SRCS settings_json_file.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_core wisp_os
+)
+
+wisp_component(
+    NAME wisp_port_sim_net
+    SRCS net/sim_http_server.cpp net/sha1.cpp
+    INCLUDE_DIRS include
+    REQUIRES wisp_net
+    HOST_LIBS Threads::Threads
 )
 
 # Simulated HAL devices: SimDisplay/SimTouch/SimImu/SimPower/
