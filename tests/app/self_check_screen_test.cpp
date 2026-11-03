@@ -169,6 +169,41 @@ int32_t find_msgbox_width(lv_obj_t* obj) {
     return -1;
 }
 
+// Returns true if every label in `obj`'s subtree can render every
+// codepoint of its text with the font it actually resolves to (including
+// that font's fallback chain). Catches widgets created outside the active
+// screen (e.g. on lv_layer_top()) that do not inherit the CJK fallback.
+bool all_label_glyphs_resolvable(lv_obj_t* obj) {
+    if (lv_obj_check_type(obj, &lv_label_class)) {
+        const lv_font_t* font = lv_obj_get_style_text_font(obj, LV_PART_MAIN);
+        const char* text = lv_label_get_text(obj);
+        const auto* p = reinterpret_cast<const unsigned char*>(text != nullptr ? text : "");
+        while (*p != 0) {
+            uint32_t letter = *p;
+            int extra = letter >= 0xF0 ? 3 : letter >= 0xE0 ? 2 : letter >= 0xC0 ? 1 : 0;
+            letter &= extra == 0 ? 0x7F : (0x3F >> extra);
+            ++p;
+            for (int k = 0; k < extra && *p != 0; ++k, ++p) {
+                letter = (letter << 6) | (*p & 0x3F);
+            }
+            if (letter == ' ' || letter == '\n') {
+                continue;
+            }
+            lv_font_glyph_dsc_t dsc;
+            if (!lv_font_get_glyph_dsc(font, &dsc, letter, 0)) {
+                return false;
+            }
+        }
+    }
+    uint32_t count = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!all_label_glyphs_resolvable(lv_obj_get_child(obj, i))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Recursively searches `obj`'s subtree for the first lv_label whose
 // current text contains `needle`, returning a copy of its text (empty if
 // none found). Used below to check specific rows' rendered text without
@@ -636,6 +671,14 @@ TEST(SelfCheckScreen, ConfirmDialogWidthClampedToSafeArea) {
     int32_t safe_width = safe.x2 - safe.x1 + 1;
     ASSERT_LT(safe_width, LV_DPI_DEF * 2) << "test fixture no longer exercises the clamp";
     EXPECT_EQ(width, safe_width);
+
+    // The dialog lives on lv_layer_top(), outside the active screen; its
+    // Chinese title, text and buttons must still render.
+    EXPECT_EQ(
+        run_on_ui_thread(
+            h.app.ui(),
+            [] { return std::string(all_label_glyphs_resolvable(lv_layer_top()) ? "ok" : ""); }),
+        "ok");
 
     h.app.stop();
 }

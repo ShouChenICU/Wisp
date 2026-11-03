@@ -440,6 +440,11 @@ Result<void> UiRuntime::start() {
         lv_theme_default_init(impl_->lv_disp, lv_palette_main(LV_PALETTE_BLUE),
                               lv_palette_main(LV_PALETTE_RED), false, default_font());
     lv_display_set_theme(impl_->lv_disp, theme);
+    // The theme applies its font only to screens, so widgets on the top
+    // and system layers (dialogs, overlays) would otherwise fall back to
+    // LV_FONT_DEFAULT, which has no CJK glyphs.
+    lv_obj_set_style_text_font(lv_display_get_layer_top(impl_->lv_disp), default_font(), 0);
+    lv_obj_set_style_text_font(lv_display_get_layer_sys(impl_->lv_disp), default_font(), 0);
 
     if (impl_->touch) {
         impl_->lv_indev = lv_indev_create();
