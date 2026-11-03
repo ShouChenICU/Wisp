@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Packs a directory of web assets into a WispPack (spec 2.3), the read-only
-format the `assets` partition holds and net::AssetPack
+format linked into the application image and net::AssetPack
 (components/wisp_net/src/asset_pack.cpp) parses. Both sides must agree on
 this layout; everything is little-endian:
 
@@ -27,12 +27,13 @@ Checks, each failing with a non-zero exit and a message on stderr:
   - every <script src> and <link href> in an .html file is a data: URL or
     resolves to a file inside the pack -- never another host, since a
     phone on the setup hotspot has no internet (spec 7.1);
-  - --partitions: the pack fits the board's `assets` partition;
+  - the whole pack is at most MAX_PACK_BYTES (256 KiB), the room the
+    application image keeps for it (spec 2.3);
   - --budget-kb: the gzipped files together fit the budget.
 
 Only the Python standard library is used.
 
-Usage: pack_assets.py <src_dir> -o <out.wpak> [--partitions <csv>] [--budget-kb N]
+Usage: pack_assets.py <src_dir> -o <out.wpak> [--budget-kb N]
 """
 
 import argparse
@@ -47,6 +48,9 @@ import sys
 MAGIC = b"WPAK"
 VERSION = 1
 HEADER = struct.Struct("<4sHHII")
+# The pack is linked into the application image (spec 2.3); this much of
+# the image is set aside for it.
+MAX_PACK_BYTES = 256 * 1024
 ALIGN = 4
 FLAG_GZIP = 0x01
 
@@ -206,36 +210,10 @@ def build_pack(files):
     return bytes(out), gzip_total
 
 
-def parse_size(text):
-    """Parses an ESP-IDF partition-table size: decimal, 0x hex, or with a
-    K/M suffix (e.g. "1M", "64K")."""
-    text = text.strip()
-    mult = 1
-    if text[-1:].upper() == "K":
-        mult, text = 1024, text[:-1]
-    elif text[-1:].upper() == "M":
-        mult, text = 1024 * 1024, text[:-1]
-    return int(text, 0) * mult
-
-
-def assets_partition_size(csv_path):
-    for raw in pathlib.Path(csv_path).read_text().splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line:
-            continue
-        cols = [c.strip() for c in line.split(",")]
-        if cols[0] == "assets":
-            if len(cols) < 5 or not cols[4]:
-                raise PackError(f"{csv_path}: assets partition has no size")
-            return parse_size(cols[4])
-    raise PackError(f"{csv_path}: no assets partition")
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Pack web assets into a WispPack.")
     parser.add_argument("src_dir")
     parser.add_argument("-o", "--output", required=True)
-    parser.add_argument("--partitions", help="board partitions.csv; pack must fit `assets`")
     parser.add_argument("--budget-kb", type=int, help="max total size of gzipped files (KiB)")
     args = parser.parse_args(argv)
 
@@ -247,13 +225,11 @@ def main(argv=None):
         check_imports(files)
         check_html_refs(files)
         blob, gzip_total = build_pack(files)
-        if args.partitions:
-            limit = assets_partition_size(args.partitions)
-            if len(blob) > limit:
-                raise PackError(
-                    f"pack is {len(blob)} bytes, larger than the assets partition "
-                    f"({limit} bytes) in {args.partitions}"
-                )
+        if len(blob) > MAX_PACK_BYTES:
+            raise PackError(
+                f"pack is {len(blob)} bytes, over the {MAX_PACK_BYTES // 1024} KiB "
+                "the application image keeps for it"
+            )
         if args.budget_kb is not None and gzip_total > args.budget_kb * 1024:
             raise PackError(
                 f"gzipped files total {gzip_total} bytes, over the {args.budget_kb} KiB budget"

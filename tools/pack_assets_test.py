@@ -174,21 +174,26 @@ class PackAssetsTest(unittest.TestCase):
         proc = run_pack(src, self.tmp / "out.wpak")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
-    def test_partition_overflow_fails(self):
-        csv = self.tmp / "partitions.csv"
-        csv.write_text(
-            "# Name, Type, SubType, Offset, Size\n"
-            "nvs,    data, nvs,     0x9000, 0x6000\n"
-            "assets, data, spiffs,  0x10000, 0x100\n"
-        )
-        proc = run_pack(FIXTURES, self.tmp / "out.wpak", "--partitions", str(csv))
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("partition", proc.stdout + proc.stderr)
+    def test_pack_over_256_kib_fails(self):
+        src = self.tmp / "src"
+        src.mkdir()
+        # Already-compressed formats are stored as-is.
+        import os
 
-    def test_partition_that_fits_passes(self):
-        csv = self.tmp / "partitions.csv"
-        csv.write_text("assets, data, spiffs, 0x10000, 1M\n")
-        self.pack_fixtures("out.wpak", "--partitions", str(csv))
+        (src / "big.png").write_bytes(os.urandom(256 * 1024))
+        proc = run_pack(src, self.tmp / "out.wpak")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("256 KiB", proc.stdout + proc.stderr)
+        self.assertFalse((self.tmp / "out.wpak").exists())
+
+    def test_pack_under_256_kib_passes(self):
+        src = self.tmp / "src"
+        src.mkdir()
+        import os
+
+        (src / "big.png").write_bytes(os.urandom(200 * 1024))
+        proc = run_pack(src, self.tmp / "out.wpak")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_budget_overflow_fails(self):
         src = self.tmp / "src"
