@@ -2,12 +2,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "support/fake_devices.hpp"
@@ -449,7 +451,9 @@ TEST(ModelProfiles, ValidatesNameUrlModelAndKey) {
     Fixture fx;
     ModelProfile p = fx.make(llm("p", "http://10.0.0.2:8000/v1", "sk-keep"));
     for (const char* bad : {"ftp://x", "api.example.com", "", "https://", "http:///",
-                            "javascript:1", "https://ex ample.com", "https://a.example/\r\nX: y"}) {
+                            "javascript:1", "https://ex ample.com", "https://a.example/\r\nX: y",
+                            // No host once user info and port are gone.
+                            "https://@/", "https://:443", "https://user@:443/v1", "http://@"}) {
         auto r = fx.svc->update(p.id, {.base_url = std::string(bad), .api_key = "sk-new"});
         ASSERT_FALSE(r) << bad;
         EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << bad;
@@ -526,6 +530,42 @@ TEST(ModelProfiles, MigratedUnboundKeyIsClearedByTheFirstBaseUrl) {
     EXPECT_FALSE(r.value().has_key);
 }
 
+// A legacy URL that create() would refuse (here the Ollama placeholder)
+// is not carried over: the profile keeps its model and key with no
+// address, so the key stays unbound and the next load keeps the profile.
+TEST(ModelProfiles, MigratedPlaceholderUrlBecomesUnbound) {
+    Fixture fx;
+    fx.svc.reset();
+    Fixture::write(fx.legacy_path(),
+                   R"({"base_url":"http://<主机>:11434/v1","model":"qwen","api_key":"sk-old"})");
+    fx.start();
+    auto s = fx.svc->get();
+    ASSERT_EQ(s.profiles.size(), 1u);
+    EXPECT_EQ(s.profiles[0].base_url, "");
+    EXPECT_EQ(s.profiles[0].model, "qwen");
+    EXPECT_TRUE(s.profiles[0].has_key);
+
+    fx.restart();
+    s = fx.svc->get();
+    ASSERT_EQ(s.profiles.size(), 1u);
+    EXPECT_TRUE(s.profiles[0].has_key);
+    auto r = fx.svc->update(s.profiles[0].id, {.base_url = "http://192.168.1.9:11434/v1"});
+    ASSERT_TRUE(r);
+    EXPECT_FALSE(r.value().has_key);
+}
+
+// An unreadable models.json says nothing about whether the migration
+// finished, so the legacy file (possibly the only copy of the key) stays.
+TEST(ModelProfiles, CorruptModelsFileKeepsTheLegacyFile) {
+    Fixture fx;
+    fx.svc.reset();
+    Fixture::write(fx.models_path(), "{not json");
+    Fixture::write(fx.legacy_path(), R"({"base_url":"https://a.example/v1","api_key":"sk-only"})");
+    fx.start();
+    EXPECT_TRUE(fx.svc->get().profiles.empty());
+    EXPECT_TRUE(std::filesystem::exists(fx.legacy_path()));
+}
+
 TEST(ModelProfiles, EmptyLegacyFileMigratesToNothing) {
     Fixture fx;
     fx.svc.reset();
@@ -582,6 +622,53 @@ TEST(ModelProfiles, LoadDropsInvalidEntries) {
     ASSERT_EQ(s.profiles.size(), 1u);
     EXPECT_EQ(s.profiles[0].id, "0000000a");
     EXPECT_EQ(s.active_for(ModelKind::Llm), "0000000a");
+}
+
+// A random source that keeps colliding (a broken platform RNG returning
+// zeros) must not spin forever under the service lock.
+TEST(ModelProfiles, CollidingRandomStillGivesUniqueIds) {
+    Fixture fx;
+    fx.svc.reset();
+    ModelProfileService svc(*fx.storage, fx.bus,
+                            [](uint8_t* out, size_t n) { std::fill(out, out + n, uint8_t{0}); });
+    ASSERT_TRUE(svc.init());
+    std::vector<std::string> ids;
+    for (int i = 0; i < 4; ++i) {
+        auto r = svc.create({.kind = ModelKind::Tts, .name = "t", .preset = "openai"});
+        ASSERT_TRUE(r) << i;
+        ids.push_back(r.value().id);
+    }
+    std::sort(ids.begin(), ids.end());
+    EXPECT_EQ(std::unique(ids.begin(), ids.end()), ids.end());
+}
+
+TEST(ModelProfiles, ConcurrentCreatesStopAtTheLimit) {
+    Fixture fx;
+    constexpr int kPerThread = 12;
+    std::atomic<int> created{0};
+    std::atomic<int> refused{0};
+    auto worker = [&](ModelKind kind) {
+        for (int i = 0; i < kPerThread; ++i) {
+            ModelFailure why = ModelFailure::None;
+            auto r = fx.svc->create({.kind = kind, .name = "p", .preset = "openai"}, &why);
+            if (r) {
+                ++created;
+            } else if (r.error().code == ErrorCode::QuotaExceeded &&
+                       why == ModelFailure::LimitReached) {
+                ++refused;
+            }
+        }
+    };
+    std::thread a(worker, ModelKind::Llm);
+    std::thread b(worker, ModelKind::Tts);
+    a.join();
+    b.join();
+    EXPECT_EQ(created.load(), 16);
+    EXPECT_EQ(refused.load(), 2 * kPerThread - 16);
+    const auto state = fx.svc->get();
+    EXPECT_EQ(state.profiles.size(), 16u);
+    fx.restart();
+    EXPECT_EQ(fx.svc->get().profiles.size(), 16u);
 }
 
 TEST(ModelProfiles, PublishesEventWithoutSecrets) {

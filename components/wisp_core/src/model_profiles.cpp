@@ -97,6 +97,16 @@ std::optional<std::string> normalize_base_url(std::string_view url) {
     if (has_control_or_space(url)) return std::nullopt;
     size_t host_end = rest.find_first_of("/?#");
     if (host_end == 0 || rest.empty()) return std::nullopt;
+    // A host must remain once user info and the port are taken off, the
+    // same way origin_of() reads it.
+    std::string_view host = rest.substr(0, host_end);
+    if (size_t at = host.rfind('@'); at != std::string_view::npos) host.remove_prefix(at + 1);
+    size_t colon = host.rfind(':');
+    size_t bracket = host.rfind(']');
+    if (colon != std::string_view::npos && (bracket == std::string_view::npos || colon > bracket)) {
+        host = host.substr(0, colon);
+    }
+    if (host.empty()) return std::nullopt;
 
     std::string out(url);
     while (out.ends_with('/')) out.pop_back();
@@ -330,31 +340,45 @@ const ModelProfileService::Stored* ModelProfileService::find(const State& state,
 
 std::string ModelProfileService::new_id(const State& state) {
     static constexpr char kHex[] = "0123456789abcdef";
-    for (;;) {
-        uint8_t bytes[kIdBytes] = {};
-        if (random_) {
-            random_(bytes, sizeof(bytes));
-        } else {
-            // Ids only need to be unique on this device, not unguessable.
-            uint64_t x = os::now_ms() * 0x9E3779B97F4A7C15ull + ++fallback_counter_;
-            x ^= x >> 31;
-            x *= 0xBF58476D1CE4E5B9ull;
-            x ^= x >> 29;
-            for (uint8_t& b : bytes) {
-                b = static_cast<uint8_t>(x);
-                x >>= 8;
-            }
-        }
+    auto to_hex = [](const uint8_t (&bytes)[kIdBytes]) {
         std::string id;
         for (uint8_t b : bytes) {
             id += kHex[b >> 4];
             id += kHex[b & 0x0F];
         }
+        return id;
+    };
+    // Random ids, but only a few tries: a broken random source that keeps
+    // colliding must not spin under the lock.
+    constexpr int kRandomTries = 8;
+    for (int i = 0; random_ && i < kRandomTries; ++i) {
+        uint8_t bytes[kIdBytes] = {};
+        random_(bytes, sizeof(bytes));
+        std::string id = to_hex(bytes);
+        if (find(state, id) == nullptr) return id;
+    }
+    // Ids only need to be unique on this device, not unguessable. The mix
+    // is a bijection on 32 bits, so consecutive counter values give
+    // distinct ids and at most kMaxProfiles + 1 tries find a free one.
+    if (fallback_counter_ == 0) fallback_counter_ = static_cast<uint32_t>(os::now_ms()) | 1u;
+    for (;;) {
+        uint32_t x = fallback_counter_++;
+        x ^= x >> 16;
+        x *= 0x7feb352du;
+        x ^= x >> 15;
+        x *= 0x846ca68bu;
+        x ^= x >> 16;
+        uint8_t bytes[kIdBytes] = {};
+        for (uint8_t& b : bytes) {
+            b = static_cast<uint8_t>(x);
+            x >>= 8;
+        }
+        std::string id = to_hex(bytes);
         if (find(state, id) == nullptr) return id;
     }
 }
 
-Result<void> ModelProfileService::load_models(const std::vector<uint8_t>& bytes) {
+Result<bool> ModelProfileService::load_models(const std::vector<uint8_t>& bytes) {
     auto doc =
         from_json(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
     const Value* list = doc ? doc.value().find("profiles") : nullptr;
@@ -362,7 +386,7 @@ Result<void> ModelProfileService::load_models(const std::vector<uint8_t>& bytes)
         // The parse error could quote part of the file (keys included), so
         // only say that it failed.
         WLOG_W(kTag, "secrets/models.json is corrupt; starting without model profiles");
-        return Result<void>::ok();
+        return Result<bool>::ok(false);
     }
 
     // Re-validate everything so a hand-edited file cannot smuggle in what
@@ -431,7 +455,7 @@ Result<void> ModelProfileService::load_models(const std::vector<uint8_t>& bytes)
         loaded.active[static_cast<size_t>(k)] = std::move(id);
     }
     state_ = std::move(loaded);
-    return Result<void>::ok();
+    return Result<bool>::ok(true);
 }
 
 Result<void> ModelProfileService::migrate_legacy(const std::string& root) {
@@ -450,8 +474,11 @@ Result<void> ModelProfileService::migrate_legacy(const std::string& root) {
     } else {
         Stored s;
         Profile& p = s.profile;
-        if (auto url = normalize_base_url(string_field(doc.value(), "base_url"))) {
-            p.base_url = std::move(*url);
+        // A URL create() would refuse (a placeholder, say) is left out
+        // rather than migrated and then dropped on the next load; the key
+        // then has no origin until the first base_url is saved.
+        if (auto url = check_base_url(string_field(doc.value(), "base_url"))) {
+            p.base_url = std::move(url.value());
         }
         std::string model = string_field(doc.value(), "model");
         if (check_model(model)) p.model = std::move(model);
@@ -491,9 +518,11 @@ Result<void> ModelProfileService::init() {
         return Result<void>::err(bytes.error().code,
                                  "reading secrets/models.json: " + bytes.error().message);
     }
-    WISP_TRY(load_models(bytes.value()));
-    // A migration interrupted after writing the new file.
-    remove_file(root + kLegacyFile);
+    auto parsed = load_models(bytes.value());
+    if (!parsed) return Result<void>::err(parsed.error().code, parsed.error().message);
+    // A migration interrupted after writing the new file. An unreadable
+    // new file proves nothing, and the old one may hold the only good key.
+    if (parsed.value()) remove_file(root + kLegacyFile);
     WLOG_I(kTag, "loaded %u model profiles", unsigned(state_.profiles.size()));
     return Result<void>::ok();
 }
