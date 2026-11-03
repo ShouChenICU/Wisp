@@ -98,8 +98,11 @@ public:
     Result<void> request_code(uint64_t now_ms);
 
     // The current code, for the device's screen only. Empty when none is
-    // active, it has expired, or pairing is locked.
-    std::optional<std::string> active_code(uint64_t now_ms) const;
+    // active, it has expired, or pairing is locked. With a code, *expires_ms
+    // (when given) is its deadline in the now_ms timebase -- the same value
+    // net.pairing.code carried -- so the screen can resync from the service
+    // alone when it missed that event.
+    std::optional<std::string> active_code(uint64_t now_ms, uint64_t* expires_ms = nullptr) const;
 
     // Drops the active code at once (the device's "reject" button) and
     // publishes net.pairing.code {active:false}, as an expiry would. Typing

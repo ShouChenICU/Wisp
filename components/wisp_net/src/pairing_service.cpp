@@ -266,9 +266,11 @@ Result<void> PairingService::request_code(uint64_t now_ms) {
     return Result<void>::ok();
 }
 
-std::optional<std::string> PairingService::active_code(uint64_t now_ms) const {
+std::optional<std::string> PairingService::active_code(uint64_t now_ms,
+                                                       uint64_t* expires_ms) const {
     std::lock_guard<os::Mutex> lock(mutex_);
     if (!code_ || now_ms >= code_expires_ms_) return std::nullopt;
+    if (expires_ms != nullptr) *expires_ms = code_expires_ms_;
     return code_;
 }
 

@@ -196,8 +196,12 @@ TEST(Pairing, CodeIsSixDigitsAndExpires) {
     auto code = svc.active_code(1000);
     ASSERT_TRUE(code.has_value());
     EXPECT_TRUE(std::regex_match(*code, std::regex("[0-9]{6}"))) << *code;
-    EXPECT_TRUE(svc.active_code(1000 + 119999).has_value());
-    EXPECT_FALSE(svc.active_code(1000 + 120000).has_value());
+    uint64_t expires = 0;
+    EXPECT_TRUE(svc.active_code(1000 + 119999, &expires).has_value());
+    EXPECT_EQ(expires, 1000u + 120000u);
+    expires = 7;
+    EXPECT_FALSE(svc.active_code(1000 + 120000, &expires).has_value());
+    EXPECT_EQ(expires, 7u);  // untouched without a code
     auto late = svc.confirm(*code, browser(), 1000 + 120000);
     ASSERT_FALSE(late);
     EXPECT_EQ(late.error().code, ErrorCode::PermissionDenied);
