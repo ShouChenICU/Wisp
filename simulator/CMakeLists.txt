@@ -43,13 +43,22 @@ target_link_libraries(wisp_sim PRIVATE
 # The admin web UI, packed by tools/pack_assets.py into assets.wpak next to
 # wisp_sim, which loads it at startup (--web-dir overrides it). Until web/
 # exists an empty directory is packed instead, so the simulator still
-# serves the API. The CONFIGURE_DEPENDS glob notices web/ appearing or
-# changing and re-packs.
+# serves the API. The CONFIGURE_DEPENDS glob notices web/ appearing and
+# files changing. The pack also depends on web/ and every directory under
+# it: deleting or renaming a file bumps only its directory's mtime, which
+# is what makes the build re-pack instead of keeping a stale entry.
 set(WISP_WEB_DIR ${WISP_ROOT}/web)
 set(WISP_SIM_WPAK ${CMAKE_CURRENT_BINARY_DIR}/assets.wpak)
 file(GLOB_RECURSE WISP_WEB_FILES CONFIGURE_DEPENDS ${WISP_WEB_DIR}/*)
+file(GLOB_RECURSE WISP_WEB_ENTRIES LIST_DIRECTORIES true CONFIGURE_DEPENDS ${WISP_WEB_DIR}/*)
 if(IS_DIRECTORY ${WISP_WEB_DIR})
     set(WISP_WEB_PACK_SRC ${WISP_WEB_DIR})
+    list(APPEND WISP_WEB_FILES ${WISP_WEB_DIR})
+    foreach(entry IN LISTS WISP_WEB_ENTRIES)
+        if(IS_DIRECTORY ${entry})
+            list(APPEND WISP_WEB_FILES ${entry})
+        endif()
+    endforeach()
 else()
     set(WISP_WEB_PACK_SRC ${CMAKE_CURRENT_BINARY_DIR}/empty-web)
     file(MAKE_DIRECTORY ${WISP_WEB_PACK_SRC})
