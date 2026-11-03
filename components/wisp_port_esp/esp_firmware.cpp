@@ -92,15 +92,16 @@ Result<core::FirmwareImageInfo> EspFirmwareUpdater::finish() {
     // Verifies the image in the slot (and frees the handle either way).
     const esp_err_t err = esp_ota_end(impl_->handle);
     if (err != ESP_OK) {
-        return R::err(err == ESP_ERR_OTA_VALIDATE_FAILED ? ErrorCode::InvalidArgument
-                                                         : ErrorCode::IoError,
-                      std::string("esp_ota_end: ") + esp_err_to_name(err));
+        return R::err(
+            err == ESP_ERR_OTA_VALIDATE_FAILED ? ErrorCode::InvalidArgument : ErrorCode::IoError,
+            std::string("esp_ota_end: ") + esp_err_to_name(err));
     }
     // What the bootloader will see, not what the client claimed.
     std::array<uint8_t, core::kFirmwareHeadBytes> head{};
     const esp_err_t rerr = esp_partition_read(impl_->target, 0, head.data(), head.size());
     if (rerr != ESP_OK) {
-        return R::err(ErrorCode::IoError, std::string("esp_partition_read: ") + esp_err_to_name(rerr));
+        return R::err(ErrorCode::IoError,
+                      std::string("esp_partition_read: ") + esp_err_to_name(rerr));
     }
     auto info = core::parse_firmware_head(head);
     if (info) impl_->finished = true;
