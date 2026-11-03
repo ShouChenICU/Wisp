@@ -32,9 +32,11 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+#include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 using wisp::test::FakeButton;
@@ -291,6 +293,40 @@ void run_on_ui_blocking(wisp::ui::UiRuntime* ui, const std::function<void()>& fn
     done.take(wisp::os::kForever);
 }
 
+// The device-list title in each language, used to tell which language the
+// screen was built in.
+struct LangCase {
+    const char* code;
+    const char* device_list_title;
+};
+constexpr LangCase kLangCases[] = {
+    {"zh", "设备列表"},
+    {"ja", "デバイス一覧"},
+    {"en", "Devices"},
+};
+
+// Writes Settings sys/lang into the settings file a Harness is about to
+// boot from, the same key SystemSettings stores the device language in.
+void seed_language(const std::string& settings_path, const char* code) {
+    wisp::port::sim::JsonFileSettingsBackend backend(settings_path);
+    ASSERT_TRUE(wisp::core::Settings(backend, "sys").set("lang", code));
+}
+
+// Every label in `obj`'s subtree, as "text" -> its screen coordinates, so a
+// test can check them against the safe area.
+void collect_labels(lv_obj_t* obj, std::vector<std::pair<std::string, lv_area_t>>& out) {
+    if (lv_obj_check_type(obj, &lv_label_class)) {
+        lv_area_t a;
+        lv_obj_get_coords(obj, &a);
+        const char* text = lv_label_get_text(obj);
+        out.emplace_back(text != nullptr ? text : "", a);
+    }
+    uint32_t count = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < count; ++i) {
+        collect_labels(lv_obj_get_child(obj, i), out);
+    }
+}
+
 }  // namespace
 
 TEST(SelfCheckScreen, RendersNonUniformFrame) {
@@ -449,39 +485,48 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
 // known to always be outside any safe_rect (the very corner, (0, 0))
 // rather than a hardcoded guess at the theme's background color.
 TEST(SelfCheckScreen, NoContentOutsideSafeRect) {
-    for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
-        Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0, shape);
-        ASSERT_TRUE(h.app.start());
-        ASSERT_TRUE(h.wait_for_flushes(5));
+    for (const LangCase& lang : kLangCases) {
+        for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
+            SCOPED_TRACE(std::string(lang.code) + " " + shape);
+            std::string settings_path = wisp::test::temp_dir().string() + "/settings.json";
+            seed_language(settings_path, lang.code);
+            Harness h(settings_path, /*init_sleep_ms=*/0, shape);
+            ASSERT_TRUE(h.app.start());
+            ASSERT_TRUE(h.wait_for_flushes(5));
+            ASSERT_FALSE(run_on_ui_thread(h.app.ui(), [&] {
+                             return find_label_text_containing(lv_screen_active(),
+                                                               lang.device_list_title);
+                         }).empty());
 
-        auto snapshot = h.app.ui()->snapshot_rgb888();
-        ASSERT_TRUE(snapshot);
-        const auto& pixels = snapshot.value();
-        constexpr int32_t kSize = 480;
-        ASSERT_EQ(pixels.size(), static_cast<size_t>(kSize) * kSize * 3u);
+            auto snapshot = h.app.ui()->snapshot_rgb888();
+            ASSERT_TRUE(snapshot);
+            const auto& pixels = snapshot.value();
+            constexpr int32_t kSize = 480;
+            ASSERT_EQ(pixels.size(), static_cast<size_t>(kSize) * kSize * 3u);
 
-        auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
-        ASSERT_TRUE(shape_result) << shape;
-        wisp::hal::Area safe = wisp::hal::safe_rect(shape_result.value());
+            auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
+            ASSERT_TRUE(shape_result) << shape;
+            wisp::hal::Area safe = wisp::hal::safe_rect(shape_result.value());
 
-        auto pixel_at = [&](int32_t x, int32_t y) {
-            size_t idx = (static_cast<size_t>(y) * kSize + x) * 3;
-            return std::array<uint8_t, 3>{pixels[idx], pixels[idx + 1], pixels[idx + 2]};
-        };
-        auto background = pixel_at(0, 0);
+            auto pixel_at = [&](int32_t x, int32_t y) {
+                size_t idx = (static_cast<size_t>(y) * kSize + x) * 3;
+                return std::array<uint8_t, 3>{pixels[idx], pixels[idx + 1], pixels[idx + 2]};
+            };
+            auto background = pixel_at(0, 0);
 
-        for (int32_t y = 0; y < kSize; ++y) {
-            for (int32_t x = 0; x < kSize; ++x) {
-                bool side_band = x < safe.x1 || x > safe.x2;
-                bool top_band = y < safe.y1;
-                if (!side_band && !top_band) {
-                    continue;
+            for (int32_t y = 0; y < kSize; ++y) {
+                for (int32_t x = 0; x < kSize; ++x) {
+                    bool side_band = x < safe.x1 || x > safe.x2;
+                    bool top_band = y < safe.y1;
+                    if (!side_band && !top_band) {
+                        continue;
+                    }
+                    ASSERT_EQ(pixel_at(x, y), background) << shape << " " << x << "," << y;
                 }
-                ASSERT_EQ(pixel_at(x, y), background) << shape << " " << x << "," << y;
             }
-        }
 
-        h.app.stop();
+            h.app.stop();
+        }
     }
 }
 
@@ -490,69 +535,176 @@ TEST(SelfCheckScreen, NoContentOutsideSafeRect) {
 // first/last row rests fully inside safe_rect() -- nothing is reachable
 // only by looking into a corner.
 TEST(SelfCheckScreen, ScrollExtremesRestInsideSafeRect) {
-    for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
-        Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0, shape);
-        ASSERT_TRUE(h.app.start());
-        ASSERT_TRUE(h.wait_for_flushes(5));
+    for (const LangCase& lang : kLangCases) {
+        for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
+            SCOPED_TRACE(std::string(lang.code) + " " + shape);
+            std::string settings_path = wisp::test::temp_dir().string() + "/settings.json";
+            seed_language(settings_path, lang.code);
+            Harness h(settings_path, /*init_sleep_ms=*/0, shape);
+            ASSERT_TRUE(h.app.start());
+            ASSERT_TRUE(h.wait_for_flushes(5));
 
-        auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
-        ASSERT_TRUE(shape_result) << shape;
-        wisp::hal::Area safe = wisp::hal::safe_rect(shape_result.value());
+            auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
+            ASSERT_TRUE(shape_result) << shape;
+            wisp::hal::Area safe = wisp::hal::safe_rect(shape_result.value());
 
-        // Returns "x1,y1,x2,y2" of the root column, then of its first and
-        // last child, after scrolling to `bottom` (or the top).
-        auto probe = [&](bool bottom) {
-            return run_on_ui_thread(h.app.ui(), [bottom] {
-                lv_obj_t* col = lv_obj_get_child(lv_screen_active(), 0);
-                if (bottom) {
-                    lv_obj_scroll_to_y(col, LV_COORD_MAX, LV_ANIM_OFF);
-                } else {
-                    lv_obj_scroll_to_y(col, 0, LV_ANIM_OFF);
+            // Returns "x1,y1,x2,y2" of the root column, then of its first and
+            // last child, after scrolling to `bottom` (or the top).
+            auto probe = [&](bool bottom) {
+                return run_on_ui_thread(h.app.ui(), [bottom] {
+                    lv_obj_t* col = lv_obj_get_child(lv_screen_active(), 0);
+                    if (bottom) {
+                        lv_obj_scroll_to_y(col, LV_COORD_MAX, LV_ANIM_OFF);
+                    } else {
+                        lv_obj_scroll_to_y(col, 0, LV_ANIM_OFF);
+                    }
+                    lv_obj_update_layout(col);
+                    std::string out;
+                    auto add = [&](lv_obj_t* o) {
+                        lv_area_t a;
+                        lv_obj_get_coords(o, &a);
+                        out += std::to_string(a.x1) + "," + std::to_string(a.y1) + "," +
+                               std::to_string(a.x2) + "," + std::to_string(a.y2) + ";";
+                    };
+                    add(col);
+                    uint32_t n = lv_obj_get_child_count(col);
+                    add(lv_obj_get_child(col, 0));
+                    add(lv_obj_get_child(col, n - 1));
+                    return out;
+                });
+            };
+            auto parse = [](const std::string& text) {
+                std::vector<wisp::hal::Area> areas;
+                std::stringstream ss(text);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    wisp::hal::Area a{};
+                    std::sscanf(item.c_str(), "%d,%d,%d,%d", &a.x1, &a.y1, &a.x2, &a.y2);
+                    areas.push_back(a);
                 }
-                lv_obj_update_layout(col);
-                std::string out;
-                auto add = [&](lv_obj_t* o) {
-                    lv_area_t a;
-                    lv_obj_get_coords(o, &a);
-                    out += std::to_string(a.x1) + "," + std::to_string(a.y1) + "," +
-                           std::to_string(a.x2) + "," + std::to_string(a.y2) + ";";
-                };
-                add(col);
-                uint32_t n = lv_obj_get_child_count(col);
-                add(lv_obj_get_child(col, 0));
-                add(lv_obj_get_child(col, n - 1));
-                return out;
-            });
-        };
-        auto parse = [](const std::string& text) {
-            std::vector<wisp::hal::Area> areas;
-            std::stringstream ss(text);
-            std::string item;
-            while (std::getline(ss, item, ';')) {
-                wisp::hal::Area a{};
-                std::sscanf(item.c_str(), "%d,%d,%d,%d", &a.x1, &a.y1, &a.x2, &a.y2);
-                areas.push_back(a);
-            }
-            return areas;
-        };
-        auto inside = [&](const wisp::hal::Area& a) {
-            return a.x1 >= safe.x1 && a.x2 <= safe.x2 && a.y1 >= safe.y1 && a.y2 <= safe.y2;
-        };
+                return areas;
+            };
+            auto inside = [&](const wisp::hal::Area& a) {
+                return a.x1 >= safe.x1 && a.x2 <= safe.x2 && a.y1 >= safe.y1 && a.y2 <= safe.y2;
+            };
 
-        auto top = parse(probe(false));
-        ASSERT_EQ(top.size(), 3u);
-        EXPECT_EQ(top[0].x1, 0) << shape;
-        EXPECT_EQ(top[0].y1, 0) << shape;
-        EXPECT_EQ(top[0].x2, 479) << shape;
-        EXPECT_EQ(top[0].y2, 479) << shape;
-        EXPECT_TRUE(inside(top[1])) << shape << " first row at scroll top";
+            auto top = parse(probe(false));
+            ASSERT_EQ(top.size(), 3u);
+            EXPECT_EQ(top[0].x1, 0) << shape;
+            EXPECT_EQ(top[0].y1, 0) << shape;
+            EXPECT_EQ(top[0].x2, 479) << shape;
+            EXPECT_EQ(top[0].y2, 479) << shape;
+            EXPECT_TRUE(inside(top[1])) << shape << " first row at scroll top";
 
-        auto bottom = parse(probe(true));
-        ASSERT_EQ(bottom.size(), 3u);
-        EXPECT_TRUE(inside(bottom[2])) << shape << " last row at scroll end";
+            auto bottom = parse(probe(true));
+            ASSERT_EQ(bottom.size(), 3u);
+            EXPECT_TRUE(inside(bottom[2])) << shape << " last row at scroll end";
 
-        h.app.stop();
+            h.app.stop();
+        }
     }
+}
+
+// Longer Japanese/English text must still wrap inside the safe columns,
+// never run past them, and every glyph must be in the built-in font.
+TEST(SelfCheckScreen, LabelsFitTheSafeAreaInEveryLanguage) {
+    for (const LangCase& lang : kLangCases) {
+        for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
+            SCOPED_TRACE(std::string(lang.code) + " " + shape);
+            std::string settings_path = wisp::test::temp_dir().string() + "/settings.json";
+            seed_language(settings_path, lang.code);
+            Harness h(settings_path, /*init_sleep_ms=*/0, shape);
+            ASSERT_TRUE(h.app.start());
+            ASSERT_TRUE(h.wait_for_flushes(5));
+
+            auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
+            ASSERT_TRUE(shape_result);
+            wisp::hal::Area safe = wisp::hal::safe_rect(shape_result.value());
+
+            std::vector<std::pair<std::string, lv_area_t>> labels;
+            run_on_ui_blocking(h.app.ui(), [&] {
+                lv_obj_update_layout(lv_screen_active());
+                collect_labels(lv_screen_active(), labels);
+            });
+            ASSERT_GT(labels.size(), 10u);
+            for (const auto& [text, a] : labels) {
+                EXPECT_GE(a.x1, safe.x1) << text;
+                EXPECT_LE(a.x2, safe.x2) << text;
+            }
+            EXPECT_EQ(run_on_ui_thread(
+                          h.app.ui(),
+                          [] {
+                              return std::string(
+                                  all_label_glyphs_resolvable(lv_screen_active()) ? "ok" : "");
+                          }),
+                      "ok");
+
+            h.app.stop();
+        }
+    }
+}
+
+// Changing SystemSettings' language (as PUT /settings does) rebuilds the
+// screen's text live, including an open confirmation dialog, without a
+// restart.
+TEST(SelfCheckScreen, RebuildsInNewLanguage) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+    auto find_on_screen = [&](const char* needle) {
+        return run_on_ui_thread(h.app.ui(), [needle] {
+            return find_label_text_containing(lv_screen_active(), needle);
+        });
+    };
+    EXPECT_FALSE(find_on_screen("设备列表").empty());
+    EXPECT_EQ(wisp::ui::lang(), wisp::ui::Lang::Zh);
+
+    ASSERT_TRUE(h.app.system_settings().set({{"language", "en"}}));
+    ASSERT_TRUE(wait_until([&] { return !find_on_screen("Devices").empty(); }, 3000));
+    EXPECT_TRUE(find_on_screen("设备列表").empty());
+    EXPECT_FALSE(find_on_screen("Boot").empty());
+    EXPECT_EQ(wisp::ui::lang(), wisp::ui::Lang::En);
+
+    // A dialog that is open while the language changes is rebuilt too.
+    h.app.bus().publish(wisp::core::Event{"button.power.long", "button.power"});
+    auto has_button = [&](const char* text) {
+        return run_on_ui_thread(h.app.ui(), [text] {
+                   return find_button_with_label(lv_layer_top(), text) != nullptr
+                              ? std::string("found")
+                              : std::string();
+               }) == "found";
+    };
+    ASSERT_TRUE(wait_until([&] { return has_button("Yes"); }, 3000));
+
+    ASSERT_TRUE(h.app.system_settings().set({{"language", "ja"}}));
+    ASSERT_TRUE(wait_until([&] { return has_button("はい"); }, 3000));
+    EXPECT_FALSE(has_button("Yes"));
+    EXPECT_FALSE(find_on_screen("デバイス一覧").empty());
+    EXPECT_EQ(run_on_ui_thread(h.app.ui(),
+                               [] {
+                                   return std::string(
+                                       all_label_glyphs_resolvable(lv_layer_top()) &&
+                                               all_label_glyphs_resolvable(lv_screen_active())
+                                           ? "ok"
+                                           : "");
+                               }),
+              "ok");
+
+    // The rebuilt screen is still the same live screen: the dialog still
+    // answers the power key.
+    ASSERT_TRUE(wait_until(
+        [&] {
+            return run_on_ui_thread(h.app.ui(), [] {
+                       lv_obj_t* no = find_button_with_label(lv_layer_top(), "いいえ");
+                       if (no == nullptr) return std::string();
+                       lv_obj_send_event(no, LV_EVENT_CLICKED, nullptr);
+                       return std::string("clicked");
+                   }) == "clicked";
+        },
+        3000));
+    EXPECT_TRUE(wait_until([&] { return !has_button("はい"); }, 3000));
+
+    h.app.stop();
 }
 
 // The perf-overlay toggle persists to Settings

@@ -15,6 +15,7 @@
 #include "wisp/hal/power.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
@@ -74,7 +75,12 @@ Result<void> App::start() {
         WLOG_W("app", "LLM config unavailable: %s", r.error().message.c_str());
     }
 
-    // Step 4: UI (or headless).
+    // Step 4: UI (or headless). The device UI language comes first so the
+    // first frame is already in it; later changes arrive as the
+    // system.settings event (see the self-check screen).
+    if (auto lang = ui::parse_lang(impl_->system_settings.get().language)) {
+        ui::set_lang(*lang);
+    }
     auto display = impl_->registry.get<hal::Display>("display.main");
     std::shared_ptr<hal::Touch> touch;
     if (display) {

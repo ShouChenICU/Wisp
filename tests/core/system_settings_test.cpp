@@ -13,6 +13,7 @@
 using wisp::ErrorCode;
 using wisp::core::Settings;
 using wisp::core::SystemSettings;
+using wisp::core::SystemSettingsValues;
 using wisp::port::sim::JsonFileSettingsBackend;
 
 namespace {
@@ -20,10 +21,13 @@ namespace {
 struct Fixture {
     Fixture()
         : backend((wisp::test::temp_dir() / "settings.json").string()),
-          settings(backend, [this](uint8_t level) { applied.push_back(level); }) {}
+          settings(
+              backend, [this](uint8_t level) { applied.push_back(level); },
+              [this](const SystemSettingsValues& now) { changed.push_back(now); }) {}
 
     JsonFileSettingsBackend backend;
     std::vector<uint8_t> applied;
+    std::vector<SystemSettingsValues> changed;
     SystemSettings settings;
 };
 
@@ -35,6 +39,7 @@ TEST(SystemSettings, Defaults) {
     EXPECT_EQ(v.brightness, 200);
     EXPECT_EQ(v.volume, 60);
     EXPECT_EQ(v.screen_off_s, 60);
+    EXPECT_EQ(v.language, "zh");
 }
 
 TEST(SystemSettings, WritesTheExistingSettingsKeys) {
@@ -76,6 +81,60 @@ TEST(SystemSettings, RangeBoundaries) {
     EXPECT_TRUE(fx.settings.set({{"screen_off_s", 3600}}));
     EXPECT_FALSE(fx.settings.set({{"screen_off_s", 3601}}));
     EXPECT_FALSE(fx.settings.set({{"screen_off_s", -1}}));
+}
+
+TEST(SystemSettings, LanguageDefaultsToZhAndValidates) {
+    Fixture fx;
+    EXPECT_EQ(fx.settings.get().language, "zh");
+
+    ASSERT_TRUE(fx.settings.set({{"language", "ja"}}));
+    EXPECT_EQ(fx.settings.get().language, "ja");
+    EXPECT_EQ(Settings(fx.backend, "sys").get_string("lang", ""), "ja");
+    ASSERT_TRUE(fx.settings.set({{"language", "en"}, {"volume", 20}}));
+    EXPECT_EQ(fx.settings.get().language, "en");
+
+    for (const wisp::Value& bad : {wisp::Value("fr"), wisp::Value(""), wisp::Value("ZH"),
+                                   wisp::Value("zh-CN"), wisp::Value(1), wisp::Value(true)}) {
+        auto r = fx.settings.set({{"language", bad}, {"volume", 30}});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    EXPECT_EQ(fx.settings.get().language, "en");
+    EXPECT_EQ(fx.settings.get().volume, 20);
+
+    // A stored value nobody could have written through set() (a hand-edited
+    // or corrupted settings store) reads back as the default.
+    ASSERT_TRUE(Settings(fx.backend, "sys").set("lang", "fr"));
+    EXPECT_EQ(fx.settings.get().language, "zh");
+}
+
+TEST(SystemSettings, IntegerKeysRejectOtherTypes) {
+    Fixture fx;
+    for (const wisp::Value& bad :
+         {wisp::Value("30"), wisp::Value(30.5), wisp::Value(true), wisp::Value(wisp::List{})}) {
+        auto r = fx.settings.set({{"volume", bad}});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    EXPECT_EQ(fx.settings.get().volume, 60);
+}
+
+TEST(SystemSettings, ReportsEachStoredBatch) {
+    Fixture fx;
+    ASSERT_TRUE(fx.settings.set({{"language", "ja"}}));
+    ASSERT_EQ(fx.changed.size(), 1u);
+    EXPECT_EQ(fx.changed[0].language, "ja");
+    EXPECT_EQ(fx.changed[0].brightness, 200);
+
+    // Rejected and empty batches change nothing, so report nothing.
+    EXPECT_FALSE(fx.settings.set({{"language", "fr"}}));
+    EXPECT_TRUE(fx.settings.set({}));
+    EXPECT_EQ(fx.changed.size(), 1u);
+
+    ASSERT_TRUE(fx.settings.set({{"brightness", 90}}));
+    ASSERT_EQ(fx.changed.size(), 2u);
+    EXPECT_EQ(fx.changed[1].brightness, 90);
+    EXPECT_EQ(fx.changed[1].language, "ja");
 }
 
 TEST(SystemSettings, AppliesBrightnessImmediately) {
@@ -140,14 +199,18 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     std::vector<uint8_t> applied;
     SystemSettings settings(flaky, [&](uint8_t level) { applied.push_back(level); });
 
-    auto r = settings.set({{"brightness", 100}, {"volume", 10}, {"screen_off_s", 30}});
+    // Written in key order: brightness, language, then screen_off_s fails.
+    auto r = settings.set(
+        {{"brightness", 100}, {"language", "en"}, {"volume", 10}, {"screen_off_s", 30}});
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().code, ErrorCode::IoError);
     auto v = settings.get();
     EXPECT_EQ(v.brightness, 200);
     EXPECT_EQ(v.volume, 40);
     EXPECT_EQ(v.screen_off_s, 60);
+    EXPECT_EQ(v.language, "zh");
     EXPECT_TRUE(applied.empty());
     // Keys that never existed are removed again, not left at a default.
     EXPECT_EQ(inner.get("display", "brightness").error().code, ErrorCode::NotFound);
+    EXPECT_EQ(inner.get("sys", "lang").error().code, ErrorCode::NotFound);
 }

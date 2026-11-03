@@ -17,18 +17,19 @@ class App;
 // Spawns (and this call returns without waiting for) a "wisp.loop" task
 // that:
 //   1. opens "audio_in.main", records 3s (16kHz mono, a 96000-byte
-//      os::alloc(Mem::Large) buffer) and calls on_status("录音中") right
-//      before recording starts;
-//   2. closes audio_in, opens "audio_out.main", calls on_status("播放中")
-//      right before playback starts, writes the recorded buffer, closes
-//      audio_out;
-//   3. calls on_status("完成").
+//      os::alloc(Mem::Large) buffer) and calls on_status(LoopRecording)
+//      right before recording starts;
+//   2. closes audio_in, opens "audio_out.main", calls
+//      on_status(LoopPlaying) right before playback starts, writes the
+//      recorded buffer, closes audio_out;
+//   3. calls on_status(LoopDone).
 // On any failure (device missing, open()/read()/write() erroring, or
-// os::Task::spawn() itself failing), calls on_status("失败: <error
-// code>") and stops early (skipping whichever steps hadn't started
-// yet). `on_status` runs on the "wisp.loop" task, not the caller's
-// thread -- the caller (self_check_screen.cpp) marshals it back to the
-// UI thread itself via ui::UiRuntime::post().
+// os::Task::spawn() itself failing), calls on_status("<LoopFailed>:
+// <error code>") and stops early (skipping whichever steps hadn't
+// started yet). Each status is the ui::tr() text of that StrId in the
+// device UI language current when it is sent. `on_status` runs on the "wisp.loop" task, not the
+// caller's thread -- the caller (self_check_screen.cpp) marshals it back to the UI thread itself
+// via ui::UiRuntime::post().
 //
 // This call is ignored outright (no task spawned, no on_status call at
 // all) if a previous run_loopback() task for this `App` is still running

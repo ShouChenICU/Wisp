@@ -305,21 +305,27 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
     f.srv = std::make_unique<wisp::admin::AdminServer>(f.make_deps());
     const std::string token = f.token();
 
-    EXPECT_EQ(
-        body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))),
-        Value(Map{{"brightness", Value(200)}, {"volume", Value(60)}, {"screen_off_s", Value(60)}}));
+    EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))),
+              Value(Map{{"brightness", Value(200)},
+                        {"volume", Value(60)},
+                        {"screen_off_s", Value(60)},
+                        {"language", Value("zh")}}));
 
     HttpResponse put =
         f.srv->handle(authed(token, Put, "/api/v1/settings", R"({"brightness":100,"volume":30})"));
     EXPECT_EQ(put.status, 200);
-    Value now(Map{{"brightness", Value(100)}, {"volume", Value(30)}, {"screen_off_s", Value(60)}});
+    Value now(Map{{"brightness", Value(100)},
+                  {"volume", Value(30)},
+                  {"screen_off_s", Value(60)},
+                  {"language", Value("zh")}});
     EXPECT_EQ(body_json(put), now);
     EXPECT_EQ(applied, (std::vector<uint8_t>{100}));
     EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))), now);
 
     // Each rejected batch leaves every value as it was.
     for (const char* bad : {R"({"brightness":5})", R"({"volume":30.5})", R"({"volume":"30"})",
-                            R"({"screen_off_s":true})", R"({"color":1})", "[1]", "3"}) {
+                            R"({"screen_off_s":true})", R"({"color":1})", R"({"language":"fr"})",
+                            R"({"language":1})", R"({"language":"ja","volume":101})", "[1]", "3"}) {
         HttpResponse r = f.srv->handle(authed(token, Put, "/api/v1/settings", bad));
         EXPECT_EQ(r.status, 400) << bad;
         EXPECT_EQ(error_code(r), "invalid_argument") << bad;
@@ -327,6 +333,25 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
     EXPECT_EQ(f.srv->handle(authed(token, Put, "/api/v1/settings")).status, 400);
     EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))), now);
     EXPECT_EQ(applied.size(), 1u);
+}
+
+TEST(Routes, SettingsLanguageRoundTrips) {
+    AdminFixture f;
+    const std::string token = f.token();
+
+    HttpResponse put =
+        f.srv->handle(authed(token, Put, "/api/v1/settings", R"({"language":"ja"})"));
+    EXPECT_EQ(put.status, 200);
+    EXPECT_EQ(field(body_json(put), "language"), Value("ja"));
+    EXPECT_EQ(field(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))), "language"),
+              Value("ja"));
+
+    HttpResponse bad =
+        f.srv->handle(authed(token, Put, "/api/v1/settings", R"({"language":"fr"})"));
+    EXPECT_EQ(bad.status, 400);
+    EXPECT_EQ(error_code(bad), "invalid_argument");
+    EXPECT_EQ(field(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))), "language"),
+              Value("ja"));
 }
 
 TEST(Routes, ClientsListMarksCurrent) {

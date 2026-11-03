@@ -1,0 +1,111 @@
+#include "wisp/ui/strings.hpp"
+
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <cstring>
+#include <string>
+
+#include "lvgl.h"
+#include "wisp/ui/ui_runtime.hpp"
+
+using wisp::ui::Lang;
+using wisp::ui::StrId;
+
+namespace {
+
+StrId id_at(size_t i) { return static_cast<StrId>(i); }
+
+// Decodes one UTF-8 sequence starting at *p (the tables are plain UTF-8
+// source literals) and advances *p past it.
+uint32_t next_codepoint(const unsigned char*& p) {
+    uint32_t c = *p++;
+    int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+    c &= extra == 0 ? 0x7F : (0x3F >> extra);
+    for (int k = 0; k < extra && *p != 0; ++k, ++p) {
+        c = (c << 6) | (*p & 0x3F);
+    }
+    return c;
+}
+
+// Restores the process-wide language after each test.
+class Strings : public ::testing::Test {
+protected:
+    void TearDown() override { wisp::ui::set_lang(Lang::Zh); }
+};
+
+}  // namespace
+
+TEST_F(Strings, EveryIdHasTextInEveryLanguage) {
+    for (size_t i = 0; i < wisp::ui::kStrCount; ++i) {
+        for (Lang lang : wisp::ui::kAllLangs) {
+            const char* text = wisp::ui::detail::table_text(id_at(i), lang);
+            ASSERT_NE(text, nullptr) << "id " << i << " lang " << wisp::ui::lang_code(lang);
+            EXPECT_GT(std::strlen(text), 0u) << "id " << i << " lang " << wisp::ui::lang_code(lang);
+        }
+    }
+}
+
+// Every codepoint of every string must render with the UI font (Montserrat
+// for ASCII, falling back to the built-in CJK font): a missing glyph would
+// show as an empty box on the device.
+TEST_F(Strings, EveryGlyphIsInTheBuiltInFont) {
+    const lv_font_t* font = wisp::ui::default_font();
+    for (size_t i = 0; i < wisp::ui::kStrCount; ++i) {
+        for (Lang lang : wisp::ui::kAllLangs) {
+            const char* text = wisp::ui::tr(id_at(i), lang);
+            const auto* p = reinterpret_cast<const unsigned char*>(text);
+            while (*p != 0) {
+                uint32_t letter = next_codepoint(p);
+                lv_font_glyph_dsc_t dsc;
+                EXPECT_TRUE(lv_font_get_glyph_dsc(font, &dsc, letter, 0))
+                    << "U+" << std::hex << letter << " in id " << std::dec << i << " ("
+                    << wisp::ui::lang_code(lang) << "): " << text;
+            }
+        }
+    }
+}
+
+// The Japanese glyphs the new font adds: kana, the long-vowel mark and
+// level-1 kanji that are not in GB2312.
+TEST_F(Strings, FontCoversJapanese) {
+    const lv_font_t* font = wisp::ui::default_font();
+    for (uint32_t letter : {0x3042u /* あ */, 0x30F3u /* ン */, 0x30FCu /* ー */, 0x691Cu /* 検 */,
+                            0x8AADu /* 読 */, 0x96FBu /* 電 */}) {
+        lv_font_glyph_dsc_t dsc;
+        EXPECT_TRUE(lv_font_get_glyph_dsc(font, &dsc, letter, 0)) << "U+" << std::hex << letter;
+    }
+    // A missing glyph really does fail the lookup (no placeholder), so the
+    // checks above and in EveryGlyphIsInTheBuiltInFont mean something.
+    lv_font_glyph_dsc_t dsc;
+    EXPECT_FALSE(lv_font_get_glyph_dsc(font, &dsc, 0x0E01 /* Thai ko kai */, 0));
+}
+
+TEST_F(Strings, ParseLang) {
+    EXPECT_EQ(wisp::ui::parse_lang("zh"), Lang::Zh);
+    EXPECT_EQ(wisp::ui::parse_lang("ja"), Lang::Ja);
+    EXPECT_EQ(wisp::ui::parse_lang("en"), Lang::En);
+    EXPECT_FALSE(wisp::ui::parse_lang("fr"));
+    EXPECT_FALSE(wisp::ui::parse_lang(""));
+    EXPECT_FALSE(wisp::ui::parse_lang("ZH"));
+    EXPECT_FALSE(wisp::ui::parse_lang("zh-CN"));
+    for (Lang lang : wisp::ui::kAllLangs) {
+        EXPECT_EQ(wisp::ui::parse_lang(wisp::ui::lang_code(lang)), lang);
+    }
+}
+
+TEST_F(Strings, TrFollowsTheCurrentLanguage) {
+    EXPECT_EQ(wisp::ui::lang(), Lang::Zh);
+    EXPECT_STREQ(wisp::ui::tr(StrId::Yes), "是");
+    wisp::ui::set_lang(Lang::Ja);
+    EXPECT_EQ(wisp::ui::lang(), Lang::Ja);
+    EXPECT_STREQ(wisp::ui::tr(StrId::Yes), "はい");
+    wisp::ui::set_lang(Lang::En);
+    EXPECT_STREQ(wisp::ui::tr(StrId::Yes), "Yes");
+    EXPECT_STREQ(wisp::ui::tr(StrId::Yes, Lang::Zh), "是");
+}
+
+TEST_F(Strings, OutOfRangeIdFallsBackToEmptyText) {
+    EXPECT_STREQ(wisp::ui::tr(StrId::Count), "");
+    EXPECT_EQ(wisp::ui::detail::table_text(StrId::Count, Lang::Zh), nullptr);
+}

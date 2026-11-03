@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <ctime>
 
+#include "wisp/ui/strings.hpp"
+
 namespace wisp::app {
 
 std::string format_bytes(uint64_t bytes) {
@@ -26,15 +28,15 @@ std::string format_bytes(uint64_t bytes) {
 const char* state_label(core::DeviceState state) {
     switch (state) {
         case core::DeviceState::Ok:
-            return "正常";
+            return ui::tr(ui::StrId::StateOk);
         case core::DeviceState::Degraded:
-            return "降级";
+            return ui::tr(ui::StrId::StateDegraded);
         case core::DeviceState::Missing:
-            return "缺失";
+            return ui::tr(ui::StrId::StateMissing);
         case core::DeviceState::Failed:
-            return "失败";
+            return ui::tr(ui::StrId::StateFailed);
     }
-    return "失败";
+    return ui::tr(ui::StrId::StateFailed);
 }
 
 std::string format_time(int64_t unix_s) {

@@ -12,6 +12,7 @@
 #include "wisp/core/settings.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/strings.hpp"
 
 namespace wisp::app {
 
@@ -29,7 +30,7 @@ constexpr int64_t kDefaultVolumePercent = 60;
 void record_and_play(App& app, core::SettingsBackend* settings_backend,
                      std::function<void(const char* status)> on_status) {
     auto fail = [&on_status](ErrorCode code) {
-        std::string msg = std::string("失败: ") + to_string(code);
+        std::string msg = std::string(ui::tr(ui::StrId::LoopFailed)) + ": " + to_string(code);
         on_status(msg.c_str());
     };
 
@@ -56,7 +57,7 @@ void record_and_play(App& app, core::SettingsBackend* settings_backend,
             fail(opened.error().code);
             return false;
         }
-        on_status("录音中");
+        on_status(ui::tr(ui::StrId::LoopRecording));
         size_t total = 0;
         while (total < kFrameCount) {
             auto read = audio_in->read(samples + total, kFrameCount - total);
@@ -95,7 +96,7 @@ void record_and_play(App& app, core::SettingsBackend* settings_backend,
                 audio_settings.get_int("volume", kDefaultVolumePercent), 0, 100);
             audio_out->set_volume(static_cast<uint8_t>(volume));
         }
-        on_status("播放中");
+        on_status(ui::tr(ui::StrId::LoopPlaying));
         size_t total = 0;
         while (total < kFrameCount) {
             auto written = audio_out->write(samples + total, kFrameCount - total);
@@ -117,7 +118,7 @@ void record_and_play(App& app, core::SettingsBackend* settings_backend,
         return;
     }
 
-    on_status("完成");
+    on_status(ui::tr(ui::StrId::LoopDone));
 }
 
 }  // namespace
@@ -164,7 +165,8 @@ void run_loopback(App& app, std::function<void(const char* status)> on_status) {
     }
 
     if (spawn_failed) {
-        std::string msg = std::string("失败: ") + to_string(ErrorCode::NoMemory);
+        std::string msg =
+            std::string(ui::tr(ui::StrId::LoopFailed)) + ": " + to_string(ErrorCode::NoMemory);
         on_status(msg.c_str());
     }
 }

@@ -1,7 +1,5 @@
 // Device overview, the device registry and system settings (spec 6.1).
 
-#include <cstdint>
-#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -12,14 +10,6 @@
 namespace wisp::admin::detail {
 
 namespace {
-
-Value settings_value(const core::SystemSettingsValues& v) {
-    return Value(Map{
-        {"brightness", Value(v.brightness)},
-        {"volume", Value(v.volume)},
-        {"screen_off_s", Value(v.screen_off_s)},
-    });
-}
 
 net::HttpResponse device(AdminDeps& deps, const RequestContext&) {
     return net::HttpResponse::json(
@@ -66,26 +56,19 @@ net::HttpResponse devices(AdminDeps& deps, const RequestContext&) {
 }
 
 net::HttpResponse get_settings(AdminDeps& deps, const RequestContext&) {
-    return net::HttpResponse::json(200, settings_value(deps.settings.get()));
+    return net::HttpResponse::json(200, Value(core::to_map(deps.settings.get())));
 }
 
-// Any subset of {brightness, volume, screen_off_s} with integer values;
-// SystemSettings rejects unknown keys and out-of-range values for the
-// whole batch.
+// Any subset of {brightness, volume, screen_off_s} (integers) and
+// language ("zh"/"ja"/"en"); SystemSettings rejects unknown keys, wrong
+// types and out-of-range values for the whole batch.
 net::HttpResponse put_settings(AdminDeps& deps, const RequestContext& ctx) {
     if (ctx.body.type() != Value::Type::Map) {
         return bad_request("body must be a JSON object");
     }
-    std::map<std::string, int64_t> changes;
-    for (const auto& [key, value] : ctx.body.as_map()) {
-        if (value.type() != Value::Type::Int) {
-            return bad_request("setting values must be integers");
-        }
-        changes[key] = value.as_int();
-    }
-    auto r = deps.settings.set(changes);
+    auto r = deps.settings.set(ctx.body.as_map());
     if (!r) return service_error(r.error());
-    return net::HttpResponse::json(200, settings_value(deps.settings.get()));
+    return net::HttpResponse::json(200, Value(core::to_map(deps.settings.get())));
 }
 
 }  // namespace

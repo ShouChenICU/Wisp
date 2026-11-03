@@ -1,6 +1,6 @@
 #pragma once
 
-// Portable, locale-independent formatting helpers used by the self-check
+// Portable formatting helpers used by the self-check
 // screen (spec 8) -- kept in their own pure, dependency-light header/cpp
 // pair so they're trivially unit-testable (see tests/app/format_test.cpp)
 // without needing a UiRuntime or any wisp::hal device at all.
@@ -19,8 +19,9 @@ namespace wisp::app {
 //   34359738368  -> "32.0 GB"
 std::string format_bytes(uint64_t bytes);
 
-// Chinese label for a device's boot-report state: "正常" (Ok), "降级"
-// (Degraded), "缺失" (Missing), "失败" (Failed).
+// Label for a device's boot-report state in the current device UI
+// language (ui::tr()); in Chinese: "正常" (Ok), "降级" (Degraded), "缺失"
+// (Missing), "失败" (Failed).
 const char* state_label(core::DeviceState state);
 
 // Formats a Unix timestamp (seconds since the epoch) as "YYYY-MM-DD

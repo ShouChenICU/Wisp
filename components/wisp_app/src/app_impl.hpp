@@ -43,11 +43,17 @@ struct App::Impl {
     // Brightness goes through PowerManager so a change made in standby
     // waits for the wake-up (spec 5.4). power_manager is only reset after
     // the HTTP server and the net task have stopped (App::stop()), so no
-    // caller races with it going away.
-    core::SystemSettings system_settings{*platform.settings, [this](uint8_t level) {
-                                             if (power_manager)
-                                                 power_manager->set_brightness(level);
-                                         }};
+    // caller races with it going away. Every stored change is published
+    // as system.settings (spec 8.3); the self-check screen rebuilds its
+    // text from it when the language changes.
+    core::SystemSettings system_settings{
+        *platform.settings,
+        [this](uint8_t level) {
+            if (power_manager) power_manager->set_brightness(level);
+        },
+        [this](const core::SystemSettingsValues& now) {
+            bus.publish({"system.settings", "app", 0, core::to_map(now)});
+        }};
 
     // Only constructed by start() -- see App::start()/App::stop().
     std::unique_ptr<ui::UiRuntime> ui;
@@ -84,7 +90,7 @@ struct App::Impl {
     // self_check.hpp. Constructed (via start_self_check(), posted onto
     // `ui`) only when `ui` is started; destroyed by App::stop() before
     // `ui`/`bus` are stopped, so every task/timer/subscription it owns
-    // (the "wisp.sample" task, its lv_timer, the "button." subscription,
+    // (the "wisp.sample" task, its lv_timer, its bus subscriptions,
     // the 5000ms WISP_PERF timer) is torn down while `ui`/`bus` are still
     // alive to be torn down against.
     std::unique_ptr<SelfCheck> self_check;

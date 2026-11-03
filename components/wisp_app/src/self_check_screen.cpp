@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,6 +31,7 @@
 #include "wisp/hal/imu.hpp"
 #include "wisp/hal/power.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
@@ -58,6 +60,11 @@ lv_color_t color_for_state(core::DeviceState state) {
             return lv_color_hex(0xE57373);
     }
     return lv_color_hex(0xE57373);
+}
+
+// "<label>: <value>", the shape of every readout row in every language.
+std::string labeled(const std::string& label, const std::string& value) {
+    return label + ": " + value;
 }
 
 lv_obj_t* make_row_label(lv_obj_t* parent) {
@@ -94,6 +101,11 @@ public:
     // (see start_self_check() below).
     void build();
 
+    // Rebuilds every widget in the current ui::lang() (spec 8.3), keeping
+    // the scroll position and an open confirm dialog. Must be called from
+    // the UI thread.
+    void rebuild();
+
     // Re-renders the header's "启动 .. ms" text from BootReport's current
     // boot_ms. Must be called from the UI thread; see
     // refresh_self_check_header() in self_check.hpp for why this exists --
@@ -128,7 +140,10 @@ private:
     // invalid width/height falls back to the full screen.
     hal::Area compute_safe_area() const;
 
-    // --- build() helpers; each appends one section to `col`. ---
+    // Creates root_ and every widget under it (build()/rebuild()).
+    void build_widgets();
+
+    // --- build_widgets() helpers; each appends one section to `col`. ---
     void build_header(lv_obj_t* col);
     void build_device_list(lv_obj_t* col);
     void build_imu_section(lv_obj_t* col);
@@ -154,6 +169,8 @@ private:
     void on_button_event(const core::Event& e);
     void subscribe_power();
     void on_power_event(const core::Event& e);
+    void subscribe_settings();
+    void on_settings_event(const core::Event& e);
     void handle_power_key_action(PowerKeyController::Action action);
     void show_confirm_dialog();
     void close_confirm_dialog();
@@ -251,9 +268,10 @@ private:
     // --- WISP_PERF emission. ---
     std::unique_ptr<os::Timer> perf_timer_;
 
-    // --- "button."/"power.state" bus subscriptions. ---
+    // --- "button."/"power.state"/"system.settings" bus subscriptions. ---
     core::SubscriptionId button_sub_ = 0;
     core::SubscriptionId power_sub_ = 0;
+    core::SubscriptionId settings_sub_ = 0;
 };
 
 SelfCheck::SelfCheck(App& app)
@@ -273,6 +291,13 @@ SelfCheck::~SelfCheck() {
     if (power_sub_ != 0) {
         app_.bus().unsubscribe(power_sub_);
         power_sub_ = 0;
+    }
+    // A language change already posted by on_settings_event() still runs
+    // before the UI-thread teardown at the end of this destructor (the post
+    // queue is FIFO), while every widget it rebuilds is still alive.
+    if (settings_sub_ != 0) {
+        app_.bus().unsubscribe(settings_sub_);
+        settings_sub_ = 0;
     }
 
     // Stop the sampling task -- thread-agnostic, and nothing it touches
@@ -363,6 +388,44 @@ void SelfCheck::run_on_ui_thread_blocking(std::function<void()> fn) {
 }
 
 void SelfCheck::build() {
+    build_widgets();
+
+    start_sampling();
+    start_perf_timer();
+    subscribe_buttons();
+    subscribe_power();
+    subscribe_settings();
+
+    refresh_timer_ = lv_timer_create(&SelfCheck::refresh_timer_cb, kUiRefreshMs, this);
+
+    overlay_enabled_ = ui_settings_.get_bool("perf_overlay", false);
+    if (overlay_enabled_) {
+        ui_->set_perf_overlay(true);
+    }
+}
+
+void SelfCheck::rebuild() {
+    int32_t scroll_y = root_ != nullptr ? lv_obj_get_scroll_y(root_) : 0;
+    bool dialog_open = msgbox_ != nullptr;
+    close_confirm_dialog();
+    if (root_ != nullptr) {
+        lv_obj_delete(root_);
+        root_ = nullptr;
+    }
+    device_list_sd_row_ = nullptr;
+
+    build_widgets();
+    // Fill the live readouts now rather than leaving "--" until the next
+    // refresh tick.
+    refresh_ui();
+    lv_obj_update_layout(root_);
+    lv_obj_scroll_to_y(root_, scroll_y, LV_ANIM_OFF);
+    if (dialog_open) {
+        show_confirm_dialog();
+    }
+}
+
+void SelfCheck::build_widgets() {
     lv_obj_t* screen = lv_screen_active();
     lv_obj_t* col = lv_obj_create(screen);
     root_ = col;
@@ -403,18 +466,6 @@ void SelfCheck::build() {
     build_button_hint_section(col);
     build_loopback_section(col);
     build_perf_section(col);
-
-    start_sampling();
-    start_perf_timer();
-    subscribe_buttons();
-    subscribe_power();
-
-    refresh_timer_ = lv_timer_create(&SelfCheck::refresh_timer_cb, kUiRefreshMs, this);
-
-    overlay_enabled_ = ui_settings_.get_bool("perf_overlay", false);
-    if (overlay_enabled_) {
-        ui_->set_perf_overlay(true);
-    }
 }
 
 std::string SelfCheck::header_text() const {
@@ -425,8 +476,8 @@ std::string SelfCheck::header_text() const {
     }
 
     char buf[160];
-    std::snprintf(buf, sizeof(buf), "%s  v%s  启动 %llu ms", app_.platform().board->name().c_str(),
-                  app_.platform().firmware_version.c_str(),
+    std::snprintf(buf, sizeof(buf), "%s  v%s  %s %llu ms", app_.platform().board->name().c_str(),
+                  app_.platform().firmware_version.c_str(), ui::tr(ui::StrId::BootTime),
                   static_cast<unsigned long long>(boot_ms));
     return buf;
 }
@@ -477,7 +528,7 @@ hal::Area SelfCheck::compute_safe_area() const {
 }
 
 void SelfCheck::build_device_list(lv_obj_t* col) {
-    lv_label_set_text(make_row_label(col), "设备列表");
+    lv_label_set_text(make_row_label(col), ui::tr(ui::StrId::DeviceList));
 
     std::vector<std::string> ids;
     for (const auto& entry : app_.report().entries()) {
@@ -524,7 +575,8 @@ void SelfCheck::build_imu_section(lv_obj_t* col) {
 
     imu_label_ = make_row_label(row);
     lv_obj_set_flex_grow(imu_label_, 1);
-    lv_label_set_text(imu_label_, imu_ ? "IMU: --" : "IMU: 缺失");
+    lv_label_set_text(imu_label_,
+                      labeled("IMU", imu_ ? "--" : ui::tr(ui::StrId::StateMissing)).c_str());
 
     lv_obj_t* frame = lv_obj_create(row);
     lv_obj_set_size(frame, 2 * kBallTravelPx + 20, 2 * kBallTravelPx + 20);
@@ -541,19 +593,23 @@ void SelfCheck::build_imu_section(lv_obj_t* col) {
 
 void SelfCheck::build_power_section(lv_obj_t* col) {
     power_label_ = make_row_label(col);
-    lv_label_set_text(power_label_, power_ ? "电源: --" : "电源: 缺失");
+    lv_label_set_text(power_label_, labeled(ui::tr(ui::StrId::Battery),
+                                            power_ ? "--" : ui::tr(ui::StrId::StateMissing))
+                                        .c_str());
 }
 
 void SelfCheck::build_rtc_section(lv_obj_t* col) {
     rtc_label_ = make_row_label(col);
-    lv_label_set_text(rtc_label_, clock_ ? "时间: --" : "时间: 缺失");
+    lv_label_set_text(
+        rtc_label_,
+        labeled(ui::tr(ui::StrId::Time), clock_ ? "--" : ui::tr(ui::StrId::StateMissing)).c_str());
 }
 
 void SelfCheck::build_storage_section(lv_obj_t* col) {
     storage_int_label_ = make_row_label(col);
     storage_sd_label_ = make_row_label(col);
-    lv_label_set_text(storage_int_label_, "内置 Flash: --");
-    lv_label_set_text(storage_sd_label_, "SD 卡: --");
+    lv_label_set_text(storage_int_label_, labeled(ui::tr(ui::StrId::InternalFlash), "--").c_str());
+    lv_label_set_text(storage_sd_label_, labeled(ui::tr(ui::StrId::SdCard), "--").c_str());
 }
 
 void SelfCheck::build_touch_section(lv_obj_t* col) {
@@ -567,12 +623,12 @@ void SelfCheck::build_touch_section(lv_obj_t* col) {
 
     touch_label_ = lv_label_create(box);
     lv_obj_center(touch_label_);
-    lv_label_set_text(touch_label_, "触摸测试区");
+    lv_label_set_text(touch_label_, ui::tr(ui::StrId::TouchTestArea));
 }
 
 void SelfCheck::build_button_hint_section(lv_obj_t* col) {
     button_label_ = make_row_label(col);
-    lv_label_set_text(button_label_, "按键: --");
+    lv_label_set_text(button_label_, labeled(ui::tr(ui::StrId::Button), "--").c_str());
 }
 
 void SelfCheck::build_loopback_section(lv_obj_t* col) {
@@ -581,11 +637,11 @@ void SelfCheck::build_loopback_section(lv_obj_t* col) {
     lv_obj_t* btn = lv_button_create(row);
     lv_obj_add_event_cb(btn, &SelfCheck::loopback_btn_cb, LV_EVENT_CLICKED, this);
     lv_obj_t* btn_label = lv_label_create(btn);
-    lv_label_set_text(btn_label, "录音回放");
+    lv_label_set_text(btn_label, ui::tr(ui::StrId::LoopbackButton));
 
     loop_status_label_ = make_row_label(row);
     lv_obj_set_flex_grow(loop_status_label_, 1);
-    lv_label_set_text(loop_status_label_, "就绪");
+    lv_label_set_text(loop_status_label_, ui::tr(ui::StrId::LoopReady));
 }
 
 void SelfCheck::build_perf_section(lv_obj_t* col) {
@@ -739,9 +795,8 @@ void SelfCheck::on_button_event(const core::Event& e) {
     // isn't invisible (see event_bus.hpp for why this must not block
     // waiting for a slot instead).
     if (!ui_->post([this, topic, source] {
-            char buf[96];
-            std::snprintf(buf, sizeof(buf), "按键: %s", topic.c_str());
-            lv_label_set_text(button_label_, buf);
+            lv_label_set_text(button_label_,
+                              labeled(ui::tr(ui::StrId::Button), topic.c_str()).c_str());
 
             PowerKeyController::Action action = PowerKeyController::Action::None;
             if (source == "button.power") {
@@ -787,6 +842,33 @@ void SelfCheck::on_power_event(const core::Event& e) {
         // Wake sample_loop() promptly instead of leaving it to notice on
         // its own, up to 1s later (see sample_loop()'s doc comment).
         standby_wake_.give();
+    }
+}
+
+void SelfCheck::subscribe_settings() {
+    settings_sub_ = app_.bus().subscribe("system.settings",
+                                         [this](const core::Event& e) { on_settings_event(e); });
+}
+
+void SelfCheck::on_settings_event(const core::Event& e) {
+    auto it = e.payload.find("language");
+    if (it == e.payload.end() || it->second.type() != Value::Type::String) {
+        return;
+    }
+    std::optional<ui::Lang> lang = ui::parse_lang(it->second.as_string());
+    if (!lang) {
+        return;
+    }
+    // set_lang() and the rebuild run together on the UI thread, so no
+    // label is ever built half in the old language and half in the new.
+    if (!ui_->post([this, l = *lang] {
+            if (l == ui::lang()) {
+                return;
+            }
+            ui::set_lang(l);
+            rebuild();
+        })) {
+        WLOG_W("self_check", "post(language change) dropped (post queue full)");
     }
 }
 
@@ -840,10 +922,10 @@ void SelfCheck::show_confirm_dialog() {
     hal::Area safe = compute_safe_area();
     int32_t safe_width = safe.x2 - safe.x1 + 1;
     lv_obj_set_width(msgbox_, std::min<int32_t>(LV_DPI_DEF * 2, safe_width));
-    lv_msgbox_add_title(msgbox_, "关机确认");
-    lv_msgbox_add_text(msgbox_, "是否关机？");
-    msgbox_yes_ = lv_msgbox_add_footer_button(msgbox_, "是");
-    lv_obj_t* no_btn = lv_msgbox_add_footer_button(msgbox_, "否");
+    lv_msgbox_add_title(msgbox_, ui::tr(ui::StrId::PowerOffTitle));
+    lv_msgbox_add_text(msgbox_, ui::tr(ui::StrId::PowerOffPrompt));
+    msgbox_yes_ = lv_msgbox_add_footer_button(msgbox_, ui::tr(ui::StrId::Yes));
+    lv_obj_t* no_btn = lv_msgbox_add_footer_button(msgbox_, ui::tr(ui::StrId::No));
     lv_obj_add_event_cb(msgbox_yes_, &SelfCheck::msgbox_btn_cb, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(no_btn, &SelfCheck::msgbox_btn_cb, LV_EVENT_CLICKED, this);
 }
@@ -923,7 +1005,7 @@ void SelfCheck::refresh_ui() {
                           snap.imu.ax, snap.imu.ay, snap.imu.az, snap.imu.gx, snap.imu.gy,
                           snap.imu.gz);
         } else {
-            std::snprintf(buf, sizeof(buf), "IMU: 读取失败");
+            std::snprintf(buf, sizeof(buf), "IMU: %s", ui::tr(ui::StrId::ReadFailed));
         }
         lv_label_set_text(imu_label_, buf);
 
@@ -934,25 +1016,23 @@ void SelfCheck::refresh_ui() {
     }
 
     if (power_) {
-        char buf[96];
+        std::string value;
         if (snap.power_ok) {
-            if (snap.power.battery_percent < 0) {
-                std::snprintf(buf, sizeof(buf), "电源: 电量未知 %s",
-                              snap.power.charging ? "充电中" : "未充电");
-            } else {
-                std::snprintf(buf, sizeof(buf), "电源: %d%% %s", snap.power.battery_percent,
-                              snap.power.charging ? "充电中" : "未充电");
-            }
+            char level[16];
+            std::snprintf(level, sizeof(level), "%d%%", snap.power.battery_percent);
+            value = snap.power.battery_percent < 0 ? ui::tr(ui::StrId::LevelUnknown) : level;
+            value += "  ";
+            value += ui::tr(snap.power.charging ? ui::StrId::Charging : ui::StrId::NotCharging);
         } else {
-            std::snprintf(buf, sizeof(buf), "电源: 读取失败");
+            value = ui::tr(ui::StrId::ReadFailed);
         }
-        lv_label_set_text(power_label_, buf);
+        lv_label_set_text(power_label_, labeled(ui::tr(ui::StrId::Battery), value).c_str());
     }
 
     if (clock_) {
-        std::string text =
-            "时间: " + (snap.rtc_ok ? format_time(snap.rtc_unix) : std::string("读取失败"));
-        lv_label_set_text(rtc_label_, text.c_str());
+        std::string value =
+            snap.rtc_ok ? format_time(snap.rtc_unix) : std::string(ui::tr(ui::StrId::ReadFailed));
+        lv_label_set_text(rtc_label_, labeled(ui::tr(ui::StrId::Time), value).c_str());
     }
 
     update_storage_labels();
@@ -979,19 +1059,20 @@ void SelfCheck::update_storage_labels() {
     auto format_row = [](const char* label, const core::MediaStatus* media) {
         char buf[160];
         if (media == nullptr) {
-            std::snprintf(buf, sizeof(buf), "%s: 缺失", label);
+            std::snprintf(buf, sizeof(buf), "%s: %s", label, ui::tr(ui::StrId::StateMissing));
         } else {
             uint64_t used =
                 media->total_bytes > media->free_bytes ? media->total_bytes - media->free_bytes : 0;
             std::snprintf(buf, sizeof(buf), "%s: %s  %s / %s", label,
-                          media->online ? "在线" : "离线", format_bytes(used).c_str(),
-                          format_bytes(media->total_bytes).c_str());
+                          ui::tr(media->online ? ui::StrId::Online : ui::StrId::Offline),
+                          format_bytes(used).c_str(), format_bytes(media->total_bytes).c_str());
         }
         return std::string(buf);
     };
 
-    lv_label_set_text(storage_int_label_, format_row("内置 Flash", int_status).c_str());
-    lv_label_set_text(storage_sd_label_, format_row("SD 卡", sd_status).c_str());
+    lv_label_set_text(storage_int_label_,
+                      format_row(ui::tr(ui::StrId::InternalFlash), int_status).c_str());
+    lv_label_set_text(storage_sd_label_, format_row(ui::tr(ui::StrId::SdCard), sd_status).c_str());
 
     if (device_list_sd_row_ != nullptr) {
         // sd_status == nullptr means "storage.sd" isn't in the registry
@@ -1023,12 +1104,12 @@ void SelfCheck::touch_event_cb(lv_event_t* e) {
         if (indev != nullptr) {
             lv_indev_get_point(indev, &p);
         }
-        char buf[48];
-        std::snprintf(buf, sizeof(buf), "触点: (%d, %d)", static_cast<int>(p.x),
-                      static_cast<int>(p.y));
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%s: (%d, %d)", ui::tr(ui::StrId::Touch),
+                      static_cast<int>(p.x), static_cast<int>(p.y));
         lv_label_set_text(self->touch_label_, buf);
     } else {
-        lv_label_set_text(self->touch_label_, "触摸测试区");
+        lv_label_set_text(self->touch_label_, ui::tr(ui::StrId::TouchTestArea));
     }
 }
 
