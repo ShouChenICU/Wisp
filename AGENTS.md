@@ -43,7 +43,7 @@ Wisp（小鬼火）是一个运行在 ESP32 系列芯片上、完全由 AI 驱�
   - 可移植层：`wisp_base` → `wisp_os` → `wisp_hal` → `wisp_core` → `wisp_net` → `wisp_admin` → `wisp_ui` → `wisp_app`。
   - 平台层：`wisp_port_sim`（PC 模拟器）、`wisp_port_esp`（ESP-IDF）。
   - 板级适配放在 `boards/<板名>/`，芯片驱动放在 `drivers/`。
-- **可移植层禁止 include 平台头文件**：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/`、`soc/*`、`sdkconfig.h`、`SDL*`。另外 `wisp_os` 和 `wisp_hal` 不得反向依赖 core/ui/app。这条规则由 `tools/check_layering.py` 强制检查。
+- **可移植层禁止 include 平台头文件**：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/`、`soc/*`、`rom/*`、`lwip/*`、`mbedtls/*`、`curl/*`、`sdkconfig.h`、`nvs.h`/`nvs_flash.h`、`sdmmc_cmd.h`、`SDL*`，以及平台层的 `wisp/port/*`。另外每一层只能依赖上面顺序中排在它之前的层，不得反向依赖（例如 `wisp_net` 不得 include `wisp/admin/`、`wisp/ui/`、`wisp/app/`）。这条规则由 `tools/check_layering.py` 强制检查。
 - **板子无关**：可移植层和平台层里不得出现具体板子的引脚、芯片型号或常量。这些只能写在 `boards/` 和 `drivers/` 中，通过设备的 caps 对外暴露。
 - **服务层约定**：Agent 工具、REST 接口、Lua 绑定都只是同一组服务 API 的薄适配层，不允许绕过服务层直接调用驱动。
 - **屏幕形状**：屏幕不一定是完整矩形（圆角屏、圆形屏）。任何界面（包括场景、Agent 生成的界面）都必须按 Display caps 的 `shape` 和 `hal::safe_rect()`/`row_span()` 布局，不得写死边距或假设整屏可见。根容器铺满屏幕、用内边距把内容收进安全区；滚动内容可以经过不可见区域，但滚到两端时首尾内容必须完整落在安全区内（spec 5.6）。
