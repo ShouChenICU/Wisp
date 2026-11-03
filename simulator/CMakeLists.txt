@@ -34,6 +34,10 @@ add_subdirectory(${WISP_ROOT}/components/wisp_port_sim wisp_port_sim)
 # (simulator/main.cpp) over a SimBoard from wisp_port_sim_dev.
 add_executable(wisp_sim main.cpp sim_options.cpp sim_stdin.cpp)
 target_compile_features(wisp_sim PRIVATE cxx_std_20)
+# Simulator-only console commands ("debug pair-code"; see main.cpp's
+# header). Defined on this target alone, so no portable component and no
+# firmware build ever compiles them in.
+target_compile_definitions(wisp_sim PRIVATE WISP_SIM_DEBUG_COMMANDS)
 target_link_libraries(wisp_sim PRIVATE
     wisp_app wisp_core wisp_hal wisp_os wisp_base wisp_ui
     wisp_port_sim_os wisp_port_sim_settings wisp_port_sim_dev wisp_port_sim_net

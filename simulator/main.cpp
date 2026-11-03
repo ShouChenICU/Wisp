@@ -28,6 +28,19 @@
 // (connectivity spec 8.2) read through Platform::read_line. SIGTTIN is
 // ignored so a backgrounded `wisp_sim &` is never stopped by it (see
 // sim_stdin.hpp).
+//
+// Signals: SIGINT and SIGTERM end the main loop like a reboot does, so the
+// process stops through App::stop() and exits with code 0; SDL's own
+// handlers (which would only queue an SDL_QUIT the headless loop never
+// reads) are turned off. The handler is one-shot: a second signal while
+// shutting down kills the process the default way.
+//
+// Debug commands: with WISP_SIM_DEBUG_COMMANDS (defined for the wisp_sim
+// target only, never in a portable component or the firmware) the console
+// gains "debug pair-code", which prints the active pairing code as
+// "pair-code=<6 digits>" ("pair-code=none" without one) so scripts can pair
+// without reading the screen (tests/smoke/admin_smoke.py). It is the only
+// output that ever carries a pairing code.
 
 #include <SDL.h>
 #include <signal.h>
@@ -59,6 +72,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/net/pairing_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/log_stdout.hpp"
 #include "wisp/port/sim/png_writer.hpp"
@@ -71,6 +85,39 @@
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace {
+
+// Set by the main loop's exit paths: power-off, reboot, SIGINT/SIGTERM.
+// Namespace scope so the signal handler can reach it.
+std::atomic<bool> g_should_exit{false};
+static_assert(std::atomic<bool>::is_always_lock_free, "stored from a signal handler");
+
+extern "C" void on_stop_signal(int) { g_should_exit.store(true); }
+
+void install_signal_handlers() {
+    struct sigaction action{};
+    action.sa_handler = on_stop_signal;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESETHAND;
+    sigaction(SIGINT, &action, nullptr);
+    sigaction(SIGTERM, &action, nullptr);
+    signal(SIGTTIN, SIG_IGN);
+}
+
+#ifdef WISP_SIM_DEBUG_COMMANDS
+std::vector<wisp::app::ConsoleCommand> debug_commands() {
+    return {{
+        "debug",
+        "debug pair-code              the active pairing code (simulator only)",
+        [](wisp::app::App& app, const std::vector<std::string>& args) -> std::string {
+            if (args.size() != 2 || args[1] != "pair-code") return "error: usage: debug pair-code";
+            wisp::net::PairingService* pairing = app.pairing();
+            if (pairing == nullptr) return "error: pairing is unavailable";
+            auto code = pairing->active_code(wisp::os::now_ms());
+            return "pair-code=" + (code ? *code : std::string("none"));
+        },
+    }};
+}
+#endif
 
 constexpr int kScreenSize = 480;
 constexpr uint32_t kFrameMs = 16;  // ~60 Hz
@@ -520,7 +567,8 @@ int main(int argc, char** argv) {
     if (opts.headless) {
         SDL_SetHint(SDL_HINT_AUDIODRIVER, "dummy");
     }
-    signal(SIGTTIN, SIG_IGN);
+    SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+    install_signal_handlers();
     if (SDL_Init(SDL_INIT_AUDIO) != 0) {
         // A host with no audio backend at all (e.g. a minimal
         // container image) shouldn't stop the whole
@@ -532,7 +580,7 @@ int main(int argc, char** argv) {
                SDL_GetError());
     }
 
-    std::atomic<bool> should_exit{false};
+    std::atomic<bool>& should_exit = g_should_exit;
     // Outlives `app`: Platform::read_line pops from it.
     ConsoleLines console_lines;
     // Outlives `app` (Platform::assets points into it).
@@ -597,6 +645,9 @@ int main(int argc, char** argv) {
     platform.read_line = [&console_lines](std::string& line, uint32_t timeout_ms) {
         return console_lines.read(line, timeout_ms);
     };
+#ifdef WISP_SIM_DEBUG_COMMANDS
+    platform.console_commands = debug_commands();
+#endif
 
     wisp::app::App app(std::move(platform));
     auto started = app.start();
