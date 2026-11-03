@@ -33,7 +33,7 @@
 - 持久化一律走 `StorageManager::write_atomic`：`<System 根>/net/wifi.json`、`<System 根>/net/clients.json`、`<System 根>/secrets/llm.json`。
 - 固定数值（来自 spec）：退避 5 s 起、每次翻倍、上限 5 min；最多保存 5 个网络；热点 10 min 无人连接自动关闭，配网成功后保留 30 s；待机超过 `net`/`idle_off_min`（默认 10）分钟断开 Wi-Fi；配对码 6 位、有效 2 min、连续错 5 次锁 5 min；令牌 32 字节随机、只存 SHA-256、最多 8 个、Cookie `wisp_token; HttpOnly; SameSite=Strict; Path=/`、有效期 1 年；请求体 ≤ 8 KB；同时 ≤ 7 个连接；WebSocket ≤ 2 个；`/llm/test` 超时 10 s；网页 gzip 后 ≤ 150 KB；`assets` 分区 ≥ 1 MB。
 - 热点 SSID 为 `Wisp-` 加 MAC 末 4 位十六进制（大写）；密码为 8 位 `[A-Za-z0-9]`，每次开热点重新生成。
-- 模拟器 HTTP 服务只监听 `127.0.0.1`，默认端口 8080。
+- 后台端口 8900（真机与模拟器相同，`http://wisp.local:8900`）；模拟器 HTTP 服务只监听 `127.0.0.1`，默认端口 8900。真机热点运行期间另有一个 80 端口的强制门户重定向服务（spec 4.3）。
 - 机器可读输出改动（`WISP_BOOT_REPORT` 新增 `notes.net`）必须同步更新 `tests/smoke/sim_smoke.py` 和 `docs/architecture.md`。
 - 设备端新增的卡片按基础 spec 5.6 的安全区规则布局。
 - 第三方文件（htm/Preact、mDNS 组件）登记到 `docs/references.md` 与 `THIRD_PARTY_NOTICES.md`。
@@ -754,7 +754,8 @@ std::function<void(uint8_t*, size_t)> random;          // 必须提供（模拟�
 std::unique_ptr<net::HttpServer> http_server;           // 可为空：不启动后台
 std::unique_ptr<net::HttpClient> http_client;           // 可为空：/llm/test 返回 transport=Other
 std::span<const uint8_t> assets;                        // 可为空：只提供 API
-uint16_t http_port = 80;
+uint16_t http_port = 8900;
+std::unique_ptr<net::HttpServer> captive_server;        // 可为空（模拟器）：热点运行期间在 80 端口运行 AdminServer::captive_handler()
 bool http_always_on = false;                            // 模拟器为 true：不等网络接口就绪，直接启动 HTTP 服务
 std::function<void()> reboot;
 std::function<bool(std::string& line)> read_line;      // 可为空：不启动串口控制台（Task 16 使用）
@@ -767,7 +768,7 @@ std::function<bool(std::string& line)> read_line;      // 可为空：不启动�
   - `unix_now` 读取 `clock.main`，读不到时返回 0。
 - `SimWifi`（`net.wifi`，model `sim-wifi`）：内置网络 `WispLab`（-45，密码 `wisp1234`）、`Neighbor`（-70，密码 `neighbor99`）、`OpenCafe`（-80，开放网络）；`--wifi-fail` 时所有连接都失败（原因为 `NotFound`）；`start_ap` 只改变状态；`ap_clients()` 返回 1，用来模拟手机已连上。模拟器的 `main.cpp` 设置 `http_always_on = true`，这样即使 `SimWifi` 处于 `Idle`，后台也能在电脑上调试。
 - `SimHttpClient`：基于 libcurl，把 `CURLE_COULDNT_RESOLVE_HOST`、`CURLE_COULDNT_CONNECT`、`CURLE_SSL_*`、`CURLE_OPERATION_TIMEDOUT` 映射为对应的 `TransportError`。
-- 模拟器命令行新增 `--http-port <n>`（默认 8080，0 表示不启动）、`--web-dir <path>`（从目录读文件，用 `pack_assets.py` 的同一套 MIME/gzip 规则在内存里打包，启动时打包一次）、`--wifi-fail`。
+- 模拟器命令行新增 `--http-port <n>`（默认 8900，0 表示不启动）、`--web-dir <path>`（从目录读文件，用 `pack_assets.py` 的同一套 MIME/gzip 规则在内存里打包，启动时打包一次）、`--wifi-fail`。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -783,7 +784,7 @@ TEST(AppNet, BootDoesNotWaitForWifi)             // FakeWifi::scan 阻塞 3 s �
 
 - [ ] **Step 2: 运行，确认失败。**
 - [ ] **Step 3: 实现。**
-- [ ] **Step 4: 运行 `ctest --test-dir build/sim --output-on-failure`（全量），并手动运行 `build/sim/wisp_sim --web-dir web`，确认 `curl -s localhost:8080/api/v1/info` 返回 JSON。**
+- [ ] **Step 4: 运行 `ctest --test-dir build/sim --output-on-failure`（全量），并手动运行 `build/sim/wisp_sim --web-dir web`，确认 `curl -s localhost:8900/api/v1/info` 返回 JSON。**
 - [ ] **Step 5: Commit** — `feat(app): wire Wi-Fi, pairing and the admin server into boot`
 
 ---
@@ -806,7 +807,7 @@ TEST(AppNet, BootDoesNotWaitForWifi)             // FakeWifi::scan 阻塞 3 s �
 
 - [ ] **Step 1:** 写 `tokens.css`、`components.css` 和外壳；`pair.js` 完成"获取配对码 → 输入 6 位数字 → 成功后进入概览"的流程（输入框用 `inputmode="numeric"`，限制 6 位）。
 - [ ] **Step 2:** 概览页：状态卡片（电量与充电、Wi-Fi、存储、运行时长、固件版本），通过 `events` 订阅实时刷新；外设页：可展开的设备列表；日志页：最多保留 2000 行，支持按级别过滤、暂停和清屏，暂停期间新日志只计数不渲染。
-- [ ] **Step 3: 验证**：`python3 tools/pack_assets.py web -o /tmp/x.wpak --budget-kb 150` 通过；运行 `build/sim/wisp_sim --web-dir web`，用浏览器打开 `http://localhost:8080`，在 390×844（手机）和 1280×800 两种窗口尺寸下截图（Playwright），检查配对 → 概览 → 外设 → 日志的流程，控制台没有错误。
+- [ ] **Step 3: 验证**：`python3 tools/pack_assets.py web -o /tmp/x.wpak --budget-kb 150` 通过；运行 `build/sim/wisp_sim --web-dir web`，用浏览器打开 `http://localhost:8900`，在 390×844（手机）和 1280×800 两种窗口尺寸下截图（Playwright），检查配对 → 概览 → 外设 → 日志的流程，控制台没有错误。
 - [ ] **Step 4: Commit** — `feat(web): add the admin shell, design tokens and overview/devices/logs pages`
 
 ---
@@ -823,7 +824,7 @@ TEST(AppNet, BootDoesNotWaitForWifi)             // FakeWifi::scan 阻塞 3 s �
 - [ ] **Step 1: 网络页**：当前连接（SSID、IP、信号格数）；已保存的网络（删除前用 `confirmDialog` 确认）；"扫描"按钮列出网络，点击后输入密码（开放网络不显示密码框），提交后订阅 `net.wifi.state` 显示结果。
 - [ ] **Step 2: 模型页**：端点输入框（placeholder 为 `https://api.openai.com/v1`）；API Key 用 `type=password`，已设置时显示"已设置（不可查看）"和"清除"按钮，输入框留空提交表示保留原 Key；"测试连接"显示延迟与错误类别（中文）；测试成功后模型变为下拉框，也可以手动输入。
 - [ ] **Step 3: 系统页**：亮度、音量滑块（松手时 `PUT`）、熄屏时间下拉框（永不、15 s、30 s、60 s、2 min、5 min、10 min）；已配对的浏览器（当前浏览器带标记，可撤销）；重启；恢复出厂设置（先在网页上确认，再提示"请在设备上确认"，等待 `system.factory_reset` 事件）。
-- [ ] **Step 4: 配网向导 `setup.html`**：先调用 `POST /pair/ap`，然后依次为选择网络 → 输入密码 → 连接中（订阅 `net.wifi.state`，60 s 超时）→ 成功时显示 `http://<新 IP>` 与 `http://wisp.local`，失败时显示原因并允许重试。只引用包内资源。
+- [ ] **Step 4: 配网向导 `setup.html`**：先调用 `POST /pair/ap`，然后依次为选择网络 → 输入密码 → 连接中（订阅 `net.wifi.state`，60 s 超时）→ 成功时显示 `http://<新 IP>:8900` 与 `http://wisp.local:8900`，失败时显示原因并允许重试。只引用包内资源。
 - [ ] **Step 5: 验证**：同 Task 13 的 Step 3，加上：模拟器里用 `WispLab`/`wisp1234` 走一遍配网向导（模拟器中 `iface` 为 `Loopback`，向导检测到 `/pair/ap` 返回 403 时退回到配对码流程）；用 `--wifi-fail` 验证失败提示；`bash tools/ci.sh` 通过。
 - [ ] **Step 6: Commit** — `feat(web): add network, model and system pages and the setup wizard`
 
@@ -930,14 +931,15 @@ TEST(Console, UnknownCommand)
 
 **Files:**
 - Create: `components/wisp_port_esp/net/{esp_wifi,esp_http_server,esp_http_client,captive_dns}.cpp`、`include/wisp/port/esp/{esp_wifi,esp_http_server,esp_http_client}.hpp`、`components/wisp_port_esp/console_esp.cpp`
-- Modify: `components/wisp_port_esp/CMakeLists.txt`（`IDF_REQUIRES esp_wifi esp_netif esp_http_server esp_http_client esp-tls mbedtls espressif__mdns esp_driver_usb_serial_jtag`）、`components/wisp_port_esp/idf_component.yml` 或 `firmware/main/idf_component.yml`（`espressif/mdns` 锁定精确版本）、`firmware/dependencies.lock`、`boards/waveshare_amoled_216/board.cpp`（注册 `net.wifi`）、`firmware/main/main.cpp`（填写 `Platform` 的新字段：`random`=`esp_fill_random`、`assets`=`esp_partition_mmap("assets")`、`reboot`=`esp_restart`、`read_line`）、`firmware/CMakeLists.txt`（构建时运行 `pack_assets.py web -o build/assets.wpak --partitions ../boards/${WISP_BOARD}/partitions.csv --budget-kb 150`，并用 `esptool_py_flash_to_partition(flash assets build/assets.wpak)` 一并烧录）、`firmware/sdkconfig.defaults`（`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`、`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y`、`CONFIG_HTTPD_WS_SUPPORT=y`、`CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024`）、`docs/references.md`、`THIRD_PARTY_NOTICES.md`
+- Modify: `components/wisp_port_esp/CMakeLists.txt`（`IDF_REQUIRES esp_wifi esp_netif esp_http_server esp_http_client esp-tls mbedtls espressif__mdns esp_driver_usb_serial_jtag`）、`components/wisp_port_esp/idf_component.yml` 或 `firmware/main/idf_component.yml`（`espressif/mdns` 锁定精确版本）、`firmware/dependencies.lock`、`boards/waveshare_amoled_216/board.cpp`（注册 `net.wifi`）、`firmware/main/main.cpp`（填写 `Platform` 的新字段：`random`=`esp_fill_random`、`assets`=`esp_partition_mmap("assets")`、`reboot`=`esp_restart`、`read_line`、`captive_server`）、`firmware/CMakeLists.txt`（构建时运行 `pack_assets.py web -o build/assets.wpak --partitions ../boards/${WISP_BOARD}/partitions.csv --budget-kb 150`，并用 `esptool_py_flash_to_partition(flash assets build/assets.wpak)` 一并烧录）、`firmware/sdkconfig.defaults`（`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`、`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y`、`CONFIG_HTTPD_WS_SUPPORT=y`、`CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024`）、`docs/references.md`、`THIRD_PARTY_NOTICES.md`
 - Test: `tests/port_esp/`（只编译、不运行的固件构建检查，沿用子项目 1 的做法）
 
 **Interfaces:**
 - Consumes：Task 3、4 的接口；Task 12 的 `Platform` 字段
 - 实现要点：
-  - `EspWifi`：初始化 `esp_netif` 和 APSTA，并在 board init 里就 `esp_wifi_start()`——射频开启后 `esp_fill_random` 才是真随机数，`Platform::random` 的所有调用方都依赖这一点（见 `firmware/main/main.cpp` 的注释）；`link()` 从事件回调更新的原子快照里读取；`start_ap` 设置 WPA2-PSK、信道 1、最多 4 个客户端，启动 `captive_dns`；STA 拿到 IP 时用主机名 `wisp` 启动 mDNS，并广播 `_http._tcp` 端口 80。初始化失败时由 `board.cpp` 写进启动报告，状态为 `Failed`。
+  - `EspWifi`：初始化 `esp_netif` 和 APSTA，并在 board init 里就 `esp_wifi_start()`——射频开启后 `esp_fill_random` 才是真随机数，`Platform::random` 的所有调用方都依赖这一点（见 `firmware/main/main.cpp` 的注释）；`link()` 从事件回调更新的原子快照里读取；`start_ap` 设置 WPA2-PSK、信道 1、最多 4 个客户端，启动 `captive_dns`；STA 拿到 IP 时用主机名 `wisp` 启动 mDNS，并广播 `_http._tcp` 端口 8900。初始化失败时由 `board.cpp` 写进启动报告，状态为 `Failed`。
   - `EspHttpServer`：`max_open_sockets = 7`，`lru_purge_enable = true`，`uri_match_fn = httpd_uri_match_wildcard`；注册 `/*` 的 GET/POST/PUT/DELETE/OPTIONS，以及 `/api/v1/ws`（`is_websocket = true`）；请求头逐个读取：`Host`、`Cookie`、`X-Wisp`、`Content-Type`、`If-None-Match`、`User-Agent`；`iface` 按客户端 IP 是否在热点子网 `192.168.4.0/24` 内判断；`send_text` 用 `httpd_ws_send_data_async`，在途发送超过 64 条时返回 false。
+  - 强制门户服务：`firmware/main/main.cpp` 再构造一个 `EspHttpServer` 作为 `Platform::captive_server`（`App` 只在热点运行期间在 80 端口启动它）。这是第二个 httpd 实例：`ctrl_port` 必须与后台实例不同（例如 `ESP_HTTPD_DEF_CTRL_PORT + 1`），配置尽量小——`max_open_sockets = 4`、小栈（约 3 KB）、不注册 WebSocket；同时注意 lwIP 套接字总数（`CONFIG_LWIP_MAX_SOCKETS`）要容纳两个实例加 DNS 劫持。
   - `EspHttpClient`：`esp_http_client` 加 `crt_bundle_attach = esp_crt_bundle_attach`，根据 `esp_err_t`/`esp_tls` 错误映射为 `TransportError`。
   - `console_esp.cpp`：安装 `usb_serial_jtag` 驱动并让 VFS 使用它，`read_line` 用 `fgets` 读 stdin。
 - [ ] **Step 1: 构建** — Run: `bash -c '. ~/esp/esp-idf-v6.0.3/export.sh >/dev/null && cd firmware && idf.py build'` → 成功；`idf.py size` 的应用大小不超过 `ota_0` 的 80%；`build/assets.wpak` 存在且小于 2 MB。

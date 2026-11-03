@@ -54,7 +54,7 @@ HTTPS 与 Flash 加密（子项目 7 评估）、OTA 升级功能（分区已预
 | `wisp_core` | `LlmConfigService`、`SystemSettings` | LLM 端点、模型名和 API Key（只写不读）；亮度、音量、自动熄屏时间的校验与立即生效 |
 | `wisp_admin`（新，可移植） | 路由表、REST 处理、WebSocket 推送 | 管理后台适配层：只把 HTTP 请求翻译成服务调用，不含业务逻辑 |
 | `wisp_app` | 装配、网络区块与配网/配对卡片、串口命令 | 构造并连接上述服务；设备端界面 |
-| `wisp_port_esp` | `EspWifi`、`EspHttpServer`、`EspHttpClient`、mDNS | 分别封装 `esp_wifi`、`esp_http_server`、`esp_http_client`（加 `esp_crt_bundle`，LLM 端点都是 HTTPS）和乐鑫 mDNS 组件（`wisp.local`） |
+| `wisp_port_esp` | `EspWifi`、`EspHttpServer`、`EspHttpClient`、mDNS | 分别封装 `esp_wifi`、`esp_http_server`、`esp_http_client`（加 `esp_crt_bundle`，LLM 端点都是 HTTPS）和乐鑫 mDNS 组件（`wisp.local`，广播 `_http._tcp` 端口 8900） |
 | `wisp_port_sim` | `SimWifi`、`SimHttpServer`、`SimHttpClient` | 假 Wi-Fi；用 POSIX socket 手写的精简 HTTP/1.1 + WebSocket 服务（只监听 `127.0.0.1`）；基于系统 libcurl 的 HTTPS 客户端 |
 | `web/`（新目录） | 前端源码 | 原生 ES 模块；第三方库锁定版本放在 `web/vendor/` |
 | `tools/` | `pack_assets.py` | 生成 WispPack 资源包并做检查（见 2.3） |
@@ -140,6 +140,7 @@ HTTPS 与 Flash 加密（子项目 7 评估）、OTA 升级功能（分区已预
 - 配网成功后热点再保留 30 秒，让手机页面能显示"已连接，新地址是 …"，然后自动关闭。
 - 10 分钟内一直没有设备连上热点就自动关闭；关闭时 `net.ap.state` 发布 `active: false`。
 - 热点运行期间提供 DNS 劫持（所有域名都解析到设备自身），配合 6.1 的探测路径触发手机的强制门户弹窗。
+- 手机的强制门户探测走 80 端口，而后台在 8900 端口（见 6.1），所以真机在热点运行期间另开一个只监听 80 端口的极简 HTTP 服务：任何请求都以 `302` 重定向到 `http://<热点地址>:8900/setup.html`（带 `Cache-Control: no-store`），没有 API、静态文件和 WebSocket。它随热点开启而启动、随热点关闭而停止；模拟器没有这个服务。
 
 ### 4.4 网络的保存
 
@@ -211,6 +212,8 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 
 ### 6.1 REST 接口
 
+后台监听 **8900** 端口（真机与模拟器相同；模拟器只监听 `127.0.0.1`），访问地址为 `http://wisp.local:8900` 或 `http://<设备 IP>:8900`。80 端口只在热点运行期间用于强制门户重定向（见 4.3）。
+
 统一前缀 `/api/v1`，请求和响应都是 JSON。
 
 | 分组 | 接口 | 鉴权 | 说明 |
@@ -233,7 +236,7 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 
 配网向导（`/setup`）先调用 `POST /pair/ap` 拿到令牌，之后与后台一样走需要鉴权的接口，不另设免鉴权的例外。
 
-**强制门户探测路径**（`/generate_204`、`/hotspot-detect.html`、`/connecttest.txt`、`/ncsi.txt` 等）在热点模式下一律重定向到 `/setup`；非热点模式下返回 404。
+**强制门户探测路径**（`/generate_204`、`/hotspot-detect.html`、`/connecttest.txt`、`/ncsi.txt` 等）在热点模式下一律重定向到 `http://<热点地址>:8900/setup.html`；非热点模式下返回 404。
 
 **恢复出厂设置的范围**：清除 Settings、已保存的网络、全部令牌和 LLM 配置（含 Key），然后重启；不删除 Library 和 Backup 区的数据（以后的场景与用户数据）。完整擦除留给子项目 7。
 
@@ -350,7 +353,7 @@ web/
 
 1. 不配网开机：各项功能正常，网络区块显示"未配网"。
 2. 点"开始配网"：屏幕显示二维码；手机扫码连上热点后自动弹出配网页；配网成功后显示新地址，热点约 30 秒后关闭。
-3. 浏览器访问 `http://wisp.local` 或显示的 IP 地址，用屏幕上的配对码完成配对。
+3. 浏览器访问 `http://wisp.local:8900` 或 `http://<显示的 IP 地址>:8900`，用屏幕上的配对码完成配对。
 4. 各页面正常显示；修改亮度后屏幕立即变化；日志页实时滚动。
 5. 填写 LLM 端点与 Key 后，"测试连接"成功并列出模型；刷新页面后 Key 只显示"已设置"。
 6. 关掉路由器：设备退避重试，界面不卡；路由器恢复后自动重连。

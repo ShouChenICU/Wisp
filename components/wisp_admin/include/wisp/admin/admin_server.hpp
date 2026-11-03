@@ -17,8 +17,9 @@
 //   2. Any method other than GET/POST/PUT/DELETE (notably OPTIONS) is 405
 //      with no CORS headers: never answering a CORS preflight is what
 //      keeps other origins from sending the X-Wisp header.
-//   3. Captive-portal probe paths: 302 to the hotspot's setup page when
-//      the request came from the hotspot, 404 otherwise.
+//   3. Captive-portal probe paths: 302 to the hotspot's setup page
+//      (http://<hotspot ip>:<http_port>/setup.html) when the request came
+//      from the hotspot, 404 otherwise.
 //   4. Every non-/api/ path is a static file from the asset pack (gzip
 //      body, ETag, 304 on a matching If-None-Match).
 //   5. API: every route except the pairing whitelist needs a valid
@@ -79,6 +80,9 @@ struct AdminDeps {
     std::string board;
     std::string firmware_version;
     std::string device_name = "Wisp";
+    // The port the admin server listens on (spec 6.1); redirects to the
+    // setup page point at it.
+    uint16_t http_port = 8900;
     std::function<Value()> device_status;  // uptime_ms, heap, battery, ...
     std::function<void()> reboot;
     // Shows a confirmation dialog on the device; the outcome is published
@@ -102,6 +106,14 @@ public:
     AdminServer& operator=(const AdminServer&) = delete;
 
     net::HttpResponse handle(const net::HttpRequest& req);
+
+    // Handler for the hotspot's port-80 server, which exists only so that
+    // phones' captive-portal probes open the setup page: every request,
+    // whatever its method, path or Host, is a 302 (Cache-Control:
+    // no-store) to http://<hotspot ip>:<http_port>/setup.html, or 503
+    // while no hotspot is up. No API, static files or WebSocket. Captures
+    // this AdminServer, like ws_handlers().
+    net::HttpHandler captive_handler();
 
     // WebSocket callbacks for /api/v1/ws. on_open refuses an upgrade with
     // a foreign Host or without a valid wisp_token cookie, and otherwise

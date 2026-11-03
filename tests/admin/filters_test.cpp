@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <tuple>
+#include <vector>
 
 #include "admin/admin_fixture.hpp"
 #include "support/fake_http.hpp"
@@ -60,7 +62,7 @@ TEST(Filters, RejectsForeignHostButAllowsPortsAndAp) {
     HttpResponse steered =
         srv.handle(host(make_req(Get, "/api/v1/info", {}, Iface::Ap), "evil.com"));
     EXPECT_EQ(steered.status, 302);
-    EXPECT_EQ(response_header(steered, "Location"), "http://192.168.4.1/setup.html");
+    EXPECT_EQ(response_header(steered, "Location"), "http://192.168.4.1:8900/setup.html");
     EXPECT_EQ(srv.handle(host(make_req(Get, "/", {}, Iface::Ap), "evil.com")).status, 302);
     EXPECT_EQ(srv.handle(host(make_req(Get, "/api/v1/info", {}, Iface::Ap), "192.168.4.1")).status,
               200);
@@ -103,10 +105,49 @@ TEST(Filters, ProbePathsRedirectFromHotspotOnly) {
           "/connecttest.txt", "/ncsi.txt", "/canonical.html", "/success.txt"}) {
         HttpResponse ap = f.srv->handle(host(make_req(Get, p, {}, Iface::Ap), "captive.apple.com"));
         EXPECT_EQ(ap.status, 302) << p;
-        EXPECT_EQ(response_header(ap, "Location"), "http://192.168.4.1/setup.html") << p;
+        EXPECT_EQ(response_header(ap, "Location"), "http://192.168.4.1:8900/setup.html") << p;
 
         EXPECT_EQ(f.srv->handle(make_req(Get, p)).status, 404) << p;
     }
+}
+
+// Port 80 is the URL default, so the Location leaves it out.
+TEST(Filters, SetupRedirectOmitsPort80) {
+    AdminFixture f;
+    ASSERT_TRUE(f.wifi->start_provisioning(f.now));
+    auto deps = f.make_deps();
+    deps.http_port = 80;
+    wisp::admin::AdminServer on_80(std::move(deps));
+    HttpResponse res =
+        on_80.handle(host(make_req(Get, "/generate_204", {}, Iface::Ap), "captive.apple.com"));
+    EXPECT_EQ(res.status, 302);
+    EXPECT_EQ(response_header(res, "Location"), "http://192.168.4.1/setup.html");
+}
+
+// The hotspot's port-80 server answers every request -- any method, path or
+// Host -- with the redirect to the admin port's setup page.
+TEST(Filters, CaptiveHandlerRedirectsEverything) {
+    AdminFixture f;
+    ASSERT_TRUE(f.wifi->start_provisioning(f.now));
+    wisp::net::HttpHandler captive = f.srv->captive_handler();
+    for (const auto& [method, path, h] :
+         std::vector<std::tuple<wisp::net::Method, std::string, std::string>>{
+             {Get, "/generate_204", "connectivitycheck.gstatic.com"},
+             {Get, "/", "192.168.4.1"},
+             {Get, "/api/v1/info", "evil.com"},
+             {Post, "/api/v1/pair/ap", "192.168.4.1"},
+             {Get, "/some/deep/path?x=1", ""}}) {
+        HttpResponse res = captive(host(make_req(method, path, {}, Iface::Ap), h));
+        EXPECT_EQ(res.status, 302) << path;
+        EXPECT_EQ(response_header(res, "Location"), "http://192.168.4.1:8900/setup.html") << path;
+        EXPECT_EQ(response_header(res, "Cache-Control"), "no-store") << path;
+    }
+    EXPECT_TRUE(f.pairing->clients().empty());
+
+    // Should a request race the hotspot going down, there is no page to
+    // point at.
+    ASSERT_TRUE(f.wifi->stop_provisioning());
+    EXPECT_EQ(captive(make_req(Get, "/", {}, Iface::Ap)).status, 503);
 }
 
 // The router reads the lowercase "x-wisp" key and accepts only the exact

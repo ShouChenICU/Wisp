@@ -112,6 +112,7 @@ void NetWiring::start() {
             .assets = has_assets_ ? &assets_ : nullptr,
             .board = platform.board->name(),
             .firmware_version = platform.firmware_version,
+            .http_port = platform.http_port,
             .device_status = [this] { return device_status(); },
             .reboot = platform.reboot,
             // The on-device confirmation dialog is not wired yet; the route
@@ -132,6 +133,11 @@ void NetWiring::stop() {
         task_->join();
         task_.reset();
     }
+    if (captive_serving_) {
+        deps_.platform.captive_server->stop();
+        captive_serving_ = false;
+    }
+    captive_failed_ = false;
     if (serving_) {
         deps_.platform.http_server->stop();
         serving_ = false;
@@ -159,6 +165,7 @@ void NetWiring::run() {
 }
 
 void NetWiring::reconcile_http() {
+    reconcile_captive();
     net::HttpServer* server = deps_.platform.http_server.get();
     if (server == nullptr || !admin_) return;
 
@@ -188,6 +195,32 @@ void NetWiring::reconcile_http() {
     WLOG_I(kTag, "admin server listening on port %u", static_cast<unsigned>(server->port()));
     deps_.platform.emit_line(
         "WISP_HTTP " + to_json(Value(Map{{"port", Value(static_cast<int64_t>(server->port()))}})));
+}
+
+void NetWiring::reconcile_captive() {
+    net::HttpServer* server = deps_.platform.captive_server.get();
+    if (server == nullptr || !admin_) return;
+
+    if (!ap_up_.load()) {
+        captive_failed_ = false;
+        if (captive_serving_) {
+            server->stop();
+            captive_serving_ = false;
+            WLOG_I(kTag, "hotspot down; captive redirect stopped");
+        }
+        return;
+    }
+    if (captive_serving_ || captive_failed_) return;
+
+    auto r = server->start(kCaptivePort, admin_->captive_handler(), net::WsHandlers{});
+    if (!r) {
+        captive_failed_ = true;
+        WLOG_E(kTag, "captive redirect failed to start on port %u: %s",
+               static_cast<unsigned>(kCaptivePort), r.error().message.c_str());
+        return;
+    }
+    captive_serving_ = true;
+    WLOG_I(kTag, "captive redirect listening on port %u", static_cast<unsigned>(kCaptivePort));
 }
 
 Value NetWiring::device_status() const {

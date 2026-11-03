@@ -261,6 +261,13 @@ net::HttpResponse AdminServer::handle_api(const net::HttpRequest& req) {
     return m.route->fn(deps_, ctx);
 }
 
+net::HttpHandler AdminServer::captive_handler() {
+    return [this](const net::HttpRequest&) {
+        if (auto redirect = detail::setup_redirect(deps_)) return std::move(*redirect);
+        return net::HttpResponse::error(503, "unavailable", "setup hotspot is not running");
+    };
+}
+
 net::WsHandlers AdminServer::ws_handlers() {
     net::WsHandlers ws;
     ws.on_open = [this](std::shared_ptr<net::WsConnection> conn, const net::HttpRequest& req) {

@@ -88,7 +88,7 @@ TEST(SimOptions, ExitAfterMsValidation) {
 TEST(SimOptions, ParsesNetFlags) {
     const char* defaults[] = {"wisp_sim"};
     auto d = parse_sim_options(1, defaults).value();
-    EXPECT_EQ(d.http_port, 8080);
+    EXPECT_EQ(d.http_port, 8900);
     EXPECT_TRUE(d.web_dir.empty());
     EXPECT_FALSE(d.wifi_fail);
 

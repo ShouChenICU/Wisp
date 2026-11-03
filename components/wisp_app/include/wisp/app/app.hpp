@@ -39,7 +39,9 @@
 //      into WifiService::set_standby(); and, given Platform::http_server,
 //      builds the admin router and serves it on http_port while the
 //      station has an IP or the setup hotspot is up (always, with
-//      http_always_on). Each successful server start emits
+//      http_always_on); while the hotspot is up it also runs
+//      Platform::captive_server on port 80. Each successful admin server
+//      start emits
 //      "WISP_HTTP {"port":n}". Records the "net" boot-report note:
 //      "missing" (no "net.wifi"), "off" (no saved network) or
 //      "connecting".
@@ -135,7 +137,13 @@ struct Platform {
     // A WispPack with the web UI (spec 2.3). The bytes must outlive the
     // App. Empty, or not a valid pack: the API is served without a page.
     std::span<const uint8_t> assets;
-    uint16_t http_port = 80;
+    // The admin backend's port (spec 6.1: http://wisp.local:8900).
+    uint16_t http_port = 8900;
+    // Device only (null in the simulator): a second, minimal server that
+    // App runs on port 80 while the setup hotspot is up, answering every
+    // request with a redirect to the admin port's setup page so phones'
+    // captive-portal probes open it (AdminServer::captive_handler()).
+    std::unique_ptr<net::HttpServer> captive_server;
     // Serve from boot regardless of network state (the simulator, whose
     // server only listens on loopback); otherwise the server runs only
     // while the station has an IP or the setup hotspot is up.

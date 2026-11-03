@@ -89,7 +89,10 @@ std::optional<net::HttpResponse> setup_redirect(const AdminDeps& deps) {
     net::HttpResponse res;
     res.status = 302;
     res.content_type = "text/plain";
-    res.headers.emplace_back("Location", "http://" + session->ip + "/setup.html");
+    // 80 is the URL default; any other port must be spelled out.
+    std::string authority = session->ip;
+    if (deps.http_port != 80) authority += ":" + std::to_string(deps.http_port);
+    res.headers.emplace_back("Location", "http://" + authority + "/setup.html");
     res.headers.emplace_back("Cache-Control", "no-store");
     return res;
 }

@@ -41,6 +41,7 @@ namespace {
 struct NetAppOptions {
     bool with_wifi = true;
     bool with_server = true;
+    bool with_captive = true;
     bool always_on = false;
     // Written to <System>/net/wifi.json before boot.
     std::vector<std::pair<std::string, std::string>> saved;
@@ -71,7 +72,8 @@ struct NetHarness {
     std::string root = wisp::test::temp_dir().string();
     std::shared_ptr<FakeWifi> wifi;
     std::shared_ptr<FakeDisplay> display;
-    FakeHttpServer* server = nullptr;  // owned by the App's Platform
+    FakeHttpServer* server = nullptr;   // owned by the App's Platform
+    FakeHttpServer* captive = nullptr;  // likewise
     std::mutex lines_mutex;
     std::vector<std::string> lines;
     std::unique_ptr<wisp::app::App> app;
@@ -114,6 +116,11 @@ struct NetHarness {
             auto srv = std::make_unique<FakeHttpServer>();
             server = srv.get();
             platform.http_server = std::move(srv);
+        }
+        if (opts.with_captive) {
+            auto srv = std::make_unique<FakeHttpServer>();
+            captive = srv.get();
+            platform.captive_server = std::move(srv);
         }
         platform.http_port = 8088;
         platform.http_always_on = opts.always_on;
@@ -284,4 +291,51 @@ TEST(AppNet, BrightnessSettingReachesTheDisplay) {
     EXPECT_EQ(h.app->system_settings().get().brightness, 120);
     EXPECT_TRUE(wait_until([&] { return h.display->brightness() == 120; }, 2000));
     EXPECT_FALSE(h.app->llm().get().has_key);
+}
+
+TEST(AppNet, AdminPortDefaultsTo8900) {
+    wisp::app::Platform platform;
+    EXPECT_EQ(platform.http_port, 8900);
+    EXPECT_EQ(platform.captive_server, nullptr);
+}
+
+TEST(AppNet, HotspotRunsCaptiveRedirectOnPort80) {
+    NetHarness h({.always_on = true});
+    ASSERT_TRUE(h.app->start());
+    EXPECT_TRUE(h.server->running());
+    EXPECT_FALSE(h.captive->running());
+    EXPECT_EQ(h.captive->start_calls.load(), 0);
+
+    ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+    ASSERT_TRUE(wait_until([&] { return h.captive->running(); }, 3000));
+    EXPECT_EQ(h.captive->port(), 80);
+
+    // Any request on it is steered to the admin port's setup page.
+    auto req = info_request();
+    req.iface = wisp::net::Iface::Ap;
+    req.headers["host"] = "connectivitycheck.gstatic.com";
+    req.path = "/generate_204";
+    auto res = h.captive->handle(req);
+    EXPECT_EQ(res.status, 302);
+    EXPECT_EQ(wisp::test::response_header(res, "Location"), "http://192.168.4.1:8088/setup.html");
+
+    ASSERT_TRUE(h.app->wifi()->stop_provisioning());
+    EXPECT_TRUE(wait_until([&] { return !h.captive->running(); }, 3000));
+    // The admin server is unaffected, and WISP_HTTP only ever names it.
+    EXPECT_TRUE(h.server->running());
+    EXPECT_EQ(h.http_lines(), 1);
+
+    // stop() takes a running captive server down too.
+    ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+    ASSERT_TRUE(wait_until([&] { return h.captive->running(); }, 3000));
+    h.app->stop();
+    EXPECT_FALSE(h.captive->running());
+}
+
+TEST(AppNet, NoCaptiveServerWithoutAdminServer) {
+    NetHarness h({.with_server = false});
+    ASSERT_TRUE(h.app->start());
+    ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+    wisp::os::sleep_ms(600);
+    EXPECT_EQ(h.captive->start_calls.load(), 0);
 }

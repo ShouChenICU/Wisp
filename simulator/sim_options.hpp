@@ -29,7 +29,7 @@ struct SimOptions {
     std::string data_dir = "./sim-data";
     std::string shape = "rounded_rect";
     // Admin HTTP server port on 127.0.0.1; 0 leaves the server off.
-    uint16_t http_port = 8080;
+    uint16_t http_port = 8900;
     // Serve the admin page from this directory (packed in memory at
     // startup) instead of the assets.wpak next to the executable.
     std::string web_dir;
