@@ -1,5 +1,6 @@
 #include "wisp/admin/admin_server.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -154,7 +155,7 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_wifi_routes(routes_);
     detail::add_llm_routes(routes_);
     detail::add_system_routes(routes_);
-    hub_ = std::make_unique<WsHub>(deps_.bus);
+    hub_ = std::make_unique<WsHub>(deps_.bus, deps_.boot_id);
     hub_->start();
     // Logout, DELETE /clients/{id} and the factory reset's revoke_all()
     // all end here, so a revoked token also loses its live stream.
@@ -176,6 +177,19 @@ AdminServer::~AdminServer() {
     // Cancels a reboot that has not fired yet and waits out one in
     // progress, so the callback never sees a destroyed deps_.
     reboot_timer_.reset();
+}
+
+std::string make_boot_id(const net::RandomFn& random) {
+    uint8_t bytes[8] = {};
+    if (random) random(bytes, sizeof(bytes));
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string id;
+    id.reserve(2 * sizeof(bytes));
+    for (uint8_t b : bytes) {
+        id += kHex[b >> 4];
+        id += kHex[b & 0x0F];
+    }
+    return id;
 }
 
 net::HttpResponse AdminServer::handle(const net::HttpRequest& req) {

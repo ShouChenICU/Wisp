@@ -2,8 +2,6 @@
 
 #include <cstdio>
 
-#include "wisp/os/os.hpp"
-
 namespace wisp::port::esp {
 
 namespace {
@@ -28,7 +26,7 @@ char level_char(wisp::LogLevel level) {
 
 }  // namespace
 
-void EspLogSink::write(wisp::LogLevel level, const char* tag, const char* msg) {
+void EspLogSink::write(const wisp::LogRecord& rec) {
     // Build the same "<ts_ms> <D|I|W|E> <tag>: <msg>"
     // line the other ports' sinks use (wisp_port_sim's StdoutLogSink;
     // see wisp/core/log.hpp's ring_snapshot() doc comment) ourselves,
@@ -59,8 +57,10 @@ void EspLogSink::write(wisp::LogLevel level, const char* tag, const char* msg) {
     // filtering (left at its Kconfig default, Info -- see
     // firmware/sdkconfig.defaults), so IDF's own Debug-level logging
     // stays quiet.
-    std::printf("%llu %c %s: %s\n", static_cast<unsigned long long>(wisp::os::now_ms()),
-                level_char(level), tag, msg);
+    // The ring's own timestamp, so the console and the admin log viewer
+    // agree on when a line was logged.
+    std::printf("%llu %c %s: %s\n", static_cast<unsigned long long>(rec.ts_ms),
+                level_char(rec.level), rec.tag, rec.msg);
 }
 
 }  // namespace wisp::port::esp

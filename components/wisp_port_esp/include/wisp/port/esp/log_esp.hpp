@@ -19,7 +19,7 @@ namespace wisp::port::esp {
 
 class EspLogSink : public wisp::LogSink {
 public:
-    void write(wisp::LogLevel level, const char* tag, const char* msg) override;
+    void write(const wisp::LogRecord& rec) override;
 };
 
 }  // namespace wisp::port::esp

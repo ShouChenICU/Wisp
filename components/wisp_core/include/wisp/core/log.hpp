@@ -9,13 +9,41 @@
 // for the same rule).
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "wisp/os/os.hpp"
 
 namespace wisp {
 
 enum class LogLevel { Debug, Info, Warn, Error };
+
+// One accepted log line as the ring stores it and every sink receives it.
+// (seq, ts_ms) are assigned together under the log lock, so a sink's copy
+// of a line and the ring's copy are identical and ring order is seq order.
+struct LogRecord {
+    LogLevel level = LogLevel::Info;
+    const char* tag = "";
+    const char* msg = "";  // may contain '\n'; it is still one line
+    // os::now_ms() when the line was accepted: ms since boot (spec 6.2).
+    uint64_t ts_ms = 0;
+    // This boot's line number: 1 for the first accepted line, +1 for each
+    // one after (filtered-out messages take none). Together with the
+    // admin API's per-boot id it identifies a line exactly, so a browser
+    // can drop the copies a ring replay repeats (spec 6.2). Wraps after
+    // 2^32 lines.
+    uint32_t seq = 0;
+};
+
+// A line read back from the ring (ring_entries()).
+struct LogEntry {
+    uint32_t seq = 0;
+    uint64_t ts_ms = 0;
+    LogLevel level = LogLevel::Info;
+    std::string tag;
+    std::string msg;
+};
 
 // A destination for formatted log lines, e.g. stdout on the simulator or
 // a UART/network sink on the ESP port. Sinks are invoked outside of
@@ -28,7 +56,7 @@ enum class LogLevel { Debug, Info, Warn, Error };
 class LogSink {
 public:
     virtual ~LogSink() = default;
-    virtual void write(LogLevel level, const char* tag, const char* msg) = 0;
+    virtual void write(const LogRecord& record) = 0;
 };
 
 namespace log {
@@ -62,11 +90,12 @@ void remove_sink(LogSink* sink);
 // LogLevel::Debug (nothing filtered) after init().
 void set_level(LogLevel level);
 
-// Formats `fmt`/`args` (printf-style) into a single line and records it:
-// always into the ring buffer, and (if not currently inside a nested call
-// from a sink) delivered to every registered sink. Messages at or above
-// the current level only; see set_level(). The formatted message is
-// truncated to 255 bytes. Prefer the WLOG_D/I/W/E macros below over
+// Formats `fmt`/`args` (printf-style) into one line and records it with
+// the next seq: always into the ring buffer, and (if not currently inside
+// a nested call from a sink) delivered to every registered sink. Messages
+// at or above the current level only; see set_level(). The formatted
+// message is truncated to 255 bytes and the tag to 255 bytes, never
+// inside a UTF-8 character. Prefer the WLOG_D/I/W/E macros below over
 // calling this directly.
 void write(LogLevel level, const char* tag, const char* fmt, ...)
 #if defined(__GNUC__) || defined(__clang__)
@@ -74,13 +103,17 @@ void write(LogLevel level, const char* tag, const char* fmt, ...)
 #endif
     ;
 
-// Returns the ring buffer's current contents, oldest line first, each
-// line formatted as "<ts_ms> <D|I|W|E> <tag>: <msg>\n".
+// The ring buffer's current lines, oldest (lowest seq) first.
+std::vector<LogEntry> ring_entries();
+
+// The same lines as text, each formatted "<ts_ms> <D|I|W|E> <tag>: <msg>\n"
+// (a message containing '\n' spans several text lines). For diagnostics
+// and tests; use ring_entries() to process lines.
 std::string ring_snapshot();
 
-// Tears down all global logging state (ring buffer, sinks, level) so a
-// fresh init() can be called as if the process had just started. For use
-// by tests only.
+// Tears down all global logging state (ring buffer, sinks, level, seq) so
+// a fresh init() can be called as if the process had just started. For
+// use by tests only.
 void reset_for_test();
 
 }  // namespace log

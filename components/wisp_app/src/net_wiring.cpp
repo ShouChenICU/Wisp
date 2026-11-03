@@ -99,6 +99,9 @@ void NetWiring::start() {
     // AdminDeps holds the Wi-Fi service by reference, so without a radio
     // there is no admin backend (nothing to set up the device with anyway).
     if (platform.http_server && wifi_) {
+        // One id per boot, however often networking is restarted: a change
+        // tells a browser the device rebooted (spec 6.2).
+        static const std::string boot_id = admin::make_boot_id(platform.random);
         admin_ = std::make_unique<admin::AdminServer>(admin::AdminDeps{
             .registry = deps_.registry,
             .report = deps_.report,
@@ -112,6 +115,7 @@ void NetWiring::start() {
             .assets = has_assets_ ? &assets_ : nullptr,
             .board = platform.board->name(),
             .firmware_version = platform.firmware_version,
+            .boot_id = boot_id,
             .http_port = platform.http_port,
             .device_status = [this] { return device_status(); },
             .reboot = platform.reboot,

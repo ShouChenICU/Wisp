@@ -61,6 +61,7 @@
 #include "wisp/net/asset_pack.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/pairing_service.hpp"
+#include "wisp/net/random.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
 
@@ -80,6 +81,10 @@ struct AdminDeps {
     std::string board;
     std::string firmware_version;
     std::string device_name = "Wisp";
+    // This boot's id (make_boot_id()), /info's "boot" and the WebSocket
+    // hello's: a browser seeing it change knows the device restarted and
+    // its log seq numbers started over (spec 6.1, 6.2).
+    std::string boot_id;
     // The port the admin server listens on (spec 6.1); redirects to the
     // setup page point at it.
     uint16_t http_port = 8900;
@@ -92,6 +97,10 @@ struct AdminDeps {
     // Tests inject their own; left empty, AdminServer uses os::now_ms().
     std::function<uint64_t()> now_ms = [] { return os::now_ms(); };
 };
+
+// A fresh boot id: 8 random bytes as 16 lowercase hex characters. Made
+// once per boot by the caller and passed in as AdminDeps::boot_id.
+std::string make_boot_id(const net::RandomFn& random);
 
 namespace detail {
 struct Route;

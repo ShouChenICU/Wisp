@@ -6,8 +6,6 @@
 
 #include <cstdio>
 
-#include "wisp/os/os.hpp"
-
 namespace wisp::port::sim {
 
 namespace {
@@ -28,9 +26,11 @@ char level_char(wisp::LogLevel level) {
 
 }  // namespace
 
-void StdoutLogSink::write(wisp::LogLevel level, const char* tag, const char* msg) {
-    std::printf("%llu %c %s: %s\n", static_cast<unsigned long long>(wisp::os::now_ms()),
-                level_char(level), tag, msg);
+void StdoutLogSink::write(const wisp::LogRecord& rec) {
+    // The ring's own timestamp, so the console and the admin log viewer
+    // agree on when a line was logged.
+    std::printf("%llu %c %s: %s\n", static_cast<unsigned long long>(rec.ts_ms),
+                level_char(rec.level), rec.tag, rec.msg);
 }
 
 }  // namespace wisp::port::sim

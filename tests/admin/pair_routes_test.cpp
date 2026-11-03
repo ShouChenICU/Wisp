@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <fstream>
 #include <string>
 
@@ -78,9 +79,10 @@ TEST(PairRoutes, ConfirmSetsHttpOnlyCookie) {
 
     // The cookie authenticates later requests, and /info reports it.
     Value anon = body_json(srv.handle(make_req(Get, "/api/v1/info")));
-    EXPECT_EQ(anon,
-              Value(wisp::Map{
-                  {"name", Value("Wisp")}, {"fw", Value("0.2.0-test")}, {"paired", Value(false)}}));
+    EXPECT_EQ(anon, Value(wisp::Map{{"name", Value("Wisp")},
+                                    {"fw", Value("0.2.0-test")},
+                                    {"paired", Value(false)},
+                                    {"boot", Value(f.boot_id)}}));
     Value paired = body_json(srv.handle(with_token(make_req(Get, "/api/v1/info"), token)));
     ASSERT_NE(paired.find("paired"), nullptr);
     EXPECT_TRUE(paired.find("paired")->as_bool());
@@ -91,6 +93,39 @@ TEST(PairRoutes, ConfirmSetsHttpOnlyCookie) {
     // The code is single-use.
     auto replay = srv.handle(with_csrf(make_req(Post, "/api/v1/pair/confirm", confirm_body(code))));
     EXPECT_EQ(replay.status, 403);
+}
+
+// /info names this boot: 16 hex characters from the platform RNG, the same
+// on every call within one boot (spec 6.1).
+TEST(PairRoutes, InfoReportsAStableBootId) {
+    AdminFixture f;
+    const Value first = body_json(f.srv->handle(make_req(Get, "/api/v1/info")));
+    const Value second = body_json(f.srv->handle(make_req(Get, "/api/v1/info")));
+    const Value* boot = first.find("boot");
+    ASSERT_NE(boot, nullptr);
+    ASSERT_EQ(boot->type(), Value::Type::String);
+    const std::string id = boot->as_string();
+    EXPECT_EQ(id.size(), 16u);
+    EXPECT_EQ(id.find_first_not_of("0123456789abcdef"), std::string::npos) << id;
+    EXPECT_EQ(id, f.boot_id);
+    ASSERT_NE(second.find("boot"), nullptr);
+    EXPECT_EQ(second.find("boot")->as_string(), id);
+}
+
+TEST(PairRoutes, BootIdIsHexOfTheRandomBytes) {
+    uint8_t next = 0;
+    const std::string id = wisp::admin::make_boot_id([&](uint8_t* out, size_t len) {
+        for (size_t i = 0; i < len; ++i) {
+            next = static_cast<uint8_t>(next + 0x1F);
+            out[i] = next;
+        }
+    });
+    EXPECT_EQ(id, "1f3e5d7c9bbad9f8");
+    // Different bytes, a different id.
+    EXPECT_NE(wisp::admin::make_boot_id([](uint8_t* out, size_t len) {
+                  for (size_t i = 0; i < len; ++i) out[i] = 0xA5;
+              }),
+              id);
 }
 
 TEST(PairRoutes, LogoutClearsCookieAndRevokesToken) {

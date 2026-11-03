@@ -10,7 +10,7 @@ namespace wisp::port::sim {
 
 class StdoutLogSink : public wisp::LogSink {
 public:
-    void write(wisp::LogLevel level, const char* tag, const char* msg) override;
+    void write(const wisp::LogRecord& rec) override;
 };
 
 }  // namespace wisp::port::sim

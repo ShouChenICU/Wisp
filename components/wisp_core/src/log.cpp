@@ -14,6 +14,8 @@ namespace wisp::log {
 namespace {
 
 constexpr size_t kMaxMsgBytes = 255;
+// Tags are short literals; the cap keeps the length in one header byte.
+constexpr size_t kMaxTagBytes = 255;
 
 bool is_utf8_continuation(char c) { return (static_cast<uint8_t>(c) & 0xC0) == 0x80; }
 
@@ -45,6 +47,21 @@ char level_char(LogLevel level) {
     return '?';
 }
 
+// Each ring entry is a fixed 16-byte header followed by the tag and the
+// message bytes. The header (rather than a delimiter) carries the entry's
+// length, so eviction is O(1) per entry and a message may contain any
+// byte, '\n' included, without ever leaving a fragment at the ring's head;
+// seq/ts/level are stored once in binary instead of being re-parsed from
+// text. 16 bytes is about what the "<ts> <L> <tag>: " text prefix took.
+struct EntryHeader {
+    uint64_t ts_ms;
+    uint32_t seq;
+    uint16_t msg_len;
+    uint8_t tag_len;
+    uint8_t level;
+};
+static_assert(sizeof(EntryHeader) == 16, "ring entries assume a 16-byte header");
+
 // All global logging state, protected by `mutex` (every field below is
 // only ever touched while holding it), except `level`, which is read on
 // every write() call and so is kept as a plain atomic instead of forcing
@@ -54,7 +71,7 @@ char level_char(LogLevel level) {
 // one instance lives for the life of the process, and init()/
 // reset_for_test() only ever swap its *contents* (the ring storage
 // pointer, sink list, level) in place, under `mutex`. This means a
-// concurrent write()/add_sink()/set_level()/ring_snapshot() can never
+// concurrent write()/add_sink()/set_level()/ring_entries() can never
 // observe a dangling State or a freed ring buffer -- it either runs
 // before or after a given init()/reset_for_test() call (serialized by
 // `mutex`), never during a half-updated one. Before the first init() (or
@@ -68,6 +85,9 @@ struct State {
     size_t ring_capacity = 0;
     size_t ring_head = 0;
     size_t ring_len = 0;
+    // The last seq handed out; survives init() so seq never repeats within
+    // a boot.
+    uint32_t last_seq = 0;
     std::vector<LogSink*> sinks;
     std::atomic<int> level{static_cast<int>(LogLevel::Debug)};
 
@@ -84,81 +104,89 @@ struct State {
     uint32_t deliveries[2] = {0, 0};
     os::Mutex remove_mutex;
 
-    // Appends `line` (length `len`, including its trailing '\n'),
-    // dropping whole lines from the front first to make room if needed.
-    // Must be called with `mutex` held.
-    void push_line(const char* line, size_t len) {
-        if (ring_capacity == 0) {
-            return;
-        }
-        if (len > ring_capacity) {
-            // Can never fit as a whole line, even in an empty ring.
-            // Drop just this line and leave the existing contents alone
-            // (storing a newline-less fragment instead would break
-            // every other line's "ends in \n" invariant that eviction
-            // relies on, and clearing the ring would needlessly destroy
-            // perfectly good, unrelated history).
-            return;
-        }
-        while (ring_len + len > ring_capacity) {
-            evict_oldest_line();
-        }
-        size_t write_at = (ring_head + ring_len) % ring_capacity;
-        size_t first_chunk = std::min(len, ring_capacity - write_at);
-        std::memcpy(ring_storage + write_at, line, first_chunk);
-        if (first_chunk < len) {
-            std::memcpy(ring_storage, line + first_chunk, len - first_chunk);
-        }
-        ring_len += len;
+    // Appends one entry, dropping whole entries from the front first to
+    // make room. An entry larger than the whole ring is dropped by itself,
+    // leaving the existing history alone. Must be called with `mutex` held.
+    void push_entry(const EntryHeader& h, const char* tag, const char* msg) {
+        const size_t size = sizeof(EntryHeader) + h.tag_len + h.msg_len;
+        if (ring_capacity == 0 || size > ring_capacity) return;
+        while (ring_len + size > ring_capacity) evict_oldest();
+        size_t at = (ring_head + ring_len) % ring_capacity;
+        at = put(at, &h, sizeof h);
+        at = put(at, tag, h.tag_len);
+        put(at, msg, h.msg_len);
+        ring_len += size;
     }
 
     // Must be called with `mutex` held.
-    std::string snapshot() const {
-        std::string out(ring_len, '\0');
-        size_t first_chunk = std::min(ring_len, ring_capacity - ring_head);
-        std::memcpy(out.data(), ring_storage + ring_head, first_chunk);
-        if (first_chunk < ring_len) {
-            std::memcpy(out.data() + first_chunk, ring_storage, ring_len - first_chunk);
+    std::vector<LogEntry> entries() const {
+        std::vector<LogEntry> out;
+        size_t at = ring_head;
+        size_t left = ring_len;
+        while (left >= sizeof(EntryHeader)) {
+            EntryHeader h;
+            at = get(at, &h, sizeof h);
+            LogEntry e;
+            e.seq = h.seq;
+            e.ts_ms = h.ts_ms;
+            e.level = static_cast<LogLevel>(h.level);
+            e.tag.resize(h.tag_len);
+            at = get(at, e.tag.data(), h.tag_len);
+            e.msg.resize(h.msg_len);
+            at = get(at, e.msg.data(), h.msg_len);
+            left -= sizeof(EntryHeader) + h.tag_len + h.msg_len;
+            out.push_back(std::move(e));
         }
         return out;
     }
 
     // Resets the ring to `new_capacity` bytes (dropping any existing
-    // contents) and, if `clear_sinks_and_level` is set, also clears the
-    // sink list and restores the default level. Must be called with
+    // contents) and, if `full_reset` is set, also clears the sink list,
+    // restores the default level and restarts seq. Must be called with
     // `mutex` held.
-    void reinit_ring(size_t new_capacity, os::Mem mem, bool clear_sinks_and_level) {
+    void reinit_ring(size_t new_capacity, os::Mem mem, bool full_reset) {
         if (ring_storage != nullptr) {
             os::dealloc(ring_storage);
         }
         ring_storage =
             new_capacity > 0 ? static_cast<char*>(os::alloc(new_capacity, mem)) : nullptr;
-        ring_capacity = new_capacity;
+        ring_capacity = ring_storage != nullptr ? new_capacity : 0;
         ring_head = 0;
         ring_len = 0;
-        if (clear_sinks_and_level) {
+        if (full_reset) {
             sinks.clear();
             level.store(static_cast<int>(LogLevel::Debug), std::memory_order_relaxed);
+            last_seq = 0;
         }
     }
 
 private:
-    // Drops the oldest stored line (up to and including its '\n'). Must
-    // be called with `mutex` held, and only when ring_len > 0.
-    void evict_oldest_line() {
-        for (size_t i = 0; i < ring_len; ++i) {
-            if (ring_storage[(ring_head + i) % ring_capacity] == '\n') {
-                size_t remove = i + 1;
-                ring_head = (ring_head + remove) % ring_capacity;
-                ring_len -= remove;
-                return;
-            }
-        }
-        // No newline found among the stored bytes; every line this class
-        // ever stores ends in '\n', so this should not happen. Drop
-        // everything rather than looping forever.
-        ring_head = 0;
-        ring_len = 0;
+    // Copy `n` bytes into / out of the ring at offset `at`, wrapping at the
+    // end; return the offset just past them.
+    size_t put(size_t at, const void* src, size_t n) {
+        const auto* p = static_cast<const char*>(src);
+        const size_t first = std::min(n, ring_capacity - at);
+        std::memcpy(ring_storage + at, p, first);
+        if (first < n) std::memcpy(ring_storage, p + first, n - first);
+        return (at + n) % ring_capacity;
+    }
+
+    size_t get(size_t at, void* dst, size_t n) const {
+        auto* p = static_cast<char*>(dst);
+        const size_t first = std::min(n, ring_capacity - at);
+        std::memcpy(p, ring_storage + at, first);
+        if (first < n) std::memcpy(p + first, ring_storage, n - first);
+        return (at + n) % ring_capacity;
+    }
+
+    // Drops the oldest entry. Must be called with `mutex` held, and only
+    // when ring_len > 0.
+    void evict_oldest() {
+        EntryHeader h;
+        get(ring_head, &h, sizeof h);
+        const size_t size = sizeof(EntryHeader) + h.tag_len + h.msg_len;
+        ring_head = (ring_head + size) % ring_capacity;
+        ring_len -= size;
     }
 };
 
@@ -185,7 +213,7 @@ thread_local bool g_in_sink = false;
 void init(size_t ring_bytes, os::Mem mem) {
     State& s = state();
     std::lock_guard<os::Mutex> lock(s.mutex);
-    s.reinit_ring(ring_bytes, mem, /*clear_sinks_and_level=*/false);
+    s.reinit_ring(ring_bytes, mem, /*full_reset=*/false);
 }
 
 void add_sink(LogSink* sink) {
@@ -233,32 +261,41 @@ void write(LogLevel level, const char* tag, const char* fmt, ...) {
     if (full > static_cast<int>(kMaxMsgBytes)) {
         msg[cut_at_char_boundary(msg, kMaxMsgBytes)] = '\0';
     }
+    if (tag == nullptr) tag = "";
+    char tag_buf[kMaxTagBytes + 1];
+    const size_t full_tag = std::strlen(tag);
+    if (full_tag > kMaxTagBytes) {
+        const size_t cut = cut_at_char_boundary(tag, kMaxTagBytes);
+        std::memcpy(tag_buf, tag, cut);
+        tag_buf[cut] = '\0';
+        tag = tag_buf;
+    }
 
-    uint64_t ts = os::now_ms();
-    char ts_buf[24];
-    std::snprintf(ts_buf, sizeof(ts_buf), "%llu", static_cast<unsigned long long>(ts));
+    LogRecord record;
+    record.level = level;
+    record.tag = tag;
+    record.msg = msg;
 
-    std::string line;
-    line.reserve(sizeof(ts_buf) + std::strlen(tag) + kMaxMsgBytes + 8);
-    line += ts_buf;
-    line += ' ';
-    line += level_char(level);
-    line += ' ';
-    line += tag;
-    line += ": ";
-    line += msg;
-    line += '\n';
-
-    // Deliver to sinks outside the lock, so a sink that does its own
-    // (possibly slow) I/O never holds up concurrent logging from other
-    // threads. See g_in_sink's comment for the reentrancy rule and
-    // State::deliveries for how remove_sink() waits these out.
+    // seq and ts are taken under the lock that orders the ring, so ring
+    // order is seq order and every sink sees exactly the ring's values.
+    // Sinks run outside the lock, so a sink that does its own (possibly
+    // slow) I/O never holds up concurrent logging from other threads. See
+    // g_in_sink's comment for the reentrancy rule and State::deliveries
+    // for how remove_sink() waits these out.
     const bool deliver = !g_in_sink;
     std::vector<LogSink*> sinks_copy;
     uint32_t epoch = 0;
     {
         std::lock_guard<os::Mutex> lock(s.mutex);
-        s.push_line(line.data(), line.size());
+        record.seq = ++s.last_seq;
+        record.ts_ms = os::now_ms();
+        EntryHeader h{};
+        h.ts_ms = record.ts_ms;
+        h.seq = record.seq;
+        h.msg_len = static_cast<uint16_t>(std::strlen(msg));
+        h.tag_len = static_cast<uint8_t>(std::strlen(tag));
+        h.level = static_cast<uint8_t>(level);
+        s.push_entry(h, tag, msg);
         if (deliver && !s.sinks.empty()) {
             sinks_copy = s.sinks;
             epoch = s.delivery_epoch;
@@ -270,7 +307,7 @@ void write(LogLevel level, const char* tag, const char* fmt, ...) {
     }
     g_in_sink = true;
     for (LogSink* sink : sinks_copy) {
-        sink->write(level, tag, msg);
+        sink->write(record);
     }
     g_in_sink = false;
     {
@@ -279,16 +316,31 @@ void write(LogLevel level, const char* tag, const char* fmt, ...) {
     }
 }
 
-std::string ring_snapshot() {
+std::vector<LogEntry> ring_entries() {
     State& s = state();
     std::lock_guard<os::Mutex> lock(s.mutex);
-    return s.snapshot();
+    return s.entries();
+}
+
+std::string ring_snapshot() {
+    std::string out;
+    for (const LogEntry& e : ring_entries()) {
+        char head[40];
+        std::snprintf(head, sizeof(head), "%llu %c ", static_cast<unsigned long long>(e.ts_ms),
+                      level_char(e.level));
+        out += head;
+        out += e.tag;
+        out += ": ";
+        out += e.msg;
+        out += '\n';
+    }
+    return out;
 }
 
 void reset_for_test() {
     State& s = state();
     std::lock_guard<os::Mutex> lock(s.mutex);
-    s.reinit_ring(0, os::Mem::Large, /*clear_sinks_and_level=*/true);
+    s.reinit_ring(0, os::Mem::Large, /*full_reset=*/true);
 }
 
 }  // namespace wisp::log

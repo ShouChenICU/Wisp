@@ -39,7 +39,10 @@ using wisp::test::with_token;
 namespace {
 
 // Records what the hub sends. `accept` = false makes send_text() report a
-// full queue; `block_ms` makes it stall like a slow socket.
+// full queue; `block_ms` makes it stall like a slow socket. The hello every
+// connection starts with is kept apart (hellos()), so sent() and the
+// counts cover the log and event traffic only; frames() has everything in
+// order.
 class FakeWsConnection : public wisp::net::WsConnection {
 public:
     explicit FakeWsConnection(int id) : id_(id) {}
@@ -54,7 +57,12 @@ public:
         if (delay > 0) wisp::os::sleep_ms(delay);
         if (!accept) return false;
         std::lock_guard<std::mutex> lock(mutex_);
-        sent_.emplace_back(text);
+        frames_.emplace_back(text);
+        if (text.find(R"("t":"hello")") != std::string_view::npos) {
+            hellos_.emplace_back(text);
+        } else {
+            sent_.emplace_back(text);
+        }
         return true;
     }
 
@@ -81,6 +89,16 @@ public:
         return sent_.size();
     }
 
+    std::vector<std::string> hellos() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return hellos_;
+    }
+
+    std::vector<std::string> frames() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return frames_;
+    }
+
     std::atomic<bool> accept{true};
     std::atomic<uint32_t> block_ms{0};
     std::atomic<int> send_calls{0};
@@ -90,6 +108,8 @@ private:
     const int id_;
     mutable std::mutex mutex_;
     std::vector<std::string> sent_;
+    std::vector<std::string> hellos_;
+    std::vector<std::string> frames_;
 };
 
 std::string str(const Value& v, std::string_view key) {
@@ -97,26 +117,28 @@ std::string str(const Value& v, std::string_view key) {
     return f != nullptr && f->type() == Value::Type::String ? f->as_string() : std::string();
 }
 
-Value log_line(int64_t ts, std::string level, std::string tag, std::string msg) {
+// A ring entry as the replay sends it.
+Value replay_line(const wisp::LogEntry& e) {
+    static const char* const kLevels[] = {"D", "I", "W", "E"};
     return Value(Map{{"t", Value("log")},
-                     {"ts", Value(ts)},
-                     {"level", Value(std::move(level))},
-                     {"tag", Value(std::move(tag))},
-                     {"msg", Value(std::move(msg))}});
+                     {"seq", Value(static_cast<int64_t>(e.seq))},
+                     {"ts", Value(static_cast<int64_t>(e.ts_ms))},
+                     {"level", Value(kLevels[static_cast<int>(e.level)])},
+                     {"tag", Value(e.tag)},
+                     {"msg", Value(e.msg)},
+                     {"replay", Value(true)}});
 }
 
-// Splits the ring snapshot into its lines, without the trailing '\n'.
-std::vector<std::string> ring_lines() {
-    std::vector<std::string> out;
-    std::string snap = wisp::log::ring_snapshot();
-    size_t start = 0;
-    while (start < snap.size()) {
-        size_t nl = snap.find('\n', start);
-        if (nl == std::string::npos) nl = snap.size();
-        out.push_back(snap.substr(start, nl - start));
-        start = nl + 1;
-    }
-    return out;
+// A line handed to the hub directly, as the log module would.
+wisp::LogRecord rec(LogLevel level, const char* tag, const char* msg, uint32_t seq = 1,
+                    uint64_t ts_ms = 0) {
+    wisp::LogRecord r;
+    r.level = level;
+    r.tag = tag;
+    r.msg = msg;
+    r.seq = seq;
+    r.ts_ms = ts_ms;
+    return r;
 }
 
 TEST(WsHub, ThirdClientRejected) {
@@ -150,49 +172,92 @@ TEST(WsHub, BackfillsRingThenStreamsLive) {
     wisp::log::reset_for_test();
     wisp::log::init(4096);
     EventBus bus;
-    WsHub hub(bus);
+    WsHub hub(bus, "0123456789abcdef");
     WLOG_I("boot", "first line");
-    WLOG_W("wifi", "second \"quoted\" line");
+    WLOG_W("wifi", "second \"quoted\" line\nwith a second row");
 
     auto c = std::make_shared<FakeWsConnection>(1);
     ASSERT_TRUE(hub.open(c));
-    const std::vector<std::string> ring = ring_lines();
-    ASSERT_GE(ring.size(), 2u);
+    const std::vector<wisp::LogEntry> ring = wisp::log::ring_entries();
+    ASSERT_GE(ring.size(), 3u);  // the two above and "client 1 connected"
     hub.on_message(1, R"({"sub":["log"]})");
     hub.pump();
 
+    // One replay message per ring entry, with the ring's own seq, ts, level
+    // and tag; a message holding '\n' stays one message.
     std::vector<Value> sent = c->sent();
     ASSERT_EQ(sent.size(), ring.size());
     for (size_t i = 0; i < ring.size(); ++i) {
-        EXPECT_EQ(sent[i], log_line(0, "I", "", ring[i])) << i;
+        EXPECT_EQ(sent[i], replay_line(ring[i])) << i;
     }
+    EXPECT_EQ(str(sent[1], "tag"), "wifi");
+    EXPECT_EQ(str(sent[1], "level"), "W");
+    EXPECT_EQ(str(sent[1], "msg"), "second \"quoted\" line\nwith a second row");
+    EXPECT_EQ(sent[1].find("seq")->as_int(), sent[0].find("seq")->as_int() + 1);
 
-    // Live lines follow, with their real level, tag and timestamp; tag and
-    // message are JSON-escaped.
-    const auto before = static_cast<int64_t>(wisp::os::now_ms());
-    hub.write(LogLevel::Error, "t\"ag", "live \"one\"\n\\done");
-    const auto after = static_cast<int64_t>(wisp::os::now_ms());
+    // Live lines follow, with their own level, tag, seq and timestamp and
+    // no "replay"; tag and message are JSON-escaped.
+    hub.write(rec(LogLevel::Error, "t\"ag", "live \"one\"\n\\done", 77, 12345));
     WLOG_D("net", "via the log module");
     hub.pump();
     sent = c->sent();
     ASSERT_EQ(sent.size(), ring.size() + 2);
     const Value& live = sent[ring.size()];
-    EXPECT_EQ(str(live, "t"), "log");
-    EXPECT_EQ(str(live, "level"), "E");
-    EXPECT_EQ(str(live, "tag"), "t\"ag");
-    EXPECT_EQ(str(live, "msg"), "live \"one\"\n\\done");
-    ASSERT_NE(live.find("ts"), nullptr);
-    // ms since boot, the same clock as /device's uptime_ms (spec 6.2).
-    EXPECT_GE(live.find("ts")->as_int(), before);
-    EXPECT_LE(live.find("ts")->as_int(), after);
+    EXPECT_EQ(live, Value(Map{{"t", Value("log")},
+                              {"seq", Value(int64_t{77})},
+                              {"ts", Value(int64_t{12345})},
+                              {"level", Value("E")},
+                              {"tag", Value("t\"ag")},
+                              {"msg", Value("live \"one\"\n\\done")}}));
+    // Through the log module, the frame carries exactly the ring's seq and
+    // ts (spec 6.2: ms since boot, the same clock as /device's uptime_ms).
+    const wisp::LogEntry newest = wisp::log::ring_entries().back();
+    ASSERT_EQ(newest.msg, "via the log module");
+    EXPECT_EQ(sent.back().find("seq")->as_int(), static_cast<int64_t>(newest.seq));
+    EXPECT_EQ(sent.back().find("ts")->as_int(), static_cast<int64_t>(newest.ts_ms));
+    EXPECT_EQ(sent.back().find("replay"), nullptr);
     EXPECT_EQ(str(sent.back(), "level"), "D");
     EXPECT_EQ(str(sent.back(), "tag"), "net");
-    EXPECT_EQ(str(sent.back(), "msg"), "via the log module");
 
     // Re-sending the same subscription does not replay the ring.
     hub.on_message(1, R"({"sub":["log"]})");
     hub.pump();
     EXPECT_EQ(c->sent_count(), ring.size() + 2);
+}
+
+// The hello naming this boot is every connection's first frame, ahead of a
+// replay, a dropped notice or anything queued, and is sent once.
+TEST(WsHub, HelloComesFirst) {
+    wisp::log::reset_for_test();
+    wisp::log::init(4096);
+    EventBus bus;
+    WsHub hub(bus, "00ff00ff00ff00ff");
+    WLOG_I("t", "already in the ring");
+
+    auto c = std::make_shared<FakeWsConnection>(1);
+    c->accept = false;
+    ASSERT_TRUE(hub.open(c));
+    hub.on_message(1, R"({"sub":["log"]})");
+    for (int i = 0; i < 300; ++i) hub.write(rec(LogLevel::Info, "t", "flood", 1000 + i));
+    hub.pump();  // refused: the hello stays owed
+    EXPECT_TRUE(c->frames().empty());
+
+    c->accept = true;
+    hub.pump();
+    hub.pump();
+    const std::vector<std::string> frames = c->frames();
+    ASSERT_GE(frames.size(), 3u);
+    EXPECT_EQ(wisp::from_json(frames[0]).value(),
+              Value(Map{{"t", Value("hello")}, {"boot", Value("00ff00ff00ff00ff")}}));
+    EXPECT_EQ(c->hellos().size(), 1u);
+    EXPECT_EQ(str(wisp::from_json(frames[1]).value(), "t"), "dropped");
+
+    // A second connection gets its own hello, even before subscribing.
+    auto d = std::make_shared<FakeWsConnection>(2);
+    ASSERT_TRUE(hub.open(d));
+    hub.pump();
+    ASSERT_EQ(d->frames().size(), 1u);
+    EXPECT_EQ(d->hellos().size(), 1u);
 }
 
 TEST(WsHub, LogsOnlyReachLogSubscribers) {
@@ -206,19 +271,19 @@ TEST(WsHub, LogsOnlyReachLogSubscribers) {
     hub.on_message(1, R"({"sub":["log"]})");
     hub.on_message(2, R"({"sub":["events"]})");
 
-    hub.write(LogLevel::Info, "t", "hello");
+    hub.write(rec(LogLevel::Info, "t", "hello"));
     hub.pump();
     EXPECT_EQ(c1->sent_count(), 1u);
     EXPECT_EQ(c2->sent_count(), 0u);
 
     // Dropping "log" stops the stream; a closed client gets nothing.
     hub.on_message(1, R"({"sub":[]})");
-    hub.write(LogLevel::Info, "t", "unsubscribed");
+    hub.write(rec(LogLevel::Info, "t", "unsubscribed"));
     hub.pump();
     EXPECT_EQ(c1->sent_count(), 1u);
     hub.on_message(1, R"({"sub":["log"]})");
     hub.close(1);
-    hub.write(LogLevel::Info, "t", "closed");
+    hub.write(rec(LogLevel::Info, "t", "closed"));
     hub.pump();
     EXPECT_EQ(c1->sent_count(), 1u);
 
@@ -226,7 +291,7 @@ TEST(WsHub, LogsOnlyReachLogSubscribers) {
     hub.on_message(2, "not json");
     hub.on_message(2, R"({"sub":"log"})");
     hub.on_message(7, R"({"sub":["log"]})");
-    hub.write(LogLevel::Info, "t", "still events only");
+    hub.write(rec(LogLevel::Info, "t", "still events only"));
     hub.pump();
     EXPECT_EQ(c2->sent_count(), 0u);
 }
@@ -274,7 +339,7 @@ TEST(WsHub, SlowClientDropsOldestAndReportsCount) {
     hub.on_message(1, R"({"sub":["log"]})");
 
     for (int i = 0; i < 300; ++i) {
-        hub.write(LogLevel::Info, "t", ("m" + std::to_string(i)).c_str());
+        hub.write(rec(LogLevel::Info, "t", ("m" + std::to_string(i)).c_str()));
         // A refused send keeps the message for the next pump.
         if (i % 50 == 0) hub.pump();
     }
@@ -291,7 +356,7 @@ TEST(WsHub, SlowClientDropsOldestAndReportsCount) {
     }
 
     // The count is reported once.
-    hub.write(LogLevel::Info, "t", "after");
+    hub.write(rec(LogLevel::Info, "t", "after"));
     hub.pump();
     sent = c->sent();
     ASSERT_EQ(sent.size(), 258u);
@@ -308,12 +373,12 @@ TEST(WsHub, LogWriteNeverBlocksOnSend) {
     c->block_ms = 1000;
     ASSERT_TRUE(hub.open(c));
     hub.on_message(1, R"({"sub":["log"]})");
-    hub.write(LogLevel::Info, "t", "wake the sender");
+    hub.write(rec(LogLevel::Info, "t", "wake the sender"));
     ASSERT_TRUE(wait_until([&] { return c->send_calls.load() > 0; }, 1000));
 
     // The sender task is now stuck inside send_text() for a second.
     uint64_t t0 = wisp::os::now_ms();
-    hub.write(LogLevel::Info, "t", "direct");
+    hub.write(rec(LogLevel::Info, "t", "direct"));
     EXPECT_LT(wisp::os::now_ms() - t0, 50u);
     t0 = wisp::os::now_ms();
     WLOG_I("t", "through the log module");
@@ -357,7 +422,7 @@ TEST(WsHub, FramesAreValidUtf8WithoutControlBytes) {
     auto c = std::make_shared<FakeWsConnection>(1);
     ASSERT_TRUE(hub.open(c));
     hub.on_message(1, R"({"sub":["log"]})");
-    hub.write(LogLevel::Warn, "t\x01", "\x1b[31mcut \xe4\xb8");
+    hub.write(rec(LogLevel::Warn, "t\x01", "\x1b[31mcut \xe4\xb8"));
     hub.pump();
 
     const std::vector<std::string> raw = c->sent_raw();
@@ -385,7 +450,8 @@ TEST(WsHub, QueueIsBoundedByBytes) {
 
     constexpr int kWritten = 100;
     for (int i = 0; i < kWritten; ++i) {
-        hub.write(LogLevel::Info, "t", (std::to_string(i) + ":" + std::string(1000, 'x')).c_str());
+        hub.write(
+            rec(LogLevel::Info, "t", (std::to_string(i) + ":" + std::string(1000, 'x')).c_str()));
     }
     c->accept = true;
     hub.pump();
@@ -413,8 +479,8 @@ TEST(WsHub, QueueIsBoundedByBytes) {
     // A single message over the budget is dropped on its own, without
     // pushing out what is already queued.
     c->accept = false;
-    hub.write(LogLevel::Info, "t", "small");
-    hub.write(LogLevel::Info, "t", std::string(40000, 'y').c_str());
+    hub.write(rec(LogLevel::Info, "t", "small"));
+    hub.write(rec(LogLevel::Info, "t", std::string(40000, 'y').c_str()));
     c->accept = true;
     hub.pump();
     const std::vector<Value> after = c->sent();
@@ -435,7 +501,7 @@ TEST(WsHub, CloseClientClosesThatClientsConnections) {
     ASSERT_TRUE(hub.open(b, "client-b"));
     hub.on_message(1, R"({"sub":["log"]})");
     hub.on_message(2, R"({"sub":["log"]})");
-    hub.write(LogLevel::Info, "t", "queued for both");
+    hub.write(rec(LogLevel::Info, "t", "queued for both"));
 
     hub.close_client("");
     hub.close_client("nobody");
@@ -444,7 +510,7 @@ TEST(WsHub, CloseClientClosesThatClientsConnections) {
     EXPECT_TRUE(a->closed);
     EXPECT_FALSE(b->closed);
 
-    hub.write(LogLevel::Info, "t", "after");
+    hub.write(rec(LogLevel::Info, "t", "after"));
     hub.pump();
     EXPECT_EQ(a->send_calls.load(), 0);
     // b also streams the hub's own "closed" log line.
@@ -514,6 +580,10 @@ TEST(AdminServer, RevokedClientsLoseTheirWebSocket) {
     ASSERT_TRUE(ws.on_open(b, with_token(req, token_b)));
     ws.on_message(21, R"({"sub":["events"]})");
     ws.on_message(22, R"({"sub":["events"]})");
+    // Both got their hello; nothing reaches `a` after the revocation.
+    ASSERT_TRUE(
+        wait_until([&] { return a->hellos().size() == 1 && b->hellos().size() == 1; }, 2000));
+    const int a_calls = a->send_calls.load();
 
     auto res = f.srv->handle(with_csrf(
         with_token(make_req(Method::Delete, "/api/v1/clients/" + a_id.value()), token_b)));
@@ -524,7 +594,7 @@ TEST(AdminServer, RevokedClientsLoseTheirWebSocket) {
     EXPECT_TRUE(wait_until([&] { return b->sent_count() >= 1; }, 2000));
     ASSERT_TRUE(f.bus.wait_idle(2000));
     wisp::os::sleep_ms(20);
-    EXPECT_EQ(a->send_calls.load(), 0);
+    EXPECT_EQ(a->send_calls.load(), a_calls);
     ws.on_close(21);
 
     res = f.srv->handle(with_csrf(with_token(make_req(Method::Post, "/api/v1/logout"), token_b)));

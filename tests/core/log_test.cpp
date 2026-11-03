@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,8 +15,10 @@ namespace {
 
 struct CaptureSink : wisp::LogSink {
     std::vector<std::string> lines;
-    void write(wisp::LogLevel, const char* tag, const char* msg) override {
-        lines.push_back(std::string(tag) + "|" + msg);
+    std::vector<wisp::LogEntry> records;
+    void write(const wisp::LogRecord& rec) override {
+        lines.push_back(std::string(rec.tag) + "|" + rec.msg);
+        records.push_back({rec.seq, rec.ts_ms, rec.level, rec.tag, rec.msg});
     }
 };
 
@@ -23,8 +26,8 @@ struct CaptureSink : wisp::LogSink {
 // reentrancy guard documented on wisp::LogSink.
 struct ReentrantSink : wisp::LogSink {
     std::vector<std::string> lines;
-    void write(wisp::LogLevel, const char* tag, const char* msg) override {
-        lines.push_back(std::string(tag) + "|" + msg);
+    void write(const wisp::LogRecord& rec) override {
+        lines.push_back(std::string(rec.tag) + "|" + rec.msg);
         WLOG_I("inner", "nested");
     }
 };
@@ -54,12 +57,105 @@ TEST(Log, RingDropsOldestWholeLines) {
         WLOG_I("t", "line-%02d", i);
     }
 
+    const auto entries = wisp::log::ring_entries();
+    ASSERT_FALSE(entries.empty());
+    EXPECT_LT(entries.size(), 50u);
+    // Whole lines only: the newest ones, consecutive, each intact.
+    EXPECT_EQ(entries.back().msg, "line-49");
+    for (size_t i = 0; i < entries.size(); ++i) {
+        EXPECT_EQ(entries[i].seq, 50u - entries.size() + 1 + i);
+        char want[16];
+        std::snprintf(want, sizeof(want), "line-%02u", static_cast<unsigned>(entries[i].seq - 1));
+        EXPECT_EQ(entries[i].msg, want);
+        EXPECT_EQ(entries[i].tag, "t");
+    }
     auto snap = wisp::log::ring_snapshot();
-    EXPECT_LE(snap.size(), 200u);
-    EXPECT_NE(snap.find("line-49"), std::string::npos);
     EXPECT_EQ(snap.find("line-00"), std::string::npos);
     EXPECT_EQ(snap.back(), '\n');
     EXPECT_TRUE(isdigit(static_cast<unsigned char>(snap.front())));  // first line intact
+}
+
+// Every accepted line takes the next seq, from 1; a filtered-out one takes
+// none, so a gap in seq always means a line was lost, never filtered.
+TEST(Log, SeqCountsAcceptedLinesFromOne) {
+    wisp::log::reset_for_test();
+    wisp::log::init(4096);
+    CaptureSink s;
+    wisp::log::add_sink(&s);
+    wisp::log::set_level(wisp::LogLevel::Info);
+
+    WLOG_I("t", "a");
+    WLOG_D("t", "filtered");
+    WLOG_W("t", "b");
+    WLOG_E("t", "c");
+
+    ASSERT_EQ(s.records.size(), 3u);
+    EXPECT_EQ(s.records[0].seq, 1u);
+    EXPECT_EQ(s.records[1].seq, 2u);
+    EXPECT_EQ(s.records[2].seq, 3u);
+
+    // init() keeps counting: seq never repeats within a process.
+    wisp::log::init(4096);
+    WLOG_I("t", "d");
+    ASSERT_EQ(s.records.size(), 4u);
+    EXPECT_EQ(s.records[3].seq, 4u);
+    wisp::log::remove_sink(&s);
+}
+
+// A sink gets exactly what the ring stores: same seq, ts, level, tag, msg.
+TEST(Log, SinkSeesTheRingsSeqAndTimestamp) {
+    wisp::log::reset_for_test();
+    wisp::log::init(4096);
+    CaptureSink s;
+    wisp::log::add_sink(&s);
+
+    const uint64_t before = wisp::os::now_ms();
+    WLOG_I("alpha", "one");
+    wisp::os::sleep_ms(3);
+    WLOG_W("beta", "two %d", 2);
+    const uint64_t after = wisp::os::now_ms();
+
+    const auto ring = wisp::log::ring_entries();
+    ASSERT_EQ(ring.size(), 2u);
+    ASSERT_EQ(s.records.size(), 2u);
+    for (size_t i = 0; i < ring.size(); ++i) {
+        EXPECT_EQ(ring[i].seq, s.records[i].seq);
+        EXPECT_EQ(ring[i].ts_ms, s.records[i].ts_ms);
+        EXPECT_EQ(ring[i].level, s.records[i].level);
+        EXPECT_EQ(ring[i].tag, s.records[i].tag);
+        EXPECT_EQ(ring[i].msg, s.records[i].msg);
+        EXPECT_GE(ring[i].ts_ms, before);
+        EXPECT_LE(ring[i].ts_ms, after);
+    }
+    EXPECT_EQ(ring[0].seq + 1, ring[1].seq);
+    EXPECT_LE(ring[0].ts_ms, ring[1].ts_ms);
+    EXPECT_EQ(ring[1].level, wisp::LogLevel::Warn);
+    EXPECT_EQ(ring[1].tag, "beta");
+    EXPECT_EQ(ring[1].msg, "two 2");
+    wisp::log::remove_sink(&s);
+}
+
+// A message containing '\n' is one line: one entry, one seq, and evicting
+// it leaves no fragment behind.
+TEST(Log, MultiLineMessageIsOneEntry) {
+    wisp::log::reset_for_test();
+    wisp::log::init(160);
+
+    WLOG_I("t", "first\nsecond\nthird");
+    auto entries = wisp::log::ring_entries();
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].seq, 1u);
+    EXPECT_EQ(entries[0].msg, "first\nsecond\nthird");
+
+    // Push it out: what remains are whole later entries only.
+    for (int i = 0; i < 20; ++i) WLOG_I("t", "filler-%02d", i);
+    entries = wisp::log::ring_entries();
+    ASSERT_FALSE(entries.empty());
+    for (const auto& e : entries) {
+        EXPECT_EQ(e.msg.rfind("filler-", 0), 0u) << e.msg;
+        EXPECT_GE(e.seq, 2u);
+    }
+    EXPECT_EQ(entries.back().msg, "filler-19");
 }
 
 TEST(Log, TruncatesLongMessages) {
@@ -170,7 +266,7 @@ TEST(Log, RemoveSinkWaitsForInFlightDelivery) {
     struct SlowSink : wisp::LogSink {
         std::atomic<bool> entered{false};
         std::atomic<bool> finished{false};
-        void write(wisp::LogLevel, const char*, const char*) override {
+        void write(const wisp::LogRecord&) override {
             entered = true;
             wisp::os::sleep_ms(200);
             finished = true;

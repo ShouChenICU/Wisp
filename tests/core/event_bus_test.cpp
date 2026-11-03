@@ -18,7 +18,7 @@ namespace {
 
 struct CaptureSink : wisp::LogSink {
     std::vector<std::string> lines;
-    void write(wisp::LogLevel, const char*, const char* msg) override { lines.push_back(msg); }
+    void write(const wisp::LogRecord& rec) override { lines.push_back(rec.msg); }
 };
 
 }  // namespace

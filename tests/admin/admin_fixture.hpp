@@ -67,6 +67,7 @@ struct AdminFixture {
             if (parsed) assets = std::move(parsed.value());
         }
 
+        boot_id = admin::make_boot_id(random);
         srv = std::make_unique<admin::AdminServer>(make_deps());
     }
 
@@ -87,6 +88,7 @@ struct AdminFixture {
             .board = "sim",
             .firmware_version = "0.2.0-test",
             .device_name = "Wisp",
+            .boot_id = boot_id,
             .device_status = [] { return Value(Map{}); },
             .reboot = [this] { ++reboots; },
             .request_factory_reset = [this] { ++factory_resets; },
@@ -131,6 +133,7 @@ struct AdminFixture {
     std::atomic<int> factory_resets{0};
     std::atomic<uint64_t> now{1000};
     std::mt19937 rng{12345};
+    std::string boot_id;  // made from rng once, like a boot
     std::unique_ptr<admin::AdminServer> srv;
 };
 

@@ -1,11 +1,17 @@
 #pragma once
 
 // Fan-out of log lines and selected events to the admin WebSocket clients
-// (spec 6.2). A client subscribes by sending {"sub":["log","events"]}
-// (either or both; a later message replaces the set):
-//   - "log": the current log ring is replayed first, one
-//     {"t":"log","ts":0,"level":"I","tag":"","msg":<ring line>} per line,
-//     then every new line streams as {"t":"log","ts","level","tag","msg"}.
+// (spec 6.2). Every connection first receives {"t":"hello","boot":<id>},
+// the id of this boot (also /info's "boot"), before anything else. A
+// client subscribes by sending {"sub":["log","events"]} (either or both; a
+// later message replaces the set):
+//   - "log": the lines still in the log ring are replayed first, one
+//     {"t":"log","seq","ts","level","tag","msg","replay":true} per line,
+//     then every new line streams as {"t":"log","seq","ts","level","tag",
+//     "msg"}. seq and ts are the log module's own (wisp::LogRecord), so
+//     (boot, seq) names a line exactly: a browser drops any copy it has
+//     already shown, e.g. the replay after a re-subscribe. A message that
+//     contains '\n' is still one line.
 //   - "events": events under net., power., storage. and system. arrive as
 //     {"t":"event","topic","payload"}.
 //
@@ -61,9 +67,10 @@ namespace wisp::admin {
 class WsHub : public LogSink {
 public:
     // Registers itself as a log sink and subscribes to the forwarded event
-    // prefixes; does not start the sender task.
-    WsHub(core::EventBus& bus, size_t max_clients = 2, size_t max_queue = 256,
-          size_t max_queue_bytes = 32768);
+    // prefixes; does not start the sender task. `boot_id` goes into every
+    // connection's hello.
+    WsHub(core::EventBus& bus, std::string boot_id = {}, size_t max_clients = 2,
+          size_t max_queue = 256, size_t max_queue_bytes = 32768);
     // Stops the sender task, unsubscribes and unregisters the log sink,
     // waiting out any write() or event handler still running.
     ~WsHub() override;
@@ -95,10 +102,11 @@ public:
     void close_all();
 
     // Only enqueues; never blocks on a connection.
-    void write(LogLevel level, const char* tag, const char* msg) override;
+    void write(const LogRecord& record) override;
 
-    // Sends what is queued, per client up to one queue's worth plus the
-    // dropped notice, stopping at that client's first refused send.
+    // Sends what is owed, per client the hello (until it goes through),
+    // the dropped notice and up to one queue's worth, in that order,
+    // stopping at that client's first refused send.
     void pump();
 
 private:
@@ -113,6 +121,7 @@ private:
     void run();
 
     core::EventBus& bus_;
+    const std::string hello_;  // the hello frame, built once
     const size_t max_clients_;
     const size_t max_queue_;
     const size_t max_queue_bytes_;

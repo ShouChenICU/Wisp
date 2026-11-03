@@ -38,12 +38,16 @@ const char* level_name(LogLevel level) {
     return "I";
 }
 
-std::string log_json(int64_t ts, const char* level, std::string tag, std::string msg) {
-    return to_json(Value(Map{{"t", Value("log")},
-                             {"ts", Value(ts)},
-                             {"level", Value(level)},
-                             {"tag", Value(std::move(tag))},
-                             {"msg", Value(std::move(msg))}}));
+std::string log_json(uint32_t seq, uint64_t ts, LogLevel level, std::string tag, std::string msg,
+                     bool replay) {
+    Map m{{"t", Value("log")},
+          {"seq", Value(static_cast<int64_t>(seq))},
+          {"ts", Value(static_cast<int64_t>(ts))},
+          {"level", Value(level_name(level))},
+          {"tag", Value(std::move(tag))},
+          {"msg", Value(std::move(msg))}};
+    if (replay) m.emplace("replay", Value(true));
+    return to_json(Value(std::move(m)));
 }
 
 }  // namespace
@@ -57,13 +61,19 @@ struct WsHub::Client {
     // Set once the client is forgotten (close(), close_client(),
     // close_all()); pump() may still hold a reference to this client.
     bool closed = false;
+    // The hello is owed until a send of it succeeds. It lives outside the
+    // queue so neither drop-oldest nor the dropped notice can get ahead
+    // of it.
+    bool hello_pending = true;
     std::deque<std::string> queue;
     size_t queued_bytes = 0;  // sum of queue's message sizes
     uint64_t dropped = 0;
 };
 
-WsHub::WsHub(core::EventBus& bus, size_t max_clients, size_t max_queue, size_t max_queue_bytes)
+WsHub::WsHub(core::EventBus& bus, std::string boot_id, size_t max_clients, size_t max_queue,
+             size_t max_queue_bytes)
     : bus_(bus),
+      hello_(to_json(Value(Map{{"t", Value("hello")}, {"boot", Value(std::move(boot_id))}}))),
       max_clients_(max_clients),
       max_queue_(max_queue),
       max_queue_bytes_(max_queue_bytes),
@@ -133,6 +143,8 @@ bool WsHub::open(std::shared_ptr<net::WsConnection> conn, std::string client_id)
             clients_.push_back(std::move(c));
         }
     }
+    // The hello goes out on the sender's next pass.
+    if (outcome == Outcome::Accepted) wake_.give();
     // Logged outside mutex_: write() takes it.
     switch (outcome) {
         case Outcome::Accepted:
@@ -180,21 +192,16 @@ void WsHub::on_message(int id, std::string_view text) {
                 // The subscription is visible to write() before the ring
                 // is read, and write() waits on mutex_ until the replay is
                 // queued: a line racing the subscription may arrive twice
+                // (both copies with the same seq, which the browser drops)
                 // but is never lost, and the replay always comes first.
-                const std::string ring = log::ring_snapshot();
-                std::vector<std::string_view> lines;
-                size_t start = 0;
-                while (start < ring.size()) {
-                    size_t nl = ring.find('\n', start);
-                    if (nl == std::string::npos) nl = ring.size();
-                    lines.push_back(std::string_view(ring).substr(start, nl - start));
-                    start = nl + 1;
-                }
+                std::vector<LogEntry> ring = log::ring_entries();
                 // Newest first, as many as an empty queue holds.
                 std::vector<std::string> replay;
                 size_t bytes = 0;
-                for (size_t i = lines.size(); i > 0 && replay.size() < max_queue_; --i) {
-                    std::string msg = log_json(0, "I", std::string(), std::string(lines[i - 1]));
+                for (size_t i = ring.size(); i > 0 && replay.size() < max_queue_; --i) {
+                    LogEntry& e = ring[i - 1];
+                    std::string msg = log_json(e.seq, e.ts_ms, e.level, std::move(e.tag),
+                                               std::move(e.msg), /*replay=*/true);
                     if (bytes + msg.size() > max_queue_bytes_) break;
                     bytes += msg.size();
                     replay.push_back(std::move(msg));
@@ -263,12 +270,13 @@ void WsHub::close_all() {
     close_matching([](const Client&) { return true; });
 }
 
-void WsHub::write(LogLevel level, const char* tag, const char* msg) {
+void WsHub::write(const LogRecord& rec) {
     // Runs on the logging thread: format, append, signal. No logging and no
     // connection calls from here.
     if (log_subscribers_.load() == 0) return;
-    const std::string json = log_json(static_cast<int64_t>(os::now_ms()), level_name(level),
-                                      tag != nullptr ? tag : "", msg != nullptr ? msg : "");
+    const std::string json =
+        log_json(rec.seq, rec.ts_ms, rec.level, rec.tag != nullptr ? rec.tag : "",
+                 rec.msg != nullptr ? rec.msg : "", /*replay=*/false);
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         for (auto& c : clients_) {
@@ -308,8 +316,9 @@ void WsHub::enqueue_locked(Client& c, std::string msg) {
 
 bool WsHub::has_pending() const {
     std::lock_guard<os::Mutex> lock(mutex_);
-    return std::any_of(clients_.begin(), clients_.end(),
-                       [](const auto& c) { return !c->queue.empty() || c->dropped > 0; });
+    return std::any_of(clients_.begin(), clients_.end(), [](const auto& c) {
+        return c->hello_pending || !c->queue.empty() || c->dropped > 0;
+    });
 }
 
 void WsHub::pump() {
@@ -321,14 +330,19 @@ void WsHub::pump() {
     }
     for (const auto& c : clients) {
         // Bounded so a client that keeps up with a log flood cannot keep
-        // the sender here forever; the next wake continues.
-        for (size_t n = 0; n <= max_queue_; ++n) {
+        // the sender here forever; the next wake continues. One queue's
+        // worth plus the hello and the dropped notice.
+        for (size_t n = 0; n < max_queue_ + 2; ++n) {
             std::string msg;
             uint64_t reported = 0;
+            bool hello = false;
             {
                 std::lock_guard<os::Mutex> lock(mutex_);
                 if (c->closed) break;
-                if (c->dropped > 0) {
+                if (c->hello_pending) {
+                    hello = true;
+                    msg = hello_;
+                } else if (c->dropped > 0) {
                     reported = c->dropped;
                     msg = to_json(Value(Map{{"t", Value("dropped")},
                                             {"count", Value(static_cast<int64_t>(reported))}}));
@@ -344,7 +358,9 @@ void WsHub::pump() {
             // socket.
             const bool sent = c->conn->send_text(msg);
             std::lock_guard<os::Mutex> lock(mutex_);
-            if (reported > 0) {
+            if (hello) {
+                if (sent) c->hello_pending = false;
+            } else if (reported > 0) {
                 // More may have been dropped while sending; keep those.
                 if (sent) c->dropped -= reported;
             } else if (!sent && !c->closed) {
