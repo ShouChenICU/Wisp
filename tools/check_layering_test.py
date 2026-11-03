@@ -197,6 +197,29 @@ class CheckLayeringTest(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("wisp/port/esp/esp_display.hpp", errors[0])
 
+    def test_curl_include_is_flagged(self):
+        # libcurl is the simulator's HTTP client backend only; wisp_net's
+        # portable code must reach it through net::HttpClient instead.
+        write(self.root, "components/wisp_net/src/c.cpp", "#include <curl/curl.h>\n")
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("curl/curl.h", errors[0])
+
+    def test_net_sits_between_core_and_ui(self):
+        write(
+            self.root,
+            "components/wisp_net/src/ok.cpp",
+            '#include "wisp/core/event_bus.hpp"\n#include "wisp/net/http.hpp"\n',
+        )
+        write(self.root, "components/wisp_ui/src/ok.cpp", '#include "wisp/net/http.hpp"\n')
+        self.assertEqual(check_layering.run(self.root), [])
+
+        write(self.root, "components/wisp_core/src/bad.cpp", '#include "wisp/net/http.hpp"\n')
+        write(self.root, "components/wisp_net/src/bad.cpp", '#include "wisp/ui/ui_runtime.hpp"\n')
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(all("reverse dependency" in e for e in errors), errors)
+
     def test_cmake_whitelisted_dependencies_are_not_flagged(self):
         write(
             self.root,

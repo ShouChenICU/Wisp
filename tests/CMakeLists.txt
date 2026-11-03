@@ -99,3 +99,27 @@ target_include_directories(sd_retry_test PRIVATE ${WISP_ROOT}/components/wisp_po
 # tests/smoke/sim_smoke.py's file header.
 add_test(NAME sim_smoke COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tests/smoke/sim_smoke.py
          $<TARGET_FILE:wisp_sim>)
+
+# wisp_net. asset_pack_test reads a WispPack that tools/pack_assets.py
+# builds from the committed tests/net/fixtures/web tree at build time, so
+# the test always exercises the real packer's output, not a checked-in
+# binary that could drift from it.
+set(WISP_FIXTURE_WEB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/net/fixtures/web)
+set(WISP_FIXTURE_WPAK ${CMAKE_BINARY_DIR}/fixture.wpak)
+file(GLOB_RECURSE WISP_FIXTURE_WEB_FILES CONFIGURE_DEPENDS ${WISP_FIXTURE_WEB_DIR}/*)
+add_custom_command(
+    OUTPUT ${WISP_FIXTURE_WPAK}
+    COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tools/pack_assets.py ${WISP_FIXTURE_WEB_DIR}
+            -o ${WISP_FIXTURE_WPAK}
+    DEPENDS ${WISP_ROOT}/tools/pack_assets.py ${WISP_FIXTURE_WEB_FILES}
+    COMMENT "Packing tests/net/fixtures/web into fixture.wpak"
+    VERBATIM
+)
+add_custom_target(wisp_fixture_wpak DEPENDS ${WISP_FIXTURE_WPAK})
+wisp_test(NAME http_test SRCS net/http_test.cpp LIBS wisp_net)
+wisp_test(NAME asset_pack_test SRCS net/asset_pack_test.cpp LIBS wisp_net)
+add_dependencies(asset_pack_test wisp_fixture_wpak)
+target_compile_definitions(asset_pack_test PRIVATE
+    WISP_FIXTURE_WPAK="${WISP_FIXTURE_WPAK}"
+    WISP_FIXTURE_WEB_DIR="${WISP_FIXTURE_WEB_DIR}"
+)

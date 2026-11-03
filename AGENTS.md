@@ -40,7 +40,7 @@ Wisp（小鬼火）是一个运行在 ESP32 系列芯片上、完全由 AI 驱�
 ## 3. 架构规则
 
 - **分层**：
-  - 可移植层：`wisp_base` → `wisp_os` → `wisp_hal` → `wisp_core` → `wisp_ui` → `wisp_app`。
+  - 可移植层：`wisp_base` → `wisp_os` → `wisp_hal` → `wisp_core` → `wisp_net` → `wisp_ui` → `wisp_app`。
   - 平台层：`wisp_port_sim`（PC 模拟器）、`wisp_port_esp`（ESP-IDF）。
   - 板级适配放在 `boards/<板名>/`，芯片驱动放在 `drivers/`。
 - **可移植层禁止 include 平台头文件**：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/`、`soc/*`、`sdkconfig.h`、`SDL*`。另外 `wisp_os` 和 `wisp_hal` 不得反向依赖 core/ui/app。这条规则由 `tools/check_layering.py` 强制检查。

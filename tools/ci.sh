@@ -103,6 +103,9 @@ python3 tools/check_layering_test.py
 echo "==> tools/check_layering.py"
 python3 tools/check_layering.py
 
+echo "==> tools/pack_assets_test.py"
+python3 tools/pack_assets_test.py
+
 echo "==> cmake -S simulator -B build/sim -G Ninja"
 cmake -S simulator -B build/sim -G Ninja
 

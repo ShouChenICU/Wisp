@@ -12,6 +12,8 @@ sim-data/
 # Generated images (screenshots etc.), except reference images kept in docs/
 *.png
 !docs/**/*.png
+# Committed test fixtures (asset-pack inputs), not generated output.
+!tests/net/fixtures/**/*.png
 
 # Build tooling artifacts
 compile_commands.json

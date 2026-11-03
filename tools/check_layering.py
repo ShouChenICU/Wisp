@@ -3,10 +3,10 @@
 docs/architecture.md):
 
   - The portable layers (wisp_base, wisp_os, wisp_hal, wisp_core,
-    wisp_ui, wisp_app) must never #include a platform header: anything
-    starting with esp_, freertos/, driver/, hal/ (ESP-IDF's, as
+    wisp_net, wisp_ui, wisp_app) must never #include a platform header:
+    anything starting with esp_, freertos/, driver/, hal/ (ESP-IDF's, as
     opposed to wisp_hal's own wisp/hal/ headers), soc/, rom/, lwip/,
-    mbedtls/ or SDL, or exactly sdkconfig.h, nvs.h, nvs_flash.h or
+    mbedtls/, SDL or curl/, or exactly sdkconfig.h, nvs.h, nvs_flash.h or
     sdmmc_cmd.h, or a bmgr-generated header (basename starting with
     dev_ or gen_board_ -- see AGENTS.md section 8). POSIX file APIs
     (<unistd.h>, <sys/stat.h>, <dirent.h>, ...) are *not* forbidden:
@@ -14,9 +14,10 @@ docs/architecture.md):
     portable code may use them directly (docs/architecture.md).
   - Each portable layer must only #include headers from its own layer
     or a strictly lower one in AGENTS.md's order (wisp_base < wisp_os
-    < wisp_hal < wisp_core < wisp_ui < wisp_app) -- no reverse
+    < wisp_hal < wisp_core < wisp_net < wisp_ui < wisp_app; wisp_net's
+    place is fixed by spec 2.2 of the connectivity-admin design) -- no reverse
     dependencies "upward", checked for every layer against every other.
-  - Each components/wisp_{base..app}/CMakeLists.txt's wisp_component()
+  - Each portable component's CMakeLists.txt's wisp_component()
     call may only declare the two external dependencies the portable
     stack actually has (ArduinoJson for wisp_base, LVGL for wisp_ui) in
     its IDF_REQUIRES/HOST_LIBS lists -- catches a new platform or
@@ -40,7 +41,15 @@ import re
 import sys
 
 # The portable components to scan, in AGENTS.md's layering order.
-COMPONENTS = ("wisp_base", "wisp_os", "wisp_hal", "wisp_core", "wisp_ui", "wisp_app")
+COMPONENTS = (
+    "wisp_base",
+    "wisp_os",
+    "wisp_hal",
+    "wisp_core",
+    "wisp_net",
+    "wisp_ui",
+    "wisp_app",
+)
 SOURCE_SUFFIXES = (".hpp", ".cpp", ".h", ".c")
 
 # Each component's header namespace (AGENTS.md section 5: "头文件路径
@@ -51,6 +60,7 @@ LAYER_INCLUDE_PREFIX = {
     "wisp_os": "wisp/os/",
     "wisp_hal": "wisp/hal/",
     "wisp_core": "wisp/core/",
+    "wisp_net": "wisp/net/",
     "wisp_ui": "wisp/ui/",
     "wisp_app": "wisp/app/",
 }
@@ -70,6 +80,8 @@ FORBIDDEN_PREFIXES = (
     "lwip/",
     "mbedtls/",
     "SDL",
+    # libcurl backs only the simulator's net::HttpClient (wisp_port_sim).
+    "curl/",
     # wisp_port_sim/wisp_port_esp headers: a portable layer including one
     # of these compiles fine on the host (wisp/port/sim/* has no
     # platform headers of its own), so only a firmware build -- which
