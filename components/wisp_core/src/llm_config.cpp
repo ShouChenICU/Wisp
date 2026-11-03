@@ -162,8 +162,8 @@ Result<void> LlmConfigService::persist(const Stored& next) {
     if (path.empty()) {
         return Result<void>::err(ErrorCode::StorageUnavailable, "system storage unavailable");
     }
-    std::string json =
-        to_json(Map{{"base_url", next.base_url}, {"model", next.model}, {"api_key", next.api_key}});
+    std::string json = to_json_raw(
+        Map{{"base_url", next.base_url}, {"model", next.model}, {"api_key", next.api_key}});
     auto r = storage_.write_atomic(path, std::vector<uint8_t>(json.begin(), json.end()));
     if (!r) {
         WLOG_E(kTag, "saving secrets/llm.json failed: %s", r.error().message.c_str());

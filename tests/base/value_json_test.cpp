@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
 
 #include "support/utf8.hpp"
@@ -146,4 +147,33 @@ TEST(Json, ReplacesInvalidUtf8) {
 
     const std::string good = "中文 \xF0\x9F\x94\xA5 \xC3\xA9 \x7f";
     EXPECT_EQ(wisp::to_json(wisp::Value(good)), "\"" + good + "\"");
+}
+
+// Persistence needs the stored bytes back exactly (an SSID in GBK, say),
+// so it uses the raw form, which keeps non-UTF-8 bytes as they are.
+TEST(Json, RawFormPreservesBytes) {
+    const std::string bytes = "\xc4\xe3\xba\xc3 \x01\x1b[0m \xe4\xb8";
+    const wisp::Value v(wisp::Map{{"k\xff", wisp::Value(bytes)}});
+    const std::string raw = wisp::to_json_raw(v);
+    EXPECT_NE(raw.find("\xc4\xe3\xba\xc3"), std::string::npos) << raw;
+    EXPECT_FALSE(wisp::test::has_control_bytes(raw)) << raw;
+    auto back = wisp::from_json(raw);
+    ASSERT_TRUE(back) << raw;
+    EXPECT_EQ(back.value(), v);
+    // The browser form of the same value is still sanitized.
+    EXPECT_TRUE(wisp::test::is_valid_utf8(wisp::to_json(v)));
+}
+
+// Fixing up the output must stay linear: a log flood of control bytes
+// would otherwise cost seconds per message.
+TEST(Json, BrowserSafePassIsLinear) {
+    // ArduinoJson strings stop at 64 KiB, so the ~480 KB of control bytes
+    // are spread over a list; a quadratic pass would take minutes here.
+    const std::string ctl(60000, '\x01');
+    const wisp::Value v(wisp::List(8, wisp::Value(ctl)));
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::string json = wisp::to_json(v);
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    EXPECT_EQ(json.size(), 8 * (ctl.size() * 6 + 2) + 7 + 2);
+    EXPECT_LT(elapsed, std::chrono::seconds(2));
 }

@@ -883,3 +883,18 @@ TEST(WifiService, ConcurrentCallsAreSafe) {
     svc.set_standby(false, now.load());
     EXPECT_LE(svc.saved_ssids().size(), 2u);
 }
+
+// SSIDs are raw bytes (32 at most), not necessarily UTF-8: routers set up
+// in GBK are common. wifi.json must keep them exactly or the saved network
+// stops matching the scan after a reboot.
+TEST(WifiService, NonUtf8SsidSurvivesRestart) {
+    Fixture f;
+    const std::string gbk = "\xc4\xe3\xba\xc3";  // "你好" in GBK
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.add_network(gbk, "password1", 0));
+
+    auto& again = f.make();
+    ASSERT_TRUE(again.init(0));
+    EXPECT_EQ(again.saved_ssids(), (std::vector<std::string>{gbk}));
+}

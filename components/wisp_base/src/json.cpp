@@ -115,50 +115,70 @@ size_t utf8_sequence(const std::string& s, size_t i, size_t* bad) {
 }
 
 // ArduinoJson escapes only the control bytes JSON gives a short form to
-// (and NUL), and copies other bytes as they are. Browsers need more: a
-// WebSocket text frame that is not valid UTF-8 drops the connection
-// (RFC 6455), and JSON.parse() rejects raw control characters. Strings
-// come from logs cut at a byte limit, SSIDs and other device data, so the
-// output is fixed up here: every byte below 0x20 becomes a 6-character
-// escape (backslash, 'u', four hex digits) and every ill-formed UTF-8
-// sequence becomes U+FFFD. Compact output has no
-// whitespace and multi-byte text only occurs inside strings, so a
-// byte-level pass cannot touch the JSON structure.
-void make_browser_safe(std::string& json) {
+// (and NUL), and copies other bytes as they are. JSON.parse() rejects the
+// remaining raw control characters, so every byte below 0x20 becomes a
+// 6-character escape (backslash, 'u', four hex digits); from_json() turns
+// it back into the same byte. With `replace_invalid_utf8`, every
+// ill-formed UTF-8 sequence also becomes U+FFFD: a WebSocket text frame
+// that is not valid UTF-8 drops the connection (RFC 6455), and strings
+// come from logs cut at a byte limit, SSIDs and other device data.
+// Compact output has no whitespace and multi-byte text only occurs inside
+// strings, so a byte-level pass cannot touch the JSON structure. Output
+// that needs no change is returned as is; otherwise the copy starts at
+// the first byte that does, keeping the pass linear.
+std::string fix_up(std::string json, bool replace_invalid_utf8) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    bool copying = false;
+    // Switches to building `out`, seeded with the unchanged bytes before i.
+    auto start_copy = [&](size_t i) {
+        if (copying) return;
+        out.reserve(json.size() + 16);
+        out.append(json, 0, i);
+        copying = true;
+    };
     size_t i = 0;
     while (i < json.size()) {
         const auto b = static_cast<uint8_t>(json[i]);
-        if (b >= 0x20 && b < 0x80) {
+        if (b < 0x20) {
+            start_copy(i);
+            const char esc[] = {'\\', 'u', '0', '0', kHex[b >> 4], kHex[b & 0xF]};
+            out.append(esc, sizeof(esc));
             ++i;
             continue;
         }
+        size_t keep = 1;  // bytes at i that pass through unchanged
         if (b >= 0x80) {
             size_t bad = 0;
-            const size_t len = utf8_sequence(json, i, &bad);
-            if (len > 0) {
-                i += len;
+            keep = utf8_sequence(json, i, &bad);
+            if (keep == 0 && replace_invalid_utf8) {
+                start_copy(i);
+                out += "\xEF\xBF\xBD";
+                i += bad;
                 continue;
             }
-            json.replace(i, bad, "\xEF\xBF\xBD");
-            i += 3;
-            continue;
+            if (keep == 0) keep = 1;
         }
-        static constexpr char kHex[] = "0123456789abcdef";
-        const char esc[] = {'\\', 'u', '0', '0', kHex[b >> 4], kHex[b & 0xF]};
-        json.replace(i, 1, esc, sizeof(esc));
-        i += sizeof(esc);
+        if (copying) out.append(json, i, keep);
+        i += keep;
     }
+    return copying ? out : json;
 }
 
-}  // namespace
-
-std::string to_json(const Value& v) {
+std::string serialize(const Value& v) {
     JsonDocument doc;
     write_value(doc.to<JsonVariant>(), v);
     std::string out;
     serializeJson(doc, out);
-    make_browser_safe(out);
     return out;
+}
+
+}  // namespace
+
+std::string to_json(const Value& v) { return fix_up(serialize(v), /*replace_invalid_utf8=*/true); }
+
+std::string to_json_raw(const Value& v) {
+    return fix_up(serialize(v), /*replace_invalid_utf8=*/false);
 }
 
 Result<Value> from_json(std::string_view s) {

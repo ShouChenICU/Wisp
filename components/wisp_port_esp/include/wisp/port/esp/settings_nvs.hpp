@@ -2,7 +2,7 @@
 
 // ESP-IDF wisp::core::SettingsBackend backed by NVS: each Wisp namespace
 // maps 1:1 to an NVS namespace, and each key's Value is serialized with
-// wisp::to_json() and stored as a single NVS string entry (nvs_set_str),
+// wisp::to_json_raw() and stored as a single NVS string entry (nvs_set_str),
 // decoded back with wisp::from_json() on get(). Both `ns` and `key` are
 // validated with core::validate_settings_name() before touching NVS,
 // same as every other SettingsBackend -- this class's host/PC equivalent

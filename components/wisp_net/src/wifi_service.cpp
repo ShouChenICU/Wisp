@@ -114,7 +114,7 @@ Result<void> WifiService::persist_locked(const std::vector<Network>& networks) {
     for (const auto& n : networks) {
         list.push_back(Map{{"ssid", n.ssid}, {"password", n.password}});
     }
-    std::string json = to_json(Map{{"networks", std::move(list)}});
+    std::string json = to_json_raw(Map{{"networks", std::move(list)}});
     auto r = storage_.write_atomic(path, std::vector<uint8_t>(json.begin(), json.end()));
     if (!r) {
         WLOG_E(kTag, "saving networks failed: %s", r.error().message.c_str());

@@ -103,7 +103,7 @@ Result<void> NvsSettingsBackend::set(const std::string& ns, const std::string& k
         return Result<void>::err(ErrorCode::IoError, "nvs not initialized");
     }
 
-    std::string json = to_json(value);
+    std::string json = to_json_raw(value);
     if (json.size() + 1 > kNvsStringMaxLen) {
         return Result<void>::err(
             ErrorCode::InvalidArgument,

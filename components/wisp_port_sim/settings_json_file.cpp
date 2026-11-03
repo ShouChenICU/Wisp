@@ -157,7 +157,7 @@ Result<void> JsonFileSettingsBackend::write_through() {
         }
         root[ns] = Value(std::move(ns_map));
     }
-    std::string json = to_json(Value(std::move(root)));
+    std::string json = to_json_raw(Value(std::move(root)));
 
     std::string tmp_path = file_path_ + ".tmp";
     {
