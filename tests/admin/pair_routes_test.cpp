@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <fstream>
 #include <string>
 
 #include "admin/admin_fixture.hpp"
@@ -185,6 +186,28 @@ TEST(PairRoutes, ErrorEnvelopeShape) {
         EXPECT_NE(e.find("error")->find("code"), nullptr) << r.body;
         EXPECT_NE(e.find("error")->find("message"), nullptr) << r.body;
     }
+}
+
+// A server-side failure is reported without its internal detail: the
+// storage error behind it names on-device paths.
+TEST(PairRoutes, ServerErrorsHideInternalMessages) {
+    AdminFixture f;
+    const std::string code = start_pairing(f);
+    // A regular file where the net/ directory belongs makes saving the
+    // paired-client list fail.
+    {
+        std::ofstream blocker(f.dir + "/system/net");
+        blocker << "x";
+    }
+    auto res = f.srv->handle(with_csrf(make_req(Post, "/api/v1/pair/confirm", confirm_body(code))));
+    EXPECT_GE(res.status, 500);
+    EXPECT_TRUE(set_cookie(res).empty());
+    Value v = body_json(res);
+    ASSERT_NE(v.find("error"), nullptr) << res.body;
+    ASSERT_NE(v.find("error")->find("message"), nullptr) << res.body;
+    EXPECT_EQ(v.find("error")->find("message")->as_string(), "internal error");
+    EXPECT_FALSE(contains(res.body, "system")) << res.body;
+    EXPECT_FALSE(contains(res.body, f.dir)) << res.body;
 }
 
 }  // namespace

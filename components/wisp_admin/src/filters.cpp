@@ -2,6 +2,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "admin_internal.hpp"
 
@@ -68,11 +69,6 @@ constexpr std::string_view kProbePaths[] = {
 }  // namespace
 
 bool host_allowed(const net::HttpRequest& req) {
-    // The hotspot's DNS answers every name with the device, so captive-
-    // portal probes and the setup page arrive under arbitrary names. Only
-    // a phone already joined to the hotspot can send these, and the
-    // hotspot is short-lived and password-protected.
-    if (req.iface == net::Iface::Ap) return true;
     auto name = strip_port(req.header("host"));
     if (!name || name->empty()) return false;
     return is_ipv4(*name) || iequals(*name, "wisp.local") || iequals(*name, "localhost");
@@ -85,19 +81,22 @@ bool is_probe_path(std::string_view path) {
     return false;
 }
 
+std::optional<net::HttpResponse> setup_redirect(const AdminDeps& deps) {
+    // ap_session() also carries the hotspot password; only the IP is
+    // used here.
+    auto session = deps.wifi.ap_session();
+    if (!session || session->ip.empty()) return std::nullopt;
+    net::HttpResponse res;
+    res.status = 302;
+    res.content_type = "text/plain";
+    res.headers.emplace_back("Location", "http://" + session->ip + "/setup.html");
+    res.headers.emplace_back("Cache-Control", "no-store");
+    return res;
+}
+
 net::HttpResponse probe_response(const AdminDeps& deps, const net::HttpRequest& req) {
     if (req.iface == net::Iface::Ap) {
-        // ap_session() also carries the hotspot password; only the IP is
-        // used here.
-        auto session = deps.wifi.ap_session();
-        if (session && !session->ip.empty()) {
-            net::HttpResponse res;
-            res.status = 302;
-            res.content_type = "text/plain";
-            res.headers.emplace_back("Location", "http://" + session->ip + "/setup.html");
-            res.headers.emplace_back("Cache-Control", "no-store");
-            return res;
-        }
+        if (auto redirect = setup_redirect(deps)) return std::move(*redirect);
     }
     return net::HttpResponse::error(404, "not_found", "no such resource");
 }

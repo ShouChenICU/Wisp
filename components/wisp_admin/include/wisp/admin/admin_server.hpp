@@ -9,9 +9,11 @@
 // Pipeline, in order:
 //   1. Host check (DNS-rebinding defence): after stripping a port the
 //      Host must be a dotted-quad IPv4 address, "wisp.local" or
-//      "localhost"; requests that arrived on the setup hotspot are exempt
-//      because its DNS answers every name with the device, so captive
-//      portal probes carry foreign Host values. Otherwise 403 bad_host.
+//      "localhost". On the setup hotspot, whose DNS answers every name
+//      with the device, a foreign Host is tolerated only for captive-
+//      portal probe paths, and any other GET under a foreign Host is
+//      redirected to the setup page; everything else (in particular every
+//      API call, /pair/ap included) is 403 bad_host on every interface.
 //   2. Any method other than GET/POST/PUT/DELETE (notably OPTIONS) is 405
 //      with no CORS headers: never answering a CORS preflight is what
 //      keeps other origins from sending the X-Wisp header.
@@ -47,6 +49,7 @@
 #include "wisp/net/http.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
+#include "wisp/os/os.hpp"
 
 namespace wisp::admin {
 
@@ -70,7 +73,8 @@ struct AdminDeps {
     // as an event rather than returned.
     std::function<void()> request_factory_reset;
     // Monotonic os::now_ms() timebase; the only clock the router uses.
-    std::function<uint64_t()> now_ms;
+    // Tests inject their own; left empty, AdminServer uses os::now_ms().
+    std::function<uint64_t()> now_ms = [] { return os::now_ms(); };
 };
 
 namespace detail {

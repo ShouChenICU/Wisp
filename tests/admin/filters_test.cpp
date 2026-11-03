@@ -9,6 +9,7 @@
 #include "admin/admin_fixture.hpp"
 #include "support/fake_http.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/os/os.hpp"
 
 using wisp::net::HttpResponse;
 using wisp::net::Iface;
@@ -40,21 +41,58 @@ TEST(Filters, RejectsForeignHostButAllowsPortsAndAp) {
 
     // A DNS-rebinding attacker's name, however IP-like, is still a name.
     for (const char* h : {"", "192.168.1.50.evil.com", "192.168.1", "192.168.1.256", "1.2.3.4.5",
-                          "wisp.local.evil.com", "localhost.evil.com", "[::1]:8080", ":80"}) {
+                          "wisp.local.evil.com", "localhost.evil.com", "[::1]:8080", ":80",
+                          "1.2.3.4:80@evil", "1.2.3.4@evil.com", "wisp.local.", "192.168.1.50:"}) {
         EXPECT_EQ(srv.handle(host(make_req(Get, "/api/v1/info"), h)).status, 403) << h;
     }
     auto no_host = make_req(Get, "/api/v1/info");
     no_host.headers.erase("host");
     EXPECT_EQ(srv.handle(no_host).status, 403);
 
-    // On the hotspot the hijacked DNS makes any name reach the device.
+    // On the hotspot the hijacked DNS makes any name reach the device, so
+    // probes pass with any Host and other foreign-Host GETs are steered
+    // to the setup page.
     ASSERT_TRUE(f.wifi->start_provisioning(f.now));
     EXPECT_EQ(srv.handle(host(make_req(Get, "/generate_204", {}, Iface::Ap),
                               "connectivitycheck.gstatic.com"))
                   .status,
               302);
-    EXPECT_EQ(srv.handle(host(make_req(Get, "/api/v1/info", {}, Iface::Ap), "evil.com")).status,
+    HttpResponse steered =
+        srv.handle(host(make_req(Get, "/api/v1/info", {}, Iface::Ap), "evil.com"));
+    EXPECT_EQ(steered.status, 302);
+    EXPECT_EQ(response_header(steered, "Location"), "http://192.168.4.1/setup.html");
+    EXPECT_EQ(srv.handle(host(make_req(Get, "/", {}, Iface::Ap), "evil.com")).status, 302);
+    EXPECT_EQ(srv.handle(host(make_req(Get, "/api/v1/info", {}, Iface::Ap), "192.168.4.1")).status,
               200);
+}
+
+// DNS rebinding over the hotspot: a page from evil.com rebound to the
+// hotspot address sends same-origin requests that arrive on Iface::Ap
+// with Host evil.com. It must not obtain a token or reach the API.
+TEST(Filters, HotspotRebindingCannotPairOrCallApi) {
+    AdminFixture f;
+    auto& srv = *f.srv;
+    ASSERT_TRUE(f.wifi->start_provisioning(f.now));
+
+    HttpResponse pair =
+        srv.handle(host(with_csrf(make_req(Post, "/api/v1/pair/ap", {}, Iface::Ap)), "evil.com"));
+    EXPECT_EQ(pair.status, 403);
+    EXPECT_EQ(error_code(pair), "bad_host");
+    EXPECT_TRUE(wisp::test::set_cookie(pair).empty());
+    EXPECT_TRUE(f.pairing->clients().empty());
+
+    const std::string token = f.token();
+    EXPECT_EQ(srv.handle(host(with_csrf(with_token(make_req(Post, "/api/v1/logout", {}, Iface::Ap),
+                                                   token)),
+                              "evil.com"))
+                  .status,
+              403);
+    EXPECT_EQ(f.pairing->clients().size(), 1u);
+
+    // Once the hotspot is gone there is no setup page to steer to.
+    ASSERT_TRUE(f.wifi->stop_provisioning());
+    EXPECT_EQ(srv.handle(host(make_req(Get, "/api/v1/info", {}, Iface::Ap), "evil.com")).status,
+              403);
 }
 
 TEST(Filters, ProbePathsRedirectFromHotspotOnly) {
@@ -71,7 +109,9 @@ TEST(Filters, ProbePathsRedirectFromHotspotOnly) {
     }
 }
 
-TEST(Filters, CsrfHeaderRequiredAnyCase) {  // Review Focus 4
+// The router reads the lowercase "x-wisp" key and accepts only the exact
+// value "1".
+TEST(Filters, CsrfHeaderRequiredAnyCase) {
     AdminFixture f;
     auto& srv = *f.srv;
     const std::string token = f.token();
@@ -98,7 +138,8 @@ TEST(Filters, CsrfAppliesToWhitelistedRoutesToo) {
     EXPECT_FALSE(f.pairing->active_code(f.now).has_value());
 }
 
-TEST(Filters, TokenIsFoundAmongSeveralCookies) {  // Review Focus 4
+// wisp_token is picked out of a Cookie header carrying several pairs.
+TEST(Filters, TokenIsFoundAmongSeveralCookies) {
     AdminFixture f;
     const std::string token = f.token();
     auto r = make_req(Post, "/api/v1/logout");
@@ -197,6 +238,25 @@ TEST(Filters, NoAssetPackServesApiOnly) {
     AdminFixture f(/*with_assets=*/false);
     EXPECT_EQ(f.srv->handle(make_req(Get, "/")).status, 404);
     EXPECT_EQ(f.srv->handle(make_req(Get, "/api/v1/info")).status, 200);
+}
+
+TEST(Filters, MissingClockDefaultsToOsTime) {
+    AdminFixture f;
+    wisp::admin::AdminDeps defaulted = f.make_deps(/*with_clock=*/false);
+    ASSERT_TRUE(defaulted.now_ms);
+    const uint64_t before = wisp::os::now_ms();
+    const uint64_t got = defaulted.now_ms();
+    EXPECT_GE(got, before);
+    EXPECT_LE(got, wisp::os::now_ms());
+
+    // Explicitly cleared: the server still uses the OS clock, so a code
+    // requested through it is live at the OS's current time.
+    wisp::admin::AdminDeps cleared = f.make_deps();
+    cleared.now_ms = nullptr;
+    wisp::admin::AdminServer srv(std::move(cleared));
+    f.now = 1;  // the fixture clock is not consulted
+    ASSERT_EQ(srv.handle(with_csrf(make_req(Post, "/api/v1/pair/start"))).status, 202);
+    EXPECT_TRUE(f.pairing->active_code(wisp::os::now_ms()).has_value());
 }
 
 TEST(Filters, WebSocketUpgradesAreRejectedForNow) {

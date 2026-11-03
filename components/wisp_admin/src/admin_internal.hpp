@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -53,12 +54,14 @@ void add_pair_routes(std::vector<Route>& routes);
 
 // --- filters.cpp ---
 
-// Host check (spec 6.3), ignoring a ":port" suffix. Requests from the
-// setup hotspot pass with any Host.
+// Host check (spec 6.3), ignoring a ":port" suffix: a dotted-quad IPv4
+// address, "wisp.local" or "localhost". The interface is not considered;
+// AdminServer::handle() decides what a foreign Host on the hotspot gets.
 bool host_allowed(const net::HttpRequest& req);
 bool is_probe_path(std::string_view path);
-// 302 to the hotspot's setup page when the request came from the hotspot,
-// else 404.
+// 302 to the hotspot's setup page; nullopt when no hotspot is up.
+std::optional<net::HttpResponse> setup_redirect(const AdminDeps& deps);
+// setup_redirect() when the request came from the hotspot, else 404.
 net::HttpResponse probe_response(const AdminDeps& deps, const net::HttpRequest& req);
 bool is_mutating(net::Method m);
 // "X-Wisp: 1" present (header names arrive lowercased).
@@ -67,7 +70,10 @@ bool csrf_ok(const net::HttpRequest& req);
 // --- admin_server.cpp ---
 
 // The {"error":{...}} envelope for a service error, with the status from
-// net::http_status_for() and the snake_case ErrorCode name as "code".
+// net::http_status_for() and the snake_case ErrorCode name as "code". The
+// service's message is passed on only for 4xx statuses: server-side
+// failures (storage errors and the like) can name on-device paths, so 5xx
+// responses carry a generic message instead.
 net::HttpResponse service_error(const Error& error);
 // Empty-object JSON body with the given status.
 net::HttpResponse ok_json(int status = 200);

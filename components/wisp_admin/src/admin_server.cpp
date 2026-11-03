@@ -8,6 +8,7 @@
 #include "admin_internal.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/os.hpp"
 
 namespace wisp::admin {
 
@@ -15,8 +16,9 @@ namespace detail {
 
 net::HttpResponse service_error(const Error& error) {
     const char* code = to_string(error.code);
-    return net::HttpResponse::error(net::http_status_for(error.code), code,
-                                    error.message.empty() ? code : error.message);
+    const int status = net::http_status_for(error.code);
+    if (status >= 500) return net::HttpResponse::error(status, code, "internal error");
+    return net::HttpResponse::error(status, code, error.message.empty() ? code : error.message);
 }
 
 net::HttpResponse ok_json(int status) { return net::HttpResponse::json(status, Value(Map{})); }
@@ -107,6 +109,7 @@ RouteMatch match_route(const std::vector<Route>& routes, net::Method method, std
 }  // namespace
 
 AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
+    if (!deps_.now_ms) deps_.now_ms = [] { return os::now_ms(); };
     detail::add_pair_routes(routes_);
 }
 
@@ -114,6 +117,19 @@ AdminServer::~AdminServer() = default;
 
 net::HttpResponse AdminServer::handle(const net::HttpRequest& req) {
     if (!detail::host_allowed(req)) {
+        // The hotspot's DNS answers every name with the device, so phones
+        // probe for a captive portal under foreign names; those probes and
+        // other plain page loads are steered to the setup page. Nothing
+        // else gets through: a page rebound to the hotspot address (a
+        // phone on a hotspot without internet may still resolve names
+        // over cellular) would otherwise be same-origin with the API and
+        // could pair itself through /pair/ap.
+        if (req.iface == net::Iface::Ap) {
+            if (detail::is_probe_path(req.path)) return detail::probe_response(deps_, req);
+            if (req.method == net::Method::Get) {
+                if (auto redirect = detail::setup_redirect(deps_)) return std::move(*redirect);
+            }
+        }
         WLOG_D(kTag, "refused a request with a foreign Host header");
         return net::HttpResponse::error(403, "bad_host", "unexpected Host header");
     }
@@ -133,7 +149,7 @@ net::HttpResponse AdminServer::handle(const net::HttpRequest& req) {
 }
 
 net::HttpResponse AdminServer::handle_api(const net::HttpRequest& req) {
-    const uint64_t now = deps_.now_ms ? deps_.now_ms() : 0;
+    const uint64_t now = deps_.now_ms();
 
     std::string_view sub;
     std::string_view path = req.path;

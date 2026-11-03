@@ -66,7 +66,13 @@ struct AdminFixture {
             if (parsed) assets = std::move(parsed.value());
         }
 
-        srv = std::make_unique<admin::AdminServer>(admin::AdminDeps{
+        srv = std::make_unique<admin::AdminServer>(make_deps());
+    }
+
+    // The router's dependencies over this fixture's services. Without
+    // `with_clock`, now_ms is left at its default.
+    admin::AdminDeps make_deps(bool with_clock = true) {
+        admin::AdminDeps deps{
             .registry = registry,
             .report = report,
             .storage = *storage,
@@ -83,8 +89,9 @@ struct AdminFixture {
             .device_status = [] { return Value(Map{}); },
             .reboot = [] {},
             .request_factory_reset = [] {},
-            .now_ms = [this] { return now.load(); },
-        });
+        };
+        if (with_clock) deps.now_ms = [this] { return now.load(); };
+        return deps;
     }
 
     ~AdminFixture() {
