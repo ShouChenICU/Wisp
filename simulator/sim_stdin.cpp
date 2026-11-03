@@ -7,8 +7,10 @@
 #include <chrono>
 #include <utility>
 
+#include "sim_options.hpp"
+
 bool is_touch_line(std::string_view line) {
-    const std::string_view word = line.substr(0, line.find(' '));
+    const std::string_view word = line.substr(0, line.find_first_of(kTouchSeparators));
     return word == "tap" || word == "swipe";
 }
 
@@ -38,7 +40,7 @@ wisp::app::LineRead ConsoleLines::read(std::string& line, uint32_t timeout_ms) {
 
 StdinReader::StdinReader(int fd, std::function<void(const std::string&)> on_touch,
                          ConsoleLines& console)
-    : fd_(fd), on_touch_(std::move(on_touch)), console_(console) {
+    : fd_(fd), is_tty_(::isatty(fd) == 1), on_touch_(std::move(on_touch)), console_(console) {
     thread_ = std::thread([this] { run(); });
 }
 
@@ -57,12 +59,24 @@ void StdinReader::route(std::string line) {
     }
 }
 
+bool StdinReader::in_background() const {
+    if (!is_tty_) return false;
+    // -1 (ENOTTY) when fd is a terminal but not our controlling one: job
+    // control does not apply to it.
+    const pid_t foreground = ::tcgetpgrp(fd_);
+    return foreground != -1 && foreground != ::getpgrp();
+}
+
 void StdinReader::run() {
     std::string pending;
     bool overlong = false;  // dropping the rest of a line past kMaxLine
     while (!stop_.load()) {
+        if (in_background()) {
+            ::poll(nullptr, 0, kPollMs);
+            continue;
+        }
         pollfd pfd{fd_, POLLIN, 0};
-        const int ready = ::poll(&pfd, 1, 50);
+        const int ready = ::poll(&pfd, 1, kPollMs);
         if (ready < 0 && errno == EINTR) continue;
         if (ready <= 0) {
             if (ready < 0) break;
@@ -71,6 +85,12 @@ void StdinReader::run() {
         char buf[512];
         const ssize_t n = ::read(fd_, buf, sizeof(buf));
         if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        // EIO: moved to the background between the check above and the
+        // read (SIGTTIN is ignored, see the header). Not the end of input.
+        if (n < 0 && errno == EIO && is_tty_) {
+            ::poll(nullptr, 0, kPollMs);
+            continue;
+        }
         if (n <= 0) {
             // End of input: a last line without a newline still counts.
             if (!overlong) route(std::move(pending));

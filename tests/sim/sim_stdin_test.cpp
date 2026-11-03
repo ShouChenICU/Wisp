@@ -4,7 +4,10 @@
 
 #include "sim_stdin.hpp"
 
+#include <fcntl.h>
 #include <gtest/gtest.h>
+#include <stdlib.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -66,6 +69,9 @@ TEST(SimStdin, ClassifiesTouchLines) {
     EXPECT_TRUE(is_touch_line("swipe 1,2,3,4"));
     EXPECT_TRUE(is_touch_line("tap"));
     EXPECT_TRUE(is_touch_line("tap nonsense"));
+    EXPECT_TRUE(is_touch_line("tap\t1,2"));
+    EXPECT_TRUE(is_touch_line("swipe\t1,2,3,4"));
+    EXPECT_FALSE(is_touch_line("tap\x01 1,2"));
     EXPECT_FALSE(is_touch_line("tapx 1,2"));
     EXPECT_FALSE(is_touch_line(" tap 1,2"));
     EXPECT_FALSE(is_touch_line("wifi status"));
@@ -106,4 +112,28 @@ TEST(SimStdin, ReadTimesOutWhileInputIsIdle) {
     EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::milliseconds(1000));
     // Stopping the reader also ends the console's input.
     EXPECT_EQ(console.read(line, 50), LineRead::Closed);
+}
+
+// A terminal that is not this process's controlling terminal (job control
+// only stops background readers of the controlling one) is read like a
+// pipe.
+TEST(SimStdin, ReadsATerminal) {
+    const int master = ::posix_openpt(O_RDWR | O_NOCTTY);
+    ASSERT_GE(master, 0);
+    ASSERT_EQ(::grantpt(master), 0);
+    ASSERT_EQ(::unlockpt(master), 0);
+    const int slave = ::open(::ptsname(master), O_RDWR | O_NOCTTY);
+    ASSERT_GE(slave, 0);
+    ASSERT_TRUE(::isatty(slave));
+    {
+        ConsoleLines console;
+        StdinReader reader(slave, nullptr, console);
+        const std::string input = "help\n";
+        ASSERT_EQ(::write(master, input.data(), input.size()), static_cast<ssize_t>(input.size()));
+        std::string line;
+        ASSERT_EQ(console.read(line, 2000), LineRead::Line);
+        EXPECT_EQ(line, "help");
+    }
+    ::close(slave);
+    ::close(master);
 }

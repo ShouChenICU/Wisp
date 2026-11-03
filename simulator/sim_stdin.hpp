@@ -15,6 +15,14 @@
 // The reader polls with a short timeout instead of blocking in read(), so
 // its destructor returns promptly even while stdin stays open with no
 // data (a terminal, or a pipe whose writer is idle).
+//
+// Job control: a process that reads its controlling terminal from a
+// background process group (`wisp_sim &`) is stopped by SIGTTIN. While
+// the terminal's foreground group is not ours the reader leaves it alone
+// and resumes once the job is brought to the foreground (`fg`). The
+// simulator also ignores SIGTTIN, which turns the remaining race (sent to
+// the background between that check and read()) into an EIO the reader
+// retries instead of a stopped process.
 
 #include <atomic>
 #include <condition_variable>
@@ -28,7 +36,7 @@
 
 #include "wisp/app/app.hpp"
 
-// True when the line's first space-separated word is "tap" or "swipe".
+// True when the line's first word (up to a space or tab) is "tap" or "swipe".
 // Such a line is always a touch line, even a malformed one, so a typo in
 // a touch command is reported as one rather than reaching the console.
 bool is_touch_line(std::string_view line);
@@ -64,10 +72,16 @@ public:
     static constexpr size_t kMaxLine = 4096;
 
 private:
+    static constexpr int kPollMs = 50;
+
     void run();
     void route(std::string line);
+    // True while fd_ is our controlling terminal and another process
+    // group is in its foreground.
+    bool in_background() const;
 
     const int fd_;
+    const bool is_tty_;
     std::function<void(const std::string&)> on_touch_;
     ConsoleLines& console_;
     std::atomic<bool> stop_{false};

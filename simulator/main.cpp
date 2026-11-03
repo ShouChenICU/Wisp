@@ -25,9 +25,12 @@
 // stdin: one StdinReader (sim_stdin.hpp) owns it for the whole run, with
 // or without --headless and whether or not it is a terminal. "tap"/"swipe"
 // lines go to TouchScript; every other line is a serial console command
-// (connectivity spec 8.2) read through Platform::read_line.
+// (connectivity spec 8.2) read through Platform::read_line. SIGTTIN is
+// ignored so a backgrounded `wisp_sim &` is never stopped by it (see
+// sim_stdin.hpp).
 
 #include <SDL.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -517,6 +520,7 @@ int main(int argc, char** argv) {
     if (opts.headless) {
         SDL_SetHint(SDL_HINT_AUDIODRIVER, "dummy");
     }
+    signal(SIGTTIN, SIG_IGN);
     if (SDL_Init(SDL_INIT_AUDIO) != 0) {
         // A host with no audio backend at all (e.g. a minimal
         // container image) shouldn't stop the whole

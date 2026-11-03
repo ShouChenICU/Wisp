@@ -77,6 +77,10 @@ struct SimOptions {
 //     integer (the message includes the flag and the value).
 wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv);
 
+// What separates "tap"/"swipe" from its coordinates on a stdin touch line:
+// any run of spaces and tabs.
+inline constexpr const char* kTouchSeparators = " \t";
+
 // Parses one touch line read from stdin (sim_stdin.hpp): "tap <x>,<y>" or
 // "swipe <x1>,<y1>,<x2>,<y2>" (coordinates as for --tap/--swipe), into a
 // step with at_ms 0. Fails with InvalidArgument, quoting the line, for

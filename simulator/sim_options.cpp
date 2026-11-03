@@ -169,12 +169,12 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
 wisp::Result<SimTouchStep> parse_touch_command(const std::string& line) {
     SimTouchStep step;
     std::string coords;
-    if (line.rfind("tap ", 0) == 0) {
-        step.kind = SimTouchStep::Kind::Tap;
-        coords = line.substr(4);
-    } else if (line.rfind("swipe ", 0) == 0) {
-        step.kind = SimTouchStep::Kind::Swipe;
-        coords = line.substr(6);
+    const size_t word_end = line.find_first_of(kTouchSeparators);
+    const std::string word = line.substr(0, word_end);
+    if (word_end != std::string::npos && (word == "tap" || word == "swipe")) {
+        step.kind = word == "tap" ? SimTouchStep::Kind::Tap : SimTouchStep::Kind::Swipe;
+        const size_t start = line.find_first_not_of(kTouchSeparators, word_end);
+        if (start != std::string::npos) coords = line.substr(start);
     }
     const bool tap = step.kind == SimTouchStep::Kind::Tap;
     int xy[4] = {};

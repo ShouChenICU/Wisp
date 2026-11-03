@@ -157,6 +157,10 @@ TEST(SimOptions, ParsesStdinTouchCommands) {
     EXPECT_EQ(tap.y1, 298);
     EXPECT_EQ(tap.x2, 188);
     EXPECT_EQ(tap.y2, 298);
+    auto tabbed = parse_touch_command("tap\t 188,298").value();
+    EXPECT_EQ(tabbed.kind, SimTouchStep::Kind::Tap);
+    EXPECT_EQ(tabbed.x1, 188);
+    EXPECT_EQ(tabbed.y1, 298);
     auto swipe = parse_touch_command("swipe 240,400,240,100").value();
     EXPECT_EQ(swipe.kind, SimTouchStep::Kind::Swipe);
     EXPECT_EQ(swipe.x2, 240);
