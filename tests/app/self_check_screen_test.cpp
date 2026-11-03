@@ -607,7 +607,12 @@ TEST(SelfCheckScreen, ConfirmDialogWidthClampedToSafeArea) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0, "circle",
               /*with_sd=*/false, /*display_size=*/220);
     ASSERT_TRUE(h.app.start());
-    ASSERT_TRUE(h.wait_for_flushes(5));
+    // At 220 px tall a full frame is only ceil(220 / buffer_lines=48) = 5
+    // flushes, and once the screen settles nothing redraws, so waiting
+    // for "more than 5" depends on a follow-up update landing in its own
+    // frame. Any flush means the screen is up; the msgbox wait below does
+    // the real synchronisation.
+    ASSERT_TRUE(h.wait_for_flushes(0));
 
     h.app.bus().publish(wisp::core::Event{"button.power.long", "button.power"});
 
