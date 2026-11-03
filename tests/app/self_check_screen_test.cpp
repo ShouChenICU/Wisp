@@ -12,9 +12,11 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -439,13 +441,13 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
     h.app.stop();
 }
 
-// Spec 5.6: on a non-rectangular screen, nothing the self-check
-// screen draws may land outside its safe_rect() -- the root column itself
-// is now sized/positioned to exactly that rect (see self_check_screen.cpp's
-// build()), so every pixel outside it should be untouched screen
-// background. Checked against a pixel known to always be outside any
-// safe_rect (the very corner, (0, 0)) rather than a hardcoded guess at the
-// theme's background color.
+// Spec 5.6: the root column fills the whole screen so its background is
+// uniform edge to edge, and keeps content inside safe_rect() purely via
+// padding. Horizontally nothing ever lands outside the safe columns;
+// vertically content may scroll through the top/bottom bands, but at
+// rest at the top the top band is untouched. Checked against a pixel
+// known to always be outside any safe_rect (the very corner, (0, 0))
+// rather than a hardcoded guess at the theme's background color.
 TEST(SelfCheckScreen, NoContentOutsideSafeRect) {
     for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
         Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0, shape);
@@ -466,20 +468,88 @@ TEST(SelfCheckScreen, NoContentOutsideSafeRect) {
             size_t idx = (static_cast<size_t>(y) * kSize + x) * 3;
             return std::array<uint8_t, 3>{pixels[idx], pixels[idx + 1], pixels[idx + 2]};
         };
-        // (0, 0) is outside safe_rect() for both shapes under test (margin
-        // 12 for rounded_rect, 71 for circle), so it's always the screen's
-        // own background -- see self_check_screen.cpp's build(): nothing
-        // is placed outside the root column.
         auto background = pixel_at(0, 0);
 
         for (int32_t y = 0; y < kSize; ++y) {
             for (int32_t x = 0; x < kSize; ++x) {
-                if (x >= safe.x1 && x <= safe.x2 && y >= safe.y1 && y <= safe.y2) {
+                bool side_band = x < safe.x1 || x > safe.x2;
+                bool top_band = y < safe.y1;
+                if (!side_band && !top_band) {
                     continue;
                 }
                 ASSERT_EQ(pixel_at(x, y), background) << shape << " " << x << "," << y;
             }
         }
+
+        h.app.stop();
+    }
+}
+
+// Spec 5.6 scroll rule: the scrolling root column spans the full screen
+// and pads its content by the safe inset, so at either scroll extreme the
+// first/last row rests fully inside safe_rect() -- nothing is reachable
+// only by looking into a corner.
+TEST(SelfCheckScreen, ScrollExtremesRestInsideSafeRect) {
+    for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
+        Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0, shape);
+        ASSERT_TRUE(h.app.start());
+        ASSERT_TRUE(h.wait_for_flushes(5));
+
+        auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
+        ASSERT_TRUE(shape_result) << shape;
+        wisp::hal::Area safe = wisp::hal::safe_rect(shape_result.value());
+
+        // Returns "x1,y1,x2,y2" of the root column, then of its first and
+        // last child, after scrolling to `bottom` (or the top).
+        auto probe = [&](bool bottom) {
+            return run_on_ui_thread(h.app.ui(), [bottom] {
+                lv_obj_t* col = lv_obj_get_child(lv_screen_active(), 0);
+                if (bottom) {
+                    lv_obj_scroll_to_y(col, LV_COORD_MAX, LV_ANIM_OFF);
+                } else {
+                    lv_obj_scroll_to_y(col, 0, LV_ANIM_OFF);
+                }
+                lv_obj_update_layout(col);
+                std::string out;
+                auto add = [&](lv_obj_t* o) {
+                    lv_area_t a;
+                    lv_obj_get_coords(o, &a);
+                    out += std::to_string(a.x1) + "," + std::to_string(a.y1) + "," +
+                           std::to_string(a.x2) + "," + std::to_string(a.y2) + ";";
+                };
+                add(col);
+                uint32_t n = lv_obj_get_child_count(col);
+                add(lv_obj_get_child(col, 0));
+                add(lv_obj_get_child(col, n - 1));
+                return out;
+            });
+        };
+        auto parse = [](const std::string& text) {
+            std::vector<wisp::hal::Area> areas;
+            std::stringstream ss(text);
+            std::string item;
+            while (std::getline(ss, item, ';')) {
+                wisp::hal::Area a{};
+                std::sscanf(item.c_str(), "%d,%d,%d,%d", &a.x1, &a.y1, &a.x2, &a.y2);
+                areas.push_back(a);
+            }
+            return areas;
+        };
+        auto inside = [&](const wisp::hal::Area& a) {
+            return a.x1 >= safe.x1 && a.x2 <= safe.x2 && a.y1 >= safe.y1 && a.y2 <= safe.y2;
+        };
+
+        auto top = parse(probe(false));
+        ASSERT_EQ(top.size(), 3u);
+        EXPECT_EQ(top[0].x1, 0) << shape;
+        EXPECT_EQ(top[0].y1, 0) << shape;
+        EXPECT_EQ(top[0].x2, 479) << shape;
+        EXPECT_EQ(top[0].y2, 479) << shape;
+        EXPECT_TRUE(inside(top[1])) << shape << " first row at scroll top";
+
+        auto bottom = parse(probe(true));
+        ASSERT_EQ(bottom.size(), 3u);
+        EXPECT_TRUE(inside(bottom[2])) << shape << " last row at scroll end";
 
         h.app.stop();
     }

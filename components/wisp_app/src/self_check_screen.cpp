@@ -366,18 +366,26 @@ void SelfCheck::build() {
     lv_obj_t* screen = lv_screen_active();
     lv_obj_t* col = lv_obj_create(screen);
     root_ = col;
-    // The root column's position and size are exactly the display's safe
-    // area (spec 5.6), not the full screen -- LVGL clips children to
-    // their parent's box by default, so nothing any build_*_section()
-    // below adds can ever land outside it. An 8px inner padding on all
-    // four sides keeps text off the safe area's own edge; no separate
-    // corner margin is needed since the safe area already accounts for
-    // the screen's shape.
+    // The root column fills the whole screen with no background or radius
+    // of its own, so the screen reads as one uniform surface edge to
+    // edge; content is kept off the invisible parts purely by padding
+    // (spec 5.6). Each side pads by that side's safe inset plus 8px, so:
+    // horizontally nothing ever leaves the safe columns, and vertically
+    // rows may scroll through the top/bottom bands (corners) but at either
+    // scroll extreme the first/last row rests fully inside the safe area.
     hal::Area safe = compute_safe_area();
-    lv_obj_set_pos(col, safe.x1, safe.y1);
-    lv_obj_set_size(col, safe.x2 - safe.x1 + 1, safe.y2 - safe.y1 + 1);
+    int32_t screen_w = lv_display_get_horizontal_resolution(nullptr);
+    int32_t screen_h = lv_display_get_vertical_resolution(nullptr);
+    constexpr int32_t kInnerPad = 8;
+    lv_obj_set_pos(col, 0, 0);
+    lv_obj_set_size(col, screen_w, screen_h);
     lv_obj_set_style_border_width(col, 0, 0);
-    lv_obj_set_style_pad_all(col, 8, 0);
+    lv_obj_set_style_radius(col, 0, 0);
+    lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_left(col, safe.x1 + kInnerPad, 0);
+    lv_obj_set_style_pad_right(col, screen_w - 1 - safe.x2 + kInnerPad, 0);
+    lv_obj_set_style_pad_top(col, safe.y1 + kInnerPad, 0);
+    lv_obj_set_style_pad_bottom(col, screen_h - 1 - safe.y2 + kInnerPad, 0);
     lv_obj_set_style_pad_row(col, 10, 0);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(col, LV_DIR_VER);
