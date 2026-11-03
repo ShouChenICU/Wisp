@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -31,6 +32,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -704,6 +706,117 @@ TEST(SelfCheckScreen, RebuildsInNewLanguage) {
         3000));
     EXPECT_TRUE(wait_until([&] { return !has_button("はい"); }, 3000));
 
+    h.app.stop();
+}
+
+// A loopback status other than "Ready" is kept across a language switch and
+// re-rendered in the new language. The harness board has no audio devices,
+// so the run fails at once with not_found.
+TEST(SelfCheckScreen, LoopbackStatusIsRetranslatedOnLanguageSwitch) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+    auto find_on_screen = [&](const char* needle) {
+        return run_on_ui_thread(h.app.ui(), [needle] {
+            return find_label_text_containing(lv_screen_active(), needle);
+        });
+    };
+
+    EXPECT_EQ(run_on_ui_thread(h.app.ui(),
+                               [] {
+                                   lv_obj_t* btn =
+                                       find_button_with_label(lv_screen_active(), "录音回放");
+                                   if (btn == nullptr) return std::string();
+                                   lv_obj_send_event(btn, LV_EVENT_CLICKED, nullptr);
+                                   return std::string("clicked");
+                               }),
+              "clicked");
+    ASSERT_TRUE(wait_until([&] { return !find_on_screen("失败: not_found").empty(); }, 3000));
+
+    ASSERT_TRUE(h.app.system_settings().set({{"language", "en"}}));
+    ASSERT_TRUE(wait_until([&] { return !find_on_screen("Devices").empty(); }, 3000));
+    EXPECT_FALSE(find_on_screen("Failed: not_found").empty());
+    EXPECT_TRUE(find_on_screen("Ready").empty());
+
+    h.app.stop();
+}
+
+// A rebuild keeps the column where the user had scrolled it. On the small
+// 220 px panel the column scrolls well past 200 px.
+TEST(SelfCheckScreen, RebuildKeepsTheScrollPosition) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
+              "rounded_rect", /*with_sd=*/false, /*display_size=*/220);
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+    auto scroll_state = [&] {
+        return run_on_ui_thread(h.app.ui(), [] {
+            lv_obj_t* col = lv_obj_get_child(lv_screen_active(), 0);
+            lv_obj_update_layout(col);
+            return std::to_string(lv_obj_get_scroll_y(col)) + " " +
+                   std::to_string(lv_obj_get_scroll_y(col) + lv_obj_get_scroll_bottom(col));
+        });
+    };
+    run_on_ui_blocking(h.app.ui(), [] {
+        lv_obj_t* col = lv_obj_get_child(lv_screen_active(), 0);
+        lv_obj_update_layout(col);
+        lv_obj_scroll_to_y(col, 200, LV_ANIM_OFF);
+    });
+    int32_t before = 0;
+    int32_t max_before = 0;
+    ASSERT_EQ(std::sscanf(scroll_state().c_str(), "%d %d", &before, &max_before), 2);
+    ASSERT_EQ(before, 200) << "the column must be tall enough to scroll to 200";
+
+    ASSERT_TRUE(h.app.system_settings().set({{"language", "ja"}}));
+    auto find_on_screen = [&](const char* needle) {
+        return run_on_ui_thread(h.app.ui(), [needle] {
+            return find_label_text_containing(lv_screen_active(), needle);
+        });
+    };
+    ASSERT_TRUE(wait_until([&] { return !find_on_screen("デバイス一覧").empty(); }, 3000));
+
+    int32_t after = 0;
+    int32_t max_after = 0;
+    ASSERT_EQ(std::sscanf(scroll_state().c_str(), "%d %d", &after, &max_after), 2);
+    EXPECT_EQ(after, std::min<int32_t>(200, max_after));
+
+    h.app.stop();
+}
+
+// If the system.settings event never reaches the screen (the bus queue
+// drops its oldest event when full), the refresh timer still notices the
+// stored language and rebuilds. The bus dispatcher is held inside a
+// handler so the event cannot be delivered, then flooded so it is
+// dropped.
+TEST(SelfCheckScreen, LanguageFollowsSettingsWhenTheEventIsLost) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    auto block_sub = h.app.bus().subscribe("test.block", [&](const wisp::core::Event&) {
+        entered.give();
+        release.take(wisp::os::kForever);
+    });
+    h.app.bus().publish(wisp::core::Event{"test.block", "test"});
+    ASSERT_TRUE(entered.take(3000));
+
+    ASSERT_TRUE(h.app.system_settings().set({{"language", "en"}}));
+    for (int i = 0; i < 256; ++i) {
+        h.app.bus().publish(wisp::core::Event{"test.flood", "test"});
+    }
+
+    auto find_on_screen = [&](const char* needle) {
+        return run_on_ui_thread(h.app.ui(), [needle] {
+            return find_label_text_containing(lv_screen_active(), needle);
+        });
+    };
+    bool switched = wait_until([&] { return !find_on_screen("Devices").empty(); }, 3000);
+    release.give();
+    EXPECT_TRUE(switched);
+    EXPECT_EQ(wisp::ui::lang(), wisp::ui::Lang::En);
+
+    h.app.bus().unsubscribe(block_sub);
     h.app.stop();
 }
 

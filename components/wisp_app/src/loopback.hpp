@@ -8,28 +8,45 @@
 // lifetime is tied to the owning App (reset_loopback()/join_loopback()).
 
 #include <functional>
+#include <string>
+
+#include "wisp/base/error.hpp"
+#include "wisp/ui/strings.hpp"
 
 namespace wisp::app {
 
 class App;
 
+// One step of a loopback run. Carries the string id rather than text so
+// the text is only made where it is shown, on the UI thread, in the
+// language current there (see ui::tr()); the screen keeps the last one and
+// re-renders it after a language switch.
+struct LoopbackStatus {
+    ui::StrId id = ui::StrId::LoopReady;
+    // Set only with LoopFailed: what failed.
+    ErrorCode error = ErrorCode::Ok;
+};
+
+// The status as shown on screen in the current language, e.g. "录音中" or
+// "失败: not_found". Call on the UI thread.
+std::string loopback_status_text(const LoopbackStatus& status);
+
 // Must be called from any thread other than the "wisp.loop" task itself.
 // Spawns (and this call returns without waiting for) a "wisp.loop" task
 // that:
 //   1. opens "audio_in.main", records 3s (16kHz mono, a 96000-byte
-//      os::alloc(Mem::Large) buffer) and calls on_status(LoopRecording)
-//      right before recording starts;
-//   2. closes audio_in, opens "audio_out.main", calls
-//      on_status(LoopPlaying) right before playback starts, writes the
-//      recorded buffer, closes audio_out;
-//   3. calls on_status(LoopDone).
+//      os::alloc(Mem::Large) buffer) and reports LoopRecording right
+//      before recording starts;
+//   2. closes audio_in, opens "audio_out.main", reports LoopPlaying right
+//      before playback starts, writes the recorded buffer, closes
+//      audio_out;
+//   3. reports LoopDone.
 // On any failure (device missing, open()/read()/write() erroring, or
-// os::Task::spawn() itself failing), calls on_status("<LoopFailed>:
-// <error code>") and stops early (skipping whichever steps hadn't
-// started yet). Each status is the ui::tr() text of that StrId in the
-// device UI language current when it is sent. `on_status` runs on the "wisp.loop" task, not the
-// caller's thread -- the caller (self_check_screen.cpp) marshals it back to the UI thread itself
-// via ui::UiRuntime::post().
+// os::Task::spawn() itself failing), reports LoopFailed with the error
+// code and stops early (skipping whichever steps hadn't started yet).
+// `on_status` runs on the "wisp.loop" task, not the caller's thread; the
+// caller (self_check_screen.cpp) marshals it to the UI thread itself via
+// ui::UiRuntime::post().
 //
 // This call is ignored outright (no task spawned, no on_status call at
 // all) if a previous run_loopback() task for this `App` is still running
@@ -40,7 +57,7 @@ class App;
 // task that starts after join_loopback() has already returned and so
 // never gets joined, outliving the SelfCheck whose label its on_status
 // callback would otherwise touch after it's been freed).
-void run_loopback(App& app, std::function<void(const char* status)> on_status);
+void run_loopback(App& app, std::function<void(const LoopbackStatus&)> on_status);
 
 // Marks `app` as stopping (so every subsequent run_loopback() call on it
 // is ignored, per the note above) and blocks until any in-flight

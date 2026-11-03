@@ -25,6 +25,7 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/core/system_settings.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -171,6 +172,9 @@ private:
     void on_power_event(const core::Event& e);
     void subscribe_settings();
     void on_settings_event(const core::Event& e);
+    // Brings ui::lang() in line with the stored language, rebuilding if it
+    // changed. UI thread only.
+    void sync_language();
     void handle_power_key_action(PowerKeyController::Action action);
     void show_confirm_dialog();
     void close_confirm_dialog();
@@ -224,6 +228,13 @@ private:
     lv_obj_t* touch_label_ = nullptr;
     lv_obj_t* button_label_ = nullptr;
     lv_obj_t* loop_status_label_ = nullptr;
+    // The last loopback status shown, re-rendered by rebuild(). UI thread
+    // only.
+    LoopbackStatus loop_status_;
+    // SystemSettings::revision() as of the last sync_language(); empty
+    // until the first one, which always reads the stored language. UI
+    // thread only.
+    std::optional<uint32_t> language_revision_;
     lv_obj_t* perf_label_ = nullptr;
     lv_obj_t* msgbox_ = nullptr;
     lv_obj_t* msgbox_yes_ = nullptr;
@@ -641,7 +652,7 @@ void SelfCheck::build_loopback_section(lv_obj_t* col) {
 
     loop_status_label_ = make_row_label(row);
     lv_obj_set_flex_grow(loop_status_label_, 1);
-    lv_label_set_text(loop_status_label_, ui::tr(ui::StrId::LoopReady));
+    lv_label_set_text(loop_status_label_, loopback_status_text(loop_status_).c_str());
 }
 
 void SelfCheck::build_perf_section(lv_obj_t* col) {
@@ -851,25 +862,35 @@ void SelfCheck::subscribe_settings() {
 }
 
 void SelfCheck::on_settings_event(const core::Event& e) {
-    auto it = e.payload.find("language");
-    if (it == e.payload.end() || it->second.type() != Value::Type::String) {
+    if (e.payload.find("language") == e.payload.end()) {
         return;
     }
-    std::optional<ui::Lang> lang = ui::parse_lang(it->second.as_string());
-    if (!lang) {
+    // The language itself is read back from SystemSettings on the UI
+    // thread rather than taken from the payload, so a stale event queued
+    // behind a newer change can never switch the screen back. If this
+    // post is dropped, the refresh timer's sync_language() still catches
+    // the change.
+    if (!ui_->post([this] { sync_language(); })) {
+        WLOG_W("self_check", "post(language change) dropped (post queue full)");
+    }
+}
+
+void SelfCheck::sync_language() {
+    // The revision is read before the value: a change stored in between
+    // moves it again, so the next sync reads the value once more.
+    uint32_t revision = app_.system_settings().revision();
+    if (language_revision_ == revision) {
+        return;
+    }
+    language_revision_ = revision;
+    std::optional<ui::Lang> lang = ui::parse_lang(app_.system_settings().get().language);
+    if (!lang || *lang == ui::lang()) {
         return;
     }
     // set_lang() and the rebuild run together on the UI thread, so no
     // label is ever built half in the old language and half in the new.
-    if (!ui_->post([this, l = *lang] {
-            if (l == ui::lang()) {
-                return;
-            }
-            ui::set_lang(l);
-            rebuild();
-        })) {
-        WLOG_W("self_check", "post(language change) dropped (post queue full)");
-    }
+    ui::set_lang(*lang);
+    rebuild();
 }
 
 void SelfCheck::handle_power_key_action(PowerKeyController::Action action) {
@@ -974,9 +995,11 @@ void SelfCheck::do_power_off() {
 }
 
 void SelfCheck::start_loopback() {
-    run_loopback(app_, [this](const char* status) {
-        std::string text = status;
-        ui_->post([this, text] { lv_label_set_text(loop_status_label_, text.c_str()); });
+    run_loopback(app_, [this](const LoopbackStatus& status) {
+        ui_->post([this, status] {
+            loop_status_ = status;
+            lv_label_set_text(loop_status_label_, loopback_status_text(status).c_str());
+        });
     });
 }
 
@@ -988,6 +1011,9 @@ void SelfCheck::toggle_perf_overlay() {
 
 void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     auto* self = static_cast<SelfCheck*>(lv_timer_get_user_data(timer));
+    // The fallback for a lost system.settings event: one atomic load per
+    // tick while nothing changes.
+    self->sync_language();
     self->refresh_ui();
 }
 

@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -34,18 +35,19 @@ bool valid_language(const Value& v) {
     return code == "zh" || code == "ja" || code == "en";
 }
 
-const KeySpec kKeys[] = {
-    {"brightness", "display", "brightness", Value(200),
-     [](const Value& v) { return int_in(v, 10, 255); }},
-    {"volume", "audio", "volume", Value(60), [](const Value& v) { return int_in(v, 0, 100); }},
-    {"screen_off_s", "power", "screen_off_s", Value(60),
-     [](const Value& v) { return int_in(v, 0, 0) || int_in(v, 15, 3600); }},
-    {"language", "sys", "lang", Value("zh"), valid_language},
-};
+const KeySpec kBrightness{"brightness", "display", "brightness", Value(200),
+                          [](const Value& v) { return int_in(v, 10, 255); }};
+const KeySpec kVolume{"volume", "audio", "volume", Value(60),
+                      [](const Value& v) { return int_in(v, 0, 100); }};
+const KeySpec kScreenOff{"screen_off_s", "power", "screen_off_s", Value(60),
+                         [](const Value& v) { return int_in(v, 0, 0) || int_in(v, 15, 3600); }};
+const KeySpec kLanguage{"language", "sys", "lang", Value("zh"), valid_language};
 
-const KeySpec* find_spec(const std::string& name) {
-    for (const auto& spec : kKeys) {
-        if (name == spec.name) return &spec;
+const KeySpec* const kKeys[] = {&kBrightness, &kVolume, &kScreenOff, &kLanguage};
+
+const KeySpec* find_spec(std::string_view name) {
+    for (const KeySpec* spec : kKeys) {
+        if (name == spec->name) return spec;
     }
     return nullptr;
 }
@@ -80,13 +82,15 @@ SystemSettings::SystemSettings(SettingsBackend& backend,
       on_changed_(std::move(on_changed)) {}
 
 SystemSettingsValues SystemSettings::get() const {
-    return SystemSettingsValues{
-        static_cast<int>(read(backend_, kKeys[0]).as_int()),
-        static_cast<int>(read(backend_, kKeys[1]).as_int()),
-        static_cast<int>(read(backend_, kKeys[2]).as_int()),
-        read(backend_, kKeys[3]).as_string(),
-    };
+    SystemSettingsValues values;
+    values.brightness = static_cast<int>(read(backend_, kBrightness).as_int());
+    values.volume = static_cast<int>(read(backend_, kVolume).as_int());
+    values.screen_off_s = static_cast<int>(read(backend_, kScreenOff).as_int());
+    values.language = read(backend_, kLanguage).as_string();
+    return values;
 }
+
+uint32_t SystemSettings::revision() const { return revision_.load(std::memory_order_acquire); }
 
 Result<void> SystemSettings::set(const std::map<std::string, Value>& changes) {
     for (const auto& [name, value] : changes) {
@@ -129,6 +133,7 @@ Result<void> SystemSettings::set(const std::map<std::string, Value>& changes) {
         written.push_back(Undo{spec, std::move(previous)});
     }
 
+    revision_.fetch_add(1, std::memory_order_acq_rel);
     auto brightness = changes.find("brightness");
     if (brightness != changes.end() && apply_brightness_) {
         apply_brightness_(static_cast<uint8_t>(brightness->second.as_int()));

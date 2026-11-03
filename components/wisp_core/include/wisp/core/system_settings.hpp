@@ -9,11 +9,13 @@
 // The consumers (App at boot, the audio path, PowerManager::tick()) read
 // these keys fresh, so only brightness needs an explicit "apply now" hook.
 // The device UI language follows `on_changed` (spec 8.3): App publishes it
-// as the system.settings event and the UI rebuilds its text from that.
+// as the system.settings event and the UI rebuilds its text from that,
+// with revision() as the fallback when that event is lost.
 //
 // Thread-safe: set() calls are serialized so concurrent batches cannot
 // interleave their writes or rollbacks.
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -53,6 +55,12 @@ public:
 
     SystemSettingsValues get() const;
 
+    // Moves (wrapping) every time a batch is stored, before the hooks run;
+    // rejected, empty and rolled-back batches leave it alone. Lets a poller
+    // that may have missed `on_changed`'s event notice a change with one
+    // atomic load instead of reading storage each time.
+    uint32_t revision() const;
+
     // Keys are "brightness", "volume", "screen_off_s" (integers) and
     // "language" (a string). An unknown key, a value of the wrong type or
     // an out-of-range value fails the whole batch with InvalidArgument
@@ -66,6 +74,7 @@ private:
     std::function<void(uint8_t)> apply_brightness_;
     std::function<void(const SystemSettingsValues&)> on_changed_;
     os::Mutex mutex_;
+    std::atomic<uint32_t> revision_{0};
 };
 
 }  // namespace wisp::core

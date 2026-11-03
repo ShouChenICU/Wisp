@@ -88,6 +88,7 @@ class PairingService;
 namespace wisp::app {
 
 class PowerManager;
+struct LoopbackStatus;
 
 // Everything App needs that varies by port/board. Constructed by the
 // simulator main or the ESP firmware main and handed
@@ -231,7 +232,7 @@ private:
     // so each App's "wisp.loop" task is tracked on that App itself
     // (torn down by App::stop() before EventBus/UiRuntime stop -- see
     // app.hpp's Lifetime note) rather than in a process-wide static.
-    friend void run_loopback(App&, std::function<void(const char* status)>);
+    friend void run_loopback(App&, std::function<void(const LoopbackStatus&)>);
     friend void join_loopback(App&);
     // Clears the "stopping" flag join_loopback() sets, so loopback works
     // again after a start()/stop()/start() cycle on the same App -- see

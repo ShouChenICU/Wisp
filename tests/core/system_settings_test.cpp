@@ -137,6 +137,23 @@ TEST(SystemSettings, ReportsEachStoredBatch) {
     EXPECT_EQ(fx.changed[1].language, "ja");
 }
 
+// revision() lets a poller notice a change without reading storage: it
+// moves on every stored batch and on nothing else.
+TEST(SystemSettings, RevisionMovesOnEachStoredBatch) {
+    Fixture fx;
+    uint32_t r0 = fx.settings.revision();
+    ASSERT_TRUE(fx.settings.set({{"language", "en"}}));
+    uint32_t r1 = fx.settings.revision();
+    EXPECT_NE(r1, r0);
+
+    EXPECT_FALSE(fx.settings.set({{"language", "fr"}}));
+    EXPECT_TRUE(fx.settings.set({}));
+    EXPECT_EQ(fx.settings.revision(), r1);
+
+    ASSERT_TRUE(fx.settings.set({{"volume", 10}}));
+    EXPECT_NE(fx.settings.revision(), r1);
+}
+
 TEST(SystemSettings, AppliesBrightnessImmediately) {
     Fixture fx;
     ASSERT_TRUE(fx.settings.set({{"brightness", 100}}));
@@ -198,6 +215,7 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     FlakyBackend flaky(inner, /*fail_on_set=*/3);
     std::vector<uint8_t> applied;
     SystemSettings settings(flaky, [&](uint8_t level) { applied.push_back(level); });
+    uint32_t revision = settings.revision();
 
     // Written in key order: brightness, language, then screen_off_s fails.
     auto r = settings.set(
@@ -210,6 +228,7 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     EXPECT_EQ(v.screen_off_s, 60);
     EXPECT_EQ(v.language, "zh");
     EXPECT_TRUE(applied.empty());
+    EXPECT_EQ(settings.revision(), revision);
     // Keys that never existed are removed again, not left at a default.
     EXPECT_EQ(inner.get("display", "brightness").error().code, ErrorCode::NotFound);
     EXPECT_EQ(inner.get("sys", "lang").error().code, ErrorCode::NotFound);
