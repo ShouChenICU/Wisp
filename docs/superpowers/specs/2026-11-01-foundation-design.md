@@ -236,8 +236,7 @@ wisp/
 │   ├── main/                  # app_main：选择板子 → 注入 port → 启动
 │   ├── CMakeLists.txt
 │   ├── idf_component.yml      # 依赖锁定版本
-│   ├── sdkconfig.defaults
-│   └── partitions.csv
+│   └── sdkconfig.defaults     # 与板子无关的公共配置
 ├── simulator/                 # PC 工程：cmake + SDL2
 │   ├── CMakeLists.txt         # LVGL 等依赖用 FetchContent 拉取，版本与固件一致
 │   └── main.cpp
@@ -250,6 +249,7 @@ wisp/
 │   └── wisp_port_sim/
 ├── boards/
 │   └── waveshare_amoled_216/  # esp_board_manager YAML + setup_device.c + board.cpp
+│                              # + partitions.csv + sdkconfig.defaults.board（见连接 spec 3）
 ├── drivers/                   # 组件库中没有的芯片驱动（从 MyOS 移植）
 ├── tests/                     # 可移植层单元测试（PC 运行）
 ├── tools/                     # check_layering.py、ci.sh、字体脚本等

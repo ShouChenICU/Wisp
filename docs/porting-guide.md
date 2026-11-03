@@ -58,6 +58,7 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 | `Imu` | `accel`、`gyro`、`magnetometer`、`max_rate_hz` |
 | `Power` | `battery`、`charging_status` |
 | `Storage` | `removable`、`fs` |
+| `Network` | `ap`（bool，是否支持热点 `start_ap()`；为 false 时 `WifiService` 不开配网热点）、`bands`（频段列表，如 `["2.4GHz"]`） |
 
 `Display` 的 `safe_area` 不用自己算——`DeviceRegistry::manifest()` 用 `wisp::hal::safe_rect()` 从 `shape`/`corner_radius`/`width`/`height` 派生，设备只管填 `shape`。缺失或无法识别的 `shape` 按 `circle`（最保守）处理并告警。
 
