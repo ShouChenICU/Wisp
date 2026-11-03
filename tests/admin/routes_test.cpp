@@ -242,15 +242,23 @@ TEST(Routes, WifiAddScanAndConnect) {
     EXPECT_EQ(field(status, "ssid"), Value("Home"));
     EXPECT_EQ(field(status, "ip"), Value("192.168.1.50"));
     EXPECT_EQ(field(status, "rssi"), Value(-50));
-    EXPECT_EQ(field(status, "saved"), Value(List{Value("Home"), Value("x")}));
+    EXPECT_EQ(field(status, "ssid_hex"), Value("486f6d65"));
+    EXPECT_EQ(field(status, "saved"), Value(List{Value(Map{{"ssid", Value("Home")},
+                                                           {"ssid_hex", Value("486f6d65")},
+                                                           {"auth_failed", Value(false)}}),
+                                                 Value(Map{{"ssid", Value("x")},
+                                                           {"ssid_hex", Value("78")},
+                                                           {"auth_failed", Value(false)}})}));
     EXPECT_FALSE(contains(wisp::to_json(status), "correct-horse"));
 
     Value scan = body_json(f.srv->handle(authed(token, Get, "/api/v1/wifi/scan")));
     EXPECT_EQ(scan, Value(Map{{"networks", Value(List{Value(Map{{"ssid", Value("Home")},
+                                                                {"ssid_hex", Value("486f6d65")},
                                                                 {"rssi", Value(-50)},
                                                                 {"secured", Value(true)},
                                                                 {"saved", Value(true)}}),
                                                       Value(Map{{"ssid", Value("Cafe")},
+                                                                {"ssid_hex", Value("43616665")},
                                                                 {"rssi", Value(-70)},
                                                                 {"secured", Value(false)},
                                                                 {"saved", Value(false)}})})}}));
@@ -268,6 +276,69 @@ TEST(Routes, WifiStatusReportsFailureReason) {
     Value status = body_json(f.srv->handle(authed(token, Get, "/api/v1/wifi")));
     EXPECT_EQ(field(status, "state"), Value("backoff"));
     EXPECT_EQ(field(status, "reason"), Value("auth_failed"));
+    // The rejected network says so, so the page can ask for the password.
+    EXPECT_EQ(field(status, "saved"), Value(List{Value(Map{{"ssid", Value("Home")},
+                                                           {"ssid_hex", Value("486f6d65")},
+                                                           {"auth_failed", Value(true)}})}));
+}
+
+// SSIDs are raw bytes and need not be UTF-8 (GBK routers are common), but
+// JSON strings can only carry UTF-8: "ssid" is lossy for such networks, so
+// every SSID also travels as "ssid_hex" and can be sent back that way.
+TEST(Routes, WifiNonUtf8SsidRoundTripsThroughHex) {
+    AdminFixture f;
+    const std::string token = f.token();
+    const std::string gbk = "\xc4\xe3\xba\xc3";  // "你好" in GBK
+    f.fake_wifi->networks = {{gbk, -50, true}};
+    f.fake_wifi->passwords[gbk] = "correct-horse";
+
+    Value scan = body_json(f.srv->handle(authed(token, Get, "/api/v1/wifi/scan")));
+    const Value& entry = field(scan, "networks").as_list().at(0);
+    EXPECT_EQ(field(entry, "ssid_hex"), Value("c4e3bac3"));
+    EXPECT_NE(field(entry, "ssid"), Value(gbk));  // the JSON string is lossy
+
+    ASSERT_EQ(f.srv
+                  ->handle(authed(token, Post, "/api/v1/wifi/networks",
+                                  R"({"ssid_hex":"c4e3bac3","password":"correct-horse"})"))
+                  .status,
+              202);
+    EXPECT_EQ(f.wifi->saved_ssids(), (std::vector<std::string>{gbk}));
+    f.wifi->tick(f.now);
+    f.wifi->tick(f.now);
+    Value status = body_json(f.srv->handle(authed(token, Get, "/api/v1/wifi")));
+    EXPECT_EQ(field(status, "state"), Value("connected"));
+    EXPECT_EQ(field(status, "ssid_hex"), Value("c4e3bac3"));
+    const Value& saved = field(status, "saved").as_list().at(0);
+    EXPECT_EQ(field(saved, "ssid_hex"), Value("c4e3bac3"));
+
+    // Uppercase hex is accepted too; the path form takes the raw bytes.
+    ASSERT_EQ(f.srv
+                  ->handle(authed(token, Post, "/api/v1/wifi/networks",
+                                  R"({"ssid_hex":"C4E3BAC3","password":"correct-horse"})"))
+                  .status,
+              202);
+    EXPECT_EQ(f.wifi->saved_ssids(), (std::vector<std::string>{gbk}));
+    EXPECT_EQ(f.srv->handle(authed(token, Delete, "/api/v1/wifi/networks/%C4%E3%BA%C3")).status,
+              204);
+    EXPECT_TRUE(f.wifi->saved_ssids().empty());
+}
+
+TEST(Routes, WifiAddNeedsExactlyOneSsidForm) {
+    AdminFixture f;
+    const std::string token = f.token();
+    for (const char* body : {
+             R"({"ssid":"Home","ssid_hex":"486f6d65","password":"12345678"})",  // both
+             R"({"password":"12345678"})",                                      // neither
+             R"({"ssid_hex":"486f6d6"})",                                       // odd length
+             R"({"ssid_hex":"486f6d6g"})",                                      // not hex
+             R"({"ssid_hex":""})",                                              // empty SSID
+             R"({"ssid_hex":486})",                                             // not a string
+         }) {
+        HttpResponse r = f.srv->handle(authed(token, Post, "/api/v1/wifi/networks", body));
+        EXPECT_EQ(r.status, 400) << body;
+        EXPECT_EQ(error_code(r), "invalid_argument") << body;
+    }
+    EXPECT_TRUE(f.wifi->saved_ssids().empty());
 }
 
 TEST(Routes, WifiNetworkDeleteDecodesSsid) {

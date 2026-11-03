@@ -80,6 +80,16 @@ struct ScanResult {
     bool saved = false;
 };
 
+// A saved network as callers may see it: no password.
+struct SavedNetwork {
+    std::string ssid;
+    // The last attempt on this network was rejected for its password. Such
+    // a network is left out of automatic selection until add_network()
+    // gives it new credentials, so a wrong password on a stronger network
+    // cannot keep the device away from one that works (spec 4.2).
+    bool auth_failed = false;
+};
+
 struct WifiServiceConfig {
     uint32_t backoff_min_ms = 5000, backoff_max_ms = 300000;
     uint32_t ap_idle_timeout_ms = 600000, ap_linger_ms = 30000;
@@ -124,9 +134,10 @@ public:
     Result<std::vector<ScanResult>> scan();
 
     // SSID 1-32 bytes; password empty (open network) or 8-63 bytes, else
-    // InvalidArgument. Re-adding a saved SSID replaces its password. A
-    // sixth distinct SSID fails with QuotaExceeded. On success the list is
-    // persisted and the next tick() connects to exactly this network.
+    // InvalidArgument. Re-adding a saved SSID replaces its password and
+    // clears its auth_failed flag. A sixth distinct SSID fails with
+    // QuotaExceeded. On success the list is persisted and the next tick()
+    // connects to exactly this network.
     Result<void> add_network(std::string_view ssid, std::string_view password, uint64_t now_ms);
 
     // NotFound if not saved. Forgetting the network currently in use drops
@@ -134,6 +145,8 @@ public:
     Result<void> forget_network(std::string_view ssid);
 
     std::vector<std::string> saved_ssids() const;
+    // Saved networks in the order they were first added.
+    std::vector<SavedNetwork> saved_networks() const;
 
     // Starts the hotspot "Wisp-XXXX" (last two MAC bytes, uppercase hex)
     // with a fresh 8-character [A-Za-z0-9] password. Calling it while a
@@ -154,6 +167,7 @@ private:
     struct Network {
         std::string ssid;
         std::string password;
+        bool auth_failed = false;  // see SavedNetwork::auth_failed
     };
 
     // What tick() decided to do with the radio, computed under mutex_ and
@@ -167,6 +181,9 @@ private:
     std::string wifi_path() const;
     Result<void> persist_locked(const std::vector<Network>& networks);
     const Network* find_locked(std::string_view ssid) const;
+    // Flags a saved network after its password was rejected and persists
+    // the flag; no-op for unsaved or already flagged networks.
+    void mark_auth_failed_locked(const std::string& ssid);
 
     void set_state_locked(WifiState state, std::string ssid, std::string ip, int rssi);
     void publish_ap_locked(bool active, const std::string& ssid);

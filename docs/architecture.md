@@ -63,7 +63,7 @@
 | `storage.sd.inserted` / `storage.sd.removed` | `core::StorageManager` | SD 卡插拔检测 |
 | `system.boot.completed` | `app::App` | 启动流程第 5 步收尾时发布 |
 | `system.settings` | `app::App`（`core::SystemSettings` 的 `on_changed` 回调） | 每批设置写入成功后发布（连接 spec 8.3），`payload = {"brightness": int, "volume": int, "screen_off_s": int, "language": "zh"\|"ja"\|"en"}`，即写入后的全部当前值（与 `GET /settings` 同形）；自检界面据 `language` 在 UI 线程上 `ui::set_lang()` 并重建文字 |
-| `net.wifi.state` | `net::WifiService` | 状态变化时发布，`payload = {"state": "off"\|"connecting"\|"backoff"\|"connected", "ssid": string, "ip": string, "rssi": int, "reason": ""\|"not_found"\|"auth_failed"\|"other"}`；`reason` 只在 `backoff` 时非空；`Event::source` 为设备 id（`net.wifi`）。不含密码 |
+| `net.wifi.state` | `net::WifiService` | 状态变化时发布，`payload = {"state": "off"\|"connecting"\|"backoff"\|"connected", "ssid": string, "ssid_hex": string（SSID 原始字节的小写十六进制，见连接 spec 6.1）, "ip": string, "rssi": int, "reason": ""\|"not_found"\|"auth_failed"\|"other"}`；`reason` 只在 `backoff` 时非空；`Event::source` 为设备 id（`net.wifi`）。不含密码 |
 | `net.ap.state` | `net::WifiService` | 配网热点开关时发布，`payload = {"active": bool, "ssid": string, "clients": int}`，不含热点密码 |
 | `net.pairing.code` | `net::PairingService` | 发出配对码时 `{"active": true, "expires_ms": int}`（`os::now_ms()` 时间基准下的截止时刻），失效时 `{"active": false, "expires_ms": 0}`；不含配对码 |
 | `net.pairing.failed` | `net::PairingService` | 配对码错误时 `{"attempts": int, "locked": bool}` |

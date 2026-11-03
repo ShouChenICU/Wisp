@@ -628,10 +628,10 @@ TEST(WifiService, StateEventsCarryNoPassword) {
         if (e.topic == "net.wifi.state") {
             ++wifi_events;
             EXPECT_EQ(e.source, "net.wifi");
-            EXPECT_EQ(e.payload.size(), 5u) << json;
+            EXPECT_EQ(e.payload.size(), 6u) << json;
             EXPECT_TRUE(e.payload.count("state") && e.payload.count("ssid") &&
-                        e.payload.count("ip") && e.payload.count("rssi") &&
-                        e.payload.count("reason"))
+                        e.payload.count("ssid_hex") && e.payload.count("ip") &&
+                        e.payload.count("rssi") && e.payload.count("reason"))
                 << json;
         } else if (e.topic == "net.ap.state") {
             ++ap_events;
@@ -658,13 +658,15 @@ TEST(WifiService, BackoffEventsCarryFailureReason) {
     auto& svc = f.make();
     ASSERT_TRUE(svc.init(0));
 
-    tick2(svc, 0);  // wrong password
+    // A rejected network is not retried automatically, so the password
+    // failure comes last.
     f.wifi->reachable = false;
-    tick2(svc, 5000);  // router unreachable
+    tick2(svc, 0);  // router unreachable
     f.wifi->networks.clear();
-    tick2(svc, 15000);  // nothing saved in range
+    tick2(svc, 5000);  // nothing saved in range
     f.wifi->networks.push_back({"Home", -50, true});
     f.wifi->reachable = true;
+    tick2(svc, 15000);  // wrong password
     ASSERT_TRUE(svc.add_network("Home", "rightpass1", 20000));
     tick2(svc, 20000);
     ASSERT_EQ(svc.status().state, WifiState::Connected);
@@ -680,7 +682,7 @@ TEST(WifiService, BackoffEventsCarryFailureReason) {
             EXPECT_EQ(str_of(e.payload, "reason"), "") << json;
         }
     }
-    EXPECT_EQ(backoff_reasons, (std::vector<std::string>{"auth_failed", "other", "not_found"}));
+    EXPECT_EQ(backoff_reasons, (std::vector<std::string>{"other", "not_found", "auth_failed"}));
 }
 
 // A Failed snapshot left over from an attempt on another network must not
@@ -897,4 +899,108 @@ TEST(WifiService, NonUtf8SsidSurvivesRestart) {
     auto& again = f.make();
     ASSERT_TRUE(again.init(0));
     EXPECT_EQ(again.saved_ssids(), (std::vector<std::string>{gbk}));
+}
+
+// A wrong password must not strand the device: the rejected network is left
+// out of automatic selection, so the device falls back to another saved
+// network instead of retrying the stronger, rejected one forever.
+TEST(WifiService, AuthFailedNetworkIsSkippedUntilReAdded) {
+    Fixture f;
+    f.in_range("A", -70, "passwordA");
+    f.in_range("B", -40, "passwordB");
+    f.seed({{"A", "passwordA"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    ASSERT_EQ(svc.status().ssid, "A");
+
+    ASSERT_TRUE(svc.add_network("B", "wrongpassB", 1000));
+    tick2(svc, 1000);  // the direct attempt on B is rejected
+    EXPECT_EQ(svc.status().state, WifiState::Backoff);
+    EXPECT_EQ(svc.status().reason, "auth_failed");
+    EXPECT_EQ(f.wifi->connect_calls.load(), 2);
+    auto saved = svc.saved_networks();
+    ASSERT_EQ(saved.size(), 2u);
+    EXPECT_EQ(saved[0].ssid, "A");
+    EXPECT_FALSE(saved[0].auth_failed);
+    EXPECT_EQ(saved[1].ssid, "B");
+    EXPECT_TRUE(saved[1].auth_failed);
+
+    tick2(svc, 6000);  // B is stronger, but excluded: back to A
+    EXPECT_EQ(f.wifi->connect_calls.load(), 3);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+    EXPECT_EQ(svc.status().ssid, "A");
+
+    f.wifi->set_link(WifiLink{});  // A drops; the reconnect still skips B
+    tick2(svc, 7000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 4);
+    EXPECT_EQ(svc.status().ssid, "A");
+
+    // New credentials clear the flag and B is tried straight away.
+    ASSERT_TRUE(svc.add_network("B", "passwordB", 8000));
+    EXPECT_FALSE(svc.saved_networks()[1].auth_failed);
+    tick2(svc, 8000);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+    EXPECT_EQ(svc.status().ssid, "B");
+
+    // Later automatic selection considers B again (and prefers it).
+    f.wifi->set_link(WifiLink{});
+    tick2(svc, 9000);
+    EXPECT_EQ(svc.status().ssid, "B");
+}
+
+TEST(WifiService, AuthFailedFlagSurvivesRestart) {
+    Fixture f;
+    f.in_range("A", -70, "passwordA");
+    f.in_range("B", -40, "passwordB");
+    f.seed({{"A", "passwordA"}, {"B", "wrongpassB"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);  // strongest saved network first: B, rejected
+    ASSERT_EQ(svc.status().reason, "auth_failed");
+
+    auto& again = f.make();
+    ASSERT_TRUE(again.init(0));
+    auto saved = again.saved_networks();
+    ASSERT_EQ(saved.size(), 2u);
+    EXPECT_FALSE(saved[0].auth_failed);
+    EXPECT_TRUE(saved[1].auth_failed);
+    tick2(again, 0);
+    EXPECT_EQ(again.status().state, WifiState::Connected);
+    EXPECT_EQ(again.status().ssid, "A");
+    EXPECT_EQ(f.wifi->connect_calls.load(), 2);
+}
+
+// With every saved network rejected, the service keeps scanning on the
+// usual backoff schedule but never retries the rejected credentials.
+TEST(WifiService, OnlyAuthFailedNetworksMeansBackoffWithoutAttempts) {
+    Fixture f;
+    f.in_range("B", -40, "passwordB");
+    f.seed({{"B", "wrongpassB"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 1);
+    tick2(svc, 5000);
+    tick2(svc, 15000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 1);
+    EXPECT_EQ(f.wifi->scan_calls.load(), 3);
+    EXPECT_EQ(svc.status().state, WifiState::Backoff);
+}
+
+// Browsers only see SSIDs through JSON, which cannot carry bytes that are
+// not UTF-8; the state event names the network byte-exactly as hex too.
+TEST(WifiService, StateEventsCarrySsidHex) {
+    Fixture f;
+    const std::string gbk = "\xc4\xe3\xba\xc3";
+    f.in_range(gbk, -50);
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.add_network(gbk, "", 0));
+    tick2(svc, 0);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    auto states = f.topic("net.wifi.state");
+    ASSERT_FALSE(states.empty());
+    EXPECT_EQ(str_of(states.back().payload, "ssid_hex"), "c4e3bac3");
 }

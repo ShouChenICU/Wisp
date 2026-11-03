@@ -8,6 +8,7 @@
 
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/base/sha256.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 
@@ -112,7 +113,9 @@ Result<void> WifiService::persist_locked(const std::vector<Network>& networks) {
     }
     List list;
     for (const auto& n : networks) {
-        list.push_back(Map{{"ssid", n.ssid}, {"password", n.password}});
+        Map entry{{"ssid", n.ssid}, {"password", n.password}};
+        if (n.auth_failed) entry.emplace("auth_failed", true);
+        list.push_back(std::move(entry));
     }
     std::string json = to_json_raw(Map{{"networks", std::move(list)}});
     auto r = storage_.write_atomic(path, std::vector<uint8_t>(json.begin(), json.end()));
@@ -120,6 +123,18 @@ Result<void> WifiService::persist_locked(const std::vector<Network>& networks) {
         WLOG_E(kTag, "saving networks failed: %s", r.error().message.c_str());
     }
     return r;
+}
+
+void WifiService::mark_auth_failed_locked(const std::string& ssid) {
+    auto it = std::find_if(networks_.begin(), networks_.end(),
+                           [&](const Network& n) { return n.ssid == ssid; });
+    if (it == networks_.end() || it->auth_failed) return;
+    it->auth_failed = true;
+    WLOG_W(kTag, "'%s' rejected the password; not retrying it until it is re-entered",
+           ssid.c_str());
+    // On a failed write the flag still holds until reboot; persist_locked()
+    // has logged the storage error.
+    (void)persist_locked(networks_);
 }
 
 const WifiService::Network* WifiService::find_locked(std::string_view ssid) const {
@@ -163,7 +178,12 @@ Result<void> WifiService::init(uint64_t now_ms) {
                     ++skipped;
                     continue;
                 }
-                networks_.push_back({ssid->as_string(), pw->as_string()});
+                // A missing or non-boolean flag means "not rejected": the
+                // worst case is one more attempt with the stored password.
+                const Value* rejected = entry.find("auth_failed");
+                bool auth_failed = rejected != nullptr && rejected->type() == Value::Type::Bool &&
+                                   rejected->as_bool();
+                networks_.push_back({ssid->as_string(), pw->as_string(), auth_failed});
             }
             if (skipped > 0) {
                 WLOG_W(kTag, "ignored %zu invalid saved network entr%s", skipped,
@@ -201,9 +221,11 @@ void WifiService::set_state_locked(WifiState state, std::string ssid, std::strin
     status_.rssi = rssi;
     status_.reason = reason;
     if (!changed) return;
+    const auto* ssid_bytes = reinterpret_cast<const uint8_t*>(status_.ssid.data());
     bus_.publish(core::Event{"net.wifi.state", source_, 0,
                              Properties{{"state", to_string(state)},
                                         {"ssid", status_.ssid},
+                                        {"ssid_hex", to_hex({ssid_bytes, status_.ssid.size()})},
                                         {"ip", status_.ip},
                                         {"rssi", status_.rssi},
                                         {"reason", reason}}});
@@ -220,6 +242,7 @@ void WifiService::fail_attempt_locked(uint64_t now_ms, const char* why, const ch
     in_flight_ = false;
     in_flight_ssid_.clear();
     direct_ssid_.reset();
+    if (reason == kReasonAuthFailed) mark_auth_failed_locked(ssid);
 
     uint32_t wait = backoff_ms_;
     backoff_ms_ = static_cast<uint32_t>(
@@ -344,7 +367,8 @@ void WifiService::finish_attempt_locked(const AttemptPlan& plan,
         int best_rssi = 0;
         for (const auto& entry : scan->value()) {
             const Network* saved = find_locked(entry.ssid);
-            if (saved != nullptr && (target == nullptr || entry.rssi > best_rssi)) {
+            if (saved != nullptr && !saved->auth_failed &&
+                (target == nullptr || entry.rssi > best_rssi)) {
                 target = saved;
                 best_rssi = entry.rssi;
             }
@@ -445,6 +469,7 @@ Result<void> WifiService::add_network(std::string_view ssid, std::string_view pa
                            [&](const Network& n) { return n.ssid == ssid; });
     if (it != updated.end()) {
         it->password = std::string(password);
+        it->auth_failed = false;
     } else {
         if (updated.size() >= config_.max_networks) {
             return Result<void>::err(
@@ -518,6 +543,14 @@ std::vector<std::string> WifiService::saved_ssids() const {
     std::vector<std::string> out;
     out.reserve(networks_.size());
     for (const auto& n : networks_) out.push_back(n.ssid);
+    return out;
+}
+
+std::vector<SavedNetwork> WifiService::saved_networks() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    std::vector<SavedNetwork> out;
+    out.reserve(networks_.size());
+    for (const auto& n : networks_) out.push_back({n.ssid, n.auth_failed});
     return out;
 }
 

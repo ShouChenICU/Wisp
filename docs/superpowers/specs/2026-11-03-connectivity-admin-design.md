@@ -129,6 +129,7 @@ HTTPS 与 Flash 加密（子项目 7 评估）、OTA 升级功能（分区已预
 ```
 
 - **连接**：扫描后，在已保存的网络里选信号最强的连接。最多保存 5 个网络。
+- **密码错误**：某个网络最近一次尝试因密码错误（`auth_failed`）失败后，就不再参加自动选择，直到用户重新输入它的密码（重新添加会清除标记并立即直接尝试它）；标记与网络一起存进 `net/wifi.json`，重启后仍然有效。这样，用户给一个信号更强的网络填错密码，也不会让设备离开原本能用的网络后再也回不来。
 - **退避**：每次失败后等待时间翻倍，从 5 秒开始，上限 5 分钟；连接成功后重置。退避期间不打扰前台。
 - **省电**：已连接时默认开启 modem sleep。设备进入待机（`power.state = standby`）超过 Settings `net`/`idle_off_min`（默认 10 分钟）后断开 Wi-Fi，唤醒后自动重连。更细的唤醒锁属于子项目 3。
 
@@ -162,6 +163,7 @@ Result<std::vector<ScanResult>> scan();      // ssid, rssi, auth, 是否已保�
 Result<void> add_network(std::string_view ssid, std::string_view password);
 Result<void> forget_network(std::string_view ssid);
 std::vector<std::string> saved_ssids();      // 只有 SSID，没有密码
+std::vector<SavedNetwork> saved_networks();  // SSID 与 auth_failed 标记（见 4.2），没有密码
 Result<ApSession> start_provisioning();      // ssid、密码（只交给屏幕显示）、地址
 Result<void> stop_provisioning();
 ```
@@ -201,7 +203,7 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 
 | 主题 | 发布者 | payload |
 |---|---|---|
-| `net.wifi.state` | `WifiService` | `{state, ssid, ip, rssi, reason}`，`state` 取值为 `off`/`connecting`/`backoff`/`connected`；`reason` 是上一次连接失败的原因（`not_found`/`auth_failed`/`other`），只在 `backoff` 时非空 |
+| `net.wifi.state` | `WifiService` | `{state, ssid, ssid_hex, ip, rssi, reason}`（`ssid_hex` 见 6.1），`state` 取值为 `off`/`connecting`/`backoff`/`connected`；`reason` 是上一次连接失败的原因（`not_found`/`auth_failed`/`other`），只在 `backoff` 时非空 |
 | `net.ap.state` | `WifiService` | `{active, ssid, clients}`（不含密码） |
 | `net.pairing.code` | `PairingService` | `{active, expires_ms}`（不含配对码） |
 | `net.pairing.failed` | `PairingService` | `{attempts, locked}` |
@@ -228,8 +230,8 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 | 概览 | `GET /device` | 是 | 能力清单、启动报告、运行时长、内存、电量 |
 | 外设 | `GET /devices` | 是 | 设备注册表：id、类别、状态、caps |
 | 设置 | `GET /settings`、`PUT /settings` | 是 | 经 `SystemSettings` 校验并立即生效 |
-| Wi-Fi | `GET /wifi`、`GET /wifi/scan` | 是 | 当前状态、已保存的 SSID、扫描结果 |
-| | `POST /wifi/networks`、`DELETE /wifi/networks/{ssid}` | 是 | 添加 / 删除网络 |
+| Wi-Fi | `GET /wifi`、`GET /wifi/scan` | 是 | `GET /wifi`：`{state, ssid, ssid_hex, ip, rssi, reason, saved, ap}`，`saved` 的每项为 `{ssid, ssid_hex, auth_failed}`（`auth_failed` 见 4.2）；扫描结果每项为 `{ssid, ssid_hex, rssi, secured, saved}` |
+| | `POST /wifi/networks {ssid \| ssid_hex, password?}`、`DELETE /wifi/networks/{ssid}` | 是 | 添加 / 删除网络；`ssid` 与 `ssid_hex` 必须且只能给一个，`ssid_hex` 不是偶数位十六进制时返回 400；`DELETE` 的路径段按 `%XX` 解码成原始字节 |
 | 模型 | `GET /llm`、`PUT /llm`、`POST /llm/test` | 是 | 见 5.3 |
 | 系统 | `POST /system/reboot` | 是 | 直接执行 |
 | | `POST /system/factory-reset` | 是 | 先在设备上弹确认框，接口返回 202，结果通过 WebSocket 推送；范围见下文 |
@@ -240,6 +242,8 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 **强制门户探测路径**（`/generate_204`、`/hotspot-detect.html`、`/connecttest.txt`、`/ncsi.txt` 等）在热点模式下一律重定向到 `http://<热点地址>:8900/setup.html`；非热点模式下返回 404。
 
 **恢复出厂设置的范围**：清除 Settings、已保存的网络、全部令牌和 LLM 配置（含 Key），然后重启；不删除 Library 和 Backup 区的数据（以后的场景与用户数据）。完整擦除留给子项目 7。
+
+**SSID 的字节**：SSID 是最多 32 字节的原始字节，不一定是 UTF-8（GBK 编码的路由器很常见），而 JSON 字符串里的非法 UTF-8 会被替换成 U+FFFD。所以响应和事件里的每个 SSID 都附带 `ssid_hex`（原始字节的小写十六进制），前端遇到含 U+FFFD 的 SSID 时用 `ssid_hex` 回传。
 
 **错误格式**：`{"error": {"code": "...", "message": "..."}}`，配合相应的 HTTP 状态码（400/401/403/404/409/413/500/503），由 `wisp::Result` 的错误码映射得到。
 
