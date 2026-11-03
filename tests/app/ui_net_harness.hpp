@@ -38,6 +38,9 @@ struct UiNetOptions {
     std::string lang;
     // Written to <System>/net/wifi.json before boot.
     std::vector<std::pair<std::string, std::string>> saved;
+    // Writes every `saved` network as parked (auth_failed), as three
+    // rejected passwords in a row on an earlier boot leave it.
+    bool saved_auth_failed = false;
     bool wifi_reachable = true;
     bool with_server = false;
     // Platform::pairing.code_ttl_ms; 0 keeps the two-minute default.
@@ -92,12 +95,13 @@ struct UiNetHarness {
         if (!opts.saved.empty()) {
             wisp::List nets;
             for (const auto& [ssid, pw] : opts.saved) {
-                nets.push_back(wisp::Value(
-                    wisp::Map{{"ssid", wisp::Value(ssid)}, {"password", wisp::Value(pw)}}));
+                wisp::Map entry{{"ssid", wisp::Value(ssid)}, {"password", wisp::Value(pw)}};
+                if (opts.saved_auth_failed) entry.emplace("auth_failed", wisp::Value(true));
+                nets.push_back(wisp::Value(std::move(entry)));
             }
             std::filesystem::create_directories(root + "/system/net");
             std::ofstream(root + "/system/net/wifi.json")
-                << wisp::to_json(wisp::Value(wisp::Map{{"networks", wisp::Value(nets)}}));
+                << wisp::to_json_raw(wisp::Value(wisp::Map{{"networks", wisp::Value(nets)}}));
         }
 
         wisp::app::Platform platform;

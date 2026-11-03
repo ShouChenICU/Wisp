@@ -5,8 +5,10 @@
 // trivially unit-testable (see tests/app/format_test.cpp) without needing
 // a UiRuntime or any wisp::hal device at all.
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "wisp/core/boot_report.hpp"
 
@@ -27,5 +29,14 @@ const char* state_label(core::DeviceState state);
 // Formats a Unix timestamp (seconds since the epoch) as "YYYY-MM-DD
 // HH:MM:SS" in UTC.
 std::string format_time(int64_t unix_s);
+
+// Length of the well-formed UTF-8 sequence starting at s[i] (RFC 3629: no
+// overlongs, no surrogates, nothing above U+10FFFF), or 0 if there is none.
+size_t utf8_sequence(std::string_view s, size_t i);
+
+// An SSID as the device screen can draw it. SSIDs are raw bytes and GBK
+// names are common, while labels expect UTF-8: each byte of an ill-formed
+// sequence, and each control byte, becomes "?".
+std::string displayable_ssid(std::string_view ssid);
 
 }  // namespace wisp::app

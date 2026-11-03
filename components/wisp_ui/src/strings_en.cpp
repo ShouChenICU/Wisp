@@ -74,6 +74,8 @@ const char* strings_en(StrId id) {
             return "Connecting…";
         case StrId::NetRetrying:
             return "Retrying in {} s";
+        case StrId::NetRejected:
+            return "{} rejected the password. Set up Wi-Fi again";
         case StrId::NetConnected:
             return "Connected";
         case StrId::NetNoHardware:

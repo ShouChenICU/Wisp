@@ -9,6 +9,7 @@
 #include "app_impl.hpp"
 #include "console_task.hpp"
 #include "wisp/app/app.hpp"
+#include "wisp/app/format.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
@@ -32,34 +33,6 @@ constexpr const char* kHelp =
     "  hex:<bytes> gives an SSID by its bytes, e.g. wifi add hex:c4e3bac3 password.";
 
 bool is_builtin(std::string_view name) { return name == "help" || name == "wifi"; }
-
-// Length of the well-formed UTF-8 sequence starting at s[i] (RFC 3629: no
-// overlongs, no surrogates, nothing above U+10FFFF), or 0 if there is none.
-size_t utf8_sequence(std::string_view s, size_t i) {
-    const auto b = [&](size_t k) { return static_cast<uint8_t>(s[k]); };
-    const uint8_t c = b(i);
-    size_t len = 0;
-    uint8_t lo = 0x80, hi = 0xbf;  // allowed range of the second byte
-    if (c >= 0xc2 && c <= 0xdf) {
-        len = 2;
-    } else if (c >= 0xe0 && c <= 0xef) {
-        len = 3;
-        if (c == 0xe0) lo = 0xa0;
-        if (c == 0xed) hi = 0x9f;
-    } else if (c >= 0xf0 && c <= 0xf4) {
-        len = 4;
-        if (c == 0xf0) lo = 0x90;
-        if (c == 0xf4) hi = 0x8f;
-    } else {
-        return 0;
-    }
-    if (i + len > s.size()) return 0;
-    if (b(i + 1) < lo || b(i + 1) > hi) return 0;
-    for (size_t k = 2; k < len; ++k) {
-        if ((b(i + k) & 0xc0) != 0x80) return 0;
-    }
-    return len;
-}
 
 void append_hex_escape(std::string& out, uint8_t c) {
     char buf[5];

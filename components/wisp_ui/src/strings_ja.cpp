@@ -76,6 +76,8 @@ const char* strings_ja(StrId id) {
             return "接続中…";
         case StrId::NetRetrying:
             return "再試行（{} 秒後）";
+        case StrId::NetRejected:
+            return "{} のパスワードが拒否されました。再設定してください";
         case StrId::NetConnected:
             return "接続済み";
         case StrId::NetNoHardware:

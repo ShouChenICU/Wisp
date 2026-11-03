@@ -1,5 +1,9 @@
 #include "net_section.hpp"
 
+#include <algorithm>
+#include <vector>
+
+#include "wisp/app/format.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/strings.hpp"
@@ -14,20 +18,25 @@ constexpr int32_t kRssiGap = 10;
 
 }  // namespace
 
-std::string wifi_status_text(const net::WifiStatus& status, bool has_saved, uint64_t now_ms) {
+std::string wifi_status_text(const net::WifiStatus& status, bool has_saved, bool all_rejected,
+                             uint64_t now_ms) {
     switch (status.state) {
         case net::WifiState::Off:
             return ui::tr(has_saved ? ui::StrId::NetOff : ui::StrId::NetNotSetUp);
         case net::WifiState::Connecting:
             return ui::tr(ui::StrId::NetConnecting);
         case net::WifiState::Backoff: {
+            // Retrying cannot help; only new credentials can.
+            if (all_rejected) {
+                return ui::tr_fill(ui::StrId::NetRejected, displayable_ssid(status.ssid));
+            }
             // Rounded up, so it reads 1 (not 0) in the last second.
             uint64_t left_ms = status.retry_at_ms > now_ms ? status.retry_at_ms - now_ms : 0;
             return ui::tr_fill(ui::StrId::NetRetrying, std::to_string((left_ms + 999) / 1000));
         }
         case net::WifiState::Connected:
-            return std::string(ui::tr(ui::StrId::NetConnected)) + " " + status.ssid + "  " +
-                   status.ip;
+            return std::string(ui::tr(ui::StrId::NetConnected)) + " " +
+                   displayable_ssid(status.ssid) + "  " + status.ip;
     }
     return {};
 }
@@ -67,7 +76,10 @@ void NetSection::build(lv_obj_t* col, uint64_t now_ms) {
 void NetSection::refresh(uint64_t now_ms) {
     if (wifi_ != nullptr) {
         status_ = wifi_->status();
-        has_saved_ = !wifi_->saved_ssids().empty();
+        const std::vector<net::SavedNetwork> saved = wifi_->saved_networks();
+        has_saved_ = !saved.empty();
+        all_rejected_ = has_saved_ && std::all_of(saved.begin(), saved.end(),
+                                                  [](const auto& n) { return n.auth_failed; });
         ap_active_ = wifi_->ap_status().active;
     }
     render(now_ms);
@@ -80,9 +92,9 @@ void NetSection::tick(uint64_t now_ms) {
 void NetSection::render(uint64_t now_ms) {
     if (label_ == nullptr) return;
     std::string text =
-        wifi_ == nullptr
-            ? std::string(ui::tr(ui::StrId::NetNoHardware))
-            : ui::tr_fill(ui::StrId::NetLine, wifi_status_text(status_, has_saved_, now_ms));
+        wifi_ == nullptr ? std::string(ui::tr(ui::StrId::NetNoHardware))
+                         : ui::tr_fill(ui::StrId::NetLine, wifi_status_text(status_, has_saved_,
+                                                                            all_rejected_, now_ms));
     if (text != shown_) {
         shown_ = text;
         lv_label_set_text(label_, text.c_str());

@@ -235,6 +235,43 @@ TEST(NetUi, SectionCountsDownToTheNextAttempt) {
     ASSERT_TRUE(wait_until([&] { return seconds() < first || seconds() > 5; }, 2500));
 }
 
+// Every saved network has had its password rejected three times in a row:
+// nothing will be retried until the user sets Wi-Fi up again, so the line
+// says that instead of counting down to a retry.
+TEST(NetUi, SectionSaysWhenEveryPasswordWasRejected) {
+    const std::pair<Lang, const char*> expected[] = {
+        {Lang::Zh, "Wi-Fi：Home 的密码被拒绝，请重新配网"},
+        {Lang::Ja, "Wi-Fi：Home のパスワードが拒否されました。再設定してください"},
+        {Lang::En, "Wi-Fi: Home rejected the password. Set up Wi-Fi again"},
+    };
+    for (const auto& [lang, line] : expected) {
+        SCOPED_TRACE(wisp::ui::lang_code(lang));
+        UiNetOptions opts;
+        opts.lang = wisp::ui::lang_code(lang);
+        opts.saved = {{"Home", "wrongpass"}};
+        opts.saved_auth_failed = true;
+        UiNetHarness h(opts);
+        ASSERT_TRUE(h.start());
+        ASSERT_TRUE(wait_until([&] { return on_screen(h, line); }, 5000));
+        const std::string retrying = text_of(StrId::NetRetrying, lang);
+        EXPECT_FALSE(on_screen(h, retrying.substr(0, retrying.find("{}"))));
+        EXPECT_TRUE(run_on_ui_thread(h.app->ui(), [] {
+                        return all_label_glyphs_resolvable(lv_screen_active()) ? "yes" : "";
+                    }) == "yes");
+    }
+}
+
+// Bytes that are not UTF-8 (a GBK router) show as "?", not as garbage.
+TEST(NetUi, NonUtf8SsidShowsQuestionMarks) {
+    const std::string gbk = "\xc4\xe3\xba\xc3";
+    UiNetOptions opts;
+    opts.saved = {{gbk, ""}};
+    UiNetHarness h(opts);
+    h.wifi->networks.push_back({gbk, -40, false});
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "已连接 ????  "); }, 5000));
+}
+
 TEST(NetUi, NoWifiDeviceShowsNoButton) {
     UiNetOptions opts;
     opts.with_wifi = false;

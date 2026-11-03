@@ -21,11 +21,14 @@
 namespace wisp::app {
 
 // The value half of the status line: not set up / not connected /
-// connecting / retrying in N s / connected <ssid> <ip>. The signal
-// strength is shown next to it on a label of its own (see NetSection).
-// `has_saved` tells "never set up" apart from "set up but off" (e.g. after
-// standby dropped the link).
-std::string wifi_status_text(const net::WifiStatus& status, bool has_saved, uint64_t now_ms);
+// connecting / retrying in N s / <ssid> rejected the password /
+// connected <ssid> <ip>. The signal strength is shown next to it on a
+// label of its own (see NetSection). `has_saved` tells "never set up"
+// apart from "set up but off" (e.g. after standby dropped the link);
+// `all_rejected` (every saved network is auth_failed, connectivity spec
+// 4.2) turns the backoff countdown into the ask to set Wi-Fi up again.
+std::string wifi_status_text(const net::WifiStatus& status, bool has_saved, bool all_rejected,
+                             uint64_t now_ms);
 
 class NetSection {
 public:
@@ -50,6 +53,7 @@ private:
     net::WifiService* wifi_;
     net::WifiStatus status_;
     bool has_saved_ = false;
+    bool all_rejected_ = false;
     bool ap_active_ = false;
     // What the widgets show, so render() only touches them on a change.
     std::string shown_;
