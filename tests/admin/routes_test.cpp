@@ -545,10 +545,11 @@ TEST(Routes, RebootRepliesFirstThenReboots) {
     HttpResponse res = f.srv->handle(authed(token, Post, "/api/v1/system/reboot"));
     EXPECT_EQ(res.status, 202);
     EXPECT_EQ(f.reboots.load(), 0);  // the reply goes out first
+    // A second request while one is pending does not stack.
+    EXPECT_EQ(f.srv->handle(authed(token, Post, "/api/v1/system/reboot")).status, 202);
     EXPECT_TRUE(wisp::test::wait_until([&] { return f.reboots.load() == 1; }, 3000));
     EXPECT_GE(wisp::os::now_ms() - start, 400u);
-    // A second request while one is pending (or done) does not stack.
-    EXPECT_EQ(f.reboots.load(), 1);
+    EXPECT_FALSE(wisp::test::wait_until([&] { return f.reboots.load() > 1; }, 1000));
 }
 
 TEST(Routes, DestroyingTheServerCancelsAPendingReboot) {

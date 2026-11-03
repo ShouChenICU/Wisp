@@ -27,7 +27,8 @@ TEST(Sha256, KnownVectors) {
 }
 
 TEST(Sha256, MultiBlockInputs) {
-    // FIPS 180-4 example: 112-byte message (two full blocks plus padding).
+    // FIPS 180-4 example: 112-byte message (one full 64-byte block, then 48
+    // bytes plus the padding in a second block).
     EXPECT_EQ(wisp::to_hex(wisp::sha256(
                   bytes("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjk"
                         "lmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"))),
