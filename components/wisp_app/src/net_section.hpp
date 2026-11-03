@@ -1,10 +1,9 @@
 #pragma once
 
 // The self-check screen's network block (connectivity spec 8.1): one
-// status line ("Wi-Fi: <state>") and a start/stop button for the setup
-// hotspot. Without a WifiService (no "net.wifi" device, or networking
-// disabled) the line says there is no Wi-Fi hardware and there is no
-// button.
+// status line ("Wi-Fi: <state>", plus the signal strength while
+// connected) and a start/stop button for the setup hotspot. Without a WifiService (no "net.wifi"
+// device, or networking disabled) the line says there is no Wi-Fi hardware and there is no button.
 //
 // Threading: UI thread only. refresh() reads the service's state (short
 // lock-protected copies); tick() only re-renders the backoff countdown
@@ -22,7 +21,8 @@
 namespace wisp::app {
 
 // The value half of the status line: not set up / not connected /
-// connecting / retrying in N s / connected <ssid> <ip> <rssi> dBm.
+// connecting / retrying in N s / connected <ssid> <ip>. The signal
+// strength is shown next to it on a label of its own (see NetSection).
 // `has_saved` tells "never set up" apart from "set up but off" (e.g. after
 // standby dropped the link).
 std::string wifi_status_text(const net::WifiStatus& status, bool has_saved, uint64_t now_ms);
@@ -56,6 +56,11 @@ private:
     int shown_button_ = -1;  // 0 start, 1 stop, -1 not rendered yet
 
     lv_obj_t* label_ = nullptr;
+    // "-45 dBm" as one unit: on its own label in a wrapping row, so a
+    // narrow line moves it down whole instead of breaking it at the "-" or
+    // the space (both LV_TXT_BREAK_CHARS).
+    lv_obj_t* rssi_label_ = nullptr;
+    std::string shown_rssi_;
     lv_obj_t* button_ = nullptr;
     lv_obj_t* button_label_ = nullptr;
 };

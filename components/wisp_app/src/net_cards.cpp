@@ -19,10 +19,6 @@ constexpr int32_t kQrSafePercent = 45;
 // the middle, so they read one by one.
 constexpr int32_t kCodeLetterSpace = 6;
 
-std::string labeled(const char* label, const std::string& value) {
-    return std::string(label) + ": " + value;
-}
-
 int32_t width_of(const hal::Area& a) { return a.x2 - a.x1 + 1; }
 int32_t height_of(const hal::Area& a) { return a.y2 - a.y1 + 1; }
 
@@ -112,8 +108,8 @@ void ProvisioningCard::open(const net::ApSession& session, const hal::Area& safe
         WLOG_W("net_ui", "QR code could not be drawn; hotspot details are shown as text");
     }
 
-    add_text(card_, labeled(ui::tr(ui::StrId::Hotspot), session.ssid));
-    add_text(card_, labeled(ui::tr(ui::StrId::Password), session.password));
+    add_text(card_, ui::tr_fill(ui::StrId::Hotspot, session.ssid));
+    add_text(card_, ui::tr_fill(ui::StrId::Password, session.password));
     add_text(card_, ui::tr_fill(ui::StrId::OpenAddress, "http://" + session.ip));
     add_button(card_, ui::tr(ui::StrId::StopSetup), &ProvisioningCard::stop_cb, this);
 }

@@ -62,7 +62,7 @@
 | `power.battery.low` | `core::PowerMonitor` | `battery_percent`（已知，即不是 -1）降到 ≤ Settings `power`/`low_batt_pct`（默认 15）时发布一次；回升超过阈值 +5 才重新武装，`payload = {"battery_percent": int}`，`Event::source` 为设备 id |
 | `storage.sd.inserted` / `storage.sd.removed` | `core::StorageManager` | SD 卡插拔检测 |
 | `system.boot.completed` | `app::App` | 启动流程第 5 步收尾时发布 |
-| `system.factory_reset` | `app::App`（`components/wisp_app/src/factory_reset.cpp`） | `payload = {"state": "requested"\|"cancelled"\|"done"}`。`POST /system/factory-reset` 发 `requested`，自检界面据此弹出确认框（已有确认框时不叠加）；点"否"发 `cancelled`；点"是"后在一次性任务 `wisp.reset` 上先发 `done`，最多等 500 ms 让事件总线和管理后台 WebSocket 发送线程把它送出，再清空 Settings、忘记全部 Wi-Fi、撤销全部配对浏览器、清除 LLM 配置，最后 `Platform::reboot`。Library/Backup 数据保留 |
+| `system.factory_reset` | `app::App`（`components/wisp_app/src/factory_reset.cpp`） | `payload = {"state": "requested"\|"cancelled"\|"done"}`。`POST /system/factory-reset` 发 `requested`，自检界面据此弹出确认框（同一时间只有一个确认框：重置框已开时重复请求被忽略，关机确认框开着时直接回 `cancelled`；反过来重置框开着时长按电源键不弹关机框）；点"否"发 `cancelled`；点"是"后在一次性任务 `wisp.reset` 上先发 `done`，最多等 500 ms 让事件总线和管理后台 WebSocket 发送线程把它送出，再清空 Settings、忘记全部 Wi-Fi、撤销全部配对浏览器、清除 LLM 配置，最后 `Platform::reboot`；`wisp.reset` 任务创建失败时什么都不清除、发 `cancelled`，之后的请求可以重新弹框。Library/Backup 数据保留 |
 | `system.settings` | `app::App`（`core::SystemSettings` 的 `on_changed` 回调） | 每批设置写入成功后发布（连接 spec 8.3），`payload = {"brightness": int, "volume": int, "screen_off_s": int, "language": "zh"\|"ja"\|"en"}`，即写入后的全部当前值（与 `GET /settings` 同形）；自检界面据 `language` 在 UI 线程上 `ui::set_lang()` 并重建文字 |
 | `net.wifi.state` | `net::WifiService` | 状态变化时发布，`payload = {"state": "off"\|"connecting"\|"backoff"\|"connected", "ssid": string, "ssid_hex": string（SSID 原始字节的小写十六进制，见连接 spec 6.1）, "ip": string, "rssi": int, "reason": ""\|"not_found"\|"auth_failed"\|"other"}`；`reason` 只在 `backoff` 时非空；`Event::source` 为设备 id（`net.wifi`）。不含密码 |
 | `net.ap.state` | `net::WifiService` | 配网热点开关时发布，`payload = {"active": bool, "ssid": string, "clients": int}`，不含热点密码 |
@@ -104,7 +104,7 @@
 
 - `net.wifi` 是 `wisp::port::sim::SimWifi`（model `sim-wifi`）：内置 `WispLab`（-45 dBm，密码 `wisp1234`）、`Neighbor`（-70，`neighbor99`）、`OpenCafe`（-80，开放）；`--wifi-fail` 让所有连接以 `not_found` 失败；热点只改状态，`ap_clients()` 在热点开启时恒为 1。
 - 管理后台由 `SimHttpServer` 提供，只监听 `127.0.0.1`，端口 `--http-port`（默认 8900，与真机后台端口相同；0 表示不启动）。模拟器没有 80 端口的强制门户服务（`Platform::captive_server` 为空）。出站请求（`/llm/test`）走 `SimHttpClient`（libcurl，主机构建 `find_package(CURL 7.80 REQUIRED)`；可移植层禁止 include `curl/`）。
-- 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。冒烟测试 `factory_reset` 用它点确认框的"是"。
+- 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。`--touch-stdin` 另外从标准输入逐行读 `tap X,Y` / `swipe X1,Y1,X2,Y2` 并立即执行，供需要先等设备上某件事发生再点的脚本使用：冒烟测试 `factory_reset` 等到 WebSocket 日志里出现确认框的日志行，再经标准输入点"Yes"。
 - `--screenshot` 的截图（`UiRuntime::take_snapshot`）包含活动屏幕和 `lv_layer_top()`（确认框、配网卡片、配对卡片都在这一层），不含 `lv_layer_sys()`。
 - 网页资源：构建时用 `tools/pack_assets.py` 把 `web/` 打包成 `wisp_sim` 旁边的 `assets.wpak`（`web/` 不存在时打包一个空目录，只提供 API）；`--web-dir <目录>` 改为启动时在内存里按同一套 MIME/gzip 规则打包该目录（`wisp::port::sim::pack_web_dir()`）。
 

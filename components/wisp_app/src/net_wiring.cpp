@@ -53,7 +53,7 @@ void NetWiring::start() {
         return t ? t.value() : 0;
     };
     pairing_ = std::make_unique<net::PairingService>(deps_.storage, deps_.bus, platform.random,
-                                                     std::move(unix_now));
+                                                     std::move(unix_now), platform.pairing);
     if (auto r = pairing_->init(); !r) {
         WLOG_W(kTag, "pairing: %s", r.error().message.c_str());
     }

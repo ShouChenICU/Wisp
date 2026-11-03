@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <utility>
 
 #include "app_impl.hpp"
 #include "wisp/core/event_bus.hpp"
@@ -65,15 +66,28 @@ void factory_reset(App& app) {
     }
 }
 
-void start_factory_reset(App& app) {
+bool start_factory_reset(App& app) {
     App::Impl& impl = *app.impl_;
     std::lock_guard<os::Mutex> lock(impl.reset_mutex);
     if (impl.reset_task) {
         WLOG_W(kTag, "factory reset already running");
-        return;
+        return true;
     }
-    impl.reset_task = os::Task::spawn({.name = "wisp.reset", .stack_bytes = kResetStackBytes},
-                                      [&app] { factory_reset(app); });
+    const os::TaskConfig config{.name = "wisp.reset", .stack_bytes = kResetStackBytes};
+    auto body = [&app] { factory_reset(app); };
+    impl.reset_task =
+        impl.reset_spawner ? impl.reset_spawner(config, body) : os::Task::spawn(config, body);
+    if (!impl.reset_task) {
+        WLOG_E(kTag, "factory reset task could not start; nothing was erased");
+        publish_state(app, "cancelled");
+        return false;
+    }
+    return true;
+}
+
+void set_reset_spawner(App& app, TaskSpawner spawner) {
+    std::lock_guard<os::Mutex> lock(app.impl_->reset_mutex);
+    app.impl_->reset_spawner = std::move(spawner);
 }
 
 void join_factory_reset(App& app) {

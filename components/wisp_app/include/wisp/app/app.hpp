@@ -69,6 +69,7 @@
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/net/pairing_service.hpp"
 
 namespace wisp::ui {
 class UiRuntime;
@@ -149,6 +150,9 @@ struct Platform {
     // server only listens on loopback); otherwise the server runs only
     // while the station has an IP or the setup hotspot is up.
     bool http_always_on = false;
+    // Code pairing's limits; the defaults are spec 6.1's (a code lives two
+    // minutes). Tests shorten code_ttl_ms to watch a code expire.
+    net::PairingConfig pairing;
 
     // Restarts the device (admin "reboot", factory reset). May be empty.
     std::function<void()> reboot;
@@ -241,8 +245,11 @@ private:
     // The factory reset (src/factory_reset.hpp) flushes the admin
     // WebSocket through NetWiring and keeps its "wisp.reset" task here.
     friend void factory_reset(App&);
-    friend void start_factory_reset(App&);
+    friend bool start_factory_reset(App&);
     friend void join_factory_reset(App&);
+    friend void set_reset_spawner(
+        App&,
+        std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

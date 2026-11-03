@@ -65,6 +65,8 @@ const char* strings_zh(StrId id) {
             return "是";
         case StrId::No:
             return "否";
+        case StrId::NetLine:
+            return "Wi-Fi：{}";
         case StrId::NetNotSetUp:
             return "未配网";
         case StrId::NetOff:
@@ -84,9 +86,9 @@ const char* strings_zh(StrId id) {
         case StrId::SetupTitle:
             return "配网";
         case StrId::Hotspot:
-            return "热点";
+            return "热点：{}";
         case StrId::Password:
-            return "密码";
+            return "密码：{}";
         case StrId::OpenAddress:
             return "连上后打开 {}";
         case StrId::PairTitle:

@@ -178,8 +178,41 @@ TEST(NetUi, SectionShowsTheConnectedNetwork) {
     ASSERT_TRUE(wait_until([&] { return on_screen(h, "已连接 Home"); }, 5000));
     std::string text = run_on_ui_thread(
         h.app->ui(), [] { return find_label_text_containing(lv_screen_active(), "已连接"); });
-    EXPECT_NE(text.find("192.168.1.50"), std::string::npos) << text;
-    EXPECT_NE(text.find("-50 dBm"), std::string::npos) << text;
+    EXPECT_EQ(text, "Wi-Fi：已连接 Home  192.168.1.50");
+    EXPECT_TRUE(on_screen(h, "-50 dBm"));
+}
+
+// The signal strength is one unit: it may move to the next line, but is
+// never split at its "-" or its space, in any language or screen shape.
+TEST(NetUi, SignalStrengthStaysOnOneLine) {
+    for (Lang lang : kLangs) {
+        for (const char* shape : kShapes) {
+            SCOPED_TRACE(std::string(wisp::ui::lang_code(lang)) + " " + shape);
+            UiNetOptions opts;
+            opts.shape = shape;
+            opts.lang = wisp::ui::lang_code(lang);
+            opts.saved = {{"Home", "password1"}};
+            UiNetHarness h(opts);
+            ASSERT_TRUE(h.start());
+            ASSERT_TRUE(wait_until([&] { return on_screen(h, "-50 dBm"); }, 5000));
+            std::string problem = run_on_ui_thread(h.app->ui(), [] {
+                lv_obj_t* rssi = find_label_containing(lv_screen_active(), "-50 dBm");
+                lv_obj_t* status = lv_obj_get_child(lv_obj_get_parent(rssi), 0);
+                lv_obj_update_layout(lv_screen_active());
+                lv_area_t r, row, st;
+                lv_obj_get_coords(rssi, &r);
+                lv_obj_get_coords(lv_obj_get_parent(rssi), &row);
+                lv_obj_get_coords(status, &st);
+                const int32_t line =
+                    lv_font_get_line_height(lv_obj_get_style_text_font(rssi, LV_PART_MAIN));
+                if (lv_area_get_height(&r) != line) return "dBm label " + fmt(r) + " wraps";
+                if (!inside(r, row)) return "dBm label " + fmt(r) + " outside " + fmt(row);
+                if (!inside(st, row)) return "status " + fmt(st) + " outside " + fmt(row);
+                return std::string();
+            });
+            EXPECT_EQ(problem, "");
+        }
+    }
 }
 
 TEST(NetUi, SectionCountsDownToTheNextAttempt) {
@@ -312,6 +345,75 @@ TEST(NetUi, PairingCardCountsDownAndCloses) {
     const std::string next = pairing->active_code(wisp::os::now_ms()).value_or("");
     ASSERT_TRUE(pairing->confirm(next, wisp::net::ClientInfo{}, wisp::os::now_ms()));
     ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "配对请求"); }, 3000));
+}
+
+// With a short code lifetime: the card counts down to the service's
+// deadline and closes at it, not before.
+TEST(NetUi, PairingCardClosesAtExpiry) {
+    UiNetOptions opts;
+    opts.pairing_ttl_ms = 2500;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start());
+    wisp::net::PairingService* pairing = h.app->pairing();
+    ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
+    uint64_t expires = 0;
+    ASSERT_TRUE(pairing->active_code(wisp::os::now_ms(), &expires).has_value());
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "配对请求"); }, 2000));
+    EXPECT_TRUE(on_top_layer(h, "剩余 3 秒") || on_top_layer(h, "剩余 2 秒"));
+
+    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "配对请求"); }, 4000));
+    EXPECT_GE(wisp::os::now_ms(), expires);
+    EXPECT_FALSE(pairing->active_code(wisp::os::now_ms()).has_value());
+}
+
+// The bus drops its oldest events when full. A lost net.ap.state or
+// net.pairing.code must not leave the cards stale: the screen re-reads the
+// services on its own.
+TEST(NetUi, CardsFollowTheServicesWhenEventsAreLost) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "未配网"); }, 3000));
+
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    auto block_sub = h.app->bus().subscribe("test.block", [&](const wisp::core::Event&) {
+        entered.give();
+        release.take(wisp::os::kForever);
+    });
+    h.app->bus().publish(wisp::core::Event{"test.block", "test"});
+    ASSERT_TRUE(entered.take(3000));
+    auto flood = [&] {
+        for (int i = 0; i < 256; ++i) {
+            h.app->bus().publish(wisp::core::Event{"test.flood", "test"});
+        }
+    };
+
+    wisp::net::WifiService* wifi = h.app->wifi();
+    wisp::net::PairingService* pairing = h.app->pairing();
+    ASSERT_TRUE(wifi->start_provisioning(wisp::os::now_ms()));
+    flood();
+    bool setup_shown = wait_until([&] { return qr_shown(h); }, 3000);
+    bool button_flipped = wait_until([&] { return has_button(h, screen, "停止配网"); }, 3000);
+
+    ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
+    flood();
+    bool pair_shown = wait_until([&] { return on_top_layer(h, "配对请求"); }, 3000);
+
+    pairing->cancel_code();
+    flood();
+    bool pair_closed = wait_until([&] { return !on_top_layer(h, "配对请求"); }, 3000);
+
+    ASSERT_TRUE(wifi->stop_provisioning());
+    flood();
+    bool setup_closed = wait_until([&] { return !qr_shown(h); }, 3000);
+
+    release.give();
+    h.app->bus().unsubscribe(block_sub);
+    EXPECT_TRUE(setup_shown);
+    EXPECT_TRUE(button_flipped);
+    EXPECT_TRUE(pair_shown);
+    EXPECT_TRUE(pair_closed);
+    EXPECT_TRUE(setup_closed);
 }
 
 TEST(NetUi, PairingCardStacksAboveProvisioningCardInsideSafeArea) {

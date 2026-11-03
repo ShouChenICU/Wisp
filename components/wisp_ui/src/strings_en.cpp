@@ -64,6 +64,8 @@ const char* strings_en(StrId id) {
             return "Yes";
         case StrId::No:
             return "No";
+        case StrId::NetLine:
+            return "Wi-Fi: {}";
         case StrId::NetNotSetUp:
             return "Not set up";
         case StrId::NetOff:
@@ -83,9 +85,9 @@ const char* strings_en(StrId id) {
         case StrId::SetupTitle:
             return "Wi-Fi setup";
         case StrId::Hotspot:
-            return "Hotspot";
+            return "Hotspot: {}";
         case StrId::Password:
-            return "Password";
+            return "Password: {}";
         case StrId::OpenAddress:
             return "Then open {}";
         case StrId::PairTitle:

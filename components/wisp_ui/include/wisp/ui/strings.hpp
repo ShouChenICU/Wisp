@@ -69,8 +69,9 @@ enum class StrId : uint16_t {
     Yes,
     No,
 
-    // Network section (connectivity spec 8.1). NetRetrying carries "{}"
-    // (seconds; see tr_fill()).
+    // Network section (connectivity spec 8.1). NetLine carries "{}" (one
+    // of the states below), NetRetrying "{}" (seconds; see tr_fill()).
+    NetLine,
     NetNotSetUp,
     NetOff,
     NetConnecting,
@@ -80,7 +81,8 @@ enum class StrId : uint16_t {
     StartSetup,
     StopSetup,
 
-    // Provisioning card. OpenAddress carries "{}" (the setup page URL).
+    // Provisioning card. Hotspot and Password carry "{}" (the hotspot's
+    // name / password), OpenAddress "{}" (the setup page URL).
     SetupTitle,
     Hotspot,
     Password,

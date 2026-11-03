@@ -40,6 +40,8 @@ struct UiNetOptions {
     std::vector<std::pair<std::string, std::string>> saved;
     bool wifi_reachable = true;
     bool with_server = false;
+    // Platform::pairing.code_ttl_ms; 0 keeps the two-minute default.
+    uint32_t pairing_ttl_ms = 0;
 };
 
 class UiNetBoard : public wisp::app::Board {
@@ -124,6 +126,7 @@ struct UiNetHarness {
             platform.http_server = std::move(srv);
             platform.http_always_on = true;
         }
+        if (opts.pairing_ttl_ms != 0) platform.pairing.code_ttl_ms = opts.pairing_ttl_ms;
         app = std::make_unique<wisp::app::App>(std::move(platform));
     }
 

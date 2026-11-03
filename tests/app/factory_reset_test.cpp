@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -238,6 +239,102 @@ TEST(FactoryReset, RepeatedRequestsShowOneDialog) {
     ASSERT_TRUE(wait_until([&] { return reset_states(h).size() == 3; }, 3000));
     EXPECT_EQ(reset_states(h).back(), "cancelled");
     EXPECT_EQ(msgboxes(h), 0);
+}
+
+// If the reset task cannot start, nothing is erased, the browser hears
+// "cancelled", and the next request asks again.
+TEST(FactoryReset, FailedTaskStartCancelsAndAllowsAnotherRequest) {
+    UiNetOptions opts;
+    opts.saved = {{"Home", "password1"}};
+    opts.with_server = true;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start("system."));
+    const std::string token = pair_browser(h);
+    std::atomic<int> spawns{0};
+    wisp::app::set_reset_spawner(
+        *h.app,
+        [&](const wisp::os::TaskConfig&, std::function<void()>) -> std::unique_ptr<wisp::os::Task> {
+            spawns.fetch_add(1);
+            return nullptr;
+        });
+
+    EXPECT_EQ(post_reset(h, token).status, 202);
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+    ASSERT_TRUE(click(h, "是"));
+    ASSERT_TRUE(wait_until([&] { return reset_states(h).size() == 2; }, 3000));
+    EXPECT_EQ(reset_states(h), (std::vector<std::string>{"requested", "cancelled"}));
+    EXPECT_EQ(spawns.load(), 1);
+    wisp::os::sleep_ms(100);
+    EXPECT_EQ(h.reboots.load(), 0);
+    EXPECT_EQ(h.app->wifi()->saved_ssids().size(), 1u);
+    EXPECT_EQ(h.app->pairing()->clients().size(), 1u);
+
+    // Not stuck in "confirmed": a new request shows the dialog again, and
+    // with the task able to start this time the reset goes through.
+    wisp::app::set_reset_spawner(*h.app, nullptr);
+    EXPECT_EQ(post_reset(h, token).status, 202);
+    ASSERT_TRUE(wait_until([&] { return msgboxes(h) == 1; }, 3000));
+    ASSERT_TRUE(click(h, "是"));
+    ASSERT_TRUE(wait_until([&] { return h.reboots.load() == 1; }, 5000));
+    EXPECT_EQ(reset_states(h),
+              (std::vector<std::string>{"requested", "cancelled", "requested", "done"}));
+}
+
+// One confirm dialog at a time: with the power-off question up, a reset
+// request is answered "cancelled" and no second dialog appears.
+TEST(FactoryReset, RequestDuringPowerOffDialogIsCancelled) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start("system."));
+    const std::string token = pair_browser(h);
+
+    h.app->bus().publish(wisp::core::Event{"button.power.long", "button.power"});
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "关机"); }, 3000));
+    ASSERT_EQ(msgboxes(h), 1);
+
+    EXPECT_EQ(post_reset(h, token).status, 202);
+    ASSERT_TRUE(wait_until([&] { return reset_states(h).size() == 2; }, 3000));
+    EXPECT_EQ(reset_states(h), (std::vector<std::string>{"requested", "cancelled"}));
+    run_on_ui_blocking(h.app->ui(), [] {});
+    EXPECT_EQ(msgboxes(h), 1);
+    EXPECT_FALSE(dialog_says(h, "恢复出厂设置"));
+    EXPECT_TRUE(dialog_says(h, "关机"));
+
+    // Once the power-off question is answered, a reset can be asked.
+    ASSERT_TRUE(click(h, "否"));
+    ASSERT_TRUE(wait_until([&] { return msgboxes(h) == 0; }, 3000));
+    EXPECT_EQ(post_reset(h, token).status, 202);
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+}
+
+// The other order: with the reset question up, a long press on the power
+// key is ignored, and the key's next short press turns the screen off as
+// it would with no dialog of its own pending.
+TEST(FactoryReset, PowerKeyDuringResetDialogIsIgnored) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start("system."));
+    const std::string token = pair_browser(h);
+
+    EXPECT_EQ(post_reset(h, token).status, 202);
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+
+    h.app->bus().publish(wisp::core::Event{"button.power.long", "button.power"});
+    h.app->bus().wait_idle(2000);
+    run_on_ui_blocking(h.app->ui(), [] {});
+    EXPECT_EQ(msgboxes(h), 1);
+    EXPECT_TRUE(dialog_says(h, "恢复出厂设置"));
+    EXPECT_FALSE(dialog_says(h, "关机"));
+
+    wisp::app::PowerManager* pm = h.app->power_manager();
+    ASSERT_NE(pm, nullptr);
+    h.app->bus().publish(wisp::core::Event{"button.power.short", "button.power"});
+    ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 3000));
+    // The reset question is still waiting for an answer.
+    EXPECT_EQ(msgboxes(h), 1);
+    EXPECT_EQ(reset_states(h), (std::vector<std::string>{"requested"}));
 }
 
 // Without a screen nobody could confirm, so the route says so up front.

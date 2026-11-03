@@ -123,6 +123,10 @@ struct App::Impl {
     // torn down. reset_mutex guards reset_task.
     os::Mutex reset_mutex;
     std::unique_ptr<os::Task> reset_task;
+    // What starts reset_task; empty means os::Task::spawn. Tests swap in
+    // one that fails (set_reset_spawner()).
+    std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>
+        reset_spawner;
 
     bool started = false;
 

@@ -51,6 +51,11 @@ constexpr uint64_t kSlowSampleIntervalMs = 1000;  // power/clock/storage.
 // (see sample_loop()'s standby branch).
 constexpr uint32_t kStandbySlowSampleMs = 30000;
 constexpr uint32_t kUiRefreshMs = 100;
+// How often the refresh timer re-reads the network services even without
+// an event: the bus drops its oldest events when full, and a lost
+// net.ap.state or net.pairing.code must not leave a card up (or missing)
+// for good. The reads are a few short lock-protected copies.
+constexpr uint64_t kNetResyncMs = 1000;
 constexpr uint32_t kPerfReportMs = 5000;
 constexpr int kBallTravelPx = 20;
 
@@ -188,9 +193,9 @@ private:
     // UI thread: re-reads the Wi-Fi state into the network section and
     // opens, refreshes or closes the provisioning card to match.
     void sync_wifi();
-    // UI thread: shows the active pairing code (if any) with a countdown to
-    // `expires_ms`, or closes the card.
-    void sync_pairing(bool active, uint64_t expires_ms);
+    // UI thread: shows the service's active pairing code (if any) with a
+    // countdown to its expiry, or closes the card.
+    void sync_pairing();
     // Keeps the stacking order on the top layer: provisioning card, then
     // pairing card, then the dialogs.
     void raise_overlays();
@@ -277,9 +282,11 @@ private:
     // other. At most one of each is open.
     lv_obj_t* reset_box_ = nullptr;
     lv_obj_t* reset_yes_ = nullptr;
-    // Set once the user confirmed: later requests are ignored while the
-    // reset runs towards its restart.
+    // Set once the user confirmed and the reset task started: later
+    // requests are ignored while the reset runs towards its restart.
     bool reset_confirmed_ = false;
+    // os::now_ms() of the last periodic network resync (see kNetResyncMs).
+    uint64_t last_net_resync_ms_ = 0;
 
     // --- Network block and cards (connectivity spec 8.1). UI thread only.
     NetSection net_section_;
@@ -485,6 +492,7 @@ void SelfCheck::build() {
     // Anything the net services announced before the subscription above
     // (the build runs after networking has started).
     sync_wifi();
+    sync_pairing();
 
     refresh_timer_ = lv_timer_create(&SelfCheck::refresh_timer_cb, kUiRefreshMs, this);
 
@@ -1004,16 +1012,7 @@ void SelfCheck::on_net_event(const core::Event& e) {
     if (e.topic == "net.wifi.state" || e.topic == "net.ap.state") {
         posted = ui_->post([this] { sync_wifi(); });
     } else if (e.topic == "net.pairing.code") {
-        auto active_it = e.payload.find("active");
-        auto expires_it = e.payload.find("expires_ms");
-        bool active = active_it != e.payload.end() &&
-                      active_it->second.type() == Value::Type::Bool && active_it->second.as_bool();
-        uint64_t expires = expires_it != e.payload.end() &&
-                                   expires_it->second.type() == Value::Type::Int &&
-                                   expires_it->second.as_int() > 0
-                               ? static_cast<uint64_t>(expires_it->second.as_int())
-                               : 0;
-        posted = ui_->post([this, active, expires] { sync_pairing(active, expires); });
+        posted = ui_->post([this] { sync_pairing(); });
     }
     if (!posted) {
         WLOG_W("self_check", "post(%s) dropped (post queue full)", e.topic.c_str());
@@ -1049,12 +1048,13 @@ void SelfCheck::sync_wifi() {
     raise_overlays();
 }
 
-void SelfCheck::sync_pairing(bool active, uint64_t expires_ms) {
+void SelfCheck::sync_pairing() {
     const uint64_t now = os::now_ms();
     net::PairingService* pairing = app_.pairing();
+    uint64_t expires_ms = 0;
     std::optional<std::string> code =
-        active && pairing != nullptr ? pairing->active_code(now) : std::nullopt;
-    if (!code || expires_ms <= now) {
+        pairing != nullptr ? pairing->active_code(now, &expires_ms) : std::nullopt;
+    if (!code) {
         pair_card_.close();
         return;
     }
@@ -1086,9 +1086,18 @@ void SelfCheck::show_reset_dialog() {
     if (reset_box_ != nullptr || reset_confirmed_) {
         return;  // one dialog per request at a time; nothing once confirmed
     }
+    if (msgbox_ != nullptr) {
+        // One confirm dialog at a time (spec 8). The person at the device
+        // is already answering the power-off question, so the browser gets
+        // a definite "no" now rather than a dialog that may never show.
+        WLOG_I("self_check", "factory reset request refused: power-off dialog is open");
+        cancel_factory_reset(app_);
+        return;
+    }
     reset_box_ = make_confirm_box(ui::StrId::ResetTitle, ui::StrId::ResetPrompt,
                                   &SelfCheck::reset_btn_cb, &reset_yes_);
     wake_screen();
+    WLOG_I("self_check", "factory reset: waiting for confirmation on the screen");
 }
 
 void SelfCheck::close_reset_dialog() {
@@ -1140,6 +1149,14 @@ void SelfCheck::show_confirm_dialog() {
     if (msgbox_ != nullptr) {
         return;  // Already up -- spec 8: no stacked confirm dialogs.
     }
+    if (reset_box_ != nullptr) {
+        // Nor on top of the factory-reset question: the long press is
+        // ignored, and the key controller is told no dialog came up, so the
+        // next short press turns the screen off as usual.
+        WLOG_I("self_check", "power-off dialog not shown: factory reset dialog is open");
+        (void)power_key_.on_confirm(false);
+        return;
+    }
     msgbox_ = make_confirm_box(ui::StrId::PowerOffTitle, ui::StrId::PowerOffPrompt,
                                &SelfCheck::msgbox_btn_cb, &msgbox_yes_);
 }
@@ -1162,6 +1179,10 @@ lv_obj_t* SelfCheck::make_confirm_box(ui::StrId title, ui::StrId text, lv_event_
     lv_obj_t* no_btn = lv_msgbox_add_footer_button(box, ui::tr(ui::StrId::No));
     lv_obj_add_event_cb(*yes, cb, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(no_btn, cb, LV_EVENT_CLICKED, this);
+    // Lay it out now rather than at the next refresh: a touch read in
+    // between would otherwise hit-test the box at zero size and land on
+    // whatever is under it.
+    lv_obj_update_layout(box);
     return box;
 }
 
@@ -1230,6 +1251,11 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     self->sync_language();
     self->refresh_ui();
     const uint64_t now = os::now_ms();
+    if (now - self->last_net_resync_ms_ >= kNetResyncMs) {
+        self->last_net_resync_ms_ = now;
+        self->sync_wifi();
+        self->sync_pairing();
+    }
     self->net_section_.tick(now);
     self->pair_card_.tick(now);
 }
@@ -1381,10 +1407,11 @@ void SelfCheck::reset_btn_cb(lv_event_t* e) {
     bool yes = (target == self->reset_yes_);
     self->close_reset_dialog();
     if (yes) {
-        self->reset_confirmed_ = true;
         // Off the UI thread: the reset waits for the network and writes
-        // flash before it restarts the device.
-        start_factory_reset(self->app_);
+        // flash before it restarts the device. If the task could not
+        // start, the reset was answered "cancelled" and a later request
+        // may ask again.
+        self->reset_confirmed_ = start_factory_reset(self->app_);
     } else {
         cancel_factory_reset(self->app_);
     }

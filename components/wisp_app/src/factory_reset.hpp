@@ -11,9 +11,17 @@
 // one-shot "wisp.reset" task -- never on the UI thread, since the reset
 // waits for the network and writes flash.
 
+#include <functional>
+#include <memory>
+
+#include "wisp/os/os.hpp"
+
 namespace wisp::app {
 
 class App;
+
+using TaskSpawner =
+    std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>;
 
 // Asks the device to confirm a factory reset on its screen. Any thread.
 void request_factory_reset(App& app);
@@ -33,11 +41,19 @@ void cancel_factory_reset(App& app);
 void factory_reset(App& app);
 
 // Runs factory_reset() on the "wisp.reset" task. Only the first call per
-// start() does anything (the reset ends in a restart). Any thread.
-void start_factory_reset(App& app);
+// start() does anything (the reset ends in a restart); true when the task
+// is running. If it cannot be created (out of memory), nothing is erased,
+// system.factory_reset {state:"cancelled"} is published -- the browser's
+// "nothing was erased" is then still true -- and false is returned so the
+// caller can let a later request ask again. Any thread.
+bool start_factory_reset(App& app);
 
 // Waits for a "wisp.reset" task to finish. App::stop() calls it before
 // tearing down the services the reset uses.
 void join_factory_reset(App& app);
+
+// Replaces os::Task::spawn for the "wisp.reset" task; empty restores it.
+// For tests that need the spawn to fail. Call before the reset starts.
+void set_reset_spawner(App& app, TaskSpawner spawner);
 
 }  // namespace wisp::app

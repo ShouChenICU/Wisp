@@ -66,6 +66,8 @@ const char* strings_ja(StrId id) {
             return "はい";
         case StrId::No:
             return "いいえ";
+        case StrId::NetLine:
+            return "Wi-Fi：{}";
         case StrId::NetNotSetUp:
             return "未設定";
         case StrId::NetOff:
@@ -85,9 +87,9 @@ const char* strings_ja(StrId id) {
         case StrId::SetupTitle:
             return "Wi-Fi 設定";
         case StrId::Hotspot:
-            return "ネットワーク";
+            return "ネットワーク：{}";
         case StrId::Password:
-            return "パスワード";
+            return "パスワード：{}";
         case StrId::OpenAddress:
             return "接続後に {} を開く";
         case StrId::PairTitle:
