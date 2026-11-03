@@ -144,3 +144,29 @@ TEST(SimOptions, RejectsMalformedTouches) {
     const char* argv[] = {"wisp_sim", "--swipe", "1,2@5"};
     EXPECT_FALSE(parse_sim_options(3, argv));
 }
+
+TEST(SimOptions, ParsesTouchStdinAndItsCommands) {
+    const char* argv[] = {"wisp_sim", "--touch-stdin"};
+    EXPECT_TRUE(parse_sim_options(2, argv).value().touch_stdin);
+    const char* none[] = {"wisp_sim"};
+    EXPECT_FALSE(parse_sim_options(1, none).value().touch_stdin);
+
+    auto tap = parse_touch_command("tap 188,298").value();
+    EXPECT_EQ(tap.kind, SimTouchStep::Kind::Tap);
+    EXPECT_EQ(tap.at_ms, 0u);
+    EXPECT_EQ(tap.x1, 188);
+    EXPECT_EQ(tap.y1, 298);
+    EXPECT_EQ(tap.x2, 188);
+    EXPECT_EQ(tap.y2, 298);
+    auto swipe = parse_touch_command("swipe 240,400,240,100").value();
+    EXPECT_EQ(swipe.kind, SimTouchStep::Kind::Swipe);
+    EXPECT_EQ(swipe.x2, 240);
+    EXPECT_EQ(swipe.y2, 100);
+
+    for (const char* bad : {"", "tap", "tap ", "tap 1", "tap 1,2,3", "tap 1,2@5", "tap 480,1",
+                            "swipe 1,2", "press 1,2", "TAP 1,2", " tap 1,2"}) {
+        auto r = parse_touch_command(bad);
+        ASSERT_FALSE(r) << bad;
+        EXPECT_NE(r.error().message.find("invalid touch command"), std::string::npos) << bad;
+    }
+}

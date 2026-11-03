@@ -1,5 +1,5 @@
 // PC simulator entry point (spec 6.1/8.1): parses
-// SimOptions (including scripted --tap/--swipe touches, see TouchScript), builds the
+// SimOptions (including scripted --tap/--swipe/--touch-stdin touches, see TouchScript), builds the
 // wisp::app::Platform around a SimBoard, runs wisp::app::App::start() (which builds the same
 // self-check UI the ESP firmware will), and then either loops headless or drives an SDL2 window at
 // ~60 Hz. This is the only translation unit in the project that creates an SDL window or pumps SDL
@@ -23,6 +23,8 @@
 // App::stop().
 
 #include <SDL.h>
+#include <poll.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cstdint>
@@ -144,21 +146,27 @@ std::vector<uint8_t> build_visible_mask(wisp::app::App& app) {
 
 // Plays --tap/--swipe (SimTouchStep) against SimInput on its own thread,
 // timed from construction (right after App::start()), so both the
-// headless and the SDL loop keep running meanwhile. In a windowed run a
-// real mouse press in between would overwrite the scripted point. The
-// destructor stops early and joins.
+// headless and the SDL loop keep running meanwhile. With --touch-stdin a
+// second thread plays each stdin line (parse_touch_command()) as it
+// arrives. In a windowed run a real mouse press in between would
+// overwrite the scripted point. The destructor stops early and joins.
 class TouchScript {
 public:
-    TouchScript(std::vector<SimTouchStep> steps, wisp::port::sim::SimInput& input)
+    TouchScript(std::vector<SimTouchStep> steps, bool from_stdin, wisp::port::sim::SimInput& input)
         : steps_(std::move(steps)), input_(input) {
         if (!steps_.empty()) {
             thread_ = std::thread([this] { run(); });
         }
+        if (from_stdin) {
+            stdin_thread_ = std::thread([this] { run_stdin(); });
+        }
     }
     ~TouchScript() {
         stop_.store(true);
-        if (thread_.joinable()) {
-            thread_.join();
+        for (std::thread* t : {&thread_, &stdin_thread_}) {
+            if (t->joinable()) {
+                t->join();
+            }
         }
     }
     TouchScript(const TouchScript&) = delete;
@@ -187,28 +195,68 @@ private:
             if (!wait_until(t0 + step.at_ms)) {
                 return;
             }
-            input_.mouse(step.x1, step.y1, true);
-            if (step.kind == SimTouchStep::Kind::Tap) {
-                wait_until(wisp::os::now_ms() + kTapMs);
-            } else {
-                const uint64_t start = wisp::os::now_ms();
-                for (int i = 1; i <= kSwipeSteps; ++i) {
-                    if (!wait_until(start + kSwipeMs * i / kSwipeSteps)) {
-                        break;
-                    }
-                    input_.mouse(step.x1 + (step.x2 - step.x1) * i / kSwipeSteps,
-                                 step.y1 + (step.y2 - step.y1) * i / kSwipeSteps, true);
-                }
-                wait_until(wisp::os::now_ms() + kSwipeRestMs);
-            }
-            input_.mouse(step.x2, step.y2, false);
+            play(step);
         }
+    }
+
+    // Polls rather than blocking in read(), so the destructor never waits
+    // on a stdin that stays open.
+    void run_stdin() {
+        std::string pending;
+        while (!stop_.load()) {
+            pollfd pfd{STDIN_FILENO, POLLIN, 0};
+            if (::poll(&pfd, 1, 50) <= 0) {
+                continue;
+            }
+            char buf[256];
+            ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
+            if (n <= 0) {
+                return;  // end of input (or an error): no more touches
+            }
+            pending.append(buf, static_cast<size_t>(n));
+            size_t eol;
+            while ((eol = pending.find('\n')) != std::string::npos) {
+                std::string line = pending.substr(0, eol);
+                pending.erase(0, eol + 1);
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
+                }
+                if (line.empty()) {
+                    continue;
+                }
+                auto step = parse_touch_command(line);
+                if (!step) {
+                    WLOG_W("sim", "%s", step.error().message.c_str());
+                    continue;
+                }
+                play(step.value());
+            }
+        }
+    }
+
+    void play(const SimTouchStep& step) {
+        input_.mouse(step.x1, step.y1, true);
+        if (step.kind == SimTouchStep::Kind::Tap) {
+            wait_until(wisp::os::now_ms() + kTapMs);
+        } else {
+            const uint64_t start = wisp::os::now_ms();
+            for (int i = 1; i <= kSwipeSteps; ++i) {
+                if (!wait_until(start + kSwipeMs * i / kSwipeSteps)) {
+                    break;
+                }
+                input_.mouse(step.x1 + (step.x2 - step.x1) * i / kSwipeSteps,
+                             step.y1 + (step.y2 - step.y1) * i / kSwipeSteps, true);
+            }
+            wait_until(wisp::os::now_ms() + kSwipeRestMs);
+        }
+        input_.mouse(step.x2, step.y2, false);
     }
 
     const std::vector<SimTouchStep> steps_;
     wisp::port::sim::SimInput& input_;
     std::atomic<bool> stop_{false};
     std::thread thread_;
+    std::thread stdin_thread_;
 };
 
 // Runs the headless loop: sleeps until exit_after_ms elapses or
@@ -541,7 +589,7 @@ int main(int argc, char** argv) {
 
     int exit_code = 0;
     {
-        TouchScript touches(opts.touches, *input);
+        TouchScript touches(opts.touches, opts.touch_stdin, *input);
         if (opts.headless) {
             run_headless(app, opts, should_exit);
         } else if (!run_windowed(app, opts, *board_ptr, *input, should_exit)) {

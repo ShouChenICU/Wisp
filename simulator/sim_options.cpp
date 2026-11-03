@@ -117,6 +117,8 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
             opts.touches.push_back(step);
         } else if (arg == "--wifi-fail") {
             opts.wifi_fail = true;
+        } else if (arg == "--touch-stdin") {
+            opts.touch_stdin = true;
         } else if (arg == "--http-port") {
             auto v = take_value(argc, argv, i, "--http-port");
             if (!v) {
@@ -164,4 +166,29 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
     }
 
     return wisp::Result<SimOptions>::ok(std::move(opts));
+}
+
+wisp::Result<SimTouchStep> parse_touch_command(const std::string& line) {
+    SimTouchStep step;
+    std::string coords;
+    if (line.rfind("tap ", 0) == 0) {
+        step.kind = SimTouchStep::Kind::Tap;
+        coords = line.substr(4);
+    } else if (line.rfind("swipe ", 0) == 0) {
+        step.kind = SimTouchStep::Kind::Swipe;
+        coords = line.substr(6);
+    }
+    const bool tap = step.kind == SimTouchStep::Kind::Tap;
+    int xy[4] = {};
+    uint32_t at_ms = 0;
+    if (coords.empty() || coords.find('@') != std::string::npos ||
+        !parse_touch(coords + "@0", tap ? 2 : 4, xy, at_ms)) {
+        return wisp::Result<SimTouchStep>::err(wisp::ErrorCode::InvalidArgument,
+                                               "invalid touch command: " + line);
+    }
+    step.x1 = xy[0];
+    step.y1 = xy[1];
+    step.x2 = tap ? xy[0] : xy[2];
+    step.y2 = tap ? xy[1] : xy[3];
+    return wisp::Result<SimTouchStep>::ok(step);
 }

@@ -48,6 +48,10 @@ struct SimOptions {
     bool wifi_fail = false;
     // In command-line order; see SimTouchStep.
     std::vector<SimTouchStep> touches;
+    // Also play touches read from stdin, one parse_touch_command() line
+    // each, as soon as they arrive -- for a script that must wait for
+    // something on the device before it touches the screen.
+    bool touch_stdin = false;
 };
 
 // Parses argv[1..argc) (argv[0], the program name, is ignored) into a
@@ -55,7 +59,9 @@ struct SimOptions {
 // --exit-after-ms <n>, --disable <id-or-class> (repeatable, appended to
 // `disabled` in order), --no-sd, --data-dir <path>, --shape
 // <rect|rounded_rect|circle>, --http-port <n> (0-65535; 0 = no admin
-// server), --web-dir <path>, --wifi-fail.
+// server), --web-dir <path>, --wifi-fail, --tap <x>,<y>@<ms> and
+// --swipe <x1>,<y1>,<x2>,<y2>@<ms> (both repeatable, appended to
+// `touches` in order), --touch-stdin.
 //
 // Fails with wisp::ErrorCode::InvalidArgument if:
 //   - an argument is none of the flags above (the error message includes
@@ -74,3 +80,8 @@ struct SimOptions {
 //     coordinates, each 0-479, then '@' and a --exit-after-ms-style
 //     integer (the message includes the flag and the value).
 wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv);
+
+// Parses one --touch-stdin line: "tap <x>,<y>" or "swipe <x1>,<y1>,<x2>,<y2>"
+// (coordinates as for --tap/--swipe), into a step with at_ms 0. Fails with
+// InvalidArgument, quoting the line, for anything else.
+wisp::Result<SimTouchStep> parse_touch_command(const std::string& line);
