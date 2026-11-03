@@ -55,6 +55,11 @@ public:
     // 0 while not running.
     uint16_t port() const override;
 
+    // Connections that have read part of a request (or became a
+    // WebSocket), i.e. that eviction leaves alone. Lets a test wait until
+    // the server has actually seen what its clients sent.
+    size_t busy_connections_for_test() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

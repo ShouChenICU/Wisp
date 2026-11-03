@@ -835,9 +835,14 @@ TEST_F(SimHttpServerTest, EighthConnectionClosedWhenNoneIsIdle) {
         clients.push_back(std::make_unique<Client>(server.port()));
         ASSERT_TRUE(clients.back()->send("GET /partial HTTP/1.1\r\nHost: 127.0.0.1\r\n"));
     }
-    // Give the server threads time to read those partial heads; until
-    // then a connection looks idle.
-    std::this_thread::sleep_for(100ms);
+    // Until the server has read a partial head, that connection still
+    // looks idle; wait for all six.
+    const auto read_by = Clock::now() + kWait;
+    while (server.busy_connections_for_test() < SimHttpServer::kMaxConnections - 1 &&
+           Clock::now() < read_by) {
+        std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_EQ(server.busy_connections_for_test(), SimHttpServer::kMaxConnections - 1);
     // The seventh is a WebSocket: both kinds count toward the limit, and a
     // WebSocket is never evicted.
     clients.push_back(std::make_unique<Client>(server.port()));

@@ -311,7 +311,7 @@ int take_ws_frame(std::string& in, WsFrame& out, size_t continuation_room) {
 // the whole server) is gone, so it owns everything send_text()/close()
 // touch.
 //
-// Locking: mutex_ guards fd_, closing_ and queue_, and is never held
+// Locking: mutex_ guards fd_, closing_, phase_ and queue_, and is never held
 // across a blocking call or an application callback, so send_text() and
 // close() never wait on the connection thread, whatever locks the
 // application holds while calling them.
@@ -365,16 +365,32 @@ public:
     // Idle: an HTTP connection between requests, nothing of the next one
     // read yet. Only idle connections may be evicted to admit a new one
     // (spec 6.3); a WebSocket or a connection mid-request never is.
-    void set_idle(bool idle) {
+    void set_idle() {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (idle && !idle_) idle_since_ = std::chrono::steady_clock::now();
-        idle_ = idle;
+        if (phase_ != Phase::Idle) idle_since_ = std::chrono::steady_clock::now();
+        phase_ = Phase::Idle;
+    }
+
+    // Leaves idle once bytes of a request arrived. False when the
+    // connection was evicted meanwhile: the bytes were read, but the
+    // evictor already shut the socket, so the request must not run. Under
+    // the same lock as evict_if_idle(), so exactly one of them wins.
+    bool mark_busy() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (closing_) return false;
+        phase_ = Phase::Busy;
+        return true;
+    }
+
+    bool busy() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return phase_ == Phase::Busy && !closing_;
     }
 
     // When idle (and not already closing), the time it became idle.
     std::optional<std::chrono::steady_clock::time_point> idle_since() {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!idle_ || closing_) return std::nullopt;
+        if (phase_ != Phase::Idle || closing_) return std::nullopt;
         return idle_since_;
     }
 
@@ -383,7 +399,7 @@ public:
     // request is left alone.
     bool evict_if_idle() {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!idle_ || closing_) return false;
+        if (phase_ != Phase::Idle || closing_) return false;
         closing_ = true;
         if (fd_ >= 0) ::shutdown(fd_, SHUT_RDWR);
         return true;
@@ -420,7 +436,9 @@ private:
     std::mutex mutex_;
     int fd_;
     bool closing_ = false;
-    bool idle_ = false;
+    // Starting: accepted, not yet waiting for a request. Busy: some of a
+    // request read (and, for a WebSocket, ever after).
+    enum class Phase { Starting, Idle, Busy } phase_ = Phase::Starting;
     std::chrono::steady_clock::time_point idle_since_{};
     std::deque<std::string> queue_;
     int wake_rd_;
@@ -579,10 +597,10 @@ void SimHttpServer::Impl::serve(const std::shared_ptr<Connection>& conn_ptr,
             if (buf.size() > kMaxHeadBytes) {
                 return reject(conn, 431, "headers_too_large", "request head exceeds 8192 bytes");
             }
-            if (buf.empty()) conn.set_idle(true);
-            const bool got = recv_some(fd, buf, kIdleTimeoutMs);
-            conn.set_idle(false);
-            if (!got) return conn.finish();
+            const bool idle = buf.empty();
+            if (idle) conn.set_idle();
+            if (!recv_some(fd, buf, kIdleTimeoutMs)) return conn.finish();
+            if (idle && !conn.mark_busy()) return conn.finish();
         }
         if (head_end + 4 > kMaxHeadBytes) {
             return reject(conn, 431, "headers_too_large", "request head exceeds 8192 bytes");
@@ -862,5 +880,14 @@ void SimHttpServer::stop() {
 bool SimHttpServer::running() const { return impl_->is_running.load(); }
 
 uint16_t SimHttpServer::port() const { return impl_->bound_port.load(); }
+
+size_t SimHttpServer::busy_connections_for_test() const {
+    std::lock_guard<std::mutex> lock(impl_->slots_mutex);
+    size_t n = 0;
+    for (const auto& slot : impl_->slots) {
+        if (!slot->finished.load() && !slot->evicted && slot->conn->busy()) ++n;
+    }
+    return n;
+}
 
 }  // namespace wisp::port::sim
