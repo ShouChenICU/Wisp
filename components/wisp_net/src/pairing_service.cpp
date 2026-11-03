@@ -256,7 +256,8 @@ Result<void> PairingService::request_code(uint64_t now_ms) {
     }
     code_ = draw_code_locked();
     code_expires_ms_ = now_ms + config_.code_ttl_ms;
-    WLOG_I(kTag, "pairing code shown on screen (valid %u s)", config_.code_ttl_ms / 1000);
+    WLOG_I(kTag, "pairing code shown on screen (valid %u s)",
+           static_cast<unsigned>(config_.code_ttl_ms / 1000));
     bus_.publish(core::Event{
         "net.pairing.code", kSource, 0,
         Properties{{"active", true}, {"expires_ms", static_cast<int64_t>(code_expires_ms_)}}});
@@ -291,7 +292,7 @@ Result<std::string> PairingService::confirm(std::string_view code, const ClientI
         WLOG_W(kTag, "wrong pairing code (%d/%d)", failures_, config_.max_attempts);
         if (now_locked) {
             locked_until_ms_ = now_ms + config_.lock_ms;
-            WLOG_W(kTag, "pairing locked for %u s", config_.lock_ms / 1000);
+            WLOG_W(kTag, "pairing locked for %u s", static_cast<unsigned>(config_.lock_ms / 1000));
             clear_code_locked();
         }
         bus_.publish(core::Event{"net.pairing.failed", kSource, 0,
