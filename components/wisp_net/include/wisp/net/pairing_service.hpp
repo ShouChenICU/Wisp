@@ -130,11 +130,10 @@ public:
 
     // Told about every revocation, so whoever holds sessions opened with a
     // token (the admin WebSocket) can end them (spec 6.4). Gets the
-    // revoked id from revoke() and nullopt from revoke_all() (every
-    // client). Called on the revoking thread once the client is already
-    // forgotten, outside the service's lock (so it may call back into the
-    // service) but under the listeners' own lock: it must not add or
-    // remove listeners.
+    // revoked id from revoke() and from a pairing that evicts the least
+    // recently seen client, and nullopt from revoke_all() (every client). Called on the revoking
+    // thread once the client is already forgotten, outside the service's lock (so it may call back
+    // into the service) but under the listeners' own lock: it must not add or remove listeners.
     using RevokeListener = std::function<void(const std::optional<std::string>& id)>;
     // Returns a handle for remove_revoke_listener().
     int add_revoke_listener(RevokeListener fn);
@@ -155,7 +154,13 @@ private:
     void observe_locked(uint64_t now_ms);
     void clear_code_locked();
     std::string draw_code_locked();
-    Result<std::string> add_client_locked(const ClientInfo& client, const char* how);
+    // Sets *evicted to the id dropped to stay within max_clients, if any;
+    // the caller notifies revoke listeners once mutex_ is released.
+    Result<std::string> add_client_locked(const ClientInfo& client, const char* how,
+                                          std::string* evicted);
+    // confirm() minus the listener call, under mutex_.
+    Result<std::string> confirm_unnotified(std::string_view code, const ClientInfo& client,
+                                           uint64_t now_ms, std::string* evicted);
 
     core::StorageManager& storage_;
     core::EventBus& bus_;

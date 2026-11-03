@@ -696,3 +696,33 @@ TEST(Pairing, RevokeListenersHearRevocations) {
     EXPECT_EQ(heard2.size(), 1u);
     svc.remove_revoke_listener(h1);
 }
+
+// Making room for a ninth browser revokes the least recently seen one, so
+// its WebSocket must be closed just like after an explicit revoke().
+TEST(Pairing, EvictionNotifiesRevokeListeners) {
+    Fixture f;
+    auto& svc = f.make();
+    std::vector<std::string> tokens;
+    for (int i = 0; i < 8; ++i) {
+        f.unix_now = 100 + i;
+        tokens.push_back(f.pair(1000 + i));
+    }
+    std::vector<std::optional<std::string>> heard;
+    const int h = svc.add_revoke_listener([&](const std::optional<std::string>& id) {
+        heard.push_back(id);
+        // Outside the service's lock.
+        (void)svc.clients();
+    });
+
+    f.unix_now = 300;
+    f.pair(3000);
+    ASSERT_EQ(heard.size(), 1u);
+    EXPECT_EQ(heard[0], std::optional<std::string>(hash_hex(tokens[0]).substr(0, 12)));
+
+    // The hotspot path evicts the same way.
+    f.unix_now = 301;
+    ASSERT_TRUE(svc.pair_from_ap(browser(Iface::Ap), 3001));
+    ASSERT_EQ(heard.size(), 2u);
+    EXPECT_EQ(heard[1], std::optional<std::string>(hash_hex(tokens[1]).substr(0, 12)));
+    svc.remove_revoke_listener(h);
+}

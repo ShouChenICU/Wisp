@@ -138,7 +138,7 @@ Result<void> PairingService::persist_locked(const std::vector<Entry>& clients) {
                            {"created", e.info.created_unix},
                            {"last_seen", e.info.last_seen_unix}});
     }
-    std::string json = to_json(Map{{"clients", std::move(list)}});
+    std::string json = to_json_raw(Map{{"clients", std::move(list)}});
     auto r = storage_.write_atomic(path, std::vector<uint8_t>(json.begin(), json.end()));
     if (!r) {
         WLOG_E(kTag, "saving paired clients failed: %s", r.error().message.c_str());
@@ -277,6 +277,16 @@ void PairingService::tick(uint64_t now_ms) {
 
 Result<std::string> PairingService::confirm(std::string_view code, const ClientInfo& client,
                                             uint64_t now_ms) {
+    std::string evicted;
+    auto token = confirm_unnotified(code, client, now_ms, &evicted);
+    // An eviction is a revocation too (outside mutex_, as in revoke()).
+    if (!evicted.empty()) notify_revoked(evicted);
+    return token;
+}
+
+Result<std::string> PairingService::confirm_unnotified(std::string_view code,
+                                                       const ClientInfo& client, uint64_t now_ms,
+                                                       std::string* evicted) {
     std::lock_guard<os::Mutex> lock(mutex_);
     observe_locked(now_ms);
     if (locked_until_ms_) {
@@ -301,7 +311,7 @@ Result<std::string> PairingService::confirm(std::string_view code, const ClientI
                                         "wrong or expired pairing code");
     }
     // If saving fails the code stays valid, so the browser can retry.
-    auto token = add_client_locked(client, "code");
+    auto token = add_client_locked(client, "code", evicted);
     if (!token) return token;
     failures_ = 0;
     clear_code_locked();
@@ -311,7 +321,8 @@ Result<std::string> PairingService::confirm(std::string_view code, const ClientI
 // ---------------------------------------------------------------------------
 // Clients
 
-Result<std::string> PairingService::add_client_locked(const ClientInfo& client, const char* how) {
+Result<std::string> PairingService::add_client_locked(const ClientInfo& client, const char* how,
+                                                      std::string* evicted_out) {
     std::string token;
     std::string hash;
     for (int i = 0;; ++i) {
@@ -354,6 +365,7 @@ Result<std::string> PairingService::add_client_locked(const ClientInfo& client, 
 
     if (!evicted.empty()) {
         WLOG_I(kTag, "evicted least recently seen client %s", evicted.c_str());
+        *evicted_out = std::move(evicted);
     }
     WLOG_I(kTag, "paired client %s (%s) via %s", entry.info.id.c_str(), entry.info.label.c_str(),
            how);
@@ -365,9 +377,15 @@ Result<std::string> PairingService::pair_from_ap(const ClientInfo& client, uint6
         return Result<std::string>::err(ErrorCode::PermissionDenied,
                                         "pairing without a code is only allowed on the hotspot");
     }
-    std::lock_guard<os::Mutex> lock(mutex_);
-    observe_locked(now_ms);
-    return add_client_locked(client, "hotspot");
+    std::string evicted;
+    Result<std::string> token = Result<std::string>::ok(std::string());
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        observe_locked(now_ms);
+        token = add_client_locked(client, "hotspot", &evicted);
+    }
+    if (!evicted.empty()) notify_revoked(evicted);
+    return token;
 }
 
 Result<std::string> PairingService::authenticate(std::string_view token, uint64_t now_ms) {
