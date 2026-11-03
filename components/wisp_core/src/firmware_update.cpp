@@ -13,7 +13,10 @@ namespace {
 constexpr const char* kTag = "firmware";
 
 FirmwareOutcome outcome(FirmwareFailure failure, std::string message) {
-    return FirmwareOutcome{failure, std::move(message)};
+    FirmwareOutcome r;
+    r.failure = failure;
+    r.message = std::move(message);
+    return r;
 }
 
 }  // namespace

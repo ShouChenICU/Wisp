@@ -148,7 +148,10 @@ std::optional<net::StreamStart> firmware_stream(AdminDeps& deps, const net::Http
                                                "upload the image with a Content-Length"));
     }
     if (head.content_length > SIZE_MAX) {
-        return answer(failure_response({FirmwareFailure::TooLarge, "image too large"}));
+        FirmwareOutcome too_large;
+        too_large.failure = FirmwareFailure::TooLarge;
+        too_large.message = "image too large";
+        return answer(failure_response(too_large));
     }
     uint32_t id = 0;
     FirmwareOutcome r = deps.firmware->begin(static_cast<size_t>(head.content_length), &id);
