@@ -15,6 +15,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/os/os.hpp"
 
 namespace wisp::admin::detail {
 
@@ -35,6 +36,9 @@ struct RequestContext {
     std::string param;
     // The JSON body; Null when the body was empty.
     Value body;
+    // AdminServer's one-shot timer that calls AdminDeps::reboot, so the
+    // reboot route can answer before the device goes down.
+    os::Timer* reboot_timer = nullptr;
 };
 
 using RouteFn = net::HttpResponse (*)(AdminDeps& deps, const RequestContext& ctx);
@@ -51,6 +55,14 @@ struct Route {
 
 // Route groups; each appends its routes to the table.
 void add_pair_routes(std::vector<Route>& routes);
+void add_device_routes(std::vector<Route>& routes);  // /device, /devices, /settings
+void add_wifi_routes(std::vector<Route>& routes);
+void add_llm_routes(std::vector<Route>& routes);
+void add_system_routes(std::vector<Route>& routes);  // /clients, /system/*
+
+// How long the reboot route waits before calling AdminDeps::reboot, so its
+// 202 reaches the browser first.
+constexpr uint32_t kRebootDelayMs = 500;
 
 // --- filters.cpp ---
 
@@ -77,5 +89,12 @@ bool csrf_ok(const net::HttpRequest& req);
 net::HttpResponse service_error(const Error& error);
 // Empty-object JSON body with the given status.
 net::HttpResponse ok_json(int status = 200);
+// 204 with an empty body.
+net::HttpResponse no_content();
+// 400 invalid_argument with `message`.
+net::HttpResponse bad_request(std::string_view message);
+// Decodes %XX escapes in a path segment ('+' stays literal, as in any URL
+// path). nullopt for a truncated or non-hex escape.
+std::optional<std::string> percent_decode(std::string_view s);
 
 }  // namespace wisp::admin::detail

@@ -194,13 +194,13 @@ void WifiService::set_state_locked(WifiState state, std::string ssid, std::strin
     // while waiting to retry one.
     const char* reason = state == WifiState::Backoff ? fail_reason_ : "";
     bool changed = state != status_.state || ssid != status_.ssid || ip != status_.ip ||
-                   std::string_view(reason) != published_reason_;
+                   std::string_view(reason) != status_.reason;
     status_.state = state;
     status_.ssid = std::move(ssid);
     status_.ip = std::move(ip);
     status_.rssi = rssi;
+    status_.reason = reason;
     if (!changed) return;
-    published_reason_ = reason;
     bus_.publish(core::Event{"net.wifi.state", source_, 0,
                              Properties{{"state", to_string(state)},
                                         {"ssid", status_.ssid},
@@ -634,6 +634,12 @@ Result<void> WifiService::stop_provisioning() {
 std::optional<ApSession> WifiService::ap_session() const {
     std::lock_guard<os::Mutex> lock(mutex_);
     return ap_;
+}
+
+ApStatus WifiService::ap_status() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    if (!ap_) return ApStatus{};
+    return ApStatus{true, ap_->ssid, ap_clients_};
 }
 
 }  // namespace wisp::net

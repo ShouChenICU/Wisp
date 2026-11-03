@@ -27,14 +27,18 @@
 //      at most 8 KiB (413) and, when non-empty, valid JSON (400 bad_json).
 //
 // Threading: handle() runs on HTTP server threads, possibly several at
-// once. AdminServer itself holds no mutable state; every service it calls
-// is thread-safe.
+// once. AdminServer's only mutable state is the reboot timer (os::Timer
+// is safe to start from any thread); every service it calls is
+// thread-safe. The reboot route only arms that timer, which calls
+// AdminDeps::reboot about 500 ms later on the timer's thread so the 202
+// is sent first; destroying the AdminServer cancels a pending reboot.
 //
 // Secrets: tokens, pairing codes and cookie values never reach a log line
 // or a response body.
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -100,6 +104,8 @@ private:
 
     AdminDeps deps_;
     std::vector<detail::Route> routes_;
+    // Declared after deps_ so it is destroyed (stopped) first.
+    std::unique_ptr<os::Timer> reboot_timer_;
 };
 
 }  // namespace wisp::admin

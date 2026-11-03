@@ -54,12 +54,23 @@ struct WifiStatus {
     std::string ssid;  // network being tried / connected; empty when none
     std::string ip;    // only in Connected
     int rssi = 0;      // only in Connected
+    // Why the last attempt failed ("not_found"/"auth_failed"/"other");
+    // only set in Backoff, "" otherwise. Same value as net.wifi.state's
+    // "reason".
+    std::string reason;
 };
 
 struct ApSession {
     std::string ssid;
     std::string password;
     std::string ip;
+};
+
+// The hotspot as the admin page may see it: no password.
+struct ApStatus {
+    bool active = false;
+    std::string ssid;
+    int clients = 0;
 };
 
 struct ScanResult {
@@ -132,6 +143,8 @@ public:
     Result<void> stop_provisioning();
     // Only for the device's own screen -- carries the hotspot password.
     std::optional<ApSession> ap_session() const;
+    // Password-free view of the hotspot, for remote callers (admin API).
+    ApStatus ap_status() const;
 
     // Factory reset: drops and persists an empty network list, closes the
     // hotspot and disconnects.
@@ -192,9 +205,9 @@ private:
     uint64_t next_attempt_ms_ = 0;
     uint32_t backoff_ms_ = 0;  // wait applied after the next failure
     // Cause of the last failed attempt ("not_found"/"auth_failed"/"other"),
-    // published as net.wifi.state's "reason" while in Backoff.
+    // published as net.wifi.state's "reason" (and WifiStatus::reason)
+    // while in Backoff.
     const char* fail_reason_ = "";
-    std::string published_reason_;            // "reason" of the last published event
     std::optional<std::string> direct_ssid_;  // next attempt skips the scan
 
     bool in_flight_ = false;  // connect() issued, waiting for the link

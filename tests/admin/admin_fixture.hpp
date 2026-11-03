@@ -2,8 +2,9 @@
 
 // Shared fixture for the wisp_admin router tests: real services (Wi-Fi
 // over a FakeWifi, pairing, LLM config, system settings) over a temp
-// directory, the fixture WispPack that tools/pack_assets.py builds from
-// tests/net/fixtures/web, and a settable monotonic clock.
+// directory, a FakeHttpClient for the LLM probe, counters for the reboot
+// and factory-reset hooks, the fixture WispPack that tools/pack_assets.py
+// builds from tests/net/fixtures/web, and a settable monotonic clock.
 
 #include <gtest/gtest.h>
 
@@ -81,14 +82,14 @@ struct AdminFixture {
             .pairing = *pairing,
             .llm = *llm,
             .settings = *settings,
-            .http_client = nullptr,
+            .http_client = &http,
             .assets = assets ? &*assets : nullptr,
             .board = "sim",
             .firmware_version = "0.2.0-test",
             .device_name = "Wisp",
             .device_status = [] { return Value(Map{}); },
-            .reboot = [] {},
-            .request_factory_reset = [] {},
+            .reboot = [this] { ++reboots; },
+            .request_factory_reset = [this] { ++factory_resets; },
         };
         if (with_clock) deps.now_ms = [this] { return now.load(); };
         return deps;
@@ -125,6 +126,9 @@ struct AdminFixture {
     std::unique_ptr<core::SystemSettings> settings;
     std::vector<uint8_t> pack_bytes;
     std::optional<net::AssetPack> assets;
+    FakeHttpClient http;
+    std::atomic<int> reboots{0};
+    std::atomic<int> factory_resets{0};
     std::atomic<uint64_t> now{1000};
     std::mt19937 rng{12345};
     std::unique_ptr<admin::AdminServer> srv;

@@ -6,9 +6,13 @@
 // Each helper takes and returns the request by value so calls nest:
 //   srv.handle(with_csrf(with_token(make_req(Method::Post, "/x"), t)))
 
+#include <cstddef>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "wisp/net/http.hpp"
 
@@ -75,5 +79,35 @@ inline bool contains(std::string_view haystack, std::string_view needle) {
 inline std::string set_cookie(const net::HttpResponse& res) {
     return response_header(res, "set-cookie");
 }
+
+// net::HttpClient double: records every request and answers each with
+// `next`. Tests set `next` before the call under test and read the
+// recorded requests afterwards; the mutex only makes the recording safe
+// if a route happens to call in from another thread.
+class FakeHttpClient : public net::HttpClient {
+public:
+    net::HttpClientResponse request(const net::HttpClientRequest& req) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        requests_.push_back(req);
+        return next;
+    }
+
+    std::optional<net::HttpClientRequest> last() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (requests_.empty()) return std::nullopt;
+        return requests_.back();
+    }
+
+    size_t calls() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return requests_.size();
+    }
+
+    net::HttpClientResponse next{.transport = net::TransportError::None, .status = 200, .body = {}};
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<net::HttpClientRequest> requests_;
+};
 
 }  // namespace wisp::test

@@ -1,6 +1,7 @@
 #include "wisp/admin/admin_server.hpp"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,6 +23,40 @@ net::HttpResponse service_error(const Error& error) {
 }
 
 net::HttpResponse ok_json(int status) { return net::HttpResponse::json(status, Value(Map{})); }
+
+net::HttpResponse no_content() {
+    net::HttpResponse res;
+    res.status = 204;
+    return res;
+}
+
+net::HttpResponse bad_request(std::string_view message) {
+    return net::HttpResponse::error(400, "invalid_argument", message);
+}
+
+std::optional<std::string> percent_decode(std::string_view s) {
+    auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] != '%') {
+            out.push_back(s[i]);
+            continue;
+        }
+        if (i + 2 >= s.size()) return std::nullopt;
+        const int hi = hex(s[i + 1]);
+        const int lo = hex(s[i + 2]);
+        if (hi < 0 || lo < 0) return std::nullopt;
+        out.push_back(static_cast<char>((hi << 4) | lo));
+        i += 2;
+    }
+    return out;
+}
 
 }  // namespace detail
 
@@ -110,10 +145,22 @@ RouteMatch match_route(const std::vector<Route>& routes, net::Method method, std
 
 AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     if (!deps_.now_ms) deps_.now_ms = [] { return os::now_ms(); };
+    reboot_timer_ =
+        std::make_unique<os::Timer>("wisp.reboot", detail::kRebootDelayMs, false, [this] {
+            if (deps_.reboot) deps_.reboot();
+        });
     detail::add_pair_routes(routes_);
+    detail::add_device_routes(routes_);
+    detail::add_wifi_routes(routes_);
+    detail::add_llm_routes(routes_);
+    detail::add_system_routes(routes_);
 }
 
-AdminServer::~AdminServer() = default;
+AdminServer::~AdminServer() {
+    // Cancels a reboot that has not fired yet and waits out one in
+    // progress, so the callback never sees a destroyed deps_.
+    reboot_timer_.reset();
+}
 
 net::HttpResponse AdminServer::handle(const net::HttpRequest& req) {
     if (!detail::host_allowed(req)) {
@@ -193,7 +240,8 @@ net::HttpResponse AdminServer::handle_api(const net::HttpRequest& req) {
         body = std::move(parsed.value());
     }
 
-    detail::RequestContext ctx{req, now, std::move(client_id), std::move(m.param), std::move(body)};
+    detail::RequestContext ctx{
+        req, now, std::move(client_id), std::move(m.param), std::move(body), reboot_timer_.get()};
     return m.route->fn(deps_, ctx);
 }
 

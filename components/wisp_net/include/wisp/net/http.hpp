@@ -89,6 +89,9 @@ public:
 
 enum class TransportError { None, Dns, Connect, Tls, Timeout, Other };
 
+// "dns"/"connect"/"tls"/"timeout"/"other"; "" for None.
+const char* to_string(TransportError e);
+
 struct HttpClientRequest {
     Method method = Method::Get;
     std::string url;

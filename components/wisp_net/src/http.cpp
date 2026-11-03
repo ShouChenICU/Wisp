@@ -76,4 +76,22 @@ int http_status_for(ErrorCode code) {
     }
 }
 
+const char* to_string(TransportError e) {
+    switch (e) {
+        case TransportError::None:
+            return "";
+        case TransportError::Dns:
+            return "dns";
+        case TransportError::Connect:
+            return "connect";
+        case TransportError::Tls:
+            return "tls";
+        case TransportError::Timeout:
+            return "timeout";
+        case TransportError::Other:
+            break;
+    }
+    return "other";
+}
+
 }  // namespace wisp::net
