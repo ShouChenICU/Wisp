@@ -32,6 +32,12 @@
 //     via a worker task EspSdStorage itself owns (see that class's
 //     comment on why: online()/capacity() must stay cheap, since they're
 //     polled by the UI thread and by a shared-dispatch Timer task)
+//   - the chip's own radio -> net.wifi (wisp::port::esp::EspWifi), brought
+//     up last, on every path (even when bmgr fails): nothing else on the
+//     board depends on it, and starting it after the display keeps the
+//     Wi-Fi driver's internal-RAM allocations from crowding out the
+//     panel's DMA buffers. Its radio being on is also what makes
+//     Platform::random a true RNG (see firmware/main/main.cpp).
 //
 // Every failure is recorded in the boot report and bring-up continues
 // with the next device -- a missing panel or touch controller degrades
@@ -73,6 +79,7 @@
 #include "wisp/port/esp/esp_power.hpp"
 #include "wisp/port/esp/esp_storage.hpp"
 #include "wisp/port/esp/esp_touch.hpp"
+#include "wisp/port/esp/esp_wifi.hpp"
 
 namespace {
 
@@ -490,6 +497,21 @@ void init_sd_storage(wisp::core::DeviceRegistry& registry, wisp::core::BootRepor
     }
 }
 
+// The ESP32-S3's built-in 2.4 GHz radio. A failure only takes networking
+// away (App records the "net" note as "missing").
+void init_wifi(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
+    wisp::port::esp::EspWifiConfig config;
+    config.id = "net.wifi";
+    config.model = "ESP32-S3";
+    config.bands = {"2.4GHz"};
+    auto wifi = wisp::port::esp::EspWifi::create(std::move(config));
+    if (!wifi) {
+        record_failed(report, "net.wifi", wisp::hal::DeviceClass::Network, wifi.error().message);
+        return;
+    }
+    add_device(registry, report, wifi.value());
+}
+
 // Sets the system clock from clock.main's RTC, if (and only if) it was
 // registered and currently holds a plausible time -- EspClock::get_unix()
 // (drivers/pcf85063) already fails rather than return a bogus reading
@@ -543,6 +565,7 @@ public:
             record_failed(report, "audio_in.main", wisp::hal::DeviceClass::AudioIn, reason);
             // storage.int was already handled above, independent of bmgr.
             record_failed(report, "storage.sd", wisp::hal::DeviceClass::Storage, reason);
+            init_wifi(registry, report);
             return;
         }
 
@@ -565,6 +588,8 @@ public:
         // which devices came up (see hold_outputs_during_light_sleep()'s
         // comment).
         hold_outputs_during_light_sleep();
+
+        init_wifi(registry, report);
     }
 };
 

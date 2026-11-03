@@ -1,6 +1,8 @@
 // ESP32-S3 firmware entry point: wires up the ESP-only pieces of
 // wisp::app::Platform (EspLogSink, wisp::port::esp::NvsSettingsBackend,
-// emit_line/request_power_off/heap_info) around whichever board
+// emit_line/request_power_off/heap_info, and the networking services:
+// EspHttpServer/EspHttpClient and the mapped web asset pack) around
+// whichever board
 // firmware/CMakeLists.txt's WISP_BOARD selected, then runs the same
 // wisp::app::App boot sequence the PC simulator runs (see
 // simulator/main.cpp and wisp/app/app.hpp). The board registers
@@ -9,12 +11,15 @@
 // panel fails to come up it falls back to the headless path instead.
 
 #include <cstdio>
+#include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_partition.h"
 #include "esp_pm.h"
 #include "esp_random.h"
 #include "esp_sleep.h"
@@ -27,6 +32,8 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/port/esp/console_esp.hpp"
+#include "wisp/port/esp/esp_http_client.hpp"
+#include "wisp/port/esp/esp_http_server.hpp"
 #include "wisp/port/esp/log_esp.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
 
@@ -57,6 +64,41 @@ void apply_pm_config(bool light_sleep_enable) {
         WLOG_W("main", "esp_pm_configure(light_sleep_enable=%d) failed: %s", light_sleep_enable,
                esp_err_to_name(err));
     }
+}
+
+// The web UI's WispPack (connectivity spec 2.3), mapped read-only from
+// the "assets" partition (found by name, spec 3.2) and left mapped for the
+// life of the firmware, so the admin server can send files straight from
+// flash. Only the pack itself is mapped, sized from its header (bytes
+// 12..15: total_bytes, see tools/pack_assets.py); an erased or foreign
+// partition yields an empty span and the API is served without a page.
+std::span<const uint8_t> map_assets() {
+    const esp_partition_t* part =
+        esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "assets");
+    if (part == nullptr) {
+        WLOG_W("main", "no \"assets\" partition; admin page unavailable");
+        return {};
+    }
+    uint8_t header[16] = {};
+    if (esp_partition_read(part, 0, header, sizeof(header)) != ESP_OK ||
+        std::memcmp(header, "WPAK", 4) != 0) {
+        WLOG_W("main", "\"assets\" holds no web pack (flash it with idf.py flash)");
+        return {};
+    }
+    uint32_t total = 0;
+    std::memcpy(&total, header + 12, sizeof(total));  // little-endian, like the chip
+    if (total < sizeof(header) || total > part->size) {
+        WLOG_W("main", "\"assets\" pack size %u is out of range", static_cast<unsigned>(total));
+        return {};
+    }
+    const void* data = nullptr;
+    esp_partition_mmap_handle_t handle = 0;
+    esp_err_t err = esp_partition_mmap(part, 0, total, ESP_PARTITION_MMAP_DATA, &data, &handle);
+    if (err != ESP_OK) {
+        WLOG_W("main", "mapping \"assets\" failed: %s", esp_err_to_name(err));
+        return {};
+    }
+    return {static_cast<const uint8_t*>(data), total};
 }
 
 }  // namespace
@@ -127,8 +169,22 @@ extern "C" void app_main() {
                                                         : wisp::app::LineRead::Timeout;
         };
     }
-    // http_server/http_client/assets stay empty: no admin backend on the
-    // device yet.
+    // Admin backend (connectivity spec 6): App serves it on http_port
+    // (8900) while the station has an address or the hotspot is up.
+    platform.http_server = std::make_unique<wisp::port::esp::EspHttpServer>();
+    platform.http_client = std::make_unique<wisp::port::esp::EspHttpClient>();
+    platform.assets = map_assets();
+    // The hotspot's port-80 captive redirect (spec 4.3): a second httpd
+    // instance, so it needs its own control port; it only ever redirects,
+    // so it gets few sockets, a small stack and no WebSocket. Both
+    // instances plus the captive DNS socket are counted into
+    // CONFIG_LWIP_MAX_SOCKETS (firmware/sdkconfig.defaults).
+    wisp::port::esp::EspHttpServerConfig captive;
+    captive.ctrl_port = static_cast<uint16_t>(wisp::port::esp::EspHttpServerConfig{}.ctrl_port + 1);
+    captive.max_open_sockets = 4;
+    captive.stack_bytes = 4096;
+    captive.websocket = false;
+    platform.captive_server = std::make_unique<wisp::port::esp::EspHttpServer>(captive);
 
     // DFS always on; light sleep off until the first enter_standby()
     // (see apply_pm_config()'s comment above).

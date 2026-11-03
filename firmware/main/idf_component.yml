@@ -33,3 +33,7 @@ dependencies:
   # so it needs the same treatment. Pinned to the exact version
   # dependencies.lock already resolved transitively (THIRD_PARTY_NOTICES.md).
   espressif/esp_codec_dev: "2.0.0-beta5"
+  # mDNS responder for wisp.local (wisp::port::esp::EspWifi,
+  # components/wisp_port_esp/net/esp_wifi.cpp; connectivity spec 2.1).
+  # Pinned to an exact release (THIRD_PARTY_NOTICES.md).
+  espressif/mdns: "1.14.0"

@@ -65,3 +65,28 @@ CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
+
+# Networking (connectivity spec 2.1, 3.1, 10). Wi-Fi and lwIP buffers go to
+# PSRAM where the driver allows it, so the radio does not squeeze LVGL and
+# the other tasks out of internal RAM (only takes effect on boards with
+# PSRAM). The default event loop task runs EspWifi's event handlers, which
+# log; 4 KiB leaves room for the log path.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
+# HTTPS for the LLM connectivity test: verify servers against the IDF
+# certificate bundle (wisp::port::esp::EspHttpClient).
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+
+# Admin server (wisp::port::esp::EspHttpServer): the /api/v1/ws WebSocket,
+# with the pre-handshake hook that lets an unauthorized upgrade be refused
+# with a plain 403 before the 101; and room for browser request headers
+# (cookie, user agent, If-None-Match) beyond httpd's 512-byte default.
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+# Sockets: the admin httpd (7 clients + 3 of its own), the hotspot's
+# port-80 httpd (4 + 3), the captive DNS responder (1) and the LLM test's
+# client (1) make 19; the rest is headroom. mDNS uses raw lwIP, no socket.
+CONFIG_LWIP_MAX_SOCKETS=24
