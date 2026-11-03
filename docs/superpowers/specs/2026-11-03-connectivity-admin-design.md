@@ -257,7 +257,7 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 - **Host 校验（防 DNS 重绑定）**：只接受 `Host` 为 IPv4 地址、`wisp.local` 或热点地址的请求，其余返回 403。热点模式下的探测路径不受此限制。
 - **令牌**：Cookie 名为 `wisp_token`，属性 `HttpOnly; SameSite=Strict; Path=/`，有效期 1 年；每次访问更新"最近访问时间"。
 - **CSRF**：所有修改类请求（POST/PUT/DELETE）必须带请求头 `X-Wisp: 1`。设备不响应任何 CORS 预检，所以别的网站无法跨域带上这个头。
-- **资源限制**：请求体最大 8KB（超出返回 413），同时最多 7 个连接。
+- **资源限制**：请求体最大 8KB（超出返回 413），同时最多 7 个连接。连接已满时，新连接淘汰最久未用的空闲 keep-alive HTTP 连接（WebSocket 和正在处理请求的连接不会被淘汰）；没有空闲连接时才关闭新连接。真机用 httpd 的 `lru_purge_enable` 实现，模拟器的 `SimHttpServer` 行为相同。
 
 ### 6.4 HTTP 的风险与缓解
 

@@ -25,6 +25,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "net/sha1.hpp"
@@ -826,23 +827,32 @@ TEST_F(SimHttpServerTest, SendQueueFillsWhenThePeerStopsReading) {
     EXPECT_EQ(rec.closed_ids(), std::vector<int>{conn->id()});
 }
 
-TEST_F(SimHttpServerTest, EighthConnectionClosed) {
+TEST_F(SimHttpServerTest, EighthConnectionClosedWhenNoneIsIdle) {
     start(rec.ws());
     std::vector<std::unique_ptr<Client>> clients;
+    // Six connections in the middle of a request head: none is idle.
     for (size_t i = 0; i < SimHttpServer::kMaxConnections - 1; ++i) {
         clients.push_back(std::make_unique<Client>(server.port()));
-        ASSERT_TRUE(clients.back()->send(get_request("/keep")));
-        auto res = clients.back()->read_response();
-        ASSERT_TRUE(res);
-        ASSERT_EQ(res->status, 200);
+        ASSERT_TRUE(clients.back()->send("GET /partial HTTP/1.1\r\nHost: 127.0.0.1\r\n"));
     }
-    // The seventh is a WebSocket: both kinds count toward the limit.
+    // Give the server threads time to read those partial heads; until
+    // then a connection looks idle.
+    std::this_thread::sleep_for(100ms);
+    // The seventh is a WebSocket: both kinds count toward the limit, and a
+    // WebSocket is never evicted.
     clients.push_back(std::make_unique<Client>(server.port()));
     ASSERT_TRUE(open_ws(*clients.back(), rec, 1));
 
     Client eighth(server.port());
     ASSERT_TRUE(eighth.connected());
     EXPECT_TRUE(eighth.closed_by_peer());
+
+    // The connections already admitted were left alone: each can finish
+    // its request.
+    ASSERT_TRUE(clients.front()->send("\r\n"));
+    auto res = clients.front()->read_response();
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
 
     // Once a slot frees up, new connections are served again.
     clients.front()->close();
@@ -851,10 +861,48 @@ TEST_F(SimHttpServerTest, EighthConnectionClosed) {
     while (!served && Clock::now() < deadline) {
         Client retry(server.port());
         if (!retry.send(get_request("/again"))) continue;
-        auto res = retry.read_response();
-        served = res && res->status == 200;
+        auto again = retry.read_response();
+        served = again && again->status == 200;
     }
     EXPECT_TRUE(served);
+}
+
+TEST_F(SimHttpServerTest, EighthConnectionEvictsTheLeastRecentlyUsedIdleOne) {
+    start(rec.ws());
+    std::vector<std::unique_ptr<Client>> clients;
+    // Six keep-alive connections, each idle after one request; the sleeps
+    // give them distinct idle-since times, oldest first.
+    for (size_t i = 0; i < SimHttpServer::kMaxConnections - 1; ++i) {
+        clients.push_back(std::make_unique<Client>(server.port()));
+        ASSERT_TRUE(clients.back()->send(get_request("/keep")));
+        auto res = clients.back()->read_response();
+        ASSERT_TRUE(res);
+        ASSERT_EQ(res->status, 200);
+        std::this_thread::sleep_for(10ms);
+    }
+    // Using the oldest again makes the second one the least recently used.
+    ASSERT_TRUE(clients[0]->send(get_request("/reuse")));
+    ASSERT_TRUE(clients[0]->read_response());
+    std::this_thread::sleep_for(10ms);
+    // A WebSocket fills the last slot.
+    Client ws(server.port());
+    ASSERT_TRUE(open_ws(ws, rec, 1));
+
+    Client eighth(server.port());
+    ASSERT_TRUE(eighth.send(get_request("/eighth")));
+    auto res = eighth.read_response();
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+
+    EXPECT_TRUE(clients[1]->closed_by_peer());
+    // Everyone else is still served, the WebSocket included.
+    for (size_t i : {size_t{0}, size_t{2}, size_t{5}}) {
+        ASSERT_TRUE(clients[i]->send(get_request("/still")));
+        auto again = clients[i]->read_response();
+        ASSERT_TRUE(again) << i;
+        EXPECT_EQ(again->status, 200) << i;
+    }
+    EXPECT_TRUE(rec.closed_ids().empty());
 }
 
 TEST_F(SimHttpServerTest, StopJoinsCleanly) {

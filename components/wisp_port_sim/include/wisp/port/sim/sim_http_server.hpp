@@ -12,7 +12,9 @@
 //
 // Limits mirror the device (connectivity spec 6.3): at most
 // kMaxConnections connections in total (HTTP and WebSocket together; a
-// connection beyond that is accepted and closed at once), request bodies
+// connection beyond that evicts the least recently used idle keep-alive
+// HTTP connection, or is accepted and closed at once when none is idle,
+// as ESP-IDF httpd's lru_purge_enable does), request bodies
 // up to kMaxBodyBytes (checked against Content-Length before anything is
 // read), and no chunked request bodies.
 

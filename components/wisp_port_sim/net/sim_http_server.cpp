@@ -16,6 +16,7 @@
 #include <deque>
 #include <list>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -361,6 +362,33 @@ public:
         return closing_;
     }
 
+    // Idle: an HTTP connection between requests, nothing of the next one
+    // read yet. Only idle connections may be evicted to admit a new one
+    // (spec 6.3); a WebSocket or a connection mid-request never is.
+    void set_idle(bool idle) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (idle && !idle_) idle_since_ = std::chrono::steady_clock::now();
+        idle_ = idle;
+    }
+
+    // When idle (and not already closing), the time it became idle.
+    std::optional<std::chrono::steady_clock::time_point> idle_since() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!idle_ || closing_) return std::nullopt;
+        return idle_since_;
+    }
+
+    // Shuts the socket down if the connection is still idle; checked and
+    // done under one lock so a connection that just started reading a
+    // request is left alone.
+    bool evict_if_idle() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!idle_ || closing_) return false;
+        closing_ = true;
+        if (fd_ >= 0) ::shutdown(fd_, SHUT_RDWR);
+        return true;
+    }
+
     std::deque<std::string> take_queue() {
         std::lock_guard<std::mutex> lock(mutex_);
         return std::exchange(queue_, {});
@@ -392,6 +420,8 @@ private:
     std::mutex mutex_;
     int fd_;
     bool closing_ = false;
+    bool idle_ = false;
+    std::chrono::steady_clock::time_point idle_since_{};
     std::deque<std::string> queue_;
     int wake_rd_;
     int wake_wr_;
@@ -404,12 +434,17 @@ struct SimHttpServer::Impl {
         std::shared_ptr<Connection> conn;
         std::thread thread;
         std::atomic<bool> finished{false};
+        bool evicted = false;  // guarded by slots_mutex
     };
 
     explicit Impl(std::string bind_addr) : bind(std::move(bind_addr)) {}
 
     void accept_loop();
     void reap_locked();
+    // Makes room for one more connection when every slot is taken: evicts
+    // the least recently used idle keep-alive connection. False when none
+    // is idle.
+    bool make_room_locked();
     void serve(const std::shared_ptr<Connection>& conn_ptr, const std::string& remote_ip);
     void serve_ws(const std::shared_ptr<Connection>& conn_ptr, const net::HttpRequest& req,
                   std::string leftover);
@@ -452,6 +487,27 @@ void SimHttpServer::Impl::reap_locked() {
     }
 }
 
+bool SimHttpServer::Impl::make_room_locked() {
+    size_t live = 0;
+    Slot* lru = nullptr;
+    std::chrono::steady_clock::time_point lru_since{};
+    for (auto& slot : slots) {
+        if (slot->finished.load() || slot->evicted) continue;
+        ++live;
+        if (auto since = slot->conn->idle_since();
+            since && (lru == nullptr || *since < lru_since)) {
+            lru = slot.get();
+            lru_since = *since;
+        }
+    }
+    if (live < kMaxConnections) return true;
+    // The evicted connection's thread finishes on its own and is reaped
+    // later; until then it no longer counts toward the limit.
+    if (lru == nullptr || !lru->conn->evict_if_idle()) return false;
+    lru->evicted = true;
+    return true;
+}
+
 void SimHttpServer::Impl::accept_loop() {
     for (;;) {
         pollfd p[2] = {{listen_fd, POLLIN, 0}, {wake_rd, POLLIN, 0}};
@@ -480,7 +536,7 @@ void SimHttpServer::Impl::accept_loop() {
         std::lock_guard<std::mutex> lock(slots_mutex);
         reap_locked();
         int pipe_fds[2] = {-1, -1};
-        if (slots.size() >= kMaxConnections || ::pipe2(pipe_fds, O_CLOEXEC | O_NONBLOCK) != 0) {
+        if (!make_room_locked() || ::pipe2(pipe_fds, O_CLOEXEC | O_NONBLOCK) != 0) {
             ::close(fd);
             continue;
         }
@@ -523,7 +579,10 @@ void SimHttpServer::Impl::serve(const std::shared_ptr<Connection>& conn_ptr,
             if (buf.size() > kMaxHeadBytes) {
                 return reject(conn, 431, "headers_too_large", "request head exceeds 8192 bytes");
             }
-            if (!recv_some(fd, buf, kIdleTimeoutMs)) return conn.finish();
+            if (buf.empty()) conn.set_idle(true);
+            const bool got = recv_some(fd, buf, kIdleTimeoutMs);
+            conn.set_idle(false);
+            if (!got) return conn.finish();
         }
         if (head_end + 4 > kMaxHeadBytes) {
             return reject(conn, 431, "headers_too_large", "request head exceeds 8192 bytes");
