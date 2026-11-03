@@ -75,7 +75,7 @@
 
 ## 机器可读输出
 
-下面带 JSON 的几条都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）：改动下面任一字段集合时，要同步更新 `tests/smoke/sim_smoke.py` 和本节。
+下面带 JSON 的几条都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）：改动下面任一字段集合时，要同步更新 `tests/smoke/sim_smoke.py`、`tests/smoke/admin_smoke.py` 和本节。
 
 - **`WISP_BOOT_REPORT <json>`**（启动流程第 5 步；`core::BootReport::to_value()`）：
   ```
@@ -97,22 +97,24 @@
   ```
   `fps`/`flush_ms` 来自 `ui::UiRuntime::perf()`，本质是浮点数，但 JSON 往返时整数值会被识别为 `Int` 而非 `Double`（`Value`/JSON 对 Int/Double 的区分按实际值而非来源类型，见 `tests/base/value_json_test.cpp`）；解析方不应假设其中任何一个字段固定是哪一种 JSON 数字形式。`heap_internal_free`/`heap_large_free` 来自 `Platform::heap_info`（可能为空，此时都是 0）。
 
-- **`WISP_HTTP <json>`**（网络步骤；`NetWiring::reconcile_http()`）：管理后台 HTTP 服务每次启动成功时一行，`{"port": int}`，是 `HttpServer::port()` 报告的实际端口。可能出现在 `WISP_BOOT_REPORT` 之前（`http_always_on` 时开机即启动）。模拟器 `--http-port 0` 时不启动服务，也就没有这一行。
+- **`WISP_HTTP <json>`**（网络步骤；`NetWiring::reconcile_http()`）：管理后台 HTTP 服务每次启动成功时一行，`{"port": int}`，是 `HttpServer::port()` 报告的实际端口。可能出现在 `WISP_BOOT_REPORT` 之前（`http_always_on` 时开机即启动）。模拟器 `--http-port 0` 时不启动服务，也就没有这一行；需要后台的冒烟测试自己挑一个空闲端口传进去（`admin_smoke.py` 在端口被抢走、日志出现 `admin server failed to start` 时换端口重试）。
 - **`WISP_REBOOT`**（仅模拟器，无 JSON）：`Platform::reboot` 被调用（例如 `POST /api/v1/system/reboot`，或恢复出厂设置完成时）时输出，随后主循环返回，经正常的 `App::stop()` 以退出码 0 结束进程（不在定时器线程里直接 `exit()`，以免静态析构与其他线程竞争）。真机对应 `esp_restart()`。
+- **`pair-code=<6 位数字>`**（仅模拟器调试命令，无 JSON）：控制台命令 `debug pair-code` 的回答，当前没有有效配对码时为 `pair-code=none`。只在 `wisp_sim` 目标定义了 `WISP_SIM_DEBUG_COMMANDS` 时经 `Platform::console_commands` 编译进去（`simulator/main.cpp`），可移植层和固件都没有；供 `tests/smoke/admin_smoke.py` 不看屏幕完成配对。
 
 ## 模拟器的网络
 
 - `net.wifi` 是 `wisp::port::sim::SimWifi`（model `sim-wifi`）：内置 `WispLab`（-45 dBm，密码 `wisp1234`）、`Neighbor`（-70，`neighbor99`）、`OpenCafe`（-80，开放）；`--wifi-fail` 让所有连接以 `not_found` 失败；热点只改状态，`ap_clients()` 在热点开启时恒为 1。
 - 管理后台由 `SimHttpServer` 提供，只监听 `127.0.0.1`，端口 `--http-port`（默认 8900，与真机后台端口相同；0 表示不启动）。模拟器没有 80 端口的强制门户服务（`Platform::captive_server` 为空）。出站请求（`/llm/test`）走 `SimHttpClient`（libcurl，主机构建 `find_package(CURL 7.80 REQUIRED)`；可移植层禁止 include `curl/`）。
 - 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。标准输入里以 `tap` / `swipe` 开头的行（`tap X,Y` / `swipe X1,Y1,X2,Y2`）也立即执行，供需要先等设备上某件事发生再点的脚本使用：冒烟测试 `factory_reset` 等到 WebSocket 日志里出现确认框的日志行，再经标准输入点"Yes"。
-- 标准输入只有一个读取者（`simulator/sim_stdin.hpp` 的 `StdinReader`，带超时轮询，退出时不会卡在阻塞读上）：不论是否 `--headless`、stdin 是不是终端都会读取；触摸行交给触摸脚本，其余每行都是串口控制台（serial console）命令，经 `Platform::read_line` 交给控制台任务；控制台没有 `tap`/`swipe` 命令。
+- 标准输入只有一个读取者（`simulator/sim_stdin.hpp` 的 `StdinReader`，带超时轮询，退出时不会卡在阻塞读上）：不论是否 `--headless`、stdin 是不是终端都会读取；触摸行交给触摸脚本，其余每行都是串口控制台（serial console）命令，经 `Platform::read_line` 交给控制台任务；控制台没有 `tap`/`swipe` 命令。`tap`/`swipe` 与坐标之间可以是空格或制表符。stdin 是控制终端且进程在后台进程组（`wisp_sim &`）时读取者暂不读，`fg` 后恢复；模拟器忽略 `SIGTTIN`，所以不会被作业控制停住。
+- 信号：`SIGINT`/`SIGTERM` 让主循环像重启一样返回，经正常的 `App::stop()` 以退出码 0 结束（SDL 自己的信号处理被 `SDL_HINT_NO_SIGNAL_HANDLERS` 关掉，否则无头模式收不到）；处理是一次性的，关机卡住时再发一次信号按默认方式结束进程。
 
 ## 串口控制台
 
 - 连接 spec 8.2：命令解析在可移植层（`wisp/app/console.hpp`：`split_command()`、`run_command()`），读输入在平台层（`Platform::read_line`：最多等待 `timeout_ms`，返回 `Line`/`Timeout`/`Closed`）。控制台跑在自己的 `wisp.console` 任务上（可能阻塞几秒的命令不占用 UI 线程），`App::start()` 最后启动、`App::stop()` 最先停止。
 - 命令：`help`；`wifi status`（`state=… ssid="…" ip=… rssi=…`，Backoff 时加 `reason=…`；之后每个已保存网络一行 `saved ssid="…"`，密码被拒的加 ` auth_failed`；热点开着时一行 `ap ssid="…" clients=n`）；`wifi add <ssid> [password]`；`wifi forget <ssid>`；`wifi ap on|off`。含空格的参数用双引号，引号内 `\"`、`\\` 转义；`hex:<字节>` 按十六进制字节给出 SSID（对应 API 的 `ssid_hex`）。输出的 SSID 一律加双引号，控制字符和非法 UTF-8 字节写成 `\xNN`。
-- 保密：控制台不回显输入、不把输入行写进日志（输出走 `emit_line`，不经 `WLOG`），任何输出都不含 Wi-Fi 密码、热点密码、配对码、令牌或 API Key；`wifi ap on` 只打印热点 SSID 和地址，密码只显示在屏幕上。终端程序自己的本地回显不受设备控制。
-- 平台扩展：`Platform::console_commands` 追加平台专用命令（出现在 `help` 末尾，不能覆盖内置命令），例如模拟器专用的调试命令。
+- 保密：控制台不回显输入、不把输入行写进日志（输出走 `emit_line`，不经 `WLOG`），任何输出都不含 Wi-Fi 密码、热点密码、配对码、令牌或 API Key（唯一例外：模拟器调试构建的 `debug pair-code` 打印当前配对码，见上文机器可读输出）；`wifi ap on` 只打印热点 SSID 和地址，密码只显示在屏幕上。终端程序自己的本地回显不受设备控制。
+- 平台扩展：`Platform::console_commands` 追加平台专用命令（出现在 `help` 末尾，不能覆盖内置命令），例如模拟器专用的调试命令 `debug pair-code`。
 - 真机：`wisp::port::esp::EspConsole`（`components/wisp_port_esp/console_esp.cpp`）安装 USB-Serial-JTAG（或 UART）驱动并让 VFS 走驱动，日志输出照常；`read_line` 用驱动的带超时读取，不忙等。
 - `--screenshot` 的截图（`UiRuntime::take_snapshot`）包含活动屏幕和 `lv_layer_top()`（确认框、配网卡片、配对卡片都在这一层），不含 `lv_layer_sys()`。
 - 网页资源：构建时用 `tools/pack_assets.py` 把 `web/` 打包成 `wisp_sim` 旁边的 `assets.wpak`（`web/` 不存在时打包一个空目录，只提供 API）；`--web-dir <目录>` 改为启动时在内存里按同一套 MIME/gzip 规则打包该目录（`wisp::port::sim::pack_web_dir()`）。

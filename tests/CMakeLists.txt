@@ -129,6 +129,14 @@ target_include_directories(sd_retry_test PRIVATE ${WISP_ROOT}/components/wisp_po
 add_test(NAME sim_smoke COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tests/smoke/sim_smoke.py
          $<TARGET_FILE:wisp_sim>)
 
+# End-to-end admin API smoke test: pairs over HTTP with the simulator-only
+# "debug pair-code" console command, exercises the routes, the LLM probe
+# (against tools/fake_openai.py) and the WebSocket log, then stops wisp_sim
+# with SIGTERM. See tests/smoke/admin_smoke.py's file header.
+add_test(NAME admin_smoke COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tests/smoke/admin_smoke.py
+         $<TARGET_FILE:wisp_sim>)
+set_tests_properties(admin_smoke PROPERTIES TIMEOUT 120)
+
 # wisp_net. asset_pack_test reads a WispPack that tools/pack_assets.py
 # builds from the committed tests/net/fixtures/web tree at build time, so
 # the test always exercises the real packer's output, not a checked-in

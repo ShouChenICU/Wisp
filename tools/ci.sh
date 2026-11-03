@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Pre-commit / CI entry point (AGENTS.md section 4): format check,
 # layering check, host build and the full ctest suite (including the
-# simulator smoke tests). Safe to run from any directory; it cd's to
-# the repository root itself.
+# simulator smoke tests sim_smoke and admin_smoke, which needs Python 3
+# only: tools/fake_openai.py is standard library). Safe to run from any
+# directory; it cd's to the repository root itself.
 #
 # Note: this only checks formatting (clang-format --dry-run --Werror);
 # it does not reformat anything. Run `clang-format -i` yourself first
