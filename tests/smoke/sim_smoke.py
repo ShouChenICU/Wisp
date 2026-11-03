@@ -7,12 +7,13 @@ checks its machine-readable stdout (the single-line-JSON
 "WISP_BOOT_REPORT ", "WISP_MANIFEST " and "WISP_HTTP " lines -- see
 AGENTS.md section 4 and docs/architecture.md) and, for the default
 case, the PNG screenshot it writes. Each case runs wisp_sim in a fresh
-temporary data directory. Every case except "http" and
-"factory_reset" passes --http-port 0 (no admin server), so the rest of
-the suite never depends on a free port; those two pick one, talk to the
-admin API over loopback and end the run with a reboot through it
-("factory_reset" also listens on the admin WebSocket and confirms on
-the screen with a "tap" line written to the simulator's stdin). "console"
+temporary data directory. Every case except "http", "factory_reset"
+and "firmware" passes --http-port 0 (no admin server), so the rest of
+the suite never depends on a free port; those three pick one, talk to
+the admin API over loopback and end the run with a reboot through it
+("factory_reset" and "firmware" also listen on the admin WebSocket and
+confirm on the screen with "tap" lines written to the simulator's
+stdin). "console"
 feeds serial console commands through stdin; every other case gives the
 simulator an empty stdin.
 
@@ -573,6 +574,170 @@ def case_factory_reset(sim_path, tmp_root):
     expect("lang" not in settings.get("sys", {}), f"settings.json after the reset: {settings}")
 
 
+def make_firmware_image(version, board="simulator", project="wisp", chip_id=9):
+    """A minimal ESP application image the way the firmware upload checks
+    one (components/wisp_core/include/wisp/core/firmware_image.hpp): a
+    header, esp_app_desc_t followed by Wisp's board descriptor in the
+    first segment, a filler second segment, the checksum byte and the
+    appended SHA-256. The simulator accepts any chip id."""
+    seg0 = bytearray(256 + 48)
+    struct.pack_into("<I", seg0, 0, 0xABCD5432)
+    seg0[16:16 + len(version)] = version.encode()
+    seg0[48:48 + len(project)] = project.encode()
+    struct.pack_into("<IHH", seg0, 256, 0x42505357, 1, 0)  # "WSPB", version 1
+    seg0[264:264 + len(board)] = board.encode()
+    seg1 = bytes((i * 7 + 3) & 0xFF for i in range(4096))
+    img = bytearray(24)
+    img[0:4] = bytes((0xE9, 2, 2, 0x4F))  # magic, 2 segments, DIO, 80 MHz/16 MB
+    struct.pack_into("<I", img, 4, 0x40370000)
+    struct.pack_into("<H", img, 12, chip_id)
+    img[23] = 1  # hash appended
+    checksum, load = 0xEF, 0x3C000020
+    for seg in (seg0, seg1):
+        img += struct.pack("<II", load, len(seg)) + seg
+        for b in seg:
+            checksum ^= b
+        load += len(seg)
+    while (len(img) + 1) % 16:
+        img.append(0)
+    img.append(checksum)
+    img += hashlib.sha256(img).digest()
+    return bytes(img)
+
+
+def post_firmware(port, cookie, image):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request("POST", "/api/v1/system/firmware", body=image, headers={
+            "Cookie": cookie, "X-Wisp": "1", "Content-Type": "application/octet-stream"})
+        res = conn.getresponse()
+        return res.status, res.read().decode("utf-8")
+    finally:
+        conn.close()
+
+
+# Where the firmware dialog's "Yes" button may be, in English on the
+# default screen: its x, and the y values tried in turn. The dialog is
+# make_confirm_box() like the reset dialog, but its text holds the
+# running version, whose length follows the git history and can wrap, so
+# the button moves by a line or so; a column of taps keeps the case from
+# depending on it. Nothing else in the modal dialog reacts to a tap at
+# that x ("No" is to the right).
+FIRMWARE_YES_X = 188
+FIRMWARE_YES_YS = (307, 297, 317, 287, 327, 277, 337)
+FIRMWARE_DIALOG_LOG = "waiting for confirmation on the screen"
+
+
+def case_firmware(sim_path, tmp_root):
+    """Uploads firmware the way the admin page does (spec 6.5): an image
+    for another board is refused with 400 wrong_board (and a "failed"
+    event) and leaves nothing behind; one for the simulator is answered 202, the socket hears
+    "received", the dialog appears on the device and a tap on "Yes" gets
+    "confirmed", WISP_REBOOT and exit code 0, with the image written to
+    the data directory's firmware.bin (SimFirmwareUpdater)."""
+    data_dir = tmp_root / "firmware"
+    token = "smoke-firmware-token"
+    seed_paired_client(data_dir, token, "smoke")
+    (data_dir / "settings.json").write_text(json.dumps({"sys": {"lang": "en"}}))
+    image = make_firmware_image("9.9.9")
+
+    port = free_port()
+    args = sim_args(sim_path, data_dir, [], http_port=port)
+    args[args.index("--exit-after-ms") + 1] = str(TIMEOUT_S * 1000)
+    proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
+    stdout_lines = []
+    http_ready = threading.Event()
+
+    def drain():
+        for line in proc.stdout:
+            stdout_lines.append(line)
+            if line.startswith("WISP_HTTP "):
+                http_ready.set()
+
+    drainer = threading.Thread(target=drain, daemon=True)
+    drainer.start()
+    ws = None
+    states = []
+    taps = []
+    dialog_open = False
+    deadline = time.monotonic() + TIMEOUT_S
+    try:
+        expect(http_ready.wait(TIMEOUT_S), f"no WISP_HTTP line:\n{''.join(stdout_lines)}")
+        cookie = f"wisp_token={token}"
+        ws = WsClient(port, cookie)
+        ws.sock.settimeout(TIMEOUT_S)
+        ws.send_text(json.dumps({"sub": ["events", "log"]}))
+        while True:
+            text = ws.recv_text()
+            expect(text is not None, "the device closed the socket before replaying its log")
+            if json.loads(text).get("t") == "log":
+                break
+
+        status, body = post_firmware(port, cookie, make_firmware_image("9.9.9", board="other"))
+        expect(status == 400 and json.loads(body)["error"]["code"] == "wrong_board",
+               f"POST another board's image -> {status} {body}")
+        expect(not (data_dir / "firmware.bin").exists(), "a refused image was kept")
+
+        status, body = post_firmware(port, cookie, image)
+        expect(status == 202 and json.loads(body) == {"version": "9.9.9"},
+               f"POST /api/v1/system/firmware -> {status} {body}")
+
+        last_tap = None
+        while True:
+            expect(time.monotonic() < deadline, f"no restart within {TIMEOUT_S}s; states {states}")
+            if dialog_open and "confirmed" not in states and (
+                    last_tap is None or time.monotonic() - last_tap > 0.5):
+                expect(len(taps) < len(FIRMWARE_YES_YS),
+                       f"tapped {taps} but the update was not confirmed: the dialog's Yes "
+                       f"button is not there any more (see FIRMWARE_YES_YS); states {states}")
+                y = FIRMWARE_YES_YS[len(taps)]
+                proc.stdin.write(f"tap {FIRMWARE_YES_X},{y}\n")
+                proc.stdin.flush()
+                taps.append(y)
+                last_tap = time.monotonic()
+            if not select.select([ws.sock], [], [], 0.1)[0]:
+                continue
+            text = ws.recv_text()
+            if text is None:
+                break
+            msg = json.loads(text)
+            if msg.get("t") == "event" and msg.get("topic") == "system.firmware":
+                expect(msg["payload"].get("version") == "9.9.9", f"event {msg}")
+                state = msg["payload"].get("state")
+                states.append(state if state != "failed" else
+                              f"failed:{msg['payload'].get('error')}")
+            elif msg.get("t") == "log" and FIRMWARE_DIALOG_LOG in msg.get("msg", "") \
+                    and "firmware 9.9.9" in msg.get("msg", ""):
+                dialog_open = True
+        expect(dialog_open, f"the firmware dialog never opened; states {states}")
+        proc.wait(timeout=TIMEOUT_S)
+        drainer.join(timeout=TIMEOUT_S)
+        err = proc.stderr.read()
+    except subprocess.TimeoutExpired as exc:
+        raise SmokeError(f"wisp_sim did not exit after the update; states {states}") from exc
+    except OSError as exc:
+        tail = "".join(stdout_lines[-15:])
+        raise SmokeError(f"{type(exc).__name__}: {exc}; states {states}; taps {taps}; "
+                         f"wisp_sim exit code {proc.poll()}; last output:\n{tail}") from exc
+    finally:
+        if ws is not None:
+            ws.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stdin.close()
+    rest = "".join(stdout_lines)
+    expect(states == ["failed:wrong_board", "received", "confirmed"],
+           f"system.firmware states over the socket: {states}")
+    expect("WISP_REBOOT" in rest.splitlines(), f"no WISP_REBOOT line after the update:\n{rest}")
+    expect(proc.returncode == 0, f"exit code {proc.returncode} after the update, stderr:\n{err}")
+    written = data_dir / "firmware.bin"
+    expect(written.is_file() and written.read_bytes() == image,
+           f"firmware.bin after the update: {written.stat().st_size if written.exists() else None}"
+           f" bytes, expected the {len(image)}-byte upload")
+
+
 CONSOLE_PASSWORD = "wisp1234"
 
 
@@ -690,6 +855,7 @@ CASES = (
     ("disable_wifi", case_disable_wifi),
     ("http", case_http),
     ("factory_reset", case_factory_reset),
+    ("firmware", case_firmware),
     ("console", case_console),
 )
 
