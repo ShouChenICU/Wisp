@@ -184,6 +184,8 @@ public:
     // "<int>/library/", the write is additionally accounted against
     // StorageConfig::internal_library_quota (see file header); exceeding
     // it fails with ErrorCode::QuotaExceeded and performs no write.
+    // Missing parent directories of `path` are created (like `mkdir -p`;
+    // a non-directory in the way fails with ErrorCode::IoError).
     // Any other I/O failure fails with ErrorCode::IoError, with
     // strerror(errno) folded into the message.
     Result<void> write_atomic(const std::string& path, std::span<const uint8_t> data);

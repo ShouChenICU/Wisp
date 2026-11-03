@@ -150,6 +150,22 @@ TEST(StorageManager, AtomicWriteLeavesNoTmpAndOverwrites) {
     EXPECT_FALSE(exists(p + ".new"));
 }
 
+// Services keep their files in subdirectories of an area root (e.g.
+// <System>/net/wifi.json) that nothing else creates.
+TEST(StorageManager, AtomicWriteCreatesMissingParentDirectories) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+
+    auto p = f.in + "/system/net/sub/a.json";
+    ASSERT_TRUE(f.mgr->write_atomic(p, bytes("one")));
+    EXPECT_EQ(str(f.mgr->read_file(p).value()), "one");
+
+    // A plain file where a parent directory should be is still an error.
+    write_raw(f.in + "/system/blocker", "x");
+    EXPECT_EQ(f.mgr->write_atomic(f.in + "/system/blocker/a.json", bytes("x")).error().code,
+              wisp::ErrorCode::IoError);
+}
+
 // A plain ".tmp" can be a torn
 // write from any point -- including the very first write to a path, with
 // no prior target and no ".new" ever created -- so it must never be

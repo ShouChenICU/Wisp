@@ -416,6 +416,13 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
         }
     }
 
+    // Services own subdirectories of an area root (net/, secrets/, ...)
+    // that init() doesn't know about, so create the parent on demand.
+    size_t slash = path.find_last_of('/');
+    if (slash != std::string::npos && slash > 0) {
+        WISP_TRY(mkdir_p(path.substr(0, slash)));
+    }
+
     std::string tmp = path + ".tmp";
     std::string neu = path + ".new";
 
