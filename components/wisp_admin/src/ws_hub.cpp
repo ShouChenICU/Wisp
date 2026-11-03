@@ -321,6 +321,24 @@ bool WsHub::has_pending() const {
     });
 }
 
+bool WsHub::flush(uint32_t timeout_ms) {
+    // Polled rather than signalled: this runs once per factory reset, and
+    // a 5 ms step costs nothing next to the reset itself.
+    constexpr uint32_t kStepMs = 5;
+    const uint64_t deadline = os::now_ms() + timeout_ms;
+    for (;;) {
+        // pump() pops a message before sending it, so an empty queue alone
+        // does not mean the bytes left; holding pump_mutex_ for a moment
+        // does.
+        if (!has_pending() && pump_mutex_.try_lock()) {
+            pump_mutex_.unlock();
+            if (!has_pending()) return true;
+        }
+        if (os::now_ms() >= deadline) return false;
+        os::sleep_ms(kStepMs);
+    }
+}
+
 void WsHub::pump() {
     std::lock_guard<os::Mutex> serialize(pump_mutex_);
     std::vector<std::shared_ptr<Client>> clients;

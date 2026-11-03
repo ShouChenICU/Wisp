@@ -131,6 +131,9 @@ public:
     // destroyed.
     net::WsHandlers ws_handlers();
 
+    // WsHub::flush() on this server's hub.
+    bool flush_ws(uint32_t timeout_ms);
+
 private:
     net::HttpResponse handle_api(const net::HttpRequest& req);
 

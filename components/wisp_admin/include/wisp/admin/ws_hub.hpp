@@ -104,6 +104,13 @@ public:
     // Only enqueues; never blocks on a connection.
     void write(const LogRecord& record) override;
 
+    // Waits up to timeout_ms until nothing is owed to any client (hello,
+    // dropped notice, queued messages) and no send is in progress; true
+    // once that holds, false on timeout. Only waits: the sender task (or a
+    // caller's pump()) does the sending. A factory reset uses it so its
+    // final event leaves before the revocation closes the sockets.
+    bool flush(uint32_t timeout_ms);
+
     // Sends what is owed, per client the hello (until it goes through),
     // the dropped notice and up to one queue's worth, in that order,
     // stopping at that client's first refused send.

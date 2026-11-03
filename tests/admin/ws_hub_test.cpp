@@ -329,6 +329,37 @@ TEST(WsHub, ForwardsOnlyAllowedTopics) {
     bus.stop();
 }
 
+// A factory reset waits (boundedly) for its "done" event to leave before
+// it revokes the tokens that close these sockets.
+TEST(WsHub, FlushWaitsUntilQueuesAreSent) {
+    wisp::log::reset_for_test();
+    EventBus bus;
+    WsHub hub(bus);
+    ASSERT_TRUE(bus.start());
+    EXPECT_TRUE(hub.flush(0));  // nobody connected: nothing owed
+
+    auto c = std::make_shared<FakeWsConnection>(1);
+    c->accept = false;
+    ASSERT_TRUE(hub.open(c));
+    hub.on_message(1, R"({"sub":["events"]})");
+    hub.start();
+    bus.publish(Event{"system.factory_reset", "test", 0, {{"state", Value("done")}}});
+    ASSERT_TRUE(bus.wait_idle(2000));
+
+    const uint64_t t0 = wisp::os::now_ms();
+    EXPECT_FALSE(hub.flush(150));  // the socket keeps refusing
+    EXPECT_GE(wisp::os::now_ms() - t0, 150u);
+    EXPECT_EQ(c->sent_count(), 0u);
+
+    c->accept = true;
+    EXPECT_TRUE(hub.flush(2000));
+    std::vector<Value> sent = c->sent();
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(str(sent[0], "topic"), "system.factory_reset");
+    hub.stop();
+    bus.stop();
+}
+
 TEST(WsHub, SlowClientDropsOldestAndReportsCount) {
     wisp::log::reset_for_test();
     EventBus bus;

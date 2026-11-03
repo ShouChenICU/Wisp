@@ -179,6 +179,8 @@ AdminServer::~AdminServer() {
     reboot_timer_.reset();
 }
 
+bool AdminServer::flush_ws(uint32_t timeout_ms) { return hub_->flush(timeout_ms); }
+
 std::string make_boot_id(const net::RandomFn& random) {
     uint8_t bytes[8] = {};
     if (random) random(bytes, sizeof(bytes));
