@@ -4,17 +4,24 @@
 Runs the wisp_sim executable (simulator/CMakeLists.txt, built by the
 host CMake project) through a handful of --headless scenarios and
 checks its machine-readable stdout (the single-line-JSON
-"WISP_BOOT_REPORT " and "WISP_MANIFEST " lines -- see AGENTS.md
-section 4) and, for the default case, the PNG screenshot it writes.
-Each case runs wisp_sim in a fresh temporary data directory.
+"WISP_BOOT_REPORT ", "WISP_MANIFEST " and "WISP_HTTP " lines -- see
+AGENTS.md section 4 and docs/architecture.md) and, for the default
+case, the PNG screenshot it writes. Each case runs wisp_sim in a fresh
+temporary data directory. Every case except "http" passes
+--http-port 0 (no admin server), so the suite never depends on a free
+port; the "http" case picks one, talks to the admin API over loopback
+and reboots the simulator through it.
 
 Registered with ctest as the "sim_smoke" test (tests/CMakeLists.txt).
 
 Usage: python3 tests/smoke/sim_smoke.py <path-to-wisp_sim>
 """
 
+import hashlib
+import http.client
 import json
 import pathlib
+import socket
 import shutil
 import struct
 import subprocess
@@ -25,7 +32,7 @@ import traceback
 TIMEOUT_S = 20
 EXIT_AFTER_MS = 3000
 
-# The 12 devices SimBoard::init() registers by default (task 13; see
+# The 13 devices SimBoard::init() registers by default (see
 # components/wisp_port_sim/sim_board.cpp).
 EXPECTED_DEVICE_IDS = {
     "audio_in.main",
@@ -36,6 +43,7 @@ EXPECTED_DEVICE_IDS = {
     "clock.main",
     "display.main",
     "imu.main",
+    "net.wifi",
     "power.main",
     "storage.int",
     "storage.sd",
@@ -59,16 +67,22 @@ def expect(condition, message):
         raise SmokeError(message)
 
 
-def run_sim(sim_path, data_dir, extra_args):
-    args = [
+def sim_args(sim_path, data_dir, extra_args, http_port=0):
+    return [
         str(sim_path),
         "--headless",
         "--exit-after-ms",
         str(EXIT_AFTER_MS),
         "--data-dir",
         str(data_dir),
+        "--http-port",
+        str(http_port),
         *extra_args,
     ]
+
+
+def run_sim(sim_path, data_dir, extra_args):
+    args = sim_args(sim_path, data_dir, extra_args)
     try:
         return subprocess.run(args, capture_output=True, text=True, timeout=TIMEOUT_S)
     except subprocess.TimeoutExpired as exc:
@@ -77,7 +91,8 @@ def run_sim(sim_path, data_dir, extra_args):
 
 def parse_output(stdout):
     """Pulls the WISP_BOOT_REPORT/WISP_MANIFEST JSON payloads out of
-    wisp_sim's stdout (one line each, prefix + single-line JSON)."""
+    wisp_sim's stdout (one line each, prefix + single-line JSON). A
+    WISP_HTTP line, if any, must be well-formed too."""
     boot_report = None
     manifest = None
     for line in stdout.splitlines():
@@ -85,6 +100,9 @@ def parse_output(stdout):
             boot_report = json.loads(line[len("WISP_BOOT_REPORT "):])
         elif line.startswith("WISP_MANIFEST "):
             manifest = json.loads(line[len("WISP_MANIFEST "):])
+        elif line.startswith("WISP_HTTP "):
+            port = json.loads(line[len("WISP_HTTP "):]).get("port")
+            expect(isinstance(port, int) and 0 < port < 65536, f"bad WISP_HTTP line: {line}")
     if boot_report is None:
         raise SmokeError(f"no WISP_BOOT_REPORT line in stdout:\n{stdout}")
     if manifest is None:
@@ -261,7 +279,101 @@ def case_default(sim_path, tmp_root):
             f"{device_id} state == {entry['state']!r}, expected ok",
         )
 
+    # connectivity spec 4.1: a fresh data dir has no saved network.
+    net_note = boot_report.get("notes", {}).get("net")
+    expect(net_note == "off", f"notes.net == {net_note!r}, expected 'off'")
+    # --http-port 0: no admin server, so no WISP_HTTP line.
+    expect(
+        not any(line.startswith("WISP_HTTP ") for line in result.stdout.splitlines()),
+        "WISP_HTTP printed although --http-port 0 disables the admin server",
+    )
+
     check_screenshot(screenshot)
+
+
+def case_disable_wifi(sim_path, tmp_root):
+    data_dir = tmp_root / "disable-wifi"
+    data_dir.mkdir()
+
+    result = run_sim(sim_path, data_dir, ["--disable", "net.wifi"])
+    expect(
+        result.returncode == 0,
+        f"exit code {result.returncode}, stderr:\n{result.stderr}",
+    )
+    boot_report, manifest = parse_output(result.stdout)
+    net_note = boot_report.get("notes", {}).get("net")
+    expect(net_note == "missing", f"notes.net == {net_note!r}, expected 'missing'")
+    expect("net.wifi" not in devices_by_id(manifest), "net.wifi in the manifest despite --disable")
+
+
+def free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def api_request(port, method, path, headers=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request(method, path, headers=headers or {})
+        res = conn.getresponse()
+        return res.status, res.read().decode("utf-8")
+    finally:
+        conn.close()
+
+
+def case_http(sim_path, tmp_root):
+    """The admin server comes up on the requested loopback port at boot
+    (Platform::http_always_on), announces it with WISP_HTTP, answers the
+    API, and POST /system/reboot ends the process with WISP_REBOOT and
+    exit code 0. The browser is "paired" by seeding net/clients.json with
+    the SHA-256 of a known token, which is all the device stores."""
+    data_dir = tmp_root / "http"
+    token = "smoke-test-token"
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    clients = data_dir / "int" / "system" / "net" / "clients.json"
+    clients.parent.mkdir(parents=True)
+    clients.write_text(json.dumps({"clients": [
+        {"id": digest[:12], "hash": digest, "label": "smoke", "created": 0, "last_seen": 0},
+    ]}))
+
+    port = free_port()
+    args = sim_args(sim_path, data_dir, [], http_port=port)
+    # Long enough that only the reboot can end the run in time.
+    args[args.index("--exit-after-ms") + 1] = str(TIMEOUT_S * 1000)
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        http_line = None
+        seen = []
+        for line in proc.stdout:
+            seen.append(line)
+            if line.startswith("WISP_HTTP "):
+                http_line = json.loads(line[len("WISP_HTTP "):])
+                break
+        expect(http_line == {"port": port}, f"WISP_HTTP == {http_line!r}, stdout:\n{''.join(seen)}")
+
+        status, body = api_request(port, "GET", "/api/v1/info")
+        expect(status == 200, f"GET /api/v1/info -> {status} {body}")
+        info = json.loads(body)
+        expect(info.get("fw") == "0.1.0" and info.get("paired") is False, f"/info == {info}")
+
+        auth = {"Cookie": f"wisp_token={token}"}
+        status, body = api_request(port, "GET", "/api/v1/device", auth)
+        expect(status == 200, f"GET /api/v1/device -> {status} {body}")
+        device = json.loads(body)
+        expect(device["boot"]["notes"].get("net") == "off", f"/device boot notes: {device['boot']}")
+
+        status, body = api_request(port, "POST", "/api/v1/system/reboot", {**auth, "X-Wisp": "1"})
+        expect(status == 202, f"POST /api/v1/system/reboot -> {status} {body}")
+        rest, err = proc.communicate(timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired as exc:
+        raise SmokeError("wisp_sim did not exit after POST /system/reboot") from exc
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+    expect("WISP_REBOOT" in rest.splitlines(), f"no WISP_REBOOT line after reboot:\n{rest}")
+    expect(proc.returncode == 0, f"exit code {proc.returncode} after reboot, stderr:\n{err}")
 
 
 def case_disable_imu(sim_path, tmp_root):
@@ -345,6 +457,8 @@ CASES = (
     ("disable_imu", case_disable_imu),
     ("no_sd", case_no_sd),
     ("shape_circle", case_shape_circle),
+    ("disable_wifi", case_disable_wifi),
+    ("http", case_http),
 )
 
 

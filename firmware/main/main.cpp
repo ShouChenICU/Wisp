@@ -16,6 +16,7 @@
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_pm.h"
+#include "esp_random.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -101,6 +102,13 @@ extern "C" void app_main() {
     // IDF build system docs), so this always reports exactly what was
     // actually flashed.
     platform.firmware_version = esp_app_get_description()->version;
+    // Hardware RNG. It is only a true RNG while the radio (or the
+    // bootloader's entropy source) is on; tokens, codes and hotspot
+    // passwords are only drawn for network clients, i.e. with Wi-Fi up.
+    platform.random = [](uint8_t* out, size_t len) { esp_fill_random(out, len); };
+    platform.reboot = [] { esp_restart(); };
+    // http_server/http_client/assets/read_line stay empty: no admin backend
+    // or serial console on the device yet.
 
     // DFS always on; light sleep off until the first enter_standby()
     // (see apply_pm_config()'s comment above).

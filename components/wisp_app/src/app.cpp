@@ -70,6 +70,9 @@ Result<void> App::start() {
         "wisp.storage", kStorageRefreshMs, /*periodic=*/true, [this] { impl_->storage.refresh(); });
     impl_->storage_timer->start();
     impl_->buttons.start();
+    if (auto r = impl_->llm.init(); !r) {
+        WLOG_W("app", "LLM config unavailable: %s", r.error().message.c_str());
+    }
 
     // Step 4: UI (or headless).
     auto display = impl_->registry.get<hal::Display>("display.main");
@@ -121,6 +124,21 @@ Result<void> App::start() {
         std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true,
                                     [this] { impl_->power_manager->tick(os::now_ms()); });
     impl_->power_timer->start();
+
+    // Step 4b: networking (connectivity spec 4.1), before the self-check
+    // screen so that screen can show the network state. Never waits for
+    // Wi-Fi -- see net_wiring.hpp.
+    impl_->net = std::make_unique<NetWiring>(NetWiringDeps{
+        .platform = impl_->platform,
+        .registry = impl_->registry,
+        .report = impl_->report,
+        .bus = impl_->bus,
+        .storage = impl_->storage,
+        .llm = impl_->llm,
+        .system_settings = impl_->system_settings,
+        .boot_t0_ms = boot_t0,
+    });
+    impl_->net->start();
 
     if (impl_->ui) {
         // Block until start_self_check() has actually run on the UI
@@ -208,6 +226,14 @@ void App::stop() {
     join_loopback(*this);
     stop_self_check(impl_->self_check);
 
+    // Networking next: the HTTP server's handlers and the "wisp.net" task
+    // call into PowerManager (brightness), the net services and storage,
+    // so both stop before any of those go away.
+    if (impl_->net) {
+        impl_->net->stop();
+        impl_->net.reset();
+    }
+
     // PowerManager is torn down next -- after the self-check screen
     // (which calls into it), before buttons/ui/bus (which it in turn
     // holds pointers/a reference into) are themselves stopped/reset.
@@ -284,6 +310,10 @@ core::StorageManager& App::storage() { return impl_->storage; }
 core::ButtonService& App::buttons() { return impl_->buttons; }
 ui::UiRuntime* App::ui() { return impl_->ui.get(); }
 PowerManager* App::power_manager() { return impl_->power_manager.get(); }
+net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr; }
+net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }
+core::LlmConfigService& App::llm() { return impl_->llm; }
+core::SystemSettings& App::system_settings() { return impl_->system_settings; }
 const Platform& App::platform() const { return impl_->platform; }
 
 }  // namespace wisp::app

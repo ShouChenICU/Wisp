@@ -24,7 +24,7 @@
 //
 // SimBoardConfig mirrors the handful of SimOptions (simulator/
 // sim_options.hpp) fields SimBoard's device construction actually needs
-// (shape, disabled, no_sd, data_dir) rather than SimBoard taking
+// (shape, disabled, no_sd, data_dir, wifi_fail) rather than SimBoard taking
 // SimOptions itself: SimOptions belongs to the simulator *executable*
 // (declared in the global namespace -- see that header), and this
 // component must not have to #include a header from simulator/ just to
@@ -91,6 +91,8 @@ struct SimBoardConfig {
     std::vector<std::string> disabled;
     bool no_sd = false;
     std::string data_dir = "./sim-data";
+    // --wifi-fail: every net.wifi connection attempt fails (see sim_wifi.hpp).
+    bool wifi_fail = false;
 };
 
 class SimBoard : public wisp::app::Board {

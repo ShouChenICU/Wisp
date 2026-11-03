@@ -11,8 +11,8 @@
 │  wisp_app     启动编排 · 自检界面 · PowerManager         │  ← 可移植
 │  wisp_ui      LVGL 驱动对接、UI 任务                     │  ← 可移植
 ├─────────────────────────────────────────────────────┤
-│  wisp_admin   管理后台路由 · 请求过滤 · 配对接口         │  ← 可移植
-│  wisp_net     HTTP 接口类型 · WispPack 资源包            │  ← 可移植
+│  wisp_admin   管理后台路由 · 请求过滤 · WebSocket 推送   │  ← 可移植
+│  wisp_net     HTTP 类型 · WispPack · Wi-Fi · 配对        │  ← 可移植
 │  wisp_core    日志 · 事件总线 · 设备注册表 · 配置 · 存储 │  ← 可移植
 ├─────────────────────────────────────────────────────┤
 │  wisp_hal     外设接口 + 能力描述（纯接口）            │  ← 可移植
@@ -37,13 +37,16 @@
 
 ## 启动流程
 
-真机（`firmware/main/main.cpp`）和模拟器（`simulator/main.cpp`）共用同一套 `wisp::app::App::start()`（`components/wisp_app/src/app.cpp`），区别只在各自提供的 `Platform`（日志 sink、设置后端、`emit_line`、`request_power_off`、`heap_info`、`set_standby`）：
+真机（`firmware/main/main.cpp`）和模拟器（`simulator/main.cpp`）共用同一套 `wisp::app::App::start()`（`components/wisp_app/src/app.cpp`），区别只在各自提供的 `Platform`（日志 sink、设置后端、`emit_line`、`request_power_off`、`heap_info`、`set_standby`，以及子项目 2 新增的 `random`、`http_server`、`http_client`、`assets`、`http_port`、`http_always_on`、`reboot`、`read_line`）：
 
 1. **日志初始化**：`wisp::log::init()`，建立 32 KB 的内存环形缓冲（真机落在 PSRAM，模拟器为普通内存）。
 2. **板级初始化**：调用 `Platform::board->init()`（真机对应 `boards/<板>/board.cpp`，模拟器对应 `wisp::port::sim::SimBoard`），构造各设备并注册进 `DeviceRegistry`；`init()` 自己只记录非 `Ok` 的 `DeviceReport`（缺失/失败），`App::start()` 随后为注册表里没有报告过的设备补一条 `Ok`。
-3. **核心服务**：启动 `EventBus`，调用 `StorageManager::init()`（挂载失败时把启动报告的 `storage` 备注设为 `"readonly"`，降级继续而不中止），启动一个 2000 ms 周期的 `StorageManager::refresh()` 定时器，启动 `ButtonService`。
+3. **核心服务**：启动 `EventBus`，调用 `StorageManager::init()`（挂载失败时把启动报告的 `storage` 备注设为 `"readonly"`，降级继续而不中止），启动一个 2000 ms 周期的 `StorageManager::refresh()` 定时器，启动 `ButtonService`，加载 LLM 配置（`core::LlmConfigService::init()`，读 System 区的 `secrets/llm.json`）。
 4. **UI 与自检界面**：若 `display.main` 已注册，把 `display` 这个 Settings 命名空间的 `brightness`（默认 200）应用到它，基于它（和 `touch.main`，如果也在）启动 `UiRuntime`；否则在启动报告里记一条 `"mode": "headless"`。无论哪种情况都查找 `power.main` 设备、构造 `core::PowerMonitor` 并 `start()`它自己的采样定时器（spec 6.3/6.7，发布下表的 `power.charging.changed`/`power.battery.low`；缺少 `power.main` 时完全惰性），再构造 `PowerManager`（spec 6.7，持有指向 `PowerMonitor` 的非持有指针）并启动它的周期性闲置检查定时器；如果启动了 `UiRuntime`，再在其上构建自检界面（`self_check_screen.cpp`，spec 8 节），阻塞到它真正跑完一次。
+   **网络**（连接 spec 4.1，`components/wisp_app/src/net_wiring.{hpp,cpp}`，在 `PowerManager` 之后、自检界面之前）：有 `Platform::random` 时构造 `net::PairingService`；若 `net.wifi` 已注册，再构造 `net::WifiService` 并 `init()`（只读取已保存的网络并安排第一次尝试，不碰射频）。`WifiService::tick()` 与 `PairingService::tick()` 都在独立任务 `wisp.net` 里每 250 ms 跑一次——扫描可能阻塞约 3 s，不能放进共享的 `os::Timer` 分发任务，所以开机从不等待联网。`power.state` 转给 `WifiService::set_standby()`。有 `Platform::http_server` 且有 `WifiService` 时构造 `admin::AdminServer`（含 `WsHub`）：STA 拿到 IP（`net.wifi.state` 为 `connected`）或热点开启（`net.ap.state` 的 `active`）时由 `wisp.net` 任务启动 HTTP 服务、两者都断开时停止；`http_always_on`（模拟器）则开机即启动、断网也不停。启动失败只记日志，接口状态变化前不重试。每次启动成功输出一行 `WISP_HTTP {"port": n}`。启动报告记录 `notes.net`。
 5. **收尾**：记录 `boot_ms`，依次输出 `"WISP_BOOT_REPORT <json>"`、`"WISP_MANIFEST <json>"`（通过 `Platform::emit_line`），再发布 `system.boot.completed` 事件。
+
+**停止顺序**（`App::stop()`）：自检界面 → 网络（先 join `wisp.net` 任务，再停 HTTP 服务——`SimHttpServer::stop()` 会在 join 连接线程时回调 `on_close`，所以调用时不持有任何锁——然后退订事件、销毁 `AdminServer`、`WifiService`、`PairingService`）→ `PowerManager` → `PowerMonitor` → 存储定时器 → `ButtonService` → `UiRuntime` → `EventBus`。HTTP 处理函数会经 `SystemSettings` 调用 `PowerManager::set_brightness()`，所以网络必须先于 `PowerManager` 停止。
 
 **失败处理**（spec 6.1）：设备初始化失败只记录、不注册，系统降级继续；`Display` 失败则不启动 UI，走 headless 路径；内置 Flash 挂载失败走只读降级。`WISP_BOOT_REPORT`、`WISP_MANIFEST`、`WISP_PERF` 都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）。
 
@@ -59,6 +62,10 @@
 | `power.battery.low` | `core::PowerMonitor` | `battery_percent`（已知，即不是 -1）降到 ≤ Settings `power`/`low_batt_pct`（默认 15）时发布一次；回升超过阈值 +5 才重新武装，`payload = {"battery_percent": int}`，`Event::source` 为设备 id |
 | `storage.sd.inserted` / `storage.sd.removed` | `core::StorageManager` | SD 卡插拔检测 |
 | `system.boot.completed` | `app::App` | 启动流程第 5 步收尾时发布 |
+| `net.wifi.state` | `net::WifiService` | 状态变化时发布，`payload = {"state": "off"\|"connecting"\|"backoff"\|"connected", "ssid": string, "ip": string, "rssi": int, "reason": ""\|"not_found"\|"auth_failed"\|"other"}`；`reason` 只在 `backoff` 时非空；`Event::source` 为设备 id（`net.wifi`）。不含密码 |
+| `net.ap.state` | `net::WifiService` | 配网热点开关时发布，`payload = {"active": bool, "ssid": string, "clients": int}`，不含热点密码 |
+| `net.pairing.code` | `net::PairingService` | 发出配对码时 `{"active": true, "expires_ms": int}`（`os::now_ms()` 时间基准下的截止时刻），失效时 `{"active": false, "expires_ms": 0}`；不含配对码 |
+| `net.pairing.failed` | `net::PairingService` | 配对码错误时 `{"attempts": int, "locked": bool}` |
 
 `power.charging.changed`/`power.battery.low` 的字段名跟随 `wisp::hal::PowerStatus` 本身的成员名（`charging`/`usb_present`/`battery_percent`），不是 "vbus_present" 这个措辞——后者出自计划中驱动结构体 `axp2101_status_t` 的字段名（`drivers/axp2101/include/axp2101.h`），不是 spec 原文；spec 本身没有提到这个字段名，沿用 hal 已有的字段名更一致。
 
@@ -66,7 +73,7 @@
 
 ## 机器可读输出
 
-三条都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）：改动下面任一字段集合时，要同步更新 `tests/smoke/sim_smoke.py` 和本节。
+下面带 JSON 的几条都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）：改动下面任一字段集合时，要同步更新 `tests/smoke/sim_smoke.py` 和本节。
 
 - **`WISP_BOOT_REPORT <json>`**（启动流程第 5 步；`core::BootReport::to_value()`）：
   ```
@@ -74,7 +81,7 @@
    "devices": [{"id": string, "class": string, "state": "ok"|"degraded"|"missing"|"failed", "reason": string}, ...],
    "notes": {...}}
   ```
-  `fw` 是 `Platform::firmware_version`（真机：`esp_app_get_description()->version`，即 IDF 的 `PROJECT_VER`；模拟器：常量 `"0.1.0"`）。`notes` 是自由格式的诊断备注，目前用到的键：`mode`（值 `"headless"`，无 `display.main` 时）、`storage`（值 `"readonly"`，内置 Flash 挂载失败时）、`library_roots`（`core::StorageManager::roots(Area::Library)` 的字符串数组，spec 9.2 的"`--no-sd` 时 Library 只有内置根"就是靠这个字段机器可读地核实的）。
+  `fw` 是 `Platform::firmware_version`（真机：`esp_app_get_description()->version`，即 IDF 的 `PROJECT_VER`；模拟器：常量 `"0.1.0"`）。`notes` 是自由格式的诊断备注，目前用到的键：`mode`（值 `"headless"`，无 `display.main` 时）、`storage`（值 `"readonly"`，内置 Flash 挂载失败时）、`library_roots`（`core::StorageManager::roots(Area::Library)` 的字符串数组，spec 9.2 的"`--no-sd` 时 Library 只有内置根"就是靠这个字段机器可读地核实的）、`net`（连接 spec 4.1，开机那一刻的网络状态：`"missing"` 表示没有 `net.wifi` 设备（或平台没有提供 `random`），`"off"` 表示没有已保存的网络，`"connecting"` 表示有已保存的网络、正在后台连接）。
 - **`WISP_MANIFEST <json>`**（启动流程第 5 步；`core::DeviceRegistry::manifest()`）：
   ```
   {"board": string,
@@ -87,6 +94,15 @@
    "heap_internal_free": int, "heap_large_free": int}
   ```
   `fps`/`flush_ms` 来自 `ui::UiRuntime::perf()`，本质是浮点数，但 JSON 往返时整数值会被识别为 `Int` 而非 `Double`（`Value`/JSON 对 Int/Double 的区分按实际值而非来源类型，见 `tests/base/value_json_test.cpp`）；解析方不应假设其中任何一个字段固定是哪一种 JSON 数字形式。`heap_internal_free`/`heap_large_free` 来自 `Platform::heap_info`（可能为空，此时都是 0）。
+
+- **`WISP_HTTP <json>`**（网络步骤；`NetWiring::reconcile_http()`）：管理后台 HTTP 服务每次启动成功时一行，`{"port": int}`，是 `HttpServer::port()` 报告的实际端口。可能出现在 `WISP_BOOT_REPORT` 之前（`http_always_on` 时开机即启动）。模拟器 `--http-port 0` 时不启动服务，也就没有这一行。
+- **`WISP_REBOOT`**（仅模拟器，无 JSON）：`Platform::reboot` 被调用（例如 `POST /api/v1/system/reboot`）时输出，随后主循环返回，经正常的 `App::stop()` 以退出码 0 结束进程（不在定时器线程里直接 `exit()`，以免静态析构与其他线程竞争）。真机对应 `esp_restart()`。
+
+## 模拟器的网络
+
+- `net.wifi` 是 `wisp::port::sim::SimWifi`（model `sim-wifi`）：内置 `WispLab`（-45 dBm，密码 `wisp1234`）、`Neighbor`（-70，`neighbor99`）、`OpenCafe`（-80，开放）；`--wifi-fail` 让所有连接以 `not_found` 失败；热点只改状态，`ap_clients()` 在热点开启时恒为 1。
+- 管理后台由 `SimHttpServer` 提供，只监听 `127.0.0.1`，端口 `--http-port`（默认 8080，0 表示不启动）。出站请求（`/llm/test`）走 `SimHttpClient`（libcurl，主机构建 `find_package(CURL 7.80 REQUIRED)`；可移植层禁止 include `curl/`）。
+- 网页资源：构建时用 `tools/pack_assets.py` 把 `web/` 打包成 `wisp_sim` 旁边的 `assets.wpak`（`web/` 不存在时打包一个空目录，只提供 API）；`--web-dir <目录>` 改为启动时在内存里按同一套 MIME/gzip 规则打包该目录（`wisp::port::sim::pack_web_dir()`）。
 
 ## 存储逻辑区
 

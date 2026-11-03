@@ -6,7 +6,9 @@
 // Each helper takes and returns the request by value so calls nest:
 //   srv.handle(with_csrf(with_token(make_req(Method::Post, "/x"), t)))
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -14,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include "wisp/base/error.hpp"
+#include "wisp/base/result.hpp"
 #include "wisp/net/http.hpp"
 
 namespace wisp::test {
@@ -108,6 +112,63 @@ public:
 private:
     mutable std::mutex mutex_;
     std::vector<net::HttpClientRequest> requests_;
+};
+
+// net::HttpServer double: start() succeeds (unless `fail_start` is set) and
+// only records what it was given. The counters and running() are atomics
+// because App drives the server from its "wisp.net" task while the test
+// thread polls them.
+class FakeHttpServer : public net::HttpServer {
+public:
+    Result<void> start(uint16_t port, net::HttpHandler handler, net::WsHandlers ws) override {
+        ++start_calls;
+        if (fail_start.load()) {
+            return Result<void>::err(ErrorCode::IoError, "fake start failure");
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            handler_ = std::move(handler);
+            ws_ = std::move(ws);
+        }
+        port_.store(port == 0 ? 4242 : port);
+        running_.store(true);
+        return Result<void>::ok();
+    }
+
+    void stop() override {
+        ++stop_calls;
+        running_.store(false);
+        port_.store(0);
+        std::lock_guard<std::mutex> lock(mutex_);
+        handler_ = nullptr;
+        ws_ = {};
+    }
+
+    bool running() const override { return running_.load(); }
+    uint16_t port() const override { return port_.load(); }
+
+    // Calls the handler start() received, as a server thread would; a 503
+    // when not running.
+    net::HttpResponse handle(const net::HttpRequest& req) {
+        net::HttpHandler h;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            h = handler_;
+        }
+        if (!h) return net::HttpResponse::error(503, "unavailable", "not running");
+        return h(req);
+    }
+
+    std::atomic<int> start_calls{0};
+    std::atomic<int> stop_calls{0};
+    std::atomic<bool> fail_start{false};
+
+private:
+    mutable std::mutex mutex_;
+    net::HttpHandler handler_;
+    net::WsHandlers ws_;
+    std::atomic<bool> running_{false};
+    std::atomic<uint16_t> port_{0};
 };
 
 }  // namespace wisp::test

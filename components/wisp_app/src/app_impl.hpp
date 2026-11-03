@@ -19,11 +19,14 @@
 #include <memory>
 #include <utility>
 
+#include "net_wiring.hpp"
 #include "self_check.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/core/button_service.hpp"
+#include "wisp/core/llm_config.hpp"
 #include "wisp/core/power_monitor.hpp"
+#include "wisp/core/system_settings.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -36,6 +39,15 @@ struct App::Impl {
     core::EventBus bus;
     core::StorageManager storage;
     core::ButtonService buttons;
+    core::LlmConfigService llm{storage};
+    // Brightness goes through PowerManager so a change made in standby
+    // waits for the wake-up (spec 5.4). power_manager is only reset after
+    // the HTTP server and the net task have stopped (App::stop()), so no
+    // caller races with it going away.
+    core::SystemSettings system_settings{*platform.settings, [this](uint8_t level) {
+                                             if (power_manager)
+                                                 power_manager->set_brightness(level);
+                                         }};
 
     // Only constructed by start() -- see App::start()/App::stop().
     std::unique_ptr<ui::UiRuntime> ui;
@@ -62,6 +74,11 @@ struct App::Impl {
     // holds pointers/a reference into) are themselves stopped.
     std::unique_ptr<PowerManager> power_manager;
     std::unique_ptr<os::Timer> power_timer;
+
+    // Built by App::start() right after power_manager, torn down by
+    // App::stop() right after the self-check screen and before
+    // power_manager -- see net_wiring.hpp.
+    std::unique_ptr<NetWiring> net;
 
     // The self-check screen's own teardown hook -- see
     // self_check.hpp. Constructed (via start_self_check(), posted onto

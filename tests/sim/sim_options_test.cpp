@@ -84,3 +84,31 @@ TEST(SimOptions, ExitAfterMsValidation) {
     const char* empty[] = {"wisp_sim", "--exit-after-ms", ""};
     EXPECT_FALSE(parse_sim_options(3, empty));
 }
+
+TEST(SimOptions, ParsesNetFlags) {
+    const char* defaults[] = {"wisp_sim"};
+    auto d = parse_sim_options(1, defaults).value();
+    EXPECT_EQ(d.http_port, 8080);
+    EXPECT_TRUE(d.web_dir.empty());
+    EXPECT_FALSE(d.wifi_fail);
+
+    const char* argv[] = {"wisp_sim", "--http-port", "0", "--web-dir", "web", "--wifi-fail"};
+    auto o = parse_sim_options(6, argv).value();
+    EXPECT_EQ(o.http_port, 0);
+    EXPECT_EQ(o.web_dir, "web");
+    EXPECT_TRUE(o.wifi_fail);
+
+    const char* custom[] = {"wisp_sim", "--http-port", "65535"};
+    EXPECT_EQ(parse_sim_options(3, custom).value().http_port, 65535);
+
+    const char* too_big[] = {"wisp_sim", "--http-port", "70000"};
+    auto bad = parse_sim_options(3, too_big);
+    ASSERT_FALSE(bad);
+    EXPECT_EQ(bad.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_NE(bad.error().message.find("70000"), std::string::npos);
+
+    const char* negative[] = {"wisp_sim", "--http-port", "-1"};
+    EXPECT_EQ(parse_sim_options(3, negative).error().code, wisp::ErrorCode::InvalidArgument);
+    const char* missing[] = {"wisp_sim", "--web-dir"};
+    EXPECT_EQ(parse_sim_options(2, missing).error().code, wisp::ErrorCode::InvalidArgument);
+}

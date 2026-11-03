@@ -200,7 +200,7 @@ Result<LlmProbe> test();                     // 请求 {base_url}/models
 
 | 主题 | 发布者 | payload |
 |---|---|---|
-| `net.wifi.state` | `WifiService` | `{state, ssid, ip, rssi}`，`state` 取值为 `off`/`connecting`/`backoff`/`connected` |
+| `net.wifi.state` | `WifiService` | `{state, ssid, ip, rssi, reason}`，`state` 取值为 `off`/`connecting`/`backoff`/`connected`；`reason` 是上一次连接失败的原因（`not_found`/`auth_failed`/`other`），只在 `backoff` 时非空 |
 | `net.ap.state` | `WifiService` | `{active, ssid, clients}`（不含密码） |
 | `net.pairing.code` | `PairingService` | `{active, expires_ms}`（不含配对码） |
 | `net.pairing.failed` | `PairingService` | `{attempts, locked}` |

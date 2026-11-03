@@ -7,6 +7,7 @@
 
 #include "dev/sim_devices.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/port/sim/sim_wifi.hpp"
 
 namespace wisp::port::sim {
 
@@ -93,6 +94,8 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
     make_or_fail("button.vol_down", wisp::hal::DeviceClass::Button, [&] {
         return std::make_shared<SimButton>("button.vol_down", SimButton::Kind::VolDown, input_);
     });
+    make_or_fail("net.wifi", wisp::hal::DeviceClass::Network,
+                 [&] { return std::make_shared<SimWifi>("net.wifi", config_.wifi_fail); });
     // main.cpp doesn't abort the simulator if SDL_Init(SDL_INIT_AUDIO)
     // failed (a host with no audio backend at
     // all, e.g. a minimal container image) -- it just warns and

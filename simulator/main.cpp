@@ -15,6 +15,14 @@
 // whether to register audio_in.main at all (see sim_board.cpp). Video
 // stays separate: only run_windowed() below ever initializes it, and
 // only on this (the main) thread.
+//
+// Networking: the admin server (SimHttpServer) listens on 127.0.0.1 only
+// and runs from boot (Platform::http_always_on), even while SimWifi is
+// idle, so the admin page can be developed on the PC. Its page comes from
+// the assets.wpak the build packs next to this executable, or from
+// --web-dir. Platform::reboot prints "WISP_REBOOT" and makes the main
+// loop return, ending the process with exit code 0 after a normal
+// App::stop().
 
 #include <SDL.h>
 
@@ -23,7 +31,12 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
+#include <random>
+#include <span>
+#include <string>
 #include <system_error>
 #include <vector>
 
@@ -38,7 +51,10 @@
 #include "wisp/port/sim/png_writer.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/port/sim/sim_board.hpp"
+#include "wisp/port/sim/sim_http_client.hpp"
+#include "wisp/port/sim/sim_http_server.hpp"
 #include "wisp/port/sim/sim_input.hpp"
+#include "wisp/port/sim/sim_web_pack.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace {
@@ -53,7 +69,31 @@ wisp::port::sim::SimBoardConfig to_board_config(const SimOptions& opts) {
     config.disabled = opts.disabled;
     config.no_sd = opts.no_sd;
     config.data_dir = opts.data_dir;
+    config.wifi_fail = opts.wifi_fail;
     return config;
+}
+
+// The admin page's WispPack: --web-dir packed in memory, else the
+// assets.wpak next to the executable. Empty (API only) when neither is
+// usable.
+std::vector<uint8_t> load_web_assets(const SimOptions& opts, const char* argv0) {
+    if (!opts.web_dir.empty()) {
+        auto packed = wisp::port::sim::pack_web_dir(opts.web_dir);
+        if (!packed) {
+            WLOG_W(kLogTag, "--web-dir: %s; serving the API only", packed.error().message.c_str());
+            return {};
+        }
+        return std::move(packed.value());
+    }
+    std::error_code ec;
+    std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (ec) exe = std::filesystem::absolute(argv0, ec);
+    std::ifstream in(exe.parent_path() / "assets.wpak", std::ios::binary);
+    if (!in) {
+        WLOG_W(kLogTag, "no assets.wpak next to wisp_sim; serving the API only");
+        return {};
+    }
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
 // Takes a screenshot of the self-check UI (app.ui()->snapshot_rgb888())
@@ -363,6 +403,8 @@ int main(int argc, char** argv) {
     }
 
     std::atomic<bool> should_exit{false};
+    // Outlives `app` (Platform::assets points into it).
+    const std::vector<uint8_t> web_assets = load_web_assets(opts, argv[0]);
     auto input = std::make_shared<wisp::port::sim::SimInput>(/*sd_present_initial=*/!opts.no_sd);
     auto on_power_off = [&should_exit] { should_exit.store(true); };
 
@@ -396,6 +438,28 @@ int main(int argc, char** argv) {
         WLOG_I(kLogTag, "set_standby(%s)", standby ? "true" : "false");
     };
     platform.firmware_version = "0.1.0";
+    platform.random = [](uint8_t* out, size_t len) {
+        // Read the OS entropy source on every call; this is only the
+        // simulator, so the cost does not matter.
+        std::random_device rd;
+        for (size_t i = 0; i < len; ++i) out[i] = static_cast<uint8_t>(rd());
+    };
+    if (opts.http_port != 0) {
+        platform.http_server = std::make_unique<wisp::port::sim::SimHttpServer>("127.0.0.1");
+    }
+    platform.http_client = std::make_unique<wisp::port::sim::SimHttpClient>();
+    platform.assets = std::span<const uint8_t>(web_assets);
+    platform.http_port = opts.http_port;
+    platform.http_always_on = true;
+    // Called from the admin server's reboot timer thread while every other
+    // thread is still running, so it must not exit() here (static
+    // destructors would race those threads): it only announces the reboot
+    // and lets the main loop return through App::stop().
+    platform.reboot = [&should_exit] {
+        std::printf("WISP_REBOOT\n");
+        std::fflush(stdout);
+        should_exit.store(true);
+    };
 
     wisp::app::App app(std::move(platform));
     auto started = app.start();

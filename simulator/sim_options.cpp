@@ -70,6 +70,25 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
                                                      "invalid --exit-after-ms value: " + v.value());
             }
             opts.exit_after_ms = parsed;
+        } else if (arg == "--wifi-fail") {
+            opts.wifi_fail = true;
+        } else if (arg == "--http-port") {
+            auto v = take_value(argc, argv, i, "--http-port");
+            if (!v) {
+                return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
+            }
+            uint32_t parsed = 0;
+            if (!parse_uint32(v.value(), parsed) || parsed > 65535) {
+                return wisp::Result<SimOptions>::err(wisp::ErrorCode::InvalidArgument,
+                                                     "invalid --http-port value: " + v.value());
+            }
+            opts.http_port = static_cast<uint16_t>(parsed);
+        } else if (arg == "--web-dir") {
+            auto v = take_value(argc, argv, i, "--web-dir");
+            if (!v) {
+                return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
+            }
+            opts.web_dir = std::move(v.value());
         } else if (arg == "--disable") {
             auto v = take_value(argc, argv, i, "--disable");
             if (!v) {

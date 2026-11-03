@@ -15,7 +15,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev ninja-build
+        # libcurl/zlib: the simulator's HTTP client and --web-dir packer.
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev ninja-build libcurl4-openssl-dev zlib1g-dev
       - name: Install pinned clang-format
         # ubuntu-latest's apt clang-format package is a much older
         # major version than the one this repo is formatted against,

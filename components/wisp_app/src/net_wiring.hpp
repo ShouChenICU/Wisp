@@ -1,0 +1,111 @@
+#pragma once
+
+// The networking half of App's boot (connectivity spec 4.1; app.hpp step
+// 4b), kept apart from app.cpp so App::Impl only holds one object for it.
+//
+// start() runs on App::start()'s thread, after PowerManager exists:
+//   - builds PairingService (and, with a "net.wifi" device, WifiService)
+//     and init()s them -- WifiService::init() only loads the saved list,
+//     so nothing here touches the radio;
+//   - subscribes to power.state (-> WifiService::set_standby()) and to
+//     net.wifi.state / net.ap.state (which interfaces are up);
+//   - with Platform::http_server, builds the AdminServer and, when
+//     http_always_on, starts serving right away;
+//   - spawns the "wisp.net" task.
+//
+// The "wisp.net" task is the only caller of WifiService::tick() and
+// PairingService::tick() (every kNetTickMs) and the only thread that
+// starts or stops the HTTP server once start() has returned. It has its
+// own task rather than an os::Timer because tick() may block for a ~3 s
+// scan, and on ESP every Timer shares one dispatch task. Event handlers
+// only record interface state and wake the task, so no blocking server
+// call ever runs on the EventBus dispatcher.
+//
+// stop() joins the task, stops the server (its on_close callbacks run
+// while it joins connection threads; nothing here holds a lock then),
+// unsubscribes and destroys the AdminServer before the services it
+// routes to. App calls it before tearing down PowerManager.
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#include "wisp/admin/admin_server.hpp"
+#include "wisp/app/app.hpp"
+#include "wisp/core/boot_report.hpp"
+#include "wisp/core/device_registry.hpp"
+#include "wisp/core/event_bus.hpp"
+#include "wisp/core/llm_config.hpp"
+#include "wisp/core/storage_manager.hpp"
+#include "wisp/core/system_settings.hpp"
+#include "wisp/net/asset_pack.hpp"
+#include "wisp/net/pairing_service.hpp"
+#include "wisp/net/wifi_service.hpp"
+#include "wisp/os/os.hpp"
+
+namespace wisp::app {
+
+struct NetWiringDeps {
+    Platform& platform;
+    core::DeviceRegistry& registry;
+    core::BootReport& report;
+    core::EventBus& bus;
+    core::StorageManager& storage;
+    core::LlmConfigService& llm;
+    core::SystemSettings& system_settings;
+    // os::now_ms() when App::start() began; uptime is measured from it.
+    uint64_t boot_t0_ms = 0;
+};
+
+class NetWiring {
+public:
+    static constexpr uint32_t kNetTickMs = 250;
+
+    explicit NetWiring(NetWiringDeps deps);
+    // Calls stop().
+    ~NetWiring();
+
+    NetWiring(const NetWiring&) = delete;
+    NetWiring& operator=(const NetWiring&) = delete;
+
+    // See the file header. Records the "net" boot-report note.
+    void start();
+    // Idempotent.
+    void stop();
+
+    net::WifiService* wifi() const { return wifi_.get(); }
+    net::PairingService* pairing() const { return pairing_.get(); }
+
+private:
+    void run();
+    // Starts or stops the HTTP server to match the interface state. Runs
+    // on the "wisp.net" task, or on start()/stop()'s thread while that
+    // task is not running.
+    void reconcile_http();
+    Value device_status() const;
+
+    NetWiringDeps deps_;
+
+    std::unique_ptr<net::WifiService> wifi_;
+    std::unique_ptr<net::PairingService> pairing_;
+    net::AssetPack assets_;
+    bool has_assets_ = false;
+    std::unique_ptr<admin::AdminServer> admin_;
+
+    std::vector<core::SubscriptionId> subscriptions_;
+    std::atomic<bool> sta_up_{false};
+    std::atomic<bool> ap_up_{false};
+
+    // Owned by whoever runs reconcile_http() (see there).
+    bool serving_ = false;
+    // A start() that failed is not retried until the interfaces go down
+    // and come back, so a busy port does not spam the log every tick.
+    bool start_failed_ = false;
+
+    os::Semaphore wake_{1, 0};
+    std::atomic<bool> stopping_{false};
+    std::unique_ptr<os::Task> task_;
+};
+
+}  // namespace wisp::app

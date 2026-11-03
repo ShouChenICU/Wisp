@@ -59,6 +59,8 @@ wisp_test(NAME power_manager_test SRCS app/power_manager_test.cpp
 wisp_test(NAME format_test SRCS app/format_test.cpp LIBS wisp_app wisp_core)
 wisp_test(NAME self_check_screen_test SRCS app/self_check_screen_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
+wisp_test(NAME app_net_test SRCS app/app_net_test.cpp
+          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 wisp_test(NAME loopback_test SRCS app/loopback_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 target_include_directories(loopback_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
@@ -75,6 +77,15 @@ wisp_test(NAME sim_board_test SRCS sim/sim_board_test.cpp
 wisp_test(NAME sim_http_server_test SRCS sim/sim_http_server_test.cpp
           LIBS wisp_port_sim_net TIMEOUT 30)
 target_include_directories(sim_http_server_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
+wisp_test(NAME sim_wifi_test SRCS sim/sim_wifi_test.cpp LIBS wisp_port_sim_net)
+# Talks to a real SimHttpServer over loopback; includes curl/curl.h for the
+# error constants.
+wisp_test(NAME sim_http_client_test SRCS sim/sim_http_client_test.cpp
+          LIBS wisp_port_sim_net wisp_port_sim_os CURL::libcurl TIMEOUT 30)
+wisp_test(NAME sim_web_pack_test SRCS sim/sim_web_pack_test.cpp
+          LIBS wisp_port_sim_net wisp_net ZLIB::ZLIB)
+target_compile_definitions(sim_web_pack_test PRIVATE
+    WISP_FIXTURE_WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/net/fixtures/web")
 
 # Host-testable conversion helpers ported from MyOS into drivers/*/include/
 # *_conv.h (see docs/references.md and each header's own comment). The

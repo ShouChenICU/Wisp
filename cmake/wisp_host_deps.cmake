@@ -67,3 +67,14 @@ if(EXISTS ${WISP_LV_CONF_PATH})
     )
     FetchContent_MakeAvailable(lvgl)
 endif()
+
+# ---------------------------------------------------------------------------
+# libcurl and zlib (system packages, not fetched): only the simulator's
+# platform layer uses them -- wisp::port::sim::SimHttpClient (libcurl,
+# 7.80 or newer for curl_easy_* timeouts in ms and the CURLE_* set the
+# error mapping relies on) and the --web-dir in-memory packer (zlib's
+# gzip writer). Portable components never include curl/ (enforced by
+# tools/check_layering.py).
+# ---------------------------------------------------------------------------
+find_package(CURL 7.80 REQUIRED)
+find_package(ZLIB REQUIRED)

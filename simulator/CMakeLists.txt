@@ -14,7 +14,8 @@ include(${WISP_ROOT}/cmake/wisp_host_deps.cmake)
 # simulator/ may include SDL*.
 find_package(SDL2 REQUIRED)
 
-# Needed by tests/CMakeLists.txt to run the sim_smoke ctest case
+# Needed to pack web/ (tools/pack_assets.py, below) and by
+# tests/CMakeLists.txt to run the sim_smoke ctest case
 # (tests/smoke/sim_smoke.py) via ${Python3_EXECUTABLE}.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
@@ -35,9 +36,34 @@ add_executable(wisp_sim main.cpp sim_options.cpp)
 target_compile_features(wisp_sim PRIVATE cxx_std_20)
 target_link_libraries(wisp_sim PRIVATE
     wisp_app wisp_core wisp_hal wisp_os wisp_base wisp_ui
-    wisp_port_sim_os wisp_port_sim_settings wisp_port_sim_dev
+    wisp_port_sim_os wisp_port_sim_settings wisp_port_sim_dev wisp_port_sim_net
     SDL2::SDL2
 )
+
+# The admin web UI, packed by tools/pack_assets.py into assets.wpak next to
+# wisp_sim, which loads it at startup (--web-dir overrides it). Until web/
+# exists an empty directory is packed instead, so the simulator still
+# serves the API. The CONFIGURE_DEPENDS glob notices web/ appearing or
+# changing and re-packs.
+set(WISP_WEB_DIR ${WISP_ROOT}/web)
+set(WISP_SIM_WPAK ${CMAKE_CURRENT_BINARY_DIR}/assets.wpak)
+file(GLOB_RECURSE WISP_WEB_FILES CONFIGURE_DEPENDS ${WISP_WEB_DIR}/*)
+if(IS_DIRECTORY ${WISP_WEB_DIR})
+    set(WISP_WEB_PACK_SRC ${WISP_WEB_DIR})
+else()
+    set(WISP_WEB_PACK_SRC ${CMAKE_CURRENT_BINARY_DIR}/empty-web)
+    file(MAKE_DIRECTORY ${WISP_WEB_PACK_SRC})
+endif()
+add_custom_command(
+    OUTPUT ${WISP_SIM_WPAK}
+    COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tools/pack_assets.py ${WISP_WEB_PACK_SRC}
+            -o ${WISP_SIM_WPAK}
+    DEPENDS ${WISP_ROOT}/tools/pack_assets.py ${WISP_WEB_FILES}
+    COMMENT "Packing web/ into assets.wpak"
+    VERBATIM
+)
+add_custom_target(wisp_sim_assets DEPENDS ${WISP_SIM_WPAK})
+add_dependencies(wisp_sim wisp_sim_assets)
 
 option(WISP_BUILD_TESTS "Build the PC unit test suite" ON)
 if(WISP_BUILD_TESTS)

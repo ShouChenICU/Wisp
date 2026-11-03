@@ -11,8 +11,9 @@
 #     host-only and SDL-free, so unit tests can link it on its own.
 #   - wisp_port_sim_dev: SDL-backed device port.
 #   - wisp_port_sim_net: SimHttpServer, the loopback HTTP/1.1 + WebSocket
-#     net::HttpServer on POSIX sockets (SDL-free, so its tests link it
-#     on its own).
+#     net::HttpServer on POSIX sockets; SimHttpClient (libcurl); SimWifi,
+#     the simulated hal::Wifi; and the --web-dir in-memory WispPack packer
+#     (zlib). SDL-free, so their tests link it on its own.
 
 # ESP-IDF's component discovery (EXTRA_COMPONENT_DIRS in
 # firmware/CMakeLists.txt) still finds this directory and -- during the
@@ -50,10 +51,11 @@ wisp_component(
 
 wisp_component(
     NAME wisp_port_sim_net
-    SRCS net/sim_http_server.cpp net/sha1.cpp
+    SRCS net/sim_http_server.cpp net/sha1.cpp net/sim_http_client.cpp net/sim_wifi.cpp
+         net/sim_web_pack.cpp
     INCLUDE_DIRS include
-    REQUIRES wisp_net
-    HOST_LIBS Threads::Threads
+    REQUIRES wisp_base wisp_hal wisp_core wisp_net
+    HOST_LIBS Threads::Threads CURL::libcurl ZLIB::ZLIB
 )
 
 # Simulated HAL devices: SimDisplay/SimTouch/SimImu/SimPower/
@@ -73,7 +75,7 @@ wisp_component(
          dev/sim_clock.cpp dev/sim_button.cpp dev/sim_audio.cpp dev/sim_storage.cpp
          sim_board.cpp png_writer.cpp
     INCLUDE_DIRS include
-    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_app
+    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_app wisp_port_sim_net
     HOST_LIBS SDL2::SDL2
 )
 

@@ -32,6 +32,17 @@
 //      is constructed before the self-check screen specifically because
 //      the screen's power-key handling calls into it (see
 //      src/self_check_screen.cpp).
+//   4b. Networking (connectivity spec 4.1; src/net_wiring.hpp): loads the
+//      LLM config, builds PairingService and -- when "net.wifi" is
+//      registered -- WifiService, whose tick() runs on a "wisp.net" task
+//      every 250 ms so boot never waits for Wi-Fi; mirrors power.state
+//      into WifiService::set_standby(); and, given Platform::http_server,
+//      builds the admin router and serves it on http_port while the
+//      station has an IP or the setup hotspot is up (always, with
+//      http_always_on). Each successful server start emits
+//      "WISP_HTTP {"port":n}". Records the "net" boot-report note:
+//      "missing" (no "net.wifi"), "off" (no saved network) or
+//      "connecting".
 //   5. Records the elapsed boot_ms (now that step 4 -- the self-check
 //      screen included -- has actually finished, per spec 6.1; the
 //      screen's header, which already rendered once with boot_ms still
@@ -40,8 +51,11 @@
 //      order) via Platform::emit_line, then publishes
 //      "system.boot.completed".
 
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 
 #include "wisp/app/board.hpp"
@@ -52,6 +66,7 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/net/http.hpp"
 
 namespace wisp::ui {
 class UiRuntime;
@@ -59,7 +74,14 @@ class UiRuntime;
 
 namespace wisp::core {
 class ButtonService;
-}
+class LlmConfigService;
+class SystemSettings;
+}  // namespace wisp::core
+
+namespace wisp::net {
+class WifiService;
+class PairingService;
+}  // namespace wisp::net
 
 namespace wisp::app {
 
@@ -99,6 +121,31 @@ struct Platform {
     std::function<void(bool standby)> set_standby;
 
     std::string firmware_version = "0.1.0";
+
+    // Fills the buffer with cryptographically strong random bytes (pairing
+    // tokens and codes, the hotspot password). Required for networking:
+    // without it no net service is built, as if "net.wifi" were missing.
+    std::function<void(uint8_t*, size_t)> random;
+
+    // The admin page's HTTP server. Empty: no admin backend at all.
+    std::unique_ptr<net::HttpServer> http_server;
+    // Outgoing HTTP (the LLM connectivity test). Empty: /llm/test reports
+    // transport "other".
+    std::unique_ptr<net::HttpClient> http_client;
+    // A WispPack with the web UI (spec 2.3). The bytes must outlive the
+    // App. Empty, or not a valid pack: the API is served without a page.
+    std::span<const uint8_t> assets;
+    uint16_t http_port = 80;
+    // Serve from boot regardless of network state (the simulator, whose
+    // server only listens on loopback); otherwise the server runs only
+    // while the station has an IP or the setup hotspot is up.
+    bool http_always_on = false;
+
+    // Restarts the device (admin "reboot", factory reset). May be empty.
+    std::function<void()> reboot;
+    // Blocks for one line of serial console input (without the line
+    // ending); false at end of input. Empty: no console.
+    std::function<bool(std::string& line)> read_line;
 };
 
 class App {
@@ -118,7 +165,10 @@ public:
     // stop() first to run the sequence again.
     Result<void> start();
 
-    // Stops (in reverse order) the storage-refresh timer, ButtonService,
+    // Stops the self-check screen, then networking -- the "wisp.net" task,
+    // then the HTTP server (whose handlers call into PowerManager and the
+    // net services), then the net services themselves -- and then (in
+    // reverse order) PowerManager, the storage-refresh timer, ButtonService,
     // UiRuntime (if one was started) and EventBus. Idempotent, and safe
     // to call even if start() was never called or didn't succeed -- only
     // what was actually started is torn down. Stopping the UiRuntime
@@ -138,6 +188,17 @@ public:
 
     // nullptr in headless mode (no "display.main" device registered).
     ui::UiRuntime* ui();
+
+    // Networking services (step 4b). wifi() is nullptr without a "net.wifi"
+    // device; both are nullptr without Platform::random, and before start()
+    // or after stop().
+    net::WifiService* wifi();
+    net::PairingService* pairing();
+    // Always available; llm() is loaded from storage by start().
+    core::LlmConfigService& llm();
+    // Applies brightness through PowerManager::set_brightness() while
+    // started (otherwise the stored value takes effect at the next boot).
+    core::SystemSettings& system_settings();
 
     // Non-null for the whole lifetime of a started App (see
     // start()'s Step 4) -- constructed regardless of headless mode,
