@@ -102,9 +102,17 @@ extern "C" void app_main() {
     // IDF build system docs), so this always reports exactly what was
     // actually flashed.
     platform.firmware_version = esp_app_get_description()->version;
-    // Hardware RNG. It is only a true RNG while the radio (or the
-    // bootloader's entropy source) is on; tokens, codes and hotspot
-    // passwords are only drawn for network clients, i.e. with Wi-Fi up.
+    // esp_fill_random() is a true RNG only while the RF subsystem (Wi-Fi/BT)
+    // is enabled or between bootloader_random_enable()/_disable(); otherwise
+    // its output is merely pseudo-random. Precondition for every caller:
+    // the radio is on. All current draws -- pairing codes and tokens, and
+    // the hotspot password from WifiService::start_provisioning(), whether
+    // asked for over HTTP, from the screen or from the serial console's
+    // "wifi ap on" -- only exist when a net.wifi device is registered, and
+    // its driver starts the radio during board init. bootloader_random_
+    // enable() is deliberately not wrapped around draws: while enabled it
+    // disturbs Wi-Fi and the ADC. A draw that can happen with the radio off
+    // has to enable that source itself.
     platform.random = [](uint8_t* out, size_t len) { esp_fill_random(out, len); };
     platform.reboot = [] { esp_restart(); };
     // http_server/http_client/assets/read_line stay empty: no admin backend

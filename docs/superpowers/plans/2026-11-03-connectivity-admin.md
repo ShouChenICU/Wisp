@@ -936,7 +936,7 @@ TEST(Console, UnknownCommand)
 **Interfaces:**
 - Consumes：Task 3、4 的接口；Task 12 的 `Platform` 字段
 - 实现要点：
-  - `EspWifi`：初始化 `esp_netif` 和 APSTA；`link()` 从事件回调更新的原子快照里读取；`start_ap` 设置 WPA2-PSK、信道 1、最多 4 个客户端，启动 `captive_dns`；STA 拿到 IP 时用主机名 `wisp` 启动 mDNS，并广播 `_http._tcp` 端口 80。初始化失败时由 `board.cpp` 写进启动报告，状态为 `Failed`。
+  - `EspWifi`：初始化 `esp_netif` 和 APSTA，并在 board init 里就 `esp_wifi_start()`——射频开启后 `esp_fill_random` 才是真随机数，`Platform::random` 的所有调用方都依赖这一点（见 `firmware/main/main.cpp` 的注释）；`link()` 从事件回调更新的原子快照里读取；`start_ap` 设置 WPA2-PSK、信道 1、最多 4 个客户端，启动 `captive_dns`；STA 拿到 IP 时用主机名 `wisp` 启动 mDNS，并广播 `_http._tcp` 端口 80。初始化失败时由 `board.cpp` 写进启动报告，状态为 `Failed`。
   - `EspHttpServer`：`max_open_sockets = 7`，`lru_purge_enable = true`，`uri_match_fn = httpd_uri_match_wildcard`；注册 `/*` 的 GET/POST/PUT/DELETE/OPTIONS，以及 `/api/v1/ws`（`is_websocket = true`）；请求头逐个读取：`Host`、`Cookie`、`X-Wisp`、`Content-Type`、`If-None-Match`、`User-Agent`；`iface` 按客户端 IP 是否在热点子网 `192.168.4.0/24` 内判断；`send_text` 用 `httpd_ws_send_data_async`，在途发送超过 64 条时返回 false。
   - `EspHttpClient`：`esp_http_client` 加 `crt_bundle_attach = esp_crt_bundle_attach`，根据 `esp_err_t`/`esp_tls` 错误映射为 `TransportError`。
   - `console_esp.cpp`：安装 `usb_serial_jtag` 驱动并让 VFS 使用它，`read_line` 用 `fgets` 读 stdin。
