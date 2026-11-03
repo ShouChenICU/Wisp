@@ -48,26 +48,42 @@ export function setUnauthorizedHandler(fn) {
  * @param {'GET'|'POST'|'PUT'|'DELETE'} method
  * @param {string} path   path below /api/v1, e.g. "/device"
  * @param {unknown} [body] JSON-encoded when given
+ * @param {{timeoutMs?: number}} [opts]  `timeoutMs`: give up after this
+ *   long (including reading the body) and throw as if unreachable. Without
+ *   it a request waits as long as the browser does, which for a device that
+ *   left the network can be minutes.
  * @returns {Promise<any>} the decoded JSON body, or null for an empty one
  * @throws {ApiError}
  */
-export async function api(method, path, body) {
+export async function api(method, path, body, opts = {}) {
   const headers = { 'X-Wisp': '1', Accept: 'application/json' };
   const init = { method, headers, credentials: 'same-origin', cache: 'no-store' };
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
+  let timer = 0;
+  if (opts.timeoutMs > 0) {
+    const ctrl = new AbortController();
+    init.signal = ctrl.signal;
+    timer = setTimeout(() => ctrl.abort(), opts.timeoutMs);
+  }
 
   let res;
+  let text;
   try {
     res = await fetch(PREFIX + path, init);
+    text = await res.text();
   } catch {
-    throw { status: 0, code: 'network', message: 'device unreachable' };
+    // An abort while reading the body is as unreachable as one before the
+    // headers; any other body read failure leaves an empty body.
+    if (init.signal?.aborted || !res) throw { status: 0, code: 'network', message: 'device unreachable' };
+    text = '';
+  } finally {
+    clearTimeout(timer);
   }
 
   let data = null;
-  const text = await res.text().catch(() => '');
   if (text) {
     try {
       data = JSON.parse(text);

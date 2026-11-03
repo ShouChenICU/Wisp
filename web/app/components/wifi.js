@@ -28,6 +28,9 @@ export const JOIN_TIMEOUT_MS = 60000;
 const JOIN_POLL_MS = 3000;
 // How long a join waits for the event socket before sending anyway.
 const JOIN_OPEN_WAIT_MS = 2000;
+// A join poll that has not answered by then counts as failed: a device that
+// left the network does not refuse the connection, it just never answers.
+const JOIN_POLL_TIMEOUT_MS = 4000;
 // This many failed polls in a row at the end of the window mean the page
 // lost the device, most likely because it moved to the new network.
 const JOIN_LOST_POLLS = 2;
@@ -342,13 +345,18 @@ export function JoinForm({ network, busy, error, submitText, onSubmit, onCancel,
  *
  * Joining another network while the device is on one makes the device
  * leave the network this page reaches it through, so the outcome may never
- * arrive: a timeout whose last polls all failed is reported as `lost`.
+ * arrive: a timeout whose last polls all failed is reported as `lost`. If
+ * the device comes back instead (it returns to a working network after the
+ * new one failed, spec 4.2), a poll shows it connected elsewhere: the join
+ * ends there, as `auth_failed` when the target's saved entry says its
+ * password was rejected, with `returnedTo` naming where the device is.
  *
  * @param {{ssid: string, ssid_hex?: string}} target  a scan or saved entry,
  *   or a typed name
  * @param {string} password  "" for an open network
  * @param {(result: {ok: true, ip: string, ssid: string}
- *                 | {ok: false, reason: string}
+ *                 | {ok: false, reason: string, returnedTo?: string}
+ *                 | {ok: false, returnedTo: string}
  *                 | {ok: false, timeout: true, lost?: true}
  *                 | {ok: false, error: any}) => void} onResult
  *   called once; `error` is an ApiError from the request itself
@@ -362,6 +370,8 @@ export function joinNetwork(target, password, onResult) {
   let posted = false;
   let armed = false;
   let failedPolls = 0;
+  let polling = false;
+  let wentAway = false;
   let pollTimer = 0;
   let openWait = 0;
   let timeout = 0;
@@ -392,18 +402,37 @@ export function joinNetwork(target, password, onResult) {
     else if (st.state === 'backoff') finish({ ok: false, reason: st.reason || 'other' });
   }
 
+  // A polled status not about the target can still settle the join once
+  // the device has given up on it: see the doc comment above.
+  function judgeElsewhere(st) {
+    const saved = Array.isArray(st.saved) ? st.saved.find((n) => ssidKey(n) === key) : null;
+    const rejected = !!saved?.auth_failed;
+    const back = wentAway && st.state === 'connected' && st.ssid ? st.ssid : '';
+    if (!rejected && !back) return;
+    const result = { ok: false };
+    if (rejected) result.reason = 'auth_failed';
+    if (back) result.returnedTo = back;
+    finish(result);
+  }
+
   async function poll() {
-    if (done || !posted) return;
+    if (done || !posted || polling) return;
+    polling = true;
     let st;
     try {
-      st = await api('GET', '/wifi');
+      st = await api('GET', '/wifi', undefined, { timeoutMs: JOIN_POLL_TIMEOUT_MS });
     } catch {
       // A failed poll is not a failed join; the next one may get through.
       failedPolls++;
+      wentAway = true;
       return;
+    } finally {
+      polling = false;
     }
     failedPolls = 0;
-    judge(st, false);
+    if (!st || done) return;
+    if (ssidKey(st) === key) judge(st, false);
+    else judgeElsewhere(st);
   }
 
   function send() {
@@ -450,6 +479,12 @@ export function joinNetwork(target, password, onResult) {
 /** A sentence for a failed join result from joinNetwork(). */
 export function joinFailureText(result) {
   if (result.lost) return t('join.err_lost', { url: MDNS_URL });
+  if (result.returnedTo) {
+    const ssid = displaySsid(result.returnedTo);
+    return result.reason
+      ? t('join.failed_returned', { reason: reasonText(result.reason), ssid })
+      : t('join.err_returned', { ssid });
+  }
   if (result.timeout) return t('join.err_timeout');
   if (result.error) {
     if (result.error.code === 'quota_exceeded') return t('join.err_quota');

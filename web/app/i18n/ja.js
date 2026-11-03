@@ -203,6 +203,8 @@ export default {
   'join.err_timeout': '1 分以内に接続できませんでした。ネットワーク名と、ルーターの電波が届くかを確認してください。',
   'join.err_lost': 'デバイスと通信できなくなりました。別のネットワークに切り替わった可能性があります。パソコンやスマートフォンを同じネットワークにつないでから {url} を開いてください。',
   'join.failed': '接続できませんでした：{reason}。',
+  'join.failed_returned': '接続できませんでした：{reason}。デバイスは {ssid} に戻りました。',
+  'join.err_returned': 'このネットワークに接続できず、デバイスは {ssid} に戻りました。',
   'model.sub': 'Agent が使う OpenAI 互換サービス',
   'model.load_failed': 'モデル設定を取得できませんでした',
   'model.endpoint_title': 'サービス設定',

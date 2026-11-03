@@ -204,6 +204,8 @@ export default {
   'join.err_timeout': 'No answer within a minute. Check the network name and that the router is in range.',
   'join.err_lost': 'Lost contact with the device; it may have changed networks. Join that network with this computer or phone, then open {url}.',
   'join.failed': 'Couldn\'t connect: {reason}.',
+  'join.failed_returned': 'Couldn\'t connect: {reason}. The device went back to {ssid}.',
+  'join.err_returned': 'The device couldn\'t join this network and went back to {ssid}.',
   'model.sub': 'The OpenAI-compatible service the Agent talks to',
   'model.load_failed': 'Couldn\'t read the model settings',
   'model.endpoint_title': 'Service',

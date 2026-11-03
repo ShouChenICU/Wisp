@@ -203,6 +203,8 @@ export default {
   'join.err_timeout': '1 分钟内没有连上。请检查网络名称，并确认路由器在信号范围内。',
   'join.err_lost': '与设备失去联系，它可能已换到别的网络。请让电脑或手机连上同一个网络，再打开 {url}。',
   'join.failed': '连接失败：{reason}。',
+  'join.failed_returned': '连接失败：{reason}。设备已回到 {ssid}。',
+  'join.err_returned': '设备没能连上这个网络，已回到 {ssid}。',
   'model.sub': 'Agent 使用的 OpenAI 兼容服务',
   'model.load_failed': '无法读取模型设置',
   'model.endpoint_title': '服务设置',
