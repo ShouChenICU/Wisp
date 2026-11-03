@@ -142,19 +142,15 @@ Result<void> App::start() {
     // The firmware update service, before networking routes uploads to
     // it. Only a device with a screen can confirm an update.
     impl_->firmware_pending.store(false);
-    impl_->firmware =
-        std::make_unique<core::FirmwareUpdateService>(core::FirmwareUpdateService::Deps{
-            .updater = impl_->platform.firmware.get(),
-            .running_version = impl_->platform.firmware_version,
-            .publish =
-                [this](Properties p) {
-                    impl_->bus.publish({"system.firmware", "app", 0, std::move(p)});
-                },
-            .request_confirm =
-                impl_->ui ? std::function<void()>([this] { request_firmware_confirm(*this); })
-                          : nullptr,
-            .restart = [this] { restart_for_firmware(*this); },
-        });
+    core::FirmwareUpdateService::Deps firmware_deps;
+    firmware_deps.updater = impl_->platform.firmware.get();
+    firmware_deps.running_version = impl_->platform.firmware_version;
+    firmware_deps.publish = [this](Properties p) {
+        impl_->bus.publish({"system.firmware", "app", 0, std::move(p)});
+    };
+    if (impl_->ui) firmware_deps.request_confirm = [this] { request_firmware_confirm(*this); };
+    firmware_deps.restart = [this] { restart_for_firmware(*this); };
+    impl_->firmware = std::make_unique<core::FirmwareUpdateService>(std::move(firmware_deps));
 
     // Step 4b: networking (connectivity spec 4.1), before the self-check
     // screen so that screen can show the network state. Never waits for
