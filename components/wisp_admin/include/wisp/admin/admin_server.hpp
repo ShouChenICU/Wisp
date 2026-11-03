@@ -81,7 +81,7 @@ struct AdminDeps {
     std::string board;
     std::string firmware_version;
     std::string device_name = "Wisp";
-    // This boot's id (make_boot_id()), /info's "boot" and the WebSocket
+    // This boot's id (make_boot_id()), /info's "boot_id" and the WebSocket
     // hello's: a browser seeing it change knows the device restarted and
     // its log seq numbers started over (spec 6.1, 6.2).
     std::string boot_id;

@@ -1,5 +1,6 @@
-// PC simulator sink for wisp::log: formats each line the same way as the
-// in-memory ring buffer (see wisp/core/log.hpp) and writes it to stdout.
+// PC simulator sink for wisp::log: formats each line the way
+// log::ring_snapshot() renders the ring (see wisp/core/log.hpp) and
+// writes it to stdout.
 // Host-only; must not pull in SDL.
 
 #include "wisp/port/sim/log_stdout.hpp"

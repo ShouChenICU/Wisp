@@ -6,7 +6,7 @@ namespace wisp::port::esp {
 
 namespace {
 
-// Same one-letter convention as wisp::core::log's own ring buffer format
+// Same one-letter convention as wisp::log's text rendering of the ring
 // ("<ts_ms> <D|I|W|E> <tag>: <msg>", see wisp/core/log.hpp's
 // ring_snapshot() doc comment) and wisp_port_sim's StdoutLogSink -- kept
 // consistent across every port rather than inventing a third scheme.

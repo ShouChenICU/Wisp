@@ -82,7 +82,7 @@ TEST(PairRoutes, ConfirmSetsHttpOnlyCookie) {
     EXPECT_EQ(anon, Value(wisp::Map{{"name", Value("Wisp")},
                                     {"fw", Value("0.2.0-test")},
                                     {"paired", Value(false)},
-                                    {"boot", Value(f.boot_id)}}));
+                                    {"boot_id", Value(f.boot_id)}}));
     Value paired = body_json(srv.handle(with_token(make_req(Get, "/api/v1/info"), token)));
     ASSERT_NE(paired.find("paired"), nullptr);
     EXPECT_TRUE(paired.find("paired")->as_bool());
@@ -101,15 +101,15 @@ TEST(PairRoutes, InfoReportsAStableBootId) {
     AdminFixture f;
     const Value first = body_json(f.srv->handle(make_req(Get, "/api/v1/info")));
     const Value second = body_json(f.srv->handle(make_req(Get, "/api/v1/info")));
-    const Value* boot = first.find("boot");
+    const Value* boot = first.find("boot_id");
     ASSERT_NE(boot, nullptr);
     ASSERT_EQ(boot->type(), Value::Type::String);
     const std::string id = boot->as_string();
     EXPECT_EQ(id.size(), 16u);
     EXPECT_EQ(id.find_first_not_of("0123456789abcdef"), std::string::npos) << id;
     EXPECT_EQ(id, f.boot_id);
-    ASSERT_NE(second.find("boot"), nullptr);
-    EXPECT_EQ(second.find("boot")->as_string(), id);
+    ASSERT_NE(second.find("boot_id"), nullptr);
+    EXPECT_EQ(second.find("boot_id")->as_string(), id);
 }
 
 TEST(PairRoutes, BootIdIsHexOfTheRandomBytes) {

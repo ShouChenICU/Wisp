@@ -14,8 +14,9 @@ namespace wisp::log {
 namespace {
 
 constexpr size_t kMaxMsgBytes = 255;
-// Tags are short literals; the cap keeps the length in one header byte.
-constexpr size_t kMaxTagBytes = 255;
+// Tags are short literals. The cap keeps write()'s stack copy small, since
+// small ESP task stacks log too.
+constexpr size_t kMaxTagBytes = 31;
 
 bool is_utf8_continuation(char c) { return (static_cast<uint8_t>(c) & 0xC0) == 0x80; }
 
@@ -85,6 +86,7 @@ struct State {
     size_t ring_capacity = 0;
     size_t ring_head = 0;
     size_t ring_len = 0;
+    os::Mem ring_mem = os::Mem::Large;
     // The last seq handed out; survives init() so seq never repeats within
     // a boot.
     uint32_t last_seq = 0;
@@ -118,26 +120,10 @@ struct State {
         ring_len += size;
     }
 
-    // Must be called with `mutex` held.
-    std::vector<LogEntry> entries() const {
-        std::vector<LogEntry> out;
-        size_t at = ring_head;
-        size_t left = ring_len;
-        while (left >= sizeof(EntryHeader)) {
-            EntryHeader h;
-            at = get(at, &h, sizeof h);
-            LogEntry e;
-            e.seq = h.seq;
-            e.ts_ms = h.ts_ms;
-            e.level = static_cast<LogLevel>(h.level);
-            e.tag.resize(h.tag_len);
-            at = get(at, e.tag.data(), h.tag_len);
-            e.msg.resize(h.msg_len);
-            at = get(at, e.msg.data(), h.msg_len);
-            left -= sizeof(EntryHeader) + h.tag_len + h.msg_len;
-            out.push_back(std::move(e));
-        }
-        return out;
+    // Copies the used part of the ring, oldest entry first, into `out`
+    // (ring_len bytes). Must be called with `mutex` held.
+    void copy_used(char* out) const {
+        if (ring_len > 0) get(ring_head, out, ring_len);
     }
 
     // Resets the ring to `new_capacity` bytes (dropping any existing
@@ -151,6 +137,7 @@ struct State {
         ring_storage =
             new_capacity > 0 ? static_cast<char*>(os::alloc(new_capacity, mem)) : nullptr;
         ring_capacity = ring_storage != nullptr ? new_capacity : 0;
+        ring_mem = mem;
         ring_head = 0;
         ring_len = 0;
         if (full_reset) {
@@ -190,6 +177,27 @@ private:
     }
 };
 
+// Decodes ring bytes laid out oldest first (State::copy_used()).
+std::vector<LogEntry> decode(const char* p, size_t len) {
+    std::vector<LogEntry> out;
+    size_t at = 0;
+    while (len - at >= sizeof(EntryHeader)) {
+        EntryHeader h;
+        std::memcpy(&h, p + at, sizeof h);
+        at += sizeof h;
+        LogEntry e;
+        e.seq = h.seq;
+        e.ts_ms = h.ts_ms;
+        e.level = static_cast<LogLevel>(h.level);
+        e.tag.assign(p + at, h.tag_len);
+        at += h.tag_len;
+        e.msg.assign(p + at, h.msg_len);
+        at += h.msg_len;
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
 // A single, function-local-static instance: constructed on first use,
 // never destroyed or reallocated, so no caller ever holds a pointer to a
 // State that init()/reset_for_test() could free out from under it (see
@@ -213,6 +221,9 @@ thread_local bool g_in_sink = false;
 void init(size_t ring_bytes, os::Mem mem) {
     State& s = state();
     std::lock_guard<os::Mutex> lock(s.mutex);
+    // The simulator initializes logging before App::start() does it again;
+    // the lines logged in between must survive that.
+    if (s.ring_storage != nullptr && s.ring_capacity == ring_bytes && s.ring_mem == mem) return;
     s.reinit_ring(ring_bytes, mem, /*full_reset=*/false);
 }
 
@@ -318,8 +329,21 @@ void write(LogLevel level, const char* tag, const char* fmt, ...) {
 
 std::vector<LogEntry> ring_entries() {
     State& s = state();
-    std::lock_guard<os::Mutex> lock(s.mutex);
-    return s.entries();
+    // Only the byte copy happens under the lock; the per-entry strings are
+    // built afterwards, so a subscriber's replay does not hold up loggers.
+    char* raw = nullptr;
+    size_t len = 0;
+    {
+        std::lock_guard<os::Mutex> lock(s.mutex);
+        len = s.ring_len;
+        if (len == 0) return {};
+        raw = static_cast<char*>(os::alloc(len, os::Mem::Large));
+        if (raw == nullptr) return {};
+        s.copy_used(raw);
+    }
+    std::vector<LogEntry> out = decode(raw, len);
+    os::dealloc(raw);
+    return out;
 }
 
 std::string ring_snapshot() {

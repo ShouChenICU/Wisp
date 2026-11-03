@@ -1,8 +1,8 @@
 #pragma once
 
-// ESP-IDF sink for wisp::log: formats each line the same way as the
-// in-memory ring buffer (see wisp/core/log.hpp) and wisp_port_sim's
-// StdoutLogSink -- "<ts_ms> <D|I|W|E> <tag>: <msg>" -- and writes it
+// ESP-IDF sink for wisp::log: formats each line as
+// "<ts_ms> <D|I|W|E> <tag>: <msg>" (the same text as log::ring_snapshot()
+// and wisp_port_sim's StdoutLogSink, with the ring's own ts) and writes it
 // directly to the console (std::printf(), same transport as
 // firmware/main.cpp's boot-report output) rather than through
 // esp_log_write(). See log_esp.cpp for why: esp_log applies its own,

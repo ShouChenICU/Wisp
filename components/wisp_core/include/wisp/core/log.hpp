@@ -63,8 +63,10 @@ namespace log {
 
 // (Re)initializes the logging subsystem with a ring buffer of
 // `ring_bytes`, allocated via os::alloc(ring_bytes, mem), replacing any
-// previous ring (existing sinks and the current level are left as-is;
-// see reset_for_test() to clear those too). Safe to call concurrently
+// previous ring of a different size or memory class (existing sinks and
+// the current level are left as-is; see reset_for_test() to clear those
+// too). Called again with the ring's current size and memory class, it
+// keeps the ring and its lines. Safe to call concurrently
 // with write()/add_sink()/set_level()/ring_snapshot() from other
 // threads/tasks (e.g. other tasks logging during startup, before or
 // during this call) -- those calls are simply serialized against it, not
@@ -94,9 +96,9 @@ void set_level(LogLevel level);
 // the next seq: always into the ring buffer, and (if not currently inside
 // a nested call from a sink) delivered to every registered sink. Messages
 // at or above the current level only; see set_level(). The formatted
-// message is truncated to 255 bytes and the tag to 255 bytes, never
-// inside a UTF-8 character. Prefer the WLOG_D/I/W/E macros below over
-// calling this directly.
+// message is truncated to 255 bytes and the tag to 31 bytes (the copy
+// lives on the caller's stack), never inside a UTF-8 character. Prefer the WLOG_D/I/W/E macros
+// below over calling this directly.
 void write(LogLevel level, const char* tag, const char* fmt, ...)
 #if defined(__GNUC__) || defined(__clang__)
     __attribute__((format(printf, 3, 4)))

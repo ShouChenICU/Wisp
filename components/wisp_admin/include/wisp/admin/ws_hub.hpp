@@ -1,16 +1,16 @@
 #pragma once
 
 // Fan-out of log lines and selected events to the admin WebSocket clients
-// (spec 6.2). Every connection first receives {"t":"hello","boot":<id>},
-// the id of this boot (also /info's "boot"), before anything else. A
+// (spec 6.2). Every connection first receives {"t":"hello","boot_id":<id>},
+// the id of this boot (also /info's "boot_id"), before anything else. A
 // client subscribes by sending {"sub":["log","events"]} (either or both; a
 // later message replaces the set):
 //   - "log": the lines still in the log ring are replayed first, one
 //     {"t":"log","seq","ts","level","tag","msg","replay":true} per line,
 //     then every new line streams as {"t":"log","seq","ts","level","tag",
 //     "msg"}. seq and ts are the log module's own (wisp::LogRecord), so
-//     (boot, seq) names a line exactly: a browser drops any copy it has
-//     already shown, e.g. the replay after a re-subscribe. A message that
+//     (boot_id, seq) names a line exactly: a browser drops any copy it
+//     has already shown, e.g. the replay after a re-subscribe. A message that
 //     contains '\n' is still one line.
 //   - "events": events under net., power., storage. and system. arrive as
 //     {"t":"event","topic","payload"}.

@@ -135,6 +135,54 @@ TEST(Log, SinkSeesTheRingsSeqAndTimestamp) {
     wisp::log::remove_sink(&s);
 }
 
+// Tags are cut to 31 bytes, never inside a character; the sink and the ring
+// agree on the cut.
+TEST(Log, LongTagsAreTruncated) {
+    wisp::log::reset_for_test();
+    wisp::log::init(4096);
+    CaptureSink s;
+    wisp::log::add_sink(&s);
+
+    WLOG_I(std::string(40, 't').c_str(), "ascii");
+    // 30 ASCII bytes then a 3-byte character: a plain cut at 31 would split it.
+    const std::string wide = std::string(30, 'w') + "\xe4\xb8\xad" + "tail";
+    WLOG_I(wide.c_str(), "wide");
+    WLOG_I(std::string(31, 'x').c_str(), "exact");
+
+    const auto ring = wisp::log::ring_entries();
+    ASSERT_EQ(ring.size(), 3u);
+    ASSERT_EQ(s.records.size(), 3u);
+    EXPECT_EQ(ring[0].tag, std::string(31, 't'));
+    EXPECT_EQ(ring[1].tag, std::string(30, 'w'));
+    EXPECT_EQ(ring[2].tag, std::string(31, 'x'));
+    for (size_t i = 0; i < ring.size(); ++i) EXPECT_EQ(s.records[i].tag, ring[i].tag) << i;
+    wisp::log::remove_sink(&s);
+}
+
+// Initializing again with the same size and memory class keeps the ring:
+// the simulator logs before App::start() initializes logging a second time.
+TEST(Log, ReinitWithSameRingKeepsLines) {
+    wisp::log::reset_for_test();
+    wisp::log::init(1024);
+    WLOG_W("t", "early");
+
+    wisp::log::init(1024);
+    WLOG_I("t", "later");
+    auto entries = wisp::log::ring_entries();
+    ASSERT_EQ(entries.size(), 2u);
+    EXPECT_EQ(entries[0].msg, "early");
+    EXPECT_EQ(entries[0].seq, 1u);
+    EXPECT_EQ(entries[1].seq, 2u);
+
+    // A different size replaces the ring; seq keeps counting.
+    wisp::log::init(2048);
+    WLOG_I("t", "resized");
+    entries = wisp::log::ring_entries();
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].msg, "resized");
+    EXPECT_EQ(entries[0].seq, 3u);
+}
+
 // A message containing '\n' is one line: one entry, one seq, and evicting
 // it leaves no fragment behind.
 TEST(Log, MultiLineMessageIsOneEntry) {

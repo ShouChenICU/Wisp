@@ -248,7 +248,7 @@ TEST(WsHub, HelloComesFirst) {
     const std::vector<std::string> frames = c->frames();
     ASSERT_GE(frames.size(), 3u);
     EXPECT_EQ(wisp::from_json(frames[0]).value(),
-              Value(Map{{"t", Value("hello")}, {"boot", Value("00ff00ff00ff00ff")}}));
+              Value(Map{{"t", Value("hello")}, {"boot_id", Value("00ff00ff00ff00ff")}}));
     EXPECT_EQ(c->hellos().size(), 1u);
     EXPECT_EQ(str(wisp::from_json(frames[1]).value(), "t"), "dropped");
 

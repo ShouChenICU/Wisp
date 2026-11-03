@@ -48,7 +48,7 @@ net::HttpResponse info(AdminDeps& deps, const RequestContext& ctx) {
                                             {"name", Value(deps.device_name)},
                                             {"fw", Value(deps.firmware_version)},
                                             {"paired", Value(!ctx.client_id.empty())},
-                                            {"boot", Value(deps.boot_id)},
+                                            {"boot_id", Value(deps.boot_id)},
                                         }));
 }
 

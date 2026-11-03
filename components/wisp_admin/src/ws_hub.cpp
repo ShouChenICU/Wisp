@@ -73,7 +73,7 @@ struct WsHub::Client {
 WsHub::WsHub(core::EventBus& bus, std::string boot_id, size_t max_clients, size_t max_queue,
              size_t max_queue_bytes)
     : bus_(bus),
-      hello_(to_json(Value(Map{{"t", Value("hello")}, {"boot", Value(std::move(boot_id))}}))),
+      hello_(to_json(Value(Map{{"t", Value("hello")}, {"boot_id", Value(std::move(boot_id))}}))),
       max_clients_(max_clients),
       max_queue_(max_queue),
       max_queue_bytes_(max_queue_bytes),
