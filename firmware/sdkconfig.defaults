@@ -1,33 +1,12 @@
-# Wisp firmware defaults for the Waveshare ESP32-S3-Touch-AMOLED-2.16
-# (ESP32-S3R8: 16 MB QIO flash, 8 MB octal PSRAM @ 80 MHz -- see
-# docs/hardware/waveshare_amoled_216.md). Committed (unlike sdkconfig/
-# sdkconfig.old, which idf.py generates and which are gitignored); idf.py
-# set-target/build regenerates the real sdkconfig from this file plus
-# Kconfig defaults.
+# Wisp firmware defaults shared by every board: board-independent settings
+# only. Flash size/mode, PSRAM, console and the partition table belong to the
+# board and live in boards/<board>/sdkconfig.defaults.board (merged in by
+# `idf.py bmgr`). Committed (unlike sdkconfig/sdkconfig.old, which idf.py
+# generates and which are gitignored); idf.py regenerates the real sdkconfig
+# from these files plus Kconfig defaults only when sdkconfig does not exist.
 
 # CPU frequency.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-
-# Flash: QIO, 80 MHz, 16 MB.
-CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
-CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-
-# Custom partition table (firmware/partitions.csv, spec 7.4).
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
-
-# External octal PSRAM, 80 MHz, usable via malloc() (os::alloc(Mem::Large) --
-# see components/wisp_port_esp/os/os_esp.cpp).
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_SPIRAM_USE_MALLOC=y
-
-# Console over USB-Serial-JTAG (no external UART-to-USB bridge on this
-# board -- see docs/hardware/waveshare_amoled_216.md).
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
-CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # LVGL must use wisp_ui's own lv_conf.h (see firmware/CMakeLists.txt's
 # LV_CONF_PATH wiring and AGENTS.md's "LVGL 配置" trap), not LVGL's

@@ -4,11 +4,12 @@
 
 ## 总览
 
-一块板子由三部分组成：
+一块板子由以下几部分组成：
 
 1. **esp_board_manager YAML**（`boards/<板名>/board_info.yaml`、`board_peripherals.yaml`、`board_devices.yaml`）：描述板子型号、总线（I2C/I2S/SPI/GPIO）和 esp_board_manager 已支持的设备（显示、触摸、音频编解码器、SD 卡等）。只负责把芯片接上总线、分配引脚，**不**填写 Wisp 的能力清单。
 2. **`setup_device.c`**（可选，仅当板上有 esp_board_manager 还没有内置工厂函数的设备类型时才需要）：给 bmgr 提供自定义设备的构造入口。
 3. **`board.cpp`**：实现 `wisp::board::create_board()`，返回一个 `wisp::app::Board`。它的 `init()` 把 bmgr 已经建好的设备句柄（屏幕、触摸、音频、SD 卡）包一层 `wisp::hal::Device` 接口，并用 Wisp 自己的驱动（通过 bmgr 暴露的总线）点亮 bmgr 不管的设备（IMU、PMU、RTC、按键等），统一注册进 `DeviceRegistry`。
+4. **`partitions.csv` 与 `sdkconfig.defaults.board`**：本板的分区表和板级 sdkconfig（见下文"分区与板级配置"）。
 
 ## 步骤 1：写 bmgr YAML
 
@@ -56,6 +57,30 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 | `Storage` | `removable`、`fs` |
 
 `Display` 的 `safe_area` 不用自己算——`DeviceRegistry::manifest()` 用 `wisp::hal::safe_rect()` 从 `shape`/`corner_radius`/`width`/`height` 派生，设备只管填 `shape`。缺失或无法识别的 `shape` 按 `circle`（最保守）处理并告警。
+
+## 分区与板级配置
+
+`firmware/sdkconfig.defaults` 只放与板子无关的公共配置。凡是属于某块板子的配置都放在板目录：
+
+- `boards/<板名>/partitions.csv`：本板分区表，也是唯一的一份。
+- `boards/<板名>/sdkconfig.defaults.board`：Flash 大小、模式与频率，PSRAM，控制台，以及
+  `CONFIG_PARTITION_TABLE_CUSTOM=y` 和 `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../boards/<板名>/partitions.csv"`（ESP-IDF 按工程目录 `firmware/` 解析相对路径）。`idf.py bmgr -b <板名>` 会把它合并进生成的 `board_manager.defaults`，优先级高于 `firmware/sdkconfig.defaults`。
+
+sdkconfig 的默认值只在 `firmware/sdkconfig` 不存在时生效。切换板子或修改 `sdkconfig.defaults.board` 后，先删掉 `firmware/sdkconfig`，再执行 `idf.py bmgr` 和 `idf.py build`。
+
+### 分区约定（新板子必须遵守）
+
+代码只按**分区名**查找分区，不依赖偏移和大小。
+
+| 分区名 | 是否必需 | 说明 |
+|---|---|---|
+| `nvs` | 必需 | 配置 |
+| `phy_init` | 必需 | 射频校准 |
+| `assets` | 必需，≥ 1MB | WispPack 资源包 |
+| `storage` | 必需 | LittleFS（`/int`） |
+| `ota_0`、`ota_1`、`otadata` | 可选 | Flash 足够时提供双 OTA 分区；没有时用单个 `factory` 应用分区，固件检测到缺少 OTA 分区就关闭 OTA 功能，只降级运行 |
+
+分区大小由各板自行决定，例如 32MB 的板子可以把多出的空间分给 `storage` 或 `assets`。参考板的分区表见基础 spec 7.4 和 `boards/waveshare_amoled_216/partitions.csv`。
 
 ## 步骤 4：构建
 

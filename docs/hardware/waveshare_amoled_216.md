@@ -7,7 +7,7 @@
 ## 主控与存储
 
 - ESP32-S3R8：16 MB QIO flash，8 MB octal PSRAM（80 MHz）
-- 分区表见 `firmware/partitions.csv`
+- 分区表见 `boards/waveshare_amoled_216/partitions.csv`（Flash、PSRAM、控制台等板级 sdkconfig 见同目录的 `sdkconfig.defaults.board`）
 
 ## 外设与引脚
 

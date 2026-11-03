@@ -504,7 +504,7 @@ StorageStatus status();                        // 各介质在线状态、容量
 - **SD 卡热插拔**：通过 SD 卡检测或周期性探测发现插拔，发布 `storage.sd.inserted` / `storage.sd.removed`。拔出后 SD 上的 `Library` 根从列表中移除，相关写入返回 `ErrorCode::StorageUnavailable`；插回后重新挂载并恢复列表，数据不删除；
 - 模拟器中按 `S` 键切换"SD 卡插入/拔出"，或用 `--no-sd` 启动。
 
-### 7.4 分区表（16MB）
+### 7.4 参考板分区表（Waveshare 2.16，16MB）
 
 | 分区 | 类型 | 偏移 | 大小 | 用途 |
 |---|---|---|---|---|
@@ -517,6 +517,8 @@ StorageStatus status();                        // 各介质在线状态、容量
 | storage | data/littlefs | 0xA20000 | 约 5.9MB（0x5E0000） | LittleFS（`/int`） |
 
 OTA 功能本身不在子项目 1 中实现，只预留双分区。
+
+这张表是参考板 `boards/waveshare_amoled_216/partitions.csv` 的内容，不是所有板子的统一布局。各板的分区表放在各自的板目录，必须遵守的分区约定（按分区名查找、`assets` ≥ 1MB、OTA 分区可选等）见子项目 2 spec（`2026-11-03-connectivity-admin-design.md`）第 3 节。
 
 ---
 

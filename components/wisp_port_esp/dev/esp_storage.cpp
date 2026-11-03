@@ -22,7 +22,8 @@ namespace {
 
 constexpr const char* kTag = "esp_storage";
 
-// Must match firmware/partitions.csv's "storage" partition label. Unlike
+// Must match the "storage" partition label in boards/<board>/partitions.csv
+// (a required partition name -- docs/porting-guide.md). Unlike
 // EspSdStorage's bmgr device name/model (passed in by board.cpp -- see
 // esp_storage.hpp's comment), this is not a board-specific fact: every
 // board using this component mounts the same internal LittleFS partition

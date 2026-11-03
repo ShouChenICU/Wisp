@@ -4,7 +4,7 @@
 //
 //   - EspInternalStorage ("storage.int"/"littlefs", caps removable=false,
 //     fs="littlefs"): mounts the "storage" flash partition (see
-//     firmware/partitions.csv, spec 7.4) with esp_vfs_littlefs_register()
+//     boards/<board>/partitions.csv, docs/porting-guide.md) with esp_vfs_littlefs_register()
 //     directly -- this is *not* a bmgr device (board_devices.yaml has no
 //     fs_littlefs entry): EspInternalStorage::create() calls
 //     esp_vfs_littlefs_register() directly instead of going through
