@@ -423,8 +423,10 @@ export function joinNetwork(target, password, onResult) {
       st = await api('GET', '/wifi', undefined, { timeoutMs: JOIN_POLL_TIMEOUT_MS });
     } catch {
       // A failed poll is not a failed join; the next one may get through.
+      // One hiccup right after the POST, while the device is still on its
+      // old network, must not read as "it left and came back".
       failedPolls++;
-      wentAway = true;
+      if (failedPolls >= JOIN_LOST_POLLS) wentAway = true;
       return;
     } finally {
       polling = false;
