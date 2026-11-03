@@ -146,8 +146,10 @@ uint64_t dir_size_recursive(const std::string& dir) {
             continue;
         }
         std::string full = dir + "/" + name;
+        // stat, not lstat: ESP-IDF's newlib has no lstat, and neither FAT
+        // nor LittleFS has symlinks to tell apart anyway.
         struct stat st;
-        if (lstat(full.c_str(), &st) != 0) {
+        if (stat(full.c_str(), &st) != 0) {
             continue;
         }
         if (S_ISDIR(st.st_mode)) {
