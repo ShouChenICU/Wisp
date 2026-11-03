@@ -2403,6 +2403,97 @@ textarea {
   font-weight: 650;
 }
 
+/* The three kinds are tabs (links: the tab lives in the hash). */
+.model-tabs {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.model-tabs .seg {
+  height: 34px;
+  text-decoration: none;
+}
+
+.model-tabs .count-pill {
+  padding: 0 7px;
+}
+
+@media (max-width: 479.98px) {
+  .model-tabs {
+    width: 100%;
+  }
+
+  .model-tabs .seg {
+    flex: 1;
+    justify-content: center;
+    padding: 0 6px;
+  }
+
+  .model-tabs .count-pill {
+    display: none;
+  }
+}
+
+.model-desc {
+  margin: calc(-1 * var(--gap-xs)) 0 var(--gap-md);
+}
+
+.model-empty {
+  padding: var(--gap-lg) var(--gap);
+}
+
+/* A row has up to four actions; on a phone they wrap rather than push the
+   row (a grid item) wider than its card. */
+.model-row {
+  min-width: 0;
+}
+
+.model-row .row-actions {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+}
+
+.model-row .row-sub {
+  overflow-wrap: anywhere;
+}
+
+.model-row .row-sub .icon {
+  vertical-align: -1px;
+}
+
+.model-row .model-result,
+.model-row .model-testing {
+  margin-top: var(--gap-sm);
+}
+
+.model-form {
+  margin: var(--gap-md) 0 var(--gap-sm);
+  padding: var(--gap);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  animation: reveal var(--dur) var(--ease);
+}
+
+.model-new .model-form {
+  margin-top: 0;
+}
+
+.model-form-title {
+  font-weight: 600;
+}
+
+.model-key-source {
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.model-count {
+  margin-top: var(--gap-md);
+  font-size: var(--fs-xs);
+}
+
 /* System page: a titled list card whose rows can grow a status line. */
 .maint-card .card-head {
   margin: 0;

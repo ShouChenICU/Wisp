@@ -27,23 +27,26 @@ import { OverviewPage } from './pages/overview.js';
 import { DevicesPage } from './pages/devices.js';
 import { LogsPage } from './pages/logs.js';
 import { NetworkPage } from './pages/network.js';
-import { ModelPage } from './pages/model.js';
+import { ModelsPage } from './pages/models.js';
 import { SystemPage, confirmLogout } from './pages/system.js';
 
 route('/pair', PairPage);
 route('/overview', OverviewPage);
 route('/devices', DevicesPage);
 route('/network', NetworkPage);
-route('/model', ModelPage);
+route('/models', ModelsPage);
 route('/system', SystemPage);
 route('/logs', LogsPage);
 
-/** Navigation entries; `wide` ones only appear in the sidebar. */
+/**
+ * Navigation entries; `wide` ones only appear in the sidebar. `href` (a
+ * path) is where the link goes when that is not the page's own path.
+ */
 const NAV = [
   { path: '/overview', label: 'nav.overview', icon: IconOverview },
   { path: '/devices', label: 'nav.devices', icon: IconChip },
   { path: '/network', label: 'nav.network', icon: IconWifi },
-  { path: '/model', label: 'nav.model', icon: IconModel },
+  { path: '/models', href: '/models/llm', label: 'nav.model', icon: IconModel },
   { path: '/system', label: 'nav.system', icon: IconSystem },
   { path: '/logs', label: 'nav.logs', icon: IconLogs, wide: true },
 ];
@@ -57,10 +60,12 @@ function App() {
   // Subscribing here re-renders the whole tree on a language switch.
   const lang = useLang();
   const entry = lookup(path);
+  // The page's own path: "#/models/asr" is the models page.
+  const base = entry ? entry.path : path;
 
   useEffect(() => {
     if (!entry) navigate(DEFAULT_PATH);
-    document.title = path === '/pair' ? `${t('nav.pair')} · Wisp` : `${title(path)} · ${t('app.title')}`;
+    document.title = path === '/pair' ? `${t('nav.pair')} · Wisp` : `${title(base)} · ${t('app.title')}`;
   }, [path, lang]);
 
   if (!entry) return null;
@@ -68,7 +73,7 @@ function App() {
   if (path === '/pair') {
     return html`<${PairPage} /><${Toaster} />`;
   }
-  return html`<${Shell} path=${path}><${Page} key=${path} /></${Shell}><${Toaster} />`;
+  return html`<${Shell} path=${base}><${Page} key=${base} /></${Shell}><${Toaster} />`;
 }
 
 function Shell({ path, children }) {
@@ -112,7 +117,7 @@ function Shell({ path, children }) {
         ${NAV.map(
           (n) => html`<a
             key=${n.path}
-            href=${'#' + n.path}
+            href=${'#' + (n.href || n.path)}
             class=${path === n.path ? 'side-link is-active' : 'side-link'}
             aria-current=${path === n.path ? 'page' : undefined}
           >
@@ -154,7 +159,7 @@ function Shell({ path, children }) {
       ${NAV.filter((n) => !n.wide).map(
         (n) => html`<a
           key=${n.path}
-          href=${'#' + n.path}
+          href=${'#' + (n.href || n.path)}
           class=${tab === n.path ? 'tab is-active' : 'tab'}
           aria-current=${path === n.path ? 'page' : undefined}
         >

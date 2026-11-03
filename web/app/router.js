@@ -1,5 +1,7 @@
 // Hash-based routing ("#/overview"): the device serves one index.html, and
-// a hash never reaches the server, so every page works from a bookmark.
+// a hash never reaches the server, so every page works from a bookmark. A
+// page may keep its own state in further segments ("#/models/asr"): those
+// paths resolve to the page registered for their first segment.
 
 import { useEffect, useState } from '../vendor/htm-preact-3.1.1.mjs';
 
@@ -27,7 +29,7 @@ export function route(path, component) {
 
 /** @returns {RouteEntry|undefined} */
 export function lookup(path) {
-  return routes.get(path);
+  return routes.get(path) || routes.get('/' + path.split('/')[1]);
 }
 
 /** The current route path; "/" and an empty hash both mean the default. */
