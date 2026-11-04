@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -28,21 +29,27 @@
 namespace wisp::scene {
 
 // A caller of open(), close(), reload() waiting for the scene task.
-// finish() may be called more than once; the first result counts.
+// finish() may be called more than once; the first result counts. `then`
+// (close_async()) is called with that result, on the thread that finished
+// it, after the waiter has been released.
 struct SceneWaiter {
     os::Semaphore sem{1, 0};
     os::Mutex mu;
     bool done = false;
     Result<void> result = Result<void>::ok();
+    std::function<void(Result<void>)> then;
 
     void finish(Result<void> r) {
+        std::function<void(Result<void>)> call;
         {
             std::lock_guard<os::Mutex> lock(mu);
             if (done) return;
             done = true;
-            result = std::move(r);
+            result = r;
+            call = std::move(then);
         }
         sem.give();
+        if (call) call(std::move(r));
     }
 };
 

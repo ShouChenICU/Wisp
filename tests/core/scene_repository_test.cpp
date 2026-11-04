@@ -491,14 +491,22 @@ TEST(SceneRepository, LogsHostChanges) {
 }
 
 // Installs arrive on HTTP server threads while the storage worker loads and
-// removes scenes: every method serializes on the repository's own lock.
+// removes scenes: every method serializes on the repository's own lock. Two
+// installs of the same scene at once do not interleave: the later one is
+// refused with Busy while the first runs.
 TEST(SceneRepository, ConcurrentCallsAreSerialized) {
     Fixture fx;
     ASSERT_TRUE(fx.install(todo_files("1.0.0")));
     std::atomic<int> failures{0};
+    std::atomic<int> installed{0};
     auto installer = [&](const char* version) {
         for (int i = 0; i < 15; ++i) {
-            if (!fx.install(todo_files(version))) ++failures;
+            auto r = fx.install(todo_files(version));
+            if (r) {
+                ++installed;
+            } else if (r.error().code != ErrorCode::Busy) {
+                ++failures;
+            }
         }
     };
     auto reader = [&] {
@@ -515,6 +523,7 @@ TEST(SceneRepository, ConcurrentCallsAreSerialized) {
     b.join();
     c.join();
     EXPECT_EQ(failures.load(), 0);
+    EXPECT_GT(installed.load(), 0);
 }
 
 // The checker may take as long as it likes (it waits for the scene task),
@@ -530,4 +539,68 @@ TEST(SceneRepository, CheckerRunsOutsideTheLock) {
     });
     ASSERT_TRUE(r) << r.error().message;
     EXPECT_TRUE(listed);
+}
+
+// installing(id) holds from the moment the upload names its scene until the
+// install returns, failed or not; a second install of the same id meanwhile
+// is refused rather than interleaved with the first.
+TEST(SceneRepository, InstallingMarksTheIdUntilItReturns) {
+    Fixture fx;
+    EXPECT_FALSE(fx.repo->installing("todo"));
+    std::vector<uint8_t> zip = zip_of(todo_files("1.0.0"));
+    bool during = false;
+    Result<SceneInfo> nested = Result<SceneInfo>::err(ErrorCode::IoError, "not run");
+    auto r = fx.repo->install(zip, [&](std::span<const SourceFile>) {
+        during = fx.repo->installing("todo");
+        nested = fx.repo->install(zip, accept_all);
+        return Result<void>::ok();
+    });
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_TRUE(during);
+    ASSERT_FALSE(nested);
+    EXPECT_EQ(nested.error().code, ErrorCode::Busy);
+    EXPECT_FALSE(fx.repo->installing("todo"));
+
+    // A refused package leaves no mark behind.
+    auto refused = fx.repo->install(zip, [](std::span<const SourceFile>) {
+        return Result<void>::err(ErrorCode::InvalidArgument, "main.lua:1: no");
+    });
+    EXPECT_FALSE(refused);
+    EXPECT_FALSE(fx.repo->installing("todo"));
+    EXPECT_FALSE(fx.repo->installing("other"));
+}
+
+// What a delete finds: the package and its name, and data left behind once
+// the package itself is gone.
+TEST(SceneRepository, RemovalSeesDataLeftBehind) {
+    Fixture fx;
+    EXPECT_EQ(fx.repo->removal("todo", true).error().code, ErrorCode::NotFound);
+    ASSERT_TRUE(fx.install(todo_files()));
+    auto r = fx.repo->removal("todo", false);
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r.value().name, "待办");
+    EXPECT_TRUE(r.value().package);
+    EXPECT_FALSE(r.value().data);
+    ASSERT_TRUE(fx.storage->write_atomic(fx.repo->data_dir("todo") + "/kv.log", as_bytes("kv\n")));
+    EXPECT_TRUE(fx.repo->removal("todo", false).value().data);
+
+    ASSERT_TRUE(fx.repo->remove("todo", false));
+    EXPECT_EQ(fx.repo->info("todo").error().code, ErrorCode::NotFound);
+    // Only the data is left: found when it is to go too.
+    EXPECT_EQ(fx.repo->removal("todo", false).error().code, ErrorCode::NotFound);
+    r = fx.repo->removal("todo", true);
+    ASSERT_TRUE(r);
+    EXPECT_FALSE(r.value().package);
+    EXPECT_TRUE(r.value().data);
+    EXPECT_EQ(r.value().name, "todo");
+    ASSERT_TRUE(fx.repo->remove("todo", true));
+    EXPECT_EQ(fx.repo->removal("todo", true).error().code, ErrorCode::NotFound);
+    EXPECT_EQ(fx.repo->removal("Bad", true).error().code, ErrorCode::InvalidArgument);
+
+    // A broken manifest is still a package, named by its id.
+    ASSERT_TRUE(fx.install(todo_files()));
+    std::ofstream(fx.root() / "todo" / "scene.json") << "{not json";
+    r = fx.repo->removal("todo", false);
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r.value().name, "todo");
 }

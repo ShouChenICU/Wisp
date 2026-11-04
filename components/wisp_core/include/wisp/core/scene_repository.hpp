@@ -56,6 +56,14 @@ struct SceneInfo {
     uint64_t data_bytes = 0;
 };
 
+// What deleting a scene would remove (SceneRepository::removal()).
+struct SceneRemoval {
+    // The manifest's name, or the id when there is no valid manifest.
+    std::string name;
+    bool package = false;  // scene.json is there, valid or not
+    bool data = false;     // the scene has a data directory
+};
+
 // One Lua source handed to a SourceChecker. Both views point into the
 // package being installed and are valid only during the call.
 struct SourceFile {
@@ -115,8 +123,8 @@ public:
     // `check` over its .lua files, then `before_replace` with the new
     // manifest (both without the lock held, so either may wait), then
     // replaces <id> keeping its data. An error from either stops the
-    // install. Unsupported in dev mode. Nothing is written for a rejected
-    // package.
+    // install. Unsupported in dev mode; Busy while another install of the
+    // same id runs. Nothing is written for a rejected package.
     Result<SceneInfo> install(
         std::span<const uint8_t> zip, const SourceChecker& check,
         const std::function<Result<void>(const SceneManifest&)>& before_replace = {});
@@ -128,6 +136,20 @@ public:
     // install of the same id finds it again. NotFound if there is nothing to
     // remove; Unsupported in dev mode.
     Result<void> remove(std::string_view id, bool with_data);
+
+    // Whether an install() of `id` is under way: from the moment its
+    // manifest has been read until it returns, whatever the outcome. The
+    // scene runtime refuses to open such a scene, so nothing runs on, or
+    // writes into, a package that is being replaced. Takes only a short
+    // lock of its own, never the repository's: safe on the UI thread and
+    // the scene task.
+    bool installing(std::string_view id) const;
+
+    // What remove(id, with_data) would find: NotFound exactly when remove()
+    // would answer NotFound (no package, and no data or !with_data), so
+    // data left behind by a package that is gone can still be deleted.
+    // InvalidArgument for a malformed id.
+    Result<SceneRemoval> removal(std::string_view id, bool with_data);
 
     // <data_root>/<id>/data
     std::string data_dir(std::string_view id) const;
@@ -148,6 +170,9 @@ private:
     StorageManager& storage_;
     SceneRepoConfig config_;
     os::Mutex mutex_;
+    // Guards installing_ only, so installing() never waits behind file work.
+    mutable os::Mutex marks_mutex_;
+    std::vector<std::string> installing_;
 };
 
 }  // namespace wisp::core

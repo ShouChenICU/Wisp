@@ -219,6 +219,8 @@ Result<void> SceneRuntime::request(os::LargeUnique<SceneMessage> m,
 }
 
 Result<void> SceneRuntime::open(const std::string& id, Value args) {
+    if (deps_.repo.installing(id))
+        return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being installed");
     auto waiter = std::make_shared<SceneWaiter>();
     return request(make_message(id, 0, msg::Load{std::move(args), waiter}), waiter);
 }
@@ -231,6 +233,14 @@ Result<void> SceneRuntime::close(const std::string& id) {
 Result<void> SceneRuntime::reload(const std::string& id) {
     auto waiter = std::make_shared<SceneWaiter>();
     return request(make_message(id, 0, msg::Reload{false, waiter}), waiter);
+}
+
+void SceneRuntime::close_async(const std::string& id, std::function<void(Result<void>)> done) {
+    auto waiter = std::make_shared<SceneWaiter>();
+    waiter->then = std::move(done);
+    // A message that cannot be queued is failed through the waiter: `done`
+    // still runs, with Busy.
+    push(make_message(id, 0, msg::Close{waiter}), 0);
 }
 
 void SceneRuntime::on_installed(const std::string& id) {
@@ -394,8 +404,8 @@ void SceneRuntime::handle(SceneMessage& m) {
         // the gesture for one instance.
         if (m.instance == 0 ? (fg_ && fg_->id == m.scene_id) : target(m) != nullptr)
             close_foreground(b->done);
-        else if (b->done)
-            b->done->finish(Result<void>::ok());
+        else
+            finish_after_queued_io(b->done);
     } else if (auto* b = std::get_if<msg::Reload>(&body)) {
         const bool in_front = fg_ && fg_->id == m.scene_id;
         if (b->if_foreground && !in_front) {
@@ -512,6 +522,14 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     }
     loading_ = 0;
     const std::string& id = m.scene_id;
+    if (open.error.code == ErrorCode::Ok && deps_.repo.installing(id)) {
+        // Loaded before an install of it began: the package and the data
+        // directory are about to be replaced under it.
+        WLOG_W(kTag, "%s: not opened: its package is being installed", id.c_str());
+        if (open.store) open.store->close();
+        done(Result<void>::err(ErrorCode::Busy, "scene " + id + " is being installed"));
+        return;
+    }
     if (open.error.code != ErrorCode::Ok) {
         if (open.error.code == ErrorCode::NotFound) {
             WLOG_W(kTag, "%s: no such scene", id.c_str());
@@ -683,8 +701,10 @@ void SceneRuntime::close_foreground(std::shared_ptr<SceneWaiter> done) {
         });
         f.store->close();
         f.store.reset();
-    } else if (done) {
-        done->finish(Result<void>::ok());
+    } else {
+        // Faulted: its store was flushed and closed then, and that flush
+        // may still be queued.
+        finish_after_queued_io(std::move(done));
     }
     ui_instance_.store(0);
     patches_.clear();
@@ -699,6 +719,14 @@ void SceneRuntime::close_foreground(std::shared_ptr<SceneWaiter> done) {
         publish(f.id, "stopped");
     }
     fg_.reset();
+}
+
+void SceneRuntime::finish_after_queued_io(std::shared_ptr<SceneWaiter> done) {
+    if (!done) return;
+    // The worker runs jobs in order: this one runs after every flush the
+    // scene queued before, so the caller may then move or delete its data.
+    if (!deps_.worker.submit([done] { done->finish(Result<void>::ok()); }))
+        done->finish(Result<void>::err(ErrorCode::Busy, "storage worker busy"));
 }
 
 void SceneRuntime::hide_scene() {

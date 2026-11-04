@@ -10,6 +10,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -33,6 +35,7 @@
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/core/zip.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/ui/strings.hpp"
@@ -228,7 +231,8 @@ TEST_F(SceneRuntimeTest, TimeoutFaultsScene) {
     ASSERT_TRUE(wait_until([&] { return rt->status("spin").state == SceneState::Error; }, 2000));
     EXPECT_NE(rt->status("spin").error.find("execution exceeded 200 ms"), std::string::npos)
         << rt->status("spin").error;
-    EXPECT_TRUE(log_has("scene.spin", "slow message event"));
+    // Logged after the handler returns, which is after the state flips.
+    EXPECT_TRUE(wait_until([&] { return log_has("scene.spin", "slow message event"); }, 1000));
 }
 
 TEST_F(SceneRuntimeTest, BindErrorDuringFlushShowsPanelWithoutPartialPatches) {
@@ -532,6 +536,151 @@ TEST_F(SceneRuntimeTest, OnInstalledReloadsOrPublishesStopped) {
     EXPECT_TRUE(wait_label("v2"));
     EXPECT_EQ(scene_log("a"), (std::vector<std::string>{"v1", "v2"}));
     EXPECT_EQ(rt->status("a").state, SceneState::Running);
+}
+
+// A package of `id` as an upload would bring it.
+wisp::os::LargeBuffer package_zip(const std::string& id, const std::string& main_lua) {
+    wisp::core::ZipWriter w;
+    auto add = [&](const std::string& path, const std::string& body) {
+        w.add(path,
+              std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(body.data()), body.size()));
+    };
+    add("scene.json", manifest(id));
+    add("main.lua", main_lua);
+    return w.finish();
+}
+
+// Holds the storage worker until release() (or destruction).
+class WorkerGate {
+public:
+    explicit WorkerGate(wisp::core::StorageWorker& worker) {
+        EXPECT_TRUE(worker.submit([f = released_.get_future().share()] { f.wait(); }));
+    }
+    ~WorkerGate() { release(); }
+    void release() {
+        if (!done_) released_.set_value();
+        done_ = true;
+    }
+
+private:
+    std::promise<void> released_;
+    bool done_ = false;
+};
+
+// Spec 6.3 and install_scene(): while a package is being replaced, an open
+// of the same scene is refused at once, and one already on its way (its
+// load queued before the install began) is dropped when it arrives, so no
+// scene runs on a package that is being swapped.
+TEST_F(SceneRuntimeTest, OpenIsBusyWhileItsPackageIsBeingInstalled) {
+    start();
+    install("todo", "return ui.screen { ui.label { text = 'v0' } }");
+
+    std::promise<void> checking;
+    std::promise<void> finish_check;
+    std::shared_future<void> finish = finish_check.get_future().share();
+    // An open queued before the install, held in the worker until the
+    // install has begun.
+    auto gate = std::make_unique<WorkerGate>(worker);
+    auto early = std::async(std::launch::async, [&] { return rt->open("todo"); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    wisp::os::LargeBuffer zip =
+        package_zip("todo", "return ui.screen { ui.label { text = 'v1' } }");
+    auto installing = std::async(std::launch::async, [&] {
+        return repo->install(zip.span(), [&](std::span<const SourceFile>) {
+            checking.set_value();
+            finish.wait();
+            return wisp::Result<void>::ok();
+        });
+    });
+    checking.get_future().wait();
+    EXPECT_TRUE(repo->installing("todo"));
+
+    auto refused = rt->open("todo");
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().code, ErrorCode::Busy);
+
+    gate->release();
+    auto late = early.get();
+    ASSERT_FALSE(late);
+    EXPECT_EQ(late.error().code, ErrorCode::Busy);
+    EXPECT_FALSE(rt->foreground().has_value());
+
+    finish_check.set_value();
+    ASSERT_TRUE(installing.get());
+    EXPECT_FALSE(repo->installing("todo"));
+    ASSERT_TRUE(rt->open("todo"));
+    EXPECT_TRUE(wait_label("v1"));
+}
+
+// A faulted scene's store was flushed and closed when it faulted, but that
+// flush may still be queued: closing it (from its error panel, or before an
+// install moves its data) waits for it like any final flush.
+TEST_F(SceneRuntimeTest, CloseOfAFaultedSceneWaitsForItsLastFlush) {
+    start();
+    install("bad", R"(return ui.screen {
+  ui.button { ref = "go", text = "go", on_click = function()
+    wisp.store.set("k", 7)
+    error("boom")
+  end },
+}
+)");
+    ASSERT_TRUE(rt->open("bad"));
+    ASSERT_TRUE(wait_label("go"));
+    WorkerGate gate(worker);
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(wait_until([&] { return rt->status("bad").state == SceneState::Error; }, 2000));
+
+    auto closing = std::async(std::launch::async, [&] { return rt->close("bad"); });
+    EXPECT_EQ(closing.wait_for(std::chrono::milliseconds(200)), std::future_status::timeout);
+    gate.release();
+    ASSERT_TRUE(closing.get());
+    std::ifstream kv(repo->data_dir("bad") + "/kv.log");
+    const std::string text((std::istreambuf_iterator<char>(kv)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find('7'), std::string::npos) << text;
+
+    // A scene that is not in the foreground: the same wait, for whatever
+    // file work is queued.
+    WorkerGate again(worker);
+    auto other = std::async(std::launch::async, [&] { return rt->close("bad"); });
+    EXPECT_EQ(other.wait_for(std::chrono::milliseconds(200)), std::future_status::timeout);
+    again.release();
+    EXPECT_TRUE(other.get());
+}
+
+// close_async(): never waits, and its callback runs once the final flush is
+// on disk -- what deleting a scene from its confirmation dialog (on the UI
+// thread) builds on.
+TEST_F(SceneRuntimeTest, CloseAsyncCallsBackAfterTheFinalFlush) {
+    start();
+    install("keep", R"(
+scene.on_close = function() wisp.store.set("k", 42) end
+return ui.screen{ui.label{text = "keep"}}
+)");
+    ASSERT_TRUE(rt->open("keep"));
+    WorkerGate gate(worker);
+    std::promise<std::string> flushed;
+    on_ui([&] {
+        rt->close_async("keep", [&](wisp::Result<void> r) {
+            std::ifstream kv(repo->data_dir("keep") + "/kv.log");
+            std::string text((std::istreambuf_iterator<char>(kv)),
+                             std::istreambuf_iterator<char>());
+            flushed.set_value(r ? text : "error: " + r.error().message);
+        });
+    });
+    auto result = flushed.get_future();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(200)), std::future_status::timeout);
+    gate.release();
+    ASSERT_EQ(result.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_NE(result.get().find("42"), std::string::npos);
+    EXPECT_TRUE(wait_until([&] { return !rt->foreground().has_value(); }, 1000));
+
+    // Nothing to close: still called back.
+    std::promise<bool> idle;
+    rt->close_async("nothing", [&](wisp::Result<void> r) { idle.set_value(r.is_ok()); });
+    auto idle_result = idle.get_future();
+    ASSERT_EQ(idle_result.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_TRUE(idle_result.get());
 }
 
 }  // namespace

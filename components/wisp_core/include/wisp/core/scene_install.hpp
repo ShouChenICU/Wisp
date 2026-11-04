@@ -14,11 +14,15 @@
 namespace wisp::core {
 
 // Compiles the package's sources through host.check_sources(), then
-// replaces the package keeping its data. A scene that is running is closed
-// before the replace and opened again after it (whether or not the replace
-// succeeded; a failed reopen is logged under "scene.<id>" and leaves the
-// new package installed); otherwise host.on_installed() is told. A failed
-// close stops the install with that error.
+// replaces the package keeping its data. Before the replace the scene is
+// closed whatever its state (host.close() returns once its last store
+// flush is on disk); one that was running is opened again after it
+// (whether or not the replace succeeded; a failed reopen is logged under
+// "scene.<id>" and leaves the new package installed), otherwise
+// host.on_installed() is told. A failed close (Timeout, Busy) stops the
+// install before anything is replaced, with that code and a message
+// saying the scene did not close. While this runs, SceneRepository::
+// installing() is true for the id, and the host refuses to open it.
 // Blocks for as long as the check and the host's calls take, so it must not
 // run on the UI thread, the scene task or the storage worker.
 Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,

@@ -1,5 +1,6 @@
 #include "wisp/core/scene_repository.hpp"
 
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -357,6 +358,25 @@ Result<SceneInfo> SceneRepository::install(
     const SceneManifest& manifest = parsed.value();
     const std::string& id = manifest.id;
 
+    // From here until this install returns, opens of `id` are refused
+    // (installing()), and so is a second install of it.
+    {
+        std::lock_guard<os::Mutex> lock(marks_mutex_);
+        if (std::find(installing_.begin(), installing_.end(), id) != installing_.end()) {
+            return R::err(ErrorCode::Busy, "scene " + id + " is already being installed");
+        }
+        installing_.push_back(id);
+    }
+    struct Unmark {
+        SceneRepository& repo;
+        const std::string& id;
+        ~Unmark() {
+            std::lock_guard<os::Mutex> lock(repo.marks_mutex_);
+            auto it = std::find(repo.installing_.begin(), repo.installing_.end(), id);
+            if (it != repo.installing_.end()) repo.installing_.erase(it);
+        }
+    } unmark{*this, id};
+
     // Everything is validated, read and compiled in memory first, so a
     // rejected package never costs a flash write.
     bool has_entry = false;
@@ -583,6 +603,46 @@ Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id, bool wi
     os::LargeBuffer out = writer.finish();
     if (!out.ok()) {
         return R::err(ErrorCode::NoMemory, "no memory for the exported zip");
+    }
+    return R::ok(std::move(out));
+}
+
+bool SceneRepository::installing(std::string_view id) const {
+    std::lock_guard<os::Mutex> lock(marks_mutex_);
+    return std::find(installing_.begin(), installing_.end(), id) != installing_.end();
+}
+
+Result<SceneRemoval> SceneRepository::removal(std::string_view id_view, bool with_data) {
+    using R = Result<SceneRemoval>;
+    if (!valid_scene_id(id_view)) {
+        return R::err(ErrorCode::InvalidArgument, "invalid scene id: " + std::string(id_view));
+    }
+    const std::string id(id_view);
+    std::lock_guard<os::Mutex> lock(mutex_);
+    SceneRemoval out;
+    // Read the way remove() reads it: a package whose scene.json no longer
+    // validates is still installed (and named by its id).
+    Result<SceneManifest> m = read_manifest(id);
+    if (m) {
+        out.package = true;
+        out.name = m.value().name;
+    } else if (m.error().code == ErrorCode::InvalidArgument) {
+        out.package = true;
+        out.name = id;
+    } else if (m.error().code != ErrorCode::NotFound) {
+        return R::err(m.error().code, m.error().message);
+    } else {
+        out.name = id;
+    }
+    for (const std::string& dir : {code_dir(id) + "/data", data_dir(id)}) {
+        Result<Kind> kind = probe(storage_, dir);
+        if (!kind) {
+            return R::err(kind.error().code, kind.error().message);
+        }
+        out.data = out.data || kind.value() != Kind::Missing;
+    }
+    if (!out.package && !(with_data && out.data)) {
+        return R::err(ErrorCode::NotFound, "scene not installed: " + id);
     }
     return R::ok(std::move(out));
 }

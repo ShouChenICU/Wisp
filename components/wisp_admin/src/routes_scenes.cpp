@@ -199,14 +199,14 @@ net::HttpResponse delete_scene(AdminDeps& deps, const RequestContext& ctx) {
     std::optional<std::string> id = scene_id(ctx, refusal);
     if (!id) return refusal;
     if (deps.scenes->dev()) return dev_mode();
-    // A package whose scene.json no longer validates is still installed,
-    // and deleting it is the way out (SceneRepository::remove() takes it).
-    auto info = deps.scenes->info(*id);
-    if (!info && info.error().code != ErrorCode::InvalidArgument) {
-        return service_error(info.error());
-    }
+    // 404 exactly when there is nothing to delete; a package whose
+    // scene.json no longer validates, or data left behind by one that is
+    // gone (with data=1), is still something.
+    const bool data = with_data(ctx);
+    auto removal = deps.scenes->removal(*id, data);
+    if (!removal) return service_error(removal.error());
     if (!deps.request_scene_delete) return unavailable();
-    Result<void> r = deps.request_scene_delete(*id, with_data(ctx));
+    Result<void> r = deps.request_scene_delete(*id, data);
     if (!r) {
         if (r.error().code == ErrorCode::Busy) {
             return net::HttpResponse::error(409, "busy", "the device is showing another dialog");

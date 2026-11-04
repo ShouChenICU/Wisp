@@ -358,7 +358,8 @@ TEST(AdminScenes, UploadStreamsAndInstalls) {
     EXPECT_EQ(at(v, "hosts"), Value(wisp::List{Value("api.example.com")}));
     EXPECT_EQ(at(v, "state"), Value("stopped"));
     EXPECT_EQ(fx.host.checks, 1);
-    EXPECT_EQ(fx.host.log(), std::vector<std::string>{"installed todo"});
+    // install_scene() closes the scene before every replace, running or not.
+    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"close todo", "installed todo"}));
     EXPECT_TRUE(fx.repo->info("todo"));
 }
 
@@ -462,7 +463,8 @@ TEST(AdminScenes, ReuploadKeepsData) {
     EXPECT_EQ(at(v, "version"), Value("1.1.0"));
     EXPECT_GT(at(v, "data_bytes").as_int(), 0);
     EXPECT_TRUE(fs::exists(data));
-    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"installed todo", "installed todo"}));
+    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"close todo", "installed todo", "close todo",
+                                                       "installed todo"}));
 }
 
 TEST(AdminScenes, ExportZip) {
@@ -558,8 +560,8 @@ TEST(AdminScenes, UploadOverARunningSceneClosesAndReopensIt) {
     HttpResponse res = fx.upload(zip_of(todo_files("1.1.0")));
     ASSERT_EQ(res.status, 201) << res.body;
     EXPECT_EQ(at(body_json(res), "state"), Value("running"));
-    EXPECT_EQ(fx.host.log(),
-              (std::vector<std::string>{"installed todo", "open todo", "close todo", "open todo"}));
+    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"close todo", "installed todo", "open todo",
+                                                       "close todo", "open todo"}));
 
     // A scene that cannot be closed is not replaced.
     fx.host.fail = wisp::Error{ErrorCode::Busy, "scene queue full"};

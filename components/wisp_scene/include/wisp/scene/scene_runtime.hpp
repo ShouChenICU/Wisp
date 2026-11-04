@@ -198,14 +198,24 @@ public:
 
     // SceneHost. open(), close() and reload() wait until the scene task
     // has done the work (at most 10 s, then Timeout) -- for close(), until
-    // the scene's final store flush has run -- except on the UI
-    // thread, the scene task and the storage worker, where they only queue
-    // it and return Ok (failures are logged and published). Busy when the
-    // runtime is not running or its queue stays full.
+    // every store flush the scene queued has run, its final one and, for a
+    // scene that faulted or is not in the foreground, any still queued from
+    // before -- except on the UI thread, the scene task and the storage
+    // worker, where they only queue it and return Ok (failures are logged
+    // and published). Busy when the runtime is not running or its queue
+    // stays full. open() is also Busy, at once, while
+    // SceneRepository::installing(id) (spec 6.3: the package is being
+    // replaced); an open that was already on its way when the install
+    // began is dropped the same way when its load arrives.
     Result<void> open(const std::string& id, Value args = {}) override;
     Result<void> close(const std::string& id) override;
     Result<void> reload(const std::string& id) override;
     core::SceneStatus status(const std::string& id) const override;
+    // close() without waiting, from any thread: `done` runs once close()
+    // would have returned (on the storage worker or the scene task), or at
+    // once with Busy if the request could not be queued. It must be quick
+    // and must not wait for the scene task.
+    void close_async(const std::string& id, std::function<void(Result<void>)> done);
     // Busy when the runtime is not running, or when called on the UI
     // thread or the storage worker (neither may wait); Timeout after 10 s.
     Result<void> check_sources(std::span<const core::SourceFile> files) override;
@@ -249,6 +259,9 @@ private:
     // results that come back as HttpDone messages for this instance.
     void wire_http(Foreground& f);
     void close_foreground(std::shared_ptr<SceneWaiter> done = nullptr);
+    // Finishes `done` from a worker job queued now, behind every flush
+    // queued before it (Busy if the worker takes no job).
+    void finish_after_queued_io(std::shared_ptr<SceneWaiter> done);
     // Runs one step of the running scene; on an error the scene faults.
     // Returns false if it did.
     bool step(const std::optional<ScriptError>& err);
