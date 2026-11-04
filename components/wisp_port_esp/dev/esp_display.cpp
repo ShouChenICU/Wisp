@@ -17,9 +17,9 @@ namespace {
 
 constexpr const char* kTag = "esp_display";
 
-// Upper bound on one flush()'s wait for the color-transfer-done callback.
-// A full 480x480 RGB565 frame at 40 MHz QSPI takes ~12 ms, so this only
-// trips if the panel IO is genuinely stuck.
+// Upper bound on one wait for the color-transfer-done callback. A full
+// 480x480 RGB565 frame at 40 MHz QSPI takes ~26 ms on the wire, so this
+// only trips if the panel IO is genuinely stuck.
 constexpr uint32_t kFlushTimeoutMs = 250;
 
 // Standard MIPI DCS commands used by set_brightness() and, with
@@ -40,12 +40,6 @@ TickType_t ms_to_ticks(uint32_t ms) {
     // Round up so a short timeout never becomes a zero-tick (non-blocking)
     // wait.
     return static_cast<TickType_t>((static_cast<uint64_t>(ms) * configTICK_RATE_HZ + 999) / 1000);
-}
-
-void swap_bytes(uint16_t* px, size_t count) {
-    for (size_t i = 0; i < count; ++i) {
-        px[i] = static_cast<uint16_t>((px[i] << 8) | (px[i] >> 8));
-    }
 }
 
 }  // namespace
@@ -91,6 +85,7 @@ EspDisplay::EspDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t i
         {"panel", wisp::Value(config_.panel)},
         {"brightness", true},
         {"area_align", config_.area_align},
+        {"rgb565_be", config_.rgb565_be},
     };
 }
 
@@ -118,6 +113,14 @@ bool IRAM_ATTR EspDisplay::on_color_trans_done(esp_lcd_panel_io_handle_t /*io*/,
 }
 
 Result<void> EspDisplay::flush(const wisp::hal::Area& area, const uint16_t* rgb565) {
+    auto r = flush_async(area, rgb565);
+    if (!r) {
+        return r;
+    }
+    return wait_flush();
+}
+
+Result<void> EspDisplay::flush_async(const wisp::hal::Area& area, const uint16_t* rgb565) {
     assert_owner_thread();
     if (rgb565 == nullptr || area.x1 > area.x2 || area.y1 > area.y2 || area.x1 < 0 || area.y1 < 0 ||
         area.x2 >= config_.width || area.y2 >= config_.height) {
@@ -125,48 +128,41 @@ Result<void> EspDisplay::flush(const wisp::hal::Area& area, const uint16_t* rgb5
     }
 
     std::lock_guard<wisp::os::Mutex> lock(mutex_);
-
-    if (pending_) {
-        if (xSemaphoreTake(done_, ms_to_ticks(kFlushTimeoutMs)) != pdTRUE) {
-            return Result<void>::err(ErrorCode::Timeout, "previous flush still in flight");
-        }
-        pending_ = false;
+    auto r = wait_pending_locked();
+    if (!r) {
+        return r;
     }
-    // Drop a stray give (e.g. from a transfer issued outside flush()) so
-    // the wait below only ever matches this call's own transfer.
+    // Drop a stray give (e.g. from a transfer issued outside this class) so
+    // the next wait only ever matches this call's own transfer.
     xSemaphoreTake(done_, 0);
 
-    size_t count = static_cast<size_t>(area.x2 - area.x1 + 1) * (area.y2 - area.y1 + 1);
-    // The Display contract hands us a const buffer; it is only mutated
-    // for the duration of this (synchronous) call and restored below, so
-    // the caller never observes the change.
-    auto* px = const_cast<uint16_t*>(rgb565);
-    if (config_.swap_rgb565_bytes) {
-        swap_bytes(px, count);
-    }
-
     esp_err_t err =
-        esp_lcd_panel_draw_bitmap(panel_, area.x1, area.y1, area.x2 + 1, area.y2 + 1, px);
+        esp_lcd_panel_draw_bitmap(panel_, area.x1, area.y1, area.x2 + 1, area.y2 + 1, rgb565);
     if (err != ESP_OK) {
-        // Don't swap the buffer back: draw_bitmap may have failed after
-        // tx_color already queued some of the pixel chunks, so the DMA can
-        // still be reading `px`. Leaving it swapped is harmless (LVGL
-        // re-renders the area) and the next panel IO call waits for those
-        // in-flight chunks itself. No pending_ either: a partially queued
-        // transfer never fires on_color_trans_done (it only fires for the
-        // last chunk), and a stray give is drained at the top of flush().
+        // No pending_: a partially queued transfer never fires
+        // on_color_trans_done (it only fires for the last chunk), and the
+        // next panel IO call waits for whatever chunks were queued itself.
         return Result<void>::err(ErrorCode::DeviceFailure,
                                  std::string("draw_bitmap: ") + esp_err_to_name(err));
     }
+    pending_ = true;
+    return Result<void>::ok();
+}
 
+Result<void> EspDisplay::wait_flush() {
+    std::lock_guard<wisp::os::Mutex> lock(mutex_);
+    return wait_pending_locked();
+}
+
+Result<void> EspDisplay::wait_pending_locked() {
+    if (!pending_) {
+        return Result<void>::ok();
+    }
     if (xSemaphoreTake(done_, ms_to_ticks(kFlushTimeoutMs)) != pdTRUE) {
-        pending_ = true;
+        // pending_ stays set: the next call waits for this transfer again.
         return Result<void>::err(ErrorCode::Timeout, "flush transfer did not complete");
     }
-
-    if (config_.swap_rgb565_bytes) {
-        swap_bytes(px, count);
-    }
+    pending_ = false;
     return Result<void>::ok();
 }
 
@@ -187,7 +183,11 @@ Result<void> EspDisplay::tx_dcs_locked(int reg, const uint8_t* param, size_t par
 Result<void> EspDisplay::set_brightness(uint8_t level) {
     assert_owner_thread();
     std::lock_guard<wisp::os::Mutex> lock(mutex_);
-    auto r = tx_dcs_locked(kDcsWriteBrightness, &level, 1);
+    auto r = wait_pending_locked();
+    if (!r) {
+        return r;
+    }
+    r = tx_dcs_locked(kDcsWriteBrightness, &level, 1);
     if (r) {
         last_brightness_ = level;  // re-applied by a later set_power(true); see below.
     }
@@ -275,9 +275,14 @@ Result<void> EspDisplay::set_power_dcs_locked(bool on) {
 Result<void> EspDisplay::set_power(bool on) {
     assert_owner_thread();
     std::lock_guard<wisp::os::Mutex> lock(mutex_);
-    Result<void> r = config_.panel_sleep == EspDisplayConfig::PanelSleep::DcsSleep
-                         ? set_power_dcs_locked(on)
-                         : set_power_vendor_locked(on);
+    // A stripe may still be on the wire; the panel must not go to sleep
+    // halfway through it.
+    Result<void> r = wait_pending_locked();
+    if (!r) {
+        return r;
+    }
+    r = config_.panel_sleep == EspDisplayConfig::PanelSleep::DcsSleep ? set_power_dcs_locked(on)
+                                                                      : set_power_vendor_locked(on);
     if (!r) {
         return r;
     }

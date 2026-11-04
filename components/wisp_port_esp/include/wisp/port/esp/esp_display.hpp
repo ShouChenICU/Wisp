@@ -40,9 +40,9 @@ struct EspDisplayConfig {
     // register number.
     bool qspi_cmd_framing = false;
     // True if the panel expects RGB565 pixels most-significant byte first
-    // (big-endian on the wire) -- flush() then byte-swaps the native
-    // little-endian pixels around the transfer.
-    bool swap_rgb565_bytes = false;
+    // (big-endian on the wire). Published as caps "rgb565_be", so callers
+    // render in that order and flush() sends the buffer as is.
+    bool rgb565_be = false;
 
     // How set_power(false)/set_power(true) put the panel to/from sleep
     // -- see docs/hardware/waveshare_amoled_216.md for this panel's own
@@ -97,8 +97,8 @@ struct EspDisplayConfig {
 class EspDisplay : public wisp::hal::Display {
 public:
     // Registers a color-transfer-done callback on `io` (replacing any
-    // previously registered one) and creates the semaphore flush() waits
-    // on. Fails with DeviceFailure/NoMemory if either step fails.
+    // previously registered one) and creates the semaphore wait_flush()
+    // waits on. Fails with DeviceFailure/NoMemory if either step fails.
     static Result<std::shared_ptr<EspDisplay>> create(esp_lcd_panel_handle_t panel,
                                                       esp_lcd_panel_io_handle_t io,
                                                       EspDisplayConfig config);
@@ -110,18 +110,20 @@ public:
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
 
-    // Synchronous: issues esp_lcd_panel_draw_bitmap(x1, y1, x2 + 1, y2 + 1)
-    // and waits (up to 250 ms) for the IO's color-transfer-done callback
-    // before returning, so `rgb565` may be reused as soon as this returns
-    // ok. On Timeout the transfer may still be in flight: the next call
-    // first waits for it again (failing with Timeout if it still hasn't
-    // finished) before starting a new transfer. With swap_rgb565_bytes,
-    // the buffer is byte-swapped in place for the duration of the
-    // transfer and restored before returning (except on Timeout or a
-    // draw_bitmap failure, where the DMA may still be reading it and it is
-    // left swapped).
+    // flush_async() then wait_flush().
     Result<void> flush(const wisp::hal::Area& area, const uint16_t* rgb565) override;
-    // Writes the DCS "write display brightness" register (0x51), and
+    // Waits for the previous transfer, if any, then queues
+    // esp_lcd_panel_draw_bitmap(x1, y1, x2 + 1, y2 + 1) and returns while
+    // the DMA still reads `rgb565`.
+    Result<void> flush_async(const wisp::hal::Area& area, const uint16_t* rgb565) override;
+    // Waits (up to 250 ms) for the IO's color-transfer-done callback of the
+    // transfer flush_async() started; ok at once if none is pending. On
+    // Timeout the transfer may still be in flight: the next call on this
+    // display waits for it again (failing with Timeout if it still hasn't
+    // finished) before touching the panel.
+    Result<void> wait_flush() override;
+    // Waits for a pending transfer, writes the DCS "write display
+    // brightness" register (0x51), and
     // remembers `level` (see set_power()'s doc comment below on why a
     // successful set_power(true) re-sends it).
     Result<void> set_brightness(uint8_t level) override;
@@ -153,6 +155,9 @@ private:
     static bool on_color_trans_done(esp_lcd_panel_io_handle_t io,
                                     esp_lcd_panel_io_event_data_t* edata, void* user_ctx);
 
+    // Waits for the transfer flush_async() started, if any. Assumes mutex_
+    // is already held.
+    Result<void> wait_pending_locked();
     // Sends one DCS command (optionally with parameter bytes) via
     // esp_lcd_panel_io_tx_param(), applying config_.qspi_cmd_framing the
     // same way set_brightness() always has. Assumes mutex_ is already
@@ -171,10 +176,11 @@ private:
     EspDisplayConfig config_;
     SemaphoreHandle_t done_;
 
-    // Serializes flush()/set_brightness()/set_power(): they all drive the
-    // same panel IO, which is not safe to use from two tasks at once.
+    // Serializes the flush calls, set_brightness() and set_power(): they
+    // all drive the same panel IO, which is not safe to use from two tasks
+    // at once.
     mutable wisp::os::Mutex mutex_;
-    bool pending_ = false;  // a timed-out transfer may still be in flight
+    bool pending_ = false;  // a transfer from flush_async() may still be in flight
     bool powered_ = true;   // esp_board_manager turns the panel on during init
 
     // The last level set_brightness() was called with, re-applied by a

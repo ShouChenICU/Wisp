@@ -218,7 +218,7 @@ void init_display(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
     dc.panel = "amoled";
     dc.area_align = kAreaAlign;
     dc.qspi_cmd_framing = uses_qspi(cfg);
-    dc.swap_rgb565_bytes = cfg->frame_format == DEV_DISPLAY_LCD_FRAME_FORMAT_RGB565_BE;
+    dc.rgb565_be = cfg->frame_format == DEV_DISPLAY_LCD_FRAME_FORMAT_RGB565_BE;
     // Standard MIPI DCS sleep instead of this panel's deep-standby path
     // (see kDisplaySleepOutSettleMs's comment above), so EspDisplay must
     // never call esp_lcd_panel_disp_sleep()/disp_on_off() on this handle
