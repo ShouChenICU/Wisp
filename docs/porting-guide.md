@@ -1,6 +1,6 @@
 # 移植指南：新增一块开发板
 
-本文档描述在 Wisp 基础骨架（子项目 1）之上新增一块 ESP32 开发板需要做哪些事。参考实现是 `boards/waveshare_amoled_216/`；硬件资料写法参考 `docs/hardware/waveshare_amoled_216.md`。
+本文档描述在 Wisp 基础骨架（子项目 1）之上新增一块 ESP32 开发板需要做哪些事。参考实现是 `boards/waveshare_esp32_s3_touch_amoled_2_16/`；硬件资料写法参考 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`。
 
 ## 总览
 
@@ -13,9 +13,22 @@
 
 ## 步骤 1：写 bmgr YAML
 
-1. 新建 `boards/<板名>/`，三个 YAML 参照 esp_board_manager 文档和已有板子（`boards/waveshare_amoled_216/`）的字段写。能直接复用其他公开板级定义（如 ESP-Claw）时，按 AGENTS.md 第 6 节在文件头注明来源、登记到 `docs/references.md` 和 `THIRD_PARTY_NOTICES.md`。
+1. 新建 `boards/<板名>/`，三个 YAML 参照 esp_board_manager 文档和已有板子（`boards/waveshare_esp32_s3_touch_amoled_2_16/`）的字段写。能直接复用其他公开板级定义（如 ESP-Claw）时，按 AGENTS.md 第 6 节在文件头注明来源、登记到 `docs/references.md` 和 `THIRD_PARTY_NOTICES.md`。
 2. 只在 YAML 里声明 esp_board_manager 原生支持的设备类型（`display_lcd`、`lcd_touch`、`audio_codec`、`fs_fat`/SDMMC、裸 GPIO/I2C/I2S/SPI 总线等）。IMU、PMU、RTC 等自定义芯片**不要**塞进 YAML 当 `custom` 设备——Wisp 用自己的驱动在 `board.cpp` 里初始化它们，挂在 bmgr 暴露的同一条总线上即可。
 3. 用 `idf.py bmgr -c ../boards -b <板名>` 生成代码（生成结果在 `firmware/components/gen_bmgr_codes/`，已被 git 忽略，改了 YAML 要重新跑这一步；不要手改生成代码）。
+
+### 板名规范
+
+`<板名>` 即 `boards/<板名>/` 的目录名，也是 `board_info.yaml` 的 `board` 字段、固件里的 `WISP_BOARD`、`Board::name()` 的返回值和 `WISP_MANIFEST` 的 `board` 字段，四处必须完全一致。
+
+- 格式为 `<厂商>_<官方型号>`：全部小写，官方型号里的 `-`、`.` 和空格都换成 `_`，整个名字只能出现 `[a-z0-9_]`。
+- 官方型号原样保留，包括芯片型号和尺寸/版本号数字，不做缩写。
+- Espressif 自己的板子直接用它们 `esp_boards` 组件里的名字，不加厂商前缀，例如 `esp32_s3_box_3`、`esp32_s31_function_coreboard_1`。
+- 同一型号出现不兼容的硬件改版时，加 `_v2` 这样的后缀区分。
+- 最长 39 个字符，这是固件板名描述符的上限。
+- 例：Waveshare ESP32-S3-Touch-AMOLED-2.16 → `waveshare_esp32_s3_touch_amoled_2_16`。
+
+给板子改名会改变镜像里的板名描述符：运行旧名字的设备会把网页上传的新镜像判定为 `wrong_board` 并拒绝，改名后的第一次刷机必须走 USB。
 
 ## 步骤 2：补驱动（`drivers/`）
 
@@ -83,7 +96,7 @@ sdkconfig 的默认值只在 `firmware/sdkconfig` 不存在时生效。切换板
 | `storage` | 必需 | LittleFS（`/int`） |
 | `ota_0`、`ota_1`、`otadata` | 可选（网页固件上传需要） | 双 OTA 应用分区，两个一样大，要装得下整个应用镜像（网页资源包也链接在镜像里）；没有时用单个 `factory` 应用分区，`EspFirmwareUpdater::create()` 找不到第二个槽就返回空，`GET /system/firmware` 报告 `supported: false`，只降级运行 |
 
-没有单独的 `assets` 分区：网页资源包（WispPack，≤ 256 KiB）链接在应用镜像里（见下文"固件与分区"）。分区大小由各板自行决定，例如 32MB 的板子可以把多出的空间分给 `storage`。参考板的分区表见 `boards/waveshare_amoled_216/partitions.csv` 和 `docs/hardware/waveshare_amoled_216.md`。
+没有单独的 `assets` 分区：网页资源包（WispPack，≤ 256 KiB）链接在应用镜像里（见下文"固件与分区"）。分区大小由各板自行决定，例如 32MB 的板子可以把多出的空间分给 `storage`。参考板的分区表见 `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv` 和 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`。
 
 **改分区表的规则**：已经出货的板子改分区表时，`nvs` 和 `storage` 保持原来的偏移和大小，设置和数据才能保留。分区表和引导程序不在 OTA 范围内，网页上传只换应用镜像；所以改了分区表（或首次打开回滚功能、换了引导程序）之后，必须用 USB 完整烧录一次（`idf.py flash`，写入引导程序、分区表、`otadata` 和 `ota_0`），之后才能用网页上传。
 
@@ -148,7 +161,7 @@ bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware \
     && idf.py build -DWISP_BOARD=<板名>'
 ```
 
-`firmware/CMakeLists.txt` 的 `WISP_BOARD` 缓存变量决定编译哪个 `boards/<名>/board.cpp`（默认 `waveshare_amoled_216`），用 `-DWISP_BOARD=<板名>` 覆盖。只要没改板子 YAML，后续重新 `idf.py build` 不需要重复 set-target/bmgr。调试版的构建命令见上文"构建配置：发布版与调试版"。
+`firmware/CMakeLists.txt` 的 `WISP_BOARD` 缓存变量决定编译哪个 `boards/<名>/board.cpp`（默认 `waveshare_esp32_s3_touch_amoled_2_16`），用 `-DWISP_BOARD=<板名>` 覆盖。只要没改板子 YAML，后续重新 `idf.py build` 不需要重复 set-target/bmgr。调试版的构建命令见上文"构建配置：发布版与调试版"。
 
 第一次烧录用 `idf.py -p <端口> flash`（引导程序、分区表和应用一起写）；之后可以在管理后台"系统"页上传 `build/wisp.bin` 更新，设备上确认后重启进入新版本。
 
@@ -159,4 +172,4 @@ bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware \
 1. **启动报告**（`WISP_BOOT_REPORT`）：每个设备状态应为 `ok`（或预期中的 `degraded`/`missing`，并带 `reason`），不应有意料之外的 `failed`。
 2. **能力清单**（`WISP_MANIFEST`）：核对 `board` 字段是板名，每个设备的 `id`/`class`/`model`/`caps` 符合上面的约定；`Display` 的 `safe_area` 没有裁掉圆角/圆形屏的内容。
 3. **自检界面**（spec 第 8 节）：8 类设备在安全区内都有对应的实时状态——设备列表按状态着色、IMU 小球随倾斜移动、触摸测试区跟手、按键事件有提示、电量和 RTC 时间正确、存储容量正确、录音回放能听到声音。
-4. 新板子特有的真机验收项，仿照 `docs/hardware/<板名>.md`（新建）的"真机验收清单"一节，参照 `docs/hardware/waveshare_amoled_216.md` 的写法逐条列出怎么测、预期结果，留一栏空的"结果"栏。
+4. 新板子特有的真机验收项，仿照 `docs/hardware/<板名>.md`（新建）的"真机验收清单"一节，参照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md` 的写法逐条列出怎么测、预期结果，留一栏空的"结果"栏。

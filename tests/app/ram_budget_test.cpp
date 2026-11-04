@@ -27,7 +27,7 @@ TEST(RamBudget, UnknownWithoutFigures) {
 
 // The idle floor is the worst-case floor plus the largest dip measured on
 // the board (a TLS handshake, about 20 KB): see AGENTS.md section 5 and
-// docs/hardware/waveshare_amoled_216.md.
+// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md.
 TEST(RamBudget, IdleFloorLeavesRoomForTheWorstCaseDip) {
     EXPECT_GE(wisp::app::kIdleInternalFreeMin, wisp::app::kWorstInternalFreeMin + 20 * 1024);
     EXPECT_GE(wisp::app::kIdleInternalLargestMin, wisp::app::kWorstInternalLargestMin);
@@ -42,7 +42,7 @@ TEST(RamBudget, LowWhenEitherFigureIsUnderTheIdleFloor) {
     EXPECT_TRUE(internal_ram_low({free_ok - 1, largest_ok}));
     EXPECT_TRUE(internal_ram_low({free_ok, largest_ok - 1}));
     // Figures at which the admin httpd's 10 KB stack could not be
-    // allocated (docs/hardware/waveshare_amoled_216.md).
+    // allocated (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
     EXPECT_TRUE(internal_ram_low({13547, 7680}));
     // A platform that reports free but not the largest block.
     EXPECT_FALSE(internal_ram_low({free_ok, -1}));

@@ -41,7 +41,7 @@ jobs:
     # the component manager fetches esp_board_manager, whose idf.py
     # extension provides `idf.py bmgr`; bmgr then generates the
     # (gitignored) firmware/components/gen_bmgr_codes/ from
-    # boards/waveshare_amoled_216/ before the build. Flashing/monitoring a
+    # boards/waveshare_esp32_s3_touch_amoled_2_16/ before the build. Flashing/monitoring a
     # real board is never a CI step (left to a human with the hardware).
     #
     # The IDF image runs via `docker run` rather than a job-level
@@ -63,7 +63,7 @@ jobs:
               set -eo pipefail
               . $IDF_PATH/export.sh
               idf.py set-target esp32s3
-              idf.py bmgr -c ../boards -b waveshare_amoled_216
+              idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16
               idf.py build'
       # set-target resolves dependencies before gen_bmgr_codes exists and
       # temporarily drops bmgr's entries from the lock file; the build

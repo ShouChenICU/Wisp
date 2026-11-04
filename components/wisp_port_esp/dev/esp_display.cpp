@@ -223,7 +223,7 @@ Result<void> EspDisplay::set_power_vendor_locked(bool on) {
     // DeviceFailure here (unlike hal::Touch::set_power(), there's no
     // "Unsupported is expected" carve-out for the display -- every panel
     // this codebase targets does implement it; see
-    // docs/hardware/waveshare_amoled_216.md).
+    // docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
     esp_err_t err;
     if (on) {
         err = esp_lcd_panel_disp_sleep(panel_, false);

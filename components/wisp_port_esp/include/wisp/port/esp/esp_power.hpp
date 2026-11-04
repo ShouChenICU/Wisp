@@ -1,7 +1,7 @@
 #pragma once
 
 // ESP-IDF wisp::hal::Power backed by drivers/axp2101 (the board's own
-// bmgr i2c_master bus handle -- see boards/waveshare_amoled_216/
+// bmgr i2c_master bus handle -- see boards/waveshare_esp32_s3_touch_amoled_2_16/
 // board.cpp). The chip model string is passed in by the board (AGENTS.md
 // "板子无关" rule); caps ("battery", "charging_status") describe what
 // an AXP2101-class PMU always reports, so they're fixed here rather than

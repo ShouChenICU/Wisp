@@ -875,7 +875,7 @@ TEST(SelfCheckScreen, ConfirmDialogWidthClampedToSafeArea) {
 // When Power::power_off() fails, do_power_off() must fall through to
 // Platform::request_power_off() -- the ESP fallback is
 // esp_deep_sleep_start(), which never actually powers the panel/PMIC
-// down (see docs/hardware/waveshare_amoled_216.md and main.cpp's own
+// down (see docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md and main.cpp's own
 // comment on request_power_off), so do_power_off() must turn the panel
 // off itself first. Confirms the dialog via a simulated click on its
 // "是" button, the same path a real touch does (rather than publishing

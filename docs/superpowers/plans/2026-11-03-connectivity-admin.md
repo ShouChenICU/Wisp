@@ -52,7 +52,7 @@
 ## 文件结构总览
 
 ```
-boards/waveshare_amoled_216/
+boards/waveshare_esp32_s3_touch_amoled_2_16/
   partitions.csv                 # 从 firmware/ 迁来
   sdkconfig.defaults.board       # Flash/PSRAM/控制台/分区表路径
 components/
@@ -79,17 +79,17 @@ tests/
 ### Task 1: 板级分区表与 sdkconfig 迁移
 
 **Files:**
-- Move: `firmware/partitions.csv` → `boards/waveshare_amoled_216/partitions.csv`
-- Create: `boards/waveshare_amoled_216/sdkconfig.defaults.board`
-- Modify: `firmware/sdkconfig.defaults`（删掉板级配置项）、`docs/porting-guide.md`（新增"分区约定"一节，内容即 spec 3.2 的表）、基础 spec 7.4 标题改为"参考板分区表（Waveshare 2.16，16MB）"并在节末引用子项目 2 spec 第 3 节、`docs/hardware/waveshare_amoled_216.md`（分区表的位置）
+- Move: `firmware/partitions.csv` → `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv`
+- Create: `boards/waveshare_esp32_s3_touch_amoled_2_16/sdkconfig.defaults.board`
+- Modify: `firmware/sdkconfig.defaults`（删掉板级配置项）、`docs/porting-guide.md`（新增"分区约定"一节，内容即 spec 3.2 的表）、基础 spec 7.4 标题改为"参考板分区表（Waveshare 2.16，16MB）"并在节末引用子项目 2 spec 第 3 节、`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`（分区表的位置）
 
 **Interfaces:**
 - Produces：`boards/<板名>/partitions.csv` 是本板唯一的分区表；Task 4 的 `pack_assets.py --partitions` 从这里读取 `assets` 分区的大小。
 
-- [ ] **Step 1:** 把下列配置项从 `firmware/sdkconfig.defaults` 移到 `sdkconfig.defaults.board`：`CONFIG_ESPTOOLPY_FLASHMODE_QIO`、`CONFIG_ESPTOOLPY_FLASHFREQ_80M`、`CONFIG_ESPTOOLPY_FLASHSIZE_16MB`、`CONFIG_SPIRAM*`、`CONFIG_ESP_CONSOLE_*`；并在其中加入 `CONFIG_PARTITION_TABLE_CUSTOM=y` 和 `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../boards/waveshare_amoled_216/partitions.csv"`（路径相对 `firmware/`）。`firmware/sdkconfig.defaults` 的文件头注释改为"与板子无关的公共配置"。
+- [ ] **Step 1:** 把下列配置项从 `firmware/sdkconfig.defaults` 移到 `sdkconfig.defaults.board`：`CONFIG_ESPTOOLPY_FLASHMODE_QIO`、`CONFIG_ESPTOOLPY_FLASHFREQ_80M`、`CONFIG_ESPTOOLPY_FLASHSIZE_16MB`、`CONFIG_SPIRAM*`、`CONFIG_ESP_CONSOLE_*`；并在其中加入 `CONFIG_PARTITION_TABLE_CUSTOM=y` 和 `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv"`（路径相对 `firmware/`）。`firmware/sdkconfig.defaults` 的文件头注释改为"与板子无关的公共配置"。
 - [ ] **Step 2: 从干净状态验证**
 
-Run: `bash -c '. ~/esp/esp-idf-v6.0.3/export.sh >/dev/null && cd firmware && rm -f sdkconfig && idf.py bmgr -c ../boards -b waveshare_amoled_216 && idf.py build'`
+Run: `bash -c '. ~/esp/esp-idf-v6.0.3/export.sh >/dev/null && cd firmware && rm -f sdkconfig && idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16 && idf.py build'`
 Expected: 构建成功；`grep -E 'FLASHSIZE_16MB=y|SPIRAM_MODE_OCT=y|CUSTOM_FILENAME' firmware/sdkconfig` 三项都存在；`build/partition_table/partition-table.bin` 的内容与迁移前一致（用 `gen_esp32part.py` 解析后对比）。
 - [ ] **Step 3: 跑 `bash tools/ci.sh`**，确认主机侧不受影响。
 - [ ] **Step 4: Commit** — `build(boards): move the partition table and board sdkconfig into the board directory`
@@ -964,7 +964,7 @@ TEST(Console, UnknownCommand)
 
 **Files:**
 - Create: `components/wisp_port_esp/net/{esp_wifi,esp_http_server,esp_http_client,captive_dns}.cpp`、`include/wisp/port/esp/{esp_wifi,esp_http_server,esp_http_client}.hpp`、`components/wisp_port_esp/console_esp.cpp`
-- Modify: `components/wisp_port_esp/CMakeLists.txt`（`IDF_REQUIRES esp_wifi esp_netif esp_http_server esp_http_client esp-tls mbedtls espressif__mdns esp_driver_usb_serial_jtag`）、`components/wisp_port_esp/idf_component.yml` 或 `firmware/main/idf_component.yml`（`espressif/mdns` 锁定精确版本）、`firmware/dependencies.lock`、`boards/waveshare_amoled_216/board.cpp`（注册 `net.wifi`）、`firmware/main/main.cpp`（填写 `Platform` 的新字段：`random`=`esp_fill_random`、`assets`=`esp_partition_mmap("assets")`、`reboot`=`esp_restart`、`read_line`、`captive_server`）、`firmware/CMakeLists.txt`（构建时运行 `pack_assets.py web -o build/assets.wpak --partitions ../boards/${WISP_BOARD}/partitions.csv --budget-kb 150`，并用 `esptool_py_flash_to_partition(flash assets build/assets.wpak)` 一并烧录）、`firmware/sdkconfig.defaults`（`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`、`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y`、`CONFIG_HTTPD_WS_SUPPORT=y`、`CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024`）、`docs/references.md`、`THIRD_PARTY_NOTICES.md`
+- Modify: `components/wisp_port_esp/CMakeLists.txt`（`IDF_REQUIRES esp_wifi esp_netif esp_http_server esp_http_client esp-tls mbedtls espressif__mdns esp_driver_usb_serial_jtag`）、`components/wisp_port_esp/idf_component.yml` 或 `firmware/main/idf_component.yml`（`espressif/mdns` 锁定精确版本）、`firmware/dependencies.lock`、`boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp`（注册 `net.wifi`）、`firmware/main/main.cpp`（填写 `Platform` 的新字段：`random`=`esp_fill_random`、`assets`=`esp_partition_mmap("assets")`、`reboot`=`esp_restart`、`read_line`、`captive_server`）、`firmware/CMakeLists.txt`（构建时运行 `pack_assets.py web -o build/assets.wpak --partitions ../boards/${WISP_BOARD}/partitions.csv --budget-kb 150`，并用 `esptool_py_flash_to_partition(flash assets build/assets.wpak)` 一并烧录）、`firmware/sdkconfig.defaults`（`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`、`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y`、`CONFIG_HTTPD_WS_SUPPORT=y`、`CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024`）、`docs/references.md`、`THIRD_PARTY_NOTICES.md`
 - Test: `tests/port_esp/`（只编译、不运行的固件构建检查，沿用子项目 1 的做法）
 
 **Interfaces:**
@@ -1028,7 +1028,7 @@ TEST(AdminAi, OldLlmRoutesAreGone)                        // /llm → 401 未鉴
 ### Task 18c: 分区调整、发布构建、网页打包进固件、网页上传固件（spec 2.3、3.2、6.5）
 
 **Files:**
-- Modify: `boards/waveshare_amoled_216/partitions.csv`（spec 3.2 的表）、`firmware/CMakeLists.txt`（`pack_assets.py` 输出链接进应用，例如 `target_add_binary_data(... BINARY)` 或 `EMBED_FILES`，保证 4 字节对齐；删除 `esptool_py_flash_to_partition(... assets ...)`）、`tools/pack_assets.py`（预算改为固定 256 KB，去掉分区表读取）、`firmware/main/main.cpp`（`Platform::assets` 指向嵌入数据；新增 `Platform::firmware`）、`firmware/sdkconfig.defaults`（`CONFIG_COMPILER_OPTIMIZATION_SIZE`、`CONFIG_LOG_MAXIMUM_LEVEL_INFO`、断言静默、`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`、`CONFIG_APP_PROJECT_VER_FROM_CONFIG` 或等价的版本来源）、渲染组件的 CMakeLists（LVGL 组件、`wisp_ui`、显示/触摸驱动与刷屏路径：`-O2`）、`components/wisp_net`（`HttpServer` 增加流式请求体处理接口）、`components/wisp_port_sim/net/sim_http_server.cpp`、`components/wisp_port_esp/net/esp_http_server.cpp`、`components/wisp_admin`（`/system/firmware` 路由）、`components/wisp_app`（确认框、回滚标记时机、事件）、`web/app/pages/system.js` 与 i18n、`tests/smoke/`、`docs/architecture.md`、`docs/porting-guide.md`、`docs/hardware/waveshare_amoled_216.md`（分区表）、`README.md` 的刷机说明（去掉 assets 相关说法，加上网页上传固件）
+- Modify: `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv`（spec 3.2 的表）、`firmware/CMakeLists.txt`（`pack_assets.py` 输出链接进应用，例如 `target_add_binary_data(... BINARY)` 或 `EMBED_FILES`，保证 4 字节对齐；删除 `esptool_py_flash_to_partition(... assets ...)`）、`tools/pack_assets.py`（预算改为固定 256 KB，去掉分区表读取）、`firmware/main/main.cpp`（`Platform::assets` 指向嵌入数据；新增 `Platform::firmware`）、`firmware/sdkconfig.defaults`（`CONFIG_COMPILER_OPTIMIZATION_SIZE`、`CONFIG_LOG_MAXIMUM_LEVEL_INFO`、断言静默、`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`、`CONFIG_APP_PROJECT_VER_FROM_CONFIG` 或等价的版本来源）、渲染组件的 CMakeLists（LVGL 组件、`wisp_ui`、显示/触摸驱动与刷屏路径：`-O2`）、`components/wisp_net`（`HttpServer` 增加流式请求体处理接口）、`components/wisp_port_sim/net/sim_http_server.cpp`、`components/wisp_port_esp/net/esp_http_server.cpp`、`components/wisp_admin`（`/system/firmware` 路由）、`components/wisp_app`（确认框、回滚标记时机、事件）、`web/app/pages/system.js` 与 i18n、`tests/smoke/`、`docs/architecture.md`、`docs/porting-guide.md`、`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`（分区表）、`README.md` 的刷机说明（去掉 assets 相关说法，加上网页上传固件）
 - Create: `firmware/sdkconfig.debug`、可移植的固件镜像头解析（`wisp_core` 或 `wisp_net`，如 `firmware_image.hpp`，只解析 ESP 应用镜像头与 `esp_app_desc_t` 布局的字节，不 include 平台头）、`FirmwareUpdater` 平台接口及 ESP（`esp_ota_*`）/模拟器（写 `<data-dir>/firmware.bin`）两套实现、`FirmwareUpdateService`（服务层：状态机、单次上传、2 分钟确认超时、事件）
 - Test: `tests/core/firmware_image_test.cpp`、`tests/core/firmware_update_test.cpp`（或所在层）、`tests/admin/routes_firmware_test.cpp`、`tests/sim/sim_http_server_test.cpp`（流式请求体）、冒烟用例 `firmware_upload`
 
@@ -1063,7 +1063,7 @@ TEST(SimHttpServer, StreamsLargeRequestBody)           // 1 MB 请求体分块�
 ### Task 19: 真机联调、验收与文档
 
 **Files:**
-- Modify: `docs/hardware/waveshare_amoled_216.md`（Wi-Fi 之后的内存剩余量、`WISP_PERF` 对比、配网实测结果）、`docs/architecture.md`（全面核对）、`README.md`（"当前状态"一节）、本计划（勾选完成项、记录执行期裁定）
+- Modify: `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`（Wi-Fi 之后的内存剩余量、`WISP_PERF` 对比、配网实测结果）、`docs/architecture.md`（全面核对）、`README.md`（"当前状态"一节）、本计划（勾选完成项、记录执行期裁定）
 
 - [ ] **Step 1: 交给用户执行 spec 9.2 的验收清单第 1–9 项**，逐项记录结果。需要用户提供的信息：手机型号与系统版本（检查强制门户是否自动弹出）、路由器的频段（确认是 2.4 GHz）。
 - [ ] **Step 2:** 第 9 项：在 Wi-Fi 已连接、后台日志页打开的状态下，滚动自检界面，采集 `WISP_PERF`，与子项目 1 的基准（目标 ≥ 30 fps；本板验收线见 foundation spec 第 10 节"已记录的偏差"）对比，写进硬件文档。

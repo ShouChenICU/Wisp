@@ -248,7 +248,7 @@ wisp/
 │   ├── wisp_port_esp/
 │   └── wisp_port_sim/
 ├── boards/
-│   └── waveshare_amoled_216/  # esp_board_manager YAML + setup_device.c + board.cpp
+│   └── waveshare_esp32_s3_touch_amoled_2_16/  # esp_board_manager YAML + setup_device.c + board.cpp
 │                              # + partitions.csv + sdkconfig.defaults.board（见连接 spec 3）
 ├── drivers/                   # 组件库中没有的芯片驱动（从 MyOS 移植）
 ├── tests/                     # 可移植层单元测试（PC 运行）
@@ -257,7 +257,7 @@ wisp/
 │   ├── architecture.md
 │   ├── porting-guide.md
 │   ├── references.md
-│   ├── hardware/waveshare_amoled_216.md
+│   ├── hardware/waveshare_esp32_s3_touch_amoled_2_16.md
 │   └── superpowers/specs/
 ├── .github/workflows/         # CI（推送到 GitHub 后生效）
 ├── .clang-format
@@ -344,7 +344,7 @@ public:
 
 ```json
 {
-  "board": "waveshare_amoled_216",
+  "board": "waveshare_esp32_s3_touch_amoled_2_16",
   "devices": [
     {"id": "display.main", "class": "display", "model": "CO5300",
      "caps": {"width": 480, "height": 480, "shape": "rounded_rect",
@@ -435,7 +435,7 @@ bus.publish(event);                  // 异步：入队后由分发任务派发
 - **只有 UI 任务可以调用 LVGL**；其他任务通过 `UiRuntime::post(fn)` 投递；
 - `wisp_ui` 基于 `hal::Display` 和 `hal::Touch` 实现 LVGL 的显示驱动和输入驱动，因此不依赖 esp_lvgl_port，两个目标共用；
 - 像素格式 RGB565，字节序按 Display caps 的 `rgb565_be`：面板要高字节在前时 LVGL 直接按这个顺序渲染（`LV_COLOR_FORMAT_RGB565_SWAPPED`），不再逐段交换字节；
-- 局部刷新，两块缓冲，行数和内存类型由 Display caps 声明（`draw_buf_lines`，默认 24；`draw_buf_mem`，默认 `"dma"` 即 `Mem::Dma`，`"large"` 为 DMA 可读的 PSRAM `Mem::DmaLarge`，分配失败退回 `Mem::Dma`；`render_mode` 只实现 `"partial"`，`"full"`/`"direct"` 为保留名，告警后按局部刷新处理），字段说明见 `docs/porting-guide.md` 的能力字段表；flush 回调用 `Display::flush_async()` 启动传输后立即返回，LVGL 接着往另一块缓冲渲染，需要复用某块缓冲前经 flush-wait 回调调用 `Display::wait_flush()`。两块缓冲的总量与内部 RAM 预算挂钩（AGENTS.md 第 5 节），行数在真机上按帧率和预算一起调优（见 `docs/hardware/waveshare_amoled_216.md` 的"性能基准"）；
+- 局部刷新，两块缓冲，行数和内存类型由 Display caps 声明（`draw_buf_lines`，默认 24；`draw_buf_mem`，默认 `"dma"` 即 `Mem::Dma`，`"large"` 为 DMA 可读的 PSRAM `Mem::DmaLarge`，分配失败退回 `Mem::Dma`；`render_mode` 只实现 `"partial"`，`"full"`/`"direct"` 为保留名，告警后按局部刷新处理），字段说明见 `docs/porting-guide.md` 的能力字段表；flush 回调用 `Display::flush_async()` 启动传输后立即返回，LVGL 接着往另一块缓冲渲染，需要复用某块缓冲前经 flush-wait 回调调用 `Display::wait_flush()`。两块缓冲的总量与内部 RAM 预算挂钩（AGENTS.md 第 5 节），行数在真机上按帧率和预算一起调优（见 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md` 的"性能基准"）；
 - LVGL tick 由 `wisp_os` 时钟提供。
 
 ### 6.5 日志
@@ -507,7 +507,7 @@ StorageStatus status();                        // 各介质在线状态、容量
 
 ### 7.4 参考板（Waveshare 2.16）的分区表
 
-16MB Flash，即 `boards/waveshare_amoled_216/partitions.csv`：
+16MB Flash，即 `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv`：
 
 | 分区 | 类型 | 偏移 | 大小 | 用途 |
 |---|---|---|---|---|
@@ -593,7 +593,7 @@ StorageStatus status();                        // 各介质在线状态、容量
 2. 自检界面中 8 类设备状态正确：IMU 小球随倾斜移动；触摸显示触点；3 个按键均有事件提示；显示电量和充电状态；断电重启后 RTC 时间正确；录音回放能听到录音；内置 Flash 与 SD 卡容量正确，SD 卡插拔实时反映；
 3. 电源键短按进入/退出待机；长按弹出关机确认，确认后关机，关机状态长按可开机；
 4. 串口输出能力清单 JSON 和启动报告，其中 `imu.main` 的 `magnetometer` 为 `false`。
-5. 待机耗电：断开 USB 数据连接，仅用电池供电，在电池端串接电流表。熄屏待机的平均电流不超过亮屏静止时的 1/10。按电源键后 300 ms 内亮屏。实测值记入 `docs/hardware/waveshare_amoled_216.md`。
+5. 待机耗电：断开 USB 数据连接，仅用电池供电，在电池端串接电流表。熄屏待机的平均电流不超过亮屏静止时的 1/10。按电源键后 300 ms 内亮屏。实测值记入 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`。
 
 **模拟器**
 
@@ -602,11 +602,11 @@ StorageStatus status();                        // 各介质在线状态、容量
 
 **文档**
 
-8. README（模拟器与真机两条快速开始路径）、`docs/architecture.md`、`docs/porting-guide.md`（如何新增一块板）、`docs/hardware/waveshare_amoled_216.md`、`docs/references.md`、`THIRD_PARTY_NOTICES.md` 齐备。
+8. README（模拟器与真机两条快速开始路径）、`docs/architecture.md`、`docs/porting-guide.md`（如何新增一块板）、`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`、`docs/references.md`、`THIRD_PARTY_NOTICES.md` 齐备。
 
 **已记录的偏差**
 
-- **UI 帧率（用户 2026-11-04 裁定）**：滚动自检列表 ≥ 30 fps（实施计划的 UI 性能基准）仍是目标。Waveshare 2.16 在 AGENTS.md 第 5 节的内部 RAM 预算内实测达不到：关热点时程序滚动 22.7 fps，开热点时 28.2 fps；原因和每帧时间分布见 `docs/hardware/waveshare_amoled_216.md`"性能基准"一节。所以本板的验收线是"不低于记下的基准"，即关热点 22.7 fps、开热点 28.2 fps。以后改渲染路径时，按 AGENTS.md 第 4 节对比的也是这两个数；达到 30 fps 后改回 ≥ 30。
+- **UI 帧率（用户 2026-11-04 裁定）**：滚动自检列表 ≥ 30 fps（实施计划的 UI 性能基准）仍是目标。Waveshare 2.16 在 AGENTS.md 第 5 节的内部 RAM 预算内实测达不到：关热点时程序滚动 22.7 fps，开热点时 28.2 fps；原因和每帧时间分布见 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`"性能基准"一节。所以本板的验收线是"不低于记下的基准"，即关热点 22.7 fps、开热点 28.2 fps。以后改渲染路径时，按 AGENTS.md 第 4 节对比的也是这两个数；达到 30 fps 后改回 ≥ 30。
 
 ---
 

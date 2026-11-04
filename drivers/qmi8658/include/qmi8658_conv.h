@@ -7,7 +7,7 @@
 // gyroscope conversion and the ODR-code lookup table are NOT from MyOS,
 // which only ever drove the accelerometer: they follow the QMI8658
 // register map's publicly documented encoding, and should be checked
-// against real hardware (see docs/hardware/waveshare_amoled_216.md's
+// against real hardware (see docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md's
 // acceptance table, row 12) since MyOS never exercised them.
 //
 // Kept header-only/pure so these can be unit-tested on the host without

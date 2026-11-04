@@ -171,7 +171,7 @@ mem                          内存和任务栈占用（仅真机）
 . ~/esp/esp-idf-v6.0.3/export.sh
 cd firmware
 idf.py set-target esp32s3
-idf.py bmgr -c ../boards -b waveshare_amoled_216
+idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16
 idf.py build
 idf.py -p <串口> flash monitor
 ```
@@ -238,7 +238,7 @@ Wisp 用 C++20 编写，界面基于 LVGL 9.5，真机运行在 ESP-IDF v6.0.3 �
 - **网页资源。** 后台网页是不依赖构建工具的原生 JavaScript，构建时由 `tools/pack_assets.py` 打包成一个 WispPack 资源包（上限 256 KB），链接进固件镜像，由设备直接提供（gzip、ETag 缓存）。网页和固件始终是同一个版本，随固件更新一起替换。
 - **机器可读输出。** `WISP_BOOT_REPORT`（启动报告）、`WISP_MANIFEST`（设备清单）、`WISP_PERF`（帧率、CPU、刷屏耗时）和 `WISP_HTTP`（后台端口）都是"前缀 + 单行 JSON"，方便脚本和测试解析。
 
-更多细节见 [架构文档](docs/architecture.md)、[移植指南](docs/porting-guide.md) 和 [硬件资料](docs/hardware/waveshare_amoled_216.md)。
+更多细节见 [架构文档](docs/architecture.md)、[移植指南](docs/porting-guide.md) 和 [硬件资料](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md)。
 
 ### 目录结构
 

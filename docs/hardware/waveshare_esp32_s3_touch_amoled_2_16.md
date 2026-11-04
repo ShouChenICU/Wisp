@@ -1,13 +1,13 @@
 # Waveshare ESP32-S3-Touch-AMOLED-2.16
 
-板名（`WISP_BOARD` / bmgr）：`waveshare_amoled_216`。板级代码：`boards/waveshare_amoled_216/`。
+板名（`WISP_BOARD` / bmgr）：`waveshare_esp32_s3_touch_amoled_2_16`。板级代码：`boards/waveshare_esp32_s3_touch_amoled_2_16/`。
 
-资料来源：MyOS 项目（MIT，作者 ShouChen，只读参考，**以其代码为准，它的文档有误**）、Waveshare 官方 BSP、ESP-Claw 中同款板的板级定义（Apache-2.0）。
+资料来源：MyOS 项目（MIT，作者 ShouChen，只读参考，**以其代码为准，它的文档有误**）、Waveshare 官方 BSP、ESP-Claw 中同款板的板级定义（Apache-2.0）、[官方产品页](https://docs.waveshare.net/ESP32-S3-Touch-AMOLED-2.16/)。
 
 ## 主控与存储
 
 - ESP32-S3R8：16 MB QIO flash，8 MB octal PSRAM（80 MHz）
-- 分区表见 `boards/waveshare_amoled_216/partitions.csv`（Flash、PSRAM、控制台等板级 sdkconfig 见同目录的 `sdkconfig.defaults.board`）：
+- 分区表见 `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv`（Flash、PSRAM、控制台等板级 sdkconfig 见同目录的 `sdkconfig.defaults.board`）：
 
   | 分区 | 偏移 | 大小 |
   |---|---|---|
@@ -93,7 +93,7 @@
 | 34 | DFS 不拖累帧率（firmware/main.cpp apply_pm_config，DFS/light sleep） | 对比开启/关闭 `CONFIG_PM_ENABLE` 前后的 `WISP_PERF` | 开启 DFS 后帧率仍不低于上一项的基准 |  |
 | 35 | `power.charging.changed` 事件（spec 6.3，wisp_core::PowerMonitor） | 插拔 USB 电源，看串口上 `power_monitor` 的 `power.charging.changed: charging=... usb_present=... battery_percent=...` 日志行 | 插拔后 1 秒内出现该日志行，`charging`/`usb_present` 的值与实际状态一致 |  |
 | 36 | `power.battery.low` 事件（spec 6.3，wisp_core::PowerMonitor） | 电量明显偏低时观察串口日志；子项目 1 还没有 CLI/REST 能改 Settings，想快速触发可以临时在 `components/wisp_app/src/app.cpp` 里 `core::Settings power_settings(*impl_->platform.settings, "power");`（约第 102 行）之后加一行 `power_settings.set("low_batt_pct", int64_t{100});`，重新编译固件验证完后删掉这行（不要提交） | 只出现一次 `power_monitor` 的 `power.battery.low: battery_percent=... (threshold=...)` 日志行（不持续重复）；电量回升超过阈值+5 后再降回阈值以下会再出现一次；没有接电池、只接 USB 供电时不出现该日志 |  |
-| 37 | 新分区表首次完整烧录（connectivity spec 3.2） | 在已经有设置和数据（配过 Wi-Fi、配对过浏览器、改过亮度、`/int` 里有文件）的板子上执行 `idf.py -p <PORT> flash` | 正常启动；串口没有分区相关报错；Wi-Fi、配对、亮度等设置和 `/int` 数据都还在；管理后台"系统"页的固件卡片显示版本、`waveshare_amoled_216` 和运行分区 `ota_0` |  |
+| 37 | 新分区表首次完整烧录（connectivity spec 3.2） | 在已经有设置和数据（配过 Wi-Fi、配对过浏览器、改过亮度、`/int` 里有文件）的板子上执行 `idf.py -p <PORT> flash` | 正常启动；串口没有分区相关报错；Wi-Fi、配对、亮度等设置和 `/int` 数据都还在；管理后台"系统"页的固件卡片显示版本、`waveshare_esp32_s3_touch_amoled_2_16` 和运行分区 `ota_0` |  |
 | 38 | 网页上传并确认（connectivity spec 6.5） | 改一点代码再构建，在"系统"页上传 `firmware/build/wisp.bin`；设备上弹出确认框后点"是" | 进度条走完后网页提示"请在设备上确认"；确认框显示旧版本 → 新版本；点"是"后设备重启，网页提示正在运行新版本；固件卡片的运行分区变成 `ota_1`；串口没有回滚日志 |  |
 | 39 | 网页上传后拒绝 | 再上传一次，设备上点"否"；再上传一次，2 分钟内不操作 | 两次网页都提示"已在设备上拒绝"；设备不重启，版本与运行分区不变 |  |
 | 40 | 拒绝其他板子的镜像 | 用 `-DWISP_BOARD=<另一块板>` 构建（或上传任何非 Wisp 的 ESP-IDF 应用 `.bin`）后上传 | 网页立即提示"这个固件是为其他开发板或芯片构建的"（400 `wrong_board`），设备上不弹确认框，Flash 未被写入（再上传一次正确镜像仍然正常） |  |
@@ -120,7 +120,7 @@
     的目标；而且硬复位会清空 GRAM，初始化序列第 45 行就发 DISPON（之后还要等 600 ms），
     期间会先显示未初始化的 GRAM（花屏/黑屏）。
   - 现改为 `EspDisplayConfig::PanelSleep::DcsSleep`（`components/wisp_port_esp/dev/esp_display.cpp`，
-    `boards/waveshare_amoled_216/board.cpp` 的 `kDisplaySleepOutSettleMs` 开启）：完全不调用
+    `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp` 的 `kDisplaySleepOutSettleMs` 开启）：完全不调用
     `esp_lcd_panel_disp_sleep()`/`disp_on_off()`，改为用 `esp_lcd_panel_io_tx_param()`（和
     `set_brightness()` 同一条路径）直接发送标准 MIPI DCS 命令——入睡：`DISPOFF`(0x28) +
     `SLPIN`(0x10)；唤醒：`SLPOUT`(0x11) + 等待 `sleep_out_settle_ms`（本板配置 120 ms，
@@ -156,7 +156,7 @@
   在睡眠期间保持电平的输出如果浮空：面板/触摸可能被意外复位（配合上面的 `DcsSleep` 会
   直接抵消它要避免的那次重新初始化），CS 浮空还可能让面板在浅睡眠期间误采样到总线上的
   随机电平、把无关的 SPI 数据当成发给自己的命令，功放浮空可能有爆音或漏电风险。
-  `boards/waveshare_amoled_216/board.cpp` 的 `hold_outputs_during_light_sleep()`（在板级
+  `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp` 的 `hold_outputs_during_light_sleep()`（在板级
   `init()` 的最后调用）对这四个引脚分别调用 `gpio_sleep_sel_dis()`，让它们在浅睡眠期间
   继续保持配置好的电平/方向。**待验证**：真机上连续经历多次自动浅睡眠/唤醒循环（例如
   待机 10 分钟以上，确保期间发生过几十次自动浅睡眠-唤醒）后，确认面板画面正常（没有

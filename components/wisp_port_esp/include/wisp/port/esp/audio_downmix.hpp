@@ -2,7 +2,7 @@
 
 // Pure, platform-free helper for wisp::port::esp::EspAudioIn (dev/esp_audio.cpp):
 // ES7210 is wired on this board as a 2-channel (stereo) capture path
-// (see docs/hardware/waveshare_amoled_216.md), but wisp::hal::AudioIn's
+// (see docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md), but wisp::hal::AudioIn's
 // contract -- and the one caller,
 // components/wisp_app/src/loopback.cpp's "录音回放" self-check -- is mono
 // (AudioFormat::channels == 1). EspAudioIn therefore always opens the

@@ -32,7 +32,7 @@ FirmwareTarget target() { return {"wisp", "test_board", wisp::test::kChipEsp32s3
 TEST(FirmwareImage, ParsesVersionAndBoardFromHeader) {
     ImageSpec spec;
     spec.version = "v0.2.0-17-g1234567-dirty";
-    spec.board = "waveshare_amoled_216";
+    spec.board = "waveshare_esp32_s3_touch_amoled_2_16";
     const auto image = make_firmware_image(spec);
 
     auto info = parse_firmware_head(head_of(image));
@@ -40,7 +40,7 @@ TEST(FirmwareImage, ParsesVersionAndBoardFromHeader) {
     EXPECT_EQ(info.value().chip_id, wisp::test::kChipEsp32s3);
     EXPECT_EQ(info.value().project, "wisp");
     EXPECT_EQ(info.value().version, "v0.2.0-17-g1234567-dirty");
-    EXPECT_EQ(info.value().board, "waveshare_amoled_216");
+    EXPECT_EQ(info.value().board, "waveshare_esp32_s3_touch_amoled_2_16");
 }
 
 TEST(FirmwareImage, LongestFieldsStopAtTheirSize) {

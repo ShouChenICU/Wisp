@@ -2,7 +2,7 @@
 
 // ESP-IDF wisp::hal::Display backed by an esp_lcd panel + panel IO pair
 // (e.g. the handles esp_board_manager's display_lcd device hands out --
-// see boards/waveshare_amoled_216/board.cpp). Chip/board-specific facts
+// see boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp). Chip/board-specific facts
 // (model, size, screen shape, flush alignment, command framing, pixel
 // byte order) are not hard-coded here -- AGENTS.md's "板子无关" rule --
 // but passed in via EspDisplayConfig by the board.
@@ -51,7 +51,7 @@ struct EspDisplayConfig {
     std::string render_mode;
 
     // How set_power(false)/set_power(true) put the panel to/from sleep
-    // -- see docs/hardware/waveshare_amoled_216.md for this panel's own
+    // -- see docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md for this panel's own
     // sleep behavior. Chosen per board, not per
     // chip model: both options are implemented entirely in terms of the
     // standard esp_lcd_panel_* API and standard MIPI DCS commands, never

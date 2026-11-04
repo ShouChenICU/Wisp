@@ -1,6 +1,6 @@
 # Board-specific sdkconfig defaults for the Waveshare ESP32-S3-Touch-AMOLED-2.16
 # (ESP32-S3R8: 16 MB QIO flash, 8 MB octal PSRAM @ 80 MHz -- see
-# docs/hardware/waveshare_amoled_216.md). `idf.py bmgr -b waveshare_amoled_216`
+# docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md). `idf.py bmgr -b waveshare_esp32_s3_touch_amoled_2_16`
 # merges this file into components/gen_bmgr_codes/board_manager.defaults, which
 # takes priority over firmware/sdkconfig.defaults. Like every sdkconfig
 # defaults file it only applies when firmware/sdkconfig does not exist yet:
@@ -14,7 +14,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # This board's partition table (layout rules: docs/porting-guide.md). ESP-IDF
 # resolves a relative filename against the project directory (firmware/).
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../boards/waveshare_amoled_216/partitions.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv"
 
 # External octal PSRAM, 80 MHz, usable via malloc() (os::alloc(Mem::Large) --
 # see components/wisp_port_esp/os/os_esp.cpp).
@@ -26,11 +26,11 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # copies them there at boot. The 80 MHz octal PSRAM refills the 16 KB
 # instruction cache faster than the 80 MHz quad flash, and LVGL's render
 # loop misses that cache a lot: scrolling the self-check list goes from 14
-# to 20 fps (docs/hardware/waveshare_amoled_216.md, "性能基准"). Costs
+# to 20 fps (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md, "性能基准"). Costs
 # about as much PSRAM as the image (~3 MB) and almost no internal RAM.
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
 # Console over USB-Serial-JTAG (no external UART-to-USB bridge on this
-# board -- see docs/hardware/waveshare_amoled_216.md).
+# board -- see docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

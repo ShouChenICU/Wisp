@@ -6,7 +6,7 @@
 # Activate the pinned ESP-IDF v6.0.3 environment first (export.sh is a
 # bash script; the user's shell is fish). Order: set-target -> bmgr ->
 # build (see AGENTS.md section 4):
-#   bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b waveshare_amoled_216 && idf.py build'
+#   bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16 && idf.py build'
 # set-target selects the esp32s3 target and (via the component manager)
 # fetches esp_board_manager, whose idf.py extension provides `idf.py bmgr`
 # -- on a fresh checkout bmgr isn't available before that. bmgr then
@@ -28,7 +28,7 @@ set(EXTRA_COMPONENT_DIRS ${CMAKE_CURRENT_LIST_DIR}/../components ${CMAKE_CURRENT
 # components/wisp_app/include/wisp/app/board.hpp). Override on the
 # command line (idf.py -DWISP_BOARD=<name> build) to build for a
 # different board.
-set(WISP_BOARD waveshare_amoled_216 CACHE STRING "Board to build for (boards/<name>/board.cpp)")
+set(WISP_BOARD waveshare_esp32_s3_touch_amoled_2_16 CACHE STRING "Board to build for (boards/<name>/board.cpp)")
 
 # The image's version (esp_app_desc_t::version, what the admin page and
 # the firmware upload compare): X.Y.Z[-N-gHASH][-dirty] from git, see

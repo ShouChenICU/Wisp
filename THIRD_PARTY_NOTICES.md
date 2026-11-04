@@ -150,7 +150,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-## ESP-Claw (board definition for `boards/waveshare_amoled_216/`)
+## ESP-Claw (board definition for `boards/waveshare_esp32_s3_touch_amoled_2_16/`)
 
 - Project: https://github.com/espressif/esp-claw (commit
   `36b377f0a46688916e4f6458a87dd92bee42aa92`)

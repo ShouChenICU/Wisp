@@ -1,6 +1,6 @@
-# waveshare_amoled_216
+# waveshare_esp32_s3_touch_amoled_2_16
 
-Waveshare ESP32-S3-Touch-AMOLED-2.16（480×480 圆角 AMOLED，CO5300 屏幕 + CST9217 触摸）的板级适配。硬件资料（引脚、芯片、勘误）见 `docs/hardware/waveshare_amoled_216.md`。
+Waveshare ESP32-S3-Touch-AMOLED-2.16（480×480 圆角 AMOLED，CO5300 屏幕 + CST9217 触摸）的板级适配。硬件资料（引脚、芯片、勘误）见 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`。
 
 ## 文件
 
@@ -19,7 +19,7 @@ IMU（QMI8658）和电源管理（AXP2101）不交给 bmgr，由 Wisp 自己的�
 ```bash
 cd firmware
 idf.py set-target esp32s3          # 仅全新检出时需要：让 idf.py 加载 bmgr 扩展
-idf.py bmgr -c ../boards -b waveshare_amoled_216
+idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16
 idf.py build
 ```
 

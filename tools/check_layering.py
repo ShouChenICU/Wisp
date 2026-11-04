@@ -96,7 +96,7 @@ FORBIDDEN_EXACT = ("sdkconfig.h", "nvs.h", "nvs_flash.h", "sdmmc_cmd.h")
 # esp_board_manager's own per-device headers (dev_*.h) and the board-
 # specific code `idf.py bmgr` generates (gen_board_*.*) are matched by
 # basename, not full path, since boards include them as bare quoted
-# filenames (see e.g. boards/waveshare_amoled_216/board.cpp's
+# filenames (see e.g. boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp's
 # #include "dev_display_lcd.h") with no fixed directory prefix to
 # anchor on -- both are gitignored (AGENTS.md section 8) so they can't
 # be listed by exact name either.

@@ -2,7 +2,7 @@
 # selected by firmware/CMakeLists.txt's WISP_BOARD cache variable (see
 # wisp::board::create_board(), components/wisp_app/include/wisp/app/board.hpp).
 # board.cpp drives esp_board_manager (bmgr) and the esp_lcd/esp_lcd_touch
-# handles it creates (see boards/waveshare_amoled_216/board.cpp).
+# handles it creates (see boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp).
 idf_component_register(
     SRCS main.cpp board_desc.c ${CMAKE_CURRENT_LIST_DIR}/../../boards/${WISP_BOARD}/board.cpp
     REQUIRES wisp_app wisp_port_esp esp_board_manager esp_lcd esp_lcd_touch esp_driver_i2c

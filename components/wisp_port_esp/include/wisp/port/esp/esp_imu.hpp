@@ -1,7 +1,7 @@
 #pragma once
 
 // ESP-IDF wisp::hal::Imu backed by drivers/qmi8658 (the board's own bmgr
-// i2c_master bus handle -- see boards/waveshare_amoled_216/board.cpp).
+// i2c_master bus handle -- see boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp).
 // The chip model string is passed in by the board (AGENTS.md "板子无关"
 // rule); caps ("accel", "gyro", "magnetometer", "max_rate_hz") describe
 // facts about the QMI8658 chip this class wraps (no magnetometer on this

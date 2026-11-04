@@ -71,13 +71,13 @@ wisp/
 ├── drivers/
 │   ├── axp2101/  pcf85063/  qmi8658/           # 从 MyOS 移植，ESP-IDF 组件
 ├── boards/
-│   └── waveshare_amoled_216/  board_info.yaml  board_peripherals.yaml  board_devices.yaml  setup_device.c  board.cpp  README.md
+│   └── waveshare_esp32_s3_touch_amoled_2_16/  board_info.yaml  board_peripherals.yaml  board_devices.yaml  setup_device.c  board.cpp  README.md
 ├── firmware/   CMakeLists.txt  main/{CMakeLists.txt,idf_component.yml,main.cpp}  sdkconfig.defaults  partitions.csv
 ├── simulator/  CMakeLists.txt  main.cpp  sim_options.{hpp,cpp}
 ├── tests/      CMakeLists.txt  base/ os/ core/ ui/ app/ sim/ smoke/sim_smoke.py
 ├── tools/      check_layering.py  ci.sh
 ├── .github/workflows/ci.yml
-└── docs/       architecture.md  porting-guide.md  references.md  hardware/waveshare_amoled_216.md
+└── docs/       architecture.md  porting-guide.md  references.md  hardware/waveshare_esp32_s3_touch_amoled_2_16.md
 ```
 
 PC 构建统一入口：`cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim && ctest --test-dir build/sim --output-on-failure`。
@@ -1137,7 +1137,7 @@ git commit -m "test: add simulator smoke tests, layering check and CI"
 **Files:**
 - Create: `firmware/CMakeLists.txt`、`firmware/main/CMakeLists.txt`、`firmware/main/idf_component.yml`、`firmware/main/main.cpp`、`firmware/sdkconfig.defaults`、`firmware/partitions.csv`
 - Create: `components/wisp_port_esp/CMakeLists.txt`、`components/wisp_port_esp/os/os_esp.cpp`、`components/wisp_port_esp/log_esp.cpp`
-- Create: `boards/waveshare_amoled_216/board.cpp`（本任务只注册 0 个设备，`name()` 返回 `"waveshare_amoled_216"`）
+- Create: `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp`（本任务只注册 0 个设备，`name()` 返回 `"waveshare_esp32_s3_touch_amoled_2_16"`）
 - Modify: `.github/workflows/ci.yml`（加入 `firmware` 任务）
 
 **Interfaces:**
@@ -1146,7 +1146,7 @@ git commit -m "test: add simulator smoke tests, layering check and CI"
   - ESP 侧 `wisp::os` 实现：`Mutex` 对应 `xSemaphoreCreateMutex`；`Semaphore` 对应 `xSemaphoreCreateCounting`；`Task::spawn` 对应 `xTaskCreatePinnedToCore`（`core == -1` 时用 `tskNO_AFFINITY`，栈大小以字节为单位，按 IDF 的约定传入），任务函数返回后 give 一个完成信号量并 `vTaskDelete(NULL)`，`join` 等待该信号量；`Timer` 对应 `esp_timer`（回调在 esp_timer 任务里运行）；`alloc` 中 `Mem::Large` → `heap_caps_malloc(MALLOC_CAP_SPIRAM)`，`Mem::Fast` → `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`，`Mem::Dma` → `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL`；`now_ms` 基于 `esp_timer_get_time() / 1000`
   - `wisp::port::esp::EspLogSink`：调用 `esp_log_write`，日志级别一一对应
   - `std::unique_ptr<wisp::app::Board> wisp::board::create_board();`（声明在 `components/wisp_app/include/wisp/app/board.hpp`，由 `boards/<板>/board.cpp` 定义）
-  - `firmware/CMakeLists.txt`：`set(EXTRA_COMPONENT_DIRS ../components ../drivers)`；`set(WISP_BOARD waveshare_amoled_216 CACHE STRING "")`；`include($ENV{IDF_PATH}/tools/cmake/project.cmake)`；`project(wisp)`；在 `project()` 之前用 `idf_build_set_property(COMPILE_DEFINITIONS "LV_CONF_PATH=${CMAKE_CURRENT_LIST_DIR}/../components/wisp_ui/config/lv_conf.h" APPEND)` 指定 LVGL 配置
+  - `firmware/CMakeLists.txt`：`set(EXTRA_COMPONENT_DIRS ../components ../drivers)`；`set(WISP_BOARD waveshare_esp32_s3_touch_amoled_2_16 CACHE STRING "")`；`include($ENV{IDF_PATH}/tools/cmake/project.cmake)`；`project(wisp)`；在 `project()` 之前用 `idf_build_set_property(COMPILE_DEFINITIONS "LV_CONF_PATH=${CMAKE_CURRENT_LIST_DIR}/../components/wisp_ui/config/lv_conf.h" APPEND)` 指定 LVGL 配置
   - `firmware/main/CMakeLists.txt`：`idf_component_register(SRCS main.cpp ${CMAKE_CURRENT_LIST_DIR}/../../boards/${WISP_BOARD}/board.cpp REQUIRES wisp_app wisp_port_esp)`
   - `firmware/main/idf_component.yml`：`idf: ">=6.0.3,<6.1"`、`lvgl/lvgl: "9.5.0"`、`bblanchon/arduinojson: "7.4.3"`（后续任务追加其他依赖）
   - `main.cpp`：`extern "C" void app_main()`，内容：`log::add_sink(EspLogSink)`；构造 `Platform`（board 来自 `create_board()`；`emit_line` 用 `printf("%s\n")` 后 `fflush`；`request_power_off` 调用 `esp_restart()`；`heap_info` 返回 `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` 与 `heap_caps_get_free_size(MALLOC_CAP_SPIRAM)`）；`App::start()`；然后 `vTaskDelete(NULL)`（App 对象为静态存储期，不随 app_main 返回而析构）
@@ -1184,9 +1184,9 @@ Expected: 构建成功，生成 `firmware/build/wisp.bin`，并生成 `firmware/
 - [ ] **Step 4: 烧录并查看日志（需要真机）**
 
 Run: `bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py -p /dev/ttyACM0 flash monitor'`
-Expected: 串口依次输出 `WISP_BOOT_REPORT {...}`（其中 `"mode":"headless"`、`"storage":"readonly"`）和 `WISP_MANIFEST {"board":"waveshare_amoled_216","devices":[]}`，没有崩溃或重启循环。
+Expected: 串口依次输出 `WISP_BOOT_REPORT {...}`（其中 `"mode":"headless"`、`"storage":"readonly"`）和 `WISP_MANIFEST {"board":"waveshare_esp32_s3_touch_amoled_2_16","devices":[]}`，没有崩溃或重启循环。
 
-- [ ] **Step 5: 在 CI 中加入固件任务**：`firmware` 任务使用容器 `espressif/idf:v6.0.3`，执行 `cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b waveshare_amoled_216 && idf.py build`（`bmgr` 这一步在 Task 16 生效；本任务先不写这一步，Task 16 再补上）。
+- [ ] **Step 5: 在 CI 中加入固件任务**：`firmware` 任务使用容器 `espressif/idf:v6.0.3`，执行 `cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16 && idf.py build`（`bmgr` 这一步在 Task 16 生效；本任务先不写这一步，Task 16 再补上）。
 
 - [ ] **Step 6: Commit**
 
@@ -1200,9 +1200,9 @@ git commit -m "feat(firmware): add ESP-IDF project, ESP OS backend and headless 
 ### Task 16: 板级定义、屏幕与触摸
 
 **Files:**
-- Create: `boards/waveshare_amoled_216/{board_info.yaml,board_peripherals.yaml,board_devices.yaml,setup_device.c,README.md}`
+- Create: `boards/waveshare_esp32_s3_touch_amoled_2_16/{board_info.yaml,board_peripherals.yaml,board_devices.yaml,setup_device.c,README.md}`
 - Create: `components/wisp_port_esp/dev/{esp_display,esp_touch}.cpp`、`components/wisp_port_esp/include/wisp/port/esp/{esp_display,esp_touch}.hpp`
-- Modify: `boards/waveshare_amoled_216/board.cpp`、`firmware/main/idf_component.yml`、`.github/workflows/ci.yml`
+- Modify: `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp`、`firmware/main/idf_component.yml`、`.github/workflows/ci.yml`
 - Create: `docs/references.md`（首条记录：板级 YAML 与 `setup_device.c` 参照 ESP-Claw 的 `boards/waveshare/waveshare_ESP32_S3_Touch_AMOLED_2_16`，Apache-2.0）
 
 **Interfaces:**
@@ -1210,18 +1210,18 @@ git commit -m "feat(firmware): add ESP-IDF project, ESP OS backend and headless 
 - Produces：
   - `class wisp::port::esp::EspDisplay : public hal::Display { EspDisplay(esp_lcd_panel_handle_t, esp_lcd_panel_io_handle_t, int w, int h); }`，model `"CO5300"`，caps 与 spec 5.5 节一致（width 480、height 480、shape `rounded_rect`、corner_radius 40、panel `amoled`、brightness true、area_align 2）；`flush` 调用 `esp_lcd_panel_draw_bitmap(x1, y1, x2+1, y2+1)`，用 `esp_lcd_panel_io_register_event_callbacks` 的传输完成回调 give 信号量，等待最多 250 ms，超时返回 `Timeout`；`set_brightness` 用 `esp_lcd_panel_io_tx_param` 写寄存器 `0x51`；`set_power` 调用 `esp_lcd_panel_disp_on_off`
   - `class wisp::port::esp::EspTouch : public hal::Touch { explicit EspTouch(esp_lcd_touch_handle_t); }`，model `"CST9217"`，caps max_points 1；`read` 先调用 `esp_lcd_touch_read_data`，再用 `esp_lcd_touch_get_data` 取数据
-  - YAML：三份文件的内容取自 ESP-Claw 同款板定义，修改为：`board: waveshare_amoled_216`；去掉其中的 `imu_sensor`、`axp2101_power_manager` 两个 `custom` 设备（由 Wisp 自己的驱动处理）；其余（i2c_master SDA15/SCL14；I2S MCLK42/BCLK9/WS45/DOUT8/DIN10，16 kHz；spi_display QSPI D0–D3=4/5/6/7、SCLK38；gpio_pa_control 46；audio_dac es8311 地址 0x30；audio_adc es7210 地址 0x80、mask `"0011"`；fs_sdcard sdmmc 1-bit CLK2/CMD1/D0=3、`format_if_mount_failed: false`；display_lcd co5300 CS12、RST39、quad_mode、`bits_per_pixel: 16`、swap_xy true、mirror_y true；lcd_touch cst9217 RST40、INT11、地址 0xB4）保持不变。`setup_device.c` 保留 Espressif 版权头，把 TAG 改为 `"wisp_board"`，在文件头追加说明"Adapted for Wisp"。
+  - YAML：三份文件的内容取自 ESP-Claw 同款板定义，修改为：`board: waveshare_esp32_s3_touch_amoled_2_16`；去掉其中的 `imu_sensor`、`axp2101_power_manager` 两个 `custom` 设备（由 Wisp 自己的驱动处理）；其余（i2c_master SDA15/SCL14；I2S MCLK42/BCLK9/WS45/DOUT8/DIN10，16 kHz；spi_display QSPI D0–D3=4/5/6/7、SCLK38；gpio_pa_control 46；audio_dac es8311 地址 0x30；audio_adc es7210 地址 0x80、mask `"0011"`；fs_sdcard sdmmc 1-bit CLK2/CMD1/D0=3、`format_if_mount_failed: false`；display_lcd co5300 CS12、RST39、quad_mode、`bits_per_pixel: 16`、swap_xy true、mirror_y true；lcd_touch cst9217 RST40、INT11、地址 0xB4）保持不变。`setup_device.c` 保留 Espressif 版权头，把 TAG 改为 `"wisp_board"`，在文件头追加说明"Adapted for Wisp"。
   - `board.cpp` 在本任务中：调用 `esp_board_manager_init()`（失败时把所有依赖 bmgr 的设备记为 `Failed` 并附错误名后返回）；从 bmgr 取 display_lcd，注册 `display.main`；取 lcd_touch，注册 `touch.main`；任何一步失败都记入 report，然后继续下一步。
   - `idf_component.yml` 追加：`espressif/esp_board_manager: "~0.7.5"`、`espressif/esp_lcd_co5300: "~2.2.0"`、`waveshare/esp_lcd_touch_cst9217: "*"`（首次构建后，从 `dependencies.lock` 读出实际解析到的版本，改为精确版本号锁定）。
 
 - [ ] **Step 1: 写板级 YAML 与 setup_device.c，生成板级代码**
 
-Run: `bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py bmgr -c ../boards -b waveshare_amoled_216'`
+Run: `bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16'`
 Expected: 生成 `firmware/components/gen_bmgr_codes/`，没有 YAML 校验错误。如果某个字段被拒绝，对照 `firmware/managed_components/espressif__esp_board_manager/` 下的文档与示例修正，不改动其他设备。
 
 - [ ] **Step 2: 实现 EspDisplay、EspTouch，更新 board.cpp，构建** — Run: `idf.py build`（在 export 环境中，下同） → Expected: 成功。
 - [ ] **Step 3: 烧录验证（需要真机）** — Run: `idf.py -p /dev/ttyACM0 flash monitor` → Expected: 屏幕显示自检界面，四角不被裁切；手指触摸时触摸区坐标跟随，且方向正确（左上角接近 (0,0)，右下角接近 (479,479)）；界面中 display、touch 为"正常"，其余设备暂时缺失；启动报告中出现 `display.main` 和 `touch.main`。如果局部刷新出现条纹或错位，先确认 `area_align` 为 2 并检查 Display caps 是否正确传入。
-- [ ] **Step 4: 更新 CI 固件任务**，加入 `idf.py bmgr -c ../boards -b waveshare_amoled_216`。
+- [ ] **Step 4: 更新 CI 固件任务**，加入 `idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16`。
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -1236,7 +1236,7 @@ git commit -m "feat(board): add Waveshare AMOLED 2.16 board with display and tou
 **Files:**
 - Create: `drivers/axp2101/{CMakeLists.txt,include/axp2101.h,axp2101.c}`、`drivers/pcf85063/{...}`、`drivers/qmi8658/{...}`（纯 C 的 ESP-IDF 组件，基于 `driver/i2c_master.h`，由 `/home/shouchen/Projects/MyOS/src/hal/{hal_power,hal_rtc,hal_imu}.cpp` 中的寄存器逻辑整理而来）
 - Create: `components/wisp_port_esp/dev/{esp_power,esp_clock,esp_imu,esp_button}.cpp` 及对应头文件
-- Modify: `boards/waveshare_amoled_216/board.cpp`、`docs/references.md`
+- Modify: `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp`、`docs/references.md`
 
 **Interfaces:**
 - Consumes: bmgr 的 `i2c_master` 总线句柄（`i2c_master_bus_handle_t`）
@@ -1263,7 +1263,7 @@ git commit -m "feat(drivers): port AXP2101, PCF85063, QMI8658 and add GPIO butto
 
 **Files:**
 - Create: `components/wisp_port_esp/dev/{esp_audio,esp_storage}.cpp` 及头文件、`components/wisp_port_esp/settings_nvs.cpp`、`components/wisp_port_esp/include/wisp/port/esp/settings_nvs.hpp`
-- Modify: `boards/waveshare_amoled_216/board.cpp`、`firmware/main/main.cpp`（settings 改为 NVS）、`firmware/main/idf_component.yml`（追加 `joltwallet/littlefs: "1.23.1"`，`esp_codec_dev` 由 bmgr 间接引入，同样从 `dependencies.lock` 读出实际版本后锁定）
+- Modify: `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp`、`firmware/main/main.cpp`（settings 改为 NVS）、`firmware/main/idf_component.yml`（追加 `joltwallet/littlefs: "1.23.1"`，`esp_codec_dev` 由 bmgr 间接引入，同样从 `dependencies.lock` 读出实际版本后锁定）
 
 **Interfaces:**
 - Consumes: bmgr 的 `audio_dac`/`audio_adc` 设备句柄（`dev_audio_codec_handles_t`，字段 `codec_dev`），`fs_sdcard` 设备，`esp_codec_dev_open`/`read`/`write`/`close`/`set_out_vol`/`set_in_gain`
@@ -1329,7 +1329,7 @@ git commit -m "feat(firmware): add audio codecs, LittleFS/SD storage and NVS set
 - **电源键**：`PowerKeyController` 的 `ScreenOff`/`ScreenOn` 动作改为调用 `PowerManager` 的 `enter_standby`/`exit_standby`，不再直接调用 `Display::set_power`。待机时按任意键都会唤醒。
 - **sdkconfig.defaults**：新增 `CONFIG_PM_ENABLE=y`、`CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`。
   - 需要核实 USB-Serial-JTAG 与自动浅睡眠的相互影响，例如 `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`。原则是：连着 USB 调试时可以不睡，但用电池供电时必须能睡；
-  - 结论写进 `docs/hardware/waveshare_amoled_216.md`。
+  - 结论写进 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`。
 
 - [ ] **Step 1: 写失败的测试**
   - `PowerManager`：`enter_standby` 之后，FakeDisplay `powered()==false`，UiRuntime `paused()`，按键轮询周期为 50，`set_standby(true)` 被调用一次，并收到 `power.state` 事件；`exit_standby` 全部恢复；连续两次 enter 只生效一次；FakeTouch 返回 Unsupported 时 `enter_standby` 仍然成功；`screen_off_s=1` 时，`tick` 超过 1000 ms 后进入待机，`note_activity` 会重置计时；`screen_off_s=0` 时永不自动熄屏。
@@ -1356,20 +1356,20 @@ git commit -m "feat(app): add screen-off standby with panel/touch sleep and ligh
 ### Task 19: 文档与整体验收
 
 **Files:**
-- Create: `README.md`、`docs/architecture.md`、`docs/porting-guide.md`、`docs/hardware/waveshare_amoled_216.md`、`THIRD_PARTY_NOTICES.md`
+- Create: `README.md`、`docs/architecture.md`、`docs/porting-guide.md`、`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`、`THIRD_PARTY_NOTICES.md`
 - Modify: `docs/references.md`
 
 **Interfaces:**
 - `README.md`：项目简介（一句话加小鬼火的定位）、两条快速开始路径（模拟器：依赖安装、构建、运行与按键说明；真机：安装 ESP-IDF v6.0.3、执行 `idf.py bmgr`、build、flash）、目录结构、`tools/ci.sh` 用法、许可证。
 - `docs/architecture.md`：分层图、依赖规则、启动流程、事件主题清单（Task 5、7、9、11 中出现的全部主题）、存储逻辑区，以及"相对 spec 的细化"一节（照抄本计划开头的 8 条）。
 - `docs/porting-guide.md`：新增一块板需要哪些步骤（写 bmgr YAML，写 `board.cpp` 实现 `create_board()`，为缺少的芯片添加驱动，设备 id 命名约定，能力字段约定，用 `--board` 构建）以及验收办法（对照自检界面和启动报告）。
-- `docs/hardware/waveshare_amoled_216.md`：在 MyOS 硬件文档的基础上修正：触摸芯片为 CST9217（地址 0x5A）；SD 卡为 1-bit SDMMC（CLK2/CMD1/D0=3）；ES8311 的 7 位地址为 0x18。
+- `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`：在 MyOS 硬件文档的基础上修正：触摸芯片为 CST9217（地址 0x5A）；SD 卡为 1-bit SDMMC（CLK2/CMD1/D0=3）；ES8311 的 7 位地址为 0x18。
 - `THIRD_PARTY_NOTICES.md`：ESP-IDF（Apache-2.0）、LVGL（MIT）、ArduinoJson（MIT）、GoogleTest（BSD-3-Clause，仅测试用）、SDL2（zlib，仅模拟器）、esp_board_manager / esp_codec_dev / esp_lcd_co5300（以组件仓库中声明的许可为准）、waveshare/esp_lcd_touch_cst9217（以组件仓库声明为准）、joltwallet/littlefs（MIT，内含 littlefs 本体为 BSD-3-Clause）、Noto Sans CJK SC 字形（SIL OFL 1.1，经 MyOS 生成）、MyOS 驱动移植（MIT）、ESP-Claw 板级定义参照（Apache-2.0）。每一项写明用途、许可证、分发方式。
 
 - [ ] **Step 1: 写文档**
 - [ ] **Step 2: 全量本机检查** — Run: `bash tools/ci.sh` → Expected: 退出码 0。
-- [ ] **Step 3: 固件构建** — Run: `bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py bmgr -c ../boards -b waveshare_amoled_216 && idf.py build'` → Expected: 成功。
-- [ ] **Step 4: 真机验收（需要真机，逐条对照 spec 第 10 节）** — 记录结果：①从上电到出现自检界面的时间 < 3 s（在串口日志中查看 `boot_ms`）；②8 类设备的状态与行为全部符合；③电源键的三种行为符合；④串口输出的 manifest 中 `imu.main.caps.magnetometer == false`；⑤手指持续上下滚动自检列表 10 s，串口 `WISP_PERF` 的 fps ≥ 30（本板的验收线见 spec 第 10 节"已记录的偏差"），记录 fps、cpu、flush_ms 三个数值写入 `docs/hardware/waveshare_amoled_216.md` 的"性能基准"一节。任何一项不通过，回到对应任务修复，不在本任务中绕过。
+- [ ] **Step 3: 固件构建** — Run: `bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16 && idf.py build'` → Expected: 成功。
+- [ ] **Step 4: 真机验收（需要真机，逐条对照 spec 第 10 节）** — 记录结果：①从上电到出现自检界面的时间 < 3 s（在串口日志中查看 `boot_ms`）；②8 类设备的状态与行为全部符合；③电源键的三种行为符合；④串口输出的 manifest 中 `imu.main.caps.magnetometer == false`；⑤手指持续上下滚动自检列表 10 s，串口 `WISP_PERF` 的 fps ≥ 30（本板的验收线见 spec 第 10 节"已记录的偏差"），记录 fps、cpu、flush_ms 三个数值写入 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md` 的"性能基准"一节。任何一项不通过，回到对应任务修复，不在本任务中绕过。
 - [ ] **Step 5: Commit**
 
 ```bash

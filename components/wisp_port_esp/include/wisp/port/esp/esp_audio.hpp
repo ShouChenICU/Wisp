@@ -3,7 +3,7 @@
 // ESP-IDF wisp::hal::AudioOut/AudioIn backed by esp_codec_dev handles that
 // esp_board_manager (bmgr) already constructed for the board's audio_dac
 // (ES8311) and audio_adc (ES7210) devices (see
-// boards/waveshare_amoled_216/board.cpp, which fetches
+// boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp, which fetches
 // dev_audio_codec_handles_t::codec_dev for each and passes it to
 // create()). The PA (GPIO46, board_peripherals.yaml's gpio_pa_control) is
 // not touched here at all: it is wired into audio_dac's "pa_name"

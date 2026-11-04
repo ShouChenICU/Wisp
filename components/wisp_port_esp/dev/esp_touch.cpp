@@ -66,7 +66,7 @@ Result<void> EspTouch::set_power(bool on) {
     // (see components/espressif__esp_lcd_touch/esp_lcd_touch.c) -- every
     // standby transition would otherwise spam an error log on a
     // controller (e.g. this board's CST9217 -- see
-    // docs/hardware/waveshare_amoled_216.md) that simply never wired one
+    // docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md) that simply never wired one
     // up. `enter_sleep`/`exit_sleep` are plain public struct fields (see
     // esp_lcd_touch.h's esp_lcd_touch_s), so checking them directly
     // avoids ever making that call at all when unsupported, instead of

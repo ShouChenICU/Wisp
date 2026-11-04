@@ -1,10 +1,10 @@
 // Board definition for the Waveshare ESP32-S3-Touch-AMOLED-2.16 (see
-// docs/hardware/waveshare_amoled_216.md).
+// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
 //
 // Buses and the esp_lcd-level display/touch devices are brought up by
 // esp_board_manager (bmgr) from this directory's board_*.yaml +
 // setup_device.c (generated into firmware/components/gen_bmgr_codes/ by
-// `idf.py bmgr -c ../boards -b waveshare_amoled_216`). This file then
+// `idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16`). This file then
 // wraps bmgr's handles in Wisp HAL devices and registers them:
 //   - display_lcd -> display.main (wisp::port::esp::EspDisplay, CO5300)
 //   - lcd_touch   -> touch.main   (wisp::port::esp::EspTouch, CST9217)
@@ -109,7 +109,7 @@ constexpr int kCornerRadius = 40;
 constexpr int kAreaAlign = 2;
 // Deliberate, user-approved deviation from calling
 // esp_lcd_panel_disp_sleep() directly -- see
-// docs/hardware/waveshare_amoled_216.md's "待机与省电" section: this
+// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md's "待机与省电" section: this
 // board's CO5300 is wired with a hardware reset GPIO
 // (board_devices.yaml's lcd_panel_config.reset_gpio_num), which makes
 // esp_lcd_panel_disp_sleep() escalate to a deep standby that clears GRAM
@@ -398,7 +398,7 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
 //   - the display panel's CS: see kPinDisplayCs's
 //     comment -- low risk, but cheap to hold at its idle-high level
 //     alongside the other three.
-// See docs/hardware/waveshare_amoled_216.md's "待机与省电" section for
+// See docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md's "待机与省电" section for
 // the on-device verification step this motivates.
 void hold_outputs_during_light_sleep() {
     constexpr gpio_num_t kPins[] = {kPinDisplayReset, kPinTouchReset, kPinAudioPaEnable,
@@ -537,9 +537,9 @@ void sync_system_clock_from_rtc(wisp::core::DeviceRegistry& registry) {
            static_cast<long long>(unix_seconds.value()));
 }
 
-class WaveshareAmoled216Board : public wisp::app::Board {
+class WaveshareEsp32S3TouchAmoled216Board : public wisp::app::Board {
 public:
-    std::string name() const override { return "waveshare_amoled_216"; }
+    std::string name() const override { return "waveshare_esp32_s3_touch_amoled_2_16"; }
 
     void init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) override {
         // Independent of esp_board_manager entirely -- see
@@ -598,7 +598,7 @@ public:
 namespace wisp::board {
 
 std::unique_ptr<wisp::app::Board> create_board() {
-    return std::make_unique<WaveshareAmoled216Board>();
+    return std::make_unique<WaveshareEsp32S3TouchAmoled216Board>();
 }
 
 }  // namespace wisp::board

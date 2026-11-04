@@ -2,7 +2,7 @@
 
 // ESP-IDF wisp::hal::Button backed directly by a GPIO level -- both the
 // volume buttons and the AXP2101 PWRON key's detect pin are plain GPIOs
-// on this board (see boards/waveshare_amoled_216/board.cpp), so one
+// on this board (see boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp), so one
 // class covers all three. Pin, polarity, id and model (e.g.
 // "gpio-button" vs. the power key's "axp2101-pwrkey") are all supplied
 // by the board (AGENTS.md "板子无关" rule).

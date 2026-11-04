@@ -7,7 +7,7 @@
 // firmware/CMakeLists.txt's WISP_BOARD selected, then runs the same
 // wisp::app::App boot sequence the PC simulator runs (see
 // simulator/main.cpp and wisp/app/app.hpp). The board registers
-// display.main/touch.main (see boards/waveshare_amoled_216/board.cpp),
+// display.main/touch.main (see boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp),
 // so App::start() brings up the UI and the self-check screen; if the
 // panel fails to come up it falls back to the headless path instead.
 
@@ -52,7 +52,7 @@ namespace {
 // CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION there additionally keeps light
 // sleep from firing while a USB-Serial-JTAG debug session is actually
 // connected, without this code needing to know or care (see
-// docs/hardware/waveshare_amoled_216.md).
+// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
 void apply_pm_config(bool light_sleep_enable) {
     esp_pm_config_t cfg = {};
     // This file is shared by every ESP

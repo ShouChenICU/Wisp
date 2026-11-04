@@ -2,7 +2,7 @@
 
 // The per-board device bring-up hook that wisp::app::App::start() calls
 // during boot (spec 6.1 step ②). A concrete Board (one per supported
-// board, e.g. boards/waveshare_amoled_216/ for the ESP port, or a
+// board, e.g. boards/waveshare_esp32_s3_touch_amoled_2_16/ for the ESP port, or a
 // simulator board for the PC port -- see wisp::board::create_board()
 // below) constructs every device it knows how to bring up and:
 //   - on success, add()s it to `registry` so the rest of the system can
@@ -34,7 +34,7 @@ public:
     virtual ~Board() = default;
 
     // The board identifier surfaced as "board" in WISP_BOOT_REPORT and
-    // WISP_MANIFEST (e.g. "waveshare_amoled_216", or a simulator board
+    // WISP_MANIFEST (e.g. "waveshare_esp32_s3_touch_amoled_2_16", or a simulator board
     // name).
     virtual std::string name() const = 0;
 

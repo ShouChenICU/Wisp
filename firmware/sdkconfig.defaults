@@ -80,7 +80,7 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # session from being cut off by light sleep (it acquires an
 # ESP_PM_NO_LIGHT_SLEEP lock for as long as the port is connected) without
 # this firmware needing to detect that itself -- see
-# docs/hardware/waveshare_amoled_216.md for why this is needed at all on
+# docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md for why this is needed at all on
 # this chip/IDF version, and for the manual verification steps.
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
@@ -102,7 +102,7 @@ CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 # recommends 16 with PSRAM for throughput and for compatibility with some
 # access points; 10 has only been tried against a PC's hotspot, so a
 # router that stalls or reassociates is the thing to watch
-# (docs/hardware/waveshare_amoled_216.md, checklist item 44).
+# (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md, checklist item 44).
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
 CONFIG_ESP_WIFI_RX_BA_WIN=10
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=10

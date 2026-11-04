@@ -10,7 +10,7 @@
 // +/-4g/+/-512dps at a default ODR of 125Hz (spec 5.5's imu.main caps).
 // The gyroscope register sequence and the ODR table in qmi8658_conv.h
 // are new, not ported -- see that header's comment, and
-// docs/hardware/waveshare_amoled_216.md's acceptance table (row 12) for
+// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md's acceptance table (row 12) for
 // the real-hardware check this needs.
 //
 // Not a wisp_* portable component: this is a pure-C ESP-IDF component
