@@ -695,7 +695,7 @@ public:
 - 错误面板：不透明（标记为覆盖物），限制在 `safe_rect` 内；标题 `StrId::SceneErrorTitle`，正文为场景名、`file:line` 与错误信息，按钮 `StrId::SceneReload`/`StrId::SceneBack`。
 - 键盘：`lv_keyboard` + `lv_ime_pinyin`，`lv_ime_pinyin_set_dict()` 用细化第 11 条生成的词库（`tools/gen_pinyin_dict.py` 读 LVGL 源码里的默认词库与 `tools/gen_cjk_font_test.py` 用的字体字符集，输出排序后的常量表；CI 里用 `--check` 校验已提交的文件是最新的），占安全区下半部，不透明（标记为覆盖物），`LV_EVENT_READY`/`LV_EVENT_CANCEL` 时收起；有一个中/英切换键。
 - 确认框：保持模态，用 `lv_msgbox_create(nullptr)`，带 LVGL 默认的全屏背板。确认框守着危险操作（恢复出厂、安装固件、删除场景），框外的触摸绝不能落到下面的界面。背板是未标记的全屏顶层对象，所以确认框打开期间不跳过被遮挡区域的重绘，下面滚动时整块重画；确认框很少出现、开着的时间也短，接受这个代价。框和背板都不调用 `mark_opaque_overlay()`（标记背板会把它当成不透明卡片裁掉下层，而背板是半透明的）。仍是 `lv_msgbox_class`（现有测试按这个类数确认框）；宽度钳制照搬 `SelfCheck::make_confirm_box`。
-- 新增 `StrId`：`Scenes`、`ScenesEmpty`、`SceneStateRunning`、`SceneStateError`、`SceneErrorTitle`、`SceneReload`、`SceneBack`、`SceneDeleteTitle`、`SceneDeletePrompt`（含一个 `{}` 填场景名）、`SceneDeleteWithData`、`KeyboardZh`、`KeyboardEn`（zh/ja/en 三份）。
+- 新增 `StrId`：`Scenes`、`ScenesEmpty`、`SceneStateRunning`、`SceneStateError`、`SceneErrorTitle`、`SceneReload`、`SceneBack`、`SceneDeleteTitle`、`SceneDeletePrompt`（含一个 `{}` 填场景名）、`SceneDeleteWithData`（zh/ja/en 三份）。键盘的输入法切换键固定显示「中」/「EN」，不随界面语言翻译（按键表是 flash 里的常量）。
 
 - [ ] **Step 1: 写失败的测试**
 
