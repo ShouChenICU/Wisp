@@ -50,15 +50,16 @@ struct UiPerf {
     uint32_t frames = 0;
 };
 
-// The default UI font: a mutable copy of the built-in (and otherwise
-// `const`) lv_font_montserrat_16, with `fallback` pointed at the built-in
+// The default UI font: lv_font_montserrat_16, with the built-in
 // lv_font_cjk_16 (GB2312 plus Japanese kana and level-1 kanji, 4bpp; see
-// tools/gen_cjk_font.py) so Chinese and Japanese text falls back to it
-// glyph-by-glyph. Lazily constructed on first call (thread-safe,
-// C++11 magic statics); safe to call from any thread, before or after any
-// UiRuntime exists. UiRuntime::start() installs this as the default theme
-// font; exposed at namespace scope since it doesn't depend on any
-// UiRuntime instance (e.g. for wisp_app's self-check UI).
+// tools/gen_cjk_font.py) as its fallback so Chinese and Japanese text
+// falls back to it glyph-by-glyph. Both are drawn from a cache of glyphs
+// expanded to 8 bits per pixel (src/a8_font.hpp), with the same pixels.
+// Lazily constructed on first call (thread-safe, C++11 magic statics);
+// safe to call from any thread, before or after any UiRuntime exists.
+// UiRuntime::start() installs this as the default theme font; exposed at
+// namespace scope since it doesn't depend on any UiRuntime instance (e.g.
+// for wisp_app's self-check UI).
 const lv_font_t* default_font();
 
 // Runs a single-threaded LVGL 9.5 instance over a wisp::hal::Display (and,

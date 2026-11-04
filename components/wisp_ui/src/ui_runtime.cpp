@@ -17,6 +17,7 @@ static_assert(LV_COLOR_DEPTH == 16, "wisp_ui requires LV_COLOR_DEPTH == 16 (RGB5
 #include <mutex>
 #include <utility>
 
+#include "a8_font.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/os/os.hpp"
@@ -80,12 +81,15 @@ const lv_font_t* default_font() {
     // Function-local static: lazily constructed exactly once (C++11 magic
     // statics are thread-safe), the first time anyone (UiRuntime::start()
     // or an outside caller, e.g. wisp_app's self-check UI) asks for it.
-    static lv_font_t s_ui_font = [] {
+    static lv_font_t s_base = [] {
         lv_font_t font = lv_font_montserrat_16;
         font.fallback = &lv_font_cjk_16;
         return font;
     }();
-    return &s_ui_font;
+    // Drawn from cached 8-bit glyphs rather than expanded on every draw
+    // (see a8_font.hpp); pixels are the same.
+    static const lv_font_t* s_ui_font = a8_font(&s_base);
+    return s_ui_font;
 }
 
 struct UiRuntime::Impl {
