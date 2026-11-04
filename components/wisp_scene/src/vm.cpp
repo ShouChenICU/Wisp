@@ -140,6 +140,11 @@ Vm* owner(lua_State* L) {
 
 int return_all(lua_State* L, int /*status*/, lua_KContext /*ctx*/) { return lua_gettop(L); }
 
+int return_upvalue(lua_State* L) {
+    lua_pushvalue(L, lua_upvalueindex(1));
+    return 1;
+}
+
 // Calls the original function in upvalue 1 with every argument.
 int call_original(lua_State* L) {
     int n = lua_gettop(L);
@@ -206,6 +211,133 @@ int sandbox_xpcall(lua_State* L) {
     return lua_gettop(L);
 }
 
+// The table library's loops run in C: no instruction, so no hook, and
+// reading or writing absent keys allocates nothing, so no memory limit
+// either. Every count that drives one of them (an argument, or a length
+// that may come from __len) is capped. A length is read exactly once, so
+// a __len that answers differently on a second call cannot get past the
+// cap.
+constexpr lua_Integer kMaxTableRange = lua_Integer{1} << 20;
+
+// True if [first, last] holds more than kMaxTableRange elements.
+bool range_too_large(lua_Integer first, lua_Integer last) {
+    return last >= first && static_cast<lua_Unsigned>(last) - static_cast<lua_Unsigned>(first) >=
+                                static_cast<lua_Unsigned>(kMaxTableRange);
+}
+
+int range_error(lua_State* L) { return luaL_error(L, "range too large"); }
+
+// The length of argument 1 for insert/remove/sort: a table, or a value
+// whose metatable provides it (as ltablib's checktab accepts).
+lua_Integer checked_len(lua_State* L) {
+    if (lua_type(L, 1) != LUA_TTABLE) {
+        if (!lua_getmetatable(L, 1))
+            luaL_checktype(L, 1, LUA_TTABLE);
+        else
+            lua_pop(L, 1);
+    }
+    lua_Integer n = luaL_len(L, 1);
+    if (n > kMaxTableRange) range_error(L);
+    return n;
+}
+
+int sandbox_table_move(lua_State* L) {
+    lua_Integer f = luaL_checkinteger(L, 2);
+    lua_Integer e = luaL_checkinteger(L, 3);
+    if (range_too_large(f, e)) return range_error(L);
+    return call_original(L);
+}
+
+// concat reads the length itself even when j is given, but then uses j;
+// passing the checked bound as j keeps its loop to what was checked.
+int sandbox_table_concat(lua_State* L) {
+    lua_Integer first = luaL_optinteger(L, 3, 1);
+    lua_Integer last = lua_isnoneornil(L, 4) ? luaL_len(L, 1) : luaL_checkinteger(L, 4);
+    if (range_too_large(first, last)) return range_error(L);
+    lua_settop(L, 4);
+    lua_pushinteger(L, last);
+    lua_replace(L, 4);
+    return call_original(L);
+}
+
+// Behaves like Lua 5.5.1's table.insert (ltablib.c, MIT), reading the
+// length once.
+int sandbox_table_insert(lua_State* L) {
+    lua_Integer e = checked_len(L) + 1;  // first empty slot
+    lua_Integer pos = e;
+    switch (lua_gettop(L)) {
+        case 2:
+            break;
+        case 3:
+            pos = luaL_checkinteger(L, 2);
+            luaL_argcheck(L, static_cast<lua_Unsigned>(pos) - 1u < static_cast<lua_Unsigned>(e), 2,
+                          "position out of bounds");
+            for (lua_Integer i = e; i > pos; --i) {
+                lua_geti(L, 1, i - 1);
+                lua_seti(L, 1, i);
+            }
+            break;
+        default:
+            return luaL_error(L, "wrong number of arguments to 'insert'");
+    }
+    lua_seti(L, 1, pos);
+    return 0;
+}
+
+// Behaves like Lua 5.5.1's table.remove (ltablib.c, MIT), reading the
+// length once.
+int sandbox_table_remove(lua_State* L) {
+    lua_Integer size = checked_len(L);
+    lua_Integer pos = luaL_optinteger(L, 2, size);
+    if (pos != size)
+        luaL_argcheck(L, static_cast<lua_Unsigned>(pos) - 1u <= static_cast<lua_Unsigned>(size), 2,
+                      "position out of bounds");
+    lua_geti(L, 1, pos);
+    for (; pos < size; ++pos) {
+        lua_geti(L, 1, pos + 1);
+        lua_seti(L, 1, pos);
+    }
+    lua_pushnil(L);
+    lua_seti(L, 1, pos);
+    return 1;
+}
+
+// A plain table's length involves no Lua code, so the original sort
+// reads the same length that was checked. Anything with a metatable is
+// sorted through a copy whose length is fixed: elements are read once
+// (through __index), the copy is sorted, and the result is written back
+// (through __newindex). Holes stay holes, so comparing one still fails.
+int sandbox_table_sort(lua_State* L) {
+    if (lua_type(L, 1) == LUA_TTABLE && !lua_getmetatable(L, 1)) {
+        if (static_cast<lua_Integer>(lua_rawlen(L, 1)) > kMaxTableRange) return range_error(L);
+        return call_original(L);
+    }
+    if (lua_type(L, 1) == LUA_TTABLE) lua_pop(L, 1);  // the metatable
+    lua_Integer n = checked_len(L);
+    if (n <= 1) return 0;
+    if (!lua_isnoneornil(L, 2)) luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_settop(L, 2);
+    lua_createtable(L, static_cast<int>(n), 0);  // 3: the copy
+    for (lua_Integer i = 1; i <= n; ++i) {
+        lua_geti(L, 1, i);
+        lua_rawseti(L, 3, i);
+    }
+    lua_createtable(L, 0, 1);  // its metatable: __len = n
+    lua_pushinteger(L, n);
+    lua_pushcclosure(L, return_upvalue, 1);
+    lua_setfield(L, -2, "__len");
+    lua_setmetatable(L, 3);
+    lua_pushvalue(L, lua_upvalueindex(1));  // the original sort
+    lua_pushvalue(L, 3);
+    lua_pushvalue(L, 2);
+    lua_call(L, 2, 0);
+    for (lua_Integer i = 1; i <= n; ++i) {
+        lua_rawgeti(L, 3, i);
+        lua_seti(L, 1, i);
+    }
+    return 0;
+}
+
 int sandbox_print(lua_State* L) {
     log_lua_args(L, LogLevel::Info);
     return 0;
@@ -246,9 +378,10 @@ void* check_alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
     }
     if (nsize > old && nsize - old > heap->limit - heap->used) return nullptr;
     void* p = os::realloc(ptr, nsize, os::Mem::Large);
-    if (!p) return nsize <= old ? ptr : nullptr;
+    if (!p && nsize > old) return nullptr;
+    // A failed shrink keeps the old block, which Lua now sizes as nsize.
     heap->used = heap->used - old + nsize;
-    return p;
+    return p ? p : ptr;
 }
 
 }  // namespace
@@ -276,7 +409,15 @@ Vm::Vm(std::string scene_id, VmLimits limits, std::function<uint64_t()> now_ms)
 
 Vm::~Vm() {
     if (L_) {
+        // lua_close runs the main thread's pending __close values (none
+        // once call() has returned, but the hook makes sure) and the
+        // pending __gc finalizers. The hook stops every Lua instruction;
+        // finalizers can only come from binding metatables, which are
+        // host C code (setmetatable refuses __gc, and new_binding_metatable
+        // hides binding metatables from scripts).
         running_ = false;
+        closing_ = true;
+        lua_sethook(L_, &Vm::hook, LUA_MASKCOUNT, 1);
         lua_close(L_);
     }
 }
@@ -345,12 +486,34 @@ int Vm::setup(lua_State* L) {
     } co_wrapped[] = {
         {"resume", &Vm::co_resume},
         {"close", &Vm::co_close},
-        {"wrap", &Vm::co_wrap},
     };
     for (const auto& w : co_wrapped) {
         lua_getfield(L, -1, w.name);
         lua_pushcclosure(L, w.fn, 1);
         lua_setfield(L, -2, w.name);
+    }
+    lua_pushcfunction(L, &Vm::co_wrap);
+    lua_setfield(L, -2, "wrap");
+    lua_pop(L, 1);
+
+    lua_getglobal(L, LUA_TABLIBNAME);
+    const struct {
+        const char* name;
+        lua_CFunction fn;
+        bool keeps_original;
+    } table_fns[] = {
+        {"move", sandbox_table_move, true},      {"concat", sandbox_table_concat, true},
+        {"sort", sandbox_table_sort, true},      {"insert", sandbox_table_insert, false},
+        {"remove", sandbox_table_remove, false},
+    };
+    for (const auto& t : table_fns) {
+        if (t.keeps_original) {
+            lua_getfield(L, -1, t.name);
+            lua_pushcclosure(L, t.fn, 1);
+        } else {
+            lua_pushcfunction(L, t.fn);
+        }
+        lua_setfield(L, -2, t.name);
     }
     lua_pop(L, 1);
 
@@ -443,12 +606,16 @@ void Vm::fault(Fault kind) {
 
 int Vm::raise_fault(lua_State* L) {
     lua_sethook(L, &Vm::hook, LUA_MASKCOUNT, 1);
-    lua_rawgetp(L, LUA_REGISTRYINDEX, fault_ == Fault::Timeout ? &kTimeoutMsgKey : &kMemoryMsgKey);
+    lua_rawgetp(L, LUA_REGISTRYINDEX, fault_ == Fault::Memory ? &kMemoryMsgKey : &kTimeoutMsgKey);
     return lua_error(L);
 }
 
 void Vm::hook(lua_State* L, lua_Debug* ar) {
     Vm* vm = owner(L);
+    if (vm->closing_) {
+        vm->raise_fault(L);
+        return;
+    }
     vm->settle_refusal();
     if (vm->fault_ == Fault::None) {
         // A refusal shortened this thread's count; put it back.
@@ -470,7 +637,9 @@ void Vm::hook(lua_State* L, lua_Debug* ar) {
 // Runs the original coroutine function in upvalue 1 with every argument,
 // tracking `co` as the running thread. A fault refuses to start anything
 // and is raised again in the caller once control returns, so a coroutine
-// cannot catch its child's fault and carry on.
+// cannot catch its child's fault and carry on. A refusal still pending
+// when the child gives control back was not recovered by a retry, so it
+// is settled (as a fault) before the caller runs another instruction.
 int Vm::co_switch(lua_State* L, lua_State* co) {
     Vm* vm = owner(L);
     if (vm->faulted()) return vm->raise_fault(L);
@@ -481,6 +650,7 @@ int Vm::co_switch(lua_State* L, lua_State* co) {
     if (co) vm->current_ = co;
     int status = lua_pcall(L, n, LUA_MULTRET, 0);
     vm->current_ = saved;
+    vm->settle_refusal();
     if (vm->faulted()) return vm->raise_fault(L);
     if (status != LUA_OK) return lua_error(L);
     return lua_gettop(L);
@@ -490,21 +660,63 @@ int Vm::co_resume(lua_State* L) { return co_switch(L, lua_tothread(L, 1)); }
 
 int Vm::co_close(lua_State* L) { return co_switch(L, lua_tothread(L, 1)); }
 
+// coroutine.wrap, written out instead of wrapping lcorolib's: on an error
+// the original closes the dead coroutine (lua_closethread), which runs its
+// pending __close values. After a fault raised by the hook that thread's
+// hooks are off for good (luaD_hook never got to turn them back on), so
+// those values would run unbounded. Here a fault skips the close.
 int Vm::co_wrap(lua_State* L) {
     Vm* vm = owner(L);
     if (vm->faulted()) return vm->raise_fault(L);
-    call_original(L);  // the original wrap function, upvalue 1
-    lua_settop(L, 1);
-    // The original returns a C closure whose only upvalue is the new
-    // thread (lcorolib.c, luaB_cowrap); keep both so the thread can be
-    // tracked while it runs.
-    if (lua_getupvalue(L, 1, 1) == nullptr || lua_type(L, -1) != LUA_TTHREAD)
-        return luaL_error(L, "coroutine.wrap: unexpected closure");
-    lua_pushcclosure(L, &Vm::co_wrapped, 2);
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_State* co = lua_newthread(L);  // copies L's hook
+    lua_pushvalue(L, 1);
+    lua_xmove(L, co, 1);
+    lua_pushcclosure(L, &Vm::co_wrapped, 1);
     return 1;
 }
 
-int Vm::co_wrapped(lua_State* L) { return co_switch(L, lua_tothread(L, lua_upvalueindex(2))); }
+int Vm::co_wrapped(lua_State* L) {
+    Vm* vm = owner(L);
+    if (vm->faulted()) return vm->raise_fault(L);
+    lua_State* co = lua_tothread(L, lua_upvalueindex(1));
+    int narg = lua_gettop(L);
+    if (!lua_checkstack(co, narg)) return luaL_error(L, "too many arguments to resume");
+    lua_xmove(L, co, narg);
+    lua_State* saved = vm->current_;
+    vm->current_ = co;
+    int nres = 0;
+    int status = lua_resume(co, L, narg, &nres);
+    vm->current_ = saved;
+    vm->settle_refusal();
+    if (vm->faulted()) return vm->raise_fault(L);
+    if (status == LUA_OK || status == LUA_YIELD) {
+        if (!lua_checkstack(L, nres + 1)) {
+            lua_pop(co, nres);
+            return luaL_error(L, "too many results to resume");
+        }
+        lua_xmove(co, L, nres);
+        return nres;
+    }
+    lua_xmove(co, L, 1);  // the error
+    int co_status = lua_status(co);
+    if (co_status != LUA_OK && co_status != LUA_YIELD) {
+        // Died of an ordinary error: hooks are on, so its __close values
+        // run bounded like any other code.
+        vm->current_ = co;
+        status = lua_closethread(co, L);
+        vm->current_ = saved;
+        vm->settle_refusal();
+        if (vm->faulted()) return vm->raise_fault(L);
+        lua_xmove(co, L, 1);
+    }
+    if (status != LUA_ERRMEM && lua_type(L, -1) == LUA_TSTRING) {
+        luaL_where(L, 1);
+        lua_insert(L, -2);
+        lua_concat(L, 2);
+    }
+    return lua_error(L);
+}
 
 int Vm::import(lua_State* L) {
     Vm* vm = owner(L);
@@ -662,6 +874,13 @@ int protect(lua_State* L, void (*fn)(lua_State*, void*), void* ctx) {
     lua_pushcfunction(L, protect_trampoline);
     lua_pushlightuserdata(L, &call);
     return lua_pcall(L, 1, LUA_MULTRET, 0);
+}
+
+bool new_binding_metatable(lua_State* L, const char* name) {
+    if (!luaL_newmetatable(L, name)) return false;
+    lua_pushboolean(L, 0);
+    lua_setfield(L, -2, "__metatable");
+    return true;
 }
 
 void log_lua_args(lua_State* L, LogLevel level) {

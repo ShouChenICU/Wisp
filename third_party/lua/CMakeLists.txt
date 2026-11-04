@@ -39,10 +39,13 @@ else()
     set(_wisp_lua_target lua)
 endif()
 
-# Caps the nesting of C calls and of the parser (default 200). Each level
-# costs C stack, and the scene task's stack is a fixed 32 KB; 128 keeps
-# deep recursion a Lua error ("C stack overflow") instead of a crash.
-target_compile_definitions(${_wisp_lua_target} PRIVATE LUAI_MAXCCALLS=128)
+# Caps the nesting of C calls and of the parser (default 200), so deep
+# recursion through C (pcall, string.gsub callbacks, metamethods,
+# coroutines, nested expressions) is a Lua error ("C stack overflow")
+# instead of a stack overflow. Each level costs C stack; the deepest per
+# level is string.gsub, about 1.3 KB of Xtensa frames. 48 pairs with the
+# scene task's 96 KB stack; see wisp/scene/vm.hpp before changing either.
+target_compile_definitions(${_wisp_lua_target} PRIVATE LUAI_MAXCCALLS=48)
 
 # luaconf.h picks 64-bit lua_Integer only if <limits.h> defines LLONG_MAX
 # and #errors otherwise. The ESP-IDF toolchain's <limits.h> defines it

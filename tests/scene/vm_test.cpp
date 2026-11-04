@@ -316,6 +316,30 @@ TEST(Vm, TimeoutEscapesPcallXpcallAndCoroutines) {
         "end})\n"
         "  while true do end end)\n"
         "global flag; flag = true",
+
+        // A coroutine that dies in a fault keeps its pending to-be-closed
+        // values: Lua would run them with hooks off.
+        "local f = coroutine.wrap(function()\n"
+        "  local x <close> = setmetatable({}, {__close = function()\n"
+        "    for i = 1, 1000000 do end _G.h = true end})\n"
+        "  while true do end end)\n"
+        "f()\n"
+        "global flag; flag = true",
+
+        "local f = coroutine.wrap(function()\n"
+        "  local c = setmetatable({}, {__close = function()\n"
+        "    for i = 1, 1000000 do end _G.h = true end})\n"
+        "  for _ in function() return true end, nil, nil, c do end end)\n"
+        "pcall(f)\n"
+        "global flag; flag = true",
+
+        "local co = coroutine.create(function()\n"
+        "  local x <close> = setmetatable({}, {__close = function()\n"
+        "    for i = 1, 1000000 do end _G.h = true end})\n"
+        "  while true do end end)\n"
+        "coroutine.resume(co)\n"
+        "coroutine.close(co)\n"
+        "global flag; flag = true",
     };
     for (const char* src : scripts) {
         FakeClock clock;
@@ -373,6 +397,182 @@ TEST(Vm, XpcallStillWorks) {
     EXPECT_FALSE(err) << describe(err);
 }
 
+TEST(Vm, CoroutineWrapStillWorks) {
+    FakeClock clock;
+    auto vm = make(clock);
+    ASSERT_NE(vm, nullptr);
+    auto err = run(*vm, R"(
+        local gen = coroutine.wrap(function(a)
+            local b = coroutine.yield(a + 1)
+            local c = coroutine.yield(b * 2)
+            return c, "done"
+        end)
+        assert(gen(1) == 2)
+        assert(gen(5) == 10)
+        local c, d = gen(7)
+        assert(c == 7 and d == "done")
+        local ok, e = pcall(gen)
+        assert(not ok and string.find(e, "cannot resume dead coroutine", 1, true), e)
+
+        -- An ordinary error closes the coroutine's pending values and
+        -- reaches the caller (with the caller's position in front, none
+        -- here since the caller is pcall).
+        local closed = false
+        local bad = coroutine.wrap(function()
+            local x <close> = setmetatable({}, {__close = function() closed = true end})
+            error("boom")
+        end)
+        ok, e = pcall(bad)
+        assert(not ok and closed, e)
+        assert(string.find(e, "^main.lua:%d+: boom$"), e)
+        ok, e = pcall(function() bad() end)
+        assert(string.find(e, "cannot resume dead coroutine", 1, true), e)
+        local bad2 = coroutine.wrap(function() error("again") end)
+        ok, e = pcall(function() bad2() end)
+        assert(string.find(e, "^main.lua:%d+: main.lua:%d+: again$"), e)
+
+        -- A non-string error object passes through unchanged.
+        local obj = {}
+        ok, e = pcall(coroutine.wrap(function() error(obj) end))
+        assert(not ok and e == obj)
+
+        assert(not pcall(coroutine.wrap, 42))
+        -- Nested wraps and yields across them.
+        local outer = coroutine.wrap(function()
+            local inner = coroutine.wrap(function() coroutine.yield(1) return 2 end)
+            coroutine.yield(inner())
+            coroutine.yield(inner())
+        end)
+        assert(outer() == 1 and outer() == 2)
+        -- coroutine.close still runs to-be-closed values of a suspended one.
+        local n = 0
+        local co = coroutine.create(function()
+            local x <close> = setmetatable({}, {__close = function() n = n + 1 end})
+            coroutine.yield()
+        end)
+        coroutine.resume(co)
+        assert(coroutine.close(co) and n == 1)
+    )");
+    EXPECT_FALSE(err) << describe(err);
+}
+
+TEST(Vm, LuaRecursionIsNotLimitedByCCalls) {
+    FakeClock clock;
+    auto vm = make(clock);
+    ASSERT_NE(vm, nullptr);
+    auto err = run(*vm, R"(
+        local function depth(n) if n == 0 then return 0 end return 1 + depth(n - 1) end
+        assert(depth(10000) == 10000)
+        -- C-level nesting is what is bounded: it fails as a Lua error.
+        local function f() return pcall(f) end
+        local r = table.pack(f())
+        assert(r[r.n - 1] == false and r[r.n] == "C stack overflow", tostring(r[r.n]))
+        local function g(s) return (string.gsub(s, ".", g)) end
+        assert(not pcall(g, "ab"))
+    )");
+    EXPECT_FALSE(err) << describe(err);
+}
+
+TEST(Vm, TableLoopsAreCapped) {
+    FakeClock clock;
+    auto vm = make(clock);
+    ASSERT_NE(vm, nullptr);
+    auto err = run(*vm, R"(
+        local function too_large(f, ...)
+            local ok, e = pcall(f, ...)
+            assert(not ok and string.find(e, "range too large", 1, true), tostring(e))
+        end
+        local big = 1 << 20
+        -- Every count reaches the C loops through __len or an argument.
+        local huge = setmetatable({}, {__len = function() return 100000000 end,
+                                       __index = rawlen, __newindex = rawequal})
+        too_large(table.move, {}, 1, big + 1, 1, {})
+        too_large(table.move, {}, 1, math.maxinteger // 2, 1, {})
+        too_large(table.move, {}, -5, big - 5, 1, {})
+        too_large(table.insert, huge, 1, "v")
+        too_large(table.insert, huge, "v")
+        too_large(table.remove, huge, 1)
+        too_large(table.remove, huge)
+        too_large(table.sort, huge)
+        too_large(table.sort, huge, function(a, b) return a < b end)
+        too_large(table.concat, huge)
+        too_large(table.concat, {}, "", 1, big + 1)
+        too_large(table.concat, {}, "", -10, big)
+
+        -- At the cap and below everything behaves as before.
+        assert(#table.move({}, 1, big, 1, {}) == 0)
+        local m = table.move({1, 2, 3}, 1, 3, 2)
+        assert(m[1] == 1 and m[2] == 1 and m[3] == 2 and m[4] == 3)
+        local m2 = table.move({1, 2, 3}, 2, 3, 1, {9})
+        assert(m2[1] == 2 and m2[2] == 3)
+        assert(table.move({1}, 3, 1, 1)[1] == 1)
+
+        local t = {1, 2, 3}
+        table.insert(t, 4)
+        table.insert(t, 1, 0)
+        table.insert(t, 3, 1.5)
+        assert(table.concat(t, ",") == "0,1,1.5,2,3,4")
+        assert(not pcall(table.insert, t, 9, "x"))
+        assert(not pcall(table.insert, t, 0, "x"))
+        assert(not pcall(table.insert, t))
+        assert(not pcall(table.insert, t, 1, 2, 3))
+        assert(not pcall(table.insert, 42, 1))
+        assert(table.remove(t) == 4)
+        assert(table.remove(t, 1) == 0)
+        assert(table.remove(t, 2) == 1.5)
+        assert(table.concat(t, ",") == "1,2,3")
+        assert(table.remove({}) == nil)
+        assert(table.remove({}, 0) == nil)
+        local r = {1, 2}
+        assert(table.remove(r, 3) == nil and #r == 2)
+        assert(not pcall(table.remove, r, 5))
+
+        local s = {5, 2, 8, 1}
+        table.sort(s)
+        assert(table.concat(s, ",") == "1,2,5,8")
+        table.sort(s, function(a, b) return a > b end)
+        assert(table.concat(s, ",") == "8,5,2,1")
+        assert(not pcall(table.sort, {1, "x"}))
+
+        -- Tables with metamethods keep working through them.
+        local backing = {3, 1, 2}
+        local proxy = setmetatable({}, {
+            __len = function() return #backing end,
+            __index = function(_, k) return backing[k] end,
+            __newindex = function(_, k, v) backing[k] = v end,
+        })
+        table.sort(proxy)
+        assert(table.concat(backing, ",") == "1,2,3")
+        table.insert(proxy, 1, 0)
+        assert(table.concat(backing, ",") == "0,1,2,3")
+        assert(table.remove(proxy, 2) == 1)
+        assert(table.concat(backing, ",") == "0,2,3")
+        assert(table.concat(proxy, "-") == "0-2-3")
+        local holes = setmetatable({}, {__len = function() return 3 end})
+        holes[1] = 2 holes[3] = 1
+        assert(not pcall(table.sort, holes))
+    )");
+    EXPECT_FALSE(err) << describe(err);
+}
+
+TEST(Vm, BindingMetatablesAreHidden) {
+    FakeClock clock;
+    auto vm = make(clock);
+    ASSERT_NE(vm, nullptr);
+    lua_State* L = vm->L();
+    lua_newuserdatauv(L, 8, 0);
+    EXPECT_TRUE(wisp::scene::new_binding_metatable(L, "wisp.test"));
+    lua_setmetatable(L, -2);
+    lua_setglobal(L, "u");
+    EXPECT_FALSE(wisp::scene::new_binding_metatable(L, "wisp.test"));
+    lua_pop(L, 1);
+    auto err = run(*vm, R"(
+        assert(getmetatable(_G.u) == false)
+        assert(not pcall(setmetatable, _G.u, {}))
+    )");
+    EXPECT_FALSE(err) << describe(err);
+}
+
 TEST(Vm, MemoryLimit2MBIsUncatchable) {
     const char* scripts[] = {
         "pcall(function() local s = string.rep('x', 3 * 1024 * 1024) end)\n"
@@ -404,6 +604,24 @@ TEST(Vm, MemoryLimit2MBIsUncatchable) {
         "local s = 'x'\n"
         "pcall(function() while true do s = s .. s end end)\n"
         "global flag; flag = true",
+
+        // Caught inside a wrapped coroutine, then raised again by the hook
+        // with a to-be-closed value pending.
+        "local f = coroutine.wrap(function()\n"
+        "  local x <close> = setmetatable({}, {__close = function()\n"
+        "    for i = 1, 1000000 do end _G.after = true end})\n"
+        "  pcall(string.rep, 'x', 3 * 1024 * 1024)\n"
+        "  local k = 0 while true do k = k + 1 end end)\n"
+        "f()\n"
+        "global flag; flag = true",
+
+        // The resumer must stop as soon as its child's refusal is known
+        // to be unrecovered.
+        "_G.after = false\n"
+        "local co = coroutine.create(function() local s = string.rep('x', 3 * 1024 * 1024) end)\n"
+        "coroutine.resume(co)\n"
+        "local k = 0 for i = 1, 100 do k = k + 1 end\n"
+        "_G.after = true",
     };
     for (const char* src : scripts) {
         FakeClock clock;
