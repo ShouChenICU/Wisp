@@ -87,7 +87,7 @@ GUARD_MATCHES="$(grep -rnE \
     --include='*.cpp' --include='*.hpp' --include='*.h' --include='*.c' \
     --include='*.md' --include='*.yaml' --include='*.yml' --include='*.py' \
     --include='CMakeLists.txt' --include='*.cmake' --include='*.sh' \
-    --include='sdkconfig.defaults' \
+    --include='sdkconfig.defaults*' --include='*.S' \
     --exclude='ci.sh' --exclude='AGENTS.md' --exclude='lv_conf.h' \
     components boards drivers firmware/main firmware/sdkconfig.defaults \
     firmware/CMakeLists.txt simulator tests tools docs cmake .github *.md \
