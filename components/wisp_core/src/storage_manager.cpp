@@ -1,6 +1,7 @@
 #include "wisp/core/storage_manager.hpp"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -85,7 +86,7 @@ bool has_suffix(const std::string& s, const char* suffix) {
 // write_atomic()/read_file() with ErrorCode::InvalidArgument so a caller
 // can never create/read a file under one of these names itself: doing so
 // would let it (a) sit in "<int>/library/" uncounted by the quota (which
-// deliberately excludes these suffixes -- see dir_size_recursive()),
+// deliberately excludes these suffixes -- see dir_size()),
 // (b) have write_atomic()'s own bookkeeping silently delete it (the
 // unconditional `remove(neu)` before `rename(tmp, neu)`, or the
 // leftover-".tmp" cleanup in read_file()), or (c) have its size
@@ -125,80 +126,101 @@ uint64_t file_size(const std::string& path) {
     return static_cast<uint64_t>(st.st_size);
 }
 
-// Recursively sums the size of every regular file under `dir` (0 if `dir`
-// doesn't exist), excluding write_atomic()'s own "*.tmp"/"*.new" temp
-// files -- those are transient write bookkeeping, not library content,
-// so counting them would make the quota fluctuate with in-flight writes
-// instead of actual stored data. Uses <dirent.h>/<sys/stat.h> only,
-// matching the constraint this whole file is built under (no
-// std::filesystem) -- mirrors tests/support/fake_devices.hpp's
-// FakeStorage::dir_size(), which a production StorageManager can't itself
-// depend on.
-//
-// Descends at most kMaxQuotaWalkDepth directory levels: stat() follows
-// symlinks, so on the host a link back up the tree would otherwise recurse
-// until the stack overflows, and several such links multiply the paths
-// walked per level (the device's filesystems have no symlinks).
-constexpr int kMaxQuotaWalkDepth = 16;
+// Directory walks below are iterative, with their work list in
+// Mem::Large: they run on the 4 KB wisp.fs stack (StorageWorker), where a
+// recursive walk costs one 170-260 B frame per level on the device
+// (measured with -fstack-usage) on top of the filesystem driver's own
+// frames. Each still stops at kMaxWalkDepth levels below where it
+// started; see dir_size()'s and remove_tree_at()'s comments for what that
+// bound protects against.
+constexpr int kMaxWalkDepth = 16;
 
-uint64_t dir_size_recursive(const std::string& dir, int depth = 0) {
-    DIR* d = opendir(dir.c_str());
-    if (!d) {
-        return 0;
-    }
+struct WalkItem {
+    std::string path;
+    int depth = 0;
+    bool expanded = false;  // remove_tree_at(): children already queued
+};
+
+// Sums the size of every regular file under `dir` (0 if `dir` doesn't
+// exist), excluding write_atomic()'s own "*.tmp"/"*.new" temp files --
+// those are transient write bookkeeping, not library content, so counting
+// them would make the quota fluctuate with in-flight writes instead of
+// actual stored data. Uses <dirent.h>/<sys/stat.h> only, matching the
+// constraint this whole file is built under (no std::filesystem) --
+// mirrors tests/support/fake_devices.hpp's FakeStorage::dir_size(), which
+// a production StorageManager can't itself depend on.
+//
+// Descends at most kMaxWalkDepth directory levels: stat() follows
+// symlinks, so on the host a link back up the tree would otherwise loop
+// forever, and several such links multiply the paths walked per level
+// (the device's filesystems have no symlinks).
+uint64_t dir_size(const std::string& dir) {
     uint64_t total = 0;
-    struct dirent* entry;
-    while ((entry = readdir(d)) != nullptr) {
-        std::string name = entry->d_name;
-        if (name == "." || name == "..") {
+    os::LargeVector<WalkItem> work;
+    work.push_back({dir, 0, false});
+    while (!work.empty()) {
+        WalkItem item = std::move(work.back());
+        work.pop_back();
+        DIR* d = opendir(item.path.c_str());
+        if (!d) {
             continue;
         }
-        std::string full = dir + "/" + name;
-        // stat, not lstat: ESP-IDF's newlib has no lstat, and neither FAT
-        // nor LittleFS has symlinks to tell apart anyway.
-        struct stat st;
-        if (stat(full.c_str(), &st) != 0) {
-            continue;
-        }
-        if (S_ISDIR(st.st_mode)) {
-            if (depth < kMaxQuotaWalkDepth) total += dir_size_recursive(full, depth + 1);
-        } else if (S_ISREG(st.st_mode)) {
-            if (has_suffix(name, ".tmp") || has_suffix(name, ".new")) {
+        struct dirent* entry;
+        while ((entry = readdir(d)) != nullptr) {
+            std::string name = entry->d_name;
+            if (name == "." || name == "..") {
                 continue;
             }
-            total += static_cast<uint64_t>(st.st_size);
+            std::string full = item.path + "/" + name;
+            // stat, not lstat: the device's libc has no lstat, and
+            // neither FAT nor LittleFS has symlinks to tell apart anyway.
+            struct stat st;
+            if (stat(full.c_str(), &st) != 0) {
+                continue;
+            }
+            if (S_ISDIR(st.st_mode)) {
+                if (item.depth < kMaxWalkDepth) {
+                    work.push_back({std::move(full), item.depth + 1, false});
+                }
+            } else if (S_ISREG(st.st_mode)) {
+                if (has_suffix(name, ".tmp") || has_suffix(name, ".new")) {
+                    continue;
+                }
+                total += static_cast<uint64_t>(st.st_size);
+            }
         }
+        closedir(d);
     }
-    closedir(d);
     return total;
 }
 
 // Creates `dir` and every missing parent directory above it (like `mkdir
-// -p`). Already-existing directories (including `dir` itself) are not an
-// error, but an existing non-directory (e.g. a plain file) at `dir`
-// itself is -- ErrorCode::IoError, since mkdir() would otherwise silently
-// treat it as "already there" via the EEXIST check below without this
-// upfront type check.
+// -p`), shallowest first. Already-existing directories (including `dir`
+// itself) are not an error, but an existing non-directory (e.g. a plain
+// file) at `dir` or at any parent is -- ErrorCode::IoError, since mkdir()
+// would otherwise silently treat it as "already there" via the EEXIST
+// check below without this upfront type check.
 Result<void> mkdir_p(const std::string& dir) {
     if (dir.empty()) {
         return Result<void>::ok();
     }
-    struct stat st;
-    if (stat(dir.c_str(), &st) == 0) {
-        if (!S_ISDIR(st.st_mode)) {
-            return Result<void>::err(ErrorCode::IoError, "not a directory: " + dir);
+    size_t pos = 0;
+    while (true) {
+        pos = dir.find('/', pos + 1);
+        std::string prefix = dir.substr(0, pos);
+        struct stat st;
+        if (stat(prefix.c_str(), &st) == 0) {
+            if (!S_ISDIR(st.st_mode)) {
+                return Result<void>::err(ErrorCode::IoError, "not a directory: " + prefix);
+            }
+        } else if (mkdir(prefix.c_str(), 0755) != 0 && errno != EEXIST) {
+            return Result<void>::err(ErrorCode::IoError,
+                                     "mkdir " + prefix + ": " + std::string(strerror(errno)));
         }
-        return Result<void>::ok();
+        if (pos == std::string::npos) {
+            return Result<void>::ok();
+        }
     }
-    size_t pos = dir.find_last_of('/');
-    if (pos != std::string::npos && pos > 0) {
-        WISP_TRY(mkdir_p(dir.substr(0, pos)));
-    }
-    if (mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
-        return Result<void>::err(ErrorCode::IoError,
-                                 "mkdir " + dir + ": " + std::string(strerror(errno)));
-    }
-    return Result<void>::ok();
 }
 
 // Creates <sd_mount>/wisp/library and <sd_mount>/wisp/backup, logging a
@@ -332,63 +354,105 @@ Result<std::vector<std::string>> read_names(const std::string& dir) {
     return Result<std::vector<std::string>>::ok(std::move(names));
 }
 
-// The wisp.fs worker that runs these calls has a 4 KB stack, so the walk
-// is bounded rather than trusting the tree's depth.
-constexpr int kMaxRemoveDepth = 16;
-
-Result<void> remove_tree_at(const std::string& path, int depth) {
-    struct stat st;
-    if (stat_nofollow(path, &st) != 0) {
-        return errno == ENOENT ? Result<void>::ok() : io_error("stat", path);
-    }
-    if (S_ISDIR(st.st_mode)) {
-        if (depth >= kMaxRemoveDepth) {
-            return Result<void>::err(ErrorCode::IoError, "directory tree too deep: " + path);
+// Removes the file or tree at `path` without following symlinks,
+// children before their directory. A directory more than kMaxWalkDepth
+// levels below `path` fails the call with ErrorCode::IoError: the
+// manager never creates one (see check_depth()), so meeting one means
+// something else built it, and a bounded walk is what keeps a corrupt or
+// hostile tree from exhausting memory.
+Result<void> remove_tree_at(const std::string& path) {
+    os::LargeVector<WalkItem> work;
+    work.push_back({path, 0, false});
+    while (!work.empty()) {
+        WalkItem item = std::move(work.back());
+        work.pop_back();
+        if (item.expanded) {
+            if (rmdir(item.path.c_str()) != 0) {
+                return io_error("rmdir", item.path);
+            }
+            continue;
         }
-        Result<std::vector<std::string>> names = read_names(path);
+        struct stat st;
+        if (stat_nofollow(item.path, &st) != 0) {
+            if (errno == ENOENT) {
+                continue;
+            }
+            return io_error("stat", item.path);
+        }
+        if (!S_ISDIR(st.st_mode)) {
+            if (remove(item.path.c_str()) != 0 && errno != ENOENT) {
+                return io_error("remove", item.path);
+            }
+            continue;
+        }
+        if (item.depth >= kMaxWalkDepth) {
+            return Result<void>::err(ErrorCode::IoError, "directory tree too deep: " + item.path);
+        }
+        Result<std::vector<std::string>> names = read_names(item.path);
         if (!names) {
             return Result<void>::err(names.error().code, names.error().message);
         }
+        int child_depth = item.depth + 1;
+        std::string dir = item.path;
+        work.push_back({std::move(item.path), item.depth, true});
         for (const std::string& name : names.value()) {
-            WISP_TRY(remove_tree_at(path + "/" + name, depth + 1));
+            work.push_back({dir + "/" + name, child_depth, false});
         }
-        if (rmdir(path.c_str()) != 0) {
-            return io_error("rmdir", path);
-        }
-        return Result<void>::ok();
-    }
-    if (remove(path.c_str()) != 0 && errno != ENOENT) {
-        return io_error("remove", path);
     }
     return Result<void>::ok();
 }
 
-// Opens `path` for appending, writes `data`, and makes it durable
-// (fflush + fsync) before closing. Every call's return value is checked:
-// an unchecked failure would report bytes as stored that are not on disk.
+// Appends `data` to `path` and makes it durable (fsync) before closing.
+// A raw file descriptor, not stdio: on failure the file is truncated back
+// to its size before the call, and a FILE* could still hold buffered
+// bytes that fclose() would write after that truncate. Undoing a failed
+// write matters because the caller's next append would otherwise land
+// after the torn bytes, burying them mid-file where a reader that drops
+// only a torn *tail* cannot get rid of them.
 Result<void> append_synced(const std::string& path, std::span<const uint8_t> data) {
-    FILE* f = fopen(path.c_str(), "ab");
-    if (!f) {
-        return io_error("fopen", path);
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) {
+        return io_error("open", path);
     }
-    size_t written = data.empty() ? 0 : fwrite(data.data(), 1, data.size(), f);
-    if (written != data.size() || ferror(f) != 0) {
-        Result<void> err = io_error("fwrite", path);
-        fclose(f);
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        Result<void> err = io_error("fstat", path);
+        close(fd);
         return err;
     }
-    if (fflush(f) != 0) {
-        Result<void> err = io_error("fflush", path);
-        fclose(f);
+    const off_t old_size = st.st_size;
+
+    const char* failed_op = nullptr;
+    size_t done = 0;
+    while (done < data.size()) {
+        ssize_t n = write(fd, data.data() + done, data.size() - done);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            if (n == 0) {
+                errno = EIO;
+            }
+            failed_op = "write";
+            break;
+        }
+        done += static_cast<size_t>(n);
+    }
+    if (failed_op == nullptr && fsync(fd) != 0) {
+        failed_op = "fsync";
+    }
+    if (failed_op != nullptr) {
+        Result<void> err = io_error(failed_op, path);
+        if (ftruncate(fd, old_size) != 0 || fsync(fd) != 0) {
+            err = Result<void>::err(ErrorCode::IoError,
+                                    err.error().message + "; could not undo the partial append: " +
+                                        std::string(strerror(errno)));
+        }
+        close(fd);
         return err;
     }
-    if (fsync(fileno(f)) != 0) {
-        Result<void> err = io_error("fsync", path);
-        fclose(f);
-        return err;
-    }
-    if (fclose(f) != 0) {
-        return io_error("fclose", path);
+    if (close(fd) != 0) {
+        return io_error("close", path);
     }
     return Result<void>::ok();
 }
@@ -401,7 +465,7 @@ uint64_t path_size(const std::string& path) {
         return 0;
     }
     if (S_ISDIR(st.st_mode)) {
-        return dir_size_recursive(path);
+        return dir_size(path);
     }
     return S_ISREG(st.st_mode) ? static_cast<uint64_t>(st.st_size) : 0;
 }
@@ -516,6 +580,7 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
     if (sd_dev_ && !sd_mount_.empty() && is_under(path, sd_mount_) && !sd_online_) {
         return Result<void>::err(ErrorCode::StorageUnavailable, "sd card offline: " + path);
     }
+    WISP_TRY(check_depth(path));
 
     // Recover a "<path>.new" orphaned by a *double*
     // power cut (first write completed and synced, but the final rename
@@ -529,7 +594,7 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
 
     std::string library_root = int_mount_ + "/library";
     if (!int_mount_.empty() && is_under(path, library_root)) {
-        uint64_t existing_total = dir_size_recursive(library_root);
+        uint64_t existing_total = dir_size(library_root);
         uint64_t old_target_size = file_size(path);
         uint64_t projected = existing_total - old_target_size + data.size();
         if (projected > config_.internal_library_quota) {
@@ -692,7 +757,43 @@ Result<std::string> StorageManager::checked_path(const std::string& raw, bool mu
     if (mutating && sd_dev_ && is_under(path, sd_mount_) && !sd_online_) {
         return R::err(ErrorCode::StorageUnavailable, "sd card offline: " + path);
     }
+    Result<void> depth = check_depth(path);
+    if (!depth) {
+        return R::err(depth.error().code, depth.error().message);
+    }
     return normalized;
+}
+
+Result<void> StorageManager::check_depth(const std::string& path) const {
+    for (const std::string* mount : {&int_mount_, &sd_mount_}) {
+        if (!is_under(path, *mount)) {
+            continue;
+        }
+        size_t levels = static_cast<size_t>(
+            std::count(path.begin() + static_cast<std::ptrdiff_t>(mount->size()), path.end(), '/'));
+        if (levels > static_cast<size_t>(kMaxWalkDepth)) {
+            return Result<void>::err(ErrorCode::InvalidArgument,
+                                     "path is more than 16 levels below its mount: " + path);
+        }
+        break;
+    }
+    return Result<void>::ok();
+}
+
+Result<void> StorageManager::check_contained(const std::string& path) const {
+    bool inside = path.size() > int_mount_.size() && is_under(path, int_mount_);
+    if (!inside && sd_online_ && !sd_mount_.empty()) {
+        inside = path.size() > sd_mount_.size() && is_under(path, sd_mount_);
+    }
+    bool is_root = path == int_mount_ + "/system" || path == int_mount_ + "/library" ||
+                   (!sd_mount_.empty() &&
+                    (path == sd_mount_ + "/wisp" || path == sd_mount_ + "/wisp/library" ||
+                     path == sd_mount_ + "/wisp/backup"));
+    if (path.empty() || path.front() != '/' || !inside || is_root) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "not a removable path inside storage: " + path);
+    }
+    return Result<void>::ok();
 }
 
 bool StorageManager::in_internal_library(const std::string& path) const {
@@ -714,7 +815,7 @@ Result<void> StorageManager::append(const std::string& raw_path, std::span<const
     WISP_TRY(promote_pending_new(path));
 
     if (in_internal_library(path)) {
-        uint64_t projected = dir_size_recursive(int_mount_ + "/library") + data.size();
+        uint64_t projected = dir_size(int_mount_ + "/library") + data.size();
         if (projected > config_.internal_library_quota) {
             return Result<void>::err(ErrorCode::QuotaExceeded,
                                      "internal library quota exceeded: " + path);
@@ -782,13 +883,9 @@ Result<void> StorageManager::remove_tree(const std::string& raw_path) {
         return Result<void>::err(checked.error().code, checked.error().message);
     }
     const std::string& path = checked.value();
-    if (path.empty() || path == "/" || path == int_mount_ ||
-        (!sd_mount_.empty() && path == sd_mount_)) {
-        return Result<void>::err(ErrorCode::InvalidArgument,
-                                 "refusing to remove a storage root: " + path);
-    }
+    WISP_TRY(check_contained(path));
 
-    WISP_TRY(remove_tree_at(path, 0));
+    WISP_TRY(remove_tree_at(path));
     // Bookkeeping beside a removed file; a directory never has any, so
     // these are no-ops then.
     for (const char* suffix : {".new", ".tmp"}) {
@@ -813,6 +910,8 @@ Result<void> StorageManager::rename(const std::string& raw_from, const std::stri
     }
     const std::string& from = from_r.value();
     const std::string& to = to_r.value();
+    WISP_TRY(check_contained(from));
+    WISP_TRY(check_contained(to));
 
     WISP_TRY(promote_pending_new(from));
     WISP_TRY(promote_pending_new(to));
@@ -830,7 +929,7 @@ Result<void> StorageManager::rename(const std::string& raw_from, const std::stri
     }
 
     if (in_internal_library(to) && !in_internal_library(from)) {
-        uint64_t projected = dir_size_recursive(int_mount_ + "/library") + path_size(from);
+        uint64_t projected = dir_size(int_mount_ + "/library") + path_size(from);
         if (projected > config_.internal_library_quota) {
             return Result<void>::err(ErrorCode::QuotaExceeded,
                                      "internal library quota exceeded: " + to);

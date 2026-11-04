@@ -1,6 +1,8 @@
 #include "wisp/core/storage_manager.hpp"
 
 #include <gtest/gtest.h>
+#include <signal.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -655,4 +657,136 @@ TEST(StorageManager, ReadFileLargeMatchesReadFile) {
               wisp::ErrorCode::NotFound);
     EXPECT_EQ(f.mgr->read_file_large(f.in + "/system/x.tmp").error().code,
               wisp::ErrorCode::InvalidArgument);
+}
+
+namespace {
+
+// `levels` nested one-letter directories under `base`, e.g. base/d/d/d.
+std::string nested(const std::string& base, int levels) {
+    std::string p = base;
+    for (int i = 0; i < levels; ++i) p += "/d";
+    return p;
+}
+
+}  // namespace
+
+// The walks run on the 4 KB wisp.fs stack; trees are capped at 16 levels
+// below the mount so no path can be built that the walks refuse.
+TEST(StorageManager, PathsDeeperThanSixteenLevelsAreRefused) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+
+    // 16 levels below the mount (15 directories + the file) is fine.
+    ASSERT_TRUE(f.mgr->append(nested(f.in, 15) + "/ok.log", view("x")));
+    ASSERT_TRUE(f.mgr->write_atomic(nested(f.in, 15) + "/ok.bin", view("x")));
+
+    // One more level is refused before mkdir_p creates anything.
+    std::string deep = nested(f.in + "/system", 16);
+    EXPECT_EQ(f.mgr->append(deep + "/x.log", view("x")).error().code,
+              wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(f.mgr->write_atomic(deep + "/x.bin", view("x")).error().code,
+              wisp::ErrorCode::InvalidArgument);
+    ASSERT_TRUE(f.mgr->write_atomic(f.in + "/system/r/a.txt", view("A")));
+    EXPECT_EQ(f.mgr->rename(f.in + "/system/r/a.txt", deep + "/a.txt").error().code,
+              wisp::ErrorCode::InvalidArgument);
+    EXPECT_FALSE(exists(f.in + "/system/d"));
+}
+
+TEST(StorageManager, RemoveTreeFailsOnTreeDeeperThanLimitAndLeavesIt) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    // Built behind the manager's back: a tree the manager never made.
+    std::string root = f.in + "/system/t";
+    std::error_code ec;
+    std::filesystem::create_directories(nested(root, 17), ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    auto r = f.mgr->remove_tree(root);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::IoError);
+    EXPECT_TRUE(exists(root));
+
+    // Within the limit the same walk succeeds.
+    std::filesystem::remove_all(nested(root, 1), ec);
+    std::filesystem::create_directories(nested(root, 14), ec);
+    EXPECT_TRUE(f.mgr->remove_tree(root));
+}
+
+TEST(StorageManager, TreeSizeOfDeepTreeIsBounded) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    std::string root = f.in + "/system/t";
+    ASSERT_TRUE(f.mgr->write_atomic(nested(root, 10) + "/a.bin", std::vector<uint8_t>(7)));
+    ASSERT_TRUE(f.mgr->write_atomic(root + "/b.bin", std::vector<uint8_t>(5)));
+    EXPECT_EQ(f.mgr->tree_size(root).value(), 12u);
+}
+
+// A write that fails partway (here: the process file-size limit, which
+// makes the kernel accept only part of the data) must not leave the
+// accepted part behind for the next append to land after.
+TEST(StorageManager, FailedAppendLeavesFileUnchanged) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    std::string p = f.in + "/system/j.log";
+    ASSERT_TRUE(f.mgr->append(p, view("first\n")));
+
+    struct sigaction ignore{};
+    struct sigaction old_action{};
+    ignore.sa_handler = SIG_IGN;
+    ASSERT_EQ(sigaction(SIGXFSZ, &ignore, &old_action), 0);
+    struct rlimit old_limit{};
+    ASSERT_EQ(getrlimit(RLIMIT_FSIZE, &old_limit), 0);
+    struct rlimit small = old_limit;
+    small.rlim_cur = 10;
+    ASSERT_EQ(setrlimit(RLIMIT_FSIZE, &small), 0);
+
+    auto r = f.mgr->append(p, view("a record that does not fit\n"));
+
+    setrlimit(RLIMIT_FSIZE, &old_limit);
+    sigaction(SIGXFSZ, &old_action, nullptr);
+
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::IoError);
+    EXPECT_EQ(str(f.mgr->read_file(p).value()), "first\n");
+
+    ASSERT_TRUE(f.mgr->append(p, view("second\n")));
+    EXPECT_EQ(str(f.mgr->read_file(p).value()), "first\nsecond\n");
+}
+
+TEST(StorageManager, RemoveTreeAndRenameStayInsideStorage) {
+    Fixture f(true);
+    ASSERT_TRUE(f.mgr->init());
+    std::string outside = wisp::test::temp_dir().string();
+    write_raw(outside + "/keep.txt", "k");
+    ASSERT_TRUE(f.mgr->write_atomic(f.in + "/system/a.txt", view("A")));
+    const auto bad = wisp::ErrorCode::InvalidArgument;
+
+    // Relative paths and paths outside every mount.
+    EXPECT_EQ(f.mgr->remove_tree("system/a.txt").error().code, bad);
+    EXPECT_EQ(f.mgr->remove_tree(outside).error().code, bad);
+    EXPECT_EQ(f.mgr->remove_tree(outside + "/keep.txt").error().code, bad);
+    EXPECT_TRUE(exists(outside + "/keep.txt"));
+    EXPECT_EQ(f.mgr->rename("system/a.txt", f.in + "/system/b.txt").error().code, bad);
+    EXPECT_EQ(f.mgr->rename(f.in + "/system/a.txt", "b.txt").error().code, bad);
+    EXPECT_EQ(f.mgr->rename(outside + "/keep.txt", f.in + "/system/k.txt").error().code, bad);
+    EXPECT_EQ(f.mgr->rename(f.in + "/system/a.txt", outside + "/a.txt").error().code, bad);
+
+    // Mount points and area roots, as the remove target and as either
+    // end of a rename.
+    for (const std::string& root : {f.in, f.in + "/system", f.in + "/library", f.sd, f.sd + "/wisp",
+                                    f.sd + "/wisp/library", f.sd + "/wisp/backup"}) {
+        EXPECT_EQ(f.mgr->remove_tree(root).error().code, bad) << root;
+        EXPECT_EQ(f.mgr->rename(root, f.in + "/system/moved").error().code, bad) << root;
+    }
+    EXPECT_TRUE(f.mgr->remove_tree(f.in + "/library/x"));  // a missing child of a root
+    for (const std::string& root : {f.in + "/library", f.sd + "/wisp/backup"}) {
+        ASSERT_EQ(rmdir(root.c_str()), 0);  // so only the root rule can refuse it
+        EXPECT_EQ(f.mgr->rename(f.in + "/system/a.txt", root).error().code, bad) << root;
+        ASSERT_EQ(mkdir(root.c_str(), 0755), 0);
+    }
+    EXPECT_TRUE(exists(f.in + "/system/a.txt"));
+
+    // Inside a mount but outside the areas (e.g. <int>/scenes) is allowed.
+    ASSERT_TRUE(f.mgr->rename(f.in + "/system/a.txt", f.in + "/scenes/a.txt"));
+    EXPECT_TRUE(f.mgr->remove_tree(f.in + "/scenes"));
 }

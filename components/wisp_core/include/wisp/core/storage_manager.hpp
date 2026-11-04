@@ -46,7 +46,7 @@
 // Because ".tmp" and ".new" are reserved for this bookkeeping, a caller
 // may not write_atomic()/read_file() a path whose last component itself
 // ends in ".tmp" or ".new": such a file would silently escape the
-// library quota (dir_size_recursive() excludes those
+// library quota (dir_size() excludes those
 // suffixes), get clobbered by another write to the same base name's own
 // "<path>.new"/".tmp" juggling, or be promoted/discarded as if it were
 // write_atomic()'s own bookkeeping. Rejected with
@@ -80,11 +80,33 @@
 // Appending is not atomic the way write_atomic() is, so never append to a
 // file whose readers expect it to be all-or-nothing.
 //
+// If append() fails it truncates the file back to its size before the
+// call, so after a failed append the file is unchanged (unless that
+// truncate fails too, which the error message then says). A power cut is
+// different: it can leave a torn tail that nothing undoes. A caller that
+// finds one when reading must rewrite the file without it (write_atomic())
+// before appending again; appending after it would bury the torn bytes
+// mid-file.
+//
 // The other primitives below (list_dir(), remove_tree(), rename(),
 // tree_size(), read_file_large()) share write_atomic()'s path rules:
 // lexical normalization, ".." rejected, and a last component ending in
 // ".tmp"/".new" rejected with ErrorCode::InvalidArgument. Mutating calls
 // on a path under an offline SD card fail with StorageUnavailable.
+//
+// Depth: no path more than 16 levels below a storage mount point is
+// accepted by write_atomic(), append(), rename() or the other primitives
+// (ErrorCode::InvalidArgument), so the manager never builds a tree its
+// own bounded walks (remove_tree(), the quota walk) would refuse. Those
+// walks are iterative because they run on the 4 KB wisp.fs stack.
+//
+// Containment: remove_tree() and both ends of rename() are destructive
+// enough that they check for themselves what they may touch: an absolute
+// path strictly inside storage.int's mount or an online storage.sd's
+// mount, and not a mount point, an area root (<int>/system,
+// <int>/library, <sd>/wisp/library, <sd>/wisp/backup) or <sd>/wisp.
+// Anything else fails with ErrorCode::InvalidArgument. Directories inside
+// a mount but outside the areas (e.g. <int>/scenes) are allowed.
 //
 // Symlinks: list_dir() and remove_tree() never follow one (a link is
 // listed as EntryKind::Other and removed as itself). On the device neither
@@ -245,8 +267,8 @@ public:
     Result<os::LargeBuffer> read_file_large(const std::string& path);
 
     // Appends `data` to `path`, creating it (and missing parent
-    // directories) if needed, then fflush()es and fsync()s -- see the file
-    // header for the power-loss semantics. A leftover "<path>.new" is
+    // directories) if needed, then fsync()s. A failed append leaves the
+    // file as it was -- see the file header, also for power loss. A leftover "<path>.new" is
     // promoted first, as in write_atomic(). Under "<int>/library/" the
     // appended bytes count against the quota; exceeding it fails with
     // ErrorCode::QuotaExceeded and leaves the file unchanged.
@@ -262,9 +284,10 @@ public:
     // Removes the file or directory tree at `path` without following
     // symlinks. Removing a file also removes its "<path>.tmp"/"<path>.new"
     // bookkeeping, so read_file() cannot resurrect it afterwards. A
-    // missing `path` is success. A storage mount point itself is refused
-    // with ErrorCode::InvalidArgument. A tree deeper than 16 levels fails
-    // with ErrorCode::IoError, leaving whatever was not yet removed.
+    // missing `path` is success. `path` must pass the containment rule
+    // in the file header (else ErrorCode::InvalidArgument). A tree deeper
+    // than 16 levels below `path` fails with ErrorCode::IoError, leaving
+    // whatever was not yet removed.
     Result<void> remove_tree(const std::string& path);
 
     // Renames the file or directory `from` to `to`, creating `to`'s
@@ -273,8 +296,9 @@ public:
     // checked here, so the result is the same on FAT (whose rename()
     // refuses an existing target) and LittleFS (whose rename() replaces
     // it). Moving into "<int>/library/" from outside it counts the moved
-    // tree's size against the quota. Both paths must be on the same
-    // storage device.
+    // tree's size against the quota. Both paths must pass the
+    // containment rule in the file header (else ErrorCode::InvalidArgument)
+    // and be on the same storage device.
     Result<void> rename(const std::string& from, const std::string& to);
 
     // The total size of the regular files at or under `path`, excluding
@@ -335,6 +359,17 @@ private:
     // read_file()'s checks and ".new" recovery; returns the normalized
     // path and the regular file's size. Called with mutex_ held.
     Result<std::pair<std::string, uint64_t>> open_for_read(const std::string& raw);
+
+    // Fails with ErrorCode::InvalidArgument if normalized `path` lies
+    // more than 16 levels below a storage mount point. Called with mutex_
+    // held.
+    Result<void> check_depth(const std::string& path) const;
+
+    // Fails with ErrorCode::InvalidArgument unless normalized `path` is
+    // strictly inside storage.int's mount or an online storage.sd's mount
+    // and is not a mount point, an area root or "<sd>/wisp". Called with
+    // mutex_ held.
+    Result<void> check_contained(const std::string& path) const;
 
     // Whether `path` is under the quota-checked "<int>/library".
     bool in_internal_library(const std::string& path) const;
