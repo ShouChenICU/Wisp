@@ -168,7 +168,7 @@ return ui.screen {
 | 类别 | 控件 |
 |---|---|
 | 布局 | `screen`、`column`、`row`、`stack`（叠放）、`grid`、`spacer`、`scroll` |
-| 文本与图像 | `label`、`icon`（内置图标集）、`image`（只能引用本包 `assets/`） |
+| 文本与图像 | `label`、`icon`（内置图标集）、`image`（只能引用本包 `assets/`；PNG 与 baseline JPEG，不支持 progressive JPEG） |
 | 输入 | `button`、`checkbox`、`switch`、`slider`、`input`（聚焦时弹出系统屏幕键盘，支持中英文） |
 | 进度与数据 | `bar`、`arc`（进度环）、`chart`（折线、柱状） |
 | 列表 | `list`：`items` 为状态或数组，`row = function(item, index)` 只为可见行调用；`items` 变化时只重建可见范围 |

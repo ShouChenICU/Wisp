@@ -31,7 +31,7 @@
 7. **只编译沙箱要的库**：Lua 5.5.1 确有 `void luaL_openselectedlibs(lua_State *L, int load, int preload)`（`linit.c`），但它的表引用全部十个 `luaopen_*`，链接时会带进 io/os/package/debug。裁定：`third_party/lua` 原样收录 `src/` 全部文件，包装组件只编译核心与 base/coroutine/math/string/table/utf8 六个库，`vm.cpp` 用 `luaL_requiref` 逐个打开；`linit.c`、`liolib.c`、`loslib.c`、`loadlib.c`、`ldblib.c`、`lua.c`、`luac.c` 不编译。
 8. **栈与递归深度**：包装组件定义 `LUAI_MAXCCALLS=128`（`ldo.h` 用 `#if !defined` 守卫，不改源码）；场景任务栈 32 KB 放 PSRAM。安装时的"编译全部 `.lua`"在场景任务上执行（`SceneHost::check_sources()`），不在 httpd 的 10 KB 内部栈上跑 Lua 解析器。
 9. **字号**：只有 Montserrat 16/24 和 CJK 16。`xs`/`sm`/`md` → 16，`lg` → 24，`xl` → 32，`xxl` → 48（新开 `LV_FONT_MONTSERRAT_32`/`48`，只含 ASCII）。`wisp_ui` 在 `default_font()` 旁新增 `ui::font(px)`：24/32/48 返回 A8 包装（与 `default_font()` 同样缓存 8 位字形）且回退到 `lv_font_cjk_16` 的字体，中日文回退到 16 px 的 CJK 字形；`a8_font.hpp` 是 `wisp_ui` 私有的，所以 `wisp_scene` 的 `theme_font` 只转发给 `ui::font`（Task 11）。
-10. **图像与图标**：`image` 只支持 PNG（开 `LV_USE_LODEPNG`，解码缓冲走 LVGL 的堆即 PSRAM）；`icon` 的内置图标集是 LVGL 的 `LV_SYMBOL_*`，名称表见 Task 9。
+10. **图像与图标**：`image` 支持 PNG 与 baseline JPEG。PNG 用 LVGL 自带的 LodePNG（开 `LV_USE_LODEPNG`，解码缓冲走 LVGL 的堆即 PSRAM）；JPEG 由平台注册解码器：ESP 端口用乐鑫 `espressif/esp_new_jpeg`（锁定 1.0.2，S3 有 SIMD 优化，直接输出面板格式 RGB565，输出缓冲 `Mem::Large`），模拟器用 LVGL 自带的 TJPGD（只在模拟器构建中打开，不进 `lv_conf.h` 的公共默认值）；progressive JPEG 报错。用户 2026-11-04 批准加入 Task 12。`icon` 的内置图标集是 LVGL 的 `LV_SYMBOL_*`，名称表见 Task 9。
 11. **屏幕键盘**：LVGL 的 `lv_keyboard` + `lv_ime_pinyin`，中英切换；日文输入不做（spec 8 只要求中英文）。spec 10 要求复用现有字体子集，而 LVGL 默认词库的候选字多于 CJK 16 子集，所以由 `tools/gen_pinyin_dict.py` 直接读 LVGL 源码里的默认词库、只保留字体中有的字，生成常量词库 `components/wisp_ui/src/pinyin_dict.cpp`（在 flash，不占 RAM），不扩字体；`LV_IME_PINYIN_USE_DEFAULT_DICT` 设为 0，不把 LVGL 的完整默认词库链接进来。
 12. **改动队列堆积**（spec 10 第 1 条）：`PatchQueue` 未应用的改动超过 1024 条时丢弃待应用的 `SetProp`、置"整体刷新"标志，场景任务下一次刷新时经 `__wisp.refresh_all()` 重新发出全部绑定的当前值。
 13. **GC 停顿的测量**（spec 10 第 2 条）：场景任务对执行超过 50 ms 的消息 `WLOG_W` 一条 `slow message <kind> <ms> ms`（标签 `scene.<id>`），真机验收时据此记录停顿。
@@ -797,7 +797,7 @@ TEST(SceneView, FontsAndColorsMapToTheme)       // theme_font("xl") == ui::font(
 
 **Files:**
 - Create: `components/wisp_scene/src/{scene_view_list,scene_view_canvas,scene_view_media}.cpp`、`components/wisp_scene/src/list_window.hpp`
-- Modify: `components/wisp_scene/include/wisp/scene/scene_view.hpp`（`set_assets`）、`components/wisp_scene/src/scene_view.cpp`、`components/wisp_ui/config/lv_conf.h`（`LV_USE_LODEPNG 1`）、`components/wisp_scene/src/prelude.cpp`（列表行作用域、`g` 绘图对象）、`components/wisp_scene/CMakeLists.txt`、`tests/CMakeLists.txt`（注册下面四个测试）
+- Modify: `components/wisp_scene/include/wisp/scene/scene_view.hpp`（`set_assets`）、`components/wisp_scene/src/scene_view.cpp`、`components/wisp_ui/config/lv_conf.h`（`LV_USE_LODEPNG 1`；TJPGD 由模拟器构建的编译定义打开）、`components/wisp_scene/src/{schema,constructors}.cpp` 与 `docs/scene-api.md`（`src` 放宽为 `assets/*.png|jpg|jpeg`）、`components/wisp_ui` 的 Platform/UiRuntime 图像解码器钩子、`components/wisp_port_esp`（新文件：基于 `esp_new_jpeg` 的 LVGL 图像解码器；`idf_component.yml` 加 `espressif/esp_new_jpeg: "==1.0.2"`，更新 `firmware/dependencies.lock`）、`components/wisp_port_sim`（注册 TJPGD）、`components/wisp_scene/src/prelude.cpp`（列表行作用域、`g` 绘图对象）、`components/wisp_scene/CMakeLists.txt`、`tests/CMakeLists.txt`（注册下面四个测试）
 - Test: `tests/scene/list_window_test.cpp`、`tests/scene/scene_view_list_test.cpp`、`tests/scene/canvas_test.cpp`、`tests/scene/scene_view_media_test.cpp`
 
 **Interfaces:**
@@ -807,6 +807,7 @@ TEST(SceneView, FontsAndColorsMapToTheme)       // theme_font("xl") == ui::font(
 - 画布：`draw = function(g) ... end` 在场景任务上执行并追踪依赖；`g:line(x1,y1,x2,y2,opts)`、`g:circle(cx,cy,r,opts)`、`g:arc(cx,cy,r,start_deg,end_deg,opts)`、`g:rect(x,y,w,h,opts)`、`g:fill(color)`、`g:text(x,y,str,opts)`（`opts` 为 `color width fill radius font`），每次最多 512 条命令，序列化进 `CanvasDraw.commands`；UI 端画进 `os::alloc(Mem::Large)` 的缓冲，颜色格式取 `lv_display_get_color_format()`（真机是 `RGB565_SWAPPED`，与 `flatten_qr` 相同，这样 S3 SIMD 拷贝走同格式快路径），大小为 `lv_draw_buf_width_to_stride(w, cf) * h` 字节。
 - 图表：`lv_chart`，`type` 映射 `LV_CHART_TYPE_LINE/BAR`，颜色依次取 `accent ok warn danger`。
 - 图像：`src` 指向包内 `assets/*.png`，字节来自打开时载入的 `ScenePackage`（Task 13 的 `Open` 路径在 UI 线程上建好 `SceneView` 后、应用 `Build` 前调用 `set_assets`），以 `lv_image_dsc_t` 内存源交给 LodePNG；包里没有该文件时报 `ui.image: no asset 'assets/x.png'` 并显示空白。
+- JPEG（细化第 10 条）：`src` 可为 `assets/*.jpg`/`*.jpeg`。可移植层只定义钩子：`UiRuntime` 启动 LVGL 后在 UI 线程上调用平台提供的"安装图像解码器"函数（可空）；解码器按内存源的魔数 `FF D8` 识别 JPEG。ESP 端口用 `esp_new_jpeg` 解码成 `lv_display_get_color_format()` 对应的 RGB565（真机为 `RGB565_SWAPPED`），输出缓冲 `os::alloc(Mem::Large)`；`esp_new_jpeg` 只能出现在 `wisp_port_esp`（AGENTS.md 第 3 节）。模拟器用 TJPGD。progressive 或损坏的 JPEG 报 `ui.image: unsupported JPEG 'assets/x.jpg'` 并显示空白。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -821,6 +822,8 @@ TEST(Canvas, CommandsRoundTripAndLimit512)           // 513 条 -> "canvas: more
 TEST(Canvas, RedrawsOnDependencyChange)
 TEST(Canvas, BufferUsesDisplayColorFormat)          // FakeDisplay 设为 RGB565_SWAPPED 时画布缓冲同格式，大小 == stride * h
 TEST(SceneViewMedia, ChartSeriesAndImageFromAssets)  // 4 条 x 128 点 ok；第 5 条报错；set_assets 后 assets/icon.png 解码后尺寸正确；缺失的资源报错
+TEST(SceneViewMedia, JpegFromAssets)                // 模拟器 TJPGD：assets/photo.jpg（baseline）解码后尺寸正确；progressive JPEG -> "unsupported JPEG"；
+                                                     // schema 接受 .jpg/.jpeg，拒绝 .gif
 ```
 
 - [ ] **Step 2: 运行，确认失败** — `ctest --test-dir build/sim -R 'ListWindow|SceneViewList|Canvas|SceneViewMedia' --output-on-failure`。
@@ -1171,6 +1174,7 @@ TEST(DirWatcher, IgnoresDataDirectory)
 
 ```python
 def test_packs_only_allowed_files()      # README.md、.git/ 被跳过并列出；lib/a.lua、assets/x.png 在包内
+def test_rejects_progressive_jpeg()     # assets/p.jpg 含 SOF2 标记 -> 打包报错并指出文件；baseline（SOF0）通过
 def test_token_file_is_0600_and_atomic()
 def test_token_never_printed()           # 捕获 push/ls 的 stdout/stderr，不含令牌
 def test_requests_use_api_prefix()       # 假服务器记录的路径都以 /api/v1/ 开头（pair/start、pair/confirm、scenes）
@@ -1215,7 +1219,7 @@ def test_requests_use_api_prefix()       # 假服务器记录的路径都以 /ap
 
 - [ ] **Step 1: `docs/architecture.md`**：标题范围改为涵盖子项目 3a；分层图加入 `wisp_scene`；依赖规则核对九层与 Lua 头文件限制；启动流程加入 `StorageWorker`/`recover()`、`SceneHttp`、`SystemLayer`、`SceneRuntime`，停止顺序同步；事件表加 `scene.state`（发布方 `scene::SceneRuntime` 与 `app` 的删除流程，payload 与细化第 17 条一致）；改正第 9 条的覆盖物说明：确认框是模态的（`SystemLayer::open_confirm` 建的 `lv_msgbox` 带全屏背板），不做跳过标记，开着时下层整块重画；被标记的只有配网/配对卡片、错误面板与屏幕键盘；返回手势条是只在场景前台时显示的未标记窄条（碰到它的重绘区不裁剪），`SelfCheck::raise_overlays()` 最后调用 `SystemLayer::raise()`；新增"场景运行时"一节（任务表：`wisp.scene` PSRAM 32 KB、`wisp.fs` 内部 4 KB、`wisp.shttp` PSRAM 8 KB；消息流；每帧 64 条；`/int/scenes/` 布局与两阶段替换；`SceneStore` 文件格式与日志）；模拟器一节加 `--scenes-dir`、`--open-scene`、`debug scene-click`；存储一节加 `<int>/scenes`。
 - [ ] **Step 2: `docs/porting-guide.md`**：新板子运行场景的前提（PSRAM：Lua 堆与 LVGL 堆都在 PSRAM；`CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` 已在公共配置里）；场景层没有板级代码，屏幕形状只经 caps 生效；验收时补跑 Task 22 的场景行。
-- [ ] **Step 3: references 与 notices 核对**：Lua 5.5.1（版本、SHA-256、`tools/vendor_lua.sh`、只编译的文件列表）已在 Task 1 登记；LVGL 自带的 LodePNG（zlib 许可，随 LVGL 分发）与 `lv_ime_pinyin` 默认词库补一行说明；inflate 为自写实现，不登记。
+- [ ] **Step 3: references 与 notices 核对**：Lua 5.5.1（版本、SHA-256、`tools/vendor_lua.sh`、只编译的文件列表）已在 Task 1 登记；LVGL 自带的 LodePNG（zlib 许可，随 LVGL 分发）与 TJPGD（随 LVGL 分发，仅模拟器）、乐鑫 `esp_new_jpeg` 1.0.2（Espressif 自定义许可，经组件管理器获取，仅 ESP 端口）与 `lv_ime_pinyin` 默认词库补一行说明；inflate 为自写实现，不登记。
 - [ ] **Step 4: 验证** — `bash tools/ci.sh`（注释守卫覆盖 `docs/`）。
 - [ ] **Step 5: Commit** — `docs: describe the scene runtime in the architecture and porting guides`
 
