@@ -346,8 +346,10 @@ std::string schema_markdown() {
         "  safe area, so content stays visible on round and rounded screens.\n";
     char line[320];
     std::snprintf(line, sizeof(line),
-                  "- At most %zu widgets per tree. A string value is at most %zu KB.\n", kMaxNodes,
-                  kMaxPropStringBytes / 1024);
+                  "- At most %zu widgets per tree, counting the rows every list has built: rows\n"
+                  "  past it are not built, and the scene's log says so. A string value is at\n"
+                  "  most %zu KB.\n",
+                  kMaxNodes, kMaxPropStringBytes / 1024);
     out += line;
     std::snprintf(line, sizeof(line),
                   "- One update (the tree, or what one handler changes) is at most %zu MB, "
@@ -464,13 +466,18 @@ std::string schema_markdown() {
         "  `g:rect(x, y, w, h, opts)`, `g:text(x, y, text, opts)`. `opts` is optional:\n"
         "  `color` (a colour, default `text`), `width` (lines and outlines, 0 to 512, default\n"
         "  1), `radius` (rect corners, 0 to 4096), `fill` (boolean: circle and rect filled),\n"
-        "  `font` (text). A canvas is `fill` in both directions unless given a size.\n"
+        "  `font` (text). A canvas is `fill` in both directions unless given a size. A canvas\n"
+        "  of more than 524,288 pixels stays empty (\"ui.canvas: too large\" in the scene's\n"
+        "  log). The `g:text` that takes the update past 1 MB is the error \"ui update too\n"
+        "  large\".\n"
         "- `ui.chart`: `series` is up to 4 tables of up to 128 numbers, drawn in `accent`, `ok`,\n"
         "  `warn` and `danger`, between `min` and `max` (default 0 and 100); `type` is `line`\n"
         "  (default) or `bar`.\n"
         "- `ui.image`: `src` is a PNG or a baseline (not progressive) JPEG in the scene's\n"
-        "  `assets/`. A file that is missing or cannot be decoded leaves the image empty and is\n"
-        "  reported in the scene's log.\n"
+        "  `assets/`, at most 1024 pixels a side and 524,288 pixels in all. A file that is\n"
+        "  missing, cannot be decoded or is too large leaves the image empty and is reported in\n"
+        "  the scene's log. The decoded images and canvases of a scene take at most 4 MB\n"
+        "  together; the one that would pass it stays empty (\"too large\").\n"
         "- `ui.icon`: the symbol `name` in the current `font`.\n"
         "\n"
         "## Helpers\n"

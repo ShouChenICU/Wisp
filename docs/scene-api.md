@@ -22,7 +22,9 @@ Rules:
 
 - The root must be `ui.screen`. It always fills the display and is padded to at least the
   safe area, so content stays visible on round and rounded screens.
-- At most 2000 widgets per tree. A string value is at most 64 KB.
+- At most 2000 widgets per tree, counting the rows every list has built: rows
+  past it are not built, and the scene's log says so. A string value is at
+  most 64 KB.
 - One update (the tree, or what one handler changes) is at most 1 MB, counting
   64 bytes per widget, property and change plus every string value: a large
   string shown by many widgets counts once per widget ("ui update too large").
@@ -140,13 +142,18 @@ Every widget takes the common properties: `w`, `h`, `grow`, `pad`, `bg`, `fg`, `
   `g:rect(x, y, w, h, opts)`, `g:text(x, y, text, opts)`. `opts` is optional:
   `color` (a colour, default `text`), `width` (lines and outlines, 0 to 512, default
   1), `radius` (rect corners, 0 to 4096), `fill` (boolean: circle and rect filled),
-  `font` (text). A canvas is `fill` in both directions unless given a size.
+  `font` (text). A canvas is `fill` in both directions unless given a size. A canvas
+  of more than 524,288 pixels stays empty ("ui.canvas: too large" in the scene's
+  log). The `g:text` that takes the update past 1 MB is the error "ui update too
+  large".
 - `ui.chart`: `series` is up to 4 tables of up to 128 numbers, drawn in `accent`, `ok`,
   `warn` and `danger`, between `min` and `max` (default 0 and 100); `type` is `line`
   (default) or `bar`.
 - `ui.image`: `src` is a PNG or a baseline (not progressive) JPEG in the scene's
-  `assets/`. A file that is missing or cannot be decoded leaves the image empty and is
-  reported in the scene's log.
+  `assets/`, at most 1024 pixels a side and 524,288 pixels in all. A file that is
+  missing, cannot be decoded or is too large leaves the image empty and is reported in
+  the scene's log. The decoded images and canvases of a scene take at most 4 MB
+  together; the one that would pass it stays empty ("too large").
 - `ui.icon`: the symbol `name` in the current `font`.
 
 ## Helpers

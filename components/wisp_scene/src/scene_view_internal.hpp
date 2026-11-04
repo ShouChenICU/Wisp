@@ -107,6 +107,14 @@ namespace wisp::scene {
 // LVGL user data and its event callbacks' user data. Destroyed only after
 // its object is gone, so the buffers below outlive every draw of them.
 struct SceneView::Node {
+    Node() = default;
+    Node(const Node&) = delete;
+    Node& operator=(const Node&) = delete;
+    // Gives its pixel memory back to the view's budget.
+    ~Node() {
+        if (view != nullptr) view->media_bytes_ -= canvas_bytes + image_bytes;
+    }
+
     // One built row of a list.
     struct Row {
         uint32_t index = 0;
@@ -148,7 +156,9 @@ struct SceneView::Node {
     os::LargeVector<uint8_t> draw;
     lv_draw_buf_t canvas_buf{};
     view::LargeMem canvas_mem;
-    bool canvas_drawn = false;  // draw_canvas() ran since apply_canvas() began
+    size_t canvas_bytes = 0;      // of canvas_mem, in the view's budget
+    bool canvas_drawn = false;    // draw_canvas() ran since apply_canvas() began
+    bool canvas_refused = false;  // too large, and said so
 
     // A chart.
     SeriesData series;
@@ -157,6 +167,7 @@ struct SceneView::Node {
     // An image: the decoded pixels it shows.
     lv_image_dsc_t image{};
     view::LargeMem image_mem;
+    size_t image_bytes = 0;  // of image_mem, in the view's budget
 };
 
 }  // namespace wisp::scene

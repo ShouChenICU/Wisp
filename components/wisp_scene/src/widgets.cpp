@@ -70,28 +70,49 @@ int list_reset(lua_State* L) {
 
 // --- Charts -----------------------------------------------------------------
 
-// Encodes the checked series at `idx` (widget_data.hpp) and sets it.
-// Needs two free stack slots.
-bool push_series(lua_State* L, NodeId id, int idx) {
-    os::LargeString bytes;
+// Encodes the checked series at `idx` (widget_data.hpp) into a Lua
+// userdata, so no C++ object is alive while the Lua calls that read the
+// table run (vm.hpp's longjmp rule), and leaves it on the stack. Needs
+// three free stack slots.
+void encode_series(lua_State* L, int idx) {
     size_t count = lua_type(L, idx) == LUA_TTABLE ? lua_rawlen(L, idx) : 0;
-    bytes.push_back(static_cast<char>(count));
+    count = std::min(count, kMaxSeries);
+    size_t size = 1;
     for (size_t k = 1; k <= count; ++k) {
         lua_rawgeti(L, idx, static_cast<lua_Integer>(k));
-        auto n = static_cast<uint16_t>(lua_rawlen(L, -1));
-        bytes.append(reinterpret_cast<const char*>(&n), sizeof(n));
+        size += sizeof(uint16_t) +
+                std::min<size_t>(lua_rawlen(L, -1), kMaxSeriesPoints) * sizeof(double);
+        lua_pop(L, 1);
+    }
+    auto* out = static_cast<uint8_t*>(lua_newuserdatauv(L, size, 0));
+    size_t at = 0;
+    out[at++] = static_cast<uint8_t>(count);
+    for (size_t k = 1; k <= count; ++k) {
+        lua_rawgeti(L, idx, static_cast<lua_Integer>(k));
+        auto n = static_cast<uint16_t>(std::min<size_t>(lua_rawlen(L, -1), kMaxSeriesPoints));
+        std::memcpy(out + at, &n, sizeof(n));
+        at += sizeof(n);
         for (uint16_t i = 1; i <= n; ++i) {
             lua_rawgeti(L, -1, i);
             double v = static_cast<double>(lua_tonumber(L, -1));
             lua_pop(L, 1);
-            bytes.append(reinterpret_cast<const char*>(&v), sizeof(v));
+            std::memcpy(out + at, &v, sizeof(v));
+            at += sizeof(v);
         }
         lua_pop(L, 1);
     }
+}
+
+// Sets the series encoded in the userdata at the top of the stack. Makes
+// no Lua call while its string exists.
+bool push_series(lua_State* L, NodeId id) {
+    const auto* bytes = static_cast<const char*>(lua_touserdata(L, -1));
+    const size_t size = lua_rawlen(L, -1);
     PatchBatch* batch = patch_batch(L);
-    return batch != nullptr &&
-           batch->set_prop(id, static_cast<PropId>(Prop::Series), PropValue{std::move(bytes)})
-               .is_ok();
+    return batch != nullptr && batch
+                                   ->set_prop(id, static_cast<PropId>(Prop::Series),
+                                              PropValue{os::LargeString(bytes, size)})
+                                   .is_ok();
 }
 
 // W.set_series(id, series)
@@ -100,21 +121,39 @@ int set_series(lua_State* L) {
     NodeId id = 0;
     if (!node_id_at(L, 1, id)) return luaL_error(L, "set_series: bad node id");
     check_bound(L, id, Prop::Series, 2);
-    luaL_checkstack(L, 2, "series");
-    if (!push_series(L, id, 2)) return too_large(L);
+    luaL_checkstack(L, 3, "series");
+    encode_series(L, 2);
+    if (!push_series(L, id)) return too_large(L);
     return 0;
 }
 
 // --- Canvas -----------------------------------------------------------------
 
 // The `g` a draw(g) gets. Its texts are in user value 1 (index i + 1 for
-// command i), so the strings stay alive until canvas_end() copies them.
+// command i), so the strings stay alive until canvas_end() copies them;
+// text_bytes is their total, counted as each is recorded.
 struct GState {
     NodeId node;
     uint32_t count;
     uint8_t open;
+    size_t text_bytes;
     DrawCommand cmds[kMaxDrawCommands];
 };
+
+// The batch size the CanvasDraw of g would take with `more` commands and
+// `more_text` text bytes added, the way PatchBatch counts it.
+size_t draw_op_bytes(const GState* g, size_t more, size_t more_text) {
+    return kOpOverheadBytes + kDrawHeaderBytes + (g->count + more) * sizeof(DrawCommand) +
+           g->text_bytes + more_text;
+}
+
+// Whether that CanvasDraw still fits the batch.
+bool draw_fits(lua_State* L, const GState* g, size_t more, size_t more_text) {
+    PatchBatch* batch = patch_batch(L);
+    if (batch == nullptr) return false;
+    const size_t used = batch->bytes();
+    return used <= kMaxBatchBytes && draw_op_bytes(g, more, more_text) <= kMaxBatchBytes - used;
+}
 
 // Raises the formatted message (lua_pushfstring formats) at the scene
 // line that called the running method.
@@ -269,11 +308,15 @@ int g_text(lua_State* L) {
     size_t len = 0;
     lua_tolstring(L, 4, &len);  // a number becomes its text
     if (len > kMaxPropStringBytes) raise_here(L, "canvas: g:text: value too large");
+    // Counted against the batch now, so a draw that cannot be sent stops
+    // here, before its texts add up to anything.
+    if (!draw_fits(L, g, 1, len)) raise_here(L, "ui update too large");
     c.text_size = static_cast<uint32_t>(len);
     lua_getiuservalue(L, 1, 1);
     lua_pushvalue(L, 4);
     lua_rawseti(L, -2, static_cast<lua_Integer>(g->count) + 1);
     lua_pop(L, 1);
+    g->text_bytes += len;
     return add(g, c);
 }
 
@@ -285,20 +328,21 @@ int canvas_begin(lua_State* L) {
     g->node = id;
     g->count = 0;
     g->open = 1;
+    g->text_bytes = 0;
     luaL_setmetatable(L, kGType);
     lua_newtable(L);
     lua_setiuservalue(L, -2, 1);
     return 1;
 }
 
-// Builds the CanvasDraw of g (at `idx`, its text table at `texts`) and
-// pushes it. Uses no stack beyond one slot per text it reads.
-bool push_canvas(lua_State* L, const GState* g, int texts) {
-    size_t text_bytes = 0;
-    for (uint32_t i = 0; i < g->count; ++i) text_bytes += g->cmds[i].text_size;
+// Builds the CanvasDraw of g from the texts in `texts` (the pointers
+// read from g's text table, which keeps the strings alive) and pushes it.
+// Makes no Lua call, and allocates nothing the batch would refuse.
+bool push_canvas(lua_State* L, const GState* g, const char* const* texts) {
+    if (!draw_fits(L, g, 0, 0)) return false;
     CanvasDraw draw;
     draw.canvas = g->node;
-    draw.commands.resize(kDrawHeaderBytes + g->count * sizeof(DrawCommand) + text_bytes);
+    draw.commands.resize(kDrawHeaderBytes + g->count * sizeof(DrawCommand) + g->text_bytes);
     uint8_t* out = draw.commands.data();
     std::memcpy(out, &g->count, sizeof(g->count));
     uint8_t* text_out = out + kDrawHeaderBytes + g->count * sizeof(DrawCommand);
@@ -306,12 +350,7 @@ bool push_canvas(lua_State* L, const GState* g, int texts) {
     for (uint32_t i = 0; i < g->count; ++i) {
         DrawCommand c = g->cmds[i];
         if (c.op == DrawOp::Text) {
-            lua_rawgeti(L, texts, static_cast<lua_Integer>(i) + 1);
-            size_t len = 0;
-            const char* s = lua_tolstring(L, -1, &len);
-            len = std::min<size_t>(len, c.text_size);
-            if (s != nullptr) std::memcpy(text_out + offset, s, len);
-            lua_pop(L, 1);
+            if (texts[i] != nullptr) std::memcpy(text_out + offset, texts[i], c.text_size);
             c.text_offset = offset;
             offset += c.text_size;
         }
@@ -327,8 +366,21 @@ int canvas_end(lua_State* L) {
     g->open = 0;
     lua_settop(L, 1);
     lua_getiuservalue(L, 1, 1);
-    luaL_checkstack(L, 2, "canvas");
-    if (!push_canvas(L, g, 2)) return too_large(L);
+    // The text pointers, read with every Lua call done before
+    // push_canvas() builds anything. The strings stay in the table (at
+    // stack slot 2) until this returns.
+    auto* texts = static_cast<const char**>(
+        lua_newuserdatauv(L, std::max<size_t>(g->count, 1) * sizeof(const char*), 0));
+    for (uint32_t i = 0; i < g->count; ++i) {
+        texts[i] = nullptr;
+        if (g->cmds[i].op != DrawOp::Text) continue;
+        lua_rawgeti(L, 2, static_cast<lua_Integer>(i) + 1);
+        size_t len = 0;
+        const char* s = lua_tolstring(L, -1, &len);
+        if (s != nullptr && len >= g->cmds[i].text_size) texts[i] = s;
+        lua_pop(L, 1);
+    }
+    if (!push_canvas(L, g, texts)) return too_large(L);
     return 0;
 }
 

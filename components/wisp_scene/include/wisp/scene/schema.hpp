@@ -255,7 +255,12 @@ std::optional<ScriptError> collect_tree(Vm& vm, int index, NodeId& next_id, Buil
 // with ids from next_id on and its watches in the row's scope; the rows
 // go to the PatchBatch as ListRows, one per run of consecutive rows. A
 // list that is not in the tree, or whose items have not been read yet (the
-// flush after the Build reads them), builds nothing. Runs under
+// flush after the Build reads them), builds nothing. The tree and every
+// row built, of all lists, share kMaxNodes (spec 4.5): the row that would
+// pass it is not built, nor any after it in this call, and the scene's
+// log gets a warning ("ui.list: widget limit 2000 reached, rows from 31
+// on are not built"); a single row of more than kMaxNodes is still an
+// error. Runs under
 // Vm::call() as a message of its own (Budget::Fresh); the caller flushes
 // afterwards as after any message. Errors as collect_tree(), positioned at
 // the row's constructor (or at the list for a row() that returns no
@@ -269,7 +274,10 @@ std::optional<ScriptError> collect_tree(Vm& vm, int index, NodeId& next_id, Buil
 //           ListReset{list, #items} and drops every row.
 //   canvas  runs draw(g); g:line, g:circle, g:arc, g:rect, g:fill and
 //           g:text record at most 512 commands (a 513th raises "canvas:
-//           more than 512 draw commands"), sent as one CanvasDraw.
+//           more than 512 draw commands"), sent as one CanvasDraw. Its
+//           size is counted against kMaxBatchBytes as each text is
+//           recorded, so the g:text that would pass it raises "ui update
+//           too large".
 //   chart   reads series (checked like a constructor's value) and sends
 //           it as SetProp{chart, series, <encoded points>}.
 std::optional<ScriptError> build_list_rows(Vm& vm, NodeId list, uint32_t first, uint32_t count,

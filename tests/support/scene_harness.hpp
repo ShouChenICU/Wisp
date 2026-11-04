@@ -94,6 +94,15 @@ protected:
         return std::nullopt;
     }
 
+    // The integer global `name` of the scene VM, or -1.
+    int64_t global_int(const char* name) {
+        lua_State* L = vm->L();
+        lua_getglobal(L, name);
+        int64_t v = lua_isinteger(L, -1) ? lua_tointeger(L, -1) : -1;
+        lua_pop(L, 1);
+        return v;
+    }
+
     scene::PatchBatch batch;
     std::unique_ptr<scene::Vm> vm;
     scene::NodeId next_id = 1;

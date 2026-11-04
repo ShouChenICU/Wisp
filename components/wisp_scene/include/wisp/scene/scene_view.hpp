@@ -65,7 +65,10 @@
 // the display's colour format (lv_display_get_color_format(), so drawing
 // the canvas is a plain copy), allocated in Mem::Large. The commands are
 // kept, and drawn again when the canvas changes size. A canvas is "fill"
-// in both directions unless given a size.
+// in both directions unless given a size. One of more than
+// kMaxCanvasPixels, or whose buffer would take the view past
+// kMaxMediaBytes, has no buffer and shows nothing, reported once
+// through on_warning ("ui.canvas: too large") until a size fits again.
 //
 // Chart: lv_chart, `type` line or bar; series in the theme colours accent,
 // ok, warn, danger; values are placed between min and max (default 0 and
@@ -76,10 +79,17 @@
 // see ui::UiConfig::install_image_decoders) into a buffer in Mem::Large
 // that the image shows from then on. LVGL's image cache is off
 // (lv_conf.h), so leaving decoding to draw time would decode the file
-// again on every redraw. A missing file, or one that cannot be decoded,
-// leaves the image empty and is reported through on_warning ("ui.image:
-// no asset 'assets/x.png'", "ui.image: unsupported JPEG 'assets/x.jpg'",
-// "ui.image: cannot decode 'assets/x.png'").
+// again on every redraw. The size in the file's header is checked before
+// anything is decoded: a side over kMaxImageSide, more than
+// kMaxImagePixels, or pixels that would take the view past
+// kMaxMediaBytes are refused. LodePNG allocates through lv_malloc, which
+// is Mem::Large with an internal-RAM fallback (lv_mem_wisp.cpp); these
+// limits are what bound it. A missing file, one that cannot be decoded
+// or one too large leaves the image empty and is reported through
+// on_warning ("ui.image: no asset 'assets/x.png'", "ui.image: unsupported
+// JPEG 'assets/x.jpg'" for a progressive or damaged JPEG, "ui.image:
+// cannot decode 'assets/x.png'", "ui.image: too large 'assets/x.png'").
+// Pixels are given back to the budget when the image changes or goes.
 //
 // Icon: a label showing the LV_SYMBOL_* glyph of `name`.
 //
@@ -122,6 +132,13 @@ public:
     // Whole numbers within this pass to LVGL unscaled (see above).
     static constexpr int32_t kDirectLimit = 100000;
     static constexpr int32_t kScaledSteps = 1000;
+    // Pixel memory limits (spec 5.6): an image's sides and pixel count,
+    // a canvas's pixel count, and the decoded images and canvas buffers
+    // of one view together.
+    static constexpr uint32_t kMaxImageSide = 1024;
+    static constexpr uint32_t kMaxImagePixels = 512 * 1024;
+    static constexpr uint32_t kMaxCanvasPixels = 512 * 1024;
+    static constexpr size_t kMaxMediaBytes = 4 * 1024 * 1024;
 
     // Creates the (empty) screen. `system` must outlive the view.
     SceneView(ui::SystemLayer& system, const hal::ScreenShape& shape, ViewCallbacks cb);
@@ -183,6 +200,7 @@ private:
     // Canvas, chart, image and icon (scene_view_canvas.cpp,
     // scene_view_media.cpp).
     void draw_canvas(Node& n);
+    void release_canvas(Node& n);
     static void canvas_event_cb(lv_event_t* e);
     void set_series(Node& n, const PropValue& v);
     void apply_chart(Node& n);
@@ -222,6 +240,10 @@ private:
     std::shared_ptr<const core::ScenePackage> assets_;
     lv_obj_t* screen_ = nullptr;
     lv_group_t* group_ = nullptr;
+    // The decoded images and canvas buffers of every node, against
+    // kMaxMediaBytes. Declared before nodes_: a Node gives its bytes back
+    // when it is destroyed.
+    size_t media_bytes_ = 0;
     NodeMap nodes_;
     RefMap refs_;
     NodeId root_ = 0;

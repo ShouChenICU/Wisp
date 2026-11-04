@@ -13,9 +13,9 @@ using namespace view;
 
 namespace {
 
-// The tree a Build may hold plus one window of rows, which build_list_rows()
-// collects under the same kMaxNodes limit.
-constexpr size_t kMaxViewNodes = 2 * kMaxNodes;
+// The tree and every row built share kMaxNodes (spec 4.5), as
+// build_list_rows() counts them.
+constexpr size_t kMaxViewNodes = kMaxNodes;
 
 }  // namespace
 

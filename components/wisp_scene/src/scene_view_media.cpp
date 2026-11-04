@@ -120,6 +120,8 @@ void SceneView::set_image(Node& n, const PropValue& v) {
     lv_image_set_src(n.obj, nullptr);
     n.image = {};
     n.image_mem = {};
+    media_bytes_ -= n.image_bytes;
+    n.image_bytes = 0;
     const auto* path = as_string(v);
     if (path == nullptr) return;
 
@@ -153,25 +155,43 @@ void SceneView::set_image(Node& n, const PropValue& v) {
     src.header.cf = LV_COLOR_FORMAT_UNKNOWN;
     src.data = file->data();
     src.data_size = static_cast<uint32_t>(file->size());
+    // The JPEG decoders take baseline JPEG only (spec 4.3): whatever else
+    // they fail on, progressive or damaged, is reported as such.
+    const char* undecodable = jpeg ? "unsupported JPEG" : "cannot decode";
     lv_image_header_t header;
     if (lv_image_decoder_get_info(&src, &header) != LV_RESULT_OK) {
-        // The JPEG decoders take baseline JPEG only (spec 4.3).
-        message(jpeg ? "unsupported JPEG" : "cannot decode");
+        message(undecodable);
+        return;
+    }
+    // Checked on the header, before anything is decoded. The estimate is
+    // what the decoder's output format takes (4 bytes a pixel if it does
+    // not say).
+    const uint64_t pixels = static_cast<uint64_t>(header.w) * header.h;
+    const uint32_t px_bytes = lv_color_format_get_size(static_cast<lv_color_format_t>(header.cf));
+    const uint64_t estimate = pixels * (px_bytes > 0 ? px_bytes : 4);
+    if (header.w > kMaxImageSide || header.h > kMaxImageSide || pixels > kMaxImagePixels ||
+        estimate > kMaxMediaBytes - media_bytes_) {
+        message("too large");
         return;
     }
     lv_image_decoder_args_t args{};
     args.no_cache = true;
     lv_image_decoder_dsc_t dsc;
     if (lv_image_decoder_open(&dsc, &src, &args) != LV_RESULT_OK) {
-        message("cannot decode");
+        message(undecodable);
         return;
     }
     const lv_draw_buf_t* decoded = dsc.decoded;
     LargeMem mem;
+    size_t size = 0;
+    bool fits = true;
     if (decoded != nullptr && decoded->header.w > 0 && decoded->header.h > 0 &&
         decoded->data_size > 0) {
-        const size_t size = static_cast<size_t>(decoded->header.stride) * decoded->header.h;
-        if (size <= decoded->data_size) mem.p = os::alloc(size, os::Mem::Large);
+        size = static_cast<size_t>(decoded->header.stride) * decoded->header.h;
+        // The decoder's own stride or format may make it larger than the
+        // estimate.
+        fits = size <= kMaxMediaBytes - media_bytes_;
+        if (fits && size <= decoded->data_size) mem.p = os::alloc(size, os::Mem::Large);
         if (mem.p != nullptr) {
             std::memcpy(mem.p, decoded->data, size);
             n.image.header = decoded->header;
@@ -181,11 +201,17 @@ void SceneView::set_image(Node& n, const PropValue& v) {
         }
     }
     lv_image_decoder_close(&dsc);
+    if (!fits) {
+        message("too large");
+        return;
+    }
     if (mem.p == nullptr) {
-        message("cannot decode");
+        message(undecodable);
         return;
     }
     n.image_mem = std::move(mem);
+    n.image_bytes = size;
+    media_bytes_ += size;
     lv_image_set_src(n.obj, &n.image);
 }
 

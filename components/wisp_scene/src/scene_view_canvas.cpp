@@ -132,6 +132,16 @@ void SceneView::canvas_event_cb(lv_event_t* e) {
     n->view->draw_canvas(*n);
 }
 
+// Frees the canvas's buffer; the canvas shows nothing until it gets one.
+void SceneView::release_canvas(Node& n) {
+    if (n.canvas_mem.p == nullptr) return;
+    lv_image_set_src(n.obj, nullptr);
+    n.canvas_buf = {};
+    n.canvas_mem = {};
+    media_bytes_ -= n.canvas_bytes;
+    n.canvas_bytes = 0;
+}
+
 void SceneView::draw_canvas(Node& n) {
     n.canvas_drawn = true;
     const int32_t w = lv_obj_get_content_width(n.obj);
@@ -141,20 +151,31 @@ void SceneView::draw_canvas(Node& n) {
     lv_image_header_t& header = n.canvas_buf.header;
     if (n.canvas_mem.p == nullptr || static_cast<int32_t>(header.w) != w ||
         static_cast<int32_t>(header.h) != h || header.cf != cf) {
+        const uint64_t pixels = static_cast<uint64_t>(w) * static_cast<uint64_t>(h);
         const uint32_t stride = lv_draw_buf_width_to_stride(static_cast<uint32_t>(w), cf);
-        const uint32_t size = stride * static_cast<uint32_t>(h);
+        const uint64_t size = static_cast<uint64_t>(stride) * static_cast<uint64_t>(h);
+        // The old buffer is about to be redrawn anyway: it goes first, so
+        // the two never take memory at once.
+        release_canvas(n);
+        if (pixels > kMaxCanvasPixels || size > kMaxMediaBytes - media_bytes_) {
+            if (!n.canvas_refused) warn(n, "ui.canvas: too large");
+            n.canvas_refused = true;
+            return;
+        }
         LargeMem mem;
-        mem.p = os::alloc(size, os::Mem::Large);
+        mem.p = os::alloc(static_cast<size_t>(size), os::Mem::Large);
         if (mem.p == nullptr) {
             WLOG_W(kTag, "out of memory for a %" PRId32 "x%" PRId32 " canvas", w, h);
             return;
         }
         if (lv_draw_buf_init(&n.canvas_buf, static_cast<uint32_t>(w), static_cast<uint32_t>(h), cf,
-                             stride, mem.p, size) != LV_RESULT_OK)
+                             stride, mem.p, static_cast<uint32_t>(size)) != LV_RESULT_OK)
             return;
         lv_canvas_set_draw_buf(n.obj, &n.canvas_buf);
-        // The old buffer goes with `mem`, now that nothing shows it.
-        std::swap(n.canvas_mem, mem);
+        n.canvas_mem = std::move(mem);
+        n.canvas_bytes = static_cast<size_t>(size);
+        media_bytes_ += n.canvas_bytes;
+        n.canvas_refused = false;
     }
     lv_draw_buf_clear(&n.canvas_buf, nullptr);
     std::span<const uint8_t> bytes(n.draw);

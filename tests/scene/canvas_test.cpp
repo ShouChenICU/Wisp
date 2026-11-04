@@ -255,4 +255,43 @@ TEST_F(Canvas, ResizeRedrawsIntoANewBuffer) {
     EXPECT_EQ(pixel(70, 20), lv_color_to_u16(lv_color_hex(0x00FF00)));
 }
 
+// Texts are counted against the 1 MB batch as they are recorded: the
+// draw stops at the text that would overflow it, long before 512 texts
+// of 64 KB (32 MB) exist anywhere, and nothing reaches the view.
+TEST_F(Canvas, LargeTextsFailAtTheBatchLimit) {
+    start("rect");
+    auto err = open(R"(
+        _G.n = 0
+        local big = string.rep("x", 65536)
+        return ui.screen {
+          ui.canvas { w = 10, h = 10, draw = function(g)
+            for i = 1, 512 do g:text(0, 0, big); _G.n = i end
+          end },
+        }
+    )");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->text(), "main.lua:6: ui update too large");
+    // 1 MB holds 15 such texts besides the Build.
+    EXPECT_GE(global_int("n"), 14);
+    EXPECT_LE(global_int("n"), 16);
+    EXPECT_TRUE(draws().empty());
+}
+
+// A canvas of more than kMaxCanvasPixels gets no buffer: it stays empty
+// and the scene hears why.
+TEST_F(Canvas, TooLargeCanvasStaysEmpty) {
+    start("rect");
+    auto err = open(R"(
+        return ui.screen {
+          ui.canvas { w = 800, h = 700, draw = function(g) g:fill("#FF0000") end },
+        }
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    on_ui([&] { EXPECT_EQ(lv_image_get_src(view->object(kCanvas)), nullptr); });
+    auto warnings = take_warnings();
+    ASSERT_EQ(warnings.size(), 1u);
+    EXPECT_EQ(warnings[0], "ui.canvas: too large");
+    static_assert(wisp::scene::SceneView::kMaxCanvasPixels == 524288);
+}
+
 }  // namespace

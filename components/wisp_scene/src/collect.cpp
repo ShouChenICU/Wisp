@@ -1,6 +1,7 @@
 // collect_tree() and push_node_prop() (see wisp/scene/schema.hpp; the
 // node layout is in node.hpp).
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <optional>
@@ -10,6 +11,7 @@
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/reactive.hpp"
 #include "wisp/scene/schema.hpp"
+#include "wisp/scene/vm.hpp"
 
 namespace wisp::scene {
 
@@ -41,6 +43,10 @@ struct Collect {
 // How often the walk checks the VM's limits (vm.hpp: C loops that call
 // back into Lua check every so often).
 constexpr size_t kCheckEvery = 256;
+
+// Registry key of the node count of the tree collected last: list rows
+// share kMaxNodes with it.
+char kTreeNodesKey;
 
 // Stack slots of collect_entry().
 constexpr int kCtxSlot = 1;
@@ -319,6 +325,8 @@ int collect_entry(lua_State* L) {
     }
     lua_pushboolean(L, 0);
     lua_rawsetp(L, LUA_REGISTRYINDEX, &kCollectingKey);
+    lua_pushinteger(L, static_cast<lua_Integer>(c->count));
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &kTreeNodesKey);
     return 0;
 }
 
@@ -340,7 +348,6 @@ struct Rows {
     Vm* vm;
     NodeId list;
     NodeId next;
-    size_t count;  // nodes collected so far, against kMaxNodes
     PatchBatch* batch;
     os::LargeVector<ListRows>* runs;
     size_t pending;  // the PatchBatch estimate of `runs`
@@ -351,17 +358,36 @@ constexpr int kRowIndexSlot = 1;
 constexpr int kRowNodeSlot = 2;
 constexpr int kRowScopeSlot = 3;
 constexpr int kRowIdsSlot = 4;
-constexpr int kRowNodesSlot = 5;
-constexpr int kRowRefsSlot = 6;
-constexpr int kRowValuesSlot = 7;
-constexpr int kRowWalkBase = 7;
+constexpr int kRowUsedSlot = 5;
+constexpr int kRowNodesSlot = 6;
+constexpr int kRowRefsSlot = 7;
+constexpr int kRowValuesSlot = 8;
+constexpr int kRowWalkBase = 8;
 
-// collect_row(index, node, scope, ids), upvalue 1 the Rows: the C half of
-// W.build_rows() (prelude). Collects one row the way collect_entry()
-// collects a tree, with the list as the root's parent.
+// log_warning(message): logs it to the scene's log.
+int log_warning(lua_State* L) {
+    log_lua_args(L, LogLevel::Warn);
+    return 0;
+}
+
+// Logs that rows from `index` (0-based) on are not built. Runs Lua (and
+// may raise), so no C++ object may be alive across it.
+void warn_widget_limit(lua_State* L, uint32_t index) {
+    lua_pushcfunction(L, log_warning);
+    lua_pushfstring(L, "ui.list: widget limit %d reached, rows from %d on are not built",
+                    static_cast<int>(kMaxNodes), static_cast<int>(index) + 1);
+    lua_call(L, 1, 0);
+}
+
+// collect_row(index, node, scope, ids, row_nodes), upvalue 1 the Rows:
+// the C half of W.build_rows() (prelude). Collects one row the way
+// collect_entry() collects a tree, with the list as the root's parent,
+// and returns true; or, when the tree, the row_nodes of the rows already
+// built and this row together pass kMaxNodes (spec 4.5), collects
+// nothing, logs a warning and returns false.
 int collect_row(lua_State* L) {
     auto* r = static_cast<Rows*>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_settop(L, kRowIdsSlot);
+    lua_settop(L, kRowUsedSlot);
     NodeHeader* root = to_node(L, kRowNodeSlot);
     if (root == nullptr || root->widget == static_cast<uint16_t>(Widget::Screen)) {
         const char* got = root != nullptr ? "ui.screen" : luaL_typename(L, kRowNodeSlot);
@@ -373,6 +399,15 @@ int collect_row(lua_State* L) {
         return raise(L, file, line, "ui.list: row must return a widget (got %s)", got);
     }
     auto index = static_cast<uint32_t>(lua_tointeger(L, kRowIndexSlot));
+    size_t used = static_cast<size_t>(std::max<lua_Integer>(lua_tointeger(L, kRowUsedSlot), 0));
+    if (lua_rawgetp(L, LUA_REGISTRYINDEX, &kTreeNodesKey) == LUA_TNUMBER)
+        used += static_cast<size_t>(std::max<lua_Integer>(lua_tointeger(L, -1), 0));
+    lua_pop(L, 1);
+    if (used >= kMaxNodes) {
+        warn_widget_limit(L, index);
+        lua_pushboolean(L, 0);
+        return 1;
+    }
     os::LargeVector<ListRows>& runs = *r->runs;
     const bool new_run = runs.empty() || runs.back().first + runs.back().rows.size() != index;
     const size_t batch_bytes = r->batch != nullptr ? r->batch->bytes() : 0;
@@ -383,8 +418,10 @@ int collect_row(lua_State* L) {
         run.list = r->list;
         run.first = index;
     }
+    // The row's own count starts at 0, so a single row of more than
+    // kMaxNodes is still the scene's error.
     Collect c{r->vm,        &runs.back().rows.emplace_back(),
-              r->next,      r->count,
+              r->next,      0,
               start,        kRowNodesSlot,
               kRowRefsSlot, kRowValuesSlot,
               true,         kRowScopeSlot,
@@ -404,9 +441,17 @@ int collect_row(lua_State* L) {
     lua_pushboolean(L, 0);
     lua_rawsetp(L, LUA_REGISTRYINDEX, &kCollectingKey);
     r->next = c.next;
-    r->count = c.count;
+    if (used + c.count > kMaxNodes) {
+        // The row's nodes and effects go when W.build_rows() drops it.
+        runs.back().rows.pop_back();
+        if (runs.back().rows.empty()) runs.pop_back();
+        warn_widget_limit(L, index);
+        lua_pushboolean(L, 0);
+        return 1;
+    }
     r->pending = c.bytes - batch_bytes;
-    return 0;
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 // rows_entry(rows, list, first, count), under Vm::call():
@@ -434,7 +479,7 @@ std::optional<ScriptError> build_list_rows(Vm& vm, NodeId list, uint32_t first, 
     lua_State* L = vm.L();
     if (!lua_checkstack(L, 5)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     os::LargeVector<ListRows> runs;
-    Rows rows{&vm, list, next_id, 0, patch_batch(L), &runs, 0};
+    Rows rows{&vm, list, next_id, patch_batch(L), &runs, 0};
     lua_pushcfunction(L, rows_entry);
     lua_pushlightuserdata(L, &rows);
     lua_pushinteger(L, list);

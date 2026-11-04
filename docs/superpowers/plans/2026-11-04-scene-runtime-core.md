@@ -808,6 +808,7 @@ TEST(SceneView, FontsAndColorsMapToTheme)       // theme_font("xl") == ui::font(
 - 图表：`lv_chart`，`type` 映射 `LV_CHART_TYPE_LINE/BAR`，颜色依次取 `accent ok warn danger`。
 - 图像：`src` 指向包内 `assets/*.png`，字节来自打开时载入的 `ScenePackage`（Task 13 的 `Open` 路径在 UI 线程上建好 `SceneView` 后、应用 `Build` 前调用 `set_assets`），以 `lv_image_dsc_t` 内存源交给 LodePNG；包里没有该文件时报 `ui.image: no asset 'assets/x.png'` 并显示空白。
 - JPEG（细化第 10 条）：`src` 可为 `assets/*.jpg`/`*.jpeg`。可移植层只定义钩子：`UiRuntime` 启动 LVGL 后在 UI 线程上调用平台提供的"安装图像解码器"函数（可空）；解码器按内存源的魔数 `FF D8` 识别 JPEG。ESP 端口用 `esp_new_jpeg` 解码成 `lv_display_get_color_format()` 对应的 RGB565（真机为 `RGB565_SWAPPED`），输出缓冲 `os::alloc(Mem::Large)`；`esp_new_jpeg` 只能出现在 `wisp_port_esp`（AGENTS.md 第 3 节）。模拟器用 TJPGD。progressive 或损坏的 JPEG 报 `ui.image: unsupported JPEG 'assets/x.jpg'` 并显示空白。
+- 上限（spec 5.6）：树与所有列表已建的行合计最多 2000 个节点，超出的行不建并记警告；单张图片每边 ≤ 1024 px、总像素 ≤ 524,288，单个画布总像素 ≤ 524,288，一个 `SceneView` 的已解码图片与画布缓冲合计 ≤ 4 MB，超出的留空并报 `ui.image: too large '<path>'` / `ui.canvas: too large`；画布的文字边记录边按 1 MB 批次上限计数。实施时裁定：图片在设置 `src` 时解码一次、像素复制进 `Mem::Large`（LVGL 的图像缓存关闭，留到绘制时解码会每帧重解），而不是让 `lv_image_dsc_t` 直接指向包里的压缩字节。
 
 - [ ] **Step 1: 写失败的测试**
 

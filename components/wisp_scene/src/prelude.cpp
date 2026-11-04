@@ -365,9 +365,13 @@ end
 
 -- The widget effects of the tree collected last, and its lists:
 -- lists[id] = {items = the table shown, row = fn, rows = {[index] =
--- {sc = scope, ids = {node ids}}}} with 0-based row indexes.
-local widgets = {}
+-- {sc = scope, ids = {node ids}, n = #ids}}} with 0-based row indexes.
+-- widgets only lists the effects for W.reset_widgets(): live keeps
+-- the running ones, so a row's effects go as soon as its scope is
+-- disposed. row_nodes counts the nodes of every row built.
+local widgets = setmetatable({}, WEAK)
 local lists = {}
+local row_nodes = 0
 
 -- A widget effect: it first runs at the next flush, after the op that
 -- creates its widget is in the batch, and refresh_all() runs it again,
@@ -401,6 +405,7 @@ local function drop_row(list, index, r)
         nodes[ids[i]] = nil
         values[ids[i]] = nil
     end
+    row_nodes = row_nodes - r.n
     list.rows[index] = nil
 end
 
@@ -438,15 +443,25 @@ end
 -- last (collect_tree() calls it before collecting a new one).
 function W.reset_widgets()
     for e in pairs(widgets) do dispose_effect(e) end
-    widgets = {}
+    widgets = setmetatable({}, WEAK)
     for _, list in pairs(lists) do drop_rows(list) end
     lists = {}
+    row_nodes = 0
+end
+
+-- The widget effects not yet collected (for tests).
+function W.widget_effects()
+    local n = 0
+    for _ in pairs(widgets) do n = n + 1 end
+    return n
 end
 
 -- W.build_rows(id, first, count, collect_row): makes rows [first,
 -- first + count) of list id exist and drops the others (0-based). Each
 -- new row is row(item, index) (1-based) in a scope of its own, handed to
--- collect_row(index, node, scope, ids), which collects it and fills ids.
+-- collect_row(index, node, scope, ids, row_nodes), which collects it and
+-- fills ids, or returns false when the row would take the scene past its
+-- widget limit: then that row is dropped and no later one is built.
 -- An unknown list, or one whose items have not been read yet, has no
 -- rows to build.
 function W.build_rows(id, first, count, collect_row)
@@ -464,8 +479,14 @@ function W.build_rows(id, first, count, collect_row)
             local sc = W.scope()
             local ids = {}
             local node = list.row(rawget(items, index + 1), index + 1)
-            list.rows[index] = {sc = sc, ids = ids}
-            collect_row(index, node, sc, ids)
+            local r = {sc = sc, ids = ids, n = 0}
+            list.rows[index] = r
+            if not collect_row(index, node, sc, ids, row_nodes) then
+                drop_row(list, index, r)
+                break
+            end
+            r.n = #ids
+            row_nodes = row_nodes + r.n
         end
     end
 end

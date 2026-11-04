@@ -4,11 +4,14 @@
 
 #include <gtest/gtest.h>
 
+#include <mutex>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "list_window.hpp"
 #include "support/scene_harness.hpp"
+#include "wisp/core/log.hpp"
 
 namespace {
 
@@ -235,6 +238,104 @@ TEST_F(SceneViewList, RowErrorsPointAtTheScene) {
     )");
     ASSERT_TRUE(err);
     EXPECT_EQ(err->text(), "main.lua:4: ui.label: ref cannot be used inside a list row");
+}
+
+// Rows of canvases and charts: every row built and dropped while the list
+// scrolls takes its widget effects with it, so neither the effects the
+// prelude keeps nor the VM's memory grow with the number of scrolls.
+TEST_F(SceneViewList, RecycledRowsReleaseTheirWidgetEffects) {
+    start("rect");
+    auto err = open(R"(
+        local t = {}
+        for i = 1, 400 do t[i] = i end
+        return ui.screen {
+          ui.list { items = t, row_h = 40, row = function(item)
+            return ui.row {
+              ui.canvas { w = 30, h = 30, draw = function(g) g:circle(15, 15, item % 15) end },
+              ui.chart { w = 60, h = 30, series = { { item, item + 1, item + 2 } } },
+            }
+          end },
+        }
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    const char* count = R"(
+        local W = ...
+        _G.effects = W.widget_effects()
+        _G.kb = math.floor(collectgarbage("count"))
+    )";
+    auto scroll = [&](int32_t y) {
+        on_ui([&] { lv_obj_scroll_to_y(list_obj(), y, LV_ANIM_OFF); });
+        auto e = pump();
+        ASSERT_FALSE(e) << describe(e);
+    };
+    scroll(200 * 40);
+    scroll(0);
+    lua_gc(vm->L(), LUA_GCCOLLECT);
+    ASSERT_FALSE(message(count));
+    const int64_t effects = global_int("effects");
+    const int64_t kb = global_int("kb");
+    // One effect per canvas and chart in the window.
+    EXPECT_GT(effects, 0);
+    EXPECT_LE(effects, 2 * static_cast<int64_t>(rows_built()) + 1);  // and the list's
+    for (int i = 0; i < 30; ++i) {
+        scroll(((i * 7) % 10) * 40 * 40);
+        scroll(0);
+    }
+    lua_gc(vm->L(), LUA_GCCOLLECT);
+    ASSERT_FALSE(message(count));
+    EXPECT_EQ(global_int("effects"), effects);
+    EXPECT_LE(global_int("kb"), kb + 16);
+}
+
+// The 2000-widget limit (spec 4.5) covers list rows too, across every
+// request for rows: rows beyond it are not built, and the scene's log
+// says so.
+TEST_F(SceneViewList, RowsBeyondTheWidgetLimitAreNotBuilt) {
+    struct Sink : wisp::LogSink {
+        std::mutex m;
+        std::vector<std::string> lines;
+        void write(const wisp::LogRecord& r) override {
+            std::lock_guard<std::mutex> lock(m);
+            if (r.level == wisp::LogLevel::Warn) lines.emplace_back(r.msg);
+        }
+    } sink;
+    wisp::log::add_sink(&sink);
+    start("rect");
+    // screen, stack, 1970 labels and the list: 1973 nodes, room for 27
+    // more, nine rows of three.
+    auto err = open(R"(
+        local labels = {}
+        for i = 1, 1970 do labels[i] = ui.label { text = "x" } end
+        local t = {}
+        for i = 1, 100 do t[i] = i end
+        return ui.screen {
+          ui.stack(labels),
+          ui.list { items = t, row_h = 30, row = function(item)
+            return ui.row { ui.label { text = item }, ui.button { text = "b" } }
+          end },
+        }
+    )");
+    wisp::log::remove_sink(&sink);
+    ASSERT_FALSE(err) << describe(err);
+    constexpr NodeId kBigList = 1973;
+    auto rows = [&] {
+        size_t n = 0;
+        on_ui([&] { n = lv_obj_get_child_count(view->object(kBigList)) - 1; });
+        return n;
+    };
+    EXPECT_EQ(rows(), 9u);
+    EXPECT_LE(view->object_count(), wisp::scene::kMaxNodes);
+    bool warned = false;
+    for (const auto& line : sink.lines)
+        if (line.find("ui.list: widget limit 2000 reached") != std::string::npos) warned = true;
+    EXPECT_TRUE(warned);
+
+    // Scrolling keeps the total within the limit.
+    on_ui([&] { lv_obj_scroll_to_y(view->object(kBigList), 50 * 30, LV_ANIM_OFF); });
+    err = pump();
+    ASSERT_FALSE(err) << describe(err);
+    EXPECT_EQ(rows(), 9u);
+    EXPECT_LE(view->object_count(), wisp::scene::kMaxNodes);
 }
 
 }  // namespace
