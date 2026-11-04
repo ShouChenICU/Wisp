@@ -421,7 +421,7 @@ public:
 - 压缩：某文件 `dead_bytes > live_bytes / 2` 或自上次压缩追加超过 64 KB 时，刷盘作业改为 `write_atomic` 重写该文件的有效内容。配额按刷盘后全部日志大小预估，超出时先按压缩后的大小再算一次，仍超就拒绝写入。
 - 读取：丢弃末尾不完整的行并 `WLOG_W`；`journal.json` 存在时在各日志读完后重放、追加并删除。
 - `find`：按顶层字段相等过滤；`sort` 字段数字按数值、字符串按字节序，缺字段的排最后，同值按 id 升序。
-- 执行裁定：`find` 返回 `os::LargeVector<StoreRecord>` 而不是 `std::vector`（索引最多 1 MB，按 AGENTS.md §5 逐条增长的容器都放 PSRAM；索引的 map 与待写缓冲同样用 `os::LargeAllocator`/`os::LargeString`）。其余实现细节：`journal.json` 为 `[{"f":"<文件名>","r":<日志行对象>}, …]`；集合记录必须是 JSON 对象；压缩后若最大 id 的记录已删，保留一行 `{"op":"del","id":<最大 id>}`，重新加载后 id 仍单调；新增错误消息 `invalid_key`、`key_too_long`、`invalid_json`、`record_not_object`、`invalid_collection`、`not_found`、`no_batch`、`not_loaded`、`ids_exhausted`；`batch` 可嵌套（只有最外层 `commit_batch()` 生效，`abort_batch()` 丢弃整批）。
+- 执行裁定：`find` 返回 `os::LargeVector<StoreRecord>` 而不是 `std::vector`（索引最多 1 MB，按 AGENTS.md §5 逐条增长的容器都放 PSRAM；索引的 map 与待写缓冲同样用 `os::LargeAllocator`/`os::LargeString`）。其余实现细节：`journal.json` 为 `[{"f":"<文件名>","r":<日志行对象>}, …]`；集合记录必须是 JSON 对象；压缩后若最大 id 的记录已删，保留一行 `{"op":"del","id":<最大 id>}`，重新加载后 id 仍单调；新增错误消息 `invalid_key`、`key_too_long`、`invalid_json`、`record_not_object`、`invalid_collection`、`not_found`、`no_batch`、`not_loaded`、`ids_exhausted`、`batch_aborted`；`batch` 可嵌套，各层共用一个覆盖层：只有最外层 `commit_batch()` 生效；内层 `abort_batch()` 只退出该层并把整批标为已中止，之后的写入仍进覆盖层，最外层 `commit_batch()` 丢弃覆盖层并返回 `InvalidArgument "batch_aborted"`（Task 15 的绑定：场景用 `pcall` 接住内层错误后外层 `batch` 结束时会得到它，应作为错误抛出）。含多行的批处理即使只涉及一个文件也经 `journal.json` 刷盘；配额回退路径另限待写总量不超过配额；刷盘失败按 300 ms 起翻倍、最长 5 s 自动重试。
 
 - [ ] **Step 1: 写失败的测试**（假 `schedule` 手动触发、`submit_io` 同步执行）
 

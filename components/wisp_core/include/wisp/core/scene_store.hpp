@@ -19,17 +19,21 @@
 // log's pending buffer (PSRAM). The first pending write arms a one-shot
 // `schedule(coalesce_ms)`; when it fires, a flush job goes to
 // `submit_io` (the wisp.fs worker in production). The job takes every
-// pending buffer and appends each to its file. A flush touching more than
-// one file first writes all of its lines to "journal.json"
-// (write_atomic), so a batch spanning files survives a power cut whole:
+// pending buffer and appends each to its file. A power cut can leave any
+// prefix of an append behind, so a flush touching more than one file, or
+// holding a committed batch of more than one line, first writes all of
+// its lines to "journal.json" (write_atomic) and a batch survives whole:
 // load() replays a journal it finds (put/del of whole records is
-// idempotent), appends the replayed lines and deletes the journal.
+// idempotent), appends the replayed lines and deletes the journal. A
+// failed flush is retried after coalesce_ms, the delay doubling up to
+// 5 s, until one succeeds.
 // Instead of appending, a job rewrites a file with only its live records
 // (write_atomic) when its dead bytes exceed half its live bytes, or when
 // more than compact_append_bytes would have been appended since the last
 // rewrite. A rewritten collection keeps a {"op":"del"} line for its
-// highest id when that record is gone, so ids stay monotonic across a
-// reload.
+// highest id when that record is gone, and a batch that hands out an id
+// and deletes it again writes that delete too, so ids stay monotonic
+// across a reload.
 //
 // The flush job and the timer hold a shared_ptr to the store, so a flush
 // already scheduled or queued completes after the owner lets go -- the
@@ -44,13 +48,16 @@
 // Batches: between begin_batch() and commit_batch() writes go to an
 // overlay that reads already see; commit_batch() moves the whole overlay
 // into the index and the pending buffers under one lock, so a flush sees
-// either none or all of it, and abort_batch() simply drops it.
+// either none or all of it, and abort_batch() drops it. Batches nest and
+// all levels share one overlay: an aborted inner batch fails the whole
+// batch (see commit_batch()).
 //
 // Limits (spec 5.6): used_bytes() -- what the logs will total once every
 // pending line is written -- may not exceed quota_bytes. A write that
 // would pass it is still accepted if the logs rewritten with only their
-// live records would fit; the next flush then rewrites every file that
-// has dead lines. Otherwise it fails with QuotaExceeded
+// live records would fit and no more than quota_bytes are pending; the
+// next flush then rewrites every file that has dead lines. Otherwise it
+// fails with QuotaExceeded
 // "quota_exceeded" and changes nothing. A record (the encoded value) over
 // record_bytes fails with InvalidArgument "record_too_large", a new
 // collection past max_collections with QuotaExceeded
@@ -148,8 +155,16 @@ public:
     Result<os::LargeVector<StoreRecord>> find(std::string_view coll, const FindQuery& q) const;
 
     // Batches nest: only the outermost commit_batch() applies the
-    // overlay. abort_batch() drops the whole overlay at any depth.
-    // commit_batch() without an open batch fails with InvalidArgument.
+    // overlay. An inner abort_batch() closes its level and marks the batch
+    // aborted; writes until the outermost commit still go to the overlay
+    // (so none of them reaches the index), and that commit drops the
+    // overlay and fails with InvalidArgument "batch_aborted". The Lua
+    // binding re-raises its error after an inner abort, so the outer
+    // batch normally aborts too; "batch_aborted" surfaces only when scene
+    // code catches the inner error with pcall. An outermost
+    // abort_batch() drops the overlay at once. commit_batch() without an
+    // open batch fails with InvalidArgument "no_batch"; abort_batch()
+    // without one does nothing.
     void begin_batch();
     Result<void> commit_batch();
     void abort_batch();
@@ -167,6 +182,8 @@ private:
     std::unique_ptr<Impl> impl_;
 
     void arm_timer();
+    void arm_timer(uint32_t delay_ms);
+    void schedule_retry();
     void on_timer();
     void flush_job(const std::function<void(Result<void>)>& done);
 };

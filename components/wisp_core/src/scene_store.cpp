@@ -8,6 +8,7 @@
 #include <mutex>
 #include <span>
 #include <system_error>
+#include <utility>
 
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
@@ -24,6 +25,8 @@ constexpr size_t kMaxCollectionName = 32;
 // Nesting bound of the JSON scanner below; its open containers are kept
 // as bits of one uint64_t, so no recursion runs on the 4 KB wisp.fs stack.
 constexpr size_t kMaxDepth = 64;
+// A failed flush is retried after coalesce_ms, doubling up to this.
+constexpr uint32_t kMaxRetryMs = 5000;
 
 constexpr std::string_view kPutHead = R"({"op":"put","id":)";
 constexpr std::string_view kDelHead = R"({"op":"del","id":)";
@@ -733,8 +736,16 @@ struct SceneStore::Impl {
     bool loaded = false;
     Index ix;
     bool timer_armed = false;
+    // The delay of the last retry after a failed flush; 0 after a success.
+    uint32_t retry_ms = 0;
+    // A committed batch of more than one line is pending. A torn append
+    // could keep part of it, so the flush that takes it goes through the
+    // journal even when the batch touches a single file.
+    bool batch_pending = false;
 
     int batch_depth = 0;
+    // An inner batch was aborted; the outermost commit drops the overlay.
+    bool batch_aborted = false;
     KvOverlay kv_ov;
     std::map<std::string, CollOverlay, std::less<>> coll_ov;
     // What committing the overlay would add to the logs and to their
@@ -769,6 +780,14 @@ struct SceneStore::Impl {
         return total;
     }
 
+    uint64_t pending_locked() const {
+        uint64_t total = ix.kv_log.pending.size();
+        for (const auto& [name, c] : ix.colls) {
+            total += c.log.pending.size();
+        }
+        return total;
+    }
+
     int64_t compacted_locked() const {
         int64_t total = static_cast<int64_t>(ix.kv_log.live);
         for (const auto& [name, c] : ix.colls) {
@@ -781,13 +800,26 @@ struct SceneStore::Impl {
     // compacted size. It fits if the logs stay within the quota, or if
     // they would once rewritten (the next flush then rewrites, see
     // take_snapshot_locked()). A write that does not grow the compacted
-    // size always fits, so a full store can still be emptied.
+    // size always fits that second test, so a full store can still be
+    // emptied.
+    //
+    // Past the quota, accepted lines pile up in PSRAM until a flush gets to
+    // rewrite, and a scene replacing one value in a loop could push
+    // megabytes per message. So that path also caps everything pending
+    // (overlay included) at one quota. Below the quota pending is never
+    // more than that anyway, so the cap only bites here. It is a cap on
+    // pending rather than on disk + pending so that it holds however much
+    // the files weigh: logs loaded over the quota still accept deletes
+    // once a flush has drained what was pending.
     Result<void> check_quota_locked(int64_t line, int64_t live) const {
         const auto quota = static_cast<int64_t>(limits.quota_bytes);
         if (static_cast<int64_t>(used_locked()) + ov_line_bytes + line <= quota) {
             return Result<void>::ok();
         }
-        if (live <= 0 || compacted_locked() + live <= quota) {
+        const bool fits_rewritten = live <= 0 || compacted_locked() + live <= quota;
+        const bool pending_ok =
+            static_cast<int64_t>(pending_locked()) + ov_line_bytes + line <= quota;
+        if (fits_rewritten && pending_ok) {
             return Result<void>::ok();
         }
         return Result<void>::err(ErrorCode::QuotaExceeded, "quota_exceeded");
@@ -915,6 +947,7 @@ struct SceneStore::Impl {
 
     void clear_overlay_locked() {
         batch_depth = 0;
+        batch_aborted = false;
         kv_ov.clear();
         coll_ov.clear();
         ov_line_bytes = 0;
@@ -923,8 +956,9 @@ struct SceneStore::Impl {
 
     // Moves every pending buffer that needs writing into `items`, choosing
     // between appending and rewriting, and updates the accounting as if the
-    // I/O succeeds (settle_locked() undoes it for what fails).
-    void take_snapshot_locked(std::vector<FlushItem>& items) {
+    // I/O succeeds (settle_locked() undoes it for what fails). Returns
+    // whether the snapshot holds a committed multi-line batch.
+    bool take_snapshot_locked(std::vector<FlushItem>& items) {
         // Writes were accepted on the promise that rewriting fits the
         // quota: rewrite whatever has dead lines.
         const bool over_quota = used_locked() > limits.quota_bytes;
@@ -960,15 +994,19 @@ struct SceneStore::Impl {
         for (auto& [name, c] : ix.colls) {
             consider(name, c.log, compacted_bytes(c), [&](LString& out) { serialize(c, out); });
         }
+        // Every pending line is in the snapshot now, the batch's included.
+        return std::exchange(batch_pending, false);
     }
 
-    // Writes the snapshot. Called with io_mu held and mu not held.
-    Result<void> write_items(std::vector<FlushItem>& items) {
+    // Writes the snapshot. Called with io_mu held and mu not held. Lines
+    // going to more than one file, or a batch's lines, go through the
+    // journal: append() can leave any prefix behind on a power cut.
+    Result<void> write_items(std::vector<FlushItem>& items, bool batch) {
         size_t with_lines = 0;
         for (const auto& item : items) {
             with_lines += item.lines.empty() ? 0 : 1;
         }
-        const bool use_journal = with_lines > 1 || journal_dirty;
+        const bool use_journal = with_lines > 1 || journal_dirty || (batch && with_lines > 0);
         if (use_journal) {
             LString journal;
             journal.push_back('[');
@@ -1532,7 +1570,11 @@ Result<void> SceneStore::commit_batch() {
         if (--m.batch_depth > 0) {
             return Result<void>::ok();
         }
-        bool wrote = false;
+        if (m.batch_aborted) {
+            m.clear_overlay_locked();
+            return Result<void>::err(ErrorCode::InvalidArgument, "batch_aborted");
+        }
+        size_t lines = 0;
         for (auto& [key, v] : m.kv_ov) {
             std::optional<std::string_view> value;
             if (v) {
@@ -1540,29 +1582,35 @@ Result<void> SceneStore::commit_batch() {
             }
             apply_record(m.ix.kv_log, m.ix.kv, std::string_view(key), quoted(key), value,
                          &m.ix.kv_log.pending);
-            wrote = true;
+            ++lines;
         }
         for (auto& [name, o] : m.coll_ov) {
             auto base = m.ix.colls.find(name);
             if (base == m.ix.colls.end()) {
-                if (o.records.empty()) {
-                    continue;  // created and emptied inside the batch
-                }
                 base = m.ix.colls.emplace(name, Collection{}).first;
             }
             Collection& c = base->second;
+            const int64_t prev_next = c.next_id;
             for (auto& [id, v] : o.records) {
                 std::optional<std::string_view> value;
                 if (v) {
                     value = std::string_view(*v);
                 }
                 apply_record(c.log, c.records, id, IdText(id).view(), value, &c.log.pending);
-                wrote = true;
+                ++lines;
+            }
+            // An id the batch handed out and then deleted left no line;
+            // record the high-water mark so a reload does not reuse it.
+            const int64_t top = o.next_id - 1;
+            if (top >= prev_next && o.records.find(top) == o.records.end()) {
+                append_line(c.log.pending, IdText(top).view(), std::nullopt);
+                ++lines;
             }
             c.next_id = std::max(c.next_id, o.next_id);
         }
         m.clear_overlay_locked();
-        arm = wrote && m.note_pending_locked();
+        m.batch_pending = m.batch_pending || lines > 1;
+        arm = lines > 0 && m.note_pending_locked();
     }
     if (arm) {
         arm_timer();
@@ -1571,8 +1619,16 @@ Result<void> SceneStore::commit_batch() {
 }
 
 void SceneStore::abort_batch() {
-    std::lock_guard<os::Mutex> lock(impl_->mu);
-    impl_->clear_overlay_locked();
+    Impl& m = *impl_;
+    std::lock_guard<os::Mutex> lock(m.mu);
+    if (m.batch_depth == 0) {
+        return;
+    }
+    if (--m.batch_depth == 0) {
+        m.clear_overlay_locked();
+    } else {
+        m.batch_aborted = true;
+    }
 }
 
 void SceneStore::flush(std::function<void(Result<void>)> done) {
@@ -1591,19 +1647,38 @@ uint64_t SceneStore::used_bytes() const {
     return impl_->used_locked();
 }
 
-void SceneStore::arm_timer() {
+void SceneStore::arm_timer() { arm_timer(impl_->limits.coalesce_ms); }
+
+void SceneStore::arm_timer(uint32_t delay_ms) {
     auto self = shared_from_this();
-    impl_->deps.schedule(impl_->limits.coalesce_ms, [self] { self->on_timer(); });
+    impl_->deps.schedule(delay_ms, [self] { self->on_timer(); });
+}
+
+void SceneStore::schedule_retry() {
+    Impl& m = *impl_;
+    uint32_t delay = 0;
+    {
+        std::lock_guard<os::Mutex> lock(m.mu);
+        if (m.timer_armed) {
+            return;  // a write since the failure already armed one
+        }
+        delay = m.retry_ms == 0 ? m.limits.coalesce_ms
+                                : std::min<uint32_t>(m.retry_ms * 2, kMaxRetryMs);
+        m.retry_ms = delay;
+        m.timer_armed = true;
+    }
+    arm_timer(delay);
 }
 
 void SceneStore::on_timer() {
     auto self = shared_from_this();
     if (!impl_->deps.submit_io([self] { self->flush_job({}); })) {
-        // The pending lines stay; the next write arms a new timer, and
-        // closing the scene flushes.
         WLOG_W(kTag, "%s: flush not queued", impl_->dir.c_str());
-        std::lock_guard<os::Mutex> lock(impl_->mu);
-        impl_->timer_armed = false;
+        {
+            std::lock_guard<os::Mutex> lock(impl_->mu);
+            impl_->timer_armed = false;
+        }
+        schedule_retry();
     }
 }
 
@@ -1613,18 +1688,31 @@ void SceneStore::flush_job(const std::function<void(Result<void>)>& done) {
     {
         std::lock_guard<os::Mutex> io(m.io_mu);
         std::vector<FlushItem> items;
+        bool batch = false;
         {
             // A write after this point finds no armed timer and arms one;
             // every write before it is in the snapshot.
             std::lock_guard<os::Mutex> lock(m.mu);
             m.timer_armed = false;
-            m.take_snapshot_locked(items);
+            batch = m.take_snapshot_locked(items);
         }
         if (!items.empty()) {
-            result = m.write_items(items);
+            result = m.write_items(items, batch);
             std::lock_guard<os::Mutex> lock(m.mu);
             m.settle_locked(items);
+            // The batch's lines are back in pending; the retry must take
+            // the journal again (journal_dirty covers it only once the
+            // journal itself was written).
+            m.batch_pending = m.batch_pending || (batch && !result);
+            if (result) {
+                m.retry_ms = 0;
+            }
         }
+    }
+    if (!result) {
+        // Data waiting in pending is lost on a power cut; retry rather
+        // than wait for the next write or the scene's close.
+        schedule_retry();
     }
     if (done) {
         done(std::move(result));

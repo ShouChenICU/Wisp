@@ -822,3 +822,164 @@ TEST(SceneStore, WritesBeforeLoadAreRefused) {
     EXPECT_EQ(s->kv_set("a", "1").error().code, ErrorCode::StorageUnavailable);
     EXPECT_EQ(s->insert("todos", "{}").error().code, ErrorCode::StorageUnavailable);
 }
+
+TEST(SceneStore, SingleFileBatchIsAllOrNothing) {
+    Harness h;
+    // A directory where kv.log belongs makes the append fail, so the
+    // journal the flush wrote first stays behind.
+    std::error_code ec;
+    fs::create_directories(h.dir() / "kv.log", ec);
+    {
+        auto s = h.open();
+        s->begin_batch();
+        ASSERT_TRUE(s->kv_set("a", "1"));
+        ASSERT_TRUE(s->kv_set("b", "2"));
+        ASSERT_TRUE(s->commit_batch());
+        EXPECT_FALSE(Harness::flush_now(*s));
+        ASSERT_TRUE(on_disk(h.dir() / "journal.json"));
+        auto journal = wisp::from_json(read_raw(h.dir() / "journal.json"));
+        ASSERT_TRUE(journal);
+        EXPECT_EQ(journal.value().as_list().size(), 2u);
+        h.timers.clear();
+    }
+    // Power lost mid-append: the first line of the batch landed, the
+    // second is torn.
+    fs::remove(h.dir() / "kv.log", ec);
+    write_raw(h.dir() / "kv.log",
+              "{\"op\":\"put\",\"id\":\"a\",\"v\":1}\n{\"op\":\"put\",\"id\":\"b\"");
+    auto again = h.open();
+    EXPECT_EQ(str(again->kv_get("a")), "1");
+    EXPECT_EQ(str(again->kv_get("b")), "2");
+    EXPECT_FALSE(on_disk(h.dir() / "journal.json"));
+    expect_well_formed(h.dir() / "kv.log");
+
+    // Single writes outside a batch are appended without a journal.
+    ASSERT_TRUE(again->kv_set("c", "3"));
+    ASSERT_TRUE(again->kv_set("d", "4"));
+    fs::remove(h.dir() / "kv.log", ec);
+    fs::create_directories(h.dir() / "kv.log", ec);
+    EXPECT_FALSE(Harness::flush_now(*again));
+    EXPECT_FALSE(on_disk(h.dir() / "journal.json"));
+    h.timers.clear();
+}
+
+TEST(SceneStore, PendingIsCappedAboveQuota) {
+    Harness h;
+    auto s = h.open();
+    const std::string value = "\"" + std::string(15000, 'v') + "\"";
+    for (int n = 0; s->kv_set("key" + std::to_string(n), value); ++n) {
+    }
+    ASSERT_TRUE(Harness::flush_now(*s));
+    const uint64_t disk = fs::file_size(h.dir() / "kv.log");
+    h.timers.clear();
+
+    // Replacing a value is accepted past the quota (rewriting fits), but
+    // not without bound before a flush gets to rewrite.
+    Result<void> last = Result<void>::ok();
+    int accepted = 0;
+    for (; accepted < 500; ++accepted) {
+        last = s->kv_set("key0", value);
+        if (!last) {
+            break;
+        }
+    }
+    ASSERT_FALSE(last);
+    EXPECT_GT(accepted, 1);
+    EXPECT_EQ(last.error().code, ErrorCode::QuotaExceeded);
+    EXPECT_EQ(last.error().message, "quota_exceeded");
+    EXPECT_LE(s->used_bytes(), disk + 1024 * 1024);
+
+    // The flush rewrites, and writes are accepted again.
+    ASSERT_TRUE(Harness::flush_now(*s));
+    EXPECT_LE(s->used_bytes(), 1024u * 1024);
+    EXPECT_TRUE(s->kv_set("key0", value));
+}
+
+TEST(SceneStore, NestedAbortFailsTheOuterBatch) {
+    Harness h;
+    auto s = h.open();
+    ASSERT_TRUE(s->kv_set("keep", "1"));
+    ASSERT_TRUE(Harness::flush_now(*s));
+    const std::string kv_before = read_raw(h.dir() / "kv.log");
+    h.timers.clear();
+
+    s->begin_batch();
+    ASSERT_TRUE(s->kv_set("x", "1"));
+    s->begin_batch();
+    ASSERT_TRUE(s->kv_set("y", "2"));
+    s->abort_batch();  // a caught inner error
+    // Still inside the outer batch: writes stay in the overlay.
+    ASSERT_TRUE(s->kv_set("a", "3"));
+    ASSERT_TRUE(s->insert("todos", "{}"));
+    EXPECT_TRUE(h.timers.empty());
+    auto r = s->commit_batch();
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(r.error().message, "batch_aborted");
+
+    for (const char* k : {"x", "y", "a"}) {
+        EXPECT_FALSE(s->kv_get(k)) << k;
+    }
+    EXPECT_TRUE(s->find("todos", all()).value().empty());
+    EXPECT_EQ(s->commit_batch().error().message, "no_batch");
+    ASSERT_TRUE(Harness::flush_now(*s));
+    EXPECT_EQ(read_raw(h.dir() / "kv.log"), kv_before);
+    EXPECT_FALSE(on_disk(h.dir() / "todos.log"));
+
+    // The store is usable again afterwards.
+    s->begin_batch();
+    ASSERT_TRUE(s->kv_set("z", "4"));
+    ASSERT_TRUE(s->commit_batch());
+    EXPECT_EQ(str(s->kv_get("z")), "4");
+}
+
+TEST(SceneStore, IdsUsedInsideABatchAreNotReused) {
+    Harness h;
+    {
+        auto s = h.open();
+        ASSERT_EQ(s->insert("todos", "{}").value(), 1);
+        s->begin_batch();
+        ASSERT_EQ(s->insert("todos", "{}").value(), 2);
+        ASSERT_TRUE(s->remove("todos", 2));
+        ASSERT_EQ(s->insert("fresh", "{}").value(), 1);
+        ASSERT_TRUE(s->remove("fresh", 1));
+        ASSERT_TRUE(s->commit_batch());
+        ASSERT_TRUE(Harness::flush_now(*s));
+    }
+    auto again = h.open();
+    EXPECT_EQ(again->insert("todos", "{}").value(), 3);
+    EXPECT_EQ(again->insert("fresh", "{}").value(), 2);
+}
+
+TEST(SceneStore, FailedFlushRetriesWithBackoff) {
+    Harness h;
+    std::error_code ec;
+    // A non-empty directory: write_atomic() cannot replace it either.
+    fs::create_directories(h.dir() / "kv.log" / "x", ec);
+    auto s = h.open();
+    ASSERT_TRUE(s->kv_set("a", "1"));
+    ASSERT_EQ(h.timers.size(), 1u);
+    std::vector<uint32_t> delays;
+    for (int i = 0; i < 7; ++i) {
+        h.fire_timers();  // the flush fails and schedules a retry
+        ASSERT_EQ(h.timers.size(), 1u) << i;
+        delays.push_back(h.timers[0].first);
+    }
+    EXPECT_EQ(delays, (std::vector<uint32_t>{300, 600, 1200, 2400, 4800, 5000, 5000}));
+
+    fs::remove_all(h.dir() / "kv.log", ec);
+    h.fire_timers();
+    EXPECT_TRUE(h.timers.empty());
+    EXPECT_EQ(lines_of(h.dir() / "kv.log").size(), 1u);
+
+    // A later failure starts from the short delay again.
+    fs::create_directories(h.dir() / "todos.log" / "x", ec);
+    ASSERT_TRUE(s->insert("todos", "{}"));
+    h.fire_timers();
+    ASSERT_EQ(h.timers.size(), 1u);
+    EXPECT_EQ(h.timers[0].first, 300u);
+    fs::remove_all(h.dir() / "todos.log", ec);
+    h.fire_timers();
+    EXPECT_TRUE(h.timers.empty());
+    EXPECT_EQ(lines_of(h.dir() / "todos.log").size(), 1u);
+}
