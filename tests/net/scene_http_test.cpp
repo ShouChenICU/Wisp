@@ -256,6 +256,41 @@ TEST_F(SceneHttpTest, TimeoutIs15s) {
     EXPECT_EQ(client.last()->timeout_ms, 15000u);
 }
 
+// Every read on its own is well inside 15 s; the request as a whole is
+// not, so the deadline ends it.
+TEST_F(SceneHttpTest, TimeoutIsOneDeadlineForTheWholeRequest) {
+    make();
+    client.next = {.status = 200, .body = std::string(8 * 4096, 'x')};
+    client.before_piece = [this] { now += 5000; };
+    auto r = run(get("https://api.example.com/trickle"));
+    EXPECT_EQ(r.error, "timeout");
+    EXPECT_EQ(r.status, 0);
+    EXPECT_EQ(r.body.size(), 0u);
+    // Pieces at +5, +10 s; the one at +15 s is refused.
+    EXPECT_EQ(client.pieces.load(), 2);
+}
+
+// A server that never answers (a stalled connect or handshake) is cut off
+// at the deadline too, not only when the client's own timeout fires.
+TEST_F(SceneHttpTest, StalledRequestTimesOut) {
+    SceneHttpLimits limits;
+    limits.timeout_ms = 300;
+    make(limits);
+    client.hold = true;
+    Results r;
+    http->submit(get("https://api.example.com/stall"), r.sink());
+    ASSERT_TRUE(wait_until([&] { return client.held.load() == 1; }, 2000));
+    now += 299;
+    wisp::os::sleep_ms(20);
+    EXPECT_EQ(r.size(), 0u);
+    now += 1;
+    ASSERT_TRUE(wait_until([&] { return r.size() == 1; }, 2000));
+    EXPECT_EQ(r.got[0].error, "timeout");
+    // The worker is free again.
+    client.hold = false;
+    EXPECT_EQ(run(get("https://api.example.com/next")).error, "");
+}
+
 TEST_F(SceneHttpTest, TransportErrors) {
     make();
     for (auto [t, code] :

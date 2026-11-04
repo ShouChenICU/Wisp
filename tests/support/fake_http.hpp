@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -95,9 +96,9 @@ inline std::string set_cookie(const net::HttpResponse& res) {
 // It behaves like the real clients towards the streaming fields: a body
 // over max_response_bytes is TooLarge (unless `ignore_limit`), on_body
 // gets it in 4 KB pieces (false: Cancelled) and `next.body` is then not
-// returned. With `hold` set, request() waits until `hold` is cleared or
-// req.cancelled() turns true (then Cancelled, `saw_cancel` set); `held`
-// counts the calls waiting.
+// returned; req.cancelled() is asked before each piece. With `hold` set, request() waits until
+// `hold` is cleared or req.cancelled() turns true (then Cancelled, `saw_cancel` set); `held` counts
+// the calls waiting.
 class FakeHttpClient : public net::HttpClient {
 public:
     net::HttpClientResponse request(const net::HttpClientRequest& req) override {
@@ -126,6 +127,12 @@ public:
         if (req.on_body) {
             const auto* p = reinterpret_cast<const uint8_t*>(res.body.data());
             for (size_t at = 0; at < res.body.size(); at += 4096) {
+                if (before_piece) before_piece();
+                if (req.cancelled && req.cancelled()) {
+                    saw_cancel = true;
+                    return {.transport = net::TransportError::Cancelled};
+                }
+                ++pieces;
                 const size_t n = std::min<size_t>(4096, res.body.size() - at);
                 if (!req.on_body({p + at, n})) return {.transport = net::TransportError::Cancelled};
             }
@@ -156,6 +163,10 @@ public:
     std::atomic<int> held{0};
     std::atomic<bool> saw_cancel{false};
     std::atomic<bool> ignore_limit{false};
+    // Called before each 4 KB piece goes to on_body (a server that trickles
+    // the body: a test advances its clock here). Set before the request.
+    std::function<void()> before_piece;
+    std::atomic<int> pieces{0};
 
 private:
     mutable std::mutex mutex_;

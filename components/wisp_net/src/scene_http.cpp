@@ -299,12 +299,23 @@ void SceneHttp::execute(Job& job) {
     req.body_ref = {reinterpret_cast<const uint8_t*>(job.body.data()), job.body.size()};
     req.timeout_ms = limits_.timeout_ms;
     req.max_response_bytes = limits_.max_response;
+    // One deadline for the whole request (spec 5.3's 15 s), enforced here
+    // as well as by the client: a client's own timeout may apply to each
+    // operation (esp_http_client's does), and a server that trickles its
+    // answer would then hold the one worker for as long as it likes.
+    const uint64_t deadline = now_ms_() + limits_.timeout_ms;
+    auto expired = [this, deadline] { return now_ms_() >= deadline; };
 
     BodyBuffer body(limits_.max_response);
     bool too_large = false;
     bool no_memory = false;
+    bool timed_out = false;
     req.on_body = [&](std::span<const uint8_t> chunk) {
         if (job.cancelled.load()) return false;
+        if (expired()) {
+            timed_out = true;
+            return false;
+        }
         switch (body.add(chunk)) {
             case BodyBuffer::Add::Ok:
                 return true;
@@ -317,19 +328,21 @@ void SceneHttp::execute(Job& job) {
         }
         return false;
     };
-    req.cancelled = [&job] { return job.cancelled.load(); };
+    req.cancelled = [&job, &expired] { return job.cancelled.load() || expired(); };
 
     HttpClientResponse res = client_.request(req);
 
     SceneHttpResult result;
-    if (too_large || res.transport == TransportError::TooLarge) {
+    if (timed_out || (res.transport == TransportError::Cancelled && expired())) {
+        result.error = "timeout";
+    } else if (too_large || res.transport == TransportError::TooLarge) {
         result.error = "too_large";
     } else if (no_memory) {
         WLOG_W(kTag, "%s: no memory for a response body", job.scene_id.c_str());
         result.error = "other";
     } else if (res.transport == TransportError::Cancelled) {
-        // Only this proxy cancels (the job's flag) or refuses a piece;
-        // either way nothing is delivered below.
+        // The scene was cancelled (nothing is delivered below) or a piece
+        // was refused for a reason handled above.
         result.error = "other";
     } else if (res.transport != TransportError::None) {
         result.error = to_string(res.transport);

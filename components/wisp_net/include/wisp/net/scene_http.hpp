@@ -17,8 +17,10 @@
 //     any 60 s window, and room in the queue (else "rate_limited"). The
 //     window is kept per scene id, so closing and reopening a scene does
 //     not reset it.
-// Accepted requests run one at a time on the "wisp.shttp" task, with
-// SceneHttpLimits::timeout_ms, no redirects (a 3xx goes back as it is) and
+// Accepted requests run one at a time on the "wisp.shttp" task, each with
+// one deadline of SceneHttpLimits::timeout_ms for all of it (waiting for
+// the TLS gate, connect, handshake, sending and every read; "timeout"
+// when it passes), no redirects (a 3xx goes back as it is) and
 // a response body cap of SceneHttpLimits::max_response bytes ("too_large"
 // past it). The body is collected in PSRAM. Transport failures come back
 // as "dns", "connect", "tls", "timeout" or "other".

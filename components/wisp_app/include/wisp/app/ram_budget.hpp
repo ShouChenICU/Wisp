@@ -21,7 +21,9 @@ namespace wisp::app {
 
 // Must still be free at the worst moment: station and hotspot both up,
 // both httpd instances, a WebSocket log stream, a TLS handshake and a
-// firmware upload.
+// firmware upload. One handshake, not more: every HTTPS client on the
+// device takes net::TlsGate::process() for its connect and handshake
+// (wisp/net/tls_gate.hpp), however many tasks send requests.
 inline constexpr int64_t kWorstInternalFreeMin = 40 * 1024;
 // Largest free block at that moment: an httpd restart needs 10 KB at once.
 inline constexpr int64_t kWorstInternalLargestMin = 16 * 1024;

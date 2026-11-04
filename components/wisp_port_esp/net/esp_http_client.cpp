@@ -1,6 +1,11 @@
 #include "wisp/port/esp/esp_http_client.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <climits>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "esp_crt_bundle.h"
@@ -8,6 +13,8 @@
 #include "esp_http_client.h"
 #include "esp_tls_errors.h"
 #include "wisp/core/log.hpp"
+#include "wisp/net/tls_gate.hpp"
+#include "wisp/os/os.hpp"
 
 namespace wisp::port::esp {
 
@@ -99,6 +106,14 @@ net::TransportError classify(esp_http_client_handle_t client, esp_err_t fallback
     }
 }
 
+bool is_https(const std::string& url) {
+    constexpr char kScheme[] = "https:";
+    if (url.size() < sizeof(kScheme) - 1) return false;
+    for (size_t i = 0; i < sizeof(kScheme) - 1; ++i)
+        if (std::tolower(static_cast<unsigned char>(url[i])) != kScheme[i]) return false;
+    return true;
+}
+
 // HTTP_EVENT_ON_HEADER: one response header. Runs inside the client's
 // own calls, on the calling task.
 esp_err_t on_event(esp_http_client_event_t* evt) {
@@ -134,6 +149,15 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         return res;
     };
     const auto cancelled = [&] { return req.cancelled && req.cancelled(); };
+    // req.timeout_ms bounds the whole request, but esp_http_client applies
+    // its timeout to each connect, write and read: every operation is
+    // given only what is left (left(), at least 1 ms while any is).
+    const uint64_t deadline = os::now_ms() + req.timeout_ms;
+    const auto left = [deadline]() -> int {
+        const uint64_t now = os::now_ms();
+        if (now >= deadline) return 0;
+        return static_cast<int>(std::min<uint64_t>(deadline - now, INT_MAX));
+    };
     const size_t limit = req.max_response_bytes != 0 ? req.max_response_bytes : kMaxResponseBytes;
     const char* body =
         req.body_ref.empty() ? req.body.data() : reinterpret_cast<const char*>(req.body_ref.data());
@@ -160,12 +184,33 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         esp_http_client_set_header(client.get(), name.c_str(), value.c_str());
     }
 
-    esp_err_t err = esp_http_client_open(client.get(), static_cast<int>(body_size));
+    // False once the deadline has passed; otherwise the next operation's
+    // timeout becomes what is left of it.
+    const auto arm = [&] {
+        const int ms = left();
+        if (ms > 0) esp_http_client_set_timeout_ms(client.get(), ms);
+        return ms > 0;
+    };
+
+    esp_err_t err = ESP_OK;
+    {
+        // Connect and handshake under the process-wide TLS gate (one
+        // handshake at a time, wisp/net/tls_gate.hpp), released before
+        // the request is sent. Waiting for it counts against the deadline.
+        std::optional<net::TlsGate::Hold> gate;
+        if (is_https(req.url)) {
+            gate.emplace(net::TlsGate::process(), static_cast<uint32_t>(left()));
+            if (!gate->held()) return failed(net::TransportError::Timeout, "tls gate", ESP_OK);
+        }
+        if (!arm()) return failed(net::TransportError::Timeout, "connect", ESP_ERR_TIMEOUT);
+        err = esp_http_client_open(client.get(), static_cast<int>(body_size));
+    }
     if (err != ESP_OK) return failed(classify(client.get(), err), "connect", err);
 
     size_t sent = 0;
     while (sent < body_size) {
         if (cancelled()) return failed(net::TransportError::Cancelled, "send", ESP_OK);
+        if (!arm()) return failed(net::TransportError::Timeout, "send", ESP_ERR_TIMEOUT);
         const int n =
             esp_http_client_write(client.get(), body + sent, static_cast<int>(body_size - sent));
         if (n <= 0) {
@@ -175,6 +220,7 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         sent += static_cast<size_t>(n);
     }
 
+    if (!arm()) return failed(net::TransportError::Timeout, "headers", ESP_ERR_TIMEOUT);
     const int64_t length = esp_http_client_fetch_headers(client.get());
     if (length == -ESP_ERR_HTTP_EAGAIN) {
         return failed(net::TransportError::Timeout, "headers", ESP_ERR_HTTP_EAGAIN);
@@ -194,6 +240,7 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
     size_t received = 0;
     for (;;) {
         if (cancelled()) return failed(net::TransportError::Cancelled, "body", ESP_OK);
+        if (!arm()) return failed(net::TransportError::Timeout, "body", ESP_ERR_TIMEOUT);
         const int n = esp_http_client_read(client.get(), buf, sizeof(buf));
         if (n == -ESP_ERR_HTTP_EAGAIN) {
             return failed(net::TransportError::Timeout, "body", ESP_ERR_HTTP_EAGAIN);

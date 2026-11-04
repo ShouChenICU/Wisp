@@ -179,6 +179,9 @@ struct HttpClientRequest {
     // When non-empty it is sent instead of `body`, without copying (a body
     // that lives in PSRAM); the bytes must outlive request().
     std::span<const uint8_t> body_ref;
+    // The deadline for the whole request, from the call to request() to
+    // its return: waiting for the TLS gate, connect, handshake, sending
+    // and every read (Timeout when it passes).
     uint32_t timeout_ms = 10000;
     // A response body over this many bytes fails the request with
     // TooLarge (checked against Content-Length first, then as it

@@ -14,8 +14,21 @@
 // exhaust memory. Response headers are collected from
 // HTTP_EVENT_ON_HEADER; with on_body the body goes there 512 bytes at a
 // time instead of into `body`. cancelled is asked before each write and
-// read: a read blocked on a silent server notices only when it times out
-// (HttpClientRequest::timeout_ms).
+// read: a read blocked on a silent server notices only when it times out.
+//
+// Deadline: HttpClientRequest::timeout_ms is the whole request's.
+// esp_http_client applies its timeout per operation, so each one (connect
+// and handshake, every write, the header fetch, every read) is given only
+// what is left of it. Two limits remain outside it: DNS resolution has
+// lwIP's own timeout, and esp-tls checks its handshake timeout between
+// socket reads, so a handshake can overrun what was left by up to one
+// read timeout.
+//
+// TLS gate: an https request holds net::TlsGate::process() around
+// esp_http_client_open() (connect and handshake) and nowhere else, so
+// only one handshake runs at a time in the process (the internal-RAM
+// budget, wisp/app/ram_budget.hpp); waiting for it counts against the
+// deadline and a wait that runs out is a Timeout.
 //
 // Errors map to TransportError from the esp_http_client result and the
 // last esp-tls error: name resolution -> Dns, refused/unreachable ->

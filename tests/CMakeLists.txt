@@ -226,6 +226,7 @@ wisp_test(NAME pairing_service_test SRCS net/pairing_service_test.cpp
           LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME model_probe_test SRCS net/model_probe_test.cpp LIBS wisp_net wisp_core wisp_port_sim_os)
 wisp_test(NAME scene_http_test SRCS net/scene_http_test.cpp LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME tls_gate_test SRCS net/tls_gate_test.cpp LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.
