@@ -622,6 +622,7 @@ int main(int argc, char** argv) {
         WLOG_I(kLogTag, "set_standby(%s)", standby ? "true" : "false");
     };
     platform.firmware_version = WISP_VERSION;
+    platform.target = "simulator";
     // Uploads land in <data-dir>/firmware.bin; images must be built for
     // board "simulator" (connectivity spec 6.5).
     platform.firmware = std::make_unique<wisp::port::sim::SimFirmwareUpdater>(opts.data_dir);

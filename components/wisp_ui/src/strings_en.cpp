@@ -8,8 +8,6 @@ const char* strings_en(StrId id) {
     switch (id) {
         case StrId::BootTime:
             return "Boot";
-        case StrId::DeviceList:
-            return "Devices";
         case StrId::StateOk:
             return "OK";
         case StrId::StateDegraded:
@@ -18,6 +16,24 @@ const char* strings_en(StrId id) {
             return "Missing";
         case StrId::StateFailed:
             return "Failed";
+        case StrId::SummaryDevices:
+            return "Devices {} OK";
+        case StrId::SummaryTests:
+            return "Tests {} done";
+        case StrId::SectionDevices:
+            return "Devices";
+        case StrId::SectionNetwork:
+            return "Network";
+        case StrId::SectionSensors:
+            return "Sensors";
+        case StrId::SectionPowerClock:
+            return "Power & clock";
+        case StrId::SectionStorage:
+            return "Storage";
+        case StrId::SectionTests:
+            return "Interactive tests";
+        case StrId::SectionPerf:
+            return "Performance";
         case StrId::Battery:
             return "Battery";
         case StrId::Time:
@@ -29,6 +45,12 @@ const char* strings_en(StrId id) {
         case StrId::Button:
             return "Button";
         case StrId::Touch:
+            return "Touch";
+        case StrId::Accel:
+            return "Accel";
+        case StrId::Gyro:
+            return "Gyro";
+        case StrId::TouchTest:
             return "Touch";
         case StrId::ReadFailed:
             return "Read error";
@@ -44,6 +66,10 @@ const char* strings_en(StrId id) {
             return "Offline";
         case StrId::TouchTestArea:
             return "Touch test area";
+        case StrId::TestUntested:
+            return "Not tested";
+        case StrId::TestPassed:
+            return "Passed";
         case StrId::LoopbackButton:
             return "Mic test";
         case StrId::LoopReady:

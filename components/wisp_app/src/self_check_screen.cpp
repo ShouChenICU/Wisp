@@ -1,43 +1,26 @@
-// The self-check screen (spec 8): the single-column, scrollable LVGL UI
-// shown right after boot on any board with a display. See self_check.hpp
-// for how App::start()/App::stop() own this object's lifetime.
+// The self-check screen (spec 8): page framing, lifecycle, bus
+// subscriptions and timers. See self_check_screen.hpp for how the class is
+// split over files, and self_check.hpp for how App::start()/App::stop()
+// own this object's lifetime.
+
+#include "self_check_screen.hpp"
 
 #include <algorithm>
-#include <atomic>
-#include <cstdint>
-#include <cstdio>
 #include <memory>
-#include <mutex>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "app_impl.hpp"
-#include "factory_reset.hpp"
-#include "firmware_confirm.hpp"
-#include "loopback.hpp"
-#include "lvgl.h"
-#include "net_cards.hpp"
-#include "net_section.hpp"
 #include "self_check.hpp"
+#include "self_check_layout.hpp"
 #include "wisp/app/app.hpp"
-#include "wisp/app/format.hpp"
-#include "wisp/app/power_key_controller.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
-#include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
-#include "wisp/hal/clock.hpp"
-#include "wisp/hal/display.hpp"
-#include "wisp/hal/display_geometry.hpp"
-#include "wisp/hal/imu.hpp"
-#include "wisp/hal/power.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
-#include "wisp/os/os.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -46,12 +29,6 @@ namespace wisp::app {
 
 namespace {
 
-constexpr uint32_t kSampleTaskPeriodMs = 20;      // ~50Hz IMU sampling.
-constexpr uint64_t kSlowSampleIntervalMs = 1000;  // power/clock/storage.
-// How often sample_loop() still takes one power/clock "slow sample"
-// while standby_ is true -- spec 6.7 asks for "约 30s", not a full stop
-// (see sample_loop()'s standby branch).
-constexpr uint32_t kStandbySlowSampleMs = 30000;
 constexpr uint32_t kUiRefreshMs = 100;
 // How often the refresh timer re-reads the network services (and the
 // pending factory-reset and firmware requests) even without an event: the
@@ -61,295 +38,12 @@ constexpr uint32_t kUiRefreshMs = 100;
 // The reads are a few short lock-protected copies and an atomic.
 constexpr uint64_t kNetResyncMs = 1000;
 constexpr uint32_t kPerfReportMs = 5000;
-constexpr int kBallTravelPx = 20;
-
-lv_color_t color_for_state(core::DeviceState state) {
-    switch (state) {
-        case core::DeviceState::Ok:
-            return lv_color_hex(0x4FC3F7);
-        case core::DeviceState::Degraded:
-            return lv_color_hex(0xFFB74D);
-        case core::DeviceState::Missing:
-            return lv_color_hex(0x9E9E9E);
-        case core::DeviceState::Failed:
-            return lv_color_hex(0xE57373);
-    }
-    return lv_color_hex(0xE57373);
-}
-
-// "<label>: <value>", the shape of every readout row in every language.
-std::string labeled(const std::string& label, const std::string& value) {
-    return label + ": " + value;
-}
-
-lv_obj_t* make_row_label(lv_obj_t* parent) {
-    lv_obj_t* label = lv_label_create(parent);
-    lv_obj_set_width(label, LV_PCT(100));
-    lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_WRAP);
-    return label;
-}
-
-// A borderless, non-scrollable horizontal row (used to put the IMU tilt
-// ball and the "录音回放" button's status text next to a label).
-lv_obj_t* make_row_container(lv_obj_t* parent) {
-    lv_obj_t* row = lv_obj_create(parent);
-    lv_obj_set_width(row, LV_PCT(100));
-    lv_obj_set_height(row, LV_SIZE_CONTENT);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    return row;
-}
+// Between the root column's safe-area padding and its content, and
+// between its children.
+constexpr int32_t kInnerPad = 8;
+constexpr int32_t kSectionGap = 10;
 
 }  // namespace
-
-// Every non-public member/method below is this screen's own business;
-// nothing outside self_check_screen.cpp names this type (see
-// self_check.hpp's forward declaration).
-class SelfCheck {
-public:
-    SelfCheck(App& app, ui::SystemLayer& system);
-    ~SelfCheck();
-
-    // Must be called once, from the UI thread, right after construction
-    // (see start_self_check() below).
-    void build();
-
-    // Rebuilds every widget in the current ui::lang() (spec 8.3), keeping
-    // the scroll position and an open confirm dialog. Must be called from
-    // the UI thread.
-    void rebuild();
-
-    // Re-renders the header's "启动 .. ms" text from BootReport's current
-    // boot_ms. Must be called from the UI thread; see
-    // refresh_self_check_header() in self_check.hpp for why this exists --
-    // build_header() runs before App::start() has called
-    // BootReport::set_boot_ms() (spec 6.1's boot sequence only finishes,
-    // and boot_ms is only final, once this screen is already built), so
-    // the header initially shows a stale (zero) value that this corrects
-    // once the real one is known.
-    void refresh_header();
-
-private:
-    // A snapshot of the "wisp.sample" task's latest readings, protected
-    // by sample_mutex_ -- see start_sampling()/refresh_ui().
-    struct Snapshot {
-        hal::ImuSample imu{};
-        bool imu_ok = true;
-        hal::PowerStatus power{};
-        bool power_ok = true;
-        int64_t rtc_unix = 0;
-        bool rtc_ok = true;
-    };
-
-    // Returns the string build_header()/refresh_header() should show.
-    std::string header_text() const;
-
-    // The safe area (spec 5.6) to lay the root column out in: that of
-    // the system layer's screen shape, which App::start() derived from
-    // display_'s caps (an invalid shape falls back to a circle).
-    hal::Area compute_safe_area() const;
-
-    // Creates root_ and every widget under it (build()/rebuild()).
-    void build_widgets();
-
-    // --- build_widgets() helpers; each appends one section to `col`. ---
-    void build_header(lv_obj_t* col);
-    void build_device_list(lv_obj_t* col);
-    void build_imu_section(lv_obj_t* col);
-    void build_power_section(lv_obj_t* col);
-    void build_rtc_section(lv_obj_t* col);
-    void build_storage_section(lv_obj_t* col);
-    void build_touch_section(lv_obj_t* col);
-    void build_button_hint_section(lv_obj_t* col);
-    void build_loopback_section(lv_obj_t* col);
-    void build_perf_section(lv_obj_t* col);
-    void build_net_section(lv_obj_t* col);
-
-    void start_sampling();
-    void sample_loop();
-    // The power/clock "slow sample" -- factored out of
-    // sample_loop() so the standby branch can call it on its own ~30s
-    // cadence instead of the active-loop cadence (kSlowSampleIntervalMs).
-    void sample_slow();
-
-    void start_perf_timer();
-    void emit_perf_line();
-
-    void subscribe_buttons();
-    void on_button_event(const core::Event& e);
-    void subscribe_power();
-    void on_power_event(const core::Event& e);
-    void subscribe_settings();
-    void on_settings_event(const core::Event& e);
-    // net.wifi.state / net.ap.state / net.pairing.code (connectivity spec
-    // 5.5) and system.factory_reset {state:"requested"}: each posts the
-    // matching sync onto the UI thread, which reads the services' current
-    // state rather than trusting a possibly stale payload.
-    void subscribe_net();
-    void on_net_event(const core::Event& e);
-    void on_reset_event(const core::Event& e);
-    // system.firmware: any state may open or close the update dialog.
-    void on_firmware_event(const core::Event& e);
-    // UI thread: re-reads the Wi-Fi state into the network section and
-    // opens, refreshes or closes the provisioning card to match.
-    void sync_wifi();
-    // UI thread: shows the service's active pairing code (if any) with a
-    // countdown to its expiry, or closes the card.
-    void sync_pairing();
-    // Keeps the stacking order on the top layer: provisioning card, then
-    // pairing card, then the system layer (the dialogs last).
-    void raise_overlays();
-    // Turns a sleeping screen on for something the user is waiting to see
-    // (a pairing code, the factory-reset question). UI thread.
-    void wake_screen();
-    // UI thread: takes a pending factory-reset request (see
-    // take_factory_reset_request()) and shows the dialog for it.
-    void sync_reset();
-    void show_reset_dialog();
-    void close_reset_dialog();
-    // UI thread: takes a pending firmware request and shows the dialog for
-    // it, or closes the dialog once nothing awaits an answer (declined
-    // elsewhere, timed out).
-    void sync_firmware();
-    void show_firmware_dialog();
-    void close_firmware_dialog();
-    // Brings ui::lang() in line with the stored language, rebuilding if it
-    // changed. UI thread only.
-    void sync_language();
-    void handle_power_key_action(PowerKeyController::Action action);
-    void show_confirm_dialog();
-    void close_confirm_dialog();
-    void do_power_off();
-
-    void start_loopback();
-    void toggle_perf_overlay();
-
-    void refresh_ui();
-    void update_storage_labels();
-
-    static void refresh_timer_cb(lv_timer_t* timer);
-    static void touch_event_cb(lv_event_t* e);
-    static void loopback_btn_cb(lv_event_t* e);
-    static void perf_long_press_cb(lv_event_t* e);
-    // Answers to the three dialogs, called by the system layer after it
-    // closed the box.
-    void on_power_off_answer(bool yes);
-    void on_reset_answer(bool yes);
-    void on_firmware_answer(bool yes);
-
-    App& app_;
-    ui::UiRuntime* ui_;
-    // Holds the confirm dialogs and keeps one open at a time; outlives
-    // this screen (see app_impl.hpp).
-    ui::SystemLayer& system_;
-    std::shared_ptr<hal::Display> display_;
-    std::shared_ptr<hal::Imu> imu_;
-    std::shared_ptr<hal::Power> power_;
-    std::shared_ptr<hal::Clock> clock_;
-    core::Settings ui_settings_;
-
-    PowerKeyController power_key_;
-    bool overlay_enabled_ = false;
-
-    // --- widgets (valid only while this App's UiRuntime is alive). ---
-    lv_obj_t* header_label_ = nullptr;
-    lv_obj_t* imu_label_ = nullptr;
-    lv_obj_t* imu_ball_ = nullptr;
-    lv_obj_t* power_label_ = nullptr;
-    lv_obj_t* rtc_label_ = nullptr;
-    lv_obj_t* storage_int_label_ = nullptr;
-    lv_obj_t* storage_sd_label_ = nullptr;
-    // The device list's own "storage.sd" row (see build_device_list()):
-    // kept live by update_storage_labels(), rather than left at
-    // whatever DeviceState build_device_list() saw once at startup, so
-    // it can't disagree with the dedicated storage section below it
-    // about whether the card is actually online right now. id/model are
-    // cached from build_device_list() since the row's text is otherwise
-    // only ever derived once, from BootReport, not from StorageManager.
-    lv_obj_t* device_list_sd_row_ = nullptr;
-    std::string device_list_sd_id_;
-    std::string device_list_sd_model_;
-    lv_obj_t* touch_label_ = nullptr;
-    lv_obj_t* button_label_ = nullptr;
-    lv_obj_t* loop_status_label_ = nullptr;
-    // The last loopback status shown, re-rendered by rebuild(). UI thread
-    // only.
-    LoopbackStatus loop_status_;
-    // SystemSettings::revision() as of the last sync_language(); empty
-    // until the first one, which always reads the stored language. UI
-    // thread only.
-    std::optional<uint32_t> language_revision_;
-    lv_obj_t* perf_label_ = nullptr;
-    // The power-off confirmation's box while it is open.
-    lv_obj_t* msgbox_ = nullptr;
-    // The factory-reset confirmation, kept apart from the power-off dialog
-    // above so neither one's answer (or the power key) can be taken for
-    // the other. The system layer opens one dialog at a time.
-    lv_obj_t* reset_box_ = nullptr;
-    // Set once the user confirmed and the reset task started: later
-    // requests are ignored while the reset runs towards its restart.
-    bool reset_confirmed_ = false;
-    // The firmware-update confirmation; the third kind of dialog, likewise
-    // never stacked on the other two.
-    lv_obj_t* fw_box_ = nullptr;
-    // os::now_ms() of the last periodic network resync (see kNetResyncMs).
-    uint64_t last_net_resync_ms_ = 0;
-
-    // --- Network block and cards (connectivity spec 8.1). UI thread only.
-    NetSection net_section_;
-    ProvisioningCard setup_card_;
-    PairingCard pair_card_;
-    lv_timer_t* refresh_timer_ = nullptr;
-    // The single root container build() creates everything else under
-    // (see build()). Deleted (lv_obj_delete(), recursively deleting every
-    // child -- the touch test box, the "录音回放" button, the perf row,
-    // etc.) in ~SelfCheck()'s UI-thread teardown step, specifically so
-    // that none of those widgets' LV_EVENT_* callbacks (all registered
-    // with `this` as user_data) can still fire after this SelfCheck is
-    // freed -- deleting only refresh_timer_/msgbox_
-    // left every other widget (and their callbacks) alive until the next
-    // lv_deinit(), so a touch/click between stop_self_check() returning
-    // and UiRuntime::stop() actually running could call back into
-    // already-freed memory.
-    lv_obj_t* root_ = nullptr;
-
-    // --- "wisp.sample" task + its mutex-protected snapshot. ---
-    os::Mutex sample_mutex_;
-    Snapshot snapshot_;
-    std::atomic<bool> sample_running_{false};
-    std::unique_ptr<os::Task> sample_task_;
-
-    // Mirrors PowerManager::standby(), kept up to date
-    // by subscribe_power()'s "power.state" handler rather than read live
-    // from PowerManager itself -- sample_loop() runs on its own thread
-    // with no UI-task affinity to synchronize against, so this is its
-    // own atomic snapshot (same pattern as PowerManager's own standby_).
-    // While true, sample_loop() stops reading the IMU at
-    // kSampleTaskPeriodMs entirely -- spec 6.7's "待机时...没有高频轮询"
-    // applies to this task too, not just UiRuntime's -- but still takes
-    // one power/clock "slow sample" about every kStandbySlowSampleMs;
-    // see sample_loop()'s standby branch.
-    std::atomic<bool> standby_{false};
-    // Given (woken) by the "power.state":"active" handler so sample_loop
-    // () resumes promptly on wake, rather than waiting out its own
-    // kStandbySlowSampleMs poll -- see sample_loop()'s doc comment. Also
-    // given by ~SelfCheck() so a sample_running_ that just went false is
-    // noticed immediately even if this task is currently blocked here.
-    os::Semaphore standby_wake_{1, 0};
-
-    // --- WISP_PERF emission. ---
-    std::unique_ptr<os::Timer> perf_timer_;
-
-    // --- "button."/"power.state"/"system.settings" bus subscriptions. ---
-    core::SubscriptionId button_sub_ = 0;
-    core::SubscriptionId power_sub_ = 0;
-    core::SubscriptionId settings_sub_ = 0;
-    core::SubscriptionId net_sub_ = 0;
-    core::SubscriptionId reset_sub_ = 0;
-    core::SubscriptionId fw_sub_ = 0;
-};
 
 SelfCheck::SelfCheck(App& app, ui::SystemLayer& system)
     : app_(app),
@@ -371,13 +65,14 @@ SelfCheck::SelfCheck(App& app, ui::SystemLayer& system)
       }),
       pair_card_([this] {
           if (net::PairingService* pairing = app_.pairing()) pairing->cancel_code();
-      }) {}
+      }),
+      sampler_(imu_, power_, clock_) {}
 
 SelfCheck::~SelfCheck() {
-    // Unsubscribe from "power.state" before anything else, so standby_
-    // can't change (and nothing else calls standby_wake_.give()) from
-    // this point on -- EventBus::unsubscribe()'s own contract guarantees
-    // the handler never runs again once this returns.
+    // Unsubscribe from "power.state" before anything else, so the
+    // sampler's standby flag can't change from this point on --
+    // EventBus::unsubscribe()'s own contract guarantees the handler never
+    // runs again once this returns.
     if (power_sub_ != 0) {
         app_.bus().unsubscribe(power_sub_);
         power_sub_ = 0;
@@ -404,19 +99,8 @@ SelfCheck::~SelfCheck() {
         fw_sub_ = 0;
     }
 
-    // Stop the sampling task -- thread-agnostic, and nothing it touches
-    // (snapshot_, the hal:: device shared_ptrs) requires the UI thread.
-    sample_running_.store(false, std::memory_order_release);
-    // sample_loop() may currently be blocked on standby_wake_ (if
-    // standby_ was true when this destructor started) -- wake it
-    // unconditionally so it notices sample_running_ went false promptly
-    // rather than waiting out its own bounded poll (see sample_loop()'s
-    // doc comment).
-    standby_wake_.give();
-    if (sample_task_) {
-        sample_task_->join();
-        sample_task_.reset();
-    }
+    // Thread-agnostic: nothing the sampler touches requires the UI thread.
+    sampler_.stop();
 
     if (perf_timer_) {
         perf_timer_->stop();
@@ -428,10 +112,10 @@ SelfCheck::~SelfCheck() {
         button_sub_ = 0;
     }
 
-    // Give PowerManager's generic "any button wakes
-    // standby" handler back ownership of "button.power" now that this
-    // screen's own PowerKeyController (the thing set_power_key_owned(true)
-    // in subscribe_buttons() handed it off to) is going away -- see
+    // Give PowerManager's generic "any button wakes standby" handler back
+    // ownership of "button.power" now that this screen's own
+    // PowerKeyController (the thing set_power_key_owned(true) in
+    // subscribe_buttons() handed it off to) is going away -- see
     // PowerManager::set_power_key_owned()'s doc comment. A no-op today
     // (App::stop() destroys PowerManager right after this object), but a
     // future scene that can replace the self-check screen without also
@@ -463,9 +147,7 @@ SelfCheck::~SelfCheck() {
             refresh_timer_ = nullptr;
         }
         if (root_ != nullptr) {
-            // Recursively deletes every widget build() created under it
-            // (and, with them, every LV_EVENT_* callback registered with
-            // `this` as user_data) -- see root_'s doc comment above.
+            // See root_'s doc comment.
             lv_obj_delete(root_);
             root_ = nullptr;
         }
@@ -475,7 +157,7 @@ SelfCheck::~SelfCheck() {
 void SelfCheck::build() {
     build_widgets();
 
-    start_sampling();
+    sampler_.start();
     start_perf_timer();
     subscribe_buttons();
     subscribe_power();
@@ -514,7 +196,6 @@ void SelfCheck::rebuild() {
         lv_obj_delete(root_);
         root_ = nullptr;
     }
-    device_list_sd_row_ = nullptr;
 
     build_widgets();
     // Fill the live readouts now rather than leaving "--" until the next
@@ -544,72 +225,58 @@ void SelfCheck::build_widgets() {
     lv_obj_t* screen = lv_screen_active();
     lv_obj_t* col = lv_obj_create(screen);
     root_ = col;
+    // No theme styles at all: LVGL sets LV_STATE_SCROLLED on the column
+    // when a scroll begins and clears it when it ends, and with the theme's
+    // state-dependent styles on it that re-styles (and so redraws) every
+    // label on the page, twice per scroll, including the parts under an
+    // opaque card that wisp/ui/overlay.hpp would otherwise skip.
+    lv_obj_remove_style_all(col);
     // The root column fills the whole screen with no background or radius
     // of its own, so the screen reads as one uniform surface edge to
     // edge; content is kept off the invisible parts purely by padding
-    // (spec 5.6). Each side pads by that side's safe inset plus 8px, so:
-    // horizontally nothing ever leaves the safe columns, and vertically
+    // (spec 5.6). Each side pads by that side's safe inset plus kInnerPad,
+    // so: horizontally nothing ever leaves the safe columns, and vertically
     // rows may scroll through the top/bottom bands (corners) but at either
     // scroll extreme the first/last row rests fully inside the safe area.
     hal::Area safe = compute_safe_area();
     int32_t screen_w = lv_display_get_horizontal_resolution(nullptr);
     int32_t screen_h = lv_display_get_vertical_resolution(nullptr);
-    constexpr int32_t kInnerPad = 8;
     lv_obj_set_pos(col, 0, 0);
     lv_obj_set_size(col, screen_w, screen_h);
-    lv_obj_set_style_border_width(col, 0, 0);
-    lv_obj_set_style_radius(col, 0, 0);
-    lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_left(col, safe.x1 + kInnerPad, 0);
     lv_obj_set_style_pad_right(col, screen_w - 1 - safe.x2 + kInnerPad, 0);
     lv_obj_set_style_pad_top(col, safe.y1 + kInnerPad, 0);
     lv_obj_set_style_pad_bottom(col, screen_h - 1 - safe.y2 + kInnerPad, 0);
-    lv_obj_set_style_pad_row(col, 10, 0);
+    lv_obj_set_style_pad_row(col, kSectionGap, 0);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(col, LV_DIR_VER);
-    // No scrollbar: on this rounded-corner screen a bar hugging the right
-    // edge would sit under/near the top-right and bottom-right corners.
+    // No scrollbar: on a rounded or round screen a bar hugging the right
+    // edge would sit under/near the corners.
     lv_obj_set_scrollbar_mode(col, LV_SCROLLBAR_MODE_OFF);
 
-    build_header(col);
-    build_device_list(col);
-    build_net_section(col);
-    build_imu_section(col);
-    build_power_section(col);
-    build_rtc_section(col);
-    build_storage_section(col);
-    build_touch_section(col);
-    build_button_hint_section(col);
-    build_loopback_section(col);
-    build_perf_section(col);
+    header_.build(col, app_.platform().board->name(), app_.platform().firmware_version,
+                  app_.platform().target, [this] { (void)devices_.scroll_to_first_problem(); });
+    header_.set_boot_ms(boot_ms());
+    build_devices(col);
+    lv_obj_t* net_card = make_card(col, ui::StrId::SectionNetwork);
+    net_section_.build(net_card, os::now_ms());
+    sensors_.build(col, imu_ != nullptr);
+    power_clock_.build(col, power_ != nullptr, clock_ != nullptr);
+    storage_.build(col);
+    tests_section_.build(col,
+                         TestSection::Callbacks{
+                             [this] { pass_test(InteractiveTest::Touch); },
+                             [this] { start_loopback(); },
+                         },
+                         loop_status_);
+    perf_.build(col, [this] { toggle_perf_overlay(); });
+
+    header_.show_devices(devices_.summary());
+    header_.show_tests(tests_.passed_count());
+    tests_section_.show(tests_);
 }
 
-std::string SelfCheck::header_text() const {
-    uint64_t boot_ms = 0;
-    Value rep = app_.report().to_value(app_.platform().board->name());
-    if (const Value* v = rep.find("boot_ms")) {
-        boot_ms = static_cast<uint64_t>(v->as_int());
-    }
-
-    char buf[160];
-    std::snprintf(buf, sizeof(buf), "%s  v%s  %s %llu ms", app_.platform().board->name().c_str(),
-                  app_.platform().firmware_version.c_str(), ui::tr(ui::StrId::BootTime),
-                  static_cast<unsigned long long>(boot_ms));
-    return buf;
-}
-
-void SelfCheck::build_header(lv_obj_t* col) {
-    header_label_ = make_row_label(col);
-    lv_label_set_text(header_label_, header_text().c_str());
-}
-
-void SelfCheck::refresh_header() { lv_label_set_text(header_label_, header_text().c_str()); }
-
-hal::Area SelfCheck::compute_safe_area() const { return hal::safe_rect(system_.shape()); }
-
-void SelfCheck::build_device_list(lv_obj_t* col) {
-    lv_label_set_text(make_row_label(col), ui::tr(ui::StrId::DeviceList));
-
+void SelfCheck::build_devices(lv_obj_t* col) {
     std::vector<std::string> ids;
     for (const auto& entry : app_.report().entries()) {
         if (std::find(ids.begin(), ids.end(), entry.id) == ids.end()) {
@@ -617,200 +284,46 @@ void SelfCheck::build_device_list(lv_obj_t* col) {
         }
     }
 
+    std::vector<DeviceRowInfo> rows;
+    rows.reserve(ids.size());
+    sd_row_live_ = false;
     for (const auto& id : ids) {
         auto found = app_.report().find(id);
-        core::DeviceState state = found ? found->state : core::DeviceState::Missing;
         auto device = app_.registry().find(id);
-        std::string model = device ? device->info().model : std::string("-");
-
-        char buf[160];
-        std::snprintf(buf, sizeof(buf), "%s | %s | %s", id.c_str(), model.c_str(),
-                      state_label(state));
-        lv_obj_t* row = make_row_label(col);
-        lv_label_set_text(row, buf);
-        lv_obj_set_style_text_color(row, color_for_state(state), 0);
+        DeviceRowInfo row;
+        row.id = id;
+        row.model = device ? device->info().model : std::string("-");
+        row.state = found ? found->state : core::DeviceState::Missing;
+        row.reason = found ? found->reason : std::string();
+        rows.push_back(std::move(row));
 
         if (id == "storage.sd" && device != nullptr) {
             // BootReport only ever reflects whether the card was present
             // at boot (spec 6.1: devices aren't re-registered after
-            // init()), so this row would otherwise keep saying "缺失"
-            // forever once a card is inserted later -- update_storage_
-            // labels() (below, driven by the live StorageManager::
-            // status()) re-renders it every kUiRefreshMs instead. Only
-            // when the device actually exists in the registry: a
-            // "storage.sd" boot-report entry with no backing device
-            // (e.g. `--disable storage.sd`) is a real, permanent
+            // init()), so this row would otherwise keep showing a missing
+            // card forever once one is inserted later -- refresh_storage()
+            // (driven by the live StorageManager::status()) follows it
+            // instead. Only when the device actually exists in the
+            // registry: a "storage.sd" boot-report entry with no backing
+            // device (e.g. `--disable storage.sd`) is a real, permanent
             // Failed/Missing that StorageManager::status() can't ever
             // contradict (it simply won't have an entry for it either),
-            // so that original coloring must stick.
-            device_list_sd_row_ = row;
-            device_list_sd_id_ = id;
-            device_list_sd_model_ = model;
+            // so that original state must stick.
+            sd_row_live_ = true;
         }
     }
+    devices_.build(col, std::move(rows));
 }
 
-void SelfCheck::build_net_section(lv_obj_t* col) { net_section_.build(col, os::now_ms()); }
-
-void SelfCheck::build_imu_section(lv_obj_t* col) {
-    lv_obj_t* row = make_row_container(col);
-
-    imu_label_ = make_row_label(row);
-    lv_obj_set_flex_grow(imu_label_, 1);
-    lv_label_set_text(imu_label_,
-                      labeled("IMU", imu_ ? "--" : ui::tr(ui::StrId::StateMissing)).c_str());
-
-    lv_obj_t* frame = lv_obj_create(row);
-    lv_obj_set_size(frame, 2 * kBallTravelPx + 20, 2 * kBallTravelPx + 20);
-    lv_obj_set_style_radius(frame, LV_RADIUS_CIRCLE, 0);
-    lv_obj_remove_flag(frame, LV_OBJ_FLAG_SCROLLABLE);
-
-    imu_ball_ = lv_obj_create(frame);
-    lv_obj_set_size(imu_ball_, 14, 14);
-    lv_obj_set_style_radius(imu_ball_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(imu_ball_, lv_color_hex(0x4FC3F7), 0);
-    lv_obj_remove_flag(imu_ball_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(imu_ball_, LV_ALIGN_CENTER, 0, 0);
+uint64_t SelfCheck::boot_ms() const {
+    Value rep = app_.report().to_value(app_.platform().board->name());
+    const Value* v = rep.find("boot_ms");
+    return v != nullptr ? static_cast<uint64_t>(v->as_int()) : 0;
 }
 
-void SelfCheck::build_power_section(lv_obj_t* col) {
-    power_label_ = make_row_label(col);
-    lv_label_set_text(power_label_, labeled(ui::tr(ui::StrId::Battery),
-                                            power_ ? "--" : ui::tr(ui::StrId::StateMissing))
-                                        .c_str());
-}
+void SelfCheck::refresh_header() { header_.set_boot_ms(boot_ms()); }
 
-void SelfCheck::build_rtc_section(lv_obj_t* col) {
-    rtc_label_ = make_row_label(col);
-    lv_label_set_text(
-        rtc_label_,
-        labeled(ui::tr(ui::StrId::Time), clock_ ? "--" : ui::tr(ui::StrId::StateMissing)).c_str());
-}
-
-void SelfCheck::build_storage_section(lv_obj_t* col) {
-    storage_int_label_ = make_row_label(col);
-    storage_sd_label_ = make_row_label(col);
-    lv_label_set_text(storage_int_label_, labeled(ui::tr(ui::StrId::InternalFlash), "--").c_str());
-    lv_label_set_text(storage_sd_label_, labeled(ui::tr(ui::StrId::SdCard), "--").c_str());
-}
-
-void SelfCheck::build_touch_section(lv_obj_t* col) {
-    lv_obj_t* box = lv_obj_create(col);
-    lv_obj_set_width(box, LV_PCT(100));
-    lv_obj_set_height(box, 60);
-    lv_obj_add_flag(box, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(box, &SelfCheck::touch_event_cb, LV_EVENT_PRESSING, this);
-    lv_obj_add_event_cb(box, &SelfCheck::touch_event_cb, LV_EVENT_RELEASED, this);
-
-    touch_label_ = lv_label_create(box);
-    lv_obj_center(touch_label_);
-    lv_label_set_text(touch_label_, ui::tr(ui::StrId::TouchTestArea));
-}
-
-void SelfCheck::build_button_hint_section(lv_obj_t* col) {
-    button_label_ = make_row_label(col);
-    lv_label_set_text(button_label_, labeled(ui::tr(ui::StrId::Button), "--").c_str());
-}
-
-void SelfCheck::build_loopback_section(lv_obj_t* col) {
-    lv_obj_t* row = make_row_container(col);
-
-    lv_obj_t* btn = lv_button_create(row);
-    lv_obj_add_event_cb(btn, &SelfCheck::loopback_btn_cb, LV_EVENT_CLICKED, this);
-    lv_obj_t* btn_label = lv_label_create(btn);
-    lv_label_set_text(btn_label, ui::tr(ui::StrId::LoopbackButton));
-
-    loop_status_label_ = make_row_label(row);
-    lv_obj_set_flex_grow(loop_status_label_, 1);
-    lv_label_set_text(loop_status_label_, loopback_status_text(loop_status_).c_str());
-}
-
-void SelfCheck::build_perf_section(lv_obj_t* col) {
-    perf_label_ = make_row_label(col);
-    lv_label_set_text(perf_label_, "FPS 0 | CPU 0% | flush 0.0ms");
-    lv_obj_add_flag(perf_label_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(perf_label_, &SelfCheck::perf_long_press_cb, LV_EVENT_LONG_PRESSED, this);
-}
-
-void SelfCheck::start_sampling() {
-    sample_running_.store(true, std::memory_order_release);
-    os::TaskConfig config;
-    config.name = "wisp.sample";
-    SelfCheck* self = this;
-    sample_task_ = os::Task::spawn(config, [self] { self->sample_loop(); });
-}
-
-void SelfCheck::sample_loop() {
-    uint64_t last_slow = 0;
-    while (sample_running_.load(std::memory_order_acquire)) {
-        // Standby means "no periodic high-frequency polling" (spec 6.7)
-        // -- IMU sampling at kSampleTaskPeriodMs (~50Hz) stops entirely
-        // while standby_ is true.
-        //
-        // spec 6.7 also asks for power/charging status (and the clock)
-        // to keep being read "约 30s" during standby rather than stopped
-        // outright, unlike IMU sampling above -- see sample_slow().
-        // take() returning false means kStandbySlowSampleMs elapsed with
-        // no wake signal -- exactly the "about 30s, take one slow
-        // sample" case; true means something actually woke this task
-        // (sample_running_ went false, or standby ended) and there is
-        // nothing to sample right now.
-        if (standby_.load(std::memory_order_acquire)) {
-            if (!standby_wake_.take(kStandbySlowSampleMs)) {
-                sample_slow();
-            }
-            continue;
-        }
-        if (imu_) {
-            auto r = imu_->read();
-            // enter_standby() can power the IMU off
-            // while this read() (which runs with no lock held) is still
-            // in flight. Publishing a resulting DeviceFailure into
-            // snapshot_ after the fact would leave one bogus "IMU 异常"
-            // frame visible right after waking -- refresh_ui() only ever
-            // shows whatever is already in snapshot_, it has no way to
-            // tell a stale failure from a fresh one. Drop this result
-            // once standby_ has flipped true in the meantime instead; the
-            // next iteration takes the standby branch above rather than
-            // trying to read again.
-            if (!standby_.load(std::memory_order_acquire)) {
-                std::lock_guard<os::Mutex> lock(sample_mutex_);
-                snapshot_.imu_ok = static_cast<bool>(r);
-                if (r) {
-                    snapshot_.imu = r.value();
-                }
-            }
-        }
-
-        uint64_t now = os::now_ms();
-        if (now - last_slow >= kSlowSampleIntervalMs) {
-            last_slow = now;
-            sample_slow();
-        }
-
-        os::sleep_ms(kSampleTaskPeriodMs);
-    }
-}
-
-void SelfCheck::sample_slow() {
-    if (power_) {
-        auto r = power_->status();
-        std::lock_guard<os::Mutex> lock(sample_mutex_);
-        snapshot_.power_ok = static_cast<bool>(r);
-        if (r) {
-            snapshot_.power = r.value();
-        }
-    }
-    if (clock_) {
-        auto r = clock_->get_unix();
-        std::lock_guard<os::Mutex> lock(sample_mutex_);
-        snapshot_.rtc_ok = static_cast<bool>(r);
-        if (r) {
-            snapshot_.rtc_unix = r.value();
-        }
-    }
-}
+hal::Area SelfCheck::compute_safe_area() const { return hal::safe_rect(system_.shape()); }
 
 void SelfCheck::start_perf_timer() {
     perf_timer_ = std::make_unique<os::Timer>("wisp.perf", kPerfReportMs, /*periodic=*/true,
@@ -846,30 +359,27 @@ void SelfCheck::subscribe_buttons() {
     button_sub_ =
         app_.bus().subscribe("button.", [this](const core::Event& e) { on_button_event(e); });
 
-    // From here on, this screen's own
-    // PowerKeyController is the *only* thing that decides what a
-    // "button.power" event does to the screen -- PowerManager's own
-    // generic "any button wakes standby" handler (power_manager.cpp)
-    // must leave button.power alone, or the two could each independently
-    // decide to flip the screen for the very same physical press (one
-    // reacting to `down`, the other -- with its own, now-stale idea of
-    // "is the screen on" -- reacting to the `short`/`long` that follows
-    // it), producing a wake-then-immediately-resleep flash. See
-    // PowerManager::set_power_key_owned()'s doc comment.
+    // From here on, this screen's own PowerKeyController is the *only*
+    // thing that decides what a "button.power" event does to the screen --
+    // PowerManager's own generic "any button wakes standby" handler
+    // (power_manager.cpp) must leave button.power alone, or the two could
+    // each independently decide to flip the screen for the very same
+    // physical press (one reacting to `down`, the other -- with its own,
+    // now-stale idea of "is the screen on" -- reacting to the
+    // `short`/`long` that follows it), producing a wake-then-immediately-
+    // resleep flash. See PowerManager::set_power_key_owned()'s doc comment.
     if (PowerManager* pm = app_.power_manager()) {
         pm->set_power_key_owned(true);
     }
 }
 
 void SelfCheck::on_button_event(const core::Event& e) {
-    // on_button_event() itself runs on the EventBus dispatcher thread
-    // (see subscribe_buttons()), but PowerKeyController is not
-    // thread-safe against concurrent callers -- on_power_off_answer() (below)
-    // also drives it, from the UI thread, via on_confirm(). Posting the
-    // *whole* decision (on_short()/on_long() included, not just the
-    // resulting Action) onto the UI thread, rather than calling those
-    // here and only posting the result, is what makes every
-    // PowerKeyController call happen on one single thread.
+    // on_button_event() itself runs on the EventBus dispatcher thread, but
+    // PowerKeyController is not thread-safe against concurrent callers --
+    // on_power_off_answer() also drives it, from the UI thread, via
+    // on_confirm(). Posting the *whole* decision (on_short()/on_long()
+    // included, not just the resulting Action) onto the UI thread is what
+    // makes every PowerKeyController call happen on one single thread.
     std::string topic = e.topic;
     std::string source = e.source;
     // A dropped post() here silently loses whatever power-key action
@@ -877,19 +387,19 @@ void SelfCheck::on_button_event(const core::Event& e) {
     // isn't invisible (see event_bus.hpp for why this must not block
     // waiting for a slot instead).
     if (!ui_->post([this, topic, source] {
-            lv_label_set_text(button_label_,
-                              labeled(ui::tr(ui::StrId::Button), topic.c_str()).c_str());
+            tests_section_.set_button_event(topic);
+            pass_test(InteractiveTest::Button);
 
             PowerKeyController::Action action = PowerKeyController::Action::None;
             if (source == "button.power") {
                 // PowerManager::standby() -- not any state
-                // PowerKeyController tracks itself -- is the
-                // single source of truth for "is the screen on"; read it
-                // fresh right before deciding, on this same UI thread (the
-                // only thread that ever calls into PowerManager's
-                // enter_standby()/exit_standby() on this screen's behalf, so
-                // there is no race between this read and this screen's own
-                // handle_power_key_action() below acting on the result).
+                // PowerKeyController tracks itself -- is the single source
+                // of truth for "is the screen on"; read it fresh right
+                // before deciding, on this same UI thread (the only thread
+                // that ever calls into PowerManager's enter_standby()/
+                // exit_standby() on this screen's behalf, so there is no
+                // race between this read and handle_power_key_action()
+                // below acting on the result).
                 PowerManager* pm = app_.power_manager();
                 bool screen_on = pm == nullptr || !pm->standby();
                 if (topic == "button.power.short") {
@@ -907,24 +417,16 @@ void SelfCheck::on_button_event(const core::Event& e) {
 }
 
 void SelfCheck::subscribe_power() {
-    // Mirrors subscribe_buttons()'s pattern, but for
-    // PowerManager's own "power.state" broadcast rather than raw button
-    // events -- lets sample_loop() (running on its own thread, not the
-    // UI task) stop polling the IMU while in standby without reaching
-    // into PowerManager itself.
+    // Lets the sampler (running on its own thread, not the UI task) stop
+    // polling the IMU while in standby without reaching into PowerManager
+    // itself.
     power_sub_ =
         app_.bus().subscribe("power.state", [this](const core::Event& e) { on_power_event(e); });
 }
 
 void SelfCheck::on_power_event(const core::Event& e) {
     auto it = e.payload.find("state");
-    bool standby = it != e.payload.end() && it->second.as_string() == "standby";
-    bool was_standby = standby_.exchange(standby, std::memory_order_acq_rel);
-    if (was_standby && !standby) {
-        // Wake sample_loop() promptly instead of leaving it to notice on
-        // its own, up to 1s later (see sample_loop()'s doc comment).
-        standby_wake_.give();
-    }
+    sampler_.set_standby(it != e.payload.end() && it->second.as_string() == "standby");
 }
 
 void SelfCheck::subscribe_settings() {
@@ -1005,235 +507,24 @@ void SelfCheck::on_firmware_event(const core::Event&) {
     }
 }
 
-void SelfCheck::sync_wifi() {
-    const uint64_t now = os::now_ms();
-    net_section_.refresh(now);
-    net::WifiService* wifi = app_.wifi();
-    std::optional<net::ApSession> ap = wifi != nullptr ? wifi->ap_session() : std::nullopt;
-    if (!ap) {
-        setup_card_.close();
-        return;
-    }
-    const net::ApSession& shown = setup_card_.session();
-    if (setup_card_.is_open() && shown.ssid == ap->ssid && shown.password == ap->password &&
-        shown.ip == ap->ip) {
-        return;
-    }
-    setup_card_.open(*ap, compute_safe_area());
-    raise_overlays();
-}
-
-void SelfCheck::sync_pairing() {
-    const uint64_t now = os::now_ms();
-    net::PairingService* pairing = app_.pairing();
-    uint64_t expires_ms = 0;
-    std::optional<std::string> code =
-        pairing != nullptr ? pairing->active_code(now, &expires_ms) : std::nullopt;
-    if (!code) {
-        pair_card_.close();
-        return;
-    }
-    if (pair_card_.is_open() && pair_card_.code() == *code &&
-        pair_card_.expires_ms() == expires_ms) {
-        return;
-    }
-    pair_card_.open(std::move(*code), expires_ms, now, compute_safe_area());
-    raise_overlays();
-    wake_screen();
-}
-
-void SelfCheck::raise_overlays() {
-    pair_card_.raise();
-    system_.raise();
-}
-
-void SelfCheck::wake_screen() {
-    PowerManager* pm = app_.power_manager();
-    if (pm != nullptr && pm->standby()) {
-        pm->exit_standby();
-    }
-}
-
-void SelfCheck::sync_reset() {
-    if (take_factory_reset_request(app_)) {
-        show_reset_dialog();
-    }
-}
-
-void SelfCheck::show_reset_dialog() {
-    if (reset_box_ != nullptr || reset_confirmed_) {
-        return;  // one dialog per request at a time; nothing once confirmed
-    }
-    reset_box_ = system_.open_confirm(ui::StrId::ResetTitle, ui::tr(ui::StrId::ResetPrompt),
-                                      [this](bool yes) { on_reset_answer(yes); });
-    if (reset_box_ == nullptr) {
-        // One confirm dialog at a time (spec 8). The person at the device
-        // is already answering another question, so the browser gets a
-        // definite "no" now rather than a dialog that may never show.
-        WLOG_I("self_check", "factory reset request refused: another dialog is open");
-        cancel_factory_reset(app_);
-        return;
-    }
-    wake_screen();
-    WLOG_I("self_check", "factory reset: waiting for confirmation on the screen");
-}
-
-void SelfCheck::close_reset_dialog() {
-    if (reset_box_ == nullptr) {
-        return;
-    }
-    system_.close_confirm(reset_box_);
-    reset_box_ = nullptr;
-}
-
-void SelfCheck::sync_firmware() {
-    if (take_firmware_request(app_)) {
-        show_firmware_dialog();
-    }
-    if (fw_box_ != nullptr && !pending_firmware(app_)) {
-        close_firmware_dialog();
-    }
-}
-
-void SelfCheck::show_firmware_dialog() {
-    if (fw_box_ != nullptr) {
-        return;
-    }
-    std::optional<core::FirmwarePending> pending = pending_firmware(app_);
-    if (!pending) {
-        return;
-    }
-    if (system_.confirm_open()) {
-        // As for the factory reset: one confirm dialog at a time, and the
-        // browser hears "rejected" now.
-        WLOG_I("self_check", "firmware update refused: another dialog is open");
-        decline_firmware(app_);
-        return;
-    }
-    // One version per line: a git-described version is about as wide as
-    // the box, and LVGL would otherwise break it mid-number.
-    std::string text = ui::tr(ui::StrId::FirmwarePrompt);
-    text += "\n" + pending->current + "\n→ " + pending->next;
-    if (pending->downgrade) {
-        text += "\n";
-        text += ui::tr(ui::StrId::FirmwareDowngrade);
-    }
-    fw_box_ = system_.open_confirm(ui::StrId::FirmwareTitle, text,
-                                   [this](bool yes) { on_firmware_answer(yes); });
-    wake_screen();
-    WLOG_I("self_check", "firmware %s: waiting for confirmation on the screen",
-           pending->next.c_str());
-}
-
-void SelfCheck::close_firmware_dialog() {
-    if (fw_box_ == nullptr) {
-        return;
-    }
-    system_.close_confirm(fw_box_);
-    fw_box_ = nullptr;
-}
-
-void SelfCheck::handle_power_key_action(PowerKeyController::Action action) {
-    // Screen on/off now goes through PowerManager (panel/touch sleep, UI
-    // pause, button poll widening, the platform DFS/light-sleep hook --
-    // spec 6.7), not a direct hal::Display::set_power() call.
-    PowerManager* pm = app_.power_manager();
-    switch (action) {
-        case PowerKeyController::Action::None:
-            break;
-        case PowerKeyController::Action::ScreenOff:
-            if (pm != nullptr) {
-                pm->enter_standby();
-            }
-            break;
-        case PowerKeyController::Action::ScreenOn:
-            if (pm != nullptr) {
-                pm->exit_standby();
-            }
-            break;
-        case PowerKeyController::Action::ShowConfirm:
-            show_confirm_dialog();
-            break;
-        case PowerKeyController::Action::ScreenOnAndConfirm:
-            if (pm != nullptr) {
-                pm->exit_standby();
-            }
-            show_confirm_dialog();
-            break;
-        case PowerKeyController::Action::PowerOff:
-            do_power_off();
-            break;
-        case PowerKeyController::Action::CancelConfirm:
-            close_confirm_dialog();
-            break;
-    }
-}
-
-void SelfCheck::show_confirm_dialog() {
-    if (msgbox_ != nullptr) {
-        return;  // Already up -- spec 8: no stacked confirm dialogs.
-    }
-    msgbox_ = system_.open_confirm(ui::StrId::PowerOffTitle, ui::tr(ui::StrId::PowerOffPrompt),
-                                   [this](bool yes) { on_power_off_answer(yes); });
-    if (msgbox_ == nullptr) {
-        // Nor on top of another question (the factory reset, a firmware
-        // update): the long press is ignored, and the key controller is
-        // told no dialog came up, so the next short press turns the screen
-        // off as usual.
-        WLOG_I("self_check", "power-off dialog not shown: another dialog is open");
-        (void)power_key_.on_confirm(false);
-    }
-}
-
-void SelfCheck::close_confirm_dialog() {
-    if (msgbox_ == nullptr) {
-        return;
-    }
-    system_.close_confirm(msgbox_);
-    msgbox_ = nullptr;
-}
-
-void SelfCheck::do_power_off() {
-    if (power_) {
-        auto result = power_->power_off();
-        if (result) {
-            return;
-        }
-        // Logged, rather than silently falling through, so a device
-        // that ends up stuck running the deep-sleep fallback below (the
-        // PMIC can't be told to cut power) leaves a trace of *why* --
-        // otherwise the only symptom is the screen going dark and
-        // nothing else happening.
-        WLOG_E("self_check", "Power::power_off() failed: %s", result.error().message.c_str());
-        // Fall through to the platform fallback below
-        // rather than silently doing nothing -- the user already
-        // confirmed shutdown, so a failed Power::power_off() shouldn't
-        // leave the device stuck on.
-    }
-    if (app_.platform().request_power_off) {
-        // The ESP fallback (esp_deep_sleep_start(), no wakeup source)
-        // does not power down the AMOLED panel or its PMIC rail (see
-        // docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md) -- deep sleep only
-        // stops the SoC. Without turning the panel off first, this
-        // confirm dialog (its own GRAM contents) would stay lit,
-        // indistinguishable from a hang, and keep drawing power for as
-        // long as the battery lasts. set_power(false) runs here, on
-        // this (UI) thread, as spec 5.3 requires for every Display
-        // call.
-        if (display_) {
-            display_->set_power(false);
-        }
-        app_.platform().request_power_off();
-    }
-}
-
 void SelfCheck::start_loopback() {
     run_loopback(app_, [this](const LoopbackStatus& status) {
         ui_->post([this, status] {
             loop_status_ = status;
-            lv_label_set_text(loop_status_label_, loopback_status_text(status).c_str());
+            tests_section_.set_loopback(status);
+            if (tests_.on_loopback(status)) {
+                tests_section_.show(tests_);
+                header_.show_tests(tests_.passed_count());
+            }
         });
     });
+}
+
+void SelfCheck::pass_test(InteractiveTest test) {
+    if (tests_.pass(test)) {
+        tests_section_.show(tests_);
+        header_.show_tests(tests_.passed_count());
+    }
 }
 
 void SelfCheck::toggle_perf_overlay() {
@@ -1261,163 +552,30 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
 }
 
 void SelfCheck::refresh_ui() {
-    Snapshot snap;
-    {
-        std::lock_guard<os::Mutex> lock(sample_mutex_);
-        snap = snapshot_;
-    }
-
-    if (imu_) {
-        char buf[160];
-        if (snap.imu_ok) {
-            std::snprintf(buf, sizeof(buf), "IMU: ax=%.2f ay=%.2f az=%.2f gx=%.1f gy=%.1f gz=%.1f",
-                          snap.imu.ax, snap.imu.ay, snap.imu.az, snap.imu.gx, snap.imu.gy,
-                          snap.imu.gz);
-        } else {
-            std::snprintf(buf, sizeof(buf), "IMU: %s", ui::tr(ui::StrId::ReadFailed));
-        }
-        lv_label_set_text(imu_label_, buf);
-
-        float ox = std::clamp(snap.imu.ax, -1.0f, 1.0f) * static_cast<float>(kBallTravelPx);
-        float oy = std::clamp(-snap.imu.ay, -1.0f, 1.0f) * static_cast<float>(kBallTravelPx);
-        lv_obj_align(imu_ball_, LV_ALIGN_CENTER, static_cast<int32_t>(ox),
-                     static_cast<int32_t>(oy));
-    }
-
-    if (power_) {
-        std::string value;
-        if (snap.power_ok) {
-            char level[16];
-            std::snprintf(level, sizeof(level), "%d%%", snap.power.battery_percent);
-            value = snap.power.battery_percent < 0 ? ui::tr(ui::StrId::LevelUnknown) : level;
-            value += "  ";
-            value += ui::tr(snap.power.charging ? ui::StrId::Charging : ui::StrId::NotCharging);
-        } else {
-            value = ui::tr(ui::StrId::ReadFailed);
-        }
-        lv_label_set_text(power_label_, labeled(ui::tr(ui::StrId::Battery), value).c_str());
-    }
-
-    if (clock_) {
-        std::string value =
-            snap.rtc_ok ? format_time(snap.rtc_unix) : std::string(ui::tr(ui::StrId::ReadFailed));
-        lv_label_set_text(rtc_label_, labeled(ui::tr(ui::StrId::Time), value).c_str());
-    }
-
-    update_storage_labels();
-
-    ui::UiPerf perf = ui_->perf();
-    char perf_buf[96];
-    std::snprintf(perf_buf, sizeof(perf_buf), "FPS %.0f | CPU %u%% | flush %.1fms", perf.fps,
-                  perf.cpu_percent, perf.avg_flush_ms);
-    lv_label_set_text(perf_label_, perf_buf);
+    // Every section compares before it sets, so a tick with nothing new
+    // invalidates nothing.
+    SampleSnapshot snap = sampler_.snapshot();
+    sensors_.update(snap);
+    power_clock_.update(snap);
+    refresh_storage();
+    perf_.update(ui_->perf());
 }
 
-void SelfCheck::update_storage_labels() {
+void SelfCheck::refresh_storage() {
     core::StorageStatus status = app_.storage().status();
-    const core::MediaStatus* int_status = nullptr;
-    const core::MediaStatus* sd_status = nullptr;
-    for (const auto& media : status.media) {
-        if (media.id == "storage.int") {
-            int_status = &media;
-        } else if (media.id == "storage.sd") {
-            sd_status = &media;
-        }
+    storage_.update(status);
+    if (!sd_row_live_) {
+        return;
     }
-
-    auto format_row = [](const char* label, const core::MediaStatus* media) {
-        char buf[160];
-        if (media == nullptr) {
-            std::snprintf(buf, sizeof(buf), "%s: %s", label, ui::tr(ui::StrId::StateMissing));
-        } else {
-            uint64_t used =
-                media->total_bytes > media->free_bytes ? media->total_bytes - media->free_bytes : 0;
-            std::snprintf(buf, sizeof(buf), "%s: %s  %s / %s", label,
-                          ui::tr(media->online ? ui::StrId::Online : ui::StrId::Offline),
-                          format_bytes(used).c_str(), format_bytes(media->total_bytes).c_str());
-        }
-        return std::string(buf);
-    };
-
-    lv_label_set_text(storage_int_label_,
-                      format_row(ui::tr(ui::StrId::InternalFlash), int_status).c_str());
-    lv_label_set_text(storage_sd_label_, format_row(ui::tr(ui::StrId::SdCard), sd_status).c_str());
-
-    if (device_list_sd_row_ != nullptr) {
-        // sd_status == nullptr means "storage.sd" isn't in the registry
-        // at all (never happens once BootReport already has a row for
-        // it, since that implies the device was registered), so this
-        // only ever distinguishes online (Ok, "正常") from offline/
-        // not-yet-mounted (Missing, "缺失" -- the same label this row
-        // already had at boot, when every registered-but-cardless SD
-        // device starts out). Never Degraded/Failed: this row keeps its
-        // original boot-time coloring for those, since a device that
-        // actually failed, or was never registered in the first place,
-        // can't suddenly come online later.
-        core::DeviceState state = (sd_status != nullptr && sd_status->online)
-                                      ? core::DeviceState::Ok
-                                      : core::DeviceState::Missing;
-        char buf[160];
-        std::snprintf(buf, sizeof(buf), "%s | %s | %s", device_list_sd_id_.c_str(),
-                      device_list_sd_model_.c_str(), state_label(state));
-        lv_label_set_text(device_list_sd_row_, buf);
-        lv_obj_set_style_text_color(device_list_sd_row_, color_for_state(state), 0);
-    }
-}
-
-void SelfCheck::touch_event_cb(lv_event_t* e) {
-    auto* self = static_cast<SelfCheck*>(lv_event_get_user_data(e));
-    if (lv_event_get_code(e) == LV_EVENT_PRESSING) {
-        lv_indev_t* indev = lv_indev_active();
-        lv_point_t p{};
-        if (indev != nullptr) {
-            lv_indev_get_point(indev, &p);
-        }
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "%s: (%d, %d)", ui::tr(ui::StrId::Touch),
-                      static_cast<int>(p.x), static_cast<int>(p.y));
-        lv_label_set_text(self->touch_label_, buf);
-    } else {
-        lv_label_set_text(self->touch_label_, ui::tr(ui::StrId::TouchTestArea));
-    }
-}
-
-void SelfCheck::loopback_btn_cb(lv_event_t* e) {
-    auto* self = static_cast<SelfCheck*>(lv_event_get_user_data(e));
-    self->start_loopback();
-}
-
-void SelfCheck::perf_long_press_cb(lv_event_t* e) {
-    auto* self = static_cast<SelfCheck*>(lv_event_get_user_data(e));
-    self->toggle_perf_overlay();
-}
-
-void SelfCheck::on_power_off_answer(bool yes) {
-    msgbox_ = nullptr;
-    PowerKeyController::Action action = power_key_.on_confirm(yes);
-    handle_power_key_action(action);
-}
-
-void SelfCheck::on_reset_answer(bool yes) {
-    reset_box_ = nullptr;
-    if (yes) {
-        // Off the UI thread: the reset waits for the network and writes
-        // flash before it restarts the device. If the task could not
-        // start, the reset was answered "cancelled" and a later request
-        // may ask again.
-        reset_confirmed_ = start_factory_reset(app_);
-    } else {
-        cancel_factory_reset(app_);
-    }
-}
-
-void SelfCheck::on_firmware_answer(bool yes) {
-    fw_box_ = nullptr;
-    if (yes) {
-        // Off the UI thread: switching the boot slot re-verifies the image.
-        (void)start_firmware_install(app_);
-    } else {
-        decline_firmware(app_);
+    // The row follows the card: online is Ok, offline or not yet mounted
+    // is Missing, as every registered but cardless SD device starts out at
+    // boot.
+    bool online = std::any_of(status.media.begin(), status.media.end(), [](const auto& media) {
+        return media.id == "storage.sd" && media.online;
+    });
+    if (devices_.set_state("storage.sd",
+                           online ? core::DeviceState::Ok : core::DeviceState::Missing)) {
+        header_.show_devices(devices_.summary());
     }
 }
 

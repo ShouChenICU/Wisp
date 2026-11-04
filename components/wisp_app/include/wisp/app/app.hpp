@@ -151,6 +151,10 @@ struct Platform {
     std::function<void(bool standby)> set_standby;
 
     std::string firmware_version = "0.1.0";
+    // What the firmware runs on, as the self-check header shows it next to
+    // the version: the chip target on ESP, "simulator" on the PC. Empty:
+    // not shown.
+    std::string target;
 
     // Fills the buffer with cryptographically strong random bytes (pairing
     // tokens and codes, the hotspot password). Required for networking:

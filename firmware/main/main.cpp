@@ -131,6 +131,7 @@ extern "C" void app_main() {
     // firmware/CMakeLists.txt), so this always reports exactly what was
     // actually flashed.
     platform.firmware_version = esp_app_get_description()->version;
+    platform.target = CONFIG_IDF_TARGET;
     // esp_fill_random() is a true RNG only while the RF subsystem (Wi-Fi/BT)
     // is enabled or between bootloader_random_enable()/_disable(); otherwise
     // its output is merely pseudo-random. Precondition for every caller:

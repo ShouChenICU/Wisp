@@ -10,8 +10,6 @@ const char* strings_ja(StrId id) {
     switch (id) {
         case StrId::BootTime:
             return "起動";
-        case StrId::DeviceList:
-            return "デバイス一覧";
         case StrId::StateOk:
             return "正常";
         case StrId::StateDegraded:
@@ -20,6 +18,24 @@ const char* strings_ja(StrId id) {
             return "未検出";
         case StrId::StateFailed:
             return "エラー";
+        case StrId::SummaryDevices:
+            return "デバイス {} 正常";
+        case StrId::SummaryTests:
+            return "テスト {} 完了";
+        case StrId::SectionDevices:
+            return "デバイス";
+        case StrId::SectionNetwork:
+            return "ネットワーク";
+        case StrId::SectionSensors:
+            return "センサー";
+        case StrId::SectionPowerClock:
+            return "電源と時計";
+        case StrId::SectionStorage:
+            return "ストレージ";
+        case StrId::SectionTests:
+            return "操作テスト";
+        case StrId::SectionPerf:
+            return "パフォーマンス";
         case StrId::Battery:
             return "バッテリー";
         case StrId::Time:
@@ -31,6 +47,12 @@ const char* strings_ja(StrId id) {
         case StrId::Button:
             return "ボタン";
         case StrId::Touch:
+            return "タッチ";
+        case StrId::Accel:
+            return "加速度";
+        case StrId::Gyro:
+            return "角速度";
+        case StrId::TouchTest:
             return "タッチ";
         case StrId::ReadFailed:
             return "読み取りエラー";
@@ -46,6 +68,10 @@ const char* strings_ja(StrId id) {
             return "オフライン";
         case StrId::TouchTestArea:
             return "タッチテスト";
+        case StrId::TestUntested:
+            return "未テスト";
+        case StrId::TestPassed:
+            return "合格";
         case StrId::LoopbackButton:
             return "マイクテスト";
         case StrId::LoopReady:

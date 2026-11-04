@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "self_check_layout.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/temp_dir.hpp"
@@ -44,6 +45,8 @@
 
 using wisp::test::all_label_glyphs_resolvable;
 using wisp::test::collect_labels;
+using wisp::test::FakeAudioIn;
+using wisp::test::FakeAudioOut;
 using wisp::test::FakeButton;
 using wisp::test::FakeClock;
 using wisp::test::FakeDisplay;
@@ -51,6 +54,7 @@ using wisp::test::FakeImu;
 using wisp::test::FakePower;
 using wisp::test::FakeStorage;
 using wisp::test::find_button_with_label;
+using wisp::test::find_label_containing;
 using wisp::test::find_label_text_containing;
 using wisp::test::find_msgbox_width;
 using wisp::test::run_on_ui_blocking;
@@ -67,16 +71,24 @@ namespace {
 // a missing power/clock/SD device), so building the screen exercises
 // every section of spec 8's layout rather than just the "device missing"
 // fallback text.
+// What a test adds to FullFakeBoard: boot-report entries of its own (e.g. a
+// device that failed to start), and the audio pair the loopback test needs.
+struct BoardExtras {
+    std::vector<wisp::core::DeviceReport> reports;
+    bool with_audio = false;
+};
+
 class FullFakeBoard : public wisp::app::Board {
 public:
     FullFakeBoard(std::shared_ptr<FakeDisplay> display, std::shared_ptr<FakeImu> imu,
                   std::shared_ptr<FakePower> power, uint32_t init_sleep_ms = 0,
-                  std::shared_ptr<FakeStorage> sd = nullptr)
+                  std::shared_ptr<FakeStorage> sd = nullptr, BoardExtras extras = {})
         : display_(std::move(display)),
           imu_(std::move(imu)),
           power_(std::move(power)),
           init_sleep_ms_(init_sleep_ms),
-          sd_(std::move(sd)) {}
+          sd_(std::move(sd)),
+          extras_(std::move(extras)) {}
 
     std::string name() const override { return "fake-full"; }
 
@@ -102,6 +114,13 @@ public:
                                wisp::core::DeviceState::Missing, "no SD card"});
             }
         }
+        if (extras_.with_audio) {
+            registry.add(std::make_shared<FakeAudioIn>("audio_in.main"));
+            registry.add(std::make_shared<FakeAudioOut>("audio_out.main"));
+        }
+        for (const auto& entry : extras_.reports) {
+            report.record(entry);
+        }
     }
 
 private:
@@ -110,6 +129,7 @@ private:
     std::shared_ptr<FakePower> power_;
     uint32_t init_sleep_ms_;
     std::shared_ptr<FakeStorage> sd_;
+    BoardExtras extras_;
 };
 
 // Bundles everything a test needs to build one App over FullFakeBoard: the
@@ -130,7 +150,7 @@ struct Harness {
 
     explicit Harness(std::string settings_path_in, uint32_t init_sleep_ms = 0,
                      std::string display_shape = "rounded_rect", bool with_sd = false,
-                     int display_size = 480)
+                     int display_size = 480, BoardExtras extras = {})
         : display(std::make_shared<FakeDisplay>("display.main", display_size, display_size,
                                                 /*area_align=*/1, std::move(display_shape))),
           imu(std::make_shared<FakeImu>("imu.main")),
@@ -139,7 +159,7 @@ struct Harness {
                                                      /*removable=*/true)
                      : nullptr),
           settings_path(std::move(settings_path_in)),
-          app(build_platform(init_sleep_ms)) {
+          app(build_platform(init_sleep_ms, std::move(extras))) {
         if (sd) {
             sd->online_flag = false;
         }
@@ -150,9 +170,10 @@ struct Harness {
     }
 
 private:
-    wisp::app::Platform build_platform(uint32_t init_sleep_ms) {
+    wisp::app::Platform build_platform(uint32_t init_sleep_ms, BoardExtras extras) {
         wisp::app::Platform platform;
-        platform.board = std::make_unique<FullFakeBoard>(display, imu, power, init_sleep_ms, sd);
+        platform.board = std::make_unique<FullFakeBoard>(display, imu, power, init_sleep_ms, sd,
+                                                         std::move(extras));
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path);
         platform.request_power_off = [this] { request_power_off_calls.fetch_add(1); };
@@ -164,17 +185,97 @@ private:
     }
 };
 
-// The device-list title in each language, used to tell which language the
-// screen was built in.
+// The devices card's heading in each language, used to tell which language
+// the screen was built in.
 struct LangCase {
     const char* code;
-    const char* device_list_title;
+    const char* devices_heading;
 };
 constexpr LangCase kLangCases[] = {
-    {"zh", "设备列表"},
-    {"ja", "デバイス一覧"},
+    {"zh", "设备"},
+    {"ja", "デバイス"},
     {"en", "Devices"},
 };
+
+const std::string kShapes[] = {"rect", "rounded_rect", "circle"};
+
+// The section cards' headings, top to bottom, in Chinese.
+const std::vector<std::string> kCardHeadings = {"设备", "网络",     "传感器", "电源与时钟",
+                                                "存储", "交互测试", "性能"};
+
+uint32_t rgb_of(lv_color_t c) {
+    return (static_cast<uint32_t>(c.red) << 16) | (static_cast<uint32_t>(c.green) << 8) | c.blue;
+}
+
+std::string hex(uint32_t rgb) {
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%06x", static_cast<unsigned>(rgb));
+    return buf;
+}
+
+// UI thread: the scrolling root column, the active screen's first child.
+lv_obj_t* root_column() { return lv_obj_get_child(lv_screen_active(), 0); }
+
+// UI thread: the root column's child whose first child is a label reading
+// exactly `heading` (a section card), or nullptr.
+lv_obj_t* find_card(const std::string& heading) {
+    lv_obj_t* col = root_column();
+    for (uint32_t i = 0; i < lv_obj_get_child_count(col); ++i) {
+        lv_obj_t* c = lv_obj_get_child(col, static_cast<int32_t>(i));
+        if (lv_obj_get_child_count(c) == 0) continue;
+        lv_obj_t* first = lv_obj_get_child(c, 0);
+        if (lv_obj_check_type(first, &lv_label_class) && heading == lv_label_get_text(first)) {
+            return c;
+        }
+    }
+    return nullptr;
+}
+
+// UI thread: "<text>|<background rgb>" of the summary chip whose label
+// contains `needle`, or empty.
+std::string chip_state(const char* needle) {
+    lv_obj_t* label = find_label_containing(root_column(), needle);
+    if (label == nullptr) return {};
+    lv_obj_t* chip = lv_obj_get_parent(label);
+    return std::string(lv_label_get_text(label)) + "|" +
+           hex(rgb_of(lv_obj_get_style_bg_color(chip, LV_PART_MAIN)));
+}
+
+// UI thread: one line per row of the devices card, top to bottom:
+// "<dot rgb>|<each shown label's text>|...". A row is a status dot
+// followed by a body holding the id, driver and reason labels.
+std::string device_rows() {
+    lv_obj_t* card = find_card("设备");
+    if (card == nullptr) return "no devices card";
+    std::string out;
+    for (uint32_t i = 1; i < lv_obj_get_child_count(card); ++i) {
+        lv_obj_t* row = lv_obj_get_child(card, static_cast<int32_t>(i));
+        if (lv_obj_get_child_count(row) < 2) return "row " + std::to_string(i) + " malformed";
+        out += hex(rgb_of(lv_obj_get_style_bg_color(lv_obj_get_child(row, 0), LV_PART_MAIN)));
+        lv_obj_t* body = lv_obj_get_child(row, 1);
+        for (uint32_t k = 0; k < lv_obj_get_child_count(body); ++k) {
+            lv_obj_t* label = lv_obj_get_child(body, static_cast<int32_t>(k));
+            if (lv_obj_check_type(label, &lv_label_class) &&
+                !lv_obj_has_flag(label, LV_OBJ_FLAG_HIDDEN)) {
+                out += "|";
+                out += lv_label_get_text(label);
+            }
+        }
+        out += "\n";
+    }
+    return out;
+}
+
+// UI thread: how many labels on the screen contain `needle`.
+int count_labels_containing(const char* needle) {
+    std::vector<std::pair<std::string, lv_area_t>> labels;
+    collect_labels(lv_screen_active(), labels);
+    int n = 0;
+    for (const auto& [text, area] : labels) {
+        if (text.find(needle) != std::string::npos) ++n;
+    }
+    return n;
+}
 
 // Writes Settings sys/lang into the settings file a Harness is about to
 // boot from, the same key SystemSettings stores the device language in.
@@ -280,9 +381,22 @@ TEST(SelfCheckScreen, ImuReadFailureRendersDifferentlyAndDoesNotCrash) {
     ASSERT_TRUE(wait_until([&] { return imu_row_text() == "IMU: 读取失败"; }, 3000));
 
     // Still alive and rendering -- the "不崩溃" half of spec 8's
-    // requirement.
+    // requirement: once reads work again, the error goes and the new
+    // values are drawn. (An unchanged screen is not redrawn, so waiting
+    // for flushes alone would prove nothing.)
     size_t flush_before_more = h.display->flush_count();
-    EXPECT_TRUE(h.wait_for_flushes(flush_before_more + 5));
+    wisp::hal::ImuSample sample{};
+    sample.ax = 0.5f;
+    h.imu->set_next_sample(sample);
+    ASSERT_TRUE(wait_until([&] { return imu_row_text().empty(); }, 3000));
+    EXPECT_TRUE(wait_until(
+        [&] {
+            return !run_on_ui_thread(h.app.ui(), [] {
+                        return find_label_text_containing(lv_screen_active(), "+0.50");
+                    }).empty();
+        },
+        3000));
+    EXPECT_TRUE(h.wait_for_flushes(flush_before_more));
 
     h.app.stop();
 }
@@ -342,7 +456,7 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
 // rather than a hardcoded guess at the theme's background color.
 TEST(SelfCheckScreen, NoContentOutsideSafeRect) {
     for (const LangCase& lang : kLangCases) {
-        for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
+        for (const std::string& shape : kShapes) {
             SCOPED_TRACE(std::string(lang.code) + " " + shape);
             std::string settings_path = wisp::test::temp_dir().string() + "/settings.json";
             seed_language(settings_path, lang.code);
@@ -351,7 +465,7 @@ TEST(SelfCheckScreen, NoContentOutsideSafeRect) {
             ASSERT_TRUE(h.wait_for_flushes(5));
             ASSERT_FALSE(run_on_ui_thread(h.app.ui(), [&] {
                              return find_label_text_containing(lv_screen_active(),
-                                                               lang.device_list_title);
+                                                               lang.devices_heading);
                          }).empty());
 
             auto snapshot = h.app.ui()->snapshot_rgb888();
@@ -392,7 +506,7 @@ TEST(SelfCheckScreen, NoContentOutsideSafeRect) {
 // only by looking into a corner.
 TEST(SelfCheckScreen, ScrollExtremesRestInsideSafeRect) {
     for (const LangCase& lang : kLangCases) {
-        for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
+        for (const std::string& shape : kShapes) {
             SCOPED_TRACE(std::string(lang.code) + " " + shape);
             std::string settings_path = wisp::test::temp_dir().string() + "/settings.json";
             seed_language(settings_path, lang.code);
@@ -465,7 +579,7 @@ TEST(SelfCheckScreen, ScrollExtremesRestInsideSafeRect) {
 // never run past them, and every glyph must be in the built-in font.
 TEST(SelfCheckScreen, LabelsFitTheSafeAreaInEveryLanguage) {
     for (const LangCase& lang : kLangCases) {
-        for (const std::string& shape : {std::string("rounded_rect"), std::string("circle")}) {
+        for (const std::string& shape : kShapes) {
             SCOPED_TRACE(std::string(lang.code) + " " + shape);
             std::string settings_path = wisp::test::temp_dir().string() + "/settings.json";
             seed_language(settings_path, lang.code);
@@ -512,12 +626,12 @@ TEST(SelfCheckScreen, RebuildsInNewLanguage) {
             return find_label_text_containing(lv_screen_active(), needle);
         });
     };
-    EXPECT_FALSE(find_on_screen("设备列表").empty());
+    EXPECT_FALSE(find_on_screen("设备").empty());
     EXPECT_EQ(wisp::ui::lang(), wisp::ui::Lang::Zh);
 
     ASSERT_TRUE(h.app.system_settings().set({{"language", "en"}}));
     ASSERT_TRUE(wait_until([&] { return !find_on_screen("Devices").empty(); }, 3000));
-    EXPECT_TRUE(find_on_screen("设备列表").empty());
+    EXPECT_TRUE(find_on_screen("设备").empty());
     EXPECT_FALSE(find_on_screen("Boot").empty());
     EXPECT_EQ(wisp::ui::lang(), wisp::ui::Lang::En);
 
@@ -535,7 +649,7 @@ TEST(SelfCheckScreen, RebuildsInNewLanguage) {
     ASSERT_TRUE(h.app.system_settings().set({{"language", "ja"}}));
     ASSERT_TRUE(wait_until([&] { return has_button("はい"); }, 3000));
     EXPECT_FALSE(has_button("Yes"));
-    EXPECT_FALSE(find_on_screen("デバイス一覧").empty());
+    EXPECT_FALSE(find_on_screen("デバイス").empty());
     EXPECT_EQ(run_on_ui_thread(h.app.ui(),
                                [] {
                                    return std::string(
@@ -626,7 +740,7 @@ TEST(SelfCheckScreen, RebuildKeepsTheScrollPosition) {
             return find_label_text_containing(lv_screen_active(), needle);
         });
     };
-    ASSERT_TRUE(wait_until([&] { return !find_on_screen("デバイス一覧").empty(); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return !find_on_screen("デバイス").empty(); }, 3000));
 
     int32_t after = 0;
     int32_t max_after = 0;
@@ -790,29 +904,35 @@ TEST(SelfCheckScreen, EmitsWispPerfLine) {
 
 // The device list's own "storage.sd" row is rendered from BootReport,
 // which is a boot-time snapshot: without a live update, it would keep
-// saying "缺失" even after a card was inserted later and the dedicated
-// storage section below it started reporting it online -- two sections
-// of the same screen visibly disagreeing. It must track
-// StorageManager::status() live instead.
+// showing a missing card even after one was inserted later and the
+// dedicated storage section below it started reporting it online -- two
+// sections of the same screen visibly disagreeing. It must track
+// StorageManager::status() live instead, and so must the device summary.
 TEST(SelfCheckScreen, DeviceListSdRowTracksLiveStorageStatus) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
               "rounded_rect", /*with_sd=*/true);
     ASSERT_TRUE(h.app.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
-    std::string row_text = run_on_ui_thread(
-        h.app.ui(), [] { return find_label_text_containing(lv_screen_active(), "storage.sd"); });
-    EXPECT_NE(row_text.find("缺失"), std::string::npos) << row_text;
+    auto sd_row = [&] {
+        std::string rows = run_on_ui_thread(h.app.ui(), [] { return device_rows(); });
+        std::stringstream ss(rows);
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (line.find("|storage.sd|") != std::string::npos) return line;
+        }
+        return rows;
+    };
+    EXPECT_EQ(sd_row(), hex(wisp::app::kColorMissing) + "|storage.sd|FAKE|缺失: no SD card");
+    EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("设备 "); }),
+              "设备 6/7 正常|" + hex(wisp::app::kColorNeutralChip));
 
     h.sd->online_flag = true;
     ASSERT_TRUE(wait_until(
-        [&] {
-            std::string text = run_on_ui_thread(h.app.ui(), [] {
-                return find_label_text_containing(lv_screen_active(), "storage.sd");
-            });
-            return text.find("正常") != std::string::npos;
-        },
-        3000));
+        [&] { return sd_row() == hex(wisp::app::kColorGood) + "|storage.sd|FAKE"; }, 3000))
+        << sd_row();
+    EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("设备 "); }),
+              "设备 7/7 正常|" + hex(wisp::app::kColorGood));
 
     h.app.stop();
 }
@@ -907,6 +1027,432 @@ TEST(SelfCheckScreen, RequestsPlatformPowerOffAndTurnsPanelOffWhenPowerOffFails)
     EXPECT_TRUE(wait_until([&] { return h.request_power_off_calls.load() > 0; }, 3000));
     EXPECT_FALSE(h.power->powered_off());
     EXPECT_FALSE(h.display->powered());
+
+    h.app.stop();
+}
+
+// The page is a header followed by one titled card per section, in a
+// fixed order.
+TEST(SelfCheckScreen, SectionCardsInOrder) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    std::string order = run_on_ui_thread(h.app.ui(), [] {
+        std::string out;
+        lv_obj_t* col = root_column();
+        for (uint32_t i = 0; i < lv_obj_get_child_count(col); ++i) {
+            lv_obj_t* c = lv_obj_get_child(col, static_cast<int32_t>(i));
+            if (lv_obj_get_child_count(c) == 0) continue;
+            lv_obj_t* first = lv_obj_get_child(c, 0);
+            if (!lv_obj_check_type(first, &lv_label_class)) continue;
+            std::string text = lv_label_get_text(first);
+            if (std::find(kCardHeadings.begin(), kCardHeadings.end(), text) !=
+                kCardHeadings.end()) {
+                out += text + ";";
+            }
+        }
+        return out;
+    });
+    std::string expected;
+    for (const auto& heading : kCardHeadings) expected += heading + ";";
+    EXPECT_EQ(order, expected);
+
+    h.app.stop();
+}
+
+// The header puts the board name on a line of its own, in a larger font
+// than the line under it with the version, the target and the boot time.
+TEST(SelfCheckScreen, HeaderShowsTheBoardNameAsTitle) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    std::string result = run_on_ui_thread(h.app.ui(), [] {
+        lv_obj_t* col = root_column();
+        lv_obj_t* title = lv_obj_get_child(col, 0);
+        lv_obj_t* info = lv_obj_get_child(col, 1);
+        if (!lv_obj_check_type(title, &lv_label_class) || lv_obj_get_child_count(info) == 0) {
+            return std::string("no title and info line");
+        }
+        std::string out = std::string(lv_label_get_text(title)) + "|";
+        for (uint32_t i = 0; i < lv_obj_get_child_count(info); ++i) {
+            out += lv_label_get_text(lv_obj_get_child(info, static_cast<int32_t>(i)));
+            out += "|";
+        }
+        int32_t title_h = lv_font_get_line_height(lv_obj_get_style_text_font(title, LV_PART_MAIN));
+        int32_t info_h = lv_font_get_line_height(
+            lv_obj_get_style_text_font(lv_obj_get_child(info, 0), LV_PART_MAIN));
+        return out + (title_h > info_h ? "larger" : "not larger");
+    });
+    // No target in this harness's Platform, so no target item.
+    EXPECT_EQ(result.substr(0, result.find("|启动")), "fake-full|v0.1.0") << result;
+    EXPECT_NE(result.find("|启动 "), std::string::npos) << result;
+    EXPECT_NE(result.find(" ms|larger"), std::string::npos) << result;
+
+    h.app.stop();
+}
+
+// "设备 n/m 正常" counts the boot report's Ok entries; its colour is green
+// when all are OK, red if any failed, yellow if any is degraded (and none
+// failed), and neutral when the only gaps are missing devices.
+TEST(SelfCheckScreen, DeviceChipSummarisesTheBootReport) {
+    using wisp::core::DeviceState;
+    using wisp::hal::DeviceClass;
+    struct Case {
+        std::vector<wisp::core::DeviceReport> reports;
+        std::string expected;
+    };
+    const Case cases[] = {
+        {{}, "设备 6/6 正常|" + hex(wisp::app::kColorGood)},
+        {{{"touch.main", DeviceClass::Touch, DeviceState::Degraded, "single touch"}},
+         "设备 6/7 正常|" + hex(wisp::app::kColorWarning)},
+        {{{"touch.main", DeviceClass::Touch, DeviceState::Degraded, "single touch"},
+          {"audio_in.main", DeviceClass::AudioIn, DeviceState::Failed, "init failed"}},
+         "设备 6/8 正常|" + hex(wisp::app::kColorError)},
+        {{{"storage.sd", DeviceClass::Storage, DeviceState::Missing, "no SD card"}},
+         "设备 6/7 正常|" + hex(wisp::app::kColorNeutralChip)},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.expected);
+        BoardExtras extras;
+        extras.reports = c.reports;
+        Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, "rounded_rect", false, 480,
+                  extras);
+        ASSERT_TRUE(h.app.start());
+        ASSERT_TRUE(h.wait_for_flushes(5));
+        EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("设备 "); }), c.expected);
+        h.app.stop();
+    }
+}
+
+// Devices that are not OK come first, failed before degraded before
+// missing, each with its state and reason on a second line; OK rows show
+// only the id and the driver. Nothing is drawn in the old link blue.
+TEST(SelfCheckScreen, DeviceRowsListProblemsFirstWithTheirReason) {
+    using wisp::core::DeviceState;
+    using wisp::hal::DeviceClass;
+    BoardExtras extras;
+    extras.reports = {
+        {"storage.sd", DeviceClass::Storage, DeviceState::Missing, "no SD card"},
+        {"touch.main", DeviceClass::Touch, DeviceState::Degraded, "single touch"},
+        {"audio_in.main", DeviceClass::AudioIn, DeviceState::Failed, "init failed"},
+    };
+    Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, "rounded_rect", false, 480,
+              extras);
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    std::string rows = run_on_ui_thread(h.app.ui(), [] { return device_rows(); });
+    std::vector<std::string> lines;
+    std::stringstream ss(rows);
+    for (std::string line; std::getline(ss, line);) lines.push_back(line);
+    ASSERT_EQ(lines.size(), 9u) << rows;
+    EXPECT_EQ(lines[0], hex(wisp::app::kColorError) + "|audio_in.main|-|失败: init failed");
+    EXPECT_EQ(lines[1], hex(wisp::app::kColorWarning) + "|touch.main|-|降级: single touch");
+    EXPECT_EQ(lines[2], hex(wisp::app::kColorMissing) + "|storage.sd|-|缺失: no SD card");
+    // The rest keep the boot report's order and have no second line.
+    std::vector<std::string> ok_ids;
+    for (const auto& entry : h.app.report().entries()) {
+        if (entry.state == DeviceState::Ok) ok_ids.push_back(entry.id);
+    }
+    ASSERT_EQ(ok_ids.size(), lines.size() - 3);
+    for (size_t i = 3; i < lines.size(); ++i) {
+        EXPECT_EQ(lines[i], hex(wisp::app::kColorGood) + "|" + ok_ids[i - 3] + "|FAKE");
+    }
+
+    std::string blue = run_on_ui_thread(h.app.ui(), [] {
+        std::string found;
+        std::function<void(lv_obj_t*)> walk = [&](lv_obj_t* o) {
+            if (lv_obj_check_type(o, &lv_label_class) &&
+                rgb_of(lv_obj_get_style_text_color(o, LV_PART_MAIN)) == 0x4FC3F7) {
+                found += std::string(lv_label_get_text(o)) + ";";
+            }
+            for (uint32_t i = 0; i < lv_obj_get_child_count(o); ++i) {
+                walk(lv_obj_get_child(o, static_cast<int32_t>(i)));
+            }
+        };
+        walk(lv_screen_active());
+        return found;
+    });
+    EXPECT_EQ(blue, "");
+
+    h.app.stop();
+}
+
+// Tapping the device chip scrolls the first device that is not OK into
+// the safe area; with every device OK it leaves the page where it is.
+TEST(SelfCheckScreen, DeviceChipTapScrollsToTheFirstProblem) {
+    using wisp::core::DeviceState;
+    using wisp::hal::DeviceClass;
+    for (bool with_problem : {true, false}) {
+        SCOPED_TRACE(with_problem ? "with a failed device" : "all OK");
+        BoardExtras extras;
+        if (with_problem) {
+            extras.reports = {
+                {"audio_in.main", DeviceClass::AudioIn, DeviceState::Failed, "init failed"}};
+        }
+        Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, "rounded_rect", false, 220,
+                  extras);
+        ASSERT_TRUE(h.app.start());
+        ASSERT_TRUE(h.wait_for_flushes(0));
+
+        auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
+        ASSERT_TRUE(shape_result);
+        wisp::hal::Area safe = wisp::hal::safe_rect(shape_result.value());
+
+        std::string bottom = run_on_ui_thread(h.app.ui(), [] {
+            lv_obj_t* col = root_column();
+            lv_obj_update_layout(col);
+            lv_obj_scroll_to_y(col, LV_COORD_MAX, LV_ANIM_OFF);
+            lv_obj_update_layout(col);
+            return std::to_string(lv_obj_get_scroll_y(col));
+        });
+        ASSERT_GT(std::stoi(bottom), 0);
+        ASSERT_EQ(run_on_ui_thread(
+                      h.app.ui(),
+                      [] {
+                          lv_obj_t* label = find_label_containing(root_column(), "设备 ");
+                          if (label == nullptr) return std::string();
+                          lv_obj_send_event(lv_obj_get_parent(label), LV_EVENT_CLICKED, nullptr);
+                          return std::string("clicked");
+                      }),
+                  "clicked");
+
+        // "<scroll y>|<y1>,<y2> of the failed row's id label>"
+        auto probe = [&] {
+            return run_on_ui_thread(h.app.ui(), [] {
+                lv_obj_t* col = root_column();
+                std::string out = std::to_string(lv_obj_get_scroll_y(col)) + "|";
+                lv_obj_t* id = find_label_containing(col, "audio_in.main");
+                if (id != nullptr) {
+                    lv_obj_t* row = lv_obj_get_parent(lv_obj_get_parent(id));
+                    lv_area_t a;
+                    lv_obj_get_coords(row, &a);
+                    out += std::to_string(a.y1) + "," + std::to_string(a.y2);
+                }
+                return out;
+            });
+        };
+        if (with_problem) {
+            bool in_view = wait_until(
+                [&] {
+                    std::string p = probe();
+                    int scroll = 0, y1 = 0, y2 = 0;
+                    if (std::sscanf(p.c_str(), "%d|%d,%d", &scroll, &y1, &y2) != 3) return false;
+                    return scroll < std::stoi(bottom) && y1 >= safe.y1 && y2 <= safe.y2;
+                },
+                3000);
+            EXPECT_TRUE(in_view) << probe();
+        } else {
+            wisp::os::sleep_ms(500);
+            EXPECT_EQ(probe(), bottom + "|");
+        }
+        h.app.stop();
+    }
+}
+
+// Touch, any button and a completed loopback each turn their "未测" into
+// "已通过", and the "交互 k/3 已测" chip counts them, green at 3/3.
+TEST(SelfCheckScreen, InteractiveTestsTurnPassedAndAreCounted) {
+    BoardExtras extras;
+    extras.with_audio = true;
+    Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, "rounded_rect", false, 480,
+              extras);
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+    auto state = [&] {
+        return run_on_ui_thread(h.app.ui(), [] {
+            return chip_state("已测") + "|" + std::to_string(count_labels_containing("未测")) +
+                   "|" + std::to_string(count_labels_containing(LV_SYMBOL_OK " 已通过"));
+        });
+    };
+    const std::string neutral = hex(wisp::app::kColorNeutralChip);
+    EXPECT_EQ(state(), "交互 0/3 已测|" + neutral + "|3|0");
+
+    ASSERT_EQ(
+        run_on_ui_thread(h.app.ui(),
+                         [] {
+                             lv_obj_t* label = find_label_containing(root_column(), "触摸测试区");
+                             if (label == nullptr) return std::string();
+                             lv_obj_send_event(lv_obj_get_parent(label), LV_EVENT_PRESSED, nullptr);
+                             return std::string("pressed");
+                         }),
+        "pressed");
+    EXPECT_TRUE(wait_until([&] { return state() == "交互 1/3 已测|" + neutral + "|2|1"; }, 3000))
+        << state();
+
+    h.app.bus().publish(wisp::core::Event{"button.vol_up.short", "button.vol_up"});
+    EXPECT_TRUE(wait_until([&] { return state() == "交互 2/3 已测|" + neutral + "|1|2"; }, 3000))
+        << state();
+
+    ASSERT_EQ(run_on_ui_thread(h.app.ui(),
+                               [] {
+                                   lv_obj_t* btn =
+                                       find_button_with_label(root_column(), "录音回放");
+                                   if (btn == nullptr) return std::string();
+                                   lv_obj_send_event(btn, LV_EVENT_CLICKED, nullptr);
+                                   return std::string("clicked");
+                               }),
+              "clicked");
+    EXPECT_TRUE(wait_until(
+        [&] { return state() == "交互 3/3 已测|" + hex(wisp::app::kColorGood) + "|0|3"; }, 8000))
+        << state();
+
+    // The results survive a language switch (they last for this boot).
+    ASSERT_TRUE(h.app.system_settings().set({{"language", "en"}}));
+    EXPECT_TRUE(wait_until(
+        [&] {
+            return run_on_ui_thread(h.app.ui(), [] { return chip_state("Tests "); }) ==
+                   "Tests 3/3 done|" + hex(wisp::app::kColorGood);
+        },
+        3000));
+
+    h.app.stop();
+}
+
+// A loopback run that fails (this board has no audio devices) does not
+// count as passed.
+TEST(SelfCheckScreen, FailedLoopbackDoesNotPass) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+    ASSERT_EQ(run_on_ui_thread(h.app.ui(),
+                               [] {
+                                   lv_obj_t* btn =
+                                       find_button_with_label(root_column(), "录音回放");
+                                   if (btn == nullptr) return std::string();
+                                   lv_obj_send_event(btn, LV_EVENT_CLICKED, nullptr);
+                                   return std::string("clicked");
+                               }),
+              "clicked");
+    ASSERT_TRUE(wait_until(
+        [&] {
+            return !run_on_ui_thread(h.app.ui(), [] {
+                        return find_label_text_containing(root_column(), "失败: not_found");
+                    }).empty();
+        },
+        3000));
+    EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("已测"); }),
+              "交互 0/3 已测|" + hex(wisp::app::kColorNeutralChip));
+
+    h.app.stop();
+}
+
+// Spec 5.6 on every shape: every section card lies within the safe
+// columns, the header's first line rests inside the safe area at the top
+// of the page, and the last card rests inside it at the bottom.
+TEST(SelfCheckScreen, CardsStayInsideTheSafeArea) {
+    for (const std::string& shape : kShapes) {
+        SCOPED_TRACE(shape);
+        Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, shape);
+        ASSERT_TRUE(h.app.start());
+        ASSERT_TRUE(h.wait_for_flushes(5));
+        auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
+        ASSERT_TRUE(shape_result);
+        wisp::hal::Area safe = wisp::hal::safe_rect(shape_result.value());
+
+        // "x1,y1,x2,y2;" per card (top to bottom), then "|" and the
+        // header title's area at the top and the last card's at the bottom.
+        std::string text = run_on_ui_thread(h.app.ui(), [] {
+            auto fmt = [](lv_obj_t* o) {
+                lv_area_t a;
+                lv_obj_get_coords(o, &a);
+                return std::to_string(a.x1) + "," + std::to_string(a.y1) + "," +
+                       std::to_string(a.x2) + "," + std::to_string(a.y2) + ";";
+            };
+            lv_obj_t* col = root_column();
+            lv_obj_scroll_to_y(col, 0, LV_ANIM_OFF);
+            lv_obj_update_layout(col);
+            std::string cards;
+            int found = 0;
+            for (const auto& heading : kCardHeadings) {
+                if (lv_obj_t* card = find_card(heading)) {
+                    cards += fmt(card);
+                    ++found;
+                }
+            }
+            if (found != static_cast<int>(kCardHeadings.size())) return std::string("missing");
+            std::string out = cards + "|" + fmt(lv_obj_get_child(col, 0));
+            lv_obj_scroll_to_y(col, LV_COORD_MAX, LV_ANIM_OFF);
+            lv_obj_update_layout(col);
+            return out + "|" + fmt(find_card(kCardHeadings.back()));
+        });
+        ASSERT_NE(text, "missing");
+        std::vector<wisp::hal::Area> areas;
+        for (size_t pos = 0; pos < text.size();) {
+            if (text[pos] == '|') {
+                ++pos;
+                continue;
+            }
+            wisp::hal::Area a{};
+            ASSERT_EQ(std::sscanf(text.c_str() + pos, "%d,%d,%d,%d", &a.x1, &a.y1, &a.x2, &a.y2),
+                      4);
+            areas.push_back(a);
+            pos = text.find(';', pos) + 1;
+        }
+        ASSERT_EQ(areas.size(), kCardHeadings.size() + 2);
+        for (size_t i = 0; i < kCardHeadings.size(); ++i) {
+            EXPECT_GE(areas[i].x1, safe.x1) << kCardHeadings[i];
+            EXPECT_LE(areas[i].x2, safe.x2) << kCardHeadings[i];
+        }
+        auto inside = [&](const wisp::hal::Area& a) {
+            return a.x1 >= safe.x1 && a.x2 <= safe.x2 && a.y1 >= safe.y1 && a.y2 <= safe.y2;
+        };
+        EXPECT_TRUE(inside(areas[kCardHeadings.size()])) << "title at the top";
+        EXPECT_TRUE(inside(areas[kCardHeadings.size() + 1])) << "last card at the bottom";
+        h.app.stop();
+    }
+}
+
+// spec 6.7 / AGENTS.md rendering budget: the 100 ms refresh only touches a
+// readout when its value changed. With every fake device holding still,
+// nothing on the battery, time or storage rows is flushed again.
+TEST(SelfCheckScreen, UnchangedReadoutsAreNotRedrawn) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    // Bring the readouts on screen, then let everything settle (the
+    // sampler's first slow sample, the scroll's redraw).
+    run_on_ui_blocking(h.app.ui(), [] {
+        lv_obj_t* label = find_label_containing(root_column(), "内置 Flash");
+        if (label != nullptr) lv_obj_scroll_to_view_recursive(label, LV_ANIM_OFF);
+    });
+    wisp::os::sleep_ms(1500);
+
+    // The rows' bands, full screen width: "y1,y2;" each.
+    std::string bands = run_on_ui_thread(h.app.ui(), [] {
+        std::string out;
+        for (const char* needle : {"电池", "时间", "内置 Flash"}) {
+            lv_obj_t* label = find_label_containing(root_column(), needle);
+            if (label == nullptr) return std::string("missing ") + needle;
+            lv_area_t a;
+            lv_obj_get_coords(label, &a);
+            out += std::to_string(a.y1) + "," + std::to_string(a.y2) + ";";
+        }
+        return out;
+    });
+    ASSERT_EQ(bands.find("missing"), std::string::npos) << bands;
+    std::vector<std::pair<int32_t, int32_t>> rows;
+    for (size_t pos = 0; pos < bands.size(); pos = bands.find(';', pos) + 1) {
+        int y1 = 0, y2 = 0;
+        ASSERT_EQ(std::sscanf(bands.c_str() + pos, "%d,%d", &y1, &y2), 2);
+        ASSERT_GE(y1, 0);
+        ASSERT_LT(y2, 480) << "row not on screen";
+        rows.emplace_back(y1, y2);
+    }
+
+    size_t before = h.display->areas().size();
+    wisp::os::sleep_ms(800);
+    std::vector<wisp::hal::Area> areas = h.display->areas();
+    for (size_t i = before; i < areas.size(); ++i) {
+        for (const auto& [y1, y2] : rows) {
+            EXPECT_FALSE(areas[i].y1 <= y2 && areas[i].y2 >= y1)
+                << "flushed " << areas[i].x1 << "," << areas[i].y1 << "-" << areas[i].x2 << ","
+                << areas[i].y2 << " over row " << y1 << "-" << y2;
+        }
+    }
 
     h.app.stop();
 }

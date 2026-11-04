@@ -32,11 +32,24 @@ inline constexpr Lang kAllLangs[] = {Lang::Zh, Lang::Ja, Lang::En};
 enum class StrId : uint16_t {
     // Self-check header and device list.
     BootTime,
-    DeviceList,
     StateOk,
     StateDegraded,
     StateMissing,
     StateFailed,
+
+    // Self-check summary chips. SummaryDevices carries "{}" ("<ok>/<all>"),
+    // SummaryTests "{}" ("<passed>/3").
+    SummaryDevices,
+    SummaryTests,
+
+    // Self-check section card headings.
+    SectionDevices,
+    SectionNetwork,
+    SectionSensors,
+    SectionPowerClock,
+    SectionStorage,
+    SectionTests,
+    SectionPerf,
 
     // Self-check readout labels.
     Battery,
@@ -45,6 +58,9 @@ enum class StrId : uint16_t {
     SdCard,
     Button,
     Touch,
+    Accel,
+    Gyro,
+    TouchTest,
 
     // Self-check readout values.
     ReadFailed,
@@ -54,6 +70,8 @@ enum class StrId : uint16_t {
     Online,
     Offline,
     TouchTestArea,
+    TestUntested,
+    TestPassed,
 
     // Microphone loopback test.
     LoopbackButton,

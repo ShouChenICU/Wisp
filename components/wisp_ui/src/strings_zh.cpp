@@ -9,8 +9,6 @@ const char* strings_zh(StrId id) {
     switch (id) {
         case StrId::BootTime:
             return "启动";
-        case StrId::DeviceList:
-            return "设备列表";
         case StrId::StateOk:
             return "正常";
         case StrId::StateDegraded:
@@ -19,6 +17,24 @@ const char* strings_zh(StrId id) {
             return "缺失";
         case StrId::StateFailed:
             return "失败";
+        case StrId::SummaryDevices:
+            return "设备 {} 正常";
+        case StrId::SummaryTests:
+            return "交互 {} 已测";
+        case StrId::SectionDevices:
+            return "设备";
+        case StrId::SectionNetwork:
+            return "网络";
+        case StrId::SectionSensors:
+            return "传感器";
+        case StrId::SectionPowerClock:
+            return "电源与时钟";
+        case StrId::SectionStorage:
+            return "存储";
+        case StrId::SectionTests:
+            return "交互测试";
+        case StrId::SectionPerf:
+            return "性能";
         case StrId::Battery:
             return "电池";
         case StrId::Time:
@@ -31,6 +47,12 @@ const char* strings_zh(StrId id) {
             return "按键";
         case StrId::Touch:
             return "触点";
+        case StrId::Accel:
+            return "加速度";
+        case StrId::Gyro:
+            return "角速度";
+        case StrId::TouchTest:
+            return "触摸";
         case StrId::ReadFailed:
             return "读取失败";
         case StrId::LevelUnknown:
@@ -45,6 +67,10 @@ const char* strings_zh(StrId id) {
             return "离线";
         case StrId::TouchTestArea:
             return "触摸测试区";
+        case StrId::TestUntested:
+            return "未测";
+        case StrId::TestPassed:
+            return "已通过";
         case StrId::LoopbackButton:
             return "录音回放";
         case StrId::LoopReady:
