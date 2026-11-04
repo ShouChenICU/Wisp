@@ -201,3 +201,6 @@ foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test rout
     add_dependencies(${admin_test} wisp_fixture_wpak)
     target_compile_definitions(${admin_test} PRIVATE WISP_FIXTURE_WPAK="${WISP_FIXTURE_WPAK}")
 endforeach()
+
+# wisp_scene: the Lua scene runtime (scene-runtime-core spec).
+wisp_test(NAME lua_vendor_test SRCS scene/lua_vendor_test.cpp LIBS wisp_scene)

@@ -252,6 +252,47 @@ class CheckLayeringTest(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("esp_http_server.h", errors[0])
 
+    def test_scene_sits_between_ui_and_app(self):
+        write(self.root, "components/wisp_scene/src/ok.cpp", '#include "wisp/ui/x.hpp"\n')
+        write(self.root, "components/wisp_app/src/ok.cpp", '#include "wisp/scene/x.hpp"\n')
+        self.assertEqual(check_layering.run(self.root), [])
+
+        write(self.root, "components/wisp_ui/src/bad.cpp", '#include "wisp/scene/x.hpp"\n')
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("reverse dependency", errors[0])
+        self.assertIn("wisp/scene/x.hpp", errors[0])
+
+    def test_lua_header_outside_scene_is_flagged(self):
+        write(
+            self.root,
+            "components/wisp_scene/src/ok.cpp",
+            '#include "lua.h"\n#include "lauxlib.h"\n#include "lualib.h"\n',
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+        write(self.root, "components/wisp_ui/src/bad.cpp", '#include "lua.h"\n')
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("lua.h", errors[0])
+
+    def test_cmake_requires_lua_only_for_scene(self):
+        write(
+            self.root,
+            "components/wisp_scene/CMakeLists.txt",
+            minimal_cmake("wisp_scene", requires="wisp_base wisp_ui lua"),
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+        write(
+            self.root,
+            "components/wisp_ui/CMakeLists.txt",
+            minimal_cmake("wisp_ui", requires="wisp_base lua"),
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("forbidden REQUIRES <lua>", errors[0])
+
     def test_cmake_whitelisted_dependencies_are_not_flagged(self):
         write(
             self.root,

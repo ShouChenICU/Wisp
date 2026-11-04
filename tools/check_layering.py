@@ -3,7 +3,8 @@
 docs/architecture.md):
 
   - The portable layers (wisp_base, wisp_os, wisp_hal, wisp_core,
-    wisp_net, wisp_admin, wisp_ui, wisp_app) must never #include a platform header:
+    wisp_net, wisp_admin, wisp_ui, wisp_scene, wisp_app) must never #include
+    a platform header:
     anything starting with esp_, freertos/, driver/, hal/ (ESP-IDF's, as
     opposed to wisp_hal's own wisp/hal/ headers), soc/, rom/, lwip/,
     mbedtls/, SDL or curl/, or exactly sdkconfig.h, nvs.h, nvs_flash.h or
@@ -14,9 +15,10 @@ docs/architecture.md):
     portable code may use them directly (docs/architecture.md).
   - Each portable layer must only #include headers from its own layer
     or a strictly lower one in AGENTS.md's order (wisp_base < wisp_os
-    < wisp_hal < wisp_core < wisp_net < wisp_admin < wisp_ui < wisp_app;
-    wisp_net's and wisp_admin's places are fixed by spec 2.2 of the
-    connectivity-admin design) -- no reverse
+    < wisp_hal < wisp_core < wisp_net < wisp_admin < wisp_ui < wisp_scene
+    < wisp_app; wisp_net's and wisp_admin's places are fixed by spec 2.2
+    of the connectivity-admin design, wisp_scene's by spec 2.2 of the
+    scene-runtime-core design) -- no reverse
     dependencies "upward", checked for every layer against every other.
   - Each portable component's CMakeLists.txt's wisp_component()
     call may only declare the two external dependencies the portable
@@ -29,6 +31,10 @@ docs/architecture.md):
     idf_component_register()'s own REQUIRES, so a platform or
     higher-layer component could otherwise be pulled in there without
     ever being #include'd.
+  - Lua's headers (lua.h, lauxlib.h, lualib.h, lua.hpp, luaconf.h) may
+    only be #included by wisp_scene, and only wisp_scene may REQUIRES
+    the vendored `lua` component (third_party/lua): every other layer
+    reaches scripts through wisp_scene's services, never the VM itself.
 
 Prints one "path:line: <message>" line per violation and exits 1 if
 any were found, else exits 0 with no output.
@@ -50,6 +56,7 @@ COMPONENTS = (
     "wisp_net",
     "wisp_admin",
     "wisp_ui",
+    "wisp_scene",
     "wisp_app",
 )
 SOURCE_SUFFIXES = (".hpp", ".cpp", ".h", ".c")
@@ -65,6 +72,7 @@ LAYER_INCLUDE_PREFIX = {
     "wisp_net": "wisp/net/",
     "wisp_admin": "wisp/admin/",
     "wisp_ui": "wisp/ui/",
+    "wisp_scene": "wisp/scene/",
     "wisp_app": "wisp/app/",
 }
 
@@ -101,6 +109,17 @@ FORBIDDEN_EXACT = ("sdkconfig.h", "nvs.h", "nvs_flash.h", "sdmmc_cmd.h")
 # anchor on -- both are gitignored (AGENTS.md section 8) so they can't
 # be listed by exact name either.
 FORBIDDEN_BASENAME_PREFIXES = ("dev_", "gen_board_")
+
+# Lua's public headers (third_party/lua/lua-5.5.1/src): only the layer
+# that owns the VM may see them.
+LUA_HEADERS = ("lua.h", "lauxlib.h", "lualib.h", "lua.hpp", "luaconf.h")
+LUA_HEADER_OWNERS = ("wisp_scene",)
+
+# Non-wisp_* components a portable layer may list in REQUIRES (as
+# opposed to IDF_REQUIRES): the vendored third_party/ components, which
+# build the same way under idf.py (EXTRA_COMPONENT_DIRS) and on the host
+# (add_subdirectory), keyed by the one layer allowed to require each.
+THIRD_PARTY_REQUIRES = {"wisp_scene": {"lua"}}
 
 INCLUDE_RE = re.compile(r'#\s*include\s*[<"]([^">]+)[">]')
 
@@ -205,6 +224,11 @@ def check_file(path, component, errors):
         include_path = match.group(1)
         if is_forbidden_platform_include(include_path):
             errors.append(f"{path}:{lineno}: forbidden include <{include_path}>")
+        elif include_path in LUA_HEADERS and component not in LUA_HEADER_OWNERS:
+            errors.append(
+                f"{path}:{lineno}: forbidden include <{include_path}> ({component} must "
+                f"not use Lua directly; only {', '.join(LUA_HEADER_OWNERS)} may)"
+            )
         elif include_path.startswith(reverse_prefixes):
             errors.append(
                 f"{path}:{lineno}: reverse dependency: {component} must not include "
@@ -258,6 +282,7 @@ def check_component_cmake(path, component, errors):
         return
     lists = _parse_keyword_lists(args_text, CMAKE_LIST_KEYWORDS)
     allowed_requires = set(COMPONENTS[: COMPONENTS.index(component)])
+    allowed_requires |= THIRD_PARTY_REQUIRES.get(component, set())
     for value in lists["REQUIRES"]:
         if value not in allowed_requires:
             errors.append(

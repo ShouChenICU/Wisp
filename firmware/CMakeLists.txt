@@ -16,12 +16,18 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-# Portable components (wisp_base/os/hal/core/ui/app) plus the ESP-only
-# wisp_port_esp port both live under components/; board-specific code
-# (selected below via WISP_BOARD) lives under drivers/ (per-chip
-# drivers); EXTRA_COMPONENT_DIRS tolerates a path that doesn't exist, so
-# a board that needs no extra chip drivers still builds without one.
-set(EXTRA_COMPONENT_DIRS ${CMAKE_CURRENT_LIST_DIR}/../components ${CMAKE_CURRENT_LIST_DIR}/../drivers)
+# Portable components (wisp_base/os/hal/core/net/admin/ui/scene/app) plus
+# the ESP-only wisp_port_esp port all live under components/; vendored
+# upstream sources (third_party/lua, used only by wisp_scene) under
+# third_party/; board-specific code (selected below via WISP_BOARD) lives
+# under drivers/ (per-chip drivers); EXTRA_COMPONENT_DIRS tolerates a path
+# that doesn't exist, so a board that needs no extra chip drivers still
+# builds without one.
+set(EXTRA_COMPONENT_DIRS
+    ${CMAKE_CURRENT_LIST_DIR}/../components
+    ${CMAKE_CURRENT_LIST_DIR}/../third_party
+    ${CMAKE_CURRENT_LIST_DIR}/../drivers
+)
 
 # Selects which boards/<name>/board.cpp firmware/main/CMakeLists.txt
 # compiles into this binary (see wisp::board::create_board(), declared in
