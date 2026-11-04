@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -757,5 +758,109 @@ TEST(UiRuntime, AStripeThatFailedToSendIsDrawnAgain) {
             return false;
         },
         2000));
+    ui.stop();
+}
+
+// The frame hook runs once per UI loop iteration: after the posted work
+// is drained and before lv_timer_handler(), and never while paused.
+TEST(UiRuntime, FrameHookRunsEachLoopIterationNotWhilePaused) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+
+    std::mutex mutex;
+    std::string trace;  // 'P' posted job, 'H' hook, 'T' LVGL timer
+    auto mark = [&](char c) {
+        std::lock_guard<std::mutex> lock(mutex);
+        trace += c;
+    };
+    std::atomic<int> hooks{0};
+    std::function<void(char)> mark_fn = mark;
+    lv_timer_t* timer = nullptr;
+    ui.run_blocking([&] {
+        timer = lv_timer_create(
+            [](lv_timer_t* t) {
+                (*static_cast<std::function<void(char)>*>(lv_timer_get_user_data(t)))('T');
+            },
+            0, &mark_fn);
+    });
+    ui.set_frame_hook([&] {
+        ++hooks;
+        mark('H');
+    });
+
+    ASSERT_TRUE(wait_until([&] { return hooks.load() > 3; }, 2000));
+    ASSERT_TRUE(ui.post([&] { mark('P'); }));
+    ASSERT_TRUE(wait_until(
+        [&] {
+            std::lock_guard<std::mutex> lock(mutex);
+            size_t p = trace.find('P');
+            return p != std::string::npos && trace.size() >= p + 3;
+        },
+        2000));
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        size_t p = trace.find('P');
+        EXPECT_EQ(trace.substr(p, 3), "PHT") << trace;
+    }
+
+    ui.set_paused(true);
+    ui.run_blocking([] {});
+    int paused_count = hooks.load();
+    wisp::os::sleep_ms(60);
+    EXPECT_EQ(hooks.load(), paused_count);
+
+    ui.set_paused(false);
+    ASSERT_TRUE(wait_until([&] { return hooks.load() > paused_count + 2; }, 2000));
+
+    // An empty function removes the hook.
+    ui.set_frame_hook({});
+    ui.run_blocking([] {});
+    int removed_count = hooks.load();
+    wisp::os::sleep_ms(60);
+    EXPECT_EQ(hooks.load(), removed_count);
+
+    ui.run_blocking([&] { lv_timer_delete(timer); });
+    ui.stop();
+}
+
+extern "C" {
+extern const lv_font_t lv_font_cjk_16;
+}
+
+TEST(UiRuntime, FontSizesWrapA8AndFallBackToCjk) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+
+    ui.run_blocking([&] {
+        using wisp::ui::font;
+        EXPECT_EQ(font(16), wisp::ui::default_font());
+        EXPECT_EQ(font(20), font(16));
+        EXPECT_EQ(font(8), font(16));
+        EXPECT_EQ(font(30), font(24));
+        EXPECT_EQ(font(100), font(48));
+        const lv_font_t* cjk = wisp::ui::default_font()->fallback;
+        ASSERT_NE(cjk, nullptr);
+        EXPECT_EQ(cjk->line_height, lv_font_cjk_16.line_height);
+        int32_t prev = font(16)->line_height;
+        for (int px : {24, 32, 48}) {
+            const lv_font_t* f = font(px);
+            ASSERT_NE(f, nullptr) << px;
+            EXPECT_GT(f->line_height, prev) << px;
+            prev = f->line_height;
+            // The A8 wrapper hands out static 8-bit bitmaps.
+            EXPECT_TRUE(f->static_bitmap) << px;
+            EXPECT_EQ(f->fallback, cjk) << px;
+
+            lv_font_glyph_dsc_t dsc{};
+            ASSERT_TRUE(lv_font_get_glyph_dsc(f, &dsc, 'A', 0)) << px;
+            EXPECT_EQ(dsc.resolved_font, f) << px;
+            lv_font_glyph_dsc_t han{};
+            ASSERT_TRUE(lv_font_get_glyph_dsc(f, &han, 0x4F60 /* 你 */, 0)) << px;
+            EXPECT_EQ(han.resolved_font, cjk) << px;
+        }
+    });
+
     ui.stop();
 }

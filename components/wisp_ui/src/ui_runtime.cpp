@@ -94,6 +94,37 @@ const lv_font_t* default_font() {
     return s_ui_font;
 }
 
+namespace {
+
+// A copy of `base` falling back to lv_font_cjk_16, drawn through the A8
+// cache; see default_font().
+const lv_font_t* wrap_with_cjk(lv_font_t& copy, const lv_font_t& base) {
+    copy = base;
+    copy.fallback = &lv_font_cjk_16;
+    return a8_font(&copy);
+}
+
+}  // namespace
+
+const lv_font_t* font(int px) {
+    if (px >= 48) {
+        static lv_font_t s_base;
+        static const lv_font_t* s_font = wrap_with_cjk(s_base, lv_font_montserrat_48);
+        return s_font;
+    }
+    if (px >= 32) {
+        static lv_font_t s_base;
+        static const lv_font_t* s_font = wrap_with_cjk(s_base, lv_font_montserrat_32);
+        return s_font;
+    }
+    if (px >= 24) {
+        static lv_font_t s_base;
+        static const lv_font_t* s_font = wrap_with_cjk(s_base, lv_font_montserrat_24);
+        return s_font;
+    }
+    return default_font();
+}
+
 struct UiRuntime::Impl {
     std::shared_ptr<hal::Display> display;
     std::shared_ptr<hal::Touch> touch;
@@ -165,6 +196,13 @@ struct UiRuntime::Impl {
     // this UiRuntime) can't deadlock on it.
     os::Mutex touch_activity_mutex;
     std::function<void()> touch_activity_cb;
+
+    // set_frame_hook()'s hook. ui_main() copies the pointer under the
+    // lock and runs the hook after releasing it, so the hook may itself
+    // call set_frame_hook(), and replacing it never frees one that is
+    // running.
+    os::Mutex frame_hook_mutex;
+    std::shared_ptr<const std::function<void()>> frame_hook;
 
     // --- perf (protected by perf_mutex) ---
     mutable os::Mutex perf_mutex;
@@ -259,6 +297,12 @@ void UiRuntime::Impl::ui_main() {
             // lv_timer_handler() this time.
             continue;
         }
+        std::shared_ptr<const std::function<void()>> hook;
+        {
+            std::lock_guard<os::Mutex> lock(frame_hook_mutex);
+            hook = frame_hook;
+        }
+        if (hook) (*hook)();
         redraw_lost();
         uint32_t next_ms = lv_timer_handler();
         uint64_t loop_end = os::now_ms();
@@ -718,6 +762,16 @@ bool UiRuntime::paused() const { return impl_->paused.load(std::memory_order_acq
 void UiRuntime::set_touch_activity_cb(std::function<void()> cb) {
     std::lock_guard<os::Mutex> lock(impl_->touch_activity_mutex);
     impl_->touch_activity_cb = std::move(cb);
+}
+
+void UiRuntime::set_frame_hook(std::function<void()> hook) {
+    std::shared_ptr<const std::function<void()>> next;
+    if (hook) next = std::make_shared<const std::function<void()>>(std::move(hook));
+    {
+        std::lock_guard<os::Mutex> lock(impl_->frame_hook_mutex);
+        std::swap(impl_->frame_hook, next);
+    }
+    // The old hook is released here, outside the lock.
 }
 
 Result<std::vector<uint8_t>> UiRuntime::snapshot_rgb888(uint32_t timeout_ms) {

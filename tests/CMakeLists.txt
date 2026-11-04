@@ -240,6 +240,10 @@ wisp_test(NAME vm_test SRCS scene/vm_test.cpp LIBS wisp_scene wisp_port_sim_os T
 wisp_test(NAME patch_batch_test SRCS scene/patch_batch_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME reactive_test SRCS scene/reactive_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME schema_test SRCS scene/schema_test.cpp LIBS wisp_scene wisp_port_sim_os)
+wisp_test(NAME patch_queue_test SRCS scene/patch_queue_test.cpp LIBS wisp_scene wisp_port_sim_os
+          TIMEOUT 30)
+wisp_test(NAME scene_view_test SRCS scene/scene_view_test.cpp LIBS wisp_scene wisp_port_sim_os
+          TIMEOUT 30)
 # DocIsUpToDate compares docs/scene-api.md with the schema and writes the
 # expected text into the build directory when they differ.
 target_compile_definitions(schema_test PRIVATE WISP_ROOT="${WISP_ROOT}"

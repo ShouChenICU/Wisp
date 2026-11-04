@@ -59,6 +59,15 @@ struct UiPerf {
 // for wisp_app's self-check UI).
 const lv_font_t* default_font();
 
+// The UI font closest to `px` pixels from below: 16 is default_font(),
+// and 24, 32 and 48 are lv_font_montserrat_24/32/48, each with
+// lv_font_cjk_16 as its fallback (so Chinese and Japanese text in a large
+// font still shows, at 16 px) and drawn through the same A8 glyph cache.
+// Sizes between steps take the step below; anything under 16 takes 16.
+// Each wrapper is built on first use and kept. UI thread only: building
+// a wrapper is not thread-safe (a8_font.hpp).
+const lv_font_t* font(int px);
+
 // Runs a single-threaded LVGL 9.5 instance over a wisp::hal::Display (and,
 // optionally, a wisp::hal::Touch -- pass nullptr to run display-only).
 class UiRuntime {
@@ -149,6 +158,15 @@ public:
     // `touch == nullptr`). Thread-safe; pass an empty std::function to
     // remove a previously installed callback.
     void set_touch_activity_cb(std::function<void()> cb);
+
+    // Installs `hook`, run on the UI task once per loop iteration, after
+    // the post()'d work is drained and before lv_timer_handler(). That is
+    // at most once per rendered frame, and more often when the loop runs
+    // without rendering. Not run while paused (set_paused()). Thread-safe;
+    // an empty function removes the hook. The scene runtime applies its
+    // queued UI updates here, so they land just before the frame that
+    // shows them.
+    void set_frame_hook(std::function<void()> hook);
 
     // Takes an lv_snapshot_take() of the active screen with the top layer
     // (cards, dialogs) blended over it -- what the panel shows, minus the
