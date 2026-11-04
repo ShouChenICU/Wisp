@@ -13,7 +13,8 @@
  * components/esp_lvgl_port/include/esp_lvgl_port_lv_blend.h, Apache-2.0;
  * see docs/references.md and THIRD_PARTY_NOTICES.md. Changes: only the
  * RGB565 fill and copy are hooked; the descriptors are LVGL 9.5's; the
- * RGB565_SWAPPED fill and copy reuse the RGB565 routines.
+ * RGB565_SWAPPED fill and copy reuse the RGB565 routines. The masked
+ * RGB565_SWAPPED fill is Wisp's own plain C (../lv_blend_mask_rgb565.h).
  *
  * Only firmware/CMakeLists.txt names this header, and only for an
  * ESP32-S3 build; every other target compiles LVGL's plain C path.
@@ -28,6 +29,9 @@
 #include <stdint.h>
 
 #include "src/draw/sw/blend/lv_draw_sw_blend_private.h"
+
+// Plain C, not from esp_lvgl_port.
+#include "../lv_blend_mask_rgb565.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -95,6 +99,8 @@ static inline lv_result_t wisp_lv_copy_16bit(lv_draw_sw_blend_image_dsc_t* dsc) 
 #define LV_DRAW_SW_COLOR_BLEND_TO_RGB565_SWAPPED(dsc) wisp_lv_fill_rgb565(dsc, 1)
 #define LV_DRAW_SW_RGB565_BLEND_NORMAL_TO_RGB565(dsc) wisp_lv_copy_16bit(dsc)
 #define LV_DRAW_SW_RGB565_SWAPPED_BLEND_NORMAL_TO_RGB565_SWAPPED(dsc) wisp_lv_copy_16bit(dsc)
+#define LV_DRAW_SW_COLOR_BLEND_TO_RGB565_SWAPPED_WITH_MASK(dsc) \
+    wisp_lv_fill_mask_rgb565_swapped(dsc)
 
 #ifdef __cplusplus
 } /*extern "C"*/

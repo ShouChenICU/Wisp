@@ -127,6 +127,10 @@ target_include_directories(qmi8658_conv_test PRIVATE ${WISP_ROOT}/drivers/qmi865
 # components/wisp_port_esp/include/ with no ESP-IDF include, so (like the
 # drivers/*_conv.h tests above) only that include dir is needed here, not
 # the whole wisp_port_esp component (which never builds on the host).
+# The masked-fill blend hook is plain C over LVGL's types; LVGL's own C
+# path (the host build has no hooks) is the reference.
+wisp_test(NAME lv_blend_mask_test SRCS port_esp/lv_blend_mask_test.cpp LIBS wisp_ui)
+target_include_directories(lv_blend_mask_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp)
 wisp_test(NAME audio_downmix_test SRCS port_esp/audio_downmix_test.cpp)
 target_include_directories(audio_downmix_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 wisp_test(NAME sd_retry_test SRCS port_esp/sd_retry_test.cpp)
