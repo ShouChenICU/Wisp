@@ -124,6 +124,21 @@ cd firmware && idf.py -B build-debug -D SDKCONFIG=build-debug/sdkconfig \
 
 `SDKCONFIG_DEFAULTS` 一旦给出就替换默认列表，所以 bmgr 生成的 `board_manager.defaults` 要显式写进去，并放在 `sdkconfig.debug` 之前。
 
+## 芯片差异
+
+可移植层不出现芯片名。随芯片变化的东西集中在下面几处，换芯片时逐条核对：
+
+| 差异 | 在哪里决定 |
+|---|---|
+| SIMD / 2D 渲染加速 | `wisp_port_esp/lv_blend/<芯片>/`，由 `firmware/CMakeLists.txt` 和 `components/wisp_port_esp/CMakeLists.txt` 按 `IDF_TARGET` 挑选（见上文"渲染加速按芯片选择"）；没有对应目录的芯片走 LVGL 的 C 路径 |
+| 任务栈放内部 RAM 还是 PSRAM | 任务只声明 `flash_access`（AGENTS.md 第 5 节），由 ESP 端口的 `wisp/port/esp/stack_placement.hpp` 按目标决定；目前所有目标都是"不访问 flash 的任务才可能放 PSRAM" |
+| DMA 能否直接读 PSRAM | 板子通过 Display caps 的 `draw_buf_mem` 声明（见上文能力字段表）；`Mem::DmaLarge` 在 `SOC_PSRAM_DMA_CAPABLE` 为假的芯片上总是分配失败，UI 退回内部 DMA RAM |
+| 从 PSRAM 执行代码（XIP） | 板级 sdkconfig：`boards/<板名>/sdkconfig.defaults.board` 的 `CONFIG_SPIRAM_XIP_FROM_PSRAM`；它不放宽栈的规则 |
+| 最低 ESP-IDF 版本 | 全项目一个范围，写在 `firmware/main/idf_component.yml` 的 `idf:`（目前 `>=6.0.3,<6.1`）；需要更新 IDF 的芯片要先单独升级这个范围和 `dependencies.lock` |
+| 内部 SRAM 预算 | 每块板子用 `mem` 命令实测，记在 `docs/hardware/<板名>.md`；预算下限在 `wisp/app/ram_budget.hpp`（AGENTS.md 第 5 节） |
+
+**计划中的目标：ESP32-S31**（未经验证，等有硬件后再核实）。已知情况：RISC-V 内核（`lv_blend/esp32s3/` 的 SIMD 例程不能用，需要另写或先走 C 路径）；flash 和 PSRAM 走各自独立的总线，PSRAM 为 250 MHz 八线 DDR；有 PPA、2D-DMA 和 JPEG 编解码硬件；需要 ESP-IDF ≥ 6.1，超出当前锁定范围。用 XIP 从 PSRAM 执行时 flash 操作不再停 cache，但 ESP-IDF 文档仍说 cache 关闭期间不能访问外部 RAM、任务栈默认在内部 RAM，所以栈的放置策略在实测前保持不变。
+
 ## 步骤 4：构建
 
 ```bash

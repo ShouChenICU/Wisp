@@ -12,9 +12,11 @@
  * driver (SDL, Linux framebuffer, X11, Wayland, Windows, ...) is enabled:
  * wisp_ui drives wisp::hal::Display/Touch directly instead.
  *
- * This same file is used by both the PC simulator build and the ESP32-S3
- * firmware build (see cmake/wisp_host_deps.cmake and AGENTS.md's LVGL
- * configuration note) -- do not fork it per platform.
+ * This same file is used by both the PC simulator build and the firmware
+ * build for every target chip (see cmake/wisp_host_deps.cmake and
+ * AGENTS.md's LVGL configuration note) -- do not fork it per platform or
+ * per chip; chip-specific rendering hooks come in through
+ * WISP_LV_DRAW_SW_ASM_INCLUDE, defined by the firmware build.
  */
 
 /*
