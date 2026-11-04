@@ -319,8 +319,9 @@ Result<ScenePackage> SceneRepository::load(std::string_view id) {
     return R::ok(std::move(pkg));
 }
 
-Result<SceneInfo> SceneRepository::install(std::span<const uint8_t> zip,
-                                           const SourceChecker& check) {
+Result<SceneInfo> SceneRepository::install(
+    std::span<const uint8_t> zip, const SourceChecker& check,
+    const std::function<Result<void>(const SceneManifest&)>& before_replace) {
     using R = Result<SceneInfo>;
     if (config_.dev) {
         return R::err(ErrorCode::Unsupported, "scenes are read-only in dev mode");
@@ -416,6 +417,13 @@ Result<SceneInfo> SceneRepository::install(std::span<const uint8_t> zip,
         }
     }
 
+    if (before_replace) {
+        Result<void> ready = before_replace(manifest);
+        if (!ready) {
+            return fail<SceneInfo>(ready.error());
+        }
+    }
+
     std::lock_guard<os::Mutex> lock(mutex_);
     // An earlier replace of this id that was cut short completes first, so
     // its staging names are free again.
@@ -497,6 +505,7 @@ Result<void> SceneRepository::finish_replace(const std::string& id) {
         }
         WISP_TRY(storage_.rename(dir + "/data", neu + "/data"));
     }
+    if (config_.on_data_moved) config_.on_data_moved();
     WISP_TRY(storage_.remove_tree(dir));
     return storage_.rename(neu, dir);
 }
@@ -545,12 +554,12 @@ Result<void> SceneRepository::recover() {
 
 Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id, bool with_data) {
     using R = Result<os::LargeBuffer>;
-    std::lock_guard<os::Mutex> lock(mutex_);
+    ZipWriter writer;
+    std::unique_lock<os::Mutex> lock(mutex_);
     Result<SceneManifest> m = read_manifest(id);
     if (!m) {
         return fail<os::LargeBuffer>(m.error());
     }
-    ZipWriter writer;
     auto add_from = [&](const std::string& base) {
         return [&, base](const std::string& rel, uint64_t) -> Result<void> {
             Result<os::LargeBuffer> buf = storage_.read_file_large(base + "/" + rel);
@@ -567,6 +576,7 @@ Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id, bool wi
         const std::string data_base = config_.data_root + "/" + std::string(id);
         walked = walk_files(storage_, data_base, "data", add_from(data_base));
     }
+    lock.unlock();  // the rest is in memory
     if (!walked) {
         return fail<os::LargeBuffer>(walked.error());
     }

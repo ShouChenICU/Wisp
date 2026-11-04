@@ -7,13 +7,16 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <span>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -369,6 +372,25 @@ TEST_F(SceneRuntimeTest, CheckSourcesRefusesTheUiThreadAndTheWorker) {
     });
     EXPECT_EQ(from_ui, static_cast<int>(ErrorCode::Busy));
     EXPECT_TRUE(rt->check_sources(files));
+}
+
+// close() returns once the scene's last writes are on disk, not merely
+// queued: an install moves data/ right after it, and a flush landing
+// during that move would be lost (spec 6.3).
+TEST_F(SceneRuntimeTest, CloseWaitsForTheFinalStoreFlush) {
+    start();
+    install("keep", R"(
+scene.on_close = function() wisp.store.set("k", 42) end
+return ui.screen{ui.label{text = "keep"}}
+)");
+    auto opened = rt->open("keep");
+    ASSERT_TRUE(opened) << opened.error().message;
+    // Hold the storage worker so the final flush stays queued for a while.
+    ASSERT_TRUE(worker.submit([] { std::this_thread::sleep_for(std::chrono::milliseconds(300)); }));
+    ASSERT_TRUE(rt->close("keep"));
+    std::ifstream kv(repo->data_dir("keep") + "/kv.log");
+    const std::string text((std::istreambuf_iterator<char>(kv)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("42"), std::string::npos) << text;
 }
 
 TEST(SceneRuntimeConfig, TaskConfigIsPsramStack) {

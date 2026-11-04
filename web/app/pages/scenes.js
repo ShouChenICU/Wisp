@@ -266,10 +266,38 @@ function SceneItem({ scene, open, onToggle, onChanged }) {
     }
   }
 
+  // Fetched rather than followed, so a failed export shows its error
+  // instead of being saved as a .zip holding a JSON error body.
+  async function exportZip(e) {
+    e.preventDefault();
+    const url = e.currentTarget.getAttribute('href');
+    try {
+      const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) {
+        let code = 'http_' + res.status;
+        try {
+          code = (await res.json())?.error?.code || code;
+        } catch {
+          // not JSON: keep the status
+        }
+        toast(sceneError({ status: res.status, code }), 'err');
+        return;
+      }
+      const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '')?.[1];
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(await res.blob());
+      link.download = name || scene.id + '.zip';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    } catch {
+      toast(sceneError({ status: 0, code: 'network' }), 'err');
+    }
+  }
+
   async function remove() {
     const ok = await confirmDialog({
-      title: t('scenes.delete'),
-      body: t('scenes.delete_pending'),
+      title: `${t('scenes.delete')} · ${scene.name}`,
+      body: (deleteData ? t('scenes.delete_data') + ' · ' : '') + t('scenes.delete_pending'),
       okText: t('scenes.delete'),
       danger: true,
     });
@@ -340,7 +368,7 @@ function SceneItem({ scene, open, onToggle, onChanged }) {
             </a>
           </div>
           <div class="scene-actions">
-            <a class="btn btn-secondary btn-sm" href=${exportUrl(scene.id, exportData)} download>
+            <a class="btn btn-secondary btn-sm" href=${exportUrl(scene.id, exportData)} download onClick=${exportZip}>
               ${t('scenes.export')}
             </a>
             <label class="scene-check">

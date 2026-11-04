@@ -548,3 +548,32 @@ TEST(AdminScenes, DeleteNeedsDeviceConfirm) {
     EXPECT_EQ(fx.call(Method::Delete, "/api/v1/scenes/nope").status, 404);
     EXPECT_EQ(fx.deletes.size(), 3u);
 }
+
+// Spec 6.3: a running scene is closed before its package is replaced (its
+// store stops writing into data/) and opened again afterwards.
+TEST(AdminScenes, UploadOverARunningSceneClosesAndReopensIt) {
+    ScenesFixture fx;
+    ASSERT_EQ(fx.upload(zip_of(todo_files("1.0.0"))).status, 201);
+    ASSERT_EQ(fx.call(Method::Post, "/api/v1/scenes/todo/open").status, 200);
+    HttpResponse res = fx.upload(zip_of(todo_files("1.1.0")));
+    ASSERT_EQ(res.status, 201) << res.body;
+    EXPECT_EQ(at(body_json(res), "state"), Value("running"));
+    EXPECT_EQ(fx.host.log(),
+              (std::vector<std::string>{"installed todo", "open todo", "close todo", "open todo"}));
+
+    // A scene that cannot be closed is not replaced.
+    fx.host.fail = wisp::Error{ErrorCode::Busy, "scene queue full"};
+    HttpResponse busy = fx.upload(zip_of(todo_files("1.2.0")));
+    EXPECT_EQ(busy.status, 409) << busy.body;
+    EXPECT_EQ(fx.repo->info("todo").value().manifest.version, "1.1.0");
+}
+
+// A package whose scene.json no longer validates can still be deleted.
+TEST(AdminScenes, DeleteReachesABrokenPackage) {
+    ScenesFixture fx;
+    ASSERT_TRUE(fx.repo->install(zip_of(todo_files()), {}));
+    std::ofstream(fs::path(fx.root) / "todo" / "scene.json") << "{not json";
+    HttpResponse res = fx.call(Method::Delete, "/api/v1/scenes/todo", "data=0");
+    EXPECT_EQ(res.status, 202) << res.body;
+    ASSERT_EQ(fx.deletes.size(), 1u);
+}

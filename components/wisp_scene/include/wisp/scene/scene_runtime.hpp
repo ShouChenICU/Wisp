@@ -197,7 +197,8 @@ public:
     Result<void> click_ref(std::string_view ref);
 
     // SceneHost. open(), close() and reload() wait until the scene task
-    // has done the work (at most 10 s, then Timeout), except on the UI
+    // has done the work (at most 10 s, then Timeout) -- for close(), until
+    // the scene's final store flush has run -- except on the UI
     // thread, the scene task and the storage worker, where they only queue
     // it and return Ok (failures are logged and published). Busy when the
     // runtime is not running or its queue stays full.
@@ -247,7 +248,7 @@ private:
     // Gives the scene's wisp.http its proxy: the declared hosts, and
     // results that come back as HttpDone messages for this instance.
     void wire_http(Foreground& f);
-    void close_foreground();
+    void close_foreground(std::shared_ptr<SceneWaiter> done = nullptr);
     // Runs one step of the running scene; on an error the scene faults.
     // Returns false if it did.
     bool step(const std::optional<ScriptError>& err);

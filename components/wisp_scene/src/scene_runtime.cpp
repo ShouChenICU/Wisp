@@ -393,8 +393,9 @@ void SceneRuntime::handle(SceneMessage& m) {
         // From the API (instance 0) by id; from the view, the panel or
         // the gesture for one instance.
         if (m.instance == 0 ? (fg_ && fg_->id == m.scene_id) : target(m) != nullptr)
-            close_foreground();
-        if (b->done) b->done->finish(Result<void>::ok());
+            close_foreground(b->done);
+        else if (b->done)
+            b->done->finish(Result<void>::ok());
     } else if (auto* b = std::get_if<msg::Reload>(&body)) {
         const bool in_front = fg_ && fg_->id == m.scene_id;
         if (b->if_foreground && !in_front) {
@@ -655,7 +656,7 @@ void SceneRuntime::fault(const ScriptError& err) {
     });
 }
 
-void SceneRuntime::close_foreground() {
+void SceneRuntime::close_foreground(std::shared_ptr<SceneWaiter> done) {
     if (!fg_) return;
     Foreground& f = *fg_;
     const bool was_running = f.scene != nullptr;
@@ -674,9 +675,16 @@ void SceneRuntime::close_foreground() {
     // After the hooks, so a request on_close makes is cancelled too.
     if (deps_.http != nullptr) deps_.http->cancel_scene(f.id);
     if (f.store) {
-        f.store->flush();
+        // A caller of close() is answered once the final flush has run, so
+        // it may move the scene's data/ (an install) without a write
+        // landing in the middle. A failed flush is logged by the store.
+        f.store->flush([done](Result<void>) {
+            if (done) done->finish(Result<void>::ok());
+        });
         f.store->close();
         f.store.reset();
+    } else if (done) {
+        done->finish(Result<void>::ok());
     }
     ui_instance_.store(0);
     patches_.clear();

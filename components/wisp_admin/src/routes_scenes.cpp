@@ -24,6 +24,7 @@
 #include "admin_internal.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/scene_host.hpp"
+#include "wisp/core/scene_install.hpp"
 #include "wisp/core/scene_manifest.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/os/large.hpp"
@@ -198,8 +199,12 @@ net::HttpResponse delete_scene(AdminDeps& deps, const RequestContext& ctx) {
     std::optional<std::string> id = scene_id(ctx, refusal);
     if (!id) return refusal;
     if (deps.scenes->dev()) return dev_mode();
+    // A package whose scene.json no longer validates is still installed,
+    // and deleting it is the way out (SceneRepository::remove() takes it).
     auto info = deps.scenes->info(*id);
-    if (!info) return service_error(info.error());
+    if (!info && info.error().code != ErrorCode::InvalidArgument) {
+        return service_error(info.error());
+    }
     if (!deps.request_scene_delete) return unavailable();
     Result<void> r = deps.request_scene_delete(*id, with_data(ctx));
     if (!r) {
@@ -243,9 +248,7 @@ private:
     net::HttpResponse install() {
         if (received_ != buffer_.size()) return bad_request("body shorter than its Content-Length");
         core::SceneHost& host = *deps_.scene_host;
-        auto installed = deps_.scenes->install(
-            buffer_.span(),
-            [&host](std::span<const core::SourceFile> files) { return host.check_sources(files); });
+        auto installed = core::install_scene(*deps_.scenes, host, buffer_.span());
         if (!installed) {
             const Error& e = installed.error();
             switch (e.code) {
@@ -258,8 +261,6 @@ private:
                     return service_error(e);
             }
         }
-        const std::string& id = installed.value().manifest.id;
-        host.on_installed(id);
         return net::HttpResponse::json(201, scene_item(installed.value(), &host));
     }
 

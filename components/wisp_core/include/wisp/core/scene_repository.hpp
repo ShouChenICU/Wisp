@@ -29,7 +29,9 @@
 // threads (installing, exporting) never see each other's half-done work.
 // install() takes it only after its checker has returned, since a checker
 // may wait seconds for the scene task. A SceneStore's own writes under
-// data/ do not take this lock.
+// data/ do not take this lock. A long hold (an install's writes, list()
+// walking every package) delays an open queued on the worker, and every
+// worker job behind it, until it ends.
 
 #include <cstddef>
 #include <cstdint>
@@ -79,6 +81,11 @@ struct SceneRepoConfig {
     std::string data_root;
     bool dev = false;  // the code root is a working directory: never written
     size_t max_code_bytes = 512 * 1024;
+    // Test seam: runs during a replace between moving data/ aside (step 3)
+    // and removing the old package (step 4), where anything still writing
+    // into the scene's data would be lost. Tests use it to widen that
+    // window; nothing sets it in production.
+    std::function<void()> on_data_moved;
 };
 
 class SceneRepository {
@@ -105,9 +112,14 @@ public:
     Result<ScenePackage> load(std::string_view id);
 
     // Validates the zip (manifest, allowed files, max_code_bytes), runs
-    // `check` over its .lua files, then replaces <id> keeping its data.
-    // Unsupported in dev mode. Nothing is written for a rejected package.
-    Result<SceneInfo> install(std::span<const uint8_t> zip, const SourceChecker& check);
+    // `check` over its .lua files, then `before_replace` with the new
+    // manifest (both without the lock held, so either may wait), then
+    // replaces <id> keeping its data. An error from either stops the
+    // install. Unsupported in dev mode. Nothing is written for a rejected
+    // package.
+    Result<SceneInfo> install(
+        std::span<const uint8_t> zip, const SourceChecker& check,
+        const std::function<Result<void>(const SceneManifest&)>& before_replace = {});
 
     // The package as a zip in Mem::Large; with_data adds data/**.
     Result<os::LargeBuffer> export_zip(std::string_view id, bool with_data);

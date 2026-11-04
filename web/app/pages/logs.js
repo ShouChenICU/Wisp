@@ -217,6 +217,16 @@ export function LogsPage() {
   const pausedRef = useRef(false);
   const filterRef = useRef(makeFilter('D', ''));
 
+  // Another scene's log link while this page is open changes only the hash.
+  useEffect(() => {
+    const onHash = () => {
+      const tag = tagFromHash();
+      if (tag) setQuery(tag);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
   function scrollToEnd() {
     const el = scroller.current;
     if (!el) return;
