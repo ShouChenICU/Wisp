@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -22,6 +23,7 @@
 #include "wisp/app/board.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -47,6 +49,7 @@ struct NetAppOptions {
     std::vector<std::pair<std::string, std::string>> saved;
     int64_t idle_off_min = -1;  // -1: leave the setting unset
     bool with_display = false;
+    std::function<wisp::Value()> heap_info;
 };
 
 class NetBoard : public wisp::app::Board {
@@ -124,6 +127,7 @@ struct NetHarness {
         }
         platform.http_port = 8088;
         platform.http_always_on = opts.always_on;
+        platform.heap_info = opts.heap_info;
         app = std::make_unique<wisp::app::App>(std::move(platform));
     }
 
@@ -213,6 +217,50 @@ TEST(AppNet, StartsHttpServerWhenStaConnects) {
     h.app->stop();
     EXPECT_FALSE(h.server->running());
     EXPECT_EQ(h.app->wifi(), nullptr);
+}
+
+namespace {
+
+bool logged(wisp::LogLevel level, const std::string& text) {
+    for (const auto& e : wisp::log::ring_entries()) {
+        if (e.tag == "net" && e.level == level && e.msg.find(text) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+std::function<wisp::Value()> heap(int64_t free, int64_t largest) {
+    return [free, largest] {
+        return wisp::Value(
+            wisp::Map{{"internal_free", free}, {"internal_largest", largest}, {"large_free", 0}});
+    };
+}
+
+}  // namespace
+
+// Running short of internal RAM shows up far from its cause (an httpd that
+// cannot get its stack), so each server start reports the figures and
+// warns under the budget (wisp/app/ram_budget.hpp).
+TEST(AppNet, ServerStartWarnsWhenInternalRamIsLow) {
+    wisp::log::init();
+    NetHarness h({.always_on = true, .heap_info = heap(13547, 7680)});
+    ASSERT_TRUE(h.app->start());
+    ASSERT_TRUE(h.server->running());
+    EXPECT_TRUE(wait_until(
+        [] { return logged(wisp::LogLevel::Warn, "internal RAM low: 13547 B free"); }, 2000));
+}
+
+TEST(AppNet, ServerStartReportsInternalRam) {
+    wisp::log::init();
+    NetHarness h({.always_on = true, .heap_info = heap(72000, 31744)});
+    ASSERT_TRUE(h.app->start());
+    ASSERT_TRUE(h.server->running());
+    EXPECT_TRUE(wait_until(
+        [] {
+            return logged(wisp::LogLevel::Info,
+                          "internal RAM: 72000 B free, largest block 31744 B");
+        },
+        2000));
 }
 
 TEST(AppNet, HotspotStartsHttpServer) {

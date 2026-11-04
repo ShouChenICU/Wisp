@@ -116,6 +116,9 @@ private:
     // task is not running.
     void reconcile_http(uint64_t now_ms);
     void reconcile_captive(uint64_t now_ms);
+    // Logs internal free RAM and its largest block after a server starts
+    // or fails to (wisp/app/ram_budget.hpp); a warning under the budget.
+    void log_internal_ram() const;
     Value device_status() const;
 
     NetWiringDeps deps_;

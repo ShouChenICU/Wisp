@@ -4,6 +4,7 @@
 #include <string>
 #include <utility>
 
+#include "wisp/app/ram_budget.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/settings.hpp"
@@ -191,12 +192,14 @@ void NetWiring::reconcile_http(uint64_t now_ms) {
         WLOG_E(kTag, "admin server failed to start on port %u: %s; retrying in %u s",
                static_cast<unsigned>(deps_.platform.http_port), r.error().message.c_str(),
                static_cast<unsigned>(start_retry_.wait_ms / 1000));
+        log_internal_ram();
         start_retry_.failed(now_ms);
         return;
     }
     start_retry_.reset();
     serving_ = true;
     WLOG_I(kTag, "admin server listening on port %u", static_cast<unsigned>(server->port()));
+    log_internal_ram();
     deps_.platform.emit_line(
         "WISP_HTTP " + to_json(Value(Map{{"port", Value(static_cast<int64_t>(server->port()))}})));
 }
@@ -221,12 +224,31 @@ void NetWiring::reconcile_captive(uint64_t now_ms) {
         WLOG_E(kTag, "captive redirect failed to start on port %u: %s; retrying in %u s",
                static_cast<unsigned>(kCaptivePort), r.error().message.c_str(),
                static_cast<unsigned>(captive_retry_.wait_ms / 1000));
+        log_internal_ram();
         captive_retry_.failed(now_ms);
         return;
     }
     captive_retry_.reset();
     captive_serving_ = true;
     WLOG_I(kTag, "captive redirect listening on port %u", static_cast<unsigned>(kCaptivePort));
+    log_internal_ram();
+}
+
+void NetWiring::log_internal_ram() const {
+    if (!deps_.platform.heap_info) return;
+    const InternalRam ram = internal_ram(deps_.platform.heap_info());
+    if (ram.free < 0) return;
+    if (internal_ram_low(ram)) {
+        WLOG_W(kTag,
+               "internal RAM low: %lld B free, largest block %lld B (idle floor %lld / %lld B, "
+               "AGENTS.md section 5)",
+               static_cast<long long>(ram.free), static_cast<long long>(ram.largest),
+               static_cast<long long>(kIdleInternalFreeMin),
+               static_cast<long long>(kIdleInternalLargestMin));
+    } else {
+        WLOG_I(kTag, "internal RAM: %lld B free, largest block %lld B",
+               static_cast<long long>(ram.free), static_cast<long long>(ram.largest));
+    }
 }
 
 Value NetWiring::device_status() const {

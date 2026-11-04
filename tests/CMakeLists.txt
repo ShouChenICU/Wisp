@@ -62,6 +62,7 @@ wisp_test(NAME power_manager_test SRCS app/power_manager_test.cpp
           LIBS wisp_app wisp_ui wisp_core wisp_hal wisp_port_sim_os wisp_port_sim_settings
           TIMEOUT 30)
 wisp_test(NAME format_test SRCS app/format_test.cpp LIBS wisp_app wisp_core)
+wisp_test(NAME ram_budget_test SRCS app/ram_budget_test.cpp LIBS wisp_app wisp_base)
 wisp_test(NAME self_check_screen_test SRCS app/self_check_screen_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 wisp_test(NAME app_net_test SRCS app/app_net_test.cpp

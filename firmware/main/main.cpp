@@ -114,6 +114,8 @@ extern "C" void app_main() {
     platform.heap_info = [] {
         wisp::Map info;
         info["internal_free"] = static_cast<int64_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        info["internal_largest"] =
+            static_cast<int64_t>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         info["large_free"] = static_cast<int64_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         return wisp::Value(std::move(info));
     };
