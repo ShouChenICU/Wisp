@@ -130,10 +130,6 @@ const char* strings_en(StrId id) {
             return "Delete the scene \"{}\"?";
         case StrId::SceneDeleteWithData:
             return "Its data is deleted too.";
-        case StrId::KeyboardZh:
-            return "ZH";
-        case StrId::KeyboardEn:
-            return "EN";
         case StrId::Count:
             break;
     }

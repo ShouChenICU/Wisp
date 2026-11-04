@@ -68,6 +68,26 @@ uint32_t matrix_button(lv_obj_t* matrix, const char* text) {
     return LV_BUTTONMATRIX_BUTTON_NONE;
 }
 
+// The pinyin candidate row: the shown button matrix on the top layer
+// other than `kb`, or nullptr.
+lv_obj_t* candidate_panel(lv_obj_t* kb) {
+    lv_obj_t* cand = nullptr;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(lv_layer_top()); ++i) {
+        lv_obj_t* c = lv_obj_get_child(lv_layer_top(), static_cast<int32_t>(i));
+        if (c != kb && lv_obj_check_type(c, &lv_buttonmatrix_class) &&
+            !lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) {
+            cand = c;
+        }
+    }
+    return cand;
+}
+
+lv_point_t center_of(lv_obj_t* obj) {
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+    return {(a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2};
+}
+
 // Presses the key reading `text` the way a tap does: selects it and
 // reports the value change.
 bool press(lv_obj_t* matrix, const char* text) {
@@ -82,8 +102,9 @@ bool press(lv_obj_t* matrix, const char* text) {
 // built on its UI thread for `shape` (by default the display's own).
 class SystemLayerTest : public ::testing::Test {
 protected:
-    void start(const std::string& display_shape = "circle") {
-        wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    void start(const std::string& display_shape = "circle",
+               wisp::ui::Lang lang = wisp::ui::Lang::Zh) {
+        wisp::ui::set_lang(lang);
         display = std::make_shared<FakeDisplay>("display.main", kSide, kSide, 1, display_shape);
         touch = std::make_shared<FakeTouch>("touch.main");
         ui = std::make_unique<wisp::ui::UiRuntime>(display, touch);
@@ -104,6 +125,7 @@ protected:
             on_ui([&] { layer.reset(); });
             ui->stop();
         }
+        wisp::ui::set_lang(wisp::ui::Lang::Zh);
     }
 
     void on_ui(const std::function<void()>& fn) { run_on_ui_blocking(ui.get(), fn); }
@@ -113,6 +135,8 @@ protected:
         touch->set_points(std::move(points));
         on_ui([&] { lv_indev_read(indev); });
     }
+
+    void tap(lv_point_t p) { tap(static_cast<int16_t>(p.x), static_cast<int16_t>(p.y)); }
 
     void tap(int16_t x, int16_t y) {
         feed({{x, y, 0}});
@@ -236,7 +260,11 @@ TEST_F(SystemLayerTest, ErrorPanelInsideSafeRect) {
         lv_obj_get_coords(panel, &a);
         EXPECT_TRUE(inside(a, safe)) << a.x1 << "," << a.y1 << "-" << a.x2 << "," << a.y2;
         EXPECT_TRUE(wisp::test::all_label_glyphs_resolvable(lv_layer_top()));
-        EXPECT_FALSE(lv_obj_has_flag(panel, LV_OBJ_FLAG_CLICKABLE));
+        // It takes every touch the buttons do not, but neither scrolls
+        // nor takes focus.
+        EXPECT_TRUE(lv_obj_has_flag(panel, LV_OBJ_FLAG_CLICKABLE));
+        EXPECT_FALSE(lv_obj_has_flag(panel, LV_OBJ_FLAG_SCROLLABLE));
+        EXPECT_FALSE(lv_obj_has_flag(panel, LV_OBJ_FLAG_CLICK_FOCUSABLE));
 
         lv_obj_t* reload = find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::SceneReload));
         ASSERT_NE(reload, nullptr);
@@ -254,6 +282,53 @@ TEST_F(SystemLayerTest, ErrorPanelInsideSafeRect) {
         EXPECT_FALSE(layer->error_visible());
         EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before);
     });
+}
+
+TEST_F(SystemLayerTest, ErrorPanelButtonsTakeTaps) {
+    start("circle");
+    int reloads = 0;
+    int backs = 0;
+    lv_point_t reload_at{};
+    lv_point_t back_at{};
+    auto show = [&] {
+        on_ui([&] {
+            layer->show_error(
+                {"Demo", "main.lua", 12, "boom"}, [&] { ++reloads; }, [&] { ++backs; });
+            reload_at =
+                center_of(find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::SceneReload)));
+            back_at =
+                center_of(find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::SceneBack)));
+        });
+    };
+    show();
+    tap(reload_at);
+    EXPECT_EQ(reloads, 1);
+    EXPECT_EQ(backs, 0);
+    on_ui([&] { EXPECT_FALSE(layer->error_visible()); });
+
+    show();
+    tap(back_at);
+    EXPECT_EQ(reloads, 1);
+    EXPECT_EQ(backs, 1);
+    on_ui([&] {
+        EXPECT_FALSE(layer->error_visible());
+        EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before);
+    });
+}
+
+// The panel replaces the scene's UI (spec 3.6): a tap on it never reaches
+// what it covers.
+TEST_F(SystemLayerTest, ErrorPanelSwallowsTaps) {
+    start("rect");
+    int clicks = 0;
+    on_ui([&] { make_counting_button(200, 200, 80, 40, &clicks); });
+    tap(240, 220);
+    ASSERT_EQ(clicks, 1);
+
+    on_ui([&] { layer->show_error({"Demo", "main.lua", 12, "boom"}, [] {}, [] {}); });
+    tap(240, 220);
+    EXPECT_EQ(clicks, 1);
+    on_ui([&] { EXPECT_TRUE(layer->error_visible()); });
 }
 
 TEST_F(SystemLayerTest, KeyboardTargetsTextareaInsideSafeRect) {
@@ -279,14 +354,7 @@ TEST_F(SystemLayerTest, KeyboardTargetsTextareaInsideSafeRect) {
         ASSERT_TRUE(press(kb, "n"));
         ASSERT_TRUE(press(kb, "i"));
         EXPECT_STREQ(lv_textarea_get_text(ta), "ni");
-        lv_obj_t* cand = nullptr;
-        for (uint32_t i = 0; i < lv_obj_get_child_count(lv_layer_top()); ++i) {
-            lv_obj_t* c = lv_obj_get_child(lv_layer_top(), static_cast<int32_t>(i));
-            if (c != kb && lv_obj_check_type(c, &lv_buttonmatrix_class) &&
-                !lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) {
-                cand = c;
-            }
-        }
+        lv_obj_t* cand = candidate_panel(kb);
         ASSERT_NE(cand, nullptr);
         lv_obj_update_layout(cand);
         lv_obj_get_coords(cand, &a);
@@ -295,11 +363,11 @@ TEST_F(SystemLayerTest, KeyboardTargetsTextareaInsideSafeRect) {
         EXPECT_STREQ(lv_textarea_get_text(ta), "你");
 
         // The language key switches to plain letters.
-        ASSERT_TRUE(press(kb, wisp::ui::tr(StrId::KeyboardZh)));
+        ASSERT_TRUE(press(kb, SystemLayer::kPinyinKey));
         kb = layer->keyboard();
         ASSERT_NE(kb, nullptr);
         EXPECT_EQ(lv_keyboard_get_textarea(kb), ta);
-        EXPECT_NE(matrix_button(kb, wisp::ui::tr(StrId::KeyboardEn)), LV_BUTTONMATRIX_BUTTON_NONE);
+        EXPECT_NE(matrix_button(kb, SystemLayer::kLatinKey), LV_BUTTONMATRIX_BUTTON_NONE);
         ASSERT_TRUE(press(kb, "n"));
         ASSERT_TRUE(press(kb, "i"));
         EXPECT_STREQ(lv_textarea_get_text(ta), "你ni");
@@ -319,6 +387,129 @@ TEST_F(SystemLayerTest, KeyboardTargetsTextareaInsideSafeRect) {
             }
         }
         EXPECT_EQ(shown, 0u);
+        EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before);
+    });
+}
+
+// In an English UI the keyboard starts with plain letters; its language
+// key still reaches pinyin.
+TEST_F(SystemLayerTest, LanguageKeyInEnglishUi) {
+    start("circle", wisp::ui::Lang::En);
+    on_ui([&] {
+        lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+        layer->show_keyboard(ta);
+        lv_obj_t* kb = layer->keyboard();
+        ASSERT_NE(kb, nullptr);
+        EXPECT_NE(matrix_button(kb, SystemLayer::kLatinKey), LV_BUTTONMATRIX_BUTTON_NONE);
+        EXPECT_EQ(matrix_button(kb, SystemLayer::kPinyinKey), LV_BUTTONMATRIX_BUTTON_NONE);
+        ASSERT_TRUE(press(kb, "n"));
+        ASSERT_TRUE(press(kb, "i"));
+        EXPECT_STREQ(lv_textarea_get_text(ta), "ni");
+        EXPECT_EQ(candidate_panel(kb), nullptr);
+
+        ASSERT_TRUE(press(kb, SystemLayer::kLatinKey));
+        kb = layer->keyboard();
+        ASSERT_NE(kb, nullptr);
+        EXPECT_NE(matrix_button(kb, SystemLayer::kPinyinKey), LV_BUTTONMATRIX_BUTTON_NONE);
+        ASSERT_TRUE(press(kb, "n"));
+        ASSERT_TRUE(press(kb, "i"));
+        lv_obj_t* cand = candidate_panel(kb);
+        ASSERT_NE(cand, nullptr);
+        ASSERT_TRUE(press(cand, "你"));
+        EXPECT_STREQ(lv_textarea_get_text(ta), "ni你");
+
+        // Both labels are in the built-in font.
+        for (uint32_t cp : {0x4E2Du /* 中 */, uint32_t{'E'}, uint32_t{'N'}}) {
+            lv_font_glyph_dsc_t dsc;
+            EXPECT_TRUE(lv_font_get_glyph_dsc(&lv_font_cjk_16, &dsc, cp, 0)) << cp;
+        }
+    });
+}
+
+// A keyboard moved to another textarea starts afresh: no half-typed
+// pinyin of the old one replaces letters of the new one.
+TEST_F(SystemLayerTest, RetargetStartsAfresh) {
+    start("circle");
+    on_ui([&] {
+        lv_obj_t* ta1 = lv_textarea_create(lv_screen_active());
+        lv_obj_t* ta2 = lv_textarea_create(lv_screen_active());
+        lv_textarea_set_text(ta2, "abc");
+        layer->show_keyboard(ta1);
+        ASSERT_TRUE(press(layer->keyboard(), "n"));
+        ASSERT_TRUE(press(layer->keyboard(), "i"));
+        EXPECT_STREQ(lv_textarea_get_text(ta1), "ni");
+
+        layer->show_keyboard(ta2);
+        lv_obj_t* kb = layer->keyboard();
+        ASSERT_NE(kb, nullptr);
+        EXPECT_EQ(lv_keyboard_get_textarea(kb), ta2);
+        ASSERT_TRUE(press(kb, "n"));
+        ASSERT_TRUE(press(kb, "i"));
+        lv_obj_t* cand = candidate_panel(kb);
+        ASSERT_NE(cand, nullptr);
+        ASSERT_TRUE(press(cand, "你"));
+        EXPECT_STREQ(lv_textarea_get_text(ta2), "abc你");
+        EXPECT_STREQ(lv_textarea_get_text(ta1), "ni");
+    });
+}
+
+// The scene's widgets may go away under the keyboard (a back swipe, a
+// scene error, a re-render): the keyboard goes with its textarea, and a
+// tap where its keys were types into nothing.
+TEST_F(SystemLayerTest, KeyboardGoesWithItsTextarea) {
+    start("rect");
+    for (bool half_typed : {false, true}) {
+        SCOPED_TRACE(half_typed);
+        lv_point_t key_at{};
+        on_ui([&] {
+            lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+            layer->show_keyboard(ta);
+            lv_obj_t* kb = layer->keyboard();
+            ASSERT_NE(kb, nullptr);
+            if (half_typed) ASSERT_TRUE(press(kb, "n"));
+            lv_area_t a;
+            lv_obj_get_coords(kb, &a);
+            key_at = {(a.x1 + a.x2) / 2, a.y1 + (a.y2 - a.y1) / 8};  // the top row
+            lv_obj_delete(ta);
+            EXPECT_EQ(layer->keyboard(), nullptr);
+        });
+        tap(key_at);
+        tap(key_at);
+    }
+    wisp::os::sleep_ms(100);
+    on_ui([&] { EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before); });
+}
+
+// The same from inside one of the keyboard's own events: Enter on a
+// one-line textarea reports READY to it, and its owner deletes it there.
+TEST_F(SystemLayerTest, TextareaDeletedFromKeyboardEvent) {
+    start("rect");
+    on_ui([&] {
+        lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+        lv_textarea_set_one_line(ta, true);
+        lv_obj_add_event_cb(
+            ta, [](lv_event_t* e) { lv_obj_delete(lv_event_get_current_target_obj(e)); },
+            LV_EVENT_READY, nullptr);
+        layer->show_keyboard(ta);
+        lv_obj_t* kb = layer->keyboard();
+        ASSERT_NE(kb, nullptr);
+        ASSERT_TRUE(press(kb, "n"));
+        ASSERT_TRUE(press(kb, LV_SYMBOL_NEW_LINE));
+        EXPECT_EQ(layer->keyboard(), nullptr);
+    });
+    wisp::os::sleep_ms(100);
+    on_ui([&] { EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before); });
+}
+
+TEST_F(SystemLayerTest, ErrorPanelPutsTheKeyboardAway) {
+    start("circle");
+    on_ui([&] {
+        lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+        layer->show_keyboard(ta);
+        ASSERT_NE(layer->keyboard(), nullptr);
+        layer->show_error({"Demo", "main.lua", 1, "boom"}, [] {}, [] {});
+        EXPECT_EQ(layer->keyboard(), nullptr);
+        layer->hide_error();
         EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before);
     });
 }
@@ -456,6 +647,33 @@ TEST_F(SystemLayerTest, NoPersistentTopLayerChild) {
         layer->set_back_handler({});
         EXPECT_TRUE(lv_obj_has_flag(strip, LV_OBJ_FLAG_HIDDEN));
     });
+}
+
+// On a round screen the strip's box is wider than the zone on most rows;
+// a touch in the box but outside the zone still reaches the screen.
+TEST_F(SystemLayerTest, StripPassesTouchesOutsideTheZone) {
+    start("circle");
+    const int32_t y = 100;
+    const wisp::hal::Span span = wisp::hal::row_span(shape, y);
+    ASSERT_GE(y, safe.y1);
+    int clicks = 0;
+    lv_area_t strip_box{};
+    on_ui([&] {
+        make_counting_button(span.x1, y - 20, 80, 40, &clicks);
+        layer->set_back_handler([] {});
+        lv_obj_t* strip = lv_obj_get_child(lv_layer_top(), -1);
+        lv_obj_update_layout(strip);
+        lv_obj_get_coords(strip, &strip_box);
+    });
+    const int16_t outside = static_cast<int16_t>(span.x1 + SystemLayer::kBackZoneWidth + 2);
+    ASSERT_LE(outside, strip_box.x2);  // inside the strip's box
+    ASSERT_FALSE(SystemLayer::in_back_zone(shape, outside, y));
+    tap(outside, y);
+    EXPECT_EQ(clicks, 1);
+
+    // Inside the zone the strip takes it.
+    tap(static_cast<int16_t>(span.x1 + 2), y);
+    EXPECT_EQ(clicks, 1);
 }
 
 // As NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone: what

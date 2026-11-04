@@ -229,10 +229,6 @@ private:
     void refresh_ui();
     void update_storage_labels();
 
-    // Runs `fn` on the UI thread and blocks until it has finished running
-    // there, regardless of which thread calls this -- see ~SelfCheck().
-    void run_on_ui_thread_blocking(std::function<void()> fn);
-
     static void refresh_timer_cb(lv_timer_t* timer);
     static void touch_event_cb(lv_event_t* e);
     static void loopback_btn_cb(lv_event_t* e);
@@ -448,14 +444,14 @@ SelfCheck::~SelfCheck() {
     }
 
     // LVGL-specific teardown must run on the UI thread -- see
-    // run_on_ui_thread_blocking(). If `ui_` is already gone (shouldn't
+    // UiRuntime::run_blocking(). If `ui_` is already gone (shouldn't
     // happen given app.cpp's teardown order, but safe either way),
     // there's nothing left to tear down: UiRuntime::stop()'s lv_deinit()
     // already released every lv_obj_t/lv_timer_t this screen created.
     if (ui_ == nullptr) {
         return;
     }
-    run_on_ui_thread_blocking([this] {
+    ui_->run_blocking([this] {
         close_confirm_dialog();
         close_reset_dialog();
         close_firmware_dialog();
@@ -474,26 +470,6 @@ SelfCheck::~SelfCheck() {
             root_ = nullptr;
         }
     });
-}
-
-void SelfCheck::run_on_ui_thread_blocking(std::function<void()> fn) {
-    if (ui_->on_ui_thread()) {
-        fn();
-        return;
-    }
-    auto done = std::make_shared<os::Semaphore>(1, 0);
-    // Retry (rather than give up) if the post queue is momentarily full:
-    // this teardown step must actually run -- see root_'s doc comment --
-    // not merely be attempted once. UiRuntime's own UI task continuously
-    // drains that queue, so a slot frees up promptly; this never spins
-    // forever in practice.
-    while (!ui_->post([fn, done] {
-        fn();
-        done->give();
-    })) {
-        os::sleep_ms(1);
-    }
-    done->take(os::kForever);
 }
 
 void SelfCheck::build() {

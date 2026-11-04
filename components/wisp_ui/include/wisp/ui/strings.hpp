@@ -111,19 +111,17 @@ enum class StrId : uint16_t {
     ScenesEmpty,
     SceneStateRunning,
     SceneStateError,
-    // System layer: the scene error panel (spec 3.6), the delete-scene
+    // System layer: the scene error panel (spec 3.6) and the delete-scene
     // dialog (answered with Yes/No; SceneDeletePrompt carries "{}", the
     // scene's name, and SceneDeleteWithData follows it when the data goes
-    // too) and the keyboard's language key, which shows the current input
-    // language.
+    // too). The keyboard's language key is not translated
+    // (SystemLayer::kPinyinKey / kLatinKey).
     SceneErrorTitle,
     SceneReload,
     SceneBack,
     SceneDeleteTitle,
     SceneDeletePrompt,
     SceneDeleteWithData,
-    KeyboardZh,
-    KeyboardEn,
 
     Count,  // not a string; keep last
 };

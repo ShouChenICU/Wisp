@@ -58,23 +58,6 @@ hal::ScreenShape display_shape(const hal::Display& display) {
     return fallback;
 }
 
-// Runs `fn` on the UI thread and waits for it, retrying while the post
-// queue is momentarily full: the UI task drains it continuously.
-void run_on_ui(ui::UiRuntime& ui, const std::function<void()>& fn) {
-    if (ui.on_ui_thread()) {
-        fn();
-        return;
-    }
-    os::Semaphore done(1, 0);
-    while (!ui.post([&] {
-        fn();
-        done.give();
-    })) {
-        os::sleep_ms(1);
-    }
-    done.take(os::kForever);
-}
-
 }  // namespace
 
 App::App(Platform platform) : impl_(std::make_unique<Impl>(std::move(platform))) {}
@@ -148,8 +131,8 @@ Result<void> App::start() {
             // Before anything that shows on the top layer (the self-check
             // screen and its dialogs, later the scenes).
             const hal::ScreenShape shape = display_shape(*display);
-            run_on_ui(*impl_->ui,
-                      [&] { impl_->system_layer = std::make_unique<ui::SystemLayer>(shape); });
+            impl_->ui->run_blocking(
+                [&] { impl_->system_layer = std::make_unique<ui::SystemLayer>(shape); });
         }
     } else {
         impl_->report.set_note("mode", "headless");
@@ -314,7 +297,7 @@ void App::stop() {
     stop_self_check(impl_->self_check);
     // After the screen, which closes its dialogs through it.
     if (impl_->ui && impl_->system_layer) {
-        run_on_ui(*impl_->ui, [&] { impl_->system_layer.reset(); });
+        impl_->ui->run_blocking([&] { impl_->system_layer.reset(); });
     }
     // A confirmed factory reset still running uses the bus, storage and
     // the net services; let it finish (it ends in Platform::reboot).
@@ -365,17 +348,12 @@ void App::stop() {
     // the final state.
     if (impl_->power_manager) {
         PowerManager* pm = impl_->power_manager.get();
-        if (impl_->ui && !impl_->ui->on_ui_thread()) {
-            auto done = std::make_shared<os::Semaphore>(1, 0);
-            while (!impl_->ui->post([pm, done] {
+        if (impl_->ui) {
+            impl_->ui->run_blocking([pm] {
                 if (pm->standby()) {
                     pm->exit_standby();
                 }
-                done->give();
-            })) {
-                os::sleep_ms(1);
-            }
-            done->take(os::kForever);
+            });
         } else if (pm->standby()) {
             pm->exit_standby();
         }

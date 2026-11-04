@@ -104,6 +104,13 @@ public:
     // itself (e.g. to chain a follow-up action).
     bool post(std::function<void()> fn);
 
+    // Runs `fn` on the UI task and returns once it has run: directly when
+    // called from the UI task itself (waiting on its own queue would
+    // deadlock), else post()'d and waited for, retrying while the queue
+    // is full -- the UI task keeps draining it. Only between start() and
+    // stop(): nothing else drains the queue.
+    void run_blocking(const std::function<void()>& fn);
+
     // True only when called from within the UI task (e.g. from inside a
     // post()'d function, or an LVGL event/timer callback it triggered).
     bool on_ui_thread() const;

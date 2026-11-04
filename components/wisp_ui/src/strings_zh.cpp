@@ -131,10 +131,6 @@ const char* strings_zh(StrId id) {
             return "删除场景“{}”？";
         case StrId::SceneDeleteWithData:
             return "场景数据也会一并删除。";
-        case StrId::KeyboardZh:
-            return "中";
-        case StrId::KeyboardEn:
-            return "英";
         case StrId::Count:
             break;
     }

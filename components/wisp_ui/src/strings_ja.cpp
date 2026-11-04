@@ -133,10 +133,6 @@ const char* strings_ja(StrId id) {
             return "シーン「{}」を削除しますか？";
         case StrId::SceneDeleteWithData:
             return "シーンのデータも削除されます。";
-        case StrId::KeyboardZh:
-            return "中";
-        case StrId::KeyboardEn:
-            return "英";
         case StrId::Count:
             break;
     }

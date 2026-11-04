@@ -1,6 +1,7 @@
 #include "wisp/ui/system_layer.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -28,28 +29,39 @@ constexpr auto control(int w) {
 }
 
 // LVGL's lower and upper case layouts with a language key beside the
-// close key; the other layouts stay LVGL's. lv_keyboard_set_map() stores
-// the maps for every keyboard and lv_buttonmatrix keeps the pointer, so
-// they live for the whole program. The language key's slot is filled in
-// from ui::tr() (static text) before each keyboard is built, on the UI
-// thread.
+// close key, one pair per input language; the other layouts stay LVGL's.
+// lv_keyboard_set_map() stores the maps for every keyboard and
+// lv_buttonmatrix keeps the pointer, so they live for the whole program:
+// constant tables, in flash.
+using KeyMap = std::array<const char*, 45>;
 constexpr size_t kLangKeySlot = 39;
 // clang-format off
-const char* g_lower_map[] = {
-    "1#", "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", LV_SYMBOL_BACKSPACE, "\n",
-    "ABC", "a", "s", "d", "f", "g", "h", "j", "k", "l", LV_SYMBOL_NEW_LINE, "\n",
-    "_", "-", "z", "x", "c", "v", "b", "n", "m", ".", ",", ":", "\n",
-    LV_SYMBOL_KEYBOARD, nullptr /* kLangKeySlot */, LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT,
-    LV_SYMBOL_OK, ""};
-const char* g_upper_map[] = {
-    "1#", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", LV_SYMBOL_BACKSPACE, "\n",
-    "abc", "A", "S", "D", "F", "G", "H", "J", "K", "L", LV_SYMBOL_NEW_LINE, "\n",
-    "_", "-", "Z", "X", "C", "V", "B", "N", "M", ".", ",", ":", "\n",
-    LV_SYMBOL_CLOSE, nullptr /* kLangKeySlot */, LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT,
-    LV_SYMBOL_OK, ""};
+constexpr KeyMap lower_map(const char* lang_key) {
+    return {"1#", "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", LV_SYMBOL_BACKSPACE, "\n",
+            "ABC", "a", "s", "d", "f", "g", "h", "j", "k", "l", LV_SYMBOL_NEW_LINE, "\n",
+            "_", "-", "z", "x", "c", "v", "b", "n", "m", ".", ",", ":", "\n",
+            LV_SYMBOL_KEYBOARD, lang_key, LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT, LV_SYMBOL_OK, ""};
+}
+constexpr KeyMap upper_map(const char* lang_key) {
+    return {"1#", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", LV_SYMBOL_BACKSPACE, "\n",
+            "abc", "A", "S", "D", "F", "G", "H", "J", "K", "L", LV_SYMBOL_NEW_LINE, "\n",
+            "_", "-", "Z", "X", "C", "V", "B", "N", "M", ".", ",", ":", "\n",
+            LV_SYMBOL_CLOSE, lang_key, LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT, LV_SYMBOL_OK, ""};
+}
+// clang-format on
+constexpr KeyMap kPinyinLower = lower_map(SystemLayer::kPinyinKey);
+constexpr KeyMap kPinyinUpper = upper_map(SystemLayer::kPinyinKey);
+constexpr KeyMap kLatinLower = lower_map(SystemLayer::kLatinKey);
+constexpr KeyMap kLatinUpper = upper_map(SystemLayer::kLatinKey);
+// Every slot filled: a short initializer list would leave null keys and
+// no "" terminator.
+static_assert(kPinyinLower.back()[0] == '\0' && kPinyinUpper.back()[0] == '\0');
+static_assert(kPinyinLower[kLangKeySlot] == SystemLayer::kPinyinKey);
+static_assert(kPinyinUpper[kLangKeySlot] == SystemLayer::kPinyinKey);
+// clang-format off
 // One entry per key (the "\n" row breaks have none). Both layouts share
 // it, as LVGL's own lower and upper case control maps are equal.
-const lv_buttonmatrix_ctrl_t g_ctrl_map[] = {
+const lv_buttonmatrix_ctrl_t kCtrlMap[] = {
     control(5), key(4), key(4), key(4), key(4), key(4), key(4), key(4), key(4), key(4), key(4),
     checked(width(7)),
     control(6), key(3), key(3), key(3), key(3), key(3), key(3), key(3), key(3), key(3),
@@ -58,7 +70,6 @@ const lv_buttonmatrix_ctrl_t g_ctrl_map[] = {
     checked(key(1)), checked(key(1)), checked(key(1)),
     control(2), control(2), checked(width(2)), width(4), checked(width(2)), control(2)};
 // clang-format on
-static_assert(sizeof(g_lower_map) == sizeof(g_upper_map));
 
 int32_t width_of(const hal::Area& a) { return a.x2 - a.x1 + 1; }
 int32_t height_of(const hal::Area& a) { return a.y2 - a.y1 + 1; }
@@ -177,6 +188,8 @@ void SystemLayer::strip_event_cb(lv_event_t* e) {
 void SystemLayer::show_error(ErrorPanelInfo info, std::function<void()> on_reload,
                              std::function<void()> on_back) {
     hide_error();
+    // The panel replaces the scene's UI, the textarea included.
+    hide_keyboard();
     on_reload_ = std::move(on_reload);
     on_error_back_ = std::move(on_back);
 
@@ -185,7 +198,9 @@ void SystemLayer::show_error(ErrorPanelInfo info, std::function<void()> on_reloa
     lv_obj_set_size(panel, width_of(safe_), height_of(safe_));
     lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
     lv_obj_set_style_shadow_width(panel, 0, 0);
-    lv_obj_remove_flag(panel, LV_OBJ_FLAG_CLICKABLE);
+    // Clickable, so a touch the buttons do not take stops here instead of
+    // reaching what the panel covers.
+    lv_obj_remove_flag(panel, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(panel, 8, 0);
@@ -246,8 +261,11 @@ void SystemLayer::error_btn_cb(lv_event_t* e) {
 void SystemLayer::show_keyboard(lv_obj_t* textarea) {
     if (textarea == nullptr) return;
     if (kb_ != nullptr) {
-        if (lv_keyboard_get_textarea(kb_) != textarea) lv_keyboard_set_textarea(kb_, textarea);
-        return;
+        if (ta_ == textarea) return;
+        // A fresh keyboard: the IME's half-typed pinyin belongs to the old
+        // textarea, and picking a candidate would replace that many
+        // characters of the new one.
+        hide_keyboard();
     }
     build_keyboard(textarea);
     raise();
@@ -264,11 +282,10 @@ void SystemLayer::build_keyboard(lv_obj_t* textarea) {
     lv_obj_add_event_cb(kb_, &SystemLayer::key_cb, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(kb_, &SystemLayer::kb_done_cb, LV_EVENT_READY, this);
     lv_obj_add_event_cb(kb_, &SystemLayer::kb_done_cb, LV_EVENT_CANCEL, this);
-    const char* lang_key = tr(pinyin_ ? StrId::KeyboardZh : StrId::KeyboardEn);
-    g_lower_map[kLangKeySlot] = lang_key;
-    g_upper_map[kLangKeySlot] = lang_key;
-    lv_keyboard_set_map(kb_, LV_KEYBOARD_MODE_TEXT_LOWER, g_lower_map, g_ctrl_map);
-    lv_keyboard_set_map(kb_, LV_KEYBOARD_MODE_TEXT_UPPER, g_upper_map, g_ctrl_map);
+    lv_keyboard_set_map(kb_, LV_KEYBOARD_MODE_TEXT_LOWER,
+                        (pinyin_ ? kPinyinLower : kLatinLower).data(), kCtrlMap);
+    lv_keyboard_set_map(kb_, LV_KEYBOARD_MODE_TEXT_UPPER,
+                        (pinyin_ ? kPinyinUpper : kLatinUpper).data(), kCtrlMap);
 
     // The lower half of the safe area.
     const int32_t top_y = safe_.y1 + height_of(safe_) / 2;
@@ -277,6 +294,10 @@ void SystemLayer::build_keyboard(lv_obj_t* textarea) {
     lv_obj_set_size(kb_, width_of(safe_), safe_.y2 - top_y + 1);
     lv_obj_set_style_bg_opa(kb_, LV_OPA_COVER, 0);
     lv_keyboard_set_textarea(kb_, textarea);
+    // lv_keyboard does not watch its textarea; a key typed after the
+    // scene deleted it would write into freed memory.
+    ta_ = textarea;
+    lv_obj_add_event_cb(ta_, &SystemLayer::ta_delete_cb, LV_EVENT_DELETE, this);
 
     if (pinyin_) {
         ime_ = lv_ime_pinyin_create(top);
@@ -300,6 +321,10 @@ void SystemLayer::build_keyboard(lv_obj_t* textarea) {
 }
 
 void SystemLayer::discard_keyboard(bool now) {
+    if (ta_ != nullptr) {
+        lv_obj_remove_event_cb_with_user_data(ta_, &SystemLayer::ta_delete_cb, this);
+        ta_ = nullptr;
+    }
     // The IME deletes its keyboard and candidate row with itself.
     lv_obj_t* root = ime_ != nullptr ? ime_ : kb_;
     if (root == nullptr) return;
@@ -323,19 +348,32 @@ void SystemLayer::key_cb(lv_event_t* e) {
     const uint32_t id = lv_buttonmatrix_get_selected_button(kb);
     const char* text =
         id != LV_BUTTONMATRIX_BUTTON_NONE ? lv_buttonmatrix_get_button_text(kb, id) : nullptr;
-    if (kb == self->kb_ && text != nullptr && std::strcmp(text, g_lower_map[kLangKeySlot]) == 0) {
+    const char* lang_key = self->pinyin_ ? kPinyinKey : kLatinKey;
+    if (kb == self->kb_ && text != nullptr && std::strcmp(text, lang_key) == 0) {
         // A fresh keyboard in the other language: with or without the IME,
         // and no half-typed pinyin carried over.
-        lv_obj_t* textarea = lv_keyboard_get_textarea(kb);
+        lv_obj_t* textarea = self->ta_;
         self->pinyin_ = !self->pinyin_;
         self->discard_keyboard(false);
-        self->build_keyboard(textarea);
-        self->raise();
+        if (textarea != nullptr) {
+            self->build_keyboard(textarea);
+            self->raise();
+        }
         return;
     }
     ++self->kb_event_depth_;
     lv_keyboard_def_event_cb(e);
     --self->kb_event_depth_;
+}
+
+void SystemLayer::ta_delete_cb(lv_event_t* e) {
+    auto* self = static_cast<SystemLayer*>(lv_event_get_user_data(e));
+    // LVGL drops the textarea's callbacks itself once this event is over.
+    self->ta_ = nullptr;
+    // A keyboard that has to outlive one of its own events must not
+    // reach the textarea after it is gone either.
+    if (self->kb_ != nullptr) lv_keyboard_set_textarea(self->kb_, nullptr);
+    self->hide_keyboard();
 }
 
 void SystemLayer::kb_done_cb(lv_event_t* e) {

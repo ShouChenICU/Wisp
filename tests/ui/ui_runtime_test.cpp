@@ -9,6 +9,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 
 #include "lvgl_private.h"
 #include "support/fake_devices.hpp"
@@ -141,6 +142,52 @@ TEST(UiRuntime, SnapshotFromUiThreadDoesNotDeadlock) {
     ASSERT_TRUE(wait_until([&] { return done.load(); }, 2000));
     ASSERT_TRUE(*result);
     EXPECT_EQ(result->value().size(), 480u * 480u * 3u);
+
+    ui.stop();
+}
+
+TEST(UiRuntime, RunBlockingRunsOnTheUiThreadAndWaits) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+
+    // From another thread: posted, and done by the time it returns.
+    bool ran_on_ui = false;
+    ui.run_blocking([&] { ran_on_ui = ui.on_ui_thread(); });
+    EXPECT_TRUE(ran_on_ui);
+
+    // From the UI task itself: run directly instead of waiting on its
+    // own queue.
+    std::atomic<bool> done{false};
+    ui.post([&] {
+        bool inner = false;
+        ui.run_blocking([&] { inner = true; });
+        EXPECT_TRUE(inner);
+        done = true;
+    });
+    ASSERT_TRUE(wait_until([&] { return done.load(); }, 2000));
+
+    // With the queue full: retried until there is room, then waited for.
+    wisp::os::Semaphore gate(1, 0);
+    std::atomic<bool> holding{false};
+    ASSERT_TRUE(ui.post([&] {
+        holding = true;
+        gate.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(wait_until([&] { return holding.load(); }, 2000));
+    while (ui.post([] {})) {
+    }
+    std::atomic<bool> ran{false};
+    std::atomic<bool> returned{false};
+    std::thread caller([&] {
+        ui.run_blocking([&] { ran = true; });
+        returned = true;
+    });
+    wisp::os::sleep_ms(20);
+    EXPECT_FALSE(returned.load());
+    gate.give();
+    caller.join();
+    EXPECT_TRUE(ran.load());
 
     ui.stop();
 }

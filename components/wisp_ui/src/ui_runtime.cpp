@@ -676,6 +676,21 @@ void UiRuntime::stop() {
 
 bool UiRuntime::post(std::function<void()> fn) { return impl_->post_queue.push(std::move(fn), 0); }
 
+void UiRuntime::run_blocking(const std::function<void()>& fn) {
+    if (on_ui_thread()) {
+        fn();
+        return;
+    }
+    os::Semaphore done(1, 0);
+    while (!post([&] {
+        fn();
+        done.give();
+    })) {
+        os::sleep_ms(1);
+    }
+    done.take(os::kForever);
+}
+
 bool UiRuntime::on_ui_thread() const {
     os::Task* task = impl_->active_task.load(std::memory_order_acquire);
     return task != nullptr && task->is_current();

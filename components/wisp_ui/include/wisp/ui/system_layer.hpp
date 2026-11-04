@@ -47,6 +47,11 @@ public:
     // Width of the back gesture zone along the left edge of each row of
     // the safe area (spec 3.5).
     static constexpr int32_t kBackZoneWidth = 16;
+    // The keyboard's language key, naming the current input: pinyin or
+    // plain Latin letters. Fixed text in every UI language, so the key
+    // maps can be constant tables.
+    static constexpr const char* kPinyinKey = "中";
+    static constexpr const char* kLatinKey = "EN";
 
     // Creates nothing yet; each piece is built when first used.
     explicit SystemLayer(const hal::ScreenShape& shape);
@@ -64,18 +69,19 @@ public:
     void set_back_handler(std::function<void()> on_back);
 
     // Shows the error panel inside the safe area, replacing one already
-    // up. Its buttons hide the panel and then call `on_reload` or
-    // `on_back`.
+    // up, and hides the keyboard. The panel takes every touch on it; its
+    // buttons hide it and then call `on_reload` or `on_back`.
     void show_error(ErrorPanelInfo info, std::function<void()> on_reload,
                     std::function<void()> on_back);
     void hide_error();
     bool error_visible() const { return error_panel_ != nullptr; }
 
     // Shows the keyboard over the lower half of the safe area, typing
-    // into `textarea` (or retargets the one already up). It hides itself
-    // on LV_EVENT_READY / LV_EVENT_CANCEL; its language key switches
-    // between pinyin and plain Latin input (pinyin first when the UI
-    // language is Chinese, then whichever was used last).
+    // into `textarea`; for another textarea than the one it types into,
+    // a fresh keyboard replaces it. It hides itself on LV_EVENT_READY /
+    // LV_EVENT_CANCEL and when `textarea` is deleted; its language key
+    // switches between pinyin and plain Latin input (pinyin first when
+    // the UI language is Chinese, then whichever was used last).
     void show_keyboard(lv_obj_t* textarea);
     void hide_keyboard();
     // The lv_keyboard while it is up, else nullptr.
@@ -114,6 +120,7 @@ private:
     static void error_btn_cb(lv_event_t* e);
     static void key_cb(lv_event_t* e);
     static void kb_done_cb(lv_event_t* e);
+    static void ta_delete_cb(lv_event_t* e);
     static void confirm_btn_cb(lv_event_t* e);
 
     hal::ScreenShape shape_;
@@ -130,6 +137,7 @@ private:
     std::function<void()> on_error_back_;
 
     lv_obj_t* kb_ = nullptr;
+    lv_obj_t* ta_ = nullptr;   // what kb_ types into
     lv_obj_t* ime_ = nullptr;  // only while typing pinyin
     lv_obj_t* candidates_ = nullptr;
     bool pinyin_;
