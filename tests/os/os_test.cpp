@@ -16,6 +16,15 @@ TEST(Os, ClockIsMonotonic) {
     sleep_ms(20);
     EXPECT_GE(now_ms() - a, 19u);
 }
+TEST(Os, MicrosecondClockSharesTheMillisecondBase) {
+    uint64_t ms_before = now_ms();
+    uint64_t us = now_us();
+    uint64_t ms_after = now_ms();
+    EXPECT_GE(us / 1000, ms_before);
+    EXPECT_LE(us / 1000, ms_after);
+    sleep_ms(5);
+    EXPECT_GE(now_us() - us, 4000u);
+}
 TEST(Os, ClockCountsFromProcessStart) {
     // The simulator's boot is process start (os.hpp). ctest gives this
     // binary a 10 s timeout; a host-boot epoch would put the value at the

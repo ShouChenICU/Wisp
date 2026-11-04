@@ -35,6 +35,12 @@ uint64_t now_ms() {
         duration_cast<milliseconds>(steady_clock::now() - boot_epoch()).count());
 }
 
+uint64_t now_us() {
+    using namespace std::chrono;
+    return static_cast<uint64_t>(
+        duration_cast<microseconds>(steady_clock::now() - boot_epoch()).count());
+}
+
 void sleep_ms(uint32_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
 void* alloc(size_t bytes, Mem /*kind*/) {

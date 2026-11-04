@@ -78,6 +78,8 @@ TickType_t ms_to_ticks(uint32_t ms) {
 
 uint64_t now_ms() { return static_cast<uint64_t>(esp_timer_get_time() / 1000); }
 
+uint64_t now_us() { return static_cast<uint64_t>(esp_timer_get_time()); }
+
 void sleep_ms(uint32_t ms) { vTaskDelay(ms_to_ticks(ms)); }
 
 void* alloc(size_t bytes, Mem kind) {

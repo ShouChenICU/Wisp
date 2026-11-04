@@ -23,6 +23,10 @@ namespace wisp::os {
 // `uptime_ms` share this base, so a browser can compare them (spec 6.2).
 uint64_t now_ms();
 
+// The same clock as now_ms(), in microseconds, for timing work that takes
+// less than a millisecond (e.g. one display transfer).
+uint64_t now_us();
+
 // Blocks the calling thread/task for at least `ms` milliseconds.
 void sleep_ms(uint32_t ms);
 
