@@ -1,6 +1,7 @@
 #include "wisp/app/app.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <utility>
 
@@ -14,12 +15,14 @@
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/display.hpp"
+#include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/imu.hpp"
 #include "wisp/hal/power.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/net/model_probe.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/strings.hpp"
+#include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
@@ -33,6 +36,44 @@ constexpr uint32_t kStorageRefreshMs = 2000;
 // the idle-timeout check's own overhead (and the "wisp.power" Timer
 // callback's wake rate) negligible.
 constexpr uint32_t kPowerTickMs = 1000;
+
+// The screen shape the system layer and the self-check screen lay out in
+// (spec 5.6). Invalid shape caps fall back to a circle, the most
+// conservative shape, as DeviceRegistry::manifest() does; UiRuntime::start()
+// has already refused a display without a usable width and height.
+hal::ScreenShape display_shape(const hal::Display& display) {
+    const Properties& caps = display.info().caps;
+    auto shape = hal::screen_shape_from_caps(caps);
+    if (shape) {
+        return shape.value();
+    }
+    WLOG_W("app", "display.main: invalid shape caps (%s); treating as circle",
+           shape.error().message.c_str());
+    hal::ScreenShape fallback;
+    fallback.kind = hal::ScreenShapeKind::Circle;
+    auto width = caps.find("width");
+    auto height = caps.find("height");
+    fallback.width = width != caps.end() ? static_cast<int32_t>(width->second.as_int()) : 0;
+    fallback.height = height != caps.end() ? static_cast<int32_t>(height->second.as_int()) : 0;
+    return fallback;
+}
+
+// Runs `fn` on the UI thread and waits for it, retrying while the post
+// queue is momentarily full: the UI task drains it continuously.
+void run_on_ui(ui::UiRuntime& ui, const std::function<void()>& fn) {
+    if (ui.on_ui_thread()) {
+        fn();
+        return;
+    }
+    os::Semaphore done(1, 0);
+    while (!ui.post([&] {
+        fn();
+        done.give();
+    })) {
+        os::sleep_ms(1);
+    }
+    done.take(os::kForever);
+}
 
 }  // namespace
 
@@ -103,6 +144,12 @@ Result<void> App::start() {
             WLOG_E("app", "UiRuntime failed to start; continuing headless");
             impl_->ui.reset();
             impl_->report.set_note("mode", "headless");
+        } else {
+            // Before anything that shows on the top layer (the self-check
+            // screen and its dialogs, later the scenes).
+            const hal::ScreenShape shape = display_shape(*display);
+            run_on_ui(*impl_->ui,
+                      [&] { impl_->system_layer = std::make_unique<ui::SystemLayer>(shape); });
         }
     } else {
         impl_->report.set_note("mode", "headless");
@@ -185,7 +232,7 @@ Result<void> App::start() {
         // nothing left to tear it down afterwards.
         os::Semaphore done(1, 0);
         bool posted = impl_->ui->post([this, &done] {
-            start_self_check(*this, impl_->self_check);
+            start_self_check(*this, *impl_->system_layer, impl_->self_check);
             done.give();
         });
         if (posted) {
@@ -265,6 +312,10 @@ void App::stop() {
     stop_console(*this);
     join_loopback(*this);
     stop_self_check(impl_->self_check);
+    // After the screen, which closes its dialogs through it.
+    if (impl_->ui && impl_->system_layer) {
+        run_on_ui(*impl_->ui, [&] { impl_->system_layer.reset(); });
+    }
     // A confirmed factory reset still running uses the bus, storage and
     // the net services; let it finish (it ends in Platform::reboot).
     join_factory_reset(*this);

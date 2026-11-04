@@ -1,0 +1,532 @@
+// The system layer (wisp/ui/system_layer.hpp): the back gesture zone, the
+// error panel, the on-screen keyboard and the modal confirm dialogs, and
+// how they leave the opaque-overlay redraw skip (wisp/ui/overlay.hpp)
+// alone.
+
+#include "wisp/ui/system_layer.hpp"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "support/fake_devices.hpp"
+#include "support/lvgl_probe.hpp"
+#include "wisp/hal/display_geometry.hpp"
+#include "wisp/ui/strings.hpp"
+#include "wisp/ui/ui_runtime.hpp"
+
+extern "C" {
+extern const lv_font_t lv_font_cjk_16;
+}
+
+namespace {
+
+using wisp::hal::Area;
+using wisp::hal::ScreenShape;
+using wisp::hal::ScreenShapeKind;
+using wisp::test::FakeDisplay;
+using wisp::test::FakeTouch;
+using wisp::test::find_button_with_label;
+using wisp::test::find_label_containing;
+using wisp::test::run_on_ui_blocking;
+using wisp::ui::StrId;
+using wisp::ui::SystemLayer;
+
+constexpr int kSide = 480;
+
+ScreenShape rect480() { return {ScreenShapeKind::Rect, kSide, kSide, 0}; }
+ScreenShape circle480() { return {ScreenShapeKind::Circle, kSide, kSide, 0}; }
+
+bool inside(const lv_area_t& a, const Area& safe) {
+    return a.x1 >= safe.x1 && a.y1 >= safe.y1 && a.x2 <= safe.x2 && a.y2 <= safe.y2;
+}
+
+bool overlaps(const Area& f, const lv_area_t& a) {
+    return f.x1 <= a.x2 && f.x2 >= a.x1 && f.y1 <= a.y2 && f.y2 >= a.y1;
+}
+
+// The direct child of lv_layer_top() that holds `obj`.
+lv_obj_t* top_level(lv_obj_t* obj) {
+    while (obj != nullptr && lv_obj_get_parent(obj) != lv_layer_top()) {
+        obj = lv_obj_get_parent(obj);
+    }
+    return obj;
+}
+
+// The button of a button matrix that reads `text`, or
+// LV_BUTTONMATRIX_BUTTON_NONE.
+uint32_t matrix_button(lv_obj_t* matrix, const char* text) {
+    for (uint32_t id = 0; id < 128; ++id) {
+        const char* t = lv_buttonmatrix_get_button_text(matrix, id);
+        if (t == nullptr || t[0] == '\0') break;
+        if (std::strcmp(t, text) == 0) return id;
+    }
+    return LV_BUTTONMATRIX_BUTTON_NONE;
+}
+
+// Presses the key reading `text` the way a tap does: selects it and
+// reports the value change.
+bool press(lv_obj_t* matrix, const char* text) {
+    uint32_t id = matrix_button(matrix, text);
+    if (id == LV_BUTTONMATRIX_BUTTON_NONE) return false;
+    lv_buttonmatrix_set_selected_button(matrix, id);
+    lv_obj_send_event(matrix, LV_EVENT_VALUE_CHANGED, nullptr);
+    return true;
+}
+
+// A UiRuntime over a fake display and touch panel, with a SystemLayer
+// built on its UI thread for `shape` (by default the display's own).
+class SystemLayerTest : public ::testing::Test {
+protected:
+    void start(const std::string& display_shape = "circle") {
+        wisp::ui::set_lang(wisp::ui::Lang::Zh);
+        display = std::make_shared<FakeDisplay>("display.main", kSide, kSide, 1, display_shape);
+        touch = std::make_shared<FakeTouch>("touch.main");
+        ui = std::make_unique<wisp::ui::UiRuntime>(display, touch);
+        ASSERT_TRUE(ui->start());
+        auto parsed = wisp::hal::screen_shape_from_caps(display->info().caps);
+        ASSERT_TRUE(parsed);
+        shape = parsed.value();
+        safe = wisp::hal::safe_rect(shape);
+        on_ui([&] {
+            top_children_before = lv_obj_get_child_count(lv_layer_top());
+            layer = std::make_unique<SystemLayer>(shape);
+            indev = lv_indev_get_next(nullptr);
+        });
+    }
+
+    void TearDown() override {
+        if (ui) {
+            on_ui([&] { layer.reset(); });
+            ui->stop();
+        }
+    }
+
+    void on_ui(const std::function<void()>& fn) { run_on_ui_blocking(ui.get(), fn); }
+
+    // Feeds one touch read: `points` empty is a release.
+    void feed(std::vector<wisp::hal::TouchPoint> points) {
+        touch->set_points(std::move(points));
+        on_ui([&] { lv_indev_read(indev); });
+    }
+
+    void tap(int16_t x, int16_t y) {
+        feed({{x, y, 0}});
+        feed({{x, y, 0}});
+        feed({});
+    }
+
+    // A button on the active screen counting its clicks.
+    lv_obj_t* make_counting_button(int32_t x, int32_t y, int32_t w, int32_t h, int* clicks) {
+        lv_obj_t* btn = lv_button_create(lv_screen_active());
+        lv_obj_set_pos(btn, x, y);
+        lv_obj_set_size(btn, w, h);
+        lv_obj_add_event_cb(
+            btn, [](lv_event_t* e) { ++*static_cast<int*>(lv_event_get_user_data(e)); },
+            LV_EVENT_CLICKED, clicks);
+        lv_obj_update_layout(btn);
+        return btn;
+    }
+
+    std::shared_ptr<FakeDisplay> display;
+    std::shared_ptr<FakeTouch> touch;
+    std::unique_ptr<wisp::ui::UiRuntime> ui;
+    std::unique_ptr<SystemLayer> layer;
+    lv_indev_t* indev = nullptr;
+    ScreenShape shape;
+    Area safe{};
+    uint32_t top_children_before = 0;
+};
+
+TEST(SystemLayerZone, BackZoneFollowsRowSpan) {
+    const ScreenShape rect = rect480();
+    const Area rs = wisp::hal::safe_rect(rect);
+    for (int32_t y : {rs.y1, int32_t{240}, rs.y2}) {
+        EXPECT_TRUE(SystemLayer::in_back_zone(rect, 0, y)) << y;
+        EXPECT_TRUE(SystemLayer::in_back_zone(rect, 15, y)) << y;
+        EXPECT_FALSE(SystemLayer::in_back_zone(rect, 16, y)) << y;
+    }
+
+    const ScreenShape circle = circle480();
+    const Area cs = wisp::hal::safe_rect(circle);
+    for (int32_t x = 0; x < 16; ++x) {
+        EXPECT_TRUE(SystemLayer::in_back_zone(circle, x, 240)) << x;
+    }
+    EXPECT_FALSE(SystemLayer::in_back_zone(circle, 16, 240));
+
+    const wisp::hal::Span s100 = wisp::hal::row_span(circle, 100);
+    ASSERT_GT(s100.x1, 0);
+    EXPECT_FALSE(SystemLayer::in_back_zone(circle, s100.x1 - 1, 100));
+    EXPECT_TRUE(SystemLayer::in_back_zone(circle, s100.x1, 100));
+    EXPECT_TRUE(SystemLayer::in_back_zone(circle, s100.x1 + 15, 100));
+    EXPECT_FALSE(SystemLayer::in_back_zone(circle, s100.x1 + 16, 100));
+
+    // Rows outside the safe area, even where they are visible.
+    for (int32_t y : {int32_t{0}, cs.y1 - 1, cs.y2 + 1, int32_t{kSide - 1}}) {
+        const wisp::hal::Span s = wisp::hal::row_span(circle, y);
+        for (int32_t x = std::max(0, s.x1); x < s.x1 + 16; ++x) {
+            EXPECT_FALSE(SystemLayer::in_back_zone(circle, x, y)) << x << "," << y;
+        }
+    }
+}
+
+TEST(SystemLayerZone, BackSwipeNeedsQuarterWidth) {
+    const ScreenShape rect = rect480();
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {124, 240}));   // dx 120
+    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {125, 240}));    // dx 121
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {20, 240}, {300, 240}));  // starts outside
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {134, 380}));   // dx 130, dy 140
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {200, 240}, {4, 240}));   // leftwards
+}
+
+TEST_F(SystemLayerTest, GestureSwallowedAndCallsBack) {
+    start("rect");
+    int backs = 0;
+    int clicks = 0;
+    on_ui([&] {
+        make_counting_button(0, 200, 120, 80, &clicks);
+        layer->set_back_handler([&] { ++backs; });
+    });
+    // The button takes taps outside the zone.
+    tap(60, 240);
+    EXPECT_EQ(clicks, 1);
+
+    feed({{4, 240, 0}});
+    for (int16_t x : {4, 50, 100, 150, 200}) feed({{x, 240, 0}});
+    feed({});
+    EXPECT_EQ(backs, 1);
+    EXPECT_EQ(clicks, 1);
+
+    // A tap inside the zone is no swipe, and still not the button's.
+    tap(4, 240);
+    EXPECT_EQ(backs, 1);
+    EXPECT_EQ(clicks, 1);
+
+    // Without a handler the zone belongs to the screen again.
+    on_ui([&] { layer->set_back_handler({}); });
+    tap(4, 240);
+    EXPECT_EQ(clicks, 2);
+}
+
+TEST_F(SystemLayerTest, ErrorPanelInsideSafeRect) {
+    start("circle");
+    int reloads = 0;
+    int backs = 0;
+    auto show = [&] {
+        layer->show_error(
+            {"Demo", "main.lua", 12, "attempt to call a nil value"}, [&] { ++reloads; },
+            [&] { ++backs; });
+    };
+    on_ui([&] {
+        show();
+        lv_obj_update_layout(lv_layer_top());
+        ASSERT_TRUE(layer->error_visible());
+        lv_obj_t* label = find_label_containing(lv_layer_top(), "main.lua:12");
+        ASSERT_NE(label, nullptr);
+        EXPECT_NE(find_label_containing(lv_layer_top(), "Demo"), nullptr);
+        EXPECT_NE(find_label_containing(lv_layer_top(), "attempt to call a nil value"), nullptr);
+        EXPECT_NE(find_label_containing(lv_layer_top(), wisp::ui::tr(StrId::SceneErrorTitle)),
+                  nullptr);
+        lv_obj_t* panel = top_level(label);
+        lv_area_t a;
+        lv_obj_get_coords(panel, &a);
+        EXPECT_TRUE(inside(a, safe)) << a.x1 << "," << a.y1 << "-" << a.x2 << "," << a.y2;
+        EXPECT_TRUE(wisp::test::all_label_glyphs_resolvable(lv_layer_top()));
+        EXPECT_FALSE(lv_obj_has_flag(panel, LV_OBJ_FLAG_CLICKABLE));
+
+        lv_obj_t* reload = find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::SceneReload));
+        ASSERT_NE(reload, nullptr);
+        lv_obj_send_event(reload, LV_EVENT_CLICKED, nullptr);
+        EXPECT_EQ(reloads, 1);
+        EXPECT_EQ(backs, 0);
+        EXPECT_FALSE(layer->error_visible());
+
+        show();
+        lv_obj_t* back = find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::SceneBack));
+        ASSERT_NE(back, nullptr);
+        lv_obj_send_event(back, LV_EVENT_CLICKED, nullptr);
+        EXPECT_EQ(reloads, 1);
+        EXPECT_EQ(backs, 1);
+        EXPECT_FALSE(layer->error_visible());
+        EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before);
+    });
+}
+
+TEST_F(SystemLayerTest, KeyboardTargetsTextareaInsideSafeRect) {
+    start("circle");
+    on_ui([&] {
+        lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+        lv_obj_set_pos(ta, safe.x1, safe.y1);
+        layer->show_keyboard(ta);
+        lv_obj_t* kb = layer->keyboard();
+        ASSERT_NE(kb, nullptr);
+        EXPECT_EQ(lv_keyboard_get_textarea(kb), ta);
+        lv_obj_update_layout(lv_layer_top());
+        lv_area_t a;
+        lv_obj_get_coords(kb, &a);
+        EXPECT_TRUE(inside(a, safe)) << a.x1 << "," << a.y1 << "-" << a.x2 << "," << a.y2;
+        EXPECT_GE(a.y1, (safe.y1 + safe.y2) / 2);  // the lower half
+        EXPECT_EQ(a.y2, safe.y2);
+        EXPECT_EQ(a.x1, safe.x1);
+        EXPECT_EQ(a.x2, safe.x2);
+        EXPECT_EQ(lv_obj_get_parent(kb), lv_layer_top());
+
+        // Pinyin: "ni" offers 你, which replaces the letters.
+        ASSERT_TRUE(press(kb, "n"));
+        ASSERT_TRUE(press(kb, "i"));
+        EXPECT_STREQ(lv_textarea_get_text(ta), "ni");
+        lv_obj_t* cand = nullptr;
+        for (uint32_t i = 0; i < lv_obj_get_child_count(lv_layer_top()); ++i) {
+            lv_obj_t* c = lv_obj_get_child(lv_layer_top(), static_cast<int32_t>(i));
+            if (c != kb && lv_obj_check_type(c, &lv_buttonmatrix_class) &&
+                !lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) {
+                cand = c;
+            }
+        }
+        ASSERT_NE(cand, nullptr);
+        lv_obj_update_layout(cand);
+        lv_obj_get_coords(cand, &a);
+        EXPECT_TRUE(inside(a, safe)) << a.x1 << "," << a.y1 << "-" << a.x2 << "," << a.y2;
+        ASSERT_TRUE(press(cand, "你"));
+        EXPECT_STREQ(lv_textarea_get_text(ta), "你");
+
+        // The language key switches to plain letters.
+        ASSERT_TRUE(press(kb, wisp::ui::tr(StrId::KeyboardZh)));
+        kb = layer->keyboard();
+        ASSERT_NE(kb, nullptr);
+        EXPECT_EQ(lv_keyboard_get_textarea(kb), ta);
+        EXPECT_NE(matrix_button(kb, wisp::ui::tr(StrId::KeyboardEn)), LV_BUTTONMATRIX_BUTTON_NONE);
+        ASSERT_TRUE(press(kb, "n"));
+        ASSERT_TRUE(press(kb, "i"));
+        EXPECT_STREQ(lv_textarea_get_text(ta), "你ni");
+
+        // OK puts it away.
+        ASSERT_TRUE(press(kb, LV_SYMBOL_OK));
+        EXPECT_EQ(layer->keyboard(), nullptr);
+    });
+    // Whatever went away inside its own event is gone a frame later.
+    wisp::os::sleep_ms(100);
+    on_ui([&] {
+        uint32_t shown = 0;
+        for (uint32_t i = 0; i < lv_obj_get_child_count(lv_layer_top()); ++i) {
+            if (!lv_obj_has_flag(lv_obj_get_child(lv_layer_top(), static_cast<int32_t>(i)),
+                                 LV_OBJ_FLAG_HIDDEN)) {
+                ++shown;
+            }
+        }
+        EXPECT_EQ(shown, 0u);
+        EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before);
+    });
+}
+
+TEST_F(SystemLayerTest, PinyinDictGlyphsInFont) {
+    start();
+    on_ui([&] {
+        const lv_pinyin_dict_t* d = wisp::ui::detail::pinyin_dict();
+        ASSERT_NE(d, nullptr);
+        std::string prev;
+        size_t entries = 0;
+        bool ni_has_you = false;
+        for (; d->py != nullptr; ++d, ++entries) {
+            ASSERT_NE(d->py_mb, nullptr);
+            const std::string py = d->py;
+            const std::string mb = d->py_mb;
+            EXPECT_LT(prev, py);  // sorted, so the IME's prefix search works
+            prev = py;
+            ASSERT_FALSE(mb.empty()) << py;
+            // The IME reads candidates as 3-byte UTF-8 sequences.
+            ASSERT_EQ(mb.size() % 3, 0u) << py;
+            for (size_t i = 0; i < mb.size(); i += 3) {
+                const auto* p = reinterpret_cast<const unsigned char*>(mb.data() + i);
+                ASSERT_EQ(p[0] & 0xF0, 0xE0) << py;
+                const uint32_t cp = ((p[0] & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+                lv_font_glyph_dsc_t dsc;
+                EXPECT_TRUE(lv_font_get_glyph_dsc(&lv_font_cjk_16, &dsc, cp, 0))
+                    << py << " U+" << std::hex << cp;
+            }
+            if (py == "ni") ni_has_you = mb.find("你") != std::string::npos;
+        }
+        EXPECT_GT(entries, 300u);
+        EXPECT_TRUE(ni_has_you);
+    });
+}
+
+TEST_F(SystemLayerTest, ConfirmAnswersAndStaysOnTop) {
+    start();
+    std::vector<bool> answers;
+    on_ui([&] {
+        lv_obj_t* box = layer->open_confirm(StrId::ResetTitle, "Really?",
+                                            [&](bool yes) { answers.push_back(yes); });
+        ASSERT_NE(box, nullptr);
+        EXPECT_TRUE(lv_obj_check_type(box, &lv_msgbox_class));
+        lv_obj_t* backdrop = lv_obj_get_parent(box);
+        ASSERT_EQ(lv_obj_get_parent(backdrop), lv_layer_top());
+        lv_obj_update_layout(backdrop);
+        EXPECT_EQ(lv_obj_get_width(backdrop), kSide);
+        EXPECT_EQ(lv_obj_get_height(backdrop), kSide);
+        EXPECT_LE(lv_obj_get_width(box), safe.x2 - safe.x1 + 1);
+        EXPECT_NE(find_label_containing(lv_layer_top(), "Really?"), nullptr);
+
+        // A card opened later goes under it again on raise().
+        lv_obj_t* card = lv_obj_create(lv_layer_top());
+        EXPECT_GT(lv_obj_get_index(card), lv_obj_get_index(backdrop));
+        layer->raise();
+        EXPECT_EQ(lv_obj_get_index(backdrop),
+                  static_cast<int32_t>(lv_obj_get_child_count(lv_layer_top())) - 1);
+        lv_obj_delete(card);
+
+        lv_obj_t* yes = find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::Yes));
+        ASSERT_NE(yes, nullptr);
+        lv_obj_send_event(yes, LV_EVENT_CLICKED, nullptr);
+        EXPECT_FALSE(layer->confirm_open());
+
+        ASSERT_NE(layer->open_confirm(StrId::ResetTitle, "Again?",
+                                      [&](bool yes) { answers.push_back(yes); }),
+                  nullptr);
+        lv_obj_t* no = find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::No));
+        ASSERT_NE(no, nullptr);
+        lv_obj_send_event(no, LV_EVENT_CLICKED, nullptr);
+        EXPECT_FALSE(layer->confirm_open());
+    });
+    EXPECT_EQ(answers, (std::vector<bool>{true, false}));
+}
+
+TEST_F(SystemLayerTest, ConfirmIsModal) {
+    start("rect");
+    int clicks = 0;
+    on_ui([&] { make_counting_button(10, 10, 100, 50, &clicks); });
+    tap(60, 35);
+    ASSERT_EQ(clicks, 1);
+
+    bool answered = false;
+    on_ui([&] {
+        ASSERT_NE(layer->open_confirm(StrId::ResetTitle, "Sure?", [&](bool) { answered = true; }),
+                  nullptr);
+    });
+    tap(60, 35);
+    EXPECT_EQ(clicks, 1);
+    EXPECT_FALSE(answered);
+    on_ui([&] { EXPECT_TRUE(layer->confirm_open()); });
+}
+
+TEST_F(SystemLayerTest, OneConfirmAtATime) {
+    start();
+    int second_calls = 0;
+    on_ui([&] {
+        lv_obj_t* first = layer->open_confirm(StrId::ResetTitle, "One", [](bool) {});
+        ASSERT_NE(first, nullptr);
+        EXPECT_TRUE(layer->confirm_open());
+        EXPECT_EQ(layer->open_confirm(StrId::FirmwareTitle, "Two", [&](bool) { ++second_calls; }),
+                  nullptr);
+        EXPECT_EQ(wisp::test::count_obj_of_class(lv_layer_top(), &lv_msgbox_class), 1);
+        layer->close_confirm(first);
+        EXPECT_FALSE(layer->confirm_open());
+        EXPECT_EQ(wisp::test::count_obj_of_class(lv_layer_top(), &lv_msgbox_class), 0);
+    });
+    EXPECT_EQ(second_calls, 0);
+}
+
+TEST_F(SystemLayerTest, NoPersistentTopLayerChild) {
+    start("circle");
+    on_ui([&] {
+        EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before);
+        layer->set_back_handler([] {});
+        ASSERT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before + 1);
+        lv_obj_t* strip = lv_obj_get_child(lv_layer_top(), -1);
+        EXPECT_FALSE(lv_obj_has_flag(strip, LV_OBJ_FLAG_HIDDEN));
+        lv_obj_update_layout(strip);
+        int32_t min_x1 = kSide;
+        int32_t max_x1 = 0;
+        for (int32_t y = safe.y1; y <= safe.y2; ++y) {
+            const wisp::hal::Span s = wisp::hal::row_span(shape, y);
+            min_x1 = std::min(min_x1, s.x1);
+            max_x1 = std::max(max_x1, s.x1);
+        }
+        lv_area_t a;
+        lv_obj_get_coords(strip, &a);
+        EXPECT_LE(lv_area_get_width(&a), 16 + (max_x1 - min_x1));
+        EXPECT_EQ(a.y1, safe.y1);
+        EXPECT_EQ(lv_area_get_height(&a), safe.y2 - safe.y1 + 1);
+        EXPECT_EQ(lv_obj_get_style_bg_opa(strip, LV_PART_MAIN), LV_OPA_TRANSP);
+
+        layer->set_back_handler({});
+        EXPECT_TRUE(lv_obj_has_flag(strip, LV_OBJ_FLAG_HIDDEN));
+    });
+}
+
+// As NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone: what
+// scrolls under the error panel or the keyboard is not redrawn where the
+// piece covers it. The rows span the whole screen, like the self-check
+// screen's: a change that lies wholly inside a marked piece's box may be
+// the piece's own and is always redrawn (wisp/ui/overlay.hpp).
+TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
+    start("rounded_rect");
+    lv_obj_t* list = nullptr;
+    on_ui([&] {
+        list = lv_obj_create(lv_screen_active());
+        lv_obj_set_size(list, kSide, kSide);
+        lv_obj_set_style_pad_all(list, 0, 0);
+        lv_obj_set_style_border_width(list, 0, 0);
+        lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+        for (int i = 0; i < 40; ++i) {
+            lv_obj_t* row = lv_label_create(list);
+            lv_obj_set_width(row, LV_PCT(100));
+            lv_label_set_text(row, ("row " + std::to_string(i)).c_str());
+        }
+    });
+
+    auto check = [&](const char* what, const std::function<lv_obj_t*()>& show,
+                     const std::function<void()>& hide) {
+        SCOPED_TRACE(what);
+        lv_area_t core{};
+        size_t before = 0;
+        on_ui([&] {
+            lv_obj_t* piece = show();
+            ASSERT_NE(piece, nullptr);
+            lv_obj_update_layout(lv_layer_top());
+            lv_obj_get_coords(piece, &core);
+            const int32_t r = lv_obj_get_style_radius(piece, LV_PART_MAIN);
+            core.y1 += r;
+            core.y2 -= r;
+            lv_refr_now(nullptr);
+            before = display->areas().size();
+            lv_obj_scroll_by(list, 0, -40, LV_ANIM_OFF);
+            lv_refr_now(nullptr);
+        });
+        const std::vector<Area> areas = display->areas();
+        ASSERT_GT(areas.size(), before);
+        for (size_t i = before; i < areas.size(); ++i) {
+            const Area& f = areas[i];
+            EXPECT_FALSE(overlaps(f, core)) << f.x1 << "," << f.y1 << "-" << f.x2 << "," << f.y2;
+        }
+        on_ui(hide);
+    };
+
+    check(
+        "error panel",
+        [&] {
+            layer->show_error({"Demo", "main.lua", 3, "boom"}, [] {}, [] {});
+            lv_obj_t* label = find_label_containing(lv_layer_top(), "main.lua:3");
+            return label != nullptr ? top_level(label) : nullptr;
+        },
+        [&] { layer->hide_error(); });
+
+    lv_obj_t* ta = nullptr;
+    on_ui([&] {
+        ta = lv_textarea_create(lv_screen_active());
+        lv_obj_set_pos(ta, safe.x1, safe.y1);
+    });
+    check(
+        "keyboard",
+        [&] {
+            layer->show_keyboard(ta);
+            return layer->keyboard();
+        },
+        [&] { layer->hide_keyboard(); });
+}
+
+}  // namespace

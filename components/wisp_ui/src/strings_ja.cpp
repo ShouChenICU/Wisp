@@ -113,6 +113,30 @@ const char* strings_ja(StrId id) {
             return "新しいファームウェアを入れて再起動しますか？";
         case StrId::FirmwareDowngrade:
             return "注意：今より古い版です（ダウングレード）。";
+        case StrId::Scenes:
+            return "シーン";
+        case StrId::ScenesEmpty:
+            return "シーンはまだありません";
+        case StrId::SceneStateRunning:
+            return "実行中";
+        case StrId::SceneStateError:
+            return "エラー";
+        case StrId::SceneErrorTitle:
+            return "シーンのエラー";
+        case StrId::SceneReload:
+            return "再読み込み";
+        case StrId::SceneBack:
+            return "戻る";
+        case StrId::SceneDeleteTitle:
+            return "シーンの削除";
+        case StrId::SceneDeletePrompt:
+            return "シーン「{}」を削除しますか？";
+        case StrId::SceneDeleteWithData:
+            return "シーンのデータも削除されます。";
+        case StrId::KeyboardZh:
+            return "中";
+        case StrId::KeyboardEn:
+            return "英";
         case StrId::Count:
             break;
     }

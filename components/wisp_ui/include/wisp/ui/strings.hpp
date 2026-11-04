@@ -106,6 +106,24 @@ enum class StrId : uint16_t {
     FirmwareTitle,
     FirmwarePrompt,
     FirmwareDowngrade,
+    // Scenes block of the self-check screen and scene states.
+    Scenes,
+    ScenesEmpty,
+    SceneStateRunning,
+    SceneStateError,
+    // System layer: the scene error panel (spec 3.6), the delete-scene
+    // dialog (answered with Yes/No; SceneDeletePrompt carries "{}", the
+    // scene's name, and SceneDeleteWithData follows it when the data goes
+    // too) and the keyboard's language key, which shows the current input
+    // language.
+    SceneErrorTitle,
+    SceneReload,
+    SceneBack,
+    SceneDeleteTitle,
+    SceneDeletePrompt,
+    SceneDeleteWithData,
+    KeyboardZh,
+    KeyboardEn,
 
     Count,  // not a string; keep last
 };

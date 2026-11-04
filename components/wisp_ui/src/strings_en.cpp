@@ -110,6 +110,30 @@ const char* strings_en(StrId id) {
             return "Install the new firmware and restart?";
         case StrId::FirmwareDowngrade:
             return "Note: this is older than the running version (a downgrade).";
+        case StrId::Scenes:
+            return "Scenes";
+        case StrId::ScenesEmpty:
+            return "No scenes installed";
+        case StrId::SceneStateRunning:
+            return "Running";
+        case StrId::SceneStateError:
+            return "Error";
+        case StrId::SceneErrorTitle:
+            return "Scene error";
+        case StrId::SceneReload:
+            return "Reload";
+        case StrId::SceneBack:
+            return "Back";
+        case StrId::SceneDeleteTitle:
+            return "Delete scene";
+        case StrId::SceneDeletePrompt:
+            return "Delete the scene \"{}\"?";
+        case StrId::SceneDeleteWithData:
+            return "Its data is deleted too.";
+        case StrId::KeyboardZh:
+            return "ZH";
+        case StrId::KeyboardEn:
+            return "EN";
         case StrId::Count:
             break;
     }

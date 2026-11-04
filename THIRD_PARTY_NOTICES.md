@@ -13,6 +13,10 @@ is used.
   re-implements the mixing formula of `lv_color_16_16_mix()` and the
   masked solid fill of `lv_draw_sw_blend_color_to_rgb565_swapped()`
   (see `docs/references.md`)
+- Derived data: `components/wisp_ui/src/pinyin_dict.cpp` is LVGL's default
+  pinyin dictionary (`lv_ime_pinyin_def_dict` in
+  `src/widgets/ime/lv_ime_pinyin.c`) filtered to the built-in CJK font's
+  characters by `tools/gen_pinyin_dict.py` (see `docs/references.md`)
 
 Copied verbatim from `build/sim/_deps/lvgl-src/LICENCE.txt` (fetched source
 tree; not committed to this repo):

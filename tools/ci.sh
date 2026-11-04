@@ -131,6 +131,13 @@ python3 tools/gen_cjk_font_test.py
 echo "==> cmake -S simulator -B build/sim -G Ninja"
 cmake -S simulator -B build/sim -G Ninja
 
+# The keyboard's pinyin dictionary must be what tools/gen_pinyin_dict.py
+# makes of the pinned LVGL's default one and the CJK font's character set.
+# It reads the LVGL source the configure step above fetched; nothing is
+# downloaded.
+echo "==> tools/gen_pinyin_dict.py --check"
+python3 tools/gen_pinyin_dict.py --check
+
 echo "==> cmake --build build/sim"
 cmake --build build/sim
 

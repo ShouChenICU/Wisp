@@ -111,6 +111,30 @@ const char* strings_zh(StrId id) {
             return "安装新固件并重启？";
         case StrId::FirmwareDowngrade:
             return "注意：新固件比当前版本旧（降级）。";
+        case StrId::Scenes:
+            return "场景";
+        case StrId::ScenesEmpty:
+            return "还没有安装场景";
+        case StrId::SceneStateRunning:
+            return "运行中";
+        case StrId::SceneStateError:
+            return "出错";
+        case StrId::SceneErrorTitle:
+            return "场景出错";
+        case StrId::SceneReload:
+            return "重载";
+        case StrId::SceneBack:
+            return "返回";
+        case StrId::SceneDeleteTitle:
+            return "删除场景";
+        case StrId::SceneDeletePrompt:
+            return "删除场景“{}”？";
+        case StrId::SceneDeleteWithData:
+            return "场景数据也会一并删除。";
+        case StrId::KeyboardZh:
+            return "中";
+        case StrId::KeyboardEn:
+            return "英";
         case StrId::Count:
             break;
     }

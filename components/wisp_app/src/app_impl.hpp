@@ -30,6 +30,7 @@
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
@@ -60,6 +61,10 @@ struct App::Impl {
 
     // Only constructed by start() -- see App::start()/App::stop().
     std::unique_ptr<ui::UiRuntime> ui;
+    // The system layer (wisp/ui/system_layer.hpp) on `ui`: built and
+    // destroyed on the UI thread, right after `ui` starts and right after
+    // the self-check screen (whose dialogs it holds) is torn down.
+    std::unique_ptr<ui::SystemLayer> system_layer;
     std::unique_ptr<os::Timer> storage_timer;
 
     // Constructed just before power_manager (which holds a

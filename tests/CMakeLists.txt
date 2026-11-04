@@ -86,6 +86,7 @@ wisp_test(NAME strings_test SRCS ui/strings_test.cpp LIBS wisp_ui wisp_port_sim_
 wisp_test(NAME ui_runtime_test SRCS ui/ui_runtime_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME overlay_test SRCS ui/overlay_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME a8_font_test SRCS ui/a8_font_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME system_layer_test SRCS ui/system_layer_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 target_include_directories(a8_font_test PRIVATE ${WISP_ROOT}/components/wisp_ui/src)
 wisp_test(NAME app_boot_test SRCS app/app_boot_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)

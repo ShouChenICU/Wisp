@@ -39,6 +39,7 @@
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/strings.hpp"
+#include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
@@ -108,7 +109,7 @@ lv_obj_t* make_row_container(lv_obj_t* parent) {
 // self_check.hpp's forward declaration).
 class SelfCheck {
 public:
-    explicit SelfCheck(App& app);
+    SelfCheck(App& app, ui::SystemLayer& system);
     ~SelfCheck();
 
     // Must be called once, from the UI thread, right after construction
@@ -145,13 +146,9 @@ private:
     // Returns the string build_header()/refresh_header() should show.
     std::string header_text() const;
 
-    // The safe area (spec 5.6) to lay the root column out in: derived
-    // from display_'s caps via wisp::hal::screen_shape_from_caps()/
-    // safe_rect(), with the same fallback rule as
-    // DeviceRegistry::manifest() (see device_registry.cpp) -- an invalid
-    // "shape"/"corner_radius" falls back to treating the panel as
-    // circular (the most conservative shape, logged via WLOG_W); missing/
-    // invalid width/height falls back to the full screen.
+    // The safe area (spec 5.6) to lay the root column out in: that of
+    // the system layer's screen shape, which App::start() derived from
+    // display_'s caps (an invalid shape falls back to a circle).
     hal::Area compute_safe_area() const;
 
     // Creates root_ and every widget under it (build()/rebuild()).
@@ -202,7 +199,7 @@ private:
     // countdown to its expiry, or closes the card.
     void sync_pairing();
     // Keeps the stacking order on the top layer: provisioning card, then
-    // pairing card, then the dialogs.
+    // pairing card, then the system layer (the dialogs last).
     void raise_overlays();
     // Turns a sleeping screen on for something the user is waiting to see
     // (a pairing code, the factory-reset question). UI thread.
@@ -240,20 +237,17 @@ private:
     static void touch_event_cb(lv_event_t* e);
     static void loopback_btn_cb(lv_event_t* e);
     static void perf_long_press_cb(lv_event_t* e);
-    static void msgbox_btn_cb(lv_event_t* e);
-    static void reset_btn_cb(lv_event_t* e);
-    static void firmware_btn_cb(lv_event_t* e);
-
-    // A confirm box in show_confirm_dialog()'s style (the msgbox's default
-    // width clamped to the safe area) with Yes/No footer buttons, both
-    // wired to `cb` with this screen as user data. Returns the box; *yes
-    // receives its Yes button.
-    lv_obj_t* make_confirm_box(ui::StrId title, ui::StrId text, lv_event_cb_t cb, lv_obj_t** yes);
-    lv_obj_t* make_confirm_box(ui::StrId title, const std::string& text, lv_event_cb_t cb,
-                               lv_obj_t** yes);
+    // Answers to the three dialogs, called by the system layer after it
+    // closed the box.
+    void on_power_off_answer(bool yes);
+    void on_reset_answer(bool yes);
+    void on_firmware_answer(bool yes);
 
     App& app_;
     ui::UiRuntime* ui_;
+    // Holds the confirm dialogs and keeps one open at a time; outlives
+    // this screen (see app_impl.hpp).
+    ui::SystemLayer& system_;
     std::shared_ptr<hal::Display> display_;
     std::shared_ptr<hal::Imu> imu_;
     std::shared_ptr<hal::Power> power_;
@@ -292,20 +286,18 @@ private:
     // thread only.
     std::optional<uint32_t> language_revision_;
     lv_obj_t* perf_label_ = nullptr;
+    // The power-off confirmation's box while it is open.
     lv_obj_t* msgbox_ = nullptr;
-    lv_obj_t* msgbox_yes_ = nullptr;
     // The factory-reset confirmation, kept apart from the power-off dialog
-    // above so neither one's buttons (or the power key) can answer the
-    // other. At most one of each is open.
+    // above so neither one's answer (or the power key) can be taken for
+    // the other. The system layer opens one dialog at a time.
     lv_obj_t* reset_box_ = nullptr;
-    lv_obj_t* reset_yes_ = nullptr;
     // Set once the user confirmed and the reset task started: later
     // requests are ignored while the reset runs towards its restart.
     bool reset_confirmed_ = false;
     // The firmware-update confirmation; the third kind of dialog, likewise
     // never stacked on the other two.
     lv_obj_t* fw_box_ = nullptr;
-    lv_obj_t* fw_yes_ = nullptr;
     // os::now_ms() of the last periodic network resync (see kNetResyncMs).
     uint64_t last_net_resync_ms_ = 0;
 
@@ -363,9 +355,10 @@ private:
     core::SubscriptionId fw_sub_ = 0;
 };
 
-SelfCheck::SelfCheck(App& app)
+SelfCheck::SelfCheck(App& app, ui::SystemLayer& system)
     : app_(app),
       ui_(app.ui()),
+      system_(system),
       display_(app.registry().get<hal::Display>("display.main")),
       imu_(app.registry().get<hal::Imu>("imu.main")),
       power_(app.registry().get<hal::Power>("power.main")),
@@ -463,11 +456,7 @@ SelfCheck::~SelfCheck() {
         return;
     }
     run_on_ui_thread_blocking([this] {
-        if (msgbox_ != nullptr) {
-            lv_msgbox_close(msgbox_);
-            msgbox_ = nullptr;
-            msgbox_yes_ = nullptr;
-        }
+        close_confirm_dialog();
         close_reset_dialog();
         close_firmware_dialog();
         // The cards live on the top layer, outside root_.
@@ -640,43 +629,7 @@ void SelfCheck::build_header(lv_obj_t* col) {
 
 void SelfCheck::refresh_header() { lv_label_set_text(header_label_, header_text().c_str()); }
 
-hal::Area SelfCheck::compute_safe_area() const {
-    int32_t screen_w = lv_display_get_horizontal_resolution(nullptr);
-    int32_t screen_h = lv_display_get_vertical_resolution(nullptr);
-    hal::Area full_screen{0, 0, screen_w - 1, screen_h - 1};
-    if (!display_) {
-        return full_screen;
-    }
-
-    const Properties& caps = display_->info().caps;
-    auto shape = hal::screen_shape_from_caps(caps);
-    if (shape) {
-        return hal::safe_rect(shape.value());
-    }
-
-    // Parse failed -- same fallback rule as DeviceRegistry::manifest()
-    // (see device_registry.cpp): treat the panel as circular (the most
-    // conservative shape) if width/height are at least usable, otherwise
-    // give up on a safe area and use the full screen.
-    auto width_it = caps.find("width");
-    auto height_it = caps.find("height");
-    if (width_it == caps.end() || width_it->second.as_int() <= 0 || height_it == caps.end() ||
-        height_it->second.as_int() <= 0) {
-        WLOG_W("self_check",
-               "display.main: invalid shape caps (%s) and no usable width/height; "
-               "using the full screen",
-               shape.error().message.c_str());
-        return full_screen;
-    }
-
-    WLOG_W("self_check", "display.main: invalid shape caps (%s); treating as circle",
-           shape.error().message.c_str());
-    hal::ScreenShape fallback;
-    fallback.kind = hal::ScreenShapeKind::Circle;
-    fallback.width = static_cast<int32_t>(width_it->second.as_int());
-    fallback.height = static_cast<int32_t>(height_it->second.as_int());
-    return hal::safe_rect(fallback);
-}
+hal::Area SelfCheck::compute_safe_area() const { return hal::safe_rect(system_.shape()); }
 
 void SelfCheck::build_device_list(lv_obj_t* col) {
     lv_label_set_text(make_row_label(col), ui::tr(ui::StrId::DeviceList));
@@ -935,7 +888,7 @@ void SelfCheck::subscribe_buttons() {
 void SelfCheck::on_button_event(const core::Event& e) {
     // on_button_event() itself runs on the EventBus dispatcher thread
     // (see subscribe_buttons()), but PowerKeyController is not
-    // thread-safe against concurrent callers -- msgbox_btn_cb() (below)
+    // thread-safe against concurrent callers -- on_power_off_answer() (below)
     // also drives it, from the UI thread, via on_confirm(). Posting the
     // *whole* decision (on_short()/on_long() included, not just the
     // resulting Action) onto the UI thread, rather than calling those
@@ -1115,10 +1068,7 @@ void SelfCheck::sync_pairing() {
 
 void SelfCheck::raise_overlays() {
     pair_card_.raise();
-    // A msgbox lives under its own full-screen backdrop on the top layer.
-    for (lv_obj_t* box : {msgbox_, reset_box_, fw_box_}) {
-        if (box != nullptr) lv_obj_move_foreground(lv_obj_get_parent(box));
-    }
+    system_.raise();
 }
 
 void SelfCheck::wake_screen() {
@@ -1138,7 +1088,9 @@ void SelfCheck::show_reset_dialog() {
     if (reset_box_ != nullptr || reset_confirmed_) {
         return;  // one dialog per request at a time; nothing once confirmed
     }
-    if (msgbox_ != nullptr || fw_box_ != nullptr) {
+    reset_box_ = system_.open_confirm(ui::StrId::ResetTitle, ui::tr(ui::StrId::ResetPrompt),
+                                      [this](bool yes) { on_reset_answer(yes); });
+    if (reset_box_ == nullptr) {
         // One confirm dialog at a time (spec 8). The person at the device
         // is already answering another question, so the browser gets a
         // definite "no" now rather than a dialog that may never show.
@@ -1146,8 +1098,6 @@ void SelfCheck::show_reset_dialog() {
         cancel_factory_reset(app_);
         return;
     }
-    reset_box_ = make_confirm_box(ui::StrId::ResetTitle, ui::StrId::ResetPrompt,
-                                  &SelfCheck::reset_btn_cb, &reset_yes_);
     wake_screen();
     WLOG_I("self_check", "factory reset: waiting for confirmation on the screen");
 }
@@ -1156,9 +1106,8 @@ void SelfCheck::close_reset_dialog() {
     if (reset_box_ == nullptr) {
         return;
     }
-    lv_msgbox_close(reset_box_);
+    system_.close_confirm(reset_box_);
     reset_box_ = nullptr;
-    reset_yes_ = nullptr;
 }
 
 void SelfCheck::sync_firmware() {
@@ -1178,7 +1127,7 @@ void SelfCheck::show_firmware_dialog() {
     if (!pending) {
         return;
     }
-    if (msgbox_ != nullptr || reset_box_ != nullptr) {
+    if (system_.confirm_open()) {
         // As for the factory reset: one confirm dialog at a time, and the
         // browser hears "rejected" now.
         WLOG_I("self_check", "firmware update refused: another dialog is open");
@@ -1193,9 +1142,8 @@ void SelfCheck::show_firmware_dialog() {
         text += "\n";
         text += ui::tr(ui::StrId::FirmwareDowngrade);
     }
-    fw_box_ =
-        make_confirm_box(ui::StrId::FirmwareTitle, text, &SelfCheck::firmware_btn_cb, &fw_yes_);
-    raise_overlays();
+    fw_box_ = system_.open_confirm(ui::StrId::FirmwareTitle, text,
+                                   [this](bool yes) { on_firmware_answer(yes); });
     wake_screen();
     WLOG_I("self_check", "firmware %s: waiting for confirmation on the screen",
            pending->next.c_str());
@@ -1205,9 +1153,8 @@ void SelfCheck::close_firmware_dialog() {
     if (fw_box_ == nullptr) {
         return;
     }
-    lv_msgbox_close(fw_box_);
+    system_.close_confirm(fw_box_);
     fw_box_ = nullptr;
-    fw_yes_ = nullptr;
 }
 
 void SelfCheck::handle_power_key_action(PowerKeyController::Action action) {
@@ -1250,55 +1197,24 @@ void SelfCheck::show_confirm_dialog() {
     if (msgbox_ != nullptr) {
         return;  // Already up -- spec 8: no stacked confirm dialogs.
     }
-    if (reset_box_ != nullptr || fw_box_ != nullptr) {
-        // Nor on top of the factory-reset or firmware question: the long
-        // press is ignored, and the key controller is told no dialog came
-        // up, so the next short press turns the screen off as usual.
+    msgbox_ = system_.open_confirm(ui::StrId::PowerOffTitle, ui::tr(ui::StrId::PowerOffPrompt),
+                                   [this](bool yes) { on_power_off_answer(yes); });
+    if (msgbox_ == nullptr) {
+        // Nor on top of another question (the factory reset, a firmware
+        // update): the long press is ignored, and the key controller is
+        // told no dialog came up, so the next short press turns the screen
+        // off as usual.
         WLOG_I("self_check", "power-off dialog not shown: another dialog is open");
         (void)power_key_.on_confirm(false);
-        return;
     }
-    msgbox_ = make_confirm_box(ui::StrId::PowerOffTitle, ui::StrId::PowerOffPrompt,
-                               &SelfCheck::msgbox_btn_cb, &msgbox_yes_);
-}
-
-lv_obj_t* SelfCheck::make_confirm_box(ui::StrId title, ui::StrId text, lv_event_cb_t cb,
-                                      lv_obj_t** yes) {
-    return make_confirm_box(title, std::string(ui::tr(text)), cb, yes);
-}
-
-lv_obj_t* SelfCheck::make_confirm_box(ui::StrId title, const std::string& text, lv_event_cb_t cb,
-                                      lv_obj_t** yes) {
-    lv_obj_t* box = lv_msgbox_create(nullptr);
-    // lv_msgbox_class's own default width is a fixed LV_DPI_DEF * 2 (see
-    // lv_msgbox.c), unrelated to this screen's actual safe area -- fine
-    // on this board's 480px circular screen (where it happens to fit
-    // comfortably inside the inscribed safe square), but spec 8/AGENTS.
-    // md require every UI element to respect safe_rect(), and a smaller
-    // round screen would clip it. Clamp to whichever is smaller.
-    hal::Area safe = compute_safe_area();
-    int32_t safe_width = safe.x2 - safe.x1 + 1;
-    lv_obj_set_width(box, std::min<int32_t>(LV_DPI_DEF * 2, safe_width));
-    lv_msgbox_add_title(box, ui::tr(title));
-    lv_msgbox_add_text(box, text.c_str());
-    *yes = lv_msgbox_add_footer_button(box, ui::tr(ui::StrId::Yes));
-    lv_obj_t* no_btn = lv_msgbox_add_footer_button(box, ui::tr(ui::StrId::No));
-    lv_obj_add_event_cb(*yes, cb, LV_EVENT_CLICKED, this);
-    lv_obj_add_event_cb(no_btn, cb, LV_EVENT_CLICKED, this);
-    // Lay it out now rather than at the next refresh: a touch read in
-    // between would otherwise hit-test the box at zero size and land on
-    // whatever is under it.
-    lv_obj_update_layout(box);
-    return box;
 }
 
 void SelfCheck::close_confirm_dialog() {
     if (msgbox_ == nullptr) {
         return;
     }
-    lv_msgbox_close(msgbox_);
+    system_.close_confirm(msgbox_);
     msgbox_ = nullptr;
-    msgbox_yes_ = nullptr;
 }
 
 void SelfCheck::do_power_off() {
@@ -1500,46 +1416,37 @@ void SelfCheck::perf_long_press_cb(lv_event_t* e) {
     self->toggle_perf_overlay();
 }
 
-void SelfCheck::msgbox_btn_cb(lv_event_t* e) {
-    auto* self = static_cast<SelfCheck*>(lv_event_get_user_data(e));
-    auto* target = static_cast<lv_obj_t*>(lv_event_get_target(e));
-    bool yes = (target == self->msgbox_yes_);
-    PowerKeyController::Action action = self->power_key_.on_confirm(yes);
-    self->close_confirm_dialog();
-    self->handle_power_key_action(action);
+void SelfCheck::on_power_off_answer(bool yes) {
+    msgbox_ = nullptr;
+    PowerKeyController::Action action = power_key_.on_confirm(yes);
+    handle_power_key_action(action);
 }
 
-void SelfCheck::reset_btn_cb(lv_event_t* e) {
-    auto* self = static_cast<SelfCheck*>(lv_event_get_user_data(e));
-    auto* target = static_cast<lv_obj_t*>(lv_event_get_target(e));
-    bool yes = (target == self->reset_yes_);
-    self->close_reset_dialog();
+void SelfCheck::on_reset_answer(bool yes) {
+    reset_box_ = nullptr;
     if (yes) {
         // Off the UI thread: the reset waits for the network and writes
         // flash before it restarts the device. If the task could not
         // start, the reset was answered "cancelled" and a later request
         // may ask again.
-        self->reset_confirmed_ = start_factory_reset(self->app_);
+        reset_confirmed_ = start_factory_reset(app_);
     } else {
-        cancel_factory_reset(self->app_);
+        cancel_factory_reset(app_);
     }
 }
 
-void SelfCheck::firmware_btn_cb(lv_event_t* e) {
-    auto* self = static_cast<SelfCheck*>(lv_event_get_user_data(e));
-    auto* target = static_cast<lv_obj_t*>(lv_event_get_target(e));
-    bool yes = (target == self->fw_yes_);
-    self->close_firmware_dialog();
+void SelfCheck::on_firmware_answer(bool yes) {
+    fw_box_ = nullptr;
     if (yes) {
         // Off the UI thread: switching the boot slot re-verifies the image.
-        (void)start_firmware_install(self->app_);
+        (void)start_firmware_install(app_);
     } else {
-        decline_firmware(self->app_);
+        decline_firmware(app_);
     }
 }
 
-void start_self_check(App& app, std::unique_ptr<SelfCheck>& slot) {
-    auto self_check = std::make_unique<SelfCheck>(app);
+void start_self_check(App& app, ui::SystemLayer& system, std::unique_ptr<SelfCheck>& slot) {
+    auto self_check = std::make_unique<SelfCheck>(app, system);
     self_check->build();
     slot = std::move(self_check);
 }

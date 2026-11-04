@@ -20,8 +20,9 @@
 #include <memory>
 
 namespace wisp::ui {
+class SystemLayer;
 class UiRuntime;
-}
+}  // namespace wisp::ui
 
 namespace wisp::app {
 
@@ -36,8 +37,9 @@ class SelfCheck;
 // Equivalent to `slot = build_self_check(app)`, except that assignment
 // itself (destroying `slot`'s previous value, if any, which needs
 // SelfCheck's full definition) is done here, in the one TU where that's
-// available -- app.cpp only ever forward-declares SelfCheck.
-void start_self_check(App& app, std::unique_ptr<SelfCheck>& slot);
+// available -- app.cpp only ever forward-declares SelfCheck. The screen
+// opens its confirm dialogs on `system`, which must outlive it.
+void start_self_check(App& app, ui::SystemLayer& system, std::unique_ptr<SelfCheck>& slot);
 
 // Tears down everything `self_check` owns (see the class-level comment
 // above) and resets the pointer to null. A no-op if `self_check` is
