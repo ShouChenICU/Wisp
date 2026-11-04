@@ -151,6 +151,10 @@ void SystemLayer::set_back_handler(std::function<void()> on_back) {
     }
     lv_obj_remove_flag(strip_, LV_OBJ_FLAG_HIDDEN);
     raise();
+    // The indev timer runs before the refresh that would lay the strip out,
+    // and an object without coordinates is never hit: a swipe starting on
+    // the first read after a scene came up would go to the scene instead.
+    lv_obj_update_layout(strip_);
 }
 
 void SystemLayer::strip_event_cb(lv_event_t* e) {

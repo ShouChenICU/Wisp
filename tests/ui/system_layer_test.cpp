@@ -236,6 +236,35 @@ TEST_F(SystemLayerTest, GestureSwallowedAndCallsBack) {
     EXPECT_EQ(clicks, 2);
 }
 
+// The strip is shown from inside a UI job (a scene's view coming up) and
+// the touch panel may be read before the next refresh lays it out: a swipe
+// that starts right away still has to be taken.
+TEST_F(SystemLayerTest, StripTakesASwipeRightAfterItIsShown) {
+    for (const char* s : {"rect", "circle"}) {
+        SCOPED_TRACE(s);
+        TearDown();
+        start(s);
+        int backs = 0;
+        int clicks = 0;
+        const int16_t y = 240;
+        const int16_t x0 = static_cast<int16_t>(wisp::hal::row_span(shape, y).x1 + 2);
+        on_ui([&] {
+            make_counting_button(0, 200, kSide, 80, &clicks);
+            layer->set_back_handler([&] { ++backs; });
+            // No timer pass between showing the strip and these reads.
+            for (int16_t x : {x0, x0, int16_t(x0 + 60), int16_t(x0 + 120), int16_t(x0 + 200)}) {
+                touch->set_points({{x, y, 0}});
+                lv_indev_read(indev);
+            }
+            touch->set_points({});
+            lv_indev_read(indev);
+        });
+        EXPECT_EQ(backs, 1);
+        EXPECT_EQ(clicks, 0);
+        on_ui([&] { layer->set_back_handler({}); });
+    }
+}
+
 TEST_F(SystemLayerTest, ErrorPanelInsideSafeRect) {
     start("circle");
     int reloads = 0;
