@@ -47,6 +47,50 @@ std::vector<uint8_t> sample(size_t n) {
     return v;
 }
 
+// Packs fields least significant bit first, as RFC 1951 3.1.1 lays out
+// header fields, so tests can hand-build dynamic block headers.
+class BitWriter {
+public:
+    void put(uint32_t value, int count) {
+        for (int i = 0; i < count; ++i) {
+            if (bit_ == 0) {
+                bytes_.push_back(0);
+            }
+            bytes_.back() |= static_cast<uint8_t>(((value >> i) & 1U) << bit_);
+            bit_ = (bit_ + 1) % 8;
+        }
+    }
+
+    // Trailing zero bytes, so a rejection is not merely running out of input.
+    std::vector<uint8_t> finish() {
+        std::vector<uint8_t> out = bytes_;
+        out.resize(out.size() + 64, 0);
+        return out;
+    }
+
+private:
+    std::vector<uint8_t> bytes_;
+    int bit_ = 0;
+};
+
+// BFINAL=1, BTYPE=10 (dynamic) and the HLIT/HDIST/HCLEN counts.
+BitWriter dynamic_header(uint32_t hlit, uint32_t hdist, uint32_t hclen) {
+    BitWriter w;
+    w.put(1, 1);
+    w.put(2, 2);
+    w.put(hlit, 5);
+    w.put(hdist, 5);
+    w.put(hclen, 4);
+    return w;
+}
+
+void expect_invalid(const std::vector<uint8_t>& stream) {
+    std::vector<uint8_t> out(1024);
+    auto r = wisp::inflate_raw(stream, out);
+    ASSERT_FALSE(r.is_ok());
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::InvalidArgument);
+}
+
 }  // namespace
 
 TEST(Inflate, RoundTripsZlibRawDeflate) {
@@ -149,4 +193,38 @@ TEST(Inflate, CorruptedStreamsNeverOverrun) {
             }
         }
     }
+}
+
+TEST(Inflate, RejectsOverSubscribedCodeLengths) {
+    // Four code-length symbols (16, 17, 18, 0) all of length 1: four 1-bit
+    // codes cannot exist.
+    BitWriter w = dynamic_header(0, 0, 0);
+    for (int i = 0; i < 4; ++i) {
+        w.put(1, 3);
+    }
+    expect_invalid(w.finish());
+}
+
+TEST(Inflate, RejectsTooManyLiteralLengthCodes) {
+    // HLIT = 30 -> 287 literal/length codes; RFC 1951 allows at most 286.
+    // The code-length code itself is valid (symbols 16 and 0, one bit each).
+    BitWriter w = dynamic_header(30, 0, 0);
+    w.put(1, 3);  // symbol 16
+    w.put(0, 3);  // symbol 17
+    w.put(0, 3);  // symbol 18
+    w.put(1, 3);  // symbol 0
+    expect_invalid(w.finish());
+}
+
+TEST(Inflate, RejectsRepeatAsFirstCodeLength) {
+    // Code-length code: symbol 0 -> code 0, symbol 16 -> code 1. The first
+    // decoded length is "repeat previous" with no previous length.
+    BitWriter w = dynamic_header(0, 0, 0);
+    w.put(1, 3);  // symbol 16
+    w.put(0, 3);  // symbol 17
+    w.put(0, 3);  // symbol 18
+    w.put(1, 3);  // symbol 0
+    w.put(1, 1);  // code 1 = symbol 16
+    w.put(0, 2);  // its repeat count
+    expect_invalid(w.finish());
 }

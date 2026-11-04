@@ -10,10 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "wisp/base/result.hpp"
 #include "wisp/os/large.hpp"
@@ -26,8 +24,11 @@ struct ZipLimits {
     size_t max_path = 128;          // bytes
 };
 
+// The entry list and its paths live in Mem::Large: their size is chosen by
+// whoever built the (untrusted) archive, and small allocations would
+// otherwise come from internal RAM (AGENTS.md section 8).
 struct ZipEntry {
-    std::string path;  // directories keep their trailing '/'
+    os::LargeString path;  // directories keep their trailing '/'
     uint32_t crc32 = 0;
     uint32_t size = 0;
     uint32_t comp_size = 0;
@@ -44,7 +45,7 @@ public:
     // path), QuotaExceeded when the declared sizes exceed limits.max_total.
     static Result<ZipReader> open(std::span<const uint8_t> zip, ZipLimits limits = {});
 
-    const std::vector<ZipEntry>& entries() const { return entries_; }
+    const os::LargeVector<ZipEntry>& entries() const { return entries_; }
 
     // Returns the entry's contents in Mem::Large, checked against its
     // declared size and CRC. Errors: InvalidArgument for a damaged entry,
@@ -52,12 +53,12 @@ public:
     Result<os::LargeBuffer> read(const ZipEntry& e) const;
 
 private:
-    ZipReader(std::span<const uint8_t> zip, std::vector<ZipEntry> entries, size_t cd_offset,
+    ZipReader(std::span<const uint8_t> zip, os::LargeVector<ZipEntry> entries, size_t cd_offset,
               size_t max_total)
         : zip_(zip), entries_(std::move(entries)), cd_offset_(cd_offset), max_total_(max_total) {}
 
     std::span<const uint8_t> zip_;
-    std::vector<ZipEntry> entries_;
+    os::LargeVector<ZipEntry> entries_;
     // read() takes any ZipEntry, not only one from entries(), so it
     // re-checks against these instead of trusting the entry: entry data
     // must end before the central directory, and no entry may need a

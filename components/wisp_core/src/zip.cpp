@@ -154,10 +154,18 @@ std::string_view without_slash(std::string_view p) {
     return p;
 }
 
+// An entry name can be up to 64 KB; messages show only its start so a
+// hostile name cannot inflate them.
+constexpr size_t kMaxShownPath = 160;
+
 template <class T>
 Result<T> bad(std::string_view path, const char* why) {
+    std::string shown = printable(path.substr(0, kMaxShownPath));
+    if (path.size() > kMaxShownPath) {
+        shown += "...";
+    }
     return Result<T>::err(ErrorCode::InvalidArgument,
-                          "zip entry '" + printable(path) + "': " + std::string(why));
+                          "zip entry '" + shown + "': " + std::string(why));
 }
 
 template <class T>
@@ -238,7 +246,7 @@ Result<ZipReader> ZipReader::open(std::span<const uint8_t> zip, ZipLimits limits
         return bad_archive<ZipReader>("central directory out of bounds");
     }
 
-    std::vector<ZipEntry> entries;
+    os::LargeVector<ZipEntry> entries;
     entries.reserve(total_entries);
     uint64_t total = 0;
     size_t pos = cd_offset;
@@ -254,8 +262,14 @@ Result<ZipReader> ZipReader::open(std::span<const uint8_t> zip, ZipLimits limits
         if (cd_end - pos - kCentralSize < name_len + extra_len + comment_len) {
             return bad_archive<ZipReader>("damaged central directory");
         }
+        // Validated in place: only a path that passes (and so is at most
+        // max_path bytes) is copied.
+        const std::string_view name(reinterpret_cast<const char*>(h + kCentralSize), name_len);
+        if (const char* why = path_problem(name, limits.max_path)) {
+            return bad<ZipReader>(name, why);
+        }
         ZipEntry entry;
-        entry.path.assign(reinterpret_cast<const char*>(h + kCentralSize), name_len);
+        entry.path.assign(name);
         const uint16_t flags = rd16(h + 8);
         entry.method = rd16(h + 10);
         entry.crc32 = rd32(h + 16);
@@ -266,9 +280,6 @@ Result<ZipReader> ZipReader::open(std::span<const uint8_t> zip, ZipLimits limits
         entry.local_offset = rd32(h + 42);
         pos += kCentralSize + name_len + extra_len + comment_len;
 
-        if (const char* why = path_problem(entry.path, limits.max_path)) {
-            return bad<ZipReader>(entry.path, why);
-        }
         entry.is_dir = entry.path.back() == '/';
         if ((flags & kFlagEncrypted) != 0) {
             return bad<ZipReader>(entry.path, "encrypted entries are not supported");
@@ -333,12 +344,19 @@ Result<os::LargeBuffer> ZipReader::read(const ZipEntry& e) const {
     // bit 3 set the local header carries zeros and the real values trail
     // the data.
     const uint16_t flags = rd16(h + 6);
+    const uint16_t method = rd16(h + 8);
     const size_t name_len = rd16(h + 26);
     const size_t extra_len = rd16(h + 28);
     const uint64_t data_start =
         static_cast<uint64_t>(e.local_offset) + kLocalSize + name_len + extra_len;
     if ((flags & kFlagEncrypted) != 0) {
         return bad<os::LargeBuffer>(e.path, "encrypted entries are not supported");
+    }
+    // The data is decoded with the central directory's method either way;
+    // a disagreeing local header means some other unzipper would read the
+    // entry differently, so the archive is rejected rather than trusted.
+    if (method != e.method) {
+        return bad<os::LargeBuffer>(e.path, "local header has a different compression method");
     }
     if (data_start + e.comp_size > cd_offset_) {
         return bad<os::LargeBuffer>(e.path, "entry data out of bounds");
@@ -351,8 +369,9 @@ Result<os::LargeBuffer> ZipReader::read(const ZipEntry& e) const {
 
     os::LargeBuffer out = os::LargeBuffer::allocate(e.size);
     if (!out.ok()) {
-        return R::err(ErrorCode::NoMemory, "zip entry '" + printable(e.path) +
-                                               "': " + std::to_string(e.size) + " bytes");
+        return R::err(ErrorCode::NoMemory,
+                      "zip entry '" + printable(std::string_view(e.path).substr(0, kMaxShownPath)) +
+                          "': " + std::to_string(e.size) + " bytes");
     }
     if (e.method == kMethodStored) {
         if (e.comp_size != e.size) {

@@ -267,12 +267,12 @@ TEST(StorageWorker, StackIsInternal)                   // task_config({}): stack
 
 ```cpp
 struct ZipLimits { size_t max_entries = 256; size_t max_total = 512 * 1024; size_t max_path = 128; };
-struct ZipEntry { std::string path; uint32_t crc32 = 0; uint32_t size = 0; uint32_t comp_size = 0;
+struct ZipEntry { os::LargeString path; uint32_t crc32 = 0; uint32_t size = 0; uint32_t comp_size = 0;
                   uint16_t method = 0; uint32_t local_offset = 0; bool is_dir = false; };
 class ZipReader {
 public:
     static Result<ZipReader> open(std::span<const uint8_t> zip, ZipLimits limits = {});
-    const std::vector<ZipEntry>& entries() const;
+    const os::LargeVector<ZipEntry>& entries() const;
     Result<os::LargeBuffer> read(const ZipEntry& e) const;   // method 0 或 8；校验 CRC 与大小
 };
 class ZipWriter {
@@ -281,6 +281,8 @@ public:
     os::LargeBuffer finish();
 };
 ```
+
+- 条目列表与路径放 PSRAM（`os::LargeVector`/`os::LargeString`）：其大小由不可信的上传包决定，按 `std::vector`/`std::string` 会落进内部 RAM（AGENTS.md 第 8 节），在上传这种最坏预算场景下挤占 httpd/TLS 所需的内部 RAM。原接口写的是 `std::vector`/`std::string`，实施时发现此问题，已裁定改为 Large 容器。
 
 - `open()` 只解析中央目录、校验每个条目，不解压：相对路径；不得以 `/` 开头；不含 `\`、`:`、空段、`.`、`..`；有效 UTF-8；≤ 128 字节；不重复；Unix 外部属性为符号链接（`S_IFLNK`）的拒绝；加密位（通用标志位 0）拒绝；方法只许 0/8；Zip64 拒绝；声明的未压缩大小之和 > `max_total` 拒绝；条目数 > `max_entries` 拒绝。错误为 `InvalidArgument`，消息含条目路径，超大为 `QuotaExceeded`。
 

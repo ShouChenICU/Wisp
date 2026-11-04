@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "wisp/base/crc32.hpp"
@@ -38,6 +39,20 @@ const wisp::core::ZipEntry* find(const wisp::core::ZipReader& z, std::string_vie
         }
     }
     return nullptr;
+}
+
+// The entry list and its paths are sized by untrusted input, so they live
+// in Mem::Large rather than internal RAM.
+static_assert(std::is_same_v<decltype(wisp::core::ZipEntry::path), wisp::os::LargeString>);
+static_assert(std::is_same_v<decltype(std::declval<const wisp::core::ZipReader&>().entries()),
+                             const wisp::os::LargeVector<wisp::core::ZipEntry>&>);
+
+// A one-entry stored archive from ZipWriter; its local header starts at 0.
+std::vector<uint8_t> one_entry(std::string_view path, std::string_view body) {
+    wisp::core::ZipWriter w;
+    w.add(path, bytes(body));
+    wisp::os::LargeBuffer zip = w.finish();
+    return {zip.data(), zip.data() + zip.size()};
 }
 
 }  // namespace
@@ -217,4 +232,41 @@ TEST(ZipWriter, RoundTripsThroughReader) {
     auto reopened = wisp::core::ZipReader::open(second.span());
     ASSERT_TRUE(reopened.is_ok()) << reopened.error().message;
     ASSERT_EQ(reopened.value().entries().size(), 1u);
+}
+
+TEST(Zip, RejectsLocalHeaderThatDisagreesWithCentralDirectory) {
+    {
+        // Local name "main.lub" against central "main.lua".
+        std::vector<uint8_t> blob = one_entry("main.lua", "print(1)");
+        ASSERT_EQ(blob[30 + 7], 'a');
+        blob[30 + 7] = 'b';
+        auto opened = wisp::core::ZipReader::open(blob);
+        ASSERT_TRUE(opened.is_ok()) << opened.error().message;
+        auto r = opened.value().read(opened.value().entries()[0]);
+        ASSERT_FALSE(r.is_ok());
+        EXPECT_EQ(r.error().code, wisp::ErrorCode::InvalidArgument);
+        EXPECT_NE(r.error().message.find("main.lua"), std::string::npos) << r.error().message;
+    }
+    {
+        // Local method 8 against central method 0.
+        std::vector<uint8_t> blob = one_entry("main.lua", "print(1)");
+        ASSERT_EQ(blob[8], 0);
+        blob[8] = 8;
+        auto opened = wisp::core::ZipReader::open(blob);
+        ASSERT_TRUE(opened.is_ok()) << opened.error().message;
+        auto r = opened.value().read(opened.value().entries()[0]);
+        ASSERT_FALSE(r.is_ok());
+        EXPECT_EQ(r.error().code, wisp::ErrorCode::InvalidArgument);
+        EXPECT_NE(r.error().message.find("main.lua"), std::string::npos) << r.error().message;
+    }
+}
+
+TEST(Zip, LongNameIsRejectedWithAShortenedMessage) {
+    const std::string name(60000, 'q');
+    const std::vector<uint8_t> blob = one_entry(name, "x");
+    auto r = wisp::core::ZipReader::open(blob);
+    ASSERT_FALSE(r.is_ok());
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_NE(r.error().message.find(std::string(160, 'q') + "..."), std::string::npos);
+    EXPECT_LT(r.error().message.size(), 256u);
 }
