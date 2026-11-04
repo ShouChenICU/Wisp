@@ -91,7 +91,7 @@ TEST(Queue, DropOldestWhenFull) {
     EXPECT_EQ(v, 3);
 }
 TEST(Os, AllocKinds) {
-    for (auto m : {Mem::Fast, Mem::Large, Mem::Dma}) {
+    for (auto m : {Mem::Fast, Mem::Large, Mem::Dma, Mem::DmaLarge}) {
         void* p = alloc(64, m);
         ASSERT_NE(p, nullptr);
         dealloc(p);

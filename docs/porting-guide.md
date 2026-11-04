@@ -53,7 +53,7 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 
 | 类别 | 必填 caps |
 |---|---|
-| `Display` | `width`、`height`、`shape`（`rect`/`rounded_rect`/`circle`）、`corner_radius`（`rounded_rect` 时）、`panel`、`brightness`、`area_align`；可选 `rgb565_be`（面板要 RGB565 高字节在前时为 true，UI 直接按这个字节序渲染） |
+| `Display` | `width`、`height`、`shape`（`rect`/`rounded_rect`/`circle`）、`corner_radius`（`rounded_rect` 时）、`panel`、`brightness`、`area_align`；可选 `rgb565_be`（面板要 RGB565 高字节在前时为 true，UI 直接按这个字节序渲染）；可选绘制缓冲策略，不写就是两块 24 行、内部 DMA RAM、局部刷新：`draw_buf_lines`（每块行数，默认 24，超过屏高按屏高）、`draw_buf_mem`（`"dma"` 默认，内部 DMA RAM；`"large"` 为 DMA 可读的 PSRAM，即 `Mem::DmaLarge`，只在芯片 DMA 能读 PSRAM、屏幕驱动也能从 PSRAM 发送时声明，分配不到时退回 `"dma"`）、`render_mode`（只实现了 `"partial"`；`"full"`/`"direct"` 是保留名，目前告警后按 `"partial"` 处理）。非法值告警后用默认值，不阻止启动（`wisp/ui/draw_buf_policy.hpp`）。ESP 端口通过 `EspDisplayConfig` 的同名字段发布 |
 | `Touch` | `max_points` |
 | `Imu` | `accel`、`gyro`、`magnetometer`、`max_rate_hz` |
 | `Power` | `battery`、`charging_status` |

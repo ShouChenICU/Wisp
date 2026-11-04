@@ -87,6 +87,10 @@ EspDisplay::EspDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t i
         {"area_align", config_.area_align},
         {"rgb565_be", config_.rgb565_be},
     };
+    if (config_.draw_buf_lines > 0) info_.caps["draw_buf_lines"] = config_.draw_buf_lines;
+    if (!config_.draw_buf_mem.empty())
+        info_.caps["draw_buf_mem"] = wisp::Value(config_.draw_buf_mem);
+    if (!config_.render_mode.empty()) info_.caps["render_mode"] = wisp::Value(config_.render_mode);
 }
 
 EspDisplay::~EspDisplay() {

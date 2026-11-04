@@ -409,7 +409,7 @@ public:
 | `Mutex` | FreeRTOS 互斥锁 | `std::mutex` |
 | `Timer` | esp_timer（单次/周期） | 定时线程 |
 | 时钟 | `now_ms()`、`sleep_ms()` | `std::chrono` |
-| 内存 | `alloc(size, Mem::Large)` → PSRAM；`Mem::Fast` → 内部 RAM；`Mem::Dma` → DMA 可用内存 | `malloc` |
+| 内存 | `alloc(size, Mem::Large)` → PSRAM；`Mem::Fast` → 内部 RAM；`Mem::Dma` → DMA 可用内存；`Mem::DmaLarge` → DMA 可读的 PSRAM（按 cache 行对齐，芯片 DMA 读不了 PSRAM 时返回空） | `malloc` |
 
 只封装上表内容，不做成通用 RTOS 抽象。
 
@@ -435,7 +435,7 @@ bus.publish(event);                  // 异步：入队后由分发任务派发
 - **只有 UI 任务可以调用 LVGL**；其他任务通过 `UiRuntime::post(fn)` 投递；
 - `wisp_ui` 基于 `hal::Display` 和 `hal::Touch` 实现 LVGL 的显示驱动和输入驱动，因此不依赖 esp_lvgl_port，两个目标共用；
 - 像素格式 RGB565，字节序按 Display caps 的 `rgb565_be`：面板要高字节在前时 LVGL 直接按这个顺序渲染（`LV_COLOR_FORMAT_RGB565_SWAPPED`），不再逐段交换字节；
-- 局部刷新，两块各 `buffer_lines` 行的缓冲，按 `Mem::Dma` 分配：flush 回调用 `Display::flush_async()` 启动传输后立即返回，LVGL 接着往另一块缓冲渲染，需要复用某块缓冲前经 flush-wait 回调调用 `Display::wait_flush()`。两块缓冲的总量与内部 RAM 预算挂钩（AGENTS.md 第 5 节），行数在真机上按帧率和预算一起调优（见 `docs/hardware/waveshare_amoled_216.md` 的"性能基准"）；
+- 局部刷新，两块缓冲，行数和内存类型由 Display caps 声明（`draw_buf_lines`，默认 24；`draw_buf_mem`，默认 `"dma"` 即 `Mem::Dma`，`"large"` 为 DMA 可读的 PSRAM `Mem::DmaLarge`，分配失败退回 `Mem::Dma`；`render_mode` 只实现 `"partial"`，`"full"`/`"direct"` 为保留名，告警后按局部刷新处理），字段说明见 `docs/porting-guide.md` 的能力字段表；flush 回调用 `Display::flush_async()` 启动传输后立即返回，LVGL 接着往另一块缓冲渲染，需要复用某块缓冲前经 flush-wait 回调调用 `Display::wait_flush()`。两块缓冲的总量与内部 RAM 预算挂钩（AGENTS.md 第 5 节），行数在真机上按帧率和预算一起调优（见 `docs/hardware/waveshare_amoled_216.md` 的"性能基准"）；
 - LVGL tick 由 `wisp_os` 时钟提供。
 
 ### 6.5 日志

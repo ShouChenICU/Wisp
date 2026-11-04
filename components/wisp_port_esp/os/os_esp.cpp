@@ -24,6 +24,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#include "soc/soc_caps.h"
 #include "wisp/os/os.hpp"
 #include "wisp/port/esp/stack_placement.hpp"
 
@@ -92,6 +93,15 @@ void* alloc(size_t bytes, Mem kind) {
             return heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         case Mem::Dma:
             return heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        case Mem::DmaLarge:
+            // The PSRAM heap never carries MALLOC_CAP_DMA; cache-line
+            // alignment is what lets a DMA-capable chip's driver write
+            // back and send a buffer from it.
+#if SOC_PSRAM_DMA_CAPABLE
+            return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
+#else
+            return nullptr;
+#endif
     }
     return nullptr;
 }

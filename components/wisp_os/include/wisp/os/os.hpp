@@ -34,8 +34,11 @@ void sleep_ms(uint32_t ms);
 constexpr uint32_t kForever = UINT32_MAX;
 
 // Memory allocation hints. The simulator ignores them; the ESP-IDF port
-// will route Fast/Dma to internal/DMA-capable RAM and Large to PSRAM.
-enum class Mem { Fast, Large, Dma };
+// routes Fast/Dma to internal/DMA-capable RAM and Large to PSRAM.
+// DmaLarge is PSRAM a DMA engine can read, cache-line aligned; on a chip
+// whose DMA cannot reach PSRAM it always fails (returns nullptr), so a
+// caller falls back to Dma.
+enum class Mem { Fast, Large, Dma, DmaLarge };
 
 void* alloc(size_t bytes, Mem kind);
 void dealloc(void* p);

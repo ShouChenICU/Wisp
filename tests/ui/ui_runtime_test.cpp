@@ -428,7 +428,7 @@ namespace {
 // checksum taken at flush_async() must still match at wait_flush()).
 class AsyncFakeDisplay : public wisp::hal::Display {
 public:
-    AsyncFakeDisplay(int width, int height, bool rgb565_be) {
+    AsyncFakeDisplay(int width, int height, bool rgb565_be, int draw_buf_lines = 0) {
         info_.id = "display.main";
         info_.cls = kClass;
         info_.model = "FAKE";
@@ -437,6 +437,7 @@ public:
             {"area_align", 2},        {"shape", wisp::Value("rect")},
             {"rgb565_be", rgb565_be},
         };
+        if (draw_buf_lines > 0) info_.caps["draw_buf_lines"] = draw_buf_lines;
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -555,10 +556,9 @@ private:
 // wire. A moving, text-filled screen split into many stripes exercises
 // the hand-over between them.
 TEST(UiRuntime, RendersIntoOneBufferWhileTheOtherIsOnTheWire) {
-    auto disp = std::make_shared<AsyncFakeDisplay>(480, 480, false);
-    wisp::ui::UiConfig config;
-    config.buffer_lines = 16;
-    wisp::ui::UiRuntime ui(disp, nullptr, config);
+    constexpr uint32_t kLines = 16;
+    auto disp = std::make_shared<AsyncFakeDisplay>(480, 480, false, kLines);
+    wisp::ui::UiRuntime ui(disp, nullptr);
     ASSERT_TRUE(ui.start());
 
     wisp::os::Semaphore done(1, 0);
@@ -590,8 +590,8 @@ TEST(UiRuntime, RendersIntoOneBufferWhileTheOtherIsOnTheWire) {
     }));
     ASSERT_TRUE(done.take(5000));
     EXPECT_TRUE(has_second);
-    EXPECT_EQ(first_bytes, 480u * config.buffer_lines * 2u);
-    EXPECT_EQ(second_bytes, 480u * config.buffer_lines * 2u);
+    EXPECT_EQ(first_bytes, 480u * kLines * 2u);
+    EXPECT_EQ(second_bytes, 480u * kLines * 2u);
 
     ASSERT_TRUE(wait_until([&] { return disp->async_flushes() > 200; }, 10000));
     EXPECT_EQ(disp->distinct_buffers(), 2u);
@@ -602,14 +602,33 @@ TEST(UiRuntime, RendersIntoOneBufferWhileTheOtherIsOnTheWire) {
     EXPECT_FALSE(disp->in_flight());
 }
 
+// Without draw-buffer caps the buffers are the 24-line default.
+TEST(UiRuntime, DrawBuffersDefaultTo24Lines) {
+    auto disp = std::make_shared<AsyncFakeDisplay>(480, 480, false);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+
+    wisp::os::Semaphore done(1, 0);
+    uint32_t first_bytes = 0;
+    uint32_t second_bytes = 0;
+    ASSERT_TRUE(ui.post([&] {
+        lv_display_t* d = lv_display_get_default();
+        first_bytes = d->buf_1 != nullptr ? d->buf_1->data_size : 0;
+        second_bytes = d->buf_2 != nullptr ? d->buf_2->data_size : 0;
+        done.give();
+    }));
+    ASSERT_TRUE(done.take(5000));
+    EXPECT_EQ(first_bytes, 480u * 24u * 2u);
+    EXPECT_EQ(second_bytes, 480u * 24u * 2u);
+    ui.stop();
+}
+
 // avg_flush_ms is per stripe, not per frame: 30 stripes of 16 lines, each
 // waited on for 2 ms, average about 2 ms however many make up a frame.
 TEST(UiRuntime, AverageFlushTimeIsPerStripe) {
-    auto disp = std::make_shared<AsyncFakeDisplay>(480, 480, false);
+    auto disp = std::make_shared<AsyncFakeDisplay>(480, 480, false, 16);
     disp->set_wait_ms(2);
-    wisp::ui::UiConfig config;
-    config.buffer_lines = 16;
-    wisp::ui::UiRuntime ui(disp, nullptr, config);
+    wisp::ui::UiRuntime ui(disp, nullptr);
     ASSERT_TRUE(ui.start());
 
     ASSERT_TRUE(ui.post([] {

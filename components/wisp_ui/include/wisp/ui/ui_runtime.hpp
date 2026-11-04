@@ -9,7 +9,7 @@
 //
 // This header (like ui_runtime.cpp) is built against the exact same
 // components/wisp_ui/config/lv_conf.h on both the PC simulator and the
-// ESP32-S3 firmware build -- it must stay free of esp_*/freertos*/SDL*
+// firmware build -- it must stay free of esp_*/freertos*/SDL*
 // headers (see wisp/os/os.hpp for the same portability rule). Including
 // "lvgl.h" itself is fine: LVGL itself is portable, and wisp_ui's whole
 // purpose is to be the portable LVGL wrapper.
@@ -26,12 +26,9 @@
 
 namespace wisp::ui {
 
+// The draw buffers' size and placement are the display's to declare, in
+// its caps (wisp/ui/draw_buf_policy.hpp), not the runtime's.
 struct UiConfig {
-    // Height (in pixels) of each of the two partial draw buffers, which
-    // are width * buffer_lines * 2 bytes (RGB565) each, allocated via
-    // os::alloc(..., Mem::Dma). LVGL renders into one while the display
-    // sends the other (Display::flush_async()).
-    uint32_t buffer_lines = 24;
     uint32_t task_stack = 8192;
     int task_priority = 4;
 };
@@ -76,8 +73,9 @@ public:
     UiRuntime& operator=(const UiRuntime&) = delete;
 
     // Calls lv_init(), creates the LVGL display (resolution taken from
-    // `display`'s caps) with two buffer_lines-tall partial draw buffers
-    // in the byte order of caps "rgb565_be",
+    // `display`'s caps) with two partial draw buffers sized and placed
+    // by draw_buf_policy() from the same caps, in the byte order of caps
+    // "rgb565_be",
     // installs default_font() as the theme font, registers the
     // LV_EVENT_INVALIDATE_AREA handler that aligns flush areas to the
     // display's caps "area_align" (default 1, i.e. unaligned), wires up
