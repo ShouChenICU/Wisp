@@ -29,18 +29,28 @@ struct Arena {
     uint8_t* chunk = nullptr;
     size_t used = kArenaChunk;
     size_t total = 0;
+    std::vector<uint8_t*> chunks;  // every chunk taken, for reset()
 
     uint8_t* take(size_t bytes) {
         if (bytes > kArenaChunk || total + bytes > kA8CacheBytes) return nullptr;
         if (used + bytes > kArenaChunk) {
             chunk = static_cast<uint8_t*>(os::alloc(kArenaChunk, os::Mem::Large));
             if (chunk == nullptr) return nullptr;
+            chunks.push_back(chunk);
             used = 0;
         }
         uint8_t* p = chunk + used;
         used += bytes;
         total += bytes;
         return p;
+    }
+
+    void reset() {
+        for (uint8_t* c : chunks) os::dealloc(c);
+        chunks.clear();
+        chunk = nullptr;
+        used = kArenaChunk;
+        total = 0;
     }
 };
 
@@ -192,6 +202,15 @@ const lv_font_t* a8_font(const lv_font_t* base) {
     w->font.fallback = a8_font(base->fallback);
     wrappers().push_back(std::move(w));
     return &wrappers().back()->font;
+}
+
+void reset_a8_cache_for_test() {
+    for (const auto& w : wrappers()) {
+        os::dealloc(w->slots);
+        w->slots = nullptr;
+        w->slots_failed = false;
+    }
+    arena().reset();
 }
 
 }  // namespace wisp::ui

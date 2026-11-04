@@ -70,6 +70,8 @@ std::vector<uint8_t> coverage(const lv_font_t* font, uint32_t letter, bool via_d
 class A8FontTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // Each test starts from an empty cache, whatever ran before.
+        wisp::ui::reset_a8_cache_for_test();
         disp_ = std::make_shared<FakeDisplay>("display.main", 480, 480);
         ui_ = std::make_unique<wisp::ui::UiRuntime>(disp_, nullptr);
         ASSERT_TRUE(ui_->start());
@@ -110,8 +112,6 @@ protected:
     std::unique_ptr<wisp::ui::UiRuntime> ui_;
 };
 
-// Runs first: the glyphs it asks for must still fit the cache, which the
-// next test fills up.
 TEST_F(A8FontTest, TheDefaultFontHandsOutA8Glyphs) {
     std::string problem;
     wisp::test::run_on_ui_blocking(ui_.get(), [&] {
