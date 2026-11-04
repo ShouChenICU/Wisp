@@ -100,6 +100,7 @@
 | 41 | 启动失败自动回滚（`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`） | 临时在 `firmware/main/main.cpp` 的 `app_main()` 开头加一行 `abort();` 构建（不要提交），上传并在设备上确认 | 新镜像崩溃复位后，引导程序回到旧镜像；网页提示"设备重启后运行的仍是旧版本，已回滚"；之后上传正常镜像仍能装上 |  |
 | 42 | 发布版帧率（全局 `-Os`、渲染路径 `-O2`） | 用默认（发布版）配置构建烧录，重复第 33 项 | `WISP_PERF` 的 fps ≥ 30，不低于第 33 项记下的基准。达不到时先试把 `esp_driver_spi`（`esp_lcd_panel_io` 下面的 QSPI 传输层，目前按 `-Os` 编译）加进 `firmware/CMakeLists.txt` 的 `-O2` 匹配规则 |  |
 | 43 | 上传期间的日志推送 | 上传固件时打开"日志"页 | 上传期间日志暂停推送（httpd 只有一个任务，被上传请求占着），上传结束后恢复推送，WebSocket 不断开 |  |
+| 44 | 内部 RAM 最坏情况（AGENTS.md 第 5 节的预算） | 设备连上家里的 Wi-Fi 后在串口执行 `wifi ap on`，手机连上热点打开设置页；电脑经 STA 地址打开管理页的"日志"页（WebSocket），在"模型"页对一个真实的 HTTPS 端点做连通性测试，再上传一次固件；全程每隔几秒执行一次 `mem` | 日志里 `admin server listening on port 8900` 和 `captive redirect listening on port 80` 都出现，后面的 `internal RAM: ...` 行不是警告；`mem` 的 `internal free` 始终 ≥ 40 KB、`largest` ≥ 16 KB（`min` 是各内存区各自最低点之和，偏低，只能当下限看）；`wisp.ws`、`wisp.dns` 和端口 80 的 `httpd` 的栈在 `psram`，端口 8900 的 `httpd` 的栈在 `internal` | |
 
 ## 待机与省电（spec 6.7）
 
@@ -235,6 +236,38 @@
     `ESP_PM_CPU_FREQ_MAX` 锁），但会把浅睡眠的最长连续时长限制在 `ButtonService` 的
     50 ms 量级，略微拉高平均功耗。真机测得的待机电流如果明显高于预期，这些仍是优先
     排查的来源。
+
+## 内部 RAM
+
+预算和规则见 AGENTS.md 第 5 节。以下数据用串口命令 `mem` 实测（ESP-IDF v6.0.3，发布版）。`largest` 是 IDF 报告的可分配最大块；`min` 是各内存区各自最低点之和，偏低，只能当下限看。
+
+**问题**：没有保存任何网络时执行 `wifi ap on`，端口 80 的重定向能起来，端口 8900 的管理服务器却起不来（`httpd_start: ESP_ERR_HTTPD_TASK`）。当时内部 RAM 空闲 13.5 KB，最大块 7.7 KB，放不下 10 KB 的 httpd 栈。启动后内部堆的主要占用：
+
+| 占用 | 大小 |
+|---|---|
+| LVGL 局部刷新缓冲 2 × 480 × 48 × 2 B（`Mem::Dma`） | 90 KB |
+| Wi-Fi 静态 RX/TX 缓冲各 16 个（IDF 在开了 PSRAM 时的默认值） | 54 KB |
+| `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` 预留池（只给 DMA 和任务栈用，并没有浪费） | 32 KB |
+| 任务栈（`wisp_ui` 8 KB，`wisp.console`/`wisp.net`/`wisp.bus` 各 6 KB，`esp_timer`/`wifi` 各 6.5 KB 等） | 约 75 KB |
+
+`hal::Display::flush()` 要等传输完成才返回，LVGL 不可能一边往第二块缓冲画、一边传第一块，所以第二块缓冲（46 KB）完全没有用。
+
+**改动**：LVGL 只用一块 48 行的缓冲；Wi-Fi 静态 RX/TX 缓冲改为 10/10、RX BA 窗口改为 10（`firmware/sdkconfig.defaults`）；`wisp.ws`、`wisp.dns` 和端口 80 的 httpd 不碰 flash，栈改放 PSRAM。
+
+| 状态（空闲，服务都已启动） | 改动前 | 改动后 |
+|---|---|---|
+| 启动后，无网络 | 36.3 KB（最大块 21.5 KB） | 105.0 KB（31.7 KB） |
+| 只开热点（两个 httpd） | 13.5 KB（7.7 KB），管理服务器起不来 | 75.9 KB（31.7 KB） |
+| 只连 STA（管理 httpd + mDNS） | 62.6 KB¹ | 85.1 KB（31.7 KB） |
+| STA + 热点 | 41.1 KB¹（26.6 KB） | 70.5–71.9 KB（31.7 KB） |
+
+¹ 只把 LVGL 改成一块缓冲之后测得。
+
+STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动后）：配对 58 KB；扫描 58 KB；WebSocket 日志流加 TLS 握手 51 KB；WebSocket 加 OTA 上传 3.18 MB 约 60 KB；手机侧设置流程（302 跳转、`setup.html`、`/pair/ap`、扫描、WebSocket）51 KB。TLS 只测到证书校验失败为止：固件只开了 TLS 1.2，被拒绝的证书在 ECDHE 和签名校验之前就会中断握手，完整握手估计还要再多用几 KB，仍然高于 40 KB 的预算。真实端点的连通性测试见上面清单第 44 项。
+
+代价：OTA 上传 3.18 MB 从 15.1 s 变成 17.5 s（RX 缓冲少了）。用程序滚动自检列表（每帧 6 px），改动前后都是 8–9 fps；这已经远低于 30 fps，原因与本改动无关：flush 是同步的，每帧约 10 段 × 4.3 ms，CPU 占用 100%。
+
+**STA 和热点互斥能省多少**：只开热点比 STA + 热点只多 5.4 KB（mDNS 任务栈 4 KB 加 DHCP 客户端和关联状态），只连 STA 比 STA + 热点多 14.6 KB。热点部分本身：softAP 驱动、netif 和 DHCP 服务器约 10.6 KB；端口 80 的 httpd 约 3 KB（栈已移到 PSRAM，移之前是 7.1 KB）；DNS 任务 0.4 KB（移之前是 3.4 KB）。配网时热点不能不开，所以互斥只能把峰值降低约 5 KB。
 
 ## 性能基准
 
