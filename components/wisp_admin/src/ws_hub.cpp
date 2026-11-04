@@ -19,7 +19,7 @@ namespace {
 constexpr const char* kTag = "ws";
 
 // Event prefixes forwarded to "events" subscribers (spec 6.2).
-constexpr const char* kForwardedPrefixes[] = {"net.", "power.", "storage.", "system."};
+constexpr const char* kForwardedPrefixes[] = {"net.", "power.", "scene.", "storage.", "system."};
 
 // While a socket keeps refusing, the sender retries this often.
 constexpr uint32_t kRetryMs = 100;

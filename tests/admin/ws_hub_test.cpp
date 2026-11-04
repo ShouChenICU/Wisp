@@ -313,18 +313,21 @@ TEST(WsHub, ForwardsOnlyAllowedTopics) {
     bus.publish(Event{"power.state", "test", 0, {{"state", Value("active")}}});
     bus.publish(Event{"storage.sd.inserted", "test", 0, {}});
     bus.publish(Event{"system.boot.completed", "test", 0, {}});
+    bus.publish(
+        Event{"scene.state", "scene", 0, {{"id", Value("todo")}, {"state", Value("running")}}});
     bus.publish(Event{"networking", "test", 0, {}});
     ASSERT_TRUE(bus.wait_idle(2000));
     hub.pump();
 
     std::vector<Value> sent = events->sent();
-    ASSERT_EQ(sent.size(), 4u);
+    ASSERT_EQ(sent.size(), 5u);
     EXPECT_EQ(sent[0], Value(Map{{"t", Value("event")},
                                  {"topic", Value("net.wifi.state")},
                                  {"payload", Value(Map{{"state", Value("connected")}})}}));
     EXPECT_EQ(str(sent[1], "topic"), "power.state");
     EXPECT_EQ(str(sent[2], "topic"), "storage.sd.inserted");
     EXPECT_EQ(str(sent[3], "topic"), "system.boot.completed");
+    EXPECT_EQ(str(sent[4], "topic"), "scene.state");
     EXPECT_EQ(logs->sent_count(), 0u);
     bus.stop();
 }

@@ -60,6 +60,26 @@ std::optional<std::string> percent_decode(std::string_view s) {
     return out;
 }
 
+std::optional<net::HttpResponse> stream_refusal(const AdminDeps& deps,
+                                                const net::HttpRequest& head) {
+    if (!host_allowed(head)) {
+        return net::HttpResponse::error(403, "bad_host", "unexpected Host header");
+    }
+    const std::string token = head.cookie("wisp_token");
+    if (token.empty() || !deps.pairing.authenticate(token, deps.now_ms())) {
+        return net::HttpResponse::error(401, "unauthorized", "pair this browser first");
+    }
+    if (!csrf_ok(head)) {
+        return net::HttpResponse::error(403, "csrf", "missing X-Wisp: 1 header");
+    }
+    return std::nullopt;
+}
+
+net::StreamStart stream_answer(net::HttpResponse res) {
+    res.headers.emplace_back("Cache-Control", "no-store");
+    return net::StreamStart{nullptr, std::move(res)};
+}
+
 }  // namespace detail
 
 namespace {
@@ -167,6 +187,7 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_ai_routes(routes_);
     detail::add_system_routes(routes_);
     detail::add_firmware_routes(routes_);
+    detail::add_scene_routes(routes_);
     hub_ = std::make_unique<WsHub>(deps_.bus, deps_.boot_id);
     hub_->start();
     // Logout, DELETE /clients/{id} and the factory reset's revoke_all()
@@ -302,7 +323,10 @@ net::HttpHandler AdminServer::captive_handler() {
 }
 
 net::StreamHandler AdminServer::stream_handler() {
-    return [this](const net::HttpRequest& head) { return detail::firmware_stream(deps_, head); };
+    return [this](const net::HttpRequest& head) -> std::optional<net::StreamStart> {
+        if (auto firmware = detail::firmware_stream(deps_, head)) return firmware;
+        return detail::scene_stream(deps_, head);
+    };
 }
 
 net::WsHandlers AdminServer::ws_handlers() {

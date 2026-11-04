@@ -1,5 +1,6 @@
 #include "wisp/core/scene_repository.hpp"
 
+#include <mutex>
 #include <string>
 #include <utility>
 
@@ -223,6 +224,11 @@ Result<SceneManifest> SceneRepository::read_manifest(std::string_view id) {
 }
 
 Result<SceneInfo> SceneRepository::info(std::string_view id) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return info_locked(id);
+}
+
+Result<SceneInfo> SceneRepository::info_locked(std::string_view id) {
     Result<SceneManifest> m = read_manifest(id);
     if (!m) {
         return fail<SceneInfo>(m.error());
@@ -247,6 +253,7 @@ Result<SceneInfo> SceneRepository::info(std::string_view id) {
 
 Result<std::vector<SceneInfo>> SceneRepository::list() {
     using R = Result<std::vector<SceneInfo>>;
+    std::lock_guard<os::Mutex> lock(mutex_);
     std::vector<SceneInfo> out;
     Result<std::vector<DirEntry>> listed = storage_.list_dir(config_.code_root);
     if (!listed) {
@@ -259,7 +266,7 @@ Result<std::vector<SceneInfo>> SceneRepository::list() {
         if (e.kind != EntryKind::Dir || !valid_scene_id(e.name)) {
             continue;
         }
-        Result<SceneInfo> one = info(e.name);
+        Result<SceneInfo> one = info_locked(e.name);
         if (one) {
             out.push_back(std::move(one.value()));
         } else if (one.error().code != ErrorCode::NotFound) {
@@ -272,6 +279,7 @@ Result<std::vector<SceneInfo>> SceneRepository::list() {
 
 Result<ScenePackage> SceneRepository::load(std::string_view id) {
     using R = Result<ScenePackage>;
+    std::lock_guard<os::Mutex> lock(mutex_);
     Result<SceneManifest> m = read_manifest(id);
     if (!m) {
         return fail<ScenePackage>(m.error());
@@ -408,6 +416,7 @@ Result<SceneInfo> SceneRepository::install(std::span<const uint8_t> zip,
         }
     }
 
+    std::lock_guard<os::Mutex> lock(mutex_);
     // An earlier replace of this id that was cut short completes first, so
     // its staging names are free again.
     {
@@ -449,7 +458,7 @@ Result<SceneInfo> SceneRepository::install(std::span<const uint8_t> zip,
                join_hosts(manifest.http_hosts).c_str());
     }
     WLOG_I(kTag, "installed %s %s", id.c_str(), manifest.version.c_str());
-    return info(id);
+    return info_locked(id);
 }
 
 Result<void> SceneRepository::finish_replace(const std::string& id) {
@@ -496,6 +505,7 @@ Result<void> SceneRepository::recover() {
     if (config_.dev) {
         return Result<void>::ok();
     }
+    std::lock_guard<os::Mutex> lock(mutex_);
     Result<std::vector<DirEntry>> listed = storage_.list_dir(config_.code_root);
     if (!listed) {
         if (listed.error().code == ErrorCode::NotFound) {
@@ -535,6 +545,7 @@ Result<void> SceneRepository::recover() {
 
 Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id, bool with_data) {
     using R = Result<os::LargeBuffer>;
+    std::lock_guard<os::Mutex> lock(mutex_);
     Result<SceneManifest> m = read_manifest(id);
     if (!m) {
         return fail<os::LargeBuffer>(m.error());
@@ -575,6 +586,7 @@ Result<void> SceneRepository::remove(std::string_view id_view, bool with_data) {
         return R::err(ErrorCode::InvalidArgument, "invalid scene id: " + std::string(id_view));
     }
     const std::string id(id_view);
+    std::lock_guard<os::Mutex> lock(mutex_);
     WISP_TRY(finish_replace(id));
 
     const std::string dir = code_dir(id);

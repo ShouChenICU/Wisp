@@ -56,9 +56,12 @@ struct HttpResponse {
     std::vector<std::pair<std::string, std::string>> headers;
     std::string body;
     // When non-empty it is sent instead of `body` without copying (asset-
-    // pack data that lives in mapped flash); the bytes must outlive the
-    // response.
+    // pack data that lives in mapped flash, or a buffer `body_owner`
+    // keeps alive); the bytes must outlive the response.
     std::span<const uint8_t> static_body;
+    // Keeps whatever static_body points into alive until the response has
+    // been sent (a scene export zip in PSRAM). Null for mapped data.
+    std::shared_ptr<const void> body_owner;
 
     static HttpResponse json(int status, const Value& v);
     // {"error": {"code": ..., "message": ...}} (spec 6.1).

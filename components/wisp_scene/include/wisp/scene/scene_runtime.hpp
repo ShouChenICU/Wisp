@@ -205,7 +205,8 @@ public:
     Result<void> close(const std::string& id) override;
     Result<void> reload(const std::string& id) override;
     core::SceneStatus status(const std::string& id) const override;
-    // Busy when the runtime is not running; Timeout after 10 s.
+    // Busy when the runtime is not running, or when called on the UI
+    // thread or the storage worker (neither may wait); Timeout after 10 s.
     Result<void> check_sources(std::span<const core::SourceFile> files) override;
     void on_installed(const std::string& id) override;
 

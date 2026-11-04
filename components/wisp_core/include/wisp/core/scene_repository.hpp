@@ -24,8 +24,12 @@
 // .<id>.newdir. The staging names end in "dir" because StorageManager
 // reserves names ending in ".tmp"/".new" for its own file writes.
 //
-// Not thread-safe: every method runs on the wisp.fs worker, which
-// serializes them.
+// Thread-safe: each method holds the repository's lock while it touches
+// the files, so the wisp.fs worker (opening, deleting) and HTTP server
+// threads (installing, exporting) never see each other's half-done work.
+// install() takes it only after its checker has returned, since a checker
+// may wait seconds for the scene task. A SceneStore's own writes under
+// data/ do not take this lock.
 
 #include <cstddef>
 #include <cstdint>
@@ -40,6 +44,7 @@
 #include "wisp/core/scene_manifest.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/os/large.hpp"
+#include "wisp/os/os.hpp"
 
 namespace wisp::core {
 
@@ -115,15 +120,22 @@ public:
     // <data_root>/<id>/data
     std::string data_dir(std::string_view id) const;
 
+    // The code root is a working directory (SceneRepoConfig::dev): install()
+    // and remove() are Unsupported.
+    bool dev() const { return config_.dev; }
+
 private:
     std::string code_dir(std::string_view id) const;
     // scene.json of <id>, checked to name <id>; NotFound if absent.
     Result<SceneManifest> read_manifest(std::string_view id);
     // Steps 3-5 of the replace in the file header, if .<id>.newdir exists.
     Result<void> finish_replace(const std::string& id);
+    // info() with the lock already held.
+    Result<SceneInfo> info_locked(std::string_view id);
 
     StorageManager& storage_;
     SceneRepoConfig config_;
+    os::Mutex mutex_;
 };
 
 }  // namespace wisp::core

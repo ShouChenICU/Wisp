@@ -180,13 +180,22 @@ class LogLines extends Component {
   }
 }
 
+/**
+ * The "tag" of a "#/logs?tag=scene.todo" link (the scenes page's log
+ * button), which starts the search box filled in; "" without one.
+ */
+function tagFromHash() {
+  const q = location.hash.split('?')[1] || '';
+  return new URLSearchParams(q).get('tag') || '';
+}
+
 export function LogsPage() {
   const [status, setStatus] = useState('idle'); // idle|connecting|live|retrying|stopped
   const [stopNote, setStopNote] = useState('');
   const [paused, setPaused] = useState(false);
   const [missed, setMissed] = useState(0);
   const [minLevel, setMinLevel] = useState('D');
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(tagFromHash);
   const [stats, setStats] = useState({ total: 0, shown: 0 });
   const [following, setFollowing] = useState(true);
 

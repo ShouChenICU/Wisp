@@ -238,7 +238,7 @@ esp_err_t send_response(httpd_req_t* r, const net::HttpResponse& res) {
     size_t len = 0;
     if (!bodyless) {
         if (!res.static_body.empty()) {
-            // Straight from the mapped asset partition, no copy.
+            // No copy: mapped asset data, or a buffer body_owner keeps alive.
             data = reinterpret_cast<const char*>(res.static_body.data());
             len = res.static_body.size();
         } else {

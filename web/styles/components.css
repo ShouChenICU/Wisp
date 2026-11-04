@@ -2048,6 +2048,32 @@ textarea {
   border-top: 1px solid var(--border);
 }
 
+/* Scenes page: a row's actions, each group wrapping on narrow screens. */
+.scene-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-sm);
+  margin-top: var(--gap-md);
+}
+
+.scene-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.scene-check input {
+  accent-color: var(--accent);
+}
+
+.scene-error {
+  margin-top: var(--gap-md);
+}
+
 .form-actions {
   display: flex;
   flex-wrap: wrap;

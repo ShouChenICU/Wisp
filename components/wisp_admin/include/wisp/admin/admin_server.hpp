@@ -26,8 +26,8 @@
 //      wisp_token cookie (401 unauthorized), then POST/PUT/DELETE need
 //      "X-Wisp: 1" (403 csrf, whitelist included), then the body must be
 //      at most 8 KiB (413) and, when non-empty, valid JSON (400 bad_json).
-//      The firmware upload is the exception: its body is streamed (see
-//      stream_handler()) and never reaches handle().
+//      The firmware and scene uploads are the exceptions: their bodies
+//      are streamed (see stream_handler()) and never reach handle().
 //
 // WebSocket (/api/v1/ws): the upgrade passes the same Host check and needs
 // the same wisp_token cookie as the API; accepted connections are handed
@@ -59,6 +59,8 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/model_profiles.hpp"
+#include "wisp/core/scene_host.hpp"
+#include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/asset_pack.hpp"
@@ -100,6 +102,18 @@ struct AdminDeps {
     // Firmware upload (spec 6.5). Null: GET /system/firmware reports
     // supported false and every upload is 501.
     core::FirmwareUpdateService* firmware = nullptr;
+    // Installed scenes (scene-runtime-core spec 7.1). Null: every /scenes
+    // route answers 503 unavailable.
+    core::SceneRepository* scenes = nullptr;
+    // Runs scenes and compiles uploads. Null (no display, so no runtime):
+    // open/close/reload and uploads answer 503; the list shows every scene
+    // as stopped.
+    core::SceneHost* scene_host = nullptr;
+    // Asks the user on the device whether to delete `id` (and its data
+    // when `with_data`); the outcome is published as a "scene.state"
+    // event ("deleted") rather than returned. Busy while another dialog
+    // is open. Empty: DELETE /scenes/{id} answers 503.
+    std::function<Result<void>(const std::string& id, bool with_data)> request_scene_delete = {};
     // Monotonic os::now_ms() timebase; the only clock the router uses.
     // Tests inject their own; left empty, AdminServer uses os::now_ms().
     std::function<uint64_t()> now_ms = [] { return os::now_ms(); };
@@ -142,10 +156,11 @@ public:
     net::WsHandlers ws_handlers();
 
     // The HttpServer's StreamHandler: takes POST /api/v1/system/firmware
-    // (the firmware image, streamed into AdminDeps::firmware after the
-    // same Host, token and X-Wisp checks as any API call; 411 without a
-    // Content-Length) and leaves every other request to handle(). Captures
-    // this AdminServer, like ws_handlers().
+    // (the firmware image, streamed into AdminDeps::firmware) and POST
+    // /api/v1/scenes (a scene zip, collected in PSRAM and installed when
+    // complete), each after the same Host, token and X-Wisp checks as any
+    // API call and 411 without a Content-Length, and leaves every other
+    // request to handle(). Captures this AdminServer, like ws_handlers().
     net::StreamHandler stream_handler();
 
     // WsHub::flush() on this server's hub.

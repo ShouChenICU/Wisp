@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <span>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -486,4 +488,46 @@ TEST(SceneRepository, LogsHostChanges) {
     }
     EXPECT_TRUE(found);
     wisp::log::reset_for_test();
+}
+
+// Installs arrive on HTTP server threads while the storage worker loads and
+// removes scenes: every method serializes on the repository's own lock.
+TEST(SceneRepository, ConcurrentCallsAreSerialized) {
+    Fixture fx;
+    ASSERT_TRUE(fx.install(todo_files("1.0.0")));
+    std::atomic<int> failures{0};
+    auto installer = [&](const char* version) {
+        for (int i = 0; i < 15; ++i) {
+            if (!fx.install(todo_files(version))) ++failures;
+        }
+    };
+    auto reader = [&] {
+        for (int i = 0; i < 30; ++i) {
+            if (!fx.repo->load("todo")) ++failures;
+            auto listed = fx.repo->list();
+            if (!listed || listed.value().size() != 1) ++failures;
+        }
+    };
+    std::thread a(installer, "1.0.1");
+    std::thread b(installer, "1.0.2");
+    std::thread c(reader);
+    a.join();
+    b.join();
+    c.join();
+    EXPECT_EQ(failures.load(), 0);
+}
+
+// The checker may take as long as it likes (it waits for the scene task),
+// so the lock is not held while it runs: it can use the repository itself.
+TEST(SceneRepository, CheckerRunsOutsideTheLock) {
+    Fixture fx;
+    ASSERT_TRUE(fx.install(todo_files("1.0.0")));
+    std::vector<uint8_t> zip = zip_of(todo_files("1.1.0"));
+    bool listed = false;
+    auto r = fx.repo->install(zip, [&](std::span<const SourceFile>) {
+        listed = static_cast<bool>(fx.repo->list());
+        return Result<void>::ok();
+    });
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_TRUE(listed);
 }

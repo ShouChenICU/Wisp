@@ -151,6 +151,18 @@ export function upload(path, file, opts = {}) {
   return { done, abort: () => xhr.abort() };
 }
 
+/**
+ * The URL of a scene's export (GET /scenes/{id}/export), for a download
+ * link: a GET needs no X-Wisp header and the cookie goes along on its own.
+ *
+ * @param {string} id
+ * @param {boolean} withData  include the scene's data/ directory
+ * @returns {string}
+ */
+export function exportUrl(id, withData) {
+  return `${PREFIX}/scenes/${encodeURIComponent(id)}/export?data=${withData ? 1 : 0}`;
+}
+
 // Several parts of the app want /info at start-up (boot, the shell, the
 // overview); one request serves them all.
 const INFO_MAX_AGE_MS = 2000;

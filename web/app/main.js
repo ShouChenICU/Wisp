@@ -1,8 +1,8 @@
 // Entry point of the admin UI: registers the pages and renders the shell.
 //
 // Layout (spec 7.2): below 768 px a top bar plus a bottom tab bar with
-// five tabs, the log page being reached from the system page; from 768 px
-// a left sidebar that lists the log page on its own. Both are rendered and
+// five tabs, the scene and log pages being reached from the system page;
+// from 768 px a left sidebar that lists those two on their own. Both are rendered and
 // CSS shows the one that fits, so resizing never remounts the page.
 
 import { html, render, useEffect, useRef, useState } from '../vendor/htm-preact-3.1.1.mjs';
@@ -18,6 +18,7 @@ import {
   IconLogs,
   IconModel,
   IconOverview,
+  IconPackage,
   IconSystem,
   IconWifi,
   WispGlyph,
@@ -29,6 +30,7 @@ import { LogsPage } from './pages/logs.js';
 import { NetworkPage } from './pages/network.js';
 import { ModelsPage } from './pages/models.js';
 import { SystemPage, confirmLogout } from './pages/system.js';
+import { ScenesPage } from './pages/scenes.js';
 
 route('/pair', PairPage);
 route('/overview', OverviewPage);
@@ -37,6 +39,7 @@ route('/network', NetworkPage);
 route('/models', ModelsPage);
 route('/system', SystemPage);
 route('/logs', LogsPage);
+route('/scenes', ScenesPage);
 
 /**
  * Navigation entries; `wide` ones only appear in the sidebar. `href` (a
@@ -48,12 +51,13 @@ const NAV = [
   { path: '/network', label: 'nav.network', icon: IconWifi },
   { path: '/models', href: '/models/llm', label: 'nav.model', icon: IconModel },
   { path: '/system', label: 'nav.system', icon: IconSystem },
+  { path: '/scenes', label: 'nav.scenes', icon: IconPackage, wide: true },
   { path: '/logs', label: 'nav.logs', icon: IconLogs, wide: true },
 ];
 const TITLE_KEYS = Object.fromEntries(NAV.map((n) => [n.path, n.label]));
 const title = (path) => (TITLE_KEYS[path] ? t(TITLE_KEYS[path]) : 'Wisp');
 // Pages the tab bar does not list, and the tab they live under.
-const PARENT = { '/logs': '/system' };
+const PARENT = { '/logs': '/system', '/scenes': '/system' };
 
 function App() {
   const path = useRoute();

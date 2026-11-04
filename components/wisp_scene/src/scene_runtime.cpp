@@ -257,6 +257,10 @@ std::optional<std::string> SceneRuntime::foreground() const {
 
 Result<void> SceneRuntime::check_sources(std::span<const core::SourceFile> files) {
     if (!running_) return Result<void>::err(ErrorCode::Busy, "scene runtime not running");
+    // Up to 10 s of waiting would freeze the screen, or stall every file
+    // job behind this one (the scene task may itself be waiting on one).
+    if (deps_.ui.on_ui_thread() || deps_.worker.on_worker())
+        return Result<void>::err(ErrorCode::Busy, "cannot wait for the scene task here");
     auto job = std::make_shared<SourceCheckJob>();
     job->files = files;
     if (task_->is_current()) {

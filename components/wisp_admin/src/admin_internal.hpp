@@ -60,11 +60,27 @@ void add_wifi_routes(std::vector<Route>& routes);
 void add_ai_routes(std::vector<Route>& routes);        // /ai/*
 void add_system_routes(std::vector<Route>& routes);    // /clients, /system/*
 void add_firmware_routes(std::vector<Route>& routes);  // /system/firmware
+void add_scene_routes(std::vector<Route>& routes);     // /scenes
 
 // The firmware upload, the one streamed request (routes_firmware.cpp).
 constexpr std::string_view kFirmwarePath = "/api/v1/system/firmware";
 // AdminServer::stream_handler(): nullopt for every other request.
 std::optional<net::StreamStart> firmware_stream(AdminDeps& deps, const net::HttpRequest& head);
+
+// The scene zip upload (routes_scenes.cpp), the other streamed request.
+constexpr std::string_view kScenesPath = "/api/v1/scenes";
+// nullopt for every request but POST kScenesPath.
+std::optional<net::StreamStart> scene_stream(AdminDeps& deps, const net::HttpRequest& head);
+
+// The gate a streamed request passes before any of its body is read, the
+// same as AdminServer::handle() applies to every API call: Host (no
+// hotspot leniency for a POST), wisp_token, then X-Wisp. The refusal, or
+// nullopt to go on.
+std::optional<net::HttpResponse> stream_refusal(const AdminDeps& deps,
+                                                const net::HttpRequest& head);
+// A StreamStart that answers `res` (with Cache-Control: no-store, as
+// AdminServer::handle() adds to API responses) without reading the body.
+net::StreamStart stream_answer(net::HttpResponse res);
 
 // How long the reboot route waits before calling AdminDeps::reboot, so its
 // 202 reaches the browser first.

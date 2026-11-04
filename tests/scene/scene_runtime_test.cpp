@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -345,6 +346,29 @@ TEST_F(SceneRuntimeTest, CheckSourcesRunsOnSceneTask) {
     // The scene task's stack does the compiling: without it, nothing.
     rt->stop();
     EXPECT_FALSE(rt->check_sources(files));
+}
+
+// Waiting up to 10 s for the scene task would freeze the UI thread, and
+// on the storage worker it would hold up every file job (the scene task
+// may be waiting on one), so both get Busy at once.
+TEST_F(SceneRuntimeTest, CheckSourcesRefusesTheUiThreadAndTheWorker) {
+    start();
+    const std::string good = "return 1\n";
+    std::vector<SourceFile> files = {{"main.lua", good}};
+    std::atomic<int> on_worker{-1};
+    ASSERT_TRUE(worker.submit([&] {
+        auto r = rt->check_sources(files);
+        on_worker = r ? 0 : static_cast<int>(r.error().code);
+    }));
+    ASSERT_TRUE(worker.drain(5000));
+    EXPECT_EQ(on_worker.load(), static_cast<int>(ErrorCode::Busy));
+    int from_ui = -1;
+    on_ui([&] {
+        auto r = rt->check_sources(files);
+        from_ui = r ? 0 : static_cast<int>(r.error().code);
+    });
+    EXPECT_EQ(from_ui, static_cast<int>(ErrorCode::Busy));
+    EXPECT_TRUE(rt->check_sources(files));
 }
 
 TEST(SceneRuntimeConfig, TaskConfigIsPsramStack) {

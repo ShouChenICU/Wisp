@@ -114,9 +114,7 @@ private:
     bool done_ = false;
 };
 
-net::StreamStart answer(net::HttpResponse res) {
-    return net::StreamStart{nullptr, no_store(std::move(res))};
-}
+net::StreamStart answer(net::HttpResponse res) { return stream_answer(std::move(res)); }
 
 }  // namespace
 
@@ -128,18 +126,7 @@ void add_firmware_routes(std::vector<Route>& routes) {
 
 std::optional<net::StreamStart> firmware_stream(AdminDeps& deps, const net::HttpRequest& head) {
     if (head.method != net::Method::Post || head.path != kFirmwarePath) return std::nullopt;
-    // The same gate as every API call (AdminServer::handle()); a foreign
-    // Host gets no hotspot leniency on a POST.
-    if (!host_allowed(head)) {
-        return answer(net::HttpResponse::error(403, "bad_host", "unexpected Host header"));
-    }
-    const std::string token = head.cookie("wisp_token");
-    if (token.empty() || !deps.pairing.authenticate(token, deps.now_ms())) {
-        return answer(net::HttpResponse::error(401, "unauthorized", "pair this browser first"));
-    }
-    if (!csrf_ok(head)) {
-        return answer(net::HttpResponse::error(403, "csrf", "missing X-Wisp: 1 header"));
-    }
+    if (auto refused = stream_refusal(deps, head)) return stream_answer(std::move(*refused));
     if (deps.firmware == nullptr) {
         return answer(net::HttpResponse::error(501, "unsupported", "this board has no OTA slots"));
     }

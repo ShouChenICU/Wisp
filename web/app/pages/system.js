@@ -818,6 +818,16 @@ function MaintenanceCard({ onBack }) {
   return html`<${Card} title=${t('sys.maint_title')} icon=${IconSystem} class="list-card maint-card">
     <ul class="link-list">
       <li>
+        <a class="link-row" href="#/scenes">
+          <span class="dev-icon tone-accent"><${IconPackage} size=${18} /></span>
+          <span class="dev-main">
+            <span class="row-title">${t('nav.scenes')}</span>
+            <span class="row-sub">${t('sys.scenes_desc')}</span>
+          </span>
+          <${IconChevronRight} size=${18} />
+        </a>
+      </li>
+      <li>
         <a class="link-row" href="#/logs">
           <span class="dev-icon tone-accent"><${IconLogs} size=${18} /></span>
           <span class="dev-main">

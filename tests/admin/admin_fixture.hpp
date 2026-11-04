@@ -4,7 +4,7 @@
 // over a FakeWifi, pairing, model profiles, system settings) over a temp
 // directory, a FakeHttpClient behind the model profiles' connectivity
 // test, counters for the reboot
-// and factory-reset hooks, the fixture WispPack that tools/pack_assets.py
+// and factory-reset hooks, an empty SceneRepository, the fixture WispPack that tools/pack_assets.py
 // builds from tests/net/fixtures/web, and a settable monotonic clock.
 
 #include <gtest/gtest.h>
@@ -29,6 +29,7 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/model_profiles.hpp"
+#include "wisp/core/scene_repository.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -61,6 +62,9 @@ struct AdminFixture {
         EXPECT_TRUE(models->init());
         models->set_prober(net::make_model_prober(http, [this] { return now.load(); }));
         settings = std::make_unique<core::SystemSettings>(*backend, nullptr);
+        scenes = std::make_unique<core::SceneRepository>(
+            *storage,
+            core::SceneRepoConfig{.code_root = dir + "/scenes", .data_root = dir + "/scenes"});
 
         if (with_assets) {
             std::ifstream in(WISP_FIXTURE_WPAK, std::ios::binary);
@@ -94,6 +98,7 @@ struct AdminFixture {
             .device_status = [] { return Value(Map{}); },
             .reboot = [this] { ++reboots; },
             .request_factory_reset = [this] { ++factory_resets; },
+            .scenes = scenes.get(),
         };
         if (with_clock) deps.now_ms = [this] { return now.load(); };
         return deps;
@@ -131,6 +136,8 @@ struct AdminFixture {
     std::unique_ptr<net::PairingService> pairing;
     std::unique_ptr<core::ModelProfileService> models;
     std::unique_ptr<core::SystemSettings> settings;
+    // Installed scenes (none until a test installs one); no SceneHost.
+    std::unique_ptr<core::SceneRepository> scenes;
     std::vector<uint8_t> pack_bytes;
     std::optional<net::AssetPack> assets;
     FakeHttpClient http;
@@ -148,7 +155,7 @@ inline const std::vector<std::string>& every_authenticated_get_route() {
     static const std::vector<std::string> paths = {
         "/api/v1/info",    "/api/v1/device",          "/api/v1/devices",     "/api/v1/settings",
         "/api/v1/wifi",    "/api/v1/wifi/scan",       "/api/v1/ai/profiles", "/api/v1/ai/presets",
-        "/api/v1/clients", "/api/v1/system/firmware",
+        "/api/v1/clients", "/api/v1/system/firmware", "/api/v1/scenes",
     };
     return paths;
 }
