@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <utility>
 
+#include "lvgl_private.h"  // lv_draw_buf_handlers_t
 #include "wisp/core/log.hpp"
+#include "wisp/os/os.hpp"
 #include "wisp/ui/overlay.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -87,13 +89,31 @@ std::string spaced_code(std::string_view code) {
     return std::string(code.substr(0, 3)) + " " + std::string(code.substr(3));
 }
 
+namespace {
+
+void* large_buf_malloc(size_t size, lv_color_format_t) { return os::alloc(size, os::Mem::Large); }
+void large_buf_free(void* p) { os::dealloc(p); }
+
+// LVGL's draw buffer handlers with the pixels in Mem::Large: the QR
+// buffer (about 80 KB on a 480 px screen) must not land in internal RAM.
+// The widget frees it through the same handlers.
+const lv_draw_buf_handlers_t* large_buf_handlers() {
+    static lv_draw_buf_handlers_t h;
+    h = *lv_draw_buf_get_handlers();
+    h.buf_malloc_cb = &large_buf_malloc;
+    h.buf_free_cb = &large_buf_free;
+    return &h;
+}
+
+}  // namespace
+
 bool flatten_qr(lv_obj_t* qr, lv_color_format_t cf) {
     if (cf != LV_COLOR_FORMAT_RGB565 && cf != LV_COLOR_FORMAT_RGB565_SWAPPED) return false;
     lv_draw_buf_t* indexed = lv_canvas_get_draw_buf(qr);
     if (indexed == nullptr || indexed->header.cf != LV_COLOR_FORMAT_I1) return false;
     const uint32_t w = indexed->header.w;
     const uint32_t h = indexed->header.h;
-    lv_draw_buf_t* flat = lv_draw_buf_create(w, h, cf, LV_STRIDE_AUTO);
+    lv_draw_buf_t* flat = lv_draw_buf_create_ex(large_buf_handlers(), w, h, cf, LV_STRIDE_AUTO);
     if (flat == nullptr) return false;
     // I1 keeps its two-entry palette ahead of the pixels; a set bit
     // (most significant first) is a dark module. Black and white read the
