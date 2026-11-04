@@ -14,21 +14,30 @@
 // exhaust memory. Response headers are collected from
 // HTTP_EVENT_ON_HEADER; with on_body the body goes there 512 bytes at a
 // time instead of into `body`. cancelled is asked before each write and
-// read: a read blocked on a silent server notices only when it times out.
+// read.
 //
-// Deadline: HttpClientRequest::timeout_ms is the whole request's.
-// esp_http_client applies its timeout per operation, so each one (connect
-// and handshake, every write, the header fetch, every read) is given only
-// what is left of it. Two limits remain outside it: DNS resolution has
-// lwIP's own timeout, and esp-tls checks its handshake timeout between
+// Deadline: HttpClientRequest::timeout_ms is the whole request's, kept by
+// a net::RequestWatch (req.watch, or the client's own armed with
+// timeout_ms). esp_http_client applies its timeout to each low-level
+// operation, and its header fetch and body read loop over many socket
+// reads inside one call, so a server that trickles bytes would keep one
+// call alive past any deadline checked between calls. Once the
+// connection is open, the watch shuts its socket down (shutdown(), not
+// close: the descriptor stays ours until the watch is disarmed, just
+// before the client closes it) at the deadline or on abort, and the
+// blocked call fails at once; the request then reports Timeout or
+// Cancelled. Before that, the connect phase can overrun the deadline
+// softly: each step is given only what is left, but DNS resolution has
+// lwIP's own timeout and esp-tls checks its handshake timeout between
 // socket reads, so a handshake can overrun what was left by up to one
-// read timeout.
+// read timeout; the watch then ends the request right after open().
 //
 // TLS gate: an https request holds net::TlsGate::process() around
 // esp_http_client_open() (connect and handshake) and nowhere else, so
 // only one handshake runs at a time in the process (the internal-RAM
-// budget, wisp/app/ram_budget.hpp); waiting for it counts against the
-// deadline and a wait that runs out is a Timeout.
+// budget, wisp/app/ram_budget.hpp). Waiting for it counts against the
+// deadline (a wait that runs out is a Timeout) and ends early when the
+// request is cancelled or its watch fires.
 //
 // Errors map to TransportError from the esp_http_client result and the
 // last esp-tls error: name resolution -> Dns, refused/unreachable ->

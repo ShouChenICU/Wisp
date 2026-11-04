@@ -72,6 +72,34 @@ TEST(TlsGate, NeverTwoAtOnce) {
     EXPECT_EQ(most.load(), 1);
 }
 
+// A request cancelled (or past its deadline) while it waits for the gate
+// stops waiting promptly instead of at the end of its timeout.
+TEST(TlsGate, WaitEndsWhenGivenUp) {
+    TlsGate gate;
+    TlsGate::Hold first(gate, 0);
+    ASSERT_TRUE(first.held());
+    std::atomic<bool> give_up{false};
+    std::thread canceller([&] {
+        wisp::os::sleep_ms(50);
+        give_up = true;
+    });
+    const uint64_t t0 = wisp::os::now_ms();
+    TlsGate::Hold waiting(gate, 5000, [&] { return give_up.load(); });
+    EXPECT_FALSE(waiting.held());
+    EXPECT_LT(wisp::os::now_ms() - t0, 1000u);
+    canceller.join();
+}
+
+TEST(TlsGate, GivingUpLeavesAFreeGateToTake) {
+    TlsGate gate;
+    {
+        TlsGate::Hold hold(gate, 1000, [] { return false; });
+        EXPECT_TRUE(hold.held());
+    }
+    TlsGate::Hold again(gate, 0);
+    EXPECT_TRUE(again.held());
+}
+
 TEST(TlsGate, ProcessGateIsShared) {
     EXPECT_EQ(&TlsGate::process(), &TlsGate::process());
     TlsGate::Hold hold(TlsGate::process(), 0);

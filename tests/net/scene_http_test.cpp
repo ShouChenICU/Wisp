@@ -270,22 +270,21 @@ TEST_F(SceneHttpTest, TimeoutIsOneDeadlineForTheWholeRequest) {
     EXPECT_EQ(client.pieces.load(), 2);
 }
 
-// A server that never answers (a stalled connect or handshake) is cut off
-// at the deadline too, not only when the client's own timeout fires.
-TEST_F(SceneHttpTest, StalledRequestTimesOut) {
+// A call blocked inside the client (a server that trickles bytes into
+// one library read, which polls nothing) is ended at the deadline by the
+// watch shutting its socket down.
+TEST_F(SceneHttpTest, BlockedCallEndsAtTheDeadline) {
     SceneHttpLimits limits;
     limits.timeout_ms = 300;
     make(limits);
     client.hold = true;
     Results r;
+    const uint64_t t0 = wisp::os::now_ms();
     http->submit(get("https://api.example.com/stall"), r.sink());
-    ASSERT_TRUE(wait_until([&] { return client.held.load() == 1; }, 2000));
-    now += 299;
-    wisp::os::sleep_ms(20);
-    EXPECT_EQ(r.size(), 0u);
-    now += 1;
-    ASSERT_TRUE(wait_until([&] { return r.size() == 1; }, 2000));
+    ASSERT_TRUE(wait_until([&] { return r.size() == 1; }, 3000));
+    EXPECT_GE(wisp::os::now_ms() - t0, 250u);
     EXPECT_EQ(r.got[0].error, "timeout");
+    EXPECT_TRUE(client.saw_cancel.load());
     // The worker is free again.
     client.hold = false;
     EXPECT_EQ(run(get("https://api.example.com/next")).error, "");

@@ -25,11 +25,18 @@ struct Transfer {
     bool cancelled = false;
 };
 
+// The caller cancelled, or its watch fired (curl keeps the deadline by
+// itself too, with CURLOPT_TIMEOUT_MS).
+bool stop_requested(const Transfer* t) {
+    return (t->req->cancelled && t->req->cancelled()) ||
+           (t->req->watch != nullptr && t->req->watch->reason() != net::RequestWatch::Reason::None);
+}
+
 size_t on_data(char* data, size_t size, size_t nmemb, void* user) {
     auto* t = static_cast<Transfer*>(user);
     const size_t n = size * nmemb;
     // Returning less than n makes curl fail with CURLE_WRITE_ERROR.
-    if (t->req->cancelled && t->req->cancelled()) {
+    if (stop_requested(t)) {
         t->cancelled = true;
         return 0;
     }
@@ -67,7 +74,7 @@ size_t on_header(char* data, size_t size, size_t nmemb, void* user) {
 // Called about once a second while curl waits, and as data moves.
 int on_progress(void* user, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
     auto* t = static_cast<Transfer*>(user);
-    if (t->req->cancelled && t->req->cancelled()) {
+    if (stop_requested(t)) {
         t->cancelled = true;
         return 1;  // CURLE_ABORTED_BY_CALLBACK
     }
@@ -193,7 +200,7 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &t);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, on_header);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &t);
-    if (req.cancelled) {
+    if (req.cancelled || req.watch != nullptr) {
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, on_progress);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &t);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
@@ -214,7 +221,10 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
 #endif
 
     CURLcode rc = curl_easy_perform(curl);
-    if (t.cancelled || rc == CURLE_ABORTED_BY_CALLBACK) {
+    if (req.watch != nullptr && req.watch->reason() == net::RequestWatch::Reason::Deadline &&
+        rc != CURLE_OK) {
+        res.transport = net::TransportError::Timeout;
+    } else if (t.cancelled || rc == CURLE_ABORTED_BY_CALLBACK) {
         res.transport = net::TransportError::Cancelled;
     } else if (t.too_large || rc == CURLE_FILESIZE_EXCEEDED) {
         res.transport = net::TransportError::TooLarge;

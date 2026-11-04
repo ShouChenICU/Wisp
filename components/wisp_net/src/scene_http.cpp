@@ -5,6 +5,7 @@
 #include <mutex>
 
 #include "wisp/core/log.hpp"
+#include "wisp/net/request_watch.hpp"
 
 namespace wisp::net {
 
@@ -109,6 +110,9 @@ struct SceneHttp::Job {
     // Set under mu_ by cancel_scene()/stop(); read by the client between
     // pieces and by the worker under deliver_mu_.
     std::atomic<bool> cancelled{false};
+    // Armed by the worker with the deadline; aborted together with the
+    // cancelled mark, so a call blocked in the client ends either way.
+    RequestWatch watch;
 };
 
 SceneHttp::SceneHttp(HttpClient& client, SceneHttpLimits limits, std::function<uint64_t()> now_ms)
@@ -154,7 +158,10 @@ void SceneHttp::stop() {
         if (!running_) return;
         running_ = false;
         dropped.swap(queue_);
-        if (current_ != nullptr) current_->cancelled = true;
+        if (current_ != nullptr) {
+            current_->cancelled = true;
+            current_->watch.abort();
+        }
     }
     wake_.give();
     if (task_) {
@@ -259,7 +266,10 @@ void SceneHttp::cancel_scene(const std::string& scene_id) {
                 ++it;
             }
         }
-        if (current_ != nullptr && current_->scene_id == scene_id) current_->cancelled = true;
+        if (current_ != nullptr && current_->scene_id == scene_id) {
+            current_->cancelled = true;
+            current_->watch.abort();
+        }
     }
     // A done() that started before the mark finishes before this returns;
     // one that had not started sees the mark.
@@ -299,10 +309,14 @@ void SceneHttp::execute(Job& job) {
     req.body_ref = {reinterpret_cast<const uint8_t*>(job.body.data()), job.body.size()};
     req.timeout_ms = limits_.timeout_ms;
     req.max_response_bytes = limits_.max_response;
-    // One deadline for the whole request (spec 5.3's 15 s), enforced here
-    // as well as by the client: a client's own timeout may apply to each
-    // operation (esp_http_client's does), and a server that trickles its
-    // answer would then hold the one worker for as long as it likes.
+    // One deadline for the whole request (spec 5.3's 15 s). A client's own
+    // timeout may apply to each low-level read (esp_http_client's does),
+    // and a server that trickles its answer would then hold the one worker
+    // for as long as it likes. So the watch interrupts a call blocked in
+    // the client at the deadline (and on cancel), and between pieces the
+    // deadline is checked here as well.
+    job.watch.arm(limits_.timeout_ms);
+    req.watch = &job.watch;
     const uint64_t deadline = now_ms_() + limits_.timeout_ms;
     auto expired = [this, deadline] { return now_ms_() >= deadline; };
 
@@ -331,9 +345,12 @@ void SceneHttp::execute(Job& job) {
     req.cancelled = [&job, &expired] { return job.cancelled.load() || expired(); };
 
     HttpClientResponse res = client_.request(req);
+    job.watch.disarm();
+    const bool watch_deadline = job.watch.reason() == RequestWatch::Reason::Deadline;
 
     SceneHttpResult result;
-    if (timed_out || (res.transport == TransportError::Cancelled && expired())) {
+    if (timed_out || (res.transport == TransportError::Cancelled && expired()) ||
+        (watch_deadline && res.transport != TransportError::None)) {
         result.error = "timeout";
     } else if (too_large || res.transport == TransportError::TooLarge) {
         result.error = "too_large";

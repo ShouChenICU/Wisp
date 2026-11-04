@@ -15,6 +15,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/net/request_watch.hpp"
 
 namespace wisp::net {
 
@@ -196,6 +197,13 @@ struct HttpClientRequest {
     // (Cancelled). A client blocked in a single read notices only when
     // that read returns or times out.
     std::function<bool()> cancelled;
+    // When set, the caller has armed it with the deadline (and may abort()
+    // it): the client attaches what interrupts a call blocked inside it
+    // and disarms it before releasing the connection, and reports a
+    // request it ended as Timeout (Deadline) or Cancelled (Aborted). A
+    // client may also watch a request with its own watch when this is
+    // null.
+    RequestWatch* watch = nullptr;
 };
 
 struct HttpClientResponse {

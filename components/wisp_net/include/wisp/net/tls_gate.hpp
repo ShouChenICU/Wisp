@@ -15,11 +15,13 @@
 // gate for a whole download would make the next request wait for it.
 //
 // The wait is bounded by the caller (its request deadline); a caller that
-// does not get the gate in time fails its request as a timeout. The
+// does not get the gate in time fails its request as a timeout, and one
+// whose request is cancelled meanwhile stops waiting (Hold's give_up). The
 // simulator's client does not use it: curl does connect, handshake and
 // transfer in one call, and the host has no internal-RAM limit.
 
 #include <cstdint>
+#include <functional>
 
 #include "wisp/os/os.hpp"
 
@@ -32,6 +34,8 @@ public:
     TlsGate(const TlsGate&) = delete;
     TlsGate& operator=(const TlsGate&) = delete;
 
+    static constexpr uint32_t kGiveUpPollMs = 20;
+
     // The one gate every client in the process shares.
     static TlsGate& process();
 
@@ -40,6 +44,10 @@ public:
     class Hold {
     public:
         Hold(TlsGate& gate, uint32_t timeout_ms);
+        // Same, but also stops waiting soon after `give_up` returns true
+        // (asked every kGiveUpPollMs while waiting): a request cancelled
+        // or past its deadline does not sit in the queue for the gate.
+        Hold(TlsGate& gate, uint32_t timeout_ms, const std::function<bool()>& give_up);
         ~Hold();
 
         Hold(const Hold&) = delete;

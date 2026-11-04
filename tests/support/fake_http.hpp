@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -96,9 +97,14 @@ inline std::string set_cookie(const net::HttpResponse& res) {
 // It behaves like the real clients towards the streaming fields: a body
 // over max_response_bytes is TooLarge (unless `ignore_limit`), on_body
 // gets it in 4 KB pieces (false: Cancelled) and `next.body` is then not
-// returned; req.cancelled() is asked before each piece. With `hold` set, request() waits until
-// `hold` is cleared or req.cancelled() turns true (then Cancelled, `saw_cancel` set); `held` counts
-// the calls waiting.
+// returned; req.cancelled() is asked before each piece.
+//
+// With `hold` set, request() blocks like a library call stuck in one read
+// on a silent or trickling server: it does not poll req.cancelled(), and
+// returns only when `hold` is cleared or its "socket" is shut down
+// through req.watch (the stop it attaches). Then `saw_cancel` is set and
+// it reports Timeout (the watch's deadline) or Cancelled (an abort).
+// `held` counts the calls blocked.
 class FakeHttpClient : public net::HttpClient {
 public:
     net::HttpClientResponse request(const net::HttpClientRequest& req) override {
@@ -109,16 +115,19 @@ public:
             res = next;
         }
         if (hold.load()) {
+            auto shut = std::make_shared<std::atomic<bool>>(false);
+            if (req.watch != nullptr) req.watch->attach([shut] { *shut = true; });
             ++held;
-            while (hold.load()) {
-                if (req.cancelled && req.cancelled()) {
-                    saw_cancel = true;
-                    --held;
-                    return {.transport = net::TransportError::Cancelled};
-                }
+            while (hold.load() && !shut->load())
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
             --held;
+            if (req.watch != nullptr) req.watch->disarm();
+            if (shut->load()) {
+                saw_cancel = true;
+                const bool deadline = req.watch->reason() == net::RequestWatch::Reason::Deadline;
+                return {.transport = deadline ? net::TransportError::Timeout
+                                              : net::TransportError::Cancelled};
+            }
         }
         if (res.transport != net::TransportError::None) return res;
         if (req.max_response_bytes != 0 && res.body.size() > req.max_response_bytes &&

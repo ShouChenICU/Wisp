@@ -12,7 +12,9 @@
 #include "esp_err.h"
 #include "esp_http_client.h"
 #include "esp_tls_errors.h"
+#include "sys/socket.h"
 #include "wisp/core/log.hpp"
+#include "wisp/net/request_watch.hpp"
 #include "wisp/net/tls_gate.hpp"
 #include "wisp/os/os.hpp"
 
@@ -29,6 +31,15 @@ struct ClientDeleter {
     void operator()(esp_http_client* c) const { esp_http_client_cleanup(c); }
 };
 using ClientPtr = std::unique_ptr<esp_http_client, ClientDeleter>;
+
+// Disarms the watch when it goes out of scope. Declared after the
+// ClientPtr, so it runs before esp_http_client_cleanup() closes the
+// socket the watch's stop() shuts down: the descriptor cannot be closed,
+// and reused by another connection, under a stop() still to come.
+struct Disarm {
+    net::RequestWatch& watch;
+    ~Disarm() { watch.disarm(); }
+};
 
 // "https://host:port" without user info, path or query, any of which may
 // carry a credential.
@@ -136,7 +147,24 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         return res;
     }
     const std::string origin = origin_of(req.url);
+    // The caller's watch (armed with its deadline), or one of our own.
+    net::RequestWatch own;
+    net::RequestWatch& watch = req.watch != nullptr ? *req.watch : own;
+    if (req.watch == nullptr) own.arm(req.timeout_ms);
     const auto failed = [&](net::TransportError e, const char* stage, esp_err_t err) {
+        // Once the watch has fired, whatever broke was its doing (a read
+        // on the shut-down socket fails as EOF or a socket error).
+        switch (watch.reason()) {
+            case net::RequestWatch::Reason::Deadline:
+                e = net::TransportError::Timeout;
+                err = ESP_ERR_TIMEOUT;
+                break;
+            case net::RequestWatch::Reason::Aborted:
+                e = net::TransportError::Cancelled;
+                break;
+            case net::RequestWatch::Reason::None:
+                break;
+        }
         // A cancel is the caller's own doing, not a failure worth a warning.
         if (e != net::TransportError::Cancelled) {
             WLOG_W(kTag, "%s %s failed at %s: %s (%s)", method_name, origin.c_str(), stage,
@@ -148,10 +176,16 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         res.headers.clear();
         return res;
     };
-    const auto cancelled = [&] { return req.cancelled && req.cancelled(); };
-    // req.timeout_ms bounds the whole request, but esp_http_client applies
-    // its timeout to each connect, write and read: every operation is
-    // given only what is left (left(), at least 1 ms while any is).
+    const auto cancelled = [&] {
+        return (req.cancelled && req.cancelled()) ||
+               watch.reason() == net::RequestWatch::Reason::Aborted;
+    };
+    // req.timeout_ms bounds the whole request. esp_http_client applies its
+    // timeout to each low-level operation, so each call is also given only
+    // what is left (left(), at least 1 ms while any is); that alone cannot
+    // stop the header fetch or a body read, which loop over many socket
+    // reads inside one call. After open() the watch does: at the deadline
+    // it shuts the socket down and the blocked call fails.
     const uint64_t deadline = os::now_ms() + req.timeout_ms;
     const auto left = [deadline]() -> int {
         const uint64_t now = os::now_ms();
@@ -179,6 +213,7 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
     cfg.user_data = &res;
     ClientPtr client(esp_http_client_init(&cfg));
     if (!client) return failed(net::TransportError::Other, "init", ESP_ERR_INVALID_ARG);
+    const Disarm disarm{watch};
 
     for (const auto& [name, value] : req.headers) {
         esp_http_client_set_header(client.get(), name.c_str(), value.c_str());
@@ -196,16 +231,31 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
     {
         // Connect and handshake under the process-wide TLS gate (one
         // handshake at a time, wisp/net/tls_gate.hpp), released before
-        // the request is sent. Waiting for it counts against the deadline.
+        // the request is sent. Waiting for it counts against the deadline
+        // and ends early on a cancel.
         std::optional<net::TlsGate::Hold> gate;
         if (is_https(req.url)) {
-            gate.emplace(net::TlsGate::process(), static_cast<uint32_t>(left()));
-            if (!gate->held()) return failed(net::TransportError::Timeout, "tls gate", ESP_OK);
+            gate.emplace(net::TlsGate::process(), static_cast<uint32_t>(left()), [&] {
+                return cancelled() || watch.reason() != net::RequestWatch::Reason::None;
+            });
+            if (!gate->held()) {
+                if (cancelled()) return failed(net::TransportError::Cancelled, "tls gate", ESP_OK);
+                return failed(net::TransportError::Timeout, "tls gate", ESP_ERR_TIMEOUT);
+            }
         }
         if (!arm()) return failed(net::TransportError::Timeout, "connect", ESP_ERR_TIMEOUT);
         err = esp_http_client_open(client.get(), static_cast<int>(body_size));
     }
     if (err != ESP_OK) return failed(classify(client.get(), err), "connect", err);
+    // From here until the Disarm above runs, the transport keeps this
+    // socket open (esp_http_client closes it only in close(), cleanup(),
+    // set_url(), perform() and a failed open()). If the watch has already
+    // fired, attach() shuts it down at once.
+    const int fd = esp_http_client_get_socket(client.get());
+    if (fd >= 0) watch.attach([fd] { shutdown(fd, SHUT_RDWR); });
+    if (watch.reason() != net::RequestWatch::Reason::None) {
+        return failed(net::TransportError::Other, "connect", ESP_FAIL);
+    }
 
     size_t sent = 0;
     while (sent < body_size) {
@@ -261,12 +311,17 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
             res.body.append(buf, static_cast<size_t>(n));
         }
     }
+    // A read on a socket the watch shut down can end like a clean EOF.
+    if (watch.reason() != net::RequestWatch::Reason::None) {
+        return failed(net::TransportError::Other, "body", ESP_FAIL);
+    }
     // A body delimited by the connection closing has nothing to check.
     const bool delimited = length > 0 || esp_http_client_is_chunked_response(client.get());
     if (delimited && !esp_http_client_is_complete_data_received(client.get())) {
         return failed(net::TransportError::Other, "body (incomplete)",
                       ESP_ERR_HTTP_INCOMPLETE_DATA);
     }
+    watch.disarm();
     esp_http_client_close(client.get());
     return res;
 }

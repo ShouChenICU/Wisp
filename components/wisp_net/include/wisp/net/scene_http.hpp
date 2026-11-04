@@ -30,8 +30,8 @@
 // unless cancel_scene() (or stop()) comes first: once it returns, done()
 // is never called for that scene's earlier requests, queued ones are
 // dropped and the one in flight is told to stop (HttpClientRequest::
-// cancelled). done() must be quick and must not call back into SceneHttp:
-// the worker runs it under the lock cancel_scene() waits on.
+// cancelled, and its watch is aborted, which interrupts a blocked call). done() must be quick and
+// must not call back into SceneHttp: the worker runs it under the lock cancel_scene() waits on.
 //
 // Memory: a queued request keeps its URL, headers and body in PSRAM; only
 // the request being sent has ordinary heap copies of the URL and headers
