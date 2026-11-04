@@ -15,6 +15,12 @@ namespace wisp::port::esp {
 // heap region's own lowest point, and internal RAM is several regions
 // whose lows can be minutes apart (boot in one, a server start in
 // another).
+//
+// The task rows are best effort. vTaskSuspendAll() only stops the calling
+// core, and the walk takes no kernel lock (uxTaskGetSystemState() would,
+// but needs CONFIG_FREERTOS_USE_TRACE_FACILITY), so a task deleted on the
+// other core during the walk can garble a row or, rarely, crash the
+// device. Do not run `mem` while servers or the hotspot are stopping.
 std::string mem_report();
 
 }  // namespace wisp::port::esp
