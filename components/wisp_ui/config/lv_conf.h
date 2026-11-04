@@ -1021,8 +1021,9 @@
     #define LV_FS_FROGFS_LETTER '\0'
 #endif
 
-/** LODEPNG decoder library */
-#define LV_USE_LODEPNG 0
+/** LODEPNG decoder library: ui.image's PNG files (scene-runtime-core
+ *  spec 4.3). */
+#define LV_USE_LODEPNG 1
 
 /** PNG decoder(libpng) library */
 #define LV_USE_LIBPNG 0
@@ -1031,8 +1032,14 @@
 #define LV_USE_BMP 0
 
 /** JPG + split JPG decoder library.
- *  Split JPG is a custom format optimized for embedded systems. */
-#define LV_USE_TJPGD 0
+ *  Split JPG is a custom format optimized for embedded systems.
+ *  Off here: each platform installs its own JPEG decoder
+ *  (ui::UiConfig::install_image_decoders). The host build turns it on
+ *  from cmake/wisp_host_deps.cmake for the simulator's decoder, which
+ *  uses the TJpgDec library LVGL bundles. */
+#ifndef LV_USE_TJPGD
+    #define LV_USE_TJPGD 0
+#endif
 
 /** libjpeg-turbo decoder library.
  *  - Supports complete JPEG specifications and high-performance JPEG decoding. */

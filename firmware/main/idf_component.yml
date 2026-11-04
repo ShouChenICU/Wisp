@@ -37,3 +37,8 @@ dependencies:
   # components/wisp_port_esp/net/esp_wifi.cpp; connectivity spec 2.1).
   # Pinned to an exact release (THIRD_PARTY_NOTICES.md).
   espressif/mdns: "1.14.0"
+  # Baseline JPEG decoding for scene images (scene-runtime-core spec 4.3):
+  # wisp::port::esp's LVGL image decoder (components/wisp_port_esp/
+  # ui/esp_jpeg_decoder.cpp) is its only user. Pinned to an exact release
+  # (THIRD_PARTY_NOTICES.md).
+  espressif/esp_new_jpeg: "==1.0.2"

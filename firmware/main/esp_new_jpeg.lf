@@ -1,0 +1,19 @@
+# esp_new_jpeg (wisp::port::esp::install_image_decoders(),
+# components/wisp_port_esp/ui/esp_jpeg_decoder.cpp) puts its IDCT and
+# colour conversion in IRAM, about 6 KB of internal RAM held for good by
+# code that runs only while a scene image is decoded. Internal RAM is kept
+# for what must live there (AGENTS.md section 5), so all of it runs from
+# flash instead.
+[scheme:wisp_jpeg_flash]
+entries:
+    iram -> flash_text
+    text -> flash_text
+    rodata -> flash_rodata
+    data -> dram0_data
+    bss -> dram0_bss
+    common -> dram0_bss
+
+[mapping:wisp_esp_new_jpeg]
+archive: libesp_new_jpeg.a
+entries:
+    * (wisp_jpeg_flash)

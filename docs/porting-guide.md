@@ -148,6 +148,7 @@ cd firmware && idf.py -B build-debug -D SDKCONFIG=build-debug/sdkconfig \
 | DMA 能否直接读 PSRAM | 板子通过 Display caps 的 `draw_buf_mem` 声明（见上文能力字段表）；`Mem::DmaLarge` 在 `SOC_PSRAM_DMA_CAPABLE` 为假的芯片上总是分配失败，UI 退回内部 DMA RAM |
 | 从 PSRAM 执行代码（XIP） | 板级 sdkconfig：`boards/<板名>/sdkconfig.defaults.board` 的 `CONFIG_SPIRAM_XIP_FROM_PSRAM`；它不放宽栈的规则 |
 | 最低 ESP-IDF 版本 | 全项目一个范围，写在 `firmware/main/idf_component.yml` 的 `idf:`（目前 `>=6.0.3,<6.1`）；需要更新 IDF 的芯片要先单独升级这个范围和 `dependencies.lock` |
+| JPEG 解码 | esp_new_jpeg 按 `IDF_TARGET` 链接对应的预编译库（1.0.2 提供 esp32、esp32s2、esp32s3、esp32p4、esp32c2/c3/c5/c6/c61、esp32h4、esp32s31）；它放进 IRAM 的汇编由 `firmware/main/esp_new_jpeg.lf` 统一移到 flash。有 JPEG 硬件的芯片可以在 `wisp_port_esp/ui/` 换成硬件解码器，接口仍是 `install_image_decoders()` |
 | 内部 SRAM 预算 | 每块板子用 `mem` 命令实测，记在 `docs/hardware/<板名>.md`；预算下限在 `wisp/app/ram_budget.hpp`（AGENTS.md 第 5 节） |
 
 **计划中的目标：ESP32-S31**（未经验证，等有硬件后再核实）。已知情况：RISC-V 内核（`lv_blend/esp32s3/` 的 SIMD 例程不能用，需要另写或先走 C 路径）；flash 和 PSRAM 走各自独立的总线，PSRAM 为 250 MHz 八线 DDR；有 PPA、2D-DMA 和 JPEG 编解码硬件；需要 ESP-IDF ≥ 6.1，超出当前锁定范围。用 XIP 从 PSRAM 执行时 flash 操作不再停 cache，但 ESP-IDF 文档仍说 cache 关闭期间不能访问外部 RAM、任务栈默认在内部 RAM，所以栈的放置策略在实测前保持不变。

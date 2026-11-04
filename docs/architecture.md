@@ -38,7 +38,7 @@
 
 ## 启动流程
 
-真机（`firmware/main/main.cpp`）和模拟器（`simulator/main.cpp`）共用同一套 `wisp::app::App::start()`（`components/wisp_app/src/app.cpp`），区别只在各自提供的 `Platform`（日志 sink、设置后端、`emit_line`、`request_power_off`、`heap_info`、`set_standby`，以及子项目 2 新增的 `random`、`http_server`、`http_client`、`assets`、`http_port`（默认 8900）、`captive_server`、`http_always_on`、`reboot`、`read_line`、`firmware`（固件上传写入器 `core::FirmwareUpdater`，连接 spec 6.5；为空时不支持网页上传）、`firmware_version`）：
+真机（`firmware/main/main.cpp`）和模拟器（`simulator/main.cpp`）共用同一套 `wisp::app::App::start()`（`components/wisp_app/src/app.cpp`），区别只在各自提供的 `Platform`（日志 sink、设置后端、`emit_line`、`request_power_off`、`heap_info`、`set_standby`，以及子项目 2 新增的 `random`、`http_server`、`http_client`、`assets`、`http_port`（默认 8900）、`captive_server`、`http_always_on`、`reboot`、`read_line`、`firmware`（固件上传写入器 `core::FirmwareUpdater`，连接 spec 6.5；为空时不支持网页上传）、`firmware_version`，以及子项目 3a 新增的 `install_image_decoders`（经 `ui::UiConfig` 在 UI 任务上安装平台自己的 LVGL 图像解码器，目前是 `ui.image` 的 baseline JPEG：真机用 esp_new_jpeg，模拟器用 LVGL 自带的 TJpgDec；PNG 由 `lv_conf.h` 打开的 LodePNG 负责，两端相同））：
 
 1. **日志初始化**：`wisp::log::init()`，建立 32 KB 的内存环形缓冲（真机落在 PSRAM，模拟器为普通内存）。每条记录是 16 字节头（`ts`、`seq`、长度、级别）加 tag 和消息，按整条淘汰；读取时只在锁内拷贝原始字节，解码在锁外；再次以相同大小和内存类型调用 `init()` 会保留已有记录；`seq` 与 `ts` 在同一把锁里分配，sink 收到的 `LogRecord` 与缓冲区里的完全一致（连接 spec 6.2）。
 2. **板级初始化**：调用 `Platform::board->init()`（真机对应 `boards/<板>/board.cpp`，模拟器对应 `wisp::port::sim::SimBoard`），构造各设备并注册进 `DeviceRegistry`；`init()` 自己只记录非 `Ok` 的 `DeviceReport`（缺失/失败），`App::start()` 随后为注册表里没有报告过的设备补一条 `Ok`。

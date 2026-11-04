@@ -32,6 +32,60 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
+### Libraries bundled inside LVGL
+
+LVGL's source tree carries third-party decoders under their own licenses;
+two of them are compiled here:
+
+- **LodePNG** (`src/libs/lodepng/`, version 20230410): PNG files of
+  `ui.image` (`LV_USE_LODEPNG` in `components/wisp_ui/config/lv_conf.h`),
+  in the firmware and the simulator. zlib License, copied verbatim from
+  the header of `src/libs/lodepng/lodepng.c`:
+
+```
+Copyright (c) 2005-2023 Lode Vandevenne
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+    1. The origin of this software must not be misrepresented; you must not
+    claim that you wrote the original software. If you use this software
+    in a product, an acknowledgment in the product documentation would be
+    appreciated but is not required.
+
+    2. Altered source versions must be plainly marked as such, and must not be
+    misrepresented as being the original software.
+
+    3. This notice may not be removed or altered from any source
+    distribution.
+```
+
+- **TJpgDec** R0.03 (`src/libs/tjpgd/`): the simulator's JPEG decoder
+  only (`components/wisp_port_sim/ui/image_decoders.cpp`; LV_USE_TJPGD is
+  set by `cmake/wisp_host_deps.cmake` and stays off in the firmware).
+  ChaN's license, copied verbatim from the header of
+  `src/libs/tjpgd/tjpgd.c`:
+
+```
+/ TJpgDec - Tiny JPEG Decompressor R0.03                      (C)ChaN, 2021
+/-----------------------------------------------------------------------------/
+/ The TJpgDec is a generic JPEG decompressor module for tiny embedded systems.
+/ This is a free software that opened for education, research and commercial
+/  developments under license policy of following terms.
+/
+/  Copyright (C) 2021, ChaN, all right reserved.
+/
+/ * The TJpgDec module is a free software and there is NO WARRANTY.
+/ * No restriction on use. You can use, modify and redistribute it for
+/   personal, non-profit or commercial products UNDER YOUR RESPONSIBILITY.
+/ * Redistributions of source code must retain the above copyright notice.
+```
+
 ## Lua
 
 - Project: https://www.lua.org/
@@ -459,6 +513,7 @@ license file under `firmware/managed_components/`:
 | `espressif/usb_host_uac` | 1.5.0 | esp_board_manager | Apache-2.0 |
 | `espressif/cmake_utilities` | 0.5.3 | esp_board_manager (build-time CMake helpers only) | Apache-2.0 |
 | `espressif/mdns` | 1.14.0 | `firmware/main` (direct dependency; the `wisp.local` responder started by `wisp::port::esp::EspWifi`, `components/wisp_port_esp/net/esp_wifi.cpp`) | Apache-2.0 |
+| `espressif/esp_new_jpeg` | 1.0.2 | `firmware/main` (direct dependency; baseline JPEG for `ui.image`, decoded by `wisp::port::esp::install_image_decoders()`, `components/wisp_port_esp/ui/esp_jpeg_decoder.cpp`; a prebuilt library) | ESPRESSIF MIT License (below) |
 | `joltwallet/littlefs` | 1.23.1 | `firmware/main` (direct dependency, backs `wisp::port::esp::EspInternalStorage`, `components/wisp_port_esp/dev/esp_storage.cpp`) | MIT (ESP-IDF wrapper) + BSD-3-Clause (vendored littlefs core) -- both texts below |
 
 The Apache-2.0 components are under the same license as this project
@@ -492,6 +547,33 @@ Espressif Modified MIT License
  DEALINGS IN THE SOFTWARE.
 
  SPDX-License-Identifier: LicenseRef-Espressif-Modified-MIT
+```
+
+esp_new_jpeg's license permits use on Espressif products, which matches
+its role here (linked into the ESP32 firmware only). Copied verbatim from
+`firmware/managed_components/espressif__esp_new_jpeg/LICENSE`:
+
+```
+ ESPRESSIF MIT License
+
+ Copyright (c) 2024 <ESPRESSIF SYSTEMS (SHANGHAI) CO.，LTD>
+
+ Permission is hereby granted for use on all ESPRESSIF SYSTEMS products, in which case,
+ it is free of charge, to any person obtaining a copy of this software and associated
+ documentation files (the "Software"), to deal in the Software without restriction, including
+ without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ and/or sell copies of the Software, and to permit persons to whom the Software is furnished
+ to do so, subject to the following conditions:
+
+ The above copyright notice and this permission notice shall be included in all copies or
+ substantial portions of the Software.
+
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ## MyOS (drivers for AXP2101, PCF85063, QMI8658)

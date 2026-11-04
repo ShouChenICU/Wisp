@@ -150,6 +150,11 @@ struct Platform {
     // sleep, UI pause, button poll widening).
     std::function<void(bool standby)> set_standby;
 
+    // Adds the platform's image decoders to LVGL (ui::UiConfig::
+    // install_image_decoders): baseline JPEG for ui.image. Empty: images
+    // are PNG only.
+    std::function<void()> install_image_decoders;
+
     std::string firmware_version = "0.1.0";
     // What the firmware runs on, as the self-check header shows it next to
     // the version: the chip target on ESP, "simulator" on the PC. Empty:

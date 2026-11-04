@@ -34,6 +34,7 @@
 #include "wisp/port/esp/esp_firmware.hpp"
 #include "wisp/port/esp/esp_http_client.hpp"
 #include "wisp/port/esp/esp_http_server.hpp"
+#include "wisp/port/esp/esp_jpeg_decoder.hpp"
 #include "wisp/port/esp/log_esp.hpp"
 #include "wisp/port/esp/mem_report.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
@@ -130,6 +131,7 @@ extern "C" void app_main() {
     // time from PROJECT_VER (cmake/wisp_version.cmake, via
     // firmware/CMakeLists.txt), so this always reports exactly what was
     // actually flashed.
+    platform.install_image_decoders = wisp::port::esp::install_image_decoders;
     platform.firmware_version = esp_app_get_description()->version;
     platform.target = CONFIG_IDF_TARGET;
     // esp_fill_random() is a true RNG only while the RF subsystem (Wi-Fi/BT)

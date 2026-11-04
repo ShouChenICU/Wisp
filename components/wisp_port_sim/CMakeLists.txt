@@ -59,6 +59,17 @@ wisp_component(
     HOST_LIBS Threads::Threads CURL::libcurl ZLIB::ZLIB
 )
 
+# The simulator's image decoders for ui::UiConfig::install_image_decoders
+# (baseline JPEG through LVGL's bundled TJPGD, which simulator/CMakeLists.txt
+# turns on with LV_USE_TJPGD). SDL-free, so the scene tests link it.
+wisp_component(
+    NAME wisp_port_sim_ui
+    SRCS ui/image_decoders.cpp
+    INCLUDE_DIRS include
+    REQUIRES wisp_os wisp_core
+    HOST_LIBS lvgl
+)
+
 # Simulated HAL devices: SimDisplay/SimTouch/SimImu/SimPower/
 # SimClock/SimButton/SimAudioOut/SimAudioIn/SimStorage, SimBoard (the
 # wisp::app::Board that constructs them) and the --screenshot PNG

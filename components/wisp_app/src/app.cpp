@@ -122,7 +122,9 @@ Result<void> App::start() {
         display->set_brightness(static_cast<uint8_t>(brightness));
 
         touch = impl_->registry.get<hal::Touch>("touch.main");
-        impl_->ui = std::make_unique<ui::UiRuntime>(display, touch);
+        ui::UiConfig ui_config;
+        ui_config.install_image_decoders = impl_->platform.install_image_decoders;
+        impl_->ui = std::make_unique<ui::UiRuntime>(display, touch, std::move(ui_config));
         if (!impl_->ui->start()) {
             WLOG_E("app", "UiRuntime failed to start; continuing headless");
             impl_->ui.reset();

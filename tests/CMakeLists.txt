@@ -166,6 +166,8 @@ wisp_test(NAME lv_blend_mask_test SRCS port_esp/lv_blend_mask_test.cpp LIBS wisp
 target_include_directories(lv_blend_mask_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp)
 wisp_test(NAME audio_downmix_test SRCS port_esp/audio_downmix_test.cpp)
 target_include_directories(audio_downmix_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
+wisp_test(NAME jpeg_header_test SRCS port_esp/jpeg_header_test.cpp)
+target_include_directories(jpeg_header_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 wisp_test(NAME sd_retry_test SRCS port_esp/sd_retry_test.cpp)
 target_include_directories(sd_retry_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 # The networking port's pure pieces: Wi-Fi disconnect-reason mapping,

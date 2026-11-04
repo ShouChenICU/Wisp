@@ -66,6 +66,11 @@ if(EXISTS ${WISP_LV_CONF_PATH})
         GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(lvgl)
+    # The simulator's JPEG decoder (components/wisp_port_sim/ui/
+    # image_decoders.cpp) is built on the TJpgDec library LVGL bundles,
+    # which LVGL compiles only with LV_USE_TJPGD. lv_conf.h leaves it off
+    # for the firmware, which decodes JPEG with esp_new_jpeg.
+    target_compile_definitions(lvgl PUBLIC LV_USE_TJPGD=1)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -241,6 +241,7 @@ void UiRuntime::Impl::ui_main() {
     // the Display's owner-thread check (see ui_ready's doc comment)
     // before touching anything LVGL/Display-related below.
     ui_ready.take(os::kForever);
+    if (config.install_image_decoders) config.install_image_decoders();
 
     // Tracks whether the *previous* iteration was in the paused branch
     // below, so the exact loop iteration where paused flips true->false

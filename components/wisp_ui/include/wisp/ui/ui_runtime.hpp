@@ -31,6 +31,14 @@ namespace wisp::ui {
 struct UiConfig {
     uint32_t task_stack = 8192;
     int task_priority = 4;
+    // The platform's image decoders (lv_image_decoder_create() and
+    // friends), run once on the UI task after LVGL is up and before
+    // anything else runs there. LVGL's own decoders (LodePNG for PNG,
+    // lv_conf.h) are already installed; this adds what the platform
+    // decodes itself, such as baseline JPEG (scene-runtime-core spec
+    // 4.3). The portable layers only ever hand LVGL image sources, never
+    // name a decoder. Empty: none.
+    std::function<void()> install_image_decoders;
 };
 
 // A thread-safe snapshot of the UI task's activity. `fps`, `cpu_percent`

@@ -75,6 +75,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/port/sim/image_decoders.hpp"
 #include "wisp/port/sim/log_stdout.hpp"
 #include "wisp/port/sim/png_writer.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
@@ -621,6 +622,7 @@ int main(int argc, char** argv) {
     platform.set_standby = [](bool standby) {
         WLOG_I(kLogTag, "set_standby(%s)", standby ? "true" : "false");
     };
+    platform.install_image_decoders = wisp::port::sim::install_image_decoders;
     platform.firmware_version = WISP_VERSION;
     platform.target = "simulator";
     // Uploads land in <data-dir>/firmware.bin; images must be built for
