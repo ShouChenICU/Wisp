@@ -73,6 +73,9 @@ add_custom_target(wisp_fixture_zips DEPENDS ${WISP_FIXTURE_ZIP_STAMP})
 wisp_test(NAME zip_test SRCS core/zip_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 60)
 add_dependencies(zip_test wisp_fixture_zips)
 target_compile_definitions(zip_test PRIVATE WISP_FIXTURE_ZIP_DIR="${WISP_FIXTURE_ZIP_DIR}")
+wisp_test(NAME scene_manifest_test SRCS core/scene_manifest_test.cpp LIBS wisp_core wisp_port_sim_os)
+wisp_test(NAME scene_repository_test SRCS core/scene_repository_test.cpp
+          LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME power_monitor_test SRCS core/power_monitor_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings TIMEOUT 20)
 wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui wisp_port_sim_os)
