@@ -35,6 +35,7 @@
 #include "wisp/port/esp/esp_http_client.hpp"
 #include "wisp/port/esp/esp_http_server.hpp"
 #include "wisp/port/esp/log_esp.hpp"
+#include "wisp/port/esp/mem_report.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
 #include "wisp_board_desc.h"
 
@@ -150,6 +151,14 @@ extern "C" void app_main() {
                                                         : wisp::app::LineRead::Timeout;
         };
     }
+    // `mem`: heap figures and every task's stack, for the internal-RAM
+    // budget in AGENTS.md section 5 (wisp/port/esp/mem_report.hpp).
+    platform.console_commands.push_back(
+        {"mem", "mem                          internal/DMA/PSRAM heap and task stacks",
+         [](wisp::app::App&, const std::vector<std::string>& args) -> std::string {
+             if (args.size() != 1) return "error: usage: mem";
+             return wisp::port::esp::mem_report();
+         }});
     // Admin backend (connectivity spec 6): App serves it on http_port
     // (8900) while the station has an address or the hotspot is up.
     platform.http_server = std::make_unique<wisp::port::esp::EspHttpServer>();
