@@ -100,7 +100,7 @@
 | 41 | 启动失败自动回滚（`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`） | 临时在 `firmware/main/main.cpp` 的 `app_main()` 开头加一行 `abort();` 构建（不要提交），上传并在设备上确认 | 新镜像崩溃复位后，引导程序回到旧镜像；网页提示"设备重启后运行的仍是旧版本，已回滚"；之后上传正常镜像仍能装上 |  |
 | 42 | 发布版帧率（全局 `-Os`、渲染路径 `-O2`） | 用默认（发布版）配置构建烧录，重复第 33 项 | `WISP_PERF` 的 fps 不低于下方"性能基准"一节记下的程序滚动结果（约 20）。`esp_driver_spi` 改用 `-O2` 已实测无收益（见该节），不用再试 |  |
 | 43 | 上传期间的日志推送 | 上传固件时打开"日志"页 | 上传期间日志暂停推送（httpd 只有一个任务，被上传请求占着），上传结束后恢复推送，WebSocket 不断开 |  |
-| 44 | 内部 RAM 最坏情况（AGENTS.md 第 5 节的预算） | 设备连上家里的 Wi-Fi 后在串口执行 `wifi ap on`，手机连上热点打开设置页；电脑经 STA 地址打开管理页的"日志"页（WebSocket），在"模型"页对一个真实的 HTTPS 端点做连通性测试，再上传一次固件；全程每隔几秒执行一次 `mem` | 日志里 `admin server listening on port 8900` 和 `captive redirect listening on port 80` 都出现，后面的 `internal RAM: ...` 行不是警告；`mem` 的 `internal free` 始终 ≥ 40 KB、`largest` ≥ 16 KB（`min` 是各内存区各自最低点之和，偏低，只能当下限看）；`wisp.ws`、`wisp.dns` 和端口 80 的 `httpd` 的栈在 `psram`，端口 8900 的 `httpd` 的栈在 `internal` | |
+| 44 | 内部 RAM 最坏情况（AGENTS.md 第 5 节的预算） | 设备连上家里的 Wi-Fi 后在串口执行 `wifi ap on`，手机连上热点打开设置页；电脑经 STA 地址打开管理页的"日志"页（WebSocket），在"模型"页对一个真实的 HTTPS 端点做连通性测试，再上传一次固件；全程每隔几秒执行一次 `mem` | 日志里 `admin server listening on port 8900` 和 `captive redirect listening on port 80` 都出现，后面的 `internal RAM: ...` 行不是警告；`mem` 的 `internal free` 始终 ≥ 40 KB、`largest` ≥ 16 KB（`min` 是各内存区各自最低点之和，偏低，只能当下限看）；`wisp.ws`、`wisp.dns` 和端口 80 的 `httpd` 的栈在 `psram`，端口 8900 的 `httpd` 的栈在 `internal`；整个过程 STA 不掉线、日志里没有反复重连（RX BA 窗口只有 10，换路由器时也看一眼） | |
 
 ## 待机与省电（spec 6.7）
 
@@ -271,7 +271,7 @@
 
 STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动后）：配对 58 KB；扫描 58 KB；WebSocket 日志流加 TLS 握手 51 KB；WebSocket 加 OTA 上传 3.18 MB 约 60 KB；手机侧设置流程（302 跳转、`setup.html`、`/pair/ap`、扫描、WebSocket）51 KB。TLS 只测到证书校验失败为止：固件只开了 TLS 1.2，被拒绝的证书在 ECDHE 和签名校验之前就会中断握手，完整握手估计还要再多用几 KB，仍然高于 40 KB 的预算。真实端点的连通性测试见上面清单第 44 项。
 
-代价：OTA 上传 3.18 MB 从 15.1 s 变成 17.5 s（RX 缓冲少了）。用程序滚动自检列表（每帧 6 px），改动前后都是 8–9 fps，原因与本改动无关，见下方"性能基准"。
+代价：OTA 上传 3.18 MB 从 15.1 s 变成 17.5 s（RX 缓冲少了）。用程序滚动自检列表（每帧 6 px），改动前后都是 8–9 fps，原因与本改动无关，见下方"性能基准"。RX BA 窗口 10 低于 IDF 对开了 PSRAM 的板子建议的 16（`CONFIG_ESP_WIFI_RX_BA_WIN` 的帮助说 16 对吞吐和与各种 AP 的兼容性更好）；目前只在电脑网卡开的热点上测过，个别路由器可能在窗口小时吞吐骤降或反复重连，见清单第 44 项。
 
 **改成异步双缓冲、XIP 之后**（下方"性能基准"的最终配置）：启动后 103.3 KB（最大块 31.7 KB），只开热点 73.5–74.0 KB（31.7 KB），关掉热点回到 101.5 KB；滚动期间 102–105 KB（`WISP_PERF` 的 `heap_internal_free`）。比上表的"改动后"少约 2 KB：`LV_OBJ_STYLE_CACHE` 约 0.8 KB，XIP 约 0.6 KB，剩下约 0.6 KB 没有细分。热点打开过程中的 `min` 下限是 40.0 KB（改之前 41.7 KB）。STA + 热点没有重测（不连真实网络），按上表推算约 68–70 KB。
 
