@@ -142,10 +142,13 @@ Vm* owner(lua_State* L) {
 // See Vm::check_limits.
 void enter(lua_State* L) { owner(L)->check_limits(L); }
 
-// Checking every element would read the clock up to 2^20 times per call;
-// one element can still cost up to 2000 __index/__newindex chain steps
-// (MAXTAGLOOP), so 256 elements stay well inside a hook interval's worth
-// of work.
+// How often the C loops below check the limits, which bounds how far one
+// of them can run past the deadline: 256 elements, each at most one read
+// and one write that can each walk MAXTAGLOOP (2000) __index/__newindex
+// steps, so up to about 256 * 2 * 2000 = 1M table lookups between two
+// checks. That took 6-8 ms on the host at -O2 (13 ms unoptimized); the
+// device is slower. Checking every element would read the clock up to
+// 2^20 times per call.
 constexpr lua_Integer kLoopCheckEvery = 256;
 
 // Called once per element by the C loops below.
@@ -153,22 +156,24 @@ void tick(lua_State* L, lua_Integer& steps) {
     if (++steps % kLoopCheckEvery == 0) enter(L);
 }
 
-// Every C function a scene can reach from the library tables is this
-// closure: it checks the limits and then calls the real function, on the
-// same Lua frame (no lua_call: no extra C call level, a few bytes of C
-// stack). The real function's own N upvalues come first, so it finds
-// them where it expects; it sits in upvalue N + 1. A wrapper written
-// here may keep one more upvalue after it (its stock original).
+// Every C function a scene can reach is this closure, except
+// coroutine.wrap's functions, which check by themselves: it checks the
+// limits and then calls the real function, on the same Lua frame (no
+// lua_call: no extra C call level, a few bytes of C stack). The real
+// function's own N upvalues come first, so it finds them where it
+// expects; it sits in upvalue N + 1. A wrapper written here may keep
+// more upvalues after it (its stock original, the iterator it hands out).
 template <int N>
 int checked(lua_State* L) {
     enter(L);
     return lua_tocfunction(L, lua_upvalueindex(N + 1))(L);
 }
 
-// The most upvalues a wrapped stock function has (math.random and
-// math.randomseed share their state through one).
-constexpr int kMaxCheckedUpvalues = 2;
-constexpr lua_CFunction kChecked[kMaxCheckedUpvalues + 1] = {checked<0>, checked<1>, checked<2>};
+// The most upvalues of its own a function can bring to checked<>: a
+// gmatch iterator has three (its subject, pattern and match state).
+constexpr int kMaxCheckedUpvalues = 3;
+constexpr lua_CFunction kChecked[kMaxCheckedUpvalues + 1] = {checked<0>, checked<1>, checked<2>,
+                                                             checked<3>};
 
 bool is_checked(lua_CFunction f) {
     for (lua_CFunction c : kChecked)
@@ -176,23 +181,24 @@ bool is_checked(lua_CFunction f) {
     return false;
 }
 
-// Pushes `fn` behind the entry check. With `original` set, the stock
-// function from the top of the stack is replaced by it and fn finds it
-// in upvalue 2 (call_original).
-void push_checked(lua_State* L, lua_CFunction fn, bool original = false) {
-    if (original) {
-        lua_CFunction orig = lua_tocfunction(L, -1);
-        lua_pop(L, 1);
-        lua_pushcfunction(L, fn);
-        lua_pushcfunction(L, orig);
-        lua_pushcclosure(L, checked<0>, 2);
-    } else {
-        lua_pushcfunction(L, fn);
-        lua_pushcclosure(L, checked<0>, 1);
-    }
+// True if the C function at `idx` has no more upvalues than checked<>
+// can carry.
+bool checkable(lua_State* L, int idx) {
+    if (!lua_getupvalue(L, idx, kMaxCheckedUpvalues + 1)) return true;
+    lua_pop(L, 1);
+    return false;
 }
 
-// Runs the stock function a wrapper replaced, on the wrapper's frame.
+// Pushes `fn` behind the entry check, with the `extra` values from the
+// top of the stack (popped) after it as upvalues 2 and on.
+void push_checked(lua_State* L, lua_CFunction fn, int extra = 0) {
+    lua_pushcfunction(L, fn);
+    lua_insert(L, -extra - 1);
+    lua_pushcclosure(L, checked<0>, extra + 1);
+}
+
+// Runs the stock function a wrapper replaced (upvalue 2, a function
+// without upvalues of its own), on the wrapper's frame.
 int call_original(lua_State* L) { return lua_tocfunction(L, lua_upvalueindex(2))(L); }
 
 int return_upvalue(lua_State* L) {
@@ -318,6 +324,76 @@ int sandbox_gsub(lua_State* L) {
         lua_replace(L, 3);
     }
     return call_original(L);
+}
+
+// The library functions that make or hand out a C function at run time
+// hand out a checked one. A generic for runs an instruction between two
+// calls of its iterator, but a C loop that calls a scene's function per
+// step (a sort comparator, __lt in sort and math.max, a gsub replacement,
+// __index in table.move) runs none, and one call can be slow: a gmatch
+// iterator that finds nothing rescans the rest of its subject every
+// time, and a utf8.codes iterator given a position that is not a number
+// starts over and skips every continuation byte it finds there (a whole
+// string of them). pairs, ipairs and utf8.codes return the same
+// function on every call, so each keeps one checked copy (pairs's is
+// _G.next itself) and identities such as pairs({}) == next hold as in
+// stock Lua; they follow Lua 5.5.1's lbaselib.c and lutf8lib.c (MIT).
+// gmatch makes a new iterator per call, and each one is copied.
+
+int pairs_cont(lua_State*, int, lua_KContext) { return 4; }
+
+// Upvalue 2: the checked next.
+int sandbox_pairs(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (luaL_getmetafield(L, 1, "__pairs") == LUA_TNIL) {
+        lua_pushvalue(L, lua_upvalueindex(2));
+        lua_pushvalue(L, 1);
+        lua_pushnil(L);
+        lua_pushnil(L);
+    } else {
+        lua_pushvalue(L, 1);
+        lua_callk(L, 1, 4, 0, pairs_cont);
+    }
+    return 4;
+}
+
+// Upvalue 2: the checked ipairs iterator.
+int sandbox_ipairs(lua_State* L) {
+    luaL_checkany(L, 1);
+    lua_pushvalue(L, lua_upvalueindex(2));
+    lua_pushvalue(L, 1);
+    lua_pushinteger(L, 0);
+    return 3;
+}
+
+// Upvalues 2 and 3: the checked strict and lax iterators.
+int sandbox_utf8_codes(lua_State* L) {
+    int lax = lua_toboolean(L, 2);
+    const char* s = luaL_checkstring(L, 1);
+    luaL_argcheck(L, (static_cast<unsigned char>(*s) & 0xC0) != 0x80, 1, "invalid UTF-8 code");
+    lua_pushvalue(L, lua_upvalueindex(lax ? 3 : 2));
+    lua_pushvalue(L, 1);
+    lua_pushinteger(L, 0);
+    return 3;
+}
+
+// Upvalue 2: the stock gmatch.
+int sandbox_gmatch(lua_State* L) {
+    call_original(L);
+    push_checked_function(L, -1);
+    return 1;
+}
+
+// Pushes a checked copy of the iterator the stock t[name]("", flag)
+// returns, t being the table at `table`.
+void push_checked_iterator(lua_State* L, int table, const char* name, bool flag) {
+    table = lua_absindex(L, table);
+    lua_getfield(L, table, name);
+    lua_pushliteral(L, "");
+    lua_pushboolean(L, flag);
+    lua_call(L, 2, 1);
+    push_checked_function(L, -1);
+    lua_replace(L, -2);
 }
 
 // The table library's loops run in C: no instruction, so no hook, and
@@ -682,6 +758,7 @@ int Vm::setup(lua_State* L) {
         {LUA_COLIBNAME, "close", &Vm::co_close, true},
         {LUA_COLIBNAME, "wrap", &Vm::co_wrap, false},
         {LUA_STRLIBNAME, "gsub", sandbox_gsub, true},
+        {LUA_STRLIBNAME, "gmatch", sandbox_gmatch, true},
         {LUA_TABLIBNAME, "move", sandbox_table_move, false},
         {LUA_TABLIBNAME, "concat", sandbox_table_concat, false},
         {LUA_TABLIBNAME, "unpack", sandbox_table_unpack, false},
@@ -695,10 +772,32 @@ int Vm::setup(lua_State* L) {
         else
             lua_pushglobaltable(L);
         if (r.keeps_original) lua_getfield(L, -1, r.name);
-        push_checked(L, r.fn, r.keeps_original);
+        push_checked(L, r.fn, r.keeps_original ? 1 : 0);
         lua_setfield(L, -2, r.name);
         lua_pop(L, 1);
     }
+
+    // pairs, ipairs and utf8.codes keep the iterator they hand out, a
+    // checked copy of what the stock function returns (see sandbox_pairs);
+    // pairs's is the next in _G.
+    lua_pushglobaltable(L);
+    lua_getfield(L, -1, "next");
+    push_checked_function(L, -1);
+    lua_replace(L, -2);
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -3, "next");
+    push_checked(L, sandbox_pairs, 1);
+    lua_setfield(L, -2, "pairs");
+    push_checked_iterator(L, -1, "ipairs", false);
+    push_checked(L, sandbox_ipairs, 1);
+    lua_setfield(L, -2, "ipairs");
+    lua_pop(L, 1);
+    lua_getglobal(L, LUA_UTF8LIBNAME);
+    push_checked_iterator(L, -1, "codes", false);
+    push_checked_iterator(L, -2, "codes", true);
+    push_checked(L, sandbox_utf8_codes, 2);
+    lua_setfield(L, -2, "codes");
+    lua_pop(L, 1);
 
     lua_createtable(L, 0, 1);
     lua_pushcfunction(L, &Vm::import);
@@ -928,27 +1027,46 @@ int Vm::co_wrapped(lua_State* L) {
     return lua_error(L);
 }
 
+void push_checked_function(lua_State* L, int idx) {
+    idx = lua_absindex(L, idx);
+    lua_CFunction f = lua_tocfunction(L, idx);
+    if (!f) luaL_error(L, "push_checked_function: not a C function");
+    if (is_checked(f)) {
+        lua_pushvalue(L, idx);
+        return;
+    }
+    luaL_checkstack(L, kMaxCheckedUpvalues + 1, nullptr);
+    if (!checkable(L, idx))
+        luaL_error(L, "C function with more than %d upvalues cannot be checked",
+                   kMaxCheckedUpvalues);
+    int n = 0;
+    while (lua_getupvalue(L, idx, n + 1)) ++n;
+    lua_pushcfunction(L, f);
+    lua_pushcclosure(L, kChecked[n], n + 1);
+}
+
 void check_c_functions(lua_State* L, int table) {
     table = lua_absindex(L, table);
+    luaL_checkstack(L, 4, nullptr);
+    // Every function is known to be checkable before the first field
+    // changes, so a refusal leaves the table as it was.
+    lua_pushnil(L);
+    while (lua_next(L, table)) {
+        lua_CFunction f = lua_tocfunction(L, -1);
+        if (f && !is_checked(f) && !checkable(L, -1))
+            luaL_error(L, "C function '%s' has more than %d upvalues and cannot be checked",
+                       lua_type(L, -2) == LUA_TSTRING ? lua_tostring(L, -2) : "?",
+                       kMaxCheckedUpvalues);
+        lua_pop(L, 1);
+    }
     lua_pushnil(L);
     while (lua_next(L, table)) {
         lua_CFunction f = lua_tocfunction(L, -1);
         if (f && !is_checked(f)) {
-            int fn = lua_gettop(L);
-            int nup = 0;
-            while (nup <= kMaxCheckedUpvalues && lua_getupvalue(L, fn, nup + 1)) ++nup;
-            if (nup > kMaxCheckedUpvalues) {
-                lua_settop(L, fn);
-                WLOG_W("scene", "C function '%s' has too many upvalues to check",
-                       lua_type(L, fn - 1) == LUA_TSTRING ? lua_tostring(L, fn - 1) : "?");
-            } else {
-                // Changing an existing field is allowed while lua_next runs.
-                lua_pushcfunction(L, f);
-                lua_pushcclosure(L, kChecked[nup], nup + 1);
-                lua_pushvalue(L, fn - 1);
-                lua_insert(L, -2);
-                lua_rawset(L, table);
-            }
+            // Changing an existing field is allowed while lua_next runs.
+            lua_pushvalue(L, -2);
+            push_checked_function(L, -2);
+            lua_rawset(L, table);
         }
         lua_pop(L, 1);
     }

@@ -27,21 +27,24 @@
 // Work that runs no Lua instruction: every C function in the library
 // tables (_G, string, table, math, utf8, coroutine, wisp, and the string
 // metatable) checks the limits when it is entered (check_c_functions()),
-// so a chain or loop of C calls stops at the first call after the
-// deadline; pcall, xpcall, load and the coroutine functions check again
-// when they return, and load checks every call of a reader function. The
-// C loops that run metamethods per element (table.move, concat, unpack,
-// insert, remove, sort, and gsub with a replacement table that has a
-// metatable) also check every 256 elements, since one element can walk a
-// 2000-step __index chain. The table loops refuse ranges over 2^20
-// elements, and insert, remove and sort a negative length ("range too
-// large"); each loop runs over a bound that was checked, whatever a __len
-// answers when called again. Sorting anything with a metatable goes
-// through a plain copy of its elements, which counts toward the memory
-// limit like any other table. Known limit: a single C call that is slow
-// by itself (string.find on long strings is O(n*m), pattern matching can
-// backtrack) is not interrupted, so the time limit can be overrun by one
-// such call.
+// and so does every C function the libraries make or hand out at run
+// time (the iterators of pairs, ipairs, string.gmatch and utf8.codes, and
+// coroutine.wrap's functions), so a chain or loop of C calls stops at the
+// first call after the deadline; pcall, xpcall, load and the coroutine
+// functions check again when they return, and load checks every call of
+// a reader function. The C loops that run metamethods per element
+// (table.move, concat, unpack, insert, remove, sort, and gsub with a
+// replacement table that has a metatable) also check every 256 elements,
+// since one element can walk a 2000-step __index chain; such a loop can
+// overrun the deadline by those 256 elements. The table loops refuse
+// ranges over 2^20 elements, and insert, remove and sort a negative
+// length ("range too large"); each loop runs over a bound that was
+// checked, whatever a __len answers when called again. Sorting anything
+// with a metatable goes through a plain copy of its elements, which
+// counts toward the memory limit like any other table. Known limit: a
+// single C call that is slow by itself (string.find on long strings is
+// O(n*m), pattern matching can backtrack) is not interrupted, so the
+// time limit can be overrun by one such call.
 //
 // Scene code may run only under Vm::call(): the time limit is measured
 // from there, and code a host runs with its own lua_pcall outside a call
@@ -167,9 +170,9 @@ public:
     // time limit has passed; otherwise returns (and settles a pending
     // refusal, see above). The count hook only sees Lua instructions, so
     // C code calls this instead: on entry to every scene-visible C
-    // function (check_c_functions() arranges that), after anything that
-    // catches errors, and every so often inside a C loop that calls back
-    // into Lua or walks metamethods. Follows the longjmp rule below.
+    // function (push_checked_function() arranges that), after anything
+    // that catches errors, and every so often inside a C loop that calls
+    // back into Lua or walks metamethods. Follows the longjmp rule below.
     void check_limits(lua_State* L);
 
 private:
@@ -240,13 +243,30 @@ std::optional<ScriptError> compile_check(std::string_view path, std::string_view
 // longjmps out of it.
 int protect(lua_State* L, void (*fn)(lua_State*, void*), void* ctx);
 
-// Replaces every C function in the table at `table` with a closure that
-// calls Vm::check_limits() and then the function itself, on the same
-// Lua frame (no extra C call level). Vm::create() does this for the
-// library tables; a binding does it for each table of functions it adds
-// for scenes. A function with more than two upvalues of its own cannot
-// be wrapped: it is left alone and logged as a warning.
+// Replaces every C function in the table at `table` with its checked
+// copy from push_checked_function(), whose upvalue rule applies: a
+// function that replaces its own upvalues must not also stay reachable
+// as the original closure. Vm::create() does this for the library
+// tables; a binding does it for each table of functions it adds for
+// scenes. Each field gets its own copy. If any function there has more
+// than three upvalues, raises a Lua error naming it before changing any
+// field. Can raise (it allocates), so it runs inside a protected call.
 void check_c_functions(lua_State* L, int table);
+
+// Pushes a checked copy of the C function at `idx`: a closure that calls
+// Vm::check_limits() and then the function itself, on the same Lua frame
+// (no extra C call level). A binding that makes a C function at run time
+// and hands it to a scene (an iterator, a callback) hands out this copy,
+// as string.gmatch does. The copy carries the function's own upvalues,
+// at most three, by value: a table or userdata upvalue is still the same
+// object, but a function that replaces one of its upvalues
+// (lua_replace(L, lua_upvalueindex(i))) changes only the closure it runs
+// as, so if the original is also kept somewhere (the registry, another
+// table), the two drift apart. Keep such state in a table or userdata,
+// or keep only the copy. A function that is already checked is pushed
+// as it is. Raises a Lua error for anything but a C function, and for
+// one with more than three upvalues.
+void push_checked_function(lua_State* L, int idx);
 
 // luaL_newmetatable for a binding's userdata type, with __metatable set
 // so scripts can neither read nor replace it (getmetatable returns

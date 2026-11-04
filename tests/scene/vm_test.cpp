@@ -34,6 +34,7 @@ struct FakeClock {
     int64_t jump_in = 0;  // reads left until the jump; 0 = none armed
     uint64_t jump_by = 0;
     uint64_t reads = 0;
+    uint64_t armed_at = 0;  // `reads` when arm() was last called
     uint64_t read() {
         ++reads;
         if (jump_in > 0 && --jump_in == 0) now += jump_by;
@@ -53,6 +54,7 @@ int arm(lua_State* L) {
     auto* clock = static_cast<FakeClock*>(lua_touserdata(L, lua_upvalueindex(1)));
     clock->jump_in = luaL_checkinteger(L, 1);
     clock->jump_by = static_cast<uint64_t>(luaL_checkinteger(L, 2));
+    clock->armed_at = clock->reads;
     return 0;
 }
 
@@ -676,10 +678,10 @@ TEST(Vm, CFanOutInsideCoroutinesTimesOut) {
     }
 }
 
-// Every C function a scene can reach through the library tables checks
-// the limits before it does anything: with the deadline already passed,
-// calling it with no arguments is a timeout, never its own result or
-// argument error.
+// Every C function a scene can reach through the library tables, or get
+// from a library function at run time, checks the limits before it does
+// anything: with the deadline already passed, calling it with no
+// arguments is a timeout, never its own result or argument error.
 TEST(Vm, EveryLibraryCFunctionChecksLimits) {
     std::vector<std::string> exprs;
     {
@@ -713,6 +715,22 @@ TEST(Vm, EveryLibraryCFunctionChecksLimits) {
         }
     }
     EXPECT_GT(exprs.size(), 80u) << exprs.size();
+    // Every place the opened libraries make or hand out a C function at
+    // run time: string.gmatch (lstrlib.c gmatch), utf8.codes (lutf8lib.c
+    // iter_codes), pairs and ipairs (lbaselib.c), coroutine.wrap.
+    for (const char* expr :
+         {"string.gmatch('a', 'a')", "('a'):gmatch('a')", "utf8.codes('a')",
+          "utf8.codes('a', true)", "pairs({})", "ipairs({})", "coroutine.wrap(function() end)"}) {
+        FakeClock clock;
+        auto vm = make(clock);
+        ASSERT_NE(vm, nullptr);
+        ASSERT_FALSE(vm->load("main.lua", std::string("return ") + expr)) << expr;
+        auto err = vm->call(0, 1);
+        ASSERT_FALSE(err) << expr << ": " << describe(err);
+        EXPECT_TRUE(lua_iscfunction(vm->L(), -1)) << expr;
+        lua_settop(vm->L(), 0);
+        exprs.push_back(expr);
+    }
     for (const auto& expr : exprs) {
         FakeClock clock;
         auto vm = make(clock);
@@ -799,6 +817,31 @@ TEST(Vm, LibraryFunctionsBehaveAsStock) {
         local parts = {"return ", "3"}
         local i = 0
         assert(load(function() i = i + 1 return parts[i] end)() == 3)
+        -- Iterators: the identities and error names stock Lua has.
+        assert(pairs({}) == next and rawequal(pairs({}), next))
+        assert(ipairs({}) == ipairs({1}))
+        assert(utf8.codes("a") == utf8.codes("b") and utf8.codes("a") ~= utf8.codes("a", true))
+        assert(string.gmatch("a", "a") ~= string.gmatch("a", "a"))
+        fails("bad argument #1 to 'next' (table expected, got number)", (pairs({})), 1)
+        fails("bad argument #1 to 'utf8.codes' (invalid UTF-8 code)", utf8.codes, "\x80")
+        fails("bad argument #1 to 'pairs' (value expected)", pairs)
+        fails("bad argument #1 to 'ipairs' (value expected)", ipairs)
+        fails("invalid UTF-8 code", function() for _ in utf8.codes("a\xff") do end end)
+        local kv = {}
+        for k, v in string.gmatch("a=1, b=2", "(%w+)=(%w+)") do kv[#kv + 1] = k .. v end
+        for c in ("abc"):gmatch(".", 2) do kv[#kv + 1] = c end
+        assert(table.concat(kv, ";") == "a1;b2;b;c", table.concat(kv, ";"))
+        local cps = {}
+        for p, c in utf8.codes("h\u{E4}x") do cps[#cps + 1] = p .. ":" .. c end
+        for p, c in utf8.codes("\u{D800}", true) do cps[#cps + 1] = p .. ":" .. c end
+        assert(table.concat(cps, ";") == "1:104;2:228;4:120;1:55296", table.concat(cps, ";"))
+        local sum = 0
+        for _, v in ipairs(setmetatable({}, {__index = function(_, k) return k < 4 and k or nil end})) do
+            sum = sum + v
+        end
+        local own = setmetatable({}, {__pairs = function(t) return next, {x = 5}, nil end})
+        for k, v in pairs(own) do sum = sum + v end
+        assert(sum == 11, sum)
         print("stock", 1, nil)
     )lua");
     EXPECT_FALSE(err) << describe(err);
@@ -828,6 +871,60 @@ TEST(Vm, CLoopsOverLibraryCallsTimeOut) {
         }
         EXPECT_EQ(err->fault, ScriptFault::Timeout) << src << "\n" << describe(err);
         EXPECT_LT(clock.reads, 2000u) << src;
+    }
+}
+
+// Stock C loops that call a function per step (a sort comparator, __lt
+// in sort and math.max, a gsub replacement, __index in table.move) can
+// be handed an iterator a library made at run time, and one call of it
+// can be slow: a gmatch iterator that finds nothing rescans the rest of
+// its subject, and a utf8.codes iterator given a string as the position
+// skips the continuation bytes it starts with (here, all of them). The
+// count hook is set out of reach, so only entry checks read the clock.
+// arm(2, ...) moves it past the deadline at the second read; the first
+// is the entry check of the loop's own function, so only a check in the
+// iterator sees it. move gets fewer elements than its own loop check
+// (every 256) needs.
+TEST(Vm, CLoopsOverIteratorsTimeOut) {
+    const char* prelude = R"(
+        local gm = string.rep("a", 1000):gmatch("b")
+        local u8 = utf8.codes("")
+        local big = string.rep("\x80", 1000)
+        local lt = {__lt = gm}
+        local nums, objs, bigs, same = {}, {}, {}, {}
+        local one = setmetatable({}, lt)
+        for i = 1, 2000 do
+            nums[i] = i
+            objs[i] = setmetatable({}, lt)
+            bigs[i] = big
+            same[i] = one
+        end
+        local src = setmetatable({}, {__index = gm})
+        local subject = string.rep("x", 2000)
+        -- Arms once table.unpack, whose own loop checks read the clock, is done.
+        local function max(...) _G.arm(2, 1000) local m = math.max(...) return m end
+    )";
+    for (const char* call : {
+             "_G.arm(2, 1000) table.sort(nums, gm)",
+             "_G.arm(2, 1000) table.sort(objs)",
+             "_G.arm(2, 1000) subject:gsub('', gm)",
+             "max(table.unpack(same))",
+             "_G.arm(2, 1000) table.sort(bigs, u8)",
+             "_G.arm(2, 1000) table.move(src, 1, 255, 1, {})",
+         }) {
+        FakeClock clock;
+        auto vm = make(clock, VmLimits{.hook_instructions = 1 << 30});
+        ASSERT_NE(vm, nullptr);
+        std::string src = std::string(prelude) + call + "\n_G.after = true\n";
+        auto err = run(*vm, src);
+        if (!err) {
+            ADD_FAILURE() << call << " ran";
+            continue;
+        }
+        EXPECT_EQ(err->fault, ScriptFault::Timeout) << call << "\n" << describe(err);
+        EXPECT_EQ(err->message, "execution exceeded 200 ms") << call;
+        EXPECT_EQ(clock.reads - clock.armed_at, 2u) << call;
+        EXPECT_TRUE(global_is_nil(*vm, "after")) << call;
     }
 }
 
@@ -1246,4 +1343,120 @@ TEST(Vm, ProtectCatchesErrors) {
     EXPECT_STREQ(lua_tostring(L, 2), "inner 7");
     EXPECT_STREQ(lua_tostring(L, 1), "below");
     lua_settop(L, 0);
+}
+
+namespace {
+
+// Returns the sum of its integer upvalues (up to the first that is not a
+// number).
+int sum_upvalues(lua_State* L) {
+    lua_Integer sum = 0;
+    for (int i = 1; lua_type(L, lua_upvalueindex(i)) == LUA_TNUMBER; ++i)
+        sum += lua_tointeger(L, lua_upvalueindex(i));
+    lua_pushinteger(L, sum);
+    return 1;
+}
+
+// _G.lib = {sum_upvalues, sum = sum_upvalues with upvalues 1..nup,
+// plain = sum_upvalues}. lua_next visits lib[1], in the array part,
+// before the string keys.
+void set_lib(lua_State* L, int nup) {
+    lua_createtable(L, 1, 2);
+    lua_pushcfunction(L, sum_upvalues);
+    lua_rawseti(L, -2, 1);
+    for (int i = 1; i <= nup; ++i) lua_pushinteger(L, i);
+    lua_pushcclosure(L, sum_upvalues, nup);
+    lua_setfield(L, -2, "sum");
+    lua_pushcfunction(L, sum_upvalues);
+    lua_setfield(L, -2, "plain");
+    lua_setglobal(L, "lib");
+}
+
+void check_lib(lua_State* L, void*) {
+    lua_getglobal(L, "lib");
+    wisp::scene::check_c_functions(L, -1);
+}
+
+}  // namespace
+
+// A binding's table goes through check_c_functions() like the library
+// tables: a function keeps up to three upvalues of its own behind the
+// check; one with more cannot be checked, so the call raises and leaves
+// the whole table as it was.
+TEST(Vm, CheckCFunctionsCarriesUpvaluesOrRefuses) {
+    {
+        FakeClock clock;
+        auto vm = make(clock);
+        ASSERT_NE(vm, nullptr);
+        lua_State* L = vm->L();
+        set_lib(L, 4);
+        ASSERT_EQ(wisp::scene::protect(L, check_lib, nullptr), LUA_ERRRUN);
+        ASSERT_EQ(lua_type(L, -1), LUA_TSTRING);
+        std::string msg = lua_tostring(L, -1);
+        EXPECT_NE(msg.find("'sum' has more than 3 upvalues"), std::string::npos) << msg;
+        lua_settop(L, 0);
+        lua_getglobal(L, "lib");
+        lua_rawgeti(L, -1, 1);
+        EXPECT_EQ(lua_tocfunction(L, -1), sum_upvalues);
+        lua_getfield(L, -2, "sum");
+        EXPECT_EQ(lua_tocfunction(L, -1), sum_upvalues);
+        lua_getfield(L, -3, "plain");
+        EXPECT_EQ(lua_tocfunction(L, -1), sum_upvalues);
+        lua_settop(L, 0);
+    }
+    for (const char* src : {
+             "assert(_G.lib.sum() == 6 and _G.lib.plain() == 0)\n",
+             "local f = _G.lib.sum\n_G.advance(1000)\nf()\n",
+             "local f = _G.lib.plain\n_G.advance(1000)\nf()\n",
+         }) {
+        FakeClock clock;
+        auto vm = make(clock);
+        ASSERT_NE(vm, nullptr);
+        set_lib(vm->L(), 3);
+        ASSERT_EQ(wisp::scene::protect(vm->L(), check_lib, nullptr), LUA_OK);
+        lua_settop(vm->L(), 0);
+        auto err = run(*vm, src);
+        if (std::string_view(src).find("advance") == std::string_view::npos) {
+            EXPECT_FALSE(err) << src << describe(err);
+        } else {
+            ASSERT_TRUE(err) << src;
+            EXPECT_EQ(err->fault, ScriptFault::Timeout) << src << describe(err);
+        }
+    }
+}
+
+namespace {
+
+void check_global_f(lua_State* L, void*) {
+    lua_getglobal(L, "f");
+    wisp::scene::push_checked_function(L, -1);
+}
+
+}  // namespace
+
+// push_checked_function() returns a function that is already checked as
+// it is (a gmatch iterator carries three upvalues of its own, so a second
+// copy would not even fit) and refuses anything but a C function.
+TEST(Vm, PushCheckedFunctionTakesOnlyCFunctionsOnce) {
+    FakeClock clock;
+    auto vm = make(clock);
+    ASSERT_NE(vm, nullptr);
+    lua_State* L = vm->L();
+    for (const char* src : {"_G.f = print", "_G.f = string.gmatch('a', 'a')", "_G.f = pairs({})"}) {
+        auto err = run(*vm, src);
+        ASSERT_FALSE(err) << src << describe(err);
+        ASSERT_EQ(wisp::scene::protect(L, check_global_f, nullptr), LUA_OK)
+            << src << ": " << lua_tostring(L, -1);
+        lua_getglobal(L, "f");
+        EXPECT_TRUE(lua_rawequal(L, -1, -2)) << src;
+        lua_settop(L, 0);
+    }
+    for (const char* src : {"_G.f = function() end", "_G.f = 42"}) {
+        auto err = run(*vm, src);
+        ASSERT_FALSE(err) << src << describe(err);
+        ASSERT_EQ(wisp::scene::protect(L, check_global_f, nullptr), LUA_ERRRUN) << src;
+        EXPECT_NE(std::string(lua_tostring(L, -1)).find("not a C function"), std::string::npos)
+            << lua_tostring(L, -1);
+        lua_settop(L, 0);
+    }
 }
