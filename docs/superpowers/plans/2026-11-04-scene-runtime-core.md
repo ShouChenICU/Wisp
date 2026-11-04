@@ -657,7 +657,7 @@ TEST(Schema, DocIsUpToDate)                    // schema_markdown() == docs/scen
 **Files:**
 - Create: `components/wisp_ui/include/wisp/ui/system_layer.hpp`、`components/wisp_ui/src/system_layer.cpp`、`components/wisp_ui/src/pinyin_dict.cpp`（生成物，提交）、`tools/gen_pinyin_dict.py`
 - Modify（追加）: `tools/ci.sh`（`python3 tools/gen_pinyin_dict.py --check`）
-- Modify: `components/wisp_ui/config/lv_conf.h`（`LV_USE_IME_PINYIN 1`、`LV_IME_PINYIN_USE_DEFAULT_DICT 0`（词库来自细化第 11 条的生成物）、`LV_IME_PINYIN_USE_K9_MODE 0`）、`components/wisp_ui/include/wisp/ui/strings.hpp` 与 `src/strings_{zh,ja,en}.cpp`、`components/wisp_ui/CMakeLists.txt`、`components/wisp_app/src/{app.cpp,app_impl.hpp,self_check_screen.cpp}`（三个确认框改用 `SystemLayer::open_confirm`，"同一时间只有一个确认框"改用 `SystemLayer::confirm_open()`；`SelfCheck::raise_overlays()` 在 `pair_card_.raise()` 之后调用 `SystemLayer::raise()`，不再自己提升确认框的背板；`App` 在启动 `UiRuntime` 后、自检界面之前于 UI 线程上构造 `SystemLayer`，停止时在自检界面之后销毁）、`tests/CMakeLists.txt`（注册 `system_layer_test`）
+- Modify: `components/wisp_ui/config/lv_conf.h`（`LV_USE_IME_PINYIN 1`、`LV_IME_PINYIN_USE_DEFAULT_DICT 0`（词库来自细化第 11 条的生成物）、`LV_IME_PINYIN_USE_K9_MODE 0`）、`components/wisp_ui/include/wisp/ui/strings.hpp` 与 `src/strings_{zh,ja,en}.cpp`、`components/wisp_ui/CMakeLists.txt`、`components/wisp_app/src/{app.cpp,app_impl.hpp,self_check_screen.cpp}`（三个确认框改用 `SystemLayer::open_confirm`，"同一时间只有一个确认框"改用 `SystemLayer::confirm_open()`；`SelfCheck::raise_overlays()` 在 `pair_card_.raise()` 之后调用 `SystemLayer::raise()`，由它提升确认框的背板；`App` 在启动 `UiRuntime` 后、自检界面之前于 UI 线程上构造 `SystemLayer`，停止时在自检界面之后销毁）、`tests/CMakeLists.txt`（注册 `system_layer_test`）
 - Test: `tests/ui/system_layer_test.cpp`；`tests/app/{factory_reset_test,firmware_confirm_test,self_check_screen_test,net_ui_test}.cpp` 与 `tests/ui/overlay_test.cpp` 必须不改即通过
 
 **Interfaces:**
@@ -680,17 +680,17 @@ public:
                                                               // 已有确认框时返回 nullptr，不回调
     bool confirm_open() const;                                // 同一时间只有一个确认框
     void close_confirm(lv_obj_t* box);
-    void raise();                                             // 把当前存在的各块提到顶层最上面；SelfCheck::raise_overlays() 最后调用
+    void raise();                                             // 把当前存在的各块（确认框连同其背板）提到顶层最上面；SelfCheck::raise_overlays() 最后调用
     static bool in_back_zone(const hal::ScreenShape& s, int32_t x, int32_t y);
     static bool is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end);
 };
 ```
 
-- 与 overlay 的配合（`wisp/ui/overlay.hpp`）：顶层只要有一个显示中、未标记的对象碰到某块重绘区，那块就不再裁剪；一个常驻的全屏容器会让配网卡片下的滚动退回整块重画（热点帧率约从 28.2 掉到 14.5，`NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone` 失败）。所以系统层没有常驻容器：手势条、错误面板、键盘、确认框各自是 `lv_layer_top()` 的直接子对象，只在使用期间存在或显示。错误面板、键盘、确认框都不透明，创建后调用 `mark_opaque_overlay()`。系统层建的辅助对象（面板内部容器等）一律清掉 `LV_OBJ_FLAG_CLICKABLE`，只有按钮、键盘和手势条可点。
+- 与 overlay 的配合（`wisp/ui/overlay.hpp`）：顶层只要有一个显示中、未标记的对象碰到某块重绘区，那块就不再裁剪；一个常驻的全屏容器会让配网卡片下的滚动退回整块重画（热点帧率约从 28.2 掉到 14.5，`NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone` 失败）。所以系统层没有常驻容器：手势条、错误面板、键盘各自是 `lv_layer_top()` 的直接子对象，确认框连同它的背板也是，都只在使用期间存在或显示。错误面板与键盘不透明，创建后调用 `mark_opaque_overlay()`；确认框不标记（见下）。系统层建的辅助对象（面板内部容器等）一律清掉 `LV_OBJ_FLAG_CLICKABLE`，只有按钮、键盘和手势条可点。
 - 手势区：`y ∈ [safe.y1, safe.y2]` 且 `row_span(y).x1 <= x < row_span(y).x1 + 16`。手势条是一个窄条对象：纵向从 `safe.y1` 到 `safe.y2`，横向从各行 `row_span(y).x1` 的最小值到其最大值 + 16，透明、不标记；创建时隐藏，`set_back_handler` 设了非空函数时才显示，清空时再隐藏。它加 `LV_OBJ_FLAG_ADV_HITTEST`，`LV_EVENT_HIT_TEST` 用 `in_back_zone` 判定，所以圆角/圆形屏上判定区贴着可见边缘，条内其余像素的触摸照常落到场景。`is_back_swipe`：起点在区内、`end.x - start.x > width / 4`、`|dy| < dx`。区内的按下被系统层吃掉，场景收不到。
 - 错误面板：不透明（标记为覆盖物），限制在 `safe_rect` 内；标题 `StrId::SceneErrorTitle`，正文为场景名、`file:line` 与错误信息，按钮 `StrId::SceneReload`/`StrId::SceneBack`。
 - 键盘：`lv_keyboard` + `lv_ime_pinyin`，`lv_ime_pinyin_set_dict()` 用细化第 11 条生成的词库（`tools/gen_pinyin_dict.py` 读 LVGL 源码里的默认词库与 `tools/gen_cjk_font_test.py` 用的字体字符集，输出排序后的常量表；CI 里用 `--check` 校验已提交的文件是最新的），占安全区下半部，不透明（标记为覆盖物），`LV_EVENT_READY`/`LV_EVENT_CANCEL` 时收起；有一个中/英切换键。
-- 确认框：`lv_msgbox_create(lv_layer_top())`——传入父对象时 LVGL 不建全屏模态背板（`lv_msgbox_create(nullptr)` 的背板是未标记的全屏顶层对象，标记框本身没有用），所以框是顶层的直接子对象、仍是 `lv_msgbox_class`（现有测试按这个类数确认框）；宽度钳制照搬 `SelfCheck::make_confirm_box`，不透明，`mark_opaque_overlay()`。没有背板，框外的触摸会落到下面的界面，3a 接受。
+- 确认框：保持模态，用 `lv_msgbox_create(nullptr)`，带 LVGL 默认的全屏背板。确认框守着危险操作（恢复出厂、安装固件、删除场景），框外的触摸绝不能落到下面的界面。背板是未标记的全屏顶层对象，所以确认框打开期间不跳过被遮挡区域的重绘，下面滚动时整块重画；确认框很少出现、开着的时间也短，接受这个代价。框和背板都不调用 `mark_opaque_overlay()`（标记背板会把它当成不透明卡片裁掉下层，而背板是半透明的）。仍是 `lv_msgbox_class`（现有测试按这个类数确认框）；宽度钳制照搬 `SelfCheck::make_confirm_box`。
 - 新增 `StrId`：`Scenes`、`ScenesEmpty`、`SceneStateRunning`、`SceneStateError`、`SceneErrorTitle`、`SceneReload`、`SceneBack`、`SceneDeleteTitle`、`SceneDeletePrompt`（含一个 `{}` 填场景名）、`SceneDeleteWithData`、`KeyboardZh`、`KeyboardEn`（zh/ja/en 三份）。
 
 - [ ] **Step 1: 写失败的测试**
@@ -703,16 +703,17 @@ TEST(SystemLayer, GestureSwallowedAndCallsBack) // FakeTouch 喂 (4,240)->(200,2
 TEST(SystemLayer, ErrorPanelInsideSafeRect)    // 标签含 "main.lua:12"；两个按钮分别调用 on_reload/on_back；面板区域在 safe_rect 内
 TEST(SystemLayer, KeyboardTargetsTextareaInsideSafeRect)
 TEST(SystemLayer, PinyinDictGlyphsInFont)      // 生成词库的每个候选字都能由 lv_font_cjk_16 解析；"ni" 的候选含 "你"
-TEST(SystemLayer, ConfirmAnswersAndStaysOnTop) // open_confirm 的 box 的父对象就是 lv_layer_top()（没有背板）；"是"/"否" 回调 true/false；raise() 后在卡片之上
+TEST(SystemLayer, ConfirmAnswersAndStaysOnTop) // open_confirm 的 box 在全屏背板下（背板是 lv_layer_top() 的子对象）；"是"/"否" 回调 true/false；raise() 后背板在卡片之上
+TEST(SystemLayer, ConfirmIsModal)              // 确认框开着时点框外（背板上）的下层按钮 -> 按钮未收到 CLICKED，确认框仍开着
 TEST(SystemLayer, OneConfirmAtATime)           // 第一个打开后 confirm_open()==true，第二次 open_confirm 返回 nullptr 且不回调；关闭后 false
 TEST(SystemLayer, NoPersistentTopLayerChild)   // 构造后 lv_layer_top() 的子对象数不变；set_back_handler(f) 后多出的手势条宽度 <= 16 + 各行 x1 之差、
                                                // 高度 == safe 高度；set_back_handler({}) 后它隐藏
-TEST(SystemLayer, OverlaysKeepOcclusionSkip)   // 照 NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone 的做法：错误面板、键盘、确认框分别显示时
+TEST(SystemLayer, OverlaysKeepOcclusionSkip)   // 照 NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone 的做法：错误面板、键盘分别显示时
                                                // 滚动下层列表，新的刷新区都不进入该块去掉圆角行后的区域
 ```
 
 - [ ] **Step 2: 运行，确认失败** — `ctest --test-dir build/sim -R 'SystemLayer' --output-on-failure`。
-- [ ] **Step 3: 实现**；把 `SelfCheck::make_confirm_box` 的宽度钳制逻辑搬进 `open_confirm`，`SelfCheck` 的三个确认框改为调用它；"同一时间只有一个确认框"的规则移进 `SystemLayer`（`confirm_open()`、`open_confirm` 忙时返回 `nullptr`），`SelfCheck` 改为查询它；`raise_overlays()` 改为 `pair_card_.raise()` 后 `SystemLayer::raise()`。
+- [ ] **Step 3: 实现**；把 `SelfCheck::make_confirm_box` 的宽度钳制逻辑搬进 `open_confirm`，`SelfCheck` 的三个确认框改为调用它；"同一时间只有一个确认框"的规则移进 `SystemLayer`（`confirm_open()`、`open_confirm` 忙时返回 `nullptr`），`SelfCheck` 改为查询它；`raise_overlays()` 改为 `pair_card_.raise()` 后 `SystemLayer::raise()`（它提升确认框的背板，原来在 `raise_overlays()` 里的这段逻辑搬过去）。
 - [ ] **Step 4: 验证** — 全量 ctest（含 `factory_reset_test`、`firmware_confirm_test`、`self_check_screen_test`、`net_ui_test`、`overlay_test`、`gen_cjk_font_test`）；`bash tools/ci.sh`；固件 `idf.py build`。
 - [ ] **Step 5: Commit** — `feat(ui): add the system layer and move the confirm dialogs onto it`
 
@@ -1208,7 +1209,7 @@ def test_requests_use_api_prefix()       # 假服务器记录的路径都以 /ap
 **Files:**
 - Modify: `docs/architecture.md`、`docs/porting-guide.md`、`docs/references.md`、`THIRD_PARTY_NOTICES.md`、`AGENTS.md`（只在发现新的通用陷阱时）、本计划（记录执行期裁定）
 
-- [ ] **Step 1: `docs/architecture.md`**：标题范围改为涵盖子项目 3a；分层图加入 `wisp_scene`；依赖规则核对九层与 Lua 头文件限制；启动流程加入 `StorageWorker`/`recover()`、`SceneHttp`、`SystemLayer`、`SceneRuntime`，停止顺序同步；事件表加 `scene.state`（发布方 `scene::SceneRuntime` 与 `app` 的删除流程，payload 与细化第 17 条一致）；改正第 9 条的覆盖物说明：确认框由 `SystemLayer::open_confirm` 建成没有背板的 `lv_msgbox` 并标记，错误面板与屏幕键盘同样标记，返回手势条是只在场景前台时显示的未标记窄条（碰到它的重绘区不裁剪），`SelfCheck::raise_overlays()` 最后调用 `SystemLayer::raise()`；新增"场景运行时"一节（任务表：`wisp.scene` PSRAM 32 KB、`wisp.fs` 内部 4 KB、`wisp.shttp` PSRAM 8 KB；消息流；每帧 64 条；`/int/scenes/` 布局与两阶段替换；`SceneStore` 文件格式与日志）；模拟器一节加 `--scenes-dir`、`--open-scene`、`debug scene-click`；存储一节加 `<int>/scenes`。
+- [ ] **Step 1: `docs/architecture.md`**：标题范围改为涵盖子项目 3a；分层图加入 `wisp_scene`；依赖规则核对九层与 Lua 头文件限制；启动流程加入 `StorageWorker`/`recover()`、`SceneHttp`、`SystemLayer`、`SceneRuntime`，停止顺序同步；事件表加 `scene.state`（发布方 `scene::SceneRuntime` 与 `app` 的删除流程，payload 与细化第 17 条一致）；改正第 9 条的覆盖物说明：确认框是模态的（`SystemLayer::open_confirm` 建的 `lv_msgbox` 带全屏背板），不做跳过标记，开着时下层整块重画；被标记的只有配网/配对卡片、错误面板与屏幕键盘；返回手势条是只在场景前台时显示的未标记窄条（碰到它的重绘区不裁剪），`SelfCheck::raise_overlays()` 最后调用 `SystemLayer::raise()`；新增"场景运行时"一节（任务表：`wisp.scene` PSRAM 32 KB、`wisp.fs` 内部 4 KB、`wisp.shttp` PSRAM 8 KB；消息流；每帧 64 条；`/int/scenes/` 布局与两阶段替换；`SceneStore` 文件格式与日志）；模拟器一节加 `--scenes-dir`、`--open-scene`、`debug scene-click`；存储一节加 `<int>/scenes`。
 - [ ] **Step 2: `docs/porting-guide.md`**：新板子运行场景的前提（PSRAM：Lua 堆与 LVGL 堆都在 PSRAM；`CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` 已在公共配置里）；场景层没有板级代码，屏幕形状只经 caps 生效；验收时补跑 Task 22 的场景行。
 - [ ] **Step 3: references 与 notices 核对**：Lua 5.5.1（版本、SHA-256、`tools/vendor_lua.sh`、只编译的文件列表）已在 Task 1 登记；LVGL 自带的 LodePNG（zlib 许可，随 LVGL 分发）与 `lv_ime_pinyin` 默认词库补一行说明；inflate 为自写实现，不登记。
 - [ ] **Step 4: 验证** — `bash tools/ci.sh`（注释守卫覆盖 `docs/`）。
