@@ -243,10 +243,16 @@
         #define LV_DRAW_SW_CIRCLE_CACHE_SIZE 4
     #endif
 
-    #define  LV_USE_DRAW_SW_ASM     LV_DRAW_SW_ASM_NONE
-
-    #if LV_USE_DRAW_SW_ASM == LV_DRAW_SW_ASM_CUSTOM
-        #define  LV_DRAW_SW_ASM_CUSTOM_INCLUDE ""
+    /* Accelerated blend routines are the platform build's choice, not this
+     * file's: firmware/CMakeLists.txt defines WISP_LV_DRAW_SW_ASM_INCLUDE
+     * (a hook header in the port component) only for a chip it has
+     * routines for. Every other target, and the simulator, uses LVGL's
+     * plain C path. */
+    #ifdef WISP_LV_DRAW_SW_ASM_INCLUDE
+        #define  LV_USE_DRAW_SW_ASM     LV_DRAW_SW_ASM_CUSTOM
+        #define  LV_DRAW_SW_ASM_CUSTOM_INCLUDE WISP_LV_DRAW_SW_ASM_INCLUDE
+    #else
+        #define  LV_USE_DRAW_SW_ASM     LV_DRAW_SW_ASM_NONE
     #endif
 
     /** Enable drawing complex gradients in software: linear at an angle, radial or conical */

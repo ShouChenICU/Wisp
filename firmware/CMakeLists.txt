@@ -60,6 +60,20 @@ idf_build_set_property(
     APPEND
 )
 
+# The ESP32-S3's SIMD fill and copy for LVGL's software renderer (see
+# components/wisp_port_esp/lv_blend/esp32s3/lv_blend_esp32s3.h; the port
+# component compiles the assembly for this target only). Build-wide for
+# the same reason as LV_CONF_PATH: lv_conf.h reads it. Any other target
+# leaves it undefined and builds LVGL's plain C path; a chip with its own
+# draw unit or SIMD routines adds its own header here.
+if(IDF_TARGET STREQUAL "esp32s3")
+    idf_build_set_property(
+        COMPILE_DEFINITIONS
+        "WISP_LV_DRAW_SW_ASM_INCLUDE=\"${CMAKE_CURRENT_LIST_DIR}/../components/wisp_port_esp/lv_blend/esp32s3/lv_blend_esp32s3.h\""
+        APPEND
+    )
+endif()
+
 project(wisp)
 
 # esp_board_manager's generated component (components/gen_bmgr_codes/,

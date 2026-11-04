@@ -48,3 +48,14 @@ wisp_component(
 # firmware/CMakeLists.txt). Source options come after the target's on the
 # compiler command line, so they win.
 set_source_files_properties(dev/esp_display.cpp dev/esp_touch.cpp PROPERTIES COMPILE_OPTIONS -O2)
+
+# LVGL's ESP32-S3 SIMD fill and copy (lv_blend/esp32s3/, from esp_lvgl_port;
+# firmware/CMakeLists.txt points lv_conf.h at their hook header for this
+# target only). Nothing in this component calls them, so the linker is
+# told to keep them for LVGL's blend code.
+if(CONFIG_IDF_TARGET_ESP32S3)
+    target_sources(${COMPONENT_LIB} PRIVATE lv_blend/esp32s3/lv_color_blend_to_rgb565_esp32s3.S
+                                            lv_blend/esp32s3/lv_rgb565_blend_normal_to_rgb565_esp32s3.S)
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-u lv_color_blend_to_rgb565_esp"
+                                                     "-u lv_rgb565_blend_normal_to_rgb565_esp")
+endif()

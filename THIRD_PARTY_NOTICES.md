@@ -158,6 +158,20 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
   `LICENSE`)
 - Copyright: 2026 Espressif Systems (Shanghai) CO LTD
 
+## esp_lvgl_port (ESP32-S3 SIMD blend routines in `components/wisp_port_esp/lv_blend/esp32s3/`)
+
+- Project: https://github.com/espressif/esp-bsp, `components/esp_lvgl_port`
+  version 2.9.0 (commit `f0ef9497efce684997ce391edd19733483e250a5`)
+- Files: `src/lvgl9/simd/lv_color_blend_to_rgb565_esp32s3.S`,
+  `lv_rgb565_blend_normal_to_rgb565_esp32s3.S` and `lv_macro_memcpy.S`
+  (copied unchanged apart from a provenance comment), and
+  `lv_blend_esp32s3.h`, adapted from `include/esp_lvgl_port_lv_blend.h`
+  (modifications listed in `docs/references.md`; each file's header notes
+  its origin)
+- License: Apache License 2.0 (same as this project; full text in
+  `LICENSE`)
+- Copyright: 2024-2025 Espressif Systems (Shanghai) CO LTD
+
 ## ESP-IDF
 
 - Project: https://github.com/espressif/esp-idf

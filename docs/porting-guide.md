@@ -114,6 +114,7 @@ sdkconfig 的默认值只在 `firmware/sdkconfig` 不存在时生效。切换板
 
 - 默认（`sdkconfig.defaults`）是发布版：全局 `-Os`（`CONFIG_COMPILER_OPTIMIZATION_SIZE`）、日志最高 INFO、断言静默。
 - **渲染路径总是 `-O2`**，不论全局优化级别：`lvgl` 组件、`wisp_ui`、`esp_lcd*` 组件（面板与触摸驱动，由 `firmware/CMakeLists.txt` 按组件名匹配）、以及 `wisp_port_esp` 的 `dev/esp_display.cpp`、`dev/esp_touch.cpp`（LCD 刷新路径）。新板子的显示或触摸驱动如果不叫 `esp_lcd*`，要在 `firmware/CMakeLists.txt` 的匹配规则里补上，否则帧率会下降；构建时 CMake 会打印 `Rendering path built with -O2: ...` 供核对。
+- **渲染加速按芯片选择**，不放进可移植层：`firmware/CMakeLists.txt` 按 `IDF_TARGET` 定义 `WISP_LV_DRAW_SW_ASM_INCLUDE`（指向 `wisp_port_esp` 里的钩子头文件），`lv_conf.h` 据此把 LVGL 软件渲染器切到 `LV_DRAW_SW_ASM_CUSTOM`。目前只有 ESP32-S3 有一组 SIMD 填充/拷贝例程（`components/wisp_port_esp/lv_blend/esp32s3/`）；其他目标不定义这个宏，走 LVGL 的 C 路径。新芯片要用自己的 SIMD 或 2D 硬件时，在 `lv_blend/<芯片>/` 下加钩子头文件和源文件，并在两处 CMake 里按目标挑选。
 - 调试版叠加 `firmware/sdkconfig.debug`（`-Og`、日志到 DEBUG、断言开启），用单独的构建目录，不碰发布版的 `sdkconfig`：
 
 ```bash
