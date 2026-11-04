@@ -27,9 +27,10 @@
 namespace wisp::ui {
 
 struct UiConfig {
-    // Height (in pixels) of each of the two partial draw buffers; each
-    // buffer is width * buffer_lines * 2 bytes (RGB565), allocated via
-    // os::alloc(..., Mem::Dma).
+    // Height (in pixels) of the single partial draw buffer, which is
+    // width * buffer_lines * 2 bytes (RGB565), allocated via
+    // os::alloc(..., Mem::Dma). One buffer because Display::flush() is
+    // synchronous (see ui_runtime.cpp).
     uint32_t buffer_lines = 48;
     uint32_t task_stack = 8192;
     int task_priority = 4;
@@ -72,8 +73,8 @@ public:
     UiRuntime& operator=(const UiRuntime&) = delete;
 
     // Calls lv_init(), creates the LVGL display (resolution taken from
-    // `display`'s caps) sized to two buffer_lines-tall partial draw
-    // buffers, installs default_font() as the theme font, registers the
+    // `display`'s caps) with one buffer_lines-tall partial draw buffer,
+    // installs default_font() as the theme font, registers the
     // LV_EVENT_INVALIDATE_AREA handler that aligns flush areas to the
     // display's caps "area_align" (default 1, i.e. unaligned), wires up
     // the pointer input device if `touch` is non-null, and starts the UI
@@ -81,13 +82,13 @@ public:
     // already started (LVGL 9.5 has only one global instance under
     // LV_USE_OS == LV_OS_NONE); fails with InvalidArgument if `display`'s
     // caps don't carry a usable width/height; fails with NoMemory if the
-    // draw buffers, the LVGL display, or (when `touch` is non-null) the
+    // draw buffer, the LVGL display, or (when `touch` is non-null) the
     // LVGL input device can't be allocated.
     Result<void> start();
 
     // Stops the UI task -- after it finishes draining any in-flight
     // post()'d work and the current lv_timer_handler() call -- then calls
-    // lv_deinit() and frees the draw buffers. Idempotent; safe to call
+    // lv_deinit() and frees the draw buffer. Idempotent; safe to call
     // even if start() was never called or failed. Calling it from the UI
     // task itself (e.g. from inside a post()'d function) would deadlock on
     // self-join, so that case is detected instead: it logs via WLOG_E and

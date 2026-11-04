@@ -414,3 +414,30 @@ TEST(UiRuntime, PerfIsZeroedWhilePaused) {
 
     ui.stop();
 }
+
+// Display::flush() blocks until the transfer is done, so LVGL can never
+// render into a second partial buffer while the first is on the wire:
+// UiRuntime keeps exactly one, buffer_lines tall. On the ESP32-S3 board a
+// second 480 x 48 RGB565 buffer is 46 KB of internal DMA RAM that the
+// admin httpd's stack needs (docs/hardware/waveshare_amoled_216.md).
+TEST(UiRuntime, UsesOneDrawBufferBecauseFlushIsSynchronous) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiConfig config;
+    wisp::ui::UiRuntime ui(disp, nullptr, config);
+    ASSERT_TRUE(ui.start());
+
+    wisp::os::Semaphore done(1, 0);
+    bool has_second = true;
+    uint32_t first_bytes = 0;
+    ASSERT_TRUE(ui.post([&] {
+        lv_display_t* d = lv_display_get_default();
+        has_second = d->buf_2 != nullptr;
+        first_bytes = d->buf_1 != nullptr ? d->buf_1->data_size : 0;
+        done.give();
+    }));
+    ASSERT_TRUE(done.take(5000));
+    EXPECT_FALSE(has_second);
+    EXPECT_EQ(first_bytes, 480u * config.buffer_lines * 2u);
+
+    ui.stop();
+}

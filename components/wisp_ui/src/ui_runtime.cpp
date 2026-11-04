@@ -111,8 +111,12 @@ struct UiRuntime::Impl {
     int height = 0;
     int area_align = 1;
 
-    void* buf1 = nullptr;
-    void* buf2 = nullptr;
+    // One partial draw buffer, not two: Display::flush() blocks until the
+    // transfer is done, so LVGL could never render into a second buffer
+    // while the first is on the wire. A second one would only cost DMA
+    // -capable internal RAM (46 KB at 480 x 48 RGB565), which the boards'
+    // network tasks need (AGENTS.md section 5).
+    void* buf = nullptr;
 
     lv_display_t* lv_disp = nullptr;
     lv_indev_t* lv_indev = nullptr;
@@ -403,18 +407,9 @@ Result<void> UiRuntime::start() {
     }
 
     size_t buf_bytes = static_cast<size_t>(impl_->width) * impl_->config.buffer_lines * 2;
-    impl_->buf1 = os::alloc(buf_bytes, os::Mem::Dma);
-    impl_->buf2 = os::alloc(buf_bytes, os::Mem::Dma);
-    if (impl_->buf1 == nullptr || impl_->buf2 == nullptr) {
-        if (impl_->buf1 != nullptr) {
-            os::dealloc(impl_->buf1);
-            impl_->buf1 = nullptr;
-        }
-        if (impl_->buf2 != nullptr) {
-            os::dealloc(impl_->buf2);
-            impl_->buf2 = nullptr;
-        }
-        return Result<void>::err(ErrorCode::NoMemory, "failed to allocate LVGL draw buffers");
+    impl_->buf = os::alloc(buf_bytes, os::Mem::Dma);
+    if (impl_->buf == nullptr) {
+        return Result<void>::err(ErrorCode::NoMemory, "failed to allocate the LVGL draw buffer");
     }
 
     lv_init();
@@ -438,10 +433,8 @@ Result<void> UiRuntime::start() {
         lv_deinit();
         impl_->lv_disp = nullptr;
         impl_->lv_indev = nullptr;
-        os::dealloc(impl_->buf1);
-        impl_->buf1 = nullptr;
-        os::dealloc(impl_->buf2);
-        impl_->buf2 = nullptr;
+        os::dealloc(impl_->buf);
+        impl_->buf = nullptr;
         return Result<void>::err(code, message);
     };
 
@@ -450,8 +443,8 @@ Result<void> UiRuntime::start() {
         return fail_after_lv_init(ErrorCode::NoMemory, "lv_display_create failed");
     }
     lv_display_set_user_data(impl_->lv_disp, impl_.get());
-    lv_display_set_buffers(impl_->lv_disp, impl_->buf1, impl_->buf2,
-                           static_cast<uint32_t>(buf_bytes), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_buffers(impl_->lv_disp, impl_->buf, nullptr, static_cast<uint32_t>(buf_bytes),
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(impl_->lv_disp, &Impl::flush_cb);
     lv_display_add_event_cb(impl_->lv_disp, &Impl::invalidate_area_cb, LV_EVENT_INVALIDATE_AREA,
                             impl_.get());
@@ -554,13 +547,9 @@ void UiRuntime::stop() {
     impl_->lv_disp = nullptr;
     impl_->lv_indev = nullptr;
 
-    if (impl_->buf1 != nullptr) {
-        os::dealloc(impl_->buf1);
-        impl_->buf1 = nullptr;
-    }
-    if (impl_->buf2 != nullptr) {
-        os::dealloc(impl_->buf2);
-        impl_->buf2 = nullptr;
+    if (impl_->buf != nullptr) {
+        os::dealloc(impl_->buf);
+        impl_->buf = nullptr;
     }
 }
 
