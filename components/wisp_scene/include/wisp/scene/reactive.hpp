@@ -22,12 +22,19 @@
 // everything that read it runs again at the next flush, even if it then
 // produces the same value.
 //
-// The objects are tables with a hidden metatable; assigning a field is an
-// error. Evaluating a computed goes through a C call boundary (an inner
-// lua_pcall), so a computed cannot yield, an error inside one leaves the
-// tracking state as it was, and each level of computeds nested inside
-// another's evaluation uses one of the LUAI_MAXCCALLS (48) C call levels:
-// a chain of about 40 computeds evaluated in one go is the limit.
+// The objects are empty proxy tables with a hidden metatable; their data
+// lives elsewhere. Plain field assignment on one is an error, but rawset
+// still works on the proxy (it only changes that proxy's own lookups), so
+// nothing may rely on proxies being immutable.
+//
+// Evaluating a computed goes through a C call boundary (an inner
+// lua_pcall), so a computed cannot yield, and an error inside one leaves
+// the tracking state as it was. A reader that catches that error with
+// pcall still updates when the computed's sources change. Each level of
+// computeds nested inside another's evaluation uses one of the
+// LUAI_MAXCCALLS (48) C call levels: a chain of 45 computeds read from a
+// message handler is the limit, 44 behind a watch at the flush; past it
+// the read raises an ordinary "C stack overflow" error at the scene line.
 //
 // The internal table (the prelude's name for it is __wisp) is for the
 // runtime only. It is not a global: global_preamble() does not declare
@@ -39,7 +46,8 @@
 //       now (tracked) and returns its value for the initial tree; emits
 //       nothing until the source changes. Then, at the flush, emits the
 //       new value with emit(); the value must be nil, a boolean, a number
-//       or a string. disposer() stops it (calling it again is harmless).
+//       or a string (a string at most kMaxPropStringBytes).
+//       disposer() stops it (calling it again is harmless).
 //   effect(fn [, scope]) -> disposer
 //       Runs fn now, tracked, and again at the flush after anything it
 //       read changes. Unlike a computed, fn may call :set(); that schedules
@@ -55,7 +63,9 @@
 //       Schedules every live watch and flushes, so each emits its current
 //       value once (after the patch queue dropped patches).
 //   emit(node, prop, value)
-//       The C function behind watch: PatchBatch::set_prop().
+//       The C function behind watch: PatchBatch::set_prop(). Raises
+//       "value too large" or "ui update too large" past the limits in
+//       patch_batch.hpp.
 //   kind(v) -> "state" | "computed" | "bind" | "scope" | nil
 // Later parts of the runtime may add fields to it.
 //
@@ -81,7 +91,8 @@ std::optional<ScriptError> install_prelude(Vm& vm, PatchBatch& out);
 
 // Runs the internal flush() under Vm::call() with Budget::Continue, so it
 // is charged to the message that just ran. On an error the whole batch is
-// discarded (PatchBatch::clear()). Does nothing without the prelude.
+// discarded (PatchBatch::clear()); an error positioned inside the prelude
+// is reported without a file. Does nothing without the prelude.
 std::optional<ScriptError> flush_reactive(Vm& vm);
 
 // Pushes the internal table and returns true, or pushes nothing and

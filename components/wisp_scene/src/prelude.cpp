@@ -15,11 +15,12 @@
 // metatable; its data is a record in `recs`, keyed by the proxy (weak
 // keys, so a dropped proxy can be collected). The graph links records:
 //   state     k v o
-//   computed  k v o s c f e d b at l  (bind: fn and src instead of f)
+//   computed  k v o s c f e d b failed at l  (bind: fn and src, not f)
 //   effect    id s q dead run [fn | node prop src quiet]
 // k kind, v value, o observers (weak set), s sources (set), c true for
-// computed and bind, e evaluator, d dirty, b being evaluated, at where it
-// was made ("main.lua:3"), l label for messages, q queued for the flush, dead disposed.
+// computed and bind, e evaluator, d dirty, b being evaluated, failed its
+// last evaluation raised, at where it was made ("main.lua:3"), l label
+// for messages, q queued for the flush, dead disposed.
 // Observer sets are weak: a computed nobody holds any more drops out of
 // its sources' sets. Effects are held by `live` until disposed.
 
@@ -30,10 +31,10 @@ namespace wisp::scene {
 std::string_view prelude_source() {
     return R"lua(
 local emit, where, tcall = ...
-global<const> setmetatable, type, error, pairs, rawequal, table, math
+global<const> setmetatable, type, error, pairs, rawequal, table, math, string
 
 local setmetatable, type, error, pairs, rawequal = setmetatable, type, error, pairs, rawequal
-local sort, concat, mtype = table.sort, table.concat, math.type
+local sort, concat, mtype, match = table.sort, table.concat, math.type, string.match
 
 local MAX_ROUNDS = 100
 local WEAK = {__mode = "k"}
@@ -52,6 +53,21 @@ local function fail(msg)
     local at = where() or (depth > 0 and stack[depth].at) or nil
     if at then msg = at .. ": " .. msg end
     error(msg, 0)
+end
+
+-- Raises an error caught from a run of `rec` again. An error Lua raised
+-- while a prelude function was running ("C stack overflow" at the
+-- nesting limit) carries a position inside the prelude; it is moved to
+-- the scene line that led here, or to where `rec` was made.
+local function rethrow(err, rec)
+    if type(err) == "string" then
+        local msg = match(err, "^wisp%.reactive:%d+: (.*)$")
+        if msg then
+            local at = where() or rec.at
+            error(at and (at .. ": " .. msg) or msg, 0)
+        end
+    end
+    error(err, 0)
 end
 
 local function read_only()
@@ -94,11 +110,17 @@ local function schedule(e)
 end
 
 -- Marks everything downstream of src: computeds dirty, effects queued.
+-- A computed that is already dirty normally stops the walk, since its
+-- observers were told when it became dirty. One whose last evaluation
+-- failed is the exception: a reader that caught the error (pcall) has
+-- subscribed since, while it stayed dirty, so the walk goes on through
+-- it once.
 local function notify(src)
     for obs in pairs(src.o) do
         if obs.c then
-            if not obs.d then
+            if not obs.d or obs.failed then
                 obs.d = true
+                obs.failed = false
                 notify(obs)
             end
         elseif not obs.dead then
@@ -137,7 +159,10 @@ local function evaluate(c)
     stack[depth] = nil
     depth = depth - 1
     c.b = false
-    if not ok then error(v, 0) end
+    if not ok then
+        c.failed = true
+        rethrow(v, c)
+    end
     c.v = v
     c.d = false
     return v
@@ -239,7 +264,7 @@ local function start(e, sc)
     local ok, v = run_effect(e)
     if not ok then
         dispose_effect(e)
-        error(v, 0)
+        rethrow(v, e)
     end
     return function() dispose_effect(e) end, v
 end

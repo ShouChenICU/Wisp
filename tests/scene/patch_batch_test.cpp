@@ -75,3 +75,80 @@ TEST(PatchBatch, TakeAndClearEmptyTheBatch) {
     ASSERT_EQ(second.ops.size(), 1u);
     EXPECT_EQ(std::get<LargeString>(std::get<SetProp>(second.ops[0]).value), "d");
 }
+
+namespace {
+
+PropValue big(size_t n) { return PropValue{LargeString(n, 'x')}; }
+
+}  // namespace
+
+TEST(PatchBatch, RefusesAStringOverThePropLimit) {
+    using wisp::scene::kMaxPropStringBytes;
+    PatchBatch b;
+    EXPECT_TRUE(b.set_prop(1, kText, big(kMaxPropStringBytes)));
+    auto r = b.set_prop(2, kText, big(kMaxPropStringBytes + 1));
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().message, "value too large");
+    EXPECT_EQ(b.size(), 1u);
+}
+
+TEST(PatchBatch, CapsTheBatchFootprint) {
+    using wisp::scene::kMaxBatchBytes;
+    using wisp::scene::kMaxPropStringBytes;
+    using wisp::scene::kOpOverheadBytes;
+    PatchBatch b;
+    const size_t per = kMaxPropStringBytes + kOpOverheadBytes;
+    const size_t fit = kMaxBatchBytes / per;  // 15
+    for (size_t i = 0; i < fit; ++i)
+        ASSERT_TRUE(b.set_prop(static_cast<uint32_t>(i + 1), kText, big(kMaxPropStringBytes)));
+    EXPECT_EQ(b.bytes(), fit * per);
+    auto r = b.set_prop(100, kText, big(kMaxPropStringBytes));
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().message, "ui update too large");
+    EXPECT_EQ(b.size(), fit);
+    EXPECT_EQ(b.bytes(), fit * per);
+    // Small ops still fit; other kinds of op are refused the same way.
+    EXPECT_TRUE(b.push(ListReset{9, 1}));
+    wisp::scene::Build build;
+    build.nodes.resize(1);
+    build.nodes[0].props.emplace_back(kText, big(kMaxPropStringBytes));
+    EXPECT_FALSE(b.push(std::move(build)));
+    // take() and clear() reset the count.
+    b.take(1);
+    EXPECT_EQ(b.bytes(), 0u);
+    EXPECT_TRUE(b.set_prop(1, kText, big(10)));
+    b.clear();
+    EXPECT_EQ(b.bytes(), 0u);
+}
+
+TEST(PatchBatch, CoalescedValueReplacesItsOldSize) {
+    using wisp::scene::kMaxBatchBytes;
+    using wisp::scene::kMaxPropStringBytes;
+    using wisp::scene::kOpOverheadBytes;
+    PatchBatch b;
+    const size_t per = kMaxPropStringBytes + kOpOverheadBytes;
+    const size_t fit = kMaxBatchBytes / per;
+    for (size_t i = 0; i < fit; ++i)
+        ASSERT_TRUE(b.set_prop(static_cast<uint32_t>(i + 1), kText, big(kMaxPropStringBytes)));
+    // Replacing a value many times never grows the batch.
+    for (int i = 0; i < 100; ++i) ASSERT_TRUE(b.set_prop(1, kText, big(kMaxPropStringBytes)));
+    EXPECT_EQ(b.bytes(), fit * per);
+    ASSERT_TRUE(b.set_prop(1, kText, PropValue{true}));
+    EXPECT_EQ(b.bytes(), fit * per - kMaxPropStringBytes);
+}
+
+TEST(PatchBatch, CountsNodesPropsAndCommands) {
+    using wisp::scene::kOpOverheadBytes;
+    PatchBatch b;
+    wisp::scene::Build build;
+    build.nodes.resize(2);
+    build.nodes[1].props.emplace_back(kText, str("abc"));
+    build.nodes[1].props.emplace_back(kHidden, PropValue{true});
+    ASSERT_TRUE(b.push(std::move(build)));
+    // The op, two nodes and two props, plus the string's bytes.
+    EXPECT_EQ(b.bytes(), 5 * kOpOverheadBytes + 3);
+    wisp::scene::CanvasDraw draw;
+    draw.commands.resize(100);
+    ASSERT_TRUE(b.push(std::move(draw)));
+    EXPECT_EQ(b.bytes(), 6 * kOpOverheadBytes + 3 + 100);
+}

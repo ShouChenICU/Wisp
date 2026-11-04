@@ -247,6 +247,57 @@ TEST(Reactive, EmitConvertsValueTypes) {
     EXPECT_EQ(s.batch.size(), 0u);
 }
 
+TEST(Reactive, EmitRefusesAStringOverThePropLimit) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err =
+        s.message("local W = ... _G.n = state('a') W.watch(1, 1, _G.n) W.watch(2, 1, state(1))");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.message("_G.n:set(string.rep('x', 65536))");
+    ASSERT_FALSE(err) << describe(err);
+    EXPECT_EQ(s.batch.size(), 1u);
+    s.batch.clear();
+    err = s.message("_G.n:set(string.rep('x', 65537))");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->fault, ScriptFault::Runtime);
+    EXPECT_EQ(err->message, "value too large");
+    EXPECT_EQ(err->file, "");
+    EXPECT_EQ(s.batch.size(), 0u);
+}
+
+TEST(Reactive, EmitRefusesABatchOverTheLimit) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    // One 64 KB string bound to 17 widgets: each emit copies it, and the
+    // 16th copy takes the batch past 1 MB.
+    auto err = s.message(R"(
+        local W = ...
+        _G.n = state("a")
+        for i = 1, 17 do W.watch(i, 1, _G.n) end
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.message("_G.n:set(string.rep('x', 65536))");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->fault, ScriptFault::Runtime);
+    EXPECT_EQ(err->message, "ui update too large");
+    EXPECT_EQ(s.batch.size(), 0u);
+    EXPECT_EQ(s.batch.bytes(), 0u);
+}
+
+TEST(Reactive, ProxiesHideTheirInsides) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.message(R"(
+        for _, obj in ipairs({state(1), computed(print), bind(state(1), tostring)}) do
+            assert(getmetatable(obj) == false)
+            assert(not pcall(setmetatable, obj, {}))
+            assert(next(obj) == nil)
+            for k in pairs(obj) do error("field " .. tostring(k)) end
+        end
+    )");
+    EXPECT_FALSE(err) << describe(err);
+}
+
 TEST(Reactive, MultipleSetsCoalesceToOnePatch) {
     Scene s;
     ASSERT_FALSE(s.installed) << describe(s.installed);
@@ -330,6 +381,88 @@ TEST(Reactive, CaughtErrorInComputedRestoresTracking) {
     EXPECT_FALSE(err) << describe(err);
 }
 
+TEST(Reactive, CaughtComputedFailureStillUpdatesComputedReader) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.message(R"(
+        local W = ...
+        _G.n = state(1)
+        local inner = computed(function() if _G.n:get() > 0 then error("bad") end return "ok" end)
+        local outer = computed(function()
+            local ok, v = pcall(inner.get, inner)
+            return ok and v or "err"
+        end)
+        local _, v = W.watch(1, 1, outer)
+        assert(v == "err", v)
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.message("_G.n:set(0)");
+    ASSERT_FALSE(err) << describe(err);
+    auto b = s.batch.take(1);
+    ASSERT_EQ(b.ops.size(), 1u);
+    EXPECT_EQ(str_of(set_at(b, 0)), "ok");
+}
+
+TEST(Reactive, CaughtComputedFailureStillUpdatesEffectReader) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.message(R"(
+        local W = ...
+        _G.n = state(1)
+        local inner = computed(function() if _G.n:get() > 0 then error("bad") end return "ok" end)
+        W.effect(function()
+            local ok, v = pcall(inner.get, inner)
+            _G.seen = ok and v or "err"
+        end)
+        assert(_G.seen == "err")
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.message("_G.n:set(0)");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.call_only("assert(_G.seen == 'ok', _G.seen)");
+    EXPECT_FALSE(err) << describe(err);
+}
+
+TEST(Reactive, WatchDisposedEarlierInTheFlushEmitsNothing) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.message(R"(
+        local W = ...
+        _G.n = state(0)
+        local d
+        -- Made first, so it runs before the watch in the flush.
+        W.effect(function() if _G.n:get() == 1 then d() end end)
+        d = W.watch(1, 1, _G.n)
+        W.watch(2, 1, _G.n)
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.message("_G.n:set(1)");
+    ASSERT_FALSE(err) << describe(err);
+    auto b = s.batch.take(1);
+    ASSERT_EQ(b.ops.size(), 1u);
+    EXPECT_EQ(set_at(b, 0).node, 2u);
+}
+
+TEST(Reactive, ChainPastTheNestingLimitIsACleanError) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.message(
+        "local c = state(1)\n"
+        "for i = 1, 60 do\n"
+        "    local prev = c\n"
+        "    c = computed(function() return prev:get() + 1 end)\n"
+        "end\n"
+        "return c:get()\n");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->fault, ScriptFault::Runtime);
+    EXPECT_EQ(err->file, "main.lua") << err->text();
+    EXPECT_EQ(err->line, 4) << err->text();
+    EXPECT_NE(err->message.find("stack overflow"), std::string::npos) << err->text();
+    // The VM is still usable: it was an ordinary error.
+    err = s.message("assert(state(2):get() == 2)");
+    EXPECT_FALSE(err) << describe(err);
+}
+
 TEST(Reactive, DeepComputedChainEvaluates) {
     Scene s;
     ASSERT_FALSE(s.installed) << describe(s.installed);
@@ -337,11 +470,11 @@ TEST(Reactive, DeepComputedChainEvaluates) {
         local W = ...
         _G.base = state(1)
         local c = _G.base
-        for i = 1, 30 do
+        for i = 1, 44 do
             local prev = c
             c = computed(function() return prev:get() + 1 end)
         end
-        assert(c:get() == 31)
+        assert(c:get() == 45)
         W.watch(1, 1, c)
     )");
     ASSERT_FALSE(err) << describe(err);
@@ -349,7 +482,7 @@ TEST(Reactive, DeepComputedChainEvaluates) {
     ASSERT_FALSE(err) << describe(err);
     auto b = s.batch.take(1);
     ASSERT_EQ(b.ops.size(), 1u);
-    EXPECT_EQ(std::get<int64_t>(set_at(b, 0).value), 32);
+    EXPECT_EQ(std::get<int64_t>(set_at(b, 0).value), 46);
 }
 
 TEST(Reactive, UnsettledUpdatesError) {

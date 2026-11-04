@@ -40,8 +40,17 @@ PropValue to_value(lua_State* L, int idx) {
     }
 }
 
+// Adds the SetProp; false if the batch refused it. Its own frame, so
+// every C++ object is gone before emit() raises.
+bool add_patch(lua_State* L, PatchBatch* batch) {
+    return batch
+        ->set_prop(static_cast<NodeId>(lua_tointeger(L, 1)),
+                   static_cast<PropId>(lua_tointeger(L, 2)), to_value(L, 3))
+        .is_ok();
+}
+
 // emit(node, prop, value): upvalue 1 is the PatchBatch. Every check that
-// can raise comes first; the PropValue is made after the last of them.
+// can raise comes first, the C++ work happens in add_patch().
 int emit(lua_State* L) {
     auto* batch = static_cast<PatchBatch*>(lua_touserdata(L, lua_upvalueindex(1)));
     if (!lua_isinteger(L, 1) || lua_tointeger(L, 1) < 0 || lua_tointeger(L, 1) > UINT32_MAX)
@@ -52,8 +61,10 @@ int emit(lua_State* L) {
     if (t != LUA_TNONE && t != LUA_TNIL && t != LUA_TBOOLEAN && t != LUA_TNUMBER &&
         t != LUA_TSTRING)
         return luaL_error(L, "emit: unsupported property value (%s)", lua_typename(L, t));
-    batch->set_prop(static_cast<NodeId>(lua_tointeger(L, 1)),
-                    static_cast<PropId>(lua_tointeger(L, 2)), to_value(L, 3));
+    // Checked before the string is copied.
+    if (t == LUA_TSTRING && lua_rawlen(L, 3) > kMaxPropStringBytes)
+        return luaL_error(L, "value too large");
+    if (!add_patch(L, batch)) return luaL_error(L, "ui update too large");
     return 0;
 }
 
@@ -134,7 +145,8 @@ std::optional<ScriptError> install_prelude(Vm& vm, PatchBatch& out) {
 
 std::optional<ScriptError> flush_reactive(Vm& vm) {
     lua_State* L = vm.L();
-    if (!lua_checkstack(L, 1)) return std::nullopt;
+    if (!lua_checkstack(L, 1))
+        return ScriptError{ScriptFault::Memory, std::string(), 0, "stack overflow"};
     if (lua_rawgetp(L, LUA_REGISTRYINDEX, &kFlushKey) != LUA_TFUNCTION) {
         lua_pop(L, 1);
         return std::nullopt;
@@ -142,9 +154,13 @@ std::optional<ScriptError> flush_reactive(Vm& vm) {
     auto err = vm.call(0, 0, Budget::Continue);
     if (err) {
         if (PatchBatch* batch = patch_batch(L)) batch->clear();
-        // An error the prelude raises without a position (or a fault
-        // outside any scene frame) is not in any file of the scene.
-        if (err->line == 0 && err->file == kPreludeFile) err->file.clear();
+        // A position inside the prelude (an error it raised without one,
+        // or a fault outside any scene frame) is not in any file of the
+        // scene.
+        if (err->file == kPreludeFile) {
+            err->file.clear();
+            err->line = 0;
+        }
     }
     return err;
 }
