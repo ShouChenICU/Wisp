@@ -15,6 +15,7 @@
 #include "support/fake_http.hpp"
 #include "support/wait.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/port/sim/sim_os.hpp"
 
 namespace {
 
@@ -365,6 +366,25 @@ TEST_F(SceneHttpTest, CancelSceneSuppressesCallbackAndAborts) {
     EXPECT_EQ(run(get("https://api.example.com/again")).error, "");
 }
 
+// cancel_scene() runs on the UI thread: it only asks the watch, and the
+// socket shutdown, however slow, happens elsewhere.
+TEST_F(SceneHttpTest, CancelSceneDoesNotWaitForTheShutdown) {
+    make();
+    client.hold = true;
+    client.shutdown_ms = 500;
+    Results r;
+    http->submit(get("https://api.example.com/inflight"), r.sink());
+    ASSERT_TRUE(wait_until([&] { return client.held.load() == 1; }, 2000));
+    const uint64_t t0 = wisp::os::now_ms();
+    http->cancel_scene("s");
+    EXPECT_LT(wisp::os::now_ms() - t0, 100u);
+    ASSERT_TRUE(wait_until([&] { return client.saw_cancel.load(); }, 3000));
+    client.hold = false;
+    client.shutdown_ms = 0;
+    EXPECT_EQ(run(get("https://api.example.com/next")).error, "");
+    EXPECT_EQ(r.size(), 0u);
+}
+
 TEST_F(SceneHttpTest, StopDropsEverythingWithoutCallbacks) {
     make();
     client.hold = true;
@@ -379,6 +399,23 @@ TEST_F(SceneHttpTest, StopDropsEverythingWithoutCallbacks) {
     http->submit(get("https://api.example.com/late"), r.sink());
     ASSERT_EQ(r.size(), 1u);
     EXPECT_EQ(r.got[0].error, "other");
+}
+
+// Without its watch timer the proxy does not run: requests fail at once.
+TEST(SceneHttpStart, NoWatchTimerLeavesItDisabled) {
+    wisp::test::FakeHttpClient client;
+    SceneHttp http(client, SceneHttpLimits{}, [] { return wisp::os::now_ms(); });
+    wisp::port::sim::set_timer_failure(true);
+    auto started = http.start();
+    wisp::port::sim::set_timer_failure(false);
+    ASSERT_FALSE(started.is_ok());
+    EXPECT_EQ(started.error().code, wisp::ErrorCode::NoMemory);
+    http.set_hosts("s", kHosts);
+    Results r;
+    http.submit(get("https://api.example.com/"), r.sink());
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r.got[0].error, "other");
+    EXPECT_EQ(client.calls(), 0u);
 }
 
 TEST_F(SceneHttpTest, AuthorizationNeverLogged) {

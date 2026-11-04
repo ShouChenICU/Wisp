@@ -30,8 +30,10 @@
 // unless cancel_scene() (or stop()) comes first: once it returns, done()
 // is never called for that scene's earlier requests, queued ones are
 // dropped and the one in flight is told to stop (HttpClientRequest::
-// cancelled, and its watch is aborted, which interrupts a blocked call). done() must be quick and
-// must not call back into SceneHttp: the worker runs it under the lock cancel_scene() waits on.
+// cancelled, and the worker's RequestWatch is aborted, which interrupts a
+// blocked call from the watch's timer task: cancel_scene() never waits
+// for that). done() must be quick and must not call back into SceneHttp:
+// the worker runs it under the lock cancel_scene() waits on.
 //
 // Memory: a queued request keeps its URL, headers and body in PSRAM; only
 // the request being sent has ordinary heap copies of the URL and headers
@@ -61,6 +63,7 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/net/request_watch.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
@@ -115,8 +118,9 @@ public:
     // false (see the file header), so the port may put its stack in PSRAM.
     static os::TaskConfig task_config();
 
-    // Spawns the worker. Busy if started before, NoMemory if the task
-    // cannot be made.
+    // Makes the request watch and spawns the worker. Busy if started
+    // before, NoMemory if the watch's timer or the task cannot be made
+    // (the proxy then stays off).
     Result<void> start();
     // Drops every queued request and stops the one in flight, all without
     // done(), and joins the worker. Idempotent.
@@ -159,6 +163,8 @@ private:
     SceneHttpLimits limits_;
     std::function<uint64_t()> now_ms_;
     std::unique_ptr<os::Task> task_;
+    // The worker's one watch, for the request in flight.
+    std::unique_ptr<RequestWatch> watch_;
     os::Semaphore wake_;
     // Guards scenes_, queue_, current_ and the flags below.
     os::Mutex mu_;

@@ -16,6 +16,8 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
+#include <new>
 
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -530,47 +532,85 @@ struct Timer::Impl {
     // stop(), is sufficient proof that any previously in-flight
     // trampoline() call (of the *real* timer, above) has returned.
     static void fence_trampoline(void* arg) { xSemaphoreGive(static_cast<SemaphoreHandle_t>(arg)); }
+
+    // Every resource, or nullptr with whatever was made released again:
+    // what Timer's constructor and create() share.
+    static std::unique_ptr<Impl> make(const char* name, uint32_t period_ms, bool periodic,
+                                      std::function<void()> cb);
+    // Deletes the esp_timers and semaphores made so far.
+    void release();
 };
 
+std::unique_ptr<Timer::Impl> Timer::Impl::make(const char* name, uint32_t period_ms, bool periodic,
+                                               std::function<void()> cb) {
+    std::unique_ptr<Timer::Impl> impl(new (std::nothrow) Timer::Impl());
+    if (!impl) return nullptr;
+    impl->period_ms = period_ms;
+    impl->periodic = periodic;
+    impl->cb = std::move(cb);
+    impl->running_mutex = xSemaphoreCreateMutex();
+    impl->control_mutex = xSemaphoreCreateMutex();
+    impl->fence_sem = xSemaphoreCreateBinary();
+    bool ok = impl->running_mutex != nullptr && impl->control_mutex != nullptr &&
+              impl->fence_sem != nullptr;
+
+    if (ok) {
+        esp_timer_create_args_t args = {};
+        args.callback = &Timer::Impl::trampoline;
+        args.arg = impl.get();
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = name;
+        args.skip_unhandled_events = false;
+        ok = esp_timer_create(&args, &impl->handle) == ESP_OK;
+    }
+    if (ok) {
+        esp_timer_create_args_t fence_args = {};
+        fence_args.callback = &Timer::Impl::fence_trampoline;
+        fence_args.arg = impl->fence_sem;
+        fence_args.dispatch_method = ESP_TIMER_TASK;
+        fence_args.name = "wisp_timer_fence";
+        // skip_unhandled_events only affects periodic timers across light
+        // sleep (see esp_timer.h); left at its zero-initialized default
+        // (false) since fence_handle_ is always one-shot.
+        ok = esp_timer_create(&fence_args, &impl->fence_handle) == ESP_OK;
+    }
+    if (ok) return impl;
+    impl->release();
+    return nullptr;
+}
+
+void Timer::Impl::release() {
+    if (handle != nullptr) esp_timer_delete(handle);
+    if (fence_handle != nullptr) esp_timer_delete(fence_handle);
+    if (running_mutex != nullptr) vSemaphoreDelete(running_mutex);
+    if (control_mutex != nullptr) vSemaphoreDelete(control_mutex);
+    if (fence_sem != nullptr) vSemaphoreDelete(fence_sem);
+    handle = nullptr;
+    fence_handle = nullptr;
+    running_mutex = nullptr;
+    control_mutex = nullptr;
+    fence_sem = nullptr;
+}
+
 Timer::Timer(const char* name, uint32_t period_ms, bool periodic, std::function<void()> cb)
-    : impl_(std::make_unique<Impl>()) {
-    impl_->period_ms = period_ms;
-    impl_->periodic = periodic;
-    impl_->cb = std::move(cb);
-    impl_->running_mutex = xSemaphoreCreateMutex();
-    impl_->control_mutex = xSemaphoreCreateMutex();
-    impl_->fence_sem = xSemaphoreCreateBinary();
-    // Timer is constructed directly (no factory/nullptr
-    // -return convention the way Task::spawn() has), so a resource
-    // failure here has no graceful way to be reported -- abort via
-    // fatal() rather than continuing with a null handle every start()/
-    // stop() call would then dereference.
-    if (impl_->running_mutex == nullptr || impl_->control_mutex == nullptr ||
-        impl_->fence_sem == nullptr) {
-        fatal("xSemaphoreCreateMutex/CreateBinary failed (Timer)");
-    }
+    : impl_(Impl::make(name, period_ms, periodic, std::move(cb))) {
+    // A constructor has no way to report the failure (create() does), so
+    // abort rather than continue with null handles every start()/stop()
+    // call would then dereference.
+    if (!impl_) fatal("cannot create a Timer (esp_timer_create or a semaphore failed)");
+}
 
-    esp_timer_create_args_t args = {};
-    args.callback = &Impl::trampoline;
-    args.arg = impl_.get();
-    args.dispatch_method = ESP_TIMER_TASK;
-    args.name = name;
-    args.skip_unhandled_events = false;
-    if (esp_timer_create(&args, &impl_->handle) != ESP_OK) {
-        fatal("esp_timer_create failed (Timer)");
-    }
+Timer::Timer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 
-    esp_timer_create_args_t fence_args = {};
-    fence_args.callback = &Impl::fence_trampoline;
-    fence_args.arg = impl_->fence_sem;
-    fence_args.dispatch_method = ESP_TIMER_TASK;
-    fence_args.name = "wisp_timer_fence";
-    // skip_unhandled_events only affects periodic timers across light
-    // sleep (see esp_timer.h); left at its zero-initialized default
-    // (false) since fence_handle_ is always one-shot.
-    if (esp_timer_create(&fence_args, &impl_->fence_handle) != ESP_OK) {
-        fatal("esp_timer_create failed (Timer fence)");
-    }
+std::unique_ptr<Timer> Timer::create(const char* name, uint32_t period_ms, bool periodic,
+                                     std::function<void()> cb) {
+    std::unique_ptr<Impl> impl = Impl::make(name, period_ms, periodic, std::move(cb));
+    if (!impl) return nullptr;
+    std::unique_ptr<Timer> timer(new (std::nothrow) Timer(std::move(impl)));
+    // A failed allocation evaluates no constructor argument (C++17), so
+    // `impl` still owns everything.
+    if (!timer && impl) impl->release();
+    return timer;
 }
 
 Timer::~Timer() {

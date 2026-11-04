@@ -16,21 +16,23 @@
 // time instead of into `body`. cancelled is asked before each write and
 // read.
 //
-// Deadline: HttpClientRequest::timeout_ms is the whole request's, kept by
-// a net::RequestWatch (req.watch, or the client's own armed with
-// timeout_ms). esp_http_client applies its timeout to each low-level
-// operation, and its header fetch and body read loop over many socket
-// reads inside one call, so a server that trickles bytes would keep one
-// call alive past any deadline checked between calls. Once the
-// connection is open, the watch shuts its socket down (shutdown(), not
-// close: the descriptor stays ours until the watch is disarmed, just
-// before the client closes it) at the deadline or on abort, and the
-// blocked call fails at once; the request then reports Timeout or
-// Cancelled. Before that, the connect phase can overrun the deadline
-// softly: each step is given only what is left, but DNS resolution has
-// lwIP's own timeout and esp-tls checks its handshake timeout between
-// socket reads, so a handshake can overrun what was left by up to one
-// read timeout; the watch then ends the request right after open().
+// Deadline: HttpClientRequest::timeout_ms is the whole request's.
+// esp_http_client applies its timeout to each low-level operation, so
+// every call is given only what is left of it; but its header fetch and
+// body read loop over many socket reads inside one call, so a server that
+// trickles bytes would keep one call alive past any deadline checked
+// between calls. With HttpClientRequest::watch (the scene HTTP proxy
+// passes one), the watch ends that: once the connection is open it shuts
+// the socket's read side down (shutdown(SHUT_RD), not close: the
+// descriptor stays ours until the watch is disarmed, just before the
+// client closes it) at the deadline or on abort, the blocked call fails
+// at once and the request reports Timeout or Cancelled. Without a watch
+// (the model connectivity test) only the per-call clamping applies. The
+// connect phase can overrun the deadline softly either way: DNS
+// resolution has lwIP's own timeout and esp-tls checks its handshake
+// timeout between socket reads, so a handshake can overrun what was left
+// by up to one read timeout; a watch then ends the request right after
+// open().
 //
 // TLS gate: an https request holds net::TlsGate::process() around
 // esp_http_client_open() (connect and handshake) and nowhere else, so

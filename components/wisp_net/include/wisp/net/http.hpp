@@ -194,15 +194,15 @@ struct HttpClientRequest {
     std::function<bool(std::span<const uint8_t>)> on_body;
     // When set, asked between pieces of the transfer (and while waiting
     // for the server, as often as the client can); true stops it
-    // (Cancelled). A client blocked in a single read notices only when
-    // that read returns or times out.
+    // (Cancelled). On its own it cannot reach a client blocked in a
+    // single read; `watch` can.
     std::function<bool()> cancelled;
     // When set, the caller has armed it with the deadline (and may abort()
     // it): the client attaches what interrupts a call blocked inside it
     // and disarms it before releasing the connection, and reports a
-    // request it ended as Timeout (Deadline) or Cancelled (Aborted). A
-    // client may also watch a request with its own watch when this is
-    // null.
+    // request it ended as Timeout (Deadline) or Cancelled (Aborted).
+    // Without one, a client keeps the deadline as well as it can on its
+    // own (see each client).
     RequestWatch* watch = nullptr;
 };
 

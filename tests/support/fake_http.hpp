@@ -104,7 +104,8 @@ inline std::string set_cookie(const net::HttpResponse& res) {
 // returns only when `hold` is cleared or its "socket" is shut down
 // through req.watch (the stop it attaches). Then `saw_cancel` is set and
 // it reports Timeout (the watch's deadline) or Cancelled (an abort).
-// `held` counts the calls blocked.
+// `held` counts the calls blocked. `shutdown_ms` makes that shutdown take
+// so long (lwIP waiting to queue a FIN, say), to show who waits for it.
 class FakeHttpClient : public net::HttpClient {
 public:
     net::HttpClientResponse request(const net::HttpClientRequest& req) override {
@@ -116,7 +117,13 @@ public:
         }
         if (hold.load()) {
             auto shut = std::make_shared<std::atomic<bool>>(false);
-            if (req.watch != nullptr) req.watch->attach([shut] { *shut = true; });
+            if (req.watch != nullptr) {
+                const uint32_t delay = shutdown_ms.load();
+                req.watch->attach([shut, delay] {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                    *shut = true;
+                });
+            }
             ++held;
             while (hold.load() && !shut->load())
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -171,6 +178,7 @@ public:
     std::atomic<bool> hold{false};
     std::atomic<int> held{0};
     std::atomic<bool> saw_cancel{false};
+    std::atomic<uint32_t> shutdown_ms{0};
     std::atomic<bool> ignore_limit{false};
     // Called before each 4 KB piece goes to on_body (a server that trickles
     // the body: a test advances its clock here). Set before the request.

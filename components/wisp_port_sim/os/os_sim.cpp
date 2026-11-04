@@ -20,6 +20,9 @@ namespace {
 // set_alloc_failure() flags, indexed by Mem; DmaLarge is the last kind.
 std::atomic<bool> g_fail[static_cast<size_t>(Mem::DmaLarge) + 1] = {};
 
+// set_timer_failure() flag.
+std::atomic<bool> g_timer_fail{false};
+
 bool failing(Mem kind) { return g_fail[static_cast<int>(kind)].load(std::memory_order_relaxed); }
 
 // The simulator's "boot" is process start. A function-local static is
@@ -74,6 +77,8 @@ namespace wisp::port::sim {
 void set_alloc_failure(os::Mem kind, bool fail) {
     os::g_fail[static_cast<int>(kind)].store(fail, std::memory_order_relaxed);
 }
+
+void set_timer_failure(bool fail) { os::g_timer_fail.store(fail, std::memory_order_relaxed); }
 
 }  // namespace wisp::port::sim
 
@@ -238,6 +243,14 @@ Timer::Timer(const char* /*name*/, uint32_t period_ms, bool periodic, std::funct
     impl_->period_ms = period_ms;
     impl_->periodic = periodic;
     impl_->cb = std::move(cb);
+}
+
+Timer::Timer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+
+std::unique_ptr<Timer> Timer::create(const char* name, uint32_t period_ms, bool periodic,
+                                     std::function<void()> cb) {
+    if (g_timer_fail.load(std::memory_order_relaxed)) return nullptr;
+    return std::make_unique<Timer>(name, period_ms, periodic, std::move(cb));
 }
 
 Timer::~Timer() { stop(); }

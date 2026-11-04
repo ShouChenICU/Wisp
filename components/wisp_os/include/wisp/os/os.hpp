@@ -157,7 +157,13 @@ private:
 // every other Timer too, not just this one's own next period.
 class Timer {
 public:
+    // Aborts the program if the port cannot make the timer (see create()).
     Timer(const char* name, uint32_t period_ms, bool periodic, std::function<void()> cb);
+    // Same timer, or nullptr if the port cannot make it (on ESP-IDF its
+    // esp_timers and semaphores come from internal RAM), for callers that
+    // can go on without it.
+    static std::unique_ptr<Timer> create(const char* name, uint32_t period_ms, bool periodic,
+                                         std::function<void()> cb);
 
     // Stops the timer (see stop()) if it is still active. Must not be
     // called from within cb() itself (destroying a Timer from inside its
@@ -199,6 +205,8 @@ public:
 
 private:
     struct Impl;
+    explicit Timer(std::unique_ptr<Impl> impl);
+
     std::unique_ptr<Impl> impl_;
 };
 

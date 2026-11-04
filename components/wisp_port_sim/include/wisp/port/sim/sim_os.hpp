@@ -11,4 +11,8 @@ namespace wisp::port::sim {
 // realloc()'d block left untouched. For tests of fallback paths.
 void set_alloc_failure(os::Mem kind, bool fail);
 
+// While set, os::Timer::create() returns nullptr, as a device does when
+// it has no internal RAM left for a timer.
+void set_timer_failure(bool fail);
+
 }  // namespace wisp::port::sim

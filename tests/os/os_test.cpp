@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "wisp/os/queue.hpp"
+#include "wisp/port/sim/sim_os.hpp"
 
 using namespace wisp::os;
 
@@ -69,6 +70,18 @@ TEST(Os, PeriodicTimerFiresRepeatedly) {
     EXPECT_GE(seen, 8);
     sleep_ms(30);
     EXPECT_EQ(n, seen);
+}
+TEST(Os, TimerCreateCanFail) {
+    std::atomic<int> n{0};
+    auto tm = Timer::create("tm", 10, false, [&] { ++n; });
+    ASSERT_NE(tm, nullptr);
+    tm->start();
+    sleep_ms(50);
+    EXPECT_EQ(n.load(), 1);
+    wisp::port::sim::set_timer_failure(true);
+    EXPECT_EQ(Timer::create("tm", 10, false, [] {}), nullptr);
+    wisp::port::sim::set_timer_failure(false);
+    EXPECT_NE(Timer::create("tm", 10, false, [] {}), nullptr);
 }
 TEST(Queue, FifoAndTimeout) {
     Queue<std::string> q(2);

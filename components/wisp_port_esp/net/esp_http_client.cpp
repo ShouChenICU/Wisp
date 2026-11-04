@@ -32,13 +32,15 @@ struct ClientDeleter {
 };
 using ClientPtr = std::unique_ptr<esp_http_client, ClientDeleter>;
 
-// Disarms the watch when it goes out of scope. Declared after the
-// ClientPtr, so it runs before esp_http_client_cleanup() closes the
+// Disarms the watch (if any) when it goes out of scope. Declared after
+// the ClientPtr, so it runs before esp_http_client_cleanup() closes the
 // socket the watch's stop() shuts down: the descriptor cannot be closed,
 // and reused by another connection, under a stop() still to come.
 struct Disarm {
-    net::RequestWatch& watch;
-    ~Disarm() { watch.disarm(); }
+    net::RequestWatch* watch;
+    ~Disarm() {
+        if (watch != nullptr) watch->disarm();
+    }
 };
 
 // "https://host:port" without user info, path or query, any of which may
@@ -147,14 +149,16 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         return res;
     }
     const std::string origin = origin_of(req.url);
-    // The caller's watch (armed with its deadline), or one of our own.
-    net::RequestWatch own;
-    net::RequestWatch& watch = req.watch != nullptr ? *req.watch : own;
-    if (req.watch == nullptr) own.arm(req.timeout_ms);
+    // The caller's watch, armed with the deadline; without one, only the
+    // per-call clamping below bounds the request.
+    net::RequestWatch* const watch = req.watch;
+    const auto fired = [watch] {
+        return watch != nullptr ? watch->reason() : net::RequestWatch::Reason::None;
+    };
     const auto failed = [&](net::TransportError e, const char* stage, esp_err_t err) {
         // Once the watch has fired, whatever broke was its doing (a read
         // on the shut-down socket fails as EOF or a socket error).
-        switch (watch.reason()) {
+        switch (fired()) {
             case net::RequestWatch::Reason::Deadline:
                 e = net::TransportError::Timeout;
                 err = ESP_ERR_TIMEOUT;
@@ -177,15 +181,14 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         return res;
     };
     const auto cancelled = [&] {
-        return (req.cancelled && req.cancelled()) ||
-               watch.reason() == net::RequestWatch::Reason::Aborted;
+        return (req.cancelled && req.cancelled()) || fired() == net::RequestWatch::Reason::Aborted;
     };
     // req.timeout_ms bounds the whole request. esp_http_client applies its
     // timeout to each low-level operation, so each call is also given only
     // what is left (left(), at least 1 ms while any is); that alone cannot
     // stop the header fetch or a body read, which loop over many socket
-    // reads inside one call. After open() the watch does: at the deadline
-    // it shuts the socket down and the blocked call fails.
+    // reads inside one call. After open() the caller's watch does: at the
+    // deadline or on abort it shuts the socket down and the call fails.
     const uint64_t deadline = os::now_ms() + req.timeout_ms;
     const auto left = [deadline]() -> int {
         const uint64_t now = os::now_ms();
@@ -235,9 +238,8 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         // and ends early on a cancel.
         std::optional<net::TlsGate::Hold> gate;
         if (is_https(req.url)) {
-            gate.emplace(net::TlsGate::process(), static_cast<uint32_t>(left()), [&] {
-                return cancelled() || watch.reason() != net::RequestWatch::Reason::None;
-            });
+            gate.emplace(net::TlsGate::process(), static_cast<uint32_t>(left()),
+                         [&] { return cancelled() || fired() != net::RequestWatch::Reason::None; });
             if (!gate->held()) {
                 if (cancelled()) return failed(net::TransportError::Cancelled, "tls gate", ESP_OK);
                 return failed(net::TransportError::Timeout, "tls gate", ESP_ERR_TIMEOUT);
@@ -251,9 +253,19 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
     // socket open (esp_http_client closes it only in close(), cleanup(),
     // set_url(), perform() and a failed open()). If the watch has already
     // fired, attach() shuts it down at once.
+    //
+    // SHUT_RD only. On lwIP (IDF v6.0.3, LWIP_NETCONN_FULLDUPLEX) it marks
+    // the netconn's receive mailbox invalid, which wakes a task blocked in
+    // recv(), and raises NETCONN_EVT_RCVPLUS, which wakes select() (the
+    // transports poll with it before each read); every read then fails or
+    // sees EOF. It does not wait: lwip_netconn_do_close() just runs
+    // tcp_shutdown(pcb, 1, 0), which queues no FIN, whereas a full close
+    // (SHUT_RDWR) can wait out an ERR_MEM retry loop, on the timer task
+    // every os::Timer shares. Writes need no interrupt: each is bounded by
+    // the clamped send timeout.
     const int fd = esp_http_client_get_socket(client.get());
-    if (fd >= 0) watch.attach([fd] { shutdown(fd, SHUT_RDWR); });
-    if (watch.reason() != net::RequestWatch::Reason::None) {
+    if (watch != nullptr && fd >= 0) watch->attach([fd] { shutdown(fd, SHUT_RD); });
+    if (fired() != net::RequestWatch::Reason::None) {
         return failed(net::TransportError::Other, "connect", ESP_FAIL);
     }
 
@@ -312,7 +324,7 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         }
     }
     // A read on a socket the watch shut down can end like a clean EOF.
-    if (watch.reason() != net::RequestWatch::Reason::None) {
+    if (fired() != net::RequestWatch::Reason::None) {
         return failed(net::TransportError::Other, "body", ESP_FAIL);
     }
     // A body delimited by the connection closing has nothing to check.
@@ -321,7 +333,7 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         return failed(net::TransportError::Other, "body (incomplete)",
                       ESP_ERR_HTTP_INCOMPLETE_DATA);
     }
-    watch.disarm();
+    if (watch != nullptr) watch->disarm();
     esp_http_client_close(client.get());
     return res;
 }

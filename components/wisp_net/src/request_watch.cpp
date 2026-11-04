@@ -1,51 +1,65 @@
 #include "wisp/net/request_watch.hpp"
 
 #include <mutex>
+#include <new>
 #include <utility>
 
 namespace wisp::net {
 
-RequestWatch::RequestWatch() = default;
+std::unique_ptr<RequestWatch> RequestWatch::create() {
+    std::unique_ptr<RequestWatch> watch(new (std::nothrow) RequestWatch());
+    if (!watch) return nullptr;
+    RequestWatch* self = watch.get();
+    watch->timer_ = os::Timer::create("wisp.http.watch", kTickMs, true, [self] { self->tick(); });
+    if (!watch->timer_) return nullptr;
+    return watch;
+}
 
 RequestWatch::~RequestWatch() { disarm(); }
 
-void RequestWatch::arm(uint32_t timeout_ms) {
+uint32_t RequestWatch::arm(uint32_t timeout_ms) {
+    uint32_t ticket = 0;
     {
         std::lock_guard<os::Mutex> lock(mu_);
-        if (disarmed_ || reason_ != Reason::None || timer_) return;
+        if (++ticket_ == 0) ++ticket_;
+        ticket = ticket_;
+        armed_ = true;
+        reason_ = Reason::None;
+        stop_ = nullptr;
+        deadline_ = os::now_ms() + timeout_ms;
     }
-    if (timeout_ms == 0) {
-        fire(Reason::Deadline);
-        return;
-    }
-    timer_ = std::make_unique<os::Timer>("wisp.http.watch", timeout_ms, false,
-                                         [this] { fire(Reason::Deadline); });
+    // Only starts the timer (a no-op while it runs): never waits.
     timer_->start();
+    return ticket;
 }
 
 void RequestWatch::attach(std::function<void()> stop) {
-    std::lock_guard<os::Mutex> lock(mu_);
-    if (disarmed_) return;
-    if (reason_ != Reason::None) {
-        if (stop) stop();
-        return;
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        if (!armed_) return;
+        if (reason_ == Reason::None) {
+            stop_ = std::move(stop);
+            return;
+        }
     }
-    stop_ = std::move(stop);
+    // Already fired: the client is about to use what stop() ends, so end
+    // it now, on the client's own thread.
+    if (stop) stop();
 }
 
-void RequestWatch::abort() { fire(Reason::Aborted); }
+void RequestWatch::abort(uint32_t ticket) {
+    std::lock_guard<os::Mutex> lock(mu_);
+    if (armed_ && ticket == ticket_ && reason_ == Reason::None) reason_ = Reason::Aborted;
+}
 
 void RequestWatch::disarm() {
-    std::function<void()> dropped;
     {
-        // Taking the lock waits out a stop() that is running.
         std::lock_guard<os::Mutex> lock(mu_);
-        disarmed_ = true;
-        dropped = std::move(stop_);
+        armed_ = false;
         stop_ = nullptr;
     }
-    // Outside the lock: a timer callback in flight blocks on it in fire(),
-    // and stop() waits for that callback to return.
+    // Waits for a tick in flight, and with it a stop() that tick runs.
+    // Not under mu_: the tick takes it.
     if (timer_) timer_->stop();
 }
 
@@ -54,14 +68,19 @@ RequestWatch::Reason RequestWatch::reason() const {
     return reason_;
 }
 
-void RequestWatch::fire(Reason why) {
-    std::lock_guard<os::Mutex> lock(mu_);
-    if (disarmed_ || reason_ != Reason::None) return;
-    reason_ = why;
-    if (stop_) {
-        stop_();
+void RequestWatch::tick() {
+    std::function<void()> stop;
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        if (!armed_) return;
+        if (reason_ == Reason::None && os::now_ms() >= deadline_) reason_ = Reason::Deadline;
+        if (reason_ == Reason::None) return;
+        stop = std::move(stop_);
         stop_ = nullptr;
     }
+    // Outside mu_, so abort() and reason() never wait for it; disarm()
+    // waits for this callback as a whole.
+    if (stop) stop();
 }
 
 }  // namespace wisp::net

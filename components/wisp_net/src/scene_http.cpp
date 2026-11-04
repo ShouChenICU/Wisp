@@ -110,9 +110,8 @@ struct SceneHttp::Job {
     // Set under mu_ by cancel_scene()/stop(); read by the client between
     // pieces and by the worker under deliver_mu_.
     std::atomic<bool> cancelled{false};
-    // Armed by the worker with the deadline; aborted together with the
-    // cancelled mark, so a call blocked in the client ends either way.
-    RequestWatch watch;
+    // Its ticket for watch_, set under mu_ when the worker takes it.
+    uint32_t ticket = 0;
 };
 
 SceneHttp::SceneHttp(HttpClient& client, SceneHttpLimits limits, std::function<uint64_t()> now_ms)
@@ -140,6 +139,13 @@ Result<void> SceneHttp::start() {
         std::lock_guard<os::Mutex> lock(mu_);
         if (started_) return Result<void>::err(ErrorCode::Busy, "scene HTTP already started");
         started_ = true;
+    }
+    // Made once and reused by every request, so a request allocates no
+    // timer; without it the proxy stays off (submit() answers "other").
+    watch_ = RequestWatch::create();
+    if (!watch_) return Result<void>::err(ErrorCode::NoMemory, "cannot make the scene HTTP watch");
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
         running_ = true;
     }
     task_ = os::Task::spawn(task_config(), [this] { run(); });
@@ -153,6 +159,7 @@ Result<void> SceneHttp::start() {
 
 void SceneHttp::stop() {
     std::deque<os::LargeUnique<Job>> dropped;
+    uint32_t ticket = 0;
     {
         std::lock_guard<os::Mutex> lock(mu_);
         if (!running_) return;
@@ -160,9 +167,10 @@ void SceneHttp::stop() {
         dropped.swap(queue_);
         if (current_ != nullptr) {
             current_->cancelled = true;
-            current_->watch.abort();
+            ticket = current_->ticket;
         }
     }
+    if (ticket != 0) watch_->abort(ticket);
     wake_.give();
     if (task_) {
         task_->join();
@@ -256,6 +264,7 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
 
 void SceneHttp::cancel_scene(const std::string& scene_id) {
     std::deque<os::LargeUnique<Job>> dropped;
+    uint32_t ticket = 0;
     {
         std::lock_guard<os::Mutex> lock(mu_);
         for (auto it = queue_.begin(); it != queue_.end();) {
@@ -268,9 +277,13 @@ void SceneHttp::cancel_scene(const std::string& scene_id) {
         }
         if (current_ != nullptr && current_->scene_id == scene_id) {
             current_->cancelled = true;
-            current_->watch.abort();
+            ticket = current_->ticket;
         }
     }
+    // Outside mu_, and abort() only asks: the socket is shut down on the
+    // watch's timer task, so a slow shutdown cannot hold up this (UI)
+    // thread. A ticket the worker has moved past is ignored.
+    if (ticket != 0) watch_->abort(ticket);
     // A done() that started before the mark finishes before this returns;
     // one that had not started sees the mark.
     std::lock_guard<os::Mutex> barrier(deliver_mu_);
@@ -288,6 +301,9 @@ void SceneHttp::run() {
                 job = std::move(queue_.front());
                 queue_.pop_front();
                 current_ = job.get();
+                // arm() never blocks (the timer is only started), so it
+                // can run under mu_, where cancel_scene() reads the ticket.
+                job->ticket = watch_->arm(limits_.timeout_ms);
             }
             execute(*job);
             std::lock_guard<os::Mutex> lock(mu_);
@@ -315,8 +331,7 @@ void SceneHttp::execute(Job& job) {
     // for as long as it likes. So the watch interrupts a call blocked in
     // the client at the deadline (and on cancel), and between pieces the
     // deadline is checked here as well.
-    job.watch.arm(limits_.timeout_ms);
-    req.watch = &job.watch;
+    req.watch = watch_.get();
     const uint64_t deadline = now_ms_() + limits_.timeout_ms;
     auto expired = [this, deadline] { return now_ms_() >= deadline; };
 
@@ -345,8 +360,8 @@ void SceneHttp::execute(Job& job) {
     req.cancelled = [&job, &expired] { return job.cancelled.load() || expired(); };
 
     HttpClientResponse res = client_.request(req);
-    job.watch.disarm();
-    const bool watch_deadline = job.watch.reason() == RequestWatch::Reason::Deadline;
+    watch_->disarm();
+    const bool watch_deadline = watch_->reason() == RequestWatch::Reason::Deadline;
 
     SceneHttpResult result;
     if (timed_out || (res.transport == TransportError::Cancelled && expired()) ||
