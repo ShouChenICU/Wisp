@@ -191,6 +191,8 @@ public:
     // The total size of the logs once every pending line is written.
     uint64_t used_bytes() const;
 
+    const SceneStoreLimits& limits() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

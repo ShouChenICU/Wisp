@@ -1684,6 +1684,8 @@ uint64_t SceneStore::used_bytes() const {
     return impl_->used_locked();
 }
 
+const SceneStoreLimits& SceneStore::limits() const { return impl_->limits; }
+
 void SceneStore::arm_timer() { arm_timer(impl_->limits.coalesce_ms); }
 
 void SceneStore::arm_timer(uint32_t delay_ms) {

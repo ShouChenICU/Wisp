@@ -87,6 +87,7 @@ int install(lua_State* L) {
     detail::install_device(L, 1);
     detail::install_log(L, 1);
     detail::install_scene(L, 1);
+    detail::install_store(L, 1);
     return 0;
 }
 

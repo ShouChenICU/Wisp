@@ -1,7 +1,7 @@
 #pragma once
 
-// The wisp.timer, wisp.device, wisp.log and wisp.scene bindings
-// (scene-runtime-core spec 5.1, 5.2, 5.5). Thin adapters: the state they
+// The wisp.timer, wisp.device, wisp.log, wisp.scene and wisp.store bindings
+// (scene-runtime-core spec 5.1, 5.2, 5.4, 5.5). Thin adapters: the state they
 // act on is a SceneApi, which the SceneInstance owns and the scene task
 // (SceneRuntime) fills in and drives. Everything here runs on the scene
 // task, which touches no flash: SceneApi::device must not either.
@@ -24,6 +24,9 @@
 //       scene once the current message is done.
 //   wisp.scene.args(): a fresh table copied from *args each call ({} when
 //       there are none).
+//   wisp.store (bind_store.cpp): the scene's SceneStore, values converted
+//       with lua_json.hpp. Every call works on the store's in-memory
+//       index; persisting is the store's own job on the wisp.fs worker.
 
 #include <cstddef>
 #include <cstdint>
@@ -32,6 +35,7 @@
 #include <type_traits>
 
 #include "wisp/base/value.hpp"
+#include "wisp/core/scene_store.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/os.hpp"
@@ -71,6 +75,9 @@ struct SceneApi {
     std::function<DeviceInfo()> device;
     // The open arguments; null for none.
     const Value* args = nullptr;
+    // The scene's data; wisp.store raises without one. Owned by the
+    // runtime, which drops the VM before it closes the store.
+    core::SceneStore* store = nullptr;
     bool close_requested = false;
     // wisp.device.on() was called for the event at least once.
     bool has_handlers[kDeviceEventCount] = {};
@@ -100,6 +107,7 @@ void install_timer(lua_State* L, int wisp);
 void install_device(lua_State* L, int wisp);
 void install_log(lua_State* L, int wisp);
 void install_scene(lua_State* L, int wisp);
+void install_store(lua_State* L, int wisp);
 
 }  // namespace detail
 

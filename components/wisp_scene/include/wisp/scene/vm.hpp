@@ -186,6 +186,13 @@ public:
     // that catches errors, and every so often inside a C loop that calls
     // back into Lua or walks metamethods. Follows the longjmp rule below.
     void check_limits(lua_State* L);
+    // True when check_limits() would raise right now. Raises nothing, so
+    // a C loop that must not raise (it holds C++ objects) can stop early
+    // and leave the raising to its caller once those objects are gone.
+    bool past_limits() const;
+
+    // The Vm that owns L (any of its threads).
+    static Vm* of(lua_State* L);
 
 private:
     enum class Fault : uint8_t { None, Timeout, Memory };

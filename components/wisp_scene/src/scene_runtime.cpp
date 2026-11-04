@@ -530,6 +530,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     SceneApi& api = f.scene->api();
     api.device = [this] { return device_info(); };
     api.args = &f.args;
+    api.store = f.store.get();
     // Opened with the screen off: timers wait for it to come on.
     if (!visible_) api.timers.pause(os::now_ms());
     {

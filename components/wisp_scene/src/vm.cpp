@@ -135,11 +135,7 @@ bool valid_lib_path(const char* p, size_t n) {
     return !segment_empty;
 }
 
-Vm* owner(lua_State* L) {
-    void* ud = nullptr;
-    lua_getallocf(L, &ud);
-    return static_cast<Vm*>(ud);
-}
+Vm* owner(lua_State* L) { return Vm::of(L); }
 
 // See Vm::check_limits.
 void enter(lua_State* L) { owner(L)->check_limits(L); }
@@ -929,6 +925,17 @@ void Vm::hook(lua_State* L, lua_Debug* ar) {
         }
     }
     vm->raise_fault(L);
+}
+
+Vm* Vm::of(lua_State* L) {
+    void* ud = nullptr;
+    lua_getallocf(L, &ud);
+    return static_cast<Vm*>(ud);
+}
+
+bool Vm::past_limits() const {
+    if (refused_ || fault_ != Fault::None) return true;
+    return running_ && now_ms_() - start_ms_ > limits_.exec_ms;
 }
 
 void Vm::check_limits(lua_State* L) {

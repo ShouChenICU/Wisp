@@ -16,6 +16,7 @@ wisp_component(
          src/scene_view_media.cpp src/scene_message.cpp src/scene_instance.cpp
          src/scene_runtime.cpp src/timer_set.cpp src/minute_ticker.cpp
          src/bind_timer.cpp src/bind_device.cpp src/bind_log.cpp src/bind_scene.cpp
+         src/bind_store.cpp src/lua_json.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_ui lua
 )
