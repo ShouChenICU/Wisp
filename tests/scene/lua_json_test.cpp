@@ -121,6 +121,23 @@ TEST_F(LuaJson, RoundTripsNestedValues) {
               "float");
 }
 
+TEST_F(LuaJson, RecordLeavesOutTopLevelId) {
+    auto record = [&](const std::string& src) {
+        run(src);
+        wisp::os::LargeString out;
+        const char* code = wisp::scene::lua_record_to_json(L, -1, out);
+        lua_pop(L, 1);
+        return std::string(code ? code : "") + std::string(out.data(), out.size());
+    };
+    EXPECT_EQ(record("return {id = 5, a = 1}"), R"({"a":1})");
+    EXPECT_EQ(record("return {id = 5}"), "{}");
+    // Only the outermost table's field.
+    EXPECT_EQ(record("return {x = {id = 1}}"), R"({"x":{"id":1}})");
+    // `id` does not make a mixed table an object.
+    EXPECT_EQ(record("return {id = 1, 2}"), "[2]");
+    EXPECT_EQ(record("return {id = 1, 2, x = 3}"), "not_serializable");
+}
+
 TEST_F(LuaJson, RejectsUnserializable) {
     EXPECT_EQ(fails("return print"), "not_serializable");
     EXPECT_EQ(fails("return function() end"), "not_serializable");

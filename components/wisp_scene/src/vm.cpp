@@ -135,10 +135,8 @@ bool valid_lib_path(const char* p, size_t n) {
     return !segment_empty;
 }
 
-Vm* owner(lua_State* L) { return Vm::of(L); }
-
 // See Vm::check_limits.
-void enter(lua_State* L) { owner(L)->check_limits(L); }
+void enter(lua_State* L) { Vm::of(L)->check_limits(L); }
 
 // How often the C loops below check the limits, which bounds how far one
 // of them can run past the deadline: 256 elements, each at most one read
@@ -258,7 +256,7 @@ int sandbox_setmetatable(lua_State* L) {
 // disabled, so the handler would run unbounded. Once the VM has faulted
 // the error object passes through untouched instead.
 int guarded_handler(lua_State* L) {
-    if (owner(L)->faulted()) return 1;
+    if (Vm::of(L)->faulted()) return 1;
     lua_pushvalue(L, lua_upvalueindex(1));
     lua_insert(L, 1);
     lua_call(L, lua_gettop(L) - 1, 1);
@@ -715,7 +713,7 @@ std::unique_ptr<Vm> Vm::create(std::string scene_id, VmLimits limits,
 }
 
 int Vm::setup(lua_State* L) {
-    Vm* vm = owner(L);
+    Vm* vm = Vm::of(L);
     const struct {
         const char* name;
         lua_CFunction open;
@@ -904,7 +902,7 @@ int Vm::raise_fault(lua_State* L) {
 }
 
 void Vm::hook(lua_State* L, lua_Debug* ar) {
-    Vm* vm = owner(L);
+    Vm* vm = Vm::of(L);
     if (vm->closing_) {
         vm->raise_fault(L);
         return;
@@ -964,7 +962,7 @@ void Vm::check_limits(lua_State* L) {
 // when the child gives control back was not recovered by a retry, so it
 // is settled (as a fault) before the caller runs another instruction.
 int Vm::co_switch(lua_State* L, lua_State* co) {
-    Vm* vm = owner(L);
+    Vm* vm = Vm::of(L);
     int n = lua_gettop(L);
     lua_pushvalue(L, lua_upvalueindex(2));
     lua_insert(L, 1);
@@ -997,7 +995,7 @@ int Vm::co_wrap(lua_State* L) {
 
 // Not in any table, so it checks the limits itself.
 int Vm::co_wrapped(lua_State* L) {
-    Vm* vm = owner(L);
+    Vm* vm = Vm::of(L);
     vm->check_limits(L);
     lua_State* co = lua_tothread(L, lua_upvalueindex(1));
     int narg = lua_gettop(L);
@@ -1082,7 +1080,7 @@ void check_c_functions(lua_State* L, int table) {
 }
 
 int Vm::import(lua_State* L) {
-    Vm* vm = owner(L);
+    Vm* vm = Vm::of(L);
     size_t len = 0;
     const char* path = lua_type(L, 1) == LUA_TSTRING ? lua_tolstring(L, 1, &len) : nullptr;
     if (!path) return luaL_typeerror(L, 1, "string");
@@ -1278,7 +1276,7 @@ void log_lua_args(lua_State* L, LogLevel level) {
     }
     line[len] = '\0';
     char tag[kSceneTagBytes + 1];
-    std::snprintf(tag, sizeof(tag), "scene.%s", owner(L)->scene_id().c_str());
+    std::snprintf(tag, sizeof(tag), "scene.%s", Vm::of(L)->scene_id().c_str());
     log::write_text(level, tag, line);
 }
 

@@ -36,7 +36,18 @@ struct Enc {
     // table that is merely reached twice.
     const void* path[kLuaJsonMaxDepth] = {};
     const char* err = nullptr;
+    // Leave out the outermost table's "id" field (lua_record_to_json).
+    bool skip_id = false;
 };
+
+// The key at `idx`, of a table `level` tables deep (0: the value
+// itself), is the "id" field a record leaves out.
+bool skipped_key(const Enc& e, int idx, int level) {
+    if (!e.skip_id || level != 0 || lua_type(e.L, idx) != LUA_TSTRING) return false;
+    size_t n = 0;
+    const char* k = lua_tolstring(e.L, idx, &n);
+    return n == 2 && k[0] == 'i' && k[1] == 'd';
+}
 
 bool fail(Enc& e, const char* code) {
     e.err = code;
@@ -189,6 +200,11 @@ bool encode_object(Enc& e, int t) {
     bool first = true;
     lua_pushnil(L);
     while (lua_next(L, t) != 0) {
+        // encode_table() has already counted this table in e.depth.
+        if (skipped_key(e, -2, e.depth - 1)) {
+            lua_pop(L, 1);
+            continue;
+        }
         size_t n = 0;
         const char* k = lua_tolstring(L, -2, &n);  // a string: no conversion
         bool ok = (first || put(e, ',')) && put_string(e, k, n) && put(e, ':') &&
@@ -218,6 +234,7 @@ bool encode_table(Enc& e, int t) {
     lua_pushnil(L);
     while (lua_next(L, t) != 0) {
         lua_pop(L, 1);
+        if (skipped_key(e, -1, e.depth)) continue;
         ++n;
         if (lua_type(L, -1) == LUA_TSTRING) {
             ints = false;
@@ -565,10 +582,13 @@ void push_entry(lua_State* L, void* ctx) {
 
 }  // namespace
 
-const char* lua_to_json(lua_State* L, int idx, os::LargeString& out, size_t max_bytes) {
+namespace {
+
+const char* to_json(lua_State* L, int idx, os::LargeString& out, size_t max_bytes, bool skip_id) {
     out.clear();
     idx = lua_absindex(L, idx);
     Enc e{L, out, max_bytes, Vm::of(L)};
+    e.skip_id = skip_id;
     if (!lua_checkstack(L, kLuaJsonStackSlots))
         return e.vm != nullptr && e.vm->past_limits() ? kJsonLimits : kJsonTooDeep;
     const int top = lua_gettop(L);
@@ -579,6 +599,16 @@ const char* lua_to_json(lua_State* L, int idx, os::LargeString& out, size_t max_
         return e.err;
     }
     return nullptr;
+}
+
+}  // namespace
+
+const char* lua_to_json(lua_State* L, int idx, os::LargeString& out, size_t max_bytes) {
+    return to_json(L, idx, out, max_bytes, false);
+}
+
+const char* lua_record_to_json(lua_State* L, int idx, os::LargeString& out, size_t max_bytes) {
+    return to_json(L, idx, out, max_bytes, true);
 }
 
 void decode_json(lua_State* L, std::string_view json) {

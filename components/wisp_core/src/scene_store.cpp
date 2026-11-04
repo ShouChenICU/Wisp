@@ -1498,6 +1498,9 @@ Result<os::LargeVector<StoreRecord>> SceneStore::find(std::string_view coll,
     // overlay applied.
     os::LargeVector<SortKey> rows;
     auto add = [&](int64_t id, const LString& json) {
+        if (q.id && *q.id != id) {
+            return;
+        }
         for (const auto& [name, want] : q.equals) {
             auto v = field(json, name);
             if (!v || !value_equals(*v, want)) {
@@ -1563,6 +1566,8 @@ Result<os::LargeVector<StoreRecord>> SceneStore::find(std::string_view coll,
             }
             return a.id < b.id;
         });
+    } else if (q.desc) {
+        std::reverse(rows.begin(), rows.end());
     }
 
     Out out;

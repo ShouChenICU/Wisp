@@ -9,6 +9,11 @@
 //       each or nil and a code
 //   c:find(filter?, opts?) -> list of records, each with its `id` field
 //
+// `id` is reserved: it is the record id the store hands out, never a
+// stored field. insert and update leave a top-level `id` out of the
+// record (so a record from find can be passed back to update), filter.id
+// selects the record with that id, and sort = "id" is id order.
+//
 // Codes: quota_exceeded, record_too_large, too_many_collections,
 // not_serializable, too_deep, not_found, ids_exhausted, batch_aborted.
 // Malformed arguments (key type or length, collection name, a record that
@@ -69,6 +74,8 @@ struct Outcome {
     bool raise = false;
     char msg[160] = {};
     int64_t id = 0;
+    // find(): nothing can match; the result is an empty list.
+    bool empty = false;
 };
 static_assert(std::is_trivially_destructible_v<Outcome>);
 
@@ -133,15 +140,24 @@ std::string_view check_key(lua_State* L, int arg, const core::SceneStore& st) {
 }
 
 // A record argument: a table whose keys are strings (an object).
+// Every key is checked, so a bad one raises the same argument error
+// wherever traversal meets it.
 void check_record(lua_State* L, int arg) {
     luaL_checktype(L, arg, LUA_TTABLE);
+    Vm* vm = Vm::of(L);
+    size_t count = 0;
     lua_pushnil(L);
-    if (lua_next(L, arg) != 0) {
-        const bool str = lua_type(L, -2) == LUA_TSTRING;
-        lua_pop(L, 2);
-        if (!str) luaL_argerror(L, arg, "record must be a table with string keys");
+    while (lua_next(L, arg) != 0) {
+        lua_pop(L, 1);
+        if (lua_type(L, -1) != LUA_TSTRING) {
+            lua_pop(L, 1);
+            luaL_argerror(L, arg, "record must be a table with string keys");
+        }
+        if (++count % kCheckEvery == 0) vm->check_limits(L);
     }
 }
+
+bool is_id(const char* k, size_t n) { return n == 2 && k[0] == 'i' && k[1] == 'd'; }
 
 CollHandle& check_coll(lua_State* L) {
     return *static_cast<CollHandle*>(luaL_checkudata(L, 1, kCollType));
@@ -189,7 +205,7 @@ void do_commit(core::SceneStore& st, Outcome* o) {
 
 void do_insert(lua_State* L, core::SceneStore& st, std::string_view coll, int arg, Outcome* o) {
     os::LargeString json;
-    if (const char* code = lua_to_json(L, arg, json, st.limits().record_bytes)) {
+    if (const char* code = lua_record_to_json(L, arg, json, st.limits().record_bytes)) {
         take_json_code(code, o);
         return;
     }
@@ -204,7 +220,7 @@ void do_insert(lua_State* L, core::SceneStore& st, std::string_view coll, int ar
 void do_update(lua_State* L, core::SceneStore& st, std::string_view coll, int64_t id, int arg,
                Outcome* o) {
     os::LargeString json;
-    if (const char* code = lua_to_json(L, arg, json, st.limits().record_bytes)) {
+    if (const char* code = lua_record_to_json(L, arg, json, st.limits().record_bytes)) {
         take_json_code(code, o);
         return;
     }
@@ -218,8 +234,9 @@ void do_delete(core::SceneStore& st, std::string_view coll, int64_t id, Outcome*
 }
 
 // The filter value at the top of the stack as a Value; false if it cannot
-// be one (`o` says why).
-bool filter_value(lua_State* L, Value* out, Outcome* o) {
+// be one (`o` says why, or sets `empty` for a value too large to equal
+// any record's field). `max` is the record size limit.
+bool filter_value(lua_State* L, size_t max, Value* out, Outcome* o) {
     switch (lua_type(L, -1)) {
         case LUA_TBOOLEAN:
             *out = Value(lua_toboolean(L, -1) != 0);
@@ -234,14 +251,22 @@ bool filter_value(lua_State* L, Value* out, Outcome* o) {
         case LUA_TSTRING: {
             size_t n = 0;
             const char* s = lua_tolstring(L, -1, &n);
+            if (n > max) {
+                o->empty = true;
+                return false;
+            }
             *out = Value(std::string(s, n));
             return true;
         }
         default: {
             // Tables compare as Values (FindQuery); go through their JSON.
             os::LargeString json;
-            if (const char* code = lua_to_json(L, -1, json, kLuaJsonMaxBytes)) {
-                take_json_code(code, o);
+            if (const char* code = lua_to_json(L, -1, json, max)) {
+                if (code == kJsonTooLarge) {
+                    o->empty = true;
+                } else {
+                    take_json_code(code, o);
+                }
                 return false;
             }
             auto v = from_json(std::string_view(json.data(), json.size()));
@@ -257,6 +282,10 @@ bool filter_value(lua_State* L, Value* out, Outcome* o) {
 
 struct FindArgs {
     int filter = 0;  // stack index of the filter table, or 0
+    // filter.id: the record id, which is not a stored field.
+    bool has_id = false;
+    int64_t id = 0;
+    // A sort field; null for id order.
     const char* sort = nullptr;
     size_t sort_len = 0;
     bool desc = false;
@@ -288,20 +317,33 @@ void push_records(lua_State* L, void* ctx) {
 void do_find(lua_State* L, const core::SceneStore& st, std::string_view coll, const FindArgs& a,
              Outcome* o) {
     core::FindQuery q;
+    if (a.has_id) q.id = a.id;
     if (a.sort != nullptr) q.sort.assign(a.sort, a.sort_len);
     q.desc = a.desc;
     q.limit = a.limit;
     q.offset = a.offset;
     if (a.filter != 0) {
+        Vm* vm = Vm::of(L);
+        const size_t max = st.limits().record_bytes;
+        size_t count = 0;
         lua_pushnil(L);
         while (lua_next(L, a.filter) != 0) {
-            Value v;
-            if (!filter_value(L, &v, o)) {
+            if (++count % kCheckEvery == 0 && vm->past_limits()) {
+                o->limits = true;
                 lua_pop(L, 2);
                 return;
             }
             size_t n = 0;
             const char* k = lua_tolstring(L, -2, &n);  // checked to be a string
+            if (is_id(k, n)) {
+                lua_pop(L, 1);
+                continue;
+            }
+            Value v;
+            if (!filter_value(L, max, &v, o)) {
+                lua_pop(L, 2);
+                return;
+            }
             q.equals.emplace_back(std::string(k, n), std::move(v));
             lua_pop(L, 1);
         }
@@ -443,11 +485,28 @@ int find(lua_State* L) {
     FindArgs a;
     if (!lua_isnil(L, 2)) {
         luaL_checktype(L, 2, LUA_TTABLE);
+        Vm* vm = Vm::of(L);
+        size_t count = 0;
         lua_pushnil(L);
         while (lua_next(L, 2) != 0) {
             const int kt = lua_type(L, -2);
             const int vt = lua_type(L, -1);
+            if (kt == LUA_TSTRING) {
+                size_t n = 0;
+                const char* k = lua_tolstring(L, -2, &n);
+                if (is_id(k, n)) {
+                    int ok = 0;
+                    const lua_Integer id = vt == LUA_TNUMBER ? lua_tointegerx(L, -1, &ok) : 0;
+                    if (!ok) {
+                        lua_pop(L, 2);
+                        return luaL_argerror(L, 2, "filter.id must be an integer");
+                    }
+                    a.has_id = true;
+                    a.id = static_cast<int64_t>(id);
+                }
+            }
             lua_pop(L, 1);
+            if (++count % kCheckEvery == 0) vm->check_limits(L);
             if (kt != LUA_TSTRING) {
                 lua_pop(L, 1);
                 return luaL_argerror(L, 2, "filter keys must be strings");
@@ -467,6 +526,8 @@ int find(lua_State* L) {
         if (t != LUA_TNIL && t != LUA_TSTRING)
             return luaL_argerror(L, 3, "opts.sort must be a string");
         if (t == LUA_TSTRING) a.sort = lua_tolstring(L, 4, &a.sort_len);
+        // The store's own order is id order.
+        if (a.sort != nullptr && is_id(a.sort, a.sort_len)) a.sort = nullptr;
         lua_getfield(L, 3, "desc");
         a.desc = lua_toboolean(L, -1) != 0;
         lua_pop(L, 1);
@@ -480,7 +541,8 @@ int find(lua_State* L) {
     do_find(L, st, c.view(), a, &o);
     const int n = settle(L, o);
     if (n >= 0) return n;
-    return 1;  // protect() left the list on top
+    if (o.empty) lua_newtable(L);
+    return 1;  // protect() left the list on top, or it is the empty one
 }
 
 }  // namespace

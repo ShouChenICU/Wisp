@@ -54,6 +54,11 @@ inline constexpr char kJsonLimits[] = "limits";
 const char* lua_to_json(lua_State* L, int idx, os::LargeString& out,
                         size_t max_bytes = kLuaJsonMaxBytes);
 
+// lua_to_json() for a wisp.store record: a top-level "id" field is left
+// out, since a record's id is the store's own (find() adds it back).
+const char* lua_record_to_json(lua_State* L, int idx, os::LargeString& out,
+                               size_t max_bytes = kLuaJsonMaxBytes);
+
 // Decodes `json` and pushes the value. On failure (malformed text, too
 // deep, out of memory, the VM's limits) returns false with the stack as
 // it was; the caller then calls Vm::check_limits() once its C++ objects

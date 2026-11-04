@@ -103,6 +103,103 @@ print(getmetatable(c))
     EXPECT_EQ(rt->status("kv").state, SceneState::Running);
 }
 
+// `id` is the record id everywhere: injected by find, never stored,
+// matched by filter.id and ordered by sort = "id".
+TEST_F(StoreBinding, IdIsReserved) {
+    start();
+    install("ids", std::string(R"(
+local c = wisp.store.collection("todos")
+print(c:insert({t = "a", done = false, id = 99}))
+print(c:insert({t = "b", done = false}))
+print(c:insert({t = "c", done = false}))
+-- The stored record has no id of its own.
+print(c:find({id = 1})[1].id, #c:find({id = 99}))
+-- find -> modify -> update round trip.
+local r = c:find({id = 2})[1]
+r.done = true
+print(c:update(r.id, r))
+r = c:find({id = 2})[1]
+print(r.id, r.t, tostring(r.done))
+print(#c:find({id = 2, done = true}), #c:find({id = 2, done = false}), #c:find({id = 3.0}))
+-- update with a foreign id field: the record id stays.
+print(c:update(3, {t = "c2", done = false, id = 7}))
+print(#c:find({id = 7}), c:find({id = 3})[1].t)
+local function ids(list)
+  local out = {}
+  for i, rec in ipairs(list) do out[i] = rec.id end
+  return table.concat(out, ",")
+end
+print(ids(c:find(nil, {sort = "id", desc = true})))
+print(ids(c:find(nil, {sort = "id"})))
+print(ids(c:find({done = false}, {sort = "id", desc = true, limit = 1})))
+print(ids(c:find(nil, {desc = true, offset = 1})))
+local ok, e = pcall(c.find, c, {id = "2"})
+print(ok, e:find("bad argument", 1, true) ~= nil)
+ok, e = pcall(c.find, c, {id = 2.5})
+print(ok, e:find("bad argument", 1, true) ~= nil)
+)") + kScreen);
+    ASSERT_TRUE(rt->open("ids")) << rt->status("ids").error;
+    EXPECT_EQ(scene_log("ids"), (std::vector<std::string>{
+                                    "1",
+                                    "2",
+                                    "3",
+                                    "1\t0",
+                                    "true",
+                                    "2\tb\ttrue",
+                                    "1\t0\t1",
+                                    "true",
+                                    "0\tc2",
+                                    "3,2,1",
+                                    "1,2,3",
+                                    "3",
+                                    "2,1",
+                                    "false\ttrue",
+                                    "false\ttrue",
+                                }));
+    // Nothing on disk carries an id field inside the value.
+    ASSERT_TRUE(rt->close("ids"));
+    ASSERT_TRUE(worker.drain(2000));
+    std::istringstream todos(data_file("ids", "todos.log"));
+    int lines = 0;
+    for (std::string line; std::getline(todos, line); ++lines) {
+        const size_t v = line.find(R"("v":)");
+        ASSERT_NE(v, std::string::npos) << line;
+        EXPECT_EQ(line.find(R"("id")", v), std::string::npos) << line;
+    }
+    EXPECT_GE(lines, 3);  // appended or compacted
+}
+
+TEST_F(StoreBinding, RecordKeysCheckedWhateverTheOrder) {
+    start();
+    install("keys", std::string(R"(
+local c = wisp.store.collection("todos")
+-- Many string keys and one boolean key: wherever traversal meets it, the
+-- error is the same argument error.
+local t = {}
+for i = 1, 300 do t["k" .. i] = i end
+t[true] = 1
+for _ = 1, 3 do
+  local ok, e = pcall(c.insert, c, t)
+  print(ok, e:find("bad argument", 1, true) ~= nil)
+end
+local u = {x = 1}
+u[1] = 2
+local ok, e = pcall(c.update, c, 1, u)
+print(ok, e:find("bad argument", 1, true) ~= nil)
+-- A filter value too large to match any record finds nothing.
+c:insert({s = "x"})
+print(#c:find({s = string.rep("x", 20000)}), #c:find({s = {string.rep("x", 20000)}}))
+)") + kScreen);
+    ASSERT_TRUE(rt->open("keys")) << rt->status("keys").error;
+    EXPECT_EQ(scene_log("keys"), (std::vector<std::string>{
+                                     "false\ttrue",
+                                     "false\ttrue",
+                                     "false\ttrue",
+                                     "false\ttrue",
+                                     "0\t0",
+                                 }));
+}
+
 TEST_F(StoreBinding, ErrorsReturnedAsNilAndCode) {
     start();
     install("err", std::string(R"(

@@ -108,10 +108,13 @@ struct SceneStoreDeps {
 
 // Top-level field equality filter, sort and paging for find(). A number
 // equals a number of the same value (3 == 3.0); lists and maps compare
-// as Values. `sort` orders numbers by value and strings by bytes; records
-// whose sort field is missing (or another type) come last whatever
-// `desc` says, and equal values keep ascending id order.
+// as Values. `id` keeps only the record with that id. `sort` orders
+// numbers by value and strings by bytes; records whose sort field is
+// missing (or another type) come last whatever `desc` says, and equal
+// values keep ascending id order. Without `sort` records come in id
+// order, newest first with `desc`.
 struct FindQuery {
+    std::optional<int64_t> id;
     std::vector<std::pair<std::string, Value>> equals;
     std::string sort;
     bool desc = false;

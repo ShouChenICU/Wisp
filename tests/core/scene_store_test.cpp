@@ -304,6 +304,43 @@ TEST(SceneStore, FindFilterSortLimitOffset) {
     EXPECT_EQ(s->find("Bad", all()).error().code, ErrorCode::InvalidArgument);
 }
 
+TEST(SceneStore, FindByIdAndIdOrder) {
+    Harness h;
+    auto s = h.open();
+    ASSERT_TRUE(s->insert("todos", R"({"t":"a","done":false})"));  // 1
+    ASSERT_TRUE(s->insert("todos", R"({"t":"b","done":true})"));   // 2
+    ASSERT_TRUE(s->insert("todos", R"({"t":"c","done":false})"));  // 3
+
+    // No sort field: id order, reversed by desc.
+    FindQuery q;
+    q.desc = true;
+    EXPECT_EQ(ids(s->find("todos", q).value()), (std::vector<int64_t>{3, 2, 1}));
+    q.limit = 1;
+    EXPECT_EQ(ids(s->find("todos", q).value()), (std::vector<int64_t>{3}));
+
+    // id selects one record; the other equals still apply.
+    FindQuery one;
+    one.id = 2;
+    EXPECT_EQ(ids(s->find("todos", one).value()), (std::vector<int64_t>{2}));
+    one.equals.emplace_back("done", Value(false));
+    EXPECT_TRUE(s->find("todos", one).value().empty());
+    one.id = 3;
+    EXPECT_EQ(ids(s->find("todos", one).value()), (std::vector<int64_t>{3}));
+    one.id = 9;
+    EXPECT_TRUE(s->find("todos", one).value().empty());
+
+    // The same inside a batch, where the overlay holds new records.
+    s->begin_batch();
+    ASSERT_TRUE(s->insert("todos", R"({"t":"d","done":false})"));  // 4
+    FindQuery in_batch;
+    in_batch.id = 4;
+    EXPECT_EQ(ids(s->find("todos", in_batch).value()), (std::vector<int64_t>{4}));
+    in_batch.id.reset();
+    in_batch.desc = true;
+    EXPECT_EQ(ids(s->find("todos", in_batch).value()), (std::vector<int64_t>{4, 3, 2, 1}));
+    s->abort_batch();
+}
+
 TEST(SceneStore, WritesCoalesceWithin300ms) {
     Harness h;
     auto s = h.open();
