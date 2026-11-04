@@ -44,7 +44,7 @@ Wisp（小鬼火）是一个运行在 ESP32 系列芯片上、完全由 AI 驱�
   - 平台层：`wisp_port_sim`（PC 模拟器）、`wisp_port_esp`（ESP-IDF）。
   - 板级适配放在 `boards/<板名>/`，芯片驱动放在 `drivers/`。
 - **可移植层禁止 include 平台头文件**：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/`、`soc/*`、`rom/*`、`lwip/*`、`mbedtls/*`、`curl/*`、`sdkconfig.h`、`nvs.h`/`nvs_flash.h`、`sdmmc_cmd.h`、`SDL*`，以及平台层的 `wisp/port/*`。另外每一层只能依赖上面顺序中排在它之前的层，不得反向依赖（例如 `wisp_net` 不得 include `wisp/admin/`、`wisp/ui/`、`wisp/app/`）。这条规则由 `tools/check_layering.py` 强制检查。
-- **板子无关**：可移植层和平台层里不得出现具体板子的引脚、芯片型号或常量。这些只能写在 `boards/` 和 `drivers/` 中，通过设备的 caps 对外暴露。
+- **板子无关**：可移植层和平台层里不得出现具体板子的引脚、芯片型号或常量。这些只能写在 `boards/` 和 `drivers/` 中，通过设备的 caps 对外暴露。例外：平台层可以按 SoC 目标（`IDF_TARGET`/`CONFIG_IDF_TARGET_*`）选择实现，例如 `wisp_port_esp/lv_blend/<芯片>/` 的渲染加速。这类代码只依赖芯片本身，与板子无关；板级常量仍然禁止。可移植层（含 `lv_conf.h`）不出现芯片名。
 - **服务层约定**：Agent 工具、REST 接口、Lua 绑定都只是同一组服务 API 的薄适配层，不允许绕过服务层直接调用驱动。
 - **屏幕形状**：屏幕不一定是完整矩形（圆角屏、圆形屏）。任何界面（包括场景、Agent 生成的界面）都必须按 Display caps 的 `shape` 和 `hal::safe_rect()`/`row_span()` 布局，不得写死边距或假设整屏可见。根容器铺满屏幕、用内边距把内容收进安全区；滚动内容可以经过不可见区域，但滚到两端时首尾内容必须完整落在安全区内（spec 5.6）。
 - **UI 单线程**：只有 UI 线程可以调用 LVGL，其他线程一律通过 `UiRuntime::post()` 把操作交给 UI 线程；脚本也不直接调用 LVGL。
@@ -85,7 +85,7 @@ cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <板名>
 - **内存分配**：大块缓冲用 `os::alloc(Mem::Large)`，DMA 缓冲用 `Mem::Dma`，不要直接调用平台的分配函数。
 - **内部 RAM 预算**（ESP32 的内部 SRAM 只有几百 KB，耗尽时报错的地方往往离原因很远，例如 httpd 拿不到栈）：
   - 内部 SRAM 只留给必须放在内部的东西：DMA 缓冲（`Mem::Dma`）；会读、写、擦除或映射内部 flash 的任务的栈；ISR 和 IRAM 代码/数据。其余超过几 KB 的一律用 `Mem::Large`（PSRAM），例如 Lua 堆、LLM 上下文和 JSON、音频环形缓冲、各种缓存。
-  - 新任务都要声明栈能否放进 PSRAM（`os::TaskConfig::external_stack`，httpd 实例是 `EspHttpServerConfig::external_stack`）。只有从不读、写、擦除或映射内部 flash 的任务才可以放，经由它调用的服务（Settings/NVS、StorageManager/LittleFS、OTA、分区）和它替别人执行的回调都算在内；读已经映射进地址空间的常量和网页资源包不算。违反时 ESP 端口在 flash 操作里静默 abort，模拟器测不出来。栈的大小按 `mem` 命令实测的 high-water mark 加余量来定。
+  - 新任务都要声明栈能否放进 PSRAM（`os::TaskConfig::external_stack`，httpd 实例是 `EspHttpServerConfig::external_stack`）。只有从不读、写、擦除或映射内部 flash 的任务才可以放，经由它调用的服务（Settings/NVS、StorageManager/LittleFS、OTA、分区）和它替别人执行的回调都算在内；读已经映射进地址空间的常量和网页资源包不算。这条规则与 XIP 无关，始终遵守：不开 XIP（`CONFIG_SPIRAM_XIP_FROM_PSRAM`）的板子上，违反时 ESP 端口在 flash 读写里直接 abort；开了 XIP 的板子上普通读写不再停 cache，只有映射 flash（`esp_partition_mmap`、OTA 收尾校验）还会 abort，所以违规代码在这类板子上大多测不出来，模拟器也测不出来。栈的大小按 `mem` 命令实测的 high-water mark 加余量来定。
   - 预算：最坏情况（STA+AP、两个 httpd、WebSocket 日志流、TLS 握手和 OTA 上传同时存在）和空闲状态下内部 RAM 的空闲量、最大块下限定义在 `wisp/app/ram_budget.hpp`。消耗内部 RAM 的改动必须上真机重新测量。
   - 诊断：固件串口命令 `mem`（各堆和每个任务的栈）；net 每次启动服务打一行 `internal RAM: ...`，低于预算时为警告。各板实测数据记在 `docs/hardware/<板名>.md`。
 - **注释**：只解释现在的代码为什么这样写（约束、不变量、踩过的坑），不写"哪一轮评审/哪次修复改了什么"——修改历史属于提交信息，不属于注释。禁止引用 `.superpowers/` 下的任何文件（`task-*-brief/report/review.md`、`global-constraints.md` 等，这些不提交到 git，新检出后是死链），禁止评审编号式引用（"Fix round N"、"Re-review N"、"R2-N"、"Task N"、裸的发现编号如 "M8"/"N3"/"I1"）。需要引用上下文时改为指向已提交的权威来源：spec 某节（"spec 6.7" 可以保留）、AGENTS.md 某节、`docs/hardware/*.md`，或仓库里的另一个函数/文件。`tools/ci.sh` 对此有 grep 守卫。
