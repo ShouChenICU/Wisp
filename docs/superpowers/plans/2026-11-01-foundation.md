@@ -35,7 +35,7 @@
 - 内置 `library` 配额默认 3 MB（3·1024·1024 字节）。
 - 分区表按 spec 7.4 节，偏移和大小一字不差。
 - 启动后 3 秒内进入自检界面（真机验收）。
-- UI 性能基准：真机上滚动自检列表时帧率 ≥ 30 fps（由 `UiRuntime::perf()` 和串口 `WISP_PERF` 行度量）。
+- UI 性能基准：真机上滚动自检列表时帧率 ≥ 30 fps（由 `UiRuntime::perf()` 和串口 `WISP_PERF` 行度量）。（执行期裁定，用户 2026-11-04：≥ 30 fps 仍是目标；Waveshare 2.16 达不到，验收线改为不低于记下的基准——关热点 22.7 fps、开热点 28.2 fps，见 spec 第 10 节"已记录的偏差"。）
 - Settings 的 namespace 与 key 长度均 ≤ 15 字符（NVS 限制，两端一致）。
 - 所有外部依赖锁定版本；固件提交 `firmware/dependencies.lock`。
 - 许可证 Apache-2.0；移植或参考的代码在文件头注明来源，并登记到 `THIRD_PARTY_NOTICES.md` / `docs/references.md`。
@@ -1369,7 +1369,7 @@ git commit -m "feat(app): add screen-off standby with panel/touch sleep and ligh
 - [ ] **Step 1: 写文档**
 - [ ] **Step 2: 全量本机检查** — Run: `bash tools/ci.sh` → Expected: 退出码 0。
 - [ ] **Step 3: 固件构建** — Run: `bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware && idf.py bmgr -c ../boards -b waveshare_amoled_216 && idf.py build'` → Expected: 成功。
-- [ ] **Step 4: 真机验收（需要真机，逐条对照 spec 第 10 节）** — 记录结果：①从上电到出现自检界面的时间 < 3 s（在串口日志中查看 `boot_ms`）；②8 类设备的状态与行为全部符合；③电源键的三种行为符合；④串口输出的 manifest 中 `imu.main.caps.magnetometer == false`；⑤手指持续上下滚动自检列表 10 s，串口 `WISP_PERF` 的 fps ≥ 30，记录 fps、cpu、flush_ms 三个数值写入 `docs/hardware/waveshare_amoled_216.md` 的"性能基准"一节。任何一项不通过，回到对应任务修复，不在本任务中绕过。
+- [ ] **Step 4: 真机验收（需要真机，逐条对照 spec 第 10 节）** — 记录结果：①从上电到出现自检界面的时间 < 3 s（在串口日志中查看 `boot_ms`）；②8 类设备的状态与行为全部符合；③电源键的三种行为符合；④串口输出的 manifest 中 `imu.main.caps.magnetometer == false`；⑤手指持续上下滚动自检列表 10 s，串口 `WISP_PERF` 的 fps ≥ 30（本板的验收线见 spec 第 10 节"已记录的偏差"），记录 fps、cpu、flush_ms 三个数值写入 `docs/hardware/waveshare_amoled_216.md` 的"性能基准"一节。任何一项不通过，回到对应任务修复，不在本任务中绕过。
 - [ ] **Step 5: Commit**
 
 ```bash

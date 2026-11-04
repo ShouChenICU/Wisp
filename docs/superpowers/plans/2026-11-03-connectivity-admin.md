@@ -1055,7 +1055,7 @@ TEST(SimHttpServer, StreamsLargeRequestBody)           // 1 MB 请求体分块�
 
 - [ ] **Step 2: 运行，确认失败。**
 - [ ] **Step 3: 实现**；冒烟用例 `firmware_upload`：配对 → 上传一个由测试构造、板名为模拟器板名的最小合法镜像 → 收到 `received` → 经 stdin 点设备确认框"是" → 看到 `WISP_REBOOT`；另一次上传错误板名 → 400。
-- [ ] **Step 4: 验证**：全量 ctest、`bash tools/ci.sh`；发布构建与调试构建都能 `idf.py build`；记录发布构建的 `idf.py size`（应用占 `ota_0` 的比例，目标 ≤ 80%，预期约 50–60%）以及 `-O2` 组件的体积；确认 `build/` 里不再有 assets 分区镜像；模拟器里浏览器实际走一遍系统页上传（Playwright），截图 zh/ja/en。真机项（整片烧录新分区表后设置与数据仍在、上传/确认/拒绝/回滚、`WISP_PERF` ≥ 30 fps）写进报告交给用户。
+- [ ] **Step 4: 验证**：全量 ctest、`bash tools/ci.sh`；发布构建与调试构建都能 `idf.py build`；记录发布构建的 `idf.py size`（应用占 `ota_0` 的比例，目标 ≤ 80%，预期约 50–60%）以及 `-O2` 组件的体积；确认 `build/` 里不再有 assets 分区镜像；模拟器里浏览器实际走一遍系统页上传（Playwright），截图 zh/ja/en。真机项（整片烧录新分区表后设置与数据仍在、上传/确认/拒绝/回滚、`WISP_PERF` ≥ 30 fps，本板验收线见 foundation spec 第 10 节"已记录的偏差"）写进报告交给用户。
 - [ ] **Step 5: Commit**（可分多次）— 例如 `feat(firmware): embed the web pack and switch to the release build`、`feat(admin): install firmware uploaded from the admin page`
 
 ---
@@ -1066,7 +1066,7 @@ TEST(SimHttpServer, StreamsLargeRequestBody)           // 1 MB 请求体分块�
 - Modify: `docs/hardware/waveshare_amoled_216.md`（Wi-Fi 之后的内存剩余量、`WISP_PERF` 对比、配网实测结果）、`docs/architecture.md`（全面核对）、`README.md`（"当前状态"一节）、本计划（勾选完成项、记录执行期裁定）
 
 - [ ] **Step 1: 交给用户执行 spec 9.2 的验收清单第 1–9 项**，逐项记录结果。需要用户提供的信息：手机型号与系统版本（检查强制门户是否自动弹出）、路由器的频段（确认是 2.4 GHz）。
-- [ ] **Step 2:** 第 9 项：在 Wi-Fi 已连接、后台日志页打开的状态下，滚动自检界面，采集 `WISP_PERF`，与子项目 1 的基准（≥ 30 fps）对比，写进硬件文档。
+- [ ] **Step 2:** 第 9 项：在 Wi-Fi 已连接、后台日志页打开的状态下，滚动自检界面，采集 `WISP_PERF`，与子项目 1 的基准（目标 ≥ 30 fps；本板验收线见 foundation spec 第 10 节"已记录的偏差"）对比，写进硬件文档。
 - [ ] **Step 3:** 修复联调中发现的问题，每个问题先写失败的测试（能在模拟器里复现的都在模拟器里复现）。
 - [ ] **Step 4:** 跑 `bash tools/ci.sh` 和固件构建；更新文档。
 - [ ] **Step 5: Commit** — `docs: record sub-project 2 on-device acceptance`

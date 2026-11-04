@@ -604,6 +604,10 @@ StorageStatus status();                        // 各介质在线状态、容量
 
 8. README（模拟器与真机两条快速开始路径）、`docs/architecture.md`、`docs/porting-guide.md`（如何新增一块板）、`docs/hardware/waveshare_amoled_216.md`、`docs/references.md`、`THIRD_PARTY_NOTICES.md` 齐备。
 
+**已记录的偏差**
+
+- **UI 帧率（用户 2026-11-04 裁定）**：滚动自检列表 ≥ 30 fps（实施计划的 UI 性能基准）仍是目标。Waveshare 2.16 在 AGENTS.md 第 5 节的内部 RAM 预算内实测达不到：关热点时程序滚动 22.7 fps，开热点时 28.2 fps；原因和每帧时间分布见 `docs/hardware/waveshare_amoled_216.md`"性能基准"一节。所以本板的验收线是"不低于记下的基准"，即关热点 22.7 fps、开热点 28.2 fps。以后改渲染路径时，按 AGENTS.md 第 4 节对比的也是这两个数；达到 30 fps 后改回 ≥ 30。
+
 ---
 
 ## 11. 风险与对策
