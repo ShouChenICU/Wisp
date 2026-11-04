@@ -180,7 +180,7 @@ return ui.screen {
 - 外观：`bg`、`fg`、`radius`、`border`、`font`（`xs`/`sm`/`md`/`lg`/`xl`/`xxl`）、`hidden`、`opa`。
 - 事件：`on_click`、`on_long_press`、`on_change`（输入类）。
 - 颜色写 `#RRGGBB` 或主题令牌：`accent`、`text`、`muted`、`surface`、`bg`、`danger`、`ok`、`warn`。子项目 7 的主题系统在这组令牌上扩展。
-- `pad = "safe"`：按安全区留边距。根节点 `ui.screen` 总是铺满屏幕并强制套上安全区内边距（AGENTS.md 第 3 节"屏幕形状"），场景无法关闭。
+- `pad = "safe"`：按安全区留边距。根节点 `ui.screen` 总是铺满屏幕并强制套上安全区内边距（AGENTS.md 第 3 节"屏幕形状"），场景无法关闭。其他节点上的 `"safe"` 不再额外留边距：根节点已经把内容收进安全区。
 - `ref = "名字"` 给节点命名，`ui.ref("名字")` 取得句柄，用于少量命令式操作（如读取输入框的值、滚动到某项）。
 
 ### 4.5 校验

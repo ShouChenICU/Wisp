@@ -73,6 +73,9 @@ using UiOp = std::variant<SetProp, Build, ListReset, ListRows, CanvasDraw, Scrol
 struct UiBatch {
     uint32_t instance = 0;
     os::LargeVector<UiOp> ops;
+    // Set on the batch that answers PatchQueue::take_refresh_request(): it
+    // re-sends every bound value (__wisp.refresh_all()).
+    bool refresh = false;
 };
 
 }  // namespace wisp::scene

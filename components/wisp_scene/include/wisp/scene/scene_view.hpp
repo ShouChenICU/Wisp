@@ -20,7 +20,8 @@
 //     from each edge of the screen to hal::safe_rect() (a larger pad is
 //     kept, a smaller one or "safe" raised to it), so content always
 //     starts inside the safe area (AGENTS.md section 3).
-//   - pad = "safe" on any other node is those same distances.
+//   - pad = "safe" on any other node adds no padding: the root's padding
+//     already keeps everything inside it in the safe area.
 //   - screen, column, scroll (direction "v") and list stack children
 //     vertically, row and scroll "h" horizontally (LVGL flex). `justify`
 //     places children along that direction, `align` across it.

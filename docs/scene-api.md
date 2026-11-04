@@ -46,7 +46,7 @@ Rules:
 | font | `xs`, `sm`, `md`, `lg`, `xl`, `xxl` |
 | align | `start`, `center`, `end` |
 | justify | `start`, `center`, `end`, `between`, `around`, `evenly` |
-| pad | integer pixels or `"safe"` (the screen's safe area) |
+| pad | integer pixels or `"safe"`: the safe area on `ui.screen`, no padding elsewhere (the screen already keeps its content in the safe area) |
 | enum | one of the listed words |
 | function | a function |
 | items | a table (an array), or a state holding one |

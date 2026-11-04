@@ -145,38 +145,152 @@ TEST_F(PatchQueueTest, DropsOtherInstances) {
     EXPECT_EQ(text(2), "mine");
 }
 
+// `count` SetProps of text `value` on labels first .. first + count - 1.
+UiBatch texts(uint32_t count, const char* value, bool refresh = false, uint32_t first = 2) {
+    UiBatch b;
+    b.instance = kInstance;
+    b.refresh = refresh;
+    for (uint32_t i = 0; i < count; ++i) b.ops.push_back(set(first + i, Prop::Text, str(value)));
+    return b;
+}
+
 TEST_F(PatchQueueTest, OverflowCollapsesToFullRefresh) {
     start();
     queue.submit(batch({tree(1)}));
     EXPECT_EQ(frame(), 1u);
     EXPECT_FALSE(queue.take_refresh_request());
 
-    UiBatch full;
-    full.instance = kInstance;
-    for (uint32_t i = 0; i < 1024; ++i) full.ops.push_back(set(i + 2, Prop::Text, str("v")));
-    queue.submit(std::move(full));
+    queue.submit(texts(1024, "v"));
     EXPECT_EQ(queue.pending(), 1024u);
     EXPECT_FALSE(queue.take_refresh_request());
 
+    // The backlog goes; the batch that overflowed it stays whole.
     queue.submit(batch({set(5000, Prop::Text, str("w"))}));
-    EXPECT_EQ(queue.pending(), 0u);
+    EXPECT_EQ(queue.pending(), 1u);
     EXPECT_TRUE(queue.take_refresh_request());
     EXPECT_FALSE(queue.take_refresh_request());
-    EXPECT_EQ(frame(), 0u);
+    EXPECT_EQ(frame(), 1u);
+    EXPECT_EQ(text(2), "");
+}
+
+TEST_F(PatchQueueTest, LoneLargeBatchIsAppliedWhole) {
+    start();
+    queue.submit(batch({tree(1500)}));
+    EXPECT_EQ(frame(), 1u);
+    queue.submit(texts(1500, "all"));
+    EXPECT_FALSE(queue.take_refresh_request());
+    EXPECT_EQ(queue.pending(), 1500u);
+    size_t applied = 0;
+    for (int i = 0; i < 30 && queue.pending() > 0; ++i) applied += frame();
+    EXPECT_EQ(applied, 1500u);
+    EXPECT_FALSE(queue.take_refresh_request());
+    EXPECT_EQ(text(2), "all");
+    EXPECT_EQ(text(1501), "all");
+}
+
+TEST_F(PatchQueueTest, RefreshOf1500BindingsTerminates) {
+    start();
+    queue.submit(batch({tree(1500)}));
+    EXPECT_EQ(frame(), 1u);
+    queue.submit(texts(1000, "stale"));
+    queue.submit(texts(100, "newer", false, 1002));
+    ASSERT_TRUE(queue.take_refresh_request());
+
+    // The scene task answers with every bound value; neither that batch
+    // nor the small ones that follow while it drains ask again.
+    int refreshes = 0;
+    queue.submit(texts(1500, "current", /*refresh=*/true));
+    for (int i = 0; i < 100 && queue.pending() > 0; ++i) {
+        if (i % 4 == 0) queue.submit(batch({set(2, Prop::Text, str("current"))}));
+        if (queue.take_refresh_request()) {
+            ++refreshes;
+            queue.submit(texts(1500, "current", true));
+        }
+        frame();
+    }
+    EXPECT_EQ(refreshes, 0);
+    EXPECT_EQ(queue.pending(), 0u);
+    EXPECT_FALSE(queue.take_refresh_request());
+    EXPECT_EQ(text(2), "current");
+    EXPECT_EQ(text(1501), "current");
 }
 
 TEST_F(PatchQueueTest, OverflowKeepsAPendingBuild) {
     start();
-    UiBatch b;
-    b.instance = kInstance;
-    b.ops.push_back(tree(2));
-    b.ops.push_back(set(2, Prop::Text, str("built")));
-    for (uint32_t i = 0; i < 1100; ++i) b.ops.push_back(Focus{i + 10});
-    queue.submit(std::move(b));
+    queue.submit(batch({tree(2), set(2, Prop::Text, str("built"))}));
+    UiBatch backlog;
+    backlog.instance = kInstance;
+    for (uint32_t i = 0; i < 1000; ++i) backlog.ops.push_back(set(i + 10, Prop::Text, str("x")));
+    queue.submit(std::move(backlog));
+    EXPECT_EQ(queue.pending(), 1001u);
+    queue.submit(texts(30, "y", false, 2000));
     EXPECT_TRUE(queue.take_refresh_request());
-    EXPECT_EQ(queue.pending(), 1u);
-    EXPECT_EQ(frame(), 1u);
+    EXPECT_EQ(queue.pending(), 31u);
+    EXPECT_EQ(frame(), 31u);
     EXPECT_EQ(text(2), "built");
+}
+
+TEST_F(PatchQueueTest, OverflowReplaysLastScrollAndFocusAfterTheRefresh) {
+    start("rect");
+    queue.submit(batch({UiOp{wisp::test::build({
+        node(1, 0, Widget::Screen),
+        node(3, 1, Widget::Scroll,
+             {{Prop::H, wisp::test::num(100)}, {Prop::W, wisp::test::num(200)}}),
+        node(4, 3, Widget::Label, {{Prop::H, wisp::test::num(80)}}),
+        node(5, 3, Widget::Label, {{Prop::H, wisp::test::num(80)}}),
+        node(6, 3, Widget::Label, {{Prop::H, wisp::test::num(80)}}),
+        node(7, 3, Widget::Label, {{Prop::H, wisp::test::num(80)}}),
+        node(8, 1, Widget::Input),
+        node(9, 1, Widget::Input),
+    })}}));
+    EXPECT_EQ(frame(), 1u);
+
+    UiBatch backlog;
+    backlog.instance = kInstance;
+    backlog.ops.push_back(ScrollTo{3, 1});
+    backlog.ops.push_back(Focus{8});
+    backlog.ops.push_back(ScrollTo{3, 3});
+    backlog.ops.push_back(Focus{9});
+    for (uint32_t i = 0; i < 1000; ++i) backlog.ops.push_back(set(i + 100, Prop::Text, str("x")));
+    queue.submit(std::move(backlog));
+    queue.submit(texts(30, "y"));
+    ASSERT_TRUE(queue.take_refresh_request());
+    EXPECT_EQ(queue.pending(), 30u);
+
+    // Replayed after the refresh, newest per node only.
+    UiBatch refresh;
+    refresh.instance = kInstance;
+    refresh.refresh = true;
+    refresh.ops.push_back(set(4, Prop::Text, str("r")));
+    queue.submit(std::move(refresh));
+    EXPECT_EQ(queue.pending(), 33u);
+    while (queue.pending() > 0) frame();
+    on_ui([&] {
+        ASSERT_NE(layer->keyboard(), nullptr);
+        EXPECT_EQ(lv_keyboard_get_textarea(layer->keyboard()), view->object(9));
+        lv_obj_update_layout(view->screen());
+        lv_area_t box, child;
+        lv_obj_get_coords(view->object(3), &box);
+        lv_obj_get_coords(view->object(7), &child);
+        EXPECT_LE(child.y2, box.y2);
+        EXPECT_GE(child.y1, box.y1);
+    });
+}
+
+TEST_F(PatchQueueTest, ABuildSupersedesWhatIsQueuedBeforeIt) {
+    start();
+    queue.submit(batch({tree(3)}));
+    queue.submit(texts(3, "old"));
+    queue.submit(batch({ScrollTo{1, 0}}));
+    queue.submit(batch({tree(2), set(2, Prop::Text, str("new"))}));
+    EXPECT_EQ(queue.pending(), 1u);
+    // Another instance's ops are left for apply_frame() to drop.
+    queue.submit(batch({set(2, Prop::Text, str("other"))}, 7));
+    queue.submit(batch({tree(2)}));
+    EXPECT_EQ(queue.pending(), 2u);
+    EXPECT_EQ(frame(), 1u);
+    EXPECT_EQ(text(2), "");
+    EXPECT_EQ(text(4), "<none>");
 }
 
 TEST_F(PatchQueueTest, ClearDropsEverything) {

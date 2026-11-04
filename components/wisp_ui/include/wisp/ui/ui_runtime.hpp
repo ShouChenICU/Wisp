@@ -65,7 +65,9 @@ const lv_font_t* default_font();
 // font still shows, at 16 px) and drawn through the same A8 glyph cache.
 // Sizes between steps take the step below; anything under 16 takes 16.
 // Each wrapper is built on first use and kept. UI thread only: building
-// a wrapper is not thread-safe (a8_font.hpp).
+// a wrapper is not thread-safe (a8_font.hpp). It cannot race with
+// default_font(), which UiRuntime::start() builds before the UI task
+// runs; after that, default_font() only returns what it built.
 const lv_font_t* font(int px);
 
 // Runs a single-threaded LVGL 9.5 instance over a wisp::hal::Display (and,

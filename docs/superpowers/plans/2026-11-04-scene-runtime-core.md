@@ -765,7 +765,7 @@ lv_color_t theme_color(std::string_view token_or_hex);   // accent #4F9DFF, text
 const lv_font_t* theme_font(std::string_view size);      // 只转发：xs/sm/md -> ui::font(16)，lg 24，xl 32，xxl 48
 ```
 
-- 根节点：`screen` 铺满屏幕，内边距强制为 `safe_rect` 到屏幕四边的距离（场景给的 `pad` 只能更大），`pad = "safe"` 的其他节点同样处理。`Build` 一次计 1 条，与它同批的 `SetProp` 随 `Build` 一起应用、不计入上限。`input` 聚焦时调 `SystemLayer::show_keyboard()`，`Change` 事件带当前文本。`ScrollTo` 滚动 `scroll`/`list` 使第 `index` 个子项（`list` 按 `index * row_h`）可见；`Focus` 对 `input` 做 `lv_group_focus_obj` 并调 `show_keyboard()`，节点已不存在时忽略。
+- 根节点：`screen` 铺满屏幕，内边距强制为 `safe_rect` 到屏幕四边的距离（场景给的 `pad` 只能更大），其他节点的 `pad = "safe"` 不额外留边距（根节点已经把内容收进安全区）。`Build` 一次计 1 条，与它同批的 `SetProp` 随 `Build` 一起应用、不计入上限。`input` 聚焦时调 `SystemLayer::show_keyboard()`，`Change` 事件带当前文本。`ScrollTo` 滚动 `scroll`/`list` 使第 `index` 个子项（`list` 按 `index * row_h`）可见；`Focus` 对 `input` 做 `lv_group_focus_obj` 并调 `show_keyboard()`，节点已不存在时忽略。
 
 - [ ] **Step 1: 写失败的测试**
 

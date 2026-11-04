@@ -65,7 +65,9 @@ TEST_F(SceneView, RootForcesSafePadding) {
         EXPECT_EQ(lv_obj_get_width(screen), 480);
         EXPECT_EQ(lv_obj_get_height(screen), 480);
         EXPECT_EQ(pads(screen), (Pads{71, 71, 71, 71}));
-        EXPECT_EQ(pads(view->object(2)), (Pads{71, 71, 71, 71}));
+        // Inside the root, "safe" adds nothing: the root already keeps
+        // its content in the safe area.
+        EXPECT_EQ(pads(view->object(2)), (Pads{0, 0, 0, 0}));
         EXPECT_EQ(pads(view->object(3)), (Pads{8, 8, 8, 8}));
     });
 
@@ -80,6 +82,65 @@ TEST_F(SceneView, RootForcesSafePadding) {
     // A wrong type is ignored rather than dropping the safe padding.
     apply(set(1, Prop::Pad, PropValue{true}));
     on_ui([&] { EXPECT_EQ(pads(view->screen()), (Pads{71, 71, 71, 71})); });
+}
+
+// The spec's counter example: screen > column { pad = "safe" }.
+TEST_F(SceneView, SafeColumnGetsTheWholeSafeArea) {
+    start("circle");
+    apply(build({node(1, 0, Widget::Screen),
+                 node(2, 1, Widget::Column,
+                      {{Prop::Pad, str("safe")}, {Prop::W, str("fill")}, {Prop::H, str("fill")}}),
+                 node(3, 2, Widget::Label, {{Prop::Text, str("hi")}})}));
+    on_ui([&] {
+        lv_obj_update_layout(view->screen());
+        lv_obj_t* col = view->object(2);
+        EXPECT_EQ(lv_obj_get_content_width(col), 338);
+        EXPECT_EQ(lv_obj_get_content_height(col), 338);
+        lv_area_t a;
+        lv_obj_get_coords(col, &a);
+        EXPECT_EQ(a.x1, 71);
+        EXPECT_EQ(a.y1, 71);
+        lv_obj_get_coords(view->object(3), &a);
+        EXPECT_EQ(a.x1, 71);
+        EXPECT_EQ(a.y1, 71);
+    });
+
+    // As the spec writes it, content-sized and centred.
+    apply(
+        build({node(10, 0, Widget::Screen),
+               node(11, 10, Widget::Column,
+                    {{Prop::Pad, str("safe")}, {Prop::Gap, num(12)}, {Prop::Align, str("center")}}),
+               node(12, 11, Widget::Label, {{Prop::Text, str("hi")}})}));
+    on_ui([&] {
+        lv_obj_update_layout(view->screen());
+        EXPECT_EQ(lv_obj_get_content_width(view->screen()), 338);
+        EXPECT_EQ(lv_obj_get_content_height(view->screen()), 338);
+        EXPECT_EQ(pads(view->object(11)), (Pads{0, 0, 0, 0}));
+        lv_area_t a;
+        lv_obj_get_coords(view->object(12), &a);
+        EXPECT_EQ(a.x1, 71);
+        EXPECT_EQ(a.y1, 71);
+    });
+}
+
+TEST_F(SceneView, UnsetSizeRestoresTheWidgetDefault) {
+    start();
+    apply(build({node(1, 0, Widget::Screen),
+                 node(2, 1, Widget::Label, {{Prop::W, num(100)}, {Prop::Text, str("x")}}),
+                 node(3, 1, Widget::Slider, {{Prop::W, str("fill")}})}));
+    int32_t slider_default = 0;
+    on_ui([&] {
+        lv_obj_t* probe = lv_slider_create(view->screen());
+        slider_default = lv_obj_get_style_width(probe, LV_PART_MAIN);
+        lv_obj_delete(probe);
+        EXPECT_EQ(lv_obj_get_style_width(view->object(2), LV_PART_MAIN), 100);
+    });
+    apply(set(2, Prop::W, PropValue{}));
+    apply(set(3, Prop::W, PropValue{}));
+    on_ui([&] {
+        EXPECT_EQ(lv_obj_get_style_width(view->object(2), LV_PART_MAIN), LV_SIZE_CONTENT);
+        EXPECT_EQ(lv_obj_get_style_width(view->object(3), LV_PART_MAIN), slider_default);
+    });
 }
 
 TEST_F(SceneView, RootOfARectScreenNeedsNoPadding) {

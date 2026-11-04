@@ -773,6 +773,11 @@ void SceneView::apply_size(Node& n) {
     int32_t grow = n.grow;
     const auto set_axis = [&](const Size& s, bool horizontal) {
         const bool main = (axis == Flow::Row) == horizontal && axis != Flow::None;
+        // Without a local size the widget's class default applies again.
+        const auto unset = [&] {
+            lv_obj_remove_local_style_prop(n.obj, horizontal ? LV_STYLE_WIDTH : LV_STYLE_HEIGHT,
+                                           LV_PART_MAIN);
+        };
         switch (s.kind) {
             case SizeKind::Px:
                 horizontal ? lv_obj_set_width(n.obj, s.px) : lv_obj_set_height(n.obj, s.px);
@@ -784,12 +789,15 @@ void SceneView::apply_size(Node& n) {
             case SizeKind::Fill:
                 if (main) {
                     if (grow < 0) grow = 1;
-                } else if (!in_grid) {
+                } else if (in_grid) {
+                    unset();
+                } else {
                     horizontal ? lv_obj_set_width(n.obj, lv_pct(100))
                                : lv_obj_set_height(n.obj, lv_pct(100));
                 }
                 break;
             case SizeKind::Unset:
+                unset();
                 break;
         }
     };
@@ -805,7 +813,12 @@ void SceneView::apply_pad(Node& n) {
     Insets pad;
     const bool root = n.id == root_;
     if (n.pad_given) {
-        pad = n.pad_safe ? safe_ : Insets{n.pad, n.pad, n.pad, n.pad};
+        // Below the root, "safe" adds nothing: the root's own padding
+        // already keeps everything inside it in the safe area.
+        if (!n.pad_safe)
+            pad = Insets{n.pad, n.pad, n.pad, n.pad};
+        else if (root)
+            pad = safe_;
     } else if (!root) {
         // Keeps the widget's own padding (a button's, an input's).
         if (is_layout(n.widget) || n.widget == Widget::Spacer || n.widget == Widget::List) return;

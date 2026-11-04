@@ -13,15 +13,27 @@
 // Coalescing: a SetProp for a (node, prop) that already has an unapplied
 // SetProp of the same instance replaces that one's value in place, as
 // long as no other op was queued after it; the queue then holds one op
-// for both.
+// for both. The value moves ahead of SetProps for other props queued in
+// between, so if a frame boundary falls there, one frame can show a mix
+// of values the scene never had at once; the next frame catches up.
 //
-// Overflow: when more than `max_pending` ops wait, the SetProps, ScrollTos
-// and Focuses waiting are dropped, and everything before the last waiting
-// Build (which replaces the whole tree anyway); if that still leaves too
-// many, only that Build stays. take_refresh_request() then reports true
-// once, and the scene task re-sends every bound value
-// (__wisp.refresh_all()), which brings the dropped SetProps back at their
-// current values. A dropped ScrollTo or Focus is not repeated.
+// A Build replaces the whole tree, so it drops every op of its instance
+// queued before it.
+//
+// Overflow is about a backlog, never about one batch: a batch is always
+// queued whole (its size is already capped by kMaxBatchBytes) and applied
+// over as many frames as it takes. Only when ops left over from earlier
+// batches and the new batch together pass `max_pending` is the backlog
+// (the earlier part) collapsed: its SetProps go, everything before its
+// last Build goes, and of its ScrollTos and Focuses only the newest per
+// node (one Focus in all) is kept aside. If what remains of it is still
+// over `max_pending`, only that Build stays. take_refresh_request() then
+// reports true once, and the scene task answers with a batch marked
+// UiBatch::refresh that re-sends every bound value
+// (__wisp.refresh_all()); the kept ScrollTos and Focuses are queued
+// right after it. A refresh batch never counts towards an overflow, so
+// answering one can never ask for another, however many bindings the
+// scene has.
 //
 // Everything queued lives in PSRAM (spec 2.3).
 
@@ -63,6 +75,7 @@ private:
         uint32_t instance = 0;
         UiOp op;
         os::LargeVector<UiOp> with;  // the SetProps that came with a Build
+        bool refresh = false;        // from a refresh batch: not counted for overflow
     };
     using Items = std::deque<Item, os::LargeAllocator<Item>>;
     // (instance, node, prop) -> sequence number of its unapplied SetProp.
@@ -81,8 +94,12 @@ private:
     using Index = std::unordered_map<Key, uint64_t, KeyHash, std::equal_to<Key>,
                                      os::LargeAllocator<std::pair<const Key, uint64_t>>>;
 
-    void push_locked(Item item);
-    void collapse_locked();
+    // Drops every queued and kept-aside op of `instance`.
+    void drop_instance_locked(uint32_t instance);
+    // Collapses items_[0, end) (see Overflow above).
+    void collapse_locked(size_t end);
+    void keep_aside_locked(Item item);
+    void count_locked();
 
     const size_t per_frame_;
     const size_t max_pending_;
@@ -90,6 +107,10 @@ private:
     Items items_;
     Index index_;
     uint64_t head_seq_ = 0;  // sequence number of items_.front()
+    size_t counted_ = 0;     // items_ not from a refresh batch
+    // ScrollTos and Focuses kept from a collapse, queued after the
+    // refresh batch.
+    os::LargeVector<Item> aside_;
     bool refresh_ = false;
 };
 

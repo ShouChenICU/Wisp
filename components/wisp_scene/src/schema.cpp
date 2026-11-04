@@ -384,7 +384,8 @@ std::string schema_markdown() {
     append_list(out, kJustifies);
     out +=
         " |\n"
-        "| pad | integer pixels or `\"safe\"` (the screen's safe area) |\n"
+        "| pad | integer pixels or `\"safe\"`: the safe area on `ui.screen`, no padding "
+        "elsewhere (the screen already keeps its content in the safe area) |\n"
         "| enum | one of the listed words |\n"
         "| function | a function |\n"
         "| items | a table (an array), or a state holding one |\n"
