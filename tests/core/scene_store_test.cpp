@@ -1018,6 +1018,32 @@ TEST(SceneStore, ClosedStoreStopsRetrying) {
     EXPECT_EQ(str(again->kv_get("a")), "2");
 }
 
+// A timer job queued before close() but run after it must not write: the
+// final flush already took (or gave back) its lines, and a store reopened
+// on the directory owns it now.
+TEST(SceneStore, TimerJobQueuedBeforeCloseIsSkipped) {
+    Harness h;
+    h.sync_io = false;
+    std::error_code ec;
+    fs::create_directories(h.dir() / "kv.log" / "x", ec);  // unwritable
+    auto s = h.open();
+    ASSERT_TRUE(s->kv_set("a", "1"));
+    ASSERT_EQ(h.timers.size(), 1u);
+    Result<void> final_flush = Result<void>::ok();
+    s->flush([&](Result<void> r) { final_flush = std::move(r); });
+    h.fire_timers();  // queues the timer's job behind the final flush
+    ASSERT_EQ(h.queued.size(), 2u);
+    s->close();
+    auto jobs = std::move(h.queued);
+    h.queued.clear();
+    jobs[0]();  // the final flush fails
+    EXPECT_FALSE(final_flush);
+    fs::remove_all(h.dir() / "kv.log", ec);  // storage recovers
+    jobs[1]();
+    EXPECT_FALSE(on_disk(h.dir() / "kv.log"));
+    EXPECT_TRUE(h.timers.empty());
+}
+
 TEST(SceneStore, ExplicitFlushKeepsOneRetryChain) {
     Harness h;
     std::error_code ec;

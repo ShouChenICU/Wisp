@@ -1671,7 +1671,7 @@ void SceneStore::flush(std::function<void(Result<void>)> done) {
     }
     auto self = shared_from_this();
     std::function<void(Result<void>)> on_done = done;
-    if (!impl_->deps.submit_io([self, done = std::move(done)] { self->flush_job(done); })) {
+    if (!impl_->deps.submit_io([self, done = std::move(done)] { self->flush_job(done, false); })) {
         WLOG_W(kTag, "%s: flush not queued", impl_->dir.c_str());
         if (on_done) {
             on_done(Result<void>::err(ErrorCode::Busy, "io_queue_full"));
@@ -1723,17 +1723,26 @@ void SceneStore::on_timer() {
         impl_->timer_armed = false;
     }
     auto self = shared_from_this();
-    if (!impl_->deps.submit_io([self] { self->flush_job({}); })) {
+    if (!impl_->deps.submit_io([self] { self->flush_job({}, true); })) {
         WLOG_W(kTag, "%s: flush not queued", impl_->dir.c_str());
         schedule_retry();
     }
 }
 
-void SceneStore::flush_job(const std::function<void(Result<void>)>& done) {
+void SceneStore::flush_job(const std::function<void(Result<void>)>& done, bool from_timer) {
     Impl& m = *impl_;
     Result<void> result = Result<void>::ok();
     {
         std::lock_guard<os::Mutex> io(m.io_mu);
+        if (from_timer) {
+            // Queued before close() and run after it: the final flush
+            // already took the lines, or gave back the ones it could not
+            // write, and those now belong to nobody (see close()).
+            std::lock_guard<os::Mutex> lock(m.mu);
+            if (m.closed) {
+                return;
+            }
+        }
         std::vector<FlushItem> items;
         bool batch = false;
         {

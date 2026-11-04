@@ -181,7 +181,8 @@ public:
     // Stops the store for good: a timer or retry that fires afterwards
     // does nothing, and writes and flush() fail with StorageUnavailable
     // "closed". A flush job already queued still runs, so what was written
-    // before close() and taken by that job still reaches the disk. The
+    // before close() and taken by that job still reaches the disk; a job
+    // the coalescing timer or a retry queued does nothing. The
     // scene host calls it after the final flush() when a scene exits; a
     // store reopened on the same directory then owns it alone. Anything
     // that final flush could not write is lost, and its `done` says so.
@@ -198,7 +199,9 @@ private:
     void arm_timer(uint32_t delay_ms);
     void schedule_retry();
     void on_timer();
-    void flush_job(const std::function<void(Result<void>)>& done);
+    // `from_timer`: queued by on_timer(); such a job does nothing once the
+    // store is closed, while a flush() job still runs.
+    void flush_job(const std::function<void(Result<void>)>& done, bool from_timer);
 };
 
 }  // namespace wisp::core
