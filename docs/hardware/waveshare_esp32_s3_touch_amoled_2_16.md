@@ -297,8 +297,9 @@ fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致�
 | 最初：同步 flush，一块 48 行缓冲，CPU 交换字节 | 10.6 | — | 8.6–8.8 | fps 9，cpu 100，flush_ms 4.2–4.4 | 105.2 KB |
 | 异步 flush，两块 24 行缓冲，按面板字节序渲染，XIP，`LV_OBJ_STYLE_CACHE` | 19.8–20.4 | 11.8–12.2 | 14.8 | fps 20，cpu 100，flush_ms 0.22–0.23 | 103.3 KB |
 | **现在**：再加上二维码按屏幕格式存、跳过被不透明卡片挡住的区域、默认字体缓存 8 位字形、S3 SIMD 填充/拷贝、内联的带遮罩填充 | **22.7** | **28.2** | 15.8 | fps 22–23（热点 28），cpu 97–100，flush_ms 0.24–0.27 | 103.1 KB |
+| LVGL 堆改到 PSRAM（`LV_STDLIB_CUSTOM`，`wisp/ui/lv_heap.hpp`）；STA 连着家里的 Wi-Fi，"热点"一列是 STA + 热点 | 21.8 | 27.7 | — | fps 22（热点 28），cpu 97–100，flush_ms 0.23–0.27 | 98.8–99.8 KB |
 
-静止时自检界面仍然是 10 fps（它每 100 ms 刷新约 7 个标签）：`WISP_PERF` cpu 22–23、flush_ms 0.70–0.87；开热点后 cpu 24–25、flush_ms 0.22–0.25。`boot_ms` 1826–1828。XIP 要在启动时把镜像拷进 PSRAM，app 开始运行的时刻从 960 ms 推迟到 1042 ms（ESP 日志里 `Pro cpu start user code` 的时间戳），还占用 3.1 MB PSRAM。默认字体的 8 位字形缓存在 PSRAM 里，上限 512 KB（`components/wisp_ui/src/a8_font.hpp`）。
+静止时自检界面仍然是 10 fps（它每 100 ms 刷新约 7 个标签）：`WISP_PERF` cpu 22–23、flush_ms 0.70–0.87；开热点后 cpu 24–25、flush_ms 0.22–0.25。LVGL 堆改到 PSRAM 之后（STA 连着网络）：cpu 22–24，开热点后 25–26，UI 任务真实占用的 CPU 不变（见下方"LVGL 堆"）。`boot_ms` 1826–1828。XIP 要在启动时把镜像拷进 PSRAM，app 开始运行的时刻从 960 ms 推迟到 1042 ms（ESP 日志里 `Pro cpu start user code` 的时间戳），还占用 3.1 MB PSRAM。默认字体的 8 位字形缓存在 PSRAM 里，上限 512 KB（`components/wisp_ui/src/a8_font.hpp`）。
 
 **静止 cpu 对代码布局敏感**：链接时排在 LVGL 前面的组件（`wisp_port_esp`、`main`、`wisp_app`、`wisp_admin`、`wisp_ui`）多出 1–3 KB 代码，就会把整个 LVGL 挪位，16 KB 指令 cache 里的冲突随之改变。同一界面、同样的缓冲，实测静止 cpu 在 24 和 33 之间跳动，fps 不变。所以改了这些组件要重测 `WISP_PERF`；不在渲染路径上的新代码优先放进链接在 LVGL 之后的组件（如 `wisp_hal`、`wisp_core`）。
 
@@ -351,6 +352,33 @@ fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致�
 - 减少滚动区域里的对象和标签数（界面设计层面的取舍）。
 
 开热点时已经到 28.2 fps：配网卡片挡住了一半列表，每帧要画的像素更少。
+
+### LVGL 堆
+
+LVGL 的堆放在 PSRAM（`LV_STDLIB_CUSTOM`，`components/wisp_ui/src/lv_mem_wisp.cpp`），启动后内部 RAM 比用 CLIB `malloc` 时多约 17 KB，STA + 热点的 `min` 从 39.7 KB 升到 56.8–57.2 KB（正式固件实测）。没有 PSRAM 或 PSRAM 用完时退回内部 RAM，这部分用 `wisp::ui::lv_heap_internal_bytes()` 单独计数。
+
+改到 PSRAM 后曾测到静止 cpu 高约 11 个点、滚动帧率低 0.16–0.47 fps。复测发现这两个数都不是堆造成的：
+
+- **`WISP_PERF` 的 cpu 不是 CPU 时间。** 它是 `lv_timer_handler()` 里度过的墙钟时间，包括等 flush 等阻塞。同一个固件每次启动都不一样，启动后就固定下来：用 CLIB 堆的固件静止时 8 次启动在 23 到 29 之间，而用 FreeRTOS 运行时统计量的 `wisp_ui` 任务 CPU 每次都是 11.6–11.9%。另外，滚动测试结束时列表停的位置取决于帧数，停在不同位置时静止重画的标签不同，"滚动之后"的静止 cpu 就不可比。把列表滚回顶部再测，所有方案的 UI 任务 CPU 都一样（见下表）。
+- **帧率差在代码布局的噪声以内。** 同一个固件反复测，raw fps 相差不到 0.05；但只改测试命令、重新链接一次，同样用 CLIB 堆的固件就从 22.31 变成 21.64（热点 28.51 → 27.97）。代码从 PSRAM 执行，约三分之一的周期在等取指（见上文），函数位置一变指令 cache 的冲突就变。几种堆方案之间的差别（±0.35 fps）都比这小，而且换一次链接排序就会倒过来。
+
+测法：临时的程序滚动命令（同上，每帧 6 px，30 s），外加一条用 `uxTaskGetSystemState()` 统计 12 s 内各任务 CPU 时间的命令（临时打开 `CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS`，所以下表的内部 RAM 比正式固件低约 9 KB）。STA 一直连着家里的 Wi-Fi，"热点"指 STA + 热点。每个方案测两遍，同一组的固件除堆以外完全相同：
+
+| LVGL 堆 | raw fps | raw fps（热点） | UI 任务 CPU：静止 / 静止（热点） | 启动后内部 RAM | STA + 热点 `min` | 启动后 PSRAM |
+|---|---|---|---|---|---|---|
+| CLIB `malloc`（改之前） | 21.64 / 21.64 | 27.97 / 27.96 | 11.9% / 15.0–15.2% | 72.3–72.9 KB | 39.8 KB | 5,106 KB |
+| PSRAM（现在） | 21.84 / 21.80 | 27.68 / 27.67 | 12.1–12.2% / 15.3–15.4% | 89.5–90.0 KB | 46.2–46.6 KB | 5,084 KB |
+| LVGL 自带的 TLSF，512 KB 池在 PSRAM | 21.99 / 21.98 | 27.86 / 27.87 | 11.7–12.0% / 15.2% | 89.3–89.8 KB | 47.0 KB | 4,580 KB |
+
+另一组固件上试过的混合方案（这一组 CLIB 是 22.31 / 28.51，PSRAM 是 21.83–21.88 / 27.63–27.76）：
+
+| 方案 | raw fps | raw fps（热点） | 启动后内部 RAM | STA + 热点 `min` |
+|---|---|---|---|---|
+| 渲染期间（`RENDER_START` 到 `RENDER_READY`）≤ 512 字节的块放内部 RAM | 21.78–21.79 | 27.61–27.62 | 89.4–90.0 KB | 46.6–46.8 KB |
+| ≤ 256 字节的块放内部 RAM | 21.90–21.92 | 27.79–27.81 | 71.9–72.0 KB | 39.7 KB |
+| ≤ 16 KB 的块放内部 RAM（等于 CLIB 的规则，单次） | 22.08 | 28.04 | 67.4 KB | 39.7 KB |
+
+结论：保留 PSRAM 堆。TLSF 不更快，而且 LVGL 9.5 不会自己扩池（`LV_MEM_POOL_EXPAND_SIZE` 只放宽单个池和单块的上限），固定的池装不下 2000 个控件的场景（主机上约 300 字节/控件），截图用的 690–920 KB 绘制缓冲也要另外处理。把块放回内部 RAM 的方案要么没有收益，要么把 17 KB 的收益吃回去。
 
 ## 验收第 5 条：待机耗电实测
 
