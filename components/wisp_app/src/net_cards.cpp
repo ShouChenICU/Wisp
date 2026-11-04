@@ -83,6 +83,33 @@ std::string spaced_code(std::string_view code) {
     return std::string(code.substr(0, 3)) + " " + std::string(code.substr(3));
 }
 
+bool flatten_qr(lv_obj_t* qr, lv_color_format_t cf) {
+    if (cf != LV_COLOR_FORMAT_RGB565 && cf != LV_COLOR_FORMAT_RGB565_SWAPPED) return false;
+    lv_draw_buf_t* indexed = lv_canvas_get_draw_buf(qr);
+    if (indexed == nullptr || indexed->header.cf != LV_COLOR_FORMAT_I1) return false;
+    const uint32_t w = indexed->header.w;
+    const uint32_t h = indexed->header.h;
+    lv_draw_buf_t* flat = lv_draw_buf_create(w, h, cf, LV_STRIDE_AUTO);
+    if (flat == nullptr) return false;
+    // I1 keeps its two-entry palette ahead of the pixels; a set bit
+    // (most significant first) is a dark module. Black and white read the
+    // same in either byte order.
+    const uint8_t* bits = indexed->data + 2 * sizeof(lv_color32_t);
+    for (uint32_t y = 0; y < h; ++y) {
+        const uint8_t* src = bits + y * indexed->header.stride;
+        auto* dst = reinterpret_cast<uint16_t*>(flat->data + y * flat->header.stride);
+        for (uint32_t x = 0; x < w; ++x) {
+            const bool dark = (src[x / 8] >> (7 - x % 8)) & 1;
+            dst[x] = dark ? 0x0000 : 0xFFFF;
+        }
+    }
+    // lv_canvas_set_draw_buf() drops the old buffer from the image cache,
+    // so it can be freed here; the widget's destructor frees the new one.
+    lv_canvas_set_draw_buf(qr, flat);
+    lv_draw_buf_destroy(indexed);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // ProvisioningCard
 
@@ -106,6 +133,9 @@ void ProvisioningCard::open(const net::ApSession& session, const hal::Area& safe
     if (lv_qrcode_update(qr, payload.data(), static_cast<uint32_t>(payload.size())) !=
         LV_RESULT_OK) {
         WLOG_W("net_ui", "QR code could not be drawn; hotspot details are shown as text");
+    } else if (!flatten_qr(qr, lv_display_get_color_format(lv_obj_get_display(qr)))) {
+        // Still correct, only slower to draw.
+        WLOG_W("net_ui", "QR code kept as an indexed image");
     }
 
     add_text(card_, ui::tr_fill(ui::StrId::Hotspot, session.ssid));

@@ -359,6 +359,91 @@ TEST(NetUi, ProvisioningCardShowsQrAndFitsSafeArea) {
     }
 }
 
+// The QR code's modules as the widget draws them: one bool per pixel,
+// true for dark (an I1 draw buf, palette first, bit set = dark).
+std::vector<bool> qr_modules(lv_obj_t* qr) {
+    const lv_draw_buf_t* buf = lv_canvas_get_draw_buf(qr);
+    std::vector<bool> dark;
+    if (buf == nullptr || buf->header.cf != LV_COLOR_FORMAT_I1) return dark;
+    const uint8_t* bits = buf->data + 8;
+    for (uint32_t y = 0; y < buf->header.h; ++y) {
+        for (uint32_t x = 0; x < buf->header.w; ++x) {
+            dark.push_back((bits[y * buf->header.stride + x / 8] >> (7 - x % 8)) & 1);
+        }
+    }
+    return dark;
+}
+
+// Describes the first pixel of `qr`'s 16-bit draw buf (in `cf`) that is
+// not black where `dark` says so, or white elsewhere; "" if all match.
+std::string check_flat_qr(lv_obj_t* qr, const std::vector<bool>& dark, lv_color_format_t cf) {
+    const lv_draw_buf_t* buf = lv_canvas_get_draw_buf(qr);
+    if (buf == nullptr) return "no draw buf";
+    if (buf->header.cf != cf) return "format " + std::to_string(buf->header.cf);
+    const uint32_t w = buf->header.w;
+    if (dark.size() != static_cast<size_t>(w) * buf->header.h) return "size changed";
+    for (uint32_t y = 0; y < buf->header.h; ++y) {
+        const auto* row = reinterpret_cast<const uint16_t*>(buf->data + y * buf->header.stride);
+        for (uint32_t x = 0; x < w; ++x) {
+            const uint16_t want = dark[y * w + x] ? 0x0000 : 0xFFFF;
+            if (row[x] != want) {
+                return "pixel " + std::to_string(x) + "," + std::to_string(y) + " is " +
+                       std::to_string(row[x]);
+            }
+        }
+    }
+    return "";
+}
+
+// The QR code never changes while the card is open, so it is stored in
+// the display's own 16-bit format: drawing it each frame is then a copy
+// rather than an indexed-colour decode (which halved the frame rate while
+// scrolling under the card).
+TEST(NetUi, QrCodeIsFlattenedToTheDisplayFormat) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start());
+    for (lv_color_format_t cf : {LV_COLOR_FORMAT_RGB565, LV_COLOR_FORMAT_RGB565_SWAPPED}) {
+        SCOPED_TRACE(std::to_string(cf));
+        std::string problem = run_on_ui_thread(h.app->ui(), [&] {
+            lv_obj_t* qr = lv_qrcode_create(lv_layer_top());
+            lv_qrcode_set_size(qr, 87);
+            lv_qrcode_set_quiet_zone(qr, true);
+            const std::string payload = wisp::app::wifi_qr_payload("Wisp-3F2A", "secret12");
+            lv_qrcode_update(qr, payload.data(), static_cast<uint32_t>(payload.size()));
+            const std::vector<bool> dark = qr_modules(qr);
+            std::string result;
+            if (dark.empty())
+                result = "QR code is not I1";
+            else if (!wisp::app::flatten_qr(qr, cf))
+                result = "flatten_qr failed";
+            else
+                result = check_flat_qr(qr, dark, cf);
+            lv_obj_delete(qr);
+            return result;
+        });
+        EXPECT_EQ(problem, "");
+    }
+}
+
+TEST(NetUi, ProvisioningCardQrUsesTheDisplayFormat) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+    ASSERT_TRUE(wait_until([&] { return qr_shown(h); }, 3000));
+    std::string problem = run_on_ui_thread(h.app->ui(), [] {
+        lv_obj_t* qr = find_obj_of_class(lv_layer_top(), &lv_qrcode_class);
+        const lv_draw_buf_t* buf = lv_canvas_get_draw_buf(qr);
+        const lv_color_format_t want = lv_display_get_color_format(lv_obj_get_display(qr));
+        if (buf == nullptr) return std::string("no draw buf");
+        if (buf->header.cf != want) {
+            return "QR in format " + std::to_string(buf->header.cf) + ", display " +
+                   std::to_string(want);
+        }
+        return std::string();
+    });
+    EXPECT_EQ(problem, "");
+}
+
 TEST(NetUi, ProvisioningCardClosesWhenTheHotspotStopsElsewhere) {
     UiNetHarness h;
     ASSERT_TRUE(h.start());

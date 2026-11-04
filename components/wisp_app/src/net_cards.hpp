@@ -40,6 +40,15 @@ std::string wifi_qr_payload(std::string_view ssid, std::string_view password);
 // other length comes back unchanged.
 std::string spaced_code(std::string_view code);
 
+// Replaces the drawn QR code `qr` (an lv_qrcode after a successful
+// lv_qrcode_update(); its draw buf is I1) with the same pixels in `cf`,
+// which must be LV_COLOR_FORMAT_RGB565 or LV_COLOR_FORMAT_RGB565_SWAPPED:
+// dark modules black, light ones white, whatever colours were set. The
+// widget then draws by copying rather than decoding an indexed image on
+// every frame. Must run on the UI thread; false (and `qr` unchanged) if
+// the buffer cannot be allocated or `qr` holds no I1 image.
+bool flatten_qr(lv_obj_t* qr, lv_color_format_t cf);
+
 class ProvisioningCard {
 public:
     // `on_stop` runs (on the UI thread) when the card's stop button is
