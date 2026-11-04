@@ -153,8 +153,8 @@
 4. 屏幕、触摸、音频编解码器、SD 卡由 esp_board_manager 的设备初始化（YAML 参照 ESP-Claw 中已验证的同款板定义，Apache-2.0，需标注来源）；IMU、PMU、RTC、按键、内置 LittleFS 由 Wisp 自己的驱动初始化，挂在 bmgr 提供的 I2C 总线上。
 5. `hal::Button` 只提供电平 `pressed()`；短按/长按由可移植的 `ButtonService` 统一判定（长按阈值 1000 ms）。
 6. 版本锁定：ESP-IDF **v6.0.3**，LVGL **9.5.0**。
-7. 字体：`lv_font_montserrat_16` 为主字体，回退到 `lv_font_cjk_16`（16 px、4bpp；GB2312 ∪ 日文假名与符号 ∪ JIS X 0208 第一水准汉字，由 `tools/gen_cjk_font.py` 从上游 Noto Sans CJK SC 生成，见连接 spec 8.3 与 `docs/references.md`）。
+7. 字体：`lv_font_montserrat_16` 为主字体，回退到 `lv_font_cjk_16`（16 px、4bpp；GB2312 ∪ 日文假名与符号 ∪ JIS X 0208 第一水准汉字，由 `tools/gen_cjk_font.py` 从上游 Noto Sans CJK SC 生成，见连接 spec 8.3 与 `docs/references.md`）。`UiRuntime::default_font()` 返回的是这两个字体外面再包一层 8 位字形缓存（`components/wisp_ui/src/a8_font.cpp`，`Mem::Large`，上限 512 KB），字形第一次画时展开，之后走 LVGL 的静态 A8 位图路径，画出来与原字体逐像素相同。
 8. 模拟器截图用自带的极简 PNG 编码器（未压缩 deflate），不引入第三方图像库。
-9. 新增性能监视（spec 未要求）：`UiRuntime` 自行统计 FPS、UI 线程占用率、平均刷新耗时；自检界面显示，每 5 s 输出一行 `WISP_PERF <json>`；可选开启 LVGL 自带的 sysmon 浮层。作为后续场景运行时的性能回归基准。
+9. 新增性能监视（spec 未要求）：`UiRuntime` 自行统计 FPS、UI 线程占用率、平均刷新耗时；自检界面显示，每 5 s 输出一行 `WISP_PERF <json>`；可选开启 LVGL 自带的 sysmon 浮层。作为后续场景运行时的性能回归基准。盖在内容上面的不透明卡片（`lv_layer_top()` 上的确认框、配网卡片、配对卡片）用 `ui::mark_opaque_overlay()`（`wisp/ui/overlay.hpp`）登记：下面的内容滚动时只重画卡片外的部分，卡片本身的变化照常重画；卡片不再完全不透明（透明度、混合模式、变换）或顶层还有别的对象时自动退回整块重画。渲染加速按芯片选择，见 `docs/porting-guide.md`。
 10. 屏幕形状与安全区（执行期由用户批准加入，spec 5.6 节）：Display caps 的 `shape` 取 `rect`/`rounded_rect`/`circle`（原 `rounded_square` 改名为 `rounded_rect`），`wisp_hal` 提供 `visible`/`safe_rect`/`row_span` 几何函数，能力清单为 Display 条目附带 `safe_area`，自检界面与模拟器遮罩都以此为准。
 11. 熄屏省电（执行期由用户批准加入，spec 6.7 节、验收第 5 条）：新增 `PowerManager`，熄屏进入待机，此时屏幕和触摸进入睡眠、UI 暂停渲染、按键放慢轮询，真机开启 DFS 和待机自动浅睡眠；同时支持闲置自动熄屏。后台场景和唤醒锁留到子项目 3（spec 1.6）。
