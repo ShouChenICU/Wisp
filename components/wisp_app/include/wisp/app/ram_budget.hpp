@@ -1,12 +1,17 @@
 #pragma once
 
 // The internal-RAM budget (AGENTS.md section 5). Internal SRAM is what DMA
-// buffers, flash-writing task stacks and the radio need, and running short
-// of it fails late and far from the cause (an httpd that cannot get its
-// stack). NetWiring logs the figures each time a server starts and warns
-// when they are under the idle floor below. Measured per board in
-// docs/hardware/<board>.md; the `mem` console command on the ESP firmware
-// prints them with every task's stack.
+// buffers, the stacks of tasks that touch flash and the radio need, and
+// running short of it fails late and far from the cause (an httpd that
+// cannot get its stack). NetWiring logs the figures each time a server
+// starts and warns when they are under the idle floor below. Measured per
+// board in docs/hardware/<board>.md; the `mem` console command on the ESP
+// firmware prints them with every task's stack.
+//
+// The figures were set on the one board measured so far
+// (waveshare_amoled_216, ESP32-S3 with PSRAM). A board with much less
+// internal RAM would warn on every server start; give it its own floors
+// (a board cap) rather than loosening these.
 
 #include <cstdint>
 

@@ -84,10 +84,10 @@ cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <板名>
 - **配置键**：Settings 的 namespace 和 key 都不能超过 15 个字符，以兼容 NVS。
 - **内存分配**：大块缓冲用 `os::alloc(Mem::Large)`，DMA 缓冲用 `Mem::Dma`，不要直接调用平台的分配函数。
 - **内部 RAM 预算**（ESP32 的内部 SRAM 只有几百 KB，耗尽时报错的地方往往离原因很远，例如 httpd 拿不到栈）：
-  - 内部 SRAM 只留给必须放在内部的东西：DMA 缓冲（`Mem::Dma`）；会写 flash（NVS、LittleFS、OTA）或者以其他方式关闭 flash cache 的任务的栈；ISR 和 IRAM 代码/数据。其余超过几 KB 的一律用 `Mem::Large`（PSRAM），例如 Lua 堆、LLM 上下文和 JSON、音频环形缓冲、各种缓存。
-  - 新任务都要声明栈能否放进 PSRAM（`os::TaskConfig::external_stack`，httpd 实例是 `EspHttpServerConfig::external_stack`）。只有从不直接碰 flash 的任务才可以放，它替别人执行的回调也算在内：在外部 RAM 的栈上写 flash 会 abort。栈的大小按 `mem` 命令实测的 high-water mark 加余量来定，不要凭感觉。
-  - 预算（`wisp/app/ram_budget.hpp`）：最坏情况下，即 STA+AP、两个 httpd、WebSocket 日志流、TLS 握手和 OTA 上传同时存在时，内部 RAM 空闲 ≥ 40 KB、最大空闲块 ≥ 16 KB；空闲状态下 ≥ 60 KB / 20 KB。消耗内部 RAM 的改动必须上真机重新测量。
-  - 诊断：固件串口命令 `mem` 列出各堆的空闲量、最大块和最低水位，以及每个任务的栈大小、high-water mark 和所在位置；net 每次启动服务都会打一行 `internal RAM: ...`（低于预算时为警告）；`WISP_PERF` 带 `heap_internal_free`。各板的实测数据记在 `docs/hardware/<板名>.md`（例如 `docs/hardware/waveshare_amoled_216.md` 的"内部 RAM"一节）。
+  - 内部 SRAM 只留给必须放在内部的东西：DMA 缓冲（`Mem::Dma`）；会读、写、擦除或映射内部 flash 的任务的栈；ISR 和 IRAM 代码/数据。其余超过几 KB 的一律用 `Mem::Large`（PSRAM），例如 Lua 堆、LLM 上下文和 JSON、音频环形缓冲、各种缓存。
+  - 新任务都要声明栈能否放进 PSRAM（`os::TaskConfig::external_stack`，httpd 实例是 `EspHttpServerConfig::external_stack`）。只有从不读、写、擦除或映射内部 flash 的任务才可以放，经由它调用的服务（Settings/NVS、StorageManager/LittleFS、OTA、分区）和它替别人执行的回调都算在内；读已经映射进地址空间的常量和网页资源包不算。违反时 ESP 端口在 flash 操作里静默 abort，模拟器测不出来。栈的大小按 `mem` 命令实测的 high-water mark 加余量来定。
+  - 预算：最坏情况（STA+AP、两个 httpd、WebSocket 日志流、TLS 握手和 OTA 上传同时存在）和空闲状态下内部 RAM 的空闲量、最大块下限定义在 `wisp/app/ram_budget.hpp`。消耗内部 RAM 的改动必须上真机重新测量。
+  - 诊断：固件串口命令 `mem`（各堆和每个任务的栈）；net 每次启动服务打一行 `internal RAM: ...`，低于预算时为警告。各板实测数据记在 `docs/hardware/<板名>.md`。
 - **注释**：只解释现在的代码为什么这样写（约束、不变量、踩过的坑），不写"哪一轮评审/哪次修复改了什么"——修改历史属于提交信息，不属于注释。禁止引用 `.superpowers/` 下的任何文件（`task-*-brief/report/review.md`、`global-constraints.md` 等，这些不提交到 git，新检出后是死链），禁止评审编号式引用（"Fix round N"、"Re-review N"、"R2-N"、"Task N"、裸的发现编号如 "M8"/"N3"/"I1"）。需要引用上下文时改为指向已提交的权威来源：spec 某节（"spec 6.7" 可以保留）、AGENTS.md 某节、`docs/hardware/*.md`，或仓库里的另一个函数/文件。`tools/ci.sh` 对此有 grep 守卫。
 
 ## 6. 参考与许可

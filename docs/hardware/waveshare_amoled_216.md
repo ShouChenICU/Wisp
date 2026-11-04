@@ -254,6 +254,12 @@
 
 **改动**：LVGL 只用一块 48 行的缓冲；Wi-Fi 静态 RX/TX 缓冲改为 10/10、RX BA 窗口改为 10（`firmware/sdkconfig.defaults`）；`wisp.ws`、`wisp.dns` 和端口 80 的 httpd 不碰 flash，栈改放 PSRAM。
 
+**哪些任务的栈能放 PSRAM**（规则见 AGENTS.md 第 5 节）：ESP-IDF 做 flash 操作时会停掉 cache，并断言当前任务的栈在内部 RAM（`spi_flash/cache_utils.c`），读和写都一样，经 NVS、LittleFS、`esp_partition_read` 间接调用也一样。本板开了 XIP（`CONFIG_SPIRAM_XIP_FROM_PSRAM`）之后，`esp_flash` 的读写改为只拿一把互斥锁、不再停 cache（`spi_flash/spi_flash_os_func_app.c` 的 `SPI_FLASH_CACHE_NO_DISABLE`），但映射和解除映射 flash（`esp_partition_mmap`、OTA 收尾时校验镜像）仍然冻结 cache 并做同样的栈检查（`esp_mm/esp_cache_utils.c`）。所以规则不因 XIP 放宽：XIP 只是板级配置，规则对所有板子都成立。PSRAM 栈只在 `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` 打开时使用（`firmware/sdkconfig.defaults` 固定为 y），关掉时自动退回内部栈。
+
+已核对的三个任务：`wisp.ws` 只把排队的帧经 `httpd_queue_work()` 交给管理 httpd 去发；`wisp.dns` 只收发 UDP；端口 80 的 httpd 只用内存里的热点状态拼一个 302。三者都不读 Settings、不读文件，日志只进内存环形缓冲和串口。网页资源包链接在应用镜像里，经 cache 读取（开 XIP 后在 PSRAM 里），不触发 flash 操作，而且只由端口 8900 的管理 httpd 提供。
+
+停掉任一个 httpd 实例（关热点、STA 断开）时，httpd 任务用 `vTaskDeleteWithCaps()` 删除自己，这需要临时创建一个内部栈的辅助任务（约 2 KB），创建失败就 abort（ESP-IDF 的 `idf_additions.c`）。最坏情况 40 KB 的下限已经包含这部分余量。
+
 | 状态（空闲，服务都已启动） | 改动前 | 改动后 |
 |---|---|---|
 | 启动后，无网络 | 36.3 KB（最大块 21.5 KB） | 105.0 KB（31.7 KB） |

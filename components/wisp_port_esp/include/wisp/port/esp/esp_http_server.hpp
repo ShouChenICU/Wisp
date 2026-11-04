@@ -71,13 +71,20 @@ struct EspHttpServerConfig {
     // instances must fit CONFIG_LWIP_MAX_SOCKETS with the other users.
     uint16_t max_open_sockets = 7;
     // The httpd task's stack. Handlers run on it, including the model
-    // connectivity test's TLS handshake and the firmware upload's flash
-    // writes on the admin instance.
+    // connectivity test's TLS handshake and, on the admin instance,
+    // Settings reads and writes and the firmware upload.
     size_t stack_bytes = 10240;
     // Put that stack in external RAM (PSRAM). Only for an instance whose
-    // handlers never write flash (see os::TaskConfig::external_stack),
-    // like the hotspot's captive redirect; the admin instance keeps it
-    // internal.
+    // handlers never touch flash, reads included (the rule is at
+    // os::TaskConfig::external_stack), like the hotspot's captive
+    // redirect; the admin instance keeps it internal. Falls back to an
+    // internal stack where external stacks are unavailable.
+    //
+    // Either way, stopping an instance needs about 2 KB of internal RAM
+    // at that moment: the httpd task deletes itself with
+    // vTaskDeleteWithCaps(), which starts a helper task with an internal
+    // stack and aborts if it cannot (ESP-IDF's idf_additions.c). The
+    // internal-RAM budget's floor (wisp/app/ram_budget.hpp) covers it.
     bool external_stack = false;
     // Below the UI task (wisp::ui::UiRuntime, 4) so serving a page never
     // costs frames (connectivity spec 10); the other core and idle time

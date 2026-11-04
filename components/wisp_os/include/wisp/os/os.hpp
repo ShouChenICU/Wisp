@@ -94,12 +94,17 @@ struct TaskConfig {
     int priority = 5;
     int core = -1;
     // The stack may live in external RAM (PSRAM) instead of scarce
-    // internal RAM. Only for a task that never writes flash -- settings
-    // (NVS), files on internal storage (LittleFS), OTA -- nor runs
-    // anything else that disables the flash cache: on the ESP port such
-    // an operation on an external stack aborts. That includes callbacks
-    // the task runs on others' behalf. A port without external RAM, or
-    // out of it, falls back to an internal stack. AGENTS.md section 5.
+    // internal RAM. Only for a task that never reads, writes, erases or
+    // maps internal flash, directly or through any service it calls:
+    // Settings (NVS), StorageManager files on internal storage
+    // (LittleFS), firmware upload (OTA) and raw partitions. Callbacks the
+    // task runs on others' behalf count too. On the ESP port such an
+    // operation may stop the flash cache and then asserts that the stack
+    // is in internal RAM: a silent abort, on hardware only (the simulator
+    // ignores this flag). Reading data already mapped into the address
+    // space (constants, the linked-in web asset pack) is fine. A port or
+    // build without external-RAM stacks, or out of PSRAM, falls back to
+    // an internal stack. AGENTS.md section 5.
     bool external_stack = false;
 };
 
