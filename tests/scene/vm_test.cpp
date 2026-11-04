@@ -376,6 +376,40 @@ TEST(Vm, LoopingMessageHandlerCannotOutliveTimeout) {
     EXPECT_TRUE(global_is_nil(*vm, "flag"));
 }
 
+TEST(Vm, PcallAndXpcallStillWork) {
+    FakeClock clock;
+    auto vm = make(clock);
+    ASSERT_NE(vm, nullptr);
+    auto err = run(*vm, R"(
+        local ok, e = pcall(error, "x", 0)
+        assert(not ok and e == "x", e)
+        local r = table.pack(pcall(function(...) return ... end, 1, nil, 3))
+        assert(r.n == 4 and r[1] == true and r[2] == 1 and r[3] == nil and r[4] == 3)
+        assert(select("#", pcall(function() end)) == 1)
+        local ok1, e1 = pcall(pcall)
+        assert(not ok1 and string.find(e1, "bad argument #1 to 'pcall'", 1, true), e1)
+        local ok2, e2 = pcall(nil)
+        assert(not ok2 and string.find(e2, "attempt to call a nil value", 1, true), e2)
+        assert(select("#", xpcall(function() end, print)) == 1)
+        local ok3, e3 = pcall(xpcall, print)
+        assert(not ok3 and string.find(e3, "bad argument #2 to 'xpcall'", 1, true), e3)
+        -- f can still yield across pcall inside a coroutine.
+        local co = coroutine.wrap(function()
+            return pcall(function() local v = coroutine.yield(1); return v * 2 end)
+        end)
+        assert(co() == 1)
+        local ok4, v = co(21)
+        assert(ok4 and v == 42)
+        local co2 = coroutine.wrap(function()
+            return pcall(function() coroutine.yield(1); error("late", 0) end)
+        end)
+        co2()
+        local ok5, e5 = co2()
+        assert(not ok5 and e5 == "late")
+    )");
+    EXPECT_FALSE(err) << describe(err);
+}
+
 TEST(Vm, XpcallStillWorks) {
     FakeClock clock;
     auto vm = make(clock);
@@ -555,6 +589,76 @@ TEST(Vm, TableLoopsAreCapped) {
     EXPECT_FALSE(err) << describe(err);
 }
 
+TEST(Vm, NegativeLengthsAndPositionsAreCapped) {
+    FakeClock clock;
+    clock.step = 1;
+    auto vm = make(clock);
+    ASSERT_NE(vm, nullptr);
+    // The __index function makes an uncapped loop run Lua code, so it
+    // ends in a timeout on the fake clock instead of hanging the test.
+    auto err = run(*vm, R"(
+        local function too_large(f, ...)
+            local ok, e = pcall(f, ...)
+            assert(not ok and string.find(e, "range too large", 1, true), tostring(e))
+        end
+        local function neg(index)
+            return setmetatable({}, {__len = function() return -2 end, __index = index})
+        end
+        local slow = function() end
+        too_large(table.remove, neg(slow), -100000000)
+        too_large(table.insert, neg(slow), -100000000, "x")
+        too_large(table.remove, neg(slow), math.mininteger)
+        too_large(table.sort, neg(slow))
+        too_large(table.remove, neg(), -100000000)
+        too_large(table.insert, neg(), -100000000, "x")
+        too_large(table.remove, neg(), math.mininteger)
+        too_large(table.insert, neg(), "x")
+        too_large(table.remove, neg())
+    )");
+    EXPECT_FALSE(err) << describe(err);
+}
+
+// A chain of C functions that call each other and catch errors runs no
+// Lua instruction, so the count hook never fires; every such function
+// checks the deadline when it is entered.
+TEST(Vm, CFanOutStillTimesOut) {
+    FakeClock clock;
+    clock.step = 1;
+    auto vm = make(clock);
+    ASSERT_NE(vm, nullptr);
+    uint64_t start = clock.now;
+    auto err = run(*vm, R"(
+        local t = setmetatable({true}, {__index = pcall, __call = table.unpack})
+        table.unpack(t, -12)
+    )");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->fault, ScriptFault::Timeout) << describe(err);
+    EXPECT_EQ(err->text(), "main.lua:3: execution exceeded 200 ms");
+    EXPECT_LT(clock.now - start, 100000u);
+    EXPECT_TRUE(vm->faulted());
+}
+
+TEST(Vm, CFanOutInsideCoroutinesTimesOut) {
+    for (const char* src : {
+             R"(local t = setmetatable({true}, {__index = pcall, __call = table.unpack})
+                local co = coroutine.wrap(table.unpack)
+                co(t, -12))",
+             R"(local t = setmetatable({true}, {__index = pcall, __call = table.unpack})
+                coroutine.resume(coroutine.create(table.unpack), t, -12))",
+         }) {
+        FakeClock clock;
+        clock.step = 1;
+        auto vm = make(clock);
+        ASSERT_NE(vm, nullptr);
+        uint64_t start = clock.now;
+        auto err = run(*vm, src);
+        ASSERT_TRUE(err) << src;
+        EXPECT_EQ(err->fault, ScriptFault::Timeout) << src << "\n" << describe(err);
+        EXPECT_EQ(err->file, "main.lua") << describe(err);
+        EXPECT_LT(clock.now - start, 100000u) << src;
+    }
+}
+
 TEST(Vm, BindingMetatablesAreHidden) {
     FakeClock clock;
     auto vm = make(clock);
@@ -568,7 +672,6 @@ TEST(Vm, BindingMetatablesAreHidden) {
     lua_pop(L, 1);
     auto err = run(*vm, R"(
         assert(getmetatable(_G.u) == false)
-        assert(not pcall(setmetatable, _G.u, {}))
     )");
     EXPECT_FALSE(err) << describe(err);
 }

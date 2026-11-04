@@ -25,8 +25,13 @@
 //     lua_close does not close coroutines (only the main thread, whose
 //     hooks every lua_pcall restores).
 // C loops that neither limit can stop are capped as well: table.move,
-// insert, remove, sort and concat refuse ranges over 2^20 elements
-// ("range too large"), reading any __len only once.
+// insert, remove, sort and concat refuse ranges over 2^20 elements, and
+// insert, remove and sort a negative length ("range too large"). Each
+// loop runs over a bound that was checked, whatever a __len answers when
+// called again. Sorting anything with a metatable goes through a plain
+// copy of its elements, which counts toward the memory limit like any
+// other table. pcall, xpcall, load, the table functions and the
+// coroutine functions check the time limit on entry (check_limits()).
 //
 // Scene code may run only under Vm::call(): the time limit is measured
 // from there, and code a host runs with its own lua_pcall outside a call
@@ -40,19 +45,20 @@
 // refused twice in a row is a memory fault, and so is a refusal nobody
 // retries (lauxlib's string buffers, used by string.rep, table.concat,
 // string.format and friends, call the allocator directly and raise a
-// plain error instead): the next allocation, the next instruction or the
-// return from a coroutine settles it. A timeout or memory fault cannot be
-// caught: from then on every thread's hook fires on every instruction and
-// raises again, and the coroutine functions refuse to resume anything and
-// re-raise in the resumer, so no further Lua code runs until call()'s own
-// lua_pcall returns. A faulted VM can only be destroyed.
+// plain error instead): the next allocation, the next instruction, the
+// return from a coroutine or the next check_limits() settles it. A
+// timeout or memory fault cannot be caught: from then on every thread's
+// hook fires on every instruction and raises again, and the coroutine
+// functions refuse to resume anything and re-raise in the resumer, so no
+// further Lua code runs until call()'s own lua_pcall returns. A faulted
+// VM can only be destroyed.
 //
 // C stack: Lua is built with LUAI_MAXCCALLS=48 (third_party/lua), which
 // bounds how deeply C calls nest (pcall, gsub callbacks, metamethods,
-// coroutines, the parser). That bound pairs with a 96 KB scene task stack
-// (in PSRAM): at the limit string.gsub recursion, the deepest per level,
-// needs about 1.3 KB per level of Xtensa frames. Changing either number
-// means measuring that case on the device again.
+// coroutines, the parser). That bound pairs with a 128 KB scene task
+// stack (in PSRAM): at the limit string.gsub recursion, the deepest per
+// level, needs about 1.3 KB per level of Xtensa frames. Changing either
+// number means measuring that case on the device again.
 //
 // longjmp rule: Lua is compiled as C and raises errors with longjmp,
 // which skips C++ destructors. A C function called from Lua (and any
@@ -146,6 +152,15 @@ public:
 
     // True after a timeout or memory fault; the VM must be destroyed.
     bool faulted() const { return fault_ != Fault::None; }
+
+    // Raises the VM's fault in L if it has one, or a timeout if call()'s
+    // time limit has passed; otherwise returns. Every C function that
+    // calls back into Lua in a loop or catches errors calls this on
+    // entry: a chain of such functions (pcall as __index of a table that
+    // table.unpack walks, ...) runs no Lua instruction, so the count hook
+    // alone would never see the deadline. Bindings that loop or call back
+    // into Lua do the same. Follows the longjmp rule below.
+    void check_limits(lua_State* L);
 
 private:
     enum class Fault : uint8_t { None, Timeout, Memory };

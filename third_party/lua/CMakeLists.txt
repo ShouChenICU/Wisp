@@ -44,7 +44,7 @@ endif()
 # coroutines, nested expressions) is a Lua error ("C stack overflow")
 # instead of a stack overflow. Each level costs C stack; the deepest per
 # level is string.gsub, about 1.3 KB of Xtensa frames. 48 pairs with the
-# scene task's 96 KB stack; see wisp/scene/vm.hpp before changing either.
+# scene task's 128 KB stack; see wisp/scene/vm.hpp before changing either.
 target_compile_definitions(${_wisp_lua_target} PRIVATE LUAI_MAXCCALLS=48)
 
 # luaconf.h picks 64-bit lua_Integer only if <limits.h> defines LLONG_MAX

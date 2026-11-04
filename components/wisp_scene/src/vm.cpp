@@ -138,7 +138,9 @@ Vm* owner(lua_State* L) {
     return static_cast<Vm*>(ud);
 }
 
-int return_all(lua_State* L, int /*status*/, lua_KContext /*ctx*/) { return lua_gettop(L); }
+// Every sandbox function that calls back into Lua or catches errors
+// starts with this (see Vm::check_limits).
+void enter(lua_State* L) { owner(L)->check_limits(L); }
 
 int return_upvalue(lua_State* L) {
     lua_pushvalue(L, lua_upvalueindex(1));
@@ -157,11 +159,16 @@ int call_original(lua_State* L) {
 // load(chunk [, chunkname [, mode [, env]]]) with mode forced to "t".
 // Only grows the stack to three values, so an absent env stays absent
 // (an explicit nil env would leave the chunk without globals).
+// lua_load parses in protected mode, so it catches whatever a reader
+// function raises; a fault is raised again on the way out.
 int sandbox_load(lua_State* L) {
+    enter(L);
     if (lua_gettop(L) < 3) lua_settop(L, 3);
     lua_pushliteral(L, "t");
     lua_replace(L, 3);
-    return call_original(L);
+    int n = call_original(L);
+    enter(L);
+    return n;
 }
 
 int sandbox_collectgarbage(lua_State* L) {
@@ -197,26 +204,52 @@ int guarded_handler(lua_State* L) {
     return 1;
 }
 
-// xpcall(f, msgh, ...) with msgh wrapped in guarded_handler. Called with
-// lua_callk so f can still yield across it, as with the original.
+// pcall and xpcall behave like Lua 5.5.1's (lbaselib.c, MIT), and also
+// check the limits when entered and again when the call returns or
+// fails, so a fault never comes back from them as a result, even to a C
+// caller (a metamethod) that runs no Lua instruction afterwards.
+int finish_pcall(lua_State* L, int status, lua_KContext extra) {
+    enter(L);
+    if (status != LUA_OK && status != LUA_YIELD) {
+        lua_pushboolean(L, 0);
+        lua_pushvalue(L, -2);
+        return 2;
+    }
+    return lua_gettop(L) - static_cast<int>(extra);
+}
+
+int sandbox_pcall(lua_State* L) {
+    enter(L);
+    luaL_checkany(L, 1);
+    lua_pushboolean(L, 1);
+    lua_insert(L, 1);
+    int status = lua_pcallk(L, lua_gettop(L) - 2, LUA_MULTRET, 0, 0, finish_pcall);
+    return finish_pcall(L, status, 0);
+}
+
+// The message handler is wrapped in guarded_handler.
 int sandbox_xpcall(lua_State* L) {
+    enter(L);
+    int n = lua_gettop(L);
     luaL_checktype(L, 2, LUA_TFUNCTION);
     lua_pushvalue(L, 2);
     lua_pushcclosure(L, guarded_handler, 1);
     lua_replace(L, 2);
-    int n = lua_gettop(L);
-    lua_pushvalue(L, lua_upvalueindex(1));
-    lua_insert(L, 1);
-    lua_callk(L, n, LUA_MULTRET, 0, return_all);
-    return lua_gettop(L);
+    lua_pushboolean(L, 1);
+    lua_pushvalue(L, 1);
+    lua_rotate(L, 3, 2);  // f, msgh, true, f, args...
+    int status = lua_pcallk(L, n - 2, LUA_MULTRET, 2, 2, finish_pcall);
+    return finish_pcall(L, status, 2);
 }
 
 // The table library's loops run in C: no instruction, so no hook, and
 // reading or writing absent keys allocates nothing, so no memory limit
 // either. Every count that drives one of them (an argument, or a length
-// that may come from __len) is capped. A length is read exactly once, so
-// a __len that answers differently on a second call cannot get past the
-// cap.
+// that may come from __len) is capped, and so is the span each loop
+// actually walks. The loops only run over values that were checked, so
+// a __len that answers differently when called again cannot get past
+// the cap. Each function also checks the limits when entered: a loop of
+// metamethods that are themselves C functions runs no Lua instruction.
 constexpr lua_Integer kMaxTableRange = lua_Integer{1} << 20;
 
 // True if [first, last] holds more than kMaxTableRange elements.
@@ -228,7 +261,9 @@ bool range_too_large(lua_Integer first, lua_Integer last) {
 int range_error(lua_State* L) { return luaL_error(L, "range too large"); }
 
 // The length of argument 1 for insert/remove/sort: a table, or a value
-// whose metatable provides it (as ltablib's checktab accepts).
+// whose metatable provides it (as ltablib's checktab accepts). Only
+// __len can make it negative, and a negative length would turn the
+// position checks below into ranges of up to 2^64 elements.
 lua_Integer checked_len(lua_State* L) {
     if (lua_type(L, 1) != LUA_TTABLE) {
         if (!lua_getmetatable(L, 1))
@@ -237,20 +272,23 @@ lua_Integer checked_len(lua_State* L) {
             lua_pop(L, 1);
     }
     lua_Integer n = luaL_len(L, 1);
-    if (n > kMaxTableRange) range_error(L);
+    if (n < 0 || n > kMaxTableRange) range_error(L);
     return n;
 }
 
 int sandbox_table_move(lua_State* L) {
+    enter(L);
     lua_Integer f = luaL_checkinteger(L, 2);
     lua_Integer e = luaL_checkinteger(L, 3);
     if (range_too_large(f, e)) return range_error(L);
     return call_original(L);
 }
 
-// concat reads the length itself even when j is given, but then uses j;
-// passing the checked bound as j keeps its loop to what was checked.
+// concat calls __len again itself, even when j is given, but then
+// loops up to j; passing the checked bound as j keeps the loop to what
+// was checked whatever that second call answers.
 int sandbox_table_concat(lua_State* L) {
+    enter(L);
     lua_Integer first = luaL_optinteger(L, 3, 1);
     lua_Integer last = lua_isnoneornil(L, 4) ? luaL_len(L, 1) : luaL_checkinteger(L, 4);
     if (range_too_large(first, last)) return range_error(L);
@@ -263,6 +301,7 @@ int sandbox_table_concat(lua_State* L) {
 // Behaves like Lua 5.5.1's table.insert (ltablib.c, MIT), reading the
 // length once.
 int sandbox_table_insert(lua_State* L) {
+    enter(L);
     lua_Integer e = checked_len(L) + 1;  // first empty slot
     lua_Integer pos = e;
     switch (lua_gettop(L)) {
@@ -272,6 +311,7 @@ int sandbox_table_insert(lua_State* L) {
             pos = luaL_checkinteger(L, 2);
             luaL_argcheck(L, static_cast<lua_Unsigned>(pos) - 1u < static_cast<lua_Unsigned>(e), 2,
                           "position out of bounds");
+            if (range_too_large(pos, e)) return range_error(L);
             for (lua_Integer i = e; i > pos; --i) {
                 lua_geti(L, 1, i - 1);
                 lua_seti(L, 1, i);
@@ -287,11 +327,13 @@ int sandbox_table_insert(lua_State* L) {
 // Behaves like Lua 5.5.1's table.remove (ltablib.c, MIT), reading the
 // length once.
 int sandbox_table_remove(lua_State* L) {
+    enter(L);
     lua_Integer size = checked_len(L);
     lua_Integer pos = luaL_optinteger(L, 2, size);
     if (pos != size)
         luaL_argcheck(L, static_cast<lua_Unsigned>(pos) - 1u <= static_cast<lua_Unsigned>(size), 2,
                       "position out of bounds");
+    if (range_too_large(pos, size)) return range_error(L);
     lua_geti(L, 1, pos);
     for (; pos < size; ++pos) {
         lua_geti(L, 1, pos + 1);
@@ -308,6 +350,7 @@ int sandbox_table_remove(lua_State* L) {
 // (through __index), the copy is sorted, and the result is written back
 // (through __newindex). Holes stay holes, so comparing one still fails.
 int sandbox_table_sort(lua_State* L) {
+    enter(L);
     if (lua_type(L, 1) == LUA_TTABLE && !lua_getmetatable(L, 1)) {
         if (static_cast<lua_Integer>(lua_rawlen(L, 1)) > kMaxTableRange) return range_error(L);
         return call_original(L);
@@ -336,6 +379,12 @@ int sandbox_table_sort(lua_State* L) {
         lua_seti(L, 1, i);
     }
     return 0;
+}
+
+// unpack's own count is bounded by the Lua stack size.
+int sandbox_table_unpack(lua_State* L) {
+    enter(L);
+    return call_original(L);
 }
 
 int sandbox_print(lua_State* L) {
@@ -469,6 +518,7 @@ int Vm::setup(lua_State* L) {
         {"load", sandbox_load},
         {"collectgarbage", sandbox_collectgarbage},
         {"setmetatable", sandbox_setmetatable},
+        {"pcall", sandbox_pcall},
         {"xpcall", sandbox_xpcall},
     };
     for (const auto& w : wrapped) {
@@ -504,7 +554,7 @@ int Vm::setup(lua_State* L) {
     } table_fns[] = {
         {"move", sandbox_table_move, true},      {"concat", sandbox_table_concat, true},
         {"sort", sandbox_table_sort, true},      {"insert", sandbox_table_insert, false},
-        {"remove", sandbox_table_remove, false},
+        {"remove", sandbox_table_remove, false}, {"unpack", sandbox_table_unpack, true},
     };
     for (const auto& t : table_fns) {
         if (t.keeps_original) {
@@ -634,6 +684,24 @@ void Vm::hook(lua_State* L, lua_Debug* ar) {
     vm->raise_fault(L);
 }
 
+void Vm::check_limits(lua_State* L) {
+    settle_refusal();
+    if (fault_ == Fault::None) {
+        if (!running_ || now_ms_() - start_ms_ <= limits_.exec_ms) return;
+        fault(Fault::Timeout);
+        // The innermost Lua function with a line, as the hook reports it.
+        lua_Debug ar;
+        for (int level = 0; lua_getstack(L, level, &ar); ++level) {
+            if (lua_getinfo(L, "Sl", &ar) && ar.currentline > 0) {
+                std::snprintf(fault_file_, sizeof(fault_file_), "%s", ar.short_src);
+                fault_line_ = ar.currentline;
+                break;
+            }
+        }
+    }
+    raise_fault(L);
+}
+
 // Runs the original coroutine function in upvalue 1 with every argument,
 // tracking `co` as the running thread. A fault refuses to start anything
 // and is raised again in the caller once control returns, so a coroutine
@@ -642,7 +710,7 @@ void Vm::hook(lua_State* L, lua_Debug* ar) {
 // is settled (as a fault) before the caller runs another instruction.
 int Vm::co_switch(lua_State* L, lua_State* co) {
     Vm* vm = owner(L);
-    if (vm->faulted()) return vm->raise_fault(L);
+    vm->check_limits(L);
     int n = lua_gettop(L);
     lua_pushvalue(L, lua_upvalueindex(1));
     lua_insert(L, 1);
@@ -650,8 +718,7 @@ int Vm::co_switch(lua_State* L, lua_State* co) {
     if (co) vm->current_ = co;
     int status = lua_pcall(L, n, LUA_MULTRET, 0);
     vm->current_ = saved;
-    vm->settle_refusal();
-    if (vm->faulted()) return vm->raise_fault(L);
+    vm->check_limits(L);
     if (status != LUA_OK) return lua_error(L);
     return lua_gettop(L);
 }
@@ -666,8 +733,7 @@ int Vm::co_close(lua_State* L) { return co_switch(L, lua_tothread(L, 1)); }
 // hooks are off for good (luaD_hook never got to turn them back on), so
 // those values would run unbounded. Here a fault skips the close.
 int Vm::co_wrap(lua_State* L) {
-    Vm* vm = owner(L);
-    if (vm->faulted()) return vm->raise_fault(L);
+    owner(L)->check_limits(L);
     luaL_checktype(L, 1, LUA_TFUNCTION);
     lua_State* co = lua_newthread(L);  // copies L's hook
     lua_pushvalue(L, 1);
@@ -678,7 +744,7 @@ int Vm::co_wrap(lua_State* L) {
 
 int Vm::co_wrapped(lua_State* L) {
     Vm* vm = owner(L);
-    if (vm->faulted()) return vm->raise_fault(L);
+    vm->check_limits(L);
     lua_State* co = lua_tothread(L, lua_upvalueindex(1));
     int narg = lua_gettop(L);
     if (!lua_checkstack(co, narg)) return luaL_error(L, "too many arguments to resume");
@@ -688,8 +754,7 @@ int Vm::co_wrapped(lua_State* L) {
     int nres = 0;
     int status = lua_resume(co, L, narg, &nres);
     vm->current_ = saved;
-    vm->settle_refusal();
-    if (vm->faulted()) return vm->raise_fault(L);
+    vm->check_limits(L);
     if (status == LUA_OK || status == LUA_YIELD) {
         if (!lua_checkstack(L, nres + 1)) {
             lua_pop(co, nres);
@@ -706,8 +771,7 @@ int Vm::co_wrapped(lua_State* L) {
         vm->current_ = co;
         status = lua_closethread(co, L);
         vm->current_ = saved;
-        vm->settle_refusal();
-        if (vm->faulted()) return vm->raise_fault(L);
+        vm->check_limits(L);
         lua_xmove(co, L, 1);
     }
     if (status != LUA_ERRMEM && lua_type(L, -1) == LUA_TSTRING) {
