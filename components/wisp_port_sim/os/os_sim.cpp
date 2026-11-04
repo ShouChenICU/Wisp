@@ -11,10 +11,16 @@
 #include <thread>
 
 #include "wisp/os/os.hpp"
+#include "wisp/port/sim/sim_os.hpp"
 
 namespace wisp::os {
 
 namespace {
+
+// set_alloc_failure() flags, indexed by Mem; DmaLarge is the last kind.
+std::atomic<bool> g_fail[static_cast<size_t>(Mem::DmaLarge) + 1] = {};
+
+bool failing(Mem kind) { return g_fail[static_cast<int>(kind)].load(std::memory_order_relaxed); }
 
 // The simulator's "boot" is process start. A function-local static is
 // safe to reach from other translation units' static initializers; the
@@ -43,23 +49,35 @@ uint64_t now_us() {
 
 void sleep_ms(uint32_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
-void* alloc(size_t bytes, Mem /*kind*/) {
+void* alloc(size_t bytes, Mem kind) {
     // The simulator has no Fast/Dma/PSRAM distinction; every kind maps to
     // the regular heap.
-    return std::malloc(bytes);
+    return failing(kind) ? nullptr : std::malloc(bytes);
 }
 
 void dealloc(void* p) { std::free(p); }
 
-void* realloc(void* p, size_t bytes, Mem /*kind*/) {
+void* realloc(void* p, size_t bytes, Mem kind) {
     // std::realloc(p, 0) is implementation-defined (and deprecated in
     // C23); spell out the contract from os.hpp instead.
     if (bytes == 0) {
         std::free(p);
         return nullptr;
     }
-    return std::realloc(p, bytes);
+    return failing(kind) ? nullptr : std::realloc(p, bytes);
 }
+
+}  // namespace wisp::os
+
+namespace wisp::port::sim {
+
+void set_alloc_failure(os::Mem kind, bool fail) {
+    os::g_fail[static_cast<int>(kind)].store(fail, std::memory_order_relaxed);
+}
+
+}  // namespace wisp::port::sim
+
+namespace wisp::os {
 
 // ---------------------------------------------------------------------------
 // Mutex

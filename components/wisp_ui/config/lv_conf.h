@@ -64,7 +64,8 @@
  * - LV_STDLIB_CUSTOM:      Implement the functions externally
  *
  * Wisp: CUSTOM, implemented by components/wisp_ui/src/lv_mem_wisp.cpp on
- * os::alloc(Mem::Large). CLIB's malloc would put every object (each well
+ * os::alloc(Mem::Large), falling back to internal RAM only without PSRAM
+ * (see wisp/ui/lv_heap.hpp). CLIB's malloc would put every object (each well
  * under 16 KB) in internal RAM (AGENTS.md section 8).
  */
 #define LV_USE_STDLIB_MALLOC    LV_STDLIB_CUSTOM
