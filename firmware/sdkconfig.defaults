@@ -39,7 +39,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_FREERTOS_HZ=1000
 
 # Lets the tasks that never touch flash keep their stacks in PSRAM
-# (os::TaskConfig::external_stack, AGENTS.md section 5). Already the
+# (os::TaskConfig::flash_access, AGENTS.md section 5). Already the
 # default on the S3; pinned so that a change in menuconfig shows up here.
 # The option exists only with PSRAM. An ESP32 board turns it off in its
 # own sdkconfig.defaults.board (ESP-IDF's help: stacks in PSRAM are unsafe

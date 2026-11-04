@@ -74,18 +74,18 @@ struct EspHttpServerConfig {
     // connectivity test's TLS handshake and, on the admin instance,
     // Settings reads and writes and the firmware upload.
     size_t stack_bytes = 10240;
-    // Put that stack in external RAM (PSRAM). Only for an instance whose
-    // handlers never touch flash, reads included (the rule is at
-    // os::TaskConfig::external_stack), like the hotspot's captive
-    // redirect; the admin instance keeps it internal. Falls back to an
-    // internal stack where external stacks are unavailable.
+    // Whether the handlers may touch internal flash, reads included (the
+    // definition is at os::TaskConfig::flash_access). The port places the
+    // stack from it, as for any task: an instance declaring false, like
+    // the hotspot's captive redirect, may get a PSRAM stack; the admin
+    // instance declares true and keeps it internal.
     //
-    // Either way, stopping an instance needs about 2 KB of internal RAM
+    // Wherever the stack goes, stopping an instance needs about 2 KB of internal RAM
     // at that moment: the httpd task deletes itself with
     // vTaskDeleteWithCaps(), which starts a helper task with an internal
     // stack and aborts if it cannot (ESP-IDF's idf_additions.c). The
     // internal-RAM budget's floor (wisp/app/ram_budget.hpp) covers it.
-    bool external_stack = false;
+    bool flash_access = true;
     // Below the UI task (wisp::ui::UiRuntime, 4) so serving a page never
     // costs frames (connectivity spec 10); the other core and idle time
     // leave it plenty.

@@ -97,10 +97,10 @@ void WsHub::start() {
     std::lock_guard<os::Mutex> lock(lifecycle_mutex_);
     if (task_) return;
     running_ = true;
-    // Only sends queued frames: no flash access, so the stack can live in
-    // external RAM (os::TaskConfig::external_stack).
+    // Only sends queued frames: no flash access, so the port may put the
+    // stack in external RAM (os::TaskConfig::flash_access).
     task_ = os::Task::spawn(
-        {.name = "wisp.ws", .stack_bytes = 4096, .priority = 3, .external_stack = true},
+        {.name = "wisp.ws", .stack_bytes = 4096, .priority = 3, .flash_access = false},
         [this] { run(); });
 }
 

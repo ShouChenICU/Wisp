@@ -93,19 +93,22 @@ struct TaskConfig {
     // Task::spawn(), which clamps to FreeRTOS's [0, configMAX_PRIORITIES - 1].
     int priority = 5;
     int core = -1;
-    // The stack may live in external RAM (PSRAM) instead of scarce
-    // internal RAM. Only for a task that never reads, writes, erases or
-    // maps internal flash, directly or through any service it calls:
-    // Settings (NVS), StorageManager files on internal storage
-    // (LittleFS), firmware upload (OTA) and raw partitions. Callbacks the
-    // task runs on others' behalf count too. On the ESP port such an
-    // operation may stop the flash cache and then asserts that the stack
-    // is in internal RAM: a silent abort, on hardware only (the simulator
-    // ignores this flag). Reading data already mapped into the address
-    // space (constants, the linked-in web asset pack) is fine. A port or
-    // build without external-RAM stacks, or out of PSRAM, falls back to
-    // an internal stack. AGENTS.md section 5.
-    bool external_stack = false;
+    // Whether the task may read, write, erase or map internal flash,
+    // directly or through any service it calls: Settings (NVS),
+    // StorageManager files on internal storage (LittleFS), firmware
+    // upload (OTA) and raw partitions. Callbacks the task runs on others'
+    // behalf count too. Reading data already mapped into the address
+    // space (constants, the linked-in web asset pack) does not. Declare
+    // false only when that holds for every path the task can take.
+    //
+    // A declaration, not a placement: the port picks where the stack
+    // goes. On the ESP port a task declaring false may get its stack in
+    // external RAM (PSRAM), where a flash operation would assert -- a
+    // silent abort, on hardware only (the simulator ignores this field).
+    // A task declaring true always gets an internal stack, as does any
+    // task when the build or PSRAM can't hold its stack. AGENTS.md
+    // section 5.
+    bool flash_access = true;
 };
 
 // A unit of concurrent execution (an RTOS task on the ESP port, a thread on

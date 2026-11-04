@@ -289,10 +289,11 @@ TEST(Queue, PushDropOldestRaceWithConcurrentPops) {
     EXPECT_EQ(dropped_count.load() + popped_count.load(), kItems);
 }
 
-// A port without external RAM runs such a task on an ordinary stack.
-TEST(Os, ExternalStackTaskRunsAndJoins) {
+// A task declaring no flash access runs on an ordinary stack on a port
+// without external RAM.
+TEST(Os, NoFlashAccessTaskRunsAndJoins) {
     std::atomic<bool> ran{false};
-    auto task = wisp::os::Task::spawn({.name = "ext", .stack_bytes = 4096, .external_stack = true},
+    auto task = wisp::os::Task::spawn({.name = "ext", .stack_bytes = 4096, .flash_access = false},
                                       [&] { ran = true; });
     ASSERT_NE(task, nullptr);
     task->join();

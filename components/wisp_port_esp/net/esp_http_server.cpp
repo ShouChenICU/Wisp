@@ -17,8 +17,8 @@
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "wisp/core/log.hpp"
-#include "wisp/port/esp/external_stack.hpp"
 #include "wisp/port/esp/net_iface.hpp"
+#include "wisp/port/esp/stack_placement.hpp"
 
 namespace wisp::port::esp {
 
@@ -649,7 +649,7 @@ Result<void> EspHttpServer::start(uint16_t port, net::HttpHandler handler, net::
     c.ctrl_port = impl_->config.ctrl_port;
     c.max_open_sockets = impl_->config.max_open_sockets;
     c.stack_size = impl_->config.stack_bytes;
-    if (impl_->config.external_stack && external_stack_available(impl_->config.stack_bytes)) {
+    if (place_stack_in_psram(impl_->config.flash_access, impl_->config.stack_bytes)) {
         c.task_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     }
     c.task_priority = impl_->config.task_priority;
