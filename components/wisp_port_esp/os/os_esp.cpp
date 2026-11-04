@@ -23,7 +23,9 @@
 #include "freertos/idf_additions.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 #include "wisp/os/os.hpp"
+#include "wisp/port/esp/external_stack.hpp"
 
 namespace wisp::os {
 
@@ -250,8 +252,7 @@ std::unique_ptr<Task> Task::spawn(const TaskConfig& config, std::function<void()
     }
     BaseType_t core_id = config.core == -1 ? tskNO_AFFINITY : static_cast<BaseType_t>(config.core);
     BaseType_t ok = pdFAIL;
-    if (config.external_stack &&
-        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= config.stack_bytes) {
+    if (config.external_stack && port::esp::external_stack_available(config.stack_bytes)) {
         // Set before the task can run: the trampoline reads it.
         task->impl_->with_caps = true;
         ok = xTaskCreatePinnedToCoreWithCaps(
@@ -634,3 +635,18 @@ void Timer::stop() {
 bool Timer::active() const { return impl_->active.load(); }
 
 }  // namespace wisp::os
+
+namespace wisp::port::esp {
+
+bool external_stack_available(size_t bytes) {
+#if CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
+    return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= bytes;
+#else
+    // Off (the ESP32's default, or no PSRAM at all): xTaskCreateStatic()
+    // would assert on a PSRAM stack, so never offer one.
+    static_cast<void>(bytes);
+    return false;
+#endif
+}
+
+}  // namespace wisp::port::esp

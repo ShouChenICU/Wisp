@@ -38,6 +38,14 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # one tick less than requested (the actual wait is in (n-1, n] ticks).
 CONFIG_FREERTOS_HZ=1000
 
+# Lets the tasks that never touch flash keep their stacks in PSRAM
+# (os::TaskConfig::external_stack, AGENTS.md section 5). Already the
+# default on the S3; pinned so that a change in menuconfig shows up here.
+# The option exists only with PSRAM. An ESP32 board turns it off in its
+# own sdkconfig.defaults.board (ESP-IDF's help: stacks in PSRAM are unsafe
+# there); the port then falls back to internal stacks.
+CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
+
 # Every wisp::os::Timer shares the one esp_timer dispatch task (see
 # os_esp.cpp's Timer section); the default stack is sized for ESP-IDF's
 # own light callbacks. Raised with headroom for wisp Timer callbacks.
