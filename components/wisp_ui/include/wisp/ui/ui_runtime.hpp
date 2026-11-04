@@ -27,7 +27,7 @@
 namespace wisp::ui {
 
 // The draw buffers' size and placement are the display's to declare, in
-// its caps (wisp/ui/draw_buf_policy.hpp), not the runtime's.
+// its caps (wisp/hal/draw_buf_policy.hpp), not the runtime's.
 struct UiConfig {
     uint32_t task_stack = 8192;
     int task_priority = 4;
@@ -74,7 +74,7 @@ public:
 
     // Calls lv_init(), creates the LVGL display (resolution taken from
     // `display`'s caps) with two partial draw buffers sized and placed
-    // by draw_buf_policy() from the same caps, in the byte order of caps
+    // by hal::draw_buf_policy() from the same caps, in the byte order of caps
     // "rgb565_be",
     // installs default_font() as the theme font, registers the
     // LV_EVENT_INVALIDATE_AREA handler that aligns flush areas to the

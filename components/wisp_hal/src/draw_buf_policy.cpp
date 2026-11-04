@@ -1,6 +1,6 @@
-#include "wisp/ui/draw_buf_policy.hpp"
+#include "wisp/hal/draw_buf_policy.hpp"
 
-namespace wisp::ui {
+namespace wisp::hal {
 
 namespace {
 
@@ -22,16 +22,13 @@ DrawBufPolicy draw_buf_policy(const Properties& caps) {
     if (const Value* v = find_cap(caps, "draw_buf_lines"); v != nullptr) {
         if (v->type() == Value::Type::Int && v->as_int() > 0) {
             if (height > 0 && v->as_int() > height) {
-                p.warnings.push_back("draw_buf_lines " + std::to_string(v->as_int()) +
-                                     " exceeds the display height; using " +
-                                     std::to_string(height));
+                p.warnings.push_back("draw_buf_lines exceeds the display height; clamped to it");
                 p.lines = static_cast<uint32_t>(height);
             } else {
                 p.lines = static_cast<uint32_t>(v->as_int());
             }
         } else {
-            p.warnings.push_back("draw_buf_lines must be a positive integer; using " +
-                                 std::to_string(kDefaultDrawBufLines));
+            p.warnings.push_back("draw_buf_lines must be a positive integer; using the default");
         }
     }
     // A display shorter than the default needs no taller buffer.
@@ -39,7 +36,7 @@ DrawBufPolicy draw_buf_policy(const Properties& caps) {
 
     if (const Value* v = find_cap(caps, "draw_buf_mem"); v != nullptr) {
         if (v->type() == Value::Type::String && v->as_string() == "large") {
-            p.mem = os::Mem::DmaLarge;
+            p.mem = DrawBufMem::Large;
         } else if (!(v->type() == Value::Type::String && v->as_string() == "dma")) {
             p.warnings.push_back("draw_buf_mem must be \"dma\" or \"large\"; using \"dma\"");
         }
@@ -53,4 +50,4 @@ DrawBufPolicy draw_buf_policy(const Properties& caps) {
     return p;
 }
 
-}  // namespace wisp::ui
+}  // namespace wisp::hal

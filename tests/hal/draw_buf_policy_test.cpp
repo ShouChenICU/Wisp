@@ -1,9 +1,9 @@
-// Unit tests for wisp::ui::draw_buf_policy(): how the Display caps
+// Unit tests for wisp::hal::draw_buf_policy(): how the Display caps
 // "draw_buf_lines", "draw_buf_mem" and "render_mode" become UiRuntime's
 // draw buffers, and that a display declaring none of them gets exactly
 // the buffers UiRuntime always used.
 
-#include "wisp/ui/draw_buf_policy.hpp"
+#include "wisp/hal/draw_buf_policy.hpp"
 
 #include <gtest/gtest.h>
 
@@ -11,9 +11,9 @@
 
 using wisp::Properties;
 using wisp::Value;
-using wisp::os::Mem;
-using wisp::ui::draw_buf_policy;
-using wisp::ui::DrawBufPolicy;
+using wisp::hal::draw_buf_policy;
+using wisp::hal::DrawBufMem;
+using wisp::hal::DrawBufPolicy;
 
 namespace {
 
@@ -24,8 +24,8 @@ Properties base_caps() { return Properties{{"width", 480}, {"height", 480}}; }
 TEST(DrawBufPolicy, DefaultsWithoutAnyDeclaration) {
     DrawBufPolicy p = draw_buf_policy(base_caps());
     EXPECT_EQ(p.lines, 24u);
-    EXPECT_EQ(p.lines, wisp::ui::kDefaultDrawBufLines);
-    EXPECT_EQ(p.mem, Mem::Dma);
+    EXPECT_EQ(p.lines, wisp::hal::kDefaultDrawBufLines);
+    EXPECT_EQ(p.mem, DrawBufMem::Dma);
     EXPECT_TRUE(p.warnings.empty());
 }
 
@@ -36,7 +36,7 @@ TEST(DrawBufPolicy, ExplicitDefaultsAreAcceptedSilently) {
     caps["render_mode"] = Value("partial");
     DrawBufPolicy p = draw_buf_policy(caps);
     EXPECT_EQ(p.lines, 24u);
-    EXPECT_EQ(p.mem, Mem::Dma);
+    EXPECT_EQ(p.mem, DrawBufMem::Dma);
     EXPECT_TRUE(p.warnings.empty());
 }
 
@@ -77,7 +77,7 @@ TEST(DrawBufPolicy, LargeMeansDmaCapablePsram) {
     Properties caps = base_caps();
     caps["draw_buf_mem"] = Value("large");
     DrawBufPolicy p = draw_buf_policy(caps);
-    EXPECT_EQ(p.mem, Mem::DmaLarge);
+    EXPECT_EQ(p.mem, DrawBufMem::Large);
     EXPECT_TRUE(p.warnings.empty());
 }
 
@@ -86,7 +86,7 @@ TEST(DrawBufPolicy, UnknownMemFallsBackToDma) {
         Properties caps = base_caps();
         caps["draw_buf_mem"] = bad;
         DrawBufPolicy p = draw_buf_policy(caps);
-        EXPECT_EQ(p.mem, Mem::Dma);
+        EXPECT_EQ(p.mem, DrawBufMem::Dma);
         EXPECT_EQ(p.warnings.size(), 1u);
     }
 }
@@ -99,7 +99,7 @@ TEST(DrawBufPolicy, OnlyPartialRenderModeIsImplemented) {
         caps["render_mode"] = Value(mode);
         DrawBufPolicy p = draw_buf_policy(caps);
         EXPECT_EQ(p.lines, 24u) << mode;
-        EXPECT_EQ(p.mem, Mem::Dma) << mode;
+        EXPECT_EQ(p.mem, DrawBufMem::Dma) << mode;
         EXPECT_EQ(p.warnings.size(), 1u) << mode;
     }
 }

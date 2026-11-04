@@ -300,6 +300,8 @@ fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致�
 
 静止时自检界面仍然是 10 fps（它每 100 ms 刷新约 7 个标签）：`WISP_PERF` cpu 22–23、flush_ms 0.70–0.87；开热点后 cpu 24–25、flush_ms 0.22–0.25。`boot_ms` 1826–1828。XIP 要在启动时把镜像拷进 PSRAM，app 开始运行的时刻从 960 ms 推迟到 1042 ms（ESP 日志里 `Pro cpu start user code` 的时间戳），还占用 3.1 MB PSRAM。默认字体的 8 位字形缓存在 PSRAM 里，上限 512 KB（`components/wisp_ui/src/a8_font.hpp`）。
 
+**静止 cpu 对代码布局敏感**：链接时排在 LVGL 前面的组件（`wisp_port_esp`、`main`、`wisp_app`、`wisp_admin`、`wisp_ui`）多出 1–3 KB 代码，就会把整个 LVGL 挪位，16 KB 指令 cache 里的冲突随之改变。同一界面、同样的缓冲，实测静止 cpu 在 24 和 33 之间跳动，fps 不变。所以改了这些组件要重测 `WISP_PERF`；不在渲染路径上的新代码优先放进链接在 LVGL 之后的组件（如 `wisp_hal`、`wisp_core`）。
+
 **每项改动的收益**（raw fps，关热点 / 开热点）：
 
 | 改动 | 关热点 | 开热点 | 说明 |

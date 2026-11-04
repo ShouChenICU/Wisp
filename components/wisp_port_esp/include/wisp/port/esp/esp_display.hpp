@@ -43,7 +43,7 @@ struct EspDisplayConfig {
     // (big-endian on the wire). Published as caps "rgb565_be", so callers
     // render in that order and flush() sends the buffer as is.
     bool rgb565_be = false;
-    // The draw-buffer policy (wisp/ui/draw_buf_policy.hpp), published as
+    // The draw-buffer policy (wisp/hal/draw_buf_policy.hpp), published as
     // caps "draw_buf_lines", "draw_buf_mem" and "render_mode" only when
     // set, so a board that leaves them alone gets the UI's defaults.
     int draw_buf_lines = 0;

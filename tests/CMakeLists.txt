@@ -31,6 +31,7 @@ endfunction()
 # are added.
 wisp_test(NAME result_test SRCS base/result_test.cpp LIBS wisp_base)
 wisp_test(NAME display_geometry_test SRCS hal/display_geometry_test.cpp LIBS wisp_hal)
+wisp_test(NAME draw_buf_policy_test SRCS hal/draw_buf_policy_test.cpp LIBS wisp_hal)
 wisp_test(NAME wifi_types_test SRCS hal/wifi_types_test.cpp LIBS wisp_hal)
 wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
 wisp_test(NAME value_test SRCS base/value_test.cpp LIBS wisp_base)
@@ -53,7 +54,6 @@ wisp_test(NAME storage_manager_test SRCS core/storage_manager_test.cpp LIBS wisp
 wisp_test(NAME power_monitor_test SRCS core/power_monitor_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings TIMEOUT 20)
 wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui)
-wisp_test(NAME draw_buf_policy_test SRCS ui/draw_buf_policy_test.cpp LIBS wisp_ui)
 wisp_test(NAME strings_test SRCS ui/strings_test.cpp LIBS wisp_ui wisp_port_sim_os)
 wisp_test(NAME ui_runtime_test SRCS ui/ui_runtime_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME overlay_test SRCS ui/overlay_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
