@@ -12,6 +12,19 @@
 using wisp::core::StorageWorker;
 using wisp::core::StorageWorkerConfig;
 
+namespace {
+
+// Releases a job blocked on `sem` when the test body exits, including by
+// a failed ASSERT, so the worker's destructor (stop()) can join instead of
+// hanging until the ctest timeout. Declare it after the worker so it runs
+// first, and the semaphore before the worker so it outlives the jobs.
+struct ReleaseOnExit {
+    wisp::os::Semaphore& sem;
+    ~ReleaseOnExit() { sem.give(); }
+};
+
+}  // namespace
+
 TEST(StorageWorker, RunsJobsFifoOnItsOwnTask) {
     StorageWorker w(StorageWorkerConfig{.queue_capacity = 128});
     ASSERT_TRUE(w.start());
@@ -36,11 +49,11 @@ TEST(StorageWorker, RunsJobsFifoOnItsOwnTask) {
 }
 
 TEST(StorageWorker, SubmitFailsWhenFull) {
-    StorageWorker w(StorageWorkerConfig{.queue_capacity = 2});
-    ASSERT_TRUE(w.start());
-
     wisp::os::Semaphore started(1, 0);
     wisp::os::Semaphore release(1, 0);
+    StorageWorker w(StorageWorkerConfig{.queue_capacity = 2});
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
     ASSERT_TRUE(w.submit([&] {
         started.give();
         release.take(wisp::os::kForever);
@@ -57,11 +70,11 @@ TEST(StorageWorker, SubmitFailsWhenFull) {
 }
 
 TEST(StorageWorker, StopRunsQueuedJobs) {
-    StorageWorker w(StorageWorkerConfig{.queue_capacity = 8});
-    ASSERT_TRUE(w.start());
-
     wisp::os::Semaphore release(1, 0);
     std::atomic<int> ran{0};
+    StorageWorker w(StorageWorkerConfig{.queue_capacity = 8});
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
     ASSERT_TRUE(w.submit([&] {
         release.take(wisp::os::kForever);
         ++ran;
