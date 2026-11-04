@@ -25,11 +25,18 @@ constexpr size_t kLimit = 2 * 1024 * 1024;
 
 // A clock the test drives: every read returns `now` and then moves it on
 // by `step`, so a loop that keeps reading it (the time hook) sees time
-// pass; scripts can also jump it with _G.advance(ms).
+// pass; scripts can also jump it with _G.advance(ms), or with
+// _G.arm(k, ms) make the k-th read from now jump it (to time a check
+// that runs inside a C loop).
 struct FakeClock {
     uint64_t now = 1000;
     uint64_t step = 0;
+    int64_t jump_in = 0;  // reads left until the jump; 0 = none armed
+    uint64_t jump_by = 0;
+    uint64_t reads = 0;
     uint64_t read() {
+        ++reads;
+        if (jump_in > 0 && --jump_in == 0) now += jump_by;
         uint64_t v = now;
         now += step;
         return v;
@@ -39,6 +46,13 @@ struct FakeClock {
 int advance(lua_State* L) {
     auto* clock = static_cast<FakeClock*>(lua_touserdata(L, lua_upvalueindex(1)));
     clock->now += static_cast<uint64_t>(luaL_checkinteger(L, 1));
+    return 0;
+}
+
+int arm(lua_State* L) {
+    auto* clock = static_cast<FakeClock*>(lua_touserdata(L, lua_upvalueindex(1)));
+    clock->jump_in = luaL_checkinteger(L, 1);
+    clock->jump_by = static_cast<uint64_t>(luaL_checkinteger(L, 2));
     return 0;
 }
 
@@ -60,6 +74,9 @@ std::unique_ptr<Vm> make(FakeClock& clock, VmLimits limits = {}, std::string id 
         lua_pushlightuserdata(vm->L(), &clock);
         lua_pushcclosure(vm->L(), advance, 1);
         lua_setglobal(vm->L(), "advance");
+        lua_pushlightuserdata(vm->L(), &clock);
+        lua_pushcclosure(vm->L(), arm, 1);
+        lua_setglobal(vm->L(), "arm");
     }
     return vm;
 }
@@ -656,6 +673,203 @@ TEST(Vm, CFanOutInsideCoroutinesTimesOut) {
         EXPECT_EQ(err->fault, ScriptFault::Timeout) << src << "\n" << describe(err);
         EXPECT_EQ(err->file, "main.lua") << describe(err);
         EXPECT_LT(clock.now - start, 100000u) << src;
+    }
+}
+
+// Every C function a scene can reach through the library tables checks
+// the limits before it does anything: with the deadline already passed,
+// calling it with no arguments is a timeout, never its own result or
+// argument error.
+TEST(Vm, EveryLibraryCFunctionChecksLimits) {
+    std::vector<std::string> exprs;
+    {
+        FakeClock clock;
+        auto vm = make(clock);
+        ASSERT_NE(vm, nullptr);
+        lua_State* L = vm->L();
+        struct Table {
+            const char* expr;  // how a script reaches the table
+            const char* name;  // global holding it, or nullptr for the string metatable
+        };
+        for (Table t :
+             {Table{"_G", "_G"}, Table{"string", "string"}, Table{"table", "table"},
+              Table{"math", "math"}, Table{"utf8", "utf8"}, Table{"coroutine", "coroutine"},
+              Table{"wisp", "wisp"}, Table{"getmetatable('')", nullptr}}) {
+            if (t.name)
+                lua_getglobal(L, t.name);
+            else
+                lua_getmetatable(L, (lua_pushliteral(L, ""), -1));
+            ASSERT_EQ(lua_type(L, -1), LUA_TTABLE) << t.expr;
+            lua_pushnil(L);
+            while (lua_next(L, -2)) {
+                if (lua_iscfunction(L, -1) && lua_type(L, -2) == LUA_TSTRING) {
+                    std::string key = lua_tostring(L, -2);
+                    if (key != "advance" && key != "arm")
+                        exprs.push_back(std::string(t.expr) + "['" + key + "']");
+                }
+                lua_pop(L, 1);
+            }
+            lua_settop(L, 0);
+        }
+    }
+    EXPECT_GT(exprs.size(), 80u) << exprs.size();
+    for (const auto& expr : exprs) {
+        FakeClock clock;
+        auto vm = make(clock);
+        ASSERT_NE(vm, nullptr);
+        std::string src = "local f = " + expr + "\n_G.advance(1000)\nf()\n";
+        auto err = run(*vm, src);
+        if (!err) {
+            ADD_FAILURE() << expr << " ran";
+            continue;
+        }
+        EXPECT_EQ(err->fault, ScriptFault::Timeout) << expr << ": " << describe(err);
+    }
+}
+
+TEST(Vm, LibraryFunctionsBehaveAsStock) {
+    FakeClock clock;
+    auto vm = make(clock);
+    ASSERT_NE(vm, nullptr);
+    auto err = run(*vm, R"lua(
+        local function fails(pattern, f, ...)
+            local ok, e = pcall(f, ...)
+            assert(not ok and string.find(e, pattern, 1, true), tostring(e))
+        end
+        assert(string.byte("AB", 1, 2) == 65 and select(2, string.byte("AB", 1, 2)) == 66)
+        assert(("abc"):upper() == "ABC" and #("x"):rep(3, ",") == 5)
+        assert(string.format("%d-%s-%q", 7, "x", "y") == '7-x-"y"')
+        assert(select("#", ("a,b,c"):gsub(",", ";")) == 2)
+        assert(("a,b,c"):gsub(",", {[","] = "+"}) == "a+b+c")
+        local up = setmetatable({}, {__index = function(_, k) return k ~= "b" and k:upper() end})
+        assert(("abc"):gsub("%w", up) == "AbC")
+        assert(("k=v x=y"):gsub("(%w)=(%w)", setmetatable({x = "X"}, {__index = up})) == "K X")
+        assert(("ab"):gsub("()", setmetatable({}, {__index = function(_, k) return k end})) == "1a2b3")
+        fails("invalid replacement value (a table)", string.gsub, "a", "a",
+              setmetatable({}, {__index = function() return {} end}))
+        assert(("hello"):find("l") == 3 and ("k=v"):match("(%w)=(%w)") == "k")
+        local words = {}
+        for w in ("a b c"):gmatch("%a") do words[#words + 1] = w end
+        assert(table.concat(words) == "abc")
+        fails("bad argument #1 to 'string.byte'", string.byte)
+        fails("bad argument #1 to 'string.upper'", string.upper, {})
+        fails("number expected, got no value", math.floor)
+        local ok, e = pcall(error, {code = 1})
+        assert(not ok and e.code == 1)
+        local ok2, e2 = pcall(function() error("lvl", 1) end)
+        assert(not ok2 and e2 == "main.lua:26: lvl", e2)
+        local ok3, e3 = pcall(function() local function g() error("up", 2) end g() end)
+        assert(not ok3 and e3 == "main.lua:28: up", e3)
+        assert(math.floor(2.5) == 2 and math.max(1, 5, 3) == 5 and math.type(1) == "integer")
+        assert(utf8.char(72, 228) == "H\u{E4}" and utf8.len("H\u{E4}") == 2)
+        assert(tostring(12) == "12" and tonumber("0x10") == 16 and type(print) == "function")
+        assert(select("#", table.unpack({1, nil, 3}, 1, 3)) == 3)
+        local m = table.move({1, 2, 3}, 1, 3, 2)
+        assert(m[1] == 1 and m[2] == 1 and m[3] == 2 and m[4] == 3)
+        local m2 = table.move({1, 2, 3}, 2, 3, 1)
+        assert(m2[1] == 2 and m2[2] == 3 and m2[3] == 3)
+        assert(table.concat({1, 2, "x"}, "-", 2) == "2-x")
+        fails("invalid value (table) at index 2 in table for 'concat'", table.concat, {1, {}})
+        fails("wrap around", table.move, {}, 1, 2, math.maxinteger)
+        fails("too many elements to move", table.move, {}, -1, math.maxinteger, 1)
+        fails("bad argument #1 to 'table.move' (table expected, got number)", table.move, 1, 1, 1, 1)
+        fails("bad argument #1 to 'table.unpack' (table expected, got no value)", table.unpack)
+        fails("too many results to unpack", table.unpack, {}, 1, math.maxinteger)
+        local p = table.pack(1, nil, 3)
+        assert(p.n == 3 and p[3] == 3)
+        local n = 0
+        for k, v in pairs({a = 1, b = 2}) do n = n + v end
+        for i, v in ipairs({4, 5}) do n = n + v end
+        assert(n == 12 and next({}) == nil and rawlen({1, 2}) == 2 and rawequal(n, 12))
+        local co = coroutine.wrap(function(a)
+            local b = coroutine.yield(a + 1)
+            assert(coroutine.isyieldable() and coroutine.running())
+            return b * 2
+        end)
+        assert(co(1) == 2 and co(5) == 10)
+        local c2 = coroutine.create(function() coroutine.yield(1) end)
+        assert(coroutine.status(c2) == "suspended" and coroutine.resume(c2))
+        assert(select(2, coroutine.resume(c2)) == nil and coroutine.status(c2) == "dead")
+        assert(not coroutine.isyieldable())
+        local lens = setmetatable({}, {__index = function(_, k) return #k end})
+        assert(lens.abc == 3)
+        assert(getmetatable("").__index == string)
+        assert(collectgarbage("count") > 0)
+        assert(load("return 1 + 1")() == 2)
+        local parts = {"return ", "3"}
+        local i = 0
+        assert(load(function() i = i + 1 return parts[i] end)() == 3)
+        print("stock", 1, nil)
+    )lua");
+    EXPECT_FALSE(err) << describe(err);
+}
+
+// Instruction-free C loops that call back into the C library on every
+// step (each call is checked on entry), so they end in a timeout.
+TEST(Vm, CLoopsOverLibraryCallsTimeOut) {
+    for (const char* src : {
+             // collectgarbage as a gsub replacement and as a load reader.
+             R"(local s = string.rep("collect", 5000)
+                s:gsub("collect", collectgarbage))",
+             R"(load(collectgarbage))",
+             // print as a gsub replacement and as __index of a moved table.
+             R"(string.rep("x", 20000):gsub("", print))",
+             R"(local src = setmetatable({}, {__index = print})
+                table.move(src, 1, 20000, 1, {}))",
+         }) {
+        FakeClock clock;
+        clock.step = 1;
+        auto vm = make(clock);
+        ASSERT_NE(vm, nullptr);
+        auto err = run(*vm, src);
+        if (!err) {
+            ADD_FAILURE() << src << " ran";
+            continue;
+        }
+        EXPECT_EQ(err->fault, ScriptFault::Timeout) << src << "\n" << describe(err);
+        EXPECT_LT(clock.reads, 2000u) << src;
+    }
+}
+
+// Each step of a table function's loop can walk a long __index chain
+// without any call or instruction; the loops check the limits as they
+// go. arm(2, ...) moves the clock past the deadline on the second read:
+// the first is the check on entry, so only a check inside the loop can
+// see it.
+TEST(Vm, TableLoopsCheckLimitsWhileRunning) {
+    const char* chain = R"(
+        local function chain(tail)
+            local head = {}
+            local t = head
+            for i = 1, 1000 do local n = {} setmetatable(t, {__index = n}) t = n end
+            if tail then setmetatable(t, {__index = tail}) end
+            return head
+        end
+        local N = 20000
+        local strings = {}
+        for i = 1, N do strings[i] = "" end
+        local function proxy() return setmetatable({}, {__len = function() return N end, __index = chain()}) end
+    )";
+    for (const char* call : {
+             "local h = chain() _G.arm(2, 1000) table.move(h, 1, N, 1, {})",
+             "local h = chain(strings) _G.arm(2, 1000) table.concat(h, '', 1, N)",
+             "local h = chain() _G.arm(2, 1000) table.unpack(h, 1, N)",
+             "local p = proxy() _G.arm(2, 1000) table.insert(p, 1, 'v')",
+             "local p = proxy() _G.arm(2, 1000) table.remove(p, 1)",
+             "local p = proxy() _G.arm(2, 1000) table.sort(p)",
+             // gsub reads a replacement table once per match.
+             "local s, h = string.rep('x', N), chain() _G.arm(2, 1000) s:gsub('.', h)",
+         }) {
+        FakeClock clock;
+        auto vm = make(clock);
+        ASSERT_NE(vm, nullptr);
+        std::string src = std::string(chain) + call + "\n";
+        auto err = run(*vm, src);
+        if (!err) {
+            ADD_FAILURE() << call << " ran";
+            continue;
+        }
+        EXPECT_EQ(err->fault, ScriptFault::Timeout) << call << "\n" << describe(err);
     }
 }
 

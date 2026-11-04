@@ -24,14 +24,24 @@
 //     a fault, coroutine.close refuses once the VM has faulted, and
 //     lua_close does not close coroutines (only the main thread, whose
 //     hooks every lua_pcall restores).
-// C loops that neither limit can stop are capped as well: table.move,
-// insert, remove, sort and concat refuse ranges over 2^20 elements, and
-// insert, remove and sort a negative length ("range too large"). Each
-// loop runs over a bound that was checked, whatever a __len answers when
-// called again. Sorting anything with a metatable goes through a plain
-// copy of its elements, which counts toward the memory limit like any
-// other table. pcall, xpcall, load, the table functions and the
-// coroutine functions check the time limit on entry (check_limits()).
+// Work that runs no Lua instruction: every C function in the library
+// tables (_G, string, table, math, utf8, coroutine, wisp, and the string
+// metatable) checks the limits when it is entered (check_c_functions()),
+// so a chain or loop of C calls stops at the first call after the
+// deadline; pcall, xpcall, load and the coroutine functions check again
+// when they return, and load checks every call of a reader function. The
+// C loops that run metamethods per element (table.move, concat, unpack,
+// insert, remove, sort, and gsub with a replacement table that has a
+// metatable) also check every 256 elements, since one element can walk a
+// 2000-step __index chain. The table loops refuse ranges over 2^20
+// elements, and insert, remove and sort a negative length ("range too
+// large"); each loop runs over a bound that was checked, whatever a __len
+// answers when called again. Sorting anything with a metatable goes
+// through a plain copy of its elements, which counts toward the memory
+// limit like any other table. Known limit: a single C call that is slow
+// by itself (string.find on long strings is O(n*m), pattern matching can
+// backtrack) is not interrupted, so the time limit can be overrun by one
+// such call.
 //
 // Scene code may run only under Vm::call(): the time limit is measured
 // from there, and code a host runs with its own lua_pcall outside a call
@@ -154,12 +164,12 @@ public:
     bool faulted() const { return fault_ != Fault::None; }
 
     // Raises the VM's fault in L if it has one, or a timeout if call()'s
-    // time limit has passed; otherwise returns. Every C function that
-    // calls back into Lua in a loop or catches errors calls this on
-    // entry: a chain of such functions (pcall as __index of a table that
-    // table.unpack walks, ...) runs no Lua instruction, so the count hook
-    // alone would never see the deadline. Bindings that loop or call back
-    // into Lua do the same. Follows the longjmp rule below.
+    // time limit has passed; otherwise returns (and settles a pending
+    // refusal, see above). The count hook only sees Lua instructions, so
+    // C code calls this instead: on entry to every scene-visible C
+    // function (check_c_functions() arranges that), after anything that
+    // catches errors, and every so often inside a C loop that calls back
+    // into Lua or walks metamethods. Follows the longjmp rule below.
     void check_limits(lua_State* L);
 
 private:
@@ -229,6 +239,14 @@ std::optional<ScriptError> compile_check(std::string_view path, std::string_view
 // objects with non-trivial destructors either: an error inside fn
 // longjmps out of it.
 int protect(lua_State* L, void (*fn)(lua_State*, void*), void* ctx);
+
+// Replaces every C function in the table at `table` with a closure that
+// calls Vm::check_limits() and then the function itself, on the same
+// Lua frame (no extra C call level). Vm::create() does this for the
+// library tables; a binding does it for each table of functions it adds
+// for scenes. A function with more than two upvalues of its own cannot
+// be wrapped: it is left alone and logged as a warning.
+void check_c_functions(lua_State* L, int table);
 
 // luaL_newmetatable for a binding's userdata type, with __metatable set
 // so scripts can neither read nor replace it (getmetatable returns
