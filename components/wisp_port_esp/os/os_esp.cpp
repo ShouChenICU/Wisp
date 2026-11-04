@@ -85,28 +85,57 @@ uint64_t now_us() { return static_cast<uint64_t>(esp_timer_get_time()); }
 
 void sleep_ms(uint32_t ms) { vTaskDelay(ms_to_ticks(ms)); }
 
-void* alloc(size_t bytes, Mem kind) {
+namespace {
+
+// mem_caps() result for a kind this chip cannot serve at all.
+constexpr uint32_t kNoCaps = 0;
+
+uint32_t mem_caps(Mem kind) {
     switch (kind) {
         case Mem::Large:
-            return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+            return MALLOC_CAP_SPIRAM;
         case Mem::Fast:
-            return heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            return MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
         case Mem::Dma:
-            return heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+            return MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
         case Mem::DmaLarge:
             // Cache-line alignment (address and size) is what lets a
             // DMA-capable chip's driver write back and send a buffer from
             // PSRAM without sharing a cache line with other data.
 #if SOC_PSRAM_DMA_CAPABLE
-            return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
+            return MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED;
 #else
-            return nullptr;
+            return kNoCaps;
 #endif
     }
-    return nullptr;
+    return MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+}
+
+}  // namespace
+
+void* alloc(size_t bytes, Mem kind) {
+    uint32_t caps = mem_caps(kind);
+    return caps == kNoCaps ? nullptr : heap_caps_malloc(bytes, caps);
 }
 
 void dealloc(void* p) { heap_caps_free(p); }
+
+void* realloc(void* p, size_t bytes, Mem kind) {
+    // heap_caps_realloc() already treats nullptr as malloc and 0 as free,
+    // but os.hpp promises both explicitly, so do not lean on it.
+    if (bytes == 0) {
+        heap_caps_free(p);
+        return nullptr;
+    }
+    uint32_t caps = mem_caps(kind);
+    if (caps == kNoCaps) {
+        return nullptr;
+    }
+    if (p == nullptr) {
+        return heap_caps_malloc(bytes, caps);
+    }
+    return heap_caps_realloc(p, bytes, caps);
+}
 
 // ---------------------------------------------------------------------------
 // Mutex

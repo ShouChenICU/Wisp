@@ -51,6 +51,16 @@ void* alloc(size_t bytes, Mem /*kind*/) {
 
 void dealloc(void* p) { std::free(p); }
 
+void* realloc(void* p, size_t bytes, Mem /*kind*/) {
+    // std::realloc(p, 0) is implementation-defined (and deprecated in
+    // C23); spell out the contract from os.hpp instead.
+    if (bytes == 0) {
+        std::free(p);
+        return nullptr;
+    }
+    return std::realloc(p, bytes);
+}
+
 // ---------------------------------------------------------------------------
 // Mutex
 // ---------------------------------------------------------------------------

@@ -43,6 +43,13 @@ enum class Mem { Fast, Large, Dma, DmaLarge };
 void* alloc(size_t bytes, Mem kind);
 void dealloc(void* p);
 
+// Resizes a block from alloc() (or nullptr), keeping the first
+// min(old, new) bytes. The result lives in `kind` memory, moving the block
+// if it was not already there. `p == nullptr` behaves like alloc();
+// `bytes == 0` frees `p` and returns nullptr. Returns nullptr on failure,
+// leaving `p` valid and unchanged.
+void* realloc(void* p, size_t bytes, Mem kind);
+
 // A mutual-exclusion lock satisfying BasicLockable (lock/unlock/try_lock),
 // so it can be used directly with std::lock_guard / std::unique_lock.
 class Mutex {
