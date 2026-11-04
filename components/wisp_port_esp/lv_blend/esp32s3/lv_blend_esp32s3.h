@@ -22,6 +22,11 @@
  * Each routine only handles the case LVGL calls the hook for: a fill
  * with no mask at full opacity, or a copy of an image with no mask at
  * full opacity.
+ *
+ * The copy, as upstream, may read up to 32 bytes past the end of a
+ * source row (it loads whole 16-byte vectors). Sources are LVGL draw
+ * buffers and images in RAM or mapped flash, where such a read cannot
+ * fault on the S3, and the extra bytes are not stored.
  */
 
 #pragma once
