@@ -9,7 +9,7 @@
 // firmware prints them with every task's stack.
 //
 // The figures were set on the one board measured so far
-// (waveshare_amoled_216, ESP32-S3 with PSRAM). A board with much less
+// (see docs/hardware/waveshare_amoled_216.md). A board with much less
 // internal RAM would warn on every server start; give it its own floors
 // (a board cap) rather than loosening these.
 

@@ -94,9 +94,9 @@ void* alloc(size_t bytes, Mem kind) {
         case Mem::Dma:
             return heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         case Mem::DmaLarge:
-            // The PSRAM heap never carries MALLOC_CAP_DMA; cache-line
-            // alignment is what lets a DMA-capable chip's driver write
-            // back and send a buffer from it.
+            // Cache-line alignment (address and size) is what lets a
+            // DMA-capable chip's driver write back and send a buffer from
+            // PSRAM without sharing a cache line with other data.
 #if SOC_PSRAM_DMA_CAPABLE
             return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
 #else
