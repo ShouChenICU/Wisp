@@ -20,7 +20,7 @@ namespace wisp::core {
 struct SceneManifest {
     std::string id;                  // [a-z0-9_-], 1-32 bytes; also the directory name
     std::string name;                // 1-32 bytes of valid UTF-8
-    std::string version;             // SemVer 2.0
+    std::string version;             // SemVer 2.0, at most 64 bytes
     std::string entry = "main.lua";  // a top-level *.lua file
     std::string icon;                // empty, or a file under assets/
     int schema_version = 1;

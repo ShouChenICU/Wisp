@@ -17,6 +17,8 @@ namespace {
 constexpr size_t kMaxManifestBytes = 16 * 1024;
 constexpr size_t kMaxIdBytes = 32;
 constexpr size_t kMaxNameBytes = 32;
+// SemVer sets no limit; the version is shown in lists and logs.
+constexpr size_t kMaxVersionBytes = 64;
 constexpr size_t kMaxHosts = 16;
 constexpr size_t kMaxHostBytes = 253;
 
@@ -249,8 +251,8 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
     if (!string_field(root, "version", m.version, present) || !present) {
         return invalid("version must be a string");
     }
-    if (!valid_semver(m.version)) {
-        return invalid("version must be a semantic version such as 1.0.0");
+    if (m.version.size() > kMaxVersionBytes || !valid_semver(m.version)) {
+        return invalid("version must be a semantic version such as 1.0.0, at most 64 bytes");
     }
 
     const Value* schema = root.find("schema_version");

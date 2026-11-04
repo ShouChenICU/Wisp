@@ -85,6 +85,9 @@ TEST(SceneManifest, VersionIsSemver) {
                           "1.0.0-a..b", "1.0.0+", "1.0.0+a_b", "", "1.0.0.0"}) {
         EXPECT_FALSE(accepts(manifest("todo", "x", v))) << v;
     }
+    // At most 64 bytes.
+    EXPECT_TRUE(accepts(manifest("todo", "x", "1.0.0-" + std::string(58, 'a'))));
+    EXPECT_FALSE(accepts(manifest("todo", "x", "1.0.0-" + std::string(59, 'a'))));
 }
 
 TEST(SceneManifest, SchemaEntryIconHosts) {

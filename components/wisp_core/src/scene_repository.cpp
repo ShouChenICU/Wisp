@@ -34,10 +34,27 @@ bool reserved_name(std::string_view name) {
     return ends_with(name, ".tmp") || ends_with(name, ".new");
 }
 
+// True if any '/'-separated segment of `path` is a bookkeeping name. A
+// directory with such a name would be written but then skipped by every
+// walk below, silently dropping the files inside it.
+bool has_reserved_segment(std::string_view path) {
+    while (!path.empty()) {
+        size_t slash = path.find('/');
+        if (reserved_name(path.substr(0, slash))) {
+            return true;
+        }
+        if (slash == std::string_view::npos) {
+            break;
+        }
+        path = path.substr(slash + 1);
+    }
+    return false;
+}
+
 // The files a package may contain: scene.json, the entry, lib/**/*.lua and
 // assets/**. data/ belongs to SceneStore and never travels in a package.
 bool allowed_file(std::string_view path, std::string_view entry) {
-    if (reserved_name(last_segment(path))) {
+    if (has_reserved_segment(path)) {
         return false;
     }
     if (path == kManifest || path == entry) {
@@ -50,7 +67,8 @@ bool allowed_file(std::string_view path, std::string_view entry) {
 }
 
 bool allowed_dir(std::string_view path) {
-    return starts_with(path, "lib/") || starts_with(path, "assets/");
+    return (starts_with(path, "lib/") || starts_with(path, "assets/")) &&
+           !has_reserved_segment(path);
 }
 
 bool is_lua(std::string_view path) { return ends_with(path, ".lua"); }
@@ -373,7 +391,9 @@ Result<SceneInfo> SceneRepository::install(std::span<const uint8_t> zip,
     }
 
     if (check) {
-        std::vector<SourceFile> sources;
+        // In Mem::Large like everything else here: the uploader chooses how
+        // many files there are.
+        os::LargeVector<SourceFile> sources;
         sources.reserve(lua_files);
         for (const auto& [path, body] : files) {
             if (is_lua(path)) {
@@ -382,7 +402,7 @@ Result<SceneInfo> SceneRepository::install(std::span<const uint8_t> zip,
                      std::string_view(reinterpret_cast<const char*>(body.data()), body.size())});
             }
         }
-        Result<void> checked = check(sources);
+        Result<void> checked = check(std::span<const SourceFile>(sources));
         if (!checked) {
             return fail<SceneInfo>(checked.error());
         }
@@ -445,21 +465,28 @@ Result<void> SceneRepository::finish_replace(const std::string& id) {
         return storage_.remove_tree(neu);
     }
 
+    // Packages never carry data/, so anything at <id>/data is the scene's
+    // data, whatever the configured roots look like, and .newdir/data
+    // exists only if this move already happened before an interruption.
     const std::string dir = code_dir(id);
-    if (data_in_code()) {
-        Result<Kind> old_data = probe(storage_, dir + "/data");
-        if (!old_data) {
-            return Result<void>::err(old_data.error().code, old_data.error().message);
+    Result<Kind> old_data = probe(storage_, dir + "/data");
+    if (!old_data) {
+        return Result<void>::err(old_data.error().code, old_data.error().message);
+    }
+    Result<Kind> new_data = probe(storage_, neu + "/data");
+    if (!new_data) {
+        return Result<void>::err(new_data.error().code, new_data.error().message);
+    }
+    if (old_data.value() != Kind::Missing) {
+        if (new_data.value() != Kind::Missing) {
+            // Only possible if an earlier replace failed after the move and
+            // the scene then wrote data again. Deleting either copy could
+            // lose what the user wrote last; leave both for a person.
+            return Result<void>::err(
+                ErrorCode::AlreadyExists,
+                "both " + dir + "/data and " + neu + "/data exist; not replacing scene " + id);
         }
-        Result<Kind> new_data = probe(storage_, neu + "/data");
-        if (!new_data) {
-            return Result<void>::err(new_data.error().code, new_data.error().message);
-        }
-        // Packages never carry data/, so .newdir/data exists only if this
-        // move already happened before an interruption.
-        if (old_data.value() == Kind::Dir && new_data.value() == Kind::Missing) {
-            WISP_TRY(storage_.rename(dir + "/data", neu + "/data"));
-        }
+        WISP_TRY(storage_.rename(dir + "/data", neu + "/data"));
     }
     WISP_TRY(storage_.remove_tree(dir));
     return storage_.rename(neu, dir);
@@ -483,9 +510,9 @@ Result<void> SceneRepository::recover() {
             continue;
         }
         Result<void> r = Result<void>::ok();
-        if (ends_with(name, kTmpSuffix)) {
+        if (ends_with(name, kTmpSuffix) && name.size() > 1 + kTmpSuffix.size()) {
             r = storage_.remove_tree(config_.code_root + "/" + e.name);
-        } else if (ends_with(name, kNewSuffix)) {
+        } else if (ends_with(name, kNewSuffix) && name.size() > 1 + kNewSuffix.size()) {
             std::string_view id = name.substr(1, name.size() - 1 - kNewSuffix.size());
             if (!valid_scene_id(id)) {
                 continue;
@@ -557,32 +584,38 @@ Result<void> SceneRepository::remove(std::string_view id_view, bool with_data) {
         return R::err(m.error().code, m.error().message);
     }
     const bool installed = m || m.error().code == ErrorCode::InvalidArgument;
+    // As in finish_replace(), <id>/data is the scene's data however the
+    // roots are spelled; data_dir(id) covers a data root of its own.
+    Result<Kind> kept = probe(storage_, dir + "/data");
+    if (!kept) {
+        return R::err(kept.error().code, kept.error().message);
+    }
     Result<Kind> data = probe(storage_, data_dir(id));
     if (!data) {
         return R::err(data.error().code, data.error().message);
     }
-    const bool has_data = data.value() != Kind::Missing;
+    const bool has_data = kept.value() != Kind::Missing || data.value() != Kind::Missing;
     if (!installed && !(with_data && has_data)) {
         return R::err(ErrorCode::NotFound, "scene not installed: " + id);
     }
 
+    // scene.json goes first, so a remove cut short already reads as "not
+    // installed" instead of as a package with missing files.
+    WISP_TRY(storage_.remove_tree(dir + "/" + std::string(kManifest)));
     if (with_data) {
         WISP_TRY(storage_.remove_tree(dir));
-        if (!data_in_code()) {
-            WISP_TRY(storage_.remove_tree(config_.data_root + "/" + id));
-        }
+        // A no-op when the data was inside `dir`.
+        WISP_TRY(storage_.remove_tree(config_.data_root + "/" + id));
         WLOG_I(kTag, "removed %s with its data", id.c_str());
         return R::ok();
     }
-    if (!data_in_code() || !has_data) {
+    if (kept.value() == Kind::Missing) {
         WISP_TRY(storage_.remove_tree(dir));
         WLOG_I(kTag, "removed %s", id.c_str());
         return R::ok();
     }
 
-    // The data directory stays in place. scene.json goes first, so a remove
-    // cut short already reads as "not installed".
-    WISP_TRY(storage_.remove_tree(dir + "/" + std::string(kManifest)));
+    // The data directory stays in place.
     Result<std::vector<DirEntry>> listed = storage_.list_dir(dir);
     if (!listed) {
         return R::err(listed.error().code, listed.error().message);

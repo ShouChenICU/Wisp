@@ -324,8 +324,8 @@ struct SceneManifest { std::string id, name, version, entry = "main.lua", icon; 
 bool valid_scene_id(std::string_view id);
 Result<SceneManifest> parse_scene_manifest(std::string_view json);
 struct SceneInfo { SceneManifest manifest; uint64_t code_bytes = 0; uint64_t data_bytes = 0; };
-struct SourceFile { std::string path; std::string_view text; };
-using SourceChecker = std::function<Result<void>(const std::vector<SourceFile>&)>;
+struct SourceFile { std::string_view path; std::string_view text; };   // 都指向安装中的包，只在调用期间有效
+using SourceChecker = std::function<Result<void>(std::span<const SourceFile>)>;  // 背后是 os::LargeVector<SourceFile>
 struct ScenePackage { SceneManifest manifest; std::vector<std::pair<std::string, os::LargeBuffer>> files; };
 struct SceneRepoConfig { std::string code_root; std::string data_root; bool dev = false;
                          size_t max_code_bytes = 512 * 1024; };
@@ -343,9 +343,9 @@ public:
 };
 ```
 
-- 校验规则（spec 6.2）：`id` 匹配 `^[a-z0-9_-]{1,32}$`；`name` 1–32 字节有效 UTF-8；`version` 匹配 SemVer 2.0（`MAJOR.MINOR.PATCH`，无前导零，可带 `-pre` 与 `+build`）；`schema_version` 必须为 1；`entry` 是顶层 `*.lua`；`icon` 可空，否则以 `assets/` 开头且包内存在；`permissions.http` 为小写主机名数组（`[a-z0-9.-]`，不含 `*`、`:`、`/`，非空，≤ 253 字节，最多 16 个）；未知顶层字段忽略。
+- 校验规则（spec 6.2）：`id` 匹配 `^[a-z0-9_-]{1,32}$`；`name` 1–32 字节有效 UTF-8；`version` 匹配 SemVer 2.0（`MAJOR.MINOR.PATCH`，无前导零，可带 `-pre` 与 `+build`，最长 64 字节）；`schema_version` 必须为 1；`entry` 是顶层 `*.lua`；`icon` 可空，否则以 `assets/` 开头且包内存在；`permissions.http` 为小写主机名数组（`[a-z0-9.-]`，不含 `*`、`:`、`/`，非空，≤ 253 字节，最多 16 个）；未知顶层字段忽略。
 - 包内允许的文件：`scene.json`、`<entry>`、`lib/**/*.lua`、`assets/**`；其余拒绝（含 `data/`）。代码总大小 ≤ 512 KB。
-- 安装（spec 6.3）：解到 `<code_root>/.<id>.tmp/`（每个文件 `write_atomic`）→ 调 `check` 编译全部 `.lua`（失败则删暂存目录，错误原样返回，消息形如 `lib/util.lua:3: ...`）→ `rename` 为 `.<id>.new` → 若 `<id>/data` 存在就移进 `.<id>.new/data` → `remove_tree(<id>)` → `rename(.<id>.new, <id>)`。`recover()`：`.<id>.tmp` 一律删除；`.<id>.new` 存在即视为完整，按上面顺序补完剩余步骤。`http_hosts` 与旧版本不同时 `WLOG_I` 标签 `scene.<id>` 记一条 `http hosts changed: [...] -> [...]`。
+- 安装（spec 6.3）：先在内存（PSRAM）里校验并调 `check` 编译全部 `.lua`（失败则不写任何文件，错误原样返回，消息形如 `lib/util.lua:3: ...`）→ 解到 `<code_root>/.<id>.tmpdir/`（每个文件 `write_atomic`）→ `rename` 为 `.<id>.newdir` → 若 `<id>/data` 存在就移进 `.<id>.newdir/data`（不比较 code_root 与 data_root 的字符串；两边都有 `data/` 时报错、不删任何一份）→ `remove_tree(<id>)` → `rename(.<id>.newdir, <id>)`。`recover()`：`.<id>.tmpdir` 一律删除；`.<id>.newdir` 存在即视为完整，按上面顺序补完剩余步骤。暂存目录名用 `.tmpdir`/`.newdir` 而不是 `.tmp`/`.new`：`StorageManager` 把以 `.tmp`/`.new` 结尾的名字保留给 `write_atomic` 的簿记，`rename`/`remove_tree`/`list_dir` 都拒绝这类路径。`http_hosts` 与旧版本不同时 `WLOG_I` 标签 `scene.<id>` 记一条 `http hosts changed: [...] -> [...]`。
 - `dev` 为真时 `install`/`remove` 返回 `Unsupported`。
 
 - [ ] **Step 1: 写失败的测试**
@@ -849,7 +849,7 @@ public:
     virtual Result<void> close(const std::string& id) = 0;
     virtual Result<void> reload(const std::string& id) = 0;
     virtual SceneStatus status(const std::string& id) const = 0;
-    virtual Result<void> check_sources(const std::vector<SourceFile>& files) = 0;  // 在场景任务上编译，最多等 10 s
+    virtual Result<void> check_sources(std::span<const SourceFile> files) = 0;  // 在场景任务上编译，最多等 10 s
     virtual void on_installed(const std::string& id) = 0;                          // 运行中则重载，否则发 stopped
 };
 ```

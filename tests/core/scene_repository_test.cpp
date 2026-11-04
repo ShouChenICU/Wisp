@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <span>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -72,7 +73,7 @@ uint64_t total_size(const Files& files) {
     return n;
 }
 
-Result<void> accept_all(const std::vector<SourceFile>&) { return Result<void>::ok(); }
+Result<void> accept_all(std::span<const SourceFile>) { return Result<void>::ok(); }
 
 void write_raw(const fs::path& path, const std::string& contents) {
     std::error_code ec;
@@ -100,13 +101,16 @@ void lay_out(const fs::path& dir, const Files& files) {
 }
 
 struct Fixture {
-    explicit Fixture(bool dev = false) : in(wisp::test::temp_dir().string()) {
+    // `data_root` is appended to the storage root; by default it is the
+    // code root.
+    explicit Fixture(bool dev = false, const std::string& data_root = "/scenes")
+        : in(wisp::test::temp_dir().string()) {
         registry.add(std::make_shared<wisp::test::FakeStorage>("storage.int", in, false));
         storage = std::make_unique<wisp::core::StorageManager>(registry, bus);
         EXPECT_TRUE(storage->init());
         SceneRepoConfig config;
         config.code_root = in + "/scenes";
-        config.data_root = in + "/scenes";
+        config.data_root = in + data_root;
         config.dev = dev;
         repo = std::make_unique<SceneRepository>(*storage, config);
     }
@@ -144,9 +148,9 @@ TEST(SceneRepository, InstallsAndLists) {
     Fixture f;
     std::vector<std::string> checked;
     std::vector<uint8_t> zip = zip_of(todo_files());
-    auto r = f.repo->install(zip, [&](const std::vector<SourceFile>& files) {
+    auto r = f.repo->install(zip, [&](std::span<const SourceFile> files) {
         for (const auto& s : files) {
-            checked.push_back(s.path + "=" + std::string(s.text));
+            checked.push_back(std::string(s.path) + "=" + std::string(s.text));
         }
         return Result<void>::ok();
     });
@@ -228,7 +232,7 @@ TEST(SceneRepository, ReinstallKeepsData) {
 TEST(SceneRepository, RejectsCheckerErrorWithFileAndLine) {
     Fixture f;
     std::vector<uint8_t> zip = zip_of(todo_files());
-    auto r = f.repo->install(zip, [](const std::vector<SourceFile>&) {
+    auto r = f.repo->install(zip, [](std::span<const SourceFile>) {
         return Result<void>::err(ErrorCode::InvalidArgument, "lib/util.lua:3: x");
     });
     ASSERT_FALSE(r);
@@ -257,8 +261,8 @@ TEST(SceneRepository, CodeLimitIs512KB) {
 
 TEST(SceneRepository, RejectsUnexpectedFilesAndData) {
     Fixture f;
-    for (const char* extra :
-         {"README.md", "data/kv.log", "lib/x.txt", "other.lua", "assets/a.tmp"}) {
+    for (const char* extra : {"README.md", "data/kv.log", "lib/x.txt", "other.lua", "assets/a.tmp",
+                              "lib/x.new/y.lua", "assets/a.tmp/b.png"}) {
         Files files = todo_files();
         files.emplace_back(extra, "x");
         auto r = f.install(files);
@@ -266,9 +270,11 @@ TEST(SceneRepository, RejectsUnexpectedFilesAndData) {
         EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << extra;
         EXPECT_NE(r.error().message.find(extra), std::string::npos) << r.error().message;
     }
-    Files dir_entry = todo_files();
-    dir_entry.emplace_back("data/", "");
-    EXPECT_FALSE(f.install(dir_entry));
+    for (const char* dir : {"data/", "lib/x.new/", "assets/a.tmp/"}) {
+        Files dir_entry = todo_files();
+        dir_entry.emplace_back(dir, "");
+        EXPECT_FALSE(f.install(dir_entry)) << dir;
+    }
 
     Files no_entry = todo_files();
     no_entry.erase(no_entry.begin() + 1);  // main.lua
@@ -326,11 +332,62 @@ TEST(SceneRepository, RecoverFinishesInterruptedReplace) {
         EXPECT_EQ(read_raw(f.root() / "todo" / "data" / "kv.log"), "kv\n");
         EXPECT_FALSE(on_disk(f.root() / ".todo.newdir"));
     }
+    // Interrupted after the data moved, before the old directory went.
+    {
+        Fixture f;
+        lay_out(f.root() / "todo", todo_files());
+        lay_out(f.root() / ".todo.newdir", todo_files("1.0.1"));
+        write_raw(f.root() / ".todo.newdir" / "data" / "kv.log", "kv\n");
+        ASSERT_TRUE(f.repo->recover());
+        auto info = f.repo->info("todo");
+        ASSERT_TRUE(info) << info.error().message;
+        EXPECT_EQ(info.value().manifest.version, "1.0.1");
+        EXPECT_EQ(read_raw(f.root() / "todo" / "data" / "kv.log"), "kv\n");
+        EXPECT_FALSE(on_disk(f.root() / ".todo.newdir"));
+    }
+    // Both directories hold data (the scene wrote again after a failed
+    // replace): neither copy is deleted, the replace reports an error.
+    {
+        Fixture f;
+        lay_out(f.root() / "todo", todo_files());
+        write_raw(f.root() / "todo" / "data" / "kv.log", "newer\n");
+        lay_out(f.root() / ".todo.newdir", todo_files("1.0.1"));
+        write_raw(f.root() / ".todo.newdir" / "data" / "kv.log", "older\n");
+        EXPECT_FALSE(f.repo->recover());
+        EXPECT_EQ(read_raw(f.root() / "todo" / "data" / "kv.log"), "newer\n");
+        EXPECT_EQ(read_raw(f.root() / ".todo.newdir" / "data" / "kv.log"), "older\n");
+        EXPECT_FALSE(f.install(todo_files("1.0.2")));
+        EXPECT_EQ(read_raw(f.root() / "todo" / "data" / "kv.log"), "newer\n");
+    }
+    // Leftovers whose names are only a suffix are ignored.
+    {
+        Fixture f;
+        write_raw(f.root() / ".newdir" / "x", "x");
+        write_raw(f.root() / ".tmpdir" / "x", "x");
+        EXPECT_TRUE(f.repo->recover());
+        EXPECT_TRUE(on_disk(f.root() / ".newdir" / "x"));
+    }
     // Nothing to do, including no scenes directory at all.
     {
         Fixture f;
         EXPECT_TRUE(f.repo->recover());
     }
+}
+
+// The data directory is found inside the package directory however the
+// roots are spelled, so a reinstall never deletes it.
+TEST(SceneRepository, ReinstallKeepsDataWhenRootsAreSpelledDifferently) {
+    Fixture f(/*dev=*/false, "//scenes/.");
+    ASSERT_TRUE(f.install(todo_files()));
+    ASSERT_TRUE(f.storage->write_atomic(f.repo->data_dir("todo") + "/kv.log", as_bytes("kv\n")));
+    ASSERT_TRUE(f.install(todo_files("1.0.1")));
+    EXPECT_EQ(read_raw(f.root() / "todo" / "data" / "kv.log"), "kv\n");
+
+    ASSERT_TRUE(f.repo->remove("todo", false));
+    EXPECT_EQ(read_raw(f.root() / "todo" / "data" / "kv.log"), "kv\n");
+    ASSERT_TRUE(f.install(todo_files()));
+    ASSERT_TRUE(f.repo->remove("todo", true));
+    EXPECT_FALSE(on_disk(f.root() / "todo"));
 }
 
 TEST(SceneRepository, ExportRoundTrips) {

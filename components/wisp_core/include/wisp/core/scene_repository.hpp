@@ -7,14 +7,17 @@
 // <data_root>/<id>/data. On the device both roots are <int>/scenes, so the
 // data directory sits inside the package directory and a replace has to
 // carry it over; in the simulator's dev mode the code comes straight from a
-// working directory and the data lives elsewhere.
+// working directory and the data lives elsewhere. Packages never contain
+// data/, so <code_root>/<id>/data is always treated as the scene's data,
+// without comparing the two roots (which may be spelled differently).
 //
 // Replacing a package is atomic across power loss (the directory-level
 // version of AGENTS.md section 8's two-name scheme):
 //   1. the new files are written under <code_root>/.<id>.tmpdir/;
 //   2. that directory is renamed to .<id>.newdir -- from here on it is
 //      known to be complete;
-//   3. <id>/data, if present, moves into .<id>.newdir/data;
+//   3. <id>/data, if present, moves into .<id>.newdir/data (if both exist,
+//      the replace stops with an error rather than delete either);
 //   4. <id> is removed;
 //   5. .<id>.newdir is renamed to <id>.
 // recover() discards every .*.tmpdir and finishes steps 3-5 for every
@@ -46,17 +49,18 @@ struct SceneInfo {
     uint64_t data_bytes = 0;
 };
 
-// One Lua source handed to a SourceChecker. `text` points into the package
-// being installed and is valid only during the call.
+// One Lua source handed to a SourceChecker. Both views point into the
+// package being installed and are valid only during the call.
 struct SourceFile {
-    std::string path;
+    std::string_view path;
     std::string_view text;
 };
 
 // Compiles (without running) every .lua file of a package. Its error is
 // returned to the installer unchanged, so it should read like
 // "lib/util.lua:3: ...".
-using SourceChecker = std::function<Result<void>(const std::vector<SourceFile>&)>;
+// The span is backed by Mem::Large: its length is up to the uploader.
+using SourceChecker = std::function<Result<void>(std::span<const SourceFile>)>;
 
 // A package's files (everything except data/) loaded into Mem::Large.
 // Paths are relative to the package root, e.g. "lib/util.lua".
@@ -113,7 +117,6 @@ public:
 
 private:
     std::string code_dir(std::string_view id) const;
-    bool data_in_code() const { return config_.code_root == config_.data_root; }
     // scene.json of <id>, checked to name <id>; NotFound if absent.
     Result<SceneManifest> read_manifest(std::string_view id);
     // Steps 3-5 of the replace in the file header, if .<id>.newdir exists.
