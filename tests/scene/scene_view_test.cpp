@@ -9,8 +9,11 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <variant>
+#include <vector>
 
 #include "support/scene_view_fixture.hpp"
+#include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/theme.hpp"
 
 namespace {
@@ -314,8 +317,8 @@ TEST_F(SceneView, FractionalSliderRangeIsScaled) {
     });
     auto events = take_events();
     ASSERT_EQ(events.size(), 1u);
-    ASSERT_EQ(events[0].value.type(), wisp::Value::Type::Double);
-    EXPECT_DOUBLE_EQ(events[0].value.as_double(), 0.05);
+    ASSERT_TRUE(std::holds_alternative<double>(events[0].value));
+    EXPECT_DOUBLE_EQ(std::get<double>(events[0].value), 0.05);
 }
 
 TEST_F(SceneView, ClickAndChangeEventsReachCallback) {
@@ -342,12 +345,12 @@ TEST_F(SceneView, ClickAndChangeEventsReachCallback) {
     EXPECT_EQ(events[0].ev, UiEvent::Click);
     EXPECT_EQ(events[1].node, 3u);
     EXPECT_EQ(events[1].ev, UiEvent::Change);
-    EXPECT_EQ(events[1].value, wisp::Value(int64_t{30}));
+    EXPECT_EQ(events[1].value, num(30));
     EXPECT_EQ(events[2].node, 4u);
     EXPECT_EQ(events[2].ev, UiEvent::Change);
-    EXPECT_EQ(events[2].value, wisp::Value(true));
+    EXPECT_EQ(events[2].value, PropValue{true});
     EXPECT_EQ(events[3].node, 6u);
-    EXPECT_EQ(events[3].value, wisp::Value(true));
+    EXPECT_EQ(events[3].value, PropValue{true});
 
     // Updates the scene sends do not echo back as events.
     apply(set(3, Prop::Value, num(70)));
@@ -456,12 +459,31 @@ TEST_F(SceneView, InputFocusShowsKeyboard) {
     ASSERT_FALSE(events.empty());
     EXPECT_EQ(events.back().node, 2u);
     EXPECT_EQ(events.back().ev, UiEvent::Change);
-    EXPECT_EQ(events.back().value, wisp::Value("abc"));
+    EXPECT_EQ(events.back().value, str("abc"));
 
     // Setting the text from the scene does not echo.
     apply(set(2, Prop::Text, str("xyz")));
     on_ui([&] { EXPECT_STREQ(lv_textarea_get_text(view->object(2)), "xyz"); });
     for (const auto& e : take_events()) EXPECT_NE(e.ev, UiEvent::Change);
+}
+
+// The text of a Change event is a string property's value on the scene
+// side, so it has the same limit (spec 5.6): past it the event is not
+// sent and the scene's log hears why.
+TEST_F(SceneView, InputChangeOverTheStringLimitIsNotSent) {
+    start("rect");
+    apply(build({node(1, 0, Widget::Screen), node(2, 1, Widget::Input, {}, kEventChange)}));
+    const std::string at_limit(wisp::scene::kMaxPropStringBytes, 'x');
+    on_ui([&] { lv_textarea_set_text(view->object(2), at_limit.c_str()); });
+    auto events = take_events();
+    ASSERT_EQ(events.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<wisp::os::LargeString>(events[0].value));
+    EXPECT_EQ(std::get<wisp::os::LargeString>(events[0].value).size(), at_limit.size());
+    EXPECT_TRUE(take_warnings().empty());
+
+    on_ui([&] { lv_textarea_add_text(view->object(2), "y"); });
+    EXPECT_TRUE(take_events().empty());
+    EXPECT_EQ(take_warnings(), (std::vector<std::string>{"ui.input: value too large"}));
 }
 
 TEST_F(SceneView, ScrollToAndFocusOps) {

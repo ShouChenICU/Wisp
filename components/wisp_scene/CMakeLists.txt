@@ -13,7 +13,8 @@ wisp_component(
          src/reactive.cpp src/schema.cpp src/node.cpp src/constructors.cpp
          src/collect.cpp src/patch_queue.cpp src/scene_view.cpp src/theme.cpp
          src/widgets.cpp src/scene_view_list.cpp src/scene_view_canvas.cpp
-         src/scene_view_media.cpp
+         src/scene_view_media.cpp src/scene_message.cpp src/scene_instance.cpp
+         src/scene_runtime.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_ui lua
 )

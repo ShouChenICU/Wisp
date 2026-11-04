@@ -1,0 +1,160 @@
+#pragma once
+
+// The messages the scene task takes (wisp/scene/scene_runtime.hpp). Each
+// lives in PSRAM (os::make_large) and travels through the queue as a
+// pointer. Every one names its scene and instance; see the header for how
+// instances are matched.
+
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <span>
+#include <string>
+#include <variant>
+
+#include "wisp/base/result.hpp"
+#include "wisp/base/value.hpp"
+#include "wisp/core/scene_repository.hpp"
+#include "wisp/core/scene_store.hpp"
+#include "wisp/os/large.hpp"
+#include "wisp/os/os.hpp"
+#include "wisp/scene/scene_runtime.hpp"
+#include "wisp/scene/scene_view.hpp"
+#include "wisp/scene/ui_ops.hpp"
+
+namespace wisp::scene {
+
+// A caller of open(), close(), reload() waiting for the scene task.
+// finish() may be called more than once; the first result counts.
+struct SceneWaiter {
+    os::Semaphore sem{1, 0};
+    os::Mutex mu;
+    bool done = false;
+    Result<void> result = Result<void>::ok();
+
+    void finish(Result<void> r) {
+        {
+            std::lock_guard<os::Mutex> lock(mu);
+            if (done) return;
+            done = true;
+            result = std::move(r);
+        }
+        sem.give();
+    }
+};
+
+// check_sources(): the files live in the caller's frame, so the scene task
+// reads them only under `mu` and only while the caller has not given up
+// (`cancelled`, set under `mu` after a timeout).
+struct SourceCheckJob {
+    std::span<const core::SourceFile> files;
+    os::Semaphore sem{1, 0};
+    os::Mutex mu;
+    bool cancelled = false;
+    bool done = false;
+    Result<void> result = Result<void>::ok();
+
+    void finish_locked(Result<void> r) {
+        done = true;
+        result = std::move(r);
+        sem.give();
+    }
+};
+
+namespace msg {
+
+// open(): the scene task closes the foreground scene and asks the worker
+// to load this one. `done` (may be null) hears how the open went.
+struct Load {
+    Value args;
+    std::shared_ptr<SceneWaiter> done;
+};
+
+// The worker loaded the package and the store (or failed: `error`).
+struct Open {
+    Value args;
+    std::shared_ptr<const core::ScenePackage> package;
+    std::shared_ptr<core::SceneStore> store;
+    Error error;
+    std::shared_ptr<SceneWaiter> done;
+};
+
+struct Close {
+    std::shared_ptr<SceneWaiter> done;
+};
+
+// `if_foreground`: only reload a scene that is in the foreground; any
+// other gets its state set to stopped (on_installed()).
+struct Reload {
+    bool if_foreground = false;
+    std::shared_ptr<SceneWaiter> done;
+};
+
+struct Show {};
+struct Hide {};
+
+// A widget event from the view (never Focus).
+struct Event {
+    NodeId node = 0;
+    UiEvent ev = UiEvent::Click;
+    PropValue value;
+};
+
+struct ListRange {
+    NodeId list = 0;
+    uint32_t first = 0;
+    uint32_t count = 0;
+};
+
+// Completions the HTTP proxy and the store bindings will send.
+struct HttpDone {};
+struct StoreDone {};
+
+// A device event for the scene's wisp.device handlers.
+struct Device {
+    std::string kind;
+};
+
+// check_sources(): compile the files the job holds.
+struct CheckSources {
+    std::shared_ptr<SourceCheckJob> job;
+};
+
+// SceneStoreDeps::schedule() added a delayed call: wakes the task so it
+// takes the new deadline into account.
+struct Wake {};
+
+// stop(): close the foreground scene and end the task.
+struct Quit {};
+
+using Body = std::variant<Load, Open, Close, Reload, Show, Hide, Event, ListRange, HttpDone,
+                          StoreDone, Device, CheckSources, Wake, Quit>;
+
+}  // namespace msg
+
+struct SceneMessage {
+    std::string scene_id;
+    uint32_t instance = 0;
+    msg::Body body;
+};
+
+// For "slow message <kind>": "load", "open", "close", ...
+const char* message_kind(const msg::Body& body);
+
+// Gives whoever waits on `m` (a waiter, a source check) `r`: the message
+// will not be handled.
+void fail_message(SceneMessage& m, const Result<void>& r);
+
+// Queues `msg` without waiting. On a full queue (or a runtime that is not
+// running) returns false and frees the message. Every place inside the
+// runtime that sends the scene task a message (the UI thread's events,
+// the worker's callbacks, later the HTTP proxy's) goes through this.
+bool post_scene_message(SceneRuntime& rt, os::LargeUnique<SceneMessage> msg);
+
+// For tests: ops in the patch queue, and the foreground's instance (0 if
+// none).
+size_t pending_patches(const SceneRuntime& rt);
+uint32_t foreground_instance(const SceneRuntime& rt);
+
+}  // namespace wisp::scene

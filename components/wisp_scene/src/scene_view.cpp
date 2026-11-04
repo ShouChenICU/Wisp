@@ -12,6 +12,7 @@
 
 #include "scene_view_internal.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/schema.hpp"
 #include "wisp/scene/theme.hpp"
 
@@ -943,7 +944,7 @@ void SceneView::apply_focus(const Focus& f) {
 
 // --- Events ---
 
-void SceneView::report(Node& n, UiEvent ev, Value value) {
+void SceneView::report(Node& n, UiEvent ev, PropValue value) {
     if (cb_.on_event) cb_.on_event(n.id, ev, std::move(value));
 }
 
@@ -958,17 +959,17 @@ void SceneView::event_cb(lv_event_t* e) {
         case LV_EVENT_LONG_PRESSED:
             if (n->events & kEventLongPress) {
                 n->long_pressed = true;
-                view->report(*n, UiEvent::LongPress, Value());
+                view->report(*n, UiEvent::LongPress, PropValue{});
             }
             break;
         case LV_EVENT_CLICKED:
             if (n->widget == Widget::Input) view->system_.show_keyboard(n->obj);
             if ((n->events & kEventClick) && !n->long_pressed)
-                view->report(*n, UiEvent::Click, Value());
+                view->report(*n, UiEvent::Click, PropValue{});
             break;
         case LV_EVENT_FOCUSED:
             view->system_.show_keyboard(n->obj);
-            view->report(*n, UiEvent::Focus, Value());
+            view->report(*n, UiEvent::Focus, PropValue{});
             break;
         case LV_EVENT_VALUE_CHANGED:
             view->report_change(*n);
@@ -980,21 +981,30 @@ void SceneView::event_cb(lv_event_t* e) {
 
 void SceneView::report_change(Node& n) {
     switch (n.widget) {
-        case Widget::Input:
-            report(n, UiEvent::Change, Value(std::string(lv_textarea_get_text(n.obj))));
+        case Widget::Input: {
+            // Copied straight into PSRAM; past the scene's string limit
+            // the scene could not take it anyway.
+            const char* text = lv_textarea_get_text(n.obj);
+            size_t len = std::strlen(text);
+            if (len > kMaxPropStringBytes) {
+                warn(n, "ui.input: value too large");
+                break;
+            }
+            report(n, UiEvent::Change, PropValue{os::LargeString(text, len)});
             break;
+        }
         case Widget::Checkbox:
         case Widget::Switch:
-            report(n, UiEvent::Change, Value(lv_obj_has_state(n.obj, LV_STATE_CHECKED)));
+            report(n, UiEvent::Change, PropValue{lv_obj_has_state(n.obj, LV_STATE_CHECKED)});
             break;
         case Widget::Slider: {
             int32_t v = lv_slider_get_value(n.obj);
             if (direct_range(n)) {
                 n.value = v;
-                report(n, UiEvent::Change, Value(static_cast<int64_t>(v)));
+                report(n, UiEvent::Change, PropValue{static_cast<int64_t>(v)});
             } else {
                 n.value = n.min + (n.max - n.min) * (static_cast<double>(v) / kScaledSteps);
-                report(n, UiEvent::Change, Value(n.value));
+                report(n, UiEvent::Change, PropValue{n.value});
             }
             break;
         }

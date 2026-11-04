@@ -1,0 +1,644 @@
+// SceneRuntime: scenes run on their own task, with the lifecycle, the
+// error panel and the back gesture (scene-runtime-core spec 3.1-3.6).
+
+#include "wisp/scene/scene_runtime.hpp"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <mutex>
+#include <span>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+#include "lvgl.h"
+#include "scene_message.hpp"
+#include "support/fake_devices.hpp"
+#include "support/lvgl_probe.hpp"
+#include "support/temp_dir.hpp"
+#include "support/wait.hpp"
+#include "wisp/core/device_registry.hpp"
+#include "wisp/core/event_bus.hpp"
+#include "wisp/core/log.hpp"
+#include "wisp/core/scene_repository.hpp"
+#include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_worker.hpp"
+#include "wisp/hal/display_geometry.hpp"
+#include "wisp/scene/patch_batch.hpp"
+#include "wisp/ui/strings.hpp"
+#include "wisp/ui/system_layer.hpp"
+#include "wisp/ui/ui_runtime.hpp"
+
+namespace {
+
+namespace fs = std::filesystem;
+
+using wisp::ErrorCode;
+using wisp::core::SceneState;
+using wisp::core::SourceFile;
+using wisp::scene::SceneMessage;
+using wisp::scene::SceneRuntime;
+using wisp::test::run_on_ui_blocking;
+using wisp::test::wait_until;
+
+using Files = std::vector<std::pair<std::string, std::string>>;
+
+// 6x4 PNG (the one scene_view_media_test decodes).
+const uint8_t kIconPng[] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+    0x44, 0x52, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x04, 0x08, 0x06, 0x00, 0x00,
+    0x00, 0xad, 0x04, 0x4e, 0x43, 0x00, 0x00, 0x00, 0x1a, 0x49, 0x44, 0x41, 0x54, 0x78,
+    0xda, 0x63, 0x64, 0xf8, 0xcf, 0xf0, 0x9f, 0x01, 0x06, 0x18, 0xff, 0x37, 0xc2, 0x98,
+    0x4c, 0x0c, 0x38, 0x00, 0xe9, 0x12, 0x00, 0x42, 0x96, 0x03, 0x87, 0xf7, 0xaf, 0x9f,
+    0xc6, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+};
+
+const char* kCounter = R"(local count = state(0)
+
+return ui.screen {
+  ui.column { pad = "safe", gap = 12, align = "center",
+    ui.label { text = bind(count, function(v) return "已点击 " .. v .. " 次" end), font = "xl" },
+    ui.button { ref = "plus", text = "+1", on_click = function() count:set(count:get() + 1) end },
+  },
+}
+)";
+
+std::string manifest(const std::string& id, const std::string& name = "Demo") {
+    return R"({"id":")" + id + R"(","name":")" + name +
+           R"(","version":"1.0.0","schema_version":1})";
+}
+
+struct StateEvent {
+    std::string id;
+    std::string state;
+    bool operator==(const StateEvent&) const = default;
+};
+
+class SceneRuntimeTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        wisp::log::reset_for_test();
+        wisp::log::init(256 * 1024);
+        in = wisp::test::temp_dir().string();
+        registry.add(std::make_shared<wisp::test::FakeStorage>("storage.int", in, false));
+        storage = std::make_unique<wisp::core::StorageManager>(registry, bus);
+        ASSERT_TRUE(storage->init());
+        ASSERT_TRUE(worker.start());
+        ASSERT_TRUE(bus.start());
+        bus.subscribe("scene.state", [this](const wisp::core::Event& e) {
+            std::lock_guard<std::mutex> lock(mutex);
+            EXPECT_EQ(e.source, "scene");
+            state_events.push_back(
+                {e.payload.at("id").as_string(), e.payload.at("state").as_string()});
+        });
+        wisp::core::SceneRepoConfig rc;
+        rc.code_root = in + "/scenes";
+        rc.data_root = in + "/scenes";
+        repo = std::make_unique<wisp::core::SceneRepository>(*storage, rc);
+    }
+
+    void TearDown() override {
+        rt.reset();
+        if (ui) {
+            on_ui([&] { layer.reset(); });
+            ui->stop();
+        }
+        worker.stop();
+        bus.stop();
+        wisp::log::reset_for_test();
+    }
+
+    void start(const std::string& display_shape = "circle") {
+        display =
+            std::make_shared<wisp::test::FakeDisplay>("display.main", 480, 480, 1, display_shape);
+        touch = std::make_shared<wisp::test::FakeTouch>("touch.main");
+        ui = std::make_unique<wisp::ui::UiRuntime>(display, touch);
+        ASSERT_TRUE(ui->start());
+        auto parsed = wisp::hal::screen_shape_from_caps(display->info().caps);
+        ASSERT_TRUE(parsed);
+        shape = parsed.value();
+        on_ui([&] {
+            layer = std::make_unique<wisp::ui::SystemLayer>(shape);
+            home = lv_screen_active();
+            indev = lv_indev_get_next(nullptr);
+        });
+        rt = std::make_unique<SceneRuntime>(
+            wisp::scene::SceneRuntimeDeps{bus, *storage, worker, *repo, *ui, *layer, shape});
+        ASSERT_TRUE(rt->start());
+    }
+
+    void on_ui(const std::function<void()>& fn) { run_on_ui_blocking(ui.get(), fn); }
+
+    // Writes a package into the code root, the way an install leaves it.
+    void install(const std::string& id, const std::string& main_lua, Files extra = {}) {
+        Files files = {{"scene.json", manifest(id)}, {"main.lua", main_lua}};
+        for (auto& f : extra) files.push_back(std::move(f));
+        for (const auto& [path, body] : files) {
+            fs::path p = fs::path(in) / "scenes" / id / path;
+            std::error_code ec;
+            fs::create_directories(p.parent_path(), ec);
+            std::ofstream f(p, std::ios::binary | std::ios::trunc);
+            f << body;
+        }
+    }
+
+    // The text of a label on the active screen that contains `needle`.
+    std::string label(const char* needle) {
+        std::string text;
+        on_ui([&] { text = wisp::test::find_label_text_containing(lv_screen_active(), needle); });
+        return text;
+    }
+
+    bool wait_label(const char* needle, uint32_t ms = 1000) {
+        return wait_until([&] { return !label(needle).empty(); }, ms);
+    }
+
+    // Every label text on the active screen.
+    std::vector<std::string> labels() {
+        std::vector<std::pair<std::string, lv_area_t>> found;
+        on_ui([&] { wisp::test::collect_labels(lv_screen_active(), found); });
+        std::vector<std::string> out;
+        for (auto& [text, area] : found) out.push_back(text);
+        return out;
+    }
+
+    bool error_panel_has(const char* needle) {
+        bool found = false;
+        on_ui([&] {
+            found = layer->error_visible() &&
+                    wisp::test::find_label_containing(lv_layer_top(), needle) != nullptr;
+        });
+        return found;
+    }
+
+    // What the scene logged (print), in order.
+    std::vector<std::string> scene_log(const std::string& id) {
+        std::vector<std::string> out;
+        for (auto& e : wisp::log::ring_entries())
+            if (e.tag == "scene." + id) out.push_back(e.msg);
+        return out;
+    }
+
+    bool log_has(const std::string& tag, const std::string& needle) {
+        for (auto& e : wisp::log::ring_entries())
+            if (e.tag == tag && e.msg.find(needle) != std::string::npos) return true;
+        return false;
+    }
+
+    std::vector<StateEvent> events() {
+        bus.wait_idle(1000);
+        std::lock_guard<std::mutex> lock(mutex);
+        return state_events;
+    }
+
+    // One touch read: `points` empty is a release.
+    void feed(std::vector<wisp::hal::TouchPoint> points) {
+        touch->set_points(std::move(points));
+        on_ui([&] { lv_indev_read(indev); });
+    }
+
+    lv_obj_t* active_screen() {
+        lv_obj_t* s = nullptr;
+        on_ui([&] { s = lv_screen_active(); });
+        return s;
+    }
+
+    std::string in;
+    wisp::core::DeviceRegistry registry;
+    wisp::core::EventBus bus;
+    std::unique_ptr<wisp::core::StorageManager> storage;
+    wisp::core::StorageWorker worker;
+    std::unique_ptr<wisp::core::SceneRepository> repo;
+    std::shared_ptr<wisp::test::FakeDisplay> display;
+    std::shared_ptr<wisp::test::FakeTouch> touch;
+    std::unique_ptr<wisp::ui::UiRuntime> ui;
+    std::unique_ptr<wisp::ui::SystemLayer> layer;
+    wisp::hal::ScreenShape shape;
+    lv_obj_t* home = nullptr;
+    lv_indev_t* indev = nullptr;
+    std::unique_ptr<SceneRuntime> rt;
+    std::mutex mutex;
+    std::vector<StateEvent> state_events;
+};
+
+TEST_F(SceneRuntimeTest, OpensCounterAndAppliesClick) {
+    start();
+    install("counter", kCounter);
+    auto opened = rt->open("counter");
+    ASSERT_TRUE(opened) << opened.error().message;
+    EXPECT_EQ(rt->status("counter").state, SceneState::Running);
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    EXPECT_EQ(label("已点击"), "已点击 0 次");
+
+    ASSERT_TRUE(rt->click_ref("plus"));
+    EXPECT_TRUE(wait_until([&] { return label("已点击") == "已点击 1 次"; }, 1000))
+        << label("已点击");
+    EXPECT_EQ(rt->click_ref("nope").error().code, ErrorCode::NotFound);
+    EXPECT_EQ(events(), (std::vector<StateEvent>{{"counter", "running"}}));
+
+    EXPECT_EQ(rt->open("missing").error().code, ErrorCode::NotFound);
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("counter"));
+}
+
+TEST_F(SceneRuntimeTest, LifecycleHookOrder) {
+    start();
+    install("life", R"(print("open")
+scene.on_show = function() print("show") end
+scene.on_hide = function() print("hide") end
+scene.on_close = function() print("close") end
+return ui.screen { ui.label { text = "x" } }
+)");
+    ASSERT_TRUE(rt->open("life"));
+    EXPECT_EQ(scene_log("life"), (std::vector<std::string>{"open", "show"}));
+    rt->set_visible(false);
+    ASSERT_TRUE(wait_until([&] { return scene_log("life").size() == 3; }, 1000));
+    rt->set_visible(true);
+    ASSERT_TRUE(wait_until([&] { return scene_log("life").size() == 4; }, 1000));
+    ASSERT_TRUE(rt->close("life"));
+    EXPECT_EQ(scene_log("life"),
+              (std::vector<std::string>{"open", "show", "hide", "show", "hide", "close"}));
+    EXPECT_EQ(rt->status("life").state, SceneState::Stopped);
+    EXPECT_EQ(rt->foreground(), std::nullopt);
+
+    // Opened while the screen is off: no on_show until it is on again, and
+    // closing then has no on_hide to run.
+    rt->set_visible(false);
+    ASSERT_TRUE(rt->open("life"));
+    ASSERT_TRUE(rt->close("life"));
+    EXPECT_EQ(scene_log("life"), (std::vector<std::string>{"open", "show", "hide", "show", "hide",
+                                                           "close", "open", "close"}));
+}
+
+TEST_F(SceneRuntimeTest, HomeScreenHiddenNotRebuilt) {
+    start();
+    install("counter", kCounter);
+    ASSERT_TRUE(rt->open("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    EXPECT_NE(active_screen(), home);
+    ASSERT_TRUE(rt->close("counter"));
+    EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
+    bool valid = false;
+    on_ui([&] { valid = lv_obj_is_valid(home); });
+    EXPECT_TRUE(valid);
+    EXPECT_EQ(events(), (std::vector<StateEvent>{{"counter", "running"}, {"counter", "stopped"}}));
+}
+
+TEST_F(SceneRuntimeTest, ErrorShowsPanelAndDestroysVm) {
+    start();
+    install("bad", R"(local clicks = 0
+return ui.screen {
+  ui.button { ref = "go", text = "go", on_click = function()
+    clicks = clicks + 1
+    print("click " .. clicks)
+    error("boom")
+  end },
+}
+)");
+    ASSERT_TRUE(rt->open("bad"));
+    ASSERT_TRUE(wait_label("go"));
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(wait_until([&] { return rt->status("bad").state == SceneState::Error; }, 1000));
+    EXPECT_EQ(rt->status("bad").error, "main.lua:6: boom");
+    EXPECT_TRUE(wait_until([&] { return error_panel_has("main.lua:6"); }, 1000));
+    EXPECT_TRUE(error_panel_has("boom"));
+    EXPECT_TRUE(log_has("scene.bad", "main.lua:6: boom"));
+    EXPECT_EQ(events(), (std::vector<StateEvent>{{"bad", "running"}, {"bad", "error"}}));
+    // The VM is gone: nothing handles the button any more.
+    EXPECT_FALSE(rt->click_ref("go"));
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(scene_log("bad"), (std::vector<std::string>{"click 1", "main.lua:6: boom"}));
+
+    ASSERT_TRUE(rt->reload("bad"));
+    EXPECT_EQ(rt->status("bad").state, SceneState::Running);
+    EXPECT_TRUE(rt->status("bad").error.empty());
+    bool panel = true;
+    on_ui([&] { panel = layer->error_visible(); });
+    EXPECT_FALSE(panel);
+    ASSERT_TRUE(wait_label("go"));
+    ASSERT_TRUE(rt->click_ref("go"));
+    EXPECT_TRUE(wait_until([&] { return rt->status("bad").state == SceneState::Error; }, 1000));
+    // A fresh VM: its counter started again.
+    auto log = scene_log("bad");
+    EXPECT_EQ(std::count(log.begin(), log.end(), "click 1"), 2);
+    EXPECT_EQ(std::count(log.begin(), log.end(), "click 2"), 0);
+}
+
+TEST_F(SceneRuntimeTest, ErrorPanelButtons) {
+    start();
+    install("bad", R"(return ui.screen {
+  ui.button { ref = "go", text = "go", on_click = function() error("boom") end },
+}
+)");
+    ASSERT_TRUE(rt->open("bad"));
+    ASSERT_TRUE(wait_label("go"));
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(wait_until([&] { return error_panel_has("boom"); }, 1000));
+    // "返回": back to the home screen, still in the error state.
+    on_ui([&] {
+        lv_obj_t* back = wisp::test::find_button_with_label(
+            lv_layer_top(), wisp::ui::tr(wisp::ui::StrId::SceneBack));
+        ASSERT_NE(back, nullptr);
+        lv_obj_send_event(back, LV_EVENT_CLICKED, nullptr);
+    });
+    EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
+    EXPECT_TRUE(wait_until([&] { return !rt->foreground(); }, 1000));
+    EXPECT_EQ(rt->status("bad").state, SceneState::Error);
+
+    // "重载" opens it again.
+    ASSERT_TRUE(rt->open("bad"));
+    ASSERT_TRUE(wait_label("go"));
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(wait_until([&] { return error_panel_has("boom"); }, 1000));
+    on_ui([&] {
+        lv_obj_t* reload = wisp::test::find_button_with_label(
+            lv_layer_top(), wisp::ui::tr(wisp::ui::StrId::SceneReload));
+        ASSERT_NE(reload, nullptr);
+        lv_obj_send_event(reload, LV_EVENT_CLICKED, nullptr);
+    });
+    EXPECT_TRUE(wait_until([&] { return rt->status("bad").state == SceneState::Running; }, 1000));
+    EXPECT_TRUE(wait_label("go"));
+}
+
+TEST_F(SceneRuntimeTest, TimeoutFaultsScene) {
+    start();
+    install("spin", R"(return ui.screen {
+  ui.button { ref = "go", text = "go", on_click = function() while true do end end },
+}
+)");
+    ASSERT_TRUE(rt->open("spin"));
+    ASSERT_TRUE(wait_label("go"));
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(wait_until([&] { return rt->status("spin").state == SceneState::Error; }, 2000));
+    EXPECT_NE(rt->status("spin").error.find("execution exceeded 200 ms"), std::string::npos)
+        << rt->status("spin").error;
+    EXPECT_TRUE(log_has("scene.spin", "slow message event"));
+}
+
+TEST_F(SceneRuntimeTest, BindErrorDuringFlushShowsPanelWithoutPartialPatches) {
+    start();
+    install("bind", R"(local count = state(0)
+return ui.screen {
+  ui.label { text = count },
+  ui.label { text = bind(count, function(v)
+    if v == 1 then error("bad value") end
+    return "b" .. v
+  end) },
+  ui.button { ref = "go", text = "go", on_click = function() count:set(1) end },
+}
+)");
+    ASSERT_TRUE(rt->open("bind"));
+    ASSERT_TRUE(wait_label("b0"));
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(wait_until([&] { return rt->status("bind").state == SceneState::Error; }, 1000));
+    EXPECT_EQ(rt->status("bind").error, "main.lua:5: bad value");
+    EXPECT_TRUE(wait_until([&] { return error_panel_has("main.lua:5"); }, 1000));
+    EXPECT_EQ(wisp::scene::pending_patches(*rt), 0u);
+    wisp::os::sleep_ms(50);
+    auto texts = labels();
+    EXPECT_NE(std::find(texts.begin(), texts.end(), "0"), texts.end());
+    EXPECT_NE(std::find(texts.begin(), texts.end(), "b0"), texts.end());
+    EXPECT_EQ(std::find(texts.begin(), texts.end(), "1"), texts.end());
+}
+
+TEST_F(SceneRuntimeTest, OnCloseErrorStillCloses) {
+    start();
+    // A timeout faults the VM for good, so the hook that runs first errs
+    // and the second one times out.
+    install("rude", R"(scene.on_hide = function() error("no") end
+scene.on_close = function() while true do end end
+return ui.screen { ui.label { text = "rude" } }
+)");
+    ASSERT_TRUE(rt->open("rude"));
+    ASSERT_TRUE(wait_label("rude"));
+    ASSERT_TRUE(rt->close("rude"));
+    EXPECT_EQ(rt->foreground(), std::nullopt);
+    EXPECT_EQ(rt->status("rude").state, SceneState::Stopped);
+    EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
+    EXPECT_TRUE(log_has("scene.rude", "execution exceeded 200 ms"));
+    EXPECT_TRUE(log_has("scene.rude", "on_hide: main.lua:1: no"));
+}
+
+TEST_F(SceneRuntimeTest, BackGestureClosesToHome) {
+    start();
+    install("counter", kCounter);
+    ASSERT_TRUE(rt->open("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    // The gesture strip is laid out at the next refresh; a real finger
+    // never comes that fast.
+    on_ui([&] { lv_obj_update_layout(lv_layer_top()); });
+    feed({{4, 240, 0}});
+    for (int16_t x : {4, 50, 100, 150, 200}) feed({{x, 240, 0}});
+    feed({});
+    EXPECT_TRUE(wait_until([&] { return !rt->foreground(); }, 1000));
+    EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
+    EXPECT_EQ(rt->status("counter").state, SceneState::Stopped);
+}
+
+TEST_F(SceneRuntimeTest, OpeningAnotherClosesFirst) {
+    start();
+    install("a", R"(scene.on_close = function() print("a closed") end
+return ui.screen { ui.label { text = "scene a" } })");
+    install("b", "return ui.screen { ui.label { text = 'scene b' } }");
+    ASSERT_TRUE(rt->open("a"));
+    ASSERT_TRUE(wait_label("scene a"));
+    ASSERT_TRUE(rt->open("b"));
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("b"));
+    EXPECT_EQ(scene_log("a"), (std::vector<std::string>{"a closed"}));
+    EXPECT_EQ(rt->status("a").state, SceneState::Stopped);
+    EXPECT_EQ(rt->status("b").state, SceneState::Running);
+    ASSERT_TRUE(wait_label("scene b"));
+    EXPECT_TRUE(label("scene a").empty());
+    ASSERT_TRUE(rt->close("b"));
+    EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
+}
+
+TEST_F(SceneRuntimeTest, StaleMessagesAreDropped) {
+    start();
+    install("counter", kCounter);
+    ASSERT_TRUE(rt->open("counter"));
+    uint32_t first = wisp::scene::foreground_instance(*rt);
+    ASSERT_NE(first, 0u);
+    ASSERT_TRUE(rt->reload("counter"));
+    EXPECT_NE(wisp::scene::foreground_instance(*rt), first);
+    for (int i = 0; i < 2; ++i) {
+        auto msg = wisp::os::make_large<SceneMessage>();
+        msg->scene_id = "counter";
+        msg->instance = first;
+        if (i == 0)
+            msg->body = wisp::scene::msg::HttpDone{};
+        else
+            msg->body = wisp::scene::msg::StoreDone{};
+        ASSERT_TRUE(wisp::scene::post_scene_message(*rt, std::move(msg)));
+    }
+    EXPECT_TRUE(wait_until([&] { return rt->stale_dropped() == 2; }, 1000));
+    EXPECT_EQ(rt->status("counter").state, SceneState::Running);
+    ASSERT_TRUE(wait_label("已点击"));
+    ASSERT_TRUE(rt->click_ref("plus"));
+    EXPECT_TRUE(wait_until([&] { return label("已点击") == "已点击 1 次"; }, 1000));
+}
+
+TEST_F(SceneRuntimeTest, CheckSourcesRunsOnSceneTask) {
+    start();
+    const std::string bad = "local x = 1\nlocal = 2\n";
+    const std::string good = "local x = 1\nreturn x\n";
+    const std::string lib = "return {}\n";
+    std::vector<SourceFile> files = {{"main.lua", bad}, {"lib/util.lua", lib}};
+    auto r = rt->check_sources(files);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(r.error().message.rfind("main.lua:2:", 0), 0u) << r.error().message;
+    files[0].text = good;
+    EXPECT_TRUE(rt->check_sources(files));
+    // The scene task's stack does the compiling: without it, nothing.
+    rt->stop();
+    EXPECT_FALSE(rt->check_sources(files));
+}
+
+TEST(SceneRuntimeConfig, TaskConfigIsPsramStack) {
+    wisp::os::TaskConfig t = SceneRuntime::task_config({});
+    EXPECT_STREQ(t.name, "wisp.scene");
+    EXPECT_EQ(t.stack_bytes, 128u * 1024u);
+    EXPECT_FALSE(t.flash_access);
+    EXPECT_EQ(t.priority, 3);
+    EXPECT_EQ(t.core, -1);
+}
+
+TEST_F(SceneRuntimeTest, ImageAssetsReachView) {
+    start("rect");
+    install("pic", "return ui.screen { ui.image { src = 'assets/icon.png' } }",
+            {{"assets/icon.png",
+              std::string(reinterpret_cast<const char*>(kIconPng), sizeof(kIconPng))}});
+    ASSERT_TRUE(rt->open("pic"));
+    uint32_t w = 0, h = 0;
+    EXPECT_TRUE(wait_until(
+        [&] {
+            on_ui([&] {
+                lv_obj_t* img = wisp::test::find_obj_of_class(lv_screen_active(), &lv_image_class);
+                if (img == nullptr) return;
+                const void* src = lv_image_get_src(img);
+                if (src == nullptr || lv_image_src_get_type(src) != LV_IMAGE_SRC_VARIABLE) return;
+                const auto* dsc = static_cast<const lv_image_dsc_t*>(src);
+                w = dsc->header.w;
+                h = dsc->header.h;
+            });
+            return w != 0;
+        },
+        1000));
+    EXPECT_EQ(w, 6u);
+    EXPECT_EQ(h, 4u);
+}
+
+TEST_F(SceneRuntimeTest, ChangeEventSetsValueThenCallsOnChange) {
+    start();
+    install("form", R"(return ui.screen {
+  ui.input { ref = "name", on_change = function(v)
+    print("change " .. v .. " " .. ui.ref("name"):value())
+  end },
+  ui.switch { ref = "on" },
+  ui.button { ref = "show", text = "show", on_click = function()
+    print("on " .. tostring(ui.ref("on"):value()))
+  end },
+}
+)");
+    ASSERT_TRUE(rt->open("form"));
+    ASSERT_TRUE(wait_label("show"));
+    on_ui([&] {
+        lv_obj_t* ta = wisp::test::find_obj_of_class(lv_screen_active(), &lv_textarea_class);
+        ASSERT_NE(ta, nullptr);
+        lv_textarea_set_text(ta, "Ada");
+        // Focusing reports nothing the scene handles.
+        lv_obj_send_event(ta, LV_EVENT_FOCUSED, nullptr);
+        lv_obj_t* sw = wisp::test::find_obj_of_class(lv_screen_active(), &lv_switch_class);
+        ASSERT_NE(sw, nullptr);
+        lv_obj_add_state(sw, LV_STATE_CHECKED);
+        lv_obj_send_event(sw, LV_EVENT_VALUE_CHANGED, nullptr);
+    });
+    ASSERT_TRUE(rt->click_ref("show"));
+    EXPECT_TRUE(wait_until([&] { return scene_log("form").size() == 2; }, 1000));
+    EXPECT_EQ(scene_log("form"), (std::vector<std::string>{"change Ada Ada", "on true"}));
+    EXPECT_EQ(rt->stale_dropped(), 0u);
+    EXPECT_EQ(rt->status("form").state, SceneState::Running);
+}
+
+// Bound values that run past the patch queue's backlog are sent again
+// (UiBatch::refresh): labels bound to `a` lose their update in the
+// collapse and must still end up showing it.
+TEST_F(SceneRuntimeTest, RefreshRequestResendsBoundValues) {
+    start();
+    install("many", R"(local a, b = state(0), state(0)
+local kids = {}
+for i = 1, 700 do kids[#kids + 1] = ui.label { text = a } end
+for i = 1, 700 do kids[#kids + 1] = ui.label { text = b } end
+kids[#kids + 1] = ui.button { ref = "a", text = "inc a", on_click = function()
+  a:set(a:get() + 1) print("a") end }
+kids[#kids + 1] = ui.button { ref = "b", text = "inc b", on_click = function()
+  b:set(b:get() + 1) print("b") end }
+return ui.screen { ui.scroll(kids) }
+)");
+    ASSERT_TRUE(rt->open("many"));
+    ASSERT_TRUE(wait_label("inc b", 3000));
+    ASSERT_TRUE(wait_until([&] { return wisp::scene::pending_patches(*rt) == 0; }, 3000));
+    ui->set_paused(true);
+    ASSERT_TRUE(rt->click_ref("a"));
+    ASSERT_TRUE(wait_until([&] { return scene_log("many").size() == 1; }, 1000));
+    ASSERT_TRUE(rt->click_ref("b"));
+    ASSERT_TRUE(wait_until([&] { return scene_log("many").size() == 2; }, 1000));
+    ui->set_paused(false);
+    ASSERT_TRUE(wait_until([&] { return wisp::scene::pending_patches(*rt) == 0; }, 5000));
+    auto texts = labels();
+    EXPECT_EQ(std::count(texts.begin(), texts.end(), "1"), 1400);
+    EXPECT_EQ(std::count(texts.begin(), texts.end(), "0"), 0);
+}
+
+// string.gsub recursion is the deepest C stack use per C call level
+// (vm.hpp): it must end in a Lua error, not overflow the scene task.
+TEST_F(SceneRuntimeTest, GsubRecursionEndsInLuaError) {
+    start();
+    install("deep", R"(return ui.screen {
+  ui.button { ref = "go", text = "go", on_click = function()
+    local function g(s) return (string.gsub(s, ".", g)) end
+    g("ab")
+  end },
+}
+)");
+    ASSERT_TRUE(rt->open("deep"));
+    ASSERT_TRUE(wait_label("go"));
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(wait_until([&] { return rt->status("deep").state == SceneState::Error; }, 2000));
+    EXPECT_NE(rt->status("deep").error.find("C stack overflow"), std::string::npos)
+        << rt->status("deep").error;
+}
+
+TEST_F(SceneRuntimeTest, StopClosesTheForegroundScene) {
+    start();
+    install("life", R"(scene.on_close = function() print("close") end
+return ui.screen { ui.label { text = "life" } })");
+    ASSERT_TRUE(rt->open("life"));
+    ASSERT_TRUE(wait_label("life"));
+    rt->stop();
+    EXPECT_EQ(scene_log("life"), (std::vector<std::string>{"close"}));
+    EXPECT_EQ(active_screen(), home);
+    EXPECT_EQ(rt->open("life").error().code, ErrorCode::Busy);
+}
+
+TEST_F(SceneRuntimeTest, OnInstalledReloadsOrPublishesStopped) {
+    start();
+    install("a", "print('v1') return ui.screen { ui.label { text = 'v1' } }");
+    rt->on_installed("a");
+    EXPECT_TRUE(wait_until([&] { return events().size() == 1; }, 1000));
+    EXPECT_EQ(events(), (std::vector<StateEvent>{{"a", "stopped"}}));
+    ASSERT_TRUE(rt->open("a"));
+    install("a", "print('v2') return ui.screen { ui.label { text = 'v2' } }");
+    rt->on_installed("a");
+    EXPECT_TRUE(wait_label("v2"));
+    EXPECT_EQ(scene_log("a"), (std::vector<std::string>{"v1", "v2"}));
+    EXPECT_EQ(rt->status("a").state, SceneState::Running);
+}
+
+}  // namespace

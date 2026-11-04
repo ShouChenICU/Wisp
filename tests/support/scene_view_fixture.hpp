@@ -56,7 +56,7 @@ inline scene::UiOp set(scene::NodeId node, scene::Prop p, scene::PropValue v) {
 struct RecordedEvent {
     scene::NodeId node;
     scene::UiEvent ev;
-    Value value;
+    scene::PropValue value;
 };
 
 struct RecordedRange {
@@ -80,7 +80,7 @@ protected:
         ASSERT_TRUE(parsed);
         shape = parsed.value();
         scene::ViewCallbacks cb;
-        cb.on_event = [this](scene::NodeId n, scene::UiEvent ev, Value v) {
+        cb.on_event = [this](scene::NodeId n, scene::UiEvent ev, scene::PropValue v) {
             std::lock_guard<std::mutex> lock(mutex);
             events.push_back({n, ev, std::move(v)});
         };

@@ -255,6 +255,10 @@ wisp_test(NAME canvas_test SRCS scene/canvas_test.cpp LIBS wisp_scene wisp_port_
 # side of the image-decoder hook (ui::UiConfig::install_image_decoders).
 wisp_test(NAME scene_view_media_test SRCS scene/scene_view_media_test.cpp
           LIBS wisp_scene wisp_port_sim_os wisp_port_sim_ui TIMEOUT 30)
+# scene_message.hpp is private to wisp_scene.
+wisp_test(NAME scene_runtime_test SRCS scene/scene_runtime_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+target_include_directories(scene_runtime_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 foreach(t list_window_test scene_view_list_test canvas_test)
     target_include_directories(${t} PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 endforeach()

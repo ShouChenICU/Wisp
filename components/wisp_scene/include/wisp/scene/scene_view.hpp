@@ -44,9 +44,12 @@
 // Events (ViewCallbacks::on_event, on the UI thread): Click and LongPress
 // for nodes with on_click/on_long_press (a long press is not also a
 // click); Change for every input, slider, checkbox and switch the user
-// changes, with the new text, value or checked state, so the scene task
-// can keep ui.ref():value() current even without on_change; Focus when
-// the user focuses an input, which also opens the system keyboard.
+// changes, with the new text (a string, in PSRAM), value (an integer or
+// a number) or checked state (a boolean), so the scene task can keep
+// ui.ref():value() current even without on_change; Focus when the user
+// focuses an input, which also opens the system keyboard. Text longer
+// than kMaxPropStringBytes, the scene's own limit for a string, is not
+// reported: on_warning gets "ui.input: value too large" instead.
 // Nothing is reported while an op is being applied, so updates the scene
 // sends never come back to it as events.
 //
@@ -107,7 +110,6 @@
 #include <utility>
 
 #include "lvgl.h"
-#include "wisp/base/value.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/large.hpp"
@@ -120,7 +122,7 @@ enum class UiEvent { Click, LongPress, Change, Focus };
 
 struct ViewCallbacks {
     // Called on the UI thread; forwards to the scene task.
-    std::function<void(NodeId node, UiEvent ev, Value value)> on_event;
+    std::function<void(NodeId node, UiEvent ev, PropValue value)> on_event;
     std::function<void(NodeId list, uint32_t first, uint32_t count)> on_list_range;
     // A problem the scene should hear about (a missing image file); the
     // scene host logs it to the scene's log.
@@ -227,7 +229,7 @@ private:
     void place_in_stack(Node& stack);
     void layout_grid(Node& grid);
     void set_text(Node& n, const PropValue& v);
-    void report(Node& n, UiEvent ev, Value value);
+    void report(Node& n, UiEvent ev, PropValue value);
     void report_change(Node& n);
     static bool direct_range(const Node& n);
 

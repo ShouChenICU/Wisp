@@ -68,10 +68,13 @@
 //
 // C stack: Lua is built with LUAI_MAXCCALLS=48 (third_party/lua), which
 // bounds how deeply C calls nest (pcall, gsub callbacks, metamethods,
-// coroutines, the parser). That bound pairs with a 128 KB scene task
-// stack (in PSRAM): at the limit string.gsub recursion, the deepest per
-// level, needs about 1.3 KB per level of Xtensa frames. Changing either
-// number means measuring that case on the device again.
+// coroutines, the parser). That bound pairs with the scene task's 128 KB
+// stack in PSRAM (SceneRuntimeConfig::stack_bytes): at the limit
+// string.gsub recursion, the deepest per level, needs about 1.3 KB per
+// level of Xtensa frames (-Os static frame sizes), and the whole scene
+// task reaches about 106 KB in that case on an x86-64 host at -Os (about
+// 41 KB for pcall recursion). Changing either number means measuring that
+// case on the device again.
 //
 // longjmp rule: Lua is compiled as C and raises errors with longjmp,
 // which skips C++ destructors. A C function called from Lua (and any
