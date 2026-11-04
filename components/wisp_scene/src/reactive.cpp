@@ -5,6 +5,8 @@
 #include <string_view>
 #include <utility>
 
+#include "wisp/scene/schema.hpp"
+
 namespace wisp::scene {
 
 // The prelude's Lua source (prelude.cpp).
@@ -64,6 +66,18 @@ int emit(lua_State* L) {
     // Checked before the string is copied.
     if (t == LUA_TSTRING && lua_rawlen(L, 3) > kMaxPropStringBytes)
         return luaL_error(L, "value too large");
+    // A property of the schema takes only what its constructor would have
+    // taken; other ids pass (the UI ignores them, and only collect_tree()
+    // makes watches, always with schema ids).
+    lua_Integer prop = lua_tointeger(L, 2);
+    if (prop < static_cast<lua_Integer>(kPropCount)) {
+        char why[kPropErrorBytes];
+        if (!bound_value_ok(L, static_cast<NodeId>(lua_tointeger(L, 1)), static_cast<Prop>(prop), 3,
+                            why, sizeof(why))) {
+            lua_pushstring(L, why);
+            return lua_error(L);
+        }
+    }
     if (!add_patch(L, batch)) return luaL_error(L, "ui update too large");
     return 0;
 }
@@ -71,14 +85,13 @@ int emit(lua_State* L) {
 // where(): "file:line" of the innermost Lua frame outside the prelude,
 // or nil. Errors and labels made by the prelude point at scene code.
 int where(lua_State* L) {
-    lua_Debug ar;
-    for (int level = 1; lua_getstack(L, level, &ar); ++level) {
-        if (!lua_getinfo(L, "Sl", &ar) || ar.currentline <= 0) continue;
-        if (std::strcmp(ar.source, kPreludeChunk) == 0) continue;
-        lua_pushfstring(L, "%s:%d", ar.short_src, ar.currentline);
+    char file[LUA_IDSIZE];
+    int line = 0;
+    if (!scene_where(L, file, line)) {
+        lua_pushnil(L);
         return 1;
     }
-    lua_pushnil(L);
+    lua_pushfstring(L, "%s:%d", file, line);
     return 1;
 }
 
@@ -163,6 +176,20 @@ std::optional<ScriptError> flush_reactive(Vm& vm) {
         }
     }
     return err;
+}
+
+bool scene_where(lua_State* L, char (&file)[LUA_IDSIZE], int& line) {
+    lua_Debug ar;
+    for (int level = 1; lua_getstack(L, level, &ar); ++level) {
+        if (!lua_getinfo(L, "Sl", &ar) || ar.currentline <= 0) continue;
+        if (std::strcmp(ar.source, kPreludeChunk) == 0) continue;
+        std::memcpy(file, ar.short_src, sizeof(file));
+        line = ar.currentline;
+        return true;
+    }
+    file[0] = '\0';
+    line = 0;
+    return false;
 }
 
 bool push_wisp_internal(lua_State* L) {

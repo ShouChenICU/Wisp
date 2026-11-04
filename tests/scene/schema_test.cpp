@@ -165,9 +165,9 @@ TEST(Schema, TypeMismatchNamesExpectedType) {
         "return ui.screen{ ui.label{font = 'huge'} }",
         "main.lua:1: ui.label: property 'font' expects one of xs, sm, md, lg, xl, xxl, got 'huge'");
     expect_build_error("return ui.screen{ ui.grid{cols = 1.5} }",
-                       "main.lua:1: ui.grid: property 'cols' expects integer >= 1, got 1.5");
+                       "main.lua:1: ui.grid: property 'cols' expects integer 1 to 16, got 1.5");
     expect_build_error("return ui.screen{ ui.label{w = 'wide'} }",
-                       "main.lua:1: ui.label: property 'w' expects pixels, \"fill\" or "
+                       "main.lua:1: ui.label: property 'w' expects 0 to 4096 pixels, \"fill\" or "
                        "\"content\", got 'wide'");
     expect_build_error("return ui.screen{ ui.label{1} }",
                        "main.lua:1: ui.label: takes no children");
@@ -210,10 +210,45 @@ TEST(Schema, PadAcceptsSafeAndInts) {
     expect_build_ok("return ui.screen{ pad = 'safe', ui.column{pad = 12}, ui.row{pad = 0} }");
     expect_build_error(
         "return ui.screen{ pad = 'big' }",
-        "main.lua:1: ui.screen: property 'pad' expects pixels or \"safe\", got 'big'");
+        "main.lua:1: ui.screen: property 'pad' expects 0 to 512 pixels or \"safe\", got 'big'");
     expect_build_error(
         "return ui.screen{ pad = 1.25 }",
-        "main.lua:1: ui.screen: property 'pad' expects pixels or \"safe\", got 1.25");
+        "main.lua:1: ui.screen: property 'pad' expects 0 to 512 pixels or \"safe\", got 1.25");
+}
+
+// Pixel values stay in ranges the UI can use as they are: LVGL reads
+// some bits of a coordinate as flags (0x20000064 is LV_PCT(100)).
+TEST(Schema, IntegersAreRangeChecked) {
+    expect_build_ok(
+        "return ui.screen{ pad = 512, gap = 0, ui.label{w = 0, h = 4096, radius = 4096, "
+        "border = 64, grow = 255}, ui.grid{cols = 16}, ui.arc{width = 512}, "
+        "ui.input{max_len = 65535}, ui.list{row = print, row_h = 4096} }");
+    expect_build_error("return ui.screen{ ui.label{w = -1} }",
+                       "main.lua:1: ui.label: property 'w' expects 0 to 4096 pixels, \"fill\" or "
+                       "\"content\", got -1");
+    expect_build_error("return ui.screen{ ui.label{h = 536871012} }",
+                       "main.lua:1: ui.label: property 'h' expects 0 to 4096 pixels, \"fill\" or "
+                       "\"content\", got 536871012");
+    expect_build_error("return ui.screen{ pad = 513 }",
+                       "main.lua:1: ui.screen: property 'pad' expects 0 to 512 pixels or \"safe\", "
+                       "got 513");
+    expect_build_error("return ui.screen{ gap = -5 }",
+                       "main.lua:1: ui.screen: property 'gap' expects integer 0 to 512, got -5");
+    expect_build_error("return ui.screen{ ui.label{radius = -1} }",
+                       "main.lua:1: ui.label: property 'radius' expects integer 0 to 4096, got -1");
+    expect_build_error("return ui.screen{ ui.label{border = 65} }",
+                       "main.lua:1: ui.label: property 'border' expects integer 0 to 64, got 65");
+    expect_build_error("return ui.screen{ ui.label{grow = 256} }",
+                       "main.lua:1: ui.label: property 'grow' expects integer 0 to 255, got 256");
+    expect_build_error("return ui.screen{ ui.grid{cols = 17} }",
+                       "main.lua:1: ui.grid: property 'cols' expects integer 1 to 16, got 17");
+    expect_build_error("return ui.screen{ ui.arc{width = 513} }",
+                       "main.lua:1: ui.arc: property 'width' expects integer 0 to 512, got 513");
+    expect_build_error("return ui.screen{ ui.input{max_len = 65536} }",
+                       "main.lua:1: ui.input: property 'max_len' expects integer 0 to 65535, "
+                       "got 65536");
+    expect_build_error("return ui.screen{ ui.list{row = print, row_h = 0} }",
+                       "main.lua:1: ui.list: property 'row_h' expects integer 1 to 4096, got 0");
 }
 
 TEST(Schema, StateAndBindAcceptedOnlyWhereBindable) {
@@ -236,10 +271,14 @@ return ui.screen{
     expect_build_error("local count = state(0)\nreturn ui.screen{ ui.button{on_click = count} }",
                        "main.lua:2: ui.button: property 'on_click' expects function, got state");
     expect_build_error("local c = state(0)\nreturn ui.screen{ ui.grid{cols = c} }",
-                       "main.lua:2: ui.grid: property 'cols' expects integer >= 1, got state");
+                       "main.lua:2: ui.grid: property 'cols' expects integer 1 to 16, got state");
     expect_build_error("return ui.screen{ ui.label{ref = bind(state(1), tostring)} }",
                        "main.lua:1: ui.label: property 'ref' expects a name of 1 to 64 bytes, "
                        "got bind");
+    // An image only ever shows a file of its package's assets/.
+    expect_build_error("return ui.screen{ ui.image{src = state('assets/a.png')} }",
+                       "main.lua:1: ui.image: property 'src' expects a path assets/<name>.png, "
+                       "got state");
     // The first value of a bound property is checked like a plain one, at
     // the line that built the node.
     expect_build_error("local f = state('huge')\n\nreturn ui.screen{\n ui.label{font = f} }",
@@ -407,6 +446,87 @@ return ui.screen{ ui.show_if(flag, ui.label{text = "hi"}), ui.show_if(true, ui.l
                        "the first argument");
 }
 
+// Every later value of a bound property is checked too, when the flush
+// emits it: the error names the widget and the line that built it, and
+// the batch is dropped.
+TEST(Schema, BoundValuesAreCheckedWhenTheyChange) {
+    struct Case {
+        const char* set;
+        const char* error;
+    };
+    const Case cases[] = {
+        {"_G.t:set(true)", "main.lua:3: ui.label: property 'text' expects string, got boolean"},
+        {"_G.c:set('blue')",
+         "main.lua:3: ui.label: property 'fg' expects \"#RRGGBB\" or one of accent, text, muted, "
+         "surface, bg, danger, ok, warn, got 'blue'"},
+        {"_G.f:set('huge')",
+         "main.lua:3: ui.label: property 'font' expects one of xs, sm, md, lg, xl, xxl, got "
+         "'huge'"},
+        {"_G.o:set(7)", "main.lua:3: ui.label: property 'opa' expects number from 0 to 1, got 7"},
+        {"_G.w:set(-3)",
+         "main.lua:3: ui.label: property 'w' expects 0 to 4096 pixels, \"fill\" or \"content\", "
+         "got -3"},
+    };
+    for (const Case& k : cases) {
+        SCOPED_TRACE(k.set);
+        Scene s;
+        ASSERT_FALSE(s.installed) << describe(s.installed);
+        auto err =
+            s.build(R"(_G.t, _G.c, _G.f, _G.o = state("a"), state("ok"), state("md"), state(1)
+_G.w = state(10)
+return ui.screen{ ui.label{text = _G.t, fg = _G.c, font = _G.f, opa = _G.o, w = _G.w} })");
+        ASSERT_FALSE(err) << describe(err);
+        // Valid later values pass.
+        err = s.message(
+            "_G.t:set(5) _G.c:set('#00FF00') _G.f:set('xl') _G.o:set(0.5) _G.w:set('fill')");
+        ASSERT_FALSE(err) << describe(err);
+        EXPECT_EQ(s.batch.take(1).ops.size(), 5u);
+
+        err = s.message(k.set);
+        ASSERT_TRUE(err);
+        EXPECT_EQ(err->text(), k.error);
+        EXPECT_EQ(s.batch.size(), 0u);
+    }
+
+    // A watch on a node outside the tree is still checked; the message
+    // then names no widget or line.
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.message(R"(local W = ...
+_G.v = state("a")
+W.watch(77, )" + std::to_string(static_cast<int>(Prop::Text)) +
+                         R"(, _G.v))");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.message("_G.v:set(false)");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->text(), "property 'text' expects string, got boolean");
+}
+
+TEST(Schema, ConstructorErrorsPointAtTheSceneLine) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    // Called through pcall, and handed straight to the prelude by a bind.
+    auto err = s.build(R"lua(local x = 1
+local ok, msg = pcall(ui.label, {txt = 1})
+assert(msg == "main.lua:2: ui.label: unknown property 'txt' (did you mean 'text'?)", msg)
+local b = bind(state({txt = 1}), ui.label)
+ok, msg = pcall(b.get, b)
+assert(msg == "main.lua:5: ui.label: unknown property 'txt' (did you mean 'text'?)", msg)
+return ui.screen{})lua");
+    EXPECT_FALSE(err) << describe(err);
+
+    // A node the prelude built (through a bind) records the scene line
+    // that read the bind, not a line of the prelude.
+    Scene t;
+    ASSERT_FALSE(t.installed) << describe(t.installed);
+    err = t.build(R"(local b = bind(state({}), ui.column)
+local x = 1
+local root = b:get()
+return root)");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->text(), "main.lua:3: entry must return ui.screen (got ui.column)");
+}
+
 TEST(Schema, RefValueTracksChanges) {
     Scene s;
     ASSERT_FALSE(s.installed) << describe(s.installed);
@@ -419,15 +539,19 @@ return ui.screen{
     ui.label{ref = "title", text = "t"},
     ui.slider{ref = "vol", value = 30},
     ui.switch{ref = "on"},
+    ui.slider{ref = "low", min = 10},
+    ui.slider{ref = "zero"},
 })");
     ASSERT_FALSE(err) << describe(err);
-    ASSERT_EQ(s.tree.nodes.size(), 5u);
+    ASSERT_EQ(s.tree.nodes.size(), 7u);
     EXPECT_EQ(str_of(prop_of(s.node(1), Prop::Ref)), "name");
 
     err = s.message(R"(
         assert(_G.h:value() == "a")
         assert(ui.ref("vol"):value() == 30)
         assert(ui.ref("on"):value() == false)
+        assert(ui.ref("low"):value() == 10, "a slider starts at its min")
+        assert(ui.ref("zero"):value() == 0)
     )");
     ASSERT_FALSE(err) << describe(err);
 
@@ -475,6 +599,9 @@ TEST(Schema, RefScrollToEmitsScrollOp) {
     err = s.message("ui.ref('x'):scroll_to(1)");
     ASSERT_TRUE(err);
     EXPECT_EQ(err->text(), "main.lua:1: ui.ref: 'x' (ui.label) does not support scroll_to");
+    err = s.message("ui.ref('l').scroll_to(5)");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->text(), "main.lua:1: ui.ref: call handle methods with ':' (h:value())");
     err = s.message("ui.ref('l'):scroll_to(0)");
     ASSERT_TRUE(err);
     EXPECT_EQ(err->text(), "main.lua:1: ui.ref: scroll_to expects an index from 1");
@@ -500,6 +627,21 @@ TEST(Schema, RefFocusEmitsFocusOp) {
     // The input's value starts empty.
     err = s.message("assert(ui.ref('in'):value() == '')");
     EXPECT_FALSE(err) << describe(err);
+}
+
+// A computed read while the tree is collected cannot push ops ahead of
+// the Build that creates their widgets.
+TEST(Schema, RefMethodsWaitForTheTree) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.build(R"(local early = computed(function()
+    ui.ref("in"):focus()
+    return "x"
+end)
+return ui.screen{ ui.input{ref = "in"}, ui.label{text = early} })");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->text(), "main.lua:2: ui.ref: widgets cannot be used while the tree is built");
+    EXPECT_EQ(s.batch.size(), 0u);
 }
 
 // Nodes are opaque: a scene can neither forge one, nor read or change one

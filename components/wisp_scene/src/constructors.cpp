@@ -1,30 +1,13 @@
-// The `ui` table (constructors, ui.show_if, ui.ref) and collect_tree();
-// see wisp/scene/schema.hpp.
-//
-// Everything here that runs inside Lua follows the longjmp rule in
-// vm.hpp: frames hold only trivially destructible locals (char buffers,
-// lua_Debug, string_view arrays), and the C++ work on the Build happens
-// in small helpers that call no Lua API that can raise.
-//
-// A node is a userdata (NodeHeader) with two user values: its record
-// table and the file it was built in. The record keeps the children at
-// 1..n and property p at -(p + 1). User values and a hidden metatable
-// put both out of the scene's reach, so collect_tree() can trust what it
-// walks: the properties were checked when the node was built, a node is
-// a child of at most one parent (marked in its header), and only C code
-// changes a record afterwards (ui.show_if).
+// The `ui` table: the constructors, ui.show_if and ui.ref handles (see
+// wisp/scene/schema.hpp; the node layout is in node.hpp).
 
 #include <algorithm>
 #include <array>
-#include <cmath>
-#include <cstdarg>
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
 #include <optional>
 #include <string_view>
-#include <utility>
 
+#include "node.hpp"
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/reactive.hpp"
 #include "wisp/scene/schema.hpp"
@@ -33,304 +16,11 @@ namespace wisp::scene {
 
 namespace {
 
-constexpr const char* kNodeType = "wisp.node";
+using namespace node;
+
 constexpr const char* kRefType = "wisp.ref";
 constexpr const char* kUiType = "wisp.ui";
-
-// Registry keys (their addresses, as light userdata).
-char kKindKey;
-char kWatchKey;
-char kNegateKey;
-char kNodesKey;
-char kRefsKey;
-char kValuesKey;
-
 constexpr size_t kMaxRefBytes = 64;
-// Package paths are at most 128 bytes (spec 6.2).
-constexpr size_t kMaxSrcBytes = 128;
-constexpr size_t kMaxSeries = 4;
-constexpr size_t kMaxSeriesPoints = 128;
-// How far up the call stack a constructor looks for the scene line that
-// called it (through pcall, for instance).
-constexpr int kMaxWhereLevels = 8;
-// How much of a scene-supplied name or value an error message quotes.
-constexpr size_t kMaxShown = 40;
-
-struct NodeHeader {
-    uint16_t widget;
-    uint16_t children;  // at 1..children of the record
-    uint8_t attached;   // already the child of another node
-    int32_t line;       // 0 if unknown
-};
-
-struct Where {
-    char file[LUA_IDSIZE];
-    int line;
-};
-
-lua_Integer prop_key(Prop p) { return -1 - static_cast<lua_Integer>(p); }
-
-std::string_view widget_name(Widget w) { return widget_spec(w).name; }
-
-// The scene line that called the running C function: the first Lua frame
-// above it.
-void where(lua_State* L, Where& at) {
-    at.file[0] = '\0';
-    at.line = 0;
-    lua_Debug ar;
-    for (int level = 1; level <= kMaxWhereLevels && lua_getstack(L, level, &ar); ++level) {
-        if (!lua_getinfo(L, "Sl", &ar) || ar.currentline <= 0) continue;
-        std::snprintf(at.file, sizeof(at.file), "%s", ar.short_src);
-        at.line = ar.currentline;
-        return;
-    }
-}
-
-// Raises the formatted message, prefixed with "file:line: " when the
-// position is known.
-int raise(lua_State* L, const char* file, int line, const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    lua_pushvfstring(L, fmt, ap);
-    va_end(ap);
-    if (file != nullptr && file[0] != '\0' && line > 0) {
-        lua_pushfstring(L, "%s:%d: ", file, line);
-        lua_insert(L, -2);
-        lua_concat(L, 2);
-    }
-    return lua_error(L);
-}
-
-// Copies at most kMaxShown bytes of s into out (cut on a UTF-8 boundary,
-// "..." marking the cut).
-template <size_t N>
-const char* shown(std::string_view s, char (&out)[N]) {
-    static_assert(N >= kMaxShown + 4);
-    size_t n = s.size();
-    bool cut = n > kMaxShown;
-    if (cut) {
-        n = kMaxShown;
-        while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
-    }
-    std::memcpy(out, s.data(), n);
-    if (cut) {
-        std::memcpy(out + n, "...", 3);
-        n += 3;
-    }
-    out[n] = '\0';
-    return out;
-}
-
-std::string_view string_at(lua_State* L, int idx) {
-    size_t n = 0;
-    const char* s = lua_tolstring(L, idx, &n);
-    return {s, n};
-}
-
-// nearest_name() into a fixed buffer, so its std::string is gone before
-// the caller raises.
-template <size_t N>
-void nearest_into(char (&out)[N], std::string_view wrong, std::span<const std::string_view> names) {
-    std::string best = nearest_name(wrong, names);
-    std::snprintf(out, N, "%s", best.c_str());
-}
-
-// --- Reactive objects -----------------------------------------------------
-
-// "state", "computed" or "bind" if the value at idx is one, else nullptr.
-// Calls the prelude's kind(), which runs no scene code.
-const char* reactive_kind(lua_State* L, int idx) {
-    if (lua_type(L, idx) != LUA_TTABLE) return nullptr;
-    idx = lua_absindex(L, idx);
-    lua_rawgetp(L, LUA_REGISTRYINDEX, &kKindKey);
-    lua_pushvalue(L, idx);
-    lua_call(L, 1, 1);
-    const char* kind = nullptr;
-    if (lua_type(L, -1) == LUA_TSTRING) {
-        const char* k = lua_tostring(L, -1);
-        if (std::strcmp(k, "state") == 0)
-            kind = "state";
-        else if (std::strcmp(k, "computed") == 0)
-            kind = "computed";
-        else if (std::strcmp(k, "bind") == 0)
-            kind = "bind";
-    }
-    lua_pop(L, 1);
-    return kind;
-}
-
-// --- Value checks (none of these raise) -------------------------------------
-
-enum class Check { Ok, WrongType, BadValue, TooLarge };
-
-bool in(std::string_view s, std::span<const std::string_view> words) {
-    return std::find(words.begin(), words.end(), s) != words.end();
-}
-
-// An integer, or a float with an integral value, within int32.
-bool integral(lua_State* L, int idx, lua_Integer& out) {
-    if (lua_isinteger(L, idx)) {
-        out = lua_tointeger(L, idx);
-    } else {
-        lua_Number d = lua_tonumber(L, idx);
-        if (!(d >= INT32_MIN && d <= INT32_MAX) || std::floor(d) != d) return false;
-        out = static_cast<lua_Integer>(d);
-    }
-    return out >= INT32_MIN && out <= INT32_MAX;
-}
-
-bool is_hex_color(std::string_view s) {
-    if (s.size() != 7 || s[0] != '#') return false;
-    for (char c : s.substr(1))
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
-            return false;
-    return true;
-}
-
-// assets/<segments>.png, no empty, "." or ".." segment, no backslash.
-bool is_asset_path(std::string_view s) {
-    constexpr std::string_view prefix = "assets/", suffix = ".png";
-    if (s.size() > kMaxSrcBytes || s.size() <= prefix.size() + suffix.size() ||
-        s.substr(0, prefix.size()) != prefix || s.substr(s.size() - suffix.size()) != suffix)
-        return false;
-    std::string_view rest = s.substr(prefix.size());
-    while (true) {
-        size_t slash = rest.find('/');
-        std::string_view seg = rest.substr(0, slash);
-        if (seg.empty() || seg == "." || seg == ".." || seg.find('\\') != std::string_view::npos)
-            return false;
-        if (slash == std::string_view::npos) return true;
-        rest = rest.substr(slash + 1);
-    }
-}
-
-Check check_series(lua_State* L, int idx) {
-    size_t n = lua_rawlen(L, idx);
-    if (n > kMaxSeries) return Check::BadValue;
-    for (size_t i = 1; i <= n; ++i) {
-        lua_rawgeti(L, idx, static_cast<lua_Integer>(i));
-        bool ok = lua_type(L, -1) == LUA_TTABLE;
-        size_t points = ok ? lua_rawlen(L, -1) : 0;
-        ok = ok && points <= kMaxSeriesPoints;
-        for (size_t j = 1; ok && j <= points; ++j) {
-            ok = lua_rawgeti(L, -1, static_cast<lua_Integer>(j)) == LUA_TNUMBER;
-            lua_pop(L, 1);
-        }
-        lua_pop(L, 1);
-        if (!ok) return Check::BadValue;
-    }
-    return Check::Ok;
-}
-
-// Checks a value that is not a reactive object. nil is accepted (only a
-// bound value can be nil: it means "not set").
-Check check_value(lua_State* L, int idx, Prop p) {
-    const PropSpec& spec = prop_spec(p);
-    int t = lua_type(L, idx);
-    if (t == LUA_TNIL) return Check::Ok;
-    if (t == LUA_TSTRING && lua_rawlen(L, idx) > kMaxPropStringBytes) return Check::TooLarge;
-    lua_Integer i = 0;
-    switch (spec.type) {
-        case PropType::Size:
-        case PropType::Pad:
-            if (t == LUA_TNUMBER) return integral(L, idx, i) ? Check::Ok : Check::BadValue;
-            if (t == LUA_TSTRING)
-                return in(string_at(L, idx), spec.choices) ? Check::Ok : Check::BadValue;
-            return Check::WrongType;
-        case PropType::Int:
-            if (t != LUA_TNUMBER) return Check::WrongType;
-            if (!integral(L, idx, i)) return Check::BadValue;
-            if ((p == Prop::Cols || p == Prop::RowH) && i < 1) return Check::BadValue;
-            if (p == Prop::MaxLen && i < 0) return Check::BadValue;
-            return Check::Ok;
-        case PropType::Number:
-            if (t != LUA_TNUMBER) return Check::WrongType;
-            if (p == Prop::Opa) {
-                lua_Number d = lua_tonumber(L, idx);
-                if (!(d >= 0 && d <= 1)) return Check::BadValue;
-            }
-            return Check::Ok;
-        case PropType::String:
-            if (p == Prop::Ref) {
-                if (t != LUA_TSTRING) return Check::WrongType;
-                size_t n = lua_rawlen(L, idx);
-                return n >= 1 && n <= kMaxRefBytes ? Check::Ok : Check::BadValue;
-            }
-            if (p == Prop::Src) {
-                if (t != LUA_TSTRING) return Check::WrongType;
-                return is_asset_path(string_at(L, idx)) ? Check::Ok : Check::BadValue;
-            }
-            return t == LUA_TSTRING || t == LUA_TNUMBER ? Check::Ok : Check::WrongType;
-        case PropType::Bool:
-            return t == LUA_TBOOLEAN ? Check::Ok : Check::WrongType;
-        case PropType::Color:
-            if (t != LUA_TSTRING) return Check::WrongType;
-            return is_hex_color(string_at(L, idx)) || in(string_at(L, idx), spec.choices)
-                       ? Check::Ok
-                       : Check::BadValue;
-        case PropType::Font:
-        case PropType::Align:
-        case PropType::Justify:
-        case PropType::Enum:
-            if (t != LUA_TSTRING) return Check::WrongType;
-            return in(string_at(L, idx), spec.choices) ? Check::Ok : Check::BadValue;
-        case PropType::Fn:
-            return t == LUA_TFUNCTION ? Check::Ok : Check::WrongType;
-        case PropType::Items:
-            return t == LUA_TTABLE ? Check::Ok : Check::WrongType;
-        case PropType::Series:
-            if (t != LUA_TTABLE) return Check::WrongType;
-            return check_series(L, idx);
-    }
-    return Check::WrongType;
-}
-
-// What the value at idx was, for "got ..." ("" when a table's content was
-// wrong: the message says what it expects).
-template <size_t N>
-void describe_got(lua_State* L, int idx, Check c, const char* kind, char (&out)[N]) {
-    char quoted[kMaxShown + 4];
-    if (kind != nullptr) {
-        std::snprintf(out, N, "%s", kind);
-    } else if (c == Check::WrongType) {
-        std::snprintf(out, N, "%s", lua_typename(L, lua_type(L, idx)));
-    } else if (lua_type(L, idx) == LUA_TSTRING) {
-        std::snprintf(out, N, "'%s'", shown(string_at(L, idx), quoted));
-    } else if (lua_isinteger(L, idx)) {
-        std::snprintf(out, N, "%lld", static_cast<long long>(lua_tointeger(L, idx)));
-    } else if (lua_type(L, idx) == LUA_TNUMBER) {
-        std::snprintf(out, N, "%.14g", static_cast<double>(lua_tonumber(L, idx)));
-    } else {
-        out[0] = '\0';
-    }
-}
-
-int raise_prop(lua_State* L, const char* file, int line, Widget w, Prop p, Check c, int idx,
-               const char* kind) {
-    const char* wname = widget_name(w).data();
-    const char* pname = prop_spec(p).name.data();
-    if (c == Check::TooLarge)
-        return raise(L, file, line, "ui.%s: property '%s': value too large", wname, pname);
-    char got[kMaxShown + 8];
-    describe_got(L, idx, c, kind, got);
-    char hint[48] = "";
-    if (p == Prop::Name && kind == nullptr && lua_type(L, idx) == LUA_TSTRING) {
-        char best[24];
-        nearest_into(best, string_at(L, idx), prop_spec(p).choices);
-        std::snprintf(hint, sizeof(hint), " (did you mean '%s'?)", best);
-    }
-    const char* expects = prop_expects(p).data();
-    if (got[0] == '\0')
-        return raise(L, file, line, "ui.%s: property '%s' expects %s", wname, pname, expects);
-    return raise(L, file, line, "ui.%s: property '%s' expects %s, got %s%s", wname, pname, expects,
-                 got, hint);
-}
-
-// --- Nodes ----------------------------------------------------------------
-
-NodeHeader* to_node(lua_State* L, int idx) {
-    return static_cast<NodeHeader*>(luaL_testudata(L, idx, kNodeType));
-}
 
 const PropSpec* find_prop(const WidgetSpec& w, std::string_view name) {
     for (Prop p : w.props)
@@ -468,14 +158,17 @@ int construct(lua_State* L) {
             raise(L, at.file, at.line, "ui.list: property 'row' is required");
         lua_pop(L, 1);
     }
-    int n = compact_children(L, 3, last);
-    attach_children(L, at, w, 3, n);
-    h->children = static_cast<uint16_t>(n);
-    lua_setiuservalue(L, 2, 1);
+    // Everything that can fail (the file string can raise a memory
+    // error) comes before the children are marked: a scene that catches
+    // the error can still use them.
     if (at.file[0] != '\0') {
         lua_pushstring(L, at.file);
         lua_setiuservalue(L, 2, 2);
     }
+    int n = compact_children(L, 3, last);
+    attach_children(L, at, w, 3, n);
+    h->children = static_cast<uint16_t>(n);
+    lua_setiuservalue(L, 2, 1);
     return 1;
 }
 
@@ -540,11 +233,21 @@ struct Resolved {
     Widget widget;
 };
 
-// Resolves the handle at 1 in the tree collected last. Leaves its name at
-// index `name` (the stack is cut to that).
-Resolved resolve(lua_State* L, int name) {
+// Every handle method starts with this, before it reads its arguments.
+void check_handle(lua_State* L) {
     if (luaL_testudata(L, 1, kRefType) == nullptr)
         luaL_error(L, "ui.ref: call handle methods with ':' (h:value())");
+}
+
+// Resolves the handle at 1 in the tree collected last. Leaves its name at
+// index `name` (the stack is cut to that). Refused while collect_tree()
+// runs: the tables are half built, and an op pushed then would come
+// before the Build that creates its widget.
+Resolved resolve(lua_State* L, int name) {
+    check_handle(L);
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &kCollectingKey);
+    if (lua_toboolean(L, -1))
+        luaL_error(L, "ui.ref: widgets cannot be used while the tree is built");
     lua_settop(L, name - 1);
     lua_getiuservalue(L, 1, 1);  // name
     lua_rawgetp(L, LUA_REGISTRYINDEX, &kRefsKey);
@@ -588,6 +291,7 @@ bool push_focus(lua_State* L, NodeId node) {
 }
 
 int ref_scroll_to(lua_State* L) {
+    check_handle(L);
     lua_Integer i = luaL_checkinteger(L, 2);
     Resolved r = resolve(L, 3);
     if (r.widget != Widget::List && r.widget != Widget::Scroll)
@@ -619,22 +323,6 @@ int set_value(lua_State* L) {
 
 // --- Installation -----------------------------------------------------------
 
-// Fresh nodes, refs and values tables, in the registry (for C) and in the
-// internal table at `internal` (for Lua).
-void reset_tree_tables(lua_State* L, int internal) {
-    struct Table {
-        char* key;
-        const char* name;
-    };
-    const Table tables[] = {{&kNodesKey, "nodes"}, {&kRefsKey, "refs"}, {&kValuesKey, "values"}};
-    for (const Table& t : tables) {
-        lua_newtable(L);
-        lua_pushvalue(L, -1);
-        lua_rawsetp(L, LUA_REGISTRYINDEX, t.key);
-        lua_setfield(L, internal, t.name);
-    }
-}
-
 void keep_internal(lua_State* L, int internal, const char* name, char* key) {
     lua_getfield(L, internal, name);
     if (lua_type(L, -1) != LUA_TFUNCTION) luaL_error(L, "ui: the prelude has no %s()", name);
@@ -657,6 +345,10 @@ int install(lua_State* L) {
     keep_internal(L, 1, "negate", &kNegateKey);
     set_checked(L, 1, "set_value", set_value);
     reset_tree_tables(L, 1);
+    // Created here so that collect_tree() only ever changes its value,
+    // which cannot fail.
+    lua_pushboolean(L, 0);
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &kCollectingKey);
 
     new_binding_metatable(L, kNodeType);
     lua_pop(L, 1);
@@ -692,245 +384,6 @@ int install(lua_State* L) {
     return 0;
 }
 
-// --- collect_tree -----------------------------------------------------------
-
-struct Collect {
-    Build* out;
-    NodeId next;
-    size_t count;
-    size_t bytes;  // the PatchBatch's estimate once `out` is pushed
-};
-
-// Stack slots of collect_entry().
-constexpr int kCtxSlot = 1;
-constexpr int kRootSlot = 2;
-constexpr int kNodesSlot = 3;
-constexpr int kRefsSlot = 4;
-constexpr int kValuesSlot = 5;
-constexpr int kWalkBase = 5;  // (node, parent id) pairs above this
-
-// Where the node at `node` was built.
-template <size_t N>
-int node_position(lua_State* L, int node, char (&file)[N]) {
-    file[0] = '\0';
-    if (lua_getiuservalue(L, node, 2) == LUA_TSTRING)
-        std::snprintf(file, N, "%s", lua_tostring(L, -1));
-    lua_pop(L, 1);
-    return static_cast<NodeHeader*>(lua_touserdata(L, node))->line;
-}
-
-// Raises at the position the node at `node` was built at.
-int raise_at_node(lua_State* L, int node, const char* fmt, const char* arg = "") {
-    char file[LUA_IDSIZE];
-    int line = node_position(L, node, file);
-    return raise(L, file, line, fmt, arg);
-}
-
-// The C++ side of a node. Neither raises; false when the batch estimate
-// would pass kMaxBatchBytes.
-bool begin_node(Collect* c, NodeId id, NodeId parent, Widget w, int line) {
-    if (c->bytes + kOpOverheadBytes > kMaxBatchBytes) return false;
-    c->bytes += kOpOverheadBytes;
-    NodeDesc& n = c->out->nodes.emplace_back();
-    n.id = id;
-    n.parent = parent;
-    n.widget = static_cast<WidgetId>(w);
-    n.line = line;
-    return true;
-}
-
-PropValue to_value(lua_State* L, int idx, PropType type) {
-    switch (lua_type(L, idx)) {
-        case LUA_TBOOLEAN:
-            return PropValue{lua_toboolean(L, idx) != 0};
-        case LUA_TNUMBER: {
-            lua_Integer i = 0;
-            if ((type == PropType::Size || type == PropType::Int || type == PropType::Pad) &&
-                integral(L, idx, i))
-                return PropValue{static_cast<int64_t>(i)};
-            if (lua_isinteger(L, idx))
-                return PropValue{static_cast<int64_t>(lua_tointeger(L, idx))};
-            return PropValue{static_cast<double>(lua_tonumber(L, idx))};
-        }
-        case LUA_TSTRING: {
-            std::string_view s = string_at(L, idx);
-            return PropValue{os::LargeString(s.data(), s.size())};
-        }
-        default:
-            return PropValue{};
-    }
-}
-
-// Checked by the caller: not a table or function, at most
-// kMaxPropStringBytes.
-bool add_prop(Collect* c, lua_State* L, int idx, Prop p) {
-    size_t added = kOpOverheadBytes + (lua_type(L, idx) == LUA_TSTRING ? lua_rawlen(L, idx) : 0);
-    if (c->bytes + added > kMaxBatchBytes) return false;
-    c->bytes += added;
-    c->out->nodes.back().props.emplace_back(static_cast<PropId>(p),
-                                            to_value(L, idx, prop_spec(p).type));
-    return true;
-}
-
-void add_events(Collect* c, uint32_t bits) { c->out->nodes.back().events |= bits; }
-
-uint32_t event_bit(Prop p) {
-    switch (p) {
-        case Prop::OnClick:
-            return kEventClick;
-        case Prop::OnLongPress:
-            return kEventLongPress;
-        case Prop::OnChange:
-            return kEventChange;
-        default:
-            return 0;
-    }
-}
-
-// The property whose value a ui.ref handle's :value() reports.
-std::optional<Prop> value_prop(Widget w) {
-    switch (w) {
-        case Widget::Input:
-            return Prop::Text;
-        case Widget::Slider:
-            return Prop::Value;
-        case Widget::Checkbox:
-        case Widget::Switch:
-            return Prop::Checked;
-        default:
-            return std::nullopt;
-    }
-}
-
-// Pushes the default :value() of a widget that was given none.
-void push_default_value(lua_State* L, Widget w, int record) {
-    if (w == Widget::Input) {
-        lua_pushliteral(L, "");
-    } else if (w == Widget::Slider) {
-        // The slider starts at its minimum when that is a plain number.
-        if (lua_rawgeti(L, record, prop_key(Prop::Min)) != LUA_TNUMBER) {
-            lua_pop(L, 1);
-            lua_pushinteger(L, 0);
-        }
-    } else {
-        lua_pushboolean(L, 0);
-    }
-}
-
-// Adds the property value on top (popping it) to the node being built:
-// event bit, ref, :value() and the NodeDesc prop. `id` is the node's id.
-void take_prop(lua_State* L, Collect* c, int node, Prop p, NodeId id, bool& has_value) {
-    Widget w = static_cast<Widget>(static_cast<NodeHeader*>(lua_touserdata(L, node))->widget);
-    if (reactive_kind(L, -1) != nullptr) {
-        // watch(node, prop, source) -> disposer, current value
-        lua_rawgetp(L, LUA_REGISTRYINDEX, &kWatchKey);
-        lua_pushinteger(L, id);
-        lua_pushinteger(L, static_cast<lua_Integer>(p));
-        lua_pushvalue(L, -4);
-        lua_call(L, 3, 2);
-        lua_remove(L, -2);
-        lua_remove(L, -2);
-        Check check = check_value(L, -1, p);
-        if (check != Check::Ok) {
-            // Reported at the node's line, as for a plain value.
-            char file[LUA_IDSIZE];
-            int line = node_position(L, node, file);
-            raise_prop(L, file, line, w, p, check, lua_gettop(L), nullptr);
-        }
-    }
-    if (p == Prop::Ref) {
-        lua_pushvalue(L, -1);
-        if (lua_rawget(L, kRefsSlot) != LUA_TNIL)
-            raise_at_node(L, node, "duplicate ref '%s'", lua_tostring(L, -2));
-        lua_pop(L, 1);
-        lua_pushvalue(L, -1);
-        lua_pushinteger(L, id);
-        lua_rawset(L, kRefsSlot);
-    }
-    if (value_prop(w) == p && !lua_isnil(L, -1)) {
-        lua_pushvalue(L, -1);
-        lua_rawseti(L, kValuesSlot, id);
-        has_value = true;
-    }
-    if (!add_prop(c, L, -1, p)) raise_at_node(L, node, "ui update too large");
-    lua_pop(L, 1);
-}
-
-// Turns the node at `node` (from the walk stack, with its parent's id)
-// into a NodeDesc, then replaces it on the stack with its children's
-// (node, id) pairs, last child lowest so the first is taken next.
-void visit(lua_State* L, Collect* c, int node, NodeId parent) {
-    // The walk's pending pairs may have used up the slots a C function
-    // starts with.
-    luaL_checkstack(L, LUA_MINSTACK, "widget tree");
-    auto* h = static_cast<NodeHeader*>(lua_touserdata(L, node));
-    Widget w = static_cast<Widget>(h->widget);
-    if (++c->count > kMaxNodes) raise_at_node(L, node, "too many widgets (limit 2000)");
-    NodeId id = c->next++;
-    if (!begin_node(c, id, parent, w, h->line)) raise_at_node(L, node, "ui update too large");
-    lua_getiuservalue(L, node, 1);
-    int record = lua_gettop(L);
-    bool has_value = false;
-    uint32_t events = 0;
-    for (Prop p : widget_spec(w).props) {
-        if (lua_rawgeti(L, record, prop_key(p)) == LUA_TNIL) {
-            lua_pop(L, 1);
-            continue;
-        }
-        PropType type = prop_spec(p).type;
-        if (type == PropType::Fn || type == PropType::Items || type == PropType::Series) {
-            // Kept in the node for push_node_prop(); handlers set event bits.
-            events |= event_bit(p);
-            lua_pop(L, 1);
-            continue;
-        }
-        take_prop(L, c, node, p, id, has_value);
-    }
-    add_events(c, events);
-    if (!has_value && value_prop(w)) {
-        push_default_value(L, w, record);
-        lua_rawseti(L, kValuesSlot, id);
-    }
-    lua_pushvalue(L, node);
-    lua_rawseti(L, kNodesSlot, id);
-    luaL_checkstack(L, 2 * h->children + 2, "widget tree");
-    for (int i = h->children; i >= 1; --i) {
-        lua_rawgeti(L, record, i);
-        lua_pushinteger(L, id);
-    }
-    lua_remove(L, record);
-    lua_remove(L, node);
-}
-
-// collect_entry(ctx, root), under Vm::call(). The walk keeps its pending
-// nodes on the Lua stack instead of recursing, so a deep tree costs stack
-// slots, not C stack or C call levels.
-int collect_entry(lua_State* L) {
-    auto* c = static_cast<Collect*>(lua_touserdata(L, kCtxSlot));
-    lua_settop(L, kRootSlot);
-    NodeHeader* root = to_node(L, kRootSlot);
-    if (root == nullptr)
-        return raise(L, nullptr, 0, "entry must return ui.screen (got %s)",
-                     luaL_typename(L, kRootSlot));
-    if (root->widget != static_cast<uint16_t>(Widget::Screen))
-        return raise_at_node(L, kRootSlot, "entry must return ui.screen (got ui.%s)",
-                             widget_name(static_cast<Widget>(root->widget)).data());
-    if (!push_wisp_internal(L)) return luaL_error(L, "ui: the reactive prelude is not installed");
-    reset_tree_tables(L, lua_gettop(L));
-    lua_pop(L, 1);
-    lua_rawgetp(L, LUA_REGISTRYINDEX, &kNodesKey);   // kNodesSlot
-    lua_rawgetp(L, LUA_REGISTRYINDEX, &kRefsKey);    // kRefsSlot
-    lua_rawgetp(L, LUA_REGISTRYINDEX, &kValuesKey);  // kValuesSlot
-    lua_pushvalue(L, kRootSlot);
-    lua_pushinteger(L, 0);
-    while (lua_gettop(L) > kWalkBase) {
-        auto parent = static_cast<NodeId>(lua_tointeger(L, -1));
-        lua_pop(L, 1);
-        visit(L, c, lua_gettop(L), parent);
-    }
-    return 0;
-}
-
 }  // namespace
 
 std::optional<ScriptError> install_ui(Vm& vm) {
@@ -938,40 +391,6 @@ std::optional<ScriptError> install_ui(Vm& vm) {
     if (!lua_checkstack(L, 1)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     lua_pushcfunction(L, install);
     return vm.call(0, 0);
-}
-
-std::optional<ScriptError> collect_tree(Vm& vm, int index, NodeId& next_id, Build& out) {
-    lua_State* L = vm.L();
-    index = lua_absindex(L, index);
-    out.nodes.clear();
-    if (!lua_checkstack(L, 3)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
-    PatchBatch* batch = patch_batch(L);
-    Collect c{&out, next_id, 0, (batch ? batch->bytes() : 0) + kOpOverheadBytes};
-    lua_pushcfunction(L, collect_entry);
-    lua_pushlightuserdata(L, &c);
-    lua_pushvalue(L, index);
-    auto err = vm.call(2, 0, Budget::Continue);
-    if (err) {
-        out.nodes.clear();
-        return err;
-    }
-    next_id = c.next;
-    return std::nullopt;
-}
-
-bool push_node_prop(lua_State* L, NodeId node, Prop prop) {
-    if (!lua_checkstack(L, 4)) return false;
-    int top = lua_gettop(L);
-    bool found = false;
-    if (lua_rawgetp(L, LUA_REGISTRYINDEX, &kNodesKey) == LUA_TTABLE &&
-        lua_rawgeti(L, -1, node) == LUA_TUSERDATA && lua_getiuservalue(L, -1, 1) == LUA_TTABLE)
-        found = lua_rawgeti(L, -1, prop_key(prop)) != LUA_TNIL;
-    else
-        lua_pushnil(L);
-    if (!found) lua_pushnil(L);
-    lua_replace(L, top + 1);
-    lua_settop(L, top + 1);
-    return found;
 }
 
 }  // namespace wisp::scene

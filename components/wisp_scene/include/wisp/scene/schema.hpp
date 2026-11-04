@@ -17,6 +17,9 @@
 // Values (PropType):
 //   Size     integer pixels, "fill" or "content"
 //   Int      integer (an integral float is taken as an integer)
+//   (Size, Pad and Int integers must fall in prop_range(): LVGL reads
+//   some high bits of a coordinate as flags, so the UI can use any value
+//   that passes as it is.)
 //   Number   integer or float
 //   String   string or number (a number is passed on as it is: the UI
 //            shows it as text)
@@ -26,7 +29,7 @@
 //   Font     xs sm md lg xl xxl
 //   Align    start center end
 //   Justify  start center end between around evenly
-//   Pad      integer or "safe" (the safe area, spec 5.6/AGENTS.md
+//   Pad      integer or "safe" (the safe area, spec 4.4/AGENTS.md
 //            section 3; ui.screen always gets at least that)
 //   Enum     one of PropSpec::choices
 //   Fn       a function
@@ -34,11 +37,15 @@
 //   Series   up to 4 tables of up to 128 numbers each
 // A bindable property also takes a state, computed or bind; the tree
 // carries its current value and a watch keeps the widget up to date.
-// Only the first value is checked against the schema: later values reach
-// the UI as nil, a boolean, a number or a string, and the UI ignores
-// what it cannot show. Items and Series hold tables, which a watch
-// cannot carry; for them the node keeps the Lua value (push_node_prop())
-// and the list and chart code runs an effect over it.
+// Every value is checked against the schema: the first by
+// collect_tree(), later ones by the watch's emit() (bound_value_ok()),
+// so the UI only ever gets values a constructor would have taken. Items
+// and Series hold tables, which a watch cannot carry; for them the node
+// keeps the Lua value (push_node_prop()) and the list and chart code runs
+// an effect over it, which must check each value it reads with
+// prop_value_ok(): collect_tree() checks only static ones. `src` and the
+// other structural properties (ref, cols, direction, type) are not
+// bindable, so an image only ever shows the asset its constructor named.
 //
 // What collect_tree() leaves in the internal table (push_wisp_internal()),
 // all keyed by NodeId and replaced by every collect_tree():
@@ -59,6 +66,7 @@
 //   h:focus()        Focus{id} (input)
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -173,6 +181,28 @@ struct WidgetSpec {
 
 inline constexpr size_t kMaxNodes = 2000;
 
+// The integers a Size, Pad or Int property takes (both ends included).
+struct IntRange {
+    int32_t min;
+    int32_t max;
+};
+IntRange prop_range(Prop p);
+
+// Room for any message prop_value_ok() and bound_value_ok() write.
+inline constexpr size_t kPropErrorBytes = 320;
+
+// Checks a value for `prop` (not a state, computed or bind) at stack
+// `idx` the way the constructors do; nil passes (an unset bound value).
+// On failure writes the reason to `why` ("property 'text' expects string,
+// got boolean"). Never raises.
+bool prop_value_ok(lua_State* L, int idx, Prop prop, char* why, size_t why_size);
+
+// prop_value_ok() for a value a watch emits for `node`. The message is
+// the constructors' ("main.lua:9: ui.label: property 'text' expects
+// string, got boolean", at the line that built the node), or the bare
+// reason when the node is not in the tree collected last. Never raises.
+bool bound_value_ok(lua_State* L, NodeId node, Prop prop, int idx, char* why, size_t why_size);
+
 // The widget called `name` ("label", without "ui."), or nullptr.
 const WidgetSpec* find_widget(std::string_view name);
 const WidgetSpec& widget_spec(Widget w);
@@ -200,7 +230,9 @@ std::optional<ScriptError> install_ui(Vm& vm);
 // ui.screen. Registers a watch for every bindable property given a
 // state, so it runs as scene code under Vm::call() (continuing the
 // current message's time budget), and rebuilds the internal nodes, refs
-// and values tables. Leaves the stack as it was.
+// and values tables. Leaves the stack as it was. While it runs, ui.ref
+// handle methods refuse to work, so nothing the watches evaluate can
+// push ops ahead of the Build (or past the size it was checked against).
 //
 // Errors carry the file and line of the constructor call that built the
 // node at fault ("main.lua:20: entry must return ui.screen (got

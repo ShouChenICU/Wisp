@@ -26,6 +26,10 @@ using wisp::scene::Vm;
 
 namespace {
 
+// The watches here use property id 999, which is outside the widget
+// schema, so emit() passes every primitive value through; the schema's
+// checks of bound values are schema_test's.
+
 struct FakeClock {
     uint64_t now = 1000;
 };
@@ -142,9 +146,9 @@ TEST(Reactive, EqualWriteDoesNotNotify) {
         local W = ...
         _G.n, _G.str, _G.t = state(1), state("a"), {1, 2}
         _G.tab = state(_G.t)
-        W.watch(1, 1, _G.n)
-        W.watch(2, 1, _G.str)
-        W.watch(3, 1, bind(_G.tab, function(v) return #v end))
+        W.watch(1, 999, _G.n)
+        W.watch(2, 999, _G.str)
+        W.watch(3, 999, bind(_G.tab, function(v) return #v end))
     )");
     ASSERT_FALSE(err) << describe(err);
     EXPECT_EQ(s.batch.size(), 0u);  // creating a watch emits nothing
@@ -221,11 +225,11 @@ TEST(Reactive, EmitConvertsValueTypes) {
     ASSERT_FALSE(s.installed) << describe(s.installed);
     auto err = s.message(R"(
         local W = ...
-        W.watch(1, 1, state(true))
-        W.watch(2, 1, state(42))
-        W.watch(3, 1, state(1.5))
-        W.watch(4, 1, state("s"))
-        W.watch(5, 1, state(nil))
+        W.watch(1, 999, state(true))
+        W.watch(2, 999, state(42))
+        W.watch(3, 999, state(1.5))
+        W.watch(4, 999, state("s"))
+        W.watch(5, 999, state(nil))
         W.refresh_all()
     )");
     ASSERT_FALSE(err) << describe(err);
@@ -238,7 +242,7 @@ TEST(Reactive, EmitConvertsValueTypes) {
     EXPECT_TRUE(std::holds_alternative<std::monostate>(set_at(b, 4).value));
 
     // A table cannot be a property value.
-    err = s.message("local W = ... _G.bad = state(1) W.watch(6, 1, _G.bad)");
+    err = s.message("local W = ... _G.bad = state(1) W.watch(6, 999, _G.bad)");
     ASSERT_FALSE(err) << describe(err);
     err = s.message("_G.bad:set({})");
     ASSERT_TRUE(err);
@@ -250,8 +254,8 @@ TEST(Reactive, EmitConvertsValueTypes) {
 TEST(Reactive, EmitRefusesAStringOverThePropLimit) {
     Scene s;
     ASSERT_FALSE(s.installed) << describe(s.installed);
-    auto err =
-        s.message("local W = ... _G.n = state('a') W.watch(1, 1, _G.n) W.watch(2, 1, state(1))");
+    auto err = s.message(
+        "local W = ... _G.n = state('a') W.watch(1, 999, _G.n) W.watch(2, 999, state(1))");
     ASSERT_FALSE(err) << describe(err);
     err = s.message("_G.n:set(string.rep('x', 65536))");
     ASSERT_FALSE(err) << describe(err);
@@ -273,7 +277,7 @@ TEST(Reactive, EmitRefusesABatchOverTheLimit) {
     auto err = s.message(R"(
         local W = ...
         _G.n = state("a")
-        for i = 1, 17 do W.watch(i, 1, _G.n) end
+        for i = 1, 17 do W.watch(i, 999, _G.n) end
     )");
     ASSERT_FALSE(err) << describe(err);
     err = s.message("_G.n:set(string.rep('x', 65536))");
@@ -305,8 +309,8 @@ TEST(Reactive, MultipleSetsCoalesceToOnePatch) {
         local W = ...
         _G.count = state(0)
         _G.runs = 0
-        W.watch(1, 1, _G.count)
-        W.watch(2, 1, bind(_G.count, function(v) _G.runs = _G.runs + 1 return v end))
+        W.watch(1, 999, _G.count)
+        W.watch(2, 999, bind(_G.count, function(v) _G.runs = _G.runs + 1 return v end))
     )");
     ASSERT_FALSE(err) << describe(err);
     err = s.message("_G.runs = 0 _G.count:set(1) _G.count:set(2) _G.count:set(3)");
@@ -392,7 +396,7 @@ TEST(Reactive, CaughtComputedFailureStillUpdatesComputedReader) {
             local ok, v = pcall(inner.get, inner)
             return ok and v or "err"
         end)
-        local _, v = W.watch(1, 1, outer)
+        local _, v = W.watch(1, 999, outer)
         assert(v == "err", v)
     )");
     ASSERT_FALSE(err) << describe(err);
@@ -432,8 +436,8 @@ TEST(Reactive, WatchDisposedEarlierInTheFlushEmitsNothing) {
         local d
         -- Made first, so it runs before the watch in the flush.
         W.effect(function() if _G.n:get() == 1 then d() end end)
-        d = W.watch(1, 1, _G.n)
-        W.watch(2, 1, _G.n)
+        d = W.watch(1, 999, _G.n)
+        W.watch(2, 999, _G.n)
     )");
     ASSERT_FALSE(err) << describe(err);
     err = s.message("_G.n:set(1)");
@@ -475,7 +479,7 @@ TEST(Reactive, DeepComputedChainEvaluates) {
             c = computed(function() return prev:get() + 1 end)
         end
         assert(c:get() == 45)
-        W.watch(1, 1, c)
+        W.watch(1, 999, c)
     )");
     ASSERT_FALSE(err) << describe(err);
     err = s.message("_G.base:set(2)");
@@ -492,7 +496,7 @@ TEST(Reactive, UnsettledUpdatesError) {
         local W = ...
         _G.runs = 0
         _G.n = state(0)
-        W.watch(1, 1, _G.n)
+        W.watch(1, 999, _G.n)
         -- Writes what it reads, so every run schedules the next one.
         W.effect(function()
             _G.runs = _G.runs + 1
@@ -514,8 +518,9 @@ TEST(Reactive, ErrorInBindFnDiscardsBatch) {
     auto err = s.message(
         "local W = ...\n"
         "_G.n = state(1)\n"
-        "W.watch(1, 1, _G.n)\n"
-        "W.watch(2, 1, bind(_G.n, function(v) if v > 1 then error('too big') end return v end))\n");
+        "W.watch(1, 999, _G.n)\n"
+        "W.watch(2, 999, bind(_G.n, function(v) if v > 1 then error('too big') end return v "
+        "end))\n");
     ASSERT_FALSE(err) << describe(err);
     err = s.message("_G.n:set(2)");
     ASSERT_TRUE(err);
@@ -533,9 +538,9 @@ TEST(Reactive, DisposedScopeStopsPatches) {
         local W = ...
         _G.n = state(0)
         local sc = W.scope()
-        W.watch(1, 1, _G.n, sc)
-        W.watch(2, 1, bind(_G.n, tostring), sc)
-        _G.d = W.watch(3, 1, _G.n)
+        W.watch(1, 999, _G.n, sc)
+        W.watch(2, 999, bind(_G.n, tostring), sc)
+        _G.d = W.watch(3, 999, _G.n)
         W.dispose(sc)
         W.dispose(sc)  -- twice is harmless
         local ok, msg = pcall(W.watch, 4, 1, _G.n, sc)
@@ -559,9 +564,9 @@ TEST(Reactive, RefreshAllReemitsLiveWatches) {
     auto err = s.message(R"(
         local W = ...
         local n = state("x")
-        W.watch(1, 1, n)
-        local d = W.watch(2, 1, n)
-        W.watch(3, 1, bind(n, function(v) return v .. "!" end))
+        W.watch(1, 999, n)
+        local d = W.watch(2, 999, n)
+        W.watch(3, 999, bind(n, function(v) return v .. "!" end))
         d()
         W.refresh_all()
     )");
@@ -580,7 +585,7 @@ TEST(Reactive, FlushChargedToSameMessage) {
     auto err = s.message(R"(
         local W = ...
         _G.n = state(0)
-        W.watch(1, 1, bind(_G.n, function(v) if v > 0 then _G.advance(100) end return v end))
+        W.watch(1, 999, bind(_G.n, function(v) if v > 0 then _G.advance(100) end return v end))
     )");
     ASSERT_FALSE(err) << describe(err);
     // 150 ms in the handler plus 100 ms in the flush: over 200 ms.
@@ -596,7 +601,7 @@ TEST(Reactive, FlushWithinBudgetPasses) {
     auto err = s.message(R"(
         local W = ...
         _G.n = state(0)
-        W.watch(1, 1, bind(_G.n, function(v) if v > 0 then _G.advance(100) end return v end))
+        W.watch(1, 999, bind(_G.n, function(v) if v > 0 then _G.advance(100) end return v end))
     )");
     ASSERT_FALSE(err) << describe(err);
     err = s.message("_G.advance(50) _G.n:set(1)");

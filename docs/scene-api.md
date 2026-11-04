@@ -23,11 +23,15 @@ Rules:
 - The root must be `ui.screen`. It always fills the display and is padded to at least the
   safe area, so content stays visible on round and rounded screens.
 - At most 2000 widgets per tree. A string value is at most 64 KB.
+- One update (the tree, or what one handler changes) is at most 1 MB, counting
+  64 bytes per widget, property and change plus every string value: a large
+  string shown by many widgets counts once per widget ("ui update too large").
 - A widget can be the child of only one other widget; `ui.screen` only the root.
 - Unknown widgets and properties and values of the wrong type are errors at the line
   that built the widget.
 - A *bindable* property also takes a `state`, `computed` or `bind`; the widget follows
-  its value.
+  its value. Every value it takes is checked like a plain one, at the line that built
+  the widget.
 
 ## Value types
 
@@ -52,17 +56,17 @@ Rules:
 
 | Property | Type | Bindable | Values |
 |---|---|---|---|
-| `w` | size | yes | pixels, "fill" or "content" |
-| `h` | size | yes | pixels, "fill" or "content" |
-| `grow` | integer | yes | integer |
-| `pad` | pad | yes | pixels or "safe" |
-| `gap` | integer | yes | integer |
+| `w` | size | yes | 0 to 4096 pixels, "fill" or "content" |
+| `h` | size | yes | 0 to 4096 pixels, "fill" or "content" |
+| `grow` | integer | yes | integer 0 to 255 |
+| `pad` | pad | yes | 0 to 512 pixels or "safe" |
+| `gap` | integer | yes | integer 0 to 512 |
 | `align` | align | yes | one of start, center, end |
 | `justify` | justify | yes | one of start, center, end, between, around, evenly |
 | `bg` | color | yes | "#RRGGBB" or one of accent, text, muted, surface, bg, danger, ok, warn |
 | `fg` | color | yes | "#RRGGBB" or one of accent, text, muted, surface, bg, danger, ok, warn |
-| `radius` | integer | yes | integer |
-| `border` | integer | yes | integer |
+| `radius` | integer | yes | integer 0 to 4096 |
+| `border` | integer | yes | integer 0 to 64 |
 | `font` | font | yes | one of xs, sm, md, lg, xl, xxl |
 | `hidden` | boolean | yes | boolean |
 | `opa` | number | yes | number from 0 to 1 |
@@ -70,22 +74,22 @@ Rules:
 | `text` | string | yes | string |
 | `placeholder` | string | yes | string |
 | `password` | boolean | yes | boolean |
-| `max_len` | integer | yes | integer >= 0 |
+| `max_len` | integer | yes | integer 0 to 65535 |
 | `name` | enum | yes | `home`, `settings`, `wifi`, `battery`, `bell`, `play`, `pause`, `stop`, `prev`, `next`, `plus`, `minus`, `ok`, `close`, `trash`, `edit`, `refresh`, `left`, `right`, `up`, `down`, `upload`, `download`, `save`, `list`, `image`, `audio`, `warning` |
-| `src` | string | yes | a path assets/&lt;name>.png |
+| `src` | string | no | a path assets/&lt;name>.png |
 | `value` | number | yes | number |
 | `min` | number | yes | number |
 | `max` | number | yes | number |
 | `checked` | boolean | yes | boolean |
-| `cols` | integer | no | integer >= 1 |
+| `cols` | integer | no | integer 1 to 16 |
 | `direction` | enum | no | `v`, `h` |
 | `type` | enum | no | `line`, `bar` |
 | `series` | series | yes | a table of up to 4 tables of up to 128 numbers |
 | `items` | items | yes | a table |
 | `row` | function | no | function |
-| `row_h` | integer | yes | integer >= 1 |
+| `row_h` | integer | yes | integer 1 to 4096 |
 | `draw` | function | no | function |
-| `width` | integer | yes | integer |
+| `width` | integer | yes | integer 0 to 512 |
 | `wrap` | boolean | yes | boolean |
 | `on_click` | function | no | function |
 | `on_long_press` | function | no | function |

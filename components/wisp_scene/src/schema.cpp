@@ -53,7 +53,7 @@ constexpr PropSpec kProps[] = {
     {Prop::Password, "password", PropType::Bool, true, none},
     {Prop::MaxLen, "max_len", PropType::Int, true, none},
     {Prop::Name, "name", PropType::Enum, true, kIcons},
-    {Prop::Src, "src", PropType::String, true, none},
+    {Prop::Src, "src", PropType::String, false, none},
     {Prop::Value, "value", PropType::Number, true, none},
     {Prop::Min, "min", PropType::Number, true, none},
     {Prop::Max, "max", PropType::Number, true, none},
@@ -83,17 +83,17 @@ static_assert(props_in_order());
 
 // Indexed by Prop; the "expects ..." part of type errors.
 constexpr SV kExpects[] = {
-    "pixels, \"fill\" or \"content\"",  // w
-    "pixels, \"fill\" or \"content\"",  // h
-    "integer",                          // grow
-    "pixels or \"safe\"",               // pad
-    "integer",                          // gap
+    "0 to 4096 pixels, \"fill\" or \"content\"",  // w
+    "0 to 4096 pixels, \"fill\" or \"content\"",  // h
+    "integer 0 to 255",                           // grow
+    "0 to 512 pixels or \"safe\"",                // pad
+    "integer 0 to 512",                           // gap
     "one of start, center, end",
     "one of start, center, end, between, around, evenly",
     "\"#RRGGBB\" or one of accent, text, muted, surface, bg, danger, ok, warn",
     "\"#RRGGBB\" or one of accent, text, muted, surface, bg, danger, ok, warn",
-    "integer",                                         // radius
-    "integer",                                         // border
+    "integer 0 to 4096",                               // radius
+    "integer 0 to 64",                                 // border
     "one of xs, sm, md, lg, xl, xxl",                  // font
     "boolean",                                         // hidden
     "number from 0 to 1",                              // opa
@@ -101,22 +101,22 @@ constexpr SV kExpects[] = {
     "string",                                          // text
     "string",                                          // placeholder
     "boolean",                                         // password
-    "integer >= 0",                                    // max_len
+    "integer 0 to 65535",                              // max_len
     "an icon name",                                    // name
     "a path assets/<name>.png",                        // src
     "number",                                          // value
     "number",                                          // min
     "number",                                          // max
     "boolean",                                         // checked
-    "integer >= 1",                                    // cols
+    "integer 1 to 16",                                 // cols
     "one of v, h",                                     // direction
     "one of line, bar",                                // type
     "a table of up to 4 tables of up to 128 numbers",  // series
     "a table",                                         // items
     "function",                                        // row
-    "integer >= 1",                                    // row_h
+    "integer 1 to 4096",                               // row_h
     "function",                                        // draw
-    "integer",                                         // width
+    "integer 0 to 512",                                // width
     "boolean",                                         // wrap
     "function",                                        // on_click
     "function",                                        // on_long_press
@@ -272,6 +272,31 @@ const WidgetSpec& widget_spec(Widget w) { return kWidgets[static_cast<size_t>(w)
 
 const PropSpec& prop_spec(Prop p) { return kProps[static_cast<size_t>(p)]; }
 
+IntRange prop_range(Prop p) {
+    switch (p) {
+        case Prop::W:
+        case Prop::H:
+        case Prop::Radius:
+            return {0, 4096};
+        case Prop::RowH:
+            return {1, 4096};
+        case Prop::Pad:
+        case Prop::Gap:
+        case Prop::Width:
+            return {0, 512};
+        case Prop::Grow:
+            return {0, 255};
+        case Prop::Border:
+            return {0, 64};
+        case Prop::MaxLen:
+            return {0, 65535};
+        case Prop::Cols:
+            return {1, 16};
+        default:
+            return {INT32_MIN, INT32_MAX};
+    }
+}
+
 std::string_view prop_expects(Prop p) { return kExpects[static_cast<size_t>(p)]; }
 
 std::string nearest_name(std::string_view wrong, std::span<const std::string_view> candidates) {
@@ -319,17 +344,26 @@ std::string schema_markdown() {
         "- The root must be `ui.screen`. It always fills the display and is padded to at least "
         "the\n"
         "  safe area, so content stays visible on round and rounded screens.\n";
-    char line[160];
+    char line[320];
     std::snprintf(line, sizeof(line),
                   "- At most %zu widgets per tree. A string value is at most %zu KB.\n", kMaxNodes,
                   kMaxPropStringBytes / 1024);
+    out += line;
+    std::snprintf(line, sizeof(line),
+                  "- One update (the tree, or what one handler changes) is at most %zu MB, "
+                  "counting\n"
+                  "  %zu bytes per widget, property and change plus every string value: a large\n"
+                  "  string shown by many widgets counts once per widget (\"ui update too "
+                  "large\").\n",
+                  kMaxBatchBytes / (1024 * 1024), kOpOverheadBytes);
     out += line;
     out +=
         "- A widget can be the child of only one other widget; `ui.screen` only the root.\n"
         "- Unknown widgets and properties and values of the wrong type are errors at the line\n"
         "  that built the widget.\n"
         "- A *bindable* property also takes a `state`, `computed` or `bind`; the widget follows\n"
-        "  its value.\n"
+        "  its value. Every value it takes is checked like a plain one, at the line that built\n"
+        "  the widget.\n"
         "\n"
         "## Value types\n"
         "\n"

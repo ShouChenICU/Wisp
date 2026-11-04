@@ -103,4 +103,11 @@ bool push_wisp_internal(lua_State* L);
 // The batch install_prelude() gave this state, or nullptr. Never raises.
 PatchBatch* patch_batch(lua_State* L);
 
+// The innermost Lua frame above the running C function that is not the
+// prelude's: writes its file (short_src) and current line and returns
+// true, or returns false (file empty, line 0) if there is none. Bindings
+// use it to point errors and nodes at scene lines, even when the prelude
+// called them (a bind's fn). Never raises.
+bool scene_where(lua_State* L, char (&file)[LUA_IDSIZE], int& line);
+
 }  // namespace wisp::scene
