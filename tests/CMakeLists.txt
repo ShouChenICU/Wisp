@@ -235,3 +235,8 @@ wisp_test(NAME lua_vendor_test SRCS scene/lua_vendor_test.cpp LIBS wisp_scene)
 wisp_test(NAME vm_test SRCS scene/vm_test.cpp LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME patch_batch_test SRCS scene/patch_batch_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME reactive_test SRCS scene/reactive_test.cpp LIBS wisp_scene wisp_port_sim_os)
+wisp_test(NAME schema_test SRCS scene/schema_test.cpp LIBS wisp_scene wisp_port_sim_os)
+# DocIsUpToDate compares docs/scene-api.md with the schema and writes the
+# expected text into the build directory when they differ.
+target_compile_definitions(schema_test PRIVATE WISP_ROOT="${WISP_ROOT}"
+                                               WISP_BUILD_DIR="${CMAKE_BINARY_DIR}")

@@ -365,6 +365,11 @@ function W.kind(v)
     return r and r.k
 end
 
+-- ui.show_if's source for hidden: true while s is falsy.
+function W.negate(s)
+    return bind(s, function(v) return not v end)
+end
+
 W.flush = flush
 W.emit = emit
 
