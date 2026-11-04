@@ -409,7 +409,7 @@ public:
     Result<int64_t> insert(std::string_view coll, std::string_view json);
     Result<void> update(std::string_view coll, int64_t id, std::string_view json);  // 整条替换；不存在 NotFound
     Result<void> remove(std::string_view coll, int64_t id);
-    Result<std::vector<StoreRecord>> find(std::string_view coll, const FindQuery& q) const;
+    Result<os::LargeVector<StoreRecord>> find(std::string_view coll, const FindQuery& q) const;
     void begin_batch();  Result<void> commit_batch();  void abort_batch();
     void flush(std::function<void(Result<void>)> done = {});   // 立即排一次刷盘（关闭、熄屏）
     uint64_t used_bytes() const;                               // 全部日志文件大小
@@ -421,6 +421,7 @@ public:
 - 压缩：某文件 `dead_bytes > live_bytes / 2` 或自上次压缩追加超过 64 KB 时，刷盘作业改为 `write_atomic` 重写该文件的有效内容。配额按刷盘后全部日志大小预估，超出时先按压缩后的大小再算一次，仍超就拒绝写入。
 - 读取：丢弃末尾不完整的行并 `WLOG_W`；`journal.json` 存在时在各日志读完后重放、追加并删除。
 - `find`：按顶层字段相等过滤；`sort` 字段数字按数值、字符串按字节序，缺字段的排最后，同值按 id 升序。
+- 执行裁定：`find` 返回 `os::LargeVector<StoreRecord>` 而不是 `std::vector`（索引最多 1 MB，按 AGENTS.md §5 逐条增长的容器都放 PSRAM；索引的 map 与待写缓冲同样用 `os::LargeAllocator`/`os::LargeString`）。其余实现细节：`journal.json` 为 `[{"f":"<文件名>","r":<日志行对象>}, …]`；集合记录必须是 JSON 对象；压缩后若最大 id 的记录已删，保留一行 `{"op":"del","id":<最大 id>}`，重新加载后 id 仍单调；新增错误消息 `invalid_key`、`key_too_long`、`invalid_json`、`record_not_object`、`invalid_collection`、`not_found`、`no_batch`、`not_loaded`、`ids_exhausted`；`batch` 可嵌套（只有最外层 `commit_batch()` 生效，`abort_batch()` 丢弃整批）。
 
 - [ ] **Step 1: 写失败的测试**（假 `schedule` 手动触发、`submit_io` 同步执行）
 
@@ -1010,7 +1011,7 @@ TEST(StoreBinding, DataSurvivesReload)
 ```
 
 - [ ] **Step 2: 运行，确认失败** — `ctest --test-dir build/sim -R 'LuaJson|StoreBinding' --output-on-failure`。
-- [ ] **Step 3: 实现**（遵守全局约束里的 longjmp 规则：`std::string`/`Value` 只在 `protect()` 外层持有）。
+- [ ] **Step 3: 实现**（遵守全局约束里的 longjmp 规则：`std::string`/`Value` 只在 `protect()` 外层持有；`SceneStore::find` 返回的 `os::LargeVector<StoreRecord>` 与 `os::LargeString` 同样有非平凡析构）。
 - [ ] **Step 4: 运行，确认通过。**
 - [ ] **Step 5: Commit** — `feat(scene): bind wisp.store to the scene data store`
 

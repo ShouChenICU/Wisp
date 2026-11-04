@@ -1,0 +1,174 @@
+#pragma once
+
+// SceneStore: one scene's persistent data -- a key/value space and up to
+// 16 collections of JSON records -- behind the Lua `wisp.store` API
+// (spec 5.4, 6.1).
+//
+// Reads and writes work on an in-memory index and return at once; the
+// index is persisted asynchronously as append-only logs under
+// `data_dir`: "kv.log" for the key/value space and "<collection>.log"
+// for each collection. Every line is one JSON object,
+// {"op":"put","id":<id>,"v":<value>} or {"op":"del","id":<id>}, where a
+// key/value id is the key string and a collection id an integer. Every
+// line ends in '\n', so on load the bytes after the last '\n' are a tail
+// torn by a power cut: they are dropped with a warning and the file is
+// rewritten (write_atomic) before anything is appended to it again, or
+// the next append would glue a new record onto the torn bytes.
+//
+// Persistence: a write changes the index, then appends its line to that
+// log's pending buffer (PSRAM). The first pending write arms a one-shot
+// `schedule(coalesce_ms)`; when it fires, a flush job goes to
+// `submit_io` (the wisp.fs worker in production). The job takes every
+// pending buffer and appends each to its file. A flush touching more than
+// one file first writes all of its lines to "journal.json"
+// (write_atomic), so a batch spanning files survives a power cut whole:
+// load() replays a journal it finds (put/del of whole records is
+// idempotent), appends the replayed lines and deletes the journal.
+// Instead of appending, a job rewrites a file with only its live records
+// (write_atomic) when its dead bytes exceed half its live bytes, or when
+// more than compact_append_bytes would have been appended since the last
+// rewrite. A rewritten collection keeps a {"op":"del"} line for its
+// highest id when that record is gone, so ids stay monotonic across a
+// reload.
+//
+// The flush job and the timer hold a shared_ptr to the store, so a flush
+// already scheduled or queued completes after the owner lets go -- the
+// close path calls flush() and drops the store.
+//
+// Threads: the scene task reads and writes, the wisp.fs worker flushes.
+// One mutex guards the index and the pending buffers; it is never held
+// across file I/O. Flush jobs are serialized among themselves (and with
+// load()) by a second mutex that is held across their I/O. Apart from
+// load(), no method does file I/O on the caller's thread.
+//
+// Batches: between begin_batch() and commit_batch() writes go to an
+// overlay that reads already see; commit_batch() moves the whole overlay
+// into the index and the pending buffers under one lock, so a flush sees
+// either none or all of it, and abort_batch() simply drops it.
+//
+// Limits (spec 5.6): used_bytes() -- what the logs will total once every
+// pending line is written -- may not exceed quota_bytes. A write that
+// would pass it is still accepted if the logs rewritten with only their
+// live records would fit; the next flush then rewrites every file that
+// has dead lines. Otherwise it fails with QuotaExceeded
+// "quota_exceeded" and changes nothing. A record (the encoded value) over
+// record_bytes fails with InvalidArgument "record_too_large", a new
+// collection past max_collections with QuotaExceeded
+// "too_many_collections". Values must be single-line JSON (no raw CR or
+// LF, which JSON encoders escape anyway); a collection record must be a
+// JSON object, since find() filters and sorts on its top-level fields.
+
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "wisp/base/result.hpp"
+#include "wisp/base/value.hpp"
+#include "wisp/core/storage_manager.hpp"
+#include "wisp/os/large.hpp"
+#include "wisp/os/os.hpp"
+
+namespace wisp::core {
+
+struct SceneStoreLimits {
+    uint64_t quota_bytes = 1024 * 1024;
+    size_t record_bytes = 16 * 1024;
+    size_t max_collections = 16;
+    uint32_t coalesce_ms = 300;
+    uint64_t compact_append_bytes = 64 * 1024;
+    size_t key_bytes = 64;
+};
+
+struct SceneStoreDeps {
+    StorageManager& storage;
+    // Runs a job on the storage worker; false if it could not be queued.
+    // Production: StorageWorker::submit.
+    std::function<bool(std::function<void()>)> submit_io;
+    // Calls `cb` once after `delay_ms`. Production: a one-shot os::Timer.
+    std::function<void(uint32_t delay_ms, std::function<void()> cb)> schedule;
+};
+
+// Top-level field equality filter, sort and paging for find(). A number
+// equals a number of the same value (3 == 3.0); lists and maps compare
+// as Values. `sort` orders numbers by value and strings by bytes; records
+// whose sort field is missing (or another type) come last whatever
+// `desc` says, and equal values keep ascending id order.
+struct FindQuery {
+    std::vector<std::pair<std::string, Value>> equals;
+    std::string sort;
+    bool desc = false;
+    size_t limit = SIZE_MAX;
+    size_t offset = 0;
+};
+
+struct StoreRecord {
+    int64_t id = 0;
+    os::LargeString json;
+};
+
+class SceneStore : public std::enable_shared_from_this<SceneStore> {
+    struct Private {};
+
+public:
+    static std::shared_ptr<SceneStore> create(SceneStoreDeps deps, std::string data_dir,
+                                              SceneStoreLimits limits = {});
+
+    SceneStore(Private, SceneStoreDeps deps, std::string data_dir, SceneStoreLimits limits);
+    ~SceneStore();
+
+    SceneStore(const SceneStore&) = delete;
+    SceneStore& operator=(const SceneStore&) = delete;
+
+    // Reads every log into the index, rewrites any file with a torn tail
+    // or unreadable lines, then replays and deletes a leftover journal.
+    // Blocks; call it once, on the storage worker, before any write.
+    // Writes before a successful load() fail with StorageUnavailable.
+    Result<void> load();
+
+    std::optional<os::LargeString> kv_get(std::string_view key) const;
+    // `json` is the encoded value. Keys are 1..key_bytes bytes.
+    Result<void> kv_set(std::string_view key, std::string_view json);
+    // Deleting a missing key succeeds and writes nothing.
+    Result<void> kv_del(std::string_view key);
+
+    // Collection names match ^[a-z0-9_-]{1,32}$ and are not "kv". insert()
+    // creates the collection; the other calls fail with NotFound (update,
+    // remove) or return nothing (find) for one that does not exist.
+    Result<int64_t> insert(std::string_view coll, std::string_view json);
+    // Replaces the whole record; NotFound if `id` does not exist.
+    Result<void> update(std::string_view coll, int64_t id, std::string_view json);
+    Result<void> remove(std::string_view coll, int64_t id);
+    Result<os::LargeVector<StoreRecord>> find(std::string_view coll, const FindQuery& q) const;
+
+    // Batches nest: only the outermost commit_batch() applies the
+    // overlay. abort_batch() drops the whole overlay at any depth.
+    // commit_batch() without an open batch fails with InvalidArgument.
+    void begin_batch();
+    Result<void> commit_batch();
+    void abort_batch();
+
+    // Queues a flush job now (scene close, screen off). `done` runs on the
+    // worker after the job, or at once with ErrorCode::Busy if the job
+    // could not be queued.
+    void flush(std::function<void(Result<void>)> done = {});
+
+    // The total size of the logs once every pending line is written.
+    uint64_t used_bytes() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+    void arm_timer();
+    void on_timer();
+    void flush_job(const std::function<void(Result<void>)>& done);
+};
+
+}  // namespace wisp::core

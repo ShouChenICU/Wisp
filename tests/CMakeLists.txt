@@ -76,6 +76,8 @@ target_compile_definitions(zip_test PRIVATE WISP_FIXTURE_ZIP_DIR="${WISP_FIXTURE
 wisp_test(NAME scene_manifest_test SRCS core/scene_manifest_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME scene_repository_test SRCS core/scene_repository_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME scene_store_test SRCS core/scene_store_test.cpp
+          LIBS wisp_core wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME power_monitor_test SRCS core/power_monitor_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings TIMEOUT 20)
 wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui wisp_port_sim_os)
