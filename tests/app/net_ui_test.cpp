@@ -444,6 +444,45 @@ TEST(NetUi, ProvisioningCardQrUsesTheDisplayFormat) {
     EXPECT_EQ(problem, "");
 }
 
+// Scrolling the self-check screen under the open card redraws only what
+// shows around it (wisp/ui/overlay.hpp).
+TEST(NetUi, ScrollingUnderTheProvisioningCardLeavesTheCardAlone) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+    ASSERT_TRUE(wait_until([&] { return qr_shown(h); }, 3000));
+    // One UI job, so nothing else is drawn between the two frames.
+    lv_area_t core{};
+    size_t before = 0;
+    bool scrolled = false;
+    run_on_ui_blocking(h.app->ui(), [&] {
+        lv_obj_t* card = lv_obj_get_parent(find_obj_of_class(lv_layer_top(), &lv_qrcode_class));
+        lv_obj_get_coords(card, &core);
+        const int32_t r = lv_obj_get_style_radius(card, LV_PART_MAIN);
+        core.y1 += r;
+        core.y2 -= r;
+        lv_refr_now(nullptr);
+        before = h.display->areas().size();
+        lv_obj_t* scr = lv_screen_active();
+        for (uint32_t i = 0; i < lv_obj_get_child_count(scr) && !scrolled; ++i) {
+            lv_obj_t* c = lv_obj_get_child(scr, static_cast<int32_t>(i));
+            if (lv_obj_get_scroll_bottom(c) > 0) {
+                lv_obj_scroll_by(c, 0, -40, LV_ANIM_OFF);
+                lv_refr_now(nullptr);
+                scrolled = true;
+            }
+        }
+    });
+    ASSERT_TRUE(scrolled);
+    const std::vector<wisp::hal::Area> areas = h.display->areas();
+    ASSERT_GT(areas.size(), before);
+    for (size_t i = before; i < areas.size(); ++i) {
+        const auto& f = areas[i];
+        EXPECT_FALSE(f.x1 <= core.x2 && f.x2 >= core.x1 && f.y1 <= core.y2 && f.y2 >= core.y1)
+            << f.x1 << "," << f.y1 << "-" << f.x2 << "," << f.y2;
+    }
+}
+
 TEST(NetUi, ProvisioningCardClosesWhenTheHotspotStopsElsewhere) {
     UiNetHarness h;
     ASSERT_TRUE(h.start());

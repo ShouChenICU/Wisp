@@ -10,7 +10,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 
 wisp_component(
     NAME wisp_ui
-    SRCS src/align.cpp src/ui_runtime.cpp src/strings.cpp src/strings_zh.cpp src/strings_ja.cpp
+    SRCS src/align.cpp src/overlay.cpp src/ui_runtime.cpp src/strings.cpp src/strings_zh.cpp src/strings_ja.cpp
          src/strings_en.cpp fonts/lv_font_cjk_16.c
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core

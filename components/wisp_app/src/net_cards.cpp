@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/ui/overlay.hpp"
 #include "wisp/ui/strings.hpp"
 
 namespace wisp::app {
@@ -43,6 +44,9 @@ lv_obj_t* make_card(const hal::Area& safe) {
     const int32_t screen_h = lv_display_get_vertical_resolution(nullptr);
     lv_obj_align(card, LV_ALIGN_CENTER, (safe.x1 + safe.x2 + 1) / 2 - screen_w / 2,
                  (safe.y1 + safe.y2 + 1) / 2 - screen_h / 2);
+    // The screen can scroll under an open card; this keeps that from
+    // redrawing the card on every frame.
+    ui::mark_opaque_overlay(card);
     return card;
 }
 
