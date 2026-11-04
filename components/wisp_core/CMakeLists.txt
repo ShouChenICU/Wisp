@@ -8,7 +8,7 @@ wisp_component(
          src/button_service.cpp src/settings.cpp src/storage_manager.cpp src/storage_worker.cpp
          src/power_monitor.cpp
          src/model_profiles.cpp src/model_presets.cpp src/system_settings.cpp
-         src/firmware_image.cpp src/firmware_update.cpp
+         src/firmware_image.cpp src/firmware_update.cpp src/zip.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal
 )

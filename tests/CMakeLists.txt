@@ -37,6 +37,9 @@ wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
 wisp_test(NAME value_test SRCS base/value_test.cpp LIBS wisp_base)
 wisp_test(NAME sha256_test SRCS base/sha256_test.cpp LIBS wisp_base)
 wisp_test(NAME base64_test SRCS base/base64_test.cpp LIBS wisp_base)
+wisp_test(NAME crc32_test SRCS base/crc32_test.cpp LIBS wisp_base)
+# zlib only produces the reference streams; wisp_base itself never links it.
+wisp_test(NAME inflate_test SRCS base/inflate_test.cpp LIBS wisp_base ZLIB::ZLIB)
 wisp_test(NAME os_test SRCS os/os_test.cpp LIBS wisp_os wisp_port_sim_os TIMEOUT 10)
 wisp_test(NAME large_test SRCS os/large_test.cpp LIBS wisp_os wisp_port_sim_os TIMEOUT 10)
 wisp_test(NAME log_test SRCS core/log_test.cpp LIBS wisp_core wisp_port_sim_os)
@@ -53,6 +56,23 @@ wisp_test(NAME firmware_update_test SRCS core/firmware_update_test.cpp
           LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME storage_manager_test SRCS core/storage_manager_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 20)
 wisp_test(NAME storage_worker_test SRCS core/storage_worker_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 20)
+# zip_test reads archives that tests/core/fixtures/make_zips.py writes at
+# build time (stdlib zipfile for the valid ones, hand-laid records for the
+# hostile ones), the same way fixture.wpak is produced below.
+set(WISP_FIXTURE_ZIP_DIR ${CMAKE_BINARY_DIR}/zip_fixtures)
+set(WISP_FIXTURE_ZIP_STAMP ${WISP_FIXTURE_ZIP_DIR}/ok.zip)
+add_custom_command(
+    OUTPUT ${WISP_FIXTURE_ZIP_STAMP}
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/core/fixtures/make_zips.py
+            ${WISP_FIXTURE_ZIP_DIR}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/core/fixtures/make_zips.py
+    COMMENT "Generating the zip_test archives"
+    VERBATIM
+)
+add_custom_target(wisp_fixture_zips DEPENDS ${WISP_FIXTURE_ZIP_STAMP})
+wisp_test(NAME zip_test SRCS core/zip_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 60)
+add_dependencies(zip_test wisp_fixture_zips)
+target_compile_definitions(zip_test PRIVATE WISP_FIXTURE_ZIP_DIR="${WISP_FIXTURE_ZIP_DIR}")
 wisp_test(NAME power_monitor_test SRCS core/power_monitor_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings TIMEOUT 20)
 wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui wisp_port_sim_os)
