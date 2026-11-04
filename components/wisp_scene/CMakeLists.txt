@@ -9,7 +9,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 
 wisp_component(
     NAME wisp_scene
-    SRCS src/version.cpp src/vm.cpp
+    SRCS src/version.cpp src/vm.cpp src/patch_batch.cpp src/prelude.cpp
+         src/reactive.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_ui lua
 )

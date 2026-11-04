@@ -125,6 +125,14 @@ struct VmLimits {
 // importing call returns.
 using SourceLookup = std::function<std::optional<std::string_view>(std::string_view path)>;
 
+// Where Vm::call() starts the time limit from.
+enum class Budget : uint8_t {
+    Fresh,     // now: a new message
+    Continue,  // where the last top-level call() started it: more work for
+               // the same message (the reactive flush after a handler).
+               // Fresh when there was no call before.
+};
+
 // Upper bound of one print/log line built by log_lua_args(), before the
 // log layer applies its own limit.
 constexpr size_t kLuaLogMaxBytes = 512;
@@ -155,13 +163,14 @@ public:
     std::optional<ScriptError> load(std::string_view path, std::string_view source);
 
     // Calls the function below the top `nargs` values, like lua_pcall,
-    // with a fresh time budget. On success leaves `nresults` results
+    // with a fresh time budget (or, with Budget::Continue, the one the
+    // last top-level call started). On success leaves `nresults` results
     // (LUA_MULTRET allowed); on failure the function and arguments are
     // gone and nothing is pushed. Only for the scene task's top level:
     // bindings that run Lua code inside a call use lua_pcall/protect(),
     // which share the outer budget. This is the only way to run scene
     // code; anything run outside it has no time limit.
-    std::optional<ScriptError> call(int nargs, int nresults);
+    std::optional<ScriptError> call(int nargs, int nresults, Budget budget = Budget::Fresh);
 
     // True after a timeout or memory fault; the VM must be destroyed.
     bool faulted() const { return fault_ != Fault::None; }
@@ -212,6 +221,7 @@ private:
     // Set by the destructor: every instruction lua_close might run raises.
     bool closing_ = false;
     uint64_t start_ms_ = 0;
+    bool started_ = false;  // start_ms_ holds a top-level call's start
     // A refused request Lua has not yet retried successfully, for the
     // memory fault rule above.
     bool refused_ = false;

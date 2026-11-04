@@ -233,3 +233,5 @@ endforeach()
 # wisp_scene: the Lua scene runtime (scene-runtime-core spec).
 wisp_test(NAME lua_vendor_test SRCS scene/lua_vendor_test.cpp LIBS wisp_scene)
 wisp_test(NAME vm_test SRCS scene/vm_test.cpp LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME patch_batch_test SRCS scene/patch_batch_test.cpp LIBS wisp_scene wisp_port_sim_os)
+wisp_test(NAME reactive_test SRCS scene/reactive_test.cpp LIBS wisp_scene wisp_port_sim_os)

@@ -1167,7 +1167,7 @@ std::optional<ScriptError> Vm::load(std::string_view path, std::string_view sour
     return e;
 }
 
-std::optional<ScriptError> Vm::call(int nargs, int nresults) {
+std::optional<ScriptError> Vm::call(int nargs, int nresults, Budget budget) {
     int base = lua_gettop(L_) - nargs - 1;
     // The callee's file, for errors that carry no position.
     char callee[LUA_IDSIZE] = "";
@@ -1183,7 +1183,8 @@ std::optional<ScriptError> Vm::call(int nargs, int nresults) {
     }
     bool outer = !running_;
     if (outer) {
-        start_ms_ = now_ms_();
+        if (budget == Budget::Fresh || !started_) start_ms_ = now_ms_();
+        started_ = true;
         running_ = true;
         current_ = L_;
         lua_sethook(L_, &Vm::hook, LUA_MASKCOUNT, limits_.hook_instructions);
