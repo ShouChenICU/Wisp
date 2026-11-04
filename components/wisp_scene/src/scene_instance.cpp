@@ -173,6 +173,10 @@ std::optional<ScriptError> SceneInstance::timer(uint32_t id, bool once) {
     return flush(run_timer(*vm_, id, once));
 }
 
+std::optional<ScriptError> SceneInstance::http(uint32_t id, const net::SceneHttpResult& result) {
+    return flush(run_http_callback(*vm_, id, result));
+}
+
 std::optional<ScriptError> SceneInstance::device(DeviceEvent ev, const DeviceInfo& info) {
     if (!api_.wants(ev)) return std::nullopt;
     return flush(run_device_handlers(*vm_, ev, info));

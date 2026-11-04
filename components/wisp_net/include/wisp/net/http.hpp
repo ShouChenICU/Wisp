@@ -149,25 +149,64 @@ public:
     virtual uint16_t port() const = 0;
 };
 
-enum class TransportError { None, Dns, Connect, Tls, Timeout, Other };
+enum class TransportError { None, Dns, Connect, Tls, Timeout, TooLarge, Cancelled, Other };
 
-// "dns"/"connect"/"tls"/"timeout"/"other"; "" for None.
+// "dns"/"connect"/"tls"/"timeout"/"too_large"/"cancelled"/"other"; "" for
+// None.
 const char* to_string(TransportError e);
+
+// What a client keeps of a response's headers (HttpClientResponse::headers):
+// names lowercased, at most kMaxResponseHeaders of them, none whose value
+// is over kMaxResponseHeaderValue bytes, and at most kMaxResponseHeaderBytes
+// of names and values together; anything past those is skipped. Header
+// strings are ordinary heap strings, which on the device land in internal
+// RAM, so the total is bounded no matter what a server sends.
+inline constexpr size_t kMaxResponseHeaders = 32;
+inline constexpr size_t kMaxResponseHeaderValue = 1024;
+inline constexpr size_t kMaxResponseHeaderBytes = 8 * 1024;
+
+// Adds one received header to `headers` under the limits above (name
+// lowercased, surrounding blanks trimmed from both). False when it was
+// skipped.
+bool keep_response_header(std::vector<std::pair<std::string, std::string>>& headers,
+                          std::string_view name, std::string_view value);
 
 struct HttpClientRequest {
     Method method = Method::Get;
     std::string url;
     std::vector<std::pair<std::string, std::string>> headers;
     std::string body;
+    // When non-empty it is sent instead of `body`, without copying (a body
+    // that lives in PSRAM); the bytes must outlive request().
+    std::span<const uint8_t> body_ref;
     uint32_t timeout_ms = 10000;
+    // A response body over this many bytes fails the request with
+    // TooLarge (checked against Content-Length first, then as it
+    // arrives). 0: the client's own default cap.
+    size_t max_response_bytes = 0;
+    // When set, the body is handed over in pieces as it arrives and
+    // HttpClientResponse::body stays empty; returning false stops the
+    // transfer (Cancelled).
+    std::function<bool(std::span<const uint8_t>)> on_body;
+    // When set, asked between pieces of the transfer (and while waiting
+    // for the server, as often as the client can); true stops it
+    // (Cancelled). A client blocked in a single read notices only when
+    // that read returns or times out.
+    std::function<bool()> cancelled;
 };
 
 struct HttpClientResponse {
     TransportError transport = TransportError::None;
     int status = 0;
     std::string body;
+    // The final response's headers, under keep_response_header()'s limits.
+    // Empty when the transfer failed.
+    std::vector<std::pair<std::string, std::string>> headers;
 };
 
+// Every client: no redirects (a 3xx is the response; following one could
+// carry the Authorization header to another host), and request headers,
+// bodies and anything past the URL's host are never logged.
 class HttpClient {
 public:
     virtual ~HttpClient() = default;

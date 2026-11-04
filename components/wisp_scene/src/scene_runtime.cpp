@@ -12,6 +12,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/scene_store.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/net/scene_http.hpp"
 #include "wisp/scene/minute_ticker.hpp"
 #include "wisp/scene/scene_view.hpp"
 #include "wisp/ui/strings.hpp"
@@ -413,9 +414,11 @@ void SceneRuntime::handle(SceneMessage& m) {
             submit();
     } else if (auto* b = std::get_if<msg::Device>(&body)) {
         device_event(b->kind);
-    } else if (std::holds_alternative<msg::HttpDone>(body) ||
-               std::holds_alternative<msg::StoreDone>(body)) {
-        // Their bindings come later; a current one has nothing to do yet.
+    } else if (auto* b = std::get_if<msg::HttpDone>(&body)) {
+        Foreground* f = target(m);
+        if (f != nullptr && f->scene && step(f->scene->http(b->id, b->result))) submit();
+    } else if (std::holds_alternative<msg::StoreDone>(body)) {
+        // Its binding comes later; a current one has nothing to do yet.
         target(m);
     } else if (auto* b = std::get_if<msg::CheckSources>(&body)) {
         SourceCheckJob& job = *b->job;
@@ -531,6 +534,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     api.device = [this] { return device_info(); };
     api.args = &f.args;
     api.store = f.store.get();
+    if (deps_.http != nullptr) wire_http(f);
     // Opened with the screen off: timers wait for it to come on.
     if (!visible_) api.timers.pause(os::now_ms());
     {
@@ -566,6 +570,36 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     done(Result<void>::ok());
 }
 
+void SceneRuntime::wire_http(Foreground& f) {
+    net::SceneHttp& http = *deps_.http;
+    http.set_hosts(f.id, f.package->manifest.http_hosts);
+    // Results come back from the proxy's task (or, for a request refused
+    // at once, from inside submit() on this task) as messages for this
+    // instance; one for an instance that is gone is dropped like any
+    // stale message.
+    auto deliver = [link = link_, id = f.id, instance = f.instance](uint32_t cb,
+                                                                    net::SceneHttpResult r) {
+        auto m = make_message(id, instance, msg::HttpDone{cb, std::move(r)});
+        std::lock_guard<os::Mutex> lock(link->mu);
+        if (link->rt == nullptr) return;
+        if (!post_scene_message(*link->rt, std::move(m)))
+            WLOG_W(scene_tag(id).c_str(), "http: a result was dropped: scene queue full");
+    };
+    SceneApi& api = f.scene->api();
+    api.http_submit = [&http, deliver, id = f.id, instance = f.instance](
+                          uint32_t cb, net::SceneHttpRequest req) {
+        req.scene_id = id;
+        req.instance = instance;
+        http.submit(std::move(req),
+                    [deliver, cb](net::SceneHttpResult r) { deliver(cb, std::move(r)); });
+    };
+    api.http_fail = [deliver](uint32_t cb, const char* error) {
+        net::SceneHttpResult r;
+        r.error = error;
+        deliver(cb, std::move(r));
+    };
+}
+
 bool SceneRuntime::step(const std::optional<ScriptError>& err) {
     if (!err) return true;
     fault(*err);
@@ -590,6 +624,7 @@ void SceneRuntime::fault(const ScriptError& err) {
     const std::string text = err.text();
     if (f.scene) f.scene->batch().clear();
     f.scene.reset();  // the VM goes with it
+    if (deps_.http != nullptr) deps_.http->cancel_scene(f.id);
     f.shown = false;
     ui_instance_.store(0);
     patches_.clear();
@@ -632,6 +667,8 @@ void SceneRuntime::close_foreground() {
         run_hook("on_close");
         f.scene.reset();
     }
+    // After the hooks, so a request on_close makes is cancelled too.
+    if (deps_.http != nullptr) deps_.http->cancel_scene(f.id);
     if (f.store) {
         f.store->flush();
         f.store->close();

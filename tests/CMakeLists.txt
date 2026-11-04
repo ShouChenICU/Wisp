@@ -225,6 +225,7 @@ wisp_test(NAME wifi_service_test SRCS net/wifi_service_test.cpp
 wisp_test(NAME pairing_service_test SRCS net/pairing_service_test.cpp
           LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME model_probe_test SRCS net/model_probe_test.cpp LIBS wisp_net wisp_core wisp_port_sim_os)
+wisp_test(NAME scene_http_test SRCS net/scene_http_test.cpp LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.
@@ -261,6 +262,8 @@ wisp_test(NAME scene_runtime_test SRCS scene/scene_runtime_test.cpp
 target_include_directories(scene_runtime_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 wisp_test(NAME lua_json_test SRCS scene/lua_json_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME store_binding_test SRCS scene/store_binding_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME http_binding_test SRCS scene/http_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME timer_set_test SRCS scene/timer_set_test.cpp LIBS wisp_scene)
 wisp_test(NAME minute_ticker_test SRCS scene/minute_ticker_test.cpp LIBS wisp_scene)

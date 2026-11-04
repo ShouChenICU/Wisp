@@ -47,6 +47,8 @@ public:
     std::optional<ScriptError> refresh();
     // A due wisp.timer callback (run_timer()).
     std::optional<ScriptError> timer(uint32_t id, bool once);
+    // A wisp.http result for callback `id` (run_http_callback()).
+    std::optional<ScriptError> http(uint32_t id, const net::SceneHttpResult& result);
     // The wisp.device.on(ev) handlers, if the scene added any.
     std::optional<ScriptError> device(DeviceEvent ev, const DeviceInfo& info);
 

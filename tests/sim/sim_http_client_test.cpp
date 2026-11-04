@@ -3,9 +3,12 @@
 #include <curl/curl.h>
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdint>
 #include <span>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "wisp/net/http.hpp"
@@ -115,7 +118,7 @@ TEST(SimHttpClient, OversizedResponseIsRefused) {
     HttpClientRequest req;
     req.url = url(server.port(), "/big");
     auto res = client.request(req);
-    EXPECT_EQ(res.transport, TransportError::Other);
+    EXPECT_EQ(res.transport, TransportError::TooLarge);
     EXPECT_EQ(res.status, 0);
     EXPECT_TRUE(res.body.empty());
 
@@ -124,6 +127,104 @@ TEST(SimHttpClient, OversizedResponseIsRefused) {
     EXPECT_EQ(res.transport, TransportError::None);
     EXPECT_EQ(res.status, 200);
     EXPECT_EQ(res.body.size(), SimHttpClient::kMaxResponseBytes);
+}
+
+TEST(SimHttpClient, StreamsBodyHeadersAndCancels) {
+    static const std::vector<uint8_t> body(100000, 'z');
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0,
+                             [](const HttpRequest& req) {
+                                 HttpResponse res;
+                                 if (req.path == "/slow") wisp::os::sleep_ms(3000);
+                                 res.status = 203;
+                                 res.content_type = "application/json; charset=utf-8";
+                                 res.headers = {{"X-Thing", "  v1 "}, {"X-Other", "v2"}};
+                                 res.static_body = std::span<const uint8_t>(body);
+                                 return res;
+                             },
+                             {}));
+    SimHttpClient client;
+
+    HttpClientRequest req;
+    req.url = url(server.port(), "/body");
+    size_t pieces = 0;
+    std::string got;
+    req.on_body = [&](std::span<const uint8_t> chunk) {
+        ++pieces;
+        got.append(reinterpret_cast<const char*>(chunk.data()), chunk.size());
+        return true;
+    };
+    req.max_response_bytes = body.size();
+    auto res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::None);
+    EXPECT_EQ(res.status, 203);
+    EXPECT_TRUE(res.body.empty());
+    EXPECT_EQ(got, std::string(body.begin(), body.end()));
+    EXPECT_GT(pieces, 1u);
+    auto header = [&](const char* name) {
+        for (const auto& [n, v] : res.headers)
+            if (n == name) return v;
+        return std::string("(missing)");
+    };
+    EXPECT_EQ(header("content-type"), "application/json; charset=utf-8");
+    EXPECT_EQ(header("x-thing"), "v1");
+    EXPECT_EQ(header("x-other"), "v2");
+    for (const auto& [n, v] : res.headers)
+        for (char c : n) EXPECT_FALSE(c >= 'A' && c <= 'Z') << n;
+
+    // The body goes to `body` without on_body.
+    HttpClientRequest plain;
+    plain.url = url(server.port(), "/body");
+    res = client.request(plain);
+    EXPECT_EQ(res.body.size(), body.size());
+
+    // One byte over the cap.
+    req.max_response_bytes = body.size() - 1;
+    got.clear();
+    res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::TooLarge);
+    EXPECT_EQ(res.status, 0);
+    EXPECT_TRUE(res.headers.empty());
+
+    // on_body refusing a piece stops the transfer.
+    req.max_response_bytes = 0;
+    req.on_body = [](std::span<const uint8_t>) { return false; };
+    res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::Cancelled);
+
+    // Cancelled while waiting for a slow server.
+    std::atomic<bool> stop{false};
+    HttpClientRequest slow;
+    slow.url = url(server.port(), "/slow");
+    slow.cancelled = [&] { return stop.load(); };
+    const uint64_t t0 = wisp::os::now_ms();
+    std::thread canceller([&] {
+        wisp::os::sleep_ms(200);
+        stop = true;
+    });
+    res = client.request(slow);
+    canceller.join();
+    EXPECT_EQ(res.transport, TransportError::Cancelled);
+    EXPECT_LT(wisp::os::now_ms() - t0, 2500u);
+
+    // The body comes from body_ref when it is set.
+    SimHttpServer echo;
+    ASSERT_TRUE(echo.start(0,
+                           [](const HttpRequest& r) {
+                               HttpResponse out;
+                               out.content_type = "text/plain";
+                               out.body = r.body;
+                               return out;
+                           },
+                           {}));
+    static const std::string ref = "from the reference";
+    HttpClientRequest post;
+    post.method = Method::Post;
+    post.url = url(echo.port(), "/echo");
+    post.body = "ignored";
+    post.body_ref = {reinterpret_cast<const uint8_t*>(ref.data()), ref.size()};
+    res = client.request(post);
+    EXPECT_EQ(res.body, ref);
 }
 
 TEST(SimHttpClient, MapsCurlErrors) {

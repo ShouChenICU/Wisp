@@ -27,6 +27,10 @@
 //   wisp.store (bind_store.cpp): the scene's SceneStore, values converted
 //       with lua_json.hpp. Every call works on the store's in-memory
 //       index; persisting is the store's own job on the wisp.fs worker.
+//   wisp.http (bind_http.cpp): the scene's requests go to the SceneHttp
+//       proxy through SceneApi::http_submit; each result comes back to the
+//       scene task as a message, and run_http_callback() calls the
+//       scene's callback with it.
 
 #include <cstddef>
 #include <cstdint>
@@ -38,6 +42,7 @@
 #include "wisp/core/scene_store.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/net/scene_http.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/timer_set.hpp"
 #include "wisp/scene/vm.hpp"
@@ -78,6 +83,14 @@ struct SceneApi {
     // The scene's data; wisp.store raises without one. Owned by the
     // runtime, which drops the VM before it closes the store.
     core::SceneStore* store = nullptr;
+    // wisp.http: sends `req` (method, url, headers, body filled in) for
+    // callback `id`; its result must come back to run_http_callback(id)
+    // on the scene task. Empty: wisp.http raises.
+    std::function<void(uint32_t id, net::SceneHttpRequest req)> http_submit;
+    // Answers callback `id` with `error` the same way, without a request
+    // (a table body that cannot be encoded).
+    std::function<void(uint32_t id, const char* error)> http_fail;
+    uint32_t next_http_id = 1;
     bool close_requested = false;
     // wisp.device.on() was called for the event at least once.
     bool has_handlers[kDeviceEventCount] = {};
@@ -97,6 +110,11 @@ std::optional<ScriptError> run_timer(Vm& vm, uint32_t id, bool once);
 // with a table like info()'s, all under one fresh budget.
 std::optional<ScriptError> run_device_handlers(Vm& vm, DeviceEvent ev, const DeviceInfo& info);
 
+// Calls wisp.http callback `id` (and forgets it) with cb(err, nil), or
+// cb(nil, {status, headers, body, json}), with a fresh budget. Nothing
+// happens if the scene has no such callback.
+std::optional<ScriptError> run_http_callback(Vm& vm, uint32_t id, const net::SceneHttpResult& r);
+
 namespace detail {
 
 // For the bind_*.cpp files; all follow the longjmp rule (vm.hpp).
@@ -108,6 +126,7 @@ void install_device(lua_State* L, int wisp);
 void install_log(lua_State* L, int wisp);
 void install_scene(lua_State* L, int wisp);
 void install_store(lua_State* L, int wisp);
+void install_http(lua_State* L, int wisp);
 
 }  // namespace detail
 

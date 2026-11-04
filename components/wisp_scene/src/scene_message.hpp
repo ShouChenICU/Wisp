@@ -18,6 +18,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/scene_store.hpp"
+#include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/scene_runtime.hpp"
@@ -108,8 +109,12 @@ struct ListRange {
     uint32_t count = 0;
 };
 
-// Completions the HTTP proxy and the store bindings will send.
-struct HttpDone {};
+// A wisp.http result for callback `id` (SceneApi::http_submit).
+struct HttpDone {
+    uint32_t id = 0;
+    net::SceneHttpResult result;
+};
+// A completion the store bindings will send.
 struct StoreDone {};
 
 // A device event for the foreground scene's wisp.device handlers (sent

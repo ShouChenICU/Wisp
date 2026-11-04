@@ -6,13 +6,16 @@
 // Each helper takes and returns the request by value so calls nest:
 //   srv.handle(with_csrf(with_token(make_req(Method::Post, "/x"), t)))
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -86,14 +89,49 @@ inline std::string set_cookie(const net::HttpResponse& res) {
 
 // net::HttpClient double: records every request and answers each with
 // `next`. Tests set `next` before the call under test and read the
-// recorded requests afterwards; the mutex only makes the recording safe
-// if a route happens to call in from another thread.
+// recorded requests afterwards; the mutex makes the recording safe when
+// the call comes from another thread (a route, SceneHttp's worker).
+//
+// It behaves like the real clients towards the streaming fields: a body
+// over max_response_bytes is TooLarge (unless `ignore_limit`), on_body
+// gets it in 4 KB pieces (false: Cancelled) and `next.body` is then not
+// returned. With `hold` set, request() waits until `hold` is cleared or
+// req.cancelled() turns true (then Cancelled, `saw_cancel` set); `held`
+// counts the calls waiting.
 class FakeHttpClient : public net::HttpClient {
 public:
     net::HttpClientResponse request(const net::HttpClientRequest& req) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        requests_.push_back(req);
-        return next;
+        net::HttpClientResponse res;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            requests_.push_back(req);
+            res = next;
+        }
+        if (hold.load()) {
+            ++held;
+            while (hold.load()) {
+                if (req.cancelled && req.cancelled()) {
+                    saw_cancel = true;
+                    --held;
+                    return {.transport = net::TransportError::Cancelled};
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            --held;
+        }
+        if (res.transport != net::TransportError::None) return res;
+        if (req.max_response_bytes != 0 && res.body.size() > req.max_response_bytes &&
+            !ignore_limit.load())
+            return {.transport = net::TransportError::TooLarge};
+        if (req.on_body) {
+            const auto* p = reinterpret_cast<const uint8_t*>(res.body.data());
+            for (size_t at = 0; at < res.body.size(); at += 4096) {
+                const size_t n = std::min<size_t>(4096, res.body.size() - at);
+                if (!req.on_body({p + at, n})) return {.transport = net::TransportError::Cancelled};
+            }
+            res.body.clear();
+        }
+        return res;
     }
 
     std::optional<net::HttpClientRequest> last() const {
@@ -107,7 +145,17 @@ public:
         return requests_.size();
     }
 
+    // The body a recorded request carried (body_ref when set, else body).
+    static std::string body_of(const net::HttpClientRequest& req) {
+        if (req.body_ref.empty()) return req.body;
+        return {reinterpret_cast<const char*>(req.body_ref.data()), req.body_ref.size()};
+    }
+
     net::HttpClientResponse next{.transport = net::TransportError::None, .status = 200, .body = {}};
+    std::atomic<bool> hold{false};
+    std::atomic<int> held{0};
+    std::atomic<bool> saw_cancel{false};
+    std::atomic<bool> ignore_limit{false};
 
 private:
     mutable std::mutex mutex_;

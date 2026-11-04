@@ -17,8 +17,12 @@ namespace wisp::port::sim {
 
 class SimHttpClient : public net::HttpClient {
 public:
-    // A larger response body aborts the transfer (transport Other), so a
-    // misbehaving endpoint cannot exhaust memory.
+    // The cap when HttpClientRequest::max_response_bytes is 0: a larger
+    // response body aborts the transfer (TooLarge), so a misbehaving
+    // endpoint cannot exhaust memory. on_body, response headers (curl's
+    // header callback) and cancelled (between pieces, and from curl's
+    // progress callback about once a second while it waits) work as
+    // http.hpp describes.
     static constexpr size_t kMaxResponseBytes = 1024 * 1024;
 
     // Initializes libcurl's global state once per process; construct the

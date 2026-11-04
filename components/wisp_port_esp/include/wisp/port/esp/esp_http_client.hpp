@@ -8,9 +8,14 @@
 // could carry the Authorization header to another host.
 //
 // Each request() uses its own client handle, so concurrent calls are
-// fine. The response body is capped at kMaxResponseBytes (a larger one
-// fails the request with transport Other), so a misbehaving endpoint
-// cannot exhaust memory.
+// fine. The response body is capped at HttpClientRequest::
+// max_response_bytes, or kMaxResponseBytes when that is 0 (a larger one
+// fails the request with TooLarge), so a misbehaving endpoint cannot
+// exhaust memory. Response headers are collected from
+// HTTP_EVENT_ON_HEADER; with on_body the body goes there 512 bytes at a
+// time instead of into `body`. cancelled is asked before each write and
+// read: a read blocked on a silent server notices only when it times out
+// (HttpClientRequest::timeout_ms).
 //
 // Errors map to TransportError from the esp_http_client result and the
 // last esp-tls error: name resolution -> Dns, refused/unreachable ->

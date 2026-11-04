@@ -106,9 +106,15 @@ protected:
     void on_ui(const std::function<void()>& fn) { run_on_ui_blocking(ui.get(), fn); }
 
     // Writes a package into the code root, the way an install leaves it.
+    // A scene.json in `extra` replaces the default manifest.
     void install(const std::string& id, const std::string& main_lua, Files extra = {}) {
-        Files files = {{"scene.json", manifest(id)}, {"main.lua", main_lua}};
-        for (auto& f : extra) files.push_back(std::move(f));
+        Files files = {{"main.lua", main_lua}};
+        bool has_manifest = false;
+        for (auto& f : extra) {
+            has_manifest = has_manifest || f.first == "scene.json";
+            files.push_back(std::move(f));
+        }
+        if (!has_manifest) files.insert(files.begin(), {"scene.json", manifest(id)});
         for (const auto& [path, body] : files) {
             std::filesystem::path p = std::filesystem::path(in) / "scenes" / id / path;
             std::error_code ec;

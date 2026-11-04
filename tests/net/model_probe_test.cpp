@@ -77,6 +77,7 @@ TEST(ModelProbe, MapsTransportAndHttpErrors) {
          {Case{TransportError::Dns, 0, "", "dns"}, Case{TransportError::Connect, 0, "", "connect"},
           Case{TransportError::Tls, 0, "", "tls"}, Case{TransportError::Timeout, 0, "", "timeout"},
           Case{TransportError::Other, 0, "", "other"},
+          Case{TransportError::TooLarge, 0, "", "other"},
           Case{TransportError::None, 401, R"({"error":"bad key"})", "http"},
           Case{TransportError::None, 503, "", "http"},
           // A 200 whose body is not a model list is not a

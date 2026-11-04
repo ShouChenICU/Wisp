@@ -56,7 +56,11 @@ core::ModelProbe probe_models(const core::ResolvedProfile& target, HttpClient& c
     const uint64_t end = now_ms();
     probe.latency_ms = static_cast<uint32_t>(end >= start ? end - start : 0);
     if (res.transport != TransportError::None) {
-        probe.error = to_string(res.transport);
+        // The models page (web/app/pages/models.js) knows dns, connect,
+        // tls, timeout and other: an oversized model list is "other".
+        const bool listed =
+            res.transport != TransportError::TooLarge && res.transport != TransportError::Cancelled;
+        probe.error = to_string(listed ? res.transport : TransportError::Other);
         WLOG_I(kTag, "probe of %s failed: transport error %s", target.id.c_str(),
                probe.error.c_str());
         return probe;

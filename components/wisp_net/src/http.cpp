@@ -88,10 +88,30 @@ const char* to_string(TransportError e) {
             return "tls";
         case TransportError::Timeout:
             return "timeout";
+        case TransportError::TooLarge:
+            return "too_large";
+        case TransportError::Cancelled:
+            return "cancelled";
         case TransportError::Other:
             break;
     }
     return "other";
+}
+
+bool keep_response_header(std::vector<std::pair<std::string, std::string>>& headers,
+                          std::string_view name, std::string_view value) {
+    name = trim(name);
+    value = trim(value);
+    if (name.empty() || headers.size() >= kMaxResponseHeaders ||
+        value.size() > kMaxResponseHeaderValue)
+        return false;
+    size_t used = 0;
+    for (const auto& [n, v] : headers) used += n.size() + v.size();
+    if (used + name.size() + value.size() > kMaxResponseHeaderBytes) return false;
+    std::string lower(name);
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    headers.emplace_back(std::move(lower), std::string(value));
+    return true;
 }
 
 }  // namespace wisp::net

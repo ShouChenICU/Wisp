@@ -60,6 +60,14 @@
 // any (ui::set_lang() runs on the UI thread and may lag the event).
 // wisp.scene.close() closes the scene once its current message is done.
 //
+// HTTP (spec 5.3): opening a scene gives the proxy (SceneRuntimeDeps::
+// http) its declared hosts; each wisp.http result is an HttpDone message
+// whose callback runs with its own 200 ms budget. Closing, reloading or
+// faulting cancels the scene's requests (SceneHttp::cancel_scene): queued
+// ones are dropped, the one in flight is stopped, and no callback runs
+// for them; a result already queued for the old instance is dropped as
+// stale.
+//
 // A hook is a function the scene stores in its `scene` table
 // (scene.on_show = function() ... end).
 //
@@ -131,6 +139,8 @@ struct SceneRuntimeDeps {
     ui::UiRuntime& ui;
     ui::SystemLayer& system;
     hal::ScreenShape shape;
+    // The proxy wisp.http uses; null: wisp.http raises. Must outlive the
+    // runtime (stop() cancels the foreground scene's requests through it).
     net::SceneHttp* http = nullptr;
     // Battery, charging and Wi-Fi for wisp.device.info():
     //   {"battery": null | {"percent": int (-1: unknown), "charging": bool},
@@ -233,6 +243,9 @@ private:
     Foreground* target(const SceneMessage& m);
     void begin_open(const std::string& id, Value args, std::shared_ptr<SceneWaiter> waiter);
     void finish_open(SceneMessage& m);
+    // Gives the scene's wisp.http its proxy: the declared hosts, and
+    // results that come back as HttpDone messages for this instance.
+    void wire_http(Foreground& f);
     void close_foreground();
     // Runs one step of the running scene; on an error the scene faults.
     // Returns false if it did.

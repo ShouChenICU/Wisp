@@ -99,6 +99,17 @@ net::TransportError classify(esp_http_client_handle_t client, esp_err_t fallback
     }
 }
 
+// HTTP_EVENT_ON_HEADER: one response header. Runs inside the client's
+// own calls, on the calling task.
+esp_err_t on_event(esp_http_client_event_t* evt) {
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && evt->user_data != nullptr &&
+        evt->header_key != nullptr && evt->header_value != nullptr) {
+        auto* res = static_cast<net::HttpClientResponse*>(evt->user_data);
+        net::keep_response_header(res->headers, evt->header_key, evt->header_value);
+    }
+    return ESP_OK;
+}
+
 }  // namespace
 
 net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req) {
@@ -111,13 +122,23 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
     }
     const std::string origin = origin_of(req.url);
     const auto failed = [&](net::TransportError e, const char* stage, esp_err_t err) {
-        WLOG_W(kTag, "%s %s failed at %s: %s (%s)", method_name, origin.c_str(), stage,
-               esp_err_to_name(err), net::to_string(e));
+        // A cancel is the caller's own doing, not a failure worth a warning.
+        if (e != net::TransportError::Cancelled) {
+            WLOG_W(kTag, "%s %s failed at %s: %s (%s)", method_name, origin.c_str(), stage,
+                   esp_err_to_name(err), net::to_string(e));
+        }
         res.transport = e;
         res.status = 0;
         res.body.clear();
+        res.headers.clear();
         return res;
     };
+    const auto cancelled = [&] { return req.cancelled && req.cancelled(); };
+    const size_t limit = req.max_response_bytes != 0 ? req.max_response_bytes : kMaxResponseBytes;
+    const char* body =
+        req.body_ref.empty() ? req.body.data() : reinterpret_cast<const char*>(req.body_ref.data());
+    const size_t body_size = req.body_ref.empty() ? req.body.size() : req.body_ref.size();
+    if (cancelled()) return failed(net::TransportError::Cancelled, "start", ESP_OK);
 
     esp_http_client_config_t cfg = {};
     cfg.url = req.url.c_str();
@@ -130,6 +151,8 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
     cfg.skip_cert_common_name_check = false;
     cfg.buffer_size = kRxBufferBytes;
     cfg.buffer_size_tx = kTxBufferBytes;
+    cfg.event_handler = on_event;
+    cfg.user_data = &res;
     ClientPtr client(esp_http_client_init(&cfg));
     if (!client) return failed(net::TransportError::Other, "init", ESP_ERR_INVALID_ARG);
 
@@ -137,13 +160,14 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         esp_http_client_set_header(client.get(), name.c_str(), value.c_str());
     }
 
-    esp_err_t err = esp_http_client_open(client.get(), static_cast<int>(req.body.size()));
+    esp_err_t err = esp_http_client_open(client.get(), static_cast<int>(body_size));
     if (err != ESP_OK) return failed(classify(client.get(), err), "connect", err);
 
     size_t sent = 0;
-    while (sent < req.body.size()) {
-        const int n = esp_http_client_write(client.get(), req.body.data() + sent,
-                                            static_cast<int>(req.body.size() - sent));
+    while (sent < body_size) {
+        if (cancelled()) return failed(net::TransportError::Cancelled, "send", ESP_OK);
+        const int n =
+            esp_http_client_write(client.get(), body + sent, static_cast<int>(body_size - sent));
         if (n <= 0) {
             return failed(classify(client.get(), ESP_ERR_HTTP_WRITE_DATA), "send",
                           ESP_ERR_HTTP_WRITE_DATA);
@@ -159,13 +183,17 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         return failed(classify(client.get(), ESP_ERR_HTTP_FETCH_HEADER), "headers",
                       ESP_ERR_HTTP_FETCH_HEADER);
     }
-    if (static_cast<uint64_t>(length) > kMaxResponseBytes) {
-        return failed(net::TransportError::Other, "body (too large)", ESP_ERR_INVALID_SIZE);
+    if (static_cast<uint64_t>(length) > limit) {
+        return failed(net::TransportError::TooLarge, "body (too large)", ESP_ERR_INVALID_SIZE);
     }
     res.status = esp_http_client_get_status_code(client.get());
 
+    // On the caller's stack: the scene proxy's task has its stack in PSRAM,
+    // so this costs no internal RAM there.
     char buf[512];
+    size_t received = 0;
     for (;;) {
+        if (cancelled()) return failed(net::TransportError::Cancelled, "body", ESP_OK);
         const int n = esp_http_client_read(client.get(), buf, sizeof(buf));
         if (n == -ESP_ERR_HTTP_EAGAIN) {
             return failed(net::TransportError::Timeout, "body", ESP_ERR_HTTP_EAGAIN);
@@ -174,10 +202,17 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
             return failed(classify(client.get(), ESP_FAIL), "body", ESP_FAIL);
         }
         if (n == 0) break;
-        if (res.body.size() + static_cast<size_t>(n) > kMaxResponseBytes) {
-            return failed(net::TransportError::Other, "body (too large)", ESP_ERR_INVALID_SIZE);
+        if (static_cast<size_t>(n) > limit - received) {
+            return failed(net::TransportError::TooLarge, "body (too large)", ESP_ERR_INVALID_SIZE);
         }
-        res.body.append(buf, static_cast<size_t>(n));
+        received += static_cast<size_t>(n);
+        if (req.on_body) {
+            if (!req.on_body({reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n)})) {
+                return failed(net::TransportError::Cancelled, "body", ESP_OK);
+            }
+        } else {
+            res.body.append(buf, static_cast<size_t>(n));
+        }
     }
     // A body delimited by the connection closing has nothing to check.
     const bool delimited = length > 0 || esp_http_client_is_chunked_response(client.get());

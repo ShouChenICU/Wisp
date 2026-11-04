@@ -2,8 +2,10 @@
 
 #include <curl/curl.h>
 
+#include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
 
 #include "wisp/core/log.hpp"
 
@@ -13,13 +15,63 @@ namespace {
 
 constexpr const char* kTag = "http_client";
 
-size_t append_body(char* data, size_t size, size_t nmemb, void* user) {
-    auto* body = static_cast<std::string*>(user);
+// What the curl callbacks share for one transfer.
+struct Transfer {
+    const net::HttpClientRequest* req = nullptr;
+    net::HttpClientResponse* res = nullptr;
+    size_t limit = 0;
+    size_t received = 0;
+    bool too_large = false;
+    bool cancelled = false;
+};
+
+size_t on_data(char* data, size_t size, size_t nmemb, void* user) {
+    auto* t = static_cast<Transfer*>(user);
     const size_t n = size * nmemb;
     // Returning less than n makes curl fail with CURLE_WRITE_ERROR.
-    if (body->size() + n > SimHttpClient::kMaxResponseBytes) return 0;
-    body->append(data, n);
+    if (t->req->cancelled && t->req->cancelled()) {
+        t->cancelled = true;
+        return 0;
+    }
+    if (n > t->limit - t->received) {
+        t->too_large = true;
+        return 0;
+    }
+    t->received += n;
+    if (t->req->on_body) {
+        if (!t->req->on_body({reinterpret_cast<const uint8_t*>(data), n})) {
+            t->cancelled = true;
+            return 0;
+        }
+    } else {
+        t->res->body.append(data, n);
+    }
     return n;
+}
+
+// One header line ("Name: value\r\n"), or a status line, which starts a
+// new response (an interim 1xx came before it), or the blank line.
+size_t on_header(char* data, size_t size, size_t nmemb, void* user) {
+    auto* t = static_cast<Transfer*>(user);
+    const size_t n = size * nmemb;
+    std::string_view line(data, n);
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.remove_suffix(1);
+    if (line.rfind("HTTP/", 0) == 0) {
+        t->res->headers.clear();
+    } else if (size_t colon = line.find(':'); colon != std::string_view::npos) {
+        net::keep_response_header(t->res->headers, line.substr(0, colon), line.substr(colon + 1));
+    }
+    return n;
+}
+
+// Called about once a second while curl waits, and as data moves.
+int on_progress(void* user, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    auto* t = static_cast<Transfer*>(user);
+    if (t->req->cancelled && t->req->cancelled()) {
+        t->cancelled = true;
+        return 1;  // CURLE_ABORTED_BY_CALLBACK
+    }
+    return 0;
 }
 
 // "https://host:port" without user info, path or query, any of which may
@@ -95,6 +147,10 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
         res.transport = net::TransportError::Other;
         return res;
     }
+    if (req.cancelled && req.cancelled()) {
+        res.transport = net::TransportError::Cancelled;
+        return res;
+    }
 
     CURL* curl = curl_easy_init();
     if (curl == nullptr) {
@@ -112,22 +168,38 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
     // and stalls a second waiting for a reply some servers never send.
     headers = curl_slist_append(headers, "Expect:");
 
+    Transfer t;
+    t.req = &req;
+    t.res = &res;
+    t.limit = req.max_response_bytes != 0 ? req.max_response_bytes : kMaxResponseBytes;
+    const char* body =
+        req.body_ref.empty() ? req.body.data() : reinterpret_cast<const char*>(req.body_ref.data());
+    const size_t body_size = req.body_ref.empty() ? req.body.size() : req.body_ref.size();
+
     curl_easy_setopt(curl, CURLOPT_URL, req.url.c_str());
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
     if (req.method == net::Method::Get) {
         curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
-    } else if (req.method != net::Method::Delete || !req.body.empty()) {
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req.body.data());
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
-                         static_cast<curl_off_t>(req.body.size()));
+    } else if (req.method != net::Method::Delete || body_size != 0) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body_size));
     }
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(req.timeout_ms));
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(req.timeout_ms));
     // Signals cannot be used for timeouts in a multi-threaded process.
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, append_body);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &res.body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, on_data);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &t);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, on_header);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &t);
+    if (req.cancelled) {
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, on_progress);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &t);
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    }
+    // Refuses a too-large Content-Length before any of the body arrives.
+    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, static_cast<curl_off_t>(t.limit));
     // Same scope as the device's client: plain http and https only, no
     // redirects (a redirect could carry the Authorization header elsewhere).
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
@@ -142,15 +214,24 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
 #endif
 
     CURLcode rc = curl_easy_perform(curl);
-    res.transport = transport_error_for(rc);
-    if (rc == CURLE_OK) {
+    if (t.cancelled || rc == CURLE_ABORTED_BY_CALLBACK) {
+        res.transport = net::TransportError::Cancelled;
+    } else if (t.too_large || rc == CURLE_FILESIZE_EXCEEDED) {
+        res.transport = net::TransportError::TooLarge;
+    } else {
+        res.transport = transport_error_for(rc);
+    }
+    if (res.transport == net::TransportError::None) {
         long status = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
         res.status = static_cast<int>(status);
     } else {
         res.body.clear();
-        WLOG_W(kTag, "%s %s failed: curl error %d (%s)", method, origin_of(req.url).c_str(),
-               static_cast<int>(rc), net::to_string(res.transport));
+        res.headers.clear();
+        if (res.transport != net::TransportError::Cancelled) {
+            WLOG_W(kTag, "%s %s failed: curl error %d (%s)", method, origin_of(req.url).c_str(),
+                   static_cast<int>(rc), net::to_string(res.transport));
+        }
     }
 
     curl_slist_free_all(headers);
