@@ -38,6 +38,8 @@ extern char kNodesKey;
 extern char kRefsKey;
 extern char kValuesKey;
 extern char kCollectingKey;
+extern char kWidgetKey;
+extern char kResetWidgetsKey;
 
 struct NodeHeader {
     uint16_t widget;
@@ -104,5 +106,10 @@ void describe_problem(lua_State* L, int idx, Prop p, Check c, const char* kind, 
 // Raises "ui.<widget>: <describe_problem()>" at file:line.
 int raise_prop(lua_State* L, const char* file, int line, Widget w, Prop p, Check c, int idx,
                const char* kind);
+
+// Adds the C functions of the list, canvas and chart effects (list_reset,
+// set_series, canvas_begin, canvas_end; widgets.cpp) to the internal
+// table at `internal`. Runs inside install_ui()'s protected call.
+void install_widgets(lua_State* L, int internal);
 
 }  // namespace wisp::scene::node

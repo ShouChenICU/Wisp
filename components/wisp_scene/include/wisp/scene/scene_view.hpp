@@ -50,10 +50,38 @@
 // Nothing is reported while an op is being applied, so updates the scene
 // sends never come back to it as events.
 //
-// Lists: a ListReset makes the list's content count * row_h tall, so
-// ScrollTo can reach row `index`. Building rows (ListRows), canvases
-// (CanvasDraw), icons, images and charts are not drawn yet; those nodes
-// get an empty object.
+// Lists (virtualized): a ListReset makes the list's content count *
+// row_h tall, drops every row it has, holds the scroll position to what
+// the new content allows and asks for the rows the viewport needs
+// (on_list_range with visible_rows(), list_window.hpp). Scrolling and a
+// change of the list's size ask again whenever that window changes, and
+// rows that left it are deleted at once (objects and nodes). A ListRows
+// row is built only if its index is still in the list's window; one that
+// is already there is replaced, so the scene's latest build of a row is
+// the one shown. A row's root is placed at index * row_h and sized to the
+// list's width and row_h (48 unless given), whatever its own w and h say.
+//
+// Canvas: a CanvasDraw is drawn into a buffer of the object's size, in
+// the display's colour format (lv_display_get_color_format(), so drawing
+// the canvas is a plain copy), allocated in Mem::Large. The commands are
+// kept, and drawn again when the canvas changes size. A canvas is "fill"
+// in both directions unless given a size.
+//
+// Chart: lv_chart, `type` line or bar; series in the theme colours accent,
+// ok, warn, danger; values are placed between min and max (default 0 and
+// 100).
+//
+// Image: `src` names a file of the package set_assets() gave, decoded
+// once (PNG by LodePNG, JPEG by whatever decoder the platform installed,
+// see ui::UiConfig::install_image_decoders) into a buffer in Mem::Large
+// that the image shows from then on. LVGL's image cache is off
+// (lv_conf.h), so leaving decoding to draw time would decode the file
+// again on every redraw. A missing file, or one that cannot be decoded,
+// leaves the image empty and is reported through on_warning ("ui.image:
+// no asset 'assets/x.png'", "ui.image: unsupported JPEG 'assets/x.jpg'",
+// "ui.image: cannot decode 'assets/x.png'").
+//
+// Icon: a label showing the LV_SYMBOL_* glyph of `name`.
 //
 // The screen is not loaded here: the scene host loads it, and must load
 // another one before destroying a SceneView whose screen is active.
@@ -62,6 +90,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
@@ -69,6 +98,7 @@
 
 #include "lvgl.h"
 #include "wisp/base/value.hpp"
+#include "wisp/core/scene_repository.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/scene/ui_ops.hpp"
@@ -82,6 +112,9 @@ struct ViewCallbacks {
     // Called on the UI thread; forwards to the scene task.
     std::function<void(NodeId node, UiEvent ev, Value value)> on_event;
     std::function<void(NodeId list, uint32_t first, uint32_t count)> on_list_range;
+    // A problem the scene should hear about (a missing image file); the
+    // scene host logs it to the scene's log.
+    std::function<void(NodeId node, std::string_view message)> on_warning;
 };
 
 class SceneView {
@@ -99,6 +132,9 @@ public:
     SceneView& operator=(const SceneView&) = delete;
 
     lv_obj_t* screen() const { return screen_; }
+    // The package images read their files from. Kept until the next call
+    // or the view's destruction; call it before the Build that uses it.
+    void set_assets(std::shared_ptr<const core::ScenePackage> package);
     void apply(const UiOp& op);
     // The object of `node` (the screen for the root), or nullptr.
     lv_obj_t* object(NodeId node) const;
@@ -122,10 +158,37 @@ private:
                             os::LargeAllocator<std::pair<const os::LargeString, NodeId>>>;
 
     void apply_build(const Build& b);
+    // Creates the object of one node (of a Build or a row), sets its
+    // props and events; the node must already be in nodes_.
+    void init_node(Node& n, const NodeDesc& d, Node* parent);
     void apply_set(const SetProp& s);
     void apply_scroll(const ScrollTo& s);
     void apply_focus(const Focus& f);
     void apply_list_reset(const ListReset& r);
+    void apply_list_rows(const ListRows& r);
+    void apply_canvas(const CanvasDraw& d);
+
+    // Lists (scene_view_list.cpp).
+    // `old`: the ids of the row it replaces, which it may reuse.
+    bool row_ok(const Node& list, const os::LargeVector<NodeDesc>& row,
+                const os::LargeVector<NodeId>* old) const;
+    void build_row(Node& list, uint32_t index, const os::LargeVector<NodeDesc>& row);
+    void drop_row(Node& list, size_t slot);
+    void drop_rows(Node& list);
+    // Recomputes the list's window; `force` asks for it even unchanged.
+    void update_window(Node& list, bool force);
+    void place_row(Node& root);
+    static void list_event_cb(lv_event_t* e);
+
+    // Canvas, chart, image and icon (scene_view_canvas.cpp,
+    // scene_view_media.cpp).
+    void draw_canvas(Node& n);
+    static void canvas_event_cb(lv_event_t* e);
+    void set_series(Node& n, const PropValue& v);
+    void apply_chart(Node& n);
+    void set_image(Node& n, const PropValue& v);
+    void set_icon(Node& n, const PropValue& v);
+    void warn(Node& n, std::string_view message);
 
     bool build_ok(const Build& b) const;
     void clear_tree();
@@ -141,7 +204,7 @@ private:
     void apply_pad(Node& n);
     void apply_flex_align(Node& n);
     void apply_range(Node& n);
-    void apply_list_height(Node& n);
+    void apply_list_height(Node& n);  // and re-places the rows
     static lv_align_t stack_align(const Node& stack);
     void place_in_stack(Node& stack);
     void layout_grid(Node& grid);
@@ -156,6 +219,7 @@ private:
     hal::ScreenShape shape_;
     Insets safe_;
     ViewCallbacks cb_;
+    std::shared_ptr<const core::ScenePackage> assets_;
     lv_obj_t* screen_ = nullptr;
     lv_group_t* group_ = nullptr;
     NodeMap nodes_;

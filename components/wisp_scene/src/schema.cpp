@@ -103,7 +103,7 @@ constexpr SV kExpects[] = {
     "boolean",                                         // password
     "integer 0 to 65535",                              // max_len
     "an icon name",                                    // name
-    "a path assets/<name>.png",                        // src
+    "a path assets/<name>.png, .jpg or .jpeg",         // src
     "number",                                          // value
     "number",                                          // min
     "number",                                          // max
@@ -448,6 +448,30 @@ std::string schema_markdown() {
         out += " |\n";
     }
     out +=
+        "\n"
+        "### list, canvas, chart, image, icon\n"
+        "\n"
+        "- `ui.list`: only the rows around the visible part exist. `row(item, index)` runs for\n"
+        "  each row as it scrolls into view and its widgets are dropped when it scrolls away;\n"
+        "  bindings inside a row live as long as the row. Every row is `row_h` pixels tall "
+        "(default\n"
+        "  48) and as wide as the list, whatever its own `w` and `h`. A row cannot use `ref` or\n"
+        "  hold another `ui.list`. Setting `items` builds the visible rows again.\n"
+        "- `ui.canvas`: `draw(g)` runs once the canvas is built and again whenever a state it\n"
+        "  read changes. `g` only works while `draw` runs, for at most 512 calls:\n"
+        "  `g:fill(color)`, `g:line(x1, y1, x2, y2, opts)`, `g:circle(cx, cy, r, opts)`,\n"
+        "  `g:arc(cx, cy, r, start, end, opts)` (degrees, clockwise from 3 o'clock),\n"
+        "  `g:rect(x, y, w, h, opts)`, `g:text(x, y, text, opts)`. `opts` is optional:\n"
+        "  `color` (a colour, default `text`), `width` (lines and outlines, 0 to 512, default\n"
+        "  1), `radius` (rect corners, 0 to 4096), `fill` (boolean: circle and rect filled),\n"
+        "  `font` (text). A canvas is `fill` in both directions unless given a size.\n"
+        "- `ui.chart`: `series` is up to 4 tables of up to 128 numbers, drawn in `accent`, `ok`,\n"
+        "  `warn` and `danger`, between `min` and `max` (default 0 and 100); `type` is `line`\n"
+        "  (default) or `bar`.\n"
+        "- `ui.image`: `src` is a PNG or a baseline (not progressive) JPEG in the scene's\n"
+        "  `assets/`. A file that is missing or cannot be decoded leaves the image empty and is\n"
+        "  reported in the scene's log.\n"
+        "- `ui.icon`: the symbol `name` in the current `font`.\n"
         "\n"
         "## Helpers\n"
         "\n"

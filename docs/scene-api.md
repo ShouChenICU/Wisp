@@ -76,7 +76,7 @@ Rules:
 | `password` | boolean | yes | boolean |
 | `max_len` | integer | yes | integer 0 to 65535 |
 | `name` | enum | yes | `home`, `settings`, `wifi`, `battery`, `bell`, `play`, `pause`, `stop`, `prev`, `next`, `plus`, `minus`, `ok`, `close`, `trash`, `edit`, `refresh`, `left`, `right`, `up`, `down`, `upload`, `download`, `save`, `list`, `image`, `audio`, `warning` |
-| `src` | string | no | a path assets/&lt;name>.png |
+| `src` | string | no | a path assets/&lt;name>.png, .jpg or .jpeg |
 | `value` | number | yes | number |
 | `min` | number | yes | number |
 | `max` | number | yes | number |
@@ -125,6 +125,29 @@ Every widget takes the common properties: `w`, `h`, `grow`, `pad`, `bg`, `fg`, `
 | `ui.chart` | no | `type`, `series`, `min`, `max` |
 | `ui.list` | no | `items`, `row` (required), `row_h` |
 | `ui.canvas` | no | `draw` |
+
+### list, canvas, chart, image, icon
+
+- `ui.list`: only the rows around the visible part exist. `row(item, index)` runs for
+  each row as it scrolls into view and its widgets are dropped when it scrolls away;
+  bindings inside a row live as long as the row. Every row is `row_h` pixels tall (default
+  48) and as wide as the list, whatever its own `w` and `h`. A row cannot use `ref` or
+  hold another `ui.list`. Setting `items` builds the visible rows again.
+- `ui.canvas`: `draw(g)` runs once the canvas is built and again whenever a state it
+  read changes. `g` only works while `draw` runs, for at most 512 calls:
+  `g:fill(color)`, `g:line(x1, y1, x2, y2, opts)`, `g:circle(cx, cy, r, opts)`,
+  `g:arc(cx, cy, r, start, end, opts)` (degrees, clockwise from 3 o'clock),
+  `g:rect(x, y, w, h, opts)`, `g:text(x, y, text, opts)`. `opts` is optional:
+  `color` (a colour, default `text`), `width` (lines and outlines, 0 to 512, default
+  1), `radius` (rect corners, 0 to 4096), `fill` (boolean: circle and rect filled),
+  `font` (text). A canvas is `fill` in both directions unless given a size.
+- `ui.chart`: `series` is up to 4 tables of up to 128 numbers, drawn in `accent`, `ok`,
+  `warn` and `danger`, between `min` and `max` (default 0 and 100); `type` is `line`
+  (default) or `bar`.
+- `ui.image`: `src` is a PNG or a baseline (not progressive) JPEG in the scene's
+  `assets/`. A file that is missing or cannot be decoded leaves the image empty and is
+  reported in the scene's log.
+- `ui.icon`: the symbol `name` in the current `font`.
 
 ## Helpers
 

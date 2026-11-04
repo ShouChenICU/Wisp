@@ -343,7 +343,10 @@ int install(lua_State* L) {
     keep_internal(L, 1, "kind", &kKindKey);
     keep_internal(L, 1, "watch", &kWatchKey);
     keep_internal(L, 1, "negate", &kNegateKey);
+    keep_internal(L, 1, "widget", &kWidgetKey);
+    keep_internal(L, 1, "reset_widgets", &kResetWidgetsKey);
     set_checked(L, 1, "set_value", set_value);
+    install_widgets(L, 1);
     reset_tree_tables(L, 1);
     // Created here so that collect_tree() only ever changes its value,
     // which cannot fail.

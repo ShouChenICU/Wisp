@@ -10,70 +10,16 @@
 #include <string>
 #include <variant>
 
+#include "scene_view_internal.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/scene/schema.hpp"
 #include "wisp/scene/theme.hpp"
 
 namespace wisp::scene {
 
+using namespace view;
+
 namespace {
-
-constexpr const char* kTag = "scene";
-
-// Numbers further out than this are clamped before any arithmetic, so
-// differences of two of them stay finite.
-constexpr double kNumberLimit = 1e15;
-
-enum class SizeKind : uint8_t { Unset, Px, Fill, Content };
-
-struct Size {
-    SizeKind kind = SizeKind::Unset;
-    int32_t px = 0;
-};
-
-enum class Flow : uint8_t { None, Column, Row };
-
-// What set_prop() leaves for SceneView::update() to redo.
-constexpr uint32_t kSizeDerived = 1;
-constexpr uint32_t kPadDerived = 2;
-constexpr uint32_t kAlignDerived = 4;
-constexpr uint32_t kRangeDerived = 8;
-constexpr uint32_t kListDerived = 16;
-constexpr uint32_t kGridDerived = 32;
-constexpr uint32_t kAllDerived = 63;
-
-const os::LargeString* as_string(const PropValue& v) { return std::get_if<os::LargeString>(&v); }
-
-std::optional<bool> as_bool(const PropValue& v) {
-    if (const auto* b = std::get_if<bool>(&v)) return *b;
-    return std::nullopt;
-}
-
-double finite(double d) {
-    if (std::isnan(d)) return 0;
-    return std::clamp(d, -kNumberLimit, kNumberLimit);
-}
-
-// A Number prop: an integer or a float, NaN as 0, clamped to
-// +-kNumberLimit.
-std::optional<double> as_number(const PropValue& v) {
-    if (const auto* i = std::get_if<int64_t>(&v)) return finite(static_cast<double>(*i));
-    if (const auto* d = std::get_if<double>(&v)) return finite(*d);
-    return std::nullopt;
-}
-
-// An integer prop held to `p`'s range: floats are rounded, NaN is 0.
-std::optional<int32_t> as_int(const PropValue& v, Prop p) {
-    IntRange r = prop_range(p);
-    if (const auto* i = std::get_if<int64_t>(&v))
-        return static_cast<int32_t>(std::clamp<int64_t>(*i, r.min, r.max));
-    if (const auto* d = std::get_if<double>(&v)) {
-        double x = std::isnan(*d) ? 0.0 : std::round(*d);
-        return static_cast<int32_t>(
-            std::clamp(x, static_cast<double>(r.min), static_cast<double>(r.max)));
-    }
-    return std::nullopt;
-}
 
 int hex_digit(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -166,31 +112,6 @@ const char* text_of(const PropValue& v, char* buf, size_t size) {
 
 }  // namespace
 
-struct SceneView::Node {
-    SceneView* view = nullptr;
-    NodeId id = 0;
-    NodeId parent = 0;
-    Widget widget = Widget::Screen;
-    uint32_t events = 0;
-    lv_obj_t* obj = nullptr;
-    lv_obj_t* text = nullptr;    // a button's label
-    lv_obj_t* filler = nullptr;  // what makes a list's content tall
-    Flow flow = Flow::None;      // how this node lays out its children
-    Size w, h;
-    int32_t grow = -1;  // -1: not given
-    bool pad_given = false;
-    bool pad_safe = false;
-    int32_t pad = 0;
-    lv_flex_align_t align = LV_FLEX_ALIGN_START;
-    lv_flex_align_t justify = LV_FLEX_ALIGN_START;
-    double value = 0, min = 0, max = 100;
-    int32_t row_h = 1;
-    uint32_t rows = 0;
-    int32_t cols = 1;
-    os::LargeVector<int32_t> grid;  // column templates, then row templates
-    bool long_pressed = false;
-};
-
 SceneView::SceneView(ui::SystemLayer& system, const hal::ScreenShape& shape, ViewCallbacks cb)
     : system_(system), shape_(shape), cb_(std::move(cb)) {
     hal::Area safe = hal::safe_rect(shape_);
@@ -208,6 +129,10 @@ SceneView::~SceneView() {
     lv_group_delete(group_);
     nodes_.clear();
     refs_.clear();
+}
+
+void SceneView::set_assets(std::shared_ptr<const core::ScenePackage> package) {
+    assets_ = std::move(package);
 }
 
 lv_obj_t* SceneView::object(NodeId node) const {
@@ -238,8 +163,10 @@ void SceneView::apply(const UiOp& op) {
         apply_focus(*f);
     else if (const auto* r = std::get_if<ListReset>(&op))
         apply_list_reset(*r);
-    else
-        WLOG_D(kTag, "ui op %zu not drawn", op.index());
+    else if (const auto* rows = std::get_if<ListRows>(&op))
+        apply_list_rows(*rows);
+    else if (const auto* d = std::get_if<CanvasDraw>(&op))
+        apply_canvas(*d);
     --applying_;
 }
 
@@ -313,39 +240,41 @@ void SceneView::apply_build(const Build& b) {
     building_ = true;
     for (size_t i = 0; i < b.nodes.size(); ++i) {
         const NodeDesc& d = b.nodes[i];
-        os::LargeUnique<Node>& node = fresh[i];
-        Node& n = *node;
-        n.view = this;
-        n.id = d.id;
-        n.parent = d.parent;
-        n.widget = static_cast<Widget>(d.widget);
-        n.events = d.events;
+        Node& n = *fresh[i];
         Node* parent = find(d.parent);
-        if (parent) {
-            n.obj = create_object(n, parent->obj);
-        } else {
-            n.obj = screen_;
-            n.flow = Flow::Column;
-            root_ = n.id;
-        }
-        lv_obj_set_user_data(n.obj, &n);
-        nodes_.emplace(n.id, std::move(node));
-        for (const auto& [prop, value] : d.props) {
-            if (prop == static_cast<PropId>(Prop::Ref)) {
-                if (const auto* s = as_string(value)) refs_.emplace(*s, n.id);
-                continue;
-            }
-            set_prop(n, prop, value);
-        }
-        update(n, kAllDerived);
-        attach_events(n);
-        if (parent && parent->widget == Widget::Stack)
-            lv_obj_set_align(n.obj, stack_align(*parent));
+        nodes_.emplace(d.id, std::move(fresh[i]));
+        init_node(n, d, parent);
     }
     building_ = false;
     // Grids are laid out once their children are all there.
     for (auto& [id, node] : nodes_)
         if (node->widget == Widget::Grid) layout_grid(*node);
+}
+
+void SceneView::init_node(Node& n, const NodeDesc& d, Node* parent) {
+    n.view = this;
+    n.id = d.id;
+    n.parent = d.parent;
+    n.widget = static_cast<Widget>(d.widget);
+    n.events = d.events;
+    if (parent) {
+        n.obj = create_object(n, parent->obj);
+    } else {
+        n.obj = screen_;
+        n.flow = Flow::Column;
+        root_ = n.id;
+    }
+    lv_obj_set_user_data(n.obj, &n);
+    for (const auto& [prop, value] : d.props) {
+        if (prop == static_cast<PropId>(Prop::Ref)) {
+            if (const auto* s = as_string(value)) refs_.emplace(*s, n.id);
+            continue;
+        }
+        set_prop(n, prop, value);
+    }
+    update(n, kAllDerived);
+    attach_events(n);
+    if (parent && parent->widget == Widget::Stack) lv_obj_set_align(n.obj, stack_align(*parent));
 }
 
 lv_obj_t* SceneView::create_object(Node& n, lv_obj_t* parent) {
@@ -382,11 +311,25 @@ lv_obj_t* SceneView::create_object(Node& n, lv_obj_t* parent) {
             obj = lv_textarea_create(parent);
             lv_textarea_set_one_line(obj, true);
             return obj;
+        case Widget::Icon:
+            obj = lv_label_create(parent);
+            lv_label_set_text(obj, "");
+            return obj;
+        case Widget::Image:
+            return lv_image_create(parent);
+        case Widget::Chart:
+            obj = lv_chart_create(parent);
+            lv_chart_set_axis_range(obj, LV_CHART_AXIS_PRIMARY_Y, 0, kScaledSteps);
+            return obj;
+        case Widget::Canvas:
+            obj = lv_canvas_create(parent);
+            lv_obj_add_event_cb(obj, canvas_event_cb, LV_EVENT_SIZE_CHANGED, &n);
+            return obj;
         default:
             break;
     }
-    // Layout widgets, spacer, list and the widgets not drawn yet: a bare
-    // object without the theme's padding, border or background. Only
+    // Layout widgets, spacer and list: a bare object without the theme's
+    // padding, border or background. Only
     // scroll and list take touches they do not handle, so a drag anywhere
     // on them scrolls; the rest let presses through to what is behind.
     obj = lv_obj_create(parent);
@@ -413,6 +356,8 @@ lv_obj_t* SceneView::create_object(Node& n, lv_obj_t* parent) {
             lv_obj_remove_style_all(n.filler);
             lv_obj_remove_flag(n.filler, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_set_size(n.filler, 1, 0);
+            lv_obj_add_event_cb(obj, list_event_cb, LV_EVENT_SCROLL, &n);
+            lv_obj_add_event_cb(obj, list_event_cb, LV_EVENT_SIZE_CHANGED, &n);
             break;
         default:
             break;
@@ -683,7 +628,7 @@ uint32_t SceneView::set_prop(Node& n, uint16_t prop_id, const PropValue& v) {
             return kAlignDerived;
         }
         case Prop::RowH: {
-            auto r = unset ? std::optional<int32_t>(1) : as_int(v, p);
+            auto r = unset ? std::optional<int32_t>(kDefaultRowH) : as_int(v, p);
             if (!r) return wrong();
             n.row_h = *r;
             return kListDerived;
@@ -701,9 +646,28 @@ uint32_t SceneView::set_prop(Node& n, uint16_t prop_id, const PropValue& v) {
             lv_label_set_long_mode(obj, *b ? LV_LABEL_LONG_MODE_WRAP : LV_LABEL_LONG_MODE_DOTS);
             return 0;
         }
+        case Prop::Name:
+            if (!unset && !as_string(v)) return wrong();
+            set_icon(n, v);
+            return 0;
+        case Prop::Src:
+            if (!unset && !as_string(v)) return wrong();
+            set_image(n, v);
+            return 0;
+        case Prop::Type: {
+            const auto* s = as_string(v);
+            if (!s && !unset) return wrong();
+            n.bar = s && *s == "bar";
+            lv_chart_set_type(obj, n.bar ? LV_CHART_TYPE_BAR : LV_CHART_TYPE_LINE);
+            return 0;
+        }
+        case Prop::Series:
+            if (!unset && !as_string(v)) return wrong();
+            set_series(n, v);
+            return kRangeDerived;
         default:
-            // Name, src, type, series, items and the handlers: drawn by
-            // the widgets that are not drawn yet, or not shown at all.
+            // Items, row, draw and the handlers: they stay on the scene
+            // task.
             return 0;
     }
 }
@@ -753,6 +717,10 @@ void SceneView::apply_size(Node& n) {
         lv_obj_set_size(n.obj, shape_.width, shape_.height);
         return;
     }
+    if (n.row_of != 0) {
+        place_row(n);
+        return;
+    }
     Node* parent = find(n.parent);
     const Flow axis = parent ? parent->flow : Flow::None;
     const bool in_grid = parent && parent->widget == Widget::Grid;
@@ -760,7 +728,7 @@ void SceneView::apply_size(Node& n) {
     Size w = n.w, h = n.h;
     if (w.kind == SizeKind::Unset || h.kind == SizeKind::Unset) {
         Size def;
-        if (n.widget == Widget::Scroll || n.widget == Widget::List)
+        if (n.widget == Widget::Scroll || n.widget == Widget::List || n.widget == Widget::Canvas)
             def.kind = SizeKind::Fill;
         else if (is_layout(n.widget))
             def.kind = SizeKind::Content;
@@ -900,6 +868,10 @@ bool SceneView::direct_range(const Node& n) {
 }
 
 void SceneView::apply_range(Node& n) {
+    if (n.widget == Widget::Chart) {
+        apply_chart(n);
+        return;
+    }
     if (n.widget != Widget::Slider && n.widget != Widget::Bar && n.widget != Widget::Arc) return;
     int32_t lo = 0, hi = kScaledSteps, val = 0;
     if (direct_range(n)) {
@@ -930,23 +902,7 @@ void SceneView::apply_range(Node& n) {
     }
 }
 
-void SceneView::apply_list_height(Node& n) {
-    if (n.filler == nullptr) return;
-    int64_t total = static_cast<int64_t>(n.rows) * n.row_h;
-    lv_obj_set_height(n.filler, static_cast<int32_t>(std::min<int64_t>(total, LV_COORD_MAX)));
-}
-
 // --- Other ops ---
-
-void SceneView::apply_list_reset(const ListReset& r) {
-    Node* n = find(r.list);
-    if (n == nullptr || n->widget != Widget::List) {
-        WLOG_D(kTag, "list reset for node %" PRIu32 " that is not a list", r.list);
-        return;
-    }
-    n->rows = r.count;
-    apply_list_height(*n);
-}
 
 void SceneView::apply_scroll(const ScrollTo& s) {
     Node* n = find(s.node);

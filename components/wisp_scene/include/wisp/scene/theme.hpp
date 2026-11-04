@@ -4,6 +4,7 @@
 // font sizes scene properties name. Sub-project 7's theme system extends
 // this set of tokens.
 
+#include <cstdint>
 #include <string_view>
 
 #include "lvgl.h"
@@ -15,6 +16,8 @@ namespace wisp::scene {
 // either case. The schema only lets those through; anything else is the
 // `text` colour, so a bad value can never leave a widget unreadable.
 lv_color_t theme_color(std::string_view token_or_hex);
+// The same colour as 0xRRGGBB; any thread.
+uint32_t theme_rgb(std::string_view token_or_hex);
 
 // xs, sm and md are ui::font(16), lg 24, xl 32, xxl 48; anything else
 // md. UI thread only, like ui::font().

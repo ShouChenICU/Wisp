@@ -7,6 +7,7 @@
 #include <cstring>
 #include <string>
 
+#include "widget_data.hpp"
 #include "wisp/core/zip.hpp"
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/reactive.hpp"
@@ -20,14 +21,14 @@ char kNodesKey;
 char kRefsKey;
 char kValuesKey;
 char kCollectingKey;
+char kWidgetKey;
+char kResetWidgetsKey;
 
 namespace {
 
 constexpr size_t kMaxRefBytes = 64;
 // The longest path a scene package can hold.
 constexpr size_t kMaxSrcBytes = core::ZipLimits{}.max_path;
-constexpr size_t kMaxSeries = 4;
-constexpr size_t kMaxSeriesPoints = 128;
 
 bool in(std::string_view s, std::span<const std::string_view> words) {
     return std::find(words.begin(), words.end(), s) != words.end();
@@ -48,11 +49,19 @@ bool is_hex_color(std::string_view s) {
     return true;
 }
 
-// assets/<segments>.png, no empty, "." or ".." segment, no backslash.
+bool ends_with(std::string_view s, std::string_view suffix) {
+    return s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix;
+}
+
+// assets/<segments>.png, .jpg or .jpeg (the images the UI decodes), no
+// empty, "." or ".." segment, no backslash.
 bool is_asset_path(std::string_view s) {
-    constexpr std::string_view prefix = "assets/", suffix = ".png";
-    if (s.size() > kMaxSrcBytes || s.size() <= prefix.size() + suffix.size() ||
-        s.substr(0, prefix.size()) != prefix || s.substr(s.size() - suffix.size()) != suffix)
+    constexpr std::string_view prefix = "assets/";
+    size_t suffix = ends_with(s, ".png") || ends_with(s, ".jpg") ? 4
+                    : ends_with(s, ".jpeg")                      ? 5
+                                                                 : 0;
+    if (suffix == 0 || s.size() > kMaxSrcBytes || s.size() <= prefix.size() + suffix ||
+        s.substr(0, prefix.size()) != prefix)
         return false;
     std::string_view rest = s.substr(prefix.size());
     while (true) {

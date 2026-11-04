@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -58,11 +59,22 @@ struct RecordedEvent {
     Value value;
 };
 
+struct RecordedRange {
+    scene::NodeId list;
+    uint32_t first;
+    uint32_t count;
+    bool operator==(const RecordedRange&) const = default;
+};
+
 class SceneViewTest : public ::testing::Test {
 protected:
-    void start(const std::string& display_shape = "circle") {
+    // `rgb565_be` gives the display the panel byte order (LVGL's
+    // RGB565_SWAPPED); `ui_config` reaches the UiRuntime as it is.
+    void start(const std::string& display_shape = "circle", bool rgb565_be = false,
+               ui::UiConfig ui_config = {}) {
         display = std::make_shared<FakeDisplay>("display.main", 480, 480, 1, display_shape);
-        ui = std::make_unique<ui::UiRuntime>(display, nullptr);
+        if (rgb565_be) display->set_cap("rgb565_be", Value(true));
+        ui = std::make_unique<ui::UiRuntime>(display, nullptr, std::move(ui_config));
         ASSERT_TRUE(ui->start());
         auto parsed = hal::screen_shape_from_caps(display->info().caps);
         ASSERT_TRUE(parsed);
@@ -71,6 +83,14 @@ protected:
         cb.on_event = [this](scene::NodeId n, scene::UiEvent ev, Value v) {
             std::lock_guard<std::mutex> lock(mutex);
             events.push_back({n, ev, std::move(v)});
+        };
+        cb.on_list_range = [this](scene::NodeId list, uint32_t first, uint32_t count) {
+            std::lock_guard<std::mutex> lock(mutex);
+            ranges.push_back({list, first, count});
+        };
+        cb.on_warning = [this](scene::NodeId, std::string_view message) {
+            std::lock_guard<std::mutex> lock(mutex);
+            warnings.emplace_back(message);
         };
         on_ui([&] {
             layer = std::make_unique<ui::SystemLayer>(shape);
@@ -99,6 +119,16 @@ protected:
         return std::exchange(events, {});
     }
 
+    std::vector<RecordedRange> take_ranges() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return std::exchange(ranges, {});
+    }
+
+    std::vector<std::string> take_warnings() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return std::exchange(warnings, {});
+    }
+
     std::shared_ptr<FakeDisplay> display;
     std::unique_ptr<ui::UiRuntime> ui;
     std::unique_ptr<ui::SystemLayer> layer;
@@ -106,6 +136,8 @@ protected:
     hal::ScreenShape shape;
     std::mutex mutex;
     std::vector<RecordedEvent> events;
+    std::vector<RecordedRange> ranges;
+    std::vector<std::string> warnings;
 };
 
 }  // namespace wisp::test

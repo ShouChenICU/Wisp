@@ -175,7 +175,7 @@ TEST(Schema, TypeMismatchNamesExpectedType) {
                        "main.lua:1: ui.column: child 1 is not a widget (got table)");
     expect_build_error("return ui.screen{ ui.image{src = '../x.png'} }",
                        "main.lua:1: ui.image: property 'src' expects a path assets/<name>.png, "
-                       "got '../x.png'");
+                       ".jpg or .jpeg, got '../x.png'");
     expect_build_error("return ui.screen{ ui.icon{name = 'hom'} }",
                        "main.lua:1: ui.icon: property 'name' expects an icon name, got 'hom' "
                        "(did you mean 'home'?)");
@@ -278,7 +278,7 @@ return ui.screen{
     // An image only ever shows a file of its package's assets/.
     expect_build_error("return ui.screen{ ui.image{src = state('assets/a.png')} }",
                        "main.lua:1: ui.image: property 'src' expects a path assets/<name>.png, "
-                       "got state");
+                       ".jpg or .jpeg, got state");
     // The first value of a bound property is checked like a plain one, at
     // the line that built the node.
     expect_build_error("local f = state('huge')\n\nreturn ui.screen{\n ui.label{font = f} }",
@@ -582,6 +582,11 @@ TEST(Schema, RefScrollToEmitsScrollOp) {
     ui.scroll{ref = "s"},
 })");
     ASSERT_FALSE(err) << describe(err);
+    // The flush after the Build reads the list's items and sends its
+    // ListReset.
+    err = flush_reactive(*s.vm);
+    ASSERT_FALSE(err) << describe(err);
+    s.batch.clear();
 
     err = s.message("ui.ref('l'):scroll_to(5) ui.ref('s'):scroll_to(1)");
     ASSERT_FALSE(err) << describe(err);

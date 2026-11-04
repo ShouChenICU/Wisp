@@ -29,19 +29,23 @@ int hex_digit(char c) {
 
 }  // namespace
 
-lv_color_t theme_color(std::string_view token_or_hex) {
+uint32_t theme_rgb(std::string_view token_or_hex) {
     for (const auto& t : kTokens)
-        if (t.name == token_or_hex) return lv_color_hex(t.rgb);
+        if (t.name == token_or_hex) return t.rgb;
     if (token_or_hex.size() == 7 && token_or_hex[0] == '#') {
         uint32_t rgb = 0;
         for (size_t i = 1; i < 7; ++i) {
             int d = hex_digit(token_or_hex[i]);
-            if (d < 0) return lv_color_hex(kTextRgb);
+            if (d < 0) return kTextRgb;
             rgb = (rgb << 4) | static_cast<uint32_t>(d);
         }
-        return lv_color_hex(rgb);
+        return rgb;
     }
-    return lv_color_hex(kTextRgb);
+    return kTextRgb;
+}
+
+lv_color_t theme_color(std::string_view token_or_hex) {
+    return lv_color_hex(theme_rgb(token_or_hex));
 }
 
 const lv_font_t* theme_font(std::string_view size) {

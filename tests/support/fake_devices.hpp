@@ -59,6 +59,10 @@ public:
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
 
+    // Adds or replaces a cap (e.g. "rgb565_be"); only before a UiRuntime
+    // reads them in start().
+    void set_cap(const std::string& key, wisp::Value value) { info_.caps[key] = std::move(value); }
+
     wisp::Result<void> flush(const wisp::hal::Area& area, const uint16_t* /*rgb565*/) override {
         assert_owner_thread();
         std::lock_guard<std::mutex> lock(mutex_);

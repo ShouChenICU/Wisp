@@ -31,9 +31,10 @@ namespace wisp::scene {
 std::string_view prelude_source() {
     return R"lua(
 local emit, where, tcall = ...
-global<const> setmetatable, type, error, pairs, rawequal, table, math, string
+global<const> setmetatable, type, error, pairs, rawequal, rawget, rawlen, table, math, string
 
 local setmetatable, type, error, pairs, rawequal = setmetatable, type, error, pairs, rawequal
+local rawget, rawlen = rawget, rawlen
 local sort, concat, mtype, match = table.sort, table.concat, math.type, string.match
 
 local MAX_ROUNDS = 100
@@ -355,9 +356,118 @@ end
 
 function W.refresh_all()
     for e in pairs(live) do
-        if e.node ~= nil then schedule(e) end
+        if e.node ~= nil or e.redo then schedule(e) end
     end
     flush()
+end
+
+-- Widgets fed by tables (list, canvas, chart) -------------------------
+
+-- The widget effects of the tree collected last, and its lists:
+-- lists[id] = {items = the table shown, row = fn, rows = {[index] =
+-- {sc = scope, ids = {node ids}}}} with 0-based row indexes.
+local widgets = {}
+local lists = {}
+
+-- A widget effect: it first runs at the next flush, after the op that
+-- creates its widget is in the batch, and refresh_all() runs it again,
+-- since it may re-send ops a collapsed patch queue dropped.
+local function widget_effect(fn, sc)
+    next_id = next_id + 1
+    local e = {fn = fn, run = effect_run, id = next_id, s = {}, q = false, dead = false,
+               redo = true}
+    live[e] = true
+    widgets[e] = true
+    if sc ~= nil then
+        sc.n = sc.n + 1
+        sc.members[sc.n] = e
+    end
+    schedule(e)
+end
+
+-- The value a widget property holds now: a state, computed or bind is
+-- read (tracked), anything else is the value itself.
+local function current_value(v)
+    local src = source_rec(v)
+    if src ~= nil then return read(src) end
+    return v
+end
+
+local function drop_row(list, index, r)
+    local nodes, values = W.nodes, W.values
+    W.dispose(r.sc)
+    local ids = r.ids
+    for i = 1, #ids do
+        nodes[ids[i]] = nil
+        values[ids[i]] = nil
+    end
+    list.rows[index] = nil
+end
+
+local function drop_rows(list)
+    for index, r in pairs(list.rows) do drop_row(list, index, r) end
+end
+
+-- W.widget(id, kind, a, b [, scope]): starts the effect behind node id
+-- (collect_tree() calls it). list: a = items, b = row; canvas: a = draw;
+-- chart: a = series. The C functions it uses (list_reset, canvas_begin,
+-- canvas_end, set_series) are added to W by install_ui().
+function W.widget(id, kind, a, b, scope)
+    local sc = scope_rec(scope)
+    if kind == "list" then
+        local list = {row = b, rows = {}}
+        lists[id] = list
+        widget_effect(function()
+            local items = current_value(a)
+            W.list_reset(id, items)
+            drop_rows(list)
+            list.items = items
+        end, sc)
+    elseif kind == "canvas" then
+        widget_effect(function()
+            local g = W.canvas_begin(id)
+            a(g)
+            W.canvas_end(g)
+        end, sc)
+    elseif kind == "chart" then
+        widget_effect(function() W.set_series(id, current_value(a)) end, sc)
+    end
+end
+
+-- Stops the widget effects and drops the lists of the tree collected
+-- last (collect_tree() calls it before collecting a new one).
+function W.reset_widgets()
+    for e in pairs(widgets) do dispose_effect(e) end
+    widgets = {}
+    for _, list in pairs(lists) do drop_rows(list) end
+    lists = {}
+end
+
+-- W.build_rows(id, first, count, collect_row): makes rows [first,
+-- first + count) of list id exist and drops the others (0-based). Each
+-- new row is row(item, index) (1-based) in a scope of its own, handed to
+-- collect_row(index, node, scope, ids), which collects it and fills ids.
+-- An unknown list, or one whose items have not been read yet, has no
+-- rows to build.
+function W.build_rows(id, first, count, collect_row)
+    local list = lists[id]
+    if list == nil or list.items == nil then return end
+    local items = list.items
+    local n = rawlen(items)
+    local last = first + count
+    if last > n then last = n end
+    for index, r in pairs(list.rows) do
+        if index < first or index >= last then drop_row(list, index, r) end
+    end
+    for index = first, last - 1 do
+        if list.rows[index] == nil then
+            local sc = W.scope()
+            local ids = {}
+            local node = list.row(rawget(items, index + 1), index + 1)
+            list.rows[index] = {sc = sc, ids = ids}
+            collect_row(index, node, sc, ids)
+        end
+    end
 end
 
 function W.kind(v)

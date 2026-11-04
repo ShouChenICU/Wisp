@@ -246,6 +246,18 @@ wisp_test(NAME patch_queue_test SRCS scene/patch_queue_test.cpp LIBS wisp_scene 
           TIMEOUT 30)
 wisp_test(NAME scene_view_test SRCS scene/scene_view_test.cpp LIBS wisp_scene wisp_port_sim_os
           TIMEOUT 30)
+# list_window.hpp and widget_data.hpp are private to wisp_scene.
+wisp_test(NAME list_window_test SRCS scene/list_window_test.cpp LIBS wisp_scene)
+wisp_test(NAME scene_view_list_test SRCS scene/scene_view_list_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME canvas_test SRCS scene/canvas_test.cpp LIBS wisp_scene wisp_port_sim_os TIMEOUT 30)
+# The simulator's JPEG decoder comes from wisp_port_sim_ui, the platform
+# side of the image-decoder hook (ui::UiConfig::install_image_decoders).
+wisp_test(NAME scene_view_media_test SRCS scene/scene_view_media_test.cpp
+          LIBS wisp_scene wisp_port_sim_os wisp_port_sim_ui TIMEOUT 30)
+foreach(t list_window_test scene_view_list_test canvas_test)
+    target_include_directories(${t} PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
+endforeach()
 # DocIsUpToDate compares docs/scene-api.md with the schema and writes the
 # expected text into the build directory when they differ.
 target_compile_definitions(schema_test PRIVATE WISP_ROOT="${WISP_ROOT}"

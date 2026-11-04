@@ -244,6 +244,37 @@ std::optional<ScriptError> install_ui(Vm& vm);
 // after an error anyway (spec 3.3).
 std::optional<ScriptError> collect_tree(Vm& vm, int index, NodeId& next_id, Build& out);
 
+// Scene task: answers SceneView's on_list_range(list, first, count) for
+// a list of the tree collected last. Makes rows [first, first + count)
+// (0-based, cut at the length of the items the list shows) exist and
+// drops every other row of that list: its scope is disposed and its nodes
+// leave the internal nodes and values tables, so an event that arrives
+// for one later finds no handler and is dropped. Each new row is
+// row(item, index) (index 1-based), collected like a tree whose root is
+// that node (any widget but ui.screen and ui.list, and no `ref` in it),
+// with ids from next_id on and its watches in the row's scope; the rows
+// go to the PatchBatch as ListRows, one per run of consecutive rows. A
+// list that is not in the tree, or whose items have not been read yet (the
+// flush after the Build reads them), builds nothing. Runs under
+// Vm::call() as a message of its own (Budget::Fresh); the caller flushes
+// afterwards as after any message. Errors as collect_tree(), positioned at
+// the row's constructor (or at the list for a row() that returns no
+// widget).
+//
+// Widgets fed by tables: collect_tree() starts an effect for every list,
+// canvas and chart, which first runs at the next flush (after the Build is
+// in the batch) and again whenever what it read changes, and also on
+// __wisp.refresh_all() (the patch queue may have dropped what it sent):
+//   list    reads items (checked like a constructor's value), sends
+//           ListReset{list, #items} and drops every row.
+//   canvas  runs draw(g); g:line, g:circle, g:arc, g:rect, g:fill and
+//           g:text record at most 512 commands (a 513th raises "canvas:
+//           more than 512 draw commands"), sent as one CanvasDraw.
+//   chart   reads series (checked like a constructor's value) and sends
+//           it as SetProp{chart, series, <encoded points>}.
+std::optional<ScriptError> build_list_rows(Vm& vm, NodeId list, uint32_t first, uint32_t count,
+                                           NodeId& next_id);
+
 // Pushes the value a node of the tree collected last holds for `prop`
 // (a handler, row, draw, items, series, or any other property as the
 // scene gave it), or nil, and returns whether it was there. For the scene
