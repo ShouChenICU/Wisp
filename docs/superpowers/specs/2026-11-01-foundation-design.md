@@ -434,7 +434,8 @@ bus.publish(event);                  // 异步：入队后由分发任务派发
 
 - **只有 UI 任务可以调用 LVGL**；其他任务通过 `UiRuntime::post(fn)` 投递；
 - `wisp_ui` 基于 `hal::Display` 和 `hal::Touch` 实现 LVGL 的显示驱动和输入驱动，因此不依赖 esp_lvgl_port，两个目标共用；
-- 像素格式 RGB565；显示缓冲区按 `Mem::Dma`/`Mem::Large` 分配，采用局部刷新，只用一块缓冲（`Display::flush()` 等传输完成才返回，第二块缓冲没法与传输重叠，只会白占内部 RAM，见 `docs/hardware/waveshare_amoled_216.md` 的"内部 RAM"一节），缓冲区大小在真机上根据帧率调优；
+- 像素格式 RGB565，字节序按 Display caps 的 `rgb565_be`：面板要高字节在前时 LVGL 直接按这个顺序渲染（`LV_COLOR_FORMAT_RGB565_SWAPPED`），不再逐段交换字节；
+- 局部刷新，两块各 `buffer_lines` 行的缓冲，按 `Mem::Dma` 分配：flush 回调用 `Display::flush_async()` 启动传输后立即返回，LVGL 接着往另一块缓冲渲染，需要复用某块缓冲前经 flush-wait 回调调用 `Display::wait_flush()`。两块缓冲的总量与内部 RAM 预算挂钩（AGENTS.md 第 5 节），行数在真机上按帧率和预算一起调优（见 `docs/hardware/waveshare_amoled_216.md` 的"性能基准"）；
 - LVGL tick 由 `wisp_os` 时钟提供。
 
 ### 6.5 日志

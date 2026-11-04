@@ -52,9 +52,22 @@ void prune_frame_times(std::deque<uint64_t>& samples, uint64_t now) {
     }
 }
 
-void prune_duration_samples(std::deque<std::pair<uint64_t, uint32_t>>& samples, uint64_t now) {
+// One frame's worth of flushes. Kept per frame rather than per stripe: a
+// frame is a dozen or more stripes, and these deques live in internal RAM.
+struct FlushSample {
+    uint64_t ts_ms = 0;  // when the latest stripe was sent
+    uint64_t total_us = 0;
+    uint32_t stripes = 0;
+    bool open = true;  // the frame's last stripe has not been sent yet
+};
+
+uint64_t sample_ts(const std::pair<uint64_t, uint32_t>& sample) { return sample.first; }
+uint64_t sample_ts(const FlushSample& sample) { return sample.ts_ms; }
+
+template <typename Sample>
+void prune_duration_samples(std::deque<Sample>& samples, uint64_t now) {
     uint64_t cutoff = now > kPerfWindowMs ? now - kPerfWindowMs : 0;
-    while (!samples.empty() && samples.front().first < cutoff) {
+    while (!samples.empty() && sample_ts(samples.front()) < cutoff) {
         samples.pop_front();
     }
 }
@@ -111,12 +124,9 @@ struct UiRuntime::Impl {
     int height = 0;
     int area_align = 1;
 
-    // One partial draw buffer, not two: Display::flush() blocks until the
-    // transfer is done, so LVGL could never render into a second buffer
-    // while the first is on the wire. A second one would only cost DMA
-    // -capable internal RAM (46 KB at 480 x 48 RGB565), which the boards'
-    // network tasks need (AGENTS.md section 5).
-    void* buf = nullptr;
+    // Two partial draw buffers: LVGL renders into one while
+    // Display::flush_async() sends the other (spec 6.4).
+    void* buf[2] = {nullptr, nullptr};
 
     lv_display_t* lv_disp = nullptr;
     lv_indev_t* lv_indev = nullptr;
@@ -147,18 +157,21 @@ struct UiRuntime::Impl {
     // --- perf (protected by perf_mutex) ---
     mutable os::Mutex perf_mutex;
     uint32_t frames_total = 0;
-    std::deque<uint64_t> frame_times;                         // ms timestamps
-    std::deque<std::pair<uint64_t, uint32_t>> flush_samples;  // (ts_ms, duration_ms)
-    std::deque<std::pair<uint64_t, uint32_t>> busy_samples;   // (ts_ms, duration_ms)
+    std::deque<uint64_t> frame_times;  // ms timestamps
+    std::deque<FlushSample> flush_samples;
+    std::deque<std::pair<uint64_t, uint32_t>> busy_samples;  // (ts_ms, duration_ms)
 
     void ui_main();
     void drain_post_queue();
     void record_busy(uint32_t duration_ms);
-    void record_flush(uint32_t duration_ms);
+    void record_flush(uint32_t duration_us);
+    void add_flush_wait(uint32_t duration_us);
+    void free_buffers();
     void record_frame();
     Result<std::vector<uint8_t>> take_snapshot();
 
     static void flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map);
+    static void flush_wait_cb(lv_display_t* disp);
     static void invalidate_area_cb(lv_event_t* e);
     static void indev_read_cb(lv_indev_t* indev, lv_indev_data_t* data);
 };
@@ -252,17 +265,42 @@ void UiRuntime::Impl::record_busy(uint32_t duration_ms) {
     prune_duration_samples(busy_samples, now);
 }
 
-void UiRuntime::Impl::record_flush(uint32_t duration_ms) {
+void UiRuntime::Impl::record_flush(uint32_t duration_us) {
     uint64_t now = os::now_ms();
     std::lock_guard<os::Mutex> lock(perf_mutex);
-    flush_samples.emplace_back(now, duration_ms);
+    if (flush_samples.empty() || !flush_samples.back().open) {
+        flush_samples.emplace_back();
+    }
+    FlushSample& frame = flush_samples.back();
+    frame.ts_ms = now;
+    frame.total_us += duration_us;
+    ++frame.stripes;
     prune_duration_samples(flush_samples, now);
+}
+
+// The wait belongs to the transfer started by the previous flush_cb(),
+// whose frame is the newest sample.
+void UiRuntime::Impl::add_flush_wait(uint32_t duration_us) {
+    std::lock_guard<os::Mutex> lock(perf_mutex);
+    if (!flush_samples.empty()) {
+        flush_samples.back().total_us += duration_us;
+    }
+}
+
+void UiRuntime::Impl::free_buffers() {
+    for (void*& b : buf) {
+        os::dealloc(b);
+        b = nullptr;
+    }
 }
 
 void UiRuntime::Impl::record_frame() {
     uint64_t now = os::now_ms();
     std::lock_guard<os::Mutex> lock(perf_mutex);
     ++frames_total;
+    if (!flush_samples.empty()) {
+        flush_samples.back().open = false;
+    }
     frame_times.push_back(now);
     prune_frame_times(frame_times, now);
 }
@@ -323,20 +361,29 @@ Result<std::vector<uint8_t>> UiRuntime::Impl::take_snapshot() {
     return Result<std::vector<uint8_t>>::ok(std::move(out));
 }
 
+// Starts the transfer and returns without lv_display_flush_ready(): LVGL
+// keeps rendering into the other buffer and calls flush_wait_cb() before it
+// needs this one again or hands over the next stripe. A failed flush_async()
+// sent nothing, so its wait_flush() returns at once.
 void UiRuntime::Impl::flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
     auto* impl = static_cast<Impl*>(lv_display_get_user_data(disp));
     hal::Area hal_area{area->x1, area->y1, area->x2, area->y2};
 
-    uint64_t t0 = os::now_ms();
-    impl->display->flush(hal_area, reinterpret_cast<const uint16_t*>(px_map));
-    uint64_t t1 = os::now_ms();
-    impl->record_flush(static_cast<uint32_t>(t1 - t0));
-
-    lv_display_flush_ready(disp);
+    uint64_t t0 = os::now_us();
+    impl->display->flush_async(hal_area, reinterpret_cast<const uint16_t*>(px_map));
+    impl->record_flush(static_cast<uint32_t>(os::now_us() - t0));
 
     if (lv_display_flush_is_last(disp)) {
         impl->record_frame();
     }
+}
+
+// LVGL marks the buffer free itself once this returns.
+void UiRuntime::Impl::flush_wait_cb(lv_display_t* disp) {
+    auto* impl = static_cast<Impl*>(lv_display_get_user_data(disp));
+    uint64_t t0 = os::now_us();
+    impl->display->wait_flush();
+    impl->add_flush_wait(static_cast<uint32_t>(os::now_us() - t0));
 }
 
 void UiRuntime::Impl::invalidate_area_cb(lv_event_t* e) {
@@ -401,15 +448,21 @@ Result<void> UiRuntime::start() {
     impl_->width = cap_int(caps, "width", 0);
     impl_->height = cap_int(caps, "height", 0);
     impl_->area_align = cap_int(caps, "area_align", 1);
+    auto be_it = caps.find("rgb565_be");
+    const bool rgb565_be = be_it != caps.end() && be_it->second.as_bool();
     if (impl_->width <= 0 || impl_->height <= 0) {
         return Result<void>::err(ErrorCode::InvalidArgument,
                                  "display caps missing a usable width/height");
     }
 
     size_t buf_bytes = static_cast<size_t>(impl_->width) * impl_->config.buffer_lines * 2;
-    impl_->buf = os::alloc(buf_bytes, os::Mem::Dma);
-    if (impl_->buf == nullptr) {
-        return Result<void>::err(ErrorCode::NoMemory, "failed to allocate the LVGL draw buffer");
+    for (void*& b : impl_->buf) {
+        b = os::alloc(buf_bytes, os::Mem::Dma);
+        if (b == nullptr) {
+            impl_->free_buffers();
+            return Result<void>::err(ErrorCode::NoMemory,
+                                     "failed to allocate the LVGL draw buffers");
+        }
     }
 
     lv_init();
@@ -433,8 +486,7 @@ Result<void> UiRuntime::start() {
         lv_deinit();
         impl_->lv_disp = nullptr;
         impl_->lv_indev = nullptr;
-        os::dealloc(impl_->buf);
-        impl_->buf = nullptr;
+        impl_->free_buffers();
         return Result<void>::err(code, message);
     };
 
@@ -443,9 +495,14 @@ Result<void> UiRuntime::start() {
         return fail_after_lv_init(ErrorCode::NoMemory, "lv_display_create failed");
     }
     lv_display_set_user_data(impl_->lv_disp, impl_.get());
-    lv_display_set_buffers(impl_->lv_disp, impl_->buf, nullptr, static_cast<uint32_t>(buf_bytes),
-                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+    // Rendering straight into the panel's byte order costs nothing; swapping
+    // each stripe afterwards would cost CPU time on every frame.
+    lv_display_set_color_format(
+        impl_->lv_disp, rgb565_be ? LV_COLOR_FORMAT_RGB565_SWAPPED : LV_COLOR_FORMAT_RGB565);
+    lv_display_set_buffers(impl_->lv_disp, impl_->buf[0], impl_->buf[1],
+                           static_cast<uint32_t>(buf_bytes), LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(impl_->lv_disp, &Impl::flush_cb);
+    lv_display_set_flush_wait_cb(impl_->lv_disp, &Impl::flush_wait_cb);
     lv_display_add_event_cb(impl_->lv_disp, &Impl::invalidate_area_cb, LV_EVENT_INVALIDATE_AREA,
                             impl_.get());
     lv_display_set_default(impl_->lv_disp);
@@ -542,15 +599,14 @@ void UiRuntime::stop() {
     impl_->display->set_owner_thread_check(nullptr);
 
     // The UI task has fully exited: no further lv_* call is in flight, so
-    // tearing LVGL down now is safe.
+    // tearing LVGL down now is safe. The last stripe may still be on the
+    // wire, so wait for it before freeing its buffer.
+    impl_->display->wait_flush();
     lv_deinit();
     impl_->lv_disp = nullptr;
     impl_->lv_indev = nullptr;
 
-    if (impl_->buf != nullptr) {
-        os::dealloc(impl_->buf);
-        impl_->buf = nullptr;
-    }
+    impl_->free_buffers();
 }
 
 bool UiRuntime::post(std::function<void()> fn) { return impl_->post_queue.push(std::move(fn), 0); }
@@ -650,13 +706,14 @@ UiPerf UiRuntime::perf() const {
     cpu = std::max(0.0f, std::min(100.0f, cpu));
     p.cpu_percent = static_cast<uint8_t>(cpu + 0.5f);
 
-    if (!impl_->flush_samples.empty()) {
-        uint32_t flush_total_ms = 0;
-        for (const auto& sample : impl_->flush_samples) {
-            flush_total_ms += sample.second;
-        }
-        p.avg_flush_ms =
-            static_cast<float>(flush_total_ms) / static_cast<float>(impl_->flush_samples.size());
+    uint64_t flush_total_us = 0;
+    uint32_t stripes = 0;
+    for (const auto& sample : impl_->flush_samples) {
+        flush_total_us += sample.total_us;
+        stripes += sample.stripes;
+    }
+    if (stripes > 0) {
+        p.avg_flush_ms = static_cast<float>(flush_total_us) / 1000.0f / static_cast<float>(stripes);
     }
 
     return p;

@@ -53,7 +53,7 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 
 | 类别 | 必填 caps |
 |---|---|
-| `Display` | `width`、`height`、`shape`（`rect`/`rounded_rect`/`circle`）、`corner_radius`（`rounded_rect` 时）、`panel`、`brightness`、`area_align` |
+| `Display` | `width`、`height`、`shape`（`rect`/`rounded_rect`/`circle`）、`corner_radius`（`rounded_rect` 时）、`panel`、`brightness`、`area_align`；可选 `rgb565_be`（面板要 RGB565 高字节在前时为 true，UI 直接按这个字节序渲染） |
 | `Touch` | `max_points` |
 | `Imu` | `accel`、`gyro`、`magnetometer`、`max_rate_hz` |
 | `Power` | `battery`、`charging_status` |

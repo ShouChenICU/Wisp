@@ -24,7 +24,10 @@ struct Area {
 // a ScreenShape/safe area), "corner_radius" (int), "panel" (string),
 // "brightness" (bool, true if set_brightness() is supported),
 // "area_align" (int, flush()'s required alignment -- see
-// wisp::ui::align_area()).
+// wisp::ui::align_area()), "rgb565_be" (bool, optional, default false:
+// true if flush() takes each RGB565 pixel high byte first in memory,
+// i.e. already in the panel's wire order, so the caller renders in that
+// order and nobody spends CPU swapping bytes).
 //
 // spec 5.3: every call on a Display must come from the UI thread (the
 // one running UiRuntime's render loop) -- concurrent access from another
@@ -42,10 +45,22 @@ public:
     static constexpr DeviceClass kClass = DeviceClass::Display;
 
     // Writes `rgb565` (area.x2 - area.x1 + 1) * (area.y2 - area.y1 + 1)
-    // pixels, row-major, into `area`. Blocks until the transfer has
-    // completed (the caller may reuse/free the buffer as soon as this
-    // returns).
+    // pixels, row-major, into `area`, in the byte order caps "rgb565_be"
+    // declares. Blocks until the transfer has completed (the caller may
+    // reuse/free the buffer as soon as this returns).
     virtual Result<void> flush(const Area& area, const uint16_t* rgb565) = 0;
+
+    // Like flush(), but may return while the transfer is still running,
+    // so the caller can render the next part of the frame meanwhile. The
+    // caller must leave `rgb565` untouched and call wait_flush() before
+    // reusing it and before the next flush()/flush_async(). The defaults
+    // are for displays whose flush() is cheap or has nothing to wait for:
+    // flush_async() is flush(), and wait_flush() has nothing to wait for.
+    virtual Result<void> flush_async(const Area& area, const uint16_t* rgb565) {
+        return flush(area, rgb565);
+    }
+    virtual Result<void> wait_flush() { return Result<void>::ok(); }
+
     virtual Result<void> set_brightness(uint8_t level) = 0;
     virtual Result<void> set_power(bool on) = 0;
     virtual bool powered() const = 0;

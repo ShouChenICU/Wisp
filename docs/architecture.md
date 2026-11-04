@@ -100,7 +100,7 @@
   {"fps": number, "cpu": int, "flush_ms": number, "frames": int,
    "heap_internal_free": int, "heap_large_free": int}
   ```
-  `fps`/`flush_ms` 来自 `ui::UiRuntime::perf()`，本质是浮点数，但 JSON 往返时整数值会被识别为 `Int` 而非 `Double`（`Value`/JSON 对 Int/Double 的区分按实际值而非来源类型，见 `tests/base/value_json_test.cpp`）；解析方不应假设其中任何一个字段固定是哪一种 JSON 数字形式。`heap_internal_free`/`heap_large_free` 来自 `Platform::heap_info`（可能为空，此时都是 0）。
+  `fps`/`flush_ms` 来自 `ui::UiRuntime::perf()`；`flush_ms` 是 UI 任务每段（一块局部缓冲）花在屏幕上的平均毫秒数，即启动传输加上之后等它传完，传输与渲染重叠时远小于传输本身。两者本质是浮点数，但 JSON 往返时整数值会被识别为 `Int` 而非 `Double`（`Value`/JSON 对 Int/Double 的区分按实际值而非来源类型，见 `tests/base/value_json_test.cpp`）；解析方不应假设其中任何一个字段固定是哪一种 JSON 数字形式。`heap_internal_free`/`heap_large_free` 来自 `Platform::heap_info`（可能为空，此时都是 0）。
 
 - **`WISP_HTTP <json>`**（网络步骤；`NetWiring::reconcile_http()`）：管理后台 HTTP 服务每次启动成功时一行，`{"port": int}`，是 `HttpServer::port()` 报告的实际端口。可能出现在 `WISP_BOOT_REPORT` 之前（`http_always_on` 时开机即启动）。模拟器 `--http-port 0` 时不启动服务，也就没有这一行；需要后台的冒烟测试自己挑一个空闲端口传进去（`admin_smoke.py` 在端口被抢走、日志出现 `admin server failed to start` 时换端口重试）。
 - **`WISP_REBOOT`**（仅模拟器，无 JSON）：`Platform::reboot` 被调用（例如 `POST /api/v1/system/reboot`，或恢复出厂设置完成、固件更新确认后）时输出，随后主循环返回，经正常的 `App::stop()` 以退出码 0 结束进程（不在定时器线程里直接 `exit()`，以免静态析构与其他线程竞争）。真机对应 `esp_restart()`。

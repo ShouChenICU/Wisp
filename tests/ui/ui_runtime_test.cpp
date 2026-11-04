@@ -4,7 +4,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <memory>
+#include <mutex>
+#include <set>
+#include <string>
 
 #include "lvgl_private.h"
 #include "support/fake_devices.hpp"
@@ -415,29 +419,220 @@ TEST(UiRuntime, PerfIsZeroedWhilePaused) {
     ui.stop();
 }
 
-// Display::flush() blocks until the transfer is done, so LVGL can never
-// render into a second partial buffer while the first is on the wire:
-// UiRuntime keeps exactly one, buffer_lines tall. On the ESP32-S3 board a
-// second 480 x 48 RGB565 buffer is 46 KB of internal DMA RAM that the
-// admin httpd's stack needs (docs/hardware/waveshare_amoled_216.md).
-TEST(UiRuntime, UsesOneDrawBufferBecauseFlushIsSynchronous) {
-    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+namespace {
+
+// A display whose transfers run in the background, like a DMA-fed panel:
+// flush_async() only takes note of the buffer and wait_flush() finishes
+// it. It checks the protocol UiRuntime must follow: never two transfers at
+// once, and nothing writes into a buffer while it is on the wire (a
+// checksum taken at flush_async() must still match at wait_flush()).
+class AsyncFakeDisplay : public wisp::hal::Display {
+public:
+    AsyncFakeDisplay(int width, int height, bool rgb565_be) {
+        info_.id = "display.main";
+        info_.cls = kClass;
+        info_.model = "FAKE";
+        info_.caps = wisp::Properties{
+            {"width", width},         {"height", height},
+            {"area_align", 2},        {"shape", wisp::Value("rect")},
+            {"rgb565_be", rgb565_be},
+        };
+    }
+
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+
+    wisp::Result<void> flush(const wisp::hal::Area& area, const uint16_t* px) override {
+        auto r = flush_async(area, px);
+        if (!r) return r;
+        return wait_flush();
+    }
+
+    wisp::Result<void> flush_async(const wisp::hal::Area& area, const uint16_t* px) override {
+        assert_owner_thread();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (in_flight_ != nullptr) ++violations_;
+        in_flight_ = px;
+        in_flight_bytes_ = static_cast<size_t>(area.x2 - area.x1 + 1) * (area.y2 - area.y1 + 1) * 2;
+        in_flight_sum_ = checksum(px, in_flight_bytes_);
+        buffers_.insert(px);
+        if (first_bytes_.empty()) {
+            const auto* b = reinterpret_cast<const uint8_t*>(px);
+            first_bytes_.assign(b, b + 2);
+        }
+        ++async_flushes_;
+        return wisp::Result<void>::ok();
+    }
+
+    wisp::Result<void> wait_flush() override {
+        if (wait_ms_ > 0) wisp::os::sleep_ms(wait_ms_);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (in_flight_ != nullptr && checksum(in_flight_, in_flight_bytes_) != in_flight_sum_) {
+            ++violations_;
+        }
+        in_flight_ = nullptr;
+        return wisp::Result<void>::ok();
+    }
+
+    wisp::Result<void> set_brightness(uint8_t) override { return wisp::Result<void>::ok(); }
+    wisp::Result<void> set_power(bool) override { return wisp::Result<void>::ok(); }
+    bool powered() const override { return true; }
+
+    int violations() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return violations_;
+    }
+    size_t async_flushes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return async_flushes_;
+    }
+    size_t distinct_buffers() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return buffers_.size();
+    }
+    bool in_flight() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return in_flight_ != nullptr;
+    }
+    // Every wait_flush() takes this long, as if each stripe were still on
+    // the wire. Set before UiRuntime::start().
+    void set_wait_ms(uint32_t ms) { wait_ms_ = ms; }
+    void reset_first_bytes() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        first_bytes_.clear();
+    }
+    std::vector<uint8_t> first_bytes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return first_bytes_;
+    }
+
+private:
+    static uint64_t checksum(const uint16_t* px, size_t bytes) {
+        const auto* b = reinterpret_cast<const uint8_t*>(px);
+        uint64_t h = 1469598103934665603ull;
+        for (size_t i = 0; i < bytes; ++i) h = (h ^ b[i]) * 1099511628211ull;
+        return h;
+    }
+
+    wisp::hal::DeviceInfo info_;
+    mutable std::mutex mutex_;
+    const uint16_t* in_flight_ = nullptr;
+    size_t in_flight_bytes_ = 0;
+    uint64_t in_flight_sum_ = 0;
+    std::set<const uint16_t*> buffers_;
+    std::vector<uint8_t> first_bytes_;
+    int violations_ = 0;
+    size_t async_flushes_ = 0;
+    uint32_t wait_ms_ = 0;
+};
+
+}  // namespace
+
+// Two partial buffers: LVGL renders into one while the other is on the
+// wire. A moving, text-filled screen split into many stripes exercises
+// the hand-over between them.
+TEST(UiRuntime, RendersIntoOneBufferWhileTheOtherIsOnTheWire) {
+    auto disp = std::make_shared<AsyncFakeDisplay>(480, 480, false);
     wisp::ui::UiConfig config;
+    config.buffer_lines = 16;
     wisp::ui::UiRuntime ui(disp, nullptr, config);
     ASSERT_TRUE(ui.start());
 
     wisp::os::Semaphore done(1, 0);
-    bool has_second = true;
+    bool has_second = false;
     uint32_t first_bytes = 0;
+    uint32_t second_bytes = 0;
     ASSERT_TRUE(ui.post([&] {
         lv_display_t* d = lv_display_get_default();
         has_second = d->buf_2 != nullptr;
         first_bytes = d->buf_1 != nullptr ? d->buf_1->data_size : 0;
+        second_bytes = d->buf_2 != nullptr ? d->buf_2->data_size : 0;
+        lv_obj_t* col = lv_obj_create(lv_screen_active());
+        lv_obj_set_size(col, 480, 480);
+        lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+        for (int i = 0; i < 40; ++i) {
+            lv_label_set_text(lv_label_create(col), "Wisp 你好 0123456789 abcdefghijklmnop");
+        }
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, col);
+        lv_anim_set_values(&a, 0, 400);
+        lv_anim_set_duration(&a, 300);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_exec_cb(&a, [](void* v, int32_t y) {
+            lv_obj_scroll_to_y(static_cast<lv_obj_t*>(v), y, LV_ANIM_OFF);
+        });
+        lv_anim_start(&a);
         done.give();
     }));
     ASSERT_TRUE(done.take(5000));
-    EXPECT_FALSE(has_second);
+    EXPECT_TRUE(has_second);
     EXPECT_EQ(first_bytes, 480u * config.buffer_lines * 2u);
+    EXPECT_EQ(second_bytes, 480u * config.buffer_lines * 2u);
+
+    ASSERT_TRUE(wait_until([&] { return disp->async_flushes() > 200; }, 10000));
+    EXPECT_EQ(disp->distinct_buffers(), 2u);
+    EXPECT_EQ(disp->violations(), 0);
 
     ui.stop();
+    // stop() waits for the last transfer before freeing the buffers.
+    EXPECT_FALSE(disp->in_flight());
+}
+
+// avg_flush_ms is per stripe, not per frame: 30 stripes of 16 lines, each
+// waited on for 2 ms, average about 2 ms however many make up a frame.
+TEST(UiRuntime, AverageFlushTimeIsPerStripe) {
+    auto disp = std::make_shared<AsyncFakeDisplay>(480, 480, false);
+    disp->set_wait_ms(2);
+    wisp::ui::UiConfig config;
+    config.buffer_lines = 16;
+    wisp::ui::UiRuntime ui(disp, nullptr, config);
+    ASSERT_TRUE(ui.start());
+
+    ASSERT_TRUE(ui.post([] {
+        lv_obj_t* scr = lv_screen_active();
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, scr);
+        lv_anim_set_values(&a, 0, 255);
+        lv_anim_set_duration(&a, 300);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_exec_cb(&a, [](void* v, int32_t c) {
+            lv_obj_set_style_bg_color(static_cast<lv_obj_t*>(v),
+                                      lv_color_make(static_cast<uint8_t>(c), 0, 0), 0);
+        });
+        lv_anim_start(&a);
+    }));
+    ASSERT_TRUE(wait_until([&] { return ui.perf().fps >= 2.0f; }, 5000));
+    wisp::ui::UiPerf p = ui.perf();
+    EXPECT_GE(p.avg_flush_ms, 1.5f);
+    EXPECT_LT(p.avg_flush_ms, 10.0f);
+
+    ui.stop();
+}
+
+// caps "rgb565_be": LVGL renders straight into the panel's byte order, so
+// pure red (0xF800) reaches flush() as F8 00 instead of the native 00 F8.
+TEST(UiRuntime, RendersInTheDisplaysByteOrder) {
+    for (bool be : {false, true}) {
+        auto disp = std::make_shared<AsyncFakeDisplay>(480, 480, be);
+        wisp::ui::UiRuntime ui(disp, nullptr);
+        ASSERT_TRUE(ui.start());
+
+        wisp::os::Semaphore done(1, 0);
+        ASSERT_TRUE(ui.post([&] {
+            lv_obj_t* scr = lv_screen_active();
+            lv_obj_set_style_bg_color(scr, lv_color_hex(0xFF0000), 0);
+            lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+            // Flushes before this point showed the theme's background.
+            disp->reset_first_bytes();
+            done.give();
+        }));
+        ASSERT_TRUE(done.take(5000));
+        ASSERT_TRUE(wait_until([&] { return disp->first_bytes().size() == 2; }, 5000));
+        std::vector<uint8_t> expected =
+            be ? std::vector<uint8_t>{0xF8, 0x00} : std::vector<uint8_t>{0x00, 0xF8};
+        EXPECT_EQ(disp->first_bytes(), expected) << "rgb565_be=" << be;
+
+        ui.stop();
+    }
 }

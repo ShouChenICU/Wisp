@@ -27,11 +27,11 @@
 namespace wisp::ui {
 
 struct UiConfig {
-    // Height (in pixels) of the single partial draw buffer, which is
-    // width * buffer_lines * 2 bytes (RGB565), allocated via
-    // os::alloc(..., Mem::Dma). One buffer because Display::flush() is
-    // synchronous (see ui_runtime.cpp).
-    uint32_t buffer_lines = 48;
+    // Height (in pixels) of each of the two partial draw buffers, which
+    // are width * buffer_lines * 2 bytes (RGB565) each, allocated via
+    // os::alloc(..., Mem::Dma). LVGL renders into one while the display
+    // sends the other (Display::flush_async()).
+    uint32_t buffer_lines = 24;
     uint32_t task_stack = 8192;
     int task_priority = 4;
 };
@@ -40,7 +40,9 @@ struct UiConfig {
 // and `avg_flush_ms` are all computed over a rolling ~1s window (see
 // UiRuntime::perf()); `frames` is the odd one out -- a lifetime total
 // (not windowed): lv_display_flush_is_last() became true this many times
-// since start().
+// since start(). `avg_flush_ms` is how long the UI task spends on the
+// display per stripe: starting the transfer (Display::flush_async()) plus
+// waiting for it (Display::wait_flush()) when LVGL needs the buffer back.
 struct UiPerf {
     float fps = 0;
     uint8_t cpu_percent = 0;
@@ -73,7 +75,8 @@ public:
     UiRuntime& operator=(const UiRuntime&) = delete;
 
     // Calls lv_init(), creates the LVGL display (resolution taken from
-    // `display`'s caps) with one buffer_lines-tall partial draw buffer,
+    // `display`'s caps) with two buffer_lines-tall partial draw buffers
+    // in the byte order of caps "rgb565_be",
     // installs default_font() as the theme font, registers the
     // LV_EVENT_INVALIDATE_AREA handler that aligns flush areas to the
     // display's caps "area_align" (default 1, i.e. unaligned), wires up
@@ -82,14 +85,15 @@ public:
     // already started (LVGL 9.5 has only one global instance under
     // LV_USE_OS == LV_OS_NONE); fails with InvalidArgument if `display`'s
     // caps don't carry a usable width/height; fails with NoMemory if the
-    // draw buffer, the LVGL display, or (when `touch` is non-null) the
+    // draw buffers, the LVGL display, or (when `touch` is non-null) the
     // LVGL input device can't be allocated.
     Result<void> start();
 
     // Stops the UI task -- after it finishes draining any in-flight
-    // post()'d work and the current lv_timer_handler() call -- then calls
-    // lv_deinit() and frees the draw buffer. Idempotent; safe to call
-    // even if start() was never called or failed. Calling it from the UI
+    // post()'d work and the current lv_timer_handler() call -- then waits
+    // for the display's last transfer, calls lv_deinit() and frees the
+    // draw buffers. Idempotent; safe to call even if start() was never
+    // called or failed. Calling it from the UI
     // task itself (e.g. from inside a post()'d function) would deadlock on
     // self-join, so that case is detected instead: it logs via WLOG_E and
     // returns immediately without stopping anything.
