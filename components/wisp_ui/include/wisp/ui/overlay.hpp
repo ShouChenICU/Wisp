@@ -36,4 +36,9 @@ namespace wisp::ui {
 // no-op.
 void mark_opaque_overlay(lv_obj_t* obj);
 
+// Tells the marked overlays of `disp` that the panel may no longer show
+// them (a stripe failed to reach it): nothing is cut out of the areas
+// invalidated before the next frame draws them again.
+void forget_drawn_overlays(lv_display_t* disp);
+
 }  // namespace wisp::ui

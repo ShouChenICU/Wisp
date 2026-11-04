@@ -248,6 +248,12 @@ bool has_handler(lv_display_t* disp) {
 
 }  // namespace
 
+void forget_drawn_overlays(lv_display_t* disp) {
+    for (Overlay& o : overlays()) {
+        if (lv_obj_get_display(o.obj) == disp) o.covered = false;
+    }
+}
+
 void mark_opaque_overlay(lv_obj_t* obj) {
     if (obj == nullptr || marked(obj)) return;
     lv_display_t* disp = lv_obj_get_display(obj);

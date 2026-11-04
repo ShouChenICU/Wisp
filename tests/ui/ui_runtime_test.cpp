@@ -450,7 +450,15 @@ public:
     wisp::Result<void> flush_async(const wisp::hal::Area& area, const uint16_t* px) override {
         assert_owner_thread();
         std::lock_guard<std::mutex> lock(mutex_);
+        if (fail_next_ > 0) {
+            // Like a panel transfer that could not be queued: nothing
+            // is in flight afterwards.
+            --fail_next_;
+            failed_.push_back(area);
+            return wisp::Result<void>::err(wisp::ErrorCode::DeviceFailure, "fake flush failure");
+        }
         if (in_flight_ != nullptr) ++violations_;
+        sent_.push_back(area);
         in_flight_ = px;
         in_flight_bytes_ = static_cast<size_t>(area.x2 - area.x1 + 1) * (area.y2 - area.y1 + 1) * 2;
         in_flight_sum_ = checksum(px, in_flight_bytes_);
@@ -493,6 +501,19 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         return in_flight_ != nullptr;
     }
+    // The next `n` flush_async() calls fail and send nothing.
+    void fail_next_flushes(int n) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        fail_next_ = n;
+    }
+    std::vector<wisp::hal::Area> failed() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return failed_;
+    }
+    std::vector<wisp::hal::Area> sent() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return sent_;
+    }
     // Every wait_flush() takes this long, as if each stripe were still on
     // the wire. Set before UiRuntime::start().
     void set_wait_ms(uint32_t ms) { wait_ms_ = ms; }
@@ -516,6 +537,9 @@ private:
     wisp::hal::DeviceInfo info_;
     mutable std::mutex mutex_;
     const uint16_t* in_flight_ = nullptr;
+    int fail_next_ = 0;
+    std::vector<wisp::hal::Area> failed_;
+    std::vector<wisp::hal::Area> sent_;
     size_t in_flight_bytes_ = 0;
     uint64_t in_flight_sum_ = 0;
     std::set<const uint16_t*> buffers_;
@@ -635,4 +659,37 @@ TEST(UiRuntime, RendersInTheDisplaysByteOrder) {
 
         ui.stop();
     }
+}
+
+// A stripe the display failed to send is not left stale on the panel: it
+// is invalidated again and sent on a later refresh.
+TEST(UiRuntime, AStripeThatFailedToSendIsDrawnAgain) {
+    auto disp = std::make_shared<AsyncFakeDisplay>(480, 480, false);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+
+    wisp::os::Semaphore done(1, 0);
+    ASSERT_TRUE(ui.post([&] {
+        lv_refr_now(nullptr);  // whatever start() left dirty
+        disp->fail_next_flushes(1);
+        lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(0x00FF00), 0);
+        done.give();
+    }));
+    ASSERT_TRUE(done.take(5000));
+    ASSERT_TRUE(wait_until([&] { return !disp->failed().empty(); }, 5000));
+    const wisp::hal::Area lost = disp->failed().front();
+    const size_t sent_before = disp->sent().size();
+    EXPECT_TRUE(wait_until(
+        [&] {
+            const auto sent = disp->sent();
+            for (size_t i = sent_before; i < sent.size(); ++i) {
+                const auto& a = sent[i];
+                if (a.x1 <= lost.x1 && a.y1 <= lost.y1 && a.x2 >= lost.x2 && a.y2 >= lost.y2) {
+                    return true;
+                }
+            }
+            return false;
+        },
+        2000));
+    ui.stop();
 }

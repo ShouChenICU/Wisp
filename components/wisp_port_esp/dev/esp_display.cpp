@@ -140,8 +140,11 @@ Result<void> EspDisplay::flush_async(const wisp::hal::Area& area, const uint16_t
         esp_lcd_panel_draw_bitmap(panel_, area.x1, area.y1, area.x2 + 1, area.y2 + 1, rgb565);
     if (err != ESP_OK) {
         // No pending_: a partially queued transfer never fires
-        // on_color_trans_done (it only fires for the last chunk), and the
-        // next panel IO call waits for whatever chunks were queued itself.
+        // on_color_trans_done (it only fires for the last chunk). The next
+        // panel IO call waits for whatever chunks were queued itself;
+        // drain_ makes wait_flush() do so too, before a caller frees the
+        // buffer.
+        drain_ = true;
         return Result<void>::err(ErrorCode::DeviceFailure,
                                  std::string("draw_bitmap: ") + esp_err_to_name(err));
     }
@@ -155,6 +158,17 @@ Result<void> EspDisplay::wait_flush() {
 }
 
 Result<void> EspDisplay::wait_pending_locked() {
+    if (drain_) {
+        // No command and no data: esp_lcd only waits for every queued
+        // transaction (the -1 command is documented as "none"), sending
+        // nothing to the panel.
+        drain_ = false;
+        esp_err_t err = esp_lcd_panel_io_tx_param(io_, -1, nullptr, 0);
+        if (err != ESP_OK) {
+            return Result<void>::err(ErrorCode::DeviceFailure,
+                                     std::string("drain: ") + esp_err_to_name(err));
+        }
+    }
     if (!pending_) {
         return Result<void>::ok();
     }

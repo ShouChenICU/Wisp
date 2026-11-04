@@ -181,7 +181,10 @@ private:
     // at once.
     mutable wisp::os::Mutex mutex_;
     bool pending_ = false;  // a transfer from flush_async() may still be in flight
-    bool powered_ = true;   // esp_board_manager turns the panel on during init
+    // A failed draw_bitmap may have queued part of its transfer, which
+    // fires no completion callback; see wait_pending_locked().
+    bool drain_ = false;
+    bool powered_ = true;  // esp_board_manager turns the panel on during init
 
     // The last level set_brightness() was called with, re-applied by a
     // successful set_power(true) (see set_power()'s doc comment). Unset
