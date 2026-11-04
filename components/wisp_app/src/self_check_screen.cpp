@@ -21,6 +21,7 @@
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
+#include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -38,6 +39,11 @@ constexpr uint32_t kUiRefreshMs = 100;
 // The reads are a few short lock-protected copies and an atomic.
 constexpr uint64_t kNetResyncMs = 1000;
 constexpr uint32_t kPerfReportMs = 5000;
+// How often the scene list is read again without a scene.state event, for
+// one the bus dropped. Each is a walk of the scene packages on the storage
+// worker, so far apart; a state change shows within one refresh anyway
+// (SceneSection::update_states()).
+constexpr uint64_t kSceneResyncMs = 30000;
 // Between the root column's safe-area padding and its content, and
 // between its children.
 constexpr int32_t kInnerPad = 8;
@@ -45,7 +51,7 @@ constexpr int32_t kSectionGap = 10;
 
 }  // namespace
 
-SelfCheck::SelfCheck(App& app, ui::SystemLayer& system)
+SelfCheck::SelfCheck(App& app, ui::SystemLayer& system, SceneWiring* scenes)
     : app_(app),
       ui_(app.ui()),
       system_(system),
@@ -66,6 +72,7 @@ SelfCheck::SelfCheck(App& app, ui::SystemLayer& system)
       pair_card_([this] {
           if (net::PairingService* pairing = app_.pairing()) pairing->cancel_code();
       }),
+      scenes_(scenes),
       sampler_(imu_, power_, clock_) {}
 
 SelfCheck::~SelfCheck() {
@@ -97,6 +104,10 @@ SelfCheck::~SelfCheck() {
     if (fw_sub_ != 0) {
         app_.bus().unsubscribe(fw_sub_);
         fw_sub_ = 0;
+    }
+    if (scene_sub_ != 0) {
+        app_.bus().unsubscribe(scene_sub_);
+        scene_sub_ = 0;
     }
 
     // Thread-agnostic: nothing the sampler touches requires the UI thread.
@@ -136,6 +147,7 @@ SelfCheck::~SelfCheck() {
         return;
     }
     ui_->run_blocking([this] {
+        *alive_ = false;
         close_confirm_dialog();
         close_reset_dialog();
         close_firmware_dialog();
@@ -163,6 +175,12 @@ void SelfCheck::build() {
     subscribe_power();
     subscribe_settings();
     subscribe_net();
+    // Every scene.state (installed, opened, closed, failed, deleted) lists
+    // the scenes again.
+    scene_sub_ =
+        app_.bus().subscribe("scene.state", [this](const core::Event&) { request_scene_list(); });
+    request_scene_list();
+    last_scene_list_ms_ = os::now_ms();
     // Anything the net services announced before the subscription above
     // (the build runs after networking has started).
     sync_wifi();
@@ -222,8 +240,8 @@ void SelfCheck::rebuild() {
 }
 
 void SelfCheck::build_widgets() {
-    lv_obj_t* screen = lv_screen_active();
-    lv_obj_t* col = lv_obj_create(screen);
+    if (screen_ == nullptr) screen_ = lv_screen_active();
+    lv_obj_t* col = lv_obj_create(screen_);
     root_ = col;
     // No theme styles at all: LVGL sets LV_STATE_SCROLLED on the column
     // when a scroll begins and clears it when it ends, and with the theme's
@@ -260,6 +278,13 @@ void SelfCheck::build_widgets() {
     build_devices(col);
     lv_obj_t* net_card = make_card(col, ui::StrId::SectionNetwork);
     net_section_.build(net_card, os::now_ms());
+    scenes_section_.build(
+        col,
+        [this](const std::string& id) {
+            scene::SceneRuntime* rt = app_.scenes();
+            return rt != nullptr ? rt->status(id) : core::SceneStatus{};
+        },
+        [this](const std::string& id) { open_scene(id); });
     sensors_.build(col, imu_ != nullptr);
     power_clock_.build(col, power_ != nullptr, clock_ != nullptr);
     storage_.build(col);
@@ -547,6 +572,10 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
         self->sync_reset();
         self->sync_firmware();
     }
+    if (now - self->last_scene_list_ms_ >= kSceneResyncMs) {
+        self->last_scene_list_ms_ = now;
+        self->request_scene_list();
+    }
     self->net_section_.tick(now);
     self->pair_card_.tick(now);
 }
@@ -559,6 +588,26 @@ void SelfCheck::refresh_ui() {
     power_clock_.update(snap);
     refresh_storage();
     perf_.update(ui_->perf());
+    scenes_section_.update_states();
+}
+
+void SelfCheck::request_scene_list() {
+    if (scenes_ == nullptr) return;
+    // The callback runs on the UI thread, where alive_ is also cleared.
+    scenes_->list_async([this, alive = alive_](std::vector<SceneEntry> entries) {
+        if (!*alive) return;
+        scenes_section_.set_entries(std::move(entries));
+    });
+}
+
+void SelfCheck::open_scene(const std::string& id) {
+    scene::SceneRuntime* rt = app_.scenes();
+    if (rt == nullptr) return;
+    // On the UI thread this only queues the open; the scene's screen comes
+    // up when it has loaded.
+    if (auto r = rt->open(id); !r) {
+        WLOG_W("self_check", "%s: not opened: %s", id.c_str(), r.error().message.c_str());
+    }
 }
 
 void SelfCheck::refresh_storage() {
@@ -579,8 +628,9 @@ void SelfCheck::refresh_storage() {
     }
 }
 
-void start_self_check(App& app, ui::SystemLayer& system, std::unique_ptr<SelfCheck>& slot) {
-    auto self_check = std::make_unique<SelfCheck>(app, system);
+void start_self_check(App& app, ui::SystemLayer& system, SceneWiring* scenes,
+                      std::unique_ptr<SelfCheck>& slot) {
+    auto self_check = std::make_unique<SelfCheck>(app, system, scenes);
     self_check->build();
     slot = std::move(self_check);
 }

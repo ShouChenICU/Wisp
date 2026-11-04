@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "app_impl.hpp"
@@ -20,6 +22,7 @@
 #include "wisp/hal/power.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/net/model_probe.hpp"
+#include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
@@ -99,6 +102,11 @@ Result<void> App::start() {
         "wisp.storage", kStorageRefreshMs, /*periodic=*/true, [this] { impl_->storage.refresh(); });
     impl_->storage_timer->start();
     impl_->buttons.start();
+    // Scenes: the storage worker, and the repository recovered on it,
+    // before anything can list or open a scene.
+    impl_->scenes =
+        std::make_unique<SceneWiring>(SceneWiringDeps{impl_->platform, impl_->bus, impl_->storage});
+    impl_->scenes->start_storage();
     if (auto r = impl_->models.init(); !r) {
         WLOG_W("app", "model profiles unavailable: %s", r.error().message.c_str());
     }
@@ -115,6 +123,7 @@ Result<void> App::start() {
     }
     auto display = impl_->registry.get<hal::Display>("display.main");
     std::shared_ptr<hal::Touch> touch;
+    hal::ScreenShape shape;
     if (display) {
         core::Settings display_settings(*impl_->platform.settings, "display");
         int64_t brightness = display_settings.get_int("brightness", 200);
@@ -132,7 +141,7 @@ Result<void> App::start() {
         } else {
             // Before anything that shows on the top layer (the self-check
             // screen and its dialogs, later the scenes).
-            const hal::ScreenShape shape = display_shape(*display);
+            shape = display_shape(*display);
             impl_->ui->run_blocking(
                 [&] { impl_->system_layer = std::make_unique<ui::SystemLayer>(shape); });
         }
@@ -184,6 +193,38 @@ Result<void> App::start() {
     firmware_deps.restart = [this] { restart_for_firmware(*this); };
     impl_->firmware = std::make_unique<core::FirmwareUpdateService>(std::move(firmware_deps));
 
+    // The scene runtime, built (not started) before networking so the
+    // admin routes can be handed it.
+    if (impl_->ui) {
+        App::Impl* impl = impl_.get();
+        // wisp.device.info(). Runs on the scene task, which must not touch
+        // flash: PowerMonitor's last sample (a copy under its lock) and the
+        // net task's Wi-Fi snapshot (an atomic), never a read of the power
+        // chip, Settings or a file. Both pointers are set before the
+        // runtime starts and reset only after it has stopped.
+        auto device_status = [impl] {
+            Value battery;
+            if (impl->power_monitor) {
+                if (auto st = impl->power_monitor->last_status()) {
+                    battery = Value(Map{{"percent", Value(st->battery_percent)},
+                                        {"charging", Value(st->charging)}});
+                }
+            }
+            std::optional<net::WifiState> wifi = impl->net ? impl->net->wifi_state() : std::nullopt;
+            return Value(Map{
+                {"battery", std::move(battery)},
+                {"wifi", Value(wifi ? net::to_string(*wifi) : "off")},
+            });
+        };
+        impl_->scenes->build_runtime(
+            *impl_->ui, *impl_->system_layer, shape, std::move(device_status), [impl] {
+                if (impl->power_manager && impl->power_manager->standby()) {
+                    impl->power_manager->exit_standby();
+                }
+            });
+    }
+    scene::SceneRuntime* scene_runtime = impl_->scenes->runtime();
+
     // Step 4b: networking (connectivity spec 4.1), before the self-check
     // screen so that screen can show the network state. Never waits for
     // Wi-Fi -- see net_wiring.hpp.
@@ -201,6 +242,15 @@ Result<void> App::start() {
         .request_factory_reset =
             impl_->ui ? std::function<void()>([this] { request_factory_reset(*this); }) : nullptr,
         .firmware = impl_->firmware.get(),
+        .scenes = impl_->scenes->repository(),
+        .scene_host = scene_runtime,
+        // Deleting needs the device's yes, so a screen.
+        .request_scene_delete = scene_runtime != nullptr
+                                    ? std::function<Result<void>(const std::string&, bool)>(
+                                          [this](const std::string& id, bool with_data) {
+                                              return impl_->scenes->request_delete(id, with_data);
+                                          })
+                                    : nullptr,
     });
     impl_->net->start();
 
@@ -217,7 +267,7 @@ Result<void> App::start() {
         // nothing left to tear it down afterwards.
         os::Semaphore done(1, 0);
         bool posted = impl_->ui->post([this, &done] {
-            start_self_check(*this, *impl_->system_layer, impl_->self_check);
+            start_self_check(*this, *impl_->system_layer, impl_->scenes.get(), impl_->self_check);
             done.give();
         });
         if (posted) {
@@ -225,6 +275,11 @@ Result<void> App::start() {
         } else {
             WLOG_E("app", "UI post queue full; self-check screen not built");
         }
+        // Only now: a scene's view remembers the screen it replaces and
+        // loads it again when it goes, so that must be the self-check
+        // screen.
+        App::Impl* impl = impl_.get();
+        impl_->scenes->start_runtime([impl] { return impl->power_manager->standby(); });
     }
 
     // boot_ms is recorded here -- right after Step 4, once the self-check
@@ -296,6 +351,9 @@ void App::stop() {
     // The console first: its commands reach the net services.
     stop_console(*this);
     join_loopback(*this);
+    // Before the self-check screen: closing the scene in front loads that
+    // screen again, and its final store flush goes to the worker.
+    if (impl_->scenes) impl_->scenes->stop_runtime();
     stop_self_check(impl_->self_check);
     // After the screen, which closes its dialogs through it.
     if (impl_->ui && impl_->system_layer) {
@@ -316,6 +374,13 @@ void App::stop() {
     }
     // Nothing streams into it any more.
     impl_->firmware.reset();
+    // Nothing calls into the scenes any more: the proxy, then the worker
+    // (drained, so the last scene's flush is on disk), before the
+    // storage-refresh timer below.
+    if (impl_->scenes) {
+        impl_->scenes->stop();
+        impl_->scenes.reset();
+    }
 
     // PowerManager is torn down next -- after the self-check screen
     // (which calls into it), before buttons/ui/bus (which it in turn
@@ -387,6 +452,10 @@ core::EventBus& App::bus() { return impl_->bus; }
 core::StorageManager& App::storage() { return impl_->storage; }
 core::ButtonService& App::buttons() { return impl_->buttons; }
 ui::UiRuntime* App::ui() { return impl_->ui.get(); }
+scene::SceneRuntime* App::scenes() { return impl_->scenes ? impl_->scenes->runtime() : nullptr; }
+core::SceneRepository* App::scene_repository() {
+    return impl_->scenes ? impl_->scenes->repository() : nullptr;
+}
 PowerManager* App::power_manager() { return impl_->power_manager.get(); }
 net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr; }
 net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }

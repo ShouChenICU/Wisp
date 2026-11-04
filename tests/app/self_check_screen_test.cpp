@@ -200,8 +200,8 @@ constexpr LangCase kLangCases[] = {
 const std::string kShapes[] = {"rect", "rounded_rect", "circle"};
 
 // The section cards' headings, top to bottom, in Chinese.
-const std::vector<std::string> kCardHeadings = {"设备", "网络",     "传感器", "电源与时钟",
-                                                "存储", "交互测试", "性能"};
+const std::vector<std::string> kCardHeadings = {"设备",       "网络", "场景",     "传感器",
+                                                "电源与时钟", "存储", "交互测试", "性能"};
 
 uint32_t rgb_of(lv_color_t c) {
     return (static_cast<uint32_t>(c.red) << 16) | (static_cast<uint32_t>(c.green) << 8) | c.blue;

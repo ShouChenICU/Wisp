@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "net_wiring.hpp"
+#include "scene_wiring.hpp"
 #include "self_check.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
@@ -93,6 +94,12 @@ struct App::Impl {
     // App::stop() right after the self-check screen and before
     // power_manager -- see net_wiring.hpp.
     std::unique_ptr<NetWiring> net;
+
+    // The storage worker, the scene repository and (with a screen) the
+    // scene runtime: built by App::start() right after storage, reset by
+    // App::stop() after networking and before the storage-refresh timer --
+    // see scene_wiring.hpp.
+    std::unique_ptr<SceneWiring> scenes;
 
     // The self-check screen's own teardown hook -- see
     // self_check.hpp. Constructed (via start_self_check(), posted onto

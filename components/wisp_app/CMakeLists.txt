@@ -1,5 +1,5 @@
 # wisp_app: boot orchestration (wisp::app::Board/Platform/App) over every
-# wisp_core service, plus the self-check UI hook (see
+# wisp_core service and the scene runtime, plus the self-check UI hook (see
 # wisp/app/app.hpp, src/self_check.hpp).
 #
 # Self-contained include -- see cmake/wisp_component.cmake's header
@@ -14,7 +14,7 @@ wisp_component(
          src/self_check_tests.cpp src/self_check_sampler.cpp src/loopback.cpp src/power_key_controller.cpp
          src/power_manager.cpp src/format.cpp src/net_wiring.cpp src/net_section.cpp
          src/net_cards.cpp src/factory_reset.cpp src/firmware_confirm.cpp src/console.cpp
-         src/ram_budget.cpp
+         src/ram_budget.cpp src/scene_wiring.cpp src/scene_section.cpp
     INCLUDE_DIRS include
-    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_admin wisp_ui
+    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_admin wisp_ui wisp_scene
 )

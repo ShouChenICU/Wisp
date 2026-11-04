@@ -52,13 +52,18 @@ struct UiNetOptions {
     // Platform::firmware (a FakeFirmwareUpdater for board "test_board").
     bool with_firmware = false;
     std::string firmware_version = "0.2.0";
+    // Registers a FakeTouch as "touch.main" (the back gesture needs one).
+    bool with_touch = false;
 };
 
 class UiNetBoard : public wisp::app::Board {
 public:
     UiNetBoard(std::string root, std::shared_ptr<FakeWifi> wifi,
-               std::shared_ptr<FakeDisplay> display)
-        : root_(std::move(root)), wifi_(std::move(wifi)), display_(std::move(display)) {}
+               std::shared_ptr<FakeDisplay> display, std::shared_ptr<FakeTouch> touch = nullptr)
+        : root_(std::move(root)),
+          wifi_(std::move(wifi)),
+          display_(std::move(display)),
+          touch_(std::move(touch)) {}
 
     std::string name() const override { return "fake-net-ui"; }
 
@@ -67,18 +72,21 @@ public:
         registry.add(std::make_shared<FakeButton>("button.power"));
         if (wifi_) registry.add(wifi_);
         if (display_) registry.add(display_);
+        if (touch_) registry.add(touch_);
     }
 
 private:
     std::string root_;
     std::shared_ptr<FakeWifi> wifi_;
     std::shared_ptr<FakeDisplay> display_;
+    std::shared_ptr<FakeTouch> touch_;
 };
 
 struct UiNetHarness {
     std::string root = temp_dir().string();
     std::shared_ptr<FakeWifi> wifi;
     std::shared_ptr<FakeDisplay> display;
+    std::shared_ptr<FakeTouch> touch;
     FakeHttpServer* server = nullptr;         // owned by the App's Platform
     FakeFirmwareUpdater* firmware = nullptr;  // likewise
     std::atomic<int> reboots{0};
@@ -103,6 +111,7 @@ struct UiNetHarness {
             display = std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/1,
                                                     opts.shape);
         }
+        if (opts.with_touch) touch = std::make_shared<FakeTouch>("touch.main");
         if (!opts.saved.empty()) {
             wisp::List nets;
             for (const auto& [ssid, pw] : opts.saved) {
@@ -116,7 +125,7 @@ struct UiNetHarness {
         }
 
         wisp::app::Platform platform;
-        platform.board = std::make_unique<UiNetBoard>(root, wifi, display);
+        platform.board = std::make_unique<UiNetBoard>(root, wifi, display, touch);
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path());
         if (!opts.lang.empty()) {

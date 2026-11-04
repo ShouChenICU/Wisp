@@ -38,19 +38,29 @@
 
 ## 启动流程
 
-真机（`firmware/main/main.cpp`）和模拟器（`simulator/main.cpp`）共用同一套 `wisp::app::App::start()`（`components/wisp_app/src/app.cpp`），区别只在各自提供的 `Platform`（日志 sink、设置后端、`emit_line`、`request_power_off`、`heap_info`、`set_standby`，以及子项目 2 新增的 `random`、`http_server`、`http_client`、`assets`、`http_port`（默认 8900）、`captive_server`、`http_always_on`、`reboot`、`read_line`、`firmware`（固件上传写入器 `core::FirmwareUpdater`，连接 spec 6.5；为空时不支持网页上传）、`firmware_version`，以及子项目 3a 新增的 `install_image_decoders`（经 `ui::UiConfig` 在 UI 任务上安装平台自己的 LVGL 图像解码器，目前是 `ui.image` 的 baseline JPEG：真机用 esp_new_jpeg，模拟器用 LVGL 自带的 TJpgDec；PNG 由 `lv_conf.h` 打开的 LodePNG 负责，两端相同））：
+真机（`firmware/main/main.cpp`）和模拟器（`simulator/main.cpp`）共用同一套 `wisp::app::App::start()`（`components/wisp_app/src/app.cpp`），区别只在各自提供的 `Platform`（日志 sink、设置后端、`emit_line`、`request_power_off`、`heap_info`、`set_standby`，以及子项目 2 新增的 `random`、`http_server`、`http_client`、`assets`、`http_port`（默认 8900）、`captive_server`、`http_always_on`、`reboot`、`read_line`、`firmware`（固件上传写入器 `core::FirmwareUpdater`，连接 spec 6.5；为空时不支持网页上传）、`firmware_version`，以及子项目 3a 新增的 `install_image_decoders`（经 `ui::UiConfig` 在 UI 任务上安装平台自己的 LVGL 图像解码器，目前是 `ui.image` 的 baseline JPEG：真机用 esp_new_jpeg，模拟器用 LVGL 自带的 TJpgDec；PNG 由 `lv_conf.h` 打开的 LodePNG 负责，两端相同）、`scenes_dir`（非空即开发模式：场景代码从这个目录读、只读）和 `scenes_data_dir`（开发模式下的场景数据根目录，为空时用 `<内置根>/scenes`））：
 
 1. **日志初始化**：`wisp::log::init()`，建立 32 KB 的内存环形缓冲（真机落在 PSRAM，模拟器为普通内存）。每条记录是 16 字节头（`ts`、`seq`、长度、级别）加 tag 和消息，按整条淘汰；读取时只在锁内拷贝原始字节，解码在锁外；再次以相同大小和内存类型调用 `init()` 会保留已有记录；`seq` 与 `ts` 在同一把锁里分配，sink 收到的 `LogRecord` 与缓冲区里的完全一致（连接 spec 6.2）。
 2. **板级初始化**：调用 `Platform::board->init()`（真机对应 `boards/<板>/board.cpp`，模拟器对应 `wisp::port::sim::SimBoard`），构造各设备并注册进 `DeviceRegistry`；`init()` 自己只记录非 `Ok` 的 `DeviceReport`（缺失/失败），`App::start()` 随后为注册表里没有报告过的设备补一条 `Ok`。
 3. **核心服务**：启动 `EventBus`，调用 `StorageManager::init()`（挂载失败时把启动报告的 `storage` 备注设为 `"readonly"`，降级继续而不中止），启动一个 2000 ms 周期的 `StorageManager::refresh()` 定时器，启动 `ButtonService`，加载模型配置（`core::ModelProfileService::init()`，读 System 区的 `secrets/models.json`；只有旧的 `secrets/llm.json` 时把它迁移成一份对话配置）。
+   **场景存储**（场景 spec 2.1/3，`components/wisp_app/src/scene_wiring.{hpp,cpp}`）：启动 `core::StorageWorker`（任务 `wisp.fs`），在 `<内置根>/scenes`（开发模式见上面的 `scenes_dir`）上构造 `core::SceneRepository`，并在 `wisp.fs` 上跑完 `recover()`（清理中断的安装）后才继续——此后任何列出或打开场景的操作都看到恢复后的状态。没有内置存储时没有场景，降级继续。
 4. **UI 与自检界面**：若 `display.main` 已注册，把 `display` 这个 Settings 命名空间的 `brightness`（默认 200）应用到它，基于它（和 `touch.main`，如果也在）启动 `UiRuntime`；否则在启动报告里记一条 `"mode": "headless"`。无论哪种情况都查找 `power.main` 设备、构造 `core::PowerMonitor` 并 `start()`它自己的采样定时器（spec 6.3/6.7，发布下表的 `power.charging.changed`/`power.battery.low`；缺少 `power.main` 时完全惰性），再构造 `PowerManager`（spec 6.7，持有指向 `PowerMonitor` 的非持有指针）并启动它的周期性闲置检查定时器；如果启动了 `UiRuntime`，再在其上构建自检界面（`self_check_screen.cpp`，spec 8 节），阻塞到它真正跑完一次。
+   **场景运行时**（场景 spec 3/6）：有 `UiRuntime` 且有仓库时，在 `SystemLayer` 之后、网络之前构造场景的 HTTP 代理 `net::SceneHttp`（有 `Platform::http_client` 时；它比运行时活得久，只在关机时停止）和 `scene::SceneRuntime`（先不启动），好让管理后台路由拿到它们（`AdminDeps` 的 `scenes`、`scene_host`、`request_scene_delete`）。`device_status`（`wisp.device.status()`）在场景任务上执行、不碰 flash：电量取 `PowerMonitor::last_status()`，Wi-Fi 状态取 `wisp.net` 任务每次循环写下的原子快照（`WifiService::status()` 的锁可能正被持有着写 flash，所以不在场景任务上调用它）。自检界面建好之后再启动代理和运行时（场景视图要替换的、关闭后要回到的正是这块屏），并订阅 `power.state`：待机时 `set_visible(false)`，唤醒时恢复（每次都读 `PowerManager::standby()`，不信事件里的值）。没有屏幕时没有运行时（headless）。
    **网络**（连接 spec 4.1，`components/wisp_app/src/net_wiring.{hpp,cpp}`，在 `PowerManager` 之后、自检界面之前）：有 `Platform::random` 时构造 `net::PairingService`；若 `net.wifi` 已注册，再构造 `net::WifiService` 并 `init()`（只读取已保存的网络并安排第一次尝试，不碰射频）。`WifiService::tick()` 与 `PairingService::tick()` 都在独立任务 `wisp.net` 里每 250 ms 跑一次——扫描可能阻塞约 3 s，不能放进共享的 `os::Timer` 分发任务，所以开机从不等待联网。`wisp.net` 任务每次循环把 `PowerManager::standby()` 交给 `WifiService::set_standby()`（`power.state` 只用来及时唤醒任务，事件丢了或迟到都不会弄错待机状态）。有 `Platform::http_server` 且有 `WifiService` 时构造 `admin::AdminServer`（含 `WsHub`；本次开机的标识 `boot_id` 在这里用 `Platform::random` 生成一次，见连接 spec 6.2）：STA 拿到 IP 或热点开启时由 `wisp.net` 任务启动 HTTP 服务、两者都断开时停止（接口状态每次循环都从 `WifiService::status()`/`ap_status()` 读取；`net.wifi.state`/`net.ap.state` 只用来及时唤醒任务，丢了事件也不会让服务停在错误状态）；`http_always_on`（模拟器）则开机即启动、断网也不停。另外，只要热点开着，`wisp.net` 任务就在 80 端口运行 `Platform::captive_server`（真机才有），处理函数是 `AdminServer::captive_handler()`：从热点接口来的任何请求都 `302`（其他接口返回 404）到 `http://<热点地址>:<http_port>/setup.html`，让手机的强制门户探测打开配网页；热点关闭时停止。启动失败记日志，并在接口仍然开着时退避重试（2 s 起翻倍，上限 60 s）。每次启动成功输出一行 `WISP_HTTP {"port": n}`。启动报告记录 `notes.net`。
    **固件上传服务**（连接 spec 6.5，在网络之前构造，因为后台路由要把上传流写进它）：`core::FirmwareUpdateService` 包着 `Platform::firmware`，没有 UI 时不设确认回调（上传在 `begin` 时就以 `unavailable` 拒绝，因为没有屏幕可以确认）；`wisp.net` 任务每次循环调用它的 `tick()`，未确认的镜像 2 分钟后丢弃。
 5. **收尾**：记录 `boot_ms`，依次输出 `"WISP_BOOT_REPORT <json>"`、`"WISP_MANIFEST <json>"`（通过 `Platform::emit_line`），再发布 `system.boot.completed` 事件。
 6. **串口控制台**：有 `Platform::read_line` 时启动 `wisp.console` 任务（见下文"串口控制台"）。
 7. **确认镜像可用**：`FirmwareUpdater::mark_valid()`。真机上新装的镜像在这一步之前崩溃或复位，引导程序都会回滚到旧镜像（`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`，见 `docs/porting-guide.md`"固件与分区"）；模拟器什么都不做。
 
-**停止顺序**（`App::stop()`）：串口控制台 → 自检界面 → 等待已确认的恢复出厂（`wisp.reset`）和固件安装（`wisp.fwup`）任务结束 → 网络（先 join `wisp.net` 任务，再停强制门户服务和 HTTP 服务——`SimHttpServer::stop()` 会在 join 连接线程时回调 `on_close`，所以调用时不持有任何锁——然后退订事件、销毁 `AdminServer`、`WifiService`、`PairingService`）→ 固件上传服务 → `PowerManager` → `PowerMonitor` → 存储定时器 → `ButtonService` → `UiRuntime` → `EventBus`。HTTP 处理函数会经 `SystemSettings` 调用 `PowerManager::set_brightness()`，所以网络必须先于 `PowerManager` 停止。
+**停止顺序**（`App::stop()`）：串口控制台 → 场景运行时（退订 `power.state`，关闭前台场景并在自检界面还在时把它装回屏幕）→ 自检界面 → 等待已确认的恢复出厂（`wisp.reset`）和固件安装（`wisp.fwup`）任务结束 → 网络（先 join `wisp.net` 任务，再停强制门户服务和 HTTP 服务——`SimHttpServer::stop()` 会在 join 连接线程时回调 `on_close`，所以调用时不持有任何锁——然后退订事件、销毁 `AdminServer`、`WifiService`、`PairingService`）→ 固件上传服务 → 场景代理 `SceneHttp`（可能要等一个进行中的请求）→ `StorageWorker`（最多等 5 s 把队列里的活——包括关闭的场景最后一次 flush——做完，再停）→ `PowerManager` → `PowerMonitor` → 存储定时器 → `ButtonService` → `UiRuntime` → `EventBus`。HTTP 处理函数会经 `SystemSettings` 调用 `PowerManager::set_brightness()`，所以网络必须先于 `PowerManager` 停止；后台路由会用场景仓库和运行时，所以网络也先于场景代理和 `StorageWorker` 停止，而 `StorageWorker` 要在存储定时器之前停。
+
+**场景相关的任务**（AGENTS.md 第 5 节：每个任务如实声明 `flash_access`，栈放哪里由端口决定）：
+
+| 任务 | 所有者 | 栈 | `flash_access` | 说明 |
+|---|---|---|---|---|
+| `wisp.scene` | `scene::SceneRuntime` | 128 KB（`SceneRuntimeConfig::stack_bytes`，Lua 解释器递归最深处要这么多） | `false`，真机放 PSRAM | 只跑 Lua 和场景消息；读写文件（`SceneStore` 的 flush、加载包）都交给 `wisp.fs`，`device_status` 也只读内存 |
+| `wisp.fs` | `core::StorageWorker` | 4096（`StorageWorkerConfig::stack_bytes`） | `true`，内部 RAM | 先进先出地替不能碰 flash 的任务做文件操作：仓库的 `recover`/`list`/`remove`、场景存储的加载与 flush、自检界面的场景列表 |
+| `wisp.shttp` | `net::SceneHttp` | 8192 | `false`，真机放 PSRAM | 场景 `wisp.http` 请求一次一个地经 `Platform::http_client` 发出；不读 Settings、不碰文件 |
 
 **失败处理**（spec 6.1）：设备初始化失败只记录、不注册，系统降级继续；`Display` 失败则不启动 UI，走 headless 路径；内置 Flash 挂载失败走只读降级。`WISP_BOOT_REPORT`、`WISP_MANIFEST`、`WISP_PERF` 都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）。
 
@@ -73,11 +83,14 @@
 | `net.ap.state` | `net::WifiService` | 配网热点开关时发布，`payload = {"active": bool, "ssid": string, "clients": int}`，不含热点密码 |
 | `net.pairing.code` | `net::PairingService` | 发出配对码时 `{"active": true, "expires_ms": int}`（`os::now_ms()` 时间基准下的截止时刻），失效时（过期、配对成功、改发新码前，或在设备的配对卡片上点"拒绝"即 `PairingService::cancel_code()`）`{"active": false, "expires_ms": 0}`；不含配对码 |
 | `net.pairing.failed` | `net::PairingService` | 配对码错误时 `{"attempts": int, "locked": bool}` |
+| `scene.state` | `scene::SceneRuntime`；删除时 `app::App`（`scene_wiring.cpp`） | 场景 spec 3.6，`Event::source` 为 `"scene"`，`payload = {"id": string, "state": "stopped"\|"running"\|"error"\|"deleted"}`。`deleted` 在设备上确认删除、文件删掉之后发布；自检界面的"场景"卡片收到任何 `scene.state` 都重新列一遍（另有 30 s 一次的兜底重列） |
 | `model.profiles` | `core::ModelProfileService` | 模型配置增删改或切换当前配置时发布，`Event::source` 为 `"models"`，`payload = {"active": {"llm": string, "asr": string, "tts": string}, "count": int}`（`active` 为各类当前配置 id，没有时为空串；不含任何 API Key） |
 
 `power.charging.changed`/`power.battery.low` 的字段名跟随 `wisp::hal::PowerStatus` 本身的成员名（`charging`/`usb_present`/`battery_percent`），不是 "vbus_present" 这个措辞——后者出自计划中驱动结构体 `axp2101_status_t` 的字段名（`drivers/axp2101/include/axp2101.h`），不是 spec 原文；spec 本身没有提到这个字段名，沿用 hal 已有的字段名更一致。
 
 事件总线本身（`wisp_core/event_bus.hpp`）：前缀订阅（空串匹配所有主题）、按发布顺序派发、单个分发任务、队列默认容量 64（满时丢弃最旧并计数，见 `dropped()`）、处理函数里可以安全地再 `publish`/`subscribe`/`unsubscribe`。
+
+管理后台 WebSocket 的 `events` 订阅（`admin::WsHub`，连接 spec 6.2）转发的主题前缀是 `net.`、`power.`、`scene.`、`storage.`、`system.`（`kForwardedPrefixes`）；`button.*` 和 `model.profiles` 不转发。
 
 ## 机器可读输出
 

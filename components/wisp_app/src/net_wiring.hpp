@@ -39,6 +39,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "wisp/admin/admin_server.hpp"
@@ -50,6 +51,8 @@
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/power_monitor.hpp"
+#include "wisp/core/scene_host.hpp"
+#include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/asset_pack.hpp"
@@ -79,6 +82,10 @@ struct NetWiringDeps {
     // The firmware upload's service (AdminDeps::firmware); ticked by the
     // "wisp.net" task so an unanswered update times out. Null: no upload.
     core::FirmwareUpdateService* firmware = nullptr;
+    // AdminDeps::scenes / scene_host / request_scene_delete (see there).
+    core::SceneRepository* scenes = nullptr;
+    core::SceneHost* scene_host = nullptr;
+    std::function<Result<void>(const std::string& id, bool with_data)> request_scene_delete;
 };
 
 class NetWiring {
@@ -107,6 +114,10 @@ public:
     bool flush_admin_ws(uint32_t timeout_ms);
 
     net::WifiService* wifi() const { return wifi_.get(); }
+    // The Wi-Fi state as of the "wisp.net" task's last tick (nullopt
+    // without a WifiService): one atomic load, never a lock, for readers
+    // that must not wait (the scene task's wisp.device.info()).
+    std::optional<net::WifiState> wifi_state() const;
     net::PairingService* pairing() const { return pairing_.get(); }
 
 private:
@@ -130,6 +141,8 @@ private:
     std::unique_ptr<admin::AdminServer> admin_;
 
     std::vector<core::SubscriptionId> subscriptions_;
+    // static_cast<int>(net::WifiState), or -1 without a WifiService.
+    std::atomic<int> wifi_state_{-1};
     std::atomic<bool> sta_up_{false};
     std::atomic<bool> ap_up_{false};
 

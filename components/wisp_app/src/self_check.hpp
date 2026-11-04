@@ -27,6 +27,7 @@ class UiRuntime;
 namespace wisp::app {
 
 class App;
+class SceneWiring;
 class SelfCheck;
 
 // Builds the self-check screen (spec 8's device list, IMU/power/RTC/
@@ -39,7 +40,9 @@ class SelfCheck;
 // SelfCheck's full definition) is done here, in the one TU where that's
 // available -- app.cpp only ever forward-declares SelfCheck. The screen
 // opens its confirm dialogs on `system`, which must outlive it.
-void start_self_check(App& app, ui::SystemLayer& system, std::unique_ptr<SelfCheck>& slot);
+// `scenes` (may be null) feeds the "场景" card and must outlive the screen.
+void start_self_check(App& app, ui::SystemLayer& system, SceneWiring* scenes,
+                      std::unique_ptr<SelfCheck>& slot);
 
 // Tears down everything `self_check` owns (see the class-level comment
 // above) and resets the pointer to null. A no-op if `self_check` is

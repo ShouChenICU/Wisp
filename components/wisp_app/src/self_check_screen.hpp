@@ -11,8 +11,13 @@
 // and the confirm dialogs) and the power key's actions. Each
 // section's widgets are a class of their own (self_check_header.hpp,
 // self_check_devices.hpp, self_check_sensors.hpp, self_check_readouts.hpp,
-// self_check_tests.hpp, net_section.hpp). Nothing outside wisp_app's own
-// sources includes this header.
+// self_check_tests.hpp, net_section.hpp, scene_section.hpp). Nothing outside
+// wisp_app's own sources includes this header.
+//
+// The screen is built once on the screen that is active then and stays on
+// it: while a scene is open (its own screen loaded over this one) the
+// screen keeps running hidden, and a rebuild (a language change) still
+// builds on this screen, never on the scene's.
 
 #include <atomic>
 #include <cstdint>
@@ -24,6 +29,8 @@
 #include "lvgl.h"
 #include "net_cards.hpp"
 #include "net_section.hpp"
+#include "scene_section.hpp"
+#include "scene_wiring.hpp"
 #include "self_check_devices.hpp"
 #include "self_check_header.hpp"
 #include "self_check_model.hpp"
@@ -52,7 +59,9 @@ class App;
 
 class SelfCheck {
 public:
-    SelfCheck(App& app, ui::SystemLayer& system);
+    // `scenes` (null: no "场景" rows, only the empty card) lists the
+    // installed scenes; it must outlive this screen.
+    SelfCheck(App& app, ui::SystemLayer& system, SceneWiring* scenes);
     ~SelfCheck();
 
     // Must be called once, from the UI thread, right after construction
@@ -143,6 +152,11 @@ private:
 
     void refresh_ui();
     void refresh_storage();
+    // Any thread: asks the storage worker for the scene list; the "场景"
+    // card takes it on the UI thread.
+    void request_scene_list();
+    // UI thread: a row was tapped.
+    void open_scene(const std::string& id);
 
     static void refresh_timer_cb(lv_timer_t* timer);
     // Answers to the three dialogs, called by the system layer after it
@@ -171,6 +185,8 @@ private:
     DeviceSection devices_;
     // connectivity spec 8.1.
     NetSection net_section_;
+    // scene-runtime-core spec 8.
+    SceneSection scenes_section_;
     SensorSection sensors_;
     PowerClockSection power_clock_;
     StorageSection storage_;
@@ -206,6 +222,15 @@ private:
     lv_obj_t* fw_box_ = nullptr;
     // os::now_ms() of the last periodic network resync (see kNetResyncMs).
     uint64_t last_net_resync_ms_ = 0;
+    // os::now_ms() of the last periodic scene list (see kSceneResyncMs).
+    uint64_t last_scene_list_ms_ = 0;
+
+    SceneWiring* scenes_;
+    // Cleared by the UI-thread teardown: a scene list still on its way to
+    // the UI thread then finds this screen gone. UI thread only.
+    std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
+    // The screen everything is built on (see the file header).
+    lv_obj_t* screen_ = nullptr;
 
     lv_timer_t* refresh_timer_ = nullptr;
     // The single root container build() creates everything else under.
@@ -229,6 +254,7 @@ private:
     core::SubscriptionId net_sub_ = 0;
     core::SubscriptionId reset_sub_ = 0;
     core::SubscriptionId fw_sub_ = 0;
+    core::SubscriptionId scene_sub_ = 0;
 };
 
 }  // namespace wisp::app

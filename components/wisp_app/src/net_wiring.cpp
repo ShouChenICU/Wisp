@@ -55,8 +55,9 @@ void NetWiring::start() {
         if (auto r = wifi_->init(now); !r) {
             WLOG_W(kTag, "wifi: %s", r.error().message.c_str());
         }
-        deps_.report.set_note(
-            "net", wifi_->status().state == net::WifiState::Connecting ? "connecting" : "off");
+        const net::WifiState state = wifi_->status().state;
+        wifi_state_.store(static_cast<int>(state));
+        deps_.report.set_note("net", state == net::WifiState::Connecting ? "connecting" : "off");
 
         // Only for a prompt reaction: run() reads the state itself, standby
         // from PowerManager, so a late event cannot flip it.
@@ -103,6 +104,9 @@ void NetWiring::start() {
             .reboot = platform.reboot,
             .request_factory_reset = deps_.request_factory_reset,
             .firmware = deps_.firmware,
+            .scenes = deps_.scenes,
+            .scene_host = deps_.scene_host,
+            .request_scene_delete = deps_.request_scene_delete,
         });
         reconcile_http(now);  // http_always_on serves from boot
     }
@@ -132,6 +136,7 @@ void NetWiring::stop() {
     subscriptions_.clear();
     sta_up_.store(false);
     ap_up_.store(false);
+    wifi_state_.store(-1);
     admin_.reset();
     wifi_.reset();
     pairing_.reset();
@@ -143,6 +148,12 @@ bool NetWiring::flush_admin_ws(uint32_t timeout_ms) {
     return admin_ ? admin_->flush_ws(timeout_ms) : true;
 }
 
+std::optional<net::WifiState> NetWiring::wifi_state() const {
+    const int state = wifi_state_.load();
+    if (state < 0) return std::nullopt;
+    return static_cast<net::WifiState>(state);
+}
+
 void NetWiring::run() {
     while (!stopping_.load()) {
         const uint64_t now = os::now_ms();
@@ -151,7 +162,9 @@ void NetWiring::run() {
                 wifi_->set_standby(deps_.power_manager->standby(), now);  // no-op if unchanged
             }
             wifi_->tick(now);
-            sta_up_.store(wifi_->status().state == net::WifiState::Connected);
+            const net::WifiState state = wifi_->status().state;
+            wifi_state_.store(static_cast<int>(state));
+            sta_up_.store(state == net::WifiState::Connected);
             ap_up_.store(wifi_->ap_status().active);
         }
         pairing_->tick(now);

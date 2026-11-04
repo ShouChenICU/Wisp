@@ -32,6 +32,13 @@
 //      is constructed before the self-check screen specifically because
 //      the screen's power-key handling calls into it (see
 //      src/self_check_screen.cpp).
+//   Scenes (scene-runtime-core spec; src/scene_wiring.hpp): right after
+//      storage, the "wisp.fs" StorageWorker starts and the scene repository
+//      recovers interrupted installs on it; with a screen, the scene
+//      runtime (and, given Platform::http_client, the scenes' HTTP proxy)
+//      is built before networking -- the admin routes reach it -- and
+//      started once the self-check screen is up, the screen a scene
+//      replaces and returns to.
 //   4b. Networking (connectivity spec 4.1; src/net_wiring.hpp): builds
 //      PairingService and -- when "net.wifi" is
 //      registered -- WifiService, whose tick() runs on a "wisp.net" task
@@ -86,8 +93,13 @@ class UiRuntime;
 namespace wisp::core {
 class ButtonService;
 class ModelProfileService;
+class SceneRepository;
 class SystemSettings;
 }  // namespace wisp::core
+
+namespace wisp::scene {
+class SceneRuntime;
+}
 
 namespace wisp::net {
 class WifiService;
@@ -208,6 +220,16 @@ struct Platform {
     // listed by `help` after the built-in ones. An entry named like a
     // built-in command is ignored.
     std::vector<ConsoleCommand> console_commands;
+
+    // Scenes (scene-runtime-core spec 6.2, 6.4). Empty: installed scenes
+    // live in <int>/scenes, code and data together. Set (the simulator's
+    // --scenes-dir): dev mode -- the code comes straight from this working
+    // directory, read-only (installs and deletes are refused), and the data
+    // goes to scenes_data_dir.
+    std::string scenes_dir;
+    // The data root in dev mode (the simulator passes <data-dir>/scenes);
+    // empty: <int>/scenes. Ignored without scenes_dir.
+    std::string scenes_data_dir;
 };
 
 class App {
@@ -227,11 +249,14 @@ public:
     // stop() first to run the sequence again.
     Result<void> start();
 
-    // Stops the serial console task, then the self-check screen, then
-    // networking -- the "wisp.net" task,
-    // then the HTTP server (whose handlers call into PowerManager and the
-    // net services), then the net services themselves -- and then (in
-    // reverse order) PowerManager, the storage-refresh timer, ButtonService,
+    // Stops the serial console task, then the scene runtime (closing the
+    // scene in front, whose last store flush goes to the worker), then the
+    // self-check screen, then networking -- the "wisp.net" task,
+    // then the HTTP server (whose handlers call into PowerManager, the
+    // net services and the scenes), then the net services themselves --
+    // then the scenes' HTTP proxy and the storage worker (drained), and
+    // then (in reverse order) PowerManager, the storage-refresh timer,
+    // ButtonService,
     // UiRuntime (if one was started) and EventBus. Idempotent, and safe
     // to call even if start() was never called or didn't succeed -- only
     // what was actually started is torn down. Stopping the UiRuntime
@@ -251,6 +276,14 @@ public:
 
     // nullptr in headless mode (no "display.main" device registered).
     ui::UiRuntime* ui();
+
+    // The scene runtime (scene-runtime-core spec 3): nullptr in headless
+    // mode, and before start() or after stop().
+    scene::SceneRuntime* scenes();
+    // The installed scene packages: nullptr without a usable internal
+    // storage root, and before start() or after stop(). Present in headless
+    // mode too (the admin API lists and deletes scenes without a screen).
+    core::SceneRepository* scene_repository();
 
     // Networking services (step 4b). wifi() is nullptr without a "net.wifi"
     // device; both are nullptr without Platform::random, and before start()
