@@ -9,6 +9,10 @@ is used.
 - Project: https://github.com/lvgl/lvgl
 - Version: 9.5.0 (fetched via CMake FetchContent, not vendored/forked)
 - License: MIT
+- Adapted code: `components/wisp_port_esp/lv_blend/lv_blend_mask_rgb565.h`
+  re-implements the mixing formula of `lv_color_16_16_mix()` and the
+  masked solid fill of `lv_draw_sw_blend_color_to_rgb565_swapped()`
+  (see `docs/references.md`)
 
 Copied verbatim from `build/sim/_deps/lvgl-src/LICENCE.txt` (fetched source
 tree; not committed to this repo):

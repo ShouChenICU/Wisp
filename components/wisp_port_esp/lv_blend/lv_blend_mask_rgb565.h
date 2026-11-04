@@ -9,6 +9,13 @@
 // one inlines the same arithmetic (results are bit-identical, which
 // tests/port_esp/lv_blend_mask_test.cpp checks against LVGL itself) and
 // skips or fills four uncovered or fully covered pixels at once.
+//
+// Adapted from LVGL 9.5.0 (https://github.com/lvgl/lvgl, MIT, Copyright
+// (c) 2025 LVGL Kft): the mixing formula of lv_color_16_16_mix()
+// (src/misc/lv_color.c) and the masked-fill case of
+// lv_draw_sw_blend_color_to_rgb565_swapped()
+// (src/draw/sw/blend/lv_draw_sw_blend_to_rgb565_swapped.c). See
+// docs/references.md and THIRD_PARTY_NOTICES.md.
 
 #pragma once
 
