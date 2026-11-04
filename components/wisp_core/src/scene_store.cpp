@@ -615,6 +615,9 @@ struct Collection {
 struct CollOverlay {
     IdOverlay records;
     int64_t next_id = 1;
+    // Bytes charged for the delete commit writes for the batch's highest
+    // new id when the batch deleted that record again (see commit_batch()).
+    int64_t marker = 0;
 };
 
 struct Index {
@@ -734,7 +737,10 @@ struct SceneStore::Impl {
     os::Mutex io_mu;
 
     bool loaded = false;
+    bool closed = false;
     Index ix;
+    // A timer callback is outstanding. Only on_timer() clears it, so there
+    // is never more than one timer (or retry) in flight.
     bool timer_armed = false;
     // The delay of the last retry after a failed flush; 0 after a success.
     uint32_t retry_ms = 0;
@@ -778,6 +784,12 @@ struct SceneStore::Impl {
             total += c.log.disk + c.log.pending.size();
         }
         return total;
+    }
+
+    // Writes are refused before load() and after close().
+    detail::ErrorProxy refuse_write() const {
+        return detail::ErrorProxy{
+            Error{ErrorCode::StorageUnavailable, closed ? "closed" : "not_loaded"}};
     }
 
     uint64_t pending_locked() const {
@@ -845,9 +857,10 @@ struct SceneStore::Impl {
     // A write inside a batch: recorded in `ov` over `base` (which may be
     // null for a collection the batch created). Every overlay entry stands
     // for the one line commit will write.
+    // `extra` is charged on top, for a high-water delete commit will write.
     template <class Ov, class Map, class K>
     Result<void> write_overlay_locked(Ov& ov, const Map* base, K key, size_t id_len,
-                                      std::optional<std::string_view> v) {
+                                      std::optional<std::string_view> v, int64_t extra = 0) {
         const typename Map::value_type::second_type* in_base = nullptr;
         if (base != nullptr) {
             auto b = base->find(key);
@@ -871,9 +884,9 @@ struct SceneStore::Impl {
         const int64_t line =
             drop ? 0 : static_cast<int64_t>(v ? put_len(id_len, v->size()) : del_len(id_len));
         const int64_t live = (v ? static_cast<int64_t>(put_len(id_len, v->size())) : 0) - base_live;
-        WISP_TRY(check_quota_locked(line - prev_line, live - prev_live));
-        ov_line_bytes += line - prev_line;
-        ov_live_delta += live - prev_live;
+        WISP_TRY(check_quota_locked(line - prev_line + extra, live - prev_live + extra));
+        ov_line_bytes += line - prev_line + extra;
+        ov_live_delta += live - prev_live + extra;
         if (drop) {
             if (o != ov.end()) {
                 ov.erase(o);
@@ -1291,8 +1304,6 @@ Result<void> check_collection(std::string_view name) {
     return Result<void>::ok();
 }
 
-Result<void> not_loaded() { return Result<void>::err(ErrorCode::StorageUnavailable, "not_loaded"); }
-
 }  // namespace
 
 Result<void> SceneStore::kv_set(std::string_view key, std::string_view json) {
@@ -1303,8 +1314,8 @@ Result<void> SceneStore::kv_set(std::string_view key, std::string_view json) {
     bool arm = false;
     {
         std::lock_guard<os::Mutex> lock(m.mu);
-        if (!m.loaded) {
-            return not_loaded();
+        if (!m.loaded || m.closed) {
+            return m.refuse_write();
         }
         if (m.batch_depth > 0) {
             return m.write_overlay_locked(m.kv_ov, &m.ix.kv, key, id.size(), json);
@@ -1326,8 +1337,8 @@ Result<void> SceneStore::kv_del(std::string_view key) {
     bool arm = false;
     {
         std::lock_guard<os::Mutex> lock(m.mu);
-        if (!m.loaded) {
-            return not_loaded();
+        if (!m.loaded || m.closed) {
+            return m.refuse_write();
         }
         if (m.batch_depth > 0) {
             return m.write_overlay_locked(m.kv_ov, &m.ix.kv, key, id.size(), std::nullopt);
@@ -1350,8 +1361,8 @@ Result<int64_t> SceneStore::insert(std::string_view coll, std::string_view json)
     int64_t id = 0;
     {
         std::lock_guard<os::Mutex> lock(m.mu);
-        if (!m.loaded) {
-            return Result<int64_t>::err(ErrorCode::StorageUnavailable, "not_loaded");
+        if (!m.loaded || m.closed) {
+            return m.refuse_write();
         }
         auto base = m.ix.colls.find(coll);
         const bool exists = base != m.ix.colls.end() || m.coll_ov.find(coll) != m.coll_ov.end();
@@ -1372,13 +1383,17 @@ Result<int64_t> SceneStore::insert(std::string_view coll, std::string_view json)
             if (id == std::numeric_limits<int64_t>::max()) {
                 return Result<int64_t>::err(ErrorCode::QuotaExceeded, "ids_exhausted");
             }
-            const uint64_t line = put_len(IdText(id).n, json.size());
-            WISP_TRY(m.check_quota_locked(static_cast<int64_t>(line), static_cast<int64_t>(line)));
+            // The new record becomes the highest id, so a high-water delete
+            // charged for an earlier one is no longer written.
+            const int64_t charge =
+                static_cast<int64_t>(put_len(IdText(id).n, json.size())) - o->marker;
+            WISP_TRY(m.check_quota_locked(charge, charge));
             CollOverlay& ov = m.overlay_of_locked(coll);
             ov.records.emplace(id, LString(json.data(), json.size()));
             ov.next_id = id + 1;
-            m.ov_line_bytes += static_cast<int64_t>(line);
-            m.ov_live_delta += static_cast<int64_t>(line);
+            ov.marker = 0;
+            m.ov_line_bytes += charge;
+            m.ov_live_delta += charge;
             return Result<int64_t>::ok(id);
         }
         id = base != m.ix.colls.end() ? base->second.next_id : 1;
@@ -1410,8 +1425,8 @@ Result<void> SceneStore::update(std::string_view coll, int64_t id, std::string_v
     bool arm = false;
     {
         std::lock_guard<os::Mutex> lock(m.mu);
-        if (!m.loaded) {
-            return not_loaded();
+        if (!m.loaded || m.closed) {
+            return m.refuse_write();
         }
         if (m.visible_locked(coll, id) == nullptr) {
             return Result<void>::err(ErrorCode::NotFound, "not_found");
@@ -1440,8 +1455,8 @@ Result<void> SceneStore::remove(std::string_view coll, int64_t id) {
     bool arm = false;
     {
         std::lock_guard<os::Mutex> lock(m.mu);
-        if (!m.loaded) {
-            return not_loaded();
+        if (!m.loaded || m.closed) {
+            return m.refuse_write();
         }
         if (m.visible_locked(coll, id) == nullptr) {
             return Result<void>::err(ErrorCode::NotFound, "not_found");
@@ -1449,8 +1464,15 @@ Result<void> SceneStore::remove(std::string_view coll, int64_t id) {
         auto base = m.ix.colls.find(coll);
         if (m.batch_depth > 0) {
             const IdMap* records = base != m.ix.colls.end() ? &base->second.records : nullptr;
-            return m.write_overlay_locked(m.overlay_of_locked(coll).records, records, id, text.n,
-                                          std::nullopt);
+            CollOverlay& o = m.overlay_of_locked(coll);
+            // Deleting the highest id the batch handed out leaves commit to
+            // write a high-water delete for it; charge that line now.
+            const int64_t base_next = base != m.ix.colls.end() ? base->second.next_id : 1;
+            const int64_t marker =
+                id == o.next_id - 1 && id >= base_next ? static_cast<int64_t>(del_len(text.n)) : 0;
+            WISP_TRY(m.write_overlay_locked(o.records, records, id, text.n, std::nullopt, marker));
+            o.marker += marker;
+            return Result<void>::ok();
         }
         Collection& c = base->second;
         auto r = m.write_base_locked(c.log, c.records, id, text.view(), std::nullopt);
@@ -1574,6 +1596,10 @@ Result<void> SceneStore::commit_batch() {
             m.clear_overlay_locked();
             return Result<void>::err(ErrorCode::InvalidArgument, "batch_aborted");
         }
+        if (m.closed) {
+            m.clear_overlay_locked();
+            return m.refuse_write();
+        }
         size_t lines = 0;
         for (auto& [key, v] : m.kv_ov) {
             std::optional<std::string_view> value;
@@ -1632,6 +1658,17 @@ void SceneStore::abort_batch() {
 }
 
 void SceneStore::flush(std::function<void(Result<void>)> done) {
+    bool closed = false;
+    {
+        std::lock_guard<os::Mutex> lock(impl_->mu);
+        closed = impl_->closed;
+    }
+    if (closed) {
+        if (done) {
+            done(Result<void>::err(ErrorCode::StorageUnavailable, "closed"));
+        }
+        return;
+    }
     auto self = shared_from_this();
     std::function<void(Result<void>)> on_done = done;
     if (!impl_->deps.submit_io([self, done = std::move(done)] { self->flush_job(done); })) {
@@ -1654,13 +1691,18 @@ void SceneStore::arm_timer(uint32_t delay_ms) {
     impl_->deps.schedule(delay_ms, [self] { self->on_timer(); });
 }
 
+void SceneStore::close() {
+    std::lock_guard<os::Mutex> lock(impl_->mu);
+    impl_->closed = true;
+}
+
 void SceneStore::schedule_retry() {
     Impl& m = *impl_;
     uint32_t delay = 0;
     {
         std::lock_guard<os::Mutex> lock(m.mu);
-        if (m.timer_armed) {
-            return;  // a write since the failure already armed one
+        if (m.closed || m.timer_armed) {
+            return;  // closed, or the timer in flight flushes anyway
         }
         delay = m.retry_ms == 0 ? m.limits.coalesce_ms
                                 : std::min<uint32_t>(m.retry_ms * 2, kMaxRetryMs);
@@ -1671,13 +1713,18 @@ void SceneStore::schedule_retry() {
 }
 
 void SceneStore::on_timer() {
+    {
+        std::lock_guard<os::Mutex> lock(impl_->mu);
+        if (impl_->closed) {
+            return;
+        }
+        // Writes from here on arm a new timer. Those before the job's
+        // snapshot are flushed by it and leave that timer nothing to do.
+        impl_->timer_armed = false;
+    }
     auto self = shared_from_this();
     if (!impl_->deps.submit_io([self] { self->flush_job({}); })) {
         WLOG_W(kTag, "%s: flush not queued", impl_->dir.c_str());
-        {
-            std::lock_guard<os::Mutex> lock(impl_->mu);
-            impl_->timer_armed = false;
-        }
         schedule_retry();
     }
 }
@@ -1690,10 +1737,9 @@ void SceneStore::flush_job(const std::function<void(Result<void>)>& done) {
         std::vector<FlushItem> items;
         bool batch = false;
         {
-            // A write after this point finds no armed timer and arms one;
-            // every write before it is in the snapshot.
+            // Every write before this point is in the snapshot. One after it
+            // either finds a timer still in flight or arms one.
             std::lock_guard<os::Mutex> lock(m.mu);
-            m.timer_armed = false;
             batch = m.take_snapshot_locked(items);
         }
         if (!items.empty()) {

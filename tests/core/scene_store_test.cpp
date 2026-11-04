@@ -983,3 +983,84 @@ TEST(SceneStore, FailedFlushRetriesWithBackoff) {
     EXPECT_TRUE(h.timers.empty());
     EXPECT_EQ(lines_of(h.dir() / "todos.log").size(), 1u);
 }
+
+TEST(SceneStore, ClosedStoreStopsRetrying) {
+    Harness h;
+    std::error_code ec;
+    fs::create_directories(h.dir() / "kv.log" / "x", ec);  // unwritable
+    auto s = h.open();
+    std::weak_ptr<SceneStore> weak = s;
+    ASSERT_TRUE(s->kv_set("a", "1"));
+    EXPECT_FALSE(Harness::flush_now(*s));  // the final flush fails
+    s->close();
+    EXPECT_EQ(s->kv_set("b", "2").error().code, ErrorCode::StorageUnavailable);
+    Result<void> after = Result<void>::ok();
+    s->flush([&](Result<void> r) { after = std::move(r); });
+    EXPECT_EQ(after.error().code, ErrorCode::StorageUnavailable);
+    s.reset();
+
+    // Storage recovers and the scene is reopened: the newer store's value
+    // must not be followed by the closed store's older line.
+    fs::remove_all(h.dir() / "kv.log", ec);
+    auto fresh = h.open();
+    ASSERT_TRUE(fresh->kv_set("a", "2"));
+    ASSERT_TRUE(Harness::flush_now(*fresh));
+    for (int i = 0; i < 5 && !h.timers.empty(); ++i) {
+        h.fire_timers();
+    }
+    EXPECT_TRUE(h.timers.empty());
+    EXPECT_TRUE(weak.expired());
+    auto lines = lines_of(h.dir() / "kv.log");
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_EQ(lines[0], R"({"op":"put","id":"a","v":2})");
+    EXPECT_FALSE(on_disk(h.dir() / "journal.json"));
+    auto again = h.open();
+    EXPECT_EQ(str(again->kv_get("a")), "2");
+}
+
+TEST(SceneStore, ExplicitFlushKeepsOneRetryChain) {
+    Harness h;
+    std::error_code ec;
+    fs::create_directories(h.dir() / "kv.log" / "x", ec);
+    auto s = h.open();
+    ASSERT_TRUE(s->kv_set("a", "1"));  // arms the coalescing timer
+    ASSERT_EQ(h.timers.size(), 1u);
+    EXPECT_FALSE(Harness::flush_now(*s));
+    EXPECT_EQ(h.timers.size(), 1u);  // the outstanding timer is the retry
+    h.fire_timers();
+    ASSERT_EQ(h.timers.size(), 1u);
+    EXPECT_EQ(h.timers[0].first, 300u);
+    EXPECT_FALSE(Harness::flush_now(*s));
+    EXPECT_EQ(h.timers.size(), 1u);
+    h.fire_timers();
+    ASSERT_EQ(h.timers.size(), 1u);
+    EXPECT_EQ(h.timers[0].first, 600u);
+
+    fs::remove_all(h.dir() / "kv.log", ec);
+    h.fire_timers();
+    EXPECT_TRUE(h.timers.empty());
+    EXPECT_EQ(lines_of(h.dir() / "kv.log").size(), 1u);
+}
+
+TEST(SceneStore, BatchIdMarkerCountsAgainstQuota) {
+    Harness h;
+    SceneStoreLimits limits;
+    limits.quota_bytes = 1000;
+    auto s = h.open(limits);
+    // A kv put line is 24 bytes + the quoted key + the value.
+    auto value = [](size_t line) { return "\"" + std::string(line - 28 - 2, 'v') + "\""; };
+    ASSERT_TRUE(s->kv_set("k0", value(500)));
+    s->begin_batch();
+    ASSERT_EQ(s->insert("todos", "{}").value(), 1);
+    ASSERT_TRUE(s->remove("todos", 1));  // commit writes {"op":"del","id":1}: 20 bytes
+    // 500 + 481 fits the quota, but not with the 20-byte line on top.
+    auto r = s->kv_set("k1", value(481));
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().message, "quota_exceeded");
+    ASSERT_TRUE(s->kv_set("k1", value(480)));
+    ASSERT_TRUE(s->commit_batch());
+    EXPECT_EQ(s->used_bytes(), 1000u);
+    ASSERT_TRUE(Harness::flush_now(*s));
+    EXPECT_EQ(s->used_bytes(),
+              fs::file_size(h.dir() / "kv.log") + fs::file_size(h.dir() / "todos.log"));
+}

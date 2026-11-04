@@ -26,7 +26,8 @@
 // load() replays a journal it finds (put/del of whole records is
 // idempotent), appends the replayed lines and deletes the journal. A
 // failed flush is retried after coalesce_ms, the delay doubling up to
-// 5 s, until one succeeds.
+// 5 s, until one succeeds or the store is closed. At most one timer or
+// retry is in flight at a time.
 // Instead of appending, a job rewrites a file with only its live records
 // (write_atomic) when its dead bytes exceed half its live bytes, or when
 // more than compact_append_bytes would have been appended since the last
@@ -36,8 +37,11 @@
 // across a reload.
 //
 // The flush job and the timer hold a shared_ptr to the store, so a flush
-// already scheduled or queued completes after the owner lets go -- the
-// close path calls flush() and drops the store.
+// already scheduled or queued completes after the owner lets go. The
+// scene host's exit path calls flush(), then close(), then drops the
+// store: close() stops the timers and retries, so a store whose final
+// flush failed cannot later append its older lines behind a newer store
+// opened on the same directory.
 //
 // Threads: the scene task reads and writes, the wisp.fs worker flushes.
 // One mutex guards the index and the pending buffers; it is never held
@@ -173,6 +177,15 @@ public:
     // worker after the job, or at once with ErrorCode::Busy if the job
     // could not be queued.
     void flush(std::function<void(Result<void>)> done = {});
+
+    // Stops the store for good: a timer or retry that fires afterwards
+    // does nothing, and writes and flush() fail with StorageUnavailable
+    // "closed". A flush job already queued still runs, so what was written
+    // before close() and taken by that job still reaches the disk. The
+    // scene host calls it after the final flush() when a scene exits; a
+    // store reopened on the same directory then owns it alone. Anything
+    // that final flush could not write is lost, and its `done` says so.
+    void close();
 
     // The total size of the logs once every pending line is written.
     uint64_t used_bytes() const;
