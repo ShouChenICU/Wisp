@@ -69,6 +69,28 @@
 // resolved, since resolving it would require knowing the filesystem's
 // current state.
 //
+// Append-only logs: append() is the one exception to "every persistent
+// write goes through write_atomic()", and the only way to extend a file in
+// place. Each call opens the file in append mode, writes, then fflush()es
+// and fsync()s before returning, so once append() succeeds its bytes are
+// durable. A power cut during a call can leave any prefix of that call's
+// data at the end of the file -- typically half a record. append() does no
+// framing: the caller writes self-delimiting records (e.g. one line each)
+// and must drop a trailing incomplete one when reading the file back.
+// Appending is not atomic the way write_atomic() is, so never append to a
+// file whose readers expect it to be all-or-nothing.
+//
+// The other primitives below (list_dir(), remove_tree(), rename(),
+// tree_size(), read_file_large()) share write_atomic()'s path rules:
+// lexical normalization, ".." rejected, and a last component ending in
+// ".tmp"/".new" rejected with ErrorCode::InvalidArgument. Mutating calls
+// on a path under an offline SD card fail with StorageUnavailable.
+//
+// Symlinks: list_dir() and remove_tree() never follow one (a link is
+// listed as EntryKind::Other and removed as itself). On the device neither
+// LittleFS nor FAT has symlinks and the libc has no lstat(), so there they
+// use stat(); see stat_nofollow() in the .cpp.
+//
 // Hot-plug: refresh() re-probes storage.sd's online() state. A
 // offline->online transition (re)creates <sd>/wisp/library and
 // <sd>/wisp/backup (logging a warning and leaving the card marked online
@@ -95,12 +117,14 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "wisp/base/result.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/hal/storage.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::core {
@@ -120,6 +144,14 @@ struct MediaStatus {
 
 struct StorageStatus {
     std::vector<MediaStatus> media;
+};
+
+enum class EntryKind { File, Dir, Other };
+
+struct DirEntry {
+    std::string name;
+    EntryKind kind = EntryKind::Other;
+    uint64_t size = 0;  // bytes for a File, 0 otherwise
 };
 
 class StorageManager {
@@ -206,6 +238,53 @@ public:
     // ErrorCode::IoError, with strerror(errno) folded into the message.
     Result<std::vector<uint8_t>> read_file(const std::string& path);
 
+    // Same as read_file(), but the contents land in an os::LargeBuffer
+    // (Mem::Large, PSRAM on the device) instead of a std::vector, which
+    // would land in internal RAM below the PSRAM malloc threshold. Fails
+    // with ErrorCode::NoMemory if that buffer cannot be allocated.
+    Result<os::LargeBuffer> read_file_large(const std::string& path);
+
+    // Appends `data` to `path`, creating it (and missing parent
+    // directories) if needed, then fflush()es and fsync()s -- see the file
+    // header for the power-loss semantics. A leftover "<path>.new" is
+    // promoted first, as in write_atomic(). Under "<int>/library/" the
+    // appended bytes count against the quota; exceeding it fails with
+    // ErrorCode::QuotaExceeded and leaves the file unchanged.
+    Result<void> append(const std::string& path, std::span<const uint8_t> data);
+
+    // The entries of directory `path`, sorted by name, without "." and
+    // "..". Fails with ErrorCode::NotFound if `path` does not exist and
+    // ErrorCode::InvalidArgument if it is not a directory. Every entry is
+    // listed as it is on disk, including any "*.tmp"/"*.new" write
+    // bookkeeping; callers that list data files skip those names.
+    Result<std::vector<DirEntry>> list_dir(const std::string& path);
+
+    // Removes the file or directory tree at `path` without following
+    // symlinks. Removing a file also removes its "<path>.tmp"/"<path>.new"
+    // bookkeeping, so read_file() cannot resurrect it afterwards. A
+    // missing `path` is success. A storage mount point itself is refused
+    // with ErrorCode::InvalidArgument. A tree deeper than 16 levels fails
+    // with ErrorCode::IoError, leaving whatever was not yet removed.
+    Result<void> remove_tree(const std::string& path);
+
+    // Renames the file or directory `from` to `to`, creating `to`'s
+    // missing parent directories. Fails with ErrorCode::NotFound if
+    // `from` does not exist and ErrorCode::AlreadyExists if `to` does --
+    // checked here, so the result is the same on FAT (whose rename()
+    // refuses an existing target) and LittleFS (whose rename() replaces
+    // it). Moving into "<int>/library/" from outside it counts the moved
+    // tree's size against the quota. Both paths must be on the same
+    // storage device.
+    Result<void> rename(const std::string& from, const std::string& to);
+
+    // The total size of the regular files at or under `path`, excluding
+    // "*.tmp"/"*.new" bookkeeping; 0 if `path` does not exist.
+    Result<uint64_t> tree_size(const std::string& path);
+
+    // storage.int's normalized mount point ("<int>"). Fails with
+    // ErrorCode::StorageUnavailable before init() has succeeded.
+    Result<std::string> internal_root() const;
+
     // Re-probes storage.sd's online() state and, on a change since the
     // last init()/refresh(), (re)creates its area roots (on an
     // offline->online transition; a creation failure only logs a warning,
@@ -248,6 +327,18 @@ public:
     void set_standby(bool standby);
 
 private:
+    // Shared argument handling for the primitives above, called with
+    // mutex_ held: the ready_ check, normalization, and the ".."/reserved
+    // suffix rules; `mutating` adds the offline-SD check.
+    Result<std::string> checked_path(const std::string& raw, bool mutating) const;
+
+    // read_file()'s checks and ".new" recovery; returns the normalized
+    // path and the regular file's size. Called with mutex_ held.
+    Result<std::pair<std::string, uint64_t>> open_for_read(const std::string& raw);
+
+    // Whether `path` is under the quota-checked "<int>/library".
+    bool in_internal_library(const std::string& path) const;
+
     DeviceRegistry& registry_;
     EventBus& bus_;
     StorageConfig config_;

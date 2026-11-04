@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -293,6 +294,118 @@ Result<void> promote_pending_new(const std::string& path) {
     return Result<void>::ok();
 }
 
+// stat() that does not follow a final symlink. Hosts (the simulator's
+// temp dirs) have symlinks and lstat(); the device's libc has no lstat()
+// to link against, and neither LittleFS nor FAT can hold a symlink, so
+// plain stat() is already non-following there.
+int stat_nofollow(const std::string& path, struct stat* st) {
+#if defined(__linux__) || defined(__APPLE__)
+    return lstat(path.c_str(), st);
+#else
+    return stat(path.c_str(), st);
+#endif
+}
+
+Result<void> io_error(const char* op, const std::string& path) {
+    return Result<void>::err(ErrorCode::IoError,
+                             std::string(op) + " " + path + ": " + std::string(strerror(errno)));
+}
+
+// The names in `dir` other than "." and "..". Collected and the handle
+// closed before the caller acts on them, so a recursive walk keeps one
+// directory open at a time and never removes entries under a live readdir().
+Result<std::vector<std::string>> read_names(const std::string& dir) {
+    DIR* d = opendir(dir.c_str());
+    if (!d) {
+        return Result<std::vector<std::string>>::err(
+            ErrorCode::IoError, "opendir " + dir + ": " + std::string(strerror(errno)));
+    }
+    std::vector<std::string> names;
+    struct dirent* entry;
+    while ((entry = readdir(d)) != nullptr) {
+        std::string name = entry->d_name;
+        if (name != "." && name != "..") {
+            names.push_back(std::move(name));
+        }
+    }
+    closedir(d);
+    return Result<std::vector<std::string>>::ok(std::move(names));
+}
+
+// The wisp.fs worker that runs these calls has a 4 KB stack, so the walk
+// is bounded rather than trusting the tree's depth.
+constexpr int kMaxRemoveDepth = 16;
+
+Result<void> remove_tree_at(const std::string& path, int depth) {
+    struct stat st;
+    if (stat_nofollow(path, &st) != 0) {
+        return errno == ENOENT ? Result<void>::ok() : io_error("stat", path);
+    }
+    if (S_ISDIR(st.st_mode)) {
+        if (depth >= kMaxRemoveDepth) {
+            return Result<void>::err(ErrorCode::IoError, "directory tree too deep: " + path);
+        }
+        Result<std::vector<std::string>> names = read_names(path);
+        if (!names) {
+            return Result<void>::err(names.error().code, names.error().message);
+        }
+        for (const std::string& name : names.value()) {
+            WISP_TRY(remove_tree_at(path + "/" + name, depth + 1));
+        }
+        if (rmdir(path.c_str()) != 0) {
+            return io_error("rmdir", path);
+        }
+        return Result<void>::ok();
+    }
+    if (remove(path.c_str()) != 0 && errno != ENOENT) {
+        return io_error("remove", path);
+    }
+    return Result<void>::ok();
+}
+
+// Opens `path` for appending, writes `data`, and makes it durable
+// (fflush + fsync) before closing. Every call's return value is checked:
+// an unchecked failure would report bytes as stored that are not on disk.
+Result<void> append_synced(const std::string& path, std::span<const uint8_t> data) {
+    FILE* f = fopen(path.c_str(), "ab");
+    if (!f) {
+        return io_error("fopen", path);
+    }
+    size_t written = data.empty() ? 0 : fwrite(data.data(), 1, data.size(), f);
+    if (written != data.size() || ferror(f) != 0) {
+        Result<void> err = io_error("fwrite", path);
+        fclose(f);
+        return err;
+    }
+    if (fflush(f) != 0) {
+        Result<void> err = io_error("fflush", path);
+        fclose(f);
+        return err;
+    }
+    if (fsync(fileno(f)) != 0) {
+        Result<void> err = io_error("fsync", path);
+        fclose(f);
+        return err;
+    }
+    if (fclose(f) != 0) {
+        return io_error("fclose", path);
+    }
+    return Result<void>::ok();
+}
+
+// Size of the regular file at `path`, or of every regular file under it
+// if it is a directory, excluding "*.tmp"/"*.new"; 0 if it is missing.
+uint64_t path_size(const std::string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        return 0;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        return dir_size_recursive(path);
+    }
+    return S_ISREG(st.st_mode) ? static_cast<uint64_t>(st.st_size) : 0;
+}
+
 }  // namespace
 
 StorageManager::StorageManager(DeviceRegistry& registry, EventBus& bus, StorageConfig config)
@@ -444,7 +557,7 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
     // any stray one first (best-effort; about to be replaced either way)
     // so this rename can't fail with EEXIST-like behavior on FAT.
     remove(neu.c_str());
-    if (rename(tmp.c_str(), neu.c_str()) != 0) {
+    if (::rename(tmp.c_str(), neu.c_str()) != 0) {
         int saved_errno = errno;
         remove(tmp.c_str());
         return Result<void>::err(ErrorCode::IoError, "rename " + tmp + " -> " + neu + ": " +
@@ -458,7 +571,7 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
         }
     }
 
-    if (rename(neu.c_str(), path.c_str()) != 0) {
+    if (::rename(neu.c_str(), path.c_str()) != 0) {
         return Result<void>::err(ErrorCode::IoError, "rename " + neu + " -> " + path + ": " +
                                                          std::string(strerror(errno)));
     }
@@ -466,33 +579,22 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
     return Result<void>::ok();
 }
 
-Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_path) {
-    std::lock_guard<os::Mutex> lock(mutex_);
+Result<std::pair<std::string, uint64_t>> StorageManager::open_for_read(
+    const std::string& raw_path) {
+    using R = Result<std::pair<std::string, uint64_t>>;
 
-    if (!ready_) {
-        return Result<std::vector<uint8_t>>::err(ErrorCode::StorageUnavailable,
-                                                 "StorageManager not initialized");
+    Result<std::string> checked = checked_path(raw_path, /*mutating=*/false);
+    if (!checked) {
+        return R::err(checked.error().code, checked.error().message);
     }
-
-    Result<std::string> normalized = normalize_path(raw_path);
-    if (!normalized) {
-        return Result<std::vector<uint8_t>>::err(normalized.error().code,
-                                                 normalized.error().message);
-    }
-    const std::string& path = normalized.value();
-
-    // See the matching check in write_atomic().
-    if (has_reserved_suffix(path)) {
-        return Result<std::vector<uint8_t>>::err(ErrorCode::InvalidArgument,
-                                                 "path must not end in '.tmp' or '.new': " + path);
-    }
+    std::string path = std::move(checked.value());
 
     // Promote a leftover ".new" (a complete, synced write that was
     // interrupted before the final rename -- see file header and
     // promote_pending_new()'s doc comment).
     Result<void> promoted = promote_pending_new(path);
     if (!promoted) {
-        return Result<std::vector<uint8_t>>::err(promoted.error().code, promoted.error().message);
+        return R::err(promoted.error().code, promoted.error().message);
     }
 
     if (!path_exists(path)) {
@@ -502,36 +604,273 @@ Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_pa
         // path -- so it's discarded here as garbage (best-effort; its
         // removal failing doesn't change the result).
         remove((path + ".tmp").c_str());
-        return Result<std::vector<uint8_t>>::err(ErrorCode::NotFound, "no such file: " + path);
+        return R::err(ErrorCode::NotFound, "no such file: " + path);
     }
 
     struct stat st;
     if (stat(path.c_str(), &st) != 0) {
-        return Result<std::vector<uint8_t>>::err(
-            ErrorCode::IoError, "stat " + path + ": " + std::string(strerror(errno)));
+        return R::err(ErrorCode::IoError, "stat " + path + ": " + std::string(strerror(errno)));
     }
     if (!S_ISREG(st.st_mode)) {
-        return Result<std::vector<uint8_t>>::err(ErrorCode::InvalidArgument,
-                                                 "not a regular file: " + path);
+        return R::err(ErrorCode::InvalidArgument, "not a regular file: " + path);
     }
+    return R::ok({std::move(path), static_cast<uint64_t>(st.st_size)});
+}
 
+namespace {
+
+// Reads exactly `size` bytes of `path` into `dst`.
+Result<void> read_exact(const std::string& path, uint8_t* dst, size_t size) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) {
-        return Result<std::vector<uint8_t>>::err(
-            ErrorCode::IoError, "fopen " + path + ": " + std::string(strerror(errno)));
+        return io_error("fopen", path);
     }
-
-    std::vector<uint8_t> data(static_cast<size_t>(st.st_size));
-    size_t read = data.empty() ? 0 : fread(data.data(), 1, data.size(), f);
-    bool failed = ferror(f) != 0 || read != data.size();
+    size_t read = size == 0 ? 0 : fread(dst, 1, size, f);
+    bool failed = ferror(f) != 0 || read != size;
     int saved_errno = errno;
     fclose(f);
     if (failed) {
-        return Result<std::vector<uint8_t>>::err(
-            ErrorCode::IoError, "read " + path + ": " + std::string(strerror(saved_errno)));
+        return Result<void>::err(ErrorCode::IoError,
+                                 "read " + path + ": " + std::string(strerror(saved_errno)));
+    }
+    return Result<void>::ok();
+}
+
+}  // namespace
+
+Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_path) {
+    using R = Result<std::vector<uint8_t>>;
+    std::lock_guard<os::Mutex> lock(mutex_);
+
+    auto opened = open_for_read(raw_path);
+    if (!opened) {
+        return R::err(opened.error().code, opened.error().message);
+    }
+    const auto& [path, size] = opened.value();
+    std::vector<uint8_t> data(static_cast<size_t>(size));
+    Result<void> r = read_exact(path, data.data(), data.size());
+    if (!r) {
+        return R::err(r.error().code, r.error().message);
+    }
+    return R::ok(std::move(data));
+}
+
+Result<os::LargeBuffer> StorageManager::read_file_large(const std::string& raw_path) {
+    using R = Result<os::LargeBuffer>;
+    std::lock_guard<os::Mutex> lock(mutex_);
+
+    auto opened = open_for_read(raw_path);
+    if (!opened) {
+        return R::err(opened.error().code, opened.error().message);
+    }
+    const auto& [path, size] = opened.value();
+    os::LargeBuffer buf = os::LargeBuffer::allocate(static_cast<size_t>(size));
+    if (!buf.ok()) {
+        return R::err(ErrorCode::NoMemory, "no memory to read " + path);
+    }
+    Result<void> r = read_exact(path, buf.data(), buf.size());
+    if (!r) {
+        return R::err(r.error().code, r.error().message);
+    }
+    return R::ok(std::move(buf));
+}
+
+Result<std::string> StorageManager::checked_path(const std::string& raw, bool mutating) const {
+    using R = Result<std::string>;
+    if (!ready_) {
+        return R::err(ErrorCode::StorageUnavailable, "StorageManager not initialized");
+    }
+    Result<std::string> normalized = normalize_path(raw);
+    if (!normalized) {
+        return normalized;
+    }
+    const std::string& path = normalized.value();
+    // See has_reserved_suffix()'s doc comment.
+    if (has_reserved_suffix(path)) {
+        return R::err(ErrorCode::InvalidArgument, "path must not end in '.tmp' or '.new': " + path);
+    }
+    if (mutating && sd_dev_ && is_under(path, sd_mount_) && !sd_online_) {
+        return R::err(ErrorCode::StorageUnavailable, "sd card offline: " + path);
+    }
+    return normalized;
+}
+
+bool StorageManager::in_internal_library(const std::string& path) const {
+    return !int_mount_.empty() && is_under(path, int_mount_ + "/library");
+}
+
+Result<void> StorageManager::append(const std::string& raw_path, std::span<const uint8_t> data) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+
+    Result<std::string> checked = checked_path(raw_path, /*mutating=*/true);
+    if (!checked) {
+        return Result<void>::err(checked.error().code, checked.error().message);
+    }
+    const std::string& path = checked.value();
+
+    // Appending to a bare path while a complete ".new" sits beside it
+    // would strand that data, which a later read_file() would then find
+    // shadowed by the appended file.
+    WISP_TRY(promote_pending_new(path));
+
+    if (in_internal_library(path)) {
+        uint64_t projected = dir_size_recursive(int_mount_ + "/library") + data.size();
+        if (projected > config_.internal_library_quota) {
+            return Result<void>::err(ErrorCode::QuotaExceeded,
+                                     "internal library quota exceeded: " + path);
+        }
     }
 
-    return Result<std::vector<uint8_t>>::ok(std::move(data));
+    size_t slash = path.find_last_of('/');
+    if (slash != std::string::npos && slash > 0) {
+        WISP_TRY(mkdir_p(path.substr(0, slash)));
+    }
+    return append_synced(path, data);
+}
+
+Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_path) {
+    using R = Result<std::vector<DirEntry>>;
+    std::lock_guard<os::Mutex> lock(mutex_);
+
+    Result<std::string> checked = checked_path(raw_path, /*mutating=*/false);
+    if (!checked) {
+        return R::err(checked.error().code, checked.error().message);
+    }
+    const std::string& path = checked.value();
+
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        if (errno == ENOENT) {
+            return R::err(ErrorCode::NotFound, "no such directory: " + path);
+        }
+        return R::err(ErrorCode::IoError, "stat " + path + ": " + std::string(strerror(errno)));
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        return R::err(ErrorCode::InvalidArgument, "not a directory: " + path);
+    }
+
+    Result<std::vector<std::string>> names = read_names(path);
+    if (!names) {
+        return R::err(names.error().code, names.error().message);
+    }
+    std::vector<DirEntry> out;
+    out.reserve(names.value().size());
+    for (std::string& name : names.value()) {
+        DirEntry e;
+        struct stat es;
+        if (stat_nofollow(path + "/" + name, &es) == 0) {
+            if (S_ISREG(es.st_mode)) {
+                e.kind = EntryKind::File;
+                e.size = static_cast<uint64_t>(es.st_size);
+            } else if (S_ISDIR(es.st_mode)) {
+                e.kind = EntryKind::Dir;
+            }
+        }
+        e.name = std::move(name);
+        out.push_back(std::move(e));
+    }
+    std::sort(out.begin(), out.end(),
+              [](const DirEntry& a, const DirEntry& b) { return a.name < b.name; });
+    return R::ok(std::move(out));
+}
+
+Result<void> StorageManager::remove_tree(const std::string& raw_path) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+
+    Result<std::string> checked = checked_path(raw_path, /*mutating=*/true);
+    if (!checked) {
+        return Result<void>::err(checked.error().code, checked.error().message);
+    }
+    const std::string& path = checked.value();
+    if (path.empty() || path == "/" || path == int_mount_ ||
+        (!sd_mount_.empty() && path == sd_mount_)) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "refusing to remove a storage root: " + path);
+    }
+
+    WISP_TRY(remove_tree_at(path, 0));
+    // Bookkeeping beside a removed file; a directory never has any, so
+    // these are no-ops then.
+    for (const char* suffix : {".new", ".tmp"}) {
+        std::string extra = path + suffix;
+        if (remove(extra.c_str()) != 0 && errno != ENOENT) {
+            return io_error("remove", extra);
+        }
+    }
+    return Result<void>::ok();
+}
+
+Result<void> StorageManager::rename(const std::string& raw_from, const std::string& raw_to) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+
+    Result<std::string> from_r = checked_path(raw_from, /*mutating=*/true);
+    if (!from_r) {
+        return Result<void>::err(from_r.error().code, from_r.error().message);
+    }
+    Result<std::string> to_r = checked_path(raw_to, /*mutating=*/true);
+    if (!to_r) {
+        return Result<void>::err(to_r.error().code, to_r.error().message);
+    }
+    const std::string& from = from_r.value();
+    const std::string& to = to_r.value();
+
+    WISP_TRY(promote_pending_new(from));
+    WISP_TRY(promote_pending_new(to));
+
+    struct stat st;
+    if (stat_nofollow(from, &st) != 0) {
+        return Result<void>::err(ErrorCode::NotFound, "no such file or directory: " + from);
+    }
+    if (stat_nofollow(to, &st) == 0) {
+        return Result<void>::err(ErrorCode::AlreadyExists, "already exists: " + to);
+    }
+    if (is_under(to, from)) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "cannot move " + from + " into itself: " + to);
+    }
+
+    if (in_internal_library(to) && !in_internal_library(from)) {
+        uint64_t projected = dir_size_recursive(int_mount_ + "/library") + path_size(from);
+        if (projected > config_.internal_library_quota) {
+            return Result<void>::err(ErrorCode::QuotaExceeded,
+                                     "internal library quota exceeded: " + to);
+        }
+    }
+
+    size_t slash = to.find_last_of('/');
+    if (slash != std::string::npos && slash > 0) {
+        WISP_TRY(mkdir_p(to.substr(0, slash)));
+    }
+
+    // A stale ".new" left at the old name would otherwise be promoted by
+    // a later read_file(from), resurrecting a file that was moved away.
+    remove((from + ".new").c_str());
+    remove((from + ".tmp").c_str());
+
+    if (::rename(from.c_str(), to.c_str()) != 0) {
+        return Result<void>::err(ErrorCode::IoError, "rename " + from + " -> " + to + ": " +
+                                                         std::string(strerror(errno)));
+    }
+    return Result<void>::ok();
+}
+
+Result<uint64_t> StorageManager::tree_size(const std::string& raw_path) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+
+    Result<std::string> checked = checked_path(raw_path, /*mutating=*/false);
+    if (!checked) {
+        return Result<uint64_t>::err(checked.error().code, checked.error().message);
+    }
+    return Result<uint64_t>::ok(path_size(checked.value()));
+}
+
+Result<std::string> StorageManager::internal_root() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    if (!ready_) {
+        return Result<std::string>::err(ErrorCode::StorageUnavailable,
+                                        "StorageManager not initialized");
+    }
+    return Result<std::string>::ok(int_mount_);
 }
 
 void StorageManager::refresh() {

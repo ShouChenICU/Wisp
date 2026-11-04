@@ -5,12 +5,14 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -474,4 +476,183 @@ TEST(StorageManager, SetStandbyIsANoOpWithoutAnSdCard) {
     mgr.set_standby(true);
     mgr.set_standby(false);
     EXPECT_EQ(int_dev->set_standby_calls(), 0);
+}
+
+namespace {
+
+std::span<const uint8_t> view(const std::string& s) {
+    return {reinterpret_cast<const uint8_t*>(s.data()), s.size()};
+}
+
+}  // namespace
+
+TEST(StorageManager, AppendCreatesAndExtends) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    std::string p = f.in + "/system/logs/a.log";
+
+    ASSERT_TRUE(f.mgr->append(p, view("a\n")));
+    ASSERT_TRUE(f.mgr->append(p, view("a\n")));
+
+    EXPECT_EQ(str(f.mgr->read_file(p).value()), "a\na\n");
+    EXPECT_FALSE(exists(p + ".tmp"));
+    EXPECT_FALSE(exists(p + ".new"));
+}
+
+TEST(StorageManager, AppendRejectsReservedSuffixAndDotDot) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+
+    EXPECT_EQ(f.mgr->append(f.in + "/system/x.tmp", view("x")).error().code,
+              wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(f.mgr->append(f.in + "/system/x.new", view("x")).error().code,
+              wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(f.mgr->append(f.in + "/system/a/../b", view("x")).error().code,
+              wisp::ErrorCode::InvalidArgument);
+    EXPECT_FALSE(exists(f.in + "/system/x.tmp"));
+    EXPECT_FALSE(exists(f.in + "/system/b"));
+}
+
+TEST(StorageManager, AppendCountsAgainstLibraryQuota) {
+    Fixture f(false, StorageConfig{.internal_library_quota = 1024});
+    ASSERT_TRUE(f.mgr->init());
+    std::string p = f.in + "/library/s/data.log";
+
+    ASSERT_TRUE(f.mgr->append(p, std::vector<uint8_t>(1000, 'a')));
+    ASSERT_TRUE(f.mgr->append(p, std::vector<uint8_t>(24, 'b')));  // exactly at the quota
+
+    auto r = f.mgr->append(p, std::vector<uint8_t>(1, 'c'));
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::QuotaExceeded);
+    EXPECT_EQ(f.mgr->read_file(p).value().size(), 1024u);
+}
+
+TEST(StorageManager, ListDirSortedWithKinds) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    std::string d = f.in + "/system/ls";
+    ASSERT_TRUE(f.mgr->write_atomic(d + "/b", view("hello")));
+    ASSERT_EQ(mkdir((d + "/a").c_str(), 0755), 0);
+    ASSERT_EQ(symlink((d + "/a").c_str(), (d + "/link").c_str()), 0);
+
+    auto r = f.mgr->list_dir(d);
+    ASSERT_TRUE(r) << r.error().message;
+    const auto& v = r.value();
+    ASSERT_EQ(v.size(), 3u);
+    EXPECT_EQ(v[0].name, "a");
+    EXPECT_EQ(v[0].kind, wisp::core::EntryKind::Dir);
+    EXPECT_EQ(v[1].name, "b");
+    EXPECT_EQ(v[1].kind, wisp::core::EntryKind::File);
+    EXPECT_EQ(v[1].size, 5u);
+    EXPECT_EQ(v[2].name, "link");
+    EXPECT_EQ(v[2].kind, wisp::core::EntryKind::Other);
+
+    EXPECT_EQ(f.mgr->list_dir(f.in + "/system/missing").error().code, wisp::ErrorCode::NotFound);
+    EXPECT_EQ(f.mgr->list_dir(d + "/b").error().code, wisp::ErrorCode::InvalidArgument);
+}
+
+TEST(StorageManager, RemoveTreeRecursiveAndMissingOk) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    std::string d = f.in + "/library/tree";
+    ASSERT_TRUE(f.mgr->write_atomic(d + "/x/y/z.bin", view("1")));
+    ASSERT_TRUE(f.mgr->write_atomic(d + "/top.bin", view("2")));
+    write_raw(d + "/x/leftover.tmp", "garbage");
+    // A symlink inside the tree is removed, not followed.
+    std::string outside = f.in + "/system/keep";
+    ASSERT_TRUE(f.mgr->write_atomic(outside + "/k.bin", view("k")));
+    ASSERT_EQ(symlink(outside.c_str(), (d + "/x/link").c_str()), 0);
+
+    ASSERT_TRUE(f.mgr->remove_tree(d));
+    struct stat st{};
+    EXPECT_NE(lstat(d.c_str(), &st), 0);
+    EXPECT_TRUE(exists(outside + "/k.bin"));
+
+    EXPECT_TRUE(f.mgr->remove_tree(d));  // already gone
+
+    // A single file goes together with its write bookkeeping, so a later
+    // read_file() cannot resurrect it from a leftover ".new".
+    std::string file = f.in + "/system/one.json";
+    ASSERT_TRUE(f.mgr->write_atomic(file, view("x")));
+    write_raw(file + ".new", "stale");
+    ASSERT_TRUE(f.mgr->remove_tree(file));
+    EXPECT_FALSE(exists(file));
+    EXPECT_FALSE(exists(file + ".new"));
+    EXPECT_EQ(f.mgr->read_file(file).error().code, wisp::ErrorCode::NotFound);
+
+    EXPECT_EQ(f.mgr->remove_tree(f.in).error().code, wisp::ErrorCode::InvalidArgument);
+}
+
+TEST(StorageManager, RenameRefusesExistingTarget) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    std::string a = f.in + "/system/r/a.txt";
+    std::string b = f.in + "/system/r/b.txt";
+    ASSERT_TRUE(f.mgr->write_atomic(a, view("A")));
+    ASSERT_TRUE(f.mgr->write_atomic(b, view("B")));
+
+    EXPECT_EQ(f.mgr->rename(a, b).error().code, wisp::ErrorCode::AlreadyExists);
+    EXPECT_EQ(str(f.mgr->read_file(b).value()), "B");
+    EXPECT_EQ(f.mgr->rename(f.in + "/system/r/none", f.in + "/system/r/c").error().code,
+              wisp::ErrorCode::NotFound);
+
+    std::string d1 = f.in + "/system/d1";
+    std::string d2 = f.in + "/system/d2";
+    ASSERT_TRUE(f.mgr->write_atomic(d1 + "/inner.txt", view("I")));
+    ASSERT_TRUE(f.mgr->rename(d1, d2));
+    EXPECT_FALSE(exists(d1 + "/inner.txt"));
+    EXPECT_EQ(str(f.mgr->read_file(d2 + "/inner.txt").value()), "I");
+}
+
+TEST(StorageManager, RenameIntoLibraryCountsAgainstQuota) {
+    Fixture f(false, StorageConfig{.internal_library_quota = 100});
+    ASSERT_TRUE(f.mgr->init());
+    std::string src = f.in + "/system/big";
+    ASSERT_TRUE(f.mgr->write_atomic(src + "/a.bin", std::vector<uint8_t>(101)));
+
+    EXPECT_EQ(f.mgr->rename(src, f.in + "/library/big").error().code,
+              wisp::ErrorCode::QuotaExceeded);
+    EXPECT_TRUE(exists(src + "/a.bin"));
+}
+
+TEST(StorageManager, TreeSizeExcludesTmpAndNew) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    std::string d = f.in + "/library/sz";
+    ASSERT_TRUE(f.mgr->write_atomic(d + "/a.bin", std::vector<uint8_t>(10)));
+    ASSERT_TRUE(f.mgr->write_atomic(d + "/sub/b.bin", std::vector<uint8_t>(20)));
+    write_raw(d + "/c.bin.tmp", std::string(100, 'x'));
+    write_raw(d + "/sub/d.bin.new", std::string(200, 'x'));
+
+    EXPECT_EQ(f.mgr->tree_size(d).value(), 30u);
+    EXPECT_EQ(f.mgr->tree_size(d + "/a.bin").value(), 10u);
+    EXPECT_EQ(f.mgr->tree_size(f.in + "/library/missing").value(), 0u);
+}
+
+TEST(StorageManager, InternalRootIsIntMount) {
+    Fixture f(false);
+    EXPECT_EQ(f.mgr->internal_root().error().code, wisp::ErrorCode::StorageUnavailable);
+    ASSERT_TRUE(f.mgr->init());
+    EXPECT_EQ(f.mgr->internal_root().value(), f.in);
+}
+
+TEST(StorageManager, ReadFileLargeMatchesReadFile) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    std::string p = f.in + "/system/big.bin";
+    std::vector<uint8_t> data(70 * 1024);
+    for (size_t i = 0; i < data.size(); ++i) data[i] = static_cast<uint8_t>(i * 31 + 7);
+    ASSERT_TRUE(f.mgr->write_atomic(p, data));
+
+    auto large = f.mgr->read_file_large(p);
+    ASSERT_TRUE(large) << large.error().message;
+    auto small = f.mgr->read_file(p);
+    ASSERT_TRUE(small);
+    ASSERT_EQ(large.value().size(), small.value().size());
+    EXPECT_TRUE(std::equal(small.value().begin(), small.value().end(), large.value().data()));
+
+    EXPECT_EQ(f.mgr->read_file_large(f.in + "/system/none").error().code,
+              wisp::ErrorCode::NotFound);
+    EXPECT_EQ(f.mgr->read_file_large(f.in + "/system/x.tmp").error().code,
+              wisp::ErrorCode::InvalidArgument);
 }
