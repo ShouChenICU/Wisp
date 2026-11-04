@@ -113,10 +113,14 @@ extern "C" void app_main() {
     // generic across every ESP32 variant (no per-chip wakeup config).
     platform.request_power_off = [] { esp_deep_sleep_start(); };
     platform.heap_info = [] {
+        // Byte-addressable internal RAM, as `mem` reports it: what a stack
+        // or a small malloc can use. On a chip with a 32-bit-only IRAM
+        // heap, MALLOC_CAP_INTERNAL alone would count that too.
+        constexpr uint32_t kInternal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
         wisp::Map info;
-        info["internal_free"] = static_cast<int64_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        info["internal_free"] = static_cast<int64_t>(heap_caps_get_free_size(kInternal));
         info["internal_largest"] =
-            static_cast<int64_t>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+            static_cast<int64_t>(heap_caps_get_largest_free_block(kInternal));
         info["large_free"] = static_cast<int64_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         return wisp::Value(std::move(info));
     };
@@ -186,7 +190,7 @@ extern "C" void app_main() {
     // (see apply_pm_config()'s comment above).
     apply_pm_config(/*light_sleep_enable=*/false);
 
-    // Static storage duration (per this task's brief): app_main() returns
+    // Static storage duration: app_main() returns
     // by deleting its own task below rather than by a normal function
     // return, so nothing would actually run `app`'s destructor either
     // way -- FreeRTOS's vTaskDelete() frees the task's stack without C++

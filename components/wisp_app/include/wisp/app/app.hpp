@@ -132,9 +132,12 @@ struct Platform {
     // registered. May be empty if the platform has no such fallback.
     std::function<void()> request_power_off;
 
-    // Returns heap diagnostics, e.g. {"internal_free": ..., "large_free":
-    // ...}, for the self-check UI. May be empty (no heap
-    // diagnostics available).
+    // Returns heap diagnostics in bytes: "internal_free" and
+    // "internal_largest" (byte-addressable internal RAM and its largest
+    // free block, checked against wisp/app/ram_budget.hpp) and
+    // "large_free" (PSRAM), for the self-check UI, WISP_PERF and the
+    // admin API. A key may be missing; the whole function may be empty
+    // (no heap diagnostics available).
     std::function<Value()> heap_info;
 
     // spec 6.7: called by wisp::app::PowerManager with `true`
