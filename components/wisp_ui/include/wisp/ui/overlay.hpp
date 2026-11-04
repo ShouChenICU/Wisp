@@ -13,8 +13,13 @@
 // (such as the performance label). Any other area comes from below the
 // overlays, and the rows of each overlay that are opaque edge to edge
 // (all but its rounded corners' rows) are cut out of it. An overlay
-// counts only while it is shown, fully opaque (opa, opa_layered and
-// background) and untransformed; otherwise nothing is cut.
+// counts only while it and every ancestor are shown, at full opacity,
+// blended normally, unmasked and untransformed, its background is opaque
+// (no gradient descriptor), and the last frame drew it so; otherwise
+// nothing is cut. One that stops counting (hidden, faded or transformed,
+// directly or through its layer) has its last drawn box redrawn on the
+// next refresh. Nothing is cut while the display renders: the event
+// then only carries LVGL's band-height probe.
 //
 // So everything drawn above a marked overlay must be inside a marked
 // overlay itself, or be a separate object on the top or system layer, as

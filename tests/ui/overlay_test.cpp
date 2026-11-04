@@ -203,6 +203,58 @@ TEST(Overlay, OtherLayersAboveTheCardAreStillDrawn) {
     EXPECT_TRUE(same_as_full_redraw(true, {add_tag, grow_tag}));
 }
 
+// While it renders, LVGL sends the display a one-column probe area
+// ({0, 0, 0, rows - 1}) through LV_EVENT_INVALIDATE_AREA to learn how many
+// rows a band may have. A card spanning x = 0 must neither split that
+// probe (invalidating during rendering halts LVGL) nor shorten the bands.
+TEST(Overlay, AFullWidthCardLeavesTheRowProbeAlone) {
+    const Step widen = [](Scene& s) {
+        lv_obj_set_style_radius(s.card, 0, 0);
+        lv_obj_set_size(s.card, kSide, 14);
+        lv_obj_align(s.card, LV_ALIGN_TOP_LEFT, 0, 2);
+    };
+    const Result r = render(true, {widen, scroll, scroll}, true);
+    ASSERT_EQ(r.flushed.size(), 3u);
+    for (size_t i = 1; i < r.flushed.size(); ++i) {
+        ASSERT_FALSE(r.flushed[i].empty());
+        // Bands of the scrolled list below the card are the buffer's
+        // full height (24 lines), apart from each area's last one.
+        bool full_band = false;
+        for (const auto& f : r.flushed[i]) full_band |= (f.y2 - f.y1 + 1) == 24;
+        EXPECT_TRUE(full_band);
+    }
+    EXPECT_TRUE(same_as_full_redraw(true, {widen, scroll, scroll}));
+}
+
+// Hiding or fading the whole top layer invalidates the layer, a
+// full-screen area, while the card is still shown, or before the change
+// takes effect; what the card covered must still be redrawn.
+TEST(Overlay, HidingTheTopLayerRevealsWhatScrolledBeneath) {
+    EXPECT_TRUE(same_as_full_redraw(
+        true, {scroll, [](Scene&) { lv_obj_add_flag(lv_layer_top(), LV_OBJ_FLAG_HIDDEN); }}));
+}
+
+TEST(Overlay, FadingTheTopLayerOutAndBackIsRedrawn) {
+    const Step fade = [](Scene& s) {
+        lv_obj_set_style_opa(lv_layer_top(), LV_OPA_50, 0);
+        scroll(s);
+    };
+    const Step unfade = [](Scene& s) {
+        lv_obj_set_style_opa(lv_layer_top(), LV_OPA_COVER, 0);
+        scroll(s);
+    };
+    EXPECT_TRUE(same_as_full_redraw(true, {scroll, fade, scroll, unfade, scroll}));
+}
+
+TEST(Overlay, ATransformedCardIsNotCut) {
+    EXPECT_TRUE(same_as_full_redraw(true, {scroll,
+                                           [](Scene& s) {
+                                               lv_obj_set_style_transform_width(s.card, -8, 0);
+                                               scroll(s);
+                                           },
+                                           scroll}));
+}
+
 TEST(Overlay, ClosingTheCardRevealsWhatScrolledBeneath) {
     EXPECT_TRUE(same_as_full_redraw(true, {scroll, [](Scene& s) { lv_obj_delete(s.card); }}));
 }
