@@ -113,11 +113,11 @@ struct HttpDone {};
 struct StoreDone {};
 
 // A device event for the foreground scene's wisp.device handlers (sent
-// with instance 0 from the event bus). `lang`: the language code a
-// system.settings event carried.
+// with instance 0 from the event bus). It only says what to look at: the
+// task reads the state itself (SceneRuntime::lang_), so a dropped one is
+// made up for at the next minute.
 struct Device {
     DeviceEvent kind = DeviceEvent::Battery;
-    std::string lang;
 };
 
 // check_sources(): compile the files the job holds.

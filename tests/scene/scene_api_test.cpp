@@ -280,13 +280,16 @@ scene.on_hide = function() print("hide") end
     ASSERT_TRUE(wait_log("pause", 2));
     wisp::os::sleep_ms(1500);
     EXPECT_EQ(scene_log("pause"), (std::vector<std::string>{"show", "hide"}));
+    const uint64_t on_at = wisp::os::now_ms();
     rt->set_visible(true);
     ASSERT_TRUE(wait_log("pause", 5, 500));
     wisp::os::sleep_ms(300);
     EXPECT_EQ(scene_log("pause"),
               (std::vector<std::string>{"show", "hide", "tick 1", "minute\t1793793630", "show"}));
-    // From then on, a period from the screen coming on.
+    // The next one a full period after the screen came on, not at the
+    // timer's old phase (which was due 500 ms after it).
     ASSERT_TRUE(wait_log("pause", 6, 2000));
+    EXPECT_GE(wisp::os::now_ms() - on_at, 950u);
     EXPECT_EQ(scene_log("pause").back(), "tick 2");
 }
 
@@ -297,7 +300,10 @@ TEST_F(SceneApiTest, MinuteFiresOnWallMinute) {
 wisp.device.on("minute", function(i) print("minute", i.time) end)
 )") + kScreen);
     ASSERT_TRUE(rt->open("clock"));
-    wisp::os::sleep_ms(100);
+    // A round trip through the scene queue: the task has finished the
+    // loop pass after the open, whose first ticker poll took its bearings
+    // at kNoon + 59.
+    ASSERT_TRUE(rt->check_sources({}));
     EXPECT_TRUE(scene_log("clock").empty());
     wall = kNoon + 60;
     ASSERT_TRUE(wait_log("clock", 1, 2500));

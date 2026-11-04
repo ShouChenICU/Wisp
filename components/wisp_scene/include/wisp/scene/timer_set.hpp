@@ -14,7 +14,8 @@
 // - pause()/resume() (screen off/on): nothing is due while paused, and
 //   next_due() is empty so the task does not wake up for it. Deadlines
 //   are not shifted: on resume whatever passed meanwhile is due once (an
-//   every timer then runs from now on), the rest keeps its time.
+//   every timer then runs a period from now, even if it missed less than
+//   a period), the rest keeps its time.
 
 #include <cstddef>
 #include <cstdint>

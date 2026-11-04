@@ -46,14 +46,16 @@
 //   reload  close, then open with the same arguments; data stays.
 // Timers and device events (spec 3.4, 5.1, 5.2): the task's wait is
 // bounded by the scene's next TimerSet deadline and, while the screen is
-// on and the scene listens for "minute" or "battery", its MinuteTicker;
+// on and the scene listens for "minute", "battery" or "lang", its
+// MinuteTicker;
 // each due timer callback, each event, is a message of its own (own 200
 // ms budget, flush, submit). Screen off: timers pause, the ticker is not
 // polled. Screen on: timers resume (each missed one fires once), a
 // "minute" is forced, then on_show. "battery" fires when the percentage
 // or charging differ from what the scene last saw, checked on each
-// power.charging.changed and each minute; "lang" when system.settings
-// carries a language other than the one the scene last saw. info().lang
+// power.charging.changed and each minute; "lang" when the language of
+// the last system.settings event differs from the one the scene last
+// saw, checked on each such event and each minute. info().lang
 // is the language of the last system.settings event, ui::lang() before
 // any (ui::set_lang() runs on the UI thread and may lag the event).
 // wisp.scene.close() closes the scene once its current message is done.
@@ -294,8 +296,9 @@ private:
     uint32_t loading_ = 0;
     bool visible_ = true;
     bool quit_ = false;
-    // The language of the last system.settings event ("" before any).
-    std::string lang_override_;
+    // The ui::Lang of the last system.settings event, -1 before any. Set
+    // by the bus's dispatcher, read by the scene task.
+    std::atomic<int> lang_{-1};
     core::SubscriptionId power_sub_ = 0;
     core::SubscriptionId settings_sub_ = 0;
 

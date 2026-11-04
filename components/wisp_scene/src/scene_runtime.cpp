@@ -121,14 +121,16 @@ Result<void> SceneRuntime::start() {
     // The bus's dispatcher only queues a message: the scene task reads
     // the state itself, so a dropped or late event cannot leave stale data.
     power_sub_ = deps_.bus.subscribe("power.charging.changed", [this](const core::Event&) {
-        push(make_message("", 0, msg::Device{DeviceEvent::Battery, {}}), 0);
+        push(make_message("", 0, msg::Device{DeviceEvent::Battery}), 0);
     });
     settings_sub_ = deps_.bus.subscribe("system.settings", [this](const core::Event& e) {
         auto it = e.payload.find("language");
         if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
-        if (!push(make_message("", 0, msg::Device{DeviceEvent::Lang, it->second.as_string()}), 0) &&
-            running_)
-            WLOG_W(kTag, "language change not passed on: scene queue full");
+        auto lang = ui::parse_lang(it->second.as_string());
+        if (!lang) return;
+        lang_.store(static_cast<int>(*lang));
+        if (!push(make_message("", 0, msg::Device{DeviceEvent::Lang}), 0) && running_)
+            WLOG_W(kTag, "language change not passed on now (scene queue full): next minute");
     });
     return Result<void>::ok();
 }
@@ -410,10 +412,6 @@ void SceneRuntime::handle(SceneMessage& m) {
         if (f != nullptr && f->scene && step(f->scene->list_range(b->list, b->first, b->count)))
             submit();
     } else if (auto* b = std::get_if<msg::Device>(&body)) {
-        if (b->kind == DeviceEvent::Lang) {
-            if (!ui::parse_lang(b->lang)) return;
-            lang_override_ = b->lang;
-        }
         device_event(b->kind);
     } else if (std::holds_alternative<msg::HttpDone>(body) ||
                std::holds_alternative<msg::StoreDone>(body)) {
@@ -696,7 +694,8 @@ DeviceInfo SceneRuntime::device_info() const {
     DeviceInfo i;
     i.shape = deps_.shape;
     i.safe = hal::safe_rect(deps_.shape);
-    const char* lang = lang_override_.empty() ? ui::lang_code(ui::lang()) : lang_override_.c_str();
+    const int set = lang_.load();
+    const char* lang = ui::lang_code(set < 0 ? ui::lang() : static_cast<ui::Lang>(set));
     std::snprintf(i.lang, sizeof(i.lang), "%s", lang);
     if (auto t = wall_now()) {
         i.has_time = true;
@@ -724,7 +723,8 @@ DeviceInfo SceneRuntime::device_info() const {
 bool SceneRuntime::wants_minute() const {
     if (!fg_ || !fg_->scene) return false;
     const SceneApi& api = fg_->scene->api();
-    return api.wants(DeviceEvent::Minute) || api.wants(DeviceEvent::Battery);
+    return api.wants(DeviceEvent::Minute) || api.wants(DeviceEvent::Battery) ||
+           api.wants(DeviceEvent::Lang);
 }
 
 uint32_t SceneRuntime::scene_wait_ms() {
@@ -762,7 +762,9 @@ void SceneRuntime::minute() {
     if (!fg_ || !fg_->scene) return;
     const DeviceInfo info = device_info();
     fire(DeviceEvent::Minute, info);
+    // Also catches a battery or lang message the full queue dropped.
     device_event(DeviceEvent::Battery);
+    device_event(DeviceEvent::Lang);
 }
 
 void SceneRuntime::device_event(DeviceEvent ev) {

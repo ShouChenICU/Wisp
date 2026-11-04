@@ -65,6 +65,13 @@ std::optional<uint64_t> TimerSet::next_due() const {
 
 void TimerSet::pause(uint64_t) { paused_ = true; }
 
-void TimerSet::resume(uint64_t) { paused_ = false; }
+void TimerSet::resume(uint64_t now) {
+    if (!paused_) return;
+    paused_ = false;
+    // An every timer that came due meanwhile fires once now and then runs
+    // a period from now, however little of a period it missed by.
+    for (auto& t : timers_)
+        if (t.period != 0 && t.due <= now) t.due = now;
+}
 
 }  // namespace wisp::scene

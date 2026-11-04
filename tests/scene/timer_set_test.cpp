@@ -85,7 +85,7 @@ TEST(TimerSet, ResumeFiresMissedEveryOnce) {
     EXPECT_EQ(t.next_due(), std::nullopt);  // nothing to wake up for
     EXPECT_EQ(t.due(1050), Ids{});          // paused: nothing fires
     t.resume(1050);
-    EXPECT_EQ(t.next_due(), std::optional<uint64_t>(100));
+    EXPECT_EQ(t.next_due(), std::optional<uint64_t>(1050));
     EXPECT_EQ(t.due(1050), Ids{every});  // ten periods missed, one fire
     EXPECT_EQ(t.due(1050), Ids{});
     EXPECT_EQ(t.next_due(), std::optional<uint64_t>(1150));
@@ -99,6 +99,18 @@ TEST(TimerSet, ResumeFiresMissedEveryOnce) {
     t.resume(1400);
     EXPECT_EQ(t.due(1400), Ids{every});
     EXPECT_EQ(t.due(6150), (Ids{every, later}));
+}
+
+// Missed by less than a period: still one fire on resume, and the next a
+// full period after it, not at the old phase right behind it.
+TEST(TimerSet, ResumeAfterSubPeriodMissRestartsFromNow) {
+    TimerSet t;
+    auto every = t.every(100, 0).value();
+    t.pause(50);
+    t.resume(150);
+    EXPECT_EQ(t.due(150), Ids{every});
+    EXPECT_EQ(t.next_due(), std::optional<uint64_t>(250));
+    EXPECT_EQ(t.due(200), Ids{});
 }
 
 TEST(TimerSet, AddedWhilePausedWaitsForResume) {
