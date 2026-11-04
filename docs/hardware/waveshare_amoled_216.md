@@ -60,12 +60,12 @@
 | 1 | 启动耗时（spec 10.1） | `idf.py -p <PORT> flash monitor`，从上电到自检界面出现用肉眼或串口时间戳计时；同时看 `WISP_BOOT_REPORT` 的 `boot_ms` | `boot_ms` < 3000 | |
 | 2 | 启动报告/能力清单格式（spec 10.4，wisp_core::BootReport/DeviceRegistry::manifest()） | 串口查看 `WISP_BOOT_REPORT <json>`、`WISP_MANIFEST <json>` 两行 | 均为合法单行 JSON；设备状态符合预期（没插 SD 卡时 `storage.sd` 报缺失是正常的） |  |
 | 3 | IMU 无磁力计（spec 10.4） | 查看 `WISP_MANIFEST` 中 `imu.main.caps` | `magnetometer` 为 `false` |  |
-| 4 | Display 能力清单（屏幕驱动：esp_display） | 查看 `WISP_MANIFEST` 中 `display.main` | `model` 为 `CO5300`；`caps` 含 `width:480 height:480 shape:"rounded_rect" corner_radius:40 panel:"amoled" brightness:true area_align:2`；`safe_area` 为 `{12,12,467,467}` |  |
+| 4 | Display 能力清单（屏幕驱动：esp_display） | 查看 `WISP_MANIFEST` 中 `display.main` | `model` 为 `CO5300`；`caps` 含 `width:480 height:480 shape:"rounded_rect" corner_radius:40 panel:"amoled" brightness:true area_align:2 rgb565_be:true`；`safe_area` 为 `{12,12,467,467}` |  |
 | 5 | Touch 型号（触摸驱动：bmgr dev_lcd_touch） | 查看 `WISP_MANIFEST` 中 `touch.main` | `model` 为 `CST9217` |  |
-| 6 | 屏幕颜色（屏幕驱动：esp_display 字节序） | 自检界面显示纯色色块或背景，目视核对纯红、纯蓝 | 红蓝不互换、不发花；如互换说明字节序判断有误 |  |
+| 6 | 屏幕颜色（字节序：esp_display 发布 caps `rgb565_be`，wisp_ui 据此直接按高字节在前渲染） | 自检界面显示纯色色块或背景，目视核对纯红、纯蓝 | 红蓝不互换、不发花；如互换说明字节序判断有误 |  |
 | 7 | 四角不裁切（spec 8，10.2） | 目视自检界面四角 | 内容不被圆角裁掉 |  |
 | 8 | 触摸坐标方向（触摸驱动：esp_display_touch 坐标映射） | 手指依次点触屏幕四角 | 左上角坐标接近 (0,0)，右下角接近 (479,479)；不镜像、不 XY 互换 |  |
-| 9 | 局部刷新无错位（屏幕驱动：esp_display flush()/area 对齐） | 上下滚动自检设备列表 | 不出现条纹或错位 |  |
+| 9 | 局部刷新无错位（屏幕驱动：esp_display flush_async()/area 对齐，两块缓冲轮流传输） | 上下快速滚动自检设备列表 | 不出现条纹、错位或某一段显示成上一帧/另一段的内容 |  |
 | 10 | 亮度初始化（屏幕驱动：esp_display set_brightness()） | 对比刚上电瞬间与自检界面稳定后的亮度 | 启动后设为 200，应比初始化时的 0xFF 略暗 |  |
 | 11 | IMU 跟随倾斜（spec 10.2） | 倾斜设备，看自检界面小球；水平放置看 `az` | 小球平稳跟随倾斜；水平时 `az` 接近 1.0g |  |
 | 12 | 陀螺仪数值合理（drivers/qmi8658，新写寄存器配置，重点核实） | 静止与转动设备，看自检界面 `gx/gy/gz` | 静止时接近 0 dps；转动时方向与幅度符合直觉；若轴向颠倒或量程异常，检查 `drivers/qmi8658/qmi8658.c` 的 CTRL3 FS/ODR 编码 |  |
@@ -98,7 +98,7 @@
 | 39 | 网页上传后拒绝 | 再上传一次，设备上点"否"；再上传一次，2 分钟内不操作 | 两次网页都提示"已在设备上拒绝"；设备不重启，版本与运行分区不变 |  |
 | 40 | 拒绝其他板子的镜像 | 用 `-DWISP_BOARD=<另一块板>` 构建（或上传任何非 Wisp 的 ESP-IDF 应用 `.bin`）后上传 | 网页立即提示"这个固件是为其他开发板或芯片构建的"（400 `wrong_board`），设备上不弹确认框，Flash 未被写入（再上传一次正确镜像仍然正常） |  |
 | 41 | 启动失败自动回滚（`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`） | 临时在 `firmware/main/main.cpp` 的 `app_main()` 开头加一行 `abort();` 构建（不要提交），上传并在设备上确认 | 新镜像崩溃复位后，引导程序回到旧镜像；网页提示"设备重启后运行的仍是旧版本，已回滚"；之后上传正常镜像仍能装上 |  |
-| 42 | 发布版帧率（全局 `-Os`、渲染路径 `-O2`） | 用默认（发布版）配置构建烧录，重复第 33 项 | `WISP_PERF` 的 fps ≥ 30，不低于第 33 项记下的基准。达不到时先试把 `esp_driver_spi`（`esp_lcd_panel_io` 下面的 QSPI 传输层，目前按 `-Os` 编译）加进 `firmware/CMakeLists.txt` 的 `-O2` 匹配规则 |  |
+| 42 | 发布版帧率（全局 `-Os`、渲染路径 `-O2`） | 用默认（发布版）配置构建烧录，重复第 33 项 | `WISP_PERF` 的 fps 不低于下方"性能基准"一节记下的程序滚动结果（约 20）。`esp_driver_spi` 改用 `-O2` 已实测无收益（见该节），不用再试 |  |
 | 43 | 上传期间的日志推送 | 上传固件时打开"日志"页 | 上传期间日志暂停推送（httpd 只有一个任务，被上传请求占着），上传结束后恢复推送，WebSocket 不断开 |  |
 | 44 | 内部 RAM 最坏情况（AGENTS.md 第 5 节的预算） | 设备连上家里的 Wi-Fi 后在串口执行 `wifi ap on`，手机连上热点打开设置页；电脑经 STA 地址打开管理页的"日志"页（WebSocket），在"模型"页对一个真实的 HTTPS 端点做连通性测试，再上传一次固件；全程每隔几秒执行一次 `mem` | 日志里 `admin server listening on port 8900` 和 `captive redirect listening on port 80` 都出现，后面的 `internal RAM: ...` 行不是警告；`mem` 的 `internal free` 始终 ≥ 40 KB、`largest` ≥ 16 KB（`min` 是各内存区各自最低点之和，偏低，只能当下限看）；`wisp.ws`、`wisp.dns` 和端口 80 的 `httpd` 的栈在 `psram`，端口 8900 的 `httpd` 的栈在 `internal` | |
 
@@ -250,7 +250,7 @@
 | `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` 预留池（只给 DMA 和任务栈用，并没有浪费） | 32 KB |
 | 任务栈（`wisp_ui` 8 KB，`wisp.console`/`wisp.net`/`wisp.bus` 各 6 KB，`esp_timer`/`wifi` 各 6.5 KB 等） | 约 75 KB |
 
-`hal::Display::flush()` 要等传输完成才返回，LVGL 不可能一边往第二块缓冲画、一边传第一块，所以第二块缓冲（46 KB）完全没有用。
+当时 `hal::Display::flush()` 要等传输完成才返回，LVGL 不可能一边往第二块缓冲画、一边传第一块，所以第二块缓冲（46 KB）完全没有用。（后来 flush 改成异步，又换回两块各 24 行的缓冲，总量仍是 46 KB，见下方"性能基准"。）
 
 **改动**：LVGL 只用一块 48 行的缓冲；Wi-Fi 静态 RX/TX 缓冲改为 10/10、RX BA 窗口改为 10（`firmware/sdkconfig.defaults`）；`wisp.ws`、`wisp.dns` 和端口 80 的 httpd 不碰 flash，栈改放 PSRAM。
 
@@ -265,15 +265,58 @@
 
 STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动后）：配对 58 KB；扫描 58 KB；WebSocket 日志流加 TLS 握手 51 KB；WebSocket 加 OTA 上传 3.18 MB 约 60 KB；手机侧设置流程（302 跳转、`setup.html`、`/pair/ap`、扫描、WebSocket）51 KB。TLS 只测到证书校验失败为止：固件只开了 TLS 1.2，被拒绝的证书在 ECDHE 和签名校验之前就会中断握手，完整握手估计还要再多用几 KB，仍然高于 40 KB 的预算。真实端点的连通性测试见上面清单第 44 项。
 
-代价：OTA 上传 3.18 MB 从 15.1 s 变成 17.5 s（RX 缓冲少了）。用程序滚动自检列表（每帧 6 px），改动前后都是 8–9 fps；这已经远低于 30 fps，原因与本改动无关：flush 是同步的，每帧约 10 段 × 4.3 ms，CPU 占用 100%。
+代价：OTA 上传 3.18 MB 从 15.1 s 变成 17.5 s（RX 缓冲少了）。用程序滚动自检列表（每帧 6 px），改动前后都是 8–9 fps，原因与本改动无关，见下方"性能基准"。
+
+**改成异步双缓冲、XIP 之后**（下方"性能基准"的最终配置）：启动后 103.3 KB（最大块 31.7 KB），只开热点 73.5–74.0 KB（31.7 KB），关掉热点回到 101.5 KB；滚动期间 102–105 KB（`WISP_PERF` 的 `heap_internal_free`）。比上表的"改动后"少约 2 KB：`LV_OBJ_STYLE_CACHE` 约 0.8 KB，XIP 约 0.6 KB，剩下约 0.6 KB 没有细分。热点打开过程中的 `min` 下限是 40.0 KB（改之前 41.7 KB）。STA + 热点没有重测（不连真实网络），按上表推算约 68–70 KB。
 
 **STA 和热点互斥能省多少**：只开热点比 STA + 热点只多 5.4 KB（mDNS 任务栈 4 KB 加 DHCP 客户端和关联状态），只连 STA 比 STA + 热点多 14.6 KB。热点部分本身：softAP 驱动、netif 和 DHCP 服务器约 10.6 KB；端口 80 的 httpd 约 3 KB（栈已移到 PSRAM，移之前是 7.1 KB）；DNS 任务 0.4 KB（移之前是 3.4 KB）。配网时热点不能不开，所以互斥只能把峰值降低约 5 KB。
 
 ## 性能基准
 
-（真机验收后填写：滚动自检列表时的 fps / cpu / flush_ms。另外对比开启动态调频（DFS，
-`firmware/sdkconfig.defaults` 的 `CONFIG_PM_ENABLE`）前后的 `WISP_PERF`，确认 DFS 本身
-没有把渲染路径的帧率拖到 spec/计划约定的基准以下。）
+ESP-IDF v6.0.3，发布版（全局 `-Os`，LVGL、esp_lcd 和 wisp_ui 的渲染路径 `-O2`），CPU 240 MHz，QSPI 40 MHz。"程序滚动"是临时加在固件里的测试命令（没有提交），在 UI 线程里每帧把自检列表滚动 6 px，往返 10 s：
+
+- **raw**：`lv_obj_scroll_by_raw()`，前后各发一次 `SCROLL_BEGIN`/`SCROLL_END`，和手指拖动时 LVGL 的做法一样。
+- **scroll_by**：每帧调用一次 `lv_obj_scroll_by()`。每次调用都会发一对 `SCROLL_BEGIN`/`SCROLL_END`，切换 `LV_STATE_SCROLLED` 状态，触发整棵树重新布局，每帧多出约 13 ms。手指滚动不会这样，所以以 raw 为准。
+
+fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致。
+
+| 配置 | raw fps | scroll_by fps | `WISP_PERF`（滚动中） | 启动后内部 RAM 空闲 |
+|---|---|---|---|---|
+| 改动前：同步 flush，一块 48 行缓冲，CPU 交换字节 | 10.6 | 8.6–8.8 | fps 9，cpu 100，flush_ms 4.2–4.4 | 105.2 KB |
+| **现在**：异步 flush，两块 24 行缓冲，LVGL 直接按面板字节序渲染，XIP，`LV_OBJ_STYLE_CACHE` | **20.1–20.4** | 14.8 | fps 20，cpu 100，flush_ms 0.22–0.23 | 103.3 KB |
+
+静止时自检界面仍然是 10 fps（它每 100 ms 刷新约 7 个标签），改之前 cpu 27–36、flush_ms 约 3，改之后 cpu 22–38、flush_ms 0.6–0.9。`boot_ms` 从 1859 降到 1814。XIP 要在启动时把镜像拷进 PSRAM，app 开始运行的时刻从 960 ms 推迟到 1042 ms（ESP 日志里 `Pro cpu start user code` 的时间戳），还占用 3.1 MB PSRAM（空闲 PSRAM 从 8.28 MB 降到 5.18 MB）。
+
+**每帧的时间花在哪里**（最终配置，raw 滚动）：
+
+- **渲染**：每帧约 45 ms（LVGL 的 `REFR_START` 到 `REFR_READY`，最长 55 ms）。滚动时整个列表区域每帧都要重画。把 DMA 关掉、只渲染不传输，也只有 22 fps，所以瓶颈是 CPU 渲染，不是屏幕链路。
+- **传输**：40 MHz QSPI 实测约 17.9 MB/s，480 × 480 RGB565 整帧在线上约 25.7 ms。每段还要先发 CASET/RASET，提交一段约 0.15–0.25 ms（每帧 20 段，共 3–5 ms）。整帧刷新的链路上限约 36 fps。传输已经和下一段的渲染重叠，UI 任务每段只花 0.22 ms 在屏幕上。
+- **CPU 频率**：开着 DFS（`CONFIG_PM_ENABLE`），渲染期间一直是 240 MHz；滚动时持有 `ESP_PM_CPU_FREQ_MAX` 锁，结果没有变化。所以 DFS 不拖帧率（第 34 项）。
+- **flash 和 PSRAM**：QIO 80 MHz flash，octal 80 MHz PSRAM。渲染循环频繁 miss 16 KB 指令 cache，所以把代码放进 PSRAM 运行（XIP，`CONFIG_SPIRAM_XIP_FROM_PSRAM`）收益最大：同样的代码从 14.9 fps 升到 20.2 fps。
+
+**试过的其他方案**（raw fps；内部 RAM 是带临时测试代码时测的启动后空闲值，比正式固件低 2–3 KB）：
+
+| 方案 | raw fps | 内部 RAM | 结论 |
+|---|---|---|---|
+| 异步 2 × 24 行，不开 XIP | 14.2–14.9 | 100.8 KB | 不开 XIP 时的基础收益 |
+| 异步 2 × 48 行 | 19.1 | 55.2 KB | 超出预算 |
+| 异步 2 × 48 行 + XIP | 25.5 | 约 55 KB（推算） | 超出预算 |
+| 2 × 24 行 + XIP + 32 KB 指令 cache | 23.4 | 83.3 KB | 多占 16.7 KB，热点 + STA 的最坏情况会跌破 40 KB |
+| 2 × 48 行 + XIP + 32 KB 指令 cache | 28.1 | 35.7 KB | 最接近 30，但启动后就低于 60 KB 的预算 |
+| 关掉 `LV_OBJ_STYLE_CACHE` | 19.2 | 多 0.8 KB | 保留 style cache（+1 fps） |
+| LVGL 两个软件渲染单元（`LV_USE_OS LV_OS_FREERTOS`、`LV_DRAW_SW_DRAW_UNIT_CNT 2`） | 16.7 | 80.2 KB | 更慢，还多占内部 RAM |
+| `esp_driver_spi` 改用 `-O2`（第 42 项） | 20.1 | 不变 | 无收益，未采用 |
+| 绘制缓冲放 PSRAM（只渲染，不传输） | 24 行每帧 46.5 ms，240 行每帧 35.4 ms | 省 46 KB | 渲染更慢。从 PSRAM 直接 DMA 还要 esp_lcd 的 `psram_dma_direct`，bmgr 0.7.5 只在 IDF ≥ 6.1 时生成这个字段 |
+| UI 任务固定在 core 1 | 20.1 | 不变 | 无收益（UI 原本就没和别的任务抢 CPU） |
+
+**为什么到不了 30 fps**：预算内（启动后 ≥ 60 KB，最坏情况 ≥ 40 KB）每帧光渲染就要约 45 ms（不传输也只有 22 fps）。唯一接近 30 的组合（32 KB 指令 cache 加 2 × 48 行缓冲）是 28 fps，但要多占约 63 KB 内部 RAM。要达到 30 fps，需要以下其中之一：
+
+- 减少每帧的渲染量：滚动内容的样式更简单（阴影、圆角、半透明），或者用更少的对象；
+- 加快渲染：ESP32-S3 的 SIMD 填充和混合，或者把 LVGL 的热点函数放进 IRAM（要占内部 RAM）；
+- 在内部 RAM 预算放宽后改用 32 KB 指令 cache 加更大的缓冲；
+- 等 bmgr 支持 `psram_dma_direct`，把缓冲放进 PSRAM，腾出内部 RAM 给 32 KB 指令 cache。
+
+**热点打开时**：raw 滚动降到 12.2 fps（每帧渲染约 77 ms），不开 XIP 时同样从 14.9 降到 8.7。这不是 Wi-Fi 抢资源：滚动期间各任务的 CPU 时间没有变化（`wisp_ui` 8 s 里仍占 7.8 s，`wifi` 任务只占 20 ms），CPU 频率一直是 240 MHz，纯运算、内部 RAM 和 PSRAM 读取的微基准与关热点时一样，UI 任务固定在 core 1 也一样。多出来的应该是渲染量：热点打开后，配网卡片（`lv_layer_top()` 上，带二维码）盖在列表上面，列表每滚一帧，卡片也要跟着重画。这一点没有单独验证。
 
 ## 验收第 5 条：待机耗电实测
 

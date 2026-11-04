@@ -22,6 +22,13 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
+# Run code and read-only data from PSRAM instead of flash: the bootloader
+# copies them there at boot. The 80 MHz octal PSRAM refills the 16 KB
+# instruction cache faster than the 80 MHz quad flash, and LVGL's render
+# loop misses that cache a lot: scrolling the self-check list goes from 14
+# to 20 fps (docs/hardware/waveshare_amoled_216.md, "性能基准"). Costs
+# about as much PSRAM as the image (~3 MB) and almost no internal RAM.
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
 # Console over USB-Serial-JTAG (no external UART-to-USB bridge on this
 # board -- see docs/hardware/waveshare_amoled_216.md).
