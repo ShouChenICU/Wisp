@@ -20,6 +20,7 @@
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "wisp/os/os.hpp"
@@ -175,6 +176,12 @@ struct Task::Impl {
     // most once, so it is given at most once.
     SemaphoreHandle_t done = nullptr;
     std::atomic<bool> joined{false};
+    // Created by xTaskCreatePinnedToCoreWithCaps() (an external stack).
+    // Such a task must be deleted with vTaskDeleteWithCaps(), and not by
+    // itself: self-deletion spawns a helper task and aborts when that
+    // cannot be allocated. So it suspends itself after giving `done`, and
+    // join() deletes it.
+    bool with_caps = false;
 
     // FreeRTOS's TaskFunction_t trampoline. Impl is a private nested type
     // of Task (see wisp/os/os.hpp), so a free function outside Task
@@ -185,8 +192,13 @@ struct Task::Impl {
     // `this`), so it's fully ABI-compatible with TaskFunction_t.
     static void trampoline(void* arg) {
         auto* impl = static_cast<Impl*>(arg);
+        const bool with_caps = impl->with_caps;
         impl->fn();
+        // `impl` may be freed by join() as soon as `done` is given.
         xSemaphoreGive(impl->done);
+        if (with_caps) {
+            for (;;) vTaskSuspend(nullptr);
+        }
         vTaskDelete(nullptr);
     }
 };
@@ -235,9 +247,22 @@ std::unique_ptr<Task> Task::spawn(const TaskConfig& config, std::function<void()
         clamped_priority = static_cast<int>(configMAX_PRIORITIES) - 1;
     }
     BaseType_t core_id = config.core == -1 ? tskNO_AFFINITY : static_cast<BaseType_t>(config.core);
-    BaseType_t ok = xTaskCreatePinnedToCore(
-        &Impl::trampoline, config.name, static_cast<uint32_t>(config.stack_bytes),
-        task->impl_.get(), static_cast<UBaseType_t>(clamped_priority), &raw_handle, core_id);
+    BaseType_t ok = pdFAIL;
+    if (config.external_stack &&
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= config.stack_bytes) {
+        // Set before the task can run: the trampoline reads it.
+        task->impl_->with_caps = true;
+        ok = xTaskCreatePinnedToCoreWithCaps(
+            &Impl::trampoline, config.name, static_cast<uint32_t>(config.stack_bytes),
+            task->impl_.get(), static_cast<UBaseType_t>(clamped_priority), &raw_handle, core_id,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (ok != pdPASS) task->impl_->with_caps = false;
+    }
+    if (ok != pdPASS) {
+        ok = xTaskCreatePinnedToCore(
+            &Impl::trampoline, config.name, static_cast<uint32_t>(config.stack_bytes),
+            task->impl_.get(), static_cast<UBaseType_t>(clamped_priority), &raw_handle, core_id);
+    }
     if (ok != pdPASS) {
         // xTaskCreatePinnedToCore() failed (e.g. out of memory for the
         // task's stack/TCB): per os.hpp, spawn() returns nullptr rather
@@ -285,6 +310,11 @@ void Task::join() {
     if (!impl_->joined.exchange(true)) {
         xSemaphoreTake(impl_->done, portMAX_DELAY);
         vSemaphoreDelete(impl_->done);
+        if (impl_->with_caps) {
+            // Waits until the task is off every core, then frees its
+            // stack and TCB (see Impl::with_caps).
+            vTaskDeleteWithCaps(impl_->handle.load());
+        }
         // See Impl::handle's comment above.
         impl_->handle.store(nullptr);
     }

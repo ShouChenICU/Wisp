@@ -279,3 +279,13 @@ TEST(Queue, PushDropOldestRaceWithConcurrentPops) {
     EXPECT_EQ(q.size(), 0u);
     EXPECT_EQ(dropped_count.load() + popped_count.load(), kItems);
 }
+
+// A port without external RAM runs such a task on an ordinary stack.
+TEST(Os, ExternalStackTaskRunsAndJoins) {
+    std::atomic<bool> ran{false};
+    auto task = wisp::os::Task::spawn({.name = "ext", .stack_bytes = 4096, .external_stack = true},
+                                      [&] { ran = true; });
+    ASSERT_NE(task, nullptr);
+    task->join();
+    EXPECT_TRUE(ran);
+}

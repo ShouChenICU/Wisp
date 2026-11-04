@@ -89,6 +89,14 @@ struct TaskConfig {
     // Task::spawn(), which clamps to FreeRTOS's [0, configMAX_PRIORITIES - 1].
     int priority = 5;
     int core = -1;
+    // The stack may live in external RAM (PSRAM) instead of scarce
+    // internal RAM. Only for a task that never writes flash -- settings
+    // (NVS), files on internal storage (LittleFS), OTA -- nor runs
+    // anything else that disables the flash cache: on the ESP port such
+    // an operation on an external stack aborts. That includes callbacks
+    // the task runs on others' behalf. A port without external RAM, or
+    // out of it, falls back to an internal stack. AGENTS.md section 5.
+    bool external_stack = false;
 };
 
 // A unit of concurrent execution (an RTOS task on the ESP port, a thread on

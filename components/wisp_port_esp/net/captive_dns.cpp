@@ -45,9 +45,11 @@ Result<void> CaptiveDns::start(uint32_t ip) {
 
     stop_.store(false);
     // Below the UI task (4), like the httpd instances: a phone's burst of
-    // lookups must not take turns with LVGL.
-    task_ = os::Task::spawn({.name = "wisp.dns", .stack_bytes = 3072, .priority = 3},
-                            [this, sock, ip] { run(sock, ip); });
+    // lookups must not take turns with LVGL. Pure UDP, no flash access:
+    // the stack can live in external RAM.
+    task_ = os::Task::spawn(
+        {.name = "wisp.dns", .stack_bytes = 3072, .priority = 3, .external_stack = true},
+        [this, sock, ip] { run(sock, ip); });
     if (!task_) {
         lwip_close(sock);
         return Result<void>::err(ErrorCode::NoMemory, "could not start the DNS task");

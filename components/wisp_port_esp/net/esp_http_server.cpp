@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
 #include "lwip/inet.h"
@@ -647,6 +648,7 @@ Result<void> EspHttpServer::start(uint16_t port, net::HttpHandler handler, net::
     c.ctrl_port = impl_->config.ctrl_port;
     c.max_open_sockets = impl_->config.max_open_sockets;
     c.stack_size = impl_->config.stack_bytes;
+    if (impl_->config.external_stack) c.task_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     c.task_priority = impl_->config.task_priority;
     c.lru_purge_enable = true;
     c.uri_match_fn = httpd_uri_match_wildcard;

@@ -159,13 +159,15 @@ extern "C" void app_main() {
     platform.firmware = wisp::port::esp::EspFirmwareUpdater::create(wisp_board_desc.board);
     // The hotspot's port-80 captive redirect (spec 4.3): a second httpd
     // instance, so it needs its own control port; it only ever redirects,
-    // so it gets few sockets, a small stack and no WebSocket. Both
+    // so it gets few sockets, a small stack in PSRAM (its handler never
+    // touches flash) and no WebSocket. Both
     // instances plus the captive DNS socket are counted into
     // CONFIG_LWIP_MAX_SOCKETS (firmware/sdkconfig.defaults).
     wisp::port::esp::EspHttpServerConfig captive;
     captive.ctrl_port = static_cast<uint16_t>(wisp::port::esp::EspHttpServerConfig{}.ctrl_port + 1);
     captive.max_open_sockets = 4;
     captive.stack_bytes = 4096;
+    captive.external_stack = true;
     captive.websocket = false;
     platform.captive_server = std::make_unique<wisp::port::esp::EspHttpServer>(captive);
 

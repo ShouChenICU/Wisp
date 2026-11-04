@@ -97,8 +97,11 @@ void WsHub::start() {
     std::lock_guard<os::Mutex> lock(lifecycle_mutex_);
     if (task_) return;
     running_ = true;
-    task_ =
-        os::Task::spawn({.name = "wisp.ws", .stack_bytes = 4096, .priority = 3}, [this] { run(); });
+    // Only sends queued frames: no flash access, so the stack can live in
+    // external RAM (os::TaskConfig::external_stack).
+    task_ = os::Task::spawn(
+        {.name = "wisp.ws", .stack_bytes = 4096, .priority = 3, .external_stack = true},
+        [this] { run(); });
 }
 
 void WsHub::stop() {

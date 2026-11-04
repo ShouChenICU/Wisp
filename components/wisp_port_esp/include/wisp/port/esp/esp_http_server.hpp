@@ -70,10 +70,15 @@ struct EspHttpServerConfig {
     // Client sockets; httpd adds three of its own, and the sum over all
     // instances must fit CONFIG_LWIP_MAX_SOCKETS with the other users.
     uint16_t max_open_sockets = 7;
-    // The httpd task's stack, in internal RAM. Handlers run on it,
-    // including the model connectivity test's TLS handshake on the admin
-    // instance.
+    // The httpd task's stack. Handlers run on it, including the model
+    // connectivity test's TLS handshake and the firmware upload's flash
+    // writes on the admin instance.
     size_t stack_bytes = 10240;
+    // Put that stack in external RAM (PSRAM). Only for an instance whose
+    // handlers never write flash (see os::TaskConfig::external_stack),
+    // like the hotspot's captive redirect; the admin instance keeps it
+    // internal.
+    bool external_stack = false;
     // Below the UI task (wisp::ui::UiRuntime, 4) so serving a page never
     // costs frames (connectivity spec 10); the other core and idle time
     // leave it plenty.
