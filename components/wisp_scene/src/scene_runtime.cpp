@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdio>
+#include <ctime>
 #include <mutex>
 #include <utility>
 
@@ -9,7 +11,10 @@
 #include "scene_message.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/scene_store.hpp"
+#include "wisp/hal/display_geometry.hpp"
+#include "wisp/scene/minute_ticker.hpp"
 #include "wisp/scene/scene_view.hpp"
+#include "wisp/ui/strings.hpp"
 
 namespace wisp::scene {
 
@@ -63,6 +68,12 @@ struct SceneRuntime::Foreground {
     std::unique_ptr<SceneInstance> scene;
     // scene.on_show() ran and on_hide() has not.
     bool shown = false;
+    MinuteTicker ticker;
+    // What the scene last saw, for "battery" and "lang".
+    bool has_battery = false;
+    int64_t battery = 0;
+    bool charging = false;
+    std::string lang;
 };
 
 struct SceneRuntime::UiSide {
@@ -107,11 +118,25 @@ Result<void> SceneRuntime::start() {
         deps_.ui.set_frame_hook({});
         return Result<void>::err(ErrorCode::NoMemory, "cannot start the scene task");
     }
+    // The bus's dispatcher only queues a message: the scene task reads
+    // the state itself, so a dropped or late event cannot leave stale data.
+    power_sub_ = deps_.bus.subscribe("power.charging.changed", [this](const core::Event&) {
+        push(make_message("", 0, msg::Device{DeviceEvent::Battery, {}}), 0);
+    });
+    settings_sub_ = deps_.bus.subscribe("system.settings", [this](const core::Event& e) {
+        auto it = e.payload.find("language");
+        if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
+        if (!push(make_message("", 0, msg::Device{DeviceEvent::Lang, it->second.as_string()}), 0) &&
+            running_)
+            WLOG_W(kTag, "language change not passed on: scene queue full");
+    });
     return Result<void>::ok();
 }
 
 void SceneRuntime::stop() {
     if (!started_ || !running_.exchange(false)) return;
+    deps_.bus.unsubscribe(power_sub_);
+    deps_.bus.unsubscribe(settings_sub_);
     if (task_) {
         // The task keeps taking messages, so this always gets in.
         auto quit = make_message("", 0, msg::Quit{});
@@ -302,7 +327,7 @@ void SceneRuntime::schedule(uint32_t ms, std::function<void()> fn) {
 
 void SceneRuntime::run() {
     while (!quit_) {
-        uint32_t timeout = os::kForever;
+        uint32_t timeout = scene_wait_ms();
         {
             std::lock_guard<os::Mutex> lock(delayed_mu_);
             uint64_t now = os::now_ms();
@@ -316,6 +341,7 @@ void SceneRuntime::run() {
             os::LargeUnique<SceneMessage> m(raw);
             const uint64_t t0 = os::now_ms();
             handle(*m);
+            close_if_asked();
             const uint64_t ms = os::now_ms() - t0;
             if (ms > kSlowMs) {
                 std::string_view id = m->scene_id;
@@ -325,6 +351,7 @@ void SceneRuntime::run() {
             }
         }
         run_delayed();
+        run_scene_clock();
     }
 }
 
@@ -382,9 +409,14 @@ void SceneRuntime::handle(SceneMessage& m) {
         Foreground* f = target(m);
         if (f != nullptr && f->scene && step(f->scene->list_range(b->list, b->first, b->count)))
             submit();
+    } else if (auto* b = std::get_if<msg::Device>(&body)) {
+        if (b->kind == DeviceEvent::Lang) {
+            if (!ui::parse_lang(b->lang)) return;
+            lang_override_ = b->lang;
+        }
+        device_event(b->kind);
     } else if (std::holds_alternative<msg::HttpDone>(body) ||
-               std::holds_alternative<msg::StoreDone>(body) ||
-               std::holds_alternative<msg::Device>(body)) {
+               std::holds_alternative<msg::StoreDone>(body)) {
         // Their bindings come later; a current one has nothing to do yet.
         target(m);
     } else if (auto* b = std::get_if<msg::CheckSources>(&body)) {
@@ -497,6 +529,18 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     f.package = open.package;
     f.store = std::move(open.store);
     f.scene = std::make_unique<SceneInstance>(id, f.package, config_.vm);
+    SceneApi& api = f.scene->api();
+    api.device = [this] { return device_info(); };
+    api.args = &f.args;
+    // Opened with the screen off: timers wait for it to come on.
+    if (!visible_) api.timers.pause(os::now_ms());
+    {
+        const DeviceInfo now = device_info();
+        f.has_battery = now.has_battery;
+        f.battery = now.battery;
+        f.charging = now.charging;
+        f.lang = now.lang;
+    }
     {
         std::lock_guard<os::Mutex> lock(status_mu_);
         foreground_id_ = id;
@@ -610,17 +654,147 @@ void SceneRuntime::close_foreground() {
 }
 
 void SceneRuntime::hide_scene() {
-    if (!fg_ || !fg_->scene || !fg_->shown) return;
-    fg_->shown = false;
-    if (step(fg_->scene->hook("on_hide"))) submit();
+    if (!fg_ || !fg_->scene) return;
+    fg_->scene->api().timers.pause(os::now_ms());
+    if (fg_->shown) {
+        fg_->shown = false;
+        if (step(fg_->scene->hook("on_hide"))) submit();
+    }
     // Spec 6.1: the store flushes before the screen goes off.
-    if (fg_->store) fg_->store->flush();
+    if (fg_ && fg_->store) fg_->store->flush();
 }
 
 void SceneRuntime::show_scene() {
-    if (!fg_ || !fg_->scene || fg_->shown) return;
+    if (!fg_ || !fg_->scene) return;
+    // Spec 3.4: timers first (each missed one once), the minute, on_show.
+    TimerSet& timers = fg_->scene->api().timers;
+    if (timers.paused()) {
+        timers.resume(os::now_ms());
+        run_timers();
+        if (!fg_ || !fg_->scene) return;
+        if (wants_minute()) {
+            fg_->ticker.force();
+            if (fg_->ticker.poll(wall_now(), os::now_ms())) minute();
+            if (!fg_ || !fg_->scene) return;
+        }
+    }
+    if (fg_->shown) return;
     fg_->shown = true;
     if (step(fg_->scene->hook("on_show"))) submit();
+}
+
+// --- Scene task: timers and device events -------------------------------------
+
+std::optional<int64_t> SceneRuntime::wall_now() const {
+    const int64_t t =
+        deps_.wall_clock ? deps_.wall_clock() : static_cast<int64_t>(std::time(nullptr));
+    if (t < MinuteTicker::kValidSince) return std::nullopt;
+    return t;
+}
+
+DeviceInfo SceneRuntime::device_info() const {
+    DeviceInfo i;
+    i.shape = deps_.shape;
+    i.safe = hal::safe_rect(deps_.shape);
+    const char* lang = lang_override_.empty() ? ui::lang_code(ui::lang()) : lang_override_.c_str();
+    std::snprintf(i.lang, sizeof(i.lang), "%s", lang);
+    if (auto t = wall_now()) {
+        i.has_time = true;
+        i.time = *t;
+    }
+    if (!deps_.device_status) return i;
+    const Value status = deps_.device_status();
+    if (const Value* b = status.find("battery"); b != nullptr) {
+        if (const Value* p = b->find("percent");
+            p != nullptr && p->type() == Value::Type::Int && p->as_int() >= 0) {
+            i.has_battery = true;
+            i.battery = p->as_int();
+        }
+        if (const Value* c = b->find("charging"); c != nullptr && c->type() == Value::Type::Bool)
+            i.charging = c->as_bool();
+    }
+    if (const Value* w = status.find("wifi"); w != nullptr && w->type() == Value::Type::String) {
+        const std::string& v = w->as_string();
+        if (v == "connecting" || v == "backoff" || v == "connected")
+            std::snprintf(i.wifi, sizeof(i.wifi), "%s", v.c_str());
+    }
+    return i;
+}
+
+bool SceneRuntime::wants_minute() const {
+    if (!fg_ || !fg_->scene) return false;
+    const SceneApi& api = fg_->scene->api();
+    return api.wants(DeviceEvent::Minute) || api.wants(DeviceEvent::Battery);
+}
+
+uint32_t SceneRuntime::scene_wait_ms() {
+    if (!fg_ || !fg_->scene) return os::kForever;
+    const uint64_t now = os::now_ms();
+    uint64_t wait = os::kForever;
+    if (auto due = fg_->scene->api().timers.next_due()) wait = *due > now ? *due - now : 0;
+    if (visible_ && wants_minute())
+        wait = std::min(wait, fg_->ticker.next_poll_ms(wall_now(), now));
+    return static_cast<uint32_t>(std::min<uint64_t>(wait, os::kForever));
+}
+
+void SceneRuntime::run_scene_clock() {
+    run_timers();
+    if (visible_ && wants_minute() && fg_->ticker.poll(wall_now(), os::now_ms())) minute();
+    close_if_asked();
+}
+
+void SceneRuntime::run_timers() {
+    if (!fg_ || !fg_->scene) return;
+    const std::vector<uint32_t> due = fg_->scene->api().timers.due(os::now_ms());
+    for (uint32_t id : due) {
+        if (!fg_ || !fg_->scene) return;
+        const bool once = !fg_->scene->api().timers.contains(id);
+        const uint64_t t0 = os::now_ms();
+        if (step(fg_->scene->timer(id, once))) submit();
+        const uint64_t ms = os::now_ms() - t0;
+        if (fg_ && ms > kSlowMs)
+            WLOG_W(scene_tag(fg_->id).c_str(), "slow message timer %" PRIu64 " ms", ms);
+        close_if_asked();
+    }
+}
+
+void SceneRuntime::minute() {
+    if (!fg_ || !fg_->scene) return;
+    const DeviceInfo info = device_info();
+    fire(DeviceEvent::Minute, info);
+    device_event(DeviceEvent::Battery);
+}
+
+void SceneRuntime::device_event(DeviceEvent ev) {
+    if (!fg_ || !fg_->scene) return;
+    Foreground& f = *fg_;
+    const DeviceInfo info = device_info();
+    if (ev == DeviceEvent::Battery) {
+        if (info.has_battery == f.has_battery && info.battery == f.battery &&
+            info.charging == f.charging)
+            return;
+        f.has_battery = info.has_battery;
+        f.battery = info.battery;
+        f.charging = info.charging;
+    } else if (ev == DeviceEvent::Lang) {
+        if (f.lang == info.lang) return;
+        f.lang = info.lang;
+    }
+    fire(ev, info);
+}
+
+void SceneRuntime::fire(DeviceEvent ev, const DeviceInfo& info) {
+    if (!fg_ || !fg_->scene) return;
+    const uint64_t t0 = os::now_ms();
+    if (step(fg_->scene->device(ev, info))) submit();
+    const uint64_t ms = os::now_ms() - t0;
+    if (fg_ && ms > kSlowMs)
+        WLOG_W(scene_tag(fg_->id).c_str(), "slow message %s %" PRIu64 " ms", device_event_name(ev),
+               ms);
+}
+
+void SceneRuntime::close_if_asked() {
+    if (fg_ && fg_->scene && fg_->scene->api().close_requested) close_foreground();
 }
 
 // --- UI thread ---------------------------------------------------------------

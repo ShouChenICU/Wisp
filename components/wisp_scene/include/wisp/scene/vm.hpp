@@ -136,8 +136,8 @@ enum class Budget : uint8_t {
                // Fresh when there was no call before.
 };
 
-// Upper bound of one print/log line built by log_lua_args(), before the
-// log layer applies its own limit.
+// Upper bound of one print/log line built by log_lua_args(); the log keeps
+// it whole (log::write_text()).
 constexpr size_t kLuaLogMaxBytes = 512;
 
 class Vm {
@@ -291,8 +291,9 @@ bool new_binding_metatable(lua_State* L, const char* name);
 // Converts every value on the stack with luaL_tolstring, joins them with
 // '\t', cuts the result at kLuaLogMaxBytes (on a UTF-8 character
 // boundary) and logs it at `level` with tag "scene.<id>" (the id of the
-// Vm that owns L). The log layer may shorten the line further. Leaves
-// the stack as it was. May raise (a __tostring metamethod can).
+// Vm that owns L; the tag fits the longest scene id). It goes to the log's
+// ring and sinks only, never to a file, so it is safe on the scene task.
+// Leaves the stack as it was. May raise (a __tostring metamethod can).
 void log_lua_args(lua_State* L, LogLevel level);
 
 }  // namespace wisp::scene

@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 
+#include "scene_api.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/scene_view.hpp"
@@ -44,8 +45,15 @@ public:
     std::optional<ScriptError> list_range(NodeId list, uint32_t first, uint32_t count);
     // __wisp.refresh_all(): every bound value again, into the batch.
     std::optional<ScriptError> refresh();
+    // A due wisp.timer callback (run_timer()).
+    std::optional<ScriptError> timer(uint32_t id, bool once);
+    // The wisp.device.on(ev) handlers, if the scene added any.
+    std::optional<ScriptError> device(DeviceEvent ev, const DeviceInfo& info);
 
     PatchBatch& batch() { return batch_; }
+    // The bindings' state; the runtime fills in its callbacks before
+    // start() and drives its timers.
+    SceneApi& api() { return api_; }
 
 private:
     std::optional<ScriptError> flush(std::optional<ScriptError> err);
@@ -53,8 +61,10 @@ private:
     std::string id_;
     std::shared_ptr<const core::ScenePackage> package_;
     VmLimits limits_;
-    // Declared before vm_: install_prelude() needs it to outlive the VM.
+    // Declared before vm_: install_prelude() and install_api() need them
+    // to outlive the VM.
     PatchBatch batch_;
+    SceneApi api_;
     std::unique_ptr<Vm> vm_;
     NodeId next_id_ = 1;
 };

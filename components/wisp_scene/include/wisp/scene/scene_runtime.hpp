@@ -44,6 +44,20 @@
 //           Then SceneStore::flush() and close(), the VM goes, and the UI
 //           thread loads the remembered screen and deletes the view.
 //   reload  close, then open with the same arguments; data stays.
+// Timers and device events (spec 3.4, 5.1, 5.2): the task's wait is
+// bounded by the scene's next TimerSet deadline and, while the screen is
+// on and the scene listens for "minute" or "battery", its MinuteTicker;
+// each due timer callback, each event, is a message of its own (own 200
+// ms budget, flush, submit). Screen off: timers pause, the ticker is not
+// polled. Screen on: timers resume (each missed one fires once), a
+// "minute" is forced, then on_show. "battery" fires when the percentage
+// or charging differ from what the scene last saw, checked on each
+// power.charging.changed and each minute; "lang" when system.settings
+// carries a language other than the one the scene last saw. info().lang
+// is the language of the last system.settings event, ui::lang() before
+// any (ui::set_lang() runs on the UI thread and may lag the event).
+// wisp.scene.close() closes the scene once its current message is done.
+//
 // A hook is a function the scene stores in its `scene` table
 // (scene.on_show = function() ... end).
 //
@@ -100,6 +114,8 @@ class SceneHttp;
 namespace wisp::scene {
 
 struct SceneMessage;
+struct DeviceInfo;
+enum class DeviceEvent : uint8_t;
 struct SceneWaiter;
 class SceneRuntime;
 
@@ -114,7 +130,17 @@ struct SceneRuntimeDeps {
     ui::SystemLayer& system;
     hal::ScreenShape shape;
     net::SceneHttp* http = nullptr;
+    // Battery, charging and Wi-Fi for wisp.device.info():
+    //   {"battery": null | {"percent": int (-1: unknown), "charging": bool},
+    //    "wifi": "off" | "connecting" | "backoff" | "connected"}
+    // (missing fields: unknown battery, not charging, "off"). Called on the
+    // scene task, which must not touch flash (task_config()): it returns
+    // values another thread keeps up to date (PowerMonitor's last sample,
+    // a Wi-Fi state snapshot), never reads Settings, NVS or files.
     std::function<Value()> device_status;
+    // Wall clock, seconds since the epoch; empty: std::time(). Called on
+    // the scene task, same rule.
+    std::function<int64_t()> wall_clock;
 };
 
 struct SceneRuntimeConfig {
@@ -217,6 +243,20 @@ private:
     void show_scene();
     void run_delayed();
     void drain_queue();
+    // How long the task may wait for the scene's timers and minute ticker.
+    uint32_t scene_wait_ms();
+    // Fires due timers, then the minute (and the battery check with it).
+    void run_scene_clock();
+    void run_timers();
+    void minute();
+    // `ev` for the foreground scene; battery and lang only if they changed.
+    void device_event(DeviceEvent ev);
+    void fire(DeviceEvent ev, const DeviceInfo& info);
+    // wisp.scene.close() was called: close now.
+    void close_if_asked();
+    DeviceInfo device_info() const;
+    std::optional<int64_t> wall_now() const;
+    bool wants_minute() const;
 
     // --- UI thread ---
     void ui_frame();
@@ -254,6 +294,10 @@ private:
     uint32_t loading_ = 0;
     bool visible_ = true;
     bool quit_ = false;
+    // The language of the last system.settings event ("" before any).
+    std::string lang_override_;
+    core::SubscriptionId power_sub_ = 0;
+    core::SubscriptionId settings_sub_ = 0;
 
     // UI thread only.
     struct UiSide;

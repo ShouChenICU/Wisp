@@ -9,6 +9,7 @@
 // parse_scene_manifest() checks every field it knows and ignores unknown
 // top-level fields, so a newer package with extra metadata still installs.
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,6 +27,9 @@ struct SceneManifest {
     int schema_version = 1;
     std::vector<std::string> http_hosts;  // permissions.http, at most 16
 };
+
+// The longest scene id.
+inline constexpr size_t kMaxSceneIdBytes = 32;
 
 // True if `id` matches ^[a-z0-9_-]{1,32}$.
 bool valid_scene_id(std::string_view id);

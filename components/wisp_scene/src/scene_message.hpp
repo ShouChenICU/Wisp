@@ -13,6 +13,7 @@
 #include <string>
 #include <variant>
 
+#include "scene_api.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/scene_repository.hpp"
@@ -111,9 +112,12 @@ struct ListRange {
 struct HttpDone {};
 struct StoreDone {};
 
-// A device event for the scene's wisp.device handlers.
+// A device event for the foreground scene's wisp.device handlers (sent
+// with instance 0 from the event bus). `lang`: the language code a
+// system.settings event carried.
 struct Device {
-    std::string kind;
+    DeviceEvent kind = DeviceEvent::Battery;
+    std::string lang;
 };
 
 // check_sources(): compile the files the job holds.

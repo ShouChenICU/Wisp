@@ -61,6 +61,15 @@ public:
 
 namespace log {
 
+// write() keeps at most this much of a formatted message (it formats into
+// a stack buffer of this size, and small task stacks log too).
+inline constexpr size_t kMaxMsgBytes = 255;
+// write_text() keeps at most this much of a message it is given whole.
+inline constexpr size_t kMaxTextBytes = 512;
+// Both keep at most this much of a tag: enough for "scene." plus the
+// longest scene id (32 bytes, scene_manifest.hpp).
+inline constexpr size_t kMaxTagBytes = 47;
+
 // (Re)initializes the logging subsystem with a ring buffer of
 // `ring_bytes`, allocated via os::alloc(ring_bytes, mem), replacing any
 // previous ring of a different size or memory class (existing sinks and
@@ -96,14 +105,21 @@ void set_level(LogLevel level);
 // the next seq: always into the ring buffer, and (if not currently inside
 // a nested call from a sink) delivered to every registered sink. Messages
 // at or above the current level only; see set_level(). The formatted
-// message is truncated to 255 bytes and the tag to 31 bytes (the copy
-// lives on the caller's stack), never inside a UTF-8 character. Prefer the WLOG_D/I/W/E macros
-// below over calling this directly.
+// message is truncated to kMaxMsgBytes and the tag to kMaxTagBytes (the
+// copies live on the caller's stack), never inside a UTF-8 character.
+// Prefer the WLOG_D/I/W/E macros below over calling this directly.
 void write(LogLevel level, const char* tag, const char* fmt, ...)
 #if defined(__GNUC__) || defined(__clang__)
     __attribute__((format(printf, 3, 4)))
 #endif
     ;
+
+// Records `msg` as it is, like write() but without formatting and with
+// the longer kMaxTextBytes limit (a longer one is cut there, never inside
+// a UTF-8 character): for lines that are built elsewhere, such as a
+// scene's print and wisp.log (wisp/scene/vm.hpp). Its frame holds a copy
+// only when `msg` must be cut; null `tag` or `msg` count as "".
+void write_text(LogLevel level, const char* tag, const char* msg);
 
 // The ring buffer's current lines, oldest (lowest seq) first.
 std::vector<LogEntry> ring_entries();

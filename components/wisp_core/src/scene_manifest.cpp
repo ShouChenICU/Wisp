@@ -15,7 +15,6 @@ namespace {
 // scene.json is a few hundred bytes; the cap keeps a hostile package from
 // making the parser build a large Value tree in internal RAM.
 constexpr size_t kMaxManifestBytes = 16 * 1024;
-constexpr size_t kMaxIdBytes = 32;
 constexpr size_t kMaxNameBytes = 32;
 // SemVer sets no limit; the version is shown in lists and logs.
 constexpr size_t kMaxVersionBytes = 64;
@@ -207,7 +206,7 @@ bool string_field(const Value& root, std::string_view key, std::string& out, boo
 }  // namespace
 
 bool valid_scene_id(std::string_view id) {
-    if (id.empty() || id.size() > kMaxIdBytes) {
+    if (id.empty() || id.size() > kMaxSceneIdBytes) {
         return false;
     }
     for (char c : id) {

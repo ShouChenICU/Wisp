@@ -1276,13 +1276,12 @@ TEST(Vm, PrintGoesToSceneLog) {
     ASSERT_EQ(lines.size(), 2u);
     EXPECT_EQ(lines[1].msg, "nil\ttrue\t1.5\tT");
 
-    // print joins and cuts at kLuaLogMaxBytes; the log layer then keeps
-    // at most 255 bytes of any line, so that is what reaches the ring.
+    // print joins and cuts at kLuaLogMaxBytes, and the log keeps that whole.
     err = run(*vm, R"(print(string.rep("x", 600)))");
     ASSERT_FALSE(err) << describe(err);
     lines = scene_lines("scene.t");
     ASSERT_EQ(lines.size(), 3u);
-    EXPECT_EQ(lines[2].msg, std::string(std::min<size_t>(wisp::scene::kLuaLogMaxBytes, 255), 'x'));
+    EXPECT_EQ(lines[2].msg, std::string(wisp::scene::kLuaLogMaxBytes, 'x'));
 
     // A failing __tostring is an ordinary, catchable error.
     err = run(*vm, R"(print(setmetatable({}, {__tostring = function() error("ts") end})))");

@@ -6,6 +6,8 @@
 #include <string>
 #include <utility>
 
+#include "wisp/core/scene_manifest.hpp"
+
 namespace wisp::scene {
 
 namespace {
@@ -1238,6 +1240,12 @@ bool new_binding_metatable(lua_State* L, const char* name) {
     return true;
 }
 
+// "scene.<id>" whole, for every id scene.json allows.
+constexpr size_t kSceneTagBytes = sizeof("scene.") - 1 + core::kMaxSceneIdBytes;
+static_assert(kSceneTagBytes <= log::kMaxTagBytes);
+// The log keeps the whole line.
+static_assert(kLuaLogMaxBytes <= log::kMaxTextBytes);
+
 void log_lua_args(lua_State* L, LogLevel level) {
     char line[kLuaLogMaxBytes + 1];
     size_t len = 0;
@@ -1262,9 +1270,9 @@ void log_lua_args(lua_State* L, LogLevel level) {
         if (cut) break;
     }
     line[len] = '\0';
-    char tag[48];
+    char tag[kSceneTagBytes + 1];
     std::snprintf(tag, sizeof(tag), "scene.%s", owner(L)->scene_id().c_str());
-    log::write(level, tag, "%s", line);
+    log::write_text(level, tag, line);
 }
 
 }  // namespace wisp::scene

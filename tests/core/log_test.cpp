@@ -135,27 +135,76 @@ TEST(Log, SinkSeesTheRingsSeqAndTimestamp) {
     wisp::log::remove_sink(&s);
 }
 
-// Tags are cut to 31 bytes, never inside a character; the sink and the ring
-// agree on the cut.
+// Tags are cut to kMaxTagBytes (47), never inside a character; the sink
+// and the ring agree on the cut. "scene." plus the longest scene id (32
+// bytes) fits.
 TEST(Log, LongTagsAreTruncated) {
+    static_assert(wisp::log::kMaxTagBytes == 47);
     wisp::log::reset_for_test();
     wisp::log::init(4096);
     CaptureSink s;
     wisp::log::add_sink(&s);
 
-    WLOG_I(std::string(40, 't').c_str(), "ascii");
-    // 30 ASCII bytes then a 3-byte character: a plain cut at 31 would split it.
-    const std::string wide = std::string(30, 'w') + "\xe4\xb8\xad" + "tail";
+    WLOG_I(std::string(60, 't').c_str(), "ascii");
+    // 46 ASCII bytes then a 3-byte character: a plain cut at 47 would split it.
+    const std::string wide = std::string(46, 'w') + "\xe4\xb8\xad" + "tail";
     WLOG_I(wide.c_str(), "wide");
-    WLOG_I(std::string(31, 'x').c_str(), "exact");
+    WLOG_I(std::string(47, 'x').c_str(), "exact");
+    const std::string scene = "scene." + std::string(32, 'i');
+    WLOG_I(scene.c_str(), "scene");
 
     const auto ring = wisp::log::ring_entries();
-    ASSERT_EQ(ring.size(), 3u);
-    ASSERT_EQ(s.records.size(), 3u);
-    EXPECT_EQ(ring[0].tag, std::string(31, 't'));
-    EXPECT_EQ(ring[1].tag, std::string(30, 'w'));
-    EXPECT_EQ(ring[2].tag, std::string(31, 'x'));
+    ASSERT_EQ(ring.size(), 4u);
+    ASSERT_EQ(s.records.size(), 4u);
+    EXPECT_EQ(ring[0].tag, std::string(47, 't'));
+    EXPECT_EQ(ring[1].tag, std::string(46, 'w'));
+    EXPECT_EQ(ring[2].tag, std::string(47, 'x'));
+    EXPECT_EQ(ring[3].tag, scene);
     for (size_t i = 0; i < ring.size(); ++i) EXPECT_EQ(s.records[i].tag, ring[i].tag) << i;
+    wisp::log::remove_sink(&s);
+}
+
+// write_text() takes a finished line and keeps up to kMaxTextBytes (512) of
+// it, more than the printf-style write(), on a character boundary.
+TEST(Log, WriteTextKeepsLongerLines) {
+    static_assert(wisp::log::kMaxTextBytes == 512);
+    wisp::log::reset_for_test();
+    wisp::log::init(8192);
+    CaptureSink s;
+    wisp::log::add_sink(&s);
+
+    wisp::log::write_text(wisp::LogLevel::Warn, "t", std::string(300, 'a').c_str());
+    wisp::log::write_text(wisp::LogLevel::Info, "t", std::string(600, 'b').c_str());
+    // 2 + 170 * 3 = 512 bytes, then more: the cut keeps whole characters.
+    std::string wide = "cc";
+    for (int i = 0; i < 200; ++i) wide += "\xe4\xb8\xad";
+    wisp::log::write_text(wisp::LogLevel::Info, "t", wide.c_str());
+    std::string wide2 = "c";
+    for (int i = 0; i < 200; ++i) wide2 += "\xe4\xb8\xad";
+    wisp::log::write_text(wisp::LogLevel::Info, "t", wide2.c_str());
+    wisp::log::write_text(wisp::LogLevel::Debug, std::string(60, 'g').c_str(), "x");
+    wisp::log::write_text(wisp::LogLevel::Info, nullptr, nullptr);
+
+    const auto ring = wisp::log::ring_entries();
+    ASSERT_EQ(ring.size(), 6u);
+    ASSERT_EQ(s.records.size(), 6u);
+    EXPECT_EQ(ring[0].level, wisp::LogLevel::Warn);
+    EXPECT_EQ(ring[0].msg, std::string(300, 'a'));
+    EXPECT_EQ(ring[1].msg, std::string(512, 'b'));
+    EXPECT_EQ(ring[2].msg, wide.substr(0, 512));
+    EXPECT_EQ(ring[3].msg, wide2.substr(0, 1 + 170 * 3));
+    EXPECT_EQ(ring[4].tag, std::string(47, 'g'));
+    EXPECT_EQ(ring[5].tag, "");
+    EXPECT_EQ(ring[5].msg, "");
+    for (size_t i = 0; i < ring.size(); ++i) {
+        EXPECT_EQ(s.records[i].msg, ring[i].msg) << i;
+        EXPECT_EQ(s.records[i].tag, ring[i].tag) << i;
+    }
+
+    // The level filter applies as for write().
+    wisp::log::set_level(wisp::LogLevel::Warn);
+    wisp::log::write_text(wisp::LogLevel::Info, "t", "dropped");
+    EXPECT_EQ(wisp::log::ring_entries().size(), 6u);
     wisp::log::remove_sink(&s);
 }
 

@@ -13,11 +13,6 @@ namespace wisp::log {
 
 namespace {
 
-constexpr size_t kMaxMsgBytes = 255;
-// Tags are short literals. The cap keeps write()'s stack copy small, since
-// small ESP task stacks log too.
-constexpr size_t kMaxTagBytes = 31;
-
 bool is_utf8_continuation(char c) { return (static_cast<uint8_t>(c) & 0xC0) == 0x80; }
 
 // Where to cut `text` (at least limit + 1 bytes long) to keep at most
@@ -256,22 +251,12 @@ void set_level(LogLevel level) {
     state().level.store(static_cast<int>(level), std::memory_order_relaxed);
 }
 
-void write(LogLevel level, const char* tag, const char* fmt, ...) {
-    State& s = state();
-    if (static_cast<int>(level) < s.level.load(std::memory_order_relaxed)) {
-        return;
-    }
+namespace {
 
-    // One byte past the limit is rendered too, so the cut can tell whether
-    // it would split a character.
-    char msg[kMaxMsgBytes + 2];
-    va_list args;
-    va_start(args, fmt);
-    const int full = std::vsnprintf(msg, sizeof(msg), fmt, args);
-    va_end(args);
-    if (full > static_cast<int>(kMaxMsgBytes)) {
-        msg[cut_at_char_boundary(msg, kMaxMsgBytes)] = '\0';
-    }
+// Records a finished message (already within its limit) under `tag`, cut
+// to kMaxTagBytes: into the ring, then to the sinks.
+void record(LogLevel level, const char* tag, const char* msg) {
+    State& s = state();
     if (tag == nullptr) tag = "";
     char tag_buf[kMaxTagBytes + 1];
     const size_t full_tag = std::strlen(tag);
@@ -324,6 +309,54 @@ void write(LogLevel level, const char* tag, const char* fmt, ...) {
     {
         std::lock_guard<os::Mutex> lock(s.mutex);
         --s.deliveries[epoch];
+    }
+}
+
+bool filtered(LogLevel level) {
+    return static_cast<int>(level) < state().level.load(std::memory_order_relaxed);
+}
+
+// The longer of the two cut copies below must fit the ring's 16-bit length.
+static_assert(kMaxTextBytes < UINT16_MAX && kMaxTagBytes < UINT8_MAX);
+
+}  // namespace
+
+void write(LogLevel level, const char* tag, const char* fmt, ...) {
+    if (filtered(level)) return;
+    // One byte past the limit is rendered too, so the cut can tell whether
+    // it would split a character.
+    char msg[kMaxMsgBytes + 2];
+    va_list args;
+    va_start(args, fmt);
+    const int full = std::vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+    if (full > static_cast<int>(kMaxMsgBytes)) {
+        msg[cut_at_char_boundary(msg, kMaxMsgBytes)] = '\0';
+    }
+    record(level, tag, msg);
+}
+
+namespace {
+
+// Kept out of write_text() so that only a message that must be cut pays
+// for the copy's stack.
+[[gnu::noinline]] void record_cut(LogLevel level, const char* tag, const char* msg) {
+    char cut[kMaxTextBytes + 1];
+    const size_t at = cut_at_char_boundary(msg, kMaxTextBytes);
+    std::memcpy(cut, msg, at);
+    cut[at] = '\0';
+    record(level, tag, cut);
+}
+
+}  // namespace
+
+void write_text(LogLevel level, const char* tag, const char* msg) {
+    if (filtered(level)) return;
+    if (msg == nullptr) msg = "";
+    if (std::strlen(msg) > kMaxTextBytes) {
+        record_cut(level, tag, msg);
+    } else {
+        record(level, tag, msg);
     }
 }
 

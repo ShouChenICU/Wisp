@@ -128,6 +128,7 @@ std::optional<ScriptError> SceneInstance::start() {
     vm_->set_sources([pkg](std::string_view path) { return file_of(*pkg, path); });
     if (auto err = install_prelude(*vm_, batch_)) return err;
     if (auto err = install_ui(*vm_)) return err;
+    if (auto err = install_api(*vm_, api_)) return err;
     lua_State* L = vm_->L();
     if (!lua_checkstack(L, 2)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     lua_pushcfunction(L, install_scene_table);
@@ -166,6 +167,15 @@ std::optional<ScriptError> SceneInstance::event(NodeId node, UiEvent ev, const P
 
 std::optional<ScriptError> SceneInstance::list_range(NodeId list, uint32_t first, uint32_t count) {
     return flush(build_list_rows(*vm_, list, first, count, next_id_));
+}
+
+std::optional<ScriptError> SceneInstance::timer(uint32_t id, bool once) {
+    return flush(run_timer(*vm_, id, once));
+}
+
+std::optional<ScriptError> SceneInstance::device(DeviceEvent ev, const DeviceInfo& info) {
+    if (!api_.wants(ev)) return std::nullopt;
+    return flush(run_device_handlers(*vm_, ev, info));
 }
 
 std::optional<ScriptError> SceneInstance::refresh() {
