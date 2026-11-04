@@ -54,7 +54,8 @@ wisp_test(NAME firmware_update_test SRCS core/firmware_update_test.cpp
 wisp_test(NAME storage_manager_test SRCS core/storage_manager_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 20)
 wisp_test(NAME power_monitor_test SRCS core/power_monitor_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings TIMEOUT 20)
-wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui)
+wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui wisp_port_sim_os)
+wisp_test(NAME lv_heap_test SRCS ui/lv_heap_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME strings_test SRCS ui/strings_test.cpp LIBS wisp_ui wisp_port_sim_os)
 wisp_test(NAME ui_runtime_test SRCS ui/ui_runtime_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME overlay_test SRCS ui/overlay_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
@@ -131,7 +132,7 @@ target_include_directories(qmi8658_conv_test PRIVATE ${WISP_ROOT}/drivers/qmi865
 # the whole wisp_port_esp component (which never builds on the host).
 # The masked-fill blend hook is plain C over LVGL's types; LVGL's own C
 # path (the host build has no hooks) is the reference.
-wisp_test(NAME lv_blend_mask_test SRCS port_esp/lv_blend_mask_test.cpp LIBS wisp_ui)
+wisp_test(NAME lv_blend_mask_test SRCS port_esp/lv_blend_mask_test.cpp LIBS wisp_ui wisp_port_sim_os)
 target_include_directories(lv_blend_mask_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp)
 wisp_test(NAME audio_downmix_test SRCS port_esp/audio_downmix_test.cpp)
 target_include_directories(audio_downmix_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)

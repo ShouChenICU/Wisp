@@ -5,7 +5,8 @@
  * Based on LVGL's own lv_conf_template.h (MIT licensed, see
  * https://github.com/lvgl/lvgl/blob/v9.5.0/lv_conf_template.h), with the
  * project-specific overrides collected in docs/references.md applied:
- * CLIB stdlib wrappers, logging routed through WLOG_I (see ui_runtime.cpp),
+ * CLIB string/sprintf wrappers and a custom heap in PSRAM (see
+ * wisp/ui/lv_heap.hpp), logging routed through WLOG_I (see ui_runtime.cpp),
  * the Montserrat 16/24 fonts plus the CJK fallback font, and the snapshot /
  * msgbox / sysmon+perf-monitor modules used by wisp::ui::UiRuntime. Every
  * other setting is an unmodified LVGL default. No platform display/input
@@ -61,8 +62,12 @@
  * - LV_STDLIB_MICROPYTHON: MicroPython implementation
  * - LV_STDLIB_RTTHREAD:    RT-Thread implementation
  * - LV_STDLIB_CUSTOM:      Implement the functions externally
+ *
+ * Wisp: CUSTOM, implemented by components/wisp_ui/src/lv_mem_wisp.cpp on
+ * os::alloc(Mem::Large). CLIB's malloc would put every object (each well
+ * under 16 KB) in internal RAM (AGENTS.md section 8).
  */
-#define LV_USE_STDLIB_MALLOC    LV_STDLIB_CLIB
+#define LV_USE_STDLIB_MALLOC    LV_STDLIB_CUSTOM
 
 /** Possible values
  * - LV_STDLIB_BUILTIN:     LVGL's built in implementation

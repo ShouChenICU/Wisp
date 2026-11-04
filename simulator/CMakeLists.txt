@@ -32,6 +32,22 @@ add_subdirectory(${WISP_ROOT}/components/wisp_scene wisp_scene)
 add_subdirectory(${WISP_ROOT}/components/wisp_app wisp_app)
 add_subdirectory(${WISP_ROOT}/components/wisp_port_sim wisp_port_sim)
 
+# lv_conf.h selects LV_STDLIB_CUSTOM, so `lvgl` calls lv_malloc_core() and
+# friends, which wisp_ui's src/lv_mem_wisp.cpp provides on os::alloc().
+# Compiled into `lvgl` itself here, not into wisp_ui: both are static
+# libraries and lvgl -> wisp_ui -> lvgl would be a cycle. That puts the
+# counter behind wisp::ui::lv_heap_bytes() in `lvgl` too, which every
+# wisp_ui user links anyway. The ESP-IDF build keeps the file in wisp_ui
+# (see components/wisp_ui/CMakeLists.txt).
+target_sources(lvgl PRIVATE ${WISP_ROOT}/components/wisp_ui/src/lv_mem_wisp.cpp)
+target_include_directories(lvgl PRIVATE ${WISP_ROOT}/components/wisp_ui/include)
+set_source_files_properties(
+    ${WISP_ROOT}/components/wisp_ui/src/lv_mem_wisp.cpp
+    TARGET_DIRECTORY lvgl
+    PROPERTIES COMPILE_OPTIONS "-fno-exceptions;-fno-rtti"
+)
+target_link_libraries(lvgl PUBLIC wisp_os wisp_port_sim_os)
+
 # The simulator executable itself: parses SimOptions
 # (simulator/sim_options.{hpp,cpp}) and runs the SDL main loop
 # (simulator/main.cpp) over a SimBoard from wisp_port_sim_dev.

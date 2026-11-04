@@ -8,15 +8,35 @@
 # comment.
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 
+# src/lv_mem_wisp.cpp holds LVGL's LV_STDLIB_CUSTOM heap hooks, which
+# lvgl itself calls. On ESP-IDF it is part of wisp_ui (see the link note
+# below). On the host `lvgl` is a static library that would then depend on
+# wisp_ui and back, so simulator/CMakeLists.txt compiles the file into the
+# `lvgl` target instead.
+set(WISP_UI_SRCS
+    src/a8_font.cpp src/align.cpp src/overlay.cpp src/ui_runtime.cpp src/strings.cpp src/strings_zh.cpp
+    src/strings_ja.cpp src/strings_en.cpp fonts/lv_font_cjk_16.c
+)
+if(ESP_PLATFORM)
+    list(APPEND WISP_UI_SRCS src/lv_mem_wisp.cpp)
+endif()
+
 wisp_component(
     NAME wisp_ui
-    SRCS src/a8_font.cpp src/align.cpp src/overlay.cpp src/ui_runtime.cpp src/strings.cpp src/strings_zh.cpp src/strings_ja.cpp
-         src/strings_en.cpp fonts/lv_font_cjk_16.c
+    SRCS ${WISP_UI_SRCS}
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core
     IDF_REQUIRES lvgl__lvgl
     HOST_LIBS lvgl
 )
+
+# Only lvgl calls the hooks in src/lv_mem_wisp.cpp, and the IDF link line
+# can scan libwisp_ui.a for the last time before liblvgl__lvgl.a, so the
+# linker is told up front that the object is needed (the same approach as
+# wisp_port_esp's SIMD blend hooks). One symbol pulls in the whole object.
+if(ESP_PLATFORM)
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-u lv_malloc_core")
+endif()
 
 # Rendering path: always -O2 on the device, whatever the global level
 # (connectivity spec 3.2; see firmware/CMakeLists.txt). The host build
