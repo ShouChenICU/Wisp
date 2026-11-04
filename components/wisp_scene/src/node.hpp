@@ -107,6 +107,12 @@ void describe_problem(lua_State* L, int idx, Prop p, Check c, const char* kind, 
 int raise_prop(lua_State* L, const char* file, int line, Widget w, Prop p, Check c, int idx,
                const char* kind);
 
+// A watch emitted `value` (at idx) for `prop` of node `id`: if that is
+// the property ui.ref():value() reports for the node's widget, the
+// values table follows it (nil becomes the widget's default value). Runs
+// inside emit(); can raise (it may allocate).
+void sync_value(lua_State* L, NodeId id, Prop prop, int idx);
+
 // Adds the C functions of the list, canvas and chart effects (list_reset,
 // set_series, canvas_begin, canvas_end; widgets.cpp) to the internal
 // table at `internal`. Runs inside install_ui()'s protected call.

@@ -65,7 +65,8 @@
 //   emit(node, prop, value)
 //       The C function behind watch: PatchBatch::set_prop(). Raises
 //       "value too large" or "ui update too large" past the limits in
-//       patch_batch.hpp.
+//       patch_batch.hpp. When prop is what ui.ref():value() reports for
+//       the node, its values entry follows (schema.hpp).
 //   kind(v) -> "state" | "computed" | "bind" | "scope" | nil
 // Later parts of the runtime may add fields to it.
 //

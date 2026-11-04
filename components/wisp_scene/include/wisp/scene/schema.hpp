@@ -54,7 +54,8 @@
 //   values[id]  the current value of an input (text), slider (value),
 //               checkbox or switch (checked); set_value(id, v) updates it
 //               (the scene task calls it before dispatching a Change
-//               event)
+//               event), and so does a watch that emits a new bound value
+//               for that property (nil: the widget's default)
 //
 // ui.show_if(s, node) sets node's hidden to bind(s, not v) (or to not s
 // for a plain boolean) and returns node: the widget is only shown and
@@ -230,9 +231,10 @@ std::optional<ScriptError> install_ui(Vm& vm);
 // ui.screen. Registers a watch for every bindable property given a
 // state, so it runs as scene code under Vm::call() (continuing the
 // current message's time budget), and rebuilds the internal nodes, refs
-// and values tables. Leaves the stack as it was. While it runs, ui.ref
-// handle methods refuse to work, so nothing the watches evaluate can
-// push ops ahead of the Build (or past the size it was checked against).
+// and values tables. The watches and widget effects of the tree collected
+// before are stopped (they share one scope per tree). Leaves the stack as it was. While it runs,
+// ui.ref handle methods refuse to work, so nothing the watches evaluate can push ops ahead of the
+// Build (or past the size it was checked against).
 //
 // Errors carry the file and line of the constructor call that built the
 // node at fault ("main.lua:20: entry must return ui.screen (got

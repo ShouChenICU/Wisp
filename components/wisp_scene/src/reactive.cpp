@@ -5,6 +5,7 @@
 #include <string_view>
 #include <utility>
 
+#include "node.hpp"
 #include "wisp/scene/schema.hpp"
 
 namespace wisp::scene {
@@ -79,6 +80,8 @@ int emit(lua_State* L) {
         }
     }
     if (!add_patch(L, batch)) return luaL_error(L, "ui update too large");
+    if (prop < static_cast<lua_Integer>(kPropCount))
+        node::sync_value(L, static_cast<NodeId>(lua_tointeger(L, 1)), static_cast<Prop>(prop), 3);
     return 0;
 }
 

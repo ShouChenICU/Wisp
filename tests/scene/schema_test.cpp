@@ -573,6 +573,56 @@ return ui.screen{
                        "main.lua:2: duplicate ref 'a'");
 }
 
+// A bound text, value or checked changes what h:value() reports too, not
+// only what the widget shows.
+TEST(Schema, RefValueFollowsBoundValues) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.build(R"(_G.name, _G.vol, _G.on = state("a"), state(5), state(false)
+return ui.screen{
+    ui.input{ref = "name", text = _G.name},
+    ui.slider{ref = "vol", value = _G.vol, min = 2},
+    ui.switch{ref = "on", checked = _G.on},
+    ui.label{ref = "title", text = _G.name},
+})");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.message(R"(
+        assert(ui.ref("name"):value() == "a")
+        _G.name:set("b") _G.vol:set(7) _G.on:set(true)
+        assert(ui.ref("name"):value() == "a", "not before the flush")
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.message(R"(
+        assert(ui.ref("name"):value() == "b", tostring(ui.ref("name"):value()))
+        assert(ui.ref("vol"):value() == 7)
+        assert(ui.ref("on"):value() == true)
+        _G.name:set(nil) _G.vol:set(nil)
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    // An unset value reads as the widget's default.
+    err = s.message(R"(
+        assert(ui.ref("name"):value() == "", tostring(ui.ref("name"):value()))
+        assert(ui.ref("vol"):value() == 2)
+    )");
+    ASSERT_FALSE(err) << describe(err);
+}
+
+// Collecting a new tree stops the watches of the old one, so they emit
+// nothing for nodes that are gone.
+TEST(Schema, RecollectStopsTheOldTreesWatches) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.build(R"(_G.old = state("a")
+return ui.screen{ ui.label{text = _G.old} })");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.build(R"(return ui.screen{ ui.label{text = "new"} })");
+    ASSERT_FALSE(err) << describe(err);
+    s.batch.clear();
+    err = s.message("_G.old:set('b')");
+    ASSERT_FALSE(err) << describe(err);
+    EXPECT_EQ(s.batch.size(), 0u);
+}
+
 TEST(Schema, RefScrollToEmitsScrollOp) {
     Scene s;
     ASSERT_FALSE(s.installed) << describe(s.installed);

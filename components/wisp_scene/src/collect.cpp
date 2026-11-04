@@ -47,6 +47,9 @@ constexpr size_t kCheckEvery = 256;
 // Registry key of the node count of the tree collected last: list rows
 // share kMaxNodes with it.
 char kTreeNodesKey;
+// Registry key of the scope of the tree collected last: its watches and
+// widget effects, stopped when the next tree is collected.
+char kTreeScopeKey;
 
 // Stack slots of collect_entry().
 constexpr int kCtxSlot = 1;
@@ -54,7 +57,8 @@ constexpr int kRootSlot = 2;
 constexpr int kNodesSlot = 3;
 constexpr int kRefsSlot = 4;
 constexpr int kValuesSlot = 5;
-constexpr int kWalkBase = 5;  // (node, parent id) pairs above this
+constexpr int kScopeSlot = 6;
+constexpr int kWalkBase = 6;  // (node, parent id) pairs above this
 
 // Raises at the position the node at `node` was built at.
 int raise_at_node(lua_State* L, int node, const char* fmt, const char* arg = "") {
@@ -311,11 +315,23 @@ int collect_entry(lua_State* L) {
     // The old tree's lists and widget effects go with it.
     lua_rawgetp(L, LUA_REGISTRYINDEX, &kResetWidgetsKey);
     lua_call(L, 0, 0);
+    // So do its watches: the next tree has other node ids.
+    if (lua_rawgetp(L, LUA_REGISTRYINDEX, &kTreeScopeKey) != LUA_TNIL) {
+        lua_getfield(L, -2, "dispose");
+        lua_insert(L, -2);
+        lua_call(L, 1, 0);
+    } else {
+        lua_pop(L, 1);
+    }
     reset_tree_tables(L, lua_gettop(L));
+    lua_getfield(L, -1, "scope");
+    lua_call(L, 0, 1);
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &kTreeScopeKey);
     lua_pop(L, 1);
-    lua_rawgetp(L, LUA_REGISTRYINDEX, &kNodesKey);   // kNodesSlot
-    lua_rawgetp(L, LUA_REGISTRYINDEX, &kRefsKey);    // kRefsSlot
-    lua_rawgetp(L, LUA_REGISTRYINDEX, &kValuesKey);  // kValuesSlot
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &kNodesKey);      // kNodesSlot
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &kRefsKey);       // kRefsSlot
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &kValuesKey);     // kValuesSlot
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &kTreeScopeKey);  // kScopeSlot
     lua_pushvalue(L, kRootSlot);
     lua_pushinteger(L, 0);
     while (lua_gettop(L) > kWalkBase) {
@@ -474,6 +490,37 @@ int rows_entry(lua_State* L) {
 
 }  // namespace
 
+namespace node {
+
+void sync_value(lua_State* L, NodeId id, Prop prop, int idx) {
+    idx = lua_absindex(L, idx);
+    luaL_checkstack(L, 4, "sync_value");
+    int top = lua_gettop(L);
+    if (lua_rawgetp(L, LUA_REGISTRYINDEX, &kNodesKey) != LUA_TTABLE ||
+        lua_rawgeti(L, -1, id) != LUA_TUSERDATA) {
+        lua_settop(L, top);
+        return;
+    }
+    // The nodes table holds only nodes.
+    auto w = static_cast<Widget>(static_cast<NodeHeader*>(lua_touserdata(L, -1))->widget);
+    if (value_prop(w) != prop) {
+        lua_settop(L, top);
+        return;
+    }
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &kValuesKey);
+    int values = lua_gettop(L);
+    if (lua_isnil(L, idx)) {
+        lua_getiuservalue(L, values - 1, 1);
+        push_default_value(L, w, lua_gettop(L));
+    } else {
+        lua_pushvalue(L, idx);
+    }
+    lua_rawseti(L, values, id);
+    lua_settop(L, top);
+}
+
+}  // namespace node
+
 std::optional<ScriptError> build_list_rows(Vm& vm, NodeId list, uint32_t first, uint32_t count,
                                            NodeId& next_id) {
     lua_State* L = vm.L();
@@ -508,8 +555,8 @@ std::optional<ScriptError> collect_tree(Vm& vm, int index, NodeId& next_id, Buil
     if (!lua_checkstack(L, 3)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     PatchBatch* batch = patch_batch(L);
     Collect c{
-        &vm,        &out.nodes, next_id,    0, (batch ? batch->bytes() : 0) + kOpOverheadBytes,
-        kNodesSlot, kRefsSlot,  kValuesSlot};
+        &vm,        &out.nodes, next_id,     0,     (batch ? batch->bytes() : 0) + kOpOverheadBytes,
+        kNodesSlot, kRefsSlot,  kValuesSlot, false, kScopeSlot};
     lua_pushcfunction(L, collect_entry);
     lua_pushlightuserdata(L, &c);
     lua_pushvalue(L, index);
