@@ -21,7 +21,8 @@ namespace wisp::core {
 // "scene.<id>" and leaves the new package installed), otherwise
 // host.on_installed() is told. A failed close (Timeout, Busy) stops the
 // install before anything is replaced, with that code and a message
-// saying the scene did not close. While this runs, SceneRepository::
+// saying so (after a Timeout the close is still queued and the scene
+// closes later, on its old package). While this runs, SceneRepository::
 // installing() is true for the id, and the host refuses to open it.
 // Blocks for as long as the check and the host's calls take, so it must not
 // run on the UI thread, the scene task or the storage worker.

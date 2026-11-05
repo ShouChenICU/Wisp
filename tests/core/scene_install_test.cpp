@@ -338,7 +338,10 @@ TEST(SceneInstall, CloseTimeoutLeavesTheOldPackage) {
     auto r = wisp::core::install_scene(*fx.repo, *fx.host, todo_zip(1, 2));
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().code, ErrorCode::Timeout);
-    EXPECT_NE(r.error().message.find("did not close"), std::string::npos) << r.error().message;
+    EXPECT_NE(r.error().message.find("did not close in time"), std::string::npos)
+        << r.error().message;
+    // The close is still queued and happens later.
+    EXPECT_NE(r.error().message.find("will still close"), std::string::npos) << r.error().message;
     EXPECT_NE(r.error().message.find("todo"), std::string::npos) << r.error().message;
     EXPECT_FALSE(fx.repo->installing("todo"));
     auto info = fx.repo->info("todo");
@@ -346,6 +349,23 @@ TEST(SceneInstall, CloseTimeoutLeavesTheOldPackage) {
     EXPECT_EQ(info.value().manifest.version, "1.0.0");
     EXPECT_EQ(fx.host->calls(), (std::vector<std::string>{"close todo", "installed todo",
                                                           "open todo", "close todo"}));
+    fx.host->close_error = ErrorCode::Ok;
+}
+
+// A close refused outright (the runtime is not running, its queue is full)
+// is not a timeout and will not happen later.
+TEST(SceneInstall, RefusedCloseIsNotCalledATimeout) {
+    Fixture fx;
+    ASSERT_TRUE(wisp::core::install_scene(*fx.repo, *fx.host, todo_zip(0, 2)));
+    ASSERT_TRUE(fx.host->open("todo", {}));
+    fx.host->close_error = ErrorCode::Busy;
+    auto r = wisp::core::install_scene(*fx.repo, *fx.host, todo_zip(1, 2));
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::Busy);
+    EXPECT_NE(r.error().message.find("could not be closed"), std::string::npos)
+        << r.error().message;
+    EXPECT_EQ(r.error().message.find("in time"), std::string::npos) << r.error().message;
+    EXPECT_NE(r.error().message.find("left unchanged"), std::string::npos) << r.error().message;
     fx.host->close_error = ErrorCode::Ok;
 }
 

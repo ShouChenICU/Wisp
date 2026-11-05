@@ -29,16 +29,19 @@ Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
             const bool was_running = host.status(m.id).state == SceneState::Running;
             Result<void> closed = host.close(m.id);
             if (!closed) {
-                // Nothing has been replaced. A close that timed out may still
-                // happen later; the scene then stays closed on its old
-                // package.
+                // Nothing has been replaced. A close that timed out is still
+                // queued and happens later; the scene then stays closed on
+                // its old package. Any other failure closed nothing.
                 const std::string tag = "scene." + m.id;
                 WLOG_W(tag.c_str(), "install stopped: the scene did not close: %s",
                        closed.error().message.c_str());
-                return Result<void>::err(closed.error().code,
-                                         "scene " + m.id + " did not close in time (" +
-                                             closed.error().message +
-                                             "); the installed package was left unchanged");
+                const bool timed_out = closed.error().code == ErrorCode::Timeout;
+                return Result<void>::err(
+                    closed.error().code,
+                    "scene " + m.id +
+                        (timed_out ? " did not close in time (" : " could not be closed (") +
+                        closed.error().message + (timed_out ? "; it will still close)" : ")") +
+                        "; the installed package was left unchanged");
             }
             if (was_running) reopen = m.id;
             return Result<void>::ok();
