@@ -324,6 +324,9 @@ void SceneRuntime::set_status(const std::string& id, core::SceneState state, std
 }
 
 void SceneRuntime::publish(const std::string& id, const char* state) {
+    // Logged as well, so whoever reads only the log (the serial console,
+    // the simulator's smoke tests) can follow a scene too.
+    WLOG_I(kTag, "%s: %s", id.c_str(), state);
     core::Event e;
     e.topic = "scene.state";
     e.source = "scene";
@@ -709,7 +712,12 @@ void SceneRuntime::close_foreground(std::shared_ptr<SceneWaiter> done) {
     }
     ui_instance_.store(0);
     patches_.clear();
-    post_ui([this] { ui_drop_view(); });
+    // Logged once the screen it covered is back: a faulted scene publishes
+    // nothing when it closes, as it stays in the error state.
+    post_ui([this, id = f.id] {
+        ui_drop_view();
+        WLOG_I(kTag, "%s: closed", id.c_str());
+    });
     {
         std::lock_guard<os::Mutex> lock(status_mu_);
         foreground_id_.reset();

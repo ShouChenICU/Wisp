@@ -83,7 +83,7 @@
 | `net.ap.state` | `net::WifiService` | 配网热点开关时发布，`payload = {"active": bool, "ssid": string, "clients": int}`，不含热点密码 |
 | `net.pairing.code` | `net::PairingService` | 发出配对码时 `{"active": true, "expires_ms": int}`（`os::now_ms()` 时间基准下的截止时刻），失效时（过期、配对成功、改发新码前，或在设备的配对卡片上点"拒绝"即 `PairingService::cancel_code()`）`{"active": false, "expires_ms": 0}`；不含配对码 |
 | `net.pairing.failed` | `net::PairingService` | 配对码错误时 `{"attempts": int, "locked": bool}` |
-| `scene.state` | `scene::SceneRuntime`；删除时 `app::App`（`scene_wiring.cpp`） | 场景 spec 3.6，`Event::source` 为 `"scene"`，`payload = {"id": string, "state": "stopped"\|"running"\|"error"\|"deleted"}`。`deleted` 在设备上确认删除、文件删掉之后发布；自检界面的"场景"卡片收到任何 `scene.state` 都重新列一遍（另有 30 s 一次的兜底重列） |
+| `scene.state` | `scene::SceneRuntime`；删除时 `app::App`（`scene_wiring.cpp`） | 场景 spec 3.6，`Event::source` 为 `"scene"`，`payload = {"id": string, "state": "stopped"\|"running"\|"error"\|"deleted"}`。`deleted` 在设备上确认删除、文件删掉之后发布；自检界面的"场景"卡片收到任何 `scene.state` 都重新列一遍（另有 30 s 一次的兜底重列）。`SceneRuntime` 发布的每一条同时以 `scene` 标签写一行日志 `<id>: <state>`，场景关闭、界面回到原屏幕后再写一行 `<id>: closed`（出错后关闭不再发布事件，状态仍为 `error`），供只看日志的一方（串口、冒烟测试）跟踪 |
 | `model.profiles` | `core::ModelProfileService` | 模型配置增删改或切换当前配置时发布，`Event::source` 为 `"models"`，`payload = {"active": {"llm": string, "asr": string, "tts": string}, "count": int}`（`active` 为各类当前配置 id，没有时为空串；不含任何 API Key） |
 
 `power.charging.changed`/`power.battery.low` 的字段名跟随 `wisp::hal::PowerStatus` 本身的成员名（`charging`/`usb_present`/`battery_percent`），不是 "vbus_present" 这个措辞——后者出自计划中驱动结构体 `axp2101_status_t` 的字段名（`drivers/axp2101/include/axp2101.h`），不是 spec 原文；spec 本身没有提到这个字段名，沿用 hal 已有的字段名更一致。

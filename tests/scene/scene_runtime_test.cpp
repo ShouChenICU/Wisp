@@ -295,6 +295,32 @@ TEST_F(SceneRuntimeTest, BackGestureClosesToHome) {
     EXPECT_EQ(rt->status("counter").state, SceneState::Stopped);
 }
 
+// Every state change and every close is in the log, so a log reader (the
+// console, sim_smoke) can follow a scene without the event bus; closing a
+// scene that failed while it built its tree publishes nothing, as it stays
+// in the error state, but is still logged once the home screen is back.
+TEST_F(SceneRuntimeTest, LogsStateChangesAndCloses) {
+    start();
+    install("counter", kCounter);
+    ASSERT_TRUE(rt->open("counter"));
+    EXPECT_TRUE(log_has("scene", "counter: running"));
+    ASSERT_TRUE(rt->close("counter"));
+    EXPECT_TRUE(log_has("scene", "counter: stopped"));
+    EXPECT_TRUE(wait_until([&] { return log_has("scene", "counter: closed"); }, 1000));
+
+    install("broken", "local missing = nil\nreturn ui.screen { ui.label { text = missing.x } }\n");
+    EXPECT_FALSE(rt->open("broken"));
+    EXPECT_TRUE(log_has("scene", "broken: error"));
+    ASSERT_TRUE(wait_until([&] { return error_panel_has("main.lua:2"); }, 1000));
+    on_ui([&] { lv_obj_update_layout(lv_layer_top()); });
+    feed({{4, 240, 0}});
+    for (int16_t x : {4, 50, 100, 150, 200}) feed({{x, 240, 0}});
+    feed({});
+    EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
+    EXPECT_TRUE(wait_until([&] { return log_has("scene", "broken: closed"); }, 1000));
+    EXPECT_EQ(rt->status("broken").state, SceneState::Error);
+}
+
 TEST_F(SceneRuntimeTest, OpeningAnotherClosesFirst) {
     start();
     install("a", R"(scene.on_close = function() print("a closed") end
