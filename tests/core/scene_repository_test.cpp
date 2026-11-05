@@ -202,6 +202,24 @@ TEST(SceneRepository, ListSkipsHiddenAndInvalid) {
     EXPECT_EQ(list.value()[0].manifest.id, "todo");
 }
 
+TEST(SceneRepository, RejectsDeeplyNestedManifest) {
+    Fixture f;
+    Files files = todo_files();
+    files[0].second.insert(files[0].second.size() - 1, R"(,"x":[[[[[[[[[1]]]]]]]]])");
+    auto r = f.install(files);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(r.error().message, "scene.json: nested deeper than 4 levels");
+    EXPECT_FALSE(fs::exists(f.root() / "todo"));
+
+    // One already on disk (put there before the cap) is skipped by the
+    // listing instead of being parsed.
+    write_raw(f.root() / "todo" / "scene.json", files[0].second);
+    auto list = f.repo->list();
+    ASSERT_TRUE(list) << list.error().message;
+    EXPECT_TRUE(list.value().empty());
+}
+
 TEST(SceneRepository, ListOfMissingRootIsEmpty) {
     Fixture f;
     auto list = f.repo->list();
