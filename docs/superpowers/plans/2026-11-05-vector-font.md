@@ -467,7 +467,7 @@ TEST(Schema, DocIsUpToDate)                 // 失败后用 build/sim/scene-api.
 | 场景大字（7.3.3） | 重新安装示例场景（`storage` 已清空），打开计数器、番茄钟、时钟；再推送一个测试场景：一行 `font = 128` 的"小鬼火"、一行 `font = "xxl"` 的中日英混排、`ui.icon` 的 `lg`/`xl`/`xxl` 各一个 | 大字清晰、字距正常、不被裁；图标是大号的，不是 16 px |
 | 降级（7.3.4） | `parttool.py -p /dev/ttyACM0 erase_partition --partition-name=fonts` 后重启；再 `idf.py -p /dev/ttyACM0 fonts-flash` 后重启；再把 `firmware/build/fonts.bin` 的前 1 MB 写进分区后重启 | 擦除与截断两种情况：不崩溃，日志有 `fonts: …; large text uses bitmap fonts`，大字退到 16 px、图标仍大；`fonts-flash` 后恢复 |
 | OTA 不碰字体（7.3.5） | 改一点代码重新构建，在网页"系统"页上传 `wisp.bin` 并在设备上确认 | 重启后 `fonts: image ok`，标题仍是矢量字 |
-| 帧率（7.3.6） | 按"UI 帧率基准"一行滚动自检列表，不开热点和开热点各一次；首次打开 128 px 测试场景时看 `WISP_PERF` 或日志里的帧耗时 | fps 不开热点 ≥ 22.7、开热点 ≥ 28.2；记下首次大字页面的冷渲染耗时 |
+| 帧率（7.3.6） | 用 `bench scroll 10` 滚动自检列表，不开热点和开热点各一次；首次打开 128 px 测试场景时看 `WISP_PERF` 或日志里的帧耗时 | fps 不开热点 ≥ 18.4、开热点 ≥ 29.8（硬件文档"当前基准"）；记下首次大字页面的冷渲染耗时 |
 | 内存（7.3.7） | 分别在 (a) 开机空闲、(b) 番茄钟运行 + 128 px 测试场景打开后执行 `mem` | 记录内部 RAM 空闲 / `min` / 最大块，`wisp_ui` 的栈大小与 high-water mark（剩余应 ≥ 1024 B），PSRAM 空闲；内部 RAM 满足 `wisp/app/ram_budget.hpp`（空闲 ≥ 60 KB、最大块 ≥ 20 KB） |
 | 镜像大小（7.3.8） | `idf.py size` | 记下应用镜像大小与占 `ota_0` 的比例，对比改动前 3,169,136 B |
 
