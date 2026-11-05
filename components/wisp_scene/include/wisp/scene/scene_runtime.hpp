@@ -56,10 +56,14 @@
 //           wisp.scene.close(): a scene whose scene.json declares
 //           "background" goes to the background, any other closes.
 //   to the background
-//           the view goes (the remembered screen comes back), then
-//           scene.on_hide() (if it was shown); every wake lock the scene
-//           holds is released; scene.on_state("background"); the state
-//           becomes Background. The VM, the store, the timers and the
+//           spec 3.2's order: scene.on_hide() (if it was shown) while the
+//           scene is still in front (wisp.scene.state() is "foreground"
+//           there, keep_screen_on() still works); every wake lock the
+//           scene holds is released; the view goes (the remembered screen
+//           comes back); then scene.on_state("background"), and the state
+//           becomes Background. An error in on_hide still sends the view
+//           away: the scene faults as one in the background (a notice, no
+//           panel), as the user asked to leave it. The VM, the store, the timers and the
 //           tree stay; the scene keeps running, its UI changes only
 //           update the tree. A fourth scene sent there closes instead.
 //   resume  SceneInstance::rebuild() makes a Build of the kept tree with
@@ -137,6 +141,7 @@
 // started; stop() (or the destructor) before either stops, since closing
 // the scenes needs both.
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -342,6 +347,27 @@ private:
     };
     // One running scene, in front or in the background; scene task only.
     struct Slot;
+    // At most one scene in front and kMaxBackground behind it.
+    static constexpr size_t kMaxBackground = 3;
+    static constexpr size_t kMaxSlots = kMaxBackground + 1;
+    // The instances of every slot, copied for loops whose steps may close
+    // slots; fixed size, as these loops run on every timer tick.
+    struct Instances {
+        std::array<uint32_t, kMaxSlots> ids{};
+        size_t n = 0;
+        const uint32_t* begin() const { return ids.data(); }
+        const uint32_t* end() const { return ids.data() + n; }
+    };
+    // A load on the worker (scene task only). A user or notification open
+    // supersedes the other ones still loading (the latest one wins) and a
+    // boot launch of the same scene; a boot launch of a scene already
+    // running or loading does nothing. So a list of boot launches queued
+    // at once all come up, and a boot launch never cancels a user open.
+    struct PendingLoad {
+        uint32_t instance = 0;
+        std::string id;
+        LaunchReason reason = LaunchReason::User;
+    };
     // A job for the UI thread (post_ui()). Showing and dropping a view name
     // their instance, so that a drop can cancel a show still waiting.
     struct UiJob {
@@ -368,12 +394,18 @@ private:
     Slot* target(const SceneMessage& m);
     Slot* find(uint32_t instance);
     Slot* find_id(std::string_view id);
-    // Instances of every slot, for loops whose steps may close slots.
-    std::vector<uint32_t> instances() const;
+    Instances instances() const;
     size_t background_count(const Slot* except) const;
     void begin_open(const std::string& id, Value args, LaunchReason reason,
                     std::shared_ptr<SceneWaiter> waiter);
     void finish_open(SceneMessage& m);
+    // Forgets the loads of `id` still on the worker (closed or exited by
+    // id: whoever did may go on to delete or replace its files).
+    void cancel_loads(std::string_view id);
+    // Forgets the user and notification loads still on the worker.
+    void cancel_user_loads();
+    // Shows the view of `s` (now in front) on the UI thread.
+    void show_view(Slot& s);
     // Makes the slot of a loaded scene (VM not started yet); null without
     // the memory for it.
     Slot* add_slot(SceneMessage& m);
@@ -438,7 +470,7 @@ private:
 
     // --- UI thread ---
     void ui_frame();
-    void ui_show_view(uint32_t instance, std::string id,
+    void ui_show_view(uint32_t instance, uint64_t token, std::string id,
                       std::shared_ptr<const core::ScenePackage> package);
     // Drops the view if it is `instance`'s (any view for 0).
     void ui_drop_view(uint32_t instance);
@@ -464,8 +496,11 @@ private:
     std::atomic<bool> running_{false};
     bool started_ = false;
     std::atomic<uint64_t> stale_dropped_{0};
-    // The instance whose patches the frame hook applies (0: none).
-    std::atomic<uint32_t> ui_instance_{0};
+    // The view the frame hook applies patches to and click_ref() clicks
+    // in: a token each show_view() takes, 0 while no view should take
+    // any. A scene keeps its instance across the background, so the
+    // instance alone cannot tell its new view from the old one still up.
+    std::atomic<uint64_t> ui_view_{0};
 
     mutable os::Mutex status_mu_;
     std::map<std::string, core::SceneStatus, std::less<>> statuses_;
@@ -484,11 +519,10 @@ private:
     // null.
     Slot* front_ = nullptr;
     uint32_t next_instance_ = 1;
-    // The instance the worker is loading for (0: none), and its scene; a
-    // load that comes back for another one was superseded, or cancelled
-    // by a close of that scene.
-    uint32_t loading_ = 0;
-    std::string loading_id_;
+    uint64_t next_view_ = 1;
+    // The loads on the worker; one that comes back and is not here was
+    // superseded, or cancelled by a close of its scene.
+    std::vector<PendingLoad> loading_;
     bool visible_ = true;
     bool quit_ = false;
     // The ui::Lang of the last system.settings event, -1 before any. Set

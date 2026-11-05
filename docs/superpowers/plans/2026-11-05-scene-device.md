@@ -704,6 +704,12 @@ TEST(AdminScenes, ExitRoute)                               // 200；未知 id 40
 - [ ] **Step 4: 验证** — 全量 ctest（`scene_runtime_test`、`scene_api_test`、`examples_test`、`app_scenes_test` 不改断言即通过）；`bash tools/ci.sh`；固件 `idf.py build`。
 - [ ] **Step 5: Commit** — `feat(scene): run up to three scenes in the background`
 
+**执行记录**：
+- 转入后台按 spec 3.2 的顺序：`on_hide` 是场景在前台的最后一步（其中 `wisp.scene.state()` 为 `"foreground"`，`keep_screen_on` 照常可用）→ 释放唤醒锁 → 撤掉视图 → `on_state("background")`。`on_hide` 出错时视图照样撤掉，场景按后台出错处理（系统通知、不弹错误面板、槽位移除），因为用户已经要求离开（裁定）。
+- 待加载用按实例的列表（`PendingLoad`）代替单个 `loading_`：用户/通知打开互相取代（最新的赢），并取代同一场景的开机启动；开机启动遇到已在运行或正在加载的同一场景什么都不做，不会取消正在加载的用户打开。
+- 每次显示视图取一个令牌（`ui_view_`），帧钩子和 `click_ref` 按令牌而不是实例号匹配视图（同一场景转入后台再切回时实例号不变）。
+- `SceneRuntime` 内部有 `kMaxBackground`/`kMaxSlots` 私有常量；Task 7 引入 `wisp::scene::kMaxBackground` 和 `config.max_background` 时把它们统一掉。
+
 ---
 
 ### Task 7: VM 总预算、淘汰与开机恢复
@@ -772,6 +778,11 @@ TEST(AppScenes, RestoresAfterBootCompleted)                    // 预置 backgro
 - [ ] **Step 3: 实现。**
 - [ ] **Step 4: 验证** — 全量 ctest；`bash tools/ci.sh`；固件 `idf.py build`。
 - [ ] **Step 5: Commit** — `feat(scene): share a VM budget, evict background scenes and restore them at boot`
+
+**执行前须知（Task 6 评审转来）**：
+- `launch(id, Boot)` 遇到 `scene.json` 未声明 `background` 的场景时拒绝：返回 `InvalidArgument`，并 `on_notice(RestoreFailed)`（`restore_background()` 随后把它从列表里移除）。加测试。
+- 重装一个正在后台的场景：目前 `install_scene` 用 `exit()` 彻底关掉它、装完不重新启动。按 3a spec 6.3（安装覆盖运行中的场景等同重载），装完应在后台重新启动它（例如给 `SceneHost` 加一个钩子，因为 `SceneHost` 没有 `launch`），并更新后台列表。加测试。
+- `AppScenes.RestoresAfterBootCompleted` 或恢复失败的测试要断言实际发出的系统通知：代码（`kRestoreFailed`/`kSceneError`）和参数（场景名），覆盖 `scene_wiring.cpp` 中 `SceneNotice` → `post_system` 的映射。
 
 ---
 
@@ -1332,6 +1343,8 @@ TEST(SimHttpServer, StreamedResponseBody)          // 3 MiB 的 stream 响应完
 - [ ] **Step 3: 实现。**
 - [ ] **Step 4: 验证** — 全量 ctest；`bash tools/ci.sh`（含 `check_i18n.py`、网页资源包）；固件 `idf.py build`；模拟器打开网页手动看场景页与系统页（中/日/英各看一次）。
 - [ ] **Step 5: Commit** — `feat(admin): show power, wake locks, peripheral use and scene files`
+
+**执行前须知（Task 6 评审转来）**：Task 6 只加了 `POST /scenes/{id}/exit` 路由，网页上还没有入口；本任务把场景页的"关闭"按钮改调 `/exit`（见上文网页一段），并加 `background` 徽标。
 
 ---
 

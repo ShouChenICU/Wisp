@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -18,9 +20,12 @@
 #include "wisp/core/wakelock.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/scene/scene_runtime.hpp"
+#include "wisp/ui/strings.hpp"
 
 namespace {
 
+using wisp::Map;
+using wisp::Value;
 using wisp::core::SceneState;
 using wisp::core::WakeLockKind;
 using wisp::scene::BackgroundScene;
@@ -617,6 +622,227 @@ TEST_F(SceneBackground, DropCancelsAShowStillWaiting) {
     // Coming forward again works as ever.
     ASSERT_TRUE(rt->open("a"));
     EXPECT_TRUE(wait_label("scene a"));
+}
+
+// Spec 3.2: on_hide is the scene's last step in front, so what it pairs
+// with on_show still works there.
+TEST_F(SceneBackground, OnHideRunsWhileStillInFront) {
+    start();
+    install_bg("a", R"(
+scene.on_show = function() print("show", wisp.power.keep_screen_on(true)) end
+scene.on_hide = function()
+  print("hide", wisp.scene.state(), wisp.power.keep_screen_on(false))
+  print("focus", ui.ref("name"):focus() == nil)
+end
+scene.on_state = function(s) print("state:" .. s) end
+return ui.screen { ui.input { ref = "name" } }
+)");
+    ASSERT_TRUE(rt->open("a"));
+    EXPECT_TRUE(locks.held(WakeLockKind::Screen));
+    ASSERT_TRUE(rt->close("a"));
+    ASSERT_EQ(rt->status("a").state, SceneState::Background);
+    EXPECT_EQ(scene_log("a"),
+              (std::vector<std::string>{"show\ttrue", "state:foreground", "hide\tforeground\ttrue",
+                                        "focus\ttrue", "state:background"}));
+    EXPECT_FALSE(locks.held(WakeLockKind::Screen));
+    EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
+}
+
+// The user asked to leave: an error in on_hide does not bring the scene
+// back as a panel. It faults as a scene in the background does.
+TEST_F(SceneBackground, OnHideErrorStillLeavesTheFront) {
+    start();
+    install("a", R"(
+scene.on_hide = function() error("hide boom") end
+return ui.screen { ui.label { text = "scene a" } }
+)",
+            {{"scene.json", bg_manifest("a", "Alpha")}});
+    ASSERT_TRUE(rt->open("a"));
+    ASSERT_TRUE(wait_label("scene a"));
+    back_gesture();
+    ASSERT_TRUE(wait_state("a", SceneState::Error));
+    EXPECT_NE(rt->status("a").error.find("hide boom"), std::string::npos) << rt->status("a").error;
+    ASSERT_TRUE(wait_until([&] { return seen_notices().size() == 1; }, 1000));
+    EXPECT_EQ(seen_notices()[0].kind, SceneNoticeKind::Faulted);
+    EXPECT_EQ(seen_notices()[0].id, "a");
+    EXPECT_EQ(rt->foreground(), std::nullopt);
+    EXPECT_TRUE(rt->background_scenes().empty());
+    EXPECT_EQ(wisp::scene::scene_instance(*rt, "a"), 0u);
+    EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
+    bool panel = true;
+    on_ui([&] { panel = layer->error_visible(); });
+    EXPECT_FALSE(panel);
+    EXPECT_EQ(events(), (std::vector<StateEvent>{{"a", "running"}, {"a", "error"}}));
+
+    // Opened again: a fresh start.
+    ASSERT_TRUE(rt->open("a"));
+    EXPECT_EQ(rt->status("a").state, SceneState::Running);
+}
+
+// Spec 3.2/3.3: a scene in the background keeps getting "minute",
+// "battery" and "lang", with the screen off and another scene in front.
+TEST_F(SceneBackground, DeviceEventsReachBackgroundScene) {
+    // 2026-11-04 12:00:59 UTC.
+    std::atomic<int64_t> wall{1793793659};
+    std::mutex status_mu;
+    Value status(
+        Map{{"battery", Value(Map{{"percent", Value(int64_t{80})}, {"charging", Value(true)}})}});
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    auto base = configure_deps;
+    configure_deps = [&, base](wisp::scene::SceneRuntimeDeps& d) {
+        base(d);
+        d.device_status = [&] {
+            std::lock_guard<std::mutex> lock(status_mu);
+            return status;
+        };
+        d.wall_clock = [&] { return wall.load(); };
+    };
+    auto publish = [&](const std::string& topic, wisp::Properties payload) {
+        wisp::core::Event e;
+        e.topic = topic;
+        e.source = "test";
+        e.payload = std::move(payload);
+        bus.publish(std::move(e));
+    };
+    start();
+    install_bg("a", R"(
+wisp.device.on("minute", function(i) print("minute", i.time) end)
+wisp.device.on("battery", function(i) print("battery", i.battery, i.charging) end)
+wisp.device.on("lang", function(i) print("lang", i.lang) end)
+return ui.screen { ui.label { text = "scene a" } }
+)");
+    install("b", "return ui.screen { ui.label { text = 'scene b' } }");
+    ASSERT_TRUE(rt->open("a"));
+    ASSERT_TRUE(rt->open("b"));
+    ASSERT_EQ(rt->status("a").state, SceneState::Background);
+    rt->set_visible(false);
+    // A round trip through the scene queue: the ticker has taken its
+    // bearings at the old minute.
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_TRUE(scene_log("a").empty()) << ::testing::PrintToString(scene_log("a"));
+
+    wall = 1793793660;
+    ASSERT_TRUE(wait_until([&] { return scene_log("a").size() == 1; }, 2500));
+    {
+        std::lock_guard<std::mutex> lock(status_mu);
+        status = Value(Map{
+            {"battery", Value(Map{{"percent", Value(int64_t{79})}, {"charging", Value(false)}})}});
+    }
+    publish("power.charging.changed", {{"charging", Value(false)}});
+    ASSERT_TRUE(wait_until([&] { return scene_log("a").size() == 2; }, 2000));
+    publish("system.settings", {{"language", Value("en")}, {"brightness", Value(int64_t{50})}});
+    ASSERT_TRUE(wait_until([&] { return scene_log("a").size() == 3; }, 2000));
+    EXPECT_EQ(scene_log("a"),
+              (std::vector<std::string>{"minute\t1793793660", "battery\t79\tfalse", "lang\ten"}));
+    EXPECT_EQ(rt->status("a").state, SceneState::Background);
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("b"));
+    rt->stop();
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+}
+
+// Three scenes in the background and one in front, all with timers: each
+// callback runs in its own scene, and the one in front still takes taps.
+TEST_F(SceneBackground, SeveralBackgroundScenesRunTheirOwnTimers) {
+    start();
+    for (const char* id : {"a", "b", "c", "d"}) {
+        const std::string tick = std::string("print(\"tick ") + id + "\", wisp.scene.state())";
+        install_bg(
+            id, "local count = state(0)\nwisp.timer.every(50, function() " + tick + " end)\n" + R"(
+return ui.screen {
+  ui.label { text = bind(count, function(v) return "count " .. v end) },
+  ui.button { ref = "plus", text = "+1", on_click = function() count:set(count:get() + 1) end },
+}
+)");
+    }
+    for (const char* id : {"a", "b", "c", "d"}) ASSERT_TRUE(rt->open(id));
+    ASSERT_EQ(background_ids(), (std::vector<std::string>{"a", "b", "c"}));
+    for (const char* id : {"a", "b", "c", "d"}) {
+        const std::string state = std::string(id) == "d" ? "foreground" : "background";
+        const std::string mine = std::string("tick ") + id + "\t" + state;
+        EXPECT_TRUE(wait_until([&] { return count_log(id, mine) >= 3; }, 3000)) << id;
+    }
+    ASSERT_TRUE(wait_label("count 0"));
+    ASSERT_TRUE(rt->click_ref("plus"));
+    EXPECT_TRUE(wait_until([&] { return label("count") == "count 1"; }, 1000)) << label("count");
+    rt->stop();
+    for (const char* id : {"a", "b", "c", "d"}) {
+        for (const auto& line : scene_log(id))
+            EXPECT_EQ(line.rfind(std::string("tick ") + id + "\t", 0), 0u) << id << ": " << line;
+    }
+}
+
+// Boot launches queued back to back from a thread that must not wait (the
+// storage worker, where the restore of the background list runs) all
+// come up.
+TEST_F(SceneBackground, BootLaunchesQueuedTogetherAllComeUp) {
+    start();
+    for (const char* id : {"a", "b", "c"})
+        install_bg(id, "return ui.screen { ui.label { text = 'x' } }");
+    std::atomic<int> queued{0};
+    ASSERT_TRUE(worker.submit([&] {
+        for (const char* id : {"a", "b", "c"})
+            if (rt->launch(id, LaunchReason::Boot)) ++queued;
+    }));
+    ASSERT_TRUE(wait_until([&] { return queued.load() == 3; }, 2000));
+    for (const char* id : {"a", "b", "c"})
+        EXPECT_TRUE(wait_state(id, SceneState::Background)) << id;
+    std::vector<std::string> ids = background_ids();
+    std::sort(ids.begin(), ids.end());
+    EXPECT_EQ(ids, (std::vector<std::string>{"a", "b", "c"}));
+    EXPECT_EQ(rt->foreground(), std::nullopt);
+}
+
+// A boot launch and a user open loading at the same time: neither
+// cancels the other.
+TEST_F(SceneBackground, BootLaunchDuringUserOpenKeepsBoth) {
+    start();
+    install("u", "return ui.screen { ui.label { text = 'scene u' } }");
+    install_bg("b", "return ui.screen { ui.label { text = 'scene b' } }");
+    std::atomic<int> queued{0};
+    ASSERT_TRUE(worker.submit([&] {
+        if (rt->open("u")) ++queued;
+        if (rt->launch("b", LaunchReason::Boot)) ++queued;
+    }));
+    ASSERT_TRUE(wait_until([&] { return queued.load() == 2; }, 2000));
+    EXPECT_TRUE(wait_state("u", SceneState::Running));
+    EXPECT_TRUE(wait_state("b", SceneState::Background));
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("u"));
+    EXPECT_TRUE(wait_label("scene u"));
+
+    // The other way round too.
+    ASSERT_TRUE(rt->exit("b"));
+    ASSERT_TRUE(rt->exit("u"));
+    queued = 0;
+    ASSERT_TRUE(worker.submit([&] {
+        if (rt->launch("b", LaunchReason::Boot)) ++queued;
+        if (rt->open("u")) ++queued;
+    }));
+    ASSERT_TRUE(wait_until([&] { return queued.load() == 2; }, 2000));
+    EXPECT_TRUE(wait_state("u", SceneState::Running));
+    EXPECT_TRUE(wait_state("b", SceneState::Background));
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("u"));
+}
+
+// A boot launch of a scene already in the background does nothing, and
+// does not cancel a user open still loading.
+TEST_F(SceneBackground, NoOpBootLaunchKeepsUserOpen) {
+    start();
+    install_bg("a", std::string(kHooks) + "return ui.screen { ui.label { text = 'scene a' } }");
+    install("u", "return ui.screen { ui.label { text = 'scene u' } }");
+    ASSERT_TRUE(rt->launch("a", LaunchReason::Boot));
+    ASSERT_EQ(rt->status("a").state, SceneState::Background);
+    std::atomic<int> queued{0};
+    ASSERT_TRUE(worker.submit([&] {
+        if (rt->open("u")) ++queued;
+        if (rt->launch("a", LaunchReason::Boot)) ++queued;
+        if (rt->launch("u", LaunchReason::Boot)) ++queued;
+    }));
+    ASSERT_TRUE(wait_until([&] { return queued.load() == 3; }, 2000));
+    EXPECT_TRUE(wait_state("u", SceneState::Running));
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("u"));
+    EXPECT_EQ(rt->status("a").state, SceneState::Background);
+    EXPECT_EQ(scene_log("a"), (std::vector<std::string>{"state:background"}));
+    EXPECT_EQ(background_ids(), (std::vector<std::string>{"a"}));
 }
 
 }  // namespace

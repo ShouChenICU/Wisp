@@ -28,8 +28,6 @@ constexpr uint32_t kWaitMs = 10000;
 constexpr uint32_t kPushMs = 1000;
 // A message that takes longer than this is logged.
 constexpr uint64_t kSlowMs = 50;
-// Scenes that may run in the background at once (spec 3.1).
-constexpr size_t kMaxBackground = 3;
 
 // "scene.<id>": the tag of the scene's own log.
 std::string scene_tag(std::string_view id) {
@@ -77,7 +75,7 @@ struct SceneRuntime::Slot {
     std::shared_ptr<const core::ScenePackage> package;
     std::shared_ptr<core::SceneStore> store;
     // Null once the scene faulted (in front: its error panel is up).
-    std::unique_ptr<SceneInstance> scene;
+    os::LargeUnique<SceneInstance> scene;
     // scene.json's "background": going back sends it there.
     bool declares_background = false;
     // In the background: no view, its batches are dropped.
@@ -99,6 +97,8 @@ struct SceneRuntime::Slot {
 struct SceneRuntime::UiSide {
     std::unique_ptr<SceneView> view;
     uint32_t instance = 0;
+    // The show_view() token of this view (ui_view_).
+    uint64_t token = 0;
     // The screen the view replaced, loaded again when it goes.
     lv_obj_t* home = nullptr;
     // Loaded instead when `home` is gone by then.
@@ -382,7 +382,7 @@ Result<void> SceneRuntime::click_ref(std::string_view ref) {
     Result<void> r = Result<void>::err(ErrorCode::NotFound, "no scene is running");
     auto click = [&] {
         UiSide& u = *ui_side_;
-        if (!u.view || u.instance == 0 || u.instance != ui_instance_.load()) return;
+        if (!u.view || u.token == 0 || u.token != ui_view_.load()) return;
         auto node = u.view->find_ref(ref);
         lv_obj_t* obj = node ? u.view->object(*node) : nullptr;
         if (obj == nullptr) {
@@ -485,10 +485,13 @@ SceneRuntime::Slot* SceneRuntime::find_id(std::string_view id) {
     return nullptr;
 }
 
-std::vector<uint32_t> SceneRuntime::instances() const {
-    std::vector<uint32_t> out;
-    out.reserve(slots_.size());
-    for (const auto& s : slots_) out.push_back(s->instance);
+SceneRuntime::Instances SceneRuntime::instances() const {
+    Instances out;
+    // finish_open() never makes more than kMaxSlots.
+    for (const auto& s : slots_) {
+        if (out.n == out.ids.size()) break;
+        out.ids[out.n++] = s->instance;
+    }
     return out;
 }
 
@@ -520,8 +523,7 @@ void SceneRuntime::handle(SceneMessage& m) {
         } else {
             // A load of it still on the worker is cancelled: whoever closed
             // it may go on to delete or replace its files.
-            if (m.instance == 0 && s == nullptr && loading_ != 0 && loading_id_ == m.scene_id)
-                loading_ = 0;
+            if (m.instance == 0 && s == nullptr) cancel_loads(m.scene_id);
             finish_after_queued_io(b->done);
         }
     } else if (auto* b = std::get_if<msg::Exit>(&body)) {
@@ -529,7 +531,7 @@ void SceneRuntime::handle(SceneMessage& m) {
         if (s != nullptr) {
             close_slot(*s, b->done);
         } else {
-            if (m.instance == 0 && loading_ != 0 && loading_id_ == m.scene_id) loading_ = 0;
+            if (m.instance == 0) cancel_loads(m.scene_id);
             finish_after_queued_io(b->done);
         }
     } else if (auto* b = std::get_if<msg::Reload>(&body)) {
@@ -604,19 +606,22 @@ void SceneRuntime::handle(SceneMessage& m) {
 void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason reason,
                               std::shared_ptr<SceneWaiter> waiter) {
     Slot* running = find_id(id);
-    if (running != nullptr && running->background) {
-        // Already running: nothing to load, and a load still on its way
-        // was superseded by this open.
-        loading_ = 0;
-        if (reason == LaunchReason::Boot) {
+    const bool boot = reason == LaunchReason::Boot;
+    if (boot) {
+        // Already running, or a load of it is on its way: nothing to
+        // start, and nothing else is touched (a user open still loading
+        // stays).
+        const bool coming = std::any_of(loading_.begin(), loading_.end(),
+                                        [&](const PendingLoad& p) { return p.id == id; });
+        if (running != nullptr || coming) {
             if (waiter) waiter->finish(Result<void>::ok());
             return;
         }
+    } else if (running != nullptr && running->background) {
+        // Nothing to load; the user opens still on their way were
+        // superseded by this one.
+        cancel_user_loads();
         resume(*running, std::move(waiter));
-        return;
-    }
-    if (running != nullptr && reason == LaunchReason::Boot) {
-        if (waiter) waiter->finish(Result<void>::ok());
         return;
     }
     // The same scene closes first: its final store flush then goes to the
@@ -626,8 +631,14 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
     if (running != nullptr) close_slot(*running);
     const uint32_t instance = next_instance_++;
     if (next_instance_ == 0) next_instance_ = 1;
-    loading_ = instance;
-    loading_id_ = id;
+    // A user open supersedes the other user opens (the latest one wins)
+    // and a boot launch of the same scene (it wants it in front).
+    if (!boot) {
+        std::erase_if(loading_, [&](const PendingLoad& p) {
+            return p.reason != LaunchReason::Boot || p.id == id;
+        });
+    }
+    loading_.push_back({instance, id, reason});
 
     std::shared_ptr<Link> link = link_;
     core::StorageWorker& worker = deps_.worker;
@@ -668,7 +679,7 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
             WLOG_W(kTag, "%s: loaded, but the scene queue is full", id.c_str());
     });
     if (!queued) {
-        loading_ = 0;
+        std::erase_if(loading_, [&](const PendingLoad& p) { return p.instance == instance; });
         WLOG_W(kTag, "%s: not opened: storage worker busy", id.c_str());
         if (waiter) waiter->finish(Result<void>::err(ErrorCode::Busy, "storage worker busy"));
     }
@@ -679,14 +690,16 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     auto done = [&](Result<void> r) {
         if (open.done) open.done->finish(std::move(r));
     };
-    if (m.instance != loading_) {
+    auto pending = std::find_if(loading_.begin(), loading_.end(),
+                                [&](const PendingLoad& p) { return p.instance == m.instance; });
+    if (pending == loading_.end()) {
         // Another open came after this one, or a close of it.
         ++stale_dropped_;
         if (open.store) open.store->close();
         done(Result<void>::err(ErrorCode::Busy, "superseded by another open or a close"));
         return;
     }
-    loading_ = 0;
+    loading_.erase(pending);
     const std::string id = m.scene_id;
     if (open.error.code == ErrorCode::Ok &&
         (deps_.repo.installing(id) || deps_.repo.removing(id))) {
@@ -713,6 +726,14 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         return;
     }
     const bool boot = open.reason == LaunchReason::Boot;
+    if (boot && find_id(id) != nullptr) {
+        // Already running (begin_open() lets no other load of it start
+        // while this one is out; this only keeps two slots of one scene
+        // impossible).
+        open.store->close();
+        done(Result<void>::ok());
+        return;
+    }
     if (boot && background_count(nullptr) >= kMaxBackground) {
         WLOG_W(kTag, "%s: not started: %u scenes already run in the background", id.c_str(),
                static_cast<unsigned>(kMaxBackground));
@@ -724,6 +745,15 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     // forward instead of loading it).
     if (Slot* old = find_id(id)) close_slot(*old);
     if (!boot && front_ != nullptr) go_back(*front_, nullptr);
+    if (slots_.size() >= kMaxSlots) {
+        // Never: the scene in front just left, and the background keeps
+        // to kMaxBackground.
+        WLOG_E(kTag, "%s: not opened: %u scenes already run", id.c_str(),
+               static_cast<unsigned>(slots_.size()));
+        open.store->close();
+        done(Result<void>::err(ErrorCode::Busy, "too many scenes running"));
+        return;
+    }
 
     Slot* added = add_slot(m);
     if (added == nullptr) {
@@ -760,12 +790,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         foreground_instance_ = s.instance;
     }
     update_background_list();
-    // The view exists before any batch of this instance is queued: the
-    // frame hook applies only to the view of the instance it is told.
-    post_ui({UiJob::Kind::Show, s.instance, [this, instance = s.instance, id, package = s.package] {
-                 ui_show_view(instance, id, package);
-             }});
-    ui_instance_.store(s.instance);
+    show_view(s);
 
     if (!run_step(s, s.scene->start())) return failed();
     set_status(id, core::SceneState::Running, "");
@@ -776,6 +801,25 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     }
     if (!run_step(s, s.scene->hook("on_state", "foreground"))) return failed();
     done(Result<void>::ok());
+}
+
+void SceneRuntime::cancel_loads(std::string_view id) {
+    std::erase_if(loading_, [&](const PendingLoad& p) { return p.id == id; });
+}
+
+void SceneRuntime::cancel_user_loads() {
+    std::erase_if(loading_, [](const PendingLoad& p) { return p.reason != LaunchReason::Boot; });
+}
+
+void SceneRuntime::show_view(Slot& s) {
+    const uint64_t token = next_view_++;
+    // The view exists before any batch for it is queued: the frame hook
+    // applies patches only to the view whose token it is told.
+    post_ui({UiJob::Kind::Show, s.instance,
+             [this, instance = s.instance, token, id = s.id, package = s.package] {
+                 ui_show_view(instance, token, id, package);
+             }});
+    ui_view_.store(token);
 }
 
 SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m) {
@@ -790,7 +834,8 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m) {
     s.package = open.package;
     s.store = std::move(open.store);
     s.declares_background = s.package->manifest.background;
-    s.scene = std::make_unique<SceneInstance>(s.id, s.package, config_.vm);
+    s.scene = os::make_large<SceneInstance>(s.id, s.package, config_.vm);
+    if (!s.scene) return nullptr;
     SceneApi& api = s.scene->api();
     api.device = [this] { return device_info(); };
     api.screen = deps_.shape;
@@ -927,7 +972,7 @@ void SceneRuntime::fault(Slot& s, const ScriptError& err) {
         erase_slot(s);
         return;
     }
-    ui_instance_.store(0);
+    ui_view_.store(0);
     ui::ErrorPanelInfo info{s.name, err.file, err.line, err.message};
     const uint32_t instance = s.instance;
     post_ui({UiJob::Kind::Other, instance,
@@ -960,7 +1005,7 @@ void SceneRuntime::forget_front() {
 }
 
 void SceneRuntime::drop_view(const Slot& s, bool closing) {
-    ui_instance_.store(0);
+    ui_view_.store(0);
     patches_.clear(s.instance);
     // Logged once the screen it covered is back.
     post_ui({UiJob::Kind::Drop, s.instance, [this, instance = s.instance, id = s.id, closing] {
@@ -979,8 +1024,17 @@ void SceneRuntime::to_background(Slot& s, std::shared_ptr<SceneWaiter> done, con
         close_slot(s, std::move(done));
         return;
     }
+    // Spec 3.2: on_hide is the scene's last step in front.
+    std::optional<ScriptError> hide_error;
+    if (s.shown) {
+        s.shown = false;
+        hide_error = s.scene->hook("on_hide");
+        // What it changed would only go to a view that is about to go;
+        // the tree has it, and a resume sends the tree whole.
+        s.scene->batch().clear();
+    }
+    release_locks(s);
     const uint64_t now = os::now_ms();
-    // The view goes first: the user asked to leave, whatever the hooks do.
     if (&s == front_) {
         forget_front();
         drop_view(s, false);
@@ -992,11 +1046,12 @@ void SceneRuntime::to_background(Slot& s, std::shared_ptr<SceneWaiter> done, con
     api.background = true;
     api.close_requested = false;
     update_background_list();
-    if (s.shown) {
-        s.shown = false;
-        if (!run_step(s, s.scene->hook("on_hide"))) return finish();
+    // The user asked to leave: an error in on_hide does not bring the
+    // scene back as a panel; it faults as one in the background.
+    if (hide_error) {
+        fault(s, *hide_error);
+        return finish();
     }
-    release_locks(s);
     if (!run_step(s, s.scene->hook("on_state", "background"))) return finish();
     set_status(s.id, core::SceneState::Background, "");
     publish(s.id, "background");
@@ -1025,10 +1080,7 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
         foreground_instance_ = s.instance;
     }
     update_background_list();
-    post_ui({UiJob::Kind::Show, s.instance, [this, instance = s.instance, id, package = s.package] {
-                 ui_show_view(instance, id, package);
-             }});
-    ui_instance_.store(s.instance);
+    show_view(s);
 
     const uint64_t t0 = os::now_ms();
     if (!run_step(s, s.scene->rebuild())) return failed();
@@ -1361,12 +1413,12 @@ void SceneRuntime::ui_frame() {
     // Before the patches: a view these patches are for may be in here.
     run_ui_jobs();
     UiSide& u = *ui_side_;
-    const uint32_t instance = ui_instance_.load();
-    if (!u.view || instance == 0 || u.instance != instance) return;
-    patches_.apply_frame(*u.view, instance);
+    const uint64_t view = ui_view_.load();
+    if (!u.view || view == 0 || u.token != view) return;
+    patches_.apply_frame(*u.view, u.instance);
 }
 
-void SceneRuntime::ui_show_view(uint32_t instance, std::string id,
+void SceneRuntime::ui_show_view(uint32_t instance, uint64_t token, std::string id,
                                 std::shared_ptr<const core::ScenePackage> package) {
     UiSide& u = *ui_side_;
     if (u.view) ui_drop_view(0);
@@ -1388,6 +1440,7 @@ void SceneRuntime::ui_show_view(uint32_t instance, std::string id,
     u.view = std::make_unique<SceneView>(deps_.system, deps_.shape, std::move(cb));
     u.view->set_assets(std::move(package));
     u.instance = instance;
+    u.token = token;
     u.home = lv_screen_active();
     lv_screen_load(u.view->screen());
     deps_.system.set_back_handler([this, instance, id] {
@@ -1418,6 +1471,7 @@ void SceneRuntime::ui_drop_view(uint32_t instance) {
     }
     u.view.reset();
     u.instance = 0;
+    u.token = 0;
     u.home = nullptr;
 }
 

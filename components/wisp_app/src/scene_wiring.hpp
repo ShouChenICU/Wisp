@@ -26,7 +26,9 @@
 //     directory, polled on the worker every 500 ms (it reads files); when
 //     the scene in front (running or showing its error panel) changes on
 //     disk, it is reloaded (spec 6.4). Errors reach the error panel and
-//     the console (tag "scene.<id>") the way every scene error does.
+//     the console (tag "scene.<id>") the way every scene error does. A
+//     scene in the background is not reloaded (that would pull it to the
+//     front): it keeps its old code until it exits.
 //
 // Shutdown is split because the pieces sit at different points of
 // App::stop(): stop_runtime() before the self-check screen goes (closing
