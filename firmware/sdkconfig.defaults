@@ -141,6 +141,7 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
 
 # Sockets: the admin httpd (7 clients + 3 of its own), the hotspot's
 # port-80 httpd (4 + 3), the captive DNS responder (1), the LLM test's
-# client (1) and the scene HTTP proxy's client (1, one request at a time)
-# make 20; the rest is headroom. mDNS uses raw lwIP, no socket.
+# client (1), the scene HTTP proxy's client (1, one request at a time)
+# and the network time query (1, one at a time) make 21; the rest is
+# headroom. mDNS uses raw lwIP, no socket.
 CONFIG_LWIP_MAX_SOCKETS=24

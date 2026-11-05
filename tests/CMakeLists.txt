@@ -174,13 +174,16 @@ target_include_directories(jpeg_header_test PRIVATE ${WISP_ROOT}/components/wisp
 wisp_test(NAME sd_retry_test SRCS port_esp/sd_retry_test.cpp)
 target_include_directories(sd_retry_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 # The networking port's pure pieces: Wi-Fi disconnect-reason mapping,
-# request interface classification and the hotspot's DNS answers.
+# request interface classification, the hotspot's DNS answers and the SNTP
+# request and reply checks.
 wisp_test(NAME wifi_reason_test SRCS port_esp/wifi_reason_test.cpp LIBS wisp_hal)
 target_include_directories(wifi_reason_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 wisp_test(NAME net_iface_test SRCS port_esp/net_iface_test.cpp LIBS wisp_net)
 target_include_directories(net_iface_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 wisp_test(NAME dns_reply_test SRCS port_esp/dns_reply_test.cpp)
 target_include_directories(dns_reply_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
+wisp_test(NAME sntp_packet_test SRCS port_esp/sntp_packet_test.cpp)
+target_include_directories(sntp_packet_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 # Where a task's stack goes, from its flash-access declaration.
 wisp_test(NAME stack_placement_test SRCS port_esp/stack_placement_test.cpp LIBS wisp_os)
 target_include_directories(stack_placement_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)

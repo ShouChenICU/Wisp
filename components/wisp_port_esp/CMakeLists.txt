@@ -11,7 +11,8 @@
 # wisp::port::esp::EspConsole (console_esp.cpp) and the networking
 # platform services: EspWifi (net/esp_wifi.cpp, with the hotspot's
 # captive DNS in net/captive_dns.cpp and mDNS), EspHttpServer
-# (net/esp_http_server.cpp) and EspHttpClient (net/esp_http_client.cpp),
+# (net/esp_http_server.cpp), EspHttpClient (net/esp_http_client.cpp) and
+# EspSntp (net/esp_sntp.cpp, the network time query),
 # plus EspFirmwareUpdater (esp_firmware.cpp, the OTA writer behind the
 # admin page's firmware upload), mem_report() (mem_report.cpp, the
 # firmware's `mem` console command) and the LVGL JPEG decoder for scene
@@ -20,8 +21,8 @@
 # (ESP_PLATFORM is never defined for it there, and no host CMakeLists adds
 # it) -- only firmware/main pulls it in. (A handful of pure, platform-free headers factored out of the audio/
 # storage/networking code -- audio_downmix.hpp, sd_retry.hpp,
-# wifi_reason.hpp, net_iface.hpp, dns_reply.hpp -- *are* unit-tested on
-# the host; see tests/CMakeLists.txt's port_esp/ tests, which add this
+# wifi_reason.hpp, net_iface.hpp, dns_reply.hpp, sntp_packet.hpp -- *are*
+# unit-tested on the host; see tests/CMakeLists.txt's port_esp/ tests, which add this
 # component's include/ directly rather than depending on this whole
 # component.)
 #
@@ -34,7 +35,8 @@ wisp_component(
     SRCS os/os_esp.cpp log_esp.cpp settings_nvs.cpp dev/esp_display.cpp dev/esp_touch.cpp
          dev/esp_power.cpp dev/esp_clock.cpp dev/esp_imu.cpp dev/esp_button.cpp dev/esp_audio.cpp
          dev/esp_storage.cpp console_esp.cpp net/esp_wifi.cpp net/captive_dns.cpp
-         net/esp_http_server.cpp net/esp_http_client.cpp esp_firmware.cpp mem_report.cpp
+         net/esp_http_server.cpp net/esp_http_client.cpp net/esp_sntp.cpp esp_firmware.cpp
+         mem_report.cpp
          ui/esp_jpeg_decoder.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net

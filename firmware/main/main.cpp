@@ -1,8 +1,9 @@
 // ESP32-S3 firmware entry point: wires up the ESP-only pieces of
 // wisp::app::Platform (EspLogSink, wisp::port::esp::NvsSettingsBackend,
 // emit_line/request_power_off/heap_info, and the networking services:
-// EspHttpServer/EspHttpClient, the linked-in web asset pack and the
-// EspFirmwareUpdater behind the admin page's firmware upload) around
+// EspHttpServer/EspHttpClient, the linked-in web asset pack, the
+// EspFirmwareUpdater behind the admin page's firmware upload and EspSntp
+// for the network time) around
 // whichever board
 // firmware/CMakeLists.txt's WISP_BOARD selected, then runs the same
 // wisp::app::App boot sequence the PC simulator runs (see
@@ -35,6 +36,7 @@
 #include "wisp/port/esp/esp_http_client.hpp"
 #include "wisp/port/esp/esp_http_server.hpp"
 #include "wisp/port/esp/esp_jpeg_decoder.hpp"
+#include "wisp/port/esp/esp_sntp.hpp"
 #include "wisp/port/esp/log_esp.hpp"
 #include "wisp/port/esp/mem_report.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
@@ -171,6 +173,10 @@ extern "C" void app_main() {
     platform.http_server = std::make_unique<wisp::port::esp::EspHttpServer>();
     platform.http_client = std::make_unique<wisp::port::esp::EspHttpClient>();
     platform.assets = web_pack();
+    // Network time (connectivity spec 5.6): synced while the station has
+    // an address; the RTC keeps it across power-off.
+    platform.sntp = std::make_unique<wisp::port::esp::EspSntp>();
+    platform.set_wall_clock = wisp::port::esp::set_wall_clock;
     // Firmware upload into the OTA slot not running (connectivity spec
     // 6.5); null without a second slot. Its board name is the one this
     // image's own descriptor carries, which uploads must match.
