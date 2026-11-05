@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -17,6 +18,7 @@
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/ui/dialog.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -29,6 +31,7 @@ namespace {
 using wisp::hal::Area;
 using wisp::hal::ScreenShape;
 using wisp::hal::ScreenShapeKind;
+using wisp::test::check_action_row;
 using wisp::test::FakeDisplay;
 using wisp::test::FakeTouch;
 using wisp::test::find_button_with_label;
@@ -48,6 +51,28 @@ bool inside(const lv_area_t& a, const Area& safe) {
 
 bool overlaps(const Area& f, const lv_area_t& a) {
     return f.x1 <= a.x2 && f.x2 >= a.x1 && f.y1 <= a.y2 && f.y2 >= a.y1;
+}
+
+// Whether all four corners of `a` are visible on `s`.
+bool fully_visible(const ScreenShape& s, const lv_area_t& a) {
+    return wisp::hal::visible(s, a.x1, a.y1) && wisp::hal::visible(s, a.x2, a.y1) &&
+           wisp::hal::visible(s, a.x1, a.y2) && wisp::hal::visible(s, a.x2, a.y2);
+}
+
+// "" if `btn` is a big dialog button sharing its row (wisp/ui/dialog.hpp)
+// that lies inside `safe` and is visible on `s`; else the problem.
+std::string check_dialog_button(lv_obj_t* btn, const ScreenShape& s, const Area& safe) {
+    if (btn == nullptr) return "no button";
+    std::string row =
+        check_action_row(btn, wisp::ui::kDialogButtonMinHeight, wisp::ui::kDialogButtonGap);
+    if (!row.empty()) return row;
+    lv_area_t a;
+    lv_obj_get_coords(btn, &a);
+    const std::string where = std::to_string(a.x1) + "," + std::to_string(a.y1) + "-" +
+                              std::to_string(a.x2) + "," + std::to_string(a.y2);
+    if (!inside(a, safe)) return "button " + where + " leaves the safe area";
+    if (!fully_visible(s, a)) return "button " + where + " is not visible";
+    return "";
 }
 
 // The direct child of lv_layer_top() that holds `obj`.
@@ -752,19 +777,124 @@ TEST_F(SystemLayerTest, ErrorPanelButtonsTakeTaps) {
     });
 }
 
-// The panel replaces the scene's UI (spec 3.6): a tap on it never reaches
-// what it covers.
+// The panel replaces the scene's UI (spec 3.6): a tap anywhere, on the
+// card or around it, never reaches what it covers.
 TEST_F(SystemLayerTest, ErrorPanelSwallowsTaps) {
     start("rect");
     int clicks = 0;
-    on_ui([&] { make_counting_button(200, 200, 80, 40, &clicks); });
+    int edge_clicks = 0;
+    on_ui([&] {
+        make_counting_button(200, 200, 80, 40, &clicks);
+        // Near the top edge, above where the card sits.
+        make_counting_button(200, 0, 80, 30, &edge_clicks);
+    });
     tap(240, 220);
+    tap(240, 15);
     ASSERT_EQ(clicks, 1);
+    ASSERT_EQ(edge_clicks, 1);
 
     on_ui([&] { layer->show_error({"Demo", "main.lua", 12, "boom"}, [] {}, [] {}); });
     tap(240, 220);
+    tap(240, 15);
     EXPECT_EQ(clicks, 1);
+    EXPECT_EQ(edge_clicks, 1);
     on_ui([&] { EXPECT_TRUE(layer->error_visible()); });
+}
+
+// Every dialog's buttons are big enough for a thumb and share their row
+// equally (wisp/ui/dialog.hpp), on every screen shape.
+TEST_F(SystemLayerTest, DialogButtonsAreBigAndShareTheRow) {
+    for (const char* s : {"rect", "rounded_rect", "circle"}) {
+        SCOPED_TRACE(s);
+        TearDown();
+        start(s);
+        on_ui([&] {
+            layer->show_error({"Demo", "main.lua", 12, "boom"}, [] {}, [] {});
+            lv_obj_update_layout(lv_layer_top());
+            for (StrId id : {StrId::SceneReload, StrId::SceneBack}) {
+                EXPECT_EQ(
+                    check_dialog_button(find_button_with_label(lv_layer_top(), wisp::ui::tr(id)),
+                                        shape, safe),
+                    "");
+            }
+            layer->hide_error();
+
+            lv_obj_t* box = layer->open_confirm(StrId::ResetTitle, "Sure?", [](bool) {});
+            ASSERT_NE(box, nullptr);
+            lv_obj_update_layout(lv_layer_top());
+            for (StrId id : {StrId::Yes, StrId::No}) {
+                EXPECT_EQ(
+                    check_dialog_button(find_button_with_label(box, wisp::ui::tr(id)), shape, safe),
+                    "");
+            }
+            layer->close_confirm(box);
+        });
+    }
+}
+
+// The error panel is a card as tall as what it holds, centred in the safe
+// area: no blank band between the message and the buttons.
+TEST_F(SystemLayerTest, ErrorCardFitsAShortMessage) {
+    for (const char* s : {"rect", "rounded_rect", "circle"}) {
+        SCOPED_TRACE(s);
+        TearDown();
+        start(s);
+        on_ui([&] {
+            layer->show_error({"Demo", "main.lua", 12, "boom"}, [] {}, [] {});
+            lv_obj_update_layout(lv_layer_top());
+            lv_obj_t* card = top_level(find_label_containing(lv_layer_top(), "main.lua:12"));
+            ASSERT_NE(card, nullptr);
+            lv_area_t a;
+            lv_obj_get_coords(card, &a);
+            const int32_t safe_h = safe.y2 - safe.y1 + 1;
+            EXPECT_TRUE(inside(a, safe));
+            EXPECT_EQ(a.x1, safe.x1);
+            EXPECT_EQ(a.x2, safe.x2);
+            EXPECT_LT(lv_area_get_height(&a), safe_h * 3 / 4);
+            EXPECT_LE(std::abs((a.y1 - safe.y1) - (safe.y2 - a.y2)), 1)
+                << a.y1 << "-" << a.y2 << " in " << safe.y1 << "-" << safe.y2;
+        });
+    }
+}
+
+// A message too long for the safe area scrolls inside the card, which
+// stops at the safe area's height: the buttons stay whole and visible.
+TEST_F(SystemLayerTest, ErrorCardScrollsALongMessage) {
+    std::string message;
+    for (int i = 0; i < 60; ++i) message += "attempt to call a nil value (field 'x') ";
+    for (const char* s : {"rect", "rounded_rect", "circle"}) {
+        SCOPED_TRACE(s);
+        TearDown();
+        start(s);
+        int reloads = 0;
+        lv_point_t reload_at{};
+        on_ui([&] {
+            layer->show_error({"Demo", "main.lua", 12, message}, [&] { ++reloads; }, [] {});
+            lv_obj_update_layout(lv_layer_top());
+            lv_obj_t* text = find_label_containing(lv_layer_top(), "main.lua:12");
+            lv_obj_t* card = top_level(text);
+            ASSERT_NE(card, nullptr);
+            lv_area_t a;
+            lv_obj_get_coords(card, &a);
+            EXPECT_TRUE(inside(a, safe)) << a.y1 << "-" << a.y2;
+            // The message, not the card, scrolls.
+            lv_obj_t* area = lv_obj_get_parent(text);
+            EXPECT_NE(area, card);
+            EXPECT_TRUE(lv_obj_has_flag(area, LV_OBJ_FLAG_SCROLLABLE));
+            EXPECT_GT(lv_obj_get_scroll_bottom(area), 0);
+            for (StrId id : {StrId::SceneReload, StrId::SceneBack}) {
+                lv_obj_t* btn = find_button_with_label(lv_layer_top(), wisp::ui::tr(id));
+                EXPECT_EQ(check_dialog_button(btn, shape, safe), "");
+                lv_area_t b;
+                lv_obj_get_coords(btn, &b);
+                EXPECT_TRUE(b.y1 >= a.y1 && b.y2 <= a.y2);
+            }
+            reload_at =
+                center_of(find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::SceneReload)));
+        });
+        tap(reload_at);
+        EXPECT_EQ(reloads, 1);
+    }
 }
 
 TEST_F(SystemLayerTest, KeyboardTargetsTextarea) {

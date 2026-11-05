@@ -22,18 +22,20 @@
 //
 // Overflow is about a backlog, never about one batch: a batch is always
 // queued whole (its size is already capped by kMaxBatchBytes) and applied
-// over as many frames as it takes. Only when ops left over from earlier
-// batches and the new batch together pass `max_pending` is the backlog
-// (the earlier part) collapsed: its SetProps go, everything before its
-// last Build goes, and of its ScrollTos and Focuses only the newest per
-// node (one Focus in all) is kept aside. If what remains of it is still
-// over `max_pending`, only that Build stays. take_refresh_request() then
-// reports true once, and the scene task answers with a batch marked
-// UiBatch::refresh that re-sends every bound value
-// (__wisp.refresh_all()); the kept ScrollTos and Focuses are queued
-// right after it. A refresh batch never counts towards an overflow, so
-// answering one can never ask for another, however many bindings the
-// scene has.
+// over as many frames as it takes. Only when ops of the same instance
+// left over from earlier batches and the new batch together pass
+// `max_pending` is that instance's backlog (the earlier part) collapsed:
+// its SetProps go, everything before its last Build goes, and of its
+// ScrollTos and Focuses only the newest per node (one Focus in all) is
+// kept aside. If what remains of it is still over `max_pending`, only
+// that Build stays. take_refresh_request(instance) then reports true
+// once, and the scene task answers with a batch marked UiBatch::refresh
+// that re-sends every bound value (__wisp.refresh_all()); the ScrollTos
+// and Focuses kept for that instance are queued right after it. A
+// refresh batch never counts towards an overflow, so answering one can
+// never ask for another, however many bindings the scene has. Every
+// instance's backlog, kept-aside ops and refresh request are its own:
+// one instance's overflow or refresh never touches another's ops.
 //
 // Everything queued lives in PSRAM (spec 2.3).
 
@@ -58,8 +60,9 @@ public:
     PatchQueue(const PatchQueue&) = delete;
     PatchQueue& operator=(const PatchQueue&) = delete;
 
-    // Scene task: true once after an overflow dropped updates.
-    bool take_refresh_request();
+    // Scene task: true once after an overflow dropped updates of
+    // `instance`.
+    bool take_refresh_request(uint32_t instance);
     // Any thread.
     void submit(UiBatch batch);
     // UI thread: applies up to per_frame ops of `instance` to `view` and
@@ -96,10 +99,11 @@ private:
 
     // Drops every queued and kept-aside op of `instance`.
     void drop_instance_locked(uint32_t instance);
-    // Collapses items_[0, end) (see Overflow above).
-    void collapse_locked(size_t end);
+    // Collapses `instance`'s items in items_[0, end) (see Overflow above).
+    void collapse_locked(size_t end, uint32_t instance);
     void keep_aside_locked(Item item);
-    void count_locked();
+    // Queued items of `instance` not from a refresh batch.
+    size_t counted_locked(uint32_t instance) const;
 
     const size_t per_frame_;
     const size_t max_pending_;
@@ -107,11 +111,11 @@ private:
     Items items_;
     Index index_;
     uint64_t head_seq_ = 0;  // sequence number of items_.front()
-    size_t counted_ = 0;     // items_ not from a refresh batch
-    // ScrollTos and Focuses kept from a collapse, queued after the
-    // refresh batch.
+    // ScrollTos and Focuses kept from a collapse, queued after their
+    // instance's refresh batch.
     os::LargeVector<Item> aside_;
-    bool refresh_ = false;
+    // Instances whose overflow asks for a refresh.
+    os::LargeVector<uint32_t> refresh_;
 };
 
 }  // namespace wisp::scene

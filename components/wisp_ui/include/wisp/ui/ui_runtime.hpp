@@ -31,7 +31,9 @@ namespace wisp::ui {
 // The draw buffers' size and placement are the display's to declare, in
 // its caps (wisp/hal/draw_buf_policy.hpp), not the runtime's.
 struct UiConfig {
-    // Tiny TTF rasterizes vector glyphs on this task (stb_truetype keeps
+    // Measured on the reference board with scenes open: 8 KB left only
+    // about 430 bytes (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md);
+    // Tiny TTF also rasterizes vector glyphs on this task (stb_truetype keeps
     // a scanline buffer on the stack), on top of LVGL's layout and
     // drawing.
     uint32_t task_stack = 10240;

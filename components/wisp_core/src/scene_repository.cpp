@@ -612,6 +612,22 @@ bool SceneRepository::installing(std::string_view id) const {
     return std::find(installing_.begin(), installing_.end(), id) != installing_.end();
 }
 
+void SceneRepository::begin_removing(std::string_view id) {
+    std::lock_guard<os::Mutex> lock(marks_mutex_);
+    removing_.emplace_back(id);
+}
+
+void SceneRepository::end_removing(std::string_view id) {
+    std::lock_guard<os::Mutex> lock(marks_mutex_);
+    auto it = std::find(removing_.begin(), removing_.end(), id);
+    if (it != removing_.end()) removing_.erase(it);
+}
+
+bool SceneRepository::removing(std::string_view id) const {
+    std::lock_guard<os::Mutex> lock(marks_mutex_);
+    return std::find(removing_.begin(), removing_.end(), id) != removing_.end();
+}
+
 Result<SceneRemoval> SceneRepository::removal(std::string_view id_view, bool with_data) {
     using R = Result<SceneRemoval>;
     if (!valid_scene_id(id_view)) {

@@ -6,6 +6,7 @@
 #include "lvgl_private.h"  // lv_draw_buf_handlers_t
 #include "wisp/core/log.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/dialog.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/overlay.hpp"
 #include "wisp/ui/strings.hpp"
@@ -62,11 +63,10 @@ lv_obj_t* add_text(lv_obj_t* card, const std::string& text) {
     return label;
 }
 
+// The card's one action: a big button across the card's width.
 lv_obj_t* add_button(lv_obj_t* card, const char* text, lv_event_cb_t cb, void* user_data) {
-    lv_obj_t* btn = lv_button_create(card);
+    lv_obj_t* btn = ui::add_dialog_button(ui::make_dialog_actions(card), text);
     lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
-    lv_obj_t* label = lv_label_create(btn);
-    lv_label_set_text(label, text);
     return btn;
 }
 

@@ -77,6 +77,17 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 
 `corner_radius` 不要直接抄厂商数据表：实测常常偏小（waveshare_esp32_s3_touch_amoled_2_16 的数据表写 40，实测约 70）。新板子接入圆角屏/圆形屏时，写一个校准场景在四角画出几个候选半径（例如 40/50/60/70/80）的四分之一圆弧，圆心放在 `(R,R)`，目视核对对角线方向上哪些弧可见、哪些已被裁掉，用能看到的最大半径作为 `corner_radius`；具体做法见 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`"已知勘误与注意事项"一节。
 
+## 场景运行时
+
+新板子接入场景运行时（场景 spec 2.1/2.3）不需要任何板级代码：场景层（`wisp_scene`）和它调用的 `wisp_ui`/`wisp_hal` 都是可移植层，屏幕形状只经上面"能力字段（caps）约定"里 Display 的 `shape`/`corner_radius` 生效——`wisp.device.info()`/`wisp.device.row_span()` 直接读这两个 caps，认的是形状不是板名。
+
+前提（都已在公共配置里，新板子不用改）：
+
+- PSRAM：Lua 堆（`components/wisp_scene/src/vm.cpp` 的分配器）和 LVGL 堆（`components/wisp_ui/src/lv_mem_wisp.cpp`）都在 `os::alloc(Mem::Large)` 上，没有 PSRAM 时退回内部 RAM（容量小得多，几个示例场景同时跑大概装不下，见 AGENTS.md 第 5 节的内部 RAM 预算）。
+- `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` 已在 `firmware/sdkconfig.defaults` 里；`wisp.scene` 128 KB 的栈要放进 PSRAM 依赖它。
+
+验收时除了下面步骤 5 自检界面清单里的"Scenes 卡片"一项，还要把本板硬件文档"真机验收清单"里场景相关的几行跑一遍（参照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`）。
+
 ## 分区与板级配置
 
 `firmware/sdkconfig.defaults` 只放与板子无关的公共配置。凡是属于某块板子的配置都放在板目录：

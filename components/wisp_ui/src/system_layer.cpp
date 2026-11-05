@@ -10,6 +10,7 @@
 
 #include "lvgl_private.h"  // lv_indev_t::pointer.act_obj, lv_buttonmatrix_t
 #include "wisp/core/log.hpp"
+#include "wisp/ui/dialog.hpp"
 #include "wisp/ui/overlay.hpp"
 
 namespace wisp::ui {
@@ -18,6 +19,8 @@ namespace {
 
 // Height of the pinyin candidate row above the keyboard.
 constexpr int32_t kCandidateHeight = 44;
+// Widest a confirm dialog gets on a large screen.
+constexpr int32_t kConfirmMaxWidth = 360;
 
 constexpr auto width(int w) { return static_cast<lv_buttonmatrix_ctrl_t>(w); }
 constexpr auto key(int w) {
@@ -195,15 +198,6 @@ void fit_rows(lv_obj_t* matrix, const hal::ScreenShape& shape) {
 void fit_rows_cb(lv_event_t* e) {
     auto* shape = static_cast<const hal::ScreenShape*>(lv_event_get_user_data(e));
     fit_rows(static_cast<lv_obj_t*>(lv_event_get_current_target(e)), *shape);
-}
-
-// A plain, non-clickable box for laying out the panel's contents.
-lv_obj_t* make_container(lv_obj_t* parent) {
-    lv_obj_t* c = lv_obj_create(parent);
-    lv_obj_remove_style_all(c);
-    lv_obj_remove_flag(c, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
-    return c;
 }
 
 }  // namespace
@@ -471,55 +465,84 @@ void SystemLayer::show_error(ErrorPanelInfo info, std::function<void()> on_reloa
     on_reload_ = std::move(on_reload);
     on_error_back_ = std::move(on_back);
 
-    lv_obj_t* panel = lv_obj_create(lv_layer_top());
-    lv_obj_set_pos(panel, safe_.x1, safe_.y1);
-    lv_obj_set_size(panel, width_of(safe_), height_of(safe_));
-    lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_shadow_width(panel, 0, 0);
-    // Clickable, so a touch the buttons do not take stops here instead of
-    // reaching what the panel covers.
-    lv_obj_remove_flag(panel, LV_OBJ_FLAG_CLICK_FOCUSABLE);
-    lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(panel, 8, 0);
+    // Behind the card, the whole screen: the scene's UI is replaced, so it
+    // is hidden, and every touch the card does not take stops here. It has
+    // no children and never changes, so what scrolls under it is cut
+    // although it spans the screen.
+    lv_obj_t* backdrop = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(backdrop);
+    lv_obj_set_size(backdrop, shape_.width, shape_.height);
+    lv_obj_set_style_bg_color(backdrop, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(backdrop, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(backdrop, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_remove_flag(backdrop, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t* title = lv_label_create(panel);
+    // The card: as wide as the safe area and as tall as what it holds.
+    lv_obj_t* card = lv_obj_create(lv_layer_top());
+    lv_obj_set_width(card, width_of(safe_));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(card, 0, 0);
+    // Clickable like the backdrop; it neither scrolls nor takes focus.
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(card, 8, 0);
+
+    lv_obj_t* title = lv_label_create(card);
     lv_label_set_text(title, tr(StrId::SceneErrorTitle));
     lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_RED), 0);
 
+    // The message scrolls inside the card when it does not fit, so the
+    // buttons below it always show. Clickable, so a drag on the text
+    // scrolls it.
+    lv_obj_t* message = lv_obj_create(card);
+    lv_obj_remove_style_all(message);
+    lv_obj_remove_flag(message, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_set_size(message, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_scroll_dir(message, LV_DIR_VER);
     std::string where = info.file;
     if (info.line > 0) where += ":" + std::to_string(info.line);
     std::string body = info.scene_name + "\n" + where + "\n" + info.message;
-    lv_obj_t* text = lv_label_create(panel);
-    lv_label_set_text(text, body.c_str());
-    lv_label_set_long_mode(text, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_t* text = lv_label_create(message);
     lv_obj_set_width(text, LV_PCT(100));
-    lv_obj_set_flex_grow(text, 1);
+    lv_label_set_long_mode(text, LV_LABEL_LONG_MODE_WRAP);
+    lv_label_set_text(text, body.c_str());
 
-    lv_obj_t* row = make_container(panel);
-    lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* row = make_dialog_actions(card);
     for (StrId id : {StrId::SceneReload, StrId::SceneBack}) {
-        lv_obj_t* btn = lv_button_create(row);
-        lv_label_set_text(lv_label_create(btn), tr(id));
+        lv_obj_t* btn = add_dialog_button(row, tr(id));
         lv_obj_add_event_cb(btn, &SystemLayer::error_btn_cb, LV_EVENT_CLICKED, this);
         if (id == StrId::SceneReload) error_reload_ = btn;
     }
 
-    error_panel_ = panel;
-    mark_opaque_overlay(panel);
+    // Too tall for the safe area: the card stops at its height and the
+    // message takes what the title and the buttons leave.
+    lv_obj_update_layout(card);
+    const int32_t safe_h = height_of(safe_);
+    if (lv_obj_get_height(card) > safe_h) {
+        lv_obj_set_height(card, safe_h);
+        lv_obj_set_flex_grow(message, 1);
+        lv_obj_update_layout(card);
+    }
+    lv_obj_set_pos(card, safe_.x1, safe_.y1 + (safe_h - lv_obj_get_height(card)) / 2);
+
+    error_backdrop_ = backdrop;
+    error_panel_ = card;
+    mark_opaque_overlay(backdrop, OwnChanges::InOwnEvents);
+    mark_opaque_overlay(card);
     // Laid out now, so a touch read before the next frame hits the
     // buttons where they are drawn.
-    lv_obj_update_layout(panel);
+    lv_obj_update_layout(card);
     raise();
 }
 
 void SystemLayer::hide_error() {
     if (error_panel_ == nullptr) return;
     lv_obj_delete(error_panel_);
+    lv_obj_delete(error_backdrop_);
     error_panel_ = nullptr;
+    error_backdrop_ = nullptr;
     error_reload_ = nullptr;
     on_reload_ = nullptr;
     on_error_back_ = nullptr;
@@ -740,13 +763,19 @@ lv_obj_t* SystemLayer::open_confirm(StrId title, const std::string& text,
     if (confirm_box_ != nullptr) return nullptr;
     lv_obj_t* box = lv_msgbox_create(nullptr);
     // lv_msgbox_class's default width is a fixed LV_DPI_DEF * 2,
-    // unrelated to the screen; clamped so a small round screen does not
-    // clip it.
-    lv_obj_set_width(box, std::min<int32_t>(LV_DPI_DEF * 2, width_of(safe_)));
+    // unrelated to the screen; this one is as wide as the safe area up to
+    // a limit, so a small round screen does not clip it.
+    lv_obj_set_width(box, std::min(kConfirmMaxWidth, width_of(safe_)));
     lv_msgbox_add_title(box, tr(title));
     lv_msgbox_add_text(box, text.c_str());
-    lv_obj_t* yes = lv_msgbox_add_footer_button(box, tr(StrId::Yes));
-    lv_obj_t* no = lv_msgbox_add_footer_button(box, tr(StrId::No));
+    // The buttons go in a row of their own rather than LVGL's footer,
+    // whose fixed height would cut them short; inset like the text.
+    lv_obj_t* row = make_dialog_actions(box);
+    const int32_t inset = lv_obj_get_style_pad_left(lv_msgbox_get_content(box), LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(row, inset, 0);
+    lv_obj_set_style_pad_bottom(row, inset, 0);
+    lv_obj_t* yes = add_dialog_button(row, tr(StrId::Yes));
+    lv_obj_t* no = add_dialog_button(row, tr(StrId::No));
     lv_obj_add_event_cb(yes, &SystemLayer::confirm_btn_cb, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(no, &SystemLayer::confirm_btn_cb, LV_EVENT_CLICKED, this);
     // Laid out now rather than at the next refresh: a touch read in
@@ -779,7 +808,7 @@ void SystemLayer::confirm_btn_cb(lv_event_t* e) {
 // --- Stacking ---
 
 void SystemLayer::raise() {
-    for (lv_obj_t* piece : {error_panel_, kb_, candidates_, arrow_}) {
+    for (lv_obj_t* piece : {error_backdrop_, error_panel_, kb_, candidates_, arrow_}) {
         if (piece != nullptr) lv_obj_move_foreground(piece);
     }
     // The dialog's backdrop holds the box.

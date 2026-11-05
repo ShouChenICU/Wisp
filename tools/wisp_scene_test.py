@@ -165,7 +165,7 @@ class FakeDevice:
                     return self._send(401, {"error": {"code": "unauthorized", "message": "x"}})
                 key = self.headers["Sec-WebSocket-Key"]
                 accept = base64.b64encode(hashlib.sha1(
-                    (key + "258EAFA5-E914-47DA-95CA-C5AB0DC11B9A").encode()).digest()).decode()
+                    (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
                 self.send_response(101)
                 self.send_header("Upgrade", "websocket")
                 self.send_header("Connection", "Upgrade")
@@ -554,6 +554,14 @@ class Defaults(unittest.TestCase):
             self.assertEqual(wisp_scene.default_config_dir(),
                              pathlib.Path.home() / ".config" / "wisp")
         self.assertEqual(wisp_scene.DEFAULT_HOST, "wisp.local:8900")
+
+
+class Handshake(unittest.TestCase):
+    def test_accept_matches_the_rfc6455_example(self):
+        # RFC 6455 section 1.3: the one worked example, independent of any
+        # GUID copy in the tool or in FakeDevice.
+        self.assertEqual(wisp_scene.ws_accept("dGhlIHNhbXBsZSBub25jZQ=="),
+                         "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
 
 
 if __name__ == "__main__":

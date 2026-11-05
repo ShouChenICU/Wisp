@@ -158,17 +158,17 @@ TEST_F(PatchQueueTest, OverflowCollapsesToFullRefresh) {
     start();
     queue.submit(batch({tree(1)}));
     EXPECT_EQ(frame(), 1u);
-    EXPECT_FALSE(queue.take_refresh_request());
+    EXPECT_FALSE(queue.take_refresh_request(kInstance));
 
     queue.submit(texts(1024, "v"));
     EXPECT_EQ(queue.pending(), 1024u);
-    EXPECT_FALSE(queue.take_refresh_request());
+    EXPECT_FALSE(queue.take_refresh_request(kInstance));
 
     // The backlog goes; the batch that overflowed it stays whole.
     queue.submit(batch({set(5000, Prop::Text, str("w"))}));
     EXPECT_EQ(queue.pending(), 1u);
-    EXPECT_TRUE(queue.take_refresh_request());
-    EXPECT_FALSE(queue.take_refresh_request());
+    EXPECT_TRUE(queue.take_refresh_request(kInstance));
+    EXPECT_FALSE(queue.take_refresh_request(kInstance));
     EXPECT_EQ(frame(), 1u);
     EXPECT_EQ(text(2), "");
 }
@@ -178,12 +178,12 @@ TEST_F(PatchQueueTest, LoneLargeBatchIsAppliedWhole) {
     queue.submit(batch({tree(1500)}));
     EXPECT_EQ(frame(), 1u);
     queue.submit(texts(1500, "all"));
-    EXPECT_FALSE(queue.take_refresh_request());
+    EXPECT_FALSE(queue.take_refresh_request(kInstance));
     EXPECT_EQ(queue.pending(), 1500u);
     size_t applied = 0;
     for (int i = 0; i < 30 && queue.pending() > 0; ++i) applied += frame();
     EXPECT_EQ(applied, 1500u);
-    EXPECT_FALSE(queue.take_refresh_request());
+    EXPECT_FALSE(queue.take_refresh_request(kInstance));
     EXPECT_EQ(text(2), "all");
     EXPECT_EQ(text(1501), "all");
 }
@@ -194,7 +194,7 @@ TEST_F(PatchQueueTest, RefreshOf1500BindingsTerminates) {
     EXPECT_EQ(frame(), 1u);
     queue.submit(texts(1000, "stale"));
     queue.submit(texts(100, "newer", false, 1002));
-    ASSERT_TRUE(queue.take_refresh_request());
+    ASSERT_TRUE(queue.take_refresh_request(kInstance));
 
     // The scene task answers with every bound value; neither that batch
     // nor the small ones that follow while it drains ask again.
@@ -202,7 +202,7 @@ TEST_F(PatchQueueTest, RefreshOf1500BindingsTerminates) {
     queue.submit(texts(1500, "current", /*refresh=*/true));
     for (int i = 0; i < 100 && queue.pending() > 0; ++i) {
         if (i % 4 == 0) queue.submit(batch({set(2, Prop::Text, str("current"))}));
-        if (queue.take_refresh_request()) {
+        if (queue.take_refresh_request(kInstance)) {
             ++refreshes;
             queue.submit(texts(1500, "current", true));
         }
@@ -210,7 +210,7 @@ TEST_F(PatchQueueTest, RefreshOf1500BindingsTerminates) {
     }
     EXPECT_EQ(refreshes, 0);
     EXPECT_EQ(queue.pending(), 0u);
-    EXPECT_FALSE(queue.take_refresh_request());
+    EXPECT_FALSE(queue.take_refresh_request(kInstance));
     EXPECT_EQ(text(2), "current");
     EXPECT_EQ(text(1501), "current");
 }
@@ -224,7 +224,7 @@ TEST_F(PatchQueueTest, OverflowKeepsAPendingBuild) {
     queue.submit(std::move(backlog));
     EXPECT_EQ(queue.pending(), 1001u);
     queue.submit(texts(30, "y", false, 2000));
-    EXPECT_TRUE(queue.take_refresh_request());
+    EXPECT_TRUE(queue.take_refresh_request(kInstance));
     EXPECT_EQ(queue.pending(), 31u);
     EXPECT_EQ(frame(), 31u);
     EXPECT_EQ(text(2), "built");
@@ -254,7 +254,7 @@ TEST_F(PatchQueueTest, OverflowReplaysLastScrollAndFocusAfterTheRefresh) {
     for (uint32_t i = 0; i < 1000; ++i) backlog.ops.push_back(set(i + 100, Prop::Text, str("x")));
     queue.submit(std::move(backlog));
     queue.submit(texts(30, "y"));
-    ASSERT_TRUE(queue.take_refresh_request());
+    ASSERT_TRUE(queue.take_refresh_request(kInstance));
     EXPECT_EQ(queue.pending(), 30u);
 
     // Replayed after the refresh, newest per node only.
@@ -275,6 +275,58 @@ TEST_F(PatchQueueTest, OverflowReplaysLastScrollAndFocusAfterTheRefresh) {
         EXPECT_LE(child.y2, box.y2);
         EXPECT_GE(child.y1, box.y1);
     });
+}
+
+// Overflow is each instance's own: another instance's backlog neither
+// counts towards it nor is collapsed by it, and its request stays its own.
+TEST_F(PatchQueueTest, OverflowIsPerInstance) {
+    start();
+    queue.submit(batch({tree(1)}));
+    EXPECT_EQ(frame(), 1u);
+    queue.submit(batch({set(2, Prop::Text, str("a")), ScrollTo{1, 0}}, 7));
+    UiBatch other;
+    other.instance = 7;
+    for (uint32_t i = 0; i < 1000; ++i) other.ops.push_back(set(i + 10, Prop::Text, str("o")));
+    queue.submit(std::move(other));
+    // 1002 of instance 7 queued: 100 more of this one do not overflow.
+    queue.submit(texts(100, "v"));
+    EXPECT_FALSE(queue.take_refresh_request(kInstance));
+    EXPECT_FALSE(queue.take_refresh_request(7));
+    EXPECT_EQ(queue.pending(), 1102u);
+
+    // This one's backlog overflows: only its own ops are collapsed.
+    queue.submit(texts(1000, "w", false, 2000));
+    EXPECT_TRUE(queue.take_refresh_request(kInstance));
+    EXPECT_FALSE(queue.take_refresh_request(7));
+    EXPECT_EQ(queue.pending(), 2002u);
+}
+
+// The ScrollTos and Focuses a collapse kept aside go out with their own
+// instance's refresh batch, not with another instance's.
+TEST_F(PatchQueueTest, KeptAsideOpsWaitForTheirOwnRefresh) {
+    start();
+    UiBatch backlog;
+    backlog.instance = 7;
+    backlog.ops.push_back(ScrollTo{3, 1});
+    for (uint32_t i = 0; i < 1000; ++i) backlog.ops.push_back(set(i + 100, Prop::Text, str("x")));
+    queue.submit(std::move(backlog));
+    UiBatch more;
+    more.instance = 7;
+    for (uint32_t i = 0; i < 30; ++i) more.ops.push_back(set(i + 2, Prop::Text, str("y")));
+    queue.submit(std::move(more));
+    ASSERT_TRUE(queue.take_refresh_request(7));
+    EXPECT_EQ(queue.pending(), 30u);
+
+    queue.submit(texts(1, "mine", /*refresh=*/true));
+    EXPECT_EQ(queue.pending(), 31u);
+
+    UiBatch refresh;
+    refresh.instance = 7;
+    refresh.refresh = true;
+    refresh.ops.push_back(set(4, Prop::Text, str("r")));
+    queue.submit(std::move(refresh));
+    // Its refresh op, then the ScrollTo kept for it.
+    EXPECT_EQ(queue.pending(), 33u);
 }
 
 TEST_F(PatchQueueTest, ABuildSupersedesWhatIsQueuedBeforeIt) {

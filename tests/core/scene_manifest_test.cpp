@@ -132,3 +132,19 @@ TEST(SceneManifest, SchemaEntryIconHosts) {
     EXPECT_FALSE(accepts("not json"));
     EXPECT_FALSE(accepts("[]"));
 }
+
+// Parsing recurses once per level, and scene.json is parsed on the storage
+// worker's small stack at every boot (wisp/core/storage_worker.hpp): its
+// nesting is capped, unknown fields included.
+TEST(SceneManifest, NestingIsCappedAtFourLevels) {
+    // permissions.http[] is three deep; one more level is still fine.
+    EXPECT_TRUE(accepts(manifest("todo", "x", "1.0.0", R"(,"x":{"y":[[1]]})")));
+    for (const char* extra :
+         {R"(,"x":{"y":[[[1]]]})", R"(,"x":[[[[[[[[[1]]]]]]]]])",
+          R"(,"x":{"a":{"a":{"a":{"a":1}}}})", R"(,"permissions":{"http":[[["a.com"]]]})"}) {
+        auto r = parse_scene_manifest(manifest("todo", "x", "1.0.0", extra));
+        ASSERT_FALSE(r) << extra;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << extra;
+        EXPECT_EQ(r.error().message, "scene.json: nested deeper than 4 levels") << extra;
+    }
+}
