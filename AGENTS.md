@@ -47,7 +47,11 @@ Wisp（小鬼火）是一个运行在 ESP32 系列芯片上、完全由 AI 驱�
 - **可移植层禁止 include 平台头文件**：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/`、`soc/*`、`rom/*`、`lwip/*`、`mbedtls/*`、`curl/*`、`sdkconfig.h`、`nvs.h`/`nvs_flash.h`、`sdmmc_cmd.h`、`SDL*`，以及平台层的 `wisp/port/*`。另外每一层只能依赖上面顺序中排在它之前的层，不得反向依赖（例如 `wisp_net` 不得 include `wisp/admin/`、`wisp/ui/`、`wisp/app/`）。这条规则由 `tools/check_layering.py` 强制检查。
 - **板子无关**：可移植层和平台层里不得出现具体板子的引脚、芯片型号或常量。这些只能写在 `boards/` 和 `drivers/` 中，通过设备的 caps 对外暴露。例外：平台层可以按 SoC 目标（`IDF_TARGET`/`CONFIG_IDF_TARGET_*`）选择实现，例如 `wisp_port_esp/lv_blend/<芯片>/` 的渲染加速。这类代码只依赖芯片本身，与板子无关；板级常量仍然禁止。可移植层（含 `lv_conf.h`）不出现芯片名。
 - **服务层约定**：Agent 工具、REST 接口、Lua 绑定都只是同一组服务 API 的薄适配层，不允许绕过服务层直接调用驱动。
-- **屏幕形状**：屏幕不一定是完整矩形（圆角屏、圆形屏）。任何界面（包括场景、Agent 生成的界面）都必须按 Display caps 的 `shape` 和 `hal::safe_rect()`/`row_span()` 布局，不得写死边距或假设整屏可见。根容器铺满屏幕、用内边距把内容收进安全区；滚动内容可以经过不可见区域，但滚到两端时首尾内容必须完整落在安全区内（spec 5.6）。
+- **屏幕形状**：屏幕不一定是完整矩形（圆角屏、圆形屏），任何界面都不得写死边距或假设整屏可见（基础 spec 5.6）。
+  - 系统界面（自检界面、`ui::SystemLayer` 的对话框、屏幕键盘、错误面板、返回手势区）必须按 Display caps 的 `shape` 和 `hal::safe_rect()`/`row_span()` 布局，保证内容可见。
+  - 场景拥有整块屏幕，自己负责布局：根容器铺满屏幕、没有默认内边距，运行时不替场景收进安全区（场景 spec 5.2"屏幕形状"）。
+  - 运行时向场景（以及将来的 Agent）提供屏幕形状、圆角半径、安全区和 `row_span`（`wisp.device.info()` 的 `shape`/`corner_radius`/`safe_area`，`wisp.device.row_span(y)`）。
+  - 滚动内容可以经过不可见区域，但滚到两端时第一项和最后一项都必须完整可见；示例场景（`scenes/examples/`）演示了这些做法，它们的测试在三种形状上检查。
 - **UI 单线程**：只有 UI 线程可以调用 LVGL，其他线程一律通过 `UiRuntime::post()` 把操作交给 UI 线程；脚本也不直接调用 LVGL。
 - **设备模型**：
   - 设备注册在 `DeviceRegistry` 里，id 的格式为 `<类别>.<名字>`。
