@@ -15,6 +15,7 @@
 #include "admin_internal.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/wakelock.hpp"
 
 namespace wisp::admin::detail {
 
@@ -25,6 +26,7 @@ using core::FirmwareOutcome;
 using core::FirmwareUpdateService;
 
 constexpr const char* kTag = "admin";
+constexpr const char* kOtaHolder = "system.ota";
 
 // API responses are never cached (AdminServer::handle() adds the same).
 net::HttpResponse no_store(net::HttpResponse res) {
@@ -80,9 +82,19 @@ net::HttpResponse firmware_buffered(AdminDeps&, const RequestContext&) {
 
 // One upload's body, piped into the service. Gives the slot back however
 // the request ends, including a sink dropped without on_end()/on_abort().
+// Until then it holds "system.ota" twice: network, so deep standby does
+// not turn Wi-Fi off under the upload, and cpu, so light sleep stays off
+// while the image is written (scene-device spec 4.3).
 class FirmwareSink final : public net::BodySink {
 public:
-    FirmwareSink(FirmwareUpdateService& service, uint32_t id) : service_(service), id_(id) {}
+    FirmwareSink(FirmwareUpdateService& service, uint32_t id, core::WakeLockRegistry* locks)
+        : service_(service), id_(id) {
+        if (locks != nullptr) {
+            network_ =
+                core::WakeLock(*locks, kOtaHolder, core::WakeLockKind::Network, "firmware upload");
+            cpu_ = core::WakeLock(*locks, kOtaHolder, core::WakeLockKind::Cpu, "firmware write");
+        }
+    }
     ~FirmwareSink() override {
         if (!done_) service_.abort(id_);
     }
@@ -92,26 +104,36 @@ public:
         FirmwareOutcome r = service_.write(id_, chunk);
         if (r.ok()) return std::nullopt;
         done_ = true;
+        release();
         return no_store(failure_response(r));
     }
 
     net::HttpResponse on_end() override {
         done_ = true;
         FirmwareOutcome r = service_.end(id_);
+        release();
         if (!r.ok()) return no_store(failure_response(r));
         return no_store(net::HttpResponse::json(202, Value(Map{{"version", Value(r.version)}})));
     }
 
     void on_abort() override {
+        release();
         if (done_) return;
         done_ = true;
         service_.abort(id_);
     }
 
 private:
+    void release() {
+        network_.release();
+        cpu_.release();
+    }
+
     FirmwareUpdateService& service_;
     const uint32_t id_;
     bool done_ = false;
+    core::WakeLock network_;
+    core::WakeLock cpu_;
 };
 
 net::StreamStart answer(net::HttpResponse res) { return stream_answer(std::move(res)); }
@@ -144,7 +166,7 @@ std::optional<net::StreamStart> firmware_stream(AdminDeps& deps, const net::Http
     FirmwareOutcome r = deps.firmware->begin(static_cast<size_t>(head.content_length), &id);
     if (!r.ok()) return answer(failure_response(r));
     WLOG_I(kTag, "firmware upload started");
-    return net::StreamStart{std::make_unique<FirmwareSink>(*deps.firmware, id), {}};
+    return net::StreamStart{std::make_unique<FirmwareSink>(*deps.firmware, id, deps.wakelocks), {}};
 }
 
 }  // namespace wisp::admin::detail

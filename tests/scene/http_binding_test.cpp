@@ -212,6 +212,27 @@ wisp.http.get("https://api.example.com/x", nil, function() error("boom") end)
     EXPECT_NE(rt->status("h").error.find("boom"), std::string::npos) << rt->status("h").error;
 }
 
+// A request that waited for deep standby's network window says so
+// (spec 4.4); one sent at once has no such field.
+TEST_F(HttpBinding, DeferredFlagReachesCallback) {
+    start();
+    http->set_deferring(true);
+    install_http("h", R"(
+wisp.http.get("https://api.example.com/a", nil, function(err, res) print("a", err, res.deferred) end)
+)");
+    ASSERT_TRUE(rt->open("h"));
+    ASSERT_TRUE(wait_until([&] { return http->deferred_count() == 1; }, 3000));
+    EXPECT_EQ(client.calls(), 0u);
+    http->set_deferring(false);
+    EXPECT_EQ(wait_log("h", 1), (std::vector<std::string>{"a\tnil\ttrue"}));
+
+    install_http("g", R"(
+wisp.http.get("https://api.example.com/b", nil, function(err, res) print("b", err, res.deferred) end)
+)");
+    ASSERT_TRUE(rt->open("g"));
+    EXPECT_EQ(wait_log("g", 1), (std::vector<std::string>{"b\tnil\tnil"}));
+}
+
 TEST_F(HttpBinding, UnavailableWithoutAProxy) {
     configure_deps = {};
     start();

@@ -10,10 +10,13 @@
 //       content type. cb(err, nil) or cb(nil, {status, headers, body,
 //       json}) runs later, as a message of its own with a fresh time
 //       budget: headers is {lowercase name = value} (repeated headers
-//       joined with ", "), body a string, and json the decoded body when
-//       content-type contains "json" and the body parses.
-//   err: permission_denied, not_https, too_large, rate_limited, dns,
-//       connect, tls, timeout, other (from the proxy), or not_serializable,
+//       joined with ", "), body a string, json the decoded body when
+//       content-type contains "json" and the body parses, and deferred =
+//       true when the request waited for deep standby's network window
+//       (scene-device spec 4.4; absent otherwise).
+//   err: permission_denied, not_https, too_large, rate_limited,
+//       deferred_queue_full, deferred_timeout, dns, connect, tls, timeout,
+//       other (from the proxy), or not_serializable,
 //       too_deep (a table body that cannot be encoded) -- always through
 //       cb, never at the call.
 // Malformed arguments (url not a string, body not a string or table, opts
@@ -221,7 +224,7 @@ int run_entry(lua_State* L) {
         return 0;
     }
     lua_pushnil(L);            // 4
-    lua_createtable(L, 0, 4);  // 5
+    lua_createtable(L, 0, 5);  // 5
     lua_pushinteger(L, r.status);
     lua_setfield(L, 5, "status");
     lua_createtable(L, 0, static_cast<int>(r.headers.size()));  // 6
@@ -234,6 +237,10 @@ int run_entry(lua_State* L) {
     const std::string_view body(reinterpret_cast<const char*>(r.body.data()), r.body.size());
     lua_pushlstring(L, body.data(), body.size());
     lua_setfield(L, 5, "body");
+    if (r.deferred) {
+        lua_pushboolean(L, 1);
+        lua_setfield(L, 5, "deferred");
+    }
     if (json) {
         if (push_json(L, body)) {
             lua_setfield(L, 5, "json");

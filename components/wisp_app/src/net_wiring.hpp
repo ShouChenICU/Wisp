@@ -8,10 +8,18 @@
 //     and init()s them -- WifiService::init() only loads the saved list,
 //     so nothing here touches the radio;
 //   - subscribes to power.state, net.wifi.state and net.ap.state, only to
-//     wake the task: each tick it applies PowerManager::standby() to
-//     WifiService::set_standby() and reads which interfaces are up from
-//     WifiService, so a dropped or late event cannot leave standby or the
+//     wake the task: each tick it applies PowerManager::level() to
+//     WifiService::set_power_level() and reads which interfaces are up from
+//     WifiService, so a dropped or late event cannot leave the radio or the
 //     servers in the wrong state;
+//   - with the scenes' SceneHttp, builds the NetworkWindow (scene-device
+//     spec 4.4) that the task ticks with the same level before the Wi-Fi
+//     service, so requests start waiting before the radio goes off; the
+//     system.time event tells the window a sync attempt has finished;
+//   - system wake locks (scene-device spec 4.3): the task holds
+//     "system.hotspot" (network) while the setup hotspot is up, and the
+//     "wisp.ntp" worker "system.ntp" (network) for each sync attempt;
+//     AdminDeps::wakelocks takes the admin page's and the uploads' locks;
 //   - with Platform::http_server, builds the AdminServer and, when
 //     http_always_on, starts serving right away. Platform::captive_server
 //     (if any) runs AdminServer::captive_handler() on port 80 exactly
@@ -64,8 +72,11 @@
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/core/wakelock.hpp"
 #include "wisp/net/asset_pack.hpp"
+#include "wisp/net/network_window.hpp"
 #include "wisp/net/pairing_service.hpp"
+#include "wisp/net/scene_http.hpp"
 #include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
@@ -82,9 +93,15 @@ struct NetWiringDeps {
     core::SystemSettings& system_settings;
     // GET /device reports its last battery sample; null: battery unknown.
     const core::PowerMonitor* power_monitor = nullptr;
-    // The standby state, applied to WifiService every tick; null: Wi-Fi
-    // never enters standby.
+    // The power level, applied to WifiService and the NetworkWindow every
+    // tick; null: always Active.
     const PowerManager* power_manager = nullptr;
+    // The system locks' registry (see the file header); null: no locks are
+    // taken, so deep standby can turn Wi-Fi off under anything.
+    core::WakeLockRegistry* wakelocks = nullptr;
+    // The scenes' proxy, whose requests wait in deep standby; null: no
+    // network window.
+    net::SceneHttp* scene_http = nullptr;
     // Shows the factory-reset confirmation on the device (AdminDeps::
     // request_factory_reset). Empty when there is no screen to confirm on:
     // the route then answers 503.
@@ -137,6 +154,8 @@ public:
 private:
     void run();
     void run_ntp();
+    // Holds "system.hotspot" exactly while `up`. On the "wisp.net" task.
+    void hold_hotspot_lock(bool up);
     // Starts or stops the HTTP servers to match the interface state. Runs
     // on the "wisp.net" task, or on start()/stop()'s thread while that
     // task is not running.
@@ -152,6 +171,9 @@ private:
     std::unique_ptr<net::WifiService> wifi_;
     std::unique_ptr<net::PairingService> pairing_;
     std::unique_ptr<net::TimeSyncService> time_sync_;
+    // Ticked and owned by the "wisp.net" task once start() has returned.
+    std::unique_ptr<net::NetworkWindow> window_;
+    core::WakeLock hotspot_lock_;
     net::AssetPack assets_;
     bool has_assets_ = false;
     std::unique_ptr<admin::AdminServer> admin_;

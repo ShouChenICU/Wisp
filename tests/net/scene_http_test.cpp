@@ -446,6 +446,138 @@ TEST_F(SceneHttpTest, AuthorizationNeverLogged) {
         EXPECT_EQ(log.find(s), std::string::npos) << s << " in:\n" << log;
 }
 
+// Deep standby (spec 4.4): accepted requests wait in a per-scene list of
+// at most four instead of going out.
+TEST_F(SceneHttpTest, DeferringQueuesUpToFourPerScene) {
+    make();
+    http->set_hosts("t", kHosts);
+    http->set_deferring(true);
+    Results s;
+    Results t;
+    for (int i = 0; i < 4; ++i)
+        http->submit(get("https://api.example.com/" + std::to_string(i)), s.sink());
+    EXPECT_EQ(s.size(), 0u);
+    EXPECT_EQ(http->deferred_count(), 4u);
+    EXPECT_FALSE(http->idle());
+
+    http->submit(get("https://api.example.com/4"), s.sink());
+    ASSERT_EQ(s.size(), 1u);
+    EXPECT_EQ(s.got[0].error, "deferred_queue_full");
+    EXPECT_FALSE(s.got[0].deferred);
+
+    // Another scene has a list of its own.
+    http->submit(get("https://api.example.com/t", "t"), t.sink());
+    EXPECT_EQ(t.size(), 0u);
+    EXPECT_EQ(http->deferred_count(), 5u);
+
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(client.calls(), 0u);
+}
+
+// Resuming sends the waiting requests in the order they were submitted,
+// a run queue's worth at a time, each result marked deferred.
+TEST_F(SceneHttpTest, ResumeSendsInOrderMarkedDeferred) {
+    SceneHttpLimits limits;
+    limits.queue = 2;
+    make(limits);
+    http->set_hosts("t", kHosts);
+    http->set_deferring(true);
+    Results r;
+    http->submit(get("https://api.example.com/0"), r.sink());
+    http->submit(get("https://api.example.com/1", "t"), r.sink());
+    http->submit(get("https://api.example.com/2"), r.sink());
+    http->submit(get("https://api.example.com/3", "t"), r.sink());
+    http->submit(get("https://api.example.com/4"), r.sink());
+    EXPECT_EQ(r.size(), 0u);
+
+    http->set_deferring(false);
+    ASSERT_TRUE(wait_until([&] { return r.size() == 5; }, 5000));
+    EXPECT_EQ(client.urls(),
+              (std::vector<std::string>{"https://api.example.com/0", "https://api.example.com/1",
+                                        "https://api.example.com/2", "https://api.example.com/3",
+                                        "https://api.example.com/4"}));
+    {
+        std::lock_guard<std::mutex> lock(r.mu);
+        for (const auto& res : r.got) {
+            EXPECT_EQ(res.error, "");
+            EXPECT_TRUE(res.deferred);
+        }
+    }
+    EXPECT_EQ(http->deferred_count(), 0u);
+    EXPECT_TRUE(wait_until([&] { return http->idle(); }, 2000));
+
+    // With deferring off a request goes straight out, unmarked.
+    auto now_res = run(get("https://api.example.com/now"));
+    EXPECT_EQ(now_res.error, "");
+    EXPECT_FALSE(now_res.deferred);
+}
+
+TEST_F(SceneHttpTest, DeferredTimeoutAfterOneHour) {
+    SceneHttpLimits limits;
+    limits.deferred_check_ms = 10;
+    make(limits);
+    http->set_deferring(true);
+    Results r;
+    http->submit(get("https://api.example.com/late"), r.sink());
+    now += 3600000;
+    wisp::os::sleep_ms(100);
+    EXPECT_EQ(r.size(), 0u);
+    EXPECT_EQ(http->deferred_count(), 1u);
+
+    now += 1;
+    ASSERT_TRUE(wait_until([&] { return r.size() == 1; }, 3000));
+    EXPECT_EQ(r.got[0].error, "deferred_timeout");
+    EXPECT_TRUE(r.got[0].deferred);
+    EXPECT_EQ(http->deferred_count(), 0u);
+    EXPECT_TRUE(http->idle());
+    EXPECT_EQ(client.calls(), 0u);
+}
+
+// A deferred request counts against the scene's 30 per minute when it is
+// submitted.
+TEST_F(SceneHttpTest, DeferredStillRateLimited) {
+    SceneHttpLimits limits;
+    limits.max_deferred_per_scene = 64;
+    make(limits);
+    http->set_deferring(true);
+    Results r;
+    for (int i = 0; i < 30; ++i) http->submit(get("https://api.example.com/"), r.sink());
+    EXPECT_EQ(r.size(), 0u);
+    http->submit(get("https://api.example.com/"), r.sink());
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r.got[0].error, "rate_limited");
+    EXPECT_EQ(http->deferred_count(), 30u);
+}
+
+TEST_F(SceneHttpTest, CancelSceneDropsDeferred) {
+    make();
+    http->set_hosts("t", kHosts);
+    http->set_deferring(true);
+    Results s;
+    Results t;
+    http->submit(get("https://api.example.com/s0"), s.sink());
+    http->submit(get("https://api.example.com/t0", "t"), t.sink());
+    http->submit(get("https://api.example.com/s1"), s.sink());
+    http->cancel_scene("s");
+    EXPECT_EQ(http->deferred_count(), 1u);
+
+    http->set_deferring(false);
+    ASSERT_TRUE(wait_until([&] { return t.size() == 1; }, 3000));
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(s.size(), 0u);
+    EXPECT_EQ(client.urls(), (std::vector<std::string>{"https://api.example.com/t0"}));
+}
+
+TEST_F(SceneHttpTest, StopDropsDeferredWithoutCallbacks) {
+    make();
+    http->set_deferring(true);
+    Results r;
+    http->submit(get("https://api.example.com/"), r.sink());
+    http->stop();
+    EXPECT_EQ(r.size(), 0u);
+    EXPECT_EQ(http->deferred_count(), 0u);
+}
+
 TEST(SceneHttpTask, Config) {
     const auto t = SceneHttp::task_config();
     EXPECT_STREQ(t.name, "wisp.shttp");

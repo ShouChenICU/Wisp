@@ -21,7 +21,6 @@ constexpr const char* kWifiFile = "/net/wifi.json";
 constexpr size_t kMaxSsidBytes = 32;
 constexpr size_t kMinPasswordBytes = 8;
 constexpr size_t kMaxPasswordBytes = 63;
-constexpr int64_t kDefaultIdleOffMin = 10;
 constexpr size_t kApPasswordLen = 8;
 // A single rejected handshake can be a lost EAPOL frame (router reboot,
 // busy channel), so a network is parked only after this many rejections
@@ -91,12 +90,10 @@ const char* to_string(WifiState s) {
 }
 
 WifiService::WifiService(std::shared_ptr<hal::Wifi> wifi, core::StorageManager& storage,
-                         core::EventBus& bus, core::Settings settings, RandomFn random,
-                         WifiServiceConfig config)
+                         core::EventBus& bus, RandomFn random, WifiServiceConfig config)
     : wifi_(std::move(wifi)),
       storage_(storage),
       bus_(bus),
-      settings_(std::move(settings)),
       random_(std::move(random)),
       config_(config),
       source_(wifi_->info().id),
@@ -327,25 +324,10 @@ void WifiService::poll_link_locked(uint64_t now_ms) {
     }
 }
 
-void WifiService::tick_standby_locked(uint64_t now_ms) {
-    if (!standby_ || standby_off_ || now_ms < standby_since_ms_ + standby_off_after_ms_) {
-        return;
-    }
-    standby_off_ = true;
-    bool active = in_flight_ || status_.state != WifiState::Off;
-    attempt_due_ = false;
-    in_flight_ = false;
-    in_flight_ssid_.clear();
-    direct_ssid_.reset();
-    if (active) {
-        WLOG_I(kTag, "standby: turning Wi-Fi off");
-        (void)wifi_->disconnect();
-    }
-    set_state_locked(WifiState::Off, "", "", 0);
-}
-
 std::optional<WifiService::AttemptPlan> WifiService::plan_attempt_locked(uint64_t now_ms) {
-    if (!attempt_due_ || in_flight_ || now_ms < next_attempt_ms_) return std::nullopt;
+    if (radio_off_ || !attempt_due_ || in_flight_ || now_ms < next_attempt_ms_) {
+        return std::nullopt;
+    }
     if (networks_.empty()) {
         attempt_due_ = false;
         set_state_locked(WifiState::Off, "", "", 0);
@@ -427,7 +409,6 @@ void WifiService::tick(uint64_t now_ms) {
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         poll_link_locked(now_ms);
-        tick_standby_locked(now_ms);
         tick_ap_locked(now_ms);
         plan = plan_attempt_locked(now_ms);
     }
@@ -443,25 +424,37 @@ void WifiService::tick(uint64_t now_ms) {
     }
 }
 
-void WifiService::set_standby(bool standby, uint64_t now_ms) {
+void WifiService::set_power_level(hal::PowerLevel level, uint64_t now_ms) {
+    // radio_mutex_ first: the radio must not go off under a scan.
+    std::lock_guard<os::Mutex> radio(radio_mutex_);
     std::lock_guard<os::Mutex> lock(mutex_);
-    if (standby == standby_) return;
-    standby_ = standby;
-    if (standby) {
-        int64_t minutes = settings_.get_int("idle_off_min", kDefaultIdleOffMin);
-        if (minutes < 0) minutes = kDefaultIdleOffMin;
-        standby_since_ms_ = now_ms;
-        standby_off_after_ms_ = static_cast<uint64_t>(minutes) * 60 * 1000;
+    const bool off = level == hal::PowerLevel::DeepStandby;
+    if (off == radio_off_) return;
+    radio_off_ = off;
+    ++generation_;
+    if (off) {
+        if (ap_) (void)close_ap_locked("deep standby");
+        const bool active = in_flight_ || status_.state != WifiState::Off;
+        attempt_due_ = false;
+        in_flight_ = false;
+        in_flight_ssid_.clear();
+        direct_ssid_.reset();
+        if (active) (void)wifi_->disconnect();
+        if (auto r = wifi_->set_radio(false); !r && r.error().code != ErrorCode::Unsupported) {
+            WLOG_W(kTag, "turning the radio off failed: %s", to_string(r.error().code));
+        }
+        WLOG_I(kTag, "deep standby: Wi-Fi off");
+        set_state_locked(WifiState::Off, "", "", 0);
         return;
     }
-    if (!standby_off_) return;
-    standby_off_ = false;
-    ++generation_;
+    if (auto r = wifi_->set_radio(true); !r && r.error().code != ErrorCode::Unsupported) {
+        WLOG_W(kTag, "turning the radio on failed: %s", to_string(r.error().code));
+    }
     if (!networks_.empty()) {
         WLOG_I(kTag, "awake: reconnecting");
         backoff_ms_ = config_.backoff_min_ms;
         schedule_attempt_locked(now_ms);
-        set_state_locked(WifiState::Connecting, "", "", 0);
+        set_state_locked(WifiState::Connecting, direct_ssid_.value_or(""), "", 0);
     }
 }
 
@@ -527,16 +520,13 @@ Result<void> WifiService::add_network(std::string_view ssid, std::string_view pa
            networks_.size());
 
     if (ap_) provisioned_ssids_.emplace(ssid);
-    if (standby_) {
-        // A user configuring Wi-Fi counts as activity: restart the
-        // standby clock instead of switching straight back off.
-        standby_off_ = false;
-        standby_since_ms_ = now_ms;
-    }
     in_flight_ = false;
     in_flight_ssid_.clear();
     direct_ssid_ = std::string(ssid);
     backoff_ms_ = config_.backoff_min_ms;
+    // With the radio off the attempt waits for set_power_level() to turn
+    // it back on, which connects to this network first.
+    if (radio_off_) return Result<void>::ok();
     schedule_attempt_locked(now_ms);
     set_state_locked(WifiState::Connecting, std::string(ssid), "", 0);
     return Result<void>::ok();
@@ -615,7 +605,6 @@ void WifiService::forget_all() {
     in_flight_ = false;
     in_flight_ssid_.clear();
     direct_ssid_.reset();
-    standby_off_ = false;
     backoff_ms_ = config_.backoff_min_ms;
     WLOG_I(kTag, "all saved networks forgotten");
     set_state_locked(WifiState::Off, "", "", 0);
@@ -670,6 +659,9 @@ void WifiService::tick_ap_locked(uint64_t now_ms) {
 Result<ApSession> WifiService::start_provisioning(uint64_t now_ms) {
     std::lock_guard<os::Mutex> lock(mutex_);
     if (ap_) return Result<ApSession>::ok(*ap_);
+    if (radio_off_) {
+        return Result<ApSession>::err(ErrorCode::Busy, "Wi-Fi is off in deep standby");
+    }
 
     const Value* ap_cap =
         wifi_->info().caps.count("ap") != 0 ? &wifi_->info().caps.at("ap") : nullptr;

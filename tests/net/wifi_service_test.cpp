@@ -21,37 +21,33 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
-#include "wisp/port/sim/settings_json_file.hpp"
 
 using wisp::ErrorCode;
 using wisp::core::DeviceRegistry;
 using wisp::core::Event;
 using wisp::core::EventBus;
-using wisp::core::Settings;
 using wisp::core::StorageManager;
+using wisp::hal::PowerLevel;
 using wisp::hal::WifiLink;
 using wisp::hal::WifiLinkState;
 using wisp::net::ApSession;
 using wisp::net::WifiService;
 using wisp::net::WifiServiceConfig;
 using wisp::net::WifiState;
-using wisp::port::sim::JsonFileSettingsBackend;
 using wisp::test::FakeStorage;
 using wisp::test::FakeWifi;
 
 namespace {
 
 // A started bus collecting every "net."-prefixed event, a StorageManager
-// over a temp dir, a JSON settings backend and a FakeWifi. Tests advance
+// over a temp dir and a FakeWifi. Tests advance
 // time by passing explicit now_ms values to the service.
 struct Fixture {
     Fixture() : dir(wisp::test::temp_dir().string()) {
         registry.add(std::make_shared<FakeStorage>("storage.int", dir, /*removable=*/false));
         storage = std::make_unique<StorageManager>(registry, bus);
         EXPECT_TRUE(storage->init());
-        backend = std::make_unique<JsonFileSettingsBackend>(dir + "/settings.json");
         wifi = std::make_shared<FakeWifi>("net.wifi");
         bus.start();
         bus.subscribe("net.", [this](const Event& e) {
@@ -68,7 +64,7 @@ struct Fixture {
     WifiService& make(WifiServiceConfig config = {}) {
         svc.reset();
         svc = std::make_unique<WifiService>(
-            wifi, *storage, bus, Settings(*backend, "net"),
+            wifi, *storage, bus,
             [this](uint8_t* out, size_t len) {
                 std::lock_guard<std::mutex> lock(mutex);
                 for (size_t i = 0; i < len; ++i) {
@@ -131,7 +127,6 @@ struct Fixture {
     DeviceRegistry registry;
     EventBus bus;
     std::unique_ptr<StorageManager> storage;
-    std::unique_ptr<JsonFileSettingsBackend> backend;
     std::shared_ptr<FakeWifi> wifi;
     std::unique_ptr<WifiService> svc;
 
@@ -556,9 +551,61 @@ TEST(WifiService, ApStaysOpenWhenOldNetworkReconnectsDuringProvisioning) {
     EXPECT_FALSE(f.wifi->ap_active.load());
 }
 
-TEST(WifiService, StandbyDisconnectsAfterIdleMinutesAndWakeReconnects) {
+// Deep standby (spec 4.1): the station disconnects, the hotspot closes
+// and the radio goes off; any lighter level turns it back on and
+// reconnects.
+TEST(WifiService, DeepStandbyTurnsRadioOffAndBack) {
     Fixture f;
-    ASSERT_TRUE(Settings(*f.backend, "net").set("idle_off_min", 10));
+    f.in_range("Home", -50, "homepass1");
+    f.in_range("Other", -60, "otherpass1");
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    svc.tick(0);
+    svc.tick(250);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    ASSERT_TRUE(svc.start_provisioning(300));
+    ASSERT_TRUE(f.wifi->ap_active.load());
+
+    svc.set_power_level(PowerLevel::DeepStandby, 1000);
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    EXPECT_GE(f.wifi->disconnect_calls.load(), 1);
+    EXPECT_FALSE(f.wifi->ap_active.load());
+    EXPECT_FALSE(svc.ap_session().has_value());
+    EXPECT_FALSE(f.wifi->radio_on.load());
+    EXPECT_EQ(f.wifi->set_radio_calls.load(), 1);
+
+    // Off is not a failure: nothing is retried while the radio is off,
+    // and the same level again changes nothing.
+    const int connects = f.wifi->connect_calls.load();
+    const int scans = f.wifi->scan_calls.load();
+    svc.tick(2000);
+    svc.tick(3'600'000);
+    svc.set_power_level(PowerLevel::DeepStandby, 3'600'000);
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    EXPECT_EQ(f.wifi->connect_calls.load(), connects);
+    EXPECT_EQ(f.wifi->scan_calls.load(), scans);
+    EXPECT_EQ(f.wifi->set_radio_calls.load(), 1);
+
+    // A network saved meanwhile is kept for the wake-up.
+    ASSERT_TRUE(svc.add_network("Other", "otherpass1", 3'700'000));
+    svc.tick(3'700'000);
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    EXPECT_EQ(f.wifi->connect_calls.load(), connects);
+
+    svc.set_power_level(PowerLevel::Active, 4'000'000);
+    EXPECT_TRUE(f.wifi->radio_on.load());
+    EXPECT_EQ(f.wifi->set_radio_calls.load(), 2);
+    EXPECT_EQ(svc.status().state, WifiState::Connecting);
+    svc.tick(4'000'000);
+    svc.tick(4'000'250);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+    EXPECT_EQ(svc.status().ssid, "Other");
+}
+
+// Plain standby keeps the station: only deep standby turns Wi-Fi off.
+TEST(WifiService, StandbyKeepsTheStation) {
+    Fixture f;
     f.in_range("Home", -50, "homepass1");
     f.seed({{"Home", "homepass1"}});
     auto& svc = f.make();
@@ -567,41 +614,17 @@ TEST(WifiService, StandbyDisconnectsAfterIdleMinutesAndWakeReconnects) {
     svc.tick(250);
     ASSERT_EQ(svc.status().state, WifiState::Connected);
 
-    // A short standby does nothing.
-    svc.set_standby(true, 1000);
-    svc.tick(300'000);
-    svc.set_standby(false, 300'000);
-    svc.tick(1'000'000);
+    svc.set_power_level(PowerLevel::Dim, 1000);
+    svc.set_power_level(PowerLevel::Standby, 2000);
+    for (uint64_t t = 2000; t <= 3'602'000; t += 60'000) svc.tick(t);
     EXPECT_EQ(svc.status().state, WifiState::Connected);
     EXPECT_EQ(f.wifi->disconnect_calls.load(), 0);
+    EXPECT_EQ(f.wifi->set_radio_calls.load(), 0);
+    EXPECT_TRUE(f.wifi->radio_on.load());
 
-    svc.set_standby(true, 1'000'000);
-    svc.tick(1'599'999);
+    svc.set_power_level(PowerLevel::Active, 3'700'000);
+    EXPECT_EQ(f.wifi->set_radio_calls.load(), 0);
     EXPECT_EQ(svc.status().state, WifiState::Connected);
-    svc.tick(1'600'000);
-    EXPECT_EQ(svc.status().state, WifiState::Off);
-    EXPECT_EQ(f.wifi->disconnect_calls.load(), 1);
-
-    // Off because of standby is not a failure: no retries while asleep.
-    int connects = f.wifi->connect_calls.load();
-    svc.tick(2'000'000);
-    svc.tick(3'000'000);
-    EXPECT_EQ(svc.status().state, WifiState::Off);
-    EXPECT_EQ(f.wifi->connect_calls.load(), connects);
-
-    svc.set_standby(false, 3'100'000);
-    EXPECT_EQ(svc.status().state, WifiState::Connecting);
-    svc.tick(3'100'000);
-    svc.tick(3'100'250);
-    EXPECT_EQ(svc.status().state, WifiState::Connected);
-
-    // The setting is read when standby starts.
-    ASSERT_TRUE(Settings(*f.backend, "net").set("idle_off_min", 1));
-    svc.set_standby(true, 4'000'000);
-    svc.tick(4'059'999);
-    EXPECT_EQ(svc.status().state, WifiState::Connected);
-    svc.tick(4'060'000);
-    EXPECT_EQ(svc.status().state, WifiState::Off);
 }
 
 TEST(WifiService, StateEventsCarryNoPassword) {
@@ -874,7 +897,8 @@ TEST(WifiService, ConcurrentCallsAreSafe) {
             (void)svc.ap_session();
             if (i % 50 == 0) (void)svc.start_provisioning(now.load());
             if (i % 50 == 25) (void)svc.stop_provisioning();
-            svc.set_standby(i % 2 == 0, now.load());
+            svc.set_power_level(i % 2 == 0 ? PowerLevel::DeepStandby : PowerLevel::Active,
+                                now.load());
         }
     });
     http.join();
@@ -882,7 +906,7 @@ TEST(WifiService, ConcurrentCallsAreSafe) {
     stop = true;
     ticker.join();
 
-    svc.set_standby(false, now.load());
+    svc.set_power_level(PowerLevel::Active, now.load());
     EXPECT_LE(svc.saved_ssids().size(), 2u);
 }
 

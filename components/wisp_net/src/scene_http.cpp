@@ -112,6 +112,9 @@ struct SceneHttp::Job {
     std::atomic<bool> cancelled{false};
     // Its ticket for watch_, set under mu_ when the worker takes it.
     uint32_t ticket = 0;
+    // It went through deferred_; when it was put there.
+    bool deferred = false;
+    uint64_t deferred_at = 0;
 };
 
 SceneHttp::SceneHttp(HttpClient& client, SceneHttpLimits limits, std::function<uint64_t()> now_ms)
@@ -165,6 +168,9 @@ void SceneHttp::stop() {
         if (!running_) return;
         running_ = false;
         dropped.swap(queue_);
+        for (auto& job : deferred_) dropped.push_back(std::move(job));
+        deferred_.clear();
+        for (auto& [id, st] : scenes_) st.deferred = 0;
         if (current_ != nullptr) {
             current_->cancelled = true;
             ticket = current_->ticket;
@@ -247,7 +253,19 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
             SceneState& st = scenes_[req.scene_id];
             const uint64_t now = now_ms_();
             while (!st.sent.empty() && st.sent.front() + kWindowMs <= now) st.sent.pop_front();
-            if (st.sent.size() >= limits_.per_minute || queue_.size() >= limits_.queue) {
+            if (st.sent.size() >= limits_.per_minute) {
+                code = "rate_limited";
+            } else if (deferring_) {
+                if (st.deferred >= limits_.max_deferred_per_scene) {
+                    code = "deferred_queue_full";
+                } else {
+                    st.sent.push_back(now);
+                    ++st.deferred;
+                    job->deferred = true;
+                    job->deferred_at = now;
+                    deferred_.push_back(std::move(job));
+                }
+            } else if (queue_.size() >= limits_.queue) {
                 code = "rate_limited";
             } else {
                 st.sent.push_back(now);
@@ -275,6 +293,15 @@ void SceneHttp::cancel_scene(const std::string& scene_id) {
                 ++it;
             }
         }
+        for (auto it = deferred_.begin(); it != deferred_.end();) {
+            if ((*it)->scene_id == scene_id) {
+                dropped.push_back(std::move(*it));
+                it = deferred_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (auto st = scenes_.find(scene_id); st != scenes_.end()) st->second.deferred = 0;
         if (current_ != nullptr && current_->scene_id == scene_id) {
             current_->cancelled = true;
             ticket = current_->ticket;
@@ -289,15 +316,87 @@ void SceneHttp::cancel_scene(const std::string& scene_id) {
     std::lock_guard<os::Mutex> barrier(deliver_mu_);
 }
 
+void SceneHttp::set_deferring(bool on) {
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        if (deferring_ == on) return;
+        deferring_ = on;
+    }
+    // The worker moves the waiting requests (off) or starts timing them out
+    // (on).
+    wake_.give();
+}
+
+size_t SceneHttp::deferred_count() const {
+    std::lock_guard<os::Mutex> lock(mu_);
+    return deferred_.size();
+}
+
+bool SceneHttp::idle() const {
+    std::lock_guard<os::Mutex> lock(mu_);
+    return deferred_.empty() && queue_.empty() && current_ == nullptr;
+}
+
+void SceneHttp::expire_locked(uint64_t now, Deque<os::LargeUnique<Job>>& out) {
+    for (auto it = deferred_.begin(); it != deferred_.end();) {
+        Job& job = **it;
+        if (now >= job.deferred_at && now - job.deferred_at > limits_.deferred_timeout_ms) {
+            if (auto st = scenes_.find(job.scene_id);
+                st != scenes_.end() && st->second.deferred > 0)
+                --st->second.deferred;
+            out.push_back(std::move(*it));
+            it = deferred_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void SceneHttp::promote_locked() {
+    while (!deferring_ && !deferred_.empty() && queue_.size() < limits_.queue) {
+        os::LargeUnique<Job> job = std::move(deferred_.front());
+        deferred_.pop_front();
+        if (auto st = scenes_.find(job->scene_id); st != scenes_.end() && st->second.deferred > 0)
+            --st->second.deferred;
+        queue_.push_back(std::move(job));
+    }
+}
+
 void SceneHttp::run() {
+    uint32_t wait = os::kForever;
     for (;;) {
-        wake_.take(os::kForever);
+        wake_.take(wait);
         for (;;) {
+            // Timed-out deferred requests are answered under deliver_mu_,
+            // taken before they leave deferred_: a cancel_scene() that
+            // missed them in deferred_ then waits for these done() calls.
+            {
+                std::lock_guard<os::Mutex> deliver(deliver_mu_);
+                {
+                    std::lock_guard<os::Mutex> lock(mu_);
+                    if (!running_) return;
+                    expire_locked(now_ms_(), expired_);
+                }
+                for (auto& job : expired_) {
+                    WLOG_W(
+                        scene_tag(job->scene_id).c_str(), "http: deferred_timeout (host %s)",
+                        host_for_log(std::string_view(job->url.data(), job->url.size())).c_str());
+                    SceneHttpResult r;
+                    r.error = "deferred_timeout";
+                    r.deferred = true;
+                    if (job->done) job->done(std::move(r));
+                }
+                expired_.clear();
+            }
             os::LargeUnique<Job> job;
             {
                 std::lock_guard<os::Mutex> lock(mu_);
                 if (!running_) return;
-                if (queue_.empty()) break;
+                promote_locked();
+                if (queue_.empty()) {
+                    wait = deferred_.empty() ? os::kForever : limits_.deferred_check_ms;
+                    break;
+                }
                 job = std::move(queue_.front());
                 queue_.pop_front();
                 current_ = job.get();
@@ -364,6 +463,7 @@ void SceneHttp::execute(Job& job) {
     const bool watch_deadline = watch_->reason() == RequestWatch::Reason::Deadline;
 
     SceneHttpResult result;
+    result.deferred = job.deferred;
     if (timed_out || (res.transport == TransportError::Cancelled && expired()) ||
         (watch_deadline && res.transport != TransportError::None)) {
         result.error = "timeout";

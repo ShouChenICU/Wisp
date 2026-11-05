@@ -42,8 +42,10 @@
 //   4b. Networking (connectivity spec 4.1; src/net_wiring.hpp): builds
 //      PairingService and -- when "net.wifi" is
 //      registered -- WifiService, whose tick() runs on a "wisp.net" task
-//      every 250 ms so boot never waits for Wi-Fi; mirrors power.state
-//      into WifiService::set_standby(); and, given Platform::http_server,
+//      every 250 ms so boot never waits for Wi-Fi; applies
+//      PowerManager::level() to WifiService::set_power_level() (deep
+//      standby turns the radio off) and, with the scenes' HTTP proxy, runs
+//      deep standby's network windows; and, given Platform::http_server,
 //      builds the admin router and serves it on http_port while the
 //      station has an IP or the setup hotspot is up (always, with
 //      http_always_on); while the hotspot is up it also runs

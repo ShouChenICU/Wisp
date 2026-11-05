@@ -13,6 +13,8 @@
 //   - otherwise                              -> Connected, ip 192.168.1.50,
 //                                               rssi from the scan entry
 // A SSID with no `passwords` entry accepts any password (an open network).
+// While the radio is off (set_radio(false)) scan() and connect() fail with
+// DeviceFailure and the link is Idle.
 //
 // Thread safety: the atomics may be read or written from any thread at any
 // time. `networks`, `passwords` and `mac_bytes` are plain fields that tests
@@ -53,6 +55,10 @@ public:
 
     wisp::Result<std::vector<wisp::hal::WifiScanEntry>> scan() override {
         ++scan_calls;
+        if (!radio_on.load()) {
+            return wisp::Result<std::vector<wisp::hal::WifiScanEntry>>::err(
+                wisp::ErrorCode::DeviceFailure, "radio off");
+        }
         if (on_scan) {
             on_scan();  // outside mutex_, so the hook may call back into the fake
         }
@@ -62,6 +68,9 @@ public:
 
     wisp::Result<void> connect(const std::string& ssid, const std::string& password) override {
         ++connect_calls;
+        if (!radio_on.load()) {
+            return wisp::Result<void>::err(wisp::ErrorCode::DeviceFailure, "radio off");
+        }
         std::lock_guard<std::mutex> lock(mutex_);
         wisp::hal::WifiLink next;
         next.ssid = ssid;
@@ -129,6 +138,17 @@ public:
         return wisp::Result<void>::ok();
     }
 
+    wisp::Result<void> set_radio(bool on) override {
+        ++set_radio_calls;
+        if (!on) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            link_ = wisp::hal::WifiLink{};
+            ap_active.store(false);
+        }
+        radio_on.store(on);
+        return wisp::Result<void>::ok();
+    }
+
     // Test control: overrides the current link, e.g. to simulate losing
     // the signal after a successful connect().
     void set_link(wisp::hal::WifiLink link) {
@@ -161,6 +181,8 @@ public:
     std::atomic<int> connect_calls{0};
     std::atomic<int> disconnect_calls{0};
     std::atomic<int> scan_calls{0};
+    std::atomic<bool> radio_on{true};
+    std::atomic<int> set_radio_calls{0};
 
 private:
     wisp::hal::DeviceInfo info_;

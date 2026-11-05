@@ -189,6 +189,7 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_firmware_routes(routes_);
     detail::add_scene_routes(routes_);
     hub_ = std::make_unique<WsHub>(deps_.bus, deps_.boot_id);
+    hub_->set_wake_locks(deps_.wakelocks);
     hub_->start();
     // Logout, DELETE /clients/{id} and the factory reset's revoke_all()
     // all end here, so a revoked token also loses its live stream.

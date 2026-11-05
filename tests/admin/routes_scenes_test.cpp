@@ -363,6 +363,45 @@ TEST(AdminScenes, UploadStreamsAndInstalls) {
     EXPECT_TRUE(fx.repo->info("todo"));
 }
 
+// An upload keeps Wi-Fi on until it ends, however it ends (spec 4.3).
+TEST(AdminScenes, UploadHoldsNetworkLock) {
+    ScenesFixture fx;
+    auto upload_locks = [&fx] {
+        int n = 0;
+        for (const auto& l : fx.f.wakelocks.list())
+            if (l.holder == "system.upload" && l.kind == wisp::core::WakeLockKind::Network) ++n;
+        return n;
+    };
+    const auto zip = zip_of(todo_files());
+    {
+        std::optional<wisp::net::StreamStart> start = fx.stream(fx.upload_head(zip.size()));
+        ASSERT_TRUE(start && start->sink);
+        EXPECT_EQ(upload_locks(), 1);
+        std::span<const uint8_t> body(zip);
+        while (!body.empty()) {
+            const size_t n = std::min(body.size(), wisp::net::kBodyChunkBytes);
+            ASSERT_FALSE(start->sink->on_data(body.first(n)));
+            body = body.subspan(n);
+        }
+        EXPECT_EQ(upload_locks(), 1);
+        EXPECT_EQ(start->sink->on_end().status, 201);
+        EXPECT_EQ(upload_locks(), 0);
+    }
+    {
+        std::optional<wisp::net::StreamStart> start = fx.stream(fx.upload_head(zip.size()));
+        ASSERT_TRUE(start && start->sink);
+        EXPECT_EQ(upload_locks(), 1);
+        start->sink->on_abort();
+        EXPECT_EQ(upload_locks(), 0);
+    }
+    {
+        std::optional<wisp::net::StreamStart> start = fx.stream(fx.upload_head(zip.size()));
+        ASSERT_TRUE(start && start->sink);
+        EXPECT_EQ(upload_locks(), 1);
+    }
+    EXPECT_EQ(upload_locks(), 0);
+}
+
 TEST(AdminScenes, UploadErrors) {
     ScenesFixture fx;
     // No Content-Length.

@@ -272,6 +272,52 @@ TEST(AdminFirmware, DroppedConnectionFreesTheSlot) {
     EXPECT_EQ(fx.upload(image).status, 202);
 }
 
+// An upload keeps Wi-Fi on and light sleep off until it ends, however it
+// ends (spec 4.3).
+TEST(AdminFirmware, UploadHoldsNetworkAndCpuLocks) {
+    FirmwareFixture fx;
+    auto ota_locks = [&fx] {
+        std::vector<std::string> kinds;
+        for (const auto& l : fx.f.wakelocks.list())
+            if (l.holder == "system.ota") kinds.emplace_back(wisp::core::to_string(l.kind));
+        std::sort(kinds.begin(), kinds.end());
+        return kinds;
+    };
+    const std::vector<std::string> both = {"cpu", "network"};
+    const auto image = make_firmware_image();
+    {
+        std::optional<wisp::net::StreamStart> start = fx.stream(fx.head(image.size()));
+        ASSERT_TRUE(start && start->sink);
+        EXPECT_EQ(ota_locks(), both);
+        std::span<const uint8_t> body(image);
+        while (!body.empty()) {
+            const size_t n = std::min(body.size(), wisp::net::kBodyChunkBytes);
+            ASSERT_FALSE(start->sink->on_data(body.first(n)));
+            body = body.subspan(n);
+        }
+        EXPECT_EQ(ota_locks(), both);
+        EXPECT_EQ(start->sink->on_end().status, 202);
+        EXPECT_TRUE(ota_locks().empty());
+    }
+    ASSERT_TRUE(fx.service->decline().ok());
+    {
+        std::optional<wisp::net::StreamStart> start = fx.stream(fx.head(image.size()));
+        ASSERT_TRUE(start && start->sink);
+        EXPECT_EQ(ota_locks(), both);
+        start->sink->on_abort();
+        EXPECT_TRUE(ota_locks().empty());
+    }
+    {
+        std::optional<wisp::net::StreamStart> start = fx.stream(fx.head(image.size()));
+        ASSERT_TRUE(start && start->sink);
+        EXPECT_EQ(ota_locks(), both);
+    }
+    EXPECT_TRUE(ota_locks().empty());
+    // A refused upload takes nothing.
+    EXPECT_EQ(fx.stream(fx.head(0))->response.status, 411);
+    EXPECT_TRUE(ota_locks().empty());
+}
+
 TEST(AdminFirmware, WithoutOtaSlots) {
     FirmwareFixture fx(/*with_service=*/false);
     Value info = fx.info();

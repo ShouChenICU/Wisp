@@ -109,6 +109,9 @@ public:
     core::SceneRepository* repository() const { return repo_.get(); }
     // Built by build_runtime(); nullptr without a screen.
     scene::SceneRuntime* runtime() const { return runtime_.get(); }
+    // The scenes' HTTP proxy, built by build_runtime(); nullptr without a
+    // screen or a Platform::http_client. Stopped by stop().
+    net::SceneHttp* http() const { return http_.get(); }
 
     // AdminDeps::request_scene_delete. NotFound when there is nothing to
     // delete (SceneRepository::removal()), Unsupported in dev mode, Busy

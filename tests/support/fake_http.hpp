@@ -168,6 +168,14 @@ public:
         return requests_.size();
     }
 
+    // The URLs of every recorded request, in the order they were made.
+    std::vector<std::string> urls() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> out;
+        for (const auto& r : requests_) out.push_back(r.url);
+        return out;
+    }
+
     // The body a recorded request carried (body_ref when set, else body).
     static std::string body_of(const net::HttpClientRequest& req) {
         if (req.body_ref.empty()) return req.body;

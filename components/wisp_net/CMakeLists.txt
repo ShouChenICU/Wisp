@@ -6,7 +6,7 @@ wisp_component(
     NAME wisp_net
     SRCS src/http.cpp src/asset_pack.cpp src/wifi_service.cpp
          src/pairing_service.cpp src/model_probe.cpp src/scene_http.cpp
-         src/tls_gate.cpp src/request_watch.cpp src/time_sync.cpp
+         src/tls_gate.cpp src/request_watch.cpp src/time_sync.cpp src/network_window.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core
 )

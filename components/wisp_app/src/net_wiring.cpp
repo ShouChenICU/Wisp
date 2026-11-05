@@ -7,7 +7,6 @@
 #include "wisp/app/ram_budget.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/settings.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/wifi.hpp"
 
@@ -49,9 +48,8 @@ void NetWiring::start() {
     }
 
     if (wifi_dev) {
-        wifi_ = std::make_unique<net::WifiService>(wifi_dev, deps_.storage, deps_.bus,
-                                                   core::Settings(*platform.settings, "net"),
-                                                   platform.random);
+        wifi_ =
+            std::make_unique<net::WifiService>(wifi_dev, deps_.storage, deps_.bus, platform.random);
         if (auto r = wifi_->init(now); !r) {
             WLOG_W(kTag, "wifi: %s", r.error().message.c_str());
         }
@@ -59,11 +57,28 @@ void NetWiring::start() {
         wifi_state_.store(static_cast<int>(state));
         deps_.report.set_note("net", state == net::WifiState::Connecting ? "connecting" : "off");
 
-        // Only for a prompt reaction: run() reads the state itself, standby
-        // from PowerManager, so a late event cannot flip it.
+        if (deps_.scene_http != nullptr && deps_.wakelocks != nullptr) {
+            net::SceneHttp* http = deps_.scene_http;
+            window_ = std::make_unique<net::NetworkWindow>(net::NetworkWindowDeps{
+                .locks = *deps_.wakelocks,
+                .pending = [http] { return http->deferred_count(); },
+                .http_idle = [http] { return http->idle(); },
+                .set_deferring = [http](bool on) { http->set_deferring(on); },
+                .wifi_connected = [this] { return sta_up_.load(); },
+            });
+        }
+
+        // Only for a prompt reaction: run() reads the state itself, the
+        // level from PowerManager, so a late event cannot flip it.
         for (const char* topic : {"power.state", "net.wifi.state", "net.ap.state"}) {
             subscriptions_.push_back(
                 deps_.bus.subscribe(topic, [this](const core::Event&) { wake_.give(); }));
+        }
+        if (window_) {
+            subscriptions_.push_back(deps_.bus.subscribe("system.time", [this](const core::Event&) {
+                window_->note_time_result();
+                wake_.give();
+            }));
         }
     } else {
         deps_.report.set_note("net", "missing");
@@ -132,6 +147,7 @@ void NetWiring::start() {
             .scene_host = deps_.scene_host,
             .request_scene_delete = deps_.request_scene_delete,
             .time_sync = time_sync_.get(),
+            .wakelocks = deps_.wakelocks,
         });
         reconcile_http(now);  // http_always_on serves from boot
     }
@@ -169,6 +185,8 @@ void NetWiring::stop() {
     start_retry_.reset();
     for (core::SubscriptionId id : subscriptions_) deps_.bus.unsubscribe(id);
     subscriptions_.clear();
+    hotspot_lock_.release();
+    window_.reset();
     sta_up_.store(false);
     ap_up_.store(false);
     wifi_state_.store(-1);
@@ -194,14 +212,17 @@ void NetWiring::run() {
     while (!stopping_.load()) {
         const uint64_t now = os::now_ms();
         if (wifi_) {
-            if (deps_.power_manager != nullptr) {
-                wifi_->set_standby(deps_.power_manager->standby(), now);  // no-op if unchanged
-            }
+            const hal::PowerLevel level = deps_.power_manager != nullptr
+                                              ? deps_.power_manager->level()
+                                              : hal::PowerLevel::Active;
+            if (window_) window_->tick(now, level);
+            wifi_->set_power_level(level, now);  // no-op if unchanged
             wifi_->tick(now);
             const net::WifiState state = wifi_->status().state;
             wifi_state_.store(static_cast<int>(state));
             sta_up_.store(state == net::WifiState::Connected);
             ap_up_.store(wifi_->ap_status().active);
+            hold_hotspot_lock(ap_up_.load());
         }
         if (time_sync_ && time_sync_->tick(sta_up_.load())) ntp_wake_.give();
         pairing_->tick(now);
@@ -215,7 +236,23 @@ void NetWiring::run_ntp() {
     while (true) {
         (void)ntp_wake_.take(os::kForever);
         if (stopping_.load()) return;
+        // Keeps Wi-Fi on until the attempt has its answer (spec 4.3).
+        core::WakeLock lock;
+        if (deps_.wakelocks != nullptr) {
+            lock = core::WakeLock(*deps_.wakelocks, "system.ntp", core::WakeLockKind::Network,
+                                  "time sync");
+        }
         time_sync_->run_attempt();
+    }
+}
+
+void NetWiring::hold_hotspot_lock(bool up) {
+    if (deps_.wakelocks == nullptr || up == hotspot_lock_.held()) return;
+    if (up) {
+        hotspot_lock_ = core::WakeLock(*deps_.wakelocks, "system.hotspot",
+                                       core::WakeLockKind::Network, "setup hotspot");
+    } else {
+        hotspot_lock_.release();
     }
 }
 

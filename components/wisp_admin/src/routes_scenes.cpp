@@ -27,6 +27,7 @@
 #include "wisp/core/scene_install.hpp"
 #include "wisp/core/scene_manifest.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/wakelock.hpp"
 #include "wisp/os/large.hpp"
 
 namespace wisp::admin::detail {
@@ -218,10 +219,17 @@ net::HttpResponse delete_scene(AdminDeps& deps, const RequestContext& ctx) {
 }
 
 // One upload's body, collected into a PSRAM buffer of the announced size
-// and installed once it is complete.
+// and installed once it is complete. Until it ends or is aborted it holds
+// a network lock ("system.upload"), so deep standby does not turn Wi-Fi off
+// under it (scene-device spec 4.3).
 class SceneSink final : public net::BodySink {
 public:
-    SceneSink(AdminDeps& deps, os::LargeBuffer buffer) : deps_(deps), buffer_(std::move(buffer)) {}
+    SceneSink(AdminDeps& deps, os::LargeBuffer buffer) : deps_(deps), buffer_(std::move(buffer)) {
+        if (deps.wakelocks != nullptr) {
+            lock_ = core::WakeLock(*deps.wakelocks, "system.upload", core::WakeLockKind::Network,
+                                   "scene upload");
+        }
+    }
 
     std::optional<net::HttpResponse> on_data(std::span<const uint8_t> chunk) override {
         if (chunk.size() > buffer_.size() - received_) {
@@ -238,11 +246,15 @@ public:
     net::HttpResponse on_end() override {
         net::HttpResponse res = install();
         buffer_ = os::LargeBuffer();
+        lock_.release();
         res.headers.emplace_back("Cache-Control", "no-store");
         return res;
     }
 
-    void on_abort() override { buffer_ = os::LargeBuffer(); }
+    void on_abort() override {
+        buffer_ = os::LargeBuffer();
+        lock_.release();
+    }
 
 private:
     net::HttpResponse install() {
@@ -267,6 +279,7 @@ private:
     AdminDeps& deps_;
     os::LargeBuffer buffer_;
     size_t received_ = 0;
+    core::WakeLock lock_;
 };
 
 }  // namespace

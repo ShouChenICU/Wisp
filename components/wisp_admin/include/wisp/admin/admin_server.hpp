@@ -63,6 +63,7 @@
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/core/wakelock.hpp"
 #include "wisp/net/asset_pack.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/pairing_service.hpp"
@@ -118,6 +119,11 @@ struct AdminDeps {
     // Network time (connectivity spec 5.6). Null (no Sntp port): GET
     // /system/time and POST /system/time/sync answer 503 unavailable.
     net::TimeSyncService* time_sync = nullptr;
+    // System wake locks (scene-device spec 4.3): "system.admin" (network)
+    // while at least one WebSocket is open, "system.upload" (network) for
+    // a scene upload and "system.ota" (network + cpu) for a firmware
+    // upload, each from its first byte to its end or abort. Null: none.
+    core::WakeLockRegistry* wakelocks = nullptr;
     // Monotonic os::now_ms() timebase; the only clock the router uses.
     // Tests inject their own; left empty, AdminServer uses os::now_ms().
     std::function<uint64_t()> now_ms = [] { return os::now_ms(); };

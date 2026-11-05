@@ -183,7 +183,8 @@ struct EspWifi::Impl {
     std::vector<hal::WifiScanEntry> last_scan;
     uint64_t last_scan_ms = 0;
 
-    // Only touched from start_ap()/stop_ap(), which WifiService serializes.
+    // Only touched from start_ap()/stop_ap()/set_radio(), which WifiService
+    // serializes.
     CaptiveDns dns;
     // The AP interface may still hold the last hotspot's configuration
     // (its password was on screen) because replacing it with the
@@ -192,6 +193,8 @@ struct EspWifi::Impl {
     bool ap_config_stale = false;
     // Only touched from link(), which WifiService calls from its one tick.
     bool mdns_started = false;
+    // Only touched from set_radio(), which WifiService serializes.
+    bool radio_on = true;
 
     static void on_wifi_event(void* arg, esp_event_base_t, int32_t id, void* data);
     static void on_ip_event(void* arg, esp_event_base_t, int32_t id, void* data);
@@ -570,6 +573,30 @@ std::array<uint8_t, 6> EspWifi::mac() {
 Result<void> EspWifi::set_power_save(bool on) {
     const esp_err_t err = esp_wifi_set_ps(on ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
     if (err != ESP_OK) return fail(code_for(err), "esp_wifi_set_ps", err);
+    return Result<void>::ok();
+}
+
+Result<void> EspWifi::set_radio(bool on) {
+    if (on == impl_->radio_on) return Result<void>::ok();
+    if (!on) {
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            impl_->link = hal::WifiLink{};
+            impl_->attempt_ssid.clear();
+        }
+        impl_->dns.stop();
+        const esp_err_t err = esp_wifi_stop();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT) {
+            return fail(code_for(err), "esp_wifi_stop", err);
+        }
+        impl_->radio_on = false;
+        WLOG_I(kTag, "radio off");
+        return Result<void>::ok();
+    }
+    const esp_err_t err = esp_wifi_start();
+    if (err != ESP_OK) return fail(code_for(err), "esp_wifi_start", err);
+    impl_->radio_on = true;
+    WLOG_I(kTag, "radio on");
     return Result<void>::ok();
 }
 

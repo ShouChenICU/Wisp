@@ -55,6 +55,13 @@ public:
     virtual int ap_clients() = 0;
     virtual std::array<uint8_t, 6> mac() = 0;
     virtual Result<void> set_power_save(bool on) = 0;
+    // Turns the radio off (deep standby, scene-device spec 4.1) or back
+    // on. Idempotent. While it is off the link is Idle and scan()/connect()
+    // fail; the caller stops the hotspot and disconnects first. A radio
+    // that cannot be switched answers Unsupported.
+    virtual Result<void> set_radio(bool /*on*/) {
+        return Result<void>::err(ErrorCode::Unsupported, "radio cannot be switched off");
+    }
 };
 
 }  // namespace wisp::hal

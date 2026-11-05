@@ -31,6 +31,14 @@
 // in AP+STA before its own configuration lands never shows an open (or
 // the previous) network.
 //
+// set_radio(false) stops the driver (esp_wifi_stop(): the station and AP
+// interfaces go down and the RF is powered off) for deep standby;
+// set_radio(true) starts it again in the mode it had, station only once
+// WifiService has closed the hotspot. Platform::random is no true RNG
+// while the radio is off; nothing that needs one runs in deep standby
+// (pairing, tokens and the hotspot password are only made at the
+// request of a network client or the lit screen).
+//
 // mDNS: the first time link() sees the station connected it starts the
 // mDNS responder as `<hostname>.local` advertising _http._tcp on the
 // admin port; the responder follows interface changes on its own from
@@ -88,6 +96,7 @@ public:
     int ap_clients() override;
     std::array<uint8_t, 6> mac() override;
     Result<void> set_power_save(bool on) override;
+    Result<void> set_radio(bool on) override;
 
     struct Impl;
 

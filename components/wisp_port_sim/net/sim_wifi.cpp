@@ -36,6 +36,13 @@ SimWifi::SimWifi(std::string id, bool fail_all) : fail_all_(fail_all) {
 }
 
 Result<std::vector<hal::WifiScanEntry>> SimWifi::scan() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!radio_on_) {
+            return Result<std::vector<hal::WifiScanEntry>>::err(ErrorCode::DeviceFailure,
+                                                                "radio off");
+        }
+    }
     std::vector<hal::WifiScanEntry> out;
     for (const SimNetwork& n : kNetworks) {
         out.push_back({n.ssid, n.rssi, n.password != nullptr});
@@ -62,6 +69,7 @@ Result<void> SimWifi::connect(const std::string& ssid, const std::string& passwo
         next.rssi = found->rssi;
     }
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!radio_on_) return Result<void>::err(ErrorCode::DeviceFailure, "radio off");
     link_ = std::move(next);
     return Result<void>::ok();
 }
@@ -100,5 +108,15 @@ std::array<uint8_t, 6> SimWifi::mac() {
 }
 
 Result<void> SimWifi::set_power_save(bool) { return Result<void>::ok(); }
+
+Result<void> SimWifi::set_radio(bool on) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!on) {
+        link_ = hal::WifiLink{};
+        ap_active_ = false;
+    }
+    radio_on_ = on;
+    return Result<void>::ok();
+}
 
 }  // namespace wisp::port::sim

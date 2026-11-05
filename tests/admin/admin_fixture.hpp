@@ -34,6 +34,7 @@
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/core/wakelock.hpp"
 #include "wisp/net/asset_pack.hpp"
 #include "wisp/net/model_probe.hpp"
 #include "wisp/net/pairing_service.hpp"
@@ -58,8 +59,7 @@ struct AdminFixture {
         auto random = [this](uint8_t* out, size_t len) {
             for (size_t i = 0; i < len; ++i) out[i] = static_cast<uint8_t>(rng());
         };
-        wifi = std::make_unique<net::WifiService>(fake_wifi, *storage, bus,
-                                                  core::Settings(*backend, "net"), random);
+        wifi = std::make_unique<net::WifiService>(fake_wifi, *storage, bus, random);
         EXPECT_TRUE(wifi->init(now));
         pairing = std::make_unique<net::PairingService>(*storage, bus, random,
                                                         [] { return kFixtureUnixTime; });
@@ -114,6 +114,7 @@ struct AdminFixture {
             .request_factory_reset = [this] { ++factory_resets; },
             .scenes = scenes.get(),
             .time_sync = time_sync.get(),
+            .wakelocks = &wakelocks,
         };
         if (with_clock) deps.now_ms = [this] { return now.load(); };
         return deps;
@@ -144,6 +145,8 @@ struct AdminFixture {
     std::string dir;
     core::DeviceRegistry registry;
     core::EventBus bus;
+    // The system locks the admin backend takes (uploads, WebSocket).
+    core::WakeLockRegistry wakelocks{bus};
     core::BootReport report;
     std::unique_ptr<core::StorageManager> storage;
     std::unique_ptr<port::sim::JsonFileSettingsBackend> backend;

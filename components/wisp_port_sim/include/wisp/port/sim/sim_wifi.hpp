@@ -11,6 +11,9 @@
 // With `fail_all` (--wifi-fail) every attempt fails with NotFound, as if
 // the router were unreachable, to exercise WifiService's backoff.
 //
+// set_radio(false) (deep standby) drops the link and the hotspot; until
+// set_radio(true) scan() and connect() fail with DeviceFailure.
+//
 // The hotspot only changes state; while it is up ap_clients() reports one
 // station, as if a phone had already joined, so the hotspot's idle timeout
 // does not close it under a developer testing the setup pages.
@@ -44,6 +47,7 @@ public:
     int ap_clients() override;
     std::array<uint8_t, 6> mac() override;
     Result<void> set_power_save(bool on) override;
+    Result<void> set_radio(bool on) override;
 
 private:
     hal::DeviceInfo info_;
@@ -52,6 +56,7 @@ private:
     std::mutex mutex_;
     hal::WifiLink link_;
     bool ap_active_ = false;
+    bool radio_on_ = true;
 };
 
 }  // namespace wisp::port::sim

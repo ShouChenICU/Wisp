@@ -20,6 +20,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/wakelock.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/os/os.hpp"
 
@@ -166,6 +167,50 @@ TEST(WsHub, ThirdClientRejected) {
     EXPECT_NE(wisp::log::ring_snapshot().find("client 3 refused: id already open"),
               std::string::npos)
         << wisp::log::ring_snapshot();
+}
+
+// An open admin page keeps Wi-Fi on (spec 4.3): one network lock while at
+// least one connection is open.
+TEST(WsHub, HoldsAdminLockWhileConnected) {
+    wisp::log::reset_for_test();
+    wisp::log::init(4096);
+    EventBus bus;
+    wisp::core::WakeLockRegistry locks(bus);
+    auto admin_locks = [&locks] {
+        int n = 0;
+        for (const auto& l : locks.list()) {
+            if (l.holder == "system.admin" && l.kind == wisp::core::WakeLockKind::Network &&
+                l.reason == "admin session")
+                ++n;
+        }
+        return n;
+    };
+    {
+        WsHub hub(bus);
+        hub.set_wake_locks(&locks);
+        EXPECT_EQ(admin_locks(), 0);
+        ASSERT_TRUE(hub.open(std::make_shared<FakeWsConnection>(1), "a"));
+        EXPECT_EQ(admin_locks(), 1);
+        ASSERT_TRUE(hub.open(std::make_shared<FakeWsConnection>(2), "b"));
+        EXPECT_FALSE(hub.open(std::make_shared<FakeWsConnection>(3), "c"));
+        EXPECT_EQ(admin_locks(), 1);
+        hub.close(1);
+        EXPECT_EQ(admin_locks(), 1);
+        hub.close(2);
+        EXPECT_EQ(admin_locks(), 0);
+
+        ASSERT_TRUE(hub.open(std::make_shared<FakeWsConnection>(4), "a"));
+        hub.close_client("a");
+        EXPECT_EQ(admin_locks(), 0);
+        ASSERT_TRUE(hub.open(std::make_shared<FakeWsConnection>(5), "a"));
+        hub.close_all();
+        EXPECT_EQ(admin_locks(), 0);
+
+        // Destroyed with a connection open: the lock goes with it.
+        ASSERT_TRUE(hub.open(std::make_shared<FakeWsConnection>(6), "a"));
+        EXPECT_EQ(admin_locks(), 1);
+    }
+    EXPECT_EQ(admin_locks(), 0);
 }
 
 TEST(WsHub, BackfillsRingThenStreamsLive) {

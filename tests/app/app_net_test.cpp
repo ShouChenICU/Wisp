@@ -47,7 +47,6 @@ struct NetAppOptions {
     bool always_on = false;
     // Written to <System>/net/wifi.json before boot.
     std::vector<std::pair<std::string, std::string>> saved;
-    int64_t idle_off_min = -1;  // -1: leave the setting unset
     bool with_display = false;
     std::function<wisp::Value()> heap_info;
 };
@@ -105,9 +104,6 @@ struct NetHarness {
         platform.board = std::make_unique<NetBoard>(root, wifi, display);
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(root + "/settings.json");
-        if (opts.idle_off_min >= 0) {
-            wisp::core::Settings(*platform.settings, "net").set("idle_off_min", opts.idle_off_min);
-        }
         platform.emit_line = [this](const std::string& line) {
             std::lock_guard<std::mutex> lock(lines_mutex);
             lines.push_back(line);
@@ -338,25 +334,46 @@ TEST(AppNet, ServerFollowsTheHotspotWhenEventsAreLost) {
     EXPECT_TRUE(down);
 }
 
-TEST(AppNet, StandbyEventReachesWifiService) {
-    NetHarness h({.saved = {{"Home", "password1"}}, .idle_off_min = 0});
+// Moves a headless App's PowerManager to deep standby: standby now, then a
+// tick far enough ahead for power/deep_after_s (default 300 s).
+void enter_deep_standby(wisp::app::PowerManager& pm) {
+    pm.enter_standby();
+    pm.tick(wisp::os::now_ms() + 3'600'000);
+}
+
+// Plain standby keeps Wi-Fi; deep standby turns the radio off and waking
+// turns it back on (spec 4.1).
+TEST(AppNet, DeepStandbyTurnsWifiOffAndWakeTurnsItOn) {
+    NetHarness h({.saved = {{"Home", "password1"}}});
     ASSERT_TRUE(h.app->start());
     ASSERT_TRUE(
         wait_until([&] { return h.app->wifi()->status().state == WifiState::Connected; }, 3000));
+    wisp::app::PowerManager& pm = *h.app->power_manager();
 
-    h.app->power_manager()->enter_standby();
-    EXPECT_TRUE(wait_until([&] { return h.app->wifi()->status().state == WifiState::Off; }, 3000));
+    pm.enter_standby();
+    wisp::os::sleep_ms(600);  // a few net-task ticks
+    EXPECT_EQ(h.app->wifi()->status().state, WifiState::Connected);
+    EXPECT_EQ(h.wifi->set_radio_calls.load(), 0);
+
+    pm.tick(wisp::os::now_ms() + 3'600'000);
+    ASSERT_EQ(pm.level(), wisp::hal::PowerLevel::DeepStandby);
+    EXPECT_TRUE(wait_until(
+        [&] { return !h.wifi->radio_on.load() && h.app->wifi()->status().state == WifiState::Off; },
+        3000));
     EXPECT_GE(h.wifi->disconnect_calls.load(), 1);
 
-    h.app->power_manager()->exit_standby();
-    EXPECT_TRUE(
-        wait_until([&] { return h.app->wifi()->status().state == WifiState::Connected; }, 3000));
+    pm.exit_standby();
+    EXPECT_TRUE(wait_until(
+        [&] {
+            return h.wifi->radio_on.load() && h.app->wifi()->status().state == WifiState::Connected;
+        },
+        3000));
 }
 
-// Standby reaches the Wi-Fi service even when its power.state event is
-// lost: the net task also reads PowerManager::standby() each tick.
-TEST(AppNet, StandbyReachesWifiServiceWhenTheEventIsLost) {
-    NetHarness h({.saved = {{"Home", "password1"}}, .idle_off_min = 0});
+// The power level reaches the Wi-Fi service even when its power.state
+// event is lost: the net task also reads PowerManager::level() each tick.
+TEST(AppNet, DeepStandbyReachesWifiServiceWhenTheEventIsLost) {
+    NetHarness h({.saved = {{"Home", "password1"}}});
     ASSERT_TRUE(h.app->start());
     ASSERT_TRUE(
         wait_until([&] { return h.app->wifi()->status().state == WifiState::Connected; }, 3000));
@@ -369,7 +386,7 @@ TEST(AppNet, StandbyReachesWifiServiceWhenTheEventIsLost) {
     h.app->bus().publish(wisp::core::Event{"test.block", "test"});
     ASSERT_TRUE(entered.take(3000));
 
-    h.app->power_manager()->enter_standby();
+    enter_deep_standby(*h.app->power_manager());
     for (int i = 0; i < 256; ++i) h.app->bus().publish(wisp::core::Event{"test.flood", "test"});
     const bool off =
         wait_until([&] { return h.app->wifi()->status().state == WifiState::Off; }, 3000);
@@ -383,11 +400,11 @@ TEST(AppNet, StandbyReachesWifiServiceWhenTheEventIsLost) {
     EXPECT_TRUE(back);
 }
 
-// PowerManager is the only source of truth for standby: a stale or stray
-// power.state event (delivered late by the bus) must not switch Wi-Fi off
-// while the device is active.
-TEST(AppNet, AStalePowerStateEventDoesNotFlipStandby) {
-    NetHarness h({.saved = {{"Home", "password1"}}, .idle_off_min = 0});
+// PowerManager is the only source of truth for the power level: a stale or
+// stray power.state event (delivered late by the bus) must not switch
+// Wi-Fi off while the device is active.
+TEST(AppNet, AStalePowerStateEventDoesNotTurnWifiOff) {
+    NetHarness h({.saved = {{"Home", "password1"}}});
     ASSERT_TRUE(h.app->start());
     ASSERT_TRUE(
         wait_until([&] { return h.app->wifi()->status().state == WifiState::Connected; }, 3000));
@@ -395,13 +412,41 @@ TEST(AppNet, AStalePowerStateEventDoesNotFlipStandby) {
     const int before = h.wifi->disconnect_calls.load();
     for (int i = 0; i < 40; ++i) {
         h.app->bus().publish(wisp::core::Event{
-            "power.state", "test", 0, wisp::Properties{{"state", wisp::Value("standby")}}});
+            "power.state", "test", 0, wisp::Properties{{"state", wisp::Value("deep_standby")}}});
         wisp::os::sleep_ms(25);
     }
     ASSERT_TRUE(h.app->bus().wait_idle(2000));
     wisp::os::sleep_ms(300);  // a few net-task ticks
     EXPECT_EQ(h.wifi->disconnect_calls.load(), before);
+    EXPECT_EQ(h.wifi->set_radio_calls.load(), 0);
     EXPECT_EQ(h.app->wifi()->status().state, WifiState::Connected);
+}
+
+// The setup hotspot holds a network lock (system.hotspot): the device
+// stays in standby with Wi-Fi on instead of going deep.
+TEST(AppNet, HotspotKeepsDeepStandbyAway) {
+    NetHarness h({});
+    ASSERT_TRUE(h.app->start());
+    ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+    wisp::app::PowerManager& pm = *h.app->power_manager();
+    // The net task notices the hotspot on its next tick.
+    wisp::os::sleep_ms(600);
+    enter_deep_standby(pm);
+    EXPECT_EQ(pm.level(), wisp::hal::PowerLevel::Standby);
+    wisp::os::sleep_ms(300);
+    EXPECT_TRUE(h.wifi->ap_active.load());
+    EXPECT_EQ(h.wifi->set_radio_calls.load(), 0);
+
+    // Once it closes (and the net task lets go of the lock), deep standby
+    // follows.
+    ASSERT_TRUE(h.app->wifi()->stop_provisioning());
+    EXPECT_TRUE(wait_until(
+        [&] {
+            pm.tick(wisp::os::now_ms() + 3'600'000);
+            return pm.level() == wisp::hal::PowerLevel::DeepStandby;
+        },
+        3000));
+    EXPECT_TRUE(wait_until([&] { return !h.wifi->radio_on.load(); }, 3000));
 }
 
 TEST(AppNet, BootDoesNotWaitForWifi) {

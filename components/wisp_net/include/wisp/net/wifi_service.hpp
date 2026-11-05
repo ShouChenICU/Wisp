@@ -16,7 +16,8 @@
 // a hal::Wifi implementation must accept calls from several threads.
 //
 // Connection attempts (scan, connect) start only inside tick(): init()
-// and add_network() merely schedule one. tick() is expected every
+// and add_network() merely schedule one, and none starts while deep
+// standby has the radio off (set_power_level()). tick() is expected every
 // 250 ms from a dedicated task; tests drive it with explicit timestamps.
 //
 // Secrets: Wi-Fi passwords and the hotspot password never appear in a
@@ -36,8 +37,8 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/core/event_bus.hpp"
-#include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/hal/device.hpp"
 #include "wisp/hal/wifi.hpp"
 #include "wisp/net/random.hpp"
 #include "wisp/os/os.hpp"
@@ -109,10 +110,9 @@ struct WifiServiceConfig {
 
 class WifiService {
 public:
-    // `settings` must be bound to namespace "net" (key "idle_off_min").
     // `random` fills the hotspot password bytes.
     WifiService(std::shared_ptr<hal::Wifi> wifi, core::StorageManager& storage, core::EventBus& bus,
-                core::Settings settings, RandomFn random, WifiServiceConfig config = {});
+                RandomFn random, WifiServiceConfig config = {});
 
     WifiService(const WifiService&) = delete;
     WifiService& operator=(const WifiService&) = delete;
@@ -125,13 +125,16 @@ public:
     Result<void> init(uint64_t now_ms);
 
     // Advances the state machine: starts due attempts (scan + connect),
-    // polls the link, runs the standby and hotspot timers.
+    // polls the link, runs the hotspot timers.
     void tick(uint64_t now_ms);
 
-    // Mirrors power.state. After `net`/`idle_off_min` minutes of standby
-    // the station is disconnected (state Off, no backoff); leaving standby
-    // reconnects when networks are saved.
-    void set_standby(bool standby, uint64_t now_ms);
+    // Follows PowerManager's level (scene-device spec 4.1). DeepStandby
+    // closes the hotspot, disconnects and turns the radio off
+    // (hal::Wifi::set_radio(false)): state Off, nothing retried. Any other
+    // level turns the radio back on and, with networks saved, reconnects at
+    // once. Standby keeps the station as it is. No-op when the level does
+    // not change that.
+    void set_power_level(hal::PowerLevel level, uint64_t now_ms);
 
     WifiStatus status() const;
 
@@ -144,7 +147,8 @@ public:
     // InvalidArgument. Re-adding a saved SSID replaces its password and
     // clears its auth_failed flag and its count of rejections. A sixth distinct SSID fails with
     // QuotaExceeded. On success the list is persisted and the next tick()
-    // connects to exactly this network.
+    // connects to exactly this network (in deep standby, the first tick()
+    // after the radio is back on).
     Result<void> add_network(std::string_view ssid, std::string_view password, uint64_t now_ms);
 
     // NotFound if not saved. Forgetting the network currently in use drops
@@ -157,7 +161,8 @@ public:
 
     // Starts the hotspot "Wisp-XXXX" (last two MAC bytes, uppercase hex)
     // with a fresh 8-character [A-Za-z0-9] password. Calling it while a
-    // session is already active returns that session unchanged.
+    // session is already active returns that session unchanged; Busy
+    // while deep standby has the radio off.
     Result<ApSession> start_provisioning(uint64_t now_ms);
     // Idempotent: OK when no session is active.
     Result<void> stop_provisioning();
@@ -203,7 +208,6 @@ private:
     void fail_attempt_locked(uint64_t now_ms, const char* why, const char* reason);
     void start_connect_locked(const Network& net, uint64_t now_ms);
     void poll_link_locked(uint64_t now_ms);
-    void tick_standby_locked(uint64_t now_ms);
     void tick_ap_locked(uint64_t now_ms);
     std::optional<AttemptPlan> plan_attempt_locked(uint64_t now_ms);
     void finish_attempt_locked(const AttemptPlan& plan,
@@ -213,7 +217,6 @@ private:
     std::shared_ptr<hal::Wifi> wifi_;
     core::StorageManager& storage_;
     core::EventBus& bus_;
-    core::Settings settings_;
     RandomFn random_;
     WifiServiceConfig config_;
     std::string source_;  // event source: the device id
@@ -225,7 +228,7 @@ private:
     WifiStatus status_;
 
     // Bumped whenever the connection plan changes from outside tick()
-    // (add/forget/standby/factory reset), so a tick() that released
+    // (add/forget/power level/factory reset), so a tick() that released
     // mutex_ for a scan can tell its plan went stale.
     uint64_t generation_ = 0;
 
@@ -242,10 +245,8 @@ private:
     std::string in_flight_ssid_;
     uint64_t in_flight_deadline_ms_ = 0;
 
-    bool standby_ = false;
-    bool standby_off_ = false;  // disconnected because of standby
-    uint64_t standby_since_ms_ = 0;
-    uint64_t standby_off_after_ms_ = 0;
+    // Deep standby turned the radio off (set_power_level()).
+    bool radio_off_ = false;
 
     std::optional<ApSession> ap_;
     int ap_clients_ = 0;
