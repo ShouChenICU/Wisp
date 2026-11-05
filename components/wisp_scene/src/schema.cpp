@@ -506,10 +506,11 @@ std::string schema_markdown() {
                   "\n"
                   "A swipe to the right that starts within %d pixels of the left edge of the\n"
                   "visible screen (rows within the safe area's height) is the system's back\n"
-                  "gesture. A touch there reaches the scene like any other; only once it has\n"
-                  "moved %d pixels to the right, mostly sideways, does the system take it, and\n"
-                  "the widget under it then gets no click. Taps and drags up, down or to the\n"
-                  "left from the edge stay the scene's.\n",
+                  "gesture, at any angle: a touch there reaches the scene like any other, and\n"
+                  "only once it has moved %d pixels to the right -- however far up or down --\n"
+                  "does the system take it, and the widget under it then gets no click.\n"
+                  "Dragging back to the left of that distance before release cancels it and\n"
+                  "nothing happens. A touch on the on-screen keyboard never starts it.\n",
                   static_cast<int>(ui::SystemLayer::kBackZoneWidth),
                   static_cast<int>(ui::SystemLayer::kBackTriggerDx));
     out += line;
@@ -525,7 +526,45 @@ std::string schema_markdown() {
         "of\n"
         "    a `checkbox` or `switch`.\n"
         "  - `h:scroll_to(i)`: scrolls a `list` or `scroll` to its `i`-th item (from 1).\n"
-        "  - `h:focus()`: focuses an `input` and opens the on-screen keyboard.\n";
+        "  - `h:focus()`: focuses an `input` and opens the on-screen keyboard.\n"
+        "\n"
+        "## wisp.store\n"
+        "\n"
+        "A scene's own persistent data (scene-runtime-core spec 5.4): a key/value space plus up\n"
+        "to 16 named collections of JSON records, kept under the scene's `data/` and never seen\n"
+        "by any other scene.\n"
+        "\n"
+        "- `wisp.store.get(key)` returns the stored value, or `nil` if `key` has none.\n"
+        "- `wisp.store.set(key, value)` returns `true`, or `nil` and a code; `value == nil`\n"
+        "  deletes `key`.\n"
+        "- `wisp.store.batch(fn)` calls `fn` with every `wisp.store` write inside it held back\n"
+        "  until `fn` returns: if `fn` raises, or any one of those writes would itself fail,\n"
+        "  none of them take effect and the call returns `nil, \"batch_aborted\"`; otherwise\n"
+        "  they all do and the call returns `true`. Batches may nest.\n"
+        "- `wisp.store.collection(name)` returns a handle `c` for one of up to 16 collections\n"
+        "  (`name` is 1 to 32 bytes of lowercase letters, digits, `_` or `-`; `\"kv\"` is\n"
+        "  reserved for the key/value space above):\n"
+        "  - `c:insert(record)` returns the new record's `id` (an integer), or `nil` and a code.\n"
+        "  - `c:update(id, record)` returns `true`, or `nil` and a code.\n"
+        "  - `c:delete(id)` returns `true`, or `nil` and a code (`\"not_found\"` for an `id` that\n"
+        "    does not exist).\n"
+        "  - `c:find(filter?, opts?)` returns a list of matching records, each with its `id`\n"
+        "    field set.\n"
+        "\n"
+        "`record` is a table with string keys. `id` in it is reserved: `insert` and `update`\n"
+        "strip it out before storing (so a record `find` returns can be passed straight back to\n"
+        "`update`), and it is always the id the store itself hands out, never a stored field.\n"
+        "`filter` (a table) keeps only records equal on every field it gives; `filter.id` tests\n"
+        "the record id rather than a stored field. `opts.sort` orders by one top-level field\n"
+        "(numbers by value, strings by bytes; a record missing it sorts last whatever\n"
+        "`opts.desc` says); `sort = \"id\"`, or no `sort` at all, means id order, which is\n"
+        "insertion order -- newest first once `opts.desc` is set. `opts.limit` and\n"
+        "`opts.offset` page the result.\n"
+        "\n"
+        "Codes: `quota_exceeded`, `record_too_large`, `too_many_collections`,\n"
+        "`not_serializable`, `too_deep`, `not_found`, `ids_exhausted`, `batch_aborted`. A key,\n"
+        "collection name or record of the wrong type, length or shape is a Lua error instead,\n"
+        "at the line that made the call.\n";
     return out;
 }
 
