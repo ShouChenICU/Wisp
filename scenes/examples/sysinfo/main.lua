@@ -1,7 +1,12 @@
 -- System info: every field of wisp.device.info(), refreshed when the battery or
 -- the language changes (the battery and lang events) and on every minute, which
--- also comes when the time zone changes.
-local info = state(wisp.device.info())
+-- also comes when the time zone changes. The scene gets the whole screen;
+-- padding it by the safe area (plus a margin) keeps this centred block visible
+-- on round and rounded screens alike.
+local first = wisp.device.info()
+local info = state(first)
+local sa = first.safe_area
+local M = 16 -- a margin inside the safe area, which reaches the edges of a rect screen
 
 local function refresh(i) info:set(i) end
 wisp.device.on("battery", refresh)
@@ -28,10 +33,12 @@ local function field(name, fn)
 end
 
 return ui.screen { gap = 6, justify = "center",
+  pad = { sa.y1 + M, first.width - 1 - sa.x2 + M, first.height - 1 - sa.y2 + M, sa.x1 + M },
   ui.label { text = "系统状态", font = "lg" },
   field("屏幕", function(i)
     return string.format("%d×%d %s", i.width, i.height, SHAPES[i.shape] or i.shape)
   end),
+  field("圆角", function(i) return i.corner_radius .. " px" end),
   field("安全区", function(i)
     local s = i.safe_area
     return string.format("(%d,%d)-(%d,%d)", s.x1, s.y1, s.x2, s.y2)

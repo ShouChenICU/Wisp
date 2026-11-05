@@ -83,9 +83,12 @@ protected:
         wisp::log::reset_for_test();
     }
 
-    void start(const std::string& display_shape = "circle") {
+    // `corner_radius` matters for "rounded_rect" only (the simulator's
+    // 40 by default; the reference board's panel is 70).
+    void start(const std::string& display_shape = "circle", int corner_radius = 40) {
         display =
             std::make_shared<wisp::test::FakeDisplay>("display.main", 480, 480, 1, display_shape);
+        display->set_cap("corner_radius", wisp::Value(static_cast<int64_t>(corner_radius)));
         touch = std::make_shared<wisp::test::FakeTouch>("touch.main");
         ui = std::make_unique<wisp::ui::UiRuntime>(display, touch);
         ASSERT_TRUE(ui->start());

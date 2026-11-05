@@ -1,7 +1,10 @@
 // The example scenes in scenes/examples (scene-runtime-core spec 9.3): each
 // package's scene.json parses, every .lua file compiles, and each one opens
 // in a SceneRuntime on a fake display and is still running two seconds
-// later without the error panel. wisp.http goes to a fake client that
+// later without the error panel, with nothing it shows cut off by the
+// screen's shape (scenes own the whole screen and lay themselves out from
+// wisp.device.info() and row_span(), AGENTS.md section 3). wisp.http goes
+// to a fake client that
 // answers the weather example with a fixed forecast: no test here touches
 // the network.
 
@@ -18,9 +21,11 @@
 #include <vector>
 
 #include "support/fake_http.hpp"
+#include "support/lvgl_probe.hpp"
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
 #include "wisp/core/scene_manifest.hpp"
+#include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/scene/vm.hpp"
 
@@ -48,6 +53,98 @@ fs::path examples_dir() { return fs::path(WISP_ROOT) / "scenes" / "examples"; }
 std::string read_file(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+}
+
+// What a scene shows that must not be cut off by the screen's shape;
+// nullptr for anything else (layout objects, a canvas).
+const char* content_kind(const lv_obj_t* o) {
+    static const struct {
+        const lv_obj_class_t* cls;
+        const char* name;
+    } kinds[] = {{&lv_label_class, "label"},       {&lv_button_class, "button"},
+                 {&lv_checkbox_class, "checkbox"}, {&lv_textarea_class, "input"},
+                 {&lv_switch_class, "switch"},     {&lv_slider_class, "slider"},
+                 {&lv_bar_class, "bar"},           {&lv_chart_class, "chart"},
+                 {&lv_image_class, "image"},       {&lv_arc_class, "arc"}};
+    for (const auto& k : kinds)
+        if (lv_obj_check_type(o, k.cls)) return k.name;
+    return nullptr;
+}
+
+bool hidden_or_under_hidden(lv_obj_t* o) {
+    for (; o != nullptr; o = lv_obj_get_parent(o))
+        if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return true;
+    return false;
+}
+
+// Whether an ancestor below `top` scrolls vertically: what is in it may
+// pass through invisible areas (only the ends of a list are checked,
+// with list_end_visible()).
+bool in_scroller(lv_obj_t* o, lv_obj_t* top) {
+    for (lv_obj_t* p = lv_obj_get_parent(o); p != nullptr && p != top; p = lv_obj_get_parent(p))
+        if (lv_obj_get_scroll_top(p) > 0 || lv_obj_get_scroll_bottom(p) > 0) return true;
+    return false;
+}
+
+// The points of `o` that must be visible: its corners, or for an arc
+// (a ring in a square box) the middle of each edge.
+std::vector<std::pair<int32_t, int32_t>> key_points(lv_obj_t* o) {
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    if (lv_obj_check_type(o, &lv_arc_class)) {
+        const int32_t mx = (a.x1 + a.x2) / 2, my = (a.y1 + a.y2) / 2;
+        return {{mx, a.y1}, {mx, a.y2}, {a.x1, my}, {a.x2, my}};
+    }
+    return {{a.x1, a.y1}, {a.x2, a.y1}, {a.x1, a.y2}, {a.x2, a.y2}};
+}
+
+// Every content object under `root` (not hidden, not zero-sized, and,
+// when `skip_scrolling`, not inside a scrolling container) that has a
+// key point outside the visible screen; empty when nothing is cut off.
+void find_clipped(lv_obj_t* root, lv_obj_t* top, const wisp::hal::ScreenShape& shape,
+                  bool skip_scrolling, std::vector<std::string>& out) {
+    const uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; ++i) {
+        lv_obj_t* c = lv_obj_get_child(root, i);
+        if (hidden_or_under_hidden(c)) continue;
+        const char* kind = content_kind(c);
+        if (kind != nullptr && lv_obj_get_width(c) > 0 && lv_obj_get_height(c) > 0 &&
+            !(skip_scrolling && in_scroller(c, top))) {
+            for (auto [x, y] : key_points(c)) {
+                if (wisp::hal::visible(shape, x, y)) continue;
+                lv_area_t a;
+                lv_obj_get_coords(c, &a);
+                std::string what = lv_obj_check_type(c, &lv_label_class)
+                                       ? std::string("label '") + lv_label_get_text(c) + "'"
+                                       : std::string(kind);
+                out.push_back(what + " at " + std::to_string(a.x1) + "," + std::to_string(a.y1) +
+                              "-" + std::to_string(a.x2) + "," + std::to_string(a.y2));
+                break;
+            }
+        }
+        // A button's, input's or checkbox's own parts are inside its box.
+        if (kind == nullptr) find_clipped(c, top, shape, skip_scrolling, out);
+    }
+}
+
+lv_obj_t* find_checkbox_with(lv_obj_t* obj, const char* text) {
+    if (lv_obj_check_type(obj, &lv_checkbox_class) &&
+        std::string(lv_checkbox_get_text(obj)).find(text) != std::string::npos)
+        return obj;
+    const uint32_t n = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < n; ++i)
+        if (lv_obj_t* f = find_checkbox_with(lv_obj_get_child(obj, i), text)) return f;
+    return nullptr;
+}
+
+lv_obj_t* find_scroller(lv_obj_t* obj) {
+    const uint32_t n = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < n; ++i) {
+        lv_obj_t* c = lv_obj_get_child(obj, i);
+        if (lv_obj_get_scroll_top(c) > 0 || lv_obj_get_scroll_bottom(c) > 0) return c;
+        if (lv_obj_t* f = find_scroller(c)) return f;
+    }
+    return nullptr;
 }
 
 TEST(ExamplesPackages, ManifestsParseAndLuaCompiles) {
@@ -136,6 +233,59 @@ protected:
         for (const auto& line : lines) f << line << "\n";
     }
 
+    // The content of the scene on screen that the screen's shape cuts off.
+    std::vector<std::string> clipped() {
+        std::vector<std::string> out;
+        on_ui([&] {
+            lv_obj_t* screen = lv_screen_active();
+            lv_obj_update_layout(screen);
+            find_clipped(screen, screen, shape, true, out);
+        });
+        return out;
+    }
+
+    // Scrolls the one scrolling container (a list) to its top or its
+    // bottom, waits for the row showing `text` (a label or a checkbox)
+    // and returns what of that row is cut off.
+    std::vector<std::string> list_end_clipped(bool bottom, const char* text) {
+        on_ui([&] {
+            lv_obj_t* screen = lv_screen_active();
+            lv_obj_update_layout(screen);
+            lv_obj_t* list = find_scroller(screen);
+            if (list == nullptr) return;
+            if (bottom)
+                lv_obj_scroll_by(list, 0, -lv_obj_get_scroll_bottom(list), LV_ANIM_OFF);
+            else
+                lv_obj_scroll_by(list, 0, lv_obj_get_scroll_top(list), LV_ANIM_OFF);
+        });
+        lv_obj_t* hit = nullptr;
+        const auto find = [&] {
+            on_ui([&] {
+                lv_obj_t* screen = lv_screen_active();
+                hit = find_checkbox_with(screen, text);
+                if (hit == nullptr) hit = wisp::test::find_label_containing(screen, text);
+            });
+            return hit != nullptr;
+        };
+        if (!wait_until(find, 2000)) return {std::string("no row showing ") + text};
+        std::vector<std::string> out;
+        on_ui([&] {
+            lv_obj_t* screen = lv_screen_active();
+            lv_obj_update_layout(screen);
+            lv_obj_t* list = find_scroller(screen);
+            lv_obj_t* row = hit;
+            while (row != nullptr && lv_obj_get_parent(row) != list) row = lv_obj_get_parent(row);
+            if (row == nullptr) {
+                out.push_back("the row is not in the list");
+                return;
+            }
+            lv_area_t a;
+            lv_obj_get_coords(row, &a);
+            find_clipped(row, screen, shape, false, out);
+        });
+        return out;
+    }
+
     int count_of(const lv_obj_class_t* cls) {
         int n = 0;
         on_ui([&] { n = wisp::test::count_obj_of_class(lv_screen_active(), cls); });
@@ -179,6 +329,7 @@ protected:
         EXPECT_TRUE(wait_until([&] { return rt->status(id).state == SceneState::Running; }, 2000))
             << rt->status(id).error;
         EXPECT_TRUE(ready(id)) << ::testing::PrintToString(labels());
+        EXPECT_EQ(clipped(), std::vector<std::string>{});
         EXPECT_EQ(rt->status(id).state, SceneState::Running) << rt->status(id).error;
         EXPECT_FALSE(error_panel_has(""));
         for (auto& e : wisp::log::ring_entries()) {
@@ -200,6 +351,9 @@ protected:
         EXPECT_FALSE(error_panel_has(""));
     }
 
+    void check_list_ends(const std::string& id, const std::string& shape_name,
+                         int corner_radius = 40);
+
     wisp::test::FakeHttpClient client;
     std::unique_ptr<wisp::net::SceneHttp> http;
 };
@@ -212,6 +366,81 @@ TEST_F(Examples, EachRunsOnACircle) {
 TEST_F(Examples, EachRunsOnARoundedRect) {
     start("rounded_rect");
     for (const char* id : kExamples) open_and_run(id, "rounded_rect");
+}
+
+// The reference board's panel: 480x480 with 70 px corners.
+TEST_F(Examples, EachRunsOnTheBoardsRoundedRect) {
+    start("rounded_rect", 70);
+    for (const char* id : kExamples) open_and_run(id, "rounded_rect r70");
+}
+
+TEST_F(Examples, EachRunsOnARect) {
+    start("rect");
+    for (const char* id : kExamples) open_and_run(id, "rect");
+}
+
+// A long list scrolls edge to edge, but its first row at the top and its
+// last row at the bottom are whole on the visible screen.
+void Examples::check_list_ends(const std::string& id, const std::string& shape_name,
+                               int corner_radius) {
+    SCOPED_TRACE(id + " on " + shape_name + " r" + std::to_string(corner_radius));
+    start(shape_name, corner_radius);
+    install_example(id);
+    std::vector<std::string> lines;
+    const int64_t today = (static_cast<int64_t>(std::time(nullptr)) + 8 * 3600) / 86400;
+    for (int i = 1; i <= 30; ++i) {
+        const std::string n = std::to_string(i);
+        if (id == "todo")
+            lines.push_back(R"({"op":"put","id":)" + n + R"(,"v":{"text":"事项)" + n +
+                            R"(","done":false}})");
+        else
+            lines.push_back(R"({"op":"put","id":)" + n + R"(,"v":{"day":)" +
+                            std::to_string(today - i) + R"(,"amount":)" + n + R"(,"note":"笔)" + n +
+                            R"("}})");
+    }
+    seed(id, id == "todo" ? "todos" : "entries", lines);
+    ASSERT_TRUE(rt->open(id));
+    ASSERT_TRUE(wait_until([&] { return rt->status(id).state == SceneState::Running; }, 2000));
+    // todo lists by id, ledger newest day first: item 1 first, 30 last.
+    const char* first = id == "todo" ? "事项1" : "笔1";
+    const char* last = id == "todo" ? "事项30" : "笔30";
+    EXPECT_EQ(list_end_clipped(false, first), std::vector<std::string>{});
+    EXPECT_EQ(list_end_clipped(true, last), std::vector<std::string>{});
+    EXPECT_EQ(list_end_clipped(false, first), std::vector<std::string>{});
+    EXPECT_EQ(clipped(), std::vector<std::string>{});
+    EXPECT_FALSE(error_panel_has(""));
+}
+
+TEST_F(Examples, TodoListEndsOnACircle) { check_list_ends("todo", "circle"); }
+TEST_F(Examples, TodoListEndsOnARoundedRect) { check_list_ends("todo", "rounded_rect"); }
+TEST_F(Examples, TodoListEndsOnTheBoardsRoundedRect) {
+    check_list_ends("todo", "rounded_rect", 70);
+}
+TEST_F(Examples, TodoListEndsOnARect) { check_list_ends("todo", "rect"); }
+TEST_F(Examples, LedgerListEndsOnACircle) { check_list_ends("ledger", "circle"); }
+TEST_F(Examples, LedgerListEndsOnARoundedRect) { check_list_ends("ledger", "rounded_rect"); }
+TEST_F(Examples, LedgerListEndsOnTheBoardsRoundedRect) {
+    check_list_ends("ledger", "rounded_rect", 70);
+}
+TEST_F(Examples, LedgerListEndsOnARect) { check_list_ends("ledger", "rect"); }
+
+// The clock's canvas is the whole screen: the dial is sized from it.
+TEST_F(Examples, ClockUsesTheWholeScreen) {
+    start("rounded_rect");
+    install_example("clock");
+    ASSERT_TRUE(rt->open("clock"));
+    ASSERT_TRUE(wait_until([&] { return count_of(&lv_canvas_class) == 1; }, 2000));
+    on_ui([&] {
+        lv_obj_t* c = wisp::test::find_obj_of_class(lv_screen_active(), &lv_canvas_class);
+        ASSERT_NE(c, nullptr);
+        lv_obj_update_layout(lv_screen_active());
+        lv_area_t a;
+        lv_obj_get_coords(c, &a);
+        EXPECT_EQ(a.x1, 0);
+        EXPECT_EQ(a.y1, 0);
+        EXPECT_EQ(a.x2, 479);
+        EXPECT_EQ(a.y2, 479);
+    });
 }
 
 TEST_F(Examples, CounterRemembersItsCount) {

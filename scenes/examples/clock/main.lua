@@ -1,6 +1,8 @@
 -- Clock face: a canvas dial, redrawn on every whole minute (wisp.device.on("minute")).
--- The canvas fills the safe area the root leaves, and the dial is sized from
--- safe_area, so it is fully visible on round and rounded screens alike.
+-- The scene gets the whole screen: the canvas covers it, and the dial is the
+-- largest circle centred on it (on a round screen, the screen itself), sized from
+-- width and height. A centred circle that fits the width and height is visible on
+-- a rounded screen too, whose corners it never reaches.
 -- Local time is info.time + info.utc_offset (minutes); a time zone change
 -- fires "minute" too.
 local WEEKDAYS = { "四", "五", "六", "日", "一", "二", "三" } -- 1970-01-01 was a Thursday
@@ -11,10 +13,9 @@ local now = state(info)
 
 wisp.device.on("minute", function(i) now:set(i) end)
 
-local sa = info.safe_area
-local W, H = sa.x2 - sa.x1 + 1, sa.y2 - sa.y1 + 1
+local W, H = info.width, info.height
 local CX, CY = W // 2, H // 2
-local R = math.min(W, H) // 2 - 4
+local R = math.min(W, H) // 2 - 2
 
 local function polar(angle_deg, r)
   local a = math.rad(angle_deg - 90) -- 0 degrees is up, clockwise
@@ -45,7 +46,7 @@ local function draw(g)
   local mins = local_s // 60 % 60
   local hours = local_s // 3600 % 24
   local day = local_s // 86400
-  g:text(CX - 40, CY + R // 3, string.format("星期%s %02d:%02d", WEEKDAYS[day % 7 + 1], hours, mins),
+  g:text(CX - 56, CY + R // 3, string.format("星期%s %02d:%02d", WEEKDAYS[day % 7 + 1], hours, mins),
          { font = "sm", color = "muted" })
   hand(g, (hours % 12) * 30 + mins / 2, R * 5 // 10, 8, "text")
   hand(g, mins * 6, R * 8 // 10, 5, "accent")

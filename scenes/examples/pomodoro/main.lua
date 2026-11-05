@@ -84,12 +84,52 @@ local function mmss(s)
   return string.format("%02d:%02d", s // 60, s % 60)
 end
 
--- Sizes come from the safe area, not fixed pixels, so it fits small and round screens.
-local sa = wisp.device.info().safe_area
-local side = math.min(sa.x2 - sa.x1 + 1, sa.y2 - sa.y1 + 1)
-local DIAL = side * 3 // 5
+-- The scene gets the whole screen and sizes itself from wisp.device: the dial is
+-- as large as fits above the buttons, and the button row is inset by row_span()
+-- at its own rows, so on a round screen it uses the width there is at that height.
+local info = wisp.device.info()
+local W, H = info.width, info.height
+local MARGIN = 16 -- from the visible edge; also clears the system's back-swipe strip
+local GAP, BTN_H = 16, 48
+local BTN_ROW_MIN = 3 * 72 + 2 * 8 -- three buttons that still hold their text
 
-return ui.screen { align = "center", justify = "center", gap = 16,
+local function visible(x, y)
+  local x1, x2 = wisp.device.row_span(y)
+  return x1 ~= nil and x >= x1 + MARGIN // 2 and x <= x2 - MARGIN // 2
+end
+
+-- The inset from both sides that keeps rows y1..y2 visible (the shape is convex:
+-- the narrowest row is one of the two ends).
+local function inset(y1, y2)
+  local need = 0
+  for _, y in ipairs({ y1, y2 }) do
+    local x1, x2 = wisp.device.row_span(y)
+    if not x1 then return W // 2 end
+    need = math.max(need, x1, W - 1 - x2)
+  end
+  return need + MARGIN
+end
+
+-- The dial and the button row as one centred block, a margin clear of the top and
+-- bottom edges: the largest dial whose ring is visible all round while the button
+-- row below it is still wide enough.
+local DIAL, TOP, btn_y
+for d = math.min(W, H - GAP - BTN_H) - 2 * MARGIN, 64, -4 do
+  TOP = (H - d - GAP - BTN_H) // 2
+  btn_y = TOP + d + GAP
+  local cx, cy, r = W // 2, TOP + d // 2, d // 2
+  local ok = W - 2 * inset(btn_y, btn_y + BTN_H - 1) >= BTN_ROW_MIN
+  for k = 0, 23 do
+    if not ok then break end
+    local a = k * math.pi / 12
+    ok = visible(cx + math.floor(r * math.cos(a) + 0.5), cy + math.floor(r * math.sin(a) + 0.5))
+  end
+  DIAL = d
+  if ok then break end
+end
+local side = inset(btn_y, btn_y + BTN_H - 1)
+
+return ui.screen { gap = GAP, align = "center", pad = { TOP, 0, 0, 0 },
   ui.stack { w = DIAL, h = DIAL, align = "center",
     ui.arc { w = "fill", h = "fill", width = math.max(DIAL // 16, 4), min = 0,
       max = bind(phase, function(p) return PHASES[p].secs end),
@@ -102,13 +142,14 @@ return ui.screen { align = "center", justify = "center", gap = 16,
                  font = "sm", fg = "muted" },
     },
   },
-  -- The button row is as wide as the safe area; the three buttons share it.
-  ui.row { w = "fill", gap = 8,
-    ui.button { ref = "toggle", grow = 1,
+  -- As wide as the screen is at the row's height; the three buttons share it.
+  ui.row { w = "fill", h = BTN_H, gap = 8, pad = { 0, side, 0, side },
+    ui.button { ref = "toggle", grow = 1, h = BTN_H,
       text = bind(running, function(r) return r and "暂停" or "开始" end),
       on_click = function() if running:get() then pause() else start() end end },
-    ui.button { ref = "skip", grow = 1, text = "跳过", on_click = function() switch_phase(false) end },
-    ui.button { ref = "reset", grow = 1, text = "重置", on_click = function()
+    ui.button { ref = "skip", grow = 1, h = BTN_H, text = "跳过",
+      on_click = function() switch_phase(false) end },
+    ui.button { ref = "reset", grow = 1, h = BTN_H, text = "重置", on_click = function()
       pause()
       left:set(PHASES[phase:get()].secs)
       save()

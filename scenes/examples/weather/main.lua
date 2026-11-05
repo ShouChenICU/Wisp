@@ -1,6 +1,8 @@
 -- Weather: the public Open-Meteo API (https://open-meteo.com), which needs no key.
 -- A scene may only reach the hosts scene.json declares in permissions.http.
--- Fetched on open and then every 30 minutes.
+-- Fetched on open and then every 30 minutes. The scene gets the whole screen;
+-- padding it by the safe area (plus a margin) keeps this centred block visible
+-- on round and rounded screens alike.
 local CITY = { name = "北京", lat = 39.90, lon = 116.40 }
 local URL = string.format(
   "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f"
@@ -112,7 +114,12 @@ local function day_row(i)
   }
 end
 
+local info = wisp.device.info()
+local sa = info.safe_area
+local M = 16 -- a margin inside the safe area, which reaches the edges of a rect screen
+
 return ui.screen { gap = 8, align = "center", justify = "center",
+  pad = { sa.y1 + M, info.width - 1 - sa.x2 + M, info.height - 1 - sa.y2 + M, sa.x1 + M },
   ui.row { gap = 8, align = "center",
     ui.label { text = CITY.name, font = "lg" },
     ui.button { ref = "refresh", bg = "surface", on_click = fetch, ui.icon { name = "refresh" } },
