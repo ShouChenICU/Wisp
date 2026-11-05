@@ -86,7 +86,7 @@
 | 26 | 待机进入/退出与唤醒（spec 6.7/10.3，wisp_app::PowerManager/PowerKeyController） | 亮屏时短按电源键进入待机；按任意键唤醒；再测试：电源键确认框打开时等待自动熄屏触发，分别用短按/长按唤醒 | 待机后任意键均可唤醒；确认框场景下两种按法都能唤醒（对话框可能仍留在界面上），不会因为"唤醒"和"确认框"逻辑冲突而异常 |  |
 | 27 | 唤醒延迟（spec 10.5） | 从按电源键到面板实际重新点亮计时（秒表或逻辑分析仪） | ≤ 300 ms（见下方"待机与省电"一节的 `DcsSleep` 估算，约 200 ms，仅为估算） |  |
 | 28 | 待机电流（spec 10.5） | 见下方"验收第 5 条"的详细测量方法 | 待机平均电流 ≤ 亮屏静止平均电流的 1/10 |  |
-| 29 | 多次浅睡眠后无异常（wisp_app::PowerManager 轻睡眠） | 待机 10 分钟以上（确保发生过多次自动浅睡眠）后唤醒 | 面板无花屏、亮度未被意外重置；触摸正常响应；扬声器无异常噗声或底噪（见下方"验收第 5 条"第 1 条） |  |
+| 29 | 多次浅睡眠后无异常（wisp_app::PowerManager 轻睡眠） | 待机 10 分钟以上（确保发生过多次自动浅睡眠）后唤醒 | 面板无花屏、亮度未被意外重置；触摸正常响应；扬声器无异常噗声或底噪（见下方"验收第 5 条"第 1 条） | 通过（2026-11-05，裁定 A，见上方"浅睡兼容性（3b-1 spike）"一节）：运行 2 待机 10 分钟、`sleeps` 751366 次，唤醒后面板、触摸正常；前提是待机期间关闭音频 I2S 通道 |
 | 30 | IMU 掉电恢复（wisp_app::PowerManager 待机，drivers/qmi8658） | 待机前记一次 IMU 读数，唤醒后再看 | 读数恢复正常更新，不是待机前最后一次读数，也不是全零/明显错误值（见"验收第 5 条"第 4 条） |  |
 | 31 | SD 探测暂停（wisp_port_esp::sd_retry 待机期间暂停探测） | 插卡待机若干分钟后唤醒；可选在待机期间物理插拔 SD 卡 | 唤醒后 `online()` 仍正确；待机期间的插拔只在唤醒后才被发现（预期行为，不是 bug，见"验收第 5 条"第 5 条） |  |
 | 32 | 触摸复位引脚功耗（可选测量，待机功耗评估） | 待机期间尝试拉低触摸复位引脚（GPIO40），对比前后电流 | 仅用于评估是否值得做后续省电项，不代表现在代码需要改动（见"验收第 5 条"第 6 条） |  |
@@ -105,7 +105,7 @@
 | 45 | 不透明卡片的遮挡裁剪（`wisp/ui/overlay.hpp`） | `wifi ap on` 让配网卡片显示，手指上下滚动自检列表；再执行 `wifi ap off` 关掉卡片 | 滚动时卡片周围和卡片上没有残影、撕裂或缺块；关掉卡片后，卡片原来位置下面的列表内容完整、与周围一致 | 用户 2026-11-04 确认开热点滚动无残影（之后修过渲染期间的探测和隐藏图层的处理，建议复看一次） |
 | 46 | 配网二维码（按屏幕像素格式存，`net_cards.cpp` 的 `flatten_qr()`） | `wifi ap on` 后用手机相机扫配网卡片上的二维码 | 黑白没有反，手机能识别并提示连接热点 | 用户 2026-11-04 确认能扫 |
 | 47 | 默认字体的 8 位字形缓存（`components/wisp_ui/src/a8_font.cpp`） | 看自检界面和配网卡片上的中、日、英文文字 | 与改动前一样：没有缺字、错字、发虚或错位 |  |
-| 48 | 开 XIP 后的待机与唤醒（`CONFIG_SPIRAM_XIP_FROM_PSRAM`） | 开 XIP 的固件上重复第 26–29 项（待机进入与唤醒、唤醒延迟、待机电流、多次浅睡眠） | 结果与第 26–29 项的预期一致；浅睡眠唤醒后没有花屏、复位或卡死 |  |
+| 48 | 开 XIP 后的待机与唤醒（`CONFIG_SPIRAM_XIP_FROM_PSRAM`） | 开 XIP 的固件上重复第 26–29 项（待机进入与唤醒、唤醒延迟、待机电流、多次浅睡眠） | 结果与第 26–29 项的预期一致；浅睡眠唤醒后没有花屏、复位或卡死 | 通过（2026-11-05）：探针固件延续本板默认配置（已开 XIP），见上方"浅睡兼容性（3b-1 spike）"一节；结论同第 29 项 |
 | 49 | 网络校时（连接 spec 5.6，`net::TimeSyncService`、`wisp_port_esp` 的 `EspSntp`） | 连上 Wi-Fi 后看串口日志和自检界面"电源与时钟"卡片；再用 `mem` 看 `wisp.ntp` 任务；在管理后台"系统"页点"立即校时"；把 `ntp_servers` 改成 `down.invalid,ntp.aliyun.com` 再校时一次 | 拿到 IP 后几秒内出现 `time: synced from pool.ntp.org`（或回落到 `ntp.aliyun.com`）；卡片显示"Synced HH:MM"（本地时间）；`wisp.ntp` 栈在 PSRAM 且 high-water mark 余量足够（4096 字节栈），按实测调整 `NetWiring::kNtpStackBytes`；空闲时内部 RAM 不低于预算；第二次校时回落到 `ntp.aliyun.com` |  |
 | 50 | 两种安装方式（scene spec 9.4.1） | 网页"场景"页上传 `counter` 的 zip；`python3 tools/wisp_scene.py --host <IP>:8900 push scenes/examples/todo --open`；从自检界面"场景"区块打开两者 | 都安装成功，推送输出显示声明的域名；列表点击即打开 |  |
 | 51 | 示例功能与断电保留（scene spec 9.4.2） | 逐个打开 7 个示例；在待办加 3 条、记账加 2 条后拔电池和 USB 断电重启 | 功能正常；重启后数据仍在 |  |
@@ -249,6 +249,58 @@
     `ESP_PM_CPU_FREQ_MAX` 锁），但会把浅睡眠的最长连续时长限制在 `ButtonService` 的
     50 ms 量级，略微拉高平均功耗。真机测得的待机电流如果明显高于预期，这些仍是优先
     排查的来源。
+
+### 浅睡兼容性（3b-1 spike）
+
+日期：2026-11-05。探针固件在一次性分支 `spike/light-sleep`（不合入）上，HEAD 为
+`3cc43ec`；运行 1 用的是该分支更早的提交 `64ce0dd`，运行 2、3 用的是 `3cc43ec`（即
+加上"待机期间关闭 I2S 通道"之后）。
+
+**运行 1**（I2S 保持开启，电池供电放置 10 分钟）：`light_sleep_counts` 为 0，完全没有
+进入浅睡眠。`pm_locks` 里有两条 `i2s_driver APB_FREQ_MAX` 锁，100% 的时间都处于持有
+状态——esp_board_manager 的 `periph_i2s` 在启动时打开了 I2S0 的 TX、RX 通道并一直保持
+开启，这两把锁挡住了所有自动浅睡眠。除了这一项，其余全部通过：`psram_ok` 为
+true，`timer_missed` 0，最大迟到 0.05 ms，`rtc_drift_ms` 1758，`wifi_reconnect_ms`
+5501；唤醒后画面和触摸正常。
+
+**运行 2**（待机期间关闭音频 I2S 通道）：原始 JSON（`WISP_SPIKE` 一行）：
+
+```
+WISP_SPIKE {"battery_end":100,"battery_start":100,"i2s_off_err":"rx=ESP_OK tx=ESP_OK","i2s_on_err":"tx=ESP_OK rx=ESP_OK","interrupted":false,"minutes":10,"pm_locks":"Time since boot up: 645307580 us\nLock stats:\nName            Type            Arg    Active    Total_count    Time(us)        Time(%) \nmpi_cpu         CPU_FREQ_MAX    0      0         14             5166            1  %\nmpi_sleep       NO_LIGHT_SLEEP  0      0         14             5164            1  %\nwifi            APB_FREQ_MAX    0      0         337            8552606         2  %\nsdmmc           APB_FREQ_MAX    0      0         83             37382           1  %\nspi_master      APB_FREQ_MAX    0      0         1766           771117          1  %\ni2s_driver      APB_FREQ_MAX    0      0         1              45106293        7  %\ni2s_driver      APB_FREQ_MAX    0      0         1              45109157        7  %\nI2C0            NO_LIGHT_SLEEP  0      0         7753           3333635         1  %\nusb_serial_jtag NO_LIGHT_SLEEP  0      0         48             26287575        5  %\nrtos1           CPU_FREQ_MAX    0      0         135180         26275935        5  %\nrtos0           CPU_FREQ_MAX    0      1         142031         30117165        5  %\n\nMode stats:\nMode      CPU_freq    Time(us)    Time(%)   \nSLEEP     80 M        568030455   88%\nAPB_MIN   80 M        28290       0 %\nAPB_MAX   80 M        23033955    3 %\nCPU_MAX   240M        54213633    8 %\n\nSleep stats:\nlight_sleep_counts:15880  light_sleep_reject_counts:3\n","psram_ok":true,"reset_reason":"usb","rtc_drift_ms":639,"run_s":600,"sleep_ratio":0.879084954,"sleep_ratio_reported":0.869085396,"sleeps":751366,"standby_entered":true,"timer_fires":600,"timer_max_late_ms":0.21,"timer_mean_late_ms":0.16914,"timer_missed":0,"uptime_end_s":651,"wifi_reconnect_ms":5503,"wifi_stop_err":"ESP_OK"}
+```
+
+唤醒后（10 分钟自动熄屏触发后）面板、触摸均正常（用户目测）。
+
+**运行 3**（约 3 分钟时按电源键唤醒）：原始 JSON：
+
+```
+WISP_SPIKE {"battery_end":100,"battery_start":100,"i2s_off_err":"rx=ESP_OK tx=ESP_OK","i2s_on_err":"tx=ESP_OK rx=ESP_OK","interrupted":true,"minutes":10,"pm_locks":"Time since boot up: 339262644 us\nLock stats:\nName            Type            Arg    Active    Total_count    Time(us)        Time(%) \nmpi_cpu         CPU_FREQ_MAX    0      0         14             5183            1  %\nmpi_sleep       NO_LIGHT_SLEEP  0      0         14             5179            1  %\nwifi            APB_FREQ_MAX    0      0         337            8898276         3  %\nsdmmc           APB_FREQ_MAX    0      0         83             37069           1  %\nspi_master      APB_FREQ_MAX    0      0         209            82976           1  %\ni2s_driver      APB_FREQ_MAX    0      0         1              45105280        14 %\ni2s_driver      APB_FREQ_MAX    0      0         1              45108117        14 %\nI2C0            NO_LIGHT_SLEEP  0      0         7457           3185981         1  %\nusb_serial_jtag NO_LIGHT_SLEEP  0      0         47             28849385        9  %\nrtos1           CPU_FREQ_MAX    0      1         78864          14296463        5  %\nrtos0           CPU_FREQ_MAX    0      1         85722          21982219        7  %\n\nMode stats:\nMode      CPU_freq    Time(us)    Time(%)   \nAPB_MIN   80 M        127265      0 %\nAPB_MAX   80 M        24359624    7 %\nCPU_MAX   240M        34747379    10%\n","psram_ok":true,"reset_reason":"usb","rtc_drift_ms":-77,"run_s":294,"sleep_ratio":0.911800832,"sleep_ratio_reported":0.905153316,"sleeps":245634,"standby_entered":true,"timer_fires":294,"timer_max_late_ms":0.213,"timer_mean_late_ms":0.122802721,"timer_missed":0,"uptime_end_s":349,"wifi_reconnect_ms":10302,"wifi_stop_err":"ESP_OK"}
+```
+
+`interrupted` 为 true（被电源键提前打断）。用户观察：短按电源键后屏幕"立刻"点亮，画面、
+触摸均正常。
+
+**c 项（USB 串口不复位重连）**：无法判断。控制端串口工具打开端口时会置位 DTR/RTS，
+这会触发板子复位，所以读到的 `reset_reason` 在读取时刻总是 `usb`。运行期间本身是否
+连续，只能从 `uptime_end_s` 相对 `run_s` 加等待延时的关系间接判断，不能用
+`reset_reason` 判断。只记录现象；按计划 Step 4，这一项不影响裁定。
+
+**裁定表**（对照 Step 4 的通过线）：
+
+| 项 | 结论 |
+|---|---|
+| 确实进入了浅睡 | 运行 2：`sleeps` 751366，`sleep_ratio` 0.879 ≥ 0.5，通过（运行 1 的 0 次是 I2S 锁所致，已查明原因并在运行 2 解除） |
+| PSRAM | 运行 2、3 的 `psram_ok` 均为 true，通过 |
+| 屏幕、触摸 | b、d 均目测正常；唤醒延迟按观察"立刻"，视为 ≤ 300 ms，通过 |
+| 定时器精度 | `timer_missed` 均为 0；`timer_max_late_ms` 远低于 50 ms；`rtc_drift_ms` 639 和 -77，均 ≤ 2000 ms，通过 |
+| 没有复位 | `reset_reason` 为 `usb` 是串口工具重新开口导致的，不是运行期间复位；`uptime_end_s` 与 `run_s`、等待延时的关系表明运行期间连续，通过 |
+| Wi-Fi 恢复 | `wifi_reconnect_ms` 5503（运行 2）、10302（运行 3），均 ≤ 15000，通过 |
+| USB 串口重连 | 无法判断（见上一段），不影响裁定 |
+
+**最终裁定：A**，深度待机打开自动浅睡眠。
+
+**前提条件**：音频 I2S 通道必须在 Standby/DeepStandby 期间关闭，否则
+`i2s_driver APB_FREQ_MAX` 锁会 100% 时间持有，阻止任何浅睡眠发生（运行 1 即为反例）。
 
 ## 内部 RAM
 

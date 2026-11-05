@@ -244,6 +244,12 @@ git commit -m "docs(hardware): record the light-sleep spike result"
 
 `spike/light-sleep` 分支保留在本地备查，不合入、不 push。
 
+**执行记录**：裁定 **A**（深度待机打开自动浅睡眠），2026-11-05。记录见
+`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md` 的"浅睡兼容性（3b-1
+spike）"一节。前提——待机期间关闭音频 I2S 通道——会带入 Task 2 的 HAL power-level
+任务：`audio_in`/`audio_out` 声明 caps standby 为 `off`，不在 Active/Dim 时关闭各自
+的 I2S 通道。
+
 ---
 
 ### Task 2: HAL 电源级别与 caps `standby`
