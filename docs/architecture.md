@@ -1,6 +1,6 @@
-# 架构（子项目 1：基础骨架）
+# 架构（子项目 1：基础骨架 + 子项目 3a：场景运行时）
 
-最高权威是 `docs/superpowers/specs/2026-11-01-foundation-design.md`；本文档是对当前代码的概述，两者冲突以 spec 为准，但本文档只记录已经落地的内容。
+最高权威是 `docs/superpowers/specs/2026-11-01-foundation-design.md`（基础骨架）和 `docs/superpowers/specs/2026-11-04-scene-runtime-core-design.md`（场景运行时）；本文档是对当前代码的概述，与 spec 冲突以 spec 为准，但本文档只记录已经落地的内容。
 
 ## 分层
 
@@ -126,6 +126,7 @@
 - `net.wifi` 是 `wisp::port::sim::SimWifi`（model `sim-wifi`）：内置 `WispLab`（-45 dBm，密码 `wisp1234`）、`Neighbor`（-70，`neighbor99`）、`OpenCafe`（-80，开放）；`--wifi-fail` 让所有连接以 `not_found` 失败；热点只改状态，`ap_clients()` 在热点开启时恒为 1。
 - 管理后台由 `SimHttpServer` 提供，只监听 `127.0.0.1`，端口 `--http-port`（默认 8900，与真机后台端口相同；0 表示不启动）。模拟器没有 80 端口的强制门户服务（`Platform::captive_server` 为空）。出站请求（模型连通测试 `POST /ai/profiles/{id}/test`）走 `SimHttpClient`（libcurl，主机构建 `find_package(CURL 7.80 REQUIRED)`；可移植层禁止 include `curl/`）。
 - 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。标准输入里以 `tap` / `swipe` 开头的行（`tap X,Y` / `swipe X1,Y1,X2,Y2`）也立即执行，供需要先等设备上某件事发生再点的脚本使用：冒烟测试 `factory_reset` 和 `firmware` 等到 WebSocket 日志里出现确认框的日志行，再经标准输入点"Yes"。
+- 场景开发（场景 spec 6.4）：`--scenes-dir <目录>` 让场景仓库以该目录为代码根运行在开发模式，数据仍落在 `<data-dir>/scenes/<id>/data`；前台场景的文件一变就重新加载。`--open-scene <id>` 在 `App::start()` 返回后立即打开一个场景。只在 `wisp_sim` 目标定义 `WISP_SIM_DEBUG_COMMANDS` 时才有的调试命令 `debug scene-click <ref>` 点击前台场景里 `ref` 为该名字的部件（`SceneRuntime::click_ref()`），回答 `scene-click=ok` 或 `scene-click=<错误>`。
 - 标准输入只有一个读取者（`simulator/sim_stdin.hpp` 的 `StdinReader`，带超时轮询，退出时不会卡在阻塞读上）：不论是否 `--headless`、stdin 是不是终端都会读取；触摸行交给触摸脚本，其余每行都是串口控制台（serial console）命令，经 `Platform::read_line` 交给控制台任务；控制台没有 `tap`/`swipe` 命令。`tap`/`swipe` 与坐标之间可以是空格或制表符。stdin 是控制终端且进程在后台进程组（`wisp_sim &`）时读取者暂不读，`fg` 后恢复；模拟器忽略 `SIGTTIN`，所以不会被作业控制停住。
 - 信号：`SIGINT`/`SIGTERM` 让主循环像重启一样返回，经正常的 `App::stop()` 以退出码 0 结束（SDL 自己的信号处理被 `SDL_HINT_NO_SIGNAL_HANDLERS` 关掉，否则无头模式收不到）；处理是一次性的，关机卡住时再发一次信号按默认方式结束进程。
 
@@ -160,6 +161,48 @@
 
 写入永远进列表第一个根；读取按顺序枚举所有根。真机挂载点：内置 Flash（LittleFS）在 `/int`，SD 卡（FAT，1-bit SDMMC）在 `/sd`；模拟器对应 `<data-dir>/int/`、`<data-dir>/sd/`。原子写（`write_atomic`）和 FAT 上 `rename` 不能覆盖已存在文件的坑，见 `AGENTS.md` 第 8 节。
 
+场景的代码与数据不属于以上三个逻辑区，固定在内置根下的 `<int>/scenes`（`core::SceneRepository`，开发模式见上面"模拟器的网络"一节的 `--scenes-dir`）：每个场景是 `<int>/scenes/<id>/`，数据在其中的 `data/` 子目录。替换一个场景是目录级的两阶段改名，不经单文件的 `write_atomic`，见下面"场景运行时"一节。
+
+## 场景运行时
+
+场景 spec 3/6；任务见上面"启动流程"末尾的"场景相关的任务"表，启动/停止顺序见同一节正文。
+
+### 消息流
+
+- `wisp.scene` 任务一次只取一条 `SceneMessage`（正文在 PSRAM）跑进 Lua VM，每条有自己的 200 ms 预算；处理完就把场景的被动状态（reactive）刷新一遍，将这次变化整理成一个 batch 交给 `PatchQueue`。
+- 消息来自三处：UI 线程（部件事件）、`wisp.fs`（包与存储加载完成的回执）、`SceneHost` 的请求（打开/关闭/删除，实例号为 0，按 id 认场景）。每条消息都带着实例号，不是前台场景当前实例号的消息被丢弃（`stale_dropped()`），已关闭场景的消息因此不会影响下一个打开的场景。
+- 消息队列容量 64（`SceneRuntimeConfig::queue_capacity`）。UI 线程的帧钩子每帧从 `PatchQueue` 最多应用 64 条操作（`PatchQueue` 的 `per_frame`）到对应实例的 `SceneView`；一次大批量更新摊到多帧应用完时，中间那几帧会显示场景从未真正处于过的半更新画面，下一帧补齐。
+
+### `/int/scenes/` 布局与两阶段替换
+
+`core::SceneRepository`（`components/wisp_core/include/wisp/core/scene_repository.hpp`）：
+
+- 布局：`<code_root>/<id>/` 下是 `scene.json`、入口文件、`lib/**/*.lua` 和 `assets/**`；场景的数据在 `data_dir(id) = <data_root>/<id>/data`。真机和非开发模式的模拟器两个根都是 `<int>/scenes`，数据目录落在包目录里面；模拟器开发模式（`--scenes-dir`）下代码来自工作目录，数据另放一处。
+- 替换（安装/升级）按 AGENTS.md 第 8 节"两阶段命名"的目录版做到跨断电原子：
+  1. 新文件写进 `<code_root>/.<id>.tmpdir/`；
+  2. 该目录改名为 `.<id>.newdir`——从这一步起视为完整；
+  3. 若旧的 `<id>/data` 存在，把它移进 `.<id>.newdir/data`（两边都已存在时放弃整个替换，不删任何一边）；
+  4. 删除 `<id>`；
+  5. `.<id>.newdir` 改名为 `<id>`。
+  `recover()`（启动时在 `wisp.fs` 上先跑一次，见"启动流程"第 3 步）丢弃每一个 `.*.tmpdir`，并把每个 `.<id>.newdir` 走完第 3–5 步。staging 名字以 `dir` 结尾，是因为 `StorageManager` 把 `.tmp`/`.new` 结尾的名字留给了它自己的单文件原子写。
+
+### `SceneStore` 文件格式与日志
+
+`core::SceneStore`（`components/wisp_core/include/wisp/core/scene_store.hpp`）是 `wisp.store` 背后的持久化：一个键值空间加最多 16 个 JSON 记录集合（spec 5.4/5.6；Lua 侧 API 见 `docs/scene-api.md`"wisp.store"一节）。
+
+- 索引全在内存，读写立即返回；按追加日志异步落盘：键值空间写 `data/kv.log`，每个集合写 `data/<集合名>.log`。每行一个 JSON 对象，`{"op":"put","id":<id>,"v":<value>}` 或 `{"op":"del","id":<id>}`（键值空间的 id 是键字符串本身，集合的 id 是整数），以 `\n` 结尾；加载时最后一个 `\n` 之后的半行视为断电撕裂的尾巴，丢弃并重写该文件（`write_atomic`），否则下次追加会接在撕裂的字节后面。
+- 第一个挂起的写安排一次性的合并延时；到点后把各文件挂起的内容一起交给 `wisp.fs`（真机上的 `submit_io`）落盘。一次落盘涉及多个文件、或一批提交里有超过一行时，先把要写的全部行写进 `data/journal.json`（`write_atomic`），落盘完成再删除——重开时先重放还没删除的 `journal.json`（put/del 都是幂等的），追加这些行后再删除它。落盘失败按 200 ms 起翻倍、上限 5 s 重试。
+- 日志按"死字节超过活字节一半"或"累计追加超过阈值"触发压缩重写（只留活记录，仍用 `write_atomic`）；压缩后的集合为已删除的最大 id 留一条 `{"op":"del"}`，保证重开后 id 分配仍然单调。
+
+### 开发循环
+
+- 模拟器 `--scenes-dir`（见上面"模拟器的网络"）：代码直接从本机目录读取，前台场景一改文件就重新加载，不必安装/卸载，迭代最快，但只能在模拟器里用。
+- `tools/wisp_scene.py`（仅标准库）面向真机或非开发模式的模拟器，经已配对的管理后台 API 推送/管理场景（连接 spec 6.1、6.3；场景 spec 7.3）：
+  - `push <目录> [--open] [--watch]`：把目录打成只含 `scene.json`、入口文件、`lib/**/*.lua`、`assets/**` 的 zip 装到设备上（`data/` 一律跳过，那是设备自己的存储）；`--watch` 每 0.5 s 比较一次文件快照，改动静止 300 ms 后自动再推一次，设备上在运行的场景据此重新加载。
+  - `ls`：列出已装场景；`logs <id>`：订阅管理后台 WebSocket 的 `log`，只打印标签为 `scene.<id>` 的行。
+  - 首次访问一台设备会走配对流程（配对码要在设备屏幕上读出来输进去）；令牌存在 `<配置目录>/scene_tool.json`（默认 `$XDG_CONFIG_HOME/wisp` 或 `~/.config/wisp`），权限 0600，原子替换写入；收到 401 说明设备忘记了这个令牌（撤销或恢复出厂），重新配对一次即可。
+  - 每次请求的超时由环境变量 `WISP_SCENE_TIMEOUT_S` 覆盖（默认 30 s；日志跟随流不设超时，设备安静多久都等）。
+
 ## 相对 spec 的细化（实施前已核实，经用户确认）
 
 1. 新增两个可移植组件：`wisp_base`（`Result`、`ErrorCode`、`Value`/`Properties`、JSON 互转，位于 os/hal 之下）和 `wisp_app`（启动编排 + 自检界面，位于 ui 之上）。spec 的 `wisp_ui` 只保留 LVGL 运行时。
@@ -173,3 +216,6 @@
 9. 新增性能监视（spec 未要求）：`UiRuntime` 自行统计 FPS、UI 线程占用率、平均刷新耗时；自检界面显示，每 5 s 输出一行 `WISP_PERF <json>`；可选开启 LVGL 自带的 sysmon 浮层。作为后续场景运行时的性能回归基准。盖在内容上面的不透明卡片用 `ui::mark_opaque_overlay()`（`wisp/ui/overlay.hpp`）登记，目前是 `lv_layer_top()` 上的配网卡片和配对卡片（`net_cards.cpp` 的 `make_card()`；确认框是 `lv_msgbox`，没有登记）：下面的内容滚动时只重画卡片外的部分，卡片本身的变化照常重画。卡片或它的任一上层被隐藏、不再完全不透明（透明度、混合模式、遮罩、变换），或失效区碰到顶层/系统层上别的对象时，退回整块重画；卡片停止遮挡后的下一次刷新会把它上一帧的区域整块重画；LVGL 渲染期间不做任何裁剪。渲染加速按芯片选择，见 `docs/porting-guide.md`。
 10. 屏幕形状与安全区（执行期由用户批准加入，spec 5.6 节）：Display caps 的 `shape` 取 `rect`/`rounded_rect`/`circle`（原 `rounded_square` 改名为 `rounded_rect`），`wisp_hal` 提供 `visible`/`safe_rect`/`row_span` 几何函数，能力清单为 Display 条目附带 `safe_area`，自检界面与模拟器遮罩都以此为准。
 11. 熄屏省电（执行期由用户批准加入，spec 6.7 节、验收第 5 条）：新增 `PowerManager`，熄屏进入待机，此时屏幕和触摸进入睡眠、UI 暂停渲染、按键放慢轮询，真机开启 DFS 和待机自动浅睡眠；同时支持闲置自动熄屏。后台场景和唤醒锁留到子项目 3（spec 1.6）。
+12. 场景运行时为不透明覆盖物和返回手势加了两条规则（执行期裁定，场景 spec 3.5）：
+    - `wisp::ui::overlay` 的标记加了 `OwnChanges::InOwnEvents`：给内容可能铺满全屏、但只在自己收到的事件里变化的覆盖物用，目前是屏幕键盘和拼音候选字行（`system_layer.cpp` 的 `build_keyboard()`）——它们处理自己的事件时，落在其内的失效区仍按遮挡处理；其余任何时候、任何失效区只要碰到它们，照旧退回整块重画。错误面板沿用原有的默认规则（`OwnChanges::InsideBox`）标记；确认框（`SystemLayer::open_confirm()` 建的 `lv_msgbox`，带 LVGL 自带的全屏背板）不标记，不做跳过：它开着时背板所占的失效区本身就会碰到它，自然退回整块重画，不需要额外规则。`SelfCheck::raise_overlays()` 每次重新同步覆盖物（语言切换、Wi-Fi/配对状态变化）都先 `raise()` 配网/配对卡片，再 `raise()` `SystemLayer`（错误面板、键盘、候选行、返回箭头、确认框），让它们始终盖在卡片之上。
+    - 返回手势不建常驻对象：`SystemLayer::hook_pointer()` 包一层输入设备的读回调，被动旁听每次读数据（不吞事件），只有起点在视觉上可见左边缘 16 px 内、向右移动超过 24 px 的触摸才会接管，不限角度（与安卓边缘返回一致，上下移动多少都不影响，只看向右的距离）；接管前的触摸正常落到场景上，松手前把手指拖回触发距离以内则取消，不触发返回。滑动越过 8 px（`kBackArrowSlop`，避免沿边缘滚动时箭头闪现）后，左边缘出现一个跟着手指移动、未标记的返回箭头，它隐藏后的下一帧照常整块重画被它盖过的区域。
