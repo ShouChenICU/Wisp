@@ -590,6 +590,23 @@ TEST(SceneRepository, InstallingMarksTheIdUntilItReturns) {
 
 // What a delete finds: the package and its name, and data left behind once
 // the package itself is gone.
+// The delete flow marks the id from the user's yes until the files are
+// gone; marks nest, so two deletes of one id overlap safely.
+TEST(SceneRepository, RemovingMarksTheIdUntilEnded) {
+    Fixture f;
+    EXPECT_FALSE(f.repo->removing("todo"));
+    f.repo->begin_removing("todo");
+    f.repo->begin_removing("todo");
+    EXPECT_TRUE(f.repo->removing("todo"));
+    EXPECT_FALSE(f.repo->removing("other"));
+    f.repo->end_removing("todo");
+    EXPECT_TRUE(f.repo->removing("todo"));
+    f.repo->end_removing("todo");
+    EXPECT_FALSE(f.repo->removing("todo"));
+    f.repo->end_removing("todo");  // unbalanced: ignored
+    EXPECT_FALSE(f.repo->removing("todo"));
+}
+
 TEST(SceneRepository, RemovalSeesDataLeftBehind) {
     Fixture fx;
     EXPECT_EQ(fx.repo->removal("todo", true).error().code, ErrorCode::NotFound);

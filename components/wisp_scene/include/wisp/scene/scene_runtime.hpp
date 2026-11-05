@@ -221,8 +221,10 @@ public:
     // (failures are logged and published). Busy when the runtime is not running or its queue
     // stays full. open() is also Busy, at once, while
     // SceneRepository::installing(id) (spec 6.3: the package is being
-    // replaced); an open that was already on its way when the install
-    // began is dropped the same way when its load arrives.
+    // replaced) or removing(id) (it is being deleted); an open that was
+    // already on its way when the install or delete began is dropped the
+    // same way when its load arrives. close(id) while a load of that id
+    // is on its way cancels the open.
     Result<void> open(const std::string& id, Value args = {}) override;
     Result<void> close(const std::string& id) override;
     Result<void> reload(const std::string& id) override;
@@ -343,9 +345,11 @@ private:
     // Scene task only.
     std::unique_ptr<Foreground> fg_;
     uint32_t next_instance_ = 1;
-    // The instance the worker is loading for (0: none); a load that comes
-    // back for another one was superseded.
+    // The instance the worker is loading for (0: none), and its scene; a
+    // load that comes back for another one was superseded, or cancelled
+    // by a close of that scene.
     uint32_t loading_ = 0;
+    std::string loading_id_;
     bool visible_ = true;
     bool quit_ = false;
     // The ui::Lang of the last system.settings event, -1 before any. Set

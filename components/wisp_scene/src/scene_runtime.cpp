@@ -254,6 +254,8 @@ Result<void> SceneRuntime::request(os::LargeUnique<SceneMessage> m,
 Result<void> SceneRuntime::open(const std::string& id, Value args) {
     if (deps_.repo.installing(id))
         return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being installed");
+    if (deps_.repo.removing(id))
+        return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being deleted");
     auto waiter = std::make_shared<SceneWaiter>();
     return request(make_message(id, 0, msg::Load{std::move(args), waiter}), waiter);
 }
@@ -438,10 +440,14 @@ void SceneRuntime::handle(SceneMessage& m) {
     } else if (auto* b = std::get_if<msg::Close>(&body)) {
         // From the API (instance 0) by id; from the view, the panel or
         // the gesture for one instance.
-        if (m.instance == 0 ? (fg_ && fg_->id == m.scene_id) : target(m) != nullptr)
+        if (m.instance == 0 ? (fg_ && fg_->id == m.scene_id) : target(m) != nullptr) {
             close_foreground(b->done);
-        else
+        } else {
+            // A load of it still on the worker is cancelled: whoever closed
+            // it may go on to delete or replace its files.
+            if (m.instance == 0 && loading_ != 0 && loading_id_ == m.scene_id) loading_ = 0;
             finish_after_queued_io(b->done);
+        }
     } else if (auto* b = std::get_if<msg::Reload>(&body)) {
         const bool in_front = fg_ && fg_->id == m.scene_id;
         if (b->if_foreground && !in_front) {
@@ -502,6 +508,7 @@ void SceneRuntime::begin_open(const std::string& id, Value args,
     const uint32_t instance = next_instance_++;
     if (next_instance_ == 0) next_instance_ = 1;
     loading_ = instance;
+    loading_id_ = id;
 
     std::shared_ptr<Link> link = link_;
     core::StorageWorker& worker = deps_.worker;
@@ -553,19 +560,24 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         if (open.done) open.done->finish(std::move(r));
     };
     if (m.instance != loading_) {
-        // Another open came after this one.
+        // Another open came after this one, or a close of it.
         ++stale_dropped_;
-        done(Result<void>::err(ErrorCode::Busy, "superseded by another open"));
+        if (open.store) open.store->close();
+        done(Result<void>::err(ErrorCode::Busy, "superseded by another open or a close"));
         return;
     }
     loading_ = 0;
     const std::string& id = m.scene_id;
-    if (open.error.code == ErrorCode::Ok && deps_.repo.installing(id)) {
-        // Loaded before an install of it began: the package and the data
-        // directory are about to be replaced under it.
-        WLOG_W(kTag, "%s: not opened: its package is being installed", id.c_str());
+    if (open.error.code == ErrorCode::Ok &&
+        (deps_.repo.installing(id) || deps_.repo.removing(id))) {
+        // Loaded before an install or a delete of it began: the package
+        // and the data directory are about to be replaced or removed.
+        const bool installing = deps_.repo.installing(id);
+        WLOG_W(kTag, "%s: not opened: it is being %s", id.c_str(),
+               installing ? "installed" : "deleted");
         if (open.store) open.store->close();
-        done(Result<void>::err(ErrorCode::Busy, "scene " + id + " is being installed"));
+        done(Result<void>::err(ErrorCode::Busy, "scene " + id + " is being " +
+                                                    (installing ? "installed" : "deleted")));
         return;
     }
     if (open.error.code != ErrorCode::Ok) {

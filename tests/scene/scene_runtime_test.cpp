@@ -794,4 +794,56 @@ TEST_F(SceneRuntimeTest, OpenAndCloseSurviveALongUiStall) {
     EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
 }
 
+// A close of a scene whose load is still on the worker cancels that open:
+// the scene does not come up afterwards on files a delete may be removing.
+TEST_F(SceneRuntimeTest, CloseDuringItsLoadCancelsTheOpen) {
+    start();
+    install("todo", "return ui.screen { ui.label { text = 'v0' } }");
+    WorkerGate gate(worker);
+    // From the UI thread an open is only queued.
+    on_ui([&] { EXPECT_TRUE(rt->open("todo")); });
+    // The scene task has handled it: the load waits on the worker.
+    ASSERT_TRUE(rt->check_sources({}));
+    std::promise<bool> closed;
+    rt->close_async("todo", [&](wisp::Result<void> r) { closed.set_value(r.is_ok()); });
+    ASSERT_TRUE(rt->check_sources({}));
+    gate.release();
+    auto result = closed.get_future();
+    ASSERT_EQ(result.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_TRUE(result.get());
+    // The load came back before the close was answered; this is after it.
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_FALSE(rt->foreground().has_value());
+    EXPECT_NE(rt->status("todo").state, SceneState::Running);
+    EXPECT_TRUE(events().empty());
+    ASSERT_TRUE(rt->open("todo"));
+    EXPECT_TRUE(wait_label("v0"));
+}
+
+// While a scene is being deleted (SceneRepository::removing()), it is not
+// opened: a new open is refused at once, and one whose load was already
+// on the worker is dropped when the load comes back.
+TEST_F(SceneRuntimeTest, OpenIsBusyWhileTheSceneIsBeingDeleted) {
+    start();
+    install("todo", "return ui.screen { ui.label { text = 'v0' } }");
+    auto gate = std::make_unique<WorkerGate>(worker);
+    on_ui([&] { EXPECT_TRUE(rt->open("todo")); });
+    ASSERT_TRUE(rt->check_sources({}));
+    repo->begin_removing("todo");
+
+    auto refused = rt->open("todo");
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().code, ErrorCode::Busy);
+
+    gate->release();
+    ASSERT_TRUE(worker.drain(5000));
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_FALSE(rt->foreground().has_value());
+    EXPECT_TRUE(events().empty());
+
+    repo->end_removing("todo");
+    ASSERT_TRUE(rt->open("todo"));
+    EXPECT_TRUE(wait_label("v0"));
+}
+
 }  // namespace
