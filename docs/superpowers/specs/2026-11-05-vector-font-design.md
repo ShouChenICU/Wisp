@@ -201,6 +201,7 @@
 ```
 
 - Tiny TTF 找不到字形时返回 false，LVGL 按 `fallback` 逐字往下找。Noto 没有 `LV_SYMBOL_*`（FontAwesome 的私用区码位），这些字由图标字给出；字符集以外的字回退到 16 px。
+- 这一步不直接用 Tiny TTF 自己生成的 `get_glyph_dsc`：矢量字体对象的 `get_glyph_dsc` 先经 `font_image_has_glyph(image, codepoint)`（按镜像里 `open_font_image()` 已经校验过的 `cmap` 子表查，不经 stb_truetype）问一句"这个字在不在矢量字体里"，不在就直接答"没有"、交给 LVGL 走 `fallback`，在才调用 Tiny TTF 原本的回调。原因：Tiny TTF 的回调对每一个它没有的字符（全部 `LV_SYMBOL_*` 图标、字符集以外的字）都会记一条 LVGL 错误日志，测量和绘制各触发一次；这个预检查把日志保持干净，不改变回退结果。控制字符、U+200C 和 `LV_SYMBOL_DUMMY` 本身是 Tiny TTF 自己能正确处理成空字形的码位，不经过这个预检查，直接调用它的回调。
 - 混排时回退字形画在主字体的基线上，实测没有错位。
 - **降级**（镜像缺失或无效，或该档创建失败）：`font(px)` 返回"图标字 → `default_font()`"，即图标仍是大号、文字退到 16 px。Montserrat 24/32/48 删除之后没有大号拉丁位图字可退（4.6），这是降级模式下可以接受的样子。
 

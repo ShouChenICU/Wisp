@@ -16,9 +16,10 @@
   | `phy_init` | 0x11000 | 4 KB |
   | `ota_0` | 0x20000 | 5 MB |
   | `ota_1` | 0x520000 | 5 MB |
-  | `storage`（LittleFS） | 0xA20000 | 5.875 MB |
+  | `storage`（LittleFS） | 0xA20000 | 3.06 MB |
+  | `fonts`（矢量字体镜像，矢量字体 spec 3.4） | 0xD30000 | 2.81 MB |
 
-  网页资源包链接在应用镜像里，没有 `assets` 分区；`nvs` 和 `storage` 保持了早先分区表里的偏移和大小，所以换成这张表时设置和数据都保留。从旧分区表（两个 4 MB 应用槽加 2 MB 的 `assets` 分区）换过来时，以及第一次用上打开了回滚功能的引导程序时，都必须用 USB 完整烧录一次（`idf.py -p <PORT> flash`，写入引导程序、分区表、`otadata` 和 `ota_0`），之后才能在网页上传固件。
+  网页资源包链接在应用镜像里，没有 `assets` 分区。`nvs` 的偏移和大小都没有变，Wi-Fi、配对、亮度、语言等设置跨这次换表保留。`storage` 偏移不变，但为了给新增的 `fonts` 分区腾出空间，从 5.875 MB 缩小到 3.06 MB：LittleFS 的超级块记着块数，分区大小一变挂载就会失败，`format_if_mount_failed` 随即重新格式化——**换成这张表时 `/int` 里的数据（已安装的场景、场景数据、文件）全部清空**，用户已批准这次换表（矢量字体 spec 3.4）。从旧分区表（两个 4 MB 应用槽加 2 MB 的 `assets` 分区，或没有 `fonts` 分区的上一版 `storage` 0x5E0000）换过来时，以及第一次用上打开了回滚功能的引导程序时，都必须用 USB 完整烧录一次（`idf.py -p <PORT> flash`，写入引导程序、分区表、`otadata`、`ota_0` 和 `fonts`），之后才能在网页上传固件；只想换字体用 `idf.py -p <PORT> fonts-flash`，日常改代码用 `idf.py -p <PORT> app-flash`（见 `docs/porting-guide.md`"字体分区"）。
 - 镜像大小（ESP-IDF v6.0.3，`idf.py size`）：发布版 3,169,136 B（`ota_0` 的 60.4%），调试版（`sdkconfig.debug`）3,467,968 B（66.1%）；预算为单个 OTA 槽的 80%。
 
 ## 外设与引脚
@@ -288,6 +289,8 @@ STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动
 **`wisp.fs` 栈从 4 KB 加到 6 KB**（2026-11-05，固件 5fab9ac 加临时 12 KB 栈实测）：装了一个场景后，开机列出场景时在这个线程上解析各场景的 manifest，4 KB 栈溢出，表现为开机约 3 秒就重启，反复循环（日志里是 `stack overflow in task wisp.fs`，或者溢出写坏了旁边的队列，变成 `Interrupt wdt timeout`）。装上 7 个示例场景后实测：开机列出场景时用了 4.3 KB，安装并打开 ledger、weather 后峰值 4.5 KB，所以定为 6 KB，留约 1.7 KB 余量。同一次测量里，安装场景加 weather 的 HTTPS 请求期间，内部 RAM `min` 降到 39.7 KB（当时 `wisp.fs` 用的是 12 KB 临时栈；改成 6 KB 后相当于约 45.7 KB）。
 
 **STA 和热点互斥能省多少**：只开热点比 STA + 热点只多 5.4 KB（mDNS 任务栈 4 KB 加 DHCP 客户端和关联状态），只连 STA 比 STA + 热点多 14.6 KB。热点部分本身：softAP 驱动、netif 和 DHCP 服务器约 10.6 KB；端口 80 的 httpd 约 3 KB（栈已移到 PSRAM，移之前是 7.1 KB）；DNS 任务 0.4 KB（移之前是 3.4 KB）。配网时热点不能不开，所以互斥只能把峰值降低约 5 KB。
+
+**矢量字体（2026-11-05，可行性验证分支 `spike/vector-font` 的实测，代码已丢弃，只取结论）**：`wisp_ui` 任务栈从 8 KB 加到 10 KB 后，用 `mem` 命令实测到的 high-water mark 余量从 1208 B 降到 808 B——stb_truetype 光栅化在栈上约用了 0.5 KB 扫描线缓冲。`fonts` 分区整个 `esp_partition_mmap()` 之后，内部 RAM 只多了约 80 B（映射本身的记账，不含映射出的 2.81 MB 本身，那部分在数据地址空间里不占堆）。这两个数字都只是 spike 分支上的一次性测量，不是这版固件的常设预算；接入矢量字体的正式实测（最坏情况 STA + 热点、两个 httpd、WebSocket 日志、TLS 握手、OTA 上传同时进行）留给真机验收（本文档"真机验收清单"）。
 
 ## 性能基准
 
