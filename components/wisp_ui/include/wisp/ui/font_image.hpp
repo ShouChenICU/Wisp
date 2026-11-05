@@ -4,7 +4,10 @@
 // ("WFNT", format version, header length, TTF length, CRC-32) followed by
 // a TrueType font. open_font_image() checks it before anything hands the
 // TTF to LVGL's Tiny TTF: stb_truetype does no bounds checking, so a
-// damaged image could make it read past the data.
+// damaged image could make it read past the data. The CRC catches
+// accidental damage; the structural checks keep stb's font, cmap, metrics
+// and loca reads inside the image. Glyph outlines and GPOS/kern data are
+// not checked (see font_image.cpp and spec 3.6).
 //
 // Portable: no LVGL, no platform headers. The bytes come from the
 // platform (a mapped partition on the device, a file read into memory in

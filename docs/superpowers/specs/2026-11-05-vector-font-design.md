@@ -169,7 +169,8 @@
 3. 版本不是 1：`Unsupported`，"font image format N, firmware reads 1"。
 4. 头部长度小于 32、TTF 长度为 0 或超出区间：`InvalidArgument`。
 5. CRC-32 不符：`InvalidArgument`，"font image CRC mismatch"（写入中途断开等）。
-6. sfnt 结构：版本必须是 `0x00010000`；表目录在载荷之内；每张表的偏移与长度都在载荷之内；必须有 `cmap`、`glyf`、`head`、`hhea`、`hmtx`、`loca`、`maxp`。不满足就 `InvalidArgument`。stb_truetype 读字体时不做边界检查，损坏的数据可能让它越界读，所以这些检查必须在把数据交给 Tiny TTF 之前做完。
+6. sfnt 结构：版本必须是 `0x00010000`；表目录在载荷之内；每张表的偏移不小于表目录末尾，偏移与长度都在载荷之内；必须有 `cmap`、`glyf`、`head`、`hhea`、`hmtx`、`loca`、`maxp`。再检查 stb_truetype 打开字体和查找、度量、定位字形时读到的结构：`head` ≥ 54 字节且 `indexToLocFormat` 为 0 或 1，`hhea` ≥ 36，`maxp` ≥ 6 且字形数不为 0；`cmap` 的编码记录都在表内，stb 选用的子表（最后一个 Unicode 子表，格式 4 或 12）连同其分段数组、字形数组或分组都在表内，格式 4 的二分查找字段是规范值、分段有序，所有字符映射到的字形号都小于字形数；`hmtx` ≥ 4·numberOfHMetrics + 2·(字形数 − numberOfHMetrics)，且 numberOfHMetrics ≥ 1；`loca` 恰好有字形数 + 1 项，单调不减、不超过 `glyf` 的长度，非空字形至少容得下 10 字节的字形头。不满足就 `InvalidArgument`。stb_truetype 读字体时不做边界检查，损坏的数据可能让它越界读，所以这些检查必须在把数据交给 Tiny TTF 之前做完。
+   - 剩余风险：字形内部（轮廓、点、复合字形分量）和 GPOS/kern 数据不校验——逐字形解析的代价远超其余检查。意外损坏由 CRC 拦下，`fonts` 分区只能经 USB 写入（3.5），要触发这些越界读需要刻意构造、CRC 也正确的镜像。
 
 - 通过：记 `WLOG_I`"fonts: image ok, <字节数> bytes, crc <8 位十六进制>"，矢量字可用。
 - 不通过：记 `WLOG_W`"fonts: <原因>; large text uses bitmap fonts"，按 4.2 的降级规则运行。`start()` 照常成功——字体问题永远不会让 UI 起不来。
@@ -331,7 +332,8 @@ Python（标准库）：`tools/pack_font_image_test.py`（头部字段、CRC 与
 
 | 风险 | 对策 |
 |---|---|
-| 损坏或写了一半的镜像让 stb_truetype 越界读、崩溃 | 头部 CRC 覆盖整个 TTF；sfnt 表目录与每张表的边界在交给 Tiny TTF 之前检查（3.6） |
+| 损坏或写了一半的镜像让 stb_truetype 越界读、崩溃 | 头部 CRC 覆盖整个 TTF；sfnt 表目录、每张表的边界以及 stb 读到的 `head`/`hhea`/`maxp`/`cmap`/`hmtx`/`loca` 结构在交给 Tiny TTF 之前检查（3.6） |
+| 刻意构造、CRC 正确的镜像经字形内部或 GPOS/kern 数据让 stb 越界读 | 接受的剩余风险：这些数据不校验（3.6）；`fonts` 分区只能经 USB 写入，网页 OTA 不碰它（3.5） |
 | 开机多出 CRC 校验时间 | 实测并记录；若超过 0.2 s，再考虑只在首次启动或分区内容变化时完整校验（需另行设计，不在本期） |
 | UI 任务栈溢出（stb 光栅化的栈缓冲） | 栈加到 10 KB；场景负载下用 `mem` 复测 high-water mark |
 | 首次显示大字号页面的冷渲染尖峰（实测 48 px 约 40 个字多 55 ms） | 记录实测值；可接受则不处理，必要时以后加空闲预热 |

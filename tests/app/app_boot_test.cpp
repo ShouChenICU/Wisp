@@ -148,13 +148,18 @@ TEST(AppBoot, StartsUiWhenDisplayPresent) {
 // bitmap fonts, and the boot report is printed as usual.
 TEST(App, BootsWithoutFontImage) {
     auto h = make_app({.with_display = true, .font_image = {}});
+    // The log ring is shared by the whole process, so only lines logged by
+    // this start() count.
+    const auto before = wisp::log::ring_entries();
+    const uint32_t last_seq = before.empty() ? 0 : before.back().seq;
     ASSERT_TRUE(h.app.start());
     ASSERT_NE(h.app.ui(), nullptr);
     ASSERT_FALSE(h.lines.empty());
     EXPECT_EQ(h.lines[0].rfind("WISP_BOOT_REPORT ", 0), 0u);
     const auto entries = wisp::log::ring_entries();
-    EXPECT_TRUE(std::any_of(entries.begin(), entries.end(), [](const auto& e) {
-        return e.tag == "ui" && e.msg == "fonts: no font image; large text uses bitmap fonts";
+    EXPECT_TRUE(std::any_of(entries.begin(), entries.end(), [last_seq](const auto& e) {
+        return e.seq > last_seq && e.tag == "ui" &&
+               e.msg == "fonts: no font image; large text uses bitmap fonts";
     }));
 }
 
