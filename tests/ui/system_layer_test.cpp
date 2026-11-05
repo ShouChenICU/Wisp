@@ -229,8 +229,8 @@ TEST(SystemLayerZone, BackSwipeNeedsTriggerDistance) {
     EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {200, 240}));
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {20, 240}, {300, 240}));  // starts outside
     // Any angle: only the distance to the right counts.
-    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 440}));   // steeply down
-    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 40}));    // steeply up
+    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 440}));  // steeply down
+    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 40}));   // steeply up
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d - 1, 440}));
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {200, 240}, {4, 240}));  // leftwards
 }
