@@ -19,8 +19,8 @@ constexpr uint32_t kColorSelected = 0x1E88E5;
 // A pressed button, a shade darker than the neutral chip.
 constexpr uint32_t kColorPressed = 0xBDBDBD;
 
-// The title's size (spec 5.2): large enough to read at a glance, in the
-// page's current language.
+// The title's size (vector-font spec 5.1): large enough to read at a glance,
+// in the page's current language.
 constexpr int kTitlePx = 32;
 
 // A pill-shaped container with one label; `label` receives the label.
