@@ -363,6 +363,33 @@ TEST(AdminScenes, UploadStreamsAndInstalls) {
     EXPECT_TRUE(fx.repo->info("todo"));
 }
 
+// Each upload holds up to 576 KiB of PSRAM until it ends, and running out
+// of PSRAM aborts the device: one scene upload at a time.
+TEST(AdminScenes, OneUploadAtATime) {
+    ScenesFixture fx;
+    const std::vector<uint8_t> zip = zip_of(todo_files("1.0.0"));
+    std::optional<wisp::net::StreamStart> first = fx.stream(fx.upload_head(zip.size()));
+    ASSERT_TRUE(first.has_value());
+    ASSERT_NE(first->sink, nullptr);
+
+    std::optional<wisp::net::StreamStart> second = fx.stream(fx.upload_head(zip.size()));
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->sink, nullptr);
+    EXPECT_EQ(second->response.status, 409);
+    EXPECT_EQ(error_code(second->response), "busy");
+
+    // Finished, or dropped without an end (the client went away): the next
+    // one may start.
+    EXPECT_EQ(first->sink->on_data(zip), std::nullopt);
+    EXPECT_EQ(first->sink->on_end().status, 201);
+    first.reset();
+    std::optional<wisp::net::StreamStart> third = fx.stream(fx.upload_head(zip.size()));
+    ASSERT_TRUE(third.has_value());
+    ASSERT_NE(third->sink, nullptr);
+    third.reset();
+    EXPECT_EQ(fx.upload(zip).status, 201);
+}
+
 TEST(AdminScenes, UploadErrors) {
     ScenesFixture fx;
     // No Content-Length.

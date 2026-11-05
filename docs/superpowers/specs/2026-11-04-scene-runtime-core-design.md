@@ -348,7 +348,7 @@ scenes/<id>/
 | 方法与路径 | 说明 |
 |---|---|
 | `GET /scenes` | 列表：`id`、`name`、`version`、代码大小、数据占用、`state`（`stopped`/`running`/`error`）、声明的域名 |
-| `POST /scenes` | 上传 zip（流式请求体，复用固件上传的流式处理），按 6.3 安装；201 返回场景信息，400 返回校验错误 |
+| `POST /scenes` | 上传 zip（流式请求体，复用固件上传的流式处理），按 6.3 安装；201 返回场景信息，400 返回校验错误；同一时间只收一个场景上传（每个上传在 PSRAM 里占到 576 KB），另一个正在进行时 409 `busy` |
 | `GET /scenes/{id}/export?data=0\|1` | 导出 zip；`data=1` 包含 `data/` |
 | `POST /scenes/{id}/open` / `close` / `reload` | 经 `SceneHost` 操作 |
 | `DELETE /scenes/{id}?data=0\|1` | 202，需在设备上确认；确认后删除代码包，`data=1` 时连数据一起删 |
