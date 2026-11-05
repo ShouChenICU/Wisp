@@ -122,6 +122,13 @@ public:
     // listing is logged and not handed over.
     bool list_async(std::function<void(std::vector<SceneEntry>)> on_ui);
 
+    // Reads StorageManager::status() on the worker and hands it to `on_ui`
+    // on `ui`'s thread. The read reaches the flash -- on LittleFS it walks
+    // every block in use to count them, longer the more is stored -- so it
+    // stays off the UI thread. False if the worker took no job; `on_ui` is
+    // then never called. An answer that finds the UI queue full is dropped.
+    bool storage_status_async(ui::UiRuntime& ui, std::function<void(core::StorageStatus)> on_ui);
+
 private:
     // On the worker: removes the scene and publishes "deleted".
     void remove(const std::string& id, bool with_data);

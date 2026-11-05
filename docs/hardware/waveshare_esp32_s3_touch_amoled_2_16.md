@@ -358,7 +358,7 @@ ESP-IDF v6.0.3，发布版（全局 `-Os`，LVGL、esp_lcd 和 wisp_ui 的渲染
 - **raw**：`lv_obj_scroll_by_raw()`，前后各发一次 `SCROLL_BEGIN`/`SCROLL_END`，和手指拖动时 LVGL 的做法一样。
 - **scroll_by**：每帧调用一次 `lv_obj_scroll_by()`。每次调用都会发一对 `SCROLL_BEGIN`/`SCROLL_END`，切换 `LV_STATE_SCROLLED` 状态，触发整棵树重新布局，每帧多出约 11 ms。手指滚动不会这样，所以以 raw 为准。
 
-fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致。"热点"指 `wifi ap on`（只开热点，不连任何网络），这时配网卡片（带二维码）盖在列表上面。
+fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致。raw 的测法现在是固件里常驻的串口命令 `bench scroll [秒数]`（默认 10 s，输出一行 `WISP_BENCH`，见 `docs/architecture.md`"机器可读输出"），测前确认性能浮层关着、列表在顶部。"热点"指 `wifi ap on`（只开热点，不连任何网络），这时配网卡片（带二维码）盖在列表上面。
 
 | 配置 | raw fps | raw fps（热点） | scroll_by fps | `WISP_PERF`（滚动中） | 启动后内部 RAM 空闲 |
 |---|---|---|---|---|---|
@@ -447,6 +447,15 @@ LVGL 的堆放在 PSRAM（`LV_STDLIB_CUSTOM`，`components/wisp_ui/src/lv_mem_wi
 | ≤ 16 KB 的块放内部 RAM（等于 CLIB 的规则，单次） | 22.08 | 28.04 | 67.4 KB | 39.7 KB |
 
 结论：保留 PSRAM 堆。TLSF 不更快，而且 LVGL 9.5 不会自己扩池（`LV_MEM_POOL_EXPAND_SIZE` 只放宽单个池和单块的上限），固定的池装不下 2000 个控件的场景（主机上约 300 字节/控件），截图用的 690–920 KB 绘制缓冲也要另外处理。把块放回内部 RAM 的方案要么没有收益，要么把 17 KB 的收益吃回去。
+
+### 自检界面的存储读数（2026-11-05）
+
+`bench scroll`（关热点，STA 连着家里的 Wi-Fi，内部 Flash 装了 12 个场景，已用 248 KB）测出 3a 的固件只有 15.6–15.8 fps，比上面的 22.7 低了 7 fps。原因有两个，都不在场景运行时里：
+
+- **自检界面每 100 ms 在 UI 线程上读一次存储容量**（`StorageManager::status()`）。LittleFS 的 `esp_littlefs_info()` 要把用到的每个块都读一遍（`lfs_fs_size()`，读块、算 CRC），实测每次 18 ms，等于 UI 线程 18% 的时间，拖掉约 4 fps；`lfs_fs_size()` 遍历所有在用的块，存的东西越多越慢（3a 验收时手指滚动还有 22–24 fps，可能就是当时存的少，没有复现）。这个读法从自检界面一开始就有，所以同一台设备上，老固件（`d7e98d5`，当时测出 21.8）现在也只有 18.2，去掉这次读取就回到 22.6。现在改为在存储工作线程（`wisp.fs`）上每秒读一次，结果交回 UI 线程（`SceneWiring::storage_status_async()`），3a 固件从 15.6–15.8 回到 19.1–19.4。
+- **自检界面改版**（`dbf75f0`，状态摘要和卡片）本身每帧多画不少东西：同样去掉存储读数，改版前 22.5–22.6，改版后 19.5。3a 之后的提交没有再带来超过噪声的变化（`842d6f3` 和 `43a2caf` 都是 15.6–15.8）。
+
+所以现在自检界面的程序滚动基准是 19.1–19.4 fps（这个界面、这台设备）；22.7 是改版前的界面上测的，两者不能直接比。
 
 ## 验收第 5 条：待机耗电实测
 

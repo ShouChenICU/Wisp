@@ -14,7 +14,7 @@ wisp_component(
          src/self_check_tests.cpp src/self_check_sampler.cpp src/loopback.cpp src/power_key_controller.cpp
          src/power_manager.cpp src/format.cpp src/net_wiring.cpp src/net_section.cpp
          src/net_cards.cpp src/factory_reset.cpp src/firmware_confirm.cpp src/console.cpp
-         src/ram_budget.cpp src/scene_wiring.cpp src/scene_section.cpp
+         src/ram_budget.cpp src/scene_wiring.cpp src/scene_section.cpp src/bench.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_admin wisp_ui wisp_scene
 )
