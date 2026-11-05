@@ -99,7 +99,8 @@ struct App::Impl {
     // scene runtime: built by App::start() right after storage, reset by
     // App::stop() after networking and before the storage-refresh timer --
     // see scene_wiring.hpp.
-    std::unique_ptr<SceneWiring> scenes;
+    // In Mem::Large (scene_wiring.hpp); null without the memory for it.
+    os::LargeUnique<SceneWiring> scenes;
 
     // The self-check screen's own teardown hook -- see
     // self_check.hpp. Constructed (via start_self_check(), posted onto

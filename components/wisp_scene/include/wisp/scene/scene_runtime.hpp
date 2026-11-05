@@ -332,7 +332,7 @@ private:
 
     // UI thread only.
     struct UiSide;
-    std::unique_ptr<UiSide> ui_side_;
+    os::LargeUnique<UiSide> ui_side_;
 };
 
 }  // namespace wisp::scene

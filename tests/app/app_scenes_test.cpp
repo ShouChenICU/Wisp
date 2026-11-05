@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "scene_wiring.hpp"
 #include "self_check_layout.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
@@ -25,7 +26,9 @@
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/port/sim/sim_os.hpp"
 #include "wisp/scene/scene_runtime.hpp"
+#include "wisp/ui/system_layer.hpp"
 
 using wisp::net::Method;
 using wisp::test::count_obj_of_class;
@@ -130,10 +133,14 @@ bool click_scene_row(lv_obj_t* screen, const char* name) {
     return true;
 }
 
+// The log ring outlives each test's App when the whole binary runs in one
+// process; only lines logged after the current test booted count.
+uint32_t g_log_floor = 0;
+
 std::vector<std::string> scene_log(const std::string& id) {
     std::vector<std::string> out;
     for (auto& e : wisp::log::ring_entries()) {
-        if (e.tag == "scene." + id) out.push_back(e.msg);
+        if (e.seq > g_log_floor && e.tag == "scene." + id) out.push_back(e.msg);
     }
     return out;
 }
@@ -146,6 +153,8 @@ struct Booted {
     explicit Booted(UiNetOptions opts = {}) : h(opts) {}
 
     bool start() {
+        auto lines = wisp::log::ring_entries();
+        g_log_floor = lines.empty() ? 0 : lines.back().seq;
         if (!h.start("scene.")) return false;
         screen = nullptr;
         run_on_ui_blocking(h.app->ui(), [&] { screen = lv_screen_active(); });
@@ -367,6 +376,73 @@ TEST(AppScenes, DeleteBusyWhenDialogOpen) {
                     return find_label_text_containing(lv_layer_top(), "删除场景“");
                 }).empty());
     EXPECT_TRUE(fs::exists(fs::path(b.h.root) / "scenes" / "counter" / "scene.json"));
+}
+
+// Shutdown destroys the system layer before networking stops, so a delete
+// request can still arrive after it is gone: it must be refused, not
+// opened on freed memory.
+TEST(AppScenes, DeleteAfterStopRuntimeIsRefused) {
+    Booted b;
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    ASSERT_TRUE(b.start());
+    wisp::ui::UiRuntime& ui = *b.h.app->ui();
+
+    wisp::app::Platform platform;
+    wisp::app::SceneWiring wiring(
+        wisp::app::SceneWiringDeps{platform, b.h.app->bus(), b.h.app->storage()});
+    wiring.start_storage();
+    ASSERT_NE(wiring.repository(), nullptr);
+    std::unique_ptr<wisp::ui::SystemLayer> layer;
+    const wisp::hal::ScreenShape shape{wisp::hal::ScreenShapeKind::Rect, 480, 480, 0};
+    run_on_ui_blocking(&ui, [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
+    wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
+    wiring.start_runtime([] { return false; });
+
+    wiring.stop_runtime();
+    run_on_ui_blocking(&ui, [&] { layer.reset(); });
+    auto r = wiring.request_delete("counter", false);
+    EXPECT_FALSE(r);
+    if (!r) {
+        EXPECT_EQ(r.error().code, wisp::ErrorCode::Busy);
+    }
+    EXPECT_EQ(run_on_ui_thread(
+                  &ui, [] { return find_label_text_containing(lv_layer_top(), "删除场景“"); }),
+              "");
+    wiring.stop();
+}
+
+// The scene services are long-lived and small, so malloc would put them
+// in internal RAM; they come from Mem::Large, and without it scenes are
+// off rather than the boot failing.
+TEST(AppScenes, ScenesAreOffWithoutLargeMemory) {
+    Booted b;
+    ASSERT_TRUE(b.start());
+    wisp::ui::UiRuntime& ui = *b.h.app->ui();
+    wisp::app::Platform platform;
+    const wisp::hal::ScreenShape shape{wisp::hal::ScreenShapeKind::Rect, 480, 480, 0};
+    std::unique_ptr<wisp::ui::SystemLayer> layer;
+    run_on_ui_blocking(&ui, [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
+
+    {
+        wisp::app::SceneWiring wiring(
+            wisp::app::SceneWiringDeps{platform, b.h.app->bus(), b.h.app->storage()});
+        wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, true);
+        wiring.start_storage();
+        wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, false);
+        EXPECT_EQ(wiring.repository(), nullptr);
+    }
+    {
+        wisp::app::SceneWiring wiring(
+            wisp::app::SceneWiringDeps{platform, b.h.app->bus(), b.h.app->storage()});
+        wiring.start_storage();
+        ASSERT_NE(wiring.repository(), nullptr);
+        wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, true);
+        wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
+        wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, false);
+        EXPECT_EQ(wiring.runtime(), nullptr);
+        EXPECT_FALSE(wiring.request_delete("counter", false));
+    }
+    run_on_ui_blocking(&ui, [&] { layer.reset(); });
 }
 
 TEST(AppScenes, ErrorBadgeInList) {

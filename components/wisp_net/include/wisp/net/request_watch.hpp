@@ -33,6 +33,7 @@
 #include <functional>
 #include <memory>
 
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::net {
@@ -45,8 +46,9 @@ public:
     // request is armed; also how late stop() may run after either.
     static constexpr uint32_t kTickMs = 50;
 
-    // nullptr if the timer cannot be made.
-    static std::unique_ptr<RequestWatch> create();
+    // nullptr if the timer or the watch itself cannot be made. Lives in
+    // Mem::Large: it is as long-lived as its owner.
+    static os::LargeUnique<RequestWatch> create();
     ~RequestWatch();  // disarm()
 
     RequestWatch(const RequestWatch&) = delete;

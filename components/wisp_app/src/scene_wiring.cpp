@@ -47,7 +47,11 @@ void SceneWiring::start_storage() {
         WLOG_E(kTag, "no internal storage (%s); scenes are off", internal.error().message.c_str());
         return;
     }
-    repo_ = std::make_unique<core::SceneRepository>(deps_.storage, std::move(config));
+    repo_ = os::make_large<core::SceneRepository>(deps_.storage, std::move(config));
+    if (!repo_) {
+        WLOG_E(kTag, "no memory for the scene repository; scenes are off");
+        return;
+    }
 
     // On the worker, like every file job; nothing lists or opens a scene
     // before it is done.
@@ -70,11 +74,9 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                 const hal::ScreenShape& shape, std::function<Value()> device_status,
                                 std::function<void()> wake) {
     if (!repo_) return;
-    ui_ = &ui;
-    system_ = &system;
-    wake_ = std::move(wake);
     if (deps_.platform.http_client) {
-        http_ = std::make_unique<net::SceneHttp>(*deps_.platform.http_client);
+        http_ = os::make_large<net::SceneHttp>(*deps_.platform.http_client);
+        if (!http_) WLOG_W(kTag, "no memory for the scene HTTP proxy; wisp.http fails");
     }
     scene::SceneRuntimeDeps rt{.bus = deps_.bus,
                                .storage = deps_.storage,
@@ -86,7 +88,15 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                .http = http_.get(),
                                .device_status = std::move(device_status),
                                .wall_clock = {}};
-    runtime_ = std::make_unique<scene::SceneRuntime>(std::move(rt));
+    runtime_ = os::make_large<scene::SceneRuntime>(std::move(rt));
+    if (!runtime_) {
+        WLOG_E(kTag, "no memory for the scene runtime; scenes are off");
+        http_.reset();
+        return;
+    }
+    ui_ = &ui;
+    system_ = &system;
+    wake_ = std::move(wake);
 }
 
 void SceneWiring::start_runtime(std::function<bool()> standby) {
@@ -116,6 +126,11 @@ void SceneWiring::stop_runtime() {
         power_sub_ = 0;
     }
     if (runtime_) runtime_->stop();
+    runtime_started_ = false;
+    // App::stop() destroys the system layer next, while the admin server
+    // still takes delete requests; request_delete() reads this on the UI
+    // thread, so clearing it there orders it against every dialog.
+    if (ui_ != nullptr && system_ != nullptr) ui_->run_blocking([this] { system_ = nullptr; });
 }
 
 void SceneWiring::stop() {
@@ -132,9 +147,7 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
     using R = Result<void>;
     if (!repo_) return R::err(ErrorCode::Unsupported, "scenes are off");
     if (repo_->dev()) return R::err(ErrorCode::Unsupported, "scenes are read-only in dev mode");
-    if (ui_ == nullptr || system_ == nullptr) {
-        return R::err(ErrorCode::Unsupported, "no screen to confirm on");
-    }
+    if (ui_ == nullptr) return R::err(ErrorCode::Unsupported, "no screen to confirm on");
     auto found = repo_->removal(id, with_data);
     if (!found) return R::err(found.error().code, found.error().message);
 
@@ -147,6 +160,10 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
     // its own thread and report what it said.
     R result = R::ok();
     ui_->run_blocking([&] {
+        if (system_ == nullptr) {
+            result = R::err(ErrorCode::Busy, "scenes are shutting down");
+            return;
+        }
         lv_obj_t* box = nullptr;
         if (!system_->confirm_open()) {
             box = system_->open_confirm(

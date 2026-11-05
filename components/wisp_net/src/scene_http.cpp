@@ -158,7 +158,7 @@ Result<void> SceneHttp::start() {
 }
 
 void SceneHttp::stop() {
-    std::deque<os::LargeUnique<Job>> dropped;
+    Deque<os::LargeUnique<Job>> dropped;
     uint32_t ticket = 0;
     {
         std::lock_guard<os::Mutex> lock(mu_);
@@ -263,7 +263,7 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
 }
 
 void SceneHttp::cancel_scene(const std::string& scene_id) {
-    std::deque<os::LargeUnique<Job>> dropped;
+    Deque<os::LargeUnique<Job>> dropped;
     uint32_t ticket = 0;
     {
         std::lock_guard<os::Mutex> lock(mu_);

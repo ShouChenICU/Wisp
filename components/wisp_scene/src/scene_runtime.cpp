@@ -88,7 +88,7 @@ SceneRuntime::SceneRuntime(SceneRuntimeDeps deps, SceneRuntimeConfig config)
     : deps_(std::move(deps)),
       config_(config),
       queue_(config.queue_capacity),
-      link_(std::make_shared<Link>()) {
+      link_(std::allocate_shared<Link>(os::LargeAllocator<Link>())) {
     link_->rt = this;
 }
 
@@ -110,7 +110,8 @@ os::TaskConfig SceneRuntime::task_config(const SceneRuntimeConfig& c) {
 Result<void> SceneRuntime::start() {
     if (started_) return Result<void>::err(ErrorCode::Busy, "scene runtime already started");
     started_ = true;
-    ui_side_ = std::make_unique<UiSide>();
+    ui_side_ = os::make_large<UiSide>();
+    if (!ui_side_) return Result<void>::err(ErrorCode::NoMemory, "cannot make the scene UI state");
     deps_.ui.set_frame_hook([this] { ui_frame(); });
     running_ = true;
     task_ = os::Task::spawn(task_config(config_), [this] { run(); });

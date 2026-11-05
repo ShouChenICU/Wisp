@@ -105,8 +105,13 @@ Result<void> App::start() {
     // Scenes: the storage worker, and the repository recovered on it,
     // before anything can list or open a scene.
     impl_->scenes =
-        std::make_unique<SceneWiring>(SceneWiringDeps{impl_->platform, impl_->bus, impl_->storage});
-    impl_->scenes->start_storage();
+        os::make_large<SceneWiring>(SceneWiringDeps{impl_->platform, impl_->bus, impl_->storage});
+    SceneWiring* scenes = impl_->scenes.get();
+    if (scenes != nullptr) {
+        scenes->start_storage();
+    } else {
+        WLOG_E("app", "no memory for the scenes; scenes are off");
+    }
     if (auto r = impl_->models.init(); !r) {
         WLOG_W("app", "model profiles unavailable: %s", r.error().message.c_str());
     }
@@ -195,7 +200,7 @@ Result<void> App::start() {
 
     // The scene runtime, built (not started) before networking so the
     // admin routes can be handed it.
-    if (impl_->ui) {
+    if (impl_->ui && scenes != nullptr) {
         App::Impl* impl = impl_.get();
         // wisp.device.info(). Runs on the scene task, which must not touch
         // flash: PowerMonitor's last sample (a copy under its lock) and the
@@ -216,14 +221,14 @@ Result<void> App::start() {
                 {"wifi", Value(wifi ? net::to_string(*wifi) : "off")},
             });
         };
-        impl_->scenes->build_runtime(
-            *impl_->ui, *impl_->system_layer, shape, std::move(device_status), [impl] {
-                if (impl->power_manager && impl->power_manager->standby()) {
-                    impl->power_manager->exit_standby();
-                }
-            });
+        scenes->build_runtime(*impl_->ui, *impl_->system_layer, shape, std::move(device_status),
+                              [impl] {
+                                  if (impl->power_manager && impl->power_manager->standby()) {
+                                      impl->power_manager->exit_standby();
+                                  }
+                              });
     }
-    scene::SceneRuntime* scene_runtime = impl_->scenes->runtime();
+    scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
 
     // Step 4b: networking (connectivity spec 4.1), before the self-check
     // screen so that screen can show the network state. Never waits for
@@ -242,7 +247,7 @@ Result<void> App::start() {
         .request_factory_reset =
             impl_->ui ? std::function<void()>([this] { request_factory_reset(*this); }) : nullptr,
         .firmware = impl_->firmware.get(),
-        .scenes = impl_->scenes->repository(),
+        .scenes = scenes != nullptr ? scenes->repository() : nullptr,
         .scene_host = scene_runtime,
         // Deleting needs the device's yes, so a screen.
         .request_scene_delete = scene_runtime != nullptr
@@ -279,7 +284,9 @@ Result<void> App::start() {
         // loads it again when it goes, so that must be the self-check
         // screen.
         App::Impl* impl = impl_.get();
-        impl_->scenes->start_runtime([impl] { return impl->power_manager->standby(); });
+        if (scenes != nullptr) {
+            scenes->start_runtime([impl] { return impl->power_manager->standby(); });
+        }
     }
 
     // boot_ms is recorded here -- right after Step 4, once the self-check

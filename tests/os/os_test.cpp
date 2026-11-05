@@ -252,6 +252,16 @@ TEST(Queue, ZeroCapacityAsserts) {
     EXPECT_DEBUG_DEATH({ Queue<int> q(0); }, "");
 }
 
+// A queue lives as long as its owner, so its slots belong in Mem::Large;
+// LargeAllocator aborts when that runs out.
+TEST(Queue, SlotsComeFromLargeMemory) {
+    wisp::port::sim::set_alloc_failure(Mem::Large, true);
+    EXPECT_DEATH({ Queue<int> q(4); }, "");
+    wisp::port::sim::set_alloc_failure(Mem::Large, false);
+    Queue<int> q(4);
+    EXPECT_TRUE(q.push(1, 0));
+}
+
 TEST(Queue, PushDropOldestRaceWithConcurrentPops) {
     // Regression test: push_drop_oldest() used to ignore the return value
     // of filled_slots_.take(0) when racing with a concurrent pop() that

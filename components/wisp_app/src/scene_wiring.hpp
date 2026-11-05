@@ -49,6 +49,7 @@
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/scene_http.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -85,15 +86,16 @@ public:
     // Builds the proxy and the runtime, not started. `device_status` is
     // SceneRuntimeDeps::device_status (runs on the scene task: no flash);
     // `wake` turns a sleeping screen on for the delete confirmation (UI
-    // thread). Needs start_storage() to have made a repository; otherwise
-    // there is no runtime.
+    // thread). Needs start_storage() to have made a repository; without
+    // one, or without the memory for it, there is no runtime.
     void build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system, const hal::ScreenShape& shape,
                        std::function<Value()> device_status, std::function<void()> wake);
     // Starts the proxy and the runtime and follows power.state;
     // `standby` reads whether the screen is off now.
     void start_runtime(std::function<bool()> standby);
 
-    // Stops the runtime (closing the scene in front). Idempotent.
+    // Stops the runtime (closing the scene in front) and lets go of the
+    // system layer, which App::stop() destroys next. Idempotent.
     void stop_runtime();
     // stop_runtime(), then the proxy, then the worker (drained). Idempotent.
     void stop();
@@ -104,7 +106,8 @@ public:
 
     // AdminDeps::request_scene_delete. NotFound when there is nothing to
     // delete (SceneRepository::removal()), Unsupported in dev mode, Busy
-    // while a dialog is open. Not from the UI thread (it waits for it).
+    // while a dialog is open or once stop_runtime() has run. Not from the
+    // UI thread (it waits for it).
     Result<void> request_delete(const std::string& id, bool with_data);
 
     // Lists the installed scenes on the worker and hands them to
@@ -120,12 +123,17 @@ private:
 
     SceneWiringDeps deps_;
     core::StorageWorker worker_;
-    std::unique_ptr<core::SceneRepository> repo_;
+    // The services sit in Mem::Large, like the worker inside this object
+    // (App builds it there): long-lived and small, so malloc would put them
+    // in internal RAM. The worker's stack and the FreeRTOS objects stay
+    // internal (scene-runtime-core spec 2.3).
+    os::LargeUnique<core::SceneRepository> repo_;
     // Declared before runtime_, so the runtime goes first: it cancels its
     // scene's requests through the proxy while it stops.
-    std::unique_ptr<net::SceneHttp> http_;
-    std::unique_ptr<scene::SceneRuntime> runtime_;
+    os::LargeUnique<net::SceneHttp> http_;
+    os::LargeUnique<scene::SceneRuntime> runtime_;
     ui::UiRuntime* ui_ = nullptr;
+    // Cleared on the UI thread by stop_runtime(); read there only after.
     ui::SystemLayer* system_ = nullptr;
     std::function<void()> wake_;
     core::SubscriptionId power_sub_ = 0;

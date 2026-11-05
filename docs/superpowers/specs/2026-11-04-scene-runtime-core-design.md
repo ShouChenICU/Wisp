@@ -78,7 +78,11 @@
 ### 2.3 内存放置（AGENTS.md 内存规则）
 
 - **PSRAM**：Lua VM 的堆（每个场景一个分配器，计数并限额）、场景任务的栈、`SceneStore` 的内存索引与写缓冲、HTTP 响应体、控件树描述。
-- **内部 RAM**：只增加场景消息队列与少量同步对象，预计 ≤ 2 KB，真机用 `mem` 实测后写入硬件文档。
+- **内部 RAM**：原先预计 ≤ 2 KB，没有算进存储工作线程的栈和各任务的 TCB；真机实测空闲时比接入场景前少了约 11.3 KB。修订后的划分：
+  - 必须留在内部 RAM、移不走的：`wisp.fs` 存储工作线程的 4 KB 栈（它读写 Flash，按 AGENTS.md 第 5 节必须放内部）；`wisp.fs`、`wisp.scene`、`wisp.shttp` 三个任务的 TCB（ESP-IDF 只把栈放进 PSRAM，TCB 总在内部，约 1.1 KB）；FreeRTOS 同步对象（各个互斥锁、信号量、队列的计数信号量，约 20 个，约 2.4 KB）和 `RequestWatch` 定时器的 `esp_timer` 句柄。合计约 8 KB。
+  - 其余都放 PSRAM：`os::Queue` 的槽位（这一改动对所有队列生效，事件总线的 64 槽队列和 UI 的投递队列也一并从内部 RAM 移走）、`SceneHttp` 的请求队列、`SceneWiring`/`SceneRepository`/`SceneRuntime`/`SceneHttp`/`RequestWatch` 等常驻对象本身（`os::make_large`）。
+  - 预计：场景子系统自身占内部 RAM 约 8 KB；由于事件总线和 UI 队列同时移出（约 5 KB），整机空闲内部 RAM 相比接入场景前预计只少约 3–4 KB。实测：TBD（Task 22）
+  - 真机用 `mem` 实测后写入硬件文档，并按新的最坏情况复核 `wisp/app/ram_budget.hpp`。
 - 场景任务不碰 Flash：所有文件读写交给 `StorageManager` 的存储工作线程，场景任务只投递请求、在消息里收回调。
 
 ---

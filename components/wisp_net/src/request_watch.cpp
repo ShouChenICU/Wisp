@@ -6,9 +6,11 @@
 
 namespace wisp::net {
 
-std::unique_ptr<RequestWatch> RequestWatch::create() {
-    std::unique_ptr<RequestWatch> watch(new (std::nothrow) RequestWatch());
-    if (!watch) return nullptr;
+os::LargeUnique<RequestWatch> RequestWatch::create() {
+    // The constructor is private, so not os::make_large().
+    void* mem = os::alloc(sizeof(RequestWatch), os::Mem::Large);
+    if (mem == nullptr) return nullptr;
+    os::LargeUnique<RequestWatch> watch(::new (mem) RequestWatch());
     RequestWatch* self = watch.get();
     watch->timer_ = os::Timer::create("wisp.http.watch", kTickMs, true, [self] { self->tick(); });
     if (!watch->timer_) return nullptr;

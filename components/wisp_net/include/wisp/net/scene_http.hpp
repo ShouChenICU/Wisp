@@ -148,9 +148,13 @@ public:
 
 private:
     struct Job;
+    // A std::deque allocates a block as soon as it is built, even empty,
+    // and malloc would put it in internal RAM.
+    template <class T>
+    using Deque = std::deque<T, os::LargeAllocator<T>>;
     struct SceneState {
         std::vector<std::string> hosts;
-        std::deque<uint64_t> sent;  // when each request in the window was accepted
+        Deque<uint64_t> sent;  // when each request in the window was accepted
     };
 
     void run();
@@ -164,7 +168,7 @@ private:
     std::function<uint64_t()> now_ms_;
     std::unique_ptr<os::Task> task_;
     // The worker's one watch, for the request in flight.
-    std::unique_ptr<RequestWatch> watch_;
+    os::LargeUnique<RequestWatch> watch_;
     os::Semaphore wake_;
     // Guards scenes_, queue_, current_ and the flags below.
     os::Mutex mu_;
@@ -173,7 +177,7 @@ private:
     // request can still be running once it returns.
     os::Mutex deliver_mu_;
     std::map<std::string, SceneState, std::less<>> scenes_;
-    std::deque<os::LargeUnique<Job>> queue_;
+    Deque<os::LargeUnique<Job>> queue_;
     Job* current_ = nullptr;
     bool started_ = false;
     bool running_ = false;

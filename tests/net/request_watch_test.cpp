@@ -17,7 +17,7 @@ using wisp::net::RequestWatch;
 using wisp::test::wait_until;
 using Reason = RequestWatch::Reason;
 
-std::unique_ptr<RequestWatch> make() {
+wisp::os::LargeUnique<RequestWatch> make() {
     auto w = RequestWatch::create();
     EXPECT_NE(w, nullptr);
     return w;
@@ -131,6 +131,12 @@ TEST(RequestWatch, DisarmWaitsForARunningStop) {
     ASSERT_TRUE(wait_until([&] { return running.load(); }, 2000));
     w->disarm();
     EXPECT_TRUE(finished.load());
+}
+
+TEST(RequestWatch, CreateFailsWithoutLargeMemory) {
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, true);
+    EXPECT_EQ(RequestWatch::create(), nullptr);
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, false);
 }
 
 TEST(RequestWatch, CreateFailsWithoutATimer) {

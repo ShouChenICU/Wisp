@@ -8,8 +8,8 @@
 #include <cstddef>
 #include <mutex>
 #include <utility>
-#include <vector>
 
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::os {
@@ -25,6 +25,11 @@ namespace wisp::os {
 //
 // T must be default-constructible (the backing storage is pre-sized) and
 // movable.
+//
+// The slots live in Mem::Large: a queue is long-lived and its slots are
+// small enough that malloc would otherwise put them in internal RAM
+// (AGENTS.md section 8). Nothing pushes or pops from an ISR or while the
+// flash cache is off; a queue that ever must would need internal slots.
 template <class T>
 class Queue {
 public:
@@ -136,7 +141,7 @@ public:
 
 private:
     size_t capacity_;
-    std::vector<T> buffer_;
+    LargeVector<T> buffer_;
     size_t head_ = 0;
     size_t tail_ = 0;
     size_t size_ = 0;
