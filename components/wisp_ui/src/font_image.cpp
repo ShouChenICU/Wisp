@@ -62,9 +62,13 @@ struct Table {
 
 constexpr uint64_t kGlyphHeaderBytes = 10;
 
-Result<void> check_cmap_format4(const uint8_t* sub, uint64_t avail, uint32_t num_glyphs) {
+// The checks below read each header field once and report the value they
+// checked through `length` and `count`, so what FontImage keeps is what
+// was checked.
+Result<void> check_cmap_format4(const uint8_t* sub, uint64_t avail, uint32_t num_glyphs,
+                                uint64_t& length, uint32_t& count) {
     if (avail < 14) return fail("cmap format 4 subtable out of bounds");
-    const uint64_t length = be16(sub + 2);
+    length = be16(sub + 2);
     if (length > avail) return fail("cmap format 4 subtable out of bounds");
     const uint32_t seg_x2 = be16(sub + 6);
     const uint32_t segs = seg_x2 / 2;
@@ -115,12 +119,14 @@ Result<void> check_cmap_format4(const uint8_t* sub, uint64_t avail, uint32_t num
             }
         }
     }
+    count = segs;
     return Result<void>::ok();
 }
 
-Result<void> check_cmap_format12(const uint8_t* sub, uint64_t avail, uint32_t num_glyphs) {
+Result<void> check_cmap_format12(const uint8_t* sub, uint64_t avail, uint32_t num_glyphs,
+                                 uint64_t& length, uint32_t& count) {
     if (avail < 16) return fail("cmap format 12 subtable out of bounds");
-    const uint64_t length = be32(sub + 4);
+    length = be32(sub + 4);
     if (length > avail) return fail("cmap format 12 subtable out of bounds");
     const uint64_t groups = be32(sub + 12);
     if (16 + 12 * groups > length) return fail("cmap format 12 groups out of bounds");
@@ -134,13 +140,21 @@ Result<void> check_cmap_format12(const uint8_t* sub, uint64_t avail, uint32_t nu
             return fail("cmap maps a character past the last glyph");
         }
     }
+    count = static_cast<uint32_t>(groups);
     return Result<void>::ok();
 }
 
+// The checked cmap subtable and the header fields lookups steer by,
+// copied into FontImage.
+struct CmapChoice {
+    std::span<const uint8_t> subtable;
+    uint32_t format = 0;
+    uint32_t count = 0;
+};
+
 // Mirrors the subtable choice in stb_truetype's InitFont: the last
 // Microsoft Unicode (BMP or full) or Unicode-platform record wins.
-Result<void> check_cmap(const Table& cmap, uint32_t num_glyphs,
-                        std::span<const uint8_t>& subtable) {
+Result<void> check_cmap(const Table& cmap, uint32_t num_glyphs, CmapChoice& choice) {
     if (cmap.length < 4) return fail("'cmap' table too short");
     const uint64_t records = be16(cmap.data + 2);
     if (4 + 8 * records > cmap.length) return fail("cmap encoding records out of bounds");
@@ -157,14 +171,15 @@ Result<void> check_cmap(const Table& cmap, uint32_t num_glyphs,
     const uint8_t* sub = cmap.data + offset;
     const uint64_t avail = cmap.length - offset;
     const uint32_t format = be16(sub);
+    uint64_t length = 0;
+    uint32_t count = 0;
     if (format == 4) {
-        WISP_TRY(check_cmap_format4(sub, avail, num_glyphs));
-        subtable = {sub, be16(sub + 2)};
-        return Result<void>::ok();
+        WISP_TRY(check_cmap_format4(sub, avail, num_glyphs, length, count));
+    } else if (format == 12) {
+        WISP_TRY(check_cmap_format12(sub, avail, num_glyphs, length, count));
     }
-    if (format == 12) {
-        WISP_TRY(check_cmap_format12(sub, avail, num_glyphs));
-        subtable = {sub, be32(sub + 4)};
+    if (format == 4 || format == 12) {
+        choice = {{sub, static_cast<size_t>(length)}, format, count};
         return Result<void>::ok();
     }
     return fail("cmap subtable format " + std::to_string(format) + " is not supported");
@@ -213,7 +228,7 @@ Result<void> check_min_length(const Table& t, const char* tag, uint64_t min) {
 
 // Spec 3.6 step 6. Offsets and lengths are summed in 64 bits so a hostile
 // pair can't wrap around.
-Result<void> check_sfnt(std::span<const uint8_t> ttf, std::span<const uint8_t>& cmap) {
+Result<void> check_sfnt(std::span<const uint8_t> ttf, CmapChoice& cmap) {
     constexpr size_t kOffsetTable = 12;
     constexpr size_t kRecord = 16;
     if (ttf.size() < kOffsetTable) return fail("TTF shorter than its offset table");
@@ -293,19 +308,22 @@ Result<FontImage> open_font_image(std::span<const uint8_t> raw) {
     const auto ttf = raw.subspan(header_bytes, static_cast<size_t>(length));
     const uint32_t crc = le32(p + 12);
     if (crc32(ttf) != crc) return invalid("font image CRC mismatch");
-    std::span<const uint8_t> cmap;
+    CmapChoice cmap;
     WISP_TRY(check_sfnt(ttf, cmap));
-    return Result<FontImage>::ok(FontImage{ttf, crc, cmap});
+    return Result<FontImage>::ok(FontImage{ttf, crc, cmap.subtable, cmap.format, cmap.count});
 }
 
 bool font_image_has_glyph(const FontImage& image, uint32_t codepoint) {
-    // open_font_image() checked every offset read here against the
-    // subtable's length.
+    // The format and counts come from the copies made when open_font_image()
+    // checked the subtable, never from `cmap` itself (see FontImage). With
+    // them every endCode/startCode/idDelta/idRangeOffset/group read below
+    // stays inside the subtable whatever bytes it returns. The only offset
+    // built from a value read here, the glyphIdArray position, is checked
+    // against the subtable's length.
     const uint8_t* sub = image.cmap.data();
-    if (image.cmap.empty()) return false;
-    if (be16(sub) == 4) {
+    if (image.cmap_format == 4) {
         if (codepoint > 0xFFFF) return false;
-        const uint32_t segs = be16(sub + 6) / 2;
+        const uint32_t segs = image.cmap_count;
         // The first segment whose endCode is at or above the character.
         uint32_t lo = 0;
         uint32_t hi = segs;
@@ -324,20 +342,23 @@ bool font_image_has_glyph(const FontImage& image, uint32_t codepoint) {
         const size_t ro_pos = 16 + 6 * size_t{segs} + 2 * lo;
         const uint32_t ro = be16(sub + ro_pos);
         if (ro == 0) return ((codepoint + delta) & 0xFFFF) != 0;
-        return be16(sub + ro_pos + ro + 2 * (codepoint - start)) != 0;
+        const size_t at = ro_pos + ro + 2 * size_t{codepoint - start};
+        if (at + 2 > image.cmap.size()) return false;
+        return be16(sub + at) != 0;
     }
-    const uint32_t groups = be32(sub + 12);
-    uint32_t lo = 0;
-    uint32_t hi = groups;
-    while (lo < hi) {
-        const uint32_t mid = lo + (hi - lo) / 2;
-        const uint8_t* g = sub + 16 + 12 * size_t{mid};
-        if (codepoint < be32(g)) {
-            hi = mid;
-        } else if (codepoint > be32(g + 4)) {
-            lo = mid + 1;
-        } else {
-            return be32(g + 8) + (codepoint - be32(g)) != 0;
+    if (image.cmap_format == 12) {
+        uint32_t lo = 0;
+        uint32_t hi = image.cmap_count;
+        while (lo < hi) {
+            const uint32_t mid = lo + (hi - lo) / 2;
+            const uint8_t* g = sub + 16 + 12 * size_t{mid};
+            if (codepoint < be32(g)) {
+                hi = mid;
+            } else if (codepoint > be32(g + 4)) {
+                lo = mid + 1;
+            } else {
+                return be32(g + 8) + (codepoint - be32(g)) != 0;
+            }
         }
     }
     return false;

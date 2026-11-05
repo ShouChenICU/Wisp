@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <ios>
 #include <span>
 #include <string>
 #include <utility>
@@ -577,4 +578,57 @@ TEST(FontImage, HasGlyphOnTheBuiltImage) {
     EXPECT_FALSE(font_image_has_glyph(r.value(), 0xD55C));  // 한
     EXPECT_FALSE(font_image_has_glyph(r.value(), 0xF00C));  // LV_SYMBOL_OK
     EXPECT_FALSE(font_image_has_glyph(FontImage{}, 'A'));
+}
+
+// On the device the image is a flash mapping, and a read that races a
+// flash erase or write can see 0xFF in place of the real bytes. The
+// subtable's format and counts are copied at open, so a lookup never
+// steers by bytes read later.
+TEST(FontImage, HasGlyphUsesTheCmapHeaderCheckedAtOpen) {
+    auto raw = make_image(make_sfnt());
+    auto r = open_font_image(raw);
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_EQ(r.value().cmap_format, 4u);
+    EXPECT_EQ(r.value().cmap_count, 2u);
+    // format, length, language, segCountX2, searchRange, entrySelector,
+    // rangeShift, as an erased flash page reads.
+    const size_t sub = static_cast<size_t>(r.value().cmap.data() - raw.data());
+    for (size_t i = 0; i < 14; ++i) raw[sub + i] = 0xFF;
+    EXPECT_TRUE(font_image_has_glyph(r.value(), 'A'));
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 'B'));
+
+    Font f = make_font();
+    f["cmap"] = cmap_table(cmap_format12({{0x41, 0x42, 0}, {0x20000, 0x20000, 1}}), 3, 10);
+    auto raw12 = make_image(build(f));
+    auto r12 = open_font_image(raw12);
+    ASSERT_TRUE(r12) << r12.error().message;
+    EXPECT_EQ(r12.value().cmap_format, 12u);
+    EXPECT_EQ(r12.value().cmap_count, 2u);
+    const size_t sub12 = static_cast<size_t>(r12.value().cmap.data() - raw12.data());
+    for (size_t i = 0; i < 16; ++i) raw12[sub12 + i] = 0xFF;
+    EXPECT_TRUE(font_image_has_glyph(r12.value(), 'B'));
+    EXPECT_TRUE(font_image_has_glyph(r12.value(), 0x20000));
+    EXPECT_FALSE(font_image_has_glyph(r12.value(), 'C'));
+}
+
+// When the whole subtable reads as 0xFF, a lookup answers "no glyph"
+// without reading past the subtable. The bytes after the image are
+// nonzero, so a glyphIdArray read that strayed there would answer "yes".
+TEST(FontImage, HasGlyphStaysInsideTheCmapWhenItReadsGarbage) {
+    auto raw = make_image(make_sfnt());
+    raw.resize(raw.size() + 0x30000, 0x01);
+    auto r = open_font_image(raw);
+    ASSERT_TRUE(r) << r.error().message;
+    const size_t sub = static_cast<size_t>(r.value().cmap.data() - raw.data());
+    for (size_t i = 0; i < r.value().cmap.size(); ++i) raw[sub + i] = 0xFF;
+    for (uint32_t c : {0x0u, 0x41u, 0x4E00u, 0xFFFEu, 0xFFFFu, 0x10000u, 0x10FFFFu}) {
+        EXPECT_FALSE(font_image_has_glyph(r.value(), c)) << std::hex << c;
+    }
+}
+
+TEST(FontImage, ErasedCmapSubtableIsInvalid) {
+    Font f = make_font();
+    Bytes& cmap = f["cmap"];
+    for (size_t i = 12; i < cmap.size(); ++i) cmap[i] = 0xFF;
+    EXPECT_REJECTED(f, "cmap");
 }

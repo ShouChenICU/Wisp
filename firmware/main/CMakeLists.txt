@@ -22,6 +22,18 @@ if(DEFINED CONFIG_ESP_BOARD_NAME AND NOT CONFIG_ESP_BOARD_NAME STREQUAL WISP_BOA
                         "\"${WISP_BOARD}\"; rerun bmgr with -b ${WISP_BOARD} or pass -DWISP_BOARD")
 endif()
 
+# With XIP the cache stays on while flash is erased or programmed, and a
+# read of a runtime flash mapping in that window returns 0xFF: the fonts
+# partition (a crash while drawing text), the OTA end check and otadata.
+# Flash auto-suspend makes those reads wait instead (docs/porting-guide.md
+# "字体分区"). A firmware/sdkconfig made before the board turned it on keeps
+# it off, since sdkconfig.defaults only seeds a new sdkconfig.
+if(CONFIG_SPIRAM_XIP_FROM_PSRAM AND NOT CONFIG_SPI_FLASH_AUTO_SUSPEND)
+    message(FATAL_ERROR "CONFIG_SPIRAM_XIP_FROM_PSRAM is on but CONFIG_SPI_FLASH_AUTO_SUSPEND is off; "
+                        "set CONFIG_SPI_FLASH_AUTO_SUSPEND=y in boards/${WISP_BOARD}/sdkconfig.defaults.board "
+                        "and in firmware/sdkconfig (or delete firmware/sdkconfig to regenerate it)")
+endif()
+
 # The admin web UI (connectivity spec 2.3): tools/pack_assets.py packs web/
 # into wisp_web.wpak (failing the build over the pack's 256 KiB or the
 # 150 KiB gzip budget), which is linked into the app image, 4-byte aligned,

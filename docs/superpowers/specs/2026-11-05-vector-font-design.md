@@ -1,7 +1,7 @@
 # Wisp 矢量字体（大字号文字）设计文档
 
 - 日期：2026-11-05
-- 状态：待审阅
+- 状态：已批准并实现（2026-11-05 修订：flash 自动挂起与 cmap 表头缓存，用户批准）
 - 范围：设备界面的大字号文字（20 px 及以上）改用矢量字体渲染；属于子项目 3a（场景运行时）之后的界面增补，不是路线图里单列的子项目
 - 前置：子项目 3a 场景运行时核心（`2026-11-04-scene-runtime-core-design.md`，下文简称"场景 spec"）；子项目 2 连接与管理后台（`2026-11-03-connectivity-admin-design.md`，下文简称"连接 spec"）
 - 依据：可行性验证（spike，本地分支 `spike/vector-font` 的 `c5f8550`、`727be0d`，代码已丢弃，只取结论）的真机实测数据，下文"实测"均指它
@@ -91,6 +91,9 @@
 
 - **映射**：`esp_partition_mmap` 属于"映射 flash"，只能在内部 RAM 栈的任务里做。真机在 `app_main`（主任务，栈在内部 RAM）里、`App::start()` 之前映射，映射句柄一直保留到关机。
 - **读取**：之后 UI 任务读映射区不算访问 flash（"读已经映射进地址空间的常量不算"），UI 任务的 `flash_access` 声明不因字体改变。
+- **2026-11-05 修订（用户批准）**：上一条只对栈的放置成立，不等于读映射区总是安全。开了 XIP 的板子上，ESP-IDF 擦写 flash 时不关 cache，擦写进行中 cache miss 落在映射区上会读到 0xFF；参考板在 OTA 期间因此崩在字形查找里（`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`"flash 擦写与映射读取"）。新增两条要求：
+  1. 开了 XIP 又有 `fonts` 分区的板子，必须在板级 sdkconfig 打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND`，并确认 flash 支持挂起（`docs/porting-guide.md`"字体分区"）。这是修复：映射读取赶上擦写时由硬件挂起擦写，字形数据和 stb_truetype 的读取都因此正确。
+  2. `open_font_image()` 校验 cmap 时把子表格式和分段/分组数拷进 `FontImage`（在 RAM 里），`font_image_has_glyph()` 只用这份拷贝、不再每次从映射区重读这些头字段；由运行时读到的值算出的 glyphIdArray 偏移和子表长度比较一次。这是加固而不是修复：字形数据仍然从映射区读。
 - **内部 RAM**：映射句柄 80 B；Tiny TTF 的字体对象、字形缓存、stb 光栅化的临时缓冲都经 `lv_malloc` 走 LVGL 的堆，在 PSRAM（`wisp/ui/lv_heap.hpp`）。实测 `lv_heap_internal_bytes()` 全程不增长。UI 任务栈加 2 KB 是唯一的内部 RAM 增量，必须真机复测（7.3）。
 - **PSRAM**：每个字号档位的字形缓存有上限（4.4），所有档位合计最多约 1.25 MB；镜像本身不占 PSRAM（读的是映射的 flash）。模拟器把镜像读进普通内存。
 - **地址空间**：映射整个 2.81 MB 分区要占数据总线虚拟地址空间（实测映射到 `0x3C800000`）；开了 XIP 的板子上代码和只读数据也映射在 PSRAM 里，两者共用这段地址空间，新板子要确认放得下（`docs/porting-guide.md`）。
@@ -319,7 +322,7 @@ Python（标准库）：`tools/pack_font_image_test.py`（头部字段、CRC 与
 3. 重新安装示例场景：计数器、番茄钟、时钟的大字正常；一个临时测试场景同时显示 `font = 128` 的中文、`xxl` 的混排文字和 `lg`/`xl`/`xxl` 图标，图标是大号的。
 4. 降级：`parttool.py erase_partition --partition-name=fonts` 后重启，日志有警告，大字退到 16 px、图标仍大，不崩溃；`idf.py fonts-flash` 后恢复。写入一个截断的镜像（只写前 1 MB）同样降级。
 5. 网页上传新固件后字体仍正常（OTA 不碰 `fonts`）。
-6. 性能：自检列表滚动的 `WISP_PERF` 不低于硬件文档"性能基准"一节记下的当前基准（2026-11-05 在当前自检界面上重测：不开热点 18.4 fps、开热点 29.8 fps）；记录首次进入大字号页面的冷渲染时间。
+6. 性能：自检列表滚动的 `WISP_PERF` 不低于硬件文档"性能基准"一节记下的当前基准（2026-11-05 在当前自检界面上重测：不开热点 18.3 fps、开热点 29.8 fps）；记录首次进入大字号页面的冷渲染时间。
 7. 内存：空闲与场景负载（番茄钟运行 + 128 px 测试页）下执行 `mem`，记录内部 RAM 空闲/最小/最大块与 `wisp_ui` 栈的 high-water mark（剩余应 ≥ 1 KB，否则继续加栈）、PSRAM 空闲；内部 RAM 仍满足 `wisp/app/ram_budget.hpp`；结果写入 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`。
 8. `idf.py size`：应用镜像变化（去掉 Montserrat 24/32/48、加入 Tiny TTF 与图标字）写入硬件文档。
 
@@ -343,6 +346,7 @@ Python（标准库）：`tools/pack_font_image_test.py`（头部字段、CRC 与
 | 字体分区与固件版本不一致（只做了 OTA，没重写字体） | 镜像格式版本只在格式变化时加 1，字符集变化只会逐字回退；版本不符时降级并在日志提示用 USB 重写 |
 | 重新分区清空 `storage` | 用户已批准；验收第 1 条确认设置保留、场景需要重新安装 |
 | 映射 2.8 MB 占用数据总线地址空间（与 XIP、PSRAM 映射共享） | 参考板实测可行；移植指南提醒新板子确认 |
+| 开 XIP 的板子上 flash 擦写期间读映射区得到 0xFF，字形查找崩溃（2026-11-05 修订，用户批准，2.3） | 板级打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND` 并确认 flash 支持挂起；cmap 头字段在打开时拷进 RAM，查找不再重读 |
 
 ---
 
