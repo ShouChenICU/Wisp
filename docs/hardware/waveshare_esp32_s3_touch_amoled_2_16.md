@@ -49,7 +49,36 @@
 - AXP2101 初始化时不要改动任何电源轨的电压或开关。
 - GPIO16 反映 PWR 键的状态：松开时被驱动为低电平，按住时为高电平（实测，官方资料只把它标为 `SYS_OUT`）。它不是 AXP2101 的中断输出，按普通按键读取即可，短按/长按由 `ButtonService` 计时判断，不需要读 AXP2101 的 IRQ 寄存器。实测时 AXP2101 的 PWRON 长按 IRQ 也恰好在按住 1 s 时置位，与 GPIO16 的电平一致。
 - 按住 PWR 键数秒（AXP2101 的 OFFLEVEL）会触发芯片的硬件强制关机，与软件无关。
+- 本板必须打开 flash 自动挂起（`CONFIG_SPI_FLASH_AUTO_SUSPEND`，`sdkconfig.defaults.board`）：开了 XIP 之后，flash 擦写期间读运行时映射的 `fonts` 分区会读到 0xFF，矢量字体因此崩溃。详见下方"flash 擦写与映射读取"。
 - 网页上传固件的已知限制（httpd 单任务，接受现状，见 `docs/architecture.md`"真机的网络"）：超过 8 MiB 的文件得到的是连接重置而不是 413（被提前拒绝时剩余部分超过 8 MiB 的上传都是如此）；两个浏览器同时上传时，第二个要等第一个传完才得到 409 `busy`；上传期间日志页暂停推送。
+
+## flash 擦写与映射读取（2026-11-05）
+
+**现象**：网页上传固件（OTA）期间 UI 任务崩溃，LoadProhibited，core 0，EXCVADDR `0xbc804b19`，栈为 `font_image_has_glyph` ← `vector_glyph_dsc`（`components/wisp_ui/src/fonts.cpp`）← `lv_font_get_glyph_dsc`。任何 flash 写入（OTA、LittleFS `/int`、NVS，包括 IDF 自己的 Wi-Fi/PHY NVS 写入）赶上 UI 正在画未缓存的矢量字形，都可能触发。
+
+**根因**：本板开了 XIP（`CONFIG_SPIRAM_XIP_FROM_PSRAM`），ESP-IDF 因此在 SPI1 擦写 flash 时不关 cache，只拿一把互斥锁（`spi_flash/spi_flash_os_func_app.c` 的 `SPI_FLASH_CACHE_NO_DISABLE`）。擦写进行中 flash 处于忙状态，这时 cache miss 落在 `esp_partition_mmap` 映射的 `fonts` 分区上，读回来的全是 0xFF。`font_image_has_glyph()` 当时每次都从映射区重读 cmap 子表的格式和计数，读到 0xFFFF 就走了格式 12 分支，分组数 0xFFFFFFFF，`12 * mid` 在 32 位下回绕，指针算到映射区之外。代码和只读数据在 XIP 启动时已经拷进 PSRAM，网页资源包同理，不受影响；受影响的是运行时映射的 flash：`fonts` 分区，以及 ESP-IDF 自己映射读取的新镜像（`esp_ota_end()` 和 `esp_ota_set_boot_partition()` 里的 `esp_image_verify()`）和 `otadata`（`read_otadata()`）。后两者在并发写入时会把 OTA 误判为失败，或把两条 `otadata` 记录都读成无效。不开 XIP 的板子不受影响：IDF 会在擦写期间关 cache 并停住另一个核。
+
+**修复**：
+- 板级打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND`：映射读取赶上擦写时，硬件先挂起擦写、读完再恢复，读到的就是正确数据。
+- 加固（不是修复）：`open_font_image()` 校验 cmap 时把子表格式和分段/分组数拷进 `FontImage`，查字形只用这份拷贝；唯一由运行时读到的值算出的偏移（glyphIdArray 位置）和子表长度比较一次。字形数据和 stb_truetype 的读取仍然来自映射区，只靠 auto-suspend 保证正确。
+
+**flash 型号**：`esptool flash-id` 读到厂商 0x20、器件 0x4018，即 XMC 128 Mbit。ESP-IDF v6.0.3 对厂商 0x20 读 SFDP 字节 0x32，bit3 为 1 就当作 XMC-D 系列、支持挂起（`spi_flash_chip_generic.c` 的 `get_caps`）；这片读到 0xF9（`esptool read-flash-sfdp 0x32 1`），bit3 为 1。启动日志有 `W spi_flash: Flash suspend feature is enabled`。
+
+**实测**（`fprobe` 临时命令：把映射区拷一份到 PSRAM 作参照、反复 memcmp；或在顶层放一个 128 px 标签，每 20 ms 换 6 个汉字让字形缓存一直 miss；同时另起一个任务在 `ota_1` 里循环做 64 KB 擦除 + 64 KB 写入）：
+
+| 测试 | 不开 suspend | 打开 suspend |
+|---|---|---|
+| 一边写 flash 一边比对映射区 | 29 遍读到 41,817,016 字节错，全是 0xFF（约占读到字节的 59%） | 19 遍和 24 遍，0 字节错 |
+| 一边写 flash 一边换 128 px 字形 | 开写后 5 s 内崩溃，栈与 OTA 崩溃相同 | 180 s 写 56.6 MB，没有崩；修复提交上再测 150 s 写 46.9 MB、1587 次更新，没有崩 |
+| 一边换字形一边网页上传 3.97 MB 固件 | 就是原始崩溃 | 没有崩，24.0 s，返回 202 |
+| 网页上传 3,971,952 B（空闲自检界面） | 20.4–20.7 s | 20.6 s（两次） |
+| 纯写吞吐（无读者） | 338.5–340.9 KB/s | 355.8–365.6 KB/s |
+| `bench scroll 10`（同一界面，关热点） | 18.8–19.1 fps | 18.8–19.0 fps；修复提交 `352ad8f` 上 18.72 / 18.75 |
+| `boot_ms` | 2416 | 2397–2411 |
+
+所有 suspend 测试里都没有看门狗报警或 flash 错误。只有在"满速比对映射区 + 同时写 flash"这个极端组合下（没有真实代码这样读），`power_monitor` 每隔几秒报一次 `axp2101_read_status: ESP_ERR_TIMEOUT`，下一次读取就恢复；单独满速比对、单独写、换字形加写入都没有出现。
+
+**风险**：auto-suspend 依赖 flash 型号。同款板子如果换了一批 ESP-IDF 不认可挂起的 flash（例如 XMC-C 系列，SFDP[0x32] 的 bit3 为 0），`esp_flash_init_default_chip()` 返回错误，启动时触发 `assert(flash_ret == ESP_OK)`（`esp_flash_spi_init.c`）：经 OTA 装上的固件会被回滚，USB 烧录的会反复重启。失败很明显，不会悄悄出错。遇到时先用 `esptool flash-id` 和 `read-flash-sfdp` 确认型号；ESP-IDF 文档还提醒中断很频繁时擦除会变慢，实测 Wi-Fi 和异步 flush 同时工作时没有看到。
 
 ## 真机验收清单
 
@@ -116,6 +145,7 @@
 | 55 | 未声明域名被拒（scene spec 9.4.6） | 临时把天气场景的 URL 改成未声明的主机后推送打开 | 回调收到 `permission_denied`，没有出站连接 |  |
 | 56 | LVGL 堆在 PSRAM 后的帧率 | 不开场景，在最终固件上重复"UI 帧率基准"一行，不开热点与开热点各测一次（LVGL 堆改到 PSRAM 后已经在真机上测过一次，见下方"性能基准"一节的"LVGL 堆"小节） | `bench scroll` 的 fps 不开热点 ≥ 18.4、开热点 ≥ 29.8（下方"性能基准"一节的"当前基准"）；低于时停下来报告，不要自行改回 | 2026-11-05：不开热点 22–24 fps，达标（基准 22.7）；开热点 23–24 fps，当时按 28.2 的基准记为低于基准、待排查。验收线改为开热点 ≥ 22.7 之后，这个结果达标。 |
 | 57 | 内部 RAM 最坏情况复测（mbedTLS 的分配全部改到 PSRAM 之后，`firmware/sdkconfig.defaults` 的 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`；UI 任务栈也已从 8 KB 加到 10 KB） | 烧录包含这项改动的固件（改 `sdkconfig.defaults` 后要先删掉 `firmware/sdkconfig` 再构建，否则不生效；构建后 `firmware/sdkconfig` 里应是 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`）。按第 44 项的同一场景操作：STA 连家里的 Wi-Fi，`wifi ap on`，手机连热点打开设置页，电脑经 STA 打开管理页"日志"页（WebSocket）；然后同时进行：打开天气场景（HTTPS）、在"模型"页对真实 HTTPS 端点做连通性测试、上传一次固件。全程每隔 1–2 秒执行一次 `mem` | 每次 `mem` 的 `internal free` 都 ≥ 40 KB（`kWorstInternalFreeMin`）、`largest` ≥ 16 KB；记下所有采样里最低的 `internal free` 和最后的 `min`。`internal free` 是同一时刻的快照，以它为准；`min` 是各内存区各自最低点之和，偏低，只作参考。若采样都 ≥ 40 KB 但 `min` < 40 KB，记下两者，不算不达标（需要精确最低点时，可以临时在固件里用 `heap_caps_monitor_local_minimum_free_size_start/stop(MALLOC_CAP_INTERNAL)` 包住这段操作）。同时确认：天气场景和连通性测试都成功（握手变慢但不超时），STA 不掉线。结果低于 40 KB 时停下来报告 | 待测 |
+| 58 | flash 写入期间渲染矢量字形（上文"flash 擦写与映射读取"） | 启动日志确认有 `Flash suspend feature is enabled`；打开一个有大字号汉字的界面（或不断切换含大字的场景），同时在管理后台上传一次固件 | 不崩溃；上传成功（202）并在重启后运行新固件；大字显示正常、没有乱码字形 | 2026-11-05：用 `fprobe` 临时命令压测（128 px 换字 150 s + 同时擦写 `ota_1` 46.9 MB），没有崩溃；比对映射区 24 遍 0 字节错 |
 
 ## 待机与省电（spec 6.7）
 
