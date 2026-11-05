@@ -501,6 +501,54 @@ wisp.device.on("minute", function(i) print("minute", i.time) end)
     EXPECT_EQ(scene_log("ts"), (std::vector<std::string>{"minute\t" + std::to_string(kNoon)}));
 }
 
+// The sync that sets an unset or wrong clock moves the wall time across a
+// minute boundary, which the minute ticker also sees: still one "minute".
+TEST_F(SceneApiTest, TimeSyncThatMovesTheClockFiresMinuteOnce) {
+    wall = kNoon;
+    start();
+    install("ts", std::string(R"(
+wisp.device.on("minute", function(i) print("minute", i.time) end)
+)") + kScreen);
+    ASSERT_TRUE(rt->open("ts"));
+    ASSERT_TRUE(rt->check_sources({}));
+    const size_t before = scene_log("ts").size();
+    wall = kNoon + 3600;
+    publish("system.time", {{"state", Value("synced")},
+                            {"server", Value("pool.ntp.org")},
+                            {"time", Value(int64_t{kNoon + 3600})}});
+    ASSERT_TRUE(wait_log("ts", before + 1));
+    bus.wait_idle(1000);
+    wisp::os::sleep_ms(300);
+    ASSERT_TRUE(rt->check_sources({}));
+    const std::vector<std::string> log = scene_log("ts");
+    ASSERT_EQ(log.size(), before + 1);
+    EXPECT_EQ(log.back(), "minute\t" + std::to_string(kNoon + 3600));
+}
+
+TEST_F(SceneApiTest, TimeSyncThatSetsAnUnsetClockFiresMinuteOnce) {
+    wall = 0;
+    start();
+    install("ts", std::string(R"(
+wisp.device.on("minute", function(i) print("minute", i.time) end)
+)") + kScreen);
+    ASSERT_TRUE(rt->open("ts"));
+    ASSERT_TRUE(rt->check_sources({}));
+    wisp::os::sleep_ms(100);
+    ASSERT_TRUE(rt->check_sources({}));
+    const size_t before = scene_log("ts").size();
+    wall = kNoon;
+    publish("system.time", {{"state", Value("synced")},
+                            {"server", Value("pool.ntp.org")},
+                            {"time", Value(int64_t{kNoon})}});
+    ASSERT_TRUE(wait_log("ts", before + 1));
+    bus.wait_idle(1000);
+    wisp::os::sleep_ms(300);
+    ASSERT_TRUE(rt->check_sources({}));
+    const std::vector<std::string> log = scene_log("ts");
+    ASSERT_EQ(log.size(), before + 1);
+    EXPECT_EQ(log.back(), "minute\t" + std::to_string(kNoon));
+}
+
 // With the screen off a sync fires nothing; the "minute" the screen coming
 // on sends carries the new time.
 TEST_F(SceneApiTest, TimeSyncWhileTheScreenIsOff) {

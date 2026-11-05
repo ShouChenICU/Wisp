@@ -137,6 +137,11 @@ struct CheckSources {
     std::shared_ptr<SourceCheckJob> job;
 };
 
+// A network time sync set the wall clock: the foreground scene gets one
+// "minute" with the new time and its minute ticker is re-based, so the
+// jump it would also see does not fire a second one.
+struct ClockSet {};
+
 // SceneStoreDeps::schedule() added a delayed call: wakes the task so it
 // takes the new deadline into account.
 struct Wake {};
@@ -145,7 +150,7 @@ struct Wake {};
 struct Quit {};
 
 using Body = std::variant<Load, Open, Close, Reload, Show, Hide, Event, ListRange, HttpDone,
-                          StoreDone, Device, CheckSources, Wake, Quit>;
+                          StoreDone, Device, ClockSet, CheckSources, Wake, Quit>;
 
 }  // namespace msg
 

@@ -156,13 +156,13 @@ Result<void> SceneRuntime::start() {
             WLOG_W(kTag, "language change not passed on now (scene queue full): next minute");
     });
     // A sync may have moved the wall clock: a clock should redraw now, not
-    // at the next minute boundary of the new time.
+    // at the next minute boundary of the new time (clock_set()).
     time_sub_ = deps_.bus.subscribe("system.time", [this](const core::Event& e) {
         auto state = e.payload.find("state");
         if (state == e.payload.end() || state->second.type() != Value::Type::String ||
             state->second.as_string() != "synced")
             return;
-        if (!push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) && running_)
+        if (!push(make_message("", 0, msg::ClockSet{}), 0) && running_)
             WLOG_W(kTag, "time sync not passed on now (scene queue full): next minute");
     });
     return Result<void>::ok();
@@ -465,6 +465,8 @@ void SceneRuntime::handle(SceneMessage& m) {
             submit();
     } else if (auto* b = std::get_if<msg::Device>(&body)) {
         device_event(b->kind);
+    } else if (std::holds_alternative<msg::ClockSet>(body)) {
+        clock_set();
     } else if (auto* b = std::get_if<msg::HttpDone>(&body)) {
         Foreground* f = target(m);
         if (f != nullptr && f->scene && step(f->scene->http(b->id, b->result))) submit();
@@ -862,6 +864,15 @@ void SceneRuntime::run_scene_clock() {
     run_timers();
     if (visible_ && wants_minute() && fg_->ticker.poll(wall_now(), os::now_ms())) minute();
     close_if_asked();
+}
+
+void SceneRuntime::clock_set() {
+    // As show_scene() does: force() makes this poll fire exactly once and
+    // records the new minute, so the poll after the message sees no jump.
+    // With the screen off nothing fires; the screen coming on sends one.
+    if (!visible_ || !wants_minute()) return;
+    fg_->ticker.force();
+    if (fg_->ticker.poll(wall_now(), os::now_ms())) minute();
 }
 
 void SceneRuntime::run_timers() {

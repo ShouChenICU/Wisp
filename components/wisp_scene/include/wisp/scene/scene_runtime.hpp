@@ -293,6 +293,8 @@ private:
     // Fires due timers, then the minute (and the battery check with it).
     void run_scene_clock();
     void run_timers();
+    // A network time sync set the wall clock (system.time "synced").
+    void clock_set();
     void minute();
     // `ev` for the foreground scene; battery and lang only if they changed.
     void device_event(DeviceEvent ev);
