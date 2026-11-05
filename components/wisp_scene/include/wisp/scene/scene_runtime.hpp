@@ -215,9 +215,10 @@ public:
     // has done the work (at most 10 s, then Timeout) -- for close(), until
     // every store flush the scene queued has run, its final one and, for a
     // scene that faulted or is not in the foreground, any still queued from
-    // before -- except on the UI thread, the scene task and the storage
-    // worker, where they only queue it and return Ok (failures are logged
-    // and published). Busy when the runtime is not running or its queue
+    // before; by then status() is Stopped and "stopped" has been published
+    // (a faulted scene stays Error) -- except on the UI thread, the scene
+    // task and the storage worker, where they only queue it and return Ok
+    // (failures are logged and published). Busy when the runtime is not running or its queue
     // stays full. open() is also Busy, at once, while
     // SceneRepository::installing(id) (spec 6.3: the package is being
     // replaced); an open that was already on its way when the install

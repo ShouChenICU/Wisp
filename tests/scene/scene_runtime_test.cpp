@@ -709,4 +709,68 @@ return ui.screen{ui.label{text = "keep"}}
     EXPECT_TRUE(idle_result.get());
 }
 
+// Holds the UI thread inside a job, with its post() queue full, until
+// release(): nothing the scene task hands the UI meanwhile can run.
+class UiStall {
+public:
+    explicit UiStall(wisp::ui::UiRuntime& ui) {
+        auto started = std::make_shared<std::promise<void>>();
+        EXPECT_TRUE(ui.post([started, f = released_.get_future().share()] {
+            started->set_value();
+            f.wait();
+        }));
+        started->get_future().wait();
+        while (ui.post([] {})) {
+        }
+    }
+    ~UiStall() { release(); }
+    void release() {
+        if (!done_) released_.set_value();
+        done_ = true;
+    }
+
+private:
+    std::promise<void> released_;
+    bool done_ = false;
+};
+
+// Whoever close() or close_async() answers sees the scene Stopped, its
+// "stopped" already published: a "deleted" the caller publishes next (as
+// a confirmed delete does) can never come before it. The UI is stalled so
+// that nothing the scene task hands it can be what orders the two.
+TEST_F(SceneRuntimeTest, CloseAnswersOnlyOnceTheSceneIsStopped) {
+    start();
+    install("counter", kCounter);
+    ASSERT_TRUE(rt->open("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    {
+        UiStall stall(*ui);
+        std::promise<SceneState> seen;
+        rt->close_async("counter", [&](wisp::Result<void> r) {
+            EXPECT_TRUE(r) << r.error().message;
+            seen.set_value(rt->status("counter").state);
+            wisp::core::Event e;
+            e.topic = "scene.state";
+            e.source = "scene";
+            e.payload = {{"id", wisp::Value("counter")}, {"state", wisp::Value("deleted")}};
+            bus.publish(std::move(e));
+        });
+        auto state = seen.get_future();
+        ASSERT_EQ(state.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+        EXPECT_EQ(state.get(), SceneState::Stopped);
+        EXPECT_EQ(rt->foreground(), std::nullopt);
+    }
+    EXPECT_EQ(events(),
+              (std::vector<StateEvent>{
+                  {"counter", "running"}, {"counter", "stopped"}, {"counter", "deleted"}}));
+
+    ASSERT_TRUE(rt->open("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    {
+        UiStall stall(*ui);
+        ASSERT_TRUE(rt->close("counter"));
+        EXPECT_EQ(rt->status("counter").state, SceneState::Stopped);
+    }
+}
+
 }  // namespace

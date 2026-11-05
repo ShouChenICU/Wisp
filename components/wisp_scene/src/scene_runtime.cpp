@@ -731,6 +731,19 @@ void SceneRuntime::close_foreground(std::shared_ptr<SceneWaiter> done) {
     }
     // After the hooks, so a request on_close makes is cancelled too.
     if (deps_.http != nullptr) deps_.http->cancel_scene(f.id);
+    // Before the caller can be answered (from the worker, below): whoever
+    // close() answers sees the scene stopped, and anything it publishes
+    // next ("deleted") comes after "stopped". A faulted scene publishes
+    // nothing here; it stays in the error state.
+    {
+        std::lock_guard<os::Mutex> lock(status_mu_);
+        foreground_id_.reset();
+        foreground_instance_ = 0;
+    }
+    if (was_running) {
+        set_status(f.id, core::SceneState::Stopped, "");
+        publish(f.id, "stopped");
+    }
     if (f.store) {
         // A caller of close() is answered once the final flush has run, so
         // it may move the scene's data/ (an install) without a write
@@ -747,21 +760,11 @@ void SceneRuntime::close_foreground(std::shared_ptr<SceneWaiter> done) {
     }
     ui_instance_.store(0);
     patches_.clear();
-    // Logged once the screen it covered is back: a faulted scene publishes
-    // nothing when it closes, as it stays in the error state.
+    // Logged once the screen it covered is back.
     post_ui([this, id = f.id] {
         ui_drop_view();
         WLOG_I(kTag, "%s: closed", id.c_str());
     });
-    {
-        std::lock_guard<os::Mutex> lock(status_mu_);
-        foreground_id_.reset();
-        foreground_instance_ = 0;
-    }
-    if (was_running) {
-        set_status(f.id, core::SceneState::Stopped, "");
-        publish(f.id, "stopped");
-    }
     fg_.reset();
 }
 
