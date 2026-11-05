@@ -590,9 +590,10 @@ Result<void> UiRuntime::start() {
     lv_sysmon_hide_performance(impl_->lv_disp);
 
     lv_display_set_theme(impl_->lv_disp, detail::install_theme(impl_->lv_disp, default_font()));
-    // lv_display_set_theme() restyles the screen only while every layer is
-    // empty, and the performance overlay's label is already on the system
-    // layer.
+    // lv_display_set_theme() restyles only the display's first screen
+    // object, which is the bottom layer (opaque in the page colour, as it
+    // was under the default theme), never the active screen; that one
+    // takes the theme here.
     lv_theme_apply(lv_display_get_screen_active(impl_->lv_disp));
     // The theme styles screens only, and the layers keep no theme styles
     // (one would make them opaque), so widgets on the top and system

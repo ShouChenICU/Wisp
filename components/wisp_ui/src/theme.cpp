@@ -35,6 +35,10 @@ struct Styles {
     lv_style_t track;
     lv_style_t indicator;
     lv_style_t knob;
+    // A textarea's cursor: the default theme's left-edge bar, in the
+    // accent. Only the border colour: a background would fill the whole
+    // character cell under the cursor.
+    lv_style_t cursor;
     lv_style_t arc_track;
     lv_style_t arc_indicator;
     // Text inputs, dropdowns and rollers.
@@ -56,6 +60,8 @@ struct Styles {
     // Lists, tables and charts.
     lv_style_t row_divider;
     lv_style_t list_text;
+    // A dropdown list's highlighted row (pressed or selected).
+    lv_style_t list_row;
     lv_style_t chart;
 };
 
@@ -107,9 +113,9 @@ void init_styles(Styles& s) {
     lv_style_set_recolor_opa(&s.secondary_pressed, LV_OPA_TRANSP);
 
     lv_style_set_bg_color(&s.danger, col(kErr));
-    lv_style_set_text_color(&s.danger, col(kAccentInk));
-    lv_style_set_bg_color(&s.danger_pressed, col(pressed(kErr, kAccentInk)));
-    lv_style_set_text_color(&s.danger_pressed, col(kAccentInk));
+    lv_style_set_text_color(&s.danger, col(kErrInk));
+    lv_style_set_bg_color(&s.danger_pressed, col(pressed(kErr, kErrInk)));
+    lv_style_set_text_color(&s.danger_pressed, col(kErrInk));
     lv_style_set_recolor_opa(&s.danger_pressed, LV_OPA_TRANSP);
 
     lv_style_set_bg_color(&s.track, col(kSurface3));
@@ -118,6 +124,7 @@ void init_styles(Styles& s) {
     lv_style_set_bg_opa(&s.indicator, LV_OPA_COVER);
     lv_style_set_bg_color(&s.knob, col(kText));
     lv_style_set_bg_opa(&s.knob, LV_OPA_COVER);
+    lv_style_set_border_color(&s.cursor, col(kAccent));
     lv_style_set_arc_color(&s.arc_track, col(kSurface3));
     lv_style_set_arc_color(&s.arc_indicator, col(kAccent));
 
@@ -160,12 +167,16 @@ void init_styles(Styles& s) {
     lv_style_set_text_color(&s.key_control, col(kText));
     lv_style_set_bg_color(&s.key_pressed, col(pressed(kSurface3, kText)));
     lv_style_set_recolor_opa(&s.key_pressed, LV_OPA_TRANSP);
+    lv_style_set_text_color(&s.key_pressed, col(kText));
 
     lv_style_set_bg_color(&s.row_divider, col(kSurface));
     lv_style_set_border_color(&s.row_divider, col(kBorder));
     lv_style_set_text_color(&s.row_divider, col(kText));
     lv_style_set_bg_color(&s.list_text, col(kSurface2));
     lv_style_set_text_color(&s.list_text, col(kTextDim));
+    lv_style_set_bg_color(&s.list_row, col(kSurface3));
+    lv_style_set_bg_opa(&s.list_row, LV_OPA_COVER);
+    lv_style_set_text_color(&s.list_row, col(kText));
     lv_style_set_line_color(&s.chart, col(kBorder));
 }
 
@@ -224,14 +235,15 @@ void apply_cb(lv_theme_t*, lv_obj_t* obj) {
         lv_obj_add_style(obj, &s.field, 0);
         lv_obj_add_style(obj, &s.field_focused, LV_STATE_FOCUSED);
         lv_obj_add_style(obj, &s.placeholder, LV_PART_TEXTAREA_PLACEHOLDER);
-        lv_obj_add_style(obj, &s.indicator, sel(LV_PART_CURSOR, LV_STATE_FOCUSED));
+        lv_obj_add_style(obj, &s.cursor, sel(LV_PART_CURSOR, LV_STATE_FOCUSED));
         add_scrollbar(obj);
     } else if (lv_obj_check_type(obj, &lv_dropdown_class)) {
         lv_obj_add_style(obj, &s.field, 0);
         lv_obj_add_style(obj, &s.field_focused, LV_STATE_PRESSED);
     } else if (lv_obj_check_type(obj, &lv_dropdownlist_class)) {
         lv_obj_add_style(obj, &s.field, 0);
-        lv_obj_add_style(obj, &s.list_text, LV_PART_SELECTED);
+        lv_obj_add_style(obj, &s.list_row, LV_PART_SELECTED);
+        lv_obj_add_style(obj, &s.key_pressed, sel(LV_PART_SELECTED, LV_STATE_PRESSED));
         lv_obj_add_style(obj, &s.selected, sel(LV_PART_SELECTED, LV_STATE_CHECKED));
         add_scrollbar(obj);
     } else if (lv_obj_check_type(obj, &lv_roller_class)) {
@@ -294,9 +306,11 @@ lv_theme_t* install_theme(lv_display_t* disp, const lv_font_t* font) {
     // warning colour.
     lv_theme_t* base = lv_theme_default_init(disp, col(kAccent), col(kAccentStrong), true, font);
     if (g_theme == nullptr) {
-        init_styles(g_styles);
+        // Styles only once the theme exists: release_theme() frees them
+        // only when there is a theme to release.
         g_theme = lv_theme_create();
         if (g_theme == nullptr) return base;
+        init_styles(g_styles);
         lv_theme_copy(g_theme, base);
         lv_theme_set_parent(g_theme, base);
         lv_theme_set_apply_cb(g_theme, &apply_cb);

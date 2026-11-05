@@ -20,7 +20,7 @@
 #include <utility>
 
 #include "wisp/os/large.hpp"
-#include "wisp/ui/theme.hpp"
+#include "wisp/ui/theme_tokens.hpp"
 
 namespace wisp::scene {
 

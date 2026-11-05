@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "wisp/ui/theme.hpp"
+#include "wisp/ui/theme_tokens.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::scene {
