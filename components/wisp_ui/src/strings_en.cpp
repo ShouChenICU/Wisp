@@ -178,6 +178,50 @@ const char* strings_en(StrId id) {
             return "Delete the scene \"{}\"?";
         case StrId::SceneDeleteWithData:
             return "Its data is deleted too.";
+        case StrId::NoticeSystemTitle:
+            return "System";
+        case StrId::NoticeEvictedMemory:
+            return "{} was closed to free memory";
+        case StrId::NoticeEvictedCount:
+            return "{} was closed: too many background scenes";
+        case StrId::NoticeSceneError:
+            return "{} stopped after an error";
+        case StrId::NoticeRestoreFailed:
+            return "{} could not be restored at startup";
+        case StrId::NoticeWakeLock:
+            return "{} has kept the device awake for 30 minutes";
+        case StrId::NoticeBatteryLow:
+            return "Battery low: {}%";
+        case StrId::NoticeRelease:
+            return "Release";
+        case StrId::HolderAdmin:
+            return "Admin page";
+        case StrId::HolderUpload:
+            return "Upload";
+        case StrId::HolderOta:
+            return "Firmware update";
+        case StrId::HolderTimeSync:
+            return "Time sync";
+        case StrId::HolderNetWindow:
+            return "Background network";
+        case StrId::HolderHotspot:
+            return "Setup hotspot";
+        case StrId::HolderTone:
+            return "Alert sound";
+        case StrId::PanelBackground:
+            return "In background";
+        case StrId::PanelNotifications:
+            return "Notifications";
+        case StrId::PanelClearAll:
+            return "Clear all";
+        case StrId::PanelEmpty:
+            return "No notifications";
+        case StrId::PanelJustNow:
+            return "just now";
+        case StrId::PanelMinutes:
+            return "{} min";
+        case StrId::PanelHours:
+            return "{} h";
         case StrId::Count:
             break;
     }

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "lvgl_private.h"  // lv_indev_t::pointer.act_obj, lv_buttonmatrix_t
+#include "system_layer_internal.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/ui/dialog.hpp"
 #include "wisp/ui/overlay.hpp"
@@ -92,18 +93,7 @@ constexpr int32_t kMaxKeyboardPercent = 55;
 // The step the keyboard rises by while looking for rows that fit.
 constexpr int32_t kRiseStep = 4;
 
-// The visible columns common to screen rows y1..y2, `inset` further in
-// from each side; empty if some row shows nothing.
-hal::Span visible_extent(const hal::ScreenShape& shape, int32_t y1, int32_t y2, int32_t inset) {
-    hal::Span ext{0, shape.width - 1};
-    for (int32_t y = y1; y <= y2; ++y) {
-        const hal::Span s = hal::row_span(shape, y);
-        if (s.empty()) return {};
-        ext.x1 = std::max(ext.x1, s.x1);
-        ext.x2 = std::min(ext.x2, s.x2);
-    }
-    return {ext.x1 + inset, ext.x2 - inset};
-}
+using detail::visible_extent;
 
 uint32_t key_units(lv_buttonmatrix_ctrl_t ctrl) {
     // As lv_buttonmatrix: a width of 0 counts as 1.
@@ -202,6 +192,21 @@ void fit_rows_cb(lv_event_t* e) {
 
 }  // namespace
 
+namespace detail {
+
+hal::Span visible_extent(const hal::ScreenShape& shape, int32_t y1, int32_t y2, int32_t inset) {
+    hal::Span ext{0, shape.width - 1};
+    for (int32_t y = y1; y <= y2; ++y) {
+        const hal::Span s = hal::row_span(shape, y);
+        if (s.empty()) return {};
+        ext.x1 = std::max(ext.x1, s.x1);
+        ext.x2 = std::min(ext.x2, s.x2);
+    }
+    return {ext.x1 + inset, ext.x2 - inset};
+}
+
+}  // namespace detail
+
 SystemLayer::SystemLayer(const hal::ScreenShape& shape)
     : shape_(shape), safe_(hal::safe_rect(shape)), pinyin_(lang() == Lang::Zh) {}
 
@@ -210,6 +215,16 @@ SystemLayer::~SystemLayer() {
     hide_error();
     discard_keyboard(true);
     unhook_pointer();
+    if (refill_queued_) lv_async_call_cancel(&SystemLayer::panel_refill_cb, this);
+    panel_event_depth_ = 0;
+    discard_panel();
+    banners_.clear();
+    banner_event_depth_ = 0;
+    hide_banner();
+    if (capsule_ != nullptr) {
+        lv_obj_delete(capsule_);
+        capsule_ = nullptr;
+    }
     if (arrow_ != nullptr) {
         lv_obj_delete(arrow_);
         arrow_ = nullptr;
@@ -254,9 +269,39 @@ bool SystemLayer::is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_
     return end.x - start.x >= kBackTriggerDx;
 }
 
+bool SystemLayer::in_top_zone(const hal::ScreenShape& s, int32_t x, int32_t y) {
+    if (!hal::visible(s, x, y)) return false;
+    // The column's first visible row. Every supported outline is convex,
+    // so above the middle row a column is hidden down to that row and
+    // shown from it on: a binary search finds it.
+    int32_t lo = 0;
+    int32_t hi = std::min(y, s.height / 2);
+    while (lo < hi) {
+        const int32_t mid = lo + (hi - lo) / 2;
+        if (hal::visible(s, x, mid)) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return y < lo + kTopZoneHeight;
+}
+
+bool SystemLayer::is_top_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end) {
+    if (!in_top_zone(s, start.x, start.y)) return false;
+    // Any angle, like the back swipe.
+    return end.y - start.y >= kTopTriggerDy;
+}
+
 void SystemLayer::set_back_handler(std::function<void()> on_back) {
     on_back_ = std::move(on_back);
-    if (on_back_) {
+    update_pointer_hook();
+}
+
+bool SystemLayer::wants_pointer() const { return on_back_ || has_panel(); }
+
+void SystemLayer::update_pointer_hook() {
+    if (wants_pointer()) {
         hook_pointer();
     } else {
         end_swipe();
@@ -293,8 +338,7 @@ void SystemLayer::hook_pointer() {
     g_pointer_watcher = this;
     // A press already under way when the handler is set is not a swipe.
     pressed_ = lv_indev_get_state(indev_) == LV_INDEV_STATE_PRESSED;
-    candidate_ = false;
-    taken_ = false;
+    end_swipe();
 }
 
 void SystemLayer::unhook_pointer() {
@@ -308,8 +352,7 @@ void SystemLayer::unhook_pointer() {
     if (g_pointer_watcher == this) g_pointer_watcher = nullptr;
     indev_ = nullptr;
     prev_read_cb_ = nullptr;
-    candidate_ = false;
-    taken_ = false;
+    end_swipe();
 }
 
 void SystemLayer::pointer_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
@@ -329,15 +372,21 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         // A release (LVGL fills in the last pressed point).
         const bool was_pressed = pressed_;
         pressed_ = false;
-        if (!was_pressed || !candidate_) return;
-        // Only the distance to the right counts: dragging back to the left
+        if (!was_pressed) return;
+        // Only the distance in the swipe's direction counts: dragging back
         // below the trigger cancels.
-        const bool fire = taken_ && p.x - start_.x >= kBackTriggerDx && on_back_;
+        const bool back = taken_ && p.x - start_.x >= kBackTriggerDx;
+        const bool top = top_taken_ && p.y - start_.y >= kTopTriggerDy;
         end_swipe();
-        if (fire) {
+        if (back && panel_open()) {
+            // The panel is what the back swipe leaves.
+            close_panel();
+        } else if (back && on_back_) {
             // A copy: the handler may replace or clear itself.
             std::function<void()> on_back = on_back_;
             on_back();
+        } else if (top) {
+            open_panel();
         }
         return;
     }
@@ -345,18 +394,29 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
     if (!pressed_) {
         pressed_ = true;
         start_ = p;
-        taken_ = false;
-        candidate_ = on_back_ && confirm_box_ == nullptr && !point_in(kb_, p) &&
+        end_swipe();
+        candidate_ = (on_back_ || panel_open()) && confirm_box_ == nullptr && !point_in(kb_, p) &&
                      !point_in(candidates_, p) && in_back_zone(shape_, p.x, p.y);
+        top_candidate_ = has_panel() && !panel_open() && kb_ == nullptr &&
+                         confirm_box_ == nullptr && in_top_zone(shape_, p.x, p.y);
         return;
+    }
+
+    // Whichever gesture crosses its trigger first takes the press; the
+    // other one is then over.
+    if (candidate_ && !taken_ && is_back_swipe(shape_, start_, p)) {
+        taken_ = true;
+        top_candidate_ = false;
+        cancel_press(indev);
+    } else if (top_candidate_ && !top_taken_ && !taken_ && is_top_swipe(shape_, start_, p)) {
+        top_taken_ = true;
+        candidate_ = false;
+        if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
+        cancel_press(indev);
     }
     if (!candidate_) return;
 
     const int32_t dx = p.x - start_.x;
-    if (!taken_ && is_back_swipe(shape_, start_, p)) {
-        taken_ = true;
-        cancel_press(indev);
-    }
     // The slop keeps a scroll along the edge, wobbling a little to the
     // right, from flashing the arrow.
     if (taken_ || dx >= kBackArrowSlop) {
@@ -452,6 +512,8 @@ void SystemLayer::show_arrow(lv_point_t at, int32_t dx, bool armed) {
 void SystemLayer::end_swipe() {
     candidate_ = false;
     taken_ = false;
+    top_candidate_ = false;
+    top_taken_ = false;
     if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -812,7 +874,8 @@ void SystemLayer::confirm_btn_cb(lv_event_t* e) {
 // --- Stacking ---
 
 void SystemLayer::raise() {
-    for (lv_obj_t* piece : {error_backdrop_, error_panel_, kb_, candidates_, arrow_}) {
+    for (lv_obj_t* piece : {capsule_, banner_, panel_backdrop_, panel_, error_backdrop_,
+                            error_panel_, kb_, candidates_, arrow_}) {
         if (piece != nullptr) lv_obj_move_foreground(piece);
     }
     // The dialog's backdrop holds the box.

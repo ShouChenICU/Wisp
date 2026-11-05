@@ -175,3 +175,19 @@ TEST_F(Strings, LanguageNamesAreNotTranslated) {
         }
     }
 }
+
+// The system notification, wake lock holder and pull-down panel text
+// (scene-device spec 5.2, 5.6).
+TEST_F(Strings, NoticeAndPanelText) {
+    EXPECT_STREQ(wisp::ui::tr(StrId::NoticeSystemTitle, Lang::Zh), "系统");
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::NoticeBatteryLow, Lang::Zh, "15"), "电量低：15%");
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::NoticeSceneError, Lang::Ja, "A"),
+              "Aでエラーが発生し、停止しました");
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::NoticeEvictedMemory, Lang::En, "A"),
+              "A was closed to free memory");
+    EXPECT_STREQ(wisp::ui::tr(StrId::NoticeRelease, Lang::En), "Release");
+    EXPECT_STREQ(wisp::ui::tr(StrId::HolderAdmin, Lang::Zh), "管理后台");
+    EXPECT_STREQ(wisp::ui::tr(StrId::PanelClearAll, Lang::Ja), "すべて消去");
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::PanelMinutes, Lang::Zh, "5"), "5 分钟");
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::PanelHours, Lang::En, "2"), "2 h");
+}

@@ -181,6 +181,50 @@ const char* strings_ja(StrId id) {
             return "シーン「{}」を削除しますか？";
         case StrId::SceneDeleteWithData:
             return "シーンのデータも削除されます。";
+        case StrId::NoticeSystemTitle:
+            return "システム";
+        case StrId::NoticeEvictedMemory:
+            return "{}はメモリ不足のため終了しました";
+        case StrId::NoticeEvictedCount:
+            return "{}を終了しました：バックグラウンドが上限です";
+        case StrId::NoticeSceneError:
+            return "{}でエラーが発生し、停止しました";
+        case StrId::NoticeRestoreFailed:
+            return "{}を起動時に復元できませんでした";
+        case StrId::NoticeWakeLock:
+            return "{}がデバイスを 30 分間起動したままにしています";
+        case StrId::NoticeBatteryLow:
+            return "バッテリー残量低下：{}%";
+        case StrId::NoticeRelease:
+            return "解除";
+        case StrId::HolderAdmin:
+            return "管理画面";
+        case StrId::HolderUpload:
+            return "アップロード";
+        case StrId::HolderOta:
+            return "ファームウェア更新";
+        case StrId::HolderTimeSync:
+            return "時刻同期";
+        case StrId::HolderNetWindow:
+            return "バックグラウンド通信";
+        case StrId::HolderHotspot:
+            return "設定用ホットスポット";
+        case StrId::HolderTone:
+            return "通知音";
+        case StrId::PanelBackground:
+            return "バックグラウンド";
+        case StrId::PanelNotifications:
+            return "通知";
+        case StrId::PanelClearAll:
+            return "すべて消去";
+        case StrId::PanelEmpty:
+            return "通知はありません";
+        case StrId::PanelJustNow:
+            return "たった今";
+        case StrId::PanelMinutes:
+            return "{} 分";
+        case StrId::PanelHours:
+            return "{} 時間";
         case StrId::Count:
             break;
     }

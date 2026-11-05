@@ -160,6 +160,36 @@ enum class StrId : uint16_t {
     SceneDeletePrompt,
     SceneDeleteWithData,
 
+    // System notifications (scene-device spec 5.2), shown under
+    // NoticeSystemTitle. Each body carries "{}": a scene's name, a wake
+    // lock holder's label (the Holder* strings below, or a scene's name)
+    // or the battery percentage. NoticeRelease is the wake lock notice's
+    // action button.
+    NoticeSystemTitle,
+    NoticeEvictedMemory,
+    NoticeEvictedCount,
+    NoticeSceneError,
+    NoticeRestoreFailed,
+    NoticeWakeLock,
+    NoticeBatteryLow,
+    NoticeRelease,
+    HolderAdmin,
+    HolderUpload,
+    HolderOta,
+    HolderTimeSync,
+    HolderNetWindow,
+    HolderHotspot,
+    HolderTone,
+    // The pull-down panel (spec 5.6). PanelMinutes and PanelHours carry
+    // "{}", how long a scene has been in the background.
+    PanelBackground,
+    PanelNotifications,
+    PanelClearAll,
+    PanelEmpty,
+    PanelJustNow,
+    PanelMinutes,
+    PanelHours,
+
     Count,  // not a string; keep last
 };
 

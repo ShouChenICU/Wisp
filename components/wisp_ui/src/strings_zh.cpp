@@ -179,6 +179,50 @@ const char* strings_zh(StrId id) {
             return "删除场景“{}”？";
         case StrId::SceneDeleteWithData:
             return "场景数据也会一并删除。";
+        case StrId::NoticeSystemTitle:
+            return "系统";
+        case StrId::NoticeEvictedMemory:
+            return "{}已因内存不足关闭";
+        case StrId::NoticeEvictedCount:
+            return "{}已关闭：后台场景已满";
+        case StrId::NoticeSceneError:
+            return "{}出错已停止";
+        case StrId::NoticeRestoreFailed:
+            return "{}开机恢复失败";
+        case StrId::NoticeWakeLock:
+            return "{}已让设备保持唤醒 30 分钟";
+        case StrId::NoticeBatteryLow:
+            return "电量低：{}%";
+        case StrId::NoticeRelease:
+            return "释放";
+        case StrId::HolderAdmin:
+            return "管理后台";
+        case StrId::HolderUpload:
+            return "上传";
+        case StrId::HolderOta:
+            return "固件更新";
+        case StrId::HolderTimeSync:
+            return "校时";
+        case StrId::HolderNetWindow:
+            return "后台联网";
+        case StrId::HolderHotspot:
+            return "配网热点";
+        case StrId::HolderTone:
+            return "提示音";
+        case StrId::PanelBackground:
+            return "后台运行";
+        case StrId::PanelNotifications:
+            return "通知";
+        case StrId::PanelClearAll:
+            return "全部清除";
+        case StrId::PanelEmpty:
+            return "没有通知";
+        case StrId::PanelJustNow:
+            return "刚刚";
+        case StrId::PanelMinutes:
+            return "{} 分钟";
+        case StrId::PanelHours:
+            return "{} 小时";
         case StrId::Count:
             break;
     }

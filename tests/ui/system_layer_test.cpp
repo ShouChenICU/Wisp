@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -18,6 +19,7 @@
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/os/os.hpp"
 #include "wisp/ui/dialog.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/theme.hpp"
@@ -37,6 +39,7 @@ using wisp::test::FakeDisplay;
 using wisp::test::FakeTouch;
 using wisp::test::find_button_with_label;
 using wisp::test::find_label_containing;
+using wisp::test::find_obj_of_class;
 using wisp::test::run_on_ui_blocking;
 using wisp::ui::StrId;
 using wisp::ui::SystemLayer;
@@ -214,6 +217,60 @@ protected:
     Area safe{};
     uint32_t top_children_before = 0;
 };
+
+// The three screens every shape-dependent test of the capsule, the
+// pull-down panel and the banners runs on: 480 x 480 as a rectangle, as
+// the reference board's rounded rectangle and as a circle.
+struct ShapeCase {
+    const char* shape;
+    int corner_radius;
+};
+constexpr ShapeCase kShapeCases[] = {{"rect", 0}, {"rounded_rect", 70}, {"circle", 0}};
+
+ScreenShape rounded480() { return {ScreenShapeKind::RoundedRect, kSide, kSide, 70}; }
+
+bool same_area(const Area& a, const Area& b) {
+    return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
+}
+
+std::string area_str(const lv_area_t& a) {
+    return std::to_string(a.x1) + "," + std::to_string(a.y1) + "-" + std::to_string(a.x2) + "," +
+           std::to_string(a.y2);
+}
+
+// A panel model with two background scenes and three notifications, the
+// newest first, one of them with an action.
+wisp::ui::PanelModel sample_model() {
+    wisp::ui::PanelModel m;
+    m.header = {"09:41", 85, false, "HomeNet"};
+    m.now_ms = 10 * 3600 * 1000;
+    m.scenes = {{"a", "Alpha", m.now_ms - 30 * 1000}, {"b", "Beta", m.now_ms - 5 * 60 * 1000}};
+    m.notes = {{"system", "w1", "", "System", "Alpha kept it awake", "Release"},
+               {"a", "n1", "A", "Note one", "First body", ""},
+               {"b", "n2", "B", "Note two", "Second body", ""}};
+    return m;
+}
+
+// Every shown, clickable object in `obj`'s subtree, `obj` included.
+void collect_clickables(lv_obj_t* obj, std::vector<lv_obj_t*>& out) {
+    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) return;
+    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE)) out.push_back(obj);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(obj); ++i) {
+        collect_clickables(lv_obj_get_child(obj, static_cast<int32_t>(i)), out);
+    }
+}
+
+// The nearest clickable ancestor of `obj` (or `obj` itself).
+lv_obj_t* clickable_of(lv_obj_t* obj) {
+    while (obj != nullptr && !lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE)) {
+        obj = lv_obj_get_parent(obj);
+    }
+    return obj;
+}
+
+// A fake LVGL clock: the real one plus an offset a test moves forward.
+std::atomic<uint32_t> g_tick_offset{0};
+uint32_t fake_tick() { return static_cast<uint32_t>(wisp::os::now_ms()) + g_tick_offset.load(); }
 
 TEST(SystemLayerZone, BackZoneFollowsRowSpan) {
     const ScreenShape rect = rect480();
@@ -1451,7 +1508,10 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
             ASSERT_NE(piece, nullptr);
             lv_obj_update_layout(lv_layer_top());
             lv_obj_get_coords(piece, &core);
-            const int32_t r = lv_obj_get_style_radius(piece, LV_PART_MAIN);
+            // As the overlay counts it: a pill's radius is LV_RADIUS_CIRCLE.
+            const int32_t r =
+                std::min({lv_obj_get_style_radius(piece, LV_PART_MAIN),
+                          lv_area_get_width(&core) / 2, lv_area_get_height(&core) / 2});
             core.y1 += r;
             core.y2 -= r;
             lv_refr_now(nullptr);
@@ -1461,12 +1521,24 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
         });
         const std::vector<Area> areas = display->areas();
         ASSERT_GT(areas.size(), before);
-        for (size_t i = before; i < areas.size(); ++i) {
+        // A pill has no row it covers edge to edge.
+        for (size_t i = before; i < areas.size() && core.y1 <= core.y2; ++i) {
             const Area& f = areas[i];
             EXPECT_FALSE(overlaps(f, core)) << f.x1 << "," << f.y1 << "-" << f.x2 << "," << f.y2;
         }
         on_ui(hide);
     };
+
+    // The capsule stays up for the checks after it: shown and unmarked, it
+    // would keep every area that touches it from being cut.
+    on_ui([&] { layer->set_panel_handlers({.on_open = [] {}}); });
+    check(
+        "capsule",
+        [&] {
+            layer->set_status({1, 2});
+            return layer->capsule();
+        },
+        [] {});
 
     check(
         "error panel",
@@ -1489,6 +1561,601 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
             return layer->keyboard();
         },
         [&] { layer->hide_keyboard(); });
+
+    check(
+        "banner",
+        [&] {
+            layer->show_banner({"s1", "n1", "D", "Demo", "Title", "Body"}, [] {});
+            return layer->banner();
+        },
+        [] {});
+
+    check(
+        "panel",
+        [&] {
+            layer->update_panel(sample_model());
+            layer->open_panel();
+            return layer->panel();
+        },
+        [&] { layer->close_panel(); });
+    on_ui([&] { EXPECT_NE(layer->capsule(), nullptr); });
+}
+
+// --- Status capsule, top-edge swipe, pull-down panel, banners ---
+
+TEST(StatusCapsule, AreaPerShape) {
+    EXPECT_TRUE(same_area(SystemLayer::status_area(rect480()), {212, 4, 267, 27}));
+    EXPECT_TRUE(same_area(SystemLayer::status_area(rounded480()), {212, 28, 267, 51}));
+    EXPECT_TRUE(same_area(SystemLayer::status_area(circle480()), {212, 78, 267, 101}));
+    const ScreenShape sim{ScreenShapeKind::RoundedRect, kSide, kSide, 40};
+    EXPECT_TRUE(same_area(SystemLayer::status_area(sim), {212, 19, 267, 42}));
+}
+
+TEST_F(SystemLayerTest, StatusCapsuleHiddenWhenBothZeroAndShowsCounts) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        on_ui([&] {
+            layer->set_status({0, 0});
+            EXPECT_EQ(layer->capsule(), nullptr);
+
+            layer->set_status({2, 0});
+            lv_obj_t* cap = layer->capsule();
+            ASSERT_NE(cap, nullptr);
+            EXPECT_EQ(lv_obj_get_parent(cap), lv_layer_top());
+            lv_obj_update_layout(cap);
+            lv_area_t a;
+            lv_obj_get_coords(cap, &a);
+            const Area want = SystemLayer::status_area(shape);
+            EXPECT_TRUE(same_area({a.x1, a.y1, a.x2, a.y2}, want)) << area_str(a);
+            EXPECT_TRUE(fully_visible(shape, a)) << area_str(a);
+            std::string text = lv_label_get_text(find_obj_of_class(cap, &lv_label_class));
+            EXPECT_NE(text.find('2'), std::string::npos) << text;
+            EXPECT_NE(text.find(LV_SYMBOL_PLAY), std::string::npos) << text;
+            EXPECT_EQ(text.find(LV_SYMBOL_BELL), std::string::npos) << text;
+
+            layer->set_status({0, 3});
+            cap = layer->capsule();
+            ASSERT_NE(cap, nullptr);
+            text = lv_label_get_text(find_obj_of_class(cap, &lv_label_class));
+            EXPECT_NE(text.find('3'), std::string::npos) << text;
+            EXPECT_NE(text.find(LV_SYMBOL_BELL), std::string::npos) << text;
+            EXPECT_EQ(text.find(LV_SYMBOL_PLAY), std::string::npos) << text;
+
+            // The widest counts still fit: the capsule then grows about the
+            // same centre, its height unchanged.
+            layer->set_status({3, 50});
+            cap = layer->capsule();
+            lv_obj_t* label = find_obj_of_class(cap, &lv_label_class);
+            lv_obj_update_layout(cap);
+            EXPECT_LE(lv_obj_get_width(label), lv_obj_get_content_width(cap));
+            lv_obj_get_coords(cap, &a);
+            EXPECT_EQ(a.y1, want.y1);
+            EXPECT_EQ(a.y2, want.y2);
+            EXPECT_LE(std::abs((a.x1 + a.x2) - (want.x1 + want.x2)), 1) << area_str(a);
+            EXPECT_TRUE(fully_visible(shape, a)) << area_str(a);
+
+            layer->set_status({0, 0});
+            EXPECT_EQ(layer->capsule(), nullptr);
+        });
+    }
+}
+
+TEST_F(SystemLayerTest, StatusCapsuleTapOpensPanel) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        int opens = 0;
+        int clicks = 0;
+        lv_point_t at{};
+        on_ui([&] {
+            make_counting_button(0, 0, kSide, 200, &clicks);
+            layer->set_status({1, 1});
+            ASSERT_NE(layer->capsule(), nullptr);
+            at = center_of(layer->capsule());
+        });
+        // Without panel handlers the capsule takes no touches.
+        tap(at);
+        EXPECT_EQ(clicks, 1);
+        on_ui([&] {
+            EXPECT_FALSE(layer->panel_open());
+            layer->set_panel_handlers({.on_open = [&] { ++opens; }});
+        });
+        tap(at);
+        EXPECT_EQ(clicks, 1);
+        EXPECT_EQ(opens, 1);
+        on_ui([&] {
+            EXPECT_TRUE(layer->panel_open());
+            EXPECT_NE(layer->panel(), nullptr);
+        });
+    }
+}
+
+TEST(TopSwipe, ZoneFollowsRowSpan) {
+    const ScreenShape circle = circle480();
+    const Area cs = wisp::hal::safe_rect(circle);
+    // The middle column starts at the physical top edge.
+    EXPECT_TRUE(SystemLayer::in_top_zone(circle, 240, 0));
+    EXPECT_TRUE(SystemLayer::in_top_zone(circle, 240, 10));
+    EXPECT_TRUE(SystemLayer::in_top_zone(circle, 240, 15));
+    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 240, 16));
+    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 100, 10));  // not visible
+    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 240, cs.y1 + 16));
+    // A column further out starts lower, and so does its zone.
+    int32_t top100 = 0;
+    while (!wisp::hal::visible(circle, 100, top100)) ++top100;
+    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 100, top100 - 1));
+    EXPECT_TRUE(SystemLayer::in_top_zone(circle, 100, top100));
+    EXPECT_TRUE(SystemLayer::in_top_zone(circle, 100, top100 + 15));
+    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 100, top100 + 16));
+
+    const ScreenShape rect = rect480();
+    EXPECT_TRUE(SystemLayer::in_top_zone(rect, 0, 0));
+    EXPECT_TRUE(SystemLayer::in_top_zone(rect, 479, 15));
+    EXPECT_FALSE(SystemLayer::in_top_zone(rect, 0, 16));
+
+    const ScreenShape rounded = rounded480();
+    EXPECT_FALSE(SystemLayer::in_top_zone(rounded, 0, 0));
+    int32_t top0 = 0;
+    while (!wisp::hal::visible(rounded, 0, top0)) ++top0;
+    EXPECT_TRUE(SystemLayer::in_top_zone(rounded, 0, top0 + 15));
+    EXPECT_FALSE(SystemLayer::in_top_zone(rounded, 0, top0 + 16));
+    EXPECT_TRUE(SystemLayer::in_top_zone(rounded, 240, 0));
+
+    constexpr int32_t d = SystemLayer::kTopTriggerDy;
+    EXPECT_FALSE(SystemLayer::is_top_swipe(circle, {240, 10}, {240, 10 + d - 1}));
+    EXPECT_TRUE(SystemLayer::is_top_swipe(circle, {240, 10}, {240, 10 + d}));
+    EXPECT_TRUE(SystemLayer::is_top_swipe(circle, {240, 10}, {400, 10 + d}));  // any angle
+    EXPECT_FALSE(SystemLayer::is_top_swipe(circle, {240, 30}, {240, 200}));    // outside
+}
+
+TEST_F(SystemLayerTest, TopSwipeTapInZoneReachesWidget) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        int clicks = 0;
+        int opens = 0;
+        on_ui([&] {
+            make_counting_button(0, 0, kSide, 120, &clicks);
+            layer->set_panel_handlers({.on_open = [&] { ++opens; }});
+        });
+        ASSERT_TRUE(SystemLayer::in_top_zone(shape, 240, 10));
+        tap(240, 10);
+        EXPECT_EQ(clicks, 1);
+        EXPECT_EQ(opens, 0);
+        on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+    }
+}
+
+TEST_F(SystemLayerTest, TopSwipeDownTakesPressAndOpens) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        int clicks = 0;
+        int lost = 0;
+        int opens = 0;
+        lv_obj_t* btn = nullptr;
+        on_ui([&] {
+            btn = make_counting_button(0, 0, kSide, 120, &clicks);
+            lv_obj_add_event_cb(
+                btn, [](lv_event_t* e) { ++*static_cast<int*>(lv_event_get_user_data(e)); },
+                LV_EVENT_PRESS_LOST, &lost);
+            layer->set_panel_handlers({.on_open = [&] { ++opens; }});
+        });
+        feed({{240, 10, 0}});
+        feed({{240, 10, 0}});
+        on_ui([&] { EXPECT_TRUE(lv_obj_has_state(btn, LV_STATE_PRESSED)); });
+        feed({{240, 40, 0}});
+        on_ui([&] {
+            EXPECT_FALSE(lv_obj_has_state(btn, LV_STATE_PRESSED));
+            EXPECT_FALSE(layer->panel_open());  // only on release
+        });
+        EXPECT_EQ(lost, 1);
+        feed({{240, 90, 0}});
+        feed({});
+        EXPECT_EQ(clicks, 0);
+        EXPECT_EQ(opens, 1);
+        on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
+    }
+}
+
+TEST_F(SystemLayerTest, TopSwipeIgnoredWhileKeyboardConfirmOrPanelOpen) {
+    start("rect");
+    int opens = 0;
+    lv_obj_t* ta = nullptr;
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [&] { ++opens; }});
+        ta = lv_textarea_create(lv_screen_active());
+        lv_obj_set_pos(ta, 100, 150);
+        layer->show_keyboard(ta);
+    });
+    auto swipe = [&] {
+        feed({{240, 4, 0}});
+        feed({{240, 4, 0}});
+        feed({{240, 60, 0}});
+        feed({});
+    };
+    swipe();
+    lv_obj_t* box = nullptr;
+    on_ui([&] {
+        EXPECT_FALSE(layer->panel_open());
+        layer->hide_keyboard();
+        box = layer->open_confirm(StrId::ResetTitle, "Sure?", [](bool) {});
+        ASSERT_NE(box, nullptr);
+    });
+    swipe();
+    on_ui([&] {
+        EXPECT_FALSE(layer->panel_open());
+        layer->close_confirm(box);
+    });
+    EXPECT_EQ(opens, 0);
+    swipe();  // now it opens
+    EXPECT_EQ(opens, 1);
+    swipe();  // already open
+    EXPECT_EQ(opens, 1);
+    on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
+}
+
+TEST_F(SystemLayerTest, PanelLayoutInsideVisibleArea) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        on_ui([&] {
+            layer->set_panel_handlers({.on_open = [] {}});
+            layer->update_panel(sample_model());
+            layer->open_panel();
+            lv_obj_t* panel = layer->panel();
+            ASSERT_NE(panel, nullptr);
+            lv_obj_update_layout(lv_layer_top());
+
+            // The panel covers the whole screen.
+            bool covered = false;
+            for (uint32_t i = 0; i < lv_obj_get_child_count(lv_layer_top()); ++i) {
+                lv_obj_t* o = lv_obj_get_child(lv_layer_top(), static_cast<int32_t>(i));
+                lv_area_t a;
+                lv_obj_get_coords(o, &a);
+                if (a.x1 <= 0 && a.y1 <= 0 && a.x2 >= kSide - 1 && a.y2 >= kSide - 1 &&
+                    lv_obj_get_style_bg_opa(o, LV_PART_MAIN) == LV_OPA_COVER &&
+                    !lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) {
+                    covered = true;
+                }
+            }
+            EXPECT_TRUE(covered);
+
+            // Each text the model gives is there.
+            for (const char* text : {"09:41", "85%", "HomeNet", "Alpha", "Beta", "Note one",
+                                     "Second body", "Release"}) {
+                EXPECT_NE(find_label_containing(panel, text), nullptr) << text;
+            }
+            EXPECT_NE(find_label_containing(panel, wisp::ui::tr(StrId::PanelJustNow)), nullptr);
+            EXPECT_NE(find_label_containing(panel, "5 分钟"), nullptr);
+            EXPECT_NE(find_label_containing(panel, wisp::ui::tr(StrId::PanelClearAll)), nullptr);
+
+            std::vector<lv_obj_t*> clickables;
+            collect_clickables(panel, clickables);
+            EXPECT_GE(clickables.size(), 8u);
+            lv_area_t box;
+            lv_obj_get_coords(panel, &box);
+            for (lv_obj_t* o : clickables) {
+                lv_obj_scroll_to_view_recursive(o, LV_ANIM_OFF);
+                lv_obj_update_layout(panel);
+                lv_area_t a;
+                lv_obj_get_coords(o, &a);
+                EXPECT_TRUE(fully_visible(shape, a)) << area_str(a);
+                EXPECT_TRUE(inside(a, {box.x1, box.y1, box.x2, box.y2})) << area_str(a);
+                EXPECT_GE(lv_area_get_height(&a), SystemLayer::kPanelRowMinH) << area_str(a);
+            }
+        });
+    }
+}
+
+TEST_F(SystemLayerTest, PanelBackGestureOnlyClosesPanel) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        int backs = 0;
+        on_ui([&] {
+            layer->set_back_handler([&] { ++backs; });
+            layer->set_panel_handlers({.on_open = [] {}});
+            layer->update_panel(sample_model());
+            layer->open_panel();
+        });
+        const int16_t x0 = static_cast<int16_t>(wisp::hal::row_span(shape, 240).x1 + 2);
+        auto swipe = [&] {
+            feed({{x0, 240, 0}});
+            feed({{x0, 240, 0}});
+            feed({{static_cast<int16_t>(x0 + 60), 240, 0}});
+            feed({});
+        };
+        swipe();
+        EXPECT_EQ(backs, 0);
+        on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+        swipe();
+        EXPECT_EQ(backs, 1);
+    }
+}
+
+// The panel's back gesture works without a back handler too.
+TEST_F(SystemLayerTest, PanelClosesWithoutABackHandler) {
+    start("circle");
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [] {}});
+        layer->open_panel();
+    });
+    const int16_t x0 = static_cast<int16_t>(wisp::hal::row_span(shape, 240).x1 + 2);
+    feed({{x0, 240, 0}});
+    feed({{static_cast<int16_t>(x0 + 60), 240, 0}});
+    feed({});
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+}
+
+TEST_F(SystemLayerTest, PanelRowsCallHandlers) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        std::vector<std::string> calls;
+        wisp::ui::PanelHandlers h;
+        h.on_open = [] {};
+        h.open_scene = [&](const std::string& id) { calls.push_back("open " + id); };
+        h.exit_scene = [&](const std::string& id) { calls.push_back("exit " + id); };
+        h.tap_note = [&](const std::string& s, const std::string& id) {
+            calls.push_back("tap " + s + "/" + id);
+        };
+        h.dismiss_note = [&](const std::string& s, const std::string& id) {
+            calls.push_back("dismiss " + s + "/" + id);
+        };
+        h.note_action = [&](const std::string& s, const std::string& id) {
+            calls.push_back("action " + s + "/" + id);
+        };
+        h.clear_all = [&] { calls.push_back("clear"); };
+        on_ui([&] {
+            layer->set_panel_handlers(h);
+            layer->update_panel(sample_model());
+        });
+
+        // Opens the panel if needed and returns the centre of what
+        // `find` picks out of it, scrolled into view.
+        auto locate = [&](const std::function<lv_obj_t*(lv_obj_t*)>& find) {
+            lv_point_t p{-1, -1};
+            on_ui([&] {
+                if (!layer->panel_open()) layer->open_panel();
+                lv_obj_t* o = find(layer->panel());
+                ASSERT_NE(o, nullptr);
+                lv_obj_scroll_to_view_recursive(o, LV_ANIM_OFF);
+                lv_obj_update_layout(lv_layer_top());
+                p = center_of(o);
+            });
+            return p;
+        };
+        auto row_of = [](const char* text) {
+            return [text](lv_obj_t* panel) {
+                return clickable_of(find_label_containing(panel, text));
+            };
+        };
+        auto close_in = [](const char* text) {
+            return [text](lv_obj_t* panel) {
+                lv_obj_t* row = clickable_of(find_label_containing(panel, text));
+                return row != nullptr ? find_button_with_label(row, LV_SYMBOL_CLOSE) : nullptr;
+            };
+        };
+        auto button = [](const char* text) {
+            return [text](lv_obj_t* panel) { return find_button_with_label(panel, text); };
+        };
+
+        tap(locate(row_of("Alpha")));
+        on_ui([&] { EXPECT_FALSE(layer->panel_open()); });  // it opened the scene
+        tap(locate(close_in("Alpha")));
+        on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
+        tap(locate(row_of("Note one")));
+        on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+        tap(locate(close_in("Note one")));
+        // A swipe to the left on a row dismisses it.
+        const lv_point_t p = locate(row_of("Note two"));
+        feed({{static_cast<int16_t>(p.x + 20), static_cast<int16_t>(p.y), 0}});
+        feed({{static_cast<int16_t>(p.x + 20), static_cast<int16_t>(p.y), 0}});
+        feed({{static_cast<int16_t>(p.x - 10), static_cast<int16_t>(p.y), 0}});
+        feed({{static_cast<int16_t>(p.x - 40), static_cast<int16_t>(p.y), 0}});
+        feed({});
+        tap(locate(button("Release")));
+        tap(locate(button(wisp::ui::tr(StrId::PanelClearAll))));
+
+        EXPECT_EQ(calls, (std::vector<std::string>{"open a", "exit a", "tap a/n1", "dismiss a/n1",
+                                                   "dismiss b/n2", "action system/w1", "clear"}));
+    }
+}
+
+TEST_F(SystemLayerTest, PanelUpdatesWhileOpen) {
+    start("circle");
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [] {}});
+        wisp::ui::PanelModel m = sample_model();
+        m.notes.resize(1);
+        layer->update_panel(m);
+        layer->open_panel();
+        EXPECT_NE(find_label_containing(layer->panel(), "Alpha kept"), nullptr);
+        EXPECT_EQ(find_label_containing(layer->panel(), "Note one"), nullptr);
+
+        layer->update_panel(sample_model());
+        EXPECT_TRUE(layer->panel_open());
+        EXPECT_NE(find_label_containing(layer->panel(), "Note one"), nullptr);
+        EXPECT_NE(find_label_containing(layer->panel(), "Note two"), nullptr);
+
+        wisp::ui::PanelModel empty;
+        empty.header = {"09:42", -1, false, ""};
+        layer->update_panel(empty);
+        EXPECT_EQ(find_label_containing(layer->panel(), "Note one"), nullptr);
+        EXPECT_EQ(find_label_containing(layer->panel(), "Alpha"), nullptr);
+        EXPECT_NE(find_label_containing(layer->panel(), wisp::ui::tr(StrId::PanelEmpty)), nullptr);
+        EXPECT_EQ(find_label_containing(layer->panel(), wisp::ui::tr(StrId::PanelClearAll)),
+                  nullptr);
+    });
+}
+
+// A tap on the panel where nothing is closes it.
+TEST_F(SystemLayerTest, PanelTapOnBlankCloses) {
+    start("circle");
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [] {}});
+        layer->open_panel();
+    });
+    tap(240, 470);  // below the safe area
+    on_ui([&] {
+        EXPECT_FALSE(layer->panel_open());
+        layer->open_panel();
+    });
+    tap(240, 400);  // the empty part of the safe area
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+}
+
+// An upward swipe across the panel closes it when its content does not
+// scroll.
+TEST_F(SystemLayerTest, PanelSwipeUpCloses) {
+    start("rect");
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [] {}});
+        layer->open_panel();
+    });
+    feed({{240, 300, 0}});
+    feed({{240, 300, 0}});
+    feed({{240, 250, 0}});
+    feed({{240, 200, 0}});
+    feed({});
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+}
+
+class BannerTest : public SystemLayerTest {
+protected:
+    void use_fake_tick() {
+        on_ui([] { lv_tick_set_cb(&fake_tick); });
+    }
+    // Moves the LVGL clock forward and runs the timers that came due.
+    void advance(uint32_t ms) {
+        g_tick_offset += ms;
+        on_ui([] { lv_timer_handler(); });
+    }
+};
+
+TEST_F(BannerTest, QueuesAndAutoHides) {
+    start("circle");
+    use_fake_tick();
+    on_ui([&] {
+        EXPECT_EQ(layer->banner(), nullptr);
+        layer->show_banner({"a", "n1", "A", "Alpha", "First", "one"}, [] {});
+        layer->show_banner({"b", "n2", "B", "Beta", "Second", "two"}, [] {});
+        ASSERT_NE(layer->banner(), nullptr);
+        EXPECT_NE(find_label_containing(layer->banner(), "First"), nullptr);
+        EXPECT_NE(find_label_containing(layer->banner(), "Alpha"), nullptr);
+    });
+    advance(SystemLayer::kBannerMs - 100);
+    on_ui([&] {
+        ASSERT_NE(layer->banner(), nullptr);
+        EXPECT_NE(find_label_containing(layer->banner(), "First"), nullptr);
+    });
+    advance(100);
+    on_ui([&] {
+        ASSERT_NE(layer->banner(), nullptr);
+        EXPECT_NE(find_label_containing(layer->banner(), "Second"), nullptr);
+    });
+    advance(SystemLayer::kBannerMs);
+    on_ui([&] { EXPECT_EQ(layer->banner(), nullptr); });
+}
+
+TEST_F(BannerTest, WidthFollowsRowSpan) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        on_ui([&] {
+            layer->show_banner({"system", "w1", "", "", "System", std::string(400, 'x')}, [] {});
+            lv_obj_t* b = layer->banner();
+            ASSERT_NE(b, nullptr);
+            lv_obj_update_layout(b);
+            lv_area_t a;
+            lv_obj_get_coords(b, &a);
+            EXPECT_EQ(a.y1, safe.y1 + 4);
+            EXPECT_EQ(lv_area_get_height(&a), SystemLayer::kBannerH);
+            EXPECT_TRUE(fully_visible(shape, a)) << area_str(a);
+            // The visible width its rows share, less 4 px each side.
+            int32_t x1 = 0;
+            int32_t x2 = kSide - 1;
+            for (int32_t y = a.y1; y <= a.y2; ++y) {
+                const wisp::hal::Span s = wisp::hal::row_span(shape, y);
+                x1 = std::max(x1, s.x1);
+                x2 = std::min(x2, s.x2);
+            }
+            EXPECT_EQ(a.x1, x1 + 4) << area_str(a);
+            EXPECT_EQ(a.x2, x2 - 4) << area_str(a);
+            // Its text stays inside it.
+            EXPECT_NE(find_label_containing(b, LV_SYMBOL_BELL), nullptr);
+            std::vector<std::pair<std::string, lv_area_t>> labels;
+            wisp::test::collect_labels(b, labels);
+            for (const auto& [text, la] : labels) {
+                EXPECT_TRUE(inside(la, {a.x1, a.y1, a.x2, a.y2})) << area_str(la);
+            }
+        });
+    }
+}
+
+TEST_F(BannerTest, TapCallsBackAndSwipeUpOnlyHides) {
+    start("rect");
+    int taps = 0;
+    int clicks = 0;
+    lv_point_t at{};
+    on_ui([&] {
+        make_counting_button(0, 0, kSide, 200, &clicks);
+        layer->show_banner({"a", "n1", "A", "Alpha", "First", "one"}, [&] { ++taps; });
+        at = center_of(layer->banner());
+    });
+    tap(at);
+    EXPECT_EQ(taps, 1);
+    EXPECT_EQ(clicks, 0);
+    on_ui([&] {
+        EXPECT_EQ(layer->banner(), nullptr);
+        layer->show_banner({"a", "n2", "A", "Alpha", "Second", "two"}, [&] { ++taps; });
+        at = center_of(layer->banner());
+    });
+    feed({{static_cast<int16_t>(at.x), static_cast<int16_t>(at.y), 0}});
+    feed({{static_cast<int16_t>(at.x), static_cast<int16_t>(at.y), 0}});
+    feed({{static_cast<int16_t>(at.x), static_cast<int16_t>(at.y - 20), 0}});
+    feed({{static_cast<int16_t>(at.x), static_cast<int16_t>(at.y - 40), 0}});
+    feed({});
+    EXPECT_EQ(taps, 1);
+    EXPECT_EQ(clicks, 0);
+    on_ui([&] { EXPECT_EQ(layer->banner(), nullptr); });
+}
+
+TEST_F(BannerTest, StacksBelowConfirm) {
+    start("circle");
+    on_ui([&] {
+        layer->set_status({1, 1});
+        layer->show_banner({"a", "n1", "A", "Alpha", "First", "one"}, [] {});
+        lv_obj_t* banner = top_level(layer->banner());
+        EXPECT_GT(lv_obj_get_index(banner), lv_obj_get_index(layer->capsule()));
+        lv_obj_t* box = layer->open_confirm(StrId::ResetTitle, "Sure?", [](bool) {});
+        ASSERT_NE(box, nullptr);
+        layer->raise();
+        lv_obj_t* backdrop = lv_obj_get_parent(box);
+        EXPECT_GT(lv_obj_get_index(backdrop), lv_obj_get_index(banner));
+        EXPECT_GT(lv_obj_get_index(banner), lv_obj_get_index(layer->capsule()));
+        layer->close_confirm(box);
+    });
+    // A banner shown while a dialog is open goes under it too.
+    on_ui([&] {
+        lv_obj_t* box = layer->open_confirm(StrId::ResetTitle, "Again?", [](bool) {});
+        ASSERT_NE(box, nullptr);
+        layer->show_banner({"b", "n2", "B", "Beta", "Second", "two"}, [] {});
+        layer->show_banner({"c", "n3", "C", "Gamma", "Third", "three"}, [] {});
+        lv_obj_t* banner = top_level(layer->banner());
+        EXPECT_GT(lv_obj_get_index(lv_obj_get_parent(box)), lv_obj_get_index(banner));
+        layer->close_confirm(box);
+    });
 }
 
 }  // namespace
