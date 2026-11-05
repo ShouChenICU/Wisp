@@ -215,6 +215,25 @@ AdminServer::~AdminServer() {
 
 bool AdminServer::flush_ws(uint32_t timeout_ms) { return hub_->flush(timeout_ms); }
 
+void AdminServer::renew_lease(uint64_t now_ms) {
+    if (deps_.wakelocks == nullptr) return;
+    std::lock_guard<os::Mutex> lock(lease_mutex_);
+    lease_until_ms_ = now_ms + kAdminLeaseMs;
+    if (!lease_.held()) {
+        lease_ = core::WakeLock(*deps_.wakelocks, "system.admin", core::WakeLockKind::Network,
+                                "admin request");
+    }
+}
+
+void AdminServer::tick(uint64_t now_ms) {
+    if (now_ms >= next_keepalive_ms_) {
+        next_keepalive_ms_ = now_ms + kWsKeepaliveMs;
+        hub_->keepalive();
+    }
+    std::lock_guard<os::Mutex> lock(lease_mutex_);
+    if (lease_.held() && now_ms >= lease_until_ms_) lease_.release();
+}
+
 std::string make_boot_id(const net::RandomFn& random) {
     uint8_t bytes[8] = {};
     if (random) random(bytes, sizeof(bytes));
@@ -285,6 +304,7 @@ net::HttpResponse AdminServer::handle_api(const net::HttpRequest& req) {
     if (!is_public && client_id.empty()) {
         return net::HttpResponse::error(401, "unauthorized", "pair this browser first");
     }
+    if (!client_id.empty()) renew_lease(now);
     if (detail::is_mutating(req.method) && !detail::csrf_ok(req)) {
         return net::HttpResponse::error(403, "csrf", "missing X-Wisp: 1 header");
     }

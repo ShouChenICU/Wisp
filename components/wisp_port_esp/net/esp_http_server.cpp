@@ -654,6 +654,15 @@ Result<void> EspHttpServer::start(uint16_t port, net::HttpHandler handler, net::
     }
     c.task_priority = impl_->config.task_priority;
     c.lru_purge_enable = true;
+    // A peer that vanished without a FIN (left Wi-Fi range, a lid shut)
+    // would otherwise keep its session -- and an admin WebSocket's wake
+    // lock, which keeps Wi-Fi out of deep standby -- until reboot: probe
+    // after 30 s of silence, every 10 s, and drop it after 3 unanswered
+    // probes (lwIP is built with LWIP_TCP_KEEPALIVE).
+    c.keep_alive_enable = true;
+    c.keep_alive_idle = 30;
+    c.keep_alive_interval = 10;
+    c.keep_alive_count = 3;
     c.uri_match_fn = httpd_uri_match_wildcard;
     c.max_uri_handlers = 6;
     // Static files carry ETag, Cache-Control, Content-Encoding and the

@@ -400,6 +400,22 @@ TEST(AdminScenes, UploadHoldsNetworkLock) {
         EXPECT_EQ(upload_locks(), 1);
     }
     EXPECT_EQ(upload_locks(), 0);
+    // A body longer than announced ends the request from on_data(): the
+    // lock goes at once, while the server is still draining the rest.
+    {
+        std::optional<wisp::net::StreamStart> start = fx.stream(fx.upload_head(zip.size() - 10));
+        ASSERT_TRUE(start && start->sink);
+        std::optional<HttpResponse> early;
+        std::span<const uint8_t> body(zip);
+        while (!early && !body.empty()) {
+            const size_t n = std::min(body.size(), wisp::net::kBodyChunkBytes);
+            early = start->sink->on_data(body.first(n));
+            body = body.subspan(n);
+        }
+        ASSERT_TRUE(early.has_value());
+        EXPECT_EQ(early->status, 400);
+        EXPECT_EQ(upload_locks(), 0);
+    }
 }
 
 TEST(AdminScenes, UploadErrors) {

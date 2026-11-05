@@ -200,35 +200,163 @@ TEST(NetworkWindow, ClosesAfterFiveMinutes) {
     EXPECT_EQ(f.deferring, true);
 }
 
-TEST(NetworkWindow, LeavingDeepStandbyStopsDeferring) {
+// Waking up turns Wi-Fi back on, but it takes seconds to connect: the
+// deferred requests stay put until it has, or until the connect timeout.
+TEST(NetworkWindow, LeavingDeepStandbyStopsDeferringOnceConnected) {
     Fixture f;
     f.tick(0, PowerLevel::DeepStandby);
     EXPECT_EQ(f.deferring, true);
+    f.pending = 1;
     f.tick(1000, PowerLevel::Active);
+    EXPECT_EQ(f.deferring, true);
+    f.tick(3000, PowerLevel::Active);
+    EXPECT_EQ(f.deferring, true);
+    f.connected = true;
+    f.tick(3250, PowerLevel::Active);
     EXPECT_EQ(f.deferring, false);
 
     // Back in deep standby the clock starts over.
-    f.pending = 1;
-    f.tick(2000, PowerLevel::DeepStandby);
+    f.connected = false;
+    f.tick(4000, PowerLevel::DeepStandby);
     EXPECT_EQ(f.deferring, true);
-    f.tick(2000 + kInterval - 1, PowerLevel::DeepStandby);
+    f.tick(4000 + kInterval - 1, PowerLevel::DeepStandby);
     EXPECT_FALSE(f.win.open());
-    f.tick(2000 + kInterval, PowerLevel::DeepStandby);
+    f.tick(4000 + kInterval, PowerLevel::DeepStandby);
     EXPECT_TRUE(f.win.open());
 
-    // Woken while a window is open: it closes and requests go out.
-    f.tick(2000 + kInterval + 1000, PowerLevel::Active);
+    // Standby kept up by someone else's network lock: once Wi-Fi is up,
+    // nothing waits.
+    Fixture g;
+    WakeLock admin(g.locks, "system.admin", WakeLockKind::Network, "admin session");
+    g.tick(3 * kInterval, PowerLevel::DeepStandby);
+    EXPECT_EQ(g.deferring, true);
+    g.tick(3 * kInterval + 250, PowerLevel::Standby);
+    EXPECT_EQ(g.deferring, true);
+    g.connected = true;
+    g.tick(3 * kInterval + 2000, PowerLevel::Standby);
+    EXPECT_EQ(g.deferring, false);
+}
+
+// No network after waking: after the connect timeout the requests are
+// released anyway and fail (or not) on their own.
+TEST(NetworkWindow, LeavingDeepStandbyGivesUpWaitingAfterConnectTimeout) {
+    Fixture f;
+    f.tick(0, PowerLevel::DeepStandby);
+    f.pending = 1;
+    f.tick(1000, PowerLevel::Active);
+    f.tick(1000 + NetworkWindow::kConnectTimeoutMs - 1, PowerLevel::Active);
+    EXPECT_EQ(f.deferring, true);
+    f.tick(1000 + NetworkWindow::kConnectTimeoutMs, PowerLevel::Active);
+    EXPECT_EQ(f.deferring, false);
+
+    // The wait starts over on the next wake.
+    f.tick(2 * NetworkWindow::kConnectTimeoutMs, PowerLevel::DeepStandby);
+    EXPECT_EQ(f.deferring, true);
+    f.tick(2 * NetworkWindow::kConnectTimeoutMs + 1000, PowerLevel::Dim);
+    EXPECT_EQ(f.deferring, true);
+}
+
+// Woken while a window is open but before it connected: the window closes
+// and the requests wait for Wi-Fi like any other wake.
+TEST(NetworkWindow, WakeBeforeTheWindowConnectsWaitsForWifi) {
+    Fixture f;
+    const uint64_t t = 2 * kInterval;
+    f.open_at(t);
+    f.tick(t + 250, PowerLevel::Standby);
+    f.tick(t + 1000, PowerLevel::Active);
+    EXPECT_FALSE(f.win.open());
+    EXPECT_FALSE(f.window_lock());
+    EXPECT_TRUE(f.logged("netwindow: closed (awake)"));
+    EXPECT_EQ(f.deferring, true);
+    f.tick(t + 2000, PowerLevel::Active);
+    EXPECT_EQ(f.deferring, true);
+    f.connected = true;
+    f.tick(t + 3000, PowerLevel::Active);
+    EXPECT_EQ(f.deferring, false);
+}
+
+// Woken while a connected window is sending: it closes, nothing waits.
+TEST(NetworkWindow, WakeDuringAConnectedWindowKeepsSending) {
+    Fixture f;
+    const uint64_t t = 2 * kInterval;
+    f.open_at(t);
+    f.connected = true;
+    f.idle = false;
+    f.tick(t + 2000, PowerLevel::Standby);
+    EXPECT_EQ(f.deferring, false);
+    f.tick(t + 3000, PowerLevel::Active);
     EXPECT_FALSE(f.win.open());
     EXPECT_FALSE(f.window_lock());
     EXPECT_EQ(f.deferring, false);
+}
 
-    // Standby kept up by someone else's network lock: Wi-Fi is on, so
-    // nothing waits.
-    WakeLock admin(f.locks, "system.admin", WakeLockKind::Network, "admin session");
-    f.tick(3 * kInterval, PowerLevel::DeepStandby);
-    EXPECT_EQ(f.deferring, true);
-    f.tick(3 * kInterval + 250, PowerLevel::Standby);
+// The station drops mid-window: requests wait again until it is back, and
+// the window gives up a connect timeout after the drop.
+TEST(NetworkWindow, WifiDropDuringAWindowDefersAgain) {
+    Fixture f;
+    const uint64_t t = 2 * kInterval;
+    f.open_at(t);
+    f.connected = true;
+    f.idle = false;
+    f.tick(t + 2000, PowerLevel::Standby);
     EXPECT_EQ(f.deferring, false);
+
+    f.connected = false;
+    const uint64_t drop = t + 10000;
+    f.tick(drop, PowerLevel::Standby);
+    EXPECT_EQ(f.deferring, true);
+    EXPECT_TRUE(f.win.open());
+
+    // Back: released again.
+    f.connected = true;
+    f.tick(drop + 3000, PowerLevel::Standby);
+    EXPECT_EQ(f.deferring, false);
+    EXPECT_TRUE(f.win.open());
+
+    // Gone for good: the window closes a connect timeout after the drop.
+    f.connected = false;
+    const uint64_t drop2 = t + 20000;
+    f.tick(drop2, PowerLevel::Standby);
+    EXPECT_EQ(f.deferring, true);
+    f.tick(drop2 + NetworkWindow::kConnectTimeoutMs - 1, PowerLevel::Standby);
+    EXPECT_TRUE(f.win.open());
+    f.tick(drop2 + NetworkWindow::kConnectTimeoutMs, PowerLevel::Standby);
+    EXPECT_FALSE(f.win.open());
+    EXPECT_FALSE(f.window_lock());
+    EXPECT_TRUE(f.logged("netwindow: closed (no wifi)"));
+    EXPECT_EQ(f.deferring, true);
+}
+
+// After a window closes, standby without any other network lock is
+// PowerManager on its way down -- but only for a few seconds. If it stays
+// in standby, Wi-Fi is on and the requests go out.
+TEST(NetworkWindow, SettleExpiresIntoStandby) {
+    Fixture f;
+    const uint64_t t = 2 * kInterval;
+    f.open_at(t);
+    f.connected = true;
+    f.tick(t + 1000, PowerLevel::Standby);
+    f.pending = 0;
+    f.win.note_time_result();
+    f.tick(t + 2000, PowerLevel::Standby);
+    ASSERT_FALSE(f.win.open());
+    EXPECT_EQ(f.deferring, true);
+
+    f.tick(t + 4000, PowerLevel::Standby);
+    EXPECT_EQ(f.deferring, true);
+    f.tick(t + 7000, PowerLevel::Standby);  // 5 s after closing
+    EXPECT_EQ(f.deferring, false);
+
+    // The window clock was reset: a new deep standby counts from its start.
+    f.pending = 1;
+    f.connected = false;
+    const uint64_t d = t + 10000;
+    f.tick(d, PowerLevel::DeepStandby);
+    EXPECT_EQ(f.deferring, true);
+    f.tick(d + kInterval - 1, PowerLevel::DeepStandby);
+    EXPECT_FALSE(f.win.open());
+    f.tick(d + kInterval, PowerLevel::DeepStandby);
+    EXPECT_TRUE(f.win.open());
 }
 
 }  // namespace

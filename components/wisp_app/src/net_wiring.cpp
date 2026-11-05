@@ -226,6 +226,7 @@ void NetWiring::run() {
         }
         if (time_sync_ && time_sync_->tick(sta_up_.load())) ntp_wake_.give();
         pairing_->tick(now);
+        if (admin_) admin_->tick(now);
         if (deps_.firmware != nullptr) deps_.firmware->tick(now);
         reconcile_http(now);
         (void)wake_.take(kNetTickMs);

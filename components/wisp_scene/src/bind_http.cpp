@@ -13,12 +13,16 @@
 //       joined with ", "), body a string, json the decoded body when
 //       content-type contains "json" and the body parses, and deferred =
 //       true when the request waited for deep standby's network window
-//       (scene-device spec 4.4; absent otherwise).
+//       (scene-device spec 4.4; absent otherwise). The flag rides only on
+//       res, as the spec puts it: an error passes no res, so a deferred
+//       request that then fails cannot be told from one that did not wait
+//       -- except deferred_timeout, which only a waiting request gets.
 //   err: permission_denied, not_https, too_large, rate_limited,
-//       deferred_queue_full, deferred_timeout, dns, connect, tls, timeout,
-//       other (from the proxy), or not_serializable,
-//       too_deep (a table body that cannot be encoded) -- always through
-//       cb, never at the call.
+//       deferred_queue_full (the scene already has 4 waiting),
+//       deferred_timeout (waited an hour without a window that connected),
+//       dns, connect, tls, timeout, other (from the proxy), or
+//       not_serializable, too_deep (a table body that cannot be encoded)
+//       -- always through cb, never at the call.
 // Malformed arguments (url not a string, body not a string or table, opts
 // or opts.headers not a table, a header name or value not a string, cb
 // not a function) raise argument errors.

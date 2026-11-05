@@ -233,7 +233,10 @@ public:
 
     std::optional<net::HttpResponse> on_data(std::span<const uint8_t> chunk) override {
         if (chunk.size() > buffer_.size() - received_) {
+            // The request ends here; the server still drains the rest of
+            // the body before the sink goes, which needs no lock.
             buffer_ = os::LargeBuffer();
+            lock_.release();
             net::HttpResponse res = bad_request("body longer than its Content-Length");
             res.headers.emplace_back("Cache-Control", "no-store");
             return res;

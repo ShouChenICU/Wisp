@@ -265,6 +265,17 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
                     job->deferred_at = now;
                     deferred_.push_back(std::move(job));
                 }
+            } else if (!deferred_.empty()) {
+                // Waiting requests are still draining into the run queue:
+                // line up behind them, in submission order.
+                if (st.deferred >= limits_.max_deferred_per_scene) {
+                    code = "rate_limited";
+                } else {
+                    st.sent.push_back(now);
+                    ++st.deferred;
+                    job->deferred_at = now;
+                    deferred_.push_back(std::move(job));
+                }
             } else if (queue_.size() >= limits_.queue) {
                 code = "rate_limited";
             } else {
@@ -321,6 +332,24 @@ void SceneHttp::set_deferring(bool on) {
         std::lock_guard<os::Mutex> lock(mu_);
         if (deferring_ == on) return;
         deferring_ = on;
+        if (on) {
+            // Whatever has not started goes back to wait (Wi-Fi is going
+            // off), ahead of the rest: everything in the run queue was
+            // submitted before anything still waiting. The per-scene cap
+            // is not applied to these.
+            const uint64_t now = now_ms_();
+            while (!queue_.empty()) {
+                os::LargeUnique<Job> job = std::move(queue_.back());
+                queue_.pop_back();
+                ++scenes_[job->scene_id].deferred;
+                deferred_.push_front(std::move(job));
+            }
+            for (auto& job : deferred_) {
+                if (job->deferred) continue;
+                job->deferred = true;
+                job->deferred_at = now;
+            }
+        }
     }
     // The worker moves the waiting requests (off) or starts timing them out
     // (on).

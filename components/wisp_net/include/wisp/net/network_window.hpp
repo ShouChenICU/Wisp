@@ -12,16 +12,21 @@
 // station is connected the deferred requests are released; the window
 // closes when the proxy is idle and a time-sync result has arrived (Wi-Fi
 // coming up starts an attempt; at most kTimeSyncWaitMs after connecting
-// is waited for one). It gives up kConnectTimeoutMs after opening without
-// a connection and closes kMaxOpenMs after opening whatever is still
-// under way. Closing releases the lock, so PowerManager returns to deep
+// is waited for one). It gives up kConnectTimeoutMs after opening (or
+// after the station dropped mid-window, which defers again) without a
+// connection and closes kMaxOpenMs after opening whatever is still under
+// way. Closing releases the lock, so PowerManager returns to deep
 // standby; the requests that remain keep waiting for the next window.
 //
 // Outside deep standby nothing is deferred: in standby Wi-Fi is on and
-// requests go out at once. Two exceptions keep deferring on in standby:
-// an open window that has not connected yet, and the few seconds right
-// after a window closes while no other network lock is held, which is only
-// PowerManager not having gone back down yet. Waking up (active or dim)
+// requests go out at once. Exceptions keep deferring on in standby: an
+// open window that is not connected, and the few seconds right after a
+// window closes while no other network lock is held, which is only
+// PowerManager not having gone back down yet. Leaving deep standby for
+// any level (or waking while an unconnected window is open) keeps the
+// requests waiting until the station is connected, or at most
+// kConnectTimeoutMs: Wi-Fi only starts coming up then, and requests
+// released earlier would fail with no route. Waking up (active or dim)
 // while a window is open closes it.
 //
 // Logs (Info, tag "net"): "netwindow: open" and "netwindow: closed
@@ -68,6 +73,7 @@ public:
     bool open() const { return open_.load(); }
 
 private:
+    void tick_open(uint64_t now_ms);
     void deferring(bool on);
     void close(uint64_t now_ms, const char* why);
 
@@ -81,6 +87,11 @@ private:
     std::optional<uint64_t> next_ms_;
     uint64_t opened_ms_ = 0;
     std::optional<uint64_t> connected_ms_;
+    // What the window's connect timeout counts from: opening, or the
+    // station dropping mid-window.
+    uint64_t connect_from_ms_ = 0;
+    // When deep standby (with deferring on) was left; nullopt otherwise.
+    std::optional<uint64_t> wake_ms_;
     // Set when a window closes: until then PowerManager may still be on
     // its way back to deep standby.
     std::optional<uint64_t> closing_until_ms_;

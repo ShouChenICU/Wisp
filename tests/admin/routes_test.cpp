@@ -511,4 +511,39 @@ TEST(Routes, SystemTimeWithoutAServiceIsUnavailable) {
     EXPECT_EQ(error_code(post), "unavailable");
 }
 
+// A page that only uses the REST API (no WebSocket) still keeps Wi-Fi on
+// while it is in use: every authenticated request renews a short network
+// lock, which tick() lets go of two minutes after the last one.
+TEST(Routes, AuthenticatedRequestsKeepWifiOnForTwoMinutes) {
+    AdminFixture f;
+    auto lease = [&f] {
+        int n = 0;
+        for (const auto& l : f.wakelocks.list())
+            if (l.holder == "system.admin" && l.kind == wisp::core::WakeLockKind::Network &&
+                l.reason == "admin request")
+                ++n;
+        return n;
+    };
+    const std::string token = f.token();
+
+    // Unauthenticated and public requests do not count.
+    EXPECT_EQ(f.srv->handle(make_req(Get, "/api/v1/settings")).status, 401);
+    EXPECT_EQ(f.srv->handle(make_req(Get, "/api/v1/info")).status, 200);
+    EXPECT_EQ(lease(), 0);
+
+    EXPECT_EQ(f.srv->handle(authed(token, Get, "/api/v1/settings")).status, 200);
+    EXPECT_EQ(lease(), 1);
+    f.now += 100000;
+    f.srv->tick(f.now);
+    EXPECT_EQ(lease(), 1);
+    EXPECT_EQ(f.srv->handle(authed(token, Get, "/api/v1/settings")).status, 200);
+    EXPECT_EQ(lease(), 1);  // renewed, not stacked
+    f.now += 119999;
+    f.srv->tick(f.now);
+    EXPECT_EQ(lease(), 1);
+    f.now += 1;
+    f.srv->tick(f.now);
+    EXPECT_EQ(lease(), 0);
+}
+
 }  // namespace

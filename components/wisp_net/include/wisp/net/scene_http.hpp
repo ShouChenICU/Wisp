@@ -25,9 +25,14 @@
 // Deferred requests wait apart from the run queue, in the order they were
 // submitted; set_deferring(false) has the worker move them into the run
 // queue as it has room, oldest first, and their results carry
-// `deferred = true`. One that has waited longer than deferred_timeout_ms
-// fails with "deferred_timeout" (the worker looks at least every
-// deferred_check_ms while any wait).
+// `deferred = true`. set_deferring(true) moves the run queue's requests
+// that have not started back to the front of the deferred list (the one
+// in flight finishes as it is). While deferred requests are draining, a
+// new one lines up behind them -- in the deferred list, capped per scene
+// at max_deferred_per_scene (else "rate_limited") -- and is not marked
+// deferred unless deferring starts again before it runs. One that has
+// waited longer than deferred_timeout_ms fails with "deferred_timeout"
+// (the worker looks at least every deferred_check_ms while any wait).
 // Accepted requests run one at a time on the "wisp.shttp" task, each with
 // one deadline of SceneHttpLimits::timeout_ms for all of it (waiting for
 // the TLS gate, connect, handshake, sending and every read; "timeout"
@@ -155,9 +160,10 @@ public:
     // drops the scene's deferred requests.
     void cancel_scene(const std::string& scene_id);
 
-    // On: accepted requests wait in the deferred list. Off: the worker
-    // moves the waiting ones into the run queue in submission order (those
-    // that do not fit stay until there is room). Any thread.
+    // On: accepted requests wait in the deferred list, and queued ones
+    // that have not started go back to it (see the file header). Off: the
+    // worker moves the waiting ones into the run queue in submission order
+    // (those that do not fit stay until there is room). Any thread.
     void set_deferring(bool on);
     // Requests waiting in the deferred list.
     size_t deferred_count() const;

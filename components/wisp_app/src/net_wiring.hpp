@@ -44,7 +44,12 @@
 // a server is unreachable) run on the "wisp.ntp" task so they never hold
 // up a Wi-Fi tick. "wisp.ntp" never touches flash: tick() reads the server
 // list on "wisp.net", and the worker only does sockets, settimeofday(),
-// the RTC's I2C write, logging and a bus publish.
+// the RTC's I2C write, logging, a bus publish and its wake lock (which,
+// with a UI, only queues PowerManager's reaction to the UI task; see
+// PowerManager::schedule_lock_eval() for headless).
+//
+// The "wisp.net" task also runs AdminServer::tick() (the admin WebSocket
+// keepalive and the REST requests' wake lock).
 //
 // stop() joins the task, stops both servers (their on_close callbacks run
 // while they join connection threads; nothing here holds a lock then),

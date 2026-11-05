@@ -31,6 +31,15 @@
 // open, so deep standby does not turn Wi-Fi off under an open admin page
 // (scene-device spec 4.3).
 //
+// Keepalive: a peer that vanished without closing (left Wi-Fi range, a
+// laptop lid shut, a router reboot) never reports a close, and its lock
+// would keep Wi-Fi on until reboot. keepalive(), called periodically by
+// the owner, sends every client {"t":"ping"}; the page answers
+// {"t":"pong"}, and any message from a client counts as hearing from it.
+// A client not heard from for kKeepaliveMisses calls in a row is closed
+// ("client N closed: silent"). The server's TCP keepalive (where the port
+// has one) catches the same peers at the socket level.
+//
 // Revocation: each connection remembers the paired client whose token
 // opened it; close_client() ends that client's connections when its
 // token is revoked (spec 6.4).
@@ -99,7 +108,8 @@ public:
     // max_clients are already open or the id is taken. New connections are
     // subscribed to nothing.
     bool open(std::shared_ptr<net::WsConnection> conn, std::string client_id = {});
-    // Handles a client's {"sub":[...]} message; anything else is ignored.
+    // Handles a client's {"sub":[...]} message; anything else is ignored
+    // (but still counts as hearing from the client, see keepalive()).
     void on_message(int id, std::string_view text);
     // The server reports a closed connection: forgets it and drops
     // whatever is still queued for it. Unknown ids are ignored.
@@ -121,6 +131,12 @@ public:
     // final event leaves before the revocation closes the sockets.
     bool flush(uint32_t timeout_ms);
 
+    // One keepalive round: pings every client and closes those not heard
+    // from for kKeepaliveMisses rounds. Only enqueues and closes; the
+    // sender task sends the pings.
+    void keepalive();
+    static constexpr int kKeepaliveMisses = 3;
+
     // Sends what is owed, per client the hello (until it goes through),
     // the dropped notice and up to one queue's worth, in that order,
     // stopping at that client's first refused send.
@@ -132,7 +148,8 @@ private:
     void on_event(const core::Event& e);
     void enqueue_locked(Client& c, std::string msg);
     // Detaches the matching clients and closes their connections.
-    void close_matching(const std::function<bool(const Client&)>& match);
+    // `why` ends the log line "client N closed: <why>".
+    void close_matching(const std::function<bool(const Client&)>& match, const char* why);
     void forget_locked(Client& c);
     bool has_pending() const;
     void run();

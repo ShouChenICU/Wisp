@@ -223,6 +223,14 @@ void PowerManager::schedule_lock_eval() {
     // device's set_power() during one of our transitions). So with a UI
     // task this only queues the work, from the UI task too, and returns.
     // Headless there is no task to queue to; the transition runs here.
+    // That makes every thread that takes or drops a wake lock a thread
+    // that may run a transition (devices' set_power(), the storage flush,
+    // light sleep), so headless such a thread must be allowed to access
+    // flash (os::TaskConfig::flash_access, AGENTS.md 5). Some are not:
+    // "wisp.ntp" holds "system.ntp" and its stack may be in PSRAM. No
+    // board ships headless today; one that does needs a task to queue to
+    // here first (wisp_os has no call to ask whether the current task
+    // may access flash, so this cannot be asserted).
     if (ui_ == nullptr) {
         evaluate(std::nullopt);
         return;

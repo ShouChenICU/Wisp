@@ -21,6 +21,8 @@ constexpr const char* kTag = "ws";
 // Event prefixes forwarded to "events" subscribers (spec 6.2).
 constexpr const char* kForwardedPrefixes[] = {"net.", "power.", "scene.", "storage.", "system."};
 
+constexpr const char* kPing = R"({"t":"ping"})";
+
 // While a socket keeps refusing, the sender retries this often.
 constexpr uint32_t kRetryMs = 100;
 
@@ -65,6 +67,10 @@ struct WsHub::Client {
     // queue so neither drop-oldest nor the dropped notice can get ahead
     // of it.
     bool hello_pending = true;
+    // Keepalive: whether anything arrived since the last round, and how
+    // many rounds in a row nothing did.
+    bool heard = false;
+    int missed = 0;
     std::deque<std::string> queue;
     size_t queued_bytes = 0;  // sum of queue's message sizes
     uint64_t dropped = 0;
@@ -168,6 +174,11 @@ bool WsHub::open(std::shared_ptr<net::WsConnection> conn, std::string client_id)
 }
 
 void WsHub::on_message(int id, std::string_view text) {
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        for (auto& c : clients_)
+            if (c->id == id) c->heard = true;
+    }
     auto parsed = from_json(text);
     if (!parsed) return;
     const Value* sub = parsed.value().find("sub");
@@ -264,7 +275,7 @@ void WsHub::sync_lock() {
     }
 }
 
-void WsHub::close_matching(const std::function<bool(const Client&)>& match) {
+void WsHub::close_matching(const std::function<bool(const Client&)>& match, const char* why) {
     std::vector<std::shared_ptr<Client>> closing;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
@@ -282,18 +293,40 @@ void WsHub::close_matching(const std::function<bool(const Client&)>& match) {
     // close(), and the log line goes through write().
     for (const auto& c : closing) {
         c->conn->close();
-        WLOG_I(kTag, "client %d closed: its pairing was revoked", c->id);
+        WLOG_I(kTag, "client %d closed: %s", c->id, why);
     }
     if (!closing.empty()) sync_lock();
 }
 
 void WsHub::close_client(std::string_view client_id) {
     if (client_id.empty()) return;
-    close_matching([client_id](const Client& c) { return c.client_id == client_id; });
+    close_matching([client_id](const Client& c) { return c.client_id == client_id; },
+                   "its pairing was revoked");
 }
 
 void WsHub::close_all() {
-    close_matching([](const Client&) { return true; });
+    close_matching([](const Client&) { return true; }, "its pairing was revoked");
+}
+
+void WsHub::keepalive() {
+    bool queued = false;
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        for (auto& c : clients_) {
+            if (c->heard) {
+                c->heard = false;
+                c->missed = 0;
+            } else {
+                ++c->missed;
+            }
+            if (c->missed < kKeepaliveMisses) {
+                enqueue_locked(*c, kPing);
+                queued = true;
+            }
+        }
+    }
+    close_matching([](const Client& c) { return c.missed >= kKeepaliveMisses; }, "silent");
+    if (queued) wake_.give();
 }
 
 void WsHub::write(const LogRecord& rec) {

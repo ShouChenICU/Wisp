@@ -134,6 +134,16 @@ function open() {
       return;
     }
     if (!msg || typeof msg !== 'object') return;
+    if (msg.t === 'ping') {
+      // The device closes a client it has not heard from in a while (a
+      // vanished peer would keep Wi-Fi awake); answering keeps this one.
+      try {
+        s.send(JSON.stringify({ t: 'pong' }));
+      } catch {
+        // Closing; the reconnect logic takes over.
+      }
+      return;
+    }
     if (msg.t === 'hello') hello = msg;
     for (const sub of [...subscribers]) {
       if (deliverable(sub, msg)) sub.onMessage(msg);

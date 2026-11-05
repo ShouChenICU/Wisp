@@ -313,6 +313,24 @@ TEST(AdminFirmware, UploadHoldsNetworkAndCpuLocks) {
         EXPECT_EQ(ota_locks(), both);
     }
     EXPECT_TRUE(ota_locks().empty());
+    // A write that fails ends the request from on_data(): the locks go at
+    // once, while the server is still draining the rest of the body.
+    fx.updater.fail_write = true;
+    {
+        std::optional<wisp::net::StreamStart> start = fx.stream(fx.head(image.size()));
+        ASSERT_TRUE(start && start->sink);
+        std::optional<HttpResponse> early;
+        std::span<const uint8_t> body(image);
+        while (!early && !body.empty()) {
+            const size_t n = std::min(body.size(), wisp::net::kBodyChunkBytes);
+            early = start->sink->on_data(body.first(n));
+            body = body.subspan(n);
+        }
+        ASSERT_TRUE(early.has_value());
+        EXPECT_EQ(early->status, 500);
+        EXPECT_TRUE(ota_locks().empty());
+    }
+    fx.updater.fail_write = false;
     // A refused upload takes nothing.
     EXPECT_EQ(fx.stream(fx.head(0))->response.status, 411);
     EXPECT_TRUE(ota_locks().empty());

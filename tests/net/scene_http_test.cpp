@@ -512,6 +512,82 @@ TEST_F(SceneHttpTest, ResumeSendsInOrderMarkedDeferred) {
     EXPECT_FALSE(now_res.deferred);
 }
 
+// Deferring starts while requests sit in the run queue (a window closing,
+// Wi-Fi dropping): the ones not started yet go back to wait, in order,
+// instead of running on a radio that is going off.
+TEST_F(SceneHttpTest, QueuedRequestsGoBackWhenDeferringStarts) {
+    make();
+    client.hold = true;
+    Results r;
+    http->submit(get("https://api.example.com/0"), r.sink());
+    ASSERT_TRUE(wait_until([&] { return client.calls() == 1; }, 3000));
+    http->submit(get("https://api.example.com/1"), r.sink());
+    http->submit(get("https://api.example.com/2"), r.sink());
+
+    http->set_deferring(true);
+    EXPECT_EQ(http->deferred_count(), 2u);
+    http->submit(get("https://api.example.com/3"), r.sink());
+    EXPECT_EQ(http->deferred_count(), 3u);
+
+    // The one already in flight finishes as it is.
+    client.hold = false;
+    ASSERT_TRUE(wait_until([&] { return r.size() == 1; }, 3000));
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(client.calls(), 1u);
+    {
+        std::lock_guard<std::mutex> lock(r.mu);
+        EXPECT_FALSE(r.got[0].deferred);
+    }
+
+    http->set_deferring(false);
+    ASSERT_TRUE(wait_until([&] { return r.size() == 4; }, 3000));
+    EXPECT_EQ(client.urls(),
+              (std::vector<std::string>{"https://api.example.com/0", "https://api.example.com/1",
+                                        "https://api.example.com/2", "https://api.example.com/3"}));
+    std::lock_guard<std::mutex> lock(r.mu);
+    for (size_t i = 1; i < 4; ++i) EXPECT_TRUE(r.got[i].deferred);
+}
+
+// While the waiting requests drain into a full run queue, a new one lines
+// up behind them (in order, per scene capped) rather than being refused.
+TEST_F(SceneHttpTest, NewRequestsQueueBehindTheBacklog) {
+    SceneHttpLimits limits;
+    limits.queue = 2;
+    make(limits);
+    http->set_hosts("t", kHosts);
+    http->set_deferring(true);
+    Results r;
+    http->submit(get("https://api.example.com/0"), r.sink());
+    http->submit(get("https://api.example.com/1", "t"), r.sink());
+    http->submit(get("https://api.example.com/2"), r.sink());
+    http->submit(get("https://api.example.com/3", "t"), r.sink());
+    http->submit(get("https://api.example.com/4"), r.sink());
+
+    client.hold = true;
+    http->set_deferring(false);
+    ASSERT_TRUE(wait_until([&] { return client.calls() == 1; }, 3000));
+    // In flight: 0. Run queue: 1, 2. Waiting: 3, 4.
+    http->submit(get("https://api.example.com/n0"), r.sink());
+    http->submit(get("https://api.example.com/n1"), r.sink());
+    EXPECT_EQ(r.size(), 0u);
+    // Scene "s" now has 4, n0 n1 among them, behind the backlog: full.
+    http->submit(get("https://api.example.com/n2"), r.sink());
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r.got[0].error, "rate_limited");
+
+    client.hold = false;
+    ASSERT_TRUE(wait_until([&] { return r.size() == 8; }, 3000));
+    EXPECT_EQ(client.urls(),
+              (std::vector<std::string>{"https://api.example.com/0", "https://api.example.com/1",
+                                        "https://api.example.com/2", "https://api.example.com/3",
+                                        "https://api.example.com/4", "https://api.example.com/n0",
+                                        "https://api.example.com/n1"}));
+    std::lock_guard<std::mutex> lock(r.mu);
+    for (size_t i = 1; i < 6; ++i) EXPECT_TRUE(r.got[i].deferred) << i;
+    EXPECT_FALSE(r.got[6].deferred);
+    EXPECT_FALSE(r.got[7].deferred);
+}
+
 TEST_F(SceneHttpTest, DeferredTimeoutAfterOneHour) {
     SceneHttpLimits limits;
     limits.deferred_check_ms = 10;
