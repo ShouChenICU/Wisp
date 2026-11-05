@@ -773,4 +773,25 @@ TEST_F(SceneRuntimeTest, CloseAnswersOnlyOnceTheSceneIsStopped) {
     }
 }
 
+// The UI changes that open and close a scene (the view coming up, going
+// away) are never dropped, however long the UI thread is held up with its
+// queue full: they run once it is free again.
+TEST_F(SceneRuntimeTest, OpenAndCloseSurviveALongUiStall) {
+    start();
+    install("counter", kCounter);
+    {
+        UiStall stall(*ui);
+        ASSERT_TRUE(rt->open("counter"));
+        // Longer than any bounded retry would wait.
+        wisp::os::sleep_ms(2500);
+    }
+    EXPECT_TRUE(wait_label("已点击"));
+    {
+        UiStall stall(*ui);
+        ASSERT_TRUE(rt->close("counter"));
+        wisp::os::sleep_ms(2500);
+    }
+    EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
+}
+
 }  // namespace

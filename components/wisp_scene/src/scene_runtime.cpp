@@ -28,9 +28,6 @@ constexpr uint32_t kWaitMs = 10000;
 constexpr uint32_t kPushMs = 1000;
 // A message that takes longer than this is logged.
 constexpr uint64_t kSlowMs = 50;
-// post_ui() retries this often, this long apart, before it gives up.
-constexpr int kUiPostTries = 1000;
-constexpr uint32_t kUiPostRetryMs = 2;
 
 // "scene.<id>": the tag of the scene's own log.
 std::string scene_tag(std::string_view id) {
@@ -193,9 +190,12 @@ void SceneRuntime::stop() {
         delayed_.clear();
     }
     deps_.ui.set_frame_hook({});
-    // Also a fence: every UI job the scene task posted has run once this
-    // returns, and the old frame hook is no longer running.
-    deps_.ui.run_blocking([this] { ui_drop_view(); });
+    // Also a fence: every UI job the scene task handed over has run once
+    // this returns, and the old frame hook is no longer running.
+    deps_.ui.run_blocking([this] {
+        run_ui_jobs();
+        ui_drop_view();
+    });
 }
 
 void SceneRuntime::drain_queue() {
@@ -940,14 +940,28 @@ void SceneRuntime::close_if_asked() {
 // --- UI thread ---------------------------------------------------------------
 
 void SceneRuntime::post_ui(std::function<void()> fn) {
-    for (int i = 0; i < kUiPostTries; ++i) {
-        if (deps_.ui.post(fn)) return;
-        os::sleep_ms(kUiPostRetryMs);
+    {
+        std::lock_guard<os::Mutex> lock(ui_jobs_mu_);
+        ui_jobs_.push_back(std::move(fn));
     }
-    WLOG_E(kTag, "UI queue stayed full: a scene UI change was dropped");
+    // Only a nudge: if the UI queue is full, the next frame (or the next
+    // nudge) runs the job. Never retried here, so the scene task never
+    // waits for the UI thread.
+    deps_.ui.post([this] { run_ui_jobs(); });
+}
+
+void SceneRuntime::run_ui_jobs() {
+    os::LargeVector<std::function<void()>> jobs;
+    {
+        std::lock_guard<os::Mutex> lock(ui_jobs_mu_);
+        jobs.swap(ui_jobs_);
+    }
+    for (auto& job : jobs) job();
 }
 
 void SceneRuntime::ui_frame() {
+    // Before the patches: a view these patches are for may be in here.
+    run_ui_jobs();
     UiSide& u = *ui_side_;
     const uint32_t instance = ui_instance_.load();
     if (!u.view || instance == 0 || u.instance != instance) return;

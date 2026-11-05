@@ -311,8 +311,14 @@ private:
     void ui_show_view(uint32_t instance, std::string id,
                       std::shared_ptr<const core::ScenePackage> package);
     void ui_drop_view();
-    // Retries post() while the UI queue is full (bounded).
+    // Hands `fn` (showing or dropping a view, the error panel) to the UI
+    // thread, in order, and never drops it: it waits in ui_jobs_ until
+    // the UI thread runs it, from a post()ed nudge or, when the UI queue
+    // was full, from the next frame hook (or stop()). Any thread; never
+    // waits.
     void post_ui(std::function<void()> fn);
+    // UI thread: runs the jobs post_ui() queued, oldest first.
+    void run_ui_jobs();
 
     SceneRuntimeDeps deps_;
     SceneRuntimeConfig config_;
@@ -357,6 +363,10 @@ private:
     // UI thread only.
     struct UiSide;
     os::LargeUnique<UiSide> ui_side_;
+
+    // post_ui()'s jobs not yet run.
+    os::Mutex ui_jobs_mu_;
+    os::LargeVector<std::function<void()>> ui_jobs_;
 };
 
 }  // namespace wisp::scene
