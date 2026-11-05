@@ -107,13 +107,13 @@
 | 47 | 默认字体的 8 位字形缓存（`components/wisp_ui/src/a8_font.cpp`） | 看自检界面和配网卡片上的中、日、英文文字 | 与改动前一样：没有缺字、错字、发虚或错位 |  |
 | 48 | 开 XIP 后的待机与唤醒（`CONFIG_SPIRAM_XIP_FROM_PSRAM`） | 开 XIP 的固件上重复第 26–29 项（待机进入与唤醒、唤醒延迟、待机电流、多次浅睡眠） | 结果与第 26–29 项的预期一致；浅睡眠唤醒后没有花屏、复位或卡死 |  |
 | 49 | 网络校时（连接 spec 5.6，`net::TimeSyncService`、`wisp_port_esp` 的 `EspSntp`） | 连上 Wi-Fi 后看串口日志和自检界面"电源与时钟"卡片；再用 `mem` 看 `wisp.ntp` 任务；在管理后台"系统"页点"立即校时"；把 `ntp_servers` 改成 `down.invalid,ntp.aliyun.com` 再校时一次 | 拿到 IP 后几秒内出现 `time: synced from pool.ntp.org`（或回落到 `ntp.aliyun.com`）；卡片显示"Synced HH:MM"（本地时间）；`wisp.ntp` 栈在 PSRAM 且 high-water mark 余量足够（4096 字节栈），按实测调整 `NetWiring::kNtpStackBytes`；空闲时内部 RAM 不低于预算；第二次校时回落到 `ntp.aliyun.com` |  |
-| 50 | 两种安装方式（scene spec 9.4.1） | 网页"场景"页上传 `counter` 的 zip；`python3 tools/wisp_scene.py --host <IP>:8900 push scenes/examples/todo --open`；从自检界面"场景"区块打开两者 | 都安装成功，推送输出显示声明的域名；列表点击即打开 |  |
+| 50 | 两种安装方式（scene spec 9.4.1） | 网页"场景"页上传 `counter` 的 zip；`python3 tools/wisp_scene.py --host <IP>:8900 push scenes/examples/todo --open`；从自检界面"场景"区块打开两者 | 都安装成功，推送输出显示声明的域名；列表点击即打开 | 2026-11-05：通过。API 推送与网页 zip 上传都安装成功（日志 `admin: scene upload started` 后场景正常安装/打开/关闭）。 |
 | 51 | 示例功能与断电保留（scene spec 9.4.2） | 逐个打开 7 个示例；在待办加 3 条、记账加 2 条后拔电池和 USB 断电重启 | 功能正常；重启后数据仍在 |  |
 | 52 | 返回手势与错误面板（scene spec 9.4.3） | 从圆角屏左边缘 16 px 以内起、向右滑动超过 24 px（任意角度，`ui::SystemLayer::kBackZoneWidth`/`kBackTriggerDx`，见 `components/wisp_ui/include/wisp/ui/system_layer.hpp`）；推送 `tests/scene/fixtures/broken` 并打开，点"返回"，再打开点"重载" | 手势可用；错误面板显示文件与行号（`main.lua:5`），返回与重载正常 |  |
-| 53 | 长列表帧率与内存（scene spec 9.4.4） | 待办放 200 条，手指持续滚动 10 s，看 `WISP_PERF`；同时执行 `mem`；记下日志里 `slow message` 的最大耗时（GC 停顿） | fps 不低于自检界面基准（下方"性能基准"一节，关热点 22.7、开热点 28.2）；`internal free` ≥ 60 KB、`largest` ≥ 20 KB（`ram_budget.hpp` 的 `kIdleInternalFreeMin`/`kIdleInternalLargestMin`） |  |
+| 53 | 长列表帧率与内存（scene spec 9.4.4） | 待办放 200 条，手指持续滚动 10 s，看 `WISP_PERF`；同时执行 `mem`；记下日志里 `slow message` 的最大耗时（GC 停顿） | fps 不低于自检界面基准（下方"性能基准"一节，关热点 22.7、开热点 28.2）；`internal free` ≥ 60 KB、`largest` ≥ 20 KB（`ram_budget.hpp` 的 `kIdleInternalFreeMin`/`kIdleInternalLargestMin`） | 2026-11-05：todo200 持续滚动 fps 22–26，偶尔掉到 14；`internal free` ≥ 84 KB，高于 60 KB 下限；`slow message open` 115–196 ms。短暂掉到 14 fps 低于基准，本次没有继续排查。 |
 | 54 | 熄屏恢复与待机耗电（scene spec 9.4.5） | 番茄钟和时钟运行时熄屏 3 分钟再亮屏；按"验收第 5 条：待机耗电实测"一节的方法测待机电流，对比无场景时 | 剩余时间与表盘正确，`minute` 只补一次；待机电流与无场景时相当 |  |
 | 55 | 未声明域名被拒（scene spec 9.4.6） | 临时把天气场景的 URL 改成未声明的主机后推送打开 | 回调收到 `permission_denied`，没有出站连接 |  |
-| 56 | LVGL 堆在 PSRAM 后的帧率 | 不开场景，在最终固件上重复"UI 帧率基准"一行，不开热点与开热点各测一次（LVGL 堆改到 PSRAM 后已经在真机上测过一次，见下方"性能基准"一节的"LVGL 堆"小节） | `WISP_PERF` 的 fps 不开热点 ≥ 22.7、开热点 ≥ 28.2（下方"性能基准"一节）；低于时停下来报告，不要自行改回 |  |
+| 56 | LVGL 堆在 PSRAM 后的帧率 | 不开场景，在最终固件上重复"UI 帧率基准"一行，不开热点与开热点各测一次（LVGL 堆改到 PSRAM 后已经在真机上测过一次，见下方"性能基准"一节的"LVGL 堆"小节） | `WISP_PERF` 的 fps 不开热点 ≥ 22.7、开热点 ≥ 28.2（下方"性能基准"一节）；低于时停下来报告，不要自行改回 | 2026-11-05：不开热点 22–24 fps，达标（基准 22.7）；开热点 23–24 fps，**低于** 28.2 的基准，记为低于基准、待排查，没有按通过处理。 |
 
 ## 待机与省电（spec 6.7）
 
@@ -316,23 +316,34 @@ STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动
 | `wisp.shttp` | PSRAM | 8192 B | `SceneHttp::task_config()`（`components/wisp_net/src/scene_http.cpp`）的 `flash_access = false` |
 | `wisp.ntp` | PSRAM | 4096 B | `NetWiring` 里 `os::Task::spawn()` 的 `flash_access = false`（`components/wisp_app/src/net_wiring.cpp`）；大小是 `kNtpStackBytes`（`components/wisp_app/src/net_wiring.hpp`） |
 
-实测结果（(a)–(d) 四种状态下各任务的栈大小与 high-water mark，B）：
+实测结果（2026-11-05，真机验收，固件 `0.1.0-387-gac2c5d0-dirty`；(a)–(d) 四种状态下各任务的栈大小与 high-water mark，B；额外记了 `wisp_ui`/`httpd`/`wisp.ws` 三个任务，因为这次顺带测到了 `wisp_ui` 的新低点）：
 
 | 任务 | 配置栈大小 | (a) HWM | (b) HWM | (c) HWM | (d) HWM |
 |---|---|---|---|---|---|
-| `wisp.scene` | 131072 | | | | |
-| `wisp.fs` | 6144 | | | | |
-| `wisp.shttp` | 8192 | | | | |
-| `wisp.ntp` | 4096 | | | | |
+| `wisp.scene` | 131072 | 130140 | 124892 | 124892 | 124892 |
+| `wisp.fs` | 6144 | 1752 | 1688 | 1688 | 1688 |
+| `wisp.shttp` | 8192 | 7344 | 7344 | 3664 | 3664 |
+| `wisp.ntp` | 4096 | 1620 | 1620 | 1620 | 1620 |
+| `wisp_ui` | 8192（测量时）¹ | 1120 | 480 | 432 | 432 |
+| `httpd`（端口 8900，管理服务器） | 10240 | 9064 | 9064 | 9064 | 4280 |
+| `wisp.ws` | 4096 | 3264 | 3264 | 3264 | 2208 |
+
+¹ 这次测量用的还是改动前的 8192 字节栈。(c)/(d) 里 `wisp_ui` 的 high-water mark 只剩 432 B，是本次验收测到的全场最低点；8 KB 栈几乎打满，按此把 `UiConfig::task_stack`（`components/wisp_ui/include/wisp/ui/ui_runtime.hpp`）从 8192 调到 10240，多占内部 RAM 2 KB。(a) 空闲时 internal free 88899 B，扣掉这 2 KB 后约 86851 B，仍远高于 `kIdleInternalFreeMin`（60 KB）下限，不需要跟着调整 idle 预算。
 
 内部 RAM（B）：
 
 | 状态 | internal free | largest | min |
 |---|---|---|---|
-| (a) 空闲，未打开场景 | | | |
-| (b) 待办场景，滚动 200 条 | | | |
-| (c) 天气场景，HTTPS 请求期间 | | | |
-| (d) STA + 热点 + 日志页 + 上传场景 zip | | | |
+| (a) 空闲，未打开场景 | 88899 | 31744 | 54656 |
+| (b) 待办场景，滚动 200 条 | 88615 | 31744 | 48924 |
+| (c) 天气场景，HTTPS 请求期间 | 88851 | 31744 | 39772 |
+| (d) STA + 热点 + 日志页 + 上传场景 zip | 86287 | 31744 | 33772 |
+
+(b)/(c) 相对 (a) 的瞬时 `internal free` 降幅分别为 284 B、48 B，都在 spec 2.3 给出的 ≤ 2 KB 以内；(d) 降幅约 2.6 KB，略高一些，但 (d) 叠加了热点、两个 httpd 和一次上传，开销不只是场景子系统本身的。
+
+`largest` 全程保持 31744 B，高于 `components/wisp_app/include/wisp/app/ram_budget.hpp` 的 `kWorstInternalLargestMin`（16 × 1024 = 16384 B）和 `kIdleInternalLargestMin`（20 × 1024 = 20480 B），两项都达标。(a) 的 `internal free` 88899 B 高于 `kIdleInternalFreeMin`（60 × 1024 = 61440 B），达标。
+
+`min` 是开机以来的历史最低点：这次验收触到的内部 RAM 历史最低点是 33772 B（TLS 连通性测试叠加热点上传前后出现，一直保持到测试结束），对照 `kWorstInternalFreeMin`（40 × 1024 = 40960 B）：33772 < 40960，**不达标**，需要跟进（日志显示这个低点是在热点打开、WebSocket 日志连上之后、上传之前的区间内出现的，具体触发点还没有继续拆开排查）。
 
 ## 性能基准
 
