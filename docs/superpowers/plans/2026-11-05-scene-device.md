@@ -714,6 +714,8 @@ TEST(AdminScenes, ExitRoute)                               // 200；未知 id 40
 
 ### Task 7: VM 总预算、淘汰与开机恢复
 
+> 来自多场景调度评审（执行时处理）：Boot 启动 X 时若用户打开的 X 仍在加载，会返回 Ok 而不排队；之后用户再打开 Y 会替换掉 X 的加载，X 的恢复就丢了。`restore_background` 要保证每个要恢复的场景最终都起来，或者发出 RestoreFailed 通知。
+
 **Files:**
 - Create: `components/wisp_scene/include/wisp/scene/scene_schedule.hpp`、`components/wisp_scene/src/scene_schedule.cpp`
 - Modify: `components/wisp_scene/include/wisp/scene/vm.hpp`、`src/vm.cpp`（`VmPool`、`VmLimits::pool`）、`include/wisp/scene/scene_runtime.hpp`、`src/scene_runtime.cpp`

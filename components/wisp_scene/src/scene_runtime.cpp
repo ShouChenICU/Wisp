@@ -830,12 +830,14 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m) {
     s.id = m.scene_id;
     s.name = open.package->manifest.name;
     s.instance = m.instance;
-    s.args = std::move(open.args);
     s.package = open.package;
-    s.store = std::move(open.store);
-    s.declares_background = s.package->manifest.background;
+    // Allocated before the store and the arguments move in: on failure the
+    // caller still holds the store and closes it.
     s.scene = os::make_large<SceneInstance>(s.id, s.package, config_.vm);
     if (!s.scene) return nullptr;
+    s.args = std::move(open.args);
+    s.store = std::move(open.store);
+    s.declares_background = s.package->manifest.background;
     SceneApi& api = s.scene->api();
     api.device = [this] { return device_info(); };
     api.screen = deps_.shape;
