@@ -182,6 +182,19 @@ TEST_F(NotificationRouterTest, SoundPlaysTone) {
     EXPECT_EQ(power->level(), PowerLevel::Active);
 }
 
+// An alarm rings until the user touches the device, so it wakes the
+// screen (and the audio with it) even without wake = true.
+TEST_F(NotificationRouterTest, AlarmWakesFromStandbyEvenWithoutWake) {
+    make_router();
+    power->enter_standby();
+    ASSERT_TRUE(power->standby());
+    post("demo", "pomo", NotifySound::Alarm, false);
+    EXPECT_EQ(power->level(), PowerLevel::Active);
+    ASSERT_TRUE(wait_until([&] { return out->frames() > 0; }, 2000));
+    tones->silence();
+    EXPECT_TRUE(wait_until([&] { return !tones->playing(); }, 1000));
+}
+
 TEST_F(NotificationRouterTest, BannerShowsEveryPost) {
     make_router();
     std::mutex banner_mu;
@@ -246,6 +259,7 @@ TEST_F(NotificationRouterTest, TapForMissingSceneJustDismisses) {
 }
 
 TEST_F(NotificationRouterTest, ReleaseActionReleasesLock) {
+    start();
     make_router();
     const uint32_t lock = locks.acquire("scene.demo", WakeLockKind::Screen, "keep_screen_on");
     const std::string id =
@@ -254,6 +268,24 @@ TEST_F(NotificationRouterTest, ReleaseActionReleasesLock) {
     router->act(wisp::core::kSystemSource, id);
     EXPECT_FALSE(locks.held(WakeLockKind::Screen));
     EXPECT_FALSE(notes->find(wisp::core::kSystemSource, id).has_value());
+
+    // A notice whose lock id is not a lock: nothing is released or launched,
+    // the notice still goes.
+    const uint32_t kept = locks.acquire("scene.demo", WakeLockKind::Screen, "keep_screen_on");
+    for (const char* arg : {"abc", "0", "12x", "", "4294967296", "999999"}) {
+        const std::string bad = notes->post_system(wisp::core::notice::kWakeLockLong,
+                                                   std::string("scene.") + (*arg ? arg : "empty"),
+                                                   wisp::core::notice::kActionReleaseLock, arg);
+        router->act(wisp::core::kSystemSource, bad);
+        EXPECT_FALSE(notes->find(wisp::core::kSystemSource, bad).has_value()) << arg;
+    }
+    EXPECT_TRUE(locks.held(WakeLockKind::Screen));
+    locks.release(kept);
+    // Unknown notices are ignored.
+    router->act(wisp::core::kSystemSource, "no_such_notice");
+    router->act("demo", "nothing");
+    EXPECT_EQ(rt->foreground(), std::nullopt);
+    EXPECT_TRUE(rt->background_scenes().empty());
 
     // A notice without the action releases nothing.
     const uint32_t sys = locks.acquire("system.ota", WakeLockKind::Cpu, "ota");

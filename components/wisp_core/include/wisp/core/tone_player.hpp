@@ -19,8 +19,10 @@
 // synthesizes into a buffer it owns and writes to the output; it never
 // reads Settings.
 //
-// Thread-safe: play(), silence() and playing() may be called from any
-// thread, and never wait.
+// Threads: play(), silence() and playing() may be called from any thread,
+// and never wait, but not while start() or stop() runs: whoever calls them
+// stops calling before stop() (App stops the router and PowerManager, the
+// only callers, before it).
 
 #include <array>
 #include <atomic>

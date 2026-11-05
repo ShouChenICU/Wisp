@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -152,6 +153,37 @@ std::vector<std::string> scene_log(const std::string& id) {
 int count_of(const std::vector<std::string>& v, const std::string& s) {
     return static_cast<int>(std::count(v.begin(), v.end(), s));
 }
+
+// Keeps the loudest sample written to it.
+class PeakAudioOut : public wisp::hal::AudioOut {
+public:
+    PeakAudioOut() {
+        info_.id = "audio_out.main";
+        info_.cls = kClass;
+        info_.model = "FAKE";
+    }
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+    wisp::Result<void> open(const wisp::hal::AudioFormat&) override {
+        return wisp::Result<void>::ok();
+    }
+    wisp::Result<size_t> write(const int16_t* frames, size_t count) override {
+        int peak = peak_.load();
+        for (size_t i = 0; i < count; ++i) peak = std::max(peak, std::abs(int{frames[i]}));
+        peak_.store(peak);
+        frames_ += count;
+        return wisp::Result<size_t>::ok(count);
+    }
+    void close() override {}
+    wisp::Result<void> set_volume(uint8_t) override { return wisp::Result<void>::ok(); }
+    // The loudest sample since the last take, and how many frames came.
+    int take_peak() { return peak_.exchange(0); }
+    size_t frames() const { return frames_.load(); }
+
+private:
+    wisp::hal::DeviceInfo info_;
+    std::atomic<int> peak_{0};
+    std::atomic<size_t> frames_{0};
+};
 
 struct Booted {
     explicit Booted(UiNetOptions opts = {}) : h(opts) {}
@@ -748,4 +780,38 @@ return ui.screen { ui.label { text = "late" } }
     };
     EXPECT_TRUE(wait_until([&] { return read_list() == R"({"ids":["alpha"]})"; }, 3000))
         << read_list();
+}
+
+// A scene's sound="tone" plays at the audio/notify_vol setting, and a
+// change to it applies to the next notification.
+TEST(AppScenes, NotificationToneFollowsNotifyVolume) {
+    auto out = std::make_shared<PeakAudioOut>();
+    UiNetOptions opts;
+    opts.audio_out = out;
+    Booted b(opts);
+    ASSERT_TRUE(b.h.app->system_settings().set({{"notify_vol", wisp::Value(80)}}));
+    put_scene(b.h.root, "beep", "提示", R"(
+return ui.screen {
+  ui.button { ref = "beep", text = "beep",
+              on_click = function() wisp.notify{ title = "t", sound = "tone" } end },
+}
+)");
+    ASSERT_TRUE(b.start());
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    ASSERT_TRUE(rt->open("beep"));
+    auto click_until = [&](size_t frames) {
+        return wait_until([&] { return static_cast<bool>(rt->click_ref("beep")); }, 3000) &&
+               wait_until([&] { return out->frames() >= frames; }, 3000);
+    };
+
+    ASSERT_TRUE(click_until(2400));
+    const int at80 = out->take_peak();
+    ASSERT_GT(at80, 0);
+
+    ASSERT_TRUE(b.h.app->system_settings().set({{"notify_vol", wisp::Value(20)}}));
+    ASSERT_TRUE(b.h.app->bus().wait_idle(2000));
+    ASSERT_TRUE(click_until(4800));
+    const int at20 = out->take_peak();
+    EXPECT_NEAR(static_cast<double>(at20) / at80, 0.25, 0.25 * 0.05);
 }

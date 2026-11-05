@@ -28,6 +28,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/hal/audio.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -61,6 +62,8 @@ struct UiNetOptions {
     // Platform::sntp (a FakeSntp answering kSntpTime) and a set_wall_clock
     // that records each call in UiNetHarness::wall_clock_sets.
     bool with_sntp = false;
+    // Registered as "audio_out.main" when set (the notification sounds).
+    std::shared_ptr<wisp::hal::AudioOut> audio_out;
 };
 
 // 2026-01-01 00:00:00 UTC, what the FakeSntp answers.
@@ -69,11 +72,13 @@ inline constexpr int64_t kSntpTime = 1767225600;
 class UiNetBoard : public wisp::app::Board {
 public:
     UiNetBoard(std::string root, std::shared_ptr<FakeWifi> wifi,
-               std::shared_ptr<FakeDisplay> display, std::shared_ptr<FakeTouch> touch = nullptr)
+               std::shared_ptr<FakeDisplay> display, std::shared_ptr<FakeTouch> touch = nullptr,
+               std::shared_ptr<wisp::hal::AudioOut> audio_out = nullptr)
         : root_(std::move(root)),
           wifi_(std::move(wifi)),
           display_(std::move(display)),
-          touch_(std::move(touch)) {}
+          touch_(std::move(touch)),
+          audio_out_(std::move(audio_out)) {}
 
     std::string name() const override { return "fake-net-ui"; }
 
@@ -83,6 +88,7 @@ public:
         if (wifi_) registry.add(wifi_);
         if (display_) registry.add(display_);
         if (touch_) registry.add(touch_);
+        if (audio_out_) registry.add(audio_out_);
     }
 
 private:
@@ -90,6 +96,7 @@ private:
     std::shared_ptr<FakeWifi> wifi_;
     std::shared_ptr<FakeDisplay> display_;
     std::shared_ptr<FakeTouch> touch_;
+    std::shared_ptr<wisp::hal::AudioOut> audio_out_;
 };
 
 struct UiNetHarness {
@@ -138,7 +145,7 @@ struct UiNetHarness {
         }
 
         wisp::app::Platform platform;
-        platform.board = std::make_unique<UiNetBoard>(root, wifi, display, touch);
+        platform.board = std::make_unique<UiNetBoard>(root, wifi, display, touch, opts.audio_out);
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path());
         if (!opts.lang.empty()) {

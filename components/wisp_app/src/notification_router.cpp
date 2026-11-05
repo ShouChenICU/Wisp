@@ -64,9 +64,12 @@ void NotificationRouter::on_change(const core::NotificationChange& c) {
 
 void NotificationRouter::posted(const core::Notification& n) {
     const bool off = deps_.power != nullptr && deps_.power->standby();
-    const bool wake = off && n.wake;
+    // An alarm rings until the user touches the device (spec 5.1), which
+    // they can only do with the screen on, so it wakes it as wake = true
+    // would.
+    const bool wake = off && (n.wake || n.sound == core::NotifySound::Alarm);
     // Audio is off with the screen (hal/audio.hpp): no sound for a
-    // notification that leaves it off.
+    // notification that leaves it off (a tone without wake).
     const bool sound =
         n.sound != core::NotifySound::None && deps_.tones != nullptr && !(off && !wake);
     if (sound) {

@@ -6,11 +6,14 @@
 //
 // Posted (the NotificationService listener, on the posting thread -- the
 // scene task for wisp.notify, which must not touch flash or wait):
-//   - wake and the screen is off: PowerManager::exit_standby() on the UI
-//     task (posted; called directly without a UiRuntime);
+//   - wake, or sound "alarm", and the screen is off: PowerManager::
+//     exit_standby() on the UI task (posted; called directly without a
+//     UiRuntime). An alarm rings until the user touches the device, so it
+//     always wakes it;
 //   - a sound: TonePlayer::play() at notify_volume(). Audio is off below
 //     Dim (hal/audio.hpp), so with the screen off a sound plays only for a
-//     notification that wakes it, right after the wake on the UI task;
+//     notification that wakes it, right after the wake on the UI task: a
+//     "tone" without wake is dropped;
 //   - the banner, if one is installed.
 // Dismissed: a sound still playing for that notification stops.
 //
