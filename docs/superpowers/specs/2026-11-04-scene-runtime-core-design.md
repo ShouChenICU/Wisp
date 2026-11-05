@@ -224,7 +224,7 @@ wisp.device.row_span(y)  -- x1, x2：屏幕第 y 行可见像素的首尾列；�
 wisp.device.on("battery" | "minute" | "lang", fn)
 ```
 
-只读。`minute` 在整分钟触发，供时钟使用。`time` 是 UTC 秒；`utc_offset` 是系统设置 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480），本地时间为 `time + utc_offset * 60`。场景任务不读 Settings：运行时开始订阅 `system.settings` 之后，App 读取当时的值交给它（已收到的事件优先，值不会比事件旧），之后跟随该事件；时区改变时立即补发一次 `minute`（亮屏时），不另设事件；网络校时成功（`system.time` 的 `state` 为 `synced`，连接 spec 5.6）后同样立即补发一次 `minute`（亮屏时），让表盘马上跳到校准后的时间。
+只读。`minute` 在整分钟触发，供时钟使用。`time` 是 UTC 秒；`utc_offset` 是系统设置 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480），本地时间为 `time + utc_offset * 60`。场景任务不读 Settings：运行时开始订阅 `system.settings` 之后，App 读取当时的值交给它（已收到的事件优先，值不会比事件旧），之后跟随该事件；时区改变时立即补发一次 `minute`（亮屏时），不另设事件；网络校时成功（`system.time` 的 `state` 为 `synced`，连接 spec 5.6）后同样立即补发一次 `minute`（亮屏时），让表盘马上跳到校准后的时间；如果校准后的这一分钟已经触发过（时钟跳变先被整分钟检查看到），就不再重复触发。
 
 **屏幕形状**（用户 2026-11-05 裁定）：
 

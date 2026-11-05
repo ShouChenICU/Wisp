@@ -870,12 +870,12 @@ void SceneRuntime::run_scene_clock() {
 }
 
 void SceneRuntime::clock_set() {
-    // As show_scene() does: force() makes this poll fire exactly once and
-    // records the new minute, so the poll after the message sees no jump.
+    // Fires once and records the new minute, so the poll after the message
+    // sees no jump; a poll that already saw it (the task woke between the
+    // clock moving and this message) already fired, and this adds nothing.
     // With the screen off nothing fires; the screen coming on sends one.
     if (!visible_ || !wants_minute()) return;
-    fg_->ticker.force();
-    if (fg_->ticker.poll(wall_now(), os::now_ms())) minute();
+    if (fg_->ticker.sync(wall_now(), os::now_ms())) minute();
 }
 
 void SceneRuntime::run_timers() {

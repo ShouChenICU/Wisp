@@ -62,8 +62,8 @@
 // seed_utc_offset() value, else SceneRuntimeDeps::utc_offset_min; when an
 // event changes it, "minute" fires at once (screen on), since the local
 // time a scene shows has moved. A system.time event of state "synced"
-// (net::TimeSyncService) fires it the same way: the wall clock itself may
-// have moved.
+// (net::TimeSyncService) fires it the same way, the wall clock itself may
+// have moved, unless the minute the clock now reads already fired.
 // wisp.scene.close() closes the scene once its current message is done.
 //
 // HTTP (spec 5.3): opening a scene gives the proxy (SceneRuntimeDeps::
