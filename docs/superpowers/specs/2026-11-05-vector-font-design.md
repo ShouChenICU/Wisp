@@ -243,7 +243,7 @@ Tiny TTF 按 `hhea` 的上伸 1160、下沉 −288（单位 1/1000 em）算行�
 
 ### 5.1 自检页标题
 
-- 标题用 `ui::font(32)`，文字仍绑定 `StrId::SelfCheckTitle`，只显示当前界面语言：中文"自检"、日文"セルフチェック"、英文"Self Check"；切换语言时随之更新。出厂默认语言是中文（连接 spec 8.3），所以默认显示"自检"。
+- 标题用 `ui::font(32)`，文字仍绑定 `StrId::SelfCheckTitle`，只显示当前界面语言：中文"自检"、日文"セルフチェック"、英文"Self Check"；切换语言时随之更新。自检页的语言是页内切换、不持久化的，默认英文（`self_check_layout.hpp` 的 `lang_ = ui::Lang::En`），所以默认显示"Self Check"。
 - 删掉 `self_check_header.cpp` 里的 `title_font()`（Montserrat 24 回退到正文字）。
 - 降级时标题是 16 px 正文字，布局不需要特殊处理。
 
