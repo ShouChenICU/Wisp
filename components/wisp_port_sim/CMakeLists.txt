@@ -12,7 +12,8 @@
 #     host-only and SDL-free, so unit tests can link it on its own.
 #   - wisp_port_sim_dev: SDL-backed device port.
 #   - wisp_port_sim_net: SimHttpServer, the loopback HTTP/1.1 + WebSocket
-#     net::HttpServer on POSIX sockets; SimHttpClient (libcurl); SimWifi,
+#     net::HttpServer on POSIX sockets; SimHttpClient (libcurl); SimSntp
+#     (the host clock as every time server); SimWifi,
 #     the simulated hal::Wifi; and the --web-dir in-memory WispPack packer
 #     (zlib). SDL-free, so their tests link it on its own.
 
@@ -53,7 +54,7 @@ wisp_component(
 wisp_component(
     NAME wisp_port_sim_net
     SRCS net/sim_http_server.cpp net/sha1.cpp net/sim_http_client.cpp net/sim_wifi.cpp
-         net/sim_web_pack.cpp
+         net/sim_web_pack.cpp net/sim_sntp.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_hal wisp_core wisp_net
     HOST_LIBS Threads::Threads CURL::libcurl ZLIB::ZLIB

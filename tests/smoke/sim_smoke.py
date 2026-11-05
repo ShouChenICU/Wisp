@@ -824,7 +824,7 @@ def case_console(sim_path, tmp_root):
     """Serial console commands on stdin (connectivity spec 8.2) are
     answered on stdout, touch lines never reach the console, and neither
     the Wi-Fi password typed into "wifi add" nor anything else secret is
-    ever printed or logged."""
+    ever printed or logged. Joining the network syncs the clock."""
     commands = [
         "help",
         "wifi status",
@@ -843,6 +843,9 @@ def case_console(sim_path, tmp_root):
     expect(any(l.startswith('ap ssid="Wisp-') and " ip=" in l for l in lines),
            f"no hotspot line:\n{result.stdout}")
     expect(lines.count("ok") == 2, f"expected two ok lines:\n{result.stdout}")
+    # Joining WispLab gives the station an IP, which syncs the clock.
+    expect(re.search(r" I time: synced from pool\.ntp\.org: unix \d+$", result.stdout, re.M),
+           f"no time sync after joining WispLab:\n{result.stdout}")
     # Only "bogus" is unknown: "tap 10,10" went to the touch screen.
     expect(lines.count("error: unknown command") == 1,
            f"expected one unknown command:\n{result.stdout}")

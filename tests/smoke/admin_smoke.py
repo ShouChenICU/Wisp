@@ -173,6 +173,16 @@ def check_routes(api):
     api.ok_json("PUT", "/settings", {"brightness": 120})
     settings = api.ok_json("GET", "/settings")
     expect(settings.get("brightness") == 120, f"/settings after PUT: {settings}")
+    expect(settings.get("ntp_servers") == "pool.ntp.org,ntp.aliyun.com",
+           f"/settings ntp_servers: {settings}")
+
+    # No Wi-Fi saved: nothing synced, and a sync is refused.
+    time = api.ok_json("GET", "/system/time")
+    expect(time == {"synced": False, "last_sync": None, "server": "", "time": None},
+           f"/system/time: {time}")
+    status, _, text = api.call("POST", "/system/time/sync", {})
+    expect(status == 409 and json.loads(text)["error"]["code"] == "no_network",
+           f"POST /system/time/sync offline -> {status} {text}")
 
 
 def check_models(api, llm_port):

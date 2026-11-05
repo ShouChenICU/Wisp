@@ -93,6 +93,7 @@
 #include "wisp/port/sim/sim_http_client.hpp"
 #include "wisp/port/sim/sim_http_server.hpp"
 #include "wisp/port/sim/sim_input.hpp"
+#include "wisp/port/sim/sim_sntp.hpp"
 #include "wisp/port/sim/sim_web_pack.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -666,6 +667,9 @@ int main(int argc, char** argv) {
         platform.http_server = std::make_unique<wisp::port::sim::SimHttpServer>("127.0.0.1");
     }
     platform.http_client = std::make_unique<wisp::port::sim::SimHttpClient>();
+    // The time sync runs as on the device; set_wall_clock stays empty
+    // since the host clock is already right.
+    platform.sntp = std::make_unique<wisp::port::sim::SimSntp>();
     platform.assets = std::span<const uint8_t>(web_assets);
     platform.http_port = opts.http_port;
     platform.http_always_on = true;
