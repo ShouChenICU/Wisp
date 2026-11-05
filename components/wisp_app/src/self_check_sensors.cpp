@@ -15,7 +15,7 @@ constexpr int32_t kBallTravelPx = 20;
 constexpr int32_t kBallSize = 14;
 constexpr int32_t kCellGap = 8;
 constexpr int32_t kBallGap = 12;
-constexpr uint32_t kBallColor = 0x4FC3F7;
+constexpr uint32_t kBallColor = ui::theme::kAccent;
 
 const int32_t kGridRows[] = {LV_GRID_CONTENT, LV_GRID_CONTENT, LV_GRID_TEMPLATE_LAST};
 
@@ -93,12 +93,14 @@ void SensorSection::build(lv_obj_t* col, PageText& text, bool has_imu) {
     lv_obj_t* frame = lv_obj_create(row);
     lv_obj_set_size(frame, 2 * kBallTravelPx + 20, 2 * kBallTravelPx + 20);
     lv_obj_set_style_radius(frame, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(frame, lv_color_hex(ui::theme::kSurface2), 0);
     lv_obj_remove_flag(frame, LV_OBJ_FLAG_SCROLLABLE);
 
     ball_ = lv_obj_create(frame);
     lv_obj_set_size(ball_, kBallSize, kBallSize);
     lv_obj_set_style_radius(ball_, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(ball_, lv_color_hex(kBallColor), 0);
+    lv_obj_set_style_border_width(ball_, 0, 0);
     lv_obj_remove_flag(ball_, LV_OBJ_FLAG_SCROLLABLE);
     ball_x_ = 0;
     ball_y_ = 0;

@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "wisp/ui/fonts.hpp"
+#include "wisp/ui/theme.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
@@ -10,14 +11,8 @@ namespace wisp::app {
 namespace {
 
 constexpr int32_t kChipPadHor = 10;
-constexpr int32_t kChipPadVer = 4;
-constexpr int32_t kChipGap = 8;
-constexpr uint32_t kChipTextLight = 0xFFFFFF;
-constexpr uint32_t kChipTextDark = 0x212121;
-// The selected language button.
-constexpr uint32_t kColorSelected = 0x1E88E5;
-// A pressed button, a shade darker than the neutral chip.
-constexpr uint32_t kColorPressed = 0xBDBDBD;
+constexpr int32_t kChipPadVer = ui::theme::kGapXs;
+constexpr int32_t kChipGap = ui::theme::kGapSm;
 
 // The title's size (vector-font spec 5.1): large enough to read at a glance,
 // in the page's current language.
@@ -37,12 +32,11 @@ lv_obj_t* make_pill(lv_obj_t* parent, lv_obj_t** label) {
     return chip;
 }
 
-// Colours `chip` for `level`: white text on the strong colours, dark text
-// on yellow and on the neutral gray.
+// Colours `chip` for `level`, as a badge: the level's colour on its own
+// soft tint.
 void paint_chip(lv_obj_t* chip, lv_obj_t* label, SummaryLevel level) {
-    set_bg_color_if_changed(chip, level_color(level));
-    bool light_text = level == SummaryLevel::Good || level == SummaryLevel::Error;
-    set_text_color_if_changed(label, light_text ? kChipTextLight : kChipTextDark);
+    set_bg_color_if_changed(chip, level_tint(level));
+    set_text_color_if_changed(label, level_color(level));
 }
 
 std::string fraction(int part, int whole) {
@@ -134,11 +128,15 @@ void BoardSection::build(lv_obj_t* col, PageText& text, const Info& info,
         // Not translated: each name is written in its own language.
         lv_label_set_text(label, ui::tr(lang_name(lang), lang));
         lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_style_bg_color(button, lv_color_hex(kColorNeutralChip), 0);
-        lv_obj_set_style_text_color(button, lv_color_hex(kChipTextDark), 0);
-        lv_obj_set_style_bg_color(button, lv_color_hex(kColorPressed), LV_STATE_PRESSED);
-        lv_obj_set_style_bg_color(button, lv_color_hex(kColorSelected), LV_STATE_CHECKED);
-        lv_obj_set_style_text_color(button, lv_color_hex(kChipTextLight), LV_STATE_CHECKED);
+        // A segmented choice: the current language is an accent pill, the
+        // others raised ones.
+        namespace theme = ui::theme;
+        lv_obj_set_style_bg_color(button, lv_color_hex(theme::kSurface3), 0);
+        lv_obj_set_style_text_color(button, lv_color_hex(theme::kText), 0);
+        lv_obj_set_style_bg_color(
+            button, lv_color_hex(theme::pressed(theme::kSurface3, theme::kText)), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(button, lv_color_hex(theme::kAccent), LV_STATE_CHECKED);
+        lv_obj_set_style_text_color(button, lv_color_hex(theme::kAccentInk), LV_STATE_CHECKED);
         lv_obj_add_event_cb(button, &BoardSection::lang_cb, LV_EVENT_CLICKED, this);
         lang_buttons_[i++] = button;
     }

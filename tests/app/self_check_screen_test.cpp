@@ -46,6 +46,7 @@
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
+using wisp::app::SummaryLevel;
 using wisp::test::all_label_glyphs_resolvable;
 using wisp::test::collect_labels;
 using wisp::test::FakeAudioIn;
@@ -248,14 +249,21 @@ lv_obj_t* find_card(const std::string& heading) {
     return nullptr;
 }
 
-// UI thread: "<text>|<background rgb>" of the summary chip whose label
-// contains `needle`, or empty.
+// UI thread: "<text>|<background rgb>/<text rgb>" of the summary chip
+// whose label contains `needle`, or empty.
 std::string chip_state(const char* needle) {
     lv_obj_t* label = find_label_containing(root_column(), needle);
     if (label == nullptr) return {};
     lv_obj_t* chip = lv_obj_get_parent(label);
     return std::string(lv_label_get_text(label)) + "|" +
-           hex(rgb_of(lv_obj_get_style_bg_color(chip, LV_PART_MAIN)));
+           hex(rgb_of(lv_obj_get_style_bg_color(chip, LV_PART_MAIN))) + "/" +
+           hex(rgb_of(lv_obj_get_style_text_color(label, LV_PART_MAIN)));
+}
+
+// What chip_state() reports for a chip at `level`: a badge, the level's
+// colour on its soft tint.
+std::string chip(SummaryLevel level) {
+    return hex(wisp::app::level_tint(level)) + "/" + hex(wisp::app::level_color(level));
 }
 
 // UI thread: one line per row of the devices card, top to bottom:
@@ -668,7 +676,7 @@ TEST(SelfCheckScreen, PageOpensInEnglishWhateverTheSystemLanguage) {
                (find_card("Devices") != nullptr ? "Devices" : "") + "|" +
                (find_card("设备") != nullptr ? "设备" : "") + "|" + chip_state("Devices ");
     });
-    EXPECT_EQ(seen, "Self Check|Devices||Devices 6/6 OK|" + hex(wisp::app::kColorGood));
+    EXPECT_EQ(seen, "Self Check|Devices||Devices 6/6 OK|" + chip(SummaryLevel::Good));
     // The selected button is the English one.
     EXPECT_EQ(run_on_ui_thread(h.app.ui(),
                                [] {
@@ -812,7 +820,7 @@ TEST(SelfCheckScreen, PageLanguageSwitchKeepsScrollAndTests) {
     ASSERT_TRUE(wait_until(
         [&] {
             return run_on_ui_thread(h.app.ui(), [] { return chip_state("Tests "); }) ==
-                   "Tests 1/3 done|" + hex(wisp::app::kColorNeutralChip);
+                   "Tests 1/3 done|" + chip(SummaryLevel::Neutral);
         },
         3000));
 
@@ -839,7 +847,7 @@ TEST(SelfCheckScreen, PageLanguageSwitchKeepsScrollAndTests) {
                                     std::to_string(count_labels_containing(LV_SYMBOL_OK " 合格")) +
                                     "|" + std::to_string(count_labels_containing("未テスト"));
                          }),
-        "テスト 1/3 完了|" + hex(wisp::app::kColorNeutralChip) + "|1|2");
+        "テスト 1/3 完了|" + chip(SummaryLevel::Neutral) + "|1|2");
 
     h.app.stop();
 }
@@ -1066,14 +1074,14 @@ TEST(SelfCheckScreen, DeviceListSdRowTracksLiveStorageStatus) {
     };
     EXPECT_EQ(sd_row(), hex(wisp::app::kColorMissing) + "|storage.sd|FAKE|Missing: no SD card");
     EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("Devices "); }),
-              "Devices 6/7 OK|" + hex(wisp::app::kColorNeutralChip));
+              "Devices 6/7 OK|" + chip(SummaryLevel::Neutral));
 
     h.sd->online_flag = true;
     ASSERT_TRUE(wait_until(
         [&] { return sd_row() == hex(wisp::app::kColorGood) + "|storage.sd|FAKE"; }, 3000))
         << sd_row();
     EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("Devices "); }),
-              "Devices 7/7 OK|" + hex(wisp::app::kColorGood));
+              "Devices 7/7 OK|" + chip(SummaryLevel::Good));
 
     h.app.stop();
 }
@@ -1336,14 +1344,14 @@ TEST(SelfCheckScreen, DeviceChipSummarisesTheBootReport) {
         std::string expected;
     };
     const Case cases[] = {
-        {{}, "Devices 6/6 OK|" + hex(wisp::app::kColorGood)},
+        {{}, "Devices 6/6 OK|" + chip(SummaryLevel::Good)},
         {{{"touch.main", DeviceClass::Touch, DeviceState::Degraded, "single touch"}},
-         "Devices 6/7 OK|" + hex(wisp::app::kColorWarning)},
+         "Devices 6/7 OK|" + chip(SummaryLevel::Warning)},
         {{{"touch.main", DeviceClass::Touch, DeviceState::Degraded, "single touch"},
           {"audio_in.main", DeviceClass::AudioIn, DeviceState::Failed, "init failed"}},
-         "Devices 6/8 OK|" + hex(wisp::app::kColorError)},
+         "Devices 6/8 OK|" + chip(SummaryLevel::Error)},
         {{{"storage.sd", DeviceClass::Storage, DeviceState::Missing, "no SD card"}},
-         "Devices 6/7 OK|" + hex(wisp::app::kColorNeutralChip)},
+         "Devices 6/7 OK|" + chip(SummaryLevel::Neutral)},
     };
     for (const Case& c : cases) {
         SCOPED_TRACE(c.expected);
@@ -1500,7 +1508,7 @@ TEST(SelfCheckScreen, InteractiveTestsTurnPassedAndAreCounted) {
                    std::to_string(count_labels_containing(LV_SYMBOL_OK " Passed"));
         });
     };
-    const std::string neutral = hex(wisp::app::kColorNeutralChip);
+    const std::string neutral = chip(SummaryLevel::Neutral);
     EXPECT_EQ(state(), "Tests 0/3 done|" + neutral + "|3|0");
 
     ASSERT_EQ(run_on_ui_thread(
@@ -1529,13 +1537,13 @@ TEST(SelfCheckScreen, InteractiveTestsTurnPassedAndAreCounted) {
                                }),
               "clicked");
     EXPECT_TRUE(wait_until(
-        [&] { return state() == "Tests 3/3 done|" + hex(wisp::app::kColorGood) + "|0|3"; }, 8000))
+        [&] { return state() == "Tests 3/3 done|" + chip(SummaryLevel::Good) + "|0|3"; }, 8000))
         << state();
 
     // The results survive a page language switch (they last for this boot).
     ASSERT_TRUE(select_page_lang(h.app.ui(), Lang::Zh));
     EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("已测"); }),
-              "交互 3/3 已测|" + hex(wisp::app::kColorGood));
+              "交互 3/3 已测|" + chip(SummaryLevel::Good));
 
     h.app.stop();
 }
@@ -1563,7 +1571,7 @@ TEST(SelfCheckScreen, FailedLoopbackDoesNotPass) {
         },
         3000));
     EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state(" done"); }),
-              "Tests 0/3 done|" + hex(wisp::app::kColorNeutralChip));
+              "Tests 0/3 done|" + chip(SummaryLevel::Neutral));
 
     h.app.stop();
 }

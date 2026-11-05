@@ -14,21 +14,23 @@
 #include "self_check_model.hpp"
 #include "wisp/core/boot_report.hpp"
 #include "wisp/ui/strings.hpp"
+#include "wisp/ui/theme.hpp"
 
 namespace wisp::app {
 
-// Status colours, as 0xRRGGBB: the device dots, the summary chips and the
-// "passed" marks.
-inline constexpr uint32_t kColorGood = 0x43A047;
-inline constexpr uint32_t kColorWarning = 0xF9A825;
-inline constexpr uint32_t kColorError = 0xE53935;
-inline constexpr uint32_t kColorMissing = 0x9E9E9E;
-// A neutral chip's background (its text stays dark).
-inline constexpr uint32_t kColorNeutralChip = 0xE0E0E0;
+// The page's colours, as 0xRRGGBB, from the device theme
+// (wisp/ui/theme.hpp). Status colours: the device dots, the summary chips'
+// text and the "passed" marks.
+inline constexpr uint32_t kColorGood = ui::theme::kOk;
+inline constexpr uint32_t kColorWarning = ui::theme::kWarn;
+inline constexpr uint32_t kColorError = ui::theme::kErr;
+inline constexpr uint32_t kColorMissing = ui::theme::kTextFaint;
+// The text of a neutral chip.
+inline constexpr uint32_t kColorNeutralChip = ui::theme::kTextDim;
 // Secondary text: driver names, reasons, the table keys, the
 // card headings and "untested".
-inline constexpr uint32_t kColorDimText = 0x757575;
-inline constexpr uint32_t kColorCard = 0xF2F3F5;
+inline constexpr uint32_t kColorDimText = ui::theme::kTextDim;
+inline constexpr uint32_t kColorCard = ui::theme::kSurface;
 
 // The self-check page's language and its fixed labels. The page has a
 // language of its own, apart from the system one (ui::lang(), which the
@@ -68,12 +70,14 @@ private:
 
 // The dot colour of a device in `state`.
 uint32_t state_color(core::DeviceState state);
-// A summary chip's background colour.
+// A summary chip's text colour, and its background: the same colour as a
+// soft tint, like the web console's badges.
 uint32_t level_color(SummaryLevel level);
+uint32_t level_tint(SummaryLevel level);
 
-// Appends a titled section card to `col`: a rounded, borderless, filled
-// column whose first child is the heading label (bound in `text`). Content
-// goes into the returned card, below the heading.
+// Appends a titled section card to `col`: a rounded, filled column with a
+// hairline border whose first child is the heading label (bound in
+// `text`). Content goes into the returned card, below the heading.
 lv_obj_t* make_card(lv_obj_t* col, ui::StrId heading, PageText& text);
 
 // A full-width label that wraps.

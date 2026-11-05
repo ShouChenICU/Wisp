@@ -508,18 +508,21 @@ TEST(AppScenes, ErrorBadgeInList) {
     EXPECT_FALSE(rt->open("bad"));
     ASSERT_TRUE(rt->close("bad"));
     EXPECT_TRUE(b.wait_rows("坏|Error\n")) << b.rows();
-    // The badge is a red chip.
-    EXPECT_EQ(run_on_ui_thread(
-                  b.h.app->ui(),
-                  [&] {
-                      lv_obj_t* badge = find_label_containing(scenes_card(b.screen), "Error");
-                      if (badge == nullptr) return std::string("none");
-                      lv_color_t c =
-                          lv_obj_get_style_bg_color(lv_obj_get_parent(badge), LV_PART_MAIN);
-                      return std::string(
-                          lv_color_eq(c, lv_color_hex(wisp::app::kColorError)) ? "red" : "other");
-                  }),
-              "red");
+    // The badge is red text on a red tint.
+    EXPECT_EQ(
+        run_on_ui_thread(
+            b.h.app->ui(),
+            [&] {
+                lv_obj_t* badge = find_label_containing(scenes_card(b.screen), "Error");
+                if (badge == nullptr) return std::string("none");
+                lv_color_t tint = lv_obj_get_style_bg_color(lv_obj_get_parent(badge), LV_PART_MAIN);
+                lv_color_t text = lv_obj_get_style_text_color(badge, LV_PART_MAIN);
+                return std::string(lv_color_eq(tint, lv_color_hex(wisp::ui::theme::kErrSoft)) &&
+                                           lv_color_eq(text, lv_color_hex(wisp::app::kColorError))
+                                       ? "red"
+                                       : "other");
+            }),
+        "red");
 }
 
 TEST(AppScenes, HeadlessHasNoRuntime) {

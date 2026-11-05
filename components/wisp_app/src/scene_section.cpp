@@ -4,21 +4,21 @@
 
 #include "self_check_layout.hpp"
 #include "wisp/ui/strings.hpp"
+#include "wisp/ui/theme.hpp"
 
 namespace wisp::app {
 
 namespace {
 
-constexpr int32_t kRowGap = 8;
-constexpr int32_t kRowPad = 4;
-constexpr int32_t kRowRadius = 8;
+constexpr int32_t kRowGap = ui::theme::kGapSm;
+constexpr int32_t kRowPad = ui::theme::kGapXs;
+constexpr int32_t kRowRadius = ui::theme::kRadiusSm;
 // A row is a tap target: never shorter than a fingertip.
 constexpr int32_t kRowMinHeight = 48;
 constexpr int32_t kChipPadHor = 8;
 constexpr int32_t kChipPadVer = 2;
-constexpr uint32_t kChipText = 0xFFFFFF;
-// A pressed row, a shade darker than the card.
-constexpr uint32_t kColorPressed = 0xE0E2E6;
+// A pressed row: the card lit by its own text.
+constexpr uint32_t kColorPressed = ui::theme::pressed(kColorCard, ui::theme::kText);
 
 }  // namespace
 
@@ -120,8 +120,9 @@ void SceneSection::render(Row& row) {
             const bool running = row.state == core::SceneState::Running;
             set_text_if_changed(row.status, text_->tr(running ? ui::StrId::SceneStateRunning
                                                               : ui::StrId::SceneStateError));
-            set_text_color_if_changed(row.status, kChipText);
-            set_bg_color_if_changed(row.chip, running ? kColorGood : kColorError);
+            // A badge: the state's colour on its soft tint.
+            set_text_color_if_changed(row.status, running ? kColorGood : kColorError);
+            set_bg_color_if_changed(row.chip, running ? ui::theme::kOkSoft : ui::theme::kErrSoft);
             lv_obj_set_style_bg_opa(row.chip, LV_OPA_COVER, 0);
             break;
         }
