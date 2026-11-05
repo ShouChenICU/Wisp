@@ -1,7 +1,7 @@
 # Wisp 矢量字体（大字号文字）设计文档
 
 - 日期：2026-11-05
-- 状态：待审阅
+- 状态：已批准并实现（2026-11-05 修订：flash 自动挂起与 cmap 表头缓存，用户批准）
 - 范围：设备界面的大字号文字（20 px 及以上）改用矢量字体渲染；属于子项目 3a（场景运行时）之后的界面增补，不是路线图里单列的子项目
 - 前置：子项目 3a 场景运行时核心（`2026-11-04-scene-runtime-core-design.md`，下文简称"场景 spec"）；子项目 2 连接与管理后台（`2026-11-03-connectivity-admin-design.md`，下文简称"连接 spec"）
 - 依据：可行性验证（spike，本地分支 `spike/vector-font` 的 `c5f8550`、`727be0d`，代码已丢弃，只取结论）的真机实测数据，下文"实测"均指它
@@ -322,7 +322,7 @@ Python（标准库）：`tools/pack_font_image_test.py`（头部字段、CRC 与
 3. 重新安装示例场景：计数器、番茄钟、时钟的大字正常；一个临时测试场景同时显示 `font = 128` 的中文、`xxl` 的混排文字和 `lg`/`xl`/`xxl` 图标，图标是大号的。
 4. 降级：`parttool.py erase_partition --partition-name=fonts` 后重启，日志有警告，大字退到 16 px、图标仍大，不崩溃；`idf.py fonts-flash` 后恢复。写入一个截断的镜像（只写前 1 MB）同样降级。
 5. 网页上传新固件后字体仍正常（OTA 不碰 `fonts`）。
-6. 性能：自检列表滚动的 `WISP_PERF` 不低于硬件文档"性能基准"一节记下的当前基准（2026-11-05 在当前自检界面上重测：不开热点 18.4 fps、开热点 29.8 fps）；记录首次进入大字号页面的冷渲染时间。
+6. 性能：自检列表滚动的 `WISP_PERF` 不低于硬件文档"性能基准"一节记下的当前基准（2026-11-05 在当前自检界面上重测：不开热点 18.3 fps、开热点 29.8 fps）；记录首次进入大字号页面的冷渲染时间。
 7. 内存：空闲与场景负载（番茄钟运行 + 128 px 测试页）下执行 `mem`，记录内部 RAM 空闲/最小/最大块与 `wisp_ui` 栈的 high-water mark（剩余应 ≥ 1 KB，否则继续加栈）、PSRAM 空闲；内部 RAM 仍满足 `wisp/app/ram_budget.hpp`；结果写入 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`。
 8. `idf.py size`：应用镜像变化（去掉 Montserrat 24/32/48、加入 Tiny TTF 与图标字）写入硬件文档。
 
