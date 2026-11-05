@@ -846,4 +846,34 @@ TEST_F(SceneRuntimeTest, OpenIsBusyWhileTheSceneIsBeingDeleted) {
     EXPECT_TRUE(wait_label("v0"));
 }
 
+// When the screen a scene covered is gone by the time it closes, an empty
+// screen stands in for it: one, made once and reused, not a new one per
+// close.
+TEST_F(SceneRuntimeTest, OneStandInScreenForAHomeThatIsGone) {
+    start();
+    install("counter", kCounter);
+    ASSERT_TRUE(rt->open("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    lv_obj_t* scene_screen = active_screen();
+    on_ui([&] { lv_obj_delete(home); });
+    ASSERT_TRUE(rt->close("counter"));
+    ASSERT_TRUE(wait_until([&] { return active_screen() != scene_screen; }, 1000));
+    lv_obj_t* stand_in = active_screen();
+
+    // Something else is on screen when the scene opens again, and is gone
+    // when it closes.
+    lv_obj_t* other = nullptr;
+    on_ui([&] {
+        other = lv_obj_create(nullptr);
+        lv_screen_load(other);
+    });
+    ASSERT_TRUE(rt->open("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    scene_screen = active_screen();
+    on_ui([&] { lv_obj_delete(other); });
+    ASSERT_TRUE(rt->close("counter"));
+    ASSERT_TRUE(wait_until([&] { return active_screen() != scene_screen; }, 1000));
+    EXPECT_EQ(active_screen(), stand_in);
+}
+
 }  // namespace

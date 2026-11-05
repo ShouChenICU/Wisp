@@ -79,6 +79,8 @@ struct SceneRuntime::UiSide {
     uint32_t instance = 0;
     // The screen the view replaced, loaded again when it goes.
     lv_obj_t* home = nullptr;
+    // Loaded instead when `home` is gone by then.
+    lv_obj_t* stand_in = nullptr;
 };
 
 SceneRuntime::SceneRuntime(SceneRuntimeDeps deps, SceneRuntimeConfig config)
@@ -1017,10 +1019,15 @@ void SceneRuntime::ui_drop_view() {
     deps_.system.hide_error();
     if (!u.view) return;
     // An active screen must not be deleted: show the one the view
-    // replaced first (or, if that is gone, an empty one).
+    // replaced first (or, if that is gone, the one empty stand-in, made the
+    // first time it is needed and reused after).
     if (lv_screen_active() == u.view->screen()) {
-        lv_obj_t* back =
-            u.home != nullptr && lv_obj_is_valid(u.home) ? u.home : lv_obj_create(nullptr);
+        lv_obj_t* back = u.home;
+        if (back == nullptr || !lv_obj_is_valid(back)) {
+            if (u.stand_in == nullptr || !lv_obj_is_valid(u.stand_in))
+                u.stand_in = lv_obj_create(nullptr);
+            back = u.stand_in;
+        }
         lv_screen_load(back);
     }
     u.view.reset();
