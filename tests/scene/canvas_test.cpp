@@ -80,7 +80,7 @@ TEST_F(Canvas, CommandsRoundTripAndLimit512) {
     auto cmds = commands(all[0]);
     ASSERT_EQ(cmds.size(), 512u);
     EXPECT_EQ(cmds[0].op, DrawOp::Fill);
-    EXPECT_EQ(cmds[0].rgb, 0x000000u);
+    EXPECT_EQ(cmds[0].rgb, 0x0B0F17u);  // bg
     EXPECT_EQ(cmds[1].op, DrawOp::Line);
     EXPECT_EQ(cmds[1].rgb, 0x102030u);
     EXPECT_EQ(cmds[1].width, 3);
@@ -88,13 +88,13 @@ TEST_F(Canvas, CommandsRoundTripAndLimit512) {
               (std::vector<int32_t>{1, 2, 30, 40}));
     EXPECT_EQ(cmds[2].op, DrawOp::Circle);
     EXPECT_EQ(cmds[2].fill, 1);
-    EXPECT_EQ(cmds[2].rgb, 0x4F9DFFu);
+    EXPECT_EQ(cmds[2].rgb, 0x5AB4FFu);
     EXPECT_EQ(cmds[2].v[2], 20);
     EXPECT_EQ(cmds[3].op, DrawOp::Arc);
     EXPECT_EQ(cmds[3].v[3], 270);
     EXPECT_EQ(cmds[3].v[4], 90);
     EXPECT_EQ(cmds[3].width, 4);
-    EXPECT_EQ(cmds[3].rgb, 0xFFFFFFu);  // the text colour by default
+    EXPECT_EQ(cmds[3].rgb, 0xE6EDF7u);  // the text colour by default
     EXPECT_EQ(cmds[4].op, DrawOp::Rect);
     EXPECT_EQ(cmds[4].radius, 8);
     EXPECT_EQ(cmds[4].fill, 0);
@@ -104,7 +104,7 @@ TEST_F(Canvas, CommandsRoundTripAndLimit512) {
     EXPECT_EQ(cmds[511].v[2], 506);
 
     // The view drew them: the filled circle's centre has the accent colour.
-    EXPECT_EQ(pixel(50, 30), lv_color_to_u16(lv_color_hex(0x4F9DFF)));
+    EXPECT_EQ(pixel(50, 30), lv_color_to_u16(lv_color_hex(0x5AB4FF)));
 
     vm.reset();
     batch.clear();

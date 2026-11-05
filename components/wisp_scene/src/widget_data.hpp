@@ -20,6 +20,7 @@
 #include <utility>
 
 #include "wisp/os/large.hpp"
+#include "wisp/ui/theme.hpp"
 
 namespace wisp::scene {
 
@@ -34,7 +35,7 @@ struct DrawCommand {
     uint8_t fill = 0;      // rect, circle: filled instead of outlined
     uint8_t font_px = 16;  // text: kFontPxMin..kFontPxMax, a token already in pixels
     uint8_t reserved = 0;
-    uint32_t rgb = 0xFFFFFF;
+    uint32_t rgb = ui::theme::kText;  // the `text` colour unless the scene names one
     int32_t width = 1;
     int32_t radius = 0;
     // line: x1 y1 x2 y2; circle: cx cy r; arc: cx cy r start end

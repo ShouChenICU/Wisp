@@ -11,10 +11,12 @@
 
 namespace wisp::scene {
 
-// A token (accent #4F9DFF, text #FFFFFF, muted #8E8E93, surface #1C1C1E,
-// bg #000000, danger #FF453A, ok #32D74B, warn #FFD60A) or "#RRGGBB" in
-// either case. The schema only lets those through; anything else is the
-// `text` colour, so a bad value can never leave a widget unreadable.
+// A token or "#RRGGBB" in either case. The tokens are the device theme's
+// colours (wisp/ui/theme.hpp): accent, text, muted (its dim text),
+// surface (its second surface, so a card stands off the page), bg,
+// danger (its error colour), ok and warn. The schema only lets those
+// through; anything else is the `text` colour, so a bad value can never
+// leave a widget unreadable.
 lv_color_t theme_color(std::string_view token_or_hex);
 // The same colour as 0xRRGGBB; any thread.
 uint32_t theme_rgb(std::string_view token_or_hex);

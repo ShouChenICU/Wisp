@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "wisp/ui/theme.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::scene {
@@ -13,12 +14,16 @@ struct Token {
     uint32_t rgb;
 };
 
+// The device theme's colours under the names scenes use. A scene's
+// surface is the theme's second step, so a card stands off the page.
 constexpr Token kTokens[] = {
-    {"accent", 0x4F9DFF}, {"text", 0xFFFFFF},   {"muted", 0x8E8E93}, {"surface", 0x1C1C1E},
-    {"bg", 0x000000},     {"danger", 0xFF453A}, {"ok", 0x32D74B},    {"warn", 0xFFD60A},
+    {"accent", ui::theme::kAccent}, {"text", ui::theme::kText},
+    {"muted", ui::theme::kTextDim}, {"surface", ui::theme::kSurface2},
+    {"bg", ui::theme::kBg},         {"danger", ui::theme::kErr},
+    {"ok", ui::theme::kOk},         {"warn", ui::theme::kWarn},
 };
 
-constexpr uint32_t kTextRgb = 0xFFFFFF;
+constexpr uint32_t kTextRgb = ui::theme::kText;
 
 int hex_digit(char c) {
     if (c >= '0' && c <= '9') return c - '0';

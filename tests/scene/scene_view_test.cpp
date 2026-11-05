@@ -16,6 +16,7 @@
 #include "support/scene_view_fixture.hpp"
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/theme.hpp"
+#include "wisp/ui/theme.hpp"
 
 namespace {
 
@@ -537,15 +538,29 @@ TEST_F(SceneView, FontsAndColorsMapToTheme) {
         EXPECT_EQ(wisp::scene::theme_font_px("lg"), 24);
         EXPECT_EQ(wisp::scene::theme_font_px("xxl"), 48);
         EXPECT_EQ(wisp::scene::theme_font_px("sm"), 16);
-        EXPECT_TRUE(lv_color_eq(theme_color("accent"), lv_color_hex(0x4F9DFF)));
-        EXPECT_TRUE(lv_color_eq(theme_color("text"), lv_color_hex(0xFFFFFF)));
-        EXPECT_TRUE(lv_color_eq(theme_color("muted"), lv_color_hex(0x8E8E93)));
-        EXPECT_TRUE(lv_color_eq(theme_color("surface"), lv_color_hex(0x1C1C1E)));
-        EXPECT_TRUE(lv_color_eq(theme_color("bg"), lv_color_hex(0x000000)));
-        EXPECT_TRUE(lv_color_eq(theme_color("danger"), lv_color_hex(0xFF453A)));
-        EXPECT_TRUE(lv_color_eq(theme_color("ok"), lv_color_hex(0x32D74B)));
-        EXPECT_TRUE(lv_color_eq(theme_color("warn"), lv_color_hex(0xFFD60A)));
+        EXPECT_TRUE(lv_color_eq(theme_color("accent"), lv_color_hex(0x5AB4FF)));
+        EXPECT_TRUE(lv_color_eq(theme_color("text"), lv_color_hex(0xE6EDF7)));
+        EXPECT_TRUE(lv_color_eq(theme_color("muted"), lv_color_hex(0x93A0B4)));
+        EXPECT_TRUE(lv_color_eq(theme_color("surface"), lv_color_hex(0x19212F)));
+        EXPECT_TRUE(lv_color_eq(theme_color("bg"), lv_color_hex(0x0B0F17)));
+        EXPECT_TRUE(lv_color_eq(theme_color("danger"), lv_color_hex(0xFF6B6B)));
+        EXPECT_TRUE(lv_color_eq(theme_color("ok"), lv_color_hex(0x3DD68C)));
+        EXPECT_TRUE(lv_color_eq(theme_color("warn"), lv_color_hex(0xF5B74F)));
         EXPECT_TRUE(lv_color_eq(theme_color("#12AbEf"), lv_color_hex(0x12ABEF)));
+        // The scene tokens are the device theme's colours (wisp/ui/theme.hpp);
+        // a scene card is one step above the page.
+        namespace ui_theme = wisp::ui::theme;
+        EXPECT_EQ(wisp::scene::theme_rgb("accent"), 0x5AB4FFu);
+        EXPECT_EQ(wisp::scene::theme_rgb("accent"), ui_theme::kAccent);
+        EXPECT_EQ(wisp::scene::theme_rgb("text"), ui_theme::kText);
+        EXPECT_EQ(wisp::scene::theme_rgb("muted"), ui_theme::kTextDim);
+        EXPECT_EQ(wisp::scene::theme_rgb("surface"), ui_theme::kSurface2);
+        EXPECT_EQ(wisp::scene::theme_rgb("bg"), ui_theme::kBg);
+        EXPECT_EQ(wisp::scene::theme_rgb("danger"), ui_theme::kErr);
+        EXPECT_EQ(wisp::scene::theme_rgb("ok"), ui_theme::kOk);
+        EXPECT_EQ(wisp::scene::theme_rgb("warn"), ui_theme::kWarn);
+        EXPECT_EQ(wisp::scene::theme_rgb("nope"), ui_theme::kText);
+        EXPECT_EQ(wisp::scene::theme_rgb("#12345G"), ui_theme::kText);
     });
     apply(build(
         {node(1, 0, Widget::Screen),
@@ -554,7 +569,7 @@ TEST_F(SceneView, FontsAndColorsMapToTheme) {
     on_ui([&] {
         lv_obj_t* label = view->object(2);
         EXPECT_TRUE(
-            lv_color_eq(lv_obj_get_style_text_color(label, LV_PART_MAIN), lv_color_hex(0xFF453A)));
+            lv_color_eq(lv_obj_get_style_text_color(label, LV_PART_MAIN), lv_color_hex(0xFF6B6B)));
         EXPECT_TRUE(
             lv_color_eq(lv_obj_get_style_bg_color(label, LV_PART_MAIN), lv_color_hex(0x102030)));
         EXPECT_EQ(lv_obj_get_style_bg_opa(label, LV_PART_MAIN), LV_OPA_COVER);
