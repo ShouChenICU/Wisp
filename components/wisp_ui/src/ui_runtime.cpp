@@ -18,6 +18,7 @@ static_assert(LV_COLOR_DEPTH == 16, "wisp_ui requires LV_COLOR_DEPTH == 16 (RGB5
 #include <utility>
 
 #include "fonts_internal.hpp"
+#include "theme_internal.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/draw_buf_policy.hpp"
@@ -26,6 +27,7 @@ static_assert(LV_COLOR_DEPTH == 16, "wisp_ui requires LV_COLOR_DEPTH == 16 (RGB5
 #include "wisp/ui/align.hpp"
 #include "wisp/ui/font_image.hpp"
 #include "wisp/ui/overlay.hpp"
+#include "wisp/ui/theme.hpp"
 
 namespace wisp::ui {
 
@@ -541,6 +543,7 @@ Result<void> UiRuntime::start() {
     auto fail_after_lv_init = [this](ErrorCode code, const char* message) {
         detail::release_vector_fonts();
         lv_deinit();
+        detail::release_theme();
         impl_->lv_disp = nullptr;
         impl_->lv_indev = nullptr;
         impl_->free_buffers();
@@ -586,15 +589,20 @@ Result<void> UiRuntime::start() {
     // set_perf_overlay()) can use it unconditionally.
     lv_sysmon_hide_performance(impl_->lv_disp);
 
-    lv_theme_t* theme =
-        lv_theme_default_init(impl_->lv_disp, lv_palette_main(LV_PALETTE_BLUE),
-                              lv_palette_main(LV_PALETTE_RED), false, default_font());
-    lv_display_set_theme(impl_->lv_disp, theme);
-    // The theme applies its font only to screens, so widgets on the top
-    // and system layers (dialogs, overlays) would otherwise fall back to
-    // LV_FONT_DEFAULT, which has no CJK glyphs.
-    lv_obj_set_style_text_font(lv_display_get_layer_top(impl_->lv_disp), default_font(), 0);
-    lv_obj_set_style_text_font(lv_display_get_layer_sys(impl_->lv_disp), default_font(), 0);
+    lv_display_set_theme(impl_->lv_disp, detail::install_theme(impl_->lv_disp, default_font()));
+    // lv_display_set_theme() restyles the screen only while every layer is
+    // empty, and the performance overlay's label is already on the system
+    // layer.
+    lv_theme_apply(lv_display_get_screen_active(impl_->lv_disp));
+    // The theme styles screens only, and the layers keep no theme styles
+    // (one would make them opaque), so widgets on the top and system
+    // layers (dialogs, overlays) would otherwise fall back to
+    // LV_FONT_DEFAULT, which has no CJK glyphs, and to LVGL's black text.
+    for (lv_obj_t* layer :
+         {lv_display_get_layer_top(impl_->lv_disp), lv_display_get_layer_sys(impl_->lv_disp)}) {
+        lv_obj_set_style_text_font(layer, default_font(), 0);
+        lv_obj_set_style_text_color(layer, lv_color_hex(theme::kText), 0);
+    }
 
     if (impl_->touch) {
         impl_->lv_indev = lv_indev_create();
@@ -680,6 +688,7 @@ void UiRuntime::stop() {
     // creates them again on demand.
     detail::release_vector_fonts();
     lv_deinit();
+    detail::release_theme();
     impl_->lv_disp = nullptr;
     impl_->lv_indev = nullptr;
 
