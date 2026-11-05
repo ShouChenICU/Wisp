@@ -297,6 +297,34 @@ TEST(AppNotifications, BatteryLowPostsSystemNotice) {
     EXPECT_EQ(n.action, "");
 }
 
+TEST(AppNotifications, BatteryLowKeepsOneNoticeAndChargingClearsIt) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::NotificationService* notes = h.app.notifications();
+    ASSERT_NE(notes, nullptr);
+    auto low = [&](int64_t pct) {
+        h.app.bus().publish(
+            {"power.battery.low", "power.main", 0, {{"battery_percent", wisp::Value(pct)}}});
+        ASSERT_TRUE(h.app.bus().wait_idle(2000));
+    };
+    low(12);
+    low(9);
+    ASSERT_EQ(notes->unread_count(), 1u);
+    EXPECT_EQ(notes->unread()[0].arg, "9");
+
+    h.app.bus().publish({"power.charging.changed",
+                         "power.main",
+                         0,
+                         {{"charging", wisp::Value(false)}, {"usb_present", wisp::Value(false)}}});
+    ASSERT_TRUE(h.app.bus().wait_idle(2000));
+    EXPECT_EQ(notes->unread_count(), 1u);
+    h.app.bus().publish({"power.charging.changed",
+                         "power.main",
+                         0,
+                         {{"charging", wisp::Value(true)}, {"usb_present", wisp::Value(true)}}});
+    EXPECT_TRUE(wait_until([&] { return notes->unread_count() == 0; }, 2000));
+}
+
 TEST(AppNotifications, WakeLockReminderPosts) {
     using wisp::core::WakeLockKind;
     auto h = make_app({.with_display = false});
@@ -340,6 +368,8 @@ TEST(AppNotifications, DeletedSceneLosesItsNotices) {
                          "scene",
                          0,
                          {{"id", wisp::Value("pomodoro")}, {"state", wisp::Value("closed")}}});
+    ASSERT_TRUE(h.app.bus().wait_idle(2000));
+    EXPECT_EQ(notes->unread_count(), 2u);
     h.app.bus().publish({"scene.state",
                          "scene",
                          0,

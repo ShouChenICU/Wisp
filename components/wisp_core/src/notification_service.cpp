@@ -1,6 +1,7 @@
 #include "wisp/core/notification_service.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <utility>
 
@@ -82,6 +83,7 @@ struct NotificationService::State {
     };
 
     explicit State(NotificationDeps d) : deps(std::move(d)) {}
+    ~State() { delete os_timer.load(); }
 
     static Entry to_entry(const Notification& n) {
         Entry e;
@@ -260,7 +262,20 @@ struct NotificationService::State {
     // disk (or queued for it).
     uint64_t change_gen = 0;
     uint64_t written_gen = 0;
+    // The timer is started and has not stopped itself yet.
     bool timer_armed = false;
+    // A save job is queued on the worker.
+    bool write_queued = false;
+    int failures = 0;       // failed saves in a row
+    uint64_t retry_at = 0;  // no save before this (backoff)
+    bool gave_up = false;   // kMaxSaveAttempts failed; wait for a change
+    bool closed = false;
+
+    NotificationTimer timer;
+    // The default timer (deps.make_timer empty), made on its first start();
+    // owned here and freed in ~State, after close() stopped it.
+    std::atomic<os::Timer*> os_timer{nullptr};
+    os::Mutex os_timer_mutex;  // creating it
 
     os::Mutex cb_mutex;
     std::shared_ptr<const std::function<void(const NotificationChange&)>> listener;
@@ -270,10 +285,22 @@ struct NotificationService::State {
     // one.
     os::Mutex write_mutex;
 
-    static void write_now(State& s);
+    // With mutex held: counts a failed save and sets the next retry.
+    void save_failed(uint64_t now) {
+        ++failures;
+        if (failures >= kMaxSaveAttempts) {
+            gave_up = true;
+            WLOG_W(kTag, "notifications not saved after %d attempts; retrying on the next change",
+                   failures);
+            return;
+        }
+        retry_at = now + (static_cast<uint64_t>(kCoalesceMs) << failures);
+    }
+
+    static bool write_now(State& s);
     static void announce(State& s, const std::vector<NotificationChange>& changes);
     static void arm(const std::shared_ptr<State>& s);
-    static void on_timer(const std::weak_ptr<State>& weak);
+    static void tick(const std::weak_ptr<State>& weak);
 };
 
 namespace {
@@ -283,18 +310,33 @@ std::string str_field(const Value& v, const char* key) {
     return f != nullptr && f->type() == Value::Type::String ? f->as_string() : std::string();
 }
 
+// The limits post() and post_system() enforce, for a notice read back from
+// the file (which may be damaged or edited by hand).
+bool loadable(const Notification& n) {
+    if (n.source == kSystemSource) {
+        return !n.code.empty() && n.id == n.code + ":" + n.arg && n.title.empty() &&
+               n.body.empty() && (n.action.empty() || n.action == notice::kActionReleaseLock) &&
+               n.code.size() <= 64 && n.arg.size() <= 64 && n.action_arg.size() <= 16;
+    }
+    return valid_notification_id(n.source) && valid_notification_id(n.id) && !n.title.empty() &&
+           n.title.size() <= NotificationService::kTitleMax &&
+           n.body.size() <= NotificationService::kBodyMax &&
+           n.source_name.size() <= NotificationService::kTitleMax && n.code.empty() &&
+           n.arg.empty() && n.action.empty() && n.action_arg.empty();
+}
+
 }  // namespace
 
-// Writes the current list if it changed since the last write. Runs on the
-// storage worker.
-void NotificationService::State::write_now(State& s) {
+// Writes the current list if it changed since the last write; false if the
+// write failed. Runs on the storage worker.
+bool NotificationService::State::write_now(State& s) {
     std::lock_guard<os::Mutex> write_lock(s.write_mutex);
     LStr body;
     uint64_t gen = 0;
     std::string path;
     {
         std::lock_guard<os::Mutex> lock(s.mutex);
-        if (s.change_gen == s.written_gen || s.path.empty()) return;
+        if (s.change_gen == s.written_gen || s.path.empty()) return true;
         body = s.serialize();
         gen = s.change_gen;
         path = s.path;
@@ -303,10 +345,11 @@ void NotificationService::State::write_now(State& s) {
         path, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(body.data()), body.size()));
     if (!r) {
         WLOG_W(kTag, "saving notifications failed: %s", r.error().message.c_str());
-        return;
+        return false;
     }
     std::lock_guard<os::Mutex> lock(s.mutex);
     s.written_gen = std::max(s.written_gen, gen);
+    return true;
 }
 
 void NotificationService::State::announce(State& s,
@@ -324,43 +367,107 @@ void NotificationService::State::announce(State& s,
     --s.in_callback;
 }
 
-// Arms the coalescing timer unless one is in flight. Called without the
-// lock: schedule() may run the callback on another thread at once.
+// Starts the coalescing timer for unsaved changes unless it runs already;
+// a change after the saves gave up starts a new round of attempts. Called
+// without the lock: start() may block on the timer's own bookkeeping.
 void NotificationService::State::arm(const std::shared_ptr<State>& s) {
     {
         std::lock_guard<os::Mutex> lock(s->mutex);
-        if (s->timer_armed || s->change_gen == s->written_gen || !s->deps.schedule) return;
+        if (s->closed || !s->deps.submit_io || s->change_gen == s->written_gen) return;
+        if (s->gave_up) {
+            s->gave_up = false;
+            s->failures = 0;
+            s->retry_at = 0;
+        }
+        if (s->timer_armed) return;
         s->timer_armed = true;
     }
-    std::weak_ptr<State> weak = s;
-    s->deps.schedule(NotificationService::kCoalesceMs, [weak] { on_timer(weak); });
-}
-
-void NotificationService::State::on_timer(const std::weak_ptr<State>& weak) {
-    auto s = weak.lock();
-    if (!s) return;
-    {
-        // Changes from here on arm a new timer; the job below writes
-        // whatever is there when it runs.
+    if (!s->timer.start()) {
         std::lock_guard<os::Mutex> lock(s->mutex);
         s->timer_armed = false;
-        // A flush() already wrote everything.
-        if (s->change_gen == s->written_gen) return;
+        WLOG_W(kTag, "no timer for saving notifications; trying again on the next change");
+    }
+}
+
+void NotificationService::State::tick(const std::weak_ptr<State>& weak) {
+    auto s = weak.lock();
+    if (!s) return;
+    const uint64_t now = s->deps.now_ms();
+    {
+        std::lock_guard<os::Mutex> lock(s->mutex);
+        if (s->closed || s->gave_up || s->change_gen == s->written_gen) {
+            // Under the lock, so an arm() that sees timer_armed false starts
+            // a timer that has already stopped.
+            s->timer_armed = false;
+            s->timer.stop();
+            return;
+        }
+        if (s->write_queued || now < s->retry_at) return;
+        s->write_queued = true;
     }
     std::weak_ptr<State> job_weak = s;
-    bool queued = s->deps.submit_io && s->deps.submit_io([job_weak] {
-        if (auto js = job_weak.lock()) write_now(*js);
+    const bool queued = s->deps.submit_io([job_weak] {
+        auto js = job_weak.lock();
+        if (!js) return;
+        const bool ok = write_now(*js);
+        std::lock_guard<os::Mutex> lock(js->mutex);
+        js->write_queued = false;
+        if (ok) {
+            js->failures = 0;
+            js->retry_at = 0;
+        } else {
+            js->save_failed(js->deps.now_ms());
+        }
     });
     if (!queued) {
-        WLOG_W(kTag, "storage queue full; saving notifications later");
-        arm(s);
+        std::lock_guard<os::Mutex> lock(s->mutex);
+        s->write_queued = false;
+        if (s->failures == 0) WLOG_W(kTag, "storage queue full; saving notifications later");
+        s->save_failed(now);
     }
 }
 
 NotificationService::NotificationService(NotificationDeps deps)
-    : state_(std::make_shared<State>(std::move(deps))) {}
+    : state_(std::make_shared<State>(std::move(deps))) {
+    std::weak_ptr<State> weak = state_;
+    auto tick = [weak] { State::tick(weak); };
+    if (state_->deps.make_timer) {
+        state_->timer = state_->deps.make_timer(std::move(tick));
+        return;
+    }
+    // A periodic os::Timer, made when first needed: on ESP-IDF it takes
+    // internal RAM, and a failed create is tried again on the next change.
+    State* st = state_.get();
+    state_->timer.start = [st, tick] {
+        os::Timer* t = st->os_timer.load();
+        if (t == nullptr) {
+            std::lock_guard<os::Mutex> lock(st->os_timer_mutex);
+            t = st->os_timer.load();
+            if (t == nullptr) {
+                auto made = os::Timer::create("wisp.notify", kCoalesceMs, /*periodic=*/true, tick);
+                if (!made) return false;
+                t = made.release();
+                st->os_timer.store(t);
+            }
+        }
+        t->start();
+        return true;
+    };
+    state_->timer.stop = [st] {
+        if (os::Timer* t = st->os_timer.load()) t->stop();
+    };
+}
 
-NotificationService::~NotificationService() = default;
+NotificationService::~NotificationService() { close(); }
+
+void NotificationService::close() {
+    {
+        std::lock_guard<os::Mutex> lock(state_->mutex);
+        state_->closed = true;
+        state_->timer_armed = false;
+    }
+    if (state_->timer.stop) state_->timer.stop();
+}
 
 Result<void> NotificationService::load() {
     auto root = state_->deps.storage.write_root(Area::System);
@@ -386,6 +493,7 @@ Result<void> NotificationService::load() {
     }
 
     os::LargeVector<State::Entry> loaded;
+    unsigned skipped = 0;
     for (const Value& v : parsed.value().as_list()) {
         if (v.type() != Value::Type::Map) continue;
         Notification n;
@@ -403,8 +511,25 @@ Result<void> NotificationService::load() {
         if (const Value* t = v.find("posted_unix"); t != nullptr && t->type() == Value::Type::Int) {
             n.posted_unix = t->as_int();
         }
+        if (!loadable(n)) {
+            ++skipped;
+            continue;
+        }
         loaded.push_back(State::to_entry(n));
     }
+    // Only the newest kUnreadPerScene of each scene, as post() would leave.
+    for (size_t i = loaded.size(); i-- > 0;) {
+        if (same(loaded[i].source, kSystemSource)) continue;
+        size_t newer = 0;
+        for (size_t j = i + 1; j < loaded.size(); ++j) {
+            if (loaded[j].source == loaded[i].source) ++newer;
+        }
+        if (newer >= kUnreadPerScene) {
+            loaded.erase(loaded.begin() + static_cast<std::ptrdiff_t>(i));
+            ++skipped;
+        }
+    }
+    if (skipped > 0) WLOG_W(kTag, "skipped %u bad or surplus stored notifications", skipped);
 
     std::vector<NotificationChange> changes;
     {
@@ -536,6 +661,24 @@ size_t NotificationService::dismiss_source(std::string_view source, DismissReaso
     return changes.size();
 }
 
+size_t NotificationService::dismiss_code(std::string_view code, DismissReason reason) {
+    State& s = *state_;
+    std::vector<NotificationChange> changes;
+    {
+        std::lock_guard<os::Mutex> lock(s.mutex);
+        for (size_t i = 0; i < s.entries.size();) {
+            if (same(s.entries[i].source, kSystemSource) && same(s.entries[i].code, code)) {
+                s.remove_at(i, reason, changes);
+            } else {
+                ++i;
+            }
+        }
+    }
+    State::announce(s, changes);
+    State::arm(state_);
+    return changes.size();
+}
+
 void NotificationService::clear_all() {
     State& s = *state_;
     std::vector<NotificationChange> changes;
@@ -597,7 +740,7 @@ bool NotificationService::flush(uint32_t timeout_ms) {
     auto done = std::make_shared<os::Semaphore>(1, 0);
     std::weak_ptr<State> weak = state_;
     bool queued = state_->deps.submit_io && state_->deps.submit_io([weak, done] {
-        if (auto s = weak.lock()) State::write_now(*s);
+        if (auto s = weak.lock()) (void)State::write_now(*s);
         done->give();
     });
     if (!queued) return false;

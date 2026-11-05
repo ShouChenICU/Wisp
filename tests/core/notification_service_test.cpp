@@ -56,12 +56,24 @@ struct Harness {
             .submit_io =
                 [this](std::function<void()> job) {
                     ++submits;
+                    if (!submit_ok) return false;
                     job();
                     return true;
                 },
-            .schedule = [this](
-                            uint32_t ms,
-                            std::function<void()> cb) { timers.emplace_back(ms, std::move(cb)); },
+            .make_timer =
+                [this](std::function<void()> t) {
+                    tick = std::move(t);
+                    return wisp::core::NotificationTimer{
+                        .start =
+                            [this] {
+                                ++timer_starts;
+                                if (!timer_ok) return false;
+                                timer_running = true;
+                                return true;
+                            },
+                        .stop = [this] { timer_running = false; },
+                    };
+                },
             .now_ms = [this] { return now.load(); },
             .wall_s = [] { return int64_t{1767225600}; },
         };
@@ -75,10 +87,20 @@ struct Harness {
         return s;
     }
 
+    // One period of the coalescing timer, if it runs.
     void fire_timers() {
-        auto due = std::move(timers);
-        timers.clear();
-        for (auto& t : due) t.second();
+        if (timer_running && tick) tick();
+    }
+
+    // Periods of the timer, the clock moving with them, until it stops.
+    int run_timer(int max_ticks) {
+        int ticks = 0;
+        while (timer_running && ticks < max_ticks) {
+            now += NotificationService::kCoalesceMs;
+            tick();
+            ++ticks;
+        }
+        return ticks;
     }
 
     std::vector<Event> drained() {
@@ -99,7 +121,11 @@ struct Harness {
     wisp::core::DeviceRegistry registry;
     wisp::core::EventBus bus;
     std::unique_ptr<wisp::core::StorageManager> storage;
-    std::vector<std::pair<uint32_t, std::function<void()>>> timers;
+    std::function<void()> tick;
+    bool timer_running = false;
+    bool timer_ok = true;
+    int timer_starts = 0;
+    bool submit_ok = true;
     std::atomic<uint64_t> now{1000};
     int submits = 0;
     std::mutex mutex;
@@ -208,16 +234,27 @@ TEST(Notifications, FiveUnreadPerSceneDropsOldest) {
 TEST(Notifications, RateLimitTenPerMinute) {
     Harness h;
     auto s = h.make();
+    const uint64_t t0 = h.now;
+    // Ten posts spread over 45 s: 0, 5, ..., 45 s.
     for (int i = 0; i < 10; ++i) {
+        h.now = t0 + static_cast<uint64_t>(i) * 5000;
         ASSERT_TRUE(s->post(scene_note("pomodoro", "t", "a"), false)) << i;
     }
+    h.now = t0 + 59 * 1000;
     auto over = s->post(scene_note("pomodoro", "t", "a"), false);
     ASSERT_FALSE(over);
     EXPECT_EQ(over.error().code, ErrorCode::RateLimited);
     EXPECT_EQ(over.error().message, "rate_limited");
     // Another scene has its own allowance.
     EXPECT_TRUE(s->post(scene_note("weather", "t"), false));
-    h.now += kMinute;
+    // The window slides: the post at 0 s leaves it at 60 s, the one at 5 s
+    // at 65 s.
+    h.now = t0 + kMinute;
+    EXPECT_TRUE(s->post(scene_note("pomodoro", "t", "a"), false));
+    auto again = s->post(scene_note("pomodoro", "t", "a"), false);
+    ASSERT_FALSE(again);
+    EXPECT_EQ(again.error().code, ErrorCode::RateLimited);
+    h.now = t0 + kMinute + 5000;
     EXPECT_TRUE(s->post(scene_note("pomodoro", "t", "a"), false));
 }
 
@@ -234,7 +271,28 @@ TEST(Notifications, ForegroundPostsAreNotListed) {
     EXPECT_EQ(changes[0].n.title, "front");
     EXPECT_TRUE(s->unread().empty());
     EXPECT_EQ(h.of_topic("notification.posted").size(), 1u);
-    EXPECT_TRUE(h.timers.empty());
+    EXPECT_FALSE(h.timer_running);
+}
+
+TEST(Notifications, ForegroundPostReplacesUnreadWithSameId) {
+    Harness h;
+    auto s = h.make();
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "back", "x"), false));
+    h.fire_timers();
+    h.fire_timers();  // saved; the timer stops
+    ASSERT_FALSE(h.timer_running);
+    std::vector<NotificationChange> changes;
+    s->set_listener([&](const NotificationChange& c) { changes.push_back(c); });
+
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "front", "x"), true));
+    EXPECT_TRUE(s->unread().empty());
+    EXPECT_TRUE(h.of_topic("notification.dismissed").empty());
+    EXPECT_EQ(h.of_topic("notification.posted").size(), 2u);
+    ASSERT_EQ(changes.size(), 1u);
+    EXPECT_EQ(changes[0].kind, NotificationChange::Kind::Posted);
+    EXPECT_FALSE(changes[0].listed);
+    // The list changed, so it is saved again.
+    EXPECT_TRUE(h.timer_running);
 }
 
 TEST(Notifications, FiftyStoredOldestDropped) {
@@ -355,19 +413,31 @@ TEST(Notifications, PersistedCoalescedAndReloaded) {
         ASSERT_TRUE(s->post(a, false));
         ASSERT_TRUE(s->post(scene_note("pomodoro", "b", "b"), false));
         s->post_system(wisp::core::notice::kBatteryLow, "12");
-        ASSERT_EQ(h.timers.size(), 1u);
-        EXPECT_EQ(h.timers[0].first, NotificationService::kCoalesceMs);
+        EXPECT_EQ(h.timer_starts, 1);
+        EXPECT_TRUE(h.timer_running);
         EXPECT_EQ(h.submits, 0);
         h.fire_timers();
         EXPECT_EQ(h.submits, 1);
         EXPECT_TRUE(fs::exists(fs::path(h.in) / "system" / "notifications.json"));
-        // Nothing changed since: flush has nothing to write.
+        // Nothing changed since: flush has nothing to write, and the next
+        // period stops the timer.
         EXPECT_TRUE(s->flush(1000));
         EXPECT_EQ(h.submits, 1);
+        h.fire_timers();
+        EXPECT_FALSE(h.timer_running);
+
+        // A second change after the first save starts the timer again.
+        ASSERT_TRUE(s->post(scene_note("pomodoro", "c", "c"), false));
+        EXPECT_EQ(h.timer_starts, 2);
+        EXPECT_TRUE(h.timer_running);
+        h.fire_timers();
+        EXPECT_EQ(h.submits, 2);
     }
     auto again = h.make();
     auto list = again->unread();
-    ASSERT_EQ(list.size(), 3u);
+    ASSERT_EQ(list.size(), 4u);
+    EXPECT_EQ(list[0].id, "c");
+    list.erase(list.begin());
     EXPECT_EQ(list[0].code, "battery_low");
     EXPECT_EQ(list[0].arg, "12");
     EXPECT_EQ(list[1].id, "b");
@@ -393,9 +463,10 @@ TEST(Notifications, FlushWritesPendingChanges) {
         ASSERT_TRUE(s->post(scene_note("pomodoro", "a", "a"), false));
         EXPECT_TRUE(s->flush(1000));
         EXPECT_EQ(h.submits, 1);
-        // The timer that was armed finds nothing left to write.
+        // The timer that was started finds nothing left to write and stops.
         h.fire_timers();
         EXPECT_EQ(h.submits, 1);
+        EXPECT_FALSE(h.timer_running);
     }
     auto again = h.make();
     EXPECT_EQ(again->unread_count(), 1u);
@@ -416,4 +487,118 @@ TEST(Notifications, MissingOrBadFileLoadsEmpty) {
     NotificationService bad(h.deps());
     EXPECT_TRUE(bad.load());
     EXPECT_EQ(bad.unread_count(), 0u);
+}
+
+TEST(Notifications, TimerThatCannotStartIsRetriedOnTheNextChange) {
+    Harness h;
+    auto s = h.make();
+    h.timer_ok = false;
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "a", "a"), false));
+    EXPECT_FALSE(h.timer_running);
+    h.timer_ok = true;
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "b", "b"), false));
+    EXPECT_TRUE(h.timer_running);
+    h.fire_timers();
+    EXPECT_EQ(h.submits, 1);
+    auto again = h.make();
+    EXPECT_EQ(again->unread_count(), 2u);
+}
+
+TEST(Notifications, FailedSavesBackOffThenWaitForAChange) {
+    Harness h;
+    auto s = h.make();
+    h.submit_ok = false;
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "a", "a"), false));
+    // Retries at 300 ms, then after 600, 1200, 2400, 4800 ms; then the timer
+    // stops instead of waking every period for ever.
+    const int ticks = h.run_timer(1000);
+    EXPECT_LT(ticks, 1000);
+    EXPECT_FALSE(h.timer_running);
+    EXPECT_EQ(h.submits, NotificationService::kMaxSaveAttempts);
+
+    // The next change tries again, and a working worker saves it.
+    h.submit_ok = true;
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "b", "b"), false));
+    EXPECT_TRUE(h.timer_running);
+    h.run_timer(10);
+    EXPECT_FALSE(h.timer_running);
+    EXPECT_EQ(h.submits, NotificationService::kMaxSaveAttempts + 1);
+    auto again = h.make();
+    EXPECT_EQ(again->unread_count(), 2u);
+}
+
+TEST(Notifications, WithoutAWorkerNothingIsScheduled) {
+    Harness h;
+    auto deps = h.deps();
+    deps.submit_io = nullptr;
+    NotificationService s(std::move(deps));
+    ASSERT_TRUE(s.load());
+    ASSERT_TRUE(s.post(scene_note("pomodoro", "a", "a"), false));
+    EXPECT_EQ(h.timer_starts, 0);
+    EXPECT_EQ(s.unread_count(), 1u);
+    EXPECT_FALSE(s.flush(100));
+}
+
+TEST(Notifications, CloseStopsTheTimer) {
+    Harness h;
+    auto s = h.make();
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "a", "a"), false));
+    ASSERT_TRUE(h.timer_running);
+    s->close();
+    EXPECT_FALSE(h.timer_running);
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "b", "b"), false));
+    EXPECT_FALSE(h.timer_running);
+    // flush() still saves after close().
+    EXPECT_TRUE(s->flush(1000));
+    auto again = h.make();
+    EXPECT_EQ(again->unread_count(), 2u);
+}
+
+TEST(Notifications, DismissCodeRemovesEveryArgument) {
+    Harness h;
+    auto s = h.make();
+    s->post_system(wisp::core::notice::kBatteryLow, "12");
+    s->post_system(wisp::core::notice::kBatteryLow, "9");
+    s->post_system(wisp::core::notice::kSceneError, "weather");
+    EXPECT_EQ(s->dismiss_code(wisp::core::notice::kBatteryLow, DismissReason::Dismiss), 2u);
+    ASSERT_EQ(s->unread_count(), 1u);
+    EXPECT_EQ(s->unread()[0].code, "scene_error");
+}
+
+TEST(Notifications, LoadSkipsBadEntriesAndCapsEachScene) {
+    Harness h;
+    std::string json = "[";
+    auto entry = [](const std::string& source, const std::string& id, const std::string& title,
+                    const std::string& body, const std::string& code = {},
+                    const std::string& arg = {}) {
+        return R"({"source":")" + source + R"(","id":")" + id + R"(","source_name":"P","title":")" +
+               title + R"(","body":")" + body + R"(","code":")" + code + R"(","arg":")" + arg +
+               R"(","action":"","action_arg":"","sound":"none","posted_unix":0})";
+    };
+    std::vector<std::string> items = {
+        entry("pomodoro", "big", std::string(33, 't'), ""),    // title too long
+        entry("pomodoro", "fat", "t", std::string(201, 'b')),  // body too long
+        entry("pomodoro", "Bad!", "t", ""),                    // bad id
+        entry("Bad Scene", "ok", "t", ""),                     // bad scene id
+        entry("system", "battery_low:12", "", "", "battery_low", "12"),
+        entry("system", "forged", "", "", "battery_low", "12"),  // id is not code:arg
+    };
+    for (int i = 0; i < 7; ++i) items.push_back(entry("weather", "w" + std::to_string(i), "t", ""));
+    for (size_t i = 0; i < items.size(); ++i) json += (i ? "," : "") + items[i];
+    json += "]";
+    std::error_code ec;
+    fs::create_directories(fs::path(h.in) / "system", ec);
+    {
+        FILE* f = std::fopen((fs::path(h.in) / "system" / "notifications.json").c_str(), "wb");
+        ASSERT_NE(f, nullptr);
+        std::fputs(json.c_str(), f);
+        std::fclose(f);
+    }
+    auto s = h.make();
+    EXPECT_EQ(s->unread_count(), 6u);
+    EXPECT_TRUE(s->find("system", "battery_low:12"));
+    EXPECT_FALSE(s->find("weather", "w0"));
+    EXPECT_FALSE(s->find("weather", "w1"));
+    EXPECT_TRUE(s->find("weather", "w2"));
+    EXPECT_TRUE(s->find("weather", "w6"));
 }

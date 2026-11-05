@@ -216,6 +216,12 @@ struct Timer::Impl {
         return running.load() && runner_id.load() == std::this_thread::get_id();
     }
 
+    // A stop() has been requested and the thread is on its way out.
+    bool stopping() {
+        std::lock_guard<std::mutex> lock(wait_mtx);
+        return stop_requested;
+    }
+
     void run() {
         // Published first so stop()-from-within-cb() can recognize "this
         // is the timer's own thread" as soon as the thread exists.
@@ -265,10 +271,13 @@ void Timer::start() {
     }
 
     std::lock_guard<std::mutex> control_lock(impl_->control_mtx);
-    if (impl_->running) {
+    if (impl_->running && !impl_->stopping()) {
         return;
     }
     if (impl_->thread.joinable()) {
+        // Also a run whose cb() stopped its own timer and is still
+        // returning: the timer is already inactive (as on ESP-IDF, see
+        // active()), so this start() must arm it again once that run ends.
         // A previous run finished (naturally, or via a stop() called from
         // within its own cb()) but was never joined; clean it up before
         // starting a new one.
@@ -318,6 +327,6 @@ void Timer::stop() {
     }
 }
 
-bool Timer::active() const { return impl_->running.load(); }
+bool Timer::active() const { return impl_->running.load() && !impl_->stopping(); }
 
 }  // namespace wisp::os

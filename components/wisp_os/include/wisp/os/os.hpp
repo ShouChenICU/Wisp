@@ -188,7 +188,10 @@ public:
     // If called from within cb() itself, returns immediately without
     // blocking — joining the calling thread with itself would deadlock —
     // but cb is still guaranteed not to be invoked again after this
-    // particular invocation returns. Idempotent either way.
+    // particular invocation returns. Idempotent either way. After a stop()
+    // from within cb() the timer is inactive at once: a start() from
+    // another thread arms it again, even while that cb() is still
+    // returning.
     //
     // Do not call stop() (or destroy the Timer) while holding a lock that
     // any Timer's cb() might itself try to take. On ports that dispatch

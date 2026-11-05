@@ -102,12 +102,12 @@ struct App::Impl {
     std::unique_ptr<NetWiring> net;
 
     // Notifications (scene-device spec 5), built by start() once the
-    // storage worker runs and loaded on it. stop() unsubscribes and stops
-    // notify_timers before the final flush, and resets the service only
+    // storage worker runs and loaded on it. stop() unsubscribes and closes
+    // it (no more timer saves) before the final flush, and resets it only
     // after power_timer (which posts wake-lock reminders) has stopped.
     std::unique_ptr<core::NotificationService> notifications;
-    std::unique_ptr<OneShotTimers> notify_timers;
     core::SubscriptionId battery_sub = 0;
+    core::SubscriptionId charging_sub = 0;
     core::SubscriptionId scene_state_sub = 0;
 
     // The storage worker, the scene repository and (with a screen) the

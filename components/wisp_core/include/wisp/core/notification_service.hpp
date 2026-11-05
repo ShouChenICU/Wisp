@@ -16,10 +16,14 @@
 //                                                        a system notice)
 //   notification.dismissed  {"id", "source", "reason"}
 //
-// Persistence: every change to the unread list arms one schedule(kCoalesceMs)
-// timer; when it fires the whole list is written with write_atomic() in a
-// submit_io job (the storage worker, which may touch flash). `wake` is not
-// stored, so a notice reloaded after a restart never turns the screen on.
+// Persistence: a change to the unread list starts one periodic kCoalesceMs
+// timer; its tick writes the whole list with write_atomic() in a submit_io
+// job (the storage worker, which may touch flash) and stops the timer once
+// the list on disk is current. A failed submit or write is retried with a
+// doubling delay; after kMaxSaveAttempts the timer stops and the next
+// change (or flush()) tries again, so a device without a working worker
+// does not wake every 300 ms. `wake` is not stored, so a notice reloaded
+// after a restart never turns the screen on.
 //
 // Thread-safe. Only load() and flush() touch flash; every other method
 // changes memory and arms the timer, so the scene task may call them.
@@ -81,18 +85,35 @@ struct Notification {
 struct NotificationChange {
     enum class Kind : uint8_t { Posted, Dismissed } kind;
     Notification n;
-    bool listed = true;  // false: a foreground scene's own post (banner only)
+    // false: a foreground scene's own post, shown as a banner only. It
+    // replaces any unread notice with the same source and id, which is
+    // gone from unread() without a Dismissed change: a list showing that
+    // row drops it.
+    bool listed = true;
     DismissReason reason = DismissReason::Dismiss;
+};
+
+// The coalescing timer. start() makes `tick` run every kCoalesceMs until
+// stop(), and returns false if the timer cannot run (the next change tries
+// again). The tick calls stop() on itself with the service's lock held, so
+// stop() from inside the tick must not block, and a start() from another
+// thread right after it must arm the timer again (os::Timer does both).
+// stop() from another thread waits for a tick in progress.
+struct NotificationTimer {
+    std::function<bool()> start;
+    std::function<void()> stop;
 };
 
 struct NotificationDeps {
     EventBus& bus;
     StorageManager& storage;
     // Runs a job on the storage worker; false if it could not be queued.
-    // Production: StorageWorker::submit.
+    // Production: StorageWorker::submit. Empty: nothing is saved (no
+    // storage worker); load() still reads.
     std::function<bool(std::function<void()>)> submit_io;
-    // Calls the callback once after `ms`.
-    std::function<void(uint32_t ms, std::function<void()>)> schedule;
+    // Makes the coalescing timer, once, in the constructor. Empty: a
+    // periodic os::Timer. See NotificationTimer.
+    std::function<NotificationTimer(std::function<void()> tick)> make_timer;
     std::function<uint64_t()> now_ms = os::now_ms;
     // Seconds since the epoch; 0 or empty: unknown.
     std::function<int64_t()> wall_s;
@@ -106,25 +127,32 @@ public:
     static constexpr size_t kTitleMax = 32, kBodyMax = 200, kIdMax = 32;
     static constexpr size_t kUnreadPerScene = 5, kPerMinute = 10, kStoredMax = 50;
     static constexpr uint32_t kCoalesceMs = 300;
+    // Failed saves in a row before the timer stops until the next change;
+    // the retries wait 600, 1200, 2400 and 4800 ms.
+    static constexpr int kMaxSaveAttempts = 5;
 
     explicit NotificationService(NotificationDeps deps);
-    ~NotificationService();
+    ~NotificationService();  // close()
 
     NotificationService(const NotificationService&) = delete;
     NotificationService& operator=(const NotificationService&) = delete;
 
     // Reads <System>/notifications.json; run it on the storage worker. A
     // missing or unreadable file is an empty list (logged), never an
-    // error; the only error is a storage without a System area. Stored
-    // notices go before anything already posted in memory, which wins on a
-    // clash.
+    // error; the only error is a storage without a System area. Entries
+    // that break the post-time limits are skipped, and only the newest
+    // kUnreadPerScene of each scene are kept. Stored notices go before
+    // anything already posted in memory, which wins on a clash.
     Result<void> load();
 
     // A scene's post: `n.source` is the scene id, `n.id` empty or valid.
     // InvalidArgument for a bad title, body or id; RateLimited
-    // "rate_limited" past kPerMinute. A foreground scene's own post
-    // (`from_foreground`) is announced (event, listener with listed =
-    // false) but not kept, and it removes an unread one with the same id.
+    // "rate_limited" past kPerMinute posts by this scene in the last 60 s
+    // (a sliding window; replacements and foreground posts count, rejected
+    // ones do not). A foreground scene's own post (`from_foreground`) is
+    // announced (notification.posted, listener with listed = false) but not
+    // kept, and it silently removes an unread notice with the same id (no
+    // notification.dismissed, as for any replacement).
     // Returns the id: the one given, or "n<seq>".
     Result<std::string> post(Notification n, bool from_foreground);
     // A system notice with id "<code>:<arg>", which replaces an earlier one
@@ -138,6 +166,9 @@ public:
     bool dismiss(std::string_view source, std::string_view id, DismissReason reason);
     // Removes every unread notice of `source`; returns how many.
     size_t dismiss_source(std::string_view source, DismissReason reason);
+    // Removes every system notice with `code` (any argument); returns how
+    // many.
+    size_t dismiss_code(std::string_view code, DismissReason reason);
     // Removes everything, each with DismissReason::Dismiss.
     void clear_all();
 
@@ -155,6 +186,11 @@ public:
     // `timeout_ms` (shutdown). True when nothing is left to write. Not on
     // the storage worker (it would wait on itself).
     bool flush(uint32_t timeout_ms);
+
+    // Stops the timer for good, waiting for a tick in progress (shutdown,
+    // before the storage worker goes). Changes after it stay in memory
+    // until flush(). Idempotent; not from inside a tick.
+    void close();
 
 private:
     // Everything lives here, shared with the timer and storage jobs, which

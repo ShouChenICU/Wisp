@@ -122,6 +122,8 @@
 25. **`GET /system/power`**：`{"level": "active"|"dim"|"standby"|"deep_standby", "light_sleep": "on"|"off"|"unsupported", "deferred": int, "locks": [{"id": int, "holder": string, "kind": "network"|"cpu"|"screen", "reason": string, "held_ms": int}]}`。`GET /system/occupancy`：`{"items": [{"device": string, "holder": string, "mode": "shared"|"exclusive", "held_ms": int}]}`。
 26. **冒烟测试可观察的日志**：`app::StatusShell` 在计数变化时以 Info 记 `status: background=<n> unread=<m>`，面板开关记 `panel: open`/`panel: closed`；`net::NetworkWindow` 记 `netwindow: open`/`netwindow: closed (<原因>)`；`PowerManager` 每次换级别记 `power: <level>`。
 
+27. **通知的限额与保存**（执行中裁定）：每分钟 10 条按场景分别计数，是滑动的 60 秒窗口（被拒绝的不计，替换和前台场景的通知都计）；系统通知不限速。低电量通知只保留一条：新的 `power.battery.low` 先移除旧的 `battery_low:*`，`power.charging.changed` 变为充电时也移除。保存用一个常驻的 300 ms 周期定时器，有未保存的变化时启动、磁盘上已是最新时在回调里停下（`os::Timer` 在回调里停下后立即视为未启动，别的线程可以马上再启动它）；失败按 600 ms 起翻倍重试，连续 5 次失败后等下一次变化。
+
 ---
 
 ## 文件结构总览

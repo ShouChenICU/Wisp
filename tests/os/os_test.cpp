@@ -144,6 +144,30 @@ TEST(Os, TimerStopFromCallbackDoesNotDeadlock) {
     EXPECT_FALSE(tm.active());
 }
 
+TEST(Os, TimerStartAfterStopFromCallbackRearms) {
+    // A callback that stops its own timer leaves it inactive at once (as on
+    // ESP-IDF), so a start() from another thread while that callback is
+    // still returning arms the timer again instead of being lost.
+    Timer* self = nullptr;
+    std::atomic<int> calls{0};
+    Semaphore stopped(1, 0);
+    Timer tm("tm", 5, /*periodic=*/true, [&] {
+        if (++calls == 1) {
+            self->stop();
+            stopped.give();
+            sleep_ms(50);
+        }
+    });
+    self = &tm;
+
+    tm.start();
+    ASSERT_TRUE(stopped.take(1000));
+    tm.start();
+    for (int i = 0; i < 200 && calls.load() < 2; ++i) sleep_ms(5);
+    EXPECT_GE(calls.load(), 2);
+    tm.stop();
+}
+
 TEST(Os, TimerDestructorGuaranteesCallbackStopped) {
     std::atomic<int> calls{0};
     {

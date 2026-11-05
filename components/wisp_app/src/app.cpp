@@ -120,18 +120,22 @@ Result<void> App::start() {
     // worker when there is one (load() reads flash), else right here.
     {
         App::Impl* impl = impl_.get();
-        impl->notify_timers = std::make_unique<OneShotTimers>();
-        OneShotTimers* timers = impl->notify_timers.get();
         core::StorageWorker* worker = scenes != nullptr ? &scenes->worker() : nullptr;
+        // Without the worker nothing is saved (the service then never
+        // starts its timer).
+        std::function<bool(std::function<void()>)> submit_io;
+        if (worker != nullptr) {
+            submit_io = [worker](std::function<void()> job) {
+                return worker->submit(std::move(job));
+            };
+        } else {
+            WLOG_W("app", "no storage worker; notifications are not saved");
+        }
         impl->notifications = std::make_unique<core::NotificationService>(core::NotificationDeps{
             .bus = impl->bus,
             .storage = impl->storage,
-            .submit_io =
-                [worker](std::function<void()> job) {
-                    return worker != nullptr && worker->submit(std::move(job));
-                },
-            .schedule = [timers](uint32_t ms,
-                                 std::function<void()> cb) { timers->schedule(ms, std::move(cb)); },
+            .submit_io = std::move(submit_io),
+            .make_timer = {},
             .now_ms = os::now_ms,
             .wall_s =
                 [] {
@@ -161,8 +165,18 @@ Result<void> App::start() {
             const std::string arg = pct != nullptr && pct->type() == Value::Type::Int
                                         ? std::to_string(pct->as_int())
                                         : std::string();
+            // One low-battery notice, with the latest level.
+            notes->dismiss_code(core::notice::kBatteryLow, core::DismissReason::Dismiss);
             notes->post_system(core::notice::kBatteryLow, arg);
         });
+        impl->charging_sub =
+            impl->bus.subscribe("power.charging.changed", [notes](const core::Event& e) {
+                auto it = e.payload.find("charging");
+                if (it != e.payload.end() && it->second.type() == Value::Type::Bool &&
+                    it->second.as_bool()) {
+                    notes->dismiss_code(core::notice::kBatteryLow, core::DismissReason::Dismiss);
+                }
+            });
         impl->scene_state_sub = impl->bus.subscribe("scene.state", [notes](const core::Event& e) {
             auto id = e.payload.find("id");
             auto state = e.payload.find("state");
@@ -467,13 +481,14 @@ void App::stop() {
     }
     // Nothing streams into it any more.
     impl_->firmware.reset();
-    // Notifications: nothing new from the bus, no more coalescing timers,
+    // Notifications: nothing new from the bus, no more saves on the timer,
     // then whatever is still unsaved goes to the worker before it stops.
     if (impl_->notifications) {
         impl_->bus.unsubscribe(impl_->battery_sub);
+        impl_->bus.unsubscribe(impl_->charging_sub);
         impl_->bus.unsubscribe(impl_->scene_state_sub);
-        impl_->battery_sub = impl_->scene_state_sub = 0;
-        impl_->notify_timers->stop();
+        impl_->battery_sub = impl_->charging_sub = impl_->scene_state_sub = 0;
+        impl_->notifications->close();
         if (!impl_->notifications->flush(kNotifyFlushMs)) {
             WLOG_W("app", "notifications not saved before shutdown");
         }
@@ -532,7 +547,6 @@ void App::stop() {
     impl_->power_manager.reset();
     // power_timer, which posts reminders, has stopped.
     impl_->notifications.reset();
-    impl_->notify_timers.reset();
 
     // power_monitor is torn down right after power_manager
     // (which points into it, like storage/storage_timer below) -- its
