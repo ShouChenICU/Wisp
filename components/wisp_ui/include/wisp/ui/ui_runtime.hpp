@@ -29,7 +29,9 @@ namespace wisp::ui {
 // The draw buffers' size and placement are the display's to declare, in
 // its caps (wisp/hal/draw_buf_policy.hpp), not the runtime's.
 struct UiConfig {
-    uint32_t task_stack = 8192;
+    // Measured on the reference board with scenes open: 8 KB left only
+    // about 430 bytes (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
+    uint32_t task_stack = 10240;
     int task_priority = 4;
     // The platform's image decoders (lv_image_decoder_create() and
     // friends), run once on the UI task after LVGL is up and before
