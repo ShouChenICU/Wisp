@@ -12,22 +12,28 @@ namespace wisp::app {
 
 namespace {
 
-const char* missing_or_pending(bool present) {
-    return present ? "--" : ui::tr(ui::StrId::StateMissing);
+// "--" until the first sample when the device is there, "missing" (for
+// good) when it is not.
+void init_value(lv_obj_t* label, bool present, PageText& text) {
+    if (present) {
+        lv_label_set_text(label, "--");
+    } else {
+        text.bind(label, ui::StrId::StateMissing);
+    }
 }
 
-std::string battery_text(const SampleSnapshot& snap) {
+std::string battery_text(const SampleSnapshot& snap, const PageText& text) {
     if (!snap.power_ok) {
-        return ui::tr(ui::StrId::ReadFailed);
+        return text.tr(ui::StrId::ReadFailed);
     }
     std::string value;
     if (snap.power.battery_percent < 0) {
-        value = ui::tr(ui::StrId::LevelUnknown);
+        value = text.tr(ui::StrId::LevelUnknown);
     } else {
         value = std::to_string(snap.power.battery_percent) + "%";
     }
     value += "  ";
-    value += ui::tr(snap.power.charging ? ui::StrId::Charging : ui::StrId::NotCharging);
+    value += text.tr(snap.power.charging ? ui::StrId::Charging : ui::StrId::NotCharging);
     return value;
 }
 
@@ -35,37 +41,40 @@ constexpr int32_t kItemGap = 8;
 
 }  // namespace
 
-void PowerClockSection::build(lv_obj_t* col, bool has_power, bool has_clock) {
+void PowerClockSection::build(lv_obj_t* col, PageText& text, bool has_power, bool has_clock) {
+    text_ = &text;
     has_power_ = has_power;
     has_clock_ = has_clock;
-    lv_obj_t* card = make_card(col, ui::StrId::SectionPowerClock);
+    lv_obj_t* card = make_card(col, ui::StrId::SectionPowerClock, text);
     lv_obj_t* table = make_table(card, 2);
-    battery_ = add_table_row(table, 0, ui::tr(ui::StrId::Battery));
-    lv_label_set_text(battery_, missing_or_pending(has_power));
-    time_ = add_table_row(table, 1, ui::tr(ui::StrId::Time));
-    lv_label_set_text(time_, missing_or_pending(has_clock));
+    battery_ = add_table_row(table, 0, ui::StrId::Battery, text);
+    init_value(battery_, has_power, text);
+    time_ = add_table_row(table, 1, ui::StrId::Time, text);
+    init_value(time_, has_clock, text);
 }
 
 void PowerClockSection::update(const SampleSnapshot& snap) {
     if (has_power_ && battery_ != nullptr) {
-        set_text_if_changed(battery_, battery_text(snap).c_str());
+        set_text_if_changed(battery_, battery_text(snap, *text_).c_str());
     }
     if (has_clock_ && time_ != nullptr) {
-        std::string value =
-            snap.rtc_ok ? format_time(snap.rtc_unix) : std::string(ui::tr(ui::StrId::ReadFailed));
+        std::string value = snap.rtc_ok ? format_time(snap.rtc_unix)
+                                        : std::string(text_->tr(ui::StrId::ReadFailed));
         set_text_if_changed(time_, value.c_str());
     }
 }
 
-void StorageSection::build(lv_obj_t* col) {
-    lv_obj_t* card = make_card(col, ui::StrId::SectionStorage);
+void StorageSection::build(lv_obj_t* col, PageText& text) {
+    text_ = &text;
+    lv_obj_t* card = make_card(col, ui::StrId::SectionStorage, text);
     lv_obj_t* table = make_table(card, 2);
-    internal_ = add_medium(table, 0, ui::tr(ui::StrId::InternalFlash));
-    sd_ = add_medium(table, 1, ui::tr(ui::StrId::SdCard));
+    internal_ = add_medium(table, 0, ui::StrId::InternalFlash, text);
+    sd_ = add_medium(table, 1, ui::StrId::SdCard, text);
 }
 
-StorageSection::Medium StorageSection::add_medium(lv_obj_t* table, int row, const char* label) {
-    add_table_key(table, row, label);
+StorageSection::Medium StorageSection::add_medium(lv_obj_t* table, int row, ui::StrId label,
+                                                  PageText& text) {
+    add_table_key(table, row, label, text);
     lv_obj_t* items = make_plain_row(table, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_style_pad_column(items, kItemGap, 0);
     lv_obj_set_grid_cell(items, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_START, row, 1);
@@ -76,16 +85,16 @@ StorageSection::Medium StorageSection::add_medium(lv_obj_t* table, int row, cons
     return Medium{state, capacity};
 }
 
-void StorageSection::show(const Medium& medium, const core::MediaStatus* status) {
+void StorageSection::show(const Medium& medium, const core::MediaStatus* status) const {
     if (status == nullptr) {
-        set_text_if_changed(medium.state, ui::tr(ui::StrId::StateMissing));
+        set_text_if_changed(medium.state, text_->tr(ui::StrId::StateMissing));
         set_text_if_changed(medium.capacity, "");
         return;
     }
     uint64_t used =
         status->total_bytes > status->free_bytes ? status->total_bytes - status->free_bytes : 0;
     set_text_if_changed(medium.state,
-                        ui::tr(status->online ? ui::StrId::Online : ui::StrId::Offline));
+                        text_->tr(status->online ? ui::StrId::Online : ui::StrId::Offline));
     set_text_if_changed(medium.capacity,
                         (format_bytes(used) + " / " + format_bytes(status->total_bytes)).c_str());
 }
@@ -107,9 +116,9 @@ void StorageSection::update(const core::StorageStatus& status) {
     show(sd_, sd);
 }
 
-void PerfSection::build(lv_obj_t* col, std::function<void()> on_long_press) {
+void PerfSection::build(lv_obj_t* col, PageText& text, std::function<void()> on_long_press) {
     on_long_press_ = std::move(on_long_press);
-    lv_obj_t* card = make_card(col, ui::StrId::SectionPerf);
+    lv_obj_t* card = make_card(col, ui::StrId::SectionPerf, text);
     label_ = make_wrap_label(card);
     lv_label_set_text(label_, "FPS 0 | CPU 0% | flush 0.0ms");
     lv_obj_add_flag(label_, LV_OBJ_FLAG_CLICKABLE);

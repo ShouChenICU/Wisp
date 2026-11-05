@@ -1,11 +1,11 @@
 #pragma once
 
-// The self-check screen's "场景" card (scene-runtime-core spec 8): one row
-// per installed scene, its name and its state -- a green "运行中" chip
-// while it runs, a red "出错" chip after an error (spec 3.6: it stays
-// until the scene opens again), its version otherwise -- or "还没有安装
-// 场景". Tapping a row opens the scene. Subproject 8's shell replaces this
-// card.
+// The self-check screen's "Scenes" card (scene-runtime-core spec 8): one
+// row per installed scene, its name and its state -- a green "Running"
+// chip while it runs, a red "Error" chip after an error (spec 3.6: it
+// stays until the scene opens again), its version otherwise -- or "No
+// scenes installed". Tapping a row opens the scene. Subproject 8's shell
+// replaces this card.
 //
 // The list comes from SceneRepository::list() on the storage worker
 // (SelfCheck asks for it), the states from SceneRuntime::status(), an
@@ -21,6 +21,7 @@
 
 #include "lvgl.h"
 #include "scene_wiring.hpp"
+#include "self_check_layout.hpp"
 #include "wisp/core/scene_host.hpp"
 
 namespace wisp::app {
@@ -33,8 +34,8 @@ public:
     using OpenFn = std::function<void(const std::string& id)>;
 
     // Appends the card to `col` (which owns the widgets) with the rows of
-    // the last listing; call again after the column was rebuilt.
-    void build(lv_obj_t* col, StatusFn status, OpenFn on_open);
+    // the last listing. `text` must outlive the widgets.
+    void build(lv_obj_t* col, PageText& text, StatusFn status, OpenFn on_open);
 
     // A new listing. Rebuilds the rows only if it differs from the last.
     void set_entries(std::vector<SceneEntry> entries);
@@ -42,6 +43,8 @@ public:
     // Re-reads every row's state; restyles only the rows whose state moved.
     void update_states();
 
+    // Re-renders the card's text in the page's current language.
+    void retext();
     // Whether a listing has arrived since construction.
     bool listed() const { return listed_; }
 
@@ -50,6 +53,8 @@ private:
         SceneEntry entry;
         core::SceneState state = core::SceneState::Stopped;
         bool rendered = false;
+        // The tap target.
+        lv_obj_t* row = nullptr;
         lv_obj_t* chip = nullptr;
         lv_obj_t* status = nullptr;
     };
@@ -58,9 +63,12 @@ private:
     void render(Row& row);
     static void row_cb(lv_event_t* e);
 
+    const PageText* text_ = nullptr;
     StatusFn status_;
     OpenFn on_open_;
     lv_obj_t* card_ = nullptr;
+    // "No scenes installed" while it is shown.
+    lv_obj_t* empty_ = nullptr;
     std::vector<SceneEntry> entries_;
     std::vector<Row> rows_;
     bool listed_ = false;

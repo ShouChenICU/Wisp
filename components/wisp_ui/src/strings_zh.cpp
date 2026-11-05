@@ -35,6 +35,22 @@ const char* strings_zh(StrId id) {
             return "交互测试";
         case StrId::SectionPerf:
             return "性能";
+        case StrId::SelfCheckTitle:
+            return "自检";
+        case StrId::SectionBoard:
+            return "设备信息";
+        case StrId::BoardName:
+            return "开发板";
+        case StrId::BoardTarget:
+            return "目标平台";
+        case StrId::Firmware:
+            return "固件";
+        case StrId::LangNameEn:
+            return "EN";
+        case StrId::LangNameZh:
+            return "中文";
+        case StrId::LangNameJa:
+            return "日本語";
         case StrId::Battery:
             return "电池";
         case StrId::Time:

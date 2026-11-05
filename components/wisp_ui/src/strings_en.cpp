@@ -34,6 +34,22 @@ const char* strings_en(StrId id) {
             return "Interactive tests";
         case StrId::SectionPerf:
             return "Performance";
+        case StrId::SelfCheckTitle:
+            return "Self Check";
+        case StrId::SectionBoard:
+            return "Board";
+        case StrId::BoardName:
+            return "Board";
+        case StrId::BoardTarget:
+            return "Target";
+        case StrId::Firmware:
+            return "Firmware";
+        case StrId::LangNameEn:
+            return "EN";
+        case StrId::LangNameZh:
+            return "中文";
+        case StrId::LangNameJa:
+            return "日本語";
         case StrId::Battery:
             return "Battery";
         case StrId::Time:

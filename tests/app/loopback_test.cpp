@@ -170,14 +170,14 @@ TEST(Loopback, ReportsEachStepAsAStringId) {
     h.app->stop();
 }
 
-TEST(Loopback, StatusTextFollowsTheCurrentLanguage) {
+// The status is shown in the self-check page's language, not ui::lang().
+TEST(Loopback, StatusTextIsInTheGivenLanguage) {
     wisp::app::LoopbackStatus failed{StrId::LoopFailed, wisp::ErrorCode::NotFound};
     wisp::app::LoopbackStatus playing{StrId::LoopPlaying};
-    wisp::ui::set_lang(Lang::Zh);
-    EXPECT_EQ(wisp::app::loopback_status_text(failed), "失败: not_found");
-    EXPECT_EQ(wisp::app::loopback_status_text(playing), "播放中");
-    wisp::ui::set_lang(Lang::En);
-    EXPECT_EQ(wisp::app::loopback_status_text(failed), "Failed: not_found");
-    EXPECT_EQ(wisp::app::loopback_status_text(playing), "Playing");
+    wisp::ui::set_lang(Lang::Ja);
+    EXPECT_EQ(wisp::app::loopback_status_text(failed, Lang::Zh), "失败: not_found");
+    EXPECT_EQ(wisp::app::loopback_status_text(playing, Lang::Zh), "播放中");
+    EXPECT_EQ(wisp::app::loopback_status_text(failed, Lang::En), "Failed: not_found");
+    EXPECT_EQ(wisp::app::loopback_status_text(playing, Lang::En), "Playing");
     wisp::ui::set_lang(Lang::Zh);
 }

@@ -25,8 +25,9 @@ lv_obj_t* make_word_label(lv_obj_t* parent, const std::string& text, int32_t max
 
 }  // namespace
 
-void DeviceSection::build(lv_obj_t* col, std::vector<DeviceRowInfo> devices) {
-    card_ = make_card(col, ui::StrId::SectionDevices);
+void DeviceSection::build(lv_obj_t* col, PageText& text, std::vector<DeviceRowInfo> devices) {
+    text_ = &text;
+    card_ = make_card(col, ui::StrId::SectionDevices, text);
     // Content-sized labels only wrap at a max width in pixels (a percentage
     // is not applied while measuring the text): one layout pass gives the
     // width every row's text has.
@@ -84,12 +85,18 @@ void DeviceSection::render(Row& row) {
     }
     // The boot report's reason only explains the state it was recorded
     // with; a state reached later (a card taken out) shows just its name.
-    std::string text = state_label(row.state);
+    std::string text = state_label(row.state, text_->lang());
     if (row.state == row.boot.state && !row.boot.reason.empty()) {
         text += ": " + row.boot.reason;
     }
     set_text_if_changed(row.reason, text.c_str());
     lv_obj_remove_flag(row.reason, LV_OBJ_FLAG_HIDDEN);
+}
+
+void DeviceSection::retext() {
+    for (Row& row : rows_) {
+        if (row.row != nullptr) render(row);
+    }
 }
 
 bool DeviceSection::set_state(const std::string& id, core::DeviceState state) {

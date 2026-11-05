@@ -86,7 +86,7 @@ SelfCheck::~SelfCheck() {
     }
     // A language change already posted by on_settings_event() still runs
     // before the UI-thread teardown at the end of this destructor (the post
-    // queue is FIFO), while every widget it rebuilds is still alive.
+    // queue is FIFO), while every dialog it reopens is still alive.
     if (settings_sub_ != 0) {
         app_.bus().unsubscribe(settings_sub_);
         settings_sub_ = 0;
@@ -196,49 +196,6 @@ void SelfCheck::build() {
     }
 }
 
-void SelfCheck::rebuild() {
-    int32_t scroll_y = root_ != nullptr ? lv_obj_get_scroll_y(root_) : 0;
-    bool dialog_open = msgbox_ != nullptr;
-    bool reset_open = reset_box_ != nullptr;
-    bool fw_open = fw_box_ != nullptr;
-    bool setup_open = setup_card_.is_open();
-    bool pair_open = pair_card_.is_open();
-    std::string pair_code = pair_card_.code();
-    uint64_t pair_expires = pair_card_.expires_ms();
-    close_confirm_dialog();
-    close_reset_dialog();
-    close_firmware_dialog();
-    setup_card_.close();
-    pair_card_.close();
-    if (root_ != nullptr) {
-        lv_obj_delete(root_);
-        root_ = nullptr;
-    }
-
-    build_widgets();
-    // Fill the live readouts now rather than leaving "--" until the next
-    // refresh tick.
-    refresh_ui();
-    lv_obj_update_layout(root_);
-    lv_obj_scroll_to_y(root_, scroll_y, LV_ANIM_OFF);
-    // Reopen in stacking order (see raise_overlays()).
-    if (setup_open) {
-        sync_wifi();
-    }
-    if (pair_open) {
-        pair_card_.open(std::move(pair_code), pair_expires, os::now_ms(), compute_safe_area());
-    }
-    if (dialog_open) {
-        show_confirm_dialog();
-    }
-    if (reset_open) {
-        show_reset_dialog();
-    }
-    if (fw_open) {
-        show_firmware_dialog();
-    }
-}
-
 void SelfCheck::build_widgets() {
     if (screen_ == nullptr) screen_ = lv_screen_active();
     lv_obj_t* col = lv_obj_create(screen_);
@@ -272,29 +229,33 @@ void SelfCheck::build_widgets() {
     // edge would sit under/near the corners.
     lv_obj_set_scrollbar_mode(col, LV_SCROLLBAR_MODE_OFF);
 
-    header_.build(col, app_.platform().board->name(), app_.platform().firmware_version,
-                  app_.platform().target, [this] { (void)devices_.scroll_to_first_problem(); });
-    header_.set_boot_ms(boot_ms());
+    header_.build(col, text_, [this] { (void)devices_.scroll_to_first_problem(); });
+    const Platform& platform = app_.platform();
+    board_.build(
+        col, text_,
+        BoardSection::Info{platform.board->name(), platform.target, platform.firmware_version},
+        [this](ui::Lang lang) { set_page_lang(lang); });
+    board_.set_boot_ms(boot_ms());
     build_devices(col);
-    lv_obj_t* net_card = make_card(col, ui::StrId::SectionNetwork);
-    net_section_.build(net_card, os::now_ms());
-    scenes_section_.build(
-        col,
-        [this](const std::string& id) {
-            scene::SceneRuntime* rt = app_.scenes();
-            return rt != nullptr ? rt->status(id) : core::SceneStatus{};
-        },
-        [this](const std::string& id) { open_scene(id); });
-    sensors_.build(col, imu_ != nullptr);
-    power_clock_.build(col, power_ != nullptr, clock_ != nullptr);
-    storage_.build(col);
-    tests_section_.build(col,
+    lv_obj_t* net_card = make_card(col, ui::StrId::SectionNetwork, text_);
+    net_section_.build(net_card, text_, os::now_ms());
+    sensors_.build(col, text_, imu_ != nullptr);
+    power_clock_.build(col, text_, power_ != nullptr, clock_ != nullptr);
+    storage_.build(col, text_);
+    tests_section_.build(col, text_,
                          TestSection::Callbacks{
                              [this] { pass_test(InteractiveTest::Touch); },
                              [this] { start_loopback(); },
                          },
                          loop_status_);
-    perf_.build(col, [this] { toggle_perf_overlay(); });
+    scenes_section_.build(
+        col, text_,
+        [this](const std::string& id) {
+            scene::SceneRuntime* rt = app_.scenes();
+            return rt != nullptr ? rt->status(id) : core::SceneStatus{};
+        },
+        [this](const std::string& id) { open_scene(id); });
+    perf_.build(col, text_, [this] { toggle_perf_overlay(); });
 
     header_.show_devices(devices_.summary());
     header_.show_tests(tests_.passed_count());
@@ -337,7 +298,7 @@ void SelfCheck::build_devices(lv_obj_t* col) {
             sd_row_live_ = true;
         }
     }
-    devices_.build(col, std::move(rows));
+    devices_.build(col, text_, std::move(rows));
 }
 
 uint64_t SelfCheck::boot_ms() const {
@@ -346,7 +307,7 @@ uint64_t SelfCheck::boot_ms() const {
     return v != nullptr ? static_cast<uint64_t>(v->as_int()) : 0;
 }
 
-void SelfCheck::refresh_header() { header_.set_boot_ms(boot_ms()); }
+void SelfCheck::refresh_header() { board_.set_boot_ms(boot_ms()); }
 
 hal::Area SelfCheck::compute_safe_area() const { return hal::safe_rect(system_.shape()); }
 
@@ -466,29 +427,11 @@ void SelfCheck::on_settings_event(const core::Event& e) {
     // The language itself is read back from SystemSettings on the UI
     // thread rather than taken from the payload, so a stale event queued
     // behind a newer change can never switch the screen back. If this
-    // post is dropped, the refresh timer's sync_language() still catches
-    // the change.
-    if (!ui_->post([this] { sync_language(); })) {
+    // post is dropped, the refresh timer's sync_system_language() still
+    // catches the change.
+    if (!ui_->post([this] { sync_system_language(); })) {
         WLOG_W("self_check", "post(language change) dropped (post queue full)");
     }
-}
-
-void SelfCheck::sync_language() {
-    // The revision is read before the value: a change stored in between
-    // moves it again, so the next sync reads the value once more.
-    uint32_t revision = app_.system_settings().revision();
-    if (language_revision_ == revision) {
-        return;
-    }
-    language_revision_ = revision;
-    std::optional<ui::Lang> lang = ui::parse_lang(app_.system_settings().get().language);
-    if (!lang || *lang == ui::lang()) {
-        return;
-    }
-    // set_lang() and the rebuild run together on the UI thread, so no
-    // label is ever built half in the old language and half in the new.
-    ui::set_lang(*lang);
-    rebuild();
 }
 
 void SelfCheck::subscribe_net() {
@@ -562,7 +505,7 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     auto* self = static_cast<SelfCheck*>(lv_timer_get_user_data(timer));
     // The fallback for a lost system.settings event: one atomic load per
     // tick while nothing changes.
-    self->sync_language();
+    self->sync_system_language();
     self->refresh_ui();
     const uint64_t now = os::now_ms();
     if (now - self->last_net_resync_ms_ >= kNetResyncMs) {

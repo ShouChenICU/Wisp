@@ -1,6 +1,7 @@
 #include "self_check_layout.hpp"
 
 #include <cstring>
+#include <utility>
 
 namespace wisp::app {
 
@@ -12,12 +13,38 @@ constexpr int32_t kCardRowGap = 6;
 constexpr int32_t kTableColumnGap = 12;
 constexpr int32_t kTableRowGap = 4;
 
-// Grid descriptors must outlive the grids that use them.
+// Grid descriptors must outlive the grids that use them. A table of n rows
+// uses the last n + 1 entries of kTableRows.
 const int32_t kTableColumns[] = {LV_GRID_CONTENT, LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
-const int32_t kTableRows1[] = {LV_GRID_CONTENT, LV_GRID_TEMPLATE_LAST};
-const int32_t kTableRows2[] = {LV_GRID_CONTENT, LV_GRID_CONTENT, LV_GRID_TEMPLATE_LAST};
+const int32_t kTableRows[] = {LV_GRID_CONTENT, LV_GRID_CONTENT, LV_GRID_CONTENT, LV_GRID_CONTENT,
+                              LV_GRID_TEMPLATE_LAST};
+static_assert(sizeof(kTableRows) / sizeof(kTableRows[0]) == kMaxTableRows + 1);
 
 }  // namespace
+
+void PageText::bind(lv_obj_t* label, ui::StrId id, std::string prefix) {
+    bound_.push_back(Bound{label, id, std::move(prefix)});
+    render(bound_.back());
+}
+
+bool PageText::set_lang(ui::Lang lang) {
+    if (lang == lang_) {
+        return false;
+    }
+    lang_ = lang;
+    for (const Bound& bound : bound_) {
+        render(bound);
+    }
+    return true;
+}
+
+void PageText::render(const Bound& bound) const {
+    if (bound.prefix.empty()) {
+        set_text_if_changed(bound.label, tr(bound.id));
+        return;
+    }
+    set_text_if_changed(bound.label, (bound.prefix + tr(bound.id)).c_str());
+}
 
 uint32_t state_color(core::DeviceState state) {
     switch (state) {
@@ -47,7 +74,7 @@ uint32_t level_color(SummaryLevel level) {
     return kColorNeutralChip;
 }
 
-lv_obj_t* make_card(lv_obj_t* col, ui::StrId heading) {
+lv_obj_t* make_card(lv_obj_t* col, ui::StrId heading, PageText& text) {
     lv_obj_t* card = lv_obj_create(col);
     lv_obj_remove_style_all(card);
     lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
@@ -60,7 +87,7 @@ lv_obj_t* make_card(lv_obj_t* col, ui::StrId heading) {
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t* title = make_wrap_label(card);
-    lv_label_set_text(title, ui::tr(heading));
+    text.bind(title, heading);
     lv_obj_set_style_text_color(title, lv_color_hex(kColorDimText), 0);
     return card;
 }
@@ -88,19 +115,20 @@ lv_obj_t* make_table(lv_obj_t* parent, int rows) {
     lv_obj_remove_flag(table, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_column(table, kTableColumnGap, 0);
     lv_obj_set_style_pad_row(table, kTableRowGap, 0);
-    lv_obj_set_grid_dsc_array(table, kTableColumns, rows <= 1 ? kTableRows1 : kTableRows2);
+    rows = rows < 1 ? 1 : rows > kMaxTableRows ? kMaxTableRows : rows;
+    lv_obj_set_grid_dsc_array(table, kTableColumns, kTableRows + (kMaxTableRows - rows));
     return table;
 }
 
-void add_table_key(lv_obj_t* table, int row, const char* label) {
+void add_table_key(lv_obj_t* table, int row, ui::StrId label, PageText& text) {
     lv_obj_t* key = lv_label_create(table);
-    lv_label_set_text(key, label);
+    text.bind(key, label);
     lv_obj_set_style_text_color(key, lv_color_hex(kColorDimText), 0);
     lv_obj_set_grid_cell(key, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_START, row, 1);
 }
 
-lv_obj_t* add_table_row(lv_obj_t* table, int row, const char* label) {
-    add_table_key(table, row, label);
+lv_obj_t* add_table_row(lv_obj_t* table, int row, ui::StrId label, PageText& text) {
+    add_table_key(table, row, label, text);
     lv_obj_t* value = lv_label_create(table);
     lv_label_set_long_mode(value, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_set_grid_cell(value, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_START, row, 1);

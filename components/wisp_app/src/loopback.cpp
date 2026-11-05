@@ -122,8 +122,8 @@ void record_and_play(App& app, core::SettingsBackend* settings_backend,
 
 }  // namespace
 
-std::string loopback_status_text(const LoopbackStatus& status) {
-    std::string text = ui::tr(status.id);
+std::string loopback_status_text(const LoopbackStatus& status, ui::Lang lang) {
+    std::string text = ui::tr(status.id, lang);
     if (status.id == ui::StrId::LoopFailed) {
         text += ": ";
         text += to_string(status.error);

@@ -6,6 +6,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "lvgl.h"
 #include "wisp/ui/ui_runtime.hpp"
@@ -143,4 +144,34 @@ TEST_F(Strings, TrFillReplacesThePlaceholder) {
     EXPECT_EQ(wisp::ui::tr_fill(StrId::PairRemaining, "42"), "42 s left");
     // Text without a placeholder comes back unchanged.
     EXPECT_EQ(wisp::ui::tr_fill(StrId::Yes, "42"), "Yes");
+}
+
+// A screen with a language of its own (the self-check page) fills its text
+// in that language, whatever ui::lang() is.
+TEST_F(Strings, TrFillTakesAnExplicitLanguage) {
+    wisp::ui::set_lang(Lang::En);
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::PairRemaining, Lang::Ja, "42"), "残り 42 秒");
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::PairRemaining, Lang::Zh, "42"), "剩余 42 秒");
+    EXPECT_EQ(wisp::ui::tr_fill(StrId::Yes, Lang::Zh, "42"), "是");
+}
+
+TEST_F(Strings, SelfCheckTitleAndBoardCard) {
+    EXPECT_STREQ(wisp::ui::tr(StrId::SelfCheckTitle, Lang::En), "Self Check");
+    EXPECT_STREQ(wisp::ui::tr(StrId::SelfCheckTitle, Lang::Zh), "自检");
+    EXPECT_STREQ(wisp::ui::tr(StrId::SelfCheckTitle, Lang::Ja), "セルフチェック");
+    EXPECT_STREQ(wisp::ui::tr(StrId::SectionBoard, Lang::En), "Board");
+    EXPECT_STREQ(wisp::ui::tr(StrId::SectionBoard, Lang::Zh), "设备信息");
+    EXPECT_STREQ(wisp::ui::tr(StrId::SectionBoard, Lang::Ja), "ボード情報");
+}
+
+// The language switcher names each language in that language, the same in
+// every table.
+TEST_F(Strings, LanguageNamesAreNotTranslated) {
+    const std::pair<StrId, const char*> names[] = {
+        {StrId::LangNameEn, "EN"}, {StrId::LangNameZh, "中文"}, {StrId::LangNameJa, "日本語"}};
+    for (const auto& [id, text] : names) {
+        for (Lang lang : wisp::ui::kAllLangs) {
+            EXPECT_STREQ(wisp::ui::tr(id, lang), text) << wisp::ui::lang_code(lang);
+        }
+    }
 }

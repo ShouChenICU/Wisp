@@ -30,18 +30,19 @@ int32_t text_width(const char* text, const lv_font_t* font) {
     return size.x;
 }
 
-std::string imu_status(ui::StrId id) { return std::string("IMU: ") + ui::tr(id); }
+constexpr const char* kImuPrefix = "IMU: ";
 
 }  // namespace
 
-void SensorSection::build(lv_obj_t* col, bool has_imu) {
+void SensorSection::build(lv_obj_t* col, PageText& text, bool has_imu) {
+    text_ = &text;
     has_imu_ = has_imu;
-    lv_obj_t* card = make_card(col, ui::StrId::SectionSensors);
+    lv_obj_t* card = make_card(col, ui::StrId::SectionSensors, text);
 
     // Empty and hidden while the IMU reads fine.
     status_ = make_wrap_label(card);
     if (!has_imu) {
-        lv_label_set_text(status_, imu_status(ui::StrId::StateMissing).c_str());
+        text.bind(status_, ui::StrId::StateMissing, kImuPrefix);
         ball_ = nullptr;
         std::fill(std::begin(values_), std::end(values_), nullptr);
         return;
@@ -75,7 +76,7 @@ void SensorSection::build(lv_obj_t* col, bool has_imu) {
     const ui::StrId keys[] = {ui::StrId::Accel, ui::StrId::Gyro};
     for (int line = 0; line < 2; ++line) {
         lv_obj_t* key = lv_label_create(grid);
-        lv_label_set_text(key, ui::tr(keys[line]));
+        text.bind(key, keys[line]);
         lv_obj_set_style_text_color(key, lv_color_hex(kColorDimText), 0);
         lv_obj_set_grid_cell(key, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_CENTER, line, 1);
         for (int axis = 0; axis < 3; ++axis) {
@@ -121,7 +122,8 @@ void SensorSection::update(const SampleSnapshot& snap) {
             set_text_if_changed(values_[i], buf);
         }
     } else {
-        set_text_if_changed(status_, imu_status(ui::StrId::ReadFailed).c_str());
+        set_text_if_changed(status_,
+                            (std::string(kImuPrefix) + text_->tr(ui::StrId::ReadFailed)).c_str());
         lv_obj_remove_flag(status_, LV_OBJ_FLAG_HIDDEN);
         for (lv_obj_t* value : values_) {
             set_text_if_changed(value, "--");

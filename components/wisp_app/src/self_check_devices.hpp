@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "lvgl.h"
+#include "self_check_layout.hpp"
 #include "self_check_model.hpp"
 #include "wisp/core/boot_report.hpp"
 
@@ -29,8 +30,11 @@ struct DeviceRowInfo {
 class DeviceSection {
 public:
     // Appends the card to `col` (which owns the widgets), with `devices`
-    // in boot-report order; call again after the column was rebuilt.
-    void build(lv_obj_t* col, std::vector<DeviceRowInfo> devices);
+    // in boot-report order. `text` must outlive the widgets.
+    void build(lv_obj_t* col, PageText& text, std::vector<DeviceRowInfo> devices);
+
+    // Re-renders the state lines in the page's current language.
+    void retext();
 
     // Shows the device `id` in `state` from now on. Returns true if that
     // changed its state (and so, maybe, the summary).
@@ -58,6 +62,7 @@ private:
     void reorder();
     std::vector<core::DeviceState> states() const;
 
+    const PageText* text_ = nullptr;
     lv_obj_t* card_ = nullptr;
     // In boot-report order; the widgets are in display order.
     std::vector<Row> rows_;

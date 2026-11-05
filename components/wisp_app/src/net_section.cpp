@@ -19,25 +19,26 @@ constexpr int32_t kRssiGap = 10;
 }  // namespace
 
 std::string wifi_status_text(const net::WifiStatus& status, bool has_saved, bool all_rejected,
-                             uint64_t now_ms) {
+                             uint64_t now_ms, ui::Lang lang) {
     switch (status.state) {
         case net::WifiState::Off:
-            return ui::tr(has_saved ? ui::StrId::NetOff : ui::StrId::NetNotSetUp);
+            return ui::tr(has_saved ? ui::StrId::NetOff : ui::StrId::NetNotSetUp, lang);
         case net::WifiState::Connecting:
-            return ui::tr(ui::StrId::NetConnecting);
+            return ui::tr(ui::StrId::NetConnecting, lang);
         case net::WifiState::Backoff: {
             // Retrying cannot help; only new credentials can.
             if (all_rejected) {
-                return status.ssid.empty()
-                           ? std::string(ui::tr(ui::StrId::NetRejectedNoName))
-                           : ui::tr_fill(ui::StrId::NetRejected, displayable_ssid(status.ssid));
+                return status.ssid.empty() ? std::string(ui::tr(ui::StrId::NetRejectedNoName, lang))
+                                           : ui::tr_fill(ui::StrId::NetRejected, lang,
+                                                         displayable_ssid(status.ssid));
             }
             // Rounded up, so it reads 1 (not 0) in the last second.
             uint64_t left_ms = status.retry_at_ms > now_ms ? status.retry_at_ms - now_ms : 0;
-            return ui::tr_fill(ui::StrId::NetRetrying, std::to_string((left_ms + 999) / 1000));
+            return ui::tr_fill(ui::StrId::NetRetrying, lang,
+                               std::to_string((left_ms + 999) / 1000));
         }
         case net::WifiState::Connected:
-            return std::string(ui::tr(ui::StrId::NetConnected)) + " " +
+            return std::string(ui::tr(ui::StrId::NetConnected, lang)) + " " +
                    displayable_ssid(status.ssid) + "  " + status.ip;
     }
     return {};
@@ -45,7 +46,8 @@ std::string wifi_status_text(const net::WifiStatus& status, bool has_saved, bool
 
 NetSection::NetSection(net::WifiService* wifi) : wifi_(wifi) {}
 
-void NetSection::build(lv_obj_t* col, uint64_t now_ms) {
+void NetSection::build(lv_obj_t* col, PageText& text, uint64_t now_ms) {
+    text_ = &text;
     lv_obj_t* row = lv_obj_create(col);
     lv_obj_remove_style_all(row);
     lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
@@ -87,16 +89,24 @@ void NetSection::refresh(uint64_t now_ms) {
     render(now_ms);
 }
 
+void NetSection::retext(uint64_t now_ms) {
+    // The status line compares its text, which the language changes; the
+    // button only compares its state.
+    shown_button_ = -1;
+    render(now_ms);
+}
+
 void NetSection::tick(uint64_t now_ms) {
     if (status_.state == net::WifiState::Backoff) render(now_ms);
 }
 
 void NetSection::render(uint64_t now_ms) {
     if (label_ == nullptr) return;
-    std::string text =
-        wifi_ == nullptr ? std::string(ui::tr(ui::StrId::NetNoHardware))
-                         : ui::tr_fill(ui::StrId::NetLine, wifi_status_text(status_, has_saved_,
-                                                                            all_rejected_, now_ms));
+    std::string text = wifi_ == nullptr
+                           ? std::string(text_->tr(ui::StrId::NetNoHardware))
+                           : text_->tr_fill(ui::StrId::NetLine,
+                                            wifi_status_text(status_, has_saved_, all_rejected_,
+                                                             now_ms, text_->lang()));
     if (text != shown_) {
         shown_ = text;
         lv_label_set_text(label_, text.c_str());
@@ -117,7 +127,7 @@ void NetSection::render(uint64_t now_ms) {
     if (button_label_ != nullptr && button_state != shown_button_) {
         shown_button_ = button_state;
         lv_label_set_text(button_label_,
-                          ui::tr(ap_active_ ? ui::StrId::StopSetup : ui::StrId::StartSetup));
+                          text_->tr(ap_active_ ? ui::StrId::StopSetup : ui::StrId::StartSetup));
     }
 }
 

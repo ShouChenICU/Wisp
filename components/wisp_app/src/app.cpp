@@ -75,7 +75,7 @@ Result<void> App::start() {
     // A previous start()/stop() cycle on this same App may have left
     // loopback permanently refusing new "wisp.loop" tasks (see
     // join_loopback() in loopback.cpp, called from stop()); clear that
-    // now so "录音回放" works again after a restart.
+    // now so "Mic test" works again after a restart.
     reset_loopback(*this);
 
     uint64_t boot_t0 = os::now_ms();
@@ -347,7 +347,7 @@ void App::stop() {
     // earlier stop()), so no `started` guard is needed here -- that flag
     // only gates start() itself.
     //
-    // The self-check screen (and any in-flight "录音回放" loopback task)
+    // The self-check screen (and any in-flight "Mic test" loopback task)
     // is torn down first, before ButtonService/UiRuntime/EventBus -- see
     // app_impl.hpp's Lifetime note: it holds a bus subscription and a
     // reference to `ui`/`registry`, so it must release those before the

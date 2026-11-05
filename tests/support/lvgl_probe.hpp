@@ -13,6 +13,7 @@
 
 #include "lvgl.h"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::test {
@@ -159,6 +160,32 @@ inline lv_obj_t* find_button_with_label(lv_obj_t* obj, const char* text) {
         }
     }
     return nullptr;
+}
+
+// The self-check page's language switcher labels each button with that
+// language's own name.
+inline const char* page_lang_name(wisp::ui::Lang lang) {
+    switch (lang) {
+        case wisp::ui::Lang::Zh:
+            return wisp::ui::tr(wisp::ui::StrId::LangNameZh, lang);
+        case wisp::ui::Lang::Ja:
+            return wisp::ui::tr(wisp::ui::StrId::LangNameJa, lang);
+        case wisp::ui::Lang::En:
+            return wisp::ui::tr(wisp::ui::StrId::LangNameEn, lang);
+    }
+    return "";
+}
+
+// Switches the self-check page (the active screen) to `lang` by clicking its
+// button, the way a tap does. Call from the test thread; false if the
+// button is not there.
+inline bool select_page_lang(wisp::ui::UiRuntime* ui, wisp::ui::Lang lang) {
+    return run_on_ui_thread(ui, [lang] {
+               lv_obj_t* btn = find_button_with_label(lv_screen_active(), page_lang_name(lang));
+               if (btn == nullptr) return std::string();
+               lv_obj_send_event(btn, LV_EVENT_CLICKED, nullptr);
+               return std::string("clicked");
+           }) == "clicked";
 }
 
 // Every label in `obj`'s subtree, as text -> screen coordinates.

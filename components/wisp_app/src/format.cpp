@@ -71,18 +71,18 @@ std::string displayable_ssid(std::string_view ssid) {
     return out;
 }
 
-const char* state_label(core::DeviceState state) {
+const char* state_label(core::DeviceState state, ui::Lang lang) {
     switch (state) {
         case core::DeviceState::Ok:
-            return ui::tr(ui::StrId::StateOk);
+            return ui::tr(ui::StrId::StateOk, lang);
         case core::DeviceState::Degraded:
-            return ui::tr(ui::StrId::StateDegraded);
+            return ui::tr(ui::StrId::StateDegraded, lang);
         case core::DeviceState::Missing:
-            return ui::tr(ui::StrId::StateMissing);
+            return ui::tr(ui::StrId::StateMissing, lang);
         case core::DeviceState::Failed:
-            return ui::tr(ui::StrId::StateFailed);
+            return ui::tr(ui::StrId::StateFailed, lang);
     }
-    return ui::tr(ui::StrId::StateFailed);
+    return ui::tr(ui::StrId::StateFailed, lang);
 }
 
 std::string format_time(int64_t unix_s) {

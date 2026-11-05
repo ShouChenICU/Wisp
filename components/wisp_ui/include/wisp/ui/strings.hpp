@@ -51,6 +51,20 @@ enum class StrId : uint16_t {
     SectionTests,
     SectionPerf,
 
+    // Self-check page title and board card (BootTime is its boot-time
+    // label).
+    SelfCheckTitle,
+    SectionBoard,
+    BoardName,
+    BoardTarget,
+    Firmware,
+
+    // The self-check page's language switcher: each language's own name,
+    // the same in every table (never translated).
+    LangNameEn,
+    LangNameZh,
+    LangNameJa,
+
     // Self-check readout labels.
     Battery,
     Time,
@@ -158,6 +172,9 @@ const char* tr(StrId id, Lang lang);
 // tr(id) with its "{}" replaced by `value`; text without one comes back
 // unchanged.
 std::string tr_fill(StrId id, std::string_view value);
+
+// The same in `lang`.
+std::string tr_fill(StrId id, Lang lang, std::string_view value);
 
 // Sets the language tr(StrId) uses. Call on the UI thread (or before any
 // UI exists), then rebuild the visible screen's text.

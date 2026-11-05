@@ -16,19 +16,20 @@
 #include <string>
 
 #include "lvgl.h"
+#include "self_check_layout.hpp"
 #include "wisp/net/wifi_service.hpp"
 
 namespace wisp::app {
 
 // The value half of the status line: not set up / not connected /
 // connecting / retrying in N s / <ssid> rejected the password /
-// connected <ssid> <ip>. The signal strength is shown next to it on a
+// connected <ssid> <ip>, in `lang`. The signal strength is shown next to it on a
 // label of its own (see NetSection). `has_saved` tells "never set up"
 // apart from "set up but off" (e.g. after standby dropped the link);
 // `all_rejected` (every saved network is auth_failed, connectivity spec
 // 4.2) turns the backoff countdown into the ask to set Wi-Fi up again.
 std::string wifi_status_text(const net::WifiStatus& status, bool has_saved, bool all_rejected,
-                             uint64_t now_ms);
+                             uint64_t now_ms, ui::Lang lang);
 
 class NetSection {
 public:
@@ -39,8 +40,10 @@ public:
     NetSection& operator=(const NetSection&) = delete;
 
     // Appends the status line (and the button) to `col`, which owns them.
-    // Call again after the column was rebuilt.
-    void build(lv_obj_t* col, uint64_t now_ms);
+    // `text` must outlive the widgets.
+    void build(lv_obj_t* col, PageText& text, uint64_t now_ms);
+    // Re-renders in the page's current language.
+    void retext(uint64_t now_ms);
     // Re-reads the service and re-renders.
     void refresh(uint64_t now_ms);
     // Re-renders the backoff countdown when its second changes.
@@ -51,6 +54,7 @@ private:
     static void button_cb(lv_event_t* e);
 
     net::WifiService* wifi_;
+    const PageText* text_ = nullptr;
     net::WifiStatus status_;
     bool has_saved_ = false;
     bool all_rejected_ = false;

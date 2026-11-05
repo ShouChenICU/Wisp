@@ -36,6 +36,22 @@ const char* strings_ja(StrId id) {
             return "操作テスト";
         case StrId::SectionPerf:
             return "パフォーマンス";
+        case StrId::SelfCheckTitle:
+            return "セルフチェック";
+        case StrId::SectionBoard:
+            return "ボード情報";
+        case StrId::BoardName:
+            return "ボード";
+        case StrId::BoardTarget:
+            return "ターゲット";
+        case StrId::Firmware:
+            return "ファームウェア";
+        case StrId::LangNameEn:
+            return "EN";
+        case StrId::LangNameZh:
+            return "中文";
+        case StrId::LangNameJa:
+            return "日本語";
         case StrId::Battery:
             return "バッテリー";
         case StrId::Time:

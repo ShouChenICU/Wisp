@@ -1,9 +1,11 @@
 #pragma once
 
-// The self-check screen (spec 8) itself: a scrollable column of a header
+// The self-check screen (spec 8) itself: a scrollable column of a title
 // with summary chips and titled section cards, shown right after boot on
-// any board with a display. See self_check.hpp for how App::start()/
-// App::stop() own this object's lifetime.
+// any board with a display. The page has a language of its own (PageText
+// in self_check_layout.hpp), English until its switcher changes it; the
+// confirm dialogs on the system layer follow the system language. See self_check.hpp for how
+// App::start()/ App::stop() own this object's lifetime.
 //
 // The class is split over two files: self_check_screen.cpp holds the
 // page framing, the lifecycle, the bus subscriptions and the timers;
@@ -14,10 +16,10 @@
 // self_check_tests.hpp, net_section.hpp, scene_section.hpp). Nothing outside
 // wisp_app's own sources includes this header.
 //
-// The screen is built once on the screen that is active then and stays on
-// it: while a scene is open (its own screen loaded over this one) the
-// screen keeps running hidden, and a rebuild (a language change) still
-// builds on this screen, never on the scene's.
+// The screen is built once, on the screen that is active then, and stays
+// on it: while a scene is open (its own screen loaded over this one) the
+// screen keeps running hidden. A language switch re-texts the widgets in
+// place; nothing is ever rebuilt.
 
 #include <atomic>
 #include <cstdint>
@@ -59,7 +61,7 @@ class App;
 
 class SelfCheck {
 public:
-    // `scenes` (null: no "场景" rows, only the empty card) lists the
+    // `scenes` (null: no "Scenes" rows, only the empty card) lists the
     // installed scenes; it must outlive this screen.
     SelfCheck(App& app, ui::SystemLayer& system, SceneWiring* scenes);
     ~SelfCheck();
@@ -68,12 +70,7 @@ public:
     // (see start_self_check()).
     void build();
 
-    // Rebuilds every widget in the current ui::lang() (spec 8.3), keeping
-    // the scroll position, an open confirm dialog and the interactive
-    // tests' results. Must be called from the UI thread.
-    void rebuild();
-
-    // Re-renders the header's "启动 .. ms" text from BootReport's current
+    // Re-renders the board card's boot time from BootReport's current
     // boot_ms. Must be called from the UI thread; see
     // refresh_self_check_header() in self_check.hpp for why this exists --
     // build() runs before App::start() has called BootReport::set_boot_ms()
@@ -91,8 +88,12 @@ private:
     // display_'s caps (an invalid shape falls back to a circle).
     hal::Area compute_safe_area() const;
 
-    // Creates root_ and every widget under it (build()/rebuild()).
+    // Creates root_ and every widget under it.
     void build_widgets();
+    // UI thread: makes `lang` the page's language and re-texts every label
+    // on the page, and the open network cards, in it. A no-op if it
+    // already is.
+    void set_page_lang(ui::Lang lang);
     void build_devices(lv_obj_t* col);
 
     void start_perf_timer();
@@ -136,9 +137,10 @@ private:
     void sync_firmware();
     void show_firmware_dialog();
     void close_firmware_dialog();
-    // Brings ui::lang() in line with the stored language, rebuilding if it
-    // changed. UI thread only.
-    void sync_language();
+    // Brings ui::lang() (the system layer's language) in line with the
+    // stored language, reopening an open confirm dialog in it if it
+    // changed. The page itself keeps its own language. UI thread only.
+    void sync_system_language();
     void handle_power_key_action(PowerKeyController::Action action);
     void show_confirm_dialog();
     void close_confirm_dialog();
@@ -152,7 +154,7 @@ private:
 
     void refresh_ui();
     void refresh_storage();
-    // Any thread: asks the storage worker for the scene list; the "场景"
+    // Any thread: asks the storage worker for the scene list; the "Scenes"
     // card takes it on the UI thread.
     void request_scene_list();
     // UI thread: a row was tapped.
@@ -181,7 +183,11 @@ private:
 
     // --- Sections (their widgets are valid only while this App's
     // UiRuntime is alive). UI thread only. ---
+    // The page's language and its fixed labels; outlives every section's
+    // widgets.
+    PageText text_;
     SelfCheckHeader header_;
+    BoardSection board_;
     DeviceSection devices_;
     // connectivity spec 8.1.
     NetSection net_section_;
@@ -198,15 +204,14 @@ private:
     // Whether the device list's "storage.sd" row follows StorageManager::
     // status() live (see build_devices()).
     bool sd_row_live_ = false;
-    // This boot's interactive test results; kept across rebuilds. UI
-    // thread only.
+    // This boot's interactive test results. UI thread only.
     InteractiveTests tests_;
-    // The last loopback status shown, re-rendered by rebuild(). UI thread
-    // only.
-    LoopbackStatus loop_status_;
-    // SystemSettings::revision() as of the last sync_language(); empty
-    // until the first one, which always reads the stored language. UI
+    // The last loopback status shown, re-rendered by set_page_lang(). UI
     // thread only.
+    LoopbackStatus loop_status_;
+    // SystemSettings::revision() as of the last sync_system_language();
+    // empty until the first one, which always reads the stored language.
+    // UI thread only.
     std::optional<uint32_t> language_revision_;
     // The power-off confirmation's box while it is open.
     lv_obj_t* msgbox_ = nullptr;

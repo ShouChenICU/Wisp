@@ -7,9 +7,9 @@
 // screen. Each is centred in the display's safe area (spec 5.6), never
 // wider or taller than it; if the content is taller (a small round
 // screen, a long translation) it scrolls inside the card, which keeps its
-// first and last rows inside the safe area at either end. All text comes
-// from ui::tr() in the current language; a language change is handled by
-// the owner closing and reopening the card.
+// first and last rows inside the safe area at either end. All text is in
+// the language open() was given (the self-check page's); a language change
+// is handled by the owner closing and reopening the card.
 //
 // Threading: every member function must be called on the UI thread. The
 // buttons only call the owner's callback, which asks a service to act;
@@ -28,6 +28,7 @@
 #include "lvgl.h"
 #include "wisp/hal/display.hpp"
 #include "wisp/net/wifi_service.hpp"
+#include "wisp/ui/strings.hpp"
 
 namespace wisp::app {
 
@@ -64,7 +65,7 @@ public:
     // "then open http://<ip>" and a stop button. The address is the bare
     // hotspot IP: phones open port 80 by default, and the device's
     // captive redirect there forwards to the setup page.
-    void open(const net::ApSession& session, const hal::Area& safe);
+    void open(const net::ApSession& session, const hal::Area& safe, ui::Lang lang);
     void close();
     bool is_open() const { return card_ != nullptr; }
     // The session shown; meaningful only while open.
@@ -91,8 +92,9 @@ public:
     PairingCard& operator=(const PairingCard&) = delete;
 
     // Shows `code` (replacing a card already open) with a countdown to
-    // `expires_ms` (os::now_ms() timebase).
-    void open(std::string code, uint64_t expires_ms, uint64_t now_ms, const hal::Area& safe);
+    // `expires_ms` (os::now_ms() timebase), in `lang`.
+    void open(std::string code, uint64_t expires_ms, uint64_t now_ms, const hal::Area& safe,
+              ui::Lang lang);
     // Updates the "N seconds left" line; closes the card once the code has
     // expired (the service announces that too, at its own tick).
     void tick(uint64_t now_ms);
@@ -111,6 +113,7 @@ private:
     std::function<void()> on_reject_;
     std::string code_;
     uint64_t expires_ms_ = 0;
+    ui::Lang lang_ = ui::Lang::En;
     int64_t shown_seconds_ = -1;
     lv_obj_t* card_ = nullptr;
     lv_obj_t* countdown_ = nullptr;

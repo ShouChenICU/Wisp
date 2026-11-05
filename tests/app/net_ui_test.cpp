@@ -34,6 +34,7 @@ using wisp::test::find_label_text_containing;
 using wisp::test::find_obj_of_class;
 using wisp::test::run_on_ui_blocking;
 using wisp::test::run_on_ui_thread;
+using wisp::test::select_page_lang;
 using wisp::test::UiNetHarness;
 using wisp::test::UiNetOptions;
 using wisp::test::wait_until;
@@ -165,10 +166,10 @@ TEST(NetUi, PairingCodeIsSpacedForReading) {
 TEST(NetUi, SectionShowsStateAndButton) {
     UiNetHarness h;
     ASSERT_TRUE(h.start());
-    ASSERT_TRUE(wait_until([&] { return on_screen(h, "未配网"); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "Not set up"); }, 3000));
     EXPECT_TRUE(on_screen(h, "Wi-Fi"));
-    EXPECT_TRUE(has_button(h, screen, "开始配网"));
-    EXPECT_FALSE(has_button(h, screen, "停止配网"));
+    EXPECT_TRUE(has_button(h, screen, "Set up Wi-Fi"));
+    EXPECT_FALSE(has_button(h, screen, "Stop setup"));
 }
 
 TEST(NetUi, SectionShowsTheConnectedNetwork) {
@@ -176,10 +177,10 @@ TEST(NetUi, SectionShowsTheConnectedNetwork) {
     opts.saved = {{"Home", "password1"}};
     UiNetHarness h(opts);
     ASSERT_TRUE(h.start());
-    ASSERT_TRUE(wait_until([&] { return on_screen(h, "已连接 Home"); }, 5000));
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "Connected Home"); }, 5000));
     std::string text = run_on_ui_thread(
-        h.app->ui(), [] { return find_label_text_containing(lv_screen_active(), "已连接"); });
-    EXPECT_EQ(text, "Wi-Fi：已连接 Home  192.168.1.50");
+        h.app->ui(), [] { return find_label_text_containing(lv_screen_active(), "Connected"); });
+    EXPECT_EQ(text, "Wi-Fi: Connected Home  192.168.1.50");
     EXPECT_TRUE(on_screen(h, "-50 dBm"));
 }
 
@@ -191,10 +192,10 @@ TEST(NetUi, SignalStrengthStaysOnOneLine) {
             SCOPED_TRACE(std::string(wisp::ui::lang_code(lang)) + " " + shape);
             UiNetOptions opts;
             opts.shape = shape;
-            opts.lang = wisp::ui::lang_code(lang);
             opts.saved = {{"Home", "password1"}};
             UiNetHarness h(opts);
             ASSERT_TRUE(h.start());
+            ASSERT_TRUE(select_page_lang(h.app->ui(), lang));
             ASSERT_TRUE(wait_until([&] { return on_screen(h, "-50 dBm"); }, 5000));
             std::string problem = run_on_ui_thread(h.app->ui(), [] {
                 lv_obj_t* rssi = find_label_containing(lv_screen_active(), "-50 dBm");
@@ -222,12 +223,13 @@ TEST(NetUi, SectionCountsDownToTheNextAttempt) {
     opts.wifi_reachable = false;
     UiNetHarness h(opts);
     ASSERT_TRUE(h.start());
-    ASSERT_TRUE(wait_until([&] { return on_screen(h, "重试中（"); }, 5000));
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "Retrying in "); }, 5000));
     auto seconds = [&] {
-        std::string text = run_on_ui_thread(
-            h.app->ui(), [] { return find_label_text_containing(lv_screen_active(), "重试中（"); });
-        size_t open = text.find("（");
-        return open == std::string::npos ? -1 : std::atoi(text.c_str() + open + 3);
+        std::string text = run_on_ui_thread(h.app->ui(), [] {
+            return find_label_text_containing(lv_screen_active(), "Retrying in ");
+        });
+        size_t at = text.find("Retrying in ");
+        return at == std::string::npos ? -1 : std::atoi(text.c_str() + at + 12);
     };
     int first = seconds();
     EXPECT_GE(first, 1);
@@ -248,11 +250,11 @@ TEST(NetUi, SectionSaysWhenEveryPasswordWasRejected) {
     for (const auto& [lang, line] : expected) {
         SCOPED_TRACE(wisp::ui::lang_code(lang));
         UiNetOptions opts;
-        opts.lang = wisp::ui::lang_code(lang);
         opts.saved = {{"Home", "wrongpass"}};
         opts.saved_auth_failed = true;
         UiNetHarness h(opts);
         ASSERT_TRUE(h.start());
+        ASSERT_TRUE(select_page_lang(h.app->ui(), lang));
         ASSERT_TRUE(wait_until([&] { return on_screen(h, line); }, 5000));
         const std::string retrying = text_of(StrId::NetRetrying, lang);
         EXPECT_FALSE(on_screen(h, retrying.substr(0, retrying.find("{}"))));
@@ -272,15 +274,13 @@ TEST(NetUi, RejectedLineWithoutAName) {
     st.retry_at_ms = 5000;
     for (Lang lang : kLangs) {
         SCOPED_TRACE(wisp::ui::lang_code(lang));
-        wisp::ui::set_lang(lang);
-        EXPECT_EQ(wisp::app::wifi_status_text(st, true, true, 0),
+        EXPECT_EQ(wisp::app::wifi_status_text(st, true, true, 0, lang),
                   text_of(StrId::NetRejectedNoName, lang));
         st.ssid = "Home";
-        EXPECT_EQ(wisp::app::wifi_status_text(st, true, true, 0),
-                  wisp::ui::tr_fill(StrId::NetRejected, "Home"));
+        EXPECT_EQ(wisp::app::wifi_status_text(st, true, true, 0, lang),
+                  wisp::ui::tr_fill(StrId::NetRejected, lang, "Home"));
         st.ssid.clear();
     }
-    wisp::ui::set_lang(Lang::Zh);
 }
 
 // Bytes that are not UTF-8 (a GBK router) show as "?", not as garbage.
@@ -291,7 +291,7 @@ TEST(NetUi, NonUtf8SsidShowsQuestionMarks) {
     UiNetHarness h(opts);
     h.wifi->networks.push_back({gbk, -40, false});
     ASSERT_TRUE(h.start());
-    ASSERT_TRUE(wait_until([&] { return on_screen(h, "已连接 ????  "); }, 5000));
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "Connected ????  "); }, 5000));
 }
 
 TEST(NetUi, NoWifiDeviceShowsNoButton) {
@@ -299,9 +299,9 @@ TEST(NetUi, NoWifiDeviceShowsNoButton) {
     opts.with_wifi = false;
     UiNetHarness h(opts);
     ASSERT_TRUE(h.start());
-    ASSERT_TRUE(wait_until([&] { return on_screen(h, "无 Wi-Fi 硬件"); }, 3000));
-    EXPECT_FALSE(has_button(h, screen, "开始配网"));
-    EXPECT_FALSE(has_button(h, screen, "停止配网"));
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "No Wi-Fi hardware"); }, 3000));
+    EXPECT_FALSE(has_button(h, screen, "Set up Wi-Fi"));
+    EXPECT_FALSE(has_button(h, screen, "Stop setup"));
 }
 
 TEST(NetUi, ProvisioningCardShowsQrAndFitsSafeArea) {
@@ -310,9 +310,9 @@ TEST(NetUi, ProvisioningCardShowsQrAndFitsSafeArea) {
             SCOPED_TRACE(std::string(wisp::ui::lang_code(lang)) + " " + shape);
             UiNetOptions opts;
             opts.shape = shape;
-            opts.lang = wisp::ui::lang_code(lang);
             UiNetHarness h(opts);
             ASSERT_TRUE(h.start());
+            ASSERT_TRUE(select_page_lang(h.app->ui(), lang));
             ASSERT_TRUE(wait_until(
                 [&] { return has_button(h, screen, text_of(StrId::StartSetup, lang)); }, 3000));
             ASSERT_TRUE(click(h, screen, text_of(StrId::StartSetup, lang)));
@@ -503,13 +503,13 @@ TEST(NetUi, PairingCardCountsDownAndCloses) {
     ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
     const std::string code = pairing->active_code(wisp::os::now_ms()).value_or("");
     ASSERT_EQ(code.size(), 6u);
-    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "配对请求"); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "Pairing request"); }, 3000));
     EXPECT_TRUE(on_top_layer(h, wisp::app::spaced_code(code)));
 
     auto remaining = [&] {
         std::string text = run_on_ui_thread(
-            h.app->ui(), [] { return find_label_text_containing(lv_layer_top(), "剩余 "); });
-        return text.empty() ? -1 : std::atoi(text.c_str() + std::string("剩余 ").size());
+            h.app->ui(), [] { return find_label_text_containing(lv_layer_top(), " s left"); });
+        return text.empty() ? -1 : std::atoi(text.c_str());
     };
     int first = remaining();
     EXPECT_GE(first, 119);
@@ -517,8 +517,8 @@ TEST(NetUi, PairingCardCountsDownAndCloses) {
     ASSERT_TRUE(wait_until([&] { return remaining() == first - 1; }, 2500));
 
     // "Reject" kills the code at once and closes the card.
-    ASSERT_TRUE(click(h, top, "拒绝"));
-    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "配对请求"); }, 3000));
+    ASSERT_TRUE(click(h, top, "Reject"));
+    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "Pairing request"); }, 3000));
     EXPECT_FALSE(pairing->active_code(wisp::os::now_ms()).has_value());
     auto codes = h.topic("net.pairing.code");
     ASSERT_FALSE(codes.empty());
@@ -526,10 +526,10 @@ TEST(NetUi, PairingCardCountsDownAndCloses) {
 
     // A successful pairing closes it as well.
     ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
-    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "配对请求"); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "Pairing request"); }, 3000));
     const std::string next = pairing->active_code(wisp::os::now_ms()).value_or("");
     ASSERT_TRUE(pairing->confirm(next, wisp::net::ClientInfo{}, wisp::os::now_ms()));
-    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "配对请求"); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "Pairing request"); }, 3000));
 }
 
 // With a short code lifetime: the card counts down to the service's
@@ -543,10 +543,10 @@ TEST(NetUi, PairingCardClosesAtExpiry) {
     ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
     uint64_t expires = 0;
     ASSERT_TRUE(pairing->active_code(wisp::os::now_ms(), &expires).has_value());
-    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "配对请求"); }, 2000));
-    EXPECT_TRUE(on_top_layer(h, "剩余 3 秒") || on_top_layer(h, "剩余 2 秒"));
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "Pairing request"); }, 2000));
+    EXPECT_TRUE(on_top_layer(h, "3 s left") || on_top_layer(h, "2 s left"));
 
-    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "配对请求"); }, 4000));
+    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "Pairing request"); }, 4000));
     EXPECT_GE(wisp::os::now_ms(), expires);
     EXPECT_FALSE(pairing->active_code(wisp::os::now_ms()).has_value());
 }
@@ -557,7 +557,7 @@ TEST(NetUi, PairingCardClosesAtExpiry) {
 TEST(NetUi, CardsFollowTheServicesWhenEventsAreLost) {
     UiNetHarness h;
     ASSERT_TRUE(h.start());
-    ASSERT_TRUE(wait_until([&] { return on_screen(h, "未配网"); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "Not set up"); }, 3000));
 
     wisp::os::Semaphore entered(1, 0);
     wisp::os::Semaphore release(1, 0);
@@ -578,15 +578,15 @@ TEST(NetUi, CardsFollowTheServicesWhenEventsAreLost) {
     ASSERT_TRUE(wifi->start_provisioning(wisp::os::now_ms()));
     flood();
     bool setup_shown = wait_until([&] { return qr_shown(h); }, 3000);
-    bool button_flipped = wait_until([&] { return has_button(h, screen, "停止配网"); }, 3000);
+    bool button_flipped = wait_until([&] { return has_button(h, screen, "Stop setup"); }, 3000);
 
     ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
     flood();
-    bool pair_shown = wait_until([&] { return on_top_layer(h, "配对请求"); }, 3000);
+    bool pair_shown = wait_until([&] { return on_top_layer(h, "Pairing request"); }, 3000);
 
     pairing->cancel_code();
     flood();
-    bool pair_closed = wait_until([&] { return !on_top_layer(h, "配对请求"); }, 3000);
+    bool pair_closed = wait_until([&] { return !on_top_layer(h, "Pairing request"); }, 3000);
 
     ASSERT_TRUE(wifi->stop_provisioning());
     flood();
@@ -607,9 +607,9 @@ TEST(NetUi, PairingCardStacksAboveProvisioningCardInsideSafeArea) {
             SCOPED_TRACE(std::string(wisp::ui::lang_code(lang)) + " " + shape);
             UiNetOptions opts;
             opts.shape = shape;
-            opts.lang = wisp::ui::lang_code(lang);
             UiNetHarness h(opts);
             ASSERT_TRUE(h.start());
+            ASSERT_TRUE(select_page_lang(h.app->ui(), lang));
             ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
             ASSERT_TRUE(wait_until([&] { return qr_shown(h); }, 3000));
             ASSERT_TRUE(h.app->pairing()->request_code(wisp::os::now_ms()));
@@ -639,33 +639,40 @@ TEST(NetUi, PairingCardStacksAboveProvisioningCardInsideSafeArea) {
     }
 }
 
-// Spec 8.3: the cards follow a language change, staying open.
-TEST(NetUi, OpenCardsAreRebuiltInTheNewLanguage) {
+// The cards follow the page's language: a switch re-texts them, staying
+// open; a system language change leaves them alone.
+TEST(NetUi, OpenCardsFollowThePageLanguage) {
     UiNetHarness h;
     ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
     ASSERT_TRUE(h.app->pairing()->request_code(wisp::os::now_ms()));
-    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "配对请求") && qr_shown(h); }, 3000));
+    ASSERT_TRUE(
+        wait_until([&] { return on_top_layer(h, "Pairing request") && qr_shown(h); }, 3000));
     const std::string code = h.app->pairing()->active_code(wisp::os::now_ms()).value_or("");
 
-    ASSERT_TRUE(h.app->system_settings().set({{"language", "en"}}));
-    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "Pairing request"); }, 3000));
-    EXPECT_TRUE(on_top_layer(h, "Wi-Fi setup"));
+    ASSERT_TRUE(h.app->system_settings().set({{"language", "ja"}}));
+    ASSERT_TRUE(wait_until([&] { return wisp::ui::lang() == Lang::Ja; }, 3000));
+    ASSERT_TRUE(h.app->bus().wait_idle(2000));
+    EXPECT_TRUE(on_top_layer(h, "Pairing request"));
+
+    ASSERT_TRUE(select_page_lang(h.app->ui(), Lang::Zh));
+    EXPECT_TRUE(on_top_layer(h, "配对请求"));
+    EXPECT_TRUE(on_top_layer(h, "配网"));
     EXPECT_TRUE(on_top_layer(h, wisp::app::spaced_code(code)));
-    EXPECT_TRUE(on_top_layer(h, " s left"));
-    EXPECT_FALSE(on_top_layer(h, "配对请求"));
-    EXPECT_FALSE(on_top_layer(h, "配网"));
-    EXPECT_TRUE(has_button(h, screen, "Stop setup"));
+    EXPECT_TRUE(on_top_layer(h, "剩余 "));
+    EXPECT_FALSE(on_top_layer(h, "Pairing request"));
+    EXPECT_FALSE(on_top_layer(h, "Wi-Fi setup"));
+    EXPECT_TRUE(has_button(h, screen, "停止配网"));
     EXPECT_EQ(
         run_on_ui_thread(
             h.app->ui(),
             [] { return std::to_string(count_obj_of_class(lv_layer_top(), &lv_qrcode_class)); }),
         "1");
-    // Still stacked the same way after the rebuild.
+    // Still stacked the same way after the switch.
     EXPECT_EQ(run_on_ui_thread(h.app->ui(),
                                [] {
-                                   lv_obj_t* setup = card_of("Wi-Fi setup");
-                                   lv_obj_t* pair = card_of("Pairing request");
+                                   lv_obj_t* setup = card_of("配网");
+                                   lv_obj_t* pair = card_of("配对请求");
                                    return setup != nullptr && pair != nullptr &&
                                                   lv_obj_get_index(pair) > lv_obj_get_index(setup)
                                               ? std::string("ok")
@@ -683,5 +690,5 @@ TEST(NetUi, PairingCodeWakesTheScreen) {
     ASSERT_TRUE(pm->standby());
     ASSERT_TRUE(h.app->pairing()->request_code(wisp::os::now_ms()));
     ASSERT_TRUE(wait_until([&] { return !pm->standby(); }, 3000));
-    EXPECT_TRUE(on_top_layer(h, "配对请求"));
+    EXPECT_TRUE(on_top_layer(h, "Pairing request"));
 }

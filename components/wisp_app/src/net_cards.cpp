@@ -139,12 +139,12 @@ bool flatten_qr(lv_obj_t* qr, lv_color_format_t cf) {
 
 ProvisioningCard::ProvisioningCard(std::function<void()> on_stop) : on_stop_(std::move(on_stop)) {}
 
-void ProvisioningCard::open(const net::ApSession& session, const hal::Area& safe) {
+void ProvisioningCard::open(const net::ApSession& session, const hal::Area& safe, ui::Lang lang) {
     close();
     session_ = session;
     card_ = make_card(safe);
 
-    add_text(card_, ui::tr(ui::StrId::SetupTitle));
+    add_text(card_, ui::tr(ui::StrId::SetupTitle, lang));
 
     lv_obj_t* qr = lv_qrcode_create(card_);
     lv_qrcode_set_size(qr, std::min(width_of(safe) * kQrSafePercent / 100, kQrMaxSide));
@@ -162,10 +162,10 @@ void ProvisioningCard::open(const net::ApSession& session, const hal::Area& safe
         WLOG_W("net_ui", "QR code kept as an indexed image");
     }
 
-    add_text(card_, ui::tr_fill(ui::StrId::Hotspot, session.ssid));
-    add_text(card_, ui::tr_fill(ui::StrId::Password, session.password));
-    add_text(card_, ui::tr_fill(ui::StrId::OpenAddress, "http://" + session.ip));
-    add_button(card_, ui::tr(ui::StrId::StopSetup), &ProvisioningCard::stop_cb, this);
+    add_text(card_, ui::tr_fill(ui::StrId::Hotspot, lang, session.ssid));
+    add_text(card_, ui::tr_fill(ui::StrId::Password, lang, session.password));
+    add_text(card_, ui::tr_fill(ui::StrId::OpenAddress, lang, "http://" + session.ip));
+    add_button(card_, ui::tr(ui::StrId::StopSetup, lang), &ProvisioningCard::stop_cb, this);
 }
 
 void ProvisioningCard::close() {
@@ -196,13 +196,14 @@ int64_t PairingCard::seconds_left(uint64_t expires_ms, uint64_t now_ms) {
 }
 
 void PairingCard::open(std::string code, uint64_t expires_ms, uint64_t now_ms,
-                       const hal::Area& safe) {
+                       const hal::Area& safe, ui::Lang lang) {
     close();
     code_ = std::move(code);
     expires_ms_ = expires_ms;
+    lang_ = lang;
     card_ = make_card(safe);
 
-    add_text(card_, ui::tr(ui::StrId::PairTitle));
+    add_text(card_, ui::tr(ui::StrId::PairTitle, lang));
 
     lv_obj_t* digits = add_text(card_, spaced_code(code_));
     // Digits only, so the larger Latin font needs no CJK fallback.
@@ -211,7 +212,7 @@ void PairingCard::open(std::string code, uint64_t expires_ms, uint64_t now_ms,
 
     countdown_ = add_text(card_, "");
     shown_seconds_ = -1;
-    add_button(card_, ui::tr(ui::StrId::Reject), &PairingCard::reject_cb, this);
+    add_button(card_, ui::tr(ui::StrId::Reject, lang), &PairingCard::reject_cb, this);
     tick(now_ms);
 }
 
@@ -225,7 +226,7 @@ void PairingCard::tick(uint64_t now_ms) {
     if (left == shown_seconds_) return;
     shown_seconds_ = left;
     lv_label_set_text(countdown_,
-                      ui::tr_fill(ui::StrId::PairRemaining, std::to_string(left)).c_str());
+                      ui::tr_fill(ui::StrId::PairRemaining, lang_, std::to_string(left)).c_str());
 }
 
 void PairingCard::close() {

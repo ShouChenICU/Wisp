@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "wisp/core/boot_report.hpp"
+#include "wisp/ui/strings.hpp"
 
 namespace wisp::app {
 
@@ -21,10 +22,9 @@ namespace wisp::app {
 //   34359738368  -> "32.0 GB"
 std::string format_bytes(uint64_t bytes);
 
-// Label for a device's boot-report state in the current device UI
-// language (ui::tr()); in Chinese: "正常" (Ok), "降级" (Degraded), "缺失"
-// (Missing), "失败" (Failed).
-const char* state_label(core::DeviceState state);
+// Label for a device's boot-report state in `lang`; in Chinese: "正常"
+// (Ok), "降级" (Degraded), "缺失" (Missing), "失败" (Failed).
+const char* state_label(core::DeviceState state, ui::Lang lang);
 
 // Formats a Unix timestamp (seconds since the epoch) as "YYYY-MM-DD
 // HH:MM:SS" in UTC.

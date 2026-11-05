@@ -1,10 +1,12 @@
 // What the self-check screen shows on the top layer: the provisioning and
 // pairing cards (connectivity spec 8.1) and the confirm dialogs (power off,
 // factory reset, firmware update; all on ui::SystemLayer, one at a time),
-// plus the power key's actions. See self_check_screen.hpp.
+// plus the power key's actions and the two languages: the page's own and
+// the system one the dialogs follow. See self_check_screen.hpp.
 
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "app_impl.hpp"
 #include "factory_reset.hpp"
@@ -13,6 +15,7 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/system_settings.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
@@ -35,7 +38,7 @@ void SelfCheck::sync_wifi() {
         shown.ip == ap->ip) {
         return;
     }
-    setup_card_.open(*ap, compute_safe_area());
+    setup_card_.open(*ap, compute_safe_area(), text_.lang());
     raise_overlays();
 }
 
@@ -53,9 +56,69 @@ void SelfCheck::sync_pairing() {
         pair_card_.expires_ms() == expires_ms) {
         return;
     }
-    pair_card_.open(std::move(*code), expires_ms, now, compute_safe_area());
+    pair_card_.open(std::move(*code), expires_ms, now, compute_safe_area(), text_.lang());
     raise_overlays();
     wake_screen();
+}
+
+void SelfCheck::set_page_lang(ui::Lang lang) {
+    if (!text_.set_lang(lang)) {
+        return;
+    }
+    // Everything not bound in text_ is re-rendered from what the sections
+    // (or this screen) last showed; each compares before it sets.
+    board_.show_lang(lang);
+    header_.show_devices(devices_.summary());
+    header_.show_tests(tests_.passed_count());
+    devices_.retext();
+    const uint64_t now = os::now_ms();
+    net_section_.retext(now);
+    tests_section_.show(tests_);
+    tests_section_.set_loopback(loop_status_);
+    tests_section_.retext();
+    scenes_section_.retext();
+    refresh_ui();
+    // The cards are rebuilt in the new language; reopening keeps their
+    // stacking order (see raise_overlays()).
+    if (setup_card_.is_open()) {
+        net::ApSession session = setup_card_.session();
+        setup_card_.open(session, compute_safe_area(), lang);
+    }
+    if (pair_card_.is_open()) {
+        std::string code = pair_card_.code();
+        uint64_t expires = pair_card_.expires_ms();
+        pair_card_.open(std::move(code), expires, now, compute_safe_area(), lang);
+    }
+    raise_overlays();
+}
+
+void SelfCheck::sync_system_language() {
+    // The revision is read before the value: a change stored in between
+    // moves it again, so the next sync reads the value once more.
+    uint32_t revision = app_.system_settings().revision();
+    if (language_revision_ == revision) {
+        return;
+    }
+    language_revision_ = revision;
+    std::optional<ui::Lang> lang = ui::parse_lang(app_.system_settings().get().language);
+    if (!lang || *lang == ui::lang()) {
+        return;
+    }
+    // The page keeps its own language; only the system layer's dialogs
+    // follow this one, so an open dialog is reopened in it.
+    ui::set_lang(*lang);
+    if (msgbox_ != nullptr) {
+        close_confirm_dialog();
+        show_confirm_dialog();
+    }
+    if (reset_box_ != nullptr) {
+        close_reset_dialog();
+        show_reset_dialog();
+    }
+    if (fw_box_ != nullptr) {
+        close_firmware_dialog();
+        show_firmware_dialog();
+    }
 }
 
 void SelfCheck::raise_overlays() {

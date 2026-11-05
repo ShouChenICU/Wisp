@@ -1,5 +1,5 @@
 // The scene runtime wired into App (scene-runtime-core spec 3.4, 3.5, 7.1,
-// 8): the self-check screen's "场景" card, opening a scene from it and
+// 8): the self-check screen's "Scenes" card, opening a scene from it and
 // coming back, standby, deleting a scene through the device's confirmation
 // dialog, and the headless case.
 
@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -28,6 +29,7 @@
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/sim_os.hpp"
 #include "wisp/scene/scene_runtime.hpp"
+#include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 
 using wisp::net::Method;
@@ -85,7 +87,7 @@ wisp::net::HttpResponse api(UiNetHarness& h, Method method, const std::string& p
     return h.server->handle(req);
 }
 
-// UI thread: the self-check screen's "场景" card, or nullptr. The screen is
+// UI thread: the self-check screen's "Scenes" card, or nullptr. The screen is
 // found from the self-check root, not from whatever screen is active.
 lv_obj_t* scenes_card(lv_obj_t* screen) {
     lv_obj_t* col = lv_obj_get_child(screen, 0);
@@ -95,7 +97,7 @@ lv_obj_t* scenes_card(lv_obj_t* screen) {
         if (lv_obj_get_child_count(c) == 0) continue;
         lv_obj_t* first = lv_obj_get_child(c, 0);
         if (lv_obj_check_type(first, &lv_label_class) &&
-            std::string(lv_label_get_text(first)) == "场景") {
+            std::string(lv_label_get_text(first)) == "Scenes") {
             return c;
         }
     }
@@ -119,7 +121,7 @@ std::string scene_rows(lv_obj_t* screen) {
     return out;
 }
 
-// UI thread: clicks the row of the "场景" card whose name is `name`.
+// UI thread: clicks the row of the "Scenes" card whose name is `name`.
 bool click_scene_row(lv_obj_t* screen, const char* name) {
     lv_obj_t* card = scenes_card(screen);
     if (card == nullptr) return false;
@@ -196,10 +198,50 @@ TEST(AppScenes, SelfCheckListsInstalledScenes) {
     EXPECT_TRUE(b.wait_rows("时钟|1.0.0\n计数器|1.0.0\n")) << b.rows();
 }
 
+// Every row is a tap target at least 48 px tall, the whole row clickable,
+// with its name and state centred vertically in it.
+TEST(AppScenes, RowsAreTallEnoughToTap) {
+    Booted b;
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    put_scene(b.h.root, "clock", "时钟", "return ui.screen { ui.label { text = 'tick' } }");
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.wait_rows("时钟|1.0.0\n计数器|1.0.0\n")) << b.rows();
+    // "<height>,<clickable>,<name centred>;" per row.
+    std::string rows = run_on_ui_thread(b.h.app->ui(), [&] {
+        lv_obj_t* card = scenes_card(b.screen);
+        lv_obj_update_layout(card);
+        std::string out;
+        for (uint32_t i = 1; i < lv_obj_get_child_count(card); ++i) {
+            lv_obj_t* row = lv_obj_get_child(card, static_cast<int32_t>(i));
+            // The name and state line.
+            lv_obj_t* name = lv_obj_get_child(row, 0);
+            lv_area_t r, n;
+            lv_obj_get_coords(row, &r);
+            lv_obj_get_coords(name, &n);
+            const int32_t gap_top = n.y1 - r.y1;
+            const int32_t gap_bottom = r.y2 - n.y2;
+            out += std::to_string(lv_area_get_height(&r)) + "," +
+                   (lv_obj_has_flag(row, LV_OBJ_FLAG_CLICKABLE) ? "1" : "0") + "," +
+                   (std::abs(gap_top - gap_bottom) <= 1 ? "1" : "0") + ";";
+        }
+        return out;
+    });
+    int count = 0;
+    for (size_t pos = 0; pos < rows.size(); pos = rows.find(';', pos) + 1, ++count) {
+        int height = 0, clickable = 0, centred = 0;
+        ASSERT_EQ(std::sscanf(rows.c_str() + pos, "%d,%d,%d", &height, &clickable, &centred), 3)
+            << rows;
+        EXPECT_GE(height, 48) << rows;
+        EXPECT_EQ(clickable, 1) << rows;
+        EXPECT_EQ(centred, 1) << rows;
+    }
+    EXPECT_EQ(count, 2) << rows;
+}
+
 TEST(AppScenes, EmptyListSaysSo) {
     Booted b;
     ASSERT_TRUE(b.start());
-    EXPECT_TRUE(b.wait_rows("还没有安装场景\n")) << b.rows();
+    EXPECT_TRUE(b.wait_rows("No scenes installed\n")) << b.rows();
 }
 
 TEST(AppScenes, TapOpensSceneAndBackReturns) {
@@ -224,7 +266,7 @@ TEST(AppScenes, TapOpensSceneAndBackReturns) {
         },
         3000));
     // The list follows: running.
-    EXPECT_TRUE(b.wait_rows("计数器|运行中\n")) << b.rows();
+    EXPECT_TRUE(b.wait_rows("计数器|Running\n")) << b.rows();
 
     // The back gesture, as the touch panel reports it.
     lv_indev_t* indev = nullptr;
@@ -453,12 +495,12 @@ TEST(AppScenes, ErrorBadgeInList) {
     wisp::scene::SceneRuntime* rt = b.h.app->scenes();
     EXPECT_FALSE(rt->open("bad"));
     ASSERT_TRUE(rt->close("bad"));
-    EXPECT_TRUE(b.wait_rows("坏|出错\n")) << b.rows();
+    EXPECT_TRUE(b.wait_rows("坏|Error\n")) << b.rows();
     // The badge is a red chip.
     EXPECT_EQ(run_on_ui_thread(
                   b.h.app->ui(),
                   [&] {
-                      lv_obj_t* badge = find_label_containing(scenes_card(b.screen), "出错");
+                      lv_obj_t* badge = find_label_containing(scenes_card(b.screen), "Error");
                       if (badge == nullptr) return std::string("none");
                       lv_color_t c =
                           lv_obj_get_style_bg_color(lv_obj_get_parent(badge), LV_PART_MAIN);
@@ -517,8 +559,9 @@ return ui.screen { ui.label { text = "t" } }
     EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"tz 330"}));
 }
 
-// A language change while a scene is up rebuilds the self-check screen on
-// its own screen, not on the scene's, which it leaves alone.
+// A system language change while a scene is up leaves both screens alone:
+// the self-check page keeps its own language (English here) and the
+// scene's screen is not touched.
 TEST(AppScenes, LanguageChangeWhileASceneIsOpen) {
     Booted b;
     put_scene(b.h.root, "counter", "计数器", kCounter);
@@ -539,18 +582,14 @@ TEST(AppScenes, LanguageChangeWhileASceneIsOpen) {
     });
     ASSERT_NE(scene_screen, b.screen);
 
-    ASSERT_TRUE(b.h.app->system_settings().set({{"language", wisp::Value("en")}}));
-    ASSERT_TRUE(wait_until(
-        [&] {
-            return !run_on_ui_thread(b.h.app->ui(), [&] {
-                        return find_label_text_containing(b.screen, "Devices");
-                    }).empty();
-        },
-        3000));
+    ASSERT_TRUE(b.h.app->system_settings().set({{"language", wisp::Value("ja")}}));
+    ASSERT_TRUE(wait_until([&] { return wisp::ui::lang() == wisp::ui::Lang::Ja; }, 3000));
     run_on_ui_blocking(b.h.app->ui(), [&] {
         EXPECT_EQ(lv_screen_active(), scene_screen);
         EXPECT_EQ(lv_obj_get_child_count(scene_screen), scene_children);
         EXPECT_EQ(find_label_containing(scene_screen, "Devices"), nullptr);
+        EXPECT_NE(find_label_containing(b.screen, "Devices"), nullptr);
+        EXPECT_EQ(find_label_containing(b.screen, "デバイス"), nullptr);
     });
     ASSERT_TRUE(b.h.app->scenes()->close("counter"));
     run_on_ui_blocking(b.h.app->ui(), [&] { EXPECT_EQ(lv_screen_active(), b.screen); });

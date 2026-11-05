@@ -12,18 +12,20 @@
 #include <cstdint>
 
 #include "lvgl.h"
+#include "self_check_layout.hpp"
 #include "self_check_sampler.hpp"
 
 namespace wisp::app {
 
 class SensorSection {
 public:
-    // Appends the card to `col` (which owns the widgets); call again after
-    // the column was rebuilt.
-    void build(lv_obj_t* col, bool has_imu);
+    // Appends the card to `col` (which owns the widgets). `text` must
+    // outlive the widgets.
+    void build(lv_obj_t* col, PageText& text, bool has_imu);
     void update(const SampleSnapshot& snap);
 
 private:
+    const PageText* text_ = nullptr;
     bool has_imu_ = false;
     lv_obj_t* status_ = nullptr;
     // ax, ay, az, gx, gy, gz.

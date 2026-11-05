@@ -5,6 +5,7 @@
 #include <string>
 
 #include "wisp/core/boot_report.hpp"
+#include "wisp/ui/strings.hpp"
 
 TEST(Format, Bytes) {
     EXPECT_EQ(wisp::app::format_bytes(0), "0 B");
@@ -15,10 +16,14 @@ TEST(Format, Bytes) {
 
 TEST(Format, TimeAndState) {
     EXPECT_EQ(wisp::app::format_time(0), "1970-01-01 00:00:00");
-    EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Failed), "失败");
-    EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Ok), "正常");
-    EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Degraded), "降级");
-    EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Missing), "缺失");
+    using wisp::ui::Lang;
+    EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Failed, Lang::Zh), "失败");
+    EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Ok, Lang::Zh), "正常");
+    EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Degraded, Lang::Zh), "降级");
+    EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Missing, Lang::Zh), "缺失");
+    // In the language asked for, whatever ui::lang() is.
+    EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Failed, Lang::En), "Failed");
+    EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Missing, Lang::Ja), "未検出");
 }
 
 // SSIDs are raw bytes; GBK names are common. The device font can only draw

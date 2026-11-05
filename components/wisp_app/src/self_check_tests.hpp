@@ -1,10 +1,10 @@
 #pragma once
 
 // The self-check screen's interactive tests card: the touch test area,
-// the last button event and the "录音回放" (record and play back) button
-// with its progress. Each test shows "未测" until it passes, then "✓
-// 已通过"; the pass state itself lives with the owner (InteractiveTests),
-// so it survives a rebuild.
+// the last button event and the "Mic test" (record and play back) button
+// with its progress. Each test shows "Not tested" until it passes, then
+// "✓ Passed"; the pass state itself lives with the owner
+// (InteractiveTests).
 //
 // UI thread only.
 
@@ -13,6 +13,7 @@
 
 #include "loopback.hpp"
 #include "lvgl.h"
+#include "self_check_layout.hpp"
 #include "self_check_model.hpp"
 
 namespace wisp::app {
@@ -22,25 +23,34 @@ public:
     struct Callbacks {
         // Any press inside the touch test area.
         std::function<void()> on_touch;
-        // The "录音回放" button was clicked.
+        // The "Mic test" button was clicked.
         std::function<void()> on_loopback;
     };
 
-    // Appends the card to `col` (which owns the widgets); call again after
-    // the column was rebuilt.
-    void build(lv_obj_t* col, Callbacks callbacks, const LoopbackStatus& loop_status);
+    // Appends the card to `col` (which owns the widgets). `text` must
+    // outlive the widgets.
+    void build(lv_obj_t* col, PageText& text, Callbacks callbacks,
+               const LoopbackStatus& loop_status);
 
     // Shows each test's pass state.
     void show(const InteractiveTests& tests);
-    // "按键: <topic>" for the last button event.
+    // "Button: <topic>" for the last button event.
     void set_button_event(const std::string& topic);
     void set_loopback(const LoopbackStatus& status);
+    // Re-renders the button line in the page's current language (the
+    // owner re-shows the statuses).
+    void retext();
 
 private:
     static void touch_cb(lv_event_t* e);
     static void loopback_cb(lv_event_t* e);
 
+    std::string button_text() const;
+
+    const PageText* text_ = nullptr;
     Callbacks callbacks_;
+    // The last button event's topic.
+    std::string button_topic_ = "--";
     lv_obj_t* touch_label_ = nullptr;
     lv_obj_t* button_label_ = nullptr;
     lv_obj_t* loop_label_ = nullptr;

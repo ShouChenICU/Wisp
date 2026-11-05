@@ -49,8 +49,9 @@ struct App::Impl {
     // waits for the wake-up (spec 5.4). power_manager is only reset after
     // the HTTP server and the net task have stopped (App::stop()), so no
     // caller races with it going away. Every stored change is published
-    // as system.settings (spec 8.3); the self-check screen rebuilds its
-    // text from it when the language changes.
+    // as system.settings (spec 8.3); the self-check screen moves the
+    // system language (ui::lang()) and an open confirm dialog to a new
+    // language from it.
     core::SystemSettings system_settings{
         *platform.settings,
         [this](uint8_t level) {
@@ -111,7 +112,7 @@ struct App::Impl {
     // alive to be torn down against.
     std::unique_ptr<SelfCheck> self_check;
 
-    // The "wisp.loop" task state for the self-check screen's "录音回放"
+    // The "wisp.loop" task state for the self-check screen's "Mic test"
     // button (see loopback.cpp's run_loopback()/join_loopback()/
     // reset_loopback()). Lives here -- on this App's own Impl -- rather
     // than in a process-wide static, again so tests constructing several
@@ -126,7 +127,7 @@ struct App::Impl {
     // that task is then exactly the one join_loopback() goes on to join),
     // or it observes loop_stopping already true and refuses outright --
     // there is no window in which a new "wisp.loop" task gets spawned
-    // that nothing will ever join -- a click triggering "录音回放"
+    // that nothing will ever join -- a click triggering "Mic test"
     // concurrently with App::stop() must not be able to start a task
     // that outlives SelfCheck.
     os::Mutex loop_mutex;

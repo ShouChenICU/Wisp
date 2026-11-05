@@ -31,7 +31,7 @@ class SceneWiring;
 class SelfCheck;
 
 // Builds the self-check screen (spec 8's device list, IMU/power/RTC/
-// storage readouts, touch test area, button hints, "录音回放" button and
+// storage readouts, touch test area, button hints, "Mic test" button and
 // performance row) on the UI thread, and stores the owner object for its
 // non-LVGL resources into `slot` (see stop_self_check() below). Callers
 // must already be inside a ui()->post()'d callback (see app.cpp).
@@ -40,7 +40,7 @@ class SelfCheck;
 // SelfCheck's full definition) is done here, in the one TU where that's
 // available -- app.cpp only ever forward-declares SelfCheck. The screen
 // opens its confirm dialogs on `system`, which must outlive it.
-// `scenes` (may be null) feeds the "场景" card and must outlive the screen.
+// `scenes` (may be null) feeds the "Scenes" card and must outlive the screen.
 void start_self_check(App& app, ui::SystemLayer& system, SceneWiring* scenes,
                       std::unique_ptr<SelfCheck>& slot);
 
@@ -52,12 +52,12 @@ void start_self_check(App& app, ui::SystemLayer& system, SceneWiring* scenes,
 // msgbox) onto the UI thread regardless of which thread calls this.
 void stop_self_check(std::unique_ptr<SelfCheck>& self_check);
 
-// Re-renders the header's "启动 .. ms" text (spec 8) from BootReport's
+// Re-renders the board card's boot time (spec 8) from BootReport's
 // current boot_ms. A no-op if `self_check` is null (headless boot).
 // Posts the refresh onto `ui` and returns immediately, without waiting
 // for it to run. boot_ms is only known once start_self_check() above has
 // already run (spec 6.1's boot sequence ends with the self-check screen
-// on screen), so the header it built shows a stale value until this
+// on screen), so the board card it built shows a stale value until this
 // corrects it.
 void refresh_self_check_header(ui::UiRuntime& ui, std::unique_ptr<SelfCheck>& self_check);
 

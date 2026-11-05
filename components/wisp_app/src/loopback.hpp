@@ -18,18 +18,18 @@ namespace wisp::app {
 class App;
 
 // One step of a loopback run. Carries the string id rather than text so
-// the text is only made where it is shown, on the UI thread, in the
-// language current there (see ui::tr()); the screen keeps the last one and
-// re-renders it after a language switch.
+// the text is only made where it is shown, in the language shown there;
+// the screen keeps the last one and re-renders it after a language
+// switch.
 struct LoopbackStatus {
     ui::StrId id = ui::StrId::LoopReady;
     // Set only with LoopFailed: what failed.
     ErrorCode error = ErrorCode::Ok;
 };
 
-// The status as shown on screen in the current language, e.g. "录音中" or
-// "失败: not_found". Call on the UI thread.
-std::string loopback_status_text(const LoopbackStatus& status);
+// The status as shown on screen in `lang`, e.g. "录音中" or
+// "失败: not_found".
+std::string loopback_status_text(const LoopbackStatus& status, ui::Lang lang);
 
 // Must be called from any thread other than the "wisp.loop" task itself.
 // Spawns (and this call returns without waiting for) a "wisp.loop" task

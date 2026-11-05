@@ -78,7 +78,7 @@
 | 19 | 充电电流曲线（drivers/axp2101 充电参数配置） | 用一块电量明显偏低的电池，经 USB 功率计供电，观察充电过程电流；同时看启动日志是否出现 `power.main: charging configuration failed: ...`（`board.cpp` 的 `WLOG_W`） | 恒流阶段稳定在约 400mA；接近 4.2V 时电流渐降；充满后 `charging` 翻 `false`，电流降到维持量级，不持续大电流过充；不出现 `charging configuration failed` 日志（出现则说明 `axp2101_charging_config_status()` 返回非 `ESP_OK`，充电参数可能停留在芯片出厂默认值） |  |
 | 20 | 音频/存储设备状态（wisp_port_esp::EspAudio/EspStorage） | 看 `WISP_BOOT_REPORT` 中 `audio_out.main`/`audio_in.main`/`storage.int`/`storage.sd` | 前三者为 `ok`；`storage.sd` 视是否插卡为 `ok` 或 `missing`（"no card"） |  |
 | 21 | 开机无爆音（屏幕驱动上电顺序，wisp_port_esp::EspAudio 初始化） | 接好喇叭，听开机瞬间 | 自检界面出现前无可闻的啪声/爆音 |  |
-| 22 | 录音回放（spec 10.2，wisp_app::loopback） | 自检界面触发"录音回放"按钮 | 录 3 秒后播放，音量合适，声音正确，不失真、不卡顿、不静音 |  |
+| 22 | 录音回放（spec 10.2，wisp_app::loopback） | 自检界面点"Mic test"按钮（中文界面为"录音回放"） | 录 3 秒后播放，音量合适，声音正确，不失真、不卡顿、不静音 |  |
 | 23 | 存储容量与 SD 热插拔（spec 10.2，wisp_port_esp::EspStorage/sd_retry） | 看自检界面内置 Flash/SD 卡容量；运行中插入/拔出 SD 卡 | 容量数字正确；插入约 2 秒内上线，不需要重启；拔出后几秒内被检测为离线 |  |
 | 24 | NVS 设置持久化（wisp_port_esp::NvsSettingsBackend） | 改一项会在启动时读取的设置（如亮度），整机断电重启（不是软重启） | 修改值在重启后仍生效 |  |
 | 25 | 内部存储降级路径（可选，wisp_port_esp::EspStorage 降级路径） | 如方便的话，人为让 `storage.int` 挂载失败 | 系统仍以降级/只读模式启动，不中止 |  |
