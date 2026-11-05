@@ -55,14 +55,13 @@ const KeySpec* find_spec(std::string_view name) {
     return nullptr;
 }
 
-// The stored value, or the default when it is missing or of the wrong
-// type. An unknown language code (a hand-edited or corrupted store) also
-// reads as the default, since the UI has no text for it; integers are
-// returned as stored, matching what their consumers read directly.
+// The stored value, or the default when it is missing or one set() would
+// refuse (a hand-edited or corrupted store): every value get() reports is
+// one its consumers can take, and an int64 past int's range never reaches
+// the narrowing in get().
 Value read(SettingsBackend& backend, const KeySpec& spec) {
     auto stored = backend.get(spec.ns, spec.key);
-    if (!stored || stored.value().type() != spec.def.type()) return spec.def;
-    if (spec.def.type() == Value::Type::String && !spec.valid(stored.value())) return spec.def;
+    if (!stored || !spec.valid(stored.value())) return spec.def;
     return stored.value();
 }
 

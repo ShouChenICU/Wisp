@@ -221,16 +221,12 @@ Result<void> App::start() {
                 {"wifi", Value(wifi ? net::to_string(*wifi) : "off")},
             });
         };
-        scenes->build_runtime(
-            *impl_->ui, *impl_->system_layer, shape, std::move(device_status),
-            [impl] {
-                if (impl->power_manager && impl->power_manager->standby()) {
-                    impl->power_manager->exit_standby();
-                }
-            },
-            // Read here, on the boot task: the scene task
-            // then follows system.settings, never Settings.
-            impl_->system_settings.get().utc_offset_min);
+        scenes->build_runtime(*impl_->ui, *impl_->system_layer, shape, std::move(device_status),
+                              [impl] {
+                                  if (impl->power_manager && impl->power_manager->standby()) {
+                                      impl->power_manager->exit_standby();
+                                  }
+                              });
     }
     scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
 
@@ -290,6 +286,12 @@ Result<void> App::start() {
         App::Impl* impl = impl_.get();
         if (scenes != nullptr) {
             scenes->start_runtime([impl] { return impl->power_manager->standby(); });
+            // Read on this task once the runtime follows system.settings, so
+            // a change stored meanwhile is either read here or arrives as
+            // its event; the scene task never reads Settings itself.
+            if (scene::SceneRuntime* rt = scenes->runtime()) {
+                rt->seed_utc_offset(impl->system_settings.get().utc_offset_min);
+            }
         }
     }
 

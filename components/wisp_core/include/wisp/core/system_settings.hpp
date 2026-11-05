@@ -2,11 +2,12 @@
 
 // SystemSettings (spec 5.4): validated access to the device-wide Settings
 // keys the admin page, future agent tools and the settings scene all edit:
-//   brightness   display/brightness   int 10-255           (default 200)
-//   volume       audio/volume         int 0-100            (default 60)
-//   screen_off_s power/screen_off_s   int 0 (never) or 15-3600 (default 60)
-//   language     sys/lang             "zh", "ja" or "en"   (default "zh")
-//   utc_offset_min sys/tz_min         int -720-840         (default 480)
+//   brightness     display/brightness  int 10-255                (default 200)
+//   volume         audio/volume        int 0-100                 (default 60)
+//   screen_off_s   power/screen_off_s  int 0 (never) or 15-3600  (default 60)
+//   language       sys/lang            "zh", "ja" or "en"        (default "zh")
+//   utc_offset_min sys/tz_min          int -720 to 840           (default 480)
+// A stored value set() would refuse reads back as its default.
 // utc_offset_min is the local time zone as minutes east of UTC (UTC-12:00
 // to UTC+14:00, half and quarter hours included); scenes read it as
 // wisp.device.info().utc_offset (scene-runtime-core spec 5.2).
@@ -40,8 +41,8 @@ struct SystemSettingsValues {
     int utc_offset_min;
 };
 
-// {"brightness", "volume", "screen_off_s", "language", "utc_offset_min"} -- the shape of
-// GET /settings and of the system.settings event payload.
+// {"brightness", "volume", "screen_off_s", "language", "utc_offset_min"}:
+// the shape of GET /settings and of the system.settings event payload.
 Map to_map(const SystemSettingsValues& values);
 
 class SystemSettings {

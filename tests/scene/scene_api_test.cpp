@@ -379,4 +379,44 @@ wisp.device.on("minute", function(i) print("minute", i.utc_offset, wisp.device.i
     EXPECT_EQ(scene_log("tz").back(), "open\t-570");
 }
 
+// With the screen off a new offset fires nothing; the "minute" the screen
+// coming on sends carries it.
+TEST_F(SceneApiTest, UtcOffsetChangeWhileTheScreenIsOff) {
+    wall = kNoon;
+    start();
+    install("tz", std::string(R"(
+wisp.device.on("minute", function(i) print("minute", i.utc_offset) end)
+)") + kScreen);
+    ASSERT_TRUE(rt->open("tz"));
+    rt->set_visible(false);
+    publish("system.settings", {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{60})}});
+    bus.wait_idle(1000);
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_TRUE(scene_log("tz").empty());
+    rt->set_visible(true);
+    ASSERT_TRUE(wait_log("tz", 1));
+    bus.wait_idle(1000);
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"minute\t60"}));
+}
+
+// App seeds the offset it reads after start(): a seed loses to any
+// system.settings event the runtime has already seen, which carries a
+// value at least as new.
+TEST_F(SceneApiTest, UtcOffsetSeedNeverOverridesAnEvent) {
+    start();
+    install("tz", std::string(R"(
+scene.on_show = function() print("tz", wisp.device.info().utc_offset) end
+)") + kScreen);
+    rt->seed_utc_offset(330);
+    ASSERT_TRUE(rt->open("tz"));
+    publish("system.settings", {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{0})}});
+    bus.wait_idle(1000);
+    rt->seed_utc_offset(540);
+    // Out of range: ignored.
+    rt->seed_utc_offset(5000);
+    ASSERT_TRUE(rt->reload("tz"));
+    EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"tz\t330", "tz\t0"}));
+}
+
 }  // namespace

@@ -58,9 +58,10 @@
 // saw, checked on each such event and each minute. info().lang
 // is the language of the last system.settings event, ui::lang() before
 // any (ui::set_lang() runs on the UI thread and may lag the event).
-// info().utc_offset is that event's utc_offset_min (SceneRuntimeDeps::
-// utc_offset_min before any); when it changes, "minute" fires at once
-// (screen on), since the local time a scene shows has moved.
+// info().utc_offset is that event's utc_offset_min, else the
+// seed_utc_offset() value, else SceneRuntimeDeps::utc_offset_min; when an
+// event changes it, "minute" fires at once (screen on), since the local
+// time a scene shows has moved.
 // wisp.scene.close() closes the scene once its current message is done.
 //
 // HTTP (spec 5.3): opening a scene gives the proxy (SceneRuntimeDeps::
@@ -157,9 +158,8 @@ struct SceneRuntimeDeps {
     // the scene task, same rule.
     std::function<int64_t()> wall_clock;
     // The time zone wisp.device.info().utc_offset reports (minutes east of
-    // UTC) until a system.settings event says otherwise: App passes
-    // SystemSettings' value, read before the runtime starts, so the scene
-    // task never reads it from Settings.
+    // UTC) until seed_utc_offset() or a system.settings event says
+    // otherwise.
     int utc_offset_min = 480;
 };
 
@@ -195,6 +195,11 @@ public:
 
     // The screen went off (false) or on (true): scene.on_hide() and a
     // store flush, or scene.on_show(). Never waits.
+    // The time zone setting, read by App (which may touch flash) after
+    // start(): from then on a change also arrives as a system.settings
+    // event, so a seed loses to any event already seen, whose value is at
+    // least as new. Values outside -720..840 are ignored. Any thread.
+    void seed_utc_offset(int minutes);
     void set_visible(bool visible);
     // The id of the scene in the foreground (running or showing its error
     // panel), if any.
@@ -335,7 +340,11 @@ private:
     // The ui::Lang of the last system.settings event, -1 before any. Set
     // by the bus's dispatcher, read by the scene task.
     std::atomic<int> lang_{-1};
-    std::atomic<int> utc_offset_min_;
+    // kUnsetOffset until seeded or set by an event.
+    static constexpr int kUnsetOffset = INT32_MIN;
+    std::atomic<int> utc_offset_min_{kUnsetOffset};
+    // utc_offset_min_, or SceneRuntimeDeps::utc_offset_min while unset.
+    int utc_offset_min() const;
     core::SubscriptionId power_sub_ = 0;
     core::SubscriptionId settings_sub_ = 0;
 

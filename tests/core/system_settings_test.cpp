@@ -65,6 +65,22 @@ TEST(SystemSettings, UtcOffsetValidatesAndIsStored) {
     EXPECT_EQ(wisp::core::to_map(fx.settings.get()).at("utc_offset_min"), wisp::Value(840));
 }
 
+// A stored value set() would refuse (a hand-edited or corrupted store)
+// reads back as the default, for integers as for the language; an int64
+// past int's range is not truncated into a "valid" one either.
+TEST(SystemSettings, OutOfRangeStoredValuesReadAsDefaults) {
+    Fixture fx;
+    ASSERT_TRUE(Settings(fx.backend, "sys").set("tz_min", int64_t{5000}));
+    ASSERT_TRUE(Settings(fx.backend, "display").set("brightness", int64_t{4294967496}));
+    ASSERT_TRUE(Settings(fx.backend, "audio").set("volume", int64_t{-5}));
+    ASSERT_TRUE(Settings(fx.backend, "power").set("screen_off_s", int64_t{5}));
+    auto v = fx.settings.get();
+    EXPECT_EQ(v.utc_offset_min, 480);
+    EXPECT_EQ(v.brightness, 200);
+    EXPECT_EQ(v.volume, 60);
+    EXPECT_EQ(v.screen_off_s, 60);
+}
+
 TEST(SystemSettings, WritesTheExistingSettingsKeys) {
     Fixture fx;
     ASSERT_TRUE(fx.settings.set({{"brightness", 120}, {"volume", 30}, {"screen_off_s", 300}}));

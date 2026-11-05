@@ -395,7 +395,7 @@ TEST(AppScenes, DeleteAfterStopRuntimeIsRefused) {
     std::unique_ptr<wisp::ui::SystemLayer> layer;
     const wisp::hal::ScreenShape shape{wisp::hal::ScreenShapeKind::Rect, 480, 480, 0};
     run_on_ui_blocking(&ui, [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
-    wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {}, 480);
+    wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
     wiring.start_runtime([] { return false; });
 
     wiring.stop_runtime();
@@ -437,7 +437,7 @@ TEST(AppScenes, ScenesAreOffWithoutLargeMemory) {
         wiring.start_storage();
         ASSERT_NE(wiring.repository(), nullptr);
         wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, true);
-        wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {}, 480);
+        wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
         wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, false);
         EXPECT_EQ(wiring.runtime(), nullptr);
         EXPECT_FALSE(wiring.request_delete("counter", false));
@@ -502,6 +502,19 @@ return ui.screen { ui.label { text = "i" } }
     wisp::os::sleep_ms(400);
     ASSERT_TRUE(b.h.app->scenes()->open("info"));
     EXPECT_EQ(scene_log("info"), (std::vector<std::string>{"wifi connected"}));
+}
+
+// The stored time zone reaches wisp.device.info() at boot.
+TEST(AppScenes, DeviceInfoReportsTheStoredUtcOffset) {
+    Booted b;
+    ASSERT_TRUE(wisp::core::Settings(*b.h.app->platform().settings, "sys").set("tz_min", 330));
+    put_scene(b.h.root, "tz", "时区", R"(
+scene.on_show = function() print("tz " .. wisp.device.info().utc_offset) end
+return ui.screen { ui.label { text = "t" } }
+)");
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.h.app->scenes()->open("tz"));
+    EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"tz 330"}));
 }
 
 // A language change while a scene is up rebuilds the self-check screen on

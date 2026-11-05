@@ -59,9 +59,10 @@ net::HttpResponse get_settings(AdminDeps& deps, const RequestContext&) {
     return net::HttpResponse::json(200, Value(core::to_map(deps.settings.get())));
 }
 
-// Any subset of {brightness, volume, screen_off_s, utc_offset_min}
-// (integers) and language ("zh"/"ja"/"en"); SystemSettings rejects unknown keys, wrong
-// types and out-of-range values for the whole batch.
+// Any subset of the integers brightness, volume, screen_off_s and
+// utc_offset_min and the string language ("zh"/"ja"/"en"); SystemSettings
+// rejects unknown keys, wrong types and out-of-range values for the whole
+// batch.
 net::HttpResponse put_settings(AdminDeps& deps, const RequestContext& ctx) {
     if (ctx.body.type() != Value::Type::Map) {
         return bad_request("body must be a JSON object");

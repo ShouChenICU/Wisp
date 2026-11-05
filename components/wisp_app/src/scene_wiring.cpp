@@ -77,7 +77,7 @@ void SceneWiring::start_storage() {
 
 void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                 const hal::ScreenShape& shape, std::function<Value()> device_status,
-                                std::function<void()> wake, int utc_offset_min) {
+                                std::function<void()> wake) {
     if (!repo_) return;
     if (deps_.platform.http_client) {
         http_ = os::make_large<net::SceneHttp>(*deps_.platform.http_client);
@@ -92,8 +92,7 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                .shape = shape,
                                .http = http_.get(),
                                .device_status = std::move(device_status),
-                               .wall_clock = {},
-                               .utc_offset_min = utc_offset_min};
+                               .wall_clock = {}};
     runtime_ = os::make_large<scene::SceneRuntime>(std::move(rt));
     if (!runtime_) {
         WLOG_E(kTag, "no memory for the scene runtime; scenes are off");
