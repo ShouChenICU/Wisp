@@ -52,6 +52,7 @@ using wisp::core::SourceFile;
 using wisp::scene::SceneMessage;
 using wisp::scene::SceneRuntime;
 using wisp::test::run_on_ui_blocking;
+using wisp::test::UiStall;
 using wisp::test::wait_until;
 
 using wisp::test::Files;
@@ -708,31 +709,6 @@ return ui.screen{ui.label{text = "keep"}}
     ASSERT_EQ(idle_result.wait_for(std::chrono::seconds(5)), std::future_status::ready);
     EXPECT_TRUE(idle_result.get());
 }
-
-// Holds the UI thread inside a job, with its post() queue full, until
-// release(): nothing the scene task hands the UI meanwhile can run.
-class UiStall {
-public:
-    explicit UiStall(wisp::ui::UiRuntime& ui) {
-        auto started = std::make_shared<std::promise<void>>();
-        EXPECT_TRUE(ui.post([started, f = released_.get_future().share()] {
-            started->set_value();
-            f.wait();
-        }));
-        started->get_future().wait();
-        while (ui.post([] {})) {
-        }
-    }
-    ~UiStall() { release(); }
-    void release() {
-        if (!done_) released_.set_value();
-        done_ = true;
-    }
-
-private:
-    std::promise<void> released_;
-    bool done_ = false;
-};
 
 // Whoever close() or close_async() answers sees the scene Stopped, its
 // "stopped" already published: a "deleted" the caller publishes next (as

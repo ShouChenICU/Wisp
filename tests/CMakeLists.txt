@@ -280,6 +280,9 @@ wisp_test(NAME scene_view_media_test SRCS scene/scene_view_media_test.cpp
 wisp_test(NAME scene_runtime_test SRCS scene/scene_runtime_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 target_include_directories(scene_runtime_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
+wisp_test(NAME scene_background_test SRCS scene/scene_background_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 90)
+target_include_directories(scene_background_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 wisp_test(NAME lua_json_test SRCS scene/lua_json_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME store_binding_test SRCS scene/store_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)

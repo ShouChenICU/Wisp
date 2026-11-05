@@ -345,13 +345,45 @@ TEST_F(PatchQueueTest, ABuildSupersedesWhatIsQueuedBeforeIt) {
     EXPECT_EQ(text(4), "<none>");
 }
 
-TEST_F(PatchQueueTest, ClearDropsEverything) {
+TEST_F(PatchQueueTest, ClearDropsEverythingOfTheInstance) {
     start();
     queue.submit(batch({tree(1), set(2, Prop::Text, str("x"))}));
-    queue.clear();
+    queue.clear(kInstance);
     EXPECT_EQ(queue.pending(), 0u);
     EXPECT_EQ(frame(), 0u);
     EXPECT_EQ(text(2), "<none>");
+}
+
+// Several scenes share the queue (one in front, others in the background):
+// clearing one drops its ops, its kept-aside ops and its refresh request,
+// and leaves every other instance's alone.
+TEST_F(PatchQueueTest, ClearLeavesOtherInstancesAlone) {
+    start();
+    UiBatch backlog;
+    backlog.instance = 7;
+    backlog.ops.push_back(ScrollTo{3, 1});
+    for (uint32_t i = 0; i < 1000; ++i) backlog.ops.push_back(set(i + 100, Prop::Text, str("x")));
+    queue.submit(std::move(backlog));
+    UiBatch more;
+    more.instance = 7;
+    for (uint32_t i = 0; i < 30; ++i) more.ops.push_back(set(i + 2, Prop::Text, str("y")));
+    queue.submit(std::move(more));
+    queue.submit(batch({tree(1), set(2, Prop::Text, str("mine"))}));
+    EXPECT_EQ(queue.pending(), 31u);
+
+    queue.clear(7);
+    EXPECT_EQ(queue.pending(), 1u);
+    // Its refresh request went with it ...
+    EXPECT_FALSE(queue.take_refresh_request(7));
+    // ... and so did the ScrollTo kept for its refresh.
+    UiBatch refresh;
+    refresh.instance = 7;
+    refresh.refresh = true;
+    queue.submit(std::move(refresh));
+    EXPECT_EQ(queue.pending(), 1u);
+
+    EXPECT_EQ(frame(), 1u);
+    EXPECT_EQ(text(2), "mine");
 }
 
 TEST_F(PatchQueueTest, SubmitsFromAnotherThread) {

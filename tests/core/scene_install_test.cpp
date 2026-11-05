@@ -119,7 +119,7 @@ private:
 };
 
 // A SceneHost whose running scene is a writer thread over a real store.
-// close() does what SceneRuntime's close does: stop the scene, flush the
+// exit() does what SceneRuntime's exit does: stop the scene, flush the
 // store, wait for that flush, close the store.
 class StoreHost final : public SceneHost {
 public:
@@ -161,6 +161,11 @@ public:
     }
     Result<void> close(const std::string& id) override {
         log("close " + id);
+        stop_scene();
+        return Result<void>::ok();
+    }
+    Result<void> exit(const std::string& id) override {
+        log("exit " + id);
         if (close_error != ErrorCode::Ok) {
             return Result<void>::err(close_error, "the scene task did not answer");
         }
@@ -186,7 +191,7 @@ public:
         }
     }
 
-    // What close() answers instead of closing (Ok: it closes).
+    // What exit() answers instead of closing (Ok: it closes).
     ErrorCode close_error = ErrorCode::Ok;
     // What status() reports instead of the writer's state.
     std::optional<SceneState> forced_state;
@@ -314,7 +319,7 @@ TEST(SceneInstall, ReinstallOverARunningSceneKeepsEveryWrite) {
     // Closed before each swap (the first install's too, though nothing ran
     // yet) and opened again after it.
     std::vector<std::string> calls = fx.host->calls();
-    EXPECT_EQ(std::count(calls.begin(), calls.end(), "close todo"), 11);
+    EXPECT_EQ(std::count(calls.begin(), calls.end(), "exit todo"), 11);
     EXPECT_EQ(std::count(calls.begin(), calls.end(), "installed todo"), 1);  // the first one
 }
 
@@ -323,8 +328,8 @@ TEST(SceneInstall, ReinstallOfAStoppedSceneDoesNotOpenIt) {
     ASSERT_TRUE(wisp::core::install_scene(*fx.repo, *fx.host, todo_zip(0, 2)));
     auto r = wisp::core::install_scene(*fx.repo, *fx.host, todo_zip(1, 2));
     ASSERT_TRUE(r) << r.error().message;
-    EXPECT_EQ(fx.host->calls(), (std::vector<std::string>{"close todo", "installed todo",
-                                                          "close todo", "installed todo"}));
+    EXPECT_EQ(fx.host->calls(), (std::vector<std::string>{"exit todo", "installed todo",
+                                                          "exit todo", "installed todo"}));
     EXPECT_EQ(fx.host->status("todo").state, SceneState::Stopped);
 }
 
@@ -347,8 +352,8 @@ TEST(SceneInstall, CloseTimeoutLeavesTheOldPackage) {
     auto info = fx.repo->info("todo");
     ASSERT_TRUE(info);
     EXPECT_EQ(info.value().manifest.version, "1.0.0");
-    EXPECT_EQ(fx.host->calls(), (std::vector<std::string>{"close todo", "installed todo",
-                                                          "open todo", "close todo"}));
+    EXPECT_EQ(fx.host->calls(),
+              (std::vector<std::string>{"exit todo", "installed todo", "open todo", "exit todo"}));
     fx.host->close_error = ErrorCode::Ok;
 }
 
@@ -378,6 +383,6 @@ TEST(SceneInstall, AnErroredSceneIsClosedFirstAndNotReopened) {
     fx.host->forced_state = SceneState::Error;
     auto r = wisp::core::install_scene(*fx.repo, *fx.host, todo_zip(1, 2));
     ASSERT_TRUE(r) << r.error().message;
-    EXPECT_EQ(fx.host->calls(), (std::vector<std::string>{"close todo", "installed todo",
-                                                          "close todo", "installed todo"}));
+    EXPECT_EQ(fx.host->calls(), (std::vector<std::string>{"exit todo", "installed todo",
+                                                          "exit todo", "installed todo"}));
 }

@@ -8,6 +8,8 @@ const char* to_string(SceneState s) {
             return "stopped";
         case SceneState::Running:
             return "running";
+        case SceneState::Background:
+            return "background";
         case SceneState::Error:
             return "error";
     }

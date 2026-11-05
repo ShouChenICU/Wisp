@@ -66,6 +66,21 @@ int close(lua_State* L) {
     return 0;
 }
 
+int exit_scene(lua_State* L) {
+    detail::api_of(L).exit_requested = true;
+    return 0;
+}
+
+int state(lua_State* L) {
+    lua_pushstring(L, detail::api_of(L).background ? "background" : "foreground");
+    return 1;
+}
+
+int launch(lua_State* L) {
+    lua_pushstring(L, detail::api_of(L).launch);
+    return 1;
+}
+
 int args(lua_State* L) {
     const Value* a = detail::api_of(L).args;
     if (a == nullptr || a->type() != Value::Type::Map) {
@@ -89,6 +104,7 @@ int install(lua_State* L) {
     detail::install_scene(L, 1);
     detail::install_store(L, 1);
     detail::install_http(L, 1);
+    detail::install_power(L, 1);
     return 0;
 }
 
@@ -96,20 +112,28 @@ int install(lua_State* L) {
 
 namespace detail {
 
-SceneApi& api_of(lua_State* L) {
+SceneApi& api_of(lua_State* L) { return *find_api(L); }
+
+SceneApi* find_api(lua_State* L) {
     lua_rawgetp(L, LUA_REGISTRYINDEX, &kApiKey);
     auto* api = static_cast<SceneApi*>(lua_touserdata(L, -1));
     lua_pop(L, 1);
-    return *api;
+    return api;
 }
 
 void install_scene(lua_State* L, int wisp) {
     wisp = lua_absindex(L, wisp);
-    lua_createtable(L, 0, 2);
+    lua_createtable(L, 0, 5);
     lua_pushcfunction(L, close);
     lua_setfield(L, -2, "close");
+    lua_pushcfunction(L, exit_scene);
+    lua_setfield(L, -2, "exit");
     lua_pushcfunction(L, args);
     lua_setfield(L, -2, "args");
+    lua_pushcfunction(L, state);
+    lua_setfield(L, -2, "state");
+    lua_pushcfunction(L, launch);
+    lua_setfield(L, -2, "launch");
     check_c_functions(L, -1);
     lua_setfield(L, wisp, "scene");
 }

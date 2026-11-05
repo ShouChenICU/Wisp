@@ -133,6 +133,28 @@ TEST(SceneManifest, SchemaEntryIconHosts) {
     EXPECT_FALSE(accepts("[]"));
 }
 
+TEST(SceneManifest, BackgroundField) {
+    auto def = parse_scene_manifest(manifest());
+    ASSERT_TRUE(def);
+    EXPECT_FALSE(def.value().background);
+
+    auto yes = parse_scene_manifest(manifest("todo", "x", "1.0.0", R"(,"background":true)"));
+    ASSERT_TRUE(yes) << yes.error().message;
+    EXPECT_TRUE(yes.value().background);
+
+    auto no = parse_scene_manifest(manifest("todo", "x", "1.0.0", R"(,"background":false)"));
+    ASSERT_TRUE(no) << no.error().message;
+    EXPECT_FALSE(no.value().background);
+
+    for (const char* bad :
+         {R"(,"background":"yes")", R"(,"background":1)", R"(,"background":null)"}) {
+        auto r = parse_scene_manifest(manifest("todo", "x", "1.0.0", bad));
+        ASSERT_FALSE(r) << bad;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << bad;
+        EXPECT_EQ(r.error().message, "scene.json: background must be a boolean") << bad;
+    }
+}
+
 // Parsing recurses once per level, and scene.json is parsed on the storage
 // worker's small stack at every boot (wisp/core/storage_worker.hpp): its
 // nesting is capped, unknown fields included.

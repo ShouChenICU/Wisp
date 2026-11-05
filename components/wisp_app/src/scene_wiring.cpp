@@ -20,6 +20,22 @@ constexpr uint32_t kDrainMs = 5000;
 // How often dev mode looks at the working directory (spec 6.4).
 constexpr uint32_t kWatchMs = 500;
 
+// The system notice for each SceneNoticeKind; its argument is the scene's
+// name.
+const char* notice_code(scene::SceneNoticeKind kind) {
+    switch (kind) {
+        case scene::SceneNoticeKind::EvictedMemory:
+            return core::notice::kSceneEvictedMemory;
+        case scene::SceneNoticeKind::EvictedCount:
+            return core::notice::kSceneEvictedCount;
+        case scene::SceneNoticeKind::Faulted:
+            return core::notice::kSceneError;
+        case scene::SceneNoticeKind::RestoreFailed:
+            return core::notice::kRestoreFailed;
+    }
+    return core::notice::kSceneError;
+}
+
 }  // namespace
 
 SceneWiring::SceneWiring(SceneWiringDeps deps) : deps_(deps) {}
@@ -77,7 +93,8 @@ void SceneWiring::start_storage() {
 
 void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                 const hal::ScreenShape& shape, std::function<Value()> device_status,
-                                std::function<void()> wake) {
+                                std::function<void()> wake, core::WakeLockRegistry* locks,
+                                core::NotificationService* notices) {
     if (!repo_) return;
     if (deps_.platform.http_client) {
         http_ = os::make_large<net::SceneHttp>(*deps_.platform.http_client);
@@ -92,7 +109,16 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                .shape = shape,
                                .http = http_.get(),
                                .device_status = std::move(device_status),
-                               .wall_clock = {}};
+                               .wall_clock = {},
+                               .locks = locks,
+                               .on_notice = {}};
+    if (notices != nullptr) {
+        // On the scene task: post_system() only records the notice and
+        // leaves saving it to the storage worker.
+        rt.on_notice = [notices](const scene::SceneNotice& n) {
+            notices->post_system(notice_code(n.kind), n.name);
+        };
+    }
     runtime_ = os::make_large<scene::SceneRuntime>(std::move(rt));
     if (!runtime_) {
         WLOG_E(kTag, "no memory for the scene runtime; scenes are off");

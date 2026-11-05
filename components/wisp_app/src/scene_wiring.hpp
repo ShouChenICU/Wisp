@@ -18,7 +18,10 @@
 //     handed them, and started (start_runtime()) once the self-check
 //     screen is up -- the screen a scene's view replaces and goes back to.
 //     The runtime then follows power.state: standby hides the scene, waking
-//     shows it.
+//     shows it. The system layer's back gesture is the runtime's "back":
+//     a scene that declares "background" goes there, any other closes.
+//     The runtime's notices become system notifications (scene-device
+//     spec 3.2, 3.5, 3.6).
 //   - in dev mode, once the runtime runs: a DirWatcher over the working
 //     directory, polled on the worker every 500 ms (it reads files); when
 //     the scene in front (running or showing its error panel) changes on
@@ -49,9 +52,11 @@
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
@@ -92,10 +97,15 @@ public:
     // Builds the proxy and the runtime, not started. `device_status` is
     // SceneRuntimeDeps::device_status (runs on the scene task: no flash);
     // `wake` turns a sleeping screen on for the delete confirmation (UI
-    // thread). Needs start_storage() to have made a repository; without
-    // one, or without the memory for it, there is no runtime.
+    // thread). `locks` backs wisp.power; the runtime's notices (a scene
+    // that failed in the background, ...) become system notifications in
+    // `notices`. Either may be null; both must outlive the runtime. Needs
+    // start_storage() to have made a repository; without one, or without
+    // the memory for it, there is no runtime.
     void build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system, const hal::ScreenShape& shape,
-                       std::function<Value()> device_status, std::function<void()> wake);
+                       std::function<Value()> device_status, std::function<void()> wake,
+                       core::WakeLockRegistry* locks = nullptr,
+                       core::NotificationService* notices = nullptr);
     // Starts the proxy and the runtime and follows power.state;
     // `standby` reads whether the screen is off now.
     void start_runtime(std::function<bool()> standby);

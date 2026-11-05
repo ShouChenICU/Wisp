@@ -95,6 +95,9 @@ public:
     Result<void> close(const std::string& id) override {
         return record("close " + id, SceneState::Stopped);
     }
+    Result<void> exit(const std::string& id) override {
+        return record("exit " + id, SceneState::Stopped);
+    }
     Result<void> reload(const std::string& id) override {
         return record("reload " + id, SceneState::Running);
     }
@@ -359,7 +362,7 @@ TEST(AdminScenes, UploadStreamsAndInstalls) {
     EXPECT_EQ(at(v, "state"), Value("stopped"));
     EXPECT_EQ(fx.host.checks, 1);
     // install_scene() closes the scene before every replace, running or not.
-    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"close todo", "installed todo"}));
+    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"exit todo", "installed todo"}));
     EXPECT_TRUE(fx.repo->info("todo"));
 }
 
@@ -545,7 +548,7 @@ TEST(AdminScenes, ReuploadKeepsData) {
     EXPECT_EQ(at(v, "version"), Value("1.1.0"));
     EXPECT_GT(at(v, "data_bytes").as_int(), 0);
     EXPECT_TRUE(fs::exists(data));
-    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"close todo", "installed todo", "close todo",
+    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"exit todo", "installed todo", "exit todo",
                                                        "installed todo"}));
 }
 
@@ -608,6 +611,30 @@ TEST(AdminScenes, OpenCloseReload) {
     EXPECT_EQ(error_code(res), "unavailable");
 }
 
+// POST /exit closes a scene for good (spec 3.7), where /close is "back".
+TEST(AdminScenes, ExitRoute) {
+    ScenesFixture fx;
+    ASSERT_TRUE(fx.repo->install(zip_of(todo_files()), {}));
+    ASSERT_EQ(fx.call(Method::Post, "/api/v1/scenes/todo/open").status, 200);
+    HttpResponse exited = fx.call(Method::Post, "/api/v1/scenes/todo/exit");
+    ASSERT_EQ(exited.status, 200) << exited.body;
+    EXPECT_EQ(at(body_json(exited), "state"), Value("stopped"));
+    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"open todo", "exit todo"}));
+
+    EXPECT_EQ(fx.call(Method::Post, "/api/v1/scenes/nope/exit").status, 404);
+    HttpResponse no_csrf =
+        fx.f.srv->handle(with_token(make_req(Method::Post, "/api/v1/scenes/todo/exit"), fx.token));
+    EXPECT_EQ(no_csrf.status, 403);
+    EXPECT_EQ(error_code(no_csrf), "csrf");
+    EXPECT_EQ(fx.host.log().size(), 2u);
+
+    ScenesFixture headless(ScenesFixture::Options{.with_host = false});
+    ASSERT_TRUE(headless.repo->install(zip_of(todo_files()), {}));
+    HttpResponse res = headless.call(Method::Post, "/api/v1/scenes/todo/exit");
+    EXPECT_EQ(res.status, 503);
+    EXPECT_EQ(error_code(res), "unavailable");
+}
+
 TEST(AdminScenes, DeleteNeedsDeviceConfirm) {
     ScenesFixture fx;
     ASSERT_TRUE(fx.repo->install(zip_of(todo_files()), {}));
@@ -642,8 +669,8 @@ TEST(AdminScenes, UploadOverARunningSceneClosesAndReopensIt) {
     HttpResponse res = fx.upload(zip_of(todo_files("1.1.0")));
     ASSERT_EQ(res.status, 201) << res.body;
     EXPECT_EQ(at(body_json(res), "state"), Value("running"));
-    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"close todo", "installed todo", "open todo",
-                                                       "close todo", "open todo"}));
+    EXPECT_EQ(fx.host.log(), (std::vector<std::string>{"exit todo", "installed todo", "open todo",
+                                                       "exit todo", "open todo"}));
 
     // A scene that cannot be closed is not replaced.
     fx.host.fail = wisp::Error{ErrorCode::Busy, "scene queue full"};

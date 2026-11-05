@@ -313,12 +313,14 @@ Result<void> App::start() {
                 {"wifi", Value(wifi ? net::to_string(*wifi) : "off")},
             });
         };
-        scenes->build_runtime(*impl_->ui, *impl_->system_layer, shape, std::move(device_status),
-                              [impl] {
-                                  if (impl->power_manager && impl->power_manager->standby()) {
-                                      impl->power_manager->exit_standby();
-                                  }
-                              });
+        scenes->build_runtime(
+            *impl_->ui, *impl_->system_layer, shape, std::move(device_status),
+            [impl] {
+                if (impl->power_manager && impl->power_manager->standby()) {
+                    impl->power_manager->exit_standby();
+                }
+            },
+            &impl_->wakelocks, impl_->notifications.get());
     }
     scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
 

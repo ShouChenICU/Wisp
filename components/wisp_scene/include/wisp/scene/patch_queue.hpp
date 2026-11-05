@@ -70,8 +70,9 @@ public:
     size_t apply_frame(SceneView& view, uint32_t instance);
     // Ops waiting, counted as apply_frame() counts them.
     size_t pending() const;
-    // Drops everything, including a refresh request.
-    void clear();
+    // Drops everything of `instance`: its queued ops, the ones kept aside
+    // for its refresh and its refresh request. Other instances' stay.
+    void clear(uint32_t instance);
 
 private:
     struct Item {

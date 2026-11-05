@@ -73,11 +73,13 @@ struct SourceCheckJob {
 
 namespace msg {
 
-// open(): the scene task closes the foreground scene and asks the worker
-// to load this one. `done` (may be null) hears how the open went.
+// launch(): the scene task asks the worker to load the scene (or, for one
+// in the background, brings it forward). `done` (may be null) hears how
+// the open went.
 struct Load {
     Value args;
     std::shared_ptr<SceneWaiter> done;
+    LaunchReason reason = LaunchReason::User;
 };
 
 // The worker loaded the package and the store (or failed: `error`).
@@ -87,9 +89,18 @@ struct Open {
     std::shared_ptr<core::SceneStore> store;
     Error error;
     std::shared_ptr<SceneWaiter> done;
+    LaunchReason reason = LaunchReason::User;
 };
 
+// "Back": from close() by id (instance 0), from the view's back gesture or
+// the error panel for one instance. A scene that declares "background"
+// goes there, any other closes.
 struct Close {
+    std::shared_ptr<SceneWaiter> done;
+};
+
+// exit(), close_async(): closes the scene for good, whatever its state.
+struct Exit {
     std::shared_ptr<SceneWaiter> done;
 };
 
@@ -124,8 +135,8 @@ struct HttpDone {
 // A completion the store bindings will send.
 struct StoreDone {};
 
-// A device event for the foreground scene's wisp.device handlers (sent
-// with instance 0 from the event bus). It only says what to look at: the
+// A device event for the scenes' wisp.device handlers (sent with
+// instance 0 from the event bus). It only says what to look at: the
 // task reads the state itself (SceneRuntime::lang_), so a dropped one is
 // made up for at the next minute.
 struct Device {
@@ -137,19 +148,19 @@ struct CheckSources {
     std::shared_ptr<SourceCheckJob> job;
 };
 
-// A network time sync set the wall clock: the foreground scene gets one
-// "minute" with the new time and its minute ticker is re-based, so the
-// jump it would also see does not fire a second one.
+// A network time sync set the wall clock: each scene whose minute ticks
+// gets one "minute" with the new time and its minute ticker is re-based,
+// so the jump it would also see does not fire a second one.
 struct ClockSet {};
 
 // SceneStoreDeps::schedule() added a delayed call: wakes the task so it
 // takes the new deadline into account.
 struct Wake {};
 
-// stop(): close the foreground scene and end the task.
+// stop(): close every scene and end the task.
 struct Quit {};
 
-using Body = std::variant<Load, Open, Close, Reload, Show, Hide, Event, ListRange, HttpDone,
+using Body = std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone,
                           StoreDone, Device, ClockSet, CheckSources, Wake, Quit>;
 
 }  // namespace msg
@@ -173,9 +184,13 @@ void fail_message(SceneMessage& m, const Result<void>& r);
 // the worker's callbacks, later the HTTP proxy's) goes through this.
 bool post_scene_message(SceneRuntime& rt, os::LargeUnique<SceneMessage> msg);
 
-// For tests: ops in the patch queue, and the foreground's instance (0 if
-// none).
+// For tests: ops in the patch queue, the foreground's instance (0 if
+// none), and the instance of scene `id` in the foreground or the
+// background (0 if none).
 size_t pending_patches(const SceneRuntime& rt);
 uint32_t foreground_instance(const SceneRuntime& rt);
+uint32_t scene_instance(const SceneRuntime& rt, const std::string& id);
+// For tests: UI jobs handed over and not run yet.
+size_t pending_ui_jobs(SceneRuntime& rt);
 
 }  // namespace wisp::scene

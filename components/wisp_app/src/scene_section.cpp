@@ -116,8 +116,11 @@ void SceneSection::render(Row& row) {
     row.rendered = true;
     switch (row.state) {
         case core::SceneState::Running:
+        case core::SceneState::Background:
         case core::SceneState::Error: {
-            const bool running = row.state == core::SceneState::Running;
+            // A scene in the background is running too; tapping it brings
+            // it back.
+            const bool running = row.state != core::SceneState::Error;
             set_text_if_changed(row.status, text_->tr(running ? ui::StrId::SceneStateRunning
                                                               : ui::StrId::SceneStateError));
             set_text_color_if_changed(row.status, kChipText);

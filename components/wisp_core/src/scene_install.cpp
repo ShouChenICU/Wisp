@@ -11,8 +11,10 @@ Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
     // A running scene's store keeps flushing into its data/ directory, which
     // the replace moves; a flush landing mid-move is lost, or leaves a stray
     // data/ that blocks the replace for good. So the scene closes first --
-    // its close returns once the final flush is on disk -- and opens again
-    // afterwards, which to the user is the reload spec 6.3 asks for.
+    // for good (exit(): a "back" would only send a scene that declares
+    // "background" there, still writing) and returning once the final flush
+    // is on disk -- and opens again afterwards, which to the user is the
+    // reload spec 6.3 asks for.
     //
     // The close is asked for whatever the state: a scene in the error state
     // may still have its last flush queued, and an open that began before
@@ -27,7 +29,7 @@ Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
         zip, [&host](std::span<const SourceFile> files) { return host.check_sources(files); },
         [&](const SceneManifest& m) -> Result<void> {
             const bool was_running = host.status(m.id).state == SceneState::Running;
-            Result<void> closed = host.close(m.id);
+            Result<void> closed = host.exit(m.id);
             if (!closed) {
                 // Nothing has been replaced. A close that timed out is still
                 // queued and happens later; the scene then stays closed on

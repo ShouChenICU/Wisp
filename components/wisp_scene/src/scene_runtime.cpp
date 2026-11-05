@@ -28,6 +28,8 @@ constexpr uint32_t kWaitMs = 10000;
 constexpr uint32_t kPushMs = 1000;
 // A message that takes longer than this is logged.
 constexpr uint64_t kSlowMs = 50;
+// Scenes that may run in the background at once (spec 3.1).
+constexpr size_t kMaxBackground = 3;
 
 // "scene.<id>": the tag of the scene's own log.
 std::string scene_tag(std::string_view id) {
@@ -55,17 +57,37 @@ struct SceneRuntime::Link {
     SceneRuntime* rt = nullptr;
 };
 
-struct SceneRuntime::Foreground {
+const char* to_string(LaunchReason r) {
+    switch (r) {
+        case LaunchReason::User:
+            return "user";
+        case LaunchReason::Boot:
+            return "boot";
+        case LaunchReason::Notification:
+            return "notification";
+    }
+    return "user";
+}
+
+struct SceneRuntime::Slot {
     std::string id;
     std::string name;
     uint32_t instance = 0;
     Value args;
     std::shared_ptr<const core::ScenePackage> package;
     std::shared_ptr<core::SceneStore> store;
-    // Null once the scene faulted: its error panel is up.
+    // Null once the scene faulted (in front: its error panel is up).
     std::unique_ptr<SceneInstance> scene;
+    // scene.json's "background": going back sends it there.
+    bool declares_background = false;
+    // In the background: no view, its batches are dropped.
+    bool background = false;
     // scene.on_show() ran and on_hide() has not.
     bool shown = false;
+    // os::now_ms() when it last left the front (0: never in front), and
+    // when it last went to the background.
+    uint64_t last_front_ms = 0;
+    uint64_t background_since_ms = 0;
     MinuteTicker ticker;
     // What the scene last saw, for "battery" and "lang".
     bool has_battery = false;
@@ -196,7 +218,7 @@ void SceneRuntime::stop() {
     // this returns, and the old frame hook is no longer running.
     deps_.ui.run_blocking([this] {
         run_ui_jobs();
-        ui_drop_view();
+        ui_drop_view(0);
     });
 }
 
@@ -236,6 +258,17 @@ uint32_t foreground_instance(const SceneRuntime& rt) {
     return rt.foreground_instance_;
 }
 
+size_t pending_ui_jobs(SceneRuntime& rt) {
+    std::lock_guard<os::Mutex> lock(rt.ui_jobs_mu_);
+    return rt.ui_jobs_.size();
+}
+
+uint32_t scene_instance(const SceneRuntime& rt, const std::string& id) {
+    std::lock_guard<os::Mutex> lock(rt.status_mu_);
+    auto it = rt.slot_instances_.find(id);
+    return it != rt.slot_instances_.end() ? it->second : 0;
+}
+
 bool SceneRuntime::must_not_wait() const {
     return deps_.ui.on_ui_thread() || (task_ && task_->is_current()) || deps_.worker.on_worker();
 }
@@ -254,17 +287,26 @@ Result<void> SceneRuntime::request(os::LargeUnique<SceneMessage> m,
 }
 
 Result<void> SceneRuntime::open(const std::string& id, Value args) {
+    return launch(id, LaunchReason::User, std::move(args));
+}
+
+Result<void> SceneRuntime::launch(const std::string& id, LaunchReason reason, Value args) {
     if (deps_.repo.installing(id))
         return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being installed");
     if (deps_.repo.removing(id))
         return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being deleted");
     auto waiter = std::make_shared<SceneWaiter>();
-    return request(make_message(id, 0, msg::Load{std::move(args), waiter}), waiter);
+    return request(make_message(id, 0, msg::Load{std::move(args), waiter, reason}), waiter);
 }
 
 Result<void> SceneRuntime::close(const std::string& id) {
     auto waiter = std::make_shared<SceneWaiter>();
     return request(make_message(id, 0, msg::Close{waiter}), waiter);
+}
+
+Result<void> SceneRuntime::exit(const std::string& id) {
+    auto waiter = std::make_shared<SceneWaiter>();
+    return request(make_message(id, 0, msg::Exit{waiter}), waiter);
 }
 
 Result<void> SceneRuntime::reload(const std::string& id) {
@@ -277,7 +319,7 @@ void SceneRuntime::close_async(const std::string& id, std::function<void(Result<
     waiter->then = std::move(done);
     // A message that cannot be queued is failed through the waiter: `done`
     // still runs, with Busy.
-    push(make_message(id, 0, msg::Close{waiter}), 0);
+    push(make_message(id, 0, msg::Exit{waiter}), 0);
 }
 
 void SceneRuntime::on_installed(const std::string& id) {
@@ -300,6 +342,11 @@ core::SceneStatus SceneRuntime::status(const std::string& id) const {
 std::optional<std::string> SceneRuntime::foreground() const {
     std::lock_guard<os::Mutex> lock(status_mu_);
     return foreground_id_;
+}
+
+std::vector<BackgroundScene> SceneRuntime::background_scenes() const {
+    std::lock_guard<os::Mutex> lock(status_mu_);
+    return background_;
 }
 
 Result<void> SceneRuntime::check_sources(std::span<const core::SourceFile> files) {
@@ -402,7 +449,7 @@ void SceneRuntime::run() {
             const uint64_t ms = os::now_ms() - t0;
             if (ms > kSlowMs) {
                 std::string_view id = m->scene_id;
-                if (id.empty() && fg_) id = fg_->id;
+                if (id.empty() && front_ != nullptr) id = front_->id;
                 std::string tag = id.empty() ? std::string(kTag) : scene_tag(id);
                 WLOG_W(tag.c_str(), "slow message %s %" PRIu64 " ms", message_kind(m->body), ms);
             }
@@ -425,59 +472,112 @@ void SceneRuntime::run_delayed() {
     for (auto& d : due) d.fn();
 }
 
-SceneRuntime::Foreground* SceneRuntime::target(const SceneMessage& m) {
-    if (!fg_ || fg_->instance != m.instance) {
-        ++stale_dropped_;
-        return nullptr;
-    }
-    return fg_.get();
+SceneRuntime::Slot* SceneRuntime::find(uint32_t instance) {
+    if (instance == 0) return nullptr;
+    for (auto& s : slots_)
+        if (s->instance == instance) return s.get();
+    return nullptr;
+}
+
+SceneRuntime::Slot* SceneRuntime::find_id(std::string_view id) {
+    for (auto& s : slots_)
+        if (s->id == id) return s.get();
+    return nullptr;
+}
+
+std::vector<uint32_t> SceneRuntime::instances() const {
+    std::vector<uint32_t> out;
+    out.reserve(slots_.size());
+    for (const auto& s : slots_) out.push_back(s->instance);
+    return out;
+}
+
+size_t SceneRuntime::background_count(const Slot* except) const {
+    size_t n = 0;
+    for (const auto& s : slots_)
+        if (s->background && s.get() != except) ++n;
+    return n;
+}
+
+SceneRuntime::Slot* SceneRuntime::target(const SceneMessage& m) {
+    Slot* s = find(m.instance);
+    if (s == nullptr) ++stale_dropped_;
+    return s;
 }
 
 void SceneRuntime::handle(SceneMessage& m) {
     msg::Body& body = m.body;
     if (auto* b = std::get_if<msg::Load>(&body)) {
-        begin_open(m.scene_id, std::move(b->args), b->done);
+        begin_open(m.scene_id, std::move(b->args), b->reason, b->done);
     } else if (std::holds_alternative<msg::Open>(body)) {
         finish_open(m);
     } else if (auto* b = std::get_if<msg::Close>(&body)) {
         // From the API (instance 0) by id; from the view, the panel or
         // the gesture for one instance.
-        if (m.instance == 0 ? (fg_ && fg_->id == m.scene_id) : target(m) != nullptr) {
-            close_foreground(b->done);
+        Slot* s = m.instance == 0 ? find_id(m.scene_id) : target(m);
+        if (s != nullptr && s == front_) {
+            go_back(*s, b->done);
         } else {
             // A load of it still on the worker is cancelled: whoever closed
             // it may go on to delete or replace its files.
+            if (m.instance == 0 && s == nullptr && loading_ != 0 && loading_id_ == m.scene_id)
+                loading_ = 0;
+            finish_after_queued_io(b->done);
+        }
+    } else if (auto* b = std::get_if<msg::Exit>(&body)) {
+        Slot* s = m.instance == 0 ? find_id(m.scene_id) : target(m);
+        if (s != nullptr) {
+            close_slot(*s, b->done);
+        } else {
             if (m.instance == 0 && loading_ != 0 && loading_id_ == m.scene_id) loading_ = 0;
             finish_after_queued_io(b->done);
         }
     } else if (auto* b = std::get_if<msg::Reload>(&body)) {
-        const bool in_front = fg_ && fg_->id == m.scene_id;
-        if (b->if_foreground && !in_front) {
-            set_status(m.scene_id, core::SceneState::Stopped, "");
-            publish(m.scene_id, "stopped");
+        Slot* s = find_id(m.scene_id);
+        if (b->if_foreground && (s == nullptr || s != front_)) {
+            // A new package: a scene in the background stops (it ran the
+            // old one), any other is only marked stopped.
+            if (s != nullptr) {
+                close_slot(*s);
+            } else {
+                set_status(m.scene_id, core::SceneState::Stopped, "");
+                publish(m.scene_id, "stopped");
+            }
         } else {
-            begin_open(m.scene_id, in_front ? fg_->args : Value(), b->done);
+            Value args = s != nullptr ? s->args : Value();
+            // One in front closes in begin_open(), ahead of the load.
+            if (s != nullptr && s != front_) close_slot(*s);
+            begin_open(m.scene_id, std::move(args), LaunchReason::User, b->done);
         }
     } else if (std::holds_alternative<msg::Show>(body)) {
+        const bool came_on = !visible_;
         visible_ = true;
-        show_scene();
+        show_scene(came_on);
     } else if (std::holds_alternative<msg::Hide>(body)) {
         visible_ = false;
-        hide_scene();
+        hide_scenes();
     } else if (auto* b = std::get_if<msg::Event>(&body)) {
-        Foreground* f = target(m);
-        if (f != nullptr && f->scene && step(f->scene->event(b->node, b->ev, b->value))) submit();
+        Slot* s = target(m);
+        if (s != nullptr && s != front_) {
+            // From the view of a scene that has gone to the background.
+            ++stale_dropped_;
+        } else if (s != nullptr && s->scene) {
+            run_step(*s, s->scene->event(b->node, b->ev, b->value));
+        }
     } else if (auto* b = std::get_if<msg::ListRange>(&body)) {
-        Foreground* f = target(m);
-        if (f != nullptr && f->scene && step(f->scene->list_range(b->list, b->first, b->count)))
-            submit();
+        Slot* s = target(m);
+        if (s != nullptr && s != front_) {
+            ++stale_dropped_;
+        } else if (s != nullptr && s->scene) {
+            run_step(*s, s->scene->list_range(b->list, b->first, b->count));
+        }
     } else if (auto* b = std::get_if<msg::Device>(&body)) {
         device_event(b->kind);
     } else if (std::holds_alternative<msg::ClockSet>(body)) {
         clock_set();
     } else if (auto* b = std::get_if<msg::HttpDone>(&body)) {
-        Foreground* f = target(m);
-        if (f != nullptr && f->scene && step(f->scene->http(b->id, b->result))) submit();
+        Slot* s = target(m);
+        if (s != nullptr && s->scene) run_step(*s, s->scene->http(b->id, b->result));
     } else if (std::holds_alternative<msg::StoreDone>(body)) {
         // Its binding comes later; a current one has nothing to do yet.
         target(m);
@@ -494,19 +594,36 @@ void SceneRuntime::handle(SceneMessage& m) {
         }
         job.finish_locked(std::move(r));
     } else if (std::holds_alternative<msg::Quit>(body)) {
-        close_foreground();
+        for (uint32_t instance : instances())
+            if (Slot* s = find(instance)) close_slot(*s);
         quit_ = true;
     }
     // msg::Wake: run() looks at the deadlines next.
 }
 
-void SceneRuntime::begin_open(const std::string& id, Value args,
+void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason reason,
                               std::shared_ptr<SceneWaiter> waiter) {
+    Slot* running = find_id(id);
+    if (running != nullptr && running->background) {
+        // Already running: nothing to load, and a load still on its way
+        // was superseded by this open.
+        loading_ = 0;
+        if (reason == LaunchReason::Boot) {
+            if (waiter) waiter->finish(Result<void>::ok());
+            return;
+        }
+        resume(*running, std::move(waiter));
+        return;
+    }
+    if (running != nullptr && reason == LaunchReason::Boot) {
+        if (waiter) waiter->finish(Result<void>::ok());
+        return;
+    }
     // The same scene closes first: its final store flush then goes to the
     // worker ahead of this load, so the reopened store reads what it
     // wrote. Another one stays until this one has loaded, so a scene that
     // cannot be opened leaves it running.
-    if (fg_ && fg_->id == id) close_foreground();
+    if (running != nullptr) close_slot(*running);
     const uint32_t instance = next_instance_++;
     if (next_instance_ == 0) next_instance_ = 1;
     loading_ = instance;
@@ -522,11 +639,12 @@ void SceneRuntime::begin_open(const std::string& id, Value args,
             if (link->rt != nullptr) link->rt->schedule(ms, std::move(cb));
         }};
     core::SceneRepository& repo = deps_.repo;
-    bool queued = worker.submit([link, &repo, store_deps, id, instance, args = std::move(args),
-                                 waiter]() mutable {
+    bool queued = worker.submit([link, &repo, store_deps, id, instance, reason,
+                                 args = std::move(args), waiter]() mutable {
         msg::Open open;
         open.args = std::move(args);
         open.done = waiter;
+        open.reason = reason;
         auto pkg = repo.load(id);
         if (!pkg) {
             open.error = pkg.error();
@@ -569,7 +687,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         return;
     }
     loading_ = 0;
-    const std::string& id = m.scene_id;
+    const std::string id = m.scene_id;
     if (open.error.code == ErrorCode::Ok &&
         (deps_.repo.installing(id) || deps_.repo.removing(id))) {
         // Loaded before an install or a delete of it began: the package
@@ -594,66 +712,115 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         done(Result<void>::err(open.error.code, open.error.message));
         return;
     }
-
-    close_foreground();
-    fg_ = std::make_unique<Foreground>();
-    Foreground& f = *fg_;
-    f.id = id;
-    f.name = open.package->manifest.name;
-    f.instance = m.instance;
-    f.args = std::move(open.args);
-    f.package = open.package;
-    f.store = std::move(open.store);
-    f.scene = std::make_unique<SceneInstance>(id, f.package, config_.vm);
-    SceneApi& api = f.scene->api();
-    api.device = [this] { return device_info(); };
-    api.screen = deps_.shape;
-    api.args = &f.args;
-    api.store = f.store.get();
-    if (deps_.http != nullptr) wire_http(f);
-    // Opened with the screen off: timers wait for it to come on.
-    if (!visible_) api.timers.pause(os::now_ms());
-    {
-        const DeviceInfo now = device_info();
-        f.has_battery = now.has_battery;
-        f.battery = now.battery;
-        f.charging = now.charging;
-        f.lang = now.lang;
+    const bool boot = open.reason == LaunchReason::Boot;
+    if (boot && background_count(nullptr) >= kMaxBackground) {
+        WLOG_W(kTag, "%s: not started: %u scenes already run in the background", id.c_str(),
+               static_cast<unsigned>(kMaxBackground));
+        open.store->close();
+        done(Result<void>::err(ErrorCode::Busy, "too many scenes in the background"));
+        return;
     }
-    {
-        std::lock_guard<os::Mutex> lock(status_mu_);
-        foreground_id_ = id;
-        foreground_instance_ = f.instance;
-    }
-    // The view exists before any batch of this instance is queued: the
-    // frame hook applies only to the view of the instance it is told.
-    post_ui([this, instance = f.instance, id, package = f.package] {
-        ui_show_view(instance, id, package);
-    });
-    ui_instance_.store(f.instance);
+    // Never two slots of one scene (begin_open() closed it or brought it
+    // forward instead of loading it).
+    if (Slot* old = find_id(id)) close_slot(*old);
+    if (!boot && front_ != nullptr) go_back(*front_, nullptr);
 
+    Slot* added = add_slot(m);
+    if (added == nullptr) {
+        WLOG_E(kTag, "%s: no memory for the scene", id.c_str());
+        open.store->close();
+        done(Result<void>::err(ErrorCode::NoMemory, "no memory for the scene"));
+        return;
+    }
+    Slot& s = *added;
     auto failed = [&] {
         std::string error = status(id).error;
         done(Result<void>::err(ErrorCode::InvalidArgument, error));
     };
-    if (!step(fg_->scene->start()) || !submit()) return failed();
+
+    if (boot) {
+        // Spec 3.6: the tree is built, but no view and no on_show.
+        const uint64_t now = os::now_ms();
+        s.background = true;
+        s.background_since_ms = now;
+        s.scene->api().background = true;
+        update_background_list();
+        if (!run_step(s, s.scene->start())) return failed();
+        if (!run_step(s, s.scene->hook("on_state", "background"))) return failed();
+        set_status(id, core::SceneState::Background, "");
+        publish(id, "background");
+        done(Result<void>::ok());
+        return;
+    }
+
+    front_ = &s;
+    {
+        std::lock_guard<os::Mutex> lock(status_mu_);
+        foreground_id_ = id;
+        foreground_instance_ = s.instance;
+    }
+    update_background_list();
+    // The view exists before any batch of this instance is queued: the
+    // frame hook applies only to the view of the instance it is told.
+    post_ui({UiJob::Kind::Show, s.instance, [this, instance = s.instance, id, package = s.package] {
+                 ui_show_view(instance, id, package);
+             }});
+    ui_instance_.store(s.instance);
+
+    if (!run_step(s, s.scene->start())) return failed();
     set_status(id, core::SceneState::Running, "");
     publish(id, "running");
     if (visible_) {
-        fg_->shown = true;
-        if (!step(fg_->scene->hook("on_show")) || !submit()) return failed();
+        s.shown = true;
+        if (!run_step(s, s.scene->hook("on_show"))) return failed();
     }
+    if (!run_step(s, s.scene->hook("on_state", "foreground"))) return failed();
     done(Result<void>::ok());
 }
 
-void SceneRuntime::wire_http(Foreground& f) {
+SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m) {
+    auto& open = std::get<msg::Open>(m.body);
+    auto slot = os::make_large<Slot>();
+    if (!slot) return nullptr;
+    Slot& s = *slot;
+    s.id = m.scene_id;
+    s.name = open.package->manifest.name;
+    s.instance = m.instance;
+    s.args = std::move(open.args);
+    s.package = open.package;
+    s.store = std::move(open.store);
+    s.declares_background = s.package->manifest.background;
+    s.scene = std::make_unique<SceneInstance>(s.id, s.package, config_.vm);
+    SceneApi& api = s.scene->api();
+    api.device = [this] { return device_info(); };
+    api.screen = deps_.shape;
+    api.args = &s.args;
+    api.store = s.store.get();
+    api.launch = to_string(open.reason);
+    api.locks = deps_.locks;
+    api.holder = scene_tag(s.id);
+    if (deps_.http != nullptr) wire_http(s);
+    // Opened in front with the screen off: the timers of a scene that does
+    // not declare "background" wait for it to come on.
+    if (!visible_ && open.reason != LaunchReason::Boot && !s.declares_background)
+        api.timers.pause(os::now_ms());
+    const DeviceInfo now = device_info();
+    s.has_battery = now.has_battery;
+    s.battery = now.battery;
+    s.charging = now.charging;
+    s.lang = now.lang;
+    slots_.push_back(std::move(slot));
+    return &s;
+}
+
+void SceneRuntime::wire_http(Slot& s) {
     net::SceneHttp& http = *deps_.http;
-    http.set_hosts(f.id, f.package->manifest.http_hosts);
+    http.set_hosts(s.id, s.package->manifest.http_hosts);
     // Results come back from the proxy's task (or, for a request refused
     // at once, from inside submit() on this task) as messages for this
     // instance; one for an instance that is gone is dropped like any
     // stale message.
-    auto deliver = [link = link_, id = f.id, instance = f.instance](uint32_t cb,
+    auto deliver = [link = link_, id = s.id, instance = s.instance](uint32_t cb,
                                                                     net::SceneHttpResult r) {
         auto m = make_message(id, instance, msg::HttpDone{cb, std::move(r)});
         std::lock_guard<os::Mutex> lock(link->mu);
@@ -661,8 +828,8 @@ void SceneRuntime::wire_http(Foreground& f) {
         if (!post_scene_message(*link->rt, std::move(m)))
             WLOG_W(scene_tag(id).c_str(), "http: a result was dropped: scene queue full");
     };
-    SceneApi& api = f.scene->api();
-    api.http_submit = [&http, deliver, id = f.id, instance = f.instance](
+    SceneApi& api = s.scene->api();
+    api.http_submit = [&http, deliver, id = s.id, instance = s.instance](
                           uint32_t cb, net::SceneHttpRequest req) {
         req.scene_id = id;
         req.instance = instance;
@@ -676,110 +843,255 @@ void SceneRuntime::wire_http(Foreground& f) {
     };
 }
 
-bool SceneRuntime::step(const std::optional<ScriptError>& err) {
+bool SceneRuntime::step(Slot& s, const std::optional<ScriptError>& err) {
     if (!err) return true;
-    fault(*err);
+    fault(s, *err);
     return false;
 }
 
-bool SceneRuntime::submit() {
-    Foreground& f = *fg_;
-    UiBatch b = f.scene->batch().take(f.instance);
+bool SceneRuntime::submit(Slot& s) {
+    if (&s != front_) {
+        // No view: the tree is up to date, and a rebuild sends it whole.
+        s.scene->batch().clear();
+        return true;
+    }
+    UiBatch b = s.scene->batch().take(s.instance);
     if (!b.ops.empty()) patches_.submit(std::move(b));
-    if (patches_.take_refresh_request(f.instance)) {
-        if (!step(f.scene->refresh())) return false;
-        UiBatch r = f.scene->batch().take(f.instance);
+    if (patches_.take_refresh_request(s.instance)) {
+        if (!step(s, s.scene->refresh())) return false;
+        UiBatch r = s.scene->batch().take(s.instance);
         r.refresh = true;
         patches_.submit(std::move(r));
     }
     return true;
 }
 
-void SceneRuntime::fault(const ScriptError& err) {
-    Foreground& f = *fg_;
-    const std::string text = err.text();
-    if (f.scene) f.scene->batch().clear();
-    f.scene.reset();  // the VM goes with it
-    if (deps_.http != nullptr) deps_.http->cancel_scene(f.id);
-    f.shown = false;
-    ui_instance_.store(0);
-    patches_.clear();
-    if (f.store) {
-        f.store->flush();
-        f.store->close();
-        f.store.reset();
-    }
-    set_status(f.id, core::SceneState::Error, text);
-    WLOG_E(scene_tag(f.id).c_str(), "%s", text.c_str());
-    publish(f.id, "error");
-    ui::ErrorPanelInfo info{f.name, err.file, err.line, err.message};
-    post_ui([this, info = std::move(info), id = f.id, instance = f.instance]() mutable {
-        deps_.system.show_error(
-            std::move(info),
-            [this, id] {
-                if (!push(make_message(id, 0, msg::Reload{false, nullptr}), 0))
-                    WLOG_W(kTag, "%s: reload not passed on: scene queue full", id.c_str());
-            },
-            [this, id, instance] {
-                if (!push(make_message(id, instance, msg::Close{}), 0))
-                    WLOG_W(kTag, "%s: back not passed on: scene queue full", id.c_str());
-            });
-    });
+bool SceneRuntime::run_step(Slot& s, const std::optional<ScriptError>& err) {
+    return step(s, err) && submit(s);
 }
 
-void SceneRuntime::close_foreground(std::shared_ptr<SceneWaiter> done) {
-    if (!fg_) return;
-    Foreground& f = *fg_;
-    const bool was_running = f.scene != nullptr;
-    if (f.scene) {
+void SceneRuntime::release_locks(Slot& s) {
+    if (deps_.locks != nullptr) deps_.locks->release_holder(scene_tag(s.id));
+    if (s.scene) s.scene->api().screen_lock = 0;
+}
+
+void SceneRuntime::notice(SceneNoticeKind kind, const Slot& s) {
+    if (deps_.on_notice) deps_.on_notice(SceneNotice{kind, s.id, s.name});
+}
+
+void SceneRuntime::update_background_list() {
+    std::vector<const Slot*> in_back;
+    std::map<std::string, uint32_t, std::less<>> ids;
+    for (const auto& s : slots_) {
+        ids[s->id] = s->instance;
+        if (s->background) in_back.push_back(s.get());
+    }
+    std::stable_sort(in_back.begin(), in_back.end(), [](const Slot* a, const Slot* b) {
+        if (a->last_front_ms != b->last_front_ms) return a->last_front_ms < b->last_front_ms;
+        return a->background_since_ms < b->background_since_ms;
+    });
+    std::vector<BackgroundScene> list;
+    list.reserve(in_back.size());
+    for (const Slot* s : in_back) list.push_back({s->id, s->name, s->background_since_ms});
+    std::lock_guard<os::Mutex> lock(status_mu_);
+    background_ = std::move(list);
+    slot_instances_ = std::move(ids);
+}
+
+void SceneRuntime::erase_slot(Slot& s) {
+    if (front_ == &s) front_ = nullptr;
+    std::erase_if(slots_, [&](const os::LargeUnique<Slot>& p) { return p.get() == &s; });
+    update_background_list();
+}
+
+void SceneRuntime::fault(Slot& s, const ScriptError& err) {
+    const std::string text = err.text();
+    if (s.scene) s.scene->batch().clear();
+    release_locks(s);
+    s.scene.reset();  // the VM goes with it, and its timers
+    if (deps_.http != nullptr) deps_.http->cancel_scene(s.id);
+    s.shown = false;
+    patches_.clear(s.instance);
+    if (s.store) {
+        s.store->flush();
+        s.store->close();
+        s.store.reset();
+    }
+    set_status(s.id, core::SceneState::Error, text);
+    WLOG_E(scene_tag(s.id).c_str(), "%s", text.c_str());
+    publish(s.id, "error");
+    if (&s != front_) {
+        // Spec 3.2: no panel for a scene nobody is looking at, a system
+        // notice instead; the slot goes.
+        notice(SceneNoticeKind::Faulted, s);
+        erase_slot(s);
+        return;
+    }
+    ui_instance_.store(0);
+    ui::ErrorPanelInfo info{s.name, err.file, err.line, err.message};
+    const uint32_t instance = s.instance;
+    post_ui({UiJob::Kind::Other, instance,
+             [this, info = std::move(info), id = s.id, instance]() mutable {
+                 deps_.system.show_error(
+                     std::move(info),
+                     [this, id] {
+                         if (!push(make_message(id, 0, msg::Reload{false, nullptr}), 0))
+                             WLOG_W(kTag, "%s: reload not passed on: scene queue full", id.c_str());
+                     },
+                     [this, id, instance] {
+                         if (!push(make_message(id, instance, msg::Close{}), 0))
+                             WLOG_W(kTag, "%s: back not passed on: scene queue full", id.c_str());
+                     });
+             }});
+}
+
+void SceneRuntime::go_back(Slot& s, std::shared_ptr<SceneWaiter> done, const Slot* except) {
+    if (s.scene && s.declares_background)
+        to_background(s, std::move(done), except);
+    else
+        close_slot(s, std::move(done));
+}
+
+void SceneRuntime::forget_front() {
+    front_ = nullptr;
+    std::lock_guard<os::Mutex> lock(status_mu_);
+    foreground_id_.reset();
+    foreground_instance_ = 0;
+}
+
+void SceneRuntime::drop_view(const Slot& s, bool closing) {
+    ui_instance_.store(0);
+    patches_.clear(s.instance);
+    // Logged once the screen it covered is back.
+    post_ui({UiJob::Kind::Drop, s.instance, [this, instance = s.instance, id = s.id, closing] {
+                 ui_drop_view(instance);
+                 if (closing) WLOG_I(kTag, "%s: closed", id.c_str());
+             }});
+}
+
+void SceneRuntime::to_background(Slot& s, std::shared_ptr<SceneWaiter> done, const Slot* except) {
+    auto finish = [&] {
+        if (done) done->finish(Result<void>::ok());
+    };
+    if (background_count(except) >= kMaxBackground) {
+        WLOG_W(scene_tag(s.id).c_str(), "%u scenes already run in the background: closing it",
+               static_cast<unsigned>(kMaxBackground));
+        close_slot(s, std::move(done));
+        return;
+    }
+    const uint64_t now = os::now_ms();
+    // The view goes first: the user asked to leave, whatever the hooks do.
+    if (&s == front_) {
+        forget_front();
+        drop_view(s, false);
+    }
+    s.background = true;
+    s.last_front_ms = now;
+    s.background_since_ms = now;
+    SceneApi& api = s.scene->api();
+    api.background = true;
+    api.close_requested = false;
+    update_background_list();
+    if (s.shown) {
+        s.shown = false;
+        if (!run_step(s, s.scene->hook("on_hide"))) return finish();
+    }
+    release_locks(s);
+    if (!run_step(s, s.scene->hook("on_state", "background"))) return finish();
+    set_status(s.id, core::SceneState::Background, "");
+    publish(s.id, "background");
+    if (s.store) s.store->flush();
+    finish();
+}
+
+void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
+    auto done = [&](Result<void> r) {
+        if (waiter) waiter->finish(std::move(r));
+    };
+    const std::string id = s.id;
+    auto failed = [&] { done(Result<void>::err(ErrorCode::InvalidArgument, status(id).error)); };
+    // The scene in front goes back; this one does not count towards the
+    // background's limit, as it is leaving it.
+    if (front_ != nullptr && front_ != &s) go_back(*front_, nullptr, &s);
+    s.background = false;
+    s.last_front_ms = os::now_ms();
+    SceneApi& api = s.scene->api();
+    api.background = false;
+    if (!visible_ && !s.declares_background) api.timers.pause(os::now_ms());
+    front_ = &s;
+    {
+        std::lock_guard<os::Mutex> lock(status_mu_);
+        foreground_id_ = id;
+        foreground_instance_ = s.instance;
+    }
+    update_background_list();
+    post_ui({UiJob::Kind::Show, s.instance, [this, instance = s.instance, id, package = s.package] {
+                 ui_show_view(instance, id, package);
+             }});
+    ui_instance_.store(s.instance);
+
+    const uint64_t t0 = os::now_ms();
+    if (!run_step(s, s.scene->rebuild())) return failed();
+    // For the device measurement of spec 9.3.
+    WLOG_I(scene_tag(id).c_str(), "rebuilt in %" PRIu64 " ms", os::now_ms() - t0);
+    if (visible_) {
+        s.shown = true;
+        if (!run_step(s, s.scene->hook("on_show"))) return failed();
+    }
+    if (!run_step(s, s.scene->hook("on_state", "foreground"))) return failed();
+    set_status(id, core::SceneState::Running, "");
+    publish(id, "running");
+    done(Result<void>::ok());
+}
+
+void SceneRuntime::close_slot(Slot& s, std::shared_ptr<SceneWaiter> done) {
+    const bool was_running = s.scene != nullptr;
+    if (s.scene) {
         // Spec 3.4: each hook has its own time limit, and closing goes on
         // whatever they do.
-        const std::string tag = scene_tag(f.id);
+        const std::string tag = scene_tag(s.id);
         auto run_hook = [&](const char* hook) {
-            if (auto err = f.scene->hook(hook))
+            if (auto err = s.scene->hook(hook))
                 WLOG_W(tag.c_str(), "%s: %s", hook, err->text().c_str());
         };
-        if (f.shown) run_hook("on_hide");
+        if (s.shown) run_hook("on_hide");
         run_hook("on_close");
-        f.scene.reset();
     }
-    // After the hooks, so a request on_close makes is cancelled too.
-    if (deps_.http != nullptr) deps_.http->cancel_scene(f.id);
+    // After the hooks, so a lock or a request on_close takes goes too.
+    release_locks(s);
+    s.scene.reset();
+    if (deps_.http != nullptr) deps_.http->cancel_scene(s.id);
     // Before the caller can be answered (from the worker, below): whoever
     // close() answers sees the scene stopped, and anything it publishes
     // next ("deleted") comes after "stopped". A faulted scene publishes
     // nothing here; it stays in the error state.
-    {
-        std::lock_guard<os::Mutex> lock(status_mu_);
-        foreground_id_.reset();
-        foreground_instance_ = 0;
-    }
+    const bool in_front = &s == front_;
+    if (in_front) forget_front();
     if (was_running) {
-        set_status(f.id, core::SceneState::Stopped, "");
-        publish(f.id, "stopped");
+        set_status(s.id, core::SceneState::Stopped, "");
+        publish(s.id, "stopped");
     }
-    if (f.store) {
+    if (s.store) {
         // A caller of close() is answered once the final flush has run, so
         // it may move the scene's data/ (an install) without a write
         // landing in the middle. A failed flush is logged by the store.
-        f.store->flush([done](Result<void>) {
+        s.store->flush([done](Result<void>) {
             if (done) done->finish(Result<void>::ok());
         });
-        f.store->close();
-        f.store.reset();
+        s.store->close();
+        s.store.reset();
     } else {
         // Faulted: its store was flushed and closed then, and that flush
         // may still be queued.
         finish_after_queued_io(std::move(done));
     }
-    ui_instance_.store(0);
-    patches_.clear();
-    // Logged once the screen it covered is back.
-    post_ui([this, id = f.id] {
-        ui_drop_view();
-        WLOG_I(kTag, "%s: closed", id.c_str());
-    });
-    fg_.reset();
+    if (in_front) {
+        drop_view(s, true);
+    } else {
+        patches_.clear(s.instance);
+        WLOG_I(kTag, "%s: closed", s.id.c_str());
+    }
+    erase_slot(s);
 }
 
 void SceneRuntime::finish_after_queued_io(std::shared_ptr<SceneWaiter> done) {
@@ -790,34 +1102,50 @@ void SceneRuntime::finish_after_queued_io(std::shared_ptr<SceneWaiter> done) {
         done->finish(Result<void>::err(ErrorCode::Busy, "storage worker busy"));
 }
 
-void SceneRuntime::hide_scene() {
-    if (!fg_ || !fg_->scene) return;
-    fg_->scene->api().timers.pause(os::now_ms());
-    if (fg_->shown) {
-        fg_->shown = false;
-        if (step(fg_->scene->hook("on_hide"))) submit();
+void SceneRuntime::hide_scenes() {
+    for (uint32_t instance : instances()) {
+        Slot* s = find(instance);
+        if (s == nullptr || !s->scene) continue;
+        if (s == front_) {
+            // Spec 3.3: a scene that declares "background" keeps its
+            // timers going with the screen off.
+            if (!s->declares_background) s->scene->api().timers.pause(os::now_ms());
+            if (s->shown) {
+                s->shown = false;
+                if (!run_step(*s, s->scene->hook("on_hide"))) continue;
+            }
+        }
+        // Spec 6.1: the store flushes before the screen goes off.
+        if (s->store) s->store->flush();
     }
-    // Spec 6.1: the store flushes before the screen goes off.
-    if (fg_ && fg_->store) fg_->store->flush();
 }
 
-void SceneRuntime::show_scene() {
-    if (!fg_ || !fg_->scene) return;
+void SceneRuntime::show_scene(bool screen_came_on) {
+    Slot* s = front_;
+    if (s == nullptr || !s->scene) return;
+    const uint32_t instance = s->instance;
+    auto still_front = [&] {
+        s = find(instance);
+        return s != nullptr && s == front_ && s->scene;
+    };
     // Spec 3.4: timers first (each missed one once), the minute, on_show.
-    TimerSet& timers = fg_->scene->api().timers;
+    // A scene whose timers ran on gets the minute too (spec 3.3).
+    bool catch_up = screen_came_on && s->declares_background;
+    TimerSet& timers = s->scene->api().timers;
     if (timers.paused()) {
+        catch_up = true;
         timers.resume(os::now_ms());
         run_timers();
-        if (!fg_ || !fg_->scene) return;
-        if (wants_minute()) {
-            fg_->ticker.force();
-            if (fg_->ticker.poll(wall_now(), os::now_ms())) minute();
-            if (!fg_ || !fg_->scene) return;
-        }
+        if (!still_front()) return;
     }
-    if (fg_->shown) return;
-    fg_->shown = true;
-    if (step(fg_->scene->hook("on_show"))) submit();
+    if (catch_up && wants_minute(*s)) {
+        s->ticker.force();
+        if (s->ticker.poll(wall_now(), os::now_ms())) minute(instance);
+        if (!still_front()) return;
+    }
+    if (s->shown) return;
+    s->shown = true;
+    run_step(*s, s->scene->hook("on_show"));
 }
 
 // --- Scene task: timers and device events -------------------------------------
@@ -860,26 +1188,36 @@ DeviceInfo SceneRuntime::device_info() const {
     return i;
 }
 
-bool SceneRuntime::wants_minute() const {
-    if (!fg_ || !fg_->scene) return false;
-    const SceneApi& api = fg_->scene->api();
+bool SceneRuntime::wants_minute(const Slot& s) const {
+    if (!s.scene) return false;
+    const SceneApi& api = s.scene->api();
     return api.wants(DeviceEvent::Minute) || api.wants(DeviceEvent::Battery) ||
            api.wants(DeviceEvent::Lang);
 }
 
+bool SceneRuntime::minute_ticks(const Slot& s) const {
+    return wants_minute(s) && (visible_ || s.declares_background || s.background);
+}
+
 uint32_t SceneRuntime::scene_wait_ms() {
-    if (!fg_ || !fg_->scene) return os::kForever;
     const uint64_t now = os::now_ms();
     uint64_t wait = os::kForever;
-    if (auto due = fg_->scene->api().timers.next_due()) wait = *due > now ? *due - now : 0;
-    if (visible_ && wants_minute())
-        wait = std::min(wait, fg_->ticker.next_poll_ms(wall_now(), now));
+    for (const auto& s : slots_) {
+        if (!s->scene) continue;
+        if (auto due = s->scene->api().timers.next_due())
+            wait = std::min<uint64_t>(wait, *due > now ? *due - now : 0);
+        if (minute_ticks(*s)) wait = std::min(wait, s->ticker.next_poll_ms(wall_now(), now));
+    }
     return static_cast<uint32_t>(std::min<uint64_t>(wait, os::kForever));
 }
 
 void SceneRuntime::run_scene_clock() {
     run_timers();
-    if (visible_ && wants_minute() && fg_->ticker.poll(wall_now(), os::now_ms())) minute();
+    for (uint32_t instance : instances()) {
+        Slot* s = find(instance);
+        if (s != nullptr && minute_ticks(*s) && s->ticker.poll(wall_now(), os::now_ms()))
+            minute(instance);
+    }
     close_if_asked();
 }
 
@@ -887,76 +1225,102 @@ void SceneRuntime::clock_set() {
     // Fires once and records the new minute, so the poll after the message
     // sees no jump; a poll that already saw it (the task woke between the
     // clock moving and this message) already fired, and this adds nothing.
-    // With the screen off nothing fires; the screen coming on sends one.
-    if (!visible_ || !wants_minute()) return;
-    if (fg_->ticker.sync(wall_now(), os::now_ms())) minute();
+    // A scene whose minute does not tick now gets one when the screen
+    // comes on.
+    for (uint32_t instance : instances()) {
+        Slot* s = find(instance);
+        if (s != nullptr && minute_ticks(*s) && s->ticker.sync(wall_now(), os::now_ms()))
+            minute(instance);
+    }
 }
 
 void SceneRuntime::run_timers() {
-    if (!fg_ || !fg_->scene) return;
-    const std::vector<uint32_t> due = fg_->scene->api().timers.due(os::now_ms());
-    for (uint32_t id : due) {
-        if (!fg_ || !fg_->scene) return;
-        const bool once = !fg_->scene->api().timers.contains(id);
-        const uint64_t t0 = os::now_ms();
-        if (step(fg_->scene->timer(id, once))) submit();
-        const uint64_t ms = os::now_ms() - t0;
-        if (fg_ && ms > kSlowMs)
-            WLOG_W(scene_tag(fg_->id).c_str(), "slow message timer %" PRIu64 " ms", ms);
-        close_if_asked();
+    for (uint32_t instance : instances()) {
+        Slot* s = find(instance);
+        if (s == nullptr || !s->scene) continue;
+        const std::string tag = scene_tag(s->id);
+        const std::vector<uint32_t> due = s->scene->api().timers.due(os::now_ms());
+        for (uint32_t id : due) {
+            s = find(instance);
+            if (s == nullptr || !s->scene) break;
+            const bool once = !s->scene->api().timers.contains(id);
+            const uint64_t t0 = os::now_ms();
+            run_step(*s, s->scene->timer(id, once));
+            const uint64_t ms = os::now_ms() - t0;
+            if (ms > kSlowMs) WLOG_W(tag.c_str(), "slow message timer %" PRIu64 " ms", ms);
+            close_if_asked();
+        }
     }
 }
 
-void SceneRuntime::minute() {
-    if (!fg_ || !fg_->scene) return;
+void SceneRuntime::minute(uint32_t instance) {
     const DeviceInfo info = device_info();
-    fire(DeviceEvent::Minute, info);
+    fire(instance, DeviceEvent::Minute, info);
     // Also catches a battery or lang message the full queue dropped.
-    device_event(DeviceEvent::Battery);
-    device_event(DeviceEvent::Lang);
+    device_event(instance, DeviceEvent::Battery, info);
+    device_event(instance, DeviceEvent::Lang, info);
 }
 
 void SceneRuntime::device_event(DeviceEvent ev) {
-    if (!fg_ || !fg_->scene) return;
-    Foreground& f = *fg_;
     const DeviceInfo info = device_info();
+    for (uint32_t instance : instances()) device_event(instance, ev, info);
+}
+
+void SceneRuntime::device_event(uint32_t instance, DeviceEvent ev, const DeviceInfo& info) {
+    Slot* s = find(instance);
+    if (s == nullptr || !s->scene) return;
     if (ev == DeviceEvent::Battery) {
-        if (info.has_battery == f.has_battery && info.battery == f.battery &&
-            info.charging == f.charging)
+        if (info.has_battery == s->has_battery && info.battery == s->battery &&
+            info.charging == s->charging)
             return;
-        f.has_battery = info.has_battery;
-        f.battery = info.battery;
-        f.charging = info.charging;
+        s->has_battery = info.has_battery;
+        s->battery = info.battery;
+        s->charging = info.charging;
     } else if (ev == DeviceEvent::Lang) {
-        if (f.lang == info.lang) return;
-        f.lang = info.lang;
-    } else if (!visible_) {
+        if (s->lang == info.lang) return;
+        s->lang = info.lang;
+    } else if (!minute_ticks(*s)) {
         // A "minute" for a new time zone; the screen coming on sends one.
         return;
     }
-    fire(ev, info);
+    fire(instance, ev, info);
 }
 
-void SceneRuntime::fire(DeviceEvent ev, const DeviceInfo& info) {
-    if (!fg_ || !fg_->scene) return;
+void SceneRuntime::fire(uint32_t instance, DeviceEvent ev, const DeviceInfo& info) {
+    Slot* s = find(instance);
+    if (s == nullptr || !s->scene) return;
+    const std::string tag = scene_tag(s->id);
     const uint64_t t0 = os::now_ms();
-    if (step(fg_->scene->device(ev, info))) submit();
+    run_step(*s, s->scene->device(ev, info));
     const uint64_t ms = os::now_ms() - t0;
-    if (fg_ && ms > kSlowMs)
-        WLOG_W(scene_tag(fg_->id).c_str(), "slow message %s %" PRIu64 " ms", device_event_name(ev),
-               ms);
+    if (ms > kSlowMs)
+        WLOG_W(tag.c_str(), "slow message %s %" PRIu64 " ms", device_event_name(ev), ms);
 }
 
 void SceneRuntime::close_if_asked() {
-    if (fg_ && fg_->scene && fg_->scene->api().close_requested) close_foreground();
+    for (uint32_t instance : instances()) {
+        Slot* s = find(instance);
+        if (s == nullptr || !s->scene) continue;
+        SceneApi& api = s->scene->api();
+        if (api.exit_requested) {
+            close_slot(*s);
+        } else if (api.close_requested) {
+            // "Back" means nothing to a scene already in the background.
+            api.close_requested = false;
+            if (s == front_) go_back(*s, nullptr);
+        }
+    }
 }
 
 // --- UI thread ---------------------------------------------------------------
 
-void SceneRuntime::post_ui(std::function<void()> fn) {
+void SceneRuntime::post_ui(UiJob job) {
     {
         std::lock_guard<os::Mutex> lock(ui_jobs_mu_);
-        ui_jobs_.push_back(std::move(fn));
+        // The drop still runs (it may log the close); only what it undoes
+        // goes.
+        if (job.kind == UiJob::Kind::Drop) cancel_show_locked(job.instance);
+        ui_jobs_.push_back(std::move(job));
     }
     // Only a nudge: if the UI queue is full, the next frame (or the next
     // nudge) runs the job. Never retried here, so the scene task never
@@ -964,13 +1328,33 @@ void SceneRuntime::post_ui(std::function<void()> fn) {
     deps_.ui.post([this] { run_ui_jobs(); });
 }
 
+bool SceneRuntime::cancel_show_locked(uint32_t instance) {
+    size_t show = ui_jobs_.size();
+    for (size_t i = ui_jobs_.size(); i-- > 0;) {
+        if (ui_jobs_[i].kind == UiJob::Kind::Show && ui_jobs_[i].instance == instance) {
+            show = i;
+            break;
+        }
+    }
+    if (show == ui_jobs_.size()) return false;
+    // A Drop of it after the Show would have cancelled it already, so what
+    // follows the Show for this instance is its error panel at most.
+    os::LargeVector<UiJob> kept;
+    for (size_t i = 0; i < ui_jobs_.size(); ++i) {
+        if (i >= show && ui_jobs_[i].instance == instance) continue;
+        kept.push_back(std::move(ui_jobs_[i]));
+    }
+    ui_jobs_.swap(kept);
+    return true;
+}
+
 void SceneRuntime::run_ui_jobs() {
-    os::LargeVector<std::function<void()>> jobs;
+    os::LargeVector<UiJob> jobs;
     {
         std::lock_guard<os::Mutex> lock(ui_jobs_mu_);
         jobs.swap(ui_jobs_);
     }
-    for (auto& job : jobs) job();
+    for (auto& job : jobs) job.fn();
 }
 
 void SceneRuntime::ui_frame() {
@@ -985,7 +1369,7 @@ void SceneRuntime::ui_frame() {
 void SceneRuntime::ui_show_view(uint32_t instance, std::string id,
                                 std::shared_ptr<const core::ScenePackage> package) {
     UiSide& u = *ui_side_;
-    if (u.view) ui_drop_view();
+    if (u.view) ui_drop_view(0);
     ViewCallbacks cb;
     cb.on_event = [this, instance, id](NodeId node, UiEvent ev, PropValue value) {
         // Focus only opens the keyboard; no handler takes it.
@@ -1012,9 +1396,11 @@ void SceneRuntime::ui_show_view(uint32_t instance, std::string id,
     });
 }
 
-void SceneRuntime::ui_drop_view() {
+void SceneRuntime::ui_drop_view(uint32_t instance) {
     if (!ui_side_) return;
     UiSide& u = *ui_side_;
+    // Another scene's view (one that came up after this one went) stays.
+    if (instance != 0 && u.instance != instance) return;
     deps_.system.set_back_handler({});
     deps_.system.hide_error();
     if (!u.view) return;

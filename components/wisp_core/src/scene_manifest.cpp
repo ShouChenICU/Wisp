@@ -306,6 +306,13 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
         }
     }
 
+    if (const Value* bg = root.find("background")) {
+        if (bg->type() != Value::Type::Bool) {
+            return invalid("background must be a boolean");
+        }
+        m.background = bg->as_bool();
+    }
+
     return Result<SceneManifest>::ok(std::move(m));
 }
 

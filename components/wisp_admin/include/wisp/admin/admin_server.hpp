@@ -108,7 +108,7 @@ struct AdminDeps {
     // route answers 503 unavailable.
     core::SceneRepository* scenes = nullptr;
     // Runs scenes and compiles uploads. Null (no display, so no runtime):
-    // open/close/reload and uploads answer 503; the list shows every scene
+    // open/close/exit/reload and uploads answer 503; the list shows every scene
     // as stopped.
     core::SceneHost* scene_host = nullptr;
     // Asks the user on the device whether to delete `id` (and its data

@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "node.hpp"
+#include "scene_api.hpp"
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/reactive.hpp"
 #include "wisp/scene/schema.hpp"
@@ -303,9 +304,16 @@ int ref_scroll_to(lua_State* L) {
     return 0;
 }
 
+// In the background there is no view to focus, and no keyboard to bring
+// up (scene-device spec 3.4): false, "not_in_background".
 int ref_focus(lua_State* L) {
     Resolved r = resolve(L, 2);
     if (r.widget != Widget::Input) return unsupported(L, 2, r.widget, "focus");
+    if (const SceneApi* api = detail::find_api(L); api != nullptr && api->background) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "not_in_background");
+        return 2;
+    }
     if (!push_focus(L, r.id)) return luaL_error(L, "ui update too large");
     return 0;
 }

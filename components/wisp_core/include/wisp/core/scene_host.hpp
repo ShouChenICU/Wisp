@@ -7,7 +7,9 @@
 //
 // Every change of a scene's state is published on the event bus as
 // "scene.state" with source "scene" and payload {"id": <scene id>,
-// "state": "stopped" | "running" | "error" | "deleted"}.
+// "state": "stopped" | "running" | "background" | "error" | "deleted"}.
+// "running" is the scene in the foreground; "background" one that keeps
+// running without a view (scene-device spec 3.2).
 
 #include <span>
 #include <string>
@@ -18,9 +20,9 @@
 
 namespace wisp::core {
 
-enum class SceneState { Stopped, Running, Error };
+enum class SceneState { Stopped, Running, Background, Error };
 
-// "stopped", "running", "error".
+// "stopped", "running", "background", "error".
 const char* to_string(SceneState s);
 
 struct SceneStatus {
@@ -37,8 +39,14 @@ public:
     // Opens `id` in the foreground, closing whatever scene is there first.
     // NotFound for a scene that is not installed.
     virtual Result<void> open(const std::string& id, Value args = {}) = 0;
-    // Closes `id` if it is in the foreground (also from its error panel).
+    // "Back" for `id` if it is in the foreground (also from its error
+    // panel): a scene that declares "background" goes to the background,
+    // any other closes. Ok and nothing changes for a scene that is not in
+    // the foreground.
     virtual Result<void> close(const std::string& id) = 0;
+    // Closes `id` for good from any state, foreground or background. Ok
+    // when it is not running.
+    virtual Result<void> exit(const std::string& id) = 0;
     // Closes and opens `id` again with the same arguments; its data stays.
     virtual Result<void> reload(const std::string& id) = 0;
     // Stopped for a scene this host has not run.

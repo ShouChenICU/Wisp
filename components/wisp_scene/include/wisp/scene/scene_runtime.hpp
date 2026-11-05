@@ -1,16 +1,19 @@
 #pragma once
 
-// SceneRuntime: the scene task and the foreground scene's lifecycle
-// (scene-runtime-core spec 3.1-3.6). It implements core::SceneHost.
+// SceneRuntime: the scene task and the lifecycle of every running scene
+// (scene-runtime-core spec 3.1-3.6, scene-device spec 3.1-3.4). It
+// implements core::SceneHost.
 //
 // Threads:
-//   - The scene task ("wisp.scene") owns the scene: its Vm, its
+//   - The scene task ("wisp.scene") owns every running scene: its Vm, its
 //     PatchBatch, its SceneStore handle. It takes one message at a time
 //     from a queue of SceneMessage pointers (bodies in PSRAM) and runs it
-//     in the VM; after each message it flushes the reactive state and
-//     submits the batch to the PatchQueue.
-//   - The UI thread owns the SceneView. Its frame hook applies the
-//     PatchQueue to the view of the instance the scene task runs; its
+//     in the VM of the scene it is for; after each message it flushes
+//     that scene's reactive state and submits the batch to the
+//     PatchQueue (the scene in front) or drops it (a scene in the
+//     background).
+//   - The UI thread owns the SceneView, at most one, of the scene in
+//     front. Its frame hook applies the PatchQueue to that view; its
 //     widget events become messages. It never waits for the scene task,
 //     and the scene task never waits for it (it only post()s).
 //   - The wisp.fs worker reads the package and loads the SceneStore, then
@@ -19,72 +22,111 @@
 //     writes go to its in-memory index, and its flushes, like every file
 //     operation, are jobs on the worker.
 //
-// Instances: every open gets a new instance number. Messages from the
-// view, the worker and the store carry it, and one whose instance is not
-// the foreground scene's is dropped (stale_dropped()), so nothing from a
-// closed scene reaches the next one. Requests from the SceneHost methods
-// carry instance 0 and name the scene by id.
+// Scenes (spec 3.1): one task runs them all, in slots: at most one in the
+// foreground (with a view) and up to three in the background (without
+// one). Each slot has its own instance, VM, timers, minute ticker and
+// store. Every open gets a new instance number; a scene keeps it while it
+// moves between foreground and background. Messages from the view, the
+// worker, the store and the HTTP proxy carry it, and one whose instance
+// no slot has is dropped (stale_dropped()), so nothing from a closed
+// scene reaches the next one; neither do the view's events for a scene
+// that has gone to the background. Requests from the SceneHost methods
+// carry instance 0 and name the scene by id. Each message still has its
+// own 200 ms, so a scene in the background cannot hold up the one in
+// front.
 //
-// Lifecycle (spec 3.4):
-//   open    the worker loads the package and the store; the scene task
-//           then closes the foreground scene (the same scene closes before
-//           the load instead, so its final store flush is queued on the
-//           worker ahead of it and the reopened store reads what it
-//           wrote; a scene that fails to load leaves another one running),
-//           makes the VM (prelude, ui, a `scene` table for the hooks),
-//           runs the entry file and builds its tree; the UI
-//           thread makes the SceneView, gives it the package's assets and
-//           loads its screen, remembering the screen it replaced (the
-//           self-check screen, hidden, never rebuilt); then
-//           scene.on_show() if the screen is on.
-//   hide    set_visible(false): scene.on_hide(), and the store flushes.
-//   show    set_visible(true): scene.on_show().
-//   close   scene.on_hide() (if it was shown), scene.on_close(); each has
+// Lifecycle (scene-runtime-core spec 3.4, scene-device spec 3.2):
+//   open    launch(User or Notification): a scene in the background comes
+//           forward (resume, below). Otherwise the worker loads the
+//           package and the store; the scene task then sends the scene in
+//           front back (below; the same scene closes before the load
+//           instead, so its final store flush is queued on the worker
+//           ahead of it and the reopened store reads what it wrote; a
+//           scene that fails to load leaves another one running), makes
+//           the VM (prelude, ui, a `scene` table for the hooks), runs the
+//           entry file and builds its tree; the UI thread makes the
+//           SceneView, gives it the package's assets and loads its
+//           screen, remembering the screen it replaced (the self-check
+//           screen, hidden, never rebuilt); then scene.on_show() if the
+//           screen is on, and scene.on_state("foreground").
+//   boot    launch(Boot): loaded the same way, into the background: the
+//           tree is built but there is no view and no on_show;
+//           scene.on_state("background").
+//   back    the back gesture, the error panel's "返回", close() and
+//           wisp.scene.close(): a scene whose scene.json declares
+//           "background" goes to the background, any other closes.
+//   to the background
+//           the view goes (the remembered screen comes back), then
+//           scene.on_hide() (if it was shown); every wake lock the scene
+//           holds is released; scene.on_state("background"); the state
+//           becomes Background. The VM, the store, the timers and the
+//           tree stay; the scene keeps running, its UI changes only
+//           update the tree. A fourth scene sent there closes instead.
+//   resume  SceneInstance::rebuild() makes a Build of the kept tree with
+//           every bound value as it is now, the UI thread makes a new
+//           view from it, scene.on_show() (screen on),
+//           scene.on_state("foreground"), Running.
+//   hide    set_visible(false): scene.on_hide() for the scene in front;
+//           every store flushes.
+//   show    set_visible(true): scene.on_show() for the scene in front.
+//   exit    exit(), close_async(), wisp.scene.exit(), from any state:
+//           scene.on_hide() (if it was shown), scene.on_close(); each has
 //           its own 200 ms and an error or timeout is logged, not shown.
-//           Then SceneStore::flush() and close(), the VM goes, and the UI
-//           thread loads the remembered screen and deletes the view.
-//   reload  close, then open with the same arguments; data stays.
-// Timers and device events (spec 3.4, 5.1, 5.2): the task's wait is
-// bounded by the scene's next TimerSet deadline and, while the screen is
-// on and the scene listens for "minute", "battery" or "lang", its
-// MinuteTicker;
-// each due timer callback, each event, is a message of its own (own 200
-// ms budget, flush, submit). Screen off: timers pause, the ticker is not
-// polled. Screen on: timers resume (each missed one fires once), a
-// "minute" is forced, then on_show. "battery" fires when the percentage
-// or charging differ from what the scene last saw, checked on each
-// power.charging.changed and each minute; "lang" when the language of
-// the last system.settings event differs from the one the scene last
-// saw, checked on each such event and each minute. info().lang
-// is the language of the last system.settings event, ui::lang() before
-// any (ui::set_lang() runs on the UI thread and may lag the event).
+//           Then the wake locks go, SceneStore::flush() and close(), the
+//           VM goes, and for the scene in front the UI thread loads the
+//           remembered screen and deletes the view.
+//   reload  exit, then open in front with the same arguments; data stays.
+// Every move between foreground and background calls scene.on_state with
+// the new state ("foreground" or "background"; also on the first open,
+// never on a close) and publishes it ("running" or "background").
+//
+// Timers and device events (scene-runtime-core spec 3.4, 5.1, 5.2;
+// scene-device spec 3.3): the task's wait is bounded by every scene's
+// next TimerSet deadline and the MinuteTicker of each scene that listens
+// for "minute", "battery" or "lang" and whose minute ticks: a scene that
+// declares "background" (in front or not) always, any other while the
+// screen is on. Each due timer callback, each event, is a message of its
+// own (own 200 ms budget, flush, submit). Screen off: the timers of a
+// scene in front that does not declare "background" pause and its ticker
+// is not polled; a scene that declares it keeps both going. Screen on:
+// paused timers resume (each missed one fires once), the scene in front
+// gets a "minute" at once, then on_show. "battery" fires when the
+// percentage or charging differ from what the scene last saw, checked on
+// each power.charging.changed and each minute; "lang" when the language
+// of the last system.settings event differs from the one the scene last
+// saw, checked on each such event and each minute. info().lang is the
+// language of the last system.settings event, ui::lang() before any
+// (ui::set_lang() runs on the UI thread and may lag the event).
 // info().utc_offset is that event's utc_offset_min, else the
 // seed_utc_offset() value, else SceneRuntimeDeps::utc_offset_min; when an
-// event changes it, "minute" fires at once (screen on), since the local
-// time a scene shows has moved. A system.time event of state "synced"
-// (net::TimeSyncService) fires it the same way, the wall clock itself may
-// have moved, unless the minute the clock now reads already fired.
-// wisp.scene.close() closes the scene once its current message is done.
+// event changes it, "minute" fires at once for every scene whose minute
+// ticks, since the local time a scene shows has moved. A system.time
+// event of state "synced" (net::TimeSyncService) fires it the same way,
+// the wall clock itself may have moved, unless the minute the clock now
+// reads already fired.
 //
-// HTTP (spec 5.3): opening a scene gives the proxy (SceneRuntimeDeps::
-// http) its declared hosts; each wisp.http result is an HttpDone message
-// whose callback runs with its own 200 ms budget. Closing, reloading or
-// faulting cancels the scene's requests (SceneHttp::cancel_scene): queued
-// ones are dropped, the one in flight is stopped, and no callback runs
-// for them; a result already queued for the old instance is dropped as
-// stale.
+// HTTP (scene-runtime-core spec 5.3): opening a scene gives the proxy
+// (SceneRuntimeDeps::http) its declared hosts; each wisp.http result is an
+// HttpDone message whose callback runs with its own 200 ms budget, in
+// front or in the background. Closing, reloading or faulting cancels the
+// scene's requests (SceneHttp::cancel_scene): queued ones are dropped, the
+// one in flight is stopped, and no callback runs for them; a result
+// already queued for the old instance is dropped as stale.
 //
 // A hook is a function the scene stores in its `scene` table
 // (scene.on_show = function() ... end).
 //
-// Errors (spec 3.3, 3.6): an error that reaches the top of a message
-// (compile, runtime, timeout, memory, a bad tree, a bad bound value)
-// drops the message's patches and everything queued, destroys the VM and
-// closes the store; the state becomes Error with ScriptError::text(),
-// logged with tag "scene.<id>", and the system layer's error panel comes
-// up over the scene's last frame. "重载" reloads it, "返回" (or the back
+// Errors (scene-runtime-core spec 3.3, 3.6): an error that reaches the
+// top of a message (compile, runtime, timeout, memory, a bad tree, a bad
+// bound value) drops the message's patches, destroys the VM, cancels the
+// scene's requests, releases its wake locks and closes the store; the
+// state becomes Error with ScriptError::text(), logged with tag
+// "scene.<id>". For the scene in front the system layer's error panel
+// comes up over its last frame: "重载" reloads it, "返回" (or the back
 // gesture) goes back to the remembered screen; the state stays Error
-// until the scene is opened again. Nothing is retried automatically.
+// until the scene is opened again. A scene in the background just stops,
+// with no panel, and SceneRuntimeDeps::on_notice hears of it (Faulted;
+// scene-device spec 3.2). Nothing is retried automatically.
 //
 // Each message is timed: one over 50 ms logs "slow message <kind> <ms>
 // ms" (tag "scene.<id>"). After a batch is submitted, a refresh the patch
@@ -93,7 +135,7 @@
 //
 // Lifetime: start() after the UiRuntime and the StorageWorker have
 // started; stop() (or the destructor) before either stops, since closing
-// the scene needs both.
+// the scenes needs both.
 
 #include <atomic>
 #include <cstddef>
@@ -114,6 +156,7 @@
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -136,6 +179,30 @@ struct SceneWaiter;
 class SceneRuntime;
 
 bool post_scene_message(SceneRuntime& rt, os::LargeUnique<SceneMessage> msg);
+
+// Why a scene was opened; wisp.scene.launch() reports it.
+enum class LaunchReason : uint8_t { User, Boot, Notification };
+// "user", "boot", "notification".
+const char* to_string(LaunchReason r);
+
+// What SceneRuntimeDeps::on_notice is told: a scene closed to make room
+// (memory or count), one that failed in the background, one that could
+// not be restored at boot. `name` is the scene's display name.
+enum class SceneNoticeKind : uint8_t { EvictedMemory, EvictedCount, Faulted, RestoreFailed };
+struct SceneNotice {
+    SceneNoticeKind kind;
+    std::string id;
+    std::string name;
+};
+
+// A scene running in the background; `since_ms` is os::now_ms() when it
+// went there.
+struct BackgroundScene {
+    std::string id;
+    std::string name;
+    uint64_t since_ms = 0;
+    bool operator==(const BackgroundScene&) const = default;
+};
 
 struct SceneRuntimeDeps {
     core::EventBus& bus;
@@ -163,6 +230,12 @@ struct SceneRuntimeDeps {
     // UTC) until seed_utc_offset() or a system.settings event says
     // otherwise.
     int utc_offset_min = 480;
+    // wisp.power; null: keep_screen_on() returns nil, "unavailable". Must
+    // outlive the runtime.
+    core::WakeLockRegistry* locks = nullptr;
+    // System notices about the scenes (SceneNotice). Called on the scene
+    // task, which must not touch flash: it may only queue the work.
+    std::function<void(const SceneNotice&)> on_notice;
 };
 
 struct SceneRuntimeConfig {
@@ -190,13 +263,14 @@ public:
     // Installs the UI frame hook and spawns the scene task. Busy if it
     // was started before, NoMemory if the task cannot be made.
     Result<void> start();
-    // Closes the foreground scene (hooks run), stops the task, deletes the
-    // view and removes the frame hook. Idempotent. Not from the scene
-    // task or the UI thread.
+    // Closes every scene (hooks run), stops the task, deletes the view and
+    // removes the frame hook. Idempotent. Not from the scene task or the
+    // UI thread.
     void stop();
 
-    // The screen went off (false) or on (true): scene.on_hide() and a
-    // store flush, or scene.on_show(). Never waits.
+    // The screen went off (false) or on (true): scene.on_hide() for the
+    // scene in front and a flush of every store, or scene.on_show(). Never
+    // waits.
     // The time zone setting, read by App (which may touch flash) after
     // start(): from then on a change also arrives as a system.settings
     // event, so a seed loses to any event already seen, whose value is at
@@ -206,30 +280,41 @@ public:
     // The id of the scene in the foreground (running or showing its error
     // panel), if any.
     std::optional<std::string> foreground() const;
+    // The scenes in the background, least recently in front first. Any
+    // thread.
+    std::vector<BackgroundScene> background_scenes() const;
     // Sends a click to the foreground scene's widget with ref = `ref`, as
     // if the user tapped it (the simulator's debug command). NotFound if
     // no running scene has one.
     Result<void> click_ref(std::string_view ref);
 
-    // SceneHost. open(), close() and reload() wait until the scene task
-    // has done the work (at most 10 s, then Timeout) -- for close(), until
-    // every store flush the scene queued has run, its final one and, for a
-    // scene that faulted or is not in the foreground, any still queued from
-    // before; by then status() is Stopped and "stopped" has been published
-    // (a faulted scene stays Error) -- except on the UI thread, the scene
-    // task and the storage worker, where they only queue it and return Ok
-    // (failures are logged and published). Busy when the runtime is not running or its queue
+    // SceneHost. open(), close(), exit() and reload() wait until the scene
+    // task has done the work (at most 10 s, then Timeout) -- for exit(),
+    // and for a close() that closes, until every store flush the scene
+    // queued has run, its final one and, for a scene that faulted or is
+    // not running, any still queued from before; by then status() is
+    // Stopped and "stopped" has been published (a faulted scene stays
+    // Error) -- except on the UI thread, the scene task and the storage
+    // worker, where they only queue it and return Ok (failures are logged
+    // and published). Busy when the runtime is not running or its queue
     // stays full. open() is also Busy, at once, while
-    // SceneRepository::installing(id) (spec 6.3: the package is being
-    // replaced) or removing(id) (it is being deleted); an open that was
-    // already on its way when the install or delete began is dropped the
-    // same way when its load arrives. close(id) while a load of that id
-    // is on its way cancels the open.
+    // SceneRepository::installing(id) (scene-runtime-core spec 6.3: the
+    // package is being replaced) or removing(id) (it is being deleted); an
+    // open that was already on its way when the install or delete began
+    // is dropped the same way when its load arrives. close(id) or exit(id)
+    // while a load of that id is on its way cancels the open. close() is
+    // "back" (file header); exit() closes from any state.
     Result<void> open(const std::string& id, Value args = {}) override;
     Result<void> close(const std::string& id) override;
+    Result<void> exit(const std::string& id) override;
     Result<void> reload(const std::string& id) override;
     core::SceneStatus status(const std::string& id) const override;
-    // close() without waiting, from any thread: `done` runs once close()
+    // User and Notification open `id` in the foreground (one in the
+    // background comes forward without reloading; `args` are then
+    // ignored). Boot starts it in the background without a view (Ok and
+    // nothing changes if it is already running). Waits like open().
+    Result<void> launch(const std::string& id, LaunchReason reason, Value args = {});
+    // exit() without waiting, from any thread: `done` runs once exit()
     // would have returned (on the storage worker or the scene task), or at
     // once with Busy if the request could not be queued. It must be quick
     // and must not wait for the scene task.
@@ -239,21 +324,32 @@ public:
     Result<void> check_sources(std::span<const core::SourceFile> files) override;
     void on_installed(const std::string& id) override;
 
-    // Messages dropped because their instance was not the foreground's.
+    // Messages dropped because no running scene has their instance, and
+    // view events for a scene that has gone to the background.
     uint64_t stale_dropped() const { return stale_dropped_.load(); }
 
 private:
     friend bool post_scene_message(SceneRuntime& rt, os::LargeUnique<SceneMessage> msg);
     friend size_t pending_patches(const SceneRuntime& rt);
     friend uint32_t foreground_instance(const SceneRuntime& rt);
+    friend uint32_t scene_instance(const SceneRuntime& rt, const std::string& id);
+    friend size_t pending_ui_jobs(SceneRuntime& rt);
 
     struct Link;
     struct Delayed {
         uint64_t due_ms;
         std::function<void()> fn;
     };
-    // The scene in the foreground; scene task only.
-    struct Foreground;
+    // One running scene, in front or in the background; scene task only.
+    struct Slot;
+    // A job for the UI thread (post_ui()). Showing and dropping a view name
+    // their instance, so that a drop can cancel a show still waiting.
+    struct UiJob {
+        enum class Kind : uint8_t { Show, Drop, Other };
+        Kind kind = Kind::Other;
+        uint32_t instance = 0;
+        std::function<void()> fn;
+    };
 
     // --- any thread ---
     bool must_not_wait() const;
@@ -268,57 +364,94 @@ private:
     // --- scene task ---
     void run();
     void handle(SceneMessage& m);
-    // The foreground scene `m` is for, or nullptr (a stale message is
-    // counted).
-    Foreground* target(const SceneMessage& m);
-    void begin_open(const std::string& id, Value args, std::shared_ptr<SceneWaiter> waiter);
+    // The slot `m` is for, or nullptr (a stale message is counted).
+    Slot* target(const SceneMessage& m);
+    Slot* find(uint32_t instance);
+    Slot* find_id(std::string_view id);
+    // Instances of every slot, for loops whose steps may close slots.
+    std::vector<uint32_t> instances() const;
+    size_t background_count(const Slot* except) const;
+    void begin_open(const std::string& id, Value args, LaunchReason reason,
+                    std::shared_ptr<SceneWaiter> waiter);
     void finish_open(SceneMessage& m);
+    // Makes the slot of a loaded scene (VM not started yet); null without
+    // the memory for it.
+    Slot* add_slot(SceneMessage& m);
     // Gives the scene's wisp.http its proxy: the declared hosts, and
     // results that come back as HttpDone messages for this instance.
-    void wire_http(Foreground& f);
-    void close_foreground(std::shared_ptr<SceneWaiter> done = nullptr);
+    void wire_http(Slot& s);
+    // "Back" for the scene in front: to the background if it declares it
+    // (and is running), closed otherwise. `except` is not counted towards
+    // the background's limit (the scene about to come forward).
+    void go_back(Slot& s, std::shared_ptr<SceneWaiter> done, const Slot* except = nullptr);
+    void to_background(Slot& s, std::shared_ptr<SceneWaiter> done, const Slot* except);
+    void resume(Slot& s, std::shared_ptr<SceneWaiter> done);
+    // No scene is in front any more (foreground() says so).
+    void forget_front();
+    // The view of `s` goes: its patches stop, the UI thread drops it and
+    // loads the remembered screen (and logs "<id>: closed" if `closing`).
+    void drop_view(const Slot& s, bool closing);
+    // Exit: hooks, requests, locks, store, view; the slot goes.
+    void close_slot(Slot& s, std::shared_ptr<SceneWaiter> done = nullptr);
+    // Removes the slot (after a close, or a fault in the background).
+    void erase_slot(Slot& s);
     // Finishes `done` from a worker job queued now, behind every flush
     // queued before it (Busy if the worker takes no job).
     void finish_after_queued_io(std::shared_ptr<SceneWaiter> done);
-    // Runs one step of the running scene; on an error the scene faults.
-    // Returns false if it did.
-    bool step(const std::optional<ScriptError>& err);
-    // Hands the scene's batch to the PatchQueue, then answers a refresh
-    // request if the queue made one.
-    bool submit();
-    void fault(const ScriptError& err);
-    void hide_scene();
-    void show_scene();
+    // Runs one step of a running scene; on an error the scene faults.
+    // Returns false if it did (a scene in the background is gone then).
+    bool step(Slot& s, const std::optional<ScriptError>& err);
+    // Hands the batch of the scene in front to the PatchQueue, then
+    // answers a refresh request if the queue made one; drops the batch of
+    // one in the background.
+    bool submit(Slot& s);
+    // step(), then submit(); false if the scene faulted.
+    bool run_step(Slot& s, const std::optional<ScriptError>& err);
+    void fault(Slot& s, const ScriptError& err);
+    void release_locks(Slot& s);
+    void notice(SceneNoticeKind kind, const Slot& s);
+    // Rewrites background_ from the slots.
+    void update_background_list();
+    void hide_scenes();
+    void show_scene(bool screen_came_on);
     void run_delayed();
     void drain_queue();
-    // How long the task may wait for the scene's timers and minute ticker.
+    // How long the task may wait for the scenes' timers and minute tickers.
     uint32_t scene_wait_ms();
-    // Fires due timers, then the minute (and the battery check with it).
+    // Fires due timers, then the minutes (and the battery checks with them).
     void run_scene_clock();
     void run_timers();
     // A network time sync set the wall clock (system.time "synced").
     void clock_set();
-    void minute();
-    // `ev` for the foreground scene; battery and lang only if they changed.
+    void minute(uint32_t instance);
+    // `ev` for every scene (battery and lang only if they changed for it).
     void device_event(DeviceEvent ev);
-    void fire(DeviceEvent ev, const DeviceInfo& info);
-    // wisp.scene.close() was called: close now.
+    void device_event(uint32_t instance, DeviceEvent ev, const DeviceInfo& info);
+    void fire(uint32_t instance, DeviceEvent ev, const DeviceInfo& info);
+    // wisp.scene.close() or exit() was called: act on it now.
     void close_if_asked();
     DeviceInfo device_info() const;
     std::optional<int64_t> wall_now() const;
-    bool wants_minute() const;
+    bool wants_minute(const Slot& s) const;
+    // Whether the scene's minute ticks now (file header).
+    bool minute_ticks(const Slot& s) const;
 
     // --- UI thread ---
     void ui_frame();
     void ui_show_view(uint32_t instance, std::string id,
                       std::shared_ptr<const core::ScenePackage> package);
-    void ui_drop_view();
+    // Drops the view if it is `instance`'s (any view for 0).
+    void ui_drop_view(uint32_t instance);
     // Hands `fn` (showing or dropping a view, the error panel) to the UI
     // thread, in order, and never drops it: it waits in ui_jobs_ until
     // the UI thread runs it, from a post()ed nudge or, when the UI queue
     // was full, from the next frame hook (or stop()). Any thread; never
     // waits.
-    void post_ui(std::function<void()> fn);
+    void post_ui(UiJob job);
+    // A Drop of `instance` while its Show still waits: both go (with any
+    // later job of that instance, its error panel), so a view that would
+    // only come up to go again holds no package meanwhile. True if so.
+    bool cancel_show_locked(uint32_t instance);
     // UI thread: runs the jobs post_ui() queued, oldest first.
     void run_ui_jobs();
 
@@ -338,12 +471,18 @@ private:
     std::map<std::string, core::SceneStatus, std::less<>> statuses_;
     std::optional<std::string> foreground_id_;
     uint32_t foreground_instance_ = 0;
+    std::vector<BackgroundScene> background_;
+    // id -> instance of every slot, for scene_instance().
+    std::map<std::string, uint32_t, std::less<>> slot_instances_;
 
     os::Mutex delayed_mu_;
     std::vector<Delayed> delayed_;
 
     // Scene task only.
-    std::unique_ptr<Foreground> fg_;
+    std::vector<os::LargeUnique<Slot>> slots_;
+    // The slot in the foreground (running or showing its error panel), or
+    // null.
+    Slot* front_ = nullptr;
     uint32_t next_instance_ = 1;
     // The instance the worker is loading for (0: none), and its scene; a
     // load that comes back for another one was superseded, or cancelled
@@ -370,7 +509,7 @@ private:
 
     // post_ui()'s jobs not yet run.
     os::Mutex ui_jobs_mu_;
-    os::LargeVector<std::function<void()>> ui_jobs_;
+    os::LargeVector<UiJob> ui_jobs_;
 };
 
 }  // namespace wisp::scene

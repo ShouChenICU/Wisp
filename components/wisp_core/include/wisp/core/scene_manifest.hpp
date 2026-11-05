@@ -4,7 +4,7 @@
 //
 //   {"id": "todo", "name": "待办", "version": "1.0.0", "schema_version": 1,
 //    "entry": "main.lua", "icon": "assets/icon.png",
-//    "permissions": {"http": ["api.example.com"]}}
+//    "permissions": {"http": ["api.example.com"]}, "background": true}
 //
 // parse_scene_manifest() checks every field it knows and ignores unknown
 // top-level fields, so a newer package with extra metadata still installs.
@@ -28,6 +28,9 @@ struct SceneManifest {
     std::string icon;                // empty, or a file under assets/
     int schema_version = 1;
     std::vector<std::string> http_hosts;  // permissions.http, at most 16
+    // Going back sends the scene to the background instead of closing it
+    // (scene-device spec 3.2).
+    bool background = false;
 };
 
 // The longest scene id.

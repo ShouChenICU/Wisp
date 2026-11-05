@@ -4,13 +4,14 @@
 // storage worker, an event bus and a SceneRepository in a temp dir, plus
 // helpers to install packages and read what the scenes logged and showed.
 // configure_deps() lets a test fill in the optional SceneRuntimeDeps
-// fields before start() makes the runtime.
+// fields before start() makes the runtime. UiStall holds the UI thread up.
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -47,6 +48,31 @@ struct StateEvent {
     std::string id;
     std::string state;
     bool operator==(const StateEvent&) const = default;
+};
+
+// Holds the UI thread inside a job, with its post() queue full, until
+// release(): nothing the scene task hands the UI meanwhile can run.
+class UiStall {
+public:
+    explicit UiStall(wisp::ui::UiRuntime& ui) {
+        auto started = std::make_shared<std::promise<void>>();
+        EXPECT_TRUE(ui.post([started, f = released_.get_future().share()] {
+            started->set_value();
+            f.wait();
+        }));
+        started->get_future().wait();
+        while (ui.post([] {})) {
+        }
+    }
+    ~UiStall() { release(); }
+    void release() {
+        if (!done_) released_.set_value();
+        done_ = true;
+    }
+
+private:
+    std::promise<void> released_;
+    bool done_ = false;
 };
 
 class SceneRuntimeFixture : public ::testing::Test {

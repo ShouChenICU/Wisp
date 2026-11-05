@@ -31,11 +31,18 @@ public:
     SceneInstance& operator=(const SceneInstance&) = delete;
 
     // Makes the VM, runs the entry file and puts the Build of the tree it
-    // returns into the batch (then the first flush).
+    // returns into the batch (then the first flush). The root stays in the
+    // registry for rebuild().
     std::optional<ScriptError> start();
-    // scene.<name>() if the scene set a function there (on_show, on_hide,
-    // on_close), with a fresh time budget.
-    std::optional<ScriptError> hook(const char* name);
+    // A Build of the root start() kept, collected again with every bound
+    // value as it is now, into the batch (scene-device spec 3.2: a scene
+    // coming back from the background gets a new view). Node ids are new;
+    // ui.ref handles resolve to them as before. Fresh time budget.
+    std::optional<ScriptError> rebuild();
+    // scene.<name>(arg) if the scene set a function there (on_show,
+    // on_hide, on_close without `arg`; on_state with it), with a fresh
+    // time budget.
+    std::optional<ScriptError> hook(const char* name, const char* arg = nullptr);
     // A widget event: a Change first updates what ui.ref():value()
     // reports (__wisp.set_value), then the node's handler (on_click,
     // on_long_press, on_change(value)) runs if it has one. One budget for

@@ -1,10 +1,11 @@
 #pragma once
 
-// The wisp.timer, wisp.device, wisp.log, wisp.scene and wisp.store bindings
-// (scene-runtime-core spec 5.1, 5.2, 5.4, 5.5). Thin adapters: the state they
-// act on is a SceneApi, which the SceneInstance owns and the scene task
-// (SceneRuntime) fills in and drives. Everything here runs on the scene
-// task, which touches no flash: SceneApi::device must not either.
+// The wisp.timer, wisp.device, wisp.log, wisp.scene, wisp.store, wisp.http
+// and wisp.power bindings (scene-runtime-core spec 5.1-5.5, scene-device
+// spec 3.2-3.4). Thin adapters: the state they act on is a SceneApi, which
+// the SceneInstance owns and the scene task (SceneRuntime) fills in and
+// drives. Everything here runs on the scene task, which touches no flash:
+// SceneApi::device must not either.
 //
 //   wisp.timer.after(ms, fn) / every(ms, fn)  -> handle, or nil and
 //       "interval_too_small" / "too_many_timers" (TimerSet's limits).
@@ -26,8 +27,18 @@
 //       name is an argument error.
 //   wisp.log.info/warn/error(...): log_lua_args() at that level, the same
 //   line print makes.
-//   wisp.scene.close(): sets close_requested; the runtime closes the
-//       scene once the current message is done.
+//   wisp.scene.close(): sets close_requested; once the current message is
+//       done the runtime goes "back": a scene that declares "background"
+//       goes to the background, any other closes.
+//   wisp.scene.exit(): sets exit_requested; the runtime closes the scene
+//       for good once the current message is done.
+//   wisp.scene.state() -> "foreground" | "background" (SceneApi::background).
+//   wisp.scene.launch() -> "user" | "boot" | "notification"
+//       (SceneApi::launch).
+//   wisp.power.keep_screen_on(on) (bind_power.cpp): in the foreground takes
+//       (true) or drops (false) a "screen" wake lock held by "scene.<id>"
+//       and returns true; nil, "not_in_background" in the background; nil,
+//       "unavailable" without a WakeLockRegistry.
 //   wisp.scene.args(): a fresh table copied from *args each call ({} when
 //       there are none).
 //   wisp.store (bind_store.cpp): the scene's SceneStore, values converted
@@ -42,10 +53,12 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 #include <type_traits>
 
 #include "wisp/base/value.hpp"
 #include "wisp/core/scene_store.hpp"
+#include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/scene_http.hpp"
@@ -102,13 +115,26 @@ struct SceneApi {
     std::function<void(uint32_t id, const char* error)> http_fail;
     uint32_t next_http_id = 1;
     bool close_requested = false;
+    bool exit_requested = false;
+    // In the background: no view, and the APIs of spec 3.4 refuse with
+    // "not_in_background". Set by the runtime.
+    bool background = false;
+    // What wisp.scene.launch() reports; a string literal.
+    const char* launch = "user";
+    // wisp.power.keep_screen_on(): the registry (null: "unavailable"), the
+    // holder name ("scene.<id>") and the screen lock it holds (0: none).
+    // The runtime releases every lock of the holder when the scene leaves
+    // the foreground or closes, and then clears screen_lock.
+    core::WakeLockRegistry* locks = nullptr;
+    std::string holder;
+    uint32_t screen_lock = 0;
     // wisp.device.on() was called for the event at least once.
     bool has_handlers[kDeviceEventCount] = {};
 
     bool wants(DeviceEvent ev) const { return has_handlers[static_cast<size_t>(ev)]; }
 };
 
-// Adds the four tables to `wisp`. Call once, before any scene code runs.
+// Adds the binding tables to `wisp`. Call once, before any scene code runs.
 std::optional<ScriptError> install_api(Vm& vm, SceneApi& api);
 
 // Runs timer `id`'s callback with a fresh budget, if it still has one.
@@ -137,6 +163,10 @@ void install_log(lua_State* L, int wisp);
 void install_scene(lua_State* L, int wisp);
 void install_store(lua_State* L, int wisp);
 void install_http(lua_State* L, int wisp);
+void install_power(lua_State* L, int wisp);
+// The SceneApi install_api() put in the registry, or null in a VM that
+// has none (the ui table alone, in tests).
+SceneApi* find_api(lua_State* L);
 
 }  // namespace detail
 

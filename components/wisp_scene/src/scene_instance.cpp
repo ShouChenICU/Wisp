@@ -27,14 +27,36 @@ int install_scene_table(lua_State* L) {
     return 0;
 }
 
-// call_hook(name)
+// Registry key of the root start() collected, for rebuild().
+char kRootKey;
+
+// call_hook(name, arg): arg is a C string or NULL (no argument).
 int call_hook(lua_State* L) {
     const char* name = static_cast<const char*>(lua_touserdata(L, 1));
+    const char* arg = static_cast<const char*>(lua_touserdata(L, 2));
     if (lua_rawgetp(L, LUA_REGISTRYINDEX, &kSceneTableKey) != LUA_TTABLE) return 0;
     lua_pushstring(L, name);
     if (lua_rawget(L, -2) != LUA_TFUNCTION) return 0;
-    lua_call(L, 0, 0);
+    if (arg == nullptr) {
+        lua_call(L, 0, 0);
+    } else {
+        lua_pushstring(L, arg);
+        lua_call(L, 1, 0);
+    }
     return 0;
+}
+
+// keep_root(root)
+int keep_root(lua_State* L) {
+    lua_settop(L, 1);
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &kRootKey);
+    return 0;
+}
+
+// push_root() -> root: also starts rebuild()'s fresh budget.
+int push_root(lua_State* L) {
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &kRootKey);
+    return 1;
 }
 
 void push_value(lua_State* L, const PropValue& v) {
@@ -141,19 +163,41 @@ std::optional<ScriptError> SceneInstance::start() {
     if (auto err = vm_->call(0, 1)) return err;
     Build tree;
     auto err = collect_tree(*vm_, -1, next_id_, tree);
-    lua_pop(L, 1);
-    if (err) return err;
+    if (err) {
+        lua_pop(L, 1);
+        return err;
+    }
+    // collect_tree() checked that it is a ui.screen.
+    lua_pushcfunction(L, keep_root);
+    lua_insert(L, -2);
+    if (auto kept = vm_->call(1, 0, Budget::Continue)) return kept;
     if (!batch_.push(std::move(tree)).is_ok())
         return ScriptError{ScriptFault::Runtime, entry, 0, "ui update too large"};
     return flush_reactive(*vm_);
 }
 
-std::optional<ScriptError> SceneInstance::hook(const char* name) {
+std::optional<ScriptError> SceneInstance::rebuild() {
     lua_State* L = vm_->L();
     if (!lua_checkstack(L, 2)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
+    lua_pushcfunction(L, push_root);
+    if (auto err = vm_->call(0, 1)) return err;
+    Build tree;
+    auto err = collect_tree(*vm_, -1, next_id_, tree);
+    lua_pop(L, 1);
+    if (err) return err;
+    if (!batch_.push(std::move(tree)).is_ok())
+        return ScriptError{ScriptFault::Runtime, package_->manifest.entry, 0,
+                           "ui update too large"};
+    return flush_reactive(*vm_);
+}
+
+std::optional<ScriptError> SceneInstance::hook(const char* name, const char* arg) {
+    lua_State* L = vm_->L();
+    if (!lua_checkstack(L, 3)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     lua_pushcfunction(L, call_hook);
     lua_pushlightuserdata(L, const_cast<char*>(name));
-    return flush(vm_->call(1, 0));
+    lua_pushlightuserdata(L, const_cast<char*>(arg));
+    return flush(vm_->call(2, 0));
 }
 
 std::optional<ScriptError> SceneInstance::event(NodeId node, UiEvent ev, const PropValue& value) {

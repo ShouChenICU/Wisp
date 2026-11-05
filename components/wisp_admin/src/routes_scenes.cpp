@@ -169,7 +169,7 @@ net::HttpResponse export_scene(AdminDeps& deps, const RequestContext& ctx) {
 
 using HostCall = Result<void> (*)(core::SceneHost& host, const std::string& id);
 
-// open/close/reload: 404 for a scene that is not installed, then the
+// open/close/exit/reload: 404 for a scene that is not installed, then the
 // host's own answer; the body is the state the scene is in afterwards.
 net::HttpResponse lifecycle(AdminDeps& deps, const RequestContext& ctx, HostCall call) {
     if (deps.scenes == nullptr) return unavailable();
@@ -194,6 +194,11 @@ net::HttpResponse open_route(AdminDeps& deps, const RequestContext& ctx) {
 net::HttpResponse close_route(AdminDeps& deps, const RequestContext& ctx) {
     return lifecycle(deps, ctx,
                      [](core::SceneHost& h, const std::string& id) { return h.close(id); });
+}
+
+net::HttpResponse exit_route(AdminDeps& deps, const RequestContext& ctx) {
+    return lifecycle(deps, ctx,
+                     [](core::SceneHost& h, const std::string& id) { return h.exit(id); });
 }
 
 net::HttpResponse reload_route(AdminDeps& deps, const RequestContext& ctx) {
@@ -311,6 +316,7 @@ void add_scene_routes(std::vector<Route>& routes) {
     routes.push_back({Method::Get, "/scenes/*/export", false, export_scene});
     routes.push_back({Method::Post, "/scenes/*/open", false, open_route});
     routes.push_back({Method::Post, "/scenes/*/close", false, close_route});
+    routes.push_back({Method::Post, "/scenes/*/exit", false, exit_route});
     routes.push_back({Method::Post, "/scenes/*/reload", false, reload_route});
     routes.push_back({Method::Delete, "/scenes/*", false, delete_scene});
 }

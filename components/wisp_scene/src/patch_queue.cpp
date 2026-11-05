@@ -25,17 +25,10 @@ size_t PatchQueue::pending() const {
     return items_.size();
 }
 
-void PatchQueue::clear() {
-    Items dropped;
-    os::LargeVector<Item> aside;
-    {
-        std::lock_guard<os::Mutex> lock(mutex_);
-        dropped.swap(items_);
-        aside.swap(aside_);
-        index_.clear();
-        head_seq_ = 0;
-        refresh_.clear();
-    }
+void PatchQueue::clear(uint32_t instance) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    drop_instance_locked(instance);
+    std::erase(refresh_, instance);
 }
 
 size_t PatchQueue::counted_locked(uint32_t instance) const {
