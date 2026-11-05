@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -308,6 +309,7 @@ public:
     bool online() override { return online_flag.load(); }
 
     wisp::Result<wisp::hal::Capacity> capacity() override {
+        if (on_capacity) on_capacity();
         wisp::hal::Capacity cap;
         cap.total_bytes = kTotalBytes;
         uint64_t used = dir_size(dir_);
@@ -326,6 +328,9 @@ public:
     bool standby() const { return standby_.load(); }
 
     std::atomic<bool> online_flag{true};
+    // Called at the start of every capacity() call, on the caller's
+    // thread. Set it before the device is used.
+    std::function<void()> on_capacity;
 
 private:
     std::atomic<int> set_standby_calls_{0};

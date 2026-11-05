@@ -299,4 +299,18 @@ bool SceneWiring::list_async(std::function<void(std::vector<SceneEntry>)> on_ui)
     });
 }
 
+bool SceneWiring::storage_status_async(ui::UiRuntime& ui,
+                                       std::function<void(core::StorageStatus)> on_ui) {
+    core::StorageManager* storage = &deps_.storage;
+    ui::UiRuntime* target = &ui;
+    return worker_.submit([storage, target, on_ui = std::move(on_ui)]() mutable {
+        core::StorageStatus status = storage->status();
+        if (!target->post([on_ui = std::move(on_ui), status = std::move(status)]() mutable {
+                on_ui(std::move(status));
+            })) {
+            WLOG_W(kTag, "storage status not shown (UI queue full)");
+        }
+    });
+}
+
 }  // namespace wisp::app

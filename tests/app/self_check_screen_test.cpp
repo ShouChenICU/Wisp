@@ -1086,6 +1086,39 @@ TEST(SelfCheckScreen, DeviceListSdRowTracksLiveStorageStatus) {
     h.app.stop();
 }
 
+// Measuring storage walks the file system (LittleFS reads every block in
+// use to count them), so the screen never does it on the UI thread: polled
+// there ten times a second it took a fifth of the frames from a scrolling
+// self-check list once a dozen scenes were installed
+// (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md). The storage card
+// and the SD row are still kept up to date.
+TEST(SelfCheckScreen, MeasuresStorageOffTheUiThread) {
+    std::atomic<int> on_ui{0};
+    std::atomic<int> off_ui{0};
+    Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
+              "rounded_rect", /*with_sd=*/true);
+    h.sd->on_capacity = [&] {
+        wisp::ui::UiRuntime* ui = h.app.ui();
+        ++(ui != nullptr && ui->on_ui_thread() ? on_ui : off_ui);
+    };
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    h.sd->online_flag = true;
+    ASSERT_TRUE(wait_until(
+        [&] {
+            return run_on_ui_thread(h.app.ui(), [] {
+                       return device_rows();
+                   }).find(hex(wisp::app::kColorGood) + "|storage.sd|FAKE") != std::string::npos;
+        },
+        3000));
+    const int seen = off_ui.load();
+    ASSERT_TRUE(wait_until([&] { return off_ui.load() > seen; }, 3000));
+    EXPECT_EQ(on_ui.load(), 0);
+
+    h.app.stop();
+}
+
 // The confirm dialog's width must respect compute_safe_area(), not LVGL's
 // fixed LV_DPI_DEF*2 default (see show_confirm_dialog()): a 480px screen's
 // safe area is wide enough that the default alone never clips, so this

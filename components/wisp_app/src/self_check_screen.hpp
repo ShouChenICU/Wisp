@@ -156,7 +156,12 @@ private:
     void refresh_ui();
     // UI thread: the time sync row from TimeSyncService::status().
     void refresh_time_sync();
-    void refresh_storage();
+    // UI thread: asks the storage worker for StorageManager::status() (it
+    // reaches the flash, see SceneWiring::storage_status_async()), at most
+    // one request at a time; show_storage() takes the answer.
+    void request_storage();
+    // UI thread: the storage card and the live SD row from `status`.
+    void show_storage(const core::StorageStatus& status);
     // Any thread: asks the storage worker for the scene list; the "Scenes"
     // card takes it on the UI thread.
     void request_scene_list();
@@ -235,6 +240,12 @@ private:
     uint64_t last_net_resync_ms_ = 0;
     // os::now_ms() of the last periodic scene list (see kSceneResyncMs).
     uint64_t last_scene_list_ms_ = 0;
+    // os::now_ms() of the last storage request (see kStorageResyncMs), and
+    // whether its answer is still on the way.
+    uint64_t last_storage_ms_ = 0;
+    bool storage_pending_ = false;
+    // The last answer, shown again in a new page language.
+    std::optional<core::StorageStatus> last_storage_;
 
     SceneWiring* scenes_;
     // Cleared by the UI-thread teardown: a scene list still on its way to

@@ -78,6 +78,7 @@
 #include "sim_options.hpp"
 #include "sim_stdin.hpp"
 #include "wisp/app/app.hpp"
+#include "wisp/app/bench.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/display.hpp"
@@ -717,6 +718,8 @@ int main(int argc, char** argv) {
 #ifdef WISP_SIM_DEBUG_COMMANDS
     platform.console_commands = debug_commands();
 #endif
+    // `bench scroll`, as on the device (wisp/app/bench.hpp).
+    platform.console_commands.push_back(wisp::app::bench_command());
     if (!opts.scenes_dir.empty()) {
         // Absolute, so the scene paths in logs and errors say where they are.
         std::filesystem::path dir = std::filesystem::absolute(opts.scenes_dir, ec);

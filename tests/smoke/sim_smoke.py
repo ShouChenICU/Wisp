@@ -4,7 +4,8 @@
 Runs the wisp_sim executable (simulator/CMakeLists.txt, built by the
 host CMake project) through a handful of --headless scenarios and
 checks its machine-readable stdout (the single-line-JSON
-"WISP_BOOT_REPORT ", "WISP_MANIFEST " and "WISP_HTTP " lines -- see
+"WISP_BOOT_REPORT ", "WISP_MANIFEST ", "WISP_HTTP " and, from the
+console case, "WISP_BENCH " lines -- see
 AGENTS.md section 4 and docs/architecture.md) and, for the default
 case, the PNG screenshot it writes. Each case runs wisp_sim in a fresh
 temporary data directory. Every case except "http", "factory_reset",
@@ -830,9 +831,11 @@ def case_console(sim_path, tmp_root):
     """Serial console commands on stdin (connectivity spec 8.2) are
     answered on stdout, touch lines never reach the console, and neither
     the Wi-Fi password typed into "wifi add" nor anything else secret is
-    ever printed or logged. Joining the network syncs the clock."""
+    ever printed or logged. Joining the network syncs the clock. "bench
+    scroll" answers one WISP_BENCH line."""
     commands = [
         "help",
+        "bench scroll 1",
         "wifi status",
         f"wifi add WispLab {CONSOLE_PASSWORD}",
         "tap 10,10",
@@ -852,6 +855,13 @@ def case_console(sim_path, tmp_root):
     # Joining WispLab gives the station an IP, which syncs the clock.
     expect(re.search(r" I time: synced from pool\.ntp\.org: unix \d+$", result.stdout, re.M),
            f"no time sync after joining WispLab:\n{result.stdout}")
+    bench = [l for l in lines if l.startswith("WISP_BENCH ")]
+    expect(len(bench) == 1, f"expected one WISP_BENCH line:\n{result.stdout}")
+    payload = json.loads(bench[0][len("WISP_BENCH "):])
+    expect(set(payload) == {"bench", "fps", "frames", "ms", "cpu", "px"},
+           f"WISP_BENCH fields: {sorted(payload)}")
+    expect(payload["bench"] == "scroll" and payload["frames"] >= 2 and payload["fps"] > 0,
+           f"bad WISP_BENCH line: {bench[0]}")
     # Only "bogus" is unknown: "tap 10,10" went to the touch screen.
     expect(lines.count("error: unknown command") == 1,
            f"expected one unknown command:\n{result.stdout}")
