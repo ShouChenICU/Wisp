@@ -1,6 +1,13 @@
 // System (spec 7.3): display and sound settings, the device's own screen
-// language, paired browsers, firmware, restart and factory reset. The phone
-// layout also reaches the log page from here.
+// language, its time zone and network time, paired browsers, firmware,
+// restart and factory reset. The phone layout also reaches the log page
+// from here.
+//
+// Network time (spec 5.6): GET /system/time shows the last sync; "Sync
+// now" posts /system/time/sync (409 no_network without Wi-Fi) and then
+// waits for the outcome, subscribing to events only for that wait (see
+// TimeSyncCard's syncNow()). Times are shown in the device's own time zone
+// (utc_offset_min), not the browser's.
 //
 // Restart: the device answers 202 and restarts a moment later; the page
 // then polls GET /info until it answers with a different boot_id, which
@@ -96,6 +103,13 @@ export async function confirmLogout() {
  * @property {number} screen_off_s 0 (never) or 15-3600
  * @property {'zh'|'ja'|'en'} language  the device's own UI language
  * @property {number} utc_offset_min  the time zone, minutes east of UTC (-720 to 840)
+ * @property {string} ntp_servers  1-2 time servers, comma-separated
+ *
+ * @typedef {Object} TimeStatus  GET /system/time
+ * @property {boolean} synced         a sync succeeded since the device started
+ * @property {number|null} last_sync  unix seconds of that sync
+ * @property {string} server          the server that answered
+ * @property {number|null} time       the device's time now, unix seconds
  *
  * @typedef {Object} Client  GET /clients
  * @property {string} id
@@ -182,6 +196,7 @@ export function SystemPage() {
       <${DisplayCard} settings=${settings} put=${put} />
       <${LanguageCard} settings=${settings} put=${put} />
       <${TimeZoneCard} settings=${settings} put=${put} />
+      <${TimeSyncCard} settings=${settings} put=${put} />
     </div>
     <${ClientsCard} clients=${clients} error=${clientsError} reload=${loadClients} />
     <${FirmwareCard} />
@@ -331,6 +346,182 @@ function TimeZoneCard({ settings, put }) {
           ${choices.map((m) => html`<option key=${m} value=${String(m)}>${utcOffsetLabel(m)}</option>`)}
         </select>
         <p id="sys-tz-hint" class="field-hint">${t('sys.tz_hint')}</p>
+      </div>
+    </div>
+  </${Card}>`;
+}
+
+// How long "Sync now" waits for the outcome event: two servers at their
+// query timeout plus name lookups, with room to spare.
+const TIME_SYNC_WAIT_MS = 20000;
+const TIME_SYNC_POLL_MS = 1500;
+
+/** "2026-01-01 08:00 UTC+08:00": `unix` in the device's time zone. */
+function deviceTime(unix, offsetMin) {
+  if (!Number.isFinite(unix) || unix < MIN_REAL_UNIX) return '';
+  const shifted = new Date((unix + offsetMin * 60) * 1000);
+  const text = new Intl.DateTimeFormat(locale(), {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'UTC',
+  }).format(shifted);
+  return `${text} ${utcOffsetLabel(offsetMin)}`;
+}
+
+/** The ntp_servers value as typed, tidied: spaces dropped, empty entries removed. */
+function tidyServers(text) {
+  return text
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .join(',');
+}
+
+function TimeSyncCard({ settings, put }) {
+  const [status, setStatus] = useState(/** @type {TimeStatus|null} */ (null));
+  const [unavailable, setUnavailable] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [draft, setDraft] = useState(/** @type {string|null} */ (null));
+  const alive = useRef(true);
+  const stopWait = useRef(/** @type {(() => void)|null} */ (null));
+
+  async function load() {
+    try {
+      const s = await api('GET', '/system/time');
+      if (alive.current) setStatus(s);
+    } catch (e) {
+      if (alive.current && e.status === 503) setUnavailable(true);
+    }
+  }
+
+  useEffect(() => {
+    alive.current = true;
+    load();
+    return () => {
+      alive.current = false;
+      stopWait.current?.();
+    };
+  }, []);
+
+  // The outcome normally arrives as a system.time event. The event socket
+  // and the POST are separate connections, so the device may answer
+  // before it has the socket's subscription: the status is also polled,
+  // and a sync it shows counts as the answer. With neither by
+  // TIME_SYNC_WAIT_MS, the attempt failed.
+  function syncNow() {
+    if (syncing) return;
+    setSyncing(true);
+    const before = status?.last_sync ?? null;
+    let posted = false;
+    let over = false;
+    let timer = 0;
+    let poller = 0;
+    const finish = (ok, server) => {
+      if (over) return;
+      over = true;
+      unsubscribe();
+      clearTimeout(timer);
+      clearInterval(poller);
+      stopWait.current = null;
+      if (!alive.current) return;
+      setSyncing(false);
+      load();
+      if (ok === true) toast(t('sys.time_synced', { server }), 'ok');
+      else if (ok === false) toast(t('sys.time_failed'), 'err');
+    };
+    const poll = async () => {
+      try {
+        const s = await api('GET', '/system/time');
+        if (s?.synced && s.last_sync !== before) finish(true, s.server);
+      } catch {
+        // The next poll or the timeout decides.
+      }
+    };
+    const unsubscribe = subscribe(
+      ['events'],
+      (msg) => {
+        if (msg.t !== 'event' || msg.topic !== 'system.time') return;
+        const ok = msg.payload?.state === 'synced';
+        finish(ok, String(msg.payload?.server || ''));
+      },
+      {
+        onState: (st) => {
+          if (st !== 'open' || posted) return;
+          posted = true;
+          api('POST', '/system/time/sync').then(
+            () => {
+              if (!over) poller = setInterval(poll, TIME_SYNC_POLL_MS);
+            },
+            (e) => {
+              finish(null);
+              if (e.status !== 401) toast(describeError(e), 'err');
+            },
+          );
+        },
+      },
+    );
+    stopWait.current = () => {
+      over = true;
+      unsubscribe();
+      clearTimeout(timer);
+      clearInterval(poller);
+    };
+    timer = setTimeout(() => finish(false), TIME_SYNC_WAIT_MS);
+  }
+
+  async function saveServers() {
+    const value = tidyServers(draft ?? '');
+    if (await put({ ntp_servers: value })) {
+      setDraft(null);
+      toast(t('sys.time_servers_saved'), 'ok');
+    }
+  }
+
+  if (!settings) return html`<${SkeletonCard} />`;
+  const offset = settings.utc_offset_min;
+  const last = status?.synced ? deviceTime(status.last_sync, offset) : '';
+  const now = status?.time != null ? deviceTime(status.time, offset) : '';
+  const shown = draft ?? settings.ntp_servers;
+  const changed = draft !== null && tidyServers(draft) !== settings.ntp_servers;
+  return html`<${Card} title=${t('sys.time_title')} icon=${IconClock}>
+    <div class="form">
+      ${unavailable
+        ? html`<p class="muted">${t('sys.time_unavailable')}</p>`
+        : html`<dl class="kv">
+              <div>
+                <dt>${t('sys.time_last')}</dt>
+                <dd>${last ? t('sys.time_from', { when: last, server: status.server }) : t('sys.time_never')}</dd>
+              </div>
+              <div>
+                <dt>${t('sys.time_now')}</dt>
+                <dd>${now || t('sys.time_unknown')}</dd>
+              </div>
+            </dl>
+            <div>
+              <button type="button" class="btn btn-secondary" onClick=${syncNow} disabled=${syncing}>
+                ${syncing ? html`<span class="spinner" aria-hidden="true"></span>` : null}
+                ${t('sys.time_sync')}
+              </button>
+            </div>`}
+      <div class="field">
+        <label class="field-label" for="sys-ntp">${t('sys.time_servers')}</label>
+        <div class="input-group">
+          <input
+            id="sys-ntp"
+            class="input mono"
+            type="text"
+            spellcheck="false"
+            autocapitalize="off"
+            autocomplete="off"
+            maxlength="127"
+            value=${shown}
+            onInput=${(e) => setDraft(e.currentTarget.value)}
+            aria-describedby="sys-ntp-hint"
+          />
+          <button type="button" class="btn btn-secondary" onClick=${saveServers} disabled=${!changed}>
+            ${t('sys.time_servers_save')}
+          </button>
+        </div>
+        <p id="sys-ntp-hint" class="field-hint">${t('sys.time_servers_hint')}</p>
       </div>
     </div>
   </${Card}>`;

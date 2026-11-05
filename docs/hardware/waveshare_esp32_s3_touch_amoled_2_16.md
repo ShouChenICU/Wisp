@@ -75,7 +75,7 @@
 | 15 | 电源键短按（spec 10.3） | 亮屏时短按电源键，再短按一次 | 第一次灭屏（进入待机），第二次重新点亮 |  |
 | 16 | 电源键长按关机（spec 10.3，drivers/axp2101 power_off，wisp_app::PowerKeyController） | 亮屏时按住电源键约 1 秒（不松手） | 按住时即弹出关机确认框；开机时为开机而按住的那一次不会触发；确认后整机断电（用电流表或指示灯判断，不能只看屏幕熄灭） |  |
 | 17 | 关机状态开机（spec 10.3） | 关机状态下长按电源键 | 重新开机 |  |
-| 18 | RTC 持续计时（spec 10.2，drivers/pcf85063） | 看启动日志是否有 "system clock set from clock.main RTC"；断电（拔 USB 和电池）重启后再看一次时间。如果 RTC 从未设置过（芯片第一次通电），`get_unix()` 会失败，日志只有一条 `WLOG_W`，系统时间不会被设置——此时需要临时在 `board.cpp` 的 `init_clock` 成功之后插入一行 `clock.value()->set_unix(<当前 UTC 时间戳>)` 写入一次当前时间，重新编译烧录后再验证本项，验证完成后删除这段临时代码 | 日志出现 "system clock set from clock.main RTC"；重启后时间连续，不跳回 1970 或固定值 |  |
+| 18 | RTC 持续计时（spec 10.2，drivers/pcf85063） | 看启动日志是否有 "system clock set from clock.main RTC"；断电（拔 USB 和电池）重启后再看一次时间。如果 RTC 从未设置过（芯片第一次通电），`get_unix()` 会失败，日志只有一条 `WLOG_W`，系统时间不会被设置——此时先连上 Wi-Fi：网络校时（连接 spec 5.6）成功后日志出现 `time: synced from <服务器>: unix <秒数>`，同时写入 RTC，再重启验证本项 | 日志出现 "system clock set from clock.main RTC"；重启后时间连续，不跳回 1970 或固定值 |  |
 | 19 | 充电电流曲线（drivers/axp2101 充电参数配置） | 用一块电量明显偏低的电池，经 USB 功率计供电，观察充电过程电流；同时看启动日志是否出现 `power.main: charging configuration failed: ...`（`board.cpp` 的 `WLOG_W`） | 恒流阶段稳定在约 400mA；接近 4.2V 时电流渐降；充满后 `charging` 翻 `false`，电流降到维持量级，不持续大电流过充；不出现 `charging configuration failed` 日志（出现则说明 `axp2101_charging_config_status()` 返回非 `ESP_OK`，充电参数可能停留在芯片出厂默认值） |  |
 | 20 | 音频/存储设备状态（wisp_port_esp::EspAudio/EspStorage） | 看 `WISP_BOOT_REPORT` 中 `audio_out.main`/`audio_in.main`/`storage.int`/`storage.sd` | 前三者为 `ok`；`storage.sd` 视是否插卡为 `ok` 或 `missing`（"no card"） |  |
 | 21 | 开机无爆音（屏幕驱动上电顺序，wisp_port_esp::EspAudio 初始化） | 接好喇叭，听开机瞬间 | 自检界面出现前无可闻的啪声/爆音 |  |
@@ -106,6 +106,7 @@
 | 46 | 配网二维码（按屏幕像素格式存，`net_cards.cpp` 的 `flatten_qr()`） | `wifi ap on` 后用手机相机扫配网卡片上的二维码 | 黑白没有反，手机能识别并提示连接热点 | 用户 2026-11-04 确认能扫 |
 | 47 | 默认字体的 8 位字形缓存（`components/wisp_ui/src/a8_font.cpp`） | 看自检界面和配网卡片上的中、日、英文文字 | 与改动前一样：没有缺字、错字、发虚或错位 |  |
 | 48 | 开 XIP 后的待机与唤醒（`CONFIG_SPIRAM_XIP_FROM_PSRAM`） | 开 XIP 的固件上重复第 26–29 项（待机进入与唤醒、唤醒延迟、待机电流、多次浅睡眠） | 结果与第 26–29 项的预期一致；浅睡眠唤醒后没有花屏、复位或卡死 |  |
+| 49 | 网络校时（连接 spec 5.6，`net::TimeSyncService`、`wisp_port_esp` 的 `EspSntp`） | 连上 Wi-Fi 后看串口日志和自检界面"电源与时钟"卡片；再用 `mem` 看 `wisp.ntp` 任务；在管理后台"系统"页点"立即校时"；把 `ntp_servers` 改成 `down.invalid,ntp.aliyun.com` 再校时一次 | 拿到 IP 后几秒内出现 `time: synced from pool.ntp.org`（或回落到 `ntp.aliyun.com`）；卡片显示"Synced HH:MM"（本地时间）；`wisp.ntp` 栈在 PSRAM 且 high-water mark 余量足够（4096 字节栈），按实测调整 `NetWiring::kNtpStackBytes`；空闲时内部 RAM 不低于预算；第二次校时回落到 `ntp.aliyun.com` |  |
 
 ## 待机与省电（spec 6.7）
 
