@@ -7,10 +7,15 @@
 //   screen_off_s   power/screen_off_s  int 0 (never) or 15-3600  (default 60)
 //   language       sys/lang            "zh", "ja" or "en"        (default "zh")
 //   utc_offset_min sys/tz_min          int -720 to 840           (default 480)
+//   ntp_servers    sys/ntp             1-2 hosts, comma-separated
+//                                      (default kDefaultNtpServers)
 // A stored value set() would refuse reads back as its default.
 // utc_offset_min is the local time zone as minutes east of UTC (UTC-12:00
 // to UTC+14:00, half and quarter hours included); scenes read it as
 // wisp.device.info().utc_offset (scene-runtime-core spec 5.2).
+// ntp_servers lists the time servers net::TimeSyncService tries in order:
+// each a host name or an IPv4 address of 1-63 characters [A-Za-z0-9.-],
+// no spaces (connectivity spec 5.4).
 // The consumers (App at boot, the audio path, PowerManager::tick()) read
 // these keys fresh, so only brightness needs an explicit "apply now" hook.
 // The device UI language follows `on_changed` (spec 8.3): App publishes it
@@ -33,15 +38,19 @@
 
 namespace wisp::core {
 
+inline constexpr const char* kDefaultNtpServers = "pool.ntp.org,ntp.aliyun.com";
+
 struct SystemSettingsValues {
     int brightness;
     int volume;
     int screen_off_s;
     std::string language;
     int utc_offset_min;
+    std::string ntp_servers;
 };
 
-// {"brightness", "volume", "screen_off_s", "language", "utc_offset_min"}:
+// {"brightness", "volume", "screen_off_s", "language", "utc_offset_min",
+// "ntp_servers"}:
 // the shape of GET /settings and of the system.settings event payload.
 Map to_map(const SystemSettingsValues& values);
 
@@ -68,11 +77,10 @@ public:
     uint32_t revision() const;
 
     // Keys are "brightness", "volume", "screen_off_s", "utc_offset_min"
-    // (integers) and "language" (a string). An unknown key, a value of the wrong type or
-    // an out-of-range value fails the whole batch with InvalidArgument
-    // before anything is written. If the backend fails partway, the keys
-    // already written are restored (best effort) and the backend's error
-    // returned; the hooks only run once the whole batch is stored.
+    // (integers), "language" and "ntp_servers" (strings). An unknown key, a value of the wrong type
+    // or an out-of-range value fails the whole batch with InvalidArgument before anything is
+    // written. If the backend fails partway, the keys already written are restored (best effort)
+    // and the backend's error returned; the hooks only run once the whole batch is stored.
     Result<void> set(const std::map<std::string, Value>& changes);
 
 private:

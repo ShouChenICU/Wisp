@@ -46,7 +46,33 @@ const KeySpec kLanguage{"language", "sys", "lang", Value("zh"), valid_language};
 const KeySpec kUtcOffset{"utc_offset_min", "sys", "tz_min", Value(480),
                          [](const Value& v) { return int_in(v, -720, 840); }};
 
-const KeySpec* const kKeys[] = {&kBrightness, &kVolume, &kScreenOff, &kLanguage, &kUtcOffset};
+// One or two comma-separated time servers (connectivity spec 5.4), each a
+// host name or an IPv4 address: 1-63 characters of [A-Za-z0-9.-]. No
+// spaces, ports or IPv6 literals.
+bool valid_ntp_servers(const Value& v) {
+    if (v.type() != Value::Type::String) return false;
+    std::string_view list = v.as_string();
+    int entries = 0;
+    while (true) {
+        const size_t comma = list.find(',');
+        std::string_view entry = list.substr(0, comma);
+        if (entry.empty() || entry.size() > 63) return false;
+        for (char c : entry) {
+            const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                            (c >= '0' && c <= '9') || c == '.' || c == '-';
+            if (!ok) return false;
+        }
+        if (++entries > 2) return false;
+        if (comma == std::string_view::npos) return true;
+        list.remove_prefix(comma + 1);
+    }
+}
+
+const KeySpec kNtpServers{"ntp_servers", "sys", "ntp", Value(kDefaultNtpServers),
+                          valid_ntp_servers};
+
+const KeySpec* const kKeys[] = {&kBrightness, &kVolume,    &kScreenOff,
+                                &kLanguage,   &kUtcOffset, &kNtpServers};
 
 const KeySpec* find_spec(std::string_view name) {
     for (const KeySpec* spec : kKeys) {
@@ -69,9 +95,12 @@ Value read(SettingsBackend& backend, const KeySpec& spec) {
 
 Map to_map(const SystemSettingsValues& values) {
     return Map{
-        {"brightness", Value(values.brightness)},         {"volume", Value(values.volume)},
-        {"screen_off_s", Value(values.screen_off_s)},     {"language", Value(values.language)},
+        {"brightness", Value(values.brightness)},
+        {"volume", Value(values.volume)},
+        {"screen_off_s", Value(values.screen_off_s)},
+        {"language", Value(values.language)},
         {"utc_offset_min", Value(values.utc_offset_min)},
+        {"ntp_servers", Value(values.ntp_servers)},
     };
 }
 
@@ -89,6 +118,7 @@ SystemSettingsValues SystemSettings::get() const {
     values.screen_off_s = static_cast<int>(read(backend_, kScreenOff).as_int());
     values.language = read(backend_, kLanguage).as_string();
     values.utc_offset_min = static_cast<int>(read(backend_, kUtcOffset).as_int());
+    values.ntp_servers = read(backend_, kNtpServers).as_string();
     return values;
 }
 

@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "support/temp_dir.hpp"
@@ -41,6 +42,37 @@ TEST(SystemSettings, Defaults) {
     EXPECT_EQ(v.screen_off_s, 60);
     EXPECT_EQ(v.language, "zh");
     EXPECT_EQ(v.utc_offset_min, 480);
+    EXPECT_EQ(v.ntp_servers, "pool.ntp.org,ntp.aliyun.com");
+}
+
+// The time servers, stored as sys/ntp: one or two host names or IPv4
+// addresses separated by a comma, each 1-63 characters of [A-Za-z0-9.-].
+TEST(SystemSettings, NtpServersValidateAndAreStored) {
+    Fixture fx;
+    for (const char* ok : {"time.example.com", "192.168.1.1", "a,b", "ntp-1.example.org,10.0.0.1",
+                           "UPPER.Example.COM"}) {
+        ASSERT_TRUE(fx.settings.set({{"ntp_servers", ok}})) << ok;
+        EXPECT_EQ(fx.settings.get().ntp_servers, ok);
+        EXPECT_EQ(Settings(fx.backend, "sys").get_string("ntp", ""), ok);
+    }
+    EXPECT_EQ(fx.changed.back().ntp_servers, "UPPER.Example.COM");
+    const std::string long64(64, 'a');
+    const std::string long63(63, 'a');
+    ASSERT_TRUE(fx.settings.set({{"ntp_servers", long63 + "," + long63}}));
+    for (const wisp::Value& bad :
+         {wisp::Value(""), wisp::Value(","), wisp::Value("a,"), wisp::Value(",a"),
+          wisp::Value("a,b,c"), wisp::Value("a b"), wisp::Value("a, b"), wisp::Value("a_b"),
+          wisp::Value("a:123"), wisp::Value("[::1]"), wisp::Value(long64),
+          wisp::Value("a," + long64), wisp::Value(1), wisp::Value(true),
+          wisp::Value(wisp::List{})}) {
+        auto r = fx.settings.set({{"ntp_servers", bad}, {"volume", 30}});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    EXPECT_EQ(fx.settings.get().ntp_servers, long63 + "," + long63);
+    EXPECT_EQ(fx.settings.get().volume, 60);
+    EXPECT_EQ(wisp::core::to_map(fx.settings.get()).at("ntp_servers"),
+              wisp::Value(long63 + "," + long63));
 }
 
 // The time zone as minutes east of UTC, stored as sys/tz_min: UTC-12:00
@@ -74,7 +106,9 @@ TEST(SystemSettings, OutOfRangeStoredValuesReadAsDefaults) {
     ASSERT_TRUE(Settings(fx.backend, "display").set("brightness", int64_t{4294967496}));
     ASSERT_TRUE(Settings(fx.backend, "audio").set("volume", int64_t{-5}));
     ASSERT_TRUE(Settings(fx.backend, "power").set("screen_off_s", int64_t{5}));
+    ASSERT_TRUE(Settings(fx.backend, "sys").set("ntp", "a b,c"));
     auto v = fx.settings.get();
+    EXPECT_EQ(v.ntp_servers, "pool.ntp.org,ntp.aliyun.com");
     EXPECT_EQ(v.utc_offset_min, 480);
     EXPECT_EQ(v.brightness, 200);
     EXPECT_EQ(v.volume, 60);
