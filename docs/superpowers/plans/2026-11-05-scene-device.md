@@ -786,6 +786,15 @@ TEST(AppScenes, RestoresAfterBootCompleted)                    // 预置 backgro
 - 重装一个正在后台的场景：目前 `install_scene` 用 `exit()` 彻底关掉它、装完不重新启动。按 3a spec 6.3（安装覆盖运行中的场景等同重载），装完应在后台重新启动它（例如给 `SceneHost` 加一个钩子，因为 `SceneHost` 没有 `launch`），并更新后台列表。加测试。
 - `AppScenes.RestoresAfterBootCompleted` 或恢复失败的测试要断言实际发出的系统通知：代码（`kRestoreFailed`/`kSceneError`）和参数（场景名），覆盖 `scene_wiring.cpp` 中 `SceneNotice` → `post_system` 的映射。
 
+**执行记录**：
+- `VmPool` 用原子计数，`Vm` 的分配器在自身上限之外再向池子预留每次增长、释放时归还；池子拒绝的分配同样先让 Lua 做紧急 GC 重试，再失败就是内存错误，文字为 `scene memory budget 3 MB exceeded`（区别于单个 VM 的 `memory limit 2 MB exceeded`）。`SceneRuntime` 自己持有池子（`config.vm.pool` 被忽略），`config.max_background` 超过 `kMaxBackground` 时按后者算；私有的 `kMaxBackground` 去掉。
+- 检查点：打开场景（`go_back` 之后、建槽之前，`opening`）、转入后台（`to_background` 末尾，切回前台时把要切回的场景算作前台）、切回前台，以及有前台场景时每条消息和每轮定时器之前。没有可淘汰的情况下不分配内存。被淘汰的场景按 `exit` 关闭（`on_close`、刷盘），记 `<id>: evicted (...)`，再 `on_notice`。
+- 开机启动遇到后台已满时仍然拒绝（`Busy`），不淘汰别的场景：它从未在前台，按"最久未在前台"它自己就是该淘汰的那个（裁定）。
+- 后台列表除了后台场景，还包含还在加载的开机启动（排在最前，按启动顺序），所以恢复过程中不会因中途断电丢项，恢复成功时文件也不重写；一个开机启动失败（找不到、未声明 `background`、后台已满、`main.lua` 出错等）就从列表消失并重写。`restore_background()` 读到文件之前（`persisted_` 为空）一律不写，避免恢复前的变化覆盖上次开机的列表；测试里先调用它。列表在每轮消息末尾与上次写入的内容比较，有变化才交给 worker 写。
+- 开机启动在加载完成时才检查 `installing`/`removing`（这样拒绝也能发 `RestoreFailed`）；`main.lua` 或 `on_state` 出错时通知为 `RestoreFailed` 而不是 `Faulted`，状态仍是 `error`。
+- 开机启动遇到同一场景正在加载的用户打开时"搭车"（`PendingLoad::then_boot`）；之后的用户打开取代它时，它转成开机启动继续加载（`launch()` 为 `"boot"`，参数清空，原调用者收到 `Busy`）；用户打开取代同一场景的开机启动时继承这个标记和它在列表中的位置。
+- 重装：`core::SceneHost` 增加纯虚的 `open_background(id)`（`SceneRuntime` 实现为不发 `RestoreFailed` 的开机启动）；`install_scene` 对 `Background` 状态的场景在替换后调用它，`Running` 的照旧 `open()`。
+
 ---
 
 ### Task 8: `wisp.notify`、通知送达场景与提示音

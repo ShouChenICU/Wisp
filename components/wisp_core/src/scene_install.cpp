@@ -20,15 +20,19 @@ Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
     // may still have its last flush queued, and an open that began before
     // the install (repo.installing() refuses those that come after) has not
     // reached Running yet; closing runs behind either on the scene task.
-    // Only a scene that was running is opened again.
+    // Only a scene that was running is opened again: in front if it was
+    // there, in the background if it was there (scene-device spec 3.2).
     //
     // Never with the repository's lock held: closing waits on the storage
     // worker, which may itself be waiting for that lock in load().
     std::string reopen;
+    bool in_background = false;
     auto installed = repo.install(
         zip, [&host](std::span<const SourceFile> files) { return host.check_sources(files); },
         [&](const SceneManifest& m) -> Result<void> {
-            const bool was_running = host.status(m.id).state == SceneState::Running;
+            const SceneState was = host.status(m.id).state;
+            const bool was_running = was == SceneState::Running || was == SceneState::Background;
+            in_background = was == SceneState::Background;
             Result<void> closed = host.exit(m.id);
             if (!closed) {
                 // Nothing has been replaced. A close that timed out is still
@@ -51,7 +55,7 @@ Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
     if (!reopen.empty()) {
         // Whichever package is in place now: the new one, or the old one if
         // the replace failed.
-        Result<void> opened = host.open(reopen);
+        Result<void> opened = in_background ? host.open_background(reopen) : host.open(reopen);
         if (!opened) {
             const std::string tag = "scene." + reopen;
             WLOG_W(tag.c_str(), "reopen after install failed: %s", opened.error().message.c_str());

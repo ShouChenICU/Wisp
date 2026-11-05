@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,6 +23,7 @@
 #include "ui_net_harness.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/pairing_service.hpp"
@@ -683,4 +685,67 @@ TEST(AppScenes, DevModeReloadsTheSceneInFront) {
     wisp::os::sleep_ms(1500);
     EXPECT_EQ(rt->foreground(), std::optional<std::string>("counter"));
     EXPECT_EQ(rt->status("other").state, wisp::core::SceneState::Stopped);
+}
+
+// Spec 3.6: once boot completes, the scenes the list names come up in the
+// background; one that cannot, and one that fails there later, become
+// system notifications (code and the scene's name), and the list drops
+// the one that could not be restored.
+TEST(AppScenes, RestoresAfterBootCompleted) {
+    Booted b;
+    auto put_bg = [&](const std::string& id, const std::string& name, const std::string& lua) {
+        const fs::path dir = fs::path(b.h.root) / "scenes" / id;
+        fs::create_directories(dir);
+        std::ofstream(dir / "scene.json") << R"({"id":")" << id << R"(","name":")" << name
+                                          << R"(","version":"1.0.0","schema_version":1,)"
+                                          << R"("background":true})";
+        std::ofstream(dir / "main.lua") << lua;
+    };
+    put_bg("alpha", "Alpha",
+           "print(wisp.scene.launch()) return ui.screen { ui.label { text = 'a' } }");
+    put_bg("late", "Late", R"(
+wisp.timer.after(300, function() error("late") end)
+return ui.screen { ui.label { text = "late" } }
+)");
+    put_scene(b.h.root, "plain", "Plain", "return ui.screen { ui.label { text = 'p' } }");
+    const fs::path list = fs::path(b.h.root) / "system" / "scenes" / "background.json";
+    fs::create_directories(list.parent_path());
+    std::ofstream(list) << R"({"ids":["alpha","gone","plain","late"]})";
+
+    ASSERT_TRUE(b.start());
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    ASSERT_TRUE(wait_until(
+        [&] { return rt->status("alpha").state == wisp::core::SceneState::Background; }, 3000));
+    EXPECT_EQ(scene_log("alpha"), (std::vector<std::string>{"boot"}));
+    EXPECT_EQ(rt->foreground(), std::nullopt);
+    ASSERT_TRUE(wait_until(
+        [&] { return rt->status("late").state == wisp::core::SceneState::Error; }, 3000));
+
+    wisp::core::NotificationService* notes = b.h.app->notifications();
+    ASSERT_NE(notes, nullptr);
+    auto system_notices = [&] {
+        std::vector<std::string> out;
+        for (const auto& n : notes->unread())
+            if (n.source == wisp::core::kSystemSource) out.push_back(n.code + " " + n.arg);
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    const std::vector<std::string> want = {
+        std::string(wisp::core::notice::kRestoreFailed) + " Plain",
+        std::string(wisp::core::notice::kRestoreFailed) + " gone",
+        std::string(wisp::core::notice::kSceneError) + " Late",
+    };
+    EXPECT_TRUE(wait_until([&] { return system_notices() == want; }, 3000))
+        << ::testing::PrintToString(system_notices());
+
+    // The list keeps what came up: alpha, and late until it failed.
+    auto read_list = [&] {
+        std::ifstream f(list);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        return ss.str();
+    };
+    EXPECT_TRUE(wait_until([&] { return read_list() == R"({"ids":["alpha"]})"; }, 3000))
+        << read_list();
 }

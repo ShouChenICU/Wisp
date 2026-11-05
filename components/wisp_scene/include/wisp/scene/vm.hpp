@@ -51,7 +51,8 @@
 // is not timed at all.
 //
 // Limits: the allocator counts every byte in PSRAM and refuses requests
-// past VmLimits::memory_bytes; a count hook checks the time every
+// past VmLimits::memory_bytes, or past what VmLimits::pool (the budget all
+// scenes share) has left; a count hook checks the time every
 // VmLimits::hook_instructions instructions. After refusing a request,
 // Lua's core runs an emergency full GC and repeats the identical request
 // once; if that retry succeeds there is no fault. The same request
@@ -90,6 +91,7 @@
 // (e.g. in Vm's own C++ methods) a raising API call reaches the panic handler and aborts, so only
 // non-raising APIs are used there.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -117,10 +119,40 @@ struct ScriptError {
     std::string text() const;
 };
 
+// What every scene VM together may hold (scene-device spec 3.5).
+inline constexpr size_t kVmBudgetBytes = 3 * 1024 * 1024;
+
+// The memory budget several VMs share. Each Vm whose limits name the pool
+// reserves every growth of its heap here as well as against its own
+// limit, and gives back every byte it frees (all of it when it is
+// destroyed); a growth the pool has no room for is refused like one past
+// the VM's own limit. Any thread. Must outlive every Vm that uses it.
+class VmPool {
+public:
+    explicit VmPool(size_t budget_bytes = kVmBudgetBytes) : budget_(budget_bytes) {}
+
+    VmPool(const VmPool&) = delete;
+    VmPool& operator=(const VmPool&) = delete;
+
+    // Takes `bytes` from the budget; false (nothing taken) if it does not
+    // have that many left.
+    bool reserve(size_t bytes);
+    void release(size_t bytes);
+    size_t used() const { return used_.load(std::memory_order_relaxed); }
+    size_t budget() const { return budget_; }
+
+private:
+    const size_t budget_;
+    std::atomic<size_t> used_{0};
+};
+
 struct VmLimits {
     size_t memory_bytes = 2 * 1024 * 1024;
     uint32_t exec_ms = 200;
     int hook_instructions = 1000;
+    // The budget this VM shares with others; null: none, only
+    // memory_bytes applies.
+    VmPool* pool = nullptr;
 };
 
 // Returns the contents of a file in the scene package ("lib/util.lua"),
@@ -155,6 +187,7 @@ public:
     lua_State* L() const { return L_; }
     const std::string& scene_id() const { return scene_id_; }
     // Bytes the Lua heap holds right now; never above limits.memory_bytes.
+    // The pool, if any, holds exactly this much for this VM.
     size_t used_bytes() const { return used_; }
 
     // Where wisp.import reads lib/ files from.
@@ -195,7 +228,8 @@ public:
     static Vm* of(lua_State* L);
 
 private:
-    enum class Fault : uint8_t { None, Timeout, Memory };
+    // Memory: past limits.memory_bytes; Budget: past the pool's budget.
+    enum class Fault : uint8_t { None, Timeout, Memory, Budget };
 
     Vm(std::string scene_id, VmLimits limits, std::function<uint64_t()> now_ms);
 
@@ -235,6 +269,8 @@ private:
     // A refused request Lua has not yet retried successfully, for the
     // memory fault rule above.
     bool refused_ = false;
+    // The pool refused it (not memory_bytes).
+    bool refused_by_pool_ = false;
     void* refused_ptr_ = nullptr;
     size_t refused_osize_ = 0;
     size_t refused_nsize_ = 0;

@@ -49,6 +49,11 @@ public:
     virtual Result<void> exit(const std::string& id) = 0;
     // Closes and opens `id` again with the same arguments; its data stays.
     virtual Result<void> reload(const std::string& id) = 0;
+    // Starts `id` in the background, without a view (scene-device spec
+    // 3.2, 3.6): what a reload is for a scene that was there. Ok and
+    // nothing changes if it is already running; InvalidArgument if its
+    // scene.json does not declare "background".
+    virtual Result<void> open_background(const std::string& id) = 0;
     // Stopped for a scene this host has not run.
     virtual SceneStatus status(const std::string& id) const = 0;
     // Compiles (never runs) every file the way a scene loads it, on the

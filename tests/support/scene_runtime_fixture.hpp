@@ -3,8 +3,9 @@
 // Test-only: a SceneRuntime on a UiRuntime with a fake 480x480 display, a
 // storage worker, an event bus and a SceneRepository in a temp dir, plus
 // helpers to install packages and read what the scenes logged and showed.
-// configure_deps() lets a test fill in the optional SceneRuntimeDeps
-// fields before start() makes the runtime. UiStall holds the UI thread up.
+// configure_deps() and configure_config() let a test fill in the optional
+// SceneRuntimeDeps fields and the config before start() makes the runtime. UiStall holds the UI
+// thread up.
 
 #include <gtest/gtest.h>
 
@@ -128,7 +129,9 @@ protected:
         });
         wisp::scene::SceneRuntimeDeps deps{bus, *storage, worker, *repo, *ui, *layer, shape};
         if (configure_deps) configure_deps(deps);
-        rt = std::make_unique<wisp::scene::SceneRuntime>(std::move(deps));
+        wisp::scene::SceneRuntimeConfig config;
+        if (configure_config) configure_config(config);
+        rt = std::make_unique<wisp::scene::SceneRuntime>(std::move(deps), config);
         ASSERT_TRUE(rt->start());
     }
 
@@ -230,6 +233,8 @@ protected:
     std::unique_ptr<wisp::scene::SceneRuntime> rt;
     // Called with the deps before start() makes the runtime.
     std::function<void(wisp::scene::SceneRuntimeDeps&)> configure_deps;
+    // Called with the config before start() makes the runtime.
+    std::function<void(wisp::scene::SceneRuntimeConfig&)> configure_config;
     std::mutex mutex;
     std::vector<StateEvent> state_events;
 };

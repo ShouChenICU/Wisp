@@ -425,6 +425,9 @@ Result<void> App::start() {
     impl_->platform.emit_line("WISP_MANIFEST " + to_json(impl_->registry.manifest(board_name)));
 
     impl_->bus.publish({"system.boot.completed", "app", 0, {}});
+    // Spec 3.6: the scenes that were in the background come back once boot
+    // has completed (in the background, read and started off this task).
+    if (impl_->scenes) impl_->scenes->restore_background();
 
     // Last, so a command never sees a half-built App.
     start_console(*this);

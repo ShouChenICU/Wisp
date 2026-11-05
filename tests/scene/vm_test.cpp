@@ -1459,3 +1459,57 @@ TEST(Vm, PushCheckedFunctionTakesOnlyCFunctionsOnce) {
         lua_settop(L, 0);
     }
 }
+
+TEST(VmPool, ReserveAndRelease) {
+    wisp::scene::VmPool pool(1000);
+    EXPECT_EQ(pool.budget(), 1000u);
+    EXPECT_EQ(pool.used(), 0u);
+    EXPECT_TRUE(pool.reserve(600));
+    EXPECT_TRUE(pool.reserve(400));
+    EXPECT_EQ(pool.used(), 1000u);
+    // Past the budget: nothing is reserved.
+    EXPECT_FALSE(pool.reserve(1));
+    EXPECT_EQ(pool.used(), 1000u);
+    pool.release(400);
+    EXPECT_EQ(pool.used(), 600u);
+    EXPECT_FALSE(pool.reserve(401));
+    EXPECT_TRUE(pool.reserve(400));
+    pool.release(1000);
+    EXPECT_EQ(pool.used(), 0u);
+    EXPECT_EQ(wisp::scene::VmPool().budget(), wisp::scene::kVmBudgetBytes);
+    EXPECT_EQ(wisp::scene::kVmBudgetBytes, 3u * 1024 * 1024);
+}
+
+// Two VMs share a 1 MiB pool: each stays far below its own 2 MB limit,
+// yet the second one's big table does not fit next to the first one's.
+TEST(VmPool, AllocationFailsPastPool) {
+    wisp::scene::VmPool pool(1024 * 1024);
+    FakeClock clock;
+    auto a = make(clock, VmLimits{.pool = &pool}, "a");
+    auto b = make(clock, VmLimits{.pool = &pool}, "b");
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(pool.used(), a->used_bytes() + b->used_bytes());
+
+    auto err = run(*a, "_G.keep = string.rep('a', 600 * 1024)");
+    ASSERT_FALSE(err) << describe(err);
+    EXPECT_EQ(pool.used(), a->used_bytes() + b->used_bytes());
+
+    err = run(*b, "_G.keep = {} for i = 1, 100000 do _G.keep[i] = i * 1.5 end");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->fault, ScriptFault::Memory);
+    EXPECT_EQ(err->message, "scene memory budget 1 MB exceeded");
+    EXPECT_TRUE(b->faulted());
+    EXPECT_LE(pool.used(), pool.budget());
+
+    // The first one is untouched and goes on.
+    EXPECT_FALSE(a->faulted());
+    err = run(*a, "assert(#_G.keep == 600 * 1024) _G.more = {1, 2, 3}");
+    EXPECT_FALSE(err) << describe(err);
+
+    // Whatever a VM held goes back to the pool with it.
+    b.reset();
+    EXPECT_EQ(pool.used(), a->used_bytes());
+    a.reset();
+    EXPECT_EQ(pool.used(), 0u);
+}

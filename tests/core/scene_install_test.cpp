@@ -181,6 +181,10 @@ public:
         if (forced_state) return SceneStatus{*forced_state, "main.lua:1: boom"};
         return SceneStatus{running_ ? SceneState::Running : SceneState::Stopped, {}};
     }
+    Result<void> open_background(const std::string& id) override {
+        log("background " + id);
+        return Result<void>::ok();
+    }
     Result<void> check_sources(std::span<const SourceFile>) override { return Result<void>::ok(); }
     void on_installed(const std::string& id) override {
         log("installed " + id);
@@ -385,4 +389,16 @@ TEST(SceneInstall, AnErroredSceneIsClosedFirstAndNotReopened) {
     ASSERT_TRUE(r) << r.error().message;
     EXPECT_EQ(fx.host->calls(), (std::vector<std::string>{"exit todo", "installed todo",
                                                           "exit todo", "installed todo"}));
+}
+
+// scene-runtime-core spec 6.3 for a scene in the background (scene-device
+// spec 3.2): closed for the swap, then started in the background again.
+TEST(SceneInstall, ReinstallOfABackgroundSceneStartsItThereAgain) {
+    Fixture fx;
+    ASSERT_TRUE(wisp::core::install_scene(*fx.repo, *fx.host, todo_zip(0, 2)));
+    fx.host->forced_state = SceneState::Background;
+    auto r = wisp::core::install_scene(*fx.repo, *fx.host, todo_zip(1, 2));
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_EQ(fx.host->calls(), (std::vector<std::string>{"exit todo", "installed todo",
+                                                          "exit todo", "background todo"}));
 }

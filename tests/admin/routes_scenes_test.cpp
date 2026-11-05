@@ -101,6 +101,9 @@ public:
     Result<void> reload(const std::string& id) override {
         return record("reload " + id, SceneState::Running);
     }
+    Result<void> open_background(const std::string& id) override {
+        return record("background " + id, SceneState::Background);
+    }
     SceneStatus status(const std::string& id) const override {
         std::lock_guard<std::mutex> lock(mu);
         auto it = states.find(id);

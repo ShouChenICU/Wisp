@@ -9,6 +9,7 @@
 
 #include "scene_instance.hpp"
 #include "scene_message.hpp"
+#include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/scene_store.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -34,6 +35,33 @@ std::string scene_tag(std::string_view id) {
     std::string tag = "scene.";
     tag.append(id);
     return tag;
+}
+
+// The ids of the background list at `path` (scene-device spec 3.6):
+// {"ids": [...]}, each a non-empty string, once. A missing file is an
+// empty list; an unreadable one is logged and empty too. On the worker.
+std::vector<std::string> read_background_list(core::StorageManager& storage,
+                                              const std::string& path) {
+    std::vector<std::string> ids;
+    auto data = storage.read_file(path);
+    if (!data) {
+        if (data.error().code != ErrorCode::NotFound)
+            WLOG_W(kTag, "background list not read: %s", data.error().message.c_str());
+        return ids;
+    }
+    auto v = from_json(
+        std::string_view(reinterpret_cast<const char*>(data.value().data()), data.value().size()));
+    const Value* list = v ? v.value().find("ids") : nullptr;
+    if (list == nullptr || list->type() != Value::Type::List) {
+        WLOG_W(kTag, "background list unreadable; nothing restored");
+        return ids;
+    }
+    for (const Value& id : list->as_list()) {
+        if (id.type() != Value::Type::String || id.as_string().empty()) continue;
+        if (std::find(ids.begin(), ids.end(), id.as_string()) == ids.end())
+            ids.push_back(id.as_string());
+    }
+    return ids;
 }
 
 os::LargeUnique<SceneMessage> make_message(std::string id, uint32_t instance, msg::Body body) {
@@ -86,6 +114,11 @@ struct SceneRuntime::Slot {
     // when it last went to the background.
     uint64_t last_front_ms = 0;
     uint64_t background_since_ms = 0;
+    // Orders scenes that left the front in the same millisecond (and
+    // those never in front): taken each time it goes to the background.
+    uint64_t seq = 0;
+    // Starting from a boot launch: a failure is a RestoreFailed notice.
+    bool restoring = false;
     MinuteTicker ticker;
     // What the scene last saw, for "battery" and "lang".
     bool has_battery = false;
@@ -108,9 +141,12 @@ struct SceneRuntime::UiSide {
 SceneRuntime::SceneRuntime(SceneRuntimeDeps deps, SceneRuntimeConfig config)
     : deps_(std::move(deps)),
       config_(config),
+      pool_(config.vm_budget),
       queue_(config.queue_capacity),
       link_(std::allocate_shared<Link>(os::LargeAllocator<Link>())) {
     link_->rt = this;
+    config_.vm.pool = &pool_;
+    config_.max_background = std::min(config_.max_background, kMaxBackground);
 }
 
 void SceneRuntime::seed_utc_offset(int minutes) {
@@ -291,12 +327,42 @@ Result<void> SceneRuntime::open(const std::string& id, Value args) {
 }
 
 Result<void> SceneRuntime::launch(const std::string& id, LaunchReason reason, Value args) {
-    if (deps_.repo.installing(id))
-        return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being installed");
-    if (deps_.repo.removing(id))
-        return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being deleted");
+    return launch_load(id, reason, std::move(args), reason == LaunchReason::Boot);
+}
+
+Result<void> SceneRuntime::open_background(const std::string& id) {
+    return launch_load(id, LaunchReason::Boot, {}, false);
+}
+
+Result<void> SceneRuntime::launch_load(const std::string& id, LaunchReason reason, Value args,
+                                       bool restore) {
+    // A boot launch is refused for these when its load arrives, where the
+    // refusal can be a notice (finish_open()).
+    if (reason != LaunchReason::Boot) {
+        if (deps_.repo.installing(id))
+            return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being installed");
+        if (deps_.repo.removing(id))
+            return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being deleted");
+    }
     auto waiter = std::make_shared<SceneWaiter>();
-    return request(make_message(id, 0, msg::Load{std::move(args), waiter, reason}), waiter);
+    return request(make_message(id, 0, msg::Load{std::move(args), waiter, reason, restore}),
+                   waiter);
+}
+
+void SceneRuntime::restore_background() {
+    if (!running_ || deps_.background_list_path.empty()) return;
+    core::StorageManager& storage = deps_.storage;
+    // Read on the worker (the scene task touches no flash), then handed to
+    // the scene task as one message, so every launch in it is queued at
+    // once and the list is compared with the file only after all of them.
+    bool queued = deps_.worker.submit([link = link_, &storage, path = deps_.background_list_path] {
+        auto m = make_message("", 0, msg::Restore{read_background_list(storage, path)});
+        std::lock_guard<os::Mutex> lock(link->mu);
+        if (link->rt == nullptr) return;
+        if (!post_scene_message(*link->rt, std::move(m)))
+            WLOG_W(kTag, "background scenes not restored: scene queue full");
+    });
+    if (!queued) WLOG_W(kTag, "background scenes not restored: storage worker busy");
 }
 
 Result<void> SceneRuntime::close(const std::string& id) {
@@ -444,6 +510,8 @@ void SceneRuntime::run() {
         if (queue_.pop(raw, timeout)) {
             os::LargeUnique<SceneMessage> m(raw);
             const uint64_t t0 = os::now_ms();
+            // Spec 3.5: before each message while a scene is in front.
+            if (front_ != nullptr) enforce_limits(false);
             handle(*m);
             close_if_asked();
             const uint64_t ms = os::now_ms() - t0;
@@ -455,7 +523,9 @@ void SceneRuntime::run() {
             }
         }
         run_delayed();
+        if (front_ != nullptr) enforce_limits(false);
         run_scene_clock();
+        persist_background();
     }
 }
 
@@ -511,7 +581,7 @@ SceneRuntime::Slot* SceneRuntime::target(const SceneMessage& m) {
 void SceneRuntime::handle(SceneMessage& m) {
     msg::Body& body = m.body;
     if (auto* b = std::get_if<msg::Load>(&body)) {
-        begin_open(m.scene_id, std::move(b->args), b->reason, b->done);
+        begin_open(m.scene_id, std::move(b->args), b->reason, b->restore, b->done);
     } else if (std::holds_alternative<msg::Open>(body)) {
         finish_open(m);
     } else if (auto* b = std::get_if<msg::Close>(&body)) {
@@ -549,7 +619,7 @@ void SceneRuntime::handle(SceneMessage& m) {
             Value args = s != nullptr ? s->args : Value();
             // One in front closes in begin_open(), ahead of the load.
             if (s != nullptr && s != front_) close_slot(*s);
-            begin_open(m.scene_id, std::move(args), LaunchReason::User, b->done);
+            begin_open(m.scene_id, std::move(args), LaunchReason::User, false, b->done);
         }
     } else if (std::holds_alternative<msg::Show>(body)) {
         const bool came_on = !visible_;
@@ -595,32 +665,41 @@ void SceneRuntime::handle(SceneMessage& m) {
             }
         }
         job.finish_locked(std::move(r));
+    } else if (auto* b = std::get_if<msg::Restore>(&body)) {
+        restore(std::move(b->ids));
     } else if (std::holds_alternative<msg::Quit>(body)) {
+        // First: the scenes closed here stay on the background list
+        // (persist_background() writes nothing from now on).
+        quit_ = true;
         for (uint32_t instance : instances())
             if (Slot* s = find(instance)) close_slot(*s);
-        quit_ = true;
     }
     // msg::Wake: run() looks at the deadlines next.
 }
 
-void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason reason,
+void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason reason, bool restore,
                               std::shared_ptr<SceneWaiter> waiter) {
     Slot* running = find_id(id);
     const bool boot = reason == LaunchReason::Boot;
     if (boot) {
         // Already running, or a load of it is on its way: nothing to
         // start, and nothing else is touched (a user open still loading
-        // stays).
-        const bool coming = std::any_of(loading_.begin(), loading_.end(),
-                                        [&](const PendingLoad& p) { return p.id == id; });
-        if (running != nullptr || coming) {
+        // stays). Riding on a user open, it is not lost if a later open
+        // supersedes that one (PendingLoad).
+        auto coming = std::find_if(loading_.begin(), loading_.end(),
+                                   [&](const PendingLoad& p) { return p.id == id; });
+        if (coming != loading_.end() && coming->reason != LaunchReason::Boot) {
+            coming->then_boot = true;
+            coming->restore = coming->restore || restore;
+        }
+        if (running != nullptr || coming != loading_.end()) {
             if (waiter) waiter->finish(Result<void>::ok());
             return;
         }
     } else if (running != nullptr && running->background) {
         // Nothing to load; the user opens still on their way were
         // superseded by this one.
-        cancel_user_loads();
+        supersede_loads({});
         resume(*running, std::move(waiter));
         return;
     }
@@ -631,14 +710,19 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
     if (running != nullptr) close_slot(*running);
     const uint32_t instance = next_instance_++;
     if (next_instance_ == 0) next_instance_ = 1;
+    PendingLoad load{instance, id, reason, restore, false, next_seq_++};
     // A user open supersedes the other user opens (the latest one wins)
-    // and a boot launch of the same scene (it wants it in front).
+    // and a boot launch of the same scene (it wants it in front), whose
+    // place in the background list it keeps.
     if (!boot) {
-        std::erase_if(loading_, [&](const PendingLoad& p) {
-            return p.reason != LaunchReason::Boot || p.id == id;
-        });
+        const Carried carried = supersede_loads(id);
+        if (carried.then_boot) {
+            load.then_boot = true;
+            load.restore = carried.restore;
+            load.seq = carried.seq;
+        }
     }
-    loading_.push_back({instance, id, reason});
+    loading_.push_back(std::move(load));
 
     std::shared_ptr<Link> link = link_;
     core::StorageWorker& worker = deps_.worker;
@@ -699,8 +783,25 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         done(Result<void>::err(ErrorCode::Busy, "superseded by another open or a close"));
         return;
     }
+    const PendingLoad load = *pending;
     loading_.erase(pending);
     const std::string id = m.scene_id;
+    const LaunchReason reason = load.reason;
+    const bool boot = reason == LaunchReason::Boot;
+    if (boot && open.reason != LaunchReason::Boot) {
+        // A user open a later one superseded, carried on for the boot
+        // launch that rode on it: its caller hears it was superseded, and
+        // the scene starts as a boot launch would (no arguments).
+        done(Result<void>::err(ErrorCode::Busy, "superseded by another open"));
+        open.done = nullptr;
+        open.args = Value();
+    }
+    const std::string name = open.package ? open.package->manifest.name : id;
+    // A refusal of a boot launch (or of a user open one rode on) is the
+    // restore failing.
+    auto refused = [&](const char* why) {
+        if (load.restore) restore_failed(id, name, why);
+    };
     if (open.error.code == ErrorCode::Ok &&
         (deps_.repo.installing(id) || deps_.repo.removing(id))) {
         // Loaded before an install or a delete of it began: the package
@@ -709,6 +810,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         WLOG_W(kTag, "%s: not opened: it is being %s", id.c_str(),
                installing ? "installed" : "deleted");
         if (open.store) open.store->close();
+        refused(installing ? "it is being installed" : "it is being deleted");
         done(Result<void>::err(ErrorCode::Busy, "scene " + id + " is being " +
                                                     (installing ? "installed" : "deleted")));
         return;
@@ -716,16 +818,17 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     if (open.error.code != ErrorCode::Ok) {
         if (open.error.code == ErrorCode::NotFound) {
             WLOG_W(kTag, "%s: no such scene", id.c_str());
+            refused("no such scene");
         } else {
             std::string text = "cannot load: " + open.error.message;
             WLOG_E(scene_tag(id).c_str(), "%s", text.c_str());
             set_status(id, core::SceneState::Error, text);
             publish(id, "error");
+            refused("cannot load");
         }
         done(Result<void>::err(open.error.code, open.error.message));
         return;
     }
-    const bool boot = open.reason == LaunchReason::Boot;
     if (boot && find_id(id) != nullptr) {
         // Already running (begin_open() lets no other load of it start
         // while this one is out; this only keeps two slots of one scene
@@ -734,31 +837,48 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         done(Result<void>::ok());
         return;
     }
-    if (boot && background_count(nullptr) >= kMaxBackground) {
-        WLOG_W(kTag, "%s: not started: %u scenes already run in the background", id.c_str(),
-               static_cast<unsigned>(kMaxBackground));
+    if (boot && !open.package->manifest.background) {
+        WLOG_W(kTag, "%s: not started in the background: its scene.json does not declare it",
+               id.c_str());
         open.store->close();
+        refused("it does not declare \"background\"");
+        done(Result<void>::err(ErrorCode::InvalidArgument,
+                               "scene " + id + " does not declare \"background\""));
+        return;
+    }
+    if (boot && background_count(nullptr) >= config_.max_background) {
+        WLOG_W(kTag, "%s: not started: %u scenes already run in the background", id.c_str(),
+               static_cast<unsigned>(config_.max_background));
+        open.store->close();
+        refused("too many scenes in the background");
         done(Result<void>::err(ErrorCode::Busy, "too many scenes in the background"));
         return;
     }
     // Never two slots of one scene (begin_open() closed it or brought it
     // forward instead of loading it).
     if (Slot* old = find_id(id)) close_slot(*old);
-    if (!boot && front_ != nullptr) go_back(*front_, nullptr);
-    if (slots_.size() >= kMaxSlots) {
-        // Never: the scene in front just left, and the background keeps
-        // to kMaxBackground.
+    if (!boot) {
+        if (front_ != nullptr) go_back(*front_, nullptr);
+        // Spec 3.5: room for the scene about to open.
+        enforce_limits(true);
+    }
+    if (slots_.size() > config_.max_background) {
+        // Never: the scene in front just left (a boot launch keeps it, but
+        // the background had room for one more), and the background keeps
+        // to max_background.
         WLOG_E(kTag, "%s: not opened: %u scenes already run", id.c_str(),
                static_cast<unsigned>(slots_.size()));
         open.store->close();
+        refused("too many scenes running");
         done(Result<void>::err(ErrorCode::Busy, "too many scenes running"));
         return;
     }
 
-    Slot* added = add_slot(m);
+    Slot* added = add_slot(m, reason);
     if (added == nullptr) {
         WLOG_E(kTag, "%s: no memory for the scene", id.c_str());
         open.store->close();
+        refused("no memory for the scene");
         done(Result<void>::err(ErrorCode::NoMemory, "no memory for the scene"));
         return;
     }
@@ -769,14 +889,18 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     };
 
     if (boot) {
-        // Spec 3.6: the tree is built, but no view and no on_show.
+        // Spec 3.6: the tree is built, but no view and no on_show. A
+        // script error here is the restore failing (fault()).
         const uint64_t now = os::now_ms();
         s.background = true;
         s.background_since_ms = now;
+        s.seq = load.seq;
+        s.restoring = load.restore;
         s.scene->api().background = true;
         update_background_list();
         if (!run_step(s, s.scene->start())) return failed();
         if (!run_step(s, s.scene->hook("on_state", "background"))) return failed();
+        s.restoring = false;
         set_status(id, core::SceneState::Background, "");
         publish(id, "background");
         done(Result<void>::ok());
@@ -807,8 +931,124 @@ void SceneRuntime::cancel_loads(std::string_view id) {
     std::erase_if(loading_, [&](const PendingLoad& p) { return p.id == id; });
 }
 
-void SceneRuntime::cancel_user_loads() {
-    std::erase_if(loading_, [](const PendingLoad& p) { return p.reason != LaunchReason::Boot; });
+SceneRuntime::Carried SceneRuntime::supersede_loads(std::string_view id) {
+    Carried carried;
+    for (PendingLoad& p : loading_) {
+        if (!id.empty() && p.id == id) {
+            if (p.reason == LaunchReason::Boot || p.then_boot) {
+                carried.then_boot = true;
+                carried.restore = carried.restore || p.restore;
+                carried.seq = p.seq;
+            }
+        } else if (p.reason != LaunchReason::Boot && p.then_boot) {
+            // The boot launch that rode on it carries on alone.
+            p.reason = LaunchReason::Boot;
+            p.then_boot = false;
+        }
+    }
+    std::erase_if(loading_, [&](const PendingLoad& p) {
+        return (!id.empty() && p.id == id) || p.reason != LaunchReason::Boot;
+    });
+    return carried;
+}
+
+void SceneRuntime::restore_failed(const std::string& id, const std::string& name, const char* why) {
+    WLOG_W(kTag, "%s: not restored: %s", id.c_str(), why);
+    if (deps_.on_notice) deps_.on_notice(SceneNotice{SceneNoticeKind::RestoreFailed, id, name});
+}
+
+void SceneRuntime::restore(std::vector<std::string> ids) {
+    // What the file holds now: the launches below are already on it, so
+    // only a change from here on is written.
+    persisted_ = ids;
+    for (const std::string& id : ids) begin_open(id, {}, LaunchReason::Boot, true, nullptr);
+}
+
+void SceneRuntime::enforce_limits(bool opening, const Slot* coming) {
+    // The common case, with nothing to close, allocates nothing: this runs
+    // before every message while a scene is in front.
+    const size_t reserve = config_.vm.memory_bytes;
+    const size_t room = config_.vm_budget > reserve ? config_.vm_budget - reserve : 0;
+    bool front = opening;
+    size_t count = 0;
+    size_t bytes = 0;
+    for (const auto& s : slots_) {
+        if (!s->background || s.get() == coming) {
+            front = true;
+            continue;
+        }
+        ++count;
+        bytes += s->scene ? s->scene->vm_bytes() : 0;
+    }
+    if (count <= config_.max_background && (!front || bytes <= room)) return;
+
+    std::vector<SlotInfo> infos;
+    for (const Slot* s : background_order()) {
+        if (s == coming) continue;
+        infos.push_back({s->id, false, s->last_front_ms, s->scene ? s->scene->vm_bytes() : 0});
+    }
+    for (const Eviction& e :
+         pick_evictions(infos, front, config_.max_background, config_.vm_budget, reserve)) {
+        Slot* s = find_id(e.id);
+        if (s != nullptr && s->background) evict(*s, e.memory);
+    }
+}
+
+void SceneRuntime::evict(Slot& s, bool memory) {
+    const SceneNotice n{memory ? SceneNoticeKind::EvictedMemory : SceneNoticeKind::EvictedCount,
+                        s.id, s.name};
+    WLOG_I(kTag, "%s: evicted (%s)", n.id.c_str(),
+           memory ? "memory budget" : "too many in the background");
+    // Spec 3.5: closed like any close (on_close, the final flush), then
+    // the notice.
+    close_slot(s);
+    if (deps_.on_notice) deps_.on_notice(n);
+}
+
+std::vector<std::string> SceneRuntime::wanted_background() const {
+    struct Entry {
+        uint64_t last_front_ms;
+        uint64_t seq;
+        const std::string* id;
+    };
+    std::vector<Entry> entries;
+    for (const Slot* s : background_order()) entries.push_back({s->last_front_ms, s->seq, &s->id});
+    // Boot launches still loading (never in front), unless the scene is
+    // already in the background.
+    for (const PendingLoad& p : loading_) {
+        if (p.reason != LaunchReason::Boot && !p.then_boot) continue;
+        const bool listed = std::any_of(entries.begin(), entries.end(),
+                                        [&](const Entry& e) { return *e.id == p.id; });
+        if (!listed) entries.push_back({0, p.seq, &p.id});
+    }
+    std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+        if (a.last_front_ms != b.last_front_ms) return a.last_front_ms < b.last_front_ms;
+        return a.seq < b.seq;
+    });
+    std::vector<std::string> ids;
+    for (const Entry& e : entries)
+        if (std::find(ids.begin(), ids.end(), *e.id) == ids.end()) ids.push_back(*e.id);
+    return ids;
+}
+
+void SceneRuntime::persist_background() {
+    if (quit_ || !persisted_ || deps_.background_list_path.empty()) return;
+    std::vector<std::string> want = wanted_background();
+    if (want == *persisted_) return;
+    List ids;
+    for (const std::string& id : want) ids.emplace_back(id);
+    std::string json = to_json(Value(Map{{"ids", Value(std::move(ids))}}));
+    core::StorageManager& storage = deps_.storage;
+    // The worker runs jobs in order: the last one written is the latest.
+    const bool queued =
+        deps_.worker.submit([&storage, path = deps_.background_list_path, json = std::move(json)] {
+            auto data = std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(json.data()),
+                                                 json.size());
+            if (auto r = storage.write_atomic(path, data); !r)
+                WLOG_W(kTag, "background list not saved: %s", r.error().message.c_str());
+        });
+    // Not queued: tried again after the next message.
+    if (queued) persisted_ = std::move(want);
 }
 
 void SceneRuntime::show_view(Slot& s) {
@@ -822,7 +1062,7 @@ void SceneRuntime::show_view(Slot& s) {
     ui_view_.store(token);
 }
 
-SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m) {
+SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason) {
     auto& open = std::get<msg::Open>(m.body);
     auto slot = os::make_large<Slot>();
     if (!slot) return nullptr;
@@ -843,13 +1083,13 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m) {
     api.screen = deps_.shape;
     api.args = &s.args;
     api.store = s.store.get();
-    api.launch = to_string(open.reason);
+    api.launch = to_string(reason);
     api.locks = deps_.locks;
     api.holder = scene_tag(s.id);
     if (deps_.http != nullptr) wire_http(s);
     // Opened in front with the screen off: the timers of a scene that does
     // not declare "background" wait for it to come on.
-    if (!visible_ && open.reason != LaunchReason::Boot && !s.declares_background)
+    if (!visible_ && reason != LaunchReason::Boot && !s.declares_background)
         api.timers.pause(os::now_ms());
     const DeviceInfo now = device_info();
     s.has_battery = now.has_battery;
@@ -926,17 +1166,21 @@ void SceneRuntime::notice(SceneNoticeKind kind, const Slot& s) {
     if (deps_.on_notice) deps_.on_notice(SceneNotice{kind, s.id, s.name});
 }
 
-void SceneRuntime::update_background_list() {
+std::vector<const SceneRuntime::Slot*> SceneRuntime::background_order() const {
     std::vector<const Slot*> in_back;
-    std::map<std::string, uint32_t, std::less<>> ids;
-    for (const auto& s : slots_) {
-        ids[s->id] = s->instance;
+    for (const auto& s : slots_)
         if (s->background) in_back.push_back(s.get());
-    }
-    std::stable_sort(in_back.begin(), in_back.end(), [](const Slot* a, const Slot* b) {
+    std::sort(in_back.begin(), in_back.end(), [](const Slot* a, const Slot* b) {
         if (a->last_front_ms != b->last_front_ms) return a->last_front_ms < b->last_front_ms;
-        return a->background_since_ms < b->background_since_ms;
+        return a->seq < b->seq;
     });
+    return in_back;
+}
+
+void SceneRuntime::update_background_list() {
+    std::map<std::string, uint32_t, std::less<>> ids;
+    for (const auto& s : slots_) ids[s->id] = s->instance;
+    const std::vector<const Slot*> in_back = background_order();
     std::vector<BackgroundScene> list;
     list.reserve(in_back.size());
     for (const Slot* s : in_back) list.push_back({s->id, s->name, s->background_since_ms});
@@ -969,8 +1213,9 @@ void SceneRuntime::fault(Slot& s, const ScriptError& err) {
     publish(s.id, "error");
     if (&s != front_) {
         // Spec 3.2: no panel for a scene nobody is looking at, a system
-        // notice instead; the slot goes.
-        notice(SceneNoticeKind::Faulted, s);
+        // notice instead; the slot goes. One that fails while it is being
+        // restored never came up: the restore failed (spec 3.6).
+        notice(s.restoring ? SceneNoticeKind::RestoreFailed : SceneNoticeKind::Faulted, s);
         erase_slot(s);
         return;
     }
@@ -1020,12 +1265,6 @@ void SceneRuntime::to_background(Slot& s, std::shared_ptr<SceneWaiter> done, con
     auto finish = [&] {
         if (done) done->finish(Result<void>::ok());
     };
-    if (background_count(except) >= kMaxBackground) {
-        WLOG_W(scene_tag(s.id).c_str(), "%u scenes already run in the background: closing it",
-               static_cast<unsigned>(kMaxBackground));
-        close_slot(s, std::move(done));
-        return;
-    }
     // Spec 3.2: on_hide is the scene's last step in front.
     std::optional<ScriptError> hide_error;
     if (s.shown) {
@@ -1044,6 +1283,7 @@ void SceneRuntime::to_background(Slot& s, std::shared_ptr<SceneWaiter> done, con
     s.background = true;
     s.last_front_ms = now;
     s.background_since_ms = now;
+    s.seq = next_seq_++;
     SceneApi& api = s.scene->api();
     api.background = true;
     api.close_requested = false;
@@ -1058,6 +1298,10 @@ void SceneRuntime::to_background(Slot& s, std::shared_ptr<SceneWaiter> done, con
     set_status(s.id, core::SceneState::Background, "");
     publish(s.id, "background");
     if (s.store) s.store->flush();
+    // Spec 3.5: one too many there now closes the least recently in front
+    // (never this one, the most recent; it may go for the budget when
+    // `except` comes forward).
+    enforce_limits(false, except);
     finish();
 }
 
@@ -1082,6 +1326,8 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
         foreground_instance_ = s.instance;
     }
     update_background_list();
+    // Spec 3.5: room for the scene coming forward.
+    enforce_limits(false);
     show_view(s);
 
     const uint64_t t0 = os::now_ms();

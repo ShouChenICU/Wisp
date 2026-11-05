@@ -49,9 +49,16 @@
 //           screen, remembering the screen it replaced (the self-check
 //           screen, hidden, never rebuilt); then scene.on_show() if the
 //           screen is on, and scene.on_state("foreground").
-//   boot    launch(Boot): loaded the same way, into the background: the
-//           tree is built but there is no view and no on_show;
-//           scene.on_state("background").
+//   boot    launch(Boot), open_background(): loaded the same way, into
+//           the background: the tree is built but there is no view and no
+//           on_show; scene.on_state("background"). Only for a scene whose
+//           scene.json declares "background" (InvalidArgument otherwise),
+//           and not past the background's count (Busy). A boot launch
+//           (not open_background(), which a reinstall uses) that does not
+//           bring its scene up -- refused, not found, a script error --
+//           is a RestoreFailed notice. One of a scene that a user open
+//           is already loading rides on that open: if a later open
+//           supersedes it, the scene still loads, as a boot launch.
 //   back    the back gesture, the error panel's "返回", close() and
 //           wisp.scene.close(): a scene whose scene.json declares
 //           "background" goes to the background, any other closes.
@@ -63,9 +70,9 @@
 //           comes back); then scene.on_state("background"), and the state
 //           becomes Background. An error in on_hide still sends the view
 //           away: the scene faults as one in the background (a notice, no
-//           panel), as the user asked to leave it. The VM, the store, the timers and the
-//           tree stay; the scene keeps running, its UI changes only
-//           update the tree. A fourth scene sent there closes instead.
+//           panel), as the user asked to leave it. The VM, the store, the
+//           timers and the tree stay; the scene keeps running, its UI
+//           changes only update the tree.
 //   resume  SceneInstance::rebuild() makes a Build of the kept tree with
 //           every bound value as it is now, the UI thread makes a new
 //           view from it, scene.on_show() (screen on),
@@ -83,6 +90,28 @@
 // Every move between foreground and background calls scene.on_state with
 // the new state ("foreground" or "background"; also on the first open,
 // never on a close) and publishes it ("running" or "background").
+//
+// Budget and eviction (scene-device spec 3.5): every scene's VM draws on
+// one VmPool of SceneRuntimeConfig::vm_budget, besides its own limit
+// (SceneRuntimeConfig::vm.memory_bytes, also what the scene in front is
+// guaranteed); an allocation past either fails as a memory error. When a
+// scene opens, comes forward or goes to the background, and before each
+// message while a scene is in front, pick_evictions() names the
+// background scenes to close, least recently in front first: those past
+// max_background, then, with a scene in front or opening, those that
+// keep the background above vm_budget - vm.memory_bytes. Each closes
+// like exit() (on_close, the final flush), is logged ("<id>: evicted
+// (...)") and becomes an EvictedCount or EvictedMemory notice.
+//
+// Background list (scene-device spec 3.6): with
+// SceneRuntimeDeps::background_list_path, the ids of the scenes in the
+// background, least recently in front first, together with the boot
+// launches still loading, are written there ({"ids": [...]},
+// StorageManager::write_atomic on the worker) whenever they change, but
+// only once restore_background() has read the file (so nothing running
+// before the restore overwrites the last boot's list), and never by
+// stop(): the scenes it closes are the ones to restore next time. A boot
+// launch that fails leaves the list, which is then written again.
 //
 // Timers and device events (scene-runtime-core spec 3.4, 5.1, 5.2;
 // scene-device spec 3.3): the task's wait is bounded by every scene's
@@ -167,6 +196,7 @@
 #include "wisp/os/os.hpp"
 #include "wisp/os/queue.hpp"
 #include "wisp/scene/patch_queue.hpp"
+#include "wisp/scene/scene_schedule.hpp"
 #include "wisp/scene/vm.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -241,10 +271,19 @@ struct SceneRuntimeDeps {
     // System notices about the scenes (SceneNotice). Called on the scene
     // task, which must not touch flash: it may only queue the work.
     std::function<void(const SceneNotice&)> on_notice;
+    // <System>/scenes/background.json (file header); empty: the list is
+    // neither written nor restored.
+    std::string background_list_path;
 };
 
 struct SceneRuntimeConfig {
+    // Each scene's own limits; vm.memory_bytes is also what the scene in
+    // front is guaranteed of vm_budget. vm.pool is ignored: the runtime
+    // gives every scene its own pool of vm_budget.
     VmLimits vm;
+    size_t vm_budget = kVmBudgetBytes;
+    // At most kMaxBackground (larger values are taken as that).
+    size_t max_background = kMaxBackground;
     size_t queue_capacity = 64;
     // At LUAI_MAXCCALLS (48) C call levels, string.gsub recursion is the
     // deepest use of the C stack (vm.hpp); this is sized for it.
@@ -317,8 +356,17 @@ public:
     // User and Notification open `id` in the foreground (one in the
     // background comes forward without reloading; `args` are then
     // ignored). Boot starts it in the background without a view (Ok and
-    // nothing changes if it is already running). Waits like open().
+    // nothing changes if it is already running or loading; see "boot" in
+    // the file header for what is refused, and the RestoreFailed notice).
+    // Waits like open().
     Result<void> launch(const std::string& id, LaunchReason reason, Value args = {});
+    // launch(id, Boot) without the RestoreFailed notice (SceneHost).
+    Result<void> open_background(const std::string& id) override;
+    // Reads the background list on the worker and launches each scene in
+    // it as at boot, in order (file header). Never waits; does nothing
+    // without SceneRuntimeDeps::background_list_path or a running
+    // runtime. Once per boot, after start().
+    void restore_background();
     // exit() without waiting, from any thread: `done` runs once exit()
     // would have returned (on the storage worker or the scene task), or at
     // once with Busy if the request could not be queued. It must be quick
@@ -347,9 +395,10 @@ private:
     };
     // One running scene, in front or in the background; scene task only.
     struct Slot;
-    // At most one scene in front and kMaxBackground behind it.
-    static constexpr size_t kMaxBackground = 3;
-    static constexpr size_t kMaxSlots = kMaxBackground + 1;
+    // At most one scene in front and kMaxBackground behind it, and for a
+    // moment one more: a scene sent to the background before the eviction
+    // that follows it.
+    static constexpr size_t kMaxSlots = kMaxBackground + 2;
     // The instances of every slot, copied for loops whose steps may close
     // slots; fixed size, as these loops run on every timer tick.
     struct Instances {
@@ -363,10 +412,20 @@ private:
     // boot launch of the same scene; a boot launch of a scene already
     // running or loading does nothing. So a list of boot launches queued
     // at once all come up, and a boot launch never cancels a user open.
+    // Nor is one lost to it: a boot launch of a scene a user open is
+    // loading (or one that open replaced) sets `then_boot` on it, and a
+    // user open that supersedes such a load turns it into a boot launch
+    // instead of dropping it.
     struct PendingLoad {
         uint32_t instance = 0;
         std::string id;
         LaunchReason reason = LaunchReason::User;
+        // A failure is a RestoreFailed notice (a boot launch, or a user
+        // open a boot launch rides on).
+        bool restore = false;
+        bool then_boot = false;
+        // Its place in the background list (Slot::seq).
+        uint64_t seq = 0;
     };
     // A job for the UI thread (post_ui()). Showing and dropping a view name
     // their instance, so that a drop can cancel a show still waiting.
@@ -396,19 +455,43 @@ private:
     Slot* find_id(std::string_view id);
     Instances instances() const;
     size_t background_count(const Slot* except) const;
-    void begin_open(const std::string& id, Value args, LaunchReason reason,
+    Result<void> launch_load(const std::string& id, LaunchReason reason, Value args, bool restore);
+    void begin_open(const std::string& id, Value args, LaunchReason reason, bool restore,
                     std::shared_ptr<SceneWaiter> waiter);
     void finish_open(SceneMessage& m);
     // Forgets the loads of `id` still on the worker (closed or exited by
     // id: whoever did may go on to delete or replace its files).
     void cancel_loads(std::string_view id);
-    // Forgets the user and notification loads still on the worker.
-    void cancel_user_loads();
+    // What a superseded load of a scene hands on to the user open of the
+    // same scene that superseded it: a boot launch to carry on.
+    struct Carried {
+        bool then_boot = false;
+        bool restore = false;
+        uint64_t seq = 0;
+    };
+    // A user open supersedes the user and notification loads still on the
+    // worker (but turns those with then_boot into boot launches) and, if
+    // `id` is not empty, every other load of `id`.
+    Carried supersede_loads(std::string_view id);
+    // The scene could not be restored: logged, and a RestoreFailed notice.
+    void restore_failed(const std::string& id, const std::string& name, const char* why);
+    // msg::Restore.
+    void restore(std::vector<std::string> ids);
+    // Closes what pick_evictions() names (file header); `coming` is a
+    // scene in the background about to come forward, counted as in front.
+    void enforce_limits(bool opening, const Slot* coming = nullptr);
+    void evict(Slot& s, bool memory);
+    // The slots in the background, least recently in front first.
+    std::vector<const Slot*> background_order() const;
+    // The background list as it should be on disk (file header).
+    std::vector<std::string> wanted_background() const;
+    // Writes it if it differs from what was last written.
+    void persist_background();
     // Shows the view of `s` (now in front) on the UI thread.
     void show_view(Slot& s);
     // Makes the slot of a loaded scene (VM not started yet); null without
     // the memory for it.
-    Slot* add_slot(SceneMessage& m);
+    Slot* add_slot(SceneMessage& m, LaunchReason reason);
     // Gives the scene's wisp.http its proxy: the declared hosts, and
     // results that come back as HttpDone messages for this instance.
     void wire_http(Slot& s);
@@ -489,6 +572,9 @@ private:
 
     SceneRuntimeDeps deps_;
     SceneRuntimeConfig config_;
+    // Every scene's VM draws on it (config_.vm.pool points here); it
+    // outlives the slots.
+    VmPool pool_;
     os::Queue<SceneMessage*> queue_;
     PatchQueue patches_;
     std::unique_ptr<os::Task> task_;
@@ -520,6 +606,11 @@ private:
     Slot* front_ = nullptr;
     uint32_t next_instance_ = 1;
     uint64_t next_view_ = 1;
+    // Slot::seq and PendingLoad::seq.
+    uint64_t next_seq_ = 1;
+    // What the background list on disk holds, as last read or written;
+    // nullopt until restore() has read it (nothing is written before).
+    std::optional<std::vector<std::string>> persisted_;
     // The loads on the worker; one that comes back and is not here was
     // superseded, or cancelled by a close of its scene.
     std::vector<PendingLoad> loading_;

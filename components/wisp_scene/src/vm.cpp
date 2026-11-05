@@ -17,6 +17,7 @@ char kImportCacheKey;
 char kImportStackKey;
 char kTimeoutMsgKey;
 char kMemoryMsgKey;
+char kBudgetMsgKey;
 
 constexpr std::string_view kPreamble =
     "global<const> ui, state, computed, bind, wisp, scene, assert, error, getmetatable, ipairs, "
@@ -71,13 +72,23 @@ void format_bytes(char* out, size_t cap, size_t bytes) {
         std::snprintf(out, cap, "%zu bytes", bytes);
 }
 
-void format_fault(char* out, size_t cap, bool timeout, const VmLimits& limits) {
-    if (timeout) {
-        std::snprintf(out, cap, "execution exceeded %u ms", static_cast<unsigned>(limits.exec_ms));
-    } else {
-        char size[32];
-        format_bytes(size, sizeof(size), limits.memory_bytes);
-        std::snprintf(out, cap, "memory limit %s exceeded", size);
+enum class FaultText : uint8_t { Timeout, Memory, Budget };
+
+void format_fault(char* out, size_t cap, FaultText kind, const VmLimits& limits) {
+    char size[32];
+    switch (kind) {
+        case FaultText::Timeout:
+            std::snprintf(out, cap, "execution exceeded %u ms",
+                          static_cast<unsigned>(limits.exec_ms));
+            return;
+        case FaultText::Memory:
+            format_bytes(size, sizeof(size), limits.memory_bytes);
+            std::snprintf(out, cap, "memory limit %s exceeded", size);
+            return;
+        case FaultText::Budget:
+            format_bytes(size, sizeof(size), limits.pool != nullptr ? limits.pool->budget() : 0);
+            std::snprintf(out, cap, "scene memory budget %s exceeded", size);
+            return;
     }
 }
 
@@ -821,42 +832,69 @@ int Vm::setup(lua_State* L) {
     // The fault messages are made now, so raising one later never needs
     // to allocate (the heap may be full by then).
     char msg[64];
-    format_fault(msg, sizeof(msg), true, vm->limits_);
+    format_fault(msg, sizeof(msg), FaultText::Timeout, vm->limits_);
     lua_pushstring(L, msg);
     lua_rawsetp(L, LUA_REGISTRYINDEX, &kTimeoutMsgKey);
-    format_fault(msg, sizeof(msg), false, vm->limits_);
+    format_fault(msg, sizeof(msg), FaultText::Memory, vm->limits_);
     lua_pushstring(L, msg);
     lua_rawsetp(L, LUA_REGISTRYINDEX, &kMemoryMsgKey);
+    format_fault(msg, sizeof(msg), FaultText::Budget, vm->limits_);
+    lua_pushstring(L, msg);
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &kBudgetMsgKey);
     return 0;
 }
 
+bool VmPool::reserve(size_t bytes) {
+    size_t used = used_.load(std::memory_order_relaxed);
+    do {
+        if (bytes > budget_ - used) return false;
+    } while (!used_.compare_exchange_weak(used, used + bytes, std::memory_order_relaxed));
+    return true;
+}
+
+void VmPool::release(size_t bytes) { used_.fetch_sub(bytes, std::memory_order_relaxed); }
+
 void* Vm::alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
     Vm* vm = static_cast<Vm*>(ud);
+    VmPool* pool = vm->limits_.pool;
     // With ptr == nullptr, osize is the kind of object, not a size.
     size_t old = ptr ? osize : 0;
     if (nsize == 0) {
         os::dealloc(ptr);
         vm->used_ -= old;
+        if (pool != nullptr) pool->release(old);
         return nullptr;
     }
     if (nsize <= old) {
         // Lua assumes shrinking never fails; the old block is big enough.
         void* p = os::realloc(ptr, nsize, os::Mem::Large);
         vm->used_ -= old - nsize;
+        if (pool != nullptr) pool->release(old - nsize);
         return p ? p : ptr;
     }
     void* p = nullptr;
-    if (nsize - old <= vm->limits_.memory_bytes - vm->used_)
-        p = os::realloc(ptr, nsize, os::Mem::Large);
+    bool by_pool = false;
+    const size_t grow = nsize - old;
+    if (grow <= vm->limits_.memory_bytes - vm->used_) {
+        if (pool == nullptr || pool->reserve(grow)) {
+            p = os::realloc(ptr, nsize, os::Mem::Large);
+            if (p == nullptr && pool != nullptr) pool->release(grow);
+        } else {
+            by_pool = true;
+        }
+    }
     bool same = vm->refused_ && vm->refused_ptr_ == ptr && vm->refused_osize_ == osize &&
                 vm->refused_nsize_ == nsize;
     if (!p) {
         if (vm->refused_) {
             // Either the emergency GC's retry was refused too, or an
-            // earlier refusal was never retried: the memory is gone.
-            vm->fault(Fault::Memory);
+            // earlier refusal was never retried: the memory is gone. The
+            // limit named is the one this request (a retry) or the
+            // earlier one met.
+            vm->fault((same ? by_pool : vm->refused_by_pool_) ? Fault::Budget : Fault::Memory);
         } else {
             vm->refused_ = true;
+            vm->refused_by_pool_ = by_pool;
             vm->refused_ptr_ = ptr;
             vm->refused_osize_ = osize;
             vm->refused_nsize_ = nsize;
@@ -869,10 +907,10 @@ void* Vm::alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
         }
         return nullptr;
     }
-    vm->used_ += nsize - old;
+    vm->used_ += grow;
     if (vm->refused_) {
         vm->refused_ = false;
-        if (!same) vm->fault(Fault::Memory);
+        if (!same) vm->fault(vm->refused_by_pool_ ? Fault::Budget : Fault::Memory);
     }
     return p;
 }
@@ -880,7 +918,7 @@ void* Vm::alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
 void Vm::settle_refusal() {
     if (refused_) {
         refused_ = false;
-        fault(Fault::Memory);
+        fault(refused_by_pool_ ? Fault::Budget : Fault::Memory);
     }
 }
 
@@ -897,7 +935,10 @@ void Vm::fault(Fault kind) {
 
 int Vm::raise_fault(lua_State* L) {
     lua_sethook(L, &Vm::hook, LUA_MASKCOUNT, 1);
-    lua_rawgetp(L, LUA_REGISTRYINDEX, fault_ == Fault::Memory ? &kMemoryMsgKey : &kTimeoutMsgKey);
+    const void* key = fault_ == Fault::Memory   ? &kMemoryMsgKey
+                      : fault_ == Fault::Budget ? &kBudgetMsgKey
+                                                : &kTimeoutMsgKey;
+    lua_rawgetp(L, LUA_REGISTRYINDEX, key);
     return lua_error(L);
 }
 
@@ -1146,7 +1187,11 @@ ScriptError Vm::fault_error(std::string_view fallback_file) const {
     ScriptError e;
     e.fault = fault_ == Fault::Timeout ? ScriptFault::Timeout : ScriptFault::Memory;
     char msg[64];
-    format_fault(msg, sizeof(msg), fault_ == Fault::Timeout, limits_);
+    format_fault(msg, sizeof(msg),
+                 fault_ == Fault::Timeout  ? FaultText::Timeout
+                 : fault_ == Fault::Budget ? FaultText::Budget
+                                           : FaultText::Memory,
+                 limits_);
     e.message = msg;
     if (fault_line_ > 0) {
         e.file = fault_file_;

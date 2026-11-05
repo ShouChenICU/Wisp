@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "scene_api.hpp"
 #include "wisp/base/result.hpp"
@@ -75,11 +76,13 @@ namespace msg {
 
 // launch(): the scene task asks the worker to load the scene (or, for one
 // in the background, brings it forward). `done` (may be null) hears how
-// the open went.
+// the open went. `restore`: a Boot launch whose failure is a RestoreFailed
+// notice (launch(); open_background() starts one without).
 struct Load {
     Value args;
     std::shared_ptr<SceneWaiter> done;
     LaunchReason reason = LaunchReason::User;
+    bool restore = false;
 };
 
 // The worker loaded the package and the store (or failed: `error`).
@@ -157,11 +160,17 @@ struct ClockSet {};
 // takes the new deadline into account.
 struct Wake {};
 
+// restore_background(): the background list as the worker read it from
+// disk (empty if there was none); each id is launched as at boot.
+struct Restore {
+    std::vector<std::string> ids;
+};
+
 // stop(): close every scene and end the task.
 struct Quit {};
 
 using Body = std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone,
-                          StoreDone, Device, ClockSet, CheckSources, Wake, Quit>;
+                          StoreDone, Device, ClockSet, CheckSources, Wake, Restore, Quit>;
 
 }  // namespace msg
 

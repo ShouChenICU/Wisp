@@ -15,8 +15,9 @@ namespace wisp::core {
 
 // Compiles the package's sources through host.check_sources(), then
 // replaces the package keeping its data. Before the replace the scene is
-// closed whatever its state (host.close() returns once its last store
-// flush is on disk); one that was running is opened again after it
+// closed whatever its state (host.exit() returns once its last store
+// flush is on disk); one that was running is opened again after it, in
+// the background (host.open_background()) if it was there
 // (whether or not the replace succeeded; a failed reopen is logged under
 // "scene.<id>" and leaves the new package installed), otherwise
 // host.on_installed() is told. A failed close (Timeout, Busy) stops the

@@ -7,6 +7,7 @@
 // batch holds the whole message's patches; on an error the caller faults
 // the scene (the batch may hold a partial message and must be cleared).
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -58,6 +59,9 @@ public:
     std::optional<ScriptError> http(uint32_t id, const net::SceneHttpResult& result);
     // The wisp.device.on(ev) handlers, if the scene added any.
     std::optional<ScriptError> device(DeviceEvent ev, const DeviceInfo& info);
+
+    // What its VM holds now (0 before start()).
+    size_t vm_bytes() const { return vm_ ? vm_->used_bytes() : 0; }
 
     PatchBatch& batch() { return batch_; }
     // The bindings' state; the runtime fills in its callbacks before

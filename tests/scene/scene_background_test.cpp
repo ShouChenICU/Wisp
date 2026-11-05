@@ -7,8 +7,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <span>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -17,7 +22,10 @@
 #include "support/fake_http.hpp"
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
+#include "wisp/base/json.hpp"
+#include "wisp/core/scene_install.hpp"
 #include "wisp/core/wakelock.hpp"
+#include "wisp/core/zip.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/strings.hpp"
@@ -575,27 +583,116 @@ return ui.screen {
 
 // Until the background has its eviction: a scene that would be the
 // fourth there closes instead.
-TEST_F(SceneBackground, FourthBackgroundIsClosedForNow) {
+// Spec 3.5: a fourth scene sent to the background closes the one least
+// recently in front, which runs on_close like any close, and says so.
+TEST_F(SceneBackground, FourthBackgroundEvictsOldestWithNotice) {
     start();
     for (const char* id : {"a", "b", "c", "d"})
-        install_bg(id, std::string(kHooks) + "return ui.screen { ui.label { text = 'x' } }");
+        install(id, std::string(kHooks) + "return ui.screen { ui.label { text = 'x' } }",
+                {{"scene.json", bg_manifest(id, std::string("Name ") + id)}});
     ASSERT_TRUE(rt->open("a"));
     ASSERT_TRUE(rt->open("b"));
     ASSERT_TRUE(rt->open("c"));
     ASSERT_TRUE(rt->open("d"));
     // Least recently in front first.
     EXPECT_EQ(background_ids(), (std::vector<std::string>{"a", "b", "c"}));
+    EXPECT_TRUE(seen_notices().empty());
     ASSERT_TRUE(rt->close("d"));
-    EXPECT_EQ(rt->status("d").state, SceneState::Stopped);
-    EXPECT_EQ(count_log("d", "close"), 1u);
-    EXPECT_EQ(background_ids(), (std::vector<std::string>{"a", "b", "c"}));
+    EXPECT_EQ(rt->status("d").state, SceneState::Background);
+    EXPECT_EQ(rt->status("a").state, SceneState::Stopped);
+    EXPECT_EQ(count_log("a", "close"), 1u);
+    EXPECT_EQ(scene_log("a").back(), "close");
+    EXPECT_EQ(count_log("d", "close"), 0u);
+    EXPECT_EQ(background_ids(), (std::vector<std::string>{"b", "c", "d"}));
+    auto seen = seen_notices();
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_EQ(seen[0].kind, SceneNoticeKind::EvictedCount);
+    EXPECT_EQ(seen[0].id, "a");
+    EXPECT_EQ(seen[0].name, "Name a");
+    EXPECT_TRUE(log_has("scene", "a: evicted (too many in the background)"));
 
     // Bringing one forward makes room for the one it replaces.
-    ASSERT_TRUE(rt->open("d"));
+    ASSERT_TRUE(rt->open("b"));
+    EXPECT_EQ(rt->status("b").state, SceneState::Running);
     ASSERT_TRUE(rt->open("a"));
     EXPECT_EQ(rt->status("a").state, SceneState::Running);
-    EXPECT_EQ(rt->status("d").state, SceneState::Background);
-    EXPECT_EQ(background_ids(), (std::vector<std::string>{"b", "c", "d"}));
+    EXPECT_EQ(background_ids(), (std::vector<std::string>{"c", "d", "b"}));
+    EXPECT_EQ(seen_notices().size(), 1u);
+}
+
+// Spec 3.5: opening a scene closes background scenes, least recently in
+// front first, until the one in front can have its full VM limit.
+TEST_F(SceneBackground, ForegroundReserveEvictsBackground) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) {
+        c.vm.memory_bytes = 768 * 1024;
+        c.vm_budget = 1024 * 1024;  // 256 KB left for the background
+    };
+    start();
+    install("hog", std::string(kHooks) + R"(
+global keep
+keep = string.rep("h", 400 * 1024)
+return ui.screen { ui.label { text = "hog" } }
+)",
+            {{"scene.json", bg_manifest("hog", "Hog")}});
+    install_bg("small", std::string(kHooks) + "return ui.screen { ui.label { text = 'small' } }");
+    install("big", R"(
+global keep
+keep = string.rep("b", 500 * 1024)
+return ui.screen { ui.label { text = "big" } }
+)");
+    ASSERT_TRUE(rt->open("small"));
+    back_gesture();
+    ASSERT_TRUE(wait_state("small", SceneState::Background));
+    // Never in front, so the least recently there.
+    ASSERT_TRUE(rt->launch("hog", LaunchReason::Boot));
+    // Nothing in front: memory evicts nothing.
+    EXPECT_EQ(background_ids(), (std::vector<std::string>{"hog", "small"}));
+    EXPECT_TRUE(seen_notices().empty());
+
+    // The two hold more than the background may: hog, the least recently
+    // in front, goes; that leaves room, so small stays.
+    ASSERT_TRUE(rt->open("big"));
+    EXPECT_EQ(rt->status("big").state, SceneState::Running);
+    EXPECT_EQ(rt->status("hog").state, SceneState::Stopped);
+    EXPECT_EQ(count_log("hog", "close"), 1u);
+    EXPECT_EQ(background_ids(), (std::vector<std::string>{"small"}));
+    auto seen = seen_notices();
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_EQ(seen[0].kind, SceneNoticeKind::EvictedMemory);
+    EXPECT_EQ(seen[0].id, "hog");
+    EXPECT_EQ(seen[0].name, "Hog");
+}
+
+// Spec 3.5: a scene in the background that grows past what the background
+// may hold is closed before the next message of the scene in front.
+TEST_F(SceneBackground, BackgroundGrowthEvictsBeforeForegroundMessage) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) {
+        c.vm.memory_bytes = 768 * 1024;
+        c.vm_budget = 1024 * 1024;
+    };
+    start();
+    install("grow", std::string(kHooks) + R"(
+global keep
+scene.on_state = function(s)
+  if s == "background" then
+    wisp.timer.after(50, function() keep = string.rep("g", 400 * 1024) print("grown") end)
+  end
+end
+return ui.screen { ui.label { text = "grow" } }
+)",
+            {{"scene.json", bg_manifest("grow", "Grow")}});
+    install("front", kCounter);
+    ASSERT_TRUE(rt->open("grow"));
+    ASSERT_TRUE(rt->open("front"));
+    ASSERT_TRUE(wait_until([&] { return count_log("grow", "grown") == 1; }, 2000));
+    ASSERT_TRUE(wait_label("count 0"));
+    ASSERT_TRUE(rt->click_ref("plus"));
+    ASSERT_TRUE(wait_state("grow", SceneState::Stopped));
+    EXPECT_TRUE(wait_until([&] { return label("count") == "count 1"; }, 1000));
+    auto seen = seen_notices();
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_EQ(seen[0].kind, SceneNoticeKind::EvictedMemory);
+    EXPECT_EQ(seen[0].id, "grow");
 }
 
 // A view that would only come up to go again (the UI thread was held up
@@ -843,6 +940,262 @@ TEST_F(SceneBackground, NoOpBootLaunchKeepsUserOpen) {
     EXPECT_EQ(rt->status("a").state, SceneState::Background);
     EXPECT_EQ(scene_log("a"), (std::vector<std::string>{"state:background"}));
     EXPECT_EQ(background_ids(), (std::vector<std::string>{"a"}));
+}
+
+// A boot launch that rides on a user open still loading (the same scene)
+// is not lost when a later user open supersedes that one: the scene still
+// comes up, in the background, as a boot launch.
+TEST_F(SceneBackground, BootLaunchSurvivesTheUserOpenItRodeOn) {
+    start();
+    install_bg("x", std::string(kHooks) + R"(
+print(wisp.scene.launch())
+return ui.screen { ui.label { text = "scene x" } }
+)");
+    install("y", "return ui.screen { ui.label { text = 'scene y' } }");
+    std::atomic<int> queued{0};
+    ASSERT_TRUE(worker.submit([&] {
+        if (rt->open("x")) ++queued;
+        if (rt->launch("x", LaunchReason::Boot)) ++queued;
+        if (rt->open("y")) ++queued;
+    }));
+    ASSERT_TRUE(wait_until([&] { return queued.load() == 3; }, 2000));
+    EXPECT_TRUE(wait_state("y", SceneState::Running));
+    EXPECT_TRUE(wait_state("x", SceneState::Background));
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("y"));
+    EXPECT_EQ(scene_log("x"), (std::vector<std::string>{"boot", "state:background"}));
+    EXPECT_TRUE(seen_notices().empty());
+}
+
+// The same when the boot launch came first and a user open of the scene
+// replaced it before a user open of another scene replaced that.
+TEST_F(SceneBackground, BootLaunchSurvivesAUserOpenThatReplacedIt) {
+    start();
+    install_bg("x", "print(wisp.scene.launch()) return ui.screen { ui.label { text = 'x' } }");
+    install("y", "return ui.screen { ui.label { text = 'scene y' } }");
+    std::atomic<int> queued{0};
+    ASSERT_TRUE(worker.submit([&] {
+        if (rt->launch("x", LaunchReason::Boot)) ++queued;
+        if (rt->open("x")) ++queued;
+        if (rt->open("y")) ++queued;
+    }));
+    ASSERT_TRUE(wait_until([&] { return queued.load() == 3; }, 2000));
+    EXPECT_TRUE(wait_state("y", SceneState::Running));
+    EXPECT_TRUE(wait_state("x", SceneState::Background));
+    EXPECT_EQ(scene_log("x"), (std::vector<std::string>{"boot"}));
+}
+
+// A boot launch is for scenes that declare "background": any other is
+// refused, and the restore that asked for it hears of it.
+TEST_F(SceneBackground, BootLaunchOfUndeclaredSceneIsRefused) {
+    start();
+    install("u", "print('ran') return ui.screen { ui.label { text = 'u' } }",
+            {{"scene.json", wisp::test::manifest("u", "Undeclared")}});
+    auto r = rt->launch("u", LaunchReason::Boot);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(rt->status("u").state, SceneState::Stopped);
+    EXPECT_TRUE(scene_log("u").empty());
+    EXPECT_TRUE(background_ids().empty());
+    auto seen = seen_notices();
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_EQ(seen[0].kind, SceneNoticeKind::RestoreFailed);
+    EXPECT_EQ(seen[0].id, "u");
+    EXPECT_EQ(seen[0].name, "Undeclared");
+}
+
+// The background list on disk (spec 3.6) and the restore at boot.
+class SceneRestore : public SceneBackground {
+protected:
+    void SetUp() override {
+        SceneBackground::SetUp();
+        list_path = in + "/system/scenes/background.json";
+        auto base = configure_deps;
+        configure_deps = [this, base](wisp::scene::SceneRuntimeDeps& d) {
+            base(d);
+            d.background_list_path = list_path;
+        };
+    }
+
+    void write_list(const std::string& json) {
+        std::filesystem::create_directories(std::filesystem::path(list_path).parent_path());
+        std::ofstream(list_path, std::ios::trunc) << json;
+    }
+
+    // The ids in the file; nullopt if there is none or it does not parse.
+    std::optional<std::vector<std::string>> read_list() {
+        std::ifstream f(list_path);
+        if (!f) return std::nullopt;
+        std::stringstream ss;
+        ss << f.rdbuf();
+        auto v = wisp::from_json(ss.str());
+        if (!v) return std::nullopt;
+        const Value* ids = v.value().find("ids");
+        if (ids == nullptr || ids->type() != Value::Type::List) return std::nullopt;
+        std::vector<std::string> out;
+        for (const Value& id : ids->as_list()) out.push_back(id.as_string());
+        return out;
+    }
+
+    // The list is written only once restore_background() has read it.
+    void start_restored() {
+        start();
+        rt->restore_background();
+        ASSERT_TRUE(worker.drain(1000));
+    }
+
+    bool wait_list(const std::vector<std::string>& want, uint32_t ms = 2000) {
+        return wait_until([&] { return read_list() == want; }, ms);
+    }
+
+    std::string list_path;
+};
+
+TEST_F(SceneRestore, BackgroundListWrittenOnTransitions) {
+    start_restored();
+    install_bg("a", "return ui.screen { ui.label { text = 'a' } }");
+    install_bg("b", "return ui.screen { ui.label { text = 'b' } }");
+    install("c", "return ui.screen { ui.label { text = 'c' } }");
+    ASSERT_TRUE(rt->open("a"));
+    EXPECT_EQ(read_list(), std::nullopt);
+    ASSERT_TRUE(rt->open("b"));
+    EXPECT_TRUE(wait_list({"a"})) << ::testing::PrintToString(read_list());
+    ASSERT_TRUE(rt->open("c"));
+    EXPECT_TRUE(wait_list({"a", "b"})) << ::testing::PrintToString(read_list());
+    ASSERT_TRUE(rt->open("a"));  // c closes; a comes forward
+    EXPECT_TRUE(wait_list({"b"})) << ::testing::PrintToString(read_list());
+    ASSERT_TRUE(rt->exit("b"));
+    EXPECT_TRUE(wait_list({})) << ::testing::PrintToString(read_list());
+}
+
+TEST_F(SceneRestore, RestoresInBackgroundWithoutView) {
+    write_list(R"({"ids":["a","b"]})");
+    start();
+    for (const char* id : {"a", "b"})
+        install_bg(id, std::string(kHooks) + R"(
+print(wisp.scene.state(), wisp.scene.launch())
+return ui.screen { ui.label { text = "restored" } }
+)");
+    rt->restore_background();
+    EXPECT_TRUE(wait_state("a", SceneState::Background));
+    EXPECT_TRUE(wait_state("b", SceneState::Background));
+    for (const char* id : {"a", "b"})
+        EXPECT_EQ(scene_log(id), (std::vector<std::string>{"background\tboot", "state:background"}))
+            << id;
+    EXPECT_EQ(background_ids(), (std::vector<std::string>{"a", "b"}));
+    EXPECT_EQ(rt->foreground(), std::nullopt);
+    EXPECT_EQ(active_screen(), home);
+    EXPECT_TRUE(label("restored").empty());
+    EXPECT_TRUE(seen_notices().empty());
+    // Nothing changed: the list stays as it was.
+    worker.drain(1000);
+    EXPECT_EQ(read_list(), (std::vector<std::string>{"a", "b"}));
+}
+
+TEST_F(SceneRestore, FailedRestoreSkippedNotifiedAndDropped) {
+    write_list(R"({"ids":["a","gone","u","bad","b"]})");
+    start();
+    install_bg("a", "return ui.screen { ui.label { text = 'a' } }");
+    install_bg("b", "return ui.screen { ui.label { text = 'b' } }");
+    install("u", "return ui.screen { ui.label { text = 'u' } }",
+            {{"scene.json", wisp::test::manifest("u", "Undeclared")}});
+    install("bad", "error('boom')", {{"scene.json", bg_manifest("bad", "Bad")}});
+    rt->restore_background();
+    EXPECT_TRUE(wait_state("a", SceneState::Background));
+    EXPECT_TRUE(wait_state("b", SceneState::Background));
+    EXPECT_TRUE(wait_state("bad", SceneState::Error));
+    EXPECT_TRUE(wait_list({"a", "b"})) << ::testing::PrintToString(read_list());
+    EXPECT_EQ(background_ids(), (std::vector<std::string>{"a", "b"}));
+    auto seen = seen_notices();
+    std::vector<std::string> got;
+    for (const auto& n : seen)
+        got.push_back(
+            std::string(n.kind == SceneNoticeKind::RestoreFailed ? "restore " : "other ") + n.id +
+            "/" + n.name);
+    std::sort(got.begin(), got.end());
+    EXPECT_EQ(got, (std::vector<std::string>{"restore bad/Bad", "restore gone/gone",
+                                             "restore u/Undeclared"}));
+    EXPECT_TRUE(log_has("scene", "gone: not restored"));
+}
+
+TEST_F(SceneRestore, StopKeepsTheList) {
+    start_restored();
+    install_bg("a", "return ui.screen { ui.label { text = 'a' } }");
+    install_bg("b", "return ui.screen { ui.label { text = 'b' } }");
+    ASSERT_TRUE(rt->open("a"));
+    ASSERT_TRUE(rt->open("b"));
+    back_gesture();
+    ASSERT_TRUE(wait_state("b", SceneState::Background));
+    ASSERT_TRUE(wait_list({"a", "b"})) << ::testing::PrintToString(read_list());
+    rt->stop();
+    EXPECT_EQ(rt->status("a").state, SceneState::Stopped);
+    EXPECT_EQ(rt->status("b").state, SceneState::Stopped);
+    ASSERT_TRUE(worker.drain(2000));
+    EXPECT_EQ(read_list(), (std::vector<std::string>{"a", "b"}));
+}
+
+// Until the restore has read the list, nothing overwrites it: a scene
+// sent to the background before then does not wipe the last boot's list.
+TEST_F(SceneRestore, NothingWrittenBeforeTheRestoreReadsTheList) {
+    write_list(R"({"ids":["a"]})");
+    start();
+    install_bg("a", "return ui.screen { ui.label { text = 'a' } }");
+    install_bg("b", "return ui.screen { ui.label { text = 'b' } }");
+    ASSERT_TRUE(rt->open("b"));
+    back_gesture();
+    ASSERT_TRUE(wait_state("b", SceneState::Background));
+    ASSERT_TRUE(worker.drain(1000));
+    EXPECT_EQ(read_list(), (std::vector<std::string>{"a"}));
+    rt->restore_background();
+    EXPECT_TRUE(wait_state("a", SceneState::Background));
+    // a never was in front, so it is the least recently in front.
+    EXPECT_TRUE(wait_list({"a", "b"})) << ::testing::PrintToString(read_list());
+}
+
+// A bad list restores nothing and breaks nothing.
+TEST_F(SceneRestore, UnreadableListRestoresNothing) {
+    write_list("not json");
+    start();
+    install_bg("a", "return ui.screen { ui.label { text = 'a' } }");
+    rt->restore_background();
+    ASSERT_TRUE(worker.drain(1000));
+    ASSERT_TRUE(rt->open("a"));
+    EXPECT_EQ(rt->status("a").state, SceneState::Running);
+    EXPECT_TRUE(background_ids().empty());
+    EXPECT_TRUE(seen_notices().empty());
+}
+
+// scene-runtime-core spec 6.3: installing over a running scene is a reload.
+// For one in the background that means starting it there again, on the
+// new package; the list keeps it.
+TEST_F(SceneRestore, ReinstallRelaunchesBackgroundScene) {
+    start_restored();
+    install_bg("a", "print('v1') return ui.screen { ui.label { text = 'a' } }");
+    install_bg("b", "return ui.screen { ui.label { text = 'b' } }");
+    ASSERT_TRUE(rt->open("a"));
+    ASSERT_TRUE(rt->open("b"));
+    ASSERT_EQ(rt->status("a").state, SceneState::Background);
+    ASSERT_TRUE(wait_list({"a"}));
+
+    wisp::core::ZipWriter w;
+    auto add = [&](const std::string& path, const std::string& body) {
+        w.add(path,
+              std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(body.data()), body.size()));
+    };
+    add("scene.json", bg_manifest("a"));
+    add("main.lua",
+        "print('v2', wisp.scene.state(), wisp.scene.launch()) "
+        "return ui.screen { ui.label { text = 'a' } }");
+    wisp::os::LargeBuffer zip = w.finish();
+    auto r =
+        wisp::core::install_scene(*repo, *rt, std::span<const uint8_t>(zip.data(), zip.size()));
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_TRUE(wait_state("a", SceneState::Background));
+    EXPECT_TRUE(wait_until([&] { return count_log("a", "v2\tbackground\tboot") == 1; }, 2000))
+        << ::testing::PrintToString(scene_log("a"));
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("b"));
+    EXPECT_EQ(background_ids(), (std::vector<std::string>{"a"}));
+    EXPECT_TRUE(wait_list({"a"})) << ::testing::PrintToString(read_list());
+    EXPECT_TRUE(seen_notices().empty());
 }
 
 }  // namespace

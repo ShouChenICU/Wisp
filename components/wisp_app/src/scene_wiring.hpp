@@ -21,7 +21,9 @@
 //     shows it. The system layer's back gesture is the runtime's "back":
 //     a scene that declares "background" goes there, any other closes.
 //     The runtime's notices become system notifications (scene-device
-//     spec 3.2, 3.5, 3.6).
+//     spec 3.2, 3.5, 3.6). Its background list is
+//     <System>/scenes/background.json, restored by restore_background()
+//     once boot completes (spec 3.6).
 //   - in dev mode, once the runtime runs: a DirWatcher over the working
 //     directory, polled on the worker every 500 ms (it reads files); when
 //     the scene in front (running or showing its error panel) changes on
@@ -111,6 +113,9 @@ public:
     // Starts the proxy and the runtime and follows power.state;
     // `standby` reads whether the screen is off now.
     void start_runtime(std::function<bool()> standby);
+    // SceneRuntime::restore_background() once the runtime runs; App calls
+    // it as it publishes system.boot.completed. Never waits.
+    void restore_background();
 
     // Stops the runtime (closing the scene in front) and lets go of the
     // system layer, which App::stop() destroys next. Idempotent.

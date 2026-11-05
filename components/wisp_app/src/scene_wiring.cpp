@@ -111,7 +111,14 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                .device_status = std::move(device_status),
                                .wall_clock = {},
                                .locks = locks,
-                               .on_notice = {}};
+                               .on_notice = {},
+                               .background_list_path = {}};
+    if (auto system = deps_.storage.write_root(core::Area::System)) {
+        rt.background_list_path = system.value() + "/scenes/background.json";
+    } else {
+        WLOG_W(kTag, "no System area (%s); background scenes are not restored at boot",
+               system.error().message.c_str());
+    }
     if (notices != nullptr) {
         // On the scene task: post_system() only records the notice and
         // leaves saving it to the storage worker.
@@ -150,6 +157,10 @@ void SceneWiring::start_runtime(std::function<bool()> standby) {
         "power.state", [rt, standby](const core::Event&) { rt->set_visible(!standby()); });
     if (standby()) rt->set_visible(false);
     if (repo_->dev()) start_watching();
+}
+
+void SceneWiring::restore_background() {
+    if (runtime_started_) runtime_->restore_background();
 }
 
 void SceneWiring::start_watching() {

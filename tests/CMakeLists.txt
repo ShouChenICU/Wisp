@@ -289,6 +289,7 @@ wisp_test(NAME store_binding_test SRCS scene/store_binding_test.cpp
 wisp_test(NAME http_binding_test SRCS scene/http_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME timer_set_test SRCS scene/timer_set_test.cpp LIBS wisp_scene)
+wisp_test(NAME scene_schedule_test SRCS scene/scene_schedule_test.cpp LIBS wisp_scene)
 wisp_test(NAME minute_ticker_test SRCS scene/minute_ticker_test.cpp LIBS wisp_scene)
 wisp_test(NAME dir_watcher_test SRCS scene/dir_watcher_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME scene_api_test SRCS scene/scene_api_test.cpp
