@@ -204,9 +204,10 @@ struct Platform {
     // Empty: no TimeSyncService, the clock is never synced from the
     // network.
     std::unique_ptr<net::Sntp> sntp;
-    // Sets the system wall clock to UTC seconds after a sync. Empty: left
-    // alone (the simulator's host clock is already right).
-    std::function<void(int64_t unix_s)> set_wall_clock;
+    // Sets the system wall clock to UTC seconds after a sync; an error
+    // fails that sync. Empty: left alone (the simulator's host clock is
+    // already right).
+    std::function<Result<void>(int64_t unix_s)> set_wall_clock;
     // Code pairing's limits; the defaults are spec 6.1's (a code lives two
     // minutes). Tests shorten code_ttl_ms to watch a code expire.
     net::PairingConfig pairing;

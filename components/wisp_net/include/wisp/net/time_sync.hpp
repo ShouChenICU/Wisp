@@ -6,14 +6,15 @@
 // Schedule: an attempt runs when the station gets an IP, again 6 h after a
 // success, and after a failure 30 s later, doubling up to 30 min, until one
 // succeeds or the link goes. Without a link nothing is scheduled; the next
-// IP starts over. sync_now() runs one at once. An attempt asks each server
+// IP starts over, even when it comes while an attempt for the old one is
+// still running. sync_now() runs one at once. An attempt asks each server
 // of the ntp_servers setting in turn and stops at the first answer.
 //
-// On success the wall clock is set (TimeSyncDeps::set_system_time), the
-// RTC written (a failure there is only a warning) and system.time
-// published: {"state":"synced","server":s,"time":unix}; a failed attempt
-// publishes {"state":"failed","server":<last one asked>}. Everything is
-// UTC; displays apply utc_offset_min themselves.
+// On an answer the wall clock is set (TimeSyncDeps::set_system_time; if
+// it refuses, the attempt fails), the RTC written (a failure there is only a warning) and
+// system.time published: {"state":"synced","server":s,"time":unix}; a failed attempt publishes
+// {"state":"failed","server":<last one asked>}. Everything is UTC; displays apply utc_offset_min
+// themselves.
 //
 // Threading: tick() runs on the "wisp.net" task and never blocks on the
 // network: when an attempt is due it reads the server list there (Settings
@@ -23,6 +24,7 @@
 // from any thread. One mutex guards the state; it is never held across a
 // query, a callback or a publish.
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -61,9 +63,10 @@ struct TimeSyncDeps {
     core::EventBus& bus;
     // The ntp_servers setting ("a,b"), read once per attempt by tick().
     std::function<std::string()> servers;
-    // Sets the system wall clock to UTC seconds. Empty: left alone (the
-    // simulator, whose host clock is already right).
-    std::function<void(int64_t)> set_system_time;
+    // Sets the system wall clock to UTC seconds; an error fails the
+    // attempt. Empty: left alone (the simulator, whose host clock is
+    // already right).
+    std::function<Result<void>(int64_t)> set_system_time;
     // clock.main, written after each sync; null without one.
     std::shared_ptr<hal::Clock> rtc;
     // Monotonic milliseconds; tests inject their own.
@@ -77,6 +80,10 @@ struct TimeSyncStatus {
     // 0 and "" until then.
     int64_t last_sync = 0;
     std::string server;
+    // Attempts finished during this boot (a cancelled one does not count)
+    // and the last one's outcome: "synced", "failed", or "" before any.
+    uint64_t attempts = 0;
+    std::string last_result;
 };
 
 // The entries of an ntp_servers value, empty ones dropped.
@@ -100,9 +107,15 @@ public:
     // Runs the prepared attempt, if any, blocking for the queries.
     void run_attempt();
 
-    // Asks for an attempt now. False when the station has no IP. An attempt
-    // already prepared or running counts as the one asked for.
-    bool sync_now();
+    // Asks for an attempt now. nullopt when the station has no IP;
+    // otherwise status().attempts as it stood, so the answer is the first
+    // attempt to finish after that many. An attempt already prepared or
+    // running counts as the one asked for.
+    std::optional<uint64_t> sync_now();
+
+    // Shutdown: a running attempt stops before its next server, publishing
+    // nothing, and no further attempt runs. Any thread.
+    void cancel() { cancelled_.store(true); }
 
     TimeSyncStatus status() const;
     // The current UTC time as the last sync implies it; nullopt before
@@ -121,6 +134,10 @@ private:
     bool requested_ = false;
     // Prepared by tick(), not yet finished by run_attempt().
     bool in_flight_ = false;
+    // The link went (and maybe came back) while in flight: the outcome
+    // belongs to the old link and must not set the new one's schedule.
+    bool link_changed_ = false;
+    std::atomic<bool> cancelled_{false};
     std::vector<std::string> job_;
     std::optional<uint64_t> next_attempt_ms_;
     uint32_t backoff_ms_;

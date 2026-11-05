@@ -341,6 +341,7 @@ export default {
   'sys.time_sync': 'Sync now',
   'sys.time_synced': 'Time synced from {server}',
   'sys.time_failed': 'No time server answered. The device keeps trying.',
+  'sys.time_pending': 'No answer yet. The device keeps trying; check back in a minute.',
   'sys.time_unavailable': 'This device can\'t set its clock from the network.',
   'sys.time_servers': 'Time servers',
   'sys.time_servers_hint': 'One or two host names or IPv4 addresses, separated by a comma. The device asks them in order whenever it connects, then every 6 hours.',

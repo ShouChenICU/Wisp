@@ -22,6 +22,7 @@ public:
     explicit FakeSntp(std::function<int64_t()> time) : time_(std::move(time)) {}
 
     wisp::Result<int64_t> query(const std::string& host, uint32_t timeout_ms) override {
+        if (on_query) on_query(host);
         std::lock_guard<std::mutex> lock(mutex_);
         calls_.push_back(host);
         timeouts_.push_back(timeout_ms);
@@ -30,6 +31,9 @@ public:
         }
         return wisp::Result<int64_t>::ok(time_());
     }
+
+    // Called at the start of each query, outside the lock. Set before use.
+    std::function<void(const std::string&)> on_query;
 
     void set_down(const std::string& host, bool down) {
         std::lock_guard<std::mutex> lock(mutex_);

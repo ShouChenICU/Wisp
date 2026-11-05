@@ -340,6 +340,7 @@ export default {
   'sys.time_sync': '今すぐ同期',
   'sys.time_synced': '{server} と時刻を同期しました',
   'sys.time_failed': 'どの時刻サーバーからも応答がありません。デバイスは再試行を続けます。',
+  'sys.time_pending': 'まだ応答がありません。デバイスは試行を続けています。しばらくしてから確認してください。',
   'sys.time_unavailable': 'このデバイスはネットワークから時刻を取得できません。',
   'sys.time_servers': '時刻サーバー',
   'sys.time_servers_hint': 'ホスト名または IPv4 アドレスを 1〜2 個、カンマ区切りで指定します。ネットワークに接続するたびに先頭から順に問い合わせ、その後は 6 時間ごとに同期します。',

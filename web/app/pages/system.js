@@ -5,8 +5,8 @@
 //
 // Network time (spec 5.6): GET /system/time shows the last sync; "Sync
 // now" posts /system/time/sync (409 no_network without Wi-Fi) and then
-// waits for the outcome, subscribing to events only for that wait (see
-// TimeSyncCard's syncNow()). Times are shown in the device's own time zone
+// waits for the attempt that answers it to finish (see TimeSyncCard's
+// syncNow()). Times are shown in the device's own time zone
 // (utc_offset_min), not the browser's.
 //
 // Restart: the device answers 202 and restarts a moment later; the page
@@ -351,9 +351,10 @@ function TimeZoneCard({ settings, put }) {
   </${Card}>`;
 }
 
-// How long "Sync now" waits for the outcome event: two servers at their
-// query timeout plus name lookups, with room to spare.
-const TIME_SYNC_WAIT_MS = 20000;
+// How long "Sync now" waits before saying there is no answer yet. Name
+// lookups are not bounded by the device's query timeout, so an attempt
+// can outlast this; past it the page stops waiting but claims nothing.
+const TIME_SYNC_WAIT_MS = 60000;
 const TIME_SYNC_POLL_MS = 1500;
 
 /** "2026-01-01 08:00 UTC+08:00": `unix` in the device's time zone. */
@@ -402,70 +403,64 @@ function TimeSyncCard({ settings, put }) {
     };
   }, []);
 
-  // The outcome normally arrives as a system.time event. The event socket
-  // and the POST are separate connections, so the device may answer
-  // before it has the socket's subscription: the status is also polled,
-  // and a sync it shows counts as the answer. With neither by
-  // TIME_SYNC_WAIT_MS, the attempt failed.
-  function syncNow() {
+  // The POST answers {after: n}: the outcome is that of the first attempt
+  // to finish after n, which GET /system/time shows as attempts > n with
+  // its last_result. The status is polled for it; a system.time event only
+  // makes the next poll come at once (the event socket is a separate
+  // connection and may miss or precede the attempt, so it decides
+  // nothing). With no finished attempt by TIME_SYNC_WAIT_MS the page says
+  // there is no answer yet, not that the sync failed.
+  async function syncNow() {
     if (syncing) return;
     setSyncing(true);
-    const before = status?.last_sync ?? null;
-    let posted = false;
     let over = false;
     let timer = 0;
     let poller = 0;
-    const finish = (ok, server) => {
-      if (over) return;
+    let unsubscribe = () => {};
+    const stop = () => {
       over = true;
       unsubscribe();
       clearTimeout(timer);
       clearInterval(poller);
       stopWait.current = null;
+    };
+    const finish = (tone, message) => {
+      if (over) return;
+      stop();
       if (!alive.current) return;
       setSyncing(false);
       load();
-      if (ok === true) toast(t('sys.time_synced', { server }), 'ok');
-      else if (ok === false) toast(t('sys.time_failed'), 'err');
+      if (message) toast(message, tone);
     };
+    stopWait.current = stop;
+
+    let after;
+    try {
+      const r = await api('POST', '/system/time/sync');
+      after = Number(r?.after ?? 0);
+    } catch (e) {
+      finish(null, null);
+      if (e.status !== 401 && alive.current) toast(describeError(e), 'err');
+      return;
+    }
+    if (over) return;
+
     const poll = async () => {
       try {
         const s = await api('GET', '/system/time');
-        if (s?.synced && s.last_sync !== before) finish(true, s.server);
+        if (over || !(Number(s?.attempts) > after)) return;
+        if (s.last_result === 'synced') finish('ok', t('sys.time_synced', { server: s.server }));
+        else finish('err', t('sys.time_failed'));
       } catch {
         // The next poll or the timeout decides.
       }
     };
-    const unsubscribe = subscribe(
-      ['events'],
-      (msg) => {
-        if (msg.t !== 'event' || msg.topic !== 'system.time') return;
-        const ok = msg.payload?.state === 'synced';
-        finish(ok, String(msg.payload?.server || ''));
-      },
-      {
-        onState: (st) => {
-          if (st !== 'open' || posted) return;
-          posted = true;
-          api('POST', '/system/time/sync').then(
-            () => {
-              if (!over) poller = setInterval(poll, TIME_SYNC_POLL_MS);
-            },
-            (e) => {
-              finish(null);
-              if (e.status !== 401) toast(describeError(e), 'err');
-            },
-          );
-        },
-      },
-    );
-    stopWait.current = () => {
-      over = true;
-      unsubscribe();
-      clearTimeout(timer);
-      clearInterval(poller);
-    };
-    timer = setTimeout(() => finish(false), TIME_SYNC_WAIT_MS);
+    unsubscribe = subscribe(['events'], (msg) => {
+      if (msg.t === 'event' && msg.topic === 'system.time') poll();
+    });
+    poller = setInterval(poll, TIME_SYNC_POLL_MS);
+    timer = setTimeout(() => finish('warn', t('sys.time_pending')), TIME_SYNC_WAIT_MS);
+    poll();
   }
 
   async function saveServers() {

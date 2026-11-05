@@ -58,29 +58,35 @@ net::HttpResponse no_time_sync() {
     return net::HttpResponse::error(503, "unavailable", "network time is not available");
 }
 
-// {"synced", "last_sync", "server", "time"}: last_sync and time (the
-// current UTC time as the last sync implies it) are null until a sync.
+// {"synced", "last_sync", "server", "time", "attempts", "last_result"}:
+// last_sync and time (the current UTC time as the last sync implies it)
+// are null until a sync; last_result ("synced"/"failed") is null until an
+// attempt has finished.
 net::HttpResponse get_time(AdminDeps& deps, const RequestContext&) {
     if (deps.time_sync == nullptr) return no_time_sync();
     const net::TimeSyncStatus st = deps.time_sync->status();
     const std::optional<int64_t> now = deps.time_sync->now_unix();
-    return net::HttpResponse::json(200,
-                                   Value(Map{
-                                       {"synced", Value(st.synced)},
-                                       {"last_sync", st.synced ? Value(st.last_sync) : Value()},
-                                       {"server", Value(st.server)},
-                                       {"time", now ? Value(*now) : Value()},
-                                   }));
+    return net::HttpResponse::json(
+        200, Value(Map{
+                 {"synced", Value(st.synced)},
+                 {"last_sync", st.synced ? Value(st.last_sync) : Value()},
+                 {"server", Value(st.server)},
+                 {"time", now ? Value(*now) : Value()},
+                 {"attempts", Value(static_cast<int64_t>(st.attempts))},
+                 {"last_result", st.last_result.empty() ? Value() : Value(st.last_result)},
+             }));
 }
 
-// Queues an attempt and answers at once; its outcome arrives as the
-// system.time event.
+// Queues an attempt and answers at once with {"after": n}: the outcome is
+// that of the first attempt to finish after n (GET's attempts and
+// last_result), also published as the system.time event.
 net::HttpResponse sync_time(AdminDeps& deps, const RequestContext&) {
     if (deps.time_sync == nullptr) return no_time_sync();
-    if (!deps.time_sync->sync_now()) {
+    const std::optional<uint64_t> after = deps.time_sync->sync_now();
+    if (!after) {
         return net::HttpResponse::error(409, "no_network", "the device has no network connection");
     }
-    return ok_json(202);
+    return net::HttpResponse::json(202, Value(Map{{"after", Value(static_cast<int64_t>(*after))}}));
 }
 
 }  // namespace

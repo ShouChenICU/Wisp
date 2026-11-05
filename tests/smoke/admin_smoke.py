@@ -178,7 +178,8 @@ def check_routes(api):
 
     # No Wi-Fi saved: nothing synced, and a sync is refused.
     time = api.ok_json("GET", "/system/time")
-    expect(time == {"synced": False, "last_sync": None, "server": "", "time": None},
+    expect(time == {"synced": False, "last_sync": None, "server": "", "time": None,
+                    "attempts": 0, "last_result": None},
            f"/system/time: {time}")
     status, _, text = api.call("POST", "/system/time/sync", {})
     expect(status == 409 and json.loads(text)["error"]["code"] == "no_network",

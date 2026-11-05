@@ -148,9 +148,11 @@ void NetWiring::stop() {
         task_.reset();
     }
     if (ntp_task_) {
-        // stopping_ is set: the worker finishes any attempt under way
-        // (at most one query timeout per server) and ends.
+        // An attempt under way stops after the query in progress (a name
+        // lookup lwIP does not bound, then up to one query timeout); the
+        // worker then ends.
         stopping_.store(true);
+        if (time_sync_) time_sync_->cancel();
         ntp_wake_.give();
         ntp_task_->join();
         ntp_task_.reset();

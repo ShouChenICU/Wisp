@@ -265,12 +265,12 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 
 联网后用 SNTP 校准系统时钟和硬件 RTC（`clock.main`），让断电重启后时间仍然正确。全部时间都是 UTC，显示时各自加上 `utc_offset_min`。
 
-- **时机**：站点（STA）每次拿到 IP 时校一次；成功后每 6 小时再校一次；失败后从 30 秒开始退避，每次翻倍，最长 30 分钟，直到成功或断网。断网时不安排任何尝试，下次拿到 IP 从头开始。`POST /system/time/sync` 立即触发一次。
+- **时机**：站点（STA）每次拿到 IP 时校一次；成功后每 6 小时再校一次；失败后从 30 秒开始退避，每次翻倍，最长 30 分钟，直到成功或断网。断网时不安排任何尝试，下次拿到 IP 从头开始（即使上一个链路的尝试还在进行，新 IP 的那次也照样立即进行，退避从 30 秒重新算）。`POST /system/time/sync` 立即触发一次。
 - **服务器**：每次尝试按 `ntp_servers`（5.4）的顺序逐个询问，第一个回答的为准；每个服务器等待约 3 秒（不含域名解析）。默认先 `pool.ntp.org`，国内网络下它可能很慢或不通，再退到 `ntp.aliyun.com`。
-- **成功后**：设置系统时钟，写入 `clock.main`（写 RTC 失败只记警告），发布 `system.time`（5.5）。场景运行时收到 `synced` 时在亮屏状态下触发一次 `minute`（场景 spec 5.2），自检页"电源与时钟"卡片显示"已同步 HH:MM"，未同步时显示"未同步"。
-- **线程**：`wisp.net` 任务每次 tick 只判断是否到期，到期时在本任务内读取 Settings（会访问 flash）并准备好服务器列表；真正的网络请求（每个不通的服务器要等几秒）在单独的 `wisp.ntp` 任务里执行。`wisp.ntp` 只做 socket、设置系统时间、I2C 写 RTC、记日志和发事件，不访问内部 flash，所以声明 `flash_access=false`（AGENTS.md 第 5 节）。
+- **成功后**：设置系统时钟（系统时钟拒绝时这次尝试算失败），写入 `clock.main`（写 RTC 失败只记警告），发布 `system.time`（5.5）。场景运行时收到 `synced` 时在亮屏状态下触发一次 `minute`（场景 spec 5.2），自检页"电源与时钟"卡片显示"已同步 HH:MM"，未同步时显示"未同步"。
+- **线程**：`wisp.net` 任务每次 tick 只判断是否到期，到期时在本任务内读取 Settings（会访问 flash）并准备好服务器列表；真正的网络请求（每个不通的服务器要等几秒）在单独的 `wisp.ntp` 任务里执行。`wisp.ntp` 只做 socket、设置系统时间、I2C 写 RTC、记日志和发事件，不访问内部 flash，所以声明 `flash_access=false`（AGENTS.md 第 5 节）。关机时取消服务，进行中的尝试在问下一个服务器之前停止，不发事件。
 - **平台端口**：`net::Sntp` 只有一个 `query(host, timeout_ms)`。ESP 端口（`wisp_port_esp/net/`）经 lwIP 发一次 SNTP v4 请求，用随机数作发送时间戳并校验回包（模式、版本、闰秒指示、层级、原始时间戳）；模拟器端口直接返回主机时间，`*.invalid` 主机模拟超时。平台不提供 `Sntp` 时不创建该服务。
-- **接口**：`GET /system/time` 返回 `{synced, last_sync, server, time}`，`last_sync` 是上次同步得到的 UTC 秒、`time` 是按它推算的当前 UTC 秒，未同步时两者都为 `null`；`POST /system/time/sync` 返回 202，结果经 `system.time` 事件推送，没有网络时返回 409 `no_network`。服务不存在时两者都返回 503。
+- **接口**：`GET /system/time` 返回 `{synced, last_sync, server, time, attempts, last_result}`，`last_sync` 是上次同步得到的 UTC 秒、`time` 是按它推算的当前 UTC 秒，未同步时两者都为 `null`；`attempts` 是本次开机已结束的尝试数，`last_result` 是最近一次的结果（`synced`/`failed`，还没有时为 `null`）。`POST /system/time/sync` 返回 202 `{after}`：回答这次请求的是 `attempts` 超过 `after` 后的第一次尝试（请求时已有尝试在进行，就算那一次），结果同时经 `system.time` 事件推送；没有网络时返回 409 `no_network`。服务不存在时两者都返回 503。后台网页按 `after` 轮询 `GET /system/time` 得出结果，事件只用来提前轮询；60 秒内没有结束的尝试时只提示"暂时还没有结果"，不报失败。
 
 ---
 

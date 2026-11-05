@@ -1,11 +1,11 @@
 #pragma once
 
 // The self-check screen's plain readout cards: power and clock (battery,
-// time, the last network time sync), storage (internal flash, SD card) and performance (FPS, CPU,
-// flush time; a long press toggles the LVGL performance overlay). The
-// power and storage values sit in aligned "label  value" rows; a storage
-// value is two items (online state, capacity) that wrap as a whole, so a
-// narrow cell never splits "5.9 MB".
+// time, the last network time sync), storage (internal flash, SD card)
+// and performance (FPS, CPU, flush time; a long press toggles the LVGL
+// performance overlay). The power and storage values sit in aligned
+// "label  value" rows; a storage value is two items (online state,
+// capacity) that wrap as a whole, so a narrow cell never splits "5.9 MB".
 //
 // UI thread only. update() only touches a label whose text changed.
 

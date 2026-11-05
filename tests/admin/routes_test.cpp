@@ -456,7 +456,9 @@ TEST(Routes, SystemTimeReportsAndSyncs) {
               Value(Map{{"synced", Value(false)},
                         {"last_sync", Value()},
                         {"server", Value("")},
-                        {"time", Value()}}));
+                        {"time", Value()},
+                        {"attempts", Value(int64_t{0})},
+                        {"last_result", Value()}}));
 
     HttpResponse offline = f.srv->handle(authed(token, Post, "/api/v1/system/time/sync"));
     EXPECT_EQ(offline.status, 409);
@@ -473,12 +475,15 @@ TEST(Routes, SystemTimeReportsAndSyncs) {
               Value(Map{{"synced", Value(true)},
                         {"last_sync", Value(wisp::test::kFixtureUnixTime)},
                         {"server", Value("pool.ntp.org")},
-                        {"time", Value(wisp::test::kFixtureUnixTime + 2)}}));
+                        {"time", Value(wisp::test::kFixtureUnixTime + 2)},
+                        {"attempts", Value(int64_t{1})},
+                        {"last_result", Value("synced")}}));
     f.sntp.take_calls();
 
     HttpResponse sync = f.srv->handle(authed(token, Post, "/api/v1/system/time/sync"));
     EXPECT_EQ(sync.status, 202);
-    EXPECT_EQ(body_json(sync), Value(Map{}));
+    // The outcome is that of the first attempt to finish after this many.
+    EXPECT_EQ(body_json(sync), Value(Map{{"after", Value(int64_t{1})}}));
     ASSERT_TRUE(f.time_sync->tick(true));
     f.time_sync->run_attempt();
     EXPECT_EQ(f.sntp.take_calls(), (std::vector<std::string>{"pool.ntp.org"}));

@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -51,11 +52,19 @@ struct Fixture {
             .sntp = sntp,
             .bus = bus,
             .servers = [this] { return servers; },
-            .set_system_time = [this](int64_t t) { system_times.push_back(t); },
+            .set_system_time =
+                [this](int64_t t) {
+                    system_times.push_back(t);
+                    if (clock_fails)
+                        return Result<void>::err(ErrorCode::IoError, "settimeofday: errno 22");
+                    return Result<void>::ok();
+                },
             .rtc = rtc,
             .now_ms = [this] { return now; },
         });
     }
+
+    bool clock_fails = false;
 
     ~Fixture() {
         svc.reset();
@@ -240,6 +249,84 @@ TEST(TimeSync, LinkLossDuringAnAttemptSchedulesNothing) {
     EXPECT_EQ(f.sntp.take_calls().size(), 2u);
 }
 
+// The link went and came back while an attempt was running: the new IP
+// still gets its immediate attempt, whatever the old one's outcome, and a
+// failure there starts the backoff afresh at 30 s.
+TEST(TimeSync, IpRegainedDuringAFailingAttemptStillSyncsAtOnce) {
+    Fixture f;
+    f.sntp.set_down("pool.ntp.org", true);
+    f.sntp.set_down("ntp.aliyun.com", true);
+    ASSERT_TRUE(f.svc->tick(true));
+    EXPECT_FALSE(f.svc->tick(false));
+    EXPECT_FALSE(f.svc->tick(true));
+    f.svc->run_attempt();
+    EXPECT_EQ(f.sntp.take_calls().size(), 2u);
+    ASSERT_TRUE(f.step(true));
+    EXPECT_EQ(f.sntp.take_calls().size(), 2u);
+    f.now += 30 * kSecond - 1;
+    EXPECT_FALSE(f.step(true));
+    f.now += 1;
+    EXPECT_TRUE(f.step(true));
+}
+
+TEST(TimeSync, IpRegainedDuringASucceedingAttemptStillSyncsAtOnce) {
+    Fixture f;
+    ASSERT_TRUE(f.svc->tick(true));
+    EXPECT_FALSE(f.svc->tick(false));
+    EXPECT_FALSE(f.svc->tick(true));
+    f.svc->run_attempt();
+    EXPECT_TRUE(f.svc->status().synced);
+    ASSERT_TRUE(f.step(true));
+    EXPECT_EQ(f.sntp.take_calls().size(), 2u);
+}
+
+// Lost during an attempt that then fails: the next IP still starts the
+// backoff at 30 s.
+TEST(TimeSync, LinkLossDuringAFailingAttemptKeepsTheBackoffAtItsStart) {
+    Fixture f;
+    f.sntp.set_down("pool.ntp.org", true);
+    f.sntp.set_down("ntp.aliyun.com", true);
+    ASSERT_TRUE(f.svc->tick(true));
+    EXPECT_FALSE(f.svc->tick(false));
+    f.svc->run_attempt();
+    ASSERT_TRUE(f.step(true));
+    f.now += 30 * kSecond;
+    EXPECT_TRUE(f.step(true));
+}
+
+// cancel() (shutdown) stops an attempt before its next server and
+// publishes nothing.
+TEST(TimeSync, CancelStopsAnAttemptBetweenServers) {
+    Fixture f;
+    f.sntp.set_down("pool.ntp.org", true);
+    f.sntp.on_query = [&f](const std::string&) { f.svc->cancel(); };
+    ASSERT_TRUE(f.svc->tick(true));
+    f.svc->run_attempt();
+    EXPECT_EQ(f.sntp.take_calls(), (std::vector<std::string>{"pool.ntp.org"}));
+    EXPECT_TRUE(f.take_events().empty());
+    EXPECT_TRUE(f.system_times.empty());
+    EXPECT_FALSE(f.svc->status().synced);
+}
+
+// The system clock refusing the time fails the attempt: nothing reports a
+// time that is not there, the RTC is left alone and the backoff starts.
+TEST(TimeSync, SystemClockRefusalFailsTheAttempt) {
+    auto rtc = std::make_shared<FailingClock>("clock.main");
+    Fixture f(rtc);
+    f.clock_fails = true;
+    ASSERT_TRUE(f.step(true));
+    EXPECT_EQ(f.system_times.size(), 1u);
+    EXPECT_EQ(rtc->attempts, 0);
+    EXPECT_FALSE(f.svc->status().synced);
+    const auto events = f.take_events();
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(str(events.at(0), "state"), "failed");
+    f.clock_fails = false;
+    f.now += 30 * kSecond;
+    EXPECT_TRUE(f.step(true));
+    EXPECT_TRUE(f.svc->status().synced);
+}
+
 // A failed RTC write is only a warning: the system clock is set and the
 // sync counts.
 TEST(TimeSync, WritesTheRtcAndSurvivesItsFailure) {
@@ -310,6 +397,38 @@ TEST(TimeSync, SyncNowCutsTheBackoffShort) {
     EXPECT_TRUE(f.svc->sync_now());
     ASSERT_TRUE(f.step(true));
     EXPECT_TRUE(f.svc->status().synced);
+}
+
+// Each finished attempt is counted with its outcome; sync_now() returns
+// the count at the moment it was accepted, so the attempt that answers it
+// is the first to finish after that.
+TEST(TimeSync, CountsFinishedAttempts) {
+    Fixture f;
+    EXPECT_EQ(f.svc->status().attempts, 0u);
+    EXPECT_EQ(f.svc->status().last_result, "");
+    f.sntp.set_down("pool.ntp.org", true);
+    f.sntp.set_down("ntp.aliyun.com", true);
+    ASSERT_TRUE(f.step(true));
+    EXPECT_EQ(f.svc->status().attempts, 1u);
+    EXPECT_EQ(f.svc->status().last_result, "failed");
+
+    std::optional<uint64_t> after = f.svc->sync_now();
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(*after, 1u);
+    f.sntp.all_up();
+    ASSERT_TRUE(f.step(true));
+    EXPECT_EQ(f.svc->status().attempts, 2u);
+    EXPECT_EQ(f.svc->status().last_result, "synced");
+
+    // Joining one under way: still answered by the next to finish.
+    f.now += kMinute;
+    ASSERT_TRUE(f.svc->sync_now().has_value());
+    ASSERT_TRUE(f.svc->tick(true));
+    after = f.svc->sync_now();
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(*after, 2u);
+    f.svc->run_attempt();
+    EXPECT_EQ(f.svc->status().attempts, 3u);
 }
 
 TEST(TimeSync, SplitsTheServerList) {

@@ -179,6 +179,7 @@ struct UiNetHarness {
             platform.set_wall_clock = [this](int64_t t) {
                 std::lock_guard<std::mutex> lock(wall_clock_mutex);
                 wall_clock_sets.push_back(t);
+                return wisp::Result<void>::ok();
             };
         }
         platform.scenes_dir = opts.scenes_dir;

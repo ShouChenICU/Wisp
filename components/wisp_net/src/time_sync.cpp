@@ -33,6 +33,7 @@ bool TimeSyncService::tick(bool online) {
     const uint64_t now = deps_.now_ms();
     {
         std::lock_guard<os::Mutex> lock(mutex_);
+        if (online != online_ && in_flight_) link_changed_ = true;
         if (!online) {
             online_ = false;
             requested_ = false;
@@ -48,7 +49,8 @@ bool TimeSyncService::tick(bool online) {
             requested_ = false;
             next_attempt_ms_ = now;
         }
-        if (in_flight_ || !next_attempt_ms_ || now < *next_attempt_ms_) return false;
+        if (cancelled_.load() || in_flight_ || !next_attempt_ms_ || now < *next_attempt_ms_)
+            return false;
         in_flight_ = true;
         next_attempt_ms_.reset();
     }
@@ -68,9 +70,22 @@ void TimeSyncService::run_attempt() {
     }
     std::string tried;
     for (const std::string& host : servers) {
+        if (cancelled_.load()) {
+            std::lock_guard<os::Mutex> lock(mutex_);
+            in_flight_ = false;
+            link_changed_ = false;
+            return;
+        }
         tried = host;
         auto r = deps_.sntp.query(host, config_.query_timeout_ms);
         if (r) {
+            if (deps_.set_system_time) {
+                if (auto set = deps_.set_system_time(r.value()); !set) {
+                    WLOG_W(kTag, "system clock not set: %s", set.error().message.c_str());
+                    finish(false, 0, host);
+                    return;
+                }
+            }
             finish(true, r.value(), host);
             return;
         }
@@ -81,7 +96,6 @@ void TimeSyncService::run_attempt() {
 
 void TimeSyncService::finish(bool ok, int64_t unix_time, const std::string& server) {
     if (ok) {
-        if (deps_.set_system_time) deps_.set_system_time(unix_time);
         if (deps_.rtc) {
             if (auto r = deps_.rtc->set_unix(unix_time); !r) {
                 WLOG_W(kTag, "RTC not set: %s", r.error().message.c_str());
@@ -90,7 +104,7 @@ void TimeSyncService::finish(bool ok, int64_t unix_time, const std::string& serv
         WLOG_I(kTag, "synced from %s: unix %lld", server.c_str(),
                static_cast<long long>(unix_time));
     } else {
-        WLOG_W(kTag, "no time server answered");
+        WLOG_W(kTag, "sync failed");
     }
 
     const uint64_t now = deps_.now_ms();
@@ -98,17 +112,24 @@ void TimeSyncService::finish(bool ok, int64_t unix_time, const std::string& serv
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         in_flight_ = false;
+        // After a link change tick() has reset the backoff and, with the
+        // link back, asked for an attempt now: that stands.
+        const bool same_link = online_ && !link_changed_;
+        link_changed_ = false;
+        ++status_.attempts;
+        status_.last_result = ok ? "synced" : "failed";
         if (ok) {
-            status_ = TimeSyncStatus{.synced = true, .last_sync = unix_time, .server = server};
+            status_.synced = true;
+            status_.last_sync = unix_time;
+            status_.server = server;
             synced_at_ms_ = now;
             backoff_ms_ = config_.backoff_min_ms;
-            if (online_) next_attempt_ms_ = now + config_.resync_ms;
-        } else {
+            if (same_link) next_attempt_ms_ = now + config_.resync_ms;
+        } else if (same_link) {
             retry_ms = backoff_ms_;
             backoff_ms_ = std::min(backoff_ms_ * 2, config_.backoff_max_ms);
-            if (online_) next_attempt_ms_ = now + retry_ms;
+            next_attempt_ms_ = now + retry_ms;
         }
-        if (!online_) retry_ms = 0;
     }
     if (retry_ms != 0) {
         WLOG_I(kTag, "next attempt in %u s", static_cast<unsigned>(retry_ms / 1000));
@@ -122,15 +143,17 @@ void TimeSyncService::finish(bool ok, int64_t unix_time, const std::string& serv
     deps_.bus.publish(std::move(event));
 }
 
-bool TimeSyncService::sync_now() {
+std::optional<uint64_t> TimeSyncService::sync_now() {
+    uint64_t finished = 0;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
-        if (!online_) return false;
-        if (in_flight_) return true;
+        if (!online_) return std::nullopt;
+        finished = status_.attempts;
+        if (in_flight_) return finished;
         requested_ = true;
     }
     if (wake_) wake_();
-    return true;
+    return finished;
 }
 
 TimeSyncStatus TimeSyncService::status() const {

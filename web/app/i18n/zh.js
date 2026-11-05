@@ -340,6 +340,7 @@ export default {
   'sys.time_sync': '立即校时',
   'sys.time_synced': '已从 {server} 校时',
   'sys.time_failed': '没有时间服务器响应，设备会继续重试。',
+  'sys.time_pending': '暂时还没有结果，设备仍在尝试，请稍后再看。',
   'sys.time_unavailable': '这台设备不能从网络获取时间。',
   'sys.time_servers': '时间服务器',
   'sys.time_servers_hint': '一到两个主机名或 IPv4 地址，用逗号分隔。设备每次连上网络时按顺序询问，之后每 6 小时一次。',
