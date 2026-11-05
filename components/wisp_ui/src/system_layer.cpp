@@ -6,8 +6,9 @@
 #include <cstring>
 #include <string>
 #include <utility>
+#include <vector>
 
-#include "lvgl_private.h"  // lv_indev_t::pointer.act_obj
+#include "lvgl_private.h"  // lv_indev_t::pointer.act_obj, lv_buttonmatrix_t
 #include "wisp/ui/overlay.hpp"
 
 namespace wisp::ui {
@@ -73,6 +74,126 @@ const lv_buttonmatrix_ctrl_t kCtrlMap[] = {
 
 int32_t width_of(const hal::Area& a) { return a.x2 - a.x1 + 1; }
 int32_t height_of(const hal::Area& a) { return a.y2 - a.y1 + 1; }
+
+// How far keys stay inside the visible width of their rows, like
+// hal::safe_rect()'s corner margin: panel outlines are rarely known to the
+// pixel. Also the keyboard's own side padding, so on a rectangle every row
+// is the keyboard's full content width.
+constexpr int32_t kKeyInset = 4;
+// The narrowest a key may get before the keyboard rises on a round
+// screen to find wider rows, and how far it may rise: at most this share
+// of the screen height (percent).
+constexpr int32_t kMinKeyWidth = 28;
+constexpr int32_t kMaxKeyboardPercent = 55;
+// The step the keyboard rises by while looking for rows that fit.
+constexpr int32_t kRiseStep = 4;
+
+// The visible columns common to screen rows y1..y2, `inset` further in
+// from each side; empty if some row shows nothing.
+hal::Span visible_extent(const hal::ScreenShape& shape, int32_t y1, int32_t y2, int32_t inset) {
+    hal::Span ext{0, shape.width - 1};
+    for (int32_t y = y1; y <= y2; ++y) {
+        const hal::Span s = hal::row_span(shape, y);
+        if (s.empty()) return {};
+        ext.x1 = std::max(ext.x1, s.x1);
+        ext.x2 = std::min(ext.x2, s.x2);
+    }
+    return {ext.x1 + inset, ext.x2 - inset};
+}
+
+uint32_t key_units(lv_buttonmatrix_ctrl_t ctrl) {
+    // As lv_buttonmatrix: a width of 0 counts as 1.
+    const uint32_t w = ctrl & LV_BUTTONMATRIX_CTRL_WIDTH_15;  // the width bits
+    return w != 0 ? w : 1;
+}
+
+// One row of a key map: how many keys, how many width units in all, and
+// the narrowest key's units.
+struct KeyRow {
+    uint32_t keys = 0;
+    uint32_t units = 0;
+    uint32_t min_units = 0;
+};
+
+std::vector<KeyRow> key_rows(const char* const* map, const lv_buttonmatrix_ctrl_t* ctrl) {
+    std::vector<KeyRow> rows;
+    KeyRow row;
+    for (size_t i = 0, k = 0;; ++i) {
+        const char* t = map[i];
+        const bool end = t == nullptr || t[0] == '\0';
+        if (end || std::strcmp(t, "\n") == 0) {
+            if (row.keys > 0) rows.push_back(row);
+            row = {};
+            if (end) break;
+            continue;
+        }
+        const uint32_t u = key_units(ctrl[k++]);
+        row.keys += 1;
+        row.units += u;
+        row.min_units = row.min_units == 0 ? u : std::min(row.min_units, u);
+    }
+    return rows;
+}
+
+// Spreads the keys of each row of `matrix` across the visible width of
+// that row's pixel rows (visible_extent() with kKeyInset) instead of the
+// matrix's whole content width. lv_buttonmatrix lays every row out over
+// the same width whenever its map, size or style changes; this redoes only
+// the x positions, with the same unit arithmetic, so the keys drawn and
+// the keys hit stay the same rectangles.
+void fit_rows(lv_obj_t* matrix, const hal::ScreenShape& shape) {
+    auto* m = reinterpret_cast<lv_buttonmatrix_t*>(matrix);
+    if (m->button_areas == nullptr || m->map_p == nullptr || m->ctrl_bits == nullptr) return;
+    lv_area_t box;
+    lv_obj_get_coords(matrix, &box);
+    const int32_t content_x1 = lv_obj_get_style_space_left(matrix, LV_PART_MAIN);
+    const int32_t content_x2 =
+        lv_area_get_width(&box) - 1 - lv_obj_get_style_space_right(matrix, LV_PART_MAIN);
+    const int32_t pcol = lv_obj_get_style_pad_column(matrix, LV_PART_MAIN);
+    const char* const* map = m->map_p;
+    uint32_t first = 0;  // the row's first button
+    while (first < m->btn_cnt) {
+        uint32_t n = 0;
+        uint32_t units = 0;
+        while (map[n] != nullptr && map[n][0] != '\0' && std::strcmp(map[n], "\n") != 0) {
+            units += key_units(m->ctrl_bits[first + n]);
+            ++n;
+        }
+        if (n > 0) {
+            const lv_area_t& head = m->button_areas[first];
+            const hal::Span ext =
+                visible_extent(shape, box.y1 + head.y1, box.y1 + head.y2, kKeyInset);
+            int32_t x1 = std::max(content_x1, ext.x1 - box.x1);
+            int32_t x2 = std::min(content_x2, ext.x2 - box.x1);
+            if (x1 > x2) {
+                x1 = content_x1;
+                x2 = content_x2;
+            }
+            const int32_t w =
+                std::max(int32_t{0}, x2 - x1 + 1 - pcol * static_cast<int32_t>(n - 1));
+            uint32_t at = 0;
+            for (uint32_t b = 0; b < n; ++b) {
+                lv_area_t& a = m->button_areas[first + b];
+                const uint32_t u = key_units(m->ctrl_bits[first + b]);
+                const auto gap = static_cast<int32_t>(b) * pcol;
+                a.x1 = x1 + w * static_cast<int32_t>(at) / static_cast<int32_t>(units) + gap;
+                a.x2 =
+                    x1 + w * static_cast<int32_t>(at + u) / static_cast<int32_t>(units) + gap - 1;
+                at += u;
+            }
+        }
+        first += n;
+        map += n;
+        if (*map == nullptr || (*map)[0] == '\0') break;
+        ++map;  // the "\n"
+    }
+    lv_obj_invalidate(matrix);
+}
+
+void fit_rows_cb(lv_event_t* e) {
+    auto* shape = static_cast<const hal::ScreenShape*>(lv_event_get_user_data(e));
+    fit_rows(static_cast<lv_obj_t*>(lv_event_get_current_target(e)), *shape);
+}
 
 // A plain, non-clickable box for laying out the panel's contents.
 lv_obj_t* make_container(lv_obj_t* parent) {
@@ -414,11 +535,17 @@ void SystemLayer::build_keyboard(lv_obj_t* textarea) {
     lv_keyboard_set_map(kb_, LV_KEYBOARD_MODE_TEXT_UPPER,
                         (pinyin_ ? kPinyinUpper : kLatinUpper).data(), kCtrlMap);
 
-    // The lower half of the safe area.
-    const int32_t top_y = safe_.y1 + height_of(safe_) / 2;
+    // The background runs to the left, right and bottom edges; the
+    // screen's outline clips its corners. The key rows are laid out below.
     lv_obj_set_align(kb_, LV_ALIGN_TOP_LEFT);
-    lv_obj_set_pos(kb_, safe_.x1, top_y);
-    lv_obj_set_size(kb_, width_of(safe_), safe_.y2 - top_y + 1);
+    lv_obj_set_style_radius(kb_, 0, 0);
+    lv_obj_set_style_pad_left(kb_, kKeyInset, 0);
+    lv_obj_set_style_pad_right(kb_, kKeyInset, 0);
+    const KeyboardPlace place = place_keyboard(textarea);
+    const int32_t top_y = place.top;
+    lv_obj_set_pos(kb_, 0, top_y);
+    lv_obj_set_size(kb_, shape_.width, shape_.height - top_y);
+    lv_obj_set_style_pad_bottom(kb_, place.pad_bottom, 0);
     lv_obj_set_style_bg_opa(kb_, LV_OPA_COVER, 0);
     lv_keyboard_set_textarea(kb_, textarea);
     // lv_keyboard does not watch its textarea; a key typed after the
@@ -432,19 +559,83 @@ void SystemLayer::build_keyboard(lv_obj_t* textarea) {
         lv_ime_pinyin_set_dict(ime_, const_cast<lv_pinyin_dict_t*>(detail::pinyin_dict()));
         lv_ime_pinyin_set_keyboard(ime_, kb_);
         // LVGL's IME puts the candidate row above the keyboard across the
-        // whole parent (the screen) and leaves it transparent; it stays
-        // inside the safe area here and covers what is under it, like the
+        // whole parent (the screen) and leaves it transparent; here it
+        // spans the screen's width and covers what is under it, like the
         // keyboard.
         candidates_ = lv_ime_pinyin_get_cand_panel(ime_);
         lv_obj_set_align(candidates_, LV_ALIGN_TOP_LEFT);
-        lv_obj_set_pos(candidates_, safe_.x1, top_y - kCandidateHeight);
-        lv_obj_set_size(candidates_, width_of(safe_), kCandidateHeight);
+        const int32_t cand_y = top_y - kCandidateHeight;
+        lv_obj_set_pos(candidates_, 0, cand_y);
+        lv_obj_set_size(candidates_, shape_.width, kCandidateHeight);
+        // One row: its padding alone keeps the candidates within the
+        // visible width of its rows.
+        hal::Span ext = visible_extent(shape_, cand_y, top_y - 1, kKeyInset);
+        if (ext.empty()) ext = {safe_.x1, safe_.x2};
+        lv_obj_set_style_pad_left(candidates_, ext.x1, 0);
+        lv_obj_set_style_pad_right(candidates_, shape_.width - 1 - ext.x2, 0);
+        lv_obj_set_style_radius(candidates_, 0, 0);
         lv_obj_set_style_bg_color(candidates_, lv_obj_get_style_bg_color(kb_, LV_PART_MAIN), 0);
         lv_obj_set_style_bg_opa(candidates_, LV_OPA_COVER, 0);
         mark_opaque_overlay(candidates_);
     }
     mark_opaque_overlay(kb_);
+    // After the IME's own handler, which may switch the map: every map,
+    // size or style change lays the rows out over the full width again.
+    for (lv_event_code_t code :
+         {LV_EVENT_VALUE_CHANGED, LV_EVENT_SIZE_CHANGED, LV_EVENT_STYLE_CHANGED}) {
+        lv_obj_add_event_cb(kb_, fit_rows_cb, code, &shape_);
+    }
     lv_obj_update_layout(kb_);
+    fit_rows(kb_, shape_);
+}
+
+SystemLayer::KeyboardPlace SystemLayer::place_keyboard(lv_obj_t* textarea) const {
+    // Where it always sat: from the middle of the safe area down, the rows
+    // ending kKeyInset above the bottom edge.
+    const int32_t default_top = safe_.y1 + height_of(safe_) / 2;
+    const std::vector<KeyRow> rows = key_rows(kLatinLower.data(), kCtrlMap);
+    const int32_t space_top = lv_obj_get_style_space_top(kb_, LV_PART_MAIN);
+    const int32_t border = lv_obj_get_style_border_width(kb_, LV_PART_MAIN);
+    const int32_t prow = lv_obj_get_style_pad_row(kb_, LV_PART_MAIN);
+    const int32_t pcol = lv_obj_get_style_pad_column(kb_, LV_PART_MAIN);
+    const auto row_cnt = static_cast<int32_t>(rows.size());
+
+    // Whether every row, laid out as lv_buttonmatrix does in a band from
+    // `top` whose rows keep their usual height, has keys at least
+    // kMinKeyWidth wide.
+    const int32_t rows_h = shape_.height - kKeyInset - border - default_top - space_top;
+    auto fits = [&](int32_t top) {
+        const int32_t y0 = top + space_top;
+        const int32_t h_no_gap = rows_h - prow * (row_cnt - 1);
+        for (int32_t r = 0; r < row_cnt; ++r) {
+            const KeyRow& row = rows[static_cast<size_t>(r)];
+            const int32_t y1 = y0 + h_no_gap * r / row_cnt + r * prow;
+            const int32_t y2 = y0 + h_no_gap * (r + 1) / row_cnt + r * prow - 1;
+            const hal::Span ext = visible_extent(shape_, y1, y2, kKeyInset);
+            if (ext.empty()) return false;
+            const int32_t w = ext.x2 - ext.x1 + 1 - pcol * static_cast<int32_t>(row.keys - 1);
+            if (w * static_cast<int32_t>(row.min_units) / static_cast<int32_t>(row.units) <
+                kMinKeyWidth) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // Too narrow there (on a round screen): rise, the band growing taller
+    // and the rows keeping their height, until they fit, the band reaches
+    // its share of the screen, or it would cover the textarea (with the
+    // candidate row above it).
+    int32_t highest = shape_.height - shape_.height * kMaxKeyboardPercent / 100;
+    if (textarea != nullptr) {
+        lv_obj_update_layout(textarea);
+        lv_area_t ta;
+        lv_obj_get_coords(textarea, &ta);
+        highest = std::max(highest, ta.y2 + 1 + (pinyin_ ? kCandidateHeight : 0));
+    }
+    int32_t top = default_top;
+    while (!fits(top) && top - kRiseStep >= highest) top -= kRiseStep;
+    return {top, kKeyInset + (default_top - top)};
 }
 
 void SystemLayer::discard_keyboard(bool now) {

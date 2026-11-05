@@ -91,9 +91,13 @@ public:
     void hide_error();
     bool error_visible() const { return error_panel_ != nullptr; }
 
-    // Shows the keyboard over the lower half of the safe area, typing
-    // into `textarea`; for another textarea than the one it types into,
-    // a fresh keyboard replaces it. It hides itself on LV_EVENT_READY /
+    // Shows the keyboard, typing into `textarea`. Its background runs from
+    // about the middle of the safe area to the left, right and bottom
+    // edges; each key row spans the visible width of its own rows, less a
+    // few pixels. Where those rows are too narrow (a round screen) it
+    // rises, at most to 55% of the height and never over `textarea`. For
+    // another textarea than the one it types into, a fresh keyboard
+    // replaces it. It hides itself on LV_EVENT_READY /
     // LV_EVENT_CANCEL and when `textarea` is deleted; its language key
     // switches between pinyin and plain Latin input (pinyin first when
     // the UI language is Chinese, then whichever was used last).
@@ -138,6 +142,13 @@ private:
     void end_swipe();
     static void pointer_read_cb(lv_indev_t* indev, lv_indev_data_t* data);
 
+    // Where the keyboard's band starts, and its bottom padding below the
+    // key rows.
+    struct KeyboardPlace {
+        int32_t top;
+        int32_t pad_bottom;
+    };
+    KeyboardPlace place_keyboard(lv_obj_t* textarea) const;
     void build_keyboard(lv_obj_t* textarea);
     // Hides the keyboard at once and deletes it now or, from inside one
     // of its own events, on the next timer pass.

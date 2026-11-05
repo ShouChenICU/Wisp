@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "lvgl_private.h"  // lv_buttonmatrix_t::button_areas
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -88,6 +89,27 @@ lv_point_t center_of(lv_obj_t* obj) {
     return {(a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2};
 }
 
+// The keys of a button matrix in screen coordinates, one vector per row
+// (hidden buttons left out).
+std::vector<std::vector<lv_area_t>> key_rows(lv_obj_t* matrix) {
+    auto* m = reinterpret_cast<lv_buttonmatrix_t*>(matrix);
+    lv_area_t box;
+    lv_obj_get_coords(matrix, &box);
+    std::vector<std::vector<lv_area_t>> rows;
+    int32_t row_y = INT32_MIN;
+    for (uint32_t i = 0; i < m->btn_cnt; ++i) {
+        if ((m->ctrl_bits[i] & LV_BUTTONMATRIX_CTRL_HIDDEN) != 0) continue;
+        lv_area_t a = m->button_areas[i];
+        lv_area_move(&a, box.x1, box.y1);
+        if (a.y1 != row_y) {
+            rows.emplace_back();
+            row_y = a.y1;
+        }
+        rows.back().push_back(a);
+    }
+    return rows;
+}
+
 // Presses the key reading `text` the way a tap does: selects it and
 // reports the value change.
 bool press(lv_obj_t* matrix, const char* text) {
@@ -103,9 +125,10 @@ bool press(lv_obj_t* matrix, const char* text) {
 class SystemLayerTest : public ::testing::Test {
 protected:
     void start(const std::string& display_shape = "circle",
-               wisp::ui::Lang lang = wisp::ui::Lang::Zh) {
+               wisp::ui::Lang lang = wisp::ui::Lang::Zh, int corner_radius = 40) {
         wisp::ui::set_lang(lang);
         display = std::make_shared<FakeDisplay>("display.main", kSide, kSide, 1, display_shape);
+        display->set_cap("corner_radius", corner_radius);
         touch = std::make_shared<FakeTouch>("touch.main");
         ui = std::make_unique<wisp::ui::UiRuntime>(display, touch);
         ASSERT_TRUE(ui->start());
@@ -619,7 +642,7 @@ TEST_F(SystemLayerTest, ErrorPanelSwallowsTaps) {
     on_ui([&] { EXPECT_TRUE(layer->error_visible()); });
 }
 
-TEST_F(SystemLayerTest, KeyboardTargetsTextareaInsideSafeRect) {
+TEST_F(SystemLayerTest, KeyboardTargetsTextarea) {
     start("circle");
     on_ui([&] {
         lv_obj_t* ta = lv_textarea_create(lv_screen_active());
@@ -628,15 +651,9 @@ TEST_F(SystemLayerTest, KeyboardTargetsTextareaInsideSafeRect) {
         lv_obj_t* kb = layer->keyboard();
         ASSERT_NE(kb, nullptr);
         EXPECT_EQ(lv_keyboard_get_textarea(kb), ta);
+        EXPECT_EQ(lv_obj_get_parent(kb), lv_layer_top());
         lv_obj_update_layout(lv_layer_top());
         lv_area_t a;
-        lv_obj_get_coords(kb, &a);
-        EXPECT_TRUE(inside(a, safe)) << a.x1 << "," << a.y1 << "-" << a.x2 << "," << a.y2;
-        EXPECT_GE(a.y1, (safe.y1 + safe.y2) / 2);  // the lower half
-        EXPECT_EQ(a.y2, safe.y2);
-        EXPECT_EQ(a.x1, safe.x1);
-        EXPECT_EQ(a.x2, safe.x2);
-        EXPECT_EQ(lv_obj_get_parent(kb), lv_layer_top());
 
         // Pinyin: "ni" offers 你, which replaces the letters.
         ASSERT_TRUE(press(kb, "n"));
@@ -646,7 +663,15 @@ TEST_F(SystemLayerTest, KeyboardTargetsTextareaInsideSafeRect) {
         ASSERT_NE(cand, nullptr);
         lv_obj_update_layout(cand);
         lv_obj_get_coords(cand, &a);
-        EXPECT_TRUE(inside(a, safe)) << a.x1 << "," << a.y1 << "-" << a.x2 << "," << a.y2;
+        EXPECT_EQ(a.y2 + 1, lv_obj_get_y(kb));  // right above the keyboard
+        for (const auto& row : key_rows(cand)) {
+            for (const lv_area_t& k : row) {
+                for (lv_point_t p : {lv_point_t{k.x1, k.y1}, lv_point_t{k.x2, k.y1},
+                                     lv_point_t{k.x1, k.y2}, lv_point_t{k.x2, k.y2}}) {
+                    EXPECT_TRUE(wisp::hal::visible(shape, p.x, p.y)) << p.x << "," << p.y;
+                }
+            }
+        }
         ASSERT_TRUE(press(cand, "你"));
         EXPECT_STREQ(lv_textarea_get_text(ta), "你");
 
@@ -677,6 +702,151 @@ TEST_F(SystemLayerTest, KeyboardTargetsTextareaInsideSafeRect) {
         EXPECT_EQ(shown, 0u);
         EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before);
     });
+}
+
+// Every key of a keyboard (or candidate row) lies wholly on the visible
+// screen, at least `inset` pixels inside the visible width of its rows.
+void expect_keys_visible(const ScreenShape& shape, lv_obj_t* matrix, int32_t inset) {
+    for (const auto& row : key_rows(matrix)) {
+        for (const lv_area_t& k : row) {
+            for (lv_point_t p : {lv_point_t{k.x1, k.y1}, lv_point_t{k.x2, k.y1},
+                                 lv_point_t{k.x1, k.y2}, lv_point_t{k.x2, k.y2}}) {
+                EXPECT_TRUE(wisp::hal::visible(shape, p.x, p.y)) << p.x << "," << p.y;
+            }
+            for (int32_t y = k.y1; y <= k.y2; ++y) {
+                const wisp::hal::Span s = wisp::hal::row_span(shape, y);
+                EXPECT_GE(k.x1, s.x1 + inset) << y;
+                EXPECT_LE(k.x2, s.x2 - inset) << y;
+            }
+        }
+    }
+}
+
+// The keyboard's background runs to the screen's left, right and bottom
+// edges whatever the shape; the screen's own outline clips its corners.
+TEST_F(SystemLayerTest, KeyboardBackgroundReachesTheEdges) {
+    for (const char* s : {"rect", "rounded_rect", "circle"}) {
+        SCOPED_TRACE(s);
+        TearDown();
+        start(s);
+        on_ui([&] {
+            lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+            lv_obj_set_pos(ta, safe.x1, safe.y1);
+            layer->show_keyboard(ta);
+            lv_obj_t* kb = layer->keyboard();
+            ASSERT_NE(kb, nullptr);
+            lv_obj_update_layout(lv_layer_top());
+            lv_area_t a;
+            lv_obj_get_coords(kb, &a);
+            EXPECT_EQ(a.x1, 0);
+            EXPECT_EQ(a.x2, kSide - 1);
+            EXPECT_EQ(a.y2, kSide - 1);
+            EXPECT_GE(a.y1, (safe.y1 + safe.y2) / 2 - kSide / 10);
+            EXPECT_EQ(lv_obj_get_style_bg_opa(kb, LV_PART_MAIN), LV_OPA_COVER);
+            // The candidate row likewise.
+            ASSERT_TRUE(press(kb, "n"));
+            lv_obj_t* cand = candidate_panel(kb);
+            ASSERT_NE(cand, nullptr);
+            lv_obj_update_layout(cand);
+            lv_obj_get_coords(cand, &a);
+            EXPECT_EQ(a.x1, 0);
+            EXPECT_EQ(a.x2, kSide - 1);
+            expect_keys_visible(shape, cand, 4);
+        });
+    }
+}
+
+// On a rectangle every key row is the full width, less the keyboard's
+// small side inset.
+TEST_F(SystemLayerTest, KeyboardRowsFullWidthOnARect) {
+    start("rect");
+    on_ui([&] {
+        lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+        layer->show_keyboard(ta);
+        lv_obj_t* kb = layer->keyboard();
+        ASSERT_NE(kb, nullptr);
+        lv_obj_update_layout(lv_layer_top());
+        const auto rows = key_rows(kb);
+        ASSERT_EQ(rows.size(), 4u);
+        for (const auto& row : rows) {
+            EXPECT_EQ(row.front().x1, 4);
+            EXPECT_EQ(row.back().x2, kSide - 1 - 4);
+        }
+        expect_keys_visible(shape, kb, 4);
+    });
+}
+
+// The reference board's corners (radius 70): the rows clear of the bottom
+// corners span the visible width less the inset; the bottom row, which
+// reaches into them, is narrower and still wholly visible. Switching to
+// capitals keeps the layout.
+TEST_F(SystemLayerTest, KeyboardRowsFollowRoundedCorners) {
+    start("rounded_rect", wisp::ui::Lang::Zh, 70);
+    on_ui([&] {
+        lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+        layer->show_keyboard(ta);
+        lv_obj_t* kb = layer->keyboard();
+        ASSERT_NE(kb, nullptr);
+        lv_obj_update_layout(lv_layer_top());
+        auto check = [&] {
+            const auto rows = key_rows(kb);
+            ASSERT_EQ(rows.size(), 4u);
+            // Rows clear of the corners span the visible width less the
+            // inset; one just reaching into them only by a pixel or two.
+            for (size_t r = 0; r + 1 < rows.size(); ++r) {
+                SCOPED_TRACE(r);
+                if (rows[r].front().y2 < kSide - 70) {
+                    EXPECT_EQ(rows[r].front().x1, 4);
+                    EXPECT_EQ(rows[r].back().x2, kSide - 1 - 4);
+                } else {
+                    EXPECT_LE(rows[r].front().x1, 4 + 2);
+                    EXPECT_GE(rows[r].back().x2, kSide - 1 - 4 - 2);
+                }
+            }
+            ASSERT_LT(rows[0].front().y2, kSide - 70);
+            const auto& bottom = rows.back();
+            EXPECT_GT(bottom.front().x1, 4 + 10);
+            EXPECT_LT(bottom.back().x2, kSide - 1 - 4 - 10);
+            expect_keys_visible(shape, kb, 4);
+        };
+        check();
+        ASSERT_TRUE(press(kb, "ABC"));
+        ASSERT_NE(matrix_button(kb, "Q"), LV_BUTTONMATRIX_BUTTON_NONE);
+        check();
+    });
+}
+
+// On a circle every row follows the circle and every key is wholly
+// visible; the keyboard rises (at most to 55% of the height) so its rows
+// get wide enough, but never over the textarea it types into.
+TEST_F(SystemLayerTest, KeyboardRowsFollowACircle) {
+    start("circle");
+    for (int32_t ta_bottom : {safe.y1 + 40, int32_t{kSide / 2 - 10}}) {
+        SCOPED_TRACE(ta_bottom);
+        on_ui([&] {
+            lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+            lv_obj_set_size(ta, 200, 40);
+            lv_obj_set_pos(ta, kSide / 2 - 100, ta_bottom - 39);
+            lv_obj_update_layout(ta);
+            layer->show_keyboard(ta);
+            lv_obj_t* kb = layer->keyboard();
+            ASSERT_NE(kb, nullptr);
+            lv_obj_update_layout(lv_layer_top());
+            lv_area_t a;
+            lv_obj_get_coords(kb, &a);
+            EXPECT_LE(lv_area_get_height(&a), kSide * 55 / 100);
+            // The textarea and the candidate row above the keyboard both
+            // stay clear of it, unless the keyboard sits where it always
+            // did (the lower half of the safe area).
+            const int32_t default_top = safe.y1 + (safe.y2 - safe.y1 + 1) / 2;
+            EXPECT_TRUE(a.y1 >= default_top || a.y1 - 44 > ta_bottom) << a.y1;
+            expect_keys_visible(shape, kb, 4);
+            const auto rows = key_rows(kb);
+            ASSERT_EQ(rows.size(), 4u);
+            layer->hide_keyboard();
+            lv_obj_delete(ta);
+        });
+    }
 }
 
 // In an English UI the keyboard starts with plain letters; its language
@@ -944,10 +1114,13 @@ TEST_F(SystemLayerTest, NoPersistentTopLayerChild) {
 }
 
 // As NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone: what
-// scrolls under the error panel or the keyboard is not redrawn where the
-// piece covers it. The rows span the whole screen, like the self-check
-// screen's: a change that lies wholly inside a marked piece's box may be
-// the piece's own and is always redrawn (wisp/ui/overlay.hpp).
+// changes under the error panel or the keyboard is not redrawn where the
+// piece covers it. A change that lies wholly inside a marked piece's box
+// may be the piece's own and is always redrawn (wisp/ui/overlay.hpp).
+// The list's rows span the whole screen, like the self-check screen's, so
+// those scrolling under the error panel are not inside its box. The
+// keyboard spans the whole width itself, so rows scrolling under it are:
+// there the change is one to the whole screen below it.
 TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
     start("rounded_rect");
     lv_obj_t* list = nullptr;
@@ -965,7 +1138,7 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
     });
 
     auto check = [&](const char* what, const std::function<lv_obj_t*()>& show,
-                     const std::function<void()>& hide) {
+                     const std::function<void()>& hide, const std::function<void()>& change) {
         SCOPED_TRACE(what);
         lv_area_t core{};
         size_t before = 0;
@@ -979,7 +1152,7 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
             core.y2 -= r;
             lv_refr_now(nullptr);
             before = display->areas().size();
-            lv_obj_scroll_by(list, 0, -40, LV_ANIM_OFF);
+            change();
             lv_refr_now(nullptr);
         });
         const std::vector<Area> areas = display->areas();
@@ -998,7 +1171,7 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
             lv_obj_t* label = find_label_containing(lv_layer_top(), "main.lua:3");
             return label != nullptr ? top_level(label) : nullptr;
         },
-        [&] { layer->hide_error(); });
+        [&] { layer->hide_error(); }, [&] { lv_obj_scroll_by(list, 0, -40, LV_ANIM_OFF); });
 
     lv_obj_t* ta = nullptr;
     on_ui([&] {
@@ -1011,7 +1184,7 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
             layer->show_keyboard(ta);
             return layer->keyboard();
         },
-        [&] { layer->hide_keyboard(); });
+        [&] { layer->hide_keyboard(); }, [&] { lv_obj_invalidate(lv_screen_active()); });
 }
 
 }  // namespace
