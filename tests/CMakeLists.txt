@@ -274,6 +274,10 @@ wisp_test(NAME minute_ticker_test SRCS scene/minute_ticker_test.cpp LIBS wisp_sc
 wisp_test(NAME dir_watcher_test SRCS scene/dir_watcher_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME scene_api_test SRCS scene/scene_api_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+# The example scenes in scenes/examples, opened on a SceneRuntime.
+wisp_test(NAME examples_test SRCS scene/examples_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 120)
+target_compile_definitions(examples_test PRIVATE WISP_ROOT="${WISP_ROOT}")
 foreach(t list_window_test scene_view_list_test canvas_test)
     target_include_directories(${t} PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 endforeach()

@@ -18,11 +18,15 @@ temporary data dir) and then, over loopback:
      kind with others cannot be deleted (409 active_profile), that a
      platform without /models reports no_model_list and that the old /llm
      routes are gone;
-  5. subscribes to the log over the WebSocket and waits for an entry;
-  6. checks the CSRF guard (no X-Wisp: 403), the Host check (a foreign
+  5. scenes (scene-runtime-core spec 7.1): uploads scenes/examples/counter
+     as packed by tools/wisp_scene.py, lists, opens, reloads and closes it,
+     exports it with and without its data, and has a package with a syntax
+     error refused with its file and line;
+  6. subscribes to the log over the WebSocket and waits for an entry;
+  7. checks the CSRF guard (no X-Wisp: 403), the Host check (a foreign
      Host: 403) and the pairing lock (wrong codes until 429 with
      Retry-After), after which the paired cookie still works;
-  7. stops the simulator with SIGTERM, which must end it cleanly (exit 0).
+  8. stops the simulator with SIGTERM, which must end it cleanly (exit 0).
 
 The API key may appear in no HTTP response, WebSocket message or
 simulator output; the pairing token only in the one Set-Cookie that
@@ -43,6 +47,8 @@ Usage: python3 tests/smoke/admin_smoke.py <path-to-wisp_sim>
 """
 
 import http.client
+import importlib.util
+import io
 import json
 import pathlib
 import re
@@ -54,11 +60,14 @@ import tempfile
 import threading
 import time
 import traceback
+import zipfile
 
-from sim_smoke import SmokeError, WsClient, expect, free_port
+from sim_smoke import Child, SmokeError, WsClient, click, expect, free_port
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FAKE_OPENAI = ROOT / "tools" / "fake_openai.py"
+WISP_SCENE = ROOT / "tools" / "wisp_scene.py"
+COUNTER = ROOT / "scenes" / "examples" / "counter"
 API_KEY = "test-key"
 STEP_TIMEOUT_S = 20
 WS_LOG_TIMEOUT_S = 30
@@ -66,82 +75,6 @@ WS_LOG_TIMEOUT_S = 30
 BACKSTOP_MS = 120000
 PORT_ATTEMPTS = 3
 HTTP_FAILED_LOG = "admin server failed to start"
-
-
-class Child:
-    """A child process whose stdout lines are collected on a thread (so a
-    chatty log never fills the pipe) and can be waited on."""
-
-    def __init__(self, args, stdin=False):
-        self.proc = subprocess.Popen(
-            args, stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self.lines = []
-        self.err_lines = []
-        self.cond = threading.Condition()
-        self.threads = [
-            threading.Thread(target=self._drain, args=(self.proc.stdout, self.lines), daemon=True),
-            threading.Thread(target=self._drain, args=(self.proc.stderr, self.err_lines),
-                             daemon=True),
-        ]
-        for t in self.threads:
-            t.start()
-
-    def _drain(self, stream, sink):
-        for line in stream:
-            with self.cond:
-                sink.append(line.rstrip("\n"))
-                self.cond.notify_all()
-        with self.cond:
-            self.cond.notify_all()
-
-    def wait_line(self, match, timeout_s, start=0):
-        """The first stdout line from index `start` on for which match()
-        is truthy, or None once timeout_s passes or the process exits."""
-        deadline = time.monotonic() + timeout_s
-        with self.cond:
-            i = start
-            while True:
-                while i < len(self.lines):
-                    if match(self.lines[i]):
-                        return self.lines[i]
-                    i += 1
-                remaining = deadline - time.monotonic()
-                if remaining <= 0 or (self.proc.poll() is not None
-                                      and not any(t.is_alive() for t in self.threads)):
-                    return None
-                self.cond.wait(min(remaining, 0.2))
-
-    def send(self, line):
-        self.proc.stdin.write(line + "\n")
-        self.proc.stdin.flush()
-
-    def join_output(self):
-        """Waits for the collector threads to read the process's last
-        output; call only once the process has exited."""
-        for t in self.threads:
-            t.join(timeout=STEP_TIMEOUT_S)
-            expect(not t.is_alive(), "the output pipes did not close after the process exited")
-
-    def output(self):
-        with self.cond:
-            return "\n".join(self.lines), "\n".join(self.err_lines)
-
-    def tail(self, n=20):
-        with self.cond:
-            return "\n".join(self.lines[-n:])
-
-    def kill(self):
-        if self.proc.poll() is None:
-            self.proc.kill()
-        self.proc.wait()
-        for t in self.threads:
-            t.join(timeout=5)
-        if self.proc.stdin:
-            try:
-                self.proc.stdin.close()
-            except OSError:
-                pass
 
 
 class Api:
@@ -153,13 +86,16 @@ class Api:
         self.cookie = None
         self.seen = []
 
-    def call(self, method, path, body=None, headers=None, csrf=True, auth=True):
+    def call(self, method, path, body=None, headers=None, csrf=True, auth=True, raw=None,
+             binary=False):
+        """raw: bytes sent as they are (with their own Content-Type in
+        `headers`); binary: the body comes back as bytes."""
         h = dict(headers or {})
         if csrf and method != "GET":
             h["X-Wisp"] = "1"
         if auth and self.cookie:
             h["Cookie"] = self.cookie
-        data = None
+        data = raw
         if body is not None:
             data = json.dumps(body)
             h["Content-Type"] = "application/json"
@@ -167,12 +103,13 @@ class Api:
         try:
             conn.request(method, "/api/v1" + path, body=data, headers=h)
             res = conn.getresponse()
-            text = res.read().decode("utf-8")
+            content = res.read()
             res_headers = {k.lower(): v for k, v in res.getheaders()}
         finally:
             conn.close()
+        text = content.decode("utf-8", "replace" if binary else "strict")
         self.seen.append(f"{method} {path} -> {res.status} {res_headers} {text}")
-        return res.status, res_headers, text
+        return res.status, res_headers, content if binary else text
 
     def ok_json(self, method, path, body=None, status=200):
         got, _, text = self.call(method, path, body)
@@ -286,6 +223,66 @@ def check_models(api, llm_port):
         expect(status == 404, f"{method} /llm -> {status}")
 
 
+def load_wisp_scene():
+    """tools/wisp_scene.py as a module, for its pack()."""
+    spec = importlib.util.spec_from_file_location("wisp_scene", WISP_SCENE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def zip_names(blob):
+    with zipfile.ZipFile(io.BytesIO(blob)) as z:
+        return sorted(z.namelist())
+
+
+def check_scenes(api, sim):
+    """/scenes (scene-runtime-core spec 7.1): uploads the counter example,
+    lists, opens, reloads and closes it, and exports it with and without
+    its data; a package that does not compile is refused with its file and
+    line."""
+    zip_header = {"Content-Type": "application/zip"}
+    blob, _, _ = load_wisp_scene().pack(COUNTER)
+    status, _, text = api.call("POST", "/scenes", headers=zip_header, raw=blob)
+    expect(status == 201, f"POST /scenes -> {status} {text}")
+    item = json.loads(text)
+    expect(item.get("id") == "counter" and item.get("state") == "stopped"
+           and item.get("hosts") == [], f"POST /scenes: {item}")
+    listed = api.ok_json("GET", "/scenes")["scenes"]
+    expect([s["id"] for s in listed] == ["counter"], f"GET /scenes: {listed}")
+
+    for action, state in (("open", "running"), ("reload", "running")):
+        got = api.ok_json("POST", f"/scenes/counter/{action}", {})
+        expect(got == {"state": state}, f"POST /scenes/counter/{action}: {got}")
+    # A click writes the count to the scene's data.
+    click(sim, "plus")
+    got = api.ok_json("POST", "/scenes/counter/close", {})
+    expect(got == {"state": "stopped"}, f"POST /scenes/counter/close: {got}")
+
+    names = {}
+    for data in ("0", "1"):
+        status, headers, body = api.call("GET", f"/scenes/counter/export?data={data}",
+                                         binary=True)
+        expect(status == 200 and headers.get("content-type") == "application/zip",
+               f"GET /scenes/counter/export?data={data} -> {status} {headers}")
+        names[data] = zip_names(body)
+    expect(names["0"] == ["main.lua", "scene.json"], f"export without data: {names['0']}")
+    expect(any(n.startswith("data/") for n in names["1"])
+           and set(names["0"]) < set(names["1"]), f"export with data: {names['1']}")
+
+    bad = io.BytesIO()
+    with zipfile.ZipFile(bad, "w") as z:
+        z.writestr("scene.json", json.dumps({"id": "bad", "name": "Bad", "version": "1.0.0",
+                                             "schema_version": 1}))
+        z.writestr("main.lua", "local x = 1\nreturn ui.screen {\n")
+    status, _, text = api.call("POST", "/scenes", headers=zip_header, raw=bad.getvalue())
+    err = json.loads(text).get("error", {}) if status == 400 else {}
+    expect(err.get("code") == "invalid_scene" and err.get("file") == "main.lua"
+           and err.get("line") == 3, f"POST /scenes with a syntax error -> {status} {text}")
+    listed = api.ok_json("GET", "/scenes")["scenes"]
+    expect([s["id"] for s in listed] == ["counter"], f"GET /scenes after the refusal: {listed}")
+
+
 def check_ws_log(port, cookie):
     """Returns every text message received."""
     ws = WsClient(port, f"wisp_token={cookie}")
@@ -386,6 +383,8 @@ def run(sim_path, tmp_root):
         print("PASS routes")
         check_models(api, llm_port)
         print("PASS models")
+        check_scenes(api, sim)
+        print("PASS scenes")
         ws_texts = check_ws_log(port, token)
         print("PASS websocket log")
         check_guards(api)

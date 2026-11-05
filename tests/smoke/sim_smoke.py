@@ -7,15 +7,21 @@ checks its machine-readable stdout (the single-line-JSON
 "WISP_BOOT_REPORT ", "WISP_MANIFEST " and "WISP_HTTP " lines -- see
 AGENTS.md section 4 and docs/architecture.md) and, for the default
 case, the PNG screenshot it writes. Each case runs wisp_sim in a fresh
-temporary data directory. Every case except "http", "factory_reset"
-and "firmware" passes --http-port 0 (no admin server), so the rest of
+temporary data directory. Every case except "http", "factory_reset",
+"firmware" and "scene_push" passes --http-port 0 (no admin server), so the rest of
 the suite never depends on a free port; those three pick one, talk to
 the admin API over loopback and end the run with a reboot through it
 ("factory_reset" and "firmware" also listen on the admin WebSocket and
 confirm on the screen with "tap" lines written to the simulator's
 stdin). "console"
-feeds serial console commands through stdin; every other case gives the
-simulator an empty stdin.
+feeds serial console commands through stdin. The scene cases
+(scene-runtime-core spec 9.2) run scenes/examples and
+tests/scene/fixtures: "scene_counter" and "scene_hot_reload" click with
+"debug scene-click" on stdin and follow the scene's log lines,
+"scene_error" swipes back from a failed scene, and "scene_push" pushes a
+scene with tools/wisp_scene.py (paired through "debug pair-code") and
+deletes it, confirming on the screen; none of them reaches the network.
+Every other case gives the simulator an empty stdin.
 
 Registered with ctest as the "sim_smoke" test (tests/CMakeLists.txt).
 
@@ -32,6 +38,7 @@ import pathlib
 import select
 import socket
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -403,6 +410,82 @@ class WsClient:
 
     def close(self):
         self.sock.close()
+
+
+class Child:
+    """A child process whose stdout lines are collected on a thread (so a
+    chatty log never fills the pipe) and can be waited on."""
+
+    def __init__(self, args, stdin=False):
+        self.proc = subprocess.Popen(
+            args, stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.lines = []
+        self.err_lines = []
+        self.cond = threading.Condition()
+        self.threads = [
+            threading.Thread(target=self._drain, args=(self.proc.stdout, self.lines), daemon=True),
+            threading.Thread(target=self._drain, args=(self.proc.stderr, self.err_lines),
+                             daemon=True),
+        ]
+        for t in self.threads:
+            t.start()
+
+    def _drain(self, stream, sink):
+        for line in stream:
+            with self.cond:
+                sink.append(line.rstrip("\n"))
+                self.cond.notify_all()
+        with self.cond:
+            self.cond.notify_all()
+
+    def wait_line(self, match, timeout_s, start=0):
+        """The first stdout line from index `start` on for which match()
+        is truthy, or None once timeout_s passes or the process exits."""
+        deadline = time.monotonic() + timeout_s
+        with self.cond:
+            i = start
+            while True:
+                while i < len(self.lines):
+                    if match(self.lines[i]):
+                        return self.lines[i]
+                    i += 1
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or (self.proc.poll() is not None
+                                      and not any(t.is_alive() for t in self.threads)):
+                    return None
+                self.cond.wait(min(remaining, 0.2))
+
+    def send(self, line):
+        self.proc.stdin.write(line + "\n")
+        self.proc.stdin.flush()
+
+    def join_output(self):
+        """Waits for the collector threads to read the process's last
+        output; call only once the process has exited."""
+        for t in self.threads:
+            t.join(timeout=TIMEOUT_S)
+            expect(not t.is_alive(), "the output pipes did not close after the process exited")
+
+    def output(self):
+        with self.cond:
+            return "\n".join(self.lines), "\n".join(self.err_lines)
+
+    def tail(self, n=20):
+        with self.cond:
+            return "\n".join(self.lines[-n:])
+
+    def kill(self):
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.wait()
+        for t in self.threads:
+            t.join(timeout=5)
+        if self.proc.stdin:
+            try:
+                self.proc.stdin.close()
+            except OSError:
+                pass
 
 
 def case_http(sim_path, tmp_root):
@@ -841,6 +924,255 @@ def case_shape_circle(sim_path, tmp_root):
     )
 
 
+# --- scenes (scene-runtime-core spec 9.2) ------------------------------------
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+EXAMPLES = ROOT / "scenes" / "examples"
+SCENE_FIXTURES = ROOT / "tests" / "scene" / "fixtures"
+WISP_SCENE = ROOT / "tools" / "wisp_scene.py"
+# The simulator's log lines on stdout: "<ms> <level> <tag>: <message>".
+LOG_LINE = re.compile(r"^\d+ [DIWE] ([^:]+): (.*)$")
+
+
+def log_match(tag, message):
+    """A Child.wait_line() matcher for the log line `tag`: `message`."""
+    def match(line):
+        m = LOG_LINE.match(line)
+        return m is not None and m.group(1) == tag and m.group(2) == message
+    return match
+
+
+def scene_sim(sim_path, data_dir, extra_args, http_port=0):
+    """A wisp_sim that only a signal (or the backstop) ends."""
+    args = sim_args(sim_path, data_dir, extra_args, http_port=http_port)
+    args[args.index("--exit-after-ms") + 1] = str(TIMEOUT_S * 1000)
+    return Child(args, stdin=True)
+
+
+def wait_log(sim, tag, message, start=0):
+    """Index of the first log line `tag`: `message` from `start` on."""
+    match = log_match(tag, message)
+    line = sim.wait_line(match, TIMEOUT_S, start=start)
+    expect(line is not None, f"no log line '{tag}: {message}'; last output:\n{sim.tail()}")
+    with sim.cond:
+        return sim.lines.index(line, start)
+
+
+def click(sim, ref):
+    """Clicks the widget `ref` of the scene in front. A scene logs "running"
+    before the UI thread has shown its view and built its widgets, so "no
+    scene is running" and "no widget with that ref" are asked again until
+    the widget is there."""
+    deadline = time.monotonic() + TIMEOUT_S
+    while True:
+        mark = len(sim.lines)
+        sim.send(f"debug scene-click {ref}")
+        line = sim.wait_line(lambda l: l.startswith("scene-click="), TIMEOUT_S, start=mark)
+        if line == "scene-click=ok":
+            return
+        expect(line in ("scene-click=no widget with that ref", "scene-click=no scene is running")
+               and time.monotonic() < deadline,
+               f"debug scene-click {ref}: {line!r}")
+
+
+def stop_child(sim):
+    """SIGTERM, which must end the simulator cleanly."""
+    sim.proc.send_signal(signal.SIGTERM)
+    try:
+        sim.proc.wait(timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired as exc:
+        raise SmokeError(f"wisp_sim ignored SIGTERM:\n{sim.tail()}") from exc
+    sim.join_output()
+    expect(sim.proc.returncode == 0, f"exit code {sim.proc.returncode} after SIGTERM:\n"
+           f"{sim.output()[1]}")
+
+
+def copy_examples(tmp_root, name):
+    scenes = tmp_root / name / "scenes"
+    shutil.copytree(EXAMPLES, scenes)
+    return scenes
+
+
+def case_scene_counter(sim_path, tmp_root):
+    """The counter example from a scenes directory: two clicks on its "plus"
+    button, each logged by the scene with its new count."""
+    scenes = copy_examples(tmp_root, "scene-counter")
+    sim = scene_sim(sim_path, tmp_root / "scene-counter" / "data",
+                    ["--scenes-dir", str(scenes), "--open-scene", "counter"])
+    try:
+        at = wait_log(sim, "scene", "counter: running")
+        click(sim, "plus")
+        at = wait_log(sim, "scene.counter", "count=1", at)
+        click(sim, "plus")
+        wait_log(sim, "scene.counter", "count=2", at)
+        stop_child(sim)
+    finally:
+        sim.kill()
+
+
+def case_scene_hot_reload(sim_path, tmp_root):
+    """Saving main.lua reloads the scene in front; its data stays."""
+    scenes = copy_examples(tmp_root, "scene-hot-reload")
+    sim = scene_sim(sim_path, tmp_root / "scene-hot-reload" / "data",
+                    ["--scenes-dir", str(scenes), "--open-scene", "counter"])
+    try:
+        at = wait_log(sim, "scene", "counter: running")
+        click(sim, "plus")
+        at = wait_log(sim, "scene.counter", "count=1", at)
+        main_lua = scenes / "counter" / "main.lua"
+        main_lua.write_text('wisp.log.info("v2")\n' + main_lua.read_text(encoding="utf-8"),
+                            encoding="utf-8")
+        at = wait_log(sim, "scene.counter", "v2", at)
+        at = wait_log(sim, "scene", "counter: running", at)
+        click(sim, "plus")
+        wait_log(sim, "scene.counter", "count=2", at)
+        stop_child(sim)
+    finally:
+        sim.kill()
+
+
+def case_scene_error(sim_path, tmp_root):
+    """A scene that fails while building its tree: the error (file and line)
+    is logged, the back gesture closes it to the self-check screen, and the
+    screenshot taken at the end is not blank."""
+    data_dir = tmp_root / "scene-error"
+    shot = data_dir / "shot.png"
+    data_dir.mkdir()
+    result = run_sim(sim_path, data_dir, [
+        "--scenes-dir", str(SCENE_FIXTURES), "--open-scene", "broken",
+        "--swipe", "4,240,240,240@1000", "--screenshot", str(shot)])
+    expect(result.returncode == 0, f"exit code {result.returncode}, stderr:\n{result.stderr}")
+    lines = result.stdout.splitlines()
+
+    def index(tag, needle):
+        for i, line in enumerate(lines):
+            m = LOG_LINE.match(line)
+            if m and m.group(1) == tag and needle in m.group(2):
+                return i
+        raise SmokeError(f"no log line '{tag}: ...{needle}...':\n{result.stdout}")
+
+    failed = index("scene.broken", "main.lua:5:")
+    expect(index("scene", "broken: error") > failed, "the error was not published")
+    expect(index("scene", "broken: closed") > failed,
+           f"the back gesture did not close the scene:\n{result.stdout}")
+    check_screenshot(shot)
+
+
+def read_until(stream, needle, timeout_s, sink):
+    """Reads `stream` (a binary pipe) byte by byte into `sink` until `needle`
+    has appeared, on a thread; returns that thread's Event."""
+    seen = threading.Event()
+
+    def run():
+        buf = b""
+        while True:
+            b = stream.read(1)
+            if not b:
+                break
+            buf += b
+            if needle.encode() in buf:
+                seen.set()
+        sink.append(buf.decode("utf-8", "replace"))
+        seen.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    return seen
+
+
+# The confirm dialog's "Yes" button for a scene delete, in English on the
+# default 480x480 rounded_rect screen: SystemLayer::open_confirm() in
+# components/wisp_ui/src/system_layer.cpp. Move it when that layout or the
+# delete prompt changes.
+SCENE_DELETE_YES_TAP = RESET_YES_TAP
+SCENE_DELETE_LOG = "counter: delete waiting for confirmation on the screen"
+
+
+def case_scene_push(sim_path, tmp_root):
+    """tools/wisp_scene.py pairs (the code from "debug pair-code" typed into
+    its stdin), pushes the counter example and opens it; deleting it with
+    its data then needs a tap on "Yes" on the device, after which no scene
+    is left."""
+    data_dir = tmp_root / "scene-push"
+    config_dir = tmp_root / "scene-push-config"
+    data_dir.mkdir()
+    (data_dir / "settings.json").write_text(json.dumps({"sys": {"lang": "en"}}))
+    port = free_port()
+    sim = scene_sim(sim_path, data_dir, [], http_port=port)
+    tool = ws = None
+    try:
+        expect(sim.wait_line(lambda l: l.startswith("WISP_HTTP "), TIMEOUT_S) is not None,
+               f"no WISP_HTTP line:\n{sim.tail()}")
+        env = dict(os.environ, WISP_SCENE_TIMEOUT_S=str(TIMEOUT_S))
+        tool = subprocess.Popen(
+            [sys.executable, "-I", str(WISP_SCENE), "--host", f"127.0.0.1:{port}",
+             "--config-dir", str(config_dir), "push", str(EXAMPLES / "counter"), "--open"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        tool_err = []
+        asked = read_until(tool.stderr, "配对码", TIMEOUT_S, tool_err)
+        expect(asked.wait(TIMEOUT_S), f"wisp_scene.py never asked for the code: {tool_err}")
+        mark = len(sim.lines)
+        sim.send("debug pair-code")
+        line = sim.wait_line(lambda l: l.startswith("pair-code="), TIMEOUT_S, start=mark)
+        expect(line is not None and re.fullmatch(r"pair-code=\d{6}", line),
+               f"'debug pair-code' printed {line!r}")
+        try:
+            out, _ = tool.communicate((line[len("pair-code="):] + "\n").encode(),
+                                      timeout=TIMEOUT_S)
+        except subprocess.TimeoutExpired as exc:
+            raise SmokeError("wisp_scene.py push did not finish") from exc
+        out = out.decode("utf-8", "replace")
+        expect(tool.returncode == 0 and "running" in out,
+               f"wisp_scene.py push -> {tool.returncode}:\n{out}\n{''.join(tool_err)}")
+        scene_dir = data_dir / "int" / "scenes" / "counter"
+        expect(scene_dir.is_dir(), f"{scene_dir}: not installed there")
+
+        token = json.loads((config_dir / "scene_tool.json").read_text())[
+            "hosts"][f"127.0.0.1:{port}"]["token"]
+        cookie = f"wisp_token={token}"
+        ws = WsClient(port, cookie)
+        ws.sock.settimeout(TIMEOUT_S)
+        ws.send_text(json.dumps({"sub": ["events", "log"]}))
+        while True:
+            text = ws.recv_text()
+            expect(text is not None, "the device closed the socket before replaying its log")
+            if json.loads(text).get("t") == "log":
+                break
+
+        status, body = api_request(port, "DELETE", "/api/v1/scenes/counter?data=1",
+                                   {"Cookie": cookie, "X-Wisp": "1"})
+        expect(status == 202, f"DELETE /api/v1/scenes/counter?data=1 -> {status} {body}")
+        deadline = time.monotonic() + TIMEOUT_S
+        tapped = False
+        states = []
+        while "deleted" not in states:
+            expect(time.monotonic() < deadline,
+                   f"not deleted within {TIMEOUT_S}s (tapped: {tapped}); states {states}")
+            if not select.select([ws.sock], [], [], 0.5)[0]:
+                continue
+            text = ws.recv_text()
+            expect(text is not None, f"the device closed the socket; states {states}")
+            msg = json.loads(text)
+            if msg.get("t") == "event" and msg.get("topic") == "scene.state":
+                states.append(msg["payload"].get("state"))
+            elif (msg.get("t") == "log" and not tapped
+                  and SCENE_DELETE_LOG in msg.get("msg", "")):
+                sim.send("tap {},{}".format(*SCENE_DELETE_YES_TAP))
+                tapped = True
+        status, body = api_request(port, "GET", "/api/v1/scenes", {"Cookie": cookie})
+        expect(status == 200 and json.loads(body) == {"scenes": []},
+               f"GET /api/v1/scenes after the delete -> {status} {body}")
+        expect(not (data_dir / "int" / "scenes" / "counter").exists(),
+               "the scene's directory is still there")
+        stop_child(sim)
+    finally:
+        if ws is not None:
+            ws.close()
+        if tool is not None and tool.poll() is None:
+            tool.kill()
+            tool.wait()
+        sim.kill()
+
+
 CASES = (
     ("expected_manifest_ids_unit", case_expected_manifest_ids_unit),
     ("default", case_default),
@@ -852,6 +1184,10 @@ CASES = (
     ("factory_reset", case_factory_reset),
     ("firmware", case_firmware),
     ("console", case_console),
+    ("scene_counter", case_scene_counter),
+    ("scene_hot_reload", case_scene_hot_reload),
+    ("scene_error", case_scene_error),
+    ("scene_push", case_scene_push),
 )
 
 

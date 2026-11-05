@@ -1,0 +1,110 @@
+-- 番茄钟：25 分钟专注、5 分钟休息。剩余时间按墙上时间（wisp.device.info().time）
+-- 计算：熄屏时定时器暂停，亮屏后错过的 every 只补一次，所以 on_show 时按结束时刻
+-- 校正，而不是数定时器触发了几次。设备不知道时间时退回为每秒减一。
+local PHASES = {
+  work = { secs = 25 * 60, title = "专注", next = "rest" },
+  rest = { secs = 5 * 60, title = "休息", next = "work" },
+}
+
+-- 保存在 wisp.store 里，关掉场景再打开也接着走。
+local saved = wisp.store.get("pomodoro") or {}
+local phase = state(PHASES[saved.phase] and saved.phase or "work")
+local left = state(saved.left or PHASES[phase:get()].secs)
+local running = state(false)
+local ends_at = nil -- 运行时这一段结束的墙上时间（秒）
+local done_count = state(wisp.store.get("done") or 0)
+
+local function now()
+  return wisp.device.info().time
+end
+
+local function save()
+  wisp.store.set("pomodoro", {
+    phase = phase:get(),
+    left = left:get(),
+    ends_at = running:get() and ends_at or nil,
+  })
+end
+
+local function start()
+  local t = now()
+  ends_at = t and (t + left:get()) or nil
+  running:set(true)
+  save()
+end
+
+local function pause()
+  running:set(false)
+  ends_at = nil
+  save()
+end
+
+local function switch_phase()
+  if phase:get() == "work" then
+    done_count:set(done_count:get() + 1)
+    wisp.store.set("done", done_count:get())
+  end
+  phase:set(PHASES[phase:get()].next)
+  left:set(PHASES[phase:get()].secs)
+  wisp.log.info("phase=" .. phase:get())
+  if running:get() then start() else save() end
+end
+
+local function sync()
+  if not running:get() then return end
+  local t = now()
+  local rest
+  if t and ends_at then
+    rest = ends_at - t
+  else
+    rest = left:get() - 1
+  end
+  if rest <= 0 then
+    switch_phase()
+  else
+    left:set(rest)
+  end
+end
+
+-- 上次关闭时还在走：按结束时刻接着走。
+if saved.ends_at and now() then
+  ends_at = saved.ends_at
+  running:set(true)
+  sync()
+end
+
+wisp.timer.every(1000, sync)
+scene.on_show = sync
+scene.on_close = save
+
+local function mmss(s)
+  return string.format("%02d:%02d", s // 60, s % 60)
+end
+
+return ui.screen { align = "center", justify = "center",
+  ui.column { gap = 16, align = "center",
+    ui.stack { w = 220, h = 220, align = "center",
+      ui.arc { w = 220, h = 220, width = 14, min = 0,
+        max = bind(phase, function(p) return PHASES[p].secs end),
+        value = left,
+        fg = bind(phase, function(p) return p == "work" and "accent" or "ok" end) },
+      ui.column { gap = 4, align = "center",
+        ui.label { text = bind(phase, function(p) return PHASES[p].title end), fg = "muted" },
+        ui.label { text = bind(left, mmss), font = "xxl" },
+        ui.label { text = bind(done_count, function(n) return "已完成 " .. n .. " 个" end),
+                   font = "sm", fg = "muted" },
+      },
+    },
+    ui.row { gap = 12,
+      ui.button { ref = "toggle", w = 96,
+        text = bind(running, function(r) return r and "暂停" or "开始" end),
+        on_click = function() if running:get() then pause() else start() end end },
+      ui.button { ref = "skip", w = 96, text = "跳过", on_click = switch_phase },
+      ui.button { ref = "reset", w = 96, text = "重置", on_click = function()
+        pause()
+        left:set(PHASES[phase:get()].secs)
+        save()
+      end },
+    },
+  },
+}
