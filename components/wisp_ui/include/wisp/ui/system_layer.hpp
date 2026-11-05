@@ -16,8 +16,10 @@
 //     has moved far enough to the right does it take the press away from
 //     that widget. The back arrow that follows the finger is unmarked and
 //     shown only during such a swipe.
-//   - The error panel and the keyboard are opaque and marked as opaque
-//     overlays.
+//   - The error panel is a card sized to what it holds, over an opaque
+//     backdrop that hides the whole screen and takes every touch the
+//     card does not. Both are marked as opaque overlays, as is the
+//     keyboard.
 //   - A confirm dialog is an lv_msgbox under LVGL's full-screen backdrop.
 //     The dialogs guard dangerous actions (factory reset, firmware
 //     install, deleting a scene), so the backdrop keeps every touch
@@ -85,9 +87,11 @@ public:
     // The back arrow while a swipe shows it, else nullptr.
     lv_obj_t* back_arrow() const;
 
-    // Shows the error panel inside the safe area, replacing one already
-    // up, and hides the keyboard. The panel takes every touch on it; its
-    // buttons hide it and then call `on_reload` or `on_back`.
+    // Shows the error panel, replacing one already up, and hides the
+    // keyboard. It is a card as wide as the safe area, as tall as what it
+    // holds (at most the safe area's height; a long message scrolls
+    // inside it) and centred in it, over a backdrop that takes every
+    // touch. Its buttons hide it and then call `on_reload` or `on_back`.
     void show_error(ErrorPanelInfo info, std::function<void()> on_reload,
                     std::function<void()> on_back);
     void hide_error();
@@ -177,7 +181,8 @@ private:
     lv_point_t start_{};
     lv_obj_t* arrow_ = nullptr;  // hidden while no swipe shows it
 
-    lv_obj_t* error_panel_ = nullptr;
+    lv_obj_t* error_panel_ = nullptr;  // the card
+    lv_obj_t* error_backdrop_ = nullptr;
     lv_obj_t* error_reload_ = nullptr;
     std::function<void()> on_reload_;
     std::function<void()> on_error_back_;
