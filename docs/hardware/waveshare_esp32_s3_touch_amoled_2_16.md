@@ -114,6 +114,7 @@
 | 54 | 熄屏恢复与待机耗电（scene spec 9.4.5） | 番茄钟和时钟运行时熄屏 3 分钟再亮屏；按"验收第 5 条：待机耗电实测"一节的方法测待机电流，对比无场景时 | 剩余时间与表盘正确，`minute` 只补一次；待机电流与无场景时相当 |  |
 | 55 | 未声明域名被拒（scene spec 9.4.6） | 临时把天气场景的 URL 改成未声明的主机后推送打开 | 回调收到 `permission_denied`，没有出站连接 |  |
 | 56 | LVGL 堆在 PSRAM 后的帧率 | 不开场景，在最终固件上重复"UI 帧率基准"一行，不开热点与开热点各测一次（LVGL 堆改到 PSRAM 后已经在真机上测过一次，见下方"性能基准"一节的"LVGL 堆"小节） | `WISP_PERF` 的 fps 不开热点 ≥ 22.7、开热点 ≥ 28.2（下方"性能基准"一节）；低于时停下来报告，不要自行改回 | 2026-11-05：不开热点 22–24 fps，达标（基准 22.7）；开热点 23–24 fps，**低于** 28.2 的基准，记为低于基准、待排查，没有按通过处理。 |
+| 57 | 内部 RAM 最坏情况复测（mbedTLS 的分配全部改到 PSRAM 之后，`firmware/sdkconfig.defaults` 的 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`；UI 任务栈也已从 8 KB 加到 10 KB） | 烧录包含这项改动的固件（改 `sdkconfig.defaults` 后要先删掉 `firmware/sdkconfig` 再构建，否则不生效；构建后 `firmware/sdkconfig` 里应是 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`）。按第 44 项的同一场景操作：STA 连家里的 Wi-Fi，`wifi ap on`，手机连热点打开设置页，电脑经 STA 打开管理页"日志"页（WebSocket）；然后同时进行：打开天气场景（HTTPS）、在"模型"页对真实 HTTPS 端点做连通性测试、上传一次固件。全程每隔 1–2 秒执行一次 `mem` | 每次 `mem` 的 `internal free` 都 ≥ 40 KB（`kWorstInternalFreeMin`）、`largest` ≥ 16 KB；记下所有采样里最低的 `internal free` 和最后的 `min`。`internal free` 是同一时刻的快照，以它为准；`min` 是各内存区各自最低点之和，偏低，只作参考。若采样都 ≥ 40 KB 但 `min` < 40 KB，记下两者，不算不达标（需要精确最低点时，可以临时在固件里用 `heap_caps_monitor_local_minimum_free_size_start/stop(MALLOC_CAP_INTERNAL)` 包住这段操作）。同时确认：天气场景和连通性测试都成功（握手变慢但不超时），STA 不掉线。结果低于 40 KB 时停下来报告 | 待测 |
 
 ## 待机与省电（spec 6.7）
 
@@ -344,6 +345,8 @@ STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动
 `largest` 全程保持 31744 B，高于 `components/wisp_app/include/wisp/app/ram_budget.hpp` 的 `kWorstInternalLargestMin`（16 × 1024 = 16384 B）和 `kIdleInternalLargestMin`（20 × 1024 = 20480 B），两项都达标。(a) 的 `internal free` 88899 B 高于 `kIdleInternalFreeMin`（60 × 1024 = 61440 B），达标。
 
 `min` 是开机以来的历史最低点：这次验收触到的内部 RAM 历史最低点是 33772 B（TLS 连通性测试叠加热点上传前后出现，一直保持到测试结束），对照 `kWorstInternalFreeMin`（40 × 1024 = 40960 B）：33772 < 40960，**不达标**，需要跟进（日志显示这个低点是在热点打开、WebSocket 日志连上之后、上传之前的区间内出现的，具体触发点还没有继续拆开排查）。
+
+跟进（2026-11-05，未上机）：TLS 会话的大部分内部 RAM 来自 mbedTLS 小于 16 KB 的分配（4 KB 发送缓冲、SSL 上下文、握手状态、解析后的证书链、大数临时变量），按默认 `malloc` 规则都落在内部 RAM，估计握手期间 15–20 KB；TLS 闸门只串行化握手，场景的 HTTPS 会话和连通性测试的握手可以重叠。现在 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y` 把 mbedTLS 的分配全部放进 PSRAM（理由和代价见 `firmware/sdkconfig.defaults` 中该项的注释）。另外这次测量之后 UI 任务栈从 8 KB 加到了 10 KB，内部 RAM 常驻多占 2 KB。需要按清单第 57 项在真机上复测，复测前不能算达标。
 
 ## 性能基准
 
