@@ -1,7 +1,7 @@
 # Wisp 子项目 3b-1：场景的设备侧接口 设计文档
 
 - 日期：2026-11-05
-- 状态：待审阅
+- 状态：已批准（2026-11-05），含计划审阅后的修订：错误码统一为 3a 的下划线风格，SD 路径、下滑判定区、`/close` 与 `/exit`、后台场景事件
 - 范围：子项目 3（场景运行时）第二期的设备侧部分
 - 前置：
   - 基础 spec：`2026-11-01-foundation-design.md`
@@ -139,6 +139,8 @@
 - **切回前台**：从声明树重建控件，然后 `on_show`。重建的耗时要计入 9.3 的真机测量。
 - 每次转换都触发场景的 `state` 事件，场景用 `wisp.scene.state()` 查询当前状态。
 - `scene.state` 总线事件增加 `background` 取值。
+- 首次打开（含开机恢复）时也触发一次 `state` 事件，告知初始状态。
+- 后台场景照常收到系统事件：`minute`、电量、语言变化等。
 - `wisp.scene.close()`（3a）语义不变，是"返回"；`wisp.scene.exit()` 是新增的，总是彻底关闭。
 
 ### 3.3 定时器与灭屏
@@ -150,7 +152,7 @@
 
 ### 3.4 后台能用与不能用的 API
 
-| 能用 | 不能用（调用时返回 `not in background`） |
+| 能用 | 不能用（调用时返回 `not_in_background`） |
 |---|---|
 | 定时器、HTTP（待机时按 4.4 排队）、`wisp.store`、`wisp.files`、`wisp.notify`、日志、`wisp.device.info` | `wisp.sensor`、`wisp.power.keep_screen_on`、键盘与确认框 |
 
@@ -174,7 +176,7 @@
 ### 3.7 管理后台
 
 - 场景页显示每个场景的状态，包括 `background`，后台场景可以关闭。
-- REST 新增 `POST /scenes/{id}/exit`，鉴权和错误格式沿用连接 spec 6.3。
+- REST 保留 3a 的 `POST /scenes/{id}/close`，语义是"返回"：声明了 `background` 的场景转入后台，其余关闭。新增 `POST /scenes/{id}/exit`，总是彻底关闭。鉴权和错误格式沿用连接 spec 6.3。
 
 ---
 
@@ -234,8 +236,8 @@
 ### 4.4 深度待机时的联网
 
 - 在 `deep_standby` 中，场景的 HTTP 请求和下载先进入队列。系统最多每 15 分钟打开一次 Wi-Fi，处理整个队列，顺带一次校时，然后关闭。
-- 队列每个场景最多 4 条。超出的请求立即失败，返回 `deferred queue full`。
-- 一条请求排队超过 1 小时就失败，返回 `deferred timeout`。
+- 队列每个场景最多 4 条。超出的请求立即失败，返回 `deferred_queue_full`。
+- 一条请求排队超过 1 小时就失败，返回 `deferred_timeout`。
 - `standby` 中 Wi-Fi 还开着，请求照常立即发出。
 - 场景回调里能看到排队这件事，`res.deferred = true`。
 
@@ -267,7 +269,7 @@ wisp.notify_cancel(id)
 - 用户点击通知时，系统把场景切回前台，场景不在运行时先启动它（`launch()` 为 `"notification"`），然后触发场景的 `notification` 事件，参数为通知 id。
 - 限额：
   - 每个场景最多保留 5 条未读，超出时丢掉最旧的；
-  - 每分钟最多 10 条，超出返回 `rate limited`。
+  - 每分钟最多 10 条，超出返回 `rate_limited`。
 - 前台场景自己发的通知只弹横幅，不进入未读列表。
 
 ### 5.2 系统通知
@@ -307,7 +309,7 @@ wisp.notify_cancel(id)
 打开方式：
 
 - 点胶囊；
-- 从顶边下滑：判定区在安全区顶部 16 px 以内，向下移动 24 px 触发。实现方式和返回手势相同，只旁观不拦截，接管时下面的控件收到 `PRESS_LOST`。键盘、确认框打开时不触发；面板已经打开时也不触发。
+- 从顶边下滑：判定区是按下点所在列的最上面一个可见像素往下 16 px 以内（圆形屏的中间列从 y=0 起，手指可以从物理顶边开始），向下移动 24 px 触发，不限角度。实现方式和返回手势相同，只旁观不拦截，接管时下面的控件收到 `PRESS_LOST`。键盘、确认框打开时不触发；面板已经打开时也不触发。
 
 面板内容，从上到下：
 
@@ -377,7 +379,7 @@ wisp.files.info(cb)                       -- cb(err, { location="sd"|"int", quot
 wisp.http.download(url, name, opts, cb)   -- 流式写入文件，受配额和 http_hosts 限制
 ```
 
-- 文件名：`[A-Za-z0-9._-]`，1–64 字节，不能以 `.` 开头，只有一层平铺目录。不合法的名字返回 `bad name`。
+- 文件名：`[A-Za-z0-9._-]`，1–64 字节，不能以 `.` 开头，只有一层平铺目录。不合法的名字返回 `bad_name`。
 - 写操作都经 `wisp.fs` 执行；`write` 用 `write_atomic`，`append` 是直接追加。
 - 单次 `write` 或 `append` 的数据不超过 256 KB。更大的数据请用 `download` 或多次 `append`。
 - `download` 不受 3a 中 256 KB 响应体上限限制，只受配额限制。它和普通 HTTP 共用频率限额，在深度待机中按 4.4 排队。
@@ -385,11 +387,11 @@ wisp.http.download(url, name, opts, cb)   -- 流式写入文件，受配额和 h
 ### 7.2 位置与配额
 
 - 场景第一次写文件时决定文件放在哪里：
-  - 有可用的 SD 卡：放 `/<sd>/library/scenes/<id>/files`，配额 64 MB；
+  - 有可用的 SD 卡：放 `<sd>/wisp/library/scenes/<id>/files`（Library 区在 SD 卡上的根，基础 spec 7.2），配额 64 MB；
   - 没有：放 `/int/scenes/<id>/files`，配额 512 KB。
 - 选定的位置记在场景的 data 目录里，此后不再改变。
 - 位置在 SD 卡上而卡被拔掉时，所有调用返回 `unavailable`。卡重新插入后恢复。
-- 已用空间开机时统计一次，之后在每次写入时增量更新；写入前检查配额，超出返回 `quota exceeded`。
+- 已用空间开机时统计一次，之后在每次写入时增量更新；写入前检查配额，超出返回 `quota_exceeded`。
 - 删除场景时，删除它的 `files/`（两个位置都检查）。
 - 导出场景不包含文件。
 - 管理后台场景页可以列出、下载、删除文件：

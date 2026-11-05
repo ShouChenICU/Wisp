@@ -38,8 +38,8 @@
 - 后台场景最多 3 个；VM 总预算 3 MB（`scene::kVmBudgetBytes`），单个 VM 仍 2 MB，前台保证 2 MB；每条消息 200 ms 上限不变。
 - 电源：`dim` 在距离灭屏 10 秒时进入，亮度降到 30%；`power/screen_off_s`（已有，默认 60）；`power/deep_after_s` 默认 300、0 表示不进入；`power/light_sleep` 布尔、默认开。
 - 唤醒锁类型 `network`/`cpu`/`screen`；持有者 `system.<模块>` 或 `scene.<id>`；连续持有满 30 分钟提醒一次、之后每 30 分钟一次。
-- 深度待机联网：最多每 15 分钟开一次 Wi-Fi；每场景排队最多 4 条（超出 `deferred queue full`）；排队超过 1 小时失败（`deferred timeout`）；回调里 `res.deferred = true`。
-- 通知：`title` 1–32 字节，`body` 0–200 字节，`id` 1–32 字节 `[a-z0-9_-]`，`sound` 为 `none`/`tone`/`alarm`（alarm 最长 30 秒），每场景最多 5 条未读，每分钟最多 10 条（超出 `rate limited`），持久化最多 50 条、300 ms 合并；横幅 4 秒自动收起。
+- 深度待机联网：最多每 15 分钟开一次 Wi-Fi；每场景排队最多 4 条（超出 `deferred_queue_full`）；排队超过 1 小时失败（`deferred_timeout`）；回调里 `res.deferred = true`。
+- 通知：`title` 1–32 字节，`body` 0–200 字节，`id` 1–32 字节 `[a-z0-9_-]`，`sound` 为 `none`/`tone`/`alarm`（alarm 最长 30 秒），每场景最多 5 条未读，每分钟最多 10 条（超出 `rate_limited`），持久化最多 50 条、300 ms 合并；横幅 4 秒自动收起。
 - 胶囊约 56×24 px；下滑手势判定区 16 px、下移 24 px 触发；面板行高至少 48 px；界面文字中/日/英。
 - 提示音：tone 约 150 ms，alarm 约 1 秒一段循环；`audio/notify_vol` 0–100、默认 60。
 - 传感器：`accel`/`gyro`；采样率 10/25/50/100 Hz；每 100 ms 打包；`shake` 为 500 ms 内 3 次超阈值，`flip` 为 z 轴翻转后稳定 300 ms；单位 m/s²（gyro 为 °/s），`t` 为毫秒。
@@ -80,7 +80,7 @@
 10. **切回前台的重建**：`SceneInstance::rebuild()` 对 `start()` 留在注册表里的根节点重新 `collect_tree()`，得到带当前值的 `Build`；`ui.ref` 句柄照常可用；列表的行由新视图经 `ListRange` 按需再建。每次重建以 Info 记 `scene.<id>` 的 `rebuilt in <ms> ms`，供 9.3 的真机测量。
 11. **VM 预算**：`scene::VmPool` 计数所有 VM 的分配，超出 `kVmBudgetBytes` 时当前分配失败。淘汰条件：有前台场景（或正在打开一个）时，后台 VM 合计超过 `kVmBudgetBytes − VmLimits::memory_bytes`（即 1 MB）就按最久未在前台的顺序关闭后台场景；没有前台场景时不按内存淘汰。
 12. **后台列表**：`<System>/scenes/background.json`，`{"ids": [...]}`，按最久未在前台在先的顺序，`write_atomic` 在 `wisp.fs` 上写。`SceneRuntime::stop()` 关闭场景时不改写它。开机恢复由 App 在 `start_runtime()` 之后、发布 `system.boot.completed` 时调用 `SceneRuntime::restore_background()`。
-13. **通知的身份与文字**：一条通知由 `(source, id)` 标识；场景不给 `id` 时生成 `n<序号>`；系统通知的 id 为 `<code>:<arg>`（同一场景再次被淘汰会替换旧的那条）。系统通知只存 `code` + `arg`，显示时由 `wisp_ui` 按当前界面语言渲染；`notification.posted` 里系统通知的 `title` 是 `code`。场景传入不合法的参数（标题超长、`id` 非法、`sound` 未知）抛 Lua 错误，只有 `rate limited` 作为返回值。持久化文件 `<System>/notifications.json`。前台场景自己发的通知只弹横幅，但照常发 `notification.posted`。场景被删除（`scene.state` 为 `deleted`）时移除它的全部未读通知。
+13. **通知的身份与文字**：一条通知由 `(source, id)` 标识；场景不给 `id` 时生成 `n<序号>`；系统通知的 id 为 `<code>:<arg>`（同一场景再次被淘汰会替换旧的那条）。系统通知只存 `code` + `arg`，显示时由 `wisp_ui` 按当前界面语言渲染；`notification.posted` 里系统通知的 `title` 是 `code`。场景传入不合法的参数（标题超长、`id` 非法、`sound` 未知）抛 Lua 错误，只有 `rate_limited` 作为返回值。持久化文件 `<System>/notifications.json`。前台场景自己发的通知只弹横幅，但照常发 `notification.posted`。场景被删除（`scene.state` 为 `deleted`）时移除它的全部未读通知。
 14. **系统通知与持有者的文字**（`ui::StrId`，`{}` 由 `tr_fill` 填入）：
 
 | StrId | zh | ja | en |
@@ -110,14 +110,14 @@
 
   场景锁的持有者显示场景名。新字若不在 16 px 字体子集里（`tools/gen_cjk_font_test.py` 失败），换一个说法，不重新生成字体。
 15. **图标**：现在没有任何地方解码场景的 `icon`。横幅与面板里每个场景显示一个圆形徽标：场景名的第一个字符，底色按 id 的哈希从主题色里取；系统通知用 `LV_SYMBOL_BELL`。真正的图标图片留给子项目 8。
-16. **胶囊与下拉区**：`status_area` = `x1 = (width − 56) / 2`、`x2 = x1 + 55`、`y1 = safe.y1 + 4`、`y2 = y1 + 23`。480×480 时：rect `{212,4,267,27}`，rounded_rect 半径 70（参考板）`{212,28,267,51}`，rounded_rect 半径 40（模拟器默认）`{212,19,267,42}`，circle `{212,78,267,101}`。胶囊显示 `LV_SYMBOL_PLAY <后台数>` 和 `LV_SYMBOL_BELL <未读数>` 中不为 0 的部分。下滑判定区："安全区顶部 16 px 以内"按 `y ≤ safe.y1 + 15`（从第一行可见行算起，手指可以从物理顶边开始）且 `x` 在该行 `row_span` 内；向下移动 ≥ 24 px 触发，不限角度。
+16. **胶囊与下拉区**：`status_area` = `x1 = (width − 56) / 2`、`x2 = x1 + 55`、`y1 = safe.y1 + 4`、`y2 = y1 + 23`。480×480 时：rect `{212,4,267,27}`，rounded_rect 半径 70（参考板）`{212,28,267,51}`，rounded_rect 半径 40（模拟器默认）`{212,19,267,42}`，circle `{212,78,267,101}`。胶囊显示 `LV_SYMBOL_PLAY <后台数>` 和 `LV_SYMBOL_BELL <未读数>` 中不为 0 的部分。下滑判定区（spec 5.6 已修订）：设按下点所在列最上面的可见行为 `top(x)`（对 `row_span` 二分求得，与 3a 的 `row_span` 二分写法相同），判定区为 `y ≤ top(x) + 15` 且 `(x, y)` 可见；向下移动 ≥ 24 px 触发，不限角度。
 17. **横幅**：顶边 `safe.y1 + 4`，高 72 px，宽度取它所占各行 `row_span` 的公共可见宽度减 8 px、水平居中；不透明，标记为不透明覆盖物；4 秒收起；点击 = 点通知；上滑只收起横幅，通知仍留在未读列表。层级：横幅在胶囊之上、确认框之下（`SystemLayer::raise()` 的顺序）。
 18. **提示音**：spec 5.4 写"端口提供 `play_tone(kind)`，内置两段 PCM"。改为可移植的 `core::TonePlayer`：经 `hal::AudioOut` 播放运行时合成的 PCM（16 kHz 单声道），不放 PCM 数据。`tone` 为 1 kHz、150 ms、首尾 5 ms 渐变；`alarm` 一段 1 秒（880 Hz 200 ms、静音 100 ms、880 Hz 200 ms、静音 500 ms），循环到 `silence()` 或 30 秒。音量由调用方传入（`notify_vol`，App 从 `system.settings` 缓存，`wisp.tone` 任务不读 NVS）。播放期间持有 `cpu` 锁 `system.tone`。没有 `audio_out.main` 或 `open()` 失败时静默返回。
 19. **传感器**：`shake` 阈值 20 m/s²（约 2 g），每次越过阈值的上升沿算一次，500 ms 内 3 次触发，之后 1 秒不应期；`flip` 以 `az > +7` / `az < −7` m/s² 为朝上/朝下，切换到相反朝向并保持 300 ms 触发一次。每个订阅者（`scene.<id>`、`system.selfcheck`）各自以共享方式登记 `imu.main` 的占用，最后一个订阅取消时释放。自检界面的采样（`SelfCheckSampler`）改经 `SensorService` 读 IMU（accel + gyro，50 Hz），不再直接调用驱动。样本的 `t` 是 `os::now_ms()` 时间基准的毫秒。
-20. **文件位置与写法**：SD 卡上的位置按 Library 区的实际根目录写成 `<sd>/wisp/library/scenes/<id>/files`（spec 7.2 的 `/<sd>/library` 是简写，基础 spec 7.2 的 Library 根在 `<sd>/wisp/library`）；内部存储为 `<data_root>/<id>/files`（真机即 `<int>/scenes/<id>/files`）。位置记录 `data/files_loc.json`（`{"location":"sd"|"int"}`，`write_atomic`）。`files/` 随 `data=1` 删除，`data=0` 时与 `data/` 一样保留；代码包替换时 `files/` 与 `data/` 一起搬到新目录；`load()`、导出、`code_bytes` 都不含 `files/`。`append` 走 `StorageManager::append()`。下载用两阶段命名：写 `.<name>.dl`（可能写了一半，视为垃圾）→ 完成后改名为 `.<name>.done` → 删除目标 → 改名为 `<name>`；统计用量时丢弃 `.dl`、把目标缺失的 `.done` 恢复为目标。只有 2xx 的响应体写入文件；下载超时 5 分钟；下载与其他场景请求共用 `wisp.shttp` 一个 worker，串行执行。超过单次 256 KB 的 `write`/`append` 和超过 64 KB 的 `read` 返回 `too large`，不存在的文件返回 `not found`。
+20. **文件位置与写法**：SD 卡上的位置按 Library 区的实际根目录写成 `<sd>/wisp/library/scenes/<id>/files`（spec 7.2 的 `/<sd>/library` 是简写，基础 spec 7.2 的 Library 根在 `<sd>/wisp/library`）；内部存储为 `<data_root>/<id>/files`（真机即 `<int>/scenes/<id>/files`）。位置记录 `data/files_loc.json`（`{"location":"sd"|"int"}`，`write_atomic`）。`files/` 随 `data=1` 删除，`data=0` 时与 `data/` 一样保留；代码包替换时 `files/` 与 `data/` 一起搬到新目录；`load()`、导出、`code_bytes` 都不含 `files/`。`append` 走 `StorageManager::append()`。下载用两阶段命名：写 `.<name>.dl`（可能写了一半，视为垃圾）→ 完成后改名为 `.<name>.done` → 删除目标 → 改名为 `<name>`；统计用量时丢弃 `.dl`、把目标缺失的 `.done` 恢复为目标。只有 2xx 的响应体写入文件；下载超时 5 分钟；下载与其他场景请求共用 `wisp.shttp` 一个 worker，串行执行。超过单次 256 KB 的 `write`/`append` 和超过 64 KB 的 `read` 返回 `too_large`，不存在的文件返回 `not_found`。
 21. **数据版本**：存在 `data/meta.json`（`{"schema_version": n}`）。迁移期间的写入就是 `SceneStore` 的一个批处理，成功时 `commit_migration(new_version)` 把整批和新版本写进同一个 `journal.json`，掉电后整体重放或整体不生效。没有 `meta.json` 的 3a 数据视为版本 1；全新的场景（没有任何数据文件）取 manifest 的值。降级安装进入 `error`，错误面板显示 `data version <n> newer than scene <m>`。
 22. **REST 下载大文件**：`net::HttpResponse` 新增流式响应体 `stream`（两个服务器都实现：ESP 用 `httpd_resp_send_chunk`，模拟器分块写 socket），`GET /scenes/{id}/files/{name}` 用它，不把 64 MB 读进内存。
-23. **错误字符串**：spec 3b-1 给出的字符串原样使用（`not in background`、`deferred queue full`、`deferred timeout`、`rate limited`、`bad name`、`quota exceeded`、`unavailable`），与 3a 的 `rate_limited` 等下划线风格不同（见文末"spec 缺口"）。
+23. **错误字符串**：统一为 3a 的下划线风格（`not_in_background`、`deferred_queue_full`、`deferred_timeout`、`rate_limited`、`bad_name`、`quota_exceeded`、`too_large`、`not_found`、`unavailable`）；spec 已按此修订（用户 2026-11-05 批准）。
 24. **大字**：水平仪示例的度数用 `font = "xxl"`（3a 为 Montserrat 48 的 ASCII 数字，矢量字体合入后自动变为矢量字），不依赖 `feat/vector-font`。
 25. **`GET /system/power`**：`{"level": "active"|"dim"|"standby"|"deep_standby", "light_sleep": "on"|"off"|"unsupported", "deferred": int, "locks": [{"id": int, "holder": string, "kind": "network"|"cpu"|"screen", "reason": string, "held_ms": int}]}`。`GET /system/occupancy`：`{"items": [{"device": string, "holder": string, "mode": "shared"|"exclusive", "held_ms": int}]}`。
 26. **冒烟测试可观察的日志**：`app::StatusShell` 在计数变化时以 Info 记 `status: background=<n> unread=<m>`，面板开关记 `panel: open`/`panel: closed`；`net::NetworkWindow` 记 `netwindow: open`/`netwindow: closed (<原因>)`；`PowerManager` 每次换级别记 `power: <level>`。
@@ -466,7 +466,7 @@ public:
 };
 ```
 
-- `SceneHttp` 延迟队列：`set_deferring(true)` 期间，通过全部检查和频率限额的请求进入该场景的延迟表；表里已有 4 条时立即 `done("deferred queue full")`；`set_deferring(false)` 时按提交顺序移入执行队列（执行队列满时留在延迟表里，下次再移），结果带 `deferred = true`；worker 有延迟请求时最多等 60 秒醒一次，把排队超过 1 小时的请求以 `done("deferred timeout")` 结束；`cancel_scene()` 同样丢弃该场景的延迟请求。`bind_http.cpp` 在回调结果表里放 `deferred = true`（只在为真时）。
+- `SceneHttp` 延迟队列：`set_deferring(true)` 期间，通过全部检查和频率限额的请求进入该场景的延迟表；表里已有 4 条时立即 `done("deferred_queue_full")`；`set_deferring(false)` 时按提交顺序移入执行队列（执行队列满时留在延迟表里，下次再移），结果带 `deferred = true`；worker 有延迟请求时最多等 60 秒醒一次，把排队超过 1 小时的请求以 `done("deferred_timeout")` 结束；`cancel_scene()` 同样丢弃该场景的延迟请求。`bind_http.cpp` 在回调结果表里放 `deferred = true`（只在为真时）。
 - `NetworkWindow::tick` 的规则：
   - 不在 `DeepStandby`、窗口也没开：`set_deferring(false)`，记下"下次窗口时刻"为空。
   - 刚进入 `DeepStandby`：`set_deferring(true)`，下次窗口 = now + 15 分钟。
@@ -480,9 +480,9 @@ public:
 TEST(WifiService, DeepStandbyTurnsRadioOffAndBack)   // set_power_level(DeepStandby): disconnect、热点关、set_radio(false)，状态 off；
                                                      // set_power_level(Active): set_radio(true)，状态 connecting
 TEST(WifiService, StandbyKeepsTheStation)            // Standby 一小时后仍 connected，set_radio 未被调用
-TEST(SceneHttp, DeferringQueuesUpToFourPerScene)     // 第 5 条立即 "deferred queue full"；另一个场景不受影响
+TEST(SceneHttp, DeferringQueuesUpToFourPerScene)     // 第 5 条立即 "deferred_queue_full"；另一个场景不受影响
 TEST(SceneHttp, ResumeSendsInOrderMarkedDeferred)    // set_deferring(false) 后假客户端按提交顺序收到，结果 deferred==true
-TEST(SceneHttp, DeferredTimeoutAfterOneHour)         // 假时钟 3600001 ms -> "deferred timeout"
+TEST(SceneHttp, DeferredTimeoutAfterOneHour)         // 假时钟 3600001 ms -> "deferred_timeout"
 TEST(SceneHttp, DeferredStillRateLimited)            // 每分钟第 31 条 "rate_limited"
 TEST(SceneHttp, CancelSceneDropsDeferred)            // 不回调
 TEST(NetworkWindow, OpensOnlyWithPendingEvery15Minutes)  // 进入 Deep 后 14:59 不开；15:00 有待发才开；无待发不开
@@ -562,7 +562,7 @@ public:
     static constexpr uint32_t kCoalesceMs = 300;
     explicit NotificationService(NotificationDeps deps);
     Result<void> load();   // <System>/notifications.json; on wisp.fs; missing file is empty
-    // Scene post: InvalidArgument for bad fields, RateLimited "rate limited".
+    // Scene post: InvalidArgument for bad fields, RateLimited "rate_limited".
     // Returns the id (given or "n<seq>").
     Result<std::string> post(Notification n, bool from_foreground);
     std::string post_system(std::string code, std::string arg,
@@ -592,7 +592,7 @@ TEST(Notifications, PostReturnsIdAndPublishesWithoutBody)  // 事件 payload 只
 TEST(Notifications, GeneratedIdsAreUnique)                  // 不给 id：n1、n2
 TEST(Notifications, SameIdReplaces)                         // unread_count 不变，内容为新的
 TEST(Notifications, FiveUnreadPerSceneDropsOldest)          // 第 6 条进来后最早那条 dismissed reason "evict"
-TEST(Notifications, RateLimitTenPerMinute)                  // 第 11 条 RateLimited，消息 "rate limited"；60 s 后可以
+TEST(Notifications, RateLimitTenPerMinute)                  // 第 11 条 RateLimited，消息 "rate_limited"；60 s 后可以
 TEST(Notifications, ForegroundPostsAreNotListed)            // listener listed==false；unread 为空；仍发 posted
 TEST(Notifications, FiftyStoredOldestDropped)               // 11 个场景各 5 条 -> 只留 50
 TEST(Notifications, ValidationErrors)                       // title "" / 33 字节、body 201、id "A!"、id 33 字节 -> InvalidArgument
@@ -618,7 +618,7 @@ TEST(AppNotifications, WakeLockReminderPosts)               // 场景锁满 30 �
 - Create: `components/wisp_scene/src/bind_power.cpp`
 - Modify: `components/wisp_core/include/wisp/core/scene_manifest.hpp`、`src/scene_manifest.cpp`（`bool background = false;`，非布尔报 `scene.json: background must be a boolean`）
 - Modify: `components/wisp_core/include/wisp/core/scene_host.hpp`、`src/scene_host.cpp`（`SceneState::Background`、`exit()`）
-- Modify: `components/wisp_scene/include/wisp/scene/scene_runtime.hpp`、`src/{scene_runtime,scene_instance,scene_message,scene_api,bind_scene,constructors}.{hpp,cpp}`（`Foreground` 改为 `Slot` 列表；`ui.ref():focus()` 在后台返回 `false, "not in background"`）、`components/wisp_scene/CMakeLists.txt`
+- Modify: `components/wisp_scene/include/wisp/scene/scene_runtime.hpp`、`src/{scene_runtime,scene_instance,scene_message,scene_api,bind_scene,constructors}.{hpp,cpp}`（`Foreground` 改为 `Slot` 列表；`ui.ref():focus()` 在后台返回 `false, "not_in_background"`）、`components/wisp_scene/CMakeLists.txt`
 - Modify: `components/wisp_app/src/scene_wiring.cpp`（`on_notice` → `NotificationService::post_system`；`locks` 传入）、`components/wisp_admin/src/routes_scenes.cpp`（`POST /scenes/{id}/exit`）、`docs/architecture.md`（`scene.state` 加 `background`）
 - Test: `tests/scene/scene_background_test.cpp`（新，`TIMEOUT 90`，同 `scene_runtime_test` 加 `src` 私有 include）、`tests/core/scene_manifest_test.cpp`、`tests/scene/scene_runtime_test.cpp`（不改断言即通过）、`tests/admin/routes_scenes_test.cpp`
 
@@ -660,7 +660,7 @@ std::optional<ScriptError> rebuild();   // Build of the retained root with curre
   - `exit()`/面板 ×/管理后台：任何状态都彻底关闭（`on_hide`（如 shown）→ `on_close` → 刷盘 → 销毁 VM）。
   - 后台出错：`Error`，销毁 VM、取消定时器与 HTTP，不弹错误面板，`on_notice({Faulted, id, name})`。
 - 定时器：声明了 `background` 的场景在后台、灭屏时都不暂停；`set_visible(false)` 对它们只调 `on_hide`（前台时）和刷盘；`minute`/`battery`/`lang` 照常（细化第 9 条）。没有声明的前台场景保持 3a。
-- `wisp.scene` 新增：`state()` → `"foreground"`/`"background"`；`launch()` → 启动原因；`exit()` → 当前消息结束后彻底关闭。`wisp.power.keep_screen_on(on)`（`bind_power.cpp`）：前台时取或放 `screen` 锁（持有者 `scene.<id>`，原因 `"keep_screen_on"`），返回 `true`；后台返回 `nil, "not in background"`。
+- `wisp.scene` 新增：`state()` → `"foreground"`/`"background"`；`launch()` → 启动原因；`exit()` → 当前消息结束后彻底关闭。`wisp.power.keep_screen_on(on)`（`bind_power.cpp`）：前台时取或放 `screen` 锁（持有者 `scene.<id>`，原因 `"keep_screen_on"`），返回 `true`；后台返回 `nil, "not_in_background"`。
 - `SceneWiring`：`on_notice` → `post_system(EvictedMemory→kSceneEvictedMemory, EvictedCount→kSceneEvictedCount, Faulted→kSceneError, RestoreFailed→kRestoreFailed; arg = name)`；系统层的返回处理改为 `SceneRuntime` 的"返回"（转入后台或关闭）。
 
 - [ ] **Step 1: 写失败的测试**（夹具 `SceneRuntimeFixture`，测试包用 `manifest()` 加 `"background":true`）
@@ -679,7 +679,7 @@ TEST(SceneBackground, ExitClosesFromAnyState)              // 后台场景 exit�
 TEST(SceneBackground, ErrorInBackgroundStopsAndNotifies)   // 后台定时器回调 error -> Error、无错误面板、on_notice Faulted
 TEST(SceneBackground, TimersRunWhileScreenOffForDeclaredScene)   // set_visible(false) 期间 every(100) 照常触发
 TEST(SceneBackground, UndeclaredSceneTimersStillPause)
-TEST(SceneBackground, ForbiddenApisInBackground)           // keep_screen_on(true) -> nil,"not in background"；ref:focus() -> false,"not in background"
+TEST(SceneBackground, ForbiddenApisInBackground)           // keep_screen_on(true) -> nil,"not_in_background"；ref:focus() -> false,"not_in_background"
 TEST(SceneBackground, ScreenLockFollowsForeground)         // 前台 keep_screen_on(true) -> locks.held(Screen)；转入后台 -> 释放
 TEST(SceneBackground, SceneCloseApiMeansBack)              // 声明了 background 的场景 wisp.scene.close() -> Background
 TEST(SceneBackground, StateAndLaunchQueries)               // state()=="foreground"，转后台后定时器里读到 "background"；launch()=="user"
@@ -826,7 +826,7 @@ public:
 };
 ```
 
-- Lua（spec 5.1）：`wisp.notify{title=, body=, sound=, wake=, id=}` → id，或 `nil, "rate limited"`；字段非法抛错（`luaL_argerror`，信息含字段名）；`source_name` 取 manifest 的 `name`；`from_foreground` 为该场景是否在前台。`wisp.notify_cancel(id)` → 布尔。后台可用。
+- Lua（spec 5.1）：`wisp.notify{title=, body=, sound=, wake=, id=}` → id，或 `nil, "rate_limited"`；字段非法抛错（`luaL_argerror`，信息含字段名）；`source_name` 取 manifest 的 `name`；`from_foreground` 为该场景是否在前台。`wisp.notify_cancel(id)` → 布尔。后台可用。
 - 路由（`Posted` 回调，在发起线程上运行，只做投递）：`wake` 且 `power->standby()` → `ui->post(exit_standby)`；`sound != None` → `tones->play(kind, notify_volume())`；`set_banner` 已装 → 显示横幅。
 
 - [ ] **Step 1: 写失败的测试**
@@ -1072,7 +1072,7 @@ Result<std::vector<ImuScriptStep>> parse_imu_script(std::string_view text);
 ```
 
 - 运行：第一个订阅（含手势，手势内部按 50 Hz 订阅 accel）`imu->set_power(Active)` 并 `set_rate(最高采样率)`；采样率变化时重设；最后一个取消时 `set_power(Standby)`。`wisp.imu` 任务按 IMU 采样率轮询 `read()`，g 换算成 m/s²（× 9.80665），按每个订阅者自己的采样率降采样（保留时间上最接近该订阅者周期的那个样本），每 `batch_ms` 把各自的样本投给回调。每个订阅者的持有者以共享方式登记 `imu.main`。
-- 绑定（spec 6.2）：`wisp.sensor.subscribe(kind, {rate=}, fn)` → 句柄（`h:stop()`），`fn(samples)` 收到 `{ {x=,y=,z=,t=}, ... }`；`wisp.sensor.on("shake"|"flip", fn)` → 句柄；`wisp.sensor.available()` → `{accel=true, gyro=true}` 或 `{}`。没有 IMU 或服务：`subscribe`/`on` 返回 `nil, "unavailable"`；后台调用返回 `nil, "not in background"`；未知 kind、rate 抛参数错误。回调经 `msg::Sensor{handle, SensorBatch}` 回到场景任务。转入后台 `set_paused(true)`，切回前台 `false`，关闭、出错、淘汰时 `unsubscribe`。
+- 绑定（spec 6.2）：`wisp.sensor.subscribe(kind, {rate=}, fn)` → 句柄（`h:stop()`），`fn(samples)` 收到 `{ {x=,y=,z=,t=}, ... }`；`wisp.sensor.on("shake"|"flip", fn)` → 句柄；`wisp.sensor.available()` → `{accel=true, gyro=true}` 或 `{}`。没有 IMU 或服务：`subscribe`/`on` 返回 `nil, "unavailable"`；后台调用返回 `nil, "not_in_background"`；未知 kind、rate 抛参数错误。回调经 `msg::Sensor{handle, SensorBatch}` 回到场景任务。转入后台 `set_paused(true)`，切回前台 `false`，关闭、出错、淘汰时 `unsubscribe`。
 - 假 IMU 脚本（`--imu-script`）：每行 `<ms> tilt <x> <y> <z>`（g）、`<ms> shake`（300 ms 内 3 个 3 g 的峰）、`<ms> flip`（az 从 +1 g 变 −1 g 并保持），`#` 开头为注释；时间从模拟器启动算起。
 
 - [ ] **Step 1: 写失败的测试**
@@ -1096,7 +1096,7 @@ TEST(SensorService, TaskConfigIsPsramStack)        // "wisp.imu"、flash_access 
 TEST(SensorBinding, SubscribeDeliversSamples)      // 场景里累计样本数 > 0，字段 x y z t 齐全
 TEST(SensorBinding, GestureFiresHandler)
 TEST(SensorBinding, BackgroundPausesForegroundResumes)
-TEST(SensorBinding, NotInBackground)               // 后台定时器里 subscribe -> nil,"not in background"
+TEST(SensorBinding, NotInBackground)               // 后台定时器里 subscribe -> nil,"not_in_background"
 TEST(SensorBinding, AvailableEmptyWithoutImu)
 TEST(SensorBinding, ExitReleases)                  // exit 后 occupancy 为空、IMU 关
 TEST(ImuScript, ParsesStepsAndComments)            // 错误行返回 InvalidArgument，信息含行号
@@ -1143,8 +1143,8 @@ bool valid_file_name(std::string_view name);   // [A-Za-z0-9._-]{1,64}, not star
 class FileDownload;   // see below
 // Every method touches flash: call it on wisp.fs or an httpd thread with flash
 // access. Thread-safe (one mutex for the usage table and the location records).
-// Errors: InvalidArgument "bad name", QuotaExceeded "quota exceeded",
-// StorageUnavailable "unavailable", InvalidArgument "too large", NotFound "not found".
+// Errors: InvalidArgument "bad_name", QuotaExceeded "quota_exceeded",
+// StorageUnavailable "unavailable", InvalidArgument "too_large", NotFound "not_found".
 class SceneFiles {
 public:
     SceneFiles(StorageManager& storage, SceneFilesConfig config);
@@ -1167,7 +1167,7 @@ public:
     bool push(std::span<const uint8_t> chunk);
     // On wisp.fs: success renames .dl -> .done -> name; otherwise removes .dl.
     Result<uint64_t> finish(bool ok);
-    std::string error() const;   // "quota exceeded", "unavailable", ...
+    std::string error() const;   // "quota_exceeded", "unavailable", ...
 };
 // wisp::net: SceneHttpRequest gets
 //   std::function<bool(std::span<const uint8_t>)> on_body;  // set: streamed, no max_response
@@ -1176,8 +1176,8 @@ public:
 // wisp::scene: SceneRuntimeDeps { ...; core::SceneFiles* files = nullptr; }
 ```
 
-- Lua（spec 7.1）：七个调用全部异步，作业在 `wisp.fs` 上执行，结果经 `msg::FilesDone{cb_id, error, payload}` 回到场景任务，`cb(err, result)` 有自己的 200 ms。`write`/`append` 的 `data` 是字符串；`read` → 字符串；`list` → `{ {name=, size=, mtime=}, ... }`；`info` → `{location="sd"|"int", quota=, used=}`（还没写过时 `location` 为 `nil`）；`remove` → `true`。名字非法时不排作业，直接在下一条消息里回调 `"bad name"`。场景关闭时它排队的回调丢弃（实例不匹配），已排的写作业照常完成。
-- `wisp.http.download(url, name, opts, cb)`：名字检查 → `wisp.fs` 上 `begin_download` → 提交 `download = true` 的请求（`on_body = FileDownload::push`，超时 `kDownloadTimeoutMs`，深度待机中照样延迟排队）→ 完成后 `wisp.fs` 上 `finish(ok)` → `cb(err, {status=, size=, deferred=})`；只有 2xx 写入，非 2xx 时 `err = nil`、`size = 0`、文件不动；传输错误时 `err` 为 3a 的传输错误码，配额超出为 `"quota exceeded"`。场景关闭时 `cancel_scene` 中止传输，`finish(false)` 删除 `.dl`。
+- Lua（spec 7.1）：七个调用全部异步，作业在 `wisp.fs` 上执行，结果经 `msg::FilesDone{cb_id, error, payload}` 回到场景任务，`cb(err, result)` 有自己的 200 ms。`write`/`append` 的 `data` 是字符串；`read` → 字符串；`list` → `{ {name=, size=, mtime=}, ... }`；`info` → `{location="sd"|"int", quota=, used=}`（还没写过时 `location` 为 `nil`）；`remove` → `true`。名字非法时不排作业，直接在下一条消息里回调 `"bad_name"`。场景关闭时它排队的回调丢弃（实例不匹配），已排的写作业照常完成。
+- `wisp.http.download(url, name, opts, cb)`：名字检查 → `wisp.fs` 上 `begin_download` → 提交 `download = true` 的请求（`on_body = FileDownload::push`，超时 `kDownloadTimeoutMs`，深度待机中照样延迟排队）→ 完成后 `wisp.fs` 上 `finish(ok)` → `cb(err, {status=, size=, deferred=})`；只有 2xx 写入，非 2xx 时 `err = nil`、`size = 0`、文件不动；传输错误时 `err` 为 3a 的传输错误码，配额超出为 `"quota_exceeded"`。场景关闭时 `cancel_scene` 中止传输，`finish(false)` 删除 `.dl`。
 - 位置（spec 7.2）：第一次写入时 SD 卡在线就用 SD，否则内部存储，记在 `data/files_loc.json`；之后不变。位置在 SD 而卡不在 → `unavailable`。
 
 - [ ] **Step 1: 写失败的测试**
@@ -1186,10 +1186,10 @@ public:
 TEST(StorageManager, ReadRangeAndMtime)
 TEST(SceneFiles, NameRules)                    // ok: "a.txt" "A-b_9.bin"；bad: "" ".x" "a/b" "é" 65 字节
 TEST(SceneFiles, LocationChosenOnFirstWriteAndRemembered)   // SD 在线 -> sd；之后 SD 离线 -> 写入 "unavailable"；无 SD 的场景 -> int
-TEST(SceneFiles, InternalQuota512KiB)          // 512 KiB 写满后再 append 1 字节 -> "quota exceeded"，文件不变
+TEST(SceneFiles, InternalQuota512KiB)          // 512 KiB 写满后再 append 1 字节 -> "quota_exceeded"，文件不变
 TEST(SceneFiles, SdQuotaFromConfig)
 TEST(SceneFiles, WriteIsAtomicAppendExtends)
-TEST(SceneFiles, ReadRangeAndLimits)           // read(0, 65537) -> "too large"；write 262145 字节 -> "too large"；越过文件尾返回剩余部分
+TEST(SceneFiles, ReadRangeAndLimits)           // read(0, 65537) -> "too_large"；write 262145 字节 -> "too_large"；越过文件尾返回剩余部分
 TEST(SceneFiles, ListRemoveInfo)
 TEST(SceneFiles, UsageScannedAtBootAndRecoversDownloads)   // 预置 ".x.dl" 被删、".y.done"（无 y）改名为 "y"、used 正确
 TEST(SceneFiles, RemoveAllChecksBothLocations)
@@ -1200,7 +1200,7 @@ TEST(SceneRepository, LoadAndExportSkipFiles)  // code_bytes 不含 files/
 TEST(SceneRepository, RemoveWithDataRemovesFiles)   // data=0 保留，data=1 两处都删
 TEST(SceneHttp, DownloadStreamsWithoutResponseCap)  // 1 MiB 响应体经 on_body 全部到达
 TEST(FilesBinding, CallbacksCarryResults)      // write -> list 含 {name,size,mtime} -> read 内容一致 -> info.location "int"
-TEST(FilesBinding, BadNameIsReportedAsync)     // 回调 err == "bad name"
+TEST(FilesBinding, BadNameIsReportedAsync)     // 回调 err == "bad_name"
 TEST(FilesBinding, DownloadWritesFileWithinQuota)   // 假客户端 300 KiB -> size 300*1024，文件存在
 TEST(FilesBinding, DownloadQuotaExceededLeavesNoFile)
 TEST(FilesBinding, DownloadNon2xxWritesNothing)
@@ -1301,7 +1301,7 @@ uint64_t stream_length = 0;
 | `GET /scenes/{id}/files/{name}` | `application/octet-stream`，`Content-Disposition: attachment; filename="<name>"`，经 `stream` 每次 `read_range` 32 KiB |
 | `DELETE /scenes/{id}/files/{name}` | 204；需要 `X-Wisp` |
 
-  `bad name` → 400 `bad_name`，`not found` → 404，`unavailable` → 503。
+  `bad_name` → 400 `bad_name`，`not_found` → 404，`unavailable` → 503。
 - 网页：场景页的状态徽标多 `background`（"后台"/"バックグラウンド"/"Background"），"关闭"按钮改调 `/exit`，展开的场景详情加"文件"列表（下载、删除、位置与用量）；系统页加"电源"卡片（当前级别、浅睡、排队的请求数、唤醒锁表：持有者、类型、原因、持续时长）和"外设占用"表，设置表单加 `deep_after_s`、`light_sleep`、`notify_vol`（细化第 7 条）。文案三种语言，`tools/check_i18n.py` 通过。
 
 - [ ] **Step 1: 写失败的测试**
@@ -1381,10 +1381,12 @@ TEST(SimHttpServer, StreamedResponseBody)          // 3 MiB 的 stream 响应完
 
 ---
 
-## spec 缺口（写计划时发现，裁定见上文细化，请用户确认）
+## spec 缺口（写计划时发现，裁定见上文细化）
+
+> 2026-11-05 用户批准计划，控制者按以下建议修订了 spec：第 1、2、5、8、12 条已在 spec 中解决；其余按计划里的细化执行。
 
 1. spec 7.2 的 SD 路径 `/<sd>/library/scenes/<id>/files` 与基础 spec 的 Library 根 `<sd>/wisp/library` 不一致（细化第 20 条）。
-2. spec 3b-1 的错误字符串带空格（`rate limited`），3a 用下划线（`rate_limited`）；同一个场景会同时看到两种风格（细化第 23 条）。
+2. spec 3b-1 的错误字符串带空格（`rate_limited`），3a 用下划线（`rate_limited`）；同一个场景会同时看到两种风格（细化第 23 条）。
 3. spec 4.1 让 `standby` 不再浅睡，子项目 1 现在是浅睡的；这是行为变化，`standby` 的耗电会上升（细化第 1 条）。
 4. `net/idle_off_min` 与 `deep_after_s` 重叠且与 `network` 锁冲突，spec 没提（细化第 2 条）。
 5. "安全区顶部 16 px" 在圆形屏上从 y=74 开始，手指够不着物理顶边（细化第 16 条）。
