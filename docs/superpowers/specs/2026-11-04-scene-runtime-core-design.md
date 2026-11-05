@@ -208,11 +208,11 @@ h:cancel()
 ### 5.2 设备
 
 ```lua
-wisp.device.info()  -- {width, height, shape, safe_area, lang, time, battery, charging, wifi}
+wisp.device.info()  -- {width, height, shape, safe_area, lang, utc_offset, time, battery, charging, wifi}
 wisp.device.on("battery" | "minute" | "lang", fn)
 ```
 
-只读。`minute` 在整分钟触发，供时钟使用。
+只读。`minute` 在整分钟触发，供时钟使用。`time` 是 UTC 秒；`utc_offset` 是系统设置 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480），本地时间为 `time + utc_offset * 60`。场景任务不读 Settings：运行时启动时由 App 传入当时的值，之后跟随 `system.settings` 事件；时区改变时立即补发一次 `minute`（亮屏时），不另设事件。
 
 ### 5.3 HTTP
 

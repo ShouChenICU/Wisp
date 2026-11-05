@@ -1,12 +1,9 @@
 -- 日期换算：场景里没有 os.date，这里按公历自己算。
--- 设备还没有时区设置，先按东八区算本地日期。
 local M = {}
 
-M.TZ_OFFSET = 8 * 3600
-
--- 墙上时间（UTC 秒）对应的本地日序号（自 1970-01-01 起的天数）。
-function M.day_of(t)
-  return (t + M.TZ_OFFSET) // 86400
+-- 墙上时间（UTC 秒）在 UTC 偏移 offset_min 分钟处的本地日序号（自 1970-01-01 起的天数）。
+function M.day_of(t, offset_min)
+  return (t + offset_min * 60) // 86400
 end
 
 -- 日序号 -> 年、月、日（Howard Hinnant 的 civil_from_days）。

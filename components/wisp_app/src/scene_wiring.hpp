@@ -92,10 +92,11 @@ public:
     // Builds the proxy and the runtime, not started. `device_status` is
     // SceneRuntimeDeps::device_status (runs on the scene task: no flash);
     // `wake` turns a sleeping screen on for the delete confirmation (UI
-    // thread). Needs start_storage() to have made a repository; without
-    // one, or without the memory for it, there is no runtime.
+    // thread); `utc_offset_min` is SceneRuntimeDeps::utc_offset_min. Needs start_storage() to have
+    // made a repository; without one, or without the memory for it, there is no runtime.
     void build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system, const hal::ScreenShape& shape,
-                       std::function<Value()> device_status, std::function<void()> wake);
+                       std::function<Value()> device_status, std::function<void()> wake,
+                       int utc_offset_min);
     // Starts the proxy and the runtime and follows power.state;
     // `standby` reads whether the screen is off now.
     void start_runtime(std::function<bool()> standby);

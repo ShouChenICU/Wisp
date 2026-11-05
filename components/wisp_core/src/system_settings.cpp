@@ -43,7 +43,10 @@ const KeySpec kScreenOff{"screen_off_s", "power", "screen_off_s", Value(60),
                          [](const Value& v) { return int_in(v, 0, 0) || int_in(v, 15, 3600); }};
 const KeySpec kLanguage{"language", "sys", "lang", Value("zh"), valid_language};
 
-const KeySpec* const kKeys[] = {&kBrightness, &kVolume, &kScreenOff, &kLanguage};
+const KeySpec kUtcOffset{"utc_offset_min", "sys", "tz_min", Value(480),
+                         [](const Value& v) { return int_in(v, -720, 840); }};
+
+const KeySpec* const kKeys[] = {&kBrightness, &kVolume, &kScreenOff, &kLanguage, &kUtcOffset};
 
 const KeySpec* find_spec(std::string_view name) {
     for (const KeySpec* spec : kKeys) {
@@ -67,10 +70,9 @@ Value read(SettingsBackend& backend, const KeySpec& spec) {
 
 Map to_map(const SystemSettingsValues& values) {
     return Map{
-        {"brightness", Value(values.brightness)},
-        {"volume", Value(values.volume)},
-        {"screen_off_s", Value(values.screen_off_s)},
-        {"language", Value(values.language)},
+        {"brightness", Value(values.brightness)},         {"volume", Value(values.volume)},
+        {"screen_off_s", Value(values.screen_off_s)},     {"language", Value(values.language)},
+        {"utc_offset_min", Value(values.utc_offset_min)},
     };
 }
 
@@ -87,6 +89,7 @@ SystemSettingsValues SystemSettings::get() const {
     values.volume = static_cast<int>(read(backend_, kVolume).as_int());
     values.screen_off_s = static_cast<int>(read(backend_, kScreenOff).as_int());
     values.language = read(backend_, kLanguage).as_string();
+    values.utc_offset_min = static_cast<int>(read(backend_, kUtcOffset).as_int());
     return values;
 }
 

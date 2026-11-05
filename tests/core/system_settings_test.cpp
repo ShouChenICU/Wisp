@@ -40,6 +40,29 @@ TEST(SystemSettings, Defaults) {
     EXPECT_EQ(v.volume, 60);
     EXPECT_EQ(v.screen_off_s, 60);
     EXPECT_EQ(v.language, "zh");
+    EXPECT_EQ(v.utc_offset_min, 480);
+}
+
+// The time zone as minutes east of UTC, stored as sys/tz_min: UTC-12:00
+// to UTC+14:00, half and quarter hours included.
+TEST(SystemSettings, UtcOffsetValidatesAndIsStored) {
+    Fixture fx;
+    for (int ok : {-720, -570, 0, 330, 345, 840}) {
+        ASSERT_TRUE(fx.settings.set({{"utc_offset_min", ok}})) << ok;
+        EXPECT_EQ(fx.settings.get().utc_offset_min, ok);
+        EXPECT_EQ(Settings(fx.backend, "sys").get_int("tz_min", -1), ok);
+    }
+    EXPECT_EQ(fx.changed.back().utc_offset_min, 840);
+    for (const wisp::Value& bad :
+         {wisp::Value(-721), wisp::Value(841), wisp::Value("480"), wisp::Value(480.5),
+          wisp::Value(true), wisp::Value(wisp::List{})}) {
+        auto r = fx.settings.set({{"utc_offset_min", bad}, {"volume", 30}});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    EXPECT_EQ(fx.settings.get().utc_offset_min, 840);
+    EXPECT_EQ(fx.settings.get().volume, 60);
+    EXPECT_EQ(wisp::core::to_map(fx.settings.get()).at("utc_offset_min"), wisp::Value(840));
 }
 
 TEST(SystemSettings, WritesTheExistingSettingsKeys) {

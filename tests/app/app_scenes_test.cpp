@@ -395,7 +395,7 @@ TEST(AppScenes, DeleteAfterStopRuntimeIsRefused) {
     std::unique_ptr<wisp::ui::SystemLayer> layer;
     const wisp::hal::ScreenShape shape{wisp::hal::ScreenShapeKind::Rect, 480, 480, 0};
     run_on_ui_blocking(&ui, [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
-    wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
+    wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {}, 480);
     wiring.start_runtime([] { return false; });
 
     wiring.stop_runtime();
@@ -437,7 +437,7 @@ TEST(AppScenes, ScenesAreOffWithoutLargeMemory) {
         wiring.start_storage();
         ASSERT_NE(wiring.repository(), nullptr);
         wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, true);
-        wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
+        wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {}, 480);
         wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, false);
         EXPECT_EQ(wiring.runtime(), nullptr);
         EXPECT_FALSE(wiring.request_delete("counter", false));

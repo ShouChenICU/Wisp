@@ -4,8 +4,8 @@ local entries = wisp.store.collection("entries")
 
 -- 今天的日序号；设备还不知道时间时为 nil。
 local function today()
-  local t = wisp.device.info().time
-  return t and dates.day_of(t) or nil
+  local i = wisp.device.info()
+  return i.time and dates.day_of(i.time, i.utc_offset) or nil
 end
 
 local function load()

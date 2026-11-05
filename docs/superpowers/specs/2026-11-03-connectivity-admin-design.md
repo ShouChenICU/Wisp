@@ -246,7 +246,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 
 ### 5.4 `SystemSettings`（`wisp_core`）
 
-封装亮度（`display`/`brightness`）、音量、自动熄屏时间、设备界面语言（`sys`/`lang`，取值 `zh`/`ja`/`en`，默认 `zh`，见 8.3）这些 Settings 键：校验取值范围，写入后立即生效（例如亮度立即应用到 `display.main`）。后台网页、以后的 Agent 工具和设置页都调用它。
+封装亮度（`display`/`brightness`）、音量、自动熄屏时间、设备界面语言（`sys`/`lang`，取值 `zh`/`ja`/`en`，默认 `zh`，见 8.3）、时区 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480；场景 spec 5.2）这些 Settings 键：校验取值范围，写入后立即生效（例如亮度立即应用到 `display.main`）。后台网页、以后的 Agent 工具和设置页都调用它。
 
 ### 5.5 事件主题（同步写入 `docs/architecture.md`）
 
@@ -256,7 +256,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | `net.ap.state` | `WifiService` | `{active, ssid, clients}`（不含密码） |
 | `net.pairing.code` | `PairingService` | `{active, expires_ms}`（不含配对码） |
 | `net.pairing.failed` | `PairingService` | `{attempts, locked}` |
-| `system.settings` | `App`（`SystemSettings` 的 `on_changed`） | `{brightness, volume, screen_off_s, language}`：每批设置写入成功后的全部当前值（与 `GET /settings` 同形） |
+| `system.settings` | `App`（`SystemSettings` 的 `on_changed`） | `{brightness, volume, screen_off_s, language, utc_offset_min}`：每批设置写入成功后的全部当前值（与 `GET /settings` 同形） |
 | `model.profiles` | `ModelProfileService` | `{active:{llm,asr,tts}, count}`：任何配置被新建、修改、删除或激活后（不含 Key、地址） |
 | `system.firmware` | 固件更新服务 | `{state, version}`：`state` 为 `received`（已写入并校验，等待设备确认）/`confirmed`（即将重启）/`rejected`（设备上点了否或 2 分钟未确认）/`failed`（写入或校验失败，附 `error`） |
 

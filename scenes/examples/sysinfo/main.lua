@@ -10,6 +10,15 @@ wisp.device.on("minute", refresh)
 local SHAPES = { rect = "矩形", rounded_rect = "圆角矩形", circle = "圆形" }
 local WIFI = { connected = "已连接", connecting = "连接中", backoff = "等待重试" }
 
+-- "UTC+8", "UTC-3:30", "UTC+5:45".
+local function zone(offset_min)
+  local sign = offset_min < 0 and "-" or "+"
+  local m = math.abs(offset_min)
+  local text = "UTC" .. sign .. (m // 60)
+  if m % 60 ~= 0 then text = text .. string.format(":%02d", m % 60) end
+  return text
+end
+
 local function field(name, fn)
   return ui.row { w = "fill", gap = 12,
     ui.label { text = name, fg = "muted", w = 72 },
@@ -34,6 +43,7 @@ return ui.screen { gap = 6, justify = "center",
   field("Wi-Fi", function(i) return WIFI[i.wifi] or "未连接" end),
   field("时间", function(i)
     if not i.time then return "未知" end
-    return "UTC " .. string.format("%02d:%02d", i.time // 3600 % 24, i.time // 60 % 60)
+    local t = i.time + i.utc_offset * 60
+    return string.format("%02d:%02d（%s）", t // 3600 % 24, t // 60 % 60, zone(i.utc_offset))
   end),
 }

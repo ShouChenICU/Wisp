@@ -107,6 +107,7 @@ void push_device_info(lua_State* L, const DeviceInfo& i) {
     lua_setfield(L, -2, "safe_area");
     lua_pushstring(L, i.lang);
     lua_setfield(L, -2, "lang");
+    set_int(L, "utc_offset", i.utc_offset_min);
     if (i.has_time) set_int(L, "time", i.time);
     if (i.has_battery) set_int(L, "battery", i.battery);
     lua_pushboolean(L, i.charging ? 1 : 0);

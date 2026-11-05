@@ -58,6 +58,9 @@
 // saw, checked on each such event and each minute. info().lang
 // is the language of the last system.settings event, ui::lang() before
 // any (ui::set_lang() runs on the UI thread and may lag the event).
+// info().utc_offset is that event's utc_offset_min (SceneRuntimeDeps::
+// utc_offset_min before any); when it changes, "minute" fires at once
+// (screen on), since the local time a scene shows has moved.
 // wisp.scene.close() closes the scene once its current message is done.
 //
 // HTTP (spec 5.3): opening a scene gives the proxy (SceneRuntimeDeps::
@@ -153,6 +156,11 @@ struct SceneRuntimeDeps {
     // Wall clock, seconds since the epoch; empty: std::time(). Called on
     // the scene task, same rule.
     std::function<int64_t()> wall_clock;
+    // The time zone wisp.device.info().utc_offset reports (minutes east of
+    // UTC) until a system.settings event says otherwise: App passes
+    // SystemSettings' value, read before the runtime starts, so the scene
+    // task never reads it from Settings.
+    int utc_offset_min = 480;
 };
 
 struct SceneRuntimeConfig {
@@ -327,6 +335,7 @@ private:
     // The ui::Lang of the last system.settings event, -1 before any. Set
     // by the bus's dispatcher, read by the scene task.
     std::atomic<int> lang_{-1};
+    std::atomic<int> utc_offset_min_;
     core::SubscriptionId power_sub_ = 0;
     core::SubscriptionId settings_sub_ = 0;
 

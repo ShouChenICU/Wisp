@@ -90,6 +90,7 @@ SceneRuntime::SceneRuntime(SceneRuntimeDeps deps, SceneRuntimeConfig config)
       queue_(config.queue_capacity),
       link_(std::allocate_shared<Link>(os::LargeAllocator<Link>())) {
     link_->rt = this;
+    utc_offset_min_.store(deps_.utc_offset_min);
 }
 
 SceneRuntime::~SceneRuntime() {
@@ -126,6 +127,14 @@ Result<void> SceneRuntime::start() {
         push(make_message("", 0, msg::Device{DeviceEvent::Battery}), 0);
     });
     settings_sub_ = deps_.bus.subscribe("system.settings", [this](const core::Event& e) {
+        auto tz = e.payload.find("utc_offset_min");
+        if (tz != e.payload.end() && tz->second.type() == Value::Type::Int &&
+            tz->second.as_int() >= -720 && tz->second.as_int() <= 840) {
+            const int now = static_cast<int>(tz->second.as_int());
+            if (utc_offset_min_.exchange(now) != now &&
+                !push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) && running_)
+                WLOG_W(kTag, "time zone change not passed on now (scene queue full): next minute");
+        }
         auto it = e.payload.find("language");
         if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
         auto lang = ui::parse_lang(it->second.as_string());
@@ -784,6 +793,7 @@ DeviceInfo SceneRuntime::device_info() const {
     const int set = lang_.load();
     const char* lang = ui::lang_code(set < 0 ? ui::lang() : static_cast<ui::Lang>(set));
     std::snprintf(i.lang, sizeof(i.lang), "%s", lang);
+    i.utc_offset_min = utc_offset_min_.load();
     if (auto t = wall_now()) {
         i.has_time = true;
         i.time = *t;
@@ -868,6 +878,9 @@ void SceneRuntime::device_event(DeviceEvent ev) {
     } else if (ev == DeviceEvent::Lang) {
         if (f.lang == info.lang) return;
         f.lang = info.lang;
+    } else if (!visible_) {
+        // A "minute" for a new time zone; the screen coming on sends one.
+        return;
     }
     fire(ev, info);
 }

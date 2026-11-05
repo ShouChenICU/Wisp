@@ -13,8 +13,8 @@
 //       table by timer id; the runtime runs the ids TimerSet::due() hands
 //       out with run_timer(), each with a fresh time budget.
 //   wisp.device.info() -> {width, height, shape, safe_area = {x1, y1, x2,
-//       y2}, lang, time, battery, charging, wifi}; time and battery are
-//       nil when unknown.
+//       y2}, lang, utc_offset, time, battery, charging, wifi}; time and
+//       battery are nil when unknown; utc_offset is in minutes east of UTC.
 //   wisp.device.on("battery" | "minute" | "lang", fn): fn(info) each time
 //       the runtime calls run_device_handlers() for that event; another
 //       name is an argument error.
@@ -61,6 +61,7 @@ struct DeviceInfo {
     hal::ScreenShape shape;
     hal::Area safe;
     char lang[4] = "zh";
+    int32_t utc_offset_min = 480;
     bool has_time = false;
     int64_t time = 0;  // seconds since the epoch
     bool has_battery = false;

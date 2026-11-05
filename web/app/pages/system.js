@@ -37,6 +37,7 @@ import {
   IconBrowser,
   IconCheck,
   IconChevronRight,
+  IconClock,
   IconDisplay,
   IconGlobe,
   IconInfo,
@@ -58,6 +59,13 @@ const BRIGHTNESS_MAX = 255;
 const VOLUME_MAX = 100;
 // Screen-off choices in seconds; 0 = never.
 const SCREEN_OFF = [0, 15, 30, 60, 120, 300, 600];
+// Time zone choices in minutes east of UTC: the offsets in use today.
+// SystemSettings takes any whole minute from -720 to 840.
+const UTC_OFFSETS = [
+  -720, -660, -600, -570, -540, -480, -420, -360, -300, -240, -210, -180, -120, -60, 0, 60, 120,
+  180, 210, 240, 270, 300, 330, 345, 360, 390, 420, 480, 525, 540, 570, 600, 630, 660, 720, 765,
+  780, 840,
+];
 const REBOOT_POLL_MS = 2000;
 // Past this the page says the restart is taking longer than usual (and
 // keeps waiting).
@@ -87,6 +95,7 @@ export async function confirmLogout() {
  * @property {number} volume       0-100
  * @property {number} screen_off_s 0 (never) or 15-3600
  * @property {'zh'|'ja'|'en'} language  the device's own UI language
+ * @property {number} utc_offset_min  the time zone, minutes east of UTC (-720 to 840)
  *
  * @typedef {Object} Client  GET /clients
  * @property {string} id
@@ -172,6 +181,7 @@ export function SystemPage() {
     <div class="grid grid-2">
       <${DisplayCard} settings=${settings} put=${put} />
       <${LanguageCard} settings=${settings} put=${put} />
+      <${TimeZoneCard} settings=${settings} put=${put} />
     </div>
     <${ClientsCard} clients=${clients} error=${clientsError} reload=${loadClients} />
     <${FirmwareCard} />
@@ -289,6 +299,38 @@ function LanguageCard({ settings, put }) {
       <div class="inline-note" id="sys-lang-hint">
         <${IconInfo} size=${15} />
         <span>${t('sys.lang_hint')}</span>
+      </div>
+    </div>
+  </${Card}>`;
+}
+
+/** "UTC+08:00", "UTC−03:30". */
+function utcOffsetLabel(m) {
+  const a = Math.abs(m);
+  const hh = String(Math.floor(a / 60)).padStart(2, '0');
+  const mm = String(a % 60).padStart(2, '0');
+  return `UTC${m < 0 ? '\u2212' : '+'}${hh}:${mm}`;
+}
+
+function TimeZoneCard({ settings, put }) {
+  if (!settings) return html`<${SkeletonCard} />`;
+  const choices = UTC_OFFSETS.includes(settings.utc_offset_min)
+    ? UTC_OFFSETS
+    : [...UTC_OFFSETS, settings.utc_offset_min].sort((a, b) => a - b);
+  return html`<${Card} title=${t('sys.tz_title')} icon=${IconClock}>
+    <div class="form">
+      <div class="field">
+        <label class="field-label" for="sys-tz">${t('sys.tz_label')}</label>
+        <select
+          id="sys-tz"
+          class="input select"
+          value=${String(settings.utc_offset_min)}
+          onChange=${(e) => put({ utc_offset_min: Number(e.currentTarget.value) })}
+          aria-describedby="sys-tz-hint"
+        >
+          ${choices.map((m) => html`<option key=${m} value=${String(m)}>${utcOffsetLabel(m)}</option>`)}
+        </select>
+        <p id="sys-tz-hint" class="field-hint">${t('sys.tz_hint')}</p>
       </div>
     </div>
   </${Card}>`;

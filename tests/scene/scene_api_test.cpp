@@ -337,4 +337,46 @@ wisp.device.on("lang", function(i) print("lang", i.lang, wisp.device.info().lang
     EXPECT_EQ(scene_log("dev"), (std::vector<std::string>{"battery\t79\tfalse", "lang\ten\ten"}));
 }
 
+// info().utc_offset starts as the runtime was given it (App reads the
+// setting before the scene task starts) and then follows the
+// system.settings event: the scene task never reads Settings, so it never
+// touches flash for it. A changed offset fires "minute", as the local time
+// a scene shows has moved.
+TEST_F(SceneApiTest, UtcOffsetFollowsSettings) {
+    wall = kNoon;
+    auto base = configure_deps;
+    configure_deps = [base](wisp::scene::SceneRuntimeDeps& d) {
+        base(d);
+        d.utc_offset_min = 330;
+    };
+    start();
+    install("tz", std::string(R"(
+print("open", wisp.device.info().utc_offset)
+wisp.device.on("minute", function(i) print("minute", i.utc_offset, wisp.device.info().utc_offset) end)
+)") + kScreen);
+    ASSERT_TRUE(rt->open("tz"));
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"open\t330"}));
+
+    // The same offset, or a value no setting can have: nothing fires.
+    publish("system.settings",
+            {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{330})}});
+    publish("system.settings", {{"language", Value("zh")}, {"utc_offset_min", Value("0")}});
+    publish("system.settings",
+            {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{900})}});
+    publish("system.settings", {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{0})}});
+    ASSERT_TRUE(wait_log("tz", 2));
+    publish("system.settings", {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{0})}});
+    publish("system.settings",
+            {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{-570})}});
+    ASSERT_TRUE(wait_log("tz", 3));
+    bus.wait_idle(1000);
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_EQ(scene_log("tz"),
+              (std::vector<std::string>{"open\t330", "minute\t0\t0", "minute\t-570\t-570"}));
+    // The value outlives the scene.
+    ASSERT_TRUE(rt->reload("tz"));
+    EXPECT_EQ(scene_log("tz").back(), "open\t-570");
+}
+
 }  // namespace

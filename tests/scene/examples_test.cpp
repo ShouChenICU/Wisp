@@ -103,6 +103,28 @@ protected:
         ASSERT_FALSE(ec) << ec.message();
     }
 
+    void publish_offset(int minutes) {
+        wisp::core::Event e;
+        e.topic = "system.settings";
+        e.source = "test";
+        e.payload = {{"language", wisp::Value("zh")},
+                     {"utc_offset_min", wisp::Value(static_cast<int64_t>(minutes))}};
+        bus.publish(std::move(e));
+    }
+
+    // The pixels of the one canvas on screen, once it has been drawn ("" before).
+    std::string canvas_pixels() {
+        std::string out;
+        on_ui([&] {
+            lv_obj_t* c = wisp::test::find_obj_of_class(lv_screen_active(), &lv_canvas_class);
+            if (c == nullptr) return;
+            lv_draw_buf_t* buf = lv_canvas_get_draw_buf(c);
+            if (buf == nullptr || buf->data == nullptr) return;
+            out.assign(reinterpret_cast<const char*>(buf->data), buf->data_size);
+        });
+        return out;
+    }
+
     // Writes `lines` as the scene's collection log, the way SceneStore
     // leaves it, so the scene opens with records and its list builds rows.
     void seed(const std::string& id, const std::string& collection,
@@ -254,6 +276,53 @@ TEST_F(Examples, PomodoroCountsDown) {
     EXPECT_TRUE(wait_label("休息"));
     EXPECT_TRUE(wait_label("已完成 0 个"));
     EXPECT_EQ(rt->status("pomodoro").state, SceneState::Running);
+}
+
+// sysinfo and clock show local time from info().utc_offset, and follow a
+// change of it without being reopened.
+TEST_F(Examples, SysinfoAndClockFollowTheUtcOffset) {
+    auto base = configure_deps;
+    configure_deps = [base](wisp::scene::SceneRuntimeDeps& d) {
+        base(d);
+        d.wall_clock = [] { return int64_t{1793793600}; };  // 2026-11-04 12:00 UTC
+        d.utc_offset_min = 0;
+    };
+    start();
+    install_example("sysinfo");
+    ASSERT_TRUE(rt->open("sysinfo"));
+    EXPECT_TRUE(wait_label("12:00")) << ::testing::PrintToString(labels());
+    EXPECT_TRUE(wait_label("UTC+0"));
+    publish_offset(480);
+    EXPECT_TRUE(wait_label("20:00")) << ::testing::PrintToString(labels());
+    EXPECT_TRUE(wait_label("UTC+8"));
+    publish_offset(-210);
+    EXPECT_TRUE(wait_label("08:30")) << ::testing::PrintToString(labels());
+    EXPECT_TRUE(wait_label("UTC-3:30"));
+    ASSERT_TRUE(rt->close("sysinfo"));
+
+    install_example("clock");
+    ASSERT_TRUE(rt->open("clock"));
+    // Not one colour: the dial is drawn.
+    const auto drawn = [](const std::string& px) {
+        return px.find_first_not_of(px.empty() ? '\0' : px[0]) != std::string::npos;
+    };
+    std::string before;
+    ASSERT_TRUE(wait_until(
+        [&] {
+            before = canvas_pixels();
+            return drawn(before);
+        },
+        2000));
+    // Drawn for 08:30 (the offset is still -3:30), then for 12:00: the
+    // hands move.
+    publish_offset(0);
+    EXPECT_TRUE(wait_until(
+        [&] {
+            const std::string now = canvas_pixels();
+            return drawn(now) && now != before;
+        },
+        2000));
+    EXPECT_EQ(rt->status("clock").state, SceneState::Running);
 }
 
 }  // namespace
