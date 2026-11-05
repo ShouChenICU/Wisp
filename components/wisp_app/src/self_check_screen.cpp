@@ -414,7 +414,10 @@ void SelfCheck::subscribe_power() {
 
 void SelfCheck::on_power_event(const core::Event& e) {
     auto it = e.payload.find("state");
-    sampler_.set_standby(it != e.payload.end() && it->second.as_string() == "standby");
+    // Both standby levels have the screen off; dim keeps it on.
+    const bool off = it != e.payload.end() && (it->second.as_string() == "standby" ||
+                                               it->second.as_string() == "deep_standby");
+    sampler_.set_standby(off);
 }
 
 void SelfCheck::subscribe_settings() {

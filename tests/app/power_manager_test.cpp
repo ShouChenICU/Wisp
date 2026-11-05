@@ -16,15 +16,19 @@
 #include "wisp/app/power_key_controller.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/wakelock.hpp"
+#include "wisp/hal/device.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 using wisp::app::PowerKeyController;
 using wisp::app::PowerManager;
+using wisp::app::PowerManagerDeps;
 using wisp::core::ButtonService;
 using wisp::core::DeviceRegistry;
 using wisp::core::Event;
@@ -32,6 +36,10 @@ using wisp::core::EventBus;
 using wisp::core::PowerMonitor;
 using wisp::core::Settings;
 using wisp::core::StorageManager;
+using wisp::core::WakeLockKind;
+using wisp::core::WakeLockRegistry;
+using wisp::hal::DeviceClass;
+using wisp::hal::PowerLevel;
 using wisp::port::sim::JsonFileSettingsBackend;
 using wisp::test::FakeButton;
 using wisp::test::FakeDisplay;
@@ -48,8 +56,8 @@ namespace {
 // Everything a PowerManager test needs: a real (but Fake-backed) Display/
 // Touch/UiRuntime/ButtonService/EventBus, plus a JSON-file Settings
 // backend under a fresh temp dir -- see tests/core/settings_test.cpp for
-// the same backend used the same way. `set_standby_calls` records every
-// Platform::set_standby() call PowerManager makes. `btn` is
+// the same backend used the same way. `light_sleep_calls` records every
+// Platform::set_light_sleep() call PowerManager makes. `btn` is
 // "button.power"; `vol_btn` ("button.vol_up") exists so the power-key-
 // ownership integration tests below can distinguish "woken via the
 // owned power key path" from "woken via PowerManager's own generic
@@ -81,6 +89,9 @@ struct Fixture {
 
         registry.add(btn);
         registry.add(vol_btn);
+        registry.add(display);
+        registry.add(touch);
+        registry.add(imu);
 
         // A real (Fake-backed) StorageManager, so PowerManager's
         // set_standby() forwarding can
@@ -111,11 +122,18 @@ struct Fixture {
         // file that doesn't care about it either way.
         power_monitor = std::make_unique<PowerMonitor>(bus, power, Settings(*backend, "power"));
 
-        pm = std::make_unique<PowerManager>(
-            bus, display, touch, imu, with_storage ? storage.get() : nullptr,
-            with_power_monitor ? power_monitor.get() : nullptr, ui.get(), buttons.get(),
-            [this](bool standby) { set_standby_calls.push_back(standby); },
-            Settings(*backend, "power"));
+        pm = std::make_unique<PowerManager>(PowerManagerDeps{
+            .bus = bus,
+            .registry = registry,
+            .locks = locks,
+            .settings = Settings(*backend, "power"),
+            .display = display,
+            .storage = with_storage ? storage.get() : nullptr,
+            .power_monitor = with_power_monitor ? power_monitor.get() : nullptr,
+            .ui = ui.get(),
+            .buttons = buttons.get(),
+            .set_light_sleep = [this](bool on) { light_sleep_calls.push_back(on); },
+        });
     }
 
     ~Fixture() {
@@ -184,6 +202,7 @@ struct Fixture {
 
     EventBus bus;
     DeviceRegistry registry;
+    WakeLockRegistry locks{bus};
 
     std::shared_ptr<FakeDisplay> display = std::make_shared<FakeDisplay>("display.main", 480, 480);
     std::shared_ptr<FakeTouch> touch = std::make_shared<FakeTouch>("touch.main");
@@ -203,7 +222,9 @@ struct Fixture {
     std::unique_ptr<ButtonService> buttons;
     std::unique_ptr<PowerManager> pm;
 
-    std::vector<bool> set_standby_calls;
+    // Written on the UI task; tests read it only after run_on_ui() or
+    // drain_ui(), which order those writes before the read.
+    std::vector<bool> light_sleep_calls;
 
 private:
     std::mutex power_events_mutex;
@@ -302,8 +323,8 @@ TEST(PowerManager, EnterStandbySleepsEverythingAndPublishesState) {
     EXPECT_EQ(f.int_storage->set_standby_calls(), 0);
     EXPECT_TRUE(wait_until([&] { return f.ui->paused(); }, 2000));
     EXPECT_EQ(f.buttons->poll_interval_ms(), 50u);
-    ASSERT_EQ(f.set_standby_calls.size(), 1u);
-    EXPECT_TRUE(f.set_standby_calls[0]);
+    // Light sleep is for deep standby only (spec 4.1).
+    EXPECT_TRUE(f.light_sleep_calls.empty());
 
     ASSERT_EQ(f.power_event_count(), 1u);
     Event e = f.power_event_at(0);
@@ -327,9 +348,7 @@ TEST(PowerManager, ExitStandbyRestoresEverything) {
     EXPECT_FALSE(f.sd_storage->standby());
     EXPECT_TRUE(wait_until([&] { return !f.ui->paused(); }, 2000));
     EXPECT_EQ(f.buttons->poll_interval_ms(), 20u);
-    ASSERT_EQ(f.set_standby_calls.size(), 2u);
-    EXPECT_TRUE(f.set_standby_calls[0]);
-    EXPECT_FALSE(f.set_standby_calls[1]);
+    EXPECT_TRUE(f.light_sleep_calls.empty());
 
     ASSERT_TRUE(wait_until([&] { return f.power_event_count() >= 2; }, 2000));
     Event e = f.power_event_at(1);
@@ -349,7 +368,7 @@ TEST(PowerManager, EnterStandbyTwiceOnlyTakesEffectOnce) {
     EXPECT_EQ(f.touch->set_power_calls(), 1);
     EXPECT_EQ(f.imu->set_power_calls(), 1);
     EXPECT_EQ(f.sd_storage->set_standby_calls(), 1);
-    EXPECT_EQ(f.set_standby_calls.size(), 1u);
+    EXPECT_TRUE(f.light_sleep_calls.empty());
     EXPECT_EQ(f.power_event_count(), 1u);
 }
 
@@ -360,7 +379,7 @@ TEST(PowerManager, ExitStandbyWhileAlreadyActiveIsANoOp) {
     EXPECT_FALSE(f.pm->standby());
     EXPECT_EQ(f.display->set_power_calls(), 0);
     EXPECT_EQ(f.touch->set_power_calls(), 0);
-    EXPECT_EQ(f.set_standby_calls.size(), 0u);
+    EXPECT_TRUE(f.light_sleep_calls.empty());
     EXPECT_EQ(f.power_event_count(), 0u);
 }
 
@@ -683,11 +702,17 @@ TEST(PowerManager, BrightnessChangedInStandbyAppliesOnWake) {
 
 TEST(PowerManager, HeadlessSetBrightnessHonoursStandby) {
     EventBus bus;
+    DeviceRegistry registry;
+    WakeLockRegistry locks(bus);
     auto backend =
         std::make_unique<JsonFileSettingsBackend>((temp_dir() / "headless.json").string());
     auto display = std::make_shared<FakeDisplay>("display.main", 480, 480);
-    PowerManager pm(bus, display, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, {},
-                    Settings(*backend, "power"));
+    registry.add(display);
+    PowerManager pm(PowerManagerDeps{.bus = bus,
+                                     .registry = registry,
+                                     .locks = locks,
+                                     .settings = Settings(*backend, "power"),
+                                     .display = display});
     pm.set_brightness(70);
     EXPECT_EQ(display->brightness(), 70);
 
@@ -699,8 +724,9 @@ TEST(PowerManager, HeadlessSetBrightnessHonoursStandby) {
     EXPECT_EQ(display->brightness(), 40);
 
     // Headless PowerManager owns no display at all: set_brightness is a no-op.
-    PowerManager no_display(bus, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, {},
-                            Settings(*backend, "power"));
+    DeviceRegistry empty;
+    PowerManager no_display(PowerManagerDeps{
+        .bus = bus, .registry = empty, .locks = locks, .settings = Settings(*backend, "power")});
     no_display.set_brightness(10);
 }
 
@@ -761,4 +787,471 @@ TEST(PowerManager, UiThreadBrightnessIsNotOverwrittenByAnOlderQueuedJob) {
     f.drain_ui();
 
     EXPECT_EQ(f.display->brightness(), 50);
+}
+
+namespace {
+
+// Every set_power() call the probes below receive, as "<id>:<level>", in
+// call order across all of them.
+struct CallLog {
+    void add(std::string entry) {
+        std::lock_guard<std::mutex> lock(mutex);
+        calls.push_back(std::move(entry));
+    }
+    std::vector<std::string> take() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return std::exchange(calls, {});
+    }
+    std::mutex mutex;
+    std::vector<std::string> calls;
+};
+
+// A device that declares caps "standby" = `standby` (none when null) and
+// records every set_power() call. `busy` makes the next that many calls
+// fail with ErrorCode::Busy, as the ESP audio devices do while a stream is
+// open; `unsupported` makes every call fail with ErrorCode::Unsupported.
+class Probe : public wisp::hal::Device {
+public:
+    Probe(std::string id, DeviceClass cls, const char* standby, std::shared_ptr<CallLog> log)
+        : log_(std::move(log)) {
+        info_.id = std::move(id);
+        info_.cls = cls;
+        info_.model = "PROBE";
+        if (standby != nullptr) info_.caps["standby"] = wisp::Value(standby);
+    }
+
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+
+    wisp::Result<void> set_power(PowerLevel level) override {
+        log_->add(info_.id + ":" + wisp::hal::to_string(level));
+        if (unsupported.load()) {
+            return wisp::Result<void>::err(wisp::ErrorCode::Unsupported, "probe: no standby");
+        }
+        if (busy.load() > 0) {
+            busy.fetch_sub(1);
+            return wisp::Result<void>::err(wisp::ErrorCode::Busy, "probe: in use");
+        }
+        powered_.store(wisp::hal::powered_at(wisp::hal::standby_policy(info_), level));
+        return wisp::Result<void>::ok();
+    }
+
+    bool powered() const { return powered_.load(); }
+
+    std::atomic<int> busy{0};
+    std::atomic<bool> unsupported{false};
+
+private:
+    wisp::hal::DeviceInfo info_;
+    std::shared_ptr<CallLog> log_;
+    std::atomic<bool> powered_{true};
+};
+
+// Collects every Warn-or-worse line logged with PowerManager's tag.
+class WarnSink : public wisp::LogSink {
+public:
+    WarnSink() {
+        wisp::log::init();
+        wisp::log::add_sink(this);
+    }
+    ~WarnSink() override { wisp::log::remove_sink(this); }
+
+    void write(const wisp::LogRecord& record) override {
+        if (record.level < wisp::LogLevel::Warn) return;
+        if (std::string(record.tag) != "power_manager") return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        lines_.push_back(record.msg);
+    }
+    std::vector<std::string> lines() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lines_;
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<std::string> lines_;
+};
+
+// A PowerManager with no UiRuntime, so every transition runs on the
+// calling thread and each assertion can follow the call directly.
+struct Headless {
+    explicit Headless(int64_t screen_off_s = 60, int64_t deep_after_s = 300,
+                      bool with_hook = true) {
+        backend = std::make_unique<JsonFileSettingsBackend>((temp_dir() / "power.json").string());
+        Settings power(*backend, "power");
+        power.set("screen_off_s", screen_off_s);
+        power.set("deep_after_s", deep_after_s);
+
+        bus.start();
+        bus.subscribe("power.state", [this](const Event& e) {
+            std::lock_guard<std::mutex> lock(mutex);
+            states_.push_back(e.payload.at("state").as_string());
+        });
+
+        PowerManagerDeps deps{.bus = bus,
+                              .registry = registry,
+                              .locks = locks,
+                              .settings = Settings(*backend, "power")};
+        if (with_hook) {
+            deps.set_light_sleep = [this](bool on) {
+                std::lock_guard<std::mutex> lock(mutex);
+                light_sleep_.push_back(on);
+            };
+        }
+        pm = std::make_unique<PowerManager>(std::move(deps));
+    }
+
+    ~Headless() {
+        pm.reset();
+        bus.stop();
+    }
+
+    std::shared_ptr<Probe> add_probe(std::string id, DeviceClass cls, const char* standby) {
+        auto probe = std::make_shared<Probe>(std::move(id), cls, standby, log);
+        registry.add(probe);
+        return probe;
+    }
+
+    // Reads the clock, then restarts the idle clock: a tick at t0 + x has
+    // seen at most x ms of idleness.
+    uint64_t start_idle() {
+        uint64_t t0 = wisp::os::now_ms();
+        pm->note_activity();
+        return t0;
+    }
+
+    // Goes Active -> Standby -> DeepStandby by idle ticks from a fresh
+    // idle clock; returns when deep standby was reached.
+    uint64_t go_deep() {
+        uint64_t t0 = start_idle();
+        pm->tick(t0 + 60050);
+        pm->tick(t0 + 60050 + 300000);
+        return t0 + 60050 + 300000;
+    }
+
+    std::vector<std::string> states() {
+        bus.wait_idle(2000);
+        std::lock_guard<std::mutex> lock(mutex);
+        return states_;
+    }
+    std::vector<bool> light_sleep() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return light_sleep_;
+    }
+
+    std::unique_ptr<JsonFileSettingsBackend> backend;
+    EventBus bus;
+    DeviceRegistry registry;
+    WakeLockRegistry locks{bus};
+    std::shared_ptr<CallLog> log = std::make_shared<CallLog>();
+    std::unique_ptr<PowerManager> pm;
+
+private:
+    std::mutex mutex;
+    std::vector<std::string> states_;
+    std::vector<bool> light_sleep_;
+};
+
+using Strings = std::vector<std::string>;
+
+}  // namespace
+
+// spec 4.1: dim comes 10 s before the screen goes off, at 30% of the set
+// brightness; any activity brings the screen back to full brightness.
+TEST(PowerManager, DimTenSecondsBeforeScreenOff) {
+    Fixture f(/*screen_off_s=*/60);
+    f.pm->set_brightness(200);
+    f.drain_ui();
+    uint64_t t0 = wisp::os::now_ms();
+    f.pm->note_activity();
+
+    f.pm->tick(t0 + 49000);
+    f.drain_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::Active);
+    EXPECT_EQ(f.display->brightness(), 200);
+
+    f.pm->tick(t0 + 50050);
+    f.drain_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::Dim);
+    EXPECT_FALSE(f.pm->standby());
+    EXPECT_EQ(f.display->brightness(), 60);
+    EXPECT_TRUE(f.display->powered());  // dim only lowers the brightness
+    EXPECT_FALSE(f.ui->paused());
+
+    f.pm->note_activity();
+    f.drain_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::Active);
+    EXPECT_EQ(f.display->brightness(), 200);
+
+    ASSERT_TRUE(wait_until([&] { return f.power_event_count() >= 2; }, 2000));
+    EXPECT_EQ(f.power_event_at(0).payload.at("state").as_string(), "dim");
+    EXPECT_EQ(f.power_event_at(1).payload.at("state").as_string(), "active");
+}
+
+TEST(PowerManager, DimWithShortestTimeout) {
+    Headless h(/*screen_off_s=*/15);
+    uint64_t t0 = h.start_idle();
+    h.pm->tick(t0 + 4999);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Active);
+    h.pm->tick(t0 + 5050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Dim);
+    h.pm->tick(t0 + 15050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+}
+
+// spec 4.2: every device with caps "standby" gets set_power(); the policy
+// decides what it does. A device without the cap is never called, and
+// Unsupported is expected, not a warning.
+TEST(PowerManager, StandbyWalksDevicesByPolicy) {
+    WarnSink warns;
+    Headless h;
+    auto off = h.add_probe("imu.off", DeviceClass::Imu, "off");
+    auto wake = h.add_probe("button.wake", DeviceClass::Button, "wake_source");
+    auto none = h.add_probe("clock.none", DeviceClass::Clock, nullptr);
+    auto unsup = h.add_probe("touch.unsup", DeviceClass::Touch, "off");
+    unsup->unsupported = true;
+
+    h.pm->enter_standby();
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+    EXPECT_EQ(h.log->take(),
+              (Strings{"button.wake:standby", "imu.off:standby", "touch.unsup:standby"}));
+    EXPECT_FALSE(off->powered());
+    EXPECT_TRUE(wake->powered());
+    EXPECT_TRUE(none->powered());
+
+    h.pm->exit_standby();
+    EXPECT_EQ(h.pm->level(), PowerLevel::Active);
+    EXPECT_EQ(h.log->take(),
+              (Strings{"touch.unsup:active", "imu.off:active", "button.wake:active"}));
+    EXPECT_TRUE(off->powered());
+    EXPECT_TRUE(wake->powered());
+    EXPECT_TRUE(warns.lines().empty());
+}
+
+// The audio pair goes down input first and comes back output first,
+// wherever the two sit in the registry: in a duplex pair the output
+// clocks the input (wisp/port/esp/i2s_power.hpp).
+TEST(PowerManager, AudioGoesDownInputFirstAndUpOutputFirst) {
+    Headless h;
+    h.add_probe("audio_out.main", DeviceClass::AudioOut, "off");
+    h.add_probe("touch.main", DeviceClass::Touch, "off");
+    h.add_probe("audio_in.main", DeviceClass::AudioIn, "off");
+    h.add_probe("imu.main", DeviceClass::Imu, "off");
+
+    h.pm->enter_standby();
+    EXPECT_EQ(h.log->take(), (Strings{"imu.main:standby", "touch.main:standby",
+                                      "audio_in.main:standby", "audio_out.main:standby"}));
+    h.pm->exit_standby();
+    EXPECT_EQ(h.log->take(), (Strings{"audio_out.main:active", "audio_in.main:active",
+                                      "touch.main:active", "imu.main:active"}));
+}
+
+// A device still in use answers Busy and stays on; PowerManager logs it
+// and asks again on the next tick until it agrees.
+TEST(PowerManager, BusyDeviceIsRetriedOnTheNextTick) {
+    WarnSink warns;
+    Headless h;
+    auto in = h.add_probe("audio_in.main", DeviceClass::AudioIn, "off");
+    auto out = h.add_probe("audio_out.main", DeviceClass::AudioOut, "off");
+    in->busy = 2;
+    out->busy = 1;
+
+    h.pm->enter_standby();
+    EXPECT_EQ(h.log->take(), (Strings{"audio_in.main:standby", "audio_out.main:standby"}));
+    EXPECT_TRUE(in->powered());
+    EXPECT_TRUE(out->powered());
+
+    uint64_t now = wisp::os::now_ms();
+    h.pm->tick(now);
+    // Still the same order: the input is still busy, so the output is
+    // asked again (and would still refuse on hardware while the input
+    // runs); here it agrees.
+    EXPECT_EQ(h.log->take(), (Strings{"audio_in.main:standby", "audio_out.main:standby"}));
+    EXPECT_TRUE(in->powered());
+    EXPECT_FALSE(out->powered());
+
+    h.pm->tick(now + 1000);
+    EXPECT_EQ(h.log->take(), (Strings{"audio_in.main:standby"}));
+    EXPECT_FALSE(in->powered());
+
+    h.pm->tick(now + 2000);
+    EXPECT_TRUE(h.log->take().empty());  // nothing left to retry
+
+    // Busy on the way up is retried the same way.
+    out->busy = 1;
+    h.pm->exit_standby();
+    EXPECT_EQ(h.log->take(), (Strings{"audio_out.main:active", "audio_in.main:active"}));
+    EXPECT_FALSE(out->powered());
+    h.pm->tick(wisp::os::now_ms());
+    EXPECT_EQ(h.log->take(), (Strings{"audio_out.main:active"}));
+    EXPECT_TRUE(out->powered());
+    EXPECT_TRUE(warns.lines().empty());
+}
+
+TEST(PowerManager, DeepStandbyAfterDeepAfterS) {
+    Headless h(/*screen_off_s=*/60, /*deep_after_s=*/300);
+    auto off = h.add_probe("imu.main", DeviceClass::Imu, "off");
+    uint64_t t0 = h.start_idle();
+
+    h.pm->tick(t0 + 60050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+    h.pm->tick(t0 + 60050 + 299000);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+    h.pm->tick(t0 + 60050 + 300000);
+    EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
+    EXPECT_TRUE(h.pm->standby());
+
+    EXPECT_EQ(h.states(), (Strings{"standby", "deep_standby"}));
+    EXPECT_EQ(h.log->take(), (Strings{"imu.main:standby", "imu.main:deep_standby"}));
+    EXPECT_FALSE(off->powered());
+    EXPECT_EQ(h.light_sleep(), (std::vector<bool>{true}));
+    EXPECT_TRUE(h.pm->light_sleep_on());
+}
+
+TEST(PowerManager, DeepAfterZeroNeverGoesDeep) {
+    Headless h(/*screen_off_s=*/60, /*deep_after_s=*/0);
+    uint64_t t0 = h.start_idle();
+    h.pm->tick(t0 + 60050);
+    h.pm->tick(t0 + 10ull * 3600 * 1000);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+    EXPECT_TRUE(h.light_sleep().empty());
+}
+
+// spec 4.3: a network lock keeps standby from going deep, pulls deep
+// standby back to standby, and on release deep standby returns at once:
+// the deep timer runs from entering standby, whatever the locks did.
+TEST(PowerManager, NetworkLockBlocksAndLeavesDeepStandby) {
+    Headless h;
+    uint32_t first = h.locks.acquire("system.admin", WakeLockKind::Network, "admin session");
+    h.go_deep();
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+
+    h.locks.release(first);
+    EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
+
+    uint32_t window = h.locks.acquire("system.netwindow", WakeLockKind::Network, "deferred");
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+    EXPECT_FALSE(h.pm->light_sleep_on());
+    h.locks.release(window);
+    EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
+    EXPECT_TRUE(h.pm->light_sleep_on());
+
+    EXPECT_EQ(h.states(), (Strings{"standby", "deep_standby", "standby", "deep_standby"}));
+}
+
+TEST(PowerManager, LightSleepFollowsCpuLockAndSetting) {
+    Headless h;
+    EXPECT_TRUE(h.pm->light_sleep_supported());
+    h.go_deep();
+    EXPECT_EQ(h.light_sleep(), (std::vector<bool>{true}));
+
+    uint32_t cpu = h.locks.acquire("system.ota", WakeLockKind::Cpu, "firmware update");
+    EXPECT_EQ(h.light_sleep(), (std::vector<bool>{true, false}));
+    EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);  // cpu locks keep Wi-Fi off
+    h.locks.release(cpu);
+    EXPECT_EQ(h.light_sleep(), (std::vector<bool>{true, false, true}));
+
+    h.pm->exit_standby();
+    EXPECT_EQ(h.light_sleep(), (std::vector<bool>{true, false, true, false}));
+    EXPECT_FALSE(h.pm->light_sleep_on());
+
+    // With power/light_sleep off, deep standby never turns it on.
+    ASSERT_TRUE(Settings(*h.backend, "power").set("light_sleep", false));
+    h.go_deep();
+    EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
+    EXPECT_EQ(h.light_sleep().size(), 4u);
+    EXPECT_FALSE(h.pm->light_sleep_on());
+
+    // Turning it back on takes effect at the next tick.
+    ASSERT_TRUE(Settings(*h.backend, "power").set("light_sleep", true));
+    h.pm->tick(wisp::os::now_ms());
+    EXPECT_EQ(h.light_sleep().back(), true);
+    EXPECT_TRUE(h.pm->light_sleep_on());
+}
+
+TEST(PowerManager, NoLightSleepHookStillGoesDeep) {
+    Headless h(/*screen_off_s=*/60, /*deep_after_s=*/300, /*with_hook=*/false);
+    EXPECT_FALSE(h.pm->light_sleep_supported());
+    h.go_deep();
+    EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
+    EXPECT_FALSE(h.pm->light_sleep_on());
+}
+
+// spec 4.3: a screen lock keeps the screen at active, but a short press of
+// the power key (enter_standby()) still turns it off and leaves the lock.
+TEST(PowerManager, ScreenLockKeepsActiveButPowerKeyStillSleeps) {
+    Headless h;
+    uint32_t id = h.locks.acquire("scene.reader", WakeLockKind::Screen, "reading");
+    uint64_t t0 = h.start_idle();
+    h.pm->tick(t0 + 50050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Active);
+    h.pm->tick(t0 + 3600000);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Active);
+
+    h.pm->enter_standby();
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+    EXPECT_TRUE(h.locks.held(WakeLockKind::Screen));
+    h.pm->exit_standby();
+
+    // A screen lock taken while dimmed brings the screen straight back.
+    h.locks.release(id);
+    uint64_t t1 = h.start_idle();
+    h.pm->tick(t1 + 50050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Dim);
+    h.locks.acquire("scene.reader", WakeLockKind::Screen, "reading");
+    EXPECT_EQ(h.pm->level(), PowerLevel::Active);
+}
+
+// Waking from deep standby undoes everything: light sleep off first, the
+// devices back up in reverse order (audio output before input), the UI
+// resumed last.
+TEST(PowerManager, WakeFromDeepStandbyRestoresAll) {
+    Fixture f(/*screen_off_s=*/60);
+    auto log = std::make_shared<CallLog>();
+    auto in = std::make_shared<Probe>("audio_in.main", DeviceClass::AudioIn, "off", log);
+    auto out = std::make_shared<Probe>("audio_out.main", DeviceClass::AudioOut, "off", log);
+    f.registry.add(in);
+    f.registry.add(out);
+
+    uint64_t t0 = wisp::os::now_ms();
+    f.pm->note_activity();
+    f.pm->tick(t0 + 60050);
+    f.drain_ui();
+    f.pm->tick(t0 + 60050 + 300000);
+    f.drain_ui();
+    ASSERT_EQ(f.pm->level(), PowerLevel::DeepStandby);
+    EXPECT_FALSE(f.display->powered());
+    EXPECT_FALSE(f.touch->powered());
+    EXPECT_FALSE(f.imu->powered());
+    EXPECT_TRUE(f.ui->paused());
+    EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true}));
+
+    f.run_on_ui([&] { f.pm->exit_standby(); });
+    EXPECT_EQ(f.pm->level(), PowerLevel::Active);
+    EXPECT_TRUE(f.display->powered());
+    EXPECT_TRUE(f.touch->powered());
+    EXPECT_TRUE(f.imu->powered());
+    EXPECT_TRUE(in->powered());
+    EXPECT_TRUE(out->powered());
+    EXPECT_FALSE(f.ui->paused());
+    EXPECT_FALSE(f.sd_storage->standby());
+    EXPECT_EQ(f.buttons->poll_interval_ms(), 20u);
+    EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true, false}));
+    EXPECT_EQ(log->take(), (Strings{"audio_in.main:standby", "audio_out.main:standby",
+                                    "audio_in.main:deep_standby", "audio_out.main:deep_standby",
+                                    "audio_out.main:active", "audio_in.main:active"}));
+
+    ASSERT_TRUE(wait_until([&] { return f.power_event_count() >= 3; }, 2000));
+    EXPECT_EQ(f.power_event_at(0).payload.at("state").as_string(), "standby");
+    EXPECT_EQ(f.power_event_at(1).payload.at("state").as_string(), "deep_standby");
+    EXPECT_EQ(f.power_event_at(2).payload.at("state").as_string(), "active");
+}
+
+TEST(PowerManager, StateEventCarriesEveryLevel) {
+    Headless h;
+    uint64_t t0 = h.start_idle();
+    h.pm->tick(t0 + 50050);
+    h.pm->tick(t0 + 60050);
+    h.pm->tick(t0 + 60050 + 300000);
+    h.pm->exit_standby();
+    EXPECT_EQ(h.states(), (Strings{"dim", "standby", "deep_standby", "active"}));
 }

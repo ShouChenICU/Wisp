@@ -18,7 +18,6 @@
 #include "wisp/core/log.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
-#include "wisp/hal/imu.hpp"
 #include "wisp/hal/power.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/net/model_probe.hpp"
@@ -129,11 +128,11 @@ Result<void> App::start() {
     auto display = impl_->registry.get<hal::Display>("display.main");
     std::shared_ptr<hal::Touch> touch;
     hal::ScreenShape shape;
+    int64_t boot_brightness = 200;
     if (display) {
         core::Settings display_settings(*impl_->platform.settings, "display");
-        int64_t brightness = display_settings.get_int("brightness", 200);
-        brightness = std::clamp<int64_t>(brightness, 0, 255);
-        display->set_brightness(static_cast<uint8_t>(brightness));
+        boot_brightness = std::clamp<int64_t>(display_settings.get_int("brightness", 200), 0, 255);
+        display->set_brightness(static_cast<uint8_t>(boot_brightness));
 
         touch = impl_->registry.get<hal::Touch>("touch.main");
         ui::UiConfig ui_config;
@@ -162,8 +161,6 @@ Result<void> App::start() {
     // regardless of whether there's a screen. It must exist before the
     // self-check screen is built below, since that screen's power-key
     // handling calls into it.
-    core::Settings power_settings(*impl_->platform.settings, "power");
-    auto imu = impl_->registry.get<hal::Imu>("imu.main");
 
     // PowerMonitor is constructed here too -- before
     // PowerManager, which holds a non-owning pointer into it -- and, like
@@ -177,9 +174,23 @@ Result<void> App::start() {
         impl_->bus, power_dev, core::Settings(*impl_->platform.settings, "power"));
     impl_->power_monitor->start();
 
-    impl_->power_manager = std::make_unique<PowerManager>(
-        impl_->bus, display, touch, imu, &impl_->storage, impl_->power_monitor.get(),
-        impl_->ui.get(), &impl_->buttons, impl_->platform.set_standby, std::move(power_settings));
+    impl_->power_manager = std::make_unique<PowerManager>(PowerManagerDeps{
+        .bus = impl_->bus,
+        .registry = impl_->registry,
+        .locks = impl_->wakelocks,
+        .settings = core::Settings(*impl_->platform.settings, "power"),
+        .display = display,
+        .storage = &impl_->storage,
+        .power_monitor = impl_->power_monitor.get(),
+        .ui = impl_->ui.get(),
+        .buttons = &impl_->buttons,
+        .set_light_sleep = impl_->platform.set_light_sleep,
+    });
+    if (display) {
+        // The panel already shows this level (applied above, before the UI
+        // started); PowerManager dims relative to it.
+        impl_->power_manager->set_brightness(static_cast<uint8_t>(boot_brightness));
+    }
     impl_->power_timer =
         std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true,
                                     [this] { impl_->power_manager->tick(os::now_ms()); });

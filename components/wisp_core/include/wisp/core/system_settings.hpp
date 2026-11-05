@@ -5,6 +5,9 @@
 //   brightness     display/brightness  int 10-255                (default 200)
 //   volume         audio/volume        int 0-100                 (default 60)
 //   screen_off_s   power/screen_off_s  int 0 (never) or 15-3600  (default 60)
+//   deep_after_s   power/deep_after_s  int 0 (never) or 60-3600  (default 300)
+//   light_sleep    power/light_sleep   bool                      (default true)
+//   notify_vol     audio/notify_vol    int 0-100                 (default 60)
 //   language       sys/lang            "zh", "ja" or "en"        (default "zh")
 //   utc_offset_min sys/tz_min          int -720 to 840           (default 480)
 //   ntp_servers    sys/ntp             1-2 hosts, comma-separated
@@ -16,6 +19,10 @@
 // ntp_servers lists the time servers net::TimeSyncService tries in order:
 // each a host name or an IPv4 address of 1-63 characters [A-Za-z0-9.-],
 // no spaces (connectivity spec 5.4).
+// deep_after_s is how long standby lasts before deep standby turns Wi-Fi
+// off; light_sleep lets deep standby use automatic light sleep (off while
+// debugging over USB serial, which light sleep may drop); notify_vol is
+// the alert-sound volume (scene-device spec 4.1 and 5.4).
 // The consumers (App at boot, the audio path, PowerManager::tick()) read
 // these keys fresh, so only brightness needs an explicit "apply now" hook.
 // The device UI language follows `on_changed` (spec 8.3): App publishes it
@@ -47,10 +54,13 @@ struct SystemSettingsValues {
     std::string language;
     int utc_offset_min;
     std::string ntp_servers;
+    int deep_after_s;
+    bool light_sleep;
+    int notify_vol;
 };
 
 // {"brightness", "volume", "screen_off_s", "language", "utc_offset_min",
-// "ntp_servers"}:
+// "ntp_servers", "deep_after_s", "light_sleep", "notify_vol"}:
 // the shape of GET /settings and of the system.settings event payload.
 Map to_map(const SystemSettingsValues& values);
 
@@ -76,8 +86,9 @@ public:
     // atomic load instead of reading storage each time.
     uint32_t revision() const;
 
-    // Keys are "brightness", "volume", "screen_off_s", "utc_offset_min"
-    // (integers), "language" and "ntp_servers" (strings). An unknown key, a value of the wrong type
+    // Keys are "brightness", "volume", "screen_off_s", "utc_offset_min",
+    // "deep_after_s", "notify_vol" (integers), "language" and "ntp_servers"
+    // (strings) and "light_sleep" (a boolean). An unknown key, a value of the wrong type
     // or an out-of-range value fails the whole batch with InvalidArgument before anything is
     // written. If the backend fails partway, the keys already written are restored (best effort)
     // and the backend's error returned; the hooks only run once the whole batch is stored.

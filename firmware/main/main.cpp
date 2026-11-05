@@ -48,10 +48,13 @@ extern "C" const uint8_t _binary_wisp_web_pack_end[];
 
 namespace {
 
-// Spec 6.7: DFS (dynamic frequency scaling) is always on; only
-// automatic tickless light sleep is toggled, by PowerManager via
-// Platform::set_standby -- entering standby turns it on, exiting turns
-// it back off. Requires CONFIG_PM_ENABLE and
+// DFS (dynamic frequency scaling) is always on; only automatic tickless
+// light sleep is toggled, by PowerManager via Platform::set_light_sleep:
+// on in deep standby (scene-device spec 4.1) unless a cpu wake lock or
+// power/light_sleep says otherwise. This board passed the light-sleep
+// compatibility check with the audio I2S channels off in standby (see
+// "浅睡兼容性（3b-1 spike）" in
+// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md). Requires CONFIG_PM_ENABLE and
 // CONFIG_FREERTOS_USE_TICKLESS_IDLE (firmware/sdkconfig.defaults);
 // CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION there additionally keeps light
 // sleep from firing while a USB-Serial-JTAG debug session is actually
@@ -128,7 +131,7 @@ extern "C" void app_main() {
         info["large_free"] = static_cast<int64_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         return wisp::Value(std::move(info));
     };
-    platform.set_standby = [](bool standby) { apply_pm_config(/*light_sleep_enable=*/standby); };
+    platform.set_light_sleep = [](bool on) { apply_pm_config(/*light_sleep_enable=*/on); };
     // The single source for this (rather than a literal duplicated here
     // and in the build config): esp_app_desc_t is filled in at build
     // time from PROJECT_VER (cmake/wisp_version.cmake, via
@@ -197,7 +200,7 @@ extern "C" void app_main() {
     captive.websocket = false;
     platform.captive_server = std::make_unique<wisp::port::esp::EspHttpServer>(captive);
 
-    // DFS always on; light sleep off until the first enter_standby()
+    // DFS always on; light sleep off until PowerManager reaches deep standby
     // (see apply_pm_config()'s comment above).
     apply_pm_config(/*light_sleep_enable=*/false);
 

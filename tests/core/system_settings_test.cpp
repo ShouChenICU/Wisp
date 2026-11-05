@@ -306,3 +306,68 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     EXPECT_EQ(inner.get("display", "brightness").error().code, ErrorCode::NotFound);
     EXPECT_EQ(inner.get("sys", "lang").error().code, ErrorCode::NotFound);
 }
+
+// spec 4.1 and 5.4: power/deep_after_s (0 never, else 60-3600, default
+// 300), power/light_sleep (a boolean, default true) and audio/notify_vol
+// (0-100, default 60).
+TEST(SystemSettings, PowerAndNotifyKeys) {
+    Fixture fx;
+    auto v = fx.settings.get();
+    EXPECT_EQ(v.deep_after_s, 300);
+    EXPECT_TRUE(v.light_sleep);
+    EXPECT_EQ(v.notify_vol, 60);
+
+    for (int ok : {0, 60, 900, 3600}) {
+        ASSERT_TRUE(fx.settings.set({{"deep_after_s", ok}})) << ok;
+        EXPECT_EQ(fx.settings.get().deep_after_s, ok);
+        EXPECT_EQ(Settings(fx.backend, "power").get_int("deep_after_s", -1), ok);
+    }
+    for (const wisp::Value& bad : {wisp::Value(59), wisp::Value(3601), wisp::Value(-1),
+                                   wisp::Value(1), wisp::Value("300"), wisp::Value(true)}) {
+        auto r = fx.settings.set({{"deep_after_s", bad}});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    EXPECT_EQ(fx.settings.get().deep_after_s, 3600);
+
+    ASSERT_TRUE(fx.settings.set({{"light_sleep", false}}));
+    EXPECT_FALSE(fx.settings.get().light_sleep);
+    EXPECT_FALSE(Settings(fx.backend, "power").get_bool("light_sleep", true));
+    EXPECT_FALSE(fx.changed.back().light_sleep);
+    for (const wisp::Value& bad :
+         {wisp::Value(1), wisp::Value(0), wisp::Value("true"), wisp::Value(wisp::List{})}) {
+        auto r = fx.settings.set({{"light_sleep", bad}});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    EXPECT_FALSE(fx.settings.get().light_sleep);
+    ASSERT_TRUE(fx.settings.set({{"light_sleep", true}}));
+    EXPECT_TRUE(fx.settings.get().light_sleep);
+
+    for (int ok : {0, 35, 100}) {
+        ASSERT_TRUE(fx.settings.set({{"notify_vol", ok}})) << ok;
+        EXPECT_EQ(fx.settings.get().notify_vol, ok);
+        EXPECT_EQ(Settings(fx.backend, "audio").get_int("notify_vol", -1), ok);
+    }
+    for (const wisp::Value& bad :
+         {wisp::Value(-1), wisp::Value(101), wisp::Value("50"), wisp::Value(false)}) {
+        auto r = fx.settings.set({{"notify_vol", bad}});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    EXPECT_EQ(fx.settings.get().notify_vol, 100);
+
+    // Stored values set() would refuse read back as the defaults.
+    ASSERT_TRUE(Settings(fx.backend, "power").set("deep_after_s", int64_t{30}));
+    ASSERT_TRUE(Settings(fx.backend, "power").set("light_sleep", int64_t{1}));
+    ASSERT_TRUE(Settings(fx.backend, "audio").set("notify_vol", int64_t{500}));
+    v = fx.settings.get();
+    EXPECT_EQ(v.deep_after_s, 300);
+    EXPECT_TRUE(v.light_sleep);
+    EXPECT_EQ(v.notify_vol, 60);
+
+    auto map = wisp::core::to_map(v);
+    EXPECT_EQ(map.at("deep_after_s"), wisp::Value(300));
+    EXPECT_EQ(map.at("light_sleep"), wisp::Value(true));
+    EXPECT_EQ(map.at("notify_vol"), wisp::Value(60));
+}

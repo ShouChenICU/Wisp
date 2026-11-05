@@ -53,7 +53,7 @@ public:
             {"width", width},           {"height", height},
             {"area_align", area_align}, {"shape", wisp::Value(std::move(shape))},
             {"corner_radius", 40},      {"panel", wisp::Value("amoled")},
-            {"brightness", true},
+            {"brightness", true},       {"standby", wisp::Value("off")},
         };
     }
 
@@ -131,7 +131,7 @@ public:
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
-        info_.caps = wisp::Properties{{"max_points", max_points}};
+        info_.caps = wisp::Properties{{"max_points", max_points}, {"standby", wisp::Value("off")}};
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -186,6 +186,7 @@ public:
             {"gyro", true},
             {"magnetometer", false},
             {"max_rate_hz", 1000},
+            {"standby", wisp::Value("off")},
         };
     }
 

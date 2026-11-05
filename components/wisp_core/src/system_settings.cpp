@@ -41,6 +41,12 @@ const KeySpec kVolume{"volume", "audio", "volume", Value(60),
                       [](const Value& v) { return int_in(v, 0, 100); }};
 const KeySpec kScreenOff{"screen_off_s", "power", "screen_off_s", Value(60),
                          [](const Value& v) { return int_in(v, 0, 0) || int_in(v, 15, 3600); }};
+const KeySpec kDeepAfter{"deep_after_s", "power", "deep_after_s", Value(300),
+                         [](const Value& v) { return int_in(v, 0, 0) || int_in(v, 60, 3600); }};
+const KeySpec kLightSleep{"light_sleep", "power", "light_sleep", Value(true),
+                          [](const Value& v) { return v.type() == Value::Type::Bool; }};
+const KeySpec kNotifyVol{"notify_vol", "audio", "notify_vol", Value(60),
+                         [](const Value& v) { return int_in(v, 0, 100); }};
 const KeySpec kLanguage{"language", "sys", "lang", Value("zh"), valid_language};
 
 const KeySpec kUtcOffset{"utc_offset_min", "sys", "tz_min", Value(480),
@@ -71,8 +77,8 @@ bool valid_ntp_servers(const Value& v) {
 const KeySpec kNtpServers{"ntp_servers", "sys", "ntp", Value(kDefaultNtpServers),
                           valid_ntp_servers};
 
-const KeySpec* const kKeys[] = {&kBrightness, &kVolume,    &kScreenOff,
-                                &kLanguage,   &kUtcOffset, &kNtpServers};
+const KeySpec* const kKeys[] = {&kBrightness, &kVolume,    &kScreenOff,  &kLanguage, &kUtcOffset,
+                                &kNtpServers, &kDeepAfter, &kLightSleep, &kNotifyVol};
 
 const KeySpec* find_spec(std::string_view name) {
     for (const KeySpec* spec : kKeys) {
@@ -101,6 +107,9 @@ Map to_map(const SystemSettingsValues& values) {
         {"language", Value(values.language)},
         {"utc_offset_min", Value(values.utc_offset_min)},
         {"ntp_servers", Value(values.ntp_servers)},
+        {"deep_after_s", Value(values.deep_after_s)},
+        {"light_sleep", Value(values.light_sleep)},
+        {"notify_vol", Value(values.notify_vol)},
     };
 }
 
@@ -119,6 +128,9 @@ SystemSettingsValues SystemSettings::get() const {
     values.language = read(backend_, kLanguage).as_string();
     values.utc_offset_min = static_cast<int>(read(backend_, kUtcOffset).as_int());
     values.ntp_servers = read(backend_, kNtpServers).as_string();
+    values.deep_after_s = static_cast<int>(read(backend_, kDeepAfter).as_int());
+    values.light_sleep = read(backend_, kLightSleep).as_bool();
+    values.notify_vol = static_cast<int>(read(backend_, kNotifyVol).as_int());
     return values;
 }
 

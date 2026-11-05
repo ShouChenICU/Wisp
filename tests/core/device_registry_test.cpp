@@ -33,11 +33,11 @@ TEST(DeviceRegistry, AddFindGetList) {
 TEST(DeviceRegistry, ManifestJson) {
     wisp::core::DeviceRegistry reg;
     reg.add(std::make_shared<FakeImu>("imu.main"));  // caps: accel=true, gyro=true,
-                                                     // magnetometer=false, max_rate_hz=1000;
-                                                     // model "FAKE"
+                                                     // magnetometer=false, max_rate_hz=1000,
+                                                     // standby="off"; model "FAKE"
     EXPECT_EQ(
         wisp::to_json(reg.manifest("b")),
-        R"({"board":"b","devices":[{"caps":{"accel":true,"gyro":true,"magnetometer":false,"max_rate_hz":1000},"class":"imu","id":"imu.main","model":"FAKE"}]})");
+        R"({"board":"b","devices":[{"caps":{"accel":true,"gyro":true,"magnetometer":false,"max_rate_hz":1000,"standby":"off"},"class":"imu","id":"imu.main","model":"FAKE"}]})");
 }
 
 TEST(DeviceRegistry, ManifestListsNetworkDevice) {

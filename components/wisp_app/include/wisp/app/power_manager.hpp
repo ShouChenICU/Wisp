@@ -1,81 +1,77 @@
 #pragma once
 
-// PowerManager (spec 6.7): the single owner of Wisp's "screen on" <->
-// "standby" transition. Sub-project 1's scope is exactly these two
-// states -- no background scenes, no wake locks; see spec 1.6 for the
-// direction later sub-projects take this in.
+// PowerManager (spec 4.1-4.3): the single owner of the device's power level,
+// one of hal::PowerLevel:
 //
-// enter_standby() pauses UiRuntime's rendering, puts the display panel,
-// touch controller and IMU to sleep (a software power-down stopgap, not
-// a real low-power mode), pauses the SD card's background presence-
-// detection worker (StorageManager::set_standby(true)), widens the power
-// monitor's sample period (spec 6.3/6.7 --
-// core::PowerMonitor::set_standby(true)), widens ButtonService's poll
-// interval, and calls the platform's set_standby(true) hook (real
-// hardware: keeps DFS always on, additionally enables tickless light
-// sleep; simulator: logs). exit_standby() reverses all seven, in the
-// opposite order (so the panel is already awake again before UiRuntime
-// resumes and -- via UiRuntime::set_paused(false)) -- forces a full
-// redraw against it).
-// Both are idempotent -- calling either while already in that state does
-// nothing (no device calls, no event). Every transition that actually
-// happens publishes "power.state" ({"state": "active"|"standby"}) on
-// `bus`.
+//   Active       normal.
+//   Dim          kDimLeadMs before the idle screen-off: the panel drops to
+//                kDimPercent of the set brightness (at least 10). No device
+//                is told; any activity returns to Active.
+//   Standby      after Settings "power"/"screen_off_s" (default 60, 0 never)
+//                of idleness, or enter_standby() (a short press of the
+//                power key). The UI pauses and every device that declares
+//                caps "standby" gets set_power(Standby); CPU and Wi-Fi stay.
+//   DeepStandby  after "power"/"deep_after_s" (default 300, 0 never) in
+//                Standby while no network wake lock is held; devices get
+//                set_power(DeepStandby). The Wi-Fi side follows level()
+//                (see net_wiring.cpp). A network lock taken here returns
+//                to Standby; once it is released deep standby returns at
+//                once, since its timer runs from entering Standby whatever
+//                the locks did meanwhile.
 //
-// PowerManager also owns the idle-timeout policy that triggers an
-// automatic enter_standby(): note_activity() resets an idle clock to
-// "now"; tick(now_ms), called periodically by the owner (see
-// App::start()), compares the elapsed idle time against Settings
-// "power"/"screen_off_s" (default 60, 0 disables) and triggers
-// enter_standby() once it's exceeded -- see tick()'s own doc comment for
-// *how* it triggers it (posted onto the UI task when there is one,
-// never run directly on tick()'s own caller's thread). The constructor
-// subscribes to every "button."-prefixed event on `bus` (any button,
-// any event type) to call note_activity() -- and, while in standby,
-// wake it -- implementing "待机中按任意键都会唤醒" (spec 6.7/8)
-// independently of whatever UI-specific handling (e.g. the self-check
-// screen's PowerKeyController) a particular button's events also drive.
-// set_power_key_owned(true) excludes "button.power" specifically from
-// that generic wake path once some other piece of UI (so far, only the
-// self-check screen) has taken over deciding what button.power does
-// with its own, more specific state machine -- see that method's doc
-// comment for why both of these reacting to the same button.power press
-// is a bug, not a belt-and-suspenders safety
-// net. The owner additionally wires UiRuntime's touch-activity hook (see
-// UiRuntime::set_touch_activity_cb()) to note_activity() when both `ui`
-// and `touch` are non-null, so touch input resets the idle clock too
-// (but never wakes from standby itself -- the touch controller is
-// asleep and UiRuntime is paused by then, so no touch read ever
-// happens while in standby in the first place).
+// Automatic light sleep (Platform::set_light_sleep) is on exactly while the
+// level is DeepStandby, "power"/"light_sleep" (default true) is set and no
+// cpu lock is held. A screen lock keeps the screen at Active: no dim, no
+// idle screen-off; enter_standby() still turns it off and leaves the lock.
+// Every level change publishes "power.state" ({"state": to_string(level)})
+// and logs "power: <level>".
 //
-// Thread-safety: every public method may be called from any thread, any
-// number of times concurrently, including from this PowerManager's own
-// bus subscription handler (on the EventBus dispatcher thread) and from
-// UI-thread code (e.g. self_check_screen.cpp's PowerKeyController
-// handling, already running inside a ui()->post()'d callback). In
-// practice, whenever a UiRuntime exists, every call this class makes to
-// enter_standby()/exit_standby() (tick()'s own, the generic "any button
-// wakes it" subscriber's, and self_check_screen.cpp's) is posted onto
-// that one UI task rather than invoked directly from whichever thread
-// noticed the trigger -- so in the only configuration sub-project 1
-// actually ships (a board with a display), these two methods'
-// device-touching bodies never truly run concurrently with each other
-// at all; the mutex below exists mainly to keep the equally-supported
-// headless configuration (no UiRuntime) correct too.
+// Devices (spec 4.2): on the way down every device with a standby policy
+// other than None is called in registry order (DeviceRegistry::all(), by
+// id), on the way up in the reverse order. The audio devices are the
+// exception: going down every AudioIn comes after the other devices and
+// before every AudioOut, going up every AudioOut comes first and then
+// every AudioIn, because in a duplex pair the output clocks the input
+// (wisp/port/esp/i2s_power.hpp; there the output refuses with Busy while
+// its input is still on). ErrorCode::Unsupported is ignored. Busy (a
+// device still in use) is logged once and asked again on every tick and
+// level change until it agrees. StorageManager, PowerMonitor and
+// ButtonService are services, not devices, and keep their own standby
+// calls (set_standby(true), the 50 ms button poll).
+//
+// Threading: whenever a UiRuntime exists, every transition runs on its
+// task, because the display may only be called from there (spec 5.3).
+// tick(), note_activity(), the wake-lock change callback and the
+// "any button wakes it" subscriber post their work onto that task; callers
+// already on it (the self-check screen's power key) call enter_standby()/
+// exit_standby() directly. Headless (no UiRuntime), everything runs on
+// the caller's thread. Settings are read only by the constructor and
+// tick() (on the shared timer task, which may touch flash); the UI-task
+// work uses the values tick() cached.
+//
+// Any button event resets the idle clock and, while the screen is off,
+// wakes the device (spec 6.7/8 of the foundation spec), except
+// "button.power" once set_power_key_owned(true) handed that key to its
+// owner. With a UiRuntime and a touch device, touch activity resets the
+// idle clock too (UiRuntime::set_touch_activity_cb()).
 
 #include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include "wisp/core/button_service.hpp"
+#include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/wakelock.hpp"
+#include "wisp/hal/device.hpp"
 #include "wisp/hal/display.hpp"
-#include "wisp/hal/imu.hpp"
-#include "wisp/hal/touch.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::ui {
@@ -84,243 +80,199 @@ class UiRuntime;
 
 namespace wisp::app {
 
+struct PowerManagerDeps {
+    core::EventBus& bus;
+    core::DeviceRegistry& registry;
+    core::WakeLockRegistry& locks;
+    core::Settings settings;                // namespace "power"
+    std::shared_ptr<hal::Display> display;  // brightness only; may be null
+    // The rest may be null or empty: each is skipped when missing.
+    core::StorageManager* storage = nullptr;
+    core::PowerMonitor* power_monitor = nullptr;
+    ui::UiRuntime* ui = nullptr;
+    core::ButtonService* buttons = nullptr;
+    std::function<void(bool enable)> set_light_sleep;  // Platform::set_light_sleep
+};
+
 class PowerManager {
 public:
-    // `display`/`touch`/`imu` may be null (headless, no touch panel, or
-    // no IMU). `storage` and `power_monitor` may also be null -- both are raw,
-    // non-owning pointers, like `ui`/`buttons`, since App owns them for
-    // its own (much longer) lifetime. `ui`/`buttons` may be null in
-    // headless mode (no UiRuntime); every call below tolerates any of
-    // these being null. `set_standby` may be an empty std::function (no
-    // platform hook). `settings` should already be bound to the "power"
-    // namespace (see wisp::core::Settings); screen_off_s is read fresh on
-    // every tick(), so a later Settings change (e.g. from a future
-    // settings UI) takes effect without reconstructing this object.
-    PowerManager(core::EventBus& bus, std::shared_ptr<hal::Display> display,
-                 std::shared_ptr<hal::Touch> touch, std::shared_ptr<hal::Imu> imu,
-                 core::StorageManager* storage, core::PowerMonitor* power_monitor,
-                 ui::UiRuntime* ui, core::ButtonService* buttons,
-                 std::function<void(bool)> set_standby, core::Settings settings);
+    static constexpr uint32_t kDimLeadMs = 10000;
+    static constexpr int kDimPercent = 30;
 
-    // Unsubscribes from `bus` and clears the UiRuntime touch-activity
-    // hook this installed (if any). Does not call exit_standby() --
-    // callers tear this down only as part of a larger shutdown (see
-    // App::stop()) where the display/touch/ui/buttons it would
-    // otherwise restore are about to go away anyway.
+    explicit PowerManager(PowerManagerDeps deps);
+
+    // Unsubscribes from the bus, drops the wake-lock change callback and
+    // clears the touch-activity hook (on the UI task, after every job this
+    // posted). Does not leave standby: App::stop() does that first.
     ~PowerManager();
 
     PowerManager(const PowerManager&) = delete;
     PowerManager& operator=(const PowerManager&) = delete;
 
-    // Idempotent: a no-op if already in standby. Otherwise, in order:
-    //   1. UiRuntime::set_paused(true) -- stop rendering *before*
-    //      touching the panel: since this always
-    //      runs on the UI task itself in practice (see the class-level
-    //      comment), there is never a concurrent lv_timer_handler()/
-    //      flush() straddling the panel-sleep call below regardless of
-    //      ordering, but pausing first keeps the two in the order the
-    //      exit path mirrors (see exit_standby()).
-    //   2. Display::set_power(Standby) (panel sleep).
-    //   3. Touch::set_power(Standby) (ErrorCode::Unsupported is expected,
-    //      not an error -- most touch drivers have no sleep mode).
-    //   4. Imu::set_power(Standby) (same ErrorCode::
-    //      Unsupported carve-out as Touch: not every IMU driver can
-    //      power its sensors down independently).
-    //   5. StorageManager::set_standby(true) (pauses storage.sd's
-    //      background CMD13 presence
-    //      probe and mount-retry worker, if any; a pure software hint,
-    //      never fails).
-    //   6. PowerMonitor::set_standby(true) (spec 6.3/6.7 --
-    //      widens the power-status sample period from ~1s to ~30s; see
-    //      wisp::core::PowerMonitor's own doc comment for why, unlike
-    //      step 5, this one *can* block for a moment, the same way step
-    //      7 below can -- both swap an os::Timer for a new one).
-    //   7. ButtonService::set_poll_interval_ms(50) (the poll interval in
-    //      effect right before this call is remembered and restored by
-    //      exit_standby(), so this works correctly even if the caller
-    //      didn't construct ButtonService with the spec's 20ms default).
-    //   8. The platform set_standby(true) hook, if any.
-    // Then publishes "power.state":"standby" on the bus.
+    // Active or Dim -> Standby (the power key, the idle timeout). A no-op
+    // while the screen is already off.
     void enter_standby();
-
-    // Idempotent: a no-op if already active. Reverses enter_standby()'s
-    // eight steps in the opposite order -- the platform hook runs first,
-    // ButtonService's poll interval is restored, then PowerMonitor::
-    // set_standby(false), then StorageManager::set_standby(false), then
-    // Imu::set_power(Active), then Touch::set_power(Active), then Display::
-    // set_power(Active) (panel wake), and only once the panel is actually
-    // awake again does UiRuntime::set_paused(false) run last, forcing a
-    // full redraw against an already-awake panel (UiRuntime::
-    // set_paused()'s own doc comment). Then publishes "power.state":
-    // "active" and calls note_activity() (waking resets the idle clock,
-    // so tick() doesn't immediately re-enter standby).
+    // Any level -> Active. A no-op at Active. Resets the idle clock.
     void exit_standby();
 
+    hal::PowerLevel level() const;
+    // level() >= Standby: the screen is off.
     bool standby() const;
+    // What set_light_sleep was last told (false before the first call).
+    bool light_sleep_on() const;
+    // Whether there is a set_light_sleep hook at all.
+    bool light_sleep_supported() const;
 
-    // Sets the panel brightness (core::SystemSettings' apply hook). While
-    // the panel is on, Display::set_brightness() runs right away; while it
-    // is asleep, the level is only remembered and applied by exit_standby()
-    // after Display::set_power(Active) -- changing brightness must never wake
-    // the screen. Callable from any thread and never blocks: off the UI
-    // task (when one exists) the level is stored and a single "apply the
-    // latest level" job is posted to the UI task, since every Display call
-    // must come from the UI thread (spec 5.3). Calls made while that job
-    // is still queued only replace the level (last write wins), so a busy
-    // UI task never sees more than one such job. If the post queue is
-    // full the change is dropped with a warning; the stored setting is
-    // still applied at the next boot.
-    //
-    // That job captures `this`: callers must stop calling set_brightness()
-    // before the PowerManager is destroyed. (The destructor drains jobs
-    // already posted, but cannot stop a call racing with it.)
-    void set_brightness(uint8_t level);
-
-    // Resets the idle clock to "now" (wisp::os::now_ms()).
+    // Resets the idle clock to now (os::now_ms()); at Dim also returns to
+    // Active (posted to the UI task when there is one).
     void note_activity();
 
-    // Compares the idle time (now_ms minus the last note_activity()) to
-    // Settings "screen_off_s" (0 disables; default 60) and, if exceeded,
-    // triggers enter_standby() -- posted onto the UI task via ui->post()
-    // when one exists, or called directly in headless mode. A no-op if
-    // already in standby, or if auto screen-off is disabled. Meant to be
-    // called periodically (e.g. every ~1s) by the owner -- see
-    // App::start()'s "wisp.power" Timer.
-    //
-    // tick() itself never calls enter_standby()
-    // directly when a UiRuntime exists. On real hardware, every
-    // wisp::os::Timer (including the one driving this call) shares a
-    // single esp_timer task; enter_standby() can block for a while (the
-    // panel's sleep-settle delay) and, if invoked directly here, would
-    // do so *on that shared task*, delaying every other Timer in the
-    // system (ButtonService's poll included) for no good reason -- and
-    // risks a genuine deadlock if enter_standby() ever needs that same
-    // task to finish something else first (see
-    // ButtonService::set_poll_interval_ms()'s use inside
-    // enter_standby()). Posting it instead returns from this call (and
-    // so from the Timer callback) almost immediately.
+    // Called about once a second (App's "wisp.power" timer): reads the
+    // settings, then moves Active -> Dim -> Standby -> DeepStandby by the
+    // idle clock and the deep timer, and back on locks, retries Busy
+    // devices and updates light sleep. `now_ms` is os::now_ms() in
+    // production; the work itself is posted to the UI task when there is
+    // one (a transition can block for the panel's sleep delay and must not
+    // hold up the shared timer task), and rechecked there against the
+    // state at that moment.
     void tick(uint64_t now_ms);
 
-    // Excludes "button.power"-sourced events from this class's own
-    // generic "any button wakes it from standby" subscriber (note_
-    // activity() is unaffected -- every button event still resets the
-    // idle clock regardless of this flag). Call with `true` once some
-    // other piece of code (so far, only self_check_screen.cpp's
-    // PowerKeyController) has taken over deciding what button.power
-    // presses do to the screen on its own -- see
-    // self_check_screen.cpp's subscribe_buttons().
-    //
-    // Why this exists: without it, a single
-    // physical short press on the power key while in standby produces,
-    // in order, "button.power.down" then "button.power.short". If this
-    // class's generic handler reacted to the `down` half by waking the
-    // device (as it does for every other button), and the owner's own
-    // button.power-specific logic reacted to the `short` half using
-    // *its own* idea of "is the screen on" -- which, if it is not also
-    // reading PowerManager::standby() live at that exact moment, would
-    // still believe the screen was off when `short` arrived, reasoning
-    // "this press' job is to turn it on" -- the two decisions can
-    // disagree and visibly flash the panel on and back off for what the
-    // user experienced as one single press. Turning button.power over
-    // entirely to the owner (down included, since note_activity() still
-    // runs for it regardless) means exactly one piece of code ever
-    // decides what a button.power press does, so there is nothing left
-    // to disagree with itself.
+    // Sets the panel brightness (core::SystemSettings' apply hook): applied
+    // right away while the panel is on (the dimmed share of it at Dim),
+    // remembered while it is off and applied on wake -- changing brightness
+    // never wakes the screen. Callable from any thread and never blocks:
+    // off the UI task one "apply the latest level" job is posted (later
+    // calls only replace the level); if the post queue is full the change
+    // is dropped with a warning. Callers must stop calling this before the
+    // PowerManager is destroyed.
+    void set_brightness(uint8_t level);
+
+    // Excludes "button.power" from the "any button wakes it" subscriber
+    // once some other code (the self-check screen's PowerKeyController)
+    // decides what that key does. Without this one short press in standby
+    // ("down" then "short") would be acted on twice: this class wakes on
+    // "down", and the owner, reading the screen as on by then, turns it
+    // off again on "short". The idle clock still resets for every button.
     void set_power_key_owned(bool owned);
 
 private:
-    void publish_state();
+    enum class Dir : uint8_t { Down, Up };
 
-    // The body of what tick() posts onto the UI task
-    // once it decides idle_ms has crossed the threshold. tick()'s own
-    // decision is based on `now_ms` and last_activity_ms_ as of the
-    // *call* to tick() -- but, when posted (see tick()'s doc comment),
-    // actually entering standby only happens once that job runs, which
-    // can lag tick() by up to one UI loop iteration. A button press
-    // arriving in that window already calls note_activity() (the
-    // constructor's "button." subscriber), but standby_ is still false
-    // at that point, so nothing posts a counteracting exit_standby() --
-    // without this recheck, the screen would still turn off right after
-    // that press. Re-reads the *current* last_activity_ms_ (which that
-    // press would have updated) against the same `now_ms` tick() was
-    // told about, and only then calls enter_standby().
-    void enter_standby_if_still_idle(uint64_t now_ms);
+    // Runs fn on the UI task (posted) when there is one, else right here.
+    // `what` names the job in the warning logged when the queue is full.
+    void run_on_ui(const char* what, std::function<void()> fn);
 
-    // set_brightness()'s body; runs on the UI task (or the caller's thread
-    // when headless).
+    // max(os::now_ms(), the latest tick's now): the time for transitions
+    // not driven by a tick, consistent with a test clock running ahead.
+    uint64_t now_for_eval() const;
+    // Whether the screen is off and has been for deep_after_s by `now_ms`.
+    bool deep_due_at(uint64_t now_ms) const;
+
+    // The level the policy wants now. `now_ms` is set for tick-driven
+    // checks (the idle clock is consulted); nullopt for lock changes.
+    hal::PowerLevel wanted_level(std::optional<uint64_t> now_ms) const;
+    // Whether light sleep should be on at `level` right now.
+    bool wants_light_sleep(hal::PowerLevel level) const;
+
+    // The posted bodies of tick() and of the lock-change callback.
+    void evaluate(std::optional<uint64_t> now_ms);
+    void schedule_tick_eval(uint64_t now_ms);
+    void schedule_lock_eval();
+
+    // Moves from the current level to `target`. Caller holds `lock` on
+    // transition_mutex_; it is dropped around the PowerMonitor and
+    // ButtonService calls (see transition_mutex_).
+    void go_to(hal::PowerLevel target, uint64_t now_ms, std::unique_lock<os::Mutex>& lock);
+    void screen_off(uint64_t now_ms, std::unique_lock<os::Mutex>& lock);
+    void screen_on(std::unique_lock<os::Mutex>& lock);
+    void set_level(hal::PowerLevel level);
+
+    // Calls set_power(level) on every managed device in `dir` order and
+    // records which answered Busy. Caller holds transition_mutex_.
+    void walk_devices(hal::PowerLevel level, Dir dir);
+    // Asks the Busy devices again. Caller holds transition_mutex_.
+    void retry_busy();
+    // Managed devices in `dir` order; with `only`, just those ids.
+    std::vector<std::shared_ptr<hal::Device>> ordered_devices(
+        Dir dir, const std::vector<std::string>* only) const;
+    // One set_power() call; true if it answered Busy.
+    bool power_device(hal::Device& device, hal::PowerLevel level, bool first_try);
+
+    // Tells the hook when wants_light_sleep() changed. Caller holds
+    // transition_mutex_.
+    void update_light_sleep();
+    void light_sleep_off();
+
+    // Brightness: the panel shows `user_brightness_` at Active and its dim
+    // share at Dim. Caller holds transition_mutex_.
     void apply_brightness(uint8_t level);
+    void show_brightness(int level);
+    int dim_brightness() const;
 
-    // The level most recently requested from off the UI task, and whether
-    // a job that will apply it is already queued (see set_brightness()).
+    void publish_state(hal::PowerLevel level);
+
     std::atomic<uint8_t> requested_brightness_{0};
     std::atomic<bool> brightness_job_queued_{false};
 
     core::EventBus& bus_;
+    core::DeviceRegistry& registry_;
+    core::WakeLockRegistry& locks_;
+    core::Settings settings_;
     std::shared_ptr<hal::Display> display_;
-    std::shared_ptr<hal::Touch> touch_;
-    std::shared_ptr<hal::Imu> imu_;
     core::StorageManager* storage_;
     core::PowerMonitor* power_monitor_;
     ui::UiRuntime* ui_;
     core::ButtonService* buttons_;
-    std::function<void(bool)> set_standby_;
-    core::Settings settings_;
+    std::function<void(bool)> set_light_sleep_;
 
-    // Serializes the whole bodies of enter_standby()/exit_standby()
-    // against each other and against themselves (e.g. a tick()-driven
-    // auto enter_standby() on one thread racing a button-driven
-    // exit_standby() on another) -- without this, two opposite
-    // transitions arriving at the same moment could interleave their
-    // steps (e.g. one's set_paused(true) landing after the other's
-    // set_paused(false)), leaving UiRuntime/ButtonService out of sync
-    // with the hardware and/or standby_ itself. `standby_` stays a
-    // plain atomic (rather than something requiring this lock to read)
-    // purely so standby() const stays cheap and lock-free for callers
-    // that just want to know the current state.
-    //
-    // This is released for the two steps (PowerMonitor::set_standby() and
-    // ButtonService::set_poll_interval_ms()) that can block waiting on
-    // the shared esp_timer task's own fence -- never hold this lock
-    // across that wait, since (on real hardware) the esp_timer task is
-    // also where every wisp::os::Timer callback -- including tick()'s
-    // own -- runs; holding this lock while blocked waiting on that same
-    // task would deadlock if that task ever needed this lock itself to
-    // make progress. See enter_standby()/exit_standby()'s definitions.
-    // Known gap, headless only (ui_ == nullptr): transition_mutex_ is
-    // unlocked -- see above -- around the PowerMonitor::set_standby()/
-    // ButtonService::set_poll_interval_ms() calls inside
-    // enter_standby(), and standby_ itself isn't set true until after
-    // both have returned. If a button-driven exit_standby() lands on
-    // another thread inside that window, it observes standby_ == false
-    // and returns early (already idempotent-active), so the wake is
-    // dropped -- the device stays in standby until the next button
-    // press. This cannot happen whenever a UiRuntime exists: every
-    // enter_standby()/exit_standby() call is then posted onto that one
-    // UI task (see the class comment above), so two transitions can
-    // never run concurrently in the first place. Not fixed here because
-    // sub-project 1 never ships headless on real hardware (every board
-    // registers a display); if a headless configuration becomes a real
-    // target, serialize these calls onto one dedicated task instead of
-    // relying on transition_mutex_ alone.
+    // Serializes transitions (and every field below it marked so) against
+    // each other. Released around PowerMonitor::set_standby() and
+    // ButtonService::set_poll_interval_ms(): both swap an os::Timer and
+    // wait for the shared esp_timer task, which also runs tick(), so
+    // holding this lock across that wait could deadlock. With a UiRuntime
+    // every transition runs on its one task, so nothing interleaves in
+    // that window; headless, a wake arriving there can be lost (seen as
+    // "already awake") until the next button press -- no board ships
+    // headless.
     mutable os::Mutex transition_mutex_;
-    std::atomic<bool> standby_{false};
+    std::atomic<hal::PowerLevel> level_{hal::PowerLevel::Active};
     std::atomic<uint64_t> last_activity_ms_;
     std::atomic<bool> power_key_owned_{false};
+    std::atomic<bool> light_sleep_on_{false};
 
-    // The ButtonService poll interval in effect right before
-    // enter_standby() last widened it, restored by exit_standby().
-    // Guarded by transition_mutex_ (see above).
+    // Cached by tick() (and the constructor) so UI-task work never reads
+    // Settings.
+    std::atomic<int64_t> screen_off_ms_{60000};   // 0: never
+    std::atomic<int64_t> deep_after_ms_{300000};  // 0: never
+    std::atomic<bool> light_sleep_setting_{true};
+    // The deep timer had run out at the last tick-driven evaluation; lock
+    // changes, which have no clock of their own, go by this.
+    std::atomic<bool> deep_due_{false};
+    // The latest `now_ms` tick() saw.
+    std::atomic<uint64_t> last_tick_ms_{0};
+    // When Standby was last entered from a lit screen (written under
+    // transition_mutex_, read by tick() without it).
+    std::atomic<uint64_t> standby_since_ms_{0};
+    // busy_ is not empty (read by tick() without the lock).
+    std::atomic<bool> busy_pending_{false};
+
+    // Guarded by transition_mutex_ from here on.
+    // The ButtonService poll interval to restore on wake.
     uint32_t saved_poll_ms_ = 20;
+    // The level devices were last walked to, and the ids that answered
+    // Busy (in no particular order).
+    hal::PowerLevel device_level_ = hal::PowerLevel::Active;
+    std::vector<std::string> busy_;
 
-    // True from just before enter_standby()'s Display::set_power(Standby)
-    // until just after exit_standby()'s set_power(Active). Tracked separately
-    // from standby_ because both transitions drop transition_mutex_ partway
-    // (see above) while standby_ still has its old value, and a brightness
-    // write in that window must follow the panel's actual state. Guarded
-    // by transition_mutex_, as is pending_brightness_ (the level to apply
-    // on wake; -1 for none).
+    // True from just before the panel is put to sleep until just after it
+    // wakes; brightness changes in between are only remembered.
     bool panel_asleep_ = false;
-    int pending_brightness_ = -1;
+    int user_brightness_ = 200;   // what the setting asks for
+    int shown_brightness_ = 200;  // what the panel was last told
+
+    std::atomic<bool> tick_eval_queued_{false};
+    std::atomic<bool> lock_eval_queued_{false};
+    std::atomic<uint64_t> tick_eval_now_{0};
 
     core::SubscriptionId button_sub_ = 0;
 };

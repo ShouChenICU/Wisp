@@ -155,15 +155,14 @@ struct Platform {
     // (no heap diagnostics available).
     std::function<Value()> heap_info;
 
-    // spec 6.7: called by wisp::app::PowerManager with `true`
-    // when entering standby, `false` when exiting. On real hardware,
-    // the implementation keeps dynamic frequency scaling (DFS) always
-    // on and only toggles automatic tickless light sleep on top of it
-    // (see firmware/main/main.cpp's esp_pm_configure() call); the
-    // simulator just logs. May be empty (no platform power hook at
-    // all -- PowerManager still does everything else: panel/touch
-    // sleep, UI pause, button poll widening).
-    std::function<void(bool standby)> set_standby;
+    // Turns automatic light sleep on or off (scene-device spec 4.1):
+    // wisp::app::PowerManager calls it with `true` in deep standby while
+    // power/light_sleep is set and no cpu wake lock is held, and with
+    // `false` when any of that stops. On real hardware dynamic frequency
+    // scaling stays on and only tickless light sleep is toggled
+    // (firmware/main/main.cpp); the simulator logs. Empty when the board
+    // cannot light-sleep safely: deep standby then only turns Wi-Fi off.
+    std::function<void(bool enable)> set_light_sleep;
 
     // Adds the platform's image decoders to LVGL (ui::UiConfig::
     // install_image_decoders): baseline JPEG for ui.image. Empty: images

@@ -1,5 +1,6 @@
 #include "wisp/app/power_manager.hpp"
 
+#include <algorithm>
 #include <mutex>
 #include <utility>
 
@@ -13,231 +14,339 @@ namespace {
 
 constexpr const char* kTag = "power_manager";
 constexpr uint32_t kStandbyPollMs = 50;
+constexpr int kMinDimBrightness = 10;
+
+bool screen_lit(hal::PowerLevel level) { return level < hal::PowerLevel::Standby; }
+
+int64_t seconds_to_ms(int64_t s) { return s > 0 ? s * 1000 : 0; }
 
 }  // namespace
 
-PowerManager::PowerManager(core::EventBus& bus, std::shared_ptr<hal::Display> display,
-                           std::shared_ptr<hal::Touch> touch, std::shared_ptr<hal::Imu> imu,
-                           core::StorageManager* storage, core::PowerMonitor* power_monitor,
-                           ui::UiRuntime* ui, core::ButtonService* buttons,
-                           std::function<void(bool)> set_standby, core::Settings settings)
-    : bus_(bus),
-      display_(std::move(display)),
-      touch_(std::move(touch)),
-      imu_(std::move(imu)),
-      storage_(storage),
-      power_monitor_(power_monitor),
-      ui_(ui),
-      buttons_(buttons),
-      set_standby_(std::move(set_standby)),
-      settings_(std::move(settings)),
+PowerManager::PowerManager(PowerManagerDeps deps)
+    : bus_(deps.bus),
+      registry_(deps.registry),
+      locks_(deps.locks),
+      settings_(std::move(deps.settings)),
+      display_(std::move(deps.display)),
+      storage_(deps.storage),
+      power_monitor_(deps.power_monitor),
+      ui_(deps.ui),
+      buttons_(deps.buttons),
+      set_light_sleep_(std::move(deps.set_light_sleep)),
       last_activity_ms_(os::now_ms()) {
-    if (ui_ != nullptr && touch_ != nullptr) {
+    screen_off_ms_.store(seconds_to_ms(settings_.get_int("screen_off_s", 60)));
+    deep_after_ms_.store(seconds_to_ms(settings_.get_int("deep_after_s", 300)));
+    light_sleep_setting_.store(settings_.get_bool("light_sleep", true));
+
+    if (ui_ != nullptr) {
         ui_->set_touch_activity_cb([this] { note_activity(); });
     }
 
-    // Any button event -- not just "button.power" -- resets the idle
-    // clock, and (unless set_power_key_owned(true) says otherwise for
-    // "button.power" specifically -- see that method's doc comment)
-    // wakes the device if it's currently in
-    // standby (spec 6.7/8's "待机中按任意键都会唤醒"), independently of
-    // whatever button-specific handling (e.g. the self-check screen's
-    // PowerKeyController, which drives its own enter_standby()/
-    // exit_standby() calls for "button.power" specifically) also runs
-    // off the same events.
-    //
-    // The actual exit_standby() call is deferred onto the UI task via
-    // ui_->post() when one exists, rather than run directly here on the
-    // EventBus dispatcher thread: exit_standby() can block for the
-    // display panel's wake latency (on real hardware, on the order of
-    // 100ms), and EventBus's contract asks handlers to return quickly
-    // (see event_bus.hpp) so as not to delay delivery of other events
-    // queued behind this one. In headless mode (no UiRuntime) there is
-    // no UI task to post onto, so it just runs here directly -- fine,
-    // since a headless exit_standby() never touches any lv_* call and
-    // has materially less to do (no display either, typically).
+    // A lock change can move the level without waiting for the next tick:
+    // a network lock leaves deep standby, a cpu lock stops light sleep, a
+    // screen lock ends dim.
+    locks_.set_on_change([this] { schedule_lock_eval(); });
+
+    // The wake itself is posted rather than run on the bus dispatcher:
+    // waking can block for the panel's wake latency, and handlers must
+    // return quickly (event_bus.hpp).
     button_sub_ = bus_.subscribe("button.", [this](const core::Event& e) {
         note_activity();
-        if (!standby_.load(std::memory_order_acquire)) {
+        if (!standby()) {
             return;
         }
         if (power_key_owned_.load(std::memory_order_acquire) && e.source == "button.power") {
-            return;  // The owner's own logic decides what this does -- see set_power_key_owned().
+            return;  // The owner decides what this does -- see set_power_key_owned().
         }
-        if (ui_ != nullptr) {
-            // A button-driven wake must not just get silently dropped if
-            // the post queue happens to be momentarily full -- log it so
-            // a "device didn't wake up" report has something to point
-            // at (see event_bus.hpp: the caller still must not block
-            // here waiting for a slot, since that would delay every
-            // other event queued behind this one).
-            if (!ui_->post([this] { exit_standby(); })) {
-                WLOG_W(kTag, "post(exit_standby) dropped (post queue full)");
-            }
-        } else {
-            exit_standby();
-        }
+        run_on_ui("exit_standby", [this] { exit_standby(); });
     });
 }
 
 PowerManager::~PowerManager() {
-    // Once this returns, the "button." handler above is guaranteed never
-    // to run again (EventBus::unsubscribe()'s own contract) -- so no new
-    // ui_->post([this] { exit_standby(); }) can be enqueued after this
-    // point. One may already be sitting in UiRuntime's post queue,
-    // though (enqueued by a dispatch that was in flight, or already
-    // finished, before this call) -- see below.
+    // After these two return neither the button handler nor the lock
+    // callback runs again, so nothing new is posted. Jobs already posted
+    // are drained below.
     bus_.unsubscribe(button_sub_);
+    locks_.set_on_change(nullptr);
 
-    if (ui_ != nullptr) {
-        // Both remaining hazards below only matter relative to work that
-        // runs *on the UI task*, so this is a no-op (and must be, to
-        // avoid a self-join-style deadlock) when already called from
-        // there -- not expected in practice (PowerManager is torn down
-        // from App::stop(), never from inside a ui()->post()'d
-        // callback), but guarded the same way UiRuntime::stop() guards
-        // against a self-join.
-        if (ui_->on_ui_thread()) {
-            if (touch_ != nullptr) {
-                ui_->set_touch_activity_cb(nullptr);
-            }
-        } else {
-            // Blocks until a job posted *now* has actually run on the UI
-            // task. Two hazards this closes, both only safe to close
-            // this way (by running the fix itself on the UI task, not
-            // by doing it here and merely waiting for *something*):
-            //
-            //   1. The "button." handler above may have already posted
-            //      a `[this] { exit_standby(); }` job before
-            //      unsubscribe() (above) returned. UiRuntime's post
-            //      queue is FIFO, so that job -- if present -- is
-            //      guaranteed to run strictly before this one.
-            //   2. set_touch_activity_cb(nullptr) must itself run *on
-            //      the UI task*, not merely be called from here:
-            //      indev_read_cb()
-            //      copies the installed callback under a lock and calls
-            //      the copy *after releasing it*, so simply calling
-            //      set_touch_activity_cb(nullptr) from this (non-UI)
-            //      thread cannot prevent an indev_read_cb() invocation
-            //      that already copied the *old* (capturing `this`)
-            //      callback from then calling it after `this` is freed.
-            //      Doing the clear from inside a job actually running on
-            //      the UI task instead sequences it, by thread affinity
-            //      alone, against every indev_read_cb() call -- they
-            //      can never be concurrent, since both run on that one
-            //      task.
-            auto done = std::make_shared<os::Semaphore>(1, 0);
-            while (!ui_->post([this, done] {
-                if (touch_ != nullptr) {
-                    ui_->set_touch_activity_cb(nullptr);
-                }
-                done->give();
-            })) {
-                os::sleep_ms(1);
-            }
-            done->take(os::kForever);
-        }
+    if (ui_ == nullptr) {
+        return;
+    }
+    if (ui_->on_ui_thread()) {
+        ui_->set_touch_activity_cb(nullptr);
+        return;
+    }
+    // The post queue is FIFO, so this job runs after every job this object
+    // posted. Clearing the touch hook must itself happen on the UI task:
+    // the touch read copies the callback and calls the copy outside its
+    // lock, so only running on that same task orders the clear after
+    // every such call.
+    auto done = std::make_shared<os::Semaphore>(1, 0);
+    while (!ui_->post([this, done] {
+        ui_->set_touch_activity_cb(nullptr);
+        done->give();
+    })) {
+        os::sleep_ms(1);
+    }
+    done->take(os::kForever);
+}
+
+void PowerManager::run_on_ui(const char* what, std::function<void()> fn) {
+    if (ui_ == nullptr || ui_->on_ui_thread()) {
+        fn();
+        return;
+    }
+    // A dropped wake must leave a trace; blocking here would hold up the
+    // caller (often the bus dispatcher).
+    if (!ui_->post(std::move(fn))) {
+        WLOG_W(kTag, "post(%s) dropped (post queue full)", what);
     }
 }
 
+hal::PowerLevel PowerManager::level() const { return level_.load(); }
+
+bool PowerManager::standby() const { return !screen_lit(level_.load()); }
+
+bool PowerManager::light_sleep_on() const { return light_sleep_on_.load(); }
+
+bool PowerManager::light_sleep_supported() const { return static_cast<bool>(set_light_sleep_); }
+
 void PowerManager::enter_standby() {
     std::unique_lock<os::Mutex> lock(transition_mutex_);
-    if (standby_.load(std::memory_order_acquire)) {
-        return;  // Already in standby -- idempotent, no device calls repeated.
+    if (!screen_lit(level_.load())) {
+        return;  // The screen is already off.
+    }
+    go_to(hal::PowerLevel::Standby, now_for_eval(), lock);
+}
+
+void PowerManager::exit_standby() {
+    {
+        std::unique_lock<os::Mutex> lock(transition_mutex_);
+        if (level_.load() == hal::PowerLevel::Active) {
+            return;
+        }
+        go_to(hal::PowerLevel::Active, now_for_eval(), lock);
+    }
+    note_activity();
+}
+
+void PowerManager::note_activity() {
+    last_activity_ms_.store(os::now_ms());
+    if (level_.load() != hal::PowerLevel::Dim) {
+        return;
+    }
+    run_on_ui("undim", [this] {
+        std::unique_lock<os::Mutex> lock(transition_mutex_);
+        if (level_.load() == hal::PowerLevel::Dim) {
+            go_to(hal::PowerLevel::Active, now_for_eval(), lock);
+        }
+    });
+}
+
+void PowerManager::tick(uint64_t now_ms) {
+    last_tick_ms_.store(now_ms);
+    screen_off_ms_.store(seconds_to_ms(settings_.get_int("screen_off_s", 60)));
+    deep_after_ms_.store(seconds_to_ms(settings_.get_int("deep_after_s", 300)));
+    light_sleep_setting_.store(settings_.get_bool("light_sleep", true));
+
+    // A screen lock counts as continuous activity, so the idle clock starts
+    // only once the lock goes.
+    if (locks_.held(core::WakeLockKind::Screen)) {
+        uint64_t last = last_activity_ms_.load();
+        while (last < now_ms && !last_activity_ms_.compare_exchange_weak(last, now_ms)) {
+        }
     }
 
-    // Pause the UI *before* sending the panel to
-    // sleep -- see the header's doc comment on why ordering only
-    // matters for self-documentation purposes in the configuration this
-    // actually ships in (ui_ != nullptr), not for correctness.
+    // deep_due_ is refreshed even while a network lock holds the level,
+    // so releasing that lock can go deep without waiting for a tick.
+    const hal::PowerLevel current = level_.load();
+    const bool work = wanted_level(now_ms) != current || busy_pending_.load() ||
+                      wants_light_sleep(current) != light_sleep_on_.load() ||
+                      deep_due_at(now_ms) != deep_due_.load();
+    if (work) {
+        schedule_tick_eval(now_ms);
+    }
+}
+
+void PowerManager::schedule_tick_eval(uint64_t now_ms) {
+    tick_eval_now_.store(now_ms);
+    if (ui_ == nullptr) {
+        evaluate(now_ms);
+        return;
+    }
+    if (tick_eval_queued_.exchange(true)) {
+        return;  // the queued job reads the newest tick_eval_now_
+    }
+    bool posted = ui_->post([this] {
+        // Clear before reading, so a tick landing after the read queues a
+        // fresh job instead of being lost.
+        tick_eval_queued_.exchange(false);
+        evaluate(tick_eval_now_.load());
+    });
+    if (!posted) {
+        tick_eval_queued_.store(false);  // the next tick tries again
+    }
+}
+
+void PowerManager::schedule_lock_eval() {
+    if (ui_ == nullptr || ui_->on_ui_thread()) {
+        evaluate(std::nullopt);
+        return;
+    }
+    if (lock_eval_queued_.exchange(true)) {
+        return;
+    }
+    bool posted = ui_->post([this] {
+        lock_eval_queued_.exchange(false);
+        evaluate(std::nullopt);
+    });
+    if (!posted) {
+        lock_eval_queued_.store(false);
+        WLOG_W(kTag, "post(lock change) dropped (post queue full); next tick catches up");
+    }
+}
+
+uint64_t PowerManager::now_for_eval() const {
+    return std::max<uint64_t>(os::now_ms(), last_tick_ms_.load());
+}
+
+bool PowerManager::deep_due_at(uint64_t now_ms) const {
+    if (screen_lit(level_.load())) {
+        return false;
+    }
+    const int64_t deep_ms = deep_after_ms_.load();
+    const uint64_t since = standby_since_ms_.load();
+    return deep_ms > 0 && now_ms >= since && now_ms - since >= static_cast<uint64_t>(deep_ms);
+}
+
+hal::PowerLevel PowerManager::wanted_level(std::optional<uint64_t> now_ms) const {
+    const hal::PowerLevel current = level_.load();
+    const bool screen_lock = locks_.held(core::WakeLockKind::Screen);
+    switch (current) {
+        case hal::PowerLevel::Active:
+        case hal::PowerLevel::Dim: {
+            if (screen_lock) {
+                return hal::PowerLevel::Active;
+            }
+            if (!now_ms) {
+                return current;  // idleness is only judged on a tick
+            }
+            const int64_t off_ms = screen_off_ms_.load();
+            if (off_ms <= 0) {
+                return hal::PowerLevel::Active;
+            }
+            const uint64_t last = last_activity_ms_.load();
+            const uint64_t idle = *now_ms > last ? *now_ms - last : 0;
+            if (idle >= static_cast<uint64_t>(off_ms)) {
+                return hal::PowerLevel::Standby;
+            }
+            if (idle + kDimLeadMs >= static_cast<uint64_t>(off_ms)) {
+                return hal::PowerLevel::Dim;
+            }
+            return hal::PowerLevel::Active;
+        }
+        case hal::PowerLevel::Standby: {
+            const bool due = now_ms ? deep_due_at(*now_ms) : deep_due_.load();
+            return due && !locks_.held(core::WakeLockKind::Network) ? hal::PowerLevel::DeepStandby
+                                                                    : hal::PowerLevel::Standby;
+        }
+        case hal::PowerLevel::DeepStandby:
+            return locks_.held(core::WakeLockKind::Network) ? hal::PowerLevel::Standby
+                                                            : hal::PowerLevel::DeepStandby;
+    }
+    return current;
+}
+
+bool PowerManager::wants_light_sleep(hal::PowerLevel level) const {
+    return level == hal::PowerLevel::DeepStandby && light_sleep_setting_.load() &&
+           set_light_sleep_ && !locks_.held(core::WakeLockKind::Cpu);
+}
+
+void PowerManager::evaluate(std::optional<uint64_t> now_ms) {
+    std::unique_lock<os::Mutex> lock(transition_mutex_);
+    if (now_ms) {
+        deep_due_.store(deep_due_at(*now_ms));
+    }
+    const hal::PowerLevel target = wanted_level(now_ms);
+    if (target != level_.load()) {
+        go_to(target, now_ms.value_or(now_for_eval()), lock);
+    } else {
+        retry_busy();  // a level change has just asked every device anyway
+    }
+    update_light_sleep();
+}
+
+void PowerManager::go_to(hal::PowerLevel target, uint64_t now_ms,
+                         std::unique_lock<os::Mutex>& lock) {
+    const hal::PowerLevel current = level_.load();
+    if (target == current) {
+        return;
+    }
+    if (screen_lit(current) && screen_lit(target)) {
+        // Active <-> Dim: brightness only; no device is told.
+        show_brightness(target == hal::PowerLevel::Dim ? dim_brightness() : user_brightness_);
+        set_level(target);
+        return;
+    }
+    if (screen_lit(target)) {
+        screen_on(lock);
+        return;
+    }
+    if (screen_lit(current)) {
+        screen_off(now_ms, lock);
+        if (target == hal::PowerLevel::Standby) {
+            return;
+        }
+    }
+    if (target == hal::PowerLevel::DeepStandby) {
+        walk_devices(hal::PowerLevel::DeepStandby, Dir::Down);
+        set_level(hal::PowerLevel::DeepStandby);
+        update_light_sleep();
+    } else {
+        light_sleep_off();
+        walk_devices(hal::PowerLevel::Standby, Dir::Up);
+        set_level(hal::PowerLevel::Standby);
+    }
+}
+
+void PowerManager::screen_off(uint64_t now_ms, std::unique_lock<os::Mutex>& lock) {
+    // Rendering stops before the panel sleeps; screen_on() mirrors this.
     if (ui_ != nullptr) {
         ui_->set_paused(true);
     }
-    if (display_) {
-        panel_asleep_ = true;
-        auto r = display_->set_power(hal::PowerLevel::Standby);
-        if (!r) {
-            WLOG_W(kTag, "display set_power(standby) failed: %s", r.error().message.c_str());
-        }
-    }
-    if (touch_) {
-        auto r = touch_->set_power(hal::PowerLevel::Standby);
-        if (!r && r.error().code != ErrorCode::Unsupported) {
-            WLOG_W(kTag, "touch set_power(standby) failed: %s", r.error().message.c_str());
-        }
-    }
-    if (imu_) {
-        // Software power-down stopgap: same ErrorCode::
-        // Unsupported carve-out as touch_ above -- not every IMU driver
-        // can power its sensors down independently of the rest of the
-        // chip.
-        auto r = imu_->set_power(hal::PowerLevel::Standby);
-        if (!r && r.error().code != ErrorCode::Unsupported) {
-            WLOG_W(kTag, "imu set_power(standby) failed: %s", r.error().message.c_str());
-        }
-    }
+    panel_asleep_ = true;
+    walk_devices(hal::PowerLevel::Standby, Dir::Down);
     if (storage_ != nullptr) {
-        // A pure software hint (see
-        // hal::Storage::set_standby()'s doc comment) -- never fails, so
-        // there is nothing to log here.
-        storage_->set_standby(true);
+        storage_->set_standby(true);  // a software hint; never fails
     }
     if (power_monitor_ != nullptr) {
-        // Like buttons_->set_poll_interval_ms() below,
-        // PowerMonitor::set_standby() swaps an os::Timer for a new one,
-        // which can block waiting for the shared esp_timer task's fence
-        // -- release transition_mutex_ for this one call, same reasoning
-        // as the button one just below (see transition_mutex_'s own doc
-        // comment). `power_monitor_` is never reassigned after
-        // construction, so reading it before unlocking is safe without
-        // the lock.
-        core::PowerMonitor* monitor = power_monitor_;
+        core::PowerMonitor* monitor = power_monitor_;  // see transition_mutex_
         lock.unlock();
         monitor->set_standby(true);
         lock.lock();
     }
     if (buttons_ != nullptr) {
         saved_poll_ms_ = buttons_->poll_interval_ms();
-        // Release transition_mutex_ for this one call.
-        // ButtonService::set_poll_interval_ms() stops/recreates a Timer;
-        // off the esp_timer task, that blocks waiting for the esp_timer
-        // task to run a fence callback for it -- see transition_mutex_'s
-        // own doc comment for why holding this lock across that wait is
-        // never safe. `buttons_` itself is never reassigned after
-        // construction, so reading it before unlocking and calling
-        // through the raw pointer afterwards is safe without the lock.
         core::ButtonService* buttons = buttons_;
         lock.unlock();
         buttons->set_poll_interval_ms(kStandbyPollMs);
         lock.lock();
     }
-    if (set_standby_) {
-        set_standby_(true);
-    }
-
-    standby_.store(true, std::memory_order_release);
-    publish_state();
+    standby_since_ms_.store(now_ms);
+    deep_due_.store(false);
+    set_level(hal::PowerLevel::Standby);
 }
 
-void PowerManager::exit_standby() {
-    std::unique_lock<os::Mutex> lock(transition_mutex_);
-    if (!standby_.load(std::memory_order_acquire)) {
-        return;  // Already active -- idempotent.
-    }
-
-    if (set_standby_) {
-        set_standby_(false);
-    }
+void PowerManager::screen_on(std::unique_lock<os::Mutex>& lock) {
+    light_sleep_off();
     if (buttons_ != nullptr) {
         uint32_t restore_ms = saved_poll_ms_;
-        core::ButtonService* buttons = buttons_;  // see enter_standby()'s identical unlock/lock.
+        core::ButtonService* buttons = buttons_;  // see transition_mutex_
         lock.unlock();
         buttons->set_poll_interval_ms(restore_ms);
         lock.lock();
     }
     if (power_monitor_ != nullptr) {
-        // See enter_standby()'s identical unlock/lock around
-        // the matching call.
         core::PowerMonitor* monitor = power_monitor_;
         lock.unlock();
         monitor->set_standby(false);
@@ -246,46 +355,120 @@ void PowerManager::exit_standby() {
     if (storage_ != nullptr) {
         storage_->set_standby(false);
     }
-    if (imu_) {
-        auto r = imu_->set_power(hal::PowerLevel::Active);
-        if (!r && r.error().code != ErrorCode::Unsupported) {
-            WLOG_W(kTag, "imu set_power(active) failed: %s", r.error().message.c_str());
-        }
+    walk_devices(hal::PowerLevel::Active, Dir::Up);
+    panel_asleep_ = false;
+    if (shown_brightness_ != user_brightness_) {
+        show_brightness(user_brightness_);
     }
-    if (touch_) {
-        auto r = touch_->set_power(hal::PowerLevel::Active);
-        if (!r && r.error().code != ErrorCode::Unsupported) {
-            WLOG_W(kTag, "touch set_power(active) failed: %s", r.error().message.c_str());
-        }
-    }
-    if (display_) {
-        auto r = display_->set_power(hal::PowerLevel::Active);
-        if (!r) {
-            WLOG_W(kTag, "display set_power(active) failed: %s", r.error().message.c_str());
-        }
-        panel_asleep_ = false;
-        if (pending_brightness_ >= 0) {
-            auto b = display_->set_brightness(static_cast<uint8_t>(pending_brightness_));
-            if (!b) {
-                WLOG_W(kTag, "display set_brightness failed: %s", b.error().message.c_str());
-            }
-            pending_brightness_ = -1;
-        }
-    }
-    // Resume the UI only after the panel is already
-    // awake again (the mirror image of enter_standby() pausing it
-    // first), so the full redraw set_paused(false) forces lands against
-    // an already-woken panel.
+    // Resumed only once the panel is awake, so the full redraw that
+    // set_paused(false) forces lands on a lit panel.
     if (ui_ != nullptr) {
         ui_->set_paused(false);
     }
-
-    standby_.store(false, std::memory_order_release);
-    publish_state();
-    note_activity();
+    set_level(hal::PowerLevel::Active);
 }
 
-bool PowerManager::standby() const { return standby_.load(std::memory_order_acquire); }
+void PowerManager::set_level(hal::PowerLevel level) {
+    level_.store(level);
+    WLOG_I(kTag, "power: %s", hal::to_string(level));
+    publish_state(level);
+}
+
+std::vector<std::shared_ptr<hal::Device>> PowerManager::ordered_devices(
+    Dir dir, const std::vector<std::string>* only) const {
+    std::vector<std::shared_ptr<hal::Device>> others;
+    std::vector<std::shared_ptr<hal::Device>> inputs;
+    std::vector<std::shared_ptr<hal::Device>> outputs;
+    for (auto& device : registry_.all()) {
+        const hal::DeviceInfo& info = device->info();
+        if (hal::standby_policy(info) == hal::StandbyPolicy::None) {
+            continue;
+        }
+        if (only != nullptr && std::find(only->begin(), only->end(), info.id) == only->end()) {
+            continue;
+        }
+        if (info.cls == hal::DeviceClass::AudioIn) {
+            inputs.push_back(std::move(device));
+        } else if (info.cls == hal::DeviceClass::AudioOut) {
+            outputs.push_back(std::move(device));
+        } else {
+            others.push_back(std::move(device));
+        }
+    }
+    // Down: everything else, then the audio inputs, then the outputs that
+    // clock them. Up is the exact reverse.
+    std::vector<std::shared_ptr<hal::Device>> order = std::move(others);
+    order.insert(order.end(), inputs.begin(), inputs.end());
+    order.insert(order.end(), outputs.begin(), outputs.end());
+    if (dir == Dir::Up) {
+        std::reverse(order.begin(), order.end());
+    }
+    return order;
+}
+
+bool PowerManager::power_device(hal::Device& device, hal::PowerLevel level, bool first_try) {
+    auto r = device.set_power(level);
+    if (r || r.error().code == ErrorCode::Unsupported) {
+        return false;
+    }
+    const std::string& id = device.info().id;
+    if (r.error().code == ErrorCode::Busy) {
+        if (first_try) {
+            WLOG_I(kTag, "%s busy (%s); retrying at %s", id.c_str(), r.error().message.c_str(),
+                   hal::to_string(level));
+        }
+        return true;
+    }
+    WLOG_W(kTag, "%s set_power(%s) failed: %s", id.c_str(), hal::to_string(level),
+           r.error().message.c_str());
+    return false;
+}
+
+void PowerManager::walk_devices(hal::PowerLevel level, Dir dir) {
+    device_level_ = level;
+    busy_.clear();
+    for (const auto& device : ordered_devices(dir, nullptr)) {
+        if (power_device(*device, level, /*first_try=*/true)) {
+            busy_.push_back(device->info().id);
+        }
+    }
+    busy_pending_.store(!busy_.empty());
+}
+
+void PowerManager::retry_busy() {
+    if (busy_.empty()) {
+        return;
+    }
+    const std::vector<std::string> ids = std::move(busy_);
+    busy_.clear();
+    const Dir dir = screen_lit(device_level_) ? Dir::Up : Dir::Down;
+    for (const auto& device : ordered_devices(dir, &ids)) {
+        if (power_device(*device, device_level_, /*first_try=*/false)) {
+            busy_.push_back(device->info().id);
+        }
+    }
+    busy_pending_.store(!busy_.empty());
+}
+
+void PowerManager::update_light_sleep() {
+    const bool want = wants_light_sleep(level_.load());
+    if (want == light_sleep_on_.load()) {
+        return;
+    }
+    if (set_light_sleep_) {
+        set_light_sleep_(want);
+    }
+    light_sleep_on_.store(want);
+}
+
+void PowerManager::light_sleep_off() {
+    if (light_sleep_on_.load()) {
+        if (set_light_sleep_) {
+            set_light_sleep_(false);
+        }
+        light_sleep_on_.store(false);
+    }
+}
 
 void PowerManager::set_brightness(uint8_t level) {
     if (!display_) {
@@ -321,68 +504,38 @@ void PowerManager::set_brightness(uint8_t level) {
 
 void PowerManager::apply_brightness(uint8_t level) {
     std::lock_guard<os::Mutex> lock(transition_mutex_);
+    user_brightness_ = level;
     if (panel_asleep_) {
-        pending_brightness_ = level;
+        return;  // applied on wake
+    }
+    show_brightness(level_.load() == hal::PowerLevel::Dim ? dim_brightness() : level);
+}
+
+void PowerManager::show_brightness(int level) {
+    if (!display_) {
         return;
     }
-    auto r = display_->set_brightness(level);
+    auto r = display_->set_brightness(static_cast<uint8_t>(level));
     if (!r) {
         WLOG_W(kTag, "display set_brightness failed: %s", r.error().message.c_str());
-    }
-}
-
-void PowerManager::note_activity() {
-    last_activity_ms_.store(os::now_ms(), std::memory_order_relaxed);
-}
-
-void PowerManager::tick(uint64_t now_ms) {
-    if (standby_.load(std::memory_order_acquire)) {
         return;
     }
-    int64_t screen_off_s = settings_.get_int("screen_off_s", 60);
-    if (screen_off_s <= 0) {
-        return;  // 0 (or negative, treated the same) disables auto screen-off.
-    }
-    uint64_t last = last_activity_ms_.load(std::memory_order_relaxed);
-    uint64_t idle_ms = now_ms > last ? now_ms - last : 0;
-    if (idle_ms >= static_cast<uint64_t>(screen_off_s) * 1000) {
-        // Never call enter_standby() directly from
-        // here -- see tick()'s own doc comment in the header for why.
-        if (ui_ != nullptr) {
-            // Recheck idle_ms, against the same
-            // now_ms, once the posted job actually runs -- see
-            // enter_standby_if_still_idle()'s own doc comment.
-            ui_->post([this, now_ms] { enter_standby_if_still_idle(now_ms); });
-        } else {
-            enter_standby();
-        }
-    }
+    shown_brightness_ = level;
 }
 
-void PowerManager::enter_standby_if_still_idle(uint64_t now_ms) {
-    int64_t screen_off_s = settings_.get_int("screen_off_s", 60);
-    if (screen_off_s <= 0) {
-        return;
-    }
-    uint64_t last = last_activity_ms_.load(std::memory_order_relaxed);
-    uint64_t idle_ms = now_ms > last ? now_ms - last : 0;
-    if (idle_ms >= static_cast<uint64_t>(screen_off_s) * 1000) {
-        enter_standby();
-    }
+int PowerManager::dim_brightness() const {
+    return std::max(kMinDimBrightness, user_brightness_ * kDimPercent / 100);
 }
 
 void PowerManager::set_power_key_owned(bool owned) {
     power_key_owned_.store(owned, std::memory_order_release);
 }
 
-void PowerManager::publish_state() {
+void PowerManager::publish_state(hal::PowerLevel level) {
     core::Event e;
     e.topic = "power.state";
     e.source = "app.power";
-    e.payload = wisp::Properties{
-        {"state",
-         wisp::Value(std::string(standby_.load(std::memory_order_acquire) ? "standby" : "active"))},
-    };
+    e.payload = wisp::Properties{{"state", wisp::Value(std::string(hal::to_string(level)))}};
     bus_.publish(std::move(e));
 }
 

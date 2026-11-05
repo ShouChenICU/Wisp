@@ -645,11 +645,9 @@ int main(int argc, char** argv) {
     };
     platform.request_power_off = on_power_off;
     platform.heap_info = [] { return wisp::Value(wisp::Map{}); };
-    // spec 6.7: no real power states to flip in the simulator --
-    // just log it, so a --headless smoke test can confirm the hook fired
-    // without needing any hardware-specific behavior to observe.
-    platform.set_standby = [](bool standby) {
-        WLOG_I(kLogTag, "set_standby(%s)", standby ? "true" : "false");
+    // No light sleep on a PC: log it, so a smoke test can see the hook fire.
+    platform.set_light_sleep = [](bool on) {
+        WLOG_I(kLogTag, "sim: light sleep %s", on ? "on" : "off");
     };
     platform.install_image_decoders = wisp::port::sim::install_image_decoders;
     platform.firmware_version = WISP_VERSION;

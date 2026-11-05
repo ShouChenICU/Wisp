@@ -30,6 +30,7 @@
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/core/wakelock.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -41,6 +42,8 @@ struct App::Impl {
     core::DeviceRegistry registry;
     core::BootReport report;
     core::EventBus bus;
+    // Wake locks (scene-device spec 4.3); PowerManager follows them.
+    core::WakeLockRegistry wakelocks{bus};
     core::StorageManager storage;
     core::ButtonService buttons;
     // Profile ids come from Platform::random (a weak fallback without it).
