@@ -672,7 +672,7 @@ bool SceneRuntime::submit() {
     Foreground& f = *fg_;
     UiBatch b = f.scene->batch().take(f.instance);
     if (!b.ops.empty()) patches_.submit(std::move(b));
-    if (patches_.take_refresh_request()) {
+    if (patches_.take_refresh_request(f.instance)) {
         if (!step(f.scene->refresh())) return false;
         UiBatch r = f.scene->batch().take(f.instance);
         r.refresh = true;

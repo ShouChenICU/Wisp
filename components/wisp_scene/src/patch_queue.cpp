@@ -2,6 +2,7 @@
 
 #include "wisp/scene/patch_queue.hpp"
 
+#include <algorithm>
 #include <mutex>
 #include <utility>
 #include <variant>
@@ -14,9 +15,9 @@ namespace wisp::scene {
 PatchQueue::PatchQueue(size_t per_frame, size_t max_pending)
     : per_frame_(per_frame > 0 ? per_frame : 1), max_pending_(max_pending) {}
 
-bool PatchQueue::take_refresh_request() {
+bool PatchQueue::take_refresh_request(uint32_t instance) {
     std::lock_guard<os::Mutex> lock(mutex_);
-    return std::exchange(refresh_, false);
+    return std::erase(refresh_, instance) > 0;
 }
 
 size_t PatchQueue::pending() const {
@@ -33,15 +34,15 @@ void PatchQueue::clear() {
         aside.swap(aside_);
         index_.clear();
         head_seq_ = 0;
-        counted_ = 0;
-        refresh_ = false;
+        refresh_.clear();
     }
 }
 
-void PatchQueue::count_locked() {
-    counted_ = 0;
+size_t PatchQueue::counted_locked(uint32_t instance) const {
+    size_t n = 0;
     for (const Item& item : items_)
-        if (!item.refresh) ++counted_;
+        if (item.instance == instance && !item.refresh) ++n;
+    return n;
 }
 
 void PatchQueue::drop_instance_locked(uint32_t instance) {
@@ -52,12 +53,13 @@ void PatchQueue::drop_instance_locked(uint32_t instance) {
     std::erase_if(aside_, [&](const Item& item) { return item.instance == instance; });
     // Positions moved: nothing left may coalesce by its old sequence number.
     index_.clear();
-    count_locked();
 }
 
 void PatchQueue::submit(UiBatch batch) {
     std::lock_guard<os::Mutex> lock(mutex_);
-    size_t backlog = counted_;
+    // Overflow is counted per instance: another scene's backlog is its own.
+    size_t backlog = batch.refresh ? 0 : counted_locked(batch.instance);
+    size_t added = 0;
     size_t first_new = items_.size();
     // While true, SetProps go with the Build queued last.
     bool after_build = false;
@@ -66,7 +68,8 @@ void PatchQueue::submit(UiBatch batch) {
         if (set == nullptr) {
             if (std::holds_alternative<Build>(op)) {
                 drop_instance_locked(batch.instance);
-                backlog = counted_;
+                backlog = 0;
+                added = 0;
                 first_new = items_.size();
                 after_build = true;
             } else {
@@ -79,7 +82,7 @@ void PatchQueue::submit(UiBatch batch) {
             item.op = std::move(op);
             item.refresh = batch.refresh;
             items_.push_back(std::move(item));
-            if (!batch.refresh) ++counted_;
+            if (!batch.refresh) ++added;
             continue;
         }
         if (after_build) {
@@ -100,20 +103,19 @@ void PatchQueue::submit(UiBatch batch) {
         item.op = std::move(op);
         item.refresh = batch.refresh;
         items_.push_back(std::move(item));
-        if (!batch.refresh) ++counted_;
+        if (!batch.refresh) ++added;
     }
     if (batch.refresh) {
         // The kept ScrollTos and Focuses land after the values they may
-        // depend on (a list's rows, an input that was hidden).
+        // depend on (a list's rows, an input that was hidden). Another
+        // instance's wait for that instance's own refresh.
         for (Item& item : aside_) {
-            if (item.instance != batch.instance) continue;
-            items_.push_back(std::move(item));
-            ++counted_;
+            if (item.instance == batch.instance) items_.push_back(std::move(item));
         }
-        aside_.clear();
+        std::erase_if(aside_, [&](const Item& item) { return item.instance == batch.instance; });
         index_.clear();
-    } else if (backlog > 0 && counted_ > max_pending_) {
-        collapse_locked(first_new);
+    } else if (backlog > 0 && backlog + added > max_pending_) {
+        collapse_locked(first_new, batch.instance);
     }
 }
 
@@ -131,33 +133,46 @@ void PatchQueue::keep_aside_locked(Item item) {
     aside_.push_back(std::move(item));
 }
 
-void PatchQueue::collapse_locked(size_t end) {
+void PatchQueue::collapse_locked(size_t end, uint32_t instance) {
+    // Only `instance`'s items in [0, end) are collapsed; every other item
+    // keeps its place. Its own last Build, if any, starts what is kept.
     size_t start = 0;
     for (size_t i = end; i-- > 0;) {
-        if (std::holds_alternative<Build>(items_[i].op)) {
+        if (items_[i].instance == instance && std::holds_alternative<Build>(items_[i].op)) {
             start = i;
             break;
         }
     }
+    size_t own = 0;  // `instance`'s items kept below
+    for (size_t i = 0; i < end; ++i) {
+        const Item& item = items_[i];
+        if (item.instance != instance || i < start) continue;
+        if (!std::holds_alternative<SetProp>(item.op) &&
+            !std::holds_alternative<ScrollTo>(item.op) && !std::holds_alternative<Focus>(item.op))
+            ++own;
+    }
+    // Still over: only its Build stays.
+    const bool only_build = own > max_pending_;
     Items kept;
-    for (size_t i = start; i < end; ++i) {
+    for (size_t i = 0; i < end; ++i) {
         Item& item = items_[i];
-        if (std::holds_alternative<SetProp>(item.op)) continue;
+        if (item.instance != instance) {
+            kept.push_back(std::move(item));
+            continue;
+        }
+        if (i < start || std::holds_alternative<SetProp>(item.op)) continue;
         if (std::holds_alternative<ScrollTo>(item.op) || std::holds_alternative<Focus>(item.op)) {
             keep_aside_locked(std::move(item));
             continue;
         }
+        if (only_build && !(i == start && std::holds_alternative<Build>(item.op))) continue;
         kept.push_back(std::move(item));
-    }
-    if (kept.size() > max_pending_) {
-        bool build = !kept.empty() && std::holds_alternative<Build>(kept.front().op);
-        kept.resize(build ? 1 : 0);
     }
     for (size_t i = end; i < items_.size(); ++i) kept.push_back(std::move(items_[i]));
     items_.swap(kept);
     index_.clear();
-    count_locked();
-    refresh_ = true;
+    if (std::find(refresh_.begin(), refresh_.end(), instance) == refresh_.end())
+        refresh_.push_back(instance);
 }
 
 size_t PatchQueue::apply_frame(SceneView& view, uint32_t instance) {
@@ -171,7 +186,6 @@ size_t PatchQueue::apply_frame(SceneView& view, uint32_t instance) {
                 auto it = index_.find(Key{front.instance, set->node, set->prop});
                 if (it != index_.end() && it->second == head_seq_) index_.erase(it);
             }
-            if (!front.refresh) --counted_;
             if (front.instance == instance)
                 taken.push_back(std::move(front));
             else
