@@ -177,7 +177,7 @@ cd firmware && idf.py -B build-debug -D SDKCONFIG=build-debug/sdkconfig \
 | SIMD / 2D 渲染加速 | `wisp_port_esp/lv_blend/<芯片>/`，由 `firmware/CMakeLists.txt` 和 `components/wisp_port_esp/CMakeLists.txt` 按 `IDF_TARGET` 挑选（见上文"渲染加速按芯片选择"）；没有对应目录的芯片走 LVGL 的 C 路径 |
 | 任务栈放内部 RAM 还是 PSRAM | 任务只声明 `flash_access`（AGENTS.md 第 5 节），由 ESP 端口的 `wisp/port/esp/stack_placement.hpp` 按目标决定；目前所有目标都是"不访问 flash 的任务才可能放 PSRAM" |
 | DMA 能否直接读 PSRAM | 板子通过 Display caps 的 `draw_buf_mem` 声明（见上文能力字段表）；`Mem::DmaLarge` 在 `SOC_PSRAM_DMA_CAPABLE` 为假的芯片上总是分配失败，UI 退回内部 DMA RAM |
-| 从 PSRAM 执行代码（XIP） | 板级 sdkconfig：`boards/<板名>/sdkconfig.defaults.board` 的 `CONFIG_SPIRAM_XIP_FROM_PSRAM`；它不放宽栈的规则；有 `fonts` 分区时还要打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND`，并确认 flash 支持挂起（上文"字体分区"） |
+| 从 PSRAM 执行代码（XIP） | 板级 sdkconfig：`boards/<板名>/sdkconfig.defaults.board` 的 `CONFIG_SPIRAM_XIP_FROM_PSRAM`；它不放宽栈的规则；开了 XIP 就要同时打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND`，并确认 flash 支持挂起：`fonts` 分区、OTA 收尾校验和 otadata 都是运行时映射读取（上文"字体分区"） |
 | 最低 ESP-IDF 版本 | 全项目一个范围，写在 `firmware/main/idf_component.yml` 的 `idf:`（目前 `>=6.0.3,<6.1`）；需要更新 IDF 的芯片要先单独升级这个范围和 `dependencies.lock` |
 | JPEG 解码 | esp_new_jpeg 按 `IDF_TARGET` 链接对应的预编译库（1.0.2 提供 esp32、esp32s2、esp32s3、esp32p4、esp32c2/c3/c5/c6/c61、esp32h4、esp32s31）；它放进 IRAM 的汇编由 `firmware/main/esp_new_jpeg.lf` 统一移到 flash。有 JPEG 硬件的芯片可以在 `wisp_port_esp/ui/` 换成硬件解码器，接口仍是 `install_image_decoders()` |
 | 内部 SRAM 预算 | 每块板子用 `mem` 命令实测，记在 `docs/hardware/<板名>.md`；预算下限在 `wisp/app/ram_budget.hpp`（AGENTS.md 第 5 节） |

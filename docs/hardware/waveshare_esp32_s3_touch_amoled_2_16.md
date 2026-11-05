@@ -64,7 +64,7 @@
 
 **flash 型号**：`esptool flash-id` 读到厂商 0x20、器件 0x4018，即 XMC 128 Mbit。ESP-IDF v6.0.3 对厂商 0x20 读 SFDP 字节 0x32，bit3 为 1 就当作 XMC-D 系列、支持挂起（`spi_flash_chip_generic.c` 的 `get_caps`）；这片读到 0xF9（`esptool read-flash-sfdp 0x32 1`），bit3 为 1。启动日志有 `W spi_flash: Flash suspend feature is enabled`。
 
-**实测**（`fprobe` 临时命令：把映射区拷一份到 PSRAM 作参照、反复 memcmp；或在顶层放一个 128 px 标签，每 20 ms 换 6 个汉字让字形缓存一直 miss；同时另起一个任务在 `ota_1` 里循环做 64 KB 擦除 + 64 KB 写入）：
+**实测**（`fprobe` 是只为这次测量加的临时命令，不在固件里：把映射区拷一份到 PSRAM 作参照、反复 memcmp；或在顶层放一个 128 px 标签，每 20 ms 换 6 个汉字让字形缓存一直 miss；同时另起一个任务在 `ota_1` 里循环做 64 KB 擦除 + 64 KB 写入）：
 
 | 测试 | 不开 suspend | 打开 suspend |
 |---|---|---|
@@ -74,7 +74,7 @@
 | 网页上传 3,971,952 B（空闲自检界面） | 20.4–20.7 s | 20.6 s（两次） |
 | 纯写吞吐（无读者） | 338.5–340.9 KB/s | 355.8–365.6 KB/s |
 | `bench scroll 10`（同一界面，关热点） | 18.8–19.1 fps | 18.8–19.0 fps；修复提交 `352ad8f` 上 18.72 / 18.75 |
-| `boot_ms` | 2416 | 2397–2411 |
+| `boot_ms` | 2416 | 2411 |
 
 所有 suspend 测试里都没有看门狗报警或 flash 错误。只有在"满速比对映射区 + 同时写 flash"这个极端组合下（没有真实代码这样读），`power_monitor` 每隔几秒报一次 `axp2101_read_status: ESP_ERR_TIMEOUT`，下一次读取就恢复；单独满速比对、单独写、换字形加写入都没有出现。
 
@@ -145,7 +145,7 @@
 | 55 | 未声明域名被拒（scene spec 9.4.6） | 临时把天气场景的 URL 改成未声明的主机后推送打开 | 回调收到 `permission_denied`，没有出站连接 |  |
 | 56 | LVGL 堆在 PSRAM 后的帧率 | 不开场景，在最终固件上重复"UI 帧率基准"一行，不开热点与开热点各测一次（LVGL 堆改到 PSRAM 后已经在真机上测过一次，见下方"性能基准"一节的"LVGL 堆"小节） | `bench scroll` 的 fps 不开热点 ≥ 18.4、开热点 ≥ 29.8（下方"性能基准"一节的"当前基准"）；低于时停下来报告，不要自行改回 | 2026-11-05：不开热点 22–24 fps，达标（基准 22.7）；开热点 23–24 fps，当时按 28.2 的基准记为低于基准、待排查。验收线改为开热点 ≥ 22.7 之后，这个结果达标。 |
 | 57 | 内部 RAM 最坏情况复测（mbedTLS 的分配全部改到 PSRAM 之后，`firmware/sdkconfig.defaults` 的 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`；UI 任务栈也已从 8 KB 加到 10 KB） | 烧录包含这项改动的固件（改 `sdkconfig.defaults` 后要先删掉 `firmware/sdkconfig` 再构建，否则不生效；构建后 `firmware/sdkconfig` 里应是 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`）。按第 44 项的同一场景操作：STA 连家里的 Wi-Fi，`wifi ap on`，手机连热点打开设置页，电脑经 STA 打开管理页"日志"页（WebSocket）；然后同时进行：打开天气场景（HTTPS）、在"模型"页对真实 HTTPS 端点做连通性测试、上传一次固件。全程每隔 1–2 秒执行一次 `mem` | 每次 `mem` 的 `internal free` 都 ≥ 40 KB（`kWorstInternalFreeMin`）、`largest` ≥ 16 KB；记下所有采样里最低的 `internal free` 和最后的 `min`。`internal free` 是同一时刻的快照，以它为准；`min` 是各内存区各自最低点之和，偏低，只作参考。若采样都 ≥ 40 KB 但 `min` < 40 KB，记下两者，不算不达标（需要精确最低点时，可以临时在固件里用 `heap_caps_monitor_local_minimum_free_size_start/stop(MALLOC_CAP_INTERNAL)` 包住这段操作）。同时确认：天气场景和连通性测试都成功（握手变慢但不超时），STA 不掉线。结果低于 40 KB 时停下来报告 | 待测 |
-| 58 | flash 写入期间渲染矢量字形（上文"flash 擦写与映射读取"） | 启动日志确认有 `Flash suspend feature is enabled`；打开一个有大字号汉字的界面（或不断切换含大字的场景），同时在管理后台上传一次固件 | 不崩溃；上传成功（202）并在重启后运行新固件；大字显示正常、没有乱码字形 | 2026-11-05：用 `fprobe` 临时命令压测（128 px 换字 150 s + 同时擦写 `ota_1` 46.9 MB），没有崩溃；比对映射区 24 遍 0 字节错 |
+| 58 | flash 写入期间渲染矢量字形（上文"flash 擦写与映射读取"） | 启动日志确认有 `Flash suspend feature is enabled`；打开一个有大字号汉字的界面（或不断切换含大字的场景），同时在管理后台上传一次固件 | 不崩溃；上传成功（202）并在重启后运行新固件；大字显示正常、没有乱码字形 | 2026-11-05：真机 OTA 通过：「大字测试」显示时经管理后台上传 `0.1.0-449-gc0be5e3`（202），上传和重启期间不崩溃，重启后启动日志有 `Flash suspend feature is enabled`、`fonts: image ok`，用户确认标题是矢量大字。此前用 `fprobe` 临时命令压测（128 px 换字 150 s + 同时擦写 `ota_1` 46.9 MB）也没有崩溃，比对映射区 24 遍 0 字节错 |
 
 ## 待机与省电（spec 6.7）
 
@@ -329,6 +329,22 @@ STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动
 **STA 和热点互斥能省多少**：只开热点比 STA + 热点只多 5.4 KB（mDNS 任务栈 4 KB 加 DHCP 客户端和关联状态），只连 STA 比 STA + 热点多 14.6 KB。热点部分本身：softAP 驱动、netif 和 DHCP 服务器约 10.6 KB；端口 80 的 httpd 约 3 KB（栈已移到 PSRAM，移之前是 7.1 KB）；DNS 任务 0.4 KB（移之前是 3.4 KB）。配网时热点不能不开，所以互斥只能把峰值降低约 5 KB。
 
 **矢量字体（2026-11-05，可行性验证分支 `spike/vector-font` 的实测，代码已丢弃，只取结论）**：`wisp_ui` 任务栈从 8 KB 加到 10 KB 后，用 `mem` 命令实测到的 high-water mark 余量从 1208 B 降到 808 B——stb_truetype 光栅化在栈上约用了 0.5 KB 扫描线缓冲。`fonts` 分区整个 `esp_partition_mmap()` 之后，内部 RAM 只多了约 80 B（映射本身的记账，不含映射出的 2.81 MB 本身，那部分在数据地址空间里不占堆）。这两个数字都只是 spike 分支上的一次性测量，不是这版固件的常设预算；接入矢量字体的正式实测（最坏情况 STA + 热点、两个 httpd、WebSocket 日志、TLS 握手、OTA 上传同时进行）留给真机验收（本文档"真机验收清单"）。
+
+**矢量字体真机验收（2026-11-05，主题分支合并后的固件 `40d24f4`/`c09a2cc`，它包含矢量字体和 3a；STA 连着家里的 Wi-Fi，内部 Flash 装了 12 个场景）**：
+
+| 状态 | 内部 RAM 空闲 | 最大块 | `min` | `wisp_ui` 栈剩余（10 KB 栈） | PSRAM 空闲 |
+|---|---|---|---|---|---|
+| 开机空闲 | 86679 B | 31744 B | 51960 B | 3412 B | 4.04 MB |
+| 番茄钟运行过、「大字测试」（128 px 汉字、xxl 混排、图标）打开 | 84283 B | 31744 B | 43680 B | 2484 B | 3.89 MB |
+
+两种状态都满足 `ram_budget.hpp` 的空闲 ≥ 60 KB、最大块 ≥ 20 KB，`wisp_ui` 剩余高于 1024 B。这一版同一时间只运行一个场景，打开「大字测试」时番茄钟已经关闭，所以第二行是先后运行，不是同时运行。
+
+- **启动**：`boot_ms` 2411–2418；字体分区擦空时（镜像校验在读魔数时就失败）是 2219，所以整个镜像的 CRC 校验约 195 ms。映射分区本身只要 42–50 µs。
+- **冷渲染**：第一次打开「大字测试」，场景的 `open` 消息用了 67 ms，第二次（字形已在缓存里）也是 67 ms。现有日志不给出单帧耗时，128 px 字形第一次光栅化的耗时没有单独测出来；用户没有看到停顿。
+- **帧率**：见"性能基准"一节的"当前基准"（这一版就是当时测基准的固件）。
+- **降级**：擦掉 `fonts` 分区后日志是 `fonts partition holds no font image; large text uses bitmap fonts`；只写入镜像前 1 MB（截断）后日志是 `font image CRC mismatch; large text uses bitmap fonts`。两种情况都不崩溃，大字退到 16 px，图标仍是大号（用户确认）。`idf.py fonts-flash` 后恢复为 `fonts: image ok`。
+- **OTA 不碰字体**：经管理后台上传应用镜像并在设备上确认，重启后仍是 `fonts: image ok`，标题仍是矢量大字。这次验收还暴露了 flash 擦写期间读映射区的崩溃，见上文"flash 擦写与映射读取"和清单第 58 项。
+- **镜像大小**：`idf.py size` 的 Total image size 是 3,967,023 B，占 `ota_0`（0x500000）的 75.7%。矢量字体本身让镜像净减约 55 KB：加入 Tiny TTF 和 stb_truetype 多了 19.5 KB，去掉 Montserrat 24/32/48 少了 72.3 KB。计划里用来对比的 3,169,136 B 是更早的固件的数，那之后 3a 等改动已经让镜像涨到约 4.01 MB。
 
 ### 场景运行时
 
