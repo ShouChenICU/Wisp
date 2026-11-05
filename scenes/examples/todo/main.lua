@@ -1,4 +1,5 @@
--- 待办：输入框（聚焦时弹出系统屏幕键盘）加列表，事项存在集合 todos 里。
+-- To-do: an input (focusing it opens the system on-screen keyboard) and a list;
+-- the items are records in the collection "todos".
 local todos = wisp.store.collection("todos")
 
 local function load()

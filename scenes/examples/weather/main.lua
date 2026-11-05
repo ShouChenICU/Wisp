@@ -1,5 +1,6 @@
--- 天气：Open-Meteo（https://open-meteo.com）的公开接口，不需要 Key。
--- 只能访问 scene.json 里 permissions.http 声明的主机。打开时取一次，之后每 30 分钟一次。
+-- Weather: the public Open-Meteo API (https://open-meteo.com), which needs no key.
+-- A scene may only reach the hosts scene.json declares in permissions.http.
+-- Fetched on open and then every 30 minutes.
 local CITY = { name = "北京", lat = 39.90, lon = 116.40 }
 local URL = string.format(
   "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f"
@@ -8,7 +9,7 @@ local URL = string.format(
     .. "&timezone=auto&forecast_days=3",
   CITY.lat, CITY.lon)
 
--- WMO 天气代码（Open-Meteo 文档里的表）。
+-- WMO weather codes (the table in the Open-Meteo docs).
 local function describe(code)
   if code == 0 then return "晴" end
   if code <= 2 then return "多云" end
@@ -22,7 +23,7 @@ local function describe(code)
   return "雷雨"
 end
 
--- wisp.http 的错误码换成给人看的话。
+-- wisp.http's error codes, in words for the user.
 local ERRORS = {
   timeout = "网络超时，稍后再试",
   rate_limited = "刷新太频繁，稍后再试",
@@ -30,7 +31,8 @@ local ERRORS = {
   too_large = "天气数据太大，无法显示",
 }
 
--- 接口缺数据时给 null（Lua 里是 nil）或别的类型：每个字段都先查类型再用。
+-- Missing data comes as null (nil in Lua) or another type: every field's type
+-- is checked before it is used.
 local function num(v)
   return type(v) == "number" and v or nil
 end

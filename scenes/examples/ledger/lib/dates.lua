@@ -1,12 +1,13 @@
--- 日期换算：场景里没有 os.date，这里按公历自己算。
+-- Date arithmetic: scenes have no os.date, so the Gregorian calendar is done here.
 local M = {}
 
--- 墙上时间（UTC 秒）在 UTC 偏移 offset_min 分钟处的本地日序号（自 1970-01-01 起的天数）。
+-- The local day number (days since 1970-01-01) of wall time t (UTC seconds)
+-- at offset_min minutes east of UTC.
 function M.day_of(t, offset_min)
   return (t + offset_min * 60) // 86400
 end
 
--- 日序号 -> 年、月、日（Howard Hinnant 的 civil_from_days）。
+-- Day number -> year, month, day (Howard Hinnant's civil_from_days).
 function M.civil(day)
   local z = day + 719468
   local era = z // 146097

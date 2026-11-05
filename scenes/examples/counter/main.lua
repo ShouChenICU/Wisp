@@ -1,4 +1,5 @@
--- 计数器：最小完整示例（scene-runtime-core spec 4.1），用 wisp.store 记住次数。
+-- Counter: the smallest complete scene (scene-runtime-core spec 4.1); wisp.store
+-- remembers the count.
 local count = state(wisp.store.get("count") or 0)
 
 local function save(n)

@@ -1,10 +1,12 @@
--- 时钟表盘：canvas 画指针表盘，每到整分钟（wisp.device.on("minute")）重画一次。
--- 画布铺满根节点留出的安全区，表盘大小按 safe_area 算，圆屏和圆角屏都整个可见。
--- 本地时间 = info.time + info.utc_offset（分钟）；改了时区也会触发 minute。
-local WEEKDAYS = { "四", "五", "六", "日", "一", "二", "三" } -- 1970-01-01 是星期四
+-- Clock face: a canvas dial, redrawn on every whole minute (wisp.device.on("minute")).
+-- The canvas fills the safe area the root leaves, and the dial is sized from
+-- safe_area, so it is fully visible on round and rounded screens alike.
+-- Local time is info.time + info.utc_offset (minutes); a time zone change
+-- fires "minute" too.
+local WEEKDAYS = { "四", "五", "六", "日", "一", "二", "三" } -- 1970-01-01 was a Thursday
 
 local info = wisp.device.info()
--- 整个 info：时间和时区任一变了都重画。
+-- The whole info table: a new time or a new time zone both redraw.
 local now = state(info)
 
 wisp.device.on("minute", function(i) now:set(i) end)
@@ -15,7 +17,7 @@ local CX, CY = W // 2, H // 2
 local R = math.min(W, H) // 2 - 4
 
 local function polar(angle_deg, r)
-  local a = math.rad(angle_deg - 90) -- 0 度朝上，顺时针
+  local a = math.rad(angle_deg - 90) -- 0 degrees is up, clockwise
   return CX + math.floor(r * math.cos(a) + 0.5), CY + math.floor(r * math.sin(a) + 0.5)
 end
 

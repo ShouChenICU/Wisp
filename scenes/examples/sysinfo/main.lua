@@ -1,5 +1,6 @@
--- 系统状态：wisp.device.info() 的各项，电量和语言变化时（battery / lang 事件）
--- 刷新，整分钟时顺带刷新时间。
+-- System info: every field of wisp.device.info(), refreshed when the battery or
+-- the language changes (the battery and lang events) and on every minute, which
+-- also comes when the time zone changes.
 local info = state(wisp.device.info())
 
 local function refresh(i) info:set(i) end

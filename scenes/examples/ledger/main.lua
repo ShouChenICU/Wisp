@@ -1,8 +1,9 @@
--- 记账：每一笔存在集合 entries 里，按日期降序列出，柱状图显示最近 7 天的支出。
+-- Ledger: each entry is a record in the collection "entries", listed newest day
+-- first; a bar chart shows the spending of the last 7 days.
 local dates = wisp.import("lib/dates")
 local entries = wisp.store.collection("entries")
 
--- 今天的日序号；设备还不知道时间时为 nil。
+-- Today's local day number; nil while the device does not know the time.
 local function today()
   local i = wisp.device.info()
   return i.time and dates.day_of(i.time, i.utc_offset) or nil
@@ -15,7 +16,7 @@ end
 local list = state(load())
 local amount = state("")
 
--- 最近 7 天每天的合计（元），最早的一天在左边。
+-- The total of each of the last 7 days, the oldest on the left.
 local week = computed(function()
   local sums = { 0, 0, 0, 0, 0, 0, 0 }
   local last = today()
@@ -37,7 +38,7 @@ local function add(note)
   end
   local day = today()
   if not day then
-    -- 不知道日期就不记，免得这一笔记到 1970 年。
+    -- Without a date the entry would land on 1970-01-01: refuse it.
     hint:set("设备还不知道日期，联网对时后再记")
     return
   end
@@ -47,7 +48,7 @@ local function add(note)
   list:set(load())
 end
 
--- 柱状图下面的日期：第 i 根柱子是 7 - i 天前，最右边是今天。
+-- The dates under the chart: bar i is 7 - i days ago, today on the right.
 local function day_label(i)
   return ui.column { grow = 1, align = "center",
     ui.label { font = "xs", fg = "muted", text = bind(week, function()
