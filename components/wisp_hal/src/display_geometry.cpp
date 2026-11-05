@@ -134,30 +134,39 @@ Span row_span(const ScreenShape& shape, int32_t y) {
         return Span{0, shape.width - 1};
     }
 
-    // RoundedRect and Circle are both convex, so each row's visible
-    // pixels form a single contiguous range (if any): scanning from both
-    // ends for the first visible() pixel is simplest, and -- by
-    // construction -- always exactly consistent with visible() itself
-    // (row_span() is only used for one-time layout, not a per-frame hot
-    // path, so the O(width) scan costs nothing that matters).
-    int32_t x1 = -1;
-    for (int32_t x = 0; x < shape.width; ++x) {
-        if (visible(shape, x, y)) {
-            x1 = x;
-            break;
-        }
-    }
-    if (x1 < 0) {
+    // RoundedRect and Circle are both convex and symmetric about the
+    // screen's centre, so a row's visible pixels (if any) are one range
+    // that holds the column nearest the centre, and visible() flips only
+    // once on each side of it: binary search finds each end with
+    // visible() itself, so the result agrees with it by construction.
+    // Scenes call this per row from Lua (wisp.device.row_span), also on
+    // targets without a double-precision FPU: a per-pixel scan is too slow.
+    const int32_t mid = (shape.width - 1) / 2;
+    if (!visible(shape, mid, y)) {
         return Span{};
     }
-    int32_t x2 = x1;
-    for (int32_t x = shape.width - 1; x > x2; --x) {
-        if (visible(shape, x, y)) {
-            x2 = x;
-            break;
+    int32_t lo = 0;  // first candidate for x1; mid is visible
+    int32_t hi = mid;
+    while (lo < hi) {
+        int32_t m = lo + (hi - lo) / 2;
+        if (visible(shape, m, y)) {
+            hi = m;
+        } else {
+            lo = m + 1;
         }
     }
-    return Span{x1, x2};
+    const int32_t x1 = lo;
+    lo = mid;  // last visible candidate for x2
+    hi = shape.width - 1;
+    while (lo < hi) {
+        int32_t m = lo + (hi - lo + 1) / 2;
+        if (visible(shape, m, y)) {
+            lo = m;
+        } else {
+            hi = m - 1;
+        }
+    }
+    return Span{x1, lo};
 }
 
 }  // namespace wisp::hal

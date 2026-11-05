@@ -128,3 +128,36 @@ TEST(DisplayGeometry, ConsistentWithVisible) {  // cross-check all three shapes 
         }
     }
 }
+
+// row_span() searches for each row's ends instead of scanning every
+// pixel (scenes call it per row from Lua, on a chip without a double FPU):
+// it must still agree with visible() pixel for pixel on odd sizes, wide
+// and tall screens, and radii from 0 to the clamped maximum.
+TEST(DisplayGeometry, RowSpanMatchesVisibleOnOddShapes) {
+    const struct {
+        const char* kind;
+        int w, h, r;
+    } cases[] = {{"rounded_rect", 101, 57, 28},
+                 {"rounded_rect", 101, 57, 500},
+                 {"rounded_rect", 300, 200, 100},
+                 {"rounded_rect", 300, 200, 0},
+                 {"rounded_rect", 466, 466, 70},
+                 {"circle", 101, 57, 0},
+                 {"circle", 57, 101, 0},
+                 {"circle", 2, 2, 0},
+                 {"circle", 1, 1, 0},
+                 {"circle", 466, 466, 0},
+                 {"rounded_rect", 1, 1, 1},
+                 {"rect", 7, 3, 0}};
+    for (const auto& c : cases) {
+        auto s = shape(c.kind, c.w, c.h, c.r);
+        for (int32_t y = -1; y <= c.h; ++y) {
+            auto sp = row_span(s, y);
+            for (int32_t x = -1; x <= c.w; ++x) {
+                bool in_span = !sp.empty() && x >= sp.x1 && x <= sp.x2;
+                ASSERT_EQ(visible(s, x, y), in_span)
+                    << c.kind << " " << c.w << "x" << c.h << " r" << c.r << " at " << x << "," << y;
+            }
+        }
+    }
+}
