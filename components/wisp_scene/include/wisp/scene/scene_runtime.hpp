@@ -54,11 +54,15 @@
 //           on_show; scene.on_state("background"). Only for a scene whose
 //           scene.json declares "background" (InvalidArgument otherwise),
 //           and not past the background's count (Busy). A boot launch
-//           (not open_background(), which a reinstall uses) that does not
-//           bring its scene up -- refused, not found, a script error --
-//           is a RestoreFailed notice. One of a scene that a user open
-//           is already loading rides on that open: if a later open
-//           supersedes it, the scene still loads, as a boot launch.
+//           that does not bring its scene up -- refused, not found, a
+//           script error -- is a RestoreFailed notice. One of a scene that
+//           a user open is already loading rides on that open: if a later
+//           open supersedes it, the scene still loads, as a boot launch.
+//           open_background() (a reinstall over a scene in the background)
+//           sends no such notice, and a scene that left the background
+//           by an exit comes back as it was: wisp.scene.launch() as
+//           before, the same place in the order of least recently in
+//           front.
 //   back    the back gesture, the error panel's "返回", close() and
 //           wisp.scene.close(): a scene whose scene.json declares
 //           "background" goes to the background, any other closes.
@@ -360,7 +364,9 @@ public:
     // the file header for what is refused, and the RestoreFailed notice).
     // Waits like open().
     Result<void> launch(const std::string& id, LaunchReason reason, Value args = {});
-    // launch(id, Boot) without the RestoreFailed notice (SceneHost).
+    // launch(id, Boot) without the RestoreFailed notice, keeping what the
+    // scene had when it last left the background by an exit (file header;
+    // SceneHost).
     Result<void> open_background(const std::string& id) override;
     // Reads the background list on the worker and launches each scene in
     // it as at boot, in order (file header). Never waits; does nothing
@@ -424,7 +430,19 @@ private:
         // open a boot launch rides on).
         bool restore = false;
         bool then_boot = false;
-        // Its place in the background list (Slot::seq).
+        // Its place in the background list (Slot::last_front_ms, seq).
+        uint64_t last_front_ms = 0;
+        uint64_t seq = 0;
+        // What wisp.scene.launch() reports: `reason`, or for a reopen what
+        // the scene reported before.
+        LaunchReason shown = LaunchReason::User;
+    };
+    // A scene that left the background by an exit: what open_background()
+    // gives it back (the last few, scene task only).
+    struct Departed {
+        std::string id;
+        LaunchReason reason = LaunchReason::User;
+        uint64_t last_front_ms = 0;
         uint64_t seq = 0;
     };
     // A job for the UI thread (post_ui()). Showing and dropping a view name
@@ -455,9 +473,10 @@ private:
     Slot* find_id(std::string_view id);
     Instances instances() const;
     size_t background_count(const Slot* except) const;
-    Result<void> launch_load(const std::string& id, LaunchReason reason, Value args, bool restore);
+    Result<void> launch_load(const std::string& id, LaunchReason reason, Value args, bool restore,
+                             bool reopen = false);
     void begin_open(const std::string& id, Value args, LaunchReason reason, bool restore,
-                    std::shared_ptr<SceneWaiter> waiter);
+                    std::shared_ptr<SceneWaiter> waiter, bool reopen = false);
     void finish_open(SceneMessage& m);
     // Forgets the loads of `id` still on the worker (closed or exited by
     // id: whoever did may go on to delete or replace its files).
@@ -611,6 +630,13 @@ private:
     // What the background list on disk holds, as last read or written;
     // nullopt until restore() has read it (nothing is written before).
     std::optional<std::vector<std::string>> persisted_;
+    // Departed entries, newest last, at most kMaxSlots.
+    std::vector<Departed> departed_;
+    // Something the background list depends on (the slots, the loads)
+    // changed since persist_background() last compared it.
+    bool list_dirty_ = false;
+    // A write could not be queued and that was logged.
+    bool persist_warned_ = false;
     // The loads on the worker; one that comes back and is not here was
     // superseded, or cancelled by a close of its scene.
     std::vector<PendingLoad> loading_;

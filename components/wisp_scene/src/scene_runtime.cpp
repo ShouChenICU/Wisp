@@ -29,6 +29,10 @@ constexpr uint32_t kWaitMs = 10000;
 constexpr uint32_t kPushMs = 1000;
 // A message that takes longer than this is logged.
 constexpr uint64_t kSlowMs = 50;
+// How often, and how far apart, the background list is offered to a full
+// scene queue at boot.
+constexpr int kRestoreAttempts = 10;
+constexpr uint32_t kRestoreRetryMs = 100;
 
 // "scene.<id>": the tag of the scene's own log.
 std::string scene_tag(std::string_view id) {
@@ -119,6 +123,8 @@ struct SceneRuntime::Slot {
     uint64_t seq = 0;
     // Starting from a boot launch: a failure is a RestoreFailed notice.
     bool restoring = false;
+    // What wisp.scene.launch() reports.
+    LaunchReason reason = LaunchReason::User;
     MinuteTicker ticker;
     // What the scene last saw, for "battery" and "lang".
     bool has_battery = false;
@@ -331,11 +337,11 @@ Result<void> SceneRuntime::launch(const std::string& id, LaunchReason reason, Va
 }
 
 Result<void> SceneRuntime::open_background(const std::string& id) {
-    return launch_load(id, LaunchReason::Boot, {}, false);
+    return launch_load(id, LaunchReason::Boot, {}, false, true);
 }
 
 Result<void> SceneRuntime::launch_load(const std::string& id, LaunchReason reason, Value args,
-                                       bool restore) {
+                                       bool restore, bool reopen) {
     // A boot launch is refused for these when its load arrives, where the
     // refusal can be a notice (finish_open()).
     if (reason != LaunchReason::Boot) {
@@ -345,7 +351,7 @@ Result<void> SceneRuntime::launch_load(const std::string& id, LaunchReason reaso
             return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being deleted");
     }
     auto waiter = std::make_shared<SceneWaiter>();
-    return request(make_message(id, 0, msg::Load{std::move(args), waiter, reason, restore}),
+    return request(make_message(id, 0, msg::Load{std::move(args), waiter, reason, restore, reopen}),
                    waiter);
 }
 
@@ -356,11 +362,17 @@ void SceneRuntime::restore_background() {
     // the scene task as one message, so every launch in it is queued at
     // once and the list is compared with the file only after all of them.
     bool queued = deps_.worker.submit([link = link_, &storage, path = deps_.background_list_path] {
-        auto m = make_message("", 0, msg::Restore{read_background_list(storage, path)});
-        std::lock_guard<os::Mutex> lock(link->mu);
-        if (link->rt == nullptr) return;
-        if (!post_scene_message(*link->rt, std::move(m)))
-            WLOG_W(kTag, "background scenes not restored: scene queue full");
+        const std::vector<std::string> ids = read_background_list(storage, path);
+        // Until it arrives nothing writes the list, so a full queue is
+        // waited out a little (without the link's lock, which the scene
+        // task may need to drain it) rather than given up at once.
+        for (int attempt = 0; attempt < kRestoreAttempts; ++attempt) {
+            if (attempt > 0) os::sleep_ms(kRestoreRetryMs);
+            std::lock_guard<os::Mutex> lock(link->mu);
+            if (link->rt == nullptr) return;
+            if (post_scene_message(*link->rt, make_message("", 0, msg::Restore{ids}))) return;
+        }
+        WLOG_W(kTag, "background scenes not restored: scene queue full");
     });
     if (!queued) WLOG_W(kTag, "background scenes not restored: storage worker busy");
 }
@@ -581,7 +593,7 @@ SceneRuntime::Slot* SceneRuntime::target(const SceneMessage& m) {
 void SceneRuntime::handle(SceneMessage& m) {
     msg::Body& body = m.body;
     if (auto* b = std::get_if<msg::Load>(&body)) {
-        begin_open(m.scene_id, std::move(b->args), b->reason, b->restore, b->done);
+        begin_open(m.scene_id, std::move(b->args), b->reason, b->restore, b->done, b->reopen);
     } else if (std::holds_alternative<msg::Open>(body)) {
         finish_open(m);
     } else if (auto* b = std::get_if<msg::Close>(&body)) {
@@ -678,7 +690,8 @@ void SceneRuntime::handle(SceneMessage& m) {
 }
 
 void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason reason, bool restore,
-                              std::shared_ptr<SceneWaiter> waiter) {
+                              std::shared_ptr<SceneWaiter> waiter, bool reopen) {
+    list_dirty_ = true;
     Slot* running = find_id(id);
     const bool boot = reason == LaunchReason::Boot;
     if (boot) {
@@ -710,7 +723,17 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
     if (running != nullptr) close_slot(*running);
     const uint32_t instance = next_instance_++;
     if (next_instance_ == 0) next_instance_ = 1;
-    PendingLoad load{instance, id, reason, restore, false, next_seq_++};
+    PendingLoad load{instance, id, reason, restore, false, 0, next_seq_++, reason};
+    if (boot && reopen) {
+        auto d = std::find_if(departed_.begin(), departed_.end(),
+                              [&](const Departed& e) { return e.id == id; });
+        if (d != departed_.end()) {
+            load.shown = d->reason;
+            load.last_front_ms = d->last_front_ms;
+            load.seq = d->seq;
+            departed_.erase(d);
+        }
+    }
     // A user open supersedes the other user opens (the latest one wins)
     // and a boot launch of the same scene (it wants it in front), whose
     // place in the background list it keeps.
@@ -770,6 +793,7 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
 }
 
 void SceneRuntime::finish_open(SceneMessage& m) {
+    list_dirty_ = true;
     auto& open = std::get<msg::Open>(m.body);
     auto done = [&](Result<void> r) {
         if (open.done) open.done->finish(std::move(r));
@@ -874,7 +898,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         return;
     }
 
-    Slot* added = add_slot(m, reason);
+    Slot* added = add_slot(m, load.shown);
     if (added == nullptr) {
         WLOG_E(kTag, "%s: no memory for the scene", id.c_str());
         open.store->close();
@@ -894,6 +918,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         const uint64_t now = os::now_ms();
         s.background = true;
         s.background_since_ms = now;
+        s.last_front_ms = load.last_front_ms;
         s.seq = load.seq;
         s.restoring = load.restore;
         s.scene->api().background = true;
@@ -928,10 +953,12 @@ void SceneRuntime::finish_open(SceneMessage& m) {
 }
 
 void SceneRuntime::cancel_loads(std::string_view id) {
+    list_dirty_ = true;
     std::erase_if(loading_, [&](const PendingLoad& p) { return p.id == id; });
 }
 
 SceneRuntime::Carried SceneRuntime::supersede_loads(std::string_view id) {
+    list_dirty_ = true;
     Carried carried;
     for (PendingLoad& p : loading_) {
         if (!id.empty() && p.id == id) {
@@ -943,6 +970,7 @@ SceneRuntime::Carried SceneRuntime::supersede_loads(std::string_view id) {
         } else if (p.reason != LaunchReason::Boot && p.then_boot) {
             // The boot launch that rode on it carries on alone.
             p.reason = LaunchReason::Boot;
+            p.shown = LaunchReason::Boot;
             p.then_boot = false;
         }
     }
@@ -961,6 +989,7 @@ void SceneRuntime::restore(std::vector<std::string> ids) {
     // What the file holds now: the launches below are already on it, so
     // only a change from here on is written.
     persisted_ = ids;
+    list_dirty_ = true;
     for (const std::string& id : ids) begin_open(id, {}, LaunchReason::Boot, true, nullptr);
 }
 
@@ -1019,7 +1048,7 @@ std::vector<std::string> SceneRuntime::wanted_background() const {
         if (p.reason != LaunchReason::Boot && !p.then_boot) continue;
         const bool listed = std::any_of(entries.begin(), entries.end(),
                                         [&](const Entry& e) { return *e.id == p.id; });
-        if (!listed) entries.push_back({0, p.seq, &p.id});
+        if (!listed) entries.push_back({p.last_front_ms, p.seq, &p.id});
     }
     std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
         if (a.last_front_ms != b.last_front_ms) return a.last_front_ms < b.last_front_ms;
@@ -1032,9 +1061,15 @@ std::vector<std::string> SceneRuntime::wanted_background() const {
 }
 
 void SceneRuntime::persist_background() {
-    if (quit_ || !persisted_ || deps_.background_list_path.empty()) return;
+    // Only after something the list depends on changed: this runs on
+    // every pass of the task, timer ticks too, and the comparison
+    // allocates.
+    if (quit_ || !persisted_ || deps_.background_list_path.empty() || !list_dirty_) return;
     std::vector<std::string> want = wanted_background();
-    if (want == *persisted_) return;
+    if (want == *persisted_) {
+        list_dirty_ = false;
+        return;
+    }
     List ids;
     for (const std::string& id : want) ids.emplace_back(id);
     std::string json = to_json(Value(Map{{"ids", Value(std::move(ids))}}));
@@ -1047,8 +1082,17 @@ void SceneRuntime::persist_background() {
             if (auto r = storage.write_atomic(path, data); !r)
                 WLOG_W(kTag, "background list not saved: %s", r.error().message.c_str());
         });
-    // Not queued: tried again after the next message.
-    if (queued) persisted_ = std::move(want);
+    if (!queued) {
+        // Stays dirty: tried again on the next pass of the task, which may
+        // be a while if nothing runs; said once until a write gets through.
+        if (!persist_warned_)
+            WLOG_W(kTag, "background list not saved yet: storage worker busy; will retry");
+        persist_warned_ = true;
+        return;
+    }
+    persist_warned_ = false;
+    list_dirty_ = false;
+    persisted_ = std::move(want);
 }
 
 void SceneRuntime::show_view(Slot& s) {
@@ -1083,6 +1127,7 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason)
     api.screen = deps_.shape;
     api.args = &s.args;
     api.store = s.store.get();
+    s.reason = reason;
     api.launch = to_string(reason);
     api.locks = deps_.locks;
     api.holder = scene_tag(s.id);
@@ -1178,6 +1223,7 @@ std::vector<const SceneRuntime::Slot*> SceneRuntime::background_order() const {
 }
 
 void SceneRuntime::update_background_list() {
+    list_dirty_ = true;
     std::map<std::string, uint32_t, std::less<>> ids;
     for (const auto& s : slots_) ids[s->id] = s->instance;
     const std::vector<const Slot*> in_back = background_order();
@@ -1346,6 +1392,12 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
 
 void SceneRuntime::close_slot(Slot& s, std::shared_ptr<SceneWaiter> done) {
     const bool was_running = s.scene != nullptr;
+    if (was_running && s.background && !quit_) {
+        // For open_background() (a reinstall closes the scene first).
+        std::erase_if(departed_, [&](const Departed& d) { return d.id == s.id; });
+        if (departed_.size() >= kMaxSlots) departed_.erase(departed_.begin());
+        departed_.push_back({s.id, s.reason, s.last_front_ms, s.seq});
+    }
     if (s.scene) {
         // Spec 3.4: each hook has its own time limit, and closing goes on
         // whatever they do.
@@ -1543,6 +1595,9 @@ void SceneRuntime::run_timers() {
         for (uint32_t id : due) {
             s = find(instance);
             if (s == nullptr || !s->scene) break;
+            // Spec 3.5: each callback is a message of its own; one of the
+            // scene in front may follow a background one that grew.
+            if (s == front_) enforce_limits(false);
             const bool once = !s->scene->api().timers.contains(id);
             const uint64_t t0 = os::now_ms();
             run_step(*s, s->scene->timer(id, once));
@@ -1589,6 +1644,10 @@ void SceneRuntime::device_event(uint32_t instance, DeviceEvent ev, const DeviceI
 void SceneRuntime::fire(uint32_t instance, DeviceEvent ev, const DeviceInfo& info) {
     Slot* s = find(instance);
     if (s == nullptr || !s->scene) return;
+    // Spec 3.5: one event reaches every scene in the same pass; the
+    // handler of the scene in front may follow a background one that grew.
+    // (Never evicts `s` itself: the scene in front is never a candidate.)
+    if (s == front_) enforce_limits(false);
     const std::string tag = scene_tag(s->id);
     const uint64_t t0 = os::now_ms();
     run_step(*s, s->scene->device(ev, info));

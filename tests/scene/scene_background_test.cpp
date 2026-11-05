@@ -581,8 +581,6 @@ return ui.screen {
     EXPECT_EQ(rt->status("h").state, SceneState::Stopped);
 }
 
-// Until the background has its eviction: a scene that would be the
-// fourth there closes instead.
 // Spec 3.5: a fourth scene sent to the background closes the one least
 // recently in front, which runs on_close like any close, and says so.
 TEST_F(SceneBackground, FourthBackgroundEvictsOldestWithNotice) {
@@ -693,6 +691,48 @@ return ui.screen { ui.label { text = "grow" } }
     ASSERT_EQ(seen.size(), 1u);
     EXPECT_EQ(seen[0].kind, SceneNoticeKind::EvictedMemory);
     EXPECT_EQ(seen[0].id, "grow");
+}
+
+// One device event reaches every scene in the same pass. A scene in the
+// background that grows in its handler is closed before the handler of
+// the scene in front runs, which keeps its guaranteed share (spec 3.5).
+TEST_F(SceneBackground, BackgroundGrowthEvictsBeforeForegroundHandlerInSamePass) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) {
+        c.vm.memory_bytes = 768 * 1024;
+        c.vm_budget = 1024 * 1024;
+    };
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    start();
+    install("grow", R"(
+global keep
+wisp.device.on("lang", function() keep = string.rep("g", 400 * 1024) print("grown") end)
+return ui.screen { ui.label { text = "grow" } }
+)",
+            {{"scene.json", bg_manifest("grow", "Grow")}});
+    install("front", R"(
+global keep
+wisp.device.on("lang", function() keep = string.rep("f", 500 * 1024) print("fits") end)
+return ui.screen { ui.label { text = "front" } }
+)");
+    // grow's slot comes first, so its handler runs first.
+    ASSERT_TRUE(rt->open("grow"));
+    ASSERT_TRUE(rt->open("front"));
+    ASSERT_EQ(rt->status("grow").state, SceneState::Background);
+    wisp::core::Event e;
+    e.topic = "system.settings";
+    e.source = "test";
+    e.payload = {{"language", Value("en")}};
+    bus.publish(std::move(e));
+    ASSERT_TRUE(wait_until([&] { return count_log("front", "fits") == 1; }, 2000))
+        << ::testing::PrintToString(scene_log("front")) << rt->status("front").error;
+    EXPECT_EQ(count_log("grow", "grown"), 1u);
+    EXPECT_EQ(rt->status("front").state, SceneState::Running);
+    EXPECT_EQ(rt->status("grow").state, SceneState::Stopped);
+    auto seen = seen_notices();
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_EQ(seen[0].kind, SceneNoticeKind::EvictedMemory);
+    EXPECT_EQ(seen[0].id, "grow");
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
 }
 
 // A view that would only come up to go again (the UI thread was held up
@@ -1166,15 +1206,18 @@ TEST_F(SceneRestore, UnreadableListRestoresNothing) {
 
 // scene-runtime-core spec 6.3: installing over a running scene is a reload.
 // For one in the background that means starting it there again, on the
-// new package; the list keeps it.
+// new package, as it was launched before and where it was in the order
+// of least recently in front (the list keeps it there).
 TEST_F(SceneRestore, ReinstallRelaunchesBackgroundScene) {
     start_restored();
     install_bg("a", "print('v1') return ui.screen { ui.label { text = 'a' } }");
     install_bg("b", "return ui.screen { ui.label { text = 'b' } }");
+    install_bg("c", "return ui.screen { ui.label { text = 'c' } }");
     ASSERT_TRUE(rt->open("a"));
+    ASSERT_TRUE(rt->open("c"));
     ASSERT_TRUE(rt->open("b"));
     ASSERT_EQ(rt->status("a").state, SceneState::Background);
-    ASSERT_TRUE(wait_list({"a"}));
+    ASSERT_TRUE(wait_list({"a", "c"}));
 
     wisp::core::ZipWriter w;
     auto add = [&](const std::string& path, const std::string& body) {
@@ -1190,11 +1233,11 @@ TEST_F(SceneRestore, ReinstallRelaunchesBackgroundScene) {
         wisp::core::install_scene(*repo, *rt, std::span<const uint8_t>(zip.data(), zip.size()));
     ASSERT_TRUE(r) << r.error().message;
     EXPECT_TRUE(wait_state("a", SceneState::Background));
-    EXPECT_TRUE(wait_until([&] { return count_log("a", "v2\tbackground\tboot") == 1; }, 2000))
+    EXPECT_TRUE(wait_until([&] { return count_log("a", "v2\tbackground\tuser") == 1; }, 2000))
         << ::testing::PrintToString(scene_log("a"));
     EXPECT_EQ(rt->foreground(), std::optional<std::string>("b"));
-    EXPECT_EQ(background_ids(), (std::vector<std::string>{"a"}));
-    EXPECT_TRUE(wait_list({"a"})) << ::testing::PrintToString(read_list());
+    EXPECT_EQ(background_ids(), (std::vector<std::string>{"a", "c"}));
+    EXPECT_TRUE(wait_list({"a", "c"})) << ::testing::PrintToString(read_list());
     EXPECT_TRUE(seen_notices().empty());
 }
 

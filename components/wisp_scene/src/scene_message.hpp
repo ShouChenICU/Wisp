@@ -77,12 +77,14 @@ namespace msg {
 // launch(): the scene task asks the worker to load the scene (or, for one
 // in the background, brings it forward). `done` (may be null) hears how
 // the open went. `restore`: a Boot launch whose failure is a RestoreFailed
-// notice (launch(); open_background() starts one without).
+// notice (launch()). `reopen`: a Boot launch from open_background(), which
+// starts the scene as it was before its last exit from the background.
 struct Load {
     Value args;
     std::shared_ptr<SceneWaiter> done;
     LaunchReason reason = LaunchReason::User;
     bool restore = false;
+    bool reopen = false;
 };
 
 // The worker loaded the package and the store (or failed: `error`).

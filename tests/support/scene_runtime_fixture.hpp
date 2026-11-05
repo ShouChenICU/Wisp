@@ -4,8 +4,8 @@
 // storage worker, an event bus and a SceneRepository in a temp dir, plus
 // helpers to install packages and read what the scenes logged and showed.
 // configure_deps() and configure_config() let a test fill in the optional
-// SceneRuntimeDeps fields and the config before start() makes the runtime. UiStall holds the UI
-// thread up.
+// SceneRuntimeDeps fields and the config before start() makes the
+// runtime. UiStall holds the UI thread up.
 
 #include <gtest/gtest.h>
 
