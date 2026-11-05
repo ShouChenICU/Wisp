@@ -198,11 +198,8 @@ void numbers(lua_State* L, const char* method, int n, int32_t* out) {
 
 uint32_t color_at(lua_State* L, int idx, const char* what) {
     if (check_value(L, idx, Prop::Bg) != Check::Ok || lua_type(L, idx) != LUA_TSTRING) {
-        char shown_value[kMaxShown + 4];
         char got[kMaxShown + 8];
-        if (lua_type(L, idx) == LUA_TSTRING)
-            std::snprintf(got, sizeof(got), "'%s'", shown(string_at(L, idx), shown_value));
-        else
+        if (!format_scalar(L, idx, got))
             std::snprintf(got, sizeof(got), "%s", luaL_typename(L, idx));
         raise_here(L, "canvas: %s expects %s, got %s", what, prop_expects(Prop::Bg).data(), got);
     }

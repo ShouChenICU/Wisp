@@ -14,8 +14,9 @@ local function save(n)
   wisp.log.info("count=" .. n)
 end
 
--- Digits plus a leading "-" for negative counts; 96 px fits up to 5 digits
--- (and a sign) in the padded safe box, 6 or more need 64 px.
+-- Digits plus a leading "-" for negative counts; in the padded safe box,
+-- 96 px fits up to 5 digits, or 4 digits plus a leading "-" -- 6 characters
+-- total (digits + sign) drop to 64 px.
 local function count_font(v)
   local digits = #tostring(math.abs(v))
   if v < 0 then digits = digits + 1 end
