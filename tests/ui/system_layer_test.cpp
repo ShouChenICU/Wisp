@@ -198,48 +198,307 @@ TEST(SystemLayerZone, BackZoneFollowsRowSpan) {
     }
 }
 
-TEST(SystemLayerZone, BackSwipeNeedsQuarterWidth) {
+TEST(SystemLayerZone, BackSwipeNeedsTriggerDistance) {
     const ScreenShape rect = rect480();
-    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {124, 240}));   // dx 120
-    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {125, 240}));    // dx 121
+    constexpr int32_t d = SystemLayer::kBackTriggerDx;
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d - 1, 240}));
+    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 240}));
+    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {200, 240}));
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {20, 240}, {300, 240}));  // starts outside
-    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {134, 380}));   // dx 130, dy 140
-    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {200, 240}, {4, 240}));   // leftwards
+    // Mainly sideways: dx must be more than twice |dy|.
+    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 269}));    // dx 60, dy 29
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 270}));   // dx 60, dy 30
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 210}));   // dx 60, dy -30
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {200, 240}, {4, 240}));  // leftwards
 }
 
-TEST_F(SystemLayerTest, GestureSwallowedAndCallsBack) {
+// A press in the zone goes to the widget under it like any other: a tap
+// there clicks the button and never goes back.
+TEST_F(SystemLayerTest, TapInTheZoneReachesTheWidgetBelow) {
+    for (const char* s : {"rect", "circle"}) {
+        SCOPED_TRACE(s);
+        TearDown();
+        start(s);
+        int backs = 0;
+        int clicks = 0;
+        const int16_t y = 240;
+        const int16_t x = static_cast<int16_t>(wisp::hal::row_span(shape, y).x1 + 2);
+        ASSERT_TRUE(SystemLayer::in_back_zone(shape, x, y));
+        on_ui([&] {
+            make_counting_button(0, 200, kSide, 80, &clicks);
+            layer->set_back_handler([&] { ++backs; });
+        });
+        tap(x, y);
+        EXPECT_EQ(clicks, 1);
+        EXPECT_EQ(backs, 0);
+        on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
+    }
+}
+
+// Crossing the trigger distance takes the press from the widget: the swipe
+// goes back on release and the button under it is neither clicked nor
+// left pressed.
+TEST_F(SystemLayerTest, SwipeFromTheZoneGoesBackInsteadOfClicking) {
+    start("rect");
+    int backs = 0;
+    int clicks = 0;
+    lv_obj_t* btn = nullptr;
+    on_ui([&] {
+        btn = make_counting_button(0, 200, kSide, 80, &clicks);
+        layer->set_back_handler([&] { ++backs; });
+    });
+    feed({{4, 240, 0}});
+    feed({{4, 240, 0}});
+    on_ui([&] { EXPECT_TRUE(lv_obj_has_state(btn, LV_STATE_PRESSED)); });
+    feed({{4 + SystemLayer::kBackTriggerDx, 242, 0}});
+    on_ui([&] { EXPECT_FALSE(lv_obj_has_state(btn, LV_STATE_PRESSED)); });
+    feed({{80, 244, 0}});
+    feed({{160, 244, 0}});
+    EXPECT_EQ(backs, 0);  // only on release
+    feed({});
+    EXPECT_EQ(backs, 1);
+    EXPECT_EQ(clicks, 0);
+    on_ui([&] { EXPECT_FALSE(lv_obj_has_state(btn, LV_STATE_PRESSED)); });
+
+    // The next tap is the button's again.
+    tap(200, 240);
+    EXPECT_EQ(clicks, 1);
+    EXPECT_EQ(backs, 1);
+}
+
+// A short move that ends before the trigger distance is an ordinary press:
+// nothing is cancelled and nothing goes back.
+TEST_F(SystemLayerTest, ReleaseBelowTheTriggerIsAnOrdinaryPress) {
     start("rect");
     int backs = 0;
     int clicks = 0;
     on_ui([&] {
-        make_counting_button(0, 200, 120, 80, &clicks);
+        make_counting_button(0, 200, kSide, 80, &clicks);
         layer->set_back_handler([&] { ++backs; });
     });
-    // The button takes taps outside the zone.
-    tap(60, 240);
-    EXPECT_EQ(clicks, 1);
-
+    const int16_t end_x = static_cast<int16_t>(4 + SystemLayer::kBackTriggerDx - 1);
     feed({{4, 240, 0}});
-    for (int16_t x : {4, 50, 100, 150, 200}) feed({{x, 240, 0}});
+    feed({{12, 240, 0}});
+    feed({{end_x, 240, 0}});
     feed({});
-    EXPECT_EQ(backs, 1);
+    EXPECT_EQ(backs, 0);
     EXPECT_EQ(clicks, 1);
-
-    // A tap inside the zone is no swipe, and still not the button's.
-    tap(4, 240);
-    EXPECT_EQ(backs, 1);
-    EXPECT_EQ(clicks, 1);
-
-    // Without a handler the zone belongs to the screen again.
-    on_ui([&] { layer->set_back_handler({}); });
-    tap(4, 240);
-    EXPECT_EQ(clicks, 2);
 }
 
-// The strip is shown from inside a UI job (a scene's view coming up) and
-// the touch panel may be read before the next refresh lays it out: a swipe
-// that starts right away still has to be taken.
-TEST_F(SystemLayerTest, StripTakesASwipeRightAfterItIsShown) {
+// Once past the trigger, dragging back below it before release cancels
+// the gesture: no back, and the press stays cancelled.
+TEST_F(SystemLayerTest, DraggingBackBelowTheTriggerCancels) {
+    start("rect");
+    int backs = 0;
+    int clicks = 0;
+    on_ui([&] {
+        make_counting_button(0, 200, kSide, 80, &clicks);
+        layer->set_back_handler([&] { ++backs; });
+    });
+    feed({{4, 240, 0}});
+    feed({{60, 240, 0}});
+    on_ui([&] {
+        ASSERT_NE(layer->back_arrow(), nullptr);
+        EXPECT_EQ(lv_obj_get_style_opa(layer->back_arrow(), LV_PART_MAIN), LV_OPA_COVER);
+    });
+    feed({{10, 240, 0}});
+    on_ui([&] {
+        ASSERT_NE(layer->back_arrow(), nullptr);
+        EXPECT_LT(lv_obj_get_style_opa(layer->back_arrow(), LV_PART_MAIN), LV_OPA_COVER);
+    });
+    feed({});
+    EXPECT_EQ(backs, 0);
+    EXPECT_EQ(clicks, 0);
+    on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
+}
+
+// A drag that starts in the zone but runs up or down scrolls what is
+// under it.
+TEST_F(SystemLayerTest, VerticalDragFromTheZoneScrolls) {
+    start("rect");
+    int backs = 0;
+    lv_obj_t* list = nullptr;
+    on_ui([&] {
+        list = lv_obj_create(lv_screen_active());
+        lv_obj_set_pos(list, 0, 0);
+        lv_obj_set_size(list, kSide, kSide);
+        lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+        for (int i = 0; i < 40; ++i) {
+            lv_obj_t* row = lv_label_create(list);
+            lv_label_set_text(row, ("row " + std::to_string(i)).c_str());
+        }
+        lv_obj_update_layout(list);
+        layer->set_back_handler([&] { ++backs; });
+    });
+    feed({{4, 400, 0}});
+    for (int16_t y = 380; y >= 200; y = static_cast<int16_t>(y - 20)) feed({{8, y, 0}});
+    feed({});
+    EXPECT_EQ(backs, 0);
+    on_ui([&] {
+        EXPECT_GT(lv_obj_get_scroll_y(list), 0);
+        EXPECT_EQ(layer->back_arrow(), nullptr);
+    });
+}
+
+TEST_F(SystemLayerTest, PressOutsideTheZoneNeverStartsAGesture) {
+    start("rect");
+    int backs = 0;
+    on_ui([&] { layer->set_back_handler([&] { ++backs; }); });
+    feed({{SystemLayer::kBackZoneWidth, 240, 0}});
+    for (int16_t x : {40, 100, 200, 300}) {
+        feed({{x, 240, 0}});
+        on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
+    }
+    feed({});
+    EXPECT_EQ(backs, 0);
+}
+
+// The arrow follows the finger's row, slides in and turns opaque as the
+// finger nears the trigger distance, and goes away on release.
+TEST_F(SystemLayerTest, ArrowFollowsTheFinger) {
+    start("rect");
+    on_ui([&] { layer->set_back_handler([] {}); });
+    feed({{4, 240, 0}});
+    on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
+
+    auto arrow_box = [&](lv_area_t* a, lv_opa_t* opa) {
+        on_ui([&] {
+            lv_obj_t* arrow = layer->back_arrow();
+            ASSERT_NE(arrow, nullptr);
+            EXPECT_EQ(lv_obj_get_parent(arrow), lv_layer_top());
+            lv_obj_update_layout(arrow);
+            lv_obj_get_coords(arrow, a);
+            *opa = lv_obj_get_style_opa(arrow, LV_PART_MAIN);
+        });
+    };
+    lv_area_t part{};
+    lv_opa_t opa = 0;
+    feed({{14, 246, 0}});
+    arrow_box(&part, &opa);
+    EXPECT_NEAR((part.y1 + part.y2) / 2, 246, 1);
+    EXPECT_GT(opa, LV_OPA_TRANSP);
+    EXPECT_LT(opa, LV_OPA_COVER);
+
+    lv_area_t full{};
+    feed({{4 + SystemLayer::kBackTriggerDx, 251, 0}});
+    arrow_box(&full, &opa);
+    EXPECT_NEAR((full.y1 + full.y2) / 2, 251, 1);
+    EXPECT_GT(full.x1, part.x1);  // further in
+    EXPECT_GE(full.x1, 0);
+    EXPECT_EQ(opa, LV_OPA_COVER);
+
+    // Past the trigger it keeps following the finger's row, fully in.
+    lv_area_t later{};
+    feed({{200, 300, 0}});
+    arrow_box(&later, &opa);
+    EXPECT_NEAR((later.y1 + later.y2) / 2, 300, 1);
+    EXPECT_EQ(later.x1, full.x1);
+    EXPECT_EQ(opa, LV_OPA_COVER);
+    feed({});
+    on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
+}
+
+// On rounded and round screens the zone follows the visible edge, and the
+// arrow, fully in, lies wholly on the visible screen even on the rows near
+// the top and bottom of the safe area.
+TEST_F(SystemLayerTest, ArrowStaysVisibleOnEveryShape) {
+    for (const char* s : {"rect", "rounded_rect", "circle"}) {
+        TearDown();
+        start(s);
+        int backs = 0;
+        on_ui([&] { layer->set_back_handler([&] { ++backs; }); });
+        for (int32_t y : {safe.y1, safe.y1 + 30, int32_t{kSide / 2}, safe.y2 - 30, safe.y2}) {
+            SCOPED_TRACE(std::string(s) + " y=" + std::to_string(y));
+            const int16_t x0 = static_cast<int16_t>(wisp::hal::row_span(shape, y).x1 + 1);
+            const auto y16 = static_cast<int16_t>(y);
+            ASSERT_TRUE(SystemLayer::in_back_zone(shape, x0, y));
+            feed({{x0, y16, 0}});
+            feed({{static_cast<int16_t>(x0 + 60), y16, 0}});
+            on_ui([&] {
+                lv_obj_t* arrow = layer->back_arrow();
+                ASSERT_NE(arrow, nullptr);
+                lv_obj_update_layout(arrow);
+                lv_area_t a;
+                lv_obj_get_coords(arrow, &a);
+                for (lv_point_t p : {lv_point_t{a.x1, a.y1}, lv_point_t{a.x2, a.y1},
+                                     lv_point_t{a.x1, a.y2}, lv_point_t{a.x2, a.y2}}) {
+                    EXPECT_TRUE(wisp::hal::visible(shape, p.x, p.y)) << p.x << "," << p.y;
+                }
+                // ...and close to the edge: a few pixels clear of the
+                // visible edge on the most indented of its rows.
+                int32_t edge = 0;
+                for (int32_t row = a.y1; row <= a.y2; ++row) {
+                    edge = std::max(edge, wisp::hal::row_span(shape, row).x1);
+                }
+                EXPECT_GE(a.x1, edge);
+                EXPECT_LE(a.x1, edge + 4);
+            });
+            const int before = backs;
+            feed({});
+            EXPECT_EQ(backs, before + 1);
+        }
+        // Just outside the zone on a rounded row: no gesture.
+        const int32_t y = safe.y1 + 30;
+        const auto x =
+            static_cast<int16_t>(wisp::hal::row_span(shape, y).x1 + SystemLayer::kBackZoneWidth);
+        const int before = backs;
+        feed({{x, static_cast<int16_t>(y), 0}});
+        feed({{static_cast<int16_t>(x + 60), static_cast<int16_t>(y), 0}});
+        feed({});
+        EXPECT_EQ(backs, before) << s;
+    }
+}
+
+TEST_F(SystemLayerTest, NoGestureWithoutABackHandler) {
+    start("rect");
+    int backs = 0;
+    auto swipe = [&] {
+        feed({{4, 240, 0}});
+        feed({{60, 240, 0}});
+        on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
+        feed({{200, 240, 0}});
+        feed({});
+    };
+    swipe();
+
+    on_ui([&] { layer->set_back_handler([&] { ++backs; }); });
+    feed({{4, 240, 0}});
+    feed({{60, 240, 0}});
+    // Cleared mid-swipe: the arrow goes and the release does nothing.
+    on_ui([&] {
+        ASSERT_NE(layer->back_arrow(), nullptr);
+        layer->set_back_handler({});
+        EXPECT_EQ(layer->back_arrow(), nullptr);
+    });
+    feed({});
+    EXPECT_EQ(backs, 0);
+
+    on_ui([&] { layer->set_back_handler({}); });
+    swipe();
+    EXPECT_EQ(backs, 0);
+}
+
+// The dialog's backdrop takes every touch, the edge included.
+TEST_F(SystemLayerTest, NoGestureWhileADialogIsOpen) {
+    start("rect");
+    int backs = 0;
+    on_ui([&] {
+        layer->set_back_handler([&] { ++backs; });
+        ASSERT_NE(layer->open_confirm(StrId::ResetTitle, "Sure?", [](bool) {}), nullptr);
+    });
+    feed({{4, 240, 0}});
+    feed({{60, 240, 0}});
+    on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
+    feed({{200, 240, 0}});
+    feed({});
+    EXPECT_EQ(backs, 0);
+    on_ui([&] { EXPECT_TRUE(layer->confirm_open()); });
+}
+
+// The handler is set from inside a UI job (a scene's view coming up) and
+// the touch panel may be read before the next refresh: a swipe that starts
+// right away still goes back.
+TEST_F(SystemLayerTest, SwipeRightAfterTheHandlerIsSet) {
     for (const char* s : {"rect", "circle"}) {
         SCOPED_TRACE(s);
         TearDown();
@@ -251,7 +510,7 @@ TEST_F(SystemLayerTest, StripTakesASwipeRightAfterItIsShown) {
         on_ui([&] {
             make_counting_button(0, 200, kSide, 80, &clicks);
             layer->set_back_handler([&] { ++backs; });
-            // No timer pass between showing the strip and these reads.
+            // No timer pass between setting the handler and these reads.
             for (int16_t x : {x0, x0, int16_t(x0 + 60), int16_t(x0 + 120), int16_t(x0 + 200)}) {
                 touch->set_points({{x, y, 0}});
                 lv_indev_read(indev);
@@ -650,59 +909,38 @@ TEST_F(SystemLayerTest, OneConfirmAtATime) {
     EXPECT_EQ(second_calls, 0);
 }
 
+// The back gesture puts nothing on the top layer until a swipe starts,
+// and nothing shown once it ends: a shown, unmarked top-layer object would
+// stop the opaque-overlay redraw skip (wisp/ui/overlay.hpp).
 TEST_F(SystemLayerTest, NoPersistentTopLayerChild) {
     start("circle");
+    auto shown_children = [] {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < lv_obj_get_child_count(lv_layer_top()); ++i) {
+            if (!lv_obj_has_flag(lv_obj_get_child(lv_layer_top(), static_cast<int32_t>(i)),
+                                 LV_OBJ_FLAG_HIDDEN)) {
+                ++n;
+            }
+        }
+        return n;
+    };
+    uint32_t shown_before = 0;
     on_ui([&] {
+        shown_before = shown_children();
         EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before);
         layer->set_back_handler([] {});
-        ASSERT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before + 1);
-        lv_obj_t* strip = lv_obj_get_child(lv_layer_top(), -1);
-        EXPECT_FALSE(lv_obj_has_flag(strip, LV_OBJ_FLAG_HIDDEN));
-        lv_obj_update_layout(strip);
-        int32_t min_x1 = kSide;
-        int32_t max_x1 = 0;
-        for (int32_t y = safe.y1; y <= safe.y2; ++y) {
-            const wisp::hal::Span s = wisp::hal::row_span(shape, y);
-            min_x1 = std::min(min_x1, s.x1);
-            max_x1 = std::max(max_x1, s.x1);
-        }
-        lv_area_t a;
-        lv_obj_get_coords(strip, &a);
-        EXPECT_LE(lv_area_get_width(&a), 16 + (max_x1 - min_x1));
-        EXPECT_EQ(a.y1, safe.y1);
-        EXPECT_EQ(lv_area_get_height(&a), safe.y2 - safe.y1 + 1);
-        EXPECT_EQ(lv_obj_get_style_bg_opa(strip, LV_PART_MAIN), LV_OPA_TRANSP);
-
-        layer->set_back_handler({});
-        EXPECT_TRUE(lv_obj_has_flag(strip, LV_OBJ_FLAG_HIDDEN));
+        EXPECT_EQ(lv_obj_get_child_count(lv_layer_top()), top_children_before);
     });
-}
-
-// On a round screen the strip's box is wider than the zone on most rows;
-// a touch in the box but outside the zone still reaches the screen.
-TEST_F(SystemLayerTest, StripPassesTouchesOutsideTheZone) {
-    start("circle");
-    const int32_t y = 100;
-    const wisp::hal::Span span = wisp::hal::row_span(shape, y);
-    ASSERT_GE(y, safe.y1);
-    int clicks = 0;
-    lv_area_t strip_box{};
+    const int16_t x0 = static_cast<int16_t>(wisp::hal::row_span(shape, 240).x1 + 2);
+    feed({{x0, 240, 0}});
+    feed({{static_cast<int16_t>(x0 + 60), 240, 0}});
+    on_ui([&] { EXPECT_EQ(shown_children(), shown_before + 1); });
+    feed({});
     on_ui([&] {
-        make_counting_button(span.x1, y - 20, 80, 40, &clicks);
-        layer->set_back_handler([] {});
-        lv_obj_t* strip = lv_obj_get_child(lv_layer_top(), -1);
-        lv_obj_update_layout(strip);
-        lv_obj_get_coords(strip, &strip_box);
+        EXPECT_EQ(shown_children(), shown_before);
+        layer->set_back_handler({});
+        EXPECT_EQ(shown_children(), shown_before);
     });
-    const int16_t outside = static_cast<int16_t>(span.x1 + SystemLayer::kBackZoneWidth + 2);
-    ASSERT_LE(outside, strip_box.x2);  // inside the strip's box
-    ASSERT_FALSE(SystemLayer::in_back_zone(shape, outside, y));
-    tap(outside, y);
-    EXPECT_EQ(clicks, 1);
-
-    // Inside the zone the strip takes it.
-    tap(static_cast<int16_t>(span.x1 + 2), y);
-    EXPECT_EQ(clicks, 1);
 }
 
 // As NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone: what

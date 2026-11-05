@@ -1,18 +1,21 @@
 #pragma once
 
 // The system layer (scene runtime spec 3.5/3.6/8): what the system shows
-// above whatever screen is up -- the back gesture zone, the scene error
-// panel, the on-screen keyboard and the modal confirm dialogs.
+// above whatever screen is up -- the back gesture, the scene error panel,
+// the on-screen keyboard and the modal confirm dialogs.
 //
 // There is no persistent container. Each piece is a direct child of
 // lv_layer_top() that exists (or is shown) only while it is in use: a
 // shown, unmarked top-layer object stops wisp/ui/overlay.hpp from cutting
 // the areas it touches, so one full-screen container would make every
 // scroll under the provisioning card redraw the card as well.
-//   - The gesture strip is a narrow transparent bar along the left edge of
-//     the safe area. It is unmarked, and shown only while a back handler
-//     is set; its hit test follows the visible edge row by row, so the
-//     rest of its pixels still reach the screen below.
+//   - The back gesture has no object to hit. While a back handler is set
+//     the layer watches the pointer's reads (it wraps the pointer input
+//     device's read callback) without taking them, so every press reaches
+//     the widget under it as usual. Only once a press from the left edge
+//     has moved far enough to the right does it take the press away from
+//     that widget. The back arrow that follows the finger is unmarked and
+//     shown only during such a swipe.
 //   - The error panel and the keyboard are opaque and marked as opaque
 //     overlays.
 //   - A confirm dialog is an lv_msgbox under LVGL's full-screen backdrop.
@@ -47,6 +50,10 @@ public:
     // Width of the back gesture zone along the left edge of each row of
     // the safe area (spec 3.5).
     static constexpr int32_t kBackZoneWidth = 16;
+    // How far right a press from the zone moves before it is a back swipe.
+    static constexpr int32_t kBackTriggerDx = 24;
+    // Diameter of the back arrow shown during a swipe.
+    static constexpr int32_t kBackArrowSize = 40;
     // The keyboard's language key, naming the current input: pinyin or
     // plain Latin letters. Fixed text in every UI language, so the key
     // maps can be constant tables.
@@ -63,10 +70,18 @@ public:
 
     const hal::ScreenShape& shape() const { return shape_; }
 
-    // Sets what a back swipe (is_back_swipe()) does and shows the gesture
-    // strip; an empty function hides it again. Presses inside the zone
-    // never reach the screen below while the strip is shown.
+    // Sets what a back swipe does; an empty function turns the gesture off.
+    // A press that starts in the zone (in_back_zone()) reaches the screen
+    // below like any other. Once it has moved far enough to the right
+    // (is_back_swipe()) the press is taken from the widget under it -- it
+    // gets LV_EVENT_PRESS_LOST and no click, and a scroll it started stops
+    // -- and an arrow follows the finger. Releasing still past the trigger
+    // calls `on_back`; releasing after moving back left does not. A press
+    // never starts a swipe while a confirm dialog is open or on the
+    // keyboard.
     void set_back_handler(std::function<void()> on_back);
+    // The back arrow while a swipe shows it, else nullptr.
+    lv_obj_t* back_arrow() const;
 
     // Shows the error panel inside the safe area, replacing one already
     // up, and hides the keyboard. The panel takes every touch on it; its
@@ -105,18 +120,29 @@ public:
     // Whether (x, y) is in the back gesture zone: a row of the safe area,
     // within kBackZoneWidth pixels of that row's visible left edge.
     static bool in_back_zone(const hal::ScreenShape& s, int32_t x, int32_t y);
-    // Whether a press from `start` released at `end` is a back swipe: it
-    // started in the zone and moved right by more than a quarter of the
-    // screen width, more sideways than up or down.
+    // Whether a press from `start` now at `end` is a back swipe: it
+    // started in the zone and moved right by at least kBackTriggerDx, more
+    // than twice as far sideways as up or down.
     static bool is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end);
 
 private:
+    // Wraps the pointer input device's read callback while a back handler
+    // is set, and puts it back.
+    void hook_pointer();
+    void unhook_pointer();
+    // Follows one read of the pointer, before LVGL processes it.
+    void observe(lv_indev_t* indev, const lv_indev_data_t& data);
+    // Takes the current press from whatever widget has it.
+    static void cancel_press(lv_indev_t* indev);
+    void show_arrow(lv_point_t at, int32_t dx, bool armed);
+    void end_swipe();
+    static void pointer_read_cb(lv_indev_t* indev, lv_indev_data_t* data);
+
     void build_keyboard(lv_obj_t* textarea);
     // Hides the keyboard at once and deletes it now or, from inside one
     // of its own events, on the next timer pass.
     void discard_keyboard(bool now);
 
-    static void strip_event_cb(lv_event_t* e);
     static void error_btn_cb(lv_event_t* e);
     static void key_cb(lv_event_t* e);
     static void kb_done_cb(lv_event_t* e);
@@ -126,10 +152,14 @@ private:
     hal::ScreenShape shape_;
     hal::Area safe_;
 
-    lv_obj_t* strip_ = nullptr;
     std::function<void()> on_back_;
-    lv_point_t press_start_{};
-    bool pressing_ = false;
+    lv_indev_t* indev_ = nullptr;  // while hooked
+    lv_indev_read_cb_t prev_read_cb_ = nullptr;
+    bool pressed_ = false;    // the last read was a press
+    bool candidate_ = false;  // the press started in the zone
+    bool taken_ = false;      // it crossed the trigger and was taken
+    lv_point_t start_{};
+    lv_obj_t* arrow_ = nullptr;  // hidden while no swipe shows it
 
     lv_obj_t* error_panel_ = nullptr;
     lv_obj_t* error_reload_ = nullptr;

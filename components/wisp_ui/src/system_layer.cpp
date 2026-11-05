@@ -7,7 +7,7 @@
 #include <string>
 #include <utility>
 
-#include "lvgl_private.h"  // lv_hit_test_info_t
+#include "lvgl_private.h"  // lv_indev_t::pointer.act_obj
 #include "wisp/ui/overlay.hpp"
 
 namespace wisp::ui {
@@ -92,13 +92,35 @@ SystemLayer::~SystemLayer() {
     close_confirm(confirm_box_);
     hide_error();
     discard_keyboard(true);
-    if (strip_ != nullptr) {
-        lv_obj_delete(strip_);
-        strip_ = nullptr;
+    unhook_pointer();
+    if (arrow_ != nullptr) {
+        lv_obj_delete(arrow_);
+        arrow_ = nullptr;
     }
 }
 
 // --- Back gesture ---
+
+namespace {
+
+// The layer whose observe() the wrapped read callback calls. LVGL is one
+// instance per process (UiRuntime refuses a second), and so is the
+// pointer it wraps.
+SystemLayer* g_pointer_watcher = nullptr;
+
+// The arrow's distance from the visible edge once fully in, like
+// hal::safe_rect()'s corner margin: panel corners are rarely known to the
+// pixel.
+constexpr int32_t kArrowEdgeInset = 4;
+
+bool point_in(lv_obj_t* obj, lv_point_t p) {
+    if (obj == nullptr || lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) return false;
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+    return lv_area_is_point_on(&a, &p, 0);
+}
+
+}  // namespace
 
 bool SystemLayer::in_back_zone(const hal::ScreenShape& s, int32_t x, int32_t y) {
     const hal::Area safe = hal::safe_rect(s);
@@ -112,79 +134,180 @@ bool SystemLayer::is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_
     if (!in_back_zone(s, start.x, start.y)) return false;
     const int32_t dx = end.x - start.x;
     const int32_t dy = end.y - start.y;
-    return dx > s.width / 4 && std::abs(dy) < dx;
+    return dx >= kBackTriggerDx && dx > 2 * std::abs(dy);
 }
 
 void SystemLayer::set_back_handler(std::function<void()> on_back) {
     on_back_ = std::move(on_back);
-    if (!on_back_) {
-        pressing_ = false;
-        if (strip_ != nullptr) lv_obj_add_flag(strip_, LV_OBJ_FLAG_HIDDEN);
-        return;
+    if (on_back_) {
+        hook_pointer();
+    } else {
+        end_swipe();
+        unhook_pointer();
     }
-    if (strip_ == nullptr) {
-        // From the leftmost to the rightmost row start, plus the zone: the
-        // hit test (in_back_zone()) then follows the edge row by row.
-        int32_t min_x1 = shape_.width;
-        int32_t max_x1 = 0;
-        for (int32_t y = safe_.y1; y <= safe_.y2; ++y) {
-            const hal::Span span = hal::row_span(shape_, y);
-            if (span.empty()) continue;
-            min_x1 = std::min(min_x1, span.x1);
-            max_x1 = std::max(max_x1, span.x1);
-        }
-        if (min_x1 > max_x1) min_x1 = max_x1 = safe_.x1;
-        strip_ = lv_obj_create(lv_layer_top());
-        lv_obj_remove_style_all(strip_);  // transparent: nothing to draw
-        lv_obj_add_flag(strip_, LV_OBJ_FLAG_ADV_HITTEST);
-        lv_obj_add_flag(strip_, LV_OBJ_FLAG_PRESS_LOCK);
-        lv_obj_remove_flag(strip_, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_remove_flag(strip_, LV_OBJ_FLAG_SCROLL_CHAIN);
-        lv_obj_remove_flag(strip_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-        lv_obj_remove_flag(strip_, LV_OBJ_FLAG_CLICK_FOCUSABLE);
-        lv_obj_set_pos(strip_, min_x1, safe_.y1);
-        lv_obj_set_size(strip_, max_x1 + kBackZoneWidth - min_x1, height_of(safe_));
-        for (lv_event_code_t code :
-             {LV_EVENT_HIT_TEST, LV_EVENT_PRESSED, LV_EVENT_RELEASED, LV_EVENT_PRESS_LOST}) {
-            lv_obj_add_event_cb(strip_, &SystemLayer::strip_event_cb, code, this);
-        }
-    }
-    lv_obj_remove_flag(strip_, LV_OBJ_FLAG_HIDDEN);
-    raise();
-    // The indev timer runs before the refresh that would lay the strip out,
-    // and an object without coordinates is never hit: a swipe starting on
-    // the first read after a scene came up would go to the scene instead.
-    lv_obj_update_layout(strip_);
 }
 
-void SystemLayer::strip_event_cb(lv_event_t* e) {
-    auto* self = static_cast<SystemLayer*>(lv_event_get_user_data(e));
-    switch (lv_event_get_code(e)) {
-        case LV_EVENT_HIT_TEST: {
-            auto* info = static_cast<lv_hit_test_info_t*>(lv_event_get_param(e));
-            info->res = in_back_zone(self->shape_, info->point->x, info->point->y);
+lv_obj_t* SystemLayer::back_arrow() const {
+    if (arrow_ == nullptr || lv_obj_has_flag(arrow_, LV_OBJ_FLAG_HIDDEN)) return nullptr;
+    return arrow_;
+}
+
+// LVGL tells an input device's event callbacks about PRESSED and RELEASED
+// only when a widget is under the finger, and never about PRESSING; the
+// read callback sees every read, so the gesture is followed from there.
+void SystemLayer::hook_pointer() {
+    if (indev_ != nullptr) return;
+    for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i)) {
+        if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER) {
+            indev_ = i;
             break;
         }
-        case LV_EVENT_PRESSED:
-            lv_indev_get_point(lv_indev_active(), &self->press_start_);
-            self->pressing_ = true;
-            break;
-        case LV_EVENT_RELEASED: {
-            if (!self->pressing_) break;
-            self->pressing_ = false;
-            lv_point_t end;
-            lv_indev_get_point(lv_indev_active(), &end);
-            if (self->on_back_ && is_back_swipe(self->shape_, self->press_start_, end)) {
-                // A copy: the handler may replace or clear itself.
-                std::function<void()> on_back = self->on_back_;
-                on_back();
-            }
-            break;
-        }
-        default:
-            self->pressing_ = false;
-            break;
     }
+    if (indev_ == nullptr) return;
+    prev_read_cb_ = lv_indev_get_read_cb(indev_);
+    lv_indev_set_read_cb(indev_, &SystemLayer::pointer_read_cb);
+    g_pointer_watcher = this;
+    // A press already under way when the handler is set is not a swipe.
+    pressed_ = lv_indev_get_state(indev_) == LV_INDEV_STATE_PRESSED;
+    candidate_ = false;
+    taken_ = false;
+}
+
+void SystemLayer::unhook_pointer() {
+    if (indev_ == nullptr) return;
+    // The device may be gone already when the UI stops first.
+    for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i)) {
+        if (i == indev_ && lv_indev_get_read_cb(i) == &SystemLayer::pointer_read_cb) {
+            lv_indev_set_read_cb(i, prev_read_cb_);
+        }
+    }
+    if (g_pointer_watcher == this) g_pointer_watcher = nullptr;
+    indev_ = nullptr;
+    prev_read_cb_ = nullptr;
+    candidate_ = false;
+    taken_ = false;
+}
+
+void SystemLayer::pointer_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
+    SystemLayer* self = g_pointer_watcher;
+    if (self == nullptr || self->indev_ != indev) return;
+    if (self->prev_read_cb_ != nullptr) self->prev_read_cb_(indev, data);
+    self->observe(indev, *data);
+}
+
+void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
+    // LVGL rotates the raw point after this callback; the zone is in
+    // display coordinates.
+    lv_point_t p = data.point;
+    lv_display_rotate_point(lv_indev_get_display(indev), &p);
+
+    if (data.state != LV_INDEV_STATE_PRESSED) {
+        // A release (LVGL fills in the last pressed point).
+        const bool was_pressed = pressed_;
+        pressed_ = false;
+        if (!was_pressed || !candidate_) return;
+        const bool fire = taken_ && is_back_swipe(shape_, start_, p) && on_back_;
+        end_swipe();
+        if (fire) {
+            // A copy: the handler may replace or clear itself.
+            std::function<void()> on_back = on_back_;
+            on_back();
+        }
+        return;
+    }
+
+    if (!pressed_) {
+        pressed_ = true;
+        start_ = p;
+        taken_ = false;
+        candidate_ = on_back_ && confirm_box_ == nullptr && !point_in(kb_, p) &&
+                     !point_in(candidates_, p) && in_back_zone(shape_, p.x, p.y);
+        return;
+    }
+    if (!candidate_) return;
+
+    const int32_t dx = p.x - start_.x;
+    const int32_t dy = std::abs(p.y - start_.y);
+    const bool past = is_back_swipe(shape_, start_, p);
+    if (!taken_) {
+        if (past) {
+            taken_ = true;
+            cancel_press(indev);
+        } else if (2 * dy >= kBackTriggerDx && 2 * dy >= dx) {
+            // Clearly up or down: a scroll, no longer a swipe.
+            end_swipe();
+            return;
+        }
+    }
+    if (taken_ || dx > 0) {
+        show_arrow(p, dx, past);
+    } else if (arrow_ != nullptr) {
+        lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+// Runs inside the read callback, before LVGL processes this read. The
+// widget holding the press gets PRESS_LOST (it drops its pressed look, a
+// slider its drag); the reset sends LV_EVENT_INDEV_RESET to it and to the
+// object being scrolled (clearing PRESSED and SCROLLED) and makes LVGL
+// forget both right after this callback returns. Waiting for the release
+// then keeps LVGL from finding a new widget under the moving finger: the
+// following pressed reads are skipped, and the release sends no RELEASED
+// or CLICKED, since no widget has the press any more.
+void SystemLayer::cancel_press(lv_indev_t* indev) {
+    lv_obj_t* act = indev->pointer.act_obj;
+    if (act != nullptr) lv_obj_send_event(act, LV_EVENT_PRESS_LOST, indev);
+    lv_indev_reset(indev, nullptr);
+    lv_indev_wait_release(indev);
+}
+
+void SystemLayer::show_arrow(lv_point_t at, int32_t dx, bool armed) {
+    if (arrow_ == nullptr) {
+        arrow_ = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(arrow_);
+        lv_obj_remove_flag(arrow_, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(arrow_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_size(arrow_, kBackArrowSize, kBackArrowSize);
+        lv_obj_set_style_radius(arrow_, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(arrow_, lv_palette_main(LV_PALETTE_BLUE), 0);
+        lv_obj_set_style_bg_opa(arrow_, LV_OPA_COVER, 0);
+        lv_obj_t* icon = lv_label_create(arrow_);
+        lv_label_set_text(icon, LV_SYMBOL_LEFT);
+        lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+        lv_obj_center(icon);
+        lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (lv_obj_has_flag(arrow_, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_remove_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
+        raise();
+    }
+    // At the finger's row, kept within the safe area's rows, so that its
+    // box lies on rows that are visible.
+    const int32_t half = kBackArrowSize / 2;
+    const int32_t y1 =
+        std::clamp(at.y - half, safe_.y1, std::max(safe_.y1, safe_.y2 + 1 - kBackArrowSize));
+    // Fully in, its box clears the visible left edge on each of its rows.
+    int32_t x_in = 0;
+    for (int32_t y = y1; y < y1 + kBackArrowSize; ++y) {
+        const hal::Span span = hal::row_span(shape_, y);
+        if (!span.empty()) x_in = std::max(x_in, span.x1);
+    }
+    x_in += kArrowEdgeInset;
+    // Below the trigger it is partly in and see-through, in step with dx.
+    const int32_t d = std::clamp(dx, int32_t{0}, kBackTriggerDx);
+    const int32_t x = armed ? x_in : x_in - half * (kBackTriggerDx - d) / kBackTriggerDx;
+    const int32_t faint = LV_OPA_30;
+    const int32_t strong = LV_OPA_80;
+    const auto opa = static_cast<lv_opa_t>(armed ? int32_t{LV_OPA_COVER}
+                                                 : faint + (strong - faint) * d / kBackTriggerDx);
+    lv_obj_set_pos(arrow_, x, y1);
+    lv_obj_set_style_opa(arrow_, opa, 0);
+}
+
+void SystemLayer::end_swipe() {
+    candidate_ = false;
+    taken_ = false;
+    if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
 }
 
 // --- Error panel ---
@@ -431,7 +554,7 @@ void SystemLayer::confirm_btn_cb(lv_event_t* e) {
 // --- Stacking ---
 
 void SystemLayer::raise() {
-    for (lv_obj_t* piece : {error_panel_, kb_, candidates_, strip_}) {
+    for (lv_obj_t* piece : {error_panel_, kb_, candidates_, arrow_}) {
         if (piece != nullptr) lv_obj_move_foreground(piece);
     }
     // The dialog's backdrop holds the box.
