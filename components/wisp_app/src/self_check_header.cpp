@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "wisp/ui/fonts.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
@@ -18,8 +19,9 @@ constexpr uint32_t kColorSelected = 0x1E88E5;
 // A pressed button, a shade darker than the neutral chip.
 constexpr uint32_t kColorPressed = 0xBDBDBD;
 
-// The title's font. UI thread only (ui::font()).
-const lv_font_t* title_font() { return ui::font(24); }
+// The title's size (spec 5.2): large enough to read at a glance, in the
+// page's current language.
+constexpr int kTitlePx = 32;
 
 // A pill-shaped container with one label; `label` receives the label.
 lv_obj_t* make_pill(lv_obj_t* parent, lv_obj_t** label) {
@@ -67,7 +69,7 @@ void SelfCheckHeader::build(lv_obj_t* col, PageText& text, std::function<void()>
     on_devices_tap_ = std::move(on_devices_tap);
 
     lv_obj_t* title = make_wrap_label(col);
-    lv_obj_set_style_text_font(title, title_font(), 0);
+    lv_obj_set_style_text_font(title, ui::font(kTitlePx), 0);
     text.bind(title, ui::StrId::SelfCheckTitle);
 
     lv_obj_t* chips = make_plain_row(col, LV_FLEX_FLOW_ROW_WRAP);

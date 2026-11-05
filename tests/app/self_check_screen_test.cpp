@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -24,6 +25,7 @@
 
 #include "self_check_layout.hpp"
 #include "support/fake_devices.hpp"
+#include "support/font_image.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/temp_dir.hpp"
 #include "support/wait.hpp"
@@ -40,6 +42,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+#include "wisp/ui/fonts.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -61,6 +64,7 @@ using wisp::test::page_lang_name;
 using wisp::test::run_on_ui_blocking;
 using wisp::test::run_on_ui_thread;
 using wisp::test::select_page_lang;
+using wisp::test::test_font_image;
 using wisp::test::wait_until;
 using wisp::ui::Lang;
 using wisp::ui::StrId;
@@ -157,7 +161,8 @@ struct Harness {
 
     explicit Harness(std::string settings_path_in, uint32_t init_sleep_ms = 0,
                      std::string display_shape = "rounded_rect", bool with_sd = false,
-                     int display_size = 480, BoardExtras extras = {})
+                     int display_size = 480, BoardExtras extras = {},
+                     std::span<const uint8_t> font_image = {})
         : display(std::make_shared<FakeDisplay>("display.main", display_size, display_size,
                                                 /*area_align=*/1, std::move(display_shape))),
           imu(std::make_shared<FakeImu>("imu.main")),
@@ -166,7 +171,7 @@ struct Harness {
                                                      /*removable=*/true)
                      : nullptr),
           settings_path(std::move(settings_path_in)),
-          app(build_platform(init_sleep_ms, std::move(extras))) {
+          app(build_platform(init_sleep_ms, std::move(extras), font_image)) {
         if (sd) {
             sd->online_flag = false;
         }
@@ -177,7 +182,8 @@ struct Harness {
     }
 
 private:
-    wisp::app::Platform build_platform(uint32_t init_sleep_ms, BoardExtras extras) {
+    wisp::app::Platform build_platform(uint32_t init_sleep_ms, BoardExtras extras,
+                                       std::span<const uint8_t> font_image) {
         wisp::app::Platform platform;
         platform.target = extras.target;
         platform.board = std::make_unique<FullFakeBoard>(display, imu, power, init_sleep_ms, sd,
@@ -189,6 +195,7 @@ private:
             std::lock_guard<std::mutex> lock(lines_mutex);
             lines.push_back(line);
         };
+        platform.font_image = font_image;
         return platform;
     }
 };
@@ -1686,4 +1693,53 @@ TEST(SelfCheckScreen, UnchangedReadoutsAreNotRedrawn) {
 
         h.app.stop();
     }
+}
+
+// Spec 5.2: the self-check title is a vector-font label, in whichever
+// language the page switcher currently shows (not necessarily the
+// default, English). This only exercises the real vector font (as
+// opposed to the bitmap fallback every other test in this file gets,
+// since they don't pass a font image) by passing test_font_image() into
+// the harness.
+TEST(SelfCheckScreen, TitleUsesLargeFontInCurrentLanguage) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
+              "rounded_rect", /*with_sd=*/false, /*display_size=*/480, /*extras=*/{},
+              test_font_image());
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    struct Case {
+        Lang lang;
+        const char* title;
+        uint32_t first_char;
+    };
+    const Case cases[] = {
+        {Lang::Zh, "自检", 0x81EA},
+        {Lang::Ja, "セルフチェック", 0x30BB},
+        {Lang::En, "Self Check", 'S'},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(wisp::ui::lang_code(c.lang));
+        ASSERT_TRUE(select_page_lang(h.app.ui(), c.lang));
+        EXPECT_EQ(run_on_ui_thread(h.app.ui(),
+                                   [&] {
+                                       lv_obj_t* title = lv_obj_get_child(root_column(), 0);
+                                       const lv_font_t* big = wisp::ui::font(32);
+                                       const lv_font_t* f =
+                                           lv_obj_get_style_text_font(title, LV_PART_MAIN);
+                                       if (f != big) return std::string("font mismatch");
+                                       if (lv_label_get_text(title) != std::string(c.title)) {
+                                           return std::string("text: ") + lv_label_get_text(title);
+                                       }
+                                       lv_font_glyph_dsc_t dsc{};
+                                       lv_font_get_glyph_dsc(f, &dsc, c.first_char, 0);
+                                       if (dsc.resolved_font != big) {
+                                           return std::string("fell back, not the vector font");
+                                       }
+                                       return std::string("ok");
+                                   }),
+                  "ok");
+    }
+
+    h.app.stop();
 }

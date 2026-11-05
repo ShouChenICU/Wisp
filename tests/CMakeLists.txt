@@ -109,6 +109,11 @@ wisp_test(NAME ram_budget_test SRCS app/ram_budget_test.cpp LIBS wisp_app wisp_b
 wisp_test(NAME self_check_screen_test SRCS app/self_check_screen_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
 target_include_directories(self_check_screen_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+# The title font test needs the real vector font image; see font_image_test
+# above for where fonts.bin comes from.
+add_dependencies(self_check_screen_test wisp_sim_fonts)
+target_compile_definitions(self_check_screen_test PRIVATE
+                           WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
 wisp_test(NAME self_check_model_test SRCS app/self_check_model_test.cpp LIBS wisp_app)
 target_include_directories(self_check_model_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME app_net_test SRCS app/app_net_test.cpp
