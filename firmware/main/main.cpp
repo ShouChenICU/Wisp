@@ -28,6 +28,7 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #include "wisp/app/app.hpp"
+#include "wisp/app/bench.hpp"
 #include "wisp/app/board.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
@@ -169,6 +170,9 @@ extern "C" void app_main() {
              if (args.size() != 1) return "error: usage: mem";
              return wisp::port::esp::mem_report();
          }});
+    // `bench scroll`: the rendering baseline's programmatic scroll, one
+    // WISP_BENCH line (wisp/app/bench.hpp).
+    platform.console_commands.push_back(wisp::app::bench_command());
     // Admin backend (connectivity spec 6): App serves it on http_port
     // (8900) while the station has an address or the hotspot is up.
     platform.http_server = std::make_unique<wisp::port::esp::EspHttpServer>();

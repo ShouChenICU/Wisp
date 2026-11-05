@@ -117,6 +117,11 @@
   ```
   `fps`/`flush_ms` 来自 `ui::UiRuntime::perf()`；`flush_ms` 是 UI 任务每段（一块局部缓冲）花在屏幕上的平均毫秒数，即启动传输加上之后等它传完，传输与渲染重叠时远小于传输本身。两者本质是浮点数，但 JSON 往返时整数值会被识别为 `Int` 而非 `Double`（`Value`/JSON 对 Int/Double 的区分按实际值而非来源类型，见 `tests/base/value_json_test.cpp`）；解析方不应假设其中任何一个字段固定是哪一种 JSON 数字形式。`heap_internal_free`/`heap_large_free` 来自 `Platform::heap_info`（可能为空，此时都是 0）。
 
+- **`WISP_BENCH <json>`**（串口控制台命令 `bench scroll [秒数]` 的回答；`wisp/app/bench.hpp`，真机和模拟器都经 `Platform::console_commands` 注册）：
+  ```
+  {"bench": "scroll", "fps": number, "frames": int, "ms": int, "cpu": int, "px": int}
+  ```
+  在 UI 线程里把当前界面上最大的可滚动对象（自检界面就是列表）每帧用 `lv_obj_scroll_by_raw()` 滚 `px`（6）像素，到头就反向，前后各发一次 `SCROLL_BEGIN`/`SCROLL_END`，结束后滚回原位；默认 10 s，命令阻塞到测完，期间屏幕不会自动熄灭，熄屏时拒绝运行。`frames` 是 `REFR_READY` 的次数，`ms` 是第一帧到最后一帧的时间，`fps` = (`frames` − 1) / `ms`，保留两位小数；`cpu` 是跑起来第 2 s 起每秒一次 `UiRuntime::perf()` 的 `cpu_percent` 的平均值（与 `WISP_PERF` 的 cpu 同义，是 `lv_timer_handler()` 里度过的墙钟时间）。这是硬件文档"性能基准"一节 raw 列的测法，数值可以直接和那里的基准比。
 - **`WISP_HTTP <json>`**（网络步骤；`NetWiring::reconcile_http()`）：管理后台 HTTP 服务每次启动成功时一行，`{"port": int}`，是 `HttpServer::port()` 报告的实际端口。可能出现在 `WISP_BOOT_REPORT` 之前（`http_always_on` 时开机即启动）。模拟器 `--http-port 0` 时不启动服务，也就没有这一行；需要后台的冒烟测试自己挑一个空闲端口传进去（`admin_smoke.py` 在端口被抢走、日志出现 `admin server failed to start` 时换端口重试）。
 - **`WISP_REBOOT`**（仅模拟器，无 JSON）：`Platform::reboot` 被调用（例如 `POST /api/v1/system/reboot`，或恢复出厂设置完成、固件更新确认后）时输出，随后主循环返回，经正常的 `App::stop()` 以退出码 0 结束进程（不在定时器线程里直接 `exit()`，以免静态析构与其他线程竞争）。真机对应 `esp_restart()`。
 - **`pair-code=<6 位数字>`**（仅模拟器调试命令，无 JSON）：控制台命令 `debug pair-code` 的回答，当前没有有效配对码时为 `pair-code=none`。只在 `wisp_sim` 目标定义了 `WISP_SIM_DEBUG_COMMANDS` 时经 `Platform::console_commands` 编译进去（`simulator/main.cpp`），可移植层和固件都没有；供 `tests/smoke/admin_smoke.py` 不看屏幕完成配对。

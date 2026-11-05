@@ -110,7 +110,7 @@ wisp_test(NAME console_test SRCS app/console_test.cpp
 wisp_test(NAME loopback_test SRCS app/loopback_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 target_include_directories(loopback_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
-foreach(app_ui_test net_ui_test factory_reset_test firmware_confirm_test app_scenes_test)
+foreach(app_ui_test net_ui_test factory_reset_test firmware_confirm_test app_scenes_test bench_test)
     wisp_test(NAME ${app_ui_test} SRCS app/${app_ui_test}.cpp
               LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
     target_include_directories(${app_ui_test} PRIVATE ${WISP_ROOT}/components/wisp_app/src)

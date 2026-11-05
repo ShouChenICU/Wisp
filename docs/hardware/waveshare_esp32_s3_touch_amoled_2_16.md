@@ -355,7 +355,7 @@ ESP-IDF v6.0.3，发布版（全局 `-Os`，LVGL、esp_lcd 和 wisp_ui 的渲染
 - **raw**：`lv_obj_scroll_by_raw()`，前后各发一次 `SCROLL_BEGIN`/`SCROLL_END`，和手指拖动时 LVGL 的做法一样。
 - **scroll_by**：每帧调用一次 `lv_obj_scroll_by()`。每次调用都会发一对 `SCROLL_BEGIN`/`SCROLL_END`，切换 `LV_STATE_SCROLLED` 状态，触发整棵树重新布局，每帧多出约 11 ms。手指滚动不会这样，所以以 raw 为准。
 
-fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致。"热点"指 `wifi ap on`（只开热点，不连任何网络），这时配网卡片（带二维码）盖在列表上面。
+fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致。raw 的测法现在是固件里常驻的串口命令 `bench scroll [秒数]`（默认 10 s，输出一行 `WISP_BENCH`，见 `docs/architecture.md`"机器可读输出"），测前确认性能浮层关着、列表在顶部。"热点"指 `wifi ap on`（只开热点，不连任何网络），这时配网卡片（带二维码）盖在列表上面。
 
 | 配置 | raw fps | raw fps（热点） | scroll_by fps | `WISP_PERF`（滚动中） | 启动后内部 RAM 空闲 |
 |---|---|---|---|---|---|
