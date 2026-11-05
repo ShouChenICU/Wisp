@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <string>
 
 #include "wisp/base/value.hpp"
@@ -52,6 +53,12 @@ TEST(DisplayGeometry, RoundedRect) {
     EXPECT_EQ(r.x2, 445);
 }
 
+// Radial distance from the point (x, y) inward to the arc of radius r
+// centred on (cx, cy); negative when the point lies outside the arc.
+static double corner_margin(double cx, double cy, double r, double x, double y) {
+    return r - std::hypot(x - cx, y - cy);
+}
+
 // The real waveshare_esp32_s3_touch_amoled_2_16 panel's measured corner
 // radius (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md): arcs of
 // known radius drawn on the real panel showed the visible boundary
@@ -65,16 +72,10 @@ TEST(DisplayGeometry, RoundedRectMeasuredRadius) {
     EXPECT_EQ(a.x2, 455);
     EXPECT_EQ(a.y2, 455);
 
-    // Each safe-rect corner carries at least the 4 px corner margin: from
-    // the top-left corner, stepping 4 px further outward along either
-    // edge (toward the actual screen corner) must still land on a
-    // visible pixel. (Stepping outward along *both* axes at once, i.e.
-    // the Euclidean diagonal, moves 4*sqrt(2) px -- more than the 4 px
-    // margin -- so that combined offset is not part of the guarantee.)
-    EXPECT_TRUE(visible(s, a.x1 - 4, a.y1));
-    EXPECT_TRUE(visible(s, a.x1, a.y1 - 4));
-    EXPECT_TRUE(visible(s, a.x2 + 4, a.y2));
-    EXPECT_TRUE(visible(s, a.x2, a.y2 + 4));
+    // The outer corner of each corner pixel lies at least 4 px (radially)
+    // inside the corner arc.
+    EXPECT_GE(corner_margin(70, 70, 70, a.x1, a.y1), 4.0);
+    EXPECT_GE(corner_margin(410, 410, 70, a.x2 + 1, a.y2 + 1), 4.0);
 }
 
 TEST(DisplayGeometry, Circle) {
@@ -95,10 +96,8 @@ TEST(DisplayGeometry, Circle) {
     EXPECT_TRUE(row_span(s, 480).empty());
 
     // Same corner-margin check as RoundedRectMeasuredRadius, for Circle.
-    EXPECT_TRUE(visible(s, a.x1 - 4, a.y1));
-    EXPECT_TRUE(visible(s, a.x1, a.y1 - 4));
-    EXPECT_TRUE(visible(s, a.x2 + 4, a.y2));
-    EXPECT_TRUE(visible(s, a.x2, a.y2 + 4));
+    EXPECT_GE(corner_margin(240, 240, 240, a.x1, a.y1), 4.0);
+    EXPECT_GE(corner_margin(240, 240, 240, a.x2 + 1, a.y2 + 1), 4.0);
 }
 
 TEST(DisplayGeometry, RectIsFullScreen) {

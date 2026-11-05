@@ -59,7 +59,7 @@
 | 任务 | 所有者 | 栈 | `flash_access` | 说明 |
 |---|---|---|---|---|
 | `wisp.scene` | `scene::SceneRuntime` | 128 KB（`SceneRuntimeConfig::stack_bytes`，Lua 解释器递归最深处要这么多） | `false`，真机放 PSRAM | 只跑 Lua 和场景消息；读写文件（`SceneStore` 的 flush、加载包）都交给 `wisp.fs`，`device_status` 也只读内存 |
-| `wisp.fs` | `core::StorageWorker` | 4096（`StorageWorkerConfig::stack_bytes`） | `true`，内部 RAM | 先进先出地替不能碰 flash 的任务做文件操作：仓库的 `recover`/`list`/`remove`、场景存储的加载与 flush、自检界面的场景列表 |
+| `wisp.fs` | `core::StorageWorker` | 6144（`StorageWorkerConfig::stack_bytes`） | `true`，内部 RAM | 先进先出地替不能碰 flash 的任务做文件操作：仓库的 `recover`/`list`/`remove`、场景存储的加载与 flush、自检界面的场景列表 |
 | `wisp.shttp` | `net::SceneHttp` | 8192 | `false`，真机放 PSRAM | 场景 `wisp.http` 请求一次一个地经 `Platform::http_client` 发出；不读 Settings、不碰文件 |
 
 **失败处理**（spec 6.1）：设备初始化失败只记录、不注册，系统降级继续；`Display` 失败则不启动 UI，走 headless 路径；内置 Flash 挂载失败走只读降级。`WISP_BOOT_REPORT`、`WISP_MANIFEST`、`WISP_PERF` 都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）。
