@@ -154,6 +154,8 @@ private:
     void pass_test(InteractiveTest test);
 
     void refresh_ui();
+    // UI thread: the time sync row from TimeSyncService::status().
+    void refresh_time_sync();
     void refresh_storage();
     // Any thread: asks the storage worker for the scene list; the "Scenes"
     // card takes it on the UI thread.
@@ -214,6 +216,9 @@ private:
     // empty until the first one, which always reads the stored language.
     // UI thread only.
     std::optional<uint32_t> language_revision_;
+    // The utc_offset_min setting as of that sync, for the time sync row.
+    // UI thread only.
+    int utc_offset_min_ = 480;
     // The power-off confirmation's box while it is open.
     lv_obj_t* msgbox_ = nullptr;
     // The factory-reset confirmation, kept apart from the power-off dialog

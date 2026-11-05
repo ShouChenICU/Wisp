@@ -47,7 +47,9 @@
 //      builds the admin router and serves it on http_port while the
 //      station has an IP or the setup hotspot is up (always, with
 //      http_always_on); while the hotspot is up it also runs
-//      Platform::captive_server on port 80. Each successful admin server
+//      Platform::captive_server on port 80. Given Platform::sntp, a
+//      TimeSyncService sets the clock from the network while the station
+//      has an IP (connectivity spec 5.6). Each successful admin server
 //      start emits
 //      "WISP_HTTP {"port":n}". Records the "net" boot-report note:
 //      "missing" (no "net.wifi"), "off" (no saved network) or
@@ -85,6 +87,7 @@
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/pairing_service.hpp"
+#include "wisp/net/time_sync.hpp"
 
 namespace wisp::ui {
 class UiRuntime;
@@ -197,6 +200,13 @@ struct Platform {
     // server only listens on loopback); otherwise the server runs only
     // while the station has an IP or the setup hotspot is up.
     bool http_always_on = false;
+    // Network time (connectivity spec 5.6): one SNTP request at a time.
+    // Empty: no TimeSyncService, the clock is never synced from the
+    // network.
+    std::unique_ptr<net::Sntp> sntp;
+    // Sets the system wall clock to UTC seconds after a sync. Empty: left
+    // alone (the simulator's host clock is already right).
+    std::function<void(int64_t unix_s)> set_wall_clock;
     // Code pairing's limits; the defaults are spec 6.1's (a code lives two
     // minutes). Tests shorten code_ttl_ms to watch a code expire.
     net::PairingConfig pairing;
@@ -290,6 +300,8 @@ public:
     // or after stop().
     net::WifiService* wifi();
     net::PairingService* pairing();
+    // Network time: nullptr without Platform::sntp or a WifiService.
+    net::TimeSyncService* time_sync();
     // Always available; loaded from storage by start() (step 3).
     core::ModelProfileService& models();
     // Applies brightness through PowerManager::set_brightness() while

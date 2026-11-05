@@ -54,6 +54,8 @@ const char* strings_en(StrId id) {
             return "Battery";
         case StrId::Time:
             return "Time";
+        case StrId::TimeSync:
+            return "Time sync";
         case StrId::InternalFlash:
             return "Internal flash";
         case StrId::SdCard:
@@ -86,6 +88,10 @@ const char* strings_en(StrId id) {
             return "Not tested";
         case StrId::TestPassed:
             return "Passed";
+        case StrId::TimeSynced:
+            return "Synced {}";
+        case StrId::TimeNotSynced:
+            return "Not synced";
         case StrId::LoopbackButton:
             return "Mic test";
         case StrId::LoopReady:

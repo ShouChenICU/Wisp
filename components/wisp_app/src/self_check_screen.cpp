@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,6 +21,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/pairing_service.hpp"
+#include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/strings.hpp"
@@ -529,9 +531,19 @@ void SelfCheck::refresh_ui() {
     SampleSnapshot snap = sampler_.snapshot();
     sensors_.update(snap);
     power_clock_.update(snap);
+    refresh_time_sync();
     refresh_storage();
     perf_.update(ui_->perf());
     scenes_section_.update_states();
+}
+
+void SelfCheck::refresh_time_sync() {
+    std::optional<int64_t> local;
+    if (net::TimeSyncService* sync = app_.time_sync()) {
+        const net::TimeSyncStatus st = sync->status();
+        if (st.synced) local = st.last_sync + int64_t{utc_offset_min_} * 60;
+    }
+    power_clock_.show_sync(local);
 }
 
 void SelfCheck::request_scene_list() {

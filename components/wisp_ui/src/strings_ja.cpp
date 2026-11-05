@@ -56,6 +56,8 @@ const char* strings_ja(StrId id) {
             return "バッテリー";
         case StrId::Time:
             return "時刻";
+        case StrId::TimeSync:
+            return "時刻同期";
         case StrId::InternalFlash:
             return "内蔵フラッシュ";
         case StrId::SdCard:
@@ -88,6 +90,10 @@ const char* strings_ja(StrId id) {
             return "未テスト";
         case StrId::TestPassed:
             return "合格";
+        case StrId::TimeSynced:
+            return "同期済み {}";
+        case StrId::TimeNotSynced:
+            return "未同期";
         case StrId::LoopbackButton:
             return "マイクテスト";
         case StrId::LoopReady:

@@ -16,6 +16,8 @@
 //     http_always_on, starts serving right away. Platform::captive_server
 //     (if any) runs AdminServer::captive_handler() on port 80 exactly
 //     while the hotspot is up;
+//   - with Platform::sntp and a WifiService, builds the TimeSyncService
+//     (connectivity spec 5.6) and its "wisp.ntp" worker task;
 //   - spawns the "wisp.net" task.
 //
 // The "wisp.net" task is the only caller of WifiService::tick(),
@@ -28,6 +30,13 @@
 // EventBus dispatcher. A server whose start() failed is retried with a
 // backoff (kStartRetryMinMs doubling up to kStartRetryMaxMs) while its
 // interface stays up.
+//
+// The "wisp.net" task also ticks the TimeSyncService with whether the
+// station has an IP; the SNTP queries an attempt makes (seconds each when
+// a server is unreachable) run on the "wisp.ntp" task so they never hold
+// up a Wi-Fi tick. "wisp.ntp" never touches flash: tick() reads the server
+// list on "wisp.net", and the worker only does sockets, settimeofday(),
+// the RTC's I2C write, logging and a bus publish.
 //
 // stop() joins the task, stops both servers (their on_close callbacks run
 // while they join connection threads; nothing here holds a lock then),
@@ -57,6 +66,7 @@
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/asset_pack.hpp"
 #include "wisp/net/pairing_service.hpp"
+#include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
 
@@ -95,6 +105,9 @@ public:
     static constexpr uint16_t kCaptivePort = 80;
     static constexpr uint32_t kStartRetryMinMs = 2000;
     static constexpr uint32_t kStartRetryMaxMs = 60000;
+    // The "wisp.ntp" worker's stack: a name lookup, one UDP exchange, a
+    // log line and a publish.
+    static constexpr size_t kNtpStackBytes = 4096;
 
     explicit NetWiring(NetWiringDeps deps);
     // Calls stop().
@@ -119,9 +132,11 @@ public:
     // that must not wait (the scene task's wisp.device.info()).
     std::optional<net::WifiState> wifi_state() const;
     net::PairingService* pairing() const { return pairing_.get(); }
+    net::TimeSyncService* time_sync() const { return time_sync_.get(); }
 
 private:
     void run();
+    void run_ntp();
     // Starts or stops the HTTP servers to match the interface state. Runs
     // on the "wisp.net" task, or on start()/stop()'s thread while that
     // task is not running.
@@ -136,6 +151,7 @@ private:
 
     std::unique_ptr<net::WifiService> wifi_;
     std::unique_ptr<net::PairingService> pairing_;
+    std::unique_ptr<net::TimeSyncService> time_sync_;
     net::AssetPack assets_;
     bool has_assets_ = false;
     std::unique_ptr<admin::AdminServer> admin_;
@@ -166,6 +182,9 @@ private:
     os::Semaphore wake_{1, 0};
     std::atomic<bool> stopping_{false};
     std::unique_ptr<os::Task> task_;
+    // The "wisp.ntp" worker: woken when tick() has prepared an attempt.
+    os::Semaphore ntp_wake_{1, 0};
+    std::unique_ptr<os::Task> ntp_task_;
 };
 
 }  // namespace wisp::app

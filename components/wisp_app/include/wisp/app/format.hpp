@@ -30,6 +30,10 @@ const char* state_label(core::DeviceState state, ui::Lang lang);
 // HH:MM:SS" in UTC.
 std::string format_time(int64_t unix_s);
 
+// "HH:MM" of a timestamp read as UTC; to show local time, add the offset
+// first.
+std::string format_hhmm(int64_t unix_s);
+
 // Length of the well-formed UTF-8 sequence starting at s[i] (RFC 3629: no
 // overlongs, no surrogates, nothing above U+10FFFF), or 0 if there is none.
 size_t utf8_sequence(std::string_view s, size_t i);

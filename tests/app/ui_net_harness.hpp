@@ -20,6 +20,7 @@
 #include "support/fake_devices.hpp"
 #include "support/fake_firmware.hpp"
 #include "support/fake_http.hpp"
+#include "support/fake_sntp.hpp"
 #include "support/fake_wifi.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/app/app.hpp"
@@ -57,7 +58,13 @@ struct UiNetOptions {
     // Platform::scenes_dir / scenes_data_dir (dev mode); empty: off.
     std::string scenes_dir;
     std::string scenes_data_dir;
+    // Platform::sntp (a FakeSntp answering kSntpTime) and a set_wall_clock
+    // that records each call in UiNetHarness::wall_clock_sets.
+    bool with_sntp = false;
 };
+
+// 2026-01-01 00:00:00 UTC, what the FakeSntp answers.
+inline constexpr int64_t kSntpTime = 1767225600;
 
 class UiNetBoard : public wisp::app::Board {
 public:
@@ -92,6 +99,9 @@ struct UiNetHarness {
     std::shared_ptr<FakeTouch> touch;
     FakeHttpServer* server = nullptr;         // owned by the App's Platform
     FakeFirmwareUpdater* firmware = nullptr;  // likewise
+    FakeSntp* sntp = nullptr;                 // likewise
+    std::mutex wall_clock_mutex;
+    std::vector<int64_t> wall_clock_sets;
     std::atomic<int> reboots{0};
     std::atomic<bool> rebooted_on_ui_thread{false};
     std::unique_ptr<wisp::app::App> app;
@@ -161,6 +171,15 @@ struct UiNetHarness {
             server = srv.get();
             platform.http_server = std::move(srv);
             platform.http_always_on = true;
+        }
+        if (opts.with_sntp) {
+            auto fake = std::make_unique<FakeSntp>([] { return kSntpTime; });
+            sntp = fake.get();
+            platform.sntp = std::move(fake);
+            platform.set_wall_clock = [this](int64_t t) {
+                std::lock_guard<std::mutex> lock(wall_clock_mutex);
+                wall_clock_sets.push_back(t);
+            };
         }
         platform.scenes_dir = opts.scenes_dir;
         platform.scenes_data_dir = opts.scenes_data_dir;

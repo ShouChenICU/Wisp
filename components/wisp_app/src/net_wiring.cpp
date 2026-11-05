@@ -69,6 +69,30 @@ void NetWiring::start() {
         deps_.report.set_note("net", "missing");
     }
 
+    if (platform.sntp && wifi_) {
+        core::SystemSettings& settings = deps_.system_settings;
+        time_sync_ = std::make_unique<net::TimeSyncService>(net::TimeSyncDeps{
+            .sntp = *platform.sntp,
+            .bus = deps_.bus,
+            .servers = [&settings] { return settings.get().ntp_servers; },
+            .set_system_time = platform.set_wall_clock,
+            .rtc = clock,
+        });
+        time_sync_->set_wake([this] { wake_.give(); });
+        stopping_.store(false);
+        // Sockets, settimeofday(), the RTC's I2C write and a publish only:
+        // no flash, so its stack may go to PSRAM (see the file header).
+        ntp_task_ = os::Task::spawn({.name = "wisp.ntp",
+                                     .stack_bytes = kNtpStackBytes,
+                                     .priority = 3,
+                                     .flash_access = false},
+                                    [this] { run_ntp(); });
+        if (!ntp_task_) {
+            WLOG_E(kTag, "cannot start the wisp.ntp task; network time is off");
+            time_sync_.reset();
+        }
+    }
+
     if (!platform.assets.empty()) {
         auto pack = net::AssetPack::parse(platform.assets);
         if (pack) {
@@ -107,6 +131,7 @@ void NetWiring::start() {
             .scenes = deps_.scenes,
             .scene_host = deps_.scene_host,
             .request_scene_delete = deps_.request_scene_delete,
+            .time_sync = time_sync_.get(),
         });
         reconcile_http(now);  // http_always_on serves from boot
     }
@@ -121,6 +146,14 @@ void NetWiring::stop() {
         wake_.give();
         task_->join();
         task_.reset();
+    }
+    if (ntp_task_) {
+        // stopping_ is set: the worker finishes any attempt under way
+        // (at most one query timeout per server) and ends.
+        stopping_.store(true);
+        ntp_wake_.give();
+        ntp_task_->join();
+        ntp_task_.reset();
     }
     if (captive_serving_) {
         deps_.platform.captive_server->stop();
@@ -138,6 +171,7 @@ void NetWiring::stop() {
     ap_up_.store(false);
     wifi_state_.store(-1);
     admin_.reset();
+    time_sync_.reset();
     wifi_.reset();
     pairing_.reset();
     assets_ = net::AssetPack();
@@ -167,10 +201,19 @@ void NetWiring::run() {
             sta_up_.store(state == net::WifiState::Connected);
             ap_up_.store(wifi_->ap_status().active);
         }
+        if (time_sync_ && time_sync_->tick(sta_up_.load())) ntp_wake_.give();
         pairing_->tick(now);
         if (deps_.firmware != nullptr) deps_.firmware->tick(now);
         reconcile_http(now);
         (void)wake_.take(kNetTickMs);
+    }
+}
+
+void NetWiring::run_ntp() {
+    while (true) {
+        (void)ntp_wake_.take(os::kForever);
+        if (stopping_.load()) return;
+        time_sync_->run_attempt();
     }
 }
 

@@ -89,7 +89,10 @@ void SelfCheck::sync_system_language() {
         return;
     }
     language_revision_ = revision;
-    std::optional<ui::Lang> lang = ui::parse_lang(app_.system_settings().get().language);
+    const core::SystemSettingsValues values = app_.system_settings().get();
+    utc_offset_min_ = values.utc_offset_min;
+    refresh_time_sync();
+    std::optional<ui::Lang> lang = ui::parse_lang(values.language);
     if (!lang || *lang == ui::lang()) {
         return;
     }

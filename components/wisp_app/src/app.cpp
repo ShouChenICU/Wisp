@@ -472,6 +472,7 @@ core::SceneRepository* App::scene_repository() {
 PowerManager* App::power_manager() { return impl_->power_manager.get(); }
 net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr; }
 net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }
+net::TimeSyncService* App::time_sync() { return impl_->net ? impl_->net->time_sync() : nullptr; }
 core::ModelProfileService& App::models() { return impl_->models; }
 core::SystemSettings& App::system_settings() { return impl_->system_settings; }
 const Platform& App::platform() const { return impl_->platform; }

@@ -26,6 +26,13 @@ TEST(Format, TimeAndState) {
     EXPECT_STREQ(wisp::app::state_label(wisp::core::DeviceState::Missing, Lang::Ja), "未検出");
 }
 
+// The time sync row's "HH:MM": the caller has already added the time zone.
+TEST(Format, HourMinute) {
+    EXPECT_EQ(wisp::app::format_hhmm(0), "00:00");
+    EXPECT_EQ(wisp::app::format_hhmm(1767225600 + 8 * 3600 + 5 * 60 + 59), "08:05");
+    EXPECT_EQ(wisp::app::format_hhmm(1767225600 - 210 * 60), "20:30");
+}
+
 // SSIDs are raw bytes; GBK names are common. The device font can only draw
 // UTF-8, so every byte of an ill-formed sequence (and every control byte)
 // shows as "?" instead of a garbage glyph.

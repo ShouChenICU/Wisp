@@ -172,6 +172,60 @@ TEST(NetUi, SectionShowsStateAndButton) {
     EXPECT_FALSE(has_button(h, screen, "Stop setup"));
 }
 
+// The power & clock card's time sync row: "Not synced" until the station
+// gets an IP and a server answers, then the local time of that sync, in
+// the page's language and the stored time zone.
+TEST(NetUi, PowerClockCardShowsTheTimeSync) {
+    UiNetOptions opts;
+    opts.with_sntp = true;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start("system.time"));
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "Not synced"); }, 3000));
+    EXPECT_TRUE(on_screen(h, "Time sync"));
+    {
+        std::lock_guard<std::mutex> lock(h.wall_clock_mutex);
+        EXPECT_TRUE(h.wall_clock_sets.empty());
+    }
+
+    ASSERT_TRUE(h.app->wifi()->add_network("Home", "password1", wisp::os::now_ms()));
+    // 00:00 UTC is 08:00 at the default UTC+8.
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "Synced 08:00"); }, 5000));
+    {
+        std::lock_guard<std::mutex> lock(h.wall_clock_mutex);
+        EXPECT_EQ(h.wall_clock_sets, (std::vector<int64_t>{wisp::test::kSntpTime}));
+    }
+    ASSERT_EQ(h.topic("system.time").size(), 1u);
+    EXPECT_EQ(h.app->time_sync()->status().server, "pool.ntp.org");
+
+    ASSERT_TRUE(select_page_lang(h.app->ui(), Lang::Zh));
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "已同步 08:00"); }, 3000));
+    EXPECT_TRUE(on_screen(h, text_of(StrId::TimeSync, Lang::Zh)));
+
+    ASSERT_TRUE(h.app->system_settings().set({{"utc_offset_min", -210}}));
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "已同步 20:30"); }, 3000));
+}
+
+// The sync goes through the admin route too, and is refused without an IP.
+TEST(NetUi, TimeSyncWithoutNetworkStaysNotSynced) {
+    UiNetOptions opts;
+    opts.with_sntp = true;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start());
+    ASSERT_NE(h.app->time_sync(), nullptr);
+    EXPECT_FALSE(h.app->time_sync()->sync_now());
+    wisp::os::sleep_ms(600);
+    EXPECT_TRUE(h.sntp->take_calls().empty());
+    EXPECT_TRUE(on_screen(h, "Not synced"));
+}
+
+// No Sntp port: no service, and the row still says so.
+TEST(NetUi, NoSntpPortMeansNoTimeSync) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start());
+    EXPECT_EQ(h.app->time_sync(), nullptr);
+    ASSERT_TRUE(wait_until([&] { return on_screen(h, "Not synced"); }, 3000));
+}
+
 TEST(NetUi, SectionShowsTheConnectedNetwork) {
     UiNetOptions opts;
     opts.saved = {{"Home", "password1"}};

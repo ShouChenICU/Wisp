@@ -55,6 +55,8 @@ const char* strings_zh(StrId id) {
             return "电池";
         case StrId::Time:
             return "时间";
+        case StrId::TimeSync:
+            return "网络校时";
         case StrId::InternalFlash:
             return "内置 Flash";
         case StrId::SdCard:
@@ -87,6 +89,10 @@ const char* strings_zh(StrId id) {
             return "未测";
         case StrId::TestPassed:
             return "已通过";
+        case StrId::TimeSynced:
+            return "已同步 {}";
+        case StrId::TimeNotSynced:
+            return "未同步";
         case StrId::LoopbackButton:
             return "录音回放";
         case StrId::LoopReady:

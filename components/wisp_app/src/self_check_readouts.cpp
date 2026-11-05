@@ -46,11 +46,23 @@ void PowerClockSection::build(lv_obj_t* col, PageText& text, bool has_power, boo
     has_power_ = has_power;
     has_clock_ = has_clock;
     lv_obj_t* card = make_card(col, ui::StrId::SectionPowerClock, text);
-    lv_obj_t* table = make_table(card, 2);
+    lv_obj_t* table = make_table(card, 3);
     battery_ = add_table_row(table, 0, ui::StrId::Battery, text);
     init_value(battery_, has_power, text);
     time_ = add_table_row(table, 1, ui::StrId::Time, text);
     init_value(time_, has_clock, text);
+    sync_ = add_table_row(table, 2, ui::StrId::TimeSync, text);
+    show_sync(std::nullopt);
+}
+
+void PowerClockSection::show_sync(std::optional<int64_t> local_unix) {
+    if (sync_ == nullptr) return;
+    if (!local_unix) {
+        set_text_if_changed(sync_, text_->tr(ui::StrId::TimeNotSynced));
+        return;
+    }
+    set_text_if_changed(sync_,
+                        text_->tr_fill(ui::StrId::TimeSynced, format_hhmm(*local_unix)).c_str());
 }
 
 void PowerClockSection::update(const SampleSnapshot& snap) {

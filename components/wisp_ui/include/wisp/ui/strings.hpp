@@ -68,6 +68,7 @@ enum class StrId : uint16_t {
     // Self-check readout labels.
     Battery,
     Time,
+    TimeSync,
     InternalFlash,
     SdCard,
     Button,
@@ -86,6 +87,10 @@ enum class StrId : uint16_t {
     TouchTestArea,
     TestUntested,
     TestPassed,
+    // The time sync row: TimeSynced carries "{}" (the local HH:MM of the
+    // last sync).
+    TimeSynced,
+    TimeNotSynced,
 
     // Microphone loopback test.
     LoopbackButton,
