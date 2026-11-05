@@ -414,11 +414,11 @@ void SystemLayer::show_arrow(lv_point_t at, int32_t dx, bool armed) {
         lv_obj_remove_flag(arrow_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_size(arrow_, kBackArrowSize, kBackArrowSize);
         lv_obj_set_style_radius(arrow_, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(arrow_, lv_palette_main(LV_PALETTE_BLUE), 0);
+        lv_obj_set_style_bg_color(arrow_, lv_color_hex(theme::kAccent), 0);
         lv_obj_set_style_bg_opa(arrow_, LV_OPA_COVER, 0);
         lv_obj_t* icon = lv_label_create(arrow_);
         lv_label_set_text(icon, LV_SYMBOL_LEFT);
-        lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+        lv_obj_set_style_text_color(icon, lv_color_hex(theme::kAccentInk), 0);
         lv_obj_center(icon);
         lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
     }
@@ -472,7 +472,7 @@ void SystemLayer::show_error(ErrorPanelInfo info, std::function<void()> on_reloa
     lv_obj_t* backdrop = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(backdrop);
     lv_obj_set_size(backdrop, shape_.width, shape_.height);
-    lv_obj_set_style_bg_color(backdrop, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(backdrop, lv_color_hex(theme::kBg), 0);
     lv_obj_set_style_bg_opa(backdrop, LV_OPA_COVER, 0);
     lv_obj_remove_flag(backdrop, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_remove_flag(backdrop, LV_OBJ_FLAG_SCROLLABLE);
@@ -483,15 +483,17 @@ void SystemLayer::show_error(ErrorPanelInfo info, std::function<void()> on_reloa
     lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_shadow_width(card, 0, 0);
+    lv_obj_set_style_radius(card, theme::kRadiusLg, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(theme::kBorderStrong), 0);
     // Clickable like the backdrop; it neither scrolls nor takes focus.
     lv_obj_remove_flag(card, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_style_pad_row(card, theme::kGapMd, 0);
 
     lv_obj_t* title = lv_label_create(card);
     lv_label_set_text(title, tr(StrId::SceneErrorTitle));
-    lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(theme::kErr), 0);
 
     // The message scrolls inside the card when it does not fit, so the
     // buttons below it always show. Clickable, so a drag on the text
@@ -511,9 +513,11 @@ void SystemLayer::show_error(ErrorPanelInfo info, std::function<void()> on_reloa
 
     lv_obj_t* row = make_dialog_actions(card);
     for (StrId id : {StrId::SceneReload, StrId::SceneBack}) {
-        lv_obj_t* btn = add_dialog_button(row, tr(id));
+        const bool reload = id == StrId::SceneReload;
+        lv_obj_t* btn =
+            add_dialog_button(row, tr(id), reload ? ButtonRole::Primary : ButtonRole::Secondary);
         lv_obj_add_event_cb(btn, &SystemLayer::error_btn_cb, LV_EVENT_CLICKED, this);
-        if (id == StrId::SceneReload) error_reload_ = btn;
+        if (reload) error_reload_ = btn;
     }
 
     // Too tall for the safe area: the card stops at its height and the
@@ -759,7 +763,7 @@ void SystemLayer::kb_done_cb(lv_event_t* e) {
 // --- Confirm dialogs ---
 
 lv_obj_t* SystemLayer::open_confirm(StrId title, const std::string& text,
-                                    std::function<void(bool yes)> on_answer) {
+                                    std::function<void(bool yes)> on_answer, ButtonRole yes_role) {
     if (confirm_box_ != nullptr) return nullptr;
     lv_obj_t* box = lv_msgbox_create(nullptr);
     // lv_msgbox_class's default width is a fixed LV_DPI_DEF * 2,
@@ -774,8 +778,8 @@ lv_obj_t* SystemLayer::open_confirm(StrId title, const std::string& text,
     const int32_t inset = lv_obj_get_style_pad_left(lv_msgbox_get_content(box), LV_PART_MAIN);
     lv_obj_set_style_pad_hor(row, inset, 0);
     lv_obj_set_style_pad_bottom(row, inset, 0);
-    lv_obj_t* yes = add_dialog_button(row, tr(StrId::Yes));
-    lv_obj_t* no = add_dialog_button(row, tr(StrId::No));
+    lv_obj_t* yes = add_dialog_button(row, tr(StrId::Yes), yes_role);
+    lv_obj_t* no = add_dialog_button(row, tr(StrId::No), ButtonRole::Secondary);
     lv_obj_add_event_cb(yes, &SystemLayer::confirm_btn_cb, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(no, &SystemLayer::confirm_btn_cb, LV_EVENT_CLICKED, this);
     // Laid out now rather than at the next refresh: a touch read in

@@ -148,8 +148,9 @@ void SelfCheck::show_reset_dialog() {
     if (reset_box_ != nullptr || reset_confirmed_) {
         return;  // one dialog per request at a time; nothing once confirmed
     }
-    reset_box_ = system_.open_confirm(ui::StrId::ResetTitle, ui::tr(ui::StrId::ResetPrompt),
-                                      [this](bool yes) { on_reset_answer(yes); });
+    reset_box_ = system_.open_confirm(
+        ui::StrId::ResetTitle, ui::tr(ui::StrId::ResetPrompt),
+        [this](bool yes) { on_reset_answer(yes); }, ui::ButtonRole::Danger);
     if (reset_box_ == nullptr) {
         // One confirm dialog at a time (spec 8). The person at the device
         // is already answering another question, so the browser gets a

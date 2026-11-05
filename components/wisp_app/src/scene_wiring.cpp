@@ -217,7 +217,8 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
         lv_obj_t* box = nullptr;
         if (!system_->confirm_open()) {
             box = system_->open_confirm(
-                ui::StrId::SceneDeleteTitle, text, [this, id, with_data](bool yes) {
+                ui::StrId::SceneDeleteTitle, text,
+                [this, id, with_data](bool yes) {
                     if (!yes) {
                         WLOG_I(kTag, "%s: delete declined on the device", id.c_str());
                         return;
@@ -239,7 +240,8 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
                     } else {
                         then(Result<void>::ok());
                     }
-                });
+                },
+                ui::ButtonRole::Danger);
         }
         if (box == nullptr) {
             result = R::err(ErrorCode::Busy, "another dialog is open");

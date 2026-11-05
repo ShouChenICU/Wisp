@@ -30,6 +30,7 @@
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/strings.hpp"
+#include "wisp/ui/theme.hpp"
 
 using wisp::net::Method;
 using wisp::test::all_label_glyphs_resolvable;
@@ -466,6 +467,23 @@ TEST(FactoryReset, DialogFitsEveryShapeAndLanguage) {
             });
             EXPECT_EQ(problem, "");
         }
+        // Erasing the device is a danger button; keeping it, a secondary one.
+        EXPECT_EQ(run_on_ui_thread(
+                      h.app->ui(),
+                      [] {
+                          auto fill = [](const char* text) {
+                              lv_obj_t* btn = find_button_with_label(lv_layer_top(), text);
+                              if (btn == nullptr) return uint32_t{0};
+                              return lv_color_to_u32(lv_obj_get_style_bg_color(btn, LV_PART_MAIN)) &
+                                     0xFFFFFFu;
+                          };
+                          const bool yes =
+                              fill(wisp::ui::tr(StrId::Yes, Lang::En)) == wisp::ui::theme::kErr;
+                          const bool no =
+                              fill(wisp::ui::tr(StrId::No, Lang::En)) == wisp::ui::theme::kSurface3;
+                          return std::string(yes ? "danger" : "?") + "|" + (no ? "secondary" : "?");
+                      }),
+                  "danger|secondary");
         ASSERT_TRUE(click(h, wisp::ui::tr(StrId::No, Lang::En)));
         ASSERT_TRUE(wait_until([&] { return reset_states(h).size() == 2; }, 3000));
         EXPECT_EQ(h.reboots.load(), 0);

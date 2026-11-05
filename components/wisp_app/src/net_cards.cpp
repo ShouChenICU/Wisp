@@ -10,6 +10,7 @@
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/overlay.hpp"
 #include "wisp/ui/strings.hpp"
+#include "wisp/ui/theme.hpp"
 
 namespace wisp::app {
 
@@ -35,8 +36,9 @@ lv_obj_t* make_card(const hal::Area& safe) {
     lv_obj_set_style_max_height(card, height_of(safe), 0);
     lv_obj_set_style_pad_all(card, kCardPad, 0);
     lv_obj_set_style_pad_row(card, kCardRowGap, 0);
-    lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_set_style_border_color(card, lv_palette_main(LV_PALETTE_LIGHT_BLUE), 0);
+    lv_obj_set_style_radius(card, ui::theme::kRadiusLg, 0);
+    // Edged in the accent: the card floats over a page of cards like it.
+    lv_obj_set_style_border_color(card, lv_color_hex(ui::theme::kAccent), 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scroll_dir(card, LV_DIR_VER);
@@ -64,8 +66,9 @@ lv_obj_t* add_text(lv_obj_t* card, const std::string& text) {
 }
 
 // The card's one action: a big button across the card's width.
-lv_obj_t* add_button(lv_obj_t* card, const char* text, lv_event_cb_t cb, void* user_data) {
-    lv_obj_t* btn = ui::add_dialog_button(ui::make_dialog_actions(card), text);
+lv_obj_t* add_button(lv_obj_t* card, const char* text, ui::ButtonRole role, lv_event_cb_t cb,
+                     void* user_data) {
+    lv_obj_t* btn = ui::add_dialog_button(ui::make_dialog_actions(card), text, role);
     lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
     return btn;
 }
@@ -166,7 +169,8 @@ void ProvisioningCard::open(const net::ApSession& session, const hal::Area& safe
     add_text(card_, ui::tr_fill(ui::StrId::Hotspot, lang, session.ssid));
     add_text(card_, ui::tr_fill(ui::StrId::Password, lang, session.password));
     add_text(card_, ui::tr_fill(ui::StrId::OpenAddress, lang, "http://" + session.ip));
-    add_button(card_, ui::tr(ui::StrId::StopSetup, lang), &ProvisioningCard::stop_cb, this);
+    add_button(card_, ui::tr(ui::StrId::StopSetup, lang), ui::ButtonRole::Secondary,
+               &ProvisioningCard::stop_cb, this);
 }
 
 void ProvisioningCard::close() {
@@ -212,7 +216,8 @@ void PairingCard::open(std::string code, uint64_t expires_ms, uint64_t now_ms,
 
     countdown_ = add_text(card_, "");
     shown_seconds_ = -1;
-    add_button(card_, ui::tr(ui::StrId::Reject, lang), &PairingCard::reject_cb, this);
+    add_button(card_, ui::tr(ui::StrId::Reject, lang), ui::ButtonRole::Secondary,
+               &PairingCard::reject_cb, this);
     tick(now_ms);
 }
 

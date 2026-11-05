@@ -31,6 +31,7 @@
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
+#include "wisp/ui/theme.hpp"
 
 using wisp::net::Method;
 using wisp::test::count_obj_of_class;
@@ -325,6 +326,17 @@ TEST(AppScenes, DeleteConfirmFlow) {
             b.h.app->ui(), [] { return find_label_text_containing(lv_layer_top(), "删除场景“"); });
     };
     EXPECT_EQ(dialog(), "删除场景“计数器”？\n场景数据也会一并删除。");
+    // Deleting is a danger button.
+    EXPECT_EQ(run_on_ui_thread(
+                  b.h.app->ui(),
+                  [] {
+                      lv_obj_t* yes = find_button_with_label(lv_layer_top(), "是");
+                      if (yes == nullptr) return std::string("none");
+                      const uint32_t fill =
+                          lv_color_to_u32(lv_obj_get_style_bg_color(yes, LV_PART_MAIN)) & 0xFFFFFFu;
+                      return std::string(fill == wisp::ui::theme::kErr ? "danger" : "other");
+                  }),
+              "danger");
     ASSERT_EQ(run_on_ui_thread(b.h.app->ui(),
                                [] {
                                    lv_obj_t* yes = find_button_with_label(lv_layer_top(), "是");

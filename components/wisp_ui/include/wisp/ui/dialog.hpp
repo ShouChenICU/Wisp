@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "lvgl.h"
+#include "wisp/ui/theme.hpp"
 
 namespace wisp::ui {
 
@@ -22,11 +23,11 @@ inline constexpr int32_t kDialogButtonGap = 12;
 // its buttons. It takes no touches and does not scroll.
 lv_obj_t* make_dialog_actions(lv_obj_t* parent);
 
-// Adds a button reading `text` to `row` (from make_dialog_actions()). It
-// shares the row's width equally with the row's other buttons, is at
-// least kDialogButtonMinHeight tall and darkens while pressed. Its label
-// keeps the inherited body font: a larger one would leave CJK text to a
-// fallback of another size.
-lv_obj_t* add_dialog_button(lv_obj_t* row, const char* text);
+// Adds a button reading `text` to `row` (from make_dialog_actions()), in
+// the colours of `role` (wisp/ui/theme.hpp). It shares the row's width
+// equally with the row's other buttons and is at least
+// kDialogButtonMinHeight tall. Its label keeps the inherited body font: a
+// larger one would leave CJK text to a fallback of another size.
+lv_obj_t* add_dialog_button(lv_obj_t* row, const char* text, ButtonRole role);
 
 }  // namespace wisp::ui
