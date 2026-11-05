@@ -830,39 +830,25 @@ extern "C" {
 extern const lv_font_t lv_font_cjk_16;
 }
 
-TEST(UiRuntime, FontSizesWrapA8AndFallBackToCjk) {
+TEST(UiRuntime, SmallSizesUseBodyFont) {
     auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
     wisp::ui::UiRuntime ui(disp, nullptr);
     ASSERT_TRUE(ui.start());
 
     ui.run_blocking([&] {
         using wisp::ui::font;
+        EXPECT_EQ(font(8), wisp::ui::default_font());
         EXPECT_EQ(font(16), wisp::ui::default_font());
-        EXPECT_EQ(font(20), font(16));
-        EXPECT_EQ(font(8), font(16));
-        EXPECT_EQ(font(30), font(24));
-        EXPECT_EQ(font(100), font(48));
+        EXPECT_EQ(font(19), wisp::ui::default_font());
         const lv_font_t* cjk = wisp::ui::default_font()->fallback;
         ASSERT_NE(cjk, nullptr);
         EXPECT_EQ(cjk->line_height, lv_font_cjk_16.line_height);
-        int32_t prev = font(16)->line_height;
-        for (int px : {24, 32, 48}) {
-            const lv_font_t* f = font(px);
-            ASSERT_NE(f, nullptr) << px;
-            EXPECT_GT(f->line_height, prev) << px;
-            prev = f->line_height;
-            // The A8 wrapper hands out static 8-bit bitmaps.
-            EXPECT_TRUE(f->static_bitmap) << px;
-            EXPECT_EQ(f->fallback, cjk) << px;
-
-            lv_font_glyph_dsc_t dsc{};
-            ASSERT_TRUE(lv_font_get_glyph_dsc(f, &dsc, 'A', 0)) << px;
-            EXPECT_EQ(dsc.resolved_font, f) << px;
-            lv_font_glyph_dsc_t han{};
-            ASSERT_TRUE(lv_font_get_glyph_dsc(f, &han, 0x4F60 /* 你 */, 0)) << px;
-            EXPECT_EQ(han.resolved_font, cjk) << px;
-        }
+        lv_font_glyph_dsc_t han{};
+        ASSERT_TRUE(lv_font_get_glyph_dsc(font(16), &han, 0x4F60 /* 你 */, 0));
+        EXPECT_EQ(han.resolved_font, cjk);
     });
 
     ui.stop();
 }
+
+TEST(UiRuntime, DefaultUiStackIs10K) { EXPECT_EQ(wisp::ui::UiConfig{}.task_stack, 10240u); }

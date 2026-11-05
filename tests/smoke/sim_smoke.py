@@ -4,7 +4,8 @@
 Runs the wisp_sim executable (simulator/CMakeLists.txt, built by the
 host CMake project) through a handful of --headless scenarios and
 checks its machine-readable stdout (the single-line-JSON
-"WISP_BOOT_REPORT ", "WISP_MANIFEST " and "WISP_HTTP " lines -- see
+"WISP_BOOT_REPORT ", "WISP_MANIFEST ", "WISP_HTTP " and, from the
+console case, "WISP_BENCH " lines -- see
 AGENTS.md section 4 and docs/architecture.md) and, for the default
 case, the PNG screenshot it writes. Each case runs wisp_sim in a fresh
 temporary data directory. Every case except "http", "factory_reset",
@@ -308,6 +309,12 @@ def case_default(sim_path, tmp_root):
     expect(
         not any(line.startswith("WISP_HTTP ") for line in result.stdout.splitlines()),
         "WISP_HTTP printed although --http-port 0 disables the admin server",
+    )
+
+    # vector-font spec 3.3: the fonts.bin packed next to wisp_sim loads.
+    expect(
+        "fonts: image ok, " in result.stdout,
+        "no 'fonts: image ok' line in stdout: fonts.bin next to wisp_sim was not used",
     )
 
     check_screenshot(screenshot)
@@ -824,9 +831,11 @@ def case_console(sim_path, tmp_root):
     """Serial console commands on stdin (connectivity spec 8.2) are
     answered on stdout, touch lines never reach the console, and neither
     the Wi-Fi password typed into "wifi add" nor anything else secret is
-    ever printed or logged. Joining the network syncs the clock."""
+    ever printed or logged. Joining the network syncs the clock. "bench
+    scroll" answers one WISP_BENCH line."""
     commands = [
         "help",
+        "bench scroll 1",
         "wifi status",
         f"wifi add WispLab {CONSOLE_PASSWORD}",
         "tap 10,10",
@@ -846,6 +855,13 @@ def case_console(sim_path, tmp_root):
     # Joining WispLab gives the station an IP, which syncs the clock.
     expect(re.search(r" I time: synced from pool\.ntp\.org: unix \d+$", result.stdout, re.M),
            f"no time sync after joining WispLab:\n{result.stdout}")
+    bench = [l for l in lines if l.startswith("WISP_BENCH ")]
+    expect(len(bench) == 1, f"expected one WISP_BENCH line:\n{result.stdout}")
+    payload = json.loads(bench[0][len("WISP_BENCH "):])
+    expect(set(payload) == {"bench", "fps", "frames", "ms", "cpu", "px"},
+           f"WISP_BENCH fields: {sorted(payload)}")
+    expect(payload["bench"] == "scroll" and payload["frames"] >= 2 and payload["fps"] > 0,
+           f"bad WISP_BENCH line: {bench[0]}")
     # Only "bogus" is unknown: "tap 10,10" went to the touch screen.
     expect(lines.count("error: unknown command") == 1,
            f"expected one unknown command:\n{result.stdout}")
@@ -926,6 +942,27 @@ def case_shape_circle(sim_path, tmp_root):
         display_safe_area == CIRCLE_SAFE_AREA,
         f"display.main safe_area == {display_safe_area}, expected {CIRCLE_SAFE_AREA}",
     )
+
+
+def case_font_image_none(sim_path, tmp_root):
+    """vector-font spec 3.6: without a font image the simulator boots on
+    bitmap fonts and says so."""
+    data_dir = tmp_root / "font-image-none"
+    data_dir.mkdir()
+    screenshot = data_dir / "s.png"
+
+    result = run_sim(sim_path, data_dir, ["--font-image", "none", "--screenshot",
+                                          str(screenshot), "--exit-after-ms", "3000"])
+    expect(
+        result.returncode == 0,
+        f"exit code {result.returncode}, stderr:\n{result.stderr}",
+    )
+    parse_output(result.stdout)
+    expect(
+        "fonts: no font image; large text uses bitmap fonts" in result.stdout,
+        "no 'fonts: no font image' warning in stdout",
+    )
+    check_screenshot(screenshot)
 
 
 # --- scenes (scene-runtime-core spec 9.2) ------------------------------------
@@ -1183,6 +1220,7 @@ CASES = (
     ("disable_imu", case_disable_imu),
     ("no_sd", case_no_sd),
     ("shape_circle", case_shape_circle),
+    ("font_image_none", case_font_image_none),
     ("disable_wifi", case_disable_wifi),
     ("http", case_http),
     ("factory_reset", case_factory_reset),

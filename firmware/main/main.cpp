@@ -28,11 +28,13 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #include "wisp/app/app.hpp"
+#include "wisp/app/bench.hpp"
 #include "wisp/app/board.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/port/esp/console_esp.hpp"
 #include "wisp/port/esp/esp_firmware.hpp"
+#include "wisp/port/esp/esp_font_partition.hpp"
 #include "wisp/port/esp/esp_http_client.hpp"
 #include "wisp/port/esp/esp_http_server.hpp"
 #include "wisp/port/esp/esp_jpeg_decoder.hpp"
@@ -132,6 +134,11 @@ extern "C" void app_main() {
         return wisp::Value(std::move(info));
     };
     platform.set_light_sleep = [](bool on) { apply_pm_config(/*light_sleep_enable=*/on); };
+    // The vector font (vector-font spec 2.3). Mapping flash has to happen
+    // on a task whose stack is in internal RAM (AGENTS.md section 5), and
+    // app_main's is; the UI task only reads the mapping afterwards, which
+    // is not a flash access.
+    platform.font_image = wisp::port::esp::map_font_partition();
     // The single source for this (rather than a literal duplicated here
     // and in the build config): esp_app_desc_t is filled in at build
     // time from PROJECT_VER (cmake/wisp_version.cmake, via
@@ -172,6 +179,9 @@ extern "C" void app_main() {
              if (args.size() != 1) return "error: usage: mem";
              return wisp::port::esp::mem_report();
          }});
+    // `bench scroll`: the rendering baseline's programmatic scroll, one
+    // WISP_BENCH line (wisp/app/bench.hpp).
+    platform.console_commands.push_back(wisp::app::bench_command());
     // Admin backend (connectivity spec 6): App serves it on http_port
     // (8900) while the station has an address or the hotspot is up.
     platform.http_server = std::make_unique<wisp::port::esp::EspHttpServer>();

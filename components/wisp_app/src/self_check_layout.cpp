@@ -7,11 +7,10 @@ namespace wisp::app {
 
 namespace {
 
-constexpr int32_t kCardRadius = 12;
-constexpr int32_t kCardPad = 10;
-constexpr int32_t kCardRowGap = 6;
-constexpr int32_t kTableColumnGap = 12;
-constexpr int32_t kTableRowGap = 4;
+constexpr int32_t kCardPad = ui::theme::kGapMd;
+constexpr int32_t kCardRowGap = ui::theme::kGapSm;
+constexpr int32_t kTableColumnGap = ui::theme::kGapMd;
+constexpr int32_t kTableRowGap = ui::theme::kGapXs;
 
 // Grid descriptors must outlive the grids that use them. A table of n rows
 // uses the last n + 1 entries of kTableRows.
@@ -74,13 +73,29 @@ uint32_t level_color(SummaryLevel level) {
     return kColorNeutralChip;
 }
 
+uint32_t level_tint(SummaryLevel level) {
+    switch (level) {
+        case SummaryLevel::Good:
+            return ui::theme::kOkSoft;
+        case SummaryLevel::Warning:
+            return ui::theme::kWarnSoft;
+        case SummaryLevel::Error:
+            return ui::theme::kErrSoft;
+        case SummaryLevel::Neutral:
+            return ui::theme::kMutedSoft;
+    }
+    return ui::theme::kMutedSoft;
+}
+
 lv_obj_t* make_card(lv_obj_t* col, ui::StrId heading, PageText& text) {
     lv_obj_t* card = lv_obj_create(col);
     lv_obj_remove_style_all(card);
     lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(card, lv_color_hex(kColorCard), 0);
-    lv_obj_set_style_radius(card, kCardRadius, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(ui::theme::kBorder), 0);
+    lv_obj_set_style_border_width(card, ui::theme::kBorderWidth, 0);
+    lv_obj_set_style_radius(card, ui::theme::kRadius, 0);
     lv_obj_set_style_pad_all(card, kCardPad, 0);
     lv_obj_set_style_pad_row(card, kCardRowGap, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);

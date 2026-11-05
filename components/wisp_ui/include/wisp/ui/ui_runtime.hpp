@@ -17,12 +17,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "lvgl.h"
 #include "wisp/base/result.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/touch.hpp"
+#include "wisp/ui/fonts.hpp"
 
 namespace wisp::ui {
 
@@ -30,7 +32,10 @@ namespace wisp::ui {
 // its caps (wisp/hal/draw_buf_policy.hpp), not the runtime's.
 struct UiConfig {
     // Measured on the reference board with scenes open: 8 KB left only
-    // about 430 bytes (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
+    // about 430 bytes (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md);
+    // Tiny TTF also rasterizes vector glyphs on this task (stb_truetype keeps
+    // a scanline buffer on the stack), on top of LVGL's layout and
+    // drawing.
     uint32_t task_stack = 10240;
     int task_priority = 4;
     // The platform's image decoders (lv_image_decoder_create() and
@@ -41,6 +46,12 @@ struct UiConfig {
     // 4.3). The portable layers only ever hand LVGL image sources, never
     // name a decoder. Empty: none.
     std::function<void()> install_image_decoders;
+    // The fonts partition image (vector-font spec 3.2) as the platform
+    // provides it: a mapped partition on the device, a file read into
+    // memory in the simulator. start() checks it with open_font_image();
+    // empty or invalid, font() falls back to bitmap fonts. The bytes must
+    // outlive the UiRuntime.
+    std::span<const uint8_t> font_image;
 };
 
 // A thread-safe snapshot of the UI task's activity. `fps`, `cpu_percent`
@@ -57,29 +68,6 @@ struct UiPerf {
     uint32_t frames = 0;
 };
 
-// The default UI font: lv_font_montserrat_16, with the built-in
-// lv_font_cjk_16 (GB2312 plus Japanese kana and level-1 kanji, 4bpp; see
-// tools/gen_cjk_font.py) as its fallback so Chinese and Japanese text
-// falls back to it glyph-by-glyph. Both are drawn from a cache of glyphs
-// expanded to 8 bits per pixel (src/a8_font.hpp), with the same pixels.
-// Lazily constructed on first call (thread-safe, C++11 magic statics);
-// safe to call from any thread, before or after any UiRuntime exists.
-// UiRuntime::start() installs this as the default theme font; exposed at
-// namespace scope since it doesn't depend on any UiRuntime instance (e.g.
-// for wisp_app's self-check UI).
-const lv_font_t* default_font();
-
-// The UI font closest to `px` pixels from below: 16 is default_font(),
-// and 24, 32 and 48 are lv_font_montserrat_24/32/48, each with
-// lv_font_cjk_16 as its fallback (so Chinese and Japanese text in a large
-// font still shows, at 16 px) and drawn through the same A8 glyph cache.
-// Sizes between steps take the step below; anything under 16 takes 16.
-// Each wrapper is built on first use and kept. UI thread only: building
-// a wrapper is not thread-safe (a8_font.hpp). It cannot race with
-// default_font(), which UiRuntime::start() builds before the UI task
-// runs; after that, default_font() only returns what it built.
-const lv_font_t* font(int px);
-
 // Runs a single-threaded LVGL 9.5 instance over a wisp::hal::Display (and,
 // optionally, a wisp::hal::Touch -- pass nullptr to run display-only).
 class UiRuntime {
@@ -93,7 +81,9 @@ public:
     UiRuntime(const UiRuntime&) = delete;
     UiRuntime& operator=(const UiRuntime&) = delete;
 
-    // Calls lv_init(), creates the LVGL display (resolution taken from
+    // Calls lv_init(), checks config.font_image with open_font_image()
+    // (logged either way; a bad image never fails start()), creates the
+    // LVGL display (resolution taken from
     // `display`'s caps) with two partial draw buffers sized and placed
     // by hal::draw_buf_policy() from the same caps, in the byte order of caps
     // "rgb565_be",
@@ -111,7 +101,8 @@ public:
 
     // Stops the UI task -- after it finishes draining any in-flight
     // post()'d work and the current lv_timer_handler() call -- then waits
-    // for the display's last transfer, calls lv_deinit() and frees the
+    // for the display's last transfer, destroys the vector fonts font()
+    // created (fonts.hpp), calls lv_deinit() and frees the
     // draw buffers. Idempotent; safe to call even if start() was never
     // called or failed. Calling it from the UI
     // task itself (e.g. from inside a post()'d function) would deadlock on

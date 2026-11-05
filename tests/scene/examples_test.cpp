@@ -6,7 +6,8 @@
 // wisp.device.info() and row_span(), AGENTS.md section 3). wisp.http goes
 // to a fake client that
 // answers the weather example with a fixed forecast: no test here touches
-// the network.
+// the network. The UI has the real vector font image, so large text is
+// laid out at its real size.
 
 #include <gtest/gtest.h>
 
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "support/fake_http.hpp"
+#include "support/font_image.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
@@ -178,6 +180,7 @@ class Examples : public wisp::test::SceneRuntimeFixture {
 protected:
     void SetUp() override {
         SceneRuntimeFixture::SetUp();
+        ui_config.font_image = wisp::test::test_font_image();
         client.next = {.status = 200,
                        .body = kForecast,
                        .headers = {{"content-type", "application/json; charset=utf-8"}}};

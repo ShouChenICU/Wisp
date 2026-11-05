@@ -133,6 +133,17 @@ python3 tools/check_i18n.py
 echo "==> tools/gen_cjk_font_test.py"
 python3 tools/gen_cjk_font_test.py
 
+# The committed vector (TrueType) font subset must be a hinting-free
+# glyf font whose cmap matches tools/gen_vector_font.py's character set
+# (spec 3.1).
+echo "==> tools/gen_vector_font_test.py"
+python3 tools/gen_vector_font_test.py
+
+# The fonts partition image: header layout, reproducibility, and the
+# committed font fitting the reference board's partition (spec 3.2).
+echo "==> tools/pack_font_image_test.py"
+python3 tools/pack_font_image_test.py
+
 echo "==> cmake -S simulator -B build/sim -G Ninja"
 cmake -S simulator -B build/sim -G Ninja
 
@@ -142,6 +153,11 @@ cmake -S simulator -B build/sim -G Ninja
 # downloaded.
 echo "==> tools/gen_pinyin_dict.py --check"
 python3 tools/gen_pinyin_dict.py --check
+
+# The committed icon fonts must hold exactly the pinned LVGL's LV_SYMBOL_*
+# icons (vector-font spec 4.6). Reads the same LVGL source; offline.
+echo "==> tools/gen_icon_font.py --check"
+python3 tools/gen_icon_font.py --check
 
 echo "==> cmake --build build/sim"
 cmake --build build/sim

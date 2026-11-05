@@ -255,7 +255,8 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
         lv_obj_t* box = nullptr;
         if (!system_->confirm_open()) {
             box = system_->open_confirm(
-                ui::StrId::SceneDeleteTitle, text, [this, id, with_data](bool yes) {
+                ui::StrId::SceneDeleteTitle, text,
+                [this, id, with_data](bool yes) {
                     if (!yes) {
                         WLOG_I(kTag, "%s: delete declined on the device", id.c_str());
                         return;
@@ -284,7 +285,8 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
                     } else {
                         then(Result<void>::ok());
                     }
-                });
+                },
+                ui::ButtonRole::Danger);
         }
         if (box == nullptr) {
             result = R::err(ErrorCode::Busy, "another dialog is open");
@@ -331,6 +333,20 @@ bool SceneWiring::list_async(std::function<void(std::vector<SceneEntry>)> on_ui)
                 on_ui(std::move(entries));
             })) {
             WLOG_W(kTag, "scene list not shown (UI queue full)");
+        }
+    });
+}
+
+bool SceneWiring::storage_status_async(ui::UiRuntime& ui,
+                                       std::function<void(core::StorageStatus)> on_ui) {
+    core::StorageManager* storage = &deps_.storage;
+    ui::UiRuntime* target = &ui;
+    return worker_.submit([storage, target, on_ui = std::move(on_ui)]() mutable {
+        core::StorageStatus status = storage->status();
+        if (!target->post([on_ui = std::move(on_ui), status = std::move(status)]() mutable {
+                on_ui(std::move(status));
+            })) {
+            WLOG_W(kTag, "storage status not shown (UI queue full)");
         }
     });
 }

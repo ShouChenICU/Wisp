@@ -78,6 +78,7 @@
 #include "sim_options.hpp"
 #include "sim_stdin.hpp"
 #include "wisp/app/app.hpp"
+#include "wisp/app/bench.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/display.hpp"
@@ -160,6 +161,15 @@ wisp::port::sim::SimBoardConfig to_board_config(const SimOptions& opts) {
     return config;
 }
 
+// The directory wisp_sim runs from, where the build puts the files it
+// packs (assets.wpak, fonts.bin).
+std::filesystem::path exe_dir(const char* argv0) {
+    std::error_code ec;
+    std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (ec) exe = std::filesystem::absolute(argv0, ec);
+    return exe.parent_path();
+}
+
 // The admin page's WispPack: --web-dir packed in memory, else the
 // assets.wpak next to the executable. Empty (API only) when neither is
 // usable.
@@ -172,12 +182,27 @@ std::vector<uint8_t> load_web_assets(const SimOptions& opts, const char* argv0) 
         }
         return std::move(packed.value());
     }
-    std::error_code ec;
-    std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (ec) exe = std::filesystem::absolute(argv0, ec);
-    std::ifstream in(exe.parent_path() / "assets.wpak", std::ios::binary);
+    std::ifstream in(exe_dir(argv0) / "assets.wpak", std::ios::binary);
     if (!in) {
         WLOG_W(kLogTag, "no assets.wpak next to wisp_sim; serving the API only");
+        return {};
+    }
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+// The vector font image (vector-font spec 3.3): --font-image's file, else
+// the fonts.bin the build packs next to the executable; nothing for
+// "--font-image none". Empty when unreadable: UiRuntime then logs why and
+// large text uses bitmap fonts. Kept in memory for the whole run, since
+// Platform::font_image points into it.
+std::vector<uint8_t> load_font_image(const SimOptions& opts, const char* argv0) {
+    if (opts.font_image == "none") return {};
+    const std::filesystem::path path = opts.font_image.empty()
+                                           ? exe_dir(argv0) / "fonts.bin"
+                                           : std::filesystem::path(opts.font_image);
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        WLOG_W(kLogTag, "cannot read the font image %s", path.c_str());
         return {};
     }
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
@@ -619,6 +644,8 @@ int main(int argc, char** argv) {
     ConsoleLines console_lines;
     // Outlives `app` (Platform::assets points into it).
     const std::vector<uint8_t> web_assets = load_web_assets(opts, argv[0]);
+    // Outlives `app` (Platform::font_image points into it).
+    const std::vector<uint8_t> font_image = load_font_image(opts, argv[0]);
     auto input = std::make_shared<wisp::port::sim::SimInput>(/*sd_present_initial=*/!opts.no_sd);
     auto on_power_off = [&should_exit] { should_exit.store(true); };
 
@@ -650,6 +677,7 @@ int main(int argc, char** argv) {
         WLOG_I(kLogTag, "sim: light sleep %s", on ? "on" : "off");
     };
     platform.install_image_decoders = wisp::port::sim::install_image_decoders;
+    platform.font_image = std::span<const uint8_t>(font_image);
     platform.firmware_version = WISP_VERSION;
     platform.target = "simulator";
     // Uploads land in <data-dir>/firmware.bin; images must be built for
@@ -688,6 +716,8 @@ int main(int argc, char** argv) {
 #ifdef WISP_SIM_DEBUG_COMMANDS
     platform.console_commands = debug_commands();
 #endif
+    // `bench scroll`, as on the device (wisp/app/bench.hpp).
+    platform.console_commands.push_back(wisp::app::bench_command());
     if (!opts.scenes_dir.empty()) {
         // Absolute, so the scene paths in logs and errors say where they are.
         std::filesystem::path dir = std::filesystem::absolute(opts.scenes_dir, ec);

@@ -818,7 +818,7 @@ textarea {
 
 .btn-danger {
   background: var(--err);
-  color: #fff;
+  color: var(--err-ink);
 }
 
 .btn-danger:hover:not(:disabled) {

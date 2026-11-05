@@ -46,6 +46,11 @@ constexpr uint32_t kPerfReportMs = 5000;
 // worker, so far apart; a state change shows within one refresh anyway
 // (SceneSection::update_states()).
 constexpr uint64_t kSceneResyncMs = 30000;
+// How often storage is measured, on the storage worker. A request whose
+// answer never came (the UI queue was full) is given up after
+// kStorageRetryMs.
+constexpr uint64_t kStorageResyncMs = 1000;
+constexpr uint64_t kStorageRetryMs = 10000;
 // Between the root column's safe-area padding and its content, and
 // between its children.
 constexpr int32_t kInnerPad = 8;
@@ -183,6 +188,7 @@ void SelfCheck::build() {
         app_.bus().subscribe("scene.state", [this](const core::Event&) { request_scene_list(); });
     request_scene_list();
     last_scene_list_ms_ = os::now_ms();
+    request_storage();
     // Anything the net services announced before the subscription above
     // (the build runs after networking has started).
     sync_wifi();
@@ -289,7 +295,7 @@ void SelfCheck::build_devices(lv_obj_t* col) {
             // BootReport only ever reflects whether the card was present
             // at boot (spec 6.1: devices aren't re-registered after
             // init()), so this row would otherwise keep showing a missing
-            // card forever once one is inserted later -- refresh_storage()
+            // card forever once one is inserted later -- show_storage()
             // (driven by the live StorageManager::status()) follows it
             // instead. Only when the device actually exists in the
             // registry: a "storage.sd" boot-report entry with no backing
@@ -524,6 +530,7 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
         self->last_scene_list_ms_ = now;
         self->request_scene_list();
     }
+    if (now - self->last_storage_ms_ >= kStorageResyncMs) self->request_storage();
     self->net_section_.tick(now);
     self->pair_card_.tick(now);
 }
@@ -535,7 +542,6 @@ void SelfCheck::refresh_ui() {
     sensors_.update(snap);
     power_clock_.update(snap);
     refresh_time_sync();
-    refresh_storage();
     perf_.update(ui_->perf());
     scenes_section_.update_states();
 }
@@ -568,8 +574,26 @@ void SelfCheck::open_scene(const std::string& id) {
     }
 }
 
-void SelfCheck::refresh_storage() {
-    core::StorageStatus status = app_.storage().status();
+void SelfCheck::request_storage() {
+    const uint64_t now = os::now_ms();
+    if (storage_pending_ && now - last_storage_ms_ < kStorageRetryMs) return;
+    last_storage_ms_ = now;
+    if (scenes_ == nullptr) {
+        // No worker (the scenes could not be set up): measured here, as
+        // rarely as the worker would.
+        show_storage(app_.storage().status());
+        return;
+    }
+    storage_pending_ =
+        scenes_->storage_status_async(*ui_, [this, alive = alive_](core::StorageStatus status) {
+            if (!*alive) return;
+            storage_pending_ = false;
+            show_storage(status);
+        });
+}
+
+void SelfCheck::show_storage(const core::StorageStatus& status) {
+    if (!last_storage_ || &status != &*last_storage_) last_storage_ = status;
     storage_.update(status);
     if (!sd_row_live_) {
         return;

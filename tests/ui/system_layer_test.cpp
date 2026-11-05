@@ -20,6 +20,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/ui/dialog.hpp"
 #include "wisp/ui/strings.hpp"
+#include "wisp/ui/theme.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 extern "C" {
@@ -830,6 +831,55 @@ TEST_F(SystemLayerTest, DialogButtonsAreBigAndShareTheRow) {
             layer->close_confirm(box);
         });
     }
+}
+
+// The dialogs wear the device theme (wisp/ui/theme.hpp): the action the
+// dialog is for is a primary button, the way out a secondary one, and a
+// confirm that destroys data asks with a danger button.
+TEST_F(SystemLayerTest, DialogButtonsTakeTheirRoles) {
+    namespace theme = wisp::ui::theme;
+    auto fill = [](lv_obj_t* obj) {
+        return lv_color_to_u32(lv_obj_get_style_bg_color(obj, LV_PART_MAIN)) & 0xFFFFFF;
+    };
+    auto ink = [](lv_obj_t* obj) {
+        return lv_color_to_u32(lv_obj_get_style_text_color(obj, LV_PART_MAIN)) & 0xFFFFFF;
+    };
+    start("rounded_rect");
+    on_ui([&] {
+        layer->show_error({"Demo", "main.lua", 12, "boom"}, [] {}, [] {});
+        lv_obj_t* reload = find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::SceneReload));
+        lv_obj_t* back = find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::SceneBack));
+        ASSERT_NE(reload, nullptr);
+        ASSERT_NE(back, nullptr);
+        EXPECT_EQ(fill(reload), theme::kAccent);
+        EXPECT_EQ(ink(reload), theme::kAccentInk);
+        EXPECT_EQ(fill(back), theme::kSurface3);
+        EXPECT_EQ(ink(back), theme::kText);
+        lv_obj_t* title =
+            find_label_containing(lv_layer_top(), wisp::ui::tr(StrId::SceneErrorTitle));
+        ASSERT_NE(title, nullptr);
+        EXPECT_EQ(ink(title), theme::kErr);
+        lv_obj_t* card = top_level(title);
+        EXPECT_EQ(fill(card), theme::kSurface);
+        EXPECT_EQ(lv_obj_get_style_radius(card, LV_PART_MAIN), theme::kRadiusLg);
+        layer->hide_error();
+
+        lv_obj_t* box = layer->open_confirm(StrId::PowerOffTitle, "Sure?", [](bool) {});
+        ASSERT_NE(box, nullptr);
+        EXPECT_EQ(fill(box), theme::kSurface);
+        EXPECT_EQ(fill(find_button_with_label(box, wisp::ui::tr(StrId::Yes))), theme::kAccent);
+        EXPECT_EQ(fill(find_button_with_label(box, wisp::ui::tr(StrId::No))), theme::kSurface3);
+        layer->close_confirm(box);
+
+        box = layer->open_confirm(
+            StrId::ResetTitle, "Erase?", [](bool) {}, wisp::ui::ButtonRole::Danger);
+        ASSERT_NE(box, nullptr);
+        lv_obj_t* yes = find_button_with_label(box, wisp::ui::tr(StrId::Yes));
+        EXPECT_EQ(fill(yes), theme::kErr);
+        EXPECT_EQ(ink(yes), theme::kAccentInk);
+        EXPECT_EQ(fill(find_button_with_label(box, wisp::ui::tr(StrId::No))), theme::kSurface3);
+        layer->close_confirm(box);
+    });
 }
 
 // The error panel is a card as tall as what it holds, centred in the safe

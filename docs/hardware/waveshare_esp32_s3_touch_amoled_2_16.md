@@ -16,10 +16,11 @@
   | `phy_init` | 0x11000 | 4 KB |
   | `ota_0` | 0x20000 | 5 MB |
   | `ota_1` | 0x520000 | 5 MB |
-  | `storage`（LittleFS） | 0xA20000 | 5.875 MB |
+  | `storage`（LittleFS） | 0xA20000 | 3.06 MB |
+  | `fonts`（矢量字体镜像，矢量字体 spec 3.4） | 0xD30000 | 2.81 MB |
 
-  网页资源包链接在应用镜像里，没有 `assets` 分区；`nvs` 和 `storage` 保持了早先分区表里的偏移和大小，所以换成这张表时设置和数据都保留。从旧分区表（两个 4 MB 应用槽加 2 MB 的 `assets` 分区）换过来时，以及第一次用上打开了回滚功能的引导程序时，都必须用 USB 完整烧录一次（`idf.py -p <PORT> flash`，写入引导程序、分区表、`otadata` 和 `ota_0`），之后才能在网页上传固件。
-- 镜像大小（ESP-IDF v6.0.3，`idf.py size`）：发布版 3,169,136 B（`ota_0` 的 60.4%），调试版（`sdkconfig.debug`）3,467,968 B（66.1%）；预算为单个 OTA 槽的 80%。
+  网页资源包链接在应用镜像里，没有 `assets` 分区。`nvs` 的偏移和大小都没有变，Wi-Fi、配对、亮度、语言等设置跨这次换表保留。`storage` 偏移不变，但为了给新增的 `fonts` 分区腾出空间，从 5.875 MB 缩小到 3.06 MB：LittleFS 的超级块记着块数，分区大小一变挂载就会失败，`format_if_mount_failed` 随即重新格式化——**换成这张表时 `/int` 里的数据（已安装的场景、场景数据、文件）全部清空**，用户已批准这次换表（矢量字体 spec 3.4）。从旧分区表（两个 4 MB 应用槽加 2 MB 的 `assets` 分区，或没有 `fonts` 分区的上一版 `storage` 0x5E0000）换过来时，以及第一次用上打开了回滚功能的引导程序时，都必须用 USB 完整烧录一次（`idf.py -p <PORT> flash`，写入引导程序、分区表、`otadata`、`ota_0` 和 `fonts`），之后才能在网页上传固件；只想换字体用 `idf.py -p <PORT> fonts-flash`，日常改代码用 `idf.py -p <PORT> app-flash`（见 `docs/porting-guide.md`"字体分区"）。
+- 镜像大小（ESP-IDF v6.0.3，`idf.py size`）：发布版 3,967,023 B（`ota_0` 的 75.7%，2026-11-05 矢量字体验收时，含 3a 和矢量字体；调试版没有重测）；预算为单个 OTA 槽的 80%。
 
 ## 外设与引脚
 
@@ -48,7 +49,36 @@
 - AXP2101 初始化时不要改动任何电源轨的电压或开关。
 - GPIO16 反映 PWR 键的状态：松开时被驱动为低电平，按住时为高电平（实测，官方资料只把它标为 `SYS_OUT`）。它不是 AXP2101 的中断输出，按普通按键读取即可，短按/长按由 `ButtonService` 计时判断，不需要读 AXP2101 的 IRQ 寄存器。实测时 AXP2101 的 PWRON 长按 IRQ 也恰好在按住 1 s 时置位，与 GPIO16 的电平一致。
 - 按住 PWR 键数秒（AXP2101 的 OFFLEVEL）会触发芯片的硬件强制关机，与软件无关。
+- 本板必须打开 flash 自动挂起（`CONFIG_SPI_FLASH_AUTO_SUSPEND`，`sdkconfig.defaults.board`）：开了 XIP 之后，flash 擦写期间读运行时映射的 `fonts` 分区会读到 0xFF，矢量字体因此崩溃。详见下方"flash 擦写与映射读取"。
 - 网页上传固件的已知限制（httpd 单任务，接受现状，见 `docs/architecture.md`"真机的网络"）：超过 8 MiB 的文件得到的是连接重置而不是 413（被提前拒绝时剩余部分超过 8 MiB 的上传都是如此）；两个浏览器同时上传时，第二个要等第一个传完才得到 409 `busy`；上传期间日志页暂停推送。
+
+## flash 擦写与映射读取（2026-11-05）
+
+**现象**：网页上传固件（OTA）期间 UI 任务崩溃，LoadProhibited，core 0，EXCVADDR `0xbc804b19`，栈为 `font_image_has_glyph` ← `vector_glyph_dsc`（`components/wisp_ui/src/fonts.cpp`）← `lv_font_get_glyph_dsc`。任何 flash 写入（OTA、LittleFS `/int`、NVS，包括 IDF 自己的 Wi-Fi/PHY NVS 写入）赶上 UI 正在画未缓存的矢量字形，都可能触发。
+
+**根因**：本板开了 XIP（`CONFIG_SPIRAM_XIP_FROM_PSRAM`），ESP-IDF 因此在 SPI1 擦写 flash 时不关 cache，只拿一把互斥锁（`spi_flash/spi_flash_os_func_app.c` 的 `SPI_FLASH_CACHE_NO_DISABLE`）。擦写进行中 flash 处于忙状态，这时 cache miss 落在 `esp_partition_mmap` 映射的 `fonts` 分区上，读回来的全是 0xFF。`font_image_has_glyph()` 当时每次都从映射区重读 cmap 子表的格式和计数，读到 0xFFFF 就走了格式 12 分支，分组数 0xFFFFFFFF，`12 * mid` 在 32 位下回绕，指针算到映射区之外。代码和只读数据在 XIP 启动时已经拷进 PSRAM，网页资源包同理，不受影响；受影响的是运行时映射的 flash：`fonts` 分区，以及 ESP-IDF 自己映射读取的新镜像（`esp_ota_end()` 和 `esp_ota_set_boot_partition()` 里的 `esp_image_verify()`）和 `otadata`（`read_otadata()`）。后两者在并发写入时会把 OTA 误判为失败，或把两条 `otadata` 记录都读成无效。不开 XIP 的板子不受影响：IDF 会在擦写期间关 cache 并停住另一个核。
+
+**修复**：
+- 板级打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND`：映射读取赶上擦写时，硬件先挂起擦写、读完再恢复，读到的就是正确数据。
+- 加固（不是修复）：`open_font_image()` 校验 cmap 时把子表格式和分段/分组数拷进 `FontImage`，查字形只用这份拷贝；唯一由运行时读到的值算出的偏移（glyphIdArray 位置）和子表长度比较一次。字形数据和 stb_truetype 的读取仍然来自映射区，只靠 auto-suspend 保证正确。
+
+**flash 型号**：`esptool flash-id` 读到厂商 0x20、器件 0x4018，即 XMC 128 Mbit。ESP-IDF v6.0.3 对厂商 0x20 读 SFDP 字节 0x32，bit3 为 1 就当作 XMC-D 系列、支持挂起（`spi_flash_chip_generic.c` 的 `get_caps`）；这片读到 0xF9（`esptool read-flash-sfdp 0x32 1`），bit3 为 1。启动日志有 `W spi_flash: Flash suspend feature is enabled`。
+
+**实测**（`fprobe` 是只为这次测量加的临时命令，不在固件里：把映射区拷一份到 PSRAM 作参照、反复 memcmp；或在顶层放一个 128 px 标签，每 20 ms 换 6 个汉字让字形缓存一直 miss；同时另起一个任务在 `ota_1` 里循环做 64 KB 擦除 + 64 KB 写入）：
+
+| 测试 | 不开 suspend | 打开 suspend |
+|---|---|---|
+| 一边写 flash 一边比对映射区 | 29 遍读到 41,817,016 字节错，全是 0xFF（约占读到字节的 59%） | 19 遍和 24 遍，0 字节错 |
+| 一边写 flash 一边换 128 px 字形 | 开写后 5 s 内崩溃，栈与 OTA 崩溃相同 | 180 s 写 56.6 MB，没有崩；修复提交上再测 150 s 写 46.9 MB、1587 次更新，没有崩 |
+| 一边换字形一边网页上传 3.97 MB 固件 | 就是原始崩溃 | 没有崩，24.0 s，返回 202 |
+| 网页上传 3,971,952 B（空闲自检界面） | 20.4–20.7 s | 20.6 s（两次） |
+| 纯写吞吐（无读者） | 338.5–340.9 KB/s | 355.8–365.6 KB/s |
+| `bench scroll 10`（同一界面，关热点） | 18.8–19.1 fps | 18.8–19.0 fps；修复提交 `352ad8f` 上 18.72 / 18.75 |
+| `boot_ms` | 2416 | 2411 |
+
+所有 suspend 测试里都没有看门狗报警或 flash 错误。只有在"满速比对映射区 + 同时写 flash"这个极端组合下（没有真实代码这样读），`power_monitor` 每隔几秒报一次 `axp2101_read_status: ESP_ERR_TIMEOUT`，下一次读取就恢复；单独满速比对、单独写、换字形加写入都没有出现。
+
+**风险**：auto-suspend 依赖 flash 型号。同款板子如果换了一批 ESP-IDF 不认可挂起的 flash（例如 XMC-C 系列，SFDP[0x32] 的 bit3 为 0），`esp_flash_init_default_chip()` 返回错误，启动时触发 `assert(flash_ret == ESP_OK)`（`esp_flash_spi_init.c`）：经 OTA 装上的固件会被回滚，USB 烧录的会反复重启。失败很明显，不会悄悄出错。遇到时先用 `esptool flash-id` 和 `read-flash-sfdp` 确认型号；ESP-IDF 文档还提醒中断很频繁时擦除会变慢，实测 Wi-Fi 和异步 flush 同时工作时没有看到。
 
 ## 真机验收清单
 
@@ -90,7 +120,7 @@
 | 30 | IMU 掉电恢复（wisp_app::PowerManager 待机，drivers/qmi8658） | 待机前记一次 IMU 读数，唤醒后再看 | 读数恢复正常更新，不是待机前最后一次读数，也不是全零/明显错误值（见"验收第 5 条"第 4 条） |  |
 | 31 | SD 探测暂停（wisp_port_esp::sd_retry 待机期间暂停探测） | 插卡待机若干分钟后唤醒；可选在待机期间物理插拔 SD 卡 | 唤醒后 `online()` 仍正确；待机期间的插拔只在唤醒后才被发现（预期行为，不是 bug，见"验收第 5 条"第 5 条） |  |
 | 32 | 触摸复位引脚功耗（可选测量，待机功耗评估） | 待机期间尝试拉低触摸复位引脚（GPIO40），对比前后电流 | 仅用于评估是否值得做后续省电项，不代表现在代码需要改动（见"验收第 5 条"第 6 条） |  |
-| 33 | UI 帧率基准（spec 10 性能基准） | 手指持续滚动自检列表 10 秒，看串口 `WISP_PERF` | 目标 fps ≥ 30。验收线（用户 2026-11-04 裁定，见 foundation spec 第 10 节"已记录的偏差"）：不低于下方"性能基准"一节记下的基准：关热点 22.7 fps，开热点（配网卡片显示时）也不低于关热点的 22.7 fps（2026-11-05 改，28.2 不再作为验收线，原因见该节末尾）；把 fps/cpu/flush_ms 三个数值记入该节 |  |
+| 33 | UI 帧率基准（spec 10 性能基准） | 手指持续滚动自检列表 10 秒，看串口 `WISP_PERF` | 目标 fps ≥ 30。验收线（用户 2026-11-04 裁定，见 foundation spec 第 10 节"已记录的偏差"）：不低于下方"性能基准"一节记下的当前基准（2026-11-05 用户同意在当前自检界面上重测，见该节"当前基准"）：关热点 18.3 fps，开热点（配网卡片显示时）29.8 fps；用 `bench scroll` 测，手指滚动只作参考；把 fps/cpu/flush_ms 三个数值记入该节 |  |
 | 34 | DFS 不拖累帧率（firmware/main.cpp apply_pm_config，DFS/light sleep） | 对比开启/关闭 `CONFIG_PM_ENABLE` 前后的 `WISP_PERF` | 开启 DFS 后帧率仍不低于上一项的基准 |  |
 | 35 | `power.charging.changed` 事件（spec 6.3，wisp_core::PowerMonitor） | 插拔 USB 电源，看串口上 `power_monitor` 的 `power.charging.changed: charging=... usb_present=... battery_percent=...` 日志行 | 插拔后 1 秒内出现该日志行，`charging`/`usb_present` 的值与实际状态一致 |  |
 | 36 | `power.battery.low` 事件（spec 6.3，wisp_core::PowerMonitor） | 电量明显偏低时观察串口日志；子项目 1 还没有 CLI/REST 能改 Settings，想快速触发可以临时在 `components/wisp_app/src/app.cpp` 里 `core::Settings power_settings(*impl_->platform.settings, "power");`（约第 102 行）之后加一行 `power_settings.set("low_batt_pct", int64_t{100});`，重新编译固件验证完后删掉这行（不要提交） | 只出现一次 `power_monitor` 的 `power.battery.low: battery_percent=... (threshold=...)` 日志行（不持续重复）；电量回升超过阈值+5 后再降回阈值以下会再出现一次；没有接电池、只接 USB 供电时不出现该日志 |  |
@@ -99,7 +129,7 @@
 | 39 | 网页上传后拒绝 | 再上传一次，设备上点"否"；再上传一次，2 分钟内不操作 | 两次网页都提示"已在设备上拒绝"；设备不重启，版本与运行分区不变 |  |
 | 40 | 拒绝其他板子的镜像 | 用 `-DWISP_BOARD=<另一块板>` 构建（或上传任何非 Wisp 的 ESP-IDF 应用 `.bin`）后上传 | 网页立即提示"这个固件是为其他开发板或芯片构建的"（400 `wrong_board`），设备上不弹确认框，Flash 未被写入（再上传一次正确镜像仍然正常） |  |
 | 41 | 启动失败自动回滚（`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`） | 临时在 `firmware/main/main.cpp` 的 `app_main()` 开头加一行 `abort();` 构建（不要提交），上传并在设备上确认 | 新镜像崩溃复位后，引导程序回到旧镜像；网页提示"设备重启后运行的仍是旧版本，已回滚"；之后上传正常镜像仍能装上 |  |
-| 42 | 发布版帧率（全局 `-Os`、渲染路径 `-O2`） | 用默认（发布版）配置构建烧录，重复第 33 项 | `WISP_PERF` 的 fps 不低于第 33 项的验收线（关热点、开热点都是 22.7 fps；目标仍是 30）。`esp_driver_spi` 改用 `-O2` 已实测无收益（见该节），不用再试 |  |
+| 42 | 发布版帧率（全局 `-Os`、渲染路径 `-O2`） | 用默认（发布版）配置构建烧录，重复第 33 项 | `WISP_PERF` 的 fps 不低于第 33 项的验收线（关热点 18.3、开热点 29.8 fps；目标仍是 30）。`esp_driver_spi` 改用 `-O2` 已实测无收益（见该节），不用再试 |  |
 | 43 | 上传期间的日志推送 | 上传固件时打开"日志"页 | 上传期间日志暂停推送（httpd 只有一个任务，被上传请求占着），上传结束后恢复推送，WebSocket 不断开 |  |
 | 44 | 内部 RAM 最坏情况（AGENTS.md 第 5 节的预算） | 设备连上家里的 Wi-Fi 后在串口执行 `wifi ap on`，手机连上热点打开设置页；电脑经 STA 地址打开管理页的"日志"页（WebSocket），在"模型"页对一个真实的 HTTPS 端点做连通性测试，再上传一次固件；全程每隔几秒执行一次 `mem` | 日志里 `admin server listening on port 8900` 和 `captive redirect listening on port 80` 都出现，后面的 `internal RAM: ...` 行不是警告；`mem` 的 `internal free` 始终 ≥ 40 KB、`largest` ≥ 16 KB（`min` 是各内存区各自最低点之和，偏低，只能当下限看）；`wisp.ws`、`wisp.dns` 和端口 80 的 `httpd` 的栈在 `psram`，端口 8900 的 `httpd` 的栈在 `internal`；整个过程 STA 不掉线、日志里没有反复重连（RX BA 窗口只有 10，换路由器时也看一眼） | |
 | 45 | 不透明卡片的遮挡裁剪（`wisp/ui/overlay.hpp`） | `wifi ap on` 让配网卡片显示，手指上下滚动自检列表；再执行 `wifi ap off` 关掉卡片 | 滚动时卡片周围和卡片上没有残影、撕裂或缺块；关掉卡片后，卡片原来位置下面的列表内容完整、与周围一致 | 用户 2026-11-04 确认开热点滚动无残影（之后修过渲染期间的探测和隐藏图层的处理，建议复看一次） |
@@ -110,11 +140,12 @@
 | 50 | 两种安装方式（scene spec 9.4.1） | 网页"场景"页上传 `counter` 的 zip；`python3 tools/wisp_scene.py --host <IP>:8900 push scenes/examples/todo --open`；从自检界面"场景"区块打开两者 | 都安装成功，推送输出显示声明的域名；列表点击即打开 | 2026-11-05：通过。API 推送与网页 zip 上传都安装成功（日志 `admin: scene upload started` 后场景正常安装/打开/关闭）。 |
 | 51 | 示例功能与断电保留（scene spec 9.4.2） | 逐个打开 7 个示例；在待办加 3 条、记账加 2 条后拔电池和 USB 断电重启 | 功能正常；重启后数据仍在 |  |
 | 52 | 返回手势与错误面板（scene spec 9.4.3） | 从圆角屏左边缘 16 px 以内起、向右滑动超过 24 px（任意角度，`ui::SystemLayer::kBackZoneWidth`/`kBackTriggerDx`，见 `components/wisp_ui/include/wisp/ui/system_layer.hpp`）；推送 `tests/scene/fixtures/broken` 并打开，点"返回"，再打开点"重载" | 手势可用；错误面板显示文件与行号（`main.lua:5`），返回与重载正常 |  |
-| 53 | 长列表帧率与内存（scene spec 9.4.4） | 待办放 200 条，手指持续滚动 10 s，看 `WISP_PERF`；同时执行 `mem`；记下日志里 `slow message` 的最大耗时（GC 停顿） | fps 不低于自检界面基准（下方"性能基准"一节，关热点、开热点都是 22.7）；`internal free` ≥ 60 KB、`largest` ≥ 20 KB（`ram_budget.hpp` 的 `kIdleInternalFreeMin`/`kIdleInternalLargestMin`） | 2026-11-05：todo200 持续滚动 fps 22–26，偶尔掉到 14；`internal free` ≥ 84 KB，高于 60 KB 下限；`slow message open` 115–196 ms。短暂掉到 14 fps 低于基准，本次没有继续排查。 |
+| 53 | 长列表帧率与内存（scene spec 9.4.4） | 待办放 200 条，手指持续滚动 10 s，看 `WISP_PERF`；同时执行 `mem`；记下日志里 `slow message` 的最大耗时（GC 停顿） | fps 不低于自检界面关热点的基准 18.3（下方"性能基准"一节的"当前基准"）；`internal free` ≥ 60 KB、`largest` ≥ 20 KB（`ram_budget.hpp` 的 `kIdleInternalFreeMin`/`kIdleInternalLargestMin`） | 2026-11-05：todo200 持续滚动 fps 22–26，偶尔掉到 14；`internal free` ≥ 84 KB，高于 60 KB 下限；`slow message open` 115–196 ms。短暂掉到 14 fps 低于基准，本次没有继续排查。 |
 | 54 | 熄屏恢复与待机耗电（scene spec 9.4.5） | 番茄钟和时钟运行时熄屏 3 分钟再亮屏；按"验收第 5 条：待机耗电实测"一节的方法测待机电流，对比无场景时 | 剩余时间与表盘正确，`minute` 只补一次；待机电流与无场景时相当 |  |
 | 55 | 未声明域名被拒（scene spec 9.4.6） | 临时把天气场景的 URL 改成未声明的主机后推送打开 | 回调收到 `permission_denied`，没有出站连接 |  |
-| 56 | LVGL 堆在 PSRAM 后的帧率 | 不开场景，在最终固件上重复"UI 帧率基准"一行，不开热点与开热点各测一次（LVGL 堆改到 PSRAM 后已经在真机上测过一次，见下方"性能基准"一节的"LVGL 堆"小节） | `WISP_PERF` 的 fps 不开热点 ≥ 22.7、开热点也 ≥ 22.7（下方"性能基准"一节；开热点原来的 28.2 不再作为验收线，原因见该节末尾）；低于时停下来报告，不要自行改回 | 2026-11-05：不开热点 22–24 fps，达标（基准 22.7）；开热点 23–24 fps，当时按 28.2 的基准记为低于基准、待排查。验收线改为开热点 ≥ 22.7 之后，这个结果达标。 |
-| 57 | 内部 RAM 最坏情况复测（mbedTLS 的分配全部改到 PSRAM 之后，`firmware/sdkconfig.defaults` 的 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`；UI 任务栈也已从 8 KB 加到 10 KB） | 烧录包含这项改动的固件（改 `sdkconfig.defaults` 后要先删掉 `firmware/sdkconfig` 再构建，否则不生效；构建后 `firmware/sdkconfig` 里应是 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`）。按第 44 项的同一场景操作：STA 连家里的 Wi-Fi，`wifi ap on`，手机连热点打开设置页，电脑经 STA 打开管理页"日志"页（WebSocket）；然后同时进行：打开天气场景（HTTPS）、在"模型"页对真实 HTTPS 端点做连通性测试、上传一次固件。全程每隔 1–2 秒执行一次 `mem` | 每次 `mem` 的 `internal free` 都 ≥ 40 KB（`kWorstInternalFreeMin`）、`largest` ≥ 16 KB；记下所有采样里最低的 `internal free` 和最后的 `min`。`internal free` 是同一时刻的快照，以它为准；`min` 是各内存区各自最低点之和，偏低，只作参考。若采样都 ≥ 40 KB 但 `min` < 40 KB，记下两者，不算不达标（需要精确最低点时，可以临时在固件里用 `heap_caps_monitor_local_minimum_free_size_start/stop(MALLOC_CAP_INTERNAL)` 包住这段操作）。同时确认：天气场景和连通性测试都成功（握手变慢但不超时），STA 不掉线。结果低于 40 KB 时停下来报告 | 待测 |
+| 56 | LVGL 堆在 PSRAM 后的帧率 | 不开场景，在最终固件上重复"UI 帧率基准"一行，不开热点与开热点各测一次（LVGL 堆改到 PSRAM 后已经在真机上测过一次，见下方"性能基准"一节的"LVGL 堆"小节） | `bench scroll` 的 fps 不开热点 ≥ 18.3、开热点 ≥ 29.8（下方"性能基准"一节的"当前基准"）；低于时停下来报告，不要自行改回 | 2026-11-05：不开热点 22–24 fps，达标（基准 22.7）；开热点 23–24 fps，当时按 28.2 的基准记为低于基准、待排查。验收线改为开热点 ≥ 22.7 之后，这个结果达标。 |
+| 57 | 内部 RAM 最坏情况复测（mbedTLS 的分配全部改到 PSRAM 之后，`firmware/sdkconfig.defaults` 的 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`；UI 任务栈也已从 8 KB 加到 10 KB） | 烧录包含这项改动的固件（改 `sdkconfig.defaults` 后要先删掉 `firmware/sdkconfig` 再构建，否则不生效；构建后 `firmware/sdkconfig` 里应是 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`）。按第 44 项的同一场景操作：STA 连家里的 Wi-Fi，`wifi ap on`，手机连热点打开设置页，电脑经 STA 打开管理页"日志"页（WebSocket）；然后同时进行：打开天气场景（HTTPS）、在"模型"页对真实 HTTPS 端点做连通性测试、上传一次固件。全程每隔 1–2 秒执行一次 `mem` | 每次 `mem` 的 `internal free` 都 ≥ 40 KB（`kWorstInternalFreeMin`）、`largest` ≥ 16 KB；记下所有采样里最低的 `internal free` 和最后的 `min`。`internal free` 是同一时刻的快照，以它为准；`min` 是各内存区各自最低点之和，偏低，只作参考。若采样都 ≥ 40 KB 但 `min` < 40 KB，记下两者，不算不达标（需要精确最低点时，可以临时在固件里用 `heap_caps_monitor_local_minimum_free_size_start/stop(MALLOC_CAP_INTERNAL)` 包住这段操作）。同时确认：天气场景和连通性测试都成功（握手变慢但不超时），STA 不掉线。结果低于 40 KB 时停下来报告 | 2026-11-05 达标（固件 `0.1.0-463-g9b24c06`，主题分支合并版，含 3a、矢量字体和 flash 自动挂起）：STA 连着家里的 Wi-Fi，`wifi ap on`，电脑的无线网卡连上热点、每 2 s 取一次 `setup.html`（全部 200），电脑经 STA 订阅场景日志（WebSocket）；同时推送并打开天气场景（HTTPS 取数成功）、对一个 DeepSeek 端点做连通性测试（用假密钥，完整 TLS 握手后得到 HTTP 401，2.2 s，测完删掉这个配置）、上传一次 3.97 MB 固件（202，之后未确认、按超时丢弃）。每 1.5 s 一次 `mem`，共 51 个采样：`internal free` 最低 62635 B、`largest` 始终 31744 B，都高于 40 KB / 16 KB；最后的 `min` 是 39732 B（各内存区最低点之和，偏低，只作参考）。`wisp.ws`、`wisp.dns` 和端口 80 的 `httpd` 栈在 `psram`，端口 8900 的 `httpd` 在 `internal`（high-water mark 剩余最低 3220 B）；全程 STA 没有断线。连通性测试和上传是先后进行的（测试结束 11 ms 后上传开始），没有完全重叠。 |
+| 58 | flash 写入期间渲染矢量字形（上文"flash 擦写与映射读取"） | 启动日志确认有 `Flash suspend feature is enabled`；打开一个有大字号汉字的界面（或不断切换含大字的场景），同时在管理后台上传一次固件 | 不崩溃；上传成功（202）并在重启后运行新固件；大字显示正常、没有乱码字形 | 2026-11-05：真机 OTA 通过：「大字测试」显示时经管理后台上传 `0.1.0-449-gc0be5e3`（202），上传和重启期间不崩溃，重启后启动日志有 `Flash suspend feature is enabled`、`fonts: image ok`，用户确认标题是矢量大字。此前用 `fprobe` 临时命令压测（128 px 换字 150 s + 同时擦写 `ota_1` 46.9 MB）也没有崩溃，比对映射区 24 遍 0 字节错 |
 
 ## 待机与省电（spec 6.7）
 
@@ -349,6 +380,24 @@ STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动
 
 **STA 和热点互斥能省多少**：只开热点比 STA + 热点只多 5.4 KB（mDNS 任务栈 4 KB 加 DHCP 客户端和关联状态），只连 STA 比 STA + 热点多 14.6 KB。热点部分本身：softAP 驱动、netif 和 DHCP 服务器约 10.6 KB；端口 80 的 httpd 约 3 KB（栈已移到 PSRAM，移之前是 7.1 KB）；DNS 任务 0.4 KB（移之前是 3.4 KB）。配网时热点不能不开，所以互斥只能把峰值降低约 5 KB。
 
+**矢量字体（2026-11-05，可行性验证分支 `spike/vector-font` 的实测，代码已丢弃，只取结论）**：`wisp_ui` 任务栈从 8 KB 加到 10 KB 后，用 `mem` 命令实测到的 high-water mark 余量从 1208 B 降到 808 B——stb_truetype 光栅化在栈上约用了 0.5 KB 扫描线缓冲。`fonts` 分区整个 `esp_partition_mmap()` 之后，内部 RAM 只多了约 80 B（映射本身的记账，不含映射出的 2.81 MB 本身，那部分在数据地址空间里不占堆）。这两个数字都只是 spike 分支上的一次性测量，不是这版固件的常设预算；接入矢量字体的正式实测（最坏情况 STA + 热点、两个 httpd、WebSocket 日志、TLS 握手、OTA 上传同时进行）留给真机验收（本文档"真机验收清单"）。
+
+**矢量字体真机验收（2026-11-05，主题分支合并后的固件 `40d24f4`/`c09a2cc`，它包含矢量字体和 3a；STA 连着家里的 Wi-Fi，内部 Flash 装了 12 个场景）**：
+
+| 状态 | 内部 RAM 空闲 | 最大块 | `min` | `wisp_ui` 栈剩余（10 KB 栈） | PSRAM 空闲 |
+|---|---|---|---|---|---|
+| 开机空闲 | 86679 B | 31744 B | 51960 B | 3412 B | 4.04 MB |
+| 番茄钟运行过、「大字测试」（128 px 汉字、xxl 混排、图标）打开 | 84283 B | 31744 B | 43680 B | 2484 B | 3.89 MB |
+
+两种状态都满足 `ram_budget.hpp` 的空闲 ≥ 60 KB、最大块 ≥ 20 KB，`wisp_ui` 剩余高于 1024 B。这一版同一时间只运行一个场景，打开「大字测试」时番茄钟已经关闭，所以第二行是先后运行，不是同时运行。
+
+- **启动**：`boot_ms` 2411–2418；字体分区擦空时（镜像校验在读魔数时就失败）是 2219，所以整个镜像的 CRC 校验约 195 ms。映射分区本身只要 42–50 µs。
+- **冷渲染**：第一次打开「大字测试」，场景的 `open` 消息用了 67 ms，第二次（字形已在缓存里）也是 67 ms。现有日志不给出单帧耗时，128 px 字形第一次光栅化的耗时没有单独测出来；用户没有看到停顿。
+- **帧率**：见"性能基准"一节的"当前基准"（这一版就是当时测基准的固件）。
+- **降级**：擦掉 `fonts` 分区后日志是 `fonts partition holds no font image; large text uses bitmap fonts`；只写入镜像前 1 MB（截断）后日志是 `font image CRC mismatch; large text uses bitmap fonts`。两种情况都不崩溃，大字退到 16 px，图标仍是大号（用户确认）。`idf.py fonts-flash` 后恢复为 `fonts: image ok`。
+- **OTA 不碰字体**：经管理后台上传应用镜像并在设备上确认，重启后仍是 `fonts: image ok`，标题仍是矢量大字。这次验收还暴露了 flash 擦写期间读映射区的崩溃，见上文"flash 擦写与映射读取"和清单第 58 项。
+- **镜像大小**：`idf.py size` 的 Total image size 是 3,967,023 B，占 `ota_0`（0x500000）的 75.7%。矢量字体本身让镜像净减约 55 KB：加入 Tiny TTF 和 stb_truetype 多了 19.5 KB，去掉 Montserrat 24/32/48 少了 72.3 KB。计划里用来对比的 3,169,136 B 是更早的固件的数，那之后 3a 等改动已经让镜像涨到约 4.01 MB。
+
 ### 场景运行时
 
 真机验收清单第 53 项之外，另外交给用户在真机上执行的实测步骤（场景 spec 2.3）：分别在以下四种状态下执行一次串口命令 `mem`，记录 `internal free`/`largest`/`min`，以及 `wisp.scene`、`wisp.fs`、`wisp.shttp`、`wisp.ntp` 四个任务的栈大小与 high-water mark：
@@ -398,6 +447,8 @@ STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动
 
 `min` 是开机以来的历史最低点：这次验收触到的内部 RAM 历史最低点是 33772 B（TLS 连通性测试叠加热点上传前后出现，一直保持到测试结束），对照 `kWorstInternalFreeMin`（40 × 1024 = 40960 B）：33772 < 40960，**不达标**，需要跟进（日志显示这个低点是在热点打开、WebSocket 日志连上之后、上传之前的区间内出现的，具体触发点还没有继续拆开排查）。
 
+2026-11-05 按清单第 57 项复测（mbedTLS 的分配已改到 PSRAM）：同样的组合下 `internal free` 的采样最低 62635 B，`min` 39732 B，比上面的 33772 B 高约 6 KB；`internal free` 的采样全部高于 40 KB，按第 57 项的判定达标。
+
 跟进（2026-11-05，未上机）：TLS 会话的大部分内部 RAM 来自 mbedTLS 小于 16 KB 的分配（4 KB 发送缓冲、SSL 上下文、握手状态、解析后的证书链、大数临时变量），按默认 `malloc` 规则都落在内部 RAM，估计握手期间 15–20 KB；TLS 闸门只串行化握手，场景的 HTTPS 会话和连通性测试的握手可以重叠。现在 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y` 把 mbedTLS 的分配全部放进 PSRAM（理由和代价见 `firmware/sdkconfig.defaults` 中该项的注释）。另外这次测量之后 UI 任务栈从 8 KB 加到了 10 KB，内部 RAM 常驻多占 2 KB。需要按清单第 57 项在真机上复测，复测前不能算达标。
 
 ## 性能基准
@@ -407,7 +458,7 @@ ESP-IDF v6.0.3，发布版（全局 `-Os`，LVGL、esp_lcd 和 wisp_ui 的渲染
 - **raw**：`lv_obj_scroll_by_raw()`，前后各发一次 `SCROLL_BEGIN`/`SCROLL_END`，和手指拖动时 LVGL 的做法一样。
 - **scroll_by**：每帧调用一次 `lv_obj_scroll_by()`。每次调用都会发一对 `SCROLL_BEGIN`/`SCROLL_END`，切换 `LV_STATE_SCROLLED` 状态，触发整棵树重新布局，每帧多出约 11 ms。手指滚动不会这样，所以以 raw 为准。
 
-fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致。"热点"指 `wifi ap on`（只开热点，不连任何网络），这时配网卡片（带二维码）盖在列表上面。
+fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致。raw 的测法现在是固件里常驻的串口命令 `bench scroll [秒数]`（默认 10 s，输出一行 `WISP_BENCH`，见 `docs/architecture.md`"机器可读输出"），测前确认性能浮层关着、列表在顶部。"热点"指 `wifi ap on`（只开热点，不连任何网络），这时配网卡片（带二维码）盖在列表上面。
 
 | 配置 | raw fps | raw fps（热点） | scroll_by fps | `WISP_PERF`（滚动中） | 启动后内部 RAM 空闲 |
 |---|---|---|---|---|---|
@@ -468,7 +519,7 @@ fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致�
 - 等 bmgr 支持 `psram_dma_direct`，把缓冲放进 PSRAM，腾出内部 RAM 给 32 KB 指令 cache；
 - 减少滚动区域里的对象和标签数（界面设计层面的取舍）。
 
-开热点时曾经到 28.2 fps：那是旧版自检界面上测的（`b16bfc3`，只开热点、不连 STA，用上面的程序滚动），配网卡片挡住了一半列表，每帧要画的像素更少，并不是开热点本身让渲染变快。之后自检界面改版了两次（内容和分区卡片都变了），安全区变小（圆角半径 70，安全区 `{24,24,455,455}`），配网卡片也变大了（大号对话框按钮），卡片挡住的比例不再相同，所以 28.2 和现在的界面没有可比性。2026-11-05 起开热点的验收线改为不低于关热点的基准 22.7 fps（第 33、42、53、56 项）。要恢复一个开热点的专门基准，需要在当前界面上用同样的方法（程序 raw 滚动、关掉性能浮层、卡片显示）在同一个固件上先后测关热点和开热点，再把两个数一起记进上面的总表。那次 23–24 fps 与关热点的数相同，可能是卡片的遮挡裁剪没有生效，例如性能浮层（LVGL sysmon 标签）开着：它是系统层上没有标记的可见对象，任何碰到它的失效区域都会关掉裁剪（`components/wisp_ui/src/overlay.cpp`）。
+开热点时曾经到 28.2 fps：那是旧版自检界面上测的（`b16bfc3`，只开热点、不连 STA，用上面的程序滚动），配网卡片挡住了一半列表，每帧要画的像素更少，并不是开热点本身让渲染变快。之后自检界面改版了两次（内容和分区卡片都变了），安全区变小（圆角半径 70，安全区 `{24,24,455,455}`），配网卡片也变大了（大号对话框按钮），卡片挡住的比例不再相同，所以 28.2 和现在的界面没有可比性。现在的开热点基准是在当前界面上按同样的方法重测的，见下方"当前基准"。那次 23–24 fps 与关热点的数相同，可能是卡片的遮挡裁剪没有生效，例如性能浮层（LVGL sysmon 标签）开着：它是系统层上没有标记的可见对象，任何碰到它的失效区域都会关掉裁剪（`components/wisp_ui/src/overlay.cpp`）。
 
 ### LVGL 堆
 
@@ -496,6 +547,25 @@ LVGL 的堆放在 PSRAM（`LV_STDLIB_CUSTOM`，`components/wisp_ui/src/lv_mem_wi
 | ≤ 16 KB 的块放内部 RAM（等于 CLIB 的规则，单次） | 22.08 | 28.04 | 67.4 KB | 39.7 KB |
 
 结论：保留 PSRAM 堆。TLSF 不更快，而且 LVGL 9.5 不会自己扩池（`LV_MEM_POOL_EXPAND_SIZE` 只放宽单个池和单块的上限），固定的池装不下 2000 个控件的场景（主机上约 300 字节/控件），截图用的 690–920 KB 绘制缓冲也要另外处理。把块放回内部 RAM 的方案要么没有收益，要么把 17 KB 的收益吃回去。
+
+### 自检界面的存储读数（2026-11-05）
+
+`bench scroll`（关热点，STA 连着家里的 Wi-Fi，内部 Flash 装了 12 个场景，已用 248 KB）测出 3a 的固件只有 15.6–15.8 fps，比上面的 22.7 低了 7 fps。原因有两个，都不在场景运行时里：
+
+- **自检界面每 100 ms 在 UI 线程上读一次存储容量**（`StorageManager::status()`）。LittleFS 的 `esp_littlefs_info()` 要把用到的每个块都读一遍（`lfs_fs_size()`，读块、算 CRC），实测每次 18 ms，等于 UI 线程 18% 的时间，拖掉约 4 fps；`lfs_fs_size()` 遍历所有在用的块，存的东西越多越慢（3a 验收时手指滚动还有 22–24 fps，可能就是当时存的少，没有复现）。这个读法从自检界面一开始就有，所以同一台设备上，老固件（`d7e98d5`，当时测出 21.8）现在也只有 18.2，去掉这次读取就回到 22.6。现在改为在存储工作线程（`wisp.fs`）上每秒读一次，结果交回 UI 线程（`SceneWiring::storage_status_async()`），3a 固件从 15.6–15.8 回到 19.1–19.4。
+- **自检界面改版**（`dbf75f0`，状态摘要和卡片）本身每帧多画不少东西：同样去掉存储读数，改版前 22.5–22.6，改版后 19.5。3a 之后的提交没有再带来超过噪声的变化（`842d6f3` 和 `43a2caf` 都是 15.6–15.8）。
+
+所以 3a 固件在现在的自检界面上是 19.1–19.4 fps（这个界面、这台设备）；22.7 是改版前的界面上测的，两者不能直接比。
+
+### 当前基准（2026-11-05）
+
+上面总表的 22.7 / 28.2 是改版前的自检界面测的，只用来说明各项渲染改动的收益。2026-11-05 起验收线（清单第 33、42、53、56 项）改为在当前自检界面上重测的值：
+
+| 固件 | 关热点 | 开热点（只开热点，配网卡片显示） |
+|---|---|---|
+| 主题 + 矢量字体 + 3a（`40d24f4`，含上面的存储读数修复） | 18.38 / 18.66 / 18.66 | 29.86 / 29.93 / 29.87 |
+
+测法：`bench scroll 10`，每种各 3 次，STA 连着家里的 Wi-Fi，内部 Flash 装了 12 个场景，性能浮层关着，列表在顶部；`cpu` 都是 99–100。验收线取关热点 18.3、开热点 29.8：同一固件重复测量的波动约 ±0.3 fps（见上文），验收线比最低一次的读数低一点，免得定基准的固件自己都过不了。开热点更快是因为卡片挡住了大半个列表，每帧要画的像素少（见上文"开热点时曾经到 28.2 fps"一段）。同一界面上只有 3a 时是 19.1–19.4，主题和矢量字体合起来约少 0.5 fps。自检界面以后再改版、或配网卡片尺寸改变时，要在同一固件上重测这两个数并更新本表。
 
 ## 验收第 5 条：待机耗电实测
 

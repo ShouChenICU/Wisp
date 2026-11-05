@@ -17,7 +17,7 @@
 // Values (PropType):
 //   Size     integer pixels, "fill" or "content"
 //   Int      integer (an integral float is taken as an integer)
-//   (Size, Pad and Int integers must fall in prop_range(): LVGL reads
+//   (Size, Pad, Int and Font integers must fall in prop_range(): LVGL reads
 //   some high bits of a coordinate as flags, so the UI can use any value
 //   that passes as it is.)
 //   Number   integer or float
@@ -26,7 +26,8 @@
 //   Bool     boolean
 //   Color    "#RRGGBB" or a theme token (accent text muted surface bg
 //            danger ok warn)
-//   Font     xs sm md lg xl xxl
+//   Font     xs sm md lg xl xxl, or integer pixels in prop_range()
+//            (16 to 128)
 //   Align    start center end
 //   Justify  start center end between around evenly
 //   Pad      integer, or {top, right, bottom, left} of integers (exactly

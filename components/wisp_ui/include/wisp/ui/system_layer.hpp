@@ -36,6 +36,7 @@
 #include "lvgl.h"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/ui/strings.hpp"
+#include "wisp/ui/theme.hpp"
 
 namespace wisp::ui {
 
@@ -112,11 +113,14 @@ public:
     // The lv_keyboard while it is up, else nullptr.
     lv_obj_t* keyboard() const { return kb_; }
 
-    // Opens a modal Yes/No dialog and returns its box. Answering closes
-    // it and then calls `on_answer`. Only one dialog is open at a time:
-    // while one is, this returns nullptr and never calls `on_answer`.
+    // Opens a modal Yes/No dialog and returns its box. Yes is a `yes_role`
+    // button (Danger for an action that destroys data), No a secondary
+    // one. Answering closes it and then calls `on_answer`. Only one dialog
+    // is open at a time: while one is, this returns nullptr and never
+    // calls `on_answer`.
     lv_obj_t* open_confirm(StrId title, const std::string& text,
-                           std::function<void(bool yes)> on_answer);
+                           std::function<void(bool yes)> on_answer,
+                           ButtonRole yes_role = ButtonRole::Primary);
     bool confirm_open() const { return confirm_box_ != nullptr; }
     // Closes `box` (if it is the open dialog) without calling its
     // callback.

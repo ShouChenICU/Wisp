@@ -53,6 +53,10 @@ struct SimOptions {
     std::string scenes_dir;
     // A scene to open once App::start() has returned.
     std::string open_scene;
+    // The vector font image (vector-font spec 3.3): empty is the fonts.bin
+    // the build packs next to the executable, "none" runs without one
+    // (large text on bitmap fonts), anything else is a path.
+    std::string font_image;
 };
 
 // Parses argv[1..argc) (argv[0], the program name, is ignored) into a
@@ -62,7 +66,8 @@ struct SimOptions {
 // <rect|rounded_rect|circle>, --http-port <n> (0-65535; 0 = no admin
 // server), --web-dir <path>, --wifi-fail, --tap <x>,<y>@<ms> and
 // --swipe <x1>,<y1>,<x2>,<y2>@<ms> (both repeatable, appended to
-// `touches` in order), --scenes-dir <path> and --open-scene <id>.
+// `touches` in order), --scenes-dir <path>, --open-scene <id> and
+// --font-image <path|none>.
 //
 // Fails with wisp::ErrorCode::InvalidArgument if:
 //   - an argument is none of the flags above (the error message includes

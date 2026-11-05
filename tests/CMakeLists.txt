@@ -95,7 +95,16 @@ wisp_test(NAME ui_runtime_test SRCS ui/ui_runtime_test.cpp LIBS wisp_ui wisp_por
 wisp_test(NAME overlay_test SRCS ui/overlay_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME a8_font_test SRCS ui/a8_font_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME system_layer_test SRCS ui/system_layer_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME theme_test SRCS ui/theme_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 target_include_directories(a8_font_test PRIVATE ${WISP_ROOT}/components/wisp_ui/src)
+# The real vector font image (vector-font spec 3.3), packed by
+# simulator/CMakeLists.txt next to wisp_sim; read by support/font_image.hpp.
+wisp_test(NAME font_image_test SRCS ui/font_image_test.cpp LIBS wisp_ui wisp_port_sim_os)
+add_dependencies(font_image_test wisp_sim_fonts)
+target_compile_definitions(font_image_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
+wisp_test(NAME vector_font_test SRCS ui/vector_font_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
+add_dependencies(vector_font_test wisp_sim_fonts)
+target_compile_definitions(vector_font_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
 wisp_test(NAME app_boot_test SRCS app/app_boot_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 wisp_test(NAME power_key_controller_test SRCS app/power_key_controller_test.cpp LIBS wisp_app)
@@ -107,6 +116,11 @@ wisp_test(NAME ram_budget_test SRCS app/ram_budget_test.cpp LIBS wisp_app wisp_b
 wisp_test(NAME self_check_screen_test SRCS app/self_check_screen_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
 target_include_directories(self_check_screen_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+# The title font test needs the real vector font image; see font_image_test
+# above for where fonts.bin comes from.
+add_dependencies(self_check_screen_test wisp_sim_fonts)
+target_compile_definitions(self_check_screen_test PRIVATE
+                           WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
 wisp_test(NAME self_check_model_test SRCS app/self_check_model_test.cpp LIBS wisp_app)
 target_include_directories(self_check_model_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME app_net_test SRCS app/app_net_test.cpp
@@ -122,7 +136,7 @@ target_include_directories(notification_router_test PRIVATE ${WISP_ROOT}/compone
 wisp_test(NAME net_wiring_test SRCS app/net_wiring_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 target_include_directories(net_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
-foreach(app_ui_test net_ui_test factory_reset_test firmware_confirm_test app_scenes_test)
+foreach(app_ui_test net_ui_test factory_reset_test firmware_confirm_test app_scenes_test bench_test)
     wisp_test(NAME ${app_ui_test} SRCS app/${app_ui_test}.cpp
               LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
     target_include_directories(${app_ui_test} PRIVATE ${WISP_ROOT}/components/wisp_app/src)
@@ -272,6 +286,10 @@ wisp_test(NAME patch_queue_test SRCS scene/patch_queue_test.cpp LIBS wisp_scene 
           TIMEOUT 30)
 wisp_test(NAME scene_view_test SRCS scene/scene_view_test.cpp LIBS wisp_scene wisp_port_sim_os
           TIMEOUT 30)
+# Numeric font sizes and the examples' large text need the real vector font
+# image; see font_image_test above for where fonts.bin comes from.
+add_dependencies(scene_view_test wisp_sim_fonts)
+target_compile_definitions(scene_view_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
 # list_window.hpp and widget_data.hpp are private to wisp_scene.
 wisp_test(NAME list_window_test SRCS scene/list_window_test.cpp LIBS wisp_scene)
 wisp_test(NAME scene_view_list_test SRCS scene/scene_view_list_test.cpp
@@ -305,7 +323,9 @@ wisp_test(NAME scene_api_test SRCS scene/scene_api_test.cpp
 # The example scenes in scenes/examples, opened on a SceneRuntime.
 wisp_test(NAME examples_test SRCS scene/examples_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 120)
-target_compile_definitions(examples_test PRIVATE WISP_ROOT="${WISP_ROOT}")
+add_dependencies(examples_test wisp_sim_fonts)
+target_compile_definitions(examples_test PRIVATE WISP_ROOT="${WISP_ROOT}"
+                           WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
 foreach(t list_window_test scene_view_list_test canvas_test)
     target_include_directories(${t} PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 endforeach()

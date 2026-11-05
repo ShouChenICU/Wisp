@@ -46,6 +46,8 @@ void TestSection::build(lv_obj_t* col, PageText& text, Callbacks callbacks,
     lv_obj_t* box = lv_obj_create(card);
     lv_obj_set_width(box, LV_PCT(100));
     lv_obj_set_height(box, kTouchAreaHeight);
+    // A step above the card, so the area reads as a pad to press.
+    lv_obj_set_style_bg_color(box, lv_color_hex(ui::theme::kSurface2), 0);
     lv_obj_add_flag(box, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(box, &TestSection::touch_cb, LV_EVENT_PRESSED, this);

@@ -80,7 +80,7 @@ TEST_F(Canvas, CommandsRoundTripAndLimit512) {
     auto cmds = commands(all[0]);
     ASSERT_EQ(cmds.size(), 512u);
     EXPECT_EQ(cmds[0].op, DrawOp::Fill);
-    EXPECT_EQ(cmds[0].rgb, 0x000000u);
+    EXPECT_EQ(cmds[0].rgb, 0x0B0F17u);  // bg
     EXPECT_EQ(cmds[1].op, DrawOp::Line);
     EXPECT_EQ(cmds[1].rgb, 0x102030u);
     EXPECT_EQ(cmds[1].width, 3);
@@ -88,23 +88,23 @@ TEST_F(Canvas, CommandsRoundTripAndLimit512) {
               (std::vector<int32_t>{1, 2, 30, 40}));
     EXPECT_EQ(cmds[2].op, DrawOp::Circle);
     EXPECT_EQ(cmds[2].fill, 1);
-    EXPECT_EQ(cmds[2].rgb, 0x4F9DFFu);
+    EXPECT_EQ(cmds[2].rgb, 0x5AB4FFu);
     EXPECT_EQ(cmds[2].v[2], 20);
     EXPECT_EQ(cmds[3].op, DrawOp::Arc);
     EXPECT_EQ(cmds[3].v[3], 270);
     EXPECT_EQ(cmds[3].v[4], 90);
     EXPECT_EQ(cmds[3].width, 4);
-    EXPECT_EQ(cmds[3].rgb, 0xFFFFFFu);  // the text colour by default
+    EXPECT_EQ(cmds[3].rgb, 0xE6EDF7u);  // the text colour by default
     EXPECT_EQ(cmds[4].op, DrawOp::Rect);
     EXPECT_EQ(cmds[4].radius, 8);
     EXPECT_EQ(cmds[4].fill, 0);
     EXPECT_EQ(cmds[5].op, DrawOp::Text);
-    EXPECT_EQ(cmds[5].font, 3);  // lg
+    EXPECT_EQ(cmds[5].font_px, 24);  // lg
     EXPECT_EQ(draw_text(std::span<const uint8_t>(all[0]), cmds[5]), "你好");
     EXPECT_EQ(cmds[511].v[2], 506);
 
     // The view drew them: the filled circle's centre has the accent colour.
-    EXPECT_EQ(pixel(50, 30), lv_color_to_u16(lv_color_hex(0x4F9DFF)));
+    EXPECT_EQ(pixel(50, 30), lv_color_to_u16(lv_color_hex(0x5AB4FF)));
 
     vm.reset();
     batch.clear();
@@ -163,6 +163,47 @@ TEST_F(Canvas, CommandsRoundTripAndLimit512) {
     err = message("_G.later:set(1)");
     ASSERT_TRUE(err);
     EXPECT_EQ(err->text(), "main.lua:6: canvas: g is only valid while draw(g) runs");
+}
+
+TEST_F(Canvas, TextAcceptsPixelFont) {
+    start("rect");
+    auto err = open(R"(
+        return ui.screen {
+          ui.canvas { w = 200, h = 200, draw = function(g)
+            g:text(0, 0, "12", { font = 64 })
+            g:text(0, 0, "12", { font = 20.0 })
+            g:text(0, 0, "12", { font = "xl" })
+            g:text(0, 0, "12")
+          end },
+        }
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    auto all = draws();
+    ASSERT_EQ(all.size(), 1u);
+    auto cmds = commands(all[0]);
+    ASSERT_EQ(cmds.size(), 4u);
+    EXPECT_EQ(cmds[0].font_px, 64);
+    EXPECT_EQ(cmds[1].font_px, 20);
+    EXPECT_EQ(cmds[2].font_px, 32);
+    EXPECT_EQ(cmds[3].font_px, 16);
+
+    const char* expects = "one of xs, sm, md, lg, xl, xxl, or an integer 16 to 128 (pixels)";
+    struct Bad {
+        const char* value;
+        const char* got;
+    };
+    for (const Bad& b : {Bad{"200", "200"}, Bad{"15", "15"}, Bad{"32.5", "32.5"},
+                         Bad{"'huge'", "'huge'"}, Bad{"true", "boolean"}}) {
+        SCOPED_TRACE(b.value);
+        vm.reset();
+        batch.clear();
+        err = open(std::string("return ui.screen { ui.canvas { draw = function(g)\n"
+                               "  g:text(0, 0, 'x', { font = ") +
+                   b.value + " })\nend } }");
+        ASSERT_TRUE(err);
+        EXPECT_EQ(err->text(),
+                  std::string("main.lua:2: canvas: font expects ") + expects + ", got " + b.got);
+    }
 }
 
 TEST_F(Canvas, RedrawsOnDependencyChange) {

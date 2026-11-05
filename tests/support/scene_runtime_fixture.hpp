@@ -5,7 +5,8 @@
 // helpers to install packages and read what the scenes logged and showed.
 // configure_deps() and configure_config() let a test fill in the optional
 // SceneRuntimeDeps fields and the config before start() makes the
-// runtime. UiStall holds the UI thread up.
+// runtime, and ui_config reaches the UiRuntime as it is. UiStall holds
+// the UI thread up.
 
 #include <gtest/gtest.h>
 
@@ -117,7 +118,7 @@ protected:
             std::make_shared<wisp::test::FakeDisplay>("display.main", 480, 480, 1, display_shape);
         display->set_cap("corner_radius", wisp::Value(static_cast<int64_t>(corner_radius)));
         touch = std::make_shared<wisp::test::FakeTouch>("touch.main");
-        ui = std::make_unique<wisp::ui::UiRuntime>(display, touch);
+        ui = std::make_unique<wisp::ui::UiRuntime>(display, touch, ui_config);
         ASSERT_TRUE(ui->start());
         auto parsed = wisp::hal::screen_shape_from_caps(display->info().caps);
         ASSERT_TRUE(parsed);
@@ -235,6 +236,8 @@ protected:
     std::function<void(wisp::scene::SceneRuntimeDeps&)> configure_deps;
     // Called with the config before start() makes the runtime.
     std::function<void(wisp::scene::SceneRuntimeConfig&)> configure_config;
+    // Given to the UiRuntime by start(); the font image must outlive it.
+    wisp::ui::UiConfig ui_config;
     std::mutex mutex;
     std::vector<StateEvent> state_events;
 };

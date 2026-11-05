@@ -54,7 +54,7 @@ Rules:
 | string | a string or a number |
 | boolean | `true` or `false` |
 | color | `"#RRGGBB"` or a theme token: `accent`, `text`, `muted`, `surface`, `bg`, `danger`, `ok`, `warn` |
-| font | `xs`, `sm`, `md`, `lg`, `xl`, `xxl` |
+| font | `xs`, `sm`, `md`, `lg`, `xl`, `xxl`, or integer pixels 16 to 128 (see Font sizes) |
 | align | `start`, `center`, `end` |
 | justify | `start`, `center`, `end`, `between`, `around`, `evenly` |
 | pad | integer pixels on every side, or `{top, right, bottom, left}` (CSS order), each 0 to 512 |
@@ -78,7 +78,7 @@ Rules:
 | `fg` | color | yes | "#RRGGBB" or one of accent, text, muted, surface, bg, danger, ok, warn |
 | `radius` | integer | yes | integer 0 to 4096 |
 | `border` | integer | yes | integer 0 to 64 |
-| `font` | font | yes | one of xs, sm, md, lg, xl, xxl |
+| `font` | font | yes | one of xs, sm, md, lg, xl, xxl, or an integer 16 to 128 (pixels) |
 | `hidden` | boolean | yes | boolean |
 | `opa` | number | yes | number from 0 to 1 |
 | `ref` | string | no | a name of 1 to 64 bytes |
@@ -109,6 +109,20 @@ Rules:
 `on_click` and `on_long_press` take no arguments; `on_change(value)` gets the new text,
 value or checked state. `row(item, index)` returns the widget for one list row and is
 only called for visible rows. `draw(g)` draws a canvas.
+
+## Font sizes
+
+`font` is a token or a size in pixels from 16 to 128. `xs`, `sm` and `md` are the
+16-pixel body font, `lg` is 24, `xl` 32 and `xxl` 48. Sizes 16 to 19 are the body
+font too; from 20 on the text is drawn from a vector font in steps of 20, 24, 28, 32,
+40, 48, 64, 80, 96 and 128 pixels, and a size between two steps gets the lower one
+(50 is 48). Symbols (`ui.icon`) come in 16, 24, 32 and 48 pixels, again the largest
+that is not above the size.
+
+Large sizes suit short text such as a number or a time. Each glyph is drawn the
+first time it is shown at a size, which takes a few milliseconds at the largest
+sizes, and only a few glyphs per size are kept (13 at 128 pixels), so a long text in
+a large size is redrawn slowly.
 
 ## Widgets
 
@@ -151,10 +165,10 @@ Every widget takes the common properties: `w`, `h`, `grow`, `pad`, `bg`, `fg`, `
   `g:rect(x, y, w, h, opts)`, `g:text(x, y, text, opts)`. `opts` is optional:
   `color` (a colour, default `text`), `width` (lines and outlines, 0 to 512, default
   1), `radius` (rect corners, 0 to 4096), `fill` (boolean: circle and rect filled),
-  `font` (text). A canvas is `fill` in both directions unless given a size. A canvas
-  of more than 524,288 pixels stays empty ("ui.canvas: too large" in the scene's
-  log). The `g:text` that takes the update past 1 MB is the error "ui update too
-  large".
+  `font` (text: a token or 16 to 128 pixels, as for the property). A canvas is `fill`
+  in both directions unless given a size. A canvas of more than 524,288 pixels stays
+  empty ("ui.canvas: too large" in the scene's log). The `g:text` that takes the
+  update past 1 MB is the error "ui update too large".
 - `ui.chart`: `series` is up to 4 tables of up to 128 numbers, drawn in `accent`, `ok`,
   `warn` and `danger`, between `min` and `max` (default 0 and 100); `type` is `line`
   (default) or `bar`.

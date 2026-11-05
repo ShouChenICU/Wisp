@@ -22,6 +22,18 @@ if(DEFINED CONFIG_ESP_BOARD_NAME AND NOT CONFIG_ESP_BOARD_NAME STREQUAL WISP_BOA
                         "\"${WISP_BOARD}\"; rerun bmgr with -b ${WISP_BOARD} or pass -DWISP_BOARD")
 endif()
 
+# With XIP the cache stays on while flash is erased or programmed, and a
+# read of a runtime flash mapping in that window returns 0xFF: the fonts
+# partition (a crash while drawing text), the OTA end check and otadata.
+# Flash auto-suspend makes those reads wait instead (docs/porting-guide.md
+# "字体分区"). A firmware/sdkconfig made before the board turned it on keeps
+# it off, since sdkconfig.defaults only seeds a new sdkconfig.
+if(CONFIG_SPIRAM_XIP_FROM_PSRAM AND NOT CONFIG_SPI_FLASH_AUTO_SUSPEND)
+    message(FATAL_ERROR "CONFIG_SPIRAM_XIP_FROM_PSRAM is on but CONFIG_SPI_FLASH_AUTO_SUSPEND is off; "
+                        "set CONFIG_SPI_FLASH_AUTO_SUSPEND=y in boards/${WISP_BOARD}/sdkconfig.defaults.board "
+                        "and in firmware/sdkconfig (or delete firmware/sdkconfig to regenerate it)")
+endif()
+
 # The admin web UI (connectivity spec 2.3): tools/pack_assets.py packs web/
 # into wisp_web.wpak (failing the build over the pack's 256 KiB or the
 # 150 KiB gzip budget), which is linked into the app image, 4-byte aligned,
@@ -50,6 +62,36 @@ add_custom_command(
     VERBATIM
 )
 target_add_binary_data(${COMPONENT_LIB} ${WISP_WEB_WPAK} BINARY RENAME_TO wisp_web_pack ALIGN 4)
+
+# The vector font image (vector-font spec 3.3, 3.5): tools/pack_font_image.py
+# wraps the committed TTF in its header as build/fonts.bin, failing the
+# build when it outgrows the board's fonts partition. It is not linked into
+# the app: idf.py flash writes it to the fonts partition alongside the app,
+# idf.py fonts-flash writes only it, and OTA never touches it. A board
+# whose partition table has no fonts partition gets neither the image nor
+# the flash targets (it simply has no vector font).
+partition_table_get_partition_info(_wisp_fonts_size "--partition-name fonts" "size")
+if(_wisp_fonts_size)
+    set(WISP_FONT_IMAGE ${CMAKE_BINARY_DIR}/fonts.bin)
+    set(_wisp_font_ttf
+        ${CMAKE_CURRENT_LIST_DIR}/../../components/wisp_ui/fonts/noto_sans_cjk_sc_subset.ttf)
+    add_custom_command(
+        OUTPUT ${WISP_FONT_IMAGE}
+        COMMAND ${_wisp_python} ${CMAKE_CURRENT_LIST_DIR}/../../tools/pack_font_image.py
+                ${_wisp_font_ttf} -o ${WISP_FONT_IMAGE} --max-bytes ${_wisp_fonts_size}
+        DEPENDS ${_wisp_font_ttf} ${CMAKE_CURRENT_LIST_DIR}/../../tools/pack_font_image.py
+        COMMENT "Packing the vector font into fonts.bin"
+        VERBATIM
+    )
+    add_custom_target(wisp_fonts_bin ALL DEPENDS ${WISP_FONT_IMAGE})
+    idf_component_get_property(_wisp_main_args esptool_py FLASH_ARGS)
+    idf_component_get_property(_wisp_sub_args esptool_py FLASH_SUB_ARGS)
+    esptool_py_flash_target(fonts-flash "${_wisp_main_args}" "${_wisp_sub_args}" ALWAYS_PLAINTEXT)
+    esptool_py_flash_to_partition(fonts-flash fonts ${WISP_FONT_IMAGE})
+    add_dependencies(fonts-flash wisp_fonts_bin)
+    esptool_py_flash_to_partition(flash fonts ${WISP_FONT_IMAGE})
+    add_dependencies(flash wisp_fonts_bin)
+endif()
 
 # Every wisp_* component already pins itself to C++20/-fno-exceptions/
 # -fno-rtti via cmake/wisp_component.cmake (see AGENTS.md section 5); this

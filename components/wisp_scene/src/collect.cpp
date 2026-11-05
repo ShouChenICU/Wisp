@@ -86,7 +86,8 @@ PropValue to_value(lua_State* L, int idx, PropType type) {
             return PropValue{lua_toboolean(L, idx) != 0};
         case LUA_TNUMBER: {
             lua_Integer i = 0;
-            if ((type == PropType::Size || type == PropType::Int || type == PropType::Pad) &&
+            if ((type == PropType::Size || type == PropType::Int || type == PropType::Pad ||
+                 type == PropType::Font) &&
                 integral(L, idx, i))
                 return PropValue{static_cast<int64_t>(i)};
             if (lua_isinteger(L, idx))

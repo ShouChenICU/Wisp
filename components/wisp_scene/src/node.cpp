@@ -259,6 +259,9 @@ Check check_value(lua_State* L, int idx, Prop p) {
                        ? Check::Ok
                        : Check::BadValue;
         case PropType::Font:
+            if (t == LUA_TNUMBER) return in_range(L, idx, p) ? Check::Ok : Check::BadValue;
+            if (t != LUA_TSTRING) return Check::WrongType;
+            return in(string_at(L, idx), spec.choices) ? Check::Ok : Check::BadValue;
         case PropType::Align:
         case PropType::Justify:
         case PropType::Enum:
@@ -275,6 +278,20 @@ Check check_value(lua_State* L, int idx, Prop p) {
     return Check::WrongType;
 }
 
+bool format_scalar(lua_State* L, int idx, char (&out)[kMaxShown + 8]) {
+    char quoted[kMaxShown + 4];
+    if (lua_type(L, idx) == LUA_TSTRING) {
+        std::snprintf(out, sizeof(out), "'%s'", shown(string_at(L, idx), quoted));
+    } else if (lua_isinteger(L, idx)) {
+        std::snprintf(out, sizeof(out), "%lld", static_cast<long long>(lua_tointeger(L, idx)));
+    } else if (lua_type(L, idx) == LUA_TNUMBER) {
+        std::snprintf(out, sizeof(out), "%.14g", static_cast<double>(lua_tonumber(L, idx)));
+    } else {
+        return false;
+    }
+    return true;
+}
+
 void describe_problem(lua_State* L, int idx, Prop p, Check c, const char* kind, char* out,
                       size_t size) {
     const char* pname = prop_spec(p).name.data();
@@ -285,18 +302,11 @@ void describe_problem(lua_State* L, int idx, Prop p, Check c, const char* kind, 
     // What the value was ("" when a table's content was wrong: the
     // message says what it expects).
     char got[kMaxShown + 8];
-    char quoted[kMaxShown + 4];
     if (kind != nullptr) {
         std::snprintf(got, sizeof(got), "%s", kind);
     } else if (c == Check::WrongType) {
         std::snprintf(got, sizeof(got), "%s", lua_typename(L, lua_type(L, idx)));
-    } else if (lua_type(L, idx) == LUA_TSTRING) {
-        std::snprintf(got, sizeof(got), "'%s'", shown(string_at(L, idx), quoted));
-    } else if (lua_isinteger(L, idx)) {
-        std::snprintf(got, sizeof(got), "%lld", static_cast<long long>(lua_tointeger(L, idx)));
-    } else if (lua_type(L, idx) == LUA_TNUMBER) {
-        std::snprintf(got, sizeof(got), "%.14g", static_cast<double>(lua_tonumber(L, idx)));
-    } else {
+    } else if (!format_scalar(L, idx, got)) {
         got[0] = '\0';
     }
     char hint[96] = "";

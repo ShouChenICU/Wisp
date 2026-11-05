@@ -161,9 +161,9 @@ TEST(Schema, TypeMismatchNamesExpectedType) {
                        "main.lua:7: ui.slider: property 'max' expects number, got string");
     expect_build_error("return ui.screen{ ui.label{text = {}} }",
                        "main.lua:1: ui.label: property 'text' expects string, got table");
-    expect_build_error(
-        "return ui.screen{ ui.label{font = 'huge'} }",
-        "main.lua:1: ui.label: property 'font' expects one of xs, sm, md, lg, xl, xxl, got 'huge'");
+    expect_build_error("return ui.screen{ ui.label{font = 'huge'} }",
+                       "main.lua:1: ui.label: property 'font' expects one of xs, sm, md, lg, xl, "
+                       "xxl, or an integer 16 to 128 (pixels), got 'huge'");
     expect_build_error("return ui.screen{ ui.grid{cols = 1.5} }",
                        "main.lua:1: ui.grid: property 'cols' expects integer 1 to 16, got 1.5");
     expect_build_error("return ui.screen{ ui.label{w = 'wide'} }",
@@ -204,6 +204,38 @@ TEST(Schema, ColorAcceptsHexAndTokens) {
     expect_build_error("return ui.screen{ ui.label{bg = '#12AB3G'} }",
                        "main.lua:1: ui.label: property 'bg' expects \"#RRGGBB\" or one of accent, "
                        "text, muted, surface, bg, danger, ok, warn, got '#12AB3G'");
+}
+
+TEST(Schema, FontAcceptsTokensAndPixels) {
+    for (const char* v :
+         {"'xs'", "'sm'", "'md'", "'lg'", "'xl'", "'xxl'", "16", "20", "64", "128", "64.0"}) {
+        SCOPED_TRACE(v);
+        expect_build_ok(std::string("return ui.screen{ ui.label{font = ") + v + "} }");
+    }
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.build("return ui.screen{ ui.label{font = 64} }");
+    ASSERT_FALSE(err) << describe(err);
+    const PropValue* v = prop_of(s.node(1), Prop::Font);
+    ASSERT_NE(v, nullptr);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(*v));
+    EXPECT_EQ(std::get<int64_t>(*v), 64);
+}
+
+TEST(Schema, FontRejectsOutOfRange) {
+    const std::string expects =
+        "property 'font' expects one of xs, sm, md, lg, xl, xxl, or an integer 16 to 128 "
+        "(pixels)";
+    expect_build_error("\n\nreturn ui.screen{ ui.label{font = 15} }",
+                       "main.lua:3: ui.label: " + expects + ", got 15");
+    expect_build_error("return ui.screen{ ui.label{font = 129} }",
+                       "main.lua:1: ui.label: " + expects + ", got 129");
+    expect_build_error("return ui.screen{ ui.label{font = 32.5} }",
+                       "main.lua:1: ui.label: " + expects + ", got 32.5");
+    expect_build_error("return ui.screen{ ui.label{font = 'huge'} }",
+                       "main.lua:1: ui.label: " + expects + ", got 'huge'");
+    expect_build_error("return ui.screen{ ui.label{font = true} }",
+                       "main.lua:1: ui.label: " + expects + ", got boolean");
 }
 
 TEST(Schema, PadAcceptsIntsAndSides) {
@@ -351,7 +383,7 @@ return ui.screen{
     // the line that built the node.
     expect_build_error("local f = state('huge')\n\nreturn ui.screen{\n ui.label{font = f} }",
                        "main.lua:4: ui.label: property 'font' expects one of xs, sm, md, lg, xl, "
-                       "xxl, got 'huge'");
+                       "xxl, or an integer 16 to 128 (pixels), got 'huge'");
 }
 
 TEST(Schema, RootMustBeScreen) {
@@ -528,8 +560,8 @@ TEST(Schema, BoundValuesAreCheckedWhenTheyChange) {
          "main.lua:3: ui.label: property 'fg' expects \"#RRGGBB\" or one of accent, text, muted, "
          "surface, bg, danger, ok, warn, got 'blue'"},
         {"_G.f:set('huge')",
-         "main.lua:3: ui.label: property 'font' expects one of xs, sm, md, lg, xl, xxl, got "
-         "'huge'"},
+         "main.lua:3: ui.label: property 'font' expects one of xs, sm, md, lg, xl, xxl, or an "
+         "integer 16 to 128 (pixels), got 'huge'"},
         {"_G.o:set(7)", "main.lua:3: ui.label: property 'opa' expects number from 0 to 1, got 7"},
         {"_G.w:set(-3)",
          "main.lua:3: ui.label: property 'w' expects 0 to 4096 pixels, \"fill\" or \"content\", "
