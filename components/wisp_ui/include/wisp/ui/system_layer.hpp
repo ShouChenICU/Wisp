@@ -125,8 +125,8 @@ public:
     // within kBackZoneWidth pixels of that row's visible left edge.
     static bool in_back_zone(const hal::ScreenShape& s, int32_t x, int32_t y);
     // Whether a press from `start` now at `end` is a back swipe: it
-    // started in the zone and moved right by at least kBackTriggerDx, more
-    // than twice as far sideways as up or down.
+    // started in the zone and moved right by at least kBackTriggerDx, at
+    // least as far sideways as up or down (within 45 degrees).
     static bool is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end);
 
 private:

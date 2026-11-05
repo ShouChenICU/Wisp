@@ -257,7 +257,8 @@ bool SystemLayer::is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_
     if (!in_back_zone(s, start.x, start.y)) return false;
     const int32_t dx = end.x - start.x;
     const int32_t dy = end.y - start.y;
-    return dx >= kBackTriggerDx && dx > 2 * std::abs(dy);
+    // Up to 45 degrees off horizontal: thumb swipes often slant.
+    return dx >= kBackTriggerDx && dx >= std::abs(dy);
 }
 
 void SystemLayer::set_back_handler(std::function<void()> on_back) {
@@ -336,7 +337,9 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         const bool was_pressed = pressed_;
         pressed_ = false;
         if (!was_pressed || !candidate_) return;
-        const bool fire = taken_ && is_back_swipe(shape_, start_, p) && on_back_;
+        // Once armed only the distance counts: drifting up or down keeps it,
+        // dragging back to the left below the trigger cancels it.
+        const bool fire = taken_ && p.x - start_.x >= kBackTriggerDx && on_back_;
         end_swipe();
         if (fire) {
             // A copy: the handler may replace or clear itself.
@@ -363,14 +366,14 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         if (past) {
             taken_ = true;
             cancel_press(indev);
-        } else if (2 * dy >= kBackTriggerDx && 2 * dy >= dx) {
-            // Clearly up or down: a scroll, no longer a swipe.
+        } else if (2 * dy >= kBackTriggerDx && dy > 2 * dx) {
+            // Steeper than about 63 degrees: a scroll, no longer a swipe.
             end_swipe();
             return;
         }
     }
     if (taken_ || dx > 0) {
-        show_arrow(p, dx, past);
+        show_arrow(p, dx, taken_ ? dx >= kBackTriggerDx : past);
     } else if (arrow_ != nullptr) {
         lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
     }

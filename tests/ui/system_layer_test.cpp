@@ -228,10 +228,11 @@ TEST(SystemLayerZone, BackSwipeNeedsTriggerDistance) {
     EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 240}));
     EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {200, 240}));
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {20, 240}, {300, 240}));  // starts outside
-    // Mainly sideways: dx must be more than twice |dy|.
-    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 269}));    // dx 60, dy 29
-    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 270}));   // dx 60, dy 30
-    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 210}));   // dx 60, dy -30
+    // Within 45 degrees of horizontal: dx must be at least |dy|.
+    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 300}));    // dx 60, dy 60
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 301}));   // dx 60, dy 61
+    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 180}));    // dx 60, dy -60
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 179}));   // dx 60, dy -61
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {200, 240}, {4, 240}));  // leftwards
 }
 
@@ -333,6 +334,37 @@ TEST_F(SystemLayerTest, DraggingBackBelowTheTriggerCancels) {
     EXPECT_EQ(backs, 0);
     EXPECT_EQ(clicks, 0);
     on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
+}
+
+// A swipe that slants up or down (about 35 degrees, as a thumb swipe
+// often does) still goes back, sampled the way a finger moves.
+TEST_F(SystemLayerTest, SlantedSwipeGoesBack) {
+    for (int sign : {1, -1}) {
+        if (ui) TearDown();
+        start("rect");
+        int backs = 0;
+        on_ui([&] { layer->set_back_handler([&] { ++backs; }); });
+        feed({{4, 240, 0}});
+        for (int16_t step = 1; step <= 10; ++step) {
+            feed({{static_cast<int16_t>(4 + step * 10), static_cast<int16_t>(240 + sign * step * 7),
+                   0}});
+        }
+        feed({});
+        EXPECT_EQ(backs, 1) << "sign " << sign;
+    }
+}
+
+// Once armed, a finger drifting up or down before release still goes
+// back: only dragging back to the left cancels.
+TEST_F(SystemLayerTest, ArmedSwipeSurvivesVerticalDrift) {
+    start("rect");
+    int backs = 0;
+    on_ui([&] { layer->set_back_handler([&] { ++backs; }); });
+    feed({{4, 240, 0}});
+    feed({{60, 240, 0}});
+    feed({{70, 330, 0}});
+    feed({});
+    EXPECT_EQ(backs, 1);
 }
 
 // A drag that starts in the zone but runs up or down scrolls what is
