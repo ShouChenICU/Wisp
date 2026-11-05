@@ -18,6 +18,8 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/os/os.hpp"
+#include "wisp/port/sim/sim_os.hpp"
 
 using wisp::ErrorCode;
 using wisp::core::DismissReason;
@@ -601,4 +603,77 @@ TEST(Notifications, LoadSkipsBadEntriesAndCapsEachScene) {
     EXPECT_FALSE(s->find("weather", "w1"));
     EXPECT_TRUE(s->find("weather", "w2"));
     EXPECT_TRUE(s->find("weather", "w6"));
+}
+
+TEST(Notifications, SystemFieldsAreCutSoTheyLoadAgain) {
+    Harness h;
+    {
+        auto s = h.make();
+        const std::string holder = "system." + std::string(100, 'h');
+        std::string id =
+            s->post_system(wisp::core::notice::kWakeLockLong, holder,
+                           wisp::core::notice::kActionReleaseLock, std::string(40, '7'));
+        auto n = s->find("system", id);
+        ASSERT_TRUE(n);
+        EXPECT_EQ(n->arg.size(), NotificationService::kArgMax);
+        EXPECT_EQ(n->action_arg.size(), NotificationService::kActionArgMax);
+        EXPECT_TRUE(s->flush(1000));
+    }
+    auto again = h.make();
+    EXPECT_EQ(again->unread_count(), 1u);
+}
+
+TEST(Notifications, LoadKeepsTheNewestOfDuplicateEntries) {
+    Harness h;
+    auto entry = [](const std::string& id, const std::string& title) {
+        return R"({"source":"pomodoro","id":")" + id + R"(","source_name":"P","title":")" + title +
+               R"(","body":"","code":"","arg":"","action":"","action_arg":"","sound":"none",)"
+               R"("posted_unix":0})";
+    };
+    const std::string json =
+        "[" + entry("x", "old") + "," + entry("y", "other") + "," + entry("x", "new") + "]";
+    std::error_code ec;
+    fs::create_directories(fs::path(h.in) / "system", ec);
+    {
+        FILE* f = std::fopen((fs::path(h.in) / "system" / "notifications.json").c_str(), "wb");
+        ASSERT_NE(f, nullptr);
+        std::fputs(json.c_str(), f);
+        std::fclose(f);
+    }
+    auto s = h.make();
+    ASSERT_EQ(s->unread_count(), 2u);
+    EXPECT_EQ(s->find("pomodoro", "x")->title, "new");
+    EXPECT_TRUE(s->dismiss("pomodoro", "x", DismissReason::Dismiss));
+    EXPECT_FALSE(s->find("pomodoro", "x"));
+}
+
+TEST(Notifications, DefaultTimerSavesAndRecoversFromAFailedCreate) {
+    Harness h;
+    auto deps = h.deps();
+    deps.make_timer = nullptr;
+    deps.now_ms = wisp::os::now_ms;
+    // Jobs come from the timer thread here.
+    std::atomic<int> saves{0};
+    deps.submit_io = [&saves](std::function<void()> job) {
+        job();
+        ++saves;
+        return true;
+    };
+    NotificationService s(std::move(deps));
+    ASSERT_TRUE(s.load());
+    const fs::path file = fs::path(h.in) / "system" / "notifications.json";
+
+    wisp::port::sim::set_timer_failure(true);
+    ASSERT_TRUE(s.post(scene_note("pomodoro", "a", "a"), false));
+    wisp::port::sim::set_timer_failure(false);
+    wisp::os::sleep_ms(3 * NotificationService::kCoalesceMs);
+    EXPECT_FALSE(fs::exists(file));
+
+    // The next change makes the timer, which saves both.
+    ASSERT_TRUE(s.post(scene_note("pomodoro", "b", "b"), false));
+    for (int i = 0; i < 200 && saves.load() == 0; ++i) wisp::os::sleep_ms(10);
+    EXPECT_GE(saves.load(), 1);
+    s.close();
+    auto again = h.make();
+    EXPECT_EQ(again->unread_count(), 2u);
 }

@@ -130,6 +130,9 @@ public:
     // Failed saves in a row before the timer stops until the next change;
     // the retries wait 600, 1200, 2400 and 4800 ms.
     static constexpr int kMaxSaveAttempts = 5;
+    // System notices: a code, its argument (a scene id or a wake-lock
+    // holder) and the action argument (a lock id) are at most this long.
+    static constexpr size_t kCodeMax = 32, kArgMax = 64, kActionArgMax = 16;
 
     explicit NotificationService(NotificationDeps deps);
     ~NotificationService();  // close()
@@ -156,7 +159,9 @@ public:
     // Returns the id: the one given, or "n<seq>".
     Result<std::string> post(Notification n, bool from_foreground);
     // A system notice with id "<code>:<arg>", which replaces an earlier one
-    // with the same code and argument.
+    // with the same code and argument. Code, argument and action argument
+    // are cut to kCodeMax, kArgMax and kActionArgMax bytes, so what is
+    // saved loads again.
     std::string post_system(std::string code, std::string arg, std::string action = {},
                             std::string action_arg = {});
 

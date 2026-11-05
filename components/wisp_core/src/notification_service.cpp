@@ -316,7 +316,9 @@ bool loadable(const Notification& n) {
     if (n.source == kSystemSource) {
         return !n.code.empty() && n.id == n.code + ":" + n.arg && n.title.empty() &&
                n.body.empty() && (n.action.empty() || n.action == notice::kActionReleaseLock) &&
-               n.code.size() <= 64 && n.arg.size() <= 64 && n.action_arg.size() <= 16;
+               n.code.size() <= NotificationService::kCodeMax &&
+               n.arg.size() <= NotificationService::kArgMax &&
+               n.action_arg.size() <= NotificationService::kActionArgMax;
     }
     return valid_notification_id(n.source) && valid_notification_id(n.id) && !n.title.empty() &&
            n.title.size() <= NotificationService::kTitleMax &&
@@ -451,7 +453,8 @@ NotificationService::NotificationService(NotificationDeps deps)
             }
         }
         t->start();
-        return true;
+        // False if the port could not arm it.
+        return t->active();
     };
     state_->timer.stop = [st] {
         if (os::Timer* t = st->os_timer.load()) t->stop();
@@ -517,14 +520,18 @@ Result<void> NotificationService::load() {
         }
         loaded.push_back(State::to_entry(n));
     }
-    // Only the newest kUnreadPerScene of each scene, as post() would leave.
+    // One entry per (source, id), and only the newest kUnreadPerScene of each
+    // scene, as post() would leave. Later entries are newer.
     for (size_t i = loaded.size(); i-- > 0;) {
-        if (same(loaded[i].source, kSystemSource)) continue;
         size_t newer = 0;
+        bool duplicate = false;
         for (size_t j = i + 1; j < loaded.size(); ++j) {
-            if (loaded[j].source == loaded[i].source) ++newer;
+            if (loaded[j].source != loaded[i].source) continue;
+            ++newer;
+            if (loaded[j].id == loaded[i].id) duplicate = true;
         }
-        if (newer >= kUnreadPerScene) {
+        const bool surplus = !same(loaded[i].source, kSystemSource) && newer >= kUnreadPerScene;
+        if (duplicate || surplus) {
             loaded.erase(loaded.begin() + static_cast<std::ptrdiff_t>(i));
             ++skipped;
         }
@@ -605,6 +612,10 @@ Result<std::string> NotificationService::post(Notification n, bool from_foregrou
 std::string NotificationService::post_system(std::string code, std::string arg, std::string action,
                                              std::string action_arg) {
     State& s = *state_;
+    // Byte cuts: codes are ASCII and arguments are ids or holder names.
+    if (code.size() > kCodeMax) code.resize(kCodeMax);
+    if (arg.size() > kArgMax) arg.resize(kArgMax);
+    if (action_arg.size() > kActionArgMax) action_arg.resize(kActionArgMax);
     Notification n;
     n.source = kSystemSource;
     n.id = code + ":" + arg;

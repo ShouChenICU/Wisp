@@ -173,13 +173,15 @@ public:
     Timer(const Timer&) = delete;
     Timer& operator=(const Timer&) = delete;
 
-    // Idempotent: starting an already-active timer is a no-op. This
-    // includes a call made from within cb() itself (e.g. an attempt to
-    // re-arm a one-shot timer so it fires again) — the timer is still
-    // "active" for the duration of that cb() invocation, so start() just
-    // returns without doing anything. To have a timer fire repeatedly,
-    // construct it with periodic=true; re-arming a one-shot timer from
-    // inside its own callback is not supported.
+    // Idempotent: starting an already-active timer is a no-op. A call made
+    // from within cb() itself is always a no-op (e.g. an attempt to re-arm
+    // a one-shot timer so it fires again), even after that cb() stopped its
+    // own timer. To have a timer fire repeatedly, construct it with
+    // periodic=true; re-arming a one-shot timer from inside its own
+    // callback is not supported. A start() from another thread while a
+    // cb() that stopped its own timer is still returning may wait for that
+    // cb() to return (the simulator joins its thread), so do not call
+    // start() while holding a lock that cb() might take.
     void start();
 
     // Stops the timer. If called from a thread other than the timer's own
