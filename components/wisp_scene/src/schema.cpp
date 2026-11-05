@@ -8,6 +8,7 @@
 #include <cstdio>
 
 #include "wisp/scene/patch_batch.hpp"
+#include "wisp/ui/system_layer.hpp"
 
 namespace wisp::scene {
 
@@ -16,7 +17,6 @@ namespace {
 using SV = std::string_view;
 
 constexpr SV kSizeWords[] = {"fill", "content"};
-constexpr SV kPadWords[] = {"safe"};
 constexpr SV kColorTokens[] = {"accent", "text", "muted", "surface", "bg", "danger", "ok", "warn"};
 constexpr SV kFontSizes[] = {"xs", "sm", "md", "lg", "xl", "xxl"};
 constexpr SV kAligns[] = {"start", "center", "end"};
@@ -36,7 +36,7 @@ constexpr PropSpec kProps[] = {
     {Prop::W, "w", PropType::Size, true, kSizeWords},
     {Prop::H, "h", PropType::Size, true, kSizeWords},
     {Prop::Grow, "grow", PropType::Int, true, none},
-    {Prop::Pad, "pad", PropType::Pad, true, kPadWords},
+    {Prop::Pad, "pad", PropType::Pad, true, none},
     {Prop::Gap, "gap", PropType::Int, true, none},
     {Prop::Align, "align", PropType::Align, true, kAligns},
     {Prop::Justify, "justify", PropType::Justify, true, kJustifies},
@@ -83,11 +83,11 @@ static_assert(props_in_order());
 
 // Indexed by Prop; the "expects ..." part of type errors.
 constexpr SV kExpects[] = {
-    "0 to 4096 pixels, \"fill\" or \"content\"",  // w
-    "0 to 4096 pixels, \"fill\" or \"content\"",  // h
-    "integer 0 to 255",                           // grow
-    "0 to 512 pixels or \"safe\"",                // pad
-    "integer 0 to 512",                           // gap
+    "0 to 4096 pixels, \"fill\" or \"content\"",                       // w
+    "0 to 4096 pixels, \"fill\" or \"content\"",                       // h
+    "integer 0 to 255",                                                // grow
+    "0 to 512 pixels or {top, right, bottom, left} of 0 to 512 each",  // pad
+    "integer 0 to 512",                                                // gap
     "one of start, center, end",
     "one of start, center, end, between, around, evenly",
     "\"#RRGGBB\" or one of accent, text, muted, surface, bg, danger, ok, warn",
@@ -330,8 +330,12 @@ std::string schema_markdown() {
         "\n"
         "```lua\n"
         "local count = state(0)\n"
-        "return ui.screen {\n"
-        "  ui.column { pad = \"safe\", gap = 12, align = \"center\",\n"
+        "local d = wisp.device.info()\n"
+        "local s = d.safe_area\n"
+        "return ui.screen { align = \"center\", justify = \"center\",\n"
+        "  -- {top, right, bottom, left}: keeps the column inside the safe area\n"
+        "  pad = { s.y1, d.width - 1 - s.x2, d.height - 1 - s.y2, s.x1 },\n"
+        "  ui.column { gap = 12, align = \"center\",\n"
         "    ui.label { text = bind(count, function(v) return \"clicked \" .. v end) },\n"
         "    ui.button { text = \"+1\", on_click = function() count:set(count:get() + 1) end "
         "},\n"
@@ -341,9 +345,8 @@ std::string schema_markdown() {
         "\n"
         "Rules:\n"
         "\n"
-        "- The root must be `ui.screen`. It always fills the display and is padded to at least "
-        "the\n"
-        "  safe area, so content stays visible on round and rounded screens.\n";
+        "- The root must be `ui.screen`. It fills the whole display and has no padding of its\n"
+        "  own: the scene lays itself out (see Screen shape below).\n";
     char line[320];
     std::snprintf(line, sizeof(line),
                   "- At most %zu widgets per tree, counting the rows every list has built: rows\n"
@@ -386,8 +389,8 @@ std::string schema_markdown() {
     append_list(out, kJustifies);
     out +=
         " |\n"
-        "| pad | integer pixels or `\"safe\"`: the safe area on `ui.screen`, no padding "
-        "elsewhere (the screen already keeps its content in the safe area) |\n"
+        "| pad | integer pixels on every side, or `{top, right, bottom, left}` (CSS order), "
+        "each 0 to 512 |\n"
         "| enum | one of the listed words |\n"
         "| function | a function |\n"
         "| items | a table (an array), or a state holding one |\n"
@@ -479,6 +482,34 @@ std::string schema_markdown() {
         "  the scene's log. The decoded images and canvases of a scene take at most 4 MB\n"
         "  together; the one that would pass it stays empty (\"too large\").\n"
         "- `ui.icon`: the symbol `name` in the current `font`.\n"
+        "\n"
+        "## Screen shape\n"
+        "\n"
+        "The screen may be a rectangle, a rounded rectangle or a circle, and a scene gets all of\n"
+        "it: `ui.screen` fills the display, and pixels outside the visible shape are simply not\n"
+        "shown. Lay out from what the device reports instead of fixed margins:\n"
+        "\n"
+        "- `wisp.device.info()` has `width`, `height`, `shape` (`rect`, `rounded_rect` or\n"
+        "  `circle`), `corner_radius` (the rounded rectangle's radius, half the smaller side for\n"
+        "  a circle, 0 for a rectangle) and `safe_area` (`x1`, `y1`, `x2`, `y2`, inclusive: the\n"
+        "  largest centred rectangle that is visible everywhere, with a small margin).\n"
+        "- `wisp.device.row_span(y)` returns `x1, x2`, the first and last visible pixel of\n"
+        "  screen row `y`, or `nil` when the row shows nothing or is off the screen.\n"
+        "\n"
+        "A centred block can pad the screen by the safe area, as in the example above. Content\n"
+        "near the top or bottom edge can be inset by `row_span` at its own rows and use the\n"
+        "width the safe area would waste. Scrolling content may pass through the invisible\n"
+        "corners, but when scrolled to either end its first and last item must be whole on the\n"
+        "visible screen: pad the list (per side) so that `row_span` at the item's top and\n"
+        "bottom rows covers its left and right edges.\n";
+    std::snprintf(line, sizeof(line),
+                  "\n"
+                  "Touches that start within %d pixels of the left edge of the visible screen\n"
+                  "(rows within the safe area's height) belong to the system's back gesture and\n"
+                  "never reach the scene: keep buttons and other touch targets out of that band.\n",
+                  static_cast<int>(ui::SystemLayer::kBackZoneWidth));
+    out += line;
+    out +=
         "\n"
         "## Helpers\n"
         "\n"

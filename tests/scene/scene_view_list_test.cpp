@@ -135,6 +135,59 @@ TEST_F(SceneViewList, OnlyVisibleRowsMaterialized) {
     EXPECT_TRUE(has_click_handler(hundredth + 2));
 }
 
+// A list padded at the top and bottom (so its first and last rows can
+// clear a rounded screen's corners at the scroll ends) still builds every
+// row its viewport shows, the padding included, at both ends.
+TEST_F(SceneViewList, PaddedListBuildsEveryVisibleRow) {
+    start("rect");
+    auto err = open(R"(
+    local t = {}
+    for i = 1, 100 do t[i] = "item " .. i end
+    return ui.screen {
+      ui.list { items = t, row_h = 20, pad = {200, 0, 200, 0}, row = function(item)
+        return ui.label { text = item }
+      end },
+    }
+)");
+    ASSERT_FALSE(err) << describe(err);
+    // Which row indexes are on screen now, from the objects themselves.
+    const auto shown = [&] {
+        std::vector<uint32_t> want;
+        on_ui([&] {
+            lv_obj_update_layout(view->screen());
+            lv_area_t a;
+            lv_obj_get_coords(list_obj(), &a);
+            const int32_t first_y = a.y1 + 200 - lv_obj_get_scroll_y(list_obj());
+            for (uint32_t i = 0; i < 100; ++i) {
+                const int32_t y1 = first_y + static_cast<int32_t>(i) * 20;
+                if (y1 + 19 >= a.y1 && y1 <= a.y2) want.push_back(i);
+            }
+        });
+        return want;
+    };
+    const auto built = [&](const std::vector<uint32_t>& want) {
+        ASSERT_FALSE(all_ranges.empty());
+        const RecordedRange& r = all_ranges.back();
+        ASSERT_FALSE(want.empty());
+        EXPECT_LE(r.first, want.front());
+        EXPECT_GE(r.first + r.count, want.back() + 1);
+    };
+    built(shown());
+    EXPECT_EQ(shown().size(), 14u);  // rows 0..13 below the top padding
+
+    all_ranges.clear();
+    on_ui([&] {
+        lv_obj_update_layout(view->screen());
+        lv_obj_scroll_by(list_obj(), 0, -lv_obj_get_scroll_bottom(list_obj()), LV_ANIM_OFF);
+    });
+    err = pump();
+    ASSERT_FALSE(err) << describe(err);
+    on_ui([&] { EXPECT_EQ(lv_obj_get_scroll_y(list_obj()), 100 * 20 + 400 - 480); });
+    built(shown());
+    EXPECT_EQ(shown().back(), 99u);
+    EXPECT_EQ(shown().size(), 14u);
+}
+
 TEST_F(SceneViewList, ItemsReplacedWhileScrolledClampsScroll) {
     start("rect");
     auto err = open(kTwoHundredRows);

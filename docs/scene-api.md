@@ -10,8 +10,12 @@ children:
 
 ```lua
 local count = state(0)
-return ui.screen {
-  ui.column { pad = "safe", gap = 12, align = "center",
+local d = wisp.device.info()
+local s = d.safe_area
+return ui.screen { align = "center", justify = "center",
+  -- {top, right, bottom, left}: keeps the column inside the safe area
+  pad = { s.y1, d.width - 1 - s.x2, d.height - 1 - s.y2, s.x1 },
+  ui.column { gap = 12, align = "center",
     ui.label { text = bind(count, function(v) return "clicked " .. v end) },
     ui.button { text = "+1", on_click = function() count:set(count:get() + 1) end },
   },
@@ -20,8 +24,8 @@ return ui.screen {
 
 Rules:
 
-- The root must be `ui.screen`. It always fills the display and is padded to at least the
-  safe area, so content stays visible on round and rounded screens.
+- The root must be `ui.screen`. It fills the whole display and has no padding of its
+  own: the scene lays itself out (see Screen shape below).
 - At most 2000 widgets per tree, counting the rows every list has built: rows
   past it are not built, and the scene's log says so. A string value is at
   most 64 KB.
@@ -48,7 +52,7 @@ Rules:
 | font | `xs`, `sm`, `md`, `lg`, `xl`, `xxl` |
 | align | `start`, `center`, `end` |
 | justify | `start`, `center`, `end`, `between`, `around`, `evenly` |
-| pad | integer pixels or `"safe"`: the safe area on `ui.screen`, no padding elsewhere (the screen already keeps its content in the safe area) |
+| pad | integer pixels on every side, or `{top, right, bottom, left}` (CSS order), each 0 to 512 |
 | enum | one of the listed words |
 | function | a function |
 | items | a table (an array), or a state holding one |
@@ -61,7 +65,7 @@ Rules:
 | `w` | size | yes | 0 to 4096 pixels, "fill" or "content" |
 | `h` | size | yes | 0 to 4096 pixels, "fill" or "content" |
 | `grow` | integer | yes | integer 0 to 255 |
-| `pad` | pad | yes | 0 to 512 pixels or "safe" |
+| `pad` | pad | yes | 0 to 512 pixels or {top, right, bottom, left} of 0 to 512 each |
 | `gap` | integer | yes | integer 0 to 512 |
 | `align` | align | yes | one of start, center, end |
 | `justify` | justify | yes | one of start, center, end, between, around, evenly |
@@ -155,6 +159,30 @@ Every widget takes the common properties: `w`, `h`, `grow`, `pad`, `bg`, `fg`, `
   the scene's log. The decoded images and canvases of a scene take at most 4 MB
   together; the one that would pass it stays empty ("too large").
 - `ui.icon`: the symbol `name` in the current `font`.
+
+## Screen shape
+
+The screen may be a rectangle, a rounded rectangle or a circle, and a scene gets all of
+it: `ui.screen` fills the display, and pixels outside the visible shape are simply not
+shown. Lay out from what the device reports instead of fixed margins:
+
+- `wisp.device.info()` has `width`, `height`, `shape` (`rect`, `rounded_rect` or
+  `circle`), `corner_radius` (the rounded rectangle's radius, half the smaller side for
+  a circle, 0 for a rectangle) and `safe_area` (`x1`, `y1`, `x2`, `y2`, inclusive: the
+  largest centred rectangle that is visible everywhere, with a small margin).
+- `wisp.device.row_span(y)` returns `x1, x2`, the first and last visible pixel of
+  screen row `y`, or `nil` when the row shows nothing or is off the screen.
+
+A centred block can pad the screen by the safe area, as in the example above. Content
+near the top or bottom edge can be inset by `row_span` at its own rows and use the
+width the safe area would waste. Scrolling content may pass through the invisible
+corners, but when scrolled to either end its first and last item must be whole on the
+visible screen: pad the list (per side) so that `row_span` at the item's top and
+bottom rows covers its left and right edges.
+
+Touches that start within 16 pixels of the left edge of the visible screen
+(rows within the safe area's height) belong to the system's back gesture and
+never reach the scene: keep buttons and other touch targets out of that band.
 
 ## Helpers
 

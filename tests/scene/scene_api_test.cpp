@@ -68,6 +68,47 @@ protected:
         bus.publish(std::move(e));
     }
 
+    std::string corner_radius_on(const char* shape) {
+        start(shape);
+        install("radius", std::string("print(wisp.device.info().corner_radius)\n") + kScreen);
+        if (!rt->open("radius")) return "(not opened)";
+        auto log = scene_log("radius");
+        return log.size() == 1 ? log[0] : "(" + std::to_string(log.size()) + " lines)";
+    }
+
+    void check_row_spans(const char* display_shape) {
+        start(display_shape);
+        install("span", std::string(R"(for _, y in ipairs({0, 10, 39, 40, 240, 479, -1, 480}) do
+  print(y, wisp.device.row_span(y))
+end
+print(pcall(wisp.device.row_span, 1.5))
+print(pcall(wisp.device.row_span, "x"))
+)") + kScreen);
+        ASSERT_TRUE(rt->open("span"));
+        auto log = scene_log("span");
+        ASSERT_EQ(log.size(), 10u);
+        const int ys[] = {0, 10, 39, 40, 240, 479, -1, 480};
+        for (size_t i = 0; i < 8; ++i) {
+            SCOPED_TRACE(ys[i]);
+            const wisp::hal::Span sp = wisp::hal::row_span(shape, ys[i]);
+            std::string want = std::to_string(ys[i]);
+            want +=
+                sp.empty() ? "\tnil" : "\t" + std::to_string(sp.x1) + "\t" + std::to_string(sp.x2);
+            EXPECT_EQ(log[i], want);
+            // The ends are visible() and the pixels just past them are not.
+            if (!sp.empty()) {
+                EXPECT_TRUE(wisp::hal::visible(shape, sp.x1, ys[i]));
+                EXPECT_TRUE(wisp::hal::visible(shape, sp.x2, ys[i]));
+                EXPECT_FALSE(wisp::hal::visible(shape, sp.x1 - 1, ys[i]));
+                EXPECT_FALSE(wisp::hal::visible(shape, sp.x2 + 1, ys[i]));
+            }
+        }
+        EXPECT_EQ(log[8].rfind("false\t", 0), 0u) << log[8];
+        EXPECT_NE(log[8].find("bad argument #1"), std::string::npos) << log[8];
+        EXPECT_EQ(log[9].rfind("false\t", 0), 0u) << log[9];
+        EXPECT_EQ(rt->status("span").state, SceneState::Running);
+    }
+
     std::mutex status_mu;
     Value status;
     std::atomic<int64_t> wall{0};
@@ -116,6 +157,45 @@ TEST_F(SceneApiTest, DeviceInfoOnRectScreen) {
     auto log = scene_log("info");
     ASSERT_EQ(log.size(), 1u);
     EXPECT_EQ(log[0].rfind("480\t480\trect\t0\t0\t479\t479\t", 0), 0u) << log[0];
+}
+
+// corner_radius: the rounded rect's radius, a circle's half width, 0 for
+// a rect.
+TEST_F(SceneApiTest, DeviceInfoCornerRadiusCircle) { EXPECT_EQ(corner_radius_on("circle"), "240"); }
+
+TEST_F(SceneApiTest, DeviceInfoCornerRadiusRoundedRect) {
+    EXPECT_EQ(corner_radius_on("rounded_rect"), "40");
+}
+
+TEST_F(SceneApiTest, DeviceInfoCornerRadiusRect) { EXPECT_EQ(corner_radius_on("rect"), "0"); }
+
+// row_span(y): the visible columns of row y, from hal::row_span(); nil
+// for a row with none or one off the screen.
+TEST_F(SceneApiTest, DeviceRowSpanCircle) { check_row_spans("circle"); }
+
+TEST_F(SceneApiTest, DeviceRowSpanRoundedRect) { check_row_spans("rounded_rect"); }
+
+TEST_F(SceneApiTest, DeviceRowSpanRect) { check_row_spans("rect"); }
+
+// Values worked out by hand: the circle's top row (a corner row) and its
+// middle row, the rounded rect's top row and the first row below its
+// corners.
+TEST_F(SceneApiTest, DeviceRowSpanKnownValuesCircle) {
+    start("circle");
+    install("span", std::string("print(wisp.device.row_span(0))\n"
+                                "print(wisp.device.row_span(240))\n") +
+                        kScreen);
+    ASSERT_TRUE(rt->open("span"));
+    EXPECT_EQ(scene_log("span"), (std::vector<std::string>{"225\t254", "0\t479"}));
+}
+
+TEST_F(SceneApiTest, DeviceRowSpanKnownValuesRoundedRect) {
+    start("rounded_rect");
+    install("span", std::string("print(wisp.device.row_span(0))\n"
+                                "print(wisp.device.row_span(40))\n") +
+                        kScreen);
+    ASSERT_TRUE(rt->open("span"));
+    EXPECT_EQ(scene_log("span"), (std::vector<std::string>{"34\t445", "0\t479"}));
 }
 
 TEST_F(SceneApiTest, DeviceOnRejectsUnknownEvent) {

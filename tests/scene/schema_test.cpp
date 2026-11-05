@@ -206,14 +206,82 @@ TEST(Schema, ColorAcceptsHexAndTokens) {
                        "text, muted, surface, bg, danger, ok, warn, got '#12AB3G'");
 }
 
-TEST(Schema, PadAcceptsSafeAndInts) {
-    expect_build_ok("return ui.screen{ pad = 'safe', ui.column{pad = 12}, ui.row{pad = 0} }");
+TEST(Schema, PadAcceptsIntsAndSides) {
+    expect_build_ok(
+        "return ui.screen{ pad = {0, 512, 3, 4}, ui.column{pad = 12}, ui.row{pad = 0}, "
+        "ui.column{pad = {1.0, 2, 3, 4}} }");
+    const char* expects =
+        "property 'pad' expects 0 to 512 pixels or {top, right, bottom, left} of 0 to 512 each";
+    expect_build_error("return ui.screen{ pad = 'big' }",
+                       std::string("main.lua:1: ui.screen: ") + expects + ", got 'big'");
+    expect_build_error("return ui.screen{ pad = 1.25 }",
+                       std::string("main.lua:1: ui.screen: ") + expects + ", got 1.25");
+    // Wrong length, out of range, not a number, a fraction, extra keys.
+    for (const char* bad : {"{}", "{1, 2, 3}", "{1, 2, 3, 4, 5}", "{1, 2, 3, 513}", "{-1, 0, 0, 0}",
+                            "{1, 2, 'x', 4}", "{1, 2, 3, 4.5}", "{1, 2, 3, 4, top = 1}",
+                            "{top = 1, right = 2, bottom = 3, left = 4}"}) {
+        SCOPED_TRACE(bad);
+        expect_build_error(std::string("return ui.screen{ pad = ") + bad + " }",
+                           std::string("main.lua:1: ui.screen: ") + expects);
+    }
+}
+
+// The screen's safe area is the scene's to use or not: "safe" is gone,
+// and the error says how to get the same padding.
+TEST(Schema, PadSafeIsRejectedWithGuidance) {
     expect_build_error(
-        "return ui.screen{ pad = 'big' }",
-        "main.lua:1: ui.screen: property 'pad' expects 0 to 512 pixels or \"safe\", got 'big'");
-    expect_build_error(
-        "return ui.screen{ pad = 1.25 }",
-        "main.lua:1: ui.screen: property 'pad' expects 0 to 512 pixels or \"safe\", got 1.25");
+        "return ui.screen{ ui.column{pad = 'safe'} }",
+        "main.lua:1: ui.column: property 'pad' expects 0 to 512 pixels or {top, right, bottom, "
+        "left} of 0 to 512 each, got 'safe' (\"safe\" was removed: compute the padding from "
+        "wisp.device.info().safe_area)");
+}
+
+// Per-side padding reaches the UI as one integer, from the constructor
+// and from a bound state alike.
+TEST(Schema, PadSidesAreEncodedForTheUi) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.build(R"(_G.p = state({1, 2, 3, 4})
+return ui.screen{ pad = {10, 20, 30, 40}, ui.column{pad = _G.p}, ui.row{pad = 7} })");
+    ASSERT_FALSE(err) << describe(err);
+    ASSERT_EQ(s.tree.nodes.size(), 3u);
+    EXPECT_EQ(std::get<int64_t>(*prop_of(s.node(0), Prop::Pad)),
+              wisp::scene::encode_pad_sides(10, 20, 30, 40));
+    EXPECT_EQ(std::get<int64_t>(*prop_of(s.node(1), Prop::Pad)),
+              wisp::scene::encode_pad_sides(1, 2, 3, 4));
+    EXPECT_EQ(std::get<int64_t>(*prop_of(s.node(2), Prop::Pad)), 7);
+    wisp::scene::PadSides sides{};
+    EXPECT_TRUE(
+        wisp::scene::decode_pad_sides(wisp::scene::encode_pad_sides(10, 20, 30, 40), sides));
+    EXPECT_EQ(sides.top, 10);
+    EXPECT_EQ(sides.right, 20);
+    EXPECT_EQ(sides.bottom, 30);
+    EXPECT_EQ(sides.left, 40);
+    EXPECT_FALSE(wisp::scene::decode_pad_sides(512, sides));
+
+    err = s.message("_G.p:set({5, 6, 7, 8})");
+    ASSERT_FALSE(err) << describe(err);
+    UiBatch b = s.batch.take(1);
+    ASSERT_EQ(b.ops.size(), 1u);
+    const auto* set = std::get_if<SetProp>(&b.ops[0]);
+    ASSERT_NE(set, nullptr);
+    EXPECT_EQ(set->prop, static_cast<PropId>(Prop::Pad));
+    EXPECT_EQ(std::get<int64_t>(set->value), wisp::scene::encode_pad_sides(5, 6, 7, 8));
+
+    err = s.message("_G.p:set({5, 6, 7})");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->text(),
+              "main.lua:2: ui.column: property 'pad' expects 0 to 512 pixels or {top, right, "
+              "bottom, left} of 0 to 512 each");
+    // A table anywhere else is still refused.
+    err = s.message(R"(local W = ...
+_G.t = state("a")
+W.watch(77, )" + std::to_string(static_cast<int>(Prop::Text)) +
+                    R"(, _G.t))");
+    ASSERT_FALSE(err) << describe(err);
+    err = s.message("_G.t:set({1, 2, 3, 4})");
+    ASSERT_TRUE(err);
+    EXPECT_NE(err->text().find("got a table"), std::string::npos) << err->text();
 }
 
 // Pixel values stay in ranges the UI can use as they are: LVGL reads
@@ -230,8 +298,8 @@ TEST(Schema, IntegersAreRangeChecked) {
                        "main.lua:1: ui.label: property 'h' expects 0 to 4096 pixels, \"fill\" or "
                        "\"content\", got 536871012");
     expect_build_error("return ui.screen{ pad = 513 }",
-                       "main.lua:1: ui.screen: property 'pad' expects 0 to 512 pixels or \"safe\", "
-                       "got 513");
+                       "main.lua:1: ui.screen: property 'pad' expects 0 to 512 pixels or {top, "
+                       "right, bottom, left} of 0 to 512 each, got 513");
     expect_build_error("return ui.screen{ gap = -5 }",
                        "main.lua:1: ui.screen: property 'gap' expects integer 0 to 512, got -5");
     expect_build_error("return ui.screen{ ui.label{radius = -1} }",
@@ -328,7 +396,7 @@ TEST(Schema, CollectTreeAssignsIdsAndLines) {
     auto err = s.build(R"(local count = state(0)
 local plus = ui.button{text = "+1", on_click = function() count:set(count:get() + 1) end}
 return ui.screen{
-    ui.column{pad = "safe", gap = 12, align = "center",
+    ui.column{pad = 16, gap = 12, align = "center",
         ui.label{text = bind(count, function(v) return "clicked " .. v end), font = "xl"},
         plus,
     },
@@ -355,7 +423,7 @@ return ui.screen{
         EXPECT_EQ(s.node(i).line, want[i].line);
     }
     // Props in schema order; handlers become event bits, not props.
-    EXPECT_EQ(str_of(prop_of(s.node(1), Prop::Pad)), "safe");
+    EXPECT_EQ(std::get<int64_t>(*prop_of(s.node(1), Prop::Pad)), 16);
     EXPECT_EQ(std::get<int64_t>(*prop_of(s.node(1), Prop::Gap)), 12);
     EXPECT_EQ(str_of(prop_of(s.node(1), Prop::Align)), "center");
     EXPECT_EQ(str_of(prop_of(s.node(2), Prop::Text)), "clicked 0");

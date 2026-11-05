@@ -580,6 +580,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     f.scene = std::make_unique<SceneInstance>(id, f.package, config_.vm);
     SceneApi& api = f.scene->api();
     api.device = [this] { return device_info(); };
+    api.screen = deps_.shape;
     api.args = &f.args;
     api.store = f.store.get();
     if (deps_.http != nullptr) wire_http(f);

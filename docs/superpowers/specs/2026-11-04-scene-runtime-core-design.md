@@ -22,7 +22,7 @@
 
 1. 场景包格式与 `SceneRepository`（安装、列出、导出、删除）；
 2. 每个场景一个 Lua 5.5 VM，跑在专门的场景任务上，有沙箱、执行超时和内存上限；
-3. 用 Lua 表声明界面、细粒度响应式状态驱动更新，映射到 LVGL，根容器强制遵守安全区；
+3. 用 Lua 表声明界面、细粒度响应式状态驱动更新，映射到 LVGL；场景拥有整块屏幕，按运行时提供的屏幕形状信息自行布局（5.2）；
 4. `wisp.*` API：界面、状态、定时器、数据、HTTP、设备信息、日志、场景控制；
 5. `SceneStore` 场景数据（键值与集合）；
 6. 前台场景模型与系统层（返回手势、错误面板）；
@@ -50,6 +50,7 @@
 
 - 基础 spec 1.7 的 `ui.json` 取消：界面与逻辑都在 `main.lua`（第 4 节）。场景包其余布局保持不变。
 - 基础 spec 1.7 的 `wisp.store` 形态按本文 5.4 定稿。
+- 基础 spec 5.6"场景运行时的根容器默认遵循布局规则"改为：场景拥有整块屏幕，根容器不加任何内边距，场景按 `wisp.device.info()` 与 `wisp.device.row_span()` 自行布局（用户 2026-11-05 裁定，见 5.2"屏幕形状"）。系统界面（自检界面、系统层的对话框、键盘、错误面板、返回手势区）仍按 `hal::safe_rect()`/`row_span()` 保证内容可见。
 
 ---
 
@@ -127,7 +128,7 @@
 ### 3.5 前台与系统层
 
 - 只有前台场景渲染并接收触摸。系统层位于场景之上，承载返回手势区、错误面板，以及已有的恢复出厂与固件确认框。
-- **返回手势**：从屏幕左边缘约 16 px 的判定区向右滑动超过 1/4 屏宽，关闭当前场景回到自检界面。手势由系统层先截获，场景收不到。判定区按 `hal::safe_rect()`/`row_span()` 计算，圆角屏上手指可达。
+- **返回手势**：从屏幕左边缘约 16 px 的判定区向右滑动超过 1/4 屏宽，关闭当前场景回到自检界面。手势由系统层先截获，场景收不到。判定区按 `hal::safe_rect()`/`row_span()` 计算，圆角屏上手指可达。判定区属于系统界面，位置不随场景改变：在安全区高度内的每一行，从该行可见左边缘起 16 px（宽度由系统层 `SystemLayer::kBackZoneWidth` 决定）内开始的触摸（包括横向滑动和点击）都交给返回手势，不会到达场景。场景把内容放到这条带下面是场景自己的选择，可点击的控件应避开它。
 - 场景打开期间，自检界面不销毁，只隐藏，返回即显示，不重建。
 
 ### 3.6 错误面板
@@ -145,8 +146,12 @@
 ```lua
 local count = state(0)
 
-return ui.screen {
-  ui.column { pad = "safe", gap = 12, align = "center",
+local d = wisp.device.info()
+local s = d.safe_area
+
+return ui.screen { align = "center", justify = "center",
+  pad = { s.y1, d.width - 1 - s.x2, d.height - 1 - s.y2, s.x1 },  -- 按安全区留边距
+  ui.column { gap = 12, align = "center",
     ui.label { text = bind(count, function(v) return "已点击 " .. v .. " 次" end), font = "xl" },
     ui.button { text = "+1", on_click = function() count:set(count:get() + 1) end },
   },
@@ -184,7 +189,7 @@ return ui.screen {
 - 外观：`bg`、`fg`、`radius`、`border`、`font`（`xs`/`sm`/`md`/`lg`/`xl`/`xxl`）、`hidden`、`opa`。
 - 事件：`on_click`、`on_long_press`、`on_change`（输入类）。
 - 颜色写 `#RRGGBB` 或主题令牌：`accent`、`text`、`muted`、`surface`、`bg`、`danger`、`ok`、`warn`。子项目 7 的主题系统在这组令牌上扩展。
-- `pad = "safe"`：按安全区留边距。根节点 `ui.screen` 总是铺满屏幕并强制套上安全区内边距（AGENTS.md 第 3 节"屏幕形状"），场景无法关闭。其他节点上的 `"safe"` 不再额外留边距：根节点已经把内容收进安全区。
+- `pad`：一个数字（四边相同），或 `{上, 右, 下, 左}` 四个数字（CSS 顺序），每个 0…512，四项缺一不可、不能有多余的键。根节点 `ui.screen` 铺满屏幕，不加任何默认内边距：场景拥有整块屏幕，自己按屏幕形状布局（5.2"屏幕形状"、AGENTS.md 第 3 节"屏幕形状"）。原来的 `pad = "safe"` 已取消，写了会在建树时报错，并提示改用 `wisp.device.info().safe_area` 算出内边距。
 - `ref = "名字"` 给节点命名，`ui.ref("名字")` 取得句柄，用于少量命令式操作（如读取输入框的值、滚动到某项）。
 
 ### 4.5 校验
@@ -208,11 +213,23 @@ h:cancel()
 ### 5.2 设备
 
 ```lua
-wisp.device.info()  -- {width, height, shape, safe_area, lang, utc_offset, time, battery, charging, wifi}
+wisp.device.info()  -- {width, height, shape, corner_radius, safe_area, lang, utc_offset, time, battery, charging, wifi}
+wisp.device.row_span(y)  -- x1, x2：屏幕第 y 行可见像素的首尾列；该行不可见或越界时为 nil
 wisp.device.on("battery" | "minute" | "lang", fn)
 ```
 
 只读。`minute` 在整分钟触发，供时钟使用。`time` 是 UTC 秒；`utc_offset` 是系统设置 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480），本地时间为 `time + utc_offset * 60`。场景任务不读 Settings：运行时开始订阅 `system.settings` 之后，App 读取当时的值交给它（已收到的事件优先，值不会比事件旧），之后跟随该事件；时区改变时立即补发一次 `minute`（亮屏时），不另设事件。
+
+**屏幕形状**（用户 2026-11-05 裁定）：
+
+- 场景拥有整块屏幕。根节点铺满屏幕、没有默认内边距，圆角屏和圆形屏的四角与边缘场景都可以用。
+- 运行时给场景的屏幕信息：`width`、`height`；`shape`（`rect`/`rounded_rect`/`circle`）；`corner_radius`（圆角矩形为圆角半径，圆形为 min(w,h)/2，矩形为 0）；`safe_area`（`hal::safe_rect()`，四角各留 4 px 边距）；`row_span(y)`（`hal::row_span()`，与 `hal::visible()` 逐像素一致）。`row_span` 是场景任务上的纯计算，不碰 flash，也不调用 LVGL。
+- 场景负责自己的布局，不得有关键内容落在不可见区域：
+  - 居中的一块内容可以按 `safe_area` 算出内边距；
+  - 靠近上下边缘的内容按它自己所在行的 `row_span` 缩进，用上安全区会浪费掉的宽度；
+  - 滚动内容可以经过不可见区域，但滚到两端时，第一项和最后一项必须完整可见：给列表按边留内边距（`pad = {上, 右, 下, 左}`），让首项、末项上下两行的 `row_span` 都盖住它的左右边缘。`ui.list` 的可见行窗口把列表的上下内边距算在视口内，内边距再大也不会少建可见的行。
+- 示例场景（9.3）演示这些做法；示例测试在矩形、圆角矩形（模拟器的 40 px 与参考板的 70 px）和圆形屏上逐个检查控件四角都可见，待办与记账还检查列表滚到两端时首末行完整可见。
+- **留给后续子项目**：子项目 4 的 Agent 生成场景时，提示词必须给出屏幕形状、圆角半径、安全区，以及 `row_span` 的用法（居中内容按安全区留边距、贴边内容按所在行缩进、滚动列表首末项在两端完整可见）；截图自检时检查有没有关键内容落在不可见区域。
 
 ### 5.3 HTTP
 
@@ -363,7 +380,7 @@ scenes/<id>/
 | 沙箱 | `io`/`os`/`debug`/`require`/字节码/`string.dump` 不可用；未声明全局变量编译报错；`wisp.import` 不能越出 `lib/` |
 | 执行限制 | 200 ms 超时（含 `pcall` 内的死循环）；2 MB 内存上限；出错后 VM 销毁并可重新打开 |
 | 响应式 | `state`/`computed`/`bind` 依赖追踪；相等写入不触发；一条消息内多次 `set` 合并；循环依赖报错 |
-| 控件映射 | 白名单报错（行号与建议）；根节点强制安全区；`list` 只为可见行建控件；每帧改动上限 |
+| 控件映射 | 白名单报错（行号与建议）；根节点无默认内边距，`pad` 按边设置；`pad = "safe"` 报错并给出替代写法；`list` 只为可见行建控件（含上下内边距）；每帧改动上限 |
 | `SceneHttp` | 声明域名精确匹配；非 HTTPS、超大、超频、禁用请求头被拒 |
 | 定时器与生命周期 | `after`/`every`/`cancel`；最小间隔与数量上限；熄屏暂停、亮屏补触发一次；`minute` 补发 |
 | 管理接口 | `/scenes` 鉴权与 CSRF；流式上传；同 id 覆盖保留数据；删除需设备确认 |
@@ -377,11 +394,11 @@ scenes/<id>/
 | 场景 | 覆盖 |
 |---|---|
 | 计数器 | 最小完整示例 |
-| 番茄钟 | `arc`、`timer`、熄屏恢复 |
-| 待办 | `list`、`input`、屏幕键盘、集合持久化 |
-| 记账 | 集合、`find` 排序、`chart` |
-| 时钟表盘 | `canvas`、`minute`、圆角屏安全区 |
-| 系统状态 | `wisp.device` |
+| 番茄钟 | `arc`、`timer`、熄屏恢复；表盘按屏幕取最大，按钮行按所在行的 `row_span` 取宽 |
+| 待办 | `list`、`input`、屏幕键盘、集合持久化；标题按 `row_span` 缩进，列表贴边滚动、两端首末行完整可见 |
+| 记账 | 集合、`find` 排序、`chart`；与待办相同的整屏布局 |
+| 时钟表盘 | `canvas`、`minute`、整屏表盘（圆形屏铺满整圆，其他屏取最大的居中圆） |
+| 系统状态 | `wisp.device`（含 `corner_radius`），按安全区留边距 |
 | 天气（可选） | `wisp.http`、域名声明（无需 Key 的公开接口） |
 
 ### 9.4 真机验收清单（由用户执行）

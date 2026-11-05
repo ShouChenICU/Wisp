@@ -57,8 +57,12 @@ void SceneView::apply_list_reset(const ListReset& r) {
 }
 
 void SceneView::update_window(Node& list, bool force) {
-    const ListWindow w = visible_rows(lv_obj_get_scroll_y(list.obj),
-                                      lv_obj_get_content_height(list.obj), list.row_h, list.rows);
+    // Rows start below the list's top padding, and the padding scrolls
+    // with them: the viewport over the rows is the whole list, offset by
+    // that padding (a list padded to clear a rounded screen's corners).
+    const ListWindow w = visible_rows(
+        lv_obj_get_scroll_y(list.obj) - lv_obj_get_style_pad_top(list.obj, LV_PART_MAIN),
+        lv_obj_get_height(list.obj), list.row_h, list.rows);
     if (!force && w == list.window) return;
     list.window = w;
     for (size_t i = list.built.size(); i-- > 0;) {

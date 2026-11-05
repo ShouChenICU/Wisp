@@ -29,8 +29,9 @@
 //   Font     xs sm md lg xl xxl
 //   Align    start center end
 //   Justify  start center end between around evenly
-//   Pad      integer or "safe" (the safe area, spec 4.4/AGENTS.md
-//            section 3; ui.screen always gets at least that)
+//   Pad      integer, or {top, right, bottom, left} of integers (exactly
+//            those four entries); the UI gets the table as one
+//            encode_pad_sides() integer (ui_ops.hpp)
 //   Enum     one of PropSpec::choices
 //   Fn       a function
 //   Items    a table, or a state/computed/bind holding one

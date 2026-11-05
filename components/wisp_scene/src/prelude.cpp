@@ -7,6 +7,8 @@
 //   tcall(f, x)              f(x) in an inner lua_pcall: true, result or
 //                            false, error. A C call boundary, so f cannot
 //                            yield; faults are raised again on return.
+// and the property id of `pad`, the one property a bound table may feed
+// ({top, right, bottom, left}; emit() checks it like a constructor).
 // It returns the internal table and the state, computed and bind
 // functions; install_prelude() sets the globals and keeps the internal
 // table in the registry.
@@ -30,7 +32,7 @@ namespace wisp::scene {
 
 std::string_view prelude_source() {
     return R"lua(
-local emit, where, tcall = ...
+local emit, where, tcall, PAD = ...
 global<const> setmetatable, type, error, pairs, rawequal, rawget, rawlen, table, math, string
 
 local setmetatable, type, error, pairs, rawequal = setmetatable, type, error, pairs, rawequal
@@ -276,7 +278,8 @@ local function watch_run(e)
     local v = read(e.src)
     if e.quiet then return v end
     local t = type(v)
-    if t ~= "nil" and t ~= "boolean" and t ~= "number" and t ~= "string" then
+    if t ~= "nil" and t ~= "boolean" and t ~= "number" and t ~= "string" and
+       not (t == "table" and e.prop == PAD) then
         fail("a widget property bound to " .. (e.src.l or "a state") .. " got a " .. t ..
              " (it takes nil, a boolean, a number or a string)")
     end

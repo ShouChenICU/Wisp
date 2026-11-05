@@ -97,6 +97,10 @@ Check check_value(lua_State* L, int idx, Prop p);
 // An integer, or a float with an integral value, within int32.
 bool integral(lua_State* L, int idx, lua_Integer& out);
 
+// The encode_pad_sides() value of a pad table check_value() passed.
+// Never raises.
+int64_t pad_sides_value(lua_State* L, int idx);
+
 // Writes "property 'p' expects ..., got ..." (or "property 'p': value
 // too large") for a failed check; `kind` names a reactive object that was
 // given where it is not allowed. Never raises.

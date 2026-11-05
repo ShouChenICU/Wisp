@@ -38,6 +38,8 @@ PropValue to_value(lua_State* L, int idx) {
             const char* s = lua_tolstring(L, idx, &len);
             return PropValue{os::LargeString(s, len)};
         }
+        case LUA_TTABLE:  // only a pad's sides get this far
+            return PropValue{node::pad_sides_value(L, idx)};
         default:
             return PropValue{};
     }
@@ -61,8 +63,11 @@ int emit(lua_State* L) {
     if (!lua_isinteger(L, 2) || lua_tointeger(L, 2) < 0 || lua_tointeger(L, 2) > UINT16_MAX)
         return luaL_error(L, "emit: bad property id");
     int t = lua_type(L, 3);
+    // A table only as pad = {top, right, bottom, left}, checked below.
+    const bool pad_sides =
+        t == LUA_TTABLE && lua_tointeger(L, 2) == static_cast<lua_Integer>(Prop::Pad);
     if (t != LUA_TNONE && t != LUA_TNIL && t != LUA_TBOOLEAN && t != LUA_TNUMBER &&
-        t != LUA_TSTRING)
+        t != LUA_TSTRING && !pad_sides)
         return luaL_error(L, "emit: unsupported property value (%s)", lua_typename(L, t));
     // Checked before the string is copied.
     if (t == LUA_TSTRING && lua_rawlen(L, 3) > kMaxPropStringBytes)
@@ -131,7 +136,8 @@ int install(lua_State* L) {
     lua_pushvalue(L, 2);
     lua_pushcclosure(L, tcall, 1);
     replace_with_checked(L);  // 6
-    lua_call(L, 3, 4);        // 3 internal, 4 state, 5 computed, 6 bind
+    lua_pushinteger(L, static_cast<lua_Integer>(Prop::Pad));
+    lua_call(L, 4, 4);  // 3 internal, 4 state, 5 computed, 6 bind
     if (lua_type(L, 3) != LUA_TTABLE) return luaL_error(L, "reactive prelude: no internal table");
     check_c_functions(L, 3);
     lua_setglobal(L, "bind");

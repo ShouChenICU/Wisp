@@ -133,8 +133,7 @@ struct SceneView::Node {
     view::Size w, h;
     int32_t grow = -1;  // -1: not given
     bool pad_given = false;
-    bool pad_safe = false;
-    int32_t pad = 0;
+    PadSides pad;
     lv_flex_align_t align = LV_FLEX_ALIGN_START;
     lv_flex_align_t justify = LV_FLEX_ALIGN_START;
     double value = 0, min = 0, max = 100;

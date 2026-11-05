@@ -2,6 +2,7 @@
 // (vm.hpp): Lua API calls that can raise happen only while the frame holds
 // trivially destructible locals.
 
+#include <algorithm>
 #include <cstring>
 
 #include "scene_api.hpp"
@@ -29,6 +30,39 @@ const char* shape_name(hal::ScreenShapeKind kind) {
 void set_int(lua_State* L, const char* key, int64_t v) {
     lua_pushinteger(L, static_cast<lua_Integer>(v));
     lua_setfield(L, -2, key);
+}
+
+// A circle's radius is half its smaller side; a rect has no corners.
+int32_t corner_radius(const hal::ScreenShape& s) {
+    switch (s.kind) {
+        case hal::ScreenShapeKind::Rect:
+            return 0;
+        case hal::ScreenShapeKind::RoundedRect:
+            return s.corner_radius;
+        case hal::ScreenShapeKind::Circle:
+            return std::min(s.width, s.height) / 2;
+    }
+    return 0;
+}
+
+// row_span(y) -> x1, x2, or nil for a row with no visible pixel or one
+// off the screen. hal::row_span() is consistent with hal::visible() by
+// construction, and scans one row: cheap enough to call per row.
+int row_span(lua_State* L) {
+    const lua_Integer y = luaL_checkinteger(L, 1);
+    const hal::ScreenShape& shape = detail::api_of(L).screen;
+    if (y < 0 || y >= shape.height) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const hal::Span span = hal::row_span(shape, static_cast<int32_t>(y));
+    if (span.empty()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushinteger(L, span.x1);
+    lua_pushinteger(L, span.x2);
+    return 2;
 }
 
 int info(lua_State* L) {
@@ -94,11 +128,12 @@ namespace detail {
 
 void push_device_info(lua_State* L, const DeviceInfo& i) {
     luaL_checkstack(L, 3, "device info");
-    lua_createtable(L, 0, 9);
+    lua_createtable(L, 0, 11);
     set_int(L, "width", i.shape.width);
     set_int(L, "height", i.shape.height);
     lua_pushstring(L, shape_name(i.shape.kind));
     lua_setfield(L, -2, "shape");
+    set_int(L, "corner_radius", corner_radius(i.shape));
     lua_createtable(L, 0, 4);
     set_int(L, "x1", i.safe.x1);
     set_int(L, "y1", i.safe.y1);
@@ -125,9 +160,11 @@ void install_device(lua_State* L, int wisp) {
     }
     lua_rawsetp(L, LUA_REGISTRYINDEX, &kHandlersKey);
 
-    lua_createtable(L, 0, 2);
+    lua_createtable(L, 0, 3);
     lua_pushcfunction(L, info);
     lua_setfield(L, -2, "info");
+    lua_pushcfunction(L, row_span);
+    lua_setfield(L, -2, "row_span");
     lua_pushcfunction(L, on);
     lua_setfield(L, -2, "on");
     check_c_functions(L, -1);

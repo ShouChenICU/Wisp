@@ -71,7 +71,7 @@ const uint8_t kIconPng[] = {
 const char* kCounter = R"(local count = state(0)
 
 return ui.screen {
-  ui.column { pad = "safe", gap = 12, align = "center",
+  ui.column { pad = 16, gap = 12, align = "center",
     ui.label { text = bind(count, function(v) return "已点击 " .. v .. " 次" end), font = "xl" },
     ui.button { ref = "plus", text = "+1", on_click = function() count:set(count:get() + 1) end },
   },

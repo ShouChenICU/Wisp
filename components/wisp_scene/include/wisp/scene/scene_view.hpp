@@ -16,12 +16,11 @@
 // other integer props are held to the schema's prop_range().
 //
 // Layout:
-//   - The root fills the screen. Its padding is at least the distance
-//     from each edge of the screen to hal::safe_rect() (a larger pad is
-//     kept, a smaller one or "safe" raised to it), so content always
-//     starts inside the safe area (AGENTS.md section 3).
-//   - pad = "safe" on any other node adds no padding: the root's padding
-//     already keeps everything inside it in the safe area.
+//   - The root fills the screen and has only the padding the scene gives
+//     it: scenes own the whole screen and lay themselves out from the
+//     shape wisp.device reports (AGENTS.md section 3).
+//   - pad is one integer for every side or, decoded with
+//     decode_pad_sides(), one per side.
 //   - screen, column, scroll (direction "v") and list stack children
 //     vertically, row and scroll "h" horizontally (LVGL flex). `justify`
 //     places children along that direction, `align` across it.
@@ -166,10 +165,6 @@ private:
     // One per node, at a fixed address: the node's object carries it as
     // its LVGL user data and its event callbacks' user data.
     struct Node;
-    struct Insets {
-        int32_t left = 0, top = 0, right = 0, bottom = 0;
-    };
-
     using NodeMap =
         std::unordered_map<NodeId, os::LargeUnique<Node>, std::hash<NodeId>, std::equal_to<NodeId>,
                            os::LargeAllocator<std::pair<const NodeId, os::LargeUnique<Node>>>>;
@@ -237,7 +232,6 @@ private:
 
     ui::SystemLayer& system_;
     hal::ScreenShape shape_;
-    Insets safe_;
     ViewCallbacks cb_;
     std::shared_ptr<const core::ScenePackage> assets_;
     lv_obj_t* screen_ = nullptr;

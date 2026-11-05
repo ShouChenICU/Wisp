@@ -12,9 +12,15 @@
 //       every timer: was still set). The callbacks live in a registry
 //       table by timer id; the runtime runs the ids TimerSet::due() hands
 //       out with run_timer(), each with a fresh time budget.
-//   wisp.device.info() -> {width, height, shape, safe_area = {x1, y1, x2,
-//       y2}, lang, utc_offset, time, battery, charging, wifi}; time and
-//       battery are nil when unknown; utc_offset is in minutes east of UTC.
+//   wisp.device.info() -> {width, height, shape, corner_radius, safe_area =
+//       {x1, y1, x2, y2}, lang, utc_offset, time, battery, charging, wifi};
+//       time and battery are nil when unknown; utc_offset is in minutes
+//       east of UTC; corner_radius is the rounded rect's radius, half the
+//       smaller side for a circle, 0 for a rect.
+//   wisp.device.row_span(y) -> x1, x2: the visible columns of screen row
+//       y (hal::row_span() of SceneApi::screen), or nil when the row has
+//       none or is off the screen. Scenes own the whole screen and lay
+//       themselves out with these (AGENTS.md section 3).
 //   wisp.device.on("battery" | "minute" | "lang", fn): fn(info) each time
 //       the runtime calls run_device_handlers() for that event; another
 //       name is an argument error.
@@ -79,6 +85,9 @@ struct SceneApi {
     // wisp.device.info(); runs on the scene task, so it must not touch
     // flash. Empty: a default DeviceInfo.
     std::function<DeviceInfo()> device;
+    // The screen wisp.device.row_span() answers for; pure geometry on the
+    // scene task. Zero-sized by default: every row is nil.
+    hal::ScreenShape screen;
     // The open arguments; null for none.
     const Value* args = nullptr;
     // The scene's data; wisp.store raises without one. Owned by the

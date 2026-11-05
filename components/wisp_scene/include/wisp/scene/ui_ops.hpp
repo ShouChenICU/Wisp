@@ -32,6 +32,28 @@ struct NodeDesc {
     int line = 0;  // the line of the entry file that built it
 };
 
+// pad = {top, right, bottom, left} travels as one integer, so PropValue
+// needs no table type: 10 bits per side (each is 0..512, schema
+// prop_range()) under a tag bit that no plain pad (also 0..512) has.
+struct PadSides {
+    int32_t top = 0, right = 0, bottom = 0, left = 0;
+};
+
+inline constexpr int64_t kPadSidesTag = int64_t{1} << 40;
+
+constexpr int64_t encode_pad_sides(int32_t top, int32_t right, int32_t bottom, int32_t left) {
+    return kPadSidesTag | (int64_t{top & 0x3ff} << 30) | (int64_t{right & 0x3ff} << 20) |
+           (int64_t{bottom & 0x3ff} << 10) | int64_t{left & 0x3ff};
+}
+
+// False for anything encode_pad_sides() did not make (a plain pad).
+constexpr bool decode_pad_sides(int64_t v, PadSides& out) {
+    if ((v & ~(kPadSidesTag - 1)) != kPadSidesTag) return false;
+    out = {static_cast<int32_t>((v >> 30) & 0x3ff), static_cast<int32_t>((v >> 20) & 0x3ff),
+           static_cast<int32_t>((v >> 10) & 0x3ff), static_cast<int32_t>(v & 0x3ff)};
+    return true;
+}
+
 struct SetProp {
     NodeId node = 0;
     PropId prop = 0;

@@ -97,6 +97,9 @@ PropValue to_value(lua_State* L, int idx, PropType type) {
             std::string_view s = string_at(L, idx);
             return PropValue{os::LargeString(s.data(), s.size())};
         }
+        case LUA_TTABLE:
+            if (type == PropType::Pad) return PropValue{pad_sides_value(L, idx)};
+            return PropValue{};
         default:
             return PropValue{};
     }

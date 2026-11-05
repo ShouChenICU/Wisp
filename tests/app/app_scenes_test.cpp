@@ -54,7 +54,7 @@ const char* kCounter = R"(local count = state(0)
 scene.on_show = function() print("show") end
 scene.on_hide = function() print("hide") end
 return ui.screen {
-  ui.column { pad = "safe", gap = 12,
+  ui.column { pad = 16, gap = 12,
     ui.label { text = bind(count, function(v) return "已点击 " .. v .. " 次" end) },
     ui.button { ref = "plus", text = "+1", on_click = function() count:set(count:get() + 1) end },
   },

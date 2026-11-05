@@ -59,9 +59,13 @@ scenes/<scene_id>/
 
 ```lua
 local count = state(0)
+local d = wisp.device.info()
+local s = d.safe_area
 
-return ui.screen {
-  ui.column { pad = "safe", gap = 12, align = "center",
+-- 场景拥有整块屏幕：这里按安全区留边距，把内容收进圆角屏、圆形屏的可见区域
+return ui.screen { align = "center", justify = "center",
+  pad = { s.y1, d.width - 1 - s.x2, d.height - 1 - s.y2, s.x1 },
+  ui.column { gap = 12, align = "center",
     ui.label { text = bind(count, function(v) return "已点击 " .. v .. " 次" end), font = "xl" },
     ui.button { text = "+1", on_click = function() count:set(count:get() + 1) end },
   },

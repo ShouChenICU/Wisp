@@ -41,6 +41,30 @@ bool in_range(lua_State* L, int idx, Prop p) {
     return i >= r.min && i <= r.max;
 }
 
+// pad = {top, right, bottom, left}: exactly the keys 1 to 4, each an
+// integer in pad's range. Never raises.
+Check check_pad_sides(lua_State* L, int idx) {
+    idx = lua_absindex(L, idx);
+    if (!lua_checkstack(L, 3) || lua_rawlen(L, idx) != 4) return Check::BadValue;
+    int keys = 0;
+    lua_pushnil(L);
+    while (lua_next(L, idx) != 0) {
+        lua_pop(L, 1);
+        if (++keys > 4) {
+            lua_pop(L, 1);
+            return Check::BadValue;
+        }
+    }
+    if (keys != 4) return Check::BadValue;
+    for (int i = 1; i <= 4; ++i) {
+        lua_rawgeti(L, idx, i);
+        const bool ok = lua_type(L, -1) == LUA_TNUMBER && in_range(L, -1, Prop::Pad);
+        lua_pop(L, 1);
+        if (!ok) return Check::BadValue;
+    }
+    return Check::Ok;
+}
+
 bool is_hex_color(std::string_view s) {
     if (s.size() != 7 || s[0] != '#') return false;
     for (char c : s.substr(1))
@@ -181,6 +205,18 @@ bool integral(lua_State* L, int idx, lua_Integer& out) {
     return out >= INT32_MIN && out <= INT32_MAX;
 }
 
+int64_t pad_sides_value(lua_State* L, int idx) {
+    idx = lua_absindex(L, idx);
+    int32_t side[4] = {};
+    for (int i = 0; i < 4; ++i) {
+        lua_rawgeti(L, idx, i + 1);
+        lua_Integer v = 0;
+        if (integral(L, -1, v)) side[i] = static_cast<int32_t>(v);
+        lua_pop(L, 1);
+    }
+    return encode_pad_sides(side[0], side[1], side[2], side[3]);
+}
+
 Check check_value(lua_State* L, int idx, Prop p) {
     const PropSpec& spec = prop_spec(p);
     int t = lua_type(L, idx);
@@ -192,6 +228,7 @@ Check check_value(lua_State* L, int idx, Prop p) {
             if (t == LUA_TNUMBER) return in_range(L, idx, p) ? Check::Ok : Check::BadValue;
             if (t == LUA_TSTRING)
                 return in(string_at(L, idx), spec.choices) ? Check::Ok : Check::BadValue;
+            if (t == LUA_TTABLE && spec.type == PropType::Pad) return check_pad_sides(L, idx);
             return Check::WrongType;
         case PropType::Int:
             if (t != LUA_TNUMBER) return Check::WrongType;
@@ -262,12 +299,19 @@ void describe_problem(lua_State* L, int idx, Prop p, Check c, const char* kind, 
     } else {
         got[0] = '\0';
     }
-    char hint[48] = "";
+    char hint[96] = "";
     if (p == Prop::Name && kind == nullptr && lua_type(L, idx) == LUA_TSTRING) {
         char best[24];
         nearest_into(best, string_at(L, idx), prop_spec(p).choices);
         std::snprintf(hint, sizeof(hint), " (did you mean '%s'?)", best);
     }
+    // Scenes own the whole screen (AGENTS.md section 3), so no pad word
+    // stands for the safe area: say how to pad by it instead.
+    if (p == Prop::Pad && kind == nullptr && lua_type(L, idx) == LUA_TSTRING &&
+        string_at(L, idx) == "safe")
+        std::snprintf(hint, sizeof(hint),
+                      " (\"safe\" was removed: compute the padding from "
+                      "wisp.device.info().safe_area)");
     const char* expects = prop_expects(p).data();
     if (got[0] == '\0')
         std::snprintf(out, size, "property '%s' expects %s", pname, expects);

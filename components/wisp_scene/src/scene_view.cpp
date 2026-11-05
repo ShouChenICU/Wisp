@@ -115,10 +115,6 @@ const char* text_of(const PropValue& v, char* buf, size_t size) {
 
 SceneView::SceneView(ui::SystemLayer& system, const hal::ScreenShape& shape, ViewCallbacks cb)
     : system_(system), shape_(shape), cb_(std::move(cb)) {
-    hal::Area safe = hal::safe_rect(shape_);
-    safe_ = {std::max<int32_t>(0, safe.x1), std::max<int32_t>(0, safe.y1),
-             std::max<int32_t>(0, shape_.width - 1 - safe.x2),
-             std::max<int32_t>(0, shape_.height - 1 - safe.y2)};
     screen_ = lv_obj_create(nullptr);
     group_ = lv_group_create();
     reset_screen_style();
@@ -205,10 +201,6 @@ void SceneView::reset_screen_style() {
     lv_obj_set_style_text_color(screen_, theme_color("text"), LV_PART_MAIN);
     lv_obj_set_style_text_font(screen_, theme_font("md"), LV_PART_MAIN);
     lv_obj_set_flex_flow(screen_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_left(screen_, safe_.left, LV_PART_MAIN);
-    lv_obj_set_style_pad_top(screen_, safe_.top, LV_PART_MAIN);
-    lv_obj_set_style_pad_right(screen_, safe_.right, LV_PART_MAIN);
-    lv_obj_set_style_pad_bottom(screen_, safe_.bottom, LV_PART_MAIN);
 }
 
 void SceneView::clear_tree() {
@@ -447,14 +439,17 @@ uint32_t SceneView::set_prop(Node& n, uint16_t prop_id, const PropValue& v) {
         case Prop::Pad: {
             if (unset) {
                 n.pad_given = false;
-            } else if (const auto* s = as_string(v)) {
-                if (*s != "safe") return wrong();
+            } else if (const auto* i = std::get_if<int64_t>(&v);
+                       i != nullptr && decode_pad_sides(*i, n.pad)) {
+                // decode_pad_sides() keeps each side within 0..1023; the
+                // schema already held them to prop_range().
+                const IntRange r = prop_range(p);
+                for (int32_t* side : {&n.pad.top, &n.pad.right, &n.pad.bottom, &n.pad.left})
+                    *side = std::clamp(*side, r.min, r.max);
                 n.pad_given = true;
-                n.pad_safe = true;
             } else if (auto pad = as_int(v, p)) {
                 n.pad_given = true;
-                n.pad_safe = false;
-                n.pad = *pad;
+                n.pad = {*pad, *pad, *pad, *pad};
             } else {
                 return wrong();
             }
@@ -779,16 +774,10 @@ void SceneView::apply_size(Node& n) {
 }
 
 void SceneView::apply_pad(Node& n) {
-    Insets pad;
-    const bool root = n.id == root_;
+    PadSides pad;
     if (n.pad_given) {
-        // Below the root, "safe" adds nothing: the root's own padding
-        // already keeps everything inside it in the safe area.
-        if (!n.pad_safe)
-            pad = Insets{n.pad, n.pad, n.pad, n.pad};
-        else if (root)
-            pad = safe_;
-    } else if (!root) {
+        pad = n.pad;
+    } else if (n.id != root_) {
         // Keeps the widget's own padding (a button's, an input's).
         if (is_layout(n.widget) || n.widget == Widget::Spacer || n.widget == Widget::List) return;
         lv_obj_remove_local_style_prop(n.obj, LV_STYLE_PAD_LEFT, LV_PART_MAIN);
@@ -796,12 +785,6 @@ void SceneView::apply_pad(Node& n) {
         lv_obj_remove_local_style_prop(n.obj, LV_STYLE_PAD_RIGHT, LV_PART_MAIN);
         lv_obj_remove_local_style_prop(n.obj, LV_STYLE_PAD_BOTTOM, LV_PART_MAIN);
         return;
-    }
-    if (root) {
-        pad.left = std::max(pad.left, safe_.left);
-        pad.top = std::max(pad.top, safe_.top);
-        pad.right = std::max(pad.right, safe_.right);
-        pad.bottom = std::max(pad.bottom, safe_.bottom);
     }
     lv_obj_set_style_pad_left(n.obj, pad.left, LV_PART_MAIN);
     lv_obj_set_style_pad_top(n.obj, pad.top, LV_PART_MAIN);
