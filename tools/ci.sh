@@ -139,6 +139,11 @@ python3 tools/gen_cjk_font_test.py
 echo "==> tools/gen_vector_font_test.py"
 python3 tools/gen_vector_font_test.py
 
+# The fonts partition image: header layout, reproducibility, and the
+# committed font fitting the reference board's partition (spec 3.2).
+echo "==> tools/pack_font_image_test.py"
+python3 tools/pack_font_image_test.py
+
 echo "==> cmake -S simulator -B build/sim -G Ninja"
 cmake -S simulator -B build/sim -G Ninja
 

@@ -102,6 +102,23 @@ add_custom_command(
 add_custom_target(wisp_sim_assets DEPENDS ${WISP_SIM_WPAK})
 add_dependencies(wisp_sim wisp_sim_assets)
 
+# The vector font image (vector-font spec 3.3), packed from the committed
+# TTF exactly as the firmware packs it, next to wisp_sim. The simulator has
+# no partition, so there is no --max-bytes; the reference board's limit is
+# checked by tools/pack_font_image_test.py.
+set(WISP_SIM_FONT_TTF ${WISP_ROOT}/components/wisp_ui/fonts/noto_sans_cjk_sc_subset.ttf)
+set(WISP_SIM_FONTS ${CMAKE_CURRENT_BINARY_DIR}/fonts.bin)
+add_custom_command(
+    OUTPUT ${WISP_SIM_FONTS}
+    COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tools/pack_font_image.py ${WISP_SIM_FONT_TTF}
+            -o ${WISP_SIM_FONTS}
+    DEPENDS ${WISP_SIM_FONT_TTF} ${WISP_ROOT}/tools/pack_font_image.py
+    COMMENT "Packing the vector font into fonts.bin"
+    VERBATIM
+)
+add_custom_target(wisp_sim_fonts DEPENDS ${WISP_SIM_FONTS})
+add_dependencies(wisp_sim wisp_sim_fonts)
+
 option(WISP_BUILD_TESTS "Build the PC unit test suite" ON)
 if(WISP_BUILD_TESTS)
     enable_testing()
