@@ -16,7 +16,8 @@
 # plus EspFirmwareUpdater (esp_firmware.cpp, the OTA writer behind the
 # admin page's firmware upload), mem_report() (mem_report.cpp, the
 # firmware's `mem` console command) and the LVGL JPEG decoder for scene
-# images (ui/esp_jpeg_decoder.cpp, on esp_new_jpeg).
+# images (ui/esp_jpeg_decoder.cpp, on esp_new_jpeg), and the mapped
+# "fonts" partition behind the vector font (ui/esp_font_partition.cpp).
 # Like wisp_port_sim, this component is never built on the host
 # (ESP_PLATFORM is never defined for it there, and no host CMakeLists adds
 # it) -- only firmware/main pulls it in. (A handful of pure, platform-free headers factored out of the audio/
@@ -37,7 +38,7 @@ wisp_component(
          dev/esp_storage.cpp console_esp.cpp net/esp_wifi.cpp net/captive_dns.cpp
          net/esp_http_server.cpp net/esp_http_client.cpp net/esp_sntp.cpp esp_firmware.cpp
          mem_report.cpp
-         ui/esp_jpeg_decoder.cpp
+         ui/esp_jpeg_decoder.cpp ui/esp_font_partition.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net
     IDF_REQUIRES freertos esp_timer heap log esp_lcd esp_lcd_touch esp_driver_i2c esp_driver_gpio

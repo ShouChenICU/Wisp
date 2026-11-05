@@ -138,6 +138,7 @@ Result<void> App::start() {
         touch = impl_->registry.get<hal::Touch>("touch.main");
         ui::UiConfig ui_config;
         ui_config.install_image_decoders = impl_->platform.install_image_decoders;
+        ui_config.font_image = impl_->platform.font_image;
         impl_->ui = std::make_unique<ui::UiRuntime>(display, touch, std::move(ui_config));
         if (!impl_->ui->start()) {
             WLOG_E("app", "UiRuntime failed to start; continuing headless");

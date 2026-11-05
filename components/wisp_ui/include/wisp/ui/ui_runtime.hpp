@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "lvgl.h"
@@ -39,6 +40,12 @@ struct UiConfig {
     // 4.3). The portable layers only ever hand LVGL image sources, never
     // name a decoder. Empty: none.
     std::function<void()> install_image_decoders;
+    // The fonts partition image (vector-font spec 3.2) as the platform
+    // provides it: a mapped partition on the device, a file read into
+    // memory in the simulator. start() checks it with open_font_image();
+    // empty or invalid, large text uses bitmap fonts. The bytes must
+    // outlive the UiRuntime.
+    std::span<const uint8_t> font_image;
 };
 
 // A thread-safe snapshot of the UI task's activity. `fps`, `cpu_percent`
@@ -91,7 +98,9 @@ public:
     UiRuntime(const UiRuntime&) = delete;
     UiRuntime& operator=(const UiRuntime&) = delete;
 
-    // Calls lv_init(), creates the LVGL display (resolution taken from
+    // Calls lv_init(), checks config.font_image with open_font_image()
+    // (logged either way; a bad image never fails start()), creates the
+    // LVGL display (resolution taken from
     // `display`'s caps) with two partial draw buffers sized and placed
     // by hal::draw_buf_policy() from the same caps, in the byte order of caps
     // "rgb565_be",

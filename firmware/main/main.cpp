@@ -33,6 +33,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/port/esp/console_esp.hpp"
 #include "wisp/port/esp/esp_firmware.hpp"
+#include "wisp/port/esp/esp_font_partition.hpp"
 #include "wisp/port/esp/esp_http_client.hpp"
 #include "wisp/port/esp/esp_http_server.hpp"
 #include "wisp/port/esp/esp_jpeg_decoder.hpp"
@@ -129,6 +130,11 @@ extern "C" void app_main() {
         return wisp::Value(std::move(info));
     };
     platform.set_standby = [](bool standby) { apply_pm_config(/*light_sleep_enable=*/standby); };
+    // The vector font (vector-font spec 2.3). Mapping flash has to happen
+    // on a task whose stack is in internal RAM (AGENTS.md section 5), and
+    // app_main's is; the UI task only reads the mapping afterwards, which
+    // is not a flash access.
+    platform.font_image = wisp::port::esp::map_font_partition();
     // The single source for this (rather than a literal duplicated here
     // and in the build config): esp_app_desc_t is filled in at build
     // time from PROJECT_VER (cmake/wisp_version.cmake, via

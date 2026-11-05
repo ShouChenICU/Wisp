@@ -310,6 +310,12 @@ def case_default(sim_path, tmp_root):
         "WISP_HTTP printed although --http-port 0 disables the admin server",
     )
 
+    # vector-font spec 3.3: the fonts.bin packed next to wisp_sim loads.
+    expect(
+        "fonts: image ok, " in result.stdout,
+        "no 'fonts: image ok' line in stdout: fonts.bin next to wisp_sim was not used",
+    )
+
     check_screenshot(screenshot)
 
 
@@ -928,6 +934,27 @@ def case_shape_circle(sim_path, tmp_root):
     )
 
 
+def case_font_image_none(sim_path, tmp_root):
+    """vector-font spec 3.6: without a font image the simulator boots on
+    bitmap fonts and says so."""
+    data_dir = tmp_root / "font-image-none"
+    data_dir.mkdir()
+    screenshot = data_dir / "s.png"
+
+    result = run_sim(sim_path, data_dir, ["--font-image", "none", "--screenshot",
+                                          str(screenshot), "--exit-after-ms", "3000"])
+    expect(
+        result.returncode == 0,
+        f"exit code {result.returncode}, stderr:\n{result.stderr}",
+    )
+    parse_output(result.stdout)
+    expect(
+        "fonts: no font image; large text uses bitmap fonts" in result.stdout,
+        "no 'fonts: no font image' warning in stdout",
+    )
+    check_screenshot(screenshot)
+
+
 # --- scenes (scene-runtime-core spec 9.2) ------------------------------------
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -1183,6 +1210,7 @@ CASES = (
     ("disable_imu", case_disable_imu),
     ("no_sd", case_no_sd),
     ("shape_circle", case_shape_circle),
+    ("font_image_none", case_font_image_none),
     ("disable_wifi", case_disable_wifi),
     ("http", case_http),
     ("factory_reset", case_factory_reset),

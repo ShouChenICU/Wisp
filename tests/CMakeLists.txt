@@ -90,6 +90,11 @@ wisp_test(NAME overlay_test SRCS ui/overlay_test.cpp LIBS wisp_ui wisp_port_sim_
 wisp_test(NAME a8_font_test SRCS ui/a8_font_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME system_layer_test SRCS ui/system_layer_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 target_include_directories(a8_font_test PRIVATE ${WISP_ROOT}/components/wisp_ui/src)
+# The real vector font image (vector-font spec 3.3), packed by
+# simulator/CMakeLists.txt next to wisp_sim; read by support/font_image.hpp.
+wisp_test(NAME font_image_test SRCS ui/font_image_test.cpp LIBS wisp_ui wisp_port_sim_os)
+add_dependencies(font_image_test wisp_sim_fonts)
+target_compile_definitions(font_image_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
 wisp_test(NAME app_boot_test SRCS app/app_boot_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 wisp_test(NAME power_key_controller_test SRCS app/power_key_controller_test.cpp LIBS wisp_app)

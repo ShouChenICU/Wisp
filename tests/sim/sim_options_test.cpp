@@ -194,3 +194,22 @@ TEST(SimOptions, ScenesDirAndOpenScene) {
     ASSERT_FALSE(r2);
     EXPECT_NE(r2.error().message.find("--open-scene"), std::string::npos);
 }
+
+// vector-font spec 3.3: empty is the fonts.bin next to wisp_sim; "none"
+// runs without a vector font.
+TEST(SimOptions, FontImage) {
+    const char* none[] = {"wisp_sim"};
+    EXPECT_TRUE(parse_sim_options(1, none).value().font_image.empty());
+
+    const char* path[] = {"wisp_sim", "--font-image", "a.bin"};
+    EXPECT_EQ(parse_sim_options(3, path).value().font_image, "a.bin");
+
+    const char* off[] = {"wisp_sim", "--font-image", "none"};
+    EXPECT_EQ(parse_sim_options(3, off).value().font_image, "none");
+
+    const char* missing[] = {"wisp_sim", "--font-image"};
+    auto r = parse_sim_options(2, missing);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_NE(r.error().message.find("--font-image"), std::string::npos);
+}

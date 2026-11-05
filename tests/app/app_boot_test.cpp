@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,6 +18,7 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -35,6 +38,7 @@ struct MakeAppOptions {
     bool with_display = true;
     bool with_internal_storage = true;
     std::map<std::string, std::string> fail;
+    std::span<const uint8_t> font_image;
 };
 
 // A wisp::app::Board that registers a fixed, test-controlled set of fake
@@ -104,6 +108,7 @@ private:
         platform.settings = std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(
             settings_dir + "/settings.json");
         platform.emit_line = [this](const std::string& line) { lines.push_back(line); };
+        platform.font_image = opts.font_image;
         return platform;
     }
 };
@@ -137,6 +142,20 @@ TEST(AppBoot, StartsUiWhenDisplayPresent) {
     ASSERT_NE(h.app.ui(), nullptr);
     EXPECT_TRUE(wait_until([&] { return h.display->flush_count() > 0; }, 2000));
     EXPECT_EQ(h.display->brightness(), 200);
+}
+
+// vector-font spec 3.6: without a font image the UI still starts, on
+// bitmap fonts, and the boot report is printed as usual.
+TEST(App, BootsWithoutFontImage) {
+    auto h = make_app({.with_display = true, .font_image = {}});
+    ASSERT_TRUE(h.app.start());
+    ASSERT_NE(h.app.ui(), nullptr);
+    ASSERT_FALSE(h.lines.empty());
+    EXPECT_EQ(h.lines[0].rfind("WISP_BOOT_REPORT ", 0), 0u);
+    const auto entries = wisp::log::ring_entries();
+    EXPECT_TRUE(std::any_of(entries.begin(), entries.end(), [](const auto& e) {
+        return e.tag == "ui" && e.msg == "fonts: no font image; large text uses bitmap fonts";
+    }));
 }
 
 TEST(AppBoot, MissingInternalStorageIsReadonlyNotFatal) {

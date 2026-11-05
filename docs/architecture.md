@@ -147,6 +147,7 @@
 - `--screenshot` 的截图（`UiRuntime::take_snapshot`）包含活动屏幕和 `lv_layer_top()`（确认框、配网卡片、配对卡片都在这一层），不含 `lv_layer_sys()`。
 - 固件上传：`wisp::port::sim::SimFirmwareUpdater` 把上传的镜像写到数据目录的 `firmware.bin`，目标板名为 `simulator`、不限芯片，容量按 5 MB 计；确认后照常重启（`WISP_REBOOT`），但模拟器不能运行 ESP 镜像，重启后仍是原来的版本（网页会显示"已回滚"）。版本号来自 `cmake/wisp_version.cmake`（与固件同一规则，见 `docs/porting-guide.md`）。
 - 网页资源：构建时用 `tools/pack_assets.py` 把 `web/` 打包成 `wisp_sim` 旁边的 `assets.wpak`（`web/` 不存在时打包一个空目录，只提供 API）；`--web-dir <目录>` 改为启动时在内存里按同一套 MIME/gzip 规则打包该目录（`wisp::port::sim::pack_web_dir()`）。
+- 矢量字体镜像（矢量字体 spec 3.3）：构建时用 `tools/pack_font_image.py` 把 `components/wisp_ui/fonts/noto_sans_cjk_sc_subset.ttf` 打包成 `wisp_sim` 旁边的 `fonts.bin`，启动时整个读进内存交给 `Platform::font_image`；`--font-image <路径>` 换一个文件，`--font-image none` 不加载（大号文字改用位图字）。真机由 `app_main` 映射 `fonts` 分区（`wisp::port::esp::map_font_partition()`）。两者都由 `UiRuntime::start()` 用 `ui::open_font_image()` 校验，不通过只降级。
 
 ## 存储逻辑区
 

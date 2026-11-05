@@ -170,6 +170,12 @@ struct Platform {
     // are PNG only.
     std::function<void()> install_image_decoders;
 
+    // The fonts partition image (ui::UiConfig::font_image): the mapped
+    // "fonts" partition on the device, fonts.bin read into memory in the
+    // simulator. The bytes must outlive the App. Empty: large text uses
+    // bitmap fonts.
+    std::span<const uint8_t> font_image;
+
     std::string firmware_version = "0.1.0";
     // What the firmware runs on, as the self-check header shows it next to
     // the version: the chip target on ESP, "simulator" on the PC. Empty:
