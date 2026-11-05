@@ -8,11 +8,13 @@
 // an area that the card covers.
 //
 // How it decides: an invalidated area that lies inside a marked
-// overlay's box may be the overlay's own change and is left alone; so is
+// overlay's box may be the overlay's own change and is left alone (for an
+// OwnChanges::InOwnEvents overlay, only while it handles an event); so is
 // one that touches any other visible object on the top or system layer
 // (such as the performance label). Any other area comes from below the
 // overlays, and the rows of each overlay that are opaque edge to edge
-// (all but its rounded corners' rows) are cut out of it. An overlay
+// (all but its rounded corners' rows) are cut out of it; an area they
+// cover wholly is dropped. An overlay
 // counts only while it and every ancestor are shown, at full opacity,
 // blended normally, unmasked and untransformed, its background is opaque
 // (no gradient descriptor), and the last frame drew it so; otherwise
@@ -31,10 +33,26 @@
 
 namespace wisp::ui {
 
+// Which invalidated areas may be an overlay's own change, and so are never
+// cut.
+enum class OwnChanges {
+    // Any area inside its box. Right for an overlay with children, or one
+    // that animates: anything may change it at any time.
+    InsideBox,
+    // An area inside its box only while LVGL sends an event to it, or to
+    // another overlay marked so. For an overlay without children that
+    // changes only in its own events (input, value, size or style
+    // changes) and in code run from them, such as the on-screen keyboard.
+    // It may span the screen: content scrolling under it lies inside its
+    // box, and is cut all the same. Add its other event callbacks before
+    // marking it; whatever they change counts as its own.
+    InOwnEvents,
+};
+
 // Marks `obj` (a child of lv_layer_top() or lv_layer_sys()) as an opaque
 // overlay of its display until it is deleted. Marking it again is a
 // no-op.
-void mark_opaque_overlay(lv_obj_t* obj);
+void mark_opaque_overlay(lv_obj_t* obj, OwnChanges own = OwnChanges::InsideBox);
 
 // Tells the marked overlays of `disp` that the panel may no longer show
 // them (a stripe failed to reach it): nothing is cut out of the areas

@@ -72,17 +72,23 @@ struct Scene {
     lv_obj_t* inner = nullptr;  // a label in the card
 };
 
+// The list of build_scene().
+lv_obj_t* build_list() {
+    lv_obj_t* list = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(list, kSide, kSide);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    for (int i = 0; i < 30; ++i) {
+        lv_obj_t* l = lv_label_create(list);
+        lv_label_set_text(l, ("row " + std::to_string(i) + " ##########").c_str());
+    }
+    return list;
+}
+
 // A scrolling list of labels filling the screen, and a card with a
 // rounded border on the top layer over the middle of it.
 Scene build_scene(bool opaque) {
     Scene s;
-    s.list = lv_obj_create(lv_screen_active());
-    lv_obj_set_size(s.list, kSide, kSide);
-    lv_obj_set_flex_flow(s.list, LV_FLEX_FLOW_COLUMN);
-    for (int i = 0; i < 30; ++i) {
-        lv_obj_t* l = lv_label_create(s.list);
-        lv_label_set_text(l, ("row " + std::to_string(i) + " ##########").c_str());
-    }
+    s.list = build_list();
     s.card = lv_obj_create(lv_layer_top());
     lv_obj_set_size(s.card, 120, 100);
     lv_obj_center(s.card);
@@ -124,7 +130,8 @@ struct Result {
 // `incremental`, applies each step and redraws only what LVGL
 // invalidated. Otherwise applies all steps and draws the whole display
 // once, which is what the panel must end up showing.
-Result render(bool opaque, const std::vector<Step>& steps, bool incremental) {
+Result render_scene(const std::function<Scene()>& build, const std::vector<Step>& steps,
+                    bool incremental) {
     auto disp = std::make_shared<FramebufferDisplay>();
     wisp::ui::UiRuntime ui(disp, nullptr);
     Result r;
@@ -135,7 +142,7 @@ Result render(bool opaque, const std::vector<Step>& steps, bool incremental) {
     wisp::test::run_on_ui_blocking(&ui, [&] {
         // Recorded before any overlay exists, so nothing is cut from it.
         lv_obj_invalidate(lv_screen_active());
-        Scene s = build_scene(opaque);
+        Scene s = build();
         r.core = opaque_core(s.card);
         if (incremental) {
             lv_refr_now(nullptr);
@@ -155,9 +162,47 @@ Result render(bool opaque, const std::vector<Step>& steps, bool incremental) {
     return r;
 }
 
+Result render(bool opaque, const std::vector<Step>& steps, bool incremental) {
+    return render_scene([opaque] { return build_scene(opaque); }, steps, incremental);
+}
+
 // Whether drawing step by step leaves the panel as a full redraw would.
+bool same_as_full_redraw_of(const std::function<Scene()>& build, const std::vector<Step>& steps) {
+    return render_scene(build, steps, true).fb == render_scene(build, steps, false).fb;
+}
+
 bool same_as_full_redraw(bool opaque, const std::vector<Step>& steps) {
-    return render(opaque, steps, true).fb == render(opaque, steps, false).fb;
+    return same_as_full_redraw_of([opaque] { return build_scene(opaque); }, steps);
+}
+
+// The list, and a key band across the whole width of the lower part of the
+// screen, like the on-screen keyboard: a button matrix that only changes
+// from its own events. A press on it (sent as LV_EVENT_VALUE_CHANGED)
+// switches its map.
+Scene build_band() {
+    Scene s;
+    s.list = build_list();
+    // Rows across the whole width, as in a scene's list.
+    lv_obj_set_style_pad_all(s.list, 0, 0);
+    lv_obj_set_style_border_width(s.list, 0, 0);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(s.list); ++i) {
+        lv_obj_set_width(lv_obj_get_child(s.list, static_cast<int32_t>(i)), LV_PCT(100));
+    }
+    s.card = lv_buttonmatrix_create(lv_layer_top());
+    lv_obj_set_pos(s.card, 0, kSide / 2);
+    lv_obj_set_size(s.card, kSide, kSide / 2);
+    lv_obj_set_style_radius(s.card, 0, 0);
+    lv_obj_set_style_bg_opa(s.card, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(
+        s.card,
+        [](lv_event_t* e) {
+            static const char* const kOther[] = {"x", "y", "\n", "z", ""};
+            lv_buttonmatrix_set_map(static_cast<lv_obj_t*>(lv_event_get_current_target(e)), kOther);
+        },
+        LV_EVENT_VALUE_CHANGED, nullptr);
+    wisp::ui::mark_opaque_overlay(s.card, wisp::ui::OwnChanges::InOwnEvents);
+    lv_obj_update_layout(s.card);
+    return s;
 }
 
 void scroll(Scene& s) { lv_obj_scroll_by(s.list, 0, -37, LV_ANIM_OFF); }
@@ -257,6 +302,33 @@ TEST(Overlay, ATransformedCardIsNotCut) {
 
 TEST(Overlay, ClosingTheCardRevealsWhatScrolledBeneath) {
     EXPECT_TRUE(same_as_full_redraw(true, {scroll, [](Scene& s) { lv_obj_delete(s.card); }}));
+}
+
+// The rows scrolling under a full-width band lie inside its box; they are
+// still not redrawn where it covers them.
+TEST(Overlay, ScrollingUnderAFullWidthBandSkipsIt) {
+    const Result r = render_scene(build_band, {scroll, scroll}, true);
+    ASSERT_EQ(r.flushed.size(), 2u);
+    for (const auto& step : r.flushed) {
+        ASSERT_FALSE(step.empty());
+        for (const auto& f : step) {
+            EXPECT_FALSE(overlaps(f, r.core)) << f.x1 << "," << f.y1 << "-" << f.x2 << "," << f.y2;
+        }
+    }
+    EXPECT_TRUE(same_as_full_redraw_of(build_band, {scroll, scroll}));
+}
+
+// What the band changes from its own events is drawn.
+TEST(Overlay, ABandChangingInItsOwnEventIsDrawn) {
+    const Step press = [](Scene& s) { lv_obj_send_event(s.card, LV_EVENT_VALUE_CHANGED, nullptr); };
+    EXPECT_TRUE(same_as_full_redraw_of(build_band, {scroll, press, scroll}));
+}
+
+TEST(Overlay, HidingOrDeletingABandRevealsWhatScrolledBeneath) {
+    EXPECT_TRUE(same_as_full_redraw_of(
+        build_band, {scroll, [](Scene& s) { lv_obj_add_flag(s.card, LV_OBJ_FLAG_HIDDEN); }}));
+    EXPECT_TRUE(
+        same_as_full_redraw_of(build_band, {scroll, [](Scene& s) { lv_obj_delete(s.card); }}));
 }
 
 }  // namespace

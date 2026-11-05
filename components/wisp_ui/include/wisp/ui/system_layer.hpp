@@ -131,13 +131,16 @@ public:
 
 private:
     // Wraps the pointer input device's read callback while a back handler
-    // is set, and puts it back.
+    // is set, and puts it back. Only one layer at a time: while another
+    // watches the pointer, this one logs an error and has no gesture.
     void hook_pointer();
     void unhook_pointer();
     // Follows one read of the pointer, before LVGL processes it.
     void observe(lv_indev_t* indev, const lv_indev_data_t& data);
     // Takes the current press from whatever widget has it.
     static void cancel_press(lv_indev_t* indev);
+    // Ends a scroll the cancelled press had started, back within range.
+    static void settle_scroll(lv_obj_t* obj);
     void show_arrow(lv_point_t at, int32_t dx, bool armed);
     void end_swipe();
     static void pointer_read_cb(lv_indev_t* indev, lv_indev_data_t* data);

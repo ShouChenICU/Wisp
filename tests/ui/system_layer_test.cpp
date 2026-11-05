@@ -501,6 +501,73 @@ TEST_F(SystemLayerTest, NoGestureWithoutABackHandler) {
     EXPECT_EQ(backs, 0);
 }
 
+// Only one layer watches the pointer: a second one with a back handler
+// leaves the first in charge (rather than wrapping its wrapper), and takes
+// over once the first lets go and its own handler is set again.
+TEST_F(SystemLayerTest, OneLayerWatchesThePointer) {
+    start("rect");
+    std::unique_ptr<SystemLayer> second;
+    int first_backs = 0;
+    int second_backs = 0;
+    on_ui([&] {
+        second = std::make_unique<SystemLayer>(shape);
+        layer->set_back_handler([&] { ++first_backs; });
+        second->set_back_handler([&] { ++second_backs; });
+    });
+    auto swipe = [&] {
+        feed({{4, 240, 0}});
+        feed({{60, 240, 0}});
+        feed({});
+    };
+    swipe();
+    EXPECT_EQ(first_backs, 1);
+    EXPECT_EQ(second_backs, 0);
+
+    on_ui([&] {
+        layer->set_back_handler({});
+        second->set_back_handler([&] { ++second_backs; });
+    });
+    swipe();
+    EXPECT_EQ(first_backs, 1);
+    EXPECT_EQ(second_backs, 1);
+    on_ui([&] { second.reset(); });
+    // With both gone the pointer reads as before.
+    swipe();
+    EXPECT_EQ(first_backs, 1);
+    EXPECT_EQ(second_backs, 1);
+}
+
+// A swipe that started a sideways scroll under the edge and is then
+// dragged back below the trigger leaves no overscroll behind: the scroller
+// returns into its range.
+TEST_F(SystemLayerTest, CancelledSwipeLeavesNoOverscroll) {
+    start("rect");
+    lv_obj_t* row = nullptr;
+    on_ui([&] {
+        row = lv_obj_create(lv_screen_active());
+        lv_obj_set_pos(row, 0, 200);
+        lv_obj_set_size(row, kSide, 80);
+        lv_obj_set_scroll_dir(row, LV_DIR_HOR);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        for (int i = 0; i < 8; ++i) {
+            lv_obj_t* cell = lv_obj_create(row);
+            lv_obj_set_size(cell, 150, 60);
+        }
+        lv_obj_update_layout(row);
+        layer->set_back_handler([] {});
+    });
+    feed({{4, 240, 0}});
+    for (int16_t x : {16, 30, 44, 60, 80}) feed({{x, 240, 0}});
+    on_ui([&] { EXPECT_LT(lv_obj_get_scroll_x(row), 0); });  // pulled past its start
+    feed({{10, 240, 0}});
+    feed({});
+    wisp::os::sleep_ms(600);  // the return is animated
+    on_ui([&] {
+        EXPECT_EQ(lv_obj_get_scroll_x(row), 0);
+        EXPECT_FALSE(lv_obj_has_state(row, LV_STATE_SCROLLED));
+    });
+}
+
 // The dialog's backdrop takes every touch, the edge included.
 TEST_F(SystemLayerTest, NoGestureWhileADialogIsOpen) {
     start("rect");
@@ -1114,13 +1181,12 @@ TEST_F(SystemLayerTest, NoPersistentTopLayerChild) {
 }
 
 // As NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone: what
-// changes under the error panel or the keyboard is not redrawn where the
-// piece covers it. A change that lies wholly inside a marked piece's box
-// may be the piece's own and is always redrawn (wisp/ui/overlay.hpp).
-// The list's rows span the whole screen, like the self-check screen's, so
-// those scrolling under the error panel are not inside its box. The
-// keyboard spans the whole width itself, so rows scrolling under it are:
-// there the change is one to the whole screen below it.
+// scrolls under the error panel or the keyboard is not redrawn where the
+// piece covers it. The rows span the whole screen, like the self-check
+// screen's: a change that lies wholly inside the error panel's box may be
+// the panel's own and is always redrawn (wisp/ui/overlay.hpp). The
+// keyboard spans the whole width, so the rows under it lie inside its box;
+// it changes only in its own events, so they are cut all the same.
 TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
     start("rounded_rect");
     lv_obj_t* list = nullptr;
@@ -1138,7 +1204,7 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
     });
 
     auto check = [&](const char* what, const std::function<lv_obj_t*()>& show,
-                     const std::function<void()>& hide, const std::function<void()>& change) {
+                     const std::function<void()>& hide) {
         SCOPED_TRACE(what);
         lv_area_t core{};
         size_t before = 0;
@@ -1152,7 +1218,7 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
             core.y2 -= r;
             lv_refr_now(nullptr);
             before = display->areas().size();
-            change();
+            lv_obj_scroll_by(list, 0, -40, LV_ANIM_OFF);
             lv_refr_now(nullptr);
         });
         const std::vector<Area> areas = display->areas();
@@ -1171,7 +1237,7 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
             lv_obj_t* label = find_label_containing(lv_layer_top(), "main.lua:3");
             return label != nullptr ? top_level(label) : nullptr;
         },
-        [&] { layer->hide_error(); }, [&] { lv_obj_scroll_by(list, 0, -40, LV_ANIM_OFF); });
+        [&] { layer->hide_error(); });
 
     lv_obj_t* ta = nullptr;
     on_ui([&] {
@@ -1184,7 +1250,7 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
             layer->show_keyboard(ta);
             return layer->keyboard();
         },
-        [&] { layer->hide_keyboard(); }, [&] { lv_obj_invalidate(lv_screen_active()); });
+        [&] { layer->hide_keyboard(); });
 }
 
 }  // namespace

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "lvgl_private.h"  // lv_indev_t::pointer.act_obj, lv_buttonmatrix_t
+#include "wisp/core/log.hpp"
 #include "wisp/ui/overlay.hpp"
 
 namespace wisp::ui {
@@ -139,8 +140,9 @@ std::vector<KeyRow> key_rows(const char* const* map, const lv_buttonmatrix_ctrl_
 // that row's pixel rows (visible_extent() with kKeyInset) instead of the
 // matrix's whole content width. lv_buttonmatrix lays every row out over
 // the same width whenever its map, size or style changes; this redoes only
-// the x positions, with the same unit arithmetic, so the keys drawn and
-// the keys hit stay the same rectangles.
+// the x positions, with the same unit arithmetic (that of update_map() in
+// LVGL 9.5.0; recheck it on an upgrade), so the keys drawn and the keys
+// hit stay the same rectangles.
 void fit_rows(lv_obj_t* matrix, const hal::ScreenShape& shape) {
     auto* m = reinterpret_cast<lv_buttonmatrix_t*>(matrix);
     if (m->button_areas == nullptr || m->map_p == nullptr || m->ctrl_bits == nullptr) return;
@@ -285,6 +287,13 @@ void SystemLayer::hook_pointer() {
         }
     }
     if (indev_ == nullptr) return;
+    // Wrapping another layer's wrapper would call itself without end.
+    if (g_pointer_watcher != nullptr ||
+        lv_indev_get_read_cb(indev_) == &SystemLayer::pointer_read_cb) {
+        WLOG_E("ui", "another system layer watches the pointer; no back gesture here");
+        indev_ = nullptr;
+        return;
+    }
     prev_read_cb_ = lv_indev_get_read_cb(indev_);
     lv_indev_set_read_cb(indev_, &SystemLayer::pointer_read_cb);
     g_pointer_watcher = this;
@@ -375,11 +384,36 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
 // then keeps LVGL from finding a new widget under the moving finger: the
 // following pressed reads are skipped, and the release sends no RELEASED
 // or CLICKED, since no widget has the press any more.
+//
+// A scroll the press had started ends where it is, possibly pulled past
+// its range (LVGL lets a drag overscroll elastically and only springs back
+// on release): it gets SCROLL_END and is animated back into range, to its
+// nearest snap point if it snaps.
 void SystemLayer::cancel_press(lv_indev_t* indev) {
     lv_obj_t* act = indev->pointer.act_obj;
+    lv_obj_t* scrolled = indev->pointer.scroll_obj;
     if (act != nullptr) lv_obj_send_event(act, LV_EVENT_PRESS_LOST, indev);
     lv_indev_reset(indev, nullptr);
     lv_indev_wait_release(indev);
+    if (scrolled != nullptr) settle_scroll(scrolled);
+}
+
+void SystemLayer::settle_scroll(lv_obj_t* obj) {
+    lv_obj_send_event(obj, LV_EVENT_SCROLL_END, nullptr);
+    if (lv_obj_get_scroll_snap_x(obj) != LV_SCROLL_SNAP_NONE ||
+        lv_obj_get_scroll_snap_y(obj) != LV_SCROLL_SNAP_NONE) {
+        lv_obj_update_snap(obj, LV_ANIM_ON);
+        return;
+    }
+    // In range: from 0 to the current offset plus what is left beyond the
+    // far edge.
+    const int32_t x = lv_obj_get_scroll_x(obj);
+    const int32_t y = lv_obj_get_scroll_y(obj);
+    const int32_t max_x = std::max(int32_t{0}, x + lv_obj_get_scroll_right(obj));
+    const int32_t max_y = std::max(int32_t{0}, y + lv_obj_get_scroll_bottom(obj));
+    const int32_t to_x = std::clamp(x, int32_t{0}, max_x);
+    const int32_t to_y = std::clamp(y, int32_t{0}, max_y);
+    if (to_x != x || to_y != y) lv_obj_scroll_to(obj, to_x, to_y, LV_ANIM_ON);
 }
 
 void SystemLayer::show_arrow(lv_point_t at, int32_t dx, bool armed) {
@@ -576,15 +610,19 @@ void SystemLayer::build_keyboard(lv_obj_t* textarea) {
         lv_obj_set_style_radius(candidates_, 0, 0);
         lv_obj_set_style_bg_color(candidates_, lv_obj_get_style_bg_color(kb_, LV_PART_MAIN), 0);
         lv_obj_set_style_bg_opa(candidates_, LV_OPA_COVER, 0);
-        mark_opaque_overlay(candidates_);
     }
-    mark_opaque_overlay(kb_);
     // After the IME's own handler, which may switch the map: every map,
     // size or style change lays the rows out over the full width again.
     for (lv_event_code_t code :
          {LV_EVENT_VALUE_CHANGED, LV_EVENT_SIZE_CHANGED, LV_EVENT_STYLE_CHANGED}) {
         lv_obj_add_event_cb(kb_, fit_rows_cb, code, &shape_);
     }
+    // Both change only in their own events (the IME fills the candidate
+    // row from the keyboard's), so what scrolls under them is cut although
+    // they span the width. Marked last: the callbacks above count as their
+    // own events.
+    if (candidates_ != nullptr) mark_opaque_overlay(candidates_, OwnChanges::InOwnEvents);
+    mark_opaque_overlay(kb_, OwnChanges::InOwnEvents);
     lv_obj_update_layout(kb_);
     fit_rows(kb_, shape_);
 }

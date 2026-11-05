@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <vector>
 
+#include "lvgl_private.h"  // lv_display_t::inv_areas
+
 namespace wisp::ui {
 
 namespace {
@@ -17,6 +19,9 @@ struct Overlay {
     // areas be cut there.
     bool covered = false;
     lv_area_t box{};
+    OwnChanges own = OwnChanges::InsideBox;
+    // How deep LVGL is in sending it events (OwnChanges::InOwnEvents).
+    int event_depth = 0;
 };
 
 // The marked overlays of every display, in marking order. Only touched on
@@ -24,6 +29,24 @@ struct Overlay {
 std::vector<Overlay>& overlays() {
     static std::vector<Overlay> list;
     return list;
+}
+
+// Whether LVGL is sending an event to an OwnChanges::InOwnEvents overlay.
+// Its changes come from there, and from code run there, which may also
+// change another such overlay (the pinyin IME fills the candidate row
+// from a keyboard event).
+bool in_own_event() {
+    const auto& list = overlays();
+    return std::any_of(list.begin(), list.end(), [](const Overlay& o) {
+        return o.own == OwnChanges::InOwnEvents && o.event_depth > 0;
+    });
+}
+
+Overlay* find(lv_obj_t* obj) {
+    for (Overlay& o : overlays()) {
+        if (o.obj == obj) return &o;
+    }
+    return nullptr;
 }
 
 // Set while the handler invalidates the extra pieces of a split area, so
@@ -164,11 +187,15 @@ void invalidate_cb(lv_event_t* e) {
     if (splitting || rendering == disp) return;
     auto* area = static_cast<lv_area_t*>(lv_event_get_param(e));
 
+    const bool own_event = in_own_event();
     std::array<lv_obj_t*, kMaxCovering> covering{};
     size_t n_covering = 0;
     for (const Overlay& o : overlays()) {
         if (!o.covered || lv_obj_get_display(o.obj) != disp || !covers(o.obj)) continue;
-        if (inside(*area, box_of(o.obj))) return;
+        // May be the overlay's own change.
+        if ((o.own == OwnChanges::InsideBox || own_event) && inside(*area, box_of(o.obj))) {
+            return;
+        }
         if (n_covering < covering.size()) covering[n_covering++] = o.obj;
     }
     if (n_covering == 0) return;
@@ -188,9 +215,15 @@ void invalidate_cb(lv_event_t* e) {
         }
         pieces = next;
     }
-    // Wholly covered, yet not inside any one overlay's box: rare enough
-    // that it is simply redrawn.
-    if (pieces.n == 0) return;
+    if (pieces.n == 0) {
+        // Wholly covered: nothing of it shows. An area already recorded is
+        // not recorded again, so the area becomes one of those; with none
+        // yet, it shrinks to a single pixel.
+        const lv_area_t first = disp->inv_p > 0 ? disp->inv_areas[0]
+                                                : lv_area_t{area->x1, area->y1, area->x1, area->y1};
+        *area = first;
+        return;
+    }
 
     *area = pieces.a[0];
     // The system layer spans the display and is never hidden, so this
@@ -231,12 +264,34 @@ void render_start_cb(lv_event_t* e) {
 
 void render_ready_cb(lv_event_t*) { rendering = nullptr; }
 
+// An overlay going away has the box it was last drawn in redrawn, like
+// one that stops covering (refr_start_cb()): LVGL invalidates an object
+// before it sends LV_EVENT_DELETE, and outside of the overlay's own events
+// (OwnChanges::InOwnEvents) that area was cut out by the overlay itself.
 void delete_cb(lv_event_t* e) {
     auto* obj = static_cast<lv_obj_t*>(lv_event_get_current_target(e));
     auto& list = overlays();
-    list.erase(
-        std::remove_if(list.begin(), list.end(), [obj](const Overlay& o) { return o.obj == obj; }),
-        list.end());
+    const auto it =
+        std::find_if(list.begin(), list.end(), [obj](const Overlay& o) { return o.obj == obj; });
+    if (it == list.end()) return;
+    const Overlay gone = *it;
+    list.erase(it);
+    if (!gone.covered || gone.own != OwnChanges::InOwnEvents) return;
+    // Not when its layer or the display goes too (lv_display_delete()).
+    lv_obj_t* layer = lv_obj_get_screen(obj);
+    lv_obj_t* sys = lv_display_get_layer_sys(lv_obj_get_display(obj));
+    if (layer == nullptr || layer->is_deleting || sys == nullptr || sys->is_deleting) return;
+    lv_obj_invalidate_area(sys, &gone.box);
+}
+
+void event_begin_cb(lv_event_t* e) {
+    Overlay* o = find(static_cast<lv_obj_t*>(lv_event_get_current_target(e)));
+    if (o != nullptr) ++o->event_depth;
+}
+
+void event_end_cb(lv_event_t* e) {
+    Overlay* o = find(static_cast<lv_obj_t*>(lv_event_get_current_target(e)));
+    if (o != nullptr && o->event_depth > 0) --o->event_depth;
 }
 
 bool has_handler(lv_display_t* disp) {
@@ -254,7 +309,7 @@ void forget_drawn_overlays(lv_display_t* disp) {
     }
 }
 
-void mark_opaque_overlay(lv_obj_t* obj) {
+void mark_opaque_overlay(lv_obj_t* obj, OwnChanges own) {
     if (obj == nullptr || marked(obj)) return;
     lv_display_t* disp = lv_obj_get_display(obj);
     if (!has_handler(disp)) {
@@ -265,8 +320,16 @@ void mark_opaque_overlay(lv_obj_t* obj) {
         lv_display_add_event_cb(disp, &render_start_cb, LV_EVENT_RENDER_START, nullptr);
         lv_display_add_event_cb(disp, &render_ready_cb, LV_EVENT_RENDER_READY, nullptr);
     }
-    overlays().push_back(Overlay{obj, false, {}});
+    overlays().push_back(Overlay{obj, false, {}, own, 0});
     lv_obj_add_event_cb(obj, &delete_cb, LV_EVENT_DELETE, nullptr);
+    if (own == OwnChanges::InOwnEvents) {
+        // Around every event: first of the preprocess handlers, last of
+        // the rest (callbacks added later would run after the end).
+        lv_obj_add_event_cb(obj, &event_begin_cb,
+                            static_cast<lv_event_code_t>(LV_EVENT_ALL | LV_EVENT_PREPROCESS),
+                            nullptr);
+        lv_obj_add_event_cb(obj, &event_end_cb, LV_EVENT_ALL, nullptr);
+    }
 }
 
 }  // namespace wisp::ui
