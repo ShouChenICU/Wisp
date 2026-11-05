@@ -234,16 +234,8 @@ void options(lua_State* L, int idx, const char* method, DrawCommand& c) {
     if (lua_getfield(L, idx, "font") != LUA_TNIL) {
         lua_Integer px = 0;
         if (check_value(L, -1, Prop::Font) != Check::Ok) {
-            char shown_value[kMaxShown + 4];
             char got[kMaxShown + 8];
-            if (lua_type(L, -1) == LUA_TSTRING)
-                std::snprintf(got, sizeof(got), "'%s'", shown(string_at(L, -1), shown_value));
-            else if (lua_isinteger(L, -1))
-                std::snprintf(got, sizeof(got), "%lld",
-                              static_cast<long long>(lua_tointeger(L, -1)));
-            else if (lua_type(L, -1) == LUA_TNUMBER)
-                std::snprintf(got, sizeof(got), "%.14g", static_cast<double>(lua_tonumber(L, -1)));
-            else
+            if (!format_scalar(L, -1, got))
                 std::snprintf(got, sizeof(got), "%s", luaL_typename(L, -1));
             raise_here(L, "canvas: font expects %s, got %s", prop_expects(Prop::Font).data(), got);
         }

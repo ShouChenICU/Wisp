@@ -14,11 +14,19 @@ local function save(n)
   wisp.log.info("count=" .. n)
 end
 
+-- Digits plus a leading "-" for negative counts; 96 px fits up to 5 digits
+-- (and a sign) in the padded safe box, 6 or more need 64 px.
+local function count_font(v)
+  local digits = #tostring(math.abs(v))
+  if v < 0 then digits = digits + 1 end
+  return digits >= 6 and 64 or 96
+end
+
 return ui.screen { align = "center", justify = "center",
   pad = { sa.y1 + M, info.width - 1 - sa.x2 + M, info.height - 1 - sa.y2 + M, sa.x1 + M },
   ui.column { gap = 16, align = "center",
     -- A size in pixels: from 20 on, text is drawn from the vector font.
-    ui.label { text = count, font = 96 },
+    ui.label { text = count, font = bind(count, count_font) },
     ui.label { text = bind(count, function(v) return "已点击 " .. v .. " 次" end), fg = "muted" },
     ui.row { gap = 12,
       ui.button { text = "清零", on_click = function() save(0) end },
