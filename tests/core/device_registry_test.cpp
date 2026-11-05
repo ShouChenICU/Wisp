@@ -96,10 +96,10 @@ TEST(DeviceRegistry, ManifestSafeArea) {
 
         const wisp::Value* area = display_entry->find("safe_area");
         ASSERT_NE(area, nullptr);
-        EXPECT_EQ(area->find("x1")->as_int(), 12);
-        EXPECT_EQ(area->find("y1")->as_int(), 12);
-        EXPECT_EQ(area->find("x2")->as_int(), 467);
-        EXPECT_EQ(area->find("y2")->as_int(), 467);
+        EXPECT_EQ(area->find("x1")->as_int(), 15);
+        EXPECT_EQ(area->find("y1")->as_int(), 15);
+        EXPECT_EQ(area->find("x2")->as_int(), 464);
+        EXPECT_EQ(area->find("y2")->as_int(), 464);
 
         EXPECT_EQ(imu_entry->find("safe_area"), nullptr);
     }
@@ -115,10 +115,10 @@ TEST(DeviceRegistry, ManifestSafeArea) {
 
         const wisp::Value* area = devices[0].find("safe_area");
         ASSERT_NE(area, nullptr);
-        EXPECT_EQ(area->find("x1")->as_int(), 71);
-        EXPECT_EQ(area->find("y1")->as_int(), 71);
-        EXPECT_EQ(area->find("x2")->as_int(), 408);
-        EXPECT_EQ(area->find("y2")->as_int(), 408);
+        EXPECT_EQ(area->find("x1")->as_int(), 74);
+        EXPECT_EQ(area->find("y1")->as_int(), 74);
+        EXPECT_EQ(area->find("x2")->as_int(), 405);
+        EXPECT_EQ(area->find("y2")->as_int(), 405);
     }
 }
 

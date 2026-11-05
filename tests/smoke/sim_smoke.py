@@ -69,9 +69,10 @@ EXPECTED_DEVICE_IDS = {
 }
 
 # display.main's safe_area for the default shape (rounded_rect, corner
-# radius 40) and for --shape circle (spec 5.6's safe-area model).
-DEFAULT_SAFE_AREA = {"x1": 12, "y1": 12, "x2": 467, "y2": 467}
-CIRCLE_SAFE_AREA = {"x1": 71, "y1": 71, "x2": 408, "y2": 408}
+# radius 40) and for --shape circle (spec 5.6's safe-area model, with its
+# 4 px corner margin).
+DEFAULT_SAFE_AREA = {"x1": 15, "y1": 15, "x2": 464, "y2": 464}
+CIRCLE_SAFE_AREA = {"x1": 74, "y1": 74, "x2": 405, "y2": 405}
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 

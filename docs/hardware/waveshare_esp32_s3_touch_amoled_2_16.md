@@ -25,7 +25,7 @@
 
 | 外设 | 芯片 | 接口与引脚 | 地址（7 位） |
 |---|---|---|---|
-| 屏幕 | CO5300，480×480 AMOLED，圆角半径 40 | QSPI：CS 12、SCLK 38、D0–D3 = 4/5/6/7、RST 39 | — |
+| 屏幕 | CO5300，480×480 AMOLED，圆角半径 70（实测，见下方"已知勘误与注意事项"） | QSPI：CS 12、SCLK 38、D0–D3 = 4/5/6/7、RST 39 | — |
 | 触摸 | **CST9217**（MyOS 文档误写为 CST9220） | I2C；INT 11、RST 40 | 0x5A |
 | 电源管理 | AXP2101 | I2C；PWR 键状态由 GPIO16 读出（**按下时为高电平**） | 0x34 |
 | IMU | QMI8658（无磁力计） | I2C；INT1 17、INT2 21 | 0x6B |
@@ -43,7 +43,8 @@
 
 - 触摸芯片实际为 CST9217，驱动使用 `waveshare/esp_lcd_touch_cst9217`。
 - SD 卡走 SDMMC 而不是 SPI。
-- 屏幕的局部刷新区域需要按 2 像素对齐（`area_align = 2`）；四角留出 ≥ 40 px 的安全边距。
+- 屏幕的局部刷新区域需要按 2 像素对齐（`area_align = 2`）。
+- 面板实际圆角半径比厂商资料给的 40 大得多：在自检界面之外另写一个校准场景，在屏幕四角画出半径 40、50、60、70、80 的四分之一圆弧（圆心在 `(R,R)`），逐一目视核对对角线方向上哪一段还能看到、哪一段已经被实际的圆角裁掉。结果是 60 px 的弧在对角线方向完全不可见，70 px 的弧只有一部分可见，由此反推可见边界在对角线上离角大约 20 px，对应半径约 70（`board.cpp` 的 `kCornerRadius`）。按厂商数据表的 40 来算安全区会裁掉文字或控件的角，新板子务必用这种画弧比对的方法实测，不要直接用数据表的值（见 `docs/porting-guide.md`）。
 - AXP2101 初始化时不要改动任何电源轨的电压或开关。
 - GPIO16 反映 PWR 键的状态：松开时被驱动为低电平，按住时为高电平（实测，官方资料只把它标为 `SYS_OUT`）。它不是 AXP2101 的中断输出，按普通按键读取即可，短按/长按由 `ButtonService` 计时判断，不需要读 AXP2101 的 IRQ 寄存器。实测时 AXP2101 的 PWRON 长按 IRQ 也恰好在按住 1 s 时置位，与 GPIO16 的电平一致。
 - 按住 PWR 键数秒（AXP2101 的 OFFLEVEL）会触发芯片的硬件强制关机，与软件无关。
@@ -60,7 +61,7 @@
 | 1 | 启动耗时（spec 10.1） | `idf.py -p <PORT> flash monitor`，从上电到自检界面出现用肉眼或串口时间戳计时；同时看 `WISP_BOOT_REPORT` 的 `boot_ms` | `boot_ms` < 3000 | |
 | 2 | 启动报告/能力清单格式（spec 10.4，wisp_core::BootReport/DeviceRegistry::manifest()） | 串口查看 `WISP_BOOT_REPORT <json>`、`WISP_MANIFEST <json>` 两行 | 均为合法单行 JSON；设备状态符合预期（没插 SD 卡时 `storage.sd` 报缺失是正常的） |  |
 | 3 | IMU 无磁力计（spec 10.4） | 查看 `WISP_MANIFEST` 中 `imu.main.caps` | `magnetometer` 为 `false` |  |
-| 4 | Display 能力清单（屏幕驱动：esp_display） | 查看 `WISP_MANIFEST` 中 `display.main` | `model` 为 `CO5300`；`caps` 含 `width:480 height:480 shape:"rounded_rect" corner_radius:40 panel:"amoled" brightness:true area_align:2 rgb565_be:true`；`safe_area` 为 `{12,12,467,467}` |  |
+| 4 | Display 能力清单（屏幕驱动：esp_display） | 查看 `WISP_MANIFEST` 中 `display.main` | `model` 为 `CO5300`；`caps` 含 `width:480 height:480 shape:"rounded_rect" corner_radius:70 panel:"amoled" brightness:true area_align:2 rgb565_be:true`；`safe_area` 为 `{24,24,455,455}` |  |
 | 5 | Touch 型号（触摸驱动：bmgr dev_lcd_touch） | 查看 `WISP_MANIFEST` 中 `touch.main` | `model` 为 `CST9217` |  |
 | 6 | 屏幕颜色（字节序：esp_display 发布 caps `rgb565_be`，wisp_ui 据此直接按高字节在前渲染） | 自检界面显示纯色色块或背景，目视核对纯红、纯蓝 | 红蓝不互换、不发花；如互换说明字节序判断有误 |  |
 | 7 | 四角不裁切（spec 8，10.2） | 目视自检界面四角 | 内容不被圆角裁掉 |  |

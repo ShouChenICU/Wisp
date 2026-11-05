@@ -42,13 +42,39 @@ TEST(DisplayGeometry, RoundedRect) {
     EXPECT_TRUE(visible(s, 0, 240));
     EXPECT_FALSE(visible(s, 480, 240));
     auto a = safe_rect(s);
-    EXPECT_EQ(a.x1, 12);
-    EXPECT_EQ(a.y1, 12);
-    EXPECT_EQ(a.x2, 467);
-    EXPECT_EQ(a.y2, 467);
+    // r=40, corner margin m=4: ceil(40 - 36/sqrt(2)) == 15.
+    EXPECT_EQ(a.x1, 15);
+    EXPECT_EQ(a.y1, 15);
+    EXPECT_EQ(a.x2, 464);
+    EXPECT_EQ(a.y2, 464);
     auto r = row_span(s, 0);
     EXPECT_EQ(r.x1, 34);
     EXPECT_EQ(r.x2, 445);
+}
+
+// The real waveshare_esp32_s3_touch_amoled_2_16 panel's measured corner
+// radius (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md): arcs of
+// known radius drawn on the real panel showed the visible boundary
+// crossing the diagonal at about 20 px from the corner, i.e. r=70.
+TEST(DisplayGeometry, RoundedRectMeasuredRadius) {
+    auto s = shape("rounded_rect", 480, 480, 70);
+    auto a = safe_rect(s);
+    // ceil(70 - 66/sqrt(2)) == 24.
+    EXPECT_EQ(a.x1, 24);
+    EXPECT_EQ(a.y1, 24);
+    EXPECT_EQ(a.x2, 455);
+    EXPECT_EQ(a.y2, 455);
+
+    // Each safe-rect corner carries at least the 4 px corner margin: from
+    // the top-left corner, stepping 4 px further outward along either
+    // edge (toward the actual screen corner) must still land on a
+    // visible pixel. (Stepping outward along *both* axes at once, i.e.
+    // the Euclidean diagonal, moves 4*sqrt(2) px -- more than the 4 px
+    // margin -- so that combined offset is not part of the guarantee.)
+    EXPECT_TRUE(visible(s, a.x1 - 4, a.y1));
+    EXPECT_TRUE(visible(s, a.x1, a.y1 - 4));
+    EXPECT_TRUE(visible(s, a.x2 + 4, a.y2));
+    EXPECT_TRUE(visible(s, a.x2, a.y2 + 4));
 }
 
 TEST(DisplayGeometry, Circle) {
@@ -57,15 +83,22 @@ TEST(DisplayGeometry, Circle) {
     EXPECT_TRUE(visible(s, 240, 0));
     EXPECT_TRUE(visible(s, 240, 240));
     auto a = safe_rect(s);
-    EXPECT_EQ(a.x1, 71);
-    EXPECT_EQ(a.y1, 71);
-    EXPECT_EQ(a.x2, 408);
-    EXPECT_EQ(a.y2, 408);
+    // R=240, corner margin m=4: ceil(240 - 236/sqrt(2)) == 74.
+    EXPECT_EQ(a.x1, 74);
+    EXPECT_EQ(a.y1, 74);
+    EXPECT_EQ(a.x2, 405);
+    EXPECT_EQ(a.y2, 405);
     auto r = row_span(s, 0);
     EXPECT_EQ(r.x1, 225);
     EXPECT_EQ(r.x2, 254);
     EXPECT_TRUE(row_span(s, -1).empty());
     EXPECT_TRUE(row_span(s, 480).empty());
+
+    // Same corner-margin check as RoundedRectMeasuredRadius, for Circle.
+    EXPECT_TRUE(visible(s, a.x1 - 4, a.y1));
+    EXPECT_TRUE(visible(s, a.x1, a.y1 - 4));
+    EXPECT_TRUE(visible(s, a.x2 + 4, a.y2));
+    EXPECT_TRUE(visible(s, a.x2, a.y2 + 4));
 }
 
 TEST(DisplayGeometry, RectIsFullScreen) {

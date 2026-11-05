@@ -87,7 +87,7 @@ TEST_F(SceneApiTest, DeviceInfoShape) {
     ASSERT_TRUE(rt->open("info"));
     EXPECT_EQ(scene_log("info"),
               (std::vector<std::string>{
-                  "480\t480\tcircle\t71\t71\t408\t408\tzh\tnil\t80\ttrue\tconnected"}));
+                  "480\t480\tcircle\t74\t74\t405\t405\tzh\tnil\t80\ttrue\tconnected"}));
 
     // A set clock, an unknown battery (none, or the -1 a power chip gives
     // when it cannot tell), no Wi-Fi field.
@@ -102,10 +102,10 @@ TEST_F(SceneApiTest, DeviceInfoShape) {
     ASSERT_TRUE(rt->reload("info"));
     EXPECT_EQ(scene_log("info"),
               (std::vector<std::string>{
-                  "480\t480\tcircle\t71\t71\t408\t408\tzh\tnil\t80\ttrue\tconnected",
-                  "480\t480\tcircle\t71\t71\t408\t408\tzh\t1793793605\tnil\tfalse\toff",
-                  "480\t480\tcircle\t71\t71\t408\t408\tzh\t1793793605\tnil\ttrue\tbackoff",
-                  "480\t480\tcircle\t71\t71\t408\t408\tzh\tnil\tnil\ttrue\tbackoff",
+                  "480\t480\tcircle\t74\t74\t405\t405\tzh\tnil\t80\ttrue\tconnected",
+                  "480\t480\tcircle\t74\t74\t405\t405\tzh\t1793793605\tnil\tfalse\toff",
+                  "480\t480\tcircle\t74\t74\t405\t405\tzh\t1793793605\tnil\ttrue\tbackoff",
+                  "480\t480\tcircle\t74\t74\t405\t405\tzh\tnil\tnil\ttrue\tbackoff",
               }));
 }
 

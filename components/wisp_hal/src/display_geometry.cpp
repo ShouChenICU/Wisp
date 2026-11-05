@@ -7,6 +7,13 @@ namespace wisp::hal {
 
 namespace {
 
+// Beyond the exact visible boundary, safe_rect()'s RoundedRect/Circle
+// corners keep this much extra straight-line room (see its header
+// comment): panel corners are measured by eye against a few candidate
+// radii (docs/porting-guide.md), not read off to the pixel, so content
+// flush against the exact boundary risks clipping on the real part.
+constexpr int32_t kSafeCornerMargin = 4;
+
 // std::map::find()-based accessor for an int-valued caps key -- Properties
 // is wisp::Map (std::map<std::string, Value>), not a Value itself, so this
 // is a plain map lookup rather than Value::find().
@@ -99,17 +106,19 @@ Area safe_rect(const ScreenShape& shape) {
             return Area{0, 0, shape.width - 1, shape.height - 1};
 
         case ScreenShapeKind::RoundedRect: {
-            int32_t margin =
-                static_cast<int32_t>(std::ceil(shape.corner_radius * (1.0 - 1.0 / std::sqrt(2.0))));
+            double r = shape.corner_radius;
+            double inner_radius = r - kSafeCornerMargin;
+            int32_t margin = static_cast<int32_t>(std::ceil(r - inner_radius / std::sqrt(2.0)));
             return Area{margin, margin, shape.width - 1 - margin, shape.height - 1 - margin};
         }
 
         case ScreenShapeKind::Circle: {
             double radius = std::min(shape.width, shape.height) / 2.0;
+            double inner_radius = radius - kSafeCornerMargin;
             int32_t margin_x =
-                static_cast<int32_t>(std::ceil(shape.width / 2.0 - radius / std::sqrt(2.0)));
+                static_cast<int32_t>(std::ceil(shape.width / 2.0 - inner_radius / std::sqrt(2.0)));
             int32_t margin_y =
-                static_cast<int32_t>(std::ceil(shape.height / 2.0 - radius / std::sqrt(2.0)));
+                static_cast<int32_t>(std::ceil(shape.height / 2.0 - inner_radius / std::sqrt(2.0)));
             return Area{margin_x, margin_y, shape.width - 1 - margin_x,
                         shape.height - 1 - margin_y};
         }

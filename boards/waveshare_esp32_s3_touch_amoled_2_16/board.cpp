@@ -103,8 +103,12 @@ constexpr const char* kSdModel = "sdcard-sdmmc";
 // (touch, AXP2101, QMI8658, PCF85063 and the audio codecs all share it).
 constexpr const char* kBmgrI2cMaster = "i2c_master";
 
-// Panel facts not carried by bmgr's config (see the hardware doc).
-constexpr int kCornerRadius = 40;
+// Panel facts not carried by bmgr's config (see the hardware doc). The
+// vendor's nominal corner radius (40) is too small: arcs of known radius
+// drawn on the real panel and compared by eye put the visible boundary
+// on the diagonal at about 20 px from the corner, which corresponds to
+// r=70.
+constexpr int kCornerRadius = 70;
 // CO5300 partial updates must start/end on even coordinates.
 constexpr int kAreaAlign = 2;
 // Deliberate, user-approved deviation from calling

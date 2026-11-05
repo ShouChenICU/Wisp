@@ -348,9 +348,9 @@ public:
   "devices": [
     {"id": "display.main", "class": "display", "model": "CO5300",
      "caps": {"width": 480, "height": 480, "shape": "rounded_rect",
-              "corner_radius": 40, "panel": "amoled", "brightness": true,
+              "corner_radius": 70, "panel": "amoled", "brightness": true,
               "area_align": 2},
-     "safe_area": {"x1": 12, "y1": 12, "x2": 467, "y2": 467}},
+     "safe_area": {"x1": 24, "y1": 24, "x2": 455, "y2": 455}},
     {"id": "imu.main", "class": "imu", "model": "QMI8658",
      "caps": {"accel": true, "gyro": true, "magnetometer": false,
               "max_rate_hz": 1000}},
@@ -372,7 +372,7 @@ public:
 
 - `wisp_hal` 提供与平台无关的几何函数，输入是 Display 的 caps：
   - `visible(x, y)`：像素中心是否落在可显示区域；
-  - `safe_rect()`：可显示区域内最大的居中矩形。圆角屏四边各缩进 ⌈r·(1−1/√2)⌉（r=40 时为 12 px）；圆形屏四边各缩进 ⌈w/2 − R/√2⌉（直径 480 时为 71 px）；
+  - `safe_rect()`：可显示区域内最大的居中矩形，比精确可见边界再留一个固定的 4 px 角边距 m（面板的实际圆角通常要靠目视校准才能定下来，见 `docs/porting-guide.md`，很少能精确到像素，零边距会让贴着角放置的内容蹭到裁切边界）。圆角屏四边各缩进 ⌈r − (r−m)/√2⌉（r=70 时为 24 px）；圆形屏四边各缩进 ⌈w/2 − (R−m)/√2⌉（直径 480 时为 74 px）；
   - `row_span(y)`：第 y 行可显示的横向范围，供圆形屏上逐行缩进的布局使用。
 - 能力清单中，每个 Display 条目附带由几何函数算出的 `safe_area`，与 `caps` 平级。它是派生信息，设备不必自己填写。
 - `shape` 值无法识别时按 `circle` 处理（最保守）并打告警。

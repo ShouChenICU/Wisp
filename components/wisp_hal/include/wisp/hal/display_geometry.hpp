@@ -57,12 +57,19 @@ bool visible(const ScreenShape& shape, int32_t x, int32_t y);
 
 // Returns the largest axis-aligned rectangle, centered on the screen, that
 // is entirely visible() -- i.e. the area UI content can safely occupy
-// without being clipped by the screen's physical shape:
-//   - Rect: the whole screen.
-//   - RoundedRect: each edge inset by ceil(corner_radius * (1 - 1/sqrt(2))).
-//   - Circle: inset horizontally by ceil(width/2 - R/sqrt(2)) and
-//     vertically by ceil(height/2 - R/sqrt(2)), where R = min(width,
-//     height) / 2.
+// without being clipped by the screen's physical shape. RoundedRect and
+// Circle each carry a fixed kSafeCornerMargin (4 px) beyond the exact
+// visible boundary, so a corner glyph placed at the safe rect's edge
+// isn't flush against the real screen's shape (real panels' corners are
+// measured by eye -- see docs/porting-guide.md -- and the exact radius
+// is rarely known to the pixel):
+//   - Rect: the whole screen, no margin.
+//   - RoundedRect: each edge inset by
+//     ceil(corner_radius - (corner_radius - kSafeCornerMargin) / sqrt(2)).
+//   - Circle: inset horizontally by
+//     ceil(width/2 - (R - kSafeCornerMargin) / sqrt(2)) and vertically by
+//     ceil(height/2 - (R - kSafeCornerMargin) / sqrt(2)), where
+//     R = min(width, height) / 2.
 Area safe_rect(const ScreenShape& shape);
 
 // A row of visible pixel columns, [x1, x2] inclusive (same convention as

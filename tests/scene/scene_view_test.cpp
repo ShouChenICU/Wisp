@@ -52,10 +52,10 @@ Pads pads(lv_obj_t* obj) {
 TEST_F(SceneView, RootForcesSafePadding) {
     start("circle");
     const wisp::hal::Area safe = wisp::hal::safe_rect(shape);
-    ASSERT_EQ(safe.x1, 71);
-    ASSERT_EQ(safe.y1, 71);
-    ASSERT_EQ(safe.x2, 408);
-    ASSERT_EQ(safe.y2, 408);
+    ASSERT_EQ(safe.x1, 74);
+    ASSERT_EQ(safe.y1, 74);
+    ASSERT_EQ(safe.x2, 405);
+    ASSERT_EQ(safe.y2, 405);
 
     // A smaller pad than the safe area's is raised to it.
     apply(build({node(1, 0, Widget::Screen, {{Prop::Pad, num(4)}}),
@@ -67,7 +67,7 @@ TEST_F(SceneView, RootForcesSafePadding) {
         lv_obj_update_layout(screen);
         EXPECT_EQ(lv_obj_get_width(screen), 480);
         EXPECT_EQ(lv_obj_get_height(screen), 480);
-        EXPECT_EQ(pads(screen), (Pads{71, 71, 71, 71}));
+        EXPECT_EQ(pads(screen), (Pads{74, 74, 74, 74}));
         // Inside the root, "safe" adds nothing: the root already keeps
         // its content in the safe area.
         EXPECT_EQ(pads(view->object(2)), (Pads{0, 0, 0, 0}));
@@ -79,12 +79,12 @@ TEST_F(SceneView, RootForcesSafePadding) {
     apply(set(1, Prop::Pad, num(100)));
     on_ui([&] { EXPECT_EQ(pads(view->screen()), (Pads{100, 100, 100, 100})); });
     apply(set(1, Prop::Pad, num(0)));
-    on_ui([&] { EXPECT_EQ(pads(view->screen()), (Pads{71, 71, 71, 71})); });
+    on_ui([&] { EXPECT_EQ(pads(view->screen()), (Pads{74, 74, 74, 74})); });
     apply(set(1, Prop::Pad, str("safe")));
-    on_ui([&] { EXPECT_EQ(pads(view->screen()), (Pads{71, 71, 71, 71})); });
+    on_ui([&] { EXPECT_EQ(pads(view->screen()), (Pads{74, 74, 74, 74})); });
     // A wrong type is ignored rather than dropping the safe padding.
     apply(set(1, Prop::Pad, PropValue{true}));
-    on_ui([&] { EXPECT_EQ(pads(view->screen()), (Pads{71, 71, 71, 71})); });
+    on_ui([&] { EXPECT_EQ(pads(view->screen()), (Pads{74, 74, 74, 74})); });
 }
 
 // The spec's counter example: screen > column { pad = "safe" }.
@@ -97,15 +97,15 @@ TEST_F(SceneView, SafeColumnGetsTheWholeSafeArea) {
     on_ui([&] {
         lv_obj_update_layout(view->screen());
         lv_obj_t* col = view->object(2);
-        EXPECT_EQ(lv_obj_get_content_width(col), 338);
-        EXPECT_EQ(lv_obj_get_content_height(col), 338);
+        EXPECT_EQ(lv_obj_get_content_width(col), 332);
+        EXPECT_EQ(lv_obj_get_content_height(col), 332);
         lv_area_t a;
         lv_obj_get_coords(col, &a);
-        EXPECT_EQ(a.x1, 71);
-        EXPECT_EQ(a.y1, 71);
+        EXPECT_EQ(a.x1, 74);
+        EXPECT_EQ(a.y1, 74);
         lv_obj_get_coords(view->object(3), &a);
-        EXPECT_EQ(a.x1, 71);
-        EXPECT_EQ(a.y1, 71);
+        EXPECT_EQ(a.x1, 74);
+        EXPECT_EQ(a.y1, 74);
     });
 
     // As the spec writes it, content-sized and centred.
@@ -116,13 +116,13 @@ TEST_F(SceneView, SafeColumnGetsTheWholeSafeArea) {
                node(12, 11, Widget::Label, {{Prop::Text, str("hi")}})}));
     on_ui([&] {
         lv_obj_update_layout(view->screen());
-        EXPECT_EQ(lv_obj_get_content_width(view->screen()), 338);
-        EXPECT_EQ(lv_obj_get_content_height(view->screen()), 338);
+        EXPECT_EQ(lv_obj_get_content_width(view->screen()), 332);
+        EXPECT_EQ(lv_obj_get_content_height(view->screen()), 332);
         EXPECT_EQ(pads(view->object(11)), (Pads{0, 0, 0, 0}));
         lv_area_t a;
         lv_obj_get_coords(view->object(12), &a);
-        EXPECT_EQ(a.x1, 71);
-        EXPECT_EQ(a.y1, 71);
+        EXPECT_EQ(a.x1, 74);
+        EXPECT_EQ(a.y1, 74);
     });
 }
 

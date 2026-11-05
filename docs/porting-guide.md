@@ -73,7 +73,9 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 | `Storage` | `removable`、`fs` |
 | `Network` | `ap`（bool，是否支持热点 `start_ap()`；为 false 时 `WifiService` 不开配网热点）、`bands`（频段列表，如 `["2.4GHz"]`） |
 
-`Display` 的 `safe_area` 不用自己算——`DeviceRegistry::manifest()` 用 `wisp::hal::safe_rect()` 从 `shape`/`corner_radius`/`width`/`height` 派生，设备只管填 `shape`。缺失或无法识别的 `shape` 按 `circle`（最保守）处理并告警。
+`Display` 的 `safe_area` 不用自己算——`DeviceRegistry::manifest()` 用 `wisp::hal::safe_rect()` 从 `shape`/`corner_radius`/`width`/`height` 派生，设备只管填 `shape`。缺失或无法识别的 `shape` 按 `circle`（最保守）处理并告警。`rounded_rect`/`circle` 的 `safe_rect()` 比精确可见边界再多留 4 px 的固定边距（`kSafeCornerMargin`，`wisp/hal/display_geometry.cpp`），避免贴着圆角放置的文字被实际面板裁掉第一个字形。
+
+`corner_radius` 不要直接抄厂商数据表：实测常常偏小（waveshare_esp32_s3_touch_amoled_2_16 的数据表写 40，实测约 70）。新板子接入圆角屏/圆形屏时，写一个校准场景在四角画出几个候选半径（例如 40/50/60/70/80）的四分之一圆弧，圆心放在 `(R,R)`，目视核对对角线方向上哪些弧可见、哪些已被裁掉，用能看到的最大半径作为 `corner_radius`；具体做法见 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`"已知勘误与注意事项"一节。
 
 ## 分区与板级配置
 
