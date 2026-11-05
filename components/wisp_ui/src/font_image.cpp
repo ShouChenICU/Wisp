@@ -139,7 +139,8 @@ Result<void> check_cmap_format12(const uint8_t* sub, uint64_t avail, uint32_t nu
 
 // Mirrors the subtable choice in stb_truetype's InitFont: the last
 // Microsoft Unicode (BMP or full) or Unicode-platform record wins.
-Result<void> check_cmap(const Table& cmap, uint32_t num_glyphs) {
+Result<void> check_cmap(const Table& cmap, uint32_t num_glyphs,
+                        std::span<const uint8_t>& subtable) {
     if (cmap.length < 4) return fail("'cmap' table too short");
     const uint64_t records = be16(cmap.data + 2);
     if (4 + 8 * records > cmap.length) return fail("cmap encoding records out of bounds");
@@ -156,8 +157,16 @@ Result<void> check_cmap(const Table& cmap, uint32_t num_glyphs) {
     const uint8_t* sub = cmap.data + offset;
     const uint64_t avail = cmap.length - offset;
     const uint32_t format = be16(sub);
-    if (format == 4) return check_cmap_format4(sub, avail, num_glyphs);
-    if (format == 12) return check_cmap_format12(sub, avail, num_glyphs);
+    if (format == 4) {
+        WISP_TRY(check_cmap_format4(sub, avail, num_glyphs));
+        subtable = {sub, be16(sub + 2)};
+        return Result<void>::ok();
+    }
+    if (format == 12) {
+        WISP_TRY(check_cmap_format12(sub, avail, num_glyphs));
+        subtable = {sub, be32(sub + 4)};
+        return Result<void>::ok();
+    }
     return fail("cmap subtable format " + std::to_string(format) + " is not supported");
 }
 
@@ -204,7 +213,7 @@ Result<void> check_min_length(const Table& t, const char* tag, uint64_t min) {
 
 // Spec 3.6 step 6. Offsets and lengths are summed in 64 bits so a hostile
 // pair can't wrap around.
-Result<void> check_sfnt(std::span<const uint8_t> ttf) {
+Result<void> check_sfnt(std::span<const uint8_t> ttf, std::span<const uint8_t>& cmap) {
     constexpr size_t kOffsetTable = 12;
     constexpr size_t kRecord = 16;
     if (ttf.size() < kOffsetTable) return fail("TTF shorter than its offset table");
@@ -248,7 +257,7 @@ Result<void> check_sfnt(std::span<const uint8_t> ttf) {
     }
     const uint32_t num_glyphs = be16(tables[kMaxp].data + 4);
     if (num_glyphs == 0) return fail("'maxp' lists no glyphs");
-    WISP_TRY(check_cmap(tables[kCmap], num_glyphs));
+    WISP_TRY(check_cmap(tables[kCmap], num_glyphs, cmap));
     WISP_TRY(check_metrics(tables[kHhea], tables[kHmtx], num_glyphs));
     WISP_TRY(check_loca(tables[kLoca], tables[kGlyf], index_to_loc == 1, num_glyphs));
     return Result<void>::ok();
@@ -284,8 +293,54 @@ Result<FontImage> open_font_image(std::span<const uint8_t> raw) {
     const auto ttf = raw.subspan(header_bytes, static_cast<size_t>(length));
     const uint32_t crc = le32(p + 12);
     if (crc32(ttf) != crc) return invalid("font image CRC mismatch");
-    WISP_TRY(check_sfnt(ttf));
-    return Result<FontImage>::ok(FontImage{ttf, crc});
+    std::span<const uint8_t> cmap;
+    WISP_TRY(check_sfnt(ttf, cmap));
+    return Result<FontImage>::ok(FontImage{ttf, crc, cmap});
+}
+
+bool font_image_has_glyph(const FontImage& image, uint32_t codepoint) {
+    // open_font_image() checked every offset read here against the
+    // subtable's length.
+    const uint8_t* sub = image.cmap.data();
+    if (image.cmap.empty()) return false;
+    if (be16(sub) == 4) {
+        if (codepoint > 0xFFFF) return false;
+        const uint32_t segs = be16(sub + 6) / 2;
+        // The first segment whose endCode is at or above the character.
+        uint32_t lo = 0;
+        uint32_t hi = segs;
+        while (lo < hi) {
+            const uint32_t mid = (lo + hi) / 2;
+            if (be16(sub + 14 + 2 * mid) < codepoint) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if (lo == segs) return false;
+        const uint32_t start = be16(sub + 16 + 2 * segs + 2 * lo);
+        if (codepoint < start) return false;
+        const uint32_t delta = be16(sub + 16 + 4 * segs + 2 * lo);
+        const size_t ro_pos = 16 + 6 * size_t{segs} + 2 * lo;
+        const uint32_t ro = be16(sub + ro_pos);
+        if (ro == 0) return ((codepoint + delta) & 0xFFFF) != 0;
+        return be16(sub + ro_pos + ro + 2 * (codepoint - start)) != 0;
+    }
+    const uint32_t groups = be32(sub + 12);
+    uint32_t lo = 0;
+    uint32_t hi = groups;
+    while (lo < hi) {
+        const uint32_t mid = lo + (hi - lo) / 2;
+        const uint8_t* g = sub + 16 + 12 * size_t{mid};
+        if (codepoint < be32(g)) {
+            hi = mid;
+        } else if (codepoint > be32(g + 4)) {
+            lo = mid + 1;
+        } else {
+            return be32(g + 8) + (codepoint - be32(g)) != 0;
+        }
+    }
+    return false;
 }
 
 }  // namespace wisp::ui

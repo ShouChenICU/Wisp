@@ -27,11 +27,20 @@ inline constexpr size_t kFontImageHeaderBytes = 32;
 struct FontImage {
     std::span<const uint8_t> ttf;  // points into the caller's bytes
     uint32_t crc32 = 0;
+    // The cmap subtable stb_truetype reads (format 4 or 12), checked;
+    // inside `ttf`.
+    std::span<const uint8_t> cmap;
 };
 
 // Checks a fonts partition image (spec 3.2, 3.6) and returns its TrueType
 // payload. Errors: NotFound (empty, or no "WFNT" magic), Unsupported (other
 // format version), InvalidArgument (header, length, CRC or sfnt structure).
 Result<FontImage> open_font_image(std::span<const uint8_t> raw);
+
+// Whether `image` (from open_font_image(), or empty) maps `codepoint` to a
+// glyph, the same way stb_truetype's FindGlyphIndex does. Tiny TTF logs an
+// LVGL error for every character its font lacks before LVGL tries the
+// fallback, so the font service asks this first (fonts.cpp).
+bool font_image_has_glyph(const FontImage& image, uint32_t codepoint);
 
 }  // namespace wisp::ui

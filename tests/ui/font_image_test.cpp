@@ -15,6 +15,8 @@
 namespace {
 
 using wisp::ErrorCode;
+using wisp::ui::font_image_has_glyph;
+using wisp::ui::FontImage;
 using wisp::ui::open_font_image;
 using Bytes = std::vector<uint8_t>;
 
@@ -530,4 +532,49 @@ TEST(FontImage, BuiltImageIsValid) {
     auto r = open_font_image(raw);
     ASSERT_TRUE(r) << r.error().message;
     EXPECT_GT(r.value().ttf.size(), 2'000'000u);
+}
+
+TEST(FontImage, HasGlyphFollowsTheCmapFormat4) {
+    // 'A' -> glyph 1 through idDelta; U+FFFF maps to glyph 0.
+    auto r = open_font_image(make_image(make_sfnt()));
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_TRUE(font_image_has_glyph(r.value(), 'A'));
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 'B'));
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 0x40));
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 0xFFFF));
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 0x10041));
+
+    // glyphIdArray entries are taken as they are; 0 means no glyph.
+    Font array = make_font();
+    array["cmap"] = cmap_table(cmap_format4({{0x41, 0x42, 0, true, {1, 0}}, {0xFFFF, 0xFFFF, 1}}));
+    const auto raw = make_image(build(array));
+    auto a = open_font_image(raw);
+    ASSERT_TRUE(a) << a.error().message;
+    EXPECT_TRUE(font_image_has_glyph(a.value(), 'A'));
+    EXPECT_FALSE(font_image_has_glyph(a.value(), 'B'));
+}
+
+TEST(FontImage, HasGlyphFollowsTheCmapFormat12) {
+    Font f = make_font();
+    f["cmap"] = cmap_table(cmap_format12({{0x41, 0x42, 0}, {0x20000, 0x20000, 1}}), 3, 10);
+    const auto raw = make_image(build(f));
+    auto r = open_font_image(raw);
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 'A'));  // glyph 0
+    EXPECT_TRUE(font_image_has_glyph(r.value(), 'B'));
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 'C'));
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 0x1FFFF));
+    EXPECT_TRUE(font_image_has_glyph(r.value(), 0x20000));
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 0x20001));
+}
+
+TEST(FontImage, HasGlyphOnTheBuiltImage) {
+    auto r = open_font_image(wisp::test::test_font_image());
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_TRUE(font_image_has_glyph(r.value(), 'A'));
+    EXPECT_TRUE(font_image_has_glyph(r.value(), 0x81EA));   // 自
+    EXPECT_TRUE(font_image_has_glyph(r.value(), 0x3042));   // あ
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 0xD55C));  // 한
+    EXPECT_FALSE(font_image_has_glyph(r.value(), 0xF00C));  // LV_SYMBOL_OK
+    EXPECT_FALSE(font_image_has_glyph(FontImage{}, 'A'));
 }

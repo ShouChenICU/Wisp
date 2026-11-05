@@ -16,7 +16,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 # wisp_ui and back, so simulator/CMakeLists.txt compiles the file into the
 # `lvgl` target instead.
 set(WISP_UI_SRCS
-    src/a8_font.cpp src/align.cpp src/font_image.cpp src/overlay.cpp src/ui_runtime.cpp src/strings.cpp src/strings_zh.cpp
+    src/a8_font.cpp src/align.cpp src/font_image.cpp src/fonts.cpp src/overlay.cpp src/ui_runtime.cpp src/strings.cpp src/strings_zh.cpp
     src/strings_ja.cpp src/strings_en.cpp src/system_layer.cpp src/pinyin_dict.cpp
     fonts/lv_font_cjk_16.c
 )
