@@ -38,6 +38,11 @@ Rules:
 - A *bindable* property also takes a `state`, `computed` or `bind`; the widget follows
   its value. Every value it takes is checked like a plain one, at the line that built
   the widget.
+- `"fill"` across a `column` or `row` (a column child's `w`, a row child's `h`) is
+  the parent's whole size, so inside a parent that is itself sized by its content
+  (the default) it can come out 0: give that parent a size or `"fill"` too.
+- `scene.on_show()` first runs right after `main.lua` returns, before the tree is on
+  the screen; what it changes is still applied after the tree is built.
 
 ## Value types
 
