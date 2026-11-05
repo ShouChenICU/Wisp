@@ -18,16 +18,8 @@ constexpr uint32_t kColorSelected = 0x1E88E5;
 // A pressed button, a shade darker than the neutral chip.
 constexpr uint32_t kColorPressed = 0xBDBDBD;
 
-// Montserrat 24 for the title, falling back to the UI font for the CJK
-// translations it lacks.
-const lv_font_t* title_font() {
-    static const lv_font_t font = [] {
-        lv_font_t f = lv_font_montserrat_24;
-        f.fallback = ui::default_font();
-        return f;
-    }();
-    return &font;
-}
+// The title's font. UI thread only (ui::font()).
+const lv_font_t* title_font() { return ui::font(24); }
 
 // A pill-shaped container with one label; `label` receives the label.
 lv_obj_t* make_pill(lv_obj_t* parent, lv_obj_t** label) {

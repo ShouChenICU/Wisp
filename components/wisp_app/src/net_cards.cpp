@@ -6,6 +6,7 @@
 #include "lvgl_private.h"  // lv_draw_buf_handlers_t
 #include "wisp/core/log.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/fonts.hpp"
 #include "wisp/ui/overlay.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -206,8 +207,7 @@ void PairingCard::open(std::string code, uint64_t expires_ms, uint64_t now_ms,
     add_text(card_, ui::tr(ui::StrId::PairTitle, lang));
 
     lv_obj_t* digits = add_text(card_, spaced_code(code_));
-    // Digits only, so the larger Latin font needs no CJK fallback.
-    lv_obj_set_style_text_font(digits, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(digits, ui::font(24), 0);
     lv_obj_set_style_text_letter_space(digits, kCodeLetterSpace, 0);
 
     countdown_ = add_text(card_, "");

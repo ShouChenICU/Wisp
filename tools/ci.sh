@@ -154,6 +154,11 @@ cmake -S simulator -B build/sim -G Ninja
 echo "==> tools/gen_pinyin_dict.py --check"
 python3 tools/gen_pinyin_dict.py --check
 
+# The committed icon fonts must hold exactly the pinned LVGL's LV_SYMBOL_*
+# icons (vector-font spec 4.6). Reads the same LVGL source; offline.
+echo "==> tools/gen_icon_font.py --check"
+python3 tools/gen_icon_font.py --check
+
 echo "==> cmake --build build/sim"
 cmake --build build/sim
 

@@ -3,6 +3,7 @@
 // The font service's hooks into UiRuntime's lifecycle (fonts.cpp). Only
 // UiRuntime calls these.
 
+#include "wisp/os/os.hpp"
 #include "wisp/ui/font_image.hpp"
 
 namespace wisp::ui::detail {
@@ -11,6 +12,11 @@ namespace wisp::ui::detail {
 // or it failed open_font_image(). Called by UiRuntime::start() before the
 // UI task runs; the image's bytes must outlive the runtime.
 void install_font_image(const FontImage* image);
+
+// The UI task font() must run on, checked in debug builds; nullptr while
+// no runtime runs, when any thread may call it. Set by UiRuntime::start()
+// once the task exists and cleared by stop() after it has exited.
+void set_font_owner(const os::Task* task);
 
 // Destroys every vector font font() created and forgets the image.
 // Called by UiRuntime::stop() after the UI task has exited and before

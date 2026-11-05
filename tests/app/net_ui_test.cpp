@@ -23,6 +23,7 @@
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/fonts.hpp"
 #include "wisp/ui/strings.hpp"
 
 using wisp::test::all_label_glyphs_resolvable;
@@ -586,6 +587,24 @@ TEST(NetUi, PairingCardCountsDownAndCloses) {
     const std::string next = pairing->active_code(wisp::os::now_ms()).value_or("");
     ASSERT_TRUE(pairing->confirm(next, wisp::net::ClientInfo{}, wisp::os::now_ms()));
     ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "配对请求"); }, 3000));
+}
+
+TEST(NetUi, PairingCodeUsesFont24) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start());
+    wisp::net::PairingService* pairing = h.app->pairing();
+    ASSERT_NE(pairing, nullptr);
+    ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
+    const std::string code = pairing->active_code(wisp::os::now_ms()).value_or("");
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "配对请求"); }, 3000));
+    const std::string same = run_on_ui_thread(h.app->ui(), [&] {
+        lv_obj_t* digits =
+            find_label_containing(lv_layer_top(), wisp::app::spaced_code(code).c_str());
+        if (digits == nullptr) return "no label";
+        return lv_obj_get_style_text_font(digits, LV_PART_MAIN) == wisp::ui::font(24) ? "yes"
+                                                                                      : "no";
+    });
+    EXPECT_EQ(same, "yes");
 }
 
 // With a short code lifetime: the card counts down to the service's

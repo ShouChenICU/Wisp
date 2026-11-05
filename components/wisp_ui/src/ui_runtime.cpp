@@ -625,6 +625,7 @@ Result<void> UiRuntime::start() {
         return fail_after_lv_init(ErrorCode::NoMemory, "failed to spawn UI task");
     }
     impl_->active_task.store(impl_->task.get(), std::memory_order_release);
+    detail::set_font_owner(impl_->task.get());
 
     // spec 5.3: now that the UI task exists, every further Display call
     // must come from it (debug-build assertion; see display.hpp).
@@ -661,6 +662,7 @@ void UiRuntime::stop() {
         impl_->task->join();
     }
     impl_->active_task.store(nullptr, std::memory_order_release);
+    detail::set_font_owner(nullptr);
     impl_->task.reset();
 
     // The check installed in start() captures `this`, which must not

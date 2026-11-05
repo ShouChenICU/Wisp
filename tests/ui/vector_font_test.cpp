@@ -176,6 +176,24 @@ TEST(VectorFont, OutsideCharsetFallsBackToBody) {
     ui->stop();
 }
 
+TEST(VectorFont, IconsResolveFromIconFont) {
+    auto ui = start_ui(test_font_image());
+    ui->run_blocking([] {
+        // LV_SYMBOL_OK is not in the vector font; the icon font of the
+        // step (24, 32 or 48 px) draws it, so icons stay large.
+        const auto ok48 = glyph(font(48), 0xF00C);
+        ASSERT_NE(ok48.resolved_font, nullptr);
+        EXPECT_NE(ok48.resolved_font, font(48));
+        EXPECT_NE(ok48.resolved_font, default_font());
+        EXPECT_GE(ok48.box_h, 30);
+        const auto ok32 = glyph(font(32), 0xF00C);
+        EXPECT_GE(ok32.box_h, 20);
+        EXPECT_LE(ok32.box_h, 32);
+        EXPECT_LE(glyph(font(20), 0xF00C).box_h, 16);
+    });
+    ui->stop();
+}
+
 TEST(VectorFont, MissingGlyphsFallBackQuietly) {
     // Without a lookup ahead of it, Tiny TTF logs an LVGL error for every
     // character the font lacks, each time it is measured or drawn.
@@ -223,6 +241,29 @@ TEST(VectorFont, CorruptImageDegrades) {
 TEST(VectorFont, NoImageDegrades) {
     auto ui = start_ui({});
     ui->run_blocking([] { expect_degraded(); });
+    ui->stop();
+}
+
+TEST(VectorFont, DegradedKeepsLargeIcons) {
+    auto ui = start_ui({});
+    ui->run_blocking([] {
+        EXPECT_GE(glyph(font(48), 0xF00C).box_h, 30);  // LV_SYMBOL_OK
+        EXPECT_LE(glyph(font(48), 'A').box_h, 16);
+    });
+    ui->stop();
+}
+
+// A font asked for while no runtime runs (here before the first start())
+// is the bitmap fallback; it must not stay cached once a start() brings a
+// usable image.
+TEST(VectorFont, StartForgetsFontsCachedWithoutARuntime) {
+    const lv_font_t* before = font(40);
+    ASSERT_NE(before, nullptr);
+    auto ui = start_ui(test_font_image());
+    ui->run_blocking([] {
+        const lv_font_t* f = font(40);
+        EXPECT_EQ(glyph(f, 0x81EA).resolved_font, f);  // 自
+    });
     ui->stop();
 }
 
