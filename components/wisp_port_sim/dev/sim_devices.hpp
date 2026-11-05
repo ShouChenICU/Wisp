@@ -31,24 +31,32 @@ class SimTouch : public wisp::hal::Touch {
 public:
     SimTouch(std::string id, std::shared_ptr<SimInput> input);
     const wisp::hal::DeviceInfo& info() const override { return info_; }
+    // Reports no touch while powered off.
     wisp::Result<std::vector<wisp::hal::TouchPoint>> read() override;
+    wisp::Result<void> set_power(wisp::hal::PowerLevel level) override;
+    bool powered() const { return powered_.load(); }
 
 private:
     wisp::hal::DeviceInfo info_;
     std::shared_ptr<SimInput> input_;
+    std::atomic<bool> powered_{true};
 };
 
 class SimImu : public wisp::hal::Imu {
 public:
     SimImu(std::string id, std::shared_ptr<SimInput> input);
     const wisp::hal::DeviceInfo& info() const override { return info_; }
+    // Fails while powered off, like the real sensors.
     wisp::Result<wisp::hal::ImuSample> read() override;
     wisp::Result<void> set_rate(uint32_t hz) override;
+    wisp::Result<void> set_power(wisp::hal::PowerLevel level) override;
+    bool powered() const { return powered_.load(); }
 
 private:
     wisp::hal::DeviceInfo info_;
     std::shared_ptr<SimInput> input_;
     std::atomic<uint32_t> rate_hz_{100};
+    std::atomic<bool> powered_{true};
 };
 
 // Fixed status (80%, 3900 mV, not charging, USB present).
@@ -87,6 +95,8 @@ public:
     SimButton(std::string id, Kind kind, std::shared_ptr<SimInput> input);
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     bool pressed() override;
+    // A wake source: stays on at every level.
+    wisp::Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
     wisp::hal::DeviceInfo info_;
@@ -125,6 +135,10 @@ public:
     wisp::Result<size_t> write(const int16_t* frames, size_t count) override;
     void close() override;
     wisp::Result<void> set_volume(uint8_t percent) override;
+    // Only tracks the level (the host's audio device has no power state
+    // to change); powered() lets tests check it.
+    wisp::Result<void> set_power(wisp::hal::PowerLevel level) override;
+    bool powered() const { return powered_.load(); }
 
 private:
     wisp::hal::DeviceInfo info_;
@@ -137,6 +151,7 @@ private:
     // to zero.
     uint16_t buffer_frames_ = 0;
     std::atomic<uint8_t> volume_{100};
+    std::atomic<bool> powered_{true};
 };
 
 // Backed by a real SDL capture device: open() calls
@@ -163,11 +178,15 @@ public:
     wisp::Result<size_t> read(int16_t* frames, size_t count) override;
     void close() override;
     wisp::Result<void> set_gain(float db) override;
+    // Same as SimAudioOut::set_power().
+    wisp::Result<void> set_power(wisp::hal::PowerLevel level) override;
+    bool powered() const { return powered_.load(); }
 
 private:
     wisp::hal::DeviceInfo info_;
     uint32_t device_ = 0;
     int channels_ = 1;
+    std::atomic<bool> powered_{true};
 };
 
 // mount_point() is a plain host directory; capacity() reports a fixed

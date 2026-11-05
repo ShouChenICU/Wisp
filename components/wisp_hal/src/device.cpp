@@ -42,4 +42,41 @@ std::optional<DeviceClass> class_from_string(std::string_view s) {
     return std::nullopt;
 }
 
+const char* to_string(PowerLevel level) {
+    switch (level) {
+        case PowerLevel::Active:
+            return "active";
+        case PowerLevel::Dim:
+            return "dim";
+        case PowerLevel::Standby:
+            return "standby";
+        case PowerLevel::DeepStandby:
+            return "deep_standby";
+    }
+    return "unknown";
+}
+
+StandbyPolicy standby_policy(const DeviceInfo& info) {
+    auto it = info.caps.find("standby");
+    if (it == info.caps.end() || it->second.type() != Value::Type::String) {
+        return StandbyPolicy::None;
+    }
+    const std::string& s = it->second.as_string();
+    if (s == "off") return StandbyPolicy::Off;
+    if (s == "throttle") return StandbyPolicy::Throttle;
+    if (s == "wake_source") return StandbyPolicy::WakeSource;
+    return StandbyPolicy::None;
+}
+
+bool powered_at(StandbyPolicy policy, PowerLevel level) {
+    if (policy != StandbyPolicy::Off) {
+        return true;
+    }
+    return level == PowerLevel::Active || level == PowerLevel::Dim;
+}
+
+Result<void> Device::set_power(PowerLevel /*level*/) {
+    return Result<void>::err(ErrorCode::Unsupported, "power levels unsupported");
+}
+
 }  // namespace wisp::hal

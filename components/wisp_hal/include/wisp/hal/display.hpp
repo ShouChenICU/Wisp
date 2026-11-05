@@ -27,7 +27,8 @@ struct Area {
 // wisp::ui::align_area()), "rgb565_be" (bool, optional, default false:
 // true if flush() takes each RGB565 pixel high byte first in memory,
 // i.e. already in the panel's wire order, so the caller renders in that
-// order and nobody spends CPU swapping bytes).
+// order and nobody spends CPU swapping bytes), "standby" (string,
+// always "off"; see StandbyPolicy in wisp/hal/device.hpp).
 //
 // spec 5.3: every call on a Display must come from the UI thread (the
 // one running UiRuntime's render loop) -- concurrent access from another
@@ -62,7 +63,12 @@ public:
     virtual Result<void> wait_flush() { return Result<void>::ok(); }
 
     virtual Result<void> set_brightness(uint8_t level) = 0;
-    virtual Result<void> set_power(bool on) = 0;
+    // Every display declares caps "standby": "off": the panel sleeps at
+    // Standby/DeepStandby and wakes at Active/Dim (Dim's lower brightness
+    // is set separately through set_brightness()). UI thread only, like
+    // flush().
+    Result<void> set_power(PowerLevel level) override = 0;
+    // Whether the panel is awake.
     virtual bool powered() const = 0;
 
     void set_owner_thread_check(std::function<bool()> on_ui_thread) {

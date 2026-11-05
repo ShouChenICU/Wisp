@@ -120,10 +120,10 @@ public:
     //      flush() straddling the panel-sleep call below regardless of
     //      ordering, but pausing first keeps the two in the order the
     //      exit path mirrors (see exit_standby()).
-    //   2. Display::set_power(false) (panel sleep).
-    //   3. Touch::set_power(false) (ErrorCode::Unsupported is expected,
+    //   2. Display::set_power(Standby) (panel sleep).
+    //   3. Touch::set_power(Standby) (ErrorCode::Unsupported is expected,
     //      not an error -- most touch drivers have no sleep mode).
-    //   4. Imu::set_power(false) (same ErrorCode::
+    //   4. Imu::set_power(Standby) (same ErrorCode::
     //      Unsupported carve-out as Touch: not every IMU driver can
     //      power its sensors down independently).
     //   5. StorageManager::set_standby(true) (pauses storage.sd's
@@ -147,8 +147,8 @@ public:
     // eight steps in the opposite order -- the platform hook runs first,
     // ButtonService's poll interval is restored, then PowerMonitor::
     // set_standby(false), then StorageManager::set_standby(false), then
-    // Imu::set_power(true), then Touch::set_power(true), then Display::
-    // set_power(true) (panel wake), and only once the panel is actually
+    // Imu::set_power(Active), then Touch::set_power(Active), then Display::
+    // set_power(Active) (panel wake), and only once the panel is actually
     // awake again does UiRuntime::set_paused(false) run last, forcing a
     // full redraw against an already-awake panel (UiRuntime::
     // set_paused()'s own doc comment). Then publishes "power.state":
@@ -161,7 +161,7 @@ public:
     // Sets the panel brightness (core::SystemSettings' apply hook). While
     // the panel is on, Display::set_brightness() runs right away; while it
     // is asleep, the level is only remembered and applied by exit_standby()
-    // after Display::set_power(true) -- changing brightness must never wake
+    // after Display::set_power(Active) -- changing brightness must never wake
     // the screen. Callable from any thread and never blocks: off the UI
     // task (when one exists) the level is stored and a single "apply the
     // latest level" job is posted to the UI task, since every Display call
@@ -312,8 +312,8 @@ private:
     // Guarded by transition_mutex_ (see above).
     uint32_t saved_poll_ms_ = 20;
 
-    // True from just before enter_standby()'s Display::set_power(false)
-    // until just after exit_standby()'s set_power(true). Tracked separately
+    // True from just before enter_standby()'s Display::set_power(Standby)
+    // until just after exit_standby()'s set_power(Active). Tracked separately
     // from standby_ because both transitions drop transition_mutex_ partway
     // (see above) while standby_ still has its old value, and a brightness
     // write in that window must follow the panel's actual state. Guarded

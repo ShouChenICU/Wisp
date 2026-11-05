@@ -86,6 +86,7 @@ EspDisplay::EspDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t i
         {"brightness", true},
         {"area_align", config_.area_align},
         {"rgb565_be", config_.rgb565_be},
+        {"standby", wisp::Value("off")},
     };
     if (config_.draw_buf_lines > 0) info_.caps["draw_buf_lines"] = config_.draw_buf_lines;
     if (!config_.draw_buf_mem.empty())
@@ -207,20 +208,20 @@ Result<void> EspDisplay::set_brightness(uint8_t level) {
     }
     r = tx_dcs_locked(kDcsWriteBrightness, &level, 1);
     if (r) {
-        last_brightness_ = level;  // re-applied by a later set_power(true); see below.
+        last_brightness_ = level;  // re-applied by the next wake; see set_power().
     }
     return r;
 }
 
 Result<void> EspDisplay::set_power_vendor_locked(bool on) {
-    // Spec 6.7: set_power(false) is "panel sleep", not just
+    // Spec 6.7: sleeping is "panel sleep", not just
     // "display off" -- turn the pixel output off first, then put the
     // controller itself to sleep (co5300: SLPIN, settling, and -- on a
-    // board wired with a reset GPIO -- deep standby); set_power(true)
+    // board wired with a reset GPIO -- deep standby); waking
     // reverses that order, waking the controller before turning pixel
     // output back on. Either op can fail with ESP_ERR_NOT_SUPPORTED on a
     // panel driver that doesn't implement disp_sleep; that's a real
-    // DeviceFailure here (unlike hal::Touch::set_power(), there's no
+    // DeviceFailure here (unlike touch and IMU drivers, there's no
     // "Unsupported is expected" carve-out for the display -- every panel
     // this codebase targets does implement it; see
     // docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
@@ -290,9 +291,13 @@ Result<void> EspDisplay::set_power_dcs_locked(bool on) {
     return r;
 }
 
-Result<void> EspDisplay::set_power(bool on) {
+Result<void> EspDisplay::set_power(wisp::hal::PowerLevel level) {
     assert_owner_thread();
+    const bool on = wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level);
     std::lock_guard<wisp::os::Mutex> lock(mutex_);
+    if (on == powered_) {
+        return Result<void>::ok();
+    }
     // A stripe may still be on the wire; the panel must not go to sleep
     // halfway through it.
     Result<void> r = wait_pending_locked();

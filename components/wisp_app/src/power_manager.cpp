@@ -155,15 +155,15 @@ void PowerManager::enter_standby() {
     }
     if (display_) {
         panel_asleep_ = true;
-        auto r = display_->set_power(false);
+        auto r = display_->set_power(hal::PowerLevel::Standby);
         if (!r) {
-            WLOG_W(kTag, "display set_power(false) failed: %s", r.error().message.c_str());
+            WLOG_W(kTag, "display set_power(standby) failed: %s", r.error().message.c_str());
         }
     }
     if (touch_) {
-        auto r = touch_->set_power(false);
+        auto r = touch_->set_power(hal::PowerLevel::Standby);
         if (!r && r.error().code != ErrorCode::Unsupported) {
-            WLOG_W(kTag, "touch set_power(false) failed: %s", r.error().message.c_str());
+            WLOG_W(kTag, "touch set_power(standby) failed: %s", r.error().message.c_str());
         }
     }
     if (imu_) {
@@ -171,9 +171,9 @@ void PowerManager::enter_standby() {
         // Unsupported carve-out as touch_ above -- not every IMU driver
         // can power its sensors down independently of the rest of the
         // chip.
-        auto r = imu_->set_power(false);
+        auto r = imu_->set_power(hal::PowerLevel::Standby);
         if (!r && r.error().code != ErrorCode::Unsupported) {
-            WLOG_W(kTag, "imu set_power(false) failed: %s", r.error().message.c_str());
+            WLOG_W(kTag, "imu set_power(standby) failed: %s", r.error().message.c_str());
         }
     }
     if (storage_ != nullptr) {
@@ -247,21 +247,21 @@ void PowerManager::exit_standby() {
         storage_->set_standby(false);
     }
     if (imu_) {
-        auto r = imu_->set_power(true);
+        auto r = imu_->set_power(hal::PowerLevel::Active);
         if (!r && r.error().code != ErrorCode::Unsupported) {
-            WLOG_W(kTag, "imu set_power(true) failed: %s", r.error().message.c_str());
+            WLOG_W(kTag, "imu set_power(active) failed: %s", r.error().message.c_str());
         }
     }
     if (touch_) {
-        auto r = touch_->set_power(true);
+        auto r = touch_->set_power(hal::PowerLevel::Active);
         if (!r && r.error().code != ErrorCode::Unsupported) {
-            WLOG_W(kTag, "touch set_power(true) failed: %s", r.error().message.c_str());
+            WLOG_W(kTag, "touch set_power(active) failed: %s", r.error().message.c_str());
         }
     }
     if (display_) {
-        auto r = display_->set_power(true);
+        auto r = display_->set_power(hal::PowerLevel::Active);
         if (!r) {
-            WLOG_W(kTag, "display set_power(true) failed: %s", r.error().message.c_str());
+            WLOG_W(kTag, "display set_power(active) failed: %s", r.error().message.c_str());
         }
         panel_asleep_ = false;
         if (pending_brightness_ >= 0) {

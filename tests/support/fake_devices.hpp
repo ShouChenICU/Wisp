@@ -78,10 +78,10 @@ public:
         return wisp::Result<void>::ok();
     }
 
-    wisp::Result<void> set_power(bool on) override {
+    wisp::Result<void> set_power(wisp::hal::PowerLevel level) override {
         assert_owner_thread();
         ++set_power_calls_;
-        powered_.store(on);
+        powered_.store(wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level));
         return wisp::Result<void>::ok();
     }
 
@@ -124,7 +124,7 @@ private:
 // (set_power_calls()/powered()) like FakeDisplay's, and -- unlike
 // FakeDisplay's, which always succeeds -- can be made to simulate a
 // touch controller with no sleep mode at all (the common case; see
-// wisp::hal::Touch::set_power()'s default) by setting `unsupported`.
+// wisp::hal::Device::set_power()'s default) by setting `unsupported`.
 class FakeTouch : public wisp::hal::Touch {
 public:
     explicit FakeTouch(std::string id, int max_points = 1) {
@@ -141,13 +141,13 @@ public:
         return wisp::Result<std::vector<wisp::hal::TouchPoint>>::ok(points_);
     }
 
-    wisp::Result<void> set_power(bool on) override {
+    wisp::Result<void> set_power(wisp::hal::PowerLevel level) override {
         ++set_power_calls_;
         if (unsupported.load()) {
             return wisp::Result<void>::err(wisp::ErrorCode::Unsupported,
                                            "fake touch sleep unsupported");
         }
-        powered_.store(on);
+        powered_.store(wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level));
         return wisp::Result<void>::ok();
     }
 
@@ -215,13 +215,13 @@ public:
     // IMU power-down stopgap (mirrors FakeTouch::set_power() above):
     // records every call (set_power_calls()/powered()); set `unsupported`
     // to simulate an IMU driver with no power-down support at all.
-    wisp::Result<void> set_power(bool on) override {
+    wisp::Result<void> set_power(wisp::hal::PowerLevel level) override {
         ++set_power_calls_;
         if (unsupported.load()) {
             return wisp::Result<void>::err(wisp::ErrorCode::Unsupported,
                                            "fake imu sleep unsupported");
         }
-        powered_.store(on);
+        powered_.store(wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level));
         return wisp::Result<void>::ok();
     }
 

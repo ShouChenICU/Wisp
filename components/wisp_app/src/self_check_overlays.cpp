@@ -301,11 +301,11 @@ void SelfCheck::do_power_off() {
         // stops the SoC. Without turning the panel off first, this
         // confirm dialog (its own GRAM contents) would stay lit,
         // indistinguishable from a hang, and keep drawing power for as
-        // long as the battery lasts. set_power(false) runs here, on
+        // long as the battery lasts. set_power(Standby) runs here, on
         // this (UI) thread, as spec 5.3 requires for every Display
         // call.
         if (display_) {
-            display_->set_power(false);
+            display_->set_power(hal::PowerLevel::Standby);
         }
         app_.platform().request_power_off();
     }

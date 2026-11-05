@@ -43,11 +43,12 @@ public:
     Result<wisp::hal::ImuSample> read() override;
     // qmi8658_set_odr().
     Result<void> set_rate(uint32_t hz) override;
-    // qmi8658_set_power(): `false` disables the accelerometer/gyroscope
-    // (CTRL7); `true` restores them at the currently-selected output
-    // data rate (not necessarily the default -- see qmi8658_set_power()'s
-    // own doc comment).
-    Result<void> set_power(bool on) override;
+    // caps "standby" is "off". qmi8658_set_power(): Standby/DeepStandby
+    // disable the accelerometer/gyroscope (CTRL7); Active/Dim restore
+    // them at the currently-selected output data rate (not necessarily
+    // the default -- see qmi8658_set_power()'s own doc comment). A level
+    // that maps to the current state sends nothing.
+    Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
     EspImu(qmi8658_handle_t handle, std::string model);

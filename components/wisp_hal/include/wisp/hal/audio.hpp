@@ -13,6 +13,10 @@ struct AudioFormat {
     uint8_t channels = 1;
 };
 
+// caps keys (AudioOut and AudioIn): "standby" (string, optional: "off"
+// when set_power() releases the audio hardware at Standby/DeepStandby;
+// see StandbyPolicy in wisp/hal/device.hpp). Playing or recording below
+// Dim is not supported.
 class AudioOut : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::AudioOut;

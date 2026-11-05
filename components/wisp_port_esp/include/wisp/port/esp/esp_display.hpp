@@ -50,7 +50,7 @@ struct EspDisplayConfig {
     std::string draw_buf_mem;
     std::string render_mode;
 
-    // How set_power(false)/set_power(true) put the panel to/from sleep
+    // How set_power() puts the panel to sleep and wakes it
     // -- see docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md for this panel's own
     // sleep behavior. Chosen per board, not per
     // chip model: both options are implemented entirely in terms of the
@@ -131,19 +131,21 @@ public:
     // Waits for a pending transfer, writes the DCS "write display
     // brightness" register (0x51), and
     // remembers `level` (see set_power()'s doc comment below on why a
-    // successful set_power(true) re-sends it).
+    // successful wake re-sends it).
     Result<void> set_brightness(uint8_t level) override;
-    // Panel sleep (spec 6.7), not just display-off. Dispatches to one of
-    // two implementations per config_.panel_sleep (see
-    // EspDisplayConfig::PanelSleep's doc comment):
-    //   - VendorDispSleep: set_power(false) calls
+    // caps "standby" is "off": Standby/DeepStandby put the panel to sleep
+    // and Active/Dim wake it; a level that maps to the panel's current
+    // state sends nothing. Panel sleep (spec 6.7), not just display-off.
+    // Dispatches to one of two implementations per config_.panel_sleep
+    // (see EspDisplayConfig::PanelSleep's doc comment):
+    //   - VendorDispSleep: sleeping calls
     //     esp_lcd_panel_disp_on_off(false) then
-    //     esp_lcd_panel_disp_sleep(true); set_power(true) reverses the
+    //     esp_lcd_panel_disp_sleep(true); waking reverses the
     //     order (disp_sleep(false) then disp_on_off(true)).
-    //   - DcsSleep: set_power(false) sends DISPOFF then SLPIN;
-    //     set_power(true) sends SLPOUT, waits
+    //   - DcsSleep: sleeping sends DISPOFF then SLPIN;
+    //     waking sends SLPOUT, waits
     //     config_.sleep_out_settle_ms, then sends DISPON.
-    // Either way, a successful set_power(true) re-sends the last
+    // Either way, a successful wake re-sends the last
     // brightness set_brightness() was called with, if any: some panels
     // reset their brightness register on wake regardless of which sleep
     // mode put them there (e.g. this
@@ -151,7 +153,7 @@ public:
     // deep-standby wake re-runs in full, ends with brightness = 0xFF)
     // -- without this, every wake would silently override whatever
     // brightness the user had configured.
-    Result<void> set_power(bool on) override;
+    Result<void> set_power(wisp::hal::PowerLevel level) override;
     bool powered() const override;
 
 private:
@@ -193,7 +195,7 @@ private:
     bool powered_ = true;  // esp_board_manager turns the panel on during init
 
     // The last level set_brightness() was called with, re-applied by a
-    // successful set_power(true) (see set_power()'s doc comment). Unset
+    // successful wake (see set_power()'s doc comment). Unset
     // until the first set_brightness() call (board init sequences
     // set an initial brightness themselves, outside this class).
     std::optional<uint8_t> last_brightness_;
@@ -201,7 +203,7 @@ private:
     // enforce sleep_out_settle_ms as the minimum spacing before the next
     // SLPOUT (see EspDisplayConfig::PanelSleep's doc comment). Unset
     // once that minimum has clearly already elapsed (so repeated
-    // set_power(true) calls long after sleeping don't all pay a
+    // wakes long after sleeping don't all pay a
     // sleep_out_settle_ms-sized check for nothing).
     //
     // Recording the last SLPIN time (rather than the last SLPOUT time,

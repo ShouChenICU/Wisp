@@ -415,8 +415,10 @@ void hold_outputs_during_light_sleep() {
     }
 }
 
-// Fetches bmgr's dev_audio_codec_handles_t for `dev_name` and wraps its
-// codec_dev in an EspAudioOut/EspAudioIn via `make`. Shared by
+// Fetches bmgr's dev_audio_codec_handles_t for `dev_name`, plus the I2S
+// channel its config's i2s_cfg names (the device's set_power() turns that
+// channel off in standby -- see wisp/port/esp/esp_audio.hpp), and wraps
+// both in an EspAudioOut/EspAudioIn via `make`. Shared by
 // init_audio_out()/init_audio_in() below -- the only difference between
 // the two is which wisp::port::esp::Esp* type and HAL id/class `make`
 // builds.
@@ -425,6 +427,7 @@ void init_audio_device(wisp::core::DeviceRegistry& registry, wisp::core::BootRep
                        const char* dev_name, const char* id, wisp::hal::DeviceClass cls,
                        const char* model,
                        wisp::Result<std::shared_ptr<Device>> (*make)(esp_codec_dev_handle_t,
+                                                                     i2s_chan_handle_t,
                                                                      std::string)) {
     void* handle = nullptr;
     esp_err_t err = esp_board_manager_get_device_handle(dev_name, &handle);
@@ -438,7 +441,22 @@ void init_audio_device(wisp::core::DeviceRegistry& registry, wisp::core::BootRep
         record_failed(report, id, cls, std::string("bmgr ") + dev_name + ": null codec_dev handle");
         return;
     }
-    auto device = make(handles->codec_dev, model);
+    void* config = nullptr;
+    err = esp_board_manager_get_device_config(dev_name, &config);
+    if (err != ESP_OK || config == nullptr) {
+        record_failed(report, id, cls,
+                      std::string("bmgr ") + dev_name + " config: " + err_name(err));
+        return;
+    }
+    const char* i2s_name = static_cast<dev_audio_codec_config_t*>(config)->i2s_cfg.name;
+    void* i2s_channel = nullptr;
+    err = i2s_name != nullptr ? esp_board_manager_get_periph_handle(i2s_name, &i2s_channel)
+                              : ESP_ERR_NOT_FOUND;
+    if (err != ESP_OK || i2s_channel == nullptr) {
+        record_failed(report, id, cls, std::string("bmgr ") + dev_name + " i2s: " + err_name(err));
+        return;
+    }
+    auto device = make(handles->codec_dev, static_cast<i2s_chan_handle_t>(i2s_channel), model);
     if (!device) {
         record_failed(report, id, cls, device.error().message);
         return;

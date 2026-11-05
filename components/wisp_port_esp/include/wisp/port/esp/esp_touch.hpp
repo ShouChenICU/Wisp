@@ -7,6 +7,7 @@
 // rule); orientation (swap/mirror) is the esp_lcd_touch driver's job,
 // configured when the handle was created.
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -36,17 +37,22 @@ public:
     // is 1).
     Result<std::vector<wisp::hal::TouchPoint>> read() override;
 
-    // esp_lcd_touch_enter_sleep()/exit_sleep(), if the underlying driver
-    // implements them (checked directly against the handle's vtable
-    // fields rather than just calling through and catching the error --
-    // see esp_touch.cpp); returns ErrorCode::Unsupported otherwise (true
-    // for every touch driver this codebase has ported so far).
-    Result<void> set_power(bool on) override;
+    // esp_lcd_touch_enter_sleep() at Standby/DeepStandby and
+    // exit_sleep() at Active/Dim, if the underlying driver implements
+    // them -- only then do the caps declare "standby": "off". Returns
+    // ErrorCode::Unsupported otherwise (true for every touch driver this
+    // codebase has ported so far). A level that maps to the current
+    // state sends nothing.
+    Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
+    // Whether the driver implements both sleep hooks.
+    bool can_sleep() const;
+
     wisp::hal::DeviceInfo info_;
     esp_lcd_touch_handle_t handle_;
     EspTouchConfig config_;
+    std::atomic<bool> powered_{true};
 };
 
 }  // namespace wisp::port::esp

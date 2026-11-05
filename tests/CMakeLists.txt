@@ -33,6 +33,7 @@ wisp_test(NAME result_test SRCS base/result_test.cpp LIBS wisp_base)
 wisp_test(NAME display_geometry_test SRCS hal/display_geometry_test.cpp LIBS wisp_hal)
 wisp_test(NAME draw_buf_policy_test SRCS hal/draw_buf_policy_test.cpp LIBS wisp_hal)
 wisp_test(NAME wifi_types_test SRCS hal/wifi_types_test.cpp LIBS wisp_hal)
+wisp_test(NAME power_level_test SRCS hal/power_level_test.cpp LIBS wisp_hal)
 wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
 wisp_test(NAME value_test SRCS base/value_test.cpp LIBS wisp_base)
 wisp_test(NAME sha256_test SRCS base/sha256_test.cpp LIBS wisp_base)
@@ -127,6 +128,7 @@ wisp_test(NAME sim_audio_test SRCS sim/sim_audio_test.cpp
 target_include_directories(sim_audio_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 wisp_test(NAME sim_board_test SRCS sim/sim_board_test.cpp
           LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os TIMEOUT 20)
+target_include_directories(sim_board_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 # Real loopback sockets; net/sha1.hpp is private to wisp_port_sim.
 wisp_test(NAME sim_http_server_test SRCS sim/sim_http_server_test.cpp
           LIBS wisp_port_sim_net TIMEOUT 30)

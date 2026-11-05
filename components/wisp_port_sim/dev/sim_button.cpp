@@ -9,6 +9,7 @@ SimButton::SimButton(std::string id, Kind kind, std::shared_ptr<SimInput> input)
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "sdl-key";
+    info_.caps = wisp::Properties{{"standby", "wake_source"}};
 }
 
 bool SimButton::pressed() {
@@ -21,6 +22,10 @@ bool SimButton::pressed() {
             return input_->vol_down_pressed();
     }
     return false;
+}
+
+wisp::Result<void> SimButton::set_power(wisp::hal::PowerLevel /*level*/) {
+    return wisp::Result<void>::ok();
 }
 
 }  // namespace wisp::port::sim

@@ -50,6 +50,22 @@
 // tail. See dev/esp_audio.cpp's kDrainFrames comment for how the drain
 // amount is derived and wisp::hal::AudioOut's close() contract (matched
 // by wisp::port::sim::SimAudioOut::close(), which also drains).
+//
+// Standby: both devices declare caps "standby": "off". Each enabled I2S
+// channel holds an ESP_PM_APB_FREQ_MAX lock ("i2s_driver"), and bmgr's
+// I2S peripheral enables the board's channels at boot and leaves them
+// enabled while no stream is open, so automatic light sleep never happens
+// unless they are disabled (docs/hardware/
+// waveshare_esp32_s3_touch_amoled_2_16.md, "浅睡兼容性（3b-1 spike）").
+// set_power() therefore disables the device's own I2S channel at
+// Standby/DeepStandby and enables it again at Active/Dim. The board passes
+// that channel to create() alongside the codec handle, because
+// esp_codec_dev does not expose it and the bmgr peripheral that owns it is
+// named only in board configuration. esp_codec_dev_open() enables a
+// disabled channel itself, but playing or recording below Dim is not
+// supported. esp_codec_dev also enables and disables channels on its own
+// (an open can enable the peer direction), so set_power() reads the
+// channel's actual state rather than remembering its own.
 
 #include <atomic>
 #include <cstddef>
@@ -57,6 +73,7 @@
 #include <memory>
 #include <string>
 
+#include "driver/i2s_types.h"
 #include "esp_codec_dev.h"
 #include "wisp/base/result.hpp"
 #include "wisp/hal/audio.hpp"
@@ -65,10 +82,12 @@ namespace wisp::port::esp {
 
 class EspAudioOut : public wisp::hal::AudioOut {
 public:
-    // Wraps an already-constructed esp_codec_dev_handle_t (owned by bmgr;
-    // this class never deletes it). Fails with ErrorCode::InvalidArgument
-    // if `codec_dev` is null.
+    // Wraps an already-constructed esp_codec_dev_handle_t and the I2S TX
+    // channel it plays through (both owned by bmgr; this class never
+    // deletes them). Fails with ErrorCode::InvalidArgument if either is
+    // null.
     static Result<std::shared_ptr<EspAudioOut>> create(esp_codec_dev_handle_t codec_dev,
+                                                       i2s_chan_handle_t i2s_channel,
                                                        std::string model);
 
     ~EspAudioOut() override;
@@ -98,9 +117,13 @@ public:
     // esp_codec_dev_set_out_vol(). Stored even while closed, and
     // re-applied by the next open().
     Result<void> set_volume(uint8_t percent) override;
+    // Disables the I2S TX channel at Standby/DeepStandby and enables it at
+    // Active/Dim (see file comment); a channel already in that state is
+    // left alone. ErrorCode::DeviceFailure if the I2S driver call fails.
+    Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
-    EspAudioOut(esp_codec_dev_handle_t codec_dev, std::string model);
+    EspAudioOut(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel, std::string model);
 
     // Writes enough silence to flush any real audio out of the I2S DMA
     // ring before close() actually closes the codec device -- see file
@@ -109,16 +132,19 @@ private:
 
     wisp::hal::DeviceInfo info_;
     esp_codec_dev_handle_t codec_dev_;
+    i2s_chan_handle_t i2s_channel_;
     std::atomic<bool> open_{false};
     std::atomic<uint8_t> volume_percent_;
 };
 
 class EspAudioIn : public wisp::hal::AudioIn {
 public:
-    // Wraps an already-constructed esp_codec_dev_handle_t (owned by bmgr;
-    // this class never deletes it). Fails with ErrorCode::InvalidArgument
-    // if `codec_dev` is null.
+    // Wraps an already-constructed esp_codec_dev_handle_t and the I2S RX
+    // channel it records through (both owned by bmgr; this class never
+    // deletes them). Fails with ErrorCode::InvalidArgument if either is
+    // null.
     static Result<std::shared_ptr<EspAudioIn>> create(esp_codec_dev_handle_t codec_dev,
+                                                      i2s_chan_handle_t i2s_channel,
                                                       std::string model);
 
     ~EspAudioIn() override;
@@ -152,6 +178,8 @@ public:
     // esp_codec_dev_set_in_gain(). Stored even while closed, and
     // re-applied by the next open().
     Result<void> set_gain(float db) override;
+    // Same as EspAudioOut::set_power(), for the I2S RX channel.
+    Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
     // 30ms at 16kHz; small enough to keep as a fixed member array (no
@@ -159,10 +187,11 @@ private:
     // capture only needs ~100 esp_codec_dev_read() calls.
     static constexpr size_t kScratchFrames = 480;
 
-    EspAudioIn(esp_codec_dev_handle_t codec_dev, std::string model);
+    EspAudioIn(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel, std::string model);
 
     wisp::hal::DeviceInfo info_;
     esp_codec_dev_handle_t codec_dev_;
+    i2s_chan_handle_t i2s_channel_;
     std::atomic<bool> open_{false};
     std::atomic<float> mic_gain_db_;
     int16_t scratch_[kScratchFrames * 2];  // interleaved stereo

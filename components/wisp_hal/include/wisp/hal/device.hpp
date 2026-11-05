@@ -15,10 +15,12 @@
 // `device->info().cls == T::kClass` before a plain
 // `std::static_pointer_cast<T>`.
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 
+#include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
 
 namespace wisp::hal {
@@ -44,6 +46,33 @@ const char* to_string(DeviceClass cls);
 // one of the names to_string() produces.
 std::optional<DeviceClass> class_from_string(std::string_view s);
 
+// The device-wide power level (spec 4.1). Active and Dim keep the screen
+// on (Dim only lowers its brightness); Standby turns the screen off;
+// DeepStandby additionally lets the system enter automatic light sleep.
+enum class PowerLevel : uint8_t { Active, Dim, Standby, DeepStandby };
+
+// "active", "dim", "standby", "deep_standby".
+const char* to_string(PowerLevel level);
+
+// What a device does when the device leaves Active/Dim, declared through
+// caps "standby" (spec 4.2):
+//   - Off: powered down at Standby and DeepStandby.
+//   - Throttle: keeps running at a reduced rate.
+//   - WakeSource: keeps running so it can wake the device.
+//   - None: no caps "standby" (or an unrecognized value); the device is
+//     not managed by power level and keeps running.
+enum class StandbyPolicy : uint8_t { None, Off, Throttle, WakeSource };
+
+struct DeviceInfo;
+
+// Parses caps "standby": "off" | "throttle" | "wake_source"; a missing
+// key, a non-string or any other string is None.
+StandbyPolicy standby_policy(const DeviceInfo& info);
+
+// Whether a device with `policy` is powered at `level`: Off only at
+// Active and Dim; every other policy at every level.
+bool powered_at(StandbyPolicy policy, PowerLevel level);
+
 // Static metadata describing one device instance, as registered with
 // wisp::core::DeviceRegistry. `id` follows the "<class>.<name>" convention
 // (e.g. "imu.main", "button.power"). `caps` is a bag of capability
@@ -64,6 +93,12 @@ class Device {
 public:
     virtual ~Device() = default;
     virtual const DeviceInfo& info() const = 0;
+
+    // Moves the device to `level`. A device that declares caps "standby"
+    // overrides this; calling it again with a level that maps to the
+    // state the device is already in must not resend hardware commands.
+    // The default reports ErrorCode::Unsupported.
+    virtual Result<void> set_power(PowerLevel level);
 };
 
 }  // namespace wisp::hal

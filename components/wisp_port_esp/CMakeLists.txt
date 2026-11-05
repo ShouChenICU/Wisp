@@ -41,7 +41,7 @@ wisp_component(
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net
     IDF_REQUIRES freertos esp_timer heap log esp_lcd esp_lcd_touch esp_driver_i2c esp_driver_gpio
-                 axp2101 pcf85063 qmi8658 esp_codec_dev nvs_flash fatfs sdmmc esp_driver_sdmmc
+                 axp2101 pcf85063 qmi8658 esp_codec_dev esp_driver_i2s nvs_flash fatfs sdmmc esp_driver_sdmmc
                  littlefs esp_board_manager esp_driver_usb_serial_jtag esp_driver_uart
                  esp_wifi esp_netif esp_event lwip esp_http_server esp_http_client esp-tls
                  mbedtls mdns app_update esp_partition lvgl__lvgl espressif__esp_new_jpeg

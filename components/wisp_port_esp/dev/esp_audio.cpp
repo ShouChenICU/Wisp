@@ -4,7 +4,9 @@
 #include <cstring>
 #include <utility>
 
+#include "driver/i2s_common.h"
 #include "esp_codec_dev_defaults.h"
+#include "esp_err.h"
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/port/esp/audio_downmix.hpp"
@@ -46,6 +48,29 @@ constexpr size_t kI2sDmaFrameNum = 240;
 constexpr size_t kDrainFrames = kI2sDmaDescNum * kI2sDmaFrameNum;  // 1440 frames (~90ms @ 16kHz)
 constexpr size_t kDrainChunkFrames = 256;
 
+// Brings `channel` to the state `level` calls for under caps "standby":
+// "off" (see esp_audio.hpp's file comment).
+Result<void> set_channel_power(i2s_chan_handle_t channel, wisp::hal::PowerLevel level) {
+    const bool enable = wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level);
+    i2s_chan_info_t chan_info = {};
+    esp_err_t err = i2s_channel_get_info(channel, &chan_info);
+    if (err != ESP_OK) {
+        return Result<void>::err(ErrorCode::DeviceFailure,
+                                 std::string("i2s_channel_get_info: ") + esp_err_to_name(err));
+    }
+    if (chan_info.is_enabled == enable) {
+        return Result<void>::ok();
+    }
+    err = enable ? i2s_channel_enable(channel) : i2s_channel_disable(channel);
+    if (err != ESP_OK) {
+        return Result<void>::err(
+            ErrorCode::DeviceFailure,
+            std::string(enable ? "i2s_channel_enable: " : "i2s_channel_disable: ") +
+                esp_err_to_name(err));
+    }
+    return Result<void>::ok();
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------
@@ -53,19 +78,26 @@ constexpr size_t kDrainChunkFrames = 256;
 // ---------------------------------------------------------------------
 
 Result<std::shared_ptr<EspAudioOut>> EspAudioOut::create(esp_codec_dev_handle_t codec_dev,
+                                                         i2s_chan_handle_t i2s_channel,
                                                          std::string model) {
     using R = Result<std::shared_ptr<EspAudioOut>>;
     if (codec_dev == nullptr) {
         return R::err(ErrorCode::InvalidArgument, "null codec_dev handle");
     }
-    return R::ok(std::shared_ptr<EspAudioOut>(new EspAudioOut(codec_dev, std::move(model))));
+    if (i2s_channel == nullptr) {
+        return R::err(ErrorCode::InvalidArgument, "null i2s channel handle");
+    }
+    return R::ok(
+        std::shared_ptr<EspAudioOut>(new EspAudioOut(codec_dev, i2s_channel, std::move(model))));
 }
 
-EspAudioOut::EspAudioOut(esp_codec_dev_handle_t codec_dev, std::string model)
-    : codec_dev_(codec_dev), volume_percent_(kDefaultVolumePercent) {
+EspAudioOut::EspAudioOut(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel,
+                         std::string model)
+    : codec_dev_(codec_dev), i2s_channel_(i2s_channel), volume_percent_(kDefaultVolumePercent) {
     info_.id = "audio_out.main";
     info_.cls = kClass;
     info_.model = std::move(model);
+    info_.caps = wisp::Properties{{"standby", wisp::Value("off")}};
 }
 
 // No esp_codec_dev_delete(): the handle is owned by bmgr (it lives for
@@ -140,6 +172,10 @@ void EspAudioOut::close() {
     open_.store(false);
 }
 
+Result<void> EspAudioOut::set_power(wisp::hal::PowerLevel level) {
+    return set_channel_power(i2s_channel_, level);
+}
+
 Result<void> EspAudioOut::set_volume(uint8_t percent) {
     uint8_t clamped = std::min<uint8_t>(percent, 100);
     volume_percent_.store(clamped);
@@ -159,19 +195,26 @@ Result<void> EspAudioOut::set_volume(uint8_t percent) {
 // ---------------------------------------------------------------------
 
 Result<std::shared_ptr<EspAudioIn>> EspAudioIn::create(esp_codec_dev_handle_t codec_dev,
+                                                       i2s_chan_handle_t i2s_channel,
                                                        std::string model) {
     using R = Result<std::shared_ptr<EspAudioIn>>;
     if (codec_dev == nullptr) {
         return R::err(ErrorCode::InvalidArgument, "null codec_dev handle");
     }
-    return R::ok(std::shared_ptr<EspAudioIn>(new EspAudioIn(codec_dev, std::move(model))));
+    if (i2s_channel == nullptr) {
+        return R::err(ErrorCode::InvalidArgument, "null i2s channel handle");
+    }
+    return R::ok(
+        std::shared_ptr<EspAudioIn>(new EspAudioIn(codec_dev, i2s_channel, std::move(model))));
 }
 
-EspAudioIn::EspAudioIn(esp_codec_dev_handle_t codec_dev, std::string model)
-    : codec_dev_(codec_dev), mic_gain_db_(kDefaultMicGainDb) {
+EspAudioIn::EspAudioIn(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel,
+                       std::string model)
+    : codec_dev_(codec_dev), i2s_channel_(i2s_channel), mic_gain_db_(kDefaultMicGainDb) {
     info_.id = "audio_in.main";
     info_.cls = kClass;
     info_.model = std::move(model);
+    info_.caps = wisp::Properties{{"standby", wisp::Value("off")}};
     std::memset(scratch_, 0, sizeof(scratch_));
 }
 
@@ -232,6 +275,10 @@ void EspAudioIn::close() {
     }
     esp_codec_dev_close(codec_dev_);
     open_.store(false);
+}
+
+Result<void> EspAudioIn::set_power(wisp::hal::PowerLevel level) {
+    return set_channel_power(i2s_channel_, level);
 }
 
 Result<void> EspAudioIn::set_gain(float db) {

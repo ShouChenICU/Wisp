@@ -56,6 +56,7 @@ Wisp（小鬼火）是一个运行在 ESP32 系列芯片上、完全由 AI 驱�
 - **设备模型**：
   - 设备注册在 `DeviceRegistry` 里，id 的格式为 `<类别>.<名字>`。
   - 设备能力通过 caps 声明，由 manifest 对外暴露。
+  - 设备经 caps `standby` 声明待机策略（`off`/`throttle`/`wake_source`，见 `wisp/hal/device.hpp`），由 `PowerManager` 统一调用 `set_power(PowerLevel)`，不按名字逐个处理设备。
   - 设备缺失或初始化失败时只降级运行，不得阻止启动。
 - **存储**：数据分为 System / Library / Backup 三个逻辑区，所有持久化写入都走 `StorageManager::write_atomic`。
 

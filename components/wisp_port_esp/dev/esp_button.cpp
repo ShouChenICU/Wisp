@@ -9,6 +9,11 @@ EspGpioButton::EspGpioButton(gpio_num_t pin, bool active_low, std::string id, st
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = std::move(model);
+    info_.caps = wisp::Properties{{"standby", wisp::Value("wake_source")}};
+}
+
+Result<void> EspGpioButton::set_power(wisp::hal::PowerLevel /*level*/) {
+    return Result<void>::ok();
 }
 
 bool EspGpioButton::pressed() {

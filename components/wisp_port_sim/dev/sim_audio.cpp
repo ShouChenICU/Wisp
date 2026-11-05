@@ -30,6 +30,7 @@ SimAudioOut::SimAudioOut(std::string id) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "sdl-audio";
+    info_.caps = wisp::Properties{{"standby", "off"}};
 }
 
 SimAudioOut::~SimAudioOut() { close(); }
@@ -180,6 +181,11 @@ void SimAudioOut::close() {
     device_ = 0;
 }
 
+wisp::Result<void> SimAudioOut::set_power(wisp::hal::PowerLevel level) {
+    powered_.store(wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level));
+    return wisp::Result<void>::ok();
+}
+
 wisp::Result<void> SimAudioOut::set_volume(uint8_t percent) {
     volume_.store(std::min<uint8_t>(percent, 100));
     return wisp::Result<void>::ok();
@@ -189,6 +195,7 @@ SimAudioIn::SimAudioIn(std::string id) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "sdl-audio";
+    info_.caps = wisp::Properties{{"standby", "off"}};
 }
 
 SimAudioIn::~SimAudioIn() { close(); }
@@ -281,5 +288,10 @@ void SimAudioIn::close() {
 }
 
 wisp::Result<void> SimAudioIn::set_gain(float /*db*/) { return wisp::Result<void>::ok(); }
+
+wisp::Result<void> SimAudioIn::set_power(wisp::hal::PowerLevel level) {
+    powered_.store(wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level));
+    return wisp::Result<void>::ok();
+}
 
 }  // namespace wisp::port::sim

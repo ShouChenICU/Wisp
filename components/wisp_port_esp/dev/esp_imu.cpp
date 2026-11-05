@@ -34,6 +34,7 @@ EspImu::EspImu(qmi8658_handle_t handle, std::string model) : handle_(handle) {
         {"gyro", true},
         {"magnetometer", false},
         {"max_rate_hz", 1000},
+        {"standby", wisp::Value("off")},
     };
 }
 
@@ -81,7 +82,11 @@ Result<void> EspImu::set_rate(uint32_t hz) {
     return Result<void>::ok();
 }
 
-Result<void> EspImu::set_power(bool on) {
+Result<void> EspImu::set_power(wisp::hal::PowerLevel level) {
+    const bool on = wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level);
+    if (on == powered_.load(std::memory_order_acquire)) {
+        return Result<void>::ok();
+    }
     esp_err_t err = qmi8658_set_power(handle_, on);
     if (err != ESP_OK) {
         return Result<void>::err(ErrorCode::DeviceFailure,

@@ -61,7 +61,7 @@ public:
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     wisp::Result<void> flush(const wisp::hal::Area& area, const uint16_t* rgb565) override;
     wisp::Result<void> set_brightness(uint8_t level) override;
-    wisp::Result<void> set_power(bool on) override;
+    wisp::Result<void> set_power(wisp::hal::PowerLevel level) override;
     bool powered() const override;
 
     int32_t width() const { return width_; }

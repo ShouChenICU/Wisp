@@ -22,6 +22,7 @@ SimDisplay::SimDisplay(std::string id, int32_t width, int32_t height, std::strin
         {"panel", wisp::Value("amoled")},
         {"brightness", true},
         {"area_align", 2},
+        {"standby", "off"},
     };
 }
 
@@ -51,9 +52,9 @@ wisp::Result<void> SimDisplay::set_brightness(uint8_t level) {
     return wisp::Result<void>::ok();
 }
 
-wisp::Result<void> SimDisplay::set_power(bool on) {
+wisp::Result<void> SimDisplay::set_power(wisp::hal::PowerLevel level) {
     assert_owner_thread();
-    powered_.store(on);
+    powered_.store(wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level));
     return wisp::Result<void>::ok();
 }
 

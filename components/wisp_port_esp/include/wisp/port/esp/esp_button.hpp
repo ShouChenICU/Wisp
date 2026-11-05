@@ -18,6 +18,7 @@
 #include <string>
 
 #include "driver/gpio.h"
+#include "wisp/base/result.hpp"
 #include "wisp/hal/button.hpp"
 
 namespace wisp::port::esp {
@@ -30,6 +31,9 @@ public:
 
     // gpio_get_level(pin), inverted when active_low.
     bool pressed() override;
+    // caps "standby" is "wake_source": a button keeps working at every
+    // level, so this is a no-op.
+    Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
     wisp::hal::DeviceInfo info_;

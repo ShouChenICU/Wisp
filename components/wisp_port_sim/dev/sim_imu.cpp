@@ -10,14 +10,16 @@ SimImu::SimImu(std::string id, std::shared_ptr<SimInput> input) : input_(std::mo
     info_.cls = kClass;
     info_.model = "sim-imu";
     info_.caps = wisp::Properties{
-        {"accel", true},
-        {"gyro", true},
-        {"magnetometer", false},
-        {"max_rate_hz", 1000},
+        {"accel", true},       {"gyro", true},     {"magnetometer", false},
+        {"max_rate_hz", 1000}, {"standby", "off"},
     };
 }
 
 wisp::Result<wisp::hal::ImuSample> SimImu::read() {
+    if (!powered_.load()) {
+        return wisp::Result<wisp::hal::ImuSample>::err(wisp::ErrorCode::DeviceFailure,
+                                                       "imu is powered off");
+    }
     SimTiltState tilt = input_->tilt_state();
     wisp::hal::ImuSample sample;
     sample.ax = tilt.ax;
@@ -32,6 +34,11 @@ wisp::Result<wisp::hal::ImuSample> SimImu::read() {
 
 wisp::Result<void> SimImu::set_rate(uint32_t hz) {
     rate_hz_.store(hz);
+    return wisp::Result<void>::ok();
+}
+
+wisp::Result<void> SimImu::set_power(wisp::hal::PowerLevel level) {
+    powered_.store(wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level));
     return wisp::Result<void>::ok();
 }
 

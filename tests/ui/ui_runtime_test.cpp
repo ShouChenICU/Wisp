@@ -531,7 +531,9 @@ public:
     }
 
     wisp::Result<void> set_brightness(uint8_t) override { return wisp::Result<void>::ok(); }
-    wisp::Result<void> set_power(bool) override { return wisp::Result<void>::ok(); }
+    wisp::Result<void> set_power(wisp::hal::PowerLevel) override {
+        return wisp::Result<void>::ok();
+    }
     bool powered() const override { return true; }
 
     int violations() const {
