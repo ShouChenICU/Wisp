@@ -81,6 +81,14 @@ std::string_view string_at(lua_State* L, int idx);
 inline constexpr size_t kMaxShown = 40;
 const char* shown(std::string_view s, char (&out)[kMaxShown + 4]);
 
+// Formats the value at idx into out, for an error message's "got ...":
+// a quoted (and shown()-cut) string, an integer, or a %.14g float.
+// Leaves out untouched and returns false for every other type (table,
+// boolean, function, ...) -- callers that always want something to show
+// fall back to a type name themselves (describe_problem() and the
+// canvas font check want different fallbacks here).
+bool format_scalar(lua_State* L, int idx, char (&out)[kMaxShown + 8]);
+
 // nearest_name() into a fixed buffer, so its std::string is gone before
 // the caller raises.
 void nearest_into(char (&out)[24], std::string_view wrong, std::span<const std::string_view> names);

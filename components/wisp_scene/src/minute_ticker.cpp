@@ -31,7 +31,14 @@ bool MinuteTicker::poll(std::optional<int64_t> wall_s, uint64_t mono_ms) {
         mono_due_ = mono_ms + kMinuteMs;
     }
     if (fire && mode_ == Mode::Mono) mono_due_ = mono_ms + kMinuteMs;
+    if (fire) fired_minute_ = mode_ == Mode::Wall ? std::optional<int64_t>(minute_) : std::nullopt;
     return fire;
+}
+
+bool MinuteTicker::sync(std::optional<int64_t> wall_s, uint64_t mono_ms) {
+    const auto wall = valid(wall_s);
+    if (!(wall && fired_minute_ == *wall / 60)) forced_ = true;
+    return poll(wall_s, mono_ms);
 }
 
 uint64_t MinuteTicker::next_poll_ms(std::optional<int64_t> wall_s, uint64_t mono_ms) const {

@@ -32,6 +32,12 @@ struct StorageWorkerConfig {
     // parses every manifest on this stack: with the seven example scenes a
     // boot plus install-and-open peaked at about 4.5 KB, so 4 KB overflowed
     // into a boot loop (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
+    // The parse recurses once per JSON level, and parse_scene_manifest()
+    // caps a manifest at 4 levels (the examples use 3), so no installed
+    // package can need much more: on the host the deepest accepted
+    // manifest takes about 9 % more stack than the examples, and a deeper
+    // one is refused before it costs more. Not shrunk until the device's
+    // high-water mark has been measured with a 4-level manifest.
     size_t stack_bytes = 6144;
     int priority = 3;
 };

@@ -20,6 +20,12 @@ constexpr size_t kMaxNameBytes = 32;
 constexpr size_t kMaxVersionBytes = 64;
 constexpr size_t kMaxHosts = 16;
 constexpr size_t kMaxHostBytes = 253;
+// The manifest needs three levels (permissions.http[]); one more leaves
+// room for a future field. Parsing recurses once per level, and the
+// storage worker parses every manifest at boot on a stack of a few KB
+// (wisp/core/storage_worker.hpp): without a cap, a package with a deeply
+// nested unknown field would overflow it on every boot.
+constexpr uint8_t kMaxManifestDepth = 4;
 
 Result<SceneManifest> invalid(const std::string& what) {
     return Result<SceneManifest>::err(ErrorCode::InvalidArgument, "scene.json: " + what);
@@ -221,8 +227,11 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
     if (json.size() > kMaxManifestBytes) {
         return invalid("larger than 16 KB");
     }
-    Result<Value> parsed = from_json(json);
+    Result<Value> parsed = from_json(json, kMaxManifestDepth);
     if (!parsed) {
+        if (parsed.error().code == ErrorCode::QuotaExceeded) {
+            return invalid("nested deeper than 4 levels");
+        }
         return invalid("not valid JSON: " + parsed.error().message);
     }
     const Value& root = parsed.value();

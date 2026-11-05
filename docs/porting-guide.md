@@ -77,6 +77,17 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 
 `corner_radius` 不要直接抄厂商数据表：实测常常偏小（waveshare_esp32_s3_touch_amoled_2_16 的数据表写 40，实测约 70）。新板子接入圆角屏/圆形屏时，写一个校准场景在四角画出几个候选半径（例如 40/50/60/70/80）的四分之一圆弧，圆心放在 `(R,R)`，目视核对对角线方向上哪些弧可见、哪些已被裁掉，用能看到的最大半径作为 `corner_radius`；具体做法见 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`"已知勘误与注意事项"一节。
 
+## 场景运行时
+
+新板子接入场景运行时（场景 spec 2.1/2.3）不需要任何板级代码：场景层（`wisp_scene`）和它调用的 `wisp_ui`/`wisp_hal` 都是可移植层，屏幕形状只经上面"能力字段（caps）约定"里 Display 的 `shape`/`corner_radius` 生效——`wisp.device.info()`/`wisp.device.row_span()` 直接读这两个 caps，认的是形状不是板名。
+
+前提（都已在公共配置里，新板子不用改）：
+
+- PSRAM：Lua 堆（`components/wisp_scene/src/vm.cpp` 的分配器）和 LVGL 堆（`components/wisp_ui/src/lv_mem_wisp.cpp`）都在 `os::alloc(Mem::Large)` 上，没有 PSRAM 时退回内部 RAM（容量小得多，几个示例场景同时跑大概装不下，见 AGENTS.md 第 5 节的内部 RAM 预算）。
+- `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` 已在 `firmware/sdkconfig.defaults` 里；`wisp.scene` 128 KB 的栈要放进 PSRAM 依赖它。
+
+验收时除了下面步骤 5 自检界面清单里的"Scenes 卡片"一项，还要把本板硬件文档"真机验收清单"里场景相关的几行跑一遍（参照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`）。
+
 ## 分区与板级配置
 
 `firmware/sdkconfig.defaults` 只放与板子无关的公共配置。凡是属于某块板子的配置都放在板目录：
@@ -97,10 +108,11 @@ sdkconfig 的默认值只在 `firmware/sdkconfig` 不存在时生效。切换板
 | `phy_init` | 必需 | 射频校准 |
 | `storage` | 必需 | LittleFS（`/int`） |
 | `ota_0`、`ota_1`、`otadata` | 可选（网页固件上传需要） | 双 OTA 应用分区，两个一样大，要装得下整个应用镜像（网页资源包也链接在镜像里）；没有时用单个 `factory` 应用分区，`EspFirmwareUpdater::create()` 找不到第二个槽就返回空，`GET /system/firmware` 报告 `supported: false`，只降级运行 |
+| `fonts` | 可选（矢量大字） | 20 px 及以上文字用的矢量字体镜像（矢量字体 spec 3.2–3.4）；没有这个分区时大字号文字退到 16 px 位图字，`UiRuntime::start()` 照常成功。没有 PSRAM 的板子不要加：字形缓存落在 PSRAM，没有 PSRAM 时这块内存会挤占内部 RAM |
 
 没有单独的 `assets` 分区：网页资源包（WispPack，≤ 256 KiB）链接在应用镜像里（见下文"固件与分区"）。分区大小由各板自行决定，例如 32MB 的板子可以把多出的空间分给 `storage`。参考板的分区表见 `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv` 和 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`。
 
-**改分区表的规则**：已经出货的板子改分区表时，`nvs` 和 `storage` 保持原来的偏移和大小，设置和数据才能保留。分区表和引导程序不在 OTA 范围内，网页上传只换应用镜像；所以改了分区表（或首次打开回滚功能、换了引导程序）之后，必须用 USB 完整烧录一次（`idf.py flash`，写入引导程序、分区表、`otadata` 和 `ota_0`），之后才能用网页上传。
+**改分区表的规则**：已经出货的板子改分区表时，`nvs` 和 `storage` 保持原来的偏移和大小，设置和数据才能保留。分区表和引导程序不在 OTA 范围内，网页上传只换应用镜像；所以改了分区表（或首次打开回滚功能、换了引导程序）之后，必须用 USB 完整烧录一次（`idf.py flash`，写入引导程序、分区表、`otadata` 和 `ota_0`），之后才能用网页上传。缩小 `storage`（例如给新增的 `fonts` 分区腾地方）同样算改分区表：LittleFS 的超级块记着块数，分区大小一变挂载就会失败，触发 `format_if_mount_failed` 重新格式化，`/int` 里的数据（已安装的场景、场景数据、文件）全部清空——这类改动必须事先告知用户，不能当成普通的"扩大分区"静默处理。
 
 ## 固件与分区
 
@@ -124,6 +136,16 @@ sdkconfig 的默认值只在 `firmware/sdkconfig` 不存在时生效。切换板
 ### 确认与回滚
 
 `sdkconfig.defaults` 打开了 `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`：网页上传、设备上确认后，新镜像以"待验证"状态启动；`App::start()` 跑完、输出启动报告并启动控制台之后才调用 `FirmwareUpdater::mark_valid()`（启动流程第 7 步，见 `docs/architecture.md`）。在这之前崩溃、看门狗复位或断电，引导程序都会回到旧镜像。
+
+### 字体分区
+
+有 `fonts` 分区的板子（分区约定表，上文），`firmware/main/CMakeLists.txt` 会把已提交的矢量字体打包成 `build/fonts.bin`（矢量字体 spec 3.3）并加三个烧录目标：
+
+- `idf.py -p <端口> flash`：和引导程序、分区表、应用一起写入 `fonts.bin`，新设备一条命令就完整，字体分区因此总是从出厂就有数据。
+- `idf.py -p <端口> fonts-flash`：只写 `fonts` 分区，换字体或修复字体分区时用。
+- `idf.py -p <端口> app-flash`：只写应用分区，日常改代码用它，省掉每次约 1.5 MB（压缩后）的字体写入和另一个闲置的 OTA 槽。
+
+`fonts` 分区由 `app_main` 整个 `esp_partition_mmap()` 到数据总线地址空间、只读、永久映射（`wisp::port::esp::map_font_partition()`），分区多大就占多大虚拟地址空间（按 `CONFIG_MMU_PAGE_SIZE`，参考板是 64 KB 页对齐；参考板的 `fonts` 分区 2.81 MB 就占约 2.81 MB 的数据地址空间，一直到关机）。新板子决定 `fonts` 分区大小时要留出这块地址空间：数据总线虚拟地址空间同时被 flash 的其他只读映射（网页资源包、XIP 开启时整个 flash 的可执行映射）和 PSRAM 的 XIP 映射占用，分区给得太大可能挤占它们的空间，具体上限随芯片的地址空间布局而不同，加大之前查该芯片的内存映射文档。
 
 ### 构建配置：发布版与调试版
 

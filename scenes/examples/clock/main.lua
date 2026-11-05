@@ -53,8 +53,10 @@ local function draw(g)
 end
 
 -- The digits and the weekday as labels stacked over the canvas, from a third of
--- the radius below the centre down, on a plate of the dial's colour: the hands
--- pass under it instead of through the digits.
+-- the radius below the centre down, on a plate in the "surface" colour -- the
+-- same token the dial's fill uses, though the canvas quantises colour and the
+-- dial reads back as a slightly different shade: the hands pass under the
+-- plate instead of through the digits.
 return ui.screen {
   ui.stack { w = W, h = H,
     ui.canvas { w = W, h = H, draw = draw },

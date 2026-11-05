@@ -38,6 +38,11 @@ Rules:
 - A *bindable* property also takes a `state`, `computed` or `bind`; the widget follows
   its value. Every value it takes is checked like a plain one, at the line that built
   the widget.
+- `"fill"` across a `column` or `row` (a column child's `w`, a row child's `h`) is
+  the parent's whole size, so inside a parent that is itself sized by its content
+  (the default) it can come out 0: give that parent a size or `"fill"` too.
+- `scene.on_show()` first runs right after `main.lua` returns, before the tree is on
+  the screen; what it changes is still applied after the tree is built.
 
 ## Value types
 
@@ -196,10 +201,11 @@ bottom rows covers its left and right edges.
 
 A swipe to the right that starts within 16 pixels of the left edge of the
 visible screen (rows within the safe area's height) is the system's back
-gesture. A touch there reaches the scene like any other; only once it has
-moved 24 pixels to the right, mostly sideways, does the system take it, and
-the widget under it then gets no click. Taps and drags up, down or to the
-left from the edge stay the scene's.
+gesture, at any angle: a touch there reaches the scene like any other, and
+only once it has moved 24 pixels to the right -- however far up or down --
+does the system take it, and the widget under it then gets no click.
+Dragging back to the left of that distance before release cancels it and
+nothing happens. A touch on the on-screen keyboard never starts it.
 
 ## Helpers
 
@@ -211,3 +217,41 @@ left from the edge stay the scene's.
     a `checkbox` or `switch`.
   - `h:scroll_to(i)`: scrolls a `list` or `scroll` to its `i`-th item (from 1).
   - `h:focus()`: focuses an `input` and opens the on-screen keyboard.
+
+## wisp.store
+
+A scene's own persistent data (scene-runtime-core spec 5.4): a key/value space plus up
+to 16 named collections of JSON records, kept under the scene's `data/` and never seen
+by any other scene.
+
+- `wisp.store.get(key)` returns the stored value, or `nil` if `key` has none.
+- `wisp.store.set(key, value)` returns `true`, or `nil` and a code; `value == nil`
+  deletes `key`.
+- `wisp.store.batch(fn)` calls `fn` with every `wisp.store` write inside it held back
+  until `fn` returns: if `fn` raises, or any one of those writes would itself fail,
+  none of them take effect and the call returns `nil, "batch_aborted"`; otherwise
+  they all do and the call returns `true`. Batches may nest.
+- `wisp.store.collection(name)` returns a handle `c` for one of up to 16 collections
+  (`name` is 1 to 32 bytes of lowercase letters, digits, `_` or `-`; `"kv"` is
+  reserved for the key/value space above):
+  - `c:insert(record)` returns the new record's `id` (an integer), or `nil` and a code.
+  - `c:update(id, record)` returns `true`, or `nil` and a code.
+  - `c:delete(id)` returns `true`, or `nil` and a code (`"not_found"` for an `id` that
+    does not exist).
+  - `c:find(filter?, opts?)` returns a list of matching records, each with its `id`
+    field set.
+
+`record` is a table with string keys. `id` in it is reserved: `insert` and `update`
+strip it out before storing (so a record `find` returns can be passed straight back to
+`update`), and it is always the id the store itself hands out, never a stored field.
+`filter` (a table) keeps only records equal on every field it gives; `filter.id` tests
+the record id rather than a stored field. `opts.sort` orders by one top-level field
+(numbers by value, strings by bytes; a record missing it sorts last whatever
+`opts.desc` says); `sort = "id"`, or no `sort` at all, means id order, which is
+insertion order -- newest first once `opts.desc` is set. `opts.limit` and
+`opts.offset` page the result.
+
+Codes: `quota_exceeded`, `record_too_large`, `too_many_collections`,
+`not_serializable`, `too_deep`, `not_found`, `ids_exhausted`, `batch_aborted`. A key,
+collection name or record of the wrong type, length or shape is a Lua error instead,
+at the line that made the call.

@@ -709,4 +709,174 @@ return ui.screen{ui.label{text = "keep"}}
     EXPECT_TRUE(idle_result.get());
 }
 
+// Holds the UI thread inside a job, with its post() queue full, until
+// release(): nothing the scene task hands the UI meanwhile can run.
+class UiStall {
+public:
+    explicit UiStall(wisp::ui::UiRuntime& ui) {
+        auto started = std::make_shared<std::promise<void>>();
+        EXPECT_TRUE(ui.post([started, f = released_.get_future().share()] {
+            started->set_value();
+            f.wait();
+        }));
+        started->get_future().wait();
+        while (ui.post([] {})) {
+        }
+    }
+    ~UiStall() { release(); }
+    void release() {
+        if (!done_) released_.set_value();
+        done_ = true;
+    }
+
+private:
+    std::promise<void> released_;
+    bool done_ = false;
+};
+
+// Whoever close() or close_async() answers sees the scene Stopped, its
+// "stopped" already published: a "deleted" the caller publishes next (as
+// a confirmed delete does) can never come before it. The UI is stalled so
+// that nothing the scene task hands it can be what orders the two.
+TEST_F(SceneRuntimeTest, CloseAnswersOnlyOnceTheSceneIsStopped) {
+    start();
+    install("counter", kCounter);
+    ASSERT_TRUE(rt->open("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    {
+        UiStall stall(*ui);
+        std::promise<SceneState> seen;
+        rt->close_async("counter", [&](wisp::Result<void> r) {
+            EXPECT_TRUE(r) << r.error().message;
+            seen.set_value(rt->status("counter").state);
+            wisp::core::Event e;
+            e.topic = "scene.state";
+            e.source = "scene";
+            e.payload = {{"id", wisp::Value("counter")}, {"state", wisp::Value("deleted")}};
+            bus.publish(std::move(e));
+        });
+        auto state = seen.get_future();
+        ASSERT_EQ(state.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+        EXPECT_EQ(state.get(), SceneState::Stopped);
+        EXPECT_EQ(rt->foreground(), std::nullopt);
+    }
+    // The callback answers before it publishes "deleted", and the bus
+    // delivers on its own thread: wait for all three before comparing.
+    ASSERT_TRUE(wait_until([&] { return events().size() == 3; }, 1000));
+    EXPECT_EQ(events(),
+              (std::vector<StateEvent>{
+                  {"counter", "running"}, {"counter", "stopped"}, {"counter", "deleted"}}));
+
+    ASSERT_TRUE(rt->open("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    {
+        UiStall stall(*ui);
+        ASSERT_TRUE(rt->close("counter"));
+        EXPECT_EQ(rt->status("counter").state, SceneState::Stopped);
+    }
+}
+
+// The UI changes that open and close a scene (the view coming up, going
+// away) are never dropped, however long the UI thread is held up with its
+// queue full: they run once it is free again.
+TEST_F(SceneRuntimeTest, OpenAndCloseSurviveALongUiStall) {
+    start();
+    install("counter", kCounter);
+    {
+        UiStall stall(*ui);
+        ASSERT_TRUE(rt->open("counter"));
+        // Longer than any bounded retry would wait.
+        wisp::os::sleep_ms(2500);
+    }
+    EXPECT_TRUE(wait_label("已点击"));
+    {
+        UiStall stall(*ui);
+        ASSERT_TRUE(rt->close("counter"));
+        wisp::os::sleep_ms(2500);
+    }
+    EXPECT_TRUE(wait_until([&] { return active_screen() == home; }, 1000));
+}
+
+// A close of a scene whose load is still on the worker cancels that open:
+// the scene does not come up afterwards on files a delete may be removing.
+TEST_F(SceneRuntimeTest, CloseDuringItsLoadCancelsTheOpen) {
+    start();
+    install("todo", "return ui.screen { ui.label { text = 'v0' } }");
+    WorkerGate gate(worker);
+    // From the UI thread an open is only queued.
+    on_ui([&] { EXPECT_TRUE(rt->open("todo")); });
+    // The scene task has handled it: the load waits on the worker.
+    ASSERT_TRUE(rt->check_sources({}));
+    std::promise<bool> closed;
+    rt->close_async("todo", [&](wisp::Result<void> r) { closed.set_value(r.is_ok()); });
+    ASSERT_TRUE(rt->check_sources({}));
+    gate.release();
+    auto result = closed.get_future();
+    ASSERT_EQ(result.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_TRUE(result.get());
+    // The load came back before the close was answered; this is after it.
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_FALSE(rt->foreground().has_value());
+    EXPECT_NE(rt->status("todo").state, SceneState::Running);
+    EXPECT_TRUE(events().empty());
+    ASSERT_TRUE(rt->open("todo"));
+    EXPECT_TRUE(wait_label("v0"));
+}
+
+// While a scene is being deleted (SceneRepository::removing()), it is not
+// opened: a new open is refused at once, and one whose load was already
+// on the worker is dropped when the load comes back.
+TEST_F(SceneRuntimeTest, OpenIsBusyWhileTheSceneIsBeingDeleted) {
+    start();
+    install("todo", "return ui.screen { ui.label { text = 'v0' } }");
+    auto gate = std::make_unique<WorkerGate>(worker);
+    on_ui([&] { EXPECT_TRUE(rt->open("todo")); });
+    ASSERT_TRUE(rt->check_sources({}));
+    repo->begin_removing("todo");
+
+    auto refused = rt->open("todo");
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().code, ErrorCode::Busy);
+
+    gate->release();
+    ASSERT_TRUE(worker.drain(5000));
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_FALSE(rt->foreground().has_value());
+    EXPECT_TRUE(events().empty());
+
+    repo->end_removing("todo");
+    ASSERT_TRUE(rt->open("todo"));
+    EXPECT_TRUE(wait_label("v0"));
+}
+
+// When the screen a scene covered is gone by the time it closes, an empty
+// screen stands in for it: one, made once and reused, not a new one per
+// close.
+TEST_F(SceneRuntimeTest, OneStandInScreenForAHomeThatIsGone) {
+    start();
+    install("counter", kCounter);
+    ASSERT_TRUE(rt->open("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    lv_obj_t* scene_screen = active_screen();
+    on_ui([&] { lv_obj_delete(home); });
+    ASSERT_TRUE(rt->close("counter"));
+    ASSERT_TRUE(wait_until([&] { return active_screen() != scene_screen; }, 1000));
+    lv_obj_t* stand_in = active_screen();
+
+    // Something else is on screen when the scene opens again, and is gone
+    // when it closes.
+    lv_obj_t* other = nullptr;
+    on_ui([&] {
+        other = lv_obj_create(nullptr);
+        lv_screen_load(other);
+    });
+    ASSERT_TRUE(rt->open("counter"));
+    ASSERT_TRUE(wait_label("已点击"));
+    scene_screen = active_screen();
+    on_ui([&] { lv_obj_delete(other); });
+    ASSERT_TRUE(rt->close("counter"));
+    ASSERT_TRUE(wait_until([&] { return active_screen() != scene_screen; }, 1000));
+    EXPECT_EQ(active_screen(), stand_in);
+}
+
 }  // namespace

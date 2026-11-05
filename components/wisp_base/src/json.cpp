@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <utility>
 
 namespace wisp {
@@ -187,6 +188,21 @@ Result<Value> from_json(std::string_view s) {
     if (err) {
         return Result<Value>::err(ErrorCode::InvalidArgument, err.c_str());
     }
+    return Result<Value>::ok(read_value(doc.as<JsonVariantConst>()));
+}
+
+Result<Value> from_json(std::string_view s, uint8_t max_depth) {
+    JsonDocument doc;
+    DeserializationError err =
+        deserializeJson(doc, s.data(), s.size(), DeserializationOption::NestingLimit(max_depth));
+    if (err == DeserializationError::TooDeep) {
+        return Result<Value>::err(ErrorCode::QuotaExceeded,
+                                  "nested deeper than " + std::to_string(max_depth) + " levels");
+    }
+    if (err) {
+        return Result<Value>::err(ErrorCode::InvalidArgument, err.c_str());
+    }
+    // The document is at most max_depth deep, and so is this recursion.
     return Result<Value>::ok(read_value(doc.as<JsonVariantConst>()));
 }
 

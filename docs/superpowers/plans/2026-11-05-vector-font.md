@@ -438,17 +438,17 @@ TEST(Schema, DocIsUpToDate)                 // 失败后用 build/sim/scene-api.
 **Files:**
 - Modify: `THIRD_PARTY_NOTICES.md`、`docs/references.md`、`docs/architecture.md`、`docs/porting-guide.md`、`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`、本计划
 
-- [ ] **Step 1: `THIRD_PARTY_NOTICES.md`**
+- [x] **Step 1: `THIRD_PARTY_NOTICES.md`**
   - "Noto Sans CJK SC" 一节标题与正文扩展到 `components/wisp_ui/fonts/noto_sans_cjk_sc_subset.ttf` 与 `fonts` 分区镜像：由 `tools/gen_vector_font.py` 子集化并转为 TrueType（修改版）；保留 name 表 ID 0/13/14；上游 `LICENSE`（标签 `Sans2.004`，SHA-256 `6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2`）没有版权行、没有保留字体名，字体名保持 "Noto Sans CJK SC"。
   - 新增 "Font Awesome Free 5 (via `lv_font_wisp_icons_*.c`)"：来源 LVGL 9.5.0 的 `scripts/built_in_font/FontAwesome5-Solid+Brands+Regular.woff`，许可证文字从 `scripts/built_in_font/font_license/FontAwesome5/LICENSE.txt` 原样复制；写明生成的字体不用保留名 "Font Awesome"。
   - LVGL 一节的 bundled 列表加 stb_truetype（`src/libs/tiny_ttf/stb_truetype_htcw.h`，MIT / Public Domain，许可证文字取自该文件末尾）。
   - 新增 "fontTools"（4.55.3，MIT，`tools/gen_vector_font.py` 的转换改编自 `Snippets/otf2ttf.py`；不进固件），许可证文字取自 fontTools 4.55.3 发行包的 `LICENSE`。
-- [ ] **Step 2: `docs/references.md`**：新增三行——子集 TTF（来源、字符集、pyftsubset 参数、cu2qu 误差、post v3、命令、`gen_vector_font_test.py`）、图标位图字（来源、码位来源、lv_font_conv 命令、`--check`）、fontTools（改编片段）。
-- [ ] **Step 3: `docs/architecture.md`**：启动流程第 4 步写明 `Platform::font_image` → `UiConfig::font_image` → `UiRuntime::start()` 校验；"相对 spec 的细化"第 7 条（字体）改写：正文 16 px 位图、20 px 起矢量档位、回退链、降级规则、行高；停止顺序写明 `UiRuntime::stop()` 先销毁矢量字体。
-- [ ] **Step 4: `docs/porting-guide.md`**：分区约定表加 `fonts`（可选：矢量大字；没有时大字退到 16 px；没有 PSRAM 的板子不要加）；"改分区表的规则"补一句：缩小 `storage` 会让 `/int` 重新格式化，必须事先告知用户；固件与分区一节加 `idf.py flash` 写字体、`fonts-flash`、`app-flash`；提醒映射 2.8 MB 要占数据总线地址空间。
-- [ ] **Step 5: 硬件文档**：分区表换成 spec 3.4 的表；改写原来"`nvs` 和 `storage` 保持了偏移和大小"那段（`storage` 缩小、换表时 `/int` 被清空、`nvs` 保留）；"内部 RAM"一节先写入 spike 的实测（`wisp_ui` 栈余量 1208 → 808 B，映射 80 B），Task 9 再补正式数据。
-- [ ] **Step 6: 验证** — `bash tools/ci.sh`（注释与文档守卫覆盖 `docs/`）。
-- [ ] **Step 7: Commit** — `docs: register the vector font and icon font, document the fonts partition`
+- [x] **Step 2: `docs/references.md`**：新增三行——子集 TTF（来源、字符集、pyftsubset 参数、cu2qu 误差、post v3、命令、`gen_vector_font_test.py`）、图标位图字（来源、码位来源、lv_font_conv 命令、`--check`）、fontTools（改编片段）。
+- [x] **Step 3: `docs/architecture.md`**：启动流程第 4 步写明 `Platform::font_image` → `UiConfig::font_image` → `UiRuntime::start()` 校验；"相对 spec 的细化"第 7 条（字体）改写：正文 16 px 位图、20 px 起矢量档位、回退链、降级规则、行高；停止顺序写明 `UiRuntime::stop()` 先销毁矢量字体。
+- [x] **Step 4: `docs/porting-guide.md`**：分区约定表加 `fonts`（可选：矢量大字；没有时大字退到 16 px；没有 PSRAM 的板子不要加）；"改分区表的规则"补一句：缩小 `storage` 会让 `/int` 重新格式化，必须事先告知用户；固件与分区一节加 `idf.py flash` 写字体、`fonts-flash`、`app-flash`；提醒映射 2.8 MB 要占数据总线地址空间。
+- [x] **Step 5: 硬件文档**：分区表换成 spec 3.4 的表；改写原来"`nvs` 和 `storage` 保持了偏移和大小"那段（`storage` 缩小、换表时 `/int` 被清空、`nvs` 保留）；"内部 RAM"一节先写入 spike 的实测（`wisp_ui` 栈余量 1208 → 808 B，映射 80 B），Task 9 再补正式数据。
+- [x] **Step 6: 验证** — `bash tools/ci.sh`（注释与文档守卫覆盖 `docs/`）。
+- [x] **Step 7: Commit** — `docs: register the vector font and icon font, document the fonts partition`
 
 ---
 

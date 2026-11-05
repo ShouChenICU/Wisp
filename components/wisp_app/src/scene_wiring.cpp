@@ -224,15 +224,22 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
                         return;
                     }
                     // A scene that is up closes first; its last flush is on
-                    // disk before the files go.
+                    // disk before the files go. From here until the files
+                    // are gone the scene is not opened again.
+                    repo_->begin_removing(id);
                     auto then = [this, id, with_data](Result<void> closed) {
                         if (!closed) {
                             WLOG_W(kTag, "%s: not deleted: the scene did not close: %s", id.c_str(),
                                    closed.error().message.c_str());
+                            repo_->end_removing(id);
                             return;
                         }
-                        if (!worker_.submit([this, id, with_data] { remove(id, with_data); })) {
+                        if (!worker_.submit([this, id, with_data] {
+                                remove(id, with_data);
+                                repo_->end_removing(id);
+                            })) {
                             WLOG_W(kTag, "%s: not deleted: storage worker busy", id.c_str());
+                            repo_->end_removing(id);
                         }
                     };
                     if (runtime_started_) {

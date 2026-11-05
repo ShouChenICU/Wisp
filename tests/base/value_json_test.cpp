@@ -31,6 +31,18 @@ TEST(Json, InvalidInputIsError) {
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().code, wisp::ErrorCode::InvalidArgument);
 }
+TEST(Json, MaxDepthBoundsNesting) {
+    // The root counts as one level: {"a":[1]} is two deep.
+    ASSERT_TRUE(wisp::from_json(R"({"a":[1]})", 2));
+    auto deep = wisp::from_json(R"({"a":[[1]]})", 2);
+    ASSERT_FALSE(deep);
+    EXPECT_EQ(deep.error().code, wisp::ErrorCode::QuotaExceeded);
+    // Strings in either quote style hold no structure.
+    EXPECT_TRUE(wisp::from_json(R"({"a":"[[[[[[","b":'{{{{'})", 1));
+    EXPECT_FALSE(wisp::from_json(R"({'"':[[[[[[1]]]]]]})", 4));
+    // Other errors stay InvalidArgument.
+    EXPECT_EQ(wisp::from_json("{bad", 4).error().code, wisp::ErrorCode::InvalidArgument);
+}
 TEST(Value, FindOnNonMapIsNull) { EXPECT_EQ(wisp::Value(3).find("x"), nullptr); }
 
 TEST(Value, DefaultIsNull) {
