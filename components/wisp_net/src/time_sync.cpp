@@ -116,7 +116,10 @@ void TimeSyncService::finish(bool ok, int64_t unix_time, const std::string& serv
 
     Properties payload{{"state", Value(ok ? "synced" : "failed")}, {"server", Value(server)}};
     if (ok) payload.emplace("time", Value(unix_time));
-    deps_.bus.publish(core::Event{.topic = "system.time", .payload = std::move(payload)});
+    core::Event event;
+    event.topic = "system.time";
+    event.payload = std::move(payload);
+    deps_.bus.publish(std::move(event));
 }
 
 bool TimeSyncService::sync_now() {
