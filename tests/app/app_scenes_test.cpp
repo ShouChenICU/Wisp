@@ -576,3 +576,59 @@ TEST(AppScenes, UnchangedListIsNotRedrawn) {
             << areas[i].y2 << " over the card " << y1 << "-" << y2;
     }
 }
+
+// Dev mode (spec 6.4): the scene in front reloads when its files change on
+// disk; a broken save shows the error (state, log) and the next good save
+// brings the scene back. Scenes not in front are left alone.
+TEST(AppScenes, DevModeReloadsTheSceneInFront) {
+    const fs::path work = fs::path(wisp::test::temp_dir()) / "work";
+    const fs::path data = fs::path(wisp::test::temp_dir()) / "data";
+    auto put = [&](const std::string& id, const std::string& main_lua) {
+        fs::create_directories(work / id);
+        std::ofstream(work / id / "scene.json") << R"({"id":")" << id << R"(","name":")" << id
+                                                << R"(","version":"1.0.0","schema_version":1})";
+        std::ofstream(work / id / "main.lua", std::ios::trunc) << main_lua;
+    };
+    put("counter", kCounter);
+    put("other", "return ui.screen { ui.label { text = 'other' } }");
+    UiNetOptions opts;
+    opts.scenes_dir = work.string();
+    opts.scenes_data_dir = data.string();
+    Booted b(opts);
+    ASSERT_TRUE(b.start());
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    EXPECT_EQ(b.h.app->scene_repository()->data_dir("counter"), data.string() + "/counter/data");
+    ASSERT_TRUE(rt->open("counter"));
+    auto shows = [&](const std::string& text) {
+        return wait_until(
+            [&] {
+                return !run_on_ui_thread(b.h.app->ui(), [&] {
+                            return find_label_text_containing(lv_screen_active(), text.c_str());
+                        }).empty();
+            },
+            5000);
+    };
+    ASSERT_TRUE(shows("已点击 0 次"));
+    ASSERT_TRUE(rt->click_ref("plus"));
+    ASSERT_TRUE(shows("已点击 1 次"));
+
+    std::string edited = kCounter;
+    edited.replace(edited.find("已点击"), std::string("已点击").size(), "改过");
+    put("counter", edited);
+    EXPECT_TRUE(shows("改过 0 次"));
+
+    put("counter", "return ui.screen {\n");
+    EXPECT_TRUE(wait_until(
+        [&] { return rt->status("counter").state == wisp::core::SceneState::Error; }, 5000));
+    EXPECT_FALSE(scene_log("counter").empty());
+
+    put("counter", kCounter);
+    EXPECT_TRUE(shows("已点击 0 次"));
+    EXPECT_EQ(rt->status("counter").state, wisp::core::SceneState::Running);
+
+    put("other", "return ui.screen { ui.label { text = 'changed' } }");
+    wisp::os::sleep_ms(1500);
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("counter"));
+    EXPECT_EQ(rt->status("other").state, wisp::core::SceneState::Stopped);
+}

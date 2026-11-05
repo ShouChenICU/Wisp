@@ -1,6 +1,9 @@
 #include "scene_wiring.hpp"
 
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "wisp/core/log.hpp"
 #include "wisp/os/os.hpp"
@@ -14,6 +17,8 @@ constexpr const char* kTag = "scenes";
 // How long stop() lets the worker finish what is queued (the closed
 // scene's last flush among it) before it stops it anyway.
 constexpr uint32_t kDrainMs = 5000;
+// How often dev mode looks at the working directory (spec 6.4).
+constexpr uint32_t kWatchMs = 500;
 
 }  // namespace
 
@@ -118,9 +123,54 @@ void SceneWiring::start_runtime(std::function<bool()> standby) {
     power_sub_ = deps_.bus.subscribe(
         "power.state", [rt, standby](const core::Event&) { rt->set_visible(!standby()); });
     if (standby()) rt->set_visible(false);
+    if (repo_->dev()) start_watching();
+}
+
+void SceneWiring::start_watching() {
+    const std::string& root = deps_.platform.scenes_dir;
+    watcher_ = os::make_large<scene::DirWatcher>(deps_.storage, root);
+    if (!watcher_) {
+        WLOG_W(kTag, "no memory for the scene watcher; edits need a manual reload");
+        return;
+    }
+    auto tick = [this] {
+        if (poll_queued_.exchange(true)) return;
+        if (!worker_.submit([this] { poll_scenes(); })) poll_queued_ = false;
+    };
+    // The first poll is the baseline, so take it now: edits made before the
+    // first tick still count.
+    tick();
+    watch_timer_ = os::Timer::create("scene.watch", kWatchMs, true, tick);
+    if (!watch_timer_) {
+        WLOG_W(kTag, "no timer for the scene watcher; edits need a manual reload");
+        return;
+    }
+    watch_timer_->start();
+    WLOG_I(kTag, "watching %s for scene changes", root.c_str());
+}
+
+void SceneWiring::poll_scenes() {
+    std::vector<std::string> changed = watcher_->poll();
+    poll_queued_ = false;
+    if (changed.empty() || !runtime_started_) return;
+    const std::optional<std::string> front = runtime_->foreground();
+    for (const std::string& id : changed) {
+        if (!front || *front != id) {
+            WLOG_D(kTag, "%s: files changed", id.c_str());
+            continue;
+        }
+        WLOG_I(kTag, "%s: files changed; reloading", id.c_str());
+        // On the worker this only queues the reload; how it went is logged
+        // and published by the runtime.
+        if (auto r = runtime_->reload(id); !r) {
+            WLOG_W(kTag, "%s: reload not queued: %s", id.c_str(), r.error().message.c_str());
+        }
+    }
 }
 
 void SceneWiring::stop_runtime() {
+    // A poll already queued finds the runtime stopped and reloads nothing.
+    if (watch_timer_) watch_timer_->stop();
     if (power_sub_ != 0) {
         deps_.bus.unsubscribe(power_sub_);
         power_sub_ = 0;

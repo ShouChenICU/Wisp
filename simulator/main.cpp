@@ -41,7 +41,16 @@
 // gains "debug pair-code", which prints the active pairing code as
 // "pair-code=<6 digits>" ("pair-code=none" without one) so scripts can pair
 // without reading the screen (tests/smoke/admin_smoke.py). It is the only
-// output that ever carries a pairing code.
+// output that ever carries a pairing code. "debug scene-click <ref>" clicks
+// the widget with that ref in the scene in front
+// (SceneRuntime::click_ref()) and answers "scene-click=ok" or
+// "scene-click=<error>".
+//
+// Scenes (scene-runtime-core spec 6.4): --scenes-dir puts the scene
+// repository in dev mode over that directory (Platform::scenes_dir), with
+// the scenes' data in <data-dir>/scenes/<id>/data; the scene in front
+// reloads when its files change (see components/wisp_app/src/
+// scene_wiring.hpp). --open-scene opens one once App::start() returns.
 
 #include <SDL.h>
 #include <signal.h>
@@ -85,6 +94,7 @@
 #include "wisp/port/sim/sim_http_server.hpp"
 #include "wisp/port/sim/sim_input.hpp"
 #include "wisp/port/sim/sim_web_pack.hpp"
+#include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace {
@@ -109,17 +119,28 @@ void install_signal_handlers() {
 }
 
 #ifdef WISP_SIM_DEBUG_COMMANDS
+std::string debug_command(wisp::app::App& app, const std::vector<std::string>& args) {
+    if (args.size() == 2 && args[1] == "pair-code") {
+        wisp::net::PairingService* pairing = app.pairing();
+        if (pairing == nullptr) return "error: pairing is unavailable";
+        auto code = pairing->active_code(wisp::os::now_ms());
+        return "pair-code=" + (code ? *code : std::string("none"));
+    }
+    if (args.size() == 3 && args[1] == "scene-click") {
+        wisp::scene::SceneRuntime* scenes = app.scenes();
+        if (scenes == nullptr) return "scene-click=scenes are off";
+        auto r = scenes->click_ref(args[2]);
+        return "scene-click=" + (r ? std::string("ok") : r.error().message);
+    }
+    return "error: usage: debug pair-code | debug scene-click <ref>";
+}
+
 std::vector<wisp::app::ConsoleCommand> debug_commands() {
     return {{
         "debug",
-        "debug pair-code              the active pairing code (simulator only)",
-        [](wisp::app::App& app, const std::vector<std::string>& args) -> std::string {
-            if (args.size() != 2 || args[1] != "pair-code") return "error: usage: debug pair-code";
-            wisp::net::PairingService* pairing = app.pairing();
-            if (pairing == nullptr) return "error: pairing is unavailable";
-            auto code = pairing->active_code(wisp::os::now_ms());
-            return "pair-code=" + (code ? *code : std::string("none"));
-        },
+        "debug pair-code              the active pairing code (simulator only)\n"
+        "debug scene-click <ref>      click a widget of the scene in front (simulator only)",
+        debug_command,
     }};
 }
 #endif
@@ -551,6 +572,13 @@ int main(int argc, char** argv) {
 
     std::error_code ec;
     std::filesystem::create_directories(opts.data_dir, ec);
+    // Absolute: StorageManager only removes or renames inside an absolute
+    // mount point, so with a relative --data-dir (the default among them)
+    // installing a scene would fail.
+    if (auto abs = std::filesystem::absolute(opts.data_dir, ec); !ec) {
+        opts.data_dir = abs.lexically_normal().string();
+        if (opts.data_dir.size() > 1 && opts.data_dir.back() == '/') opts.data_dir.pop_back();
+    }
 
     // log::init() is called again (harmlessly -- see log.hpp) inside
     // App::start(); it's called here too, first, so the WLOG_W below
@@ -658,6 +686,21 @@ int main(int argc, char** argv) {
 #ifdef WISP_SIM_DEBUG_COMMANDS
     platform.console_commands = debug_commands();
 #endif
+    if (!opts.scenes_dir.empty()) {
+        // Absolute, so the scene paths in logs and errors say where they are.
+        std::filesystem::path dir = std::filesystem::absolute(opts.scenes_dir, ec);
+        if (ec || !std::filesystem::is_directory(dir, ec)) {
+            std::fprintf(stderr, "wisp_sim: --scenes-dir %s is not a directory\n",
+                         opts.scenes_dir.c_str());
+            SDL_Quit();
+            return 2;
+        }
+        platform.scenes_dir = dir.lexically_normal().string();
+        if (platform.scenes_dir.size() > 1 && platform.scenes_dir.back() == '/') {
+            platform.scenes_dir.pop_back();
+        }
+        platform.scenes_data_dir = opts.data_dir + "/scenes";
+    }
 
     wisp::app::App app(std::move(platform));
     auto started = app.start();
@@ -666,6 +709,17 @@ int main(int argc, char** argv) {
                      started.error().message.c_str());
         SDL_Quit();
         return 1;
+    }
+
+    if (!opts.open_scene.empty()) {
+        wisp::scene::SceneRuntime* scenes = app.scenes();
+        auto opened = scenes != nullptr
+                          ? scenes->open(opts.open_scene)
+                          : wisp::Result<void>::err(wisp::ErrorCode::Unsupported, "scenes are off");
+        if (!opened) {
+            WLOG_E(kLogTag, "--open-scene %s: %s", opts.open_scene.c_str(),
+                   opened.error().message.c_str());
+        }
     }
 
     int exit_code = 0;

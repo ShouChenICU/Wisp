@@ -19,6 +19,11 @@
 //     screen is up -- the screen a scene's view replaces and goes back to.
 //     The runtime then follows power.state: standby hides the scene, waking
 //     shows it.
+//   - in dev mode, once the runtime runs: a DirWatcher over the working
+//     directory, polled on the worker every 500 ms (it reads files); when
+//     the scene in front (running or showing its error panel) changes on
+//     disk, it is reloaded (spec 6.4). Errors reach the error panel and
+//     the console (tag "scene.<id>") the way every scene error does.
 //
 // Shutdown is split because the pieces sit at different points of
 // App::stop(): stop_runtime() before the self-check screen goes (closing
@@ -50,6 +55,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
+#include "wisp/scene/dir_watcher.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -120,6 +126,11 @@ private:
     // On the worker: removes the scene and publishes "deleted".
     void remove(const std::string& id, bool with_data);
     void publish(const std::string& id, const char* state);
+    // Dev mode: starts the watch timer (start_runtime()).
+    void start_watching();
+    // On the worker: one DirWatcher poll, reloading the scene in front if
+    // its files changed.
+    void poll_scenes();
 
     SceneWiringDeps deps_;
     core::StorageWorker worker_;
@@ -136,6 +147,11 @@ private:
     // Cleared on the UI thread by stop_runtime(); read there only after.
     ui::SystemLayer* system_ = nullptr;
     std::function<void()> wake_;
+    // Dev mode only. The watcher is used on the worker alone; the timer
+    // only queues a poll, at most one at a time.
+    os::LargeUnique<scene::DirWatcher> watcher_;
+    std::unique_ptr<os::Timer> watch_timer_;
+    std::atomic<bool> poll_queued_{false};
     core::SubscriptionId power_sub_ = 0;
     // Read by the delete dialog's answer on the UI thread.
     std::atomic<bool> runtime_started_{false};

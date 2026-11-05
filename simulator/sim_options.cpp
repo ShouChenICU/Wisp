@@ -134,6 +134,12 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
                 return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
             }
             opts.web_dir = std::move(v.value());
+        } else if (arg == "--scenes-dir" || arg == "--open-scene") {
+            auto v = take_value(argc, argv, i, arg.c_str());
+            if (!v) {
+                return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
+            }
+            (arg == "--scenes-dir" ? opts.scenes_dir : opts.open_scene) = std::move(v.value());
         } else if (arg == "--disable") {
             auto v = take_value(argc, argv, i, "--disable");
             if (!v) {

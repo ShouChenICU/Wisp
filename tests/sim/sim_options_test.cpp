@@ -173,3 +173,24 @@ TEST(SimOptions, ParsesStdinTouchCommands) {
         EXPECT_NE(r.error().message.find("invalid touch command"), std::string::npos) << bad;
     }
 }
+
+TEST(SimOptions, ScenesDirAndOpenScene) {
+    const char* none[] = {"wisp_sim"};
+    auto defaults = parse_sim_options(1, none).value();
+    EXPECT_TRUE(defaults.scenes_dir.empty());
+    EXPECT_TRUE(defaults.open_scene.empty());
+
+    const char* argv[] = {"wisp_sim", "--scenes-dir", "scenes/examples", "--open-scene", "counter"};
+    auto o = parse_sim_options(5, argv).value();
+    EXPECT_EQ(o.scenes_dir, "scenes/examples");
+    EXPECT_EQ(o.open_scene, "counter");
+
+    const char* missing[] = {"wisp_sim", "--scenes-dir"};
+    auto r = parse_sim_options(2, missing);
+    ASSERT_FALSE(r);
+    EXPECT_NE(r.error().message.find("--scenes-dir"), std::string::npos);
+    const char* missing_id[] = {"wisp_sim", "--open-scene"};
+    auto r2 = parse_sim_options(2, missing_id);
+    ASSERT_FALSE(r2);
+    EXPECT_NE(r2.error().message.find("--open-scene"), std::string::npos);
+}

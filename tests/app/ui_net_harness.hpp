@@ -54,6 +54,9 @@ struct UiNetOptions {
     std::string firmware_version = "0.2.0";
     // Registers a FakeTouch as "touch.main" (the back gesture needs one).
     bool with_touch = false;
+    // Platform::scenes_dir / scenes_data_dir (dev mode); empty: off.
+    std::string scenes_dir;
+    std::string scenes_data_dir;
 };
 
 class UiNetBoard : public wisp::app::Board {
@@ -159,6 +162,8 @@ struct UiNetHarness {
             platform.http_server = std::move(srv);
             platform.http_always_on = true;
         }
+        platform.scenes_dir = opts.scenes_dir;
+        platform.scenes_data_dir = opts.scenes_data_dir;
         if (opts.pairing_ttl_ms != 0) platform.pairing.code_ttl_ms = opts.pairing_ttl_ms;
         if (opts.pairing_interval_ms >= 0) {
             platform.pairing.min_code_interval_ms = static_cast<uint32_t>(opts.pairing_interval_ms);

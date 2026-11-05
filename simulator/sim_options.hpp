@@ -48,6 +48,11 @@ struct SimOptions {
     bool wifi_fail = false;
     // In command-line order; see SimTouchStep.
     std::vector<SimTouchStep> touches;
+    // Dev mode (scene-runtime-core spec 6.4): scenes come straight from
+    // this directory and reload when their files change.
+    std::string scenes_dir;
+    // A scene to open once App::start() has returned.
+    std::string open_scene;
 };
 
 // Parses argv[1..argc) (argv[0], the program name, is ignored) into a
@@ -57,7 +62,7 @@ struct SimOptions {
 // <rect|rounded_rect|circle>, --http-port <n> (0-65535; 0 = no admin
 // server), --web-dir <path>, --wifi-fail, --tap <x>,<y>@<ms> and
 // --swipe <x1>,<y1>,<x2>,<y2>@<ms> (both repeatable, appended to
-// `touches` in order).
+// `touches` in order), --scenes-dir <path> and --open-scene <id>.
 //
 // Fails with wisp::ErrorCode::InvalidArgument if:
 //   - an argument is none of the flags above (the error message includes
