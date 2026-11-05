@@ -246,7 +246,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 
 ### 5.4 `SystemSettings`（`wisp_core`）
 
-封装亮度（`display`/`brightness`）、音量、自动熄屏时间、设备界面语言（`sys`/`lang`，取值 `zh`/`ja`/`en`，默认 `zh`，见 8.3）、时区 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480；场景 spec 5.2）这些 Settings 键：校验取值范围，写入后立即生效（例如亮度立即应用到 `display.main`）。后台网页、以后的 Agent 工具和设置页都调用它。
+封装亮度（`display`/`brightness`）、音量、自动熄屏时间、设备界面语言（`sys`/`lang`，取值 `zh`/`ja`/`en`，默认 `zh`，见 8.3）、时区 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480；场景 spec 5.2）、校时服务器 `ntp_servers`（`sys`/`ntp`，逗号分隔的 1–2 个主机名或 IPv4 地址，每个不超过 63 个字符，默认 `pool.ntp.org,ntp.aliyun.com`；见 5.6）这些 Settings 键：校验取值范围，写入后立即生效（例如亮度立即应用到 `display.main`）。后台网页、以后的 Agent 工具和设置页都调用它。
 
 ### 5.5 事件主题（同步写入 `docs/architecture.md`）
 
@@ -256,9 +256,21 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | `net.ap.state` | `WifiService` | `{active, ssid, clients}`（不含密码） |
 | `net.pairing.code` | `PairingService` | `{active, expires_ms}`（不含配对码） |
 | `net.pairing.failed` | `PairingService` | `{attempts, locked}` |
-| `system.settings` | `App`（`SystemSettings` 的 `on_changed`） | `{brightness, volume, screen_off_s, language, utc_offset_min}`：每批设置写入成功后的全部当前值（与 `GET /settings` 同形） |
+| `system.settings` | `App`（`SystemSettings` 的 `on_changed`） | `{brightness, volume, screen_off_s, language, utc_offset_min, ntp_servers}`：每批设置写入成功后的全部当前值（与 `GET /settings` 同形） |
+| `system.time` | `TimeSyncService` | `{state, server, time}`：每次校时尝试结束后发布；`state` 为 `synced`（`time` 为同步到的 UTC 秒）或 `failed`（不含 `time`，`server` 是最后问过的服务器），见 5.6 |
 | `model.profiles` | `ModelProfileService` | `{active:{llm,asr,tts}, count}`：任何配置被新建、修改、删除或激活后（不含 Key、地址） |
 | `system.firmware` | 固件更新服务 | `{state, version}`：`state` 为 `received`（已写入并校验，等待设备确认）/`confirmed`（即将重启）/`rejected`（设备上点了否或 2 分钟未确认）/`failed`（写入或校验失败，附 `error`） |
+
+### 5.6 网络校时 `TimeSyncService`（`wisp_net`）
+
+联网后用 SNTP 校准系统时钟和硬件 RTC（`clock.main`），让断电重启后时间仍然正确。全部时间都是 UTC，显示时各自加上 `utc_offset_min`。
+
+- **时机**：站点（STA）每次拿到 IP 时校一次；成功后每 6 小时再校一次；失败后从 30 秒开始退避，每次翻倍，最长 30 分钟，直到成功或断网。断网时不安排任何尝试，下次拿到 IP 从头开始。`POST /system/time/sync` 立即触发一次。
+- **服务器**：每次尝试按 `ntp_servers`（5.4）的顺序逐个询问，第一个回答的为准；每个服务器等待约 3 秒（不含域名解析）。默认先 `pool.ntp.org`，国内网络下它可能很慢或不通，再退到 `ntp.aliyun.com`。
+- **成功后**：设置系统时钟，写入 `clock.main`（写 RTC 失败只记警告），发布 `system.time`（5.5）。场景运行时收到 `synced` 时在亮屏状态下触发一次 `minute`（场景 spec 5.2），自检页"电源与时钟"卡片显示"已同步 HH:MM"，未同步时显示"未同步"。
+- **线程**：`wisp.net` 任务每次 tick 只判断是否到期，到期时在本任务内读取 Settings（会访问 flash）并准备好服务器列表；真正的网络请求（每个不通的服务器要等几秒）在单独的 `wisp.ntp` 任务里执行。`wisp.ntp` 只做 socket、设置系统时间、I2C 写 RTC、记日志和发事件，不访问内部 flash，所以声明 `flash_access=false`（AGENTS.md 第 5 节）。
+- **平台端口**：`net::Sntp` 只有一个 `query(host, timeout_ms)`。ESP 端口（`wisp_port_esp/net/`）经 lwIP 发一次 SNTP v4 请求，用随机数作发送时间戳并校验回包（模式、版本、闰秒指示、层级、原始时间戳）；模拟器端口直接返回主机时间，`*.invalid` 主机模拟超时。平台不提供 `Sntp` 时不创建该服务。
+- **接口**：`GET /system/time` 返回 `{synced, last_sync, server, time}`，`last_sync` 是上次同步得到的 UTC 秒、`time` 是按它推算的当前 UTC 秒，未同步时两者都为 `null`；`POST /system/time/sync` 返回 202，结果经 `system.time` 事件推送，没有网络时返回 409 `no_network`。服务不存在时两者都返回 503。
 
 ---
 
@@ -293,6 +305,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | 系统 | `POST /system/reboot` | 是 | 直接执行 |
 | | `POST /system/factory-reset` | 是 | 先在设备上弹确认框，接口返回 202，结果通过 WebSocket 推送；范围见下文 |
 | | `GET /system/firmware`、`POST /system/firmware` | 是 | 固件信息与网页上传固件，见 6.5 |
+| | `GET /system/time`、`POST /system/time/sync` | 是 | 网络校时状态与立即校时，见 5.6 |
 | 实时 | `WS /ws` | 是 | 见 6.2 |
 
 配网向导（`/setup`）先调用 `POST /pair/ap` 拿到令牌，之后与后台一样走需要鉴权的接口，不另设免鉴权的例外。
@@ -387,7 +400,7 @@ web/
 | 外设 | 设备列表（id、类别、状态），展开可查看 caps |
 | 网络 | 当前连接、已保存的网络（可删除）、扫描并添加网络 |
 | 模型 | 「对话 / 语音识别 / 语音合成」三个标签页，三类配置严格分开、互不混列：每个标签页只列出、新建、编辑、测试、激活和删除本类型的配置，"设为当前"只影响本类型；所选标签记在地址的 hash 中（如 `#/models/asr`）。各标签页显示该类型的配置列表（名称、平台、地址、模型、Key 已设置/未设置，激活的有标记）；"新建配置"：先选该类型可用的预设，自动填入地址，再填名称、Key（或"沿用某套配置的 Key"，只列出同源的配置）；`tts` 多一个音色输入框；每套配置可编辑、测试连接（成功后模型下拉框列出可选模型，也可手动输入）、设为当前、删除 |
-| 系统 | 亮度、音量、自动熄屏时间、设备语言；已配对的浏览器列表；重启；恢复出厂设置；固件：当前版本与板名、选择文件上传（进度条）、"请在设备上确认"、结果 |
+| 系统 | 亮度、音量、自动熄屏时间、设备语言；网络时间（上次同步时间、服务器、"立即同步"按钮）；已配对的浏览器列表；重启；恢复出厂设置；固件：当前版本与板名、选择文件上传（进度条）、"请在设备上确认"、结果 |
 | 日志 | 实时滚动，可按级别过滤、暂停、清屏 |
 | `/setup` 配网向导 | 选择网络 → 输入密码 → 连接中 → 显示新地址并提供"进入后台"按钮 |
 
