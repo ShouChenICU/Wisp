@@ -78,6 +78,7 @@ void SelfCheck::set_page_lang(ui::Lang lang) {
     tests_section_.set_loopback(loop_status_);
     tests_section_.retext();
     scenes_section_.retext();
+    if (last_storage_) show_storage(*last_storage_);
     refresh_ui();
 }
 
