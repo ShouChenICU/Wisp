@@ -10,6 +10,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/port/esp/audio_downmix.hpp"
+#include "wisp/port/esp/i2s_power.hpp"
 
 namespace wisp::port::esp {
 
@@ -48,20 +49,57 @@ constexpr size_t kI2sDmaFrameNum = 240;
 constexpr size_t kDrainFrames = kI2sDmaDescNum * kI2sDmaFrameNum;  // 1440 frames (~90ms @ 16kHz)
 constexpr size_t kDrainChunkFrames = 256;
 
-// Brings `channel` to the state `level` calls for under caps "standby":
-// "off" (see esp_audio.hpp's file comment).
-Result<void> set_channel_power(i2s_chan_handle_t channel, wisp::hal::PowerLevel level) {
-    const bool enable = wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level);
-    i2s_chan_info_t chan_info = {};
-    esp_err_t err = i2s_channel_get_info(channel, &chan_info);
+Result<i2s_chan_info_t> channel_info(i2s_chan_handle_t channel) {
+    i2s_chan_info_t info = {};
+    esp_err_t err = i2s_channel_get_info(channel, &info);
     if (err != ESP_OK) {
-        return Result<void>::err(ErrorCode::DeviceFailure,
-                                 std::string("i2s_channel_get_info: ") + esp_err_to_name(err));
+        return Result<i2s_chan_info_t>::err(
+            ErrorCode::DeviceFailure, std::string("i2s_channel_get_info: ") + esp_err_to_name(err));
     }
-    if (chan_info.is_enabled == enable) {
-        return Result<void>::ok();
+    return Result<i2s_chan_info_t>::ok(info);
+}
+
+// Brings `channel` to the state `level` calls for under caps "standby":
+// "off", subject to plan_i2s_power()'s refusals (see i2s_power.hpp).
+Result<void> set_channel_power(i2s_chan_handle_t channel, bool stream_open,
+                               wisp::hal::PowerLevel level) {
+    const bool enable = wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level);
+    auto info = channel_info(channel);
+    if (!info) {
+        return Result<void>::err(info.error().code, info.error().message);
     }
-    err = enable ? i2s_channel_enable(channel) : i2s_channel_disable(channel);
+    I2sChannelView view;
+    view.enabled = info.value().is_enabled;
+    view.is_tx = info.value().dir == I2S_DIR_TX;
+    view.stream_open = stream_open;
+    if (info.value().pair_chan != nullptr) {
+        auto peer = channel_info(info.value().pair_chan);
+        if (!peer) {
+            return Result<void>::err(peer.error().code, peer.error().message);
+        }
+        view.peer_enabled = peer.value().is_enabled;
+    }
+    switch (plan_i2s_power(view, enable)) {
+        case I2sPowerStep::None:
+            return Result<void>::ok();
+        case I2sPowerStep::BusyStreamOpen:
+            return Result<void>::err(ErrorCode::Busy, "audio stream open");
+        case I2sPowerStep::BusyPeerRunning:
+            return Result<void>::err(ErrorCode::Busy, "paired i2s rx channel still enabled");
+        case I2sPowerStep::Enable:
+        case I2sPowerStep::Disable:
+            break;
+    }
+    esp_err_t err = enable ? i2s_channel_enable(channel) : i2s_channel_disable(channel);
+    if (err == ESP_ERR_INVALID_STATE) {
+        // esp_codec_dev_open()/close() on another task can flip the
+        // channel between the read above and this call; what matters is
+        // whether it ended up where we wanted it.
+        auto again = channel_info(channel);
+        if (again && again.value().is_enabled == enable) {
+            return Result<void>::ok();
+        }
+    }
     if (err != ESP_OK) {
         return Result<void>::err(
             ErrorCode::DeviceFailure,
@@ -173,7 +211,7 @@ void EspAudioOut::close() {
 }
 
 Result<void> EspAudioOut::set_power(wisp::hal::PowerLevel level) {
-    return set_channel_power(i2s_channel_, level);
+    return set_channel_power(i2s_channel_, open_.load(), level);
 }
 
 Result<void> EspAudioOut::set_volume(uint8_t percent) {
@@ -278,7 +316,7 @@ void EspAudioIn::close() {
 }
 
 Result<void> EspAudioIn::set_power(wisp::hal::PowerLevel level) {
-    return set_channel_power(i2s_channel_, level);
+    return set_channel_power(i2s_channel_, open_.load(), level);
 }
 
 Result<void> EspAudioIn::set_gain(float db) {

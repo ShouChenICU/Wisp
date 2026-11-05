@@ -73,7 +73,7 @@
 3. **联网窗口**：就是一把 `network` 锁（持有者 `system.netwindow`）。延迟队列非空，且距进入深度待机或上次窗口结束满 15 分钟时打开；`PowerManager` 看到锁回到 `standby`、开 Wi-Fi；连上后放行队列，等队列清空并等到一次 `system.time` 结果（最多 30 秒）后释放锁。连不上 60 秒放弃；窗口最长开 5 分钟。延迟队列放在 `SceneHttp` 里（`set_deferring()`），与 8 条的执行队列分开；排队的请求在提交时照常计入每分钟 30 次。
 4. **系统锁清单**：`system.admin`（`network`，管理后台至少有一个 WebSocket 连接时）、`system.upload`（`network`，场景 zip 上传进行中）、`system.ota`（`network` + `cpu`，固件上传与写入）、`system.ntp`（`network`，校时尝试进行中）、`system.netwindow`（`network`）、`system.hotspot`（`network`，配网热点开着时）、`system.tone`（`cpu`，提示音播放中）。原因文字用英文短语（`"admin session"` 等），只在 REST 与网页里显示；设备上的提醒通知按持有者显示本地化名称（第 14 条）。
 5. **dim**：亮度取当前设置的 30%，至少 10；只有 `screen_off_s > 0` 时才有 dim。`dim` 不调用设备的 `set_power`，只改亮度。
-6. **caps `standby` 由端口设备类声明**：`display`、`touch`、`imu` 为 `"off"`；按键为 `"wake_source"`；其他设备不声明，`PowerManager` 跳过（存储、电源、时钟、音频、Wi-Fi 由各自的服务处理）。`Display`/`Touch`/`Imu` 原有的 `set_power(bool)` 删除，改为覆盖基类的 `set_power(PowerLevel)`。`SensorService` 没有订阅者时调用 `imu->set_power(PowerLevel::Standby)`。AGENTS.md §3"设备模型"补一句：设备经 caps `standby` 声明待机策略，`PowerManager` 统一调度，不按名字处理设备。
+6. **caps `standby` 由端口设备类声明**：`display`、`touch`、`imu` 为 `"off"`；按键为 `"wake_source"`；`audio_in`、`audio_out` 也为 `"off"`，待机时关掉各自的 I2S 通道（每个开着的通道持有一把 `i2s_driver` APB_FREQ_MAX 锁，会挡住所有自动浅睡，见 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md` 的"浅睡兼容性（3b-1 spike）"一节）；其他设备不声明，`PowerManager` 跳过（存储、电源、时钟、Wi-Fi 由各自的服务处理）。ESP 触摸只有驱动实现了睡眠钩子时才声明 `"off"`，否则不声明、`set_power` 返回 `Unsupported`；本板的 CST9217 没有钩子，所以它没有 `standby`。`Display`/`Touch`/`Imu` 原有的 `set_power(bool)` 删除，改为覆盖基类的 `set_power(PowerLevel)`。`SensorService` 没有订阅者时调用 `imu->set_power(PowerLevel::Standby)`。AGENTS.md §3"设备模型"补一句：设备经 caps `standby` 声明待机策略，`PowerManager` 统一调度，不按名字处理设备。
 7. **新设置进 `SystemSettings`**：`deep_after_s`（`power`/`deep_after_s`，0 或 60–3600，默认 300）、`light_sleep`（`power`/`light_sleep`，布尔，默认 true）、`notify_vol`（`audio`/`notify_vol`，0–100，默认 60）。`GET/PUT /settings` 与 `system.settings` 事件随之多三项，网页"系统"页加三个控件。
 8. **多场景的名字**：`core::SceneState` 加 `Background`（`"background"`）；`"running"` 仍表示前台，`scene.state` 事件因此多一个 `background` 取值。Lua 侧 `wisp.scene.state()` 返回 `"foreground"`/`"background"`。新钩子沿用 `scene` 表：`scene.on_state(state)` 在每次进入前台或后台时调用（包括第一次打开和开机恢复，不包括关闭），`scene.on_notification(id)`，`scene.migrate(old)`。`POST /scenes/{id}/close` 保持 3a 的"返回"语义，新增的 `POST /scenes/{id}/exit` 是彻底关闭；网页的"关闭"按钮改调 `/exit`（spec 3.2 表"管理后台关闭"）。
 9. **后台场景的设备事件**：声明了 `background` 的场景在后台和灭屏时照常收到 `minute`、`battery`、`lang`；没有声明的前台场景保持 3a 行为。
@@ -280,7 +280,8 @@ public:
 };
 ```
 
-- 显示器的 `set_power(PowerLevel)` 仍要求在 UI 线程调用（`assert_owner_thread()`）；`Standby`/`DeepStandby` 时面板睡眠，`Active`/`Dim` 时唤醒，重复调用同一状态不重复发命令。触摸、IMU 同理（IMU 关闭期间 `read()` 失败，沿用现有约定）。按键覆盖为返回 `ok` 的空操作（它是唤醒源，要一直工作）。
+- 显示器的 `set_power(PowerLevel)` 仍要求在 UI 线程调用（`assert_owner_thread()`）；`Standby`/`DeepStandby` 时面板睡眠，`Active`/`Dim` 时唤醒，重复调用同一状态不重复发命令。触摸、IMU 同理（IMU 关闭期间 `read()` 失败，沿用现有约定；ESP 触摸只在驱动有睡眠钩子时声明 `"off"`，CST9217 没有，故不声明）。按键覆盖为返回 `ok` 的空操作（它是唤醒源，要一直工作）。
+- `audio_in`、`audio_out` 声明 `"off"`（见细化第 6 条与硬件文档"浅睡兼容性（3b-1 spike）"一节）：ESP 端 `Standby`/`DeepStandby` 时关掉自己的 I2S 通道，`Active`/`Dim` 时重新打开，幂等。通道由板级代码从 bmgr 的 codec 设备配置取得后传入，外设名不进 `wisp_port_esp`。有流打开时、或 TX 的双工 RX 仍开着时，下行返回 `Busy` 并保持通道开着（TX 为 RX 提供时钟）。模拟器的音频设备声明同样的 caps，并记录一个 `powered` 标志。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -289,8 +290,9 @@ TEST(PowerLevel, Names)                 // to_string 四个值；DeepStandby -> 
 TEST(StandbyPolicy, ParsedFromCaps)     // "off" Off, "throttle" Throttle, "wake_source" WakeSource, 缺失/"x"/数字 None
 TEST(StandbyPolicy, PoweredAt)          // Off: Active/Dim true, Standby/DeepStandby false；其余三种全 true
 TEST(Device, SetPowerDefaultsToUnsupported)  // 一个只实现 info() 的设备：ErrorCode::Unsupported
-TEST(SimBoard, DevicesDeclareStandbyPolicy)  // display/touch/imu "off"；三个按键 "wake_source"；power/clock/audio/storage 没有 "standby"
+TEST(SimBoard, DevicesDeclareStandbyPolicy)  // display/touch/imu/audio_in/audio_out "off"；三个按键 "wake_source"；power/clock/storage 没有 "standby"
 TEST(SimBoard, DisplayFollowsPowerLevel)     // set_power(Standby) -> powered()==false；set_power(Dim) -> true
+TEST(SimBoard, AudioFollowsPowerLevel)       // 模拟器音频设备的 powered 标志随级别变化
 ```
 
 - [ ] **Step 2: 运行，确认失败** — `ctest --test-dir build/sim -R 'PowerLevel|StandbyPolicy|Device\.|SimBoard' --output-on-failure` 编译失败。
@@ -386,7 +388,7 @@ public:
 - 级别规则（spec 4.1–4.3）：
   - 有 `screen` 锁：`tick()` 视为有操作，不进 `Dim`/`Standby`；电源键短按仍进 `Standby`（用户意愿优先，锁保留）。
   - `Active` → `Dim`：空闲 ≥ `screen_off_s·1000 − kDimLeadMs`；`Dim` 只改亮度（细化第 5 条），在 UI 线程上执行。
-  - → `Standby`：空闲 ≥ `screen_off_s·1000` 或 `enter_standby()`。暂停 UI，对每个 `standby_policy() != None` 的设备调 `set_power(Standby)`（按注册顺序；唤醒时逆序），`StorageManager`/`PowerMonitor`/`ButtonService` 的现有待机调用保留。
+  - → `Standby`：空闲 ≥ `screen_off_s·1000` 或 `enter_standby()`。暂停 UI，对每个 `standby_policy() != None` 的设备调 `set_power(Standby)`（按注册顺序；唤醒时逆序），`StorageManager`/`PowerMonitor`/`ButtonService` 的现有待机调用保留。音频例外，不受注册顺序影响：下行时先 `audio_in` 后 `audio_out`，上行时先 `audio_out` 后 `audio_in`（双工下 TX 为 RX 提供时钟；ESP 的 `audio_out` 在 RX 仍开着时返回 `Busy` 并保持开着，见 `wisp/port/esp/i2s_power.hpp`）。`Busy` 记一行日志，下次级别变化时再试。
   - `Standby` → `DeepStandby`：在 `Standby` 已满 `deep_after_s`（> 0）且没有 `network` 锁；设备再收到 `set_power(DeepStandby)`。计时从进入 `Standby` 起算，期间锁来锁去不重置：窗口锁释放后立即回到 `DeepStandby`。
   - `DeepStandby` → `Standby`：出现 `network` 锁。
   - 浅睡：`want = level()==DeepStandby && settings "light_sleep" && !locks.held(Cpu) && set_light_sleep`；与上次不同时调用钩子。`locks.set_on_change()` 投递一次重新评估（有 UI 线程时 `post`，否则直接调用），不必等下一次 `tick()`。

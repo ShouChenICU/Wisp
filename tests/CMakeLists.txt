@@ -175,6 +175,8 @@ wisp_test(NAME jpeg_header_test SRCS port_esp/jpeg_header_test.cpp)
 target_include_directories(jpeg_header_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 wisp_test(NAME sd_retry_test SRCS port_esp/sd_retry_test.cpp)
 target_include_directories(sd_retry_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
+wisp_test(NAME i2s_power_test SRCS port_esp/i2s_power_test.cpp)
+target_include_directories(i2s_power_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 # The networking port's pure pieces: Wi-Fi disconnect-reason mapping,
 # request interface classification, the hotspot's DNS answers and the SNTP
 # request and reply checks.

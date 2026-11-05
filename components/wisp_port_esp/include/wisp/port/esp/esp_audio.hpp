@@ -63,7 +63,11 @@
 // esp_codec_dev does not expose it and the bmgr peripheral that owns it is
 // named only in board configuration. esp_codec_dev_open() enables a
 // disabled channel itself, but playing or recording below Dim is not
-// supported. esp_codec_dev also enables and disables channels on its own
+// supported: stepping down while a stream is open, or stepping TX down
+// while its duplex RX still runs, is refused with ErrorCode::Busy and the
+// channel stays on (wisp/port/esp/i2s_power.hpp explains both). So the
+// caller steps audio_in down before audio_out, and audio_out up before
+// audio_in. esp_codec_dev also enables and disables channels on its own
 // (an open can enable the peer direction), so set_power() reads the
 // channel's actual state rather than remembering its own.
 
@@ -119,7 +123,9 @@ public:
     Result<void> set_volume(uint8_t percent) override;
     // Disables the I2S TX channel at Standby/DeepStandby and enables it at
     // Active/Dim (see file comment); a channel already in that state is
-    // left alone. ErrorCode::DeviceFailure if the I2S driver call fails.
+    // left alone. ErrorCode::Busy (channel left on) while a stream is open
+    // or the paired RX channel is still enabled; ErrorCode::DeviceFailure
+    // if the I2S driver call fails.
     Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
@@ -178,7 +184,8 @@ public:
     // esp_codec_dev_set_in_gain(). Stored even while closed, and
     // re-applied by the next open().
     Result<void> set_gain(float db) override;
-    // Same as EspAudioOut::set_power(), for the I2S RX channel.
+    // Same as EspAudioOut::set_power(), for the I2S RX channel (only an
+    // open stream makes it Busy).
     Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
