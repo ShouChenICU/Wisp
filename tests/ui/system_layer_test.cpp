@@ -228,11 +228,10 @@ TEST(SystemLayerZone, BackSwipeNeedsTriggerDistance) {
     EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 240}));
     EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {200, 240}));
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {20, 240}, {300, 240}));  // starts outside
-    // Within 45 degrees of horizontal: dx must be at least |dy|.
-    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 300}));    // dx 60, dy 60
-    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 301}));   // dx 60, dy 61
-    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 180}));    // dx 60, dy -60
-    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {64, 179}));   // dx 60, dy -61
+    // Any angle: only the distance to the right counts.
+    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 440}));   // steeply down
+    EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 40}));    // steeply up
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d - 1, 440}));
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {200, 240}, {4, 240}));  // leftwards
 }
 
@@ -363,6 +362,33 @@ TEST_F(SystemLayerTest, ArmedSwipeSurvivesVerticalDrift) {
     feed({{4, 240, 0}});
     feed({{60, 240, 0}});
     feed({{70, 330, 0}});
+    feed({});
+    EXPECT_EQ(backs, 1);
+}
+
+// However steep the swipe, moving far enough right from the zone goes
+// back, as on Android.
+TEST_F(SystemLayerTest, SteepSwipeGoesBack) {
+    start("rect");
+    int backs = 0;
+    on_ui([&] { layer->set_back_handler([&] { ++backs; }); });
+    feed({{4, 100, 0}});
+    for (int16_t step = 1; step <= 10; ++step) {
+        feed({{static_cast<int16_t>(4 + step * 3), static_cast<int16_t>(100 + step * 30), 0}});
+    }
+    feed({});
+    EXPECT_EQ(backs, 1);
+}
+
+// A drag that first runs down the edge and then turns right still goes
+// back: going up or down never gives the gesture up.
+TEST_F(SystemLayerTest, DownThenRightGoesBack) {
+    start("rect");
+    int backs = 0;
+    on_ui([&] { layer->set_back_handler([&] { ++backs; }); });
+    feed({{4, 100, 0}});
+    for (int16_t y = 120; y <= 300; y = static_cast<int16_t>(y + 20)) feed({{6, y, 0}});
+    feed({{40, 300, 0}});
     feed({});
     EXPECT_EQ(backs, 1);
 }

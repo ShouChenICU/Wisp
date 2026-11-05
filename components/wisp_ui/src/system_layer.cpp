@@ -255,10 +255,9 @@ bool SystemLayer::in_back_zone(const hal::ScreenShape& s, int32_t x, int32_t y) 
 
 bool SystemLayer::is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end) {
     if (!in_back_zone(s, start.x, start.y)) return false;
-    const int32_t dx = end.x - start.x;
-    const int32_t dy = end.y - start.y;
-    // Up to 45 degrees off horizontal: thumb swipes often slant.
-    return dx >= kBackTriggerDx && dx >= std::abs(dy);
+    // Any angle, as on Android: thumbs slant, and a press that starts at
+    // the very edge and travels right is meant as back.
+    return end.x - start.x >= kBackTriggerDx;
 }
 
 void SystemLayer::set_back_handler(std::function<void()> on_back) {
@@ -337,8 +336,8 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         const bool was_pressed = pressed_;
         pressed_ = false;
         if (!was_pressed || !candidate_) return;
-        // Once armed only the distance counts: drifting up or down keeps it,
-        // dragging back to the left below the trigger cancels it.
+        // Only the distance to the right counts: dragging back to the left
+        // below the trigger cancels.
         const bool fire = taken_ && p.x - start_.x >= kBackTriggerDx && on_back_;
         end_swipe();
         if (fire) {
@@ -360,20 +359,14 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
     if (!candidate_) return;
 
     const int32_t dx = p.x - start_.x;
-    const int32_t dy = std::abs(p.y - start_.y);
-    const bool past = is_back_swipe(shape_, start_, p);
-    if (!taken_) {
-        if (past) {
-            taken_ = true;
-            cancel_press(indev);
-        } else if (2 * dy >= kBackTriggerDx && dy > 2 * dx) {
-            // Steeper than about 63 degrees: a scroll, no longer a swipe.
-            end_swipe();
-            return;
-        }
+    if (!taken_ && is_back_swipe(shape_, start_, p)) {
+        taken_ = true;
+        cancel_press(indev);
     }
-    if (taken_ || dx > 0) {
-        show_arrow(p, dx, taken_ ? dx >= kBackTriggerDx : past);
+    // The slop keeps a scroll along the edge, wobbling a little to the
+    // right, from flashing the arrow.
+    if (taken_ || dx >= kBackArrowSlop) {
+        show_arrow(p, dx, dx >= kBackTriggerDx);
     } else if (arrow_ != nullptr) {
         lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
     }

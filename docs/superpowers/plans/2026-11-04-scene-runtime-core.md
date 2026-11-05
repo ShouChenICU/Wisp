@@ -691,7 +691,7 @@ public:
 ```
 
 - 与 overlay 的配合（`wisp/ui/overlay.hpp`）：顶层只要有一个显示中、未标记的对象碰到某块重绘区，那块就不再裁剪；一个常驻的全屏容器会让配网卡片下的滚动退回整块重画（热点帧率约从 28.2 掉到 14.5，`NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone` 失败）。所以系统层没有常驻容器：返回箭头、错误面板、键盘各自是 `lv_layer_top()` 的直接子对象，确认框连同它的背板也是，都只在使用期间存在或显示。错误面板与键盘不透明，创建后调用 `mark_opaque_overlay()`；确认框不标记（见下）。系统层建的辅助对象（面板内部容器等）一律清掉 `LV_OBJ_FLAG_CLICKABLE`，只有按钮和键盘可点（返回手势不建可点对象，见下一条）。
-- 手势区：`y ∈ [safe.y1, safe.y2]` 且 `row_span(y).x1 <= x < row_span(y).x1 + 16`。**执行期裁定（控制者 2026-11-05，用户批准的返回手势改动）**：原设计的手势条（透明窄条，`ADV_HITTEST` + `PRESS_LOCK`，吃掉区内所有按下）作废，因为它让区内的点击到不了场景。改为被动的边缘观察者：设了返回处理函数时，系统层包装指针输入设备的读回调，在 LVGL 处理每次读数之前旁观、不拦截，区内的按下照常先交给下面的控件；起点在区内、右移至少 24 px（`kBackTriggerDx`）且 `dx >= |dy|` 时才接管（2026-11-05 用户反馈斜向滑动无法返回，由 `dx > 2·|dy|` 放宽到 45°；纵移超过横移两倍才放弃；接管后松手只看横向距离）：给持有按下的控件发 `LV_EVENT_PRESS_LOST`，`lv_indev_reset()` 清掉按下与滚动对象，`lv_indev_wait_release()` 让这次按下不再产生点击；已开始的滚动收到 `SCROLL_END` 并以动画回到范围内（有吸附则吸到最近的点）。松手时仍越过触发距离才返回，拖回触发距离以内则取消。从屏幕键盘或拼音候选行上开始的按下不启动返回手势；确认框打开时也不启动。左边缘有一个跟随手指的 40 px 返回箭头，只在滑动期间显示。`is_back_swipe`：起点在区内、`end.x - start.x >= 24`、`dx >= |dy|`。同一时刻只有一个系统层能包装读回调，第二个记错误日志、没有手势。
+- 手势区：`y ∈ [safe.y1, safe.y2]` 且 `row_span(y).x1 <= x < row_span(y).x1 + 16`。**执行期裁定（控制者 2026-11-05，用户批准的返回手势改动）**：原设计的手势条（透明窄条，`ADV_HITTEST` + `PRESS_LOCK`，吃掉区内所有按下）作废，因为它让区内的点击到不了场景。改为被动的边缘观察者：设了返回处理函数时，系统层包装指针输入设备的读回调，在 LVGL 处理每次读数之前旁观、不拦截，区内的按下照常先交给下面的控件；起点在区内、右移至少 24 px（`kBackTriggerDx`）时就接管，不限角度（2026-11-05 用户反馈斜向滑动无法返回，并要求与安卓一致：原 `dx > 2·|dy|` 和纵移放弃规则都取消，只看向右的距离；箭头在右移 8 px 后才出现）：给持有按下的控件发 `LV_EVENT_PRESS_LOST`，`lv_indev_reset()` 清掉按下与滚动对象，`lv_indev_wait_release()` 让这次按下不再产生点击；已开始的滚动收到 `SCROLL_END` 并以动画回到范围内（有吸附则吸到最近的点）。松手时仍越过触发距离才返回，拖回触发距离以内则取消。从屏幕键盘或拼音候选行上开始的按下不启动返回手势；确认框打开时也不启动。左边缘有一个跟随手指的 40 px 返回箭头，只在滑动期间显示。`is_back_swipe`：起点在区内、`end.x - start.x >= 24`。同一时刻只有一个系统层能包装读回调，第二个记错误日志、没有手势。
 - 错误面板：不透明（标记为覆盖物），限制在 `safe_rect` 内；标题 `StrId::SceneErrorTitle`，正文为场景名、`file:line` 与错误信息，按钮 `StrId::SceneReload`/`StrId::SceneBack`。
 - 键盘：`lv_keyboard` + `lv_ime_pinyin`，`lv_ime_pinyin_set_dict()` 用细化第 11 条生成的词库（`tools/gen_pinyin_dict.py` 读 LVGL 源码里的默认词库与 `tools/gen_cjk_font_test.py` 用的字体字符集，输出排序后的常量表；CI 里用 `--check` 校验已提交的文件是最新的），占安全区下半部，不透明（标记为覆盖物），`LV_EVENT_READY`/`LV_EVENT_CANCEL` 时收起；有一个中/英切换键。
 - 确认框：保持模态，用 `lv_msgbox_create(nullptr)`，带 LVGL 默认的全屏背板。确认框守着危险操作（恢复出厂、安装固件、删除场景），框外的触摸绝不能落到下面的界面。背板是未标记的全屏顶层对象，所以确认框打开期间不跳过被遮挡区域的重绘，下面滚动时整块重画；确认框很少出现、开着的时间也短，接受这个代价。框和背板都不调用 `mark_opaque_overlay()`（标记背板会把它当成不透明卡片裁掉下层，而背板是半透明的）。仍是 `lv_msgbox_class`（现有测试按这个类数确认框）；宽度钳制照搬 `SelfCheck::make_confirm_box`。
@@ -1216,13 +1216,21 @@ def test_requests_use_api_prefix()       # 假服务器记录的路径都以 /ap
 ### Task 21: 文档
 
 **Files:**
-- Modify: `docs/architecture.md`、`docs/porting-guide.md`、`docs/references.md`、`THIRD_PARTY_NOTICES.md`、`AGENTS.md`（只在发现新的通用陷阱时）、本计划（记录执行期裁定）
+- Modify: `docs/architecture.md`、`docs/porting-guide.md`、`docs/scene-api.md`（经 `schema_markdown()`）、`components/wisp_scene/src/schema.cpp`、本计划（记录执行期裁定）
 
-- [ ] **Step 1: `docs/architecture.md`**：标题范围改为涵盖子项目 3a；分层图加入 `wisp_scene`；依赖规则核对九层与 Lua 头文件限制；启动流程加入 `StorageWorker`/`recover()`、`SceneHttp`、`SystemLayer`、`SceneRuntime`，停止顺序同步；事件表加 `scene.state`（发布方 `scene::SceneRuntime` 与 `app` 的删除流程，payload 与细化第 17 条一致）；改正第 9 条的覆盖物说明：确认框是模态的（`SystemLayer::open_confirm` 建的 `lv_msgbox` 带全屏背板），不做跳过标记，开着时下层整块重画；被标记的只有配网/配对卡片、错误面板与屏幕键盘；返回手势不建常驻对象，只有滑动期间显示的未标记返回箭头（碰到它的重绘区不裁剪；执行期裁定，见 Task 10），`SelfCheck::raise_overlays()` 最后调用 `SystemLayer::raise()`；新增"场景运行时"一节（任务表：`wisp.scene` PSRAM 32 KB、`wisp.fs` 内部 4 KB、`wisp.shttp` PSRAM 8 KB；消息流；每帧 64 条；`/int/scenes/` 布局与两阶段替换；`SceneStore` 文件格式与日志）；模拟器一节加 `--scenes-dir`、`--open-scene`、`debug scene-click`；存储一节加 `<int>/scenes`。
-- [ ] **Step 2: `docs/porting-guide.md`**：新板子运行场景的前提（PSRAM：Lua 堆与 LVGL 堆都在 PSRAM；`CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` 已在公共配置里）；场景层没有板级代码，屏幕形状只经 caps 生效；验收时补跑 Task 22 的场景行。
-- [ ] **Step 3: references 与 notices 核对**：Lua 5.5.1（版本、SHA-256、`tools/vendor_lua.sh`、只编译的文件列表）已在 Task 1 登记；LVGL 自带的 LodePNG（zlib 许可，随 LVGL 分发）与 TJPGD（随 LVGL 分发，仅模拟器）、乐鑫 `esp_new_jpeg` 1.0.2（Espressif 自定义许可，经组件管理器获取，仅 ESP 端口）与 `lv_ime_pinyin` 默认词库补一行说明；inflate 为自写实现，不登记。
-- [ ] **Step 4: 验证** — `bash tools/ci.sh`（注释守卫覆盖 `docs/`）。
-- [ ] **Step 5: Commit** — `docs: describe the scene runtime in the architecture and porting guides`
+**执行期记录（Claude Opus 5.5，2026-11-05）**：本任务开始执行时，brief 里写下的几项事实已经与当时的 HEAD（`bb92a73`）不一致，按代码改正如下，不再按 brief 原文：
+- 任务栈：`wisp.scene` 实际是 128 KB（不是 32 KB），`wisp.fs` 是 6144 字节内部 RAM（不是 4 KB），`wisp.shttp` 8 KB 不变；另有一个 brief 没提到的 `wisp.ntp`（4 KB，PSRAM，`flash_access=false`）。这三项（`wisp.scene`/`wisp.fs`/`wisp.shttp`）与 `scene.state` 事件，在之前实现相应功能的提交里已经写进了 `docs/architecture.md`（随功能改动一起改的文档，而不是留到本任务），逐一核对后确认与代码一致，没有重复改。
+- 覆盖物与返回手势的说明在当时的 `docs/architecture.md` 第 9 条里仍是旧版本（没有 `OwnChanges::InOwnEvents`、没有确认框的模态说明、没有返回箭头不裁剪的说明），补成新的第 12 条而不是改写第 9 条：第 9 条本是子项目 1 的性能监视与卡片覆盖物，场景运行时只是扩展了同一套机制，分开写更清楚各自何时加入。
+- `docs/architecture.md` 当时还没有独立的"场景运行时"一节（消息流、`/int/scenes/` 布局与两阶段替换、`SceneStore` 文件格式与日志、开发循环），现已补上；模拟器一节补了 `--scenes-dir`/`--open-scene`/`debug scene-click`；存储逻辑区一节补了 `<int>/scenes`。
+- `docs/references.md` 与 `THIRD_PARTY_NOTICES.md` 的条目（Lua、LVGL 自带的 LodePNG/TJpgDec、`esp_new_jpeg`、`lv_ime_pinyin` 默认词库）在当时的 HEAD 已经登记齐全，本任务未再改动这两个文件。
+- `docs/scene-api.md` 整份由 `schema_markdown()`（`components/wisp_scene/src/schema.cpp`）生成，`Schema.DocIsUpToDate` 测试逐字节比对，不能手改：`wisp.store`（含 `id` 字段的保留规则、`batch()` 的返回值）的说明是在生成函数里加了一段静态文本后，用该测试的失败输出重新生成、覆盖写入的。
+
+- [x] **Step 1: `docs/architecture.md`**：标题范围改为涵盖子项目 3a；分层图已有 `wisp_scene`（无需改）；依赖规则已核对九层与 Lua 头文件限制（无需改）；启动流程、停止顺序与 `scene.state` 事件已是最新（无需改）；新增"相对 spec 的细化"第 12 条，改正覆盖物与返回手势的说明（`OwnChanges::InOwnEvents`、确认框不标记、`raise_overlays()` 的顺序）；新增"场景运行时"一节（消息流；每帧 64 条；`/int/scenes/` 布局与两阶段替换；`SceneStore` 文件格式与日志；开发循环，含 `tools/wisp_scene.py` 的用法）；模拟器一节加 `--scenes-dir`、`--open-scene`、`debug scene-click`；存储一节加 `<int>/scenes`。
+- [x] **Step 2: `docs/porting-guide.md`**：新增"场景运行时"一节：新板子运行场景的前提（PSRAM：Lua 堆与 LVGL 堆都在 PSRAM；`CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` 已在公共配置里）；场景层没有板级代码，屏幕形状只经 caps 生效；验收时补跑场景相关的验收行。
+- [x] **Step 3: references 与 notices 核对**：已在当时的 HEAD 登记齐全，未发现遗漏，未改动这两个文件。
+- [x] **Step 3b（原计划没有）：`docs/scene-api.md`**：补 `wisp.store` 一节（`id` 的保留规则、`filter.id`、`sort = "id"`、`desc` 无 `sort` 时的新到旧顺序、`batch()` 的返回值），经 `schema.cpp` 的生成函数加入，`cp` 生成结果覆盖写入后 `Schema.DocIsUpToDate` 通过。
+- [x] **Step 4: 验证** — `bash tools/ci.sh`（注释守卫覆盖 `docs/`）。
+- [x] **Step 5: Commit** — `docs: describe the scene runtime in the architecture and porting guides`
 
 ---
 

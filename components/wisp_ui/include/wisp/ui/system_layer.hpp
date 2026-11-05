@@ -52,6 +52,8 @@ public:
     static constexpr int32_t kBackZoneWidth = 16;
     // How far right a press from the zone moves before it is a back swipe.
     static constexpr int32_t kBackTriggerDx = 24;
+    // How far right a press from the zone moves before the arrow shows.
+    static constexpr int32_t kBackArrowSlop = 8;
     // Diameter of the back arrow shown during a swipe.
     static constexpr int32_t kBackArrowSize = 40;
     // The keyboard's language key, naming the current input: pinyin or
@@ -126,7 +128,7 @@ public:
     static bool in_back_zone(const hal::ScreenShape& s, int32_t x, int32_t y);
     // Whether a press from `start` now at `end` is a back swipe: it
     // started in the zone and moved right by at least kBackTriggerDx, at
-    // least as far sideways as up or down (within 45 degrees).
+    // any angle.
     static bool is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end);
 
 private:
