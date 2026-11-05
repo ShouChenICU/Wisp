@@ -30,6 +30,14 @@ struct FontImage {
     // The cmap subtable stb_truetype reads (format 4 or 12), checked;
     // inside `ttf`.
     std::span<const uint8_t> cmap;
+    // The subtable's format (4 or 12; 0 with no image) and its segment
+    // (format 4) or group (format 12) count, copied out of `cmap` when it
+    // was checked. On the device `cmap` is a flash mapping, and a read
+    // that races a flash erase or write can return 0xFF instead of the
+    // real bytes; font_image_has_glyph() steers by these copies so that
+    // such a read cannot send it outside the subtable.
+    uint32_t cmap_format = 0;
+    uint32_t cmap_count = 0;
 };
 
 // Checks a fonts partition image (spec 3.2, 3.6) and returns its TrueType
