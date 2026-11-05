@@ -91,6 +91,9 @@
 
 - **映射**：`esp_partition_mmap` 属于"映射 flash"，只能在内部 RAM 栈的任务里做。真机在 `app_main`（主任务，栈在内部 RAM）里、`App::start()` 之前映射，映射句柄一直保留到关机。
 - **读取**：之后 UI 任务读映射区不算访问 flash（"读已经映射进地址空间的常量不算"），UI 任务的 `flash_access` 声明不因字体改变。
+- **2026-11-05 修订（用户批准）**：上一条只对栈的放置成立，不等于读映射区总是安全。开了 XIP 的板子上，ESP-IDF 擦写 flash 时不关 cache，擦写进行中 cache miss 落在映射区上会读到 0xFF；参考板在 OTA 期间因此崩在字形查找里（`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`"flash 擦写与映射读取"）。新增两条要求：
+  1. 开了 XIP 又有 `fonts` 分区的板子，必须在板级 sdkconfig 打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND`，并确认 flash 支持挂起（`docs/porting-guide.md`"字体分区"）。这是修复：映射读取赶上擦写时由硬件挂起擦写，字形数据和 stb_truetype 的读取都因此正确。
+  2. `open_font_image()` 校验 cmap 时把子表格式和分段/分组数拷进 `FontImage`（在 RAM 里），`font_image_has_glyph()` 只用这份拷贝、不再每次从映射区重读这些头字段；由运行时读到的值算出的 glyphIdArray 偏移和子表长度比较一次。这是加固而不是修复：字形数据仍然从映射区读。
 - **内部 RAM**：映射句柄 80 B；Tiny TTF 的字体对象、字形缓存、stb 光栅化的临时缓冲都经 `lv_malloc` 走 LVGL 的堆，在 PSRAM（`wisp/ui/lv_heap.hpp`）。实测 `lv_heap_internal_bytes()` 全程不增长。UI 任务栈加 2 KB 是唯一的内部 RAM 增量，必须真机复测（7.3）。
 - **PSRAM**：每个字号档位的字形缓存有上限（4.4），所有档位合计最多约 1.25 MB；镜像本身不占 PSRAM（读的是映射的 flash）。模拟器把镜像读进普通内存。
 - **地址空间**：映射整个 2.81 MB 分区要占数据总线虚拟地址空间（实测映射到 `0x3C800000`）；开了 XIP 的板子上代码和只读数据也映射在 PSRAM 里，两者共用这段地址空间，新板子要确认放得下（`docs/porting-guide.md`）。
@@ -343,6 +346,7 @@ Python（标准库）：`tools/pack_font_image_test.py`（头部字段、CRC 与
 | 字体分区与固件版本不一致（只做了 OTA，没重写字体） | 镜像格式版本只在格式变化时加 1，字符集变化只会逐字回退；版本不符时降级并在日志提示用 USB 重写 |
 | 重新分区清空 `storage` | 用户已批准；验收第 1 条确认设置保留、场景需要重新安装 |
 | 映射 2.8 MB 占用数据总线地址空间（与 XIP、PSRAM 映射共享） | 参考板实测可行；移植指南提醒新板子确认 |
+| 开 XIP 的板子上 flash 擦写期间读映射区得到 0xFF，字形查找崩溃（2026-11-05 修订，用户批准，2.3） | 板级打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND` 并确认 flash 支持挂起；cmap 头字段在打开时拷进 RAM，查找不再重读 |
 
 ---
 

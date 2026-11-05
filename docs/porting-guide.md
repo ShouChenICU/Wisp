@@ -147,6 +147,13 @@ sdkconfig 的默认值只在 `firmware/sdkconfig` 不存在时生效。切换板
 
 `fonts` 分区由 `app_main` 整个 `esp_partition_mmap()` 到数据总线地址空间、只读、永久映射（`wisp::port::esp::map_font_partition()`），分区多大就占多大虚拟地址空间（按 `CONFIG_MMU_PAGE_SIZE`，参考板是 64 KB 页对齐；参考板的 `fonts` 分区 2.81 MB 就占约 2.81 MB 的数据地址空间，一直到关机）。新板子决定 `fonts` 分区大小时要留出这块地址空间：数据总线虚拟地址空间同时被 flash 的其他只读映射（网页资源包、XIP 开启时整个 flash 的可执行映射）和 PSRAM 的 XIP 映射占用，分区给得太大可能挤占它们的空间，具体上限随芯片的地址空间布局而不同，加大之前查该芯片的内存映射文档。
 
+**开了 XIP 的板子必须打开 flash 自动挂起**：开了 `CONFIG_SPIRAM_XIP_FROM_PSRAM` 之后，ESP-IDF 擦写 flash 时不关 cache，擦写进行中读映射的 `fonts` 分区会读到 0xFF，UI 画字时就会崩溃（参考板的现象和实测见 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`"flash 擦写与映射读取"）。所以这类板子要在 `boards/<板名>/sdkconfig.defaults.board` 里加 `CONFIG_SPI_FLASH_AUTO_SUSPEND=y`，并确认板上的 flash 支持挂起：
+
+- 最终以启动日志为准：出现 `W spi_flash: Flash suspend feature is enabled` 就是 ESP-IDF 认可了这片 flash。不认可时 `esp_flash_init_default_chip()` 返回错误，启动时断言失败：USB 烧录的会反复重启，经 OTA 装上的会被回滚。所以第一次打开它要用 USB 烧录验证，不要直接走 OTA 推给已出货的板子。
+- 烧录前可以先查型号：`esptool flash-id` 读出厂商和器件号。厂商 0x20（XMC）时，ESP-IDF 读 SFDP 字节 0x32（`esptool read-flash-sfdp 0x32 1`），bit3 为 1 才当作支持挂起的 XMC-D 系列，为 0（XMC-C）默认拒绝。其他厂商看 ESP-IDF `components/spi_flash/` 里对应 `spi_flash_chip_<厂商>.c` 的 `get_caps`。
+- flash 不支持挂起的板子不能同时有 XIP 和 `fonts` 分区：去掉其中一个（不开 XIP，或不加 `fonts` 分区让大字退回位图字）。
+- 不开 XIP 的板子不需要这一项：ESP-IDF 擦写期间会关 cache，读不到中间状态。
+
 ### 构建配置：发布版与调试版
 
 - 默认（`sdkconfig.defaults`）是发布版：全局 `-Os`（`CONFIG_COMPILER_OPTIMIZATION_SIZE`）、日志最高 INFO、断言静默。
@@ -170,7 +177,7 @@ cd firmware && idf.py -B build-debug -D SDKCONFIG=build-debug/sdkconfig \
 | SIMD / 2D 渲染加速 | `wisp_port_esp/lv_blend/<芯片>/`，由 `firmware/CMakeLists.txt` 和 `components/wisp_port_esp/CMakeLists.txt` 按 `IDF_TARGET` 挑选（见上文"渲染加速按芯片选择"）；没有对应目录的芯片走 LVGL 的 C 路径 |
 | 任务栈放内部 RAM 还是 PSRAM | 任务只声明 `flash_access`（AGENTS.md 第 5 节），由 ESP 端口的 `wisp/port/esp/stack_placement.hpp` 按目标决定；目前所有目标都是"不访问 flash 的任务才可能放 PSRAM" |
 | DMA 能否直接读 PSRAM | 板子通过 Display caps 的 `draw_buf_mem` 声明（见上文能力字段表）；`Mem::DmaLarge` 在 `SOC_PSRAM_DMA_CAPABLE` 为假的芯片上总是分配失败，UI 退回内部 DMA RAM |
-| 从 PSRAM 执行代码（XIP） | 板级 sdkconfig：`boards/<板名>/sdkconfig.defaults.board` 的 `CONFIG_SPIRAM_XIP_FROM_PSRAM`；它不放宽栈的规则 |
+| 从 PSRAM 执行代码（XIP） | 板级 sdkconfig：`boards/<板名>/sdkconfig.defaults.board` 的 `CONFIG_SPIRAM_XIP_FROM_PSRAM`；它不放宽栈的规则；有 `fonts` 分区时还要打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND`，并确认 flash 支持挂起（上文"字体分区"） |
 | 最低 ESP-IDF 版本 | 全项目一个范围，写在 `firmware/main/idf_component.yml` 的 `idf:`（目前 `>=6.0.3,<6.1`）；需要更新 IDF 的芯片要先单独升级这个范围和 `dependencies.lock` |
 | JPEG 解码 | esp_new_jpeg 按 `IDF_TARGET` 链接对应的预编译库（1.0.2 提供 esp32、esp32s2、esp32s3、esp32p4、esp32c2/c3/c5/c6/c61、esp32h4、esp32s31）；它放进 IRAM 的汇编由 `firmware/main/esp_new_jpeg.lf` 统一移到 flash。有 JPEG 硬件的芯片可以在 `wisp_port_esp/ui/` 换成硬件解码器，接口仍是 `install_image_decoders()` |
 | 内部 SRAM 预算 | 每块板子用 `mem` 命令实测，记在 `docs/hardware/<板名>.md`；预算下限在 `wisp/app/ram_budget.hpp`（AGENTS.md 第 5 节） |
