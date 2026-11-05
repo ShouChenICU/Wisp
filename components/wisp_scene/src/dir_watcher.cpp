@@ -86,11 +86,12 @@ DirWatcher::Snapshot DirWatcher::scan_scene(const std::string& dir) {
             if (skipped(e.name)) continue;
             std::string path = rel.empty() ? e.name : rel + "/" + e.name;
             if (e.kind == core::EntryKind::Dir) {
-                if (rel.empty() && e.name == "data") continue;
+                if (rel.empty() && e.name != "lib" && e.name != "assets") continue;
                 if (depth + 1 < kMaxDepth) todo.emplace_back(std::move(path), depth + 1);
                 continue;
             }
             if (e.kind != core::EntryKind::File) continue;
+            if (rel.empty() && e.name != "scene.json" && !ends_with(e.name, ".lua")) continue;
             Stamp stamp{path, e.size, 0};
             auto body = storage_.read_file_large(dir + "/" + path);
             if (body) {

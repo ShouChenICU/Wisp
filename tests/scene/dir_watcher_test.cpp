@@ -132,3 +132,19 @@ TEST(DirWatcher, MissingRootIsEmpty) {
     EXPECT_EQ(w.poll(), Ids{});
     EXPECT_EQ(w.poll(), Ids{});
 }
+
+TEST(DirWatcher, IgnoresFilesOutsideThePackage) {
+    // Only what a package can hold counts: scene.json, top-level .lua files
+    // (the entry is one), lib/ and assets/. A README or docs/ edit would
+    // reload the scene for nothing.
+    Fixture f;
+    DirWatcher w(*f.storage, f.root.string());
+    EXPECT_EQ(w.poll(), Ids{});
+    write_raw(f.root / "counter" / "README.md", "notes");
+    write_raw(f.root / "counter" / "docs" / "a.md", "more");
+    EXPECT_EQ(w.poll(), Ids{});
+    EXPECT_EQ(w.poll(), Ids{});
+    write_raw(f.root / "counter" / "assets" / "deep" / "x.png", "png");
+    EXPECT_EQ(w.poll(), Ids{});
+    EXPECT_EQ(w.poll(), Ids{"counter"});
+}

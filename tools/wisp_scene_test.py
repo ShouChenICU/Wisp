@@ -15,6 +15,7 @@ import io
 import json
 import os
 import pathlib
+import signal
 import socket
 import stat
 import struct
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from unittest import mock
@@ -33,6 +35,10 @@ sys.path.insert(0, str(TOOLS))
 import wisp_scene  # noqa: E402
 
 TOKEN = "fake-device-token-0123456789abcdef"
+# The tool's connect/request timeout in these tests (WISP_SCENE_TIMEOUT_S),
+# and a silence on the log stream longer than it.
+SHORT_TIMEOUT_S = "1"
+QUIET_S = 2.5
 CODE = "482913"
 
 # A minimal JPEG header: SOI, then a frame header (SOFn) of an 8x8 image.
@@ -73,6 +79,10 @@ class FakeDevice:
         self.token = TOKEN
         self.upload_error = None
         self.ws_frames = []
+        # "normal": a few lines then a close frame; "quiet": silence for
+        # QUIET_S, one line, close; "drop": the connection just ends.
+        self.ws_mode = "normal"
+        self.garbage_list = False
         device = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -106,6 +116,12 @@ class FakeDevice:
                 if not self._authed():
                     return self._send(401, {"error": {"code": "unauthorized",
                                                       "message": "pair this browser first"}})
+                if self.path == "/api/v1/scenes" and device.garbage_list:
+                    self.send_response(200)
+                    self.send_header("Content-Length", "9")
+                    self.end_headers()
+                    self.wfile.write(b"not json!")
+                    return
                 if self.path == "/api/v1/scenes":
                     return self._send(200, {"scenes": [{
                         "id": "counter", "name": "计数器", "version": "1.2.0",
@@ -164,6 +180,19 @@ class FakeDevice:
                 mask = self.rfile.read(4)
                 payload = bytes(b ^ mask[i % 4] for i, b in enumerate(self.rfile.read(n)))
                 device.ws_frames.append(payload.decode())
+                if device.ws_mode == "drop":
+                    self.wfile.flush()
+                    self.close_connection = True
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    return
+                if device.ws_mode == "quiet":
+                    time.sleep(QUIET_S)
+                    data = json.dumps({"t": "log", "seq": 1, "ts": 1, "level": "I",
+                                       "tag": "scene.counter", "msg": "after the quiet"}).encode()
+                    self.wfile.write(bytes([0x81, len(data)]) + data + bytes([0x88, 0]))
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
                 for msg in [
                     {"t": "hello", "boot_id": "b"},
                     {"t": "log", "seq": 1, "ts": 1, "level": "I", "tag": "scene.counter",
@@ -210,7 +239,8 @@ class Base(unittest.TestCase):
         return subprocess.run(
             [sys.executable, str(SCRIPT), "--host", self.host, "--config-dir", str(self.config),
              *args],
-            input=stdin, capture_output=True, text=True, timeout=30)
+            input=stdin, capture_output=True, text=True, timeout=30,
+            env={**os.environ, "WISP_SCENE_TIMEOUT_S": SHORT_TIMEOUT_S})
 
 
 class Packing(Base):
@@ -259,6 +289,65 @@ class Packing(Base):
         blob, _, _ = wisp_scene.pack(d)
         with zipfile.ZipFile(io.BytesIO(blob)) as z:
             self.assertIn("assets/p.jpg", z.namelist())
+
+    def test_symlinked_file_is_not_followed(self):
+        d = make_scene(self.tmp)
+        secret = self.tmp / "outside.txt"
+        secret.write_text("SECRET-CONTENTS\n")
+        os.symlink(secret, d / "assets" / "leak.png")
+        os.symlink(secret, d / "lib" / "leak.lua")
+        blob, _, skipped = wisp_scene.pack(d)
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            self.assertNotIn("assets/leak.png", z.namelist())
+            self.assertNotIn("lib/leak.lua", z.namelist())
+            for name in z.namelist():
+                self.assertNotIn(b"SECRET", z.read(name))
+        self.assertIn("assets/leak.png", skipped)
+        self.assertIn("lib/leak.lua", skipped)
+
+    def test_symlinked_directory_is_listed_as_skipped(self):
+        d = make_scene(self.tmp)
+        outside = self.tmp / "outside"
+        write(outside / "big.png", "SECRET")
+        os.symlink(outside, d / "assets" / "linked")
+        os.symlink(outside, d / "lib" / "more")
+        blob, _, skipped = wisp_scene.pack(d)
+        self.assertIn("assets/linked/", skipped)
+        self.assertIn("lib/more/", skipped)
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            self.assertFalse(any("linked" in n or "more" in n for n in z.namelist()))
+        proc = self.run_tool("push", str(d))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("assets/linked/", proc.stdout)
+
+    def test_snapshot_ignores_non_package_files(self):
+        d = make_scene(self.tmp)
+        before = wisp_scene.snapshot(d)
+        write(d / "README.md", "edited\n")
+        write(d / "docs" / "notes.md", "new\n")
+        self.assertEqual(before, wisp_scene.snapshot(d))
+        write(d / "assets" / "x.png", b"\x89PNG\r\n changed")
+        self.assertNotEqual(before, wisp_scene.snapshot(d))
+
+    def test_watch_waits_for_the_files_to_settle(self):
+        d = make_scene(self.tmp)
+        before = wisp_scene.snapshot(d)
+        edits = iter(["-- 1\n", "-- 12\n"])
+        sleeps = []
+
+        def fake_sleep(s):
+            sleeps.append(s)
+            edit = next(edits, None)
+            if edit is not None:
+                write(d / "main.lua", edit)
+
+        with mock.patch.object(wisp_scene.time, "sleep", side_effect=fake_sleep):
+            after = wisp_scene.wait_for_change(d, before)
+        self.assertEqual(after, wisp_scene.snapshot(d))
+        self.assertEqual((d / "main.lua").read_text(), "-- 12\n")
+        # One watch period, then debounce until a quiet one.
+        self.assertEqual(sleeps, [wisp_scene.WATCH_PERIOD_S, wisp_scene.DEBOUNCE_S,
+                                  wisp_scene.DEBOUNCE_S])
 
     def test_missing_manifest_is_an_error(self):
         d = self.tmp / "empty"
@@ -380,10 +469,79 @@ class Api(Base):
         self.assertIn("main.lua:3: boom", proc.stdout)
         self.assertNotIn("not mine", proc.stdout)
 
+    def test_logs_waits_through_a_quiet_stream(self):
+        # The device sends no keepalives: a silence longer than the tool's
+        # timeouts is normal and must not end `logs`.
+        self.device.ws_mode = "quiet"
+        proc = self.run_tool("logs", "counter")
+        self.assertIn("after the quiet", proc.stdout)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_logs_ends_cleanly_on_ctrl_c(self):
+        self.device.ws_mode = "quiet"
+        # Paired first, so the interrupt lands while `logs` waits on the
+        # stream rather than at the pairing prompt.
+        self.assertEqual(self.run_tool("ls").returncode, 0)
+        proc = subprocess.Popen(
+            [sys.executable, str(SCRIPT), "--host", self.host, "--config-dir", str(self.config),
+             "logs", "counter"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "WISP_SCENE_TIMEOUT_S": SHORT_TIMEOUT_S})
+        time.sleep(1.0)
+        proc.send_signal(signal.SIGINT)
+        out, err = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertNotIn("Traceback", err)
+
+    def test_logs_reports_a_dropped_connection(self):
+        self.device.ws_mode = "drop"
+        proc = self.run_tool("logs", "counter")
+        self.assertEqual(proc.returncode, 1)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertEqual(len(proc.stderr.strip().splitlines()[-1:]), 1)
+        self.assertTrue(proc.stderr.strip().splitlines()[-1].startswith("error: "), proc.stderr)
+
+    def test_logs_reports_an_unreachable_device(self):
+        port = self.device.port
+        self.device.close()
+        proc = self.run_tool("logs", "counter")
+        self.assertEqual(proc.returncode, 1)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn(f"127.0.0.1:{port}", proc.stderr)
+
+    def test_malformed_reply_is_one_line(self):
+        d = make_scene(self.tmp)
+        self.device.garbage_list = True
+        self.assertEqual(self.run_tool("push", str(d)).returncode, 0)
+        proc = self.run_tool("ls")
+        self.assertEqual(proc.returncode, 1)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertTrue(proc.stderr.startswith("error: "), proc.stderr)
+
     def test_rejects_a_bad_id(self):
         proc = self.run_tool("logs", "../x")
         self.assertNotEqual(proc.returncode, 0)
         self.assertEqual(self.device.requests, [])
+
+
+class LooseTokenFile(Base):
+    def test_loose_permissions_are_tightened(self):
+        self.config.mkdir()
+        path = self.config / "scene_tool.json"
+        path.write_text(json.dumps({"hosts": {self.host: {"token": TOKEN}}}))
+        os.chmod(path, 0o644)
+        self.assertEqual(wisp_scene.TokenStore(self.config).get(self.host), TOKEN)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_unreadable_file_is_not_overwritten(self):
+        self.config.mkdir()
+        path = self.config / "scene_tool.json"
+        path.write_text("{ broken")
+        with self.assertRaises(wisp_scene.ToolError) as cm:
+            wisp_scene.TokenStore(self.config).put(self.host, "t")
+        self.assertIn("scene_tool.json", str(cm.exception))
+        self.assertEqual(path.read_text(), "{ broken")
 
 
 class Defaults(unittest.TestCase):

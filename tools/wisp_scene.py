@@ -16,7 +16,9 @@ code on the device's screen, the user types it here, and POST
 <config-dir>/scene_tool.json, keyed by host, mode 0600, replaced in one
 step (written aside, then os.replace()). A 401 means the device forgot
 the token (revoked, factory reset): pair again once and retry. The token
-is never printed, logged or put in an error message.
+is never printed, logged or put in an error message. The admin server
+speaks plain HTTP (connectivity spec 6), so the token crosses the network
+in the clear: use this on the local network only.
 
 push packs only what a package may hold -- scene.json, the entry file,
 lib/**/*.lua and assets/** -- with ZIP_DEFLATED, lists everything else as
@@ -32,6 +34,7 @@ and prints only the lines tagged scene.<id>.
 
 import argparse
 import base64
+import hashlib
 import http.client
 import io
 import json
@@ -50,7 +53,10 @@ DEFAULT_HOST = "wisp.local:8900"
 DEFAULT_PORT = 8900
 API = "/api/v1"
 TOKEN_FILE = "scene_tool.json"
-TIMEOUT_S = 30
+# Connecting and each HTTP request; the log stream, once open, waits as
+# long as the device stays quiet. WISP_SCENE_TIMEOUT_S overrides it (the
+# tests shorten it).
+TIMEOUT_S = float(os.environ.get("WISP_SCENE_TIMEOUT_S") or 30)
 # The device refuses a package over 512 KiB (spec 6.2); say so before
 # uploading.
 MAX_CODE_BYTES = 512 * 1024
@@ -126,11 +132,13 @@ def read_manifest(directory):
     return manifest, entry
 
 
-def collect(directory):
-    """(manifest, [(relative path, Path)] to pack, [skipped]). A skipped
-    directory is listed once, with a trailing '/'."""
+def walk_package(directory, entry):
+    """([(relative path, Path)] a package may hold, [skipped]), sorted. A
+    skipped directory is listed once, with a trailing '/'. Symlinks are
+    never followed, file or directory: a link inside a scene can point
+    anywhere (a cloned scene's assets/x.png -> ~/.ssh/id_ed25519), and what
+    is packed ends up on the device and in its exports."""
     directory = pathlib.Path(directory)
-    manifest, entry = read_manifest(directory)
     files, skipped = [], []
     for current, dirs, names in os.walk(directory):
         rel_dir = pathlib.Path(current).relative_to(directory).as_posix()
@@ -138,26 +146,35 @@ def collect(directory):
         keep = []
         for d in sorted(dirs):
             rel = rel_dir + d
-            if not rel_dir and d == "data":
+            if not rel_dir and d == "data" and not os.path.islink(os.path.join(current, d)):
                 continue  # the device's store; never part of a package
-            if (rel_dir or d in ("lib", "assets")) and not d.startswith(".") and not reserved(d):
+            if ((rel_dir or d in ("lib", "assets")) and not d.startswith(".")
+                    and not reserved(d) and not os.path.islink(os.path.join(current, d))):
                 keep.append(d)
             else:
                 skipped.append(rel + "/")
         dirs[:] = keep
         for name in sorted(names):
             rel = rel_dir + name
-            hidden = name.startswith(".") or reserved(name)
+            path = pathlib.Path(current) / name
+            hidden = name.startswith(".") or reserved(name) or path.is_symlink()
             if not hidden and (rel in ("scene.json", entry)
                                or (rel.startswith("lib/") and name.endswith(".lua")
                                    and len(name) > 4)
                                or rel.startswith("assets/")):
-                files.append((rel, pathlib.Path(current) / name))
+                files.append((rel, path))
             else:
                 skipped.append(rel)
+    return sorted(files), sorted(skipped)
+
+
+def collect(directory):
+    """(manifest, [(relative path, Path)] to pack, [skipped])."""
+    manifest, entry = read_manifest(pathlib.Path(directory))
+    files, skipped = walk_package(directory, entry)
     if entry not in [rel for rel, _ in files]:
         raise ToolError(f"{entry}: the entry file is missing")
-    return manifest, sorted(files), sorted(skipped)
+    return manifest, files, skipped
 
 
 def pack(directory):
@@ -180,22 +197,26 @@ def pack(directory):
 
 
 def snapshot(directory):
-    """{relative path: (size, crc32)} of the files push would look at
-    (data/ and hidden entries left out), for --watch."""
-    directory = pathlib.Path(directory)
+    """{relative path: (size, crc32)} of the files push would pack, for
+    --watch: editing a README or anything else outside the package pushes
+    nothing. Works on a scene whose scene.json is broken (the entry is then
+    taken to be main.lua), so fixing it is a change too."""
+    try:
+        _, entry = read_manifest(pathlib.Path(directory))
+    except ToolError:
+        entry = "main.lua"
     out = {}
-    for current, dirs, names in os.walk(directory):
-        rel_dir = pathlib.Path(current).relative_to(directory).as_posix()
-        rel_dir = "" if rel_dir == "." else rel_dir + "/"
-        dirs[:] = [d for d in dirs if not d.startswith(".") and not (not rel_dir and d == "data")]
-        for name in names:
-            if name.startswith("."):
-                continue
-            try:
-                data = (pathlib.Path(current) / name).read_bytes()
-            except OSError:
-                data = None
-            out[rel_dir + name] = (-1, 0) if data is None else (len(data), zlib.crc32(data))
+    for rel, path in walk_package(directory, entry)[0]:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            data = None
+        out[rel] = (-1, 0) if data is None else (len(data), zlib.crc32(data))
+    try:
+        data = (pathlib.Path(directory) / "scene.json").read_bytes()
+        out["scene.json"] = (len(data), zlib.crc32(data))
+    except OSError:
+        pass
     return out
 
 
@@ -209,12 +230,25 @@ class TokenStore:
         self.path = self.dir / TOKEN_FILE
 
     def _load(self):
+        """The file's contents; empty when it does not exist. A file that
+        cannot be read or parsed is an error rather than empty, so put()
+        never overwrites the other hosts' tokens with nothing. A file others
+        may read is narrowed to 0600 first."""
         try:
+            st = self.path.stat()
+        except FileNotFoundError:
+            return {"hosts": {}}
+        except OSError as exc:
+            raise ToolError(f"{self.path}: {exc.strerror}") from None
+        try:
+            if st.st_mode & 0o077:
+                os.chmod(self.path, 0o600)
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {"hosts": {}}
+        except (OSError, ValueError) as exc:
+            raise ToolError(f"{self.path}: unreadable ({type(exc).__name__}); "
+                            "fix or delete it to pair again") from None
         if not isinstance(data, dict) or not isinstance(data.get("hosts"), dict):
-            return {"hosts": {}}
+            raise ToolError(f"{self.path}: not a token file; fix or delete it to pair again")
         return data
 
     def get(self, host):
@@ -254,6 +288,17 @@ class TokenStore:
 
 
 # --- the admin API ---------------------------------------------------------
+
+def parse_json(body):
+    """A 2xx body as a JSON object; ToolError for anything else."""
+    try:
+        value = json.loads(body)
+    except ValueError:
+        value = None
+    if not isinstance(value, dict):
+        raise ToolError("the device sent a reply this tool does not understand")
+    return value
+
 
 def error_text(status, body):
     """One line from an API error: {"error": {"code", "message"[, "file",
@@ -351,33 +396,16 @@ class Client:
         status, data = self.call(method, path, body, content_type)
         if status not in want:
             raise ToolError(error_text(status, data))
-        return json.loads(data) if data else {}
+        return parse_json(data) if data else {}
 
     # A WebSocket: the upgrade, masked text frames out, text frames in.
     def ws_connect(self):
         if not self.token:
             self.pair()
         for attempt in range(2):
-            sock = socket.create_connection((self.hostname, self.port), timeout=TIMEOUT_S)
-            key = base64.b64encode(os.urandom(16)).decode()
-            request = (f"GET {API}/ws HTTP/1.1\r\nHost: {self.host}\r\n"
-                       "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                       f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n")
-            for k, v in self._headers(True).items():
-                request += f"{k}: {v}\r\n"
-            sock.sendall((request + "\r\n").encode())
-            head = b""
-            while b"\r\n\r\n" not in head:
-                chunk = sock.recv(1)
-                if not chunk:
-                    break
-                head += chunk
-            status_line = head.split(b"\r\n", 1)[0].decode("latin-1")
-            parts = status_line.split()
-            status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-            if status == 101:
-                return WebSocket(sock)
-            sock.close()
+            status, ws = self._ws_upgrade()
+            if ws is not None:
+                return ws
             if status == 401 and attempt == 0:
                 self.token = None
                 self.store.drop(self.host)
@@ -386,17 +414,61 @@ class Client:
             raise ToolError(f"log stream refused: HTTP {status}")
         raise ToolError("log stream refused")
 
+    def _ws_upgrade(self):
+        """(status, WebSocket or None)."""
+        key = base64.b64encode(os.urandom(16)).decode()
+        request = (f"GET {API}/ws HTTP/1.1\r\nHost: {self.host}\r\n"
+                   "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                   f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n")
+        for k, v in self._headers(True).items():
+            request += f"{k}: {v}\r\n"
+        try:
+            sock = socket.create_connection((self.hostname, self.port), timeout=TIMEOUT_S)
+        except OSError as exc:
+            raise ToolError(f"cannot reach {self.host}: {exc}") from None
+        try:
+            sock.sendall((request + "\r\n").encode())
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = sock.recv(1)
+                if not chunk:
+                    break
+                head += chunk
+            lines = head.decode("latin-1").split("\r\n")
+            parts = lines[0].split()
+            status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            if status != 101:
+                sock.close()
+                return status, None
+            accept = base64.b64encode(hashlib.sha1(
+                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC11B9A").encode()).digest()).decode()
+            got = [l.split(":", 1)[1].strip() for l in lines[1:]
+                   if l.lower().startswith("sec-websocket-accept:")]
+            if got != [accept]:
+                raise ToolError("log stream: the device answered the upgrade wrongly")
+            # The device sends no keepalives: a quiet scene means a quiet
+            # socket, for as long as it likes.
+            sock.settimeout(None)
+            return status, WebSocket(sock)
+        except OSError as exc:
+            sock.close()
+            raise ToolError(f"log stream from {self.host}: {exc}") from None
+        except BaseException:
+            sock.close()
+            raise
+
 
 class WebSocket:
     def __init__(self, sock):
         self.sock = sock
 
     def _read(self, n):
+        """Exactly n bytes; ToolError if the connection ends first."""
         data = b""
         while len(data) < n:
             chunk = self.sock.recv(n - len(data))
             if not chunk:
-                return None
+                raise ToolError("the device dropped the log stream")
             data += chunk
         return data
 
@@ -411,26 +483,27 @@ class WebSocket:
         self.sock.sendall(head + mask + masked)
 
     def recv_text(self):
-        """The next text message; None once the device closes."""
+        """The next text message, its fragments joined; None once the device
+        closes the stream with a close frame. A connection that just ends is
+        a ToolError, like every socket error."""
+        parts = []
         while True:
             head = self._read(2)
-            if head is None:
-                return None
-            opcode, size = head[0] & 0x0F, head[1] & 0x7F
+            fin, opcode, size = head[0] & 0x80, head[0] & 0x0F, head[1] & 0x7F
             if size == 126:
-                ext = self._read(2)
-                size = struct.unpack(">H", ext)[0] if ext else 0
+                size = struct.unpack(">H", self._read(2))[0]
             elif size == 127:
-                ext = self._read(8)
-                size = struct.unpack(">Q", ext)[0] if ext else 0
+                size = struct.unpack(">Q", self._read(8))[0]
             body = self._read(size) if size else b""
-            if body is None or opcode == 0x8:
+            if opcode == 0x8:
                 return None
             if opcode == 0x9:  # ping
                 self.sock.sendall(bytes([0x8A, 0x80 | len(body)]) + b"\0\0\0\0" + body)
                 continue
-            if opcode == 0x1:
-                return body.decode("utf-8", "replace")
+            if opcode == 0x1 or (opcode == 0x0 and parts):
+                parts.append(body)
+                if fin:
+                    return b"".join(parts).decode("utf-8", "replace")
 
     def close(self):
         try:
@@ -454,7 +527,7 @@ def push_once(client, directory, open_after, out):
     status, data = client.call("POST", "/scenes", blob, "application/zip")
     if status != 201:
         raise ToolError(error_text(status, data))
-    item = json.loads(data)
+    item = parse_json(data)
     hosts = ", ".join(item.get("hosts") or []) or "-"
     print(f"{item.get('id')} {item.get('version')} 域名: {hosts} 状态: {item.get('state')}",
           file=out)
@@ -504,6 +577,8 @@ def cmd_push(client, args, out, err):
 
 def cmd_ls(client, args, out, err):
     scenes = client.json_call("GET", "/scenes").get("scenes", [])
+    if not isinstance(scenes, list) or not all(isinstance(x, dict) for x in scenes):
+        raise ToolError("the device sent a reply this tool does not understand")
     if not scenes:
         print("还没有安装场景", file=out)
         return 0
@@ -525,16 +600,21 @@ def cmd_logs(client, args, out, err):
         while True:
             text = ws.recv_text()
             if text is None:
+                print("the device closed the log stream", file=err)
                 return 0
             try:
                 msg = json.loads(text)
             except ValueError:
+                continue
+            if not isinstance(msg, dict):
                 continue
             if msg.get("t") == "log" and msg.get("tag") == tag:
                 print(f"{msg.get('level', '?')} {msg.get('msg', '')}", file=out)
                 out.flush()
             elif msg.get("t") == "dropped":
                 print("(some log lines were dropped)", file=err)
+    except OSError as exc:
+        raise ToolError(f"log stream from {client.host}: {exc}") from None
     finally:
         ws.close()
 
@@ -573,6 +653,10 @@ def main(argv=None):
         return handler(client, args, out, err)
     except ToolError as exc:
         print(f"error: {exc}", file=err)
+        return 1
+    except OSError as exc:
+        # Anything the commands did not turn into a ToolError themselves.
+        print(f"error: {args.host}: {exc}", file=err)
         return 1
     except KeyboardInterrupt:
         return 0

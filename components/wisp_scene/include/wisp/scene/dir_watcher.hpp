@@ -5,10 +5,12 @@
 // can be reloaded after each save.
 //
 // poll() takes a snapshot of every scene directory under the root: the
-// path, size and CRC-32 of each file, data/ excluded (the scene's own
-// store writes there; on the simulator it lives elsewhere anyway) and so
-// is anything whose name starts with '.' (editor swap files, .git). The
-// checksum is what catches an edit that keeps the size.
+// path, size and CRC-32 of each file a package can hold -- scene.json and
+// the top-level .lua files (the entry is one of them), lib/** and
+// assets/** -- leaving out anything whose name starts with '.' (editor
+// swap files). A README, docs/ or data/ (the scene's own store) never
+// trigger a reload, and are not read every poll either. The checksum is
+// what catches an edit that keeps the size.
 //
 // A change is reported once the scene's files have held still for one
 // whole poll: the poll that first sees a difference only remembers it, and
