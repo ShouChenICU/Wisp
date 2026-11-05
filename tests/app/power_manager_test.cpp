@@ -1282,6 +1282,20 @@ TEST(PowerManager, SettingsAreCachedUntilSystemSettingsChanges) {
     EXPECT_EQ(h.pm->level(), PowerLevel::Dim);  // 15 s now
 }
 
+// A system.settings event the bus dropped delays a change only until the
+// periodic re-read.
+TEST(PowerManager, DroppedSettingsEventIsCaughtUpByThePeriodicReread) {
+    Headless h(/*screen_off_s=*/60);
+    ASSERT_TRUE(Settings(*h.backend, "power").set("screen_off_s", 15));  // no event
+    uint64_t t0 = h.start_idle();
+    for (uint32_t i = 1; i < PowerManager::kSettingsRefreshTicks; ++i) {
+        h.pm->tick(t0 + 5050);
+        ASSERT_EQ(h.pm->level(), PowerLevel::Active) << "tick " << i;  // still 60 s
+    }
+    h.pm->tick(t0 + 5050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Dim);  // 15 s now
+}
+
 // A stored value SystemSettings would refuse (a hand-edited or corrupt
 // store) counts as the default here too, as GET /settings reports it.
 TEST(PowerManager, OutOfRangeStoredSettingsReadAsDefaults) {

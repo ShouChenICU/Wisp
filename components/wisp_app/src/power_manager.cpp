@@ -73,9 +73,11 @@ PowerManager::PowerManager(PowerManagerDeps deps)
 }
 
 PowerManager::~PowerManager() {
-    // After these two return neither the button handler nor the lock
-    // callback runs again, so nothing new is posted. Jobs already posted
-    // are drained below.
+    // After these return neither the bus handlers nor the lock callback
+    // runs again, so nothing new is posted. Jobs already posted are
+    // drained below -- except when called on the UI task itself, which
+    // cannot wait for its own queue; the header makes that a caller's
+    // precondition.
     bus_.unsubscribe(button_sub_);
     bus_.unsubscribe(settings_sub_);
     locks_.set_on_change(nullptr);
@@ -167,8 +169,12 @@ void PowerManager::read_settings() {
 void PowerManager::tick(uint64_t now_ms) {
     last_tick_ms_.store(now_ms);
     // Read here, on the timer task, which may touch flash; never on the
-    // UI task or the bus dispatcher.
-    if (settings_dirty_.exchange(false)) {
+    // UI task or the bus dispatcher. The event only makes a change take
+    // effect promptly: the bus may drop it, so the keys are also re-read
+    // every kSettingsRefreshTicks ticks.
+    const bool dirty = settings_dirty_.exchange(false);
+    if (dirty || ticks_since_read_.fetch_add(1) + 1 >= kSettingsRefreshTicks) {
+        ticks_since_read_.store(0);
         read_settings();
     }
 

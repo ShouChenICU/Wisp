@@ -54,7 +54,8 @@
 //
 // Settings: the power keys are read by the constructor and then again by
 // the next tick() (on the shared timer task, which may touch flash) after
-// each system.settings event, never on the UI task. A stored value
+// each system.settings event, and every kSettingsRefreshTicks ticks in
+// case such an event was dropped; never on the UI task. A stored value
 // core::SystemSettings::set() would refuse reads as its default, as
 // SystemSettings::get() reports it.
 //
@@ -108,12 +109,18 @@ class PowerManager {
 public:
     static constexpr uint32_t kDimLeadMs = 10000;
     static constexpr int kDimPercent = 30;
+    // tick() re-reads the power settings at least this often, in case the
+    // system.settings event that announced a change was dropped.
+    static constexpr uint32_t kSettingsRefreshTicks = 60;
 
     explicit PowerManager(PowerManagerDeps deps);
 
     // Unsubscribes from the bus, drops the wake-lock change callback and
     // clears the touch-activity hook (on the UI task, after every job this
     // posted). Does not leave standby: App::stop() does that first.
+    // Precondition: not called on the UI task. Jobs this posted (tick and
+    // lock-change evaluations) capture `this` and could not be drained
+    // from there; App::stop() destroys it from its own thread.
     ~PowerManager();
 
     PowerManager(const PowerManager&) = delete;
@@ -254,6 +261,8 @@ private:
     void read_settings();
     // A system.settings event arrived; the next tick() calls read_settings().
     std::atomic<bool> settings_dirty_{false};
+    // Ticks since the last read_settings().
+    std::atomic<uint32_t> ticks_since_read_{0};
     // Cached so UI-task work never reads Settings.
     std::atomic<int64_t> screen_off_ms_{60000};   // 0: never
     std::atomic<int64_t> deep_after_ms_{300000};  // 0: never
