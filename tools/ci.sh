@@ -133,6 +133,12 @@ python3 tools/check_i18n.py
 echo "==> tools/gen_cjk_font_test.py"
 python3 tools/gen_cjk_font_test.py
 
+# The committed vector (TrueType) font subset must be a hinting-free
+# glyf font whose cmap matches tools/gen_vector_font.py's character set
+# (spec 3.1).
+echo "==> tools/gen_vector_font_test.py"
+python3 tools/gen_vector_font_test.py
+
 echo "==> cmake -S simulator -B build/sim -G Ninja"
 cmake -S simulator -B build/sim -G Ninja
 
