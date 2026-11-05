@@ -28,7 +28,11 @@ namespace wisp::core {
 
 struct StorageWorkerConfig {
     size_t queue_capacity = 32;
-    size_t stack_bytes = 4096;
+    // Internal RAM (the worker touches flash). Listing installed scenes
+    // parses every manifest on this stack: with the seven example scenes a
+    // boot plus install-and-open peaked at about 4.5 KB, so 4 KB overflowed
+    // into a boot loop (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
+    size_t stack_bytes = 6144;
     int priority = 3;
 };
 

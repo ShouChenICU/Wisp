@@ -79,7 +79,7 @@
 
 - **PSRAM**：Lua VM 的堆（每个场景一个分配器，计数并限额）、场景任务的栈、`SceneStore` 的内存索引与写缓冲、HTTP 响应体、控件树描述。
 - **内部 RAM**：原先预计 ≤ 2 KB，没有算进存储工作线程的栈和各任务的 TCB；初版接入时真机实测空闲内部 RAM 比接入场景前少约 11.3 KB。修订后的划分：
-  - 必须留在内部 RAM、移不走的：`wisp.fs` 存储工作线程的 4 KB 栈（它读写 Flash，按 AGENTS.md 第 5 节必须放内部）；`wisp.fs`、`wisp.scene`、`wisp.shttp` 三个任务的 TCB（ESP-IDF 只把栈放进 PSRAM，TCB 总在内部，约 1.1 KB）；FreeRTOS 同步对象（各个互斥锁、信号量、队列的计数信号量，约 20 个，约 2.4 KB）和 `RequestWatch` 定时器的 `esp_timer` 句柄。合计约 8 KB。
+  - 必须留在内部 RAM、移不走的：`wisp.fs` 存储工作线程的 6 KB 栈（它读写 Flash，按 AGENTS.md 第 5 节必须放内部）；`wisp.fs`、`wisp.scene`、`wisp.shttp` 三个任务的 TCB（ESP-IDF 只把栈放进 PSRAM，TCB 总在内部，约 1.1 KB）；FreeRTOS 同步对象（各个互斥锁、信号量、队列的计数信号量，约 20 个，约 2.4 KB）和 `RequestWatch` 定时器的 `esp_timer` 句柄。合计约 10 KB。
   - 其余都放 PSRAM：`os::Queue` 的槽位（这一改动对所有队列生效，事件总线的 64 槽队列和 UI 的投递队列也一并从内部 RAM 移走；没有 PSRAM 或 PSRAM 用完时退回内部 RAM）、`SceneHttp` 的请求队列、`SceneWiring`/`SceneRepository`/`SceneRuntime`/`SceneHttp`/`RequestWatch` 等常驻对象本身（`os::make_large`）。
   - 实测（`waveshare_esp32_s3_touch_amoled_2_16`，STA、空闲、未打开场景，`mem`）：内部 RAM 空闲 92.6 KB（min 58.3 KB），接入场景前为 97.5 KB（min 62.8 KB），整机净少 4.9 KB（min 净少 4.5 KB）。这是净值：同一改动把事件总线（64 × 80 B）和 UI 投递队列（32 × 16 B）的槽位约 5.6 KB 一并移进了 PSRAM，扣除这部分后，场景子系统本身约占 10 KB 内部 RAM，高于上面约 8 KB 的估算，差额尚未逐项拆分。空闲预算（`kIdleInternalFreeMin`，60 KB）仍满足；最坏情况（STA+AP、两个 httpd、WebSocket 日志、TLS 握手、OTA 上传同时进行）尚未在这一版本上重测。
   - 真机用 `mem` 实测后写入硬件文档，并按新的最坏情况复核 `wisp/app/ram_budget.hpp`。

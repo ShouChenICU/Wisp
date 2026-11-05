@@ -96,7 +96,7 @@ TEST(StorageWorker, SubmitBeforeStartFails) {
 
 TEST(StorageWorker, StackIsInternal) {
     auto c = StorageWorker::task_config({});
-    EXPECT_EQ(c.stack_bytes, 4096u);
+    EXPECT_EQ(c.stack_bytes, 6144u);
     EXPECT_TRUE(c.flash_access);
     EXPECT_STREQ(c.name, "wisp.fs");
     EXPECT_EQ(c.priority, 3);

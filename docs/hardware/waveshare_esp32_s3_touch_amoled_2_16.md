@@ -283,6 +283,8 @@ STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动
 
 **接入场景运行时之后**（2026-11-04，固件 e9e11a7，只连 STA、空闲、未打开场景）：内部 RAM 空闲 92.6 KB（`min` 58.3 KB），接入前 97.5 KB（`min` 62.8 KB），净少 4.9 KB（`min` 净少 4.5 KB）。这是两项改动的净值：`os::Queue` 的槽位同时移进了 PSRAM（事件总线 64 × 80 B、UI 投递队列 32 × 16 B，约 5.6 KB），扣除后场景子系统本身约占 10 KB 内部 RAM，划分见场景 spec 2.3。新任务的栈：`wisp.fs` 4093 B，放内部 RAM（它读写 flash），high-water mark 剩 1532 B；`wisp.shttp` 8181 B 和 `wisp.scene` 131057 B，都在 PSRAM。最坏情况（STA + 热点、两个 httpd、WebSocket 日志、TLS 握手、OTA 上传同时进行）没有在这一版本上重测。
 
+**`wisp.fs` 栈从 4 KB 加到 6 KB**（2026-11-05，固件 5fab9ac 加临时 12 KB 栈实测）：装了一个场景后，开机列出场景时在这个线程上解析各场景的 manifest，4 KB 栈溢出，表现为开机约 3 秒就重启，反复循环（日志里是 `stack overflow in task wisp.fs`，或者溢出写坏了旁边的队列，变成 `Interrupt wdt timeout`）。装上 7 个示例场景后实测：开机列出场景时用了 4.3 KB，安装并打开 ledger、weather 后峰值 4.5 KB，所以定为 6 KB，留约 1.7 KB 余量。同一次测量里，安装场景加 weather 的 HTTPS 请求期间，内部 RAM `min` 降到 39.7 KB（当时 `wisp.fs` 用的是 12 KB 临时栈；改成 6 KB 后相当于约 45.7 KB）。
+
 **STA 和热点互斥能省多少**：只开热点比 STA + 热点只多 5.4 KB（mDNS 任务栈 4 KB 加 DHCP 客户端和关联状态），只连 STA 比 STA + 热点多 14.6 KB。热点部分本身：softAP 驱动、netif 和 DHCP 服务器约 10.6 KB；端口 80 的 httpd 约 3 KB（栈已移到 PSRAM，移之前是 7.1 KB）；DNS 任务 0.4 KB（移之前是 3.4 KB）。配网时热点不能不开，所以互斥只能把峰值降低约 5 KB。
 
 ## 性能基准
