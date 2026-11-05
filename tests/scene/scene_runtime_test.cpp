@@ -760,6 +760,9 @@ TEST_F(SceneRuntimeTest, CloseAnswersOnlyOnceTheSceneIsStopped) {
         EXPECT_EQ(state.get(), SceneState::Stopped);
         EXPECT_EQ(rt->foreground(), std::nullopt);
     }
+    // The callback answers before it publishes "deleted", and the bus
+    // delivers on its own thread: wait for all three before comparing.
+    ASSERT_TRUE(wait_until([&] { return events().size() == 3; }, 1000));
     EXPECT_EQ(events(),
               (std::vector<StateEvent>{
                   {"counter", "running"}, {"counter", "stopped"}, {"counter", "deleted"}}));
