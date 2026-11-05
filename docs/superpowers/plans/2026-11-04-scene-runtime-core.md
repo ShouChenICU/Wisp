@@ -80,7 +80,7 @@
 
 - 分层变为 `wisp_base` → `wisp_os` → `wisp_hal` → `wisp_core` → `wisp_net` → `wisp_admin` → `wisp_ui` → `wisp_scene` → `wisp_app`。`lua.h`/`lauxlib.h`/`lualib.h`/`lua.hpp`/`luaconf.h` 只有 `wisp_scene` 能 include；`lua` 组件只有 `wisp_scene` 能 REQUIRES。
 - **longjmp 规则**：Lua 以 C 编译，错误用 `longjmp` 传播。绑定函数在调用任何可能抛错的 Lua API（`luaL_check*`、`lua_push*`、`lua_new*`、`luaL_error`、`lua_call`）时，栈帧上不得有析构函数非平凡的 C++ 对象（`std::string`、`Value`、容器、`unique_ptr`）。做法：先用 `lua_type`/`lua_to*` 校验参数并在需要时报错，再做 C++ 工作；需要在持有 C++ 对象时调用 Lua API，就经 `scene::protect(L, fn)`（Task 7）在内层 `lua_pcall` 里做，错误消息存在定长 `char[256]` 里再 `lua_error`。
-- 数值（spec 原文）：VM 内存 2 MB；每条消息执行 200 ms；每帧最多 64 条界面改动；控件数 2000；场景数据 1 MB；单条记录 16 KB；集合数 16；HTTP 响应 256 KB；HTTP 频率 30 次/分钟；HTTP 超时 15 秒；定时器最小间隔 50 ms、最多 32 个；写入合并 300 ms；压缩阈值 64 KB / 废弃超过有效一半；代码包 512 KB；`id` 为 `[a-z0-9_-]`、1–32 字节；`name` 1–32 字节 UTF-8；`version` 语义化版本；`schema_version` 为 1；`entry` 默认 `main.lua`；返回手势判定区约 16 px、右滑超过 1/4 屏宽；场景放 `/int/scenes/`（`<int 挂载点>/scenes`）。
+- 数值（spec 原文）：VM 内存 2 MB；每条消息执行 200 ms；每帧最多 64 条界面改动；控件数 2000；场景数据 1 MB；单条记录 16 KB；集合数 16；HTTP 响应 256 KB；HTTP 频率 30 次/分钟；HTTP 超时 15 秒；定时器最小间隔 50 ms、最多 32 个；写入合并 300 ms；压缩阈值 64 KB / 废弃超过有效一半；代码包 512 KB；`id` 为 `[a-z0-9_-]`、1–32 字节；`name` 1–32 字节 UTF-8；`version` 语义化版本；`schema_version` 为 1；`entry` 默认 `main.lua`；返回手势判定区约 16 px、右滑至少 24 px（执行期裁定，原为超过 1/4 屏宽，见 Task 10）；场景放 `/int/scenes/`（`<int 挂载点>/scenes`）。
 - 任务配置：`wisp.scene` 优先级 3（低于 UI 的 4）、不绑核（`TaskConfig::core = -1`，UI 任务同样不绑，由 SMP 调度器把两者分到两个核上；spec 1.3/3.1）、栈 32768 字节、`flash_access = false`（场景任务从不碰 flash：文件都经 `wisp.fs`，不读 Settings，语言用 `ui::lang()`）；`wisp.fs` 优先级 3、栈 4096 字节、`flash_access = true`；`wisp.shttp` 优先级 3、栈 8192 字节、`flash_access = false`（只做网络；证书包是已映射的只读常量）。场景消息队列 64 条，元素是指针，消息体经 `os::make_large` 放 PSRAM。
 - PSRAM 放置（spec 2.3）：Lua 堆（计数分配器）、场景任务栈、`SceneStore` 索引与写缓冲（`os::LargeString`/`LargeVector`）、HTTP 响应体（`os::LargeBuffer`）、控件树描述与界面改动队列、上传与导出的 zip 缓冲、LVGL 对象。
 - 界面文字中/日/英：设备端走 `ui::StrId` 三张表（字形由 `tools/gen_cjk_font_test.py` 检查），网页走 `web/app/i18n/{zh,ja,en}.js`（`tools/check_i18n.py` 检查）。
@@ -673,7 +673,7 @@ class SystemLayer {
 public:
     explicit SystemLayer(const hal::ScreenShape& shape);      // 不建常驻容器（见下文"与 overlay 的配合"）
     ~SystemLayer();
-    void set_back_handler(std::function<void()> on_back);     // 空函数 = 关闭手势区
+    void set_back_handler(std::function<void()> on_back);     // 空函数 = 关闭返回手势
     void show_error(ErrorPanelInfo info, std::function<void()> on_reload, std::function<void()> on_back);
     void hide_error();
     bool error_visible() const;
@@ -690,8 +690,8 @@ public:
 };
 ```
 
-- 与 overlay 的配合（`wisp/ui/overlay.hpp`）：顶层只要有一个显示中、未标记的对象碰到某块重绘区，那块就不再裁剪；一个常驻的全屏容器会让配网卡片下的滚动退回整块重画（热点帧率约从 28.2 掉到 14.5，`NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone` 失败）。所以系统层没有常驻容器：手势条、错误面板、键盘各自是 `lv_layer_top()` 的直接子对象，确认框连同它的背板也是，都只在使用期间存在或显示。错误面板与键盘不透明，创建后调用 `mark_opaque_overlay()`；确认框不标记（见下）。系统层建的辅助对象（面板内部容器等）一律清掉 `LV_OBJ_FLAG_CLICKABLE`，只有按钮、键盘和手势条可点。
-- 手势区：`y ∈ [safe.y1, safe.y2]` 且 `row_span(y).x1 <= x < row_span(y).x1 + 16`。手势条是一个窄条对象：纵向从 `safe.y1` 到 `safe.y2`，横向从各行 `row_span(y).x1` 的最小值到其最大值 + 16，透明、不标记；创建时隐藏，`set_back_handler` 设了非空函数时才显示，清空时再隐藏。它加 `LV_OBJ_FLAG_ADV_HITTEST`，`LV_EVENT_HIT_TEST` 用 `in_back_zone` 判定，所以圆角/圆形屏上判定区贴着可见边缘，条内其余像素的触摸照常落到场景。`is_back_swipe`：起点在区内、`end.x - start.x > width / 4`、`|dy| < dx`。区内的按下被系统层吃掉，场景收不到。
+- 与 overlay 的配合（`wisp/ui/overlay.hpp`）：顶层只要有一个显示中、未标记的对象碰到某块重绘区，那块就不再裁剪；一个常驻的全屏容器会让配网卡片下的滚动退回整块重画（热点帧率约从 28.2 掉到 14.5，`NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone` 失败）。所以系统层没有常驻容器：返回箭头、错误面板、键盘各自是 `lv_layer_top()` 的直接子对象，确认框连同它的背板也是，都只在使用期间存在或显示。错误面板与键盘不透明，创建后调用 `mark_opaque_overlay()`；确认框不标记（见下）。系统层建的辅助对象（面板内部容器等）一律清掉 `LV_OBJ_FLAG_CLICKABLE`，只有按钮和键盘可点（返回手势不建可点对象，见下一条）。
+- 手势区：`y ∈ [safe.y1, safe.y2]` 且 `row_span(y).x1 <= x < row_span(y).x1 + 16`。**执行期裁定（控制者 2026-11-05，用户批准的返回手势改动）**：原设计的手势条（透明窄条，`ADV_HITTEST` + `PRESS_LOCK`，吃掉区内所有按下）作废，因为它让区内的点击到不了场景。改为被动的边缘观察者：设了返回处理函数时，系统层包装指针输入设备的读回调，在 LVGL 处理每次读数之前旁观、不拦截，区内的按下照常先交给下面的控件；起点在区内、右移至少 24 px（`kBackTriggerDx`）且 `dx > 2·|dy|` 时才接管：给持有按下的控件发 `LV_EVENT_PRESS_LOST`，`lv_indev_reset()` 清掉按下与滚动对象，`lv_indev_wait_release()` 让这次按下不再产生点击；已开始的滚动收到 `SCROLL_END` 并以动画回到范围内（有吸附则吸到最近的点）。松手时仍越过触发距离才返回，拖回触发距离以内则取消。从屏幕键盘或拼音候选行上开始的按下不启动返回手势；确认框打开时也不启动。左边缘有一个跟随手指的 40 px 返回箭头，只在滑动期间显示。`is_back_swipe`：起点在区内、`end.x - start.x >= 24`、`dx > 2·|dy|`。同一时刻只有一个系统层能包装读回调，第二个记错误日志、没有手势。
 - 错误面板：不透明（标记为覆盖物），限制在 `safe_rect` 内；标题 `StrId::SceneErrorTitle`，正文为场景名、`file:line` 与错误信息，按钮 `StrId::SceneReload`/`StrId::SceneBack`。
 - 键盘：`lv_keyboard` + `lv_ime_pinyin`，`lv_ime_pinyin_set_dict()` 用细化第 11 条生成的词库（`tools/gen_pinyin_dict.py` 读 LVGL 源码里的默认词库与 `tools/gen_cjk_font_test.py` 用的字体字符集，输出排序后的常量表；CI 里用 `--check` 校验已提交的文件是最新的），占安全区下半部，不透明（标记为覆盖物），`LV_EVENT_READY`/`LV_EVENT_CANCEL` 时收起；有一个中/英切换键。
 - 确认框：保持模态，用 `lv_msgbox_create(nullptr)`，带 LVGL 默认的全屏背板。确认框守着危险操作（恢复出厂、安装固件、删除场景），框外的触摸绝不能落到下面的界面。背板是未标记的全屏顶层对象，所以确认框打开期间不跳过被遮挡区域的重绘，下面滚动时整块重画；确认框很少出现、开着的时间也短，接受这个代价。框和背板都不调用 `mark_opaque_overlay()`（标记背板会把它当成不透明卡片裁掉下层，而背板是半透明的）。仍是 `lv_msgbox_class`（现有测试按这个类数确认框）；宽度钳制照搬 `SelfCheck::make_confirm_box`。
@@ -710,8 +710,8 @@ TEST(SystemLayer, PinyinDictGlyphsInFont)      // 生成词库的每个候选字
 TEST(SystemLayer, ConfirmAnswersAndStaysOnTop) // open_confirm 的 box 在全屏背板下（背板是 lv_layer_top() 的子对象）；"是"/"否" 回调 true/false；raise() 后背板在卡片之上
 TEST(SystemLayer, ConfirmIsModal)              // 确认框开着时点框外（背板上）的下层按钮 -> 按钮未收到 CLICKED，确认框仍开着
 TEST(SystemLayer, OneConfirmAtATime)           // 第一个打开后 confirm_open()==true，第二次 open_confirm 返回 nullptr 且不回调；关闭后 false
-TEST(SystemLayer, NoPersistentTopLayerChild)   // 构造后 lv_layer_top() 的子对象数不变；set_back_handler(f) 后多出的手势条宽度 <= 16 + 各行 x1 之差、
-                                               // 高度 == safe 高度；set_back_handler({}) 后它隐藏
+TEST(SystemLayer, NoPersistentTopLayerChild)   // 构造后与 set_back_handler(f) 后 lv_layer_top() 的子对象数都不变；
+                                               // 滑动期间只多出显示中的返回箭头，松手后隐藏（执行期裁定，见上）
 TEST(SystemLayer, OverlaysKeepOcclusionSkip)   // 照 NetUi.ScrollingUnderTheProvisioningCardLeavesTheCardAlone 的做法：错误面板、键盘分别显示时
                                                // 滚动下层列表，新的刷新区都不进入该块去掉圆角行后的区域
 ```
@@ -1218,7 +1218,7 @@ def test_requests_use_api_prefix()       # 假服务器记录的路径都以 /ap
 **Files:**
 - Modify: `docs/architecture.md`、`docs/porting-guide.md`、`docs/references.md`、`THIRD_PARTY_NOTICES.md`、`AGENTS.md`（只在发现新的通用陷阱时）、本计划（记录执行期裁定）
 
-- [ ] **Step 1: `docs/architecture.md`**：标题范围改为涵盖子项目 3a；分层图加入 `wisp_scene`；依赖规则核对九层与 Lua 头文件限制；启动流程加入 `StorageWorker`/`recover()`、`SceneHttp`、`SystemLayer`、`SceneRuntime`，停止顺序同步；事件表加 `scene.state`（发布方 `scene::SceneRuntime` 与 `app` 的删除流程，payload 与细化第 17 条一致）；改正第 9 条的覆盖物说明：确认框是模态的（`SystemLayer::open_confirm` 建的 `lv_msgbox` 带全屏背板），不做跳过标记，开着时下层整块重画；被标记的只有配网/配对卡片、错误面板与屏幕键盘；返回手势条是只在场景前台时显示的未标记窄条（碰到它的重绘区不裁剪），`SelfCheck::raise_overlays()` 最后调用 `SystemLayer::raise()`；新增"场景运行时"一节（任务表：`wisp.scene` PSRAM 32 KB、`wisp.fs` 内部 4 KB、`wisp.shttp` PSRAM 8 KB；消息流；每帧 64 条；`/int/scenes/` 布局与两阶段替换；`SceneStore` 文件格式与日志）；模拟器一节加 `--scenes-dir`、`--open-scene`、`debug scene-click`；存储一节加 `<int>/scenes`。
+- [ ] **Step 1: `docs/architecture.md`**：标题范围改为涵盖子项目 3a；分层图加入 `wisp_scene`；依赖规则核对九层与 Lua 头文件限制；启动流程加入 `StorageWorker`/`recover()`、`SceneHttp`、`SystemLayer`、`SceneRuntime`，停止顺序同步；事件表加 `scene.state`（发布方 `scene::SceneRuntime` 与 `app` 的删除流程，payload 与细化第 17 条一致）；改正第 9 条的覆盖物说明：确认框是模态的（`SystemLayer::open_confirm` 建的 `lv_msgbox` 带全屏背板），不做跳过标记，开着时下层整块重画；被标记的只有配网/配对卡片、错误面板与屏幕键盘；返回手势不建常驻对象，只有滑动期间显示的未标记返回箭头（碰到它的重绘区不裁剪；执行期裁定，见 Task 10），`SelfCheck::raise_overlays()` 最后调用 `SystemLayer::raise()`；新增"场景运行时"一节（任务表：`wisp.scene` PSRAM 32 KB、`wisp.fs` 内部 4 KB、`wisp.shttp` PSRAM 8 KB；消息流；每帧 64 条；`/int/scenes/` 布局与两阶段替换；`SceneStore` 文件格式与日志）；模拟器一节加 `--scenes-dir`、`--open-scene`、`debug scene-click`；存储一节加 `<int>/scenes`。
 - [ ] **Step 2: `docs/porting-guide.md`**：新板子运行场景的前提（PSRAM：Lua 堆与 LVGL 堆都在 PSRAM；`CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` 已在公共配置里）；场景层没有板级代码，屏幕形状只经 caps 生效；验收时补跑 Task 22 的场景行。
 - [ ] **Step 3: references 与 notices 核对**：Lua 5.5.1（版本、SHA-256、`tools/vendor_lua.sh`、只编译的文件列表）已在 Task 1 登记；LVGL 自带的 LodePNG（zlib 许可，随 LVGL 分发）与 TJPGD（随 LVGL 分发，仅模拟器）、乐鑫 `esp_new_jpeg` 1.0.2（Espressif 自定义许可，经组件管理器获取，仅 ESP 端口）与 `lv_ime_pinyin` 默认词库补一行说明；inflate 为自写实现，不登记。
 - [ ] **Step 4: 验证** — `bash tools/ci.sh`（注释守卫覆盖 `docs/`）。
