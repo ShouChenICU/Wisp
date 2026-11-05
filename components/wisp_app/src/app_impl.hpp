@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "net_wiring.hpp"
+#include "notification_router.hpp"
 #include "scene_wiring.hpp"
 #include "self_check.hpp"
 #include "wisp/app/app.hpp"
@@ -32,6 +33,7 @@
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/core/tone_player.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/system_layer.hpp"
@@ -106,6 +108,18 @@ struct App::Impl {
     // it (no more timer saves) before the final flush, and resets it only
     // after power_timer (which posts wake-lock reminders) has stopped.
     std::unique_ptr<core::NotificationService> notifications;
+    // The notification sounds over "audio_out.main" (scene-device spec
+    // 5.4). Built before power_manager, whose activity hook silences it,
+    // and reset after it.
+    std::unique_ptr<core::TonePlayer> tones;
+    // audio/notify_vol, kept from system.settings: the router reads it on
+    // the posting thread (the scene task), which must not read Settings.
+    std::atomic<uint8_t> notify_vol{60};
+    core::SubscriptionId notify_vol_sub = 0;
+    // What a posted, tapped or acted-on notification does (wake, sound,
+    // banner, its scene). Built once the scene runtime is, stopped first
+    // by App::stop().
+    std::unique_ptr<NotificationRouter> router;
     core::SubscriptionId battery_sub = 0;
     core::SubscriptionId charging_sub = 0;
     core::SubscriptionId scene_state_sub = 0;

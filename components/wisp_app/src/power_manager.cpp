@@ -40,6 +40,7 @@ PowerManager::PowerManager(PowerManagerDeps deps)
       ui_(deps.ui),
       buttons_(deps.buttons),
       set_light_sleep_(std::move(deps.set_light_sleep)),
+      on_activity_(std::move(deps.on_activity)),
       last_activity_ms_(os::now_ms()) {
     read_settings();
 
@@ -49,7 +50,10 @@ PowerManager::PowerManager(PowerManagerDeps deps)
                                    [this](const core::Event&) { settings_dirty_.store(true); });
 
     if (ui_ != nullptr) {
-        ui_->set_touch_activity_cb([this] { note_activity(); });
+        ui_->set_touch_activity_cb([this] {
+            note_activity();
+            if (on_activity_) on_activity_();
+        });
     }
 
     // A lock change can move the level without waiting for the next tick:
@@ -62,6 +66,7 @@ PowerManager::PowerManager(PowerManagerDeps deps)
     // return quickly (event_bus.hpp).
     button_sub_ = bus_.subscribe("button.", [this](const core::Event& e) {
         note_activity();
+        if (on_activity_) on_activity_();
         if (!standby()) {
             return;
         }

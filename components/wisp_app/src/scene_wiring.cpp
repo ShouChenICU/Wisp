@@ -112,6 +112,7 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                .wall_clock = {},
                                .locks = locks,
                                .on_notice = {},
+                               .notifications = notices,
                                .background_list_path = {}};
     if (auto system = deps_.storage.write_root(core::Area::System)) {
         rt.background_list_path = system.value() + "/scenes/background.json";

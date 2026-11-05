@@ -15,6 +15,7 @@ wisp_component(
          src/power_manager.cpp src/format.cpp src/net_wiring.cpp src/net_section.cpp
          src/net_cards.cpp src/factory_reset.cpp src/firmware_confirm.cpp src/console.cpp
          src/ram_budget.cpp src/scene_wiring.cpp src/scene_section.cpp src/system_notices.cpp
+         src/notification_router.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_admin wisp_ui wisp_scene
 )

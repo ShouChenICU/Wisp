@@ -168,11 +168,17 @@ struct Restore {
     std::vector<std::string> ids;
 };
 
+// deliver_notification(): bring the scene forward (or launch it), then
+// scene.on_notification(note_id).
+struct Notify {
+    std::string note_id;
+};
+
 // stop(): close every scene and end the task.
 struct Quit {};
 
 using Body = std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone,
-                          StoreDone, Device, ClockSet, CheckSources, Wake, Restore, Quit>;
+                          StoreDone, Device, ClockSet, CheckSources, Wake, Restore, Notify, Quit>;
 
 }  // namespace msg
 

@@ -84,6 +84,8 @@ wisp_test(NAME scene_store_test SRCS core/scene_store_test.cpp
 wisp_test(NAME wakelock_test SRCS core/wakelock_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME notification_service_test SRCS core/notification_service_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME tone_player_test SRCS core/tone_player_test.cpp
+          LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME power_monitor_test SRCS core/power_monitor_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings TIMEOUT 20)
 wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui wisp_port_sim_os)
@@ -114,6 +116,9 @@ wisp_test(NAME console_test SRCS app/console_test.cpp
 wisp_test(NAME loopback_test SRCS app/loopback_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 target_include_directories(loopback_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+wisp_test(NAME notification_router_test SRCS app/notification_router_test.cpp
+          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
+target_include_directories(notification_router_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME net_wiring_test SRCS app/net_wiring_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 target_include_directories(net_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
@@ -283,6 +288,9 @@ target_include_directories(scene_runtime_test PRIVATE ${WISP_ROOT}/components/wi
 wisp_test(NAME scene_background_test SRCS scene/scene_background_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 90)
 target_include_directories(scene_background_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
+wisp_test(NAME notify_binding_test SRCS scene/notify_binding_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+target_include_directories(notify_binding_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 wisp_test(NAME lua_json_test SRCS scene/lua_json_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME store_binding_test SRCS scene/store_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)

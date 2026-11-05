@@ -1,8 +1,8 @@
 #pragma once
 
-// The wisp.timer, wisp.device, wisp.log, wisp.scene, wisp.store, wisp.http
-// and wisp.power bindings (scene-runtime-core spec 5.1-5.5, scene-device
-// spec 3.2-3.4). Thin adapters: the state they act on is a SceneApi, which
+// The wisp.timer, wisp.device, wisp.log, wisp.scene, wisp.store, wisp.http,
+// wisp.power and wisp.notify bindings (scene-runtime-core spec 5.1-5.5, scene-device
+// spec 3.2-3.4, 5.1). Thin adapters: the state they act on is a SceneApi, which
 // the SceneInstance owns and the scene task (SceneRuntime) fills in and
 // drives. Everything here runs on the scene task, which touches no flash:
 // SceneApi::device must not either.
@@ -39,6 +39,14 @@
 //       (true) or drops (false) a "screen" wake lock held by "scene.<id>"
 //       and returns true; nil, "not_in_background" in the background; nil,
 //       "unavailable" without a WakeLockRegistry.
+//   wisp.notify{title, body, sound, wake, id} (bind_notify.cpp) -> id, or
+//       nil, "rate_limited" | "unavailable" (no NotificationService). A
+//       bad field raises an argument error naming it. Posted with the
+//       scene's id and name, as the foreground scene's own post while
+//       the scene is in front (shown as a banner, not kept). Works in the
+//       background.
+//   wisp.notify_cancel(id) -> true if an unread notification of this
+//       scene with that id was removed.
 //   wisp.scene.args(): a fresh table copied from *args each call ({} when
 //       there are none).
 //   wisp.store (bind_store.cpp): the scene's SceneStore, values converted
@@ -57,6 +65,7 @@
 #include <type_traits>
 
 #include "wisp/base/value.hpp"
+#include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_store.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display.hpp"
@@ -128,6 +137,11 @@ struct SceneApi {
     core::WakeLockRegistry* locks = nullptr;
     std::string holder;
     uint32_t screen_lock = 0;
+    // wisp.notify: the service (null: "unavailable"), and the scene's id
+    // and display name its notifications carry.
+    core::NotificationService* notifications = nullptr;
+    std::string scene_id;
+    std::string scene_name;
     // wisp.device.on() was called for the event at least once.
     bool has_handlers[kDeviceEventCount] = {};
 
@@ -164,6 +178,8 @@ void install_scene(lua_State* L, int wisp);
 void install_store(lua_State* L, int wisp);
 void install_http(lua_State* L, int wisp);
 void install_power(lua_State* L, int wisp);
+// Sets wisp.notify and wisp.notify_cancel.
+void install_notify(lua_State* L, int wisp);
 // The SceneApi install_api() put in the registry, or null in a VM that
 // has none (the ui table alone, in tests).
 SceneApi* find_api(lua_State* L);

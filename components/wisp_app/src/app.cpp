@@ -17,6 +17,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/hal/audio.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/power.hpp"
@@ -252,6 +253,29 @@ Result<void> App::start() {
         impl_->bus, power_dev, core::Settings(*impl_->platform.settings, "power"));
     impl_->power_monitor->start();
 
+    // The notification sounds, before PowerManager (its activity hook
+    // silences them). Without a speaker they are skipped.
+    impl_->tones = std::make_unique<core::TonePlayer>(
+        impl_->registry.get<hal::AudioOut>("audio_out.main"), &impl_->wakelocks);
+    if (auto r = impl_->tones->start(); !r) {
+        WLOG_W("app", "notification sounds off: %s", r.error().message.c_str());
+    }
+    {
+        // Subscribed before the seed is read, so a change stored in
+        // between is not lost.
+        App::Impl* impl = impl_.get();
+        impl_->notify_vol_sub =
+            impl_->bus.subscribe("system.settings", [impl](const core::Event& e) {
+                auto it = e.payload.find("notify_vol");
+                if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
+                    impl->notify_vol.store(
+                        static_cast<uint8_t>(std::clamp<int64_t>(it->second.as_int(), 0, 100)));
+                }
+            });
+        impl_->notify_vol.store(
+            static_cast<uint8_t>(std::clamp(impl_->system_settings.get().notify_vol, 0, 100)));
+    }
+
     impl_->power_manager = std::make_unique<PowerManager>(PowerManagerDeps{
         .bus = impl_->bus,
         .registry = impl_->registry,
@@ -263,6 +287,11 @@ Result<void> App::start() {
         .ui = impl_->ui.get(),
         .buttons = &impl_->buttons,
         .set_light_sleep = impl_->platform.set_light_sleep,
+        .on_activity =
+            [tones = impl_->tones.get()] {
+                // The user is there: an alarm stops (spec 5.1).
+                tones->silence();
+            },
     });
     if (display) {
         // The panel already shows this level (applied above, before the UI
@@ -323,6 +352,19 @@ Result<void> App::start() {
             &impl_->wakelocks, impl_->notifications.get());
     }
     scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
+    {
+        App::Impl* impl = impl_.get();
+        impl_->router = std::make_unique<NotificationRouter>(NotificationRouterDeps{
+            .notes = *impl_->notifications,
+            .power = impl_->power_manager.get(),
+            .tones = impl_->tones.get(),
+            .scenes = scene_runtime,
+            .locks = &impl_->wakelocks,
+            .notify_volume = [impl] { return impl->notify_vol.load(); },
+            .ui = impl_->ui.get(),
+        });
+        impl_->router->start();
+    }
 
     // Step 4b: networking (connectivity spec 4.1), before the self-check
     // screen so that screen can show the network state. Never waits for
@@ -462,6 +504,13 @@ void App::stop() {
     // lambda does.
     // The console first: its commands reach the net services.
     stop_console(*this);
+    // Nothing reacts to notifications any more (no wake, sound or scene).
+    if (impl_->router) {
+        impl_->router->stop();
+        impl_->router.reset();
+    }
+    impl_->bus.unsubscribe(impl_->notify_vol_sub);
+    impl_->notify_vol_sub = 0;
     join_loopback(*this);
     // Before the self-check screen: closing the scene in front loads that
     // screen again, and its final store flush goes to the worker.
@@ -550,6 +599,8 @@ void App::stop() {
         }
     }
     impl_->power_manager.reset();
+    // After power_manager, whose activity hook calls it.
+    impl_->tones.reset();
     // power_timer, which posts reminders, has stopped.
     impl_->notifications.reset();
 

@@ -1422,3 +1422,37 @@ TEST(PowerManager, DeviceTakingALockDuringATransitionDoesNotDeadlock) {
     EXPECT_FALSE(f.locks.held(WakeLockKind::Network));
     EXPECT_EQ(log->take(), (Strings{"imu.locky:standby", "imu.locky:active"}));
 }
+
+// The activity hook hears every button event and every touch read with a
+// finger down (an alarm stops on them).
+TEST(PowerManager, ActivityHookHearsButtonsAndTouches) {
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    DeviceRegistry registry;
+    WakeLockRegistry locks{bus};
+    JsonFileSettingsBackend backend((temp_dir() / "activity.json").string());
+    auto display = std::make_shared<FakeDisplay>("display.main", 320, 240);
+    auto touch = std::make_shared<FakeTouch>("touch.main");
+    UiRuntime ui(display, touch);
+    ASSERT_TRUE(ui.start());
+    std::atomic<int> calls{0};
+    {
+        PowerManager pm(PowerManagerDeps{
+            .bus = bus,
+            .registry = registry,
+            .locks = locks,
+            .settings = Settings(backend, "power"),
+            .display = display,
+            .ui = &ui,
+            .on_activity = [&] { ++calls; },
+        });
+        bus.publish({"button.vol_up.down", "button.vol_up", 0, {}});
+        ASSERT_TRUE(bus.wait_idle(1000));
+        EXPECT_EQ(calls.load(), 1);
+        touch->set_points({{10, 10, 0}});
+        ASSERT_TRUE(wait_until([&] { return calls.load() >= 2; }, 1000));
+        touch->set_points({});
+    }
+    ui.stop();
+    bus.stop();
+}

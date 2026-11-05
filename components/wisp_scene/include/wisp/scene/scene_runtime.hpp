@@ -63,6 +63,10 @@
 //           by an exit comes back as it was: wisp.scene.launch() as
 //           before, the same place in the order of least recently in
 //           front.
+//   notify  deliver_notification(): a scene running in front stays, one in
+//           the background comes forward (resume), any other opens as
+//           launch(Notification); then scene.on_notification(note_id),
+//           once it is up and in front.
 //   back    the back gesture, the error panel's "返回", close() and
 //           wisp.scene.close(): a scene whose scene.json declares
 //           "background" goes to the background, any other closes.
@@ -190,6 +194,7 @@
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
@@ -275,6 +280,9 @@ struct SceneRuntimeDeps {
     // System notices about the scenes (SceneNotice). Called on the scene
     // task, which must not touch flash: it may only queue the work.
     std::function<void(const SceneNotice&)> on_notice;
+    // wisp.notify and wisp.notify_cancel; null: notify() returns nil,
+    // "unavailable". Must outlive the runtime.
+    core::NotificationService* notifications = nullptr;
     // <System>/scenes/background.json (file header); empty: the list is
     // neither written nor restored.
     std::string background_list_path;
@@ -378,6 +386,14 @@ public:
     // once with Busy if the request could not be queued. It must be quick
     // and must not wait for the scene task.
     void close_async(const std::string& id, std::function<void(Result<void>)> done);
+    // The user tapped notification `note_id` of scene `scene_id` (scene-
+    // device spec 5.1): the scene comes forward (one in the background
+    // without reloading; one not running is launched with
+    // LaunchReason::Notification), then scene.on_notification(note_id)
+    // runs. Never waits. Busy when the runtime is not running, its queue
+    // is full, or the scene is being installed or deleted; a scene that
+    // turns out not to exist is only logged.
+    Result<void> deliver_notification(const std::string& scene_id, const std::string& note_id);
     // Busy when the runtime is not running, or when called on the UI
     // thread or the storage worker (neither may wait); Timeout after 10 s.
     Result<void> check_sources(std::span<const core::SourceFile> files) override;
@@ -436,6 +452,9 @@ private:
         // What wisp.scene.launch() reports: `reason`, or for a reopen what
         // the scene reported before.
         LaunchReason shown = LaunchReason::User;
+        // A notification launch: the id scene.on_notification() gets once
+        // the scene is up.
+        std::string notification;
     };
     // A scene that left the background by an exit: what open_background()
     // gives it back (the last few, scene task only).
@@ -476,7 +495,10 @@ private:
     Result<void> launch_load(const std::string& id, LaunchReason reason, Value args, bool restore,
                              bool reopen = false);
     void begin_open(const std::string& id, Value args, LaunchReason reason, bool restore,
-                    std::shared_ptr<SceneWaiter> waiter, bool reopen = false);
+                    std::shared_ptr<SceneWaiter> waiter, bool reopen = false,
+                    std::string notification = {});
+    // msg::Notify (deliver_notification()).
+    void notify(const std::string& id, const std::string& note_id);
     void finish_open(SceneMessage& m);
     // Forgets the loads of `id` still on the worker (closed or exited by
     // id: whoever did may go on to delete or replace its files).

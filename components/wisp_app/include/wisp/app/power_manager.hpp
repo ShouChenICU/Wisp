@@ -103,6 +103,11 @@ struct PowerManagerDeps {
     ui::UiRuntime* ui = nullptr;
     core::ButtonService* buttons = nullptr;
     std::function<void(bool enable)> set_light_sleep;  // Platform::set_light_sleep
+    // Runs on every touch read with a finger down (the UI task) and every
+    // button event (the bus dispatcher), besides resetting the idle clock:
+    // the user is there (an alarm stops, spec 5.1). Keep it short and
+    // non-blocking.
+    std::function<void()> on_activity;
 };
 
 class PowerManager {
@@ -241,6 +246,7 @@ private:
     ui::UiRuntime* ui_;
     core::ButtonService* buttons_;
     std::function<void(bool)> set_light_sleep_;
+    std::function<void()> on_activity_;
 
     // Serializes transitions (and every field below it marked so) against
     // each other. Released around PowerMonitor::set_standby() and

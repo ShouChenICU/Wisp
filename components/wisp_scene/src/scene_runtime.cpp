@@ -400,6 +400,18 @@ void SceneRuntime::close_async(const std::string& id, std::function<void(Result<
     push(make_message(id, 0, msg::Exit{waiter}), 0);
 }
 
+Result<void> SceneRuntime::deliver_notification(const std::string& scene_id,
+                                                const std::string& note_id) {
+    if (!running_) return Result<void>::err(ErrorCode::Busy, "scene runtime not running");
+    if (deps_.repo.installing(scene_id))
+        return Result<void>::err(ErrorCode::Busy, "scene " + scene_id + " is being installed");
+    if (deps_.repo.removing(scene_id))
+        return Result<void>::err(ErrorCode::Busy, "scene " + scene_id + " is being deleted");
+    if (!push(make_message(scene_id, 0, msg::Notify{note_id}), 0))
+        return Result<void>::err(ErrorCode::Busy, "scene queue full");
+    return Result<void>::ok();
+}
+
 void SceneRuntime::on_installed(const std::string& id) {
     if (!push(make_message(id, 0, msg::Reload{true, nullptr}), 0))
         WLOG_W(kTag, "%s: installed, but the scene task was not told", id.c_str());
@@ -679,6 +691,8 @@ void SceneRuntime::handle(SceneMessage& m) {
         job.finish_locked(std::move(r));
     } else if (auto* b = std::get_if<msg::Restore>(&body)) {
         restore(std::move(b->ids));
+    } else if (auto* b = std::get_if<msg::Notify>(&body)) {
+        notify(m.scene_id, b->note_id);
     } else if (std::holds_alternative<msg::Quit>(body)) {
         // First: the scenes closed here stay on the background list
         // (persist_background() writes nothing from now on).
@@ -689,8 +703,29 @@ void SceneRuntime::handle(SceneMessage& m) {
     // msg::Wake: run() looks at the deadlines next.
 }
 
+void SceneRuntime::notify(const std::string& id, const std::string& note_id) {
+    Slot* s = find_id(id);
+    if (s == nullptr || !s->scene) {
+        // Not running (or its error panel is up): launched for the
+        // notification, which it gets once it is up (finish_open()).
+        begin_open(id, {}, LaunchReason::Notification, false, nullptr, false, note_id);
+        return;
+    }
+    if (s->background) {
+        const uint32_t instance = s->instance;
+        // As an open of it would: the opens still on their way lose.
+        supersede_loads({});
+        resume(*s, nullptr);
+        s = find(instance);
+        // It failed coming forward.
+        if (s == nullptr || s != front_ || !s->scene) return;
+    }
+    run_step(*s, s->scene->hook("on_notification", note_id.c_str()));
+}
+
 void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason reason, bool restore,
-                              std::shared_ptr<SceneWaiter> waiter, bool reopen) {
+                              std::shared_ptr<SceneWaiter> waiter, bool reopen,
+                              std::string notification) {
     list_dirty_ = true;
     Slot* running = find_id(id);
     const bool boot = reason == LaunchReason::Boot;
@@ -723,7 +758,8 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
     if (running != nullptr) close_slot(*running);
     const uint32_t instance = next_instance_++;
     if (next_instance_ == 0) next_instance_ = 1;
-    PendingLoad load{instance, id, reason, restore, false, 0, next_seq_++, reason};
+    PendingLoad load{
+        instance, id, reason, restore, false, 0, next_seq_++, reason, std::move(notification)};
     if (boot && reopen) {
         auto d = std::find_if(departed_.begin(), departed_.end(),
                               [&](const Departed& e) { return e.id == id; });
@@ -949,6 +985,9 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         if (!run_step(s, s.scene->hook("on_show"))) return failed();
     }
     if (!run_step(s, s.scene->hook("on_state", "foreground"))) return failed();
+    if (!load.notification.empty() &&
+        !run_step(s, s.scene->hook("on_notification", load.notification.c_str())))
+        return failed();
     done(Result<void>::ok());
 }
 
@@ -1131,6 +1170,9 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason)
     api.launch = to_string(reason);
     api.locks = deps_.locks;
     api.holder = scene_tag(s.id);
+    api.notifications = deps_.notifications;
+    api.scene_id = s.id;
+    api.scene_name = s.name;
     if (deps_.http != nullptr) wire_http(s);
     // Opened in front with the screen off: the timers of a scene that does
     // not declare "background" wait for it to come on.
