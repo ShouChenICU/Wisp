@@ -29,13 +29,10 @@ inline constexpr size_t kMaxDrawCommands = 512;
 // Coordinates, sizes and angles are held to this before they reach LVGL.
 inline constexpr int32_t kMaxDrawCoord = 100000;
 
-// The font sizes in DrawCommand::font order (theme_font() names).
-inline constexpr std::string_view kDrawFontSizes[] = {"xs", "sm", "md", "lg", "xl", "xxl"};
-
 struct DrawCommand {
     DrawOp op = DrawOp::Fill;
-    uint8_t fill = 0;  // rect, circle: filled instead of outlined
-    uint8_t font = 2;  // index into kDrawFontSizes
+    uint8_t fill = 0;      // rect, circle: filled instead of outlined
+    uint8_t font_px = 16;  // text: kFontPxMin..kFontPxMax, a token already in pixels
     uint8_t reserved = 0;
     uint32_t rgb = 0xFFFFFF;
     int32_t width = 1;

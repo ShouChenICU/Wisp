@@ -92,7 +92,7 @@ void draw_command(lv_layer_t* layer, std::span<const uint8_t> bytes, const DrawC
             d.text_length = static_cast<uint32_t>(text.size());
             d.text_local = 1;  // copied: the bytes are not NUL-terminated
             d.color = color;
-            d.font = theme_font(c.font < std::size(kDrawFontSizes) ? kDrawFontSizes[c.font] : "md");
+            d.font = theme_font(std::clamp<int>(c.font_px, kFontPxMin, kFontPxMax));
             const int32_t x = coord(c.v[0]), y = coord(c.v[1]);
             lv_area_t area{x, y, std::max(x, w - 1), std::max(y, h - 1)};
             lv_draw_label(layer, &d, &area);

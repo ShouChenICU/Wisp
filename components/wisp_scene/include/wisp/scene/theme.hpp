@@ -19,8 +19,19 @@ lv_color_t theme_color(std::string_view token_or_hex);
 // The same colour as 0xRRGGBB; any thread.
 uint32_t theme_rgb(std::string_view token_or_hex);
 
-// xs, sm and md are ui::font(16), lg 24, xl 32, xxl 48; anything else
-// md. UI thread only, like ui::font().
-const lv_font_t* theme_font(std::string_view size);
+// The pixel sizes a scene's `font` may give as a number (spec 5.3 of the
+// vector-font design). ui::font() rounds them down to its steps.
+inline constexpr int kFontPxMin = 16;
+inline constexpr int kFontPxMax = 128;
+
+// xs, sm and md are 16 pixels, lg 24, xl 32, xxl 48; anything else 16.
+// Any thread.
+int theme_font_px(std::string_view token);
+
+// ui::font(theme_font_px(token)). UI thread only, like ui::font().
+const lv_font_t* theme_font(std::string_view token);
+// ui::font(px) for a size the schema already held to kFontPxMin..
+// kFontPxMax. UI thread only.
+const lv_font_t* theme_font(int px);
 
 }  // namespace wisp::scene

@@ -1,8 +1,10 @@
--- Clock face: a canvas dial, redrawn on every whole minute (wisp.device.on("minute")).
+-- Clock face: a canvas dial, redrawn on every whole minute (wisp.device.on("minute")),
+-- with the time in large digits over its lower third.
 -- The scene gets the whole screen: the canvas covers it, and the dial is the
 -- largest circle centred on it (on a round screen, the screen itself), sized from
 -- width and height. A centred circle that fits the width and height is visible on
--- a rounded screen too, whose corners it never reaches.
+-- a rounded screen too, whose corners it never reaches, and so is anything well
+-- inside it.
 -- Local time is info.time + info.utc_offset (minutes); a time zone change
 -- fires "minute" too.
 local WEEKDAYS = { "四", "五", "六", "日", "一", "二", "三" } -- 1970-01-01 was a Thursday
@@ -22,6 +24,12 @@ local function polar(angle_deg, r)
   return CX + math.floor(r * math.cos(a) + 0.5), CY + math.floor(r * math.sin(a) + 0.5)
 end
 
+-- Hours, minutes and days since 1970-01-01 in local time.
+local function local_time(i)
+  local local_s = i.time + i.utc_offset * 60
+  return local_s // 3600 % 24, local_s // 60 % 60, local_s // 86400
+end
+
 local function hand(g, angle, len, width, color)
   local x, y = polar(angle, len)
   g:line(CX, CY, x, y, { color = color, width = width })
@@ -37,22 +45,32 @@ local function draw(g)
     g:line(x1, y1, x2, y2, { color = major and "text" or "muted", width = major and 4 or 1 })
   end
   local i = now:get()
-  local t = i.time
-  if not t then
-    g:text(CX - 30, CY - 12, "--:--", { font = "lg", color = "muted" })
-    return
-  end
-  local local_s = t + i.utc_offset * 60
-  local mins = local_s // 60 % 60
-  local hours = local_s // 3600 % 24
-  local day = local_s // 86400
-  g:text(CX - 56, CY + R // 3, string.format("星期%s %02d:%02d", WEEKDAYS[day % 7 + 1], hours, mins),
-         { font = "sm", color = "muted" })
+  if not i.time then return end
+  local hours, mins = local_time(i)
   hand(g, (hours % 12) * 30 + mins / 2, R * 5 // 10, 8, "text")
   hand(g, mins * 6, R * 8 // 10, 5, "accent")
   g:circle(CX, CY, 8, { color = "accent", fill = true })
 end
 
+-- The digits and the weekday as labels stacked over the canvas, from a third of
+-- the radius below the centre down, on a plate of the dial's colour: the hands
+-- pass under it instead of through the digits.
 return ui.screen {
-  ui.canvas { w = W, h = H, draw = draw },
+  ui.stack { w = W, h = H,
+    ui.canvas { w = W, h = H, draw = draw },
+    ui.column { w = W, h = H, align = "center", pad = { CY + R // 3, 0, 0, 0 },
+      ui.column { align = "center", gap = 0, bg = "surface", radius = 8, pad = { 0, 8, 4, 8 },
+        ui.label { font = 56, text = bind(now, function(i)
+          if not i.time then return "--:--" end
+          local hours, mins = local_time(i)
+          return string.format("%02d:%02d", hours, mins)
+        end) },
+        ui.label { font = "sm", fg = "muted", text = bind(now, function(i)
+          if not i.time then return "" end
+          local _, _, day = local_time(i)
+          return "星期" .. WEEKDAYS[day % 7 + 1]
+        end) },
+      },
+    },
+  },
 }

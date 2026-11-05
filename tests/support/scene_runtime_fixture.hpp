@@ -4,7 +4,8 @@
 // storage worker, an event bus and a SceneRepository in a temp dir, plus
 // helpers to install packages and read what the scenes logged and showed.
 // configure_deps() lets a test fill in the optional SceneRuntimeDeps
-// fields before start() makes the runtime.
+// fields before start() makes the runtime, and ui_config reaches the
+// UiRuntime as it is.
 
 #include <gtest/gtest.h>
 
@@ -90,7 +91,7 @@ protected:
             std::make_shared<wisp::test::FakeDisplay>("display.main", 480, 480, 1, display_shape);
         display->set_cap("corner_radius", wisp::Value(static_cast<int64_t>(corner_radius)));
         touch = std::make_shared<wisp::test::FakeTouch>("touch.main");
-        ui = std::make_unique<wisp::ui::UiRuntime>(display, touch);
+        ui = std::make_unique<wisp::ui::UiRuntime>(display, touch, ui_config);
         ASSERT_TRUE(ui->start());
         auto parsed = wisp::hal::screen_shape_from_caps(display->info().caps);
         ASSERT_TRUE(parsed);
@@ -204,6 +205,8 @@ protected:
     std::unique_ptr<wisp::scene::SceneRuntime> rt;
     // Called with the deps before start() makes the runtime.
     std::function<void(wisp::scene::SceneRuntimeDeps&)> configure_deps;
+    // Given to the UiRuntime by start(); the font image must outlive it.
+    wisp::ui::UiConfig ui_config;
     std::mutex mutex;
     std::vector<StateEvent> state_events;
 };

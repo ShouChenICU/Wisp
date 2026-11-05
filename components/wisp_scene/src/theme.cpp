@@ -48,11 +48,15 @@ lv_color_t theme_color(std::string_view token_or_hex) {
     return lv_color_hex(theme_rgb(token_or_hex));
 }
 
-const lv_font_t* theme_font(std::string_view size) {
-    if (size == "lg") return ui::font(24);
-    if (size == "xl") return ui::font(32);
-    if (size == "xxl") return ui::font(48);
-    return ui::font(16);
+int theme_font_px(std::string_view token) {
+    if (token == "lg") return 24;
+    if (token == "xl") return 32;
+    if (token == "xxl") return 48;
+    return 16;
 }
+
+const lv_font_t* theme_font(std::string_view token) { return ui::font(theme_font_px(token)); }
+
+const lv_font_t* theme_font(int px) { return ui::font(px); }
 
 }  // namespace wisp::scene

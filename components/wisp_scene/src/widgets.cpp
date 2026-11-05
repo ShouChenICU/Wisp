@@ -28,8 +28,6 @@ using namespace node;
 
 constexpr const char* kGType = "wisp.canvas";
 
-constexpr const auto& kFontSizes = kDrawFontSizes;
-
 bool node_id_at(lua_State* L, int idx, NodeId& out) {
     if (!lua_isinteger(L, idx)) return false;
     lua_Integer i = lua_tointeger(L, idx);
@@ -234,14 +232,25 @@ void options(lua_State* L, int idx, const char* method, DrawCommand& c) {
     c.fill = lua_toboolean(L, -1) ? 1 : 0;
     lua_pop(L, 1);
     if (lua_getfield(L, idx, "font") != LUA_TNIL) {
-        const auto* it =
-            lua_type(L, -1) == LUA_TSTRING
-                ? std::find(std::begin(kFontSizes), std::end(kFontSizes), string_at(L, -1))
-                : std::end(kFontSizes);
-        if (it == std::end(kFontSizes))
-            raise_here(L, "canvas: font expects %s, got %s", prop_expects(Prop::Font).data(),
-                       luaL_typename(L, -1));
-        c.font = static_cast<uint8_t>(it - std::begin(kFontSizes));
+        lua_Integer px = 0;
+        if (check_value(L, -1, Prop::Font) != Check::Ok) {
+            char shown_value[kMaxShown + 4];
+            char got[kMaxShown + 8];
+            if (lua_type(L, -1) == LUA_TSTRING)
+                std::snprintf(got, sizeof(got), "'%s'", shown(string_at(L, -1), shown_value));
+            else if (lua_isinteger(L, -1))
+                std::snprintf(got, sizeof(got), "%lld",
+                              static_cast<long long>(lua_tointeger(L, -1)));
+            else if (lua_type(L, -1) == LUA_TNUMBER)
+                std::snprintf(got, sizeof(got), "%.14g", static_cast<double>(lua_tonumber(L, -1)));
+            else
+                std::snprintf(got, sizeof(got), "%s", luaL_typename(L, -1));
+            raise_here(L, "canvas: font expects %s, got %s", prop_expects(Prop::Font).data(), got);
+        }
+        if (lua_type(L, -1) == LUA_TSTRING)
+            c.font_px = static_cast<uint8_t>(theme_font_px(string_at(L, -1)));
+        else if (integral(L, -1, px))
+            c.font_px = static_cast<uint8_t>(px);
     }
     lua_pop(L, 1);
 }

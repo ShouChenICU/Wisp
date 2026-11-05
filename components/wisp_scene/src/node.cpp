@@ -259,6 +259,9 @@ Check check_value(lua_State* L, int idx, Prop p) {
                        ? Check::Ok
                        : Check::BadValue;
         case PropType::Font:
+            if (t == LUA_TNUMBER) return in_range(L, idx, p) ? Check::Ok : Check::BadValue;
+            if (t != LUA_TSTRING) return Check::WrongType;
+            return in(string_at(L, idx), spec.choices) ? Check::Ok : Check::BadValue;
         case PropType::Align:
         case PropType::Justify:
         case PropType::Enum:

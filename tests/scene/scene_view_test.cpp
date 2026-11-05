@@ -12,6 +12,7 @@
 #include <variant>
 #include <vector>
 
+#include "support/font_image.hpp"
 #include "support/scene_view_fixture.hpp"
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/theme.hpp"
@@ -532,6 +533,10 @@ TEST_F(SceneView, FontsAndColorsMapToTheme) {
         EXPECT_EQ(theme_font("lg"), wisp::ui::font(24));
         EXPECT_EQ(theme_font("xl"), wisp::ui::font(32));
         EXPECT_EQ(theme_font("xxl"), wisp::ui::font(48));
+        EXPECT_EQ(theme_font("huge"), wisp::ui::font(16));
+        EXPECT_EQ(wisp::scene::theme_font_px("lg"), 24);
+        EXPECT_EQ(wisp::scene::theme_font_px("xxl"), 48);
+        EXPECT_EQ(wisp::scene::theme_font_px("sm"), 16);
         EXPECT_TRUE(lv_color_eq(theme_color("accent"), lv_color_hex(0x4F9DFF)));
         EXPECT_TRUE(lv_color_eq(theme_color("text"), lv_color_hex(0xFFFFFF)));
         EXPECT_TRUE(lv_color_eq(theme_color("muted"), lv_color_hex(0x8E8E93)));
@@ -554,6 +559,42 @@ TEST_F(SceneView, FontsAndColorsMapToTheme) {
             lv_color_eq(lv_obj_get_style_bg_color(label, LV_PART_MAIN), lv_color_hex(0x102030)));
         EXPECT_EQ(lv_obj_get_style_bg_opa(label, LV_PART_MAIN), LV_OPA_COVER);
         EXPECT_EQ(lv_obj_get_style_text_font(label, LV_PART_MAIN), wisp::ui::font(24));
+    });
+}
+
+TEST_F(SceneView, FontTokenStillMaps) {
+    start();
+    apply(build({node(1, 0, Widget::Screen),
+                 node(2, 1, Widget::Label, {{Prop::Text, str("A")}, {Prop::Font, str("lg")}})}));
+    on_ui([&] {
+        EXPECT_EQ(lv_obj_get_style_text_font(view->object(2), LV_PART_MAIN), wisp::ui::font(24));
+    });
+}
+
+TEST_F(SceneView, NumericFontUsesVectorStep) {
+    wisp::ui::UiConfig config;
+    config.font_image = wisp::test::test_font_image();
+    start("circle", false, std::move(config));
+    apply(build({node(1, 0, Widget::Screen),
+                 node(2, 1, Widget::Label, {{Prop::Text, str("8")}, {Prop::Font, num(50)}}),
+                 node(3, 1, Widget::Label, {{Prop::Text, str("8")}, {Prop::Font, num(18)}}),
+                 node(4, 1, Widget::Label, {{Prop::Text, str("8")}, {Prop::Font, num(128)}})}));
+    on_ui([&] {
+        EXPECT_EQ(lv_obj_get_style_text_font(view->object(2), LV_PART_MAIN), wisp::ui::font(48));
+        EXPECT_EQ(lv_obj_get_style_text_font(view->object(3), LV_PART_MAIN), wisp::ui::font(16));
+        EXPECT_EQ(lv_obj_get_style_text_font(view->object(4), LV_PART_MAIN), wisp::ui::font(128));
+        EXPECT_EQ(wisp::scene::theme_font(64), wisp::ui::font(64));
+        // The real image: the steps are distinct vector fonts.
+        ASSERT_TRUE(wisp::ui::vector_fonts_ready());
+        EXPECT_NE(wisp::ui::font(48), wisp::ui::font(64));
+        EXPECT_NE(wisp::ui::font(48), wisp::ui::font(16));
+    });
+    // A token and a number replace each other.
+    apply(set(2, Prop::Font, str("xl")));
+    apply(set(3, Prop::Font, PropValue{96.0}));
+    on_ui([&] {
+        EXPECT_EQ(lv_obj_get_style_text_font(view->object(2), LV_PART_MAIN), wisp::ui::font(32));
+        EXPECT_EQ(lv_obj_get_style_text_font(view->object(3), LV_PART_MAIN), wisp::ui::font(96));
     });
 }
 

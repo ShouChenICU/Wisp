@@ -535,9 +535,14 @@ uint32_t SceneView::set_prop(Node& n, uint16_t prop_id, const PropValue& v) {
                 lv_obj_remove_local_style_prop(obj, LV_STYLE_TEXT_FONT, LV_PART_MAIN);
                 return 0;
             }
-            const auto* s = as_string(v);
-            if (!s) return wrong();
-            lv_obj_set_style_text_font(obj, theme_font(*s), LV_PART_MAIN);
+            // A token or a number of pixels the schema held to prop_range().
+            if (const auto* s = as_string(v)) {
+                lv_obj_set_style_text_font(obj, theme_font(*s), LV_PART_MAIN);
+                return 0;
+            }
+            auto px = as_int(v, p);
+            if (!px) return wrong();
+            lv_obj_set_style_text_font(obj, theme_font(static_cast<int>(*px)), LV_PART_MAIN);
             return 0;
         }
         case Prop::Hidden: {

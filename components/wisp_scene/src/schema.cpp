@@ -8,6 +8,7 @@
 #include <cstdio>
 
 #include "wisp/scene/patch_batch.hpp"
+#include "wisp/scene/theme.hpp"
 #include "wisp/ui/system_layer.hpp"
 
 namespace wisp::scene {
@@ -92,35 +93,35 @@ constexpr SV kExpects[] = {
     "one of start, center, end, between, around, evenly",
     "\"#RRGGBB\" or one of accent, text, muted, surface, bg, danger, ok, warn",
     "\"#RRGGBB\" or one of accent, text, muted, surface, bg, danger, ok, warn",
-    "integer 0 to 4096",                               // radius
-    "integer 0 to 64",                                 // border
-    "one of xs, sm, md, lg, xl, xxl",                  // font
-    "boolean",                                         // hidden
-    "number from 0 to 1",                              // opa
-    "a name of 1 to 64 bytes",                         // ref
-    "string",                                          // text
-    "string",                                          // placeholder
-    "boolean",                                         // password
-    "integer 0 to 65535",                              // max_len
-    "an icon name",                                    // name
-    "a path assets/<name>.png, .jpg or .jpeg",         // src
-    "number",                                          // value
-    "number",                                          // min
-    "number",                                          // max
-    "boolean",                                         // checked
-    "integer 1 to 16",                                 // cols
-    "one of v, h",                                     // direction
-    "one of line, bar",                                // type
-    "a table of up to 4 tables of up to 128 numbers",  // series
-    "a table",                                         // items
-    "function",                                        // row
-    "integer 1 to 4096",                               // row_h
-    "function",                                        // draw
-    "integer 0 to 512",                                // width
-    "boolean",                                         // wrap
-    "function",                                        // on_click
-    "function",                                        // on_long_press
-    "function",                                        // on_change
+    "integer 0 to 4096",                                                 // radius
+    "integer 0 to 64",                                                   // border
+    "one of xs, sm, md, lg, xl, xxl, or an integer 16 to 128 (pixels)",  // font
+    "boolean",                                                           // hidden
+    "number from 0 to 1",                                                // opa
+    "a name of 1 to 64 bytes",                                           // ref
+    "string",                                                            // text
+    "string",                                                            // placeholder
+    "boolean",                                                           // password
+    "integer 0 to 65535",                                                // max_len
+    "an icon name",                                                      // name
+    "a path assets/<name>.png, .jpg or .jpeg",                           // src
+    "number",                                                            // value
+    "number",                                                            // min
+    "number",                                                            // max
+    "boolean",                                                           // checked
+    "integer 1 to 16",                                                   // cols
+    "one of v, h",                                                       // direction
+    "one of line, bar",                                                  // type
+    "a table of up to 4 tables of up to 128 numbers",                    // series
+    "a table",                                                           // items
+    "function",                                                          // row
+    "integer 1 to 4096",                                                 // row_h
+    "function",                                                          // draw
+    "integer 0 to 512",                                                  // width
+    "boolean",                                                           // wrap
+    "function",                                                          // on_click
+    "function",                                                          // on_long_press
+    "function",                                                          // on_change
 };
 static_assert(std::size(kExpects) == kPropCount);
 
@@ -292,6 +293,8 @@ IntRange prop_range(Prop p) {
             return {0, 65535};
         case Prop::Cols:
             return {1, 16};
+        case Prop::Font:
+            return {kFontPxMin, kFontPxMax};
         default:
             return {INT32_MIN, INT32_MAX};
     }
@@ -383,7 +386,7 @@ std::string schema_markdown() {
     append_list(out, kColorTokens);
     out += " |\n| font | ";
     append_list(out, kFontSizes);
-    out += " |\n| align | ";
+    out += ", or integer pixels 16 to 128 (see Font sizes) |\n| align | ";
     append_list(out, kAligns);
     out += " |\n| justify | ";
     append_list(out, kJustifies);
@@ -418,6 +421,20 @@ std::string schema_markdown() {
         "text,\n"
         "value or checked state. `row(item, index)` returns the widget for one list row and is\n"
         "only called for visible rows. `draw(g)` draws a canvas.\n"
+        "\n"
+        "## Font sizes\n"
+        "\n"
+        "`font` is a token or a size in pixels from 16 to 128. `xs`, `sm` and `md` are the\n"
+        "16-pixel body font, `lg` is 24, `xl` 32 and `xxl` 48. Sizes 16 to 19 are the body\n"
+        "font too; from 20 on the text is drawn from a vector font in steps of 20, 24, 28, 32,\n"
+        "40, 48, 64, 80, 96 and 128 pixels, and a size between two steps gets the lower one\n"
+        "(50 is 48). Symbols (`ui.icon`) come in 16, 24, 32 and 48 pixels, again the largest\n"
+        "that is not above the size.\n"
+        "\n"
+        "Large sizes suit short text such as a number or a time. Each glyph is drawn the\n"
+        "first time it is shown at a size, which takes a few milliseconds at the largest\n"
+        "sizes, and only a few glyphs per size are kept (13 at 128 pixels), so a long text in\n"
+        "a large size is redrawn slowly.\n"
         "\n"
         "## Widgets\n"
         "\n"
@@ -469,10 +486,10 @@ std::string schema_markdown() {
         "  `g:rect(x, y, w, h, opts)`, `g:text(x, y, text, opts)`. `opts` is optional:\n"
         "  `color` (a colour, default `text`), `width` (lines and outlines, 0 to 512, default\n"
         "  1), `radius` (rect corners, 0 to 4096), `fill` (boolean: circle and rect filled),\n"
-        "  `font` (text). A canvas is `fill` in both directions unless given a size. A canvas\n"
-        "  of more than 524,288 pixels stays empty (\"ui.canvas: too large\" in the scene's\n"
-        "  log). The `g:text` that takes the update past 1 MB is the error \"ui update too\n"
-        "  large\".\n"
+        "  `font` (text: a token or 16 to 128 pixels, as for the property). A canvas is `fill`\n"
+        "  in both directions unless given a size. A canvas of more than 524,288 pixels stays\n"
+        "  empty (\"ui.canvas: too large\" in the scene's log). The `g:text` that takes the\n"
+        "  update past 1 MB is the error \"ui update too large\".\n"
         "- `ui.chart`: `series` is up to 4 tables of up to 128 numbers, drawn in `accent`, `ok`,\n"
         "  `warn` and `danger`, between `min` and `max` (default 0 and 100); `type` is `line`\n"
         "  (default) or `bar`.\n"

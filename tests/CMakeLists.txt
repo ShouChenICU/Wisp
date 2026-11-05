@@ -269,6 +269,10 @@ wisp_test(NAME patch_queue_test SRCS scene/patch_queue_test.cpp LIBS wisp_scene 
           TIMEOUT 30)
 wisp_test(NAME scene_view_test SRCS scene/scene_view_test.cpp LIBS wisp_scene wisp_port_sim_os
           TIMEOUT 30)
+# Numeric font sizes and the examples' large text need the real vector font
+# image; see font_image_test above for where fonts.bin comes from.
+add_dependencies(scene_view_test wisp_sim_fonts)
+target_compile_definitions(scene_view_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
 # list_window.hpp and widget_data.hpp are private to wisp_scene.
 wisp_test(NAME list_window_test SRCS scene/list_window_test.cpp LIBS wisp_scene)
 wisp_test(NAME scene_view_list_test SRCS scene/scene_view_list_test.cpp
@@ -295,7 +299,9 @@ wisp_test(NAME scene_api_test SRCS scene/scene_api_test.cpp
 # The example scenes in scenes/examples, opened on a SceneRuntime.
 wisp_test(NAME examples_test SRCS scene/examples_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 120)
-target_compile_definitions(examples_test PRIVATE WISP_ROOT="${WISP_ROOT}")
+add_dependencies(examples_test wisp_sim_fonts)
+target_compile_definitions(examples_test PRIVATE WISP_ROOT="${WISP_ROOT}"
+                           WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
 foreach(t list_window_test scene_view_list_test canvas_test)
     target_include_directories(${t} PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 endforeach()
