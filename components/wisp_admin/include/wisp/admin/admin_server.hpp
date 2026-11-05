@@ -67,6 +67,7 @@
 #include "wisp/net/http.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/random.hpp"
+#include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
 
@@ -114,6 +115,9 @@ struct AdminDeps {
     // event ("deleted") rather than returned. Busy while another dialog
     // is open. Empty: DELETE /scenes/{id} answers 503.
     std::function<Result<void>(const std::string& id, bool with_data)> request_scene_delete = {};
+    // Network time (connectivity spec 5.6). Null (no Sntp port): GET
+    // /system/time and POST /system/time/sync answer 503 unavailable.
+    net::TimeSyncService* time_sync = nullptr;
     // Monotonic os::now_ms() timebase; the only clock the router uses.
     // Tests inject their own; left empty, AdminServer uses os::now_ms().
     std::function<uint64_t()> now_ms = [] { return os::now_ms(); };

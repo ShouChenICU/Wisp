@@ -69,6 +69,7 @@ TEST(Routes, BusinessRoutesNeedAToken) {
         EXPECT_EQ(f.srv->handle(make_req(Get, path)).status, 401) << path;
     }
     EXPECT_EQ(f.srv->handle(with_csrf(make_req(Post, "/api/v1/system/reboot"))).status, 401);
+    EXPECT_EQ(f.srv->handle(with_csrf(make_req(Post, "/api/v1/system/time/sync"))).status, 401);
     EXPECT_EQ(f.reboots.load(), 0);
 }
 
@@ -444,6 +445,59 @@ TEST(Routes, DestroyingTheServerCancelsAPendingReboot) {
     f.srv.reset();
     wisp::os::sleep_ms(700);
     EXPECT_EQ(f.reboots.load(), 0);
+}
+
+// GET /system/time reports the last sync; POST /system/time/sync asks for
+// one now (202), or 409 no_network while the station has no IP.
+TEST(Routes, SystemTimeReportsAndSyncs) {
+    AdminFixture f;
+    const std::string token = f.token();
+    EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/system/time"))),
+              Value(Map{{"synced", Value(false)},
+                        {"last_sync", Value()},
+                        {"server", Value("")},
+                        {"time", Value()}}));
+
+    HttpResponse offline = f.srv->handle(authed(token, Post, "/api/v1/system/time/sync"));
+    EXPECT_EQ(offline.status, 409);
+    EXPECT_EQ(error_code(offline), "no_network");
+
+    // CSRF applies as to any POST.
+    EXPECT_EQ(f.srv->handle(with_token(make_req(Post, "/api/v1/system/time/sync"), token)).status,
+              403);
+
+    ASSERT_TRUE(f.time_sync->tick(true));
+    f.time_sync->run_attempt();
+    f.now += 2500;
+    EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/system/time"))),
+              Value(Map{{"synced", Value(true)},
+                        {"last_sync", Value(wisp::test::kFixtureUnixTime)},
+                        {"server", Value("pool.ntp.org")},
+                        {"time", Value(wisp::test::kFixtureUnixTime + 2)}}));
+    f.sntp.take_calls();
+
+    HttpResponse sync = f.srv->handle(authed(token, Post, "/api/v1/system/time/sync"));
+    EXPECT_EQ(sync.status, 202);
+    EXPECT_EQ(body_json(sync), Value(Map{}));
+    ASSERT_TRUE(f.time_sync->tick(true));
+    f.time_sync->run_attempt();
+    EXPECT_EQ(f.sntp.take_calls(), (std::vector<std::string>{"pool.ntp.org"}));
+}
+
+// Without a time service (no Sntp port) both routes are unavailable.
+TEST(Routes, SystemTimeWithoutAServiceIsUnavailable) {
+    AdminFixture f;
+    f.srv.reset();
+    auto deps = f.make_deps();
+    deps.time_sync = nullptr;
+    f.srv = std::make_unique<wisp::admin::AdminServer>(std::move(deps));
+    const std::string token = f.token();
+    HttpResponse get = f.srv->handle(authed(token, Get, "/api/v1/system/time"));
+    EXPECT_EQ(get.status, 503);
+    EXPECT_EQ(error_code(get), "unavailable");
+    HttpResponse post = f.srv->handle(authed(token, Post, "/api/v1/system/time/sync"));
+    EXPECT_EQ(post.status, 503);
+    EXPECT_EQ(error_code(post), "unavailable");
 }
 
 }  // namespace

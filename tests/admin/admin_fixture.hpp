@@ -21,6 +21,7 @@
 
 #include "support/fake_devices.hpp"
 #include "support/fake_http.hpp"
+#include "support/fake_sntp.hpp"
 #include "support/fake_wifi.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/admin/admin_server.hpp"
@@ -36,10 +37,15 @@
 #include "wisp/net/asset_pack.hpp"
 #include "wisp/net/model_probe.hpp"
 #include "wisp/net/pairing_service.hpp"
+#include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 
 namespace wisp::test {
+
+// 2026-01-01 00:00:00 UTC: what the fixture's pairing clock and time
+// server report.
+inline constexpr int64_t kFixtureUnixTime = 1767225600;
 
 struct AdminFixture {
     explicit AdminFixture(bool with_assets = true) : dir(temp_dir().string()) {
@@ -56,7 +62,7 @@ struct AdminFixture {
                                                   core::Settings(*backend, "net"), random);
         EXPECT_TRUE(wifi->init(now));
         pairing = std::make_unique<net::PairingService>(*storage, bus, random,
-                                                        [] { return int64_t{1767225600}; });
+                                                        [] { return kFixtureUnixTime; });
         EXPECT_TRUE(pairing->init());
         models = std::make_unique<core::ModelProfileService>(*storage, bus, random);
         EXPECT_TRUE(models->init());
@@ -65,6 +71,14 @@ struct AdminFixture {
         scenes = std::make_unique<core::SceneRepository>(
             *storage,
             core::SceneRepoConfig{.code_root = dir + "/scenes", .data_root = dir + "/scenes"});
+        time_sync = std::make_unique<net::TimeSyncService>(net::TimeSyncDeps{
+            .sntp = sntp,
+            .bus = bus,
+            .servers = [this] { return settings->get().ntp_servers; },
+            .set_system_time = {},
+            .rtc = nullptr,
+            .now_ms = [this] { return now.load(); },
+        });
 
         if (with_assets) {
             std::ifstream in(WISP_FIXTURE_WPAK, std::ios::binary);
@@ -99,6 +113,7 @@ struct AdminFixture {
             .reboot = [this] { ++reboots; },
             .request_factory_reset = [this] { ++factory_resets; },
             .scenes = scenes.get(),
+            .time_sync = time_sync.get(),
         };
         if (with_clock) deps.now_ms = [this] { return now.load(); };
         return deps;
@@ -106,6 +121,7 @@ struct AdminFixture {
 
     ~AdminFixture() {
         srv.reset();
+        time_sync.reset();
         pairing.reset();
         wifi.reset();
         bus.stop();
@@ -138,6 +154,9 @@ struct AdminFixture {
     std::unique_ptr<core::SystemSettings> settings;
     // Installed scenes (none until a test installs one); no SceneHost.
     std::unique_ptr<core::SceneRepository> scenes;
+    // Answers with kFixtureUnixTime; no RTC, the wall clock left alone.
+    FakeSntp sntp{[] { return kFixtureUnixTime; }};
+    std::unique_ptr<net::TimeSyncService> time_sync;
     std::vector<uint8_t> pack_bytes;
     std::optional<net::AssetPack> assets;
     FakeHttpClient http;
@@ -155,7 +174,7 @@ inline const std::vector<std::string>& every_authenticated_get_route() {
     static const std::vector<std::string> paths = {
         "/api/v1/info",    "/api/v1/device",          "/api/v1/devices",     "/api/v1/settings",
         "/api/v1/wifi",    "/api/v1/wifi/scan",       "/api/v1/ai/profiles", "/api/v1/ai/presets",
-        "/api/v1/clients", "/api/v1/system/firmware", "/api/v1/scenes",
+        "/api/v1/clients", "/api/v1/system/firmware", "/api/v1/scenes",      "/api/v1/system/time",
     };
     return paths;
 }
