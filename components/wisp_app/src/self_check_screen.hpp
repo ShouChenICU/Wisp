@@ -4,7 +4,7 @@
 // with summary chips and titled section cards, shown right after boot on
 // any board with a display. The page has a language of its own (PageText
 // in self_check_layout.hpp), English until its switcher changes it; the
-// confirm dialogs on the system layer follow the system language. See self_check.hpp for how
+// network cards and the confirm dialogs follow the system language. See self_check.hpp for how
 // App::start()/ App::stop() own this object's lifetime.
 //
 // The class is split over two files: self_check_screen.cpp holds the
@@ -91,8 +91,8 @@ private:
     // Creates root_ and every widget under it.
     void build_widgets();
     // UI thread: makes `lang` the page's language and re-texts every label
-    // on the page, and the open network cards, in it. A no-op if it
-    // already is.
+    // on the page in it. A no-op if it already is. The network cards and
+    // the dialogs are system UI and keep the system language.
     void set_page_lang(ui::Lang lang);
     void build_devices(lv_obj_t* col);
 
@@ -137,9 +137,10 @@ private:
     void sync_firmware();
     void show_firmware_dialog();
     void close_firmware_dialog();
-    // Brings ui::lang() (the system layer's language) in line with the
-    // stored language, reopening an open confirm dialog in it if it
-    // changed. The page itself keeps its own language. UI thread only.
+    // Brings ui::lang() (the system UI's language) in line with the stored
+    // language, reopening the open network cards and confirm dialog in it
+    // if it changed. The page itself keeps its own language. UI thread
+    // only.
     void sync_system_language();
     void handle_power_key_action(PowerKeyController::Action action);
     void show_confirm_dialog();

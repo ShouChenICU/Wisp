@@ -34,7 +34,8 @@ inline constexpr uint32_t kColorCard = 0xF2F3F5;
 // language of its own, apart from the system one (ui::lang(), which the
 // system layer's dialogs follow): it starts in English every time the page
 // is built, is never stored, and only the page's switcher changes it. Every
-// text on the page comes from tr() here. A label whose whole text is one
+// text on the page comes from tr() here; the network cards and dialogs over
+// it are system UI and use the system language. A label whose whole text is one
 // string is bound once and re-texted by set_lang(); the sections re-render
 // the rest themselves (see SelfCheck::set_page_lang()).
 class PageText {

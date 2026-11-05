@@ -7,9 +7,10 @@
 // screen. Each is centred in the display's safe area (spec 5.6), never
 // wider or taller than it; if the content is taller (a small round
 // screen, a long translation) it scrolls inside the card, which keeps its
-// first and last rows inside the safe area at either end. All text is in
-// the language open() was given (the self-check page's); a language change
-// is handled by the owner closing and reopening the card.
+// first and last rows inside the safe area at either end. They are system
+// UI: all text is in the language open() was given, the system language
+// (ui::lang()), not the self-check page's own; a change of it is handled
+// by the owner reopening the card.
 //
 // Threading: every member function must be called on the UI thread. The
 // buttons only call the owner's callback, which asks a service to act;

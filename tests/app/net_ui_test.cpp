@@ -310,6 +310,8 @@ TEST(NetUi, ProvisioningCardShowsQrAndFitsSafeArea) {
             SCOPED_TRACE(std::string(wisp::ui::lang_code(lang)) + " " + shape);
             UiNetOptions opts;
             opts.shape = shape;
+            // The cards follow the system language, the button the page's.
+            opts.lang = wisp::ui::lang_code(lang);
             UiNetHarness h(opts);
             ASSERT_TRUE(h.start());
             ASSERT_TRUE(select_page_lang(h.app->ui(), lang));
@@ -503,13 +505,13 @@ TEST(NetUi, PairingCardCountsDownAndCloses) {
     ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
     const std::string code = pairing->active_code(wisp::os::now_ms()).value_or("");
     ASSERT_EQ(code.size(), 6u);
-    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "Pairing request"); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "配对请求"); }, 3000));
     EXPECT_TRUE(on_top_layer(h, wisp::app::spaced_code(code)));
 
     auto remaining = [&] {
         std::string text = run_on_ui_thread(
-            h.app->ui(), [] { return find_label_text_containing(lv_layer_top(), " s left"); });
-        return text.empty() ? -1 : std::atoi(text.c_str());
+            h.app->ui(), [] { return find_label_text_containing(lv_layer_top(), "剩余 "); });
+        return text.empty() ? -1 : std::atoi(text.c_str() + std::string("剩余 ").size());
     };
     int first = remaining();
     EXPECT_GE(first, 119);
@@ -517,8 +519,8 @@ TEST(NetUi, PairingCardCountsDownAndCloses) {
     ASSERT_TRUE(wait_until([&] { return remaining() == first - 1; }, 2500));
 
     // "Reject" kills the code at once and closes the card.
-    ASSERT_TRUE(click(h, top, "Reject"));
-    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "Pairing request"); }, 3000));
+    ASSERT_TRUE(click(h, top, "拒绝"));
+    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "配对请求"); }, 3000));
     EXPECT_FALSE(pairing->active_code(wisp::os::now_ms()).has_value());
     auto codes = h.topic("net.pairing.code");
     ASSERT_FALSE(codes.empty());
@@ -526,10 +528,10 @@ TEST(NetUi, PairingCardCountsDownAndCloses) {
 
     // A successful pairing closes it as well.
     ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
-    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "Pairing request"); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "配对请求"); }, 3000));
     const std::string next = pairing->active_code(wisp::os::now_ms()).value_or("");
     ASSERT_TRUE(pairing->confirm(next, wisp::net::ClientInfo{}, wisp::os::now_ms()));
-    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "Pairing request"); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "配对请求"); }, 3000));
 }
 
 // With a short code lifetime: the card counts down to the service's
@@ -543,10 +545,10 @@ TEST(NetUi, PairingCardClosesAtExpiry) {
     ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
     uint64_t expires = 0;
     ASSERT_TRUE(pairing->active_code(wisp::os::now_ms(), &expires).has_value());
-    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "Pairing request"); }, 2000));
-    EXPECT_TRUE(on_top_layer(h, "3 s left") || on_top_layer(h, "2 s left"));
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "配对请求"); }, 2000));
+    EXPECT_TRUE(on_top_layer(h, "剩余 3 秒") || on_top_layer(h, "剩余 2 秒"));
 
-    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "Pairing request"); }, 4000));
+    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, "配对请求"); }, 4000));
     EXPECT_GE(wisp::os::now_ms(), expires);
     EXPECT_FALSE(pairing->active_code(wisp::os::now_ms()).has_value());
 }
@@ -582,11 +584,11 @@ TEST(NetUi, CardsFollowTheServicesWhenEventsAreLost) {
 
     ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
     flood();
-    bool pair_shown = wait_until([&] { return on_top_layer(h, "Pairing request"); }, 3000);
+    bool pair_shown = wait_until([&] { return on_top_layer(h, "配对请求"); }, 3000);
 
     pairing->cancel_code();
     flood();
-    bool pair_closed = wait_until([&] { return !on_top_layer(h, "Pairing request"); }, 3000);
+    bool pair_closed = wait_until([&] { return !on_top_layer(h, "配对请求"); }, 3000);
 
     ASSERT_TRUE(wifi->stop_provisioning());
     flood();
@@ -607,6 +609,8 @@ TEST(NetUi, PairingCardStacksAboveProvisioningCardInsideSafeArea) {
             SCOPED_TRACE(std::string(wisp::ui::lang_code(lang)) + " " + shape);
             UiNetOptions opts;
             opts.shape = shape;
+            // The cards follow the system language, the button the page's.
+            opts.lang = wisp::ui::lang_code(lang);
             UiNetHarness h(opts);
             ASSERT_TRUE(h.start());
             ASSERT_TRUE(select_page_lang(h.app->ui(), lang));
@@ -639,46 +643,55 @@ TEST(NetUi, PairingCardStacksAboveProvisioningCardInsideSafeArea) {
     }
 }
 
-// The cards follow the page's language: a switch re-texts them, staying
-// open; a system language change leaves them alone.
-TEST(NetUi, OpenCardsFollowThePageLanguage) {
+// The cards are system UI: they follow the system language (spec 8.3),
+// staying open when it changes, and ignore the self-check page's own
+// language.
+TEST(NetUi, OpenCardsFollowTheSystemLanguage) {
     UiNetHarness h;
     ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
     ASSERT_TRUE(h.app->pairing()->request_code(wisp::os::now_ms()));
-    ASSERT_TRUE(
-        wait_until([&] { return on_top_layer(h, "Pairing request") && qr_shown(h); }, 3000));
+    // The system language starts as Chinese; the page as English.
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, "配对请求") && qr_shown(h); }, 3000));
+    EXPECT_TRUE(has_button(h, screen, "Stop setup"));
     const std::string code = h.app->pairing()->active_code(wisp::os::now_ms()).value_or("");
 
+    const std::string pair_title = text_of(StrId::PairTitle, Lang::Ja);
+    const std::string setup_title = text_of(StrId::SetupTitle, Lang::Ja);
     ASSERT_TRUE(h.app->system_settings().set({{"language", "ja"}}));
-    ASSERT_TRUE(wait_until([&] { return wisp::ui::lang() == Lang::Ja; }, 3000));
-    ASSERT_TRUE(h.app->bus().wait_idle(2000));
-    EXPECT_TRUE(on_top_layer(h, "Pairing request"));
-
-    ASSERT_TRUE(select_page_lang(h.app->ui(), Lang::Zh));
-    EXPECT_TRUE(on_top_layer(h, "配对请求"));
-    EXPECT_TRUE(on_top_layer(h, "配网"));
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, pair_title); }, 3000));
+    EXPECT_TRUE(on_top_layer(h, setup_title));
     EXPECT_TRUE(on_top_layer(h, wisp::app::spaced_code(code)));
-    EXPECT_TRUE(on_top_layer(h, "剩余 "));
-    EXPECT_FALSE(on_top_layer(h, "Pairing request"));
-    EXPECT_FALSE(on_top_layer(h, "Wi-Fi setup"));
-    EXPECT_TRUE(has_button(h, screen, "停止配网"));
+    const std::string remaining = text_of(StrId::PairRemaining, Lang::Ja);
+    EXPECT_TRUE(on_top_layer(h, remaining.substr(0, remaining.find("{}"))));
+    EXPECT_TRUE(has_button(h, top, text_of(StrId::StopSetup, Lang::Ja)));
+    EXPECT_FALSE(on_top_layer(h, "配对请求"));
+    // The page keeps its own language.
+    EXPECT_TRUE(has_button(h, screen, "Stop setup"));
     EXPECT_EQ(
         run_on_ui_thread(
             h.app->ui(),
             [] { return std::to_string(count_obj_of_class(lv_layer_top(), &lv_qrcode_class)); }),
         "1");
-    // Still stacked the same way after the switch.
-    EXPECT_EQ(run_on_ui_thread(h.app->ui(),
-                               [] {
-                                   lv_obj_t* setup = card_of("配网");
-                                   lv_obj_t* pair = card_of("配对请求");
-                                   return setup != nullptr && pair != nullptr &&
-                                                  lv_obj_get_index(pair) > lv_obj_get_index(setup)
-                                              ? std::string("ok")
-                                              : std::string();
-                               }),
-              "ok");
+    auto stacked = [&] {
+        return run_on_ui_thread(h.app->ui(), [&] {
+            lv_obj_t* setup = card_of(setup_title.c_str());
+            lv_obj_t* pair = card_of(pair_title.c_str());
+            return setup != nullptr && pair != nullptr &&
+                           lv_obj_get_index(pair) > lv_obj_get_index(setup)
+                       ? std::string("ok")
+                       : std::string();
+        });
+    };
+    EXPECT_EQ(stacked(), "ok");
+
+    // A page language switch leaves the cards alone.
+    ASSERT_TRUE(select_page_lang(h.app->ui(), Lang::Zh));
+    EXPECT_TRUE(on_top_layer(h, pair_title));
+    EXPECT_TRUE(on_top_layer(h, setup_title));
+    EXPECT_FALSE(on_top_layer(h, "配对请求"));
+    EXPECT_TRUE(has_button(h, screen, "停止配网"));
+    EXPECT_EQ(stacked(), "ok");
 }
 
 // Someone is waiting at a browser for the code: a sleeping screen wakes.
@@ -690,5 +703,5 @@ TEST(NetUi, PairingCodeWakesTheScreen) {
     ASSERT_TRUE(pm->standby());
     ASSERT_TRUE(h.app->pairing()->request_code(wisp::os::now_ms()));
     ASSERT_TRUE(wait_until([&] { return !pm->standby(); }, 3000));
-    EXPECT_TRUE(on_top_layer(h, "Pairing request"));
+    EXPECT_TRUE(on_top_layer(h, "配对请求"));
 }
