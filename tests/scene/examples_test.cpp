@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -102,14 +103,60 @@ protected:
         ASSERT_FALSE(ec) << ec.message();
     }
 
-    // Opens the example and checks that it is still running, with no
-    // error panel and nothing logged as an error, two seconds later.
+    // Writes `lines` as the scene's collection log, the way SceneStore
+    // leaves it, so the scene opens with records and its list builds rows.
+    void seed(const std::string& id, const std::string& collection,
+              const std::vector<std::string>& lines) {
+        const fs::path dir = fs::path(in) / "scenes" / id / "data";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        std::ofstream f(dir / (collection + ".log"), std::ios::binary | std::ios::trunc);
+        for (const auto& line : lines) f << line << "\n";
+    }
+
+    int count_of(const lv_obj_class_t* cls) {
+        int n = 0;
+        on_ui([&] { n = wisp::test::count_obj_of_class(lv_screen_active(), cls); });
+        return n;
+    }
+
+    // What shows that the example has built its view (todo and ledger:
+    // the rows of their seeded records).
+    bool ready(const std::string& id) {
+        constexpr uint32_t kMs = 2000;
+        if (id == "counter") return wait_label("已点击", kMs);
+        if (id == "pomodoro") return wait_label("25:00", kMs);
+        if (id == "todo") return wait_until([&] { return count_of(&lv_checkbox_class) == 2; }, kMs);
+        if (id == "ledger") return wait_label("午饭", kMs) && wait_label("今天", kMs);
+        if (id == "clock") return wait_until([&] { return count_of(&lv_canvas_class) == 1; }, kMs);
+        if (id == "sysinfo") return wait_label("安全区", kMs);
+        if (id == "weather") return wait_label("12°", kMs);
+        return false;
+    }
+
+    // Opens the example (todo and ledger with two records each), waits
+    // until it is running and has built its view, and checks that there
+    // is no error panel and nothing logged as a warning or an error.
     void open_and_run(const std::string& id, const std::string& shape) {
         SCOPED_TRACE(id + " on " + shape);
         install_example(id);
+        if (id == "todo")
+            seed(id, "todos",
+                 {R"({"op":"put","id":1,"v":{"text":"买牛奶","done":false}})",
+                  R"({"op":"put","id":2,"v":{"text":"交电费","done":true}})"});
+        if (id == "ledger") {
+            const int64_t today = (static_cast<int64_t>(std::time(nullptr)) + 8 * 3600) / 86400;
+            seed(id, "entries",
+                 {R"({"op":"put","id":1,"v":{"day":)" + std::to_string(today) +
+                      R"(,"amount":32.5,"note":"午饭"}})",
+                  R"({"op":"put","id":2,"v":{"day":)" + std::to_string(today - 3) +
+                      R"(,"amount":12,"note":"其他"}})"});
+        }
         auto opened = rt->open(id);
         ASSERT_TRUE(opened) << opened.error().message;
-        wisp::os::sleep_ms(2000);
+        EXPECT_TRUE(wait_until([&] { return rt->status(id).state == SceneState::Running; }, 2000))
+            << rt->status(id).error;
+        EXPECT_TRUE(ready(id)) << ::testing::PrintToString(labels());
         EXPECT_EQ(rt->status(id).state, SceneState::Running) << rt->status(id).error;
         EXPECT_FALSE(error_panel_has(""));
         for (auto& e : wisp::log::ring_entries()) {
@@ -119,6 +166,16 @@ protected:
                 << e.tag << ": " << e.msg;
         }
         ASSERT_TRUE(rt->close(id));
+    }
+
+    // Opens weather with `next` as the forecast's answer and waits for a
+    // label holding `text`; the scene must stay running without the panel.
+    void weather_shows(const std::string& text) {
+        install_example("weather");
+        ASSERT_TRUE(rt->open("weather"));
+        EXPECT_TRUE(wait_label(text.c_str(), 2000)) << ::testing::PrintToString(labels());
+        EXPECT_EQ(rt->status("weather").state, SceneState::Running) << rt->status("weather").error;
+        EXPECT_FALSE(error_panel_has(""));
     }
 
     wisp::test::FakeHttpClient client;
@@ -152,12 +209,51 @@ TEST_F(Examples, CounterRemembersItsCount) {
 
 TEST_F(Examples, WeatherShowsTheFakeForecast) {
     start();
-    install_example("weather");
-    ASSERT_TRUE(rt->open("weather"));
-    EXPECT_TRUE(wait_label("12", 2000)) << ::testing::PrintToString(labels());
+    weather_shows("12°");
+    EXPECT_TRUE(wait_label("多云"));
     ASSERT_TRUE(client.last());
     EXPECT_EQ(client.last()->url.rfind("https://api.open-meteo.com/v1/forecast?", 0), 0u)
         << client.last()->url;
+}
+
+// Open-Meteo answers null where it has no value: the scene shows that it
+// has none instead of failing.
+TEST_F(Examples, WeatherSurvivesNulls) {
+    client.next.body = R"({"current":{"time":"2026-11-04T10:00","temperature_2m":null,
+"relative_humidity_2m":null,"weather_code":null,"wind_speed_10m":null},
+"daily":{"time":["2026-11-04",null],"weather_code":[null,1],"temperature_2m_max":[null,9],
+"temperature_2m_min":null}})";
+    start();
+    weather_shows("暂无数据");
+    EXPECT_TRUE(wait_label("--"));
+}
+
+TEST_F(Examples, WeatherExplainsAFailedRequest) {
+    client.next = {.status = 500, .body = "oops"};
+    start();
+    weather_shows("天气服务暂时不可用");
+}
+
+TEST_F(Examples, WeatherExplainsATimeout) {
+    client.next = {.transport = wisp::net::TransportError::Timeout};
+    start();
+    weather_shows("网络");
+}
+
+// The timer runs: once started, a second later the time left is 24:59.
+TEST_F(Examples, PomodoroCountsDown) {
+    start();
+    install_example("pomodoro");
+    ASSERT_TRUE(rt->open("pomodoro"));
+    ASSERT_TRUE(wait_label("25:00"));
+    ASSERT_TRUE(rt->click_ref("toggle"));
+    EXPECT_TRUE(wait_label("暂停"));
+    EXPECT_TRUE(wait_label("24:5", 3000)) << ::testing::PrintToString(labels());
+    // Skipping a work phase does not count it as done.
+    ASSERT_TRUE(rt->click_ref("skip"));
+    EXPECT_TRUE(wait_label("休息"));
+    EXPECT_TRUE(wait_label("已完成 0 个"));
+    EXPECT_EQ(rt->status("pomodoro").state, SceneState::Running);
 }
 
 }  // namespace

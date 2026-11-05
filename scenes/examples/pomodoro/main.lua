@@ -39,8 +39,9 @@ local function pause()
   save()
 end
 
-local function switch_phase()
-  if phase:get() == "work" then
+-- finished：这一段是走完的（跳过的专注不算完成）。
+local function switch_phase(finished)
+  if finished and phase:get() == "work" then
     done_count:set(done_count:get() + 1)
     wisp.store.set("done", done_count:get())
   end
@@ -60,7 +61,7 @@ local function sync()
     rest = left:get() - 1
   end
   if rest <= 0 then
-    switch_phase()
+    switch_phase(true)
   else
     left:set(rest)
   end
@@ -81,30 +82,34 @@ local function mmss(s)
   return string.format("%02d:%02d", s // 60, s % 60)
 end
 
-return ui.screen { align = "center", justify = "center",
-  ui.column { gap = 16, align = "center",
-    ui.stack { w = 220, h = 220, align = "center",
-      ui.arc { w = 220, h = 220, width = 14, min = 0,
-        max = bind(phase, function(p) return PHASES[p].secs end),
-        value = left,
-        fg = bind(phase, function(p) return p == "work" and "accent" or "ok" end) },
-      ui.column { gap = 4, align = "center",
-        ui.label { text = bind(phase, function(p) return PHASES[p].title end), fg = "muted" },
-        ui.label { text = bind(left, mmss), font = "xxl" },
-        ui.label { text = bind(done_count, function(n) return "已完成 " .. n .. " 个" end),
-                   font = "sm", fg = "muted" },
-      },
+-- 尺寸都按安全区算，不写死像素：小屏、圆屏上也放得下。
+local sa = wisp.device.info().safe_area
+local side = math.min(sa.x2 - sa.x1 + 1, sa.y2 - sa.y1 + 1)
+local DIAL = side * 3 // 5
+
+return ui.screen { align = "center", justify = "center", gap = 16,
+  ui.stack { w = DIAL, h = DIAL, align = "center",
+    ui.arc { w = "fill", h = "fill", width = math.max(DIAL // 16, 4), min = 0,
+      max = bind(phase, function(p) return PHASES[p].secs end),
+      value = left,
+      fg = bind(phase, function(p) return p == "work" and "accent" or "ok" end) },
+    ui.column { gap = 4, align = "center",
+      ui.label { text = bind(phase, function(p) return PHASES[p].title end), fg = "muted" },
+      ui.label { text = bind(left, mmss), font = "xxl" },
+      ui.label { text = bind(done_count, function(n) return "已完成 " .. n .. " 个" end),
+                 font = "sm", fg = "muted" },
     },
-    ui.row { gap = 12,
-      ui.button { ref = "toggle", w = 96,
-        text = bind(running, function(r) return r and "暂停" or "开始" end),
-        on_click = function() if running:get() then pause() else start() end end },
-      ui.button { ref = "skip", w = 96, text = "跳过", on_click = switch_phase },
-      ui.button { ref = "reset", w = 96, text = "重置", on_click = function()
-        pause()
-        left:set(PHASES[phase:get()].secs)
-        save()
-      end },
-    },
+  },
+  -- 按钮行和安全区一样宽，三个按钮平分。
+  ui.row { w = "fill", gap = 8,
+    ui.button { ref = "toggle", grow = 1,
+      text = bind(running, function(r) return r and "暂停" or "开始" end),
+      on_click = function() if running:get() then pause() else start() end end },
+    ui.button { ref = "skip", grow = 1, text = "跳过", on_click = function() switch_phase(false) end },
+    ui.button { ref = "reset", grow = 1, text = "重置", on_click = function()
+      pause()
+      left:set(PHASES[phase:get()].secs)
+      save()
+    end },
   },
 }
