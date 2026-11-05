@@ -480,6 +480,51 @@ wisp.device.on("minute", function(i) print("minute", i.utc_offset) end)
     EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"minute\t60"}));
 }
 
+// A time sync moves the clock a scene shows: "minute" fires once at once
+// while the screen is on. A failed sync moved nothing and fires nothing.
+TEST_F(SceneApiTest, TimeSyncFiresMinute) {
+    wall = kNoon;
+    start();
+    install("ts", std::string(R"(
+wisp.device.on("minute", function(i) print("minute", i.time) end)
+)") + kScreen);
+    ASSERT_TRUE(rt->open("ts"));
+    ASSERT_TRUE(rt->check_sources({}));
+    publish("system.time", {{"state", Value("failed")}, {"server", Value("pool.ntp.org")}});
+    publish("system.time", {{"state", Value("synced")},
+                            {"server", Value("pool.ntp.org")},
+                            {"time", Value(int64_t{kNoon})}});
+    ASSERT_TRUE(wait_log("ts", 1));
+    bus.wait_idle(1000);
+    wisp::os::sleep_ms(150);
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_EQ(scene_log("ts"), (std::vector<std::string>{"minute\t" + std::to_string(kNoon)}));
+}
+
+// With the screen off a sync fires nothing; the "minute" the screen coming
+// on sends carries the new time.
+TEST_F(SceneApiTest, TimeSyncWhileTheScreenIsOff) {
+    wall = kNoon;
+    start();
+    install("ts", std::string(R"(
+wisp.device.on("minute", function(i) print("minute") end)
+)") + kScreen);
+    ASSERT_TRUE(rt->open("ts"));
+    rt->set_visible(false);
+    publish("system.time", {{"state", Value("synced")},
+                            {"server", Value("pool.ntp.org")},
+                            {"time", Value(int64_t{kNoon})}});
+    bus.wait_idle(1000);
+    wisp::os::sleep_ms(150);
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_TRUE(scene_log("ts").empty());
+    rt->set_visible(true);
+    ASSERT_TRUE(wait_log("ts", 1));
+    bus.wait_idle(1000);
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_EQ(scene_log("ts"), (std::vector<std::string>{"minute"}));
+}
+
 // App seeds the offset it reads after start(): a seed loses to any
 // system.settings event the runtime has already seen, which carries a
 // value at least as new.

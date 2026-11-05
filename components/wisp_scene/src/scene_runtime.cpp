@@ -155,6 +155,16 @@ Result<void> SceneRuntime::start() {
         if (!push(make_message("", 0, msg::Device{DeviceEvent::Lang}), 0) && running_)
             WLOG_W(kTag, "language change not passed on now (scene queue full): next minute");
     });
+    // A sync may have moved the wall clock: a clock should redraw now, not
+    // at the next minute boundary of the new time.
+    time_sub_ = deps_.bus.subscribe("system.time", [this](const core::Event& e) {
+        auto state = e.payload.find("state");
+        if (state == e.payload.end() || state->second.type() != Value::Type::String ||
+            state->second.as_string() != "synced")
+            return;
+        if (!push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) && running_)
+            WLOG_W(kTag, "time sync not passed on now (scene queue full): next minute");
+    });
     return Result<void>::ok();
 }
 
@@ -162,6 +172,7 @@ void SceneRuntime::stop() {
     if (!started_ || !running_.exchange(false)) return;
     deps_.bus.unsubscribe(power_sub_);
     deps_.bus.unsubscribe(settings_sub_);
+    deps_.bus.unsubscribe(time_sub_);
     if (task_) {
         // The task keeps taking messages, so this always gets in.
         auto quit = make_message("", 0, msg::Quit{});
