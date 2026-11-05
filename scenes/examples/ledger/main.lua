@@ -11,7 +11,7 @@ local entries = wisp.store.collection("entries")
 
 local info = wisp.device.info()
 local W, H = info.width, info.height
-local MARGIN = 16 -- from the visible edge; also clears the system's back-swipe strip
+local MARGIN = 16 -- from the visible edge
 local GAP = 8
 local TITLE_H, CHART_H, DAYS_H, INPUT_H, HINT_H, ROW_H = 32, 96, 20, 48, 20, 44
 

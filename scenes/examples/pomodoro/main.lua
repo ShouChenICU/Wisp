@@ -89,7 +89,7 @@ end
 -- at its own rows, so on a round screen it uses the width there is at that height.
 local info = wisp.device.info()
 local W, H = info.width, info.height
-local MARGIN = 16 -- from the visible edge; also clears the system's back-swipe strip
+local MARGIN = 16 -- from the visible edge
 local GAP, BTN_H = 16, 48
 local BTN_ROW_MIN = 3 * 72 + 2 * 8 -- three buttons that still hold their text
 

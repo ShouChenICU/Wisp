@@ -180,9 +180,12 @@ corners, but when scrolled to either end its first and last item must be whole o
 visible screen: pad the list (per side) so that `row_span` at the item's top and
 bottom rows covers its left and right edges.
 
-Touches that start within 16 pixels of the left edge of the visible screen
-(rows within the safe area's height) belong to the system's back gesture and
-never reach the scene: keep buttons and other touch targets out of that band.
+A swipe to the right that starts within 16 pixels of the left edge of the
+visible screen (rows within the safe area's height) is the system's back
+gesture. A touch there reaches the scene like any other; only once it has
+moved 24 pixels to the right, mostly sideways, does the system take it, and
+the widget under it then gets no click. Taps and drags up, down or to the
+left from the edge stay the scene's.
 
 ## Helpers
 

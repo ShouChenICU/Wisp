@@ -347,7 +347,7 @@ std::string schema_markdown() {
         "\n"
         "- The root must be `ui.screen`. It fills the whole display and has no padding of its\n"
         "  own: the scene lays itself out (see Screen shape below).\n";
-    char line[320];
+    char line[512];
     std::snprintf(line, sizeof(line),
                   "- At most %zu widgets per tree, counting the rows every list has built: rows\n"
                   "  past it are not built, and the scene's log says so. A string value is at\n"
@@ -504,10 +504,14 @@ std::string schema_markdown() {
         "bottom rows covers its left and right edges.\n";
     std::snprintf(line, sizeof(line),
                   "\n"
-                  "Touches that start within %d pixels of the left edge of the visible screen\n"
-                  "(rows within the safe area's height) belong to the system's back gesture and\n"
-                  "never reach the scene: keep buttons and other touch targets out of that band.\n",
-                  static_cast<int>(ui::SystemLayer::kBackZoneWidth));
+                  "A swipe to the right that starts within %d pixels of the left edge of the\n"
+                  "visible screen (rows within the safe area's height) is the system's back\n"
+                  "gesture. A touch there reaches the scene like any other; only once it has\n"
+                  "moved %d pixels to the right, mostly sideways, does the system take it, and\n"
+                  "the widget under it then gets no click. Taps and drags up, down or to the\n"
+                  "left from the edge stay the scene's.\n",
+                  static_cast<int>(ui::SystemLayer::kBackZoneWidth),
+                  static_cast<int>(ui::SystemLayer::kBackTriggerDx));
     out += line;
     out +=
         "\n"
