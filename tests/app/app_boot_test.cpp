@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <string>
@@ -12,10 +14,14 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/board.hpp"
 #include "wisp/app/power_manager.hpp"
+#include "wisp/app/system_notices.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/core/notification_service.hpp"
+#include "wisp/core/storage_manager.hpp"
+#include "wisp/core/wakelock.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -274,4 +280,81 @@ TEST(AppBoot, StopUndoesStandbyQueuedJustBeforeTheCheck) {
 
     EXPECT_TRUE(h.display->powered());
     EXPECT_EQ(h.app.buttons().poll_interval_ms(), 20u);
+}
+
+TEST(AppNotifications, BatteryLowPostsSystemNotice) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::NotificationService* notes = h.app.notifications();
+    ASSERT_NE(notes, nullptr);
+    h.app.bus().publish(
+        {"power.battery.low", "power.main", 0, {{"battery_percent", wisp::Value(int64_t{12})}}});
+    ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 2000));
+    auto n = notes->unread()[0];
+    EXPECT_EQ(n.source, "system");
+    EXPECT_EQ(n.code, "battery_low");
+    EXPECT_EQ(n.arg, "12");
+    EXPECT_EQ(n.action, "");
+}
+
+TEST(AppNotifications, WakeLockReminderPosts) {
+    using wisp::core::WakeLockKind;
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::NotificationService* notes = h.app.notifications();
+    ASSERT_NE(notes, nullptr);
+    wisp::core::WakeLockRegistry& locks = h.app.wakelocks();
+    const uint32_t scene_lock = locks.acquire("scene.a", WakeLockKind::Cpu, "timer");
+    locks.acquire("system.net", WakeLockKind::Network, "sync");
+
+    // Not yet due.
+    wisp::app::post_wakelock_reminders(locks, *notes, wisp::os::now_ms());
+    EXPECT_EQ(notes->unread_count(), 0u);
+
+    wisp::app::post_wakelock_reminders(
+        locks, *notes, wisp::os::now_ms() + wisp::core::WakeLockRegistry::kReminderMs);
+    auto scene = notes->find("system", "wakelock_long:scene.a");
+    ASSERT_TRUE(scene);
+    EXPECT_EQ(scene->code, "wakelock_long");
+    EXPECT_EQ(scene->arg, "scene.a");
+    EXPECT_EQ(scene->action, "release_lock");
+    EXPECT_EQ(scene->action_arg, std::to_string(scene_lock));
+    auto system = notes->find("system", "wakelock_long:system.net");
+    ASSERT_TRUE(system);
+    EXPECT_EQ(system->arg, "system.net");
+    EXPECT_EQ(system->action, "");
+    EXPECT_EQ(system->action_arg, "");
+}
+
+TEST(AppNotifications, DeletedSceneLosesItsNotices) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::NotificationService* notes = h.app.notifications();
+    ASSERT_NE(notes, nullptr);
+    wisp::core::Notification n;
+    n.source = "pomodoro";
+    n.title = "t";
+    ASSERT_TRUE(notes->post(n, false));
+    ASSERT_TRUE(notes->post(n, false));
+    h.app.bus().publish({"scene.state",
+                         "scene",
+                         0,
+                         {{"id", wisp::Value("pomodoro")}, {"state", wisp::Value("closed")}}});
+    h.app.bus().publish({"scene.state",
+                         "scene",
+                         0,
+                         {{"id", wisp::Value("pomodoro")}, {"state", wisp::Value("deleted")}}});
+    EXPECT_TRUE(wait_until([&] { return notes->unread_count() == 0; }, 2000));
+}
+
+TEST(AppNotifications, StopSavesPendingNotices) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    auto root = h.app.storage().write_root(wisp::core::Area::System);
+    ASSERT_TRUE(root);
+    h.app.notifications()->post_system(wisp::core::notice::kRestoreFailed, "weather");
+    h.app.stop();
+    std::ifstream f(root.value() + "/notifications.json");
+    std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("restore_failed"), std::string::npos) << text;
 }

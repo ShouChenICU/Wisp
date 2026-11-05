@@ -25,9 +25,11 @@
 #include "self_check.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
+#include "wisp/app/system_notices.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/model_profiles.hpp"
+#include "wisp/core/notification_service.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/wakelock.hpp"
@@ -98,6 +100,15 @@ struct App::Impl {
     // App::stop() right after the self-check screen and before
     // power_manager -- see net_wiring.hpp.
     std::unique_ptr<NetWiring> net;
+
+    // Notifications (scene-device spec 5), built by start() once the
+    // storage worker runs and loaded on it. stop() unsubscribes and stops
+    // notify_timers before the final flush, and resets the service only
+    // after power_timer (which posts wake-lock reminders) has stopped.
+    std::unique_ptr<core::NotificationService> notifications;
+    std::unique_ptr<OneShotTimers> notify_timers;
+    core::SubscriptionId battery_sub = 0;
+    core::SubscriptionId scene_state_sub = 0;
 
     // The storage worker, the scene repository and (with a screen) the
     // scene runtime: built by App::start() right after storage, reset by

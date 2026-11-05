@@ -100,6 +100,8 @@ class ButtonService;
 class ModelProfileService;
 class SceneRepository;
 class SystemSettings;
+class NotificationService;
+class WakeLockRegistry;
 }  // namespace wisp::core
 
 namespace wisp::scene {
@@ -319,6 +321,12 @@ public:
     // instead of calling hal::Display::set_power() directly. nullptr
     // before start() (or after stop()).
     PowerManager* power_manager();
+
+    // Wake locks (scene-device spec 4.3); valid for the App's lifetime.
+    core::WakeLockRegistry& wakelocks();
+    // Notifications (scene-device spec 5): loaded by start(), saved and
+    // reset by stop(); nullptr before start() or after stop().
+    core::NotificationService* notifications();
 
     // The Platform this App was constructed from (needed by the
     // self-check screen for request_power_off, heap_info,

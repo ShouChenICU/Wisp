@@ -112,6 +112,8 @@ public:
     // The scenes' HTTP proxy, built by build_runtime(); nullptr without a
     // screen or a Platform::http_client. Stopped by stop().
     net::SceneHttp* http() const { return http_.get(); }
+    // The "wisp.fs" worker, running from start_storage() until stop().
+    core::StorageWorker& worker() { return worker_; }
 
     // AdminDeps::request_scene_delete. NotFound when there is nothing to
     // delete (SceneRepository::removal()), Unsupported in dev mode, Busy

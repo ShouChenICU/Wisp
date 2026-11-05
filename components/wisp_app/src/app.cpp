@@ -1,6 +1,7 @@
 #include "wisp/app/app.hpp"
 
 #include <algorithm>
+#include <ctime>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -23,6 +24,7 @@
 #include "wisp/net/model_probe.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/scene/minute_ticker.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -38,6 +40,9 @@ constexpr uint32_t kStorageRefreshMs = 2000;
 // the idle-timeout check's own overhead (and the "wisp.power" Timer
 // callback's wake rate) negligible.
 constexpr uint32_t kPowerTickMs = 1000;
+// At most 50 short notices to read at boot, or to write at shutdown.
+constexpr uint32_t kNotifyLoadMs = 2000;
+constexpr uint32_t kNotifyFlushMs = 1000;
 
 // The screen shape the system layer and the self-check screen lay out in
 // (spec 5.6). Invalid shape caps fall back to a circle, the most
@@ -110,6 +115,65 @@ Result<void> App::start() {
         scenes->start_storage();
     } else {
         WLOG_E("app", "no memory for the scenes; scenes are off");
+    }
+    // Notifications, loaded before anything can post: on the storage
+    // worker when there is one (load() reads flash), else right here.
+    {
+        App::Impl* impl = impl_.get();
+        impl->notify_timers = std::make_unique<OneShotTimers>();
+        OneShotTimers* timers = impl->notify_timers.get();
+        core::StorageWorker* worker = scenes != nullptr ? &scenes->worker() : nullptr;
+        impl->notifications = std::make_unique<core::NotificationService>(core::NotificationDeps{
+            .bus = impl->bus,
+            .storage = impl->storage,
+            .submit_io =
+                [worker](std::function<void()> job) {
+                    return worker != nullptr && worker->submit(std::move(job));
+                },
+            .schedule = [timers](uint32_t ms,
+                                 std::function<void()> cb) { timers->schedule(ms, std::move(cb)); },
+            .now_ms = os::now_ms,
+            .wall_s =
+                [] {
+                    const auto t = static_cast<int64_t>(std::time(nullptr));
+                    return t >= scene::MinuteTicker::kValidSince ? t : int64_t{0};
+                },
+        });
+        core::NotificationService* notes = impl->notifications.get();
+        auto load = [notes] {
+            if (auto r = notes->load(); !r) {
+                WLOG_W("app", "notifications not loaded: %s", r.error().message.c_str());
+            }
+        };
+        auto loaded = std::make_shared<os::Semaphore>(1, 0);
+        if (worker != nullptr && worker->submit([load, loaded] {
+                load();
+                loaded->give();
+            })) {
+            if (!loaded->take(kNotifyLoadMs)) WLOG_W("app", "notifications still loading");
+        } else {
+            load();
+        }
+        impl->battery_sub = impl->bus.subscribe("power.battery.low", [notes](const core::Event& e) {
+            const Value* pct = nullptr;
+            if (auto it = e.payload.find("battery_percent"); it != e.payload.end())
+                pct = &it->second;
+            const std::string arg = pct != nullptr && pct->type() == Value::Type::Int
+                                        ? std::to_string(pct->as_int())
+                                        : std::string();
+            notes->post_system(core::notice::kBatteryLow, arg);
+        });
+        impl->scene_state_sub = impl->bus.subscribe("scene.state", [notes](const core::Event& e) {
+            auto id = e.payload.find("id");
+            auto state = e.payload.find("state");
+            if (id == e.payload.end() || state == e.payload.end() ||
+                id->second.type() != Value::Type::String ||
+                state->second.type() != Value::Type::String ||
+                state->second.as_string() != "deleted") {
+                return;
+            }
+            notes->dismiss_source(id->second.as_string(), core::DismissReason::Dismiss);
+        });
     }
     if (auto r = impl_->models.init(); !r) {
         WLOG_W("app", "model profiles unavailable: %s", r.error().message.c_str());
@@ -192,8 +256,11 @@ Result<void> App::start() {
         impl_->power_manager->set_brightness(static_cast<uint8_t>(boot_brightness));
     }
     impl_->power_timer =
-        std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true,
-                                    [this] { impl_->power_manager->tick(os::now_ms()); });
+        std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true, [this] {
+            const uint64_t now = os::now_ms();
+            impl_->power_manager->tick(now);
+            post_wakelock_reminders(impl_->wakelocks, *impl_->notifications, now);
+        });
     impl_->power_timer->start();
 
     // The firmware update service, before networking routes uploads to
@@ -400,6 +467,17 @@ void App::stop() {
     }
     // Nothing streams into it any more.
     impl_->firmware.reset();
+    // Notifications: nothing new from the bus, no more coalescing timers,
+    // then whatever is still unsaved goes to the worker before it stops.
+    if (impl_->notifications) {
+        impl_->bus.unsubscribe(impl_->battery_sub);
+        impl_->bus.unsubscribe(impl_->scene_state_sub);
+        impl_->battery_sub = impl_->scene_state_sub = 0;
+        impl_->notify_timers->stop();
+        if (!impl_->notifications->flush(kNotifyFlushMs)) {
+            WLOG_W("app", "notifications not saved before shutdown");
+        }
+    }
     // Nothing calls into the scenes any more: the proxy, then the worker
     // (drained, so the last scene's flush is on disk), before the
     // storage-refresh timer below.
@@ -452,6 +530,9 @@ void App::stop() {
         }
     }
     impl_->power_manager.reset();
+    // power_timer, which posts reminders, has stopped.
+    impl_->notifications.reset();
+    impl_->notify_timers.reset();
 
     // power_monitor is torn down right after power_manager
     // (which points into it, like storage/storage_timer below) -- its
@@ -483,6 +564,8 @@ core::SceneRepository* App::scene_repository() {
     return impl_->scenes ? impl_->scenes->repository() : nullptr;
 }
 PowerManager* App::power_manager() { return impl_->power_manager.get(); }
+core::WakeLockRegistry& App::wakelocks() { return impl_->wakelocks; }
+core::NotificationService* App::notifications() { return impl_->notifications.get(); }
 net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr; }
 net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }
 net::TimeSyncService* App::time_sync() { return impl_->net ? impl_->net->time_sync() : nullptr; }
