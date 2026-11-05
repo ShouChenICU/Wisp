@@ -62,8 +62,8 @@
 // seed_utc_offset() value, else SceneRuntimeDeps::utc_offset_min; when an
 // event changes it, "minute" fires at once (screen on), since the local
 // time a scene shows has moved. A system.time event of state "synced"
-// (net::TimeSyncService) fires it the same way: the wall clock itself may
-// have moved.
+// (net::TimeSyncService) fires it the same way, the wall clock itself may
+// have moved, unless the minute the clock now reads already fired.
 // wisp.scene.close() closes the scene once its current message is done.
 //
 // HTTP (spec 5.3): opening a scene gives the proxy (SceneRuntimeDeps::
@@ -215,13 +215,16 @@ public:
     // has done the work (at most 10 s, then Timeout) -- for close(), until
     // every store flush the scene queued has run, its final one and, for a
     // scene that faulted or is not in the foreground, any still queued from
-    // before -- except on the UI thread, the scene task and the storage
-    // worker, where they only queue it and return Ok (failures are logged
-    // and published). Busy when the runtime is not running or its queue
+    // before; by then status() is Stopped and "stopped" has been published
+    // (a faulted scene stays Error) -- except on the UI thread, the scene
+    // task and the storage worker, where they only queue it and return Ok
+    // (failures are logged and published). Busy when the runtime is not running or its queue
     // stays full. open() is also Busy, at once, while
     // SceneRepository::installing(id) (spec 6.3: the package is being
-    // replaced); an open that was already on its way when the install
-    // began is dropped the same way when its load arrives.
+    // replaced) or removing(id) (it is being deleted); an open that was
+    // already on its way when the install or delete began is dropped the
+    // same way when its load arrives. close(id) while a load of that id
+    // is on its way cancels the open.
     Result<void> open(const std::string& id, Value args = {}) override;
     Result<void> close(const std::string& id) override;
     Result<void> reload(const std::string& id) override;
@@ -310,8 +313,14 @@ private:
     void ui_show_view(uint32_t instance, std::string id,
                       std::shared_ptr<const core::ScenePackage> package);
     void ui_drop_view();
-    // Retries post() while the UI queue is full (bounded).
+    // Hands `fn` (showing or dropping a view, the error panel) to the UI
+    // thread, in order, and never drops it: it waits in ui_jobs_ until
+    // the UI thread runs it, from a post()ed nudge or, when the UI queue
+    // was full, from the next frame hook (or stop()). Any thread; never
+    // waits.
     void post_ui(std::function<void()> fn);
+    // UI thread: runs the jobs post_ui() queued, oldest first.
+    void run_ui_jobs();
 
     SceneRuntimeDeps deps_;
     SceneRuntimeConfig config_;
@@ -336,9 +345,11 @@ private:
     // Scene task only.
     std::unique_ptr<Foreground> fg_;
     uint32_t next_instance_ = 1;
-    // The instance the worker is loading for (0: none); a load that comes
-    // back for another one was superseded.
+    // The instance the worker is loading for (0: none), and its scene; a
+    // load that comes back for another one was superseded, or cancelled
+    // by a close of that scene.
     uint32_t loading_ = 0;
+    std::string loading_id_;
     bool visible_ = true;
     bool quit_ = false;
     // The ui::Lang of the last system.settings event, -1 before any. Set
@@ -356,6 +367,10 @@ private:
     // UI thread only.
     struct UiSide;
     os::LargeUnique<UiSide> ui_side_;
+
+    // post_ui()'s jobs not yet run.
+    os::Mutex ui_jobs_mu_;
+    os::LargeVector<std::function<void()>> ui_jobs_;
 };
 
 }  // namespace wisp::scene

@@ -224,7 +224,7 @@ wisp.device.row_span(y)  -- x1, x2：屏幕第 y 行可见像素的首尾列；�
 wisp.device.on("battery" | "minute" | "lang", fn)
 ```
 
-只读。`minute` 在整分钟触发，供时钟使用。`time` 是 UTC 秒；`utc_offset` 是系统设置 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480），本地时间为 `time + utc_offset * 60`。场景任务不读 Settings：运行时开始订阅 `system.settings` 之后，App 读取当时的值交给它（已收到的事件优先，值不会比事件旧），之后跟随该事件；时区改变时立即补发一次 `minute`（亮屏时），不另设事件；网络校时成功（`system.time` 的 `state` 为 `synced`，连接 spec 5.6）后同样立即补发一次 `minute`（亮屏时），让表盘马上跳到校准后的时间。
+只读。`minute` 在整分钟触发，供时钟使用。`time` 是 UTC 秒；`utc_offset` 是系统设置 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480），本地时间为 `time + utc_offset * 60`。场景任务不读 Settings：运行时开始订阅 `system.settings` 之后，App 读取当时的值交给它（已收到的事件优先，值不会比事件旧），之后跟随该事件；时区改变时立即补发一次 `minute`（亮屏时），不另设事件；网络校时成功（`system.time` 的 `state` 为 `synced`，连接 spec 5.6）后同样立即补发一次 `minute`（亮屏时），让表盘马上跳到校准后的时间；如果校准后的这一分钟已经触发过（时钟跳变先被整分钟检查看到），就不再重复触发。
 
 **屏幕形状**（用户 2026-11-05 裁定）：
 
@@ -326,6 +326,7 @@ scenes/<id>/
 ```
 
 - `id`：`[a-z0-9_-]`，1–32 字节；`name` 1–32 字节 UTF-8；`version` 为语义化版本；`entry` 默认 `main.lua`。
+- 未知字段忽略，但整个文件（含未知字段）嵌套不得超过 4 层（根对象算第 1 层），否则安装时拒绝。存储工作线程每次开机列出场景时都要解析它，解析按层递归，而这个线程的栈只有几 KB。
 - 3a 的场景放在内置存储的 `/int/scenes/`；代码包总大小上限 512 KB。
 
 ### 6.3 安装
@@ -347,7 +348,7 @@ scenes/<id>/
 | 方法与路径 | 说明 |
 |---|---|
 | `GET /scenes` | 列表：`id`、`name`、`version`、代码大小、数据占用、`state`（`stopped`/`running`/`error`）、声明的域名 |
-| `POST /scenes` | 上传 zip（流式请求体，复用固件上传的流式处理），按 6.3 安装；201 返回场景信息，400 返回校验错误 |
+| `POST /scenes` | 上传 zip（流式请求体，复用固件上传的流式处理），按 6.3 安装；201 返回场景信息，400 返回校验错误；同一时间只收一个场景上传（每个上传在 PSRAM 里占到 576 KB），另一个正在进行时 409 `busy` |
 | `GET /scenes/{id}/export?data=0\|1` | 导出 zip；`data=1` 包含 `data/` |
 | `POST /scenes/{id}/open` / `close` / `reload` | 经 `SceneHost` 操作 |
 | `DELETE /scenes/{id}?data=0\|1` | 202，需在设备上确认；确认后删除代码包，`data=1` 时连数据一起删 |

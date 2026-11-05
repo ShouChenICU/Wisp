@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "support/wait.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/os/os.hpp"
 
@@ -486,11 +487,11 @@ TEST(EventBus, StopFromHandlerThenStartRepeatedlyNeverStrandsAnEvent) {
         // this test is specifically about the stale-retirement path, so
         // drive it deterministically rather than also racing stop() vs
         // start() against each other here.
-        for (int spins = 0; !stop_requested.load(std::memory_order_relaxed) && spins < 100000;
-             ++spins) {
-            wisp::os::sleep_ms(0);
-        }
-        ASSERT_TRUE(stop_requested.load(std::memory_order_relaxed));
+        // Bounded by time, not by a spin count: sleep_ms(0) does not yield
+        // on the host, so a count ran out in a few ms when the dispatcher
+        // thread was not scheduled that soon (a loaded CI machine).
+        ASSERT_TRUE(wisp::test::wait_until(
+            [&] { return stop_requested.load(std::memory_order_relaxed); }, 5000));
         ASSERT_TRUE(bus.start());
     }
 

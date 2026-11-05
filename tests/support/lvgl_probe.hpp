@@ -5,6 +5,7 @@
 // text. Shared by the self-check screen, network UI and factory-reset
 // tests, which treat the screens themselves as black boxes.
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -160,6 +161,47 @@ inline lv_obj_t* find_button_with_label(lv_obj_t* obj, const char* text) {
         }
     }
     return nullptr;
+}
+
+// Checks the row of dialog action buttons that holds `button`: each button
+// in it is at least `min_height` tall and lies inside the row, and together
+// they fill the row's content width in equal shares with `gap` between
+// them (within a pixel per button, for rounding). "" or the first problem.
+inline std::string check_action_row(lv_obj_t* button, int32_t min_height, int32_t gap) {
+    if (button == nullptr) return "no button";
+    lv_obj_t* row = lv_obj_get_parent(button);
+    lv_obj_update_layout(row);
+    lv_area_t content;
+    lv_obj_get_content_coords(row, &content);
+    const auto n = static_cast<int32_t>(lv_obj_get_child_count(row));
+    int32_t total = 0;
+    int32_t w_min = INT32_MAX;
+    int32_t w_max = 0;
+    for (int32_t i = 0; i < n; ++i) {
+        lv_area_t a;
+        lv_obj_get_coords(lv_obj_get_child(row, i), &a);
+        const int32_t w = lv_area_get_width(&a);
+        const int32_t h = lv_area_get_height(&a);
+        if (h < min_height) {
+            return "button " + std::to_string(i) + " is " + std::to_string(h) + " px tall";
+        }
+        if (a.x1 < content.x1 || a.x2 > content.x2) {
+            return "button " + std::to_string(i) + " leaves its row";
+        }
+        total += w;
+        w_min = std::min(w_min, w);
+        w_max = std::max(w_max, w);
+    }
+    if (n == 0) return "empty row";
+    if (w_max - w_min > 1) {
+        return "widths differ: " + std::to_string(w_min) + " to " + std::to_string(w_max);
+    }
+    const int32_t filled = total + gap * (n - 1);
+    const int32_t row_w = lv_area_get_width(&content);
+    if (filled < row_w - n || filled > row_w) {
+        return "buttons fill " + std::to_string(filled) + " of " + std::to_string(row_w) + " px";
+    }
+    return "";
 }
 
 // The self-check page's language switcher labels each button with that

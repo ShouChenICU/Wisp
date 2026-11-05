@@ -119,13 +119,24 @@ CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
 # TrustAsia), and a user-chosen base URL can be anywhere.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
-# mbedTLS allocates through malloc(), so its 16 KiB incoming record buffer
-# lands in PSRAM (above CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL) instead of
-# internal RAM; smaller blocks, including the 4 KiB outgoing buffer that
-# carries the request and its Authorization header, stay internal. What
-# goes to PSRAM is mainly response data, unencrypted there unless flash
-# encryption is on.
-CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
+# Every mbedTLS allocation goes to PSRAM. Through plain malloc() only the
+# 16 KiB incoming record buffer did (it is above
+# CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL); the 4 KiB outgoing buffer, the SSL
+# context, the handshake state, the parsed peer chain and the bignum
+# temporaries, all smaller, took an estimated 15-20 KB of internal RAM during a
+# handshake, and two TLS sessions can overlap (the gate serialises only
+# handshakes). That put the worst case below the internal-RAM floor
+# (wisp/app/ram_budget.hpp; docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
+# The crypto accelerators' DMA copies PSRAM operands through internal
+# bounce buffers itself. Costs: a slower handshake (bignum work on PSRAM),
+# and keys, the request with its Authorization header and the response sit
+# in PSRAM, unencrypted there unless flash encryption is on -- as the LLM
+# request and reply bodies already do (AGENTS.md section 5). The Wi-Fi
+# supplicant's crypto (CONFIG_ESP_WIFI_MBEDTLS_CRYPTO) allocates the same
+# way. CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE stays off (the IDF
+# default); dynamic record buffers (CONFIG_MBEDTLS_DYNAMIC_BUFFER) would
+# now only save PSRAM.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
 # Admin server (wisp::port::esp::EspHttpServer): the /api/v1/ws WebSocket,
 # with the pre-handshake hook that lets an unauthorized upgrade be refused

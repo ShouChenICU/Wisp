@@ -52,6 +52,8 @@ import zlib
 DEFAULT_HOST = "wisp.local:8900"
 DEFAULT_PORT = 8900
 API = "/api/v1"
+# RFC 6455 section 1.3; the device's Sec-WebSocket-Accept is checked against it.
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 TOKEN_FILE = "scene_tool.json"
 # Connecting and each HTTP request; the log stream, once open, waits as
 # long as the device stays quiet. WISP_SCENE_TIMEOUT_S overrides it (the
@@ -63,6 +65,11 @@ MAX_CODE_BYTES = 512 * 1024
 WATCH_PERIOD_S = 0.5
 DEBOUNCE_S = 0.3
 SCENE_ID = re.compile(r"[a-z0-9_-]{1,32}")
+
+
+def ws_accept(key):
+    """The Sec-WebSocket-Accept a server must answer `key` with."""
+    return base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
 
 
 class ToolError(Exception):
@@ -440,8 +447,7 @@ class Client:
             if status != 101:
                 sock.close()
                 return status, None
-            accept = base64.b64encode(hashlib.sha1(
-                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC11B9A").encode()).digest()).decode()
+            accept = ws_accept(key)
             got = [l.split(":", 1)[1].strip() for l in lines[1:]
                    if l.lower().startswith("sec-websocket-accept:")]
             if got != [accept]:

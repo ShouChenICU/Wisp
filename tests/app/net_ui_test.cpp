@@ -23,9 +23,11 @@
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/dialog.hpp"
 #include "wisp/ui/strings.hpp"
 
 using wisp::test::all_label_glyphs_resolvable;
+using wisp::test::check_action_row;
 using wisp::test::collect_labels;
 using wisp::test::count_obj_of_class;
 using wisp::test::find_button_with_label;
@@ -391,6 +393,10 @@ TEST(NetUi, ProvisioningCardShowsQrAndFitsSafeArea) {
                 if (lv_area_get_width(&q) != want || lv_area_get_height(&q) != want) {
                     return "QR code " + fmt(q) + ", want side " + std::to_string(want);
                 }
+                std::string row = check_action_row(
+                    find_button_with_label(card, text_of(StrId::StopSetup, lang).c_str()),
+                    wisp::ui::kDialogButtonMinHeight, wisp::ui::kDialogButtonGap);
+                if (!row.empty()) return "stop button: " + row;
                 return all_label_glyphs_resolvable(lv_layer_top()) ? std::string()
                                                                    : std::string("missing glyph");
             });
@@ -687,6 +693,10 @@ TEST(NetUi, PairingCardStacksAboveProvisioningCardInsideSafeArea) {
                 }
                 std::string fit = check_card_fits(pair, safe);
                 if (!fit.empty()) return "pairing: " + fit;
+                std::string row = check_action_row(
+                    find_button_with_label(pair, text_of(StrId::Reject, lang).c_str()),
+                    wisp::ui::kDialogButtonMinHeight, wisp::ui::kDialogButtonGap);
+                if (!row.empty()) return "reject button: " + row;
                 fit = check_card_fits(setup, safe);
                 if (!fit.empty()) return "provisioning: " + fit;
                 return all_label_glyphs_resolvable(lv_layer_top()) ? std::string()

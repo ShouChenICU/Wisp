@@ -8,6 +8,8 @@
 //
 // parse_scene_manifest() checks every field it knows and ignores unknown
 // top-level fields, so a newer package with extra metadata still installs.
+// Nothing, unknown fields included, may nest deeper than 4 levels (the
+// root object is level 1).
 
 #include <cstddef>
 #include <string>

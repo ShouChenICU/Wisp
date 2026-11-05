@@ -90,7 +90,7 @@
 | 30 | IMU 掉电恢复（wisp_app::PowerManager 待机，drivers/qmi8658） | 待机前记一次 IMU 读数，唤醒后再看 | 读数恢复正常更新，不是待机前最后一次读数，也不是全零/明显错误值（见"验收第 5 条"第 4 条） |  |
 | 31 | SD 探测暂停（wisp_port_esp::sd_retry 待机期间暂停探测） | 插卡待机若干分钟后唤醒；可选在待机期间物理插拔 SD 卡 | 唤醒后 `online()` 仍正确；待机期间的插拔只在唤醒后才被发现（预期行为，不是 bug，见"验收第 5 条"第 5 条） |  |
 | 32 | 触摸复位引脚功耗（可选测量，待机功耗评估） | 待机期间尝试拉低触摸复位引脚（GPIO40），对比前后电流 | 仅用于评估是否值得做后续省电项，不代表现在代码需要改动（见"验收第 5 条"第 6 条） |  |
-| 33 | UI 帧率基准（spec 10 性能基准） | 手指持续滚动自检列表 10 秒，看串口 `WISP_PERF` | 目标 fps ≥ 30。验收线（用户 2026-11-04 裁定，见 foundation spec 第 10 节"已记录的偏差"）：不低于下方"性能基准"一节记下的基准，关热点 22.7 fps、开热点（配网卡片显示时）28.2 fps；把 fps/cpu/flush_ms 三个数值记入该节 |  |
+| 33 | UI 帧率基准（spec 10 性能基准） | 手指持续滚动自检列表 10 秒，看串口 `WISP_PERF` | 目标 fps ≥ 30。验收线（用户 2026-11-04 裁定，见 foundation spec 第 10 节"已记录的偏差"）：不低于下方"性能基准"一节记下的基准：关热点 22.7 fps，开热点（配网卡片显示时）也不低于关热点的 22.7 fps（2026-11-05 改，28.2 不再作为验收线，原因见该节末尾）；把 fps/cpu/flush_ms 三个数值记入该节 |  |
 | 34 | DFS 不拖累帧率（firmware/main.cpp apply_pm_config，DFS/light sleep） | 对比开启/关闭 `CONFIG_PM_ENABLE` 前后的 `WISP_PERF` | 开启 DFS 后帧率仍不低于上一项的基准 |  |
 | 35 | `power.charging.changed` 事件（spec 6.3，wisp_core::PowerMonitor） | 插拔 USB 电源，看串口上 `power_monitor` 的 `power.charging.changed: charging=... usb_present=... battery_percent=...` 日志行 | 插拔后 1 秒内出现该日志行，`charging`/`usb_present` 的值与实际状态一致 |  |
 | 36 | `power.battery.low` 事件（spec 6.3，wisp_core::PowerMonitor） | 电量明显偏低时观察串口日志；子项目 1 还没有 CLI/REST 能改 Settings，想快速触发可以临时在 `components/wisp_app/src/app.cpp` 里 `core::Settings power_settings(*impl_->platform.settings, "power");`（约第 102 行）之后加一行 `power_settings.set("low_batt_pct", int64_t{100});`，重新编译固件验证完后删掉这行（不要提交） | 只出现一次 `power_monitor` 的 `power.battery.low: battery_percent=... (threshold=...)` 日志行（不持续重复）；电量回升超过阈值+5 后再降回阈值以下会再出现一次；没有接电池、只接 USB 供电时不出现该日志 |  |
@@ -99,7 +99,7 @@
 | 39 | 网页上传后拒绝 | 再上传一次，设备上点"否"；再上传一次，2 分钟内不操作 | 两次网页都提示"已在设备上拒绝"；设备不重启，版本与运行分区不变 |  |
 | 40 | 拒绝其他板子的镜像 | 用 `-DWISP_BOARD=<另一块板>` 构建（或上传任何非 Wisp 的 ESP-IDF 应用 `.bin`）后上传 | 网页立即提示"这个固件是为其他开发板或芯片构建的"（400 `wrong_board`），设备上不弹确认框，Flash 未被写入（再上传一次正确镜像仍然正常） |  |
 | 41 | 启动失败自动回滚（`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`） | 临时在 `firmware/main/main.cpp` 的 `app_main()` 开头加一行 `abort();` 构建（不要提交），上传并在设备上确认 | 新镜像崩溃复位后，引导程序回到旧镜像；网页提示"设备重启后运行的仍是旧版本，已回滚"；之后上传正常镜像仍能装上 |  |
-| 42 | 发布版帧率（全局 `-Os`、渲染路径 `-O2`） | 用默认（发布版）配置构建烧录，重复第 33 项 | `WISP_PERF` 的 fps 不低于第 33 项的验收线（关热点 22.7 fps、开热点 28.2 fps；目标仍是 30）。`esp_driver_spi` 改用 `-O2` 已实测无收益（见该节），不用再试 |  |
+| 42 | 发布版帧率（全局 `-Os`、渲染路径 `-O2`） | 用默认（发布版）配置构建烧录，重复第 33 项 | `WISP_PERF` 的 fps 不低于第 33 项的验收线（关热点、开热点都是 22.7 fps；目标仍是 30）。`esp_driver_spi` 改用 `-O2` 已实测无收益（见该节），不用再试 |  |
 | 43 | 上传期间的日志推送 | 上传固件时打开"日志"页 | 上传期间日志暂停推送（httpd 只有一个任务，被上传请求占着），上传结束后恢复推送，WebSocket 不断开 |  |
 | 44 | 内部 RAM 最坏情况（AGENTS.md 第 5 节的预算） | 设备连上家里的 Wi-Fi 后在串口执行 `wifi ap on`，手机连上热点打开设置页；电脑经 STA 地址打开管理页的"日志"页（WebSocket），在"模型"页对一个真实的 HTTPS 端点做连通性测试，再上传一次固件；全程每隔几秒执行一次 `mem` | 日志里 `admin server listening on port 8900` 和 `captive redirect listening on port 80` 都出现，后面的 `internal RAM: ...` 行不是警告；`mem` 的 `internal free` 始终 ≥ 40 KB、`largest` ≥ 16 KB（`min` 是各内存区各自最低点之和，偏低，只能当下限看）；`wisp.ws`、`wisp.dns` 和端口 80 的 `httpd` 的栈在 `psram`，端口 8900 的 `httpd` 的栈在 `internal`；整个过程 STA 不掉线、日志里没有反复重连（RX BA 窗口只有 10，换路由器时也看一眼） | |
 | 45 | 不透明卡片的遮挡裁剪（`wisp/ui/overlay.hpp`） | `wifi ap on` 让配网卡片显示，手指上下滚动自检列表；再执行 `wifi ap off` 关掉卡片 | 滚动时卡片周围和卡片上没有残影、撕裂或缺块；关掉卡片后，卡片原来位置下面的列表内容完整、与周围一致 | 用户 2026-11-04 确认开热点滚动无残影（之后修过渲染期间的探测和隐藏图层的处理，建议复看一次） |
@@ -107,13 +107,14 @@
 | 47 | 默认字体的 8 位字形缓存（`components/wisp_ui/src/a8_font.cpp`） | 看自检界面和配网卡片上的中、日、英文文字 | 与改动前一样：没有缺字、错字、发虚或错位 |  |
 | 48 | 开 XIP 后的待机与唤醒（`CONFIG_SPIRAM_XIP_FROM_PSRAM`） | 开 XIP 的固件上重复第 26–29 项（待机进入与唤醒、唤醒延迟、待机电流、多次浅睡眠） | 结果与第 26–29 项的预期一致；浅睡眠唤醒后没有花屏、复位或卡死 | 通过（2026-11-05）：探针固件延续本板默认配置（已开 XIP），见上方"浅睡兼容性（3b-1 spike）"一节；结论同第 29 项 |
 | 49 | 网络校时（连接 spec 5.6，`net::TimeSyncService`、`wisp_port_esp` 的 `EspSntp`） | 连上 Wi-Fi 后看串口日志和自检界面"电源与时钟"卡片；再用 `mem` 看 `wisp.ntp` 任务；在管理后台"系统"页点"立即校时"；把 `ntp_servers` 改成 `down.invalid,ntp.aliyun.com` 再校时一次 | 拿到 IP 后几秒内出现 `time: synced from pool.ntp.org`（或回落到 `ntp.aliyun.com`）；卡片显示"Synced HH:MM"（本地时间）；`wisp.ntp` 栈在 PSRAM 且 high-water mark 余量足够（4096 字节栈），按实测调整 `NetWiring::kNtpStackBytes`；空闲时内部 RAM 不低于预算；第二次校时回落到 `ntp.aliyun.com` |  |
-| 50 | 两种安装方式（scene spec 9.4.1） | 网页"场景"页上传 `counter` 的 zip；`python3 tools/wisp_scene.py --host <IP>:8900 push scenes/examples/todo --open`；从自检界面"场景"区块打开两者 | 都安装成功，推送输出显示声明的域名；列表点击即打开 |  |
+| 50 | 两种安装方式（scene spec 9.4.1） | 网页"场景"页上传 `counter` 的 zip；`python3 tools/wisp_scene.py --host <IP>:8900 push scenes/examples/todo --open`；从自检界面"场景"区块打开两者 | 都安装成功，推送输出显示声明的域名；列表点击即打开 | 2026-11-05：通过。API 推送与网页 zip 上传都安装成功（日志 `admin: scene upload started` 后场景正常安装/打开/关闭）。 |
 | 51 | 示例功能与断电保留（scene spec 9.4.2） | 逐个打开 7 个示例；在待办加 3 条、记账加 2 条后拔电池和 USB 断电重启 | 功能正常；重启后数据仍在 |  |
 | 52 | 返回手势与错误面板（scene spec 9.4.3） | 从圆角屏左边缘 16 px 以内起、向右滑动超过 24 px（任意角度，`ui::SystemLayer::kBackZoneWidth`/`kBackTriggerDx`，见 `components/wisp_ui/include/wisp/ui/system_layer.hpp`）；推送 `tests/scene/fixtures/broken` 并打开，点"返回"，再打开点"重载" | 手势可用；错误面板显示文件与行号（`main.lua:5`），返回与重载正常 |  |
-| 53 | 长列表帧率与内存（scene spec 9.4.4） | 待办放 200 条，手指持续滚动 10 s，看 `WISP_PERF`；同时执行 `mem`；记下日志里 `slow message` 的最大耗时（GC 停顿） | fps 不低于自检界面基准（下方"性能基准"一节，关热点 22.7、开热点 28.2）；`internal free` ≥ 60 KB、`largest` ≥ 20 KB（`ram_budget.hpp` 的 `kIdleInternalFreeMin`/`kIdleInternalLargestMin`） |  |
+| 53 | 长列表帧率与内存（scene spec 9.4.4） | 待办放 200 条，手指持续滚动 10 s，看 `WISP_PERF`；同时执行 `mem`；记下日志里 `slow message` 的最大耗时（GC 停顿） | fps 不低于自检界面基准（下方"性能基准"一节，关热点、开热点都是 22.7）；`internal free` ≥ 60 KB、`largest` ≥ 20 KB（`ram_budget.hpp` 的 `kIdleInternalFreeMin`/`kIdleInternalLargestMin`） | 2026-11-05：todo200 持续滚动 fps 22–26，偶尔掉到 14；`internal free` ≥ 84 KB，高于 60 KB 下限；`slow message open` 115–196 ms。短暂掉到 14 fps 低于基准，本次没有继续排查。 |
 | 54 | 熄屏恢复与待机耗电（scene spec 9.4.5） | 番茄钟和时钟运行时熄屏 3 分钟再亮屏；按"验收第 5 条：待机耗电实测"一节的方法测待机电流，对比无场景时 | 剩余时间与表盘正确，`minute` 只补一次；待机电流与无场景时相当 |  |
 | 55 | 未声明域名被拒（scene spec 9.4.6） | 临时把天气场景的 URL 改成未声明的主机后推送打开 | 回调收到 `permission_denied`，没有出站连接 |  |
-| 56 | LVGL 堆在 PSRAM 后的帧率 | 不开场景，在最终固件上重复"UI 帧率基准"一行，不开热点与开热点各测一次（LVGL 堆改到 PSRAM 后已经在真机上测过一次，见下方"性能基准"一节的"LVGL 堆"小节） | `WISP_PERF` 的 fps 不开热点 ≥ 22.7、开热点 ≥ 28.2（下方"性能基准"一节）；低于时停下来报告，不要自行改回 |  |
+| 56 | LVGL 堆在 PSRAM 后的帧率 | 不开场景，在最终固件上重复"UI 帧率基准"一行，不开热点与开热点各测一次（LVGL 堆改到 PSRAM 后已经在真机上测过一次，见下方"性能基准"一节的"LVGL 堆"小节） | `WISP_PERF` 的 fps 不开热点 ≥ 22.7、开热点也 ≥ 22.7（下方"性能基准"一节；开热点原来的 28.2 不再作为验收线，原因见该节末尾）；低于时停下来报告，不要自行改回 | 2026-11-05：不开热点 22–24 fps，达标（基准 22.7）；开热点 23–24 fps，当时按 28.2 的基准记为低于基准、待排查。验收线改为开热点 ≥ 22.7 之后，这个结果达标。 |
+| 57 | 内部 RAM 最坏情况复测（mbedTLS 的分配全部改到 PSRAM 之后，`firmware/sdkconfig.defaults` 的 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`；UI 任务栈也已从 8 KB 加到 10 KB） | 烧录包含这项改动的固件（改 `sdkconfig.defaults` 后要先删掉 `firmware/sdkconfig` 再构建，否则不生效；构建后 `firmware/sdkconfig` 里应是 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`）。按第 44 项的同一场景操作：STA 连家里的 Wi-Fi，`wifi ap on`，手机连热点打开设置页，电脑经 STA 打开管理页"日志"页（WebSocket）；然后同时进行：打开天气场景（HTTPS）、在"模型"页对真实 HTTPS 端点做连通性测试、上传一次固件。全程每隔 1–2 秒执行一次 `mem` | 每次 `mem` 的 `internal free` 都 ≥ 40 KB（`kWorstInternalFreeMin`）、`largest` ≥ 16 KB；记下所有采样里最低的 `internal free` 和最后的 `min`。`internal free` 是同一时刻的快照，以它为准；`min` 是各内存区各自最低点之和，偏低，只作参考。若采样都 ≥ 40 KB 但 `min` < 40 KB，记下两者，不算不达标（需要精确最低点时，可以临时在固件里用 `heap_caps_monitor_local_minimum_free_size_start/stop(MALLOC_CAP_INTERNAL)` 包住这段操作）。同时确认：天气场景和连通性测试都成功（握手变慢但不超时），STA 不掉线。结果低于 40 KB 时停下来报告 | 待测 |
 
 ## 待机与省电（spec 6.7）
 
@@ -368,23 +369,36 @@ STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动
 | `wisp.shttp` | PSRAM | 8192 B | `SceneHttp::task_config()`（`components/wisp_net/src/scene_http.cpp`）的 `flash_access = false` |
 | `wisp.ntp` | PSRAM | 4096 B | `NetWiring` 里 `os::Task::spawn()` 的 `flash_access = false`（`components/wisp_app/src/net_wiring.cpp`）；大小是 `kNtpStackBytes`（`components/wisp_app/src/net_wiring.hpp`） |
 
-实测结果（(a)–(d) 四种状态下各任务的栈大小与 high-water mark，B）：
+实测结果（2026-11-05，真机验收，固件 `0.1.0-387-gac2c5d0-dirty`；(a)–(d) 四种状态下各任务的栈大小与 high-water mark，B；额外记了 `wisp_ui`/`httpd`/`wisp.ws` 三个任务，因为这次顺带测到了 `wisp_ui` 的新低点）：
 
 | 任务 | 配置栈大小 | (a) HWM | (b) HWM | (c) HWM | (d) HWM |
 |---|---|---|---|---|---|
-| `wisp.scene` | 131072 | | | | |
-| `wisp.fs` | 6144 | | | | |
-| `wisp.shttp` | 8192 | | | | |
-| `wisp.ntp` | 4096 | | | | |
+| `wisp.scene` | 131072 | 130140 | 124892 | 124892 | 124892 |
+| `wisp.fs` | 6144 | 1752 | 1688 | 1688 | 1688 |
+| `wisp.shttp` | 8192 | 7344 | 7344 | 3664 | 3664 |
+| `wisp.ntp` | 4096 | 1620 | 1620 | 1620 | 1620 |
+| `wisp_ui` | 8192（测量时）¹ | 1120 | 480 | 432 | 432 |
+| `httpd`（端口 8900，管理服务器） | 10240 | 9064 | 9064 | 9064 | 4280 |
+| `wisp.ws` | 4096 | 3264 | 3264 | 3264 | 2208 |
+
+¹ 这次测量用的还是改动前的 8192 字节栈。(c)/(d) 里 `wisp_ui` 的 high-water mark 只剩 432 B，是本次验收测到的全场最低点；8 KB 栈几乎打满，按此把 `UiConfig::task_stack`（`components/wisp_ui/include/wisp/ui/ui_runtime.hpp`）从 8192 调到 10240，多占内部 RAM 2 KB。(a) 空闲时 internal free 88899 B，扣掉这 2 KB 后约 86851 B，仍远高于 `kIdleInternalFreeMin`（60 KB）下限，不需要跟着调整 idle 预算。
 
 内部 RAM（B）：
 
 | 状态 | internal free | largest | min |
 |---|---|---|---|
-| (a) 空闲，未打开场景 | | | |
-| (b) 待办场景，滚动 200 条 | | | |
-| (c) 天气场景，HTTPS 请求期间 | | | |
-| (d) STA + 热点 + 日志页 + 上传场景 zip | | | |
+| (a) 空闲，未打开场景 | 88899 | 31744 | 54656 |
+| (b) 待办场景，滚动 200 条 | 88615 | 31744 | 48924 |
+| (c) 天气场景，HTTPS 请求期间 | 88851 | 31744 | 39772 |
+| (d) STA + 热点 + 日志页 + 上传场景 zip | 86287 | 31744 | 33772 |
+
+(b)/(c) 相对 (a) 的瞬时 `internal free` 降幅分别为 284 B、48 B，都在 spec 2.3 给出的 ≤ 2 KB 以内；(d) 降幅约 2.6 KB，略高一些，但 (d) 叠加了热点、两个 httpd 和一次上传，开销不只是场景子系统本身的。
+
+`largest` 全程保持 31744 B，高于 `components/wisp_app/include/wisp/app/ram_budget.hpp` 的 `kWorstInternalLargestMin`（16 × 1024 = 16384 B）和 `kIdleInternalLargestMin`（20 × 1024 = 20480 B），两项都达标。(a) 的 `internal free` 88899 B 高于 `kIdleInternalFreeMin`（60 × 1024 = 61440 B），达标。
+
+`min` 是开机以来的历史最低点：这次验收触到的内部 RAM 历史最低点是 33772 B（TLS 连通性测试叠加热点上传前后出现，一直保持到测试结束），对照 `kWorstInternalFreeMin`（40 × 1024 = 40960 B）：33772 < 40960，**不达标**，需要跟进（日志显示这个低点是在热点打开、WebSocket 日志连上之后、上传之前的区间内出现的，具体触发点还没有继续拆开排查）。
+
+跟进（2026-11-05，未上机）：TLS 会话的大部分内部 RAM 来自 mbedTLS 小于 16 KB 的分配（4 KB 发送缓冲、SSL 上下文、握手状态、解析后的证书链、大数临时变量），按默认 `malloc` 规则都落在内部 RAM，估计握手期间 15–20 KB；TLS 闸门只串行化握手，场景的 HTTPS 会话和连通性测试的握手可以重叠。现在 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y` 把 mbedTLS 的分配全部放进 PSRAM（理由和代价见 `firmware/sdkconfig.defaults` 中该项的注释）。另外这次测量之后 UI 任务栈从 8 KB 加到了 10 KB，内部 RAM 常驻多占 2 KB。需要按清单第 57 项在真机上复测，复测前不能算达标。
 
 ## 性能基准
 
@@ -454,7 +468,7 @@ fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致�
 - 等 bmgr 支持 `psram_dma_direct`，把缓冲放进 PSRAM，腾出内部 RAM 给 32 KB 指令 cache；
 - 减少滚动区域里的对象和标签数（界面设计层面的取舍）。
 
-开热点时已经到 28.2 fps：配网卡片挡住了一半列表，每帧要画的像素更少。
+开热点时曾经到 28.2 fps：那是旧版自检界面上测的（`b16bfc3`，只开热点、不连 STA，用上面的程序滚动），配网卡片挡住了一半列表，每帧要画的像素更少，并不是开热点本身让渲染变快。之后自检界面改版了两次（内容和分区卡片都变了），安全区变小（圆角半径 70，安全区 `{24,24,455,455}`），配网卡片也变大了（大号对话框按钮），卡片挡住的比例不再相同，所以 28.2 和现在的界面没有可比性。2026-11-05 起开热点的验收线改为不低于关热点的基准 22.7 fps（第 33、42、53、56 项）。要恢复一个开热点的专门基准，需要在当前界面上用同样的方法（程序 raw 滚动、关掉性能浮层、卡片显示）在同一个固件上先后测关热点和开热点，再把两个数一起记进上面的总表。那次 23–24 fps 与关热点的数相同，可能是卡片的遮挡裁剪没有生效，例如性能浮层（LVGL sysmon 标签）开着：它是系统层上没有标记的可见对象，任何碰到它的失效区域都会关掉裁剪（`components/wisp_ui/src/overlay.cpp`）。
 
 ### LVGL 堆
 

@@ -202,6 +202,24 @@ TEST(SceneRepository, ListSkipsHiddenAndInvalid) {
     EXPECT_EQ(list.value()[0].manifest.id, "todo");
 }
 
+TEST(SceneRepository, RejectsDeeplyNestedManifest) {
+    Fixture f;
+    Files files = todo_files();
+    files[0].second.insert(files[0].second.size() - 1, R"(,"x":[[[[[[[[[1]]]]]]]]])");
+    auto r = f.install(files);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(r.error().message, "scene.json: nested deeper than 4 levels");
+    EXPECT_FALSE(fs::exists(f.root() / "todo"));
+
+    // One already on disk (put there before the cap) is skipped by the
+    // listing instead of being parsed.
+    write_raw(f.root() / "todo" / "scene.json", files[0].second);
+    auto list = f.repo->list();
+    ASSERT_TRUE(list) << list.error().message;
+    EXPECT_TRUE(list.value().empty());
+}
+
 TEST(SceneRepository, ListOfMissingRootIsEmpty) {
     Fixture f;
     auto list = f.repo->list();
@@ -572,6 +590,23 @@ TEST(SceneRepository, InstallingMarksTheIdUntilItReturns) {
 
 // What a delete finds: the package and its name, and data left behind once
 // the package itself is gone.
+// The delete flow marks the id from the user's yes until the files are
+// gone; marks nest, so two deletes of one id overlap safely.
+TEST(SceneRepository, RemovingMarksTheIdUntilEnded) {
+    Fixture f;
+    EXPECT_FALSE(f.repo->removing("todo"));
+    f.repo->begin_removing("todo");
+    f.repo->begin_removing("todo");
+    EXPECT_TRUE(f.repo->removing("todo"));
+    EXPECT_FALSE(f.repo->removing("other"));
+    f.repo->end_removing("todo");
+    EXPECT_TRUE(f.repo->removing("todo"));
+    f.repo->end_removing("todo");
+    EXPECT_FALSE(f.repo->removing("todo"));
+    f.repo->end_removing("todo");  // unbalanced: ignored
+    EXPECT_FALSE(f.repo->removing("todo"));
+}
+
 TEST(SceneRepository, RemovalSeesDataLeftBehind) {
     Fixture fx;
     EXPECT_EQ(fx.repo->removal("todo", true).error().code, ErrorCode::NotFound);

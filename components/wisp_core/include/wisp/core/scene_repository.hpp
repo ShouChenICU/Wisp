@@ -145,6 +145,16 @@ public:
     // the scene task.
     bool installing(std::string_view id) const;
 
+    // Marks `id` as being deleted, from the user's yes until its files are
+    // gone (the caller ends it with end_removing(), whatever the outcome).
+    // The scene runtime refuses to open such a scene, so nothing comes up
+    // on, or writes into, files that are being removed. Marks nest;
+    // remove() itself neither sets nor needs one. Short lock of its own,
+    // as installing().
+    void begin_removing(std::string_view id);
+    void end_removing(std::string_view id);
+    bool removing(std::string_view id) const;
+
     // What remove(id, with_data) would find: NotFound exactly when remove()
     // would answer NotFound (no package, and no data or !with_data), so
     // data left behind by a package that is gone can still be deleted.
@@ -170,9 +180,11 @@ private:
     StorageManager& storage_;
     SceneRepoConfig config_;
     os::Mutex mutex_;
-    // Guards installing_ only, so installing() never waits behind file work.
+    // Guards installing_ and removing_ only, so installing() and
+    // removing() never wait behind file work.
     mutable os::Mutex marks_mutex_;
     std::vector<std::string> installing_;
+    std::vector<std::string> removing_;  // one entry per begin_removing()
 };
 
 }  // namespace wisp::core

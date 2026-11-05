@@ -100,4 +100,41 @@ TEST(MinuteTicker, ForceFiresOnceAtNextPoll) {
     EXPECT_FALSE(fresh.poll(kNoon + 6, 1000));
 }
 
+// A time sync (clock_set()) fires the minute it brings, unless a poll
+// already fired for that minute: the scene task may poll between the
+// clock moving and the sync's message reaching it.
+TEST(MinuteTicker, SyncFiresOnlyAMinuteNotYetFired) {
+    // The poll saw the jump first: the sync adds nothing.
+    MinuteTicker polled;
+    EXPECT_FALSE(polled.poll(std::nullopt, 0));
+    EXPECT_TRUE(polled.poll(kNoon + 5, 100));
+    EXPECT_FALSE(polled.sync(kNoon + 5, 200));
+    EXPECT_FALSE(polled.poll(kNoon + 6, 300));
+
+    // The sync came first: it fires, and the poll after it does not.
+    MinuteTicker synced;
+    EXPECT_FALSE(synced.poll(std::nullopt, 0));
+    EXPECT_TRUE(synced.sync(kNoon + 5, 100));
+    EXPECT_FALSE(synced.poll(kNoon + 6, 200));
+
+    // Only bearings taken (nothing fired yet): the sync fires.
+    MinuteTicker fresh;
+    EXPECT_FALSE(fresh.poll(kNoon + 5, 0));
+    EXPECT_TRUE(fresh.sync(kNoon + 5, 100));
+
+    // A sync that moves the clock to a minute not yet fired fires, once.
+    MinuteTicker moved;
+    EXPECT_FALSE(moved.poll(kNoon + 5, 0));
+    EXPECT_TRUE(moved.poll(kNoon + 60, 1000));
+    EXPECT_TRUE(moved.sync(kNoon + 3600, 2000));
+    EXPECT_FALSE(moved.poll(kNoon + 3601, 3000));
+    EXPECT_FALSE(moved.sync(kNoon + 3602, 4000));
+
+    // The minute that fired on the monotonic clock is not a wall minute.
+    MinuteTicker mono;
+    EXPECT_FALSE(mono.poll(std::nullopt, 0));
+    EXPECT_TRUE(mono.poll(std::nullopt, 60000));
+    EXPECT_TRUE(mono.sync(kNoon, 60100));
+}
+
 }  // namespace

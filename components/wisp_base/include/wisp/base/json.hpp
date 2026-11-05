@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -26,5 +27,11 @@ std::string to_json_raw(const Value& v);
 // Parses `s` as JSON into a Value. On a parse error, returns
 // ErrorCode::InvalidArgument with ArduinoJson's error text in the message.
 Result<Value> from_json(std::string_view s);
+
+// The same, refusing input nested deeper than `max_depth` levels (the
+// outermost array or object is level 1) with ErrorCode::QuotaExceeded.
+// Parsing recurses once per level, so this bounds the stack it needs; the
+// parser itself enforces it, so no string can hide a level from it.
+Result<Value> from_json(std::string_view s, uint8_t max_depth);
 
 }  // namespace wisp

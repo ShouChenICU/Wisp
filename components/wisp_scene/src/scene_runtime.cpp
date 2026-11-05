@@ -28,9 +28,6 @@ constexpr uint32_t kWaitMs = 10000;
 constexpr uint32_t kPushMs = 1000;
 // A message that takes longer than this is logged.
 constexpr uint64_t kSlowMs = 50;
-// post_ui() retries this often, this long apart, before it gives up.
-constexpr int kUiPostTries = 1000;
-constexpr uint32_t kUiPostRetryMs = 2;
 
 // "scene.<id>": the tag of the scene's own log.
 std::string scene_tag(std::string_view id) {
@@ -82,6 +79,8 @@ struct SceneRuntime::UiSide {
     uint32_t instance = 0;
     // The screen the view replaced, loaded again when it goes.
     lv_obj_t* home = nullptr;
+    // Loaded instead when `home` is gone by then.
+    lv_obj_t* stand_in = nullptr;
 };
 
 SceneRuntime::SceneRuntime(SceneRuntimeDeps deps, SceneRuntimeConfig config)
@@ -193,9 +192,12 @@ void SceneRuntime::stop() {
         delayed_.clear();
     }
     deps_.ui.set_frame_hook({});
-    // Also a fence: every UI job the scene task posted has run once this
-    // returns, and the old frame hook is no longer running.
-    deps_.ui.run_blocking([this] { ui_drop_view(); });
+    // Also a fence: every UI job the scene task handed over has run once
+    // this returns, and the old frame hook is no longer running.
+    deps_.ui.run_blocking([this] {
+        run_ui_jobs();
+        ui_drop_view();
+    });
 }
 
 void SceneRuntime::drain_queue() {
@@ -254,6 +256,8 @@ Result<void> SceneRuntime::request(os::LargeUnique<SceneMessage> m,
 Result<void> SceneRuntime::open(const std::string& id, Value args) {
     if (deps_.repo.installing(id))
         return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being installed");
+    if (deps_.repo.removing(id))
+        return Result<void>::err(ErrorCode::Busy, "scene " + id + " is being deleted");
     auto waiter = std::make_shared<SceneWaiter>();
     return request(make_message(id, 0, msg::Load{std::move(args), waiter}), waiter);
 }
@@ -438,10 +442,14 @@ void SceneRuntime::handle(SceneMessage& m) {
     } else if (auto* b = std::get_if<msg::Close>(&body)) {
         // From the API (instance 0) by id; from the view, the panel or
         // the gesture for one instance.
-        if (m.instance == 0 ? (fg_ && fg_->id == m.scene_id) : target(m) != nullptr)
+        if (m.instance == 0 ? (fg_ && fg_->id == m.scene_id) : target(m) != nullptr) {
             close_foreground(b->done);
-        else
+        } else {
+            // A load of it still on the worker is cancelled: whoever closed
+            // it may go on to delete or replace its files.
+            if (m.instance == 0 && loading_ != 0 && loading_id_ == m.scene_id) loading_ = 0;
             finish_after_queued_io(b->done);
+        }
     } else if (auto* b = std::get_if<msg::Reload>(&body)) {
         const bool in_front = fg_ && fg_->id == m.scene_id;
         if (b->if_foreground && !in_front) {
@@ -502,6 +510,7 @@ void SceneRuntime::begin_open(const std::string& id, Value args,
     const uint32_t instance = next_instance_++;
     if (next_instance_ == 0) next_instance_ = 1;
     loading_ = instance;
+    loading_id_ = id;
 
     std::shared_ptr<Link> link = link_;
     core::StorageWorker& worker = deps_.worker;
@@ -553,19 +562,24 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         if (open.done) open.done->finish(std::move(r));
     };
     if (m.instance != loading_) {
-        // Another open came after this one.
+        // Another open came after this one, or a close of it.
         ++stale_dropped_;
-        done(Result<void>::err(ErrorCode::Busy, "superseded by another open"));
+        if (open.store) open.store->close();
+        done(Result<void>::err(ErrorCode::Busy, "superseded by another open or a close"));
         return;
     }
     loading_ = 0;
     const std::string& id = m.scene_id;
-    if (open.error.code == ErrorCode::Ok && deps_.repo.installing(id)) {
-        // Loaded before an install of it began: the package and the data
-        // directory are about to be replaced under it.
-        WLOG_W(kTag, "%s: not opened: its package is being installed", id.c_str());
+    if (open.error.code == ErrorCode::Ok &&
+        (deps_.repo.installing(id) || deps_.repo.removing(id))) {
+        // Loaded before an install or a delete of it began: the package
+        // and the data directory are about to be replaced or removed.
+        const bool installing = deps_.repo.installing(id);
+        WLOG_W(kTag, "%s: not opened: it is being %s", id.c_str(),
+               installing ? "installed" : "deleted");
         if (open.store) open.store->close();
-        done(Result<void>::err(ErrorCode::Busy, "scene " + id + " is being installed"));
+        done(Result<void>::err(ErrorCode::Busy, "scene " + id + " is being " +
+                                                    (installing ? "installed" : "deleted")));
         return;
     }
     if (open.error.code != ErrorCode::Ok) {
@@ -672,7 +686,7 @@ bool SceneRuntime::submit() {
     Foreground& f = *fg_;
     UiBatch b = f.scene->batch().take(f.instance);
     if (!b.ops.empty()) patches_.submit(std::move(b));
-    if (patches_.take_refresh_request()) {
+    if (patches_.take_refresh_request(f.instance)) {
         if (!step(f.scene->refresh())) return false;
         UiBatch r = f.scene->batch().take(f.instance);
         r.refresh = true;
@@ -731,6 +745,19 @@ void SceneRuntime::close_foreground(std::shared_ptr<SceneWaiter> done) {
     }
     // After the hooks, so a request on_close makes is cancelled too.
     if (deps_.http != nullptr) deps_.http->cancel_scene(f.id);
+    // Before the caller can be answered (from the worker, below): whoever
+    // close() answers sees the scene stopped, and anything it publishes
+    // next ("deleted") comes after "stopped". A faulted scene publishes
+    // nothing here; it stays in the error state.
+    {
+        std::lock_guard<os::Mutex> lock(status_mu_);
+        foreground_id_.reset();
+        foreground_instance_ = 0;
+    }
+    if (was_running) {
+        set_status(f.id, core::SceneState::Stopped, "");
+        publish(f.id, "stopped");
+    }
     if (f.store) {
         // A caller of close() is answered once the final flush has run, so
         // it may move the scene's data/ (an install) without a write
@@ -747,21 +774,11 @@ void SceneRuntime::close_foreground(std::shared_ptr<SceneWaiter> done) {
     }
     ui_instance_.store(0);
     patches_.clear();
-    // Logged once the screen it covered is back: a faulted scene publishes
-    // nothing when it closes, as it stays in the error state.
+    // Logged once the screen it covered is back.
     post_ui([this, id = f.id] {
         ui_drop_view();
         WLOG_I(kTag, "%s: closed", id.c_str());
     });
-    {
-        std::lock_guard<os::Mutex> lock(status_mu_);
-        foreground_id_.reset();
-        foreground_instance_ = 0;
-    }
-    if (was_running) {
-        set_status(f.id, core::SceneState::Stopped, "");
-        publish(f.id, "stopped");
-    }
     fg_.reset();
 }
 
@@ -867,12 +884,12 @@ void SceneRuntime::run_scene_clock() {
 }
 
 void SceneRuntime::clock_set() {
-    // As show_scene() does: force() makes this poll fire exactly once and
-    // records the new minute, so the poll after the message sees no jump.
+    // Fires once and records the new minute, so the poll after the message
+    // sees no jump; a poll that already saw it (the task woke between the
+    // clock moving and this message) already fired, and this adds nothing.
     // With the screen off nothing fires; the screen coming on sends one.
     if (!visible_ || !wants_minute()) return;
-    fg_->ticker.force();
-    if (fg_->ticker.poll(wall_now(), os::now_ms())) minute();
+    if (fg_->ticker.sync(wall_now(), os::now_ms())) minute();
 }
 
 void SceneRuntime::run_timers() {
@@ -937,14 +954,28 @@ void SceneRuntime::close_if_asked() {
 // --- UI thread ---------------------------------------------------------------
 
 void SceneRuntime::post_ui(std::function<void()> fn) {
-    for (int i = 0; i < kUiPostTries; ++i) {
-        if (deps_.ui.post(fn)) return;
-        os::sleep_ms(kUiPostRetryMs);
+    {
+        std::lock_guard<os::Mutex> lock(ui_jobs_mu_);
+        ui_jobs_.push_back(std::move(fn));
     }
-    WLOG_E(kTag, "UI queue stayed full: a scene UI change was dropped");
+    // Only a nudge: if the UI queue is full, the next frame (or the next
+    // nudge) runs the job. Never retried here, so the scene task never
+    // waits for the UI thread.
+    deps_.ui.post([this] { run_ui_jobs(); });
+}
+
+void SceneRuntime::run_ui_jobs() {
+    os::LargeVector<std::function<void()>> jobs;
+    {
+        std::lock_guard<os::Mutex> lock(ui_jobs_mu_);
+        jobs.swap(ui_jobs_);
+    }
+    for (auto& job : jobs) job();
 }
 
 void SceneRuntime::ui_frame() {
+    // Before the patches: a view these patches are for may be in here.
+    run_ui_jobs();
     UiSide& u = *ui_side_;
     const uint32_t instance = ui_instance_.load();
     if (!u.view || instance == 0 || u.instance != instance) return;
@@ -988,10 +1019,15 @@ void SceneRuntime::ui_drop_view() {
     deps_.system.hide_error();
     if (!u.view) return;
     // An active screen must not be deleted: show the one the view
-    // replaced first (or, if that is gone, an empty one).
+    // replaced first (or, if that is gone, the one empty stand-in, made the
+    // first time it is needed and reused after).
     if (lv_screen_active() == u.view->screen()) {
-        lv_obj_t* back =
-            u.home != nullptr && lv_obj_is_valid(u.home) ? u.home : lv_obj_create(nullptr);
+        lv_obj_t* back = u.home;
+        if (back == nullptr || !lv_obj_is_valid(back)) {
+            if (u.stand_in == nullptr || !lv_obj_is_valid(u.stand_in))
+                u.stand_in = lv_obj_create(nullptr);
+            back = u.stand_in;
+        }
         lv_screen_load(back);
     }
     u.view.reset();

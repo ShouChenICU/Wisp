@@ -4,12 +4,13 @@
 // stream_handler() gates its head, the body is collected in PSRAM, and the
 // install runs on the HTTP server thread when it is complete -- that thread
 // may wait out SceneHost::check_sources(), which the UI thread and the
-// storage worker may not.
+// storage worker may not. One upload at a time (409 busy).
 //
 // Deleting needs the user's yes on the device: the route only asks
 // (AdminDeps::request_scene_delete) and answers 202; the outcome arrives as
 // a "scene.state" event.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -39,6 +40,12 @@ constexpr const char* kTag = "admin";
 // A package holds at most 512 KiB of files (spec 6.2); stored entries plus
 // zip headers for its up to 256 files stay well inside this.
 constexpr uint64_t kMaxUploadBytes = 576 * 1024;
+
+// One scene upload at a time, whichever server or socket it comes in on:
+// each holds up to kMaxUploadBytes of PSRAM until it ends, a handful of
+// them could take most of it, and a PSRAM allocation that fails anywhere
+// else aborts the device (os::LargeAllocator). Held by the SceneSink.
+std::atomic<bool> g_upload_busy{false};
 
 net::HttpResponse unavailable() {
     return net::HttpResponse::error(503, "unavailable", "scenes are not available");
@@ -224,19 +231,23 @@ net::HttpResponse delete_scene(AdminDeps& deps, const RequestContext& ctx) {
 // under it (scene-device spec 4.3).
 class SceneSink final : public net::BodySink {
 public:
+    // Takes over g_upload_busy, already set by the caller.
     SceneSink(AdminDeps& deps, os::LargeBuffer buffer) : deps_(deps), buffer_(std::move(buffer)) {
         if (deps.wakelocks != nullptr) {
             lock_ = core::WakeLock(*deps.wakelocks, "system.upload", core::WakeLockKind::Network,
                                    "scene upload");
         }
     }
+    ~SceneSink() override { release(); }
+    SceneSink(const SceneSink&) = delete;
+    SceneSink& operator=(const SceneSink&) = delete;
 
     std::optional<net::HttpResponse> on_data(std::span<const uint8_t> chunk) override {
         if (chunk.size() > buffer_.size() - received_) {
             // The request ends here; the server still drains the rest of
-            // the body before the sink goes, which needs no lock.
-            buffer_ = os::LargeBuffer();
-            lock_.release();
+            // the body before the sink goes, which needs neither the slot
+            // nor the lock.
+            release();
             net::HttpResponse res = bad_request("body longer than its Content-Length");
             res.headers.emplace_back("Cache-Control", "no-store");
             return res;
@@ -248,18 +259,23 @@ public:
 
     net::HttpResponse on_end() override {
         net::HttpResponse res = install();
-        buffer_ = os::LargeBuffer();
-        lock_.release();
+        release();
         res.headers.emplace_back("Cache-Control", "no-store");
         return res;
     }
 
-    void on_abort() override {
+    void on_abort() override { release(); }
+
+private:
+    // Frees the body, lets the next upload in and lets Wi-Fi go.
+    // Idempotent.
+    void release() {
         buffer_ = os::LargeBuffer();
+        if (holds_slot_) g_upload_busy.store(false);
+        holds_slot_ = false;
         lock_.release();
     }
 
-private:
     net::HttpResponse install() {
         if (received_ != buffer_.size()) return bad_request("body shorter than its Content-Length");
         core::SceneHost& host = *deps_.scene_host;
@@ -282,6 +298,7 @@ private:
     AdminDeps& deps_;
     os::LargeBuffer buffer_;
     size_t received_ = 0;
+    bool holds_slot_ = true;
     core::WakeLock lock_;
 };
 
@@ -311,9 +328,14 @@ std::optional<net::StreamStart> scene_stream(AdminDeps& deps, const net::HttpReq
         return stream_answer(
             net::HttpResponse::error(413, "payload_too_large", "a scene zip is at most 576 KiB"));
     }
+    if (g_upload_busy.exchange(true)) {
+        return stream_answer(
+            net::HttpResponse::error(409, "busy", "another scene upload is in progress"));
+    }
     // In PSRAM: a whole package must never land in internal RAM.
     os::LargeBuffer buffer = os::LargeBuffer::allocate(static_cast<size_t>(head.content_length));
     if (!buffer.ok()) {
+        g_upload_busy.store(false);
         return stream_answer(
             net::HttpResponse::error(503, "no_memory", "no memory for the upload"));
     }

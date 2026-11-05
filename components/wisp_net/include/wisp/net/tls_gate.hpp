@@ -2,10 +2,11 @@
 
 // TlsGate: lets at most one TLS handshake run at a time.
 //
-// Why: a handshake is the largest transient use of internal RAM an HTTPS
-// request makes (about 20 KB on the ESP32-S3; mbedTLS's contexts and
-// handshake state, under CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL), and the
-// internal-RAM budget allows for exactly one (wisp/app/ram_budget.hpp).
+// Why: a handshake is the largest transient use of RAM an HTTPS request
+// makes (about 20 KB on the reference board, mostly the TLS library's
+// contexts and handshake state; where the platform puts them is its own
+// choice, see docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md), and
+// the internal-RAM budget allows for exactly one (wisp/app/ram_budget.hpp).
 // Several tasks start HTTPS requests on their own (the model connectivity
 // test on the admin httpd, the scene HTTP proxy's worker), so every
 // HttpClient that does TLS on the device holds TlsGate::process() from
