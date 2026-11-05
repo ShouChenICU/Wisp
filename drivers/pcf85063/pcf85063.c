@@ -6,6 +6,7 @@
 
 #include "pcf85063.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +35,9 @@ struct pcf85063_dev {
     // Set when pcf85063_init() found the oscillator had been stopped
     // (no battery backup, or a dead backup cell): there is no valid time
     // until pcf85063_set_unix() is called. See pcf85063_get_unix().
-    bool time_invalid;
+    // Atomic: set_unix may run on one task (the network time sync) while
+    // get_unix runs on others.
+    atomic_bool time_invalid;
 };
 
 static esp_err_t rtc_read(pcf85063_handle_t h, uint8_t reg, uint8_t* data, size_t len) {
@@ -131,7 +134,7 @@ esp_err_t pcf85063_init(i2c_master_bus_handle_t bus, pcf85063_handle_t* out) {
     // The oscillator was stopped (dead/missing backup battery): whatever
     // time is in the registers predates that, so it's not valid until
     // pcf85063_set_unix() is called. See pcf85063_get_unix().
-    h->time_invalid = was_stopped;
+    atomic_init(&h->time_invalid, was_stopped);
 
     *out = h;
     ESP_LOGI(TAG, "PCF85063 init done");
@@ -142,7 +145,7 @@ esp_err_t pcf85063_get_unix(pcf85063_handle_t handle, int64_t* out) {
     if (handle == NULL || out == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (handle->time_invalid) {
+    if (atomic_load(&handle->time_invalid)) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -195,7 +198,7 @@ esp_err_t pcf85063_set_unix(pcf85063_handle_t handle, int64_t unix_time) {
     pcf85063_encode(&t, regs);
     ret = rtc_write_bytes(handle, REG_SECONDS, regs, sizeof(regs));
     if (ret == ESP_OK) {
-        handle->time_invalid = false;
+        atomic_store(&handle->time_invalid, false);
         ESP_LOGI(TAG, "RTC time set: %04d-%02d-%02d %02d:%02d:%02d UTC", t.tm_year + 1900,
                  t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
     } else {

@@ -40,6 +40,7 @@
 #include "wisp/port/esp/log_esp.hpp"
 #include "wisp/port/esp/mem_report.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
+#include "wisp/port/esp/wall_clock.hpp"
 #include "wisp_board_desc.h"
 
 extern "C" const uint8_t _binary_wisp_web_pack_start[];

@@ -8,7 +8,7 @@
 // the answer. Blocking; TimeSyncService calls it from the "wisp.ntp"
 // task, which never touches flash -- nor does anything here.
 //
-// set_wall_clock() is Platform::set_wall_clock: settimeofday().
+// Platform::set_wall_clock is set_wall_clock() from wall_clock.hpp.
 
 #include <cstdint>
 #include <string>
@@ -26,7 +26,5 @@ public:
     // does not resolve, IoError on a socket error.
     Result<int64_t> query(const std::string& host, uint32_t timeout_ms) override;
 };
-
-void set_wall_clock(int64_t unix_s);
 
 }  // namespace wisp::port::esp

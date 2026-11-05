@@ -12,7 +12,7 @@
 //     power.main (wisp::port::esp::EspPower, AXP2101)
 //   - i2c_master + drivers/pcf85063 -> clock.main (wisp::port::esp::EspClock,
 //     PCF85063); on success the system clock is set from the RTC
-//     (settimeofday()) right after this board's init() returns -- see
+//     (port wall_clock.hpp) right after this board's init() returns -- see
 //     sync_system_clock_from_rtc() below.
 //   - i2c_master + drivers/qmi8658 -> imu.main (wisp::port::esp::EspImu,
 //     QMI8658)
@@ -53,8 +53,6 @@
 
 #include "wisp/app/board.hpp"
 
-#include <sys/time.h>
-
 #include <cstring>
 #include <memory>
 #include <string>
@@ -80,6 +78,7 @@
 #include "wisp/port/esp/esp_storage.hpp"
 #include "wisp/port/esp/esp_touch.hpp"
 #include "wisp/port/esp/esp_wifi.hpp"
+#include "wisp/port/esp/wall_clock.hpp"
 
 namespace {
 
@@ -521,7 +520,7 @@ void init_wifi(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& rep
 // (drivers/pcf85063) already fails rather than return a bogus reading
 // when the chip's oscillator-stop flag is set or the decoded year looks
 // wrong, so this never needs to re-check that itself; it just must not
-// settimeofday() on a failed Result.
+// set the clock from a failed Result.
 void sync_system_clock_from_rtc(wisp::core::DeviceRegistry& registry) {
     auto clock = registry.get<wisp::hal::Clock>("clock.main");
     if (!clock) {
@@ -533,10 +532,10 @@ void sync_system_clock_from_rtc(wisp::core::DeviceRegistry& registry) {
                unix_seconds.error().message.c_str());
         return;
     }
-    struct timeval tv = {};
-    tv.tv_sec = static_cast<time_t>(unix_seconds.value());
-    tv.tv_usec = 0;
-    settimeofday(&tv, nullptr);
+    if (auto set = wisp::port::esp::set_wall_clock(unix_seconds.value()); !set) {
+        WLOG_W(kTag, "clock.main: system clock not set (%s)", set.error().message.c_str());
+        return;
+    }
     WLOG_I(kTag, "system clock set from clock.main RTC (unix=%lld)",
            static_cast<long long>(unix_seconds.value()));
 }
