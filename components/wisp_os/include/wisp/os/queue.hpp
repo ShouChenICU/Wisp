@@ -6,10 +6,11 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdlib>
 #include <mutex>
+#include <new>
 #include <utility>
 
-#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::os {
@@ -26,19 +27,27 @@ namespace wisp::os {
 // T must be default-constructible (the backing storage is pre-sized) and
 // movable.
 //
-// The slots live in Mem::Large: a queue is long-lived and its slots are
-// small enough that malloc would otherwise put them in internal RAM
-// (AGENTS.md section 8). Nothing pushes or pops from an ISR or while the
-// flash cache is off; a queue that ever must would need internal slots.
+// The slots live in Mem::Large when there is any: a queue is long-lived
+// and its slots are small enough that malloc would otherwise put them in
+// internal RAM (AGENTS.md section 8). Without it (a board with no PSRAM,
+// or none left) they come from Mem::Fast instead; only when both fail
+// does construction abort, as there is no way to report it. Nothing
+// pushes or pops from an ISR or while the flash cache is off; a queue
+// that ever must would need internal slots.
 template <class T>
 class Queue {
 public:
     explicit Queue(size_t capacity)
         : capacity_(capacity),
-          buffer_(capacity),
+          buffer_(allocate_slots(capacity)),
           free_slots_(static_cast<uint32_t>(capacity), static_cast<uint32_t>(capacity)),
           filled_slots_(static_cast<uint32_t>(capacity), 0) {
         assert(capacity_ > 0);
+    }
+
+    ~Queue() {
+        for (size_t i = 0; i < capacity_; ++i) buffer_[i].~T();
+        dealloc(buffer_);
     }
 
     Queue(const Queue&) = delete;
@@ -140,8 +149,23 @@ public:
     size_t capacity() const { return capacity_; }
 
 private:
+    static_assert(alignof(T) <= alignof(std::max_align_t),
+                  "os::alloc only guarantees malloc's alignment");
+
+    static T* allocate_slots(size_t capacity) {
+        // One byte's worth at least, so a zero capacity reaches the
+        // constructor's assert instead of an allocation failure.
+        const size_t bytes = (capacity == 0 ? 1 : capacity) * sizeof(T);
+        void* p = alloc(bytes, Mem::Large);
+        if (p == nullptr) p = alloc(bytes, Mem::Fast);
+        if (p == nullptr) std::abort();
+        T* slots = static_cast<T*>(p);
+        for (size_t i = 0; i < capacity; ++i) ::new (slots + i) T();
+        return slots;
+    }
+
     size_t capacity_;
-    LargeVector<T> buffer_;
+    T* buffer_;
     size_t head_ = 0;
     size_t tail_ = 0;
     size_t size_ = 0;

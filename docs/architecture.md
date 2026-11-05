@@ -88,7 +88,7 @@
 
 `power.charging.changed`/`power.battery.low` 的字段名跟随 `wisp::hal::PowerStatus` 本身的成员名（`charging`/`usb_present`/`battery_percent`），不是 "vbus_present" 这个措辞——后者出自计划中驱动结构体 `axp2101_status_t` 的字段名（`drivers/axp2101/include/axp2101.h`），不是 spec 原文；spec 本身没有提到这个字段名，沿用 hal 已有的字段名更一致。
 
-事件总线本身（`wisp_core/event_bus.hpp`）：前缀订阅（空串匹配所有主题）、按发布顺序派发、单个分发任务、队列默认容量 64（满时丢弃最旧并计数，见 `dropped()`；和所有 `os::Queue` 一样，槽位放在 `Mem::Large`）、处理函数里可以安全地再 `publish`/`subscribe`/`unsubscribe`。
+事件总线本身（`wisp_core/event_bus.hpp`）：前缀订阅（空串匹配所有主题）、按发布顺序派发、单个分发任务、队列默认容量 64（满时丢弃最旧并计数，见 `dropped()`；和所有 `os::Queue` 一样，槽位放在 `Mem::Large`，没有时退回 `Mem::Fast`）、处理函数里可以安全地再 `publish`/`subscribe`/`unsubscribe`。
 
 管理后台 WebSocket 的 `events` 订阅（`admin::WsHub`，连接 spec 6.2）转发的主题前缀是 `net.`、`power.`、`scene.`、`storage.`、`system.`（`kForwardedPrefixes`）；`button.*` 和 `model.profiles` 不转发。
 

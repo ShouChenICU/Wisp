@@ -252,14 +252,20 @@ TEST(Queue, ZeroCapacityAsserts) {
     EXPECT_DEBUG_DEATH({ Queue<int> q(0); }, "");
 }
 
-// A queue lives as long as its owner, so its slots belong in Mem::Large;
-// LargeAllocator aborts when that runs out.
-TEST(Queue, SlotsComeFromLargeMemory) {
+// A queue's slots go to Mem::Large; a board without it (or with it
+// exhausted) still gets a working queue from ordinary memory.
+TEST(Queue, SlotsFallBackWithoutLargeMemory) {
     wisp::port::sim::set_alloc_failure(Mem::Large, true);
-    EXPECT_DEATH({ Queue<int> q(4); }, "");
+    Queue<std::string> q(2);
     wisp::port::sim::set_alloc_failure(Mem::Large, false);
-    Queue<int> q(4);
-    EXPECT_TRUE(q.push(1, 0));
+    EXPECT_TRUE(q.push("a", 0));
+    EXPECT_TRUE(q.push("b", 0));
+    EXPECT_FALSE(q.push("c", 0));
+    std::string out;
+    ASSERT_TRUE(q.pop(out, 0));
+    EXPECT_EQ(out, "a");
+    ASSERT_TRUE(q.pop(out, 0));
+    EXPECT_EQ(out, "b");
 }
 
 TEST(Queue, PushDropOldestRaceWithConcurrentPops) {
