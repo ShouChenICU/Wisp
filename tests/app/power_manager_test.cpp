@@ -471,23 +471,23 @@ TEST(PowerManager, EnterAndExitStandbyWidenAndRestorePowerMonitorSampleInterval)
 }
 
 TEST(PowerManager, TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt) {
-    Fixture f(/*screen_off_s=*/1);
+    Fixture f(/*screen_off_s=*/15);
     f.pm->note_activity();
     uint64_t t0 = wisp::os::now_ms();
 
     f.pm->tick(t0);
     f.drain_ui();  // so a buggy false-positive post would already show up.
     EXPECT_FALSE(f.pm->standby());
-    f.pm->tick(t0 + 999);
+    f.pm->tick(t0 + 14999);
     f.drain_ui();
     EXPECT_FALSE(f.pm->standby());
 
-    f.pm->tick(t0 + 1001);
+    f.pm->tick(t0 + 15001);
     EXPECT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 }
 
-// A tick() at t0 + 999, right after the second note_activity(), is
-// already < 1000ms past the *first* note_activity() (~t0) too, so it
+// A tick() at t0 + 14999, right after the second note_activity(), is
+// already < 15000ms past the *first* note_activity() (~t0) too, so it
 // passed even with the reset deleted entirely (idle_ms never reached
 // the threshold
 // either way). This version picks a tick() time that is past the first
@@ -495,17 +495,17 @@ TEST(PowerManager, TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt) {
 // active) but still short of the second activity's deadline (proving
 // the reset moved the clock forward, not just no-opped).
 TEST(PowerManager, NoteActivityResetsTheIdleClock) {
-    Fixture f(/*screen_off_s=*/1);
+    Fixture f(/*screen_off_s=*/15);
     f.pm->note_activity();
     uint64_t t0 = wisp::os::now_ms();
 
     wisp::os::sleep_ms(300);
     f.pm->note_activity();  // resets the clock to ~t0+300, not t0.
 
-    // t0+1000 is >= the *first* activity's 1000ms deadline (a reset that
+    // t0+15000 is >= the *first* activity's 15000ms deadline (a reset that
     // didn't actually happen would enter standby here), but well short
-    // of the *second* activity's deadline (~t0+1300).
-    f.pm->tick(t0 + 1000);
+    // of the *second* activity's deadline (~t0+15300).
+    f.pm->tick(t0 + 15000);
     // tick() only ever posts the decision onto the UI task (see
     // tick()'s doc comment) -- without draining the queue
     // first, this assertion can't tell "the reset correctly kept this
@@ -559,12 +559,12 @@ TEST(PowerManager, AnyButtonEventWhileInStandbyWakesIt) {
 // wiring's own on_short() (reading PowerManager::standby() live) decides
 // -- correctly, ScreenOn -- and nothing then reverses it.
 TEST(PowerManager, AutoScreenOffThenPowerKeyPressWakesWithoutFlashingBackOff) {
-    Fixture f(/*screen_off_s=*/1);
+    Fixture f(/*screen_off_s=*/15);
     PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
 
     f.pm->note_activity();
     uint64_t t0 = wisp::os::now_ms();
-    f.pm->tick(t0 + 1001);
+    f.pm->tick(t0 + 15001);
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 
     press_short(*f.buttons, *f.btn);
@@ -620,7 +620,7 @@ TEST(PowerManager, PowerKeyScreenOffThenVolumeKeyWakeThenNextPowerShortTurnsItOf
 // cancelled/no-opped on the dialog instead of waking anything at all,
 // needing a second press.
 TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyShortWakes) {
-    Fixture f(/*screen_off_s=*/1);
+    Fixture f(/*screen_off_s=*/15);
     PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
 
     // Open the power-off confirm dialog with a long press while active.
@@ -635,7 +635,7 @@ TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyShortWakes) {
     // Idle out into automatic standby while the dialog is still "open".
     f.pm->note_activity();
     uint64_t t0 = wisp::os::now_ms();
-    f.pm->tick(t0 + 1001);
+    f.pm->tick(t0 + 15001);
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 
     // A short press must wake the screen, not act on the dialog.
@@ -645,7 +645,7 @@ TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyShortWakes) {
 
 // Same scenario, but the wake comes from a long press instead.
 TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyLongWakes) {
-    Fixture f(/*screen_off_s=*/1);
+    Fixture f(/*screen_off_s=*/15);
     PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
 
     press_long(*f.buttons, *f.btn);
@@ -653,7 +653,7 @@ TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyLongWakes) {
 
     f.pm->note_activity();
     uint64_t t0 = wisp::os::now_ms();
-    f.pm->tick(t0 + 1001);
+    f.pm->tick(t0 + 15001);
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 
     press_long(*f.buttons, *f.btn);
@@ -824,6 +824,7 @@ public:
 
     wisp::Result<void> set_power(PowerLevel level) override {
         log_->add(info_.id + ":" + wisp::hal::to_string(level));
+        if (on_set_power) on_set_power(level);
         if (unsupported.load()) {
             return wisp::Result<void>::err(wisp::ErrorCode::Unsupported, "probe: no standby");
         }
@@ -839,6 +840,8 @@ public:
 
     std::atomic<int> busy{0};
     std::atomic<bool> unsupported{false};
+    // Runs inside set_power(); set before the probe is registered.
+    std::function<void(PowerLevel)> on_set_power;
 
 private:
     wisp::hal::DeviceInfo info_;
@@ -926,6 +929,13 @@ struct Headless {
         pm->tick(t0 + 60050);
         pm->tick(t0 + 60050 + 300000);
         return t0 + 60050 + 300000;
+    }
+
+    // What App does after SystemSettings stored a change: PowerManager
+    // re-reads its settings at the next tick.
+    void settings_changed() {
+        bus.publish(Event{"system.settings", "test", 0, {}});
+        bus.wait_idle(2000);
     }
 
     std::vector<std::string> states() {
@@ -1156,6 +1166,7 @@ TEST(PowerManager, LightSleepFollowsCpuLockAndSetting) {
 
     // With power/light_sleep off, deep standby never turns it on.
     ASSERT_TRUE(Settings(*h.backend, "power").set("light_sleep", false));
+    h.settings_changed();
     h.go_deep();
     EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
     EXPECT_EQ(h.light_sleep().size(), 4u);
@@ -1163,6 +1174,7 @@ TEST(PowerManager, LightSleepFollowsCpuLockAndSetting) {
 
     // Turning it back on takes effect at the next tick.
     ASSERT_TRUE(Settings(*h.backend, "power").set("light_sleep", true));
+    h.settings_changed();
     h.pm->tick(wisp::os::now_ms());
     EXPECT_EQ(h.light_sleep().back(), true);
     EXPECT_TRUE(h.pm->light_sleep_on());
@@ -1254,4 +1266,145 @@ TEST(PowerManager, StateEventCarriesEveryLevel) {
     h.pm->tick(t0 + 60050 + 300000);
     h.pm->exit_standby();
     EXPECT_EQ(h.states(), (Strings{"dim", "standby", "deep_standby", "active"}));
+}
+
+// The power keys are read once and again only after a system.settings
+// event, not from flash on every tick.
+TEST(PowerManager, SettingsAreCachedUntilSystemSettingsChanges) {
+    Headless h(/*screen_off_s=*/60);
+    ASSERT_TRUE(Settings(*h.backend, "power").set("screen_off_s", 15));
+    uint64_t t0 = h.start_idle();
+    h.pm->tick(t0 + 5050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Active);  // still 60 s
+
+    h.settings_changed();
+    h.pm->tick(t0 + 5050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Dim);  // 15 s now
+}
+
+// A stored value SystemSettings would refuse (a hand-edited or corrupt
+// store) counts as the default here too, as GET /settings reports it.
+TEST(PowerManager, OutOfRangeStoredSettingsReadAsDefaults) {
+    Headless h(/*screen_off_s=*/5, /*deep_after_s=*/30);
+    uint64_t t0 = h.start_idle();
+    h.pm->tick(t0 + 5050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Active);  // 60 s, not 5 s
+    h.pm->tick(t0 + 60050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+    h.pm->tick(t0 + 60050 + 30050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);  // 300 s, not 30 s
+    h.pm->tick(t0 + 60050 + 300000);
+    EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
+}
+
+// With a UI, a lock change from any thread -- the UI task included -- is
+// only queued; the transition runs later as a job on the UI task.
+TEST(PowerManager, LockChangesWithUiRunAsAUiJob) {
+    Fixture f(/*screen_off_s=*/60);
+    f.pm->set_brightness(200);
+    f.drain_ui();
+    uint64_t t0 = wisp::os::now_ms();
+    f.pm->note_activity();
+    f.pm->tick(t0 + 60050);
+    f.drain_ui();
+    f.pm->tick(t0 + 60050 + 300000);
+    f.drain_ui();
+    ASSERT_EQ(f.pm->level(), PowerLevel::DeepStandby);
+    ASSERT_EQ(f.light_sleep_calls, (std::vector<bool>{true}));
+
+    // From the test thread.
+    uint32_t net = f.locks.acquire("system.admin", WakeLockKind::Network, "admin session");
+    f.drain_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::Standby);
+    EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true, false}));
+    f.locks.release(net);
+    f.drain_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::DeepStandby);
+    EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true, false, true}));
+
+    // From the UI task: still a job of its own, not run inside acquire().
+    f.run_on_ui([&] { f.pm->exit_standby(); });
+    uint64_t t1 = wisp::os::now_ms();
+    f.pm->note_activity();
+    f.pm->tick(t1 + 50050);
+    f.drain_ui();
+    ASSERT_EQ(f.pm->level(), PowerLevel::Dim);
+    EXPECT_EQ(f.display->brightness(), 60);
+    PowerLevel right_after = PowerLevel::Active;
+    f.run_on_ui([&] {
+        f.locks.acquire("scene.reader", WakeLockKind::Screen, "reading");
+        right_after = f.pm->level();
+    });
+    EXPECT_EQ(right_after, PowerLevel::Dim);
+    f.drain_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::Active);
+    EXPECT_EQ(f.display->brightness(), 200);
+}
+
+// Many lock changes while the UI task is busy take one queue slot and
+// one evaluation.
+TEST(PowerManager, LockChangesCoalesceIntoOneEvaluation) {
+    Fixture f(/*screen_off_s=*/60);
+    uint64_t t0 = wisp::os::now_ms();
+    f.pm->note_activity();
+    f.pm->tick(t0 + 60050);
+    f.drain_ui();
+    f.pm->tick(t0 + 60050 + 300000);
+    f.drain_ui();
+    ASSERT_EQ(f.pm->level(), PowerLevel::DeepStandby);
+
+    auto started = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto gate = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(f.ui->post([started, gate] {
+        started->give();
+        gate->take(wisp::os::kForever);
+    }));
+    started->take(wisp::os::kForever);
+
+    for (int i = 0; i < 50; ++i) {
+        f.locks.release(f.locks.acquire("system.ota", WakeLockKind::Cpu, "firmware update"));
+    }
+    f.locks.acquire("system.admin", WakeLockKind::Network, "admin session");
+
+    int free_slots = 0;
+    while (f.ui->post([] {})) {
+        ++free_slots;
+    }
+    gate->give();
+    EXPECT_GE(free_slots, 31);
+
+    f.drain_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::Standby);
+    // One evaluation saw the final state: light sleep off once, no flapping.
+    EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true, false}));
+}
+
+// A device that takes or releases a wake lock inside set_power() -- in the
+// middle of a transition on the UI task -- does not deadlock: the change
+// is queued and evaluated after the transition.
+TEST(PowerManager, DeviceTakingALockDuringATransitionDoesNotDeadlock) {
+    Fixture f(/*screen_off_s=*/60);
+    auto log = std::make_shared<CallLog>();
+    auto probe = std::make_shared<Probe>("imu.locky", DeviceClass::Imu, "off", log);
+    auto held = std::make_shared<std::atomic<uint32_t>>(0);
+    WakeLockRegistry* locks = &f.locks;
+    probe->on_set_power = [locks, held](PowerLevel level) {
+        if (level == PowerLevel::Standby) {
+            held->store(locks->acquire("system.locky", WakeLockKind::Network, "settling"));
+        } else if (level == PowerLevel::Active && held->load() != 0) {
+            locks->release(held->exchange(0));
+        }
+    };
+    f.registry.add(probe);
+
+    f.run_on_ui([&] { f.pm->enter_standby(); });
+    f.drain_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::Standby);
+    EXPECT_TRUE(f.locks.held(WakeLockKind::Network));
+
+    f.run_on_ui([&] { f.pm->exit_standby(); });
+    f.drain_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::Active);
+    EXPECT_FALSE(f.locks.held(WakeLockKind::Network));
+    EXPECT_EQ(log->take(), (Strings{"imu.locky:standby", "imu.locky:active"}));
 }

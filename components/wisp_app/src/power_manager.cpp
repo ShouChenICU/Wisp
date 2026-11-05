@@ -6,6 +6,7 @@
 
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/system_settings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
@@ -19,6 +20,12 @@ constexpr int kMinDimBrightness = 10;
 bool screen_lit(hal::PowerLevel level) { return level < hal::PowerLevel::Standby; }
 
 int64_t seconds_to_ms(int64_t s) { return s > 0 ? s * 1000 : 0; }
+
+// A stored value core::SystemSettings::set() would refuse reads as the
+// default, as SystemSettings::get() (and so GET /settings) reports it.
+int64_t valid_or(int64_t value, bool (*valid)(int64_t), int64_t def) {
+    return valid(value) ? value : def;
+}
 
 }  // namespace
 
@@ -34,9 +41,12 @@ PowerManager::PowerManager(PowerManagerDeps deps)
       buttons_(deps.buttons),
       set_light_sleep_(std::move(deps.set_light_sleep)),
       last_activity_ms_(os::now_ms()) {
-    screen_off_ms_.store(seconds_to_ms(settings_.get_int("screen_off_s", 60)));
-    deep_after_ms_.store(seconds_to_ms(settings_.get_int("deep_after_s", 300)));
-    light_sleep_setting_.store(settings_.get_bool("light_sleep", true));
+    read_settings();
+
+    // Settings are cached; a stored change (published as system.settings,
+    // spec 8.3) makes the next tick() read them again.
+    settings_sub_ = bus_.subscribe("system.settings",
+                                   [this](const core::Event&) { settings_dirty_.store(true); });
 
     if (ui_ != nullptr) {
         ui_->set_touch_activity_cb([this] { note_activity(); });
@@ -67,6 +77,7 @@ PowerManager::~PowerManager() {
     // callback runs again, so nothing new is posted. Jobs already posted
     // are drained below.
     bus_.unsubscribe(button_sub_);
+    bus_.unsubscribe(settings_sub_);
     locks_.set_on_change(nullptr);
 
     if (ui_ == nullptr) {
@@ -143,11 +154,23 @@ void PowerManager::note_activity() {
     });
 }
 
+void PowerManager::read_settings() {
+    const int64_t off_s = valid_or(settings_.get_int("screen_off_s", core::kDefaultScreenOffS),
+                                   core::valid_screen_off_s, core::kDefaultScreenOffS);
+    const int64_t deep_s = valid_or(settings_.get_int("deep_after_s", core::kDefaultDeepAfterS),
+                                    core::valid_deep_after_s, core::kDefaultDeepAfterS);
+    screen_off_ms_.store(seconds_to_ms(off_s));
+    deep_after_ms_.store(seconds_to_ms(deep_s));
+    light_sleep_setting_.store(settings_.get_bool("light_sleep", core::kDefaultLightSleep));
+}
+
 void PowerManager::tick(uint64_t now_ms) {
     last_tick_ms_.store(now_ms);
-    screen_off_ms_.store(seconds_to_ms(settings_.get_int("screen_off_s", 60)));
-    deep_after_ms_.store(seconds_to_ms(settings_.get_int("deep_after_s", 300)));
-    light_sleep_setting_.store(settings_.get_bool("light_sleep", true));
+    // Read here, on the timer task, which may touch flash; never on the
+    // UI task or the bus dispatcher.
+    if (settings_dirty_.exchange(false)) {
+        read_settings();
+    }
 
     // A screen lock counts as continuous activity, so the idle clock starts
     // only once the lock goes.
@@ -189,7 +212,12 @@ void PowerManager::schedule_tick_eval(uint64_t now_ms) {
 }
 
 void PowerManager::schedule_lock_eval() {
-    if (ui_ == nullptr || ui_->on_ui_thread()) {
+    // Called from WakeLockRegistry's change callback, on whichever thread
+    // changed a lock, possibly inside its own critical section (even a
+    // device's set_power() during one of our transitions). So with a UI
+    // task this only queues the work, from the UI task too, and returns.
+    // Headless there is no task to queue to; the transition runs here.
+    if (ui_ == nullptr) {
         evaluate(std::nullopt);
         return;
     }

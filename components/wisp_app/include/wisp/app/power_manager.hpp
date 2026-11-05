@@ -44,16 +44,26 @@
 // tick(), note_activity(), the wake-lock change callback and the
 // "any button wakes it" subscriber post their work onto that task; callers
 // already on it (the self-check screen's power key) call enter_standby()/
-// exit_standby() directly. Headless (no UiRuntime), everything runs on
-// the caller's thread. Settings are read only by the constructor and
-// tick() (on the shared timer task, which may touch flash); the UI-task
-// work uses the values tick() cached.
+// exit_standby() directly. A wake-lock change is always posted (coalesced
+// into one job), even from the UI task, so a lock taken or released
+// anywhere -- inside a device's set_power() during a transition included
+// -- never runs a transition in the caller's critical section. Headless
+// (no UiRuntime), everything runs on the caller's thread, lock changes
+// included, so there a device's set_power() must not take or release a
+// wake lock (no board ships headless).
+//
+// Settings: the power keys are read by the constructor and then again by
+// the next tick() (on the shared timer task, which may touch flash) after
+// each system.settings event, never on the UI task. A stored value
+// core::SystemSettings::set() would refuse reads as its default, as
+// SystemSettings::get() reports it.
 //
 // Any button event resets the idle clock and, while the screen is off,
 // wakes the device (spec 6.7/8 of the foundation spec), except
 // "button.power" once set_power_key_owned(true) handed that key to its
-// owner. With a UiRuntime and a touch device, touch activity resets the
-// idle clock too (UiRuntime::set_touch_activity_cb()).
+// owner. With a UiRuntime, touch activity resets the idle clock too
+// (UiRuntime::set_touch_activity_cb(), which only fires when there is a
+// touch device).
 
 #include <atomic>
 #include <cstdint>
@@ -127,8 +137,8 @@ public:
     // Active (posted to the UI task when there is one).
     void note_activity();
 
-    // Called about once a second (App's "wisp.power" timer): reads the
-    // settings, then moves Active -> Dim -> Standby -> DeepStandby by the
+    // Called about once a second (App's "wisp.power" timer): re-reads the
+    // settings if they changed, then moves Active -> Dim -> Standby -> DeepStandby by the
     // idle clock and the deep timer, and back on locks, retries Busy
     // devices and updates light sleep. `now_ms` is os::now_ms() in
     // production; the work itself is posted to the UI task when there is
@@ -240,8 +250,11 @@ private:
     std::atomic<bool> power_key_owned_{false};
     std::atomic<bool> light_sleep_on_{false};
 
-    // Cached by tick() (and the constructor) so UI-task work never reads
-    // Settings.
+    // Reads the power keys into the cached values below.
+    void read_settings();
+    // A system.settings event arrived; the next tick() calls read_settings().
+    std::atomic<bool> settings_dirty_{false};
+    // Cached so UI-task work never reads Settings.
     std::atomic<int64_t> screen_off_ms_{60000};   // 0: never
     std::atomic<int64_t> deep_after_ms_{300000};  // 0: never
     std::atomic<bool> light_sleep_setting_{true};
@@ -275,6 +288,7 @@ private:
     std::atomic<uint64_t> tick_eval_now_{0};
 
     core::SubscriptionId button_sub_ = 0;
+    core::SubscriptionId settings_sub_ = 0;
 };
 
 }  // namespace wisp::app

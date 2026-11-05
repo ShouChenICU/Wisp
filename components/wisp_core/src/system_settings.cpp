@@ -39,11 +39,13 @@ const KeySpec kBrightness{"brightness", "display", "brightness", Value(200),
                           [](const Value& v) { return int_in(v, 10, 255); }};
 const KeySpec kVolume{"volume", "audio", "volume", Value(60),
                       [](const Value& v) { return int_in(v, 0, 100); }};
-const KeySpec kScreenOff{"screen_off_s", "power", "screen_off_s", Value(60),
-                         [](const Value& v) { return int_in(v, 0, 0) || int_in(v, 15, 3600); }};
-const KeySpec kDeepAfter{"deep_after_s", "power", "deep_after_s", Value(300),
-                         [](const Value& v) { return int_in(v, 0, 0) || int_in(v, 60, 3600); }};
-const KeySpec kLightSleep{"light_sleep", "power", "light_sleep", Value(true),
+const KeySpec kScreenOff{
+    "screen_off_s", "power", "screen_off_s", Value(kDefaultScreenOffS),
+    [](const Value& v) { return v.type() == Value::Type::Int && valid_screen_off_s(v.as_int()); }};
+const KeySpec kDeepAfter{
+    "deep_after_s", "power", "deep_after_s", Value(kDefaultDeepAfterS),
+    [](const Value& v) { return v.type() == Value::Type::Int && valid_deep_after_s(v.as_int()); }};
+const KeySpec kLightSleep{"light_sleep", "power", "light_sleep", Value(kDefaultLightSleep),
                           [](const Value& v) { return v.type() == Value::Type::Bool; }};
 const KeySpec kNotifyVol{"notify_vol", "audio", "notify_vol", Value(60),
                          [](const Value& v) { return int_in(v, 0, 100); }};
@@ -98,6 +100,10 @@ Value read(SettingsBackend& backend, const KeySpec& spec) {
 }
 
 }  // namespace
+
+bool valid_screen_off_s(int64_t s) { return s == 0 || (s >= 15 && s <= 3600); }
+
+bool valid_deep_after_s(int64_t s) { return s == 0 || (s >= 60 && s <= 3600); }
 
 Map to_map(const SystemSettingsValues& values) {
     return Map{

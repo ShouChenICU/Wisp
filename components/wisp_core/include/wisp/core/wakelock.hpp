@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -51,7 +52,8 @@ public:
     WakeLockRegistry(const WakeLockRegistry&) = delete;
     WakeLockRegistry& operator=(const WakeLockRegistry&) = delete;
 
-    // Records a new lock and returns its id (> 0, never reused).
+    // Records a new lock and returns its id: > 0, and never the id of a
+    // lock still held (ids only repeat after the 32-bit counter wraps).
     uint32_t acquire(std::string holder, WakeLockKind kind, std::string reason);
     // False if `id` is not held (never acquired, or already released).
     bool release(uint32_t id);
@@ -62,12 +64,13 @@ public:
     // Every lock currently held, by id.
     std::vector<WakeLockInfo> list() const;
 
-    // Runs after every acquire/release that changed something, outside
-    // the registry's own lock, on the caller's thread. Calls are
-    // serialized with each other and with set_on_change(), so once
-    // set_on_change() returns the previous callback is not running and
-    // never runs again. The callback may read the registry (held(),
-    // list()) but must not acquire, release or call set_on_change().
+    // Runs after every acquire/release that changed something, on the
+    // caller's thread, with no registry lock held. Keep it short and
+    // non-blocking (post the real work elsewhere): it runs on whatever
+    // thread changed a lock, possibly inside that thread's own critical
+    // section. Once set_on_change() returns, no call of the previous
+    // callback is still running, so set_on_change() must not be called
+    // from inside the callback.
     void set_on_change(std::function<void()> cb);
 
     // Locks whose held time crossed the next multiple of kReminderMs
@@ -81,19 +84,25 @@ private:
         uint64_t reminded = 0;  // multiples of kReminderMs already reported
     };
 
+    // Both with mutex_ held.
     void publish(const char* op, const WakeLockInfo& info);
+    uint32_t next_free_id();
     void notify_change();
 
     EventBus& bus_;
     std::function<uint64_t()> now_ms_;
 
-    mutable os::Mutex mutex_;     // guards entries_ and next_id_
+    // Guards entries_ and next_id_; events are published under it, so they
+    // come in the order the registry changed.
+    mutable os::Mutex mutex_;
     std::vector<Entry> entries_;  // ascending id
     uint32_t next_id_ = 1;
 
-    // Held while the callback runs and while it is replaced.
+    // Guards on_change_ and in_callback_; never held while the callback
+    // runs.
     os::Mutex cb_mutex_;
-    std::function<void()> on_change_;
+    std::shared_ptr<const std::function<void()>> on_change_;
+    int in_callback_ = 0;
 };
 
 // Holds one lock for its lifetime. Move-only; a default-constructed or

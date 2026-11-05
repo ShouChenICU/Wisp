@@ -1,5 +1,7 @@
 #include "wisp/core/wakelock.hpp"
 
+#include <algorithm>
+#include <memory>
 #include <mutex>
 #include <utility>
 
@@ -29,12 +31,16 @@ uint32_t WakeLockRegistry::acquire(std::string holder, WakeLockKind kind, std::s
     info.reason = std::move(reason);
     info.since_ms = now_ms_();
     {
+        // Published under the lock so the events come in the order the
+        // registry changed: a concurrent release is never seen before its
+        // acquire. EventBus::publish() never blocks.
         std::lock_guard<os::Mutex> lock(mutex_);
-        info.id = next_id_++;
-        if (next_id_ == 0) next_id_ = 1;  // 0 means "no lock" to callers
-        entries_.push_back(Entry{info, 0});
+        info.id = next_free_id();
+        auto pos = std::find_if(entries_.begin(), entries_.end(),
+                                [&](const Entry& e) { return e.info.id > info.id; });
+        entries_.insert(pos, Entry{info, 0});
+        publish("acquire", info);
     }
-    publish("acquire", info);
     notify_change();
     return info.id;
 }
@@ -48,8 +54,8 @@ bool WakeLockRegistry::release(uint32_t id) {
         if (it == entries_.end()) return false;
         info = std::move(it->info);
         entries_.erase(it);
+        publish("release", info);
     }
-    publish("release", info);
     notify_change();
     return true;
 }
@@ -60,6 +66,7 @@ size_t WakeLockRegistry::release_holder(std::string_view holder) {
         std::lock_guard<os::Mutex> lock(mutex_);
         for (auto it = entries_.begin(); it != entries_.end();) {
             if (it->info.holder == holder) {
+                publish("release", it->info);
                 released.push_back(std::move(it->info));
                 it = entries_.erase(it);
             } else {
@@ -67,7 +74,6 @@ size_t WakeLockRegistry::release_holder(std::string_view holder) {
             }
         }
     }
-    for (const WakeLockInfo& info : released) publish("release", info);
     if (!released.empty()) notify_change();
     return released.size();
 }
@@ -88,9 +94,37 @@ std::vector<WakeLockInfo> WakeLockRegistry::list() const {
     return out;
 }
 
+uint32_t WakeLockRegistry::next_free_id() {
+    // After 2^32 acquires the counter wraps; skip 0 ("no lock") and any id
+    // a lock taken long ago still holds.
+    while (true) {
+        const uint32_t id = next_id_++;
+        if (id == 0) continue;
+        bool taken = false;
+        for (const Entry& e : entries_) {
+            if (e.info.id == id) {
+                taken = true;
+                break;
+            }
+        }
+        if (!taken) return id;
+    }
+}
+
 void WakeLockRegistry::set_on_change(std::function<void()> cb) {
-    std::lock_guard<os::Mutex> lock(cb_mutex_);
-    on_change_ = std::move(cb);
+    auto next = cb ? std::make_shared<const std::function<void()>>(std::move(cb)) : nullptr;
+    {
+        std::lock_guard<os::Mutex> lock(cb_mutex_);
+        on_change_ = std::move(next);
+    }
+    // Wait out calls already running (they may hold the old callback).
+    while (true) {
+        {
+            std::lock_guard<os::Mutex> lock(cb_mutex_);
+            if (in_callback_ == 0) return;
+        }
+        os::sleep_ms(1);
+    }
 }
 
 std::vector<WakeLockInfo> WakeLockRegistry::due_reminders(uint64_t now_ms) {
@@ -121,8 +155,18 @@ void WakeLockRegistry::publish(const char* op, const WakeLockInfo& info) {
 }
 
 void WakeLockRegistry::notify_change() {
+    std::shared_ptr<const std::function<void()>> cb;
+    {
+        std::lock_guard<os::Mutex> lock(cb_mutex_);
+        cb = on_change_;
+        if (!cb) return;
+        ++in_callback_;
+    }
+    // Called with no registry lock held, so a callback that is slow or
+    // reads the registry never holds up another thread's acquire/release.
+    (*cb)();
     std::lock_guard<os::Mutex> lock(cb_mutex_);
-    if (on_change_) on_change_();
+    --in_callback_;
 }
 
 WakeLock::WakeLock(WakeLockRegistry& reg, std::string holder, WakeLockKind kind, std::string reason)

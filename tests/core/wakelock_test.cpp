@@ -4,12 +4,15 @@
 
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "wisp/core/event_bus.hpp"
+#include "wisp/os/os.hpp"
 
 using wisp::core::Event;
 using wisp::core::EventBus;
@@ -214,4 +217,85 @@ TEST(WakeLock, RaiiReleasesOnDestruction) {
     ASSERT_EQ(events.size(), 4u);
     EXPECT_EQ(field(events[1], "op"), "release");
     EXPECT_EQ(field(events[3], "op"), "release");
+}
+
+// Events come in the order the registry changed: a lock released by
+// another thread right after it was taken never shows its release first.
+TEST(WakeLockRegistry, EventsFollowRegistryOrderAcrossThreads) {
+    EventBus bus(4096);
+    std::mutex mutex;
+    std::vector<Event> events;
+    bus.start();
+    bus.subscribe("power.wakelock", [&](const Event& e) {
+        std::lock_guard<std::mutex> lock(mutex);
+        events.push_back(e);
+    });
+    WakeLockRegistry reg(bus);
+
+    constexpr int kLocks = 500;
+    std::thread releaser([&] {
+        for (int i = 0; i < kLocks; ++i) {
+            const std::string holder = "scene.s" + std::to_string(i);
+            while (reg.release_holder(holder) == 0) {
+                std::this_thread::yield();
+            }
+        }
+    });
+    for (int i = 0; i < kLocks; ++i) {
+        reg.acquire("scene.s" + std::to_string(i), WakeLockKind::Cpu, "x");
+    }
+    releaser.join();
+    ASSERT_TRUE(bus.wait_idle(5000));
+
+    std::lock_guard<std::mutex> lock(mutex);
+    ASSERT_EQ(events.size(), 2u * kLocks);
+    std::map<std::string, std::string> last_op;
+    for (const Event& e : events) {
+        const std::string holder = field(e, "holder");
+        const std::string op = field(e, "op");
+        if (op == "acquire") {
+            EXPECT_EQ(last_op.count(holder), 0u) << holder;
+        } else {
+            EXPECT_EQ(last_op[holder], "acquire") << holder;
+        }
+        last_op[holder] = op;
+    }
+    bus.stop();
+}
+
+// set_on_change() returns only once a callback already running has
+// finished, and the callback runs with no registry lock held: it may read
+// (and even change) the registry.
+TEST(WakeLockRegistry, SetOnChangeWaitsForARunningCallback) {
+    Fixture f;
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto gate = std::make_shared<wisp::os::Semaphore>(1, 0);
+    std::atomic<bool> finished{false};
+    std::atomic<bool> first{true};
+    f.reg.set_on_change([&] {
+        if (!first.exchange(false)) return;
+        EXPECT_EQ(f.reg.list().size(), 1u);
+        entered->give();
+        gate->take(wisp::os::kForever);
+        finished = true;
+    });
+    std::thread changer([&] { f.reg.acquire("scene.a", WakeLockKind::Cpu, "x"); });
+    entered->take(wisp::os::kForever);
+
+    // Another thread's change is not held up by the running callback.
+    uint32_t other = f.reg.acquire("scene.b", WakeLockKind::Cpu, "y");
+    EXPECT_GT(other, 0u);
+
+    std::atomic<bool> replaced{false};
+    std::thread replacer([&] {
+        f.reg.set_on_change(nullptr);
+        replaced = true;
+    });
+    wisp::os::sleep_ms(50);
+    EXPECT_FALSE(replaced.load());
+    gate->give();
+    replacer.join();
+    changer.join();
+    EXPECT_TRUE(finished.load());
+    EXPECT_TRUE(replaced.load());
 }

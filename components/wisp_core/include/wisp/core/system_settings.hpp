@@ -47,6 +47,15 @@ namespace wisp::core {
 
 inline constexpr const char* kDefaultNtpServers = "pool.ntp.org,ntp.aliyun.com";
 
+// The power keys' defaults and valid ranges, shared with
+// wisp::app::PowerManager, which reads Settings "power" itself and treats a
+// stored value set() would refuse as the default, as get() does.
+inline constexpr int64_t kDefaultScreenOffS = 60;
+inline constexpr int64_t kDefaultDeepAfterS = 300;
+inline constexpr bool kDefaultLightSleep = true;
+bool valid_screen_off_s(int64_t seconds);  // 0 (never) or 15-3600
+bool valid_deep_after_s(int64_t seconds);  // 0 (never) or 60-3600
+
 struct SystemSettingsValues {
     int brightness;
     int volume;
