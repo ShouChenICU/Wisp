@@ -5,12 +5,16 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <functional>
 #include <memory>
 
+#include "lvgl_private.h"  // lv_obj_t::style_cnt, lv_obj_t::state
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
-#include "wisp/os/os.hpp"
+#include "support/wait.hpp"
+#include "wisp/ui/lv_heap.hpp"
+#include "wisp/ui/theme_tokens.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace {
@@ -32,6 +36,22 @@ uint32_t fg(lv_obj_t* obj, lv_part_t part = LV_PART_MAIN) {
     return rgb_of(lv_obj_get_style_text_color(obj, part));
 }
 
+// WCAG 2 relative luminance and contrast ratio.
+double luminance(uint32_t rgb) {
+    auto channel = [](uint32_t c) {
+        double v = c / 255.0;
+        return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel((rgb >> 16) & 0xFF) + 0.7152 * channel((rgb >> 8) & 0xFF) +
+           0.0722 * channel(rgb & 0xFF);
+}
+
+double contrast(uint32_t a, uint32_t b) {
+    double la = luminance(a);
+    double lb = luminance(b);
+    return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+}
+
 // The web console's dark tokens (web/styles/tokens.css), and the opaque
 // stand-ins for its translucent ones, blended onto the surface colour.
 TEST(Theme, TokensMatchTheWebConsole) {
@@ -49,6 +69,7 @@ TEST(Theme, TokensMatchTheWebConsole) {
     EXPECT_EQ(theme::kOk, 0x3DD68Cu);
     EXPECT_EQ(theme::kWarn, 0xF5B74Fu);
     EXPECT_EQ(theme::kErr, 0xFF6B6Bu);
+    EXPECT_EQ(theme::kErrInk, 0x04121Fu);
 
     // rgba(148, 170, 205, 0.12) and 0.22 over #121926.
     EXPECT_EQ(theme::kBorder, 0x222A3Au);
@@ -78,6 +99,46 @@ TEST(Theme, BlendRoundsEachChannel) {
     EXPECT_GT(theme::pressed(theme::kSurface3, theme::kText) & 0xFF, theme::kSurface3 & 0xFF);
 }
 
+// Every text-on-fill pair the theme draws stays readable (WCAG AA for
+// body text), pressed fills included.
+TEST(Theme, TextPairsKeepTheirContrast) {
+    struct Pair {
+        const char* name;
+        uint32_t text;
+        uint32_t fill;
+    };
+    const Pair pairs[] = {
+        {"text/bg", theme::kText, theme::kBg},
+        {"text/bg-raised", theme::kText, theme::kBgRaised},
+        {"text/surface", theme::kText, theme::kSurface},
+        {"text/surface2", theme::kText, theme::kSurface2},
+        {"text/surface3", theme::kText, theme::kSurface3},
+        {"text/surface3 pressed", theme::kText, theme::pressed(theme::kSurface3, theme::kText)},
+        {"text-dim/surface", theme::kTextDim, theme::kSurface},
+        {"text-dim/surface2", theme::kTextDim, theme::kSurface2},
+        {"text-dim/surface3", theme::kTextDim, theme::kSurface3},
+        {"text-dim/muted-soft", theme::kTextDim, theme::kMutedSoft},
+        {"text-faint/surface", theme::kTextFaint, theme::kSurface},
+        {"text-faint/surface2", theme::kTextFaint, theme::kSurface2},
+        {"text-faint/surface3", theme::kTextFaint, theme::kSurface3},
+        {"accent-ink/accent", theme::kAccentInk, theme::kAccent},
+        {"accent-ink/accent pressed", theme::kAccentInk,
+         theme::pressed(theme::kAccent, theme::kAccentInk)},
+        {"accent-ink/accent-strong", theme::kAccentInk, theme::kAccentStrong},
+        {"err-ink/err", theme::kErrInk, theme::kErr},
+        {"err-ink/err pressed", theme::kErrInk, theme::pressed(theme::kErr, theme::kErrInk)},
+        {"ok/ok-soft", theme::kOk, theme::kOkSoft},
+        {"warn/warn-soft", theme::kWarn, theme::kWarnSoft},
+        {"err/err-soft", theme::kErr, theme::kErrSoft},
+        {"err/surface", theme::kErr, theme::kSurface},
+        {"accent/surface", theme::kAccent, theme::kSurface},
+        {"accent/accent-soft", theme::kAccent, theme::kAccentSoft},
+    };
+    for (const Pair& p : pairs) {
+        EXPECT_GE(contrast(p.text, p.fill), 4.5) << p.name;
+    }
+}
+
 class ThemeTest : public ::testing::Test {
 protected:
     void SetUp() override { start(); }
@@ -94,10 +155,23 @@ protected:
 
     void on_ui(const std::function<void()>& fn) { run_on_ui_blocking(ui.get(), fn); }
 
-    // Puts `obj` in `state` and waits out the theme's style transitions.
-    void enter_state(lv_obj_t* obj, lv_state_t state) {
+    // Puts `obj` in `state`, then waits until its `part` background is
+    // `want`: the theme's style transitions end exactly on the new value.
+    void enter_state(lv_obj_t* obj, lv_state_t state, uint32_t want,
+                     lv_part_t part = LV_PART_MAIN) {
         on_ui([&] { lv_obj_add_state(obj, state); });
-        wisp::os::sleep_ms(400);
+        wait_for_bg(obj, want, part);
+    }
+
+    void wait_for_bg(lv_obj_t* obj, uint32_t want, lv_part_t part = LV_PART_MAIN) {
+        bool reached = wisp::test::wait_until(
+            [&] {
+                bool done = false;
+                on_ui([&] { done = bg(obj, part) == want; });
+                return done;
+            },
+            2000);
+        EXPECT_TRUE(reached) << std::hex << "background never reached 0x" << want;
     }
 
     std::shared_ptr<FakeDisplay> display;
@@ -129,14 +203,15 @@ TEST_F(ThemeTest, AStockButtonIsPrimary) {
         EXPECT_EQ(lv_obj_get_style_radius(btn, LV_PART_MAIN), theme::kRadiusSm);
         EXPECT_EQ(lv_obj_get_style_shadow_width(btn, LV_PART_MAIN), 0);
     });
-    enter_state(btn, LV_STATE_PRESSED);
+    enter_state(btn, LV_STATE_PRESSED, theme::pressed(theme::kAccent, theme::kAccentInk));
     on_ui([&] {
         EXPECT_EQ(bg(btn), theme::pressed(theme::kAccent, theme::kAccentInk));
         // No second darkening on top of the pressed fill.
         EXPECT_EQ(lv_obj_get_style_recolor_opa(btn, LV_PART_MAIN), LV_OPA_TRANSP);
-        lv_obj_remove_state(btn, LV_STATE_PRESSED);
     });
-    enter_state(btn, LV_STATE_CHECKED);
+    on_ui([&] { lv_obj_remove_state(btn, LV_STATE_PRESSED); });
+    wait_for_bg(btn, theme::kAccent);
+    enter_state(btn, LV_STATE_CHECKED, theme::kAccentStrong);
     on_ui([&] {
         EXPECT_EQ(bg(btn), theme::kAccentStrong);
         EXPECT_EQ(fg(btn), theme::kAccentInk);
@@ -152,7 +227,7 @@ TEST_F(ThemeTest, ButtonRolesSetTheirColours) {
     };
     for (Case c : {Case{ButtonRole::Primary, theme::kAccent, theme::kAccentInk},
                    Case{ButtonRole::Secondary, theme::kSurface3, theme::kText},
-                   Case{ButtonRole::Danger, theme::kErr, theme::kAccentInk}}) {
+                   Case{ButtonRole::Danger, theme::kErr, theme::kErrInk}}) {
         SCOPED_TRACE(static_cast<int>(c.role));
         lv_obj_t* btn = nullptr;
         on_ui([&] {
@@ -161,7 +236,7 @@ TEST_F(ThemeTest, ButtonRolesSetTheirColours) {
             EXPECT_EQ(bg(btn), c.fill);
             EXPECT_EQ(fg(btn), c.ink);
         });
-        enter_state(btn, LV_STATE_PRESSED);
+        enter_state(btn, LV_STATE_PRESSED, theme::pressed(c.fill, c.ink));
         on_ui([&] {
             EXPECT_EQ(bg(btn), theme::pressed(c.fill, c.ink));
             EXPECT_EQ(fg(btn), c.ink);
@@ -217,12 +292,130 @@ TEST_F(ThemeTest, ControlsUseTheAccent) {
         EXPECT_EQ(rgb_of(lv_obj_get_style_bg_color(scr, LV_PART_SCROLLBAR)), theme::kTextDim);
     });
     // The switch's indicator once its check transition is over.
-    wisp::os::sleep_ms(400);
+    lv_obj_t* sw = nullptr;
+    on_ui([&] { sw = lv_obj_get_child_by_type(lv_screen_active(), 0, &lv_switch_class); });
+    ASSERT_NE(sw, nullptr);
+    wait_for_bg(sw, theme::kAccent, LV_PART_INDICATOR);
+    on_ui([&] { lv_obj_clean(lv_screen_active()); });
+}
+
+// The focused cursor is the default theme's left-edge bar in the accent;
+// the theme must not fill the character cell under it.
+TEST_F(ThemeTest, TextareaCursorIsAnAccentBar) {
     on_ui([&] {
-        lv_obj_t* sw = lv_obj_get_child_by_type(lv_screen_active(), 0, &lv_switch_class);
-        ASSERT_NE(sw, nullptr);
-        EXPECT_EQ(bg(sw, LV_PART_INDICATOR), theme::kAccent);
-        lv_obj_clean(lv_screen_active());
+        lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+        lv_obj_add_state(ta, LV_STATE_FOCUSED);
+        EXPECT_EQ(rgb_of(lv_obj_get_style_border_color(ta, LV_PART_CURSOR)), theme::kAccent);
+        EXPECT_EQ(lv_obj_get_style_bg_opa(ta, LV_PART_CURSOR), LV_OPA_TRANSP);
+        EXPECT_GT(lv_obj_get_style_border_width(ta, LV_PART_CURSOR), 0);
+        EXPECT_EQ(lv_obj_get_style_border_side(ta, LV_PART_CURSOR), LV_BORDER_SIDE_LEFT);
+        lv_obj_delete(ta);
+    });
+}
+
+// An open dropdown's rows, read the way lv_dropdown draws them: with the
+// list's state swapped for the row's.
+TEST_F(ThemeTest, DropdownRowsStayReadable) {
+    on_ui([&] {
+        lv_obj_t* dd = lv_dropdown_create(lv_screen_active());
+        lv_dropdown_set_options(dd, "one\ntwo\nthree");
+        lv_dropdown_open(dd);
+        lv_obj_t* list = lv_dropdown_get_list(dd);
+        ASSERT_NE(list, nullptr);
+        EXPECT_EQ(bg(list), theme::kSurface2);
+
+        const auto saved = list->state;
+        list->state = LV_STATE_CHECKED;
+        EXPECT_EQ(bg(list, LV_PART_SELECTED), theme::kAccent);
+        EXPECT_EQ(fg(list, LV_PART_SELECTED), theme::kAccentInk);
+        list->state = LV_STATE_PRESSED;
+        EXPECT_EQ(bg(list, LV_PART_SELECTED), theme::pressed(theme::kSurface3, theme::kText));
+        EXPECT_EQ(fg(list, LV_PART_SELECTED), theme::kText);
+        list->state = LV_STATE_CHECKED | LV_STATE_PRESSED;
+        EXPECT_EQ(fg(list, LV_PART_SELECTED), theme::kText);
+        list->state = saved;
+
+        lv_dropdown_close(dd);
+        lv_obj_delete(dd);
+    });
+}
+
+TEST_F(ThemeTest, ListsAndTablesUseTheSurfaces) {
+    on_ui([&] {
+        lv_obj_t* list = lv_list_create(lv_screen_active());
+        EXPECT_EQ(bg(list), theme::kSurface);
+        lv_obj_t* heading = lv_list_add_text(list, "Heading");
+        EXPECT_EQ(fg(heading), theme::kTextDim);
+        lv_obj_t* row = lv_list_add_button(list, nullptr, "Row");
+        EXPECT_EQ(bg(row), theme::kSurface);
+        EXPECT_EQ(fg(row), theme::kText);
+        lv_obj_add_state(row, LV_STATE_PRESSED);
+        EXPECT_EQ(fg(row), theme::kText);
+        lv_obj_delete(list);
+
+        lv_obj_t* table = lv_table_create(lv_screen_active());
+        EXPECT_EQ(bg(table), theme::kSurface);
+        EXPECT_EQ(bg(table, LV_PART_ITEMS), theme::kSurface);
+        EXPECT_EQ(fg(table, LV_PART_ITEMS), theme::kText);
+        lv_obj_delete(table);
+    });
+}
+
+// A button that changes role keeps only the last role's styles.
+TEST_F(ThemeTest, SwitchingRolesLeavesOnlyTheLast) {
+    on_ui([&] {
+        lv_obj_t* btn = lv_button_create(lv_screen_active());
+        const uint32_t stock = btn->style_cnt;
+
+        wisp::ui::set_button_role(btn, ButtonRole::Secondary);
+        const uint32_t with_role = btn->style_cnt;
+        EXPECT_GT(with_role, stock);
+        wisp::ui::set_button_role(btn, ButtonRole::Danger);
+        EXPECT_EQ(btn->style_cnt, with_role);
+        EXPECT_EQ(bg(btn), theme::kErr);
+        EXPECT_EQ(fg(btn), theme::kErrInk);
+        wisp::ui::set_button_role(btn, ButtonRole::Secondary);
+        wisp::ui::set_button_role(btn, ButtonRole::Secondary);
+        EXPECT_EQ(btn->style_cnt, with_role);
+        EXPECT_EQ(bg(btn), theme::kSurface3);
+        wisp::ui::set_button_role(btn, ButtonRole::Primary);
+        EXPECT_EQ(btn->style_cnt, stock);
+        EXPECT_EQ(bg(btn), theme::kAccent);
+        EXPECT_EQ(fg(btn), theme::kAccentInk);
+        lv_obj_delete(btn);
+    });
+}
+
+// The theme's styles are shared, so themed widgets cost LVGL's heap only
+// for themselves: creating and deleting them leaves it where it was.
+TEST_F(ThemeTest, ThemedWidgetsDoNotLeak) {
+    on_ui([&] {
+        auto round = [] {
+            lv_obj_t* scr = lv_screen_active();
+            lv_obj_t* card = lv_obj_create(scr);
+            lv_obj_t* btn = lv_button_create(card);
+            wisp::ui::set_button_role(btn, ButtonRole::Danger);
+            wisp::ui::set_button_role(btn, ButtonRole::Secondary);
+            lv_label_create(btn);
+            lv_textarea_create(card);
+            lv_slider_create(card);
+            lv_switch_create(card);
+            lv_obj_t* dd = lv_dropdown_create(card);
+            lv_dropdown_open(dd);
+            lv_dropdown_close(dd);
+            lv_obj_t* list = lv_list_create(card);
+            lv_list_add_button(list, nullptr, "Row");
+            lv_keyboard_create(card);
+            lv_obj_t* box = lv_msgbox_create(nullptr);
+            lv_msgbox_add_footer_button(box, "OK");
+            lv_msgbox_close(box);
+            lv_obj_delete(dd);
+            lv_obj_delete(card);
+        };
+        round();
+        const size_t warm = wisp::ui::lv_heap_bytes();
+        for (int i = 0; i < 20; ++i) round();
+        EXPECT_EQ(wisp::ui::lv_heap_bytes(), warm);
     });
 }
 
