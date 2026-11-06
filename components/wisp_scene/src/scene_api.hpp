@@ -48,7 +48,8 @@
 //       scene with that id was removed.
 //   wisp.sensor (bind_sensor.cpp), over core::SensorService:
 //       subscribe(kind, {rate = n}, fn) -> handle: kind "accel" or "gyro",
-//       rate 10, 25, 50 or 100 (25 when the table or rate is left out);
+//       rate 10, 25, 50 or 100; the options may be nil or left out
+//       (subscribe(kind, fn)), and rate then defaults to 25;
 //       fn(samples) gets { {x =, y =, z =, t =}, ... } every 100 ms or so
 //       (m/s², or degrees per second for gyro; t in ms).
 //       on("shake" | "flip", fn) -> handle; fn(name) once per gesture.
@@ -56,7 +57,8 @@
 //       available() -> {accel = true, gyro = true} as the IMU has them,
 //       {} without one.
 //       subscribe and on: nil, "not_in_background" in the background;
-//       nil, "unavailable" without the service or the sensor; a bad kind,
+//       nil, "unavailable" without the service or the sensor, or the
+//       service's error as its snake_case code ("busy", "no_memory"); a bad kind,
 //       rate or gesture raises an argument error naming it.
 //       The runtime pauses a scene's subscriptions while it is in the
 //       background and resumes them in front (pause_sensors()), and ends

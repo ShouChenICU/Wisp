@@ -496,8 +496,9 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
     h.app.stop();
 }
 
-// Plan refinement 19: the screen reads the IMU through SensorService
-// (accel and gyro at 50 Hz) as holder "system.selfcheck", not the driver.
+// Refinement 19 of docs/superpowers/plans/2026-11-05-scene-device.md: the
+// screen reads the IMU through SensorService (accel and gyro at 50 Hz) as
+// holder "system.selfcheck", not the driver.
 TEST(SelfCheckScreen, ImuReadsThroughSensorService) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
     ASSERT_TRUE(h.app.start());

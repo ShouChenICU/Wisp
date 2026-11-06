@@ -250,6 +250,58 @@ return ui.screen {}
     EXPECT_EQ(sensors->imu_rate(), 0u);
 }
 
+TEST_F(SensorBinding, FunctionAsSecondArgumentUsesDefaultRate) {
+    make_sensors(imu);
+    start();
+    install("demo", R"(
+local h = wisp.sensor.subscribe("gyro", function() end)
+print("handle", h ~= nil)
+return ui.screen {}
+)");
+    ASSERT_TRUE(rt->open("demo"));
+    EXPECT_EQ(scene_log("demo"), (std::vector<std::string>{"handle\ttrue"}));
+    EXPECT_EQ(sensors->imu_rate(), 25u);
+}
+
+TEST_F(SensorBinding, ServiceErrorsKeepTheirCode) {
+    make_sensors(imu);
+    // Someone else holds the IMU exclusively: the service says Busy.
+    ASSERT_TRUE(occupancy.acquire("imu.main", "system.test", wisp::core::OccupancyMode::Exclusive));
+    start();
+    install("demo", R"(
+print("sub", wisp.sensor.subscribe("accel", { rate = 10 }, function() end))
+print("on", wisp.sensor.on("shake", function() end))
+return ui.screen {}
+)");
+    ASSERT_TRUE(rt->open("demo"));
+    EXPECT_EQ(scene_log("demo"), (std::vector<std::string>{"sub\tnil\tbusy", "on\tnil\tbusy"}));
+    EXPECT_EQ(sensors->imu_rate(), 0u);
+}
+
+TEST_F(SensorBinding, EvictionReleases) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) { c.max_background = 1; };
+    make_sensors(imu);
+    start();
+    install_bg("a", R"(
+wisp.sensor.subscribe("accel", { rate = 50 }, function() end)
+return ui.screen {}
+)");
+    install_bg("b", "return ui.screen {}");
+    install_bg("c", "return ui.screen {}");
+    ASSERT_TRUE(rt->open("a"));
+    EXPECT_EQ(occupancy.list().size(), 1u);
+    // a goes to the background (paused, still holding imu.main), then b
+    // joins it there and a, the least recently in front, is evicted.
+    ASSERT_TRUE(rt->open("b"));
+    ASSERT_EQ(rt->status("a").state, SceneState::Background);
+    EXPECT_EQ(occupancy.list().size(), 1u);
+    ASSERT_TRUE(rt->open("c"));
+    ASSERT_EQ(rt->status("a").state, SceneState::Stopped);
+    EXPECT_TRUE(occupancy.list().empty());
+    EXPECT_EQ(sensors->imu_rate(), 0u);
+    EXPECT_FALSE(imu->powered());
+}
+
 TEST_F(SensorBinding, ExitReleases) {
     make_sensors(imu);
     start();

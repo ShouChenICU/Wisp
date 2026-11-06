@@ -38,8 +38,12 @@ int fail(lua_State* L, const char* code) {
     return 2;
 }
 
-// What the service said, as the code a scene sees; null on success.
-const char* code_of(ErrorCode code) { return code == ErrorCode::Busy ? "busy" : "unavailable"; }
+// The code a scene sees for a service error: "unavailable" without the
+// sensor, otherwise the error's own snake_case name ("busy",
+// "no_memory", ...). Static strings.
+const char* code_of(ErrorCode code) {
+    return code == ErrorCode::Unsupported ? "unavailable" : wisp::to_string(code);
+}
 
 const char* do_subscribe(SceneApi& api, uint32_t id, SensorKind kind, uint32_t rate) {
     auto post = api.sensor_post;
@@ -119,12 +123,18 @@ int add(lua_State* L, int fn, Want want, SensorKind kind, uint32_t rate, Gesture
     return 1;
 }
 
-// subscribe(kind, {rate = n}, fn) -> handle | nil, code
+// subscribe(kind, {rate = n}, fn) or subscribe(kind, fn) -> handle | nil, code
 int subscribe(lua_State* L) {
     const char* kind_name = luaL_checkstring(L, 1);
     const std::optional<SensorKind> kind = core::parse_sensor_kind(kind_name);
     if (!kind) luaL_argerror(L, 1, "kind must be \"accel\" or \"gyro\"");
     lua_Integer rate = kDefaultRate;
+    // subscribe(kind, fn): no options.
+    if (lua_type(L, 2) == LUA_TFUNCTION) {
+        lua_settop(L, 2);
+        lua_pushnil(L);
+        lua_insert(L, 2);
+    }
     if (!lua_isnoneornil(L, 2)) {
         luaL_checktype(L, 2, LUA_TTABLE);
         if (lua_getfield(L, 2, "rate") != LUA_TNIL) {

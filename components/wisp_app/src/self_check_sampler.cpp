@@ -8,7 +8,8 @@ namespace wisp::app {
 namespace {
 
 constexpr const char* kHolder = "system.selfcheck";
-// The IMU rate the screen asks for (plan refinement 19).
+// The IMU rate the screen asks for (refinement 19 of
+// docs/superpowers/plans/2026-11-05-scene-device.md).
 constexpr uint32_t kImuRateHz = 50;
 constexpr float kStandardGravity = 9.80665f;
 constexpr uint32_t kSlowSampleIntervalMs = 1000;  // power/clock.

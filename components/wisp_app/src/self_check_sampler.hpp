@@ -3,8 +3,9 @@
 // The self-check screen's readings, in a mutex-protected snapshot the
 // screen's 100 ms refresh copies out (snapshot()):
 //   - the IMU through core::SensorService (accelerometer and gyroscope at
-//     50 Hz, as holder "system.selfcheck"; scene-device plan refinement
-//     19), never the driver itself. The service pauses it in standby. The
+//     50 Hz, as holder "system.selfcheck"; refinement 19 of
+//     docs/superpowers/plans/2026-11-05-scene-device.md), never the driver
+//     itself. The service pauses it in standby. The
 //     accelerations go back to g, which the screen shows.
 //   - the battery and the clock, read by the "wisp.sample" task once a
 //     second, about every 30 s in standby (spec 6.7).
