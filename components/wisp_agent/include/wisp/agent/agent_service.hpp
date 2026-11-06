@@ -35,6 +35,13 @@
 // Queueing: one message runs and kMaxQueued more wait; past that submit()
 // is Busy. stop_turn() also drops the waiting ones.
 //
+// Irreversible steps ask on the device (spec 6.1) through the
+// ConfirmService set with set_confirm(): the tools' ConfirmFn
+// (confirm_fn()) and request_clear(). A tool's successful result with a
+// note (spec 6.2) is followed by a note message with that text, and the
+// stored result -- what the model sees next -- carries it as
+// "system_note".
+//
 // Threads: submit(), stop_turn(), new_conversation(), state(), view() and
 // the listener calls may come from any thread. Listeners and the
 // agent.state event run on wisp.agent; a listener must not block for
@@ -64,6 +71,7 @@
 #include <string>
 #include <vector>
 
+#include "wisp/agent/confirm.hpp"
 #include "wisp/agent/context.hpp"
 #include "wisp/agent/conversation.hpp"
 #include "wisp/agent/limits.hpp"
@@ -100,7 +108,7 @@ struct AgentEvent {
     std::string text;                     // Delta; Confirm ("" = over); TurnBegin: the user text
     std::string tool;                     // ToolStart, ToolEnd, State (Tool): dotted
     std::string args, result;             // ToolStart, ToolEnd: cut to kSummaryChars code points
-    bool ok = true;                       // ToolEnd
+    bool ok = true;                       // ToolEnd; Cleared: false when nothing changed
     AgentState state = AgentState::Idle;  // State
     uint64_t seq = 0;                     // Message: the appended message's seq
     uint32_t turn = 0;                    // TurnBegin, TurnEnd
@@ -191,6 +199,26 @@ public:
     // Archives the conversation and starts a new one (Cleared). Busy while
     // a turn runs or a message waits.
     Result<void> new_conversation();
+
+    // The device confirmation the tools' ConfirmFn and request_clear() go
+    // through; null (the default) refuses every request. Set it before
+    // start(); it must outlive the service's task.
+    void set_confirm(ConfirmService* c);
+    // The ConfirmFn for the tools: on wisp.agent it puts the agent in
+    // WaitingConfirm, emits Confirm(text), asks (cancelled by the turn's
+    // stop or limits), emits Confirm("") and goes back to the tool state;
+    // true only for Allowed. Called on any other thread it refuses
+    // without asking: a wait for the user must never hold the UI thread
+    // or wisp.fs.
+    ConfirmFn confirm_fn();
+    // Asks on the device (AgentConfirmClear) and, when allowed, removes
+    // the current conversation and every archive on the storage worker.
+    // Runs on wisp.agent after anything already queued; stop_turn() while
+    // it waits cancels it. Then emits Cleared (ok: whether the history was
+    // cleared) and calls `done` with the same, on wisp.agent. Busy "busy"
+    // (and `done` is never called) while a turn runs or a message waits;
+    // "not_running" before start() or after stop().
+    Result<void> request_clear(std::function<void(bool cleared)> done);
 
     AgentState state() const;
     ConversationView view() const;

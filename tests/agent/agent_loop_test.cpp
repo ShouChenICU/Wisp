@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <fstream>
 #include <iterator>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "support/agent_fixture.hpp"
+#include "support/confirm_harness.hpp"
 #include "support/wait.hpp"
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/agent/limits.hpp"
@@ -72,6 +74,7 @@ protected:
         h->server.release();
         svc.reset();
         h.reset();
+        ch.reset();
         wisp::log::reset_for_test();
     }
 
@@ -104,6 +107,7 @@ protected:
         wisp::agent::AgentDeps deps = h->deps();
         deps.context = context;
         svc = std::make_unique<AgentService>(std::move(deps), cfg);
+        if (ch) svc->set_confirm(ch->confirm.get());
         listener = svc->add_listener([this](const AgentEvent& e) {
             std::lock_guard<std::mutex> lock(mu);
             events.push_back(e);
@@ -186,6 +190,8 @@ protected:
 
     std::unique_ptr<AgentHarness> h;
     std::unique_ptr<AgentService> svc;
+    // The device confirmation, for the tests that need one (before start()).
+    std::unique_ptr<wisp::test::ConfirmHarness> ch;
     wisp::agent::ContextSource context;
     uint32_t listener = 0;
     std::mutex mu;
@@ -1094,4 +1100,251 @@ TEST_F(AgentLoop, SummaryWithoutConnectionKeepsTheTurns) {
     const Value body_msgs = h->server.body_json(4);
     const List& msgs = body_msgs.find("messages")->as_list();
     EXPECT_EQ(msgs[0].find("content")->as_string(), "q1");
+}
+
+namespace {
+
+ToolDef risky_tool(const std::string& name, wisp::agent::ToolRisk risk,
+                   std::function<ToolOutput(const Value&, ToolCtx&)> run) {
+    ToolDef def;
+    def.name = name;
+    def.description = "test tool";
+    def.risk = risk;
+    def.timeout_ms = 60000;
+    def.run = std::move(run);
+    return def;
+}
+
+}  // namespace
+
+// While a tool waits for the device, the agent is waiting_confirm and its
+// listeners (the web page) get the question, then "" once it is answered.
+TEST_F(AgentLoop, WaitingConfirmStateAndWebSeesText) {
+    ch = std::make_unique<wisp::test::ConfirmHarness>();
+    ASSERT_TRUE(ch->ok);
+    harness();
+    wisp::agent::ConfirmFn fn;
+    std::atomic<bool> allowed{false};
+    ASSERT_TRUE(h->tools->add(
+        risky_tool("scene.delete", wisp::agent::ToolRisk::Confirm, [&](const Value&, ToolCtx& c) {
+            allowed = fn("Agent 要删除场景「番茄钟」", c);
+            return ToolOutput{.ok = true, .result = Map{{"ok", true}}};
+        })));
+    start();
+    fn = svc->confirm_fn();
+    h->server.push(tool_reply("c1", "scene_delete", "{}"));
+    h->server.push(text_reply("done"));
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+
+    ASSERT_TRUE(ch->wait_showing("番茄钟"));
+    EXPECT_EQ(svc->state(), AgentState::WaitingConfirm);
+    EXPECT_EQ(svc->view().confirm, std::optional<std::string>("Agent 要删除场景「番茄钟」"));
+    ASSERT_TRUE(ch->press(true));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_TRUE(allowed.load());
+    EXPECT_FALSE(svc->view().confirm.has_value());
+
+    std::vector<std::string> confirms;
+    for (const auto& e : snapshot())
+        if (e.kind == Kind::Confirm) confirms.push_back(e.text);
+    EXPECT_EQ(confirms, (std::vector<std::string>{"Agent 要删除场景「番茄钟」", ""}));
+    const std::vector<AgentState> s = states();
+    auto at = std::find(s.begin(), s.end(), AgentState::WaitingConfirm);
+    ASSERT_NE(at, s.end());
+    // Back to the tool once answered.
+    ASSERT_NE(at + 1, s.end());
+    EXPECT_EQ(*(at + 1), AgentState::Tool);
+}
+
+// A confirm asked off wisp.agent (a tool on the storage worker) is refused
+// without a dialog: the wait would hold that thread.
+TEST_F(AgentLoop, ConfirmOffTheAgentThreadIsRefused) {
+    ch = std::make_unique<wisp::test::ConfirmHarness>();
+    ASSERT_TRUE(ch->ok);
+    harness();
+    wisp::agent::ConfirmFn fn;
+    std::atomic<int> answer{-1};
+    ToolDef def = risky_tool("scene.files_remove", wisp::agent::ToolRisk::Confirm,
+                             [&](const Value&, ToolCtx& c) {
+                                 answer = fn("remove?", c) ? 1 : 0;
+                                 return ToolOutput{.ok = true, .result = Map{{"ok", true}}};
+                             });
+    def.thread = wisp::agent::ToolThread::Fs;
+    ASSERT_TRUE(h->tools->add(std::move(def)));
+    start();
+    fn = svc->confirm_fn();
+    h->server.push(tool_reply("c1", "scene_files_remove", "{}"));
+    h->server.push(text_reply("done"));
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(answer.load(), 0);
+    EXPECT_EQ(ch->wakes.load(), 0);
+    EXPECT_EQ(count(Kind::Confirm), 0u);
+}
+
+// A note tool's success adds the system's note after the tool's result,
+// and the result the model sees next carries it as "system_note".
+TEST_F(AgentLoop, NoteToolsInsertSystemNote) {
+    harness();
+    ASSERT_TRUE(h->tools->add(
+        risky_tool("settings.set", wisp::agent::ToolRisk::Note, [](const Value&, ToolCtx&) {
+            return ToolOutput{.ok = true, .result = Map{{"ok", true}}, .note = "亮度 200 → 120"};
+        })));
+    start();
+    h->server.push(tool_reply("c1", "settings_set", R"({"key":"brightness","value":120})"));
+    h->server.push(text_reply("done"));
+    ASSERT_TRUE(svc->submit("dim it", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+
+    History all = history();
+    size_t tool_at = all.size();
+    for (size_t i = 0; i < all.size(); ++i)
+        if (all[i].role == Role::Tool) tool_at = i;
+    ASSERT_LT(tool_at + 1, all.size());
+    EXPECT_EQ(all[tool_at + 1].role, Role::Note);
+    EXPECT_EQ(str(all[tool_at + 1].text), "亮度 200 → 120");
+    EXPECT_EQ(all[tool_at + 1].turn, all[tool_at].turn);
+
+    ASSERT_EQ(h->server.requests().size(), 2u);
+    const Value body = h->server.body_json(1);
+    const List& msgs = body.find("messages")->as_list();
+    const Value* tool_msg = nullptr;
+    for (const Value& m : msgs)
+        if (m.find("role")->as_string() == "tool") tool_msg = &m;
+    ASSERT_NE(tool_msg, nullptr);
+    auto content = wisp::from_json(tool_msg->find("content")->as_string());
+    ASSERT_TRUE(content);
+    ASSERT_NE(content.value().find("system_note"), nullptr);
+    EXPECT_EQ(content.value().find("system_note")->as_string(), "亮度 200 → 120");
+    // The note itself is not sent as a message of its own.
+    for (const Value& m : msgs) {
+        const Value* text = m.find("content");
+        if (text != nullptr && text->type() == Value::Type::String)
+            EXPECT_NE(text->as_string(), "亮度 200 → 120");
+    }
+}
+
+TEST_F(AgentLoop, NoNoteOnFailure) {
+    harness();
+    ASSERT_TRUE(h->tools->add(
+        risky_tool("settings.set", wisp::agent::ToolRisk::Note, [](const Value&, ToolCtx&) {
+            ToolOutput o = wisp::agent::tool_error("bad_value", "no such level");
+            o.note = "亮度 200 → 999";
+            return o;
+        })));
+    start();
+    h->server.push(tool_reply("c1", "settings_set", "{}"));
+    h->server.push(text_reply("done"));
+    ASSERT_TRUE(svc->submit("dim it", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_TRUE(notes().empty());
+    const Value body = h->server.body_json(1);
+    for (const Value& m : body.find("messages")->as_list()) {
+        if (m.find("role")->as_string() != "tool") continue;
+        auto content = wisp::from_json(m.find("content")->as_string());
+        ASSERT_TRUE(content);
+        EXPECT_EQ(content.value().find("system_note"), nullptr);
+    }
+}
+
+// Clearing every conversation asks on the device first: denied, nothing
+// changes; allowed, the current conversation and the archives go.
+TEST_F(AgentLoop, ClearAllNeedsConfirm) {
+    ch = std::make_unique<wisp::test::ConfirmHarness>();
+    ASSERT_TRUE(ch->ok);
+    start();
+    run_turn("one", "first");
+    ASSERT_TRUE(svc->new_conversation());
+    run_turn("two", "second");
+    auto archives = [&] {
+        size_t n = 0;
+        EXPECT_TRUE(h->worker.run_sync(
+            [&] {
+                auto a = h->store->archives();
+                ASSERT_TRUE(a);
+                n = a.value().size();
+            },
+            wisp::os::kForever));
+        return n;
+    };
+    ASSERT_EQ(archives(), 1u);
+    const size_t before = history().size();
+    ASSERT_GT(before, 0u);
+    const std::string question = wisp::ui::tr(wisp::ui::StrId::AgentConfirmClear);
+
+    auto clear = [&](bool allow) {
+        std::atomic<int> result{-1};
+        const size_t cleared_before = count(Kind::Cleared);
+        EXPECT_TRUE(svc->request_clear([&](bool ok) { result = ok ? 1 : 0; }));
+        EXPECT_TRUE(ch->wait_showing(question));
+        EXPECT_EQ(svc->state(), AgentState::WaitingConfirm);
+        EXPECT_TRUE(ch->press(allow));
+        EXPECT_TRUE(wait_until([&] { return result.load() >= 0; }, 5000));
+        EXPECT_TRUE(wait_until([&] { return count(Kind::Cleared) > cleared_before; }, 5000));
+        EXPECT_EQ(svc->state(), AgentState::Idle);
+        return result.load();
+    };
+
+    EXPECT_EQ(clear(false), 0);
+    EXPECT_EQ(history().size(), before);
+    EXPECT_EQ(archives(), 1u);
+    auto last_cleared = [&] {
+        std::optional<AgentEvent> e;
+        for (const auto& ev : snapshot())
+            if (ev.kind == Kind::Cleared) e = ev;
+        return e;
+    };
+    ASSERT_TRUE(last_cleared());
+    EXPECT_FALSE(last_cleared()->ok);
+
+    EXPECT_EQ(clear(true), 1);
+    EXPECT_TRUE(history().empty());
+    EXPECT_EQ(archives(), 0u);
+    ASSERT_TRUE(last_cleared());
+    EXPECT_TRUE(last_cleared()->ok);
+
+    // The next turn starts the numbering over.
+    run_turn("three", "third");
+    EXPECT_EQ(history().front().turn, 1u);
+}
+
+TEST_F(AgentLoop, ClearAllWithoutConfirmIsRefused) {
+    start();
+    run_turn("one", "first");
+    const size_t before = history().size();
+    std::atomic<int> result{-1};
+    ASSERT_TRUE(svc->request_clear([&](bool ok) { result = ok ? 1 : 0; }));
+    ASSERT_TRUE(wait_until([&] { return result.load() >= 0; }, 5000));
+    EXPECT_EQ(result.load(), 0);
+    EXPECT_EQ(history().size(), before);
+}
+
+// A stop while the clear waits for the device closes the dialog and
+// leaves the history.
+TEST_F(AgentLoop, StopCancelsClear) {
+    ch = std::make_unique<wisp::test::ConfirmHarness>();
+    ASSERT_TRUE(ch->ok);
+    start();
+    run_turn("one", "first");
+    const size_t before = history().size();
+    std::atomic<int> result{-1};
+    ASSERT_TRUE(svc->request_clear([&](bool ok) { result = ok ? 1 : 0; }));
+    ASSERT_TRUE(ch->wait_showing(wisp::ui::tr(wisp::ui::StrId::AgentConfirmClear)));
+    svc->stop_turn();
+    ASSERT_TRUE(wait_until([&] { return result.load() >= 0; }, 5000));
+    EXPECT_EQ(result.load(), 0);
+    EXPECT_EQ(history().size(), before);
+    EXPECT_TRUE(wait_until([&] { return !ch->dialog_open(); }, 2000));
+}
+
+TEST_F(AgentLoop, ClearIsBusyDuringATurn) {
+    start();
+    h->server.push({.status = 200, .chunks = {FakeLlmServer::sse_text("slow")}, .hold_after = 1});
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return svc->state() == AgentState::Output; }, 5000));
+    auto r = svc->request_clear([](bool) { ADD_FAILURE() << "done called"; });
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().message, "busy");
+    svc->stop_turn();
+    ASSERT_TRUE(wait_turns(1));
 }

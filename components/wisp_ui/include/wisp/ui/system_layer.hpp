@@ -266,13 +266,13 @@ public:
     lv_obj_t* keyboard() const { return kb_; }
 
     // Opens a modal Yes/No dialog and returns its box. Yes is a `yes_role`
-    // button (Danger for an action that destroys data), No a secondary
-    // one. Answering closes it and then calls `on_answer`. Only one dialog
-    // is open at a time: while one is, this returns nullptr and never
-    // calls `on_answer`.
+    // button (Danger for an action that destroys data) labelled `yes`, No
+    // a secondary one labelled `no`. Answering closes it and then calls `on_answer`. Only one
+    // dialog is open at a time: while one is, this returns nullptr and never calls `on_answer`.
     lv_obj_t* open_confirm(StrId title, const std::string& text,
                            std::function<void(bool yes)> on_answer,
-                           ButtonRole yes_role = ButtonRole::Primary);
+                           ButtonRole yes_role = ButtonRole::Primary, StrId yes = StrId::Yes,
+                           StrId no = StrId::No);
     bool confirm_open() const { return confirm_box_ != nullptr; }
     // What of the layer is on screen now, for ui.tree() (agent-core spec
     // 5.2): ("capsule" | "banner" | "panel" | "error" | "keyboard" |

@@ -855,7 +855,8 @@ void SystemLayer::kb_done_cb(lv_event_t* e) {
 // --- Confirm dialogs ---
 
 lv_obj_t* SystemLayer::open_confirm(StrId title, const std::string& text,
-                                    std::function<void(bool yes)> on_answer, ButtonRole yes_role) {
+                                    std::function<void(bool yes)> on_answer, ButtonRole yes_role,
+                                    StrId yes_text, StrId no_text) {
     if (confirm_box_ != nullptr) return nullptr;
     lv_obj_t* box = lv_msgbox_create(nullptr);
     // lv_msgbox_class's default width is a fixed LV_DPI_DEF * 2,
@@ -870,8 +871,8 @@ lv_obj_t* SystemLayer::open_confirm(StrId title, const std::string& text,
     const int32_t inset = lv_obj_get_style_pad_left(lv_msgbox_get_content(box), LV_PART_MAIN);
     lv_obj_set_style_pad_hor(row, inset, 0);
     lv_obj_set_style_pad_bottom(row, inset, 0);
-    lv_obj_t* yes = add_dialog_button(row, tr(StrId::Yes), yes_role);
-    lv_obj_t* no = add_dialog_button(row, tr(StrId::No), ButtonRole::Secondary);
+    lv_obj_t* yes = add_dialog_button(row, tr(yes_text), yes_role);
+    lv_obj_t* no = add_dialog_button(row, tr(no_text), ButtonRole::Secondary);
     lv_obj_add_event_cb(yes, &SystemLayer::confirm_btn_cb, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(no, &SystemLayer::confirm_btn_cb, LV_EVENT_CLICKED, this);
     // Laid out now rather than at the next refresh: a touch read in

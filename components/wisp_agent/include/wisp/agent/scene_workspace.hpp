@@ -61,9 +61,6 @@
 
 namespace wisp::agent {
 
-// Asks the user on the device (agent-core spec 6.1); true for yes.
-using ConfirmFn = std::function<bool(const std::string& text, ToolCtx& ctx)>;
-
 struct SceneWorkspaceDeps {
     core::SceneRepository& repo;
     scene::SceneRuntime& runtime;

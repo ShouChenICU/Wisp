@@ -316,6 +316,14 @@ const char* strings_ja(StrId id) {
             return "画面オフまでの時間";
         case StrId::AgentSetLanguage:
             return "言語";
+        case StrId::AgentConfirmTitle:
+            return "Agent の確認";
+        case StrId::AgentAllow:
+            return "許可";
+        case StrId::AgentDeny:
+            return "拒否";
+        case StrId::AgentConfirmClear:
+            return "Agent との会話をすべて消去しますか？";
         case StrId::Count:
             break;
     }

@@ -48,6 +48,10 @@ struct ToolOutput {
 
 using ToolFn = std::function<ToolOutput(const Value& args, ToolCtx& ctx)>;
 
+// Asks the user on the device (agent-core spec 6.1); true for yes.
+// AgentService::confirm_fn() provides it.
+using ConfirmFn = std::function<bool(const std::string& text, ToolCtx& ctx)>;
+
 struct ToolDef {
     std::string name;  // dotted, ^[a-z]+\.[a-z_]+$
     std::string description;

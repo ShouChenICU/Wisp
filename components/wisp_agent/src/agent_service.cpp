@@ -91,11 +91,12 @@ struct AgentService::Impl {
     };
 
     struct Command {
-        enum class Kind : uint8_t { Message, New };
+        enum class Kind : uint8_t { Message, New, Clear };
         Kind kind = Kind::Message;
         os::LargeString text;
         Source source = Source::Web;
-        std::shared_ptr<Done> done;  // New
+        std::shared_ptr<Done> done;         // New
+        std::function<void(bool)> cleared;  // Clear
     };
 
     struct Listener {
@@ -251,6 +252,61 @@ struct AgentService::Impl {
         return r;
     }
 
+    // Asks on the device for whatever runs on wisp.agent (a tool, the
+    // clear), showing WaitingConfirm and the question meanwhile, then puts
+    // the state back as it was. true only for Allowed.
+    bool ask_user(const std::string& text, const std::function<bool()>& cancelled) {
+        if (confirm.load() == nullptr) {
+            WLOG_I(kTag, "confirm refused: no device confirmation");
+            return false;
+        }
+        AgentState before;
+        std::string before_tool;
+        {
+            std::lock_guard<os::Mutex> lock(mu);
+            before = state;
+            before_tool = tool;
+            confirm_text = text;
+        }
+        set_state(AgentState::WaitingConfirm);
+        AgentEvent e;
+        e.kind = AgentEvent::Kind::Confirm;
+        e.text = text;
+        emit(e);
+        const Answer a = confirm.load()->ask(text, cancelled);
+        {
+            std::lock_guard<os::Mutex> lock(mu);
+            confirm_text.reset();
+        }
+        e.text.clear();
+        emit(e);
+        set_state(before, before_tool);
+        WLOG_I(kTag, "confirm %s", to_string(a));
+        return a == Answer::Allowed;
+    }
+
+    void clear_all(const Command& c) {
+        bool ok = ask_user(ui::tr(ui::StrId::AgentConfirmClear, lang()), [this] {
+            return quit.load() || abort.load() != static_cast<uint8_t>(Abort::None);
+        });
+        if (ok) {
+            Result<void> r = Result<void>::err(ErrorCode::Busy, "storage worker refused");
+            run_io([&] { r = deps.store.clear_all(); });
+            if (!r) WLOG_W(kTag, "clear failed: %s", r.error().message.c_str());
+            ok = r.is_ok();
+        }
+        if (ok) WLOG_I(kTag, "conversations cleared");
+        {
+            std::lock_guard<os::Mutex> lock(mu);
+            clearing = false;
+        }
+        AgentEvent e;
+        e.kind = AgentEvent::Kind::Cleared;
+        e.ok = ok;
+        emit(e);
+        if (c.cleared) c.cleared(ok);
+    }
+
     void run() {
         while (!quit.load()) {
             wake.take(os::kForever);
@@ -266,11 +322,16 @@ struct AgentService::Impl {
                         active = true;
                         running_source = c.source;
                         abort = static_cast<uint8_t>(Abort::None);
+                    } else if (c.kind == Command::Kind::Clear) {
+                        clearing = true;
+                        abort = static_cast<uint8_t>(Abort::None);
                     }
                 }
                 if (c.kind == Command::Kind::New) {
                     c.done->result = archive();
                     c.done->sem.give();
+                } else if (c.kind == Command::Kind::Clear) {
+                    clear_all(c);
                 } else {
                     run_turn(c);
                 }
@@ -616,6 +677,16 @@ struct AgentService::Impl {
         ++out.steps;
         const auto ms = static_cast<unsigned>(now() - t0);
 
+        // A successful step the system tells the user about (spec 6.2):
+        // the model learns it was told from the result itself, so the
+        // history gains no extra system or user message.
+        const bool noted = o.ok && !o.note.empty();
+        if (noted && o.result.type() == Value::Type::Map) {
+            Map fields = o.result.as_map();
+            fields["system_note"] = Value(o.note);
+            o.result = Value(std::move(fields));
+        }
+
         Message m;
         m.role = Role::Tool;
         m.turn = turn;
@@ -647,6 +718,13 @@ struct AgentService::Impl {
         end.ok = o.ok;
         end.result = summary(sv(m.text));
         append(std::move(m));
+        if (noted) {
+            Message n;
+            n.role = Role::Note;
+            n.turn = turn;
+            n.text.assign(o.note);
+            append(std::move(n));
+        }
         emit(end);
     }
 
@@ -661,11 +739,15 @@ struct AgentService::Impl {
     // A message holds the running slot: from when the task takes it until
     // its turn ends (then it passes to the next waiting message).
     bool slot = false;
-    bool active = false;  // run_turn() is running
+    bool active = false;    // run_turn() is running
+    bool clearing = false;  // clear_all() is running
+    std::optional<std::string> confirm_text;
     AgentState state = AgentState::Idle;
     std::string tool;
     std::optional<uint32_t> running_turn;
     std::optional<Source> running_source;
+
+    std::atomic<ConfirmService*> confirm{nullptr};
 
     os::Semaphore wake{64, 0};
     std::unique_ptr<os::Task> task;
@@ -753,7 +835,7 @@ void AgentService::stop() {
             }
         }
         s.pending.clear();
-        if (s.active) s.trigger(Abort::Stop);
+        if (s.active || s.clearing) s.trigger(Abort::Stop);
     }
     s.quit = true;
     s.wake.give();
@@ -795,7 +877,7 @@ void AgentService::stop_turn() {
     std::lock_guard<os::Mutex> lock(s.mu);
     std::erase_if(s.pending,
                   [](const Impl::Command& c) { return c.kind == Impl::Command::Kind::Message; });
-    if (s.active) s.trigger(Abort::Stop);
+    if (s.active || s.clearing) s.trigger(Abort::Stop);
 }
 
 Result<void> AgentService::new_conversation() {
@@ -806,7 +888,7 @@ Result<void> AgentService::new_conversation() {
     {
         std::lock_guard<os::Mutex> lock(s.mu);
         if (!s.accepting) return Result<void>::err(ErrorCode::Busy, "not_running");
-        if (s.slot || s.active || !s.pending.empty())
+        if (s.slot || s.active || s.clearing || !s.pending.empty())
             return Result<void>::err(ErrorCode::Busy, "busy");
         Impl::Command c;
         c.kind = Impl::Command::Kind::New;
@@ -816,6 +898,35 @@ Result<void> AgentService::new_conversation() {
     s.wake.give();
     done->sem.take(os::kForever);
     return done->result;
+}
+
+void AgentService::set_confirm(ConfirmService* c) { impl_->confirm = c; }
+
+ConfirmFn AgentService::confirm_fn() {
+    Impl* s = impl_.get();
+    return [s](const std::string& text, ToolCtx& ctx) {
+        if (!s->task || !s->task->is_current()) {
+            WLOG_W(kTag, "confirm refused: asked off wisp.agent");
+            return false;
+        }
+        return s->ask_user(text, ctx.cancelled ? ctx.cancelled : [s] { return s->aborted(); });
+    };
+}
+
+Result<void> AgentService::request_clear(std::function<void(bool cleared)> done) {
+    Impl& s = *impl_;
+    {
+        std::lock_guard<os::Mutex> lock(s.mu);
+        if (!s.accepting) return Result<void>::err(ErrorCode::Busy, "not_running");
+        if (s.slot || s.active || s.clearing || !s.pending.empty())
+            return Result<void>::err(ErrorCode::Busy, "busy");
+        Impl::Command c;
+        c.kind = Impl::Command::Kind::Clear;
+        c.cleared = std::move(done);
+        s.pending.push_back(std::move(c));
+    }
+    s.wake.give();
+    return Result<void>::ok();
 }
 
 AgentState AgentService::state() const {
@@ -830,6 +941,7 @@ ConversationView AgentService::view() const {
     std::lock_guard<os::Mutex> lock(s.mu);
     v.state = s.state;
     v.tool = s.tool;
+    v.confirm = s.confirm_text;
     v.running_turn = s.running_turn;
     v.running_source = s.running_source;
     v.queued = std::any_of(s.pending.begin(), s.pending.end(), [](const Impl::Command& c) {

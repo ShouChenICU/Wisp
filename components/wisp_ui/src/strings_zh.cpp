@@ -311,6 +311,14 @@ const char* strings_zh(StrId id) {
             return "熄屏时间";
         case StrId::AgentSetLanguage:
             return "语言";
+        case StrId::AgentConfirmTitle:
+            return "Agent 请求确认";
+        case StrId::AgentAllow:
+            return "允许";
+        case StrId::AgentDeny:
+            return "拒绝";
+        case StrId::AgentConfirmClear:
+            return "清空全部 Agent 对话？";
         case StrId::Count:
             break;
     }

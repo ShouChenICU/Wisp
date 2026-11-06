@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -252,6 +253,12 @@ enum class StrId : uint16_t {
     AgentSetNotifyVol,
     AgentSetScreenOff,
     AgentSetLanguage,
+    // The device confirmation dialog (spec 6.1): its title, its buttons,
+    // and the question before the whole conversation history is cleared.
+    AgentConfirmTitle,
+    AgentAllow,
+    AgentDeny,
+    AgentConfirmClear,
 
     Count,  // not a string; keep last
 };
@@ -278,6 +285,10 @@ std::string tr_fill(StrId id, Lang lang, std::string_view value);
 // placeholders past the last value stay as they are, and the values
 // themselves are never searched for placeholders.
 std::string tr_fill_n(StrId id, Lang lang, std::initializer_list<std::string_view> values);
+std::string tr_fill_n(StrId id, Lang lang, std::span<const std::string_view> values);
+
+// The same in the current language.
+std::string tr_fill_n(StrId id, std::span<const std::string_view> values);
 
 // Sets the language tr(StrId) uses. Call on the UI thread (or before any
 // UI exists), then rebuild the visible screen's text.

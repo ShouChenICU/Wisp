@@ -51,6 +51,10 @@ std::string tr_fill(StrId id, Lang lang, std::string_view value) {
 }
 
 std::string tr_fill_n(StrId id, Lang lang, std::initializer_list<std::string_view> values) {
+    return tr_fill_n(id, lang, std::span<const std::string_view>(values.begin(), values.size()));
+}
+
+std::string tr_fill_n(StrId id, Lang lang, std::span<const std::string_view> values) {
     std::string text = tr(id, lang);
     size_t from = 0;
     for (std::string_view v : values) {
@@ -60,6 +64,10 @@ std::string tr_fill_n(StrId id, Lang lang, std::initializer_list<std::string_vie
         from = pos + v.size();
     }
     return text;
+}
+
+std::string tr_fill_n(StrId id, std::span<const std::string_view> values) {
+    return tr_fill_n(id, g_lang.load(std::memory_order_relaxed), values);
 }
 
 std::string tr_fill(StrId id, std::string_view value) {

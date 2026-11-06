@@ -193,3 +193,43 @@ TEST_F(Strings, NoticeAndPanelText) {
     EXPECT_EQ(wisp::ui::tr_fill(StrId::PanelMinutes, Lang::Zh, "5"), "5 分钟");
     EXPECT_EQ(wisp::ui::tr_fill(StrId::PanelHours, Lang::En, "2"), "2 h");
 }
+
+// The agent's notes, confirmations and setting names (agent-core spec
+// 3.4, 6.1, 6.2): every one has text in every language, with the same
+// number of placeholders.
+TEST_F(Strings, AgentStringsInEveryLanguage) {
+    const auto first = static_cast<size_t>(StrId::AgentStepLimit);
+    for (size_t i = first; i < wisp::ui::kStrCount; ++i) {
+        const char* zh = wisp::ui::detail::table_text(id_at(i), Lang::Zh);
+        ASSERT_NE(zh, nullptr) << "id " << i;
+        for (Lang lang : wisp::ui::kAllLangs) {
+            const char* text = wisp::ui::detail::table_text(id_at(i), lang);
+            ASSERT_NE(text, nullptr) << "id " << i << " lang " << wisp::ui::lang_code(lang);
+            EXPECT_GT(std::strlen(text), 0u) << "id " << i << " lang " << wisp::ui::lang_code(lang);
+            EXPECT_EQ(count_placeholders(text), count_placeholders(zh))
+                << "id " << i << " lang " << wisp::ui::lang_code(lang);
+        }
+    }
+    EXPECT_STREQ(wisp::ui::tr(StrId::AgentConfirmClear, Lang::Zh), "清空全部 Agent 对话？");
+    EXPECT_STREQ(wisp::ui::tr(StrId::AgentAllow, Lang::Zh), "允许");
+    EXPECT_STREQ(wisp::ui::tr(StrId::AgentDeny, Lang::Zh), "拒绝");
+}
+
+// tr_fill_n() fills the placeholders in order, in the current language or
+// an explicit one; extra values are ignored, missing ones leave "{}", and
+// a value is never searched for placeholders itself.
+TEST_F(Strings, FillNInOrder) {
+    const std::string_view three[] = {"亮度", "200", "120"};
+    EXPECT_EQ(wisp::ui::tr_fill_n(StrId::AgentNoteSetting, three), "亮度 200 → 120");
+    wisp::ui::set_lang(Lang::En);
+    const std::string_view two[] = {"Clock", "a.png"};
+    EXPECT_EQ(wisp::ui::tr_fill_n(StrId::AgentNoteFileRemoved, two),
+              "Deleted a file of \"Clock\": a.png");
+    EXPECT_EQ(wisp::ui::tr_fill_n(StrId::AgentNoteFileRemoved, Lang::Zh, two),
+              "删除了「Clock」的文件 a.png");
+    const std::string_view braces[] = {"{}", "x"};
+    EXPECT_EQ(wisp::ui::tr_fill_n(StrId::AgentNoteSetting, Lang::Zh, braces), "{} x → {}");
+    const std::string_view four[] = {"a", "b", "c", "d"};
+    EXPECT_EQ(wisp::ui::tr_fill_n(StrId::AgentNoteSetting, Lang::Zh, four), "a b → c");
+    EXPECT_EQ(wisp::ui::tr_fill_n(StrId::Yes, Lang::En, four), "Yes");
+}

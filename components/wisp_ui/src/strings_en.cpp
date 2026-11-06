@@ -313,6 +313,14 @@ const char* strings_en(StrId id) {
             return "Screen off after";
         case StrId::AgentSetLanguage:
             return "Language";
+        case StrId::AgentConfirmTitle:
+            return "Agent request";
+        case StrId::AgentAllow:
+            return "Allow";
+        case StrId::AgentDeny:
+            return "Deny";
+        case StrId::AgentConfirmClear:
+            return "Clear all agent conversations?";
         case StrId::Count:
             break;
     }
