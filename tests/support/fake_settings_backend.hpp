@@ -26,6 +26,7 @@ public:
     wisp::Result<wisp::Value> get(const std::string& ns, const std::string& key) override {
         std::lock_guard<std::mutex> lock(m);
         ++gets;
+        if (!wisp::os::on_flash_thread()) ++gets_off_thread;
         auto it = store.find({ns, key});
         if (it == store.end())
             return wisp::Result<wisp::Value>::err(wisp::ErrorCode::NotFound, ns + "/" + key);
@@ -34,6 +35,7 @@ public:
     wisp::Result<void> set(const std::string& ns, const std::string& key,
                            const wisp::Value& value) override {
         std::lock_guard<std::mutex> lock(m);
+        if (!wisp::os::on_flash_thread()) ++sets_off_thread;
         store[{ns, key}] = value;
         return wisp::Result<void>::ok();
     }
@@ -99,6 +101,9 @@ public:
     std::map<std::pair<std::string, std::string>, wisp::Value> store;
     std::vector<std::vector<wisp::core::SettingsChange>> batches;
     int gets = 0;
+    // get() calls made off the flash thread while one was registered.
+    int gets_off_thread = 0;
+    int sets_off_thread = 0;
     int loads = 0;
     int erase_alls = 0;
     int fail_writes = 0;

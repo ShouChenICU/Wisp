@@ -34,14 +34,17 @@
 // .<id>.newdir. The staging names end in "dir" because StorageManager
 // reserves names ending in ".tmp"/".new" for its own file writes.
 //
-// Thread-safe: each method holds the repository's lock while it touches
-// the files, so the wisp.fs worker (opening, deleting) and HTTP server
-// threads (installing, exporting) never see each other's half-done work.
-// install() takes it only after its checker has returned, since a checker
-// may wait seconds for the scene task. A SceneStore's own writes under
-// data/ do not take this lock. A long hold (an install's writes, list()
-// walking every package) delays an open queued on the worker, and every
-// worker job behind it, until it ends.
+// Threads: the file work runs on the flash thread (SceneRepoConfig::
+// worker; spec 2.1 of docs/superpowers/specs/2026-11-06-flash-thread-
+// design.md). A method called anywhere else queues it there and waits as
+// long as it takes; on the worker, or without one, it runs right away.
+// install() validates the package and runs its checker and before_replace
+// on the caller's thread, since a checker may wait seconds for the scene
+// task, and only its replace goes to the worker. Each method holds the
+// repository's lock while it touches the files. A SceneStore's own writes
+// under data/ do not take this lock. One long job (an install's writes,
+// list() walking every package, an export) delays every worker job behind
+// it, settings saves included, until it ends.
 
 #include <cstddef>
 #include <cstdint>
@@ -55,6 +58,7 @@
 #include "wisp/base/result.hpp"
 #include "wisp/core/scene_manifest.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
@@ -104,6 +108,9 @@ struct SceneRepoConfig {
     // into the scene's data would be lost. Tests use it to widen that
     // window; nothing sets it in production.
     std::function<void()> on_data_moved;
+    // The flash thread the file work runs on. Null: on the caller (boot,
+    // tests without one).
+    StorageWorker* worker = nullptr;
 };
 
 class SceneRepository {
@@ -194,6 +201,17 @@ private:
     Result<void> finish_replace(const std::string& id);
     // info() with the lock already held.
     Result<SceneInfo> info_locked(std::string_view id);
+    // The public methods' file work, on the flash thread.
+    Result<void> recover_here();
+    Result<std::vector<SceneInfo>> list_here();
+    Result<SceneInfo> info_here(std::string_view id);
+    Result<SceneManifest> manifest_here(std::string_view id);
+    Result<ScenePackage> load_here(std::string_view id);
+    Result<SceneInfo> replace_here(const SceneManifest& manifest,
+                                   os::LargeVector<std::pair<std::string, os::LargeBuffer>>& files);
+    Result<os::LargeBuffer> export_zip_here(std::string_view id, bool with_data);
+    Result<void> remove_here(std::string_view id, bool with_data);
+    Result<SceneRemoval> removal_here(std::string_view id, bool with_data);
 
     StorageManager& storage_;
     SceneRepoConfig config_;

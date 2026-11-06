@@ -316,10 +316,14 @@ protected:
         sd_dev = std::make_shared<wisp::test::FakeStorage>("storage.sd", sd_dir, true);
         registry.add(sd_dev);
         storage = std::make_unique<wisp::core::StorageManager>(registry, bus);
-        ASSERT_TRUE(storage->init());
+        // The fixture's worker is already the flash thread.
+        wisp::Result<void> inited = wisp::Result<void>::ok();
+        ASSERT_TRUE(worker.run_sync([&] { inited = storage->init(); }, wisp::os::kForever));
+        ASSERT_TRUE(inited);
         wisp::core::SceneRepoConfig rc;
         rc.code_root = in + "/scenes";
         rc.data_root = in + "/scenes";
+        rc.worker = &worker;
         repo = std::make_unique<wisp::core::SceneRepository>(*storage, rc);
         wisp::core::SceneFilesConfig fc;
         fc.data_root = in + "/scenes";
@@ -343,9 +347,20 @@ protected:
         fs::rename(sd_dir, sd_dir + ".pulled");
         std::ofstream(sd_dir) << "no card";
     }
+    // On the worker, as the app's storage poll does it.
     void report_card() {
-        storage->refresh();
-        files->on_sd_changed();
+        EXPECT_TRUE(worker.run_sync(
+            [this] {
+                storage->refresh();
+                files->on_sd_changed();
+            },
+            wisp::os::kForever));
+    }
+
+    wisp::Result<wisp::core::SceneFilesInfo> info_on_worker(const std::string& id) {
+        auto out = wisp::Result<wisp::core::SceneFilesInfo>::err(wisp::ErrorCode::Busy, "not run");
+        EXPECT_TRUE(worker.run_sync([&] { out = files->info(id); }, wisp::os::kForever));
+        return out;
     }
     void insert_card() {
         fs::remove(sd_dir);
@@ -421,14 +436,14 @@ return ui.screen {
     EXPECT_EQ(read_raw(sd_files("h") / "keep.txt"), "kept");
     for (const auto& e : fs::directory_iterator(sd_files("h")))
         EXPECT_EQ(e.path().filename().string()[0] == '.', false) << e.path();
-    auto info = files->info("h");
+    auto info = info_on_worker("h");
     ASSERT_TRUE(info) << info.error().message;
     EXPECT_EQ(info.value().used, 4u);
     ASSERT_TRUE(rt->click_ref("again"));
     lines = wait_log("h", 5);
     ASSERT_EQ(lines.size(), 5u);
     EXPECT_EQ(lines[4], "again\tnil\ttrue");
-    EXPECT_EQ(files->info("h").value().used, 5u);
+    EXPECT_EQ(info_on_worker("h").value().used, 5u);
 }
 
 }  // namespace

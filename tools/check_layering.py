@@ -36,6 +36,13 @@ docs/architecture.md):
     only be #included by wisp_scene, and only wisp_scene may REQUIRES
     the vendored `lua` component (third_party/lua): every other layer
     reaches scripts through wisp_scene's services, never the VM itself.
+  - Flash access (spec 3.3 of the flash-thread design): calls to nvs_*,
+    esp_partition_* and esp_ota_*, and #include of nvs.h,
+    esp_ota_ops.h and esp_partition.h, may only appear in the files
+    listed in FLASH_API_WHITELIST -- anywhere under components/,
+    boards/, drivers/ and firmware/, the platform layer included. Every
+    other path to flash goes through StorageManager or Settings on the
+    flash thread.
 
 Prints one "path:line: <message>" line per violation and exits 1 if
 any were found, else exits 0 with no output.
@@ -123,6 +130,24 @@ LUA_HEADER_OWNERS = ("wisp_scene",)
 # build the same way under idf.py (EXTRA_COMPONENT_DIRS) and on the host
 # (add_subdirectory), keyed by the one layer allowed to require each.
 THIRD_PARTY_REQUIRES = {"wisp_scene": {"lua"}}
+
+# The only files that may call nvs_*/esp_partition_*/esp_ota_* or include
+# their headers, each with the reason it needs raw flash access.
+FLASH_API_WHITELIST = {
+    "components/wisp_port_esp/settings_nvs.cpp":
+        "the NVS settings backend, NVS init at boot and the factory-reset erase",
+    "components/wisp_port_esp/esp_firmware.cpp":
+        "the firmware (OTA) service: writes, verifies and activates the OTA slot",
+    "components/wisp_port_esp/ui/esp_font_partition.cpp":
+        "maps the font partition at boot, before the flash thread starts",
+    "components/wisp_port_esp/dev/esp_storage.cpp":
+        "platform storage mount (LittleFS on the internal storage partition)",
+}
+FLASH_API_ROOTS = ("components", "boards", "drivers", "firmware")
+# Fetched or generated code, not Wisp's own.
+FLASH_API_SKIPPED_DIRS = ("managed_components", "build")
+FLASH_API_HEADERS = ("nvs.h", "esp_ota_ops.h", "esp_partition.h")
+FLASH_API_CALL_RE = re.compile(r"\b((?:nvs|esp_partition|esp_ota)_[A-Za-z0-9_]*)\s*\(")
 
 INCLUDE_RE = re.compile(r'#\s*include\s*[<"]([^">]+)[">]')
 
@@ -306,6 +331,46 @@ def check_component_cmake(path, component, errors):
             )
 
 
+def iter_flash_api_files(root):
+    for top in FLASH_API_ROOTS:
+        top_dir = root / top
+        if not top_dir.is_dir():
+            continue
+        for path in sorted(top_dir.rglob("*")):
+            if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+                continue
+            rel_dirs = path.relative_to(root).parts[:-1]
+            if any(part in FLASH_API_SKIPPED_DIRS for part in rel_dirs):
+                continue
+            yield path
+
+
+def check_flash_api(root, path, errors):
+    rel = path.relative_to(root).as_posix()
+    if rel in FLASH_API_WHITELIST:
+        return
+    parts = path.relative_to(root).parts
+    # A portable layer's platform include is already reported by
+    # check_file(); one message per line is enough.
+    portable = len(parts) > 1 and parts[0] == "components" and parts[1] in COMPONENTS
+    text = strip_comments(path.read_text(encoding="utf-8", errors="replace"))
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        match = INCLUDE_RE.search(line)
+        if match and match.group(1) in FLASH_API_HEADERS:
+            if portable and is_forbidden_platform_include(match.group(1)):
+                continue
+            errors.append(
+                f"{path}:{lineno}: flash API include <{match.group(1)}> outside "
+                f"FLASH_API_WHITELIST (go through StorageManager/Settings on the flash thread)"
+            )
+            continue
+        for call in FLASH_API_CALL_RE.finditer(line):
+            errors.append(
+                f"{path}:{lineno}: flash API call {call.group(1)}() outside "
+                f"FLASH_API_WHITELIST (go through StorageManager/Settings on the flash thread)"
+            )
+
+
 def run(root):
     """Runs every check against `root` and returns the list of error
     strings found (empty if clean). Importable so tools/check_layering_
@@ -318,6 +383,8 @@ def run(root):
         cmake_path = root / "components" / component / "CMakeLists.txt"
         if cmake_path.is_file():
             check_component_cmake(cmake_path, component, errors)
+    for path in iter_flash_api_files(root):
+        check_flash_api(root, path, errors)
     return errors
 
 

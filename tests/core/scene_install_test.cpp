@@ -252,6 +252,7 @@ struct Fixture {
         // Long enough for the running scene's store (flushing every
         // millisecond) to write while the package is being swapped.
         config.on_data_moved = [] { std::this_thread::sleep_for(std::chrono::milliseconds(20)); };
+        config.worker = &worker;
         repo = std::make_unique<SceneRepository>(*storage, config);
         host = std::make_unique<StoreHost>(*storage, worker, *repo);
     }

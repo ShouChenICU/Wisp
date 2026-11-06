@@ -97,6 +97,7 @@ protected:
         wisp::core::SceneRepoConfig rc;
         rc.code_root = in + "/scenes";
         rc.data_root = in + "/scenes";
+        rc.worker = &worker;
         repo = std::make_unique<wisp::core::SceneRepository>(*storage, rc);
     }
 

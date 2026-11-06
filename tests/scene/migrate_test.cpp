@@ -87,9 +87,16 @@ protected:
         bool v2_seen = false;  // main.lua v2's top-level write landed
     };
 
-    // What the scene's data directory holds, read by a store of its own.
-    // Call it once the scene has exited and the worker drained.
+    // What the scene's data directory holds, read by a store of its own
+    // on the worker (the flash thread). Call it once the scene has exited
+    // and the worker drained.
     Stored stored() {
+        Stored out;
+        EXPECT_TRUE(worker.run_sync([&] { out = stored_here(); }, wisp::os::kForever));
+        return out;
+    }
+
+    Stored stored_here() {
         wisp::core::SceneStoreDeps deps{*storage,
                                         [](std::function<void()> job) {
                                             job();

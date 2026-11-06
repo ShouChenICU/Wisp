@@ -378,11 +378,13 @@ TEST(AdminFirmware, BufferedUploadIsRefused) {
 // an OTA never holds up a save by more than the chunk being written.
 TEST(AdminFirmware, SettingsWriteDuringUploadIsNotDelayed) {
     wisp::core::StorageWorker worker;
+    // The fixture sets up its storage first, as boot does before the flash
+    // thread starts.
+    FirmwareFixture fx(true, &worker);
     ASSERT_TRUE(worker.start());
     wisp::test::FakePlatformBackend platform;
     wisp::core::CachedSettingsBackend cache(platform, worker, {});
     ASSERT_TRUE(cache.load());
-    FirmwareFixture fx(true, &worker);
 
     // Park the flash thread in a Bulk job, so the upload's first chunk
     // queues behind it.

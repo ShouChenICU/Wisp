@@ -97,6 +97,25 @@ std::vector<std::string> reset_states(UiNetHarness& h) {
     return out;
 }
 
+// Runs `fn` on the app's storage worker -- the flash thread while the app
+// runs -- and waits for it.
+void on_flash(wisp::app::App& app, const std::function<void()>& fn) {
+    ASSERT_TRUE(app.storage_worker()->run_sync(fn, wisp::os::kForever));
+}
+
+wisp::Result<std::vector<uint8_t>> read_on_flash(wisp::app::App& app, const std::string& path) {
+    auto out = wisp::Result<std::vector<uint8_t>>::err(wisp::ErrorCode::Busy, "not run");
+    on_flash(app, [&] { out = app.storage().read_file(path); });
+    return out;
+}
+
+wisp::Result<void> write_on_flash(wisp::app::App& app, const std::string& path,
+                                  std::span<const uint8_t> data) {
+    auto out = wisp::Result<void>::err(wisp::ErrorCode::Busy, "not run");
+    on_flash(app, [&] { out = app.storage().write_atomic(path, data); });
+    return out;
+}
+
 }  // namespace
 
 TEST(FactoryReset, ClearsEverythingButLibraryAndReboots) {
@@ -123,8 +142,8 @@ TEST(FactoryReset, ClearsEverythingButLibraryAndReboots) {
     const std::string library =
         app.storage().write_root(wisp::core::Area::Library).value() + "/scene.json";
     const std::string kept = R"({"keep":true})";
-    ASSERT_TRUE(app.storage().write_atomic(
-        library,
+    ASSERT_TRUE(write_on_flash(
+        app, library,
         std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(kept.data()), kept.size())));
 
     wisp::app::factory_reset(app);
@@ -132,19 +151,19 @@ TEST(FactoryReset, ClearsEverythingButLibraryAndReboots) {
     EXPECT_EQ(h.reboots.load(), 1);
     EXPECT_EQ(reset_states(h), std::vector<std::string>{"done"});
     // Settings: every key gone, on disk too.
-    {
+    on_flash(app, [&] {
         wisp::port::sim::JsonFileSettingsBackend fresh(h.settings_path());
         EXPECT_EQ(wisp::core::Settings(fresh, "sys").get_string("lang", "none"), "none");
         EXPECT_EQ(wisp::core::Settings(fresh, "power").get_int("screen_off_s", -1), -1);
-    }
+    });
     // Wi-Fi, pairings and the model profiles, in memory and on disk.
     EXPECT_TRUE(app.wifi()->saved_ssids().empty());
-    auto wifi_json = app.storage().read_file(system + "/net/wifi.json");
+    auto wifi_json = read_on_flash(app, system + "/net/wifi.json");
     ASSERT_TRUE(wifi_json);
     EXPECT_EQ(std::string(wifi_json.value().begin(), wifi_json.value().end()).find("Home"),
               std::string::npos);
     EXPECT_TRUE(app.pairing()->clients().empty());
-    auto clients_json = app.storage().read_file(system + "/net/clients.json");
+    auto clients_json = read_on_flash(app, system + "/net/clients.json");
     if (clients_json) {
         EXPECT_EQ(
             std::string(clients_json.value().begin(), clients_json.value().end()).find("hash"),
@@ -154,7 +173,7 @@ TEST(FactoryReset, ClearsEverythingButLibraryAndReboots) {
     EXPECT_FALSE(app.models().active_for_request(wisp::core::ModelKind::Llm).has_value());
     EXPECT_FALSE(std::filesystem::exists(system + "/secrets/models.json"));
     // Library data stays.
-    auto scene = app.storage().read_file(library);
+    auto scene = read_on_flash(app, library);
     ASSERT_TRUE(scene);
     EXPECT_EQ(std::string(scene.value().begin(), scene.value().end()), kept);
 }
@@ -168,8 +187,8 @@ TEST(FactoryReset, ClearsAgentDirectory) {
     const std::string line = "{\"seq\":1}\n";
     const std::span<const uint8_t> bytes(reinterpret_cast<const uint8_t*>(line.data()),
                                          line.size());
-    ASSERT_TRUE(app.storage().write_atomic(agent + "/current.jsonl", bytes));
-    ASSERT_TRUE(app.storage().write_atomic(agent + "/archive-1.jsonl", bytes));
+    ASSERT_TRUE(write_on_flash(app, agent + "/current.jsonl", bytes));
+    ASSERT_TRUE(write_on_flash(app, agent + "/archive-1.jsonl", bytes));
 
     wisp::app::factory_reset(app);
 

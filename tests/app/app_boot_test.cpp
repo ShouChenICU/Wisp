@@ -518,9 +518,14 @@ TEST(App, RestartFlushesSettingsFirst) {
     opts.settings_write_delay_ms = 300;
     Harness h(opts);
     std::atomic<int64_t> on_disk{-2};
+    // What a fresh boot would read, read on the flash thread: the worker
+    // is still running when the restart hook fires.
     h.on_reboot = [&] {
-        wisp::port::sim::JsonFileSettingsBackend fresh(h.settings_dir + "/settings.json");
-        on_disk.store(wisp::core::Settings(fresh, "test").get_int("k", -1));
+        auto read = [&] {
+            wisp::port::sim::JsonFileSettingsBackend fresh(h.settings_dir + "/settings.json");
+            on_disk.store(wisp::core::Settings(fresh, "test").get_int("k", -1));
+        };
+        EXPECT_TRUE(h.app.storage_worker()->run_sync(read, wisp::os::kForever));
     };
     ASSERT_TRUE(h.app.start());
 

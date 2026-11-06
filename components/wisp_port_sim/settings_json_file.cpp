@@ -10,6 +10,7 @@
 
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/flash_guard.hpp"
 
 namespace wisp::port::sim {
 
@@ -50,6 +51,7 @@ JsonFileSettingsBackend::JsonFileSettingsBackend(std::string file_path)
 }
 
 Result<Value> JsonFileSettingsBackend::get(const std::string& ns, const std::string& key) {
+    WISP_ASSERT_FLASH_THREAD("JsonFileSettingsBackend::get");
     WISP_TRY(core::validate_settings_name(ns));
     WISP_TRY(core::validate_settings_name(key));
 
@@ -67,6 +69,7 @@ Result<Value> JsonFileSettingsBackend::get(const std::string& ns, const std::str
 
 Result<void> JsonFileSettingsBackend::set(const std::string& ns, const std::string& key,
                                           const Value& value) {
+    WISP_ASSERT_FLASH_THREAD("JsonFileSettingsBackend::set");
     WISP_TRY(core::validate_settings_name(ns));
     WISP_TRY(core::validate_settings_name(key));
     WISP_TRY(core::validate_settings_value(ns, key, value));
@@ -108,6 +111,7 @@ Result<void> JsonFileSettingsBackend::set(const std::string& ns, const std::stri
 }
 
 Result<void> JsonFileSettingsBackend::erase(const std::string& ns, const std::string& key) {
+    WISP_ASSERT_FLASH_THREAD("JsonFileSettingsBackend::erase");
     WISP_TRY(core::validate_settings_name(ns));
     WISP_TRY(core::validate_settings_name(key));
 
@@ -139,6 +143,7 @@ Result<void> JsonFileSettingsBackend::erase(const std::string& ns, const std::st
 }
 
 Result<void> JsonFileSettingsBackend::erase_all() {
+    WISP_ASSERT_FLASH_THREAD("JsonFileSettingsBackend::erase_all");
     std::lock_guard<os::Mutex> lock(mutex_);
     auto previous = std::move(store_);
     store_.clear();
@@ -150,6 +155,7 @@ Result<void> JsonFileSettingsBackend::erase_all() {
 }
 
 Result<std::vector<core::SettingsEntry>> JsonFileSettingsBackend::load_all() {
+    WISP_ASSERT_FLASH_THREAD("JsonFileSettingsBackend::load_all");
     std::lock_guard<os::Mutex> lock(mutex_);
     std::vector<core::SettingsEntry> out;
     for (const auto& [ns, keys] : store_) {
@@ -159,6 +165,7 @@ Result<std::vector<core::SettingsEntry>> JsonFileSettingsBackend::load_all() {
 }
 
 Result<void> JsonFileSettingsBackend::write_batch(std::span<const core::SettingsChange> changes) {
+    WISP_ASSERT_FLASH_THREAD("JsonFileSettingsBackend::write_batch");
     for (const core::SettingsChange& c : changes) {
         WISP_TRY(core::validate_settings_name(c.ns));
         WISP_TRY(core::validate_settings_name(c.key));

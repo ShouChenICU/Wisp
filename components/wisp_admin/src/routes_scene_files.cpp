@@ -31,6 +31,7 @@
 #include "admin_internal.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_manifest.hpp"
+#include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/large.hpp"
@@ -97,7 +98,9 @@ std::optional<std::string> installed_scene(AdminDeps& deps, const RequestContext
         refusal = bad_request("invalid scene id");
         return std::nullopt;
     }
-    auto info = deps.scenes->info(*id);
+    core::SceneRepository* scenes = deps.scenes;
+    auto info =
+        on_flash<core::SceneInfo>(deps.worker, [scenes, id = *id] { return scenes->info(id); });
     if (!info) {
         refusal = service_error(info.error());
         return std::nullopt;

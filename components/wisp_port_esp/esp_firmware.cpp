@@ -10,6 +10,7 @@
 #include "sdkconfig.h"
 #include "wisp/core/firmware_image.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/flash_guard.hpp"
 
 namespace wisp::port::esp {
 
@@ -63,6 +64,7 @@ std::string EspFirmwareUpdater::running_slot() const { return impl_->running->la
 size_t EspFirmwareUpdater::capacity() const { return impl_->target->size; }
 
 Result<void> EspFirmwareUpdater::begin(size_t size) {
+    WISP_ASSERT_FLASH_THREAD("EspFirmwareUpdater::begin");
     abort();
     if (size > impl_->target->size) {
         return Result<void>::err(ErrorCode::InvalidArgument, "image larger than the slot");
@@ -77,6 +79,7 @@ Result<void> EspFirmwareUpdater::begin(size_t size) {
 }
 
 Result<void> EspFirmwareUpdater::write(std::span<const uint8_t> chunk) {
+    WISP_ASSERT_FLASH_THREAD("EspFirmwareUpdater::write");
     if (!impl_->writing) {
         return Result<void>::err(ErrorCode::IoError, "no firmware upload in progress");
     }
@@ -86,6 +89,7 @@ Result<void> EspFirmwareUpdater::write(std::span<const uint8_t> chunk) {
 }
 
 Result<core::FirmwareImageInfo> EspFirmwareUpdater::finish() {
+    WISP_ASSERT_FLASH_THREAD("EspFirmwareUpdater::finish");
     using R = Result<core::FirmwareImageInfo>;
     if (!impl_->writing) return R::err(ErrorCode::IoError, "no firmware upload in progress");
     impl_->writing = false;
@@ -109,6 +113,7 @@ Result<core::FirmwareImageInfo> EspFirmwareUpdater::finish() {
 }
 
 void EspFirmwareUpdater::abort() {
+    WISP_ASSERT_FLASH_THREAD("EspFirmwareUpdater::abort");
     if (impl_->writing) esp_ota_abort(impl_->handle);
     impl_->writing = false;
     // A verified image left in the slot is harmless: the boot slot was
@@ -117,6 +122,7 @@ void EspFirmwareUpdater::abort() {
 }
 
 Result<void> EspFirmwareUpdater::activate() {
+    WISP_ASSERT_FLASH_THREAD("EspFirmwareUpdater::activate");
     if (!impl_->finished) {
         return Result<void>::err(ErrorCode::IoError, "no verified image to activate");
     }
@@ -128,6 +134,7 @@ Result<void> EspFirmwareUpdater::activate() {
 }
 
 void EspFirmwareUpdater::mark_valid() {
+    WISP_ASSERT_FLASH_THREAD("EspFirmwareUpdater::mark_valid");
     esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
     if (esp_ota_get_state_partition(impl_->running, &state) != ESP_OK) return;
     if (state != ESP_OTA_IMG_PENDING_VERIFY) return;

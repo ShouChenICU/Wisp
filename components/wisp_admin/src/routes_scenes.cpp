@@ -4,7 +4,9 @@
 // stream_handler() gates its head, the body is collected in PSRAM, and the
 // install runs on the HTTP server thread when it is complete -- that thread
 // may wait out SceneHost::check_sources(), which the UI thread and the
-// storage worker may not. One upload at a time (409 busy).
+// storage worker may not; the repository hands its file work (the replace
+// itself, listing, exporting) to the flash thread and waits for it. One
+// upload at a time (409 busy).
 //
 // Deleting needs the user's yes on the device: the route only asks
 // (AdminDeps::request_scene_delete) and answers 202; the outcome arrives as

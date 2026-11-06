@@ -720,20 +720,23 @@ TEST_F(AgentLoop, PublishesAgentStateEvents) {
 
 TEST_F(AgentLoop, InterruptedTurnReportedAfterRestart) {
     harness();
-    {
-        ConversationStore before(*h->storage, h->dir);
-        ASSERT_TRUE(before.load());
-        Message begin;
-        begin.turn = 1;
-        begin.role = Role::Marker;
-        begin.marker = "turn_begin";
-        ASSERT_TRUE(before.append(begin));
-        Message user;
-        user.turn = 1;
-        user.role = Role::User;
-        user.text = "make a timer";
-        ASSERT_TRUE(before.append(user));
-    }
+    // Written on the harness's worker, the flash thread.
+    ASSERT_TRUE(h->worker.run_sync(
+        [&] {
+            ConversationStore before(*h->storage, h->dir);
+            ASSERT_TRUE(before.load());
+            Message begin;
+            begin.turn = 1;
+            begin.role = Role::Marker;
+            begin.marker = "turn_begin";
+            ASSERT_TRUE(before.append(begin));
+            Message user;
+            user.turn = 1;
+            user.role = Role::User;
+            user.text = "make a timer";
+            ASSERT_TRUE(before.append(user));
+        },
+        wisp::os::kForever));
     start();
     History all = history();
     ASSERT_FALSE(all.empty());
@@ -848,15 +851,18 @@ TEST_F(AgentLoop, NewConversationArchives) {
 
 TEST_F(AgentLoop, RolloverArchivesBeforeTheNextTurn) {
     harness();
-    {
-        ConversationStore before(*h->storage, h->dir);
-        ASSERT_TRUE(before.load());
-        Message big;
-        big.turn = 1;
-        big.role = Role::Note;
-        big.text.assign(wisp::agent::kRolloverBytes + 10, 'x');
-        ASSERT_TRUE(before.append(big));
-    }
+    // Written on the harness's worker, the flash thread.
+    ASSERT_TRUE(h->worker.run_sync(
+        [&] {
+            ConversationStore before(*h->storage, h->dir);
+            ASSERT_TRUE(before.load());
+            Message big;
+            big.turn = 1;
+            big.role = Role::Note;
+            big.text.assign(wisp::agent::kRolloverBytes + 10, 'x');
+            ASSERT_TRUE(before.append(big));
+        },
+        wisp::os::kForever));
     start();
     ASSERT_TRUE(h->store->needs_rollover());
     h->server.push(text_reply("ok"));

@@ -247,11 +247,19 @@ Result<SceneManifest> SceneRepository::read_manifest(std::string_view id) {
 }
 
 Result<SceneManifest> SceneRepository::manifest(std::string_view id) {
+    return call_on_worker<SceneManifest>(config_.worker, [&] { return manifest_here(id); });
+}
+
+Result<SceneManifest> SceneRepository::manifest_here(std::string_view id) {
     std::lock_guard<os::Mutex> lock(mutex_);
     return read_manifest(id);
 }
 
 Result<SceneInfo> SceneRepository::info(std::string_view id) {
+    return call_on_worker<SceneInfo>(config_.worker, [&] { return info_here(id); });
+}
+
+Result<SceneInfo> SceneRepository::info_here(std::string_view id) {
     std::lock_guard<os::Mutex> lock(mutex_);
     return info_locked(id);
 }
@@ -280,6 +288,10 @@ Result<SceneInfo> SceneRepository::info_locked(std::string_view id) {
 }
 
 Result<std::vector<SceneInfo>> SceneRepository::list() {
+    return call_on_worker<std::vector<SceneInfo>>(config_.worker, [&] { return list_here(); });
+}
+
+Result<std::vector<SceneInfo>> SceneRepository::list_here() {
     using R = Result<std::vector<SceneInfo>>;
     std::lock_guard<os::Mutex> lock(mutex_);
     std::vector<SceneInfo> out;
@@ -306,6 +318,10 @@ Result<std::vector<SceneInfo>> SceneRepository::list() {
 }
 
 Result<ScenePackage> SceneRepository::load(std::string_view id) {
+    return call_on_worker<ScenePackage>(config_.worker, [&] { return load_here(id); });
+}
+
+Result<ScenePackage> SceneRepository::load_here(std::string_view id) {
     using R = Result<ScenePackage>;
     std::lock_guard<os::Mutex> lock(mutex_);
     Result<SceneManifest> m = read_manifest(id);
@@ -471,6 +487,13 @@ Result<SceneInfo> SceneRepository::install(
         }
     }
 
+    return call_on_worker<SceneInfo>(config_.worker, [&] { return replace_here(manifest, files); });
+}
+
+Result<SceneInfo> SceneRepository::replace_here(
+    const SceneManifest& manifest,
+    os::LargeVector<std::pair<std::string, os::LargeBuffer>>& files) {
+    const std::string& id = manifest.id;
     std::lock_guard<os::Mutex> lock(mutex_);
     // An earlier replace of this id that was cut short completes first, so
     // its staging names are free again.
@@ -564,6 +587,10 @@ Result<void> SceneRepository::finish_replace(const std::string& id) {
 }
 
 Result<void> SceneRepository::recover() {
+    return call_on_worker<void>(config_.worker, [&] { return recover_here(); });
+}
+
+Result<void> SceneRepository::recover_here() {
     if (config_.dev) {
         return Result<void>::ok();
     }
@@ -606,6 +633,11 @@ Result<void> SceneRepository::recover() {
 }
 
 Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id, bool with_data) {
+    return call_on_worker<os::LargeBuffer>(config_.worker,
+                                           [&] { return export_zip_here(id, with_data); });
+}
+
+Result<os::LargeBuffer> SceneRepository::export_zip_here(std::string_view id, bool with_data) {
     using R = Result<os::LargeBuffer>;
     ZipWriter writer;
     std::unique_lock<os::Mutex> lock(mutex_);
@@ -661,7 +693,12 @@ bool SceneRepository::removing(std::string_view id) const {
     return std::find(removing_.begin(), removing_.end(), id) != removing_.end();
 }
 
-Result<SceneRemoval> SceneRepository::removal(std::string_view id_view, bool with_data) {
+Result<SceneRemoval> SceneRepository::removal(std::string_view id, bool with_data) {
+    return call_on_worker<SceneRemoval>(config_.worker,
+                                        [&] { return removal_here(id, with_data); });
+}
+
+Result<SceneRemoval> SceneRepository::removal_here(std::string_view id_view, bool with_data) {
     using R = Result<SceneRemoval>;
     if (!valid_scene_id(id_view)) {
         return R::err(ErrorCode::InvalidArgument, "invalid scene id: " + std::string(id_view));
@@ -699,7 +736,11 @@ Result<SceneRemoval> SceneRepository::removal(std::string_view id_view, bool wit
     return R::ok(std::move(out));
 }
 
-Result<void> SceneRepository::remove(std::string_view id_view, bool with_data) {
+Result<void> SceneRepository::remove(std::string_view id, bool with_data) {
+    return call_on_worker<void>(config_.worker, [&] { return remove_here(id, with_data); });
+}
+
+Result<void> SceneRepository::remove_here(std::string_view id_view, bool with_data) {
     using R = Result<void>;
     if (config_.dev) {
         return R::err(ErrorCode::Unsupported, "scenes are read-only in dev mode");

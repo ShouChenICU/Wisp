@@ -121,6 +121,9 @@ Result<void> App::start() {
     SceneWiring* scenes = impl_->scenes.get();
     if (scenes != nullptr) {
         scenes->start_storage();
+        // Until the settings cache is attached below (or for good, if it
+        // cannot be), settings calls reach flash, so they run on the worker.
+        impl_->settings_front.set_worker(&scenes->worker());
     } else {
         WLOG_E("app", "no memory for the scenes; scenes are off");
     }
@@ -687,6 +690,7 @@ void App::stop() {
         if (auto r = impl_->settings_front.detach_and_flush(); !r) {
             WLOG_W("app", "settings not saved: %s", r.error().message.c_str());
         }
+        impl_->settings_front.set_worker(nullptr);
         impl_->settings_cache.reset();
         impl_->scenes.reset();
     }

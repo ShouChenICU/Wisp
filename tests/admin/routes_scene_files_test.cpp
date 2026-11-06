@@ -416,12 +416,15 @@ TEST(AdminSceneFiles, EncodedDotsAreRefused) {
 // come out once it is free are the file's.
 TEST(AdminSceneFiles, DownloadReadsOnTheFlashThread) {
     wisp::core::StorageWorker worker;
-    ASSERT_TRUE(worker.start());
     {
+        // Set up before the flash thread starts, as at boot; from then on
+        // the route itself (the scene check and every read) must go
+        // through the worker.
         FilesFixture fx(true, 256, nullptr, &worker);
         fx.install("notes");
         const std::string big = pattern(100 * 1024);
         ASSERT_TRUE(fx.files->write("notes", "big.bin", as_bytes(big)));
+        ASSERT_TRUE(worker.start());
         HttpResponse dl = fx.call(Method::Get, "/api/v1/scenes/notes/files/big.bin");
         ASSERT_EQ(dl.status, 200) << dl.body;
         ASSERT_TRUE(dl.stream);
@@ -458,6 +461,6 @@ TEST(AdminSceneFiles, DownloadReadsOnTheFlashThread) {
         pump.join();
         EXPECT_TRUE(body == big);
         EXPECT_EQ(pieces, 4u);
+        worker.stop();
     }
-    worker.stop();
 }

@@ -4,10 +4,12 @@
 #include "esp_partition.h"
 #include "esp_timer.h"
 #include "wisp/core/log.hpp"
+#include "wisp/os/flash_guard.hpp"
 
 namespace wisp::port::esp {
 
 std::span<const uint8_t> map_font_partition() {
+    WISP_ASSERT_FLASH_THREAD("map_font_partition");
     const esp_partition_t* part =
         esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "fonts");
     if (part == nullptr) {

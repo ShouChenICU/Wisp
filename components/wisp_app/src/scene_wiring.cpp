@@ -68,6 +68,7 @@ void SceneWiring::start_storage() {
         WLOG_E(kTag, "no internal storage (%s); scenes are off", internal.error().message.c_str());
         return;
     }
+    config.worker = &worker_;
     repo_ = os::make_large<core::SceneRepository>(deps_.storage, std::move(config));
     if (!repo_) {
         WLOG_E(kTag, "no memory for the scene repository; scenes are off");

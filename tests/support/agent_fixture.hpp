@@ -93,7 +93,8 @@ struct AgentHarness {
         bus.start();
         storage = std::make_unique<core::StorageManager>(registry, bus);
         storage->init();
-        worker.start();
+        // The model profiles load and the test's model is saved before the
+        // worker starts, as at boot: once it runs, only it touches flash.
         models = std::make_unique<core::ModelProfileService>(*storage, bus);
         models->init();
         if (with_model) {
@@ -104,6 +105,7 @@ struct AgentHarness {
                             .model = "m",
                             .api_key = "sk-test"});
         }
+        worker.start();
         llm = std::make_unique<net::LlmClient>(server, *models, [](uint32_t) {});
         locks = std::make_unique<core::WakeLockRegistry>(bus, [this] { return now(); });
         notes = std::make_unique<core::NotificationService>(

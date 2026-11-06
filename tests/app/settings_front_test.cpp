@@ -32,6 +32,32 @@ TEST(SettingsFront, FailedLoadLeavesReadsOnThePlatform) {
     EXPECT_EQ(platform.gets, 1);
 }
 
+// Without a cache while the worker runs (the cache could not be loaded or
+// allocated), the platform backend is still only touched on the flash
+// thread: each direct call is run on the worker.
+TEST(SettingsFront, DirectCallsRunOnTheWorkerWhileItRuns) {
+    auto owned = std::make_unique<FakePlatformBackend>();
+    FakePlatformBackend& platform = *owned;
+    platform.store[{"display", "brightness"}] = Value(90);
+    platform.fail_load = true;
+    SettingsFront front(std::move(owned));
+    StorageWorker w;
+    ASSERT_TRUE(w.start());
+    front.set_worker(&w);
+    CachedSettingsBackend cache(platform, w, {});
+    EXPECT_FALSE(front.load_and_attach(cache));
+
+    EXPECT_EQ(Settings(front, "display").get_int("brightness", 0), 90);
+    ASSERT_TRUE(Settings(front, "display").set("brightness", 40));
+    EXPECT_EQ(platform.stored("display", "brightness"), Value(40));
+    EXPECT_EQ(platform.gets, 1);
+    EXPECT_EQ(platform.gets_off_thread, 0);
+    EXPECT_EQ(platform.sets_off_thread, 0);
+
+    front.set_worker(nullptr);
+    w.stop();
+}
+
 TEST(SettingsFront, ReadsComeFromTheCacheOnceAttached) {
     auto owned = std::make_unique<FakePlatformBackend>();
     FakePlatformBackend& platform = *owned;

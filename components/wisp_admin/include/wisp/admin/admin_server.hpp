@@ -108,7 +108,8 @@ struct AdminDeps {
     // supported false and every upload is 501.
     core::FirmwareUpdateService* firmware = nullptr;
     // Installed scenes (scene-runtime-core spec 7.1). Null: every /scenes
-    // route answers 503 unavailable.
+    // route answers 503 unavailable. Its file work runs on its own
+    // SceneRepoConfig::worker.
     core::SceneRepository* scenes = nullptr;
     // Runs scenes and compiles uploads. Null (no display, so no runtime):
     // open/close/exit/reload and uploads answer 503; the list shows every scene
@@ -143,8 +144,9 @@ struct AdminDeps {
     // GET/DELETE /scenes/{id}/files[/{name}] (spec 7.2). Null: 503
     // unavailable.
     core::SceneFiles* files = nullptr;
-    // The flash thread: every `files` call runs on it, a download chunk by
-    // chunk (Bulk lane). Null (tests): they run on the calling thread.
+    // The flash thread: every `files` call, and the files routes' check
+    // that the scene is installed, runs on it, a download chunk by chunk
+    // (Bulk lane). Null (tests): they run on the calling thread.
     core::StorageWorker* worker = nullptr;
     // Monotonic os::now_ms() timebase; the only clock the router uses.
     // Tests inject their own; left empty, AdminServer uses os::now_ms().

@@ -331,6 +331,67 @@ class CheckLayeringTest(unittest.TestCase):
         )
         self.assertEqual(check_layering.run(self.root), [])
 
+    # Flash-access rule (spec 3.3 of the flash-thread design): nvs_*,
+    # esp_partition_*, esp_ota_* calls and their headers only in the
+    # whitelisted files, anywhere in the tree (platform layer included).
+
+    def test_nvs_call_outside_whitelist_is_flagged(self):
+        write(
+            self.root,
+            "components/wisp_port_esp/dev/rogue.cpp",
+            "void f() { nvs_get_str(h, \"k\", buf, &len); }\n",
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("rogue.cpp:1", errors[0])
+        self.assertIn("nvs_get_str", errors[0])
+
+    def test_ota_include_outside_whitelist_is_flagged(self):
+        write(self.root, "boards/some_board/board.cpp", '#include "esp_ota_ops.h"\n')
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("esp_ota_ops.h", errors[0])
+
+    def test_partition_call_and_includes_outside_whitelist_are_flagged(self):
+        write(
+            self.root,
+            "drivers/chip/chip.c",
+            '#include "nvs.h"\n#include <esp_partition.h>\n'
+            "int x = esp_partition_read(p, 0, b, 4);\n",
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 3, errors)
+
+    def test_whitelisted_files_may_touch_flash(self):
+        for rel in check_layering.FLASH_API_WHITELIST:
+            write(
+                self.root,
+                rel,
+                '#include "nvs.h"\n#include "esp_ota_ops.h"\n#include "esp_partition.h"\n'
+                "void f() { nvs_commit(h); esp_ota_end(h); esp_partition_mmap(p); }\n",
+            )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_flash_api_whitelist_entries_have_reasons(self):
+        for rel, reason in check_layering.FLASH_API_WHITELIST.items():
+            self.assertTrue(reason.strip(), rel)
+
+    def test_flash_api_in_comments_and_type_names_is_not_flagged(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            "// esp_ota_set_boot_partition() hashes the image\n"
+            "/* nvs_set_str(h, k, v) */\n"
+            "nvs_handle_t h; esp_partition_t* p; int my_nvs_get(int);\n",
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_third_party_and_managed_components_are_not_scanned(self):
+        write(self.root, "managed_components/x/a.c", "void f() { nvs_commit(h); }\n")
+        write(self.root, "third_party/x/a.c", "void f() { nvs_commit(h); }\n")
+        write(self.root, "firmware/managed_components/x/a.c", "void f() { nvs_commit(h); }\n")
+        self.assertEqual(check_layering.run(self.root), [])
+
 
 if __name__ == "__main__":
     unittest.main()

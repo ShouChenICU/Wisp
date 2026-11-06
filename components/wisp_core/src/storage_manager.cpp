@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/os/flash_guard.hpp"
 
 namespace wisp::core {
 
@@ -476,6 +477,7 @@ StorageManager::StorageManager(DeviceRegistry& registry, EventBus& bus, StorageC
     : registry_(registry), bus_(bus), config_(config) {}
 
 Result<void> StorageManager::init() {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::init");
     std::lock_guard<os::Mutex> lock(mutex_);
 
     // Set this false up front, before anything else
@@ -556,6 +558,7 @@ Result<std::string> StorageManager::write_root(Area area) const {
 
 Result<void> StorageManager::write_atomic(const std::string& raw_path,
                                           std::span<const uint8_t> data) {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::write_atomic");
     std::lock_guard<os::Mutex> lock(mutex_);
 
     if (!ready_) {
@@ -704,6 +707,7 @@ Result<void> read_exact(const std::string& path, uint8_t* dst, size_t size) {
 }  // namespace
 
 Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_path) {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::read_file");
     using R = Result<std::vector<uint8_t>>;
     std::lock_guard<os::Mutex> lock(mutex_);
 
@@ -721,6 +725,7 @@ Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_pa
 }
 
 Result<os::LargeBuffer> StorageManager::read_file_large(const std::string& raw_path) {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::read_file_large");
     using R = Result<os::LargeBuffer>;
     std::lock_guard<os::Mutex> lock(mutex_);
 
@@ -742,6 +747,7 @@ Result<os::LargeBuffer> StorageManager::read_file_large(const std::string& raw_p
 
 Result<os::LargeBuffer> StorageManager::read_range(const std::string& raw_path, uint64_t offset,
                                                    size_t len) {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::read_range");
     using R = Result<os::LargeBuffer>;
     std::lock_guard<os::Mutex> lock(mutex_);
 
@@ -845,6 +851,7 @@ bool StorageManager::in_internal_library(const std::string& path) const {
 }
 
 Result<void> StorageManager::append(const std::string& raw_path, std::span<const uint8_t> data) {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::append");
     std::lock_guard<os::Mutex> lock(mutex_);
 
     Result<std::string> checked = checked_path(raw_path, /*mutating=*/true);
@@ -874,6 +881,7 @@ Result<void> StorageManager::append(const std::string& raw_path, std::span<const
 }
 
 Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_path) {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::list_dir");
     std::vector<DirEntry> out;
     Result<void> r = visit_dir(raw_path, [&out](const DirEntry& e) {
         out.push_back(e);
@@ -889,6 +897,7 @@ Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_pa
 
 Result<void> StorageManager::visit_dir(const std::string& raw_path,
                                        const std::function<bool(const DirEntry&)>& visit) {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::visit_dir");
     using R = Result<void>;
     std::lock_guard<os::Mutex> lock(mutex_);
 
@@ -939,6 +948,7 @@ Result<void> StorageManager::visit_dir(const std::string& raw_path,
 }
 
 Result<void> StorageManager::remove_tree(const std::string& raw_path) {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::remove_tree");
     std::lock_guard<os::Mutex> lock(mutex_);
 
     Result<std::string> checked = checked_path(raw_path, /*mutating=*/true);
@@ -961,6 +971,7 @@ Result<void> StorageManager::remove_tree(const std::string& raw_path) {
 }
 
 Result<void> StorageManager::rename(const std::string& raw_from, const std::string& raw_to) {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::rename");
     std::lock_guard<os::Mutex> lock(mutex_);
 
     Result<std::string> from_r = checked_path(raw_from, /*mutating=*/true);
@@ -1017,6 +1028,7 @@ Result<void> StorageManager::rename(const std::string& raw_from, const std::stri
 }
 
 Result<uint64_t> StorageManager::tree_size(const std::string& raw_path) {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::tree_size");
     std::lock_guard<os::Mutex> lock(mutex_);
 
     Result<std::string> checked = checked_path(raw_path, /*mutating=*/false);
@@ -1036,6 +1048,7 @@ Result<std::string> StorageManager::internal_root() const {
 }
 
 void StorageManager::refresh() {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::refresh");
     std::lock_guard<os::Mutex> lock(mutex_);
 
     if (!sd_dev_) {
@@ -1063,6 +1076,7 @@ void StorageManager::refresh() {
 }
 
 StorageStatus StorageManager::status() const {
+    WISP_ASSERT_FLASH_THREAD("StorageManager::status");
     std::lock_guard<os::Mutex> lock(mutex_);
 
     StorageStatus result;

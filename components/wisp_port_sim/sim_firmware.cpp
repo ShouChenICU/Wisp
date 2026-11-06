@@ -7,6 +7,7 @@
 
 #include "wisp/core/firmware_image.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/flash_guard.hpp"
 
 namespace wisp::port::sim {
 
@@ -35,6 +36,7 @@ void SimFirmwareUpdater::close_file() {
 }
 
 Result<void> SimFirmwareUpdater::begin(size_t size) {
+    WISP_ASSERT_FLASH_THREAD("SimFirmwareUpdater::begin");
     close_file();
     file_ = std::fopen(path_.c_str(), "wb");
     if (file_ == nullptr) return io_error("cannot create the firmware file");
@@ -44,6 +46,7 @@ Result<void> SimFirmwareUpdater::begin(size_t size) {
 }
 
 Result<void> SimFirmwareUpdater::write(std::span<const uint8_t> chunk) {
+    WISP_ASSERT_FLASH_THREAD("SimFirmwareUpdater::write");
     if (file_ == nullptr) return io_error("no firmware upload in progress");
     if (std::fwrite(chunk.data(), 1, chunk.size(), file_) != chunk.size()) {
         return io_error("cannot write the firmware file");
@@ -53,6 +56,7 @@ Result<void> SimFirmwareUpdater::write(std::span<const uint8_t> chunk) {
 }
 
 Result<core::FirmwareImageInfo> SimFirmwareUpdater::finish() {
+    WISP_ASSERT_FLASH_THREAD("SimFirmwareUpdater::finish");
     using R = Result<core::FirmwareImageInfo>;
     if (file_ == nullptr) return R::err(ErrorCode::IoError, "no firmware upload in progress");
     const bool flushed = std::fflush(file_) == 0;
@@ -74,6 +78,7 @@ Result<core::FirmwareImageInfo> SimFirmwareUpdater::finish() {
 }
 
 void SimFirmwareUpdater::abort() {
+    WISP_ASSERT_FLASH_THREAD("SimFirmwareUpdater::abort");
     close_file();
     std::remove(path_.c_str());
     expected_ = 0;
@@ -81,6 +86,7 @@ void SimFirmwareUpdater::abort() {
 }
 
 Result<void> SimFirmwareUpdater::activate() {
+    WISP_ASSERT_FLASH_THREAD("SimFirmwareUpdater::activate");
     WLOG_I(kTag, "the simulator cannot boot an ESP image; firmware.bin is kept");
     return Result<void>::ok();
 }

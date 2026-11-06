@@ -767,14 +767,15 @@ TEST(SceneStore, FlushOutlivesOwner) {
 TEST(SceneStore, WritesDuringFlushesAreNeitherLostNorDuplicated) {
     Harness h;
     wisp::core::StorageWorker worker;
-    ASSERT_TRUE(worker.start());
     SceneStoreLimits limits;
     limits.compact_append_bytes = 2048;  // compact often
     SceneStoreDeps deps{*h.storage,
                         [&](std::function<void()> job) { return worker.submit(std::move(job)); },
                         [](uint32_t, std::function<void()> cb) { cb(); }};
     auto s = SceneStore::create(deps, h.dir().string(), limits);
+    // Loaded before the worker -- the flash thread -- starts.
     ASSERT_TRUE(s->load());
+    ASSERT_TRUE(worker.start());
 
     std::atomic<bool> stop{false};
     std::thread flusher([&] {

@@ -11,6 +11,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/flash_guard.hpp"
 
 namespace wisp::port::esp {
 
@@ -45,6 +46,7 @@ std::unique_ptr<NvsSettingsBackend> NvsSettingsBackend::create() {
 }
 
 Result<Value> NvsSettingsBackend::get(const std::string& ns, const std::string& key) {
+    WISP_ASSERT_FLASH_THREAD("NvsSettingsBackend::get");
     WISP_TRY(core::validate_settings_name(ns));
     WISP_TRY(core::validate_settings_name(key));
 
@@ -98,6 +100,7 @@ Result<Value> NvsSettingsBackend::get(const std::string& ns, const std::string& 
 
 Result<void> NvsSettingsBackend::set(const std::string& ns, const std::string& key,
                                      const Value& value) {
+    WISP_ASSERT_FLASH_THREAD("NvsSettingsBackend::set");
     WISP_TRY(core::validate_settings_name(ns));
     WISP_TRY(core::validate_settings_name(key));
 
@@ -134,6 +137,7 @@ Result<void> NvsSettingsBackend::set(const std::string& ns, const std::string& k
 }
 
 Result<void> NvsSettingsBackend::erase(const std::string& ns, const std::string& key) {
+    WISP_ASSERT_FLASH_THREAD("NvsSettingsBackend::erase");
     WISP_TRY(core::validate_settings_name(ns));
     WISP_TRY(core::validate_settings_name(key));
 
@@ -170,6 +174,7 @@ Result<void> NvsSettingsBackend::erase(const std::string& ns, const std::string&
 }
 
 Result<void> NvsSettingsBackend::erase_all() {
+    WISP_ASSERT_FLASH_THREAD("NvsSettingsBackend::erase_all");
     if (!ready_) {
         return Result<void>::err(ErrorCode::IoError, "nvs not initialized");
     }
@@ -221,6 +226,7 @@ Result<void> NvsSettingsBackend::erase_all() {
 }
 
 Result<std::vector<core::SettingsEntry>> NvsSettingsBackend::load_all() {
+    WISP_ASSERT_FLASH_THREAD("NvsSettingsBackend::load_all");
     using R = Result<std::vector<core::SettingsEntry>>;
     if (!ready_) {
         return R::err(ErrorCode::IoError, "nvs not initialized");
@@ -263,6 +269,7 @@ Result<std::vector<core::SettingsEntry>> NvsSettingsBackend::load_all() {
 }
 
 Result<void> NvsSettingsBackend::write_batch(std::span<const core::SettingsChange> changes) {
+    WISP_ASSERT_FLASH_THREAD("NvsSettingsBackend::write_batch");
     // Everything that can be checked without NVS, before any write.
     std::vector<std::string> values(changes.size());
     for (size_t i = 0; i < changes.size(); ++i) {
