@@ -149,6 +149,9 @@ TEST(SimHttpClient, StreamsBodyHeadersAndCancels) {
     req.url = url(server.port(), "/body");
     size_t pieces = 0;
     std::string got;
+    // The status arrives once, before the first piece.
+    std::vector<std::pair<int, size_t>> statuses;
+    req.on_status = [&](int status) { statuses.emplace_back(status, pieces); };
     req.on_body = [&](std::span<const uint8_t> chunk) {
         ++pieces;
         got.append(reinterpret_cast<const char*>(chunk.data()), chunk.size());
@@ -161,6 +164,7 @@ TEST(SimHttpClient, StreamsBodyHeadersAndCancels) {
     EXPECT_TRUE(res.body.empty());
     EXPECT_EQ(got, std::string(body.begin(), body.end()));
     EXPECT_GT(pieces, 1u);
+    EXPECT_EQ(statuses, (std::vector<std::pair<int, size_t>>{{203, 0}}));
     auto header = [&](const char* name) {
         for (const auto& [n, v] : res.headers)
             if (n == name) return v;

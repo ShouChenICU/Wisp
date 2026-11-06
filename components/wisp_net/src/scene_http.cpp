@@ -481,6 +481,12 @@ void SceneHttp::execute(Job& job) {
 
     BodyBuffer body(limits_.max_response);
     size_t streamed_bytes = 0;
+    // A download's body goes to on_body only with a 2xx status; any other
+    // answer's body (an error page) is read and dropped, up to the plain
+    // response cap, after which the transfer stops with the status kept.
+    int status = 0;
+    bool error_body_cut = false;
+    if (streamed) req.on_status = [&status](int st) { status = st; };
     bool too_large = false;
     bool no_memory = false;
     bool timed_out = false;
@@ -489,6 +495,14 @@ void SceneHttp::execute(Job& job) {
         if (expired()) {
             timed_out = true;
             return false;
+        }
+        if (streamed && status != 0 && (status < 200 || status >= 300)) {
+            if (chunk.size() > limits_.max_response - streamed_bytes) {
+                error_body_cut = true;
+                return false;
+            }
+            streamed_bytes += chunk.size();
+            return true;
         }
         if (streamed) {
             if (chunk.size() > req.max_response_bytes - streamed_bytes) {
@@ -523,6 +537,9 @@ void SceneHttp::execute(Job& job) {
         result.error = "timeout";
     } else if (too_large || res.transport == TransportError::TooLarge) {
         result.error = "too_large";
+    } else if (error_body_cut) {
+        result.status = status;
+        result.headers = std::move(res.headers);
     } else if (no_memory) {
         WLOG_W(kTag, "%s: no memory for a response body", job.scene_id.c_str());
         result.error = "other";

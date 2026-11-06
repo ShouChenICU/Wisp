@@ -155,6 +155,31 @@ TEST(SceneManifest, BackgroundField) {
     }
 }
 
+TEST(SceneManifest, FilesField) {
+    using wisp::core::FilesWant;
+    auto def = parse_scene_manifest(manifest());
+    ASSERT_TRUE(def);
+    EXPECT_EQ(def.value().files, FilesWant::Auto);
+    const std::pair<const char*, FilesWant> ok[] = {{R"(,"files":"auto")", FilesWant::Auto},
+                                                    {R"(,"files":"sd")", FilesWant::Sd},
+                                                    {R"(,"files":"int")", FilesWant::Int}};
+    for (const auto& [extra, want] : ok) {
+        auto r = parse_scene_manifest(manifest("todo", "x", "1.0.0", extra));
+        ASSERT_TRUE(r) << extra;
+        EXPECT_EQ(r.value().files, want) << extra;
+    }
+    for (const char* bad :
+         {R"(,"files":"SD")", R"(,"files":"flash")", R"(,"files":1)", R"(,"files":null)"}) {
+        auto r = parse_scene_manifest(manifest("todo", "x", "1.0.0", bad));
+        ASSERT_FALSE(r) << bad;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << bad;
+        EXPECT_NE(r.error().message.find("files"), std::string::npos) << r.error().message;
+    }
+    EXPECT_STREQ(wisp::core::to_string(FilesWant::Auto), "auto");
+    EXPECT_STREQ(wisp::core::to_string(FilesWant::Sd), "sd");
+    EXPECT_STREQ(wisp::core::to_string(FilesWant::Int), "int");
+}
+
 // Parsing recurses once per level, and scene.json is parsed on the storage
 // worker's small stack at every boot (wisp/core/storage_worker.hpp): its
 // nesting is capped, unknown fields included.

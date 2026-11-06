@@ -764,15 +764,23 @@ Result<os::LargeBuffer> StorageManager::read_range(const std::string& raw_path, 
         Result<void> e = io_error("fopen", path);
         return R::err(e.error().code, e.error().message);
     }
-    bool failed = fseek(f, static_cast<long>(offset), SEEK_SET) != 0;
-    size_t got = failed ? 0 : fread(buf.data(), 1, n, f);
-    failed = failed || ferror(f) != 0 || got != n;
-    int saved_errno = errno;
+    // errno is taken right after the call that failed: a short read that
+    // is only the end of the file sets none.
+    int saved_errno = 0;
+    size_t got = 0;
+    if (fseek(f, static_cast<long>(offset), SEEK_SET) != 0) {
+        saved_errno = errno;
+    } else {
+        got = fread(buf.data(), 1, n, f);
+        if (ferror(f) != 0) saved_errno = errno != 0 ? errno : EIO;
+    }
     fclose(f);
-    if (failed) {
+    if (saved_errno != 0) {
         return R::err(ErrorCode::IoError,
                       "read " + path + ": " + std::string(strerror(saved_errno)));
     }
+    // The file shrank since it was measured: what is there.
+    if (got < n) buf.truncate(got);
     return R::ok(std::move(buf));
 }
 

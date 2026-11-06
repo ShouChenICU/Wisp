@@ -1304,8 +1304,16 @@ void SceneRuntime::wire_files(Slot& s) {
     if (deps_.http == nullptr) return;
     net::SceneHttp& http = *deps_.http;
     api.files_download = [&files, &worker, &http, deliver, busy, gate = s.files_gate, id = s.id,
-                          instance = s.instance](uint32_t cb, net::SceneHttpRequest req,
-                                                 std::string name) {
+                          instance = s.instance, hosts = s.package->manifest.http_hosts](
+                             uint32_t cb, net::SceneHttpRequest req, std::string name) {
+        // SceneHttp checks the URL again; checked here first so a refused
+        // download never picks the scene's files location.
+        if (std::string code = net::SceneHttp::check_url(req.url, hosts); !code.empty()) {
+            FilesResult r;
+            r.error = std::move(code);
+            deliver(cb, std::move(r));
+            return;
+        }
         req.scene_id = id;
         req.instance = instance;
         req.download = true;

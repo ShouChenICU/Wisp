@@ -29,8 +29,6 @@ namespace {
 
 // Registry key of the table of pending callbacks, by id.
 char kCallbacksKey;
-// spec 7.1: a larger write is refused before its data is copied.
-constexpr size_t kMaxWrite = 256 * 1024;
 
 std::string_view view_at(lua_State* L, int idx) {
     size_t n = 0;
@@ -66,7 +64,9 @@ void do_write(lua_State* L, SceneApi& api, uint32_t id, bool append) {
     const std::string_view name = view_at(L, 1);
     const std::string_view data = view_at(L, 2);
     if (!core::valid_file_name(name)) return api.files_fail(id, "bad_name");
-    if (data.size() > kMaxWrite) return api.files_fail(id, "too_large");
+    // Refused before its data is copied; SceneFiles checks its own
+    // configured limit again.
+    if (data.size() > core::kMaxFileWrite) return api.files_fail(id, "too_large");
     auto buf = std::allocate_shared<os::LargeBuffer>(os::LargeAllocator<os::LargeBuffer>(),
                                                      os::LargeBuffer::allocate(data.size()));
     if (!buf || !buf->ok()) return api.files_fail(id, "no_memory");
@@ -198,6 +198,8 @@ void push_payload(lua_State* L, const FilesPayload& p) {
             lua_pushstring(L, core::to_string(info->location));
             lua_setfield(L, t, "location");
         }
+        lua_pushstring(L, core::to_string(info->want));
+        lua_setfield(L, t, "want");
         set_int(L, t, "quota", static_cast<int64_t>(info->quota));
         set_int(L, t, "used", static_cast<int64_t>(info->used));
     } else if (const auto* dl = std::get_if<FilesDownloaded>(&p)) {

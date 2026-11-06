@@ -4,7 +4,8 @@
 //
 //   {"id": "todo", "name": "待办", "version": "1.0.0", "schema_version": 1,
 //    "entry": "main.lua", "icon": "assets/icon.png",
-//    "permissions": {"http": ["api.example.com"]}, "background": true}
+//    "permissions": {"http": ["api.example.com"]}, "background": true,
+//    "files": "auto"}
 //
 // parse_scene_manifest() checks every field it knows and ignores unknown
 // top-level fields, so a newer package with extra metadata still installs.
@@ -20,6 +21,16 @@
 
 namespace wisp::core {
 
+// Where the scene's files/ area lives (scene-device spec 7.2):
+// Auto picks the SD card when one is present at the first write and
+// internal storage otherwise; Sd never falls back (no card means
+// "unavailable"); Int always uses internal storage. Once chosen, the
+// location is recorded and a later change of declaration moves nothing.
+enum class FilesWant { Auto, Sd, Int };
+
+// "auto", "sd" or "int".
+const char* to_string(FilesWant w);
+
 struct SceneManifest {
     std::string id;                  // [a-z0-9_-], 1-32 bytes; also the directory name
     std::string name;                // 1-32 bytes of valid UTF-8
@@ -31,6 +42,7 @@ struct SceneManifest {
     // Going back sends the scene to the background instead of closing it
     // (scene-device spec 3.2).
     bool background = false;
+    FilesWant files = FilesWant::Auto;  // "files"; absent means Auto
 };
 
 // The longest scene id.

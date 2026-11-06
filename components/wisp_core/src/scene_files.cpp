@@ -54,6 +54,26 @@ bool contains(const std::vector<std::string>& v, std::string_view s) {
     return std::find(v.begin(), v.end(), s) != v.end();
 }
 
+char lower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
+
+bool same_folded(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (lower(a[i]) != lower(b[i])) return false;
+    return true;
+}
+
+// The entry named `name` in `entries`; with `fold`, one differing only in
+// case when there is no exact match.
+const DirEntry* find_entry(const std::vector<DirEntry>& entries, std::string_view name, bool fold) {
+    for (const DirEntry& e : entries)
+        if (e.name == name) return &e;
+    if (fold)
+        for (const DirEntry& e : entries)
+            if (same_folded(e.name, name)) return &e;
+    return nullptr;
+}
+
 }  // namespace
 
 const char* to_string(FilesLocation l) {
@@ -100,6 +120,31 @@ SceneFiles::SceneFiles(StorageManager& storage, SceneFilesConfig config)
 
 bool SceneFiles::sd_online() const { return storage_.roots(Area::Library).size() > 1; }
 
+FilesWant SceneFiles::want_of(std::string_view scene) const {
+    if (!config_.declared) return FilesWant::Auto;
+    Result<FilesWant> w = config_.declared(scene);
+    return w ? w.value() : FilesWant::Auto;
+}
+
+void SceneFiles::log_orphans() {
+    if (!config_.declared) return;
+    std::vector<std::string> roots = storage_.roots(Area::Library);
+    if (roots.size() < 2) return;
+    const std::string scenes = roots.front() + "/scenes";
+    auto listed = storage_.list_dir(scenes);
+    if (!listed) return;
+    for (const DirEntry& e : listed.value()) {
+        if (e.kind != EntryKind::Dir || !valid_scene_id(e.name)) continue;
+        Result<FilesWant> w = config_.declared(e.name);
+        if (w || w.error().code != ErrorCode::NotFound) continue;
+        auto files = storage_.list_dir(scenes + "/" + e.name + "/files");
+        if (!files) continue;
+        // Kept: the scene may be installed again, or the user may want them.
+        WLOG_W(kTag, "%s/%s/files: %zu entries of no installed scene, kept", scenes.c_str(),
+               e.name.c_str(), files.value().size());
+    }
+}
+
 uint64_t SceneFiles::quota_of(FilesLocation loc) const {
     return loc == FilesLocation::Sd ? config_.sd_quota : config_.int_quota;
 }
@@ -126,6 +171,7 @@ Result<uint64_t> SceneFiles::count_dir(const std::string& dir,
         return storage_fail<uint64_t>(listed.error());
     }
     bool changed = false;
+    const bool fold = !dir.starts_with(config_.data_root + "/");
     for (const DirEntry& e : listed.value()) {
         std::string_view name = e.name;
         if (e.kind != EntryKind::File || name.empty() || name.front() != '.') continue;
@@ -138,8 +184,16 @@ Result<uint64_t> SceneFiles::count_dir(const std::string& dir,
         } else if (ends_with(name, kDoneSuffix)) {
             const std::string target(name.substr(1, name.size() - 1 - kDoneSuffix.size()));
             if (!valid_file_name(target) || contains(skip, target)) continue;
-            // Complete, and newer than any <name> still beside it.
-            Result<void> r = storage_.remove_tree(dir + "/" + target);
+            // Complete, and newer than any file <name> still beside it. A
+            // directory of that name is not ours to remove.
+            const DirEntry* old = find_entry(listed.value(), target, fold);
+            if (old != nullptr && old->kind != EntryKind::File) {
+                WLOG_W(kTag, "%s/%s is not a file: %s kept, not finished", dir.c_str(),
+                       old->name.c_str(), e.name.c_str());
+                continue;
+            }
+            Result<void> r = Result<void>::ok();
+            if (old != nullptr) r = storage_.remove_tree(dir + "/" + old->name);
             if (r) r = storage_.rename(dir + "/" + e.name, dir + "/" + target);
             if (!r) WLOG_W(kTag, "%s", r.error().message.c_str());
             changed = true;
@@ -155,12 +209,20 @@ Result<uint64_t> SceneFiles::count_dir(const std::string& dir,
     return Result<uint64_t>::ok(used);
 }
 
-Result<uint64_t> SceneFiles::size_of(const std::string& dir, std::string_view name) {
+Result<DirEntry> SceneFiles::entry_of(const std::string& dir, std::string_view name) {
     auto listed = storage_.list_dir(dir);
-    if (!listed) return storage_fail<uint64_t>(listed.error());
-    for (const DirEntry& e : listed.value())
-        if (e.kind == EntryKind::File && e.name == name) return Result<uint64_t>::ok(e.size);
-    return fail<uint64_t>(ErrorCode::NotFound, "not_found");
+    if (!listed) return storage_fail<DirEntry>(listed.error());
+    // Only the card is FAT; internal storage keeps case.
+    const bool fold = !dir.starts_with(config_.data_root + "/");
+    if (const DirEntry* e = find_entry(listed.value(), name, fold)) return Result<DirEntry>::ok(*e);
+    return fail<DirEntry>(ErrorCode::NotFound, "not_found");
+}
+
+Result<uint64_t> SceneFiles::size_of(const std::string& dir, std::string_view name) {
+    auto e = entry_of(dir, name);
+    if (!e) return Result<uint64_t>::err(e.error().code, e.error().message);
+    if (e.value().kind != EntryKind::File) return fail<uint64_t>(ErrorCode::NotFound, "not_found");
+    return Result<uint64_t>::ok(e.value().size);
 }
 
 Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choose) {
@@ -187,6 +249,14 @@ Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choo
             if (loc == FilesLocation::None)
                 WLOG_W(kTag, "%.*s: unreadable location record", static_cast<int>(scene.size()),
                        scene.data());
+            const FilesWant want = loc == FilesLocation::None ? FilesWant::Auto : want_of(scene);
+            if ((want == FilesWant::Sd && loc == FilesLocation::Internal) ||
+                (want == FilesWant::Int && loc == FilesLocation::Sd)) {
+                // spec 7.2: the first choice stands; files are never moved.
+                WLOG_W(kTag, "%.*s: declares files \"%s\" but they are kept on %s",
+                       static_cast<int>(scene.size()), scene.data(), to_string(want),
+                       to_string(loc));
+            }
         } else if (raw.error().code != ErrorCode::NotFound) {
             return storage_fail<Record*>(raw.error());
         }
@@ -196,8 +266,15 @@ Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choo
         r->counted = false;
     }
     if (r->loc == FilesLocation::None) {
+        const FilesWant want = want_of(scene);
+        const bool card = sd_online();
+        // "sd" never falls back to internal storage.
+        if (want == FilesWant::Sd && !card)
+            return fail<Record*>(ErrorCode::StorageUnavailable, "unavailable");
         if (!choose) return R::ok(r);
-        const FilesLocation loc = sd_online() ? FilesLocation::Sd : FilesLocation::Internal;
+        const FilesLocation loc = want == FilesWant::Int
+                                      ? FilesLocation::Internal
+                                      : (card ? FilesLocation::Sd : FilesLocation::Internal);
         const std::string json = std::string(R"({"location":")") + to_string(loc) + "\"}";
         Result<void> saved = storage_.write_atomic(
             record_path(scene),
@@ -245,6 +322,7 @@ Result<void> SceneFiles::scan() {
         if (!r && r.error().code != ErrorCode::StorageUnavailable)
             WLOG_W(kTag, "%s: not counted: %s", e.name.c_str(), r.error().message.c_str());
     }
+    log_orphans();
     return Result<void>::ok();
 }
 
@@ -264,6 +342,7 @@ void SceneFiles::on_sd_changed() {
         auto r = ensure(id, false);
         if (!r) WLOG_W(kTag, "%s: not counted: %s", id.c_str(), r.error().message.c_str());
     }
+    log_orphans();
 }
 
 Result<void> SceneFiles::write(std::string_view scene, std::string_view name,
@@ -356,6 +435,7 @@ Result<std::vector<SceneFileEntry>> SceneFiles::list(std::string_view scene) {
     }
     for (DirEntry& e : listed.value()) {
         if (e.kind != EntryKind::File || !valid_file_name(e.name)) continue;
+        if (out.size() == config_.max_list) break;
         out.push_back({std::move(e.name), e.size, e.mtime});
     }
     return R::ok(std::move(out));
@@ -388,11 +468,13 @@ Result<SceneFilesInfo> SceneFiles::info(std::string_view scene) {
     // Asked before mu_: push() takes mu_ on the HTTP task, which must not
     // wait behind the storage lock.
     const bool card = sd_online();
+    out.want = want_of(scene);
     std::lock_guard<os::Mutex> lock(mu_);
     const Record& r = *rec.value();
     out.location = r.loc;
     if (r.loc == FilesLocation::None) {
-        out.quota = quota_of(card ? FilesLocation::Sd : FilesLocation::Internal);
+        const bool sd = out.want == FilesWant::Sd || (out.want == FilesWant::Auto && card);
+        out.quota = quota_of(sd ? FilesLocation::Sd : FilesLocation::Internal);
         return R::ok(out);
     }
     out.quota = quota_of(r.loc);
@@ -504,12 +586,24 @@ Result<uint64_t> SceneFiles::finish_download(FileDownload& dl, bool ok) {
         r = storage_.append(dl_path, rest.span());
         size += rest.size();
     }
+    std::string old_name = dl.name_;
+    bool blocked = false;
     if (good && r) {
-        auto old = size_of(dl.dir_, dl.name_);
-        replaced = old ? old.value() : 0;
+        auto old = entry_of(dl.dir_, dl.name_);
+        if (old) {
+            old_name = old.value().name;
+            replaced = old.value().kind == EntryKind::File ? old.value().size : 0;
+            blocked = old.value().kind != EntryKind::File;
+        }
         r = storage_.remove_tree(done);
         if (r) r = storage_.rename(dl_path, done);
-        if (r) r = storage_.remove_tree(target);
+        // A directory of that name is not ours to remove: both stay.
+        if (r && blocked) {
+            WLOG_W(kTag, "%s/%s is not a file: download kept as %s", dl.dir_.c_str(),
+                   old_name.c_str(), done.c_str());
+            r = Result<void>::err(ErrorCode::AlreadyExists, "not a file: " + old_name);
+        }
+        if (r && old) r = storage_.remove_tree(dl.dir_ + "/" + old_name);
         if (r) r = storage_.rename(done, target);
     }
     // A ".done" that a failed step left behind is complete: the next count

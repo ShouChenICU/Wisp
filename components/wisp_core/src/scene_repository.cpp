@@ -15,12 +15,20 @@ namespace wisp::core {
 namespace {
 
 constexpr const char* kTag = "scene";
+
 constexpr std::string_view kManifest = "scene.json";
 constexpr std::string_view kTmpSuffix = ".tmpdir";
 constexpr std::string_view kNewSuffix = ".newdir";
 // Same bound as the zip reader's entry limit, so a dev working directory
 // cannot hold a package that could never be installed.
 constexpr size_t kMaxFiles = 256;
+
+// A card slot exists but holds no online card.
+bool sd_card_out(const StorageManager& storage) {
+    for (const MediaStatus& m : storage.status().media)
+        if (!m.online) return true;
+    return false;
+}
 // The directories of a scene's own that sit inside its package directory
 // on the device and never travel in a package: SceneStore's data/ and
 // SceneFiles' files/.
@@ -236,6 +244,11 @@ Result<SceneManifest> SceneRepository::read_manifest(std::string_view id) {
                                               "'");
     }
     return m;
+}
+
+Result<SceneManifest> SceneRepository::manifest(std::string_view id) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return read_manifest(id);
 }
 
 Result<SceneInfo> SceneRepository::info(std::string_view id) {
@@ -736,6 +749,11 @@ Result<void> SceneRepository::remove(std::string_view id_view, bool with_data) {
         WISP_TRY(storage_.remove_tree(config_.data_root + "/" + id));
         if (std::string sd = sd_scene_dir(storage_, id); !sd.empty()) {
             WISP_TRY(storage_.remove_tree(sd));
+        } else if (sd_card_out(storage_)) {
+            WLOG_W(kTag,
+                   "%s: the SD card is out, so its files there (if any) stay in "
+                   "wisp/library/scenes/%s/files",
+                   id.c_str(), id.c_str());
         }
         WLOG_I(kTag, "removed %s with its data", id.c_str());
         return R::ok();

@@ -95,7 +95,8 @@ inline std::string set_cookie(const net::HttpResponse& res) {
 // the call comes from another thread (a route, SceneHttp's worker).
 //
 // It behaves like the real clients towards the streaming fields: a body
-// over max_response_bytes is TooLarge (unless `ignore_limit`), on_body
+// over max_response_bytes is TooLarge (unless `ignore_limit`), on_status
+// gets next.status before the body, on_body
 // gets it in 4 KB pieces (false: Cancelled) and `next.body` is then not
 // returned; req.cancelled() is asked before each piece.
 //
@@ -140,6 +141,7 @@ public:
         if (req.max_response_bytes != 0 && res.body.size() > req.max_response_bytes &&
             !ignore_limit.load())
             return {.transport = net::TransportError::TooLarge};
+        if (req.on_status) req.on_status(res.status);
         if (req.on_body) {
             const auto* p = reinterpret_cast<const uint8_t*>(res.body.data());
             for (size_t at = 0; at < res.body.size(); at += 4096) {

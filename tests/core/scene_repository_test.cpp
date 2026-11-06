@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <system_error>
@@ -21,6 +22,7 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/scene_files.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/zip.hpp"
 
@@ -708,4 +710,116 @@ TEST(SceneRepository, RemoveWithDataRemovesFiles) {
     EXPECT_FALSE(on_disk(fs::path(in) / "scenes" / "todo"));
     EXPECT_FALSE(on_disk(fs::path(sd) / "wisp" / "library" / "scenes" / "todo"));
     EXPECT_TRUE(on_disk(fs::path(sd) / "wisp" / "library"));
+}
+
+namespace {
+
+struct RepoLogTap : wisp::LogSink {
+    RepoLogTap() { wisp::log::add_sink(this); }
+    ~RepoLogTap() override { wisp::log::remove_sink(this); }
+    RepoLogTap(const RepoLogTap&) = delete;
+    RepoLogTap& operator=(const RepoLogTap&) = delete;
+    void write(const wisp::LogRecord& rec) override {
+        std::lock_guard<std::mutex> lock(mu);
+        lines.push_back(std::string(rec.tag) + "|" + rec.msg);
+    }
+    size_t count(std::string_view a, std::string_view b) {
+        std::lock_guard<std::mutex> lock(mu);
+        size_t n = 0;
+        for (const std::string& l : lines)
+            n += l.find(a) != std::string::npos && l.find(b) != std::string::npos ? 1 : 0;
+        return n;
+    }
+    std::mutex mu;
+    std::vector<std::string> lines;
+};
+
+// A repository and SceneFiles over an internal disk and a card, wired the
+// way SceneWiring wires them.
+struct FilesRig {
+    FilesRig() : in(wisp::test::temp_dir().string()), sd(wisp::test::temp_dir().string()) {
+        sd_dev = std::make_shared<wisp::test::FakeStorage>("storage.sd", sd, true);
+        registry.add(std::make_shared<wisp::test::FakeStorage>("storage.int", in, false));
+        registry.add(sd_dev);
+        storage = std::make_unique<wisp::core::StorageManager>(registry, bus);
+        EXPECT_TRUE(storage->init());
+        SceneRepoConfig config;
+        config.code_root = in + "/scenes";
+        config.data_root = in + "/scenes";
+        repo = std::make_unique<SceneRepository>(*storage, config);
+        files_cfg.data_root = in + "/scenes";
+        files_cfg.declared = [this](std::string_view id) -> Result<wisp::core::FilesWant> {
+            auto m = repo->manifest(id);
+            if (!m) return Result<wisp::core::FilesWant>::err(m.error().code, m.error().message);
+            return Result<wisp::core::FilesWant>::ok(m.value().files);
+        };
+        files = std::make_unique<wisp::core::SceneFiles>(*storage, files_cfg);
+    }
+    void set_sd(bool online) {
+        sd_dev->online_flag = online;
+        storage->refresh();
+        files->on_sd_changed();
+    }
+    fs::path sd_files(const std::string& id) const {
+        return fs::path(sd) / "wisp" / "library" / "scenes" / id / "files";
+    }
+
+    std::string in;
+    std::string sd;
+    wisp::core::DeviceRegistry registry;
+    wisp::core::EventBus bus;
+    std::shared_ptr<wisp::test::FakeStorage> sd_dev;
+    std::unique_ptr<wisp::core::StorageManager> storage;
+    std::unique_ptr<SceneRepository> repo;
+    wisp::core::SceneFilesConfig files_cfg;
+    std::unique_ptr<wisp::core::SceneFiles> files;
+};
+
+}  // namespace
+
+// Deleting with data while the card is out cannot reach the card: its
+// files stay, that is logged, and nothing removes them later on its own.
+TEST(SceneRepository, RemoveWithCardOutKeepsCardFiles) {
+    FilesRig r;
+    ASSERT_TRUE(r.repo->install(zip_of(todo_files()), accept_all));
+    ASSERT_TRUE(r.files->write("todo", "song.mp3", as_bytes("music")));
+    EXPECT_EQ(read_raw(r.sd_files("todo") / "song.mp3"), "music");
+
+    r.set_sd(false);
+    RepoLogTap tap;
+    ASSERT_TRUE(r.repo->remove("todo", true));
+    ASSERT_TRUE(r.files->remove_all("todo"));
+    EXPECT_EQ(tap.count("scene|", "SD card is out"), 1u);
+    EXPECT_FALSE(on_disk(fs::path(r.in) / "scenes" / "todo"));
+
+    r.set_sd(true);
+    ASSERT_TRUE(r.files->scan());
+    EXPECT_EQ(read_raw(r.sd_files("todo") / "song.mp3"), "music");
+    EXPECT_EQ(tap.count("scene_files|", "todo/files"), 2u);  // on_sd_changed(), scan()
+}
+
+// Without data the files stay, and the same id installed again finds them
+// where they were, counted.
+TEST(SceneRepository, ReinstallAdoptsFiles) {
+    FilesRig r;
+    ASSERT_TRUE(r.repo->install(zip_of(todo_files()), accept_all));
+    ASSERT_TRUE(r.files->write("todo", "a.txt", as_bytes("12345")));
+    ASSERT_TRUE(r.repo->remove("todo", false));
+    ASSERT_TRUE(r.repo->install(zip_of(todo_files("1.1.0")), accept_all));
+
+    for (bool reboot : {false, true}) {
+        if (reboot) {
+            r.files = std::make_unique<wisp::core::SceneFiles>(*r.storage, r.files_cfg);
+            ASSERT_TRUE(r.files->scan());
+        }
+        auto info = r.files->info("todo");
+        ASSERT_TRUE(info);
+        EXPECT_EQ(info.value().location, wisp::core::FilesLocation::Sd);
+        EXPECT_EQ(info.value().used, 5u);
+        auto listed = r.files->list("todo");
+        ASSERT_TRUE(listed);
+        ASSERT_EQ(listed.value().size(), 1u);
+        EXPECT_EQ(listed.value()[0].name, "a.txt");
+        EXPECT_EQ(read_raw(r.sd_files("todo") / "a.txt"), "12345");
+    }
 }

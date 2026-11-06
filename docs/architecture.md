@@ -176,7 +176,7 @@
 
 写入永远进列表第一个根；读取按顺序枚举所有根。真机挂载点：内置 Flash（LittleFS）在 `/int`，SD 卡（FAT，1-bit SDMMC）在 `/sd`；模拟器对应 `<data-dir>/int/`、`<data-dir>/sd/`。原子写（`write_atomic`）和 FAT 上 `rename` 不能覆盖已存在文件的坑，见 `AGENTS.md` 第 8 节。
 
-场景的代码与数据不属于以上三个逻辑区，固定在内置根下的 `<int>/scenes`（`core::SceneRepository`，开发模式见上面"模拟器的网络"一节的 `--scenes-dir`）：每个场景是 `<int>/scenes/<id>/`，数据在其中的 `data/` 子目录，`wisp.files` 的文件在 `files/` 子目录（第一次写时 SD 卡在线则改放 `<sd>/wisp/library/scenes/<id>/files`，位置记在 `data/files_loc.json`，之后不变；见下面"场景运行时"一节的 `SceneFiles`）。替换一个场景是目录级的两阶段改名，不经单文件的 `write_atomic`，见下面"场景运行时"一节。
+场景的代码与数据不属于以上三个逻辑区，固定在内置根下的 `<int>/scenes`（`core::SceneRepository`，开发模式见上面"模拟器的网络"一节的 `--scenes-dir`）：每个场景是 `<int>/scenes/<id>/`，数据在其中的 `data/` 子目录，`wisp.files` 的文件在 `files/` 子目录（第一次写时按 `scene.json` 的 `files` 声明可能改放 `<sd>/wisp/library/scenes/<id>/files`，位置记在 `data/files_loc.json`，之后不变；见下面"场景运行时"一节的 `SceneFiles`）。替换一个场景是目录级的两阶段改名，不经单文件的 `write_atomic`，见下面"场景运行时"一节。
 
 ## 场景运行时
 
@@ -205,10 +205,12 @@
 
 `core::SceneFiles`（`components/wisp_core/include/wisp/core/scene_files.hpp`）是 `wisp.files` 与 `wisp.http.download` 背后的服务（场景设备 spec 7.1/7.2；Lua 绑定 `bind_files.cpp`、`bind_http.cpp`）。
 
-- 位置：第一次写（`write`/`append`/下载）时 SD 卡在线就用 `<sd>/wisp/library/scenes/<id>/files`（配额 64 MB），否则 `<int>/scenes/<id>/files`（配额 512 KB）；记录 `data/files_loc.json`（`{"location":"sd"|"int"}`，`write_atomic`），之后不变。位置在 SD 卡而卡不在时所有调用返回 `unavailable`。
+- 位置：第一次写（`write`/`append`/下载）时按 `scene.json` 的 `files` 声明（`SceneManifest::files`，经 `SceneFilesConfig::declared` 由 `SceneRepository::manifest()` 提供）决定：`"auto"`（默认）SD 卡在线就用 `<sd>/wisp/library/scenes/<id>/files`（配额 64 MB），否则 `<int>/scenes/<id>/files`（配额 512 KB）；`"sd"` 只用 SD 卡，没卡时返回 `unavailable`，不退回内部存储；`"int"` 总是内部存储。记录 `data/files_loc.json`（`{"location":"sd"|"int"}`，`write_atomic`），之后不变：声明后来改了，以记录为准、文件不搬，加载记录时记一条警告。位置在 SD 卡（或声明 `"sd"` 而还没选定）而卡不在时所有调用返回 `unavailable`。`info()` 同时返回 `location` 与声明 `want`。
+- 系统从不自动删除场景的文件：只有场景自己的 `remove`、管理后台和带数据删除场景（`SceneRepository::remove(id, true)` 加 `SceneFiles::remove_all()`）会删。卡不在时带数据删除场景，卡上的 `files/` 留下并记一条日志；`scan()`、`on_sd_changed()` 遇到卡上没有已安装场景的 `scenes/<id>/files` 也只记日志。同 id 重新安装时沿用留下的文件。
+- `list()` 最多返回 `max_list`（256）个名字（按名字排序的前 256 个）。SD 卡是 FAT，名字不分大小写，所以在卡上找已有文件时，没有完全相同的名字就按不分大小写匹配。
 - 文件名 `[A-Za-z0-9._-]`、1–64 字节、不以 `.` 开头，另外不能以 `.tmp`/`.new` 结尾（`StorageManager` 自己的原子写簿记名）；单次 `write`/`append` 最多 256 KB、`read` 最多 64 KB（`too_large`）。`write` 走 `write_atomic`，`append` 走 `StorageManager::append()`。
 - 用量开机统计一次（`scan()`），之后每次写入增量更新；写入前检查配额。进行中的下载按已收到的字节预留配额。
-- 下载用文件级的两阶段命名：响应体追加到 `.<name>.dl`（可能写了一半，视为垃圾），完成后改名 `.<name>.done`（此时一定完整）→ 删除旧的 `<name>` → 改名为 `<name>`。统计目录时删掉不属于进行中下载的 `.dl`，并完成每个 `.done`（旁边还有 `<name>` 时 `.done` 更新，先删 `<name>`）。只有 2xx 的响应体被保留；非 2xx 时 `.dl` 被删、原文件不动。
+- 下载用文件级的两阶段命名：响应体追加到 `.<name>.dl`（可能写了一半，视为垃圾），完成后改名 `.<name>.done`（此时一定完整）→ 删除旧的 `<name>` → 改名为 `<name>`。统计目录时删掉不属于进行中下载的 `.dl`，并完成每个 `.done`（旁边还有 `<name>` 文件时 `.done` 更新，先删 `<name>`；`<name>` 是目录时两者都不动，只记日志，下载收尾时也一样）。HTTP 客户端在响应体之前用 `HttpClientRequest::on_status` 报告状态码，`SceneHttp` 只把 2xx 的响应体交给下载；非 2xx 的响应体读掉丢弃（最多普通响应上限那么多，超过就停止传输），不占配额，回调得到 `err=nil`、`size=0`，`.dl` 被删、原文件不动。下载的 URL 在开始下载（选定位置）之前就在场景任务上按 `http_hosts` 检查，被拒的下载不会定下位置。
 - 线程：每个方法都碰 flash，只在 `wisp.fs`（或允许访问 flash 的 httpd 线程）上调用。`FileDownload::push()` 在 `wisp.shttp` 上运行：只把数据拷进 32 KB 的 PSRAM 分块、把追加排到 `wisp.fs`，排队超过 128 KB 时等待；`cancel()`（场景关闭或出错时运行时调用，先于 `SceneHttp::cancel_scene`）唤醒它，之后在 `wisp.fs` 上 `finish(false)` 删除 `.dl`。
 
 ### `SceneStore` 文件格式与日志

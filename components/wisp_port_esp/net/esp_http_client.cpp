@@ -295,6 +295,7 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         return failed(net::TransportError::TooLarge, "body (too large)", ESP_ERR_INVALID_SIZE);
     }
     res.status = esp_http_client_get_status_code(client.get());
+    if (req.on_status) req.on_status(res.status);
 
     // On the caller's stack: the scene proxy's task has its stack in PSRAM,
     // so this costs no internal RAM there.

@@ -16,8 +16,9 @@
 // read by load(), not exported, not counted in code_bytes, carried over by
 // a replace and kept by remove() without data. remove() with data also
 // deletes the copy on the SD card, <sd>/wisp/library/scenes/<id>, when
-// the card is in. (SceneFiles keeps its own usage table: whoever removes a
-// scene's data tells it with SceneFiles::remove_all().)
+// the card is in; with the card out it logs that the card's copy, if any,
+// stays (nothing removes it later on its own). (SceneFiles keeps its own usage table: whoever
+// removes a scene's data tells it with SceneFiles::remove_all().)
 //
 // Replacing a package is atomic across power loss (the directory-level
 // version of AGENTS.md section 8's two-name scheme):
@@ -121,6 +122,11 @@ public:
     // NotFound if `id` has no scene.json; InvalidArgument for a malformed id
     // or manifest.
     Result<SceneInfo> info(std::string_view id);
+
+    // Only scene.json, checked to name <id>: cheaper than info(), which
+    // also sizes the package. NotFound if it is absent; InvalidArgument for
+    // a malformed id or manifest.
+    Result<SceneManifest> manifest(std::string_view id);
 
     // Reads scene.json, the entry file, lib/**/*.lua and assets/** into
     // Mem::Large. Anything else in the directory (data/, or stray files in

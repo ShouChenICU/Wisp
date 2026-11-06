@@ -83,6 +83,14 @@ void SceneWiring::start_storage() {
         files_config.submit_io = [this](std::function<void()> job) {
             return worker_.submit(std::move(job));
         };
+        // The repository never calls into SceneFiles, so taking its lock
+        // under SceneFiles' locks cannot deadlock.
+        files_config.declared = [repo =
+                                     repo_.get()](std::string_view id) -> Result<core::FilesWant> {
+            Result<core::SceneManifest> m = repo->manifest(id);
+            if (!m) return Result<core::FilesWant>::err(m.error().code, m.error().message);
+            return Result<core::FilesWant>::ok(m.value().files);
+        };
         files_ = os::make_large<core::SceneFiles>(deps_.storage, std::move(files_config));
         if (!files_) WLOG_W(kTag, "no memory for scene files; wisp.files is off");
     }
@@ -332,17 +340,22 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
 }
 
 void SceneWiring::remove(const std::string& id, bool with_data) {
-    if (auto r = repo_->remove(id, with_data); !r) {
-        WLOG_W(kTag, "%s: delete failed: %s", id.c_str(), r.error().message.c_str());
-        return;
-    }
+    Result<void> removed = repo_->remove(id, with_data);
+    if (!removed)
+        WLOG_W(kTag, "%s: delete failed: %s", id.c_str(), removed.error().message.c_str());
     // The repository removed the files with the data; this forgets their
-    // location and usage (and removes the dev-mode copy).
-    if (with_data && files_) {
+    // location and usage. Also after a delete that failed part way, which
+    // may already have taken the files: a record left in memory would
+    // describe files that are gone. Unsupported (dev mode) and
+    // InvalidArgument touched nothing.
+    const bool touched = removed || (removed.error().code != ErrorCode::Unsupported &&
+                                     removed.error().code != ErrorCode::InvalidArgument);
+    if (with_data && files_ && touched) {
         if (auto r = files_->remove_all(id); !r)
             WLOG_W(kTag, "%s: removing its files failed: %s", id.c_str(),
                    r.error().message.c_str());
     }
+    if (!removed) return;
     publish(id, "deleted");
 }
 

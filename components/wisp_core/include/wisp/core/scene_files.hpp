@@ -4,13 +4,24 @@
 // wisp.files API and wisp.http.download (scene-device spec 7.1, 7.2).
 //
 // Location: the first write (write, append or a download) picks where the
-// scene's files live -- the SD card when one is online, internal storage
-// otherwise -- and records it in <data_root>/<id>/data/files_loc.json
-// ({"location":"sd"|"int"}, write_atomic). It never changes after that.
+// scene's files live from the manifest's "files" declaration
+// (SceneFilesConfig::declared): "auto" takes the SD card when one is
+// online and internal storage otherwise, "sd" only the card (no card:
+// "unavailable", never internal storage), "int" always internal storage.
+// The choice is recorded in <data_root>/<id>/data/files_loc.json
+// ({"location":"sd"|"int"}, write_atomic) and never changes after that: a
+// record that disagrees with a later declaration wins (one warning when
+// it is loaded) and nothing is moved.
 //   sd:  <sd>/wisp/library/scenes/<id>/files   quota sd_quota (64 MB)
 //   int: <data_root>/<id>/files                quota int_quota (512 KB)
 // (on the device <data_root> is <int>/scenes). A scene whose files are on
-// the card gets "unavailable" from every call while the card is out.
+// the card, or that declares "sd" and has none yet, gets "unavailable"
+// from every call while the card is out.
+//
+// Nothing here deletes a scene's files on its own: remove() and
+// remove_all() are asked for. Files on the card with no installed scene
+// (the scene was deleted while the card was out) are only logged, by
+// scan() and on_sd_changed().
 //
 // Names: valid_file_name(), one level only. Names starting with '.' are
 // this class's own bookkeeping and never listed; names ending in ".tmp" or
@@ -34,7 +45,11 @@
 // <name>. Counting a directory (scan(), on_sd_changed(), first use)
 // removes every ".dl" that no download in flight owns and finishes every
 // ".done" (removing a <name> still beside it, since the ".done" is the
-// newer one).
+// newer one -- unless that <name> is a directory, which is left alone
+// together with the ".done", and logged).
+//
+// FAT (the SD card) compares names without case, so on the card a name
+// that differs from an existing one only in case is that file.
 //
 // Errors carry these messages, which scene_files_code() hands to scripts:
 // InvalidArgument "bad_name", InvalidArgument "too_large", QuotaExceeded
@@ -60,6 +75,7 @@
 
 #include "wisp/base/error.hpp"
 #include "wisp/base/result.hpp"
+#include "wisp/core/scene_manifest.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -80,16 +96,27 @@ struct SceneFileEntry {
 struct SceneFilesInfo {
     // None until the scene first writes; quota is then what it would get now.
     FilesLocation location = FilesLocation::None;
+    FilesWant want = FilesWant::Auto;  // the manifest's declaration
     uint64_t quota = 0;
     uint64_t used = 0;
 };
+
+// The longest single write() or append() (spec 7.1).
+inline constexpr size_t kMaxFileWrite = 256 * 1024;
 
 struct SceneFilesConfig {
     std::string data_root;  // SceneRepoConfig::data_root
     uint64_t sd_quota = 64ull * 1024 * 1024;
     uint64_t int_quota = 512 * 1024;
-    size_t max_write = 256 * 1024;
+    size_t max_write = kMaxFileWrite;  // at most kMaxFileWrite
     size_t max_read = 64 * 1024;
+    // list() returns at most this many names (the first ones in order).
+    size_t max_list = 256;
+    // The installed scene's "files" declaration (SceneManifest::files);
+    // NotFound when no scene of that id is installed. Called on wisp.fs
+    // with this class's locks held, so it must not call back into it.
+    // Empty: every scene declares Auto and none is reported as missing.
+    std::function<Result<FilesWant>(std::string_view scene)> declared;
     // How a download's appends reach the wisp.fs worker
     // (StorageWorker::submit); false: not queued. Empty: FileDownload::push()
     // appends on the caller's thread, which must then be allowed flash.
@@ -118,10 +145,11 @@ public:
 
     // Counts every scene that has a location record (recovering downloads
     // as the file header says). A scene whose card is out is counted when
-    // it comes back. Fails only if <data_root> cannot be listed.
+    // it comes back. Logs files on the card that belong to no installed
+    // scene. Fails only if <data_root> cannot be listed.
     Result<void> scan();
     // The card came or went: the scenes on it are counted again (now, if
-    // it is in).
+    // it is in), and its files without a scene are logged.
     void on_sd_changed();
 
     Result<void> write(std::string_view scene, std::string_view name,
@@ -131,7 +159,8 @@ public:
     // At most `len` bytes from `offset`; fewer at the end of the file.
     Result<os::LargeBuffer> read(std::string_view scene, std::string_view name, uint64_t offset,
                                  size_t len);
-    // Sorted by name; bookkeeping names hidden. Empty before the first write.
+    // Sorted by name, at most max_list of them; bookkeeping names hidden.
+    // Empty before the first write.
     Result<std::vector<SceneFileEntry>> list(std::string_view scene);
     Result<void> remove(std::string_view scene, std::string_view name);
     Result<SceneFilesInfo> info(std::string_view scene);
@@ -164,10 +193,18 @@ private:
     std::string record_path(std::string_view scene) const;
     uint64_t quota_of(FilesLocation loc) const;
     bool sd_online() const;
+    // config_.declared, Auto when it has no answer.
+    FilesWant want_of(std::string_view scene) const;
+    // Logs each <sd>/wisp/library/scenes/<id>/files whose scene is not
+    // installed. With io_mu_.
+    void log_orphans();
     // Sums the visible files of `dir`, removing stray ".dl" files and
     // finishing ".done" ones. With io_mu_.
     Result<uint64_t> count_dir(const std::string& dir, const std::vector<std::string>& skip);
-    // The size of `dir`/`name`, or NotFound. With io_mu_.
+    // The entry `name` of `dir`, or NotFound; on the card a name differing
+    // only in case matches when there is no exact one. With io_mu_.
+    Result<DirEntry> entry_of(const std::string& dir, std::string_view name);
+    // entry_of()'s size; NotFound unless it is a regular file.
     Result<uint64_t> size_of(const std::string& dir, std::string_view name);
 
     // For FileDownload, under mu_ only (no flash). reserve() is called with

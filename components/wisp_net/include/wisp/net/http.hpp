@@ -195,6 +195,10 @@ struct HttpClientRequest {
     // HttpClientResponse::body stays empty; returning false stops the
     // transfer (Cancelled).
     std::function<bool(std::span<const uint8_t>)> on_body;
+    // When set, called once with the final response's status code after
+    // its headers and before the first on_body() piece (an interim 1xx
+    // answer is not reported). Not called when the transfer fails first.
+    std::function<void(int status)> on_status;
     // When set, asked between pieces of the transfer (and while waiting
     // for the server, as often as the client can); true stops it
     // (Cancelled). On its own it cannot reach a client blocked in a

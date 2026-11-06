@@ -313,7 +313,34 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
         m.background = bg->as_bool();
     }
 
+    if (const Value* f = root.find("files")) {
+        const std::string_view v = f->type() == Value::Type::String
+                                       ? std::string_view(f->as_string())
+                                       : std::string_view();
+        if (v == "auto") {
+            m.files = FilesWant::Auto;
+        } else if (v == "sd") {
+            m.files = FilesWant::Sd;
+        } else if (v == "int") {
+            m.files = FilesWant::Int;
+        } else {
+            return invalid("files must be \"auto\", \"sd\" or \"int\"");
+        }
+    }
+
     return Result<SceneManifest>::ok(std::move(m));
+}
+
+const char* to_string(FilesWant w) {
+    switch (w) {
+        case FilesWant::Sd:
+            return "sd";
+        case FilesWant::Int:
+            return "int";
+        case FilesWant::Auto:
+            break;
+    }
+    return "auto";
 }
 
 }  // namespace wisp::core

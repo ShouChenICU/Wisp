@@ -199,6 +199,40 @@ end)
     EXPECT_EQ(files->info("h").value().used, 3u);
 }
 
+// An error page larger than the quota is dropped, not stored: no
+// quota_exceeded, and the status comes back with size 0.
+TEST_F(FilesBinding, DownloadLarge404IsDropped) {
+    start();
+    client.next = {.status = 404, .body = std::string(600 * 1024, 'e')};
+    install_scene("h", R"(
+wisp.http.download("https://api.example.com/f", "f.bin", nil, function(err, res)
+  print("dl", err, res.status, res.size)
+end)
+)");
+    ASSERT_TRUE(rt->open("h"));
+    EXPECT_EQ(wait_log("h", 1), (std::vector<std::string>{"dl\tnil\t404\t0"}));
+    EXPECT_FALSE(on_disk(files_dir("h") / "f.bin"));
+    EXPECT_FALSE(on_disk(files_dir("h") / ".f.bin.dl"));
+    EXPECT_EQ(files->info("h").value().used, 0u);
+}
+
+// A URL the scene may not fetch is refused before anything is written,
+// so it does not fix where the scene's files go.
+TEST_F(FilesBinding, RefusedDownloadPicksNoLocation) {
+    start();
+    install_scene("h", R"(
+wisp.http.download("https://other.example.com/f", "f.bin", nil, function(err, res)
+  print("dl", err, res)
+  wisp.files.info(function(err, info) print("info", err, info.location, info.want) end)
+end)
+)");
+    ASSERT_TRUE(rt->open("h"));
+    EXPECT_EQ(wait_log("h", 2),
+              (std::vector<std::string>{"dl\tpermission_denied\tnil", "info\tnil\tnil\tauto"}));
+    EXPECT_FALSE(on_disk(fs::path(in) / "scenes" / "h" / "data" / "files_loc.json"));
+    EXPECT_EQ(client.calls(), 0u);
+}
+
 TEST_F(FilesBinding, DownloadDeferredInDeepStandby) {
     start();
     client.next = {.status = 200, .body = "later"};

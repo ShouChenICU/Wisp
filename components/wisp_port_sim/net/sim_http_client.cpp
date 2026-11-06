@@ -23,7 +23,20 @@ struct Transfer {
     size_t received = 0;
     bool too_large = false;
     bool cancelled = false;
+    CURL* curl = nullptr;
+    bool status_sent = false;  // req->on_status has been called
 };
+
+// The final response's status to req->on_status, once: from the first body
+// piece (curl knows it by then), or after a transfer without a body.
+void send_status(Transfer* t) {
+    if (t->status_sent) return;
+    t->status_sent = true;
+    if (!t->req->on_status) return;
+    long status = 0;
+    curl_easy_getinfo(t->curl, CURLINFO_RESPONSE_CODE, &status);
+    t->req->on_status(static_cast<int>(status));
+}
 
 // The caller cancelled, or its watch fired (curl keeps the deadline by
 // itself too, with CURLOPT_TIMEOUT_MS).
@@ -45,6 +58,7 @@ size_t on_data(char* data, size_t size, size_t nmemb, void* user) {
         return 0;
     }
     t->received += n;
+    send_status(t);
     if (t->req->on_body) {
         if (!t->req->on_body({reinterpret_cast<const uint8_t*>(data), n})) {
             t->cancelled = true;
@@ -178,6 +192,7 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
     Transfer t;
     t.req = &req;
     t.res = &res;
+    t.curl = curl;
     t.limit = req.max_response_bytes != 0 ? req.max_response_bytes : kMaxResponseBytes;
     const char* body =
         req.body_ref.empty() ? req.body.data() : reinterpret_cast<const char*>(req.body_ref.data());
@@ -232,6 +247,7 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
         res.transport = transport_error_for(rc);
     }
     if (res.transport == net::TransportError::None) {
+        send_status(&t);
         long status = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
         res.status = static_cast<int>(status);

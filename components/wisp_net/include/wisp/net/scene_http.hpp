@@ -40,7 +40,8 @@
 // a response body cap of SceneHttpLimits::max_response bytes ("too_large"
 // past it). The body is collected in PSRAM. A download
 // (SceneHttpRequest::on_body, wisp.http.download) streams its body to
-// on_body instead, without that cap, under a deadline of
+// on_body instead (only a 2xx body; others are dropped), without that
+// cap, under a deadline of
 // kDownloadTimeoutMs; it takes the one worker for as long as it runs, so
 // the scenes' other requests wait behind it. Transport failures come back
 // as "dns", "connect", "tls", "timeout" or "other".
@@ -120,8 +121,10 @@ struct SceneHttpRequest {
     // Set: the response body is streamed to it piece by piece on the
     // worker task (which must not touch flash) instead of being collected,
     // so no max_response applies and SceneHttpResult::body stays empty.
-    // false stops the transfer ("other"). It gets the body of any status;
-    // the caller keeps or drops it once the result says which.
+    // false stops the transfer ("other"). Only a 2xx answer's body reaches
+    // it: any other body is read and dropped (at most max_response bytes
+    // of it; past that the transfer stops), and the result carries just
+    // the status and headers.
     std::function<bool(std::span<const uint8_t>)> on_body;
     // With on_body: a body over this many bytes fails with "too_large";
     // 0 is kMaxDownloadBody.
