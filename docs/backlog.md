@@ -80,3 +80,13 @@ The full list is the 30-row device acceptance checklist kept with the `feat/scen
 - 28: scene file list with 256 or more files.
 - 29: panel with 50 notices.
 - 30: smaller allocations.
+
+## MVP parked review findings
+
+Source: `feat/agent-core` review records.
+
+- `net::LlmClient`:
+  - a stored profile whose free-form `vision`/`context_window` option fails the new check is dropped at load, key included; drop only the bad option there;
+  - an abort on an old ticket between retry attempts is a no-op, so callers must also make `cancelled()` true;
+  - a transport error after `finish_reason` but before `[DONE]` fails a complete reply;
+  - per-event `from_json` strings under 16 KB land in internal RAM briefly; measure with `mem` once `wisp.agent` exists.
