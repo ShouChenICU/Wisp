@@ -326,6 +326,10 @@ wisp_test(NAME sensor_binding_test SRCS scene/sensor_binding_test.cpp
 wisp_test(NAME lua_json_test SRCS scene/lua_json_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME store_binding_test SRCS scene/store_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+# Opens the fixture scenes in scene/fixtures/migrate_v*.
+wisp_test(NAME migrate_test SRCS scene/migrate_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+target_compile_definitions(migrate_test PRIVATE WISP_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 wisp_test(NAME http_binding_test SRCS scene/http_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME files_binding_test SRCS scene/files_binding_test.cpp

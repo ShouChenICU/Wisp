@@ -992,7 +992,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         s.restoring = load.restore;
         s.scene->api().background = true;
         update_background_list();
-        if (!run_step(s, s.scene->start())) return failed();
+        if (!run_step(s, start_scene(s))) return failed();
         if (!run_step(s, s.scene->hook("on_state", "background"))) return failed();
         s.restoring = false;
         set_status(id, core::SceneState::Background, "");
@@ -1011,7 +1011,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     update_background_list();
     show_view(s);
 
-    if (!run_step(s, s.scene->start())) return failed();
+    if (!run_step(s, start_scene(s))) return failed();
     set_status(id, core::SceneState::Running, "");
     publish(id, "running");
     if (visible_) {
@@ -1418,6 +1418,21 @@ bool SceneRuntime::submit(Slot& s) {
 
 bool SceneRuntime::run_step(Slot& s, const std::optional<ScriptError>& err) {
     return step(s, err) && submit(s);
+}
+
+std::optional<ScriptError> SceneRuntime::start_scene(Slot& s) {
+    const int want = s.package->manifest.schema_version;
+    const int have = s.store ? s.store->data_version() : want;
+    if (have == 0) s.store->set_initial_version(want);
+    if (have > want)
+        return ScriptError{
+            ScriptFault::Runtime, "", 0,
+            "data version " + std::to_string(have) + " newer than scene " + std::to_string(want)};
+    if (have != 0 && have < want) {
+        WLOG_I(kTag, "%s: migrating data from version %d to %d", s.id.c_str(), have, want);
+        return s.scene->start(have);
+    }
+    return s.scene->start();
 }
 
 void SceneRuntime::release_locks(Slot& s) {

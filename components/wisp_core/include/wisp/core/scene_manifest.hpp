@@ -37,6 +37,7 @@ struct SceneManifest {
     std::string version;             // SemVer 2.0, at most 64 bytes
     std::string entry = "main.lua";  // a top-level *.lua file
     std::string icon;                // empty, or a file under assets/
+    // The data's structure version, 1-1000 (scene-device spec 7.3).
     int schema_version = 1;
     std::vector<std::string> http_hosts;  // permissions.http, at most 16
     // Going back sends the scene to the background instead of closing it

@@ -13,6 +13,7 @@
 
 #include "wisp/core/log.hpp"
 
+using wisp::scene::Budget;
 using wisp::scene::compile_check;
 using wisp::scene::ScriptError;
 using wisp::scene::ScriptFault;
@@ -294,6 +295,28 @@ TEST(Vm, TimeoutLimitFollowsVmLimits) {
     ASSERT_TRUE(err);
     EXPECT_EQ(err->fault, ScriptFault::Timeout);
     EXPECT_EQ(err->message, "execution exceeded 50 ms");
+}
+
+// A call can be given its own limit (a migration's 2 s); the next call
+// without one is back to limits.exec_ms.
+TEST(Vm, CallExecMsOverridesTheLimit) {
+    FakeClock clock;
+    auto vm = make(clock);
+    ASSERT_NE(vm, nullptr);
+    ASSERT_FALSE(vm->load("main.lua", "_G.advance(1500) for i = 1, 100000 do end"));
+    auto err = vm->call(0, 0, Budget::Fresh, 2000);
+    EXPECT_FALSE(err) << describe(err);
+    err = run(*vm, "_G.advance(201) for i = 1, 100000 do end");
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->message, "execution exceeded 200 ms");
+
+    auto other = make(clock);
+    ASSERT_NE(other, nullptr);
+    ASSERT_FALSE(other->load("main.lua", "_G.advance(2001)\nwhile true do end"));
+    err = other->call(0, 0, Budget::Fresh, 2000);
+    ASSERT_TRUE(err);
+    EXPECT_EQ(err->fault, ScriptFault::Timeout);
+    EXPECT_EQ(err->message, "execution exceeded 2000 ms");
 }
 
 TEST(Vm, TimeoutEscapesPcallXpcallAndCoroutines) {

@@ -595,6 +595,10 @@ private:
     bool submit(Slot& s);
     // step(), then submit(); false if the scene faulted.
     bool run_step(Slot& s, const std::optional<ScriptError>& err);
+    // SceneInstance::start() after comparing the data version with the
+    // manifest's (spec 7.3): a new store takes the manifest's, an older
+    // one is migrated, and a newer one is refused before any VM exists.
+    std::optional<ScriptError> start_scene(Slot& s);
     void fault(Slot& s, const ScriptError& err);
     void release_locks(Slot& s);
     void notice(SceneNoticeKind kind, const Slot& s);

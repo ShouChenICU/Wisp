@@ -1127,3 +1127,129 @@ TEST(SceneStore, BatchIdMarkerCountsAgainstQuota) {
     EXPECT_EQ(s->used_bytes(),
               fs::file_size(h.dir() / "kv.log") + fs::file_size(h.dir() / "todos.log"));
 }
+
+// Spec 7.3: the data version is meta.json's, else 1 for data an older
+// firmware wrote without one, else 0 for a store never written.
+TEST(SceneStore, DataVersionDefaults) {
+    {
+        Harness h;
+        auto s = h.open();
+        EXPECT_EQ(s->data_version(), 0);
+        // A new store records the manifest's version with its first flush.
+        s->set_initial_version(4);
+        EXPECT_EQ(s->data_version(), 4);
+        ASSERT_TRUE(Harness::flush_now(*s));
+        EXPECT_EQ(h.open()->data_version(), 4);
+    }
+    {
+        Harness h;
+        write_raw(h.dir() / "kv.log", "{\"op\":\"put\",\"id\":\"a\",\"v\":1}\n");
+        auto s = h.open();
+        EXPECT_EQ(s->data_version(), 1);
+        // Only a new store takes an initial version.
+        s->set_initial_version(4);
+        EXPECT_EQ(s->data_version(), 1);
+        ASSERT_TRUE(Harness::flush_now(*s));
+        EXPECT_FALSE(on_disk(h.dir() / "meta.json"));
+    }
+    {
+        Harness h;
+        write_raw(h.dir() / "kv.log", "{\"op\":\"put\",\"id\":\"a\",\"v\":1}\n");
+        write_raw(h.dir() / "meta.json", R"({"schema_version":3})");
+        EXPECT_EQ(h.open()->data_version(), 3);
+    }
+    {
+        Harness h;
+        write_raw(h.dir() / "meta.json", R"({"schema_version":5})");
+        EXPECT_EQ(h.open()->data_version(), 5);
+    }
+}
+
+// Spec 7.3: the migrated records and the new version reach the disk
+// together through journal.json. A directory where write_atomic() puts
+// its ".tmp" makes that write fail before it changes anything, which
+// stands in for a power cut at that point: the store is then dropped
+// without another flush.
+TEST(SceneStore, MigrationCommitIsAtomicWithVersion) {
+    const std::string v1 =
+        "{\"op\":\"put\",\"id\":1,\"v\":{\"name\":\"a\"}}\n"
+        "{\"op\":\"put\",\"id\":2,\"v\":{\"name\":\"b\"}}\n";
+    auto migrate = [](SceneStore& s) {
+        s.begin_batch();
+        ASSERT_TRUE(s.update("items", 1, R"({"name":"a","done":false})"));
+        ASSERT_TRUE(s.update("items", 2, R"({"name":"b","done":false})"));
+        ASSERT_TRUE(s.commit_migration(2));
+        EXPECT_EQ(s.data_version(), 2);
+    };
+    std::error_code ec;
+
+    // Cut after the journal: the reload replays records and version.
+    {
+        Harness h;
+        write_raw(h.dir() / "items.log", v1);
+        {
+            auto s = h.open();
+            EXPECT_EQ(s->data_version(), 1);
+            fs::create_directories(h.dir() / "meta.json.tmp", ec);
+            migrate(*s);
+            EXPECT_FALSE(Harness::flush_now(*s));
+            ASSERT_TRUE(on_disk(h.dir() / "journal.json"));
+            EXPECT_EQ(read_raw(h.dir() / "items.log"), v1);
+            h.timers.clear();
+        }
+        fs::remove(h.dir() / "meta.json.tmp", ec);
+        auto again = h.open();
+        EXPECT_EQ(again->data_version(), 2);
+        auto found = again->find("items", all());
+        ASSERT_TRUE(found);
+        ASSERT_EQ(found.value().size(), 2u);
+        EXPECT_EQ(str(found.value()[0].json), R"({"name":"a","done":false})");
+        EXPECT_EQ(str(found.value()[1].json), R"({"name":"b","done":false})");
+        EXPECT_FALSE(on_disk(h.dir() / "journal.json"));
+        EXPECT_EQ(read_raw(h.dir() / "meta.json"), R"({"schema_version":2})");
+        EXPECT_EQ(h.open()->data_version(), 2);
+    }
+
+    // Cut before the journal: nothing changed, records nor version.
+    {
+        Harness h;
+        write_raw(h.dir() / "items.log", v1);
+        {
+            auto s = h.open();
+            fs::create_directories(h.dir() / "journal.json.tmp", ec);
+            migrate(*s);
+            EXPECT_FALSE(Harness::flush_now(*s));
+            h.timers.clear();
+        }
+        fs::remove(h.dir() / "journal.json.tmp", ec);
+        auto again = h.open();
+        EXPECT_EQ(again->data_version(), 1);
+        EXPECT_EQ(str(again->find("items", all()).value()[0].json), R"({"name":"a"})");
+        EXPECT_FALSE(on_disk(h.dir() / "meta.json"));
+        EXPECT_EQ(read_raw(h.dir() / "items.log"), v1);
+    }
+
+    // Nothing in the way: everything lands and the journal goes.
+    {
+        Harness h;
+        write_raw(h.dir() / "items.log", v1);
+        auto s = h.open();
+        migrate(*s);
+        ASSERT_TRUE(Harness::flush_now(*s));
+        EXPECT_FALSE(on_disk(h.dir() / "journal.json"));
+        EXPECT_EQ(read_raw(h.dir() / "meta.json"), R"({"schema_version":2})");
+        auto again = h.open();
+        EXPECT_EQ(again->data_version(), 2);
+        EXPECT_EQ(str(again->find("items", all()).value()[1].json), R"({"name":"b","done":false})");
+    }
+
+    // Without an open batch there is nothing to commit.
+    {
+        Harness h;
+        auto s = h.open();
+        auto r = s->commit_migration(2);
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+        EXPECT_EQ(s->data_version(), 0);
+    }
+}

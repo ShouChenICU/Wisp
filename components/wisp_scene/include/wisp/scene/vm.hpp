@@ -122,6 +122,9 @@ struct ScriptError {
 // What every scene VM together may hold (scene-device spec 3.5).
 inline constexpr size_t kVmBudgetBytes = 3 * 1024 * 1024;
 
+// How long scene.migrate(old) may run (scene-device spec 7.3).
+inline constexpr uint32_t kMigrateMs = 2000;
+
 // The memory budget several VMs share. Each Vm whose limits name the pool
 // reserves every growth of its heap here as well as against its own
 // limit, and gives back every byte it frees (all of it when it is
@@ -205,8 +208,12 @@ public:
     // gone and nothing is pushed. Only for the scene task's top level:
     // bindings that run Lua code inside a call use lua_pcall/protect(),
     // which share the outer budget. This is the only way to run scene
-    // code; anything run outside it has no time limit.
-    std::optional<ScriptError> call(int nargs, int nresults, Budget budget = Budget::Fresh);
+    // code; anything run outside it has no time limit. `exec_ms` is this
+    // call's time limit (0: limits().exec_ms), for the rare step allowed
+    // longer than a message (a migration, scene-device spec 7.3); a
+    // timeout's error names it.
+    std::optional<ScriptError> call(int nargs, int nresults, Budget budget = Budget::Fresh,
+                                    uint32_t exec_ms = 0);
 
     // True after a timeout or memory fault; the VM must be destroyed.
     bool faulted() const { return fault_ != Fault::None; }
@@ -265,6 +272,8 @@ private:
     // Set by the destructor: every instruction lua_close might run raises.
     bool closing_ = false;
     uint64_t start_ms_ = 0;
+    // The time limit of the top-level call running (or last run).
+    uint32_t exec_ms_ = 0;
     bool started_ = false;  // start_ms_ holds a top-level call's start
     // A refused request Lua has not yet retried successfully, for the
     // memory fault rule above.
