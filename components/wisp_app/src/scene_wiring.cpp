@@ -367,6 +367,14 @@ void SceneWiring::remove(const std::string& id, const std::string& name, bool wi
                    r.error().message.c_str());
     }
     if (!removed) return;
+    // A retry that succeeds supersedes an earlier "could not be deleted"
+    // notice for the same scene: it must not keep telling the user to try
+    // again, including after a reboot (the notice is persisted).
+    if (notices_ != nullptr) {
+        notices_->dismiss(core::kSystemSource,
+                          std::string(core::notice::kSceneDeleteFailed) + ":" + name,
+                          core::DismissReason::Dismiss);
+    }
     publish(id, "deleted");
 }
 

@@ -531,6 +531,12 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     if (now - self->last_scene_list_ms_ >= kSceneResyncMs) {
         self->last_scene_list_ms_ = now;
         self->request_scene_list();
+        // Closing a faulted foreground scene's error panel runs no
+        // on_close and publishes no scene.state (close_slot() only
+        // publishes "stopped" for a scene that was actually running), so
+        // the subscription above can miss it; this catches up with
+        // foreground() either way.
+        self->follow_foreground();
     }
     if (now - self->last_storage_ms_ >= kStorageResyncMs) self->request_storage();
     self->net_section_.tick(now);

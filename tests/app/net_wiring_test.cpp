@@ -259,8 +259,10 @@ TEST(NetWiring, NetworkWindowDeliversADeferredRequest) {
     ASSERT_EQ(r.pm->level(), PowerLevel::DeepStandby);
     ASSERT_TRUE(wait_until([&] { return !r.wifi->radio_on.load(); }, 5000));
     r.submit("https://api.example.com/later");
+    ASSERT_TRUE(wait_until([&] { return r.http->deferred_count() == 1u; }, 5000));
+    // The negative check below needs an actual settle: there is no event
+    // to wait on for "never called".
     wisp::os::sleep_ms(600);
-    ASSERT_EQ(r.http->deferred_count(), 1u);
     EXPECT_EQ(r.inner.calls(), 0u);
     EXPECT_FALSE(holds(r.locks, "system.netwindow"));
 

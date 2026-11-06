@@ -421,6 +421,72 @@ TEST(AppScenes, SelfCheckLetsTheImuGoWhileASceneIsInFront) {
     EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 50u; }, 3000));
 }
 
+// A foreground scene that faults shows its error panel over the self-check
+// screen, which stays covered. Closing that panel (the back button, not a
+// reload) never runs on_close or publishes scene.state: close_slot() only
+// publishes "stopped" for a scene that was actually running, and a faulted
+// slot's VM is already gone. follow_foreground() is normally driven by
+// scene.state, so without another event the self-check screen would read
+// as covered, and the IMU stays dropped, until the periodic scene resync
+// catches up.
+TEST(AppScenes, SelfCheckResyncsAfterAFaultedPanelCloses) {
+    UiNetOptions opts;
+    auto imu = std::make_shared<wisp::test::FakeImu>("imu.main");
+    opts.imu = imu;
+    Booted b(opts);
+    put_scene(b.h.root, "bad", "坏场景", R"(return ui.screen {
+  ui.button { ref = "go", text = "go", on_click = function() error("boom") end },
+}
+)");
+    ASSERT_TRUE(b.start());
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    wisp::core::SensorService* sensors = b.h.app->sensors();
+    ASSERT_NE(rt, nullptr);
+    ASSERT_NE(sensors, nullptr);
+    auto holders = [&] {
+        std::vector<std::string> out;
+        for (const auto& e : b.h.app->occupancy().list()) out.push_back(e.holder);
+        return out;
+    };
+    const std::vector<std::string> selfcheck = {"system.selfcheck"};
+    ASSERT_TRUE(wait_until([&] { return holders() == selfcheck; }, 3000));
+
+    ASSERT_TRUE(rt->open("bad"));
+    ASSERT_TRUE(wait_until(
+        [&] {
+            bool found = false;
+            run_on_ui_blocking(b.h.app->ui(), [&] {
+                found = find_button_with_label(lv_screen_active(), "go") != nullptr;
+            });
+            return found;
+        },
+        3000));
+    EXPECT_TRUE(wait_until([&] { return holders().empty(); }, 3000));
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(
+        wait_until([&] { return rt->status("bad").state == wisp::core::SceneState::Error; }, 3000));
+
+    // "返回": back to the self-check screen, the scene still in the error
+    // state.
+    ASSERT_EQ(run_on_ui_thread(b.h.app->ui(),
+                               [] {
+                                   lv_obj_t* back = find_button_with_label(
+                                       lv_layer_top(), wisp::ui::tr(wisp::ui::StrId::SceneBack));
+                                   if (back == nullptr) return std::string("none");
+                                   lv_obj_send_event(back, LV_EVENT_CLICKED, nullptr);
+                                   return std::string("ok");
+                               }),
+              "ok");
+    ASSERT_TRUE(wait_until([&] { return !rt->foreground(); }, 3000));
+    EXPECT_EQ(rt->status("bad").state, wisp::core::SceneState::Error);
+
+    // The periodic scene resync picks up what the missing scene.state
+    // event could not: the self-check screen re-checks foreground() and
+    // takes the IMU back.
+    EXPECT_TRUE(wait_until([&] { return holders() == selfcheck; }, 35000));
+    EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 50u; }, 3000));
+}
+
 // Spec 5.1/5.4 across the real pieces: a scene in the background posts a
 // waking notification while the device is in deep standby; PowerManager
 // brings it back to active, the scene in front stays the self-check screen
@@ -459,8 +525,11 @@ return ui.screen { ui.label { text = "pomo" } }
         });
     run_on_ui_blocking(b.h.app->ui(), [&] { pm->enter_standby(); });
     pm->tick(wisp::os::now_ms() + 3'600'000);
+    // Generous on purpose: the scene's own timer below fires 1500 ms after
+    // it went to the background, and the "levels" sequence checked at the
+    // end only holds if deep standby is reached before that.
     ASSERT_TRUE(
-        wait_until([&] { return pm->level() == wisp::hal::PowerLevel::DeepStandby; }, 1000));
+        wait_until([&] { return pm->level() == wisp::hal::PowerLevel::DeepStandby; }, 10000));
 
     ASSERT_TRUE(wait_until([] { return count_of(scene_log("pomo"), "notify\tn1") == 1; }, 5000));
     EXPECT_TRUE(wait_until([&] { return pm->level() == wisp::hal::PowerLevel::Active; }, 3000));
@@ -617,6 +686,9 @@ TEST(AppScenes, ConfirmedDeleteAgainstAFullWorkerTellsTheUser) {
     ASSERT_EQ(click_yes(), "ok");
     EXPECT_TRUE(
         wait_until([&] { return !fs::exists(fs::path(b.h.root) / "scenes" / "counter"); }, 3000));
+    // The retry succeeded: the stale "could not be deleted" notice must
+    // not keep telling the user to try again.
+    EXPECT_TRUE(wait_until([&] { return !failed_notice().has_value(); }, 3000));
 }
 
 // The package is gone but its data stayed (a delete without data, or a

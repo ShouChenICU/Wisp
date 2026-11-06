@@ -76,6 +76,11 @@ public:
     // job (the running job itself would never finish).
     bool drain(uint32_t timeout_ms);
 
+    // Jobs submitted and not yet finished (queued plus the one running, if
+    // any). Lets a caller wait for a job it just submitted to actually be
+    // queued, rather than guessing how long that takes.
+    size_t pending() const { return pending_.load(); }
+
 private:
     void run();
 

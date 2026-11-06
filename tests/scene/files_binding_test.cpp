@@ -395,8 +395,13 @@ return ui.screen {
 
     auto hold = hold_worker();
     ASSERT_TRUE(wait_label("again"));
+    const size_t before = worker.pending();
     ASSERT_TRUE(rt->click_ref("w"));
-    wisp::os::sleep_ms(100);  // the write and the append are queued
+    // Both the write and the append are really queued behind the held
+    // job before the card goes, not just clicked: the click message still
+    // has to reach the scene task before it runs the Lua handler that
+    // submits them.
+    ASSERT_TRUE(wait_until([&] { return worker.pending() >= before + 2; }, 2000));
     pull_card();
     *hold = false;
     auto lines = wait_log("h", 3);
