@@ -118,6 +118,17 @@ Source: `feat/agent-core` review records.
   - `AppScenes.DeleteSceneWithoutDialog` needs its own `EventBus` because `os::set_flash_thread()` is one global taken over by a second worker;
   - `ThreadsRisksAndTimeouts` asserts `timeout_ms` on agent-thread tools, which the registry ignores;
   - `tr_fill_n` has no direct test in `strings_test.cpp`.
+- Agent REST/WebSocket wiring:
+  - the conversation `epoch` is bumped by the `Cleared` listener after the store already changed, so a `GET /conversation` in that window pairs new messages with the old epoch; keep a generation counter in the store read under the history lock; `message(seq)` carries no epoch;
+  - `POST /agent/messages` copies the up-to-12 KB text twice in internal RAM (`as_string()` then the argument); take a `std::string_view`;
+  - `DeltasCoalescedPer100ms` relies on real time; inject `now_ms`;
+  - `AppAgent.StopsWithATurnInFlight` does not actually stop mid-turn (no model, the turn ends at once);
+  - no test for `DELETE /agent/conversations` without CSRF or any agent route without a token;
+  - the WS bridge formats every settled message even with no `agent` subscribers;
+  - the `queued` flag in the 202 can be wrong under a concurrent voice submit;
+  - `device.status` storage use lags one call and is null on the first call after boot;
+  - with no `net.wifi` device (simulator) the context reports the network as up.
+- Firmware builds with `-Werror=missing-field-initializers`, the host build does not, so `tools/ci.sh` misses designated initializers that omit fields; enable the warning on the host or build the firmware in CI.
 
 ## Glyph partition parked review findings
 

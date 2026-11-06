@@ -5,7 +5,7 @@
 // handed to the admin routes as AdminDeps::agent) and its WebSocket frames
 // (AgentWsBridge, fed to the admin page's WsHub).
 //
-// App builds it (build_agent_wiring()) with a screen and a scene runtime,
+// App builds it (App::build_agent()) with a screen and a scene runtime,
 // after the runtime and before networking (the routes take api()); it
 // start()s once the runtime runs and stop()s before the scene runtime, the
 // system layer and the storage worker go: after stop() nothing runs on

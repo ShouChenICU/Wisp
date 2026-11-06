@@ -362,14 +362,19 @@
 
 | 接口 | 说明 |
 |---|---|
-| `GET /conversation` | 当前对话：消息、进行中的一轮、待确认请求、`state` |
-| `POST /messages` `{"text"}` | 发送消息；排队已满返回 409 `busy`；文字最长 4000 字符 |
+| `GET /conversation` | 当前对话：最近 100 条消息、`total`、`epoch`、进行中的一轮、待确认请求、`state` |
+| `POST /messages` `{"text"}` | 发送消息，返回 202 `{"queued"}`；排队已满返回 409 `busy`；文字最长 4000 字符 |
+| `GET /messages/{seq}` | 当前对话中的一条消息，带完整的工具参数与结果 |
 | `POST /stop` | 中止当前一轮 |
 | `POST /conversation/new` | 当前对话归档，开始新对话 |
 | `GET /archive` | 归档列表：序号、时间、第一条消息 |
 | `GET /archive/{n}` | 某个归档的全部消息 |
-| `DELETE /conversations` | 清空当前对话与全部归档；需要设备确认，拒绝返回 403 `denied` |
-| `GET /usage` | 今天与本月的 token 用量、`day_tokens` 上限 |
+| `DELETE /conversations` | 清空当前对话与全部归档；需要设备确认。立即返回 202 `{"pending":true}`（一轮进行中返回 409 `busy`），结果由 WebSocket 的 `cleared` 消息给出 |
+| `GET /usage` | 今天与本月的 token 用量、`day_tokens` 上限（MVP 不做，见 MVP spec） |
+
+设备确认最长等 30 秒，而 ESP 的 httpd 每个实例只有一个处理任务，同步等待会让整个管理后台停住，所以清空是异步的。
+
+每条消息带 `seq`、`turn`，它们在每个对话里从头编号；`epoch` 每次启动从 1 开始，每开始一个新对话加 1。客户端看到 `epoch` 或 WebSocket hello 的 `boot_id` 变化时丢弃缓存。压缩摘要和标记消息带 `"hidden": true`，不作为对话内容显示；文字为空的摘要另带 `"dropped": true`，表示较早的几轮已被丢弃。
 
 ### 7.2 WebSocket
 
@@ -378,10 +383,11 @@
 | 消息 | 内容 |
 |---|---|
 | `{"t":"agent","k":"delta","text"}` | 回复的流式文字 |
-| `{"t":"agent","k":"tool","phase":"start"\|"end","name","args","result"}` | 工具开始或结束。`args`、`result` 是摘要，各最多 200 字符 |
+| `{"t":"agent","k":"tool","phase":"start"\|"end","name","args","result","ok"}` | 工具开始或结束。`args`、`result` 是摘要，各最多 200 字符；`ok` 只在结束时有 |
 | `{"t":"agent","k":"state","state"}` | 状态变化（3.8） |
 | `{"t":"agent","k":"confirm","text"\|null}` | 等待设备确认，或确认结束 |
 | `{"t":"agent","k":"msg","msg"}` | 一条完整消息落定 |
+| `{"t":"agent","k":"cleared","ok","epoch"}` | 新对话或清空的结果；`ok` 为 false 表示设备上拒绝或超时 |
 
 ### 7.3 网页"对话"页
 
