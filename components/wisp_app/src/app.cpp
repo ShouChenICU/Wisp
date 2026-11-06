@@ -281,6 +281,23 @@ Result<void> App::start() {
         impl_->utc_offset_min.store(now.utc_offset_min);
     }
 
+    // The IMU's subscribers, before the scene runtime and the self-check
+    // screen that read it. Standby and deep standby pause every
+    // subscription (spec 6.1); the state comes from the payload, as the
+    // service keeps no reference to PowerManager.
+    impl_->sensors = std::make_unique<core::SensorService>(
+        impl_->registry.get<hal::Imu>("imu.main"), impl_->occupancy);
+    if (auto r = impl_->sensors->start(); !r) {
+        WLOG_W("app", "sensors off: %s", r.error().message.c_str());
+    }
+    impl_->sensor_sub =
+        impl_->bus.subscribe("power.state", [sensors = impl_->sensors.get()](const core::Event& e) {
+            auto it = e.payload.find("state");
+            if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
+            const std::string& state = it->second.as_string();
+            sensors->set_standby(state == "standby" || state == "deep_standby");
+        });
+
     impl_->power_manager = std::make_unique<PowerManager>(PowerManagerDeps{
         .bus = impl_->bus,
         .registry = impl_->registry,
@@ -362,7 +379,7 @@ Result<void> App::start() {
                     impl->power_manager->exit_standby();
                 }
             },
-            &impl_->wakelocks, impl_->notifications.get());
+            &impl_->wakelocks, impl_->notifications.get(), impl_->sensors.get());
     }
     scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
     {
@@ -602,6 +619,15 @@ void App::stop() {
         impl_->scenes.reset();
     }
 
+    // Nothing subscribes any more: the scene runtime and the self-check
+    // screen are gone.
+    impl_->bus.unsubscribe(impl_->sensor_sub);
+    impl_->sensor_sub = 0;
+    if (impl_->sensors) {
+        impl_->sensors->stop();
+        impl_->sensors.reset();
+    }
+
     // PowerManager is torn down next -- after the self-check screen
     // (which calls into it), before buttons/ui/bus (which it in turn
     // holds pointers/a reference into) are themselves stopped/reset.
@@ -683,6 +709,8 @@ core::SceneRepository* App::scene_repository() {
 PowerManager* App::power_manager() { return impl_->power_manager.get(); }
 core::WakeLockRegistry& App::wakelocks() { return impl_->wakelocks; }
 core::NotificationService* App::notifications() { return impl_->notifications.get(); }
+core::OccupancyRegistry& App::occupancy() { return impl_->occupancy; }
+core::SensorService* App::sensors() { return impl_->sensors.get(); }
 net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr; }
 net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }
 net::TimeSyncService* App::time_sync() { return impl_->net ? impl_->net->time_sync() : nullptr; }

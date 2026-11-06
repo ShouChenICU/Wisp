@@ -197,6 +197,7 @@
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
@@ -286,6 +287,9 @@ struct SceneRuntimeDeps {
     // <System>/scenes/background.json (file header); empty: the list is
     // neither written nor restored.
     std::string background_list_path;
+    // wisp.sensor; null: subscribe() and on() return nil, "unavailable".
+    // Must outlive the runtime.
+    core::SensorService* sensors = nullptr;
 };
 
 struct SceneRuntimeConfig {
@@ -539,6 +543,9 @@ private:
     // Gives the scene's wisp.http its proxy: the declared hosts, and
     // results that come back as HttpDone messages for this instance.
     void wire_http(Slot& s);
+    // Gives the scene's wisp.sensor the service, and batches that come
+    // back as Sensor messages for this instance.
+    void wire_sensors(Slot& s);
     // "Back" for the scene in front: to the background if it declares it
     // (and is running), closed otherwise. `except` is not counted towards
     // the background's limit (the scene about to come forward).

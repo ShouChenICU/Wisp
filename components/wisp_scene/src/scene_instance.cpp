@@ -135,7 +135,10 @@ SceneInstance::SceneInstance(std::string id, std::shared_ptr<const core::ScenePa
                              VmLimits limits)
     : id_(std::move(id)), package_(std::move(package)), limits_(limits) {}
 
-SceneInstance::~SceneInstance() = default;
+// The runtime ends the subscriptions itself when a scene closes or
+// faults; this catches any path that drops the instance without that,
+// as the service would otherwise keep its callbacks and occupancy.
+SceneInstance::~SceneInstance() { release_sensors(api_); }
 
 std::optional<ScriptError> SceneInstance::flush(std::optional<ScriptError> err) {
     if (err) return err;
@@ -219,6 +222,10 @@ std::optional<ScriptError> SceneInstance::timer(uint32_t id, bool once) {
 
 std::optional<ScriptError> SceneInstance::http(uint32_t id, const net::SceneHttpResult& result) {
     return flush(run_http_callback(*vm_, id, result));
+}
+
+std::optional<ScriptError> SceneInstance::sensor(uint32_t id, const core::SensorBatch& batch) {
+    return flush(run_sensor_callback(*vm_, id, batch));
 }
 
 std::optional<ScriptError> SceneInstance::device(DeviceEvent ev, const DeviceInfo& info) {

@@ -57,6 +57,9 @@ struct SimOptions {
     // the build packs next to the executable, "none" runs without one
     // (large text on bitmap fonts), anything else is a path.
     std::string font_image;
+    // A file of scripted IMU steps (wisp/port/sim/imu_script.hpp); empty:
+    // none, the arrow keys tilt.
+    std::string imu_script;
 };
 
 // Parses argv[1..argc) (argv[0], the program name, is ignored) into a
@@ -66,8 +69,8 @@ struct SimOptions {
 // <rect|rounded_rect|circle>, --http-port <n> (0-65535; 0 = no admin
 // server), --web-dir <path>, --wifi-fail, --tap <x>,<y>@<ms> and
 // --swipe <x1>,<y1>,<x2>,<y2>@<ms> (both repeatable, appended to
-// `touches` in order), --scenes-dir <path>, --open-scene <id> and
-// --font-image <path|none>.
+// `touches` in order), --scenes-dir <path>, --open-scene <id>,
+// --font-image <path|none> and --imu-script <path>.
 //
 // Fails with wisp::ErrorCode::InvalidArgument if:
 //   - an argument is none of the flags above (the error message includes

@@ -181,7 +181,6 @@ private:
     // this screen (see app_impl.hpp).
     ui::SystemLayer& system_;
     std::shared_ptr<hal::Display> display_;
-    std::shared_ptr<hal::Imu> imu_;
     std::shared_ptr<hal::Power> power_;
     std::shared_ptr<hal::Clock> clock_;
     core::Settings ui_settings_;

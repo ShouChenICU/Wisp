@@ -140,6 +140,12 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
                 return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
             }
             (arg == "--scenes-dir" ? opts.scenes_dir : opts.open_scene) = std::move(v.value());
+        } else if (arg == "--imu-script") {
+            auto v = take_value(argc, argv, i, "--imu-script");
+            if (!v) {
+                return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
+            }
+            opts.imu_script = std::move(v.value());
         } else if (arg == "--font-image") {
             auto v = take_value(argc, argv, i, "--font-image");
             if (!v) {

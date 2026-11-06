@@ -109,7 +109,8 @@ public:
     void build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system, const hal::ScreenShape& shape,
                        std::function<Value()> device_status, std::function<void()> wake,
                        core::WakeLockRegistry* locks = nullptr,
-                       core::NotificationService* notices = nullptr);
+                       core::NotificationService* notices = nullptr,
+                       core::SensorService* sensors = nullptr);
     // Starts the proxy and the runtime and follows power.state;
     // `standby` reads whether the screen is off now.
     void start_runtime(std::function<bool()> standby);

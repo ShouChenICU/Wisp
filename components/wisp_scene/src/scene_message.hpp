@@ -137,6 +137,12 @@ struct HttpDone {
     uint32_t id = 0;
     net::SceneHttpResult result;
 };
+// A wisp.sensor batch for the binding's handle `handle` (empty for a
+// gesture), from the service's task.
+struct Sensor {
+    uint32_t handle = 0;
+    core::SensorBatch samples;
+};
 // A completion the store bindings will send.
 struct StoreDone {};
 
@@ -177,8 +183,9 @@ struct Notify {
 // stop(): close every scene and end the task.
 struct Quit {};
 
-using Body = std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone,
-                          StoreDone, Device, ClockSet, CheckSources, Wake, Restore, Notify, Quit>;
+using Body =
+    std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone, StoreDone,
+                 Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor, Quit>;
 
 }  // namespace msg
 

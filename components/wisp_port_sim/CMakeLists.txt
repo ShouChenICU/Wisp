@@ -86,7 +86,7 @@ wisp_component(
     NAME wisp_port_sim_dev
     SRCS dev/sim_display.cpp dev/sim_touch.cpp dev/sim_imu.cpp dev/sim_power.cpp
          dev/sim_clock.cpp dev/sim_button.cpp dev/sim_audio.cpp dev/sim_storage.cpp
-         sim_board.cpp png_writer.cpp
+         sim_board.cpp png_writer.cpp imu_script.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_app wisp_port_sim_net
     HOST_LIBS SDL2::SDL2

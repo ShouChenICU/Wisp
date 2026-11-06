@@ -213,3 +213,12 @@ TEST(SimOptions, FontImage) {
     EXPECT_EQ(r.error().code, wisp::ErrorCode::InvalidArgument);
     EXPECT_NE(r.error().message.find("--font-image"), std::string::npos);
 }
+
+TEST(SimOptions, ImuScript) {
+    const char* a1[] = {"wisp_sim"};
+    EXPECT_TRUE(parse_sim_options(1, a1).value().imu_script.empty());
+    const char* a2[] = {"wisp_sim", "--imu-script", "moves.txt"};
+    EXPECT_EQ(parse_sim_options(3, a2).value().imu_script, "moves.txt");
+    const char* a3[] = {"wisp_sim", "--imu-script"};
+    EXPECT_NE(parse_sim_options(2, a3).error().message.find("--imu-script"), std::string::npos);
+}

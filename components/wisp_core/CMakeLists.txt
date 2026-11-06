@@ -10,7 +10,7 @@ wisp_component(
          src/model_profiles.cpp src/model_presets.cpp src/system_settings.cpp
          src/firmware_image.cpp src/firmware_update.cpp src/zip.cpp
          src/scene_manifest.cpp src/scene_repository.cpp src/scene_install.cpp src/scene_store.cpp
-         src/scene_host.cpp
+         src/scene_host.cpp src/occupancy.cpp src/gesture.cpp src/sensor_service.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal
 )

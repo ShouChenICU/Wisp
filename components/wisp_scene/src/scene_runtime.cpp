@@ -682,6 +682,11 @@ void SceneRuntime::handle(SceneMessage& m) {
     } else if (auto* b = std::get_if<msg::HttpDone>(&body)) {
         Slot* s = target(m);
         if (s != nullptr && s->scene) run_step(*s, s->scene->http(b->id, b->result));
+    } else if (auto* b = std::get_if<msg::Sensor>(&body)) {
+        Slot* s = target(m);
+        // Paused in the background: a batch already on its way is dropped.
+        if (s != nullptr && s->scene && !s->background)
+            run_step(*s, s->scene->sensor(b->handle, b->samples));
     } else if (std::holds_alternative<msg::StoreDone>(body)) {
         // Its binding comes later; a current one has nothing to do yet.
         target(m);
@@ -1183,6 +1188,7 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason)
     api.scene_id = s.id;
     api.scene_name = s.name;
     if (deps_.http != nullptr) wire_http(s);
+    if (deps_.sensors != nullptr) wire_sensors(s);
     // Opened in front with the screen off: the timers of a scene that does
     // not declare "background" wait for it to come on.
     if (!visible_ && reason != LaunchReason::Boot && !s.declares_background)
@@ -1223,6 +1229,24 @@ void SceneRuntime::wire_http(Slot& s) {
         net::SceneHttpResult r;
         r.error = error;
         deliver(cb, std::move(r));
+    };
+}
+
+void SceneRuntime::wire_sensors(Slot& s) {
+    SceneApi& api = s.scene->api();
+    api.sensors = deps_.sensors;
+    // On the service's "wisp.imu" task, whose stack may be in PSRAM: this
+    // only copies the samples into a message (PSRAM) and queues it without
+    // waiting, never touching flash. A full queue drops the batch quietly:
+    // the next one comes 100 ms later, and a log line per batch would
+    // flood the log.
+    api.sensor_post = [link = link_, id = s.id, instance = s.instance](
+                          uint32_t handle, const core::SensorBatch* batch) {
+        msg::Sensor body{handle, {}};
+        if (batch != nullptr) body.samples.assign(batch->begin(), batch->end());
+        auto m = make_message(id, instance, std::move(body));
+        std::lock_guard<os::Mutex> lock(link->mu);
+        if (link->rt != nullptr) post_scene_message(*link->rt, std::move(m));
     };
 }
 
@@ -1296,6 +1320,7 @@ void SceneRuntime::fault(Slot& s, const ScriptError& err) {
     const std::string text = err.text();
     if (s.scene) s.scene->batch().clear();
     release_locks(s);
+    if (s.scene) release_sensors(s.scene->api());
     s.scene.reset();  // the VM goes with it, and its timers
     if (deps_.http != nullptr) deps_.http->cancel_scene(s.id);
     s.shown = false;
@@ -1373,6 +1398,8 @@ void SceneRuntime::to_background(Slot& s, std::shared_ptr<SceneWaiter> done, con
         s.scene->batch().clear();
     }
     release_locks(s);
+    // Spec 6.2: its subscriptions pause until it comes back.
+    pause_sensors(s.scene->api(), true);
     const uint64_t now = os::now_ms();
     if (&s == front_) {
         forget_front();
@@ -1416,6 +1443,7 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
     s.last_front_ms = os::now_ms();
     SceneApi& api = s.scene->api();
     api.background = false;
+    pause_sensors(api, false);
     if (!visible_ && !s.declares_background) api.timers.pause(os::now_ms());
     front_ = &s;
     {
@@ -1462,8 +1490,10 @@ void SceneRuntime::close_slot(Slot& s, std::shared_ptr<SceneWaiter> done) {
         if (s.shown) run_hook("on_hide");
         run_hook("on_close");
     }
-    // After the hooks, so a lock or a request on_close takes goes too.
+    // After the hooks, so a lock, a request or a subscription on_close
+    // takes goes too.
     release_locks(s);
+    if (s.scene) release_sensors(s.scene->api());
     s.scene.reset();
     if (deps_.http != nullptr) deps_.http->cancel_scene(s.id);
     // Before the caller can be answered (from the worker, below): whoever

@@ -32,7 +32,9 @@
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/occupancy.hpp"
 #include "wisp/core/power_monitor.hpp"
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/tone_player.hpp"
 #include "wisp/core/wakelock.hpp"
@@ -49,6 +51,9 @@ struct App::Impl {
     core::EventBus bus;
     // Wake locks (scene-device spec 4.3); PowerManager follows them.
     core::WakeLockRegistry wakelocks{bus};
+    // Device occupancy (scene-device spec 6.3); SensorService records its
+    // holders here.
+    core::OccupancyRegistry occupancy;
     core::StorageManager storage;
     core::ButtonService buttons;
     // Profile ids come from Platform::random (a weak fallback without it).
@@ -113,6 +118,12 @@ struct App::Impl {
     // 5.4). Built before power_manager, whose activity hook silences it,
     // and reset after it.
     std::unique_ptr<core::TonePlayer> tones;
+    // The IMU shared between the scenes (wisp.sensor) and the self-check
+    // screen (scene-device spec 6.1). Built by start() before the scene
+    // runtime and the screen, which hold pointers to it; stopped and reset
+    // by stop() once both are gone. Follows power.state (sensor_sub).
+    std::unique_ptr<core::SensorService> sensors;
+    core::SubscriptionId sensor_sub = 0;
     // audio/notify_vol and sys/tz_min, kept from system.settings: the
     // router reads the volume on the posting thread (the scene task) and
     // the status shell the time zone on the UI thread, neither of which

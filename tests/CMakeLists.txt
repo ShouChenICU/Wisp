@@ -86,6 +86,10 @@ wisp_test(NAME notification_service_test SRCS core/notification_service_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME tone_player_test SRCS core/tone_player_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME occupancy_test SRCS core/occupancy_test.cpp LIBS wisp_core wisp_port_sim_os)
+wisp_test(NAME gesture_test SRCS core/gesture_test.cpp LIBS wisp_core wisp_port_sim_os)
+wisp_test(NAME sensor_service_test SRCS core/sensor_service_test.cpp
+          LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME power_monitor_test SRCS core/power_monitor_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings TIMEOUT 20)
 wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui wisp_port_sim_os)
@@ -158,6 +162,8 @@ target_include_directories(sim_audio_test PRIVATE ${WISP_ROOT}/components/wisp_p
 wisp_test(NAME sim_board_test SRCS sim/sim_board_test.cpp
           LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os TIMEOUT 20)
 target_include_directories(sim_board_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
+wisp_test(NAME imu_script_test SRCS sim/imu_script_test.cpp
+          LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os)
 # Real loopback sockets; net/sha1.hpp is private to wisp_port_sim.
 wisp_test(NAME sim_http_server_test SRCS sim/sim_http_server_test.cpp
           LIBS wisp_port_sim_net TIMEOUT 30)
@@ -313,6 +319,8 @@ target_include_directories(scene_background_test PRIVATE ${WISP_ROOT}/components
 wisp_test(NAME notify_binding_test SRCS scene/notify_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 target_include_directories(notify_binding_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
+wisp_test(NAME sensor_binding_test SRCS scene/sensor_binding_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME lua_json_test SRCS scene/lua_json_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME store_binding_test SRCS scene/store_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)

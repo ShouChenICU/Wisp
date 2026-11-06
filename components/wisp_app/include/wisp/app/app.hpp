@@ -102,6 +102,8 @@ class SceneRepository;
 class SystemSettings;
 class NotificationService;
 class WakeLockRegistry;
+class OccupancyRegistry;
+class SensorService;
 }  // namespace wisp::core
 
 namespace wisp::scene {
@@ -333,6 +335,12 @@ public:
     // Notifications (scene-device spec 5): loaded by start(), saved and
     // reset by stop(); nullptr before start() or after stop().
     core::NotificationService* notifications();
+    // Who uses which device (scene-device spec 6.3); valid for the App's
+    // lifetime.
+    core::OccupancyRegistry& occupancy();
+    // The IMU's subscribers (scene-device spec 6.1): built by start(),
+    // stopped and reset by stop(); nullptr before start() or after stop().
+    core::SensorService* sensors();
 
     // The Platform this App was constructed from (needed by the
     // self-check screen for request_power_off, heap_info,

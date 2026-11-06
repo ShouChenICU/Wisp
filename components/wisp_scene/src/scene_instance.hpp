@@ -57,6 +57,8 @@ public:
     std::optional<ScriptError> timer(uint32_t id, bool once);
     // A wisp.http result for callback `id` (run_http_callback()).
     std::optional<ScriptError> http(uint32_t id, const net::SceneHttpResult& result);
+    // A wisp.sensor batch or gesture for handle `id` (run_sensor_callback()).
+    std::optional<ScriptError> sensor(uint32_t id, const core::SensorBatch& batch);
     // The wisp.device.on(ev) handlers, if the scene added any.
     std::optional<ScriptError> device(DeviceEvent ev, const DeviceInfo& info);
 

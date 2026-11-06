@@ -25,6 +25,13 @@ wisp::Result<wisp::hal::ImuSample> SimImu::read() {
     sample.ax = tilt.ax;
     sample.ay = tilt.ay;
     sample.az = tilt.az;
+    if (auto script = input_->imu_script()) {
+        if (auto a = imu_script_accel(*script, wisp::os::now_ms())) {
+            sample.ax = (*a)[0];
+            sample.ay = (*a)[1];
+            sample.az = (*a)[2];
+        }
+    }
     sample.gx = 0;
     sample.gy = 0;
     sample.gz = 0;

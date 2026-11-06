@@ -1,18 +1,24 @@
 #pragma once
 
-// The self-check screen's "wisp.sample" task: reads the IMU at about 50 Hz
-// and the battery and the clock once a second into a mutex-protected
-// snapshot, which the screen's 100 ms refresh copies out (snapshot()).
-// Standby stops the IMU polling and slows the battery/clock reads to about
-// every 30 s (spec 6.7).
+// The self-check screen's readings, in a mutex-protected snapshot the
+// screen's 100 ms refresh copies out (snapshot()):
+//   - the IMU through core::SensorService (accelerometer and gyroscope at
+//     50 Hz, as holder "system.selfcheck"; scene-device plan refinement
+//     19), never the driver itself. The service pauses it in standby. The
+//     accelerations go back to g, which the screen shows.
+//   - the battery and the clock, read by the "wisp.sample" task once a
+//     second, about every 30 s in standby (spec 6.7).
 //
 // Threading: start(), stop() and the destructor from the screen's owner;
-// set_standby() from the bus dispatcher; snapshot() from the UI thread.
+// set_standby() from the bus dispatcher; snapshot() from the UI thread;
+// the IMU callbacks on the service's "wisp.imu" task, which must not touch
+// flash: they only copy the newest sample into the snapshot.
 
 #include <atomic>
 #include <cstdint>
 #include <memory>
 
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/imu.hpp"
 #include "wisp/hal/power.hpp"
@@ -22,6 +28,7 @@ namespace wisp::app {
 
 // The sampler's latest readings. An `_ok` flag is false while the last
 // read of that device failed (its value then keeps the last good one).
+// `imu` is in g and degrees per second.
 struct SampleSnapshot {
     hal::ImuSample imu{};
     bool imu_ok = true;
@@ -33,8 +40,9 @@ struct SampleSnapshot {
 
 class SelfCheckSampler {
 public:
-    // Any device may be null; it is then never read.
-    SelfCheckSampler(std::shared_ptr<hal::Imu> imu, std::shared_ptr<hal::Power> power,
+    // Any of them may be null; it is then never read. `sensors` must
+    // outlive the sampler.
+    SelfCheckSampler(core::SensorService* sensors, std::shared_ptr<hal::Power> power,
                      std::shared_ptr<hal::Clock> clock);
     // Stops and joins the task.
     ~SelfCheckSampler();
@@ -42,14 +50,18 @@ public:
     SelfCheckSampler(const SelfCheckSampler&) = delete;
     SelfCheckSampler& operator=(const SelfCheckSampler&) = delete;
 
+    // Subscribes to the IMU and starts the task.
     void start();
-    // Stops the task and waits for it; a no-op if it is not running.
+    // Unsubscribes, stops the task and waits for it; a no-op if it is not
+    // running.
     void stop();
 
-    // Follows PowerManager's standby (the "power.state" event); waking
-    // resumes the IMU polling at once rather than after the next slow
-    // read.
+    // Follows PowerManager's standby (the "power.state" event) for the
+    // battery/clock reads; the service pauses the IMU on its own.
     void set_standby(bool standby);
+
+    // There is an accelerometer to show.
+    bool has_imu() const;
 
     SampleSnapshot snapshot() const;
 
@@ -58,8 +70,14 @@ private:
     // The battery/clock read: once a second while active, about every
     // 30 s in standby.
     void sample_slow();
+    void subscribe_imu();
 
-    std::shared_ptr<hal::Imu> imu_;
+    core::SensorService* sensors_;
+    uint32_t accel_sub_ = 0;
+    uint32_t gyro_sub_ = 0;
+    // Subscribed; snapshot() reads it on the UI thread while the owner
+    // may be stopping.
+    std::atomic<bool> imu_live_{false};
     std::shared_ptr<hal::Power> power_;
     std::shared_ptr<hal::Clock> clock_;
 
@@ -72,8 +90,8 @@ private:
     // live: loop() runs on its own thread, with no UI-thread affinity to
     // synchronize against.
     std::atomic<bool> standby_{false};
-    // Given on wake-up and by stop(), so a loop() blocked in its standby
-    // wait notices at once.
+    // Given on wake-up and by stop(), so a loop() blocked in its wait
+    // notices at once.
     os::Semaphore wake_{1, 0};
 };
 

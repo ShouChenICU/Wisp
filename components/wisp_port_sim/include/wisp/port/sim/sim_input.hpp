@@ -13,7 +13,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <utility>
+#include <vector>
+
+#include "wisp/port/sim/imu_script.hpp"
 
 namespace wisp::port::sim {
 
@@ -63,6 +68,20 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         ax_ = std::clamp(ax_ + static_cast<float>(dx) * 0.1f, -1.0f, 1.0f);
         ay_ = std::clamp(ay_ + static_cast<float>(dy) * 0.1f, -1.0f, 1.0f);
+    }
+
+    // --imu-script: SimImu plays these steps (imu_script.hpp) from the
+    // first one's time on, instead of the arrow keys' tilt.
+    void set_imu_script(std::vector<ImuScriptStep> steps) {
+        auto shared = std::make_shared<const std::vector<ImuScriptStep>>(std::move(steps));
+        std::lock_guard<std::mutex> lock(mutex_);
+        imu_script_ = std::move(shared);
+    }
+
+    // Null without a script.
+    std::shared_ptr<const std::vector<ImuScriptStep>> imu_script() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return imu_script_;
     }
 
     void toggle_sd() {
@@ -115,6 +134,7 @@ private:
     float ax_ = 0.0f;
     float ay_ = 0.0f;
     bool sd_present_ = true;
+    std::shared_ptr<const std::vector<ImuScriptStep>> imu_script_;
 };
 
 }  // namespace wisp::port::sim

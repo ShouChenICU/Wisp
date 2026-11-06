@@ -4,9 +4,9 @@ namespace wisp::scene {
 
 const char* message_kind(const msg::Body& body) {
     static constexpr const char* kNames[] = {
-        "load",      "open",          "close",      "exit",      "reload",     "show",
-        "hide",      "event",         "list_range", "http_done", "store_done", "device",
-        "clock_set", "check_sources", "wake",       "restore",   "notify",     "quit"};
+        "load",  "open",       "close",     "exit",       "reload", "show",      "hide",
+        "event", "list_range", "http_done", "store_done", "device", "clock_set", "check_sources",
+        "wake",  "restore",    "notify",    "sensor",     "quit"};
     static_assert(std::size(kNames) == std::variant_size_v<msg::Body>);
     return kNames[body.index()];
 }

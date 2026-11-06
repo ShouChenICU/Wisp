@@ -37,6 +37,8 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/occupancy.hpp"
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -492,6 +494,42 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
     EXPECT_TRUE(wait_until([&] { return h.imu->read_count() > reads_at_standby; }, 2000));
 
     h.app.stop();
+}
+
+// Plan refinement 19: the screen reads the IMU through SensorService
+// (accel and gyro at 50 Hz) as holder "system.selfcheck", not the driver.
+TEST(SelfCheckScreen, ImuReadsThroughSensorService) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+    ASSERT_NE(h.app.sensors(), nullptr);
+    auto entries = h.app.occupancy().list();
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].device, "imu.main");
+    EXPECT_EQ(entries[0].holder, "system.selfcheck");
+    EXPECT_EQ(entries[0].mode, wisp::core::OccupancyMode::Shared);
+    EXPECT_EQ(h.app.sensors()->imu_rate(), 50u);
+    EXPECT_EQ(h.imu->rate_hz(), 50u);
+
+    // What the IMU reads reaches the screen in g, as before.
+    run_on_ui_blocking(h.app.ui(), [] {
+        lv_obj_t* label = find_label_containing(root_column(), "Accel");
+        if (label != nullptr) lv_obj_scroll_to_view_recursive(label, LV_ANIM_OFF);
+    });
+    wisp::hal::ImuSample sample{};
+    sample.ay = -0.25f;
+    sample.gz = 12.5f;
+    h.imu->set_next_sample(sample);
+    EXPECT_TRUE(wait_until(
+        [&] {
+            return !run_on_ui_thread(h.app.ui(), [] {
+                        return find_label_text_containing(lv_screen_active(), "-0.25");
+                    }).empty();
+        },
+        3000));
+
+    h.app.stop();
+    EXPECT_TRUE(h.app.occupancy().list().empty());
 }
 
 // Spec 5.6: the root column fills the whole screen so its background is

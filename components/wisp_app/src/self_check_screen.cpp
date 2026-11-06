@@ -63,7 +63,6 @@ SelfCheck::SelfCheck(App& app, ui::SystemLayer& system, SceneWiring* scenes)
       ui_(app.ui()),
       system_(system),
       display_(app.registry().get<hal::Display>("display.main")),
-      imu_(app.registry().get<hal::Imu>("imu.main")),
       power_(app.registry().get<hal::Power>("power.main")),
       clock_(app.registry().get<hal::Clock>("clock.main")),
       ui_settings_(*app.platform().settings, "ui"),
@@ -80,7 +79,7 @@ SelfCheck::SelfCheck(App& app, ui::SystemLayer& system, SceneWiring* scenes)
           if (net::PairingService* pairing = app_.pairing()) pairing->cancel_code();
       }),
       scenes_(scenes),
-      sampler_(imu_, power_, clock_) {}
+      sampler_(app.sensors(), power_, clock_) {}
 
 SelfCheck::~SelfCheck() {
     // Unsubscribe from "power.state" before anything else, so the
@@ -247,7 +246,7 @@ void SelfCheck::build_widgets() {
     build_devices(col);
     lv_obj_t* net_card = make_card(col, ui::StrId::SectionNetwork, text_);
     net_section_.build(net_card, text_, os::now_ms());
-    sensors_.build(col, text_, imu_ != nullptr);
+    sensors_.build(col, text_, sampler_.has_imu());
     power_clock_.build(col, text_, power_ != nullptr, clock_ != nullptr);
     storage_.build(col, text_);
     tests_section_.build(col, text_,

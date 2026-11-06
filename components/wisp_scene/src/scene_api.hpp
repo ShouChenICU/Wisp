@@ -1,11 +1,10 @@
 #pragma once
 
 // The wisp.timer, wisp.device, wisp.log, wisp.scene, wisp.store, wisp.http,
-// wisp.power and wisp.notify bindings (scene-runtime-core spec 5.1-5.5, scene-device
-// spec 3.2-3.4, 5.1). Thin adapters: the state they act on is a SceneApi, which
-// the SceneInstance owns and the scene task (SceneRuntime) fills in and
-// drives. Everything here runs on the scene task, which touches no flash:
-// SceneApi::device must not either.
+// wisp.power, wisp.notify and wisp.sensor bindings (scene-runtime-core spec
+// 5.1-5.5, scene-device spec 3.2-3.4, 5.1, 6.2). Thin adapters: the state they act on is a
+// SceneApi, which the SceneInstance owns and the scene task (SceneRuntime) fills in and drives.
+// Everything here runs on the scene task, which touches no flash: SceneApi::device must not either.
 //
 //   wisp.timer.after(ms, fn) / every(ms, fn)  -> handle, or nil and
 //       "interval_too_small" / "too_many_timers" (TimerSet's limits).
@@ -47,6 +46,21 @@
 //       background.
 //   wisp.notify_cancel(id) -> true if an unread notification of this
 //       scene with that id was removed.
+//   wisp.sensor (bind_sensor.cpp), over core::SensorService:
+//       subscribe(kind, {rate = n}, fn) -> handle: kind "accel" or "gyro",
+//       rate 10, 25, 50 or 100 (25 when the table or rate is left out);
+//       fn(samples) gets { {x =, y =, z =, t =}, ... } every 100 ms or so
+//       (m/s², or degrees per second for gyro; t in ms).
+//       on("shake" | "flip", fn) -> handle; fn(name) once per gesture.
+//       handle:stop() -> true if it was still subscribed.
+//       available() -> {accel = true, gyro = true} as the IMU has them,
+//       {} without one.
+//       subscribe and on: nil, "not_in_background" in the background;
+//       nil, "unavailable" without the service or the sensor; a bad kind,
+//       rate or gesture raises an argument error naming it.
+//       The runtime pauses a scene's subscriptions while it is in the
+//       background and resumes them in front (pause_sensors()), and ends
+//       them when it closes or faults (release_sensors()).
 //   wisp.scene.args(): a fresh table copied from *args each call ({} when
 //       there are none).
 //   wisp.store (bind_store.cpp): the scene's SceneStore, values converted
@@ -63,10 +77,12 @@
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include "wisp/base/value.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_store.hpp"
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -145,6 +161,20 @@ struct SceneApi {
     core::NotificationService* notifications = nullptr;
     std::string scene_id;
     std::string scene_name;
+    // wisp.sensor: the service (null: "unavailable") and how a batch for
+    // the binding's handle `id` (null: a gesture) reaches the scene task
+    // as msg::Sensor. sensor_post runs on the service's "wisp.imu" task,
+    // which must not touch flash (core::SensorService), so it only queues
+    // the message. Empty: nothing is delivered.
+    core::SensorService* sensors = nullptr;
+    std::function<void(uint32_t id, const core::SensorBatch* batch)> sensor_post;
+    // The binding's handle ids with the service handles behind them.
+    struct SensorHandle {
+        uint32_t id = 0;
+        uint32_t service = 0;
+    };
+    std::vector<SensorHandle> sensor_handles;
+    uint32_t next_sensor_id = 1;
     // wisp.device.on() was called for the event at least once.
     bool has_handlers[kDeviceEventCount] = {};
 
@@ -168,6 +198,15 @@ std::optional<ScriptError> run_device_handlers(Vm& vm, DeviceEvent ev, const Dev
 // happens if the scene has no such callback.
 std::optional<ScriptError> run_http_callback(Vm& vm, uint32_t id, const net::SceneHttpResult& r);
 
+// Calls wisp.sensor callback `id` with the samples, or for a gesture with
+// its name, with a fresh budget. Nothing happens if the handle was stopped.
+std::optional<ScriptError> run_sensor_callback(Vm& vm, uint32_t id, const core::SensorBatch& batch);
+
+// Pauses (true) or resumes every wisp.sensor subscription of the scene.
+void pause_sensors(SceneApi& api, bool paused);
+// Ends every wisp.sensor subscription of the scene. Idempotent.
+void release_sensors(SceneApi& api);
+
 namespace detail {
 
 // For the bind_*.cpp files; all follow the longjmp rule (vm.hpp).
@@ -183,6 +222,7 @@ void install_http(lua_State* L, int wisp);
 void install_power(lua_State* L, int wisp);
 // Sets wisp.notify and wisp.notify_cancel.
 void install_notify(lua_State* L, int wisp);
+void install_sensor(lua_State* L, int wisp);
 // The SceneApi install_api() put in the registry, or null in a VM that
 // has none (the ui table alone, in tests).
 SceneApi* find_api(lua_State* L);

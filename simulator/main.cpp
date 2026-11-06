@@ -86,6 +86,7 @@
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/image_decoders.hpp"
+#include "wisp/port/sim/imu_script.hpp"
 #include "wisp/port/sim/log_stdout.hpp"
 #include "wisp/port/sim/png_writer.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
@@ -206,6 +207,23 @@ std::vector<uint8_t> load_font_image(const SimOptions& opts, const char* argv0) 
         return {};
     }
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+// --imu-script's steps (wisp/port/sim/imu_script.hpp); an unreadable or
+// malformed file stops the simulator, as a bad option does.
+wisp::Result<std::vector<wisp::port::sim::ImuScriptStep>> load_imu_script(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return wisp::Result<std::vector<wisp::port::sim::ImuScriptStep>>::err(
+            wisp::ErrorCode::NotFound, "cannot read the IMU script " + path);
+    }
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    auto steps = wisp::port::sim::parse_imu_script(text);
+    if (!steps) {
+        return wisp::Result<std::vector<wisp::port::sim::ImuScriptStep>>::err(
+            steps.error().code, path + ": " + steps.error().message);
+    }
+    return steps;
 }
 
 // Takes a screenshot of the self-check UI (app.ui()->snapshot_rgb888())
@@ -647,6 +665,14 @@ int main(int argc, char** argv) {
     // Outlives `app` (Platform::font_image points into it).
     const std::vector<uint8_t> font_image = load_font_image(opts, argv[0]);
     auto input = std::make_shared<wisp::port::sim::SimInput>(/*sd_present_initial=*/!opts.no_sd);
+    if (!opts.imu_script.empty()) {
+        auto steps = load_imu_script(opts.imu_script);
+        if (!steps) {
+            std::fprintf(stderr, "wisp_sim: %s\n", steps.error().message.c_str());
+            return 2;
+        }
+        input->set_imu_script(std::move(steps.value()));
+    }
     auto on_power_off = [&should_exit] { should_exit.store(true); };
 
     // Keep the concrete SimBoard* from make_unique directly, before
