@@ -65,11 +65,19 @@ public:
     // `on_long_press` runs on the UI thread.
     void build(lv_obj_t* col, PageText& text, std::function<void()> on_long_press);
     void update(const ui::UiPerf& perf);
+    // Internal RAM (`free`/`largest`, -1 if unknown) and PSRAM (`psram_free`/
+    // `psram_total`, bytes). `psram_total` <= 0 shows "-": the platform
+    // either has no PSRAM or doesn't report one. Same refresh cadence as
+    // update() (SelfCheck::refresh_ui()).
+    void update_ram(int64_t free, int64_t largest, int64_t psram_free, int64_t psram_total);
 
 private:
     static void long_press_cb(lv_event_t* e);
 
+    const PageText* text_ = nullptr;
     lv_obj_t* label_ = nullptr;
+    lv_obj_t* ram_ = nullptr;
+    lv_obj_t* psram_ = nullptr;
     std::function<void()> on_long_press_;
 };
 

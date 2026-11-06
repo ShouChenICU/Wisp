@@ -72,6 +72,10 @@ const char* strings_ja(StrId id) {
             return "角速度";
         case StrId::TouchTest:
             return "タッチ";
+        case StrId::PerfInternalRam:
+            return "内部RAM";
+        case StrId::PerfPsram:
+            return "PSRAM";
         case StrId::ReadFailed:
             return "読み取りエラー";
         case StrId::LevelUnknown:
@@ -84,6 +88,10 @@ const char* strings_ja(StrId id) {
             return "オンライン";
         case StrId::Offline:
             return "オフライン";
+        case StrId::PerfFree:
+            return "空き";
+        case StrId::PerfLargestBlock:
+            return "最大ブロック";
         case StrId::TouchTestArea:
             return "タッチテスト";
         case StrId::TestUntested:

@@ -156,6 +156,9 @@ private:
     void refresh_ui();
     // UI thread: the time sync row from TimeSyncService::status().
     void refresh_time_sync();
+    // UI thread: the performance card's internal-RAM and PSRAM rows, from
+    // Platform::heap_info().
+    void refresh_perf_ram();
     // UI thread: asks the storage worker for StorageManager::status() (it
     // reaches the flash, see SceneWiring::storage_status_async()), at most
     // one request at a time; show_storage() takes the answer.

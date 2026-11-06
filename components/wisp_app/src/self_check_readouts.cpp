@@ -39,6 +39,22 @@ std::string battery_text(const SampleSnapshot& snap, const PageText& text) {
 
 constexpr int32_t kItemGap = 8;
 
+// Whole kilobytes, rounded: a diagnostic row, not a precise accounting
+// (matches the granularity of the `mem` console command's figures).
+std::string format_kb(int64_t bytes) {
+    int64_t kb = bytes > 0 ? (bytes + 512) / 1024 : 0;
+    return std::to_string(kb) + " KB";
+}
+
+// Megabytes with one decimal place, PSRAM being large enough that whole
+// KB would be noise.
+std::string format_mb(int64_t bytes) {
+    double mb = bytes > 0 ? static_cast<double>(bytes) / (1024.0 * 1024.0) : 0.0;
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.1f", mb);
+    return buf;
+}
+
 }  // namespace
 
 void PowerClockSection::build(lv_obj_t* col, PageText& text, bool has_power, bool has_clock) {
@@ -129,12 +145,19 @@ void StorageSection::update(const core::StorageStatus& status) {
 }
 
 void PerfSection::build(lv_obj_t* col, PageText& text, std::function<void()> on_long_press) {
+    text_ = &text;
     on_long_press_ = std::move(on_long_press);
     lv_obj_t* card = make_card(col, ui::StrId::SectionPerf, text);
     label_ = make_wrap_label(card);
     lv_label_set_text(label_, "FPS 0 | CPU 0% | flush 0.0ms");
     lv_obj_add_flag(label_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(label_, &PerfSection::long_press_cb, LV_EVENT_LONG_PRESSED, this);
+
+    lv_obj_t* table = make_table(card, 2);
+    ram_ = add_table_row(table, 0, ui::StrId::PerfInternalRam, text);
+    lv_label_set_text(ram_, "--");
+    psram_ = add_table_row(table, 1, ui::StrId::PerfPsram, text);
+    lv_label_set_text(psram_, "--");
 }
 
 void PerfSection::update(const ui::UiPerf& perf) {
@@ -146,6 +169,37 @@ void PerfSection::update(const ui::UiPerf& perf) {
                   static_cast<double>(perf.fps), static_cast<unsigned>(perf.cpu_percent),
                   static_cast<double>(perf.avg_flush_ms));
     set_text_if_changed(label_, buf);
+}
+
+void PerfSection::update_ram(int64_t free, int64_t largest, int64_t psram_free,
+                             int64_t psram_total) {
+    if (ram_ != nullptr) {
+        std::string value;
+        if (free < 0) {
+            // No heap_info at all (the simulator doesn't report this
+            // today) -- same bare "-" as a boot-report row with nothing
+            // to show (self_check_screen.cpp's build_devices()).
+            value = "-";
+        } else {
+            value = format_kb(free) + " " + text_->tr(ui::StrId::PerfFree);
+            if (largest >= 0) {
+                value += " | ";
+                value += text_->tr(ui::StrId::PerfLargestBlock);
+                value += " " + format_kb(largest);
+            }
+        }
+        set_text_if_changed(ram_, value.c_str());
+    }
+    if (psram_ != nullptr) {
+        std::string value;
+        if (psram_total <= 0) {
+            value = "-";
+        } else {
+            value = format_mb(psram_free) + " / " + format_mb(psram_total) + " MB " +
+                    text_->tr(ui::StrId::PerfFree);
+        }
+        set_text_if_changed(psram_, value.c_str());
+    }
 }
 
 void PerfSection::long_press_cb(lv_event_t* e) {

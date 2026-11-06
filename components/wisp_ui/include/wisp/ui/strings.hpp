@@ -76,6 +76,8 @@ enum class StrId : uint16_t {
     Accel,
     Gyro,
     TouchTest,
+    PerfInternalRam,
+    PerfPsram,
 
     // Self-check readout values.
     ReadFailed,
@@ -84,6 +86,8 @@ enum class StrId : uint16_t {
     NotCharging,
     Online,
     Offline,
+    PerfFree,
+    PerfLargestBlock,
     TouchTestArea,
     TestUntested,
     TestPassed,

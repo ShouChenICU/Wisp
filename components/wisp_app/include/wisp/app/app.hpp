@@ -157,10 +157,11 @@ struct Platform {
 
     // Returns heap diagnostics in bytes: "internal_free" and
     // "internal_largest" (byte-addressable internal RAM and its largest
-    // free block, checked against wisp/app/ram_budget.hpp) and
-    // "large_free" (PSRAM), for the self-check UI, WISP_PERF and the
-    // admin API. A key may be missing; the whole function may be empty
-    // (no heap diagnostics available).
+    // free block, checked against wisp/app/ram_budget.hpp), and
+    // "large_free"/"large_total" (PSRAM: free and total size; a platform
+    // with no PSRAM reports "large_total" 0 or leaves it out), for the
+    // self-check UI, WISP_PERF and the admin API. A key may be missing;
+    // the whole function may be empty (no heap diagnostics available).
     std::function<Value()> heap_info;
 
     // Turns automatic light sleep on or off (scene-device spec 4.1):

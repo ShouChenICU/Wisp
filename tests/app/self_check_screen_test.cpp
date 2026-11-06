@@ -165,7 +165,8 @@ struct Harness {
     explicit Harness(std::string settings_path_in, uint32_t init_sleep_ms = 0,
                      std::string display_shape = "rounded_rect", bool with_sd = false,
                      int display_size = 480, BoardExtras extras = {},
-                     std::span<const uint8_t> font_image = {})
+                     std::span<const uint8_t> font_image = {},
+                     std::function<wisp::Value()> heap_info = {})
         : display(std::make_shared<FakeDisplay>("display.main", display_size, display_size,
                                                 /*area_align=*/1, std::move(display_shape))),
           imu(std::make_shared<FakeImu>("imu.main")),
@@ -174,7 +175,7 @@ struct Harness {
                                                      /*removable=*/true)
                      : nullptr),
           settings_path(std::move(settings_path_in)),
-          app(build_platform(init_sleep_ms, std::move(extras), font_image)) {
+          app(build_platform(init_sleep_ms, std::move(extras), font_image, std::move(heap_info))) {
         if (sd) {
             sd->online_flag = false;
         }
@@ -186,7 +187,8 @@ struct Harness {
 
 private:
     wisp::app::Platform build_platform(uint32_t init_sleep_ms, BoardExtras extras,
-                                       std::span<const uint8_t> font_image) {
+                                       std::span<const uint8_t> font_image,
+                                       std::function<wisp::Value()> heap_info) {
         wisp::app::Platform platform;
         platform.target = extras.target;
         platform.board = std::make_unique<FullFakeBoard>(display, imu, power, init_sleep_ms, sd,
@@ -199,6 +201,7 @@ private:
             lines.push_back(line);
         };
         platform.font_image = font_image;
+        platform.heap_info = std::move(heap_info);
         return platform;
     }
 };
@@ -219,9 +222,9 @@ const std::string kShapes[] = {"rect", "rounded_rect", "circle"};
 
 // The section cards' headings, top to bottom, in English (the page's
 // language until the switcher changes it).
-const std::vector<std::string> kCardHeadings = {
-    "Board",   "Devices",           "Network", "Sensors",    "Power & clock",
-    "Storage", "Interactive tests", "Scenes",  "Performance"};
+const std::vector<std::string> kCardHeadings = {"Board",   "Devices",           "Network",
+                                                "Sensors", "Power & clock",     "Performance",
+                                                "Storage", "Interactive tests", "Scenes"};
 
 uint32_t rgb_of(lv_color_t c) {
     return (static_cast<uint32_t>(c.red) << 16) | (static_cast<uint32_t>(c.green) << 8) | c.blue;
@@ -1086,6 +1089,66 @@ TEST(SelfCheckScreen, EmitsWispPerfLine) {
     const wisp::Value* heap_large_free = v.find("heap_large_free");
     ASSERT_NE(heap_large_free, nullptr);
     EXPECT_EQ(heap_large_free->type(), wisp::Value::Type::Int);
+
+    h.app.stop();
+}
+
+// The Performance card's internal-RAM and PSRAM rows (PerfSection::
+// update_ram()), fed from Platform::heap_info() on the same 100 ms
+// cadence as the FPS/CPU/flush line. KB/largest-block wording comes from
+// the string table (ui::StrId), so this runs in the page's starting
+// language (English); the KB/MB units themselves are not translated
+// (format_kb()/format_mb() in self_check_readouts.cpp).
+TEST(SelfCheckScreen, PerformanceCardShowsInternalRamAndPsram) {
+    auto heap_info = [] {
+        return wisp::Value(wisp::Map{
+            {"internal_free", int64_t{79 * 1024}},
+            {"internal_largest", int64_t{31 * 1024}},
+            {"large_free", int64_t{4089446}},           // ~3.9 MiB
+            {"large_total", int64_t{8 * 1024 * 1024}},  // 8.0 MiB
+        });
+    };
+    Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, "rounded_rect", false, 480, {},
+              {}, heap_info);
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+    // refresh_perf_ram() runs on SelfCheck's 100 ms lv_timer, not tied to a
+    // flush (set_text_if_changed() only triggers one once the row's "--"
+    // placeholder actually changes); give it a few ticks.
+    wisp::os::sleep_ms(300);
+
+    std::string ram_text = run_on_ui_thread(
+        h.app.ui(), [] { return find_label_text_containing(root_column(), "largest block"); });
+    EXPECT_EQ(ram_text, "79 KB free | largest block 31 KB");
+
+    std::string psram_text = run_on_ui_thread(
+        h.app.ui(), [] { return find_label_text_containing(root_column(), "MB free"); });
+    EXPECT_EQ(psram_text, "3.9 / 8.0 MB free");
+
+    h.app.stop();
+}
+
+// A platform that reports no PSRAM (heap_info missing entirely, like the
+// simulator today, or a board with "large_total" 0) shows "-" rather than
+// "0.0 / 0.0 MB free", which would misleadingly read as "completely full".
+TEST(SelfCheckScreen, PerformanceCardShowsDashWithNoHeapInfo) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+    wisp::os::sleep_ms(300);
+
+    std::string texts = run_on_ui_thread(h.app.ui(), [] {
+        lv_obj_t* ram_key = find_label_containing(root_column(), "Internal RAM");
+        lv_obj_t* psram_key = find_label_containing(root_column(), "PSRAM");
+        if (ram_key == nullptr || psram_key == nullptr) return std::string("missing key");
+        lv_obj_t* table = lv_obj_get_parent(ram_key);
+        auto value_of = [&](lv_obj_t* key) {
+            return std::string(
+                lv_label_get_text(lv_obj_get_child(table, lv_obj_get_index(key) + 1)));
+        };
+        return value_of(ram_key) + "|" + value_of(psram_key);
+    });
+    EXPECT_EQ(texts, "-|-");
 
     h.app.stop();
 }

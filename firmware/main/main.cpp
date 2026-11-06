@@ -131,6 +131,9 @@ extern "C" void app_main() {
         info["internal_largest"] =
             static_cast<int64_t>(heap_caps_get_largest_free_block(kInternal));
         info["large_free"] = static_cast<int64_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        // 0 on a board with no PSRAM configured -- the self-check UI reads
+        // that as "no PSRAM" (self_check_readouts.cpp's PerfSection).
+        info["large_total"] = static_cast<int64_t>(heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
         return wisp::Value(std::move(info));
     };
     platform.set_light_sleep = [](bool on) { apply_pm_config(/*light_sleep_enable=*/on); };

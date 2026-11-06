@@ -731,7 +731,11 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
     };
     platform.request_power_off = on_power_off;
-    platform.heap_info = [] { return wisp::Value(wisp::Map{}); };
+    // No real heap diagnostics on a PC; "large_total" 0 tells the
+    // self-check UI there's no PSRAM to show (self_check_readouts.cpp's
+    // PerfSection), rather than leaving the key out and looking the same
+    // as "unknown".
+    platform.heap_info = [] { return wisp::Value(wisp::Map{{"large_total", int64_t{0}}}); };
     // No light sleep on a PC: log it, so a smoke test can see the hook fire.
     platform.set_light_sleep = [](bool on) {
         WLOG_I(kLogTag, "sim: light sleep %s", on ? "on" : "off");

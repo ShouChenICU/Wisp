@@ -71,6 +71,10 @@ const char* strings_zh(StrId id) {
             return "角速度";
         case StrId::TouchTest:
             return "触摸";
+        case StrId::PerfInternalRam:
+            return "内部 RAM";
+        case StrId::PerfPsram:
+            return "PSRAM";
         case StrId::ReadFailed:
             return "读取失败";
         case StrId::LevelUnknown:
@@ -83,6 +87,10 @@ const char* strings_zh(StrId id) {
             return "在线";
         case StrId::Offline:
             return "离线";
+        case StrId::PerfFree:
+            return "空闲";
+        case StrId::PerfLargestBlock:
+            return "最大块";
         case StrId::TouchTestArea:
             return "触摸测试区";
         case StrId::TestUntested:

@@ -17,6 +17,7 @@
 #include "self_check_layout.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
+#include "wisp/app/ram_budget.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -251,6 +252,7 @@ void SelfCheck::build_widgets() {
     net_section_.build(net_card, text_, os::now_ms());
     sensors_.build(col, text_, sampler_.has_imu());
     power_clock_.build(col, text_, power_ != nullptr, clock_ != nullptr);
+    perf_.build(col, text_, [this] { toggle_perf_overlay(); });
     storage_.build(col, text_);
     tests_section_.build(col, text_,
                          TestSection::Callbacks{
@@ -265,7 +267,6 @@ void SelfCheck::build_widgets() {
             return rt != nullptr ? rt->status(id) : core::SceneStatus{};
         },
         [this](const std::string& id) { open_scene(id); });
-    perf_.build(col, text_, [this] { toggle_perf_overlay(); });
 
     header_.show_devices(devices_.summary());
     header_.show_tests(tests_.passed_count());
@@ -551,7 +552,25 @@ void SelfCheck::refresh_ui() {
     power_clock_.update(snap);
     refresh_time_sync();
     perf_.update(ui_->perf());
+    refresh_perf_ram();
     scenes_section_.update_states();
+}
+
+void SelfCheck::refresh_perf_ram() {
+    // Same Platform::heap_info() map emit_perf_line() reads for WISP_PERF
+    // (internal_free/internal_largest/large_free), plus large_total (the
+    // PSRAM's size, so the row can show "used / total").
+    Value heap = app_.platform().heap_info ? app_.platform().heap_info() : Value();
+    InternalRam ram = internal_ram(heap);
+    int64_t psram_free = 0;
+    int64_t psram_total = 0;
+    if (const Value* v = heap.find("large_free")) {
+        psram_free = v->as_int();
+    }
+    if (const Value* v = heap.find("large_total")) {
+        psram_total = v->as_int();
+    }
+    perf_.update_ram(ram.free, ram.largest, psram_free, psram_total);
 }
 
 void SelfCheck::refresh_time_sync() {

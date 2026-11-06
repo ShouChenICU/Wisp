@@ -70,6 +70,10 @@ const char* strings_en(StrId id) {
             return "Gyro";
         case StrId::TouchTest:
             return "Touch";
+        case StrId::PerfInternalRam:
+            return "Internal RAM";
+        case StrId::PerfPsram:
+            return "PSRAM";
         case StrId::ReadFailed:
             return "Read error";
         case StrId::LevelUnknown:
@@ -82,6 +86,10 @@ const char* strings_en(StrId id) {
             return "Online";
         case StrId::Offline:
             return "Offline";
+        case StrId::PerfFree:
+            return "free";
+        case StrId::PerfLargestBlock:
+            return "largest block";
         case StrId::TouchTestArea:
             return "Touch test area";
         case StrId::TestUntested:
