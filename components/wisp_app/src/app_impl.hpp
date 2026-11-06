@@ -17,6 +17,7 @@
 // that construct several Apps in one process, one after another.
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <utility>
 
@@ -32,6 +33,7 @@
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/cached_settings.hpp"
 #include "wisp/core/firmware_update.hpp"
+#include "wisp/core/latest_save.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/occupancy.hpp"
@@ -67,7 +69,8 @@ struct App::Impl {
     core::StorageManager storage;
     core::ButtonService buttons;
     // Profile ids come from Platform::random (a weak fallback without it).
-    core::ModelProfileService models{storage, bus, platform.random};
+    // Saved on the storage worker (submit_io()).
+    core::ModelProfileService models{storage, bus, platform.random, io_submitter()};
     // Brightness goes through PowerManager so a change made in standby
     // waits for the wake-up (spec 5.4). power_manager is only reset after
     // the HTTP server and the net task have stopped (App::stop()), so no
@@ -90,7 +93,11 @@ struct App::Impl {
     // destroyed on the UI thread, right after `ui` starts and right after
     // the self-check screen (whose dialogs it holds) is torn down.
     std::unique_ptr<ui::SystemLayer> system_layer;
+    // Drives queue_storage_refresh() (storage_io.hpp) every 2 s; created
+    // once the storage worker runs, stopped before it stops.
     std::unique_ptr<os::Timer> storage_timer;
+    // A queued StorageManager::refresh() has not finished yet.
+    std::atomic<bool> refresh_pending{false};
 
     // Constructed just before power_manager (which holds a
     // non-owning pointer into it -- see PowerManager::enter_standby()/
@@ -155,8 +162,8 @@ struct App::Impl {
 
     // The storage worker, the scene repository and (with a screen) the
     // scene runtime: built by App::start() right after storage, reset by
-    // App::stop() after networking and before the storage-refresh timer --
-    // see scene_wiring.hpp.
+    // App::stop() after networking and the storage-refresh timer -- see
+    // scene_wiring.hpp.
     // In Mem::Large (scene_wiring.hpp); null without the memory for it.
     os::LargeUnique<SceneWiring> scenes;
     // Settings served from memory and saved on the scenes' storage worker
@@ -219,6 +226,9 @@ struct App::Impl {
     // "wisp.fwup" task are gone. firmware_mutex guards firmware_task; see
     // firmware_confirm.hpp for the rest.
     std::unique_ptr<core::FirmwareUpdateService> firmware;
+    // Platform::firmware with the calls that write otadata run on the
+    // storage worker (firmware_confirm.hpp); what `firmware` drives.
+    std::unique_ptr<core::FirmwareUpdater> firmware_updater;
     os::Mutex firmware_mutex;
     std::unique_ptr<os::Task> firmware_task;
     // An image awaits the user's answer and no screen has taken it up yet
@@ -231,6 +241,25 @@ struct App::Impl {
     std::atomic<bool> console_stopping{false};
 
     bool started = false;
+
+    // How the services reach flash (spec 3.5 of
+    // docs/superpowers/specs/2026-11-06-flash-thread-design.md). Both run
+    // `job` on the storage worker when there is one: inline when called
+    // on it, and on the caller before it starts, after it stops or
+    // without scenes (no worker at all), as StorageWorker::run_sync()
+    // does. `scenes` only changes in start()/stop(), while nothing else
+    // calls these.
+    //
+    // submit_io() queues `job` and returns at once; false when the queue
+    // is full (core::LatestSave::SubmitIo).
+    bool submit_io(std::function<void()> job);
+    core::LatestSave::SubmitIo io_submitter() {
+        return [this](std::function<void()> job) { return submit_io(std::move(job)); };
+    }
+    // run_io() waits up to `timeout_ms` for `job` (os::kForever allowed);
+    // StorageWorker::run_sync()'s errors. A full queue is retried for a
+    // while before Busy is returned.
+    Result<void> run_io(std::function<void()> job, uint32_t timeout_ms);
 
     // Both the constructor and destructor are declared here but defined
     // out-of-line in self_check_screen.cpp, the one TU where SelfCheck's

@@ -228,3 +228,17 @@ TEST(FirmwareConfirm, DialogFitsEveryShapeAndLanguage) {
         ASSERT_TRUE(wait_until([&] { return states(h).size() == 2; }, 3000));
     }
 }
+
+TEST(FirmwareConfirm, MarksValidOnTheFlashThread) {
+    UiNetHarness h(firmware_opts());
+    ASSERT_TRUE(h.start("system."));
+    EXPECT_EQ(h.firmware->mark_valid_calls, 1);
+    const std::string token = pair_browser(h);
+
+    EXPECT_EQ(upload(h, token, image_of("0.3.0")), 202);
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "固件更新"); }, 3000));
+    ASSERT_TRUE(click(h, "是"));
+    ASSERT_TRUE(wait_until([&] { return h.reboots.load() == 1; }, 5000));
+    EXPECT_EQ(h.firmware->activations, 1);
+    EXPECT_EQ(h.firmware->off_flash_thread.load(), 0);
+}

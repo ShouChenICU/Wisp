@@ -15,6 +15,7 @@
 #include "wisp/base/sha256.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/large.hpp"
 
 namespace wisp::net {
 
@@ -112,12 +113,14 @@ std::string label_for(std::string_view ua) {
 }  // namespace
 
 PairingService::PairingService(core::StorageManager& storage, core::EventBus& bus, RandomFn random,
-                               std::function<int64_t()> unix_now, PairingConfig config)
+                               std::function<int64_t()> unix_now, PairingConfig config,
+                               core::LatestSave::SubmitIo submit_io)
     : storage_(storage),
       bus_(bus),
       random_(std::move(random)),
       unix_now_(std::move(unix_now)),
-      config_(config) {}
+      config_(config),
+      saver_(std::move(submit_io)) {}
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -127,11 +130,8 @@ std::string PairingService::clients_path() const {
     return root ? root.value() + kClientsFile : std::string();
 }
 
-Result<void> PairingService::persist_locked(const std::vector<Entry>& clients) {
-    std::string path = clients_path();
-    if (path.empty()) {
-        return Result<void>::err(ErrorCode::StorageUnavailable, "system storage unavailable");
-    }
+Result<void> PairingService::persist_locked(const std::vector<Entry>& clients,
+                                            bool remove_on_failure) {
     List list;
     for (const auto& e : clients) {
         list.push_back(Map{{"id", e.info.id},
@@ -140,13 +140,34 @@ Result<void> PairingService::persist_locked(const std::vector<Entry>& clients) {
                            {"created", e.info.created_unix},
                            {"last_seen", e.info.last_seen_unix}});
     }
-    std::string json = to_json_raw(Map{{"clients", std::move(list)}});
-    auto r = storage_.write_atomic(path, std::vector<uint8_t>(json.begin(), json.end()));
-    if (!r) {
-        WLOG_E(kTag, "saving paired clients failed: %s", r.error().message.c_str());
-        return r;
-    }
-    // Whatever was written includes every pending last_seen update.
+    const std::string json = to_json_raw(Map{{"clients", std::move(list)}});
+    // The write runs on the flash thread, possibly after this service is
+    // gone: it owns its snapshot and finds the path itself.
+    auto r = saver_.save([&storage = storage_, snapshot = os::LargeString(json.begin(), json.end()),
+                          remove_on_failure]() -> Result<void> {
+        auto root = storage.write_root(core::Area::System);
+        const std::string path = root ? root.value() + kClientsFile : std::string();
+        Result<void> w =
+            path.empty()
+                ? Result<void>::err(ErrorCode::StorageUnavailable, "system storage unavailable")
+                : storage.write_atomic(path, std::span<const uint8_t>(
+                                                 reinterpret_cast<const uint8_t*>(snapshot.data()),
+                                                 snapshot.size()));
+        if (w) return w;
+        WLOG_E(kTag, "saving paired clients failed: %s", w.error().message.c_str());
+        if (remove_on_failure) {
+            WLOG_E(kTag, "factory reset of paired clients was not persisted; removing the file");
+            // The old hashes would otherwise come back on the next boot. A
+            // missing file loads as "no clients", so deleting it is enough.
+            if (path.empty() || (std::remove(path.c_str()) != 0 && errno != ENOENT)) {
+                WLOG_E(kTag, "removing net/clients.json failed: %s",
+                       path.empty() ? "system storage unavailable" : std::strerror(errno));
+            }
+        }
+        return w;
+    });
+    if (!r) return r;
+    // Whatever is written includes every pending last_seen update.
     last_flush_ms_ = latest_now_ms_;
     last_seen_dirty_ = false;
     return r;
@@ -503,18 +524,8 @@ void PairingService::revoke_all() {
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         clients_.clear();
-        if (!persist_locked(clients_)) {
-            WLOG_E(kTag, "factory reset of paired clients was not persisted; removing the file");
-            // The old hashes would otherwise come back on the next boot. A
-            // missing file loads as "no clients", so deleting it is enough.
-            std::string path = clients_path();
-            if (path.empty() || (std::remove(path.c_str()) != 0 && errno != ENOENT)) {
-                WLOG_E(kTag, "removing net/clients.json failed: %s",
-                       path.empty() ? "system storage unavailable" : std::strerror(errno));
-            }
-        } else {
-            WLOG_I(kTag, "all paired clients revoked");
-        }
+        (void)persist_locked(clients_, /*remove_on_failure=*/true);
+        WLOG_I(kTag, "all paired clients revoked");
     }
     notify_revoked(std::nullopt);
 }

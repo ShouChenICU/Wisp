@@ -21,8 +21,9 @@
 // Flash wear: authenticate() runs on every authenticated HTTP request, so
 // it only updates last_seen in memory and writes clients.json at most
 // once per last_seen_flush_ms. Adding or revoking a client writes at
-// once. A reboot can therefore lose up to that long of last_seen
-// progress, which only affects which client is evicted first.
+// once (on the flash thread when there is a submit_io). A reboot can
+// therefore lose up to that long of last_seen progress, which only affects
+// which client is evicted first.
 //
 // Threading: confirm()/authenticate() run on HTTP server threads while
 // request_code()/active_code()/tick() run on the UI or console; one
@@ -46,6 +47,7 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/latest_save.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/random.hpp"
@@ -82,8 +84,12 @@ struct PairingConfig {
 
 class PairingService {
 public:
+    // `submit_io` queues the writes of clients.json on the flash thread
+    // (core::LatestSave); empty: every change is written on the calling
+    // thread.
     PairingService(core::StorageManager& storage, core::EventBus& bus, RandomFn random,
-                   std::function<int64_t()> unix_now, PairingConfig config = {});
+                   std::function<int64_t()> unix_now, PairingConfig config = {},
+                   core::LatestSave::SubmitIo submit_io = {});
 
     PairingService(const PairingService&) = delete;
     PairingService& operator=(const PairingService&) = delete;
@@ -181,7 +187,12 @@ private:
     };
 
     std::string clients_path() const;
-    Result<void> persist_locked(const std::vector<Entry>& clients);
+    // Saves `clients` as clients.json (see core::LatestSave): Ok once the
+    // write is queued, or, without submit_io, once it is done; either way
+    // the pending last_seen updates count as flushed. With
+    // `remove_on_failure` a failed write deletes the file instead, so no
+    // old hash survives a reboot.
+    Result<void> persist_locked(const std::vector<Entry>& clients, bool remove_on_failure = false);
     // Records the latest time seen, expires the code and lifts the lock
     // when due.
     void observe_locked(uint64_t now_ms);
@@ -201,6 +212,7 @@ private:
     RandomFn random_;
     std::function<int64_t()> unix_now_;
     PairingConfig config_;
+    core::LatestSave saver_;
 
     mutable os::Mutex mutex_;
 

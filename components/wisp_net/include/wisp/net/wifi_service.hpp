@@ -37,6 +37,7 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/latest_save.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/hal/device.hpp"
 #include "wisp/hal/wifi.hpp"
@@ -110,9 +111,12 @@ struct WifiServiceConfig {
 
 class WifiService {
 public:
-    // `random` fills the hotspot password bytes.
+    // `random` fills the hotspot password bytes. `submit_io` queues the
+    // writes of wifi.json on the flash thread (core::LatestSave); empty:
+    // every change is written on the calling thread.
     WifiService(std::shared_ptr<hal::Wifi> wifi, core::StorageManager& storage, core::EventBus& bus,
-                RandomFn random, WifiServiceConfig config = {});
+                RandomFn random, WifiServiceConfig config = {},
+                core::LatestSave::SubmitIo submit_io = {});
 
     WifiService(const WifiService&) = delete;
     WifiService& operator=(const WifiService&) = delete;
@@ -194,7 +198,10 @@ private:
     };
 
     std::string wifi_path() const;
-    Result<void> persist_locked(const std::vector<Network>& networks);
+    // Saves `networks` as wifi.json (see core::LatestSave): Ok once the
+    // write is queued, or, without submit_io, once it is done. `lost`,
+    // when set, is logged as well if the write fails.
+    Result<void> persist_locked(const std::vector<Network>& networks, const char* lost = nullptr);
     const Network* find_locked(std::string_view ssid) const;
     // Counts a rejected password; the third in a row flags the network
     // auth_failed and persists the flag. No-op for unsaved or already
@@ -220,6 +227,7 @@ private:
     RandomFn random_;
     WifiServiceConfig config_;
     std::string source_;  // event source: the device id
+    core::LatestSave saver_;
 
     os::Mutex radio_mutex_;  // see file header
     mutable os::Mutex mutex_;

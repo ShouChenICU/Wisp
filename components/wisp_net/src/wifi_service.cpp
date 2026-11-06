@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <map>
 #include <mutex>
+#include <span>
 #include <utility>
 
 #include "wisp/base/error.hpp"
@@ -11,6 +12,7 @@
 #include "wisp/base/sha256.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/large.hpp"
 
 namespace wisp::net {
 
@@ -90,13 +92,15 @@ const char* to_string(WifiState s) {
 }
 
 WifiService::WifiService(std::shared_ptr<hal::Wifi> wifi, core::StorageManager& storage,
-                         core::EventBus& bus, RandomFn random, WifiServiceConfig config)
+                         core::EventBus& bus, RandomFn random, WifiServiceConfig config,
+                         core::LatestSave::SubmitIo submit_io)
     : wifi_(std::move(wifi)),
       storage_(storage),
       bus_(bus),
       random_(std::move(random)),
       config_(config),
       source_(wifi_->info().id),
+      saver_(std::move(submit_io)),
       backoff_ms_(config.backoff_min_ms) {}
 
 // ---------------------------------------------------------------------------
@@ -107,23 +111,31 @@ std::string WifiService::wifi_path() const {
     return root ? root.value() + kWifiFile : std::string();
 }
 
-Result<void> WifiService::persist_locked(const std::vector<Network>& networks) {
-    std::string path = wifi_path();
-    if (path.empty()) {
-        return Result<void>::err(ErrorCode::StorageUnavailable, "system storage unavailable");
-    }
+Result<void> WifiService::persist_locked(const std::vector<Network>& networks, const char* lost) {
     List list;
     for (const auto& n : networks) {
         Map entry{{"ssid", n.ssid}, {"password", n.password}};
         if (n.auth_failed) entry.emplace("auth_failed", true);
         list.push_back(std::move(entry));
     }
-    std::string json = to_json_raw(Map{{"networks", std::move(list)}});
-    auto r = storage_.write_atomic(path, std::vector<uint8_t>(json.begin(), json.end()));
-    if (!r) {
-        WLOG_E(kTag, "saving networks failed: %s", r.error().message.c_str());
-    }
-    return r;
+    const std::string json = to_json_raw(Map{{"networks", std::move(list)}});
+    // The write runs on the flash thread, possibly after this service is
+    // gone: it owns its snapshot and finds the path itself.
+    return saver_.save([&storage = storage_, snapshot = os::LargeString(json.begin(), json.end()),
+                        lost]() -> Result<void> {
+        auto root = storage.write_root(core::Area::System);
+        Result<void> r =
+            root ? storage.write_atomic(
+                       root.value() + kWifiFile,
+                       std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(snapshot.data()),
+                                                snapshot.size()))
+                 : Result<void>::err(ErrorCode::StorageUnavailable, "system storage unavailable");
+        if (!r) {
+            WLOG_E(kTag, "saving networks failed: %s", r.error().message.c_str());
+            if (lost != nullptr) WLOG_E(kTag, "%s", lost);
+        }
+        return r;
+    });
 }
 
 void WifiService::note_rejection_locked(const std::string& ssid) {
@@ -141,8 +153,8 @@ void WifiService::note_rejection_locked(const std::string& ssid) {
            "'%s' rejected the password %u times in a row; not retrying it until it is "
            "re-entered",
            ssid.c_str(), static_cast<unsigned>(kRejectionsToPark));
-    // On a failed write the flag still holds until reboot; persist_locked()
-    // has logged the storage error.
+    // On a failed write the flag still holds until reboot; the write logs
+    // the storage error.
     (void)persist_locked(networks_);
 }
 
@@ -594,11 +606,9 @@ void WifiService::forget_all() {
     std::lock_guard<os::Mutex> lock(mutex_);
     ++generation_;
     networks_.clear();
-    if (!persist_locked(networks_)) {
-        // persist_locked() already logged the storage error; say what it
-        // means: the networks come back after a reboot.
-        WLOG_E(kTag, "factory reset of saved networks was not persisted");
-    }
+    // On a failed write the networks come back after a reboot; the write
+    // says so.
+    (void)persist_locked(networks_, "factory reset of saved networks was not persisted");
     if (ap_) (void)close_ap_locked("factory reset");
     if (in_flight_ || status_.state != WifiState::Off) (void)wifi_->disconnect();
     attempt_due_ = false;

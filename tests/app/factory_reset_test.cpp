@@ -23,10 +23,12 @@
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
+#include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/strings.hpp"
@@ -115,6 +117,8 @@ TEST(FactoryReset, ClearsEverythingButLibraryAndReboots) {
                                      .model = "m",
                                      .api_key = "sk-test"}));
     const std::string system = app.storage().write_root(wisp::core::Area::System).value();
+    // The profile is saved on the storage worker.
+    ASSERT_TRUE(app.storage_worker()->drain(2000));
     ASSERT_TRUE(std::filesystem::exists(system + "/secrets/models.json"));
     const std::string library =
         app.storage().write_root(wisp::core::Area::Library).value() + "/scene.json";
@@ -505,4 +509,35 @@ TEST(FactoryReset, DialogFitsEveryShapeAndLanguage) {
         ASSERT_TRUE(wait_until([&] { return reset_states(h).size() == 2; }, 3000));
         EXPECT_EQ(h.reboots.load(), 0);
     }
+}
+
+TEST(FactoryReset, ErasesOnTheFlashThread) {
+    UiNetOptions opts;
+    opts.saved = {{"Home", "password1"}};
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    pair_browser(h);
+    ASSERT_NE(app.storage_worker(), nullptr);
+
+    // Revoking every browser is one step of the erase; its listeners run
+    // on the thread doing it.
+    std::atomic<int> revokes{0};
+    std::atomic<int> off_worker{0};
+    wisp::app::App* papp = &app;
+    const int handle = app.pairing()->add_revoke_listener([&, papp](const auto&) {
+        revokes.fetch_add(1);
+        if (!papp->storage_worker()->on_worker() || !wisp::os::on_flash_thread()) {
+            off_worker.fetch_add(1);
+        }
+    });
+
+    wisp::app::factory_reset(app);
+    app.pairing()->remove_revoke_listener(handle);
+
+    EXPECT_EQ(h.reboots.load(), 1);
+    EXPECT_EQ(revokes.load(), 1);
+    EXPECT_EQ(off_worker.load(), 0);
+    EXPECT_TRUE(app.wifi()->saved_ssids().empty());
+    EXPECT_TRUE(app.pairing()->clients().empty());
 }

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "support/fake_devices.hpp"
+#include "support/fake_io_queue.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
@@ -35,6 +36,7 @@ using wisp::core::ProfileInput;
 using wisp::core::ProfileUpdate;
 using wisp::core::ResolvedProfile;
 using wisp::core::StorageManager;
+using wisp::test::FakeIoQueue;
 using wisp::test::FakeStorage;
 
 namespace {
@@ -808,4 +810,36 @@ TEST(ModelProfiles, ContextWindowDefaultsTo65536) {
     ModelProfile p = fx.make(llm("p"));
     EXPECT_EQ(wisp::core::profile_context_window(p.options), 65536u);
     EXPECT_FALSE(wisp::core::profile_vision(p.options));
+}
+
+TEST(ModelProfiles, SavesOffTheCallingThread) {
+    Fixture fx;
+    FakeIoQueue io;
+    fx.svc = std::make_unique<ModelProfileService>(*fx.storage, fx.bus, nullptr, io.submit_io());
+    ASSERT_TRUE(fx.svc->init());
+    const ModelProfile a = fx.make(llm("a", "https://a.example", "sk-a"));
+    fx.make(llm("b"));
+    ASSERT_TRUE(fx.svc->remove(fx.make(llm("c")).id));
+    EXPECT_FALSE(std::filesystem::exists(fx.models_path()));
+    EXPECT_EQ(io.queued(), 1u);
+
+    EXPECT_EQ(io.run_all(), 1u);
+    fx.restart();
+    const auto state = fx.svc->get();
+    ASSERT_EQ(state.profiles.size(), 2u);
+    EXPECT_EQ(state.active[0], a.id);
+}
+
+TEST(ModelProfiles, ClearSupersedesAQueuedSave) {
+    Fixture fx;
+    FakeIoQueue io;
+    fx.svc = std::make_unique<ModelProfileService>(*fx.storage, fx.bus, nullptr, io.submit_io());
+    ASSERT_TRUE(fx.svc->init());
+    fx.make(llm("a", "https://a.example", "sk-gone"));
+    fx.svc->clear();
+    EXPECT_EQ(io.queued(), 1u);
+    io.run_all();
+    EXPECT_FALSE(std::filesystem::exists(fx.models_path()));
+    fx.restart();
+    EXPECT_TRUE(fx.svc->get().profiles.empty());
 }

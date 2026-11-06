@@ -7,9 +7,11 @@
 //     wisp/core/firmware_image.hpp describes;
 //   - FakeFirmwareUpdater records what the service asks of the platform.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -21,6 +23,7 @@
 #include "wisp/base/sha256.hpp"
 #include "wisp/core/firmware_image.hpp"
 #include "wisp/core/firmware_update.hpp"
+#include "wisp/os/flash_guard.hpp"
 
 namespace wisp::test {
 
@@ -133,12 +136,14 @@ public:
     Result<void> activate() override {
         std::lock_guard<std::mutex> lock(mutex);
         ++activations;
+        if (!wisp::os::on_flash_thread()) off_flash_thread.fetch_add(1);
         if (fail_activate) return Result<void>::err(ErrorCode::IoError, "fake activate failure");
         return Result<void>::ok();
     }
     void mark_valid() override {
         std::lock_guard<std::mutex> lock(mutex);
         ++mark_valid_calls;
+        if (!wisp::os::on_flash_thread()) off_flash_thread.fetch_add(1);
         if (on_mark_valid) on_mark_valid();
     }
 
@@ -156,6 +161,9 @@ public:
     int aborts = 0;
     int activations = 0;
     int mark_valid_calls = 0;
+    // activate() and mark_valid() calls made off the flash thread (while
+    // one is registered): both write otadata.
+    std::atomic<int> off_flash_thread{0};
     size_t began_size = 0;
     std::vector<uint8_t> written;
 };

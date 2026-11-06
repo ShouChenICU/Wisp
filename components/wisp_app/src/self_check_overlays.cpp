@@ -280,6 +280,9 @@ void SelfCheck::close_confirm_dialog() {
 }
 
 void SelfCheck::do_power_off() {
+    // What still waits for flash goes first (spec 3.8 of the flash-thread
+    // design); the screen stays as it is for those few seconds at most.
+    app_.flush_storage();
     if (power_) {
         auto result = power_->power_off();
         if (result) {

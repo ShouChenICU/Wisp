@@ -16,8 +16,9 @@
 //      untouched) -- see board.hpp.
 //   3. Starts the EventBus, then StorageManager::init() (a failure here
 //      sets the "storage" boot-report note to "readonly" and boot
-//      continues read-only rather than failing), starts a periodic
-//      2000ms StorageManager::refresh() timer, and starts ButtonService.
+//      continues read-only rather than failing), starts ButtonService and
+//      the storage worker, and a periodic 2000ms timer that queues
+//      StorageManager::refresh() on that worker.
 //   4. If "display.main" is registered: applies the `display` settings
 //      namespace's `brightness` key (default 200) to it, starts a
 //      UiRuntime over it (plus "touch.main" if also registered).
@@ -280,8 +281,8 @@ public:
     // self-check screen, then networking -- the "wisp.net" task,
     // then the HTTP server (whose handlers call into PowerManager, the
     // net services and the scenes), then the net services themselves --
-    // then the scenes' HTTP proxy and the storage worker (drained), and
-    // then (in reverse order) PowerManager, the storage-refresh timer,
+    // then the storage-refresh timer, the scenes' HTTP proxy and the
+    // storage worker (drained), and then (in reverse order) PowerManager,
     // ButtonService,
     // UiRuntime (if one was started) and EventBus. Idempotent, and safe
     // to call even if start() was never called or didn't succeed -- only
@@ -352,6 +353,14 @@ public:
     // nullptr without scenes, and before start() or after stop().
     core::StorageWorker* storage_worker();
 
+    // Writes what still waits for flash before the device restarts, powers
+    // off or enters deep standby (spec 3.8 of
+    // docs/superpowers/specs/2026-11-06-flash-thread-design.md): changed
+    // Settings first (up to 2 s), then every job queued on the storage
+    // worker (up to 5 s). A timeout is logged and ignored. Blocks; any
+    // thread but the worker's.
+    void flush_storage();
+
     // The Platform this App was constructed from (needed by the
     // self-check screen for request_power_off, heap_info,
     // firmware_version, board->name() and the settings backend -- see
@@ -388,6 +397,8 @@ private:
     friend void decline_firmware(App&);
     friend void restart_for_firmware(App&);
     friend void join_firmware_install(App&);
+    // src/storage_io.hpp.
+    friend bool queue_storage_refresh(App&);
     // The console task (src/console_task.hpp) lives on Impl.
     friend void start_console(App&);
     friend void stop_console(App&);

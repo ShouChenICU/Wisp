@@ -10,6 +10,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/large.hpp"
 
 namespace wisp::core {
 
@@ -350,8 +351,8 @@ Map profiles_event_payload(const ProfilesState& state) {
 }
 
 ModelProfileService::ModelProfileService(StorageManager& storage, EventBus& bus,
-                                         ModelRandomFn random)
-    : storage_(storage), bus_(bus), random_(std::move(random)) {}
+                                         ModelRandomFn random, LatestSave::SubmitIo submit_io)
+    : storage_(storage), bus_(bus), random_(std::move(random)), saver_(std::move(submit_io)) {}
 
 std::string ModelProfileService::system_root() const {
     auto root = storage_.write_root(Area::System);
@@ -534,10 +535,7 @@ Result<void> ModelProfileService::migrate_legacy(const std::string& root, bool o
     }
     // The old file goes only once the new one holds its contents; until
     // then the next boot migrates again.
-    if (auto r = persist(next); r) {
-        remove_file(legacy);
-        WLOG_I(kTag, "migrated secrets/llm.json to secrets/models.json");
-    }
+    (void)persist(next, legacy);
     state_ = std::move(next);
     return Result<void>::ok();
 }
@@ -794,20 +792,21 @@ std::optional<ResolvedProfile> ModelProfileService::active_for_request(ModelKind
 void ModelProfileService::clear() {
     std::lock_guard<os::Mutex> lock(mutex_);
     state_ = State{};
-    const std::string root = system_root();
-    if (!root.empty()) {
-        remove_file(root + kFile);
-        remove_file(root + kLegacyFile);
-    }
+    // Through the saver, so a write still queued cannot bring the keys back
+    // after the files are gone.
+    (void)saver_.save([&storage = storage_]() -> Result<void> {
+        auto root = storage.write_root(Area::System);
+        if (root) {
+            remove_file(root.value() + kFile);
+            remove_file(root.value() + kLegacyFile);
+        }
+        return Result<void>::ok();
+    });
     WLOG_I(kTag, "model profiles cleared");
     publish(state_);
 }
 
-Result<void> ModelProfileService::persist(const State& next) {
-    const std::string root = system_root();
-    if (root.empty()) {
-        return Result<void>::err(ErrorCode::StorageUnavailable, "system storage unavailable");
-    }
+Result<void> ModelProfileService::persist(const State& next, std::string migrated_from) {
     List profiles;
     for (const Stored& s : next.profiles) {
         Map options;
@@ -826,9 +825,29 @@ Result<void> ModelProfileService::persist(const State& next) {
     const std::string json = to_json_raw(Map{{"version", Value(kFileVersion)},
                                              {"active", active_value(next.active)},
                                              {"profiles", Value(std::move(profiles))}});
-    auto r = storage_.write_atomic(root + kFile, std::vector<uint8_t>(json.begin(), json.end()));
-    if (!r) WLOG_E(kTag, "saving secrets/models.json failed: %s", r.error().message.c_str());
-    return r;
+    // The write runs on the flash thread, possibly after this service is
+    // gone: it owns its snapshot and finds the path itself.
+    return saver_.save([&storage = storage_, snapshot = os::LargeString(json.begin(), json.end()),
+                        migrated_from = std::move(migrated_from)]() -> Result<void> {
+        auto root = storage.write_root(Area::System);
+        if (!root) {
+            WLOG_E(kTag, "saving secrets/models.json failed: system storage unavailable");
+            return Result<void>::err(ErrorCode::StorageUnavailable, "system storage unavailable");
+        }
+        auto r = storage.write_atomic(
+            root.value() + kFile,
+            std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(snapshot.data()),
+                                     snapshot.size()));
+        if (!r) {
+            WLOG_E(kTag, "saving secrets/models.json failed: %s", r.error().message.c_str());
+            return r;
+        }
+        if (!migrated_from.empty()) {
+            remove_file(migrated_from);
+            WLOG_I(kTag, "migrated secrets/llm.json to secrets/models.json");
+        }
+        return r;
+    });
 }
 
 void ModelProfileService::publish(const State& state) {

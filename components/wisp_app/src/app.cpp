@@ -14,6 +14,8 @@
 #include "firmware_confirm.hpp"
 #include "loopback.hpp"
 #include "self_check.hpp"
+#include "storage_io.hpp"
+#include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/log.hpp"
@@ -46,6 +48,13 @@ constexpr uint32_t kNotifyLoadMs = 2000;
 constexpr uint32_t kNotifyFlushMs = 1000;
 // How long stop() waits for changed settings to be written (spec 3.8).
 constexpr uint32_t kSettingsFlushMs = 2000;
+// Before a restart, power-off or deep standby (spec 3.8): changed settings,
+// then whatever the storage worker still has queued.
+constexpr uint32_t kShutdownSettingsFlushMs = 2000;
+constexpr uint32_t kShutdownDrainMs = 5000;
+// How long run_io() keeps retrying a full storage queue, and how often.
+constexpr uint32_t kIoBusyRetryMs = 2000;
+constexpr uint32_t kIoBusyPollMs = 10;
 
 // The screen shape the system layer and the self-check screen lay out in
 // (spec 5.6). Invalid shape caps fall back to a circle, the most
@@ -105,9 +114,6 @@ Result<void> App::start() {
     if (!impl_->storage.init()) {
         impl_->report.set_note("storage", "readonly");
     }
-    impl_->storage_timer = std::make_unique<os::Timer>(
-        "wisp.storage", kStorageRefreshMs, /*periodic=*/true, [this] { impl_->storage.refresh(); });
-    impl_->storage_timer->start();
     impl_->buttons.start();
     // Scenes: the storage worker, and the repository recovered on it,
     // before anything can list or open a scene.
@@ -212,8 +218,21 @@ Result<void> App::start() {
             impl->settings_cache.reset();
         }
     }
-    if (auto r = impl_->models.init(); !r) {
-        WLOG_W("app", "model profiles unavailable: %s", r.error().message.c_str());
+    // The SD card hot-plug probe, on the worker like every other storage
+    // access.
+    impl_->refresh_pending.store(false);
+    impl_->storage_timer =
+        std::make_unique<os::Timer>("wisp.storage", kStorageRefreshMs, /*periodic=*/true,
+                                    [this] { (void)queue_storage_refresh(*this); });
+    impl_->storage_timer->start();
+    {
+        Result<void> loaded = Result<void>::ok();
+        if (auto r = impl_->run_io([&] { loaded = impl_->models.init(); }, os::kForever); !r) {
+            loaded = r;
+        }
+        if (!loaded) {
+            WLOG_W("app", "model profiles unavailable: %s", loaded.error().message.c_str());
+        }
     }
     if (impl_->platform.http_client) {
         impl_->models.set_prober(
@@ -331,6 +350,7 @@ Result<void> App::start() {
         .ui = impl_->ui.get(),
         .buttons = &impl_->buttons,
         .set_light_sleep = impl_->platform.set_light_sleep,
+        .before_deep_standby = [this] { flush_storage(); },
         .on_activity =
             [tones = impl_->tones.get()] {
                 // The user is there: an alarm stops (spec 5.1).
@@ -354,7 +374,14 @@ Result<void> App::start() {
     // it. Only a device with a screen can confirm an update.
     impl_->firmware_pending.store(false);
     core::FirmwareUpdateService::Deps firmware_deps;
-    firmware_deps.updater = impl_->platform.firmware.get();
+    if (impl_->platform.firmware) {
+        App::Impl* impl = impl_.get();
+        impl_->firmware_updater =
+            flash_thread_updater(*impl_->platform.firmware, [impl](std::function<void()> job) {
+                return impl->run_io(std::move(job), os::kForever);
+            });
+    }
+    firmware_deps.updater = impl_->firmware_updater.get();
     firmware_deps.running_version = impl_->platform.firmware_version;
     firmware_deps.publish = [this](Properties p) {
         impl_->bus.publish({"system.firmware", "app", 0, std::move(p)});
@@ -449,6 +476,16 @@ Result<void> App::start() {
         .occupancy = &impl_->occupancy,
         .files = scenes != nullptr ? scenes->files() : nullptr,
         .now_ms = {},  // os::now_ms
+        .submit_io = impl_->io_submitter(),
+        .run_io =
+            [impl = impl_.get()](std::function<void()> job) {
+                return impl->run_io(std::move(job), os::kForever);
+            },
+        .reboot = impl_->platform.reboot ? std::function<void()>([this] {
+            flush_storage();
+            impl_->platform.reboot();
+        })
+                                         : nullptr,
     });
     impl_->net->start();
 
@@ -624,6 +661,7 @@ void App::stop() {
     }
     // Nothing streams into it any more.
     impl_->firmware.reset();
+    impl_->firmware_updater.reset();
     // Notifications: nothing new from the bus, no more saves on the timer,
     // then whatever is still unsaved goes to the worker before it stops.
     if (impl_->notifications) {
@@ -640,9 +678,13 @@ void App::stop() {
     if (auto r = impl_->settings_front.flush(kSettingsFlushMs); !r) {
         WLOG_W("app", "settings not saved before shutdown: %s", r.error().message.c_str());
     }
+    // The storage-refresh timer queues onto the worker stopped below.
+    if (impl_->storage_timer) {
+        impl_->storage_timer->stop();
+        impl_->storage_timer.reset();
+    }
     // Nothing calls into the scenes any more: the proxy, then the worker
-    // (drained, so the last scene's flush is on disk), before the
-    // storage-refresh timer below.
+    // (drained, so the last scene's flush is on disk).
     if (impl_->scenes) {
         impl_->scenes->stop();
         // The cache points at the worker: from here on Settings go to the
@@ -718,10 +760,6 @@ void App::stop() {
     // own stop() tears down its internal Timer; see power_monitor.hpp.
     impl_->power_monitor.reset();
 
-    if (impl_->storage_timer) {
-        impl_->storage_timer->stop();
-        impl_->storage_timer.reset();
-    }
     impl_->buttons.stop();
     if (impl_->ui) {
         impl_->ui->stop();
@@ -730,6 +768,60 @@ void App::stop() {
     impl_->bus.stop();
 
     impl_->started = false;
+}
+
+bool App::Impl::submit_io(std::function<void()> job) {
+    core::StorageWorker* worker = scenes ? &scenes->worker() : nullptr;
+    if (worker == nullptr || worker->on_worker()) {
+        job();
+        return true;
+    }
+    if (worker->submit(job)) return true;
+    // Not running (boot or shutdown): run_sync() runs it right here. Timeout
+    // means it got queued after all and runs later; Busy that it never will.
+    Result<void> r = worker->run_sync(std::move(job), 0);
+    return r || r.error().code == ErrorCode::Timeout;
+}
+
+Result<void> App::Impl::run_io(std::function<void()> job, uint32_t timeout_ms) {
+    core::StorageWorker* worker = scenes ? &scenes->worker() : nullptr;
+    if (worker == nullptr) {
+        job();
+        return Result<void>::ok();
+    }
+    // A full Normal lane drains within a few jobs; a worker that is
+    // stopping stays Busy until it has stopped, and then runs it inline.
+    Result<void> r = worker->run_sync(job, timeout_ms);
+    for (uint32_t waited = 0; !r && r.error().code == ErrorCode::Busy && waited < kIoBusyRetryMs;
+         waited += kIoBusyPollMs) {
+        os::sleep_ms(kIoBusyPollMs);
+        r = worker->run_sync(job, timeout_ms);
+    }
+    return r;
+}
+
+void App::flush_storage() {
+    if (auto r = impl_->settings_front.flush(kShutdownSettingsFlushMs); !r) {
+        WLOG_W("app", "settings not saved before going down: %s", r.error().message.c_str());
+    }
+    core::StorageWorker* worker = storage_worker();
+    if (worker != nullptr && !worker->drain(kShutdownDrainMs)) {
+        WLOG_W("app", "storage work still queued (%u jobs); going down anyway",
+               static_cast<unsigned>(worker->pending()));
+    }
+}
+
+bool queue_storage_refresh(App& app) {
+    App::Impl* impl = app.impl_.get();
+    if (impl->refresh_pending.exchange(true)) return false;
+    if (impl->submit_io([impl] {
+            impl->storage.refresh();
+            impl->refresh_pending.store(false);
+        })) {
+        return true;
+    }
+    impl->refresh_pending.store(false);
+    return false;
 }
 
 core::DeviceRegistry& App::registry() { return impl_->registry; }

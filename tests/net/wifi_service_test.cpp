@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "support/fake_devices.hpp"
+#include "support/fake_io_queue.hpp"
 #include "support/fake_wifi.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
@@ -35,6 +36,7 @@ using wisp::net::ApSession;
 using wisp::net::WifiService;
 using wisp::net::WifiServiceConfig;
 using wisp::net::WifiState;
+using wisp::test::FakeIoQueue;
 using wisp::test::FakeStorage;
 using wisp::test::FakeWifi;
 
@@ -61,7 +63,8 @@ struct Fixture {
         bus.stop();
     }
 
-    WifiService& make(WifiServiceConfig config = {}) {
+    WifiService& make(WifiServiceConfig config = {},
+                      std::function<bool(std::function<void()>)> submit_io = {}) {
         svc.reset();
         svc = std::make_unique<WifiService>(
             wifi, *storage, bus,
@@ -76,7 +79,7 @@ struct Fixture {
                     }
                 }
             },
-            config);
+            config, std::move(submit_io));
         return *svc;
     }
 
@@ -1173,4 +1176,63 @@ TEST(WifiService, StatusSaysWhenBackoffRetries) {
     tick2(svc, 6000);
     ASSERT_EQ(svc.status().state, WifiState::Connected);
     EXPECT_EQ(svc.status().retry_at_ms, 0u);
+}
+
+TEST(WifiService, SavesOffTheCallingThread) {
+    Fixture f;
+    FakeIoQueue io;
+    auto& svc = f.make({}, io.submit_io());
+    ASSERT_TRUE(svc.init(0));
+
+    ASSERT_TRUE(svc.add_network("Home", "password1", 0));
+    EXPECT_EQ(svc.saved_ssids(), (std::vector<std::string>{"Home"}));
+    EXPECT_FALSE(std::filesystem::exists(f.wifi_json_path()));
+    EXPECT_EQ(io.queued(), 1u);
+
+    EXPECT_EQ(io.run_all(), 1u);
+    auto bytes = f.storage->read_file(f.wifi_json_path());
+    ASSERT_TRUE(bytes);
+    EXPECT_NE(std::string(bytes.value().begin(), bytes.value().end()).find("Home"),
+              std::string::npos);
+
+    auto& again = f.make();
+    ASSERT_TRUE(again.init(0));
+    EXPECT_EQ(again.saved_ssids(), (std::vector<std::string>{"Home"}));
+}
+
+TEST(WifiService, LastSnapshotWins) {
+    Fixture f;
+    FakeIoQueue io;
+    auto& svc = f.make({}, io.submit_io());
+    ASSERT_TRUE(svc.init(0));
+
+    ASSERT_TRUE(svc.add_network("Home", "password1", 0));
+    ASSERT_TRUE(svc.add_network("Cafe", "", 0));
+    ASSERT_TRUE(svc.forget_network("Home"));
+    EXPECT_EQ(io.queued(), 1u);
+    EXPECT_FALSE(std::filesystem::exists(f.wifi_json_path()));
+
+    EXPECT_EQ(io.run_all(), 1u);
+    auto& again = f.make();
+    ASSERT_TRUE(again.init(0));
+    EXPECT_EQ(again.saved_ssids(), (std::vector<std::string>{"Cafe"}));
+}
+
+TEST(WifiService, FullQueueRefusesTheChange) {
+    Fixture f;
+    FakeIoQueue io;
+    auto& svc = f.make({}, io.submit_io());
+    ASSERT_TRUE(svc.init(0));
+    io.refuse = true;
+    auto r = svc.add_network("Home", "password1", 0);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::Busy);
+    EXPECT_TRUE(svc.saved_ssids().empty());
+
+    io.refuse = false;
+    ASSERT_TRUE(svc.add_network("Cafe", "", 0));
+    EXPECT_EQ(io.run_all(), 1u);
+    auto& again = f.make();
+    ASSERT_TRUE(again.init(0));
+    EXPECT_EQ(again.saved_ssids(), (std::vector<std::string>{"Cafe"}));
 }

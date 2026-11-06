@@ -40,6 +40,7 @@ PowerManager::PowerManager(PowerManagerDeps deps)
       ui_(deps.ui),
       buttons_(deps.buttons),
       set_light_sleep_(std::move(deps.set_light_sleep)),
+      before_deep_standby_(std::move(deps.before_deep_standby)),
       on_activity_(std::move(deps.on_activity)),
       last_activity_ms_(os::now_ms()) {
     read_settings();
@@ -346,6 +347,12 @@ void PowerManager::go_to(hal::PowerLevel target, uint64_t now_ms,
         }
     }
     if (target == hal::PowerLevel::DeepStandby) {
+        if (before_deep_standby_) {
+            // It waits seconds for the storage worker; see transition_mutex_.
+            lock.unlock();
+            before_deep_standby_();
+            lock.lock();
+        }
         walk_devices(hal::PowerLevel::DeepStandby, Dir::Down);
         set_level(hal::PowerLevel::DeepStandby);
         update_light_sleep();

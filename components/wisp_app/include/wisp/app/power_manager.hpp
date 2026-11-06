@@ -103,6 +103,11 @@ struct PowerManagerDeps {
     ui::UiRuntime* ui = nullptr;
     core::ButtonService* buttons = nullptr;
     std::function<void(bool enable)> set_light_sleep;  // Platform::set_light_sleep
+    // Runs on the transition's thread right before the devices go to deep
+    // standby, without PowerManager's lock: App writes what still waits
+    // for flash (App::flush_storage(), spec 3.8 of the flash-thread
+    // design). May block for seconds.
+    std::function<void()> before_deep_standby;
     // Runs on every touch read with a finger down (the UI task) and every
     // button event (the bus dispatcher), besides resetting the idle clock:
     // the user is there (an alarm stops, spec 5.1). Keep it short and
@@ -246,13 +251,15 @@ private:
     ui::UiRuntime* ui_;
     core::ButtonService* buttons_;
     std::function<void(bool)> set_light_sleep_;
+    std::function<void()> before_deep_standby_;
     std::function<void()> on_activity_;
 
     // Serializes transitions (and every field below it marked so) against
     // each other. Released around PowerMonitor::set_standby() and
     // ButtonService::set_poll_interval_ms(): both swap an os::Timer and
     // wait for the shared esp_timer task, which also runs tick(), so
-    // holding this lock across that wait could deadlock. With a UiRuntime
+    // holding this lock across that wait could deadlock. Released around
+    // before_deep_standby too, which waits seconds for the storage worker. With a UiRuntime
     // every transition runs on its one task, so nothing interleaves in
     // that window; headless, a wake arriving there can be lost (seen as
     // "already awake") until the next button press -- no board ships

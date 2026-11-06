@@ -1,15 +1,20 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <map>
 #include <memory>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
+#include "firmware_confirm.hpp"
+#include "storage_io.hpp"
 #include "support/fake_devices.hpp"
 #include "support/temp_dir.hpp"
 #include "support/wait.hpp"
@@ -23,8 +28,11 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
+#include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -45,6 +53,39 @@ struct MakeAppOptions {
     bool with_internal_storage = true;
     std::map<std::string, std::string> fail;
     std::span<const uint8_t> font_image;
+    // Registered as "storage.sd" when set.
+    std::shared_ptr<FakeStorage> sd;
+    // Every settings write_batch() first sleeps this long.
+    uint32_t settings_write_delay_ms = 0;
+};
+
+// The simulator's JSON file backend, with writes slowed down so a test can
+// tell whether someone waited for them.
+class SlowSettings : public wisp::core::SettingsBackend {
+public:
+    SlowSettings(const std::string& path, uint32_t delay_ms) : inner_(path), delay_ms_(delay_ms) {}
+    wisp::Result<wisp::Value> get(const std::string& ns, const std::string& key) override {
+        return inner_.get(ns, key);
+    }
+    wisp::Result<void> set(const std::string& ns, const std::string& key,
+                           const wisp::Value& value) override {
+        return inner_.set(ns, key, value);
+    }
+    wisp::Result<void> erase(const std::string& ns, const std::string& key) override {
+        return inner_.erase(ns, key);
+    }
+    wisp::Result<void> erase_all() override { return inner_.erase_all(); }
+    wisp::Result<std::vector<wisp::core::SettingsEntry>> load_all() override {
+        return inner_.load_all();
+    }
+    wisp::Result<void> write_batch(std::span<const wisp::core::SettingsChange> changes) override {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms_));
+        return inner_.write_batch(changes);
+    }
+
+private:
+    wisp::port::sim::JsonFileSettingsBackend inner_;
+    uint32_t delay_ms_;
 };
 
 // A wisp::app::Board that registers a fixed, test-controlled set of fake
@@ -71,6 +112,7 @@ public:
                 std::make_shared<FakeStorage>("storage.int", wisp::test::temp_dir().string(),
                                               /*removable=*/false));
         }
+        if (opts_.sd) maybe_register(registry, report, opts_.sd);
         maybe_register(registry, report, std::make_shared<FakeImu>("imu.main"));
         maybe_register(registry, report, std::make_shared<FakeButton>("button.power"));
     }
@@ -98,6 +140,8 @@ struct Harness {
     std::vector<std::string> lines;
     std::shared_ptr<FakeDisplay> display;
     std::string settings_dir;
+    // Platform::reboot calls it.
+    std::function<void()> on_reboot;
     wisp::app::App app;
 
     explicit Harness(const MakeAppOptions& opts)
@@ -111,9 +155,17 @@ private:
 
         wisp::app::Platform platform;
         platform.board = std::make_unique<FakeBoard>(opts, display);
-        platform.settings = std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(
-            settings_dir + "/settings.json");
+        if (opts.settings_write_delay_ms != 0) {
+            platform.settings = std::make_unique<SlowSettings>(settings_dir + "/settings.json",
+                                                               opts.settings_write_delay_ms);
+        } else {
+            platform.settings = std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(
+                settings_dir + "/settings.json");
+        }
         platform.emit_line = [this](const std::string& line) { lines.push_back(line); };
+        platform.reboot = [this] {
+            if (on_reboot) on_reboot();
+        };
         platform.font_image = opts.font_image;
         return platform;
     }
@@ -416,4 +468,61 @@ TEST(AppNotifications, StopSavesPendingNotices) {
     std::ifstream f(root.value() + "/notifications.json");
     std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     EXPECT_NE(text.find("restore_failed"), std::string::npos) << text;
+}
+
+TEST(App, StorageRefreshRunsOnTheWorker) {
+    MakeAppOptions opts;
+    opts.with_display = false;
+    opts.sd = std::make_shared<FakeStorage>("storage.sd", wisp::test::temp_dir().string(),
+                                            /*removable=*/true);
+    std::atomic<int> polls{0};
+    std::atomic<int> off_thread{0};
+    std::atomic<bool> hold{false};
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    opts.sd->on_online = [&] {
+        polls.fetch_add(1);
+        if (!wisp::os::on_flash_thread()) off_thread.fetch_add(1);
+        if (hold.exchange(false)) {
+            entered.give();
+            release.take(wisp::os::kForever);
+        }
+    };
+    Harness h(opts);
+    ASSERT_TRUE(h.app.start());
+    ASSERT_NE(h.app.storage_worker(), nullptr);
+
+    // The timer's own refresh may be in flight; ours goes in once it is not.
+    hold.store(true);
+    ASSERT_TRUE(wait_until([&] { return wisp::app::queue_storage_refresh(h.app); }, 3000));
+    ASSERT_TRUE(entered.take(3000));
+    // Still running: the next one (the timer's included) is skipped.
+    EXPECT_FALSE(wisp::app::queue_storage_refresh(h.app));
+    const int before = polls.load();
+    release.give();
+    ASSERT_TRUE(wait_until([&] { return wisp::app::queue_storage_refresh(h.app); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return polls.load() > before; }, 3000));
+
+    // The 2 s timer queues it as well.
+    const int timer_before = polls.load();
+    ASSERT_TRUE(wait_until([&] { return polls.load() > timer_before; }, 5000));
+    h.app.stop();
+    EXPECT_EQ(off_thread.load(), 0);
+}
+
+TEST(App, RestartFlushesSettingsFirst) {
+    MakeAppOptions opts;
+    opts.with_display = false;
+    opts.settings_write_delay_ms = 300;
+    Harness h(opts);
+    std::atomic<int64_t> on_disk{-2};
+    h.on_reboot = [&] {
+        wisp::port::sim::JsonFileSettingsBackend fresh(h.settings_dir + "/settings.json");
+        on_disk.store(wisp::core::Settings(fresh, "test").get_int("k", -1));
+    };
+    ASSERT_TRUE(h.app.start());
+
+    ASSERT_TRUE(wisp::core::Settings(*h.app.platform().settings, "test").set("k", 7));
+    wisp::app::restart_for_firmware(h.app);
+    EXPECT_EQ(on_disk.load(), 7);
 }

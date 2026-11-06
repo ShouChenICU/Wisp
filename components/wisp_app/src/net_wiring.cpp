@@ -41,16 +41,25 @@ void NetWiring::start() {
         auto t = clock->get_unix();
         return t ? t.value() : 0;
     };
+    // Both loads read flash.
+    auto run_io = [this](const std::function<Result<void>()>& load) {
+        if (!deps_.run_io) return load();
+        Result<void> loaded = Result<void>::ok();
+        if (auto r = deps_.run_io([&] { loaded = load(); }); !r) return r;
+        return loaded;
+    };
     pairing_ = std::make_unique<net::PairingService>(deps_.storage, deps_.bus, platform.random,
-                                                     std::move(unix_now), platform.pairing);
-    if (auto r = pairing_->init(); !r) {
+                                                     std::move(unix_now), platform.pairing,
+                                                     deps_.submit_io);
+    if (auto r = run_io([this] { return pairing_->init(); }); !r) {
         WLOG_W(kTag, "pairing: %s", r.error().message.c_str());
     }
 
     if (wifi_dev) {
         wifi_ =
-            std::make_unique<net::WifiService>(wifi_dev, deps_.storage, deps_.bus, platform.random);
-        if (auto r = wifi_->init(now); !r) {
+            std::make_unique<net::WifiService>(wifi_dev, deps_.storage, deps_.bus, platform.random,
+                                               net::WifiServiceConfig{}, deps_.submit_io);
+        if (auto r = run_io([this, now] { return wifi_->init(now); }); !r) {
             WLOG_W(kTag, "wifi: %s", r.error().message.c_str());
         }
         const net::WifiState state = wifi_->status().state;
@@ -140,7 +149,7 @@ void NetWiring::start() {
             .boot_id = boot_id,
             .http_port = platform.http_port,
             .device_status = [this] { return device_status(); },
-            .reboot = platform.reboot,
+            .reboot = deps_.reboot ? deps_.reboot : platform.reboot,
             .request_factory_reset = deps_.request_factory_reset,
             .firmware = deps_.firmware,
             .scenes = deps_.scenes,

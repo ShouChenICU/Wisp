@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "support/fake_devices.hpp"
+#include "support/fake_io_queue.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/base/base64.hpp"
 #include "wisp/base/error.hpp"
@@ -38,6 +39,7 @@ using wisp::net::Iface;
 using wisp::net::PairedClient;
 using wisp::net::PairingConfig;
 using wisp::net::PairingService;
+using wisp::test::FakeIoQueue;
 using wisp::test::FakeStorage;
 
 namespace {
@@ -86,7 +88,8 @@ struct Fixture {
     }
 
     // (Re)creates the service over the same storage, as a reboot would.
-    PairingService& make(PairingConfig config = {}) {
+    PairingService& make(PairingConfig config = {},
+                         std::function<bool(std::function<void()>)> submit_io = {}) {
         svc.reset();
         svc = std::make_unique<PairingService>(
             *storage, bus,
@@ -101,7 +104,7 @@ struct Fixture {
                     }
                 }
             },
-            [this] { return unix_now.load(); }, config);
+            [this] { return unix_now.load(); }, config, std::move(submit_io));
         EXPECT_TRUE(svc->init());
         return *svc;
     }
@@ -858,4 +861,32 @@ TEST(Pairing, CancelCodeInvalidatesItAtOnce) {
     svc.cancel_code();
     svc.tick(1000 + 120000);
     EXPECT_EQ(f.topic("net.pairing.code").size(), 2u);
+}
+
+TEST(PairingService, SavesOffTheCallingThread) {
+    Fixture f;
+    FakeIoQueue io;
+    auto& svc = f.make(kBackToBack, io.submit_io());
+    f.pair(1000);
+    f.pair(2000);
+    ASSERT_EQ(svc.clients().size(), 2u);
+    EXPECT_EQ(f.read_clients(), "");
+    EXPECT_EQ(io.queued(), 1u);
+
+    EXPECT_EQ(io.run_all(), 1u);
+    auto& again = f.make();
+    EXPECT_EQ(again.clients().size(), 2u);
+}
+
+TEST(PairingService, RevokeAllSupersedesAQueuedSave) {
+    Fixture f;
+    FakeIoQueue io;
+    auto& svc = f.make(kBackToBack, io.submit_io());
+    f.pair(1000);
+    svc.revoke_all();
+    EXPECT_EQ(io.queued(), 1u);
+    EXPECT_EQ(io.run_all(), 1u);
+    EXPECT_EQ(f.read_clients().find("\"hash\""), std::string::npos) << f.read_clients();
+    auto& again = f.make();
+    EXPECT_TRUE(again.clients().empty());
 }

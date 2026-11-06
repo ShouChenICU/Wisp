@@ -45,8 +45,11 @@ void cancel_factory_reset(App& app);
 //   2. waits (at most 500 ms in all) for the event bus to deliver it and
 //      the admin WebSocket sender to put it on the wire;
 //   3. erases Settings, forgets the Wi-Fi networks, revokes every paired
-//      browser (closing their sockets) and clears the model profiles;
-//   4. calls Platform::reboot (if any).
+//      browser (closing their sockets), clears the model profiles and the
+//      agent's conversations -- all as one job on the flash thread, waited
+//      for up to 30 s (spec 3.7 of the flash-thread design);
+//   4. writes what still waits for flash (App::flush_storage());
+//   5. calls Platform::reboot (if any).
 // Blocks; must not run on the UI thread.
 void factory_reset(App& app);
 

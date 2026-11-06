@@ -307,7 +307,10 @@ public:
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     std::string mount_point() const override { return dir_; }
-    bool online() override { return online_flag.load(); }
+    bool online() override {
+        if (on_online) on_online();
+        return online_flag.load();
+    }
 
     wisp::Result<wisp::hal::Capacity> capacity() override {
         if (on_capacity) on_capacity();
@@ -332,6 +335,8 @@ public:
     // Called at the start of every capacity() call, on the caller's
     // thread. Set it before the device is used.
     std::function<void()> on_capacity;
+    // Likewise for online() (StorageManager::refresh() polls it).
+    std::function<void()> on_online;
 
 private:
     std::atomic<int> set_standby_calls_{0};

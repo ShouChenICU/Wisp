@@ -117,6 +117,7 @@ add_dependencies(vector_font_test wisp_sim_fonts)
 target_compile_definitions(vector_font_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
 wisp_test(NAME app_boot_test SRCS app/app_boot_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
+target_include_directories(app_boot_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME power_key_controller_test SRCS app/power_key_controller_test.cpp LIBS wisp_app)
 wisp_test(NAME power_manager_test SRCS app/power_manager_test.cpp
           LIBS wisp_app wisp_ui wisp_core wisp_hal wisp_port_sim_os wisp_port_sim_settings

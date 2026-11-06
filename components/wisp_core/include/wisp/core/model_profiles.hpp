@@ -37,6 +37,12 @@
 //
 // Thread-safe: the admin HTTP handlers and request-sending code may call
 // in concurrently. test() runs the prober outside the lock.
+//
+// Saving (spec 3.5 of docs/superpowers/specs/2026-11-06-flash-thread-design.md):
+// with a `submit_io`, a change is applied in memory and its file write
+// queued on the flash thread (core::LatestSave), the newest state winning;
+// init() reads flash and must itself run on the flash thread or before it
+// starts.
 
 #include <array>
 #include <cstddef>
@@ -52,6 +58,7 @@
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/latest_save.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/os/os.hpp"
 
@@ -194,7 +201,10 @@ public:
     static constexpr size_t kMaxOptionKeyBytes = 15;
     static constexpr size_t kMaxOptionValueBytes = 64;
 
-    ModelProfileService(StorageManager& storage, EventBus& bus, ModelRandomFn random = nullptr);
+    // `submit_io` queues the file writes on the flash thread; empty: every
+    // change is written on the calling thread.
+    ModelProfileService(StorageManager& storage, EventBus& bus, ModelRandomFn random = nullptr,
+                        LatestSave::SubmitIo submit_io = {});
 
     ModelProfileService(const ModelProfileService&) = delete;
     ModelProfileService& operator=(const ModelProfileService&) = delete;
@@ -248,9 +258,9 @@ public:
     // kind has none. Only for the model clients -- see the file header.
     std::optional<ResolvedProfile> active_for_request(ModelKind kind) const;
 
-    // Forgets every profile and deletes the files (factory reset).
-    // Failures to delete are logged, not returned: the caller reboots
-    // regardless.
+    // Forgets every profile and deletes the files (factory reset), in
+    // place of any write still queued. Failures to delete are logged, not
+    // returned: the caller reboots regardless.
     void clear();
 
 private:
@@ -264,7 +274,9 @@ private:
     };
 
     std::string system_root() const;  // "" if the System area is unavailable
-    Result<void> persist(const State& next);
+    // Saves `next` (see LatestSave). `migrated_from`, the legacy file
+    // `next` was migrated from, is deleted once the write has succeeded.
+    Result<void> persist(const State& next, std::string migrated_from = {});
     void publish(const State& state);
     std::string new_id(const State& state);
     Stored* find(State& state, std::string_view id);
@@ -278,6 +290,7 @@ private:
     StorageManager& storage_;
     EventBus& bus_;
     ModelRandomFn random_;
+    LatestSave saver_;
     mutable os::Mutex mutex_;
     State state_;
     ModelProber prober_;

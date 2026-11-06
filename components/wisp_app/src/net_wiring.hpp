@@ -5,8 +5,8 @@
 //
 // start() runs on App::start()'s thread, after PowerManager exists:
 //   - builds PairingService (and, with a "net.wifi" device, WifiService)
-//     and init()s them -- WifiService::init() only loads the saved list,
-//     so nothing here touches the radio;
+//     and init()s them through run_io -- WifiService::init() only loads
+//     the saved list, so nothing here touches the radio;
 //   - subscribes to power.state, net.wifi.state and net.ap.state, only to
 //     wake the task: each tick it applies PowerManager::level() to
 //     WifiService::set_power_level() and reads which interfaces are up from
@@ -71,6 +71,7 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_update.hpp"
+#include "wisp/core/latest_save.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/occupancy.hpp"
 #include "wisp/core/power_monitor.hpp"
@@ -128,6 +129,14 @@ struct NetWiringDeps {
     // and the admin services; empty: os::now_ms. Tests move it to reach
     // the network window's 15 minutes.
     std::function<uint64_t()> now_ms;
+    // Queues the Wi-Fi and pairing file writes on the flash thread (their
+    // submit_io); empty: they write on the calling thread.
+    core::LatestSave::SubmitIo submit_io;
+    // Runs their init() (which reads flash) on the flash thread and waits;
+    // empty: on start()'s thread.
+    std::function<Result<void>(std::function<void()>)> run_io;
+    // AdminDeps::reboot; empty: Platform::reboot.
+    std::function<void()> reboot;
 };
 
 class NetWiring {

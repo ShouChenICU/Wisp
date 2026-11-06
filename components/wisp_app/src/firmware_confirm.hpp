@@ -16,8 +16,11 @@
 // service (two minutes), which publishes "rejected"; the screen then
 // closes its dialog because pending_firmware() is empty.
 
+#include <functional>
+#include <memory>
 #include <optional>
 
+#include "wisp/base/result.hpp"
 #include "wisp/core/firmware_update.hpp"
 
 namespace wisp::app {
@@ -41,8 +44,19 @@ bool start_firmware_install(App& app);
 void decline_firmware(App& app);
 
 // FirmwareUpdateService::Deps::restart: lets the "confirmed" event reach
-// the browser (at most 500 ms), then calls Platform::reboot.
+// the browser (at most 500 ms), writes what waits for flash
+// (App::flush_storage()), then calls Platform::reboot.
 void restart_for_firmware(App& app);
+
+// `inner` with activate() and mark_valid() -- the calls that write
+// otadata -- run through `run_io` on the flash thread (spec 3.7 of
+// docs/superpowers/specs/2026-11-06-flash-thread-design.md): mark_valid()
+// from App::start(), activate() from the "wisp.fwup" task. `run_io` waits
+// for the job; on its error activate() fails with it and mark_valid() logs
+// it. Every other call goes straight to `inner`. `inner` must outlive the
+// result.
+std::unique_ptr<core::FirmwareUpdater> flash_thread_updater(
+    core::FirmwareUpdater& inner, std::function<Result<void>(std::function<void()>)> run_io);
 
 // Waits for a "wisp.fwup" task to finish; App::stop() calls it before
 // tearing down the services it uses.
