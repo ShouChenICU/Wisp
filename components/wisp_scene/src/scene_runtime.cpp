@@ -99,6 +99,21 @@ const char* to_string(LaunchReason r) {
     return "user";
 }
 
+// One scene's downloads: begun on the worker while `open`, cancelled all
+// at once by cancel_files(). The lock is held across a download's
+// SceneHttp::submit(), so once cancel_files() has closed the gate every
+// request of the scene is either cancelled here or not sent at all.
+struct SceneRuntime::FilesGate {
+    os::Mutex mu;
+    bool open = true;
+    std::vector<std::shared_ptr<core::FileDownload>> active;
+
+    void forget(const core::FileDownload* dl) {
+        std::lock_guard<os::Mutex> lock(mu);
+        std::erase_if(active, [dl](const auto& p) { return p.get() == dl; });
+    }
+};
+
 struct SceneRuntime::Slot {
     std::string id;
     std::string name;
@@ -126,6 +141,8 @@ struct SceneRuntime::Slot {
     // What wisp.scene.launch() reports.
     LaunchReason reason = LaunchReason::User;
     MinuteTicker ticker;
+    // Its downloads in flight (wire_files()); shared with the jobs.
+    std::shared_ptr<FilesGate> files_gate;
     // What the scene last saw, for "battery" and "lang".
     bool has_battery = false;
     int64_t battery = 0;
@@ -682,6 +699,9 @@ void SceneRuntime::handle(SceneMessage& m) {
     } else if (auto* b = std::get_if<msg::HttpDone>(&body)) {
         Slot* s = target(m);
         if (s != nullptr && s->scene) run_step(*s, s->scene->http(b->id, b->result));
+    } else if (auto* b = std::get_if<msg::FilesDone>(&body)) {
+        Slot* s = target(m);
+        if (s != nullptr && s->scene) run_step(*s, s->scene->files(b->id, b->result));
     } else if (auto* b = std::get_if<msg::Sensor>(&body)) {
         Slot* s = target(m);
         // Paused in the background: a batch already on its way is dropped.
@@ -1189,6 +1209,7 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason)
     api.scene_name = s.name;
     if (deps_.http != nullptr) wire_http(s);
     if (deps_.sensors != nullptr) wire_sensors(s);
+    if (deps_.files != nullptr) wire_files(s);
     // Opened in front with the screen off: the timers of a scene that does
     // not declare "background" wait for it to come on.
     if (!visible_ && reason != LaunchReason::Boot && !s.declares_background)
@@ -1248,6 +1269,120 @@ void SceneRuntime::wire_sensors(Slot& s) {
         std::lock_guard<os::Mutex> lock(link->mu);
         if (link->rt != nullptr) post_scene_message(*link->rt, std::move(m));
     };
+}
+
+void SceneRuntime::wire_files(Slot& s) {
+    core::SceneFiles& files = *deps_.files;
+    core::StorageWorker& worker = deps_.worker;
+    s.files_gate = std::allocate_shared<FilesGate>(os::LargeAllocator<FilesGate>());
+    // Results come back from the worker (or, for a refusal, from this
+    // task) as messages for this instance; one for an instance that is
+    // gone is dropped like any stale message.
+    auto deliver = [link = link_, id = s.id, instance = s.instance](uint32_t cb, FilesResult r) {
+        auto m = make_message(id, instance, msg::FilesDone{cb, std::move(r)});
+        std::lock_guard<os::Mutex> lock(link->mu);
+        if (link->rt == nullptr) return;
+        if (!post_scene_message(*link->rt, std::move(m)))
+            WLOG_W(scene_tag(id).c_str(), "files: a result was dropped: scene queue full");
+    };
+    auto busy = [deliver](uint32_t cb) {
+        FilesResult r;
+        r.error = "busy";
+        deliver(cb, std::move(r));
+    };
+    SceneApi& api = s.scene->api();
+    api.files_run = [&files, &worker, deliver, busy, id = s.id](uint32_t cb, FilesJob job) {
+        const bool queued = worker.submit(
+            [&files, deliver, id, cb, job = std::move(job)] { deliver(cb, job(files, id)); });
+        if (!queued) busy(cb);
+    };
+    api.files_fail = [deliver](uint32_t cb, const char* error) {
+        FilesResult r;
+        r.error = error;
+        deliver(cb, std::move(r));
+    };
+    if (deps_.http == nullptr) return;
+    net::SceneHttp& http = *deps_.http;
+    api.files_download = [&files, &worker, &http, deliver, busy, gate = s.files_gate, id = s.id,
+                          instance = s.instance](uint32_t cb, net::SceneHttpRequest req,
+                                                 std::string name) {
+        req.scene_id = id;
+        req.instance = instance;
+        req.download = true;
+        auto shared_req = std::allocate_shared<net::SceneHttpRequest>(
+            os::LargeAllocator<net::SceneHttpRequest>(), std::move(req));
+        // On the worker: begin the file, then send the request.
+        auto begin = [&files, &worker, &http, deliver, busy, gate, id, cb, shared_req,
+                      name = std::move(name)] {
+            auto begun = files.begin_download(id, name);
+            if (!begun) {
+                FilesResult r;
+                r.error = core::scene_files_code(begun.error());
+                deliver(cb, std::move(r));
+                return;
+            }
+            std::shared_ptr<core::FileDownload> dl = std::move(begun.value());
+            // On the worker once the transfer is over (done() runs on the
+            // proxy's task, which must not touch flash).
+            auto done = [&worker, deliver, busy, gate, dl, cb](net::SceneHttpResult res) {
+                auto result = std::allocate_shared<net::SceneHttpResult>(
+                    os::LargeAllocator<net::SceneHttpResult>(), std::move(res));
+                auto finish = [deliver, gate, dl, cb, result] {
+                    const int status = result->status;
+                    const bool ok = result->error.empty() && status >= 200 && status < 300;
+                    auto kept = dl->finish(ok);
+                    gate->forget(dl.get());
+                    FilesResult r;
+                    if (std::string own = dl->error(); !own.empty()) {
+                        r.error = std::move(own);
+                    } else if (!result->error.empty()) {
+                        r.error = result->error;
+                    } else if (ok && !kept) {
+                        r.error = core::scene_files_code(kept.error());
+                    } else {
+                        r.payload =
+                            FilesDownloaded{status, ok ? kept.value() : 0, result->deferred};
+                    }
+                    deliver(cb, std::move(r));
+                };
+                // Without the worker the reservation goes and the .dl waits
+                // for the next count. Not forgotten here: this may run inside
+                // submit(), under the gate's lock.
+                if (!worker.submit(std::move(finish))) {
+                    dl->abandon();
+                    busy(cb);
+                }
+            };
+            {
+                std::lock_guard<os::Mutex> lock(gate->mu);
+                if (gate->open) {
+                    gate->active.push_back(dl);
+                    shared_req->on_body = [dl](std::span<const uint8_t> chunk) {
+                        return dl->push(chunk);
+                    };
+                    http.submit(std::move(*shared_req), std::move(done));
+                    return;
+                }
+            }
+            // The scene closed while this waited for the worker.
+            dl->finish(false);
+        };
+        if (!worker.submit(std::move(begin))) busy(cb);
+    };
+}
+
+void SceneRuntime::cancel_files(Slot& s) {
+    if (!s.files_gate) return;
+    std::vector<std::shared_ptr<core::FileDownload>> active;
+    {
+        std::lock_guard<os::Mutex> lock(s.files_gate->mu);
+        s.files_gate->open = false;
+        active.swap(s.files_gate->active);
+    }
+    for (auto& dl : active) {
+        dl->cancel();
+        if (!deps_.worker.submit([dl] { dl->finish(false); })) dl->abandon();
+    }
 }
 
 bool SceneRuntime::step(Slot& s, const std::optional<ScriptError>& err) {
@@ -1322,6 +1457,7 @@ void SceneRuntime::fault(Slot& s, const ScriptError& err) {
     release_locks(s);
     if (s.scene) release_sensors(s.scene->api());
     s.scene.reset();  // the VM goes with it, and its timers
+    cancel_files(s);
     if (deps_.http != nullptr) deps_.http->cancel_scene(s.id);
     s.shown = false;
     patches_.clear(s.instance);
@@ -1495,6 +1631,7 @@ void SceneRuntime::close_slot(Slot& s, std::shared_ptr<SceneWaiter> done) {
     release_locks(s);
     if (s.scene) release_sensors(s.scene->api());
     s.scene.reset();
+    cancel_files(s);
     if (deps_.http != nullptr) deps_.http->cancel_scene(s.id);
     // Before the caller can be answered (from the worker, below): whoever
     // close() answers sees the scene stopped, and anything it publishes

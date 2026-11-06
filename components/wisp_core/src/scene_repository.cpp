@@ -1,11 +1,13 @@
 #include "wisp/core/scene_repository.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/core/scene_files.hpp"
 #include "wisp/core/zip.hpp"
 
 namespace wisp::core {
@@ -19,6 +21,10 @@ constexpr std::string_view kNewSuffix = ".newdir";
 // Same bound as the zip reader's entry limit, so a dev working directory
 // cannot hold a package that could never be installed.
 constexpr size_t kMaxFiles = 256;
+// The directories of a scene's own that sit inside its package directory
+// on the device and never travel in a package: SceneStore's data/ and
+// SceneFiles' files/.
+constexpr std::string_view kSceneOwned[] = {"data", "files"};
 
 bool starts_with(std::string_view s, std::string_view p) { return s.substr(0, p.size()) == p; }
 
@@ -71,6 +77,10 @@ bool allowed_file(std::string_view path, std::string_view entry) {
 bool allowed_dir(std::string_view path) {
     return (starts_with(path, "lib/") || starts_with(path, "assets/")) &&
            !has_reserved_segment(path);
+}
+
+bool scene_owned(std::string_view name) {
+    return std::find(std::begin(kSceneOwned), std::end(kSceneOwned), name) != std::end(kSceneOwned);
 }
 
 bool is_lua(std::string_view path) { return ends_with(path, ".lua"); }
@@ -193,6 +203,10 @@ std::string SceneRepository::code_dir(std::string_view id) const {
 
 std::string SceneRepository::data_dir(std::string_view id) const {
     return config_.data_root + "/" + std::string(id) + "/data";
+}
+
+std::string SceneRepository::files_dir(std::string_view id) const {
+    return config_.data_root + "/" + std::string(id) + "/files";
 }
 
 Result<SceneManifest> SceneRepository::read_manifest(std::string_view id) {
@@ -502,28 +516,34 @@ Result<void> SceneRepository::finish_replace(const std::string& id) {
         return storage_.remove_tree(neu);
     }
 
-    // Packages never carry data/, so anything at <id>/data is the scene's
-    // data, whatever the configured roots look like, and .newdir/data
-    // exists only if this move already happened before an interruption.
+    // Packages never carry data/ or files/, so anything at <id>/data or
+    // <id>/files is the scene's, whatever the configured roots look like,
+    // and the same name under .newdir exists only if this move already
+    // happened before an interruption.
     const std::string dir = code_dir(id);
-    Result<Kind> old_data = probe(storage_, dir + "/data");
-    if (!old_data) {
-        return Result<void>::err(old_data.error().code, old_data.error().message);
-    }
-    Result<Kind> new_data = probe(storage_, neu + "/data");
-    if (!new_data) {
-        return Result<void>::err(new_data.error().code, new_data.error().message);
-    }
-    if (old_data.value() != Kind::Missing) {
-        if (new_data.value() != Kind::Missing) {
+    for (std::string_view sub : kSceneOwned) {
+        const std::string from = dir + "/" + std::string(sub);
+        const std::string to = neu + "/" + std::string(sub);
+        Result<Kind> old_kind = probe(storage_, from);
+        if (!old_kind) {
+            return Result<void>::err(old_kind.error().code, old_kind.error().message);
+        }
+        Result<Kind> new_kind = probe(storage_, to);
+        if (!new_kind) {
+            return Result<void>::err(new_kind.error().code, new_kind.error().message);
+        }
+        if (old_kind.value() == Kind::Missing) {
+            continue;
+        }
+        if (new_kind.value() != Kind::Missing) {
             // Only possible if an earlier replace failed after the move and
-            // the scene then wrote data again. Deleting either copy could
-            // lose what the user wrote last; leave both for a person.
+            // the scene then wrote again. Deleting either copy could lose
+            // what the user wrote last; leave both for a person.
             return Result<void>::err(
                 ErrorCode::AlreadyExists,
-                "both " + dir + "/data and " + neu + "/data exist; not replacing scene " + id);
+                "both " + from + " and " + to + " exist; not replacing scene " + id);
         }
-        WISP_TRY(storage_.rename(dir + "/data", neu + "/data"));
+        WISP_TRY(storage_.rename(from, to));
     }
     if (config_.on_data_moved) config_.on_data_moved();
     WISP_TRY(storage_.remove_tree(dir));
@@ -650,7 +670,10 @@ Result<SceneRemoval> SceneRepository::removal(std::string_view id_view, bool wit
     } else {
         out.name = id;
     }
-    for (const std::string& dir : {code_dir(id) + "/data", data_dir(id)}) {
+    std::vector<std::string> owned = {code_dir(id) + "/data", data_dir(id), code_dir(id) + "/files",
+                                      files_dir(id)};
+    if (std::string sd = sd_scene_dir(storage_, id); !sd.empty()) owned.push_back(sd);
+    for (const std::string& dir : owned) {
         Result<Kind> kind = probe(storage_, dir);
         if (!kind) {
             return R::err(kind.error().code, kind.error().message);
@@ -682,17 +705,24 @@ Result<void> SceneRepository::remove(std::string_view id_view, bool with_data) {
         return R::err(m.error().code, m.error().message);
     }
     const bool installed = m || m.error().code == ErrorCode::InvalidArgument;
-    // As in finish_replace(), <id>/data is the scene's data however the
-    // roots are spelled; data_dir(id) covers a data root of its own.
-    Result<Kind> kept = probe(storage_, dir + "/data");
-    if (!kept) {
-        return R::err(kept.error().code, kept.error().message);
+    // As in finish_replace(), <id>/data and <id>/files are the scene's
+    // however the roots are spelled; data_dir(id) and files_dir(id) cover a
+    // data root of its own, and the SD card may hold files too.
+    bool kept = false;
+    bool has_data = false;
+    std::vector<std::string> owned = {data_dir(id), files_dir(id)};
+    if (std::string sd = sd_scene_dir(storage_, id); !sd.empty()) owned.push_back(sd);
+    for (std::string_view sub : kSceneOwned) owned.push_back(dir + "/" + std::string(sub));
+    for (size_t i = 0; i < owned.size(); ++i) {
+        Result<Kind> kind = probe(storage_, owned[i]);
+        if (!kind) {
+            return R::err(kind.error().code, kind.error().message);
+        }
+        const bool present = kind.value() != Kind::Missing;
+        has_data = has_data || present;
+        // The last ones are those inside the package directory.
+        if (i + std::size(kSceneOwned) >= owned.size()) kept = kept || present;
     }
-    Result<Kind> data = probe(storage_, data_dir(id));
-    if (!data) {
-        return R::err(data.error().code, data.error().message);
-    }
-    const bool has_data = kept.value() != Kind::Missing || data.value() != Kind::Missing;
     if (!installed && !(with_data && has_data)) {
         return R::err(ErrorCode::NotFound, "scene not installed: " + id);
     }
@@ -704,32 +734,32 @@ Result<void> SceneRepository::remove(std::string_view id_view, bool with_data) {
         WISP_TRY(storage_.remove_tree(dir));
         // A no-op when the data was inside `dir`.
         WISP_TRY(storage_.remove_tree(config_.data_root + "/" + id));
+        if (std::string sd = sd_scene_dir(storage_, id); !sd.empty()) {
+            WISP_TRY(storage_.remove_tree(sd));
+        }
         WLOG_I(kTag, "removed %s with its data", id.c_str());
         return R::ok();
     }
-    if (kept.value() == Kind::Missing) {
+    if (!kept) {
         WISP_TRY(storage_.remove_tree(dir));
         WLOG_I(kTag, "removed %s", id.c_str());
         return R::ok();
     }
 
-    // The data directory stays in place.
+    // The data and files directories stay in place.
     Result<std::vector<DirEntry>> listed = storage_.list_dir(dir);
     if (!listed) {
         return R::err(listed.error().code, listed.error().message);
     }
     for (const DirEntry& e : listed.value()) {
-        if (e.name == "data") {
-            continue;
-        }
         // remove_tree() refuses a bookkeeping name itself but removes it
         // along with the file it belongs to.
         std::string name = e.name;
         if (reserved_name(name)) {
             name.resize(name.size() - 4);
-            if (name == "data") {
-                continue;
-            }
+        }
+        if (scene_owned(name)) {
+            continue;
         }
         WISP_TRY(storage_.remove_tree(dir + "/" + name));
     }

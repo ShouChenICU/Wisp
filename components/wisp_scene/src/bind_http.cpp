@@ -23,6 +23,11 @@
 //       dns, connect, tls, timeout, other (from the proxy), or
 //       not_serializable, too_deep (a table body that cannot be encoded)
 //       -- always through cb, never at the call.
+//   wisp.http.download(url, name, opts, cb) (scene-device spec 7.1): GET
+//       url into the scene's file `name` (wisp.files) through
+//       SceneApi::files_download; opts as for get. cb(err, nil) or
+//       cb(nil, {status, size, deferred}), with the callback kept by
+//       bind_files.cpp. A bad name is "bad_name", through cb.
 // Malformed arguments (url not a string, body not a string or table, opts
 // or opts.headers not a table, a header name or value not a string, cb
 // not a function) raise argument errors.
@@ -85,21 +90,20 @@ struct SendArgs {
     uint32_t id = 0;
 };
 
-// The C++ part of send(): calls only non-raising Lua APIs. Returns false
-// when lua_to_json reached the VM's limits (the caller raises).
-bool do_send(lua_State* L, SceneApi& api, const SendArgs& a) {
-    // Longer than the proxy accepts is too long whatever the rest: one
-    // byte over the cap keeps that outcome without copying the whole of
-    // an oversized value.
-    auto capped = [](std::string_view s, size_t cap) { return s.substr(0, cap + 1); };
-    net::SceneHttpRequest req;
-    req.method = a.post ? net::Method::Post : net::Method::Get;
+// Longer than the proxy accepts is too long whatever the rest: one byte
+// over the cap keeps that outcome without copying the whole of an
+// oversized value.
+std::string_view capped(std::string_view s, size_t cap) { return s.substr(0, cap + 1); }
+
+// Fills in the URL (at 1) and opts.headers (at `headers`, or 0) with
+// non-raising Lua calls only. True if a content type was among them.
+bool fill_request(lua_State* L, net::SceneHttpRequest& req, int headers) {
     const std::string_view url = capped(view_at(L, 1), net::SceneHttp::kMaxUrlBytes);
     req.url.assign(url.data(), url.size());
     bool has_type = false;
-    if (a.headers != 0) {
+    if (headers != 0) {
         lua_pushnil(L);
-        while (lua_next(L, a.headers) != 0) {
+        while (lua_next(L, headers) != 0) {
             if (req.headers.size() > net::SceneHttp::kMaxHeaders) {
                 // Already one over: the proxy refuses the request.
                 lua_pop(L, 2);
@@ -112,6 +116,15 @@ bool do_send(lua_State* L, SceneApi& api, const SendArgs& a) {
             lua_pop(L, 1);
         }
     }
+    return has_type;
+}
+
+// The C++ part of send(): calls only non-raising Lua APIs. Returns false
+// when lua_to_json reached the VM's limits (the caller raises).
+bool do_send(lua_State* L, SceneApi& api, const SendArgs& a) {
+    net::SceneHttpRequest req;
+    req.method = a.post ? net::Method::Post : net::Method::Get;
+    const bool has_type = fill_request(L, req, a.headers);
     if (a.post) {
         if (lua_type(L, a.body) == LUA_TSTRING) {
             const std::string_view body =
@@ -144,6 +157,21 @@ void check_headers(lua_State* L, int idx, int opts_arg) {
     }
 }
 
+// opts (at `opts`, may be 0 or nil): checks opts.headers and returns its
+// stack index, or 0.
+int check_opts(lua_State* L, int opts) {
+    if (opts == 0 || !lua_istable(L, opts)) return 0;
+    lua_getfield(L, opts, "headers");
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        return 0;
+    }
+    if (!lua_istable(L, -1)) luaL_argerror(L, opts, "opts.headers must be a table");
+    const int headers = lua_gettop(L);
+    check_headers(L, headers, opts);
+    return headers;
+}
+
 // get(url, [opts], cb) / post(url, body, [opts], cb)
 int send(lua_State* L, bool post) {
     SendArgs a;
@@ -163,16 +191,7 @@ int send(lua_State* L, bool post) {
     lua_settop(L, cb);
     SceneApi& api = detail::api_of(L);
     if (!api.http_submit || !api.http_fail) return luaL_error(L, "wisp.http is not available");
-    if (opts != 0 && lua_istable(L, opts)) {
-        lua_getfield(L, opts, "headers");
-        if (lua_isnil(L, -1)) {
-            lua_pop(L, 1);
-        } else {
-            if (!lua_istable(L, -1)) luaL_argerror(L, opts, "opts.headers must be a table");
-            a.headers = lua_gettop(L);
-            check_headers(L, a.headers, opts);
-        }
-    }
+    a.headers = check_opts(L, opts);
     luaL_checkstack(L, kLuaJsonStackSlots, "wisp.http");
 
     a.id = api.next_http_id++;
@@ -186,6 +205,38 @@ int send(lua_State* L, bool post) {
         Vm::of(L)->check_limits(L);
         return luaL_error(L, "wisp.http: limits reached");
     }
+    return 0;
+}
+
+// The C++ part of download(): non-raising Lua calls only.
+void do_download(lua_State* L, SceneApi& api, uint32_t id, int headers) {
+    const std::string_view name = view_at(L, 2);
+    if (!core::valid_file_name(name)) return api.files_fail(id, "bad_name");
+    net::SceneHttpRequest req;
+    req.method = net::Method::Get;
+    fill_request(L, req, headers);
+    api.files_download(id, std::move(req), std::string(name));
+}
+
+// download(url, name, [opts], cb)
+int download(lua_State* L) {
+    int opts = 3;
+    int cb = 4;
+    if (lua_type(L, opts) == LUA_TFUNCTION && lua_isnone(L, cb)) {
+        cb = opts;
+        opts = 0;
+    }
+    luaL_checktype(L, 1, LUA_TSTRING);
+    luaL_checktype(L, 2, LUA_TSTRING);
+    if (opts != 0 && !lua_isnoneornil(L, opts)) luaL_checktype(L, opts, LUA_TTABLE);
+    luaL_checktype(L, cb, LUA_TFUNCTION);
+    lua_settop(L, cb);
+    SceneApi& api = detail::api_of(L);
+    if (!api.files_download || !api.files_fail)
+        return luaL_error(L, "wisp.http.download is not available");
+    const int headers = check_opts(L, opts);
+    const uint32_t id = detail::register_files_callback(L, api, cb);
+    do_download(L, api, id, headers);
     return 0;
 }
 
@@ -266,9 +317,11 @@ void install_http(lua_State* L, int wisp) {
     wisp = lua_absindex(L, wisp);
     lua_newtable(L);
     lua_rawsetp(L, LUA_REGISTRYINDEX, &kCallbacksKey);
-    lua_createtable(L, 0, 2);
+    lua_createtable(L, 0, 3);
     lua_pushcfunction(L, get);
     lua_setfield(L, -2, "get");
+    lua_pushcfunction(L, download);
+    lua_setfield(L, -2, "download");
     lua_pushcfunction(L, post);
     lua_setfield(L, -2, "post");
     check_c_functions(L, -1);

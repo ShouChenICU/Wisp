@@ -143,6 +143,12 @@ struct Sensor {
     uint32_t handle = 0;
     core::SensorBatch samples;
 };
+// A wisp.files (or wisp.http.download) result for callback `id`, from
+// the wisp.fs worker (SceneApi::files_run).
+struct FilesDone {
+    uint32_t id = 0;
+    FilesResult result;
+};
 // A completion the store bindings will send.
 struct StoreDone {};
 
@@ -185,7 +191,7 @@ struct Quit {};
 
 using Body =
     std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone, StoreDone,
-                 Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor, Quit>;
+                 Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor, FilesDone, Quit>;
 
 }  // namespace msg
 

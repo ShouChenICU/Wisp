@@ -11,13 +11,22 @@
 // data/, so <code_root>/<id>/data is always treated as the scene's data,
 // without comparing the two roots (which may be spelled differently).
 //
+// files/ (SceneFiles, scene-device spec 7.2) is treated exactly like data/:
+// <data_root>/<id>/files on internal storage, never part of a package, not
+// read by load(), not exported, not counted in code_bytes, carried over by
+// a replace and kept by remove() without data. remove() with data also
+// deletes the copy on the SD card, <sd>/wisp/library/scenes/<id>, when
+// the card is in. (SceneFiles keeps its own usage table: whoever removes a
+// scene's data tells it with SceneFiles::remove_all().)
+//
 // Replacing a package is atomic across power loss (the directory-level
 // version of AGENTS.md section 8's two-name scheme):
 //   1. the new files are written under <code_root>/.<id>.tmpdir/;
 //   2. that directory is renamed to .<id>.newdir -- from here on it is
 //      known to be complete;
-//   3. <id>/data, if present, moves into .<id>.newdir/data (if both exist,
-//      the replace stops with an error rather than delete either);
+//   3. <id>/data and <id>/files, if present, move into .<id>.newdir (if
+//      one exists on both sides, the replace stops with an error rather
+//      than delete either);
 //   4. <id> is removed;
 //   5. .<id>.newdir is renamed to <id>.
 // recover() discards every .*.tmpdir and finishes steps 3-5 for every
@@ -61,7 +70,7 @@ struct SceneRemoval {
     // The manifest's name, or the id when there is no valid manifest.
     std::string name;
     bool package = false;  // scene.json is there, valid or not
-    bool data = false;     // the scene has a data directory
+    bool data = false;     // the scene has a data or files directory
 };
 
 // One Lua source handed to a SourceChecker. Both views point into the
@@ -132,8 +141,9 @@ public:
     // The package as a zip in Mem::Large; with_data adds data/**.
     Result<os::LargeBuffer> export_zip(std::string_view id, bool with_data);
 
-    // Removes the package. Without with_data, data_dir(id) stays, so a later
-    // install of the same id finds it again. NotFound if there is nothing to
+    // Removes the package. Without with_data, data_dir(id) and files_dir(id)
+    // stay, so a later install of the same id finds them again; with it,
+    // the SD card's files go too. NotFound if there is nothing to
     // remove; Unsupported in dev mode.
     Result<void> remove(std::string_view id, bool with_data);
 
@@ -163,6 +173,8 @@ public:
 
     // <data_root>/<id>/data
     std::string data_dir(std::string_view id) const;
+    // <data_root>/<id>/files
+    std::string files_dir(std::string_view id) const;
 
     // The code root is a working directory (SceneRepoConfig::dev): install()
     // and remove() are Unsupported.

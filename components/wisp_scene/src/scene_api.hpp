@@ -1,8 +1,8 @@
 #pragma once
 
 // The wisp.timer, wisp.device, wisp.log, wisp.scene, wisp.store, wisp.http,
-// wisp.power, wisp.notify and wisp.sensor bindings (scene-runtime-core spec
-// 5.1-5.5, scene-device spec 3.2-3.4, 5.1, 6.2). Thin adapters: the state they act on is a
+// wisp.power, wisp.notify, wisp.sensor and wisp.files bindings (scene-runtime-core spec
+// 5.1-5.5, scene-device spec 3.2-3.4, 5.1, 6.2, 7.1). Thin adapters: the state they act on is a
 // SceneApi, which the SceneInstance owns and the scene task (SceneRuntime) fills in and drives.
 // Everything here runs on the scene task, which touches no flash: SceneApi::device must not either.
 //
@@ -72,6 +72,24 @@
 //       proxy through SceneApi::http_submit; each result comes back to the
 //       scene task as a message, and run_http_callback() calls the
 //       scene's callback with it.
+//   wisp.files (bind_files.cpp; scene-device spec 7.1), over
+//       core::SceneFiles, every call asynchronous:
+//       write(name, data, cb), append(name, data, cb) -> cb(err, true);
+//       read(name, offset, len, cb) -> cb(err, data);
+//       list(cb) -> cb(err, { {name =, size =, mtime =}, ... });
+//       remove(name, cb) -> cb(err, true);
+//       info(cb) -> cb(err, {location = "sd" | "int" | nil, quota =, used =}).
+//       wisp.http.download(url, name, [opts], cb) (bind_http.cpp) ->
+//       cb(err, {status =, size =, deferred =}); only a 2xx body is kept.
+//       Each job goes to the wisp.fs worker through SceneApi::files_run
+//       (files_download for a download) and its FilesResult comes back as
+//       a message for run_files_callback(), which calls cb with a fresh
+//       budget. A bad name is answered "bad_name" through files_fail,
+//       also as a message. err is bad_name, too_large, quota_exceeded,
+//       unavailable, not_found or another snake_case storage code, and
+//       for a download also a wisp.http transport or proxy error. Data,
+//       names and arguments that are not strings or integers raise
+//       argument errors.
 
 #include <cstddef>
 #include <cstdint>
@@ -79,16 +97,19 @@
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <variant>
 #include <vector>
 
 #include "wisp/base/value.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_store.hpp"
 #include "wisp/core/sensor_service.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/scene_http.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/timer_set.hpp"
 #include "wisp/scene/vm.hpp"
@@ -120,6 +141,26 @@ struct DeviceInfo {
 };
 static_assert(std::is_trivially_destructible_v<DeviceInfo>);
 
+// What a wisp.http.download callback gets.
+struct FilesDownloaded {
+    int status = 0;
+    uint64_t size = 0;
+    bool deferred = false;
+};
+
+// A wisp.files job's answer: an error code, or the payload (monostate is
+// `true`, a buffer is read()'s data).
+using FilesPayload =
+    std::variant<std::monostate, os::LargeBuffer, std::vector<core::SceneFileEntry>,
+                 core::SceneFilesInfo, FilesDownloaded>;
+struct FilesResult {
+    std::string error;
+    FilesPayload payload;
+};
+
+// Runs on the wisp.fs worker with the scene's id.
+using FilesJob = std::function<FilesResult(core::SceneFiles& files, const std::string& scene)>;
+
 // One scene's binding state. Must outlive the VM it is installed in.
 struct SceneApi {
     TimerSet timers;
@@ -144,6 +185,15 @@ struct SceneApi {
     // (a table body that cannot be encoded).
     std::function<void(uint32_t id, const char* error)> http_fail;
     uint32_t next_http_id = 1;
+    // wisp.files: runs `job` on the worker and brings its result back to
+    // run_files_callback(id) on the scene task. Empty: wisp.files raises.
+    std::function<void(uint32_t id, FilesJob job)> files_run;
+    // Answers callback `id` with `error` without a job (a bad name).
+    std::function<void(uint32_t id, const char* error)> files_fail;
+    // wisp.http.download: `req` (url, headers) into file `name`; the
+    // result comes back like files_run's. Empty: download raises.
+    std::function<void(uint32_t id, net::SceneHttpRequest req, std::string name)> files_download;
+    uint32_t next_files_id = 1;
     bool close_requested = false;
     bool exit_requested = false;
     // In the background: no view, and the APIs of spec 3.4 refuse with
@@ -200,6 +250,11 @@ std::optional<ScriptError> run_device_handlers(Vm& vm, DeviceEvent ev, const Dev
 // happens if the scene has no such callback.
 std::optional<ScriptError> run_http_callback(Vm& vm, uint32_t id, const net::SceneHttpResult& r);
 
+// Calls wisp.files (or wisp.http.download) callback `id` (and forgets it)
+// with cb(err, nil) or cb(nil, result), with a fresh budget. Nothing
+// happens if the scene has no such callback.
+std::optional<ScriptError> run_files_callback(Vm& vm, uint32_t id, const FilesResult& r);
+
 // Calls wisp.sensor callback `id` with the samples, or for a gesture with
 // its name, with a fresh budget. Nothing happens if the handle was stopped.
 std::optional<ScriptError> run_sensor_callback(Vm& vm, uint32_t id, const core::SensorBatch& batch);
@@ -225,6 +280,9 @@ void install_power(lua_State* L, int wisp);
 // Sets wisp.notify and wisp.notify_cancel.
 void install_notify(lua_State* L, int wisp);
 void install_sensor(lua_State* L, int wisp);
+void install_files(lua_State* L, int wisp);
+// Keeps the function at `cb` as a wisp.files callback and returns its id.
+uint32_t register_files_callback(lua_State* L, SceneApi& api, int cb);
 // The SceneApi install_api() put in the registry, or null in a VM that
 // has none (the ui table alone, in tests).
 SceneApi* find_api(lua_State* L);

@@ -12,6 +12,11 @@
 //     Platform::scenes_dir for the code and Platform::scenes_data_dir for
 //     the data), whose recover() runs on the worker before anything lists
 //     or opens a scene. Without an internal storage root there is none;
+//   - the SceneFiles (wisp.files, scene-device spec 7.2) over <int>/scenes
+//     and the SD card's library, even in dev mode (StorageManager moves
+//     files only inside a storage mount). Its scan() follows recover() on
+//     the worker; storage.sd.inserted/removed recount the card's scenes
+//     there. Deleting a scene with its data also clears its files;
 //   - with a screen (build_runtime(), after the system layer): the
 //     scenes' HTTP proxy (given Platform::http_client) and the
 //     SceneRuntime, built before networking so the admin routes can be
@@ -57,6 +62,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
@@ -125,6 +131,10 @@ public:
     void stop();
 
     core::SceneRepository* repository() const { return repo_.get(); }
+    // The scenes' files (wisp.files), built by start_storage(); nullptr
+    // without internal storage. Its methods run on worker() or a thread
+    // allowed flash.
+    core::SceneFiles* files() const { return files_.get(); }
     // Built by build_runtime(); nullptr without a screen.
     scene::SceneRuntime* runtime() const { return runtime_.get(); }
     // The scenes' HTTP proxy, built by build_runtime(); nullptr without a
@@ -169,6 +179,11 @@ private:
     // in internal RAM. The worker's stack and the FreeRTOS objects stay
     // internal (scene-runtime-core spec 2.3).
     os::LargeUnique<core::SceneRepository> repo_;
+    // wisp.files, over <int>/scenes (and the card); built with the
+    // repository, counted on the worker after recover().
+    os::LargeUnique<core::SceneFiles> files_;
+    // storage.sd.inserted/removed, which recount the card's scenes.
+    std::vector<core::SubscriptionId> sd_subs_;
     // Declared before runtime_, so the runtime goes first: it cancels its
     // scene's requests through the proxy while it stops.
     os::LargeUnique<net::SceneHttp> http_;

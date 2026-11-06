@@ -639,3 +639,73 @@ TEST(SceneRepository, RemovalSeesDataLeftBehind) {
     ASSERT_TRUE(r);
     EXPECT_EQ(r.value().name, "todo");
 }
+
+// files/ (wisp.files, scene-device spec 7.2) is the scene's like data/:
+// a replace carries it over, and the package's own files never include it.
+TEST(SceneRepository, ReplaceKeepsFilesDir) {
+    Fixture f;
+    ASSERT_TRUE(f.install(todo_files()));
+    write_raw(f.root() / "todo" / "files" / "a.txt", "kept");
+    auto r = f.install(todo_files("1.0.1"));
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_EQ(r.value().code_bytes, total_size(todo_files("1.0.1")));
+    EXPECT_EQ(read_raw(f.root() / "todo" / "files" / "a.txt"), "kept");
+    EXPECT_FALSE(on_disk(f.root() / ".todo.newdir"));
+}
+
+TEST(SceneRepository, LoadAndExportSkipFiles) {
+    Fixture f;
+    ASSERT_TRUE(f.install(todo_files()));
+    write_raw(f.root() / "todo" / "files" / "a.txt", "not code");
+    ASSERT_TRUE(f.storage->write_atomic(f.repo->data_dir("todo") + "/kv.log", as_bytes("kv\n")));
+
+    auto info = f.repo->info("todo");
+    ASSERT_TRUE(info);
+    EXPECT_EQ(info.value().code_bytes, total_size(todo_files()));
+
+    auto pkg = f.repo->load("todo");
+    ASSERT_TRUE(pkg) << pkg.error().message;
+    for (const auto& file : pkg.value().files) EXPECT_NE(file.first.rfind("files/", 0), 0u);
+
+    auto full = f.repo->export_zip("todo", true);
+    ASSERT_TRUE(full);
+    EXPECT_EQ(zip_paths(full.value()),
+              (std::vector<std::string>{"assets/icon.png", "data/kv.log", "lib/util.lua",
+                                        "main.lua", "scene.json"}));
+}
+
+// Without data, files/ stays in both places; with data it goes from both:
+// <int>/scenes/<id>/files and <sd>/wisp/library/scenes/<id>/files.
+TEST(SceneRepository, RemoveWithDataRemovesFiles) {
+    const std::string in = wisp::test::temp_dir().string();
+    const std::string sd = wisp::test::temp_dir().string();
+    wisp::core::DeviceRegistry registry;
+    wisp::core::EventBus bus;
+    registry.add(std::make_shared<wisp::test::FakeStorage>("storage.int", in, false));
+    registry.add(std::make_shared<wisp::test::FakeStorage>("storage.sd", sd, true));
+    wisp::core::StorageManager storage(registry, bus);
+    ASSERT_TRUE(storage.init());
+    SceneRepoConfig config;
+    config.code_root = in + "/scenes";
+    config.data_root = in + "/scenes";
+    SceneRepository repo(storage, config);
+    const fs::path int_files = fs::path(in) / "scenes" / "todo" / "files";
+    const fs::path sd_files = fs::path(sd) / "wisp" / "library" / "scenes" / "todo" / "files";
+
+    ASSERT_TRUE(repo.install(zip_of(todo_files()), accept_all));
+    write_raw(int_files / "a.txt", "a");
+    write_raw(sd_files / "b.txt", "b");
+    // Files alone (no data/) count as the scene's data.
+    EXPECT_TRUE(repo.removal("todo", false).value().data);
+    ASSERT_TRUE(repo.remove("todo", false));
+    EXPECT_EQ(read_raw(int_files / "a.txt"), "a");
+    EXPECT_EQ(read_raw(sd_files / "b.txt"), "b");
+    EXPECT_FALSE(on_disk(fs::path(in) / "scenes" / "todo" / "main.lua"));
+
+    ASSERT_TRUE(repo.install(zip_of(todo_files()), accept_all));
+    EXPECT_EQ(read_raw(int_files / "a.txt"), "a");
+    ASSERT_TRUE(repo.remove("todo", true));
+    EXPECT_FALSE(on_disk(fs::path(in) / "scenes" / "todo"));
+    EXPECT_FALSE(on_disk(fs::path(sd) / "wisp" / "library" / "scenes" / "todo"));
+    EXPECT_TRUE(on_disk(fs::path(sd) / "wisp" / "library"));
+}

@@ -740,6 +740,42 @@ Result<os::LargeBuffer> StorageManager::read_file_large(const std::string& raw_p
     return R::ok(std::move(buf));
 }
 
+Result<os::LargeBuffer> StorageManager::read_range(const std::string& raw_path, uint64_t offset,
+                                                   size_t len) {
+    using R = Result<os::LargeBuffer>;
+    std::lock_guard<os::Mutex> lock(mutex_);
+
+    auto opened = open_for_read(raw_path);
+    if (!opened) {
+        return R::err(opened.error().code, opened.error().message);
+    }
+    const auto& [path, size] = opened.value();
+    const uint64_t left = offset >= size ? 0 : size - offset;
+    const size_t n = static_cast<size_t>(std::min<uint64_t>(left, len));
+    os::LargeBuffer buf = os::LargeBuffer::allocate(n);
+    if (!buf.ok()) {
+        return R::err(ErrorCode::NoMemory, "no memory to read " + path);
+    }
+    if (n == 0) {
+        return R::ok(std::move(buf));
+    }
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) {
+        Result<void> e = io_error("fopen", path);
+        return R::err(e.error().code, e.error().message);
+    }
+    bool failed = fseek(f, static_cast<long>(offset), SEEK_SET) != 0;
+    size_t got = failed ? 0 : fread(buf.data(), 1, n, f);
+    failed = failed || ferror(f) != 0 || got != n;
+    int saved_errno = errno;
+    fclose(f);
+    if (failed) {
+        return R::err(ErrorCode::IoError,
+                      "read " + path + ": " + std::string(strerror(saved_errno)));
+    }
+    return R::ok(std::move(buf));
+}
+
 Result<std::string> StorageManager::checked_path(const std::string& raw, bool mutating) const {
     using R = Result<std::string>;
     if (!ready_) {
@@ -860,6 +896,7 @@ Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_pa
         DirEntry e;
         struct stat es;
         if (stat_nofollow(path + "/" + name, &es) == 0) {
+            e.mtime = static_cast<int64_t>(es.st_mtime);
             if (S_ISREG(es.st_mode)) {
                 e.kind = EntryKind::File;
                 e.size = static_cast<uint64_t>(es.st_size);

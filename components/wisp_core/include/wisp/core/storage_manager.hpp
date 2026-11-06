@@ -174,6 +174,10 @@ struct DirEntry {
     std::string name;
     EntryKind kind = EntryKind::Other;
     uint64_t size = 0;  // bytes for a File, 0 otherwise
+    // Last modification, seconds since the epoch, as the filesystem keeps
+    // it (0 when it cannot be read). Only as good as the clock was when the
+    // file was written: before a time sync the device's clock starts at 0.
+    int64_t mtime = 0;
 };
 
 class StorageManager {
@@ -265,6 +269,11 @@ public:
     // would land in internal RAM below the PSRAM malloc threshold. Fails
     // with ErrorCode::NoMemory if that buffer cannot be allocated.
     Result<os::LargeBuffer> read_file_large(const std::string& path);
+
+    // At most `len` bytes of `path` from `offset` (fewer at the end of the
+    // file, none past it), in Mem::Large. The same path rules, ".new"
+    // recovery and errors as read_file_large(); NotFound if missing.
+    Result<os::LargeBuffer> read_range(const std::string& path, uint64_t offset, size_t len);
 
     // Appends `data` to `path`, creating it (and missing parent
     // directories) if needed, then fsync()s. A failed append leaves the

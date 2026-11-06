@@ -38,7 +38,11 @@
 // the TLS gate, connect, handshake, sending and every read; "timeout"
 // when it passes), no redirects (a 3xx goes back as it is) and
 // a response body cap of SceneHttpLimits::max_response bytes ("too_large"
-// past it). The body is collected in PSRAM. Transport failures come back
+// past it). The body is collected in PSRAM. A download
+// (SceneHttpRequest::on_body, wisp.http.download) streams its body to
+// on_body instead, without that cap, under a deadline of
+// kDownloadTimeoutMs; it takes the one worker for as long as it runs, so
+// the scenes' other requests wait behind it. Transport failures come back
 // as "dns", "connect", "tls", "timeout" or "other".
 //
 // done: every submit() gets exactly one done() call -- immediate
@@ -72,6 +76,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -98,6 +103,12 @@ struct SceneHttpLimits {
 };
 
 struct SceneHttpRequest {
+    // A download's deadline for all of it (scene-device spec 7.1): five
+    // minutes instead of SceneHttpLimits::timeout_ms.
+    static constexpr uint32_t kDownloadTimeoutMs = 300000;
+    // The body cap of a download that sets no max_body.
+    static constexpr uint64_t kMaxDownloadBody = 1ull << 30;
+
     std::string scene_id;
     uint32_t instance = 0;
     Method method = Method::Get;
@@ -106,6 +117,17 @@ struct SceneHttpRequest {
     // In PSRAM from the start: it can be up to kMaxRequestBody bytes and
     // waits in the queue.
     os::LargeString body;
+    // Set: the response body is streamed to it piece by piece on the
+    // worker task (which must not touch flash) instead of being collected,
+    // so no max_response applies and SceneHttpResult::body stays empty.
+    // false stops the transfer ("other"). It gets the body of any status;
+    // the caller keeps or drops it once the result says which.
+    std::function<bool(std::span<const uint8_t>)> on_body;
+    // With on_body: a body over this many bytes fails with "too_large";
+    // 0 is kMaxDownloadBody.
+    uint64_t max_body = 0;
+    // The request's deadline is kDownloadTimeoutMs.
+    bool download = false;
 };
 
 struct SceneHttpResult {
@@ -200,6 +222,8 @@ private:
     // deferring is off. With mu_.
     void promote_locked();
     void execute(Job& job);
+    // The request's whole deadline.
+    uint32_t timeout_of(const Job& job) const;
     // Rejects without a request: logs and calls done().
     static void reject(const SceneHttpRequest& req, const char* code,
                        const std::function<void(SceneHttpResult)>& done);

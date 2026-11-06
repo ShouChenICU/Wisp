@@ -74,14 +74,43 @@ void SceneWiring::start_storage() {
         return;
     }
 
+    // wisp.files. StorageManager renames and removes only inside a storage
+    // mount, which a dev-mode data root need not be, so the files there go
+    // under <int>/scenes as on the device.
+    if (internal) {
+        core::SceneFilesConfig files_config;
+        files_config.data_root = internal.value() + "/scenes";
+        files_config.submit_io = [this](std::function<void()> job) {
+            return worker_.submit(std::move(job));
+        };
+        files_ = os::make_large<core::SceneFiles>(deps_.storage, std::move(files_config));
+        if (!files_) WLOG_W(kTag, "no memory for scene files; wisp.files is off");
+    }
+    core::SceneFiles* files = files_.get();
+    if (files != nullptr) {
+        // The card's scenes are counted again on the worker (spec 7.2).
+        for (const char* topic : {"storage.sd.inserted", "storage.sd.removed"}) {
+            sd_subs_.push_back(deps_.bus.subscribe(topic, [this, files](const core::Event&) {
+                if (!worker_.submit([files] { files->on_sd_changed(); }))
+                    WLOG_W(kTag, "storage worker busy: scene files on the card not recounted");
+            }));
+        }
+    }
+
     // On the worker, like every file job; nothing lists or opens a scene
     // before it is done.
     core::SceneRepository* repo = repo_.get();
     auto done = std::make_shared<os::Semaphore>(1, 0);
-    if (!worker_.submit([repo, done] {
+    if (!worker_.submit([repo, files, done] {
             if (auto r = repo->recover(); !r) {
                 WLOG_W(kTag, "recovering interrupted installs failed: %s",
                        r.error().message.c_str());
+            }
+            // Usage and interrupted downloads, once the packages (and the
+            // files/ they carry over) are in place.
+            if (files != nullptr) {
+                if (auto r = files->scan(); !r)
+                    WLOG_W(kTag, "counting scene files failed: %s", r.error().message.c_str());
             }
             done->give();
         })) {
@@ -114,7 +143,8 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                .on_notice = {},
                                .notifications = notices,
                                .background_list_path = {},
-                               .sensors = sensors};
+                               .sensors = sensors,
+                               .files = files_.get()};
     if (auto system = deps_.storage.write_root(core::Area::System)) {
         rt.background_list_path = system.value() + "/scenes/background.json";
     } else {
@@ -224,6 +254,8 @@ void SceneWiring::stop_runtime() {
 
 void SceneWiring::stop() {
     stop_runtime();
+    for (core::SubscriptionId id : sd_subs_) deps_.bus.unsubscribe(id);
+    sd_subs_.clear();
     if (http_) http_->stop();
     if (!worker_.drain(kDrainMs)) {
         WLOG_W(kTag, "storage worker still busy after %u ms; stopping it",
@@ -303,6 +335,13 @@ void SceneWiring::remove(const std::string& id, bool with_data) {
     if (auto r = repo_->remove(id, with_data); !r) {
         WLOG_W(kTag, "%s: delete failed: %s", id.c_str(), r.error().message.c_str());
         return;
+    }
+    // The repository removed the files with the data; this forgets their
+    // location and usage (and removes the dev-mode copy).
+    if (with_data && files_) {
+        if (auto r = files_->remove_all(id); !r)
+            WLOG_W(kTag, "%s: removing its files failed: %s", id.c_str(),
+                   r.error().message.c_str());
     }
     publish(id, "deleted");
 }

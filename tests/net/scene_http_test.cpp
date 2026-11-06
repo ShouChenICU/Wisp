@@ -664,3 +664,49 @@ TEST(SceneHttpTask, Config) {
 }
 
 }  // namespace
+
+namespace {
+
+// A download (on_body set): no 256 KB response cap, the body goes to
+// on_body piece by piece and the result carries none of it.
+TEST_F(SceneHttpTest, DownloadStreamsWithoutResponseCap) {
+    make();
+    const std::string body(1024 * 1024, 'd');
+    client.next = {.status = 200, .body = body};
+    std::mutex mu;
+    std::string got;
+    SceneHttpRequest req = get("https://api.example.com/big");
+    req.download = true;
+    req.on_body = [&](std::span<const uint8_t> chunk) {
+        std::lock_guard<std::mutex> lock(mu);
+        got.append(reinterpret_cast<const char*>(chunk.data()), chunk.size());
+        return true;
+    };
+    SceneHttpResult r = run(std::move(req));
+    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.status, 200);
+    EXPECT_EQ(r.body.size(), 0u);
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        EXPECT_EQ(got.size(), body.size());
+        EXPECT_EQ(got, body);
+    }
+    ASSERT_TRUE(client.last());
+    EXPECT_EQ(client.last()->timeout_ms, SceneHttpRequest::kDownloadTimeoutMs);
+    EXPECT_GT(client.last()->max_response_bytes, body.size());
+
+    // on_body refusing stops the transfer.
+    SceneHttpRequest stop = get("https://api.example.com/big");
+    stop.download = true;
+    stop.on_body = [](std::span<const uint8_t>) { return false; };
+    EXPECT_EQ(run(std::move(stop)).error, "other");
+
+    // max_body caps it like max_response does an ordinary request.
+    SceneHttpRequest capped = get("https://api.example.com/big");
+    capped.download = true;
+    capped.max_body = 1000;
+    capped.on_body = [](std::span<const uint8_t>) { return true; };
+    EXPECT_EQ(run(std::move(capped)).error, "too_large");
+}
+
+}  // namespace

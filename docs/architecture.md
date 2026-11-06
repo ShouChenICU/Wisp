@@ -43,7 +43,7 @@
 1. **日志初始化**：`wisp::log::init()`，建立 32 KB 的内存环形缓冲（真机落在 PSRAM，模拟器为普通内存）。每条记录是 16 字节头（`ts`、`seq`、长度、级别）加 tag 和消息，按整条淘汰；读取时只在锁内拷贝原始字节，解码在锁外；再次以相同大小和内存类型调用 `init()` 会保留已有记录；`seq` 与 `ts` 在同一把锁里分配，sink 收到的 `LogRecord` 与缓冲区里的完全一致（连接 spec 6.2）。
 2. **板级初始化**：调用 `Platform::board->init()`（真机对应 `boards/<板>/board.cpp`，模拟器对应 `wisp::port::sim::SimBoard`），构造各设备并注册进 `DeviceRegistry`；`init()` 自己只记录非 `Ok` 的 `DeviceReport`（缺失/失败），`App::start()` 随后为注册表里没有报告过的设备补一条 `Ok`。
 3. **核心服务**：启动 `EventBus`，调用 `StorageManager::init()`（挂载失败时把启动报告的 `storage` 备注设为 `"readonly"`，降级继续而不中止），启动一个 2000 ms 周期的 `StorageManager::refresh()` 定时器，启动 `ButtonService`，加载模型配置（`core::ModelProfileService::init()`，读 System 区的 `secrets/models.json`；只有旧的 `secrets/llm.json` 时把它迁移成一份对话配置）。
-   **场景存储**（场景 spec 2.1/3，`components/wisp_app/src/scene_wiring.{hpp,cpp}`）：启动 `core::StorageWorker`（任务 `wisp.fs`），在 `<内置根>/scenes`（开发模式见上面的 `scenes_dir`）上构造 `core::SceneRepository`，并在 `wisp.fs` 上跑完 `recover()`（清理中断的安装）后才继续——此后任何列出或打开场景的操作都看到恢复后的状态。没有内置存储时没有场景，降级继续。
+   **场景存储**（场景 spec 2.1/3，`components/wisp_app/src/scene_wiring.{hpp,cpp}`）：启动 `core::StorageWorker`（任务 `wisp.fs`），在 `<内置根>/scenes`（开发模式见上面的 `scenes_dir`）上构造 `core::SceneRepository`，并在 `wisp.fs` 上跑完 `recover()`（清理中断的安装）后才继续——此后任何列出或打开场景的操作都看到恢复后的状态。同时在 `<内置根>/scenes` 上构造 `core::SceneFiles`（`wisp.files`，场景设备 spec 7；开发模式也放这里，因为 `StorageManager` 只在存储挂载点内改名和删除），同一个 `wisp.fs` 作业在 `recover()` 之后跑它的 `scan()`（统计每个场景的用量、清理和完成中断的下载）；订阅 `storage.sd.inserted`/`storage.sd.removed`，在 `wisp.fs` 上 `on_sd_changed()` 重新统计 SD 卡上的场景。没有内置存储时没有场景，降级继续。
    **通知**（场景设备 spec 5，`core::NotificationService`）：随后构造通知服务并在 `wisp.fs` 上 `load()` System 区的 `notifications.json`（最多等 2 s；没有存储工作线程时就在启动线程上读），订阅 `power.battery.low`（先移除旧的 `battery_low` 通知，再发一条参数为电量百分比的）、`power.charging.changed`（开始充电时移除 `battery_low`）和 `scene.state`（`deleted` 时移除该场景的全部通知）。有未保存的变化时启动一个 300 ms 周期的 `os::Timer`（`wisp.notify`，第一次需要时创建，之后一直复用），每个周期在 `wisp.fs` 上整体 `write_atomic` 一次，磁盘上已是最新时定时器在自己的回调里停下；投递或写入失败按 600 ms 起翻倍重试，连续失败 5 次后停下，等下一次变化或 `flush()` 再试。没有存储工作线程时不保存。`App::stop()` 在存储工作线程停止之前 `close()`（停掉定时器）再 `flush(1000)`。第 4 步在构造 `PowerManager` 之前构造 `core::SensorService`（`imu.main` 上的订阅共享，任务 `wisp.imu`，没有 IMU 时不建任务；订阅 `power.state`，`standby`/`deep_standby` 暂停全部订阅；每个订阅者以共享方式登记在 `core::OccupancyRegistry` 的 `imu.main` 下），交给场景运行时（`wisp.sensor`）和自检界面（经它读 IMU，持有者 `system.selfcheck`）；再启动 `core::TonePlayer`（任务 `wisp.tone`，没有 `audio_out.main` 时不建任务、提示音静默跳过），`PowerManager` 的活动回调（每次触摸读数和按键事件）调用它的 `silence()`；场景运行时构造之后建 `app::NotificationRouter` 作为通知服务的监听者：`wake` 或 `sound = "alarm"` 且灭屏时把 `exit_standby()` 投递到 UI 线程（闹铃要响到用户触摸为止，所以总是亮屏），有声音时按缓存的 `audio/notify_vol` 播放（灭屏且不唤醒时没有声音，音频随屏幕关闭，所以不带 `wake` 的 `tone` 在灭屏时被丢弃），装了横幅时显示横幅（由下面的状态外壳装）；点击通知时以 `tap` 移除、静音并经 `SceneRuntime::deliver_notification()` 把场景切回前台或以 `"notification"` 启动后调用 `scene.on_notification(id)`。
 4. **UI 与自检界面**：若 `display.main` 已注册，把 `display` 这个 Settings 命名空间的 `brightness`（默认 200）应用到它，基于它（和 `touch.main`，如果也在）启动 `UiRuntime`：`Platform::font_image`（真机是 `app_main` 映射的 `fonts` 分区，模拟器是读进内存的 `fonts.bin`）经 `ui::UiConfig::font_image` 传入，`UiRuntime::start()` 内部用 `ui::open_font_image()` 校验（矢量字体 spec 3.6），不通过只让 20 px 及以上的文字降级为位图字，不影响这一步本身的启动。否则在启动报告里记一条 `"mode": "headless"`。无论哪种情况都查找 `power.main` 设备、构造 `core::PowerMonitor` 并 `start()`它自己的采样定时器（spec 6.3/6.7，发布下表的 `power.charging.changed`/`power.battery.low`；缺少 `power.main` 时完全惰性），再构造 `PowerManager`（spec 6.7 与场景设备 spec 4，持有指向 `PowerMonitor` 的非持有指针，跟随 `App` 自己的 `core::WakeLockRegistry`）并启动它的周期性闲置检查定时器 `wisp.power`（每秒一次 `tick()`，同时把持有满 30 分钟的唤醒锁作为系统通知 `wakelock_long` 发出）。`PowerManager` 管五个级别：`active`；距灭屏 10 秒的 `dim`（亮度降到设定值的 30%，不调用设备）；`standby`（暂停 UI，按设备 caps `standby` 逐个 `set_power()`，下行按 `DeviceRegistry::all()` 的顺序、音频输入在输出之前，上行完全逆序；`Busy` 记日志并在之后每次 `tick()` 重试）；`deep_standby`（`standby` 满 `power/deep_after_s` 且没有 `network` 锁）；以及在 `deep_standby` 中、`power/light_sleep` 为真且没有 `cpu` 锁时调用的 `Platform::set_light_sleep(true)`。`screen` 锁让闲置计时不走。唤醒锁变化时不等下一次 `tick()` 就重新评估：有 UI 时总是合并成一个任务投递到 UI 线程（在 UI 线程上改锁也一样），从不在改锁的线程里执行切换。`power` 命名空间的设置只在构造时、每次 `system.settings` 之后的下一次 `tick()`，以及每 60 次 `tick()`（防止事件被丢弃）读取，越界的存储值按默认值处理（与 `SystemSettings::get()` 一致）。所有级别切换在有 UI 时都在 UI 线程上执行；如果启动了 `UiRuntime`，再在其上构建自检界面（`self_check_screen.cpp`，spec 8 节），阻塞到它真正跑完一次。
    **场景运行时**（场景 spec 3/6）：有 `UiRuntime` 且有仓库时，在 `SystemLayer` 之后、网络之前构造场景的 HTTP 代理 `net::SceneHttp`（有 `Platform::http_client` 时；它比运行时活得久，只在关机时停止）和 `scene::SceneRuntime`（先不启动），好让管理后台路由拿到它们（`AdminDeps` 的 `scenes`、`scene_host`、`request_scene_delete`）。`device_status`（`wisp.device.info()`）在场景任务上执行、不碰 flash：电量取 `PowerMonitor::last_status()`，Wi-Fi 状态取 `wisp.net` 任务每次循环写下的原子快照（`WifiService::status()` 的锁可能正被持有着写 flash，所以不在场景任务上调用它）。自检界面建好之后再启动代理和运行时（场景视图要替换的、关闭后要回到的正是这块屏），并订阅 `power.state`：待机时 `set_visible(false)`，唤醒时恢复（每次都读 `PowerManager::standby()`，不信事件里的值）。没有屏幕时没有运行时（headless）。
@@ -61,8 +61,8 @@
 | 任务 | 所有者 | 栈 | `flash_access` | 说明 |
 |---|---|---|---|---|
 | `wisp.scene` | `scene::SceneRuntime` | 128 KB（`SceneRuntimeConfig::stack_bytes`，Lua 解释器递归最深处要这么多） | `false`，真机放 PSRAM | 只跑 Lua 和场景消息；读写文件（`SceneStore` 的 flush、加载包）都交给 `wisp.fs`，`device_status` 也只读内存 |
-| `wisp.fs` | `core::StorageWorker` | 6144（`StorageWorkerConfig::stack_bytes`） | `true`，内部 RAM | 先进先出地替不能碰 flash 的任务做文件操作：仓库的 `recover`/`list`/`remove`、场景存储的加载与 flush、通知的加载与保存、自检界面的场景列表 |
-| `wisp.shttp` | `net::SceneHttp` | 8192 | `false`，真机放 PSRAM | 场景 `wisp.http` 请求一次一个地经 `Platform::http_client` 发出；不读 Settings、不碰文件 |
+| `wisp.fs` | `core::StorageWorker` | 6144（`StorageWorkerConfig::stack_bytes`） | `true`，内部 RAM | 先进先出地替不能碰 flash 的任务做文件操作：仓库的 `recover`/`list`/`remove`、场景存储的加载与 flush、通知的加载与保存、自检界面的场景列表、`SceneFiles` 的 `scan`/`on_sd_changed` 和每个 `wisp.files` 调用、下载的开始（`begin_download`）、分块追加与收尾（`finish`） |
+| `wisp.shttp` | `net::SceneHttp` | 8192 | `false`，真机放 PSRAM | 场景 `wisp.http` 请求一次一个地经 `Platform::http_client` 发出；不读 Settings、不碰文件。`wisp.http.download` 的响应体经 `FileDownload::push()` 只拷进 PSRAM 并把追加排到 `wisp.fs`（排队超过 128 KB 时等待，取消即醒）；下载的超时是 5 分钟，期间独占这一个 worker |
 | `wisp.tone` | `core::TonePlayer` | 4096（`TonePlayerConfig::stack_bytes`） | `false`，真机放 PSRAM | 通知提示音（场景设备 spec 5.4）：运行时合成 16 kHz PCM 写到 `audio_out.main`，播放期间持有 `cpu` 锁 `system.tone`；音量由 `app::NotificationRouter` 传入（App 从 `system.settings` 缓存的 `audio/notify_vol`），不读 Settings、不碰文件 |
 | `wisp.imu` | `core::SensorService` | 4096（`SensorServiceConfig::stack_bytes`，按 `mem` 实测再定） | `false`，真机放 PSRAM | IMU 共享（场景设备 spec 6.1）：有订阅时按最高采样率轮询 `imu.main`，每 100 ms 把样本按订阅者打包交给回调；回调只拷贝样本（场景的 `wisp.sensor` 投递 `msg::Sensor` 给 `wisp.scene`，自检界面写进自己的快照），不读 Settings、不碰文件。没有订阅、全部暂停或待机时 IMU 关闭、任务阻塞等待 |
 
@@ -176,7 +176,7 @@
 
 写入永远进列表第一个根；读取按顺序枚举所有根。真机挂载点：内置 Flash（LittleFS）在 `/int`，SD 卡（FAT，1-bit SDMMC）在 `/sd`；模拟器对应 `<data-dir>/int/`、`<data-dir>/sd/`。原子写（`write_atomic`）和 FAT 上 `rename` 不能覆盖已存在文件的坑，见 `AGENTS.md` 第 8 节。
 
-场景的代码与数据不属于以上三个逻辑区，固定在内置根下的 `<int>/scenes`（`core::SceneRepository`，开发模式见上面"模拟器的网络"一节的 `--scenes-dir`）：每个场景是 `<int>/scenes/<id>/`，数据在其中的 `data/` 子目录。替换一个场景是目录级的两阶段改名，不经单文件的 `write_atomic`，见下面"场景运行时"一节。
+场景的代码与数据不属于以上三个逻辑区，固定在内置根下的 `<int>/scenes`（`core::SceneRepository`，开发模式见上面"模拟器的网络"一节的 `--scenes-dir`）：每个场景是 `<int>/scenes/<id>/`，数据在其中的 `data/` 子目录，`wisp.files` 的文件在 `files/` 子目录（第一次写时 SD 卡在线则改放 `<sd>/wisp/library/scenes/<id>/files`，位置记在 `data/files_loc.json`，之后不变；见下面"场景运行时"一节的 `SceneFiles`）。替换一个场景是目录级的两阶段改名，不经单文件的 `write_atomic`，见下面"场景运行时"一节。
 
 ## 场景运行时
 
@@ -185,21 +185,31 @@
 ### 消息流
 
 - `wisp.scene` 任务一次只取一条 `SceneMessage`（正文在 PSRAM）跑进 Lua VM，每条有自己的 200 ms 预算；处理完就把场景的被动状态（reactive）刷新一遍，将这次变化整理成一个 batch 交给 `PatchQueue`。
-- 消息来自三处：UI 线程（部件事件）、`wisp.fs`（包与存储加载完成的回执）、`SceneHost` 的请求（打开/关闭/删除，实例号为 0，按 id 认场景）。每条消息都带着实例号，不是前台场景当前实例号的消息被丢弃（`stale_dropped()`），已关闭场景的消息因此不会影响下一个打开的场景。
+- 消息来自三处：UI 线程（部件事件）、`wisp.fs`（包与存储加载完成的回执、`wisp.files` 作业的结果 `FilesDone`）、`SceneHost` 的请求（打开/关闭/删除，实例号为 0，按 id 认场景）。每条消息都带着实例号，不是前台场景当前实例号的消息被丢弃（`stale_dropped()`），已关闭场景的消息因此不会影响下一个打开的场景。
 - 消息队列容量 64（`SceneRuntimeConfig::queue_capacity`）。UI 线程的帧钩子每帧从 `PatchQueue` 最多应用 64 条操作（`PatchQueue` 的 `per_frame`）到对应实例的 `SceneView`；一次大批量更新摊到多帧应用完时，中间那几帧会显示场景从未真正处于过的半更新画面，下一帧补齐。
 
 ### `/int/scenes/` 布局与两阶段替换
 
 `core::SceneRepository`（`components/wisp_core/include/wisp/core/scene_repository.hpp`）：
 
-- 布局：`<code_root>/<id>/` 下是 `scene.json`、入口文件、`lib/**/*.lua` 和 `assets/**`；场景的数据在 `data_dir(id) = <data_root>/<id>/data`。真机和非开发模式的模拟器两个根都是 `<int>/scenes`，数据目录落在包目录里面；模拟器开发模式（`--scenes-dir`）下代码来自工作目录，数据另放一处。
+- 布局：`<code_root>/<id>/` 下是 `scene.json`、入口文件、`lib/**/*.lua` 和 `assets/**`；场景的数据在 `data_dir(id) = <data_root>/<id>/data`，文件在 `files_dir(id) = <data_root>/<id>/files`（与 `data/` 同等对待：不属于包，`load()`、导出和 `code_bytes` 都不含它，替换时随 `data/` 一起搬，`remove()` 不带数据时保留，带数据时连同 SD 卡上的 `<sd>/wisp/library/scenes/<id>` 一起删除）。真机和非开发模式的模拟器两个根都是 `<int>/scenes`，数据目录落在包目录里面；模拟器开发模式（`--scenes-dir`）下代码来自工作目录，数据另放一处。
 - 替换（安装/升级）按 AGENTS.md 第 8 节"两阶段命名"的目录版做到跨断电原子：
   1. 新文件写进 `<code_root>/.<id>.tmpdir/`；
   2. 该目录改名为 `.<id>.newdir`——从这一步起视为完整；
-  3. 若旧的 `<id>/data` 存在，把它移进 `.<id>.newdir/data`（两边都已存在时放弃整个替换，不删任何一边）；
+  3. 若旧的 `<id>/data`、`<id>/files` 存在，把它们移进 `.<id>.newdir`（任一个两边都已存在时放弃整个替换，不删任何一边）；
   4. 删除 `<id>`；
   5. `.<id>.newdir` 改名为 `<id>`。
   `recover()`（启动时在 `wisp.fs` 上先跑一次，见"启动流程"第 3 步）丢弃每一个 `.*.tmpdir`，并把每个 `.<id>.newdir` 走完第 3–5 步。staging 名字以 `dir` 结尾，是因为 `StorageManager` 把 `.tmp`/`.new` 结尾的名字留给了它自己的单文件原子写。
+
+### `SceneFiles`：场景的私有文件
+
+`core::SceneFiles`（`components/wisp_core/include/wisp/core/scene_files.hpp`）是 `wisp.files` 与 `wisp.http.download` 背后的服务（场景设备 spec 7.1/7.2；Lua 绑定 `bind_files.cpp`、`bind_http.cpp`）。
+
+- 位置：第一次写（`write`/`append`/下载）时 SD 卡在线就用 `<sd>/wisp/library/scenes/<id>/files`（配额 64 MB），否则 `<int>/scenes/<id>/files`（配额 512 KB）；记录 `data/files_loc.json`（`{"location":"sd"|"int"}`，`write_atomic`），之后不变。位置在 SD 卡而卡不在时所有调用返回 `unavailable`。
+- 文件名 `[A-Za-z0-9._-]`、1–64 字节、不以 `.` 开头，另外不能以 `.tmp`/`.new` 结尾（`StorageManager` 自己的原子写簿记名）；单次 `write`/`append` 最多 256 KB、`read` 最多 64 KB（`too_large`）。`write` 走 `write_atomic`，`append` 走 `StorageManager::append()`。
+- 用量开机统计一次（`scan()`），之后每次写入增量更新；写入前检查配额。进行中的下载按已收到的字节预留配额。
+- 下载用文件级的两阶段命名：响应体追加到 `.<name>.dl`（可能写了一半，视为垃圾），完成后改名 `.<name>.done`（此时一定完整）→ 删除旧的 `<name>` → 改名为 `<name>`。统计目录时删掉不属于进行中下载的 `.dl`，并完成每个 `.done`（旁边还有 `<name>` 时 `.done` 更新，先删 `<name>`）。只有 2xx 的响应体被保留；非 2xx 时 `.dl` 被删、原文件不动。
+- 线程：每个方法都碰 flash，只在 `wisp.fs`（或允许访问 flash 的 httpd 线程）上调用。`FileDownload::push()` 在 `wisp.shttp` 上运行：只把数据拷进 32 KB 的 PSRAM 分块、把追加排到 `wisp.fs`，排队超过 128 KB 时等待；`cancel()`（场景关闭或出错时运行时调用，先于 `SceneHttp::cancel_scene`）唤醒它，之后在 `wisp.fs` 上 `finish(false)` 删除 `.dl`。
 
 ### `SceneStore` 文件格式与日志
 

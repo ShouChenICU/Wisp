@@ -106,6 +106,9 @@ struct SceneHttp::Job {
     os::LargeString url;
     os::LargeVector<std::pair<os::LargeString, os::LargeString>> headers;
     os::LargeString body;
+    std::function<bool(std::span<const uint8_t>)> on_body;
+    uint64_t max_body = 0;
+    bool download = false;
     std::function<void(SceneHttpResult)> done;
     // Set under mu_ by cancel_scene()/stop(); read by the client between
     // pieces and by the worker under deliver_mu_.
@@ -126,6 +129,10 @@ SceneHttp::SceneHttp(HttpClient& client, SceneHttpLimits limits, std::function<u
       wake_(1024, 0) {}
 
 SceneHttp::~SceneHttp() { stop(); }
+
+uint32_t SceneHttp::timeout_of(const Job& job) const {
+    return job.download ? SceneHttpRequest::kDownloadTimeoutMs : limits_.timeout_ms;
+}
 
 os::TaskConfig SceneHttp::task_config() {
     os::TaskConfig t;
@@ -243,6 +250,9 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
         job->headers.emplace_back(os::LargeString(name.data(), name.size()),
                                   os::LargeString(value.data(), value.size()));
     job->body = std::move(req.body);
+    job->on_body = std::move(req.on_body);
+    job->max_body = req.max_body;
+    job->download = req.download;
     job->done = std::move(done);
 
     {
@@ -431,7 +441,7 @@ void SceneHttp::run() {
                 current_ = job.get();
                 // arm() never blocks (the timer is only started), so it
                 // can run under mu_, where cancel_scene() reads the ticket.
-                job->ticket = watch_->arm(limits_.timeout_ms);
+                job->ticket = watch_->arm(timeout_of(*job));
             }
             execute(*job);
             std::lock_guard<os::Mutex> lock(mu_);
@@ -451,8 +461,14 @@ void SceneHttp::execute(Job& job) {
         req.headers.emplace_back(std::string(name.data(), name.size()),
                                  std::string(value.data(), value.size()));
     req.body_ref = {reinterpret_cast<const uint8_t*>(job.body.data()), job.body.size()};
-    req.timeout_ms = limits_.timeout_ms;
+    const uint32_t timeout_ms = timeout_of(job);
+    const bool streamed = static_cast<bool>(job.on_body);
+    req.timeout_ms = timeout_ms;
     req.max_response_bytes = limits_.max_response;
+    if (streamed) {
+        const uint64_t cap = job.max_body != 0 ? job.max_body : SceneHttpRequest::kMaxDownloadBody;
+        req.max_response_bytes = static_cast<size_t>(cap);
+    }
     // One deadline for the whole request (spec 5.3's 15 s). A client's own
     // timeout may apply to each low-level read (esp_http_client's does),
     // and a server that trickles its answer would then hold the one worker
@@ -460,10 +476,11 @@ void SceneHttp::execute(Job& job) {
     // the client at the deadline (and on cancel), and between pieces the
     // deadline is checked here as well.
     req.watch = watch_.get();
-    const uint64_t deadline = now_ms_() + limits_.timeout_ms;
+    const uint64_t deadline = now_ms_() + timeout_ms;
     auto expired = [this, deadline] { return now_ms_() >= deadline; };
 
     BodyBuffer body(limits_.max_response);
+    size_t streamed_bytes = 0;
     bool too_large = false;
     bool no_memory = false;
     bool timed_out = false;
@@ -472,6 +489,14 @@ void SceneHttp::execute(Job& job) {
         if (expired()) {
             timed_out = true;
             return false;
+        }
+        if (streamed) {
+            if (chunk.size() > req.max_response_bytes - streamed_bytes) {
+                too_large = true;
+                return false;
+            }
+            streamed_bytes += chunk.size();
+            return job.on_body(chunk);
         }
         switch (body.add(chunk)) {
             case BodyBuffer::Add::Ok:
@@ -507,6 +532,9 @@ void SceneHttp::execute(Job& job) {
         result.error = "other";
     } else if (res.transport != TransportError::None) {
         result.error = to_string(res.transport);
+    } else if (streamed) {
+        result.status = res.status;
+        result.headers = std::move(res.headers);
     } else {
         result.body = body.take();
         if (!result.body.ok()) {

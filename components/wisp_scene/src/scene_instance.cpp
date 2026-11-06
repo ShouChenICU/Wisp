@@ -224,6 +224,10 @@ std::optional<ScriptError> SceneInstance::http(uint32_t id, const net::SceneHttp
     return flush(run_http_callback(*vm_, id, result));
 }
 
+std::optional<ScriptError> SceneInstance::files(uint32_t id, const FilesResult& result) {
+    return flush(run_files_callback(*vm_, id, result));
+}
+
 std::optional<ScriptError> SceneInstance::sensor(uint32_t id, const core::SensorBatch& batch) {
     return flush(run_sensor_callback(*vm_, id, batch));
 }

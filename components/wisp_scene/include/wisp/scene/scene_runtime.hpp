@@ -154,6 +154,16 @@
 // one in flight is stopped, and no callback runs for them; a result
 // already queued for the old instance is dropped as stale.
 //
+// Files (scene-device spec 7.1): each wisp.files call is a job on the
+// wisp.fs worker (SceneRuntimeDeps::files) whose result is a FilesDone
+// message with its own 200 ms; a job already queued when the scene closes
+// still runs, and its result is dropped as stale. wisp.http.download
+// begins the file on the worker, then sends the request through the proxy
+// with the body streamed into it (core::FileDownload, fed on the proxy's
+// task) and finishes it on the worker. Closing or faulting cancels the
+// scene's downloads before its requests: the transfer stops and the
+// worker removes the partial file.
+//
 // A hook is a function the scene stores in its `scene` table
 // (scene.on_show = function() ... end).
 //
@@ -195,6 +205,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/sensor_service.hpp"
@@ -290,6 +301,10 @@ struct SceneRuntimeDeps {
     // wisp.sensor; null: subscribe() and on() return nil, "unavailable".
     // Must outlive the runtime.
     core::SensorService* sensors = nullptr;
+    // wisp.files and wisp.http.download (which also needs `http`); null:
+    // they raise. Its jobs run on `worker`. Must outlive the runtime and
+    // the worker's last job.
+    core::SceneFiles* files = nullptr;
 };
 
 struct SceneRuntimeConfig {
@@ -424,6 +439,7 @@ private:
     };
     // One running scene, in front or in the background; scene task only.
     struct Slot;
+    struct FilesGate;
     // At most one scene in front and kMaxBackground behind it, and for a
     // moment one more: a scene sent to the background before the eviction
     // that follows it.
@@ -546,6 +562,12 @@ private:
     // Gives the scene's wisp.sensor the service, and batches that come
     // back as Sensor messages for this instance.
     void wire_sensors(Slot& s);
+    // Gives the scene's wisp.files its jobs on the worker and its
+    // downloads, whose results come back as FilesDone messages.
+    void wire_files(Slot& s);
+    // The scene is closing or faulted: its downloads stop (each .dl is
+    // removed on the worker) and none starts after this.
+    void cancel_files(Slot& s);
     // "Back" for the scene in front: to the background if it declares it
     // (and is running), closed otherwise. `except` is not counted towards
     // the background's limit (the scene about to come forward).

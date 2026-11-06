@@ -81,6 +81,8 @@ wisp_test(NAME scene_install_test SRCS core/scene_install_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME scene_store_test SRCS core/scene_store_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME scene_files_test SRCS core/scene_files_test.cpp
+          LIBS wisp_core wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME wakelock_test SRCS core/wakelock_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME notification_service_test SRCS core/notification_service_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
@@ -325,6 +327,8 @@ wisp_test(NAME lua_json_test SRCS scene/lua_json_test.cpp LIBS wisp_scene wisp_p
 wisp_test(NAME store_binding_test SRCS scene/store_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME http_binding_test SRCS scene/http_binding_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME files_binding_test SRCS scene/files_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME timer_set_test SRCS scene/timer_set_test.cpp LIBS wisp_scene)
 wisp_test(NAME scene_schedule_test SRCS scene/scene_schedule_test.cpp LIBS wisp_scene)

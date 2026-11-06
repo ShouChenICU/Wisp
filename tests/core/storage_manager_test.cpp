@@ -790,3 +790,35 @@ TEST(StorageManager, RemoveTreeAndRenameStayInsideStorage) {
     ASSERT_TRUE(f.mgr->rename(f.in + "/system/a.txt", f.in + "/scenes/a.txt"));
     EXPECT_TRUE(f.mgr->remove_tree(f.in + "/scenes"));
 }
+
+TEST(StorageManager, ReadRangeAndMtime) {
+    Fixture f(/*sd_online=*/false);
+    ASSERT_TRUE(f.mgr->init());
+    const std::string path = f.in + "/scenes/a/files/x.bin";
+    ASSERT_TRUE(f.mgr->write_atomic(path, bytes("0123456789")));
+
+    auto mid = f.mgr->read_range(path, 2, 3);
+    ASSERT_TRUE(mid) << mid.error().message;
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(mid.value().data()), mid.value().size()),
+              "234");
+    // Past the end: what is left, then nothing.
+    auto tail = f.mgr->read_range(path, 8, 100);
+    ASSERT_TRUE(tail);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(tail.value().data()), tail.value().size()),
+              "89");
+    auto beyond = f.mgr->read_range(path, 50, 4);
+    ASSERT_TRUE(beyond);
+    EXPECT_EQ(beyond.value().size(), 0u);
+    EXPECT_EQ(f.mgr->read_range(f.in + "/scenes/a/files/none", 0, 4).error().code,
+              wisp::ErrorCode::NotFound);
+
+    struct stat st{};
+    ASSERT_EQ(stat(path.c_str(), &st), 0);
+    auto listed = f.mgr->list_dir(f.in + "/scenes/a/files");
+    ASSERT_TRUE(listed);
+    ASSERT_EQ(listed.value().size(), 1u);
+    EXPECT_EQ(listed.value()[0].name, "x.bin");
+    EXPECT_EQ(listed.value()[0].size, 10u);
+    EXPECT_EQ(listed.value()[0].mtime, static_cast<int64_t>(st.st_mtime));
+    EXPECT_GT(listed.value()[0].mtime, 0);
+}
