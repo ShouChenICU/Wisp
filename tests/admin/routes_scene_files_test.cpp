@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <span>
 #include <string>
@@ -251,4 +252,95 @@ TEST(AdminSceneFiles, DownloadOfAShrunkFileFails) {
     ASSERT_TRUE(fx.files->write("notes", "a.bin", as_bytes("tiny")));
     std::vector<uint8_t> buf(wisp::net::kStreamChunkBytes);
     EXPECT_FALSE(wisp::net::pump_stream(dl, buf, [](std::span<const uint8_t>) { return true; }));
+}
+
+// A full list (max_list names, more on disk) is written straight into one
+// PSRAM buffer rather than built as a value tree, and is still valid JSON
+// in the same shape.
+TEST(AdminSceneFiles, FullListIsValidJsonOutOfPsram) {
+    FilesFixture fx;
+    fx.install("tiles");
+    std::vector<std::string> names;
+    for (int i = 0; i < 257; ++i) {
+        char name[48];
+        std::snprintf(name, sizeof name, "tile_%03d-abcdefghijklmnopqrstu.png", i);
+        names.emplace_back(name);
+        ASSERT_TRUE(fx.files->write("tiles", name, as_bytes("x")));
+    }
+    HttpResponse res = fx.call(Method::Get, "/api/v1/scenes/tiles/files");
+    ASSERT_EQ(res.status, 200);
+    EXPECT_EQ(res.content_type, "application/json");
+    EXPECT_TRUE(res.body.empty());
+    EXPECT_FALSE(res.static_body.empty());
+    EXPECT_NE(res.body_owner, nullptr);
+    const Value v = body_json(res);
+    EXPECT_EQ(at(v, "location"), Value("int"));
+    EXPECT_EQ(at(v, "want"), Value("auto"));
+    EXPECT_EQ(at(v, "quota"), Value(int64_t{512 * 1024}));
+    EXPECT_EQ(at(v, "used"), Value(int64_t{257}));
+    EXPECT_EQ(at(v, "truncated"), Value(true));
+    const Value& files = at(v, "files");
+    ASSERT_EQ(files.type(), Value::Type::List);
+    ASSERT_EQ(files.as_list().size(), 256u);
+    for (size_t i = 0; i < 256; ++i) {
+        const Value& f = files.as_list()[i];
+        EXPECT_EQ(at(f, "name"), Value(names[i]));
+        EXPECT_EQ(at(f, "size"), Value(int64_t{1}));
+        EXPECT_EQ(at(f, "mtime").type(), Value::Type::Int);
+    }
+}
+
+// An empty file is a plain empty 200 (Content-Length 0), not a stream.
+TEST(AdminSceneFiles, EmptyFileIsAPlainEmptyResponse) {
+    FilesFixture fx;
+    fx.install("notes");
+    ASSERT_TRUE(fx.files->write("notes", "empty.txt", {}));
+    HttpResponse res = fx.call(Method::Get, "/api/v1/scenes/notes/files/empty.txt");
+    ASSERT_EQ(res.status, 200) << res.body;
+    EXPECT_FALSE(res.stream);
+    EXPECT_TRUE(res.body.empty());
+    EXPECT_TRUE(res.static_body.empty());
+    EXPECT_EQ(res.content_type, "application/octet-stream");
+    EXPECT_EQ(response_header(res, "content-disposition"), "attachment; filename=\"empty.txt\"");
+}
+
+// The download's network lock lives exactly as long as its response.
+TEST(AdminSceneFiles, DownloadHoldsANetworkLockWhileAlive) {
+    FilesFixture fx;
+    fx.install("notes");
+    ASSERT_TRUE(fx.files->write("notes", "a.bin", as_bytes(pattern(1000))));
+    auto download_locks = [&] {
+        int n = 0;
+        for (const auto& l : fx.f.wakelocks.list()) {
+            if (l.holder == "system.download") {
+                EXPECT_EQ(l.kind, wisp::core::WakeLockKind::Network);
+                ++n;
+            }
+        }
+        return n;
+    };
+    EXPECT_EQ(download_locks(), 0);
+    {
+        HttpResponse dl = fx.call(Method::Get, "/api/v1/scenes/notes/files/a.bin");
+        ASSERT_EQ(dl.status, 200);
+        EXPECT_EQ(download_locks(), 1);
+        EXPECT_EQ(drain(dl).size(), 1000u);
+        // Sent, but the server has not let go of the response yet.
+        EXPECT_EQ(download_locks(), 1);
+    }
+    EXPECT_EQ(download_locks(), 0);
+}
+
+// Percent-encoded dots decode to "..", which is not a file name.
+TEST(AdminSceneFiles, EncodedDotsAreRefused) {
+    FilesFixture fx;
+    fx.install("notes");
+    for (const char* name : {"%2e%2e", "%2E%2E", "..", "%2e"}) {
+        HttpResponse get = fx.call(Method::Get, std::string("/api/v1/scenes/notes/files/") + name);
+        EXPECT_EQ(get.status, 400) << name;
+        EXPECT_EQ(error_code(get), "bad_name") << name;
+        HttpResponse del =
+            fx.call(Method::Delete, std::string("/api/v1/scenes/notes/files/") + name);
+        EXPECT_EQ(del.status, 400) << name;
+    }
 }

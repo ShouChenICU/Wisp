@@ -190,10 +190,21 @@ inline const std::vector<std::string>& every_authenticated_get_route() {
     return paths;
 }
 
+// A response's body: `body`, or `static_body` when that is set (a body
+// kept in PSRAM).
+inline std::string body_text(const net::HttpResponse& res) {
+    if (!res.static_body.empty()) {
+        return std::string(reinterpret_cast<const char*>(res.static_body.data()),
+                           res.static_body.size());
+    }
+    return res.body;
+}
+
 // Parses a response body; a non-JSON body yields Null (and a failure).
 inline Value body_json(const net::HttpResponse& res) {
-    auto v = from_json(res.body);
-    EXPECT_TRUE(v) << "not JSON: " << res.body;
+    const std::string text = body_text(res);
+    auto v = from_json(text);
+    EXPECT_TRUE(v) << "not JSON: " << text;
     return v ? v.value() : Value();
 }
 

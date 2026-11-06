@@ -213,7 +213,8 @@ void fill_request(httpd_req_t* r, net::HttpRequest& req) {
     req.iface = iface_for(local_ip, peer_ip, local_addresses());
 }
 
-esp_err_t send_streamed(httpd_req_t* r, const net::HttpResponse& res, const char* status);
+esp_err_t send_streamed(httpd_req_t* r, const net::HttpResponse& res, const char* status,
+                        os::LargeBuffer& buf);
 
 esp_err_t send_response(httpd_req_t* r, const net::HttpResponse& res) {
     std::string custom;
@@ -225,6 +226,20 @@ esp_err_t send_response(httpd_req_t* r, const net::HttpResponse& res) {
     // 1xx, 204 and 304 never carry a body (RFC 9110 section 6.4.1).
     const bool bodyless =
         (res.status >= 100 && res.status < 200) || res.status == 204 || res.status == 304;
+    // A streamed body's buffer, taken before any of the response's head is
+    // set: without it the 503 must not go out under the download's
+    // Content-Disposition, or the browser would save it as the file.
+    os::LargeBuffer stream_buf;
+    if (res.stream && !bodyless) {
+        stream_buf = os::LargeBuffer::allocate(net::kStreamChunkBytes);
+        if (!stream_buf.ok()) {
+            WLOG_W(kTag, "no memory to stream a response");
+            net::HttpResponse err =
+                net::HttpResponse::error(503, "no_memory", "no memory for the response");
+            err.headers.emplace_back("Cache-Control", "no-store");
+            return send_response(r, err);
+        }
+    }
     httpd_resp_set_status(r, status);
     if (!res.content_type.empty() && !has_crlf(res.content_type)) {
         httpd_resp_set_type(r, res.content_type.c_str());
@@ -238,7 +253,7 @@ esp_err_t send_response(httpd_req_t* r, const net::HttpResponse& res) {
         }
     }
     // The head set above is what a chunked stream goes out with.
-    if (res.stream && !bodyless) return send_streamed(r, res, status);
+    if (stream_buf.ok()) return send_streamed(r, res, status, stream_buf);
     const char* data = nullptr;
     size_t len = 0;
     if (!bodyless) {
@@ -265,25 +280,16 @@ bool send_raw(httpd_req_t* r, const char* data, size_t len) {
     return true;
 }
 
-// A body pulled from HttpResponse::stream through one Mem::Large buffer
-// that lives only while this response is sent. Chunked (httpd's own
+// A body pulled from HttpResponse::stream through `buf` (Mem::Large,
+// kStreamChunkBytes, taken by send_response() and held only while this
+// response is sent). Chunked (httpd's own
 // framing, with the head send_response() set) without a stream_length;
 // with one, the head is written here so it can carry a Content-Length,
 // which httpd_resp_send_chunk() cannot and httpd_resp_send() only up to an
-// int. ESP_FAIL once anything fails
-// midway: httpd then closes the session, so the client never takes a
-// short body for a whole one.
-esp_err_t send_streamed(httpd_req_t* r, const net::HttpResponse& res, const char* status) {
-    os::LargeBuffer buf = os::LargeBuffer::allocate(net::kStreamChunkBytes);
-    if (!buf.ok()) {
-        WLOG_W(kTag, "no memory to stream a response");
-        httpd_resp_set_status(r, "503 Service Unavailable");
-        httpd_resp_set_type(r, "application/json");
-        const net::HttpResponse err =
-            net::HttpResponse::error(503, "no_memory", "no memory for the response");
-        httpd_resp_send(r, err.body.data(), static_cast<ssize_t>(err.body.size()));
-        return ESP_OK;
-    }
+// int. ESP_FAIL once anything fails midway: httpd then closes the session,
+// so the client never takes a short body for a whole one.
+esp_err_t send_streamed(httpd_req_t* r, const net::HttpResponse& res, const char* status,
+                        os::LargeBuffer& buf) {
     if (res.stream_length == 0) {
         const bool ok = net::pump_stream(res, buf.span(), [r](std::span<const uint8_t> piece) {
             return httpd_resp_send_chunk(r, reinterpret_cast<const char*>(piece.data()),

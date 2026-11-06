@@ -403,6 +403,7 @@ wisp.http.download(url, name, opts, cb)   -- 流式写入文件，受配额和 h
   - REST `GET /scenes/{id}/files`；
   - `GET /scenes/{id}/files/{name}`；
   - `DELETE /scenes/{id}/files/{name}`，需要 `X-Wisp` 头。
+  - 附加字段：`GET /scenes` 每项有 `files`（声明的 `"auto"`/`"sd"`/`"int"`），顶层有 `sd_card`（SD 卡是否可用），供页面标出"需要 SD 卡"；`GET /scenes/{id}/files` 返回 `want`（同一声明）和 `truncated`（列表只含前 256 个名字时为 true）。
 
 ### 7.3 数据迁移 `migrate`
 

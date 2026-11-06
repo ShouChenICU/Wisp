@@ -1277,3 +1277,67 @@ TEST(SimHttpServer, StreamedResponseFailureClosesTheConnection) {
         EXPECT_TRUE(c.closed_by_peer()) << path;
     }
 }
+
+// A client that hangs up in the middle of a long body: the server stops
+// pulling, lets the response go, and keeps serving new connections.
+TEST(SimHttpServer, ClientDisconnectMidStreamStopsIt) {
+    struct Probe {
+        std::mutex mu;
+        std::condition_variable cv;
+        bool released = false;
+        std::atomic<size_t> pulled{0};
+    };
+    auto probe = std::make_shared<Probe>();
+    struct Release {
+        std::shared_ptr<Probe> p;
+        ~Release() {
+            if (!p) return;
+            std::lock_guard<std::mutex> lock(p->mu);
+            p->released = true;
+            p->cv.notify_all();
+        }
+    };
+    constexpr uint64_t kLength = 1024ull * 1024 * 1024;  // never sent in full
+    auto handler = [probe](const HttpRequest& req) {
+        HttpResponse res;
+        if (req.path != "/endless") {
+            res.body = "ok";
+            return res;
+        }
+        Probe* p = probe.get();
+        res.stream = [p](std::span<uint8_t> buf) -> wisp::Result<size_t> {
+            std::memset(buf.data(), 'z', buf.size());
+            p->pulled += buf.size();
+            return wisp::Result<size_t>::ok(buf.size());
+        };
+        res.stream_length = kLength;
+        auto owner = std::make_shared<Release>();
+        owner->p = probe;
+        res.body_owner = std::move(owner);
+        return res;
+    };
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0, handler, WsHandlers{}).is_ok());
+    {
+        Client c(server.port());
+        ASSERT_TRUE(c.send(get_request("/endless")));
+        // Wait until the body is under way, then hang up.
+        const auto deadline = Clock::now() + kWait;
+        while (probe->pulled.load() < 256 * 1024 && Clock::now() < deadline) {
+            std::this_thread::sleep_for(1ms);
+        }
+        ASSERT_GE(probe->pulled.load(), 256u * 1024);
+    }
+    {
+        std::unique_lock<std::mutex> lock(probe->mu);
+        EXPECT_TRUE(probe->cv.wait_for(lock, kWait, [&] { return probe->released; }));
+    }
+    EXPECT_LT(probe->pulled.load(), kLength);
+
+    Client next(server.port());
+    ASSERT_TRUE(next.send(get_request("/plain")));
+    auto res = next.read_response();
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+    EXPECT_EQ(res->body, "ok");
+}

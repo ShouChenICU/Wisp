@@ -12,11 +12,13 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -76,6 +78,39 @@ std::optional<std::string> file_name(const RequestContext& ctx, net::HttpRespons
     return name;
 }
 
+// Appends `s` as a JSON string. Names are [A-Za-z0-9._-] (valid_file_name),
+// so nothing needs escaping in practice; quotes, backslashes and control
+// bytes are escaped all the same, so a name that ever got past that check
+// could not break the document.
+void append_json_string(os::LargeString& out, std::string_view s) {
+    out.push_back('"');
+    for (char c : s) {
+        const auto u = static_cast<unsigned char>(c);
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+            out.push_back(c);
+        } else if (u < 0x20) {
+            char esc[8];
+            std::snprintf(esc, sizeof esc, "\\u%04x", u);
+            out.append(esc);
+        } else {
+            out.push_back(c);
+        }
+    }
+    out.push_back('"');
+}
+
+void append_int(os::LargeString& out, int64_t v) {
+    char num[24];
+    std::snprintf(num, sizeof num, "%lld", static_cast<long long>(v));
+    out.append(num);
+}
+
+// The list is written straight into one PSRAM string rather than built as
+// a Value tree and serialized: with max_list (256) entries the tree's many
+// small nodes and the serializer's pools would all land in internal RAM
+// (AGENTS.md section 8) and could take 100 KB of it. Keys in the order a
+// Value map would give them, so the body is what HttpResponse::json made.
 net::HttpResponse list_files(AdminDeps& deps, const RequestContext& ctx) {
     net::HttpResponse refusal;
     std::optional<std::string> id = installed_scene(deps, ctx, refusal);
@@ -85,25 +120,45 @@ net::HttpResponse list_files(AdminDeps& deps, const RequestContext& ctx) {
     auto listed = deps.files->list(*id);
     if (!listed) return files_error(listed.error());
     const core::SceneFilesInfo& i = info.value();
-    List files;
-    files.reserve(listed.value().entries.size());
-    for (const core::SceneFileEntry& e : listed.value().entries) {
-        files.push_back(Value(Map{
-            {"name", Value(e.name)},
-            {"size", Value(static_cast<int64_t>(e.size))},
-            {"mtime", Value(e.mtime)},
-        }));
+    const auto& entries = listed.value().entries;
+
+    auto body = std::allocate_shared<os::LargeString>(os::LargeAllocator<os::LargeString>());
+    os::LargeString& out = *body;
+    size_t estimate = 128;
+    for (const core::SceneFileEntry& e : entries) estimate += e.name.size() + 64;
+    out.reserve(estimate);
+    out.append("{\"files\":[");
+    for (size_t n = 0; n < entries.size(); ++n) {
+        const core::SceneFileEntry& e = entries[n];
+        if (n > 0) out.push_back(',');
+        out.append("{\"mtime\":");
+        append_int(out, e.mtime);
+        out.append(",\"name\":");
+        append_json_string(out, e.name);
+        out.append(",\"size\":");
+        append_int(out, static_cast<int64_t>(e.size));
+        out.push_back('}');
     }
-    return net::HttpResponse::json(200, Value(Map{
-                                            {"location", i.location == core::FilesLocation::None
-                                                             ? Value()
-                                                             : Value(core::to_string(i.location))},
-                                            {"want", Value(core::to_string(i.want))},
-                                            {"quota", Value(static_cast<int64_t>(i.quota))},
-                                            {"used", Value(static_cast<int64_t>(i.used))},
-                                            {"truncated", Value(listed.value().truncated)},
-                                            {"files", Value(std::move(files))},
-                                        }));
+    out.append("],\"location\":");
+    if (i.location == core::FilesLocation::None) {
+        out.append("null");
+    } else {
+        append_json_string(out, core::to_string(i.location));
+    }
+    out.append(",\"quota\":");
+    append_int(out, static_cast<int64_t>(i.quota));
+    out.append(",\"truncated\":");
+    out.append(listed.value().truncated ? "true" : "false");
+    out.append(",\"used\":");
+    append_int(out, static_cast<int64_t>(i.used));
+    out.append(",\"want\":");
+    append_json_string(out, core::to_string(i.want));
+    out.push_back('}');
+
+    net::HttpResponse res;
+    res.static_body = {reinterpret_cast<const uint8_t*>(out.data()), out.size()};
+    res.body_owner = std::move(body);
+    return res;
 }
 
 // What a download's stream reads from. In PSRAM with its control block
@@ -129,6 +184,15 @@ net::HttpResponse download_file(AdminDeps& deps, const RequestContext& ctx) {
     auto entry = deps.files->stat(*id, *name);
     if (!entry) return files_error(entry.error());
 
+    net::HttpResponse res;
+    res.content_type = "application/octet-stream";
+    // valid_file_name() allows only [A-Za-z0-9._-]: nothing to quote.
+    res.headers.emplace_back("Content-Disposition",
+                             "attachment; filename=\"" + entry.value().name + "\"");
+    // An empty file is an empty body under Content-Length 0: a stream with
+    // stream_length 0 would go out chunked instead.
+    if (entry.value().size == 0) return res;
+
     auto dl = std::allocate_shared<Download>(os::LargeAllocator<Download>());
     dl->files = deps.files;
     dl->scene.assign(id->data(), id->size());
@@ -138,12 +202,6 @@ net::HttpResponse download_file(AdminDeps& deps, const RequestContext& ctx) {
         dl->lock = core::WakeLock(*deps.wakelocks, "system.download", core::WakeLockKind::Network,
                                   "file download");
     }
-
-    net::HttpResponse res;
-    res.content_type = "application/octet-stream";
-    // valid_file_name() allows only [A-Za-z0-9._-]: nothing to quote.
-    res.headers.emplace_back("Content-Disposition",
-                             "attachment; filename=\"" + entry.value().name + "\"");
     res.stream_length = entry.value().size;
     Download* state = dl.get();
     res.stream = [state](std::span<uint8_t> buf) -> Result<size_t> {

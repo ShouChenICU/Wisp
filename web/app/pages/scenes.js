@@ -517,23 +517,25 @@ function FilesSection({ scene, sdCard }) {
                       <span class="row-title mono">${f.name}</span>
                       <span class="row-sub">${formatBytes(f.size)}${when ? ' · ' + when : ''}</span>
                     </div>
-                    <a
-                      class="btn btn-ghost btn-sm"
-                      href=${fileUrl(scene.id, f.name)}
-                      download=${f.name}
-                      aria-label=${t('scenes.file_download') + ' ' + f.name}
-                    >
-                      <${IconArrowDown} size=${15} />${t('scenes.file_download')}
-                    </a>
-                    <button
-                      type="button"
-                      class="btn btn-ghost btn-sm"
-                      disabled=${removing === f.name}
-                      onClick=${() => remove(f.name)}
-                      aria-label=${t('scenes.file_delete') + ' ' + f.name}
-                    >
-                      <${IconTrash} size=${15} />${t('scenes.file_delete')}
-                    </button>
+                    <div class="row-actions">
+                      <a
+                        class="btn btn-ghost btn-sm"
+                        href=${fileUrl(scene.id, f.name)}
+                        download=${f.name}
+                        aria-label=${t('scenes.file_download') + ' ' + f.name}
+                      >
+                        <${IconArrowDown} size=${15} />${t('scenes.file_download')}
+                      </a>
+                      <button
+                        type="button"
+                        class="btn btn-ghost btn-sm"
+                        disabled=${removing === f.name}
+                        onClick=${() => remove(f.name)}
+                        aria-label=${t('scenes.file_delete') + ' ' + f.name}
+                      >
+                        <${IconTrash} size=${15} />${t('scenes.file_delete')}
+                      </button>
+                    </div>
                   </li>`;
                 })}
               </ul>`}

@@ -137,9 +137,11 @@ net::HttpResponse list_scenes(AdminDeps& deps, const RequestContext&) {
         scenes.push_back(scene_item(info, deps.scene_host));
     }
     // Whether an SD card is in, so the page can mark a scene that declares
-    // "sd" (scene-device spec 7.2); the card's library is listed only
-    // while it is online (storage_manager.hpp).
-    const bool sd_card = deps.storage.roots(core::Area::Library).size() > 1;
+    // "sd" (scene-device spec 7.2): what SceneFiles goes by, or, without
+    // it, the card's library being listed (only while it is online,
+    // storage_manager.hpp).
+    const bool sd_card = deps.files != nullptr ? deps.files->sd_online()
+                                               : deps.storage.roots(core::Area::Library).size() > 1;
     return net::HttpResponse::json(
         200, Value(Map{{"scenes", Value(std::move(scenes))}, {"sd_card", Value(sd_card)}}));
 }

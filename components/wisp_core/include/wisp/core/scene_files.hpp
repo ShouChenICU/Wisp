@@ -189,6 +189,9 @@ public:
     // ".<name>.dl". Busy if a download of that name is already in flight.
     Result<std::shared_ptr<FileDownload>> begin_download(std::string_view scene,
                                                          std::string_view name);
+    // Whether an SD card is in and usable: what "auto" and "sd" go by.
+    // Touches no flash.
+    bool sd_online() const;
 
 private:
     friend class FileDownload;
@@ -210,7 +213,6 @@ private:
     std::string dir_of(std::string_view scene, FilesLocation loc) const;
     std::string record_path(std::string_view scene) const;
     uint64_t quota_of(FilesLocation loc) const;
-    bool sd_online() const;
     // config_.declared, Auto when it has no answer; `installed` false when
     // it says NotFound.
     FilesWant want_of(std::string_view scene, bool* installed = nullptr) const;
