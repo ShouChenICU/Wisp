@@ -339,6 +339,9 @@ public:
     // The scenes in the background, least recently in front first. Any
     // thread.
     std::vector<BackgroundScene> background_scenes() const;
+    // The manifest name of scene `id` while it is in the foreground or the
+    // background; "" otherwise. Any thread.
+    std::string running_name(std::string_view id) const;
     // Sends a click to the foreground scene's widget with ref = `ref`, as
     // if the user tapped it (the simulator's debug command). NotFound if
     // no running scene has one.
@@ -632,6 +635,7 @@ private:
     mutable os::Mutex status_mu_;
     std::map<std::string, core::SceneStatus, std::less<>> statuses_;
     std::optional<std::string> foreground_id_;
+    std::string foreground_name_;  // while foreground_id_ is set
     uint32_t foreground_instance_ = 0;
     std::vector<BackgroundScene> background_;
     // id -> instance of every slot, for scene_instance().

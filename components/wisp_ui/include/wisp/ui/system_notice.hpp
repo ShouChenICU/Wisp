@@ -18,9 +18,9 @@ struct NoticeText {
 };
 
 // The title and body of system notice `code` in the current ui::lang().
-// `arg` goes into the body as it is: the caller resolves it first (a
-// scene id to the scene's name, a wake lock holder through
-// holder_label()). An unknown code, from a newer firmware's stored list,
+// `arg` goes into the body as it is: a scene notice's argument is already
+// the scene's name, and the caller passes a wake lock holder through
+// holder_label() first. An unknown code, from a newer firmware's stored list,
 // becomes the body itself.
 NoticeText system_notice_text(std::string_view code, std::string_view arg);
 

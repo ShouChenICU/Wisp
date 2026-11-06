@@ -130,8 +130,10 @@ public:
     // Failed saves in a row before the timer stops until the next change;
     // the retries wait 600, 1200, 2400 and 4800 ms.
     static constexpr int kMaxSaveAttempts = 5;
-    // System notices: a code, its argument (a scene id or a wake-lock
-    // holder) and the action argument (a lock id) are at most this long.
+    // System notices: a code, its argument (a scene's name, a wake-lock
+    // holder or a battery percentage, shown as it is or, for a holder,
+    // through its label) and the action argument (a lock id) are at most
+    // this long.
     static constexpr size_t kCodeMax = 32, kArgMax = 64, kActionArgMax = 16;
 
     explicit NotificationService(NotificationDeps deps);

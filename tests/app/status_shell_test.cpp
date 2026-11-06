@@ -110,8 +110,28 @@ protected:
                 },
             .utc_offset_min = [] { return 480; },
             .wall_s = [this] { return wall.load(); },
+            .repo = repo.get(),
+            .submit_io =
+                [this](std::function<void()> job) { return worker.submit(std::move(job)); },
         });
         shell->start();
+    }
+
+    // The body of the panel's note from `source`/`id`, "" if none.
+    std::string note_body(const std::string& source, const std::string& id) {
+        std::string body;
+        on_ui([&] {
+            for (const auto& n : shell->panel_model().notes)
+                if (n.source == source && n.id == id) body = n.body;
+        });
+        return body;
+    }
+
+    bool wait_body_starts(const std::string& id, const std::string& prefix) {
+        const bool ok =
+            wait_until([&] { return note_body("system", id).rfind(prefix, 0) == 0; }, 2000);
+        EXPECT_TRUE(ok) << note_body("system", id);
+        return ok;
     }
 
     // Scene `id` named `name`, opened and sent to the background.
@@ -413,8 +433,31 @@ TEST_F(StatusShellTest, SystemNoticeRenderedInUiLanguage) {
     on_ui([&] {
         const wisp::ui::PanelModel m = shell->panel_model();
         ASSERT_EQ(m.notes.size(), 3u);
-        EXPECT_EQ(m.notes[1].body.rfind("a已让设备", 0), 0u) << m.notes[1].body;
+        EXPECT_EQ(m.notes[1].body.rfind("Alpha已让设备", 0), 0u) << m.notes[1].body;
     });
+}
+
+// A wake-lock holder reads as its scene's name wherever the scene is: in
+// front, in the background, or installed and not running (read from its
+// manifest off the UI thread); only a scene that is not installed reads
+// as its id.
+TEST_F(StatusShellTest, WakeLockHolderNamedWhereverTheSceneIs) {
+    start_shell();
+    install("f", kScene, {{"scene.json", wisp::test::manifest("f", "Front")}});
+    install("g", kScene, {{"scene.json", wisp::test::manifest("g", "Gamma")}});
+    ASSERT_TRUE(rt->open("f"));
+    ASSERT_TRUE(
+        wait_until([&] { return rt->foreground() == std::optional<std::string>("f"); }, 2000));
+    notes->post_system(wisp::core::notice::kWakeLockLong, "scene.f");
+    notes->post_system(wisp::core::notice::kWakeLockLong, "scene.g");
+    notes->post_system(wisp::core::notice::kWakeLockLong, "scene.zz");
+    wait_body_starts("wakelock_long:scene.f", "Front已让设备");
+    wait_body_starts("wakelock_long:scene.g", "Gamma已让设备");
+    wait_body_starts("wakelock_long:scene.zz", "zz已让设备");
+    // Once the scene has stopped its name still shows.
+    ASSERT_TRUE(rt->exit("f"));
+    ASSERT_TRUE(wait_until([&] { return rt->status("f").state == SceneState::Stopped; }, 2000));
+    wait_body_starts("wakelock_long:scene.f", "Front已让设备");
 }
 
 TEST_F(StatusShellTest, BannerOnPostAndTapOpensScene) {

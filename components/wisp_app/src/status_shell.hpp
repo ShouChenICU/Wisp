@@ -16,7 +16,10 @@
 //     then the background scenes and the unread notifications, newest
 //     first. A system notice reads in the UI language: its argument goes
 //     in as posted (a scene notice carries the scene's name already), a
-//     wake-lock holder through ui::holder_label(). Opening and closing are
+//     wake-lock holder through ui::holder_label(): "scene.<id>" by the
+//     scene's name -- the runtime's while it runs, else its manifest's,
+//     read on the storage worker and kept -- and by its id only while that
+//     is unknown or the scene is not installed. Opening and closing are
 //     logged "panel: open" / "panel: closed". The screen going off closes
 //     it.
 //   - Rows: a scene row brings the scene forward (launch(User)), its close
@@ -27,8 +30,8 @@
 //     notification over; it is shown on the UI thread, and a tap on it is
 //     NotificationRouter::tap().
 //
-// start() and stop() run on any thread but the UI thread (stop() waits for
-// it). Every SystemLayer call is made on the UI thread.
+// start() runs on any thread. Every SystemLayer call is made on the UI
+// thread.
 
 #include <cstdint>
 #include <functional>
@@ -38,6 +41,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/scene_repository.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -61,6 +65,11 @@ struct StatusShellDeps {
     std::function<int()> utc_offset_min;
     // Seconds since the epoch; 0 (or empty) while the clock is unset.
     std::function<int64_t()> wall_s;
+    // Where the name of a scene that is not running is read (its
+    // manifest), and how that read gets off the UI thread: a job on the
+    // storage worker. Either null or empty: such a scene reads as its id.
+    core::SceneRepository* repo = nullptr;
+    std::function<bool(std::function<void()>)> submit_io;
 };
 
 class StatusShell {
@@ -75,8 +84,12 @@ public:
     // the panel handlers and the banner, and shows the counts there are
     // now.
     void start();
-    // Undoes start() and waits for every UI job it posted, so the system
-    // layer and the router may go next. Idempotent.
+    // Undoes start(), so the system layer and the router may go next: the
+    // panel handlers are removed on the UI thread, and a job posted
+    // earlier, a manifest read or a banner call still under way, or a tap
+    // on a banner still up, does nothing once stop() has returned. Off the
+    // UI thread it also waits for the UI jobs posted before it; on the UI
+    // thread it cannot, and those do nothing when they run. Idempotent.
     void stop();
 
     // What the panel would show now. UI thread.

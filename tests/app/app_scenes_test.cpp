@@ -326,6 +326,50 @@ TEST(AppScenes, TapOpensSceneAndBackReturns) {
     EXPECT_EQ(b.states("counter"), (std::vector<std::string>{"running", "stopped"}));
 }
 
+// The pull-down panel's header names the Wi-Fi state only on a device
+// that has Wi-Fi.
+TEST(AppScenes, PanelHeaderShowsWifiOnlyWithWifi) {
+    for (bool with_wifi : {true, false}) {
+        SCOPED_TRACE(with_wifi);
+        UiNetOptions opts;
+        opts.with_wifi = with_wifi;
+        Booted b(opts);
+        ASSERT_TRUE(b.start());
+        b.h.app->notifications()->post_system(wisp::core::notice::kBatteryLow, "9");
+        // Opens the panel from the capsule once the capsule shows.
+        auto open = [&] {
+            std::string result;
+            run_on_ui_blocking(b.h.app->ui(), [&] {
+                // The capsule's own text: the banner shows a bell too.
+                lv_obj_t* cap = find_label_containing(lv_layer_top(), LV_SYMBOL_BELL "1");
+                while (cap != nullptr && !lv_obj_has_flag(cap, LV_OBJ_FLAG_CLICKABLE))
+                    cap = lv_obj_get_parent(cap);
+                if (cap == nullptr) {
+                    result = "no capsule";
+                    return;
+                }
+                lv_obj_send_event(cap, LV_EVENT_CLICKED, nullptr);
+                result = "ok";
+            });
+            return result;
+        };
+        ASSERT_TRUE(wait_until([&] { return open() == "ok"; }, 3000)) << open();
+        std::string wifi;
+        std::string clear_all;
+        run_on_ui_blocking(b.h.app->ui(), [&] {
+            wifi = find_label_text_containing(lv_layer_top(), LV_SYMBOL_WIFI);
+            clear_all = find_label_text_containing(lv_layer_top(),
+                                                   wisp::ui::tr(wisp::ui::StrId::PanelClearAll));
+        });
+        EXPECT_FALSE(clear_all.empty());  // the panel is open
+        if (with_wifi) {
+            EXPECT_FALSE(wifi.empty());
+        } else {
+            EXPECT_TRUE(wifi.empty()) << wifi;
+        }
+    }
+}
+
 TEST(AppScenes, StandbyHidesAndWakeShows) {
     Booted b;
     put_scene(b.h.root, "counter", "计数器", kCounter);

@@ -343,11 +343,14 @@ Result<void> App::start() {
                                         {"charging", Value(st->charging)}});
                 }
             }
-            std::optional<net::WifiState> wifi = impl->net ? impl->net->wifi_state() : std::nullopt;
-            return Value(Map{
-                {"battery", std::move(battery)},
-                {"wifi", Value(wifi ? net::to_string(*wifi) : "off")},
-            });
+            // No "wifi" without a WifiService: wisp.device.info() then says
+            // "off", and the panel leaves the item out.
+            Map status{{"battery", std::move(battery)}};
+            if (std::optional<net::WifiState> wifi =
+                    impl->net ? impl->net->wifi_state() : std::nullopt) {
+                status.emplace("wifi", Value(net::to_string(*wifi)));
+            }
+            return Value(std::move(status));
         };
     }
     if (impl_->ui && scenes != nullptr) {
@@ -421,6 +424,12 @@ Result<void> App::start() {
             .device_status = std::move(device_status),
             .utc_offset_min = [impl] { return impl->utc_offset_min.load(); },
             .wall_s = [] { return static_cast<int64_t>(std::time(nullptr)); },
+            .repo = scenes != nullptr ? scenes->repository() : nullptr,
+            .submit_io = scenes != nullptr ? std::function<bool(std::function<void()>)>(
+                                                 [scenes](std::function<void()> job) {
+                                                     return scenes->worker().submit(std::move(job));
+                                                 })
+                                           : nullptr,
         });
         if (impl_->status_shell) {
             impl_->status_shell->start();

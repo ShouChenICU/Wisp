@@ -439,6 +439,14 @@ std::vector<BackgroundScene> SceneRuntime::background_scenes() const {
     return background_;
 }
 
+std::string SceneRuntime::running_name(std::string_view id) const {
+    std::lock_guard<os::Mutex> lock(status_mu_);
+    if (foreground_id_ && *foreground_id_ == id) return foreground_name_;
+    for (const BackgroundScene& b : background_)
+        if (b.id == id) return b.name;
+    return {};
+}
+
 Result<void> SceneRuntime::check_sources(std::span<const core::SourceFile> files) {
     if (!running_) return Result<void>::err(ErrorCode::Busy, "scene runtime not running");
     // Up to 10 s of waiting would freeze the screen, or stall every file
@@ -972,6 +980,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     {
         std::lock_guard<os::Mutex> lock(status_mu_);
         foreground_id_ = id;
+        foreground_name_ = s.name;
         foreground_instance_ = s.instance;
     }
     update_background_list();
@@ -1336,6 +1345,7 @@ void SceneRuntime::forget_front() {
     front_ = nullptr;
     std::lock_guard<os::Mutex> lock(status_mu_);
     foreground_id_.reset();
+    foreground_name_.clear();
     foreground_instance_ = 0;
 }
 
@@ -1411,6 +1421,7 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
     {
         std::lock_guard<os::Mutex> lock(status_mu_);
         foreground_id_ = id;
+        foreground_name_ = s.name;
         foreground_instance_ = s.instance;
     }
     update_background_list();

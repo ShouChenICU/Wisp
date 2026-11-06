@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "wisp/base/result.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -39,7 +42,7 @@ std::string wifi_text(const std::string& state) {
 
 }  // namespace
 
-struct StatusShell::State {
+struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
     explicit State(StatusShellDeps d) : deps(std::move(d)) {}
 
     StatusShellDeps deps;
@@ -49,35 +52,77 @@ struct StatusShell::State {
     std::atomic<bool> refresh_queued{false};
     // UI thread only: the counts last shown.
     ui::StatusCounts shown{-1, -1};
+    // UI thread only: names of scenes read from their manifests ("" for
+    // one not installed: it reads as its id), and the reads on their way.
+    std::map<std::string, std::string, std::less<>> names;
+    std::set<std::string, std::less<>> reading;
 
     std::vector<scene::BackgroundScene> background() const {
         return deps.scenes != nullptr ? deps.scenes->background_scenes()
                                       : std::vector<scene::BackgroundScene>{};
     }
 
+    // The name of scene `id`: the runtime's while it runs, else its
+    // manifest's, read once on the storage worker (a manifest read touches
+    // flash, which the UI thread must not) and kept; a refresh follows the
+    // read. "" until then, and for a scene that is not installed. UI
+    // thread.
+    std::string scene_name(const std::string& id) {
+        std::string name = deps.scenes != nullptr ? deps.scenes->running_name(id) : std::string();
+        if (!name.empty()) {
+            names[id] = name;
+            return name;
+        }
+        if (auto it = names.find(id); it != names.end()) return it->second;
+        read_name(id);
+        return {};
+    }
+
+    void read_name(const std::string& id) {
+        if (deps.repo == nullptr || !deps.submit_io || reading.count(id) != 0) return;
+        reading.insert(id);
+        std::shared_ptr<State> self = shared_from_this();
+        const bool queued = deps.submit_io([self, id] {
+            if (self->stopped.load()) return;
+            auto info = self->deps.repo->info(id);
+            std::string name = info ? info.value().manifest.name : std::string();
+            if (!info && info.error().code != ErrorCode::NotFound) {
+                WLOG_W(kTag, "%s: name not read: %s", id.c_str(), info.error().message.c_str());
+            }
+            const bool posted = self->deps.ui.post([self, id, name = std::move(name)] {
+                self->reading.erase(id);
+                if (self->stopped.load()) return;
+                self->names[id] = name;
+                self->refresh();
+            });
+            if (!posted) WLOG_W(kTag, "%s: name not shown: UI queue full", id.c_str());
+        });
+        if (!queued) {
+            // Read again on the next refresh.
+            reading.erase(id);
+        }
+    }
+
     // What a system notice's argument reads as: a wake-lock holder by its
-    // label (a scene holder by the name of the scene running in the
-    // background, else its id); every other code's argument as posted.
-    std::string notice_arg(const core::Notification& n,
-                           const std::vector<scene::BackgroundScene>& bg) const {
+    // label (a scene holder by its scene's name, its id while that is
+    // unknown); every other code's argument as posted (a scene notice
+    // carries the scene's name already).
+    std::string notice_arg(const core::Notification& n) {
         if (n.code != core::notice::kWakeLockLong) return n.arg;
         constexpr std::string_view kScene = "scene.";
         std::string name;
         if (std::string_view(n.arg).substr(0, kScene.size()) == kScene) {
-            const std::string id = n.arg.substr(kScene.size());
-            for (const auto& b : bg)
-                if (b.id == id) name = b.name;
+            name = scene_name(n.arg.substr(kScene.size()));
         }
         return ui::holder_label(n.arg, name);
     }
 
-    ui::PanelNote note_of(const core::Notification& n,
-                          const std::vector<scene::BackgroundScene>& bg) const {
+    ui::PanelNote note_of(const core::Notification& n) {
         ui::PanelNote p;
         p.source = n.source;
         p.id = n.id;
         if (n.source == core::kSystemSource) {
-            ui::NoticeText t = ui::system_notice_text(n.code, notice_arg(n, bg));
+            ui::NoticeText t = ui::system_notice_text(n.code, notice_arg(n));
             p.title = std::move(t.title);
             p.body = std::move(t.body);
         } else {
@@ -91,8 +136,8 @@ struct StatusShell::State {
         return p;
     }
 
-    ui::BannerInfo banner_of(const core::Notification& n) const {
-        const ui::PanelNote p = note_of(n, background());
+    ui::BannerInfo banner_of(const core::Notification& n) {
+        const ui::PanelNote p = note_of(n);
         ui::BannerInfo b;
         b.source = p.source;
         b.id = p.id;
@@ -137,13 +182,12 @@ struct StatusShell::State {
         return h;
     }
 
-    ui::PanelModel model() const {
+    ui::PanelModel model() {
         ui::PanelModel m;
         m.header = header();
         m.now_ms = os::now_ms();
-        const std::vector<scene::BackgroundScene> bg = background();
-        for (const auto& b : bg) m.scenes.push_back({b.id, b.name, b.since_ms});
-        for (const core::Notification& n : deps.notes.unread()) m.notes.push_back(note_of(n, bg));
+        for (const auto& b : background()) m.scenes.push_back({b.id, b.name, b.since_ms});
+        for (const core::Notification& n : deps.notes.unread()) m.notes.push_back(note_of(n));
         return m;
     }
 
