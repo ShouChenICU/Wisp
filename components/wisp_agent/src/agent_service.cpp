@@ -247,19 +247,11 @@ struct AgentService::Impl {
     // Runs `fn` on the storage worker and waits for it; false if it could
     // not be queued (then it never runs).
     bool run_io(const std::function<void()>& fn) {
-        if (!deps.submit_io) {
+        if (!deps.run_io) {
             fn();
             return true;
         }
-        auto sem = std::make_shared<os::Semaphore>(1, 0);
-        if (!deps.submit_io([&fn, sem] {
-                fn();
-                sem->give();
-            })) {
-            return false;
-        }
-        sem->take(os::kForever);
-        return true;
+        return deps.run_io([&fn] { fn(); }).is_ok();
     }
 
     // --- wisp.agent (and start()) -------------------------------------
@@ -701,7 +693,7 @@ os::TaskConfig AgentService::task_config(const AgentConfig& c) {
     t.name = "wisp.agent";
     t.stack_bytes = c.stack_bytes;
     t.priority = c.priority;
-    // Every file access goes through submit_io (see the header).
+    // Every file access goes through run_io (see the header).
     t.flash_access = false;
     return t;
 }

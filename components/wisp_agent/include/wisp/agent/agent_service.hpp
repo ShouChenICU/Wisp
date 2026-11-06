@@ -7,7 +7,7 @@
 //
 // A turn
 //   - is framed by turn_begin/turn_end markers in the ConversationStore;
-//     every message is appended on the storage worker (submit_io) and the
+//     every message is appended on the storage worker (run_io) and the
 //     loop waits for it, so the file always holds what listeners saw;
 //   - runs at most max_steps tool calls and turn_ms in all;
 //   - holds a cpu and a network wake lock ("system.agent", "agent_turn");
@@ -33,7 +33,7 @@
 //
 // wisp.agent declares flash_access = false (its stack may be in PSRAM):
 // everything it calls that touches flash -- the conversation file -- goes
-// through submit_io. The model client, the tool registry (which posts
+// through run_io. The model client, the tool registry (which posts
 // each tool to the thread it declares), the wake locks, the event bus and
 // NotificationService::post_system() (which saves on the storage worker)
 // do not touch flash themselves; deps.lang, screen_off, network_up, wall_s
@@ -115,9 +115,12 @@ struct AgentDeps {
     ToolRegistry& tools;
     net::LlmClient& llm;
     core::ModelProfileService& models;  // get() only
-    // Runs a job on the storage worker; false if it could not be queued.
+    // Runs a job on the storage worker and waits for it to finish; an
+    // error if it could not be queued (it then never runs). The service
+    // passes jobs that reference its own stack, so the wait must be
+    // unbounded. Production: StorageWorker::run_sync with os::kForever.
     // Empty: jobs run on the calling thread (tests without a worker).
-    std::function<bool(std::function<void()>)> submit_io;
+    std::function<Result<void>(std::function<void()>)> run_io;
     core::WakeLockRegistry* locks = nullptr;
     core::NotificationService* notes = nullptr;  // the agent_done notice
     std::function<bool()> screen_off;            // empty: never off

@@ -108,24 +108,24 @@ void SceneWiring::start_storage() {
     // On the worker, like every file job; nothing lists or opens a scene
     // before it is done.
     core::SceneRepository* repo = repo_.get();
-    auto done = std::make_shared<os::Semaphore>(1, 0);
-    if (!worker_.submit([repo, files, done] {
-            if (auto r = repo->recover(); !r) {
-                WLOG_W(kTag, "recovering interrupted installs failed: %s",
-                       r.error().message.c_str());
-            }
-            // Usage and interrupted downloads, once the packages (and the
-            // files/ they carry over) are in place.
-            if (files != nullptr) {
-                if (auto r = files->scan(); !r)
-                    WLOG_W(kTag, "counting scene files failed: %s", r.error().message.c_str());
-            }
-            done->give();
-        })) {
+    // An unbounded wait, so the job may use these plain pointers.
+    if (auto r = worker_.run_sync(
+            [repo, files] {
+                if (auto r = repo->recover(); !r) {
+                    WLOG_W(kTag, "recovering interrupted installs failed: %s",
+                           r.error().message.c_str());
+                }
+                // Usage and interrupted downloads, once the packages (and
+                // the files/ they carry over) are in place.
+                if (files != nullptr) {
+                    if (auto r = files->scan(); !r)
+                        WLOG_W(kTag, "counting scene files failed: %s", r.error().message.c_str());
+                }
+            },
+            os::kForever);
+        !r) {
         WLOG_W(kTag, "storage worker busy: interrupted installs not recovered");
-        return;
     }
-    done->take(os::kForever);
 }
 
 void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,

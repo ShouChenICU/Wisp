@@ -133,7 +133,10 @@ struct AgentHarness {
             .tools = *tools,
             .llm = *llm,
             .models = *models,
-            .submit_io = [this](std::function<void()> fn) { return worker.submit(std::move(fn)); },
+            .run_io =
+                [this](std::function<void()> fn) {
+                    return worker.run_sync(std::move(fn), os::kForever);
+                },
             .locks = locks.get(),
             .notes = notes.get(),
             .screen_off = [this] { return screen_off.load(); },

@@ -375,8 +375,9 @@ TEST_F(AgentLoop, FailedStartCanBeRetried) {
     harness();
     std::atomic<bool> refuse{true};
     auto deps = h->deps();
-    deps.submit_io = [&](std::function<void()> fn) {
-        return !refuse.load() && h->worker.submit(std::move(fn));
+    deps.run_io = [&](std::function<void()> fn) {
+        if (refuse.load()) return wisp::Result<void>::err(wisp::ErrorCode::Busy, "refused");
+        return h->worker.run_sync(std::move(fn), wisp::os::kForever);
     };
     svc = std::make_unique<AgentService>(std::move(deps));
     listener = svc->add_listener([this](const AgentEvent& e) {
