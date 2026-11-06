@@ -117,9 +117,14 @@ if(_wisp_glyphs_size)
         VERBATIM
     )
     add_custom_target(wisp_glyphs_bin ALL DEPENDS ${WISP_GLYPH_IMAGE})
-    # fonts-flash is only defined above, inside the "has a fonts partition"
-    # branch; reuse it rather than esptool_py_flash_target() again, which
-    # would redefine the same custom target.
+    # The fonts block above defines fonts-flash when the board has a fonts
+    # partition; defining it again would redefine the same custom target,
+    # so only a board with glyphs but no fonts defines it here.
+    if(NOT TARGET fonts-flash)
+        idf_component_get_property(_wisp_main_args esptool_py FLASH_ARGS)
+        idf_component_get_property(_wisp_sub_args esptool_py FLASH_SUB_ARGS)
+        esptool_py_flash_target(fonts-flash "${_wisp_main_args}" "${_wisp_sub_args}" ALWAYS_PLAINTEXT)
+    endif()
     esptool_py_flash_to_partition(fonts-flash glyphs ${WISP_GLYPH_IMAGE})
     add_dependencies(fonts-flash wisp_glyphs_bin)
     esptool_py_flash_to_partition(flash glyphs ${WISP_GLYPH_IMAGE})

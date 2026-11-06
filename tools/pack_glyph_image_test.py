@@ -322,5 +322,38 @@ class PackGlyphImageTest(unittest.TestCase):
         self.assertIn("SPARSE_FULL", result.stderr)
 
 
+    def with_glyph_1(self, **fields):
+        """The committed source with glyph 1 (an empty glyph) changed."""
+        line = "{.bitmap_index = 0, .adv_w = 57, .box_w = 0, .box_h = 0, .ofs_x = 0, .ofs_y = 0},"
+        self.assertEqual(self.source_text.count(line), 1)
+        values = {"bitmap_index": 0, "adv_w": 57}
+        values.update(fields)
+        changed = (
+            f"{{.bitmap_index = {values['bitmap_index']}, .adv_w = {values['adv_w']}, "
+            ".box_w = 0, .box_h = 0, .ofs_x = 0, .ofs_y = 0},"
+        )
+        return self.source_text.replace(line, changed)
+
+    def test_rejects_adv_w_past_bitfield(self):
+        result, _ = self.run_pack(self.with_glyph_1(adv_w=4096))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("12-bit", result.stderr)
+        result, _ = self.run_pack(self.with_glyph_1(adv_w=4095))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_bitmap_index_past_bitfield(self):
+        result, _ = self.run_pack(self.with_glyph_1(bitmap_index=2**20))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("20-bit", result.stderr)
+
+    def test_rejects_empty_glyph_index_at_bitmap_end(self):
+        bitmap_bytes = self.metrics["bitmap_bytes"]
+        result, _ = self.run_pack(self.with_glyph_1(bitmap_index=bitmap_bytes))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("past glyph_bitmap[]", result.stderr)
+        result, _ = self.run_pack(self.with_glyph_1(bitmap_index=bitmap_bytes - 1))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

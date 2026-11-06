@@ -12,8 +12,9 @@
 // device they are a flash mapping, and a read that races a flash erase or
 // write can return wrong bytes. Bitmap bytes read wrongly only draw wrong
 // pixels. A wrong glyph index, list length or offset would send LVGL's
-// lookups outside the font, so every value LVGL steers by is checked here
-// and then copied into Mem::Large memory, and LVGL reads only the copies.
+// lookups outside the font, so every value LVGL steers by is copied into
+// Mem::Large memory and checked as copied (read once, so a second read
+// cannot differ from the checked one), and LVGL reads only the copies.
 // The format itself is described in glyph_image.hpp.
 
 namespace wisp::ui {
@@ -80,70 +81,87 @@ Metrics read_metrics(const uint8_t* m) {
 // Bytes per entry of a cmap type's list; the type has been checked first.
 size_t list_entry_bytes(uint32_t type) { return type == LV_FONT_FMT_TXT_CMAP_SPARSE_TINY ? 2 : 1; }
 
-// One past the highest glyph id cmap `c` maps to; `list` is its checked
-// list in the image (nullptr for FORMAT0_TINY).
-uint32_t cmap_glyph_end(const uint8_t* c, const uint8_t* list) {
-    const uint32_t range_length = le16(c + 4);
-    const uint32_t start = le16(c + 6);
-    const uint32_t type = c[8];
-    const uint32_t list_length = le16(c + 10);
-    if (type == LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY) return start + range_length;
-    if (type == LV_FONT_FMT_TXT_CMAP_SPARSE_TINY) return start + list_length;
-    // FORMAT0_FULL: LVGL indexes the offsets by code point - range_start,
-    // below range_length.
-    uint32_t top = 0;
-    for (uint32_t i = 0; i < range_length; ++i) {
-        if (list[i] + 1u > top) top = list[i] + 1u;
-    }
-    return start + top;
+std::string cmap_error(uint32_t index, const std::string& what) {
+    return "glyph image: cmap " + std::to_string(index) + " " + what;
 }
 
-// Checks cmap `index` (the 20 bytes at `c`) against the sections around
-// it. `lists_at` and `list_bytes` locate the lists section by payload
-// offset. Adds the bytes its list takes to `copied`: nothing stops two
-// cmaps from naming the same list, so the copies are sized by this sum,
-// not by list_bytes.
-Result<void> check_cmap(const uint8_t* payload, const uint8_t* c, uint32_t index, uint64_t lists_at,
-                        uint64_t list_bytes, uint32_t glyph_count, uint64_t& copied) {
-    auto fail = [index](const std::string& what) {
-        return Result<void>::err(ErrorCode::InvalidArgument,
-                                 "glyph image: cmap " + std::to_string(index) + " " + what);
-    };
-    const uint32_t range_length = le16(c + 4);
-    const uint32_t type = c[8];
-    const uint32_t list_length = le16(c + 10);
+// A cmap record read once from the image. Sizing the tables and copying
+// them both go through read_cmap(), so each structural bound lives in one
+// place, and the copy uses the very values the copy pass checked.
+struct CmapRecord {
+    uint32_t range_start;
+    uint32_t range_length;
+    uint32_t glyph_id_start;
+    uint32_t type;
+    uint32_t list_length;
+    uint32_t list_at;  // payload offset of its list, kAbsent for none
+    size_t list_bytes;
+};
+
+// Reads cmap `index` (the 20 bytes at `c`) and checks it against the
+// lists section, which `lists_at` and `list_bytes` locate by payload
+// offset. Whether it maps past the last glyph is checked on the copied
+// lists instead (cmap_glyph_end()).
+Result<CmapRecord> read_cmap(const uint8_t* c, uint32_t index, uint64_t lists_at,
+                             uint64_t list_bytes) {
+    using R = Result<CmapRecord>;
+    CmapRecord r{le32(c), le16(c + 4), le16(c + 6), c[8], le16(c + 10), kAbsent, 0};
     const uint32_t unicode_at = le32(c + 12);
     const uint32_t ofs_at = le32(c + 16);
     // SPARSE_FULL is not part of the format (tools/pack_glyph_image.py
     // rejects it), so it is refused here with every unknown value.
-    uint32_t list_at = kAbsent;
-    switch (type) {
+    switch (r.type) {
         case LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY:
-            if (unicode_at != kAbsent || ofs_at != kAbsent) return fail("has a list");
+            if (unicode_at != kAbsent || ofs_at != kAbsent) {
+                return R::err(ErrorCode::InvalidArgument, cmap_error(index, "has a list"));
+            }
             break;
         case LV_FONT_FMT_TXT_CMAP_FORMAT0_FULL:
-            if (unicode_at != kAbsent || ofs_at == kAbsent) return fail("lists do not match type");
-            if (list_length < range_length) return fail("offset list shorter than its range");
-            list_at = ofs_at;
+            if (unicode_at != kAbsent || ofs_at == kAbsent) {
+                return R::err(ErrorCode::InvalidArgument,
+                              cmap_error(index, "lists do not match type"));
+            }
+            if (r.list_length < r.range_length) {
+                return R::err(ErrorCode::InvalidArgument,
+                              cmap_error(index, "offset list shorter than its range"));
+            }
+            r.list_at = ofs_at;
             break;
         case LV_FONT_FMT_TXT_CMAP_SPARSE_TINY:
-            if (unicode_at == kAbsent || ofs_at != kAbsent) return fail("lists do not match type");
-            list_at = unicode_at;
+            if (unicode_at == kAbsent || ofs_at != kAbsent) {
+                return R::err(ErrorCode::InvalidArgument,
+                              cmap_error(index, "lists do not match type"));
+            }
+            r.list_at = unicode_at;
             break;
         default:
-            return fail("type " + std::to_string(type) + " is not supported");
+            return R::err(
+                ErrorCode::InvalidArgument,
+                cmap_error(index, "type " + std::to_string(r.type) + " is not supported"));
     }
-    const uint8_t* list = nullptr;
-    if (list_at != kAbsent) {
-        const uint64_t bytes = uint64_t{list_length} * list_entry_bytes(type);
-        if (list_at < lists_at || list_at + bytes > lists_at + list_bytes) {
-            return fail("list out of the lists section");
+    if (r.list_at != kAbsent) {
+        const uint64_t bytes = uint64_t{r.list_length} * list_entry_bytes(r.type);
+        if (r.list_at < lists_at || r.list_at + bytes > lists_at + list_bytes) {
+            return R::err(ErrorCode::InvalidArgument,
+                          cmap_error(index, "list out of the lists section"));
         }
-        list = payload + list_at;
-        copied += bytes;
+        r.list_bytes = static_cast<size_t>(bytes);
     }
-    if (cmap_glyph_end(c, list) > glyph_count) return fail("maps past the last glyph");
-    return Result<void>::ok();
+    return R::ok(r);
+}
+
+// One past the highest glyph id the copied cmap `c` maps to.
+uint32_t cmap_glyph_end(const lv_font_fmt_txt_cmap_t& c) {
+    if (c.type == LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY) return c.glyph_id_start + c.range_length;
+    if (c.type == LV_FONT_FMT_TXT_CMAP_SPARSE_TINY) return c.glyph_id_start + c.list_length;
+    // FORMAT0_FULL: LVGL indexes the offsets by code point - range_start,
+    // below range_length.
+    const auto* ofs = static_cast<const uint8_t*>(c.glyph_id_ofs_list);
+    uint32_t top = 0;
+    for (uint32_t i = 0; i < c.range_length; ++i) {
+        if (ofs[i] + 1u > top) top = ofs[i] + 1u;
+    }
+    return c.glyph_id_start + top;
 }
 
 }  // namespace
@@ -173,7 +191,8 @@ Opened open_glyph_image(std::span<const uint8_t> raw) {
         return invalid("payload length " + std::to_string(length) + " runs past the image");
     }
     const auto payload_span = raw.subspan(header_bytes, static_cast<size_t>(length));
-    if (crc32(payload_span) != le32(p + 12)) return invalid("CRC mismatch");
+    const uint32_t crc = le32(p + 12);
+    if (crc32(payload_span) != crc) return invalid("CRC mismatch");
     const uint8_t* payload = payload_span.data();
     if (length < kMetricsBytes) return invalid("payload shorter than its metrics");
 
@@ -195,28 +214,15 @@ Opened open_glyph_image(std::span<const uint8_t> raw) {
                        " bytes, payload is " + std::to_string(length));
     }
 
-    for (uint32_t i = 0; i < m.glyph_count; ++i) {
-        const uint8_t* g = payload + glyphs_at + kGlyphBytes * i;
-        const uint32_t index = le32(g);
-        const uint64_t bytes = (uint64_t{g[6]} * g[7] * kBpp + 7) / 8;
-        // Every index names a byte of the section, even an empty glyph's:
-        // LVGL hands out &glyph_bitmap[bitmap_index] to a caller asking for
-        // the raw bitmap.
-        if (index > kMaxBitmapIndex || index >= m.bitmap_bytes || index + bytes > m.bitmap_bytes) {
-            return invalid("glyph " + std::to_string(i) + "'s bitmap runs past the bitmap section");
-        }
-        if (le16(g + 4) > kMaxAdvW) return invalid("glyph " + std::to_string(i) + " too wide");
-    }
-    uint64_t list_copy_bytes = 0;
+    // Only the list sizes are needed before allocating; every other check
+    // runs below on the copies, after the last read of each value. Two
+    // cmaps may name the same list, so the copies are sized by this sum,
+    // not by list_bytes.
+    size_t list_copy_bytes = 0;
     for (uint32_t i = 0; i < m.cmap_count; ++i) {
-        WISP_TRY(check_cmap(payload, payload + cmaps_at + kCmapBytes * i, i, lists_at, m.list_bytes,
-                            m.glyph_count, list_copy_bytes));
-    }
-    const uint8_t* kern_ids = payload + kern_at;
-    for (uint64_t i = 0; i < 2 * uint64_t{m.kern_pairs}; ++i) {
-        if (le16(kern_ids + 2 * i) >= m.glyph_count) {
-            return invalid("kern pair " + std::to_string(i / 2) + " names a glyph past the last");
-        }
+        auto r = read_cmap(payload + cmaps_at + kCmapBytes * i, i, lists_at, m.list_bytes);
+        if (!r.is_ok()) return Opened::err(r.error().code, r.error().message);
+        list_copy_bytes += r.value().list_bytes;
     }
 
     // One Mem::Large block holds every table: the descriptors first, then
@@ -228,8 +234,7 @@ Opened open_glyph_image(std::span<const uint8_t> raw) {
     const size_t cmap_off =
         align_up(glyph_off + sizeof(lv_font_fmt_txt_glyph_dsc_t) * size_t{m.glyph_count});
     const size_t list_off = align_up(cmap_off + sizeof(lv_font_fmt_txt_cmap_t) * m.cmap_count);
-    const size_t kern_ids_off =
-        align_up(list_off + static_cast<size_t>(list_copy_bytes) + m.cmap_count);
+    const size_t kern_ids_off = align_up(list_off + list_copy_bytes + m.cmap_count);
     const size_t kern_values_off = kern_ids_off + 4 * size_t{m.kern_pairs};
     const size_t total = kern_values_off + m.kern_pairs;
 
@@ -243,59 +248,85 @@ Opened open_glyph_image(std::span<const uint8_t> raw) {
     uint8_t* base = out->tables.data();
     std::memset(base, 0, total);
 
+    // The memset above leaves every table a valid zeroed C struct; each
+    // value below is read from the image once, checked, and stored as read.
     auto* glyphs = reinterpret_cast<lv_font_fmt_txt_glyph_dsc_t*>(base + glyph_off);
     for (uint32_t i = 0; i < m.glyph_count; ++i) {
         const uint8_t* g = payload + glyphs_at + kGlyphBytes * i;
-        ::new (&glyphs[i]) lv_font_fmt_txt_glyph_dsc_t{};
-        glyphs[i].bitmap_index = le32(g);
-        glyphs[i].adv_w = le16(g + 4);
-        glyphs[i].box_w = g[6];
-        glyphs[i].box_h = g[7];
+        const uint32_t index = le32(g);
+        const uint32_t adv_w = le16(g + 4);
+        const uint32_t box_w = g[6];
+        const uint32_t box_h = g[7];
+        const uint64_t bytes = (uint64_t{box_w} * box_h * kBpp + 7) / 8;
+        // Every index names a byte of the section, even an empty glyph's:
+        // LVGL hands out &glyph_bitmap[bitmap_index] to a caller asking for
+        // the raw bitmap.
+        if (index > kMaxBitmapIndex || index >= m.bitmap_bytes || index + bytes > m.bitmap_bytes) {
+            return invalid("glyph " + std::to_string(i) + "'s bitmap runs past the bitmap section");
+        }
+        if (adv_w > kMaxAdvW) return invalid("glyph " + std::to_string(i) + " too wide");
+        glyphs[i].bitmap_index = index;
+        glyphs[i].adv_w = adv_w;
+        glyphs[i].box_w = static_cast<uint8_t>(box_w);
+        glyphs[i].box_h = static_cast<uint8_t>(box_h);
         glyphs[i].ofs_x = static_cast<int8_t>(g[8]);
         glyphs[i].ofs_y = static_cast<int8_t>(g[9]);
     }
 
     auto* cmaps = reinterpret_cast<lv_font_fmt_txt_cmap_t*>(base + cmap_off);
+    const size_t list_end = list_off + list_copy_bytes + m.cmap_count;
     size_t list_pos = list_off;
     for (uint32_t i = 0; i < m.cmap_count; ++i) {
-        const uint8_t* c = payload + cmaps_at + kCmapBytes * i;
-        lv_font_fmt_txt_cmap_t& dst = *::new (&cmaps[i]) lv_font_fmt_txt_cmap_t{};
-        dst.range_start = le32(c);
-        dst.range_length = static_cast<uint16_t>(le16(c + 4));
-        dst.glyph_id_start = static_cast<uint16_t>(le16(c + 6));
-        dst.type = static_cast<lv_font_fmt_txt_cmap_type_t>(c[8]);
-        dst.list_length = static_cast<uint16_t>(le16(c + 10));
-        const uint32_t unicode_at = le32(c + 12);
-        const uint32_t ofs_at = le32(c + 16);
-        if (unicode_at != kAbsent) {
-            list_pos += list_pos % 2;
+        auto read = read_cmap(payload + cmaps_at + kCmapBytes * i, i, lists_at, m.list_bytes);
+        if (!read.is_ok()) return Opened::err(read.error().code, read.error().message);
+        const CmapRecord& r = read.value();
+        if (r.type == LV_FONT_FMT_TXT_CMAP_SPARSE_TINY) list_pos += list_pos % 2;
+        // Only a record that changed since the sizing pass can overrun the
+        // space that pass reserved.
+        if (list_pos + r.list_bytes > list_end) {
+            return Opened::err(ErrorCode::InvalidArgument,
+                               cmap_error(i, "changed while being read"));
+        }
+        lv_font_fmt_txt_cmap_t& dst = cmaps[i];
+        dst.range_start = r.range_start;
+        dst.range_length = static_cast<uint16_t>(r.range_length);
+        dst.glyph_id_start = static_cast<uint16_t>(r.glyph_id_start);
+        dst.type = static_cast<lv_font_fmt_txt_cmap_type_t>(r.type);
+        dst.list_length = static_cast<uint16_t>(r.list_length);
+        if (r.type == LV_FONT_FMT_TXT_CMAP_SPARSE_TINY) {
             auto* list = reinterpret_cast<uint16_t*>(base + list_pos);
-            for (uint32_t k = 0; k < dst.list_length; ++k) {
-                list[k] = static_cast<uint16_t>(le16(payload + unicode_at + 2 * k));
+            for (uint32_t k = 0; k < r.list_length; ++k) {
+                list[k] = static_cast<uint16_t>(le16(payload + r.list_at + 2 * k));
             }
             dst.unicode_list = list;
-            list_pos += 2 * size_t{dst.list_length};
-        }
-        if (ofs_at != kAbsent) {
-            std::memcpy(base + list_pos, payload + ofs_at, dst.list_length);
+        } else if (r.type == LV_FONT_FMT_TXT_CMAP_FORMAT0_FULL) {
+            std::memcpy(base + list_pos, payload + r.list_at, r.list_bytes);
             dst.glyph_id_ofs_list = base + list_pos;
-            list_pos += dst.list_length;
+        }
+        list_pos += r.list_bytes;
+        if (cmap_glyph_end(dst) > m.glyph_count) {
+            return Opened::err(ErrorCode::InvalidArgument,
+                               cmap_error(i, "maps past the last glyph"));
         }
     }
 
+    const uint8_t* kern_ids = payload + kern_at;
     auto* kern_ids_out = reinterpret_cast<uint16_t*>(base + kern_ids_off);
     for (size_t i = 0; i < 2 * size_t{m.kern_pairs}; ++i) {
         kern_ids_out[i] = static_cast<uint16_t>(le16(kern_ids + 2 * i));
+        if (kern_ids_out[i] >= m.glyph_count) {
+            return invalid("kern pair " + std::to_string(i / 2) + " names a glyph past the last");
+        }
     }
     auto* kern_values = reinterpret_cast<int8_t*>(base + kern_values_off);
     std::memcpy(kern_values, kern_ids + 4 * size_t{m.kern_pairs}, m.kern_pairs);
-    auto* kern = ::new (base + kern_dsc_off) lv_font_fmt_txt_kern_pair_t{};
+    auto* kern = reinterpret_cast<lv_font_fmt_txt_kern_pair_t*>(base + kern_dsc_off);
     kern->glyph_ids = kern_ids_out;
     kern->values = kern_values;
     kern->pair_cnt = m.kern_pairs;
     kern->glyph_ids_size = 1;  // 16-bit glyph ids
 
-    auto* dsc = ::new (base + dsc_off) lv_font_fmt_txt_dsc_t{};
+    auto* dsc = reinterpret_cast<lv_font_fmt_txt_dsc_t*>(base + dsc_off);
     dsc->glyph_bitmap = payload + bitmap_at;
     dsc->glyph_dsc = glyphs;
     dsc->cmaps = cmaps;
@@ -318,7 +349,7 @@ Opened open_glyph_image(std::span<const uint8_t> raw) {
     f.dsc = dsc;
     f.fallback = nullptr;
     f.user_data = nullptr;
-    out->crc32 = le32(p + 12);
+    out->crc32 = crc;
     return Opened::ok(std::move(out));
 }
 

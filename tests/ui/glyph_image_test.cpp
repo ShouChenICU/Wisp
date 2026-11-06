@@ -250,6 +250,15 @@ TEST(GlyphImage, RejectsGlyphBitmapRunningPastEnd) {
     EXPECT_EQ(open_error(b), ErrorCode::InvalidArgument);
 }
 
+TEST(GlyphImage, RejectsGlyphTooWide) {
+    Bytes b = image();
+    const Layout l = layout(b);
+    // adv_w is a 12-bit field in LVGL: 4096 would be stored as 0.
+    put_le16(b, l.glyphs + kGlyph * 1 + 4, 4096);
+    fix_crc(b);
+    EXPECT_EQ(open_error(b), ErrorCode::InvalidArgument);
+}
+
 TEST(GlyphImage, RejectsCmapListPastLists) {
     Bytes b = image();
     const Layout l = layout(b);

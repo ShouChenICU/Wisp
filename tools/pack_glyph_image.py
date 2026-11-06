@@ -60,7 +60,9 @@ kern classes, a kern_pairs array with a glyph id width other than 16 bits,
 a bitmap format other than LV_FONT_FMT_TXT_PLAIN (uncompressed) -- the
 glyphs partition reader only ever reads raw bitmap bytes -- a SPARSE_FULL
 cmap (needs both a unicode_list and a glyph_id_ofs_list; not implemented,
-since the committed font has none), or when the image is larger than
+since the committed font has none), a glyph whose bitmap_index or adv_w
+does not fit LVGL's bitfields or whose bitmap_index is not inside
+glyph_bitmap[] (the device's reader refuses the same), or when the image is larger than
 --max-bytes (the glyphs partition's size).
 
 Usage: pack_glyph_image.py <lv_font_c> -o <out> [--max-bytes N]
@@ -83,6 +85,11 @@ GLYPH = struct.Struct("<IHBBbb")
 CMAP = struct.Struct("<IHHBBHII")
 
 NO_OFFSET = 0xFFFFFFFF
+
+# Widths of the lv_font_fmt_txt_glyph_dsc_t bitfields the reader stores
+# these in (LV_FONT_FMT_TXT_LARGE 0).
+MAX_BITMAP_INDEX = 2**20 - 1
+MAX_ADV_W = 2**12 - 1
 
 CMAP_TYPE_VALUES = {
     "LV_FONT_FMT_TXT_CMAP_FORMAT0_FULL": 0,
@@ -246,6 +253,19 @@ def pack(c_source_text):
             raise PackError(f"kern pair ({left}, {right}) references a glyph id past glyph_count={glyph_count}")
 
     for index, (bitmap_index, adv_w, box_w, box_h, ofs_x, ofs_y) in enumerate(glyphs):
+        # The same limits open_glyph_image() (components/wisp_ui/src/
+        # glyph_image.cpp) enforces, so a font the device would refuse
+        # fails the build instead.
+        if bitmap_index > MAX_BITMAP_INDEX:
+            raise PackError(f"glyph {index}'s bitmap_index {bitmap_index} does not fit LVGL's 20-bit field")
+        if adv_w > MAX_ADV_W:
+            raise PackError(f"glyph {index}'s adv_w {adv_w} does not fit LVGL's 12-bit field")
+        # Even an empty glyph's index must name a byte of the bitmap: LVGL
+        # hands out &glyph_bitmap[bitmap_index] for the raw bitmap.
+        if bitmap_index >= len(bitmap_bytes_data):
+            raise PackError(
+                f"glyph {index}'s bitmap_index {bitmap_index} is past glyph_bitmap[] ({len(bitmap_bytes_data)} bytes)"
+            )
         size = math.ceil(box_w * box_h * bpp / 8)
         if bitmap_index + size > len(bitmap_bytes_data):
             raise PackError(
