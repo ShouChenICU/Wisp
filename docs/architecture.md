@@ -1,6 +1,6 @@
-# 架构（子项目 1：基础骨架 + 子项目 3a：场景运行时）
+# 架构（子项目 1：基础骨架 + 子项目 3：场景运行时与设备侧接口）
 
-最高权威是 `docs/superpowers/specs/2026-11-01-foundation-design.md`（基础骨架）和 `docs/superpowers/specs/2026-11-04-scene-runtime-core-design.md`（场景运行时）；本文档是对当前代码的概述，与 spec 冲突以 spec 为准，但本文档只记录已经落地的内容。
+最高权威是 `docs/superpowers/specs/2026-11-01-foundation-design.md`（基础骨架）、`docs/superpowers/specs/2026-11-04-scene-runtime-core-design.md`（场景运行时）和 `docs/superpowers/specs/2026-11-05-scene-device-design.md`（场景设备侧接口：后台场景、电源分级、通知、传感器、场景文件）；本文档是对当前代码的概述，与 spec 冲突以 spec 为准，但本文档只记录已经落地的内容。
 
 ## 分层
 
@@ -138,7 +138,7 @@
 - `net.wifi` 是 `wisp::port::sim::SimWifi`（model `sim-wifi`）：内置 `WispLab`（-45 dBm，密码 `wisp1234`）、`Neighbor`（-70，`neighbor99`）、`OpenCafe`（-80，开放）；`--wifi-fail` 让所有连接以 `not_found` 失败；热点只改状态，`ap_clients()` 在热点开启时恒为 1；`set_radio(false)` 断开并关热点，之后扫描和连接都失败，直到 `set_radio(true)`。
 - 管理后台由 `SimHttpServer` 提供，只监听 `127.0.0.1`，端口 `--http-port`（默认 8900，与真机后台端口相同；0 表示不启动）。模拟器没有 80 端口的强制门户服务（`Platform::captive_server` 为空）。出站请求（模型连通测试 `POST /ai/profiles/{id}/test`）走 `SimHttpClient`（libcurl，主机构建 `find_package(CURL 7.80 REQUIRED)`；可移植层禁止 include `curl/`）。
 - 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。标准输入里以 `tap` / `swipe` 开头的行（`tap X,Y` / `swipe X1,Y1,X2,Y2`）也立即执行，供需要先等设备上某件事发生再点的脚本使用：冒烟测试 `factory_reset` 和 `firmware` 等到 WebSocket 日志里出现确认框的日志行，再经标准输入点"Yes"。
-- 场景开发（场景 spec 6.4）：`--scenes-dir <目录>` 让场景仓库以该目录为代码根运行在开发模式，数据仍落在 `<data-dir>/scenes/<id>/data`；前台场景的文件一变就重新加载。`--open-scene <id>` 在 `App::start()` 返回后立即打开一个场景。只在 `wisp_sim` 目标定义 `WISP_SIM_DEBUG_COMMANDS` 时才有的调试命令 `debug scene-click <ref>` 点击前台场景里 `ref` 为该名字的部件（`SceneRuntime::click_ref()`），回答 `scene-click=ok` 或 `scene-click=<错误>`。
+- 场景开发（场景 spec 6.4）：`--scenes-dir <目录>` 让场景仓库以该目录为代码根运行在开发模式，数据仍落在 `<data-dir>/scenes/<id>/data`；前台场景的文件一变就重新加载。`--open-scene <id>` 在 `App::start()` 返回后立即打开一个场景。只在 `wisp_sim` 目标定义 `WISP_SIM_DEBUG_COMMANDS` 时才有的调试命令 `debug scene-click <ref>` 点击前台场景里 `ref` 为该名字的部件（`SceneRuntime::click_ref()`），回答 `scene-click=ok` 或 `scene-click=<错误>`。`debug panel-tap <序号>` 点已打开的下拉面板的第几行（从 0 起，先是后台场景，再是通知；`SystemLayer::tap_panel_row()`），回答 `panel-tap=ok` 或 `panel-tap=<错误>`；`debug screenshot <路径>` 把屏幕当前的样子写成 PNG（与 `--screenshot` 相同，只是随时可用），回答 `screenshot=ok` 或 `screenshot=<错误>`。日志行每行写完就刷新标准输出，读管道的脚本（冒烟测试）不会被缓冲拖住。`--imu-script <文件>` 按脚本驱动模拟 IMU（`wisp/port/sim/imu_script.hpp`：`<毫秒> tilt <x> <y> <z>`、`shake`、`flip`）。
 - 标准输入只有一个读取者（`simulator/sim_stdin.hpp` 的 `StdinReader`，带超时轮询，退出时不会卡在阻塞读上）：不论是否 `--headless`、stdin 是不是终端都会读取；触摸行交给触摸脚本，其余每行都是串口控制台（serial console）命令，经 `Platform::read_line` 交给控制台任务；控制台没有 `tap`/`swipe` 命令。`tap`/`swipe` 与坐标之间可以是空格或制表符。stdin 是控制终端且进程在后台进程组（`wisp_sim &`）时读取者暂不读，`fg` 后恢复；模拟器忽略 `SIGTTIN`，所以不会被作业控制停住。
 - 信号：`SIGINT`/`SIGTERM` 让主循环像重启一样返回，经正常的 `App::stop()` 以退出码 0 结束（SDL 自己的信号处理被 `SDL_HINT_NO_SIGNAL_HANDLERS` 关掉，否则无头模式收不到）；处理是一次性的，关机卡住时再发一次信号按默认方式结束进程。
 
@@ -181,6 +181,19 @@
 ## 场景运行时
 
 场景 spec 3/6；任务见上面"启动流程"末尾的"场景相关的任务"表，启动/停止顺序见同一节正文。
+
+### 后台场景、内存预算与开机恢复
+
+场景设备 spec 3；实现在 `scene::SceneRuntime`（`components/wisp_scene/include/wisp/scene/scene_runtime.hpp` 的文件头有完整的生命周期说明）。
+
+- 槽位：所有场景共用 `wisp.scene` 一个任务，最多一个前台、三个后台（`SceneRuntimeConfig::max_background`）。每个槽位有自己的实例号、VM、定时器、分钟节拍和 `SceneStore`；场景在前后台之间移动时实例号不变。每条消息仍有自己的 200 ms 预算，后台场景拖不住前台。
+- 转换：`scene.json` 声明 `"background": true` 的场景，返回手势、`close()`、`wisp.scene.close()` 都让它转入后台（`on_hide` → 释放它持有的唤醒锁 → 撤下视图、回到原屏幕 → `scene.on_state("background")`），VM、存储、定时器和声明树都保留，界面变化只更新声明树、不发给 UI 线程；没有声明的场景照旧关闭。再次打开（列表、面板里的行、点通知）时从声明树重建视图（`SceneInstance::rebuild()`），然后 `on_show`、`scene.on_state("foreground")`。`exit()`、面板里的 ×、`wisp.scene.exit()`、管理后台的 `POST /scenes/{id}/exit` 总是彻底关闭。`scene.state` 事件对后台发 `background`，对前台发 `running`。
+- 定时器：声明了 `background` 的场景（不论在前台还是后台）灭屏时定时器和分钟节拍照常运行；其余前台场景灭屏时暂停、亮屏时每个错过的定时器补一次。
+- 后台不能用的 API（spec 3.4）：`wisp.sensor.subscribe`/`on`、`wisp.power.keep_screen_on` 返回 `nil, "not_in_background"`；已有的传感器订阅在转入后台时暂停、回到前台时恢复。
+- 内存预算与淘汰（spec 3.5）：所有 VM 从同一个 `VmPool` 分配，总预算 `scene::kVmBudgetBytes`（3 MB），单个 VM 仍以 2 MB 为上限，也是前台保证能拿到的量；超过任一个的分配按内存错误失败。场景打开、切回前台、转入后台时，以及前台有场景时每条消息之前，按"最久未在前台"的顺序挑出要关闭的后台场景：先是超过数量的，再是让后台总量超过 `预算 - 2 MB` 的。被淘汰的场景照常 `on_close` 并刷盘，日志 `<id>: evicted (...)`，并发一条系统通知。
+- 开机恢复（spec 3.6）：后台场景的 id（最久未在前台的在前，加上还在加载的开机启动）每次变化时写入 System 区的 `scenes/background.json`（`{"ids": [...]}`，`write_atomic`，在 `wisp.fs` 上）；只有 `restore_background()` 读过它以后才写，`stop()` 关闭的场景不从列表里移除，下次开机照样恢复。`system.boot.completed` 之后逐个以 `launch(Boot)` 在后台启动：建 VM、执行入口文件、建声明树，不建视图、不调 `on_show`，`wisp.scene.launch()` 为 `"boot"`。启动失败的场景跳过、记日志、发系统通知，并从列表中去掉。
+- 点通知（spec 5.1）：`SceneRuntime::deliver_notification()`——前台场景留在前台，后台场景切回前台，没在运行的场景以 `launch(Notification)` 打开（`wisp.scene.launch()` 为 `"notification"`）；场景到了前台后调用 `scene.on_notification(id)`。
+- 数据迁移（spec 7.3）：数据版本低于清单的 `schema_version` 时，入口文件执行完、建界面之前调用 `scene.migrate(old_version)`，时限 2 秒（`scene::kMigrateMs`）；入口文件和迁移期间对 `wisp.store` 的写入放在同一个批次里，成功时连同新版本号一起提交，出错或超时整批丢弃、数据不动，错误信息以 `migrate failed: ` 开头。数据版本高于清单时拒绝打开（`data version <n> newer than scene <m>`）。
 
 ### 消息流
 

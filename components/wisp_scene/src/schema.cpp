@@ -1,14 +1,21 @@
 // The compiled-in widget whitelist (scene-runtime-core spec 4.3-4.5) and
-// the Markdown it exports as docs/scene-api.md.
+// the Markdown it exports as docs/scene-api.md, which also describes
+// scene.json, the hooks and the wisp.* APIs of the scene-device spec.
 
 #include "wisp/scene/schema.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <string>
 
+#include "wisp/core/notification_service.hpp"
+#include "wisp/core/scene_files.hpp"
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/scene/patch_batch.hpp"
+#include "wisp/scene/scene_schedule.hpp"
 #include "wisp/scene/theme.hpp"
+#include "wisp/scene/vm.hpp"
 #include "wisp/ui/system_layer.hpp"
 
 namespace wisp::scene {
@@ -261,6 +268,265 @@ void append_escaped(std::string& out, SV text) {
     }
 }
 
+std::string num(uint64_t v) { return std::to_string(v); }
+
+// The manifest, the hooks and the device-side APIs (scene-device spec 3,
+// 4.3, 5.1, 6.2, 7): the numbers come from the code that enforces them.
+void append_device_api(std::string& out) {
+    using core::NotificationService;
+    const core::SceneFilesConfig files;
+    out +=
+        "\n"
+        "## scene.json\n"
+        "\n"
+        "Every scene package has a `scene.json` at its root:\n"
+        "\n"
+        "```json\n"
+        "{\"id\": \"pomodoro\", \"name\": \"番茄钟\", \"version\": \"1.0.0\", "
+        "\"schema_version\": 1,\n"
+        " \"background\": true, \"files\": \"auto\",\n"
+        " \"permissions\": {\"http\": [\"api.example.com\"]}}\n"
+        "```\n"
+        "\n"
+        "- `id`: 1 to 32 bytes of `a-z`, `0-9`, `_` and `-`; also the scene's directory.\n"
+        "- `name`: 1 to 32 bytes of UTF-8. `version`: a semantic version.\n"
+        "- `entry` (default `main.lua`) and `icon` (a file under `assets/`) are optional.\n"
+        "- `schema_version`: an integer from 1 to 1000, the version of the structure of the\n"
+        "  scene's data (see `scene.migrate` below).\n"
+        "- `permissions.http`: the hosts `wisp.http` may reach, at most 16.\n"
+        "- `background` (default `false`): going back sends the scene to the background\n"
+        "  instead of closing it (see Background scenes).\n"
+        "- `files` (default `\"auto\"`): where `wisp.files` keeps the scene's files: `\"auto\"`,\n"
+        "  `\"sd\"` or `\"int\"` (see wisp.files). Any other value refuses the install.\n"
+        "\n"
+        "Unknown fields are ignored; nothing may nest deeper than 4 levels.\n"
+        "\n"
+        "## Scene hooks\n"
+        "\n"
+        "A scene sets these functions in the global `scene` table; each one that is set runs\n"
+        "as a message of its own, within the usual 200 ms:\n"
+        "\n"
+        "- `scene.on_show()` and `scene.on_hide()`: the scene's view appears or goes (it opens,\n"
+        "  the screen turns on or off, it comes back from or goes to the background).\n"
+        "- `scene.on_close()`: the scene is closing; its store is flushed after it.\n"
+        "- `scene.on_state(state)`: the scene is now `\"foreground\"` or `\"background\"`. It\n"
+        "  is called when the scene first opens (with the state it opened in) and on every\n"
+        "  move between the two, never on a close.\n"
+        "- `scene.on_notification(id)`: the user tapped the scene's notification `id`. It is\n"
+        "  called once the scene is in front: one in the background comes forward first, and\n"
+        "  one that is not running is opened first (`wisp.scene.launch()` is then\n"
+        "  `\"notification\"`).\n";
+    out += "- `scene.migrate(old_version)`: see Data migration; it may run for " + num(kMigrateMs) +
+           " ms.\n";
+    out +=
+        "\n"
+        "## wisp.scene\n"
+        "\n"
+        "- `wisp.scene.close()`: goes back, like the back gesture: a scene that declares\n"
+        "  `background` goes to the background, any other closes.\n"
+        "- `wisp.scene.exit()`: always closes the scene completely (`on_hide`, `on_close`).\n"
+        "- `wisp.scene.args()`: the table of arguments the scene was opened with (`{}` for\n"
+        "  none).\n"
+        "- `wisp.scene.state()`: `\"foreground\"` or `\"background\"`.\n"
+        "- `wisp.scene.launch()`: why the scene was started: `\"user\"`, `\"boot\"` (restored\n"
+        "  in the background after a restart) or `\"notification\"`.\n"
+        "\n"
+        "## Background scenes\n"
+        "\n"
+        "A scene whose `scene.json` declares `\"background\": true` keeps running after the\n"
+        "user goes back: `scene.on_hide()`, then its view goes and "
+        "`scene.on_state(\"background\")`\n"
+        "runs. Its VM, store, timers and widget tree stay; changes to its state still update\n"
+        "the tree, which is shown again when the scene comes back to the front (from the\n"
+        "scene list, a row of the pull-down panel or a tap on one of its notifications), and\n"
+        "then `scene.on_show()` and `scene.on_state(\"foreground\")` run. Closing it from the\n"
+        "panel (its ×), from the admin page or with `wisp.scene.exit()` stops it completely.\n"
+        "\n"
+        "- Timers and `wisp.device.on` events keep firing in the background and while the\n"
+        "  screen is off, without pausing and without catching up. `wisp.http`, `wisp.store`,\n"
+        "  `wisp.files`, `wisp.notify`, `wisp.log` and `wisp.device.info()` work as in front.\n"
+        "- `wisp.sensor.subscribe`, `wisp.sensor.on` and `wisp.power.keep_screen_on` return\n"
+        "  `nil, \"not_in_background\"`; sensor subscriptions made in front pause in the\n"
+        "  background and resume in front. The keyboard and confirmation dialogs are not\n"
+        "  available. A scene in the background holds no wake lock.\n";
+    out += "- At most " + num(kMaxBackground) +
+           " scenes run in the background. All scenes' Lua memory comes from one\n"
+           "  budget of " +
+           num(kVmBudgetBytes / (1024 * 1024)) +
+           " MB; each scene may still use at most 2 MB, and the scene in front can always\n"
+           "  get its 2 MB. When a scene would go past the count, or the scene in front needs\n"
+           "  the memory, the scene in the background longest away from the front is closed\n"
+           "  (`on_close` runs and its data is saved) and the user gets a notification saying\n"
+           "  so.\n";
+    out +=
+        "- Scenes running in the background when the device powers off or restarts are\n"
+        "  started again in the background once it has booted: the entry file runs and the\n"
+        "  tree is built, with no view and no `on_show`; `wisp.scene.launch()` is `\"boot\"`.\n"
+        "- An error in the background stops the scene (no error panel) and posts a system\n"
+        "  notification.\n"
+        "\n"
+        "## wisp.notify\n"
+        "\n"
+        "```lua\n"
+        "local id = wisp.notify{ title = \"番茄钟\", body = \"25 分钟到了\",\n"
+        "                        sound = \"alarm\", wake = true, id = \"pomo\" }\n"
+        "wisp.notify_cancel(id)\n"
+        "```\n"
+        "\n";
+    out += "- `title`: 1 to " + num(NotificationService::kTitleMax) + " bytes; `body`: 0 to " +
+           num(NotificationService::kBodyMax) + " bytes (optional).\n";
+    out +=
+        "- `sound`: `\"none\"` (default), `\"tone\"` (one short tone) or `\"alarm\"` (rings until\n"
+        "  the screen is touched, at most 30 seconds). The volume is the system's\n"
+        "  notification volume.\n"
+        "- `wake` (default `false`): turns the screen on if it is off.\n";
+    out += "- `id`: optional, 1 to " + num(NotificationService::kIdMax) +
+           " bytes of `a-z`, `0-9`, `_` and `-`. Posting the same id again\n"
+           "  replaces the earlier notification.\n";
+    out +=
+        "\n"
+        "`wisp.notify` returns the notification's id (the one given, or one made up), or\n"
+        "`nil` and a code: `rate_limited`";
+    out += " (more than " + num(NotificationService::kPerMinute) +
+           " posts by the scene in any minute) or\n"
+           "`unavailable`. A bad field is a Lua error at the call. "
+           "`wisp.notify_cancel(id)` removes the\n"
+           "scene's unread notification `id` and returns whether there was one.\n"
+           "\n";
+    out += "A notification from a scene in the background shows a banner for " +
+           num(ui::SystemLayer::kBannerMs / 1000) +
+           " seconds and stays in\n"
+           "the pull-down panel's list until the user taps or dismisses it; each scene keeps at\n"
+           "most " +
+           num(NotificationService::kUnreadPerScene) +
+           " unread, the oldest dropped first. A notification posted by the scene in front only\n"
+           "shows the banner. A tap on either calls `scene.on_notification(id)` (see Scene\n"
+           "hooks).\n";
+    out +=
+        "\n"
+        "## wisp.power\n"
+        "\n"
+        "- `wisp.power.keep_screen_on(on)`: `true` keeps the screen on and bright while the\n"
+        "  scene is in front (a `screen` wake lock), `false` lets it dim and turn off again.\n"
+        "  Returns `true`, or `nil` and `not_in_background` or `unavailable`. The lock goes\n"
+        "  by itself when the scene leaves the front or closes. A lock held for 30 minutes\n"
+        "  brings a system notification (again every 30 minutes) with a button that releases\n"
+        "  it.\n"
+        "\n"
+        "## wisp.sensor\n"
+        "\n"
+        "For the scene in front only.\n"
+        "\n"
+        "```lua\n"
+        "local h = wisp.sensor.subscribe(\"accel\", { rate = 25 }, function(samples)\n"
+        "  -- samples = { {x =, y =, z =, t =}, ... }\n"
+        "end)\n"
+        "h:stop()\n"
+        "local g = wisp.sensor.on(\"shake\", function() end)  -- or \"flip\"; g:stop()\n"
+        "wisp.sensor.available()                             -- { accel = true, gyro = true }\n"
+        "```\n"
+        "\n";
+    out +=
+        "- `wisp.sensor.subscribe(kind, opts, fn)`: `kind` is `\"accel\"` or `\"gyro\"`;\n"
+        "  `opts.rate` is one of ";
+    for (size_t i = 0; i < core::SensorService::kRates.size(); ++i) {
+        if (i) out += i + 1 == core::SensorService::kRates.size() ? " or " : ", ";
+        out += num(core::SensorService::kRates[i]);
+    }
+    out +=
+        " samples a second (default 25; `opts` may be left out).\n"
+        "  `fn(samples)` gets the samples about every 100 ms, in a batch: `x`, `y`, `z` in\n"
+        "  m/s² (`accel`) or degrees per second (`gyro`), `t` in milliseconds.\n"
+        "- `wisp.sensor.on(gesture, fn)`: `fn()` runs on each `\"shake\"` (three strong jolts\n"
+        "  within half a second) or `\"flip\"` (turned face down or face up, then still for\n"
+        "  300 ms).\n"
+        "- Both return a handle, or `nil` and a code: `not_in_background`, `unavailable` (no\n"
+        "  such sensor) or another error's name. `h:stop()` ends it and returns whether it\n"
+        "  was still running.\n"
+        "- `wisp.sensor.available()` lists the sensors there are; `{}` without an IMU.\n"
+        "- Subscriptions pause while the screen is off and in the background, resume in\n"
+        "  front, and end when the scene closes.\n"
+        "\n"
+        "## wisp.files\n"
+        "\n"
+        "Each scene has its own flat directory of files, for data too large for `wisp.store`\n"
+        "(downloads, recordings, logs). Every call is asynchronous: `cb(err, ...)` runs\n"
+        "later as a message of its own, with `err` `nil` on success.\n"
+        "\n"
+        "```lua\n"
+        "wisp.files.write(name, data, cb)          -- replaces the file; cb(err, true)\n"
+        "wisp.files.append(name, data, cb)         -- cb(err, true)\n"
+        "wisp.files.read(name, offset, len, cb)    -- cb(err, data)\n"
+        "wisp.files.list(cb)                       -- cb(err, { {name =, size =, mtime =}, ... }, "
+        "truncated)\n"
+        "wisp.files.remove(name, cb)               -- cb(err, true)\n"
+        "wisp.files.info(cb)                       -- cb(err, { location =, want =, quota =, "
+        "used = })\n"
+        "```\n"
+        "\n"
+        "- Names: 1 to 64 bytes of `A-Z`, `a-z`, `0-9`, `.`, `_` and `-`, not starting with `.`\n"
+        "  and not ending in `.tmp` or `.new`; no directories. Anything else is `bad_name`.\n";
+    out += "- One `write` or `append` takes at most " + num(core::kMaxFileWrite / 1024) +
+           " KB and one `read` at most " + num(files.max_read / 1024) +
+           " KB\n"
+           "  (`too_large`); write more with several `append`s or `wisp.http.download`. `write`\n"
+           "  replaces the file whole or not at all.\n";
+    out += "- `list` gives at most " + num(files.max_list) +
+           " names, in name order; `truncated` is `true` when there were\n"
+           "  more.\n";
+    out +=
+        "- Where the files live is chosen at the scene's first write, from `files` in\n"
+        "  `scene.json`: `\"auto\"` takes the SD card when one is in and internal storage\n";
+    out +=
+        "  otherwise; `\"sd\"` only the SD card; `\"int\"` always internal storage. On the card\n"
+        "  a scene may use " +
+        num(files.sd_quota / (1024 * 1024)) + " MB, in internal storage " +
+        num(files.int_quota / 1024) +
+        " KB (`quota_exceeded`, and nothing\n"
+        "  is written). The choice is kept: a later change of `files` moves nothing.\n";
+    out +=
+        "- `files: \"sd\"` with no card in means the files are unavailable: every call returns\n"
+        "  `unavailable`, and nothing falls back to internal storage. The same goes for files\n"
+        "  already on a card that has been taken out; they come back with the card.\n"
+        "- `info` tells `location` (`\"sd\"` or `\"int\"`; absent before the first write),\n"
+        "  `want` (the `files` declaration), `quota` and `used` in bytes.\n"
+        "- The system never deletes a scene's files by itself. They go only when the user\n"
+        "  deletes the scene and confirms deleting its data with it, when the scene calls\n"
+        "  `wisp.files.remove`, or when the user deletes one on the admin page. A scene\n"
+        "  reinstalled with the same id finds its old files where it left them.\n"
+        "- Other codes: `not_found` (no such file), `unavailable`, or the name of a storage\n"
+        "  error.\n"
+        "\n"
+        "## wisp.http.download and deep standby\n"
+        "\n"
+        "- `wisp.http.download(url, name, opts, cb)` GETs `url` (a host from\n"
+        "  `permissions.http`, as for `wisp.http.get`; `opts` as for `get`, may be left out)\n"
+        "  straight into the scene's file `name`, which it replaces once the whole body has\n"
+        "  arrived. It is not limited to the 256 KB of a normal response, only by the\n"
+        "  scene's quota. `cb(err, res)`: `res = {status, size, deferred}`. A response that\n"
+        "  is not 2xx leaves the file as it was and gives `size = 0`. Errors are those of\n"
+        "  `wisp.http` and of `wisp.files`.\n"
+        "- In deep standby (the screen has been off for a while) Wi-Fi is off. Requests and\n"
+        "  downloads then wait in a queue, at most 4 per scene (`deferred_queue_full` past\n"
+        "  it), until the system turns Wi-Fi on for a short network window, at most every 15\n"
+        "  minutes. A request that waited gets `res.deferred = true`; one that waited more\n"
+        "  than an hour fails with `deferred_timeout`.\n"
+        "\n"
+        "## Data migration\n"
+        "\n"
+        "Raise `schema_version` in `scene.json` when the structure of the scene's data\n"
+        "changes. When a scene opens (or is restored at boot) and its data is from a lower\n"
+        "version, `scene.migrate(old_version)` runs after the entry file and before the\n";
+    out += "widget tree is built, for at most " + num(kMigrateMs) +
+           " ms. What the entry file and the migration write\n"
+           "to `wisp.store` is held back and saved, with the new version, only when the\n"
+           "migration returns; an error or a timeout drops all of it, leaves the data as it\n"
+           "was and puts the scene in error with `migrate failed: <message>`. A scene with no\n"
+           "`scene.migrate` just has its version raised. Data from a higher version than the\n"
+           "scene's (an older scene installed over a newer one) is refused: the scene does not\n"
+           "open.\n";
+}
+
 }  // namespace
 
 const WidgetSpec* find_widget(std::string_view name) {
@@ -318,7 +584,7 @@ std::string nearest_name(std::string_view wrong, std::span<const std::string_vie
 std::string schema_markdown() {
     std::string out;
     out +=
-        "# Scene UI API\n"
+        "# Scene API\n"
         "\n"
         "<!-- Generated by schema_markdown() in components/wisp_scene/src/schema.cpp; do not "
         "edit.\n"
@@ -590,6 +856,7 @@ std::string schema_markdown() {
         "`not_serializable`, `too_deep`, `not_found`, `ids_exhausted`, `batch_aborted`. A key,\n"
         "collection name or record of the wrong type, length or shape is a Lua error instead,\n"
         "at the line that made the call.\n";
+    append_device_api(out);
     return out;
 }
 

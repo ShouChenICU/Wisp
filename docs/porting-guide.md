@@ -73,6 +73,8 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 | `Storage` | `removable`、`fs` |
 | `Network` | `ap`（bool，是否支持热点 `start_ap()`；为 false 时 `WifiService` 不开配网热点）、`bands`（频段列表，如 `["2.4GHz"]`） |
 
+另外，要随电源级别开关的设备都声明 `standby`（见下面"待机与电源分级"）。
+
 `Display` 的 `safe_area` 不用自己算——`DeviceRegistry::manifest()` 用 `wisp::hal::safe_rect()` 从 `shape`/`corner_radius`/`width`/`height` 派生，设备只管填 `shape`。缺失或无法识别的 `shape` 按 `circle`（最保守）处理并告警。`rounded_rect`/`circle` 的 `safe_rect()` 比精确可见边界再多留 4 px 的固定边距（`kSafeCornerMargin`，`wisp/hal/display_geometry.cpp`），避免贴着圆角放置的文字被实际面板裁掉第一个字形。
 
 `corner_radius` 不要直接抄厂商数据表：实测常常偏小（waveshare_esp32_s3_touch_amoled_2_16 的数据表写 40，实测约 70）。新板子接入圆角屏/圆形屏时，写一个校准场景在四角画出几个候选半径（例如 40/50/60/70/80）的四分之一圆弧，圆心放在 `(R,R)`，目视核对对角线方向上哪些弧可见、哪些已被裁掉，用能看到的最大半径作为 `corner_radius`；具体做法见 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`"已知勘误与注意事项"一节。
@@ -87,6 +89,17 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 - `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` 已在 `firmware/sdkconfig.defaults` 里；`wisp.scene` 128 KB 的栈要放进 PSRAM 依赖它。
 
 验收时除了下面步骤 5 自检界面清单里的"Scenes 卡片"一项，还要把本板硬件文档"真机验收清单"里场景相关的几行跑一遍（参照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`）。
+
+## 待机与电源分级
+
+电源有 `active`、`dim`、`standby`、`deep_standby` 四级（场景设备 spec 4.1/4.2）。`app::PowerManager` 不按名字处理设备：级别变化时遍历 `DeviceRegistry`，对每个设备调用 `hal::Device::set_power(PowerLevel)`，设备按自己 caps 里的 `standby` 处理。新板子的设备要做的：
+
+- **caps `standby`**：`"off"`（`standby` 及以下关闭，如屏幕、触摸、IMU、音频）、`"throttle"`（降频保持）或 `"wake_source"`（一直保持，用来唤醒，如电源键和音量键）。不写或写了别的值时设备不受级别管理、一直运行。`hal::powered_at(policy, level)` 给出某个策略在某一级是否供电。
+- **`set_power(PowerLevel)`**：声明了 `standby` 的设备覆盖它；用同一种状态再调一次不能重发硬件命令。基类默认返回 `Unsupported`，`PowerManager` 忽略这种设备。
+- **Wi-Fi 射频**：`deep_standby` 时 `WifiService` 先关热点、断开，再调 `hal::Wifi::set_radio(false)`，离开时 `set_radio(true)` 并立即重连。ESP 端口的 `EspWifi` 是 `esp_wifi_stop()`/`esp_wifi_start()`；射频不能关的网络设备不覆盖它（默认 `Unsupported`），深度待机就只是不再联网。射频关着时 `Platform::random` 不是真随机数，见 `docs/architecture.md`"真机的网络"一节。
+- **自动浅睡**：`Platform::set_light_sleep(bool)` 由 `PowerManager` 在 `deep_standby`、设置 `power/light_sleep` 打开且没有 `cpu` 唤醒锁时以 `true` 调用，其余情况以 `false` 调用；固件里它只开关 tickless 浅睡（`firmware/main/main.cpp`），DFS 一直开着。板子不能安全浅睡时让它保持为空，深度待机就只关 Wi-Fi。
+
+浅睡要在真机上验证，模拟器测不出来（它只记一行 `sim: light sleep on|off`）。验证方法照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md` 的"浅睡兼容性（3b-1 spike）"一节：电池供电放置 10 分钟，确认确实进入过浅睡（`light_sleep_counts` 大于 0；常见的挡路者是一直开着的 I2S 通道的 `APB_FREQ_MAX` 锁），并检查 PSRAM、定时器精度、RTC 漂移、唤醒后的屏幕与触摸，以及 USB 串口重新连接；再跑该文档"真机验收清单"里的多次浅睡（第 29 项）和开 XIP 时的待机唤醒（第 48 项）。不兼容时不注册 `set_light_sleep`，并把结论记进新板子的硬件文档。浅睡期间 GPIO 会被隔离，需要保持电平的引脚（例如面板的 RST/CS）要在板级 `init()` 里处理，见同一份硬件文档"待机与省电"一节。
 
 ## 分区与板级配置
 
