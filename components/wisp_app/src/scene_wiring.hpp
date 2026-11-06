@@ -133,6 +133,9 @@ public:
     void stop();
 
     core::SceneRepository* repository() const { return repo_.get(); }
+    // Where the scenes' data lives (SceneRepoConfig::data_root); "" without
+    // a repository.
+    const std::string& data_root() const { return data_root_; }
     // The scenes' files (wisp.files), built by start_storage(); nullptr
     // without internal storage. Its methods run on worker() or a thread
     // allowed flash.
@@ -198,6 +201,7 @@ private:
     // in internal RAM. The worker's stack and the FreeRTOS objects stay
     // internal (scene-runtime-core spec 2.3).
     os::LargeUnique<core::SceneRepository> repo_;
+    std::string data_root_;
     // wisp.files, over <int>/scenes (and the card); built with the
     // repository, counted on the worker after recover().
     os::LargeUnique<core::SceneFiles> files_;

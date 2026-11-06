@@ -196,6 +196,7 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_scene_routes(routes_);
     detail::add_power_routes(routes_);
     detail::add_scene_file_routes(routes_);
+    detail::add_agent_routes(routes_);
     hub_ = std::make_unique<WsHub>(deps_.bus, deps_.boot_id);
     hub_->set_wake_locks(deps_.wakelocks);
     hub_->start();
@@ -359,6 +360,7 @@ net::HttpHandler AdminServer::captive_handler() {
 net::StreamHandler AdminServer::stream_handler() {
     return [this](const net::HttpRequest& head) -> std::optional<net::StreamStart> {
         if (auto firmware = detail::firmware_stream(deps_, head)) return firmware;
+        if (auto agent = detail::agent_stream(deps_, head)) return agent;
         return detail::scene_stream(deps_, head);
     };
 }

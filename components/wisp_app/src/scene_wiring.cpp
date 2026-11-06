@@ -69,11 +69,13 @@ void SceneWiring::start_storage() {
         return;
     }
     config.worker = &worker_;
+    const std::string data_root = config.data_root;
     repo_ = os::make_large<core::SceneRepository>(deps_.storage, std::move(config));
     if (!repo_) {
         WLOG_E(kTag, "no memory for the scene repository; scenes are off");
         return;
     }
+    data_root_ = data_root;
 
     // wisp.files. StorageManager renames and removes only inside a storage
     // mount, which a dev-mode data root need not be, so the files there go

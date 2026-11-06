@@ -314,6 +314,12 @@ foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test rout
     add_dependencies(${admin_test} wisp_fixture_wpak)
     target_compile_definitions(${admin_test} PRIVATE WISP_FIXTURE_WPAK="${WISP_FIXTURE_WPAK}")
 endforeach()
+# /agent over a real AgentService (the App's adapter, so wisp_app too).
+wisp_test(NAME routes_agent_test SRCS admin/routes_agent_test.cpp
+          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
+add_dependencies(routes_agent_test wisp_fixture_wpak)
+target_compile_definitions(routes_agent_test PRIVATE WISP_FIXTURE_WPAK="${WISP_FIXTURE_WPAK}")
+target_include_directories(routes_agent_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 
 # wisp_scene: the Lua scene runtime (scene-runtime-core spec).
 wisp_test(NAME lua_vendor_test SRCS scene/lua_vendor_test.cpp LIBS wisp_scene)
@@ -388,6 +394,13 @@ wisp_test(NAME agent_loop_test SRCS agent/agent_loop_test.cpp
 # The device confirmation dialog on a real UI runtime (agent-core spec 6.1).
 wisp_test(NAME confirm_test SRCS agent/confirm_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
+# The agent's WebSocket frames, and the agent wired into the App.
+wisp_test(NAME agent_wiring_test SRCS app/agent_wiring_test.cpp
+          LIBS wisp_app wisp_port_sim_os TIMEOUT 30)
+target_include_directories(agent_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+wisp_test(NAME app_agent_test SRCS app/app_agent_test.cpp
+          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
+target_include_directories(app_agent_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 
 # DocIsUpToDate compares docs/scene-api.md with the schema and writes the
 # expected text into the build directory when they differ.

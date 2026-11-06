@@ -14,6 +14,8 @@
 //     contains '\n' is still one line.
 //   - "events": events under net., power., storage. and system. arrive as
 //     {"t":"event","topic","payload"}.
+//   - "agent": the agent's frames {"t":"agent","k",...} (agent-core spec
+//     7.2), as the owner hands them to send_agent(); nothing is replayed.
 //
 // Backpressure: each client has a bounded queue, at most max_queue
 // messages and max_queue_bytes bytes in total (on ESP these small strings
@@ -124,6 +126,10 @@ public:
     // Only enqueues; never blocks on a connection.
     void write(const LogRecord& record) override;
 
+    // Queues one agent frame (JSON text) for every "agent" subscriber.
+    // Any thread; only enqueues, like write().
+    void send_agent(std::string json);
+
     // Waits up to timeout_ms until nothing is owed to any client (hello,
     // dropped notice, queued messages) and no send is in progress; true
     // once that holds, false on timeout. Only waits: the sender task (or a
@@ -171,6 +177,7 @@ private:
     // mutex_; read without it.
     std::atomic<int> log_subscribers_{0};
     std::atomic<int> event_subscribers_{0};
+    std::atomic<int> agent_subscribers_{0};
 
     os::Mutex pump_mutex_;  // serializes pump()
     os::Semaphore wake_;    // given whenever something is enqueued

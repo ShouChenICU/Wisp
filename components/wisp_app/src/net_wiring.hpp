@@ -128,6 +128,8 @@ struct NetWiringDeps {
     core::SceneFiles* files = nullptr;
     // AdminDeps::worker (see there).
     core::StorageWorker* worker = nullptr;
+    // AdminDeps::agent (see there); null: the /agent routes answer 503.
+    admin::AgentApi* agent = nullptr;
     // The clock the "wisp.net" loop hands WifiService, the NetworkWindow
     // and the admin services; empty: os::now_ms. Tests move it to reach
     // the network window's 15 minutes.
@@ -178,6 +180,9 @@ public:
     // that must not wait (the scene task's wisp.device.info()).
     std::optional<net::WifiState> wifi_state() const;
     net::PairingService* pairing() const { return pairing_.get(); }
+    // The admin WebSocket's hub (the agent's frames go there); null without
+    // an admin server. Lives until stop().
+    admin::WsHub* ws_hub() const { return admin_ ? &admin_->ws_hub() : nullptr; }
     net::TimeSyncService* time_sync() const { return time_sync_.get(); }
 
 private:

@@ -60,6 +60,7 @@ struct WsHub::Client {
     std::string client_id;  // the paired client whose token opened it
     bool log = false;
     bool events = false;
+    bool agent = false;
     // Set once the client is forgotten (close(), close_client(),
     // close_all()); pump() may still hold a reference to this client.
     bool closed = false;
@@ -185,10 +186,12 @@ void WsHub::on_message(int id, std::string_view text) {
     if (sub == nullptr || sub->type() != Value::Type::List) return;
     bool want_log = false;
     bool want_events = false;
+    bool want_agent = false;
     for (const Value& v : sub->as_list()) {
         if (v.type() != Value::Type::String) continue;
         if (v.as_string() == "log") want_log = true;
         if (v.as_string() == "events") want_events = true;
+        if (v.as_string() == "agent") want_agent = true;
     }
 
     bool queued = false;
@@ -201,6 +204,10 @@ void WsHub::on_message(int id, std::string_view text) {
         if (want_events != c.events) {
             c.events = want_events;
             event_subscribers_ += want_events ? 1 : -1;
+        }
+        if (want_agent != c.agent) {
+            c.agent = want_agent;
+            agent_subscribers_ += want_agent ? 1 : -1;
         }
         if (want_log != c.log) {
             c.log = want_log;
@@ -236,6 +243,7 @@ void WsHub::on_message(int id, std::string_view text) {
 void WsHub::forget_locked(Client& c) {
     if (c.log) --log_subscribers_;
     if (c.events) --event_subscribers_;
+    if (c.agent) --agent_subscribers_;
     c.closed = true;
     c.queue.clear();
     c.queued_bytes = 0;
@@ -340,6 +348,17 @@ void WsHub::write(const LogRecord& rec) {
         std::lock_guard<os::Mutex> lock(mutex_);
         for (auto& c : clients_) {
             if (c->log) enqueue_locked(*c, json);
+        }
+    }
+    wake_.give();
+}
+
+void WsHub::send_agent(std::string json) {
+    if (agent_subscribers_.load() == 0) return;
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        for (auto& c : clients_) {
+            if (c->agent) enqueue_locked(*c, json);
         }
     }
     wake_.give();

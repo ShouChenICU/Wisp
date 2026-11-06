@@ -113,6 +113,14 @@ namespace wisp::scene {
 class SceneRuntime;
 }
 
+namespace wisp::agent {
+class AgentService;
+}
+
+namespace wisp::hal {
+struct ScreenShape;
+}
+
 namespace wisp::net {
 class WifiService;
 class PairingService;
@@ -360,6 +368,9 @@ public:
     // The "wisp.fs" storage worker the scenes and notifications share:
     // nullptr without scenes, and before start() or after stop().
     core::StorageWorker* storage_worker();
+    // The agent (agent-core spec 2), built and started with a screen and a
+    // scene runtime; nullptr otherwise, and before start() or after stop().
+    agent::AgentService* agent();
 
     // Writes what still waits for flash before the device restarts, powers
     // off or enters deep standby (spec 3.8 of
@@ -414,6 +425,10 @@ private:
     friend void set_reset_spawner(
         App&,
         std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>);
+
+    // start(): builds impl_->agent (src/agent_wiring.hpp) on the screen of
+    // that shape.
+    void build_agent(const hal::ScreenShape& shape);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

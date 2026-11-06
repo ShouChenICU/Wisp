@@ -26,8 +26,9 @@
 //      wisp_token cookie (401 unauthorized), then POST/PUT/DELETE need
 //      "X-Wisp: 1" (403 csrf, whitelist included), then the body must be
 //      at most 8 KiB (413) and, when non-empty, valid JSON (400 bad_json).
-//      The firmware and scene uploads are the exceptions: their bodies
-//      are streamed (see stream_handler()) and never reach handle().
+//      The firmware and scene uploads and the agent's messages are the
+//      exceptions: their bodies are streamed (see stream_handler()) and
+//      never reach handle().
 //
 // WebSocket (/api/v1/ws): the upgrade passes the same Host check and needs
 // the same wisp_token cookie as the API; accepted connections are handed
@@ -52,6 +53,7 @@
 #include <string>
 #include <vector>
 
+#include "wisp/admin/agent_api.hpp"
 #include "wisp/admin/ws_hub.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/boot_report.hpp"
@@ -148,6 +150,9 @@ struct AdminDeps {
     // that the scene is installed, runs on it, a download chunk by chunk
     // (Bulk lane). Null (tests): they run on the calling thread.
     core::StorageWorker* worker = nullptr;
+    // The agent (agent-core spec 7.1). Null (no screen or no scene
+    // runtime, so no agent): every /agent route answers 503 unavailable.
+    AgentApi* agent = nullptr;
     // Monotonic os::now_ms() timebase; the only clock the router uses.
     // Tests inject their own; left empty, AdminServer uses os::now_ms().
     std::function<uint64_t()> now_ms = [] { return os::now_ms(); };
@@ -190,15 +195,18 @@ public:
     net::WsHandlers ws_handlers();
 
     // The HttpServer's StreamHandler: takes POST /api/v1/system/firmware
-    // (the firmware image, streamed into AdminDeps::firmware) and POST
+    // (the firmware image, streamed into AdminDeps::firmware), POST
     // /api/v1/scenes (a scene zip, collected in PSRAM and installed when
-    // complete), each after the same Host, token and X-Wisp checks as any
-    // API call and 411 without a Content-Length, and leaves every other
-    // request to handle(). Captures this AdminServer, like ws_handlers().
+    // complete) and POST /api/v1/agent/messages (up to 16 KiB), each
+    // after the same Host, token and X-Wisp checks as any API call and 411
+    // without a Content-Length, and leaves every other request to
+    // handle(). Captures this AdminServer, like ws_handlers().
     net::StreamHandler stream_handler();
 
     // WsHub::flush() on this server's hub.
     bool flush_ws(uint32_t timeout_ms);
+    // The hub behind /api/v1/ws, alive as long as this server.
+    WsHub& ws_hub() { return *hub_; }
 
     // Periodic upkeep, from the owner's loop (at least once a second; on a
     // task that may access flash, since releasing a lock may run a power

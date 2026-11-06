@@ -66,6 +66,7 @@ void add_firmware_routes(std::vector<Route>& routes);    // /system/firmware
 void add_scene_routes(std::vector<Route>& routes);       // /scenes
 void add_power_routes(std::vector<Route>& routes);       // /system/power, /system/occupancy
 void add_scene_file_routes(std::vector<Route>& routes);  // /scenes/{id}/files
+void add_agent_routes(std::vector<Route>& routes);       // /agent/*
 
 // The firmware upload, the one streamed request (routes_firmware.cpp).
 constexpr std::string_view kFirmwarePath = "/api/v1/system/firmware";
@@ -76,6 +77,12 @@ std::optional<net::StreamStart> firmware_stream(AdminDeps& deps, const net::Http
 constexpr std::string_view kScenesPath = "/api/v1/scenes";
 // nullopt for every request but POST kScenesPath.
 std::optional<net::StreamStart> scene_stream(AdminDeps& deps, const net::HttpRequest& head);
+
+// The agent's messages (routes_agent.cpp), streamed so they may pass
+// kMaxBodyBytes: 4000 characters of CJK text are 12000 bytes.
+constexpr std::string_view kAgentMessagesPath = "/api/v1/agent/messages";
+// nullopt for every request but POST kAgentMessagesPath.
+std::optional<net::StreamStart> agent_stream(AdminDeps& deps, const net::HttpRequest& head);
 
 // The gate a streamed request passes before any of its body is read, the
 // same as AdminServer::handle() applies to every API call: Host (no

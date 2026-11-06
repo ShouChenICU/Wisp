@@ -15,6 +15,8 @@
 #include "loopback.hpp"
 #include "self_check.hpp"
 #include "storage_io.hpp"
+#include "wisp/agent/context.hpp"
+#include "wisp/agent/conversation.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/button_service.hpp"
@@ -318,10 +320,15 @@ Result<void> App::start() {
             if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
                 impl->utc_offset_min.store(static_cast<int>(it->second.as_int()));
             }
+            it = e.payload.find("language");
+            if (it != e.payload.end() && it->second.type() == Value::Type::String) {
+                if (auto lang = ui::parse_lang(it->second.as_string())) impl->lang.store(*lang);
+            }
         });
         const core::SystemSettingsValues now = impl_->system_settings.get();
         impl_->notify_vol.store(static_cast<uint8_t>(std::clamp(now.notify_vol, 0, 100)));
         impl_->utc_offset_min.store(now.utc_offset_min);
+        if (auto lang = ui::parse_lang(now.language)) impl_->lang.store(*lang);
     }
 
     // The IMU's subscribers, before the scene runtime and the self-check
@@ -443,6 +450,14 @@ Result<void> App::start() {
         impl_->router->start();
     }
 
+    // The agent, before networking so the admin routes can be handed it;
+    // only with a screen (it asks there before irreversible steps) and a
+    // scene runtime (most of its tools work on scenes).
+    if (impl_->ui && impl_->system_layer && scene_runtime != nullptr &&
+        scenes->repository() != nullptr) {
+        build_agent(shape);
+    }
+
     // Step 4b: networking (connectivity spec 4.1), before the self-check
     // screen so that screen can show the network state. Never waits for
     // Wi-Fi -- see net_wiring.hpp.
@@ -474,6 +489,7 @@ Result<void> App::start() {
         .occupancy = &impl_->occupancy,
         .files = scenes != nullptr ? scenes->files() : nullptr,
         .worker = storage_worker(),
+        .agent = impl_->agent ? impl_->agent->api() : nullptr,
         .now_ms = {},  // os::now_ms
         .submit_io = impl_->io_submitter(),
         .on_persist_failed = [impl = impl_.get()] { impl->report_persist_failed(); },
@@ -488,6 +504,7 @@ Result<void> App::start() {
                                          : nullptr,
     });
     impl_->net->start();
+    if (impl_->agent) impl_->agent->attach_ws(impl_->net->ws_hub());
 
     // The capsule, the panel and the banners, once everything their
     // device_status reads (the net task's Wi-Fi snapshot) is set.
@@ -549,6 +566,12 @@ Result<void> App::start() {
             // its event; the scene task never reads Settings itself.
             if (scene::SceneRuntime* rt = scenes->runtime()) {
                 rt->seed_utc_offset(impl->system_settings.get().utc_offset_min);
+            }
+        }
+        // Once the runtime its tools drive runs.
+        if (impl_->agent) {
+            if (auto r = impl_->agent->start(); !r) {
+                WLOG_E("app", "agent not started: %s", r.error().message.c_str());
             }
         }
     }
@@ -638,6 +661,12 @@ void App::stop() {
     impl_->bus.unsubscribe(impl_->settings_sub);
     impl_->settings_sub = 0;
     join_loopback(*this);
+    // wisp.agent first: its tools drive the scene runtime, its dialogs sit
+    // on the system layer, and it reaches flash through the storage worker
+    // (a run_sync() after the worker stops would run inline on its stack,
+    // which may be in PSRAM). The object stays until networking, whose
+    // routes hold its api(), is gone.
+    if (impl_->agent) impl_->agent->stop();
     // Before the self-check screen: closing the scene in front loads that
     // screen again, and its final store flush goes to the worker.
     if (impl_->scenes) impl_->scenes->stop_runtime();
@@ -659,6 +688,8 @@ void App::stop() {
         impl_->net->stop();
         impl_->net.reset();
     }
+    // Stopped above; nothing holds its api() any more.
+    impl_->agent.reset();
     // Nothing streams into it any more.
     impl_->firmware.reset();
     // Notifications: nothing new from the bus, no more saves on the timer,
@@ -770,6 +801,129 @@ void App::stop() {
     impl_->started = false;
 }
 
+void App::build_agent(const hal::ScreenShape& shape) {
+    App::Impl* impl = impl_.get();
+    SceneWiring& scenes = *impl->scenes;
+    auto system = impl->storage.write_root(core::Area::System);
+    if (!system) {
+        WLOG_W("app", "no System storage for conversations; the agent is off");
+        return;
+    }
+    // Everything below runs on wisp.agent (or an HTTP thread) and reads only
+    // what other tasks keep up to date in memory: never Settings, a file or
+    // a device.
+    auto wall_s = [] {
+        const auto t = static_cast<int64_t>(std::time(nullptr));
+        return t >= scene::MinuteTicker::kValidSince ? t : int64_t{0};
+    };
+    auto wifi = [impl]() -> std::string {
+        std::optional<net::WifiState> st = impl->net ? impl->net->wifi_state() : std::nullopt;
+        return st ? std::string(net::to_string(*st)) : std::string();
+    };
+    scene::SceneRuntime* runtime = scenes.runtime();
+    agent::ContextSource context = [impl, shape, wall_s, wifi, runtime](agent::Source source) {
+        agent::DeviceSnapshot d;
+        d.lang = ui::lang_code(impl->lang.load());
+        d.shape = shape;
+        d.foreground = runtime->foreground().value_or(std::string());
+        for (const scene::BackgroundScene& b : runtime->background_scenes()) {
+            d.background.push_back(b.id);
+        }
+        if (impl->power_monitor) {
+            if (auto st = impl->power_monitor->last_status()) {
+                d.battery = st->battery_percent;
+                d.charging = st->charging;
+            }
+        }
+        d.wifi = wifi();
+        d.wall_s = wall_s();
+        d.utc_offset_min = impl->utc_offset_min.load();
+        d.weekday = d.wall_s != 0 ? agent::weekday_of(d.wall_s, d.utc_offset_min) : 0;
+        // Memory notes come with the memory service; none until then.
+        d.source = source;
+        return d;
+    };
+    auto device_status = [impl, shape, wifi]() {
+        Map out;
+        Value battery, charging;
+        if (impl->power_monitor) {
+            if (auto st = impl->power_monitor->last_status()) {
+                battery = Value(st->battery_percent);
+                charging = Value(st->charging);
+            }
+        }
+        out["battery"] = std::move(battery);
+        out["charging"] = std::move(charging);
+        const std::string w = wifi();
+        out["wifi"] = w.empty() ? Value() : Value(w);
+        out["power"] =
+            impl->power_manager ? Value(hal::to_string(impl->power_manager->level())) : Value();
+        List occupancy;
+        for (const core::OccupancyEntry& e : impl->occupancy.list()) {
+            occupancy.push_back(Value(Map{{"device", Value(e.device)},
+                                          {"holder", Value(e.holder)},
+                                          {"mode", Value(core::to_string(e.mode))}}));
+        }
+        out["occupancy"] = Value(std::move(occupancy));
+        const char* kind = shape.kind == hal::ScreenShapeKind::Circle        ? "circle"
+                           : shape.kind == hal::ScreenShapeKind::RoundedRect ? "rounded_rect"
+                                                                             : "rect";
+        out["shape"] = Value(kind);
+        const hal::Area safe = hal::safe_rect(shape);
+        out["safe_area"] = Value(Map{{"x1", Value(static_cast<int64_t>(safe.x1))},
+                                     {"y1", Value(static_cast<int64_t>(safe.y1))},
+                                     {"x2", Value(static_cast<int64_t>(safe.x2))},
+                                     {"y2", Value(static_cast<int64_t>(safe.y2))}});
+        return Value(std::move(out));
+    };
+    impl->agent = os::make_large<AgentWiring>(AgentWiringDeps{
+        .bus = impl->bus,
+        .storage = impl->storage,
+        .worker = scenes.worker(),
+        .models = impl->models,
+        .settings = impl->system_settings,
+        .notes = *impl->notifications,
+        .locks = &impl->wakelocks,
+        .ui = *impl->ui,
+        .layer = *impl->system_layer,
+        .shape = shape,
+        .runtime = *runtime,
+        .repo = *scenes.repository(),
+        .files = scenes.files(),
+        .conversation_dir = system.value() + "/agent",
+        .drafts_root = scenes.data_root() + "/.drafts",
+        .http = impl->platform.http_client.get(),
+        .run_io =
+            [impl](std::function<void()> job) {
+                return impl->run_io(std::move(job), os::kForever);
+            },
+        .delete_scene =
+            [impl](const std::string& id, bool with_data, std::function<void(Result<void>)> done) {
+                impl->scenes->delete_scene(id, with_data, std::move(done));
+            },
+        .wake =
+            [impl] {
+                if (impl->power_manager && impl->power_manager->standby()) {
+                    impl->power_manager->exit_standby();
+                }
+            },
+        .screen_off = [impl] { return impl->power_manager && impl->power_manager->standby(); },
+        // Without a Wi-Fi service (the simulator without one) the host's
+        // network is assumed.
+        .network_up =
+            [impl] {
+                std::optional<net::WifiState> st =
+                    impl->net ? impl->net->wifi_state() : std::nullopt;
+                return !st || *st == net::WifiState::Connected;
+            },
+        .lang = [impl] { return std::string(ui::lang_code(impl->lang.load())); },
+        .wall_s = wall_s,
+        .context = std::move(context),
+        .device_status = std::move(device_status),
+    });
+    if (!impl->agent) WLOG_E("app", "no memory for the agent; the agent is off");
+}
+
 bool App::Impl::submit_io(std::function<void()> job) {
     core::StorageWorker* worker = scenes ? &scenes->worker() : nullptr;
     if (worker == nullptr || worker->on_worker()) {
@@ -846,6 +1000,7 @@ core::WakeLockRegistry& App::wakelocks() { return impl_->wakelocks; }
 core::NotificationService* App::notifications() { return impl_->notifications.get(); }
 core::OccupancyRegistry& App::occupancy() { return impl_->occupancy; }
 core::SensorService* App::sensors() { return impl_->sensors.get(); }
+agent::AgentService* App::agent() { return impl_->agent ? impl_->agent->service() : nullptr; }
 core::StorageWorker* App::storage_worker() {
     return impl_->scenes ? &impl_->scenes->worker() : nullptr;
 }

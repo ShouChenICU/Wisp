@@ -21,6 +21,7 @@
 #include <memory>
 #include <utility>
 
+#include "agent_wiring.hpp"
 #include "net_wiring.hpp"
 #include "notification_router.hpp"
 #include "scene_wiring.hpp"
@@ -43,6 +44,7 @@
 #include "wisp/core/tone_player.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -147,6 +149,9 @@ struct App::Impl {
     // may read Settings.
     std::atomic<uint8_t> notify_vol{60};
     std::atomic<int> utc_offset_min{480};
+    // sys/lang, kept the same way for the agent (wisp.agent may not read
+    // Settings either).
+    std::atomic<ui::Lang> lang{ui::Lang::Zh};
     core::SubscriptionId settings_sub = 0;
     // What a posted, tapped or acted-on notification does (wake, sound,
     // banner, its scene). Built once the scene runtime is, stopped first
@@ -166,6 +171,11 @@ struct App::Impl {
     // scene_wiring.hpp.
     // In Mem::Large (scene_wiring.hpp); null without the memory for it.
     os::LargeUnique<SceneWiring> scenes;
+    // The agent (agent_wiring.hpp): built with a screen and a scene
+    // runtime, after the runtime and before networking (whose routes take
+    // its api()); started once the runtime runs. App::stop() stops it
+    // before the scene runtime and resets it once networking is gone.
+    os::LargeUnique<AgentWiring> agent;
     // Settings served from memory and saved on the scenes' storage worker
     // (wisp/core/cached_settings.hpp), attached to settings_front from
     // right after that worker starts until App::stop() has stopped it.

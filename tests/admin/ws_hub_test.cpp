@@ -392,6 +392,36 @@ TEST(WsHub, LogsOnlyReachLogSubscribers) {
     EXPECT_EQ(c2->sent_count(), 0u);
 }
 
+// Agent frames (agent-core spec 7.2) go only to the clients whose last
+// {"sub":[...]} named "agent", in the order they were sent.
+TEST(WsHub, AgentFramesOnlyToAgentSubscribers) {
+    wisp::log::reset_for_test();
+    EventBus bus;
+    WsHub hub(bus);
+    auto agent = std::make_shared<FakeWsConnection>(1);
+    auto other = std::make_shared<FakeWsConnection>(2);
+    ASSERT_TRUE(hub.open(agent));
+    ASSERT_TRUE(hub.open(other));
+    hub.on_message(1, R"({"sub":["agent"]})");
+    hub.on_message(2, R"({"sub":["log","events"]})");
+
+    hub.send_agent(R"({"t":"agent","k":"delta","text":"a"})");
+    hub.send_agent(R"({"t":"agent","k":"delta","text":"b"})");
+    hub.pump();
+    ASSERT_EQ(agent->sent_count(), 2u);
+    EXPECT_EQ(str(agent->sent()[0], "text"), "a");
+    EXPECT_EQ(str(agent->sent()[1], "text"), "b");
+    for (const Value& v : other->sent()) EXPECT_NE(str(v, "t"), "agent");
+
+    // Dropping "agent" stops them.
+    hub.on_message(1, R"({"sub":["log"]})");
+    hub.send_agent(R"({"t":"agent","k":"delta","text":"c"})");
+    hub.pump();
+    size_t agent_frames = 0;
+    for (const Value& v : agent->sent()) agent_frames += str(v, "t") == "agent" ? 1 : 0;
+    EXPECT_EQ(agent_frames, 2u);
+}
+
 TEST(WsHub, ForwardsOnlyAllowedTopics) {
     wisp::log::reset_for_test();
     EventBus bus;

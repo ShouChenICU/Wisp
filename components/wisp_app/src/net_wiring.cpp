@@ -163,6 +163,7 @@ void NetWiring::start() {
             .occupancy = deps_.occupancy,
             .files = deps_.files,
             .worker = deps_.worker,
+            .agent = deps_.agent,
         });
         reconcile_http(now);  // http_always_on serves from boot
     }
