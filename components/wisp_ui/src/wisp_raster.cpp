@@ -50,6 +50,8 @@ constexpr Stop kStops[] = {
 }  // namespace
 
 void WispModel::build_palette() {
+    // Error drains some of the colour: each stop moves towards its grey.
+    const int desat = pal_desat_;
     for (int i = 0; i < 256; ++i) {
         size_t s = 0;
         while (s + 2 < std::size(kStops) && kStops[s + 1].lum < i) ++s;
@@ -57,9 +59,13 @@ void WispModel::build_palette() {
         const Stop& b = kStops[s + 1];
         const int span = std::max<int32_t>(b.lum - a.lum, 1);
         const int t = std::clamp<int32_t>(i - a.lum, 0, span);
-        const int r = a.r + (b.r - a.r) * t / span;
-        const int g = a.g + (b.g - a.g) * t / span;
-        const int bl = a.b + (b.b - a.b) * t / span;
+        int r = a.r + (b.r - a.r) * t / span;
+        int g = a.g + (b.g - a.g) * t / span;
+        int bl = a.b + (b.b - a.b) * t / span;
+        const int grey = (r * 77 + g * 150 + bl * 29) >> 8;
+        r += (grey - r) * desat / 256;
+        g += (grey - g) * desat / 256;
+        bl += (grey - bl) * desat / 256;
         uint16_t c = static_cast<uint16_t>(((r >> 3) << 11) | ((g >> 2) << 5) | (bl >> 3));
         if (swapped_) c = static_cast<uint16_t>((c >> 8) | (c << 8));
         palette_[static_cast<size_t>(i)] = c;
@@ -112,12 +118,12 @@ void WispModel::draw_body(uint8_t* lum, hal::Area& lit) const {
 }
 
 void WispModel::draw_hair(uint8_t* lum, hal::Area& lit) const {
-    static constexpr int32_t kRootHw[3] = {9 * 256, 11 * 256, 9 * 256};
+    static constexpr int32_t kRootHw[3] = {12 * 256, 15 * 256, 12 * 256};
     for (size_t i = 0; i < hair_.size(); ++i) {
         const Hair& h = hair_[i];
         const int32_t len = h.ay - h.y;
         if (len < 2 * 256) continue;
-        const int32_t root_hw = px(kRootHw[i]) * r_ / std::max<int32_t>(px(47 * 256 + 128), 1);
+        const int32_t root_hw = px(kRootHw[i]) * r_ / std::max<int32_t>(r_base(), 1);
         const int y0 = std::max<int32_t>(1, h.y >> 8);
         const int y1 = std::min<int32_t>(h_ - 2, h.ay >> 8);
         for (int y = y0; y <= y1; ++y) {
@@ -188,6 +194,41 @@ void WispModel::draw_particles(uint8_t* lum, hal::Area& lit) const {
     }
 }
 
+// An anti-aliased chevron centred on (cx, cy), Q8 px: its point towards
+// `dir` (+1: ">" pointing right), half width hw and half height hh.
+void WispModel::draw_chevron(uint8_t* lum, int32_t cx, int32_t cy, int dir, int32_t hw,
+                             int32_t hh) const {
+    const int32_t th = std::max<int32_t>(r_ * 5 / 100, 200);  // half the stroke
+    const int32_t tip_x = cx + dir * hw;
+    const int32_t back_x = cx - dir * hw;
+    const int32_t seg[2][4] = {{back_x, cy - hh, tip_x, cy}, {back_x, cy + hh, tip_x, cy}};
+    const int y0 = std::max<int32_t>(1, (cy - hh - th) / 256 - 1);
+    const int y1 = std::min<int32_t>(h_ - 2, (cy + hh + th) / 256 + 1);
+    const int x0 = std::max<int32_t>(1, (cx - hw - th) / 256 - 1);
+    const int x1 = std::min<int32_t>(w_ - 2, (cx + hw + th) / 256 + 1);
+    for (int y = y0; y <= y1; ++y) {
+        uint8_t* row = lum + static_cast<size_t>(y) * w_;
+        const int32_t py = y * 256 + 128;
+        for (int x = x0; x <= x1; ++x) {
+            const int32_t px_ = x * 256 + 128;
+            int32_t cov = 0;
+            for (const auto& s : seg) {
+                const int64_t dx = s[2] - s[0], dy = s[3] - s[1];
+                const int64_t vx = px_ - s[0], vy = py - s[1];
+                const int64_t len2 = dx * dx + dy * dy;
+                int64_t t = len2 > 0 ? (vx * dx + vy * dy) * 4096 / len2 : 0;
+                t = std::clamp<int64_t>(t, 0, 4096);
+                const int64_t ex = vx - dx * t / 4096, ey = vy - dy * t / 4096;
+                const auto d = static_cast<int32_t>(
+                    isqrt(static_cast<uint32_t>(std::min<int64_t>(ex * ex + ey * ey, 0xffffffff))));
+                cov = std::max<int32_t>(cov, std::clamp<int32_t>(th + 128 - d, 0, 256));
+            }
+            if (cov == 0) continue;
+            row[x] = static_cast<uint8_t>(row[x] + ((255 - row[x]) * cov >> 8));
+        }
+    }
+}
+
 void WispModel::draw_eyes(uint8_t* lum) const {
     // Eye openness through a blink: shut and open again over kBlinkMs.
     int32_t open = 256;
@@ -199,12 +240,19 @@ void WispModel::draw_eyes(uint8_t* lum) const {
     const int32_t ry_full = r_ * 27 / 100 * params_.eye_open / 256;
     const int32_t ry = std::max<int32_t>(ry_full * open / 256, 128);
     const int32_t gx = (params_.gaze_x + glance_x_) * rx / 256 * 9 / 10;
-    const int32_t gy = (params_.gaze_y + glance_y_) * (r_ * 27 / 100) / 256 * 9 / 10;
+    const int32_t gy = (params_.gaze_y + glance_y_) * (r_ * 27 / 100) / 256 * 12 / 10;
     const int32_t ey = cy_ - r_ * 14 / 100 + gy;
     const int32_t yn_eye =
         static_cast<int32_t>(static_cast<int64_t>(ey - cy_) * 4096 / (ey < cy_ ? top_ : r_));
     const int32_t rowc = cx_ + sway_at(yn_eye);
     const int32_t sep = r_ * 40 / 100;
+    if (err_ >= 128) {
+        // Error: "> <", eyes screwed shut.
+        for (int side = -1; side <= 1; side += 2) {
+            draw_chevron(lum, rowc + side * sep + gx, ey, -side, rx * 11 / 10, r_ * 15 / 100);
+        }
+        return;
+    }
     const int32_t inv_rx = (1 << 24) / rx;
     const int32_t inv_ry = (1 << 24) / ry;
     const int32_t rmin = std::min<int32_t>(rx, ry);
@@ -276,6 +324,14 @@ hal::Area WispModel::render(std::span<uint8_t> lum, std::span<uint16_t> out) {
     b = std::clamp<int32_t>(b, 0, 256);
     for (size_t i = 0; i < body_lum_.size(); ++i) {
         body_lum_[i] = static_cast<uint8_t>(kBodyLum[i] * b >> 8);
+    }
+
+    // Every lit pixel is in this frame's dirty box, so a new palette needs
+    // no full redraw.
+    const int32_t desat = err_ * 96 / 256 / 8 * 8;
+    if (desat != pal_desat_) {
+        pal_desat_ = desat;
+        build_palette();
     }
 
     const hal::Area prev = bounds_;

@@ -68,7 +68,7 @@ WispParams mood_params(WispMood m) {
         case WispMood::Listening:
             return {276, 380, 256, 330, 0, 320, 0, 40, 56, 0};
         case WispMood::Thinking:
-            return {256, 300, 240, 300, 256, 220, 90, -180, -20, 0};
+            return {256, 300, 240, 300, 256, 210, 120, -256, -20, 0};
         case WispMood::Speaking:
             return {268, 330, 250, 290, 0, 256, 0, 0, 0, 0};
         case WispMood::Error:
@@ -132,6 +132,8 @@ void WispModel::set_mood(WispMood m) {
     listen_to_ = m == WispMood::Listening ? 256 : 0;
     speak_from_ = speak_;
     speak_to_ = m == WispMood::Speaking ? 256 : 0;
+    err_from_ = err_;
+    err_to_ = m == WispMood::Error ? 256 : 0;
     blend_ms_ = 0;
     if (m == WispMood::Error) error_ms_ = 0;
     mood_ = m;
@@ -161,6 +163,7 @@ void WispModel::step(uint32_t dt_ms) {
         params_ = lerp(from_, to_, t);
         listen_ = lerp1(listen_from_, listen_to_, t);
         speak_ = lerp1(speak_from_, speak_to_, t);
+        err_ = lerp1(err_from_, err_to_, t);
     }
 
     // The level jumps up quickly and falls back slowly, like a VU meter.
@@ -216,14 +219,14 @@ void WispModel::step(uint32_t dt_ms) {
 }
 
 void WispModel::update_geometry() {
-    const int32_t r_base = px(47 * 256 + 128);
+    const int32_t rb = r_base();
     // Breathing: 3.6 s in and out; the whole wisp floats up and down with it.
     const uint32_t breath = cycle(time_ms_, 3600);
     const int32_t b = sin16(breath);
-    r_ = r_base + (r_base * b >> 15) * 6 / 256;
+    r_ = rb + (rb * b >> 15) * 6 / 256;
     const int32_t listen_level = level_ * listen_ / 256;  // Q8
-    const int32_t flame = params_.flame_height * (256 + listen_level * 60 / 256) / 256;
-    top_ = static_cast<int32_t>(static_cast<int64_t>(r_) * 19 / 10 * flame / 256);
+    const int32_t flame = params_.flame_height * (256 + listen_level * 38 / 256) / 256;
+    top_ = static_cast<int32_t>(static_cast<int64_t>(r_) * 3 / 2 * flame / 256);
     top_ += (top_ * b >> 15) * 10 / 256;
     top_ = static_cast<int32_t>(static_cast<int64_t>(top_) * (4096 + bounce_) / 4096);
     r_ = static_cast<int32_t>(static_cast<int64_t>(r_) * (4096 - bounce_ / 3) / 4096);
@@ -252,7 +255,7 @@ void WispModel::update_geometry() {
     }
 
     cx_ = w_ * 128 + drift_x + shake_x;
-    cy_ = h_ * 256 * 70 / 100 + drift_y + bob + shake_y - r_base * bounce_ / 4096 / 2;
+    cy_ = h_ * 256 * 645 / 1000 + drift_y + bob + shake_y - rb * bounce_ / 4096 / 2;
 }
 
 int32_t WispModel::sway_at(int32_t yn) const {
@@ -280,9 +283,8 @@ int32_t WispModel::half_width_scale(int32_t yn) const {
 
 void WispModel::place_hair(bool snap) {
     const int32_t listen_level = level_ * listen_ / 256;
-    const int32_t flame = params_.flame_height * (256 + listen_level * 90 / 256) / 256;
-    const int32_t scale =
-        r_ * 256 / std::max<int32_t>(px(47 * 256 + 128), 1);  // Q8, follows breathing
+    const int32_t flame = params_.flame_height * (256 + listen_level * 64 / 256) / 256;
+    const int32_t scale = r_ * 256 / std::max<int32_t>(r_base(), 1);  // Q8, follows breathing
     for (size_t i = 0; i < hair_.size(); ++i) {
         const HairSpec& s = kHair[i];
         Hair& h = hair_[i];
@@ -306,8 +308,8 @@ void WispModel::place_hair(bool snap) {
 void WispModel::step_hair(uint32_t dt_ms) {
     place_hair(false);
     const int32_t listen_level = level_ * listen_ / 256;
-    const int32_t flame = params_.flame_height * (256 + listen_level * 90 / 256) / 256;
-    const int32_t scale = r_ * 256 / std::max<int32_t>(px(47 * 256 + 128), 1);
+    const int32_t flame = params_.flame_height * (256 + listen_level * 64 / 256) / 256;
+    const int32_t scale = r_ * 256 / std::max<int32_t>(r_base(), 1);
     for (size_t i = 0; i < hair_.size(); ++i) {
         const HairSpec& s = kHair[i];
         Hair& h = hair_[i];
@@ -344,7 +346,7 @@ void WispModel::spawn(Particle& p, bool initial) {
     p.vy = -rand_range(px(14 * 256), px(28 * 256));
     p.phase = rand();
     p.glow = static_cast<uint8_t>(rand_range(70, 190));
-    p.orbit_pct = static_cast<int8_t>(rand_range(-14, 14));
+    p.orbit_pct = static_cast<int8_t>(rand_range(-10, 10));
     if (initial) {
         p.x += p.vx * p.age_ms / 1000;
         p.y += p.vy * p.age_ms / 1000;
@@ -370,18 +372,20 @@ void WispModel::step_particles(uint32_t dt_ms) {
             --live_;
             continue;
         }
+        const bool fresh = p.age_ms == 0;
         p.age_ms = static_cast<uint16_t>(p.age_ms + dt_ms);
         p.x += static_cast<int32_t>(static_cast<int64_t>(p.vx) * speed / 256 * dt_ms / 1000);
         p.y += static_cast<int32_t>(static_cast<int64_t>(p.vy) * speed / 256 * dt_ms / 1000);
         p.phase += dt_ms * 21u * static_cast<uint32_t>(std::max<int32_t>(speed, 0)) / 256u;
         const int32_t rise_x = p.x + (px(3 * 256) * sin16(p.phase / 3 + p.age_ms * 44u) >> 15);
-        const int32_t rx = r_ * 160 / 100 * (100 + p.orbit_pct) / 100;
-        const int32_t ry = r_ * 46 / 100 * (100 + p.orbit_pct) / 100;
+        const int32_t rx = r_ * 130 / 100 * (100 + p.orbit_pct) / 100;
+        const int32_t ry = r_ * 40 / 100 * (100 + p.orbit_pct) / 100;
         const int32_t ox = ocx + (rx * cos16(p.phase) >> 15);
         const int32_t oy = ocy + (ry * sin16(p.phase) >> 15) - (ox - ocx) * 14 / 100;
         const int32_t nx = rise_x + (ox - rise_x) * orbit / 256;
         const int32_t ny = p.y + (oy - p.y) * orbit / 256;
-        travel_ += static_cast<uint32_t>(std::abs(nx - p.dx) + std::abs(ny - p.dy));
+        // A new spark's first step places it; that jump is not travel.
+        if (!fresh) travel_ += static_cast<uint32_t>(std::abs(nx - p.dx) + std::abs(ny - p.dy));
         p.dx = nx;
         p.dy = ny;
         if (nx < margin || nx > w_ * 256 - margin || ny < margin + px(6 * 256) ||

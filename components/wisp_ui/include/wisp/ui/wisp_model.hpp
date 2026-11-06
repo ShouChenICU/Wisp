@@ -129,6 +129,9 @@ private:
     void update_geometry();
     void build_palette();
     // A length given in Q8 px for size 216, scaled to this model's size.
+    // The drop's bottom radius before breathing: 0.29 of the width, so the
+    // body fills most of the frame and the halo, hair and sparks the rest.
+    int32_t r_base() const { return px(63 * 256); }
     int32_t px(int32_t q8_at_216) const {
         return static_cast<int32_t>(static_cast<int64_t>(q8_at_216) * w_ / 216);
     }
@@ -136,6 +139,7 @@ private:
     void draw_hair(uint8_t* lum, hal::Area& lit) const;
     void draw_particles(uint8_t* lum, hal::Area& lit) const;
     void draw_eyes(uint8_t* lum) const;
+    void draw_chevron(uint8_t* lum, int32_t cx, int32_t cy, int dir, int32_t hw, int32_t hh) const;
     void draw_mouth(uint8_t* lum) const;
 
     int w_, h_;
@@ -145,6 +149,8 @@ private:
     // How much Listening and Speaking show the level, Q8, blended like params_.
     int32_t listen_from_ = 0, listen_to_ = 0, listen_ = 0;
     int32_t speak_from_ = 0, speak_to_ = 0, speak_ = 0;
+    // How much of Error's face and colour shows, Q8, blended the same way.
+    int32_t err_from_ = 0, err_to_ = 0, err_ = 0;
     uint32_t blend_ms_ = kMoodBlendMs;
     int32_t level_target_ = 0;  // Q8
     int32_t level_ = 0;         // smoothed, Q8
@@ -177,6 +183,7 @@ private:
     std::array<uint16_t, 256> palette_{};
     std::array<uint8_t, 256> body_lum_{};  // kBodyLum scaled by brightness
     bool swapped_ = false;
+    int32_t pal_desat_ = 0;  // the palette's current desaturation, Q8
     bool first_render_ = true;
     hal::Area bounds_{0, 0, -1, -1};
 };

@@ -49,15 +49,15 @@ inline int32_t cos16(uint32_t a) { return kSin[((a >> 6) + 256) & 1023]; }
 // Body and hair luminance by normalized squared distance from the centre
 // line: entry i is q = i / 64 (r = sqrt(q), 1 on the outline). Inside, a
 // core that brightens towards the middle; across the outline a one-pixel
-// edge; outside, a halo that fades out by r = 1.5. Stays at or below 190 so
+// edge; outside, a halo that fades out by r = 1.35. Stays at or below 190 so
 // the palette's white is the eyes' and the sparks' alone.
-inline constexpr int kHaloQ8 = 576;  // r = 1.5, in q * 256
+inline constexpr int kHaloQ8 = 467;  // r = 1.35, in q * 256
 inline constexpr std::array<uint8_t, 256> kBodyLum = [] {
     std::array<uint8_t, 256> t{};
     for (int i = 0; i < 256; ++i) {
         const double r = c_sqrt(i / 64.0);
         const double core = 116 + 74 * (1 - r * r);  // 190 in the middle, 116 at the outline
-        const double g = r < 1 ? 1 : (r >= 1.5 ? 0 : 1 - (r - 1) / 0.5);
+        const double g = r < 1 ? 1 : (r >= 1.35 ? 0 : 1 - (r - 1) / 0.35);
         const double halo = 84 * g * g * (0.55 + 0.45 * g);
         const double e = 0.025;  // half the outline's width, in r
         double v;

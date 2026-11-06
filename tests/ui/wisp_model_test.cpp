@@ -19,7 +19,7 @@ using wisp::ui::WispParams;
 
 // The golden frame: seed 42, size 216, 30 steps of 33 ms, then render.
 // Any change to the look changes it; say why in the commit that updates it.
-constexpr uint32_t kGolden = 0xd691dd51u;
+constexpr uint32_t kGolden = 0x7245bc14u;
 
 struct Frame {
     std::vector<uint8_t> lum;
@@ -239,6 +239,48 @@ TEST(WispModel, IdleDriftsOverTime) {
     }
     const int32_t span = std::max(max_x - min_x, max_y - min_y);
     EXPECT_GE(span, 2 * 256);
+}
+
+// The widest and tallest the wisp gets (level jumping between 0 and 100,
+// busy, every mood) still leaves the frame's edge dark: nothing is cut off.
+TEST(WispModel, NothingClipsInAnyMood) {
+    for (int size : {216, 134, 149}) {
+        WispModel m(size, 9);
+        Frame f(m);
+        for (int i = 0; i < 5 * 120; ++i) {
+            if (i % 120 == 0) m.set_mood(static_cast<WispMood>(i / 120));
+            m.set_level((i / 8) % 2 == 0 ? 100 : 0);
+            m.set_busy(true);
+            m.step(33);
+            f.render(m);
+            const wisp::hal::Area b = m.bounds();
+            ASSERT_GT(b.x1, 0) << size << " step " << i;
+            ASSERT_GT(b.y1, 0) << size << " step " << i;
+            ASSERT_LT(b.x2, m.width() - 1) << size << " step " << i;
+            ASSERT_LT(b.y2, m.height() - 1) << size << " step " << i;
+        }
+    }
+}
+
+// The body is most of the frame's width (spec 6.2's 45% view is the
+// character, not a margin around it).
+TEST(WispModel, BodyFillsTheFrame) {
+    WispModel m(216, 42);
+    Frame f(m);
+    m.step(33);
+    f.render(m);
+    // The body's own width: the row through its centre, above the halo.
+    const int y = m.centre().y >> 8;
+    int first = -1, last = -1;
+    for (int x = 0; x < m.width(); ++x) {
+        if (f.lum[static_cast<size_t>(y) * m.width() + x] >= 100) {
+            if (first < 0) first = x;
+            last = x;
+        }
+    }
+    const int body = last - first + 1;
+    EXPECT_GE(body * 100, m.width() * 55) << body;
+    EXPECT_LE(body * 100, m.width() * 72) << body;
 }
 
 TEST(WispModel, ErrorDimsThenSettles) {
