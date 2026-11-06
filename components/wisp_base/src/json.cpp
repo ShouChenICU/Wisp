@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace wisp {
@@ -80,41 +81,6 @@ Value read_value(JsonVariantConst src) {
     return Value();
 }
 
-// Length of the well-formed UTF-8 sequence starting at s[i], or 0 when
-// there is none. When 0, *bad is set to how many bytes form the maximal
-// ill-formed prefix (at least 1), which is replaced by one U+FFFD as the
-// Unicode standard recommends.
-size_t utf8_sequence(const std::string& s, size_t i, size_t* bad) {
-    const auto b = static_cast<uint8_t>(s[i]);
-    size_t len = 0;
-    uint8_t lo = 0x80;
-    uint8_t hi = 0xBF;
-    if (b >= 0xC2 && b <= 0xDF) {
-        len = 2;
-    } else if (b >= 0xE0 && b <= 0xEF) {
-        len = 3;
-        if (b == 0xE0) lo = 0xA0;  // overlong
-        if (b == 0xED) hi = 0x9F;  // UTF-16 surrogates
-    } else if (b >= 0xF0 && b <= 0xF4) {
-        len = 4;
-        if (b == 0xF0) lo = 0x90;  // overlong
-        if (b == 0xF4) hi = 0x8F;  // past U+10FFFF
-    } else {
-        *bad = 1;
-        return 0;
-    }
-    for (size_t k = 1; k < len; ++k) {
-        const uint8_t min = k == 1 ? lo : 0x80;
-        const uint8_t max = k == 1 ? hi : 0xBF;
-        if (i + k >= s.size() || static_cast<uint8_t>(s[i + k]) < min ||
-            static_cast<uint8_t>(s[i + k]) > max) {
-            *bad = k;
-            return 0;
-        }
-    }
-    return len;
-}
-
 // ArduinoJson escapes only the control bytes JSON gives a short form to
 // (and NUL), and copies other bytes as they are. JSON.parse() rejects the
 // remaining raw control characters, so every byte below 0x20 becomes a
@@ -151,7 +117,7 @@ std::string fix_up(std::string json, bool replace_invalid_utf8) {
         size_t keep = 1;  // bytes at i that pass through unchanged
         if (b >= 0x80) {
             size_t bad = 0;
-            keep = utf8_sequence(json, i, &bad);
+            keep = json_detail::utf8_sequence(json, i, &bad);
             if (keep == 0 && replace_invalid_utf8) {
                 start_copy(i);
                 out += "\xEF\xBF\xBD";
@@ -175,6 +141,37 @@ std::string serialize(const Value& v) {
 }
 
 }  // namespace
+
+size_t json_detail::utf8_sequence(std::string_view s, size_t i, size_t* bad) {
+    const auto b = static_cast<uint8_t>(s[i]);
+    size_t len = 0;
+    uint8_t lo = 0x80;
+    uint8_t hi = 0xBF;
+    if (b >= 0xC2 && b <= 0xDF) {
+        len = 2;
+    } else if (b >= 0xE0 && b <= 0xEF) {
+        len = 3;
+        if (b == 0xE0) lo = 0xA0;  // overlong
+        if (b == 0xED) hi = 0x9F;  // UTF-16 surrogates
+    } else if (b >= 0xF0 && b <= 0xF4) {
+        len = 4;
+        if (b == 0xF0) lo = 0x90;  // overlong
+        if (b == 0xF4) hi = 0x8F;  // past U+10FFFF
+    } else {
+        *bad = 1;
+        return 0;
+    }
+    for (size_t k = 1; k < len; ++k) {
+        const uint8_t min = k == 1 ? lo : 0x80;
+        const uint8_t max = k == 1 ? hi : 0xBF;
+        if (i + k >= s.size() || static_cast<uint8_t>(s[i + k]) < min ||
+            static_cast<uint8_t>(s[i + k]) > max) {
+            *bad = k;
+            return 0;
+        }
+    }
+    return len;
+}
 
 std::string to_json(const Value& v) { return fix_up(serialize(v), /*replace_invalid_utf8=*/true); }
 

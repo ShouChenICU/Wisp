@@ -761,3 +761,51 @@ TEST(ModelProfiles, ClearAllForFactoryReset) {
 }
 
 }  // namespace
+
+TEST(ModelProfiles, VisionAndContextWindowValidated) {
+    Fixture fx;
+    ModelProfile p = fx.make(llm("p"));
+    for (const wisp::core::ModelOptions& bad :
+         {wisp::core::ModelOptions{{"vision", "yes"}}, wisp::core::ModelOptions{{"vision", "TRUE"}},
+          wisp::core::ModelOptions{{"context_window", "1000"}},
+          wisp::core::ModelOptions{{"context_window", "x"}},
+          wisp::core::ModelOptions{{"context_window", ""}},
+          wisp::core::ModelOptions{{"context_window", "-4096"}},
+          wisp::core::ModelOptions{{"context_window", "1048577"}},
+          wisp::core::ModelOptions{{"context_window", "99999999999999999999"}}}) {
+        auto r = fx.svc->update(p.id, {.options = bad});
+        ASSERT_FALSE(r) << bad.begin()->second;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+        auto c = fx.svc->create({.kind = ModelKind::Llm,
+                                 .name = "c",
+                                 .preset = "custom",
+                                 .base_url = "https://api.example.com/v1",
+                                 .options = bad});
+        EXPECT_FALSE(c);
+    }
+    auto ok = fx.svc->update(p.id, {.options = wisp::core::ModelOptions{
+                                        {"vision", "true"}, {"context_window", "65536"}}});
+    ASSERT_TRUE(ok);
+    EXPECT_TRUE(wisp::core::profile_vision(ok.value().options));
+    EXPECT_EQ(wisp::core::profile_context_window(ok.value().options), 65536u);
+    for (const char* edge : {"4096", "1048576"}) {
+        auto r = fx.svc->update(
+            p.id, {.options = wisp::core::ModelOptions{{wisp::core::kOptContextWindow, edge}}});
+        ASSERT_TRUE(r) << edge;
+        EXPECT_EQ(wisp::core::profile_context_window(r.value().options),
+                  static_cast<uint32_t>(std::stoul(edge)));
+    }
+    auto off = fx.svc->update(
+        p.id, {.options = wisp::core::ModelOptions{{wisp::core::kOptVision, "false"}}});
+    ASSERT_TRUE(off);
+    EXPECT_FALSE(wisp::core::profile_vision(off.value().options));
+}
+
+TEST(ModelProfiles, ContextWindowDefaultsTo65536) {
+    EXPECT_EQ(wisp::core::profile_context_window({}), 65536u);
+    EXPECT_FALSE(wisp::core::profile_vision({}));
+    Fixture fx;
+    ModelProfile p = fx.make(llm("p"));
+    EXPECT_EQ(wisp::core::profile_context_window(p.options), 65536u);
+    EXPECT_FALSE(wisp::core::profile_vision(p.options));
+}

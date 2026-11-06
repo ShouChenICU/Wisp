@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <mutex>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -176,6 +177,18 @@ Result<void> check_model(std::string_view model) {
     return Result<void>::ok();
 }
 
+// A decimal string in kMinContextWindow..kMaxContextWindow, digits only.
+std::optional<uint32_t> parse_context_window(std::string_view s) {
+    if (s.empty() || s.size() > 7) return std::nullopt;
+    uint32_t n = 0;
+    for (char c : s) {
+        if (c < '0' || c > '9') return std::nullopt;
+        n = n * 10 + static_cast<uint32_t>(c - '0');
+    }
+    if (n < kMinContextWindow || n > kMaxContextWindow) return std::nullopt;
+    return n;
+}
+
 Result<void> check_options(const ModelOptions& options) {
     if (options.size() > ModelProfileService::kMaxOptions) {
         return fail<void>(invalid("options may have at most 8 keys"));
@@ -188,6 +201,16 @@ Result<void> check_options(const ModelOptions& options) {
         if (v.size() > ModelProfileService::kMaxOptionValueBytes || has_control(v) ||
             !valid_utf8(v)) {
             return fail<void>(invalid("option values must be at most 64 bytes of text"));
+        }
+    }
+    if (auto it = options.find(kOptVision); it != options.end()) {
+        if (it->second != "true" && it->second != "false")
+            return fail<void>(invalid("vision must be \"true\" or \"false\""));
+    }
+    if (auto it = options.find(kOptContextWindow); it != options.end()) {
+        if (!parse_context_window(it->second)) {
+            return fail<void>(
+                invalid("context_window must be a whole number from 4096 to 1048576"));
         }
     }
     return Result<void>::ok();
@@ -240,6 +263,17 @@ void remove_file(const std::string& path) {
 }
 
 }  // namespace
+
+bool profile_vision(const ModelOptions& options) {
+    auto it = options.find(kOptVision);
+    return it != options.end() && it->second == "true";
+}
+
+uint32_t profile_context_window(const ModelOptions& options) {
+    auto it = options.find(kOptContextWindow);
+    if (it == options.end()) return kDefaultContextWindow;
+    return parse_context_window(it->second).value_or(kDefaultContextWindow);
+}
 
 const char* to_string(ModelKind kind) {
     switch (kind) {

@@ -189,3 +189,25 @@ TEST(Json, BrowserSafePassIsLinear) {
     EXPECT_EQ(json.size(), 8 * (ctl.size() * 6 + 2) + 7 + 2);
     EXPECT_LT(elapsed, std::chrono::seconds(2));
 }
+
+TEST(Json, AppendStringMatchesToJson) {
+    const std::string cases[] = {
+        "",
+        "plain",
+        "quote \" backslash \\ slash /",
+        "\b\f\n\r\t",
+        std::string("nul\0byte", 8),
+        "\x01\x1f\x7f",
+        "中文 and emoji \xF0\x9F\x98\x80",
+        "bad \xC3 lead",
+        "truncated at end \xE4\xB8",
+        "overlong \xC0\xAF and surrogate \xED\xA0\x80",
+        "\xF4\x90\x80\x80 past max",
+        "\xC3\"quote right after a lead byte",
+    };
+    for (const std::string& s : cases) {
+        std::string out = "prefix:";
+        wisp::append_json_string(out, s);
+        EXPECT_EQ(out, "prefix:" + wisp::to_json(wisp::Value(s))) << s;
+    }
+}

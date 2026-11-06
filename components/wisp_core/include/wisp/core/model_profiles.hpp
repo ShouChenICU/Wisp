@@ -85,9 +85,22 @@ struct ModelPreset {
 std::span<const ModelPreset> model_presets();
 const ModelPreset* find_model_preset(std::string_view id);
 
-// Extra per-platform fields: flat, string values. Spec 5.3 defines only
-// tts "voice"; unknown keys are kept as they are.
+// Extra per-platform fields: flat, string values. Spec 5.3 defines tts
+// "voice"; the agent adds the two llm options below. Unknown keys are kept
+// as they are.
 using ModelOptions = std::map<std::string, std::string>;
+
+// Whether the model takes images: "true" or "false" (absent: false).
+inline constexpr const char* kOptVision = "vision";
+// The model's context window in tokens: a decimal string,
+// kMinContextWindow..kMaxContextWindow (absent: kDefaultContextWindow).
+inline constexpr const char* kOptContextWindow = "context_window";
+inline constexpr uint32_t kMinContextWindow = 4096;
+inline constexpr uint32_t kMaxContextWindow = 1048576;
+inline constexpr uint32_t kDefaultContextWindow = 65536;
+
+bool profile_vision(const ModelOptions& options);
+uint32_t profile_context_window(const ModelOptions& options);
 
 // What the outside world may see of a profile: everything but the key.
 struct ModelProfile {
@@ -202,7 +215,8 @@ public:
     // and supporting `kind`; base_url http(s) with a host and without
     // whitespace, control characters or a '<' placeholder (trailing '/'
     // stripped); model at most 128 bytes of text; at most 8 options, keys
-    // 1-15 bytes, values at most 64 bytes, no control characters; api_key
+    // 1-15 bytes, values at most 64 bytes, no control characters, and
+    // kOptVision/kOptContextWindow in their documented forms; api_key
     // printable ASCII without spaces (it goes into an HTTP header).
     // Failures with a dedicated code also set *why: LimitReached (17th
     // profile, QuotaExceeded) and KeyOriginMismatch (api_key_from naming a
