@@ -13,7 +13,7 @@
 //
 // Portable: no platform header, built the same way for the host
 // simulator and the ESP-IDF target. The registered thread is identified
-// with a thread_local flag rather than a platform thread/task handle --
+// by a thread_local id rather than a platform thread/task handle --
 // thread_local is backed on both ports (the simulator's <thread>, and
 // FreeRTOS tasks on ESP-IDF via its own per-task TLS slots) without
 // wisp_os needing a "current task handle" lookup of its own for this.
@@ -25,9 +25,11 @@ namespace wisp::os {
 // Registers the calling thread as the flash thread.
 void set_flash_thread();
 
-// Unregisters the flash thread. Need not be called from the same thread
-// as set_flash_thread() (a test may tear down from a different thread
-// once the flash thread itself has already exited).
+// Unregisters the calling thread if it is the registered flash thread;
+// a no-op on any other thread. A later set_flash_thread() on another
+// thread takes over, and the earlier thread's clear then leaves the newer
+// registration alone -- so two workers alive at once (in a test) cannot
+// switch the guard off for each other.
 void clear_flash_thread();
 
 // True on the flash thread itself, or whenever no flash thread is

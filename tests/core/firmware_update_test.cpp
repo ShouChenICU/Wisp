@@ -452,3 +452,52 @@ TEST(FirmwareUpdate, ChunkTimeoutFailsTheUpload) {
     ASSERT_TRUE(fx.upload(image).ok());
     EXPECT_EQ(fx.updater.written, image);
 }
+
+// Dropping an image while the Bulk lane is full waits for room without
+// holding the service's lock: status() and pending() still answer, and no
+// new upload can begin until the abort has been queued.
+TEST(FirmwareUpdate, AbortWaitingForRoomDoesNotBlockStatus) {
+    wisp::core::StorageWorkerConfig cfg;
+    cfg.bulk_capacity = 1;
+    StorageWorker worker(cfg);
+    ASSERT_TRUE(worker.start());
+    Fixture fx(true, true, true, &worker);
+    ASSERT_TRUE(fx.upload(make_firmware_image()).ok());
+
+    // Hold the flash thread, then fill the one Bulk slot.
+    wisp::os::Semaphore started(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    ASSERT_TRUE(worker.submit([&] {
+        started.give();
+        (void)release.take(10000);
+    }));
+    ASSERT_TRUE(started.take(5000));
+    ASSERT_TRUE(worker.submit([] {}, wisp::core::IoLane::Bulk));
+
+    wisp::os::Semaphore declined(1, 0);
+    auto decliner = wisp::os::Task::spawn({}, [&] {
+        EXPECT_TRUE(fx.service->decline().ok());
+        declined.give();
+    });
+    wisp::os::sleep_ms(50);
+    EXPECT_FALSE(declined.take(0));  // still waiting for room
+
+    wisp::os::Semaphore answered(1, 0);
+    auto reader = wisp::os::Task::spawn({}, [&] {
+        (void)fx.service->status();
+        (void)fx.service->pending();
+        answered.give();
+    });
+    EXPECT_TRUE(answered.take(1000));
+    EXPECT_FALSE(fx.service->pending());
+    EXPECT_EQ(fx.service->begin(1024, nullptr).failure, FirmwareFailure::Busy);
+
+    release.give();
+    ASSERT_TRUE(declined.take(5000));
+    decliner->join();
+    reader->join();
+    ASSERT_TRUE(worker.drain(5000));
+    EXPECT_EQ(fx.updater.aborts, 1);
+    ASSERT_TRUE(fx.upload(make_firmware_image()).ok());
+    worker.stop();
+}

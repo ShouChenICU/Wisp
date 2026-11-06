@@ -27,6 +27,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <utility>
 
 #include "wisp/base/result.hpp"
 #include "wisp/os/os.hpp"
@@ -99,8 +101,8 @@ public:
     Result<void> run_sync(std::function<void()> job, uint32_t timeout_ms,
                           IoLane lane = IoLane::Normal);
 
-    // True when called from inside a job: on this worker's thread, while
-    // it is registered as the flash thread.
+    // True when called from inside one of this worker's jobs (on its
+    // thread, between start and stop).
     bool on_worker() const;
 
     // Waits up to `timeout_ms` (or os::kForever) until no job is queued or
@@ -138,5 +140,28 @@ private:
     // drain() never sees a queued job as idle.
     std::atomic<size_t> pending_{0};
 };
+
+// fn() (returning Result<T>) on `worker` and its result, waiting as long as
+// it takes: inline without a worker, on the worker, or outside its run (see
+// run_sync()). A full lane is retried for up to `busy_retry_ms` before
+// failing with ErrorCode::Busy. Since the wait has no timeout, fn may
+// capture references to the caller's stack: once queued it has finished
+// before this returns, and a refused job never runs.
+template <typename T, typename Fn>
+Result<T> call_on_worker(StorageWorker* worker, Fn&& fn, IoLane lane = IoLane::Normal,
+                         uint32_t busy_retry_ms = 2000) {
+    if (worker == nullptr) return fn();
+    std::optional<Result<T>> out;
+    std::function<void()> job = [&out, &fn] { out.emplace(fn()); };
+    Result<void> r = worker->run_sync(job, os::kForever, lane);
+    constexpr uint32_t kPollMs = 10;
+    for (uint32_t waited = 0; !r && r.error().code == ErrorCode::Busy && waited < busy_retry_ms;
+         waited += kPollMs) {
+        os::sleep_ms(kPollMs);
+        r = worker->run_sync(job, os::kForever, lane);
+    }
+    if (!r) return Result<T>::err(r.error().code, r.error().message);
+    return std::move(*out);
+}
 
 }  // namespace wisp::core

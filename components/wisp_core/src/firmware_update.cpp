@@ -178,11 +178,9 @@ FirmwareOutcome FirmwareUpdateService::fail_upload(uint32_t id, FirmwareFailure 
             return outcome(failure, std::move(message));
         }
         version = version_;
-        // Under the lock: once Idle, a new upload may begin() the platform,
-        // and this abort() must not land on it.
-        abort_updater_locked();
-        reset_locked();
+        state_ = State::Aborting;
     }
+    abort_updater_and_reset();
     if (event_error == nullptr) event_error = to_string(failure);
     WLOG_W(kTag, "firmware upload failed: %s (%s)", event_error, message.c_str());
     publish("failed", version, event_error);
@@ -226,7 +224,10 @@ FirmwareOutcome FirmwareUpdateService::write(uint32_t id, std::span<const uint8_
         auto begun = call_on<void>(worker_, deps_.chunk_timeout_ms,
                                    [updater, size] { return updater->begin(size); });
         if (!begun) return fail_upload(id, FirmwareFailure::WriteFailed, begun.error().message);
-        chunk_ = std::allocate_shared<Chunk>(os::LargeAllocator<Chunk>());
+        // The control block is small; only the buffer goes to PSRAM, and
+        // its allocation failure is reported below rather than aborting
+        // the way a failed LargeAllocator does.
+        chunk_ = std::make_shared<Chunk>();
         chunk_->buf = os::LargeBuffer::allocate(kIoChunk);
         if (!chunk_->buf.ok()) {
             return fail_upload(id, FirmwareFailure::WriteFailed, "no memory for the upload buffer");
@@ -343,9 +344,9 @@ FirmwareOutcome FirmwareUpdateService::confirm() {
         !r) {
         {
             std::lock_guard<os::Mutex> lock(mutex_);
-            abort_updater_locked();
-            reset_locked();
+            state_ = State::Aborting;
         }
+        abort_updater_and_reset();
         WLOG_E(kTag, "activating firmware %s failed: %s", version.c_str(),
                r.error().message.c_str());
         publish("failed", version, to_string(FirmwareFailure::WriteFailed));
@@ -372,9 +373,9 @@ FirmwareOutcome FirmwareUpdateService::decline() {
             return outcome(FirmwareFailure::NotPending, "no firmware awaits confirmation");
         }
         version = version_;
-        abort_updater_locked();
-        reset_locked();
+        state_ = State::Aborting;
     }
+    abort_updater_and_reset();
     WLOG_I(kTag, "firmware %s declined on the device", version.c_str());
     publish("rejected", version);
     return {};
@@ -389,9 +390,9 @@ void FirmwareUpdateService::tick(uint64_t now_ms) {
             return;
         }
         version = version_;
-        abort_updater_locked();
-        reset_locked();
+        state_ = State::Aborting;
     }
+    abort_updater_and_reset();
     WLOG_I(kTag, "firmware %s not confirmed in time; discarded", version.c_str());
     publish("rejected", version);
 }
@@ -404,19 +405,20 @@ void FirmwareUpdateService::mark_running_valid() {
     }
 }
 
-void FirmwareUpdateService::abort_updater_locked() {
+void FirmwareUpdateService::abort_updater_and_reset() {
     FirmwareUpdater* updater = deps_.updater;
     std::function<void()> job = [updater] { updater->abort(); };
     if (worker_ == nullptr) {
         job();
-        return;
+    } else if (!worker_->submit(job, IoLane::Bulk)) {
+        // Not running (boot or shutdown: run_sync() runs it right here) or
+        // the lane is full (wait for room).
+        if (auto r = run_on(worker_, job, os::kForever); !r) {
+            WLOG_W(kTag, "could not drop the partial image: %s", r.error().message.c_str());
+        }
     }
-    if (worker_->submit(job, IoLane::Bulk)) return;
-    // Not running (boot or shutdown: run_sync() runs it right here) or
-    // the lane is full (wait for room).
-    if (auto r = run_on(worker_, job, os::kForever); !r) {
-        WLOG_W(kTag, "could not drop the partial image: %s", r.error().message.c_str());
-    }
+    std::lock_guard<os::Mutex> lock(mutex_);
+    reset_locked();
 }
 
 }  // namespace wisp::core

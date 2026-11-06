@@ -11,10 +11,11 @@ namespace {
 
 size_t at_least_one(size_t n) { return n == 0 ? 1 : n; }
 
-// The worker whose run() is executing on this thread, if any. A
-// per-thread record rather than os::on_flash_thread() alone: that also
-// answers true whenever no flash thread is registered, and a test may
-// have two workers alive, one of which clears the registration.
+// The worker whose run() is executing on this thread, if any. on_worker()
+// reads this rather than os::on_flash_thread(): the guard also answers
+// true when no flash thread is registered at all (boot, shutdown), which
+// would make run_sync() run inline on any thread then, and it cannot tell
+// two workers alive in one test apart.
 thread_local const StorageWorker* t_current_worker = nullptr;
 
 }  // namespace
@@ -126,7 +127,7 @@ Result<void> StorageWorker::run_sync(std::function<void()> job, uint32_t timeout
     return Result<void>::ok();
 }
 
-bool StorageWorker::on_worker() const { return t_current_worker == this && os::on_flash_thread(); }
+bool StorageWorker::on_worker() const { return t_current_worker == this; }
 
 bool StorageWorker::drain(uint32_t timeout_ms) {
     if (on_worker()) {

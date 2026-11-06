@@ -1,5 +1,6 @@
 #include "wisp/os/flash_guard.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
@@ -7,18 +8,25 @@ namespace wisp::os {
 
 namespace {
 
-// Whether any thread is currently registered as the flash thread; false
-// both before the first set_flash_thread() and after every
-// clear_flash_thread() (the single-threaded boot/shutdown phases, where
-// on_flash_thread() must allow everything).
-std::atomic<bool> g_flash_thread_registered{false};
+// The id of the registered flash thread, 0 when none is (before the first
+// set_flash_thread() and after the owner's clear_flash_thread(): the
+// single-threaded boot/shutdown phases, where on_flash_thread() must
+// allow everything).
+std::atomic<uint32_t> g_owner{0};
 
-// Set true only on the thread that called set_flash_thread(), by that
-// very call -- every other thread's copy stays false. Cleared on
-// clear_flash_thread() too, so a thread that briefly was the flash
-// thread (tests reuse OS threads across cases) doesn't misreport itself
-// as still being it.
-thread_local bool g_is_flash_thread = false;
+// Never-reused per-thread ids, handed out on a thread's first use of the
+// guard. A counter rather than a thread_local's address: a thread that
+// exits while still registered must not be impersonated by a later one
+// that happens to get the same TLS slot.
+std::atomic<uint32_t> g_next_id{1};
+thread_local uint32_t t_id = 0;
+
+uint32_t this_thread_id() {
+    if (t_id == 0) {
+        t_id = g_next_id.fetch_add(1, std::memory_order_relaxed);
+    }
+    return t_id;
+}
 
 // Installed by set_flash_violation_reporter(); null until a higher layer
 // installs one at boot. A plain function pointer (not std::function), so
@@ -28,18 +36,16 @@ std::atomic<FlashViolationReporter> g_flash_violation_reporter{nullptr};
 
 }  // namespace
 
-void set_flash_thread() {
-    g_is_flash_thread = true;
-    g_flash_thread_registered.store(true, std::memory_order_release);
-}
+void set_flash_thread() { g_owner.store(this_thread_id(), std::memory_order_release); }
 
 void clear_flash_thread() {
-    g_flash_thread_registered.store(false, std::memory_order_release);
-    g_is_flash_thread = false;
+    uint32_t self = this_thread_id();
+    g_owner.compare_exchange_strong(self, 0, std::memory_order_acq_rel);
 }
 
 bool on_flash_thread() {
-    return !g_flash_thread_registered.load(std::memory_order_acquire) || g_is_flash_thread;
+    uint32_t owner = g_owner.load(std::memory_order_acquire);
+    return owner == 0 || owner == this_thread_id();
 }
 
 void set_flash_violation_reporter(FlashViolationReporter reporter) {

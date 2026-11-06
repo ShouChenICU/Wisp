@@ -109,17 +109,89 @@ TEST(FlashGuard, OnlyTheRegisteredThreadIsTheFlashThread) {
     EXPECT_TRUE(b_sees_true_after_clear);
 }
 
+// Only the registered thread can unregister itself: a clear from any
+// other thread (say, a second worker that has stopped while the first is
+// still running) leaves the registration in place, so the guard keeps
+// rejecting everyone but the flash thread.
+TEST(FlashGuard, ClearFromAnotherThreadKeepsTheRegistration) {
+    Semaphore registered(1, 0);
+    Semaphore release(1, 0);
+    auto owner = Task::spawn({}, [&] {
+        set_flash_thread();
+        registered.give();
+        release.take(kForever);
+        clear_flash_thread();
+    });
+    registered.take(kForever);
+
+    clear_flash_thread();  // not the owner: ignored
+    bool still_rejected = !on_flash_thread();
+
+    auto other = Task::spawn({}, [] { clear_flash_thread(); });
+    other->join();
+    bool still_rejected_after_other = !on_flash_thread();
+
+    release.give();
+    owner->join();
+
+    EXPECT_TRUE(still_rejected);
+    EXPECT_TRUE(still_rejected_after_other);
+    EXPECT_TRUE(on_flash_thread());  // the owner's own clear did unregister it
+}
+
+// A thread that registers after another one takes over; the earlier
+// thread's later clear does not undo the newer registration.
+TEST(FlashGuard, StaleOwnerClearDoesNotUndoANewerRegistration) {
+    Semaphore a_registered(1, 0);
+    Semaphore b_registered(1, 0);
+    Semaphore a_cleared(1, 0);
+    Semaphore release_b(1, 0);
+    bool a_after_takeover = true;
+
+    auto a = Task::spawn({}, [&] {
+        set_flash_thread();
+        a_registered.give();
+        b_registered.take(kForever);
+        a_after_takeover = on_flash_thread();
+        clear_flash_thread();
+        a_cleared.give();
+    });
+    a_registered.take(kForever);
+    auto b = Task::spawn({}, [&] {
+        set_flash_thread();
+        b_registered.give();
+        release_b.take(kForever);
+        clear_flash_thread();
+    });
+    a_cleared.take(kForever);
+    a->join();
+    bool main_rejected = !on_flash_thread();
+    release_b.give();
+    b->join();
+
+    EXPECT_FALSE(a_after_takeover);
+    EXPECT_TRUE(main_rejected);
+    EXPECT_TRUE(on_flash_thread());
+}
+
 // Off the flash thread, WISP_ASSERT_FLASH_THREAD's host/test build prints
 // the call site and aborts (spec 3.2), so misplaced flash access fails
 // the very ctest that exercises it instead of only showing up on
 // hardware.
 TEST(FlashGuardDeathTest, AssertAbortsOffTheFlashThread) {
-    // Registered by a thread that has since exited and been joined --
-    // registration is global, so it stays in effect -- rather than kept
-    // alive across the EXPECT_DEATH fork() below, which gtest otherwise
-    // warns about when other threads are still running.
-    auto setter = Task::spawn({}, [] { set_flash_thread(); });
-    setter->join();
+    // Another thread stays registered across the death test, so it runs
+    // in the "threadsafe" style (re-executes the binary) rather than
+    // forking a multi-threaded process.
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    Semaphore registered(1, 0);
+    Semaphore release(1, 0);
+    auto owner = Task::spawn({}, [&] {
+        set_flash_thread();
+        registered.give();
+        release.take(kForever);
+        clear_flash_thread();
+    });
+    registered.take(kForever);
 
     // The test's own thread was never registered, so this trips the
     // guard.
@@ -127,8 +199,6 @@ TEST(FlashGuardDeathTest, AssertAbortsOffTheFlashThread) {
         { WISP_ASSERT_FLASH_THREAD("StorageManager::write_atomic"); },
         "flash access off the flash thread.*write_atomic");
 
-    // Leave global registration state as this test found it (cleared),
-    // since it is process-wide and other tests in this binary run after
-    // it.
-    clear_flash_thread();
+    release.give();
+    owner->join();
 }

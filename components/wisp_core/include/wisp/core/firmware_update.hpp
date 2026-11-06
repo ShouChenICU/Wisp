@@ -11,8 +11,9 @@
 //     +----- abort(), ---+---- decline(), ----+-- activate failed ---+
 //            a bad image       tick() after confirm_timeout_ms
 //
-// begin() refuses a second upload (Busy) until the first one has left
-// Pending. write() checks the image as soon as its first
+// Every drop of the image goes through a short Aborting state while the
+// platform's abort is queued. begin() refuses a second upload (Busy) until
+// the first one has left Pending (or Aborting). write() checks the image as soon as its first
 // kFirmwareHeadBytes have arrived and refuses a foreign one before a single
 // byte reaches FirmwareUpdater::write(). end() has the platform verify the
 // whole image, publishes system.firmware {state:"received", version} and
@@ -202,13 +203,19 @@ public:
     void mark_running_valid();
 
 private:
-    enum class State { Idle, Uploading, Pending, Installing };
+    // Aborting: the partial image is being dropped; like Installing it
+    // keeps every other upload and answer out until it is Idle again.
+    enum class State { Idle, Uploading, Pending, Installing, Aborting };
 
     // Under mutex_: back to Idle for the next upload.
     void reset_locked();
-    // Queues FirmwareUpdater::abort() behind every earlier call. Under
-    // mutex_, so it lands before a later upload's begin().
-    void abort_updater_locked();
+    // Called without mutex_, with the state set to Aborting under it:
+    // queues FirmwareUpdater::abort() behind every earlier call (waiting
+    // for room when the Bulk lane is full), then resets to Idle. Only then
+    // can a later upload begin(), so its begin() lands after the abort;
+    // the wait for room holds no lock, so status() and pending() never
+    // wait on the flash thread.
+    void abort_updater_and_reset();
     // Adds `bytes` to chunk_, handing each full chunk to the platform.
     Result<void> gather(std::span<const uint8_t> bytes);
     // Hands the gathered bytes to the platform and waits for them.
