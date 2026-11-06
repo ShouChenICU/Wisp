@@ -2,7 +2,6 @@
 // background and how many notifications are unread, at the top of the
 // safe area. See wisp/ui/system_layer.hpp.
 
-#include <algorithm>
 #include <string>
 
 #include "wisp/ui/overlay.hpp"
@@ -12,21 +11,20 @@ namespace wisp::ui {
 
 namespace {
 
-// The capsule's side padding. Either count alone fits kCapsuleW at the
-// body font; both together, with a two-digit unread count, need a few
-// pixels more, and the capsule then grows about its centre.
-constexpr int32_t kCapsulePadX = 2;
+// "9+" above 9 keeps the widest text, "<play>9+ <bell>9+", inside
+// kCapsuleW at the body font.
+std::string count_text(int n) { return n > 9 ? "9+" : std::to_string(n); }
 
 std::string capsule_text(StatusCounts c) {
     std::string text;
     if (c.background > 0) {
         text += LV_SYMBOL_PLAY;
-        text += std::to_string(c.background);
+        text += count_text(c.background);
     }
     if (c.unread > 0) {
         if (!text.empty()) text += " ";
         text += LV_SYMBOL_BELL;
-        text += std::to_string(c.unread);
+        text += count_text(c.unread);
     }
     return text;
 }
@@ -59,7 +57,10 @@ void SystemLayer::set_status(StatusCounts c) {
         lv_obj_set_style_bg_color(capsule_,
                                   lv_color_hex(theme::pressed(theme::kSurface3, theme::kText)),
                                   LV_STATE_PRESSED);
-        lv_obj_set_style_pad_hor(capsule_, kCapsulePadX, 0);
+        // The drawn pill is kCapsuleH tall; its touch target reaches
+        // kPanelRowMinH like the other system controls. Rows above the
+        // screen's top take no touches anyway.
+        lv_obj_set_ext_click_area(capsule_, (kPanelRowMinH - kCapsuleH) / 2);
         lv_obj_add_event_cb(capsule_, &SystemLayer::capsule_cb, LV_EVENT_CLICKED, this);
         capsule_label_ = lv_label_create(capsule_);
         lv_obj_set_style_text_color(capsule_label_, lv_color_hex(theme::kText), 0);
@@ -71,11 +72,6 @@ void SystemLayer::set_status(StatusCounts c) {
     update_capsule_touch();
     lv_label_set_text(capsule_label_, capsule_text(c).c_str());
     lv_obj_remove_flag(capsule_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_update_layout(capsule_label_);
-    const hal::Area a = status_area(shape_);
-    const int32_t w = std::max(kCapsuleW, lv_obj_get_width(capsule_label_) + 2 * kCapsulePadX);
-    lv_obj_set_pos(capsule_, a.x1 - (w - kCapsuleW) / 2, a.y1);
-    lv_obj_set_width(capsule_, w);
     // Laid out now, so a touch read before the next frame hits it where it
     // is drawn.
     lv_obj_update_layout(capsule_);

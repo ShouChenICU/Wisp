@@ -32,8 +32,11 @@
 //     at a time, and marked.
 //   - The pull-down panel is a full-screen opaque backdrop without
 //     children, marked like the error panel's, and over it a content
-//     box exactly the safe area, marked as well. Content that scrolls
-//     under the panel is cut by both.
+//     box exactly the safe area, marked as well. A change under the panel
+//     is cut by both only where it reaches beyond the content box: one
+//     that lies wholly inside it may be the panel's own (InsideBox), so it
+//     is redrawn. On a rectangle the content box is the whole screen, so
+//     nothing under the panel is cut there.
 //   - A confirm dialog is an lv_msgbox under LVGL's full-screen backdrop.
 //     The dialogs guard dangerous actions (factory reset, firmware
 //     install, deleting a scene), so the backdrop keeps every touch
@@ -136,8 +139,8 @@ public:
     static constexpr const char* kPinyinKey = "中";
     static constexpr const char* kLatinKey = "EN";
     // The status capsule's size and its gap below the safe area's top
-    // (refinement of spec 5.5; see status_area()).
-    static constexpr int32_t kCapsuleW = 56, kCapsuleH = 24, kCapsuleTopGap = 4;
+    // (spec 5.5; see status_area()).
+    static constexpr int32_t kCapsuleW = 72, kCapsuleH = 24, kCapsuleTopGap = 4;
     // The top-edge swipe (spec 5.6): the zone's depth below each column's
     // first visible pixel, and how far down a press from it moves before
     // it opens the panel.
@@ -172,7 +175,9 @@ public:
 
     // Shows the counts in the status capsule, at status_area(): the
     // background scenes after LV_SYMBOL_PLAY and the unread notifications
-    // after LV_SYMBOL_BELL, each only when it is not 0. Both 0 hides it.
+    // after LV_SYMBOL_BELL, each only when it is not 0 and as "9+" above
+    // 9, so the text always fits. Both 0 hides it. The pill is drawn
+    // exactly at status_area(); its touch target reaches kPanelRowMinH.
     void set_status(StatusCounts c);
     // The capsule while it is shown, else nullptr.
     lv_obj_t* capsule() const;
@@ -184,19 +189,21 @@ public:
     // the top zone (in_top_zone()) reaches the screen below, and once it
     // has moved kTopTriggerDy down (is_top_swipe()) it is taken from the
     // widget under it, which gets LV_EVENT_PRESS_LOST; the release opens
-    // the panel. A press never starts it while the keyboard or a confirm
-    // dialog is up, or the panel is already open.
+    // the panel. A press never starts it while the keyboard, the error
+    // panel or a confirm dialog is up, or the panel is already open.
     void set_panel_handlers(PanelHandlers h);
-    // Calls on_open, then shows the model over the whole screen.
+    // Calls on_open, then shows the model over the whole screen. Does
+    // nothing while the keyboard, the error panel or a confirm dialog is
+    // up: the panel would open under them.
     // Rows inside the safe area, each at least kPanelRowMinH tall: the
     // header (time, battery, Wi-Fi), the background scenes (a tap calls
     // open_scene and closes the panel, the close button exit_scene) and
     // the notifications (a tap calls tap_note and closes the panel; a
     // swipe to the left or the close button dismiss_note; the action
     // button note_action), then a clear-all button (clear_all). A tap on
-    // no row, an upward swipe where the content does not scroll, or a
-    // back swipe closes it; while it is open the back swipe calls no back
-    // handler.
+    // no row, an upward swipe where the content does not scroll or is at
+    // the bottom of its scroll, or a back swipe closes it; while it is
+    // open the back swipe calls no back handler.
     void open_panel();
     void close_panel();
     bool panel_open() const { return panel_ != nullptr; }
@@ -296,6 +303,9 @@ private:
     bool wants_pointer() const;
     void update_pointer_hook();
     bool has_panel() const;
+    // A panel exists, is not open, and nothing it would open under is up
+    // (the keyboard, the error panel, a dialog).
+    bool can_open_panel() const;
     void update_capsule_touch();
 
     void build_panel();
@@ -342,6 +352,10 @@ private:
     bool taken_ = false;          // it crossed the trigger and was taken
     bool top_candidate_ = false;  // the press started in the top zone
     bool top_taken_ = false;      // it crossed the top trigger and was taken
+    // The press started on the open panel at the bottom of its scroll; it
+    // was taken once it moved up far enough.
+    bool up_candidate_ = false;
+    bool up_taken_ = false;
     lv_point_t start_{};
     lv_obj_t* arrow_ = nullptr;  // hidden while no swipe shows it
 
@@ -371,6 +385,7 @@ private:
     PanelModel model_;
     lv_obj_t* panel_ = nullptr;  // the content box
     lv_obj_t* panel_backdrop_ = nullptr;
+    lv_point_t press_at_{};  // where the press on the panel or banner began
     // > 0 while one of the panel's event callbacks runs: the panel must
     // then outlive the event.
     int panel_event_depth_ = 0;

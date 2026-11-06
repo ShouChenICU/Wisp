@@ -71,6 +71,7 @@ namespace {
 // index of the scene or notification it belongs to.
 enum class Part : uintptr_t {
     Blank,
+    Header,
     SceneRow,
     SceneClose,
     NoteRow,
@@ -97,9 +98,6 @@ size_t index_of(lv_obj_t* obj) {
 constexpr int32_t kBadgeSize = 32;
 // A swipe on the panel: as far as the top-edge swipe that opens it.
 constexpr int32_t kSwipe = SystemLayer::kTopTriggerDy;
-
-// Where the current press on the panel started.
-lv_point_t g_press_at{};
 
 lv_obj_t* make_text(lv_obj_t* parent, const std::string& text, uint32_t color) {
     lv_obj_t* label = lv_label_create(parent);
@@ -166,11 +164,19 @@ void SystemLayer::set_panel_handlers(PanelHandlers h) {
     update_pointer_hook();
 }
 
+bool SystemLayer::can_open_panel() const {
+    // Under the keyboard the user would type into a textarea the panel
+    // hides; under the error panel or a dialog it would show up only once
+    // they go, and take the next back swipe.
+    return has_panel() && panel_ == nullptr && kb_ == nullptr && error_panel_ == nullptr &&
+           confirm_box_ == nullptr;
+}
+
 void SystemLayer::open_panel() {
-    if (!has_panel() || panel_ != nullptr) return;
+    if (!can_open_panel()) return;
     // A copy: the owner may replace the handlers from it.
     if (std::function<void()> on_open = panel_handlers_.on_open) on_open();
-    if (!has_panel() || panel_ != nullptr) return;
+    if (!can_open_panel()) return;
     build_panel();
     raise();
 }
@@ -274,6 +280,9 @@ void SystemLayer::fill_panel() {
     // Header: the time, then the battery and Wi-Fi.
     lv_obj_t* header = make_box(panel_, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_min_height(header, kPanelRowMinH, 0);
+    // A tap on the time or the battery is not a tap on empty space.
+    lv_obj_add_flag(header, LV_OBJ_FLAG_CLICKABLE);
+    touchable(header, Part::Header, 0);
     lv_obj_t* time = make_text(header, m.header.time, theme::kText);
     lv_obj_set_style_text_font(time, font(24), 0);
     std::string status = battery_text(m.header);
@@ -363,12 +372,16 @@ void SystemLayer::panel_cb(lv_event_t* e) {
     lv_point_t at{};
     if (indev != nullptr) lv_indev_get_point(indev, &at);
     if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
-        g_press_at = at;
+        self->press_at_ = at;
         return;
     }
+    // The rows drawn now are an older model's until the queued refill
+    // runs; an index may name another notification by then.
+    if (self->refill_queued_) return;
     // A click without a pointer (sent by code) is a tap.
-    const detail::PressEnd end =
-        indev != nullptr ? detail::classify_press(g_press_at, at, kSwipe) : detail::PressEnd::Tap;
+    const detail::PressEnd end = indev != nullptr
+                                     ? detail::classify_press(self->press_at_, at, kSwipe)
+                                     : detail::PressEnd::Tap;
     const Part part = part_of(obj);
     const size_t i = index_of(obj);
     const PanelModel& m = self->model_;
@@ -384,7 +397,8 @@ void SystemLayer::panel_cb(lv_event_t* e) {
     bool close = false;
     if (end == detail::PressEnd::SwipeUp) {
         close = true;
-    } else if (end == detail::PressEnd::SwipeLeft && part == Part::NoteRow) {
+    } else if (end == detail::PressEnd::SwipeLeft && note_part) {
+        // A swipe that starts on the row's buttons swipes the row.
         call = [fn = h.dismiss_note, n = m.notes[i]] {
             if (fn) fn(n.source, n.id);
         };
@@ -392,6 +406,8 @@ void SystemLayer::panel_cb(lv_event_t* e) {
         switch (part) {
             case Part::Blank:
                 close = true;
+                break;
+            case Part::Header:
                 break;
             case Part::SceneRow:
                 close = true;

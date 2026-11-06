@@ -1584,11 +1584,11 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
 // --- Status capsule, top-edge swipe, pull-down panel, banners ---
 
 TEST(StatusCapsule, AreaPerShape) {
-    EXPECT_TRUE(same_area(SystemLayer::status_area(rect480()), {212, 4, 267, 27}));
-    EXPECT_TRUE(same_area(SystemLayer::status_area(rounded480()), {212, 28, 267, 51}));
-    EXPECT_TRUE(same_area(SystemLayer::status_area(circle480()), {212, 78, 267, 101}));
+    EXPECT_TRUE(same_area(SystemLayer::status_area(rect480()), {204, 4, 275, 27}));
+    EXPECT_TRUE(same_area(SystemLayer::status_area(rounded480()), {204, 28, 275, 51}));
+    EXPECT_TRUE(same_area(SystemLayer::status_area(circle480()), {204, 78, 275, 101}));
     const ScreenShape sim{ScreenShapeKind::RoundedRect, kSide, kSide, 40};
-    EXPECT_TRUE(same_area(SystemLayer::status_area(sim), {212, 19, 267, 42}));
+    EXPECT_TRUE(same_area(SystemLayer::status_area(sim), {204, 19, 275, 42}));
 }
 
 TEST_F(SystemLayerTest, StatusCapsuleHiddenWhenBothZeroAndShowsCounts) {
@@ -1623,18 +1623,20 @@ TEST_F(SystemLayerTest, StatusCapsuleHiddenWhenBothZeroAndShowsCounts) {
             EXPECT_NE(text.find(LV_SYMBOL_BELL), std::string::npos) << text;
             EXPECT_EQ(text.find(LV_SYMBOL_PLAY), std::string::npos) << text;
 
-            // The widest counts still fit: the capsule then grows about the
-            // same centre, its height unchanged.
-            layer->set_status({3, 50});
+            // Counts above 9 read "9+"; the widest text fits the capsule,
+            // which is always exactly status_area().
+            layer->set_status({12, 50});
             cap = layer->capsule();
             lv_obj_t* label = find_obj_of_class(cap, &lv_label_class);
+            text = lv_label_get_text(label);
+            EXPECT_EQ(text, LV_SYMBOL_PLAY "9+ " LV_SYMBOL_BELL "9+");
             lv_obj_update_layout(cap);
             EXPECT_LE(lv_obj_get_width(label), lv_obj_get_content_width(cap));
             lv_obj_get_coords(cap, &a);
-            EXPECT_EQ(a.y1, want.y1);
-            EXPECT_EQ(a.y2, want.y2);
-            EXPECT_LE(std::abs((a.x1 + a.x2) - (want.x1 + want.x2)), 1) << area_str(a);
-            EXPECT_TRUE(fully_visible(shape, a)) << area_str(a);
+            EXPECT_TRUE(same_area({a.x1, a.y1, a.x2, a.y2}, want)) << area_str(a);
+            layer->set_status({9, 10});
+            text = lv_label_get_text(label);
+            EXPECT_EQ(text, LV_SYMBOL_PLAY "9 " LV_SYMBOL_BELL "9+");
 
             layer->set_status({0, 0});
             EXPECT_EQ(layer->capsule(), nullptr);
@@ -1669,8 +1671,94 @@ TEST_F(SystemLayerTest, StatusCapsuleTapOpensPanel) {
         on_ui([&] {
             EXPECT_TRUE(layer->panel_open());
             EXPECT_NE(layer->panel(), nullptr);
+            layer->close_panel();
         });
+        // The touch target reaches kPanelRowMinH: a tap just below the
+        // drawn capsule still opens the panel.
+        tap(at.x, static_cast<int16_t>(at.y + SystemLayer::kPanelRowMinH / 2 - 2));
+        EXPECT_EQ(clicks, 1);
+        EXPECT_EQ(opens, 2);
+        on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
     }
+}
+
+// The panel never opens under the keyboard, the error panel or a dialog:
+// not from the capsule, a top swipe or the owner.
+TEST_F(SystemLayerTest, PanelRefusesToOpenUnderOtherPieces) {
+    start("rect");
+    int opens = 0;
+    lv_point_t at{};
+    lv_obj_t* ta = nullptr;
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [&] { ++opens; }});
+        layer->set_status({1, 1});
+        at = center_of(layer->capsule());
+        ta = lv_textarea_create(lv_screen_active());
+        lv_obj_set_pos(ta, 100, 150);
+        layer->show_keyboard(ta);
+    });
+    tap(at);
+    on_ui([&] {
+        EXPECT_FALSE(layer->panel_open());
+        layer->open_panel();
+        EXPECT_FALSE(layer->panel_open());
+        layer->hide_keyboard();
+        layer->show_error({"Demo", "main.lua", 3, "boom"}, [] {}, [] {});
+    });
+    feed({{240, 4, 0}});
+    feed({{240, 4, 0}});
+    feed({{240, 60, 0}});
+    feed({});
+    lv_obj_t* box = nullptr;
+    on_ui([&] {
+        EXPECT_FALSE(layer->panel_open());
+        layer->open_panel();
+        EXPECT_FALSE(layer->panel_open());
+        layer->hide_error();
+        box = layer->open_confirm(StrId::ResetTitle, "Sure?", [](bool) {});
+        ASSERT_NE(box, nullptr);
+        layer->open_panel();
+        EXPECT_FALSE(layer->panel_open());
+        layer->close_confirm(box);
+    });
+    EXPECT_EQ(opens, 0);
+    tap(at);
+    EXPECT_EQ(opens, 1);
+    on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
+}
+
+// A press from the top-left corner is in both zones: whichever swipe
+// crosses its trigger first owns it.
+TEST_F(SystemLayerTest, FirstGestureToCrossItsTriggerWins) {
+    start("rect");
+    int backs = 0;
+    int opens = 0;
+    on_ui([&] {
+        layer->set_back_handler([&] { ++backs; });
+        layer->set_panel_handlers({.on_open = [&] { ++opens; }});
+    });
+    ASSERT_TRUE(SystemLayer::in_back_zone(shape, 4, 4));
+    ASSERT_TRUE(SystemLayer::in_top_zone(shape, 4, 4));
+    // Right first: back, though it then moves far down too.
+    feed({{4, 4, 0}});
+    feed({{4, 4, 0}});
+    feed({{40, 10, 0}});
+    feed({{44, 80, 0}});
+    feed({});
+    EXPECT_EQ(backs, 1);
+    EXPECT_EQ(opens, 0);
+    // Down first: the panel, and the arrow it had started to show goes.
+    feed({{4, 4, 0}});
+    feed({{4, 4, 0}});
+    feed({{14, 10, 0}});
+    on_ui([&] { EXPECT_NE(layer->back_arrow(), nullptr); });
+    feed({{16, 40, 0}});
+    on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
+    feed({{80, 60, 0}});
+    feed({});
+    EXPECT_EQ(backs, 1);
+    EXPECT_EQ(opens, 1);
+    on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
 }
 
 TEST(TopSwipe, ZoneFollowsRowSpan) {
@@ -2030,10 +2118,51 @@ TEST_F(SystemLayerTest, PanelSwipeUpCloses) {
     on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
 }
 
+// At the bottom of its scroll, an upward swipe closes the panel too;
+// elsewhere it scrolls.
+TEST_F(SystemLayerTest, PanelSwipeUpAtTheBottomCloses) {
+    start("circle");
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [] {}});
+        wisp::ui::PanelModel m = sample_model();
+        for (int i = 0; i < 8; ++i) {
+            m.notes.push_back({"a", "x" + std::to_string(i), "A", "More", "Body", ""});
+        }
+        layer->update_panel(m);
+        layer->open_panel();
+        lv_obj_update_layout(layer->panel());
+        ASSERT_GT(lv_obj_get_scroll_bottom(layer->panel()), 0);
+    });
+    auto swipe_up = [&] {
+        feed({{240, 300, 0}});
+        feed({{240, 300, 0}});
+        feed({{240, 270, 0}});
+        feed({{240, 230, 0}});
+        feed({{240, 200, 0}});
+        feed({});
+    };
+    swipe_up();
+    on_ui([&] {
+        ASSERT_TRUE(layer->panel_open());
+        EXPECT_GT(lv_obj_get_scroll_y(layer->panel()), 0);  // it scrolled
+        lv_obj_scroll_to_y(layer->panel(), LV_COORD_MAX, LV_ANIM_OFF);
+        lv_obj_update_layout(layer->panel());
+        EXPECT_LE(lv_obj_get_scroll_bottom(layer->panel()), 0);
+    });
+    swipe_up();
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+}
+
 class BannerTest : public SystemLayerTest {
 protected:
     void use_fake_tick() {
         on_ui([] { lv_tick_set_cb(&fake_tick); });
+    }
+    // The runtime stops first; the next UiRuntime::start() installs its
+    // own clock again.
+    void TearDown() override {
+        SystemLayerTest::TearDown();
+        g_tick_offset = 0;
     }
     // Moves the LVGL clock forward and runs the timers that came due.
     void advance(uint32_t ms) {

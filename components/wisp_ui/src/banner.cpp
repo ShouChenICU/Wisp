@@ -23,8 +23,6 @@ constexpr int32_t kSwipe = SystemLayer::kTopTriggerDy;
 // The body's lines at most.
 constexpr int32_t kBodyLines = 2;
 
-lv_point_t g_press_at{};
-
 }  // namespace
 
 void SystemLayer::show_banner(BannerInfo b, std::function<void()> on_tap) {
@@ -153,11 +151,12 @@ void SystemLayer::banner_cb(lv_event_t* e) {
     lv_point_t at{};
     if (indev != nullptr) lv_indev_get_point(indev, &at);
     if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
-        g_press_at = at;
+        self->press_at_ = at;
         return;
     }
-    const detail::PressEnd end =
-        indev != nullptr ? detail::classify_press(g_press_at, at, kSwipe) : detail::PressEnd::Tap;
+    const detail::PressEnd end = indev != nullptr
+                                     ? detail::classify_press(self->press_at_, at, kSwipe)
+                                     : detail::PressEnd::Tap;
     if (end != detail::PressEnd::Tap && end != detail::PressEnd::SwipeUp) return;
     // A swipe up only puts it away; the notification stays unread.
     std::function<void()> on_tap = end == detail::PressEnd::Tap ? self->banner_tap_ : nullptr;

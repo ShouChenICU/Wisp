@@ -216,6 +216,7 @@ SystemLayer::~SystemLayer() {
     discard_keyboard(true);
     unhook_pointer();
     if (refill_queued_) lv_async_call_cancel(&SystemLayer::panel_refill_cb, this);
+    refill_queued_ = false;
     panel_event_depth_ = 0;
     discard_panel();
     banners_.clear();
@@ -377,8 +378,9 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         // below the trigger cancels.
         const bool back = taken_ && p.x - start_.x >= kBackTriggerDx;
         const bool top = top_taken_ && p.y - start_.y >= kTopTriggerDy;
+        const bool up = up_taken_ && start_.y - p.y >= kTopTriggerDy;
         end_swipe();
-        if (back && panel_open()) {
+        if (up || (back && panel_open())) {
             // The panel is what the back swipe leaves.
             close_panel();
         } else if (back && on_back_) {
@@ -397,8 +399,11 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         end_swipe();
         candidate_ = (on_back_ || panel_open()) && confirm_box_ == nullptr && !point_in(kb_, p) &&
                      !point_in(candidates_, p) && in_back_zone(shape_, p.x, p.y);
-        top_candidate_ = has_panel() && !panel_open() && kb_ == nullptr &&
-                         confirm_box_ == nullptr && in_top_zone(shape_, p.x, p.y);
+        top_candidate_ = can_open_panel() && in_top_zone(shape_, p.x, p.y);
+        // At the bottom of its scroll (or with nothing to scroll) the
+        // panel goes on an upward swipe; LVGL would only overscroll it.
+        up_candidate_ = panel_open() && kb_ == nullptr && error_panel_ == nullptr &&
+                        confirm_box_ == nullptr && lv_obj_get_scroll_bottom(panel_) <= 0;
         return;
     }
 
@@ -410,6 +415,12 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         cancel_press(indev);
     } else if (top_candidate_ && !top_taken_ && !taken_ && is_top_swipe(shape_, start_, p)) {
         top_taken_ = true;
+        candidate_ = false;
+        if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
+        cancel_press(indev);
+    } else if (up_candidate_ && !up_taken_ && !taken_ && start_.y - p.y >= kTopTriggerDy &&
+               start_.y - p.y > std::abs(p.x - start_.x)) {
+        up_taken_ = true;
         candidate_ = false;
         if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
         cancel_press(indev);
@@ -514,6 +525,8 @@ void SystemLayer::end_swipe() {
     taken_ = false;
     top_candidate_ = false;
     top_taken_ = false;
+    up_candidate_ = false;
+    up_taken_ = false;
     if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
 }
 

@@ -40,7 +40,7 @@
 - 唤醒锁类型 `network`/`cpu`/`screen`；持有者 `system.<模块>` 或 `scene.<id>`；连续持有满 30 分钟提醒一次、之后每 30 分钟一次。
 - 深度待机联网：最多每 15 分钟开一次 Wi-Fi；每场景排队最多 4 条（超出 `deferred_queue_full`）；排队超过 1 小时失败（`deferred_timeout`）；回调里 `res.deferred = true`。
 - 通知：`title` 1–32 字节，`body` 0–200 字节，`id` 1–32 字节 `[a-z0-9_-]`，`sound` 为 `none`/`tone`/`alarm`（alarm 最长 30 秒），每场景最多 5 条未读，每分钟最多 10 条（超出 `rate_limited`），持久化最多 50 条、300 ms 合并；横幅 4 秒自动收起。
-- 胶囊约 56×24 px；下滑手势判定区 16 px、下移 24 px 触发；面板行高至少 48 px；界面文字中/日/英。
+- 胶囊 72×24 px（实测最宽文字 `▶9+ 🔔9+` 需要 72 px）；下滑手势判定区 16 px、下移 24 px 触发；面板行高至少 48 px；界面文字中/日/英。
 - 提示音：tone 约 150 ms，alarm 约 1 秒一段循环；`audio/notify_vol` 0–100、默认 60。
 - 传感器：`accel`/`gyro`；采样率 10/25/50/100 Hz；每 100 ms 打包；`shake` 为 500 ms 内 3 次超阈值，`flip` 为 z 轴翻转后稳定 300 ms；单位 m/s²（gyro 为 °/s），`t` 为毫秒。
 - `wisp.files`：文件名 `[A-Za-z0-9._-]`、1–64 字节、不以 `.` 开头、平铺；`read` 的 `len` ≤ 64 KB；单次 `write`/`append` ≤ 256 KB；SD 卡配额 64 MB，内部存储配额 512 KB。
@@ -110,7 +110,7 @@
 
   场景锁的持有者显示场景名。新字若不在 16 px 字体子集里（`tools/gen_cjk_font_test.py` 失败），换一个说法，不重新生成字体。
 15. **图标**：现在没有任何地方解码场景的 `icon`。横幅与面板里每个场景显示一个圆形徽标：场景名的第一个字符，底色按 id 的哈希从主题色里取；系统通知用 `LV_SYMBOL_BELL`。真正的图标图片留给子项目 8。
-16. **胶囊与下拉区**：`status_area` = `x1 = (width − 56) / 2`、`x2 = x1 + 55`、`y1 = safe.y1 + 4`、`y2 = y1 + 23`。480×480 时：rect `{212,4,267,27}`，rounded_rect 半径 70（参考板）`{212,28,267,51}`，rounded_rect 半径 40（模拟器默认）`{212,19,267,42}`，circle `{212,78,267,101}`。胶囊显示 `LV_SYMBOL_PLAY <后台数>` 和 `LV_SYMBOL_BELL <未读数>` 中不为 0 的部分。下滑判定区（spec 5.6 已修订）：设按下点所在列最上面的可见行为 `top(x)`（对 `row_span` 二分求得，与 3a 的 `row_span` 二分写法相同），判定区为 `y ≤ top(x) + 15` 且 `(x, y)` 可见；向下移动 ≥ 24 px 触发，不限角度。
+16. **胶囊与下拉区**：`status_area` = `x1 = (width − 72) / 2`、`x2 = x1 + 71`、`y1 = safe.y1 + 4`、`y2 = y1 + 23`。480×480 时：rect `{204,4,275,27}`，rounded_rect 半径 70（参考板）`{204,28,275,51}`，rounded_rect 半径 40（模拟器默认）`{204,19,275,42}`，circle `{204,78,275,101}`。胶囊显示 `LV_SYMBOL_PLAY <后台数>` 和 `LV_SYMBOL_BELL <未读数>` 中不为 0 的部分，大于 9 的数显示为 `9+`；胶囊总是恰好占 `status_area`（16 px 字体下最宽的 `▶9+ 🔔9+` 实测需要 72 px，56 px 放不下）。下滑判定区（spec 5.6 已修订）：设按下点所在列最上面的可见行为 `top(x)`（对 `row_span` 二分求得，与 3a 的 `row_span` 二分写法相同），判定区为 `y ≤ top(x) + 15` 且 `(x, y)` 可见；向下移动 ≥ 24 px 触发，不限角度。
 17. **横幅**：顶边 `safe.y1 + 4`，高 72 px，宽度取它所占各行 `row_span` 的公共可见宽度减 8 px、水平居中；不透明，标记为不透明覆盖物；4 秒收起；点击 = 点通知；上滑只收起横幅，通知仍留在未读列表。层级：横幅在胶囊之上、确认框之下（`SystemLayer::raise()` 的顺序）。
 18. **提示音**：spec 5.4 写"端口提供 `play_tone(kind)`，内置两段 PCM"。改为可移植的 `core::TonePlayer`：经 `hal::AudioOut` 播放运行时合成的 PCM（16 kHz 单声道），不放 PCM 数据。`tone` 为 1 kHz、150 ms、首尾 5 ms 渐变；`alarm` 一段 1 秒（880 Hz 200 ms、静音 100 ms、880 Hz 200 ms、静音 500 ms），循环到 `silence()` 或 30 秒。音量由调用方传入（`notify_vol`，App 从 `system.settings` 缓存，`wisp.tone` 任务不读 NVS）。播放期间持有 `cpu` 锁 `system.tone`。没有 `audio_out.main` 或 `open()` 失败时静默返回。
 19. **传感器**：`shake` 阈值 20 m/s²（约 2 g），每次越过阈值的上升沿算一次，500 ms 内 3 次触发，之后 1 秒不应期；`flip` 以 `az > +7` / `az < −7` m/s² 为朝上/朝下，切换到相反朝向并保持 300 ms 触发一次。每个订阅者（`scene.<id>`、`system.selfcheck`）各自以共享方式登记 `imu.main` 的占用，最后一个订阅取消时释放。自检界面的采样（`SelfCheckSampler`）改经 `SensorService` 读 IMU（accel + gyro，50 Hz），不再直接调用驱动。样本的 `t` 是 `os::now_ms()` 时间基准的毫秒。
@@ -922,7 +922,7 @@ struct PanelHandlers {
 struct BannerInfo { std::string source, id, badge, name, title, body; };
 class SystemLayer {
 public:
-    static constexpr int32_t kCapsuleW = 56, kCapsuleH = 24, kCapsuleTopGap = 4;
+    static constexpr int32_t kCapsuleW = 72, kCapsuleH = 24, kCapsuleTopGap = 4;
     static constexpr int32_t kTopZoneHeight = 16, kTopTriggerDy = 24;
     static constexpr int32_t kPanelRowMinH = 48, kBannerH = 72;
     static constexpr uint32_t kBannerMs = 4000;
