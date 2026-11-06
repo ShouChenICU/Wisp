@@ -1406,7 +1406,7 @@ TEST(SimHttpServer, StreamedResponseBody)          // 3 MiB 的 stream 响应完
 | 后台场景的内存 | 天气、番茄钟、计数器在后台（计数器临时加 `"background": true`），前台打开待办放 200 条；执行 `mem` | 记录 PSRAM 空闲、`internal free`/`largest`；内部 RAM 不低于 `ram_budget.hpp` 的空闲下限 |
 | 切回前台的重建耗时 | 上一行状态下从面板依次切回三个后台场景；看日志 `rebuilt in <ms> ms` | 记录三个值；单个超过 300 ms 时停下来报告 |
 | 新任务的栈 | 水平仪打开 1 分钟、番茄钟响铃期间各执行一次 `mem` | `wisp.imu`、`wisp.tone` 的栈在 `psram`，记录 high-water mark；余量不足 25% 时按实测加大并改代码与 `docs/architecture.md` |
-| 水平仪 | 打开水平仪，把设备放平、倾斜约 30 度、摇一摇 | 度数与实际一致（±3 度），气泡随倾斜移动；返回后 `GET /system/occupancy` 为空 |
+| 水平仪 | 打开水平仪，把设备放平、倾斜约 30 度、摇一摇 | 度数与实际一致（±3 度），气泡随倾斜移动；打开期间 `GET /system/occupancy` 只有 `scene.level`（场景在前台盖住自检界面时，自检界面不占 IMU），返回后只剩 `system.selfcheck` |
 
 - [ ] **Step 2: 内存实测步骤**（写进"内部 RAM"一节，交给用户执行并填表）：分别在 (a) 开机空闲无场景、(b) 上表"后台场景的内存"的状态、(c) (b) 再加 STA + 热点 + 网页日志页 + 上传一个场景 zip 时执行 `mem`，记录 `internal free`/`largest`/`min`、PSRAM 空闲与 `wisp.scene`、`wisp.fs`、`wisp.shttp`、`wisp.imu`、`wisp.tone` 的栈位置与 high-water mark；(b) 相对 (a) 的 PSRAM 用量对照 spec 10 风险第 2 条（PSRAM 可用约 4.3 MB），不够时报告用户，按实测调 `kVmBudgetBytes`。
 - [ ] **Step 3: 交给用户执行** Step 1 与 Step 2，逐项记录结果；不通过的项回到对应任务，先在模拟器里写出能复现的失败测试再修。

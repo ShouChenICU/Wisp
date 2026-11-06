@@ -182,9 +182,12 @@ void SelfCheck::build() {
     subscribe_settings();
     subscribe_net();
     // Every scene.state (installed, opened, closed, failed, deleted) lists
-    // the scenes again.
-    scene_sub_ =
-        app_.bus().subscribe("scene.state", [this](const core::Event&) { request_scene_list(); });
+    // the scenes again, and says whether a scene now covers this screen.
+    scene_sub_ = app_.bus().subscribe("scene.state", [this](const core::Event&) {
+        request_scene_list();
+        follow_foreground();
+    });
+    follow_foreground();
     request_scene_list();
     last_scene_list_ms_ = os::now_ms();
     request_storage();
@@ -552,6 +555,13 @@ void SelfCheck::refresh_time_sync() {
         if (st.synced) local = st.last_sync + int64_t{utc_offset_min_} * 60;
     }
     power_clock_.show_sync(local);
+}
+
+void SelfCheck::follow_foreground() {
+    // Read live rather than from the event: the last event of a burst
+    // leaves the right answer even if an earlier one was dropped.
+    scene::SceneRuntime* rt = app_.scenes();
+    sampler_.set_covered(rt != nullptr && rt->foreground().has_value());
 }
 
 void SelfCheck::request_scene_list() {

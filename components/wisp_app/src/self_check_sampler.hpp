@@ -5,7 +5,8 @@
 //   - the IMU through core::SensorService (accelerometer and gyroscope at
 //     50 Hz, as holder "system.selfcheck"; refinement 19 of
 //     docs/superpowers/plans/2026-11-05-scene-device.md), never the driver
-//     itself. The service pauses it in standby. The
+//     itself. The service pauses it in standby, and set_covered() drops
+//     it while a scene in front hides the screen. The
 //     accelerations go back to g, which the screen shows.
 //   - the battery and the clock, read by the "wisp.sample" task once a
 //     second, about every 30 s in standby (spec 6.7).
@@ -61,6 +62,13 @@ public:
     // battery/clock reads; the service pauses the IMU on its own.
     void set_standby(bool standby);
 
+    // True while a scene in front hides the screen: the IMU subscriptions
+    // go, and come back when it shows again. Spec 6.1 powers the IMU off
+    // with no subscriber, and the occupancy list then names only scenes
+    // that read it. Any thread; the IMU is not read before start() or
+    // after stop().
+    void set_covered(bool covered);
+
     // There is an accelerometer to show.
     bool has_imu() const;
 
@@ -71,11 +79,19 @@ private:
     // The battery/clock read: once a second while active, about every
     // 30 s in standby.
     void sample_slow();
+    // Both with imu_mutex_ held.
     void subscribe_imu();
+    void unsubscribe_imu();
 
     core::SensorService* sensors_;
+    // Guards the subscriptions and the two flags below. Never taken by the
+    // IMU callbacks, so unsubscribing under it cannot wait on one that
+    // waits for it.
+    os::Mutex imu_mutex_;
     uint32_t accel_sub_ = 0;
     uint32_t gyro_sub_ = 0;
+    bool imu_wanted_ = false;  // between start() and stop()
+    bool covered_ = false;
     // Subscribed; snapshot() reads it on the UI thread while the owner
     // may be stopping.
     std::atomic<bool> imu_live_{false};

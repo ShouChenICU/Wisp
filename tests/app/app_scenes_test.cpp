@@ -19,6 +19,7 @@
 
 #include "scene_wiring.hpp"
 #include "self_check_layout.hpp"
+#include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
 #include "ui_net_harness.hpp"
@@ -26,6 +27,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
@@ -383,6 +385,37 @@ TEST(AppScenes, StandbyHidesAndWakeShows) {
     run_on_ui_blocking(b.h.app->ui(), [&] { pm->exit_standby(); });
     EXPECT_TRUE(wait_until([] { return count_of(scene_log("counter"), "show") == 2; }, 3000));
     EXPECT_EQ(scene_log("counter"), (std::vector<std::string>{"show", "hide", "show"}));
+}
+
+// Spec 6.1: the IMU is off with no subscribers. The self-check screen reads
+// it only while it shows: a scene in front covers it, and with a scene
+// that does not use the IMU nobody holds it.
+TEST(AppScenes, SelfCheckLetsTheImuGoWhileASceneIsInFront) {
+    UiNetOptions opts;
+    auto imu = std::make_shared<wisp::test::FakeImu>("imu.main");
+    opts.imu = imu;
+    Booted b(opts);
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    ASSERT_TRUE(b.start());
+    wisp::core::SensorService* sensors = b.h.app->sensors();
+    ASSERT_NE(sensors, nullptr);
+    auto holders = [&] {
+        std::vector<std::string> out;
+        for (const auto& e : b.h.app->occupancy().list()) out.push_back(e.holder);
+        return out;
+    };
+    const std::vector<std::string> selfcheck = {"system.selfcheck"};
+    ASSERT_TRUE(wait_until([&] { return holders() == selfcheck; }, 3000));
+    EXPECT_EQ(sensors->imu_rate(), 50u);
+
+    ASSERT_TRUE(b.h.app->scenes()->open("counter"));
+    ASSERT_TRUE(wait_until([] { return count_of(scene_log("counter"), "show") == 1; }, 3000));
+    EXPECT_TRUE(wait_until([&] { return holders().empty(); }, 3000));
+    EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 0; }, 3000));
+
+    ASSERT_TRUE(b.h.app->scenes()->exit("counter"));
+    EXPECT_TRUE(wait_until([&] { return holders() == selfcheck; }, 3000));
+    EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 50u; }, 3000));
 }
 
 TEST(AppScenes, DeleteConfirmFlow) {

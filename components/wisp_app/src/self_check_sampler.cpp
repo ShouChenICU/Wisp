@@ -30,15 +30,31 @@ bool SelfCheckSampler::has_imu() const {
 }
 
 void SelfCheckSampler::start() {
-    subscribe_imu();
+    {
+        std::lock_guard<os::Mutex> lock(imu_mutex_);
+        imu_wanted_ = true;
+        if (!covered_) subscribe_imu();
+    }
     running_.store(true, std::memory_order_release);
     os::TaskConfig config;
     config.name = "wisp.sample";
     task_ = os::Task::spawn(config, [this] { loop(); });
 }
 
+void SelfCheckSampler::set_covered(bool covered) {
+    std::lock_guard<os::Mutex> lock(imu_mutex_);
+    if (covered_ == covered) return;
+    covered_ = covered;
+    if (!imu_wanted_) return;
+    if (covered) {
+        unsubscribe_imu();
+    } else {
+        subscribe_imu();
+    }
+}
+
 void SelfCheckSampler::subscribe_imu() {
-    if (sensors_ == nullptr) return;
+    if (sensors_ == nullptr || accel_sub_ != 0 || gyro_sub_ != 0) return;
     // On wisp.imu: only the newest sample of each batch is shown.
     auto accel = sensors_->subscribe(core::SensorKind::Accel, kImuRateHz, kHolder,
                                      [this](const core::SensorBatch& b) {
@@ -62,7 +78,7 @@ void SelfCheckSampler::subscribe_imu() {
     imu_live_.store(accel_sub_ != 0 || gyro_sub_ != 0);
 }
 
-void SelfCheckSampler::stop() {
+void SelfCheckSampler::unsubscribe_imu() {
     // After this no IMU callback runs (SensorService::unsubscribe()).
     if (sensors_ != nullptr) {
         if (accel_sub_ != 0) sensors_->unsubscribe(accel_sub_);
@@ -70,6 +86,14 @@ void SelfCheckSampler::stop() {
     }
     accel_sub_ = gyro_sub_ = 0;
     imu_live_.store(false);
+}
+
+void SelfCheckSampler::stop() {
+    {
+        std::lock_guard<os::Mutex> lock(imu_mutex_);
+        imu_wanted_ = false;
+        unsubscribe_imu();
+    }
     running_.store(false, std::memory_order_release);
     // loop() may be blocked on wake_: wake it so it notices running_ went
     // false now rather than after its bounded wait.
