@@ -125,7 +125,13 @@ Result<void> run_sync(std::function<void()> job, uint32_t timeout_ms,
 ```
 
 - 实现：两条 `os::Queue`（Normal 32 项、Bulk 4 项），用一个计数信号量唤醒线程。线程每次先取 Normal，Normal 空了再取 Bulk。
-- 一块 Bulk 任务最多处理 32 KB，单次耗时以 flash 擦写为上限（几十 ms），Normal 任务的最坏等待就是一块 Bulk 的耗时。
+- 时延上限按**单个任务**计：任何一个任务（两条队列都算）最多读写 32 KB（`kIoChunk`），单次耗时以 flash 擦写为上限（几十 ms）。线程不抢占正在执行的任务，所以排队任务的最坏等待就是正在执行的那一个任务的耗时。
+- 长操作一律拆成多个任务，每个任务至多 32 KB，其他任务（设置落盘、下载块）在块与块之间执行：
+  - OTA：每块 `esp_ota_write` 一个 Bulk 任务（3.6）；
+  - 场景文件下载：每块 `read_range` 一个 Bulk 任务（3.6）；
+  - 场景安装：先在一个任务里完成上一次中断的替换并清掉暂存目录，再把每个文件按 32 KB 一块写进 `.<id>.tmpdir`（第一块 `write_atomic`，其余 `append`），每块一个 Normal 任务、不持仓库锁（暂存目录只属于这次安装，同一 id 的第二次安装被 `installing()` 拒绝，`list()` 跳过点目录），最后一个持锁的任务把它换成正式包；
+  - 场景导出：一个任务列出文件，再按每块 32 KB 一个任务读取；每块读取前在锁内检查仓库的代数（每次替换、删除都会加一），变了就以 `Busy` 失败，不会混合两个版本。
+- `call_on_worker<T>(worker, fn)`（`storage_worker.hpp`）：在 worker 上执行一个返回 `Result<T>` 的调用并一直等待；队列满时重试至多 2 s，仍满则返回 `Busy`。等待没有超时，所以 `fn` 可以引用调用方栈上的数据（被拒绝的任务不会执行，排上队的任务在返回前一定已经执行完）。
 - `agent_service.cpp` 里的 `run_io()` 和 `scene_wiring.cpp` 里开机扫描的同步等待都改用 `run_sync`。
 
 ### 3.2 flash 线程守卫
@@ -135,23 +141,32 @@ Result<void> run_sync(std::function<void()> job, uint32_t timeout_ms,
 ```cpp
 namespace wisp::os {
 // Registers the calling thread as the flash thread (wisp.fs calls it as
-// its first action) / clears it (its last action).
+// its first action). A later call on another thread takes over.
 void set_flash_thread();
+// Unregisters the calling thread if it is the registered flash thread; a
+// no-op on any other thread (wisp.fs calls it as its last action).
 void clear_flash_thread();
 // True on the flash thread, or when no flash thread is registered (the
 // boot and shutdown phases).
 bool on_flash_thread();
+
+// Device builds report a violation through this hook (wisp_os sits below
+// the logging layer); wisp_core's log::init() installs one that logs with
+// WLOG_E. Null: not reported.
+using FlashViolationReporter = void (*)(const char* what);
+void set_flash_violation_reporter(FlashViolationReporter reporter);
 }  // namespace wisp::os
 
-// At every flash entry point: StorageManager's public methods, the NVS
-// settings backend, the firmware (OTA) service, the partition reads.
+// At every flash entry point: StorageManager's I/O methods, both settings
+// backends, both firmware updaters, the font-partition mapping.
 #define WISP_ASSERT_FLASH_THREAD(what) ...
 ```
 
-- **模拟器与单元测试**：违反时打印调用位置和线程名，然后 `abort()`，所以放错线程的代码在 ctest 里就会失败。
-- **设备**：违反时每个调用点只打一次 `WLOG_E`（含任务名），不主动 abort。栈在 PSRAM 的任务会被硬件 abort，栈在内部 RAM 的任务能继续运行，日志留下线索。
-- 用 `on_flash_thread()` 实现 `StorageWorker::on_worker()`，两者是同一个概念。
-- 测试里大量直接在 gtest 主线程调用 `StorageManager`：没有注册 flash 线程时守卫放行，所以不启动 `StorageWorker` 的测试不受影响。启动了 worker、又在测试线程直接访问存储的测试要改成经 `run_sync`，这本身就是在消除同类问题。
+- **登记**：登记的是线程 id（每个线程第一次用到守卫时从计数器取一个不重复的 32 位 id，不复用，已退出的线程不会被后来的线程冒充）。`clear_flash_thread()` 只有登记的那个线程调用才生效；后登记的线程接管，先前那个线程之后的 clear 不会撤掉新的登记。所以同一进程里同时有两个 worker（测试）时，一个停下不会让守卫对另一个失效。
+- **模拟器与单元测试**：违反时向 stderr 打印 `flash access off the flash thread: <调用点>`，然后 `abort()`，所以放错线程的代码在 ctest 里就会失败。
+- **设备**：违反时每个调用点只报告一次（宏展开处的静态标志），经 `set_flash_violation_reporter()` 装上的钩子发出；`log::init()` 装的钩子打 `WLOG_E("flash", "flash access off the flash thread: %s", what)`。不主动 abort：栈在 PSRAM 的任务会被硬件 abort，栈在内部 RAM 的任务能继续运行，日志留下线索。
+- `StorageWorker::on_worker()` 是 `t_current_worker == this`（worker 线程在 `run()` 里记下的线程局部指针），不用 `on_flash_thread()`：后者在没有登记时也返回 true（会让开机、关机阶段任何线程上的 `run_sync()` 都就地执行），也分不清同时存在的两个 worker。
+- 测试里大量直接在 gtest 主线程调用 `StorageManager`：没有注册 flash 线程时守卫放行，所以不启动 `StorageWorker` 的测试不受影响。启动了 worker、又在测试线程直接访问存储的测试要改成经 `run_sync`，或在启动 worker 之前做完准备，这本身就是在消除同类问题。
 
 ### 3.3 静态检查
 
@@ -160,29 +175,38 @@ bool on_flash_thread();
 - NVS 设置后端；
 - 固件服务；
 - 字体分区映射；
-- NVS 初始化与恢复出厂的擦除入口；
-- 平台层存储挂载。
+- NVS 初始化与恢复出厂的擦除入口（与 NVS 设置后端是同一个文件）。
 
-白名单写在脚本里，每一项附一行理由，并为这条规则补自测（`tools/check_layering_test.py`）。
+平台层的 LittleFS 挂载经 `esp_vfs_littlefs_register()` 按分区标签挂载，不直接调用这些接口，所以不在白名单里；以后真要用时再加。白名单写在脚本里，每一项附一行理由，并为这条规则补自测（`tools/check_layering_test.py`）。
 
 ### 3.4 Settings：内存缓存 + 异步落盘
 
-- `SettingsBackend` 新增：
+- `SettingsBackend` 新增（`components/wisp_core/include/wisp/core/settings.hpp`）：
 
 ```cpp
-// Loads every key of every namespace into memory. Runs on the flash
-// thread (or in the boot phase) once, before any get().
-virtual Result<void> load_all() = 0;
-// Writes the keys changed since the last flush. Flash thread only.
-virtual Result<void> flush_dirty() = 0;
+// One stored key, as load_all() returns it.
+struct SettingsEntry { std::string ns, key; Value value; };
+// One change for write_batch(): store `value`, or erase the key when nullopt.
+struct SettingsChange { std::string ns, key; std::optional<Value> value; };
+
+// Every key of every namespace. A platform backend reads its storage
+// (flash); CachedSettingsBackend calls this once, at boot or on the
+// flash thread, and serves get() from memory after that.
+virtual Result<std::vector<SettingsEntry>> load_all() = 0;
+// Applies `changes` in order, committed together where the backend can
+// (one file rewrite, one NVS commit per namespace). Every name is
+// validated first. A platform backend touches flash here, so it is
+// called on the flash thread.
+virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
 ```
 
+- 脏键由缓存记录，不由平台后端记录：落盘任务把脏键整理成一批 `SettingsChange` 交给 `write_batch()`。
 - 新类 `core::CachedSettingsBackend` 包装平台后端（NVS 或 JSON 文件）：
   - `get()` 只读缓存，缓存放在 PSRAM（`os::LargeString`），互斥锁保护，任何线程可调用；
   - `set()`/`erase()` 先改缓存，记下脏键；如果还没有待执行的落盘任务，就提交一个 Normal 任务。同一个键的连续写入在落盘前合并为一次；
   - 落盘失败：缓存保留新值、脏键保留，记 `WLOG_W`，等下一次 `set()` 或 `flush()` 重试；连续 3 次失败时发一条系统通知（"设置未能保存"）；
   - `flush(timeout_ms)`：同步等待脏键写完，给恢复出厂、重启、深度待机前调用。
-- 模拟器的 JSON 文件后端本来就有内存表，改为只在 `flush_dirty()` 时整文件重写。
+- 模拟器的 JSON 文件后端本来就有内存表，每次 `write_batch()` 整文件重写一次。
 - NVS 后端的 `load_all()` 用 `nvs_entry_find` 遍历 Wisp 自己的分区与命名空间。值都是字符串（现有格式不变），不涉及数据迁移。
 - `Settings` 类的公有接口不变，所有调用方不用改。
 

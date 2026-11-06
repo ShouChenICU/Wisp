@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "wisp/os/os.hpp"
 
 using namespace wisp::os;
@@ -181,7 +183,12 @@ TEST(FlashGuard, StaleOwnerClearDoesNotUndoANewerRegistration) {
 TEST(FlashGuardDeathTest, AssertAbortsOffTheFlashThread) {
     // Another thread stays registered across the death test, so it runs
     // in the "threadsafe" style (re-executes the binary) rather than
-    // forking a multi-threaded process.
+    // forking a multi-threaded process; the style is restored for the
+    // tests after this one.
+    struct RestoreStyle {
+        std::string old = GTEST_FLAG_GET(death_test_style);
+        ~RestoreStyle() { GTEST_FLAG_SET(death_test_style, old); }
+    } restore;
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     Semaphore registered(1, 0);
     Semaphore release(1, 0);

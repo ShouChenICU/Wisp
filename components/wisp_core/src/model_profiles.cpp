@@ -10,6 +10,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/flash_guard.hpp"
 #include "wisp/os/large.hpp"
 
 namespace wisp::core {
@@ -255,7 +256,10 @@ Value active_value(const std::array<std::string, kModelKindCount>& active) {
 // Deletes a JSON file written by write_atomic() along with its leftovers.
 // ".new" first: read_file() would promote a leftover ".new" if the target
 // were gone, resurrecting what was deleted.
+// Raw std::remove(), since StorageManager reserves the ".new"/".tmp" names,
+// but flash all the same: flash thread only.
 void remove_file(const std::string& path) {
+    WISP_ASSERT_FLASH_THREAD("ModelProfileService remove_file");
     for (const std::string& p : {path + ".new", path + ".tmp", path}) {
         if (std::remove(p.c_str()) != 0 && errno != ENOENT) {
             WLOG_W(kTag, "deleting %s failed (errno %d)", p.c_str(), errno);

@@ -15,6 +15,7 @@
 #include "wisp/base/sha256.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/flash_guard.hpp"
 #include "wisp/os/large.hpp"
 
 namespace wisp::net {
@@ -159,6 +160,7 @@ Result<void> PairingService::persist_locked(const std::vector<Entry>& clients,
             WLOG_E(kTag, "factory reset of paired clients was not persisted; removing the file");
             // The old hashes would otherwise come back on the next boot. A
             // missing file loads as "no clients", so deleting it is enough.
+            WISP_ASSERT_FLASH_THREAD("PairingService remove clients.json");
             if (path.empty() || (std::remove(path.c_str()) != 0 && errno != ENOENT)) {
                 WLOG_E(kTag, "removing net/clients.json failed: %s",
                        path.empty() ? "system storage unavailable" : std::strerror(errno));

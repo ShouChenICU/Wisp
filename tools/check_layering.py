@@ -140,8 +140,6 @@ FLASH_API_WHITELIST = {
         "the firmware (OTA) service: writes, verifies and activates the OTA slot",
     "components/wisp_port_esp/ui/esp_font_partition.cpp":
         "maps the font partition at boot, before the flash thread starts",
-    "components/wisp_port_esp/dev/esp_storage.cpp":
-        "platform storage mount (LittleFS on the internal storage partition)",
 }
 FLASH_API_ROOTS = ("components", "boards", "drivers", "firmware")
 # Fetched or generated code, not Wisp's own.
