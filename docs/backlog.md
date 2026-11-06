@@ -90,3 +90,4 @@ Source: `feat/agent-core` review records.
   - an abort on an old ticket between retry attempts is a no-op, so callers must also make `cancelled()` true;
   - a transport error after `finish_reason` but before `[DONE]` fails a complete reply;
   - per-event `from_json` strings under 16 KB land in internal RAM briefly; measure with `mem` once `wisp.agent` exists.
+- `ConversationStore`: after a failed append leaves half a line, the next good line joins it and is skipped on load; truncate or start a fresh line before the next append.
