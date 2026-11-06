@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -31,6 +32,15 @@ using wisp::core::NotificationService;
 using wisp::core::NotifySound;
 
 namespace fs = std::filesystem;
+
+// unread() hands out up to kStoredMax notices with their bodies: in PSRAM,
+// like the service's own list (AGENTS.md section 5).
+static_assert(std::is_same_v<decltype(std::declval<NotificationService&>().unread()),
+                             wisp::os::LargeVector<wisp::core::StoredNotification>>);
+static_assert(
+    std::is_same_v<decltype(wisp::core::StoredNotification::title), wisp::os::LargeString>);
+static_assert(
+    std::is_same_v<decltype(wisp::core::StoredNotification::body), wisp::os::LargeString>);
 
 namespace {
 

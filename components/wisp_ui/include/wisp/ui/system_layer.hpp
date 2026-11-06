@@ -55,6 +55,7 @@
 #include "lvgl.h"
 #include "wisp/base/result.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/theme.hpp"
 
@@ -74,37 +75,41 @@ struct StatusCounts {
     int unread = 0;
 };
 
+// The panel's model is in PSRAM: with up to 50 notifications and their
+// bodies it would otherwise hold tens of KB of internal RAM while the panel
+// is open (AGENTS.md section 8).
+
 // A background scene in the pull-down panel.
 struct PanelScene {
-    std::string id;
-    std::string name;
+    os::LargeString id;
+    os::LargeString name;
     uint64_t since_ms = 0;  // when it went to the background
 };
 
 // A notification in the pull-down panel, its text already rendered (a
 // system notice through system_notice_text()).
 struct PanelNote {
-    std::string source, id;
-    std::string badge;  // the first character of the scene's name; "" for system
-    std::string title, body;
-    std::string action_label;  // "" or the action button's text
+    os::LargeString source, id;
+    os::LargeString badge;  // the first character of the scene's name; "" for system
+    os::LargeString title, body;
+    os::LargeString action_label;  // "" or the action button's text
 };
 
 // The panel's first row. `battery` < 0: unknown; `wifi` is shown as given
 // ("" shows no Wi-Fi item).
 struct PanelHeader {
-    std::string time;
+    os::LargeString time;
     int battery = -1;
     bool charging = false;
-    std::string wifi;
+    os::LargeString wifi;
 };
 
 // Everything the panel shows. Notes are newest first; `now_ms` is the time
 // the scenes' since_ms are measured against.
 struct PanelModel {
     PanelHeader header;
-    std::vector<PanelScene> scenes;
-    std::vector<PanelNote> notes;
+    os::LargeVector<PanelScene> scenes;
+    os::LargeVector<PanelNote> notes;
     uint64_t now_ms = 0;
 };
 
@@ -211,7 +216,11 @@ public:
     void open_panel();
     void close_panel();
     bool panel_open() const { return panel_ != nullptr; }
-    // Keeps `m` for the next open_panel(), and shows it now if open.
+    // The model the panel shows; empty once it closes.
+    const PanelModel& panel_model() const { return model_; }
+    // Keeps `m` for the next open_panel(), and shows it now if open. The
+    // panel lets it go when it closes, so on_open gives each opening its
+    // model.
     void update_panel(PanelModel m);
     // The panel's content box (the safe area) while open, else nullptr.
     lv_obj_t* panel() const { return panel_; }

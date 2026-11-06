@@ -861,7 +861,8 @@ return ui.screen { ui.label { text = "late" } }
     auto system_notices = [&] {
         std::vector<std::string> out;
         for (const auto& n : notes->unread())
-            if (n.source == wisp::core::kSystemSource) out.push_back(n.code + " " + n.arg);
+            if (n.source == wisp::core::kSystemSource)
+                out.push_back(std::string(n.code) + " " + std::string(n.arg));
         std::sort(out.begin(), out.end());
         return out;
     };

@@ -70,13 +70,7 @@ bool valid_notification_id(std::string_view id) {
 // Unread notices live in PSRAM: up to kStoredMax of them, with bodies, would
 // otherwise sit in internal RAM as small std::string allocations.
 struct NotificationService::State {
-    struct Entry {
-        LStr source, id, source_name, title, body, code, arg, action, action_arg;
-        NotifySound sound = NotifySound::None;
-        bool wake = false;
-        uint64_t posted_ms = 0;
-        int64_t posted_unix = 0;
-    };
+    using Entry = StoredNotification;
     struct Rate {
         LStr source;
         os::LargeVector<uint64_t> times;  // posts within the last window
@@ -717,14 +711,9 @@ std::optional<Notification> NotificationService::find(std::string_view source,
     return State::to_notification(*it);
 }
 
-std::vector<Notification> NotificationService::unread() const {
+os::LargeVector<StoredNotification> NotificationService::unread() const {
     std::lock_guard<os::Mutex> lock(state_->mutex);
-    std::vector<Notification> out;
-    out.reserve(state_->entries.size());
-    for (auto it = state_->entries.rbegin(); it != state_->entries.rend(); ++it) {
-        out.push_back(State::to_notification(*it));
-    }
-    return out;
+    return os::LargeVector<StoredNotification>(state_->entries.rbegin(), state_->entries.rend());
 }
 
 size_t NotificationService::unread_count() const {

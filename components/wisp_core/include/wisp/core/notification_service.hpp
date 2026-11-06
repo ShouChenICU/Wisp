@@ -82,6 +82,17 @@ struct Notification {
     int64_t posted_unix = 0;  // 0: clock unset
 };
 
+// A notification as the service keeps it and as unread() hands it out: in
+// PSRAM, since up to kStoredMax of them with their bodies would otherwise
+// be small blocks of internal RAM (AGENTS.md section 8).
+struct StoredNotification {
+    os::LargeString source, id, source_name, title, body, code, arg, action, action_arg;
+    NotifySound sound = NotifySound::None;
+    bool wake = false;
+    uint64_t posted_ms = 0;
+    int64_t posted_unix = 0;
+};
+
 struct NotificationChange {
     enum class Kind : uint8_t { Posted, Dismissed } kind;
     Notification n;
@@ -183,7 +194,7 @@ public:
 
     std::optional<Notification> find(std::string_view source, std::string_view id) const;
     // Newest first.
-    std::vector<Notification> unread() const;
+    os::LargeVector<StoredNotification> unread() const;
     size_t unread_count() const;
 
     // Runs on the caller's thread after each change, outside the lock.

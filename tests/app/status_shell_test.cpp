@@ -122,7 +122,8 @@ protected:
         std::string body;
         on_ui([&] {
             for (const auto& n : shell->panel_model().notes)
-                if (n.source == source && n.id == id) body = n.body;
+                if (n.source == std::string_view(source) && n.id == std::string_view(id))
+                    body = std::string(n.body);
         });
         return body;
     }

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "lvgl_private.h"  // lv_buttonmatrix_t::button_areas
@@ -238,6 +239,25 @@ std::string area_str(const lv_area_t& a) {
     return std::to_string(a.x1) + "," + std::to_string(a.y1) + "-" + std::to_string(a.x2) + "," +
            std::to_string(a.y2);
 }
+
+// The panel's model holds up to NotificationService::kStoredMax notes with
+// their bodies: it lives in PSRAM (AGENTS.md section 5), not as small
+// std::string and std::vector blocks in internal RAM.
+using LStr = wisp::os::LargeString;
+static_assert(std::is_same_v<decltype(wisp::ui::PanelNote::source), LStr>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelNote::id), LStr>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelNote::badge), LStr>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelNote::title), LStr>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelNote::body), LStr>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelNote::action_label), LStr>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelScene::id), LStr>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelScene::name), LStr>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelHeader::time), LStr>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelHeader::wifi), LStr>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelModel::notes),
+                             wisp::os::LargeVector<wisp::ui::PanelNote>>);
+static_assert(std::is_same_v<decltype(wisp::ui::PanelModel::scenes),
+                             wisp::os::LargeVector<wisp::ui::PanelScene>>);
 
 // A panel model with two background scenes and three notifications, the
 // newest first, one of them with an action.
@@ -1991,7 +2011,9 @@ TEST_F(SystemLayerTest, PanelRowsCallHandlers) {
         start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
         std::vector<std::string> calls;
         wisp::ui::PanelHandlers h;
-        h.on_open = [] {};
+        // The panel lets its model go when it closes: each opening gets a
+        // new one, as StatusShell gives it.
+        h.on_open = [&] { layer->update_panel(sample_model()); };
         h.open_scene = [&](const std::string& id) { calls.push_back("open " + id); };
         h.exit_scene = [&](const std::string& id) { calls.push_back("exit " + id); };
         h.tap_note = [&](const std::string& s, const std::string& id) {
@@ -2067,7 +2089,7 @@ TEST_F(SystemLayerTest, TapPanelRowTapsTheIndexedRow) {
     start("circle");
     std::vector<std::string> calls;
     wisp::ui::PanelHandlers h;
-    h.on_open = [] {};
+    h.on_open = [&] { layer->update_panel(sample_model()); };
     h.open_scene = [&](const std::string& id) { calls.push_back("open " + id); };
     h.tap_note = [&](const std::string& s, const std::string& id) {
         calls.push_back("tap " + s + "/" + id);
@@ -2118,6 +2140,33 @@ TEST_F(SystemLayerTest, PanelUpdatesWhileOpen) {
         EXPECT_NE(find_label_containing(layer->panel(), wisp::ui::tr(StrId::PanelEmpty)), nullptr);
         EXPECT_EQ(find_label_containing(layer->panel(), wisp::ui::tr(StrId::PanelClearAll)),
                   nullptr);
+    });
+}
+
+// The model is let go once the panel closes, however it closes: a closed
+// panel keeps none of the notes it showed.
+TEST_F(SystemLayerTest, PanelModelIsClearedOnClose) {
+    start("circle");
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [] {}});
+        layer->update_panel(sample_model());
+        layer->open_panel();
+        ASSERT_TRUE(layer->panel_open());
+        EXPECT_EQ(layer->panel_model().notes.size(), 3u);
+        EXPECT_EQ(layer->panel_model().scenes.size(), 2u);
+        layer->close_panel();
+        EXPECT_TRUE(layer->panel_model().notes.empty());
+        EXPECT_TRUE(layer->panel_model().scenes.empty());
+        EXPECT_TRUE(layer->panel_model().header.time.empty());
+
+        layer->update_panel(sample_model());
+        layer->open_panel();
+        EXPECT_NE(find_label_containing(layer->panel(), "Note one"), nullptr);
+    });
+    tap(240, 470);  // a tap on blank space
+    on_ui([&] {
+        EXPECT_FALSE(layer->panel_open());
+        EXPECT_TRUE(layer->panel_model().notes.empty());
     });
 }
 
@@ -2190,7 +2239,8 @@ TEST_F(SystemLayerTest, PanelSwipeUpAtTheBottomCloses) {
         layer->set_panel_handlers({.on_open = [] {}});
         wisp::ui::PanelModel m = sample_model();
         for (int i = 0; i < 8; ++i) {
-            m.notes.push_back({"a", "x" + std::to_string(i), "A", "More", "Body", ""});
+            m.notes.push_back({"a", wisp::os::LargeString(("x" + std::to_string(i)).c_str()), "A",
+                               "More", "Body", ""});
         }
         layer->update_panel(m);
         layer->open_panel();
