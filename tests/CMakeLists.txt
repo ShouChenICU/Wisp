@@ -103,6 +103,8 @@ wisp_test(NAME a8_font_test SRCS ui/a8_font_test.cpp LIBS wisp_ui wisp_port_sim_
 wisp_test(NAME system_layer_test SRCS ui/system_layer_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME system_notice_test SRCS ui/system_notice_test.cpp LIBS wisp_ui wisp_port_sim_os)
 wisp_test(NAME theme_test SRCS ui/theme_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME wisp_model_test SRCS ui/wisp_model_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME wisp_view_test SRCS ui/wisp_view_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 target_include_directories(a8_font_test PRIVATE ${WISP_ROOT}/components/wisp_ui/src)
 # The real vector font image (vector-font spec 3.3), packed by
 # simulator/CMakeLists.txt next to wisp_sim; read by support/font_image.hpp.

@@ -60,6 +60,9 @@ struct SimOptions {
     // A file of scripted IMU steps (wisp/port/sim/imu_script.hpp); empty:
     // none, the arrow keys tilt.
     std::string imu_script;
+    // Shows the wisp on a black screen of its own, cycling its moods
+    // (spec 6.1), instead of the self-check screen.
+    bool wisp_demo = false;
 };
 
 // Parses argv[1..argc) (argv[0], the program name, is ignored) into a
@@ -70,7 +73,7 @@ struct SimOptions {
 // server), --web-dir <path>, --wifi-fail, --tap <x>,<y>@<ms> and
 // --swipe <x1>,<y1>,<x2>,<y2>@<ms> (both repeatable, appended to
 // `touches` in order), --scenes-dir <path>, --open-scene <id>,
-// --font-image <path|none> and --imu-script <path>.
+// --font-image <path|none>, --imu-script <path> and --wisp-demo.
 //
 // Fails with wisp::ErrorCode::InvalidArgument if:
 //   - an argument is none of the flags above (the error message includes
