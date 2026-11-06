@@ -35,6 +35,21 @@ void clear_flash_thread();
 // never called set_flash_thread()).
 bool on_flash_thread();
 
+// Called, at most once per call site, on an ESP-IDF device build's
+// violation (see WISP_ASSERT_FLASH_THREAD below). wisp_os cannot call
+// WLOG_E itself (wisp/core/log.hpp sits above it -- AGENTS.md section 3),
+// so it reports through this hook instead: a higher layer installs one at
+// boot (wisp_core's logging setup installs one that calls WLOG_E) via
+// set_flash_violation_reporter(). Unlike the earlier approach of simply
+// naming WLOG_E inside the macro and relying on every call site to have
+// included wisp/core/log.hpp first, this compiles independently of what
+// the call site itself includes. Null (the default, and every build that
+// never installs one, including every host/sim build, which never
+// reaches the ESP-IDF branch below at all): a violation is just not
+// reported through this path.
+using FlashViolationReporter = void (*)(const char* what);
+void set_flash_violation_reporter(FlashViolationReporter reporter);
+
 namespace detail {
 
 // The non-ESP-IDF half of WISP_ASSERT_FLASH_THREAD below: prints `what`
@@ -42,6 +57,13 @@ namespace detail {
 // direct use -- go through the macro, which also supplies the
 // ESP-IDF device behavior.
 void flash_guard_abort_if_violated(const char* what);
+
+// Calls the reporter installed by set_flash_violation_reporter(), if any;
+// a silent no-op otherwise. Used by WISP_ASSERT_FLASH_THREAD's ESP-IDF
+// device branch below; exposed here (rather than kept private to
+// flash_guard.cpp) so the hook itself can be unit-tested on the host
+// without needing an ESP-IDF build.
+void flash_guard_report(const char* what);
 
 }  // namespace detail
 
@@ -54,24 +76,22 @@ void flash_guard_abort_if_violated(const char* what);
 //   - host builds (the simulator, every ctest): prints the call site and
 //     aborts, so code that reaches a flash entry point from the wrong
 //     thread fails the very test that exercises it;
-//   - ESP-IDF device builds: logs once per call site (the static below
-//     is local to each macro expansion, i.e. to each call site, so a
-//     tight loop that keeps tripping this doesn't flood the log) via
-//     WLOG_E and keeps running. A task whose stack is in PSRAM is
-//     already aborted by the hardware before this can even run
-//     (AGENTS.md section 5: a flash operation stops the cache, which
-//     asserts the stack is internal); a task with an internal stack
-//     survives, and this log is the diagnostic trail for why. WLOG_E is
-//     not declared here (wisp/core/log.hpp is above wisp_os, which this
-//     header must not include -- AGENTS.md section 3); every real call
-//     site is in a layer that already includes it.
+//   - ESP-IDF device builds: reports once per call site (the static
+//     below is local to each macro expansion, i.e. to each call site, so
+//     a tight loop that keeps tripping this doesn't flood the log)
+//     through the reporter hook above, and keeps running. A task whose
+//     stack is in PSRAM is already aborted by the hardware before this
+//     can even run (AGENTS.md section 5: a flash operation stops the
+//     cache, which asserts the stack is internal); a task with an
+//     internal stack survives, and the report is the diagnostic trail
+//     for why.
 #if defined(ESP_PLATFORM)
 #define WISP_ASSERT_FLASH_THREAD(what)                                                 \
     do {                                                                               \
         if (!::wisp::os::on_flash_thread()) {                                          \
             static std::atomic<bool> wisp_flash_guard_logged_{false};                  \
             if (!wisp_flash_guard_logged_.exchange(true, std::memory_order_relaxed)) { \
-                WLOG_E("flash", "flash access off the flash thread: %s", (what));      \
+                ::wisp::os::detail::flash_guard_report(what);                          \
             }                                                                          \
         }                                                                              \
     } while (0)

@@ -20,6 +20,12 @@ std::atomic<bool> g_flash_thread_registered{false};
 // as still being it.
 thread_local bool g_is_flash_thread = false;
 
+// Installed by set_flash_violation_reporter(); null until a higher layer
+// installs one at boot. A plain function pointer (not std::function), so
+// the atomic itself can be lock-free and the hook adds no allocation on
+// the violation path.
+std::atomic<FlashViolationReporter> g_flash_violation_reporter{nullptr};
+
 }  // namespace
 
 void set_flash_thread() {
@@ -36,6 +42,10 @@ bool on_flash_thread() {
     return !g_flash_thread_registered.load(std::memory_order_acquire) || g_is_flash_thread;
 }
 
+void set_flash_violation_reporter(FlashViolationReporter reporter) {
+    g_flash_violation_reporter.store(reporter, std::memory_order_release);
+}
+
 namespace detail {
 
 void flash_guard_abort_if_violated(const char* what) {
@@ -46,6 +56,13 @@ void flash_guard_abort_if_violated(const char* what) {
                  what != nullptr ? what : "(unknown)");
     std::fflush(stderr);
     std::abort();
+}
+
+void flash_guard_report(const char* what) {
+    FlashViolationReporter reporter = g_flash_violation_reporter.load(std::memory_order_acquire);
+    if (reporter != nullptr) {
+        reporter(what);
+    }
 }
 
 }  // namespace detail

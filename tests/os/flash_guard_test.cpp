@@ -6,6 +6,50 @@
 
 using namespace wisp::os;
 
+namespace {
+
+// A plain function, not a lambda: FlashViolationReporter is a function
+// pointer, which cannot carry a capture. State lives at file scope
+// instead and each test resets it before use.
+const char* g_last_reported = nullptr;
+int g_report_count = 0;
+
+void capture_violation(const char* what) {
+    g_last_reported = what;
+    ++g_report_count;
+}
+
+}  // namespace
+
+// detail::flash_guard_report() -- the hook WISP_ASSERT_FLASH_THREAD's
+// ESP-IDF device branch calls instead of naming WLOG_E directly (which
+// would need wisp/core/log.hpp, above wisp_os, in scope at every call
+// site) -- reaches whatever set_flash_violation_reporter() installed,
+// unaltered. Exercised directly here since the installed reporter is
+// wisp_core's job (log.cpp installs one that calls WLOG_E), not
+// wisp_os's.
+TEST(FlashGuard, ReporterHookReceivesTheCallSite) {
+    g_last_reported = nullptr;
+    g_report_count = 0;
+    set_flash_violation_reporter(&capture_violation);
+
+    detail::flash_guard_report("StorageManager::write_atomic");
+
+    EXPECT_EQ(g_report_count, 1);
+    ASSERT_NE(g_last_reported, nullptr);
+    EXPECT_STREQ(g_last_reported, "StorageManager::write_atomic");
+
+    set_flash_violation_reporter(nullptr);
+}
+
+// No reporter installed (the default, and every host/sim build, which
+// never reaches this hook through the macro at all) is a silent no-op,
+// not a crash.
+TEST(FlashGuard, NoReporterInstalledIsSilent) {
+    set_flash_violation_reporter(nullptr);
+    detail::flash_guard_report("StorageManager::write_atomic");
+}
+
 // With no flash thread ever registered (the common case for a test that
 // never starts core::StorageWorker), the guard allows everything, on any
 // thread -- this is the boot/shutdown-phase behavior spec 3.2 documents.

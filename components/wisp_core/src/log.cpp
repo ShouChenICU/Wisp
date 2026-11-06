@@ -9,6 +9,8 @@
 #include <mutex>
 #include <vector>
 
+#include "wisp/os/flash_guard.hpp"
+
 namespace wisp::log {
 
 namespace {
@@ -211,9 +213,22 @@ State& state() {
 // different sinks may run concurrently from different threads.
 thread_local bool g_in_sink = false;
 
+// Installed on os::flash_guard (wisp/os/flash_guard.hpp) below: wisp_os
+// cannot call WLOG_E itself (its own layer sits below wisp_core --
+// AGENTS.md section 3), so a device-build flash-thread violation reaches
+// this layer's logging through that hook instead of a direct call.
+void report_flash_violation(const char* what) {
+    WLOG_E("flash", "flash access off the flash thread: %s", what);
+}
+
 }  // namespace
 
 void init(size_t ring_bytes, os::Mem mem) {
+    // Idempotent, so installing it on every init() call (including the
+    // simulator's early one before App::start() re-inits) is harmless;
+    // this is simply the first point every boot path already reaches.
+    os::set_flash_violation_reporter(&report_flash_violation);
+
     State& s = state();
     std::lock_guard<os::Mutex> lock(s.mutex);
     // The simulator initializes logging before App::start() does it again;
