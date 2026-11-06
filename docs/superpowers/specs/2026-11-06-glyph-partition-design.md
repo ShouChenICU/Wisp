@@ -1,7 +1,7 @@
 # Wisp 正文位图字分区设计文档
 
 - 日期：2026-11-06
-- 状态：待批准
+- 状态：已批准（2026-11-06），已实施
 - 范围：16 px 正文位图字 `lv_font_cjk_16` 从应用镜像挪进单独的 flash 分区 `glyphs`，运行时映射读取；分区表随之调整。显示效果不变。属于基础设施，插在 MVP 计划（`2026-11-06-mvp.md`）Task 4 之前，在 `feat/agent-core` 上实施。
 - 前置：矢量字体（`2026-11-05-vector-font-design.md`，下文"矢量字体 spec"）、单一 flash 线程（`2026-11-06-flash-thread-design.md`）
 

@@ -153,11 +153,13 @@ sdkconfig 的默认值只在 `firmware/sdkconfig` 不存在时生效。切换板
 
 ### 字体分区
 
-有 `fonts` 分区的板子（分区约定表，上文），`firmware/main/CMakeLists.txt` 会把已提交的矢量字体打包成 `build/fonts.bin`（矢量字体 spec 3.3）并加三个烧录目标；有 `glyphs` 分区时同样打包 16 px 正文位图字为 `build/glyphs.bin`（字形分区 spec 3.2–3.3），复用同三个目标而不单独新建：
+有 `fonts` 分区的板子（分区约定表，上文），`firmware/main/CMakeLists.txt` 会把已提交的矢量字体打包成 `build/fonts.bin`（矢量字体 spec 3.3）并加三个烧录目标；有 `glyphs` 分区时同样打包 16 px 正文位图字为 `build/glyphs.bin`（字形分区 spec 3.2–3.3），复用同三个目标而不单独新建（只有 `glyphs`、没有 `fonts` 分区的板子也会得到这三个目标，只写 `glyphs.bin`）：
 
 - `idf.py -p <端口> flash`：和引导程序、分区表、应用一起写入 `fonts.bin`、`glyphs.bin`（各自分区存在才写），新设备一条命令就完整，字体分区因此总是从出厂就有数据。
 - `idf.py -p <端口> fonts-flash`：只写 `fonts`、`glyphs` 两个分区，换字体或修复字体分区时用。
 - `idf.py -p <端口> app-flash`：只写应用分区，日常改代码用它，省掉每次的字体写入和另一个闲置的 OTA 槽。
+
+给已经在用的板子新加 `glyphs` 分区就是换分区表，必须 USB 完整烧录一次。如果只经 OTA 把新固件装到还是旧分区表的板子上，固件照常运行（`storage` 等分区按名字查找，数据不受影响），只是找不到 `glyphs` 分区，正文退到矢量 16 px（比位图字略虚），直到完整烧录换上新表。
 
 `fonts`、`glyphs` 分区都由 `app_main` 整个 `esp_partition_mmap()` 到数据总线地址空间、只读、永久映射（`wisp::port::esp::map_font_partition()`/`map_glyph_partition()`），分区多大就占多大虚拟地址空间（按 `CONFIG_MMU_PAGE_SIZE`，参考板是 64 KB 页对齐；参考板的 `fonts` 分区 2.81 MB、`glyphs` 分区 1.125 MB 分别占约等大的数据地址空间，一直到关机）。新板子决定这两个分区大小时要留出这块地址空间：数据总线虚拟地址空间同时被 flash 的其他只读映射（网页资源包、XIP 开启时整个 flash 的可执行映射）和 PSRAM 的 XIP 映射占用，分区给得太大可能挤占它们的空间，具体上限随芯片的地址空间布局而不同，加大之前查该芯片的内存映射文档。
 

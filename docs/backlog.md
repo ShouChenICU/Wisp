@@ -95,3 +95,16 @@ Source: `feat/agent-core` review records.
   - `remove_listener` can deadlock when a listener removes itself from its own callback before `start()`, or blocks on the UI thread while the UI thread removes it; listeners must not block on another thread;
   - the `TurnBegin` text and serialized tool results are `std::string`, briefly in internal RAM; include them in the device `mem` measurement;
   - the done-notice id carries the reply's first line, so each turn adds a notice instead of replacing one.
+
+## Glyph partition parked review findings
+
+Source: glyph partition review records.
+
+- Simulator: an explicit but unreadable `--glyph-image <path>` silently falls back to the host built-in font (`simulator/main.cpp`); disable the built-in when a path was given, or warn louder.
+- `internal_library_quota` defaults to 3 MiB (`storage_manager.hpp`) while the reference board's `storage` partition is now 2.94 MiB, so the Library quota can never trigger; size it per board or as a fraction of the partition.
+- `glyph_image.cpp`: the cmap rejections for a FORMAT0_FULL `list_length` below `range_length` and for a list present or absent against the type have no tests.
+- `fonts.cpp` re-decodes the payload length from the raw header; `GlyphFont` could expose it.
+- `keep_glyph_font`'s "different bytes -> new font" branch has no test.
+- After a different image is installed, the old A8 wrapper's cached glyphs keep using the shared 512 KiB arena (simulator and tests only).
+- `a8_set_fallback` silently ignores a font that is not an A8 wrapper; a debug assert would catch misuse.
+- Each `UiRuntime::start()` re-validates the image and briefly allocates about 130 KB of PSRAM before dropping it when the old font is reused.
