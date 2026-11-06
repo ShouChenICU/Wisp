@@ -123,7 +123,7 @@
    "heap_internal_free": int, "heap_large_free": int,
    "wisp_fps": number, "wisp_ms": number}
   ```
-  `fps`/`flush_ms` 来自 `ui::UiRuntime::perf()`；`flush_ms` 是 UI 任务每段（一块局部缓冲）花在屏幕上的平均毫秒数，即启动传输加上之后等它传完，传输与渲染重叠时远小于传输本身。两者本质是浮点数，但 JSON 往返时整数值会被识别为 `Int` 而非 `Double`（`Value`/JSON 对 Int/Double 的区分按实际值而非来源类型，见 `tests/base/value_json_test.cpp`）；解析方不应假设其中任何一个字段固定是哪一种 JSON 数字形式。`heap_internal_free`/`heap_large_free` 来自 `Platform::heap_info`（可能为空，此时都是 0）。`wisp_fps`/`wisp_ms` 来自 `ui::wisp_perf()`（`wisp/ui/wisp_model.hpp`）：最近 5 s 里所有鬼火（`WispView`）合计的出帧率，和每帧模型推进加渲染的平均毫秒数，不含 LVGL 把帧画到屏幕上的时间；这段时间没出帧时两者都是 0（mvp spec 6.1）。模拟器 `--wisp-demo` 用自己的黑色屏幕循环演示五种表情，自检界面留在后面照常输出这一行。
+  `fps`/`flush_ms` 来自 `ui::UiRuntime::perf()`；`flush_ms` 是 UI 任务每段（一块局部缓冲）花在屏幕上的平均毫秒数，即启动传输加上之后等它传完，传输与渲染重叠时远小于传输本身。两者本质是浮点数，但 JSON 往返时整数值会被识别为 `Int` 而非 `Double`（`Value`/JSON 对 Int/Double 的区分按实际值而非来源类型，见 `tests/base/value_json_test.cpp`）；解析方不应假设其中任何一个字段固定是哪一种 JSON 数字形式。`heap_internal_free`/`heap_large_free` 来自 `Platform::heap_info`（可能为空，此时都是 0）。`wisp_fps`/`wisp_ms` 来自 `ui::wisp_perf()`（`wisp/ui/wisp_model.hpp`）：最近 5 s 里所有鬼火（`WispView`）合计的出帧率，和每帧的平均毫秒数：模型推进、生成形状，加上鬼火在 LVGL 绘制事件里画线和填充的时间（软件渲染器在这些调用里完成光栅化，刷屏不算在内）；这段时间没出帧时两者都是 0（mvp spec 6.1）。电子纸只在表情变化时出一帧，所以 `wisp_fps` 接近 0。模拟器 `--wisp-demo` 用自己的屏幕（背景按面板取黑或白）循环演示五种表情，可配合 `--panel mono|epaper` 查看单色和电子纸的画法；自检界面留在后面照常输出这一行。
 
 - **`WISP_BENCH <json>`**（串口控制台命令 `bench scroll [秒数]` 的回答；`wisp/app/bench.hpp`，真机和模拟器都经 `Platform::console_commands` 注册）：
   ```

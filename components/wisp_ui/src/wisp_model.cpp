@@ -1,5 +1,6 @@
-// WispModel's parameters and motion (wisp/ui/wisp_model.hpp); the
-// rasterizer is in wisp_raster.cpp.
+// WispModel's parameters and motion (wisp/ui/wisp_model.hpp); the shape
+// it draws as is built in wisp_shape.cpp, and rasterized for two-colour
+// panels in wisp_spans.cpp.
 
 #include "wisp/ui/wisp_model.hpp"
 
@@ -19,7 +20,6 @@ namespace {
 
 constexpr uint32_t kBlinkMs = 170;
 constexpr uint32_t kErrorShakeMs = 600;
-constexpr uint32_t kErrorDipMs = 900;
 constexpr uint32_t kMaxStepMs = 100;
 
 // A phase in 1/65536 turns advanced by `mhz` (millihertz) over dt_ms,
@@ -47,16 +47,18 @@ int32_t ease_to(int32_t cur, int32_t target, uint32_t dt_ms, uint32_t tau_ms) {
     return cur + (target - cur) * k / 256;
 }
 
-// Hair roots on the drop (normalized height, and the fraction of the half
-// width to the side, Q8), and tips at rest relative to the root (Q8 px at
-// size 216). Their widths are in wisp_raster.cpp.
+// Flame tips: where each hangs on the drop (normalized height, and the
+// fraction of the half width to the side, Q8), and where its tip rests
+// relative to that point (Q8 px at size 216).
 struct HairSpec {
     int32_t yn, side, rest_x, rest_y;
 };
+constexpr uint32_t kSpringStepMs = 25;
+
 constexpr HairSpec kHair[3] = {
-    {-2900, -120, -9 * 256, -28 * 256},
-    {-3500, 0, 1 * 256, -38 * 256},
-    {-2800, 120, 10 * 256, -25 * 256},
+    {-2900, -150, -13 * 256, -24 * 256},
+    {-3500, 0, 1 * 256, -34 * 256},
+    {-2800, 150, 14 * 256, -21 * 256},
 };
 
 }  // namespace
@@ -91,22 +93,25 @@ WispParams lerp(const WispParams& a, const WispParams& b, uint32_t t) {
             lerp1(a.jitter, b.jitter, t)};
 }
 
-WispModel::WispModel(int size_px, uint32_t seed)
+WispModel::WispModel(int size_px, uint32_t seed, hal::PanelKind panel)
     : w_(std::max<int32_t>(size_px, 16)),
       h_(std::max<int32_t>(size_px, 16) * 5 / 4),
-      rng_(seed == 0 ? 1 : seed) {
+      rng_(seed == 0 ? 1 : seed),
+      panel_(panel),
+      sparks_on_(hal::panel_is_colour(panel)) {
     params_ = from_ = to_ = mood_params(WispMood::Idle);
     blink_ms_ = kBlinkMs;
     next_blink_ms_ = static_cast<uint32_t>(rand_range(1500, 4000));
     next_glance_ms_ = static_cast<uint32_t>(rand_range(2000, 4000));
     for (uint32_t& p : phase_) p = rand();
     hair_phase_ = rand();
-    build_palette();
     update_geometry();
     place_hair(true);
-    for (size_t i = 0; i < static_cast<size_t>(kMinParticles); ++i) {
-        spawn(particles_[i], true);
-        ++live_;
+    if (sparks_on_) {
+        for (size_t i = 0; i < 4; ++i) {
+            spawn(particles_[i], true);
+            ++live_;
+        }
     }
 }
 
@@ -146,6 +151,8 @@ void WispModel::set_level(uint8_t level) {
 void WispModel::set_busy(bool fast) { busy_ = fast; }
 
 uint32_t WispModel::frame_interval_ms() const {
+    if (panel_ == hal::PanelKind::EPaper) return 0;
+    if (panel_ == hal::PanelKind::Mono) return kMonoFrameMs;
     if (blend_ms_ < kMoodBlendMs || mood_ == WispMood::Listening || mood_ == WispMood::Thinking ||
         mood_ == WispMood::Error) {
         return kFastFrameMs;
@@ -170,10 +177,12 @@ void WispModel::step(uint32_t dt_ms) {
     level_ = ease_to(level_, level_target_, dt_ms, level_target_ > level_ ? 60 : 180);
     busy_q8_ = ease_to(busy_q8_, busy_ ? 256 : 0, dt_ms, 250);
 
-    phase_[0] = advance(phase_[0], dt_ms, 1100, params_.sway_speed);
-    phase_[1] = advance(phase_[1], dt_ms, 1700, params_.sway_speed);
-    phase_[2] = advance(phase_[2], dt_ms, 2900, params_.sway_speed);
-    hair_phase_ = advance(hair_phase_, dt_ms, 1300, params_.sway_speed);
+    // Busy (a tool runs): everything burns faster.
+    const int32_t sway = params_.sway_speed * (256 + busy_q8_ * 3 / 4) / 256;
+    phase_[0] = advance(phase_[0], dt_ms, 1100, sway);
+    phase_[1] = advance(phase_[1], dt_ms, 1700, sway);
+    phase_[2] = advance(phase_[2], dt_ms, 2900, sway);
+    hair_phase_ = advance(hair_phase_, dt_ms, 1300, sway);
 
     if (mood_ == WispMood::Error) error_ms_ = std::min<uint32_t>(error_ms_ + dt_ms, 60000);
 
@@ -205,17 +214,41 @@ void WispModel::step(uint32_t dt_ms) {
     glance_y_ = ease_to(glance_y_, glance_ty_, dt_ms, 110);
 
     // Speaking: a spring pulled by the level stretches the drop.
+    // Springs are stepped at most kSpringStepMs at a time: a slow panel's
+    // 100 ms frames would otherwise make them unstable.
     {
         const int64_t target = static_cast<int64_t>(level_) * speak_ / 256 * 640 / 256;  // Q12
-        const int64_t a = 700 * (target - bounce_) - 13 * static_cast<int64_t>(bounce_v_);
-        bounce_v_ += static_cast<int32_t>(a * dt_ms / 1000);
-        bounce_ += static_cast<int32_t>(static_cast<int64_t>(bounce_v_) * dt_ms / 1000);
-        bounce_ = std::clamp<int32_t>(bounce_, -900, 900);
+        for (uint32_t left = dt_ms; left > 0;) {
+            const uint32_t d = std::min(left, kSpringStepMs);
+            left -= d;
+            const int64_t a = 700 * (target - bounce_) - 13 * static_cast<int64_t>(bounce_v_);
+            bounce_v_ += static_cast<int32_t>(a * d / 1000);
+            bounce_ += static_cast<int32_t>(static_cast<int64_t>(bounce_v_) * d / 1000);
+            bounce_ = std::clamp<int32_t>(bounce_, -900, 900);
+        }
     }
 
     update_geometry();
     step_hair(dt_ms);
     step_particles(dt_ms);
+}
+
+void WispModel::settle() {
+    blend_ms_ = kMoodBlendMs;
+    params_ = to_;
+    listen_ = listen_to_;
+    speak_ = speak_to_;
+    err_ = err_to_;
+    level_ = level_target_;
+    busy_q8_ = busy_ ? 256 : 0;
+    error_ms_ = std::max(error_ms_, kErrorShakeMs);
+    blink_ms_ = kBlinkMs;
+    glance_x_ = glance_tx_ = 0;
+    glance_y_ = glance_ty_ = 0;
+    bounce_ = static_cast<int32_t>(static_cast<int64_t>(level_) * speak_ / 256 * 640 / 256);
+    bounce_v_ = 0;
+    update_geometry();
+    place_hair(true);
 }
 
 void WispModel::update_geometry() {
@@ -239,18 +272,12 @@ void WispModel::update_geometry() {
     const int32_t bob = px(2 * 256 + 154) * sin16(breath + 16384) >> 15;
 
     int32_t shake_x = 0, shake_y = 0;
-    dim_ = 256;
     if (mood_ == WispMood::Error) {
         if (error_ms_ < kErrorShakeMs) {
             const int32_t amp = static_cast<int32_t>(static_cast<int64_t>(px(to_.jitter)) *
                                                      (kErrorShakeMs - error_ms_) / kErrorShakeMs);
             shake_x = amp * sin16(error_ms_ * 65536u * 13u / 1000u) >> 15;
             shake_y = (amp / 3) * cos16(error_ms_ * 65536u * 9u / 1000u) >> 15;
-        }
-        // The flame dips at once and recovers to Error's own brightness.
-        if (error_ms_ < kErrorDipMs) {
-            const int32_t t = static_cast<int32_t>(error_ms_);
-            dim_ = 256 - (t < 120 ? 110 * t / 120 : 110 * (900 - t) / 780);
         }
     }
 
@@ -322,14 +349,18 @@ void WispModel::step_hair(uint32_t dt_ms) {
             (px(3 * 256) * cos16(ph * 2 + 9000) >> 15);
         // Spring towards the rest point, lightly damped: about 2 Hz, so
         // the tips trail the body's movement and overshoot a little.
-        const int64_t ax =
-            170 * static_cast<int64_t>(tx - h.x) - 15 * static_cast<int64_t>(h.vx) / 2;
-        const int64_t ay =
-            170 * static_cast<int64_t>(ty - h.y) - 15 * static_cast<int64_t>(h.vy) / 2;
-        h.vx += static_cast<int32_t>(ax * dt_ms / 1000);
-        h.vy += static_cast<int32_t>(ay * dt_ms / 1000);
-        h.x += static_cast<int32_t>(static_cast<int64_t>(h.vx) * dt_ms / 1000);
-        h.y += static_cast<int32_t>(static_cast<int64_t>(h.vy) * dt_ms / 1000);
+        for (uint32_t left = dt_ms; left > 0;) {
+            const uint32_t d = std::min(left, kSpringStepMs);
+            left -= d;
+            const int64_t ax =
+                170 * static_cast<int64_t>(tx - h.x) - 15 * static_cast<int64_t>(h.vx) / 2;
+            const int64_t ay =
+                170 * static_cast<int64_t>(ty - h.y) - 15 * static_cast<int64_t>(h.vy) / 2;
+            h.vx += static_cast<int32_t>(ax * d / 1000);
+            h.vy += static_cast<int32_t>(ay * d / 1000);
+            h.x += static_cast<int32_t>(static_cast<int64_t>(h.vx) * d / 1000);
+            h.y += static_cast<int32_t>(static_cast<int64_t>(h.vy) * d / 1000);
+        }
         // Never below its root: a tongue hangs up, not down.
         h.y = std::min<int32_t>(h.y, h.ay - px(4 * 256));
     }
@@ -345,7 +376,6 @@ void WispModel::spawn(Particle& p, bool initial) {
     p.vx = rand_range(-px(6 * 256), px(6 * 256));
     p.vy = -rand_range(px(14 * 256), px(28 * 256));
     p.phase = rand();
-    p.glow = static_cast<uint8_t>(rand_range(70, 190));
     p.orbit_pct = static_cast<int8_t>(rand_range(-10, 10));
     if (initial) {
         p.x += p.vx * p.age_ms / 1000;
@@ -359,10 +389,15 @@ void WispModel::spawn(Particle& p, bool initial) {
 
 void WispModel::step_particles(uint32_t dt_ms) {
     const int32_t speed = params_.particle_rate * (256 + busy_q8_ * 150 / 256) / 256;
-    const size_t target = static_cast<size_t>(
-        kMinParticles + std::clamp<int32_t>((params_.particle_rate - 256) * 20 / 160, 0, 20));
+    // Four sparks when calm, up to six when lively; none on two-colour panels.
+    const size_t target =
+        sparks_on_ ? static_cast<size_t>(
+                         4 + std::clamp<int32_t>((params_.particle_rate - 256) * 2 / 64, 0, 2))
+                   : 0;
     const int32_t orbit = params_.particle_orbit;
-    const int32_t ocx = cx_, ocy = cy_ - r_ * 35 / 100;
+    // The orbit: a small ring up and to the right of the head, where a
+    // thinking wisp looks, clear of the face.
+    const int32_t ocx = cx_ + r_ * 75 / 100, ocy = cy_ - top_ * 90 / 100;
     const int32_t margin = 6 * 256;
     travel_ = 0;
     for (Particle& p : particles_) {
@@ -378,8 +413,8 @@ void WispModel::step_particles(uint32_t dt_ms) {
         p.y += static_cast<int32_t>(static_cast<int64_t>(p.vy) * speed / 256 * dt_ms / 1000);
         p.phase += dt_ms * 21u * static_cast<uint32_t>(std::max<int32_t>(speed, 0)) / 256u;
         const int32_t rise_x = p.x + (px(3 * 256) * sin16(p.phase / 3 + p.age_ms * 44u) >> 15);
-        const int32_t rx = r_ * 130 / 100 * (100 + p.orbit_pct) / 100;
-        const int32_t ry = r_ * 40 / 100 * (100 + p.orbit_pct) / 100;
+        const int32_t rx = r_ * 50 / 100 * (100 + p.orbit_pct) / 100;
+        const int32_t ry = r_ * 20 / 100 * (100 + p.orbit_pct) / 100;
         const int32_t ox = ocx + (rx * cos16(p.phase) >> 15);
         const int32_t oy = ocy + (ry * sin16(p.phase) >> 15) - (ox - ocx) * 14 / 100;
         const int32_t nx = rise_x + (ox - rise_x) * orbit / 256;
@@ -400,15 +435,6 @@ void WispModel::step_particles(uint32_t dt_ms) {
         spawn(p, false);
         ++live_;
     }
-}
-
-uint32_t frame_hash(std::span<const uint16_t> px) {
-    uint32_t h = 2166136261u;
-    for (uint16_t v : px) {
-        h = (h ^ (v & 0xffu)) * 16777619u;
-        h = (h ^ (v >> 8)) * 16777619u;
-    }
-    return h;
 }
 
 namespace {

@@ -6,7 +6,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -21,11 +23,42 @@ namespace {
 using wisp::ui::WispMood;
 using wisp::ui::WispView;
 
+// FakeDisplay that also keeps every flushed pixel, like a panel's memory.
+class FramebufferDisplay : public wisp::test::FakeDisplay {
+public:
+    explicit FramebufferDisplay(const std::string& shape)
+        : FakeDisplay("display.main", 480, 480, 1, shape), fb_(480u * 480u, 0) {}
+
+    wisp::Result<void> flush(const wisp::hal::Area& area, const uint16_t* px) override {
+        {
+            std::lock_guard<std::mutex> lock(fb_mutex_);
+            const int w = area.x2 - area.x1 + 1;
+            for (int y = area.y1; y <= area.y2; ++y) {
+                for (int x = area.x1; x <= area.x2; ++x) {
+                    fb_[static_cast<size_t>(y) * 480 + x] = px[(y - area.y1) * w + (x - area.x1)];
+                }
+            }
+        }
+        return FakeDisplay::flush(area, px);
+    }
+
+    std::vector<uint16_t> framebuffer() const {
+        std::lock_guard<std::mutex> lock(fb_mutex_);
+        return fb_;
+    }
+
+private:
+    mutable std::mutex fb_mutex_;
+    std::vector<uint16_t> fb_;
+};
+
 class WispViewTest : public ::testing::Test {
 protected:
-    void start(const std::string& shape = "rect", int corner_radius = 40) {
-        display_ = std::make_shared<wisp::test::FakeDisplay>("display.main", 480, 480, 1, shape);
+    void start(const std::string& shape = "rect", int corner_radius = 40,
+               const std::string& panel = "amoled") {
+        display_ = std::make_shared<FramebufferDisplay>(shape);
         display_->set_cap("corner_radius", wisp::Value(corner_radius));
+        display_->set_cap("panel", wisp::Value(panel));
         ui_ = std::make_unique<wisp::ui::UiRuntime>(display_, nullptr);
         ASSERT_TRUE(ui_->start());
         ui([] {
@@ -59,7 +92,7 @@ protected:
         return a;
     }
 
-    std::shared_ptr<wisp::test::FakeDisplay> display_;
+    std::shared_ptr<FramebufferDisplay> display_;
     std::unique_ptr<wisp::ui::UiRuntime> ui_;
     WispView* view_ = nullptr;
 };
@@ -128,6 +161,67 @@ TEST_F(WispViewTest, SetSizeRebuilds) {
     const uint32_t before = frames();
     wisp::os::sleep_ms(300);
     EXPECT_GT(frames(), before);
+}
+
+// E-paper shows still pictures: one when created, one per mood change,
+// nothing for the level, busy or a repeated mood (spec 6.1).
+TEST_F(WispViewTest, EPaperRedrawsOnlyOnMoodChange) {
+    start("rect", 40, "epaper");
+    ui([&] {
+        lv_obj_set_style_bg_color(lv_screen_active(), lv_color_white(), 0);
+        view_ = WispView::create(lv_screen_active(), 216);
+    });
+    ASSERT_NE(view_, nullptr);
+    wisp::os::sleep_ms(400);
+    EXPECT_EQ(frames(), 1u);
+    ui([&] {
+        view_->set_level(80);
+        view_->set_busy(true);
+        view_->set_mood(WispMood::Idle);
+    });
+    wisp::os::sleep_ms(300);
+    EXPECT_EQ(frames(), 1u);
+    const size_t flushes = display_->flush_count();
+    ui([&] { view_->set_mood(WispMood::Error); });
+    wisp::os::sleep_ms(400);
+    EXPECT_EQ(frames(), 2u);
+    EXPECT_GT(display_->flush_count(), flushes);
+    bool chevrons = false;
+    ui([&] { chevrons = view_->model().shape().chevrons; });
+    EXPECT_TRUE(chevrons);
+    // Black on white.
+    const std::vector<uint16_t> fb = display_->framebuffer();
+    EXPECT_NE(std::find(fb.begin(), fb.end(), 0x0000), fb.end());
+}
+
+// Mono: no anti-aliasing and no sparks; the wisp is white on black and
+// the panel gets exactly two colours.
+TEST_F(WispViewTest, MonoDrawsTwoColoursWithoutSparks) {
+    start("rect", 40, "mono");
+    ui([&] {
+        view_ = WispView::create(lv_screen_active(), 216);
+        view_->set_mood(WispMood::Thinking);
+    });
+    ASSERT_NE(view_, nullptr);
+    bool aa = true;
+    ui([&] { aa = lv_display_get_antialiasing(lv_obj_get_display(view_->obj())); });
+    EXPECT_FALSE(aa);
+    wisp::os::sleep_ms(500);
+    size_t sparks = 1;
+    uint32_t interval = 0;
+    ui([&] {
+        sparks = view_->model().live_particles();
+        interval = view_->model().frame_interval_ms();
+    });
+    EXPECT_EQ(sparks, 0u);
+    EXPECT_EQ(interval, 100u);
+    const std::vector<uint16_t> fb = display_->framebuffer();
+    size_t white = 0;
+    for (uint16_t px : fb) {
+        ASSERT_TRUE(px == 0x0000 || px == 0xffff) << std::hex << px;
+        white += px == 0xffff;
+    }
+    EXPECT_GT(white, 500u);
 }
 
 class WispViewShapes : public WispViewTest, public ::testing::WithParamInterface<std::string> {};

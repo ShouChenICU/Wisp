@@ -1,6 +1,7 @@
 // WispModel (wisp/ui/wisp_model.hpp): determinism, mood blending, level
-// and busy, the particle pool, the dirty box, the frame rate it asks for,
-// the anti-burn-in drift and the Error shake; and the wisp_perf() window.
+// and busy, sparks per panel, the dirty box, the frame rate it asks for,
+// the anti-burn-in drift, what each mood's face looks like, the span
+// rasterizer for two-colour panels, and the wisp_perf() window.
 
 #include "wisp/ui/wisp_model.hpp"
 
@@ -13,56 +14,51 @@
 
 namespace {
 
+using wisp::hal::PanelKind;
 using wisp::ui::WispModel;
 using wisp::ui::WispMood;
 using wisp::ui::WispParams;
+using wisp::ui::WispShape;
 
-// The golden frame: seed 42, size 216, 30 steps of 33 ms, then render.
-// Any change to the look changes it; say why in the commit that updates it.
-constexpr uint32_t kGolden = 0x7245bc14u;
+// The golden shape: seed 42, size 216, 30 steps of 33 ms, then build,
+// hashed with shape_hash(). Any change to the look changes it; say why in
+// the commit that updates it.
+constexpr uint32_t kGolden = 0xc90710f7u;
 
-struct Frame {
-    std::vector<uint8_t> lum;
-    std::vector<uint16_t> out;
-    explicit Frame(const WispModel& m)
-        : lum(static_cast<size_t>(m.width()) * m.height()),
-          out(static_cast<size_t>(m.width()) * m.height()) {}
-    wisp::hal::Area render(WispModel& m) { return m.render(lum, out); }
-    uint32_t hash() const { return wisp::ui::frame_hash(out); }
-};
+uint32_t hash_after(WispModel& m) {
+    m.build();
+    return wisp::ui::shape_hash(m.shape());
+}
 
 int bounds_height(const WispModel& m) { return m.bounds().y2 - m.bounds().y1 + 1; }
 
+bool inside_frame(const wisp::hal::Area& b, const WispModel& m) {
+    return b.x1 > 0 && b.y1 > 0 && b.x2 < m.width() - 1 && b.y2 < m.height() - 1;
+}
+
 TEST(WispModel, SameSeedSameFrames) {
     WispModel a(216, 42), b(216, 42);
-    Frame fa(a), fb(b);
     for (int i = 0; i < 60; ++i) {
         a.step(33);
         b.step(33);
-        fa.render(a);
-        fb.render(b);
-        ASSERT_EQ(fa.hash(), fb.hash()) << "step " << i;
+        ASSERT_EQ(hash_after(a), hash_after(b)) << "step " << i;
     }
 }
 
 TEST(WispModel, GoldenFrameHash) {
     WispModel m(216, 42);
-    Frame f(m);
     for (int i = 0; i < 30; ++i) m.step(33);
-    f.render(m);
-    EXPECT_EQ(f.hash(), kGolden) << std::hex << "0x" << f.hash();
+    const uint32_t h = hash_after(m);
+    EXPECT_EQ(h, kGolden) << std::hex << "0x" << h;
 }
 
 TEST(WispModel, DifferentSeedsDiffer) {
     WispModel a(216, 42), b(216, 43);
-    Frame fa(a), fb(b);
     for (int i = 0; i < 30; ++i) {
         a.step(33);
         b.step(33);
     }
-    fa.render(a);
-    fb.render(b);
-    EXPECT_NE(fa.hash(), fb.hash());
+    EXPECT_NE(hash_after(a), hash_after(b));
 }
 
 TEST(WispModel, MoodTransitionInterpolates) {
@@ -93,16 +89,14 @@ TEST(WispModel, LerpEnds) {
     EXPECT_EQ(wisp::ui::lerp(a, b, 128).brightness, (a.brightness + b.brightness) / 2);
 }
 
-// Heights of the lit bounds over a few steps after setting the level.
 int max_height_with_level(WispMood mood, uint8_t level) {
     WispModel m(216, 42);
-    Frame f(m);
     m.set_mood(mood);
     m.set_level(level);
     int h = 0;
     for (int i = 0; i < 15; ++i) {
         m.step(33);
-        f.render(m);
+        m.build();
         h = std::max(h, bounds_height(m));
     }
     return h;
@@ -114,15 +108,12 @@ TEST(WispModel, LevelMovesTheFlameWhileListening) {
 
     // Idle ignores the level: the very same frames.
     WispModel a(216, 42), b(216, 42);
-    Frame fa(a), fb(b);
     a.set_level(0);
     b.set_level(100);
     for (int i = 0; i < 20; ++i) {
         a.step(33);
         b.step(33);
-        fa.render(a);
-        fb.render(b);
-        ASSERT_EQ(fa.hash(), fb.hash()) << "step " << i;
+        ASSERT_EQ(hash_after(a), hash_after(b)) << "step " << i;
     }
 }
 
@@ -146,24 +137,33 @@ TEST(WispModel, BusyThinkingSpeedsParticles) {
     EXPECT_GT(busy, calm * 3 / 2);
 }
 
-TEST(WispModel, ParticleCountWithinPool) {
-    WispModel m(216, 7);
+TEST(WispModel, SparksOnlyOnColourPanels) {
     const WispMood moods[] = {WispMood::Idle, WispMood::Listening, WispMood::Thinking,
                               WispMood::Speaking, WispMood::Error};
-    EXPECT_GE(m.live_particles(), static_cast<size_t>(WispModel::kMinParticles));
-    for (int i = 0; i < 600; ++i) {
-        if (i % 60 == 0) m.set_mood(moods[(i / 60) % 5]);
-        m.set_busy(i % 120 >= 60);
-        m.step(33);
-        ASSERT_GE(m.live_particles(), static_cast<size_t>(WispModel::kMinParticles)) << i;
-        ASSERT_LE(m.live_particles(), static_cast<size_t>(WispModel::kMaxParticles)) << i;
+    for (PanelKind panel :
+         {PanelKind::Amoled, PanelKind::Lcd, PanelKind::Mono, PanelKind::EPaper}) {
+        const bool colour = wisp::hal::panel_is_colour(panel);
+        WispModel m(216, 7, panel);
+        for (int i = 0; i < 300; ++i) {
+            if (i % 60 == 0) m.set_mood(moods[(i / 60) % 5]);
+            m.set_busy(i % 120 >= 60);
+            m.step(33);
+            m.build();
+            if (colour) {
+                ASSERT_GE(m.live_particles(), 1u) << i;
+                ASSERT_LE(m.live_particles(), static_cast<size_t>(WispModel::kMaxSparks)) << i;
+                ASSERT_LE(m.shape().spark_n, WispModel::kMaxSparks) << i;
+            } else {
+                ASSERT_EQ(m.live_particles(), 0u) << i;
+                ASSERT_EQ(m.shape().spark_n, 0) << i;
+            }
+        }
     }
 }
 
-TEST(WispModel, DirtyBoxInsideBounds) {
+TEST(WispModel, DirtyBoxCoversLastAndThisFrame) {
     WispModel m(216, 42);
-    Frame f(m);
-    const wisp::hal::Area first = f.render(m);
+    const wisp::hal::Area first = m.build();
     EXPECT_EQ(first.x1, 0);
     EXPECT_EQ(first.y1, 0);
     EXPECT_EQ(first.x2, m.width() - 1);
@@ -174,23 +174,71 @@ TEST(WispModel, DirtyBoxInsideBounds) {
         if (i % 20 == 0) m.set_mood(moods[i / 20]);
         m.set_level(static_cast<uint8_t>((i * 37) % 101));
         m.step(33);
-        const std::vector<uint16_t> before = f.out;
-        const wisp::hal::Area a = f.render(m);
+        const wisp::hal::Area prev = m.bounds();
+        const wisp::hal::Area a = m.build();
+        const wisp::hal::Area cur = m.bounds();
         ASSERT_GE(a.x1, 0);
         ASSERT_GE(a.y1, 0);
         ASSERT_LT(a.x2, m.width());
         ASSERT_LT(a.y2, m.height());
-        ASSERT_LE(a.x1, a.x2);
-        ASSERT_LE(a.y1, a.y2);
-        for (int y = 0; y < m.height(); ++y) {
-            for (int x = 0; x < m.width(); ++x) {
-                if (x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2) continue;
-                const size_t k = static_cast<size_t>(y) * m.width() + x;
-                ASSERT_EQ(f.out[k], before[k]) << "step " << i << " at " << x << "," << y;
-                ASSERT_EQ(f.out[k], 0) << "step " << i << " at " << x << "," << y;
-            }
+        for (const wisp::hal::Area& b : {prev, cur}) {
+            ASSERT_LE(a.x1, b.x1) << i;
+            ASSERT_LE(a.y1, b.y1) << i;
+            ASSERT_GE(a.x2, b.x2) << i;
+            ASSERT_GE(a.y2, b.y2) << i;
         }
     }
+}
+
+// Every span of the shape is inside its bbox: what the bbox does not
+// cover is never drawn.
+TEST(WispModel, SpansStayInsideTheBbox) {
+    WispModel m(216, 3);
+    for (int i = 0; i < 200; ++i) {
+        if (i % 40 == 0) m.set_mood(static_cast<WispMood>(i / 40));
+        m.set_level(static_cast<uint8_t>((i * 23) % 101));
+        m.step(33);
+        m.build();
+        struct Ctx {
+            wisp::hal::Area box;
+            int bad = 0;
+            int n = 0;
+            int last_y = -1, last_x2 = -1;
+        } ctx{m.bounds()};
+        wisp::ui::for_each_span(m.shape(), &ctx, [](void* p, int y, int x1, int x2) {
+            auto* c = static_cast<Ctx*>(p);
+            ++c->n;
+            if (x1 > x2 || y < c->box.y1 || y > c->box.y2 || x1 < c->box.x1 || x2 > c->box.x2) {
+                ++c->bad;
+            }
+            // Rows go down; runs in a row go right without overlapping.
+            if (y < c->last_y || (y == c->last_y && x1 <= c->last_x2)) ++c->bad;
+            c->last_y = y;
+            c->last_x2 = x2;
+        });
+        ASSERT_GT(ctx.n, 0) << i;
+        ASSERT_EQ(ctx.bad, 0) << i;
+    }
+}
+
+// A single round dot rasterizes to a disc of about the right size.
+TEST(WispModel, SpanOfADot) {
+    WispShape s;
+    s.sparks[0] = {{20 * 256 + 128, 30 * 256 + 128}, {20 * 256 + 128, 30 * 256 + 128}, 5 * 256};
+    s.spark_n = 1;
+    s.bbox = {0, 0, 63, 63};
+    struct Ctx {
+        int pixels = 0, rows = 0, widest = 0;
+    } ctx;
+    wisp::ui::for_each_span(s, &ctx, [](void* p, int, int x1, int x2) {
+        auto* c = static_cast<Ctx*>(p);
+        c->pixels += x2 - x1 + 1;
+        c->widest = std::max(c->widest, x2 - x1 + 1);
+        ++c->rows;
+    });
+    EXPECT_EQ(ctx.rows, 11);
+    EXPECT_EQ(ctx.widest, 11);
+    EXPECT_NEAR(ctx.pixels, 79, 6);  // pi * 5^2
 }
 
 TEST(WispModel, FrameIntervalFollowsActivity) {
@@ -214,11 +262,32 @@ TEST(WispModel, FrameIntervalFollowsActivity) {
     EXPECT_EQ(m.frame_interval_ms(), 33u);
     for (int i = 0; i < 12; ++i) m.step(33);
     EXPECT_EQ(m.frame_interval_ms(), 66u);
+
+    WispModel mono(216, 42, PanelKind::Mono);
+    EXPECT_EQ(mono.frame_interval_ms(), 100u);
+    mono.set_mood(WispMood::Listening);
+    EXPECT_EQ(mono.frame_interval_ms(), 100u);
+    WispModel paper(216, 42, PanelKind::EPaper);
+    EXPECT_EQ(paper.frame_interval_ms(), 0u);
+    paper.set_mood(WispMood::Thinking);
+    EXPECT_EQ(paper.frame_interval_ms(), 0u);
+}
+
+TEST(WispModel, SettleFinishesTheMood) {
+    WispModel m(216, 42, PanelKind::EPaper);
+    m.set_mood(WispMood::Error);
+    m.settle();
+    EXPECT_EQ(m.params().eye_open, wisp::ui::mood_params(WispMood::Error).eye_open);
+    m.build();
+    EXPECT_TRUE(m.shape().chevrons);
+    // No shake frozen into the picture: the same centre as a settled Idle.
+    WispModel idle(216, 42, PanelKind::EPaper);
+    idle.settle();
+    EXPECT_EQ(m.centre().x, idle.centre().x);
 }
 
 TEST(WispModel, IdleDriftsOverTime) {
     WispModel m(216, 42);
-    Frame f(m);
     int32_t min_x = INT32_MAX, max_x = INT32_MIN, min_y = INT32_MAX, max_y = INT32_MIN;
     for (int t = 0; t < 60000; t += 66) {
         m.step(66);
@@ -228,13 +297,8 @@ TEST(WispModel, IdleDriftsOverTime) {
         min_y = std::min(min_y, c.y);
         max_y = std::max(max_y, c.y);
         if ((t / 66) % 10 == 0) {
-            f.render(m);
-            // Nothing lit reaches the frame's edge, so nothing is cut off.
-            const wisp::hal::Area b = m.bounds();
-            ASSERT_GT(b.x1, 0) << t;
-            ASSERT_GT(b.y1, 0) << t;
-            ASSERT_LT(b.x2, m.width() - 1) << t;
-            ASSERT_LT(b.y2, m.height() - 1) << t;
+            m.build();
+            ASSERT_TRUE(inside_frame(m.bounds(), m)) << t;
         }
     }
     const int32_t span = std::max(max_x - min_x, max_y - min_y);
@@ -242,48 +306,44 @@ TEST(WispModel, IdleDriftsOverTime) {
 }
 
 // The widest and tallest the wisp gets (level jumping between 0 and 100,
-// busy, every mood) still leaves the frame's edge dark: nothing is cut off.
+// busy, every mood) stays off the frame's edge: nothing is cut off.
 TEST(WispModel, NothingClipsInAnyMood) {
     for (int size : {216, 134, 149}) {
         WispModel m(size, 9);
-        Frame f(m);
         for (int i = 0; i < 5 * 120; ++i) {
             if (i % 120 == 0) m.set_mood(static_cast<WispMood>(i / 120));
             m.set_level((i / 8) % 2 == 0 ? 100 : 0);
             m.set_busy(true);
             m.step(33);
-            f.render(m);
-            const wisp::hal::Area b = m.bounds();
-            ASSERT_GT(b.x1, 0) << size << " step " << i;
-            ASSERT_GT(b.y1, 0) << size << " step " << i;
-            ASSERT_LT(b.x2, m.width() - 1) << size << " step " << i;
-            ASSERT_LT(b.y2, m.height() - 1) << size << " step " << i;
+            m.build();
+            ASSERT_TRUE(inside_frame(m.bounds(), m)) << size << " step " << i;
         }
     }
 }
 
-// The body is most of the frame's width (spec 6.2's 45% view is the
+// The outline is most of the frame's width (spec 6.2's 45% view is the
 // character, not a margin around it).
 TEST(WispModel, BodyFillsTheFrame) {
     WispModel m(216, 42);
-    Frame f(m);
     m.step(33);
-    f.render(m);
-    // The body's own width: the row through its centre, above the halo.
-    const int y = m.centre().y >> 8;
-    int first = -1, last = -1;
-    for (int x = 0; x < m.width(); ++x) {
-        if (f.lum[static_cast<size_t>(y) * m.width() + x] >= 100) {
-            if (first < 0) first = x;
-            last = x;
-        }
+    m.build();
+    int32_t lo = INT32_MAX, hi = INT32_MIN;
+    const WispShape& s = m.shape();
+    for (int i = 0; i < s.outline_n; ++i) {
+        lo = std::min(lo, s.outline[static_cast<size_t>(i)].x);
+        hi = std::max(hi, s.outline[static_cast<size_t>(i)].x);
     }
-    const int body = last - first + 1;
+    const int body = (hi - lo + s.stroke) / 256;
     EXPECT_GE(body * 100, m.width() * 55) << body;
-    EXPECT_LE(body * 100, m.width() * 72) << body;
+    EXPECT_LE(body * 100, m.width() * 75) << body;
+    // Stroke: about 1/40 of the height, at least 2 px.
+    EXPECT_NEAR(s.stroke, m.height() * 256 / 40, 256);
+    WispModel tiny(40, 1);
+    tiny.build();
+    EXPECT_GE(tiny.shape().stroke, 2 * 256);
 }
 
-TEST(WispModel, ErrorDimsThenSettles) {
+TEST(WispModel, ErrorShakesThenSettles) {
     const int32_t idle = wisp::ui::mood_params(WispMood::Idle).brightness;
     WispModel m(216, 42);
     for (int i = 0; i < 10; ++i) m.step(33);
@@ -310,27 +370,51 @@ TEST(WispModel, ErrorDimsThenSettles) {
     EXPECT_LT(max_jump, 128) << "still shaking";
 }
 
-TEST(WispModel, MoodsLookDifferent) {
-    std::vector<uint32_t> hashes;
-    for (WispMood mood : {WispMood::Idle, WispMood::Listening, WispMood::Thinking,
-                          WispMood::Speaking, WispMood::Error}) {
-        WispModel m(216, 42);
-        Frame f(m);
-        m.set_mood(mood);
-        for (int i = 0; i < 20; ++i) m.step(33);
-        f.render(m);
-        hashes.push_back(f.hash());
-    }
-    std::sort(hashes.begin(), hashes.end());
-    EXPECT_EQ(std::unique(hashes.begin(), hashes.end()), hashes.end());
+const WispShape& settled(WispModel& m, WispMood mood, uint8_t level = 0) {
+    m.set_mood(mood);
+    m.set_level(level);
+    m.settle();
+    for (int i = 0; i < 12; ++i) m.step(33);
+    m.settle();
+    m.build();
+    return m.shape();
 }
 
-TEST(WispModel, TooSmallBuffersDrawNothing) {
-    WispModel m(216, 42);
-    std::vector<uint8_t> lum(10);
-    std::vector<uint16_t> out(10);
-    const wisp::hal::Area a = m.render(lum, out);
-    EXPECT_LT(a.x2, a.x1);
+int32_t eye_height(const WispShape::Capsule& c) { return std::abs(c.b.y - c.a.y) + 2 * c.r; }
+
+// Moods differ by shape alone (spec 6.1): bigger eyes listening, eyes up
+// and to the right thinking, a mouth speaking, "> <" in error.
+TEST(WispModel, MoodsDifferByShape) {
+    WispModel idle_m(216, 42), listen_m(216, 42), think_m(216, 42), speak_m(216, 42),
+        error_m(216, 42);
+    const WispShape idle = settled(idle_m, WispMood::Idle);
+    const WispShape listen = settled(listen_m, WispMood::Listening);
+    const WispShape think = settled(think_m, WispMood::Thinking);
+    const WispShape speak = settled(speak_m, WispMood::Speaking, 80);
+    const WispShape error = settled(error_m, WispMood::Error);
+
+    EXPECT_FALSE(idle.chevrons);
+    EXPECT_FALSE(idle.mouth);
+    EXPECT_GT(eye_height(listen.eyes[0]), eye_height(idle.eyes[0]) * 11 / 10);
+    // Thinking: eyes clearly higher (relative to the body) and to the right.
+    const int32_t idle_rel = idle.eyes[0].a.y - idle_m.centre().y;
+    const int32_t think_rel = think.eyes[0].a.y - think_m.centre().y;
+    EXPECT_LT(think_rel, idle_rel - eye_height(idle.eyes[0]) / 4);
+    EXPECT_GT(think.eyes[0].a.x - think_m.centre().x, idle.eyes[0].a.x - idle_m.centre().x);
+    EXPECT_TRUE(speak.mouth);
+    EXPECT_TRUE(error.chevrons);
+    EXPECT_FALSE(error.mouth);
+}
+
+TEST(WispModel, MouthOpensWithLevel) {
+    WispModel shut(216, 42), open(216, 42);
+    const WispShape a = settled(shut, WispMood::Speaking, 0);
+    const WispShape b = settled(open, WispMood::Speaking, 100);
+    ASSERT_TRUE(a.mouth);
+    ASSERT_TRUE(b.mouth);
+    EXPECT_GT(eye_height(b.mouth_shape), eye_height(a.mouth_shape) * 2);
+    // Shut, it is a line: as tall as the stroke.
+    EXPECT_LE(eye_height(a.mouth_shape), a.stroke + 256);
 }
 
 TEST(WispPerf, RollingFiveSecondWindow) {

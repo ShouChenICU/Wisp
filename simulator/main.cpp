@@ -184,6 +184,7 @@ constexpr const char* kLogTag = "sim";
 wisp::port::sim::SimBoardConfig to_board_config(const SimOptions& opts) {
     wisp::port::sim::SimBoardConfig config;
     config.shape = opts.shape;
+    config.panel = opts.panel;
     config.disabled = opts.disabled;
     config.no_sd = opts.no_sd;
     config.data_dir = opts.data_dir;
@@ -685,7 +686,8 @@ void start_wisp_demo(wisp::app::App& app) {
     static WispDemo demo;
     ui->run_blocking([&] {
         lv_obj_t* scr = lv_obj_create(nullptr);
-        lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+        lv_obj_set_style_bg_color(
+            scr, wisp::ui::wisp_background(wisp::ui::display_panel(lv_obj_get_display(scr))), 0);
         lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
         lv_obj_set_style_pad_all(scr, 0, 0);
         lv_obj_set_style_border_width(scr, 0, 0);

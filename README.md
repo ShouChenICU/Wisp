@@ -269,6 +269,8 @@ docs/         架构、移植、硬件资料、设计 spec 和实施计划
 | `--no-sd` | 启动时不插 SD 卡 |
 | `--data-dir <path>` | 数据目录，默认 `./sim-data` |
 | `--shape <rect\|rounded_rect\|circle>` | 模拟不同形状的屏幕 |
+| `--panel <amoled\|lcd\|mono\|epaper>` | 模拟不同种类的屏幕面板（caps 的 `panel`），默认 `amoled` |
+| `--wisp-demo` | 显示鬼火并循环演示五种表情 |
 | `--http-port <n>` | 管理后台端口，默认 8900；0 表示不启动后台 |
 | `--web-dir <path>` | 直接从这个目录提供后台网页，改了网页刷新即可，不用重新构建 |
 | `--wifi-fail` | 模拟路由器不可达，用来观察重试和退避 |

@@ -21,7 +21,9 @@ struct Area {
 // caps keys: "width" (int), "height" (int), "shape" (string, one of
 // "rect"/"rounded_rect"/"circle"; see wisp/hal/display_geometry.hpp for
 // how these -- plus "corner_radius" below for "rounded_rect" -- turn into
-// a ScreenShape/safe area), "corner_radius" (int), "panel" (string),
+// a ScreenShape/safe area), "corner_radius" (int), "panel" (string,
+// "lcd"/"amoled"/"mono"/"epaper"; see panel_kind() in
+// wisp/hal/display_geometry.hpp),
 // "brightness" (bool, true if set_brightness() is supported),
 // "area_align" (int, flush()'s required alignment -- see
 // wisp::ui::align_area()), "rgb565_be" (bool, optional, default false:

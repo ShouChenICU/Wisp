@@ -56,7 +56,7 @@ namespace wisp::port::sim {
 class SimDisplay : public wisp::hal::Display {
 public:
     SimDisplay(std::string id, int32_t width, int32_t height, std::string shape,
-               int32_t corner_radius);
+               int32_t corner_radius, std::string panel = "amoled");
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     wisp::Result<void> flush(const wisp::hal::Area& area, const uint16_t* rgb565) override;
@@ -88,6 +88,8 @@ private:
 
 struct SimBoardConfig {
     std::string shape = "rounded_rect";
+    // Display caps "panel" (wisp/hal/display_geometry.hpp's panel_kind()).
+    std::string panel = "amoled";
     std::vector<std::string> disabled;
     bool no_sd = false;
     std::string data_dir = "./sim-data";

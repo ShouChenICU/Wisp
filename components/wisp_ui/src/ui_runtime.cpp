@@ -75,6 +75,7 @@ void prune_duration_samples(std::deque<Sample>& samples, uint64_t now) {
 
 struct UiRuntime::Impl {
     std::shared_ptr<hal::Display> display;
+    hal::PanelKind panel = hal::PanelKind::Lcd;
     std::shared_ptr<hal::Touch> touch;
     UiConfig config;
 
@@ -493,6 +494,7 @@ Result<void> UiRuntime::start() {
     impl_->width = cap_int(caps, "width", 0);
     impl_->height = cap_int(caps, "height", 0);
     impl_->area_align = cap_int(caps, "area_align", 1);
+    impl_->panel = hal::panel_kind(caps);
     auto be_it = caps.find("rgb565_be");
     const bool rgb565_be = be_it != caps.end() && be_it->second.as_bool();
     if (impl_->width <= 0 || impl_->height <= 0) {
@@ -569,6 +571,8 @@ Result<void> UiRuntime::start() {
         return fail_after_lv_init(ErrorCode::NoMemory, "lv_display_create failed");
     }
     lv_display_set_user_data(impl_->lv_disp, impl_.get());
+    // Grey edge pixels mean nothing on a two-colour panel.
+    if (!hal::panel_is_colour(impl_->panel)) lv_display_set_antialiasing(impl_->lv_disp, false);
     // Rendering straight into the panel's byte order costs nothing; swapping
     // each stripe afterwards would cost CPU time on every frame.
     lv_display_set_color_format(
@@ -853,6 +857,13 @@ void UiRuntime::set_perf_overlay(bool enabled) {
 
 bool UiRuntime::perf_overlay_enabled() const {
     return impl_->perf_overlay_enabled.load(std::memory_order_acquire);
+}
+
+hal::PanelKind display_panel(lv_display_t* disp) {
+    // Only UiRuntime creates displays, and it keeps its Impl as their user data.
+    auto* impl =
+        disp != nullptr ? static_cast<UiRuntime::Impl*>(lv_display_get_user_data(disp)) : nullptr;
+    return impl != nullptr ? impl->panel : hal::PanelKind::Lcd;
 }
 
 }  // namespace wisp::ui

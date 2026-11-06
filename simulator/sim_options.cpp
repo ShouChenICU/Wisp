@@ -166,6 +166,17 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
                 return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
             }
             opts.data_dir = std::move(v.value());
+        } else if (arg == "--panel") {
+            auto v = take_value(argc, argv, i, "--panel");
+            if (!v) {
+                return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
+            }
+            const std::string& panel = v.value();
+            if (panel != "amoled" && panel != "lcd" && panel != "mono" && panel != "epaper") {
+                return wisp::Result<SimOptions>::err(wisp::ErrorCode::InvalidArgument,
+                                                     "invalid --panel value: " + panel);
+            }
+            opts.panel = panel;
         } else if (arg == "--shape") {
             auto v = take_value(argc, argv, i, "--shape");
             if (!v) {

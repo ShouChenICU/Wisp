@@ -7,7 +7,7 @@
 namespace wisp::port::sim {
 
 SimDisplay::SimDisplay(std::string id, int32_t width, int32_t height, std::string shape,
-                       int32_t corner_radius)
+                       int32_t corner_radius, std::string panel)
     : width_(width),
       height_(height),
       framebuffer_(static_cast<size_t>(width) * static_cast<size_t>(height), 0) {
@@ -19,7 +19,7 @@ SimDisplay::SimDisplay(std::string id, int32_t width, int32_t height, std::strin
         {"height", height},
         {"shape", wisp::Value(std::move(shape))},
         {"corner_radius", corner_radius},
-        {"panel", wisp::Value("amoled")},
+        {"panel", wisp::Value(std::move(panel))},
         {"brightness", true},
         {"area_align", 2},
         {"standby", "off"},
