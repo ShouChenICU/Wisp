@@ -385,10 +385,9 @@ hooks).
 - `wisp.power.keep_screen_on(on)`: `true` keeps the screen on and bright while the
   scene is in front (a `screen` wake lock), `false` lets it dim and turn off again.
   Returns `true`, or `nil` and `not_in_background` or `unavailable`. The lock goes
-  by itself when the scene leaves the front or closes. A lock held for 30 minutes
-  brings a system notification (again every 30 minutes) with a button that releases
-  it. After the user releases it there, the next `keep_screen_on(true)` takes a new
-  lock. The reminder does not survive a restart.
+  by itself when the scene leaves the front or closes, and a short press of the
+  power key still turns the screen off regardless. It brings no reminder: the
+  scene is in front, so the user can already see the lock.
 
 ## wisp.sensor
 
