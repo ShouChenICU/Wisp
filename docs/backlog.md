@@ -91,3 +91,7 @@ Source: `feat/agent-core` review records.
   - a transport error after `finish_reason` but before `[DONE]` fails a complete reply;
   - per-event `from_json` strings under 16 KB land in internal RAM briefly; measure with `mem` once `wisp.agent` exists.
 - `ConversationStore`: after a failed append leaves half a line, the next good line joins it and is skipped on load; truncate or start a fresh line before the next append.
+- `AgentService`:
+  - `remove_listener` can deadlock when a listener removes itself from its own callback before `start()`, or blocks on the UI thread while the UI thread removes it; listeners must not block on another thread;
+  - the `TurnBegin` text and serialized tool results are `std::string`, briefly in internal RAM; include them in the device `mem` measurement;
+  - the done-notice id carries the reply's first line, so each turn adds a notice instead of replacing one.
