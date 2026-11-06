@@ -8,6 +8,8 @@
 
 **Tech Stack:** C++20（`-fno-exceptions -fno-rtti`）、LVGL 9.5.0、Lua 5.5.1、ESP-IDF v6.0.3（`esp_new_jpeg` 1.0.2 的编码器）、ArduinoJson（经 `wisp/base/json.hpp`）、GoogleTest、Preact + htm（网页）、Python 3 标准库（`fake_openai.py`、冒烟测试、文档生成）。
 
+**Status:** 已批准（2026-11-05）；等 3b-1 做完并合并进本分支后开始执行。
+
 **Spec:** `docs/superpowers/specs/2026-11-05-agent-core-design.md`（下文"spec N"均指它；"3a spec"指 `2026-11-04-scene-runtime-core-design.md`，"3b-1 spec"指 `2026-11-05-scene-device-design.md`，"连接 spec"指 `2026-11-03-connectivity-admin-design.md`）
 
 ## Global Constraints
