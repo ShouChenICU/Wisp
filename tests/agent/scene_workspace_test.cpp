@@ -584,3 +584,24 @@ TEST_F(AutoCheck, SceneFaultingDuringSettleIsReported) {
     ASSERT_FALSE(tree);
     EXPECT_EQ(tree.error().message.rfind("scene_error", 0), 0u);
 }
+
+// An install whose open fails while another scene is in front describes
+// no tree rather than the other scene's.
+TEST_F(AutoCheck, FailedOpenDoesNotDescribeAnotherScene) {
+    install("other", R"(return ui.screen { ui.label { ref = "elsewhere", text = "other" } })");
+    begin();
+    ASSERT_TRUE(rt->open("other"));
+    ASSERT_TRUE(wait_until([&] { return rt->foreground() == "other"; }, 2000));
+    write("counter", "scene.json", counter_json("2.0.0"));
+    // Its data directory becomes unreadable, so the open after the
+    // install cannot load the scene's store.
+    const fs::path meta = fs::path(repo->data_dir("counter")) / "meta.json";
+    fs::create_directories(meta);
+    ToolOutput out = ws->install("counter", ctx);
+    ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
+    EXPECT_FALSE(str(out.result, "open_error").empty()) << wisp::to_json(out.result);
+    const Value* check = field(out.result, "check");
+    ASSERT_NE(check, nullptr);
+    EXPECT_EQ(str(*check, "tree").find("elsewhere"), std::string::npos) << str(*check, "tree");
+    EXPECT_TRUE(str(*check, "tree").empty()) << str(*check, "tree");
+}

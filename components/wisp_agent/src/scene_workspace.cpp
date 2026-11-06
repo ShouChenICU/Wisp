@@ -11,6 +11,7 @@
 #include "wisp/core/scene_install.hpp"
 #include "wisp/core/scene_manifest.hpp"
 #include "wisp/core/zip.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/scene_data.hpp"
 #include "wisp/ui/strings.hpp"
@@ -142,11 +143,32 @@ ToolOutput check_failed(std::vector<InstallError> errors) {
 
 ToolOutput from_error(const Error& e) { return tool_error(error_code(e), e.message); }
 
-// The last `n` of `v`.
-List last(List v, size_t n) {
-    if (v.size() > n) v.erase(v.begin(), v.end() - static_cast<std::ptrdiff_t>(n));
-    return v;
-}
+// The last kCheckLogsPerLevel messages pushed, kept in Mem::Large: the
+// ring may hold hundreds of matching lines, and each would otherwise be a
+// small string in internal RAM (AGENTS.md section 8).
+class LastLines {
+public:
+    LastLines() : lines_(kCheckLogsPerLevel) {}
+    void push(std::string_view msg) {
+        lines_[pushed_ % lines_.size()].assign(msg.data(), msg.size());
+        ++pushed_;
+    }
+    // Oldest first, each wrapped with scene_data().
+    List take(const std::string& id) const {
+        const size_t n = std::min(pushed_, lines_.size());
+        List out;
+        out.reserve(n);
+        for (size_t i = pushed_ - n; i < pushed_; ++i) {
+            const os::LargeString& l = lines_[i % lines_.size()];
+            out.push_back(Value(scene::scene_data(id, std::string_view(l.data(), l.size()))));
+        }
+        return out;
+    }
+
+private:
+    os::LargeVector<os::LargeString> lines_;
+    size_t pushed_ = 0;
+};
 
 }  // namespace
 
@@ -547,8 +569,10 @@ ToolOutput SceneWorkspace::install_zip(const std::string& id, std::span<const ui
             {"version", Value(m.version)}};
     const bool in_front = deps_.runtime.foreground() == id &&
                           deps_.runtime.status(id).state == core::SceneState::Running;
+    bool open_ok = true;
     if (!in_front) {
         Result<void> opened = deps_.runtime.open(id);
+        open_ok = static_cast<bool>(opened);
         if (!opened) {
             WLOG_W(kTag, "%s installed but not opened: %s", id.c_str(),
                    opened.error().message.c_str());
@@ -574,15 +598,19 @@ ToolOutput SceneWorkspace::install_zip(const std::string& id, std::span<const ui
     const core::SceneStatus status = deps_.runtime.status(id);
     if (status.state == core::SceneState::Error)
         lua_errors.push_back(Value(scene::scene_data(id, status.error)));
-    List warns, errs;
+    LastLines warns, errs;
     const std::string tag = "scene." + id;
-    for (const LogEntry& e : log::ring_entries()) {
-        if (e.ts_ms < since_ms || e.tag != tag) continue;
-        if (e.level == LogLevel::Warn) warns.push_back(Value(scene::scene_data(id, e.msg)));
-        if (e.level == LogLevel::Error) errs.push_back(Value(scene::scene_data(id, e.msg)));
-    }
+    log::for_each_ring_entry([&](const LogEntryView& e) {
+        if (e.ts_ms < since_ms || e.tag != tag) return;
+        if (e.level == LogLevel::Warn) warns.push(e.msg);
+        if (e.level == LogLevel::Error) errs.push(e.msg);
+    });
     std::string tree;
-    if (deps_.inspector != nullptr) {
+    // A failed open may leave another scene in front, whose tree would
+    // describe the wrong scene: then the check carries none, and
+    // open_error says why.
+    const bool described = open_ok || deps_.runtime.foreground() == id;
+    if (deps_.inspector != nullptr && described) {
         auto t = deps_.inspector->tree();
         // On an error, its message: "scene_error: ..." for a scene that
         // faulted, with the scene's text already wrapped.
@@ -590,8 +618,7 @@ ToolOutput SceneWorkspace::install_zip(const std::string& id, std::span<const ui
     }
     out["check"] = Value(Map{
         {"lua_errors", Value(std::move(lua_errors))},
-        {"logs", Value(Map{{"W", Value(last(std::move(warns), kCheckLogsPerLevel))},
-                           {"E", Value(last(std::move(errs), kCheckLogsPerLevel))}})},
+        {"logs", Value(Map{{"W", Value(warns.take(id))}, {"E", Value(errs.take(id))}})},
         {"tree", Value(std::move(tree))},
         {"stable", Value(stable)},
     });

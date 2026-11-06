@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "wisp/os/os.hpp"
@@ -43,6 +45,16 @@ struct LogEntry {
     LogLevel level = LogLevel::Info;
     std::string tag;
     std::string msg;
+};
+
+// A line of the ring seen in place (for_each_ring_entry()): the views
+// point into a copy of the ring that lives only for the visit.
+struct LogEntryView {
+    uint32_t seq = 0;
+    uint64_t ts_ms = 0;
+    LogLevel level = LogLevel::Info;
+    std::string_view tag;
+    std::string_view msg;
 };
 
 // A destination for formatted log lines, e.g. stdout on the simulator or
@@ -123,6 +135,21 @@ void write_text(LogLevel level, const char* tag, const char* msg);
 
 // The ring buffer's current lines, oldest (lowest seq) first.
 std::vector<LogEntry> ring_entries();
+
+// Calls fn(const LogEntryView&) for each line ring_entries() would return,
+// in the same order, without a string per line: the ring is copied once
+// into Mem::Large and read in place, so a caller that keeps only a few
+// lines never holds the whole ring in small allocations (AGENTS.md
+// section 8). The views are valid only during the call that gets them.
+// No log lock is held while fn runs, so fn may log.
+void for_each_ring_entry(void (*fn)(const LogEntryView&, void*), void* ctx);
+
+template <class Fn>
+void for_each_ring_entry(Fn&& fn) {
+    for_each_ring_entry(
+        [](const LogEntryView& e, void* c) { (*static_cast<std::remove_reference_t<Fn>*>(c))(e); },
+        const_cast<void*>(static_cast<const void*>(&fn)));
+}
 
 // The same lines as text, each formatted "<ts_ms> <D|I|W|E> <tag>: <msg>\n"
 // (a message containing '\n' spans several text lines). For diagnostics

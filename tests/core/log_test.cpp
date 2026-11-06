@@ -405,3 +405,42 @@ TEST(Log, TruncationKeepsWholeCodePoints) {
     EXPECT_EQ(s.lines[0].size(), 2u + 255u);
     wisp::log::remove_sink(&s);
 }
+
+// for_each_ring_entry() visits the same lines as ring_entries(), oldest
+// first, with views that stay valid for the whole callback.
+TEST(Log, ForEachRingEntryVisitsInOrder) {
+    wisp::log::reset_for_test();
+    wisp::log::init(1024);
+    WLOG_I("a", "one");
+    WLOG_W("bb", "two %d", 2);
+    WLOG_E("ccc", "three");
+
+    const auto entries = wisp::log::ring_entries();
+    std::vector<std::string> seen;
+    size_t i = 0;
+    wisp::log::for_each_ring_entry([&](const wisp::LogEntryView& e) {
+        // Read the views after other work in the callback.
+        seen.push_back("x");
+        ASSERT_LT(i, entries.size());
+        EXPECT_EQ(e.seq, entries[i].seq);
+        EXPECT_EQ(e.ts_ms, entries[i].ts_ms);
+        EXPECT_EQ(e.level, entries[i].level);
+        EXPECT_EQ(e.tag, entries[i].tag);
+        EXPECT_EQ(e.msg, entries[i].msg);
+        seen.back() = std::string(e.tag) + "|" + std::string(e.msg);
+        ++i;
+    });
+    EXPECT_EQ(i, entries.size());
+    ASSERT_EQ(seen.size(), 3u);
+    EXPECT_EQ(seen[0], "a|one");
+    EXPECT_EQ(seen[1], "bb|two 2");
+    EXPECT_EQ(seen[2], "ccc|three");
+}
+
+TEST(Log, ForEachRingEntryOnEmptyRing) {
+    wisp::log::reset_for_test();
+    wisp::log::init(1024);
+    int calls = 0;
+    wisp::log::for_each_ring_entry([&](const wisp::LogEntryView&) { ++calls; });
+    EXPECT_EQ(calls, 0);
+}

@@ -175,24 +175,24 @@ private:
 };
 
 // Decodes ring bytes laid out oldest first (State::copy_used()).
-std::vector<LogEntry> decode(const char* p, size_t len) {
-    std::vector<LogEntry> out;
+// Calls fn for each entry of a copy of the ring, in place.
+template <class Fn>
+void visit(const char* p, size_t len, Fn&& fn) {
     size_t at = 0;
     while (len - at >= sizeof(EntryHeader)) {
         EntryHeader h;
         std::memcpy(&h, p + at, sizeof h);
         at += sizeof h;
-        LogEntry e;
+        LogEntryView e;
         e.seq = h.seq;
         e.ts_ms = h.ts_ms;
         e.level = static_cast<LogLevel>(h.level);
-        e.tag.assign(p + at, h.tag_len);
+        e.tag = std::string_view(p + at, h.tag_len);
         at += h.tag_len;
-        e.msg.assign(p + at, h.msg_len);
+        e.msg = std::string_view(p + at, h.msg_len);
         at += h.msg_len;
-        out.push_back(std::move(e));
+        fn(e);
     }
-    return out;
 }
 
 // A single, function-local-static instance: constructed on first use,
@@ -375,22 +375,29 @@ void write_text(LogLevel level, const char* tag, const char* msg) {
     }
 }
 
-std::vector<LogEntry> ring_entries() {
+void for_each_ring_entry(void (*fn)(const LogEntryView&, void*), void* ctx) {
     State& s = state();
-    // Only the byte copy happens under the lock; the per-entry strings are
-    // built afterwards, so a subscriber's replay does not hold up loggers.
+    // Only the byte copy happens under the lock, so a slow visitor (or a
+    // subscriber's replay) does not hold up loggers.
     char* raw = nullptr;
     size_t len = 0;
     {
         std::lock_guard<os::Mutex> lock(s.mutex);
         len = s.ring_len;
-        if (len == 0) return {};
+        if (len == 0) return;
         raw = static_cast<char*>(os::alloc(len, os::Mem::Large));
-        if (raw == nullptr) return {};
+        if (raw == nullptr) return;
         s.copy_used(raw);
     }
-    std::vector<LogEntry> out = decode(raw, len);
+    visit(raw, len, [&](const LogEntryView& e) { fn(e, ctx); });
     os::dealloc(raw);
+}
+
+std::vector<LogEntry> ring_entries() {
+    std::vector<LogEntry> out;
+    for_each_ring_entry([&](const LogEntryView& e) {
+        out.push_back({e.seq, e.ts_ms, e.level, std::string(e.tag), std::string(e.msg)});
+    });
     return out;
 }
 
