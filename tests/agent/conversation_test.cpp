@@ -7,8 +7,10 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <span>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <vector>
 
 #include "support/fake_devices.hpp"
@@ -21,6 +23,7 @@
 
 using wisp::ErrorCode;
 using wisp::agent::ConversationStore;
+using wisp::agent::History;
 using wisp::agent::Message;
 using wisp::agent::Role;
 using wisp::agent::Source;
@@ -160,7 +163,7 @@ TEST_F(Conversation, LoadRestoresEveryField) {
     ASSERT_TRUE(store->append(marker(1, "turn_end", "done")));
 
     reboot();
-    auto m = store->messages();
+    auto m = *store->history();
     ASSERT_EQ(m.size(), 7u);
     for (size_t i = 0; i < m.size(); ++i) EXPECT_EQ(m[i].seq, i + 1);
 
@@ -215,7 +218,7 @@ TEST_F(Conversation, SourceDefaultsToWebWhenMissing) {
     write_raw(current(), R"({"seq":1,"ts":0,"role":"user","turn":1,"text":"hi"})"
                          "\n");
     reboot();
-    auto m = store->messages();
+    auto m = *store->history();
     ASSERT_EQ(m.size(), 1u);
     EXPECT_EQ(m[0].source, Source::Web);
     EXPECT_EQ(m[0].text, "hi");
@@ -229,7 +232,7 @@ TEST_F(Conversation, TornTailDroppedAndRewritten) {
         f << R"({"seq":3,"ts":0,"role":"us)";
     }
     reboot();
-    ASSERT_EQ(store->messages().size(), 2u);
+    ASSERT_EQ(store->history()->size(), 2u);
     std::string all = read_raw(current());
     ASSERT_EQ(all.back(), '\n');
     EXPECT_EQ(lines_of(all).size(), 2u);
@@ -251,7 +254,7 @@ TEST_F(Conversation, UnfinishedTurnMarkedInterrupted) {
     reboot();
     ASSERT_TRUE(store->interrupted_turn().has_value());
     EXPECT_EQ(*store->interrupted_turn(), 3u);
-    auto m = store->messages();
+    auto m = *store->history();
     ASSERT_EQ(m.size(), 5u);
     EXPECT_EQ(m.back().role, Role::Marker);
     EXPECT_EQ(m.back().marker, "turn_end");
@@ -262,7 +265,7 @@ TEST_F(Conversation, UnfinishedTurnMarkedInterrupted) {
     // Once marked, the next boot finds nothing unfinished.
     reboot();
     EXPECT_FALSE(store->interrupted_turn().has_value());
-    EXPECT_EQ(store->messages().size(), 5u);
+    EXPECT_EQ(store->history()->size(), 5u);
 }
 
 TEST_F(Conversation, ArchiveRotatesKeepingFive) {
@@ -278,7 +281,7 @@ TEST_F(Conversation, ArchiveRotatesKeepingFive) {
     EXPECT_FALSE(fs::exists(fs::path(dir) / "archive-1.jsonl"));
     EXPECT_FALSE(fs::exists(fs::path(dir) / "archive-2.jsonl"));
     EXPECT_TRUE(fs::exists(fs::path(dir) / "archive-7.jsonl"));
-    EXPECT_TRUE(store->messages().empty());
+    EXPECT_TRUE(store->history()->empty());
     EXPECT_EQ(store->bytes(), 0u);
     EXPECT_EQ(read_raw(current()), "");
 
@@ -321,7 +324,7 @@ TEST_F(Conversation, ClearAllRemovesEverything) {
     ASSERT_TRUE(store->archive());
     ASSERT_TRUE(store->append(user(1, "b")));
     ASSERT_TRUE(store->clear_all());
-    EXPECT_TRUE(store->messages().empty());
+    EXPECT_TRUE(store->history()->empty());
     EXPECT_EQ(store->bytes(), 0u);
     auto list = store->archives();
     ASSERT_TRUE(list);
@@ -348,7 +351,7 @@ TEST_F(Conversation, LongResultsKeptInFull) {
     t.text = big.c_str();
     ASSERT_TRUE(store->append(t));
     reboot();
-    auto m = store->messages();
+    auto m = *store->history();
     ASSERT_EQ(m.size(), 1u);
     ASSERT_EQ(m[0].text.size(), big.size());
     EXPECT_TRUE(std::string_view(m[0].text.data(), m[0].text.size()) == big);
@@ -370,6 +373,48 @@ TEST_F(Conversation, RolloverPastOneMiB) {
     EXPECT_TRUE(store->needs_rollover());
     reboot();
     EXPECT_TRUE(store->needs_rollover());
+}
+
+// Everything a message owns lives in Mem::Large: a history near
+// kRolloverBytes holds well over a thousand tool calls, whose ids and names
+// are too long for the small-string buffer.
+static_assert(std::is_same_v<decltype(ToolCallRec::id), wisp::os::LargeString>);
+static_assert(std::is_same_v<decltype(ToolCallRec::name), wisp::os::LargeString>);
+static_assert(std::is_same_v<decltype(Message::calls), wisp::os::LargeVector<ToolCallRec>>);
+static_assert(std::is_same_v<decltype(Message::call_id), wisp::os::LargeString>);
+static_assert(std::is_same_v<decltype(Message::tool), wisp::os::LargeString>);
+static_assert(std::is_same_v<decltype(Message::marker), wisp::os::LargeString>);
+static_assert(std::is_same_v<decltype(Message::status), wisp::os::LargeString>);
+
+TEST_F(Conversation, HistoryIsASharedSnapshot) {
+    ASSERT_TRUE(store->append(user(1, "a")));
+    std::shared_ptr<const History> first = store->history();
+    // Reading again hands out the same history, not a copy.
+    EXPECT_EQ(store->history().get(), first.get());
+
+    ASSERT_TRUE(store->append(user(1, "b")));
+    // A snapshot already handed out does not change.
+    ASSERT_EQ(first->size(), 1u);
+    EXPECT_EQ((*first)[0].text, "a");
+    std::shared_ptr<const History> second = store->history();
+    ASSERT_EQ(second->size(), 2u);
+    EXPECT_NE(second.get(), first.get());
+
+    // With no snapshot out, an append grows the history in place.
+    first.reset();
+    const History* held = second.get();
+    second.reset();
+    ASSERT_TRUE(store->append(user(1, "c")));
+    std::shared_ptr<const History> third = store->history();
+    EXPECT_EQ(third.get(), held);
+    const std::span<const Message> view(*third);
+    ASSERT_EQ(view.size(), 3u);
+    EXPECT_EQ(view.back().text, "c");
+
+    // Archiving starts an empty history; the old snapshot keeps its messages.
+    ASSERT_TRUE(store->archive());
+    EXPECT_TRUE(store->history()->empty());
+    EXPECT_EQ(third->size(), 3u);
 }
 
 TEST_F(Conversation, FindBySeq) {

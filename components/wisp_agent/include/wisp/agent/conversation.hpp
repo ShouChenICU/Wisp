@@ -22,12 +22,21 @@
 // write_atomic() so the next append starts on a fresh line.
 //
 // Threads: every method that touches files must run on the wisp.fs worker
-// (the caller's job). messages(), find(), bytes(), needs_rollover(),
-// interrupted_turn() and last_turn() read the in-memory copy (in PSRAM)
-// under a mutex and are safe from any thread.
+// (the caller's job). history(), find(), bytes(), needs_rollover(),
+// interrupted_turn() and last_turn() read the in-memory copy under a mutex
+// and are safe from any thread.
+//
+// Memory: the history can approach kRolloverBytes with well over a
+// thousand tool calls, so every string and vector a Message owns is in
+// Mem::Large (call ids and dotted names exceed the small-string buffer and
+// would otherwise land in internal RAM). history() hands out a shared,
+// immutable snapshot instead of a copy: the agent loop reads it every step,
+// usually as a std::span<const Message>. An append copies the history only
+// while some older snapshot is still held; otherwise it grows in place.
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -50,8 +59,8 @@ enum class Source : uint8_t { Voice, DeviceText, Web };
 const char* to_string(Source s);
 
 struct ToolCallRec {
-    std::string id;
-    std::string name;  // dotted
+    os::LargeString id;
+    os::LargeString name;  // dotted
     os::LargeString args;
 };
 
@@ -60,14 +69,16 @@ struct Message {
     int64_t ts = 0;  // unix s, 0 while the clock is unset
     uint32_t turn = 0;
     Role role = Role::User;
-    os::LargeString text;            // user/assistant/note/summary text; tool result JSON
-    Source source = Source::Web;     // user
-    std::vector<ToolCallRec> calls;  // assistant
-    std::string call_id, tool;       // tool
-    bool ok = true;                  // tool
-    std::string marker, status;      // marker
+    os::LargeString text;                // user/assistant/note/summary text; tool result JSON
+    Source source = Source::Web;         // user
+    os::LargeVector<ToolCallRec> calls;  // assistant
+    os::LargeString call_id, tool;       // tool
+    bool ok = true;                      // tool
+    os::LargeString marker, status;      // marker
     uint64_t covers_first = 0, covers_last = 0;  // summary
 };
+
+using History = os::LargeVector<Message>;
 
 struct ArchiveInfo {
     uint32_t n = 0;
@@ -92,7 +103,9 @@ public:
     // the seq.
     Result<uint64_t> append(Message m);
 
-    os::LargeVector<Message> messages() const;
+    // The current conversation as of now; never null. Later appends do not
+    // change a snapshot already handed out.
+    std::shared_ptr<const History> history() const;
     std::optional<Message> find(uint64_t seq) const;
     // Size of current.jsonl.
     uint64_t bytes() const;
@@ -107,7 +120,7 @@ public:
     // Newest first.
     Result<std::vector<ArchiveInfo>> archives();
     // NotFound for an archive that does not exist.
-    Result<os::LargeVector<Message>> read_archive(uint32_t n);
+    Result<History> read_archive(uint32_t n);
     // Removes the current conversation and every archive.
     Result<void> clear_all();
 
@@ -116,6 +129,10 @@ private:
     std::string archive_path(uint32_t n) const;
     Result<std::vector<uint32_t>> archive_numbers();
     Result<uint64_t> append_locked(Message m);
+    // Under mutex_: makes history_ safe to modify (copying it when a
+    // snapshot is out) or replaces it with `fresh`.
+    History& writable_history();
+    void reset_history(History fresh);
 
     core::StorageManager& storage_;
     std::string dir_;
@@ -124,7 +141,7 @@ private:
     // across I/O, unlike mutex_, which readers on other threads take.
     os::Mutex write_mutex_;
     mutable os::Mutex mutex_;
-    os::LargeVector<Message> messages_;
+    std::shared_ptr<History> history_;
     uint64_t bytes_ = 0;
     uint64_t next_seq_ = 1;
     uint32_t last_turn_ = 0;

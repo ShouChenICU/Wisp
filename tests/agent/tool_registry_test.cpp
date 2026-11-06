@@ -322,6 +322,44 @@ TEST(ToolRegistry, TimeoutReturnsTimeoutAndLateResultIsDropped) {
     EXPECT_TRUE(saw_cancel.load());
 }
 
+// The caller's cancel check may capture state that dies once call() has
+// returned; a late tool must never be inside it, or enter it, after that.
+TEST(ToolRegistry, LateToolNeverRunsTheCallersCancelCheck) {
+    auto alive = std::make_shared<std::atomic<bool>>(true);
+    auto misuse = std::make_shared<std::atomic<int>>(0);
+    auto stop = std::make_shared<std::atomic<bool>>(false);
+    {
+        Worker fs;
+        {
+            ToolRegistry reg(executors_on(fs));
+            ToolDef d = tool("scene.slow", "", ToolThread::Fs);
+            d.timeout_ms = 50;
+            // Asks continuously, so it is almost always inside the check
+            // when call() gives up.
+            d.run = [stop](const Value&, ToolCtx& c) {
+                while (!stop->load() && !c.cancelled()) {
+                }
+                return ToolOutput{};
+            };
+            ASSERT_TRUE(reg.add(d));
+            ToolCtx c;
+            c.cancelled = [alive, misuse] {
+                if (!alive->load()) ++*misuse;
+                wisp::os::sleep_ms(10);
+                if (!alive->load()) ++*misuse;
+                return false;
+            };
+            ToolOutput out = reg.call("scene_slow", "", c);
+            EXPECT_EQ(error_of(out), "timeout");
+            // What the check captured is gone from here on.
+            alive->store(false);
+            wisp::os::sleep_ms(50);
+        }
+        stop->store(true);
+    }
+    EXPECT_EQ(misuse->load(), 0);
+}
+
 TEST(ToolRegistry, DeadlineShortensTheWait) {
     Worker fs;
     ToolRegistry reg(executors_on(fs));

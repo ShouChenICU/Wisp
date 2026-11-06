@@ -161,11 +161,6 @@ const std::string* str_at(const Value& v, const char* k) {
     return f != nullptr && f->type() == Value::Type::String ? &f->as_string() : nullptr;
 }
 
-std::string str_or(const Value& v, const char* k) {
-    const std::string* s = str_at(v, k);
-    return s != nullptr ? *s : std::string();
-}
-
 os::LargeString large_or(const Value& v, const char* k) {
     const std::string* s = str_at(v, k);
     return s != nullptr ? os::LargeString(s->data(), s->size()) : os::LargeString();
@@ -194,7 +189,7 @@ std::optional<Message> parse(std::string_view line) {
     switch (m.role) {
         case Role::User:
             m.text = large_or(v, "text");
-            m.source = source_from(str_or(v, "source"));
+            if (const std::string* src = str_at(v, "source")) m.source = source_from(*src);
             break;
         case Role::Assistant:
             m.text = large_or(v, "text");
@@ -203,13 +198,13 @@ std::optional<Message> parse(std::string_view line) {
                 for (const Value& c : calls->as_list()) {
                     if (c.type() != Value::Type::Map) continue;
                     m.calls.push_back(
-                        ToolCallRec{str_or(c, "id"), str_or(c, "name"), large_or(c, "args")});
+                        ToolCallRec{large_or(c, "id"), large_or(c, "name"), large_or(c, "args")});
                 }
             }
             break;
         case Role::Tool: {
-            m.call_id = str_or(v, "call_id");
-            m.tool = str_or(v, "name");
+            m.call_id = large_or(v, "call_id");
+            m.tool = large_or(v, "name");
             const Value* ok = v.find("ok");
             m.ok = ok == nullptr || ok->type() != Value::Type::Bool || ok->as_bool();
             m.text = large_or(v, "result");
@@ -230,8 +225,8 @@ std::optional<Message> parse(std::string_view line) {
             break;
         }
         case Role::Marker:
-            m.marker = str_or(v, "kind");
-            m.status = str_or(v, "status");
+            m.marker = large_or(v, "kind");
+            m.status = large_or(v, "status");
             break;
     }
     return m;
@@ -296,7 +291,9 @@ const char* to_string(Source s) {
 }
 
 ConversationStore::ConversationStore(core::StorageManager& storage, std::string dir)
-    : storage_(storage), dir_(std::move(dir)) {}
+    : storage_(storage), dir_(std::move(dir)) {
+    reset_history(History());
+}
 
 std::string ConversationStore::current_path() const { return dir_ + "/" + kCurrent; }
 
@@ -310,7 +307,7 @@ std::string ConversationStore::archive_path(uint32_t n) const {
 
 Result<void> ConversationStore::load() {
     std::lock_guard<os::Mutex> write_lock(write_mutex_);
-    os::LargeVector<Message> loaded;
+    History loaded;
     uint64_t kept_bytes = 0;
 
     auto file = storage_.read_file_large(current_path());
@@ -359,7 +356,7 @@ Result<void> ConversationStore::load() {
     }
     {
         std::lock_guard<os::Mutex> lock(mutex_);
-        messages_ = std::move(loaded);
+        reset_history(std::move(loaded));
         bytes_ = kept_bytes;
         next_seq_ = max_seq + 1;
         last_turn_ = max_turn;
@@ -401,20 +398,34 @@ Result<uint64_t> ConversationStore::append_locked(Message m) {
     bytes_ += line.size();
     last_turn_ = std::max(last_turn_, m.turn);
     const uint64_t seq = m.seq;
-    messages_.push_back(std::move(m));
+    writable_history().push_back(std::move(m));
     return Result<uint64_t>::ok(seq);
 }
 
-os::LargeVector<Message> ConversationStore::messages() const {
+History& ConversationStore::writable_history() {
+    // Only this store creates new references, and only under mutex_, so a
+    // count of one here means no snapshot is out and none can appear.
+    if (history_.use_count() > 1) {
+        history_ = std::allocate_shared<History>(os::LargeAllocator<History>(), *history_);
+    }
+    return *history_;
+}
+
+void ConversationStore::reset_history(History fresh) {
+    history_ = std::allocate_shared<History>(os::LargeAllocator<History>(), std::move(fresh));
+}
+
+std::shared_ptr<const History> ConversationStore::history() const {
     std::lock_guard<os::Mutex> lock(mutex_);
-    return messages_;
+    return history_;
 }
 
 std::optional<Message> ConversationStore::find(uint64_t seq) const {
     std::lock_guard<os::Mutex> lock(mutex_);
-    auto it = std::lower_bound(messages_.begin(), messages_.end(), seq,
+    const History& h = *history_;
+    auto it = std::lower_bound(h.begin(), h.end(), seq,
                                [](const Message& m, uint64_t s) { return m.seq < s; });
-    if (it == messages_.end() || it->seq != seq) return std::nullopt;
+    if (it == h.end() || it->seq != seq) return std::nullopt;
     return *it;
 }
 
@@ -473,7 +484,7 @@ Result<void> ConversationStore::archive() {
     WISP_TRY(storage_.rename(current_path(), archive_path(n)));
     {
         std::lock_guard<os::Mutex> lock(mutex_);
-        messages_.clear();
+        reset_history(History());
         bytes_ = 0;
         next_seq_ = 1;
         last_turn_ = 0;
@@ -520,10 +531,10 @@ Result<std::vector<ArchiveInfo>> ConversationStore::archives() {
     return R::ok(std::move(out));
 }
 
-Result<os::LargeVector<Message>> ConversationStore::read_archive(uint32_t n) {
-    using R = Result<os::LargeVector<Message>>;
+Result<History> ConversationStore::read_archive(uint32_t n) {
+    using R = Result<History>;
     std::lock_guard<os::Mutex> write_lock(write_mutex_);
-    os::LargeVector<Message> out;
+    History out;
     auto r = for_each_line(storage_, archive_path(n), [&out](std::string_view line) {
         if (std::optional<Message> m = parse(line)) out.push_back(std::move(*m));
         return true;
@@ -536,7 +547,7 @@ Result<void> ConversationStore::clear_all() {
     std::lock_guard<os::Mutex> write_lock(write_mutex_);
     WISP_TRY(storage_.remove_tree(dir_));
     std::lock_guard<os::Mutex> lock(mutex_);
-    messages_.clear();
+    reset_history(History());
     bytes_ = 0;
     next_seq_ = 1;
     last_turn_ = 0;
@@ -563,8 +574,8 @@ Value to_value(const Message& m, size_t max_result_chars) {
             out["text"] = std::string(view(m.text));
             List calls;
             for (const ToolCallRec& c : m.calls) {
-                calls.push_back(Map{{"id", c.id},
-                                    {"name", c.name},
+                calls.push_back(Map{{"id", std::string(view(c.id))},
+                                    {"name", std::string(view(c.name))},
                                     {"args", cut(view(c.args))},
                                     {"args_len", static_cast<int64_t>(c.args.size())}});
             }
@@ -572,8 +583,8 @@ Value to_value(const Message& m, size_t max_result_chars) {
             break;
         }
         case Role::Tool:
-            out["call_id"] = m.call_id;
-            out["name"] = m.tool;
+            out["call_id"] = std::string(view(m.call_id));
+            out["name"] = std::string(view(m.tool));
             out["ok"] = m.ok;
             out["result"] = cut(view(m.text));
             out["result_len"] = static_cast<int64_t>(m.text.size());
@@ -587,8 +598,8 @@ Value to_value(const Message& m, size_t max_result_chars) {
                 List{static_cast<int64_t>(m.covers_first), static_cast<int64_t>(m.covers_last)};
             break;
         case Role::Marker:
-            out["kind"] = m.marker;
-            if (!m.status.empty()) out["status"] = m.status;
+            out["kind"] = std::string(view(m.marker));
+            if (!m.status.empty()) out["status"] = std::string(view(m.status));
             break;
     }
     return Value(std::move(out));

@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 #include "wisp/base/json.hpp"
@@ -42,8 +44,28 @@ struct CallState {
     Value args;
     ToolCtx ctx;
     ToolOutput out;
-    std::atomic<bool> abandoned{false};
     os::Semaphore done{1, 0};
+
+    // The caller's own cancel check may capture state that dies when call()
+    // returns. It only runs under `mutex` with `abandoned` rechecked, and
+    // abandon() takes `mutex` after setting the flag, so once abandon()
+    // returns no invocation is running and none can start. The flag is
+    // also read before locking, so a tool polling in a tight loop cannot
+    // keep abandon() from getting the mutex.
+    os::Mutex mutex;
+    std::atomic<bool> abandoned{false};
+    std::function<bool()> outer;
+
+    bool cancelled() {
+        if (abandoned.load()) return true;
+        std::lock_guard<os::Mutex> lock(mutex);
+        return abandoned.load() || (outer && outer());
+    }
+
+    void abandon() {
+        abandoned.store(true);
+        std::lock_guard<os::Mutex> lock(mutex);
+    }
 };
 
 }  // namespace
@@ -206,13 +228,12 @@ ToolOutput ToolRegistry::call(std::string_view wire, std::string_view args_json,
     state->run = e.def.run;
     state->args = std::move(args);
     state->ctx = ctx;
-    // Once call() has given up, the tool sees itself cancelled; the
-    // caller's own check is not consulted after that, since what it
-    // captured may be gone by the time a late tool asks.
+    // Once call() has given up, the tool sees itself cancelled. `raw` is
+    // valid whenever the tool can ask: the task owns `state` until the tool
+    // returns.
+    state->outer = ctx.cancelled;
     CallState* raw = state.get();
-    state->ctx.cancelled = [raw, outer = ctx.cancelled] {
-        return raw->abandoned.load() || (outer && outer());
-    };
+    state->ctx.cancelled = [raw] { return raw->cancelled(); };
 
     if (post == nullptr || !*post || !(*post)([state] {
             state->out = state->run(state->args, state->ctx);
@@ -227,7 +248,7 @@ ToolOutput ToolRegistry::call(std::string_view wire, std::string_view args_json,
     for (;;) {
         const uint64_t now = os::now_ms();
         if (now >= end) {
-            state->abandoned = true;
+            state->abandon();
             return tool_error("timeout", e.def.name + " did not finish in time");
         }
         const uint32_t slice = static_cast<uint32_t>(std::min<uint64_t>(kPollMs, end - now));
@@ -235,7 +256,7 @@ ToolOutput ToolRegistry::call(std::string_view wire, std::string_view args_json,
             return std::move(state->out);
         }
         if (ctx.cancelled && ctx.cancelled()) {
-            state->abandoned = true;
+            state->abandon();
             return tool_error("cancelled", "the turn was stopped");
         }
     }
