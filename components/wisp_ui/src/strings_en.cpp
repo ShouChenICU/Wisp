@@ -238,6 +238,30 @@ const char* strings_en(StrId id) {
             return "{} min";
         case StrId::PanelHours:
             return "{} h";
+        case StrId::AgentStepLimit:
+            return "Too many steps; stopped";
+        case StrId::AgentTimeLimit:
+            return "Over 10 minutes; stopped";
+        case StrId::AgentStopped:
+            return "Stopped";
+        case StrId::AgentInterrupted:
+            return "Interrupted";
+        case StrId::AgentErrNoModel:
+            return "No model is set up yet. Add and enable one on the Model page of the admin "
+                   "console";
+        case StrId::AgentErrNetwork:
+            return "No network connection. Check Wi-Fi";
+        case StrId::AgentErrNetworkLost:
+            return "Network connection lost";
+        case StrId::AgentErrUnauthorized:
+            return "The model refused the API Key. Check its settings on the Model page of the "
+                   "admin console";
+        case StrId::AgentErrServer:
+            return "The model service returned an error. Try again later";
+        case StrId::AgentRolledOver:
+            return "The conversation got long, so it was archived and a new one started";
+        case StrId::NoticeAgentDone:
+            return "Done: {}";
         case StrId::Count:
             break;
     }

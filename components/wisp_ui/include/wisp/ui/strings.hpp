@@ -197,6 +197,20 @@ enum class StrId : uint16_t {
     PanelJustNow,
     PanelMinutes,
     PanelHours,
+    // Notes the agent adds to the conversation (agent-core spec 3.4).
+    AgentStepLimit,
+    AgentTimeLimit,
+    AgentStopped,
+    AgentInterrupted,
+    AgentErrNoModel,
+    AgentErrNetwork,
+    AgentErrNetworkLost,
+    AgentErrUnauthorized,
+    AgentErrServer,
+    AgentRolledOver,
+    // The agent_done notice (agent-core spec 3.7): "{}" is the first line
+    // of the reply.
+    NoticeAgentDone,
 
     Count,  // not a string; keep last
 };

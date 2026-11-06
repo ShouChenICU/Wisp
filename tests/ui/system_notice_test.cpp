@@ -25,7 +25,7 @@ TEST_F(SystemNotice, EveryCodeInEveryLanguage) {
     const char* codes[] = {notice::kSceneEvictedMemory, notice::kSceneEvictedCount,
                            notice::kSceneError,         notice::kRestoreFailed,
                            notice::kWakeLockLong,       notice::kBatteryLow,
-                           notice::kSceneDeleteFailed};
+                           notice::kSceneDeleteFailed,  notice::kAgentDone};
     for (Lang lang : wisp::ui::kAllLangs) {
         wisp::ui::set_lang(lang);
         for (const char* code : codes) {
@@ -39,6 +39,7 @@ TEST_F(SystemNotice, EveryCodeInEveryLanguage) {
     }
     wisp::ui::set_lang(Lang::En);
     EXPECT_EQ(wisp::ui::system_notice_text(notice::kBatteryLow, "15").body, "Battery low: 15%");
+    EXPECT_EQ(wisp::ui::system_notice_text(notice::kAgentDone, "All set").body, "Done: All set");
 
     // An unknown code is shown as it is.
     const wisp::ui::NoticeText unknown = wisp::ui::system_notice_text("future_code", "x");

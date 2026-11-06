@@ -239,6 +239,28 @@ const char* strings_zh(StrId id) {
             return "{} 分钟";
         case StrId::PanelHours:
             return "{} 小时";
+        case StrId::AgentStepLimit:
+            return "步骤太多，已停止";
+        case StrId::AgentTimeLimit:
+            return "超过 10 分钟，已停止";
+        case StrId::AgentStopped:
+            return "已中止";
+        case StrId::AgentInterrupted:
+            return "已中断";
+        case StrId::AgentErrNoModel:
+            return "还没有可用的模型，请在管理后台的“模型”页添加并启用";
+        case StrId::AgentErrNetwork:
+            return "网络不可用，请检查 Wi-Fi";
+        case StrId::AgentErrNetworkLost:
+            return "网络中断";
+        case StrId::AgentErrUnauthorized:
+            return "模型拒绝了 API Key，请在管理后台的“模型”页检查配置";
+        case StrId::AgentErrServer:
+            return "模型服务出错，请稍后再试";
+        case StrId::AgentRolledOver:
+            return "对话太长，已存档并开始新对话";
+        case StrId::NoticeAgentDone:
+            return "完成：{}";
         case StrId::Count:
             break;
     }

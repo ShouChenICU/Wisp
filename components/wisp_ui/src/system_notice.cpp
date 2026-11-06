@@ -17,6 +17,7 @@ NoticeText system_notice_text(std::string_view code, std::string_view arg) {
         {notice::kSceneDeleteFailed, StrId::NoticeDeleteFailed},
         {notice::kWakeLockLong, StrId::NoticeWakeLock},
         {notice::kBatteryLow, StrId::NoticeBatteryLow},
+        {notice::kAgentDone, StrId::NoticeAgentDone},
     };
     NoticeText t{tr(StrId::NoticeSystemTitle), std::string(code)};
     for (const auto& [c, id] : kBodies) {

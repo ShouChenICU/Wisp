@@ -4,7 +4,8 @@
 // OpenAI chat-completions replies (spec 8.1's FakeLlm). Each request()
 // takes the next pushed FakeReply; once the script runs out it answers
 // 500. Replies are deterministic: status, SSE chunks fed to on_body one by
-// one, a transport failure instead of a response, or a stream that stops
+// one, a transport failure instead of a response (or, with chunks, after
+// them: a connection dropped mid-stream), or a stream that stops
 // after `hold_after` chunks until release() or the request's watch ends it
 // (Cancelled on abort, Timeout at the watch's deadline).
 //
@@ -161,14 +162,18 @@ private:
     }
 
     net::HttpClientResponse play(const net::HttpClientRequest& req, const FakeReply& reply) {
-        if (reply.fail != net::TransportError::None) return {.transport = reply.fail};
+        if (reply.fail != net::TransportError::None && reply.chunks.empty())
+            return {.transport = reply.fail};
         if (req.on_status) req.on_status(reply.status);
         net::HttpClientResponse res{.status = reply.status};
         for (size_t i = 0; i <= reply.chunks.size(); ++i) {
             if (reply.hold_after >= 0 && static_cast<size_t>(reply.hold_after) == i) {
                 if (auto stopped = hold(req)) return {.transport = *stopped};
             }
-            if (i == reply.chunks.size()) break;
+            if (i == reply.chunks.size()) {
+                if (reply.fail != net::TransportError::None) return {.transport = reply.fail};
+                break;
+            }
             if (req.cancelled && req.cancelled())
                 return {.transport = net::TransportError::Cancelled};
             const std::string& c = reply.chunks[i];

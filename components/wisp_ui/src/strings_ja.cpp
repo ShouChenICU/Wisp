@@ -241,6 +241,30 @@ const char* strings_ja(StrId id) {
             return "{} 分";
         case StrId::PanelHours:
             return "{} 時間";
+        case StrId::AgentStepLimit:
+            return "ステップが多すぎるため停止しました";
+        case StrId::AgentTimeLimit:
+            return "10 分を超えたため停止しました";
+        case StrId::AgentStopped:
+            return "中止しました";
+        case StrId::AgentInterrupted:
+            return "中断されました";
+        case StrId::AgentErrNoModel:
+            return "使えるモデルがありません。管理画面の「モデル」ページで追加して有効にしてくださ"
+                   "い";
+        case StrId::AgentErrNetwork:
+            return "ネットワークに接続できません。Wi-Fi を確認してください";
+        case StrId::AgentErrNetworkLost:
+            return "ネットワークが切断されました";
+        case StrId::AgentErrUnauthorized:
+            return "モデルが API Key "
+                   "を拒否しました。管理画面の「モデル」ページで設定を確認してください";
+        case StrId::AgentErrServer:
+            return "モデルサービスでエラーが発生しました。しばらくしてからお試しください";
+        case StrId::AgentRolledOver:
+            return "会話が長くなったため、保存して新しい会話を始めました";
+        case StrId::NoticeAgentDone:
+            return "完了：{}";
         case StrId::Count:
             break;
     }

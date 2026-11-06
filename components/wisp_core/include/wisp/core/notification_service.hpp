@@ -66,6 +66,9 @@ inline constexpr const char* kRestoreFailed = "restore_failed";
 inline constexpr const char* kSceneDeleteFailed = "scene_delete_failed";
 inline constexpr const char* kWakeLockLong = "wakelock_long";
 inline constexpr const char* kBatteryLow = "battery_low";
+// A turn ended while the screen was off; the argument is the first line
+// of the reply.
+inline constexpr const char* kAgentDone = "agent_done";
 // action_arg is the wake lock id; arg is its holder, which must still hold it.
 inline constexpr const char* kActionReleaseLock = "release_lock";
 }  // namespace notice
