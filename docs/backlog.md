@@ -56,7 +56,7 @@ Source: `feat/scene-device` review records.
 
 ## 3b-1 device checks not run in the smoke pass
 
-The full list is the Task 16 checklist (rows 1-30) in the `feat/scene-device` final review. The smoke pass runs rows 1, 10, 11, 17, 19, 20, 22 and 26. The other rows are:
+The full list is the 30-row device acceptance checklist kept with the `feat/scene-device` review records. The smoke pass runs rows 1, 10, 11, 17, 19, 20, 22 and 26. On 2026-11-06 rows 10a, 11, 17, 19, 20 and 26a passed; rows 1, 10b/c, 22 and 26b/c are still to run. The rows outside the smoke pass are:
 
 - 2: standby drain.
 - 3: audio and standby.
