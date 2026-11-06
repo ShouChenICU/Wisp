@@ -77,6 +77,13 @@ const NAME_MAX_BYTES = 32;
 const MODEL_MAX_BYTES = 128;
 const OPTION_MAX_BYTES = 64;
 const MANUAL = '\u0000manual';
+// llm-only options the agent reads (agent-core spec 1.5): kept in the MVP
+// (MVP spec 3.1) even though the tools that would use "vision" (a
+// screenshot) are deferred, so this form is the only way to set it --
+// "test connection" elsewhere never writes it back.
+const MIN_CONTEXT_WINDOW = 4096;
+const MAX_CONTEXT_WINDOW = 1048576;
+const DEFAULT_CONTEXT_WINDOW = 65536;
 // Presets whose spec name is a description rather than a brand.
 const PRESET_LABEL_KEYS = { custom: 'models.preset_custom', ollama: 'models.preset_ollama' };
 
@@ -467,6 +474,8 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
   const [model, setModel] = useState(profile ? profile.model : '');
   const [manualModel, setManualModel] = useState(false);
   const [voice, setVoice] = useState(profile?.options?.voice || '');
+  const [vision, setVision] = useState(profile?.options?.vision === 'true');
+  const [contextWindow, setContextWindow] = useState(profile?.options?.context_window || '');
   const [problem, setProblem] = useState(null); // {field, text}
   const [saving, setSaving] = useState(false);
   // The last save moved the address to another origin and the device
@@ -496,6 +505,8 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
   }
 
   const voiceNow = profile?.options?.voice || '';
+  const visionNow = profile?.options?.vision === 'true';
+  const contextWindowNow = profile?.options?.context_window || '';
   const dirty =
     !profile ||
     presetId !== profile.preset ||
@@ -503,6 +514,7 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
     u !== profile.base_url ||
     model !== profile.model ||
     (kind === 'tts' && voice.trim() !== voiceNow) ||
+    (kind === 'llm' && (vision !== visionNow || contextWindow.trim() !== contextWindowNow)) ||
     key !== '' ||
     reuse;
   // Saving now would drop the stored key.
@@ -518,6 +530,12 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
     if (!reuse && !validKey(key)) return { field: 'key', text: t('models.err_key') };
     if (bytes(model) > MODEL_MAX_BYTES) return { field: 'model', text: t('models.err_model_long', { max: MODEL_MAX_BYTES }) };
     if (bytes(voice.trim()) > OPTION_MAX_BYTES) return { field: 'voice', text: t('models.err_voice_long', { max: OPTION_MAX_BYTES }) };
+    if (kind === 'llm' && contextWindow.trim()) {
+      const n = Number(contextWindow.trim());
+      if (!/^\d+$/.test(contextWindow.trim()) || n < MIN_CONTEXT_WINDOW || n > MAX_CONTEXT_WINDOW) {
+        return { field: 'context_window', text: t('models.err_context_window', { min: formatCount(MIN_CONTEXT_WINDOW), max: formatCount(MAX_CONTEXT_WINDOW) }) };
+      }
+    }
     return null;
   }
 
@@ -537,6 +555,13 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
       const options = { ...(profile?.options || {}) };
       if (voice.trim()) options.voice = voice.trim();
       else delete options.voice;
+      body.options = options;
+    }
+    if (kind === 'llm' && (vision !== visionNow || contextWindow.trim() !== contextWindowNow)) {
+      const options = { ...(profile?.options || {}) };
+      options.vision = vision ? 'true' : 'false';
+      if (contextWindow.trim()) options.context_window = contextWindow.trim();
+      else delete options.context_window;
       body.options = options;
     }
     if (reuse) body.api_key_from = keyFrom;
@@ -843,6 +868,48 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
                   aria-describedby=${idp + 'voice-hint'}
                 />
                 ${hint('voice', t('models.voice_hint'))}
+              </div>`
+            : null}
+
+          ${kind === 'llm'
+            ? html`<div class="field">
+                <label class="field-row field-label" for=${idp + 'vision'}>
+                  <span>${t('models.vision')}</span>
+                  <input
+                    id=${idp + 'vision'}
+                    type="checkbox"
+                    checked=${vision}
+                    onChange=${(e) => {
+                      setVision(e.currentTarget.checked);
+                      setProblem(null);
+                    }}
+                    disabled=${busy}
+                    aria-describedby=${idp + 'vision-hint'}
+                  />
+                </label>
+                ${hint('vision', t('models.vision_hint'))}
+              </div>
+              <div class="field">
+                <label class="field-label" for=${idp + 'context_window'}>${t('models.context_window')}</label>
+                <input
+                  id=${idp + 'context_window'}
+                  class="input mono-input"
+                  type="number"
+                  inputmode="numeric"
+                  min=${MIN_CONTEXT_WINDOW}
+                  max=${MAX_CONTEXT_WINDOW}
+                  step="1"
+                  placeholder=${String(DEFAULT_CONTEXT_WINDOW)}
+                  value=${contextWindow}
+                  onInput=${(e) => {
+                    setContextWindow(e.currentTarget.value);
+                    setProblem(null);
+                  }}
+                  disabled=${busy}
+                  aria-invalid=${fieldError('context_window') ? 'true' : 'false'}
+                  aria-describedby=${idp + 'context_window-hint'}
+                />
+                ${hint('context_window', t('models.context_window_hint', { default: formatCount(DEFAULT_CONTEXT_WINDOW) }))}
               </div>`
             : null}
 

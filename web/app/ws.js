@@ -162,9 +162,10 @@ function open() {
 function deliverable(sub, msg) {
   if (msg.t === 'log' || msg.t === 'hello') return sub.kinds.has('log');
   if (msg.t === 'event') return sub.kinds.has('events');
-  // The device dropped queued messages; an events subscriber may have
-  // missed a state change and should refetch.
-  if (msg.t === 'dropped') return sub.kinds.has('log') || sub.kinds.has('events');
+  if (msg.t === 'agent') return sub.kinds.has('agent');
+  // The device dropped queued messages; an events or agent subscriber may
+  // have missed a state change and should refetch.
+  if (msg.t === 'dropped') return sub.kinds.has('log') || sub.kinds.has('events') || sub.kinds.has('agent');
   return false;
 }
 
@@ -250,6 +251,12 @@ document.addEventListener('visibilitychange', () => {
  *               (boot_id, seq).
  *   - "events": {t:"event", topic, payload}, and {t:"dropped", count}
  *               when the device had to drop queued messages.
+ *   - "agent":  {t:"agent", k, ...} (agent-core spec 7.2), and
+ *               {t:"dropped", count}. A subscriber only sees "hello" (and
+ *               so the boot id) by also asking for "log"; relying on
+ *               `onState`'s "open" (it fires on every reconnect too) and
+ *               refetching from REST is simpler and covers a changed
+ *               boot id as well as a missed frame.
  *
  * `opts.onState` follows the shared socket: "connecting", "open" (also
  * after every reconnect, so callers can refetch what they missed),

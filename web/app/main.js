@@ -12,6 +12,7 @@ import { Toaster } from './components/toast.js';
 import { LangSwitch } from './components/lang.js';
 import { t, useLang } from './i18n/index.js';
 import {
+  IconChat,
   IconChevronLeft,
   IconChip,
   IconLogout,
@@ -24,6 +25,7 @@ import {
   WispGlyph,
 } from './icons.js';
 import { PairPage } from './pages/pair.js';
+import { ChatPage } from './pages/chat.js';
 import { OverviewPage } from './pages/overview.js';
 import { DevicesPage } from './pages/devices.js';
 import { LogsPage } from './pages/logs.js';
@@ -33,6 +35,7 @@ import { SystemPage, confirmLogout } from './pages/system.js';
 import { ScenesPage } from './pages/scenes.js';
 
 route('/pair', PairPage);
+route('/chat', ChatPage);
 route('/overview', OverviewPage);
 route('/devices', DevicesPage);
 route('/network', NetworkPage);
@@ -46,6 +49,7 @@ route('/scenes', ScenesPage);
  * path) is where the link goes when that is not the page's own path.
  */
 const NAV = [
+  { path: '/chat', label: 'nav.chat', icon: IconChat },
   { path: '/overview', label: 'nav.overview', icon: IconOverview },
   { path: '/devices', label: 'nav.devices', icon: IconChip },
   { path: '/network', label: 'nav.network', icon: IconWifi },

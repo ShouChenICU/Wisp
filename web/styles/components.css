@@ -265,7 +265,7 @@ textarea {
   inset: auto 0 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   background: color-mix(in srgb, var(--bg-raised) 88%, transparent);
@@ -2787,6 +2787,333 @@ textarea {
 .setup-note {
   text-align: center;
   font-size: var(--fs-xs);
+}
+
+/* ---------- Chat ---------- */
+
+/* Fills the viewport like .page-logs, so the message list scrolls inside
+   its own panel and the composer stays pinned below it. */
+.page-chat {
+  height: calc(100dvh - var(--topbar-h) - var(--tabbar-h) - var(--gap) - var(--gap-lg) - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  min-height: 460px;
+}
+
+@media (min-width: 768px) {
+  .page-chat {
+    height: calc(100dvh - 2 * var(--gap-xl));
+    min-height: 480px;
+  }
+}
+
+.chat-model-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  font-size: var(--fs-sm);
+}
+
+.chat-model-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chat-confirm {
+  align-items: flex-start;
+}
+
+.chat-panel {
+  position: relative;
+  flex: 1;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.chat-panel-error {
+  align-items: center;
+  justify-content: center;
+  gap: var(--gap-sm);
+  padding: var(--gap-lg);
+  text-align: center;
+}
+
+.chat-error-title {
+  font-weight: 600;
+  margin: 0;
+}
+
+.chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-sm);
+  padding: var(--gap-md);
+}
+
+.chat-empty {
+  margin: auto;
+}
+
+.msg {
+  max-width: 88%;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.msg-user {
+  align-self: flex-end;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 9px var(--gap-md);
+  border-radius: var(--radius) var(--radius) 4px var(--radius);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.msg-mic {
+  flex: none;
+  margin-top: 3px;
+  color: var(--text-dim);
+}
+
+.msg-assistant {
+  align-self: flex-start;
+  padding: 9px var(--gap-md);
+  border-radius: var(--radius) var(--radius) var(--radius) 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.msg-streaming {
+  opacity: 0.82;
+}
+
+.msg-note {
+  align-self: center;
+  font-size: var(--fs-xs);
+  text-align: center;
+  max-width: 96%;
+}
+
+.chat-dropped {
+  align-self: center;
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+
+/* The agent's reply, rendered through md.js's limited Markdown. */
+.md p {
+  margin: 0 0 8px;
+}
+
+.md p:last-child {
+  margin-bottom: 0;
+}
+
+.md ul,
+.md ol {
+  margin: 4px 0 8px 1.2em;
+  padding: 0;
+}
+
+.md li + li {
+  margin-top: 2px;
+}
+
+.md code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.md pre {
+  margin: 4px 0 8px;
+  padding: var(--gap-sm);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  overflow: auto;
+}
+
+.md pre code {
+  padding: 0;
+  background: none;
+}
+
+.chat-tool {
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.chat-tool-row {
+  display: block;
+  max-width: 100%;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.chat-tool-row:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.chat-tool-detail {
+  margin-top: 6px;
+  padding: var(--gap-sm) var(--gap-md);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.chat-tool-field + .chat-tool-field {
+  margin-top: var(--gap-sm);
+}
+
+.chat-tool-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.chat-tool-detail pre {
+  margin: 0;
+  padding: var(--gap-sm);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-status {
+  padding: 0 var(--gap-md);
+  font-size: var(--fs-xs);
+}
+
+.chat-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--gap-sm);
+  padding: var(--gap-sm) var(--gap-md);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.chat-input {
+  flex: 1;
+  height: auto;
+  min-height: 42px;
+  max-height: 160px;
+  padding: 10px 12px;
+  resize: none;
+  line-height: 1.4;
+  font-family: var(--font);
+}
+
+.chat-send {
+  flex: none;
+}
+
+.chat-composer-error {
+  padding: 0 var(--gap-md) var(--gap-sm);
+}
+
+.chat-menu {
+  position: relative;
+}
+
+.chat-menu-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-pop);
+}
+
+.chat-menu-item {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-menu-item:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.chat-menu-item.is-danger {
+  color: var(--err);
+}
+
+.chat-menu-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.chat-archive-head {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  padding: var(--gap-sm) var(--gap-md);
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-archive-title {
+  font-weight: 600;
+}
+
+.chat-archive-list {
+  overflow: auto;
+}
+
+.chat-archive-rows {
+  padding: var(--gap-sm);
+  overflow: auto;
+}
+
+.chat-archive-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
 }
 
 /* ---------- Motion preference ---------- */
