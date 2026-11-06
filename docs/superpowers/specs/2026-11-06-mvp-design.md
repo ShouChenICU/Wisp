@@ -293,20 +293,20 @@
 
 ### 5.1 `MemoryStore`
 
-- **存储**：System 区 `memory/notes.json`，经 `StorageManager::write_atomic` 写入。
+- **存储**：System 区 `memory/notes.json`，经 `StorageManager::write_atomic` 写入；只在 `wisp.fs` 上执行（flash-thread spec 2.1）。
   - 格式：`{"version":1,"notes":[{"id","text","updated"}]}`；
   - `id` 为递增整数。
 - **容量**：最多 64 条，每条最多 200 个字符。超出时：
   - 条数满了，返回 `memory_full`；
   - 单条太长，返回 `too_long`。
-- **线程安全**：Agent 线程与管理后台的 HTTP 线程都会调用。
+- **线程安全**：Agent 线程与管理后台的 HTTP 线程都会调用，经 `StorageWorker::submit()`/`run_sync()` 把读写排到 `wisp.fs`，调用方不直接碰 flash（AGENTS.md 第 5 节）。
 - **事件**：每次修改发布 `memory.changed {count}`，不带内容。
 - **日志**：不记录笔记内容。
 - **恢复出厂**：一并清除。
 
 ### 5.2 `ReminderScheduler`
 
-- **存储**：System 区 `todo/todos.json`，经 `write_atomic` 写入。字段：
+- **存储**：System 区 `todo/todos.json`，经 `write_atomic` 写入；和 `MemoryStore` 一样只在 `wisp.fs` 上执行，工具调用（`todo.*`）经 `submit()`/`run_sync()` 把读写排到 `wisp.fs`。字段：
   - `id`、`title`（最多 100 字）、`done`、`created`；
   - `due`：UTC 秒，可选；
   - `repeat`：`none`、`daily`，或 `weekly` 加星期掩码；

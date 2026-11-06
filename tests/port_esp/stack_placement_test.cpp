@@ -22,8 +22,10 @@ TEST(StackPlacement, HotOrFlashStacksStayInternal) {
     EXPECT_FALSE(stack_may_use_psram(/*flash_access=*/false, /*hot_stack=*/true));
 }
 
-// The declaration's defaults are the safe ones.
-TEST(StackPlacement, DefaultDeclarationIsFlashAccess) {
-    EXPECT_FALSE(
+// The default declaration is the common case: a task that never touches
+// flash, so its stack may go to PSRAM. wisp.fs is the one task that
+// opts out, explicitly (AGENTS.md section 5).
+TEST(StackPlacement, DefaultDeclarationMayUsePsram) {
+    EXPECT_TRUE(
         stack_may_use_psram(wisp::os::TaskConfig{}.flash_access, wisp::os::TaskConfig{}.hot_stack));
 }

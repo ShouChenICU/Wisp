@@ -71,21 +71,23 @@ struct EspHttpServerConfig {
     // instances must fit CONFIG_LWIP_MAX_SOCKETS with the other users.
     uint16_t max_open_sockets = 7;
     // The httpd task's stack. Handlers run on it, including the model
-    // connectivity test's TLS handshake and, on the admin instance,
-    // Settings reads and writes and the firmware upload.
+    // connectivity test's TLS handshake; Settings reads and writes go
+    // through the cache (core::CachedSettingsBackend) and the firmware
+    // upload and scene file downloads hand their flash I/O to wisp.fs
+    // (run_sync, IoLane::Bulk) instead of touching it here.
     size_t stack_bytes = 10240;
     // Whether the handlers may touch internal flash, reads included (the
-    // definition is at os::TaskConfig::flash_access). The port places the
-    // stack from it, as for any task: an instance declaring false, like
-    // the hotspot's captive redirect, may get a PSRAM stack; the admin
-    // instance declares true and keeps it internal.
+    // definition is at os::TaskConfig::flash_access). Defaults to false:
+    // no httpd instance touches flash directly. The port places the
+    // stack from it, as for any task: an instance declaring false may
+    // get a PSRAM stack.
     //
     // Wherever the stack goes, stopping an instance needs about 2 KB of internal RAM
     // at that moment: the httpd task deletes itself with
     // vTaskDeleteWithCaps(), which starts a helper task with an internal
     // stack and aborts if it cannot (ESP-IDF's idf_additions.c). The
     // internal-RAM budget's floor (wisp/app/ram_budget.hpp) covers it.
-    bool flash_access = true;
+    bool flash_access = false;
     // Whether this instance's stack should stay in internal RAM for
     // speed rather than for flash safety (os::TaskConfig::hot_stack's
     // same meaning). No httpd instance declares this true today.

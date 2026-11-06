@@ -386,6 +386,55 @@ class CheckLayeringTest(unittest.TestCase):
         )
         self.assertEqual(check_layering.run(self.root), [])
 
+    # Flash-access declaration rule (spec 3.9): flash_access = true (and
+    # brace-init forms) only in storage_worker.cpp.
+
+    def test_flash_access_true_outside_storage_worker_is_flagged(self):
+        write(
+            self.root,
+            "components/wisp_app/src/rogue.cpp",
+            "os::TaskConfig t;\nt.flash_access = true;\n",
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("rogue.cpp:2", errors[0])
+        self.assertIn("flash_access", errors[0])
+
+    def test_flash_access_true_brace_form_outside_storage_worker_is_flagged(self):
+        write(
+            self.root,
+            "components/wisp_app/src/rogue2.cpp",
+            "os::TaskConfig t{.name = \"x\", .flash_access = true};\n",
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("rogue2.cpp:1", errors[0])
+
+    def test_flash_access_true_is_allowed_in_storage_worker(self):
+        write(
+            self.root,
+            check_layering.FLASH_ACCESS_TRUE_WHITELIST,
+            "os::TaskConfig t;\nt.flash_access = true;\n",
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_flash_access_true_in_comment_is_not_flagged(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            "// wisp.fs declares flash_access = true; every other task\n"
+            "// keeps flash_access{true} out of its own config.\n",
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_flash_access_false_is_not_flagged(self):
+        write(
+            self.root,
+            "components/wisp_app/src/y.cpp",
+            "os::TaskConfig t;\nt.flash_access = false;\n",
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
     def test_third_party_and_managed_components_are_not_scanned(self):
         write(self.root, "managed_components/x/a.c", "void f() { nvs_commit(h); }\n")
         write(self.root, "third_party/x/a.c", "void f() { nvs_commit(h); }\n")

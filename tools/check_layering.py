@@ -43,6 +43,14 @@ docs/architecture.md):
     boards/, drivers/ and firmware/, the platform layer included. Every
     other path to flash goes through StorageManager or Settings on the
     flash thread.
+  - Flash-access declarations (spec 3.9 of the flash-thread design):
+    `flash_access = true` and brace-init forms like `flash_access{true}`
+    or `.flash_access = true` may only appear in
+    FLASH_ACCESS_TRUE_WHITELIST's one file (components/wisp_core/src/
+    storage_worker.cpp) -- wisp.fs is the only task permitted flash
+    access; every other task relies on os::TaskConfig::flash_access's
+    (and EspHttpServerConfig::flash_access's) false default. Scanned over
+    the same roots as the flash-API rule above.
 
 Prints one "path:line: <message>" line per violation and exits 1 if
 any were found, else exits 0 with no output.
@@ -146,6 +154,12 @@ FLASH_API_ROOTS = ("components", "boards", "drivers", "firmware")
 FLASH_API_SKIPPED_DIRS = ("managed_components", "build")
 FLASH_API_HEADERS = ("nvs.h", "esp_ota_ops.h", "esp_partition.h")
 FLASH_API_CALL_RE = re.compile(r"\b((?:nvs|esp_partition|esp_ota)_[A-Za-z0-9_]*)\s*\(")
+
+# The only file allowed to declare flash_access = true (spec 3.9): wisp.fs
+# (core::StorageWorker::task_config()) is the one task on which flash
+# access is permitted.
+FLASH_ACCESS_TRUE_WHITELIST = "components/wisp_core/src/storage_worker.cpp"
+FLASH_ACCESS_TRUE_RE = re.compile(r"\bflash_access\s*=\s*true\b|\bflash_access\s*\{\s*true\s*\}")
 
 INCLUDE_RE = re.compile(r'#\s*include\s*[<"]([^">]+)[">]')
 
@@ -369,6 +383,20 @@ def check_flash_api(root, path, errors):
             )
 
 
+def check_flash_access_true(root, path, errors):
+    rel = path.relative_to(root).as_posix()
+    if rel == FLASH_ACCESS_TRUE_WHITELIST:
+        return
+    text = strip_comments(path.read_text(encoding="utf-8", errors="replace"))
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if FLASH_ACCESS_TRUE_RE.search(line):
+            errors.append(
+                f"{path}:{lineno}: flash_access = true outside "
+                f"{FLASH_ACCESS_TRUE_WHITELIST} (only wisp.fs may declare flash access; "
+                "spec 3.9 of the flash-thread design)"
+            )
+
+
 def run(root):
     """Runs every check against `root` and returns the list of error
     strings found (empty if clean). Importable so tools/check_layering_
@@ -383,6 +411,7 @@ def run(root):
             check_component_cmake(cmake_path, component, errors)
     for path in iter_flash_api_files(root):
         check_flash_api(root, path, errors)
+        check_flash_access_true(root, path, errors)
     return errors
 
 

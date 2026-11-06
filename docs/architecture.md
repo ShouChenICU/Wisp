@@ -178,6 +178,8 @@
 
 写入永远进列表第一个根；读取按顺序枚举所有根。真机挂载点：内置 Flash（LittleFS）在 `/int`，SD 卡（FAT，1-bit SDMMC）在 `/sd`；模拟器对应 `<data-dir>/int/`、`<data-dir>/sd/`。原子写（`write_atomic`）和 FAT 上 `rename` 不能覆盖已存在文件的坑，见 `AGENTS.md` 第 8 节。
 
+所有内置 flash 读写都在一个线程上执行——`wisp.fs`（`core::StorageWorker`），这是唯一声明 `os::TaskConfig::flash_access = true` 的任务（AGENTS.md 第 5 节）。其他线程把活经 `submit()`（排队即返回）或 `run_sync()`（排队并等待，worker 自己线程上或单线程的开机/关机阶段就地执行）交给它，分两条队列：Normal（设置落盘、JSON 文档、场景数据）先于已排队的 Bulk（固件分块、文件下载分块）处理，队列内先进先出。任何线程离开这条路径直接碰 flash 都会被 `WISP_ASSERT_FLASH_THREAD`（`wisp/os/flash_guard.hpp`）挡住：模拟器和单元测试里打印调用点后 `abort()`，设备上每个调用点只 `WLOG_E` 一次、不主动 abort。
+
 场景的代码与数据不属于以上三个逻辑区，固定在内置根下的 `<int>/scenes`（`core::SceneRepository`，开发模式见上面"模拟器的网络"一节的 `--scenes-dir`）：每个场景是 `<int>/scenes/<id>/`，数据在其中的 `data/` 子目录，`wisp.files` 的文件在 `files/` 子目录（第一次写时按 `scene.json` 的 `files` 声明可能改放 `<sd>/wisp/library/scenes/<id>/files`，位置记在 `data/files_loc.json`，之后不变；见下面"场景运行时"一节的 `SceneFiles`）。替换一个场景是目录级的两阶段改名，不经单文件的 `write_atomic`，见下面"场景运行时"一节。
 
 ## 场景运行时

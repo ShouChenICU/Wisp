@@ -342,6 +342,13 @@ TEST(Queue, PushDropOldestRaceWithConcurrentPops) {
     EXPECT_EQ(dropped_count.load() + popped_count.load(), kItems);
 }
 
+// Only wisp.fs (core::StorageWorker) opts into flash access (AGENTS.md
+// section 5); every other task relies on this default.
+TEST(Os, TaskConfigDefaultsToNoFlashAccess) {
+    EXPECT_FALSE(TaskConfig{}.flash_access);
+    EXPECT_FALSE(TaskConfig{}.hot_stack);
+}
+
 // A task declaring no flash access runs on an ordinary stack on a port
 // without external RAM.
 TEST(Os, NoFlashAccessTaskRunsAndJoins) {

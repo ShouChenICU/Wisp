@@ -505,7 +505,10 @@ esp_err_t answer_early(httpd_req_t* r, const net::HttpResponse& res, size_t left
 }
 
 esp_err_t stream_body(httpd_req_t* r, net::BodySink& sink) {
-    // On the heap: the httpd stack also carries the sink's flash writes.
+    // On the heap, not the httpd task's stack: this frame stays alive
+    // while sink.on_data() blocks in run_sync() waiting on wisp.fs, so a
+    // kBodyChunkBytes buffer here would sit on the stack for the whole
+    // transfer, not just this call.
     std::vector<uint8_t> chunk(net::kBodyChunkBytes);
     size_t left = r->content_len;
     int timeouts = 0;
