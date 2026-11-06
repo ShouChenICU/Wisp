@@ -218,6 +218,8 @@ SystemLayer::~SystemLayer() {
     if (refill_queued_) lv_async_call_cancel(&SystemLayer::panel_refill_cb, this);
     refill_queued_ = false;
     panel_event_depth_ = 0;
+    // Without calling on_close.
+    panel_handlers_ = {};
     discard_panel();
     banners_.clear();
     banner_event_depth_ = 0;

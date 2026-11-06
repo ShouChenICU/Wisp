@@ -88,6 +88,9 @@ const char* device_event_name(DeviceEvent ev);
 struct DeviceInfo {
     hal::ScreenShape shape;
     hal::Area safe;
+    // The status capsule's box (ui::SystemLayer::status_area()), shown or
+    // not.
+    hal::Area status_area;
     char lang[4] = "zh";
     int32_t utc_offset_min = 480;
     bool has_time = false;

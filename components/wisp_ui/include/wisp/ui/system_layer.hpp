@@ -115,6 +115,9 @@ struct PanelHandlers {
     std::function<void(const std::string& source, const std::string& id)> tap_note, dismiss_note,
         note_action;
     std::function<void()> clear_all;
+    // The open panel went, whichever way it was closed (never from the
+    // destructor).
+    std::function<void()> on_close;
 };
 
 // One notification banner (spec 5.3).

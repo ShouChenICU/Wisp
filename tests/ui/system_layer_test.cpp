@@ -2086,6 +2086,35 @@ TEST_F(SystemLayerTest, PanelUpdatesWhileOpen) {
     });
 }
 
+// on_close follows every way an open panel goes, once each; never while
+// it is closed, nor from the destructor.
+TEST_F(SystemLayerTest, PanelOnCloseFollowsEveryClose) {
+    start("circle");
+    int opens = 0, closes = 0;
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [&] { ++opens; }, .on_close = [&] { ++closes; }});
+        layer->close_panel();
+        EXPECT_EQ(closes, 0);
+        layer->open_panel();
+        layer->close_panel();
+        layer->close_panel();
+        EXPECT_EQ(closes, 1);
+        layer->open_panel();
+    });
+    tap(240, 470);  // a tap on blank space
+    on_ui([&] {
+        EXPECT_FALSE(layer->panel_open());
+        EXPECT_EQ(closes, 2);
+        layer->open_panel();
+        layer->set_panel_handlers({.on_open = [] {}, .on_close = [&] { ++closes; }});
+        EXPECT_EQ(closes, 2);  // still open
+        layer->open_panel();
+        layer.reset();
+    });
+    EXPECT_EQ(opens, 3);
+    EXPECT_EQ(closes, 2);
+}
+
 // A tap on the panel where nothing is closes it.
 TEST_F(SystemLayerTest, PanelTapOnBlankCloses) {
     start("circle");

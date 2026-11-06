@@ -265,16 +265,20 @@ Result<void> App::start() {
         // Subscribed before the seed is read, so a change stored in
         // between is not lost.
         App::Impl* impl = impl_.get();
-        impl_->notify_vol_sub =
-            impl_->bus.subscribe("system.settings", [impl](const core::Event& e) {
-                auto it = e.payload.find("notify_vol");
-                if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
-                    impl->notify_vol.store(
-                        static_cast<uint8_t>(std::clamp<int64_t>(it->second.as_int(), 0, 100)));
-                }
-            });
-        impl_->notify_vol.store(
-            static_cast<uint8_t>(std::clamp(impl_->system_settings.get().notify_vol, 0, 100)));
+        impl_->settings_sub = impl_->bus.subscribe("system.settings", [impl](const core::Event& e) {
+            auto it = e.payload.find("notify_vol");
+            if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
+                impl->notify_vol.store(
+                    static_cast<uint8_t>(std::clamp<int64_t>(it->second.as_int(), 0, 100)));
+            }
+            it = e.payload.find("utc_offset_min");
+            if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
+                impl->utc_offset_min.store(static_cast<int>(it->second.as_int()));
+            }
+        });
+        const core::SystemSettingsValues now = impl_->system_settings.get();
+        impl_->notify_vol.store(static_cast<uint8_t>(std::clamp(now.notify_vol, 0, 100)));
+        impl_->utc_offset_min.store(now.utc_offset_min);
     }
 
     impl_->power_manager = std::make_unique<PowerManager>(PowerManagerDeps{
@@ -322,14 +326,16 @@ Result<void> App::start() {
 
     // The scene runtime, built (not started) before networking so the
     // admin routes can be handed it.
-    if (impl_->ui && scenes != nullptr) {
+    // wisp.device.info() and the panel's header. Runs on the scene task
+    // and the UI thread, neither of which may touch flash: PowerMonitor's
+    // last sample (a copy under its lock) and the net task's Wi-Fi snapshot
+    // (an atomic), never a read of the power chip, Settings or a file. Both
+    // pointers are set before the runtime and the status shell start and
+    // reset only after they have stopped.
+    std::function<Value()> device_status;
+    if (impl_->ui) {
         App::Impl* impl = impl_.get();
-        // wisp.device.info(). Runs on the scene task, which must not touch
-        // flash: PowerMonitor's last sample (a copy under its lock) and the
-        // net task's Wi-Fi snapshot (an atomic), never a read of the power
-        // chip, Settings or a file. Both pointers are set before the
-        // runtime starts and reset only after it has stopped.
-        auto device_status = [impl] {
+        device_status = [impl] {
             Value battery;
             if (impl->power_monitor) {
                 if (auto st = impl->power_monitor->last_status()) {
@@ -343,8 +349,11 @@ Result<void> App::start() {
                 {"wifi", Value(wifi ? net::to_string(*wifi) : "off")},
             });
         };
+    }
+    if (impl_->ui && scenes != nullptr) {
+        App::Impl* impl = impl_.get();
         scenes->build_runtime(
-            *impl_->ui, *impl_->system_layer, shape, std::move(device_status),
+            *impl_->ui, *impl_->system_layer, shape, device_status,
             [impl] {
                 if (impl->power_manager && impl->power_manager->standby()) {
                     impl->power_manager->exit_standby();
@@ -397,6 +406,28 @@ Result<void> App::start() {
                                     : nullptr,
     });
     impl_->net->start();
+
+    // The capsule, the panel and the banners, once everything their
+    // device_status reads (the net task's Wi-Fi snapshot) is set.
+    if (impl_->ui && impl_->system_layer) {
+        App::Impl* impl = impl_.get();
+        impl_->status_shell = os::make_large<StatusShell>(StatusShellDeps{
+            .ui = *impl_->ui,
+            .layer = *impl_->system_layer,
+            .bus = impl_->bus,
+            .notes = *impl_->notifications,
+            .router = *impl_->router,
+            .scenes = scene_runtime,
+            .device_status = std::move(device_status),
+            .utc_offset_min = [impl] { return impl->utc_offset_min.load(); },
+            .wall_s = [] { return static_cast<int64_t>(std::time(nullptr)); },
+        });
+        if (impl_->status_shell) {
+            impl_->status_shell->start();
+        } else {
+            WLOG_E("app", "no memory for the status shell; no capsule or panel");
+        }
+    }
 
     if (impl_->ui) {
         // Block until start_self_check() has actually run on the UI
@@ -505,13 +536,19 @@ void App::stop() {
     // lambda does.
     // The console first: its commands reach the net services.
     stop_console(*this);
+    // The capsule, the panel and the banners let go of the router and the
+    // system layer.
+    if (impl_->status_shell) {
+        impl_->status_shell->stop();
+        impl_->status_shell.reset();
+    }
     // Nothing reacts to notifications any more (no wake, sound or scene).
     if (impl_->router) {
         impl_->router->stop();
         impl_->router.reset();
     }
-    impl_->bus.unsubscribe(impl_->notify_vol_sub);
-    impl_->notify_vol_sub = 0;
+    impl_->bus.unsubscribe(impl_->settings_sub);
+    impl_->settings_sub = 0;
     join_loopback(*this);
     // Before the self-check screen: closing the scene in front loads that
     // screen again, and its final store flush goes to the worker.

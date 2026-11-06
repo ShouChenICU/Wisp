@@ -189,6 +189,9 @@ shown. Lay out from what the device reports instead of fixed margins:
   `circle`), `corner_radius` (the rounded rectangle's radius, half the smaller side for
   a circle, 0 for a rectangle) and `safe_area` (`x1`, `y1`, `x2`, `y2`, inclusive: the
   largest centred rectangle that is visible everywhere, with a small margin).
+- `wisp.device.info().status_area` (`x1`, `y1`, `x2`, `y2`, inclusive) is the system's
+  status capsule at the top centre of the safe area. It is given whether or not the
+  capsule shows, so a scene that keeps clear of it never has its layout jump.
 - `wisp.device.row_span(y)` returns `x1, x2`, the first and last visible pixel of
   screen row `y`, or `nil` when the row shows nothing or is off the screen.
 

@@ -1555,6 +1555,7 @@ DeviceInfo SceneRuntime::device_info() const {
     DeviceInfo i;
     i.shape = deps_.shape;
     i.safe = hal::safe_rect(deps_.shape);
+    i.status_area = ui::SystemLayer::status_area(deps_.shape);
     const int set = lang_.load();
     const char* lang = ui::lang_code(set < 0 ? ui::lang() : static_cast<ui::Lang>(set));
     std::snprintf(i.lang, sizeof(i.lang), "%s", lang);

@@ -363,6 +363,8 @@ void SystemLayer::discard_panel() {
     }
     panel_ = nullptr;
     panel_backdrop_ = nullptr;
+    // A copy: the owner may replace the handlers from it.
+    if (std::function<void()> on_close = panel_handlers_.on_close) on_close();
 }
 
 void SystemLayer::panel_cb(lv_event_t* e) {

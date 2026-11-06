@@ -128,7 +128,7 @@ namespace detail {
 
 void push_device_info(lua_State* L, const DeviceInfo& i) {
     luaL_checkstack(L, 3, "device info");
-    lua_createtable(L, 0, 11);
+    lua_createtable(L, 0, 12);
     set_int(L, "width", i.shape.width);
     set_int(L, "height", i.shape.height);
     lua_pushstring(L, shape_name(i.shape.kind));
@@ -140,6 +140,12 @@ void push_device_info(lua_State* L, const DeviceInfo& i) {
     set_int(L, "x2", i.safe.x2);
     set_int(L, "y2", i.safe.y2);
     lua_setfield(L, -2, "safe_area");
+    lua_createtable(L, 0, 4);
+    set_int(L, "x1", i.status_area.x1);
+    set_int(L, "y1", i.status_area.y1);
+    set_int(L, "x2", i.status_area.x2);
+    set_int(L, "y2", i.status_area.y2);
+    lua_setfield(L, -2, "status_area");
     lua_pushstring(L, i.lang);
     lua_setfield(L, -2, "lang");
     set_int(L, "utc_offset", i.utc_offset_min);
