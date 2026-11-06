@@ -54,7 +54,7 @@ struct WispPoint {
 // What one frame draws, in Q8 pixels of the model's frame (0,0 is its top
 // left corner).
 struct WispShape {
-    static constexpr int kMaxOutline = 104;
+    static constexpr int kMaxOutline = 112;
     static constexpr int kMaxSparks = 6;
 
     // A filled stadium: the segment a-b widened by r on every side. Eyes,
@@ -173,7 +173,7 @@ private:
     void build_sparks();
     // The drop's bottom radius before breathing: 0.29 of the width, so the
     // body fills most of the frame and the flame tips and sparks the rest.
-    int32_t r_base() const { return px(63 * 256); }
+    int32_t r_base() const { return px(70 * 256); }
     // A length given in Q8 px for size 216, scaled to this model's size.
     int32_t px(int32_t q8_at_216) const {
         return static_cast<int32_t>(static_cast<int64_t>(q8_at_216) * w_ / 216);

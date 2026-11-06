@@ -692,8 +692,11 @@ void start_wisp_demo(wisp::app::App& app) {
         lv_obj_set_style_pad_all(scr, 0, 0);
         lv_obj_set_style_border_width(scr, 0, 0);
         lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+        // 56% of the safe area's short side makes the wisp itself (tips to
+        // bottom) about half the screen's height; its 5:4 box still fits
+        // the safe area, circle included.
         demo.view = wisp::ui::WispView::create(
-            scr, wisp::ui::wisp_size_px(wisp::hal::safe_rect(shape.value()), 45));
+            scr, wisp::ui::wisp_size_px(wisp::hal::safe_rect(shape.value()), 56));
         if (demo.view == nullptr) {
             lv_obj_delete(scr);
             WLOG_E(kLogTag, "--wisp-demo: out of memory");

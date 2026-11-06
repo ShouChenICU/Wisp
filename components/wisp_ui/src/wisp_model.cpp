@@ -56,9 +56,9 @@ struct HairSpec {
 constexpr uint32_t kSpringStepMs = 25;
 
 constexpr HairSpec kHair[3] = {
-    {-2900, -150, -13 * 256, -24 * 256},
-    {-3500, 0, 1 * 256, -34 * 256},
-    {-2800, 150, 14 * 256, -21 * 256},
+    {-2900, -170, -3 * 256, -24 * 256},
+    {-3500, 0, 1 * 256, -30 * 256},
+    {-2800, 170, 4 * 256, -21 * 256},
 };
 
 }  // namespace
@@ -289,9 +289,11 @@ int32_t WispModel::sway_at(int32_t yn) const {
     const int32_t up = yn < 0 ? std::min<int32_t>(-yn, 4096) : 0;
     // A quarter of the movement at the bottom, all of it at the top.
     const int32_t amp = sway_amp_ * (1024 + 3 * up / 4) / 4096;
-    const int32_t s = (3 * sin16(phase_[0] + static_cast<uint32_t>(yn * 9)) +
-                       2 * sin16(phase_[1] - static_cast<uint32_t>(yn * 18)) +
-                       sin16(phase_[2] + static_cast<uint32_t>(yn * 34))) /
+    // Low spatial frequency only (well under a wave over the height): the
+    // body bends as a whole and its edge stays a smooth curve.
+    const int32_t s = (3 * sin16(phase_[0] + static_cast<uint32_t>(yn * 4)) +
+                       2 * sin16(phase_[1] - static_cast<uint32_t>(yn * 7)) +
+                       sin16(phase_[2] + static_cast<uint32_t>(yn * 2))) /
                       6;
     int32_t off = amp * s >> 15;
     off += static_cast<int32_t>(static_cast<int64_t>(params_.lean * r_ / 256) * (up * up >> 12) /
@@ -302,9 +304,8 @@ int32_t WispModel::sway_at(int32_t yn) const {
 int32_t WispModel::half_width_scale(int32_t yn) const {
     if (yn >= 0) return r_;
     const int32_t up = std::min<int32_t>(-yn, 4096);
-    int32_t taper = 256 - 150 * up / 4096;
-    // The upper sides flicker in and out a little.
-    taper += (sin16(phase_[1] * 2 + static_cast<uint32_t>(yn * 24)) * 12 >> 15) * up / 4096;
+    // Quadratic, so the width has no kink at the equator.
+    const int32_t taper = 256 - 150 * (up * up >> 12) / 4096;
     return r_ * taper / 256;
 }
 

@@ -23,7 +23,7 @@ using wisp::ui::WispShape;
 // The golden shape: seed 42, size 216, 30 steps of 33 ms, then build,
 // hashed with shape_hash(). Any change to the look changes it; say why in
 // the commit that updates it.
-constexpr uint32_t kGolden = 0xc90710f7u;
+constexpr uint32_t kGolden = 0x45216fcfu;
 
 uint32_t hash_after(WispModel& m) {
     m.build();

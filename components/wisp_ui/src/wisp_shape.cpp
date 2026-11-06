@@ -18,7 +18,7 @@ constexpr uint32_t kBlinkMs = 170;
 // Where the flame tips leave the body: this far round from the top, each
 // side (1/65536 turn).
 constexpr uint32_t kRootAngle = 8900;
-constexpr int kBodyPoints = 52;
+constexpr int kBodyPoints = 64;
 constexpr int kEdgePoints = 8;  // per crown edge
 
 // Quadratic Bezier p0-c-p1 at t / kEdgePoints.
@@ -90,14 +90,15 @@ void WispModel::build_outline() {
     const int32_t valley_drop = r_ * 22 / 100;
     const WispPoint valley_1{
         (hair_[0].ax + hair_[1].ax) / 2,
-        std::max<int32_t>(hair_[0].ay, hair_[1].ay) - r_ * 8 / 100 + valley_drop / 4};
+        std::max<int32_t>(hair_[0].ay, hair_[1].ay) - r_ * 16 / 100 + valley_drop / 4};
     const WispPoint valley_2{
         (hair_[1].ax + hair_[2].ax) / 2,
-        std::max<int32_t>(hair_[1].ay, hair_[2].ay) - r_ * 8 / 100 + valley_drop / 4};
+        std::max<int32_t>(hair_[1].ay, hair_[2].ay) - r_ * 16 / 100 + valley_drop / 4};
 
-    // Each edge: leaves its base going up (the control point straight
-    // above it) and bends into the tip, so tips are sharp and the valleys
-    // and roots round.
+    // Each edge is a quadratic from a base to a tip that leaves the base
+    // going up (the control point above it), so every tip is a convex
+    // tongue with a sharp point; out of a root the edge instead carries on
+    // along the body, so the side tips grow out of it without a kink.
     struct Edge {
         WispPoint from, to;
         bool rising;  // from a base up to a tip
@@ -111,8 +112,6 @@ void WispModel::build_outline() {
         const WispPoint tip = ed.rising ? ed.to : ed.from;
         WispPoint c{base.x + (tip.x - base.x) / 6, base.y + (tip.y - base.y) * 6 / 10};
         if (e == 0 || e == 5) {
-            // At a root the edge carries on along the body, so the side
-            // tips grow out of it without a kink.
             const WispPoint prev = s.outline[e == 0 ? kBodyPoints - 2 : 1];
             const int64_t tx = base.x - prev.x, ty = base.y - prev.y;
             const auto seg = static_cast<int64_t>(
