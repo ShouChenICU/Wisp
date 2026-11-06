@@ -77,6 +77,7 @@
 - **3a spec 3.5**：返回手势对声明了 `background` 的场景改为"转入后台"；系统层新增状态胶囊、下拉面板和横幅（第 5 节）。
 - **3a spec 6.2 / `SceneManifest`**：
   - 新增 `background` 字段；
+  - 新增 `files` 字段，声明文件存储位置（7.2）；
   - 取消 `schema_version` 必须为 1 的限制（7.3）；
   - 场景目录增加 `files/`（7.2）。
 - **基础 spec 1.6**：电源级别和唤醒锁按本文第 4 节定稿。
@@ -376,7 +377,7 @@ wisp.files.append(name, data, cb)
 wisp.files.read(name, offset, len, cb)    -- cb(err, data)，len ≤ 64 KB
 wisp.files.list(cb)                       -- cb(err, { {name=, size=, mtime=}, ... })
 wisp.files.remove(name, cb)
-wisp.files.info(cb)                       -- cb(err, { location="sd"|"int", quota=, used= })
+wisp.files.info(cb)                       -- cb(err, { location="sd"|"int", want="auto"|"sd"|"int", quota=, used= })
 wisp.http.download(url, name, opts, cb)   -- 流式写入文件，受配额和 http_hosts 限制
 ```
 
@@ -387,10 +388,13 @@ wisp.http.download(url, name, opts, cb)   -- 流式写入文件，受配额和 h
 
 ### 7.2 位置与配额
 
-- 场景第一次写文件时决定文件放在哪里：
-  - 有可用的 SD 卡：放 `<sd>/wisp/library/scenes/<id>/files`（Library 区在 SD 卡上的根，基础 spec 7.2），配额 64 MB；
-  - 没有：放 `/int/scenes/<id>/files`，配额 512 KB。
-- 选定的位置记在场景的 data 目录里，此后不再改变。
+- 场景在 `scene.json` 里用 `files` 字段声明文件放在哪里，取值为 `"auto"`（默认，不写时即此值）、`"sd"` 或 `"int"`；其他值安装时拒绝，错误信息含字段名。
+- 第一次写文件时按声明决定位置：
+  - `"auto"`：有可用的 SD 卡就放 `<sd>/wisp/library/scenes/<id>/files`（Library 区在 SD 卡上的根，基础 spec 7.2），配额 64 MB；没有就放 `/int/scenes/<id>/files`，配额 512 KB；
+  - `"sd"`：只放 SD 卡。没有可用的卡时返回 `unavailable`，不退回内部存储。需要大存储的场景应声明 `"sd"`；
+  - `"int"`：总是放内部存储，配额 512 KB。
+- 声明 `"sd"` 的场景在没有卡时照样可以安装和运行，只是文件调用返回 `unavailable`；管理后台场景页标出"需要 SD 卡"。
+- 选定的位置记在场景的 data 目录里，此后不再改变。场景更新时改了 `files` 声明，已选定的位置也不变、文件不搬（场景文件在 SD 卡与内部存储之间迁移不在本期，1.4），只记一条日志；新声明只对还没写过文件的场景生效。
 - 位置在 SD 卡上而卡被拔掉时，所有调用返回 `unavailable`。卡重新插入后恢复。
 - 已用空间开机时统计一次，之后在每次写入时增量更新；写入前检查配额，超出返回 `quota_exceeded`。
 - 删除场景时，删除它的 `files/`（两个位置都检查）。
