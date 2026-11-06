@@ -51,9 +51,9 @@ struct LlmToolCall {
 // Views only: everything must outlive complete().
 struct LlmMessage {
     LlmRole role = LlmRole::User;
-    std::string_view text;
-    std::span<const LlmToolCall> tool_calls;  // Assistant only
-    std::string_view tool_call_id;            // Tool only
+    std::string_view text{};
+    std::span<const LlmToolCall> tool_calls{};  // Assistant only
+    std::string_view tool_call_id{};            // Tool only
 };
 
 enum class LlmFinish : uint8_t { Stop, ToolCalls, Length, Other };

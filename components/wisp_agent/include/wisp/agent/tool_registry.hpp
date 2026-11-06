@@ -55,7 +55,7 @@ using ConfirmFn = std::function<bool(const std::string& text, ToolCtx& ctx)>;
 struct ToolDef {
     std::string name;  // dotted, ^[a-z]+\.[a-z_]+$
     std::string description;
-    std::string schema_json;  // JSON Schema subset (validate_args); "" is an empty object
+    std::string schema_json{};  // JSON Schema subset (validate_args); "" is an empty object
     ToolRisk risk = ToolRisk::Normal;
     // Where run() runs. The default, Agent, runs it on wisp.agent itself,
     // whose stack may be in PSRAM (flash_access = false): a tool that
