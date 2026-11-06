@@ -144,6 +144,12 @@ python3 tools/gen_vector_font_test.py
 echo "==> tools/pack_font_image_test.py"
 python3 tools/pack_font_image_test.py
 
+# The glyphs partition image: header and section layout, reproducibility,
+# and that it reproduces the committed CJK body font exactly (glyph-partition
+# spec 3.1).
+echo "==> tools/pack_glyph_image_test.py"
+python3 tools/pack_glyph_image_test.py
+
 echo "==> cmake -S simulator -B build/sim -G Ninja"
 cmake -S simulator -B build/sim -G Ninja
 

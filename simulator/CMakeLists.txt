@@ -120,6 +120,23 @@ add_custom_command(
 add_custom_target(wisp_sim_fonts DEPENDS ${WISP_SIM_FONTS})
 add_dependencies(wisp_sim wisp_sim_fonts)
 
+# The 16 px CJK body font, packed from the committed generated .c into the
+# glyphs partition's image (glyph-partition spec 3.1 and 3.3), next to
+# wisp_sim. The simulator has no partition, so there is no --max-bytes; the
+# reference board's limit is checked by tools/pack_glyph_image_test.py.
+set(WISP_SIM_GLYPH_FONT_C ${WISP_ROOT}/components/wisp_ui/fonts/lv_font_cjk_16.c)
+set(WISP_SIM_GLYPHS ${CMAKE_CURRENT_BINARY_DIR}/glyphs.bin)
+add_custom_command(
+    OUTPUT ${WISP_SIM_GLYPHS}
+    COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tools/pack_glyph_image.py ${WISP_SIM_GLYPH_FONT_C}
+            -o ${WISP_SIM_GLYPHS}
+    DEPENDS ${WISP_SIM_GLYPH_FONT_C} ${WISP_ROOT}/tools/pack_glyph_image.py
+    COMMENT "Packing the CJK body font into glyphs.bin"
+    VERBATIM
+)
+add_custom_target(wisp_sim_glyphs DEPENDS ${WISP_SIM_GLYPHS})
+add_dependencies(wisp_sim wisp_sim_glyphs)
+
 option(WISP_BUILD_TESTS "Build the PC unit test suite" ON)
 if(WISP_BUILD_TESTS)
     enable_testing()
