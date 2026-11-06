@@ -37,8 +37,9 @@ docs/architecture.md):
     the vendored `lua` component (third_party/lua): every other layer
     reaches scripts through wisp_scene's services, never the VM itself.
   - Flash access (spec 3.3 of the flash-thread design): calls to nvs_*,
-    esp_partition_* and esp_ota_*, and #include of nvs.h,
-    esp_ota_ops.h and esp_partition.h, may only appear in the files
+    esp_partition_*, esp_ota_*, esp_flash_, spi_flash_ and esp_littlefs_,
+    and #include of nvs.h, esp_ota_ops.h, esp_partition.h, esp_flash.h,
+    spi_flash_mmap.h and esp_littlefs.h, may only appear in the files
     listed in FLASH_API_WHITELIST -- anywhere under components/,
     boards/, drivers/ and firmware/, the platform layer included. Every
     other path to flash goes through StorageManager or Settings on the
@@ -148,12 +149,23 @@ FLASH_API_WHITELIST = {
         "the firmware (OTA) service: writes, verifies and activates the OTA slot",
     "components/wisp_port_esp/ui/esp_font_partition.cpp":
         "maps the font partition at boot, before the flash thread starts",
+    "components/wisp_port_esp/dev/esp_storage.cpp":
+        "mounts internal LittleFS at boot and queries its capacity",
 }
 FLASH_API_ROOTS = ("components", "boards", "drivers", "firmware")
 # Fetched or generated code, not Wisp's own.
 FLASH_API_SKIPPED_DIRS = ("managed_components", "build")
-FLASH_API_HEADERS = ("nvs.h", "esp_ota_ops.h", "esp_partition.h")
-FLASH_API_CALL_RE = re.compile(r"\b((?:nvs|esp_partition|esp_ota)_[A-Za-z0-9_]*)\s*\(")
+FLASH_API_HEADERS = (
+    "nvs.h",
+    "esp_ota_ops.h",
+    "esp_partition.h",
+    "esp_flash.h",
+    "spi_flash_mmap.h",
+    "esp_littlefs.h",
+)
+FLASH_API_CALL_RE = re.compile(
+    r"\b((?:nvs|esp_partition|esp_ota|esp_flash|spi_flash|esp_littlefs)_[A-Za-z0-9_]*)\s*\("
+)
 
 # The only file allowed to declare flash_access = true (spec 3.9): wisp.fs
 # (core::StorageWorker::task_config()) is the one task on which flash

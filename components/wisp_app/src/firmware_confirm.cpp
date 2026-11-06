@@ -14,7 +14,10 @@ namespace {
 constexpr const char* kTag = "firmware";
 // How long "confirmed" gets to reach the browser before the restart.
 constexpr uint32_t kFlushMs = 500;
-// esp_ota_set_boot_partition() re-reads and hashes the whole image.
+// activate() (esp_ota_set_boot_partition(), which re-reads and hashes
+// the whole image) runs on "wisp.fs"; this task only blocks waiting for
+// it. Should be resized from the measured device high-water mark (the
+// "mem" command, AGENTS.md 5) rather than kept at this guess.
 constexpr size_t kInstallStackBytes = 6144;
 
 }  // namespace

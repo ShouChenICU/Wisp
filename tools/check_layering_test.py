@@ -372,6 +372,46 @@ class CheckLayeringTest(unittest.TestCase):
             )
         self.assertEqual(check_layering.run(self.root), [])
 
+    def test_esp_flash_call_outside_whitelist_is_flagged(self):
+        write(
+            self.root,
+            "components/wisp_port_esp/dev/rogue3.cpp",
+            "void f() { esp_flash_read(chip, buf, 0, 4); }\n",
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("rogue3.cpp:1", errors[0])
+        self.assertIn("esp_flash_read", errors[0])
+
+    def test_spi_flash_call_and_include_outside_whitelist_are_flagged(self):
+        write(
+            self.root,
+            "drivers/chip/chip2.c",
+            '#include "esp_flash.h"\n#include <spi_flash_mmap.h>\n'
+            "int x = spi_flash_read(0, b, 4);\n",
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 3, errors)
+
+    def test_esp_littlefs_call_and_include_outside_whitelist_are_flagged(self):
+        write(
+            self.root,
+            "components/wisp_port_esp/dev/rogue4.cpp",
+            '#include "esp_littlefs.h"\n'
+            "void f() { esp_littlefs_info(\"storage\", &total, &used); }\n",
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 2, errors)
+
+    def test_esp_storage_may_mount_and_query_littlefs(self):
+        write(
+            self.root,
+            "components/wisp_port_esp/dev/esp_storage.cpp",
+            '#include "esp_littlefs.h"\n'
+            "void f() { esp_littlefs_info(\"storage\", &total, &used); }\n",
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
     def test_flash_api_whitelist_entries_have_reasons(self):
         for rel, reason in check_layering.FLASH_API_WHITELIST.items():
             self.assertTrue(reason.strip(), rel)

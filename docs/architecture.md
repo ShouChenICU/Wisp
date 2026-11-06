@@ -57,7 +57,7 @@
 
 **停止顺序**（`App::stop()`）：串口控制台 → 状态外壳（`StatusShell`：退订事件、撤下横幅回调，再在 UI 线程上撤下面板处理函数并等此前投递的任务跑完；之后还在路上的横幅回调和留在系统层里的横幅点击都什么也不做）→ 通知路由（`NotificationRouter`，退订后等它投递到 UI 线程的唤醒做完）→ 场景运行时（退订 `power.state`，关闭前台场景并在自检界面还在时把它装回屏幕）→ 自检界面（退订它的 IMU 订阅）→ 等待已确认的恢复出厂（`wisp.reset`）和固件安装（`wisp.fwup`）任务结束 → 网络（先 join `wisp.net` 任务，再取消校时服务并 join `wisp.ntp` 任务（进行中的尝试在问下一个服务器前停止，最多等正在进行的那一次查询），再停强制门户服务和 HTTP 服务——`SimHttpServer::stop()` 会在 join 连接线程时回调 `on_close`，所以调用时不持有任何锁——然后退订事件、销毁 `AdminServer`、`WifiService`、`PairingService`）→ 固件上传服务 → 场景代理 `SceneHttp`（可能要等一个进行中的请求）→ `StorageWorker`（最多等 5 s 把队列里的活——包括关闭的场景最后一次 flush——做完，再停）→ `SensorService`（退订 `power.state`，停 `wisp.imu`；场景运行时和自检界面都已退订）→ `PowerManager` → `TonePlayer`（`PowerManager` 的活动回调会调用它）→ `PowerMonitor` → 存储定时器 → `ButtonService` → `UiRuntime`（自己在 `lv_deinit()` 之前先销毁全部矢量字体，矢量字体 spec 4.5：它们和各档的字形缓存都在 LVGL 的堆与 `lv_cache` 上，`lv_deinit()` 之后再碰就是悬空指针）→ `EventBus`。HTTP 处理函数会经 `SystemSettings` 调用 `PowerManager::set_brightness()`，所以网络必须先于 `PowerManager` 停止；后台路由会用场景仓库和运行时，所以网络也先于场景代理和 `StorageWorker` 停止，而 `StorageWorker` 要在存储定时器之前停。
 
-**场景相关的任务**（AGENTS.md 第 5 节：每个任务如实声明 `flash_access`，栈放哪里由端口决定）：
+**各任务的 `flash_access` 声明**（AGENTS.md 第 5 节：每个任务如实声明 `flash_access`，栈放哪里由端口决定；单一 flash 线程设计 spec 3.9：只有 `wisp.fs` 声明 `true`）：
 
 | 任务 | 所有者 | 栈 | `flash_access` | 说明 |
 |---|---|---|---|---|
@@ -66,6 +66,14 @@
 | `wisp.shttp` | `net::SceneHttp` | 8192 | `false`，真机放 PSRAM | 场景 `wisp.http` 请求一次一个地经 `Platform::http_client` 发出；不读 Settings、不碰文件。`wisp.http.download` 的响应体经 `FileDownload::push()` 只拷进 PSRAM 并把追加排到 `wisp.fs`（排队超过 128 KB 时等待，取消即醒）；下载的超时是 5 分钟，期间独占这一个 worker |
 | `wisp.tone` | `core::TonePlayer` | 4096（`TonePlayerConfig::stack_bytes`） | `false`，真机放 PSRAM | 通知提示音（场景设备 spec 5.4）：运行时合成 16 kHz PCM 写到 `audio_out.main`，播放期间持有 `cpu` 锁 `system.tone`；音量由 `app::NotificationRouter` 传入（App 从 `system.settings` 缓存的 `audio/notify_vol`），不读 Settings、不碰文件 |
 | `wisp.imu` | `core::SensorService` | 4096（`SensorServiceConfig::stack_bytes`，按 `mem` 实测再定） | `false`，真机放 PSRAM | IMU 共享（场景设备 spec 6.1）：有订阅时按最高采样率轮询 `imu.main`，每 100 ms 把样本按订阅者打包交给回调；回调只拷贝样本（场景的 `wisp.sensor` 投递 `msg::Sensor` 给 `wisp.scene`，自检界面写进自己的快照），不读 Settings、不碰文件。没有订阅、全部暂停或待机时 IMU 关闭、任务阻塞等待 |
+| `wisp.net` | `app::NetWiring`（`components/wisp_app/src/net_wiring.cpp`） | 6144 | `false`，真机放 PSRAM | Wi-Fi、配对、校时和管理后台 httpd 的每 250 ms 循环（连接 spec 4.1）；`ntp_servers` 等键只读 Settings 的内存缓存，`WifiService`/`PairingService` 的落盘都异步交给 `wisp.fs`（spec 3.5），自己不碰 flash |
+| `wisp.console` | `app::start_console`（`components/wisp_app/src/console.cpp`） | 6144 | `false`，真机放 PSRAM | 串口控制台（连接 spec 8.2）：读 `Platform::read_line`、跑 `run_command()`；命令触发的落盘（保存网络、开热点）都经 `WifiService`/`PairingService` 异步交给 `wisp.fs` |
+| `wisp.reset` | `app::App`（`components/wisp_app/src/factory_reset.cpp`） | 6144（`kResetStackBytes`） | `false`，真机放 PSRAM | 一次性任务：把确认过的恢复出厂整体作为一个任务交给 `wisp.fs`，自己只等它做完再触发重启，不直接碰 flash |
+| `wisp.fwup` | `app::App`（`components/wisp_app/src/firmware_confirm.cpp`） | 6144（`kInstallStackBytes`） | `false`，真机放 PSRAM | 一次性任务：确认固件时只等 `FirmwareUpdateService::confirm()` 的 `run_sync` 把 `esp_ota_set_boot_partition()` 交给 `wisp.fs` 执行完，自己不碰 flash |
+| `wisp.bus` | `core::EventBus` | 6144 | `false`，真机放 PSRAM | 事件分发：把发布的事件逐个交给订阅者的回调；回调只做内存操作，需要落盘的另起任务交给 `wisp.fs` |
+| `wisp.loop` | `app::App`（`components/wisp_app/src/loopback.cpp`） | 4096（默认） | `false`，真机放 PSRAM | 自检界面"录音回放"：录音与回放都读写 PSRAM 缓冲；`audio/volume` 只读 Settings 的内存缓存，不碰文件 |
+| `wisp.sample` | `app::SelfCheckSampler`（`components/wisp_app/src/self_check_sampler.cpp`） | 4096（默认） | `false`，真机放 PSRAM | 自检界面每秒采样一次电量（`PowerMonitor::last_status()`）和时钟，只读内存，不碰文件 |
+| `wisp.sd` | `port::esp::EspSdStorage`（`components/wisp_port_esp/dev/esp_storage.cpp`） | 4096（默认，bmgr/sdmmc/fatfs 调用链较深，留足余量） | `false`，真机放 PSRAM | SD 卡的挂载/卸载重试与容量查询；卡上文件本身的读写仍经 `wisp.fs` |
 
 **失败处理**（spec 6.1）：设备初始化失败只记录、不注册，系统降级继续；`Display` 失败则不启动 UI，走 headless 路径；内置 Flash 挂载失败走只读降级。`WISP_BOOT_REPORT`、`WISP_MANIFEST`、`WISP_PERF` 都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）。
 
@@ -184,7 +192,7 @@
 
 ## 场景运行时
 
-场景 spec 3/6；任务见上面"启动流程"末尾的"场景相关的任务"表，启动/停止顺序见同一节正文。
+场景 spec 3/6；任务见上面"启动流程"末尾的"各任务的 `flash_access` 声明"表，启动/停止顺序见同一节正文。
 
 ### 后台场景、内存预算与开机恢复
 

@@ -174,10 +174,11 @@ void PowerManager::read_settings() {
 
 void PowerManager::tick(uint64_t now_ms) {
     last_tick_ms_.store(now_ms);
-    // Read here, on the timer task, which may touch flash; never on the
-    // UI task or the bus dispatcher. The event only makes a change take
-    // effect promptly: the bus may drop it, so the keys are also re-read
-    // every kSettingsRefreshTicks ticks.
+    // Read here, on the timer task; Settings::get_int/get_bool only read
+    // the in-memory cache (CachedSettingsBackend, AGENTS.md 5), so this
+    // never touches flash. The event only makes a change take effect
+    // promptly: the bus may drop it, so the keys are also re-read every
+    // kSettingsRefreshTicks ticks.
     const bool dirty = settings_dirty_.exchange(false);
     if (dirty || ticks_since_read_.fetch_add(1) + 1 >= kSettingsRefreshTicks) {
         ticks_since_read_.store(0);
@@ -230,13 +231,12 @@ void PowerManager::schedule_lock_eval() {
     // task this only queues the work, from the UI task too, and returns.
     // Headless there is no task to queue to; the transition runs here.
     // That makes every thread that takes or drops a wake lock a thread
-    // that may run a transition (devices' set_power(), the storage flush,
-    // light sleep), so headless such a thread must be allowed to access
-    // flash (os::TaskConfig::flash_access, AGENTS.md 5). Some are not:
-    // "wisp.ntp" holds "system.ntp" and its stack may be in PSRAM. No
-    // board ships headless today; one that does needs a task to queue to
-    // here first (wisp_os has no call to ask whether the current task
-    // may access flash, so this cannot be asserted).
+    // that may run a transition (devices' set_power(), the deep-standby
+    // flush, light sleep). None of that needs flash access on this
+    // thread: the deep-standby flush (before_deep_standby_) only blocks
+    // on Settings::flush() and StorageWorker::drain(), both of which wait
+    // for "wisp.fs" to finish its own run_sync() work; wisp.fs remains
+    // the only task that declares flash_access (AGENTS.md 5).
     if (ui_ == nullptr) {
         evaluate(std::nullopt);
         return;
