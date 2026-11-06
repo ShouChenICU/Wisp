@@ -113,6 +113,13 @@ target_include_directories(a8_font_test PRIVATE ${WISP_ROOT}/components/wisp_ui/
 wisp_test(NAME font_image_test SRCS ui/font_image_test.cpp LIBS wisp_ui wisp_port_sim_os)
 add_dependencies(font_image_test wisp_sim_fonts)
 target_compile_definitions(font_image_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
+# The packed 16 px body font (glyph-partition spec 3.3), built by
+# simulator/CMakeLists.txt's wisp_sim_glyphs target. a8_font.hpp is private
+# to wisp_ui.
+wisp_test(NAME glyph_image_test SRCS ui/glyph_image_test.cpp LIBS wisp_ui wisp_port_sim_os)
+add_dependencies(glyph_image_test wisp_sim_glyphs)
+target_compile_definitions(glyph_image_test PRIVATE WISP_GLYPH_IMAGE="${CMAKE_BINARY_DIR}/glyphs.bin")
+target_include_directories(glyph_image_test PRIVATE ${WISP_ROOT}/components/wisp_ui/src)
 wisp_test(NAME vector_font_test SRCS ui/vector_font_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
 add_dependencies(vector_font_test wisp_sim_fonts)
 target_compile_definitions(vector_font_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
