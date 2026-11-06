@@ -259,6 +259,8 @@ const char* strings_zh(StrId id) {
             return "模型服务出错，请稍后再试";
         case StrId::AgentRolledOver:
             return "对话太长，已存档并开始新对话";
+        case StrId::AgentContextDropped:
+            return "对话太长，较早的内容没能总结，已从上下文中省略（记录仍保留）";
         case StrId::NoticeAgentDone:
             return "完成：{}";
         case StrId::NoticeSettingsNotSaved:

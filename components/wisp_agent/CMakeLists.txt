@@ -10,6 +10,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 wisp_component(
     NAME wisp_agent
     SRCS src/conversation.cpp src/tool_registry.cpp src/args_schema.cpp src/agent_service.cpp
+         src/context.cpp src/prompt.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_admin wisp_ui wisp_scene
 )

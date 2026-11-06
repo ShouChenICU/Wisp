@@ -17,6 +17,15 @@
 //   device language: no model, no network, a lost or stalled stream, a
 //   refused key, a server error, a limit, a stop.
 //
+// Each model request is laid out by context.hpp: with a context source,
+// the fixed system prompt, the history and the dynamic info (a snapshot
+// taken for that request with the turn's source); without one, the history
+// alone. Past kCompressPercent of the active llm profile's context window
+// (read once per turn) the oldest turns are first summarized by an extra
+// request without tools. If the model fails to summarize, they are left out
+// of the context (an empty summary) with a note; with no model, a refused
+// key or no connection nothing is stored and the request goes out whole.
+//
 // A model request is aborted (its RequestWatch, and its cancelled() check,
 // which also covers the waits between retries) when the user stops the
 // turn, when net.wifi.state leaves "connected", when no byte arrives for
@@ -44,6 +53,7 @@
 //   agent: state <s>
 //   agent: tool <name> <ok|error:<code>> <ms> ms
 //   agent: turn <n> end <status> steps=<k> tokens=<t>
+//   agent: context <summarized|dropped> seq <first>-<last>
 
 #include <atomic>
 #include <cstddef>

@@ -56,77 +56,6 @@ std::string summary(std::string_view s) {
     return std::string(s.substr(0, prefix_code_points(s, kSummaryChars)));
 }
 
-bool in_sorted(const os::LargeVector<std::string_view>& v, std::string_view id) {
-    return std::binary_search(v.begin(), v.end(), id);
-}
-
-// The model request for a history: user and assistant text, the tool calls
-// and their results. Notes and markers are for people only. An assistant
-// call without a stored result (a turn cut short by a restart) is left
-// out, and so is a result without its call: the API refuses either.
-struct Request {
-    os::LargeVector<net::LlmMessage> messages;
-    // The assistant messages' calls with wire names; `messages` points
-    // into them.
-    os::LargeVector<os::LargeVector<net::LlmToolCall>> calls;
-
-    explicit Request(const History& h) {
-        os::LargeVector<std::string_view> answered, asked;
-        for (const Message& m : h) {
-            if (m.role == Role::Tool) answered.push_back(sv(m.call_id));
-        }
-        std::sort(answered.begin(), answered.end());
-        size_t assistants = 0;
-        for (const Message& m : h) {
-            if (m.role != Role::Assistant) continue;
-            ++assistants;
-            for (const ToolCallRec& c : m.calls)
-                if (in_sorted(answered, sv(c.id))) asked.push_back(sv(c.id));
-        }
-        std::sort(asked.begin(), asked.end());
-
-        calls.reserve(assistants);
-        messages.reserve(h.size());
-        for (const Message& m : h) {
-            switch (m.role) {
-                case Role::User:
-                    add(net::LlmRole::User, m.text);
-                    break;
-                case Role::Assistant: {
-                    os::LargeVector<net::LlmToolCall> kept;
-                    for (const ToolCallRec& c : m.calls) {
-                        if (!in_sorted(answered, sv(c.id))) continue;
-                        kept.push_back({.id = std::string(sv(c.id)),
-                                        .name = wire_name(sv(c.name)),
-                                        .arguments = c.args});
-                    }
-                    if (m.text.empty() && kept.empty()) break;
-                    calls.push_back(std::move(kept));
-                    add(net::LlmRole::Assistant, m.text).tool_calls = {calls.back().data(),
-                                                                       calls.back().size()};
-                    break;
-                }
-                case Role::Tool:
-                    if (!in_sorted(asked, sv(m.call_id))) break;
-                    add(net::LlmRole::Tool, m.text).tool_call_id = sv(m.call_id);
-                    break;
-                case Role::Note:
-                case Role::Summary:
-                case Role::Marker:
-                    break;
-            }
-        }
-    }
-
-private:
-    net::LlmMessage& add(net::LlmRole role, const os::LargeString& text) {
-        net::LlmMessage& m = messages.emplace_back();
-        m.role = role;
-        m.text = sv(text);
-        return m;
-    }
-};
-
 struct Outcome {
     const char* status = "done";
     uint32_t steps = 0;
@@ -387,7 +316,7 @@ struct AgentService::Impl {
         set_state(AgentState::Thinking);
 
         Outcome out;
-        out.status = loop(turn, out);
+        out.status = loop(turn, c.source, context_window(), out);
 
         if (timer) timer->stop();
         in_turn = false;
@@ -459,8 +388,103 @@ struct AgentService::Impl {
         }
     }
 
-    const char* loop(uint32_t turn, Outcome& out) {
+    // The active llm profile's context window, read once per turn.
+    uint32_t context_window() const {
+        const core::ProfilesState st = deps.models.get();
+        const std::string& id = st.active_for(core::ModelKind::Llm);
+        for (const core::ModelProfile& p : st.profiles)
+            if (p.id == id) return core::profile_context_window(p.options);
+        return kDefaultContextWindow;
+    }
+
+    BuiltRequest build(std::span<const Message> h, Source source) const {
+        if (!deps.context) return build_history(h);
+        DeviceSnapshot d = deps.context(source);
+        d.source = source;
+        return build_request(h, d);
+    }
+
+    // One model request under the turn's controls: the user's stop, the
+    // network, the stall check and the time limit.
+    net::LlmResult request(std::span<const net::LlmMessage> messages, std::string_view tools_json,
+                           std::function<void(std::string_view)> on_text) {
+        const uint64_t spent = now() - turn_start.load();
+        const uint64_t left = spent >= cfg.turn_ms ? 1 : cfg.turn_ms - spent;
+        net::LlmCall call;
+        call.messages = messages;
+        call.tools_json = tools_json;
+        // Past the turn's deadline by a margin, so the time limit (checked
+        // every kCheckMs) ends the request, not its own deadline, which
+        // would read as a transport error.
+        call.timeout_ms =
+            static_cast<uint32_t>(std::min<uint64_t>(left + kDeadlineMarginMs, kRequestMs));
+        call.watch = watch.get();
+        call.on_armed = [this](uint32_t t) {
+            ticket = t;
+            if (abort.load() != static_cast<uint8_t>(Abort::None)) watch->abort(t);
+        };
+        call.on_text = std::move(on_text);
+        call.on_bytes = [this] { last_byte = now(); };
+        call.cancelled = [this] { return aborted(); };
+        last_byte = now();
+        in_request = true;
+        net::LlmResult res = deps.llm.complete(call);
+        in_request = false;
+        return res;
+    }
+
+    // A connection dropped after finish_reason but before [DONE] still
+    // delivered the whole reply.
+    static bool whole(const net::LlmResult& res) {
+        const bool finished = res.finish == net::LlmFinish::Stop ||
+                              res.finish == net::LlmFinish::ToolCalls ||
+                              res.finish == net::LlmFinish::Length;
+        return res.error.empty() || (res.error == "transport" && finished);
+    }
+
+    // Summarizes history[first..last] and stores the summary, or, when the
+    // model fails to give one, stores an empty one (the turns are dropped
+    // from the context; the file keeps them) and says so. Without a model,
+    // with a refused key or without a connection nothing is stored: the
+    // request that follows fails the same way and explains it, and the
+    // turns stay for a later attempt. false when the turn was aborted
+    // meanwhile.
+    bool compress(uint32_t turn, std::span<const Message> h, std::pair<uint64_t, uint64_t> range,
+                  Outcome& out) {
+        net::LlmResult res;
+        {
+            const BuiltRequest req = build_summary_request(h, range.first, range.second);
+            res = request({req.messages.data(), req.messages.size()}, {}, nullptr);
+        }
+        if (res.usage) out.tokens += res.usage->total;
+        if (aborted()) return false;
+        const bool ok = whole(res) && !res.text.empty();
+        if (!ok &&
+            (res.error == "no_model" || res.error == "unauthorized" || res.error == "transport")) {
+            WLOG_W(kTag, "context not compressed: %s", res.error.c_str());
+            return true;
+        }
+        WLOG_I(kTag, "context %s seq %llu-%llu", ok ? "summarized" : "dropped",
+               static_cast<unsigned long long>(range.first),
+               static_cast<unsigned long long>(range.second));
+        Message m;
+        m.role = Role::Summary;
+        m.turn = turn;
+        m.covers_first = range.first;
+        m.covers_last = range.second;
+        if (ok) m.text = std::move(res.text);
+        append(std::move(m));
+        if (!ok) note(ui::StrId::AgentContextDropped, turn);
+        return true;
+    }
+
+    const char* loop(uint32_t turn, Source source, uint32_t window, Outcome& out) {
         uint32_t generated = 0;
+        // Set once the context has been compressed for the coming request,
+        // so a history still too long after that is sent as it is.
+        bool compressed = false;
+        const std::string_view tools_json = sv(deps.tools.tools_json());
+        const size_t tools_tokens = tools_json.size() / 3;
         for (;;) {
             if (aborted()) return finish_abort(turn, out);
             if (!network_up()) {
@@ -473,49 +497,33 @@ struct AgentService::Impl {
             net::LlmResult res;
             {
                 const std::shared_ptr<const History> hist = deps.store.history();
-                const Request req(*hist);
-                const uint64_t spent = now() - turn_start.load();
-                const uint64_t left = spent >= cfg.turn_ms ? 1 : cfg.turn_ms - spent;
-                bool output = false;
-                net::LlmCall call;
-                call.messages = {req.messages.data(), req.messages.size()};
-                call.tools_json = sv(deps.tools.tools_json());
-                // Past the turn's deadline by a margin, so the time limit
-                // (checked every kCheckMs) ends the request, not its own
-                // deadline, which would read as a transport error.
-                call.timeout_ms =
-                    static_cast<uint32_t>(std::min<uint64_t>(left + kDeadlineMarginMs, kRequestMs));
-                call.watch = watch.get();
-                call.on_armed = [this](uint32_t t) {
-                    ticket = t;
-                    if (abort.load() != static_cast<uint8_t>(Abort::None)) watch->abort(t);
-                };
-                call.on_text = [&](std::string_view d) {
-                    if (!output) {
-                        output = true;
-                        set_state(AgentState::Output);
+                const BuiltRequest req = build(*hist, source);
+                if (!compressed && needs_compression(req.est_tokens + tools_tokens, window)) {
+                    compressed = true;
+                    const auto range =
+                        pick_compression(*hist, window, req.fixed_tokens + tools_tokens);
+                    if (range) {
+                        if (!compress(turn, *hist, *range, out)) return finish_abort(turn, out);
+                        continue;  // rebuilt with the summary in place
                     }
-                    AgentEvent e;
-                    e.kind = AgentEvent::Kind::Delta;
-                    e.text.assign(d);
-                    emit(e);
-                };
-                call.on_bytes = [this] { last_byte = now(); };
-                call.cancelled = [this] { return aborted(); };
-                last_byte = now();
-                in_request = true;
-                res = deps.llm.complete(call);
-                in_request = false;
+                }
+                compressed = false;
+                bool output = false;
+                res = request({req.messages.data(), req.messages.size()}, tools_json,
+                              [&](std::string_view d) {
+                                  if (!output) {
+                                      output = true;
+                                      set_state(AgentState::Output);
+                                  }
+                                  AgentEvent e;
+                                  e.kind = AgentEvent::Kind::Delta;
+                                  e.text.assign(d);
+                                  emit(e);
+                              });
             }
             if (res.usage) out.tokens += res.usage->total;
 
-            // A connection dropped after finish_reason but before [DONE]
-            // still delivered the whole reply.
-            const bool finished = res.finish == net::LlmFinish::Stop ||
-                                  res.finish == net::LlmFinish::ToolCalls ||
-                                  res.finish == net::LlmFinish::Length;
-            const bool whole = res.error.empty() || (res.error == "transport" && finished);
-            if (!whole) {
+            if (!whole(res)) {
                 if (!res.text.empty()) {
                     Message m;
                     m.role = Role::Assistant;

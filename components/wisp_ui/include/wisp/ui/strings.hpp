@@ -208,6 +208,8 @@ enum class StrId : uint16_t {
     AgentErrUnauthorized,
     AgentErrServer,
     AgentRolledOver,
+    // The context grew past the model's window and its summary failed.
+    AgentContextDropped,
     // The agent_done notice (agent-core spec 3.7): "{}" is the first line
     // of the reply.
     NoticeAgentDone,

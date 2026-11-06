@@ -12,7 +12,9 @@
 //   assistant  text, calls [{id, name (dotted), args (the model's text)}]
 //   tool       call_id, name (dotted), ok, result (the whole result JSON)
 //   note       text
-//   summary    text, covers [first_seq, last_seq]
+//   summary    text, covers [first_seq, last_seq]; stands in for those
+//              messages in the model context (context.hpp), an empty text
+//              meaning they were dropped without a summary
 //   marker     kind ("turn_begin" | "turn_end"), status (turn_end: "done",
 //              "stopped", "step_limit", "time_limit", "error", "interrupted")
 //

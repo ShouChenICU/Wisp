@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -99,7 +101,9 @@ protected:
 
     void start(AgentConfig cfg = {}) {
         harness();
-        svc = std::make_unique<AgentService>(h->deps(), cfg);
+        wisp::agent::AgentDeps deps = h->deps();
+        deps.context = context;
+        svc = std::make_unique<AgentService>(std::move(deps), cfg);
         listener = svc->add_listener([this](const AgentEvent& e) {
             std::lock_guard<std::mutex> lock(mu);
             events.push_back(e);
@@ -158,8 +162,31 @@ protected:
         return std::nullopt;
     }
 
+    // Sets the active model's context window (on the flash thread, which
+    // is running by now).
+    void set_window(uint32_t tokens) {
+        harness();
+        ASSERT_TRUE(h->worker.run_sync(
+            [&] {
+                const std::string id = h->models->get().active_for(wisp::core::ModelKind::Llm);
+                wisp::core::ProfileUpdate u;
+                u.options = wisp::core::ModelOptions{{"context_window", std::to_string(tokens)}};
+                ASSERT_TRUE(h->models->update(id, u));
+            },
+            wisp::os::kForever));
+    }
+
+    // Runs one whole turn: `user` in, `reply` out.
+    void run_turn(const std::string& user, const std::string& reply) {
+        const size_t before = count(Kind::TurnEnd);
+        h->server.push(text_reply(reply));
+        ASSERT_TRUE(svc->submit(user, Source::Web));
+        ASSERT_TRUE(wait_turns(before + 1));
+    }
+
     std::unique_ptr<AgentHarness> h;
     std::unique_ptr<AgentService> svc;
+    wisp::agent::ContextSource context;
     uint32_t listener = 0;
     std::mutex mu;
     std::vector<AgentEvent> events;
@@ -935,3 +962,136 @@ TEST_F(AgentLoop, ViewShowsTheRunningTurn) {
 }
 
 }  // namespace
+
+TEST_F(AgentLoop, ContextFramesTheRequest) {
+    std::atomic<int> asked{0};
+    std::atomic<int> source{-1};
+    context = [&](Source s) {
+        ++asked;
+        source = static_cast<int>(s);
+        wisp::agent::DeviceSnapshot d;
+        d.shape = {.kind = wisp::hal::ScreenShapeKind::Rect, .width = 320, .height = 240};
+        d.memory = {"[1] 称呼：小陈"};
+        return d;
+    };
+    start();
+    h->server.push(text_reply("hi"));
+    ASSERT_TRUE(svc->submit("hello", Source::Voice));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(asked.load(), 1);
+    EXPECT_EQ(source.load(), static_cast<int>(Source::Voice));
+    const Value body_msgs = h->server.body_json(0);
+    const List& msgs = body_msgs.find("messages")->as_list();
+    ASSERT_EQ(msgs.size(), 3u);
+    EXPECT_EQ(msgs[0].find("role")->as_string(), "system");
+    EXPECT_NE(msgs[0].find("content")->as_string().find("320x240"), std::string::npos);
+    EXPECT_EQ(msgs[1].find("content")->as_string(), "hello");
+    EXPECT_EQ(msgs[2].find("role")->as_string(), "system");
+    const std::string& info = msgs[2].find("content")->as_string();
+    EXPECT_EQ(info.rfind("[1] ", 0), 0u) << info;
+    // The snapshot's source is the turn's, whatever the context source says.
+    EXPECT_NE(info.find("Source: voice"), std::string::npos) << info;
+}
+
+TEST_F(AgentLoop, CompressionRequestReplacesOldTurns) {
+    // 4096 tokens: compress past 3072 (9216 bytes), down to 1638.
+    set_window(4096);
+    add_tool("scene.list");
+    start();
+    const std::string big(4000, 'a');
+    run_turn("q1", big);
+    run_turn("q2", big);
+    run_turn("q3", big);
+    ASSERT_EQ(h->server.requests().size(), 3u);
+    History before = history();
+    uint64_t turn2_end = 0;
+    for (const auto& m : before)
+        if (m.turn == 2) turn2_end = m.seq;
+
+    h->server.push(text_reply("they asked q1 and q2"));
+    run_turn("q4", "done");
+    ASSERT_EQ(h->server.requests().size(), 5u);
+
+    // The summary request: no tools, a fixed prompt, the old turns.
+    Value sum = h->server.body_json(3);
+    EXPECT_EQ(sum.find("tools"), nullptr);
+    const List& sm = sum.find("messages")->as_list();
+    ASSERT_EQ(sm.size(), 2u);
+    EXPECT_EQ(sm[0].find("role")->as_string(), "system");
+    EXPECT_NE(sm[1].find("content")->as_string().find("User: q1"), std::string::npos);
+    EXPECT_EQ(sm[1].find("content")->as_string().find("q3"), std::string::npos);
+
+    // The normal request: the summary in place of turns 1-2.
+    Value next = h->server.body_json(4);
+    EXPECT_NE(next.find("tools"), nullptr);
+    const List& nm = next.find("messages")->as_list();
+    ASSERT_EQ(nm.size(), 4u);
+    EXPECT_EQ(nm[0].find("role")->as_string(), "system");
+    EXPECT_NE(nm[0].find("content")->as_string().find("they asked q1 and q2"), std::string::npos);
+    EXPECT_EQ(nm[1].find("content")->as_string(), "q3");
+    EXPECT_EQ(nm[3].find("content")->as_string(), "q4");
+
+    auto stored = last_of(history(), Role::Summary);
+    ASSERT_TRUE(stored);
+    EXPECT_EQ(str(stored->text), "they asked q1 and q2");
+    EXPECT_EQ(stored->covers_first, 1u);
+    EXPECT_EQ(stored->covers_last, turn2_end);
+    EXPECT_EQ(stored->turn, 4u);
+    // The originals stay in the file.
+    std::ifstream f(h->dir + "/current.jsonl", std::ios::binary);
+    std::string file((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    EXPECT_NE(file.find("\"q1\""), std::string::npos);
+    EXPECT_NE(file.find("\"summary\""), std::string::npos);
+    EXPECT_EQ(last_status(), "done");
+
+    // The next turn reuses the summary instead of compressing again.
+    run_turn("q5", "ok");
+    ASSERT_EQ(h->server.requests().size(), 6u);
+    const Value body_later = h->server.body_json(5);
+    const List& later = body_later.find("messages")->as_list();
+    EXPECT_NE(later[0].find("content")->as_string().find("they asked q1 and q2"),
+              std::string::npos);
+}
+
+TEST_F(AgentLoop, SummaryFailureFallsBackToDropping) {
+    set_window(4096);
+    start();
+    const std::string big(4000, 'a');
+    run_turn("q1", big);
+    run_turn("q2", big);
+    run_turn("q3", big);
+    // The summary request fails three times (500, retried twice).
+    for (int i = 0; i < 3; ++i) h->server.push({.status = 500, .chunks = {}});
+    run_turn("q4", "done");
+    ASSERT_EQ(h->server.requests().size(), 3u + 3u + 1u);
+    EXPECT_EQ(last_status(), "done");
+
+    auto n = notes();
+    ASSERT_EQ(n.size(), 1u);
+    EXPECT_EQ(n[0], wisp::ui::tr(wisp::ui::StrId::AgentContextDropped, wisp::ui::Lang::Zh));
+    const Value body_msgs = h->server.body_json(6);
+    const List& msgs = body_msgs.find("messages")->as_list();
+    ASSERT_EQ(msgs.size(), 3u);
+    EXPECT_EQ(msgs[0].find("content")->as_string(), "q3");
+    EXPECT_EQ(msgs[2].find("content")->as_string(), "q4");
+    for (const auto& m : msgs) EXPECT_NE(m.find("content")->as_string(), "q1");
+}
+
+TEST_F(AgentLoop, SummaryWithoutConnectionKeepsTheTurns) {
+    set_window(4096);
+    start();
+    const std::string big(4000, 'a');
+    run_turn("q1", big);
+    run_turn("q2", big);
+    run_turn("q3", big);
+    h->server.push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+    run_turn("q4", "done");
+    ASSERT_EQ(h->server.requests().size(), 5u);
+    EXPECT_EQ(last_status(), "done");
+    EXPECT_FALSE(last_of(history(), Role::Summary));
+    EXPECT_TRUE(notes().empty());
+    // Sent whole: the turns are kept for a later attempt.
+    const Value body_msgs = h->server.body_json(4);
+    const List& msgs = body_msgs.find("messages")->as_list();
+    EXPECT_EQ(msgs[0].find("content")->as_string(), "q1");
+}

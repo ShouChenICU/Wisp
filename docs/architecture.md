@@ -9,7 +9,7 @@
 │  入口层   firmware/main (真机)   │  simulator/ (PC)   │
 ├─────────────────────────────────────────────────────┤
 │  wisp_app     启动编排 · 自检界面 · PowerManager         │  ← 可移植
-│  wisp_agent   Agent：对话记录 · 工具登记 · 对话循环      │  ← 可移植
+│  wisp_agent   Agent：对话记录 · 工具 · 循环 · 上下文      │  ← 可移植
 │  wisp_scene   Lua 场景运行时（third_party/lua）          │  ← 可移植
 │  wisp_ui      LVGL 驱动对接、UI 任务                     │  ← 可移植
 ├─────────────────────────────────────────────────────┤

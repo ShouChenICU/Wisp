@@ -260,6 +260,9 @@ const char* strings_en(StrId id) {
             return "The model service returned an error. Try again later";
         case StrId::AgentRolledOver:
             return "The conversation got long, so it was archived and a new one started";
+        case StrId::AgentContextDropped:
+            return "The conversation got long and its older part could not be summarized, so it "
+                   "was left out of the context (the record is kept)";
         case StrId::NoticeAgentDone:
             return "Done: {}";
         case StrId::NoticeSettingsNotSaved:
