@@ -478,16 +478,19 @@ Result<SceneFileList> SceneFiles::list(std::string_view scene) {
     // The max_list smallest names, kept as a max-heap while the directory
     // is visited, so at most max_list + 1 entries are ever held.
     const size_t cap = config_.max_list;
-    auto by_name = [](const SceneFileEntry& a, const SceneFileEntry& b) { return a.name < b.name; };
+    auto by_name = [](const SceneFileEntry& a, const SceneFileEntry& b) {
+        return std::string_view(a.name) < std::string_view(b.name);
+    };
     auto& v = out.entries;
     v.reserve(cap + 1);
     Result<void> r = storage_.visit_dir(dir, [&](const DirEntry& e) {
         if (e.kind != EntryKind::File || !valid_file_name(e.name)) return true;
         if (v.size() == cap) {
             out.truncated = true;
-            if (cap == 0 || !(e.name < v.front().name)) return true;
+            if (cap == 0 || !(std::string_view(e.name) < std::string_view(v.front().name)))
+                return true;
         }
-        v.push_back({e.name, e.size, e.mtime});
+        v.push_back({os::LargeString(e.name.data(), e.name.size()), e.size, e.mtime});
         std::push_heap(v.begin(), v.end(), by_name);
         if (v.size() > cap) {
             std::pop_heap(v.begin(), v.end(), by_name);
@@ -536,7 +539,9 @@ Result<SceneFileEntry> SceneFiles::stat(std::string_view scene, std::string_view
     if (!entry) return R::err(entry.error().code, entry.error().message);
     if (entry.value().kind != EntryKind::File)
         return fail<SceneFileEntry>(ErrorCode::NotFound, "not_found");
-    return R::ok(SceneFileEntry{entry.value().name, entry.value().size, entry.value().mtime});
+    const std::string& found = entry.value().name;
+    return R::ok(SceneFileEntry{os::LargeString(found.data(), found.size()), entry.value().size,
+                                entry.value().mtime});
 }
 
 Result<SceneFilesInfo> SceneFiles::info(std::string_view scene) {

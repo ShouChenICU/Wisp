@@ -188,7 +188,7 @@ net::HttpResponse download_file(AdminDeps& deps, const RequestContext& ctx) {
     res.content_type = "application/octet-stream";
     // valid_file_name() allows only [A-Za-z0-9._-]: nothing to quote.
     res.headers.emplace_back("Content-Disposition",
-                             "attachment; filename=\"" + entry.value().name + "\"");
+                             "attachment; filename=\"" + std::string(entry.value().name) + "\"");
     // An empty file is an empty body under Content-Length 0: a stream with
     // stream_length 0 would go out chunked instead.
     if (entry.value().size == 0) return res;

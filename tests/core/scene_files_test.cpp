@@ -17,6 +17,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "support/fake_devices.hpp"
@@ -277,6 +278,11 @@ TEST(SceneFiles, ReadRangeAndLimits) {
     EXPECT_EQ(code_of(f.files->append("s", "big", as_bytes(over))), "too_large");
     EXPECT_FALSE(on_disk(f.int_files("s") / "big"));
 }
+
+// A full list holds up to max_list names; past 15 bytes a std::string
+// would put each one in internal RAM on the device (AGENTS.md section 8).
+static_assert(std::is_same_v<decltype(wisp::core::SceneFileEntry::name), wisp::os::LargeString>,
+              "listed file names live in PSRAM");
 
 TEST(SceneFiles, ListRemoveInfo) {
     Fixture f(false);
@@ -568,7 +574,7 @@ TEST(SceneFiles, ListIsBounded) {
     ASSERT_TRUE(listed);
     EXPECT_TRUE(listed.value().truncated);
     std::vector<std::string> names;
-    for (const auto& e : listed.value().entries) names.push_back(e.name);
+    for (const auto& e : listed.value().entries) names.emplace_back(e.name);
     EXPECT_EQ(names, (std::vector<std::string>{"a", "b", "c"}));
     EXPECT_EQ(f.files->info("l").value().used, 5u);
 }

@@ -96,7 +96,9 @@ enum class FilesLocation : uint8_t { None, Sd, Internal };
 const char* to_string(FilesLocation l);
 
 struct SceneFileEntry {
-    std::string name;
+    // In PSRAM: a list holds up to max_list of them, and a std::string
+    // past its inline 15 bytes would put each one in internal RAM.
+    os::LargeString name;
     uint64_t size = 0;
     int64_t mtime = 0;  // DirEntry::mtime
 };
