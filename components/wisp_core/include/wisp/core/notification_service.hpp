@@ -63,7 +63,7 @@ inline constexpr const char* kSceneError = "scene_error";
 inline constexpr const char* kRestoreFailed = "restore_failed";
 inline constexpr const char* kWakeLockLong = "wakelock_long";
 inline constexpr const char* kBatteryLow = "battery_low";
-// action_arg is the wake lock id.
+// action_arg is the wake lock id; arg is its holder, which must still hold it.
 inline constexpr const char* kActionReleaseLock = "release_lock";
 }  // namespace notice
 
@@ -146,7 +146,9 @@ public:
     // missing or unreadable file is an empty list (logged), never an
     // error; the only error is a storage without a System area. Entries
     // that break the post-time limits are skipped, and only the newest
-    // kUnreadPerScene of each scene are kept. Stored notices go before
+    // kUnreadPerScene of each scene are kept. Wake-lock reminders
+    // (notice::kWakeLockLong) are dropped: they describe the last boot's
+    // locks, whose ids now mean other locks. Stored notices go before
     // anything already posted in memory, which wins on a clash.
     Result<void> load();
 

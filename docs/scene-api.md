@@ -387,7 +387,8 @@ hooks).
   Returns `true`, or `nil` and `not_in_background` or `unavailable`. The lock goes
   by itself when the scene leaves the front or closes. A lock held for 30 minutes
   brings a system notification (again every 30 minutes) with a button that releases
-  it.
+  it. After the user releases it there, the next `keep_screen_on(true)` takes a new
+  lock. The reminder does not survive a restart.
 
 ## wisp.sensor
 

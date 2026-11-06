@@ -436,6 +436,35 @@ return ui.screen {
     EXPECT_TRUE(locks.list().empty());
 }
 
+// The user can release a scene's screen lock from its reminder; the scene
+// still thinks it holds it, and a later keep_screen_on(true) takes a new one.
+TEST_F(SceneBackground, KeepScreenOnRetakesALockReleasedElsewhere) {
+    start();
+    install("a", R"(
+print(wisp.power.keep_screen_on(true))
+return ui.screen {
+  ui.button { ref = "on", text = "on", on_click = function()
+    print(wisp.power.keep_screen_on(true))
+  end },
+}
+)");
+    ASSERT_TRUE(rt->open("a"));
+    auto held = locks.list();
+    ASSERT_EQ(held.size(), 1u);
+    ASSERT_TRUE(locks.release_if(held[0].id, "scene.a"));
+    EXPECT_FALSE(locks.held(WakeLockKind::Screen));
+
+    ASSERT_TRUE(wait_label("on"));
+    ASSERT_TRUE(rt->click_ref("on"));
+    ASSERT_TRUE(wait_until([&] { return count_log("a", "true") == 2; }, 1000));
+    EXPECT_TRUE(locks.held(WakeLockKind::Screen));
+    held = locks.list();
+    ASSERT_EQ(held.size(), 1u);
+    EXPECT_EQ(held[0].holder, "scene.a");
+    ASSERT_TRUE(rt->exit("a"));
+    EXPECT_TRUE(locks.list().empty());
+}
+
 TEST_F(SceneBackground, SceneCloseApiMeansBack) {
     start();
     const char* lua = R"(

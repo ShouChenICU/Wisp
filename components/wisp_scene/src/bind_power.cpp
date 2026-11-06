@@ -12,13 +12,17 @@ namespace {
 constexpr const char* kReason = "keep_screen_on";
 
 void take_screen(SceneApi& api) {
-    if (api.screen_lock != 0) return;
+    // The user may have released the lock from its reminder notice, and
+    // its id may belong to another holder by now: take a new one.
+    if (api.screen_lock != 0 && api.locks->holds(api.screen_lock, api.holder)) return;
     api.screen_lock = api.locks->acquire(api.holder, core::WakeLockKind::Screen, kReason);
 }
 
 void drop_screen(SceneApi& api) {
     if (api.screen_lock == 0) return;
-    api.locks->release(api.screen_lock);
+    // Only this scene's own lock: an id released from a reminder may have
+    // gone to another holder since.
+    api.locks->release_if(api.screen_lock, api.holder);
     api.screen_lock = 0;
 }
 

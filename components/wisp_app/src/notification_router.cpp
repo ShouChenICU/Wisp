@@ -123,10 +123,11 @@ void NotificationRouter::act(const std::string& source, const std::string& id) {
     if (ec != std::errc() || end != last || lock == 0) {
         WLOG_W(kTag, "%s/%s: bad lock id \"%s\"", source.c_str(), id.c_str(),
                n->action_arg.c_str());
-    } else if (deps_.locks != nullptr && !deps_.locks->release(lock)) {
-        // Released meanwhile: the notice is out of date either way.
-        WLOG_I(kTag, "%s/%s: lock %u already released", source.c_str(), id.c_str(),
-               static_cast<unsigned>(lock));
+    } else if (deps_.locks != nullptr && !deps_.locks->release_if(lock, n->arg)) {
+        // Released meanwhile, and the id possibly reused by another holder:
+        // the notice is out of date either way.
+        WLOG_I(kTag, "%s/%s: lock %u no longer held by %s", source.c_str(), id.c_str(),
+               static_cast<unsigned>(lock), n->arg.c_str());
     }
     deps_.notes.dismiss(source, id, core::DismissReason::Dismiss);
 }

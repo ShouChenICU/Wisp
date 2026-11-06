@@ -295,4 +295,20 @@ TEST_F(NotificationRouterTest, ReleaseActionReleasesLock) {
     locks.release(sys);
 }
 
+// A reminder names its holder: a lock id that now belongs to another
+// holder (ids restart at 1 each boot) is left alone, and the notice goes.
+TEST_F(NotificationRouterTest, ReleaseActionLeavesAnotherHoldersLock) {
+    start();
+    make_router();
+    const uint32_t admin = locks.acquire("system.admin", WakeLockKind::Network, "ws");
+    const std::string id =
+        notes->post_system(wisp::core::notice::kWakeLockLong, "scene.a",
+                           wisp::core::notice::kActionReleaseLock, std::to_string(admin));
+    router->act(wisp::core::kSystemSource, id);
+    EXPECT_TRUE(locks.holds(admin, "system.admin"));
+    EXPECT_TRUE(locks.held(WakeLockKind::Network));
+    EXPECT_FALSE(notes->find(wisp::core::kSystemSource, id).has_value());
+    locks.release(admin);
+}
+
 }  // namespace

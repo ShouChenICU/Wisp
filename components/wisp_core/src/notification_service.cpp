@@ -496,7 +496,7 @@ Result<void> NotificationService::load() {
     }
 
     os::LargeVector<State::Entry> loaded;
-    unsigned skipped = 0;
+    unsigned skipped = 0, stale = 0;
     for (const Value& v : parsed.value().as_list()) {
         if (v.type() != Value::Type::Map) continue;
         Notification n;
@@ -518,6 +518,13 @@ Result<void> NotificationService::load() {
             ++skipped;
             continue;
         }
+        // A wake-lock reminder is about a lock of the boot that posted it,
+        // and lock ids restart every boot: its release action could hit an
+        // unrelated lock now.
+        if (n.source == kSystemSource && n.code == notice::kWakeLockLong) {
+            ++stale;
+            continue;
+        }
         loaded.push_back(State::to_entry(n));
     }
     // One entry per (source, id), and only the newest kUnreadPerScene of each
@@ -537,6 +544,7 @@ Result<void> NotificationService::load() {
         }
     }
     if (skipped > 0) WLOG_W(kTag, "skipped %u bad or surplus stored notifications", skipped);
+    if (stale > 0) WLOG_I(kTag, "dropped %u wake-lock reminders from the last boot", stale);
 
     std::vector<NotificationChange> changes;
     {
