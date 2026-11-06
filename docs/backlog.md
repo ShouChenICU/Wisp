@@ -95,6 +95,13 @@ Source: `feat/agent-core` review records.
   - `remove_listener` can deadlock when a listener removes itself from its own callback before `start()`, or blocks on the UI thread while the UI thread removes it; listeners must not block on another thread;
   - the `TurnBegin` text and serialized tool results are `std::string`, briefly in internal RAM; include them in the device `mem` measurement;
   - the done-notice id carries the reply's first line, so each turn adds a notice instead of replacing one.
+- Context assembly:
+  - `sv()` and `prefix_bytes()` are duplicated between `context.cpp` and `agent_service.cpp`; move them to one internal header;
+  - the prompt takes the date from `wall_s` but the weekday name from `DeviceSnapshot::weekday`; derive the name from `weekday_of(wall_s, offset)` and keep `weekday == 0` only as the "clock unset" flag;
+  - the compaction summary is a mid-history `system` message; gateways that hoist system messages would move it and break the cached prefix; consider a `user` message;
+  - `compress()` appends while the loop still holds the history snapshot, which forces a full PSRAM copy; append after the snapshot scope closes;
+  - a summary request that keeps timing out counts as a transport error, so the history never compresses and every request carries it whole;
+  - the four new `AgentLoop` tests sit outside the test namespace.
 
 ## Glyph partition parked review findings
 
