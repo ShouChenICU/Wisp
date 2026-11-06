@@ -27,11 +27,11 @@ constexpr const char* kTag = "status";
 constexpr int kDefaultUtcOffsetMin = 480;
 
 // The first UTF-8 character of `s`.
-std::string first_char(const std::string& s) {
+std::string first_char(std::string_view s) {
     if (s.empty()) return {};
     const auto lead = static_cast<unsigned char>(s[0]);
     size_t n = lead < 0x80 ? 1 : (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : 4;
-    return s.substr(0, std::min(n, s.size()));
+    return std::string(s.substr(0, std::min(n, s.size())));
 }
 
 std::string wifi_text(const std::string& state) {
@@ -107,31 +107,36 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
     // label (a scene holder by its scene's name, its id while that is
     // unknown); every other code's argument as posted (a scene notice
     // carries the scene's name already).
-    std::string notice_arg(const core::Notification& n) {
-        if (n.code != core::notice::kWakeLockLong) return n.arg;
+    std::string notice_arg(std::string_view code, std::string_view arg) {
+        if (code != core::notice::kWakeLockLong) return std::string(arg);
         constexpr std::string_view kScene = "scene.";
         std::string name;
-        if (std::string_view(n.arg).substr(0, kScene.size()) == kScene) {
-            name = scene_name(n.arg.substr(kScene.size()));
+        if (arg.substr(0, kScene.size()) == kScene) {
+            name = scene_name(std::string(arg.substr(kScene.size())));
         }
-        return ui::holder_label(n.arg, name);
+        return ui::holder_label(arg, name);
     }
 
-    ui::PanelNote note_of(const core::Notification& n) {
+    // `N` is core::Notification (a banner) or core::StoredNotification (the
+    // panel's rows, in PSRAM).
+    template <class N>
+    ui::PanelNote note_of(const N& n) {
+        using SV = std::string_view;
         ui::PanelNote p;
-        p.source = n.source;
-        p.id = n.id;
-        if (n.source == core::kSystemSource) {
-            ui::NoticeText t = ui::system_notice_text(n.code, notice_arg(n));
-            p.title = std::move(t.title);
-            p.body = std::move(t.body);
+        p.source = SV(n.source);
+        p.id = SV(n.id);
+        if (SV(n.source) == core::kSystemSource) {
+            const ui::NoticeText t =
+                ui::system_notice_text(SV(n.code), notice_arg(SV(n.code), SV(n.arg)));
+            p.title = SV(t.title);
+            p.body = SV(t.body);
         } else {
-            p.badge = first_char(n.source_name.empty() ? n.source : n.source_name);
-            p.title = n.title;
-            p.body = n.body;
+            p.badge = SV(first_char(n.source_name.empty() ? SV(n.source) : SV(n.source_name)));
+            p.title = SV(n.title);
+            p.body = SV(n.body);
         }
-        if (n.action == core::notice::kActionReleaseLock) {
-            p.action_label = ui::tr(ui::StrId::NoticeRelease);
+        if (SV(n.action) == core::notice::kActionReleaseLock) {
+            p.action_label = SV(ui::tr(ui::StrId::NoticeRelease));
         }
         return p;
     }
@@ -139,13 +144,13 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
     ui::BannerInfo banner_of(const core::Notification& n) {
         const ui::PanelNote p = note_of(n);
         ui::BannerInfo b;
-        b.source = p.source;
-        b.id = p.id;
-        b.badge = p.badge;
+        b.source = n.source;
+        b.id = n.id;
+        b.badge = std::string_view(p.badge);
         if (n.source != core::kSystemSource)
             b.name = n.source_name.empty() ? n.source : n.source_name;
-        b.title = p.title;
-        b.body = p.body;
+        b.title = std::string_view(p.title);
+        b.body = std::string_view(p.body);
         return b;
     }
 
@@ -159,7 +164,7 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
             char buf[8];
             std::snprintf(buf, sizeof(buf), "%02d:%02d", static_cast<int>(local / 3600),
                           static_cast<int>(local % 3600 / 60));
-            h.time = buf;
+            h.time = std::string_view(buf);
         } else {
             h.time = "--:--";
         }
@@ -177,7 +182,7 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
         }
         if (const Value* w = status.find("wifi");
             w != nullptr && w->type() == Value::Type::String) {
-            h.wifi = wifi_text(w->as_string());
+            h.wifi = std::string_view(wifi_text(w->as_string()));
         }
         return h;
     }
@@ -186,8 +191,13 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
         ui::PanelModel m;
         m.header = header();
         m.now_ms = os::now_ms();
-        for (const auto& b : background()) m.scenes.push_back({b.id, b.name, b.since_ms});
-        for (const core::Notification& n : deps.notes.unread()) m.notes.push_back(note_of(n));
+        for (const auto& b : background()) {
+            m.scenes.push_back({os::LargeString(std::string_view(b.id)),
+                                os::LargeString(std::string_view(b.name)), b.since_ms});
+        }
+        const auto unread = deps.notes.unread();
+        m.notes.reserve(unread.size());
+        for (const core::StoredNotification& n : unread) m.notes.push_back(note_of(n));
         return m;
     }
 

@@ -553,6 +553,33 @@ TEST(StorageManager, ListDirSortedWithKinds) {
     EXPECT_EQ(f.mgr->list_dir(d + "/b").error().code, wisp::ErrorCode::InvalidArgument);
 }
 
+// visit_dir(): the entries one at a time, stopping when asked.
+TEST(StorageManager, VisitDirStopsEarly) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    std::string d = f.in + "/system/vd";
+    for (const char* n : {"a", "b", "c"}) ASSERT_TRUE(f.mgr->write_atomic(d + "/" + n, view("xy")));
+    std::vector<std::string> seen;
+    ASSERT_TRUE(f.mgr->visit_dir(d, [&](const wisp::core::DirEntry& e) {
+        EXPECT_EQ(e.kind, wisp::core::EntryKind::File);
+        EXPECT_EQ(e.size, 2u);
+        seen.push_back(e.name);
+        return true;
+    }));
+    std::sort(seen.begin(), seen.end());
+    EXPECT_EQ(seen, (std::vector<std::string>{"a", "b", "c"}));
+    size_t calls = 0;
+    ASSERT_TRUE(f.mgr->visit_dir(d, [&](const wisp::core::DirEntry&) {
+        ++calls;
+        return false;
+    }));
+    EXPECT_EQ(calls, 1u);
+    EXPECT_EQ(f.mgr->visit_dir(d + "/missing", [](const wisp::core::DirEntry&) { return true; })
+                  .error()
+                  .code,
+              wisp::ErrorCode::NotFound);
+}
+
 TEST(StorageManager, RemoveTreeRecursiveAndMissingOk) {
     Fixture f(false);
     ASSERT_TRUE(f.mgr->init());

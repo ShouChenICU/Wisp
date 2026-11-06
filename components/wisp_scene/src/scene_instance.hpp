@@ -34,7 +34,17 @@ public:
     // Makes the VM, runs the entry file and puts the Build of the tree it
     // returns into the batch (then the first flush). The root stays in the
     // registry for rebuild().
-    std::optional<ScriptError> start();
+    //
+    // With `migrate_from` (the data version, older than the manifest's;
+    // scene-device spec 7.3), scene.migrate(migrate_from) runs between
+    // the entry file and the tree, for up to kMigrateMs. The entry file
+    // and the migration run inside one store batch: their writes and the
+    // manifest's version are committed together
+    // (SceneStore::commit_migration()), or on an error or timeout dropped;
+    // a migration's error message then starts with "migrate failed: ". A
+    // scene without scene.migrate only has its version raised. Building
+    // the tree gets a fresh time budget after a migration.
+    std::optional<ScriptError> start(std::optional<int> migrate_from = std::nullopt);
     // A Build of the root start() kept, collected again with every bound
     // value as it is now, into the batch (scene-device spec 3.2: a scene
     // coming back from the background gets a new view). Node ids are new;
@@ -74,6 +84,9 @@ public:
 
 private:
     std::optional<ScriptError> flush(std::optional<ScriptError> err);
+    // scene.migrate(from), then commits or aborts the store batch start()
+    // opened (see start()).
+    std::optional<ScriptError> migrate(int from);
 
     std::string id_;
     std::shared_ptr<const core::ScenePackage> package_;

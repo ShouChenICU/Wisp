@@ -64,6 +64,8 @@ struct UiNetOptions {
     bool with_sntp = false;
     // Registered as "audio_out.main" when set (the notification sounds).
     std::shared_ptr<wisp::hal::AudioOut> audio_out;
+    // Registered as "imu.main" when set.
+    std::shared_ptr<wisp::hal::Imu> imu;
 };
 
 // 2026-01-01 00:00:00 UTC, what the FakeSntp answers.
@@ -73,12 +75,14 @@ class UiNetBoard : public wisp::app::Board {
 public:
     UiNetBoard(std::string root, std::shared_ptr<FakeWifi> wifi,
                std::shared_ptr<FakeDisplay> display, std::shared_ptr<FakeTouch> touch = nullptr,
-               std::shared_ptr<wisp::hal::AudioOut> audio_out = nullptr)
+               std::shared_ptr<wisp::hal::AudioOut> audio_out = nullptr,
+               std::shared_ptr<wisp::hal::Imu> imu = nullptr)
         : root_(std::move(root)),
           wifi_(std::move(wifi)),
           display_(std::move(display)),
           touch_(std::move(touch)),
-          audio_out_(std::move(audio_out)) {}
+          audio_out_(std::move(audio_out)),
+          imu_(std::move(imu)) {}
 
     std::string name() const override { return "fake-net-ui"; }
 
@@ -89,6 +93,7 @@ public:
         if (display_) registry.add(display_);
         if (touch_) registry.add(touch_);
         if (audio_out_) registry.add(audio_out_);
+        if (imu_) registry.add(imu_);
     }
 
 private:
@@ -97,6 +102,7 @@ private:
     std::shared_ptr<FakeDisplay> display_;
     std::shared_ptr<FakeTouch> touch_;
     std::shared_ptr<wisp::hal::AudioOut> audio_out_;
+    std::shared_ptr<wisp::hal::Imu> imu_;
 };
 
 struct UiNetHarness {
@@ -145,7 +151,8 @@ struct UiNetHarness {
         }
 
         wisp::app::Platform platform;
-        platform.board = std::make_unique<UiNetBoard>(root, wifi, display, touch, opts.audio_out);
+        platform.board =
+            std::make_unique<UiNetBoard>(root, wifi, display, touch, opts.audio_out, opts.imu);
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path());
         if (!opts.lang.empty()) {

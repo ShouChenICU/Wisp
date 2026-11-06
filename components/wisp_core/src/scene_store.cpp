@@ -21,6 +21,7 @@ constexpr const char* kTag = "store";
 constexpr std::string_view kKv = "kv";
 constexpr std::string_view kLogSuffix = ".log";
 constexpr std::string_view kJournal = "journal.json";
+constexpr std::string_view kMeta = "meta.json";
 constexpr size_t kMaxCollectionName = 32;
 // Nesting bound of the JSON scanner below; its open containers are kept
 // as bits of one uint64_t, so no recursion runs on the 4 KB wisp.fs stack.
@@ -535,6 +536,24 @@ std::optional<std::string_view> field(std::string_view object, std::string_view 
     return found;
 }
 
+// meta.json: {"schema_version":n}; n, a positive integer, or nullopt.
+std::optional<int> parse_meta(std::string_view s) {
+    auto v = field(s, "schema_version");
+    int n = 0;
+    if (!v) {
+        return std::nullopt;
+    }
+    auto [end, ec] = std::from_chars(v->data(), v->data() + v->size(), n);
+    if (ec != std::errc() || end != v->data() + v->size() || n < 1) {
+        return std::nullopt;
+    }
+    return n;
+}
+
+std::string meta_json(int version) {
+    return R"({"schema_version":)" + std::to_string(version) + "}";
+}
+
 bool is_number(std::string_view v) { return !v.empty() && (v[0] == '-' || is_digit(v[0])); }
 
 double to_double(std::string_view v) {
@@ -744,6 +763,13 @@ struct SceneStore::Impl {
     bool timer_armed = false;
     // The delay of the last retry after a failed flush; 0 after a success.
     uint32_t retry_ms = 0;
+    // The data version (see the header).
+    int version = 0;
+    // A version the next flush writes to meta.json.
+    std::optional<int> meta_pending;
+    // meta_pending waits for the first flush that writes data: a scene
+    // that never stores anything gets no data directory.
+    bool meta_lazy = false;
     // A committed batch of more than one line is pending. A torn append
     // could keep part of it, so the flush that takes it goes through the
     // journal even when the batch touches a single file.
@@ -1011,19 +1037,31 @@ struct SceneStore::Impl {
         return std::exchange(batch_pending, false);
     }
 
-    // Writes the snapshot. Called with io_mu held and mu not held. Lines
-    // going to more than one file, or a batch's lines, go through the
-    // journal: append() can leave any prefix behind on a power cut.
-    Result<void> write_items(std::vector<FlushItem>& items, bool batch) {
+    // Writes the snapshot and `meta`, a new data version. Called with io_mu
+    // held and mu not held. Lines going to more than one file, a batch's
+    // lines, or lines with a new version go through the journal: append()
+    // can leave any prefix behind on a power cut. meta.json is written
+    // before any log: data whose log was written ahead of its version
+    // would read as the older version after a power cut.
+    Result<void> write_items(std::vector<FlushItem>& items, bool batch, std::optional<int> meta) {
         size_t with_lines = 0;
         for (const auto& item : items) {
             with_lines += item.lines.empty() ? 0 : 1;
         }
-        const bool use_journal = with_lines > 1 || journal_dirty || (batch && with_lines > 0);
+        const bool use_journal =
+            with_lines > 1 || journal_dirty || ((batch || meta.has_value()) && with_lines > 0);
         if (use_journal) {
             LString journal;
             journal.push_back('[');
             bool first = true;
+            if (meta) {
+                journal.append(R"({"f":")");
+                journal.append(kMeta);
+                journal.append(R"(","r":)");
+                journal.append(meta_json(*meta));
+                journal.push_back('}');
+                first = false;
+            }
             for (const auto& item : items) {
                 std::string_view rest(item.lines);
                 while (!rest.empty()) {
@@ -1045,6 +1083,15 @@ struct SceneStore::Impl {
                 return r;
             }
             journal_dirty = true;
+        }
+        if (meta) {
+            const std::string text = meta_json(*meta);
+            auto r = deps.storage.write_atomic(dir + "/" + std::string(kMeta), bytes(text));
+            if (!r) {
+                WLOG_W(kTag, "%s: %s write failed: %s", dir.c_str(), std::string(kMeta).c_str(),
+                       r.error().message.c_str());
+                return r;
+            }
         }
         Result<void> result = Result<void>::ok();
         for (auto& item : items) {
@@ -1120,6 +1167,22 @@ Result<void> SceneStore::load() {
     std::lock_guard<os::Mutex> io(m.io_mu);
     Index ix;
     bool journal_dirty = false;
+    std::optional<int> version;
+    bool meta_unreadable = false;
+
+    const std::string meta_path = m.dir + "/" + std::string(kMeta);
+    auto meta = m.deps.storage.read_file_large(meta_path);
+    if (!meta && meta.error().code != ErrorCode::NotFound) {
+        return Result<void>::err(meta.error().code, meta.error().message);
+    }
+    if (meta) {
+        version = parse_meta(std::string_view(reinterpret_cast<const char*>(meta.value().data()),
+                                              meta.value().size()));
+        meta_unreadable = !version;
+        if (meta_unreadable) {
+            WLOG_W(kTag, "%s: %s unreadable", m.dir.c_str(), std::string(kMeta).c_str());
+        }
+    }
 
     std::vector<std::string> stems;
     auto listed = m.deps.storage.list_dir(m.dir);
@@ -1217,16 +1280,33 @@ Result<void> SceneStore::load() {
             });
             entries.emplace_back(f.size() >= 2 ? f.substr(1, f.size() - 2) : std::string_view(), r);
         });
+        // 0: the journal holds no version.
+        int journal_version = 0;
         for (const auto& [name, line] : entries) {
+            if (name == kMeta) {
+                const std::optional<int> v = parse_meta(line);
+                journal_version = v.value_or(0);
+                ok = ok && v.has_value();
+                continue;
+            }
             ParsedLine p;
             ok = ok && (name == kKv || valid_collection(name)) && parse_line(line, name == kKv, p);
         }
         if (!ok) {
             WLOG_W(kTag, "%s: discarding an unreadable journal", m.dir.c_str());
             entries.clear();
+            journal_version = 0;
+        }
+        if (journal_version != 0) {
+            // Ahead of the logs, as a flush writes it.
+            WISP_TRY(m.deps.storage.write_atomic(meta_path, bytes(meta_json(journal_version))));
+            version = journal_version;
         }
         std::map<std::string, LString, std::less<>> replay;
         for (const auto& [name, line] : entries) {
+            if (name == kMeta) {
+                continue;
+            }
             apply_line(ix, name, line);
             LString& out = replay.try_emplace(std::string(name)).first->second;
             out.append(line);
@@ -1250,8 +1330,19 @@ Result<void> SceneStore::load() {
         }
     }
 
+    if (!version) {
+        // Data written before versions existed is version 1. A meta.json
+        // that does not parse says nothing: the data could be at any
+        // version.
+        const bool has_data = !stems.empty() || !ix.colls.empty() || !ix.kv.empty();
+        version = meta_unreadable ? kDataVersionUnreadable : has_data ? 1 : 0;
+    }
+
     m.journal_dirty = journal_dirty;
     std::lock_guard<os::Mutex> lock(m.mu);
+    m.version = *version;
+    m.meta_pending.reset();
+    m.meta_lazy = false;
     std::swap(m.ix, ix);
     m.clear_overlay_locked();
     m.loaded = true;
@@ -1586,13 +1677,21 @@ void SceneStore::begin_batch() {
     ++impl_->batch_depth;
 }
 
-Result<void> SceneStore::commit_batch() {
+Result<void> SceneStore::commit_batch() { return commit(std::nullopt); }
+
+Result<void> SceneStore::commit_migration(int new_version) { return commit(new_version); }
+
+Result<void> SceneStore::commit(std::optional<int> new_version) {
     Impl& m = *impl_;
     bool arm = false;
     {
         std::lock_guard<os::Mutex> lock(m.mu);
         if (m.batch_depth == 0) {
             return Result<void>::err(ErrorCode::InvalidArgument, "no_batch");
+        }
+        if (new_version && m.batch_depth > 1) {
+            m.clear_overlay_locked();
+            return Result<void>::err(ErrorCode::InvalidArgument, "batch_open");
         }
         if (--m.batch_depth > 0) {
             return Result<void>::ok();
@@ -1641,12 +1740,34 @@ Result<void> SceneStore::commit_batch() {
         }
         m.clear_overlay_locked();
         m.batch_pending = m.batch_pending || lines > 1;
-        arm = lines > 0 && m.note_pending_locked();
+        if (new_version) {
+            m.version = *new_version;
+            m.meta_pending = new_version;
+            m.meta_lazy = false;
+        }
+        arm = (lines > 0 || new_version) && m.note_pending_locked();
     }
     if (arm) {
         arm_timer();
     }
     return Result<void>::ok();
+}
+
+int SceneStore::data_version() const {
+    std::lock_guard<os::Mutex> lock(impl_->mu);
+    return impl_->version;
+}
+
+void SceneStore::set_initial_version(int v) {
+    Impl& m = *impl_;
+    std::lock_guard<os::Mutex> lock(m.mu);
+    if (!m.loaded || m.closed || m.version != 0) {
+        return;
+    }
+    // No timer: the first flush with data writes it.
+    m.version = v;
+    m.meta_pending = v;
+    m.meta_lazy = true;
 }
 
 void SceneStore::abort_batch() {
@@ -1752,16 +1873,26 @@ void SceneStore::flush_job(const std::function<void(Result<void>)>& done, bool f
         }
         std::vector<FlushItem> items;
         bool batch = false;
+        std::optional<int> meta;
         {
             // Every write before this point is in the snapshot. One after it
             // either finds a timer still in flight or arms one.
             std::lock_guard<os::Mutex> lock(m.mu);
             batch = m.take_snapshot_locked(items);
+            if (!m.meta_lazy || !items.empty()) {
+                meta = std::exchange(m.meta_pending, std::nullopt);
+                m.meta_lazy = false;
+            }
         }
-        if (!items.empty()) {
-            result = m.write_items(items, batch);
+        if (!items.empty() || meta) {
+            result = m.write_items(items, batch, meta);
             std::lock_guard<os::Mutex> lock(m.mu);
             m.settle_locked(items);
+            // Written again with the lines put back, unless a newer one
+            // came meanwhile.
+            if (!result && meta && !m.meta_pending) {
+                m.meta_pending = meta;
+            }
             // The batch's lines are back in pending; the retry must take
             // the journal again (journal_dirty covers it only once the
             // journal itself was written).

@@ -3,6 +3,12 @@
 // restart and factory reset. The phone layout also reaches the log page
 // from here.
 //
+// Power (scene-device spec 4.5): the level, light sleep, how many scene
+// requests wait for the network and every wake lock with how long it has
+// been held, refreshed while the tab is visible; with it the deep-standby
+// delay and the light-sleep switch. Peripheral use (spec 6.3) lists who
+// holds which device.
+//
 // Network time (spec 5.6): GET /system/time shows the last sync; "Sync
 // now" posts /system/time/sync (409 no_network without Wi-Fi) and then
 // waits for the attempt that answers it to finish (see TimeSyncCard's
@@ -35,18 +41,21 @@ import { api, describeError, errorDetail, logout, setUnauthorizedHandler, upload
 import { navigate } from '../router.js';
 import { LANGS, has, locale, t } from '../i18n/index.js';
 import { subscribe } from '../ws.js';
+import { formatUptime, useVisible } from '../util.js';
 import { Card } from '../components/card.js';
 import { Badge } from '../components/badge.js';
 import { confirmDialog } from '../components/dialog.js';
 import { toast } from '../components/toast.js';
 import {
   IconAlert,
+  IconBolt,
   IconBrowser,
   IconCheck,
   IconChevronRight,
   IconClock,
   IconDisplay,
   IconGlobe,
+  IconImu,
   IconInfo,
   IconLogout,
   IconLogs,
@@ -66,6 +75,10 @@ const BRIGHTNESS_MAX = 255;
 const VOLUME_MAX = 100;
 // Screen-off choices in seconds; 0 = never.
 const SCREEN_OFF = [0, 15, 30, 60, 120, 300, 600];
+// Deep-standby delays in seconds; 0 = never (SystemSettings: 0 or 60-3600).
+const DEEP_AFTER = [0, 60, 120, 300, 600, 1800, 3600];
+// How often the power card refreshes while the tab is visible.
+const POWER_REFRESH_MS = 5000;
 // Time zone choices in minutes east of UTC: the offsets in use today.
 // SystemSettings takes any whole minute from -720 to 840.
 const UTC_OFFSETS = [
@@ -104,6 +117,15 @@ export async function confirmLogout() {
  * @property {'zh'|'ja'|'en'} language  the device's own UI language
  * @property {number} utc_offset_min  the time zone, minutes east of UTC (-720 to 840)
  * @property {string} ntp_servers  1-2 time servers, comma-separated
+ * @property {number} deep_after_s  0 (never) or 60-3600: deep standby after the screen is off this long
+ * @property {boolean} light_sleep  allow light sleep in deep standby
+ * @property {number} notify_vol   0-100, the notification sounds
+ *
+ * @typedef {Object} PowerStatus  GET /system/power
+ * @property {'active'|'dim'|'standby'|'deep_standby'} level
+ * @property {'on'|'off'|'unsupported'} light_sleep
+ * @property {number} deferred  scene requests waiting for the network
+ * @property {{id: number, holder: string, kind: 'network'|'cpu'|'screen', reason: string, held_ms: number}[]} locks
  *
  * @typedef {Object} TimeStatus  GET /system/time
  * @property {boolean} synced         a sync succeeded since the device started
@@ -198,6 +220,8 @@ export function SystemPage() {
       <${TimeZoneCard} settings=${settings} put=${put} />
       <${TimeSyncCard} settings=${settings} put=${put} />
     </div>
+    <${PowerCard} settings=${settings} put=${put} />
+    <${OccupancyCard} />
     <${ClientsCard} clients=${clients} error=${clientsError} reload=${loadClients} />
     <${FirmwareCard} />
     <${MaintenanceCard} onBack=${loadAll} />
@@ -273,6 +297,16 @@ function DisplayCard({ settings, put }) {
         format=${(v) => percent(v, 0, VOLUME_MAX)}
         onCommit=${(v) => put({ volume: v })}
       />
+      <${RangeField}
+        id="sys-notify-vol"
+        label=${t('sys.notify_vol')}
+        icon=${IconSpeaker}
+        min=${0}
+        max=${VOLUME_MAX}
+        value=${settings.notify_vol ?? 60}
+        format=${(v) => percent(v, 0, VOLUME_MAX)}
+        onCommit=${(v) => put({ notify_vol: v })}
+      />
       <div class="field">
         <label class="field-label with-icon" for="sys-screen-off"><${IconMoon} size=${16} />${t('sys.screen_off')}</label>
         <select
@@ -287,6 +321,134 @@ function DisplayCard({ settings, put }) {
         <p id="sys-screen-off-hint" class="field-hint">${t('sys.screen_off_hint')}</p>
       </div>
     </div>
+  </${Card}>`;
+}
+
+/** GET `path` every POWER_REFRESH_MS while the tab is visible. */
+function usePolled(path) {
+  const visible = useVisible();
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (!visible) return undefined;
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await api('GET', path);
+        if (!alive) return;
+        setData(r);
+        setError(null);
+      } catch (e) {
+        if (alive && e.status !== 401) setError(e);
+      }
+    };
+    load();
+    const timer = setInterval(load, POWER_REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [visible, path]);
+  return [data, error];
+}
+
+function deepAfterLabel(s) {
+  return s === 0 ? t('sys.deep_never') : screenOffLabel(s);
+}
+
+const LEVEL_TONE = { active: 'ok', dim: 'accent', standby: 'muted', deep_standby: 'muted' };
+
+function PowerCard({ settings, put }) {
+  const [power, error] = usePolled('/system/power');
+  const locks = Array.isArray(power?.locks) ? power.locks : [];
+  const choices =
+    !settings || DEEP_AFTER.includes(settings.deep_after_s)
+      ? DEEP_AFTER
+      : [...DEEP_AFTER, settings.deep_after_s].sort((a, b) => a - b);
+  return html`<${Card}
+    title=${t('power.title')}
+    icon=${IconBolt}
+    actions=${power
+      ? html`<${Badge} tone=${LEVEL_TONE[power.level] || 'muted'}>${t('power.level.' + power.level)}</${Badge}>`
+      : null}
+  >
+    ${error && !power
+      ? html`<div class="alert tone-err" role="alert">
+          <${IconAlert} size=${18} /><span>${t('power.load_failed', { reason: describeError(error) })}</span>
+        </div>`
+      : !power
+        ? html`<div class="skel skel-line"></div>`
+        : html`<dl class="kv">
+              <div><dt>${t('power.light_sleep')}</dt><dd>${t('power.light_sleep.' + power.light_sleep)}</dd></div>
+              <div><dt>${t('power.deferred')}</dt><dd class="mono">${power.deferred}</dd></div>
+            </dl>
+            <h3 class="field-label">${t('power.locks')}</h3>
+            ${locks.length === 0
+              ? html`<p class="stat-empty">${t('power.no_locks')}</p>`
+              : html`<ul class="rows">
+                  ${locks.map(
+                    (l) => html`<li key=${l.id} class="row">
+                      <div class="row-main">
+                        <span class="row-title mono">${l.holder}</span>
+                        <span class="row-sub">${l.reason}</span>
+                      </div>
+                      <${Badge} tone="muted">${t('power.kind.' + l.kind)}</${Badge}>
+                      <span class="mono" title=${t('power.held')}>${formatUptime(l.held_ms)}</span>
+                    </li>`,
+                  )}
+                </ul>`}`}
+    ${settings
+      ? html`<div class="form fw-form">
+          <div class="field">
+            <label class="field-label with-icon" for="sys-deep-after"><${IconMoon} size=${16} />${t('sys.deep_after')}</label>
+            <select
+              id="sys-deep-after"
+              class="input select"
+              value=${String(settings.deep_after_s)}
+              onChange=${(e) => put({ deep_after_s: Number(e.currentTarget.value) })}
+              aria-describedby="sys-deep-after-hint"
+            >
+              ${choices.map((s) => html`<option key=${s} value=${String(s)}>${deepAfterLabel(s)}</option>`)}
+            </select>
+            <p id="sys-deep-after-hint" class="field-hint">${t('sys.deep_after_hint')}</p>
+          </div>
+          <label class="scene-check">
+            <input
+              type="checkbox"
+              checked=${settings.light_sleep !== false}
+              onChange=${(e) => put({ light_sleep: e.currentTarget.checked })}
+            />
+            ${t('sys.light_sleep')}
+          </label>
+        </div>`
+      : null}
+  </${Card}>`;
+}
+
+function OccupancyCard() {
+  const [occ, error] = usePolled('/system/occupancy');
+  const items = Array.isArray(occ?.items) ? occ.items : null;
+  return html`<${Card} title=${t('occ.title')} icon=${IconImu}>
+    ${error && !items
+      ? html`<div class="alert tone-err" role="alert">
+          <${IconAlert} size=${18} /><span>${t('occ.load_failed', { reason: describeError(error) })}</span>
+        </div>`
+      : !items
+        ? html`<div class="skel skel-line"></div>`
+        : items.length === 0
+          ? html`<p class="stat-empty">${t('occ.none')}</p>`
+          : html`<ul class="rows">
+              ${items.map(
+                (o) => html`<li key=${o.device + ' ' + o.holder} class="row">
+                  <div class="row-main">
+                    <span class="row-title mono">${o.device}</span>
+                    <span class="row-sub mono">${o.holder}</span>
+                  </div>
+                  <${Badge} tone=${o.mode === 'exclusive' ? 'warn' : 'muted'}>${t('occ.mode.' + o.mode)}</${Badge}>
+                  <span class="mono" title=${t('power.held')}>${formatUptime(o.held_ms)}</span>
+                </li>`,
+              )}
+            </ul>`}
   </${Card}>`;
 }
 

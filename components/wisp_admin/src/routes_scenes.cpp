@@ -100,6 +100,7 @@ Value scene_item(const core::SceneInfo& info, const core::SceneHost* host) {
         {"data_bytes", Value(static_cast<int64_t>(info.data_bytes))},
         {"state", Value(core::to_string(status.state))},
         {"hosts", Value(std::move(hosts))},
+        {"files", Value(core::to_string(m.files))},
         {"error", status.error.empty() ? Value() : Value(status.error)},
     });
 }
@@ -135,7 +136,14 @@ net::HttpResponse list_scenes(AdminDeps& deps, const RequestContext&) {
     for (const core::SceneInfo& info : listed.value()) {
         scenes.push_back(scene_item(info, deps.scene_host));
     }
-    return net::HttpResponse::json(200, Value(Map{{"scenes", Value(std::move(scenes))}}));
+    // Whether an SD card is in, so the page can mark a scene that declares
+    // "sd" (scene-device spec 7.2): what SceneFiles goes by, or, without
+    // it, the card's library being listed (only while it is online,
+    // storage_manager.hpp).
+    const bool sd_card = deps.files != nullptr ? deps.files->sd_online()
+                                               : deps.storage.roots(core::Area::Library).size() > 1;
+    return net::HttpResponse::json(
+        200, Value(Map{{"scenes", Value(std::move(scenes))}, {"sd_card", Value(sd_card)}}));
 }
 
 // Reached only through a server that buffers every body (the streamed path

@@ -14,6 +14,7 @@ NoticeText system_notice_text(std::string_view code, std::string_view arg) {
         {notice::kSceneEvictedCount, StrId::NoticeEvictedCount},
         {notice::kSceneError, StrId::NoticeSceneError},
         {notice::kRestoreFailed, StrId::NoticeRestoreFailed},
+        {notice::kSceneDeleteFailed, StrId::NoticeDeleteFailed},
         {notice::kWakeLockLong, StrId::NoticeWakeLock},
         {notice::kBatteryLow, StrId::NoticeBatteryLow},
     };
@@ -36,6 +37,7 @@ std::string holder_label(std::string_view holder, std::string_view scene_name) {
         {"system.netwindow", StrId::HolderNetWindow},
         {"system.hotspot", StrId::HolderHotspot},
         {"system.tone", StrId::HolderTone},
+        {"system.download", StrId::HolderDownload},
     };
     for (const auto& [h, id] : kSystem) {
         if (holder == h) return tr(id);

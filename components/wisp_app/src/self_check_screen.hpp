@@ -165,6 +165,9 @@ private:
     // Any thread: asks the storage worker for the scene list; the "Scenes"
     // card takes it on the UI thread.
     void request_scene_list();
+    // Any thread: lets the sampler drop the IMU while a scene is in front
+    // (this screen is covered) and take it again once none is.
+    void follow_foreground();
     // UI thread: a row was tapped.
     void open_scene(const std::string& id);
 

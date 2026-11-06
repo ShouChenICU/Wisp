@@ -1,6 +1,17 @@
 // Scenes (scene-runtime-core spec 7.2): the installed scene packages, a
 // zip upload, and per scene open/close/reload, export and delete. A row
-// expands to show the hosts the scene may call and its last error.
+// expands to show the hosts the scene may call, its last error and its
+// files (scene-device spec 7.2).
+//
+// Close always ends the scene (POST /exit), whether it is in front or in
+// the background (scene-device spec 3.7); the device's own back gesture is
+// what sends a background-capable scene to the background.
+//
+// Files: where they live, how much of the quota they use, and per file a
+// download link and a delete that asks first. A scene that declares
+// "files": "sd" is marked as needing an SD card while no card is in, or
+// while its files cannot be reached. Nothing here deletes a file unless
+// the user asks for that one.
 //
 // The device validates and compiles an upload before writing anything; a
 // rejected package comes back as invalid_scene with the compiler's
@@ -9,7 +20,7 @@
 // crash and install, arrives as a scene.state event, which reloads the list.
 
 import { html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
-import { api, describeError, errorDetail, exportUrl, upload } from '../api.js';
+import { api, describeError, errorDetail, exportUrl, fileUrl, upload } from '../api.js';
 import { locale, t } from '../i18n/index.js';
 import { subscribe } from '../ws.js';
 import { formatBytes } from '../util.js';
@@ -19,12 +30,14 @@ import { confirmDialog } from '../components/dialog.js';
 import { toast } from '../components/toast.js';
 import {
   IconAlert,
+  IconArrowDown,
   IconChevronDown,
   IconGlobe,
   IconLogs,
   IconPackage,
   IconPlay,
   IconRefresh,
+  IconStorage,
   IconStop,
   IconTrash,
   IconUpload,
@@ -37,12 +50,23 @@ import {
  * @property {string} version
  * @property {number} code_bytes
  * @property {number} data_bytes
- * @property {'stopped'|'running'|'error'} state
+ * @property {'stopped'|'running'|'background'|'error'} state
  * @property {string[]} hosts   permissions.http from scene.json
  * @property {string|null} error  the last error while state is "error"
+ * @property {'auto'|'sd'|'int'} files  where scene.json wants its files
+ *
+ * @typedef {Object} SceneFiles  GET /scenes/{id}/files
+ * @property {'sd'|'int'|null} location  null until the scene first writes
+ * @property {'auto'|'sd'|'int'} want
+ * @property {number} quota
+ * @property {number} used
+ * @property {boolean} truncated  more files than the list holds
+ * @property {{name: string, size: number, mtime: number}[]} files
  */
 
-const STATE_TONE = { running: 'ok', error: 'err', stopped: 'muted' };
+const STATE_TONE = { running: 'ok', background: 'accent', error: 'err', stopped: 'muted' };
+// Clocks before 2020 mean the device had no real time when it wrote.
+const MIN_REAL_UNIX = 1577836800;
 // A scene zip is at most this large (the device answers 413 beyond it).
 const MAX_UPLOAD = 576 * 1024;
 
@@ -55,6 +79,7 @@ function sceneError(e) {
 
 export function ScenesPage() {
   const [scenes, setScenes] = useState(/** @type {SceneRow[]|null} */ (null));
+  const [sdCard, setSdCard] = useState(true);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(() => new Set());
@@ -67,6 +92,7 @@ export function ScenesPage() {
       const r = await api('GET', '/scenes');
       if (!alive.current) return;
       setScenes(Array.isArray(r?.scenes) ? r.scenes : []);
+      setSdCard(r?.sd_card !== false);
       setError(null);
     } catch (e) {
       if (alive.current && e.status !== 401) setError(e);
@@ -142,7 +168,15 @@ export function ScenesPage() {
           ? html`<div class="empty"><p class="muted">${t('scenes.empty')}</p></div>`
           : html`<ul class="card list-card dev-list">
               ${list.map(
-                (s) => html`<${SceneItem} key=${s.id} scene=${s} open=${open.has(s.id)} onToggle=${toggle} onChanged=${load} />`,
+                (s) =>
+                  html`<${SceneItem}
+                    key=${s.id}
+                    scene=${s}
+                    sdCard=${sdCard}
+                    open=${open.has(s.id)}
+                    onToggle=${toggle}
+                    onChanged=${load}
+                  />`,
               )}
             </ul>`}
   </div>`;
@@ -246,13 +280,15 @@ function UploadCard({ onInstalled }) {
   </${Card}>`;
 }
 
-function SceneItem({ scene, open, onToggle, onChanged }) {
+function SceneItem({ scene, sdCard, open, onToggle, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [exportData, setExportData] = useState(false);
   const [deleteData, setDeleteData] = useState(false);
   const panelId = 'scene-' + scene.id;
   const tone = STATE_TONE[scene.state] || 'muted';
   const hosts = Array.isArray(scene.hosts) ? scene.hosts : [];
+  const live = scene.state === 'running' || scene.state === 'background';
+  const needsCard = scene.files === 'sd' && !sdCard;
 
   async function act(action) {
     setBusy(true);
@@ -326,6 +362,7 @@ function SceneItem({ scene, open, onToggle, onChanged }) {
         <span class="dev-id">${scene.name}</span>
         <span class="dev-sub"><span class="mono">${scene.id}</span> · v${scene.version}</span>
       </span>
+      ${needsCard ? html`<${Badge} tone="warn">${t('scenes.needs_sd')}</${Badge}>` : null}
       <${Badge} tone=${tone}>${STATE_TONE[scene.state] ? t('scenes.state.' + scene.state) : scene.state}</${Badge}>
       <span class="dev-chevron"><${IconChevronDown} size=${18} /></span>
     </button>
@@ -353,13 +390,16 @@ function SceneItem({ scene, open, onToggle, onChanged }) {
               </div>`
             : null}
           <div class="scene-actions">
-            ${scene.state === 'running'
-              ? html`<button type="button" class="btn btn-secondary btn-sm" disabled=${busy} onClick=${() => act('close')}>
+            ${scene.state !== 'running'
+              ? html`<button type="button" class="btn btn-primary btn-sm" disabled=${busy} onClick=${() => act('open')}>
+                  <${IconPlay} size=${15} />${t('scenes.open')}
+                </button>`
+              : null}
+            ${live
+              ? html`<button type="button" class="btn btn-secondary btn-sm" disabled=${busy} onClick=${() => act('exit')}>
                   <${IconStop} size=${15} />${t('scenes.close')}
                 </button>`
-              : html`<button type="button" class="btn btn-primary btn-sm" disabled=${busy} onClick=${() => act('open')}>
-                  <${IconPlay} size=${15} />${t('scenes.open')}
-                </button>`}
+              : null}
             <button type="button" class="btn btn-secondary btn-sm" disabled=${busy} onClick=${() => act('reload')}>
               <${IconRefresh} size=${15} />${t('scenes.reload')}
             </button>
@@ -367,6 +407,7 @@ function SceneItem({ scene, open, onToggle, onChanged }) {
               <${IconLogs} size=${15} />${t('scenes.logs')}
             </a>
           </div>
+          <${FilesSection} scene=${scene} sdCard=${sdCard} />
           <div class="scene-actions">
             <a class="btn btn-secondary btn-sm" href=${exportUrl(scene.id, exportData)} download onClick=${exportZip}>
               ${t('scenes.export')}
@@ -388,4 +429,119 @@ function SceneItem({ scene, open, onToggle, onChanged }) {
         </div>`
       : null}
   </li>`;
+}
+
+function formatMtime(unix) {
+  if (!Number.isFinite(unix) || unix < MIN_REAL_UNIX) return '';
+  return new Intl.DateTimeFormat(locale(), { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(unix * 1000));
+}
+
+/** The scene's files: location, usage, and per file download and delete. */
+function FilesSection({ scene, sdCard }) {
+  const [info, setInfo] = useState(/** @type {SceneFiles|null} */ (null));
+  const [error, setError] = useState(null);
+  const [removing, setRemoving] = useState('');
+  const alive = useRef(true);
+  const base = `/scenes/${encodeURIComponent(scene.id)}/files`;
+
+  async function load() {
+    try {
+      const r = await api('GET', base);
+      if (!alive.current) return;
+      setInfo(r);
+      setError(null);
+    } catch (e) {
+      if (alive.current && e.status !== 401) setError(e);
+    }
+  }
+
+  useEffect(() => {
+    alive.current = true;
+    load();
+    return () => {
+      alive.current = false;
+    };
+  }, [scene.id]);
+
+  async function remove(name) {
+    const ok = await confirmDialog({
+      title: `${t('scenes.file_delete')} · ${name}`,
+      body: t('scenes.file_delete_body', { name }),
+      okText: t('scenes.file_delete'),
+      danger: true,
+    });
+    if (!ok) return;
+    setRemoving(name);
+    try {
+      await api('DELETE', `${base}/${encodeURIComponent(name)}`);
+      toast(t('scenes.file_deleted', { name }), 'ok');
+    } catch (e) {
+      if (e.status !== 401) toast(sceneError(e), 'err');
+    } finally {
+      if (alive.current) setRemoving('');
+      load();
+    }
+  }
+
+  const want = info?.want || scene.files;
+  const unreachable = error?.code === 'unavailable';
+  const needsCard = want === 'sd' && (!sdCard || unreachable);
+  const files = Array.isArray(info?.files) ? info.files : [];
+  const where = info?.location ? t('scenes.files_at.' + info.location) : t('scenes.files_none_yet');
+
+  return html`<section class="scene-files" aria-label=${t('scenes.files')}>
+    <h3 class="field-label with-icon"><${IconStorage} size=${16} />${t('scenes.files')}</h3>
+    ${needsCard
+      ? html`<div class="alert tone-warn" role="status">
+          <${IconAlert} size=${18} /><span class="alert-body">${t('scenes.needs_sd_body')}</span>
+        </div>`
+      : null}
+    ${error && !needsCard
+      ? html`<p class="field-hint is-error">${unreachable ? t('scenes.files_unavailable') : sceneError(error)}</p>`
+      : null}
+    ${info
+      ? html`<dl class="kv">
+            <div><dt>${t('scenes.files_where')}</dt><dd>${where}</dd></div>
+            <div>
+              <dt>${t('scenes.files_used')}</dt>
+              <dd class="mono">${formatBytes(info.used)} / ${formatBytes(info.quota)}</dd>
+            </div>
+          </dl>
+          ${files.length === 0
+            ? html`<p class="stat-empty">${t('scenes.files_empty')}</p>`
+            : html`<ul class="rows">
+                ${files.map((f) => {
+                  const when = formatMtime(f.mtime);
+                  return html`<li key=${f.name} class="row">
+                    <div class="row-main">
+                      <span class="row-title mono">${f.name}</span>
+                      <span class="row-sub">${formatBytes(f.size)}${when ? ' · ' + when : ''}</span>
+                    </div>
+                    <div class="row-actions">
+                      <a
+                        class="btn btn-ghost btn-sm"
+                        href=${fileUrl(scene.id, f.name)}
+                        download=${f.name}
+                        aria-label=${t('scenes.file_download') + ' ' + f.name}
+                      >
+                        <${IconArrowDown} size=${15} />${t('scenes.file_download')}
+                      </a>
+                      <button
+                        type="button"
+                        class="btn btn-ghost btn-sm"
+                        disabled=${removing === f.name}
+                        onClick=${() => remove(f.name)}
+                        aria-label=${t('scenes.file_delete') + ' ' + f.name}
+                      >
+                        <${IconTrash} size=${15} />${t('scenes.file_delete')}
+                      </button>
+                    </div>
+                  </li>`;
+                })}
+              </ul>`}
+          ${info.truncated ? html`<p class="field-hint">${t('scenes.files_truncated', { count: files.length })}</p>` : null}`
+      : !error
+        ? html`<div class="skel skel-line"></div>`
+        : null}
+  </section>`;
 }

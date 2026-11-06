@@ -57,10 +57,16 @@ public:
     uint32_t acquire(std::string holder, WakeLockKind kind, std::string reason);
     // False if `id` is not held (never acquired, or already released).
     bool release(uint32_t id);
+    // Releases `id` only if `holder` holds it; false otherwise. For a caller
+    // that remembered an id from earlier: the lock may be gone, and its id
+    // taken by another holder since (ids restart every boot).
+    bool release_if(uint32_t id, std::string_view holder);
     // Releases every lock of `holder`; returns how many there were.
     size_t release_holder(std::string_view holder);
 
     bool held(WakeLockKind kind) const;
+    // True while `holder` holds the lock `id`.
+    bool holds(uint32_t id, std::string_view holder) const;
     // Every lock currently held, by id.
     std::vector<WakeLockInfo> list() const;
 
@@ -84,6 +90,8 @@ private:
         uint64_t reminded = 0;  // multiples of kReminderMs already reported
     };
 
+    // Releases `id`, if `holder` is set only when that holder holds it.
+    bool release_matching(uint32_t id, const std::string_view* holder);
     // Both with mutex_ held.
     void publish(const char* op, const WakeLockInfo& info);
     uint32_t next_free_id();

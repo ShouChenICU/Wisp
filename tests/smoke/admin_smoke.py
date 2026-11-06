@@ -9,7 +9,8 @@ temporary data dir) and then, over loopback:
   2. pairs like a browser: POST /pair/start, the code read back with the
      simulator-only console command "debug pair-code" written to the
      simulator's stdin, POST /pair/confirm for the wisp_token cookie;
-  3. reads /device, /devices and /wifi, and round-trips a setting;
+  3. reads /device, /devices, /wifi, /system/power (level "active") and
+     /system/occupancy, and round-trips a setting;
   4. model profiles (/ai/*): creates an llm profile on the fake endpoint
      and tests it, once with a wrong key (http 401) and once with
      "test-key" (both models); creates an asr profile that reuses that key
@@ -19,7 +20,8 @@ temporary data dir) and then, over loopback:
      platform without /models reports no_model_list and that the old /llm
      routes are gone;
   5. scenes (scene-runtime-core spec 7.1): uploads scenes/examples/counter
-     as packed by tools/wisp_scene.py, lists, opens, reloads and closes it,
+     as packed by tools/wisp_scene.py, lists it and its (empty) files,
+     opens, reloads and closes it,
      exports it with and without its data, and has a package with a syntax
      error refused with its file and line;
   6. subscribes to the log over the WebSocket and waits for an entry;
@@ -170,6 +172,13 @@ def check_routes(api):
     wifi = api.ok_json("GET", "/wifi")
     expect(isinstance(wifi, dict) and wifi, f"/wifi: {wifi}")
 
+    # Scene-device spec 4.5: the device was just started and is in use.
+    power = api.ok_json("GET", "/system/power")
+    expect(power.get("level") == "active" and isinstance(power.get("locks"), list)
+           and isinstance(power.get("deferred"), int), f"/system/power: {power}")
+    occupancy = api.ok_json("GET", "/system/occupancy")
+    expect(isinstance(occupancy.get("items"), list), f"/system/occupancy: {occupancy}")
+
     api.ok_json("PUT", "/settings", {"brightness": 120})
     settings = api.ok_json("GET", "/settings")
     expect(settings.get("brightness") == 120, f"/settings after PUT: {settings}")
@@ -261,6 +270,10 @@ def check_scenes(api, sim):
            and item.get("hosts") == [], f"POST /scenes: {item}")
     listed = api.ok_json("GET", "/scenes")["scenes"]
     expect([s["id"] for s in listed] == ["counter"], f"GET /scenes: {listed}")
+    # Scene-device spec 7.2: no file written yet.
+    files = api.ok_json("GET", "/scenes/counter/files")
+    expect(files.get("files") == [] and files.get("used") == 0 and files.get("want") == "auto"
+           and files.get("truncated") is False, f"GET /scenes/counter/files: {files}")
 
     for action, state in (("open", "running"), ("reload", "running")):
         got = api.ok_json("POST", f"/scenes/counter/{action}", {})

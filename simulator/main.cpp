@@ -44,7 +44,12 @@
 // output that ever carries a pairing code. "debug scene-click <ref>" clicks
 // the widget with that ref in the scene in front
 // (SceneRuntime::click_ref()) and answers "scene-click=ok" or
-// "scene-click=<error>".
+// "scene-click=<error>". "debug panel-tap <index>" taps row <index> (from
+// 0: the background scenes, then the notifications) of the open pull-down
+// panel (SystemLayer::tap_panel_row()) and answers "panel-tap=ok" or
+// "panel-tap=<error>". "debug screenshot <path>" writes what the screen
+// shows now as a PNG, as --screenshot does at exit, and answers
+// "screenshot=ok" or "screenshot=<error>".
 //
 // Scenes (scene-runtime-core spec 6.4): --scenes-dir puts the scene
 // repository in dev mode over that directory (Platform::scenes_dir), with
@@ -60,6 +65,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -98,6 +104,7 @@
 #include "wisp/port/sim/sim_sntp.hpp"
 #include "wisp/port/sim/sim_web_pack.hpp"
 #include "wisp/scene/scene_runtime.hpp"
+#include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace {
@@ -121,6 +128,8 @@ void install_signal_handlers() {
     signal(SIGTTIN, SIG_IGN);
 }
 
+wisp::Result<void> write_screenshot(wisp::app::App& app, const std::string& path);
+
 #ifdef WISP_SIM_DEBUG_COMMANDS
 std::string debug_command(wisp::app::App& app, const std::vector<std::string>& args) {
     if (args.size() == 2 && args[1] == "pair-code") {
@@ -135,14 +144,32 @@ std::string debug_command(wisp::app::App& app, const std::vector<std::string>& a
         auto r = scenes->click_ref(args[2]);
         return "scene-click=" + (r ? std::string("ok") : r.error().message);
     }
-    return "error: usage: debug pair-code | debug scene-click <ref>";
+    if (args.size() == 3 && args[1] == "panel-tap") {
+        wisp::ui::UiRuntime* ui = app.ui();
+        wisp::ui::SystemLayer* layer = app.system_layer();
+        if (ui == nullptr || layer == nullptr) return "panel-tap=there is no screen";
+        char* end = nullptr;
+        const unsigned long index = std::strtoul(args[2].c_str(), &end, 10);
+        if (args[2].empty() || *end != '\0') return "panel-tap=the index is not a number";
+        wisp::Result<void> r = wisp::Result<void>::ok();
+        ui->run_blocking([&] { r = layer->tap_panel_row(index); });
+        return "panel-tap=" + (r ? std::string("ok") : r.error().message);
+    }
+    if (args.size() == 3 && args[1] == "screenshot") {
+        auto r = write_screenshot(app, args[2]);
+        return "screenshot=" + (r ? std::string("ok") : r.error().message);
+    }
+    return "error: usage: debug pair-code | debug scene-click <ref> | debug panel-tap <index> | "
+           "debug screenshot <path>";
 }
 
 std::vector<wisp::app::ConsoleCommand> debug_commands() {
     return {{
         "debug",
         "debug pair-code              the active pairing code (simulator only)\n"
-        "debug scene-click <ref>      click a widget of the scene in front (simulator only)",
+        "debug scene-click <ref>      click a widget of the scene in front (simulator only)\n"
+        "debug panel-tap <index>      tap a row of the open pull-down panel (simulator only)\n"
+        "debug screenshot <path>      write the screen as a PNG (simulator only)",
         debug_command,
     }};
 }
@@ -226,24 +253,31 @@ wisp::Result<std::vector<wisp::port::sim::ImuScriptStep>> load_imu_script(const 
     return steps;
 }
 
-// Takes a screenshot of the self-check UI (app.ui()->snapshot_rgb888())
-// and writes it to `path`, per --screenshot. Logs to stderr (rather than
-// failing the whole process) if there's no UI or the write fails.
-void take_screenshot(wisp::app::App& app, const std::string& path) {
+// Writes what the screen shows (app.ui()->snapshot_rgb888()) to `path` as
+// a PNG.
+wisp::Result<void> write_screenshot(wisp::app::App& app, const std::string& path) {
     if (app.ui() == nullptr) {
-        std::fprintf(stderr, "wisp_sim: --screenshot requested but no display/UI is running\n");
-        return;
+        return wisp::Result<void>::err(wisp::ErrorCode::Unsupported, "no display/UI is running");
     }
     auto snap = app.ui()->snapshot_rgb888();
     if (!snap) {
-        std::fprintf(stderr, "wisp_sim: snapshot failed: %s\n", snap.error().message.c_str());
-        return;
+        return wisp::Result<void>::err(snap.error().code,
+                                       "snapshot failed: " + snap.error().message);
     }
     auto written =
         wisp::port::sim::write_png_rgb888(path, snap.value().data(), kScreenSize, kScreenSize);
     if (!written) {
-        std::fprintf(stderr, "wisp_sim: failed to write screenshot %s: %s\n", path.c_str(),
-                     written.error().message.c_str());
+        return wisp::Result<void>::err(written.error().code, "failed to write screenshot " + path +
+                                                                 ": " + written.error().message);
+    }
+    return wisp::Result<void>::ok();
+}
+
+// Takes a screenshot per --screenshot. Logs to stderr (rather than failing
+// the whole process) if there's no UI or the write fails.
+void take_screenshot(wisp::app::App& app, const std::string& path) {
+    if (auto r = write_screenshot(app, path); !r) {
+        std::fprintf(stderr, "wisp_sim: --screenshot: %s\n", r.error().message.c_str());
     }
 }
 

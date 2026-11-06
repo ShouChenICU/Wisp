@@ -72,7 +72,9 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/model_profiles.hpp"
+#include "wisp/core/occupancy.hpp"
 #include "wisp/core/power_monitor.hpp"
+#include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
@@ -118,6 +120,14 @@ struct NetWiringDeps {
     core::SceneRepository* scenes = nullptr;
     core::SceneHost* scene_host = nullptr;
     std::function<Result<void>(const std::string& id, bool with_data)> request_scene_delete;
+    // AdminDeps::occupancy / files (see there); null: their routes answer
+    // 503.
+    core::OccupancyRegistry* occupancy = nullptr;
+    core::SceneFiles* files = nullptr;
+    // The clock the "wisp.net" loop hands WifiService, the NetworkWindow
+    // and the admin services; empty: os::now_ms. Tests move it to reach
+    // the network window's 15 minutes.
+    std::function<uint64_t()> now_ms;
 };
 
 class NetWiring {
@@ -170,6 +180,10 @@ private:
     // or fails to (wisp/app/ram_budget.hpp); a warning under the budget.
     void log_internal_ram() const;
     Value device_status() const;
+    // AdminDeps::power_status: PowerManager's level and light sleep, and
+    // how many scene requests wait for the network. Atomics and one short
+    // lock, so an HTTP thread never waits on a power transition.
+    Value power_status() const;
 
     NetWiringDeps deps_;
 

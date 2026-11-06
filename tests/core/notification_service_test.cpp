@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -31,6 +32,15 @@ using wisp::core::NotificationService;
 using wisp::core::NotifySound;
 
 namespace fs = std::filesystem;
+
+// unread() hands out up to kStoredMax notices with their bodies: in PSRAM,
+// like the service's own list (AGENTS.md section 5).
+static_assert(std::is_same_v<decltype(std::declval<NotificationService&>().unread()),
+                             wisp::os::LargeVector<wisp::core::StoredNotification>>);
+static_assert(
+    std::is_same_v<decltype(wisp::core::StoredNotification::title), wisp::os::LargeString>);
+static_assert(
+    std::is_same_v<decltype(wisp::core::StoredNotification::body), wisp::os::LargeString>);
 
 namespace {
 
@@ -610,9 +620,8 @@ TEST(Notifications, SystemFieldsAreCutSoTheyLoadAgain) {
     {
         auto s = h.make();
         const std::string holder = "system." + std::string(100, 'h');
-        std::string id =
-            s->post_system(wisp::core::notice::kWakeLockLong, holder,
-                           wisp::core::notice::kActionReleaseLock, std::string(40, '7'));
+        std::string id = s->post_system("cut_test", holder, wisp::core::notice::kActionReleaseLock,
+                                        std::string(40, '7'));
         auto n = s->find("system", id);
         ASSERT_TRUE(n);
         EXPECT_EQ(n->arg.size(), NotificationService::kArgMax);
@@ -621,6 +630,24 @@ TEST(Notifications, SystemFieldsAreCutSoTheyLoadAgain) {
     }
     auto again = h.make();
     EXPECT_EQ(again->unread_count(), 1u);
+}
+
+// Wake-lock reminders describe the locks of the boot that posted them, and
+// lock ids restart every boot: a stored one is dropped, never offered again.
+TEST(Notifications, LoadDropsWakeLockReminders) {
+    Harness h;
+    {
+        auto s = h.make();
+        s->post_system(wisp::core::notice::kWakeLockLong, "scene.level",
+                       wisp::core::notice::kActionReleaseLock, "4");
+        s->post_system(wisp::core::notice::kWakeLockLong, "system.ota");
+        s->post_system(wisp::core::notice::kBatteryLow, "12");
+        EXPECT_TRUE(s->flush(1000));
+    }
+    auto again = h.make();
+    auto list = again->unread();
+    ASSERT_EQ(list.size(), 1u);
+    EXPECT_EQ(list[0].code, wisp::core::notice::kBatteryLow);
 }
 
 TEST(Notifications, LoadKeepsTheNewestOfDuplicateEntries) {

@@ -12,10 +12,13 @@
 #include <thread>
 #include <vector>
 
+#include "support/fake_devices.hpp"
 #include "support/fake_http.hpp"
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
 #include "wisp/core/scene_files.hpp"
+#include "wisp/core/scene_repository.hpp"
+#include "wisp/core/storage_manager.hpp"
 #include "wisp/net/scene_http.hpp"
 
 namespace {
@@ -49,6 +52,7 @@ protected:
         ASSERT_TRUE(http->start());
         wisp::core::SceneFilesConfig fc;
         fc.data_root = in + "/scenes";
+        fc.max_list = 3;  // small enough for a test to go past it
         fc.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
         configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) {
@@ -100,8 +104,9 @@ TEST_F(FilesBinding, CallbacksCarryResults) {
 wisp.files.info(function(err, info) print("fresh", err, info.location, info.used) end)
 wisp.files.write("a.txt", "hello", function(err, ok)
   print("write", err, ok)
-  wisp.files.list(function(err, list)
-    print("list", err, #list, list[1].name, list[1].size, math.type(list[1].mtime), list[1].mtime > 0)
+  wisp.files.list(function(err, list, truncated)
+    print("list", err, #list, list[1].name, list[1].size, math.type(list[1].mtime), list[1].mtime > 0,
+          truncated)
     wisp.files.read("a.txt", 1, 3, function(err, data)
       print("read", err, data)
       wisp.files.append("a.txt", "!", function(err, ok)
@@ -118,10 +123,30 @@ end)
     ASSERT_TRUE(rt->open("h"));
     auto lines = wait_log("h", 7);
     EXPECT_EQ(lines, (std::vector<std::string>{"fresh\tnil\tnil\t0", "write\tnil\ttrue",
-                                               "list\tnil\t1\ta.txt\t5\tinteger\ttrue",
+                                               "list\tnil\t1\ta.txt\t5\tinteger\ttrue\tfalse",
                                                "read\tnil\tell", "append\tnil\ttrue",
                                                "info\tnil\tint\t524288\t6", "remove\tnil\ttrue"}));
     EXPECT_FALSE(on_disk(files_dir("h") / "a.txt"));
+}
+
+// Past max_list the list is cut, and the callback says so.
+TEST_F(FilesBinding, ListSaysWhenCut) {
+    start();
+    install_scene("h", R"(
+local names = {"d", "b", "a", "c"}
+local function step(i)
+  if i > #names then
+    wisp.files.list(function(err, list, truncated)
+      print("list", err, #list, list[1].name, list[3].name, truncated)
+    end)
+    return
+  end
+  wisp.files.write(names[i], "x", function() step(i + 1) end)
+end
+step(1)
+)");
+    ASSERT_TRUE(rt->open("h"));
+    EXPECT_EQ(wait_log("h", 1), (std::vector<std::string>{"list\tnil\t3\ta\tc\ttrue"}));
 }
 
 TEST_F(FilesBinding, BadNameIsReportedAsync) {
@@ -275,6 +300,135 @@ wisp.http.download("https://api.example.com/f", "f.bin", nil, function(err, res)
     EXPECT_FALSE(on_disk(files_dir("h") / "f.bin"));
     EXPECT_TRUE(printed("h").empty());
     EXPECT_EQ(files->info("h").value().used, 0u);
+}
+
+// wisp.files on the SD card, pulled while a write is on its way: the write
+// was issued (it waits on the storage worker), then the card goes. The
+// scene gets an error, never a crash; once the card is reported gone every
+// call says "unavailable"; once it is back nothing half-written is left and
+// the usage matches the disk.
+class FilesBindingSd : public FilesBinding {
+protected:
+    void SetUp() override {
+        FilesBinding::SetUp();
+        files.reset();
+        sd_dir = wisp::test::temp_dir().string();
+        sd_dev = std::make_shared<wisp::test::FakeStorage>("storage.sd", sd_dir, true);
+        registry.add(sd_dev);
+        storage = std::make_unique<wisp::core::StorageManager>(registry, bus);
+        ASSERT_TRUE(storage->init());
+        wisp::core::SceneRepoConfig rc;
+        rc.code_root = in + "/scenes";
+        rc.data_root = in + "/scenes";
+        repo = std::make_unique<wisp::core::SceneRepository>(*storage, rc);
+        wisp::core::SceneFilesConfig fc;
+        fc.data_root = in + "/scenes";
+        fc.declared = [](std::string_view) {
+            return wisp::Result<wisp::core::FilesWant>::ok(wisp::core::FilesWant::Sd);
+        };
+        fc.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
+        files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
+    }
+
+    fs::path sd_files(const std::string& id) const {
+        return fs::path(sd_dir) / "wisp" / "library" / "scenes" / id / "files";
+    }
+
+    // The card leaves mid-operation: its files are gone at once and its
+    // mount point takes no new ones (a plain file stands in for the dead
+    // mount, so nothing can be created under it); the storage notices on
+    // its next refresh.
+    void pull_card() {
+        sd_dev->online_flag = false;
+        fs::rename(sd_dir, sd_dir + ".pulled");
+        std::ofstream(sd_dir) << "no card";
+    }
+    void report_card() {
+        storage->refresh();
+        files->on_sd_changed();
+    }
+    void insert_card() {
+        fs::remove(sd_dir);
+        fs::rename(sd_dir + ".pulled", sd_dir);
+        sd_dev->online_flag = true;
+        report_card();
+    }
+
+    // Holds the worker inside a job until the returned flag goes false.
+    std::shared_ptr<std::atomic<bool>> hold_worker() {
+        auto hold = std::make_shared<std::atomic<bool>>(true);
+        auto holding = std::make_shared<std::atomic<bool>>(false);
+        EXPECT_TRUE(worker.submit([hold, holding] {
+            *holding = true;
+            while (hold->load()) wisp::os::sleep_ms(1);
+        }));
+        EXPECT_TRUE(wait_until([&] { return holding->load(); }, 2000));
+        return hold;
+    }
+
+    std::string sd_dir;
+    std::shared_ptr<wisp::test::FakeStorage> sd_dev;
+};
+
+TEST_F(FilesBindingSd, CardPulledDuringAWriteOrAppend) {
+    start();
+    install("h", R"(
+wisp.files.write("keep.txt", "kept", function(err, ok) print("first", err, ok) end)
+return ui.screen {
+  ui.button { ref = "w", text = "w", on_click = function()
+    wisp.files.write("big.txt", string.rep("x", 4096), function(err, ok)
+      print("write", err ~= nil, ok)
+    end)
+    wisp.files.append("keep.txt", "+more", function(err, ok)
+      print("append", err ~= nil, ok)
+    end)
+  end },
+  ui.button { ref = "again", text = "again", on_click = function()
+    wisp.files.write("c.txt", "c", function(err, ok) print("again", err, ok) end)
+  end },
+}
+)",
+            {{"scene.json", manifest_with_hosts("h")}});
+    ASSERT_TRUE(rt->open("h"));
+    ASSERT_EQ(wait_log("h", 1), (std::vector<std::string>{"first\tnil\ttrue"}));
+    ASSERT_EQ(read_raw(sd_files("h") / "keep.txt"), "kept");
+
+    auto hold = hold_worker();
+    ASSERT_TRUE(wait_label("again"));
+    const size_t before = worker.pending();
+    ASSERT_TRUE(rt->click_ref("w"));
+    // Both the write and the append are really queued behind the held
+    // job before the card goes, not just clicked: the click message still
+    // has to reach the scene task before it runs the Lua handler that
+    // submits them.
+    ASSERT_TRUE(wait_until([&] { return worker.pending() >= before + 2; }, 2000));
+    pull_card();
+    *hold = false;
+    auto lines = wait_log("h", 3);
+    EXPECT_EQ(lines, (std::vector<std::string>{"first\tnil\ttrue", "write\ttrue\tnil",
+                                               "append\ttrue\tnil"}));
+
+    // Reported gone: every call is "unavailable".
+    report_card();
+    ASSERT_TRUE(rt->click_ref("again"));
+    lines = wait_log("h", 4);
+    ASSERT_EQ(lines.size(), 4u);
+    EXPECT_EQ(lines[3], "again\tunavailable\tnil");
+
+    // Back: nothing half-written, the old file as it was, the usage right.
+    insert_card();
+    EXPECT_FALSE(on_disk(sd_files("h") / "big.txt"));
+    EXPECT_EQ(read_raw(sd_files("h") / "keep.txt"), "kept");
+    for (const auto& e : fs::directory_iterator(sd_files("h")))
+        EXPECT_EQ(e.path().filename().string()[0] == '.', false) << e.path();
+    auto info = files->info("h");
+    ASSERT_TRUE(info) << info.error().message;
+    EXPECT_EQ(info.value().used, 4u);
+    ASSERT_TRUE(rt->click_ref("again"));
+    lines = wait_log("h", 5);
+    ASSERT_EQ(lines.size(), 5u);
+    EXPECT_EQ(lines[4], "again\tnil\ttrue");
+    EXPECT_EQ(files->info("h").value().used, 5u);
 }
 
 }  // namespace

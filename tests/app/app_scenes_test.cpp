@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -19,6 +20,7 @@
 
 #include "scene_wiring.hpp"
 #include "self_check_layout.hpp"
+#include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
 #include "ui_net_harness.hpp"
@@ -26,6 +28,8 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/sensor_service.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
@@ -34,6 +38,7 @@
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
+#include "wisp/ui/system_notice.hpp"
 #include "wisp/ui/theme.hpp"
 
 using wisp::net::Method;
@@ -385,6 +390,179 @@ TEST(AppScenes, StandbyHidesAndWakeShows) {
     EXPECT_EQ(scene_log("counter"), (std::vector<std::string>{"show", "hide", "show"}));
 }
 
+// Spec 6.1: the IMU is off with no subscribers. The self-check screen reads
+// it only while it shows: a scene in front covers it, and with a scene
+// that does not use the IMU nobody holds it.
+TEST(AppScenes, SelfCheckLetsTheImuGoWhileASceneIsInFront) {
+    UiNetOptions opts;
+    auto imu = std::make_shared<wisp::test::FakeImu>("imu.main");
+    opts.imu = imu;
+    Booted b(opts);
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    ASSERT_TRUE(b.start());
+    wisp::core::SensorService* sensors = b.h.app->sensors();
+    ASSERT_NE(sensors, nullptr);
+    auto holders = [&] {
+        std::vector<std::string> out;
+        for (const auto& e : b.h.app->occupancy().list()) out.push_back(e.holder);
+        return out;
+    };
+    const std::vector<std::string> selfcheck = {"system.selfcheck"};
+    ASSERT_TRUE(wait_until([&] { return holders() == selfcheck; }, 3000));
+    EXPECT_EQ(sensors->imu_rate(), 50u);
+
+    ASSERT_TRUE(b.h.app->scenes()->open("counter"));
+    ASSERT_TRUE(wait_until([] { return count_of(scene_log("counter"), "show") == 1; }, 3000));
+    EXPECT_TRUE(wait_until([&] { return holders().empty(); }, 3000));
+    EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 0; }, 3000));
+
+    ASSERT_TRUE(b.h.app->scenes()->exit("counter"));
+    EXPECT_TRUE(wait_until([&] { return holders() == selfcheck; }, 3000));
+    EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 50u; }, 3000));
+}
+
+// A foreground scene that faults shows its error panel over the self-check
+// screen, which stays covered. Closing that panel (the back button, not a
+// reload) never runs on_close or publishes scene.state: close_slot() only
+// publishes "stopped" for a scene that was actually running, and a faulted
+// slot's VM is already gone. follow_foreground() is normally driven by
+// scene.state, so without another event the self-check screen would read
+// as covered, and the IMU stays dropped, until the periodic scene resync
+// catches up.
+TEST(AppScenes, SelfCheckResyncsAfterAFaultedPanelCloses) {
+    UiNetOptions opts;
+    auto imu = std::make_shared<wisp::test::FakeImu>("imu.main");
+    opts.imu = imu;
+    Booted b(opts);
+    put_scene(b.h.root, "bad", "坏场景", R"(return ui.screen {
+  ui.button { ref = "go", text = "go", on_click = function() error("boom") end },
+}
+)");
+    ASSERT_TRUE(b.start());
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    wisp::core::SensorService* sensors = b.h.app->sensors();
+    ASSERT_NE(rt, nullptr);
+    ASSERT_NE(sensors, nullptr);
+    auto holders = [&] {
+        std::vector<std::string> out;
+        for (const auto& e : b.h.app->occupancy().list()) out.push_back(e.holder);
+        return out;
+    };
+    const std::vector<std::string> selfcheck = {"system.selfcheck"};
+    ASSERT_TRUE(wait_until([&] { return holders() == selfcheck; }, 3000));
+
+    ASSERT_TRUE(rt->open("bad"));
+    ASSERT_TRUE(wait_until(
+        [&] {
+            bool found = false;
+            run_on_ui_blocking(b.h.app->ui(), [&] {
+                found = find_button_with_label(lv_screen_active(), "go") != nullptr;
+            });
+            return found;
+        },
+        3000));
+    EXPECT_TRUE(wait_until([&] { return holders().empty(); }, 3000));
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(
+        wait_until([&] { return rt->status("bad").state == wisp::core::SceneState::Error; }, 3000));
+
+    // "返回": back to the self-check screen, the scene still in the error
+    // state.
+    ASSERT_EQ(run_on_ui_thread(b.h.app->ui(),
+                               [] {
+                                   lv_obj_t* back = find_button_with_label(
+                                       lv_layer_top(), wisp::ui::tr(wisp::ui::StrId::SceneBack));
+                                   if (back == nullptr) return std::string("none");
+                                   lv_obj_send_event(back, LV_EVENT_CLICKED, nullptr);
+                                   return std::string("ok");
+                               }),
+              "ok");
+    ASSERT_TRUE(wait_until([&] { return !rt->foreground(); }, 3000));
+    EXPECT_EQ(rt->status("bad").state, wisp::core::SceneState::Error);
+
+    // The periodic scene resync picks up what the missing scene.state
+    // event could not: the self-check screen re-checks foreground() and
+    // takes the IMU back.
+    EXPECT_TRUE(wait_until([&] { return holders() == selfcheck; }, 35000));
+    EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 50u; }, 3000));
+}
+
+// Spec 5.1/5.4 across the real pieces: a scene in the background posts a
+// waking notification while the device is in deep standby; PowerManager
+// brings it back to active, the scene in front stays the self-check screen
+// and the banner shows the notification.
+TEST(AppScenes, BackgroundNotificationWakesFromDeepStandbyWithABanner) {
+    Booted b;
+    const fs::path dir = fs::path(b.h.root) / "scenes" / "pomo";
+    fs::create_directories(dir);
+    std::ofstream(dir / "scene.json")
+        << R"({"id":"pomo","name":"番茄钟","version":"1.0.0","schema_version":1,"background":true})";
+    std::ofstream(dir / "main.lua") << R"(
+scene.on_state = function(s)
+  if s == "background" then
+    wisp.timer.after(1500, function()
+      print("notify", wisp.notify{ title = "时间到", body = "休息一下", wake = true })
+    end)
+  end
+end
+return ui.screen { ui.label { text = "pomo" } }
+)";
+    ASSERT_TRUE(b.start());
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    wisp::app::PowerManager* pm = b.h.app->power_manager();
+    ASSERT_NE(rt, nullptr);
+    ASSERT_NE(pm, nullptr);
+    ASSERT_TRUE(rt->open("pomo"));
+    ASSERT_TRUE(rt->close("pomo"));
+    ASSERT_EQ(rt->status("pomo").state, wisp::core::SceneState::Background);
+
+    std::mutex levels_mu;
+    std::vector<std::string> levels;
+    const wisp::core::SubscriptionId levels_sub =
+        b.h.app->bus().subscribe("power.state", [&](const wisp::core::Event& e) {
+            std::lock_guard<std::mutex> lock(levels_mu);
+            levels.push_back(e.payload.at("state").as_string());
+        });
+    run_on_ui_blocking(b.h.app->ui(), [&] { pm->enter_standby(); });
+    pm->tick(wisp::os::now_ms() + 3'600'000);
+    // Generous on purpose: the scene's own timer below fires 1500 ms after
+    // it went to the background, and the "levels" sequence checked at the
+    // end only holds if deep standby is reached before that.
+    ASSERT_TRUE(
+        wait_until([&] { return pm->level() == wisp::hal::PowerLevel::DeepStandby; }, 10000));
+
+    ASSERT_TRUE(wait_until([] { return count_of(scene_log("pomo"), "notify\tn1") == 1; }, 5000));
+    EXPECT_TRUE(wait_until([&] { return pm->level() == wisp::hal::PowerLevel::Active; }, 3000));
+    EXPECT_TRUE(wait_until(
+        [&] {
+            std::lock_guard<std::mutex> lock(levels_mu);
+            return !levels.empty() && levels.back() == "active";
+        },
+        3000));
+    b.h.app->bus().unsubscribe(levels_sub);
+    {
+        std::lock_guard<std::mutex> lock(levels_mu);
+        EXPECT_EQ(levels, (std::vector<std::string>{"standby", "deep_standby", "active"}));
+    }
+    EXPECT_TRUE(wait_until(
+        [&] {
+            bool shown = false;
+            run_on_ui_blocking(b.h.app->ui(), [&] {
+                lv_obj_t* banner = b.h.app->system_layer()->banner();
+                shown = banner != nullptr && find_label_containing(banner, "时间到") != nullptr &&
+                        find_label_containing(banner, "休息一下") != nullptr;
+            });
+            return shown;
+        },
+        3000));
+    // The scene stays in the background; the self-check screen is in front.
+    EXPECT_EQ(rt->status("pomo").state, wisp::core::SceneState::Background);
+    EXPECT_FALSE(rt->foreground().has_value());
+    lv_obj_t* active = nullptr;
+    run_on_ui_blocking(b.h.app->ui(), [&] { active = lv_screen_active(); });
+    EXPECT_EQ(active, b.screen);
+}
+
 TEST(AppScenes, DeleteConfirmFlow) {
     UiNetOptions opts;
     opts.with_server = true;
@@ -453,6 +631,66 @@ TEST(AppScenes, DeleteConfirmFlow) {
     EXPECT_TRUE(b.states("keep").empty());
 }
 
+// A delete the user confirmed that cannot go ahead (the storage worker's
+// queue is full) is not dropped in silence: a system notice says so, the
+// scene stays, and a later delete works.
+TEST(AppScenes, ConfirmedDeleteAgainstAFullWorkerTellsTheUser) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    Booted b(opts);
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    ASSERT_TRUE(b.start());
+    const std::string token = pair_browser(b.h);
+    wisp::core::NotificationService* notes = b.h.app->notifications();
+    ASSERT_NE(notes, nullptr);
+    wisp::core::StorageWorker* worker = b.h.app->storage_worker();
+    ASSERT_NE(worker, nullptr);
+    auto click_yes = [&] {
+        return run_on_ui_thread(b.h.app->ui(), [] {
+            lv_obj_t* yes = find_button_with_label(lv_layer_top(), "是");
+            if (yes == nullptr) return "";
+            lv_obj_send_event(yes, LV_EVENT_CLICKED, nullptr);
+            return "ok";
+        });
+    };
+    auto failed_notice = [&] {
+        return notes->find(wisp::core::kSystemSource,
+                           std::string(wisp::core::notice::kSceneDeleteFailed) + ":计数器");
+    };
+
+    ASSERT_EQ(api(b.h, Method::Delete, "/api/v1/scenes/counter", token).status, 202);
+    // The worker held inside a job, its queue full behind it.
+    std::atomic<bool> hold{true};
+    std::atomic<bool> holding{false};
+    ASSERT_TRUE(worker->submit([&] {
+        holding = true;
+        while (hold.load()) wisp::os::sleep_ms(1);
+    }));
+    ASSERT_TRUE(wait_until([&] { return holding.load(); }, 2000));
+    int queued = 0;
+    while (worker->submit([] {})) ASSERT_LT(++queued, 1000);
+
+    ASSERT_EQ(click_yes(), "ok");
+    EXPECT_TRUE(wait_until([&] { return failed_notice().has_value(); }, 3000));
+    hold = false;
+    ASSERT_TRUE(wait_until([&] { return worker->drain(2000); }, 3000));
+    EXPECT_TRUE(fs::exists(fs::path(b.h.root) / "scenes" / "counter" / "scene.json"));
+    EXPECT_TRUE(b.states("counter").empty());
+    ASSERT_TRUE(failed_notice().has_value());
+    const wisp::ui::NoticeText text =
+        wisp::ui::system_notice_text(failed_notice()->code, failed_notice()->arg);
+    EXPECT_EQ(text.body, "计数器未能删除，请重试");
+
+    // Nothing is left marked as being removed: the user can try again.
+    ASSERT_EQ(api(b.h, Method::Delete, "/api/v1/scenes/counter", token).status, 202);
+    ASSERT_EQ(click_yes(), "ok");
+    EXPECT_TRUE(
+        wait_until([&] { return !fs::exists(fs::path(b.h.root) / "scenes" / "counter"); }, 3000));
+    // The retry succeeded: the stale "could not be deleted" notice must
+    // not keep telling the user to try again.
+    EXPECT_TRUE(wait_until([&] { return !failed_notice().has_value(); }, 3000));
+}
+
 // The package is gone but its data stayed (a delete without data, or a
 // package that went missing): deleting with data still reaches it.
 TEST(AppScenes, DeleteReachesDataLeftBehind) {
@@ -480,6 +718,49 @@ TEST(AppScenes, DeleteReachesDataLeftBehind) {
     EXPECT_TRUE(
         wait_until([&] { return !fs::exists(fs::path(b.h.root) / "scenes" / "gone"); }, 3000));
     EXPECT_EQ(api(b.h, Method::Delete, "/api/v1/scenes/nothing", token, "data=1").status, 404);
+}
+
+// A delete with data that fails before the scene is gone leaves its
+// files: the scene is still installed and still owns them.
+TEST(AppScenes, FailedDeleteKeepsFiles) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    Booted b(opts);
+    put_scene(b.h.root, "stuck", "卡住", "return ui.screen { ui.label { text = 's' } }");
+    const fs::path dir = fs::path(b.h.root) / "scenes" / "stuck";
+    fs::create_directories(dir / "data");
+    fs::create_directories(dir / "files");
+    std::ofstream(dir / "data" / "files_loc.json") << R"({"location":"int"})";
+    std::ofstream(dir / "files" / "a.txt") << "keep me";
+    ASSERT_TRUE(b.start());
+    const std::string token = pair_browser(b.h);
+
+    auto res = api(b.h, Method::Delete, "/api/v1/scenes/stuck", token, "data=1");
+    ASSERT_EQ(res.status, 202) << res.body;
+    // An interrupted replace whose data/ clashes with the scene's: the
+    // repository stops before it removes anything.
+    fs::create_directories(fs::path(b.h.root) / "scenes" / ".stuck.newdir" / "data");
+    ASSERT_EQ(run_on_ui_thread(b.h.app->ui(),
+                               [] {
+                                   lv_obj_t* yes = find_button_with_label(lv_layer_top(), "是");
+                                   if (yes == nullptr) return "";
+                                   lv_obj_send_event(yes, LV_EVENT_CLICKED, nullptr);
+                                   return "ok";
+                               }),
+              "ok");
+    EXPECT_TRUE(wait_until(
+        [] {
+            for (const auto& e : wisp::log::ring_entries())
+                if (e.msg.find("stuck: delete failed") != std::string::npos) return true;
+            return false;
+        },
+        3000));
+    EXPECT_TRUE(fs::exists(dir / "scene.json"));
+    std::stringstream kept;
+    kept << std::ifstream(dir / "files" / "a.txt").rdbuf();
+    EXPECT_EQ(kept.str(), "keep me");
+    EXPECT_TRUE(fs::exists(dir / "data" / "files_loc.json"));
+    EXPECT_TRUE(b.states("stuck").empty());
 }
 
 TEST(AppScenes, DeleteBusyWhenDialogOpen) {
@@ -818,7 +1099,8 @@ return ui.screen { ui.label { text = "late" } }
     auto system_notices = [&] {
         std::vector<std::string> out;
         for (const auto& n : notes->unread())
-            if (n.source == wisp::core::kSystemSource) out.push_back(n.code + " " + n.arg);
+            if (n.source == wisp::core::kSystemSource)
+                out.push_back(std::string(n.code) + " " + std::string(n.arg));
         std::sort(out.begin(), out.end());
         return out;
     };

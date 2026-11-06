@@ -45,13 +45,20 @@ uint32_t WakeLockRegistry::acquire(std::string holder, WakeLockKind kind, std::s
     return info.id;
 }
 
-bool WakeLockRegistry::release(uint32_t id) {
+bool WakeLockRegistry::release(uint32_t id) { return release_matching(id, nullptr); }
+
+bool WakeLockRegistry::release_if(uint32_t id, std::string_view holder) {
+    return release_matching(id, &holder);
+}
+
+bool WakeLockRegistry::release_matching(uint32_t id, const std::string_view* holder) {
     WakeLockInfo info;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         auto it = entries_.begin();
         while (it != entries_.end() && it->info.id != id) ++it;
         if (it == entries_.end()) return false;
+        if (holder != nullptr && it->info.holder != *holder) return false;
         info = std::move(it->info);
         entries_.erase(it);
         publish("release", info);
@@ -82,6 +89,14 @@ bool WakeLockRegistry::held(WakeLockKind kind) const {
     std::lock_guard<os::Mutex> lock(mutex_);
     for (const Entry& e : entries_) {
         if (e.info.kind == kind) return true;
+    }
+    return false;
+}
+
+bool WakeLockRegistry::holds(uint32_t id, std::string_view holder) const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    for (const Entry& e : entries_) {
+        if (e.info.id == id) return e.info.holder == holder;
     }
     return false;
 }

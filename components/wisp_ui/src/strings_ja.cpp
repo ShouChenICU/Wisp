@@ -191,6 +191,8 @@ const char* strings_ja(StrId id) {
             return "{}でエラーが発生し、停止しました";
         case StrId::NoticeRestoreFailed:
             return "{}を起動時に復元できませんでした";
+        case StrId::NoticeDeleteFailed:
+            return "{}を削除できませんでした。もう一度お試しください";
         case StrId::NoticeWakeLock:
             return "{}がデバイスを 30 分間起動したままにしています";
         case StrId::NoticeBatteryLow:
@@ -211,6 +213,8 @@ const char* strings_ja(StrId id) {
             return "設定用ホットスポット";
         case StrId::HolderTone:
             return "通知音";
+        case StrId::HolderDownload:
+            return "ファイルのダウンロード";
         case StrId::PanelBackground:
             return "バックグラウンド";
         case StrId::PanelNotifications:

@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <list>
@@ -26,6 +27,7 @@
 
 #include "sha1.hpp"
 #include "wisp/base/base64.hpp"
+#include "wisp/os/large.hpp"
 
 namespace wisp::port::sim {
 
@@ -215,13 +217,21 @@ bool write_response(int fd, const net::HttpResponse& res, bool keep_alive) {
         body = {reinterpret_cast<const uint8_t*>(res.body.data()), res.body.size()};
     }
 
+    const bool streamed = !bodyless && static_cast<bool>(res.stream);
+    const bool chunked = streamed && res.stream_length == 0;
+
     std::string head =
         "HTTP/1.1 " + std::to_string(res.status) + " " + reason_phrase(res.status) + "\r\n";
     if (!bodyless) {
         if (!res.content_type.empty() && !has_crlf(res.content_type)) {
             head += "Content-Type: " + res.content_type + "\r\n";
         }
-        head += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+        if (chunked) {
+            head += "Transfer-Encoding: chunked\r\n";
+        } else {
+            const uint64_t length = streamed ? res.stream_length : body.size();
+            head += "Content-Length: " + std::to_string(length) + "\r\n";
+        }
     }
     for (const auto& [name, value] : res.headers) {
         // A stray CR/LF would let a value inject headers.
@@ -230,6 +240,22 @@ bool write_response(int fd, const net::HttpResponse& res, bool keep_alive) {
     }
     head += keep_alive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n";
     if (!send_all(fd, head)) return false;
+    if (streamed) {
+        // As on the device: one piece at a time through a PSRAM-class
+        // buffer that lives only while this response is sent.
+        os::LargeBuffer buf = os::LargeBuffer::allocate(net::kStreamChunkBytes);
+        if (!buf.ok()) return false;
+        const bool ok =
+            net::pump_stream(res, buf.span(), [fd, chunked](std::span<const uint8_t> piece) {
+                if (!chunked) return send_all(fd, piece.data(), piece.size());
+                char size_line[24];
+                const int n = std::snprintf(size_line, sizeof size_line, "%zx\r\n", piece.size());
+                return send_all(fd, size_line, static_cast<size_t>(n)) &&
+                       send_all(fd, piece.data(), piece.size()) && send_all(fd, "\r\n", 2);
+            });
+        if (!ok) return false;
+        return !chunked || send_all(fd, "0\r\n\r\n", 5);
+    }
     // static_body goes straight from its (mapped) storage to the socket.
     if (!bodyless && !body.empty()) return send_all(fd, body.data(), body.size());
     return true;

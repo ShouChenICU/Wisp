@@ -2074,6 +2074,35 @@ textarea {
   margin-top: var(--gap-md);
 }
 
+/* A scene's files: a heading, the usage and one row per file. */
+.scene-files {
+  display: grid;
+  gap: var(--gap-sm);
+  margin-top: var(--gap-md);
+  padding-top: var(--gap-md);
+  border-top: 1px solid var(--border);
+}
+
+/* Name and size on the left, Download and Delete together at the right;
+   on a phone the buttons wrap under each other rather than widen the row. */
+.scene-files .row {
+  min-width: 0;
+}
+
+.scene-files .row-main {
+  flex: 1 1 auto;
+}
+
+.scene-files .row-title {
+  overflow-wrap: anywhere;
+}
+
+.scene-files .row-actions {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .form-actions {
   display: flex;
   flex-wrap: wrap;

@@ -1,9 +1,10 @@
 // NetWiring end to end (scene-device spec 4.1, 4.3, 4.4): a real
 // PowerManager (headless), WifiService over a FakeWifi, the NetworkWindow
 // and a standalone SceneHttp, driven by the "wisp.net" task on the real
-// clock. The 15-minute window itself is covered by network_window_test;
-// here: the time-sync attempt holds "system.ntp", deep standby makes
-// scene requests wait, and waking releases them only once Wi-Fi is up.
+// clock (moved forward to reach the 15-minute window). Here: the time-sync
+// attempt holds "system.ntp", deep standby makes scene requests wait,
+// waking releases them only once Wi-Fi is up, and the network window
+// delivers them while the device stays down.
 
 #include "net_wiring.hpp"
 
@@ -36,6 +37,7 @@
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/wakelock.hpp"
+#include "wisp/net/network_window.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
@@ -145,6 +147,7 @@ struct Rig {
             .power_manager = pm.get(),
             .wakelocks = &locks,
             .scene_http = http.get(),
+            .now_ms = [this] { return wisp::os::now_ms() + skew.load(); },
         });
     }
 
@@ -173,6 +176,9 @@ struct Rig {
         return results.size();
     }
 
+    // Added to the "wisp.net" loop's clock: moves it past the network
+    // window's 15 minutes.
+    std::atomic<uint64_t> skew{0};
     std::string dir = wisp::test::temp_dir().string();
     wisp::core::DeviceRegistry registry;
     wisp::core::EventBus bus;
@@ -234,6 +240,51 @@ TEST(NetWiring, DeepStandbyDefersSceneRequestsUntilWifiIsBack) {
     }
     EXPECT_EQ(r.client->link_up(), (std::vector<bool>{true, true}));
     EXPECT_EQ(r.http->deferred_count(), 0u);
+}
+
+// Spec 4.4 across the pieces: in deep standby a scene request waits; the
+// network window opens after 15 minutes (its lock brings the device back to
+// standby, where Wi-Fi comes on), the request goes out once the station is
+// connected, marked deferred, and the window closes so deep standby can
+// return.
+TEST(NetWiring, NetworkWindowDeliversADeferredRequest) {
+    Rig r;
+    r.net->start();
+    ASSERT_TRUE(
+        wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Connected; }, 5000));
+    ASSERT_TRUE(wait_until([&] { return !holds(r.locks, "system.ntp"); }, 5000));
+
+    r.pm->enter_standby();
+    r.pm->tick(wisp::os::now_ms() + 3'600'000);
+    ASSERT_EQ(r.pm->level(), PowerLevel::DeepStandby);
+    ASSERT_TRUE(wait_until([&] { return !r.wifi->radio_on.load(); }, 5000));
+    r.submit("https://api.example.com/later");
+    ASSERT_TRUE(wait_until([&] { return r.http->deferred_count() == 1u; }, 5000));
+    // The negative check below needs an actual settle: there is no event
+    // to wait on for "never called".
+    wisp::os::sleep_ms(600);
+    EXPECT_EQ(r.inner.calls(), 0u);
+    EXPECT_FALSE(holds(r.locks, "system.netwindow"));
+
+    // 15 minutes on: the window opens, its lock takes the device back to
+    // standby and Wi-Fi comes on.
+    r.skew = wisp::net::NetworkWindow::kIntervalMs + 1000;
+    ASSERT_TRUE(wait_until([&] { return holds(r.locks, "system.netwindow"); }, 5000));
+    EXPECT_TRUE(wait_until([&] { return r.pm->level() == PowerLevel::Standby; }, 5000));
+    ASSERT_TRUE(wait_until([&] { return r.result_count() == 1; }, 10000));
+    {
+        std::lock_guard<std::mutex> lock(r.results_mutex);
+        EXPECT_EQ(r.results[0].error, "");
+        EXPECT_TRUE(r.results[0].deferred);
+    }
+    EXPECT_EQ(r.client->link_up(), (std::vector<bool>{true}));
+    EXPECT_EQ(r.http->deferred_count(), 0u);
+
+    // Sent and the clock synced: the window closes and its lock goes.
+    EXPECT_TRUE(wait_until([&] { return !holds(r.locks, "system.netwindow"); }, 10000));
+    r.pm->tick(wisp::os::now_ms() + 3'600'000);
+    EXPECT_EQ(r.pm->level(), PowerLevel::DeepStandby);
+    EXPECT_TRUE(wait_until([&] { return !r.wifi->radio_on.load(); }, 5000));
 }
 
 }  // namespace

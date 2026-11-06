@@ -189,6 +189,8 @@ const char* strings_zh(StrId id) {
             return "{}出错已停止";
         case StrId::NoticeRestoreFailed:
             return "{}开机恢复失败";
+        case StrId::NoticeDeleteFailed:
+            return "{}未能删除，请重试";
         case StrId::NoticeWakeLock:
             return "{}已让设备保持唤醒 30 分钟";
         case StrId::NoticeBatteryLow:
@@ -209,6 +211,8 @@ const char* strings_zh(StrId id) {
             return "配网热点";
         case StrId::HolderTone:
             return "提示音";
+        case StrId::HolderDownload:
+            return "文件下载";
         case StrId::PanelBackground:
             return "后台运行";
         case StrId::PanelNotifications:

@@ -150,9 +150,8 @@ struct FilesDownloaded {
 
 // A wisp.files job's answer: an error code, or the payload (monostate is
 // `true`, a buffer is read()'s data).
-using FilesPayload =
-    std::variant<std::monostate, os::LargeBuffer, std::vector<core::SceneFileEntry>,
-                 core::SceneFilesInfo, FilesDownloaded>;
+using FilesPayload = std::variant<std::monostate, os::LargeBuffer, core::SceneFileList,
+                                  core::SceneFilesInfo, FilesDownloaded>;
 struct FilesResult {
     std::string error;
     FilesPayload payload;

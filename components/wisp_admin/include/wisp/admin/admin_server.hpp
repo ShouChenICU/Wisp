@@ -59,6 +59,8 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/model_profiles.hpp"
+#include "wisp/core/occupancy.hpp"
+#include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
@@ -125,8 +127,22 @@ struct AdminDeps {
     // pages that only use the REST API open no WebSocket), "system.upload"
     // (network) for
     // a scene upload and "system.ota" (network + cpu) for a firmware
-    // upload, each from its first byte to its end or abort. Null: none.
+    // upload, each from its first byte to its end or abort, and
+    // "system.download" (network) while a scene file is being sent.
+    // Null: none.
     core::WakeLockRegistry* wakelocks = nullptr;
+    // GET /system/power (scene-device spec 4.5): {"level", "light_sleep",
+    // "deferred"} from PowerManager and SceneHttp::deferred_count(); the
+    // route adds every lock of `wakelocks` (null: 503 unavailable). Called
+    // on an HTTP server thread; it must not block. Empty (no
+    // PowerManager): "active", "unsupported", 0.
+    std::function<Value()> power_status = {};
+    // GET /system/occupancy (spec 6.3). Null: 503 unavailable.
+    core::OccupancyRegistry* occupancy = nullptr;
+    // GET/DELETE /scenes/{id}/files[/{name}] (spec 7.2). Its methods touch
+    // flash, so the server calling handle() must run on threads that may
+    // (EspHttpServerConfig::flash_access). Null: 503 unavailable.
+    core::SceneFiles* files = nullptr;
     // Monotonic os::now_ms() timebase; the only clock the router uses.
     // Tests inject their own; left empty, AdminServer uses os::now_ms().
     std::function<uint64_t()> now_ms = [] { return os::now_ms(); };

@@ -141,6 +141,31 @@ TEST(WakeLockRegistry, ReleaseHolderDropsAll) {
     EXPECT_EQ(field(events[4], "holder"), "scene.a");
 }
 
+// A release on behalf of a holder only touches that holder's lock: an id
+// remembered from an older lock may belong to someone else by now.
+TEST(WakeLockRegistry, ReleaseIfChecksTheHolder) {
+    Fixture f;
+    const uint32_t admin = f.reg.acquire("system.admin", WakeLockKind::Network, "ws");
+    const uint32_t scene = f.reg.acquire("scene.a", WakeLockKind::Screen, "keep_screen_on");
+
+    EXPECT_FALSE(f.reg.release_if(admin, "scene.a"));
+    EXPECT_TRUE(f.reg.holds(admin, "system.admin"));
+    EXPECT_FALSE(f.reg.holds(admin, "scene.a"));
+    EXPECT_FALSE(f.reg.release_if(0, "scene.a"));
+    EXPECT_FALSE(f.reg.release_if(999, "scene.a"));
+
+    EXPECT_TRUE(f.reg.release_if(scene, "scene.a"));
+    EXPECT_FALSE(f.reg.holds(scene, "scene.a"));
+    EXPECT_FALSE(f.reg.release_if(scene, "scene.a"));
+    EXPECT_TRUE(f.reg.holds(admin, "system.admin"));
+    EXPECT_FALSE(f.reg.holds(0, "scene.a"));
+
+    auto events = f.drained();
+    ASSERT_EQ(events.size(), 3u);
+    EXPECT_EQ(field(events[2], "op"), "release");
+    EXPECT_EQ(field(events[2], "holder"), "scene.a");
+}
+
 TEST(WakeLockRegistry, ListIsOrderedById) {
     Fixture f;
     uint32_t a = f.reg.acquire("system.a", WakeLockKind::Cpu, "a");

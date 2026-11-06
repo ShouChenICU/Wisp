@@ -228,9 +228,10 @@
 
 - 场景的 `screen` 锁在场景转入后台或关闭时自动释放。
 - 后台场景不能持有任何锁。
-- 一把锁连续持有超过 30 分钟，发一条系统通知"<持有者>已让设备保持唤醒 30 分钟"，附"释放"操作，之后每 30 分钟提醒一次。
+- `network`/`cpu` 锁连续持有超过 30 分钟，发一条系统通知"<持有者>已让设备保持唤醒 30 分钟"，附"释放"操作，之后每 30 分钟提醒一次。
   - 对场景锁，"释放"就是释放这把锁；
   - 对系统锁，只提示，不提供"释放"。
+  - `screen` 锁不提醒：场景的 `screen` 锁只在前台存在，用户看得见；短按电源键随时可以灭屏，不受锁影响。
 - 锁的增减都发 `power.wakelock` 事件：`{"op":"acquire"|"release","holder":..,"kind":..,"reason":..}`。
 - `power.state` 的取值扩展为 `active`、`dim`、`standby`、`deep_standby`。
 
@@ -403,18 +404,20 @@ wisp.http.download(url, name, opts, cb)   -- 流式写入文件，受配额和 h
   - REST `GET /scenes/{id}/files`；
   - `GET /scenes/{id}/files/{name}`；
   - `DELETE /scenes/{id}/files/{name}`，需要 `X-Wisp` 头。
+  - 附加字段：`GET /scenes` 每项有 `files`（声明的 `"auto"`/`"sd"`/`"int"`），顶层有 `sd_card`（SD 卡是否可用），供页面标出"需要 SD 卡"；`GET /scenes/{id}/files` 返回 `want`（同一声明）和 `truncated`（列表只含前 256 个名字时为 true）。
 
 ### 7.3 数据迁移 `migrate`
 
 - `scene.json` 的 `schema_version` 可以是 1–1000 的整数，表示数据结构的版本。
-- `SceneStore` 记录数据当前的版本，首次创建时等于 manifest 的值。
+- `SceneStore` 记录数据当前的版本，首次创建时等于 manifest 的值，随第一次写入数据落盘；从不写数据的场景不建 `data/` 目录。
 - 打开场景时（包括开机恢复），如果数据版本低于 manifest，先在执行 `main.lua` 之后、建立界面之前调用 `scene.migrate(old_version)`：
   - 时限 2 秒；
-  - 期间对 `wisp.store` 的写入先缓存；
+  - 从执行 `main.lua` 起到 `migrate` 结束，对 `wisp.store` 的写入先缓存；
   - 成功后一次性提交，并把版本更新为新值；
   - 出错或超时就丢弃全部缓存写入，原数据不变，场景进入 `error`，错误面板显示 `migrate failed: <msg>`。
 - 场景没有定义 `migrate`、但版本需要升级时，直接把版本更新为新值，视为结构兼容。
 - 数据版本高于 manifest（降级安装）时拒绝打开，返回 `data version <n> newer than scene <m>`。
+- 记录版本的文件损坏、读不出版本时同样拒绝打开，返回 `data version unreadable`，数据不动。
 - 安装时的检查不变，迁移只在打开场景时执行。
 
 ---

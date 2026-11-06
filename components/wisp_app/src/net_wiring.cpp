@@ -24,7 +24,7 @@ NetWiring::~NetWiring() { stop(); }
 
 void NetWiring::start() {
     Platform& platform = deps_.platform;
-    const uint64_t now = os::now_ms();
+    const uint64_t now = deps_.now_ms ? deps_.now_ms() : os::now_ms();
 
     auto wifi_dev = deps_.registry.get<hal::Wifi>("net.wifi");
     if (!platform.random) {
@@ -148,6 +148,9 @@ void NetWiring::start() {
             .request_scene_delete = deps_.request_scene_delete,
             .time_sync = time_sync_.get(),
             .wakelocks = deps_.wakelocks,
+            .power_status = [this] { return power_status(); },
+            .occupancy = deps_.occupancy,
+            .files = deps_.files,
         });
         reconcile_http(now);  // http_always_on serves from boot
     }
@@ -210,7 +213,7 @@ std::optional<net::WifiState> NetWiring::wifi_state() const {
 
 void NetWiring::run() {
     while (!stopping_.load()) {
-        const uint64_t now = os::now_ms();
+        const uint64_t now = deps_.now_ms ? deps_.now_ms() : os::now_ms();
         if (wifi_) {
             const hal::PowerLevel level = deps_.power_manager != nullptr
                                               ? deps_.power_manager->level()
@@ -367,6 +370,18 @@ Value NetWiring::device_status() const {
     }
     status.emplace("battery", std::move(battery));
     return Value(std::move(status));
+}
+
+Value NetWiring::power_status() const {
+    const PowerManager* pm = deps_.power_manager;
+    const char* light = "unsupported";
+    if (pm != nullptr && pm->light_sleep_supported()) light = pm->light_sleep_on() ? "on" : "off";
+    const size_t deferred = deps_.scene_http != nullptr ? deps_.scene_http->deferred_count() : 0;
+    return Value(Map{
+        {"level", Value(hal::to_string(pm != nullptr ? pm->level() : hal::PowerLevel::Active))},
+        {"light_sleep", Value(light)},
+        {"deferred", Value(static_cast<int64_t>(deferred))},
+    });
 }
 
 }  // namespace wisp::app

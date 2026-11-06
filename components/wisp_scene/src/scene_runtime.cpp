@@ -435,9 +435,13 @@ void SceneRuntime::on_installed(const std::string& id) {
 }
 
 void SceneRuntime::set_visible(bool visible) {
+    want_visible_.store(visible);
+    // The message only wakes the task; on a full queue the task is busy
+    // and follows want_visible_ after the message it is on.
     msg::Body body = visible ? msg::Body{msg::Show{}} : msg::Body{msg::Hide{}};
     if (!push(make_message("", 0, std::move(body)), 0) && running_)
-        WLOG_W(kTag, "screen %s not passed on: scene queue full", visible ? "on" : "off");
+        WLOG_I(kTag, "screen %s: scene queue full; the scene task catches up",
+               visible ? "on" : "off");
 }
 
 core::SceneStatus SceneRuntime::status(const std::string& id) const {
@@ -571,6 +575,7 @@ void SceneRuntime::run() {
                 WLOG_W(tag.c_str(), "slow message %s %" PRIu64 " ms", message_kind(m->body), ms);
             }
         }
+        follow_visibility();
         run_delayed();
         if (front_ != nullptr) enforce_limits(false);
         run_scene_clock();
@@ -992,7 +997,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         s.restoring = load.restore;
         s.scene->api().background = true;
         update_background_list();
-        if (!run_step(s, s.scene->start())) return failed();
+        if (!run_step(s, start_scene(s))) return failed();
         if (!run_step(s, s.scene->hook("on_state", "background"))) return failed();
         s.restoring = false;
         set_status(id, core::SceneState::Background, "");
@@ -1011,7 +1016,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     update_background_list();
     show_view(s);
 
-    if (!run_step(s, s.scene->start())) return failed();
+    if (!run_step(s, start_scene(s))) return failed();
     set_status(id, core::SceneState::Running, "");
     publish(id, "running");
     if (visible_) {
@@ -1420,6 +1425,23 @@ bool SceneRuntime::run_step(Slot& s, const std::optional<ScriptError>& err) {
     return step(s, err) && submit(s);
 }
 
+std::optional<ScriptError> SceneRuntime::start_scene(Slot& s) {
+    const int want = s.package->manifest.schema_version;
+    const int have = s.store ? s.store->data_version() : want;
+    if (have == core::kDataVersionUnreadable)
+        return ScriptError{ScriptFault::Runtime, "", 0, "data version unreadable"};
+    if (have == 0) s.store->set_initial_version(want);
+    if (have > want)
+        return ScriptError{
+            ScriptFault::Runtime, "", 0,
+            "data version " + std::to_string(have) + " newer than scene " + std::to_string(want)};
+    if (have != 0 && have < want) {
+        WLOG_I(kTag, "%s: migrating data from version %d to %d", s.id.c_str(), have, want);
+        return s.scene->start(have);
+    }
+    return s.scene->start();
+}
+
 void SceneRuntime::release_locks(Slot& s) {
     if (deps_.locks != nullptr) deps_.locks->release_holder(scene_tag(s.id));
     if (s.scene) s.scene->api().screen_lock = 0;
@@ -1697,6 +1719,17 @@ void SceneRuntime::hide_scenes() {
         }
         // Spec 6.1: the store flushes before the screen goes off.
         if (s->store) s->store->flush();
+    }
+}
+
+void SceneRuntime::follow_visibility() {
+    const bool want = want_visible_.load();
+    if (want == visible_) return;
+    visible_ = want;
+    if (want) {
+        show_scene(true);
+    } else {
+        hide_scenes();
     }
 }
 

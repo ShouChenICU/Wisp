@@ -46,6 +46,17 @@ int call_hook(lua_State* L) {
     return 0;
 }
 
+// call_migrate(old): scene.migrate(old) if the scene set one.
+int call_migrate(lua_State* L) {
+    const lua_Integer old = lua_tointeger(L, 1);
+    if (lua_rawgetp(L, LUA_REGISTRYINDEX, &kSceneTableKey) != LUA_TTABLE) return 0;
+    lua_pushstring(L, "migrate");
+    if (lua_rawget(L, -2) != LUA_TFUNCTION) return 0;
+    lua_pushinteger(L, old);
+    lua_call(L, 1, 0);
+    return 0;
+}
+
 // keep_root(root)
 int keep_root(lua_State* L) {
     lua_settop(L, 1);
@@ -145,7 +156,29 @@ std::optional<ScriptError> SceneInstance::flush(std::optional<ScriptError> err) 
     return flush_reactive(*vm_);
 }
 
-std::optional<ScriptError> SceneInstance::start() {
+std::optional<ScriptError> SceneInstance::migrate(int from) {
+    lua_State* L = vm_->L();
+    core::SceneStore* store = api_.store;
+    std::optional<ScriptError> err;
+    if (lua_checkstack(L, 2)) {
+        lua_pushcfunction(L, call_migrate);
+        lua_pushinteger(L, from);
+        err = vm_->call(1, 0, Budget::Fresh, kMigrateMs);
+    } else {
+        err = ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
+    }
+    if (store != nullptr) {
+        if (err) {
+            store->abort_batch();
+        } else if (auto r = store->commit_migration(package_->manifest.schema_version); !r) {
+            err = ScriptError{ScriptFault::Runtime, "", 0, r.error().message};
+        }
+    }
+    if (err) err->message = "migrate failed: " + err->message;
+    return err;
+}
+
+std::optional<ScriptError> SceneInstance::start(std::optional<int> migrate_from) {
     vm_ = Vm::create(id_, limits_);
     if (!vm_) return ScriptError{ScriptFault::Memory, "", 0, "not enough memory for the scene"};
     // The package outlives the VM: this instance holds both.
@@ -162,18 +195,39 @@ std::optional<ScriptError> SceneInstance::start() {
     const std::string& entry = pkg->manifest.entry;
     auto source = file_of(*pkg, entry);
     if (!source) return ScriptError{ScriptFault::Compile, entry, 0, "entry file missing"};
-    if (auto err = vm_->load(entry, *source)) return err;
-    if (auto err = vm_->call(0, 1)) return err;
+    // During a migration main.lua's own writes go into the migration's
+    // batch as well, so a failed migration leaves the data as it was.
+    core::SceneStore* batch = migrate_from ? api_.store : nullptr;
+    if (batch != nullptr) batch->begin_batch();
+    auto entry_err = vm_->load(entry, *source);
+    if (!entry_err) entry_err = vm_->call(0, 1);
+    if (entry_err) {
+        if (batch != nullptr) batch->abort_batch();
+        return entry_err;
+    }
+    if (migrate_from) {
+        if (auto err = migrate(*migrate_from)) {
+            lua_pop(L, 1);
+            return err;
+        }
+    }
+    if (!lua_checkstack(L, 2)) {
+        lua_pop(L, 1);
+        return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
+    }
+    // Kept before it is collected (a root collect_tree() refuses is never
+    // rebuilt: the scene faults). After a migration this call starts the
+    // fresh budget the tree is built in.
+    lua_pushcfunction(L, keep_root);
+    lua_pushvalue(L, -2);
+    if (auto kept = vm_->call(1, 0, migrate_from ? Budget::Fresh : Budget::Continue)) {
+        lua_pop(L, 1);
+        return kept;
+    }
     Build tree;
     auto err = collect_tree(*vm_, -1, next_id_, tree);
-    if (err) {
-        lua_pop(L, 1);
-        return err;
-    }
-    // collect_tree() checked that it is a ui.screen.
-    lua_pushcfunction(L, keep_root);
-    lua_insert(L, -2);
-    if (auto kept = vm_->call(1, 0, Budget::Continue)) return kept;
+    lua_pop(L, 1);
+    if (err) return err;
     if (!batch_.push(std::move(tree)).is_ok())
         return ScriptError{ScriptFault::Runtime, entry, 0, "ui update too large"};
     return flush_reactive(*vm_);

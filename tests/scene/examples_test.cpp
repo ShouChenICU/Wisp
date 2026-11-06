@@ -4,13 +4,15 @@
 // later without the error panel, with nothing it shows cut off by the
 // screen's shape (scenes own the whole screen and lay themselves out from
 // wisp.device.info() and row_span(), AGENTS.md section 3). wisp.http goes
-// to a fake client that
-// answers the weather example with a fixed forecast: no test here touches
-// the network. The UI has the real vector font image, so large text is
-// laid out at its real size.
+// to a fake client that answers the weather example with a fixed
+// forecast: no test here touches the network. wisp.sensor reads a fake
+// IMU (the level example), and wisp.notify posts to a NotificationService
+// in memory. The UI has the real vector font image, so large text is laid
+// out at its real size.
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -26,7 +28,10 @@
 #include "support/lvgl_probe.hpp"
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
+#include "wisp/core/notification_service.hpp"
+#include "wisp/core/occupancy.hpp"
 #include "wisp/core/scene_manifest.hpp"
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/scene/vm.hpp"
@@ -38,8 +43,8 @@ namespace fs = std::filesystem;
 using wisp::core::SceneState;
 using wisp::test::wait_until;
 
-const char* const kExamples[] = {"counter", "pomodoro", "todo",   "ledger",
-                                 "clock",   "sysinfo",  "weather"};
+const char* const kExamples[] = {"counter", "pomodoro", "todo",    "ledger",
+                                 "clock",   "sysinfo",  "weather", "level"};
 
 // A forecast the way api.open-meteo.com answers ?current=...&daily=...
 const char* kForecast = R"({"latitude":39.9,"longitude":116.4,"timezone":"Asia/Shanghai",
@@ -174,6 +179,16 @@ TEST(ExamplesPackages, ManifestsParseAndLuaCompiles) {
         wisp::core::parse_scene_manifest(read_file(examples_dir() / "weather" / "scene.json"));
     ASSERT_TRUE(weather);
     EXPECT_EQ(weather.value().http_hosts, std::vector<std::string>{"api.open-meteo.com"});
+    // Going back sends the timer and the forecast to the background; the
+    // rest close. Every example keeps schema_version 1 (scene-device spec 8).
+    for (const char* id : kExamples) {
+        SCOPED_TRACE(id);
+        auto m = wisp::core::parse_scene_manifest(read_file(examples_dir() / id / "scene.json"));
+        ASSERT_TRUE(m);
+        const std::string name = id;
+        EXPECT_EQ(m.value().background, name == "pomodoro" || name == "weather");
+        EXPECT_EQ(m.value().schema_version, 1);
+    }
 }
 
 class Examples : public wisp::test::SceneRuntimeFixture {
@@ -186,12 +201,25 @@ protected:
                        .headers = {{"content-type", "application/json; charset=utf-8"}}};
         http = std::make_unique<wisp::net::SceneHttp>(client);
         ASSERT_TRUE(http->start());
-        configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) { d.http = http.get(); };
+        imu->set_next_sample({.az = 1});  // lying flat
+        sensors = std::make_unique<wisp::core::SensorService>(imu, occupancy);
+        ASSERT_TRUE(sensors->start());
+        notes = std::make_unique<wisp::core::NotificationService>(wisp::core::NotificationDeps{
+            .bus = bus, .storage = *storage, .submit_io = {}, .make_timer = {}});
+        configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) {
+            d.http = http.get();
+            d.sensors = sensors.get();
+            d.notifications = notes.get();
+        };
     }
 
     void TearDown() override {
+        rt.reset();
+        sensors->stop();
         SceneRuntimeFixture::TearDown();
         http.reset();
+        sensors.reset();
+        notes.reset();
     }
 
     // Copies scenes/examples/<id> into the repository's code root.
@@ -306,6 +334,7 @@ protected:
         if (id == "clock") return wait_until([&] { return count_of(&lv_canvas_class) == 1; }, kMs);
         if (id == "sysinfo") return wait_label("安全区", kMs);
         if (id == "weather") return wait_label("12°", kMs);
+        if (id == "level") return wait_label("0°", kMs);
         return false;
     }
 
@@ -359,6 +388,10 @@ protected:
 
     wisp::test::FakeHttpClient client;
     std::unique_ptr<wisp::net::SceneHttp> http;
+    std::shared_ptr<wisp::test::FakeImu> imu = std::make_shared<wisp::test::FakeImu>("imu.main");
+    wisp::core::OccupancyRegistry occupancy;
+    std::unique_ptr<wisp::core::SensorService> sensors;
+    std::unique_ptr<wisp::core::NotificationService> notes;
 };
 
 TEST_F(Examples, EachRunsOnACircle) {
@@ -508,6 +541,107 @@ TEST_F(Examples, PomodoroCountsDown) {
     EXPECT_TRUE(wait_label("休息"));
     EXPECT_TRUE(wait_label("已完成 0 个"));
     EXPECT_EQ(rt->status("pomodoro").state, SceneState::Running);
+}
+
+// A refresh that waited for deep standby's network window says when the
+// forecast it shows was fetched (scene-device spec 4.4).
+TEST_F(Examples, WeatherShowsWhenADeferredRefreshRan) {
+    start();
+    http->set_deferring(true);
+    install_example("weather");
+    ASSERT_TRUE(rt->open("weather"));
+    EXPECT_TRUE(wait_label("正在获取"));
+    http->set_deferring(false);
+    EXPECT_TRUE(wait_label("上次更新 10:00", 2000)) << ::testing::PrintToString(labels());
+    EXPECT_EQ(rt->status("weather").state, SceneState::Running) << rt->status("weather").error;
+}
+
+// Started and sent to the background, the timer runs on: when the work
+// phase ends it posts its alarm notification, and a tap on it brings the
+// scene back on its timer page, which hears which notification it was.
+TEST_F(Examples, PomodoroNotifiesFromTheBackground) {
+    std::atomic<int64_t> wall{1793793600};  // 2026-11-04 12:00 UTC
+    auto base = configure_deps;
+    configure_deps = [base, &wall](wisp::scene::SceneRuntimeDeps& d) {
+        base(d);
+        d.wall_clock = [&wall] { return wall.load(); };
+    };
+    start();
+    install_example("pomodoro");
+    ASSERT_TRUE(rt->open("pomodoro"));
+    ASSERT_TRUE(wait_label("25:00"));
+    ASSERT_TRUE(rt->click_ref("toggle"));
+    ASSERT_TRUE(wait_label("暂停"));
+    ASSERT_TRUE(rt->close("pomodoro"));
+    ASSERT_TRUE(
+        wait_until([&] { return rt->status("pomodoro").state == SceneState::Background; }, 2000));
+    wall += 25 * 60;
+    ASSERT_TRUE(wait_until([&] { return notes->find("pomodoro", "pomo").has_value(); }, 3000));
+    const wisp::core::Notification n = *notes->find("pomodoro", "pomo");
+    EXPECT_EQ(n.title, "番茄钟");
+    EXPECT_EQ(n.body, "25 分钟到了");
+    EXPECT_EQ(n.sound, wisp::core::NotifySound::Alarm);
+    EXPECT_TRUE(n.wake);
+
+    ASSERT_TRUE(rt->deliver_notification("pomodoro", "pomo"));
+    EXPECT_TRUE(
+        wait_until([&] { return rt->status("pomodoro").state == SceneState::Running; }, 2000));
+    EXPECT_TRUE(wait_until([&] { return log_has("scene.pomodoro", "notified=pomo"); }, 2000));
+    EXPECT_TRUE(wait_label("休息", 2000)) << ::testing::PrintToString(labels());
+    EXPECT_TRUE(wait_label("已完成 1 个", 2000));
+}
+
+// The level reads the accelerometer: tilted 30 degrees from flat, it
+// shows and logs 30, and its bubble moves off the centre.
+TEST_F(Examples, LevelShowsTheTilt) {
+    start("circle");
+    install_example("level");
+    imu->set_next_sample({.ax = 0, .ay = 0, .az = 1});
+    ASSERT_TRUE(rt->open("level"));
+    ASSERT_TRUE(wait_label("0°", 2000)) << ::testing::PrintToString(labels());
+    ASSERT_TRUE(wait_until([&] { return log_has("scene.level", "angle=0"); }, 2000));
+    std::string flat;
+    ASSERT_TRUE(wait_until(
+        [&] {
+            flat = canvas_pixels();
+            return !flat.empty();
+        },
+        2000));
+    imu->set_next_sample({.ax = 0.5f, .ay = 0, .az = 0.87f});
+    EXPECT_TRUE(wait_label("30°", 2000)) << ::testing::PrintToString(labels());
+    EXPECT_TRUE(wait_until([&] { return log_has("scene.level", "angle=30"); }, 2000));
+    EXPECT_TRUE(wait_until([&] { return canvas_pixels() != flat; }, 2000));
+    EXPECT_EQ(clipped(), std::vector<std::string>{});
+    EXPECT_EQ(rt->status("level").state, SceneState::Running) << rt->status("level").error;
+}
+
+// Without an IMU the level says so instead of failing.
+TEST_F(Examples, LevelWithoutASensor) {
+    auto base = configure_deps;
+    configure_deps = [base](wisp::scene::SceneRuntimeDeps& d) {
+        base(d);
+        d.sensors = nullptr;
+    };
+    start();
+    install_example("level");
+    ASSERT_TRUE(rt->open("level"));
+    EXPECT_TRUE(wait_label("没有加速度传感器", 2000)) << ::testing::PrintToString(labels());
+    EXPECT_EQ(rt->status("level").state, SceneState::Running) << rt->status("level").error;
+    EXPECT_FALSE(error_panel_has(""));
+}
+
+// A sensor that is there but cannot be subscribed (another holder has the
+// IMU to itself): the level says so in a note that stays whole on a
+// circle, and logs why.
+TEST_F(Examples, LevelWhenTheSubscriptionFails) {
+    ASSERT_TRUE(occupancy.acquire("imu.main", "system.test", wisp::core::OccupancyMode::Exclusive));
+    start("circle");
+    install_example("level");
+    ASSERT_TRUE(rt->open("level"));
+    EXPECT_TRUE(wait_label("加速度传感器不可用", 2000)) << ::testing::PrintToString(labels());
+    EXPECT_EQ(clipped(), std::vector<std::string>{});
+    EXPECT_TRUE(log_has("scene.level", "busy"));
+    EXPECT_EQ(rt->status("level").state, SceneState::Running) << rt->status("level").error;
 }
 
 // sysinfo and clock show local time from info().utc_offset, and follow a

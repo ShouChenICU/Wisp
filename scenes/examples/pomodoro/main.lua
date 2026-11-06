@@ -1,8 +1,11 @@
--- Pomodoro: 25 minutes of work, 5 of rest. The time left comes from the wall
--- clock (wisp.device.info().time), not from counting ticks: timers pause while
--- the screen is off and missed "every" ticks fire only once when it comes back,
--- so on_show recomputes it from the end time. Without a clock it falls back to
--- one second per tick.
+-- Pomodoro: 25 minutes of work, 5 of rest. scene.json declares "background":
+-- going back leaves it running in the background, where its timer keeps going
+-- with the screen off too, and a phase that runs out posts a notification
+-- that rings and wakes the screen. A tap on that notification brings the
+-- scene back to the front (scene.on_notification).
+-- The time left comes from the wall clock (wisp.device.info().time), not from
+-- counting ticks, so a late tick does not slow it down. Without a clock it
+-- falls back to one second per tick.
 local PHASES = {
   work = { secs = 25 * 60, title = "专注", next = "rest" },
   rest = { secs = 5 * 60, title = "休息", next = "work" },
@@ -41,12 +44,25 @@ local function pause()
   save()
 end
 
+-- The same id each time: a new alarm replaces the one still unread.
+local ALARMS = {
+  work = "25 分钟到了",
+  rest = "休息结束，开始专注",
+}
+
+local function alarm(ended)
+  local id, err = wisp.notify { title = "番茄钟", body = ALARMS[ended], sound = "alarm",
+                                wake = true, id = "pomo" }
+  if not id then wisp.log.warn("no alarm: " .. tostring(err)) end
+end
+
 -- finished: the phase ran out (a skipped work phase does not count as done).
 local function switch_phase(finished)
   if finished and phase:get() == "work" then
     done_count:set(done_count:get() + 1)
     wisp.store.set("done", done_count:get())
   end
+  if finished then alarm(phase:get()) end
   phase:set(PHASES[phase:get()].next)
   left:set(PHASES[phase:get()].secs)
   wisp.log.info("phase=" .. phase:get())
@@ -79,6 +95,11 @@ end
 wisp.timer.every(1000, sync)
 scene.on_show = sync
 scene.on_close = save
+-- Opened from the alarm: the timer page shows the phase that has just begun.
+scene.on_notification = function(id)
+  wisp.log.info("notified=" .. id)
+  sync()
+end
 
 local function mmss(s)
   return string.format("%02d:%02d", s // 60, s % 60)

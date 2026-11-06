@@ -99,16 +99,16 @@ constexpr int32_t kBadgeSize = 32;
 // A swipe on the panel: as far as the top-edge swipe that opens it.
 constexpr int32_t kSwipe = SystemLayer::kTopTriggerDy;
 
-lv_obj_t* make_text(lv_obj_t* parent, const std::string& text, uint32_t color) {
+lv_obj_t* make_text(lv_obj_t* parent, const char* text, uint32_t color) {
     lv_obj_t* label = lv_label_create(parent);
-    lv_label_set_text(label, text.c_str());
+    lv_label_set_text(label, text);
     lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
     return label;
 }
 
 // A label that takes what is left of its flex row and ends in "..." when
 // the text is longer.
-lv_obj_t* make_fill_text(lv_obj_t* parent, const std::string& text, uint32_t color) {
+lv_obj_t* make_fill_text(lv_obj_t* parent, const char* text, uint32_t color) {
     lv_obj_t* label = make_text(parent, text, color);
     lv_obj_set_width(label, 0);
     lv_obj_set_flex_grow(label, 1);
@@ -283,14 +283,15 @@ void SystemLayer::fill_panel() {
     // A tap on the time or the battery is not a tap on empty space.
     lv_obj_add_flag(header, LV_OBJ_FLAG_CLICKABLE);
     touchable(header, Part::Header, 0);
-    lv_obj_t* time = make_text(header, m.header.time, theme::kText);
+    lv_obj_t* time = make_text(header, m.header.time.c_str(), theme::kText);
     lv_obj_set_style_text_font(time, font(24), 0);
     std::string status = battery_text(m.header);
     if (!m.header.wifi.empty()) {
         if (!status.empty()) status += "  ";
-        status += LV_SYMBOL_WIFI " " + m.header.wifi;
+        status += LV_SYMBOL_WIFI " ";
+        status.append(m.header.wifi.data(), m.header.wifi.size());
     }
-    lv_obj_t* status_label = make_fill_text(header, status, theme::kTextDim);
+    lv_obj_t* status_label = make_fill_text(header, status.c_str(), theme::kTextDim);
     lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_RIGHT, 0);
 
     if (!m.scenes.empty()) heading(StrId::PanelBackground);
@@ -298,8 +299,8 @@ void SystemLayer::fill_panel() {
         const PanelScene& sc = m.scenes[i];
         lv_obj_t* row = make_row(Part::SceneRow, i);
         detail::make_badge(row, detail::first_char(sc.name), sc.id, kBadgeSize);
-        make_fill_text(row, sc.name, theme::kText);
-        make_text(row, elapsed_text(m.now_ms, sc.since_ms), theme::kTextFaint);
+        make_fill_text(row, sc.name.c_str(), theme::kText);
+        make_text(row, elapsed_text(m.now_ms, sc.since_ms).c_str(), theme::kTextFaint);
         make_close(row, Part::SceneClose, i);
     }
 
@@ -314,11 +315,11 @@ void SystemLayer::fill_panel() {
         lv_obj_set_width(text, 0);
         lv_obj_set_flex_grow(text, 1);
         lv_obj_set_style_pad_top(text, theme::kGapXs, 0);
-        lv_obj_t* title = make_text(text, n.title, theme::kText);
+        lv_obj_t* title = make_text(text, n.title.c_str(), theme::kText);
         lv_obj_set_width(title, LV_PCT(100));
         lv_label_set_long_mode(title, LV_LABEL_LONG_MODE_DOTS);
         if (!n.body.empty()) {
-            lv_obj_t* body = make_text(text, n.body, theme::kTextDim);
+            lv_obj_t* body = make_text(text, n.body.c_str(), theme::kTextDim);
             lv_obj_set_width(body, LV_PCT(100));
             lv_label_set_long_mode(body, LV_LABEL_LONG_MODE_WRAP);
         }
@@ -349,6 +350,22 @@ void SystemLayer::fill_panel() {
     lv_obj_scroll_to_y(panel_, std::min(scroll_y, max_y), LV_ANIM_OFF);
 }
 
+Result<void> SystemLayer::tap_panel_row(size_t index) {
+    if (panel_ == nullptr) return Result<void>::err(ErrorCode::NotFound, "the panel is not open");
+    size_t seen = 0;
+    const uint32_t n = lv_obj_get_child_count(panel_);
+    for (uint32_t i = 0; i < n; ++i) {
+        lv_obj_t* row = lv_obj_get_child(panel_, static_cast<int32_t>(i));
+        const Part part = part_of(row);
+        if (part != Part::SceneRow && part != Part::NoteRow) continue;
+        if (seen++ != index) continue;
+        // Sent by code, without a pointer: panel_cb takes it for a tap.
+        lv_obj_send_event(row, LV_EVENT_CLICKED, nullptr);
+        return Result<void>::ok();
+    }
+    return Result<void>::err(ErrorCode::NotFound, "no such row");
+}
+
 void SystemLayer::discard_panel() {
     if (panel_ == nullptr) return;
     if (panel_event_depth_ > 0) {
@@ -363,6 +380,8 @@ void SystemLayer::discard_panel() {
     }
     panel_ = nullptr;
     panel_backdrop_ = nullptr;
+    // A closed panel keeps nothing it showed; on_open builds the next model.
+    model_ = PanelModel{};
     // A copy: the owner may replace the handlers from it.
     if (std::function<void()> on_close = panel_handlers_.on_close) on_close();
 }
@@ -402,7 +421,7 @@ void SystemLayer::panel_cb(lv_event_t* e) {
     } else if (end == detail::PressEnd::SwipeLeft && note_part) {
         // A swipe that starts on the row's buttons swipes the row.
         call = [fn = h.dismiss_note, n = m.notes[i]] {
-            if (fn) fn(n.source, n.id);
+            if (fn) fn(std::string(n.source), std::string(n.id));
         };
     } else if (end == detail::PressEnd::Tap) {
         switch (part) {
@@ -413,29 +432,29 @@ void SystemLayer::panel_cb(lv_event_t* e) {
                 break;
             case Part::SceneRow:
                 close = true;
-                call = [fn = h.open_scene, id = m.scenes[i].id] {
+                call = [fn = h.open_scene, id = std::string(m.scenes[i].id)] {
                     if (fn) fn(id);
                 };
                 break;
             case Part::SceneClose:
-                call = [fn = h.exit_scene, id = m.scenes[i].id] {
+                call = [fn = h.exit_scene, id = std::string(m.scenes[i].id)] {
                     if (fn) fn(id);
                 };
                 break;
             case Part::NoteRow:
                 close = true;
                 call = [fn = h.tap_note, n = m.notes[i]] {
-                    if (fn) fn(n.source, n.id);
+                    if (fn) fn(std::string(n.source), std::string(n.id));
                 };
                 break;
             case Part::NoteClose:
                 call = [fn = h.dismiss_note, n = m.notes[i]] {
-                    if (fn) fn(n.source, n.id);
+                    if (fn) fn(std::string(n.source), std::string(n.id));
                 };
                 break;
             case Part::NoteAction:
                 call = [fn = h.note_action, n = m.notes[i]] {
-                    if (fn) fn(n.source, n.id);
+                    if (fn) fn(std::string(n.source), std::string(n.id));
                 };
                 break;
             case Part::ClearAll:

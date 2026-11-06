@@ -62,11 +62,34 @@ struct HttpResponse {
     // Keeps whatever static_body points into alive until the response has
     // been sent (a scene export zip in PSRAM). Null for mapped data.
     std::shared_ptr<const void> body_owner;
+    // Set: the body is pulled from it in pieces until it returns 0 (or an error,
+    // which ends the connection); sent as Content-Length when stream_length > 0,
+    // else chunked. Runs on the server's thread.
+    //
+    // Each call fills at most buf.size() bytes (at most kStreamChunkBytes,
+    // and never past stream_length): the servers hand it a buffer of that
+    // size in Mem::Large, held only while the response is being sent. With
+    // a stream_length the body ends once that many bytes have come; a
+    // stream that runs dry before then ends the connection, since the
+    // client was promised more. `body` and `static_body` are ignored.
+    std::function<Result<size_t>(std::span<uint8_t> buf)> stream;
+    uint64_t stream_length = 0;
 
     static HttpResponse json(int status, const Value& v);
     // {"error": {"code": ..., "message": ...}} (spec 6.1).
     static HttpResponse error(int status, std::string_view code, std::string_view message);
 };
+
+// The largest piece HttpResponse::stream is asked for at once.
+inline constexpr size_t kStreamChunkBytes = 32 * 1024;
+
+// Pulls `res.stream` into `buf` and hands each piece to `write`, as both
+// servers send a streamed body: until it returns 0 (stream_length 0), or
+// until stream_length bytes have come. False when the stream fails, runs
+// dry short of stream_length or `write` fails: the connection must then
+// be closed. `write` gets non-empty pieces only.
+bool pump_stream(const HttpResponse& res, std::span<uint8_t> buf,
+                 const std::function<bool(std::span<const uint8_t>)>& write);
 
 using HttpHandler = std::function<HttpResponse(const HttpRequest&)>;
 

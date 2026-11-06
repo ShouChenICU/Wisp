@@ -351,6 +351,9 @@ public:
     // event, so a seed loses to any event already seen, whose value is at
     // least as new. Values outside -720..840 are ignored. Any thread.
     void seed_utc_offset(int minutes);
+    // The screen went on or off. Any thread. The wanted state is kept and
+    // the scene task catches up with it on its next pass, so a message
+    // dropped on a full queue only delays it.
     void set_visible(bool visible);
     // The id of the scene in the foreground (running or showing its error
     // panel), if any.
@@ -595,6 +598,10 @@ private:
     bool submit(Slot& s);
     // step(), then submit(); false if the scene faulted.
     bool run_step(Slot& s, const std::optional<ScriptError>& err);
+    // SceneInstance::start() after comparing the data version with the
+    // manifest's (spec 7.3): a new store takes the manifest's, an older
+    // one is migrated, and a newer one is refused before any VM exists.
+    std::optional<ScriptError> start_scene(Slot& s);
     void fault(Slot& s, const ScriptError& err);
     void release_locks(Slot& s);
     void notice(SceneNoticeKind kind, const Slot& s);
@@ -602,6 +609,8 @@ private:
     void update_background_list();
     void hide_scenes();
     void show_scene(bool screen_came_on);
+    // Hides or shows to match want_visible_ if visible_ differs.
+    void follow_visibility();
     void run_delayed();
     void drain_queue();
     // How long the task may wait for the scenes' timers and minute tickers.
@@ -696,6 +705,9 @@ private:
     // superseded, or cancelled by a close of its scene.
     std::vector<PendingLoad> loading_;
     bool visible_ = true;
+    // What set_visible() last asked for; the scene task brings visible_
+    // to it after every pass (follow_visibility()).
+    std::atomic<bool> want_visible_{true};
     bool quit_ = false;
     // The ui::Lang of the last system.settings event, -1 before any. Set
     // by the bus's dispatcher, read by the scene task.

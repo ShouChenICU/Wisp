@@ -17,6 +17,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "support/fake_devices.hpp"
@@ -171,8 +172,14 @@ TEST(SceneFiles, NameRules) {
     // StorageManager's own bookkeeping suffixes.
     EXPECT_FALSE(valid_file_name("a.tmp"));
     EXPECT_FALSE(valid_file_name("a.new"));
+    // In any case: on FAT "x.TMP" is "x.tmp".
+    EXPECT_FALSE(valid_file_name("x.TMP"));
+    EXPECT_FALSE(valid_file_name("x.New"));
+    EXPECT_FALSE(valid_file_name("x.tMp"));
+    EXPECT_TRUE(valid_file_name("x.tmpl"));
 
     Fixture f(false);
+    EXPECT_EQ(code_of(f.files->write("s", "x.TMP", as_bytes("x"))), "bad_name");
     EXPECT_EQ(code_of(f.files->write("s", "../x", as_bytes("x"))), "bad_name");
     EXPECT_EQ(code_of(f.files->read("s", ".x", 0, 1)), "bad_name");
 }
@@ -272,11 +279,16 @@ TEST(SceneFiles, ReadRangeAndLimits) {
     EXPECT_FALSE(on_disk(f.int_files("s") / "big"));
 }
 
+// A full list holds up to max_list names; past 15 bytes a std::string
+// would put each one in internal RAM on the device (AGENTS.md section 8).
+static_assert(std::is_same_v<decltype(wisp::core::SceneFileEntry::name), wisp::os::LargeString>,
+              "listed file names live in PSRAM");
+
 TEST(SceneFiles, ListRemoveInfo) {
     Fixture f(false);
     auto empty = f.files->list("s");
     ASSERT_TRUE(empty);
-    EXPECT_TRUE(empty.value().empty());
+    EXPECT_TRUE(empty.value().entries.empty());
     EXPECT_EQ(code_of(f.files->remove("s", "a.txt")), "not_found");
 
     ASSERT_TRUE(f.files->write("s", "b.txt", as_bytes("bb")));
@@ -285,17 +297,17 @@ TEST(SceneFiles, ListRemoveInfo) {
     write_raw(f.int_files("s") / ".c.dl", "partial");
     auto listed = f.files->list("s");
     ASSERT_TRUE(listed);
-    ASSERT_EQ(listed.value().size(), 2u);
-    EXPECT_EQ(listed.value()[0].name, "a.txt");
-    EXPECT_EQ(listed.value()[0].size, 1u);
-    EXPECT_GT(listed.value()[0].mtime, 0);
-    EXPECT_EQ(listed.value()[1].name, "b.txt");
-    EXPECT_EQ(listed.value()[1].size, 2u);
+    ASSERT_EQ(listed.value().entries.size(), 2u);
+    EXPECT_EQ(listed.value().entries[0].name, "a.txt");
+    EXPECT_EQ(listed.value().entries[0].size, 1u);
+    EXPECT_GT(listed.value().entries[0].mtime, 0);
+    EXPECT_EQ(listed.value().entries[1].name, "b.txt");
+    EXPECT_EQ(listed.value().entries[1].size, 2u);
 
     ASSERT_TRUE(f.files->remove("s", "a.txt"));
     EXPECT_FALSE(on_disk(f.int_files("s") / "a.txt"));
     EXPECT_EQ(code_of(f.files->remove("s", "a.txt")), "not_found");
-    EXPECT_EQ(f.files->list("s").value().size(), 1u);
+    EXPECT_EQ(f.files->list("s").value().entries.size(), 1u);
 
     auto info = f.files->info("s");
     ASSERT_TRUE(info);
@@ -305,6 +317,33 @@ TEST(SceneFiles, ListRemoveInfo) {
     EXPECT_STREQ(wisp::core::to_string(FilesLocation::Internal), "int");
     EXPECT_STREQ(wisp::core::to_string(FilesLocation::Sd), "sd");
     EXPECT_STREQ(wisp::core::to_string(FilesLocation::None), "none");
+}
+
+// One file's entry, for a download that announces its length; on the card
+// the spelling on disk.
+TEST(SceneFiles, StatOneFile) {
+    Fixture f(false);
+    EXPECT_EQ(code_of(f.files->stat("s", "a.txt")), "not_found");
+    ASSERT_TRUE(f.files->write("s", "a.txt", as_bytes("abc")));
+    auto st = f.files->stat("s", "a.txt");
+    ASSERT_TRUE(st);
+    EXPECT_EQ(st.value().name, "a.txt");
+    EXPECT_EQ(st.value().size, 3u);
+    EXPECT_GT(st.value().mtime, 0);
+    EXPECT_EQ(code_of(f.files->stat("s", "b.txt")), "not_found");
+    EXPECT_EQ(code_of(f.files->stat("s", ".a.txt")), "bad_name");
+    // Bookkeeping is never a file of the scene's.
+    write_raw(f.int_files("s") / ".c.dl", "partial");
+    EXPECT_EQ(code_of(f.files->stat("s", ".c.dl")), "bad_name");
+
+    Fixture card(true);
+    ASSERT_TRUE(card.files->write("c", "Song.MP3", as_bytes("12345")));
+    auto folded = card.files->stat("c", "song.mp3");
+    ASSERT_TRUE(folded);
+    EXPECT_EQ(folded.value().name, "Song.MP3");
+    EXPECT_EQ(folded.value().size, 5u);
+    card.set_sd(false);
+    EXPECT_EQ(code_of(card.files->stat("c", "Song.MP3")), "unavailable");
 }
 
 // Two-phase naming of downloads (".<name>.dl" -> ".<name>.done" -> name):
@@ -352,7 +391,7 @@ TEST(SceneFiles, SdRemovedMidDownload) {
     EXPECT_TRUE(dl->push(as_bytes(chunk)));
     EXPECT_TRUE(on_disk(f.sd_files("d") / ".big.bin.dl"));
     // Not listed while it downloads.
-    EXPECT_TRUE(f.files->list("d").value().empty());
+    EXPECT_TRUE(f.files->list("d").value().entries.empty());
 
     f.set_sd(false);
     f.files->on_sd_changed();
@@ -524,13 +563,19 @@ TEST(SceneFiles, ListIsBounded) {
     SceneFilesConfig config;
     config.max_list = 3;
     Fixture f(false, config);
-    for (const char* n : {"a", "b", "c", "d", "e"})
-        ASSERT_TRUE(f.files->write("l", n, as_bytes("1")));
+    // Written out of order: the directory's own order is not the answer's.
+    for (const char* n : {"e", "c", "a"}) ASSERT_TRUE(f.files->write("l", n, as_bytes("1")));
+    auto exact = f.files->list("l");
+    ASSERT_TRUE(exact);
+    EXPECT_EQ(exact.value().entries.size(), 3u);
+    EXPECT_FALSE(exact.value().truncated);
+    for (const char* n : {"d", "b"}) ASSERT_TRUE(f.files->write("l", n, as_bytes("1")));
     auto listed = f.files->list("l");
     ASSERT_TRUE(listed);
-    ASSERT_EQ(listed.value().size(), 3u);
-    EXPECT_EQ(listed.value()[0].name, "a");
-    EXPECT_EQ(listed.value()[2].name, "c");
+    EXPECT_TRUE(listed.value().truncated);
+    std::vector<std::string> names;
+    for (const auto& e : listed.value().entries) names.emplace_back(e.name);
+    EXPECT_EQ(names, (std::vector<std::string>{"a", "b", "c"}));
     EXPECT_EQ(f.files->info("l").value().used, 5u);
 }
 
@@ -590,4 +635,67 @@ TEST(SceneFiles, PushWaitsForTheWorkerUntilCancelled) {
     EXPECT_EQ(read_raw(f.sd_files("w") / "d.bin"), body);
     EXPECT_FALSE(on_disk(f.sd_files("w") / "c.bin"));
     EXPECT_EQ(f.files->info("w").value().used, body.size());
+}
+
+// On the card (FAT) a name differing only in case is the file already
+// there: every call acts on the spelling on disk. The simulator's card is
+// case-sensitive, so a second spelling showing up would be a bug here.
+TEST(SceneFiles, CardNamesMatchWithoutCase) {
+    Fixture f(true);
+    ASSERT_TRUE(f.files->write("c", "Song.MP3", as_bytes("12345")));
+    ASSERT_TRUE(f.files->write("c", "song.mp3", as_bytes("abc")));
+    ASSERT_TRUE(f.files->append("c", "SONG.mp3", as_bytes("d")));
+    EXPECT_EQ(read_raw(f.sd_files("c") / "Song.MP3"), "abcd");
+    EXPECT_FALSE(on_disk(f.sd_files("c") / "song.mp3"));
+    EXPECT_FALSE(on_disk(f.sd_files("c") / "SONG.mp3"));
+    EXPECT_EQ(text(f.files->read("c", "song.MP3", 0, 10).value()), "abcd");
+    EXPECT_EQ(f.files->info("c").value().used, 4u);
+
+    // A download: the in-flight check and the target follow the same rule.
+    auto dl = f.files->begin_download("c", "SONG.MP3");
+    ASSERT_TRUE(dl);
+    EXPECT_EQ(code_of(f.files->begin_download("c", "song.mp3")), "busy");
+    EXPECT_TRUE(dl.value()->push(as_bytes("new!!!")));
+    ASSERT_TRUE(dl.value()->finish(true));
+    EXPECT_EQ(read_raw(f.sd_files("c") / "Song.MP3"), "new!!!");
+    EXPECT_FALSE(on_disk(f.sd_files("c") / "SONG.MP3"));
+    EXPECT_EQ(f.files->info("c").value().used, 6u);
+
+    ASSERT_TRUE(f.files->remove("c", "song.mp3"));
+    EXPECT_FALSE(on_disk(f.sd_files("c") / "Song.MP3"));
+    EXPECT_EQ(f.files->info("c").value().used, 0u);
+    EXPECT_EQ(disk_bytes(f.sd_files("c")), 0u);
+
+    // Internal storage keeps case: two files.
+    f.declared["i"] = FilesWant::Int;
+    ASSERT_TRUE(f.files->write("i", "A.txt", as_bytes("1")));
+    ASSERT_TRUE(f.files->write("i", "a.txt", as_bytes("22")));
+    EXPECT_EQ(read_raw(f.int_files("i") / "A.txt"), "1");
+    EXPECT_EQ(read_raw(f.int_files("i") / "a.txt"), "22");
+    EXPECT_EQ(f.files->info("i").value().used, 3u);
+}
+
+// No record, but the card holds files for the id: an installed scene that
+// may use the card takes them over on its first call, even a read; one
+// declaring "int" does not, and neither does an id with no scene.
+TEST(SceneFiles, CardFilesAdoptedOnFirstLook) {
+    Fixture f(true);
+    write_raw(f.sd_files("a") / "ep1.mp3", "audio");
+    write_raw(f.sd_files("i") / "x", "int?");
+    write_raw(f.sd_files("ghost") / "x", "ghost");
+    f.declared["a"] = FilesWant::Auto;
+    f.declared["i"] = FilesWant::Int;
+
+    EXPECT_EQ(text(f.files->read("a", "ep1.mp3", 0, 10).value()), "audio");
+    EXPECT_NE(read_raw(f.record("a")).find("\"sd\""), std::string::npos);
+    EXPECT_EQ(f.files->info("a").value().location, FilesLocation::Sd);
+    EXPECT_EQ(f.files->info("a").value().used, 5u);
+
+    EXPECT_EQ(f.files->info("i").value().location, FilesLocation::None);
+    EXPECT_FALSE(on_disk(f.record("i")));
+
+    ASSERT_TRUE(f.files->scan());
+    EXPECT_EQ(f.files->info("ghost").value().location, FilesLocation::None);
+    EXPECT_FALSE(on_disk(f.record("ghost")));
+    EXPECT_EQ(read_raw(f.sd_files("ghost") / "x"), "ghost");
 }

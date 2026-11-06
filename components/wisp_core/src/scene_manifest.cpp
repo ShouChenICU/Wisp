@@ -20,6 +20,7 @@ constexpr size_t kMaxNameBytes = 32;
 constexpr size_t kMaxVersionBytes = 64;
 constexpr size_t kMaxHosts = 16;
 constexpr size_t kMaxHostBytes = 253;
+constexpr int64_t kMaxSchemaVersion = 1000;
 // The manifest needs three levels (permissions.http[]); one more leaves
 // room for a future field. Parsing recurses once per level, and the
 // storage worker parses every manifest at boot on a stack of a few KB
@@ -264,10 +265,11 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
     }
 
     const Value* schema = root.find("schema_version");
-    if (schema == nullptr || schema->type() != Value::Type::Int || schema->as_int() != 1) {
-        return invalid("schema_version must be 1");
+    if (schema == nullptr || schema->type() != Value::Type::Int || schema->as_int() < 1 ||
+        schema->as_int() > kMaxSchemaVersion) {
+        return invalid("schema_version must be an integer from 1 to 1000");
     }
-    m.schema_version = 1;
+    m.schema_version = static_cast<int>(schema->as_int());
 
     if (!string_field(root, "entry", m.entry, present)) {
         return invalid("entry must be a string");

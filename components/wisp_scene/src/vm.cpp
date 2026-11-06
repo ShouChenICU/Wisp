@@ -688,7 +688,10 @@ std::string ScriptError::text() const {
 std::string_view global_preamble() { return kPreamble; }
 
 Vm::Vm(std::string scene_id, VmLimits limits, std::function<uint64_t()> now_ms)
-    : scene_id_(std::move(scene_id)), limits_(limits), now_ms_(std::move(now_ms)) {
+    : scene_id_(std::move(scene_id)),
+      limits_(limits),
+      now_ms_(std::move(now_ms)),
+      exec_ms_(limits.exec_ms) {
     if (limits_.hook_instructions < 1) limits_.hook_instructions = 1;
 }
 
@@ -956,7 +959,7 @@ void Vm::hook(lua_State* L, lua_Debug* ar) {
         // Lua code only runs outside call() inside some other protected
         // call (a host's own lua_pcall); it is not timed.
         if (!vm->running_) return;
-        if (vm->now_ms_() - vm->start_ms_ <= vm->limits_.exec_ms) return;
+        if (vm->now_ms_() - vm->start_ms_ <= vm->exec_ms_) return;
         vm->fault(Fault::Timeout);
         if (lua_getinfo(L, "Sl", ar) && ar->currentline > 0) {
             std::snprintf(vm->fault_file_, sizeof(vm->fault_file_), "%s", ar->short_src);
@@ -974,13 +977,13 @@ Vm* Vm::of(lua_State* L) {
 
 bool Vm::past_limits() const {
     if (refused_ || fault_ != Fault::None) return true;
-    return running_ && now_ms_() - start_ms_ > limits_.exec_ms;
+    return running_ && now_ms_() - start_ms_ > exec_ms_;
 }
 
 void Vm::check_limits(lua_State* L) {
     settle_refusal();
     if (fault_ == Fault::None) {
-        if (!running_ || now_ms_() - start_ms_ <= limits_.exec_ms) return;
+        if (!running_ || now_ms_() - start_ms_ <= exec_ms_) return;
         fault(Fault::Timeout);
         // The innermost Lua function with a line, as the hook reports it.
         lua_Debug ar;
@@ -1187,11 +1190,14 @@ ScriptError Vm::fault_error(std::string_view fallback_file) const {
     ScriptError e;
     e.fault = fault_ == Fault::Timeout ? ScriptFault::Timeout : ScriptFault::Memory;
     char msg[64];
+    // The limit of the call that timed out, which may not be the default.
+    VmLimits limits = limits_;
+    limits.exec_ms = exec_ms_;
     format_fault(msg, sizeof(msg),
                  fault_ == Fault::Timeout  ? FaultText::Timeout
                  : fault_ == Fault::Budget ? FaultText::Budget
                                            : FaultText::Memory,
-                 limits_);
+                 limits);
     e.message = msg;
     if (fault_line_ > 0) {
         e.file = fault_file_;
@@ -1219,7 +1225,7 @@ std::optional<ScriptError> Vm::load(std::string_view path, std::string_view sour
     return e;
 }
 
-std::optional<ScriptError> Vm::call(int nargs, int nresults, Budget budget) {
+std::optional<ScriptError> Vm::call(int nargs, int nresults, Budget budget, uint32_t exec_ms) {
     int base = lua_gettop(L_) - nargs - 1;
     // The callee's file, for errors that carry no position.
     char callee[LUA_IDSIZE] = "";
@@ -1237,6 +1243,7 @@ std::optional<ScriptError> Vm::call(int nargs, int nresults, Budget budget) {
     if (outer) {
         if (budget == Budget::Fresh || !started_) start_ms_ = now_ms_();
         started_ = true;
+        exec_ms_ = exec_ms != 0 ? exec_ms : limits_.exec_ms;
         running_ = true;
         current_ = L_;
         lua_sethook(L_, &Vm::hook, LUA_MASKCOUNT, limits_.hook_instructions);

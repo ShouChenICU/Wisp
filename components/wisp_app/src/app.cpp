@@ -424,6 +424,9 @@ Result<void> App::start() {
                                               return impl_->scenes->request_delete(id, with_data);
                                           })
                                     : nullptr,
+        .occupancy = &impl_->occupancy,
+        .files = scenes != nullptr ? scenes->files() : nullptr,
+        .now_ms = {},  // os::now_ms
     });
     impl_->net->start();
 
@@ -702,6 +705,7 @@ core::EventBus& App::bus() { return impl_->bus; }
 core::StorageManager& App::storage() { return impl_->storage; }
 core::ButtonService& App::buttons() { return impl_->buttons; }
 ui::UiRuntime* App::ui() { return impl_->ui.get(); }
+ui::SystemLayer* App::system_layer() { return impl_->system_layer.get(); }
 scene::SceneRuntime* App::scenes() { return impl_->scenes ? impl_->scenes->runtime() : nullptr; }
 core::SceneRepository* App::scene_repository() {
     return impl_->scenes ? impl_->scenes->repository() : nullptr;
@@ -711,6 +715,9 @@ core::WakeLockRegistry& App::wakelocks() { return impl_->wakelocks; }
 core::NotificationService* App::notifications() { return impl_->notifications.get(); }
 core::OccupancyRegistry& App::occupancy() { return impl_->occupancy; }
 core::SensorService* App::sensors() { return impl_->sensors.get(); }
+core::StorageWorker* App::storage_worker() {
+    return impl_->scenes ? &impl_->scenes->worker() : nullptr;
+}
 net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr; }
 net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }
 net::TimeSyncService* App::time_sync() { return impl_->net ? impl_->net->time_sync() : nullptr; }

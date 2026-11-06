@@ -170,6 +170,7 @@ enum class StrId : uint16_t {
     NoticeEvictedCount,
     NoticeSceneError,
     NoticeRestoreFailed,
+    NoticeDeleteFailed,
     NoticeWakeLock,
     NoticeBatteryLow,
     NoticeRelease,
@@ -180,6 +181,7 @@ enum class StrId : uint16_t {
     HolderNetWindow,
     HolderHotspot,
     HolderTone,
+    HolderDownload,
     // The pull-down panel (spec 5.6). PanelMinutes and PanelHours carry
     // "{}", how long a scene has been in the background.
     PanelBackground,

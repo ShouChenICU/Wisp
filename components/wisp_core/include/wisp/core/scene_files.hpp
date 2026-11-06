@@ -49,7 +49,15 @@
 // together with the ".done", and logged).
 //
 // FAT (the SD card) compares names without case, so on the card a name
-// that differs from an existing one only in case is that file.
+// that differs from an existing one only in case is that file: every call
+// (write, append, read, remove, a download and its in-flight check, the
+// directory count) acts on the spelling already on disk. The ".tmp" and
+// ".new" endings are refused in any case for the same reason.
+//
+// Adoption: a scene with no location record whose declaration allows the
+// card ("auto" or "sd") takes over <sd>/.../scenes/<id>/files when it
+// exists and the card is in -- files a delete with the card out left
+// behind -- on its first call of any kind, read-only ones included.
 //
 // Errors carry these messages, which scene_files_code() hands to scripts:
 // InvalidArgument "bad_name", InvalidArgument "too_large", QuotaExceeded
@@ -88,9 +96,18 @@ enum class FilesLocation : uint8_t { None, Sd, Internal };
 const char* to_string(FilesLocation l);
 
 struct SceneFileEntry {
-    std::string name;
+    // In PSRAM: a list holds up to max_list of them, and a std::string
+    // past its inline 15 bytes would put each one in internal RAM.
+    os::LargeString name;
     uint64_t size = 0;
     int64_t mtime = 0;  // DirEntry::mtime
+};
+
+// list(): the first max_list names in order; `truncated` when there were
+// more.
+struct SceneFileList {
+    os::LargeVector<SceneFileEntry> entries;
+    bool truncated = false;
 };
 
 struct SceneFilesInfo {
@@ -159,10 +176,13 @@ public:
     // At most `len` bytes from `offset`; fewer at the end of the file.
     Result<os::LargeBuffer> read(std::string_view scene, std::string_view name, uint64_t offset,
                                  size_t len);
-    // Sorted by name, at most max_list of them; bookkeeping names hidden.
-    // Empty before the first write.
-    Result<std::vector<SceneFileEntry>> list(std::string_view scene);
+    // Sorted by name, at most max_list of them (`truncated` when there were
+    // more); bookkeeping names hidden. Empty before the first write.
+    Result<SceneFileList> list(std::string_view scene);
     Result<void> remove(std::string_view scene, std::string_view name);
+    // The entry of file `name` (on the card, its spelling on disk):
+    // NotFound "not_found" when there is none, as for read().
+    Result<SceneFileEntry> stat(std::string_view scene, std::string_view name);
     Result<SceneFilesInfo> info(std::string_view scene);
     // Removes the files in both locations (the card's only while it is in)
     // and the location record. Nothing there is success.
@@ -171,6 +191,9 @@ public:
     // ".<name>.dl". Busy if a download of that name is already in flight.
     Result<std::shared_ptr<FileDownload>> begin_download(std::string_view scene,
                                                          std::string_view name);
+    // Whether an SD card is in and usable: what "auto" and "sd" go by.
+    // Touches no flash.
+    bool sd_online() const;
 
 private:
     friend class FileDownload;
@@ -192,9 +215,16 @@ private:
     std::string dir_of(std::string_view scene, FilesLocation loc) const;
     std::string record_path(std::string_view scene) const;
     uint64_t quota_of(FilesLocation loc) const;
-    bool sd_online() const;
-    // config_.declared, Auto when it has no answer.
-    FilesWant want_of(std::string_view scene) const;
+    // config_.declared, Auto when it has no answer; `installed` false when
+    // it says NotFound.
+    FilesWant want_of(std::string_view scene, bool* installed = nullptr) const;
+    // `dir` is on the card (FAT: names compare without case).
+    bool on_card(const std::string& dir) const;
+    // `name` as a file in `dir` is spelled on disk (on the card it may
+    // differ in case); `name` itself when there is none. With io_mu_.
+    std::string name_on_disk(const std::string& dir, std::string_view name);
+    // <sd>/wisp/library/scenes/<scene>/files exists (card in). With io_mu_.
+    bool sd_files_exist(std::string_view scene) const;
     // Logs each <sd>/wisp/library/scenes/<id>/files whose scene is not
     // installed. With io_mu_.
     void log_orphans();
@@ -204,8 +234,6 @@ private:
     // The entry `name` of `dir`, or NotFound; on the card a name differing
     // only in case matches when there is no exact one. With io_mu_.
     Result<DirEntry> entry_of(const std::string& dir, std::string_view name);
-    // entry_of()'s size; NotFound unless it is a regular file.
-    Result<uint64_t> size_of(const std::string& dir, std::string_view name);
 
     // For FileDownload, under mu_ only (no flash). reserve() is called with
     // the download's own lock held: that lock comes first, never after mu_.

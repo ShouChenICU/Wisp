@@ -137,6 +137,7 @@
 // dependency rules on why POSIX file APIs are allowed here.
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <utility>
@@ -289,6 +290,13 @@ public:
     // listed as it is on disk, including any "*.tmp"/"*.new" write
     // bookkeeping; callers that list data files skip those names.
     Result<std::vector<DirEntry>> list_dir(const std::string& path);
+
+    // list_dir() one entry at a time, in directory order (unsorted),
+    // without holding the whole listing: `visit` returns false to stop.
+    // It runs with the manager's lock held, so it must not call back into
+    // this class.
+    Result<void> visit_dir(const std::string& path,
+                           const std::function<bool(const DirEntry&)>& visit);
 
     // Removes the file or directory tree at `path` without following
     // symlinks. Removing a file also removes its "<path>.tmp"/"<path>.new"

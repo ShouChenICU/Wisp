@@ -358,6 +358,9 @@ TEST(AppNotifications, WakeLockReminderPosts) {
     wisp::core::WakeLockRegistry& locks = h.app.wakelocks();
     const uint32_t scene_lock = locks.acquire("scene.a", WakeLockKind::Cpu, "timer");
     locks.acquire("system.net", WakeLockKind::Network, "sync");
+    // A scene's screen lock only exists while that scene is in the
+    // foreground, so the user can already see it: no reminder for it.
+    locks.acquire("scene.clock", WakeLockKind::Screen, "keep_screen_on");
 
     // Not yet due.
     wisp::app::post_wakelock_reminders(locks, *notes, wisp::os::now_ms());
@@ -376,6 +379,8 @@ TEST(AppNotifications, WakeLockReminderPosts) {
     EXPECT_EQ(system->arg, "system.net");
     EXPECT_EQ(system->action, "");
     EXPECT_EQ(system->action_arg, "");
+    EXPECT_FALSE(notes->find("system", "wakelock_long:scene.clock").has_value());
+    EXPECT_EQ(notes->unread_count(), 2u);
 }
 
 TEST(AppNotifications, DeletedSceneLosesItsNotices) {

@@ -91,7 +91,6 @@ TEST(SceneManifest, VersionIsSemver) {
 }
 
 TEST(SceneManifest, SchemaEntryIconHosts) {
-    EXPECT_FALSE(accepts(R"({"id":"todo","name":"x","version":"1.0.0","schema_version":2})"));
     EXPECT_FALSE(accepts(R"({"id":"todo","name":"x","version":"1.0.0"})"));
 
     auto def = parse_scene_manifest(manifest());
@@ -193,5 +192,22 @@ TEST(SceneManifest, NestingIsCappedAtFourLevels) {
         ASSERT_FALSE(r) << extra;
         EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << extra;
         EXPECT_EQ(r.error().message, "scene.json: nested deeper than 4 levels") << extra;
+    }
+}
+
+// Spec 7.3: an integer from 1 to 1000.
+TEST(SceneManifest, SchemaVersionRange) {
+    auto with = [](const std::string& v) {
+        return R"({"id":"todo","name":"x","version":"1.0.0","schema_version":)" + v + "}";
+    };
+    for (const char* bad : {"0", "1001", "1.5", "\"2\"", "-1", "null"}) {
+        auto r = parse_scene_manifest(with(bad));
+        ASSERT_FALSE(r) << bad;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << bad;
+    }
+    for (int ok : {1, 2, 1000}) {
+        auto r = parse_scene_manifest(with(std::to_string(ok)));
+        ASSERT_TRUE(r) << ok;
+        EXPECT_EQ(r.value().schema_version, ok);
     }
 }

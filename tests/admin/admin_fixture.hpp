@@ -30,6 +30,7 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/model_profiles.hpp"
+#include "wisp/core/occupancy.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
@@ -49,8 +50,11 @@ namespace wisp::test {
 inline constexpr int64_t kFixtureUnixTime = 1767225600;
 
 struct AdminFixture {
-    explicit AdminFixture(bool with_assets = true) : dir(temp_dir().string()) {
+    // `sd`, if given, is registered as the SD card.
+    explicit AdminFixture(bool with_assets = true, std::shared_ptr<FakeStorage> sd = nullptr)
+        : dir(temp_dir().string()) {
         registry.add(std::make_shared<FakeStorage>("storage.int", dir, /*removable=*/false));
+        if (sd) registry.add(sd);
         storage = std::make_unique<core::StorageManager>(registry, bus);
         EXPECT_TRUE(storage->init());
         bus.start();
@@ -115,6 +119,7 @@ struct AdminFixture {
             .scenes = scenes.get(),
             .time_sync = time_sync.get(),
             .wakelocks = &wakelocks,
+            .occupancy = &occupancy,
         };
         if (with_clock) deps.now_ms = [this] { return now.load(); };
         return deps;
@@ -147,6 +152,8 @@ struct AdminFixture {
     core::EventBus bus;
     // The system locks the admin backend takes (uploads, WebSocket).
     core::WakeLockRegistry wakelocks{bus};
+    // Who uses which device (nobody, until a test says so).
+    core::OccupancyRegistry occupancy;
     core::BootReport report;
     std::unique_ptr<core::StorageManager> storage;
     std::unique_ptr<port::sim::JsonFileSettingsBackend> backend;
@@ -175,17 +182,32 @@ struct AdminFixture {
 // that walk all of them: a new GET route belongs here.
 inline const std::vector<std::string>& every_authenticated_get_route() {
     static const std::vector<std::string> paths = {
-        "/api/v1/info",    "/api/v1/device",          "/api/v1/devices",     "/api/v1/settings",
-        "/api/v1/wifi",    "/api/v1/wifi/scan",       "/api/v1/ai/profiles", "/api/v1/ai/presets",
-        "/api/v1/clients", "/api/v1/system/firmware", "/api/v1/scenes",      "/api/v1/system/time",
+        "/api/v1/info",         "/api/v1/device",
+        "/api/v1/devices",      "/api/v1/settings",
+        "/api/v1/wifi",         "/api/v1/wifi/scan",
+        "/api/v1/ai/profiles",  "/api/v1/ai/presets",
+        "/api/v1/clients",      "/api/v1/system/firmware",
+        "/api/v1/scenes",       "/api/v1/system/time",
+        "/api/v1/system/power", "/api/v1/system/occupancy",
     };
     return paths;
 }
 
+// A response's body: `body`, or `static_body` when that is set (a body
+// kept in PSRAM).
+inline std::string body_text(const net::HttpResponse& res) {
+    if (!res.static_body.empty()) {
+        return std::string(reinterpret_cast<const char*>(res.static_body.data()),
+                           res.static_body.size());
+    }
+    return res.body;
+}
+
 // Parses a response body; a non-JSON body yields Null (and a failure).
 inline Value body_json(const net::HttpResponse& res) {
-    auto v = from_json(res.body);
-    EXPECT_TRUE(v) << "not JSON: " << res.body;
+    const std::string text = body_text(res);
+    auto v = from_json(text);
+    EXPECT_TRUE(v) << "not JSON: " << text;
     return v ? v.value() : Value();
 }
 

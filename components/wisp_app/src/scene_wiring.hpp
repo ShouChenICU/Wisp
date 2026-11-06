@@ -163,8 +163,13 @@ public:
     bool storage_status_async(ui::UiRuntime& ui, std::function<void(core::StorageStatus)> on_ui);
 
 private:
-    // On the worker: removes the scene and publishes "deleted".
-    void remove(const std::string& id, bool with_data);
+    // On the worker: removes the scene and publishes "deleted"; a failure
+    // is delete_failed().
+    void remove(const std::string& id, const std::string& name, bool with_data);
+    // A delete the user confirmed did not happen: logs `why` and tells the
+    // user with a system notice (the admin page already got its 202). The
+    // scene stays as it is; nothing is retried behind the user's back.
+    void delete_failed(const std::string& id, const std::string& name, const char* why);
     void publish(const std::string& id, const char* state);
     // Dev mode: starts the watch timer (start_runtime()).
     void start_watching();
@@ -192,6 +197,8 @@ private:
     // Cleared on the UI thread by stop_runtime(); read there only after.
     ui::SystemLayer* system_ = nullptr;
     std::function<void()> wake_;
+    // Set by build_runtime(); may be null.
+    core::NotificationService* notices_ = nullptr;
     // Dev mode only. The watcher is used on the worker alone; the timer
     // only queues a poll, at most one at a time.
     os::LargeUnique<scene::DirWatcher> watcher_;

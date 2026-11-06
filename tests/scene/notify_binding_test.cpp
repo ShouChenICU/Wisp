@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -292,6 +293,51 @@ TEST_F(SceneNotification, TapForMissingSceneChangesNothing) {
     EXPECT_EQ(rt->foreground(), std::optional<std::string>("other"));
     EXPECT_EQ(rt->status("other").state, SceneState::Running);
     EXPECT_EQ(rt->status("gone").state, SceneState::Stopped);
+}
+
+// The screen going off while the scene queue is full: the message that says
+// so is dropped, and the scene task still catches up once it drains. A
+// scene held inside wisp.notify (its listener blocks) keeps the task busy
+// while the queue fills.
+TEST_F(NotifyFixture, ScreenOffAgainstAFullQueueStillHides) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) {
+        c.queue_capacity = 4;
+        c.vm.exec_ms = 10000;
+    };
+    std::atomic<bool> hold{false}, held{false};
+    notes->set_listener([&](const NotificationChange&) {
+        held = true;
+        while (hold.load()) wisp::os::sleep_ms(1);
+    });
+    start();
+    install("a", R"(
+scene.on_show = function() print("show") end
+scene.on_hide = function() print("hide") end
+return ui.screen {
+  ui.button { ref = "go", text = "go", on_click = function() wisp.notify{ title = "t" } end },
+}
+)");
+    ASSERT_TRUE(rt->open("a"));
+    ASSERT_TRUE(wait_log("a", "show"));
+    ASSERT_TRUE(wait_label("go"));
+
+    hold = true;
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(wait_until([&] { return held.load(); }, 2000));
+    int queued = 0;
+    while (true) {
+        auto msg = wisp::os::make_large<wisp::scene::SceneMessage>();
+        msg->body = wisp::scene::msg::StoreDone{};
+        if (!wisp::scene::post_scene_message(*rt, std::move(msg))) break;
+        ASSERT_LT(++queued, 100);
+    }
+    rt->set_visible(false);  // dropped: the queue is full
+    hold = false;
+
+    EXPECT_TRUE(wait_log("a", "hide"));
+    rt->set_visible(true);
+    EXPECT_TRUE(wait_until([&] { return printed("a").size() == 3; }, 2000));
+    EXPECT_EQ(printed("a"), (std::vector<std::string>{"show", "hide", "show"}));
 }
 
 }  // namespace

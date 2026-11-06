@@ -24,7 +24,8 @@ TEST_F(SystemNotice, EveryCodeInEveryLanguage) {
     namespace notice = wisp::core::notice;
     const char* codes[] = {notice::kSceneEvictedMemory, notice::kSceneEvictedCount,
                            notice::kSceneError,         notice::kRestoreFailed,
-                           notice::kWakeLockLong,       notice::kBatteryLow};
+                           notice::kWakeLockLong,       notice::kBatteryLow,
+                           notice::kSceneDeleteFailed};
     for (Lang lang : wisp::ui::kAllLangs) {
         wisp::ui::set_lang(lang);
         for (const char* code : codes) {
@@ -53,10 +54,13 @@ TEST_F(SystemNotice, HolderLabels) {
     EXPECT_EQ(wisp::ui::holder_label("system.netwindow", ""), "后台联网");
     EXPECT_EQ(wisp::ui::holder_label("system.hotspot", ""), "配网热点");
     EXPECT_EQ(wisp::ui::holder_label("system.tone", ""), "提示音");
+    EXPECT_EQ(wisp::ui::holder_label("system.download", ""), "文件下载");
     wisp::ui::set_lang(Lang::Ja);
     EXPECT_EQ(wisp::ui::holder_label("system.admin", ""), "管理画面");
+    EXPECT_EQ(wisp::ui::holder_label("system.download", ""), "ファイルのダウンロード");
     wisp::ui::set_lang(Lang::En);
     EXPECT_EQ(wisp::ui::holder_label("system.admin", ""), "Admin page");
+    EXPECT_EQ(wisp::ui::holder_label("system.download", ""), "File download");
 
     // A scene's lock shows the scene's name, or its id without one.
     EXPECT_EQ(wisp::ui::holder_label("scene.x", "番茄钟"), "番茄钟");

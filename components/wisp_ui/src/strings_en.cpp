@@ -188,6 +188,8 @@ const char* strings_en(StrId id) {
             return "{} stopped after an error";
         case StrId::NoticeRestoreFailed:
             return "{} could not be restored at startup";
+        case StrId::NoticeDeleteFailed:
+            return "{} could not be deleted; try again";
         case StrId::NoticeWakeLock:
             return "{} has kept the device awake for 30 minutes";
         case StrId::NoticeBatteryLow:
@@ -208,6 +210,8 @@ const char* strings_en(StrId id) {
             return "Setup hotspot";
         case StrId::HolderTone:
             return "Alert sound";
+        case StrId::HolderDownload:
+            return "File download";
         case StrId::PanelBackground:
             return "In background";
         case StrId::PanelNotifications:

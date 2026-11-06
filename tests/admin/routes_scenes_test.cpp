@@ -330,6 +330,21 @@ TEST(AdminScenes, ListShape) {
     EXPECT_EQ(at(again, "error"), Value());
 }
 
+// A scene running in the background (scene-device spec 3.7), and where
+// each scene wants its files with whether a card is in: the page marks a
+// scene that needs one.
+TEST(AdminScenes, ListShowsBackground) {
+    ScenesFixture fx;
+    ASSERT_TRUE(fx.repo->install(zip_of(todo_files()), {}));
+    fx.host.states["todo"] = SceneStatus{SceneState::Background, {}};
+    const Value list = body_json(fx.call(Method::Get, kScenes));
+    const Value& s = at(list, "scenes").as_list()[0];
+    EXPECT_EQ(at(s, "state"), Value("background"));
+    EXPECT_EQ(at(s, "files"), Value("auto"));
+    // The fixture has internal storage only.
+    EXPECT_EQ(at(list, "sd_card"), Value(false));
+}
+
 TEST(AdminScenes, ListWithoutRepositoryIsUnavailable) {
     ScenesFixture fx(ScenesFixture::Options{.with_host = false, .with_repo = false});
     HttpResponse res = fx.call(Method::Get, kScenes);
