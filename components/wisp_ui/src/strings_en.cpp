@@ -188,6 +188,8 @@ const char* strings_en(StrId id) {
             return "{} stopped after an error";
         case StrId::NoticeRestoreFailed:
             return "{} could not be restored at startup";
+        case StrId::NoticeDeleteFailed:
+            return "{} could not be deleted; try again";
         case StrId::NoticeWakeLock:
             return "{} has kept the device awake for 30 minutes";
         case StrId::NoticeBatteryLow:

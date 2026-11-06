@@ -28,6 +28,7 @@
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/sensor_service.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
@@ -36,6 +37,7 @@
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
+#include "wisp/ui/system_notice.hpp"
 #include "wisp/ui/theme.hpp"
 
 using wisp::net::Method;
@@ -484,6 +486,63 @@ TEST(AppScenes, DeleteConfirmFlow) {
     wisp::os::sleep_ms(300);
     EXPECT_TRUE(fs::exists(fs::path(b.h.root) / "scenes" / "keep" / "scene.json"));
     EXPECT_TRUE(b.states("keep").empty());
+}
+
+// A delete the user confirmed that cannot go ahead (the storage worker's
+// queue is full) is not dropped in silence: a system notice says so, the
+// scene stays, and a later delete works.
+TEST(AppScenes, ConfirmedDeleteAgainstAFullWorkerTellsTheUser) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    Booted b(opts);
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    ASSERT_TRUE(b.start());
+    const std::string token = pair_browser(b.h);
+    wisp::core::NotificationService* notes = b.h.app->notifications();
+    ASSERT_NE(notes, nullptr);
+    wisp::core::StorageWorker* worker = b.h.app->storage_worker();
+    ASSERT_NE(worker, nullptr);
+    auto click_yes = [&] {
+        return run_on_ui_thread(b.h.app->ui(), [] {
+            lv_obj_t* yes = find_button_with_label(lv_layer_top(), "是");
+            if (yes == nullptr) return "";
+            lv_obj_send_event(yes, LV_EVENT_CLICKED, nullptr);
+            return "ok";
+        });
+    };
+    auto failed_notice = [&] {
+        return notes->find(wisp::core::kSystemSource,
+                           std::string(wisp::core::notice::kSceneDeleteFailed) + ":计数器");
+    };
+
+    ASSERT_EQ(api(b.h, Method::Delete, "/api/v1/scenes/counter", token).status, 202);
+    // The worker held inside a job, its queue full behind it.
+    std::atomic<bool> hold{true};
+    std::atomic<bool> holding{false};
+    ASSERT_TRUE(worker->submit([&] {
+        holding = true;
+        while (hold.load()) wisp::os::sleep_ms(1);
+    }));
+    ASSERT_TRUE(wait_until([&] { return holding.load(); }, 2000));
+    int queued = 0;
+    while (worker->submit([] {})) ASSERT_LT(++queued, 1000);
+
+    ASSERT_EQ(click_yes(), "ok");
+    EXPECT_TRUE(wait_until([&] { return failed_notice().has_value(); }, 3000));
+    hold = false;
+    ASSERT_TRUE(wait_until([&] { return worker->drain(2000); }, 3000));
+    EXPECT_TRUE(fs::exists(fs::path(b.h.root) / "scenes" / "counter" / "scene.json"));
+    EXPECT_TRUE(b.states("counter").empty());
+    ASSERT_TRUE(failed_notice().has_value());
+    const wisp::ui::NoticeText text =
+        wisp::ui::system_notice_text(failed_notice()->code, failed_notice()->arg);
+    EXPECT_EQ(text.body, "计数器未能删除，请重试");
+
+    // Nothing is left marked as being removed: the user can try again.
+    ASSERT_EQ(api(b.h, Method::Delete, "/api/v1/scenes/counter", token).status, 202);
+    ASSERT_EQ(click_yes(), "ok");
+    EXPECT_TRUE(
+        wait_until([&] { return !fs::exists(fs::path(b.h.root) / "scenes" / "counter"); }, 3000));
 }
 
 // The package is gone but its data stayed (a delete without data, or a

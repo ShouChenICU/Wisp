@@ -170,6 +170,7 @@ enum class StrId : uint16_t {
     NoticeEvictedCount,
     NoticeSceneError,
     NoticeRestoreFailed,
+    NoticeDeleteFailed,
     NoticeWakeLock,
     NoticeBatteryLow,
     NoticeRelease,

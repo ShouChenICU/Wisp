@@ -14,6 +14,7 @@ NoticeText system_notice_text(std::string_view code, std::string_view arg) {
         {notice::kSceneEvictedCount, StrId::NoticeEvictedCount},
         {notice::kSceneError, StrId::NoticeSceneError},
         {notice::kRestoreFailed, StrId::NoticeRestoreFailed},
+        {notice::kSceneDeleteFailed, StrId::NoticeDeleteFailed},
         {notice::kWakeLockLong, StrId::NoticeWakeLock},
         {notice::kBatteryLow, StrId::NoticeBatteryLow},
     };

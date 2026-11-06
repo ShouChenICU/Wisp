@@ -191,6 +191,8 @@ const char* strings_ja(StrId id) {
             return "{}でエラーが発生し、停止しました";
         case StrId::NoticeRestoreFailed:
             return "{}を起動時に復元できませんでした";
+        case StrId::NoticeDeleteFailed:
+            return "{}を削除できませんでした。もう一度お試しください";
         case StrId::NoticeWakeLock:
             return "{}がデバイスを 30 分間起動したままにしています";
         case StrId::NoticeBatteryLow:

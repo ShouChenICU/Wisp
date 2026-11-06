@@ -61,6 +61,9 @@ inline constexpr const char* kSceneEvictedMemory = "scene_evicted_memory";
 inline constexpr const char* kSceneEvictedCount = "scene_evicted_count";
 inline constexpr const char* kSceneError = "scene_error";
 inline constexpr const char* kRestoreFailed = "restore_failed";
+// A delete the user confirmed did not happen; the argument is the scene's
+// name.
+inline constexpr const char* kSceneDeleteFailed = "scene_delete_failed";
 inline constexpr const char* kWakeLockLong = "wakelock_long";
 inline constexpr const char* kBatteryLow = "battery_low";
 // action_arg is the wake lock id; arg is its holder, which must still hold it.

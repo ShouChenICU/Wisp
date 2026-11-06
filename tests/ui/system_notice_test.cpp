@@ -24,7 +24,8 @@ TEST_F(SystemNotice, EveryCodeInEveryLanguage) {
     namespace notice = wisp::core::notice;
     const char* codes[] = {notice::kSceneEvictedMemory, notice::kSceneEvictedCount,
                            notice::kSceneError,         notice::kRestoreFailed,
-                           notice::kWakeLockLong,       notice::kBatteryLow};
+                           notice::kWakeLockLong,       notice::kBatteryLow,
+                           notice::kSceneDeleteFailed};
     for (Lang lang : wisp::ui::kAllLangs) {
         wisp::ui::set_lang(lang);
         for (const char* code : codes) {
