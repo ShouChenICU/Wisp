@@ -58,7 +58,13 @@ struct StorageWorkerConfig {
     // manifest takes about 9 % more stack than the examples, and a deeper
     // one is refused before it costs more. Not shrunk until the device's
     // high-water mark has been measured with a 4-level manifest.
-    size_t stack_bytes = 6144;
+    // Since every flash access runs here, the jobs of the services that
+    // used to touch flash on their own stacks (settings batches, Wi-Fi
+    // and AP switches, scene install/export/download, the OTA chunks and
+    // their final check, the factory-reset erase) all share this stack:
+    // at 6 KB a scene install, export and download plus an AP on/off left
+    // only 740 B, under the quarter the mem rule keeps free, so 8 KB.
+    size_t stack_bytes = 8192;
     int priority = 3;
 };
 
