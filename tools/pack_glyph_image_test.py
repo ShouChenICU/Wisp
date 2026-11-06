@@ -34,6 +34,42 @@ GLYPH = struct.Struct("<IHBBbb")
 CMAP = struct.Struct("<IHHBBHII")
 NO_OFFSET = 0xFFFFFFFF
 
+# A source with one SPARSE_FULL cmap and just enough else (font_dsc
+# scalars, one glyph, one bitmap byte) for pack() to reach the cmap-type
+# check, which runs before kern is ever parsed.
+SPARSE_FULL_SOURCE = """
+static const lv_font_fmt_txt_dsc_t font_dsc = {
+    .kern_scale = 16,
+    .cmap_num = 1,
+    .bpp = 4,
+    .kern_classes = 0,
+    .bitmap_format = 0,
+};
+
+const lv_font_t lv_font_test = {
+    .line_height = 1,
+    .base_line = 0,
+    .underline_position = 0,
+    .underline_thickness = 1,
+};
+
+static const uint8_t glyph_bitmap[] = {
+    0x0,
+};
+
+static const lv_font_fmt_txt_glyph_dsc_t glyph_dsc[] = {
+    {.bitmap_index = 0, .adv_w = 0, .box_w = 0, .box_h = 0, .ofs_x = 0, .ofs_y = 0},
+};
+
+static const lv_font_fmt_txt_cmap_t cmaps[] =
+{
+    {
+        .range_start = 32, .range_length = 1, .glyph_id_start = 0,
+        .unicode_list = NULL, .glyph_id_ofs_list = NULL, .list_length = 0, .type = LV_FONT_FMT_TXT_CMAP_SPARSE_FULL
+    }
+};
+"""
+
 # A minimal source carrying only the font_dsc scalar fields pack() reads
 # before it ever looks for the array sections -- enough to exercise the
 # early rejections without the full committed font.
@@ -279,6 +315,11 @@ class PackGlyphImageTest(unittest.TestCase):
         result, _ = self.run_pack(src)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("bitmap_format", result.stderr)
+
+    def test_rejects_sparse_full_cmaps(self):
+        result, _ = self.run_pack(SPARSE_FULL_SOURCE)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SPARSE_FULL", result.stderr)
 
 
 if __name__ == "__main__":

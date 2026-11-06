@@ -38,15 +38,14 @@ Payload, in order:
     u32 unicode_list_offset, u32 glyph_id_ofs_offset. The two offsets are
     byte offsets from the start of the payload into the lists section
     below, or 0xFFFFFFFF when that cmap has no such list (FORMAT0_TINY
-    has neither; FORMAT0_FULL has only glyph_id_ofs_list; SPARSE_TINY has
-    only unicode_list; SPARSE_FULL, unused by the committed font but
-    supported here, has both).
+    has neither, FORMAT0_FULL has only glyph_id_ofs_list, SPARSE_TINY has
+    only unicode_list). SPARSE_FULL would need both and is not supported
+    (see below) -- the committed font has none, so that case is rejected
+    outright rather than carried as untested code.
 
-  lists (list_bytes): each cmap's unicode_list (u16 per entry) and/or
-    glyph_id_ofs_list (u8 per entry for FORMAT0_FULL, u16 for SPARSE_FULL,
-    matching the width lv_font_conv declared the array with in the .c)
-    concatenated in cmap order, unicode_list before glyph_id_ofs_list
-    within a given cmap.
+  lists (list_bytes): each cmap's unicode_list (u16 per entry, only for
+    SPARSE_TINY) or glyph_id_ofs_list (u8 per entry, only for
+    FORMAT0_FULL) concatenated in cmap order.
 
   kern (kern_pair_count * 5 bytes): kern_pair_count glyph-id pairs
     (u16 left, u16 right) followed by kern_pair_count i8 values, scaled
@@ -58,9 +57,11 @@ Payload, in order:
 
 Fails with a non-zero exit and a message on stderr when the source has
 kern classes, a kern_pairs array with a glyph id width other than 16 bits,
-or a bitmap format other than LV_FONT_FMT_TXT_PLAIN (uncompressed) -- the
-glyphs partition reader only ever reads raw bitmap bytes -- or when the
-image is larger than --max-bytes (the glyphs partition's size).
+a bitmap format other than LV_FONT_FMT_TXT_PLAIN (uncompressed) -- the
+glyphs partition reader only ever reads raw bitmap bytes -- a SPARSE_FULL
+cmap (needs both a unicode_list and a glyph_id_ofs_list; not implemented,
+since the committed font has none), or when the image is larger than
+--max-bytes (the glyphs partition's size).
 
 Usage: pack_glyph_image.py <lv_font_c> -o <out> [--max-bytes N]
 """
@@ -142,9 +143,11 @@ def _parse_glyph_dsc(text):
 def _parse_named_arrays(text):
     """Returns {array name: (element width in bytes, values)} for every
     unicode_list_N and glyph_id_ofs_list_N array. The width comes from the
-    C type lv_font_conv declared the array with, which is how the format
-    tells FORMAT0_FULL's 8-bit glyph_id_ofs_list apart from SPARSE_FULL's
-    16-bit one (lv_font_fmt_txt.h's comment on `glyph_id_ofs_list`)."""
+    C type lv_font_conv declared the array with: callers use it to check
+    each array is the width its cmap type requires (unicode_list always
+    16-bit, glyph_id_ofs_list 8-bit for the only supported form,
+    FORMAT0_FULL -- see lv_font_fmt_txt.h's comment on `glyph_id_ofs_list`
+    for the 16-bit SPARSE_FULL form this packer rejects)."""
     arrays = {}
     pattern = re.compile(
         r"static const (uint8_t|uint16_t)\s+"
@@ -227,6 +230,11 @@ def pack(c_source_text):
     cmaps = _parse_cmaps(c_source_text)
     if len(cmaps) != cmap_num:
         raise PackError(f"cmaps[] has {len(cmaps)} entries, font_dsc.cmap_num says {cmap_num}")
+    for cmap in cmaps:
+        if cmap["type"] == "LV_FONT_FMT_TXT_CMAP_SPARSE_FULL":
+            raise PackError(
+                "SPARSE_FULL cmaps are not supported; only FORMAT0_FULL, FORMAT0_TINY and SPARSE_TINY can be packed"
+            )
     named_arrays = _parse_named_arrays(c_source_text)
     kern_pairs, kern_values, glyph_ids_size = _parse_kern(c_source_text)
     if glyph_ids_size != 1:
@@ -254,9 +262,14 @@ def pack(c_source_text):
     lists_section = bytearray()
     cmap_section = bytearray()
     for cmap in cmaps:
+        # A cmap has at most one of these two lists: FORMAT0_TINY has
+        # neither, FORMAT0_FULL only glyph_id_ofs_list, SPARSE_TINY only
+        # unicode_list. SPARSE_FULL would need both, and is rejected above.
         unicode_list_offset = NO_OFFSET
         if cmap["unicode_list"] != "NULL":
             width, values = named_arrays.get(cmap["unicode_list"], (None, None))
+            if width is None:
+                raise PackError(f"could not find array {cmap['unicode_list']}")
             if width != 2:
                 raise PackError(f"{cmap['unicode_list']} must be a 16-bit unicode_list")
             if len(values) != cmap["list_length"]:
@@ -270,12 +283,13 @@ def pack(c_source_text):
             width, values = named_arrays.get(cmap["glyph_id_ofs_list"], (None, None))
             if width is None:
                 raise PackError(f"could not find array {cmap['glyph_id_ofs_list']}")
+            if width != 1:
+                raise PackError(f"{cmap['glyph_id_ofs_list']} must be an 8-bit glyph_id_ofs_list (FORMAT0_FULL)")
             if len(values) != cmap["list_length"]:
                 raise PackError(f"{cmap['glyph_id_ofs_list']} has {len(values)} entries, cmap says list_length={cmap['list_length']}")
             glyph_id_ofs_offset = base_lists_offset + len(lists_section)
-            entry_fmt = "<B" if width == 1 else "<H"
             for v in values:
-                lists_section += struct.pack(entry_fmt, v)
+                lists_section += struct.pack("<B", v)
 
         cmap_section += CMAP.pack(
             cmap["range_start"],
