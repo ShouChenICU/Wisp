@@ -293,7 +293,8 @@ std::unique_ptr<Task> Task::spawn(const TaskConfig& config, std::function<void()
     }
     BaseType_t core_id = config.core == -1 ? tskNO_AFFINITY : static_cast<BaseType_t>(config.core);
     BaseType_t ok = pdFAIL;
-    if (port::esp::place_stack_in_psram(config.flash_access, config.stack_bytes)) {
+    if (port::esp::place_stack_in_psram(config.flash_access, config.hot_stack,
+                                        config.stack_bytes)) {
         // Set before the task can run: the trampoline reads it.
         task->impl_->with_caps = true;
         ok = xTaskCreatePinnedToCoreWithCaps(

@@ -86,6 +86,10 @@ struct EspHttpServerConfig {
     // stack and aborts if it cannot (ESP-IDF's idf_additions.c). The
     // internal-RAM budget's floor (wisp/app/ram_budget.hpp) covers it.
     bool flash_access = true;
+    // Whether this instance's stack should stay in internal RAM for
+    // speed rather than for flash safety (os::TaskConfig::hot_stack's
+    // same meaning). No httpd instance declares this true today.
+    bool hot_stack = false;
     // Below the UI task (wisp::ui::UiRuntime, 4) so serving a page never
     // costs frames (connectivity spec 10); the other core and idle time
     // leave it plenty.

@@ -109,7 +109,14 @@ struct TaskConfig {
     // upload (OTA) and raw partitions. Callbacks the task runs on others'
     // behalf count too. Reading data already mapped into the address
     // space (constants, the linked-in web asset pack) does not. Declare
-    // false only when that holds for every path the task can take.
+    // false only when that holds for every path the task can take. In
+    // this build, wisp.fs (core::StorageWorker) is the only task that
+    // ever does any of this (spec 2.1 of the flash-thread design); every
+    // other task submits its flash work to it instead and keeps this
+    // false. Off the flash thread, a flash entry point also trips
+    // WISP_ASSERT_FLASH_THREAD (wisp/os/flash_guard.hpp) regardless of
+    // this declaration -- that is the enforced rule; this field is only
+    // the stack-placement input below.
     //
     // A declaration, not a placement: the port picks where the stack
     // goes. On the ESP port a task declaring false may get its stack in
@@ -119,6 +126,15 @@ struct TaskConfig {
     // task when the build or PSRAM can't hold its stack. AGENTS.md
     // section 5.
     bool flash_access = true;
+    // Whether this task is on a high-performance path and its stack
+    // should stay in internal RAM for speed, independent of
+    // flash_access -- currently only the UI task (wisp_ui), for the
+    // render hot path. A task declaring this true always gets an
+    // internal stack, same as flash_access; see
+    // wisp/port/esp/stack_placement.hpp's stack_may_use_psram(). A new
+    // hot_stack = true task needs its reasoning recorded in the owning
+    // spec (AGENTS.md section 5).
+    bool hot_stack = false;
 };
 
 // A unit of concurrent execution (an RTOS task on the ESP port, a thread on

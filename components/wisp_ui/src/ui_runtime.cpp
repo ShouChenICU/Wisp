@@ -621,6 +621,9 @@ Result<void> UiRuntime::start() {
     task_config.name = "wisp_ui";
     task_config.stack_bytes = impl_->config.task_stack;
     task_config.priority = impl_->config.task_priority;
+    // The render hot path, not flash access: keep the stack internal for
+    // speed (AGENTS.md section 5, spec 2.2 of the flash-thread design).
+    task_config.hot_stack = true;
     Impl* impl = impl_.get();
     impl_->task = os::Task::spawn(task_config, [impl] { impl->ui_main(); });
     if (impl_->task == nullptr) {

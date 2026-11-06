@@ -12,16 +12,18 @@ using wisp::port::esp::stack_may_use_psram;
 
 // A task that may touch internal flash always keeps an internal stack:
 // on the targets this port builds for, a flash operation can stop the
-// cache or map flash, and both assert on a PSRAM stack.
-TEST(StackPlacement, FlashAccessKeepsTheStackInternal) {
-    EXPECT_FALSE(stack_may_use_psram(/*flash_access=*/true));
+// cache or map flash, and both assert on a PSRAM stack. A task declaring
+// hot_stack keeps its stack internal too, for speed rather than flash
+// safety; either reason alone is enough to refuse PSRAM.
+TEST(StackPlacement, HotOrFlashStacksStayInternal) {
+    EXPECT_TRUE(stack_may_use_psram(/*flash_access=*/false, /*hot_stack=*/false));
+    EXPECT_FALSE(stack_may_use_psram(/*flash_access=*/true, /*hot_stack=*/false));
+    EXPECT_FALSE(stack_may_use_psram(/*flash_access=*/true, /*hot_stack=*/true));
+    EXPECT_FALSE(stack_may_use_psram(/*flash_access=*/false, /*hot_stack=*/true));
 }
 
-TEST(StackPlacement, NoFlashAccessMayUsePsram) {
-    EXPECT_TRUE(stack_may_use_psram(/*flash_access=*/false));
-}
-
-// The declaration's default is the safe one.
+// The declaration's defaults are the safe ones.
 TEST(StackPlacement, DefaultDeclarationIsFlashAccess) {
-    EXPECT_FALSE(stack_may_use_psram(wisp::os::TaskConfig{}.flash_access));
+    EXPECT_FALSE(
+        stack_may_use_psram(wisp::os::TaskConfig{}.flash_access, wisp::os::TaskConfig{}.hot_stack));
 }
