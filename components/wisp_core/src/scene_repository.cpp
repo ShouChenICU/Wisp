@@ -487,43 +487,53 @@ Result<SceneInfo> SceneRepository::install(
         }
     }
 
-    return call_on_worker<SceneInfo>(config_.worker, [&] { return replace_here(manifest, files); });
-}
-
-Result<SceneInfo> SceneRepository::replace_here(
-    const SceneManifest& manifest,
-    os::LargeVector<std::pair<std::string, os::LargeBuffer>>& files) {
-    const std::string& id = manifest.id;
-    std::lock_guard<os::Mutex> lock(mutex_);
-    // An earlier replace of this id that was cut short completes first, so
-    // its staging names are free again.
-    {
-        Result<void> pending = finish_replace(id);
-        if (!pending) {
-            return fail<SceneInfo>(pending.error());
-        }
-    }
-
-    Result<SceneManifest> previous = read_manifest(id);
-
+    // Staged in one flash-thread job per piece of at most kIoChunk, without
+    // the lock: .<id>.tmpdir is this install's alone (installing() keeps a
+    // second install of the id out, list() skips dot directories, and only
+    // recover() at boot removes it). Other flash work queued meanwhile runs
+    // between the pieces. Only the swap takes the lock.
+    StorageWorker* worker = config_.worker;
     const std::string tmp = config_.code_root + "/." + id + std::string(kTmpSuffix);
-    const std::string neu = config_.code_root + "/." + id + std::string(kNewSuffix);
-    Result<void> staged = storage_.remove_tree(tmp);
+    Result<void> staged = call_on_worker<void>(worker, [&]() -> Result<void> {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        // An earlier replace of this id that was cut short completes first,
+        // so its staging names are free again.
+        WISP_TRY(finish_replace(id));
+        return storage_.remove_tree(tmp);
+    });
     for (const auto& [path, body] : files) {
-        if (!staged) {
-            break;
-        }
-        staged = storage_.write_atomic(tmp + "/" + path, body.span());
-    }
-    if (staged) {
-        staged = storage_.rename(tmp, neu);
+        if (!staged) break;
+        const std::string target = tmp + "/" + path;
+        size_t offset = 0;
+        do {
+            const size_t n = std::min(kIoChunk, body.size() - offset);
+            const std::span<const uint8_t> piece = body.span().subspan(offset, n);
+            staged = call_on_worker<void>(worker, [&] {
+                return offset == 0 ? storage_.write_atomic(target, piece)
+                                   : storage_.append(target, piece);
+            });
+            offset += n;
+        } while (staged && offset < body.size());
     }
     if (!staged) {
-        storage_.remove_tree(tmp);
+        (void)call_on_worker<void>(worker, [&] { return storage_.remove_tree(tmp); });
         return fail<SceneInfo>(staged.error());
     }
     files.clear();
+    return call_on_worker<SceneInfo>(worker, [&] { return swap_here(manifest); });
+}
 
+Result<SceneInfo> SceneRepository::swap_here(const SceneManifest& manifest) {
+    const std::string& id = manifest.id;
+    const std::string tmp = config_.code_root + "/." + id + std::string(kTmpSuffix);
+    const std::string neu = config_.code_root + "/." + id + std::string(kNewSuffix);
+    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<SceneManifest> previous = read_manifest(id);
+    if (Result<void> renamed = storage_.rename(tmp, neu); !renamed) {
+        storage_.remove_tree(tmp);
+        return fail<SceneInfo>(renamed.error());
+    }
+    ++generation_;
     Result<void> replaced = finish_replace(id);
     if (!replaced) {
         return fail<SceneInfo>(replaced.error());
@@ -632,38 +642,74 @@ Result<void> SceneRepository::recover_here() {
     return first;
 }
 
-Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id, bool with_data) {
-    return call_on_worker<os::LargeBuffer>(config_.worker,
-                                           [&] { return export_zip_here(id, with_data); });
-}
-
-Result<os::LargeBuffer> SceneRepository::export_zip_here(std::string_view id, bool with_data) {
+Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id_view, bool with_data) {
     using R = Result<os::LargeBuffer>;
-    ZipWriter writer;
-    std::unique_lock<os::Mutex> lock(mutex_);
-    Result<SceneManifest> m = read_manifest(id);
-    if (!m) {
-        return fail<os::LargeBuffer>(m.error());
-    }
-    auto add_from = [&](const std::string& base) {
-        return [&, base](const std::string& rel, uint64_t) -> Result<void> {
-            Result<os::LargeBuffer> buf = storage_.read_file_large(base + "/" + rel);
-            if (!buf) {
-                return Result<void>::err(buf.error().code, buf.error().message);
-            }
-            writer.add(rel, buf.value().span());
-            return Result<void>::ok();
-        };
+    // The file list first, then every file in flash-thread jobs of at most
+    // kIoChunk, so other flash work queued meanwhile runs between them.
+    // Each read checks under the lock that no replace or remove has landed
+    // since the list was taken; one that has fails the export with Busy
+    // rather than mixing two versions of the package.
+    struct Item {
+        std::string path;  // full path on storage
+        std::string name;  // in the zip
     };
-    const std::string dir = code_dir(id);
-    Result<void> walked = walk_package(storage_, dir, m.value().entry, add_from(dir));
-    if (walked && with_data) {
-        const std::string data_base = config_.data_root + "/" + std::string(id);
-        walked = walk_files(storage_, data_base, "data", add_from(data_base));
+    StorageWorker* worker = config_.worker;
+    const std::string id(id_view);
+    std::vector<Item> items;
+    uint64_t generation = 0;
+    Result<void> listed = call_on_worker<void>(worker, [&]() -> Result<void> {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        generation = generation_;
+        Result<SceneManifest> m = read_manifest(id);
+        if (!m) {
+            return Result<void>::err(m.error().code, m.error().message);
+        }
+        auto add_from = [&](const std::string& base) {
+            return [&, base](const std::string& rel, uint64_t) -> Result<void> {
+                items.push_back({base + "/" + rel, rel});
+                return Result<void>::ok();
+            };
+        };
+        const std::string dir = code_dir(id);
+        WISP_TRY(walk_package(storage_, dir, m.value().entry, add_from(dir)));
+        if (with_data) {
+            const std::string data_base = config_.data_root + "/" + id;
+            WISP_TRY(walk_files(storage_, data_base, "data", add_from(data_base)));
+        }
+        return Result<void>::ok();
+    });
+    if (!listed) {
+        return fail<os::LargeBuffer>(listed.error());
     }
-    lock.unlock();  // the rest is in memory
-    if (!walked) {
-        return fail<os::LargeBuffer>(walked.error());
+
+    ZipWriter writer;
+    os::LargeVector<uint8_t> body;
+    for (const Item& item : items) {
+        body.clear();
+        // Until a short read: a data file may grow or shrink meanwhile.
+        bool more = true;
+        while (more) {
+            Result<void> read = call_on_worker<void>(worker, [&]() -> Result<void> {
+                std::lock_guard<os::Mutex> lock(mutex_);
+                if (generation_ != generation) {
+                    return Result<void>::err(ErrorCode::Busy,
+                                             "scene " + id + " changed during the export");
+                }
+                Result<os::LargeBuffer> chunk =
+                    storage_.read_range(item.path, body.size(), kIoChunk);
+                if (!chunk) {
+                    return Result<void>::err(chunk.error().code, chunk.error().message);
+                }
+                body.insert(body.end(), chunk.value().data(),
+                            chunk.value().data() + chunk.value().size());
+                more = chunk.value().size() == kIoChunk;
+                return Result<void>::ok();
+            });
+            if (!read) {
+                return fail<os::LargeBuffer>(read.error());
+            }
+        }
+        writer.add(item.name, std::span<const uint8_t>(body.data(), body.size()));
     }
     os::LargeBuffer out = writer.finish();
     if (!out.ok()) {
@@ -750,6 +796,7 @@ Result<void> SceneRepository::remove_here(std::string_view id_view, bool with_da
     }
     const std::string id(id_view);
     std::lock_guard<os::Mutex> lock(mutex_);
+    ++generation_;
     WISP_TRY(finish_replace(id));
 
     const std::string dir = code_dir(id);

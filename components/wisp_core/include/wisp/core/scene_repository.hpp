@@ -40,11 +40,12 @@
 // long as it takes; on the worker, or without one, it runs right away.
 // install() validates the package and runs its checker and before_replace
 // on the caller's thread, since a checker may wait seconds for the scene
-// task, and only its replace goes to the worker. Each method holds the
-// repository's lock while it touches the files. A SceneStore's own writes
-// under data/ do not take this lock. One long job (an install's writes,
-// list() walking every package, an export) delays every worker job behind
-// it, settings saves included, until it ends.
+// task; it then stages the files in jobs of at most kIoChunk each, and
+// only the final swap holds the repository's lock. export_zip() likewise
+// reads in jobs of at most kIoChunk and fails with Busy if a replace or
+// remove lands in between. Every other method holds the lock for its one
+// job. A SceneStore's own writes under data/ do not take this lock.
+// list() walking every package is still one job.
 
 #include <cstddef>
 #include <cstdint>
@@ -207,15 +208,17 @@ private:
     Result<SceneInfo> info_here(std::string_view id);
     Result<SceneManifest> manifest_here(std::string_view id);
     Result<ScenePackage> load_here(std::string_view id);
-    Result<SceneInfo> replace_here(const SceneManifest& manifest,
-                                   os::LargeVector<std::pair<std::string, os::LargeBuffer>>& files);
-    Result<os::LargeBuffer> export_zip_here(std::string_view id, bool with_data);
+    // install()'s last step: .<id>.tmpdir becomes the package (steps 2-5).
+    Result<SceneInfo> swap_here(const SceneManifest& manifest);
     Result<void> remove_here(std::string_view id, bool with_data);
     Result<SceneRemoval> removal_here(std::string_view id, bool with_data);
 
     StorageManager& storage_;
     SceneRepoConfig config_;
     os::Mutex mutex_;
+    // Under mutex_: bumped by every replace and remove, so an export read
+    // across several flash-thread jobs notices one that landed in between.
+    uint64_t generation_ = 0;
     // Guards installing_ and removing_ only, so installing() and
     // removing() never wait behind file work.
     mutable os::Mutex marks_mutex_;

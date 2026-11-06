@@ -24,7 +24,9 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/core/zip.hpp"
+#include "wisp/os/os.hpp"
 
 using wisp::ErrorCode;
 using wisp::Result;
@@ -107,7 +109,8 @@ void lay_out(const fs::path& dir, const Files& files) {
 struct Fixture {
     // `data_root` is appended to the storage root; by default it is the
     // code root.
-    explicit Fixture(bool dev = false, const std::string& data_root = "/scenes")
+    explicit Fixture(bool dev = false, const std::string& data_root = "/scenes",
+                     wisp::core::StorageWorker* worker = nullptr)
         : in(wisp::test::temp_dir().string()) {
         registry.add(std::make_shared<wisp::test::FakeStorage>("storage.int", in, false));
         storage = std::make_unique<wisp::core::StorageManager>(registry, bus);
@@ -116,6 +119,7 @@ struct Fixture {
         config.code_root = in + "/scenes";
         config.data_root = in + data_root;
         config.dev = dev;
+        config.worker = worker;
         repo = std::make_unique<SceneRepository>(*storage, config);
     }
 
@@ -847,4 +851,177 @@ TEST(SceneRepository, ReinstallAdoptsCardFilesAfterCardOutDelete) {
     EXPECT_EQ(r.files->info("todo").value().location, wisp::core::FilesLocation::Sd);
     EXPECT_EQ(r.files->info("todo").value().used, 5u);
     EXPECT_TRUE(on_disk(fs::path(r.in) / "scenes" / "todo" / "data" / "files_loc.json"));
+}
+
+namespace {
+
+// A package whose files take several flash-thread jobs to stage: three
+// assets, one larger than a job writes at once.
+Files multi_file_package() {
+    Files files = todo_files();
+    files.push_back({"assets/a.bin", std::string(wisp::core::kIoChunk + 100, 'a')});
+    files.push_back({"assets/b.bin", std::string(1000, 'b')});
+    return files;
+}
+
+// Parks `worker` until the returned semaphore is given.
+struct ParkedWorker {
+    explicit ParkedWorker(wisp::core::StorageWorker& w) {
+        EXPECT_TRUE(w.submit([this] {
+            started.give();
+            (void)release.take(wisp::os::kForever);
+        }));
+        EXPECT_TRUE(started.take(5000));
+    }
+    ~ParkedWorker() { release.give(); }
+    wisp::os::Semaphore started{1, 0};
+    wisp::os::Semaphore release{1, 0};
+};
+
+bool wait_for_pending(wisp::core::StorageWorker& w, size_t n) {
+    for (int i = 0; i < 5000; ++i) {
+        if (w.pending() >= n) return true;
+        wisp::os::sleep_ms(1);
+    }
+    return false;
+}
+
+}  // namespace
+
+// An install goes to the flash thread in small jobs, so other work queued
+// meanwhile (a settings save, a download chunk) runs before it completes
+// instead of waiting for the whole package to be written.
+TEST(SceneRepository, InstallLetsOtherFlashWorkInterleave) {
+    wisp::core::StorageWorker worker;
+    Fixture f(false, "/scenes", &worker);
+    ASSERT_TRUE(worker.start());
+    std::vector<uint8_t> zip = zip_of(multi_file_package());
+
+    std::atomic<bool> installed_when_ran{true};
+    std::atomic<bool> ran{false};
+    Result<SceneInfo> result = Result<SceneInfo>::err(ErrorCode::Busy, "not run");
+    {
+        ParkedWorker parked(worker);
+        std::thread installer([&] { result = f.repo->install(zip, accept_all); });
+        // The install's first job waits behind the parked one; queue
+        // another behind it.
+        ASSERT_TRUE(wait_for_pending(worker, 2));
+        ASSERT_TRUE(worker.submit([&] {
+            installed_when_ran = on_disk(f.root() / "todo" / "scene.json");
+            ran = true;
+        }));
+        parked.release.give();
+        installer.join();
+    }
+    ASSERT_TRUE(result) << result.error().message;
+    EXPECT_TRUE(ran.load());
+    EXPECT_FALSE(installed_when_ran.load());
+    EXPECT_EQ(read_raw(f.root() / "todo" / "assets" / "a.bin"),
+              std::string(wisp::core::kIoChunk + 100, 'a'));
+    EXPECT_FALSE(on_disk(f.root() / ".todo.tmpdir"));
+    worker.stop();
+}
+
+// An export reads on the flash thread in small jobs too: a job queued
+// after it starts runs before its later reads.
+TEST(SceneRepository, ExportLetsOtherFlashWorkInterleave) {
+    wisp::core::StorageWorker worker;
+    Fixture f(false, "/scenes", &worker);
+    ASSERT_TRUE(worker.start());
+    ASSERT_TRUE(f.install(multi_file_package()));
+
+    Result<wisp::os::LargeBuffer> exported =
+        Result<wisp::os::LargeBuffer>::err(ErrorCode::Busy, "not run");
+    {
+        ParkedWorker parked(worker);
+        std::thread exporter([&] { exported = f.repo->export_zip("todo", false); });
+        ASSERT_TRUE(wait_for_pending(worker, 2));
+        // Runs after the export's first job and before its reads, so the
+        // export sees this content.
+        ASSERT_TRUE(worker.submit([&] {
+            EXPECT_TRUE(f.storage->write_atomic((f.root() / "todo" / "assets" / "b.bin").string(),
+                                                as_bytes("changed")));
+        }));
+        parked.release.give();
+        exporter.join();
+    }
+    ASSERT_TRUE(exported) << exported.error().message;
+    auto reader = ZipReader::open(exported.value().span(),
+                                  {.max_entries = 256, .max_total = 4 * 1024 * 1024});
+    ASSERT_TRUE(reader);
+    std::string b;
+    std::string a;
+    for (const auto& e : reader.value().entries()) {
+        auto body = reader.value().read(e);
+        ASSERT_TRUE(body);
+        std::string text(reinterpret_cast<const char*>(body.value().data()), body.value().size());
+        if (e.path == "assets/b.bin") b = text;
+        if (e.path == "assets/a.bin") a = text;
+    }
+    EXPECT_EQ(b, "changed");
+    EXPECT_EQ(a, std::string(wisp::core::kIoChunk + 100, 'a'));
+    worker.stop();
+}
+
+// A replace that lands between an export's reads fails the export rather
+// than mixing two versions.
+TEST(SceneRepository, ExportFailsWhenThePackageIsReplacedMidway) {
+    wisp::core::StorageWorker worker;
+    Fixture f(false, "/scenes", &worker);
+    ASSERT_TRUE(worker.start());
+    ASSERT_TRUE(f.install(multi_file_package()));
+    std::vector<uint8_t> v2 = zip_of(todo_files("2.0.0"));
+
+    Result<wisp::os::LargeBuffer> exported =
+        Result<wisp::os::LargeBuffer>::err(ErrorCode::IoError, "not run");
+    {
+        ParkedWorker parked(worker);
+        std::thread exporter([&] { exported = f.repo->export_zip("todo", false); });
+        ASSERT_TRUE(wait_for_pending(worker, 2));
+        // A whole reinstall on the worker itself: it runs inline there.
+        ASSERT_TRUE(worker.submit([&] { EXPECT_TRUE(f.repo->install(v2, accept_all)); }));
+        parked.release.give();
+        exporter.join();
+    }
+    ASSERT_FALSE(exported);
+    EXPECT_EQ(exported.error().code, ErrorCode::Busy);
+    worker.stop();
+}
+
+// The concurrency test above, with the file work on a flash thread.
+TEST(SceneRepository, ConcurrentCallsThroughTheWorkerAreSerialized) {
+    wisp::core::StorageWorker worker;
+    Fixture fx(false, "/scenes", &worker);
+    ASSERT_TRUE(worker.start());
+    ASSERT_TRUE(fx.install(todo_files("1.0.0")));
+    std::atomic<int> failures{0};
+    std::atomic<int> installed{0};
+    auto installer = [&](const char* version) {
+        for (int i = 0; i < 10; ++i) {
+            auto r = fx.install(todo_files(version));
+            if (r) {
+                ++installed;
+            } else if (r.error().code != ErrorCode::Busy) {
+                ++failures;
+            }
+        }
+    };
+    auto reader = [&] {
+        for (int i = 0; i < 20; ++i) {
+            if (!fx.repo->load("todo")) ++failures;
+            auto listed = fx.repo->list();
+            if (!listed || listed.value().size() != 1) ++failures;
+            auto exported = fx.repo->export_zip("todo", false);
+            if (!exported && exported.error().code != ErrorCode::Busy) ++failures;
+        }
+    };
+    std::thread a(installer, "1.0.1");
+    std::thread b(installer, "1.0.2");
+    std::thread c(reader);
+    a.join();
+    b.join();
+    c.join();
+    EXPECT_EQ(failures.load(), 0);
+    EXPECT_GT(installed.load(), 0);
+    worker.stop();
 }
