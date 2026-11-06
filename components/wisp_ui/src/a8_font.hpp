@@ -31,6 +31,13 @@ inline constexpr size_t kA8CacheBytes = 512 * 1024;
 // outlive the result; wrappers are created once and never freed.
 const lv_font_t* a8_font(const lv_font_t* base);
 
+// Points the wrapper `wrapper` (a pointer a8_font() returned) at a new
+// fallback, wrapped like a8_font() wraps `base`'s; nullptr: none. For a
+// font whose fallback is decided after the wrapper was handed out, such
+// as the body font's CJK fallback (fonts.cpp). Does nothing when
+// `wrapper` is not a wrapper. Only while nothing draws with it.
+void a8_set_fallback(const lv_font_t* wrapper, const lv_font_t* fallback);
+
 // Empties the cache of every wrapper, freeing its memory, so a test sees
 // the same cache whatever ran before it. Only while nothing draws with
 // a wrapper (no UiRuntime running).

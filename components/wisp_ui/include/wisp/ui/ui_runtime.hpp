@@ -52,6 +52,16 @@ struct UiConfig {
     // empty or invalid, font() falls back to bitmap fonts. The bytes must
     // outlive the UiRuntime.
     std::span<const uint8_t> font_image;
+    // The glyphs partition image (glyph-partition spec 4.2), provided
+    // like font_image. start() checks it with open_glyph_image(); the
+    // 16 px body font's CJK glyphs come from it. Empty or invalid, they
+    // come from the built-in font when `builtin_glyphs` allows it and the
+    // build has one (host builds only), else from a 16 px vector font,
+    // else nowhere (spec 4.3). The bytes must outlive the UiRuntime; a
+    // font built from them is kept for the life of the process and
+    // reused when a later start() gets the same bytes.
+    std::span<const uint8_t> glyph_image;
+    bool builtin_glyphs = true;
 };
 
 // A thread-safe snapshot of the UI task's activity. `fps`, `cpu_percent`
@@ -82,7 +92,8 @@ public:
     UiRuntime& operator=(const UiRuntime&) = delete;
 
     // Calls lv_init(), checks config.font_image with open_font_image()
-    // (logged either way; a bad image never fails start()), creates the
+    // and config.glyph_image with open_glyph_image() (logged either way;
+    // a bad image never fails start()), creates the
     // LVGL display (resolution taken from
     // `display`'s caps) with two partial draw buffers sized and placed
     // by hal::draw_buf_policy() from the same caps, in the byte order of caps

@@ -218,22 +218,35 @@ std::vector<uint8_t> load_web_assets(const SimOptions& opts, const char* argv0) 
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-// The vector font image (vector-font spec 3.3): --font-image's file, else
-// the fonts.bin the build packs next to the executable; nothing for
-// "--font-image none". Empty when unreadable: UiRuntime then logs why and
-// large text uses bitmap fonts. Kept in memory for the whole run, since
-// Platform::font_image points into it.
-std::vector<uint8_t> load_font_image(const SimOptions& opts, const char* argv0) {
-    if (opts.font_image == "none") return {};
-    const std::filesystem::path path = opts.font_image.empty()
-                                           ? exe_dir(argv0) / "fonts.bin"
-                                           : std::filesystem::path(opts.font_image);
+// A font image option's bytes: the file `option` names, else `fallback`
+// next to the executable; nothing for "none". Empty when unreadable:
+// UiRuntime then logs why and degrades. Kept in memory for the whole run,
+// since Platform::font_image/glyph_image point into it.
+std::vector<uint8_t> load_image_option(const std::string& option, const char* fallback,
+                                       const char* argv0) {
+    if (option == "none") return {};
+    const std::filesystem::path path =
+        option.empty() ? exe_dir(argv0) / fallback : std::filesystem::path(option);
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         WLOG_W(kLogTag, "cannot read the font image %s", path.c_str());
         return {};
     }
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+// The vector font image (vector-font spec 3.3): --font-image's file, else
+// fonts.bin; without it large text uses bitmap fonts.
+std::vector<uint8_t> load_font_image(const SimOptions& opts, const char* argv0) {
+    return load_image_option(opts.font_image, "fonts.bin", argv0);
+}
+
+// The body font image (glyph-partition spec 3.3): --glyph-image's file,
+// else glyphs.bin; without it the built-in body font stands in, or for
+// "none" the 16 px vector font, as on a device whose glyphs partition is
+// missing.
+std::vector<uint8_t> load_glyph_image(const SimOptions& opts, const char* argv0) {
+    return load_image_option(opts.glyph_image, "glyphs.bin", argv0);
 }
 
 // --imu-script's steps (wisp/port/sim/imu_script.hpp); an unreadable or
@@ -698,6 +711,8 @@ int main(int argc, char** argv) {
     const std::vector<uint8_t> web_assets = load_web_assets(opts, argv[0]);
     // Outlives `app` (Platform::font_image points into it).
     const std::vector<uint8_t> font_image = load_font_image(opts, argv[0]);
+    // Outlives `app` (Platform::glyph_image points into it).
+    const std::vector<uint8_t> glyph_image = load_glyph_image(opts, argv[0]);
     auto input = std::make_shared<wisp::port::sim::SimInput>(/*sd_present_initial=*/!opts.no_sd);
     if (!opts.imu_script.empty()) {
         auto steps = load_imu_script(opts.imu_script);
@@ -742,6 +757,8 @@ int main(int argc, char** argv) {
     };
     platform.install_image_decoders = wisp::port::sim::install_image_decoders;
     platform.font_image = std::span<const uint8_t>(font_image);
+    platform.glyph_image = std::span<const uint8_t>(glyph_image);
+    platform.builtin_glyphs = opts.glyph_image != "none";
     platform.firmware_version = WISP_VERSION;
     platform.target = "simulator";
     // Uploads land in <data-dir>/firmware.bin; images must be built for

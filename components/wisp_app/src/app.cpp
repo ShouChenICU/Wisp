@@ -258,6 +258,8 @@ Result<void> App::start() {
         ui::UiConfig ui_config;
         ui_config.install_image_decoders = impl_->platform.install_image_decoders;
         ui_config.font_image = impl_->platform.font_image;
+        ui_config.glyph_image = impl_->platform.glyph_image;
+        ui_config.builtin_glyphs = impl_->platform.builtin_glyphs;
         impl_->ui = std::make_unique<ui::UiRuntime>(display, touch, std::move(ui_config));
         if (!impl_->ui->start()) {
             WLOG_E("app", "UiRuntime failed to start; continuing headless");

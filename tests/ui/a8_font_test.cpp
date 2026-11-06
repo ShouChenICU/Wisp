@@ -162,4 +162,36 @@ TEST_F(A8FontTest, TextRendersIdentically) {
     EXPECT_TRUE(want.value() == got.value());
 }
 
+// The body font's CJK fallback is chosen when a UiRuntime starts
+// (fonts.cpp), after default_font() has handed its wrapper out, so the
+// wrapper's fallback is rewired in place and wrapped like a8_font()'s.
+TEST_F(A8FontTest, SetFallbackRewires) {
+    static lv_font_t base = [] {
+        lv_font_t f = lv_font_montserrat_16;
+        f.fallback = nullptr;
+        return f;
+    }();
+    bool with_cjk = false;
+    const lv_font_t* resolved = nullptr;
+    const lv_font_t* cjk_wrapper = nullptr;
+    bool without_cjk = true;
+    bool latin = false;
+    wisp::test::run_on_ui_blocking(ui_.get(), [&] {
+        const lv_font_t* w = wisp::ui::a8_font(&base);
+        cjk_wrapper = wisp::ui::a8_font(&lv_font_cjk_16);
+        lv_font_glyph_dsc_t g{};
+        wisp::ui::a8_set_fallback(w, &lv_font_cjk_16);
+        with_cjk = lv_font_get_glyph_dsc(w, &g, 0x4F60 /* 你 */, 0);
+        resolved = g.resolved_font;
+        wisp::ui::a8_set_fallback(w, nullptr);
+        without_cjk = lv_font_get_glyph_dsc(w, &g, 0x4F60, 0);
+        latin = lv_font_get_glyph_dsc(w, &g, 'A', 0);
+    });
+    EXPECT_TRUE(with_cjk);
+    EXPECT_EQ(resolved, cjk_wrapper);
+    EXPECT_NE(cjk_wrapper, &lv_font_cjk_16);
+    EXPECT_FALSE(without_cjk);
+    EXPECT_TRUE(latin);
+}
+
 }  // namespace

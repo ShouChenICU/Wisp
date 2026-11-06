@@ -57,6 +57,11 @@ struct SimOptions {
     // the build packs next to the executable, "none" runs without one
     // (large text on bitmap fonts), anything else is a path.
     std::string font_image;
+    // The body font image (glyph-partition spec 3.3): empty is the
+    // glyphs.bin the build packs next to the executable, "none" runs
+    // without one and without the built-in body font (CJK text on the
+    // 16 px vector font), anything else is a path.
+    std::string glyph_image;
     // A file of scripted IMU steps (wisp/port/sim/imu_script.hpp); empty:
     // none, the arrow keys tilt.
     std::string imu_script;
@@ -70,7 +75,8 @@ struct SimOptions {
 // server), --web-dir <path>, --wifi-fail, --tap <x>,<y>@<ms> and
 // --swipe <x1>,<y1>,<x2>,<y2>@<ms> (both repeatable, appended to
 // `touches` in order), --scenes-dir <path>, --open-scene <id>,
-// --font-image <path|none> and --imu-script <path>.
+// --font-image <path|none>, --glyph-image <path|none> and --imu-script
+// <path>.
 //
 // Fails with wisp::ErrorCode::InvalidArgument if:
 //   - an argument is none of the flags above (the error message includes

@@ -204,6 +204,17 @@ const lv_font_t* a8_font(const lv_font_t* base) {
     return &wrappers().back()->font;
 }
 
+void a8_set_fallback(const lv_font_t* wrapper, const lv_font_t* fallback) {
+    // Wrapped before the search: a8_font() may add to the list.
+    const lv_font_t* wrapped = a8_font(fallback);
+    for (const auto& w : wrappers()) {
+        if (&w->font == wrapper) {
+            w->font.fallback = wrapped;
+            return;
+        }
+    }
+}
+
 void reset_a8_cache_for_test() {
     for (const auto& w : wrappers()) {
         os::dealloc(w->slots);

@@ -186,6 +186,14 @@ struct Platform {
     // bitmap fonts.
     std::span<const uint8_t> font_image;
 
+    // The glyphs partition image (ui::UiConfig::glyph_image): the mapped
+    // "glyphs" partition on the device, glyphs.bin read into memory in
+    // the simulator. The bytes must outlive the App. Empty: CJK body
+    // text uses the built-in font where allowed (`builtin_glyphs`, host
+    // builds only), else the 16 px vector font.
+    std::span<const uint8_t> glyph_image;
+    bool builtin_glyphs = true;
+
     std::string firmware_version = "0.1.0";
     // What the firmware runs on, as the self-check header shows it next to
     // the version: the chip target on ESP, "simulator" on the PC. Empty:

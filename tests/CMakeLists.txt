@@ -120,6 +120,13 @@ wisp_test(NAME glyph_image_test SRCS ui/glyph_image_test.cpp LIBS wisp_ui wisp_p
 add_dependencies(glyph_image_test wisp_sim_glyphs)
 target_compile_definitions(glyph_image_test PRIVATE WISP_GLYPH_IMAGE="${CMAKE_BINARY_DIR}/glyphs.bin")
 target_include_directories(glyph_image_test PRIVATE ${WISP_ROOT}/components/wisp_ui/src)
+# The body font's fallback chain needs both packed images; see
+# font_image_test and glyph_image_test above.
+wisp_test(NAME glyph_font_test SRCS ui/glyph_font_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
+add_dependencies(glyph_font_test wisp_sim_glyphs wisp_sim_fonts)
+target_compile_definitions(glyph_font_test PRIVATE WISP_GLYPH_IMAGE="${CMAKE_BINARY_DIR}/glyphs.bin"
+                           WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
+target_include_directories(glyph_font_test PRIVATE ${WISP_ROOT}/components/wisp_ui/src)
 wisp_test(NAME vector_font_test SRCS ui/vector_font_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
 add_dependencies(vector_font_test wisp_sim_fonts)
 target_compile_definitions(vector_font_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")

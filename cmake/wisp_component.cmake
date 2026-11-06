@@ -103,7 +103,7 @@ macro(wisp_component)
         # -fno-exceptions/-fno-rtti are C++-only flags: GCC hard-errors
         # under -Werror (part of the ESP-IDF toolchain's default flags) if
         # they reach a .c file, which any component mixing C and C++ SRCS
-        # (e.g. wisp_ui's lv_font_cjk_16.c) does. Gate them to CXX via a
+        # (e.g. wisp_ui's lv_font_wisp_icons_*.c) does. Gate them to CXX via a
         # generator expression rather than relying on language-specific
         # scope the way the plain PRIVATE/PUBLIC/INTERFACE keywords above
         # do.

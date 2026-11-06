@@ -143,6 +143,8 @@ extern "C" void app_main() {
     // app_main's is; the UI task only reads the mapping afterwards, which
     // is not a flash access.
     platform.font_image = wisp::port::esp::map_font_partition();
+    // The 16 px body font (glyph-partition spec 4.2), mapped likewise.
+    platform.glyph_image = wisp::port::esp::map_glyph_partition();
     // The single source for this (rather than a literal duplicated here
     // and in the build config): esp_app_desc_t is filled in at build
     // time from PROJECT_VER (cmake/wisp_version.cmake, via

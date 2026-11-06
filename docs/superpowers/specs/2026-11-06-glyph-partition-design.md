@@ -81,8 +81,8 @@
 ### 3.3 构建与烧录
 
 - `firmware/main/CMakeLists.txt` 照 `fonts.bin` 的写法：分区表里有 `glyphs` 分区时生成 `build/glyphs.bin`，超过分区大小时构建失败；`idf.py flash` 一并写入；`idf.py fonts-flash` 同时写 `fonts.bin` 与 `glyphs.bin`。分区表没有 `glyphs` 的板子两者都没有。
-- `components/wisp_ui/CMakeLists.txt` 在固件构建里不再编译 `fonts/lv_font_cjk_16.c`。
-- 模拟器：构建时同样生成 `build/sim/glyphs.bin`，启动时读进内存，`--glyph-image <路径|none>` 可以覆盖或关闭（与现有 `--font-image` 一致）。
+- `components/wisp_ui/CMakeLists.txt` 在固件构建里不再编译 `fonts/lv_font_cjk_16.c`。主机构建继续把它编进 `wisp_ui`（宏 `WISP_UI_BUILTIN_CJK16`，只在 `NOT ESP_PLATFORM` 时定义），作为内置回退：几百个不传镜像就启动 `UiRuntime` 的主机测试照常有中文字形，等价性测试也以它为参照。固件从不链接它。
+- 模拟器：构建时同样生成 `build/sim/glyphs.bin`，启动时读进内存，`--glyph-image <路径|none>` 可以覆盖或关闭（与现有 `--font-image` 一致）。`none` 同时关掉内置回退（`builtin_glyphs = false`），用来在模拟器里看真机缺分区时的样子（4.3 第 2 步）。
 
 ## 4. 运行时
 
@@ -95,15 +95,17 @@
 ### 4.2 平台与接入
 
 - 平台层新增 `wisp::port::esp::map_glyph_partition()`（`esp_font_partition.cpp`），与 `map_font_partition()` 相同：整个分区只读、永久映射，没有该分区时返回空。
-- `Platform`/`UiConfig` 新增 `glyph_image` 字段（与 `font_image` 并列），`UiRuntime::start()` 调 `open_glyph_image()`，成功后交给字体服务。
-- `default_font()` 的回退链保持"Montserrat 16 → CJK 16"，CJK 16 换成由镜像组装的字体，仍外包 `a8_font()` 的 8 位字形缓存。像素与现在相同。
+- `Platform`/`UiConfig` 新增 `glyph_image` 字段（与 `font_image` 并列）和 `builtin_glyphs`（缺省 true，是否允许用主机的内置字体），`UiRuntime::start()` 在装好矢量字体镜像之后调 `open_glyph_image()`，按 4.3 选定正文的 CJK 回退。
+- `default_font()` 的回退链保持"Montserrat 16 → CJK 16"，CJK 16 换成由镜像组装的字体，仍外包 `a8_font()` 的 8 位字形缓存。像素与现在相同。`default_font()` 返回的指针始终不变，每次 `start()` 只改它的 A8 外包字体的 `fallback`；`stop()` 后恢复为启动前的回退（主机是内置字体，固件为空），所以任何 runtime 启动之前，主机上的 `default_font()` 已经能显示中文。
+- 由镜像组装的字体一旦用过就不释放（`a8_font()` 以字体地址为键、终身保留外包），下次 `start()` 拿到同一段字节（地址、长度、CRC 都相同）时复用，反复启停不增长 PSRAM。
 
 ### 4.3 降级
 
-`glyph_image` 为空或校验失败时记一条警告，然后：
+`glyph_image` 为空或校验失败时记一条警告（写明 `open_glyph_image()` 给出的原因），然后：
 
-1. 矢量字体镜像可用：CJK 回退到 16 px 档的 Tiny TTF 字体（按需创建，复用矢量字体 spec 4.4 的档位与缓存上限）。能显示，但比位图字发虚。
-2. 矢量字体也不可用：只剩 Montserrat 16，中文显示为占位框。界面仍然能启动、能操作。
+1. 主机构建且 `builtin_glyphs` 为 true：CJK 回退到内置的 `lv_font_cjk_16`（同样外包 `a8_font()`）。固件没有这一步。
+2. 矢量字体镜像可用：CJK 回退到 16 px 的 Tiny TTF 字体（`start()` 时创建，行框与查字过滤与矢量字体 spec 4.3 的大字相同，缓存条数按 `font_cache_entries(16)`；`stop()` 时销毁）。它自己不再回退，免得与正文字体构成回环。能显示，但比位图字发虚。
+3. 矢量字体也不可用：只剩 Montserrat 16，中文显示为占位框。界面仍然能启动、能操作。
 
 ### 4.4 资源
 
@@ -117,7 +119,7 @@
 主机（GoogleTest，TDD）：
 
 - `open_glyph_image()`：正常镜像通过；魔数、版本、长度、CRC 错误各自返回对应错误码；字形位图越界、cmap 偏移越界、kern id 越界都被拒绝。
-- 等价性：模拟器构建里同时链接原来的 `lv_font_cjk_16.c` 作为参照（只在测试里），对 8709 个码位逐个比较字形描述、kern 值和位图，结果必须完全相同。
+- 等价性：主机构建的 `wisp_ui` 里仍有原来的 `lv_font_cjk_16.c`（3.3），以它为参照，对 8709 个码位逐个比较字形描述、kern 值和位图，结果必须完全相同。
 - 降级：`glyph_image` 为空时，有矢量镜像则中文字符走 16 px Tiny TTF；两者都没有时 `default_font()` 仍然可用、不崩溃。
 
 真机（交给用户，硬件文档新增一项）：

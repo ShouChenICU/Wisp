@@ -146,12 +146,12 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
                 return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
             }
             opts.imu_script = std::move(v.value());
-        } else if (arg == "--font-image") {
-            auto v = take_value(argc, argv, i, "--font-image");
+        } else if (arg == "--font-image" || arg == "--glyph-image") {
+            auto v = take_value(argc, argv, i, arg.c_str());
             if (!v) {
                 return wisp::Result<SimOptions>::err(v.error().code, v.error().message);
             }
-            opts.font_image = std::move(v.value());
+            (arg == "--font-image" ? opts.font_image : opts.glyph_image) = std::move(v.value());
         } else if (arg == "--disable") {
             auto v = take_value(argc, argv, i, "--disable");
             if (!v) {

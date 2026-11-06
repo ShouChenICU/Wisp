@@ -23,14 +23,19 @@ inline constexpr int kVectorMinPx = 20;
 // them the PSRAM they take, has a fixed bound (spec 4.4).
 inline constexpr std::array<int, 10> kFontSteps = {20, 24, 28, 32, 40, 48, 64, 80, 96, 128};
 
-// The default UI font: lv_font_montserrat_16, with the built-in
-// lv_font_cjk_16 (GB2312 plus Japanese kana and level-1 kanji, 4bpp; see
-// tools/gen_cjk_font.py) as its fallback so Chinese and Japanese text
-// falls back to it glyph-by-glyph. Both are drawn from a cache of glyphs
-// expanded to 8 bits per pixel (src/a8_font.hpp), with the same pixels.
-// Lazily constructed on first call (thread-safe, C++11 magic statics);
-// safe to call from any thread, before or after any UiRuntime exists.
-// UiRuntime::start() installs this as the default theme font.
+// The default UI font: lv_font_montserrat_16, falling back glyph by
+// glyph to a CJK font for Chinese and Japanese text (glyph-partition
+// spec 4.2, 4.3). While a UiRuntime runs that is the 16 px body font
+// (GB2312 plus Japanese kana and level-1 kanji, 4bpp; see
+// tools/gen_cjk_font.py) read from UiConfig::glyph_image; failing that,
+// the same font built into host builds, a 16 px vector font, or nothing.
+// Outside a runtime it is the built-in font on the host and nothing on
+// the device. Bitmap fonts are drawn from a cache of glyphs expanded to
+// 8 bits per pixel (src/a8_font.hpp), with the same pixels. Lazily
+// constructed on first call (thread-safe, C++11 magic statics); the
+// pointer never changes, and it is safe to call from any thread, before
+// or after any UiRuntime exists. UiRuntime::start() installs this as the
+// default theme font.
 const lv_font_t* default_font();
 
 // The size font(px) draws at: kBodyFontPx below kVectorMinPx, otherwise

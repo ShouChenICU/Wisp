@@ -214,6 +214,25 @@ TEST(SimOptions, FontImage) {
     EXPECT_NE(r.error().message.find("--font-image"), std::string::npos);
 }
 
+// glyph-partition spec 3.3: empty is the glyphs.bin next to wisp_sim;
+// "none" runs without one and without the built-in body font.
+TEST(SimOptions, GlyphImage) {
+    const char* none[] = {"wisp_sim"};
+    EXPECT_TRUE(parse_sim_options(1, none).value().glyph_image.empty());
+
+    const char* path[] = {"wisp_sim", "--glyph-image", "/x/y.bin"};
+    EXPECT_EQ(parse_sim_options(3, path).value().glyph_image, "/x/y.bin");
+
+    const char* off[] = {"wisp_sim", "--glyph-image", "none"};
+    EXPECT_EQ(parse_sim_options(3, off).value().glyph_image, "none");
+
+    const char* missing[] = {"wisp_sim", "--glyph-image"};
+    auto r = parse_sim_options(2, missing);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_NE(r.error().message.find("--glyph-image"), std::string::npos);
+}
+
 TEST(SimOptions, ImuScript) {
     const char* a1[] = {"wisp_sim"};
     EXPECT_TRUE(parse_sim_options(1, a1).value().imu_script.empty());

@@ -563,6 +563,9 @@ Result<void> UiRuntime::start() {
         WLOG_W("ui", "fonts: %s; large text uses bitmap fonts", image.error().message.c_str());
         detail::install_font_image(nullptr);
     }
+    // After the vector font: without a glyph image the body font may fall
+    // back to a 16 px vector font. Never fails either (spec 4.3).
+    detail::install_glyph_font(impl_->config.glyph_image, impl_->config.builtin_glyphs);
 
     impl_->lv_disp = lv_display_create(impl_->width, impl_->height);
     if (impl_->lv_disp == nullptr) {
