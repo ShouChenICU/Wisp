@@ -1,15 +1,19 @@
 # Name,    Type, SubType,  Offset,   Size
-# Two 5 MB OTA slots for the admin page's firmware upload (connectivity
-# spec 3.2, 6.5); the web pack is linked into the app image, so there is
-# no assets partition. fonts holds the vector font image (vector-font
-# spec 3.4); idf.py flash and idf.py fonts-flash write it, OTA never
-# touches it. storage shrank from 0x5E0000 to 0x310000 to make room, so
-# moving to this table reformats /int; nvs keeps its offset and size, so
-# settings survive.
+# The OTA slots are rounded down from 5 MB to 4.5 MB (glyph-partition
+# spec 2) to make room for the new glyphs partition without growing total
+# flash use; the web pack is linked into the app image, so there is still
+# no assets partition. glyphs holds the 16 px body font image
+# (glyph-partition spec 3.1), subtype 0x41 right after fonts' 0x40; fonts
+# holds the vector font image (vector-font spec 3.4). idf.py flash and
+# idf.py fonts-flash write both, OTA never touches either. storage shrank
+# again, from 0x310000 to 0x2F0000, to make room for glyphs, so moving to
+# this table reformats /int a second time; nvs keeps its offset and size,
+# so settings survive.
 nvs,       data, nvs,      0x9000,   0x6000
 otadata,   data, ota,      0xF000,   0x2000
 phy_init,  data, phy,      0x11000,  0x1000
-ota_0,     app,  ota_0,    0x20000,  0x500000
-ota_1,     app,  ota_1,    0x520000, 0x500000
-storage,   data, littlefs, 0xA20000, 0x310000
+ota_0,     app,  ota_0,    0x20000,  0x480000
+ota_1,     app,  ota_1,    0x4A0000, 0x480000
+glyphs,    data, 0x41,     0x920000, 0x120000
+storage,   data, littlefs, 0xA40000, 0x2F0000
 fonts,     data, 0x40,     0xD30000, 0x2D0000

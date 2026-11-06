@@ -93,6 +93,39 @@ if(_wisp_fonts_size)
     add_dependencies(flash wisp_fonts_bin)
 endif()
 
+# The 16 px body font image (glyph-partition spec 3.2, 3.3): tools/pack_
+# glyph_image.py repacks the committed lv_font_cjk_16.c as build/glyphs.bin,
+# failing the build when it outgrows the board's glyphs partition. Like
+# fonts.bin, it is not linked into the app: idf.py flash writes it to the
+# glyphs partition alongside the app and fonts, idf.py fonts-flash writes
+# it alongside fonts.bin, and OTA never touches it. A board whose
+# partition table has no glyphs partition gets neither the image nor the
+# extra flash targets; the firmware never links lv_font_cjk_16.c itself
+# (components/wisp_ui/CMakeLists.txt), so that board's body font falls
+# back further per the glyph-partition spec (4.3).
+partition_table_get_partition_info(_wisp_glyphs_size "--partition-name glyphs" "size")
+if(_wisp_glyphs_size)
+    set(WISP_GLYPH_IMAGE ${CMAKE_BINARY_DIR}/glyphs.bin)
+    set(_wisp_glyph_font_c
+        ${CMAKE_CURRENT_LIST_DIR}/../../components/wisp_ui/fonts/lv_font_cjk_16.c)
+    add_custom_command(
+        OUTPUT ${WISP_GLYPH_IMAGE}
+        COMMAND ${_wisp_python} ${CMAKE_CURRENT_LIST_DIR}/../../tools/pack_glyph_image.py
+                ${_wisp_glyph_font_c} -o ${WISP_GLYPH_IMAGE} --max-bytes ${_wisp_glyphs_size}
+        DEPENDS ${_wisp_glyph_font_c} ${CMAKE_CURRENT_LIST_DIR}/../../tools/pack_glyph_image.py
+        COMMENT "Packing the body font into glyphs.bin"
+        VERBATIM
+    )
+    add_custom_target(wisp_glyphs_bin ALL DEPENDS ${WISP_GLYPH_IMAGE})
+    # fonts-flash is only defined above, inside the "has a fonts partition"
+    # branch; reuse it rather than esptool_py_flash_target() again, which
+    # would redefine the same custom target.
+    esptool_py_flash_to_partition(fonts-flash glyphs ${WISP_GLYPH_IMAGE})
+    add_dependencies(fonts-flash wisp_glyphs_bin)
+    esptool_py_flash_to_partition(flash glyphs ${WISP_GLYPH_IMAGE})
+    add_dependencies(flash wisp_glyphs_bin)
+endif()
+
 # Every wisp_* component already pins itself to C++20/-fno-exceptions/
 # -fno-rtti via cmake/wisp_component.cmake (see AGENTS.md section 5); this
 # component is registered directly with idf_component_register() instead

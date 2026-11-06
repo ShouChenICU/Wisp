@@ -12,7 +12,7 @@
 
 ### 1.1 现状
 
-- 正文是 16 px 位图字：`lv_font_montserrat_16` 回退到 `lv_font_cjk_16`（Noto Sans CJK SC 的 16 px、4 bpp 子集，`tools/gen_cjk_font.py` 生成），外面包一层 8 位字形缓存（`components/wisp_ui/src/a8_font.cpp`）。
+- 正文是 16 px 位图字：`lv_font_montserrat_16` 回退到 `lv_font_cjk_16`（Noto Sans CJK SC 的 16 px、4 bpp 子集，`tools/gen_cjk_font.py` 生成），外面包一层 8 位字形缓存（`components/wisp_ui/src/a8_font.cpp`）。`lv_font_cjk_16` 的数据后来挪进独立的 `glyphs` flash 分区，运行时映射读取，不再链接进固件镜像（字形分区 spec）。
 - 大字号只有 Montserrat 24/32/48，只含 ASCII 和 LVGL 的图标符号（`LV_SYMBOL_*`）。`ui::font(px)` 把它们回退到 16 px 的 CJK 字：**大字号里的中文、日文仍然只有 16 px**。场景的 `font = "lg"/"xl"/"xxl"` 也是这样。
 - Montserrat 24/32/48 三个字体共占应用镜像约 171 KB。
 
@@ -206,7 +206,7 @@
 - Tiny TTF 找不到字形时返回 false，LVGL 按 `fallback` 逐字往下找。Noto 没有 `LV_SYMBOL_*`（FontAwesome 的私用区码位），这些字由图标字给出；字符集以外的字回退到 16 px。
 - 这一步不直接用 Tiny TTF 自己生成的 `get_glyph_dsc`：矢量字体对象的 `get_glyph_dsc` 先经 `font_image_has_glyph(image, codepoint)`（按镜像里 `open_font_image()` 已经校验过的 `cmap` 子表查，不经 stb_truetype）问一句"这个字在不在矢量字体里"，不在就直接答"没有"、交给 LVGL 走 `fallback`，在才调用 Tiny TTF 原本的回调。原因：Tiny TTF 的回调对每一个它没有的字符（全部 `LV_SYMBOL_*` 图标、字符集以外的字）都会记一条 LVGL 错误日志，测量和绘制各触发一次；这个预检查把日志保持干净，不改变回退结果。控制字符、U+200C 和 `LV_SYMBOL_DUMMY` 本身是 Tiny TTF 自己能正确处理成空字形的码位，不经过这个预检查，直接调用它的回调。
 - 混排时回退字形画在主字体的基线上，实测没有错位。
-- **降级**（镜像缺失或无效，或该档创建失败）：`font(px)` 返回"图标字 → `default_font()`"，即图标仍是大号、文字退到 16 px。Montserrat 24/32/48 删除之后没有大号拉丁位图字可退（4.6），这是降级模式下可以接受的样子。
+- **降级**（镜像缺失或无效，或该档创建失败）：`font(px)` 返回"图标字 → `default_font()`"，即图标仍是大号、文字退到 16 px。Montserrat 24/32/48 删除之后没有大号拉丁位图字可退（4.6），这是降级模式下可以接受的样子。`default_font()` 本身在 `glyphs` 分区缺失或镜像无效时还有自己的降级链（矢量 16 px，再没有就只剩占位框），见字形分区 spec 4.3。
 
 ### 4.3 行高
 

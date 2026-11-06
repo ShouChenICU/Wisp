@@ -14,13 +14,14 @@
   | `nvs` | 0x9000 | 24 KB |
   | `otadata` | 0xF000 | 8 KB |
   | `phy_init` | 0x11000 | 4 KB |
-  | `ota_0` | 0x20000 | 5 MB |
-  | `ota_1` | 0x520000 | 5 MB |
-  | `storage`（LittleFS） | 0xA20000 | 3.06 MB |
+  | `ota_0` | 0x20000 | 4.5 MB |
+  | `ota_1` | 0x4A0000 | 4.5 MB |
+  | `glyphs`（16 px 正文位图字镜像，字形分区 spec 2，data 子类型 0x41） | 0x920000 | 1.125 MB |
+  | `storage`（LittleFS） | 0xA40000 | 2.94 MB |
   | `fonts`（矢量字体镜像，矢量字体 spec 3.4） | 0xD30000 | 2.81 MB |
 
-  网页资源包链接在应用镜像里，没有 `assets` 分区。`nvs` 的偏移和大小都没有变，Wi-Fi、配对、亮度、语言等设置跨这次换表保留。`storage` 偏移不变，但为了给新增的 `fonts` 分区腾出空间，从 5.875 MB 缩小到 3.06 MB：LittleFS 的超级块记着块数，分区大小一变挂载就会失败，`format_if_mount_failed` 随即重新格式化——**换成这张表时 `/int` 里的数据（已安装的场景、场景数据、文件）全部清空**，用户已批准这次换表（矢量字体 spec 3.4）。从旧分区表（两个 4 MB 应用槽加 2 MB 的 `assets` 分区，或没有 `fonts` 分区的上一版 `storage` 0x5E0000）换过来时，以及第一次用上打开了回滚功能的引导程序时，都必须用 USB 完整烧录一次（`idf.py -p <PORT> flash`，写入引导程序、分区表、`otadata`、`ota_0` 和 `fonts`），之后才能在网页上传固件；只想换字体用 `idf.py -p <PORT> fonts-flash`，日常改代码用 `idf.py -p <PORT> app-flash`（见 `docs/porting-guide.md`"字体分区"）。
-- 镜像大小（ESP-IDF v6.0.3，`idf.py size`）：发布版 3,967,023 B（`ota_0` 的 75.7%，2026-11-05 矢量字体验收时，含 3a 和矢量字体；调试版没有重测）；预算为单个 OTA 槽的 80%。
+  网页资源包链接在应用镜像里，没有 `assets` 分区。`nvs` 的偏移和大小跨历次换表都没有变，Wi-Fi、配对、亮度、语言等设置都保留。`fonts` 的偏移和大小同样不变。这是第二次换表：第一次（矢量字体 spec 3.4）为了给新增的 `fonts` 分区腾出空间，把 `storage` 从 5.875 MB 缩小到 3.06 MB；这一次（字形分区 spec 2）为了给新增的 `glyphs` 分区腾出空间，又把两个 OTA 槽从 5 MB 取整缩小到 4.5 MB，`storage` 跟着从 3.06 MB 缩小到 2.94 MB（偏移从 0xA20000 挪到 0xA40000）。两次道理相同：LittleFS 的超级块记着块数，分区大小一变挂载就会失败，`format_if_mount_failed` 随即重新格式化——**每次换成新表时 `/int` 里的数据（已安装的场景、场景数据、文件）全部清空**，用户已批准这次换表（字形分区 spec 2）。从旧分区表（两个 4 MB 应用槽加 2 MB 的 `assets` 分区，没有 `fonts` 分区的上一版 `storage` 0x5E0000，或两个 5 MB 应用槽、没有 `glyphs` 分区的上一版 `storage` 0xA20000）换过来时，以及第一次用上打开了回滚功能的引导程序时，都必须用 USB 完整烧录一次（`idf.py -p <PORT> flash`，写入引导程序、分区表、`otadata`、`ota_0`、`fonts` 和 `glyphs`），之后才能在网页上传固件；只想换字体用 `idf.py -p <PORT> fonts-flash`（同时写 `fonts.bin` 和 `glyphs.bin`），日常改代码用 `idf.py -p <PORT> app-flash`（见 `docs/porting-guide.md`"字体分区"）。
+- 镜像大小（ESP-IDF v6.0.3，`idf.py size`）：发布版 3,114,019 B（新的 `ota_0`，0x480000，的 66.0%，2026-11-06 字形分区换表后，`glyphs.bin` 1,122,464 B；调试版没有重测）；预算为单个 OTA 槽的 80%。更早的 3,967,023 B（`ota_0` 旧值 5 MB 的 75.7%，2026-11-05 矢量字体验收时，含 3a 和矢量字体）是换表前的数字，`lv_font_cjk_16` 挪进 `glyphs` 分区后不再链接进镜像。
 
 ## 外设与引脚
 
@@ -148,6 +149,12 @@
 | 58 | flash 写入期间渲染矢量字形（上文"flash 擦写与映射读取"） | 启动日志确认有 `Flash suspend feature is enabled`；打开一个有大字号汉字的界面（或不断切换含大字的场景），同时在管理后台上传一次固件 | 不崩溃；上传成功（202）并在重启后运行新固件；大字显示正常、没有乱码字形 | 2026-11-05：真机 OTA 通过：「大字测试」显示时经管理后台上传 `0.1.0-449-gc0be5e3`（202），上传和重启期间不崩溃，重启后启动日志有 `Flash suspend feature is enabled`、`fonts: image ok`，用户确认标题是矢量大字。此前用 `fprobe` 临时命令压测（128 px 换字 150 s + 同时擦写 `ota_1` 46.9 MB）也没有崩溃，比对映射区 24 遍 0 字节错 |
 | 59 | `wisp.sd` 栈在 PSRAM 不触发 flash 保护（flash-thread spec 3.9：`wisp.sd` 只做 SD 卡的挂载探测，声明 `flash_access = false`） | 插入 SD 卡，反复拔插触发 `EspSdStorage` 的挂载/卸载重试（见上文"存储容量与 SD 热插拔"一项）；同时用 `mem` 核对 `wisp.sd` 任务的栈位置 | `wisp.sd` 栈在 `psram`；挂载、卸载、重试过程不 abort、不触发"flash access off the flash thread" | |
 | 60 | 管理后台 httpd（8900）栈改到 PSRAM（flash-thread spec 3.6/3.9：OTA 与 Settings 都已经经 `run_sync` 交给 `wisp.fs`，httpd 自己不再碰 flash，`EspHttpServerConfig::flash_access` 缺省改为 false）——这改变了上文"内部 RAM"一节第 44、57 项记录的基线（当时 8900 的 httpd 栈在 `internal`） | 重复第 44/57 项的最坏情况组合（STA+AP、两个 httpd、WebSocket 日志、TLS 握手、OTA 上传同时进行），用 `mem` 核对 8900 的 `httpd` 栈位置并记录新的 `internal free`/`largest` | 8900 的 `httpd` 栈在 `psram`（不再是 `internal`）；上传、设置读写和配网流程均不出现"flash access off the flash thread"；`internal free` 相对第 57 项的基线应有提升（约 10 KB，`stack_bytes` 从内部挪到 PSRAM） | |
+| 61 | 新分区表换表烧录（字形分区 spec 5.1） | 在已经有设置和矢量大字（已走过第 37 项那张表）的板子上执行 `idf.py -p <PORT> flash`，写入新分区表、应用、`fonts.bin` 和 `glyphs.bin` | 正常启动；Wi-Fi、配对、亮度等设置和矢量大字都还在；`/int` 已重新格式化（场景列表为空）；重新推送一个示例场景能正常安装和打开；启动日志里有 `glyphs` 镜像校验通过的一行 |  |
+| 62 | 镜像大小与 PSRAM 总量（字形分区 spec 5.2） | `idf.py size` 看 Total image size；自检界面看 PSRAM"共" | 镜像约 3.13 MB；PSRAM"共"约 5 MB |  |
+| 63 | 开关热点的滚动帧率（字形分区 spec 5.3） | `bench scroll 10` 分别在不开热点、开热点（配网卡片显示）时测一次 | fps 不低于下方"性能基准"一节记下的当前基准 |  |
+| 64 | 正文显示不变（字形分区 spec 5.4） | 目测自检页、番茄钟、待办等界面的中文正文 | 与换表前一致，没有缺字、错字、发虚或错位 |  |
+| 65 | 仅擦 `glyphs` 分区的降级（字形分区 spec 5.5） | 只烧应用（`idf.py app-flash`），再 `parttool.py erase_partition --partition-name=glyphs` | 正常启动；中文正文以矢量 16 px 显示；启动日志有警告；`idf.py fonts-flash` 后恢复为位图正文 |  |
+| 66 | OTA 期间滚动正文（字形分区 spec 5.6） | 打开一个有中文正文的界面并持续滚动，同时经管理后台上传一次固件 | 显示正常、不崩溃；上传成功并在重启后运行新固件 |  |
 
 ## 待机与省电（spec 6.7）
 
