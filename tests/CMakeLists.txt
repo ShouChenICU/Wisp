@@ -399,3 +399,12 @@ wisp_test(NAME ui_tree_test SRCS scene/ui_tree_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME scene_workspace_test SRCS agent/scene_workspace_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)
+# The tools that operate scenes (eval, the store, files, logs, delete) and
+# the device tools with docs.read.
+wisp_test(NAME scene_eval_test SRCS scene/scene_eval_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME scene_ops_tools_test SRCS agent/scene_ops_tools_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)
+wisp_test(NAME device_tools_test SRCS agent/device_tools_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME docs_test SRCS agent/docs_test.cpp LIBS wisp_agent wisp_port_sim_os)

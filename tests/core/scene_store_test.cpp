@@ -1296,3 +1296,40 @@ TEST(SceneStore, MigrationCommitIsAtomicWithVersion) {
         EXPECT_EQ(s->data_version(), 0);
     }
 }
+
+// dump_json() (agent-core spec 4.2, scene.data_read): the committed data as
+// one JSON document, cut at a size it never passes.
+TEST(SceneStore, DumpJson) {
+    Harness h;
+    auto s = h.open();
+    auto dump = [&](size_t max) {
+        const wisp::os::LargeString d = s->dump_json(max);
+        return std::string(d.data(), d.size());
+    };
+    EXPECT_EQ(dump(4096), R"({"kv":{},"collections":{}})");
+    ASSERT_TRUE(s->kv_set("b", "2"));
+    ASSERT_TRUE(s->kv_set("a", R"({"x":"y"})"));
+    ASSERT_TRUE(s->insert("notes", R"({"t":"hi"})"));
+    ASSERT_TRUE(s->insert("notes", "{}"));
+    ASSERT_TRUE(s->insert("alpha", R"({"n":1})"));
+    EXPECT_EQ(dump(4096), R"({"kv":{"a":{"x":"y"},"b":2},"collections":{"alpha":[{"id":1,"n":1}],)"
+                          R"("notes":[{"id":1,"t":"hi"},{"id":2}]}})");
+    // An open batch is not seen.
+    s->begin_batch();
+    ASSERT_TRUE(s->kv_set("c", "3"));
+    EXPECT_EQ(dump(4096).find("\"c\""), std::string::npos);
+    s->abort_batch();
+
+    for (int i = 0; i < 50; ++i) ASSERT_TRUE(s->kv_set("k" + std::to_string(i), object_of(100)));
+    for (size_t max : {size_t{64}, size_t{100}, size_t{300}, size_t{1000}, size_t{4000}}) {
+        const std::string text = dump(max);
+        EXPECT_LE(text.size(), max) << max;
+        auto v = wisp::from_json(text);
+        ASSERT_TRUE(v) << max << ": " << text;
+        ASSERT_NE(v.value().find("truncated"), nullptr) << text;
+        EXPECT_TRUE(v.value().find("truncated")->as_bool());
+        EXPECT_NE(v.value().find("collections"), nullptr) << text;
+    }
+    const std::string whole = dump(1024 * 1024);
+    EXPECT_EQ(whole.find("truncated"), std::string::npos);
+}

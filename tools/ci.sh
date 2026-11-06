@@ -150,6 +150,13 @@ python3 tools/pack_font_image_test.py
 echo "==> tools/pack_glyph_image_test.py"
 python3 tools/pack_glyph_image_test.py
 
+# docs.read's compiled-in topics must be what tools/gen_agent_docs.py
+# makes of docs/scene-api.md and scenes/examples (agent-core spec 4.4).
+echo "==> tools/gen_agent_docs_test.py"
+python3 tools/gen_agent_docs_test.py
+echo "==> tools/gen_agent_docs.py --check"
+python3 tools/gen_agent_docs.py --check
+
 echo "==> cmake -S simulator -B build/sim -G Ninja"
 cmake -S simulator -B build/sim -G Ninja
 

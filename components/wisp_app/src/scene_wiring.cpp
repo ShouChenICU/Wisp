@@ -305,31 +305,9 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
                         WLOG_I(kTag, "%s: delete declined on the device", id.c_str());
                         return;
                     }
-                    // A scene that is up closes first; its last flush is on
-                    // disk before the files go. From here until the files
-                    // are gone the scene is not opened again.
-                    repo_->begin_removing(id);
-                    auto then = [this, id, name, with_data](Result<void> closed) {
-                        if (!closed) {
-                            repo_->end_removing(id);
-                            const std::string why =
-                                "the scene did not close: " + closed.error().message;
-                            delete_failed(id, name, why.c_str());
-                            return;
-                        }
-                        if (!worker_.submit([this, id, name, with_data] {
-                                remove(id, name, with_data);
-                                repo_->end_removing(id);
-                            })) {
-                            repo_->end_removing(id);
-                            delete_failed(id, name, "storage worker busy");
-                        }
-                    };
-                    if (runtime_started_) {
-                        runtime_->close_async(id, std::move(then));
-                    } else {
-                        then(Result<void>::ok());
-                    }
+                    delete_named(id, name, with_data, [this, id, name](Result<void> r) {
+                        if (!r) delete_failed(id, name, r.error().message.c_str());
+                    });
                 },
                 ui::ButtonRole::Danger);
         }
@@ -343,6 +321,46 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
     return result;
 }
 
+void SceneWiring::delete_scene(const std::string& id, bool with_data,
+                               std::function<void(Result<void>)> done) {
+    using R = Result<void>;
+    if (!repo_) return done(R::err(ErrorCode::Unsupported, "scenes are off"));
+    if (repo_->dev())
+        return done(R::err(ErrorCode::Unsupported, "scenes are read-only in dev mode"));
+    auto found = repo_->removal(id, with_data);
+    if (!found) return done(R::err(found.error().code, found.error().message));
+    delete_named(id, found.value().name, with_data, std::move(done));
+}
+
+void SceneWiring::delete_named(const std::string& id, const std::string& name, bool with_data,
+                               std::function<void(Result<void>)> done) {
+    // A scene that is up closes first; its last flush is on disk before
+    // the files go. From here until the files are gone the scene is not
+    // opened again.
+    repo_->begin_removing(id);
+    auto then = [this, id, name, with_data, done = std::move(done)](Result<void> closed) {
+        if (!closed) {
+            repo_->end_removing(id);
+            done(Result<void>::err(closed.error().code,
+                                   "the scene did not close: " + closed.error().message));
+            return;
+        }
+        if (!worker_.submit([this, id, name, with_data, done] {
+                Result<void> r = remove(id, name, with_data);
+                repo_->end_removing(id);
+                done(std::move(r));
+            })) {
+            repo_->end_removing(id);
+            done(Result<void>::err(ErrorCode::Busy, "storage worker busy"));
+        }
+    };
+    if (runtime_started_) {
+        runtime_->close_async(id, std::move(then));
+    } else {
+        then(Result<void>::ok());
+    }
+}
+
 void SceneWiring::delete_failed(const std::string& id, const std::string& name, const char* why) {
     WLOG_W(kTag, "%s: delete failed: %s", id.c_str(), why);
     // post_system() only records the notice (no flash): safe on the scene
@@ -350,9 +368,8 @@ void SceneWiring::delete_failed(const std::string& id, const std::string& name, 
     if (notices_ != nullptr) notices_->post_system(core::notice::kSceneDeleteFailed, name);
 }
 
-void SceneWiring::remove(const std::string& id, const std::string& name, bool with_data) {
+Result<void> SceneWiring::remove(const std::string& id, const std::string& name, bool with_data) {
     Result<void> removed = repo_->remove(id, with_data);
-    if (!removed) delete_failed(id, name, removed.error().message.c_str());
     // The repository removed the files with the data; this forgets their
     // location and usage. After a failed delete only if it got past
     // removing scene.json (the scene is no longer installed): a delete
@@ -367,7 +384,7 @@ void SceneWiring::remove(const std::string& id, const std::string& name, bool wi
             WLOG_W(kTag, "%s: removing its files failed: %s", id.c_str(),
                    r.error().message.c_str());
     }
-    if (!removed) return;
+    if (!removed) return removed;
     // A retry that succeeds supersedes an earlier "could not be deleted"
     // notice for the same scene: it must not keep telling the user to try
     // again, including after a reboot (the notice is persisted).
@@ -377,6 +394,7 @@ void SceneWiring::remove(const std::string& id, const std::string& name, bool wi
                           core::DismissReason::Dismiss);
     }
     publish(id, "deleted");
+    return removed;
 }
 
 void SceneWiring::publish(const std::string& id, const char* state) {

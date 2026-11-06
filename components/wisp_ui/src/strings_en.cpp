@@ -279,6 +279,40 @@ const char* strings_en(StrId id) {
             return "\"{}\" will be able to reach ";
         case StrId::AgentListSep:
             return ", ";
+        case StrId::AgentNoteOpened:
+            return "Opened \"{}\"";
+        case StrId::AgentNoteClosed:
+            return "Closed \"{}\"";
+        case StrId::AgentNoteToBackground:
+            return "Moved \"{}\" to the background";
+        case StrId::AgentNoteExited:
+            return "Exited \"{}\"";
+        case StrId::AgentNoteDataWritten:
+            return "Changed the data of \"{}\": {}";
+        case StrId::AgentNoteEval:
+            return "Ran Lua in \"{}\"";
+        case StrId::AgentNoteDeleted:
+            return "Deleted \"{}\"";
+        case StrId::AgentNoteFileRemoved:
+            return "Deleted a file of \"{}\": {}";
+        case StrId::AgentConfirmDelete:
+            return "The agent wants to delete the scene \"{}\"";
+        case StrId::AgentConfirmWithData:
+            return " and its data";
+        case StrId::AgentConfirmFileRemove:
+            return "The agent wants to delete a file of \"{}\": {}";
+        case StrId::AgentNoteSetting:
+            return "{} {} → {}";
+        case StrId::AgentSetBrightness:
+            return "Brightness";
+        case StrId::AgentSetVolume:
+            return "Volume";
+        case StrId::AgentSetNotifyVol:
+            return "Alert volume";
+        case StrId::AgentSetScreenOff:
+            return "Screen off after";
+        case StrId::AgentSetLanguage:
+            return "Language";
         case StrId::Count:
             break;
     }

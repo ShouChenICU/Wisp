@@ -268,6 +268,87 @@ Codes: `quota_exceeded`, `record_too_large`, `too_many_collections`,
 collection name or record of the wrong type, length or shape is a Lua error instead,
 at the line that made the call.
 
+## Lua environment
+
+Scenes run Lua 5.5 in a sandbox of their own. Only the `string`, `table`, `math`,
+`utf8` and `coroutine` libraries and the safe base functions are there (no `io`,
+`os`, `require`, `dofile` or `loadfile`; `load` takes text only). Every file is
+compiled so that a global name it does not declare is a compile error: use `local`
+for your own names. The globals a scene may use are `ui`, `state`, `computed`,
+`bind`, `wisp`, `scene` and the standard ones above.
+
+- Each message (the entry file, a handler, a timer, a callback) may run for 200 ms,
+  and a scene's Lua memory is at most 2 MB; past either the scene stops with an error.
+- `print(...)` writes one line to the scene's log, like `wisp.log.info`.
+- `wisp.import("lib/<name>")` runs `lib/<name>.lua` from the scene's package once
+  and returns what it returned (`true` for nothing); later imports of the same
+  path return the same value. An import cycle is an error.
+- `state(v)`: a value the UI can follow. `s:get()` reads it, `s:set(v)` writes it;
+  every bound property and computed that read it is brought up to date after the
+  current message. Writing an equal value (by value for numbers, strings and
+  booleans, by reference for tables) changes nothing.
+- `computed(fn)`: `c:get()` is `fn()`, worked out again only after something it read
+  changed. `fn` may not call `:set()`.
+- `bind(s, fn)`: a computed whose value is `fn(s:get())`; `s` is a state, computed
+  or bind. Pass any of the three as a bindable property.
+
+## wisp.timer
+
+- `wisp.timer.after(ms, fn)` runs `fn()` once, `ms` milliseconds from now;
+  `wisp.timer.every(ms, fn)` every `ms` milliseconds. Both return a handle, or `nil`
+  and `interval_too_small` (below 50 ms) or `too_many_timers` (32 set at once).
+- `h:cancel()` stops it and returns whether it had still to run.
+- Each run is a message of its own. Timers keep running in the background and
+  while the screen is off; they end when the scene closes.
+
+## wisp.device
+
+- `wisp.device.info()` returns `width`, `height`, `shape`, `corner_radius`,
+  `safe_area` and `status_area` (see Screen shape), `lang` (`"zh"`, `"ja"` or
+  `"en"`), `utc_offset` (minutes east of UTC), `time` (seconds since the epoch,
+  `nil` until the clock is set), `battery` (percent, `nil` when unknown),
+  `charging` and `wifi` (`"off"`, `"connecting"`, `"backoff"` or
+  `"connected"`).
+- `wisp.device.row_span(y)`: see Screen shape.
+- `wisp.device.on(event, fn)` calls `fn(info)`, with `info` as `info()` returns
+  it, on each `"battery"` change, each `"minute"` of the clock and each
+  `"lang"` change. Any other event name is an error.
+
+## wisp.log
+
+- `wisp.log.info(...)`, `wisp.log.warn(...)` and `wisp.log.error(...)` write one
+  line of their arguments, joined with tabs like `print`, to the scene's log
+  (tag `scene.<id>`, at most 512 bytes a line), which the admin page and the agent
+  can read. It is kept in memory only.
+
+## wisp.http
+
+```lua
+wisp.http.get("https://api.example.com/now", nil, function(err, res)
+  if err then return end
+  print(res.status, res.json and res.json.temp)
+end)
+wisp.http.post(url, { a = 1 }, { headers = { authorization = "Bearer x" } }, cb)
+```
+
+- `wisp.http.get(url, opts, cb)` and `wisp.http.post(url, body, opts, cb)`: `opts`
+  (may be `nil` or left out) is `{headers = {name = value}}`; a `body` table is sent
+  as JSON (with `Content-Type: application/json` unless a header names one), a
+  string as it is.
+- `cb(err, res)` runs later as a message of its own: `res` is `{status, headers,
+  body, json}`, `headers` with lowercase names, `json` the decoded body when the
+  content type mentions JSON and it parses; `err` is `nil` on success.
+- Only `https://` URLs (`not_https`) to a host listed in `permissions.http` of
+  `scene.json`, exactly (`permission_denied`). Cookies, `host` and the other
+  connection headers cannot be set (`permission_denied`); at most 16 headers.
+- A request body is at most 64 KB and a response at most 256 KB
+  (`too_large`); each request has 15 seconds in all (`timeout`); at most 30 requests
+  a minute per scene (`rate_limited`). Redirects are not followed.
+- Other errors: `dns`, `connect`, `tls`, `other`, `deferred_queue_full`,
+  `deferred_timeout` (see below), `not_serializable` and `too_deep` (a body table
+  that cannot be sent as JSON). Errors always arrive through `cb`; only arguments
+  of the wrong type are a Lua error at the call.
+
 ## scene.json
 
 Every scene package has a `scene.json` at its root:

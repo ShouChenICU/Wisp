@@ -48,7 +48,9 @@
 // confirmation on the device. "Yes" closes the scene if it is up --
 // close_async(), whose callback comes once its last store flush is on disk
 // -- then removes the package (and the data, if asked) on the worker and
-// publishes scene.state {id, "deleted"}; "no" does nothing.
+// publishes scene.state {id, "deleted"}; "no" does nothing. The steps
+// after "yes" are delete_scene(), which the agent's scene.delete calls
+// directly once it has asked the user itself.
 
 #include <atomic>
 #include <functional>
@@ -149,6 +151,15 @@ public:
     // UI thread (it waits for it).
     Result<void> request_delete(const std::string& id, bool with_data);
 
+    // Deletes scene `id` without a dialog, for a caller that has already
+    // asked the user (the agent's scene.delete): closes the scene if it is
+    // up, removes it on the worker and publishes "deleted". `done` runs
+    // once with the outcome, on the worker or the scene task (or here for
+    // an error found at once): NotFound when there is nothing to delete,
+    // Unsupported in dev mode. Not from the UI thread or the worker.
+    void delete_scene(const std::string& id, bool with_data,
+                      std::function<void(Result<void>)> done);
+
     // Lists the installed scenes on the worker and hands them to
     // `on_ui` on the UI thread. False if the worker took no job (or there
     // is no repository or screen); `on_ui` is then never called. A failed
@@ -163,9 +174,12 @@ public:
     bool storage_status_async(ui::UiRuntime& ui, std::function<void(core::StorageStatus)> on_ui);
 
 private:
-    // On the worker: removes the scene and publishes "deleted"; a failure
-    // is delete_failed().
-    void remove(const std::string& id, const std::string& name, bool with_data);
+    // delete_scene() once the name is known: from the dialog's "yes" on
+    // the UI thread, so it never waits.
+    void delete_named(const std::string& id, const std::string& name, bool with_data,
+                      std::function<void(Result<void>)> done);
+    // On the worker: removes the scene and publishes "deleted".
+    Result<void> remove(const std::string& id, const std::string& name, bool with_data);
     // A delete the user confirmed did not happen: logs `why` and tells the
     // user with a system notice (the admin page already got its 202). The
     // scene stays as it is; nothing is retried behind the user's back.

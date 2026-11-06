@@ -218,6 +218,19 @@ public:
     // True after a timeout or memory fault; the VM must be destroyed.
     bool faulted() const { return fault_ != Fault::None; }
 
+    // Clears a timeout fault once the top-level call() that hit it has
+    // returned, so the VM can run again; true if it did. Only for a step
+    // whose overrun is its own business, not the scene's (the agent's
+    // scene.eval, agent-core spec 4.2). It is safe there because a timeout
+    // is an ordinary Lua error by the time call()'s lua_pcall returns: the
+    // stack has unwound through every handler that cleans up after an
+    // error, and no coroutine was resumed while it was faulted. Not when
+    // the timeout hit inside a coroutine (fault_off_main_), and a memory
+    // fault is never cleared (the heap may still be at its limit). The
+    // next call() with
+    // Budget::Continue starts a fresh budget.
+    bool recover_timeout();
+
     // Raises the VM's fault in L if it has one, or a timeout if call()'s
     // time limit has passed; otherwise returns (and settles a pending
     // refusal, see above). The count hook only sees Lua instructions, so
@@ -286,6 +299,11 @@ private:
     // Where the fault was first seen by the hook (short_src, line).
     char fault_file_[LUA_IDSIZE] = {};
     int fault_line_ = 0;
+    // The timeout hit a coroutine, which is now dead with its hooks off
+    // for good (see the hooks-off rule): recover_timeout() refuses, since
+    // the VM no longer being faulted would let coroutine.close() run that
+    // thread's pending __close values unbounded.
+    bool fault_off_main_ = false;
 };
 
 // The text load() puts in front of every source file, on the same line

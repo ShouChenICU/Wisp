@@ -222,6 +222,11 @@ std::string nearest_name(std::string_view wrong, std::span<const std::string_vie
 // docs/scene-api.md: the schema as Markdown.
 std::string schema_markdown();
 
+// One widget's part of it, for docs.read's widget/<name> (agent-core spec
+// 4.4): its properties (the common ones too) and its notes. `name` is
+// without "ui."; "" for a widget there is none of.
+std::string widget_markdown(std::string_view name);
+
 // Sets the global `ui` (the constructors, ui.show_if, ui.ref) and adds
 // set_value, nodes, refs and values to the internal table. Needs
 // install_prelude() first; call once, before any scene code runs.

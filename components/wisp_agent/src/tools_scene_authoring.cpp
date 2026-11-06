@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "tool_io.hpp"
 #include "wisp/agent/scene_workspace.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/ui/strings.hpp"
@@ -45,25 +46,6 @@ ToolOutput done(Map fields = {}) {
     ToolOutput out;
     out.result = Value(std::move(fields));
     return out;
-}
-
-// Whether `s` is UTF-8 a JSON string can carry as it is.
-bool is_text(std::string_view s) {
-    size_t i = 0;
-    while (i < s.size()) {
-        const unsigned char c = static_cast<unsigned char>(s[i]);
-        size_t n = c < 0x80           ? 1
-                   : (c >> 5) == 0x6  ? 2
-                   : (c >> 4) == 0xE  ? 3
-                   : (c >> 3) == 0x1E ? 4
-                                      : 0;
-        if (n == 0 || (c < 0x20 && c != '\n' && c != '\r' && c != '\t') || i + n > s.size())
-            return false;
-        for (size_t k = 1; k < n; ++k)
-            if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80) return false;
-        i += n;
-    }
-    return true;
 }
 
 }  // namespace
@@ -106,7 +88,7 @@ Result<void> add_scene_authoring_tools(ToolRegistry& reg, SceneWorkspace& ws) {
                 Map out{{"path", Value(path)},
                         {"bytes", Value(static_cast<int64_t>(text.size()))},
                         {"draft", Value(draft)}};
-                if (is_text(text)) {
+                if (detail::is_text(text)) {
                     out["content"] = Value(scene_data(id, text));
                 } else {
                     out["binary"] = Value(true);

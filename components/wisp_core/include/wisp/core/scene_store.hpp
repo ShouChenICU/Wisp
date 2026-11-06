@@ -219,6 +219,16 @@ public:
     // that final flush could not write is lost, and its `done` says so.
     void close();
 
+    // The committed data as one JSON document (the agent's scene.data_read,
+    // agent-core spec 4.2): {"kv":{<key>:<value>,...},"collections":
+    // {"<name>":[{"id":<id>,<fields>...},...],...}}, keys and names in byte
+    // order, records in id order. Writes of a batch still open are not
+    // in it. Once the next entry would take it past `max_bytes` it stops
+    // there and ends with "truncated":true, so it is never longer than
+    // `max_bytes` (at least kMinDumpBytes). Reads memory only; any thread.
+    static constexpr size_t kMinDumpBytes = 64;
+    os::LargeString dump_json(size_t max_bytes) const;
+
     // The total size of the logs once every pending line is written.
     uint64_t used_bytes() const;
 

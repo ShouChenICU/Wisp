@@ -11,7 +11,8 @@ wisp_component(
     NAME wisp_agent
     SRCS src/conversation.cpp src/tool_registry.cpp src/args_schema.cpp src/agent_service.cpp
          src/context.cpp src/prompt.cpp src/scene_workspace.cpp src/tools_scene_authoring.cpp
-         src/tools_ui.cpp
+         src/tools_ui.cpp src/tools_scene_ops.cpp src/tools_device.cpp src/docs.cpp
+         src/docs_data.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_admin wisp_ui wisp_scene
 )

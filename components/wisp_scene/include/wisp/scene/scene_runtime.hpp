@@ -230,6 +230,7 @@ class SceneHttp;
 namespace wisp::scene {
 
 struct SceneMessage;
+struct SceneQuery;
 class SceneView;
 struct DeviceInfo;
 enum class DeviceEvent : uint8_t;
@@ -261,6 +262,11 @@ struct BackgroundScene {
     uint64_t since_ms = 0;
     bool operator==(const BackgroundScene&) const = default;
 };
+
+// SceneRuntime::eval()'s default budget, and the most JSON its result may
+// take (agent-core spec 4.2).
+inline constexpr uint32_t kEvalMs = 200;
+inline constexpr size_t kEvalResultMaxBytes = 64 * 1024;
 
 struct SceneRuntimeDeps {
     core::EventBus& bus;
@@ -440,6 +446,30 @@ public:
     // InvalidArgument. Waits, Busy and Timeout as check_sources().
     Result<void> check_build(std::shared_ptr<const core::ScenePackage> package);
 
+    // The agent's view into a running scene (agent-core spec 4.2), each a
+    // message of its own on the scene task, for a scene in the foreground
+    // or the background. They wait like open() (10 s, then Timeout), and
+    // are Busy when the runtime is not running, its queue stays full, or
+    // they are called on the UI thread, the scene task or the storage
+    // worker. NotFound when `id` is not running (or shows its error
+    // panel).
+    //
+    // eval(): `lua` (the chunk "eval") runs in the scene's VM with a
+    // budget of `budget_ms`; the result is the JSON of its return values:
+    // none -> null, one -> it, several -> an array. A Lua error, a timeout
+    // or a result JSON cannot hold (or past kEvalResultMaxBytes) is
+    // InvalidArgument with ScriptError::text() ("eval:1: x") and does not
+    // fault the scene; only a memory fault does, or an error in the flush
+    // after it, which the scene's own watches run. UI changes it makes
+    // are applied as after any message.
+    Result<os::LargeString> eval(const std::string& id, std::string_view lua,
+                                 uint32_t budget_ms = kEvalMs);
+    // SceneStore::dump_json(max_bytes) of the scene's store.
+    Result<os::LargeString> store_dump(const std::string& id, size_t max_bytes);
+    // SceneStore::kv_set(key, json) on the scene's store (whose errors it
+    // returns), which the scene's wisp.store.get() sees at once.
+    Result<void> store_set(const std::string& id, std::string_view key, std::string_view json);
+
     // Messages dropped because no running scene has their instance, and
     // view events for a scene that has gone to the background.
     uint64_t stale_dropped() const { return stale_dropped_.load(); }
@@ -519,6 +549,12 @@ private:
     bool must_not_wait() const;
     // Queues a request; waits for it unless must_not_wait().
     Result<void> request(os::LargeUnique<SceneMessage> msg, std::shared_ptr<SceneWaiter> waiter);
+    // eval(), store_dump(), store_set(): sends the message and waits for
+    // its job's answer.
+    Result<os::LargeString> ask(os::LargeUnique<SceneMessage> msg,
+                                const std::shared_ptr<SceneQuery>& job);
+    // On the scene task: answers a query for scene `id`.
+    void answer(const std::string& id, SceneMessage& m);
     bool push(os::LargeUnique<SceneMessage> msg, uint32_t timeout_ms);
     void set_status(const std::string& id, core::SceneState state, std::string error);
     void publish(const std::string& id, const char* state);

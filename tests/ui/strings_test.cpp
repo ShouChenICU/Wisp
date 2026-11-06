@@ -126,11 +126,13 @@ size_t count_placeholders(std::string_view text) {
 }  // namespace
 
 // A translation may move the "{}" but never drop or add one, or a number
-// would vanish (or a literal "{}" show) in that language.
+// would vanish (or a literal "{}" show) in that language. A text with
+// several is filled by tr_fill_n(), in order, so a translation keeps that
+// order too (it can only be checked by reading).
 TEST_F(Strings, PlaceholdersMatchAcrossLanguages) {
     for (size_t i = 0; i < wisp::ui::kStrCount; ++i) {
         const size_t zh = count_placeholders(wisp::ui::tr(id_at(i), Lang::Zh));
-        EXPECT_LE(zh, 1u) << "id " << i;
+        EXPECT_LE(zh, 3u) << "id " << i;
         for (Lang lang : wisp::ui::kAllLangs) {
             EXPECT_EQ(count_placeholders(wisp::ui::tr(id_at(i), lang)), zh)
                 << "id " << i << " lang " << wisp::ui::lang_code(lang);

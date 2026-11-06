@@ -7,10 +7,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -25,6 +28,7 @@
 #include "support/wait.hpp"
 #include "ui_net_harness.hpp"
 #include "wisp/app/power_manager.hpp"
+#include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_repository.hpp"
@@ -629,6 +633,72 @@ TEST(AppScenes, DeleteConfirmFlow) {
     wisp::os::sleep_ms(300);
     EXPECT_TRUE(fs::exists(fs::path(b.h.root) / "scenes" / "keep" / "scene.json"));
     EXPECT_TRUE(b.states("keep").empty());
+}
+
+// SceneWiring::delete_scene(), for a caller that has already asked the
+// user (the agent's scene.delete): no dialog; the scene closes, its files
+// go and "deleted" is published, then `done` hears how it went.
+TEST(AppScenes, DeleteSceneWithoutDialog) {
+    Booted b;
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    fs::create_directories(fs::path(b.h.root) / "scenes" / "counter" / "data");
+    std::ofstream(fs::path(b.h.root) / "scenes" / "counter" / "data" / "kv.log") << "x\n";
+    ASSERT_TRUE(b.start());
+    wisp::ui::UiRuntime& ui = *b.h.app->ui();
+
+    // A bus of its own: the App's screens list the scenes on the App's
+    // worker at every scene.state, and this wiring's worker is now the
+    // flash thread.
+    wisp::core::EventBus bus;
+    ASSERT_TRUE(bus.start());
+    std::mutex states_mu;
+    std::vector<std::string> states;
+    bus.subscribe("scene.state", [&](const wisp::core::Event& e) {
+        std::lock_guard<std::mutex> lock(states_mu);
+        if (e.payload.at("id").as_string() == "counter") {
+            states.push_back(e.payload.at("state").as_string());
+        }
+    });
+    wisp::app::Platform platform;
+    wisp::app::SceneWiring wiring(wisp::app::SceneWiringDeps{platform, bus, b.h.app->storage()});
+    wiring.start_storage();
+    ASSERT_NE(wiring.repository(), nullptr);
+    std::unique_ptr<wisp::ui::SystemLayer> layer;
+    const wisp::hal::ScreenShape shape{wisp::hal::ScreenShapeKind::Rect, 480, 480, 0};
+    run_on_ui_blocking(&ui, [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
+    wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
+    wiring.start_runtime([] { return false; });
+    ASSERT_TRUE(wiring.runtime()->open("counter"));
+
+    auto remove = [&](bool with_data) {
+        auto done = std::make_shared<std::promise<wisp::Result<void>>>();
+        wiring.delete_scene("counter", with_data,
+                            [done](wisp::Result<void> r) { done->set_value(std::move(r)); });
+        auto f = done->get_future();
+        EXPECT_EQ(f.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+        return f.get();
+    };
+    auto r = remove(true);
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_FALSE(fs::exists(fs::path(b.h.root) / "scenes" / "counter"));
+    EXPECT_FALSE(wiring.runtime()->foreground().has_value());
+    EXPECT_EQ(run_on_ui_thread(
+                  &ui, [] { return find_label_text_containing(lv_layer_top(), "删除场景“"); }),
+              "");
+    EXPECT_TRUE(wait_until(
+        [&] {
+            std::lock_guard<std::mutex> lock(states_mu);
+            return !states.empty() && states.back() == "deleted";
+        },
+        3000));
+    auto again = remove(true);
+    ASSERT_FALSE(again);
+    EXPECT_EQ(again.error().code, wisp::ErrorCode::NotFound);
+
+    wiring.stop_runtime();
+    run_on_ui_blocking(&ui, [&] { layer.reset(); });
+    wiring.stop();
+    bus.stop();
 }
 
 // A delete the user confirmed that cannot go ahead (the storage worker's

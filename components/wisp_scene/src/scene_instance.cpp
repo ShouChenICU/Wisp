@@ -5,7 +5,9 @@
 #include <utility>
 #include <variant>
 
+#include "wisp/scene/lua_json.hpp"
 #include "wisp/scene/reactive.hpp"
+#include "wisp/scene/scene_runtime.hpp"
 #include "wisp/scene/schema.hpp"
 
 namespace wisp::scene {
@@ -289,6 +291,54 @@ std::optional<ScriptError> SceneInstance::sensor(uint32_t id, const core::Sensor
 std::optional<ScriptError> SceneInstance::device(DeviceEvent ev, const DeviceInfo& info) {
     if (!api_.wants(ev)) return std::nullopt;
     return flush(run_device_handlers(*vm_, ev, info));
+}
+
+std::optional<ScriptError> SceneInstance::eval(std::string_view lua, uint32_t budget_ms,
+                                               os::LargeString& out, bool* fatal) {
+    *fatal = false;
+    out.clear();
+    lua_State* L = vm_->L();
+    const int base = lua_gettop(L);
+    std::optional<ScriptError> err = vm_->load("eval", lua);
+    if (!err) err = vm_->call(0, LUA_MULTRET, Budget::Fresh, budget_ms);
+    if (!err) {
+        const int n = lua_gettop(L) - base;
+        const char* code = nullptr;
+        if (n == 0) {
+            out = "null";
+        } else if (n == 1) {
+            code = lua_to_json(L, base + 1, out, kEvalResultMaxBytes);
+        } else {
+            out = "[";
+            os::LargeString one;
+            for (int i = 1; i <= n && code == nullptr; ++i) {
+                code = lua_to_json(L, base + i, one, kEvalResultMaxBytes);
+                if (code != nullptr) break;
+                if (i > 1) out.push_back(',');
+                out += one;
+                if (out.size() > kEvalResultMaxBytes) code = kJsonTooLarge;
+            }
+            out.push_back(']');
+        }
+        lua_settop(L, base);
+        if (code != nullptr) {
+            out.clear();
+            err = ScriptError{ScriptFault::Runtime, "eval", 0, std::string("result ") + code};
+        }
+    }
+    if (vm_->faulted() && !vm_->recover_timeout()) {
+        *fatal = true;
+        return err;
+    }
+    // What the chunk changed before it stopped reaches the screen, as for
+    // any message. The flush runs the scene's own watches: an error there
+    // is the scene's, as after a handler.
+    if (auto flushed = flush_reactive(*vm_)) {
+        *fatal = true;
+        out.clear();
+        return flushed;
+    }
+    return err;
 }
 
 std::optional<ScriptError> SceneInstance::refresh() {

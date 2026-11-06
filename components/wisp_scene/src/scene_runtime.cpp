@@ -527,6 +527,87 @@ Result<void> SceneRuntime::check_build(std::shared_ptr<const core::ScenePackage>
     return job->result;
 }
 
+Result<os::LargeString> SceneRuntime::ask(os::LargeUnique<SceneMessage> m,
+                                          const std::shared_ptr<SceneQuery>& job) {
+    using R = Result<os::LargeString>;
+    if (!running_) return R::err(ErrorCode::Busy, "scene runtime not running");
+    if (must_not_wait()) return R::err(ErrorCode::Busy, "cannot wait for the scene task here");
+    if (!push(std::move(m), kPushMs)) return R::err(ErrorCode::Busy, "scene queue full");
+    if (!job->sem.take(kWaitMs)) {
+        std::lock_guard<os::Mutex> lock(job->mu);
+        if (!job->done) return R::err(ErrorCode::Timeout, "the scene task did not answer");
+    }
+    std::lock_guard<os::Mutex> lock(job->mu);
+    return job->result;
+}
+
+Result<os::LargeString> SceneRuntime::eval(const std::string& id, std::string_view lua,
+                                           uint32_t budget_ms) {
+    auto job = std::make_shared<SceneQuery>();
+    job->text.assign(lua.data(), lua.size());
+    job->budget_ms = budget_ms;
+    return ask(make_message(id, 0, msg::Eval{job}), job);
+}
+
+Result<os::LargeString> SceneRuntime::store_dump(const std::string& id, size_t max_bytes) {
+    auto job = std::make_shared<SceneQuery>();
+    job->max_bytes = max_bytes;
+    return ask(make_message(id, 0, msg::StoreDump{job}), job);
+}
+
+Result<void> SceneRuntime::store_set(const std::string& id, std::string_view key,
+                                     std::string_view json) {
+    auto job = std::make_shared<SceneQuery>();
+    job->key.assign(key);
+    job->text.assign(json.data(), json.size());
+    auto r = ask(make_message(id, 0, msg::StoreSet{job}), job);
+    if (!r) return Result<void>::err(r.error().code, r.error().message);
+    return Result<void>::ok();
+}
+
+void SceneRuntime::answer(const std::string& id, SceneMessage& m) {
+    using R = Result<os::LargeString>;
+    SceneQuery* job = nullptr;
+    if (auto* b = std::get_if<msg::Eval>(&m.body)) job = b->job.get();
+    if (auto* b = std::get_if<msg::StoreDump>(&m.body)) job = b->job.get();
+    if (auto* b = std::get_if<msg::StoreSet>(&m.body)) job = b->job.get();
+    if (job == nullptr) return;
+    Slot* s = find_id(id);
+    if (s == nullptr || !s->scene) {
+        job->finish(R::err(ErrorCode::NotFound, "scene " + id + " is not running"));
+        return;
+    }
+    if (std::holds_alternative<msg::Eval>(m.body)) {
+        os::LargeString out;
+        bool fatal = false;
+        std::optional<ScriptError> err = s->scene->eval(job->text, job->budget_ms, out, &fatal);
+        if (fatal) {
+            const std::string text = err ? err->text() : std::string("eval failed");
+            if (err) fault(*s, *err);
+            job->finish(R::err(ErrorCode::InvalidArgument, text));
+            return;
+        }
+        // The answer goes out once the changes are on their way.
+        submit(*s);
+        if (err) {
+            job->finish(R::err(ErrorCode::InvalidArgument, err->text()));
+        } else {
+            job->finish(R::ok(std::move(out)));
+        }
+        return;
+    }
+    if (!s->store) {
+        job->finish(R::err(ErrorCode::NotFound, "scene " + id + " has no store"));
+        return;
+    }
+    if (std::holds_alternative<msg::StoreDump>(m.body)) {
+        job->finish(R::ok(s->store->dump_json(job->max_bytes)));
+        return;
+    }
+    Result<void> set = s->store->kv_set(job->key, std::string_view(job->text));
+    job->finish(set ? R::ok(os::LargeString()) : R::err(set.error().code, set.error().message));
+}
+
 const SceneView* SceneRuntime::ui_current_view() const {
     if (!ui_side_) return nullptr;
     const UiSide& u = *ui_side_;
@@ -771,6 +852,10 @@ void SceneRuntime::handle(SceneMessage& m) {
         std::lock_guard<os::Mutex> lock(job.mu);
         if (job.cancelled) return;
         job.finish_locked(run_check_build(job.package, *job.store));
+    } else if (std::holds_alternative<msg::Eval>(body) ||
+               std::holds_alternative<msg::StoreDump>(body) ||
+               std::holds_alternative<msg::StoreSet>(body)) {
+        answer(m.scene_id, m);
     } else if (auto* b = std::get_if<msg::Restore>(&body)) {
         restore(std::move(b->ids));
     } else if (auto* b = std::get_if<msg::Notify>(&body)) {

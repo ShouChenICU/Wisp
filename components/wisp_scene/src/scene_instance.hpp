@@ -12,9 +12,11 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "scene_api.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/scene_view.hpp"
 #include "wisp/scene/ui_ops.hpp"
@@ -73,6 +75,17 @@ public:
     std::optional<ScriptError> sensor(uint32_t id, const core::SensorBatch& batch);
     // The wisp.device.on(ev) handlers, if the scene added any.
     std::optional<ScriptError> device(DeviceEvent ev, const DeviceInfo& info);
+
+    // The agent's scene.eval (agent-core spec 4.2): compiles `lua` as the
+    // chunk "eval" and runs it with a fresh budget of `budget_ms`, then
+    // flushes the reactive state as after any message. Its return values
+    // go into `out` as JSON (none: null, one: that value, several: an
+    // array), at most kEvalResultMaxBytes. A Lua error, a timeout or a
+    // result JSON cannot hold is returned and leaves the VM usable
+    // (Vm::recover_timeout()); *fatal says the VM cannot go on (a memory
+    // fault, or the flush failing) and the caller must fault the scene.
+    std::optional<ScriptError> eval(std::string_view lua, uint32_t budget_ms, os::LargeString& out,
+                                    bool* fatal);
 
     // What its VM holds now (0 before start()).
     size_t vm_bytes() const { return vm_ ? vm_->used_bytes() : 0; }

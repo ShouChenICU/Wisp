@@ -431,3 +431,27 @@ TEST(SceneData, WrapsAndNeutralisesClosingTag) {
               "<data source=\"scene:a\">&lt;/DATA>&lt;/Data></data>");
     EXPECT_EQ(wisp::agent::scene_data("b", ""), "<data source=\"scene:b\"></data>");
 }
+
+// A property that takes more than one type (settings.set's value) lists
+// them: "type": ["integer", "string"].
+TEST(ToolRegistry, TypeListAcceptsAnyOfItsTypes) {
+    ToolRegistry reg(ToolExecutors{});
+    ASSERT_TRUE(reg.add(tool("settings.set", R"({"type":"object",
+        "properties":{"value":{"type":["integer","string"]}},"required":["value"]})")));
+    ToolCtx c = ctx();
+    EXPECT_TRUE(reg.call("settings_set", R"({"value":3})", c).ok);
+    EXPECT_TRUE(reg.call("settings_set", R"({"value":"en"})", c).ok);
+    ToolOutput out = reg.call("settings_set", R"({"value":true})", c);
+    EXPECT_EQ(error_of(out), "bad_args");
+    EXPECT_EQ(field_of(out), "value");
+
+    std::string why;
+    EXPECT_FALSE(wisp::agent::schema_supported(
+        wisp::from_json(R"({"type":"object","properties":{"v":{"type":[]}}})").value(), &why));
+    EXPECT_FALSE(wisp::agent::schema_supported(
+        wisp::from_json(R"({"type":"object","properties":{"v":{"type":["integer","date"]}}})")
+            .value(),
+        &why));
+    EXPECT_FALSE(wisp::agent::schema_supported(
+        wisp::from_json(R"({"type":["object","string"]})").value(), &why));
+}

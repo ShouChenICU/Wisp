@@ -1805,6 +1805,79 @@ void SceneStore::flush(std::function<void(Result<void>)> done) {
     }
 }
 
+os::LargeString SceneStore::dump_json(size_t max_bytes) const {
+    // Every entry is checked against what the longest ending could still
+    // need: "},\"collections\":{}" and ",\"truncated\":true}" after a key,
+    // fewer anywhere else.
+    constexpr std::string_view kTruncated = ",\"truncated\":true}";
+    constexpr size_t kEndRoom = 18 + kTruncated.size();
+    static_assert(6 + kEndRoom < kMinDumpBytes);
+    max_bytes = std::max(max_bytes, kMinDumpBytes);
+    const Impl& m = *impl_;
+    LString out;
+    LString piece;
+    bool cut = false;
+    auto fits = [&] { return out.size() + piece.size() + kEndRoom <= max_bytes; };
+
+    std::lock_guard<os::Mutex> lock(m.mu);
+    out = "{\"kv\":{";
+    bool first = true;
+    for (const auto& [key, json] : m.ix.kv) {
+        piece.clear();
+        if (!first) piece.push_back(',');
+        append_json_string(piece, std::string_view(key));
+        piece.push_back(':');
+        piece.append(json);
+        if (!fits()) {
+            cut = true;
+            break;
+        }
+        out += piece;
+        first = false;
+    }
+    out += "},\"collections\":{";
+    bool first_coll = true;
+    for (const auto& [name, coll] : m.ix.colls) {
+        if (cut) break;
+        piece.clear();
+        if (!first_coll) piece.push_back(',');
+        append_json_string(piece, name);
+        piece += ":[";
+        if (!fits()) {
+            cut = true;
+            break;
+        }
+        out += piece;
+        first_coll = false;
+        bool first_rec = true;
+        for (const auto& [id, json] : coll.records) {
+            piece.clear();
+            if (!first_rec) piece.push_back(',');
+            piece += "{\"id\":";
+            const IdText text(id);
+            piece.append(text.buf, text.n);
+            // A record is a JSON object without its id: "{}" or "{...}".
+            const std::string_view body(json);
+            if (body.size() > 2) piece.push_back(',');
+            piece.append(body.substr(1));
+            if (!fits()) {
+                cut = true;
+                break;
+            }
+            out += piece;
+            first_rec = false;
+        }
+        out += "]";
+    }
+    out += "}";
+    if (cut) {
+        out += kTruncated;
+    } else {
+        out += "}";
+    }
+    return out;
+}
+
 uint64_t SceneStore::used_bytes() const {
     std::lock_guard<os::Mutex> lock(impl_->mu);
     return impl_->used_locked();

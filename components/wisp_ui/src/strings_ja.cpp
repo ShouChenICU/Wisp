@@ -282,6 +282,40 @@ const char* strings_ja(StrId id) {
             return "「{}」が次のサイトにアクセスできるようになります：";
         case StrId::AgentListSep:
             return "、";
+        case StrId::AgentNoteOpened:
+            return "「{}」を開きました";
+        case StrId::AgentNoteClosed:
+            return "「{}」を閉じました";
+        case StrId::AgentNoteToBackground:
+            return "「{}」をバックグラウンドに移しました";
+        case StrId::AgentNoteExited:
+            return "「{}」を終了しました";
+        case StrId::AgentNoteDataWritten:
+            return "「{}」のデータ {} を書き換えました";
+        case StrId::AgentNoteEval:
+            return "「{}」で Lua を実行しました";
+        case StrId::AgentNoteDeleted:
+            return "「{}」を削除しました";
+        case StrId::AgentNoteFileRemoved:
+            return "「{}」のファイル {} を削除しました";
+        case StrId::AgentConfirmDelete:
+            return "Agent がシーン「{}」を削除しようとしています";
+        case StrId::AgentConfirmWithData:
+            return "（データも含む）";
+        case StrId::AgentConfirmFileRemove:
+            return "Agent が「{}」のファイル {} を削除しようとしています";
+        case StrId::AgentNoteSetting:
+            return "{} {} → {}";
+        case StrId::AgentSetBrightness:
+            return "明るさ";
+        case StrId::AgentSetVolume:
+            return "音量";
+        case StrId::AgentSetNotifyVol:
+            return "通知音量";
+        case StrId::AgentSetScreenOff:
+            return "画面オフまでの時間";
+        case StrId::AgentSetLanguage:
+            return "言語";
         case StrId::Count:
             break;
     }

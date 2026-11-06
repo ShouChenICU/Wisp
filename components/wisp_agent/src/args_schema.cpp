@@ -63,9 +63,19 @@ std::optional<std::string> fail(const std::string& path, std::string* why, std::
 std::optional<std::string> check(const Value& schema, const Value& v, const std::string& path,
                                  std::string* why) {
     const std::string label = path.empty() ? std::string("arguments") : "'" + path + "'";
-    const Value* type = schema.find("type");
-    if (type != nullptr && !has_type(v, type->as_string())) {
-        return fail(path, why, label + " must be " + type->as_string());
+    if (const Value* type = schema.find("type")) {
+        if (type->type() == Value::Type::List) {
+            bool any = false;
+            std::string names;
+            for (const Value& t : type->as_list()) {
+                any = any || has_type(v, t.as_string());
+                if (!names.empty()) names += " or ";
+                names += t.as_string();
+            }
+            if (!any) return fail(path, why, label + " must be " + names);
+        } else if (!has_type(v, type->as_string())) {
+            return fail(path, why, label + " must be " + type->as_string());
+        }
     }
     if (const Value* e = schema.find("enum")) {
         bool found = false;
@@ -129,11 +139,27 @@ bool supported(const Value& schema, const std::string& where, std::string* why) 
         return false;
     };
     if (schema.type() != Value::Type::Map) return no("not an object");
+    auto known = [](const Value& t) {
+        if (t.type() != Value::Type::String) return false;
+        for (std::string_view k : kTypes) {
+            if (t.as_string() == k) return true;
+        }
+        return false;
+    };
     const Value* type = schema.find("type");
-    if (type == nullptr || type->type() != Value::Type::String) return no("no type");
-    bool known = false;
-    for (std::string_view t : kTypes) known = known || type->as_string() == t;
-    if (!known) return no("unsupported type " + type->as_string());
+    if (type == nullptr) return no("no type");
+    if (type->type() == Value::Type::List) {
+        // A list of types is for a property; the arguments are an object.
+        if (where.empty()) return no("type list at the root");
+        if (type->as_list().empty()) return no("empty type list");
+        for (const Value& t : type->as_list()) {
+            if (!known(t)) return no("unsupported type in list");
+        }
+    } else if (type->type() != Value::Type::String) {
+        return no("no type");
+    } else if (!known(*type)) {
+        return no("unsupported type " + type->as_string());
+    }
 
     if (const Value* p = schema.find("properties")) {
         if (p->type() != Value::Type::Map) return no("properties is not an object");

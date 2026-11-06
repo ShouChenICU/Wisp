@@ -908,3 +908,17 @@ TEST(Schema, DocIsUpToDate) {
                << "; to accept it:\n  cp " << out << " " << doc;
     }
 }
+
+// docs.read's widget/<name> (agent-core spec 4.4): one widget's properties
+// from the schema itself, so it can never fall behind.
+TEST(Schema, WidgetMarkdownForButton) {
+    const std::string md = wisp::scene::widget_markdown("button");
+    EXPECT_NE(md.find("ui.button"), std::string::npos);
+    EXPECT_NE(md.find("on_click"), std::string::npos);
+    EXPECT_NE(md.find("`text`"), std::string::npos);
+    // Only its own properties.
+    EXPECT_EQ(md.find("`row_h`"), std::string::npos);
+    EXPECT_NE(wisp::scene::widget_markdown("list").find("row_h"), std::string::npos);
+    EXPECT_EQ(wisp::scene::widget_markdown("nope"), "");
+    EXPECT_EQ(wisp::scene::widget_markdown("ui.button"), "");
+}

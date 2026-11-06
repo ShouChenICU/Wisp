@@ -14,11 +14,13 @@
 // Strings are fragments without printf conversions; callers compose them
 // (e.g. "<Battery>: 85%"), so a translation can never mismatch a format.
 // Where word order differs between languages a string carries one "{}"
-// that tr_fill() replaces (every language has the same count, which
-// tests/ui/strings_test.cpp checks).
+// that tr_fill() replaces, or a few that tr_fill_n() replaces in order
+// (every language has the same count, which tests/ui/strings_test.cpp
+// checks).
 
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -225,6 +227,31 @@ enum class StrId : uint16_t {
     // hosts, joined with AgentListSep.
     AgentConfirmHosts,
     AgentListSep,
+    // Scene operation notes (agent-core spec 4.2), "{}" the scene's name;
+    // AgentNoteDataWritten and AgentNoteFileRemoved have a second "{}",
+    // the key or the file name (tr_fill_n()).
+    AgentNoteOpened,
+    AgentNoteClosed,
+    AgentNoteToBackground,
+    AgentNoteExited,
+    AgentNoteDataWritten,
+    AgentNoteEval,
+    AgentNoteDeleted,
+    AgentNoteFileRemoved,
+    // Device confirmations (spec 6.1): deleting a scene, followed by
+    // AgentConfirmWithData when its data goes too; removing one of its
+    // files ("{}" the scene's name, then the file name).
+    AgentConfirmDelete,
+    AgentConfirmWithData,
+    AgentConfirmFileRemove,
+    // settings.set's note (spec 6.2): "{} {} → {}", the setting's name
+    // (one of the AgentSet* below), the old value and the new one.
+    AgentNoteSetting,
+    AgentSetBrightness,
+    AgentSetVolume,
+    AgentSetNotifyVol,
+    AgentSetScreenOff,
+    AgentSetLanguage,
 
     Count,  // not a string; keep last
 };
@@ -246,6 +273,11 @@ std::string tr_fill(StrId id, std::string_view value);
 
 // The same in `lang`.
 std::string tr_fill(StrId id, Lang lang, std::string_view value);
+
+// tr(id, lang) with each "{}" in turn replaced by the next of `values`;
+// placeholders past the last value stay as they are, and the values
+// themselves are never searched for placeholders.
+std::string tr_fill_n(StrId id, Lang lang, std::initializer_list<std::string_view> values);
 
 // Sets the language tr(StrId) uses. Call on the UI thread (or before any
 // UI exists), then rebuild the visible screen's text.

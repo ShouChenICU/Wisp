@@ -277,6 +277,40 @@ const char* strings_zh(StrId id) {
             return "「{}」将可以访问 ";
         case StrId::AgentListSep:
             return "、";
+        case StrId::AgentNoteOpened:
+            return "打开了「{}」";
+        case StrId::AgentNoteClosed:
+            return "关闭了「{}」";
+        case StrId::AgentNoteToBackground:
+            return "「{}」转入后台";
+        case StrId::AgentNoteExited:
+            return "退出了「{}」";
+        case StrId::AgentNoteDataWritten:
+            return "改写了「{}」的数据 {}";
+        case StrId::AgentNoteEval:
+            return "在「{}」中执行了 Lua";
+        case StrId::AgentNoteDeleted:
+            return "删除了「{}」";
+        case StrId::AgentNoteFileRemoved:
+            return "删除了「{}」的文件 {}";
+        case StrId::AgentConfirmDelete:
+            return "Agent 要删除场景「{}」";
+        case StrId::AgentConfirmWithData:
+            return "及其数据";
+        case StrId::AgentConfirmFileRemove:
+            return "Agent 要删除「{}」的文件 {}";
+        case StrId::AgentNoteSetting:
+            return "{} {} → {}";
+        case StrId::AgentSetBrightness:
+            return "亮度";
+        case StrId::AgentSetVolume:
+            return "音量";
+        case StrId::AgentSetNotifyVol:
+            return "提示音量";
+        case StrId::AgentSetScreenOff:
+            return "熄屏时间";
+        case StrId::AgentSetLanguage:
+            return "语言";
         case StrId::Count:
             break;
     }

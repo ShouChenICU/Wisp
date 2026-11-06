@@ -50,6 +50,18 @@ std::string tr_fill(StrId id, Lang lang, std::string_view value) {
     return text;
 }
 
+std::string tr_fill_n(StrId id, Lang lang, std::initializer_list<std::string_view> values) {
+    std::string text = tr(id, lang);
+    size_t from = 0;
+    for (std::string_view v : values) {
+        const size_t pos = text.find("{}", from);
+        if (pos == std::string::npos) break;
+        text.replace(pos, 2, v);
+        from = pos + v.size();
+    }
+    return text;
+}
+
 std::string tr_fill(StrId id, std::string_view value) {
     return tr_fill(id, g_lang.load(std::memory_order_relaxed), value);
 }

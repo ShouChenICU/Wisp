@@ -91,6 +91,32 @@ struct BuildCheckJob {
     }
 };
 
+// eval(), store_dump(), store_set(): what the caller asked and, once the
+// scene task has answered, the answer. The job travels shared and holds
+// copies of everything, so a caller that gave up after kWaitMs leaves
+// nothing the task could write into.
+struct SceneQuery {
+    os::LargeString text;    // eval: the chunk; store_set: the value's JSON
+    std::string key;         // store_set
+    size_t max_bytes = 0;    // store_dump
+    uint32_t budget_ms = 0;  // eval
+    os::Semaphore sem{1, 0};
+    os::Mutex mu;
+    bool done = false;
+    Result<os::LargeString> result =
+        Result<os::LargeString>::err(ErrorCode::Timeout, "not answered");
+
+    void finish(Result<os::LargeString> r) {
+        {
+            std::lock_guard<os::Mutex> lock(mu);
+            if (done) return;
+            done = true;
+            result = std::move(r);
+        }
+        sem.give();
+    }
+};
+
 namespace msg {
 
 // launch(): the scene task asks the worker to load the scene (or, for one
@@ -210,12 +236,25 @@ struct Notify {
     std::string note_id;
 };
 
+// eval(): run SceneQuery::text in the scene's VM (SceneInstance::eval()).
+struct Eval {
+    std::shared_ptr<SceneQuery> job;
+};
+// store_dump(): SceneStore::dump_json() of the scene's store.
+struct StoreDump {
+    std::shared_ptr<SceneQuery> job;
+};
+// store_set(): one key of the scene's store.
+struct StoreSet {
+    std::shared_ptr<SceneQuery> job;
+};
+
 // stop(): close every scene and end the task.
 struct Quit {};
 
 using Body = std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone,
                           StoreDone, Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor,
-                          FilesDone, Quit, CheckBuild>;
+                          FilesDone, Quit, CheckBuild, Eval, StoreDump, StoreSet>;
 
 }  // namespace msg
 

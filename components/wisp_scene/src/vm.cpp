@@ -961,6 +961,7 @@ void Vm::hook(lua_State* L, lua_Debug* ar) {
         if (!vm->running_) return;
         if (vm->now_ms_() - vm->start_ms_ <= vm->exec_ms_) return;
         vm->fault(Fault::Timeout);
+        vm->fault_off_main_ = L != vm->L_;
         if (lua_getinfo(L, "Sl", ar) && ar->currentline > 0) {
             std::snprintf(vm->fault_file_, sizeof(vm->fault_file_), "%s", ar->short_src);
             vm->fault_line_ = ar->currentline;
@@ -985,6 +986,7 @@ void Vm::check_limits(lua_State* L) {
     if (fault_ == Fault::None) {
         if (!running_ || now_ms_() - start_ms_ <= exec_ms_) return;
         fault(Fault::Timeout);
+        fault_off_main_ = L != L_;
         // The innermost Lua function with a line, as the hook reports it.
         lua_Debug ar;
         for (int level = 0; lua_getstack(L, level, &ar); ++level) {
@@ -1182,6 +1184,16 @@ int Vm::import(lua_State* L) {
     lua_pushvalue(L, 4);
     lua_rawset(L, 2);
     return 1;
+}
+
+bool Vm::recover_timeout() {
+    if (fault_ != Fault::Timeout || running_ || refused_ || fault_off_main_) return false;
+    fault_ = Fault::None;
+    fault_file_[0] = '\0';
+    fault_line_ = 0;
+    started_ = false;
+    lua_sethook(L_, &Vm::hook, LUA_MASKCOUNT, limits_.hook_instructions);
+    return true;
 }
 
 void Vm::set_sources(SourceLookup lookup) { sources_ = std::move(lookup); }

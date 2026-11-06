@@ -12,9 +12,11 @@
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/sensor_service.hpp"
+#include "wisp/net/scene_http.hpp"
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/scene_schedule.hpp"
 #include "wisp/scene/theme.hpp"
+#include "wisp/scene/timer_set.hpp"
 #include "wisp/scene/vm.hpp"
 #include "wisp/ui/system_layer.hpp"
 
@@ -268,7 +270,177 @@ void append_escaped(std::string& out, SV text) {
     }
 }
 
+// The widgets that need more than their properties: the doc's "list,
+// canvas, chart, image, icon" section, and widget_markdown() for each.
+struct WidgetNote {
+    Widget widget;
+    SV text;
+};
+constexpr WidgetNote kWidgetNotes[] = {
+    {Widget::List,
+     "- `ui.list`: only the rows around the visible part exist. `row(item, index)` runs for\n"
+     "  each row as it scrolls into view and its widgets are dropped when it scrolls away;\n"
+     "  bindings inside a row live as long as the row. Every row is `row_h` pixels tall "
+     "(default\n"
+     "  48) and as wide as the list, whatever its own `w` and `h`. A row cannot use `ref` or\n"
+     "  hold another `ui.list`. Setting `items` builds the visible rows again.\n"},
+    {Widget::Canvas,
+     "- `ui.canvas`: `draw(g)` runs once the canvas is built and again whenever a state it\n"
+     "  read changes. `g` only works while `draw` runs, for at most 512 calls:\n"
+     "  `g:fill(color)`, `g:line(x1, y1, x2, y2, opts)`, `g:circle(cx, cy, r, opts)`,\n"
+     "  `g:arc(cx, cy, r, start, end, opts)` (degrees, clockwise from 3 o'clock),\n"
+     "  `g:rect(x, y, w, h, opts)`, `g:text(x, y, text, opts)`. `opts` is optional:\n"
+     "  `color` (a colour, default `text`), `width` (lines and outlines, 0 to 512, default\n"
+     "  1), `radius` (rect corners, 0 to 4096), `fill` (boolean: circle and rect filled),\n"
+     "  `font` (text: a token or 16 to 128 pixels, as for the property). A canvas is `fill`\n"
+     "  in both directions unless given a size. A canvas of more than 524,288 pixels stays\n"
+     "  empty (\"ui.canvas: too large\" in the scene's log). The `g:text` that takes the\n"
+     "  update past 1 MB is the error \"ui update too large\".\n"},
+    {Widget::Chart,
+     "- `ui.chart`: `series` is up to 4 tables of up to 128 numbers, drawn in `accent`, `ok`,\n"
+     "  `warn` and `danger`, between `min` and `max` (default 0 and 100); `type` is `line`\n"
+     "  (default) or `bar`.\n"},
+    {Widget::Image,
+     "- `ui.image`: `src` is a PNG or a baseline (not progressive) JPEG in the scene's\n"
+     "  `assets/`, at most 1024 pixels a side and 524,288 pixels in all. A file that is\n"
+     "  missing, cannot be decoded or is too large leaves the image empty and is reported in\n"
+     "  the scene's log. The decoded images and canvases of a scene take at most 4 MB\n"
+     "  together; the one that would pass it stays empty (\"too large\").\n"},
+    {Widget::Icon, "- `ui.icon`: the symbol `name` in the current `font`.\n"},
+};
+
+// One row of a property table: | `name` | type | yes/no | values |.
+void append_prop_row(std::string& out, const PropSpec& p) {
+    out += "| `";
+    out += p.name;
+    out += "` | ";
+    out += type_name(p.type);
+    out += p.bindable ? " | yes | " : " | no | ";
+    if (p.type == PropType::Enum)
+        append_list(out, p.choices);
+    else
+        append_escaped(out, prop_expects(p.prop));
+    out += " |\n";
+}
+
+constexpr SV kPropTableHead =
+    "| Property | Type | Bindable | Values |\n"
+    "|---|---|---|---|\n";
+
+constexpr SV kCallbackNote =
+    "`on_click` and `on_long_press` take no arguments; `on_change(value)` gets the new text,\n"
+    "value or checked state. `row(item, index)` returns the widget for one list row and is\n"
+    "only called for visible rows. `draw(g)` draws a canvas.\n";
+
 std::string num(uint64_t v) { return std::to_string(v); }
+
+// The Lua side beyond the widgets: the sandbox, reactive state, imports,
+// and the wisp.timer, wisp.device, wisp.log and wisp.http modules
+// (scene-runtime-core spec 3.3, 4.2, 5.1-5.3). The numbers come from the
+// code that enforces them.
+void append_lua_api(std::string& out) {
+    const VmLimits vm;
+    const net::SceneHttpLimits http;
+    out +=
+        "\n"
+        "## Lua environment\n"
+        "\n"
+        "Scenes run Lua 5.5 in a sandbox of their own. Only the `string`, `table`, `math`,\n"
+        "`utf8` and `coroutine` libraries and the safe base functions are there (no `io`,\n"
+        "`os`, `require`, `dofile` or `loadfile`; `load` takes text only). Every file is\n"
+        "compiled so that a global name it does not declare is a compile error: use `local`\n"
+        "for your own names. The globals a scene may use are `ui`, `state`, `computed`,\n"
+        "`bind`, `wisp`, `scene` and the standard ones above.\n"
+        "\n";
+    out += "- Each message (the entry file, a handler, a timer, a callback) may run for " +
+           num(vm.exec_ms) +
+           " ms,\n"
+           "  and a scene's Lua memory is at most " +
+           num(vm.memory_bytes / (1024 * 1024)) +
+           " MB; past either the scene stops with an error.\n";
+    out +=
+        "- `print(...)` writes one line to the scene's log, like `wisp.log.info`.\n"
+        "- `wisp.import(\"lib/<name>\")` runs `lib/<name>.lua` from the scene's package once\n"
+        "  and returns what it returned (`true` for nothing); later imports of the same\n"
+        "  path return the same value. An import cycle is an error.\n"
+        "- `state(v)`: a value the UI can follow. `s:get()` reads it, `s:set(v)` writes it;\n"
+        "  every bound property and computed that read it is brought up to date after the\n"
+        "  current message. Writing an equal value (by value for numbers, strings and\n"
+        "  booleans, by reference for tables) changes nothing.\n"
+        "- `computed(fn)`: `c:get()` is `fn()`, worked out again only after something it read\n"
+        "  changed. `fn` may not call `:set()`.\n"
+        "- `bind(s, fn)`: a computed whose value is `fn(s:get())`; `s` is a state, computed\n"
+        "  or bind. Pass any of the three as a bindable property.\n"
+        "\n"
+        "## wisp.timer\n"
+        "\n"
+        "- `wisp.timer.after(ms, fn)` runs `fn()` once, `ms` milliseconds from now;\n"
+        "  `wisp.timer.every(ms, fn)` every `ms` milliseconds. Both return a handle, or `nil`\n";
+    out += "  and `interval_too_small` (below " + num(TimerSet::kMinIntervalMs) +
+           " ms) or `too_many_timers` (" + num(TimerSet::kMaxTimers) +
+           " set at once).\n"
+           "- `h:cancel()` stops it and returns whether it had still to run.\n"
+           "- Each run is a message of its own. Timers keep running in the background and\n"
+           "  while the screen is off; they end when the scene closes.\n"
+           "\n"
+           "## wisp.device\n"
+           "\n"
+           "- `wisp.device.info()` returns `width`, `height`, `shape`, `corner_radius`,\n"
+           "  `safe_area` and `status_area` (see Screen shape), `lang` (`\"zh\"`, `\"ja\"` or\n"
+           "  `\"en\"`), `utc_offset` (minutes east of UTC), `time` (seconds since the epoch,\n"
+           "  `nil` until the clock is set), `battery` (percent, `nil` when unknown),\n"
+           "  `charging` and `wifi` (`\"off\"`, `\"connecting\"`, `\"backoff\"` or\n"
+           "  `\"connected\"`).\n"
+           "- `wisp.device.row_span(y)`: see Screen shape.\n"
+           "- `wisp.device.on(event, fn)` calls `fn(info)`, with `info` as `info()` returns\n"
+           "  it, on each `\"battery\"` change, each `\"minute\"` of the clock and each\n"
+           "  `\"lang\"` change. Any other event name is an error.\n"
+           "\n"
+           "## wisp.log\n"
+           "\n"
+           "- `wisp.log.info(...)`, `wisp.log.warn(...)` and `wisp.log.error(...)` write one\n"
+           "  line of their arguments, joined with tabs like `print`, to the scene's log\n"
+           "  (tag `scene.<id>`, at most " +
+           num(kLuaLogMaxBytes) +
+           " bytes a line), which the admin page and the agent\n"
+           "  can read. It is kept in memory only.\n"
+           "\n"
+           "## wisp.http\n"
+           "\n"
+           "```lua\n"
+           "wisp.http.get(\"https://api.example.com/now\", nil, function(err, res)\n"
+           "  if err then return end\n"
+           "  print(res.status, res.json and res.json.temp)\n"
+           "end)\n"
+           "wisp.http.post(url, { a = 1 }, { headers = { authorization = \"Bearer x\" } }, cb)\n"
+           "```\n"
+           "\n"
+           "- `wisp.http.get(url, opts, cb)` and `wisp.http.post(url, body, opts, cb)`: `opts`\n"
+           "  (may be `nil` or left out) is `{headers = {name = value}}`; a `body` table is sent\n"
+           "  as JSON (with `Content-Type: application/json` unless a header names one), a\n"
+           "  string as it is.\n"
+           "- `cb(err, res)` runs later as a message of its own: `res` is `{status, headers,\n"
+           "  body, json}`, `headers` with lowercase names, `json` the decoded body when the\n"
+           "  content type mentions JSON and it parses; `err` is `nil` on success.\n"
+           "- Only `https://` URLs (`not_https`) to a host listed in `permissions.http` of\n"
+           "  `scene.json`, exactly (`permission_denied`). Cookies, `host` and the other\n"
+           "  connection headers cannot be set (`permission_denied`); at most " +
+           num(net::SceneHttp::kMaxHeaders) +
+           " headers.\n"
+           "- A request body is at most " +
+           num(net::SceneHttp::kMaxRequestBody / 1024) + " KB and a response at most " +
+           num(http.max_response / 1024) +
+           " KB\n"
+           "  (`too_large`); each request has " +
+           num(http.timeout_ms / 1000) + " seconds in all (`timeout`); at most " +
+           num(http.per_minute) +
+           " requests\n"
+           "  a minute per scene (`rate_limited`). Redirects are not followed.\n"
+           "- Other errors: `dns`, `connect`, `tls`, `other`, `deferred_queue_full`,\n"
+           "  `deferred_timeout` (see below), `not_serializable` and `too_deep` (a body table\n"
+           "  that cannot be sent as JSON). Errors always arrive through `cb`; only arguments\n"
+           "  of the wrong type are a Lua error at the call.\n";
+}
 
 // The manifest, the hooks and the device-side APIs (scene-device spec 3,
 // 4.3, 5.1, 6.2, 7): the numbers come from the code that enforces them.
@@ -676,27 +848,12 @@ std::string schema_markdown() {
         "| series | up to 4 tables of up to 128 numbers each |\n"
         "\n"
         "## Properties\n"
-        "\n"
-        "| Property | Type | Bindable | Values |\n"
-        "|---|---|---|---|\n";
-    for (const auto& p : kProps) {
-        out += "| `";
-        out += p.name;
-        out += "` | ";
-        out += type_name(p.type);
-        out += p.bindable ? " | yes | " : " | no | ";
-        if (p.type == PropType::Enum)
-            append_list(out, p.choices);
-        else
-            append_escaped(out, prop_expects(p.prop));
-        out += " |\n";
-    }
+        "\n";
+    out += kPropTableHead;
+    for (const auto& p : kProps) append_prop_row(out, p);
+    out += "\n";
+    out += kCallbackNote;
     out +=
-        "\n"
-        "`on_click` and `on_long_press` take no arguments; `on_change(value)` gets the new "
-        "text,\n"
-        "value or checked state. `row(item, index)` returns the widget for one list row and is\n"
-        "only called for visible rows. `draw(g)` draws a canvas.\n"
         "\n"
         "## Font sizes\n"
         "\n"
@@ -748,33 +905,9 @@ std::string schema_markdown() {
     out +=
         "\n"
         "### list, canvas, chart, image, icon\n"
-        "\n"
-        "- `ui.list`: only the rows around the visible part exist. `row(item, index)` runs for\n"
-        "  each row as it scrolls into view and its widgets are dropped when it scrolls away;\n"
-        "  bindings inside a row live as long as the row. Every row is `row_h` pixels tall "
-        "(default\n"
-        "  48) and as wide as the list, whatever its own `w` and `h`. A row cannot use `ref` or\n"
-        "  hold another `ui.list`. Setting `items` builds the visible rows again.\n"
-        "- `ui.canvas`: `draw(g)` runs once the canvas is built and again whenever a state it\n"
-        "  read changes. `g` only works while `draw` runs, for at most 512 calls:\n"
-        "  `g:fill(color)`, `g:line(x1, y1, x2, y2, opts)`, `g:circle(cx, cy, r, opts)`,\n"
-        "  `g:arc(cx, cy, r, start, end, opts)` (degrees, clockwise from 3 o'clock),\n"
-        "  `g:rect(x, y, w, h, opts)`, `g:text(x, y, text, opts)`. `opts` is optional:\n"
-        "  `color` (a colour, default `text`), `width` (lines and outlines, 0 to 512, default\n"
-        "  1), `radius` (rect corners, 0 to 4096), `fill` (boolean: circle and rect filled),\n"
-        "  `font` (text: a token or 16 to 128 pixels, as for the property). A canvas is `fill`\n"
-        "  in both directions unless given a size. A canvas of more than 524,288 pixels stays\n"
-        "  empty (\"ui.canvas: too large\" in the scene's log). The `g:text` that takes the\n"
-        "  update past 1 MB is the error \"ui update too large\".\n"
-        "- `ui.chart`: `series` is up to 4 tables of up to 128 numbers, drawn in `accent`, `ok`,\n"
-        "  `warn` and `danger`, between `min` and `max` (default 0 and 100); `type` is `line`\n"
-        "  (default) or `bar`.\n"
-        "- `ui.image`: `src` is a PNG or a baseline (not progressive) JPEG in the scene's\n"
-        "  `assets/`, at most 1024 pixels a side and 524,288 pixels in all. A file that is\n"
-        "  missing, cannot be decoded or is too large leaves the image empty and is reported in\n"
-        "  the scene's log. The decoded images and canvases of a scene take at most 4 MB\n"
-        "  together; the one that would pass it stays empty (\"too large\").\n"
-        "- `ui.icon`: the symbol `name` in the current `font`.\n"
+        "\n";
+    for (const WidgetNote& n : kWidgetNotes) out += n.text;
+    out +=
         "\n"
         "## Screen shape\n"
         "\n"
@@ -873,7 +1006,29 @@ std::string schema_markdown() {
         "`not_serializable`, `too_deep`, `not_found`, `ids_exhausted`, `batch_aborted`. A key,\n"
         "collection name or record of the wrong type, length or shape is a Lua error instead,\n"
         "at the line that made the call.\n";
+    append_lua_api(out);
     append_device_api(out);
+    return out;
+}
+
+std::string widget_markdown(std::string_view name) {
+    const WidgetSpec* w = find_widget(name);
+    if (w == nullptr) return {};
+    std::string out = "## ui.";
+    out += w->name;
+    out += "\n\n";
+    if (w->widget == Widget::Screen) out += "The root of every tree, and only the root. ";
+    out += w->children ? "Array entries are its children.\n\n" : "Takes no children.\n\n";
+    out += kPropTableHead;
+    for (Prop p : w->props) append_prop_row(out, prop_spec(p));
+    if (w->widget == Widget::List) out += "\n`row` is required.\n";
+    out += "\n";
+    out += kCallbackNote;
+    for (const WidgetNote& n : kWidgetNotes) {
+        if (n.widget != w->widget) continue;
+        out += "\n";
+        out += n.text;
+    }
     return out;
 }
 
