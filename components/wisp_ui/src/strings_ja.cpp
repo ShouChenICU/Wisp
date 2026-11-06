@@ -211,6 +211,8 @@ const char* strings_ja(StrId id) {
             return "設定用ホットスポット";
         case StrId::HolderTone:
             return "通知音";
+        case StrId::HolderDownload:
+            return "ファイルのダウンロード";
         case StrId::PanelBackground:
             return "バックグラウンド";
         case StrId::PanelNotifications:

@@ -208,6 +208,8 @@ const char* strings_en(StrId id) {
             return "Setup hotspot";
         case StrId::HolderTone:
             return "Alert sound";
+        case StrId::HolderDownload:
+            return "File download";
         case StrId::PanelBackground:
             return "In background";
         case StrId::PanelNotifications:

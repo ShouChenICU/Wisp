@@ -36,6 +36,7 @@ std::string holder_label(std::string_view holder, std::string_view scene_name) {
         {"system.netwindow", StrId::HolderNetWindow},
         {"system.hotspot", StrId::HolderHotspot},
         {"system.tone", StrId::HolderTone},
+        {"system.download", StrId::HolderDownload},
     };
     for (const auto& [h, id] : kSystem) {
         if (holder == h) return tr(id);

@@ -209,6 +209,8 @@ const char* strings_zh(StrId id) {
             return "配网热点";
         case StrId::HolderTone:
             return "提示音";
+        case StrId::HolderDownload:
+            return "文件下载";
         case StrId::PanelBackground:
             return "后台运行";
         case StrId::PanelNotifications:
