@@ -344,13 +344,15 @@ void SceneWiring::remove(const std::string& id, bool with_data) {
     if (!removed)
         WLOG_W(kTag, "%s: delete failed: %s", id.c_str(), removed.error().message.c_str());
     // The repository removed the files with the data; this forgets their
-    // location and usage. Also after a delete that failed part way, which
-    // may already have taken the files: a record left in memory would
-    // describe files that are gone. Unsupported (dev mode) and
-    // InvalidArgument touched nothing.
-    const bool touched = removed || (removed.error().code != ErrorCode::Unsupported &&
-                                     removed.error().code != ErrorCode::InvalidArgument);
-    if (with_data && files_ && touched) {
+    // location and usage. After a failed delete only if it got past
+    // removing scene.json (the scene is no longer installed): a delete
+    // that failed earlier leaves the scene, and its files, as they were.
+    bool gone = static_cast<bool>(removed);
+    if (!removed && removed.error().code != ErrorCode::Unsupported) {
+        Result<core::SceneManifest> m = repo_->manifest(id);
+        gone = !m && m.error().code == ErrorCode::NotFound;
+    }
+    if (with_data && files_ && gone) {
         if (auto r = files_->remove_all(id); !r)
             WLOG_W(kTag, "%s: removing its files failed: %s", id.c_str(),
                    r.error().message.c_str());

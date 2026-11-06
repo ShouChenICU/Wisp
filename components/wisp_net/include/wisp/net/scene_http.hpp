@@ -123,8 +123,8 @@ struct SceneHttpRequest {
     // so no max_response applies and SceneHttpResult::body stays empty.
     // false stops the transfer ("other"). Only a 2xx answer's body reaches
     // it: any other body is read and dropped (at most max_response bytes
-    // of it; past that the transfer stops), and the result carries just
-    // the status and headers.
+    // of it; past that the transfer stops, and the result carries just
+    // the status, without headers).
     std::function<bool(std::span<const uint8_t>)> on_body;
     // With on_body: a body over this many bytes fails with "too_large";
     // 0 is kMaxDownloadBody.

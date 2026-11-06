@@ -482,6 +482,49 @@ TEST(AppScenes, DeleteReachesDataLeftBehind) {
     EXPECT_EQ(api(b.h, Method::Delete, "/api/v1/scenes/nothing", token, "data=1").status, 404);
 }
 
+// A delete with data that fails before the scene is gone leaves its
+// files: the scene is still installed and still owns them.
+TEST(AppScenes, FailedDeleteKeepsFiles) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    Booted b(opts);
+    put_scene(b.h.root, "stuck", "卡住", "return ui.screen { ui.label { text = 's' } }");
+    const fs::path dir = fs::path(b.h.root) / "scenes" / "stuck";
+    fs::create_directories(dir / "data");
+    fs::create_directories(dir / "files");
+    std::ofstream(dir / "data" / "files_loc.json") << R"({"location":"int"})";
+    std::ofstream(dir / "files" / "a.txt") << "keep me";
+    ASSERT_TRUE(b.start());
+    const std::string token = pair_browser(b.h);
+
+    auto res = api(b.h, Method::Delete, "/api/v1/scenes/stuck", token, "data=1");
+    ASSERT_EQ(res.status, 202) << res.body;
+    // An interrupted replace whose data/ clashes with the scene's: the
+    // repository stops before it removes anything.
+    fs::create_directories(fs::path(b.h.root) / "scenes" / ".stuck.newdir" / "data");
+    ASSERT_EQ(run_on_ui_thread(b.h.app->ui(),
+                               [] {
+                                   lv_obj_t* yes = find_button_with_label(lv_layer_top(), "是");
+                                   if (yes == nullptr) return "";
+                                   lv_obj_send_event(yes, LV_EVENT_CLICKED, nullptr);
+                                   return "ok";
+                               }),
+              "ok");
+    EXPECT_TRUE(wait_until(
+        [] {
+            for (const auto& e : wisp::log::ring_entries())
+                if (e.msg.find("stuck: delete failed") != std::string::npos) return true;
+            return false;
+        },
+        3000));
+    EXPECT_TRUE(fs::exists(dir / "scene.json"));
+    std::stringstream kept;
+    kept << std::ifstream(dir / "files" / "a.txt").rdbuf();
+    EXPECT_EQ(kept.str(), "keep me");
+    EXPECT_TRUE(fs::exists(dir / "data" / "files_loc.json"));
+    EXPECT_TRUE(b.states("stuck").empty());
+}
+
 TEST(AppScenes, DeleteBusyWhenDialogOpen) {
     UiNetOptions opts;
     opts.with_server = true;

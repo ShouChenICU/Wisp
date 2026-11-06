@@ -818,8 +818,33 @@ TEST(SceneRepository, ReinstallAdoptsFiles) {
         EXPECT_EQ(info.value().used, 5u);
         auto listed = r.files->list("todo");
         ASSERT_TRUE(listed);
-        ASSERT_EQ(listed.value().size(), 1u);
-        EXPECT_EQ(listed.value()[0].name, "a.txt");
+        ASSERT_EQ(listed.value().entries.size(), 1u);
+        EXPECT_EQ(listed.value().entries[0].name, "a.txt");
         EXPECT_EQ(read_raw(r.sd_files("todo") / "a.txt"), "12345");
     }
+}
+
+// A delete with data while the card was out left the card's files; the
+// same id installed again takes them over on its first, read-only, look.
+TEST(SceneRepository, ReinstallAdoptsCardFilesAfterCardOutDelete) {
+    FilesRig r;
+    ASSERT_TRUE(r.repo->install(zip_of(todo_files()), accept_all));
+    ASSERT_TRUE(r.files->write("todo", "song.mp3", as_bytes("music")));
+    r.set_sd(false);
+    ASSERT_TRUE(r.repo->remove("todo", true));
+    ASSERT_TRUE(r.files->remove_all("todo"));
+    ASSERT_TRUE(r.repo->install(zip_of(todo_files("1.1.0")), accept_all));
+    r.set_sd(true);
+
+    auto listed = r.files->list("todo");
+    ASSERT_TRUE(listed);
+    ASSERT_EQ(listed.value().entries.size(), 1u);
+    EXPECT_EQ(listed.value().entries[0].name, "song.mp3");
+    auto data = r.files->read("todo", "song.mp3", 0, 100);
+    ASSERT_TRUE(data);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(data.value().data()), data.value().size()),
+              "music");
+    EXPECT_EQ(r.files->info("todo").value().location, wisp::core::FilesLocation::Sd);
+    EXPECT_EQ(r.files->info("todo").value().used, 5u);
+    EXPECT_TRUE(on_disk(fs::path(r.in) / "scenes" / "todo" / "data" / "files_loc.json"));
 }

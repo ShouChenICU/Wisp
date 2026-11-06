@@ -874,7 +874,22 @@ Result<void> StorageManager::append(const std::string& raw_path, std::span<const
 }
 
 Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_path) {
-    using R = Result<std::vector<DirEntry>>;
+    std::vector<DirEntry> out;
+    Result<void> r = visit_dir(raw_path, [&out](const DirEntry& e) {
+        out.push_back(e);
+        return true;
+    });
+    if (!r) {
+        return Result<std::vector<DirEntry>>::err(r.error().code, r.error().message);
+    }
+    std::sort(out.begin(), out.end(),
+              [](const DirEntry& a, const DirEntry& b) { return a.name < b.name; });
+    return Result<std::vector<DirEntry>>::ok(std::move(out));
+}
+
+Result<void> StorageManager::visit_dir(const std::string& raw_path,
+                                       const std::function<bool(const DirEntry&)>& visit) {
+    using R = Result<void>;
     std::lock_guard<os::Mutex> lock(mutex_);
 
     Result<std::string> checked = checked_path(raw_path, /*mutating=*/false);
@@ -894,16 +909,19 @@ Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_pa
         return R::err(ErrorCode::InvalidArgument, "not a directory: " + path);
     }
 
-    Result<std::vector<std::string>> names = read_names(path);
-    if (!names) {
-        return R::err(names.error().code, names.error().message);
+    DIR* d = opendir(path.c_str());
+    if (!d) {
+        return R::err(ErrorCode::IoError, "opendir " + path + ": " + std::string(strerror(errno)));
     }
-    std::vector<DirEntry> out;
-    out.reserve(names.value().size());
-    for (std::string& name : names.value()) {
+    struct dirent* entry;
+    while ((entry = readdir(d)) != nullptr) {
         DirEntry e;
+        e.name = entry->d_name;
+        if (e.name == "." || e.name == "..") {
+            continue;
+        }
         struct stat es;
-        if (stat_nofollow(path + "/" + name, &es) == 0) {
+        if (stat_nofollow(path + "/" + e.name, &es) == 0) {
             e.mtime = static_cast<int64_t>(es.st_mtime);
             if (S_ISREG(es.st_mode)) {
                 e.kind = EntryKind::File;
@@ -912,12 +930,12 @@ Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_pa
                 e.kind = EntryKind::Dir;
             }
         }
-        e.name = std::move(name);
-        out.push_back(std::move(e));
+        if (!visit(e)) {
+            break;
+        }
     }
-    std::sort(out.begin(), out.end(),
-              [](const DirEntry& a, const DirEntry& b) { return a.name < b.name; });
-    return R::ok(std::move(out));
+    closedir(d);
+    return R::ok();
 }
 
 Result<void> StorageManager::remove_tree(const std::string& raw_path) {

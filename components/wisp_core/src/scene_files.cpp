@@ -50,10 +50,6 @@ Result<T> storage_fail(const Error& e) {
     }
 }
 
-bool contains(const std::vector<std::string>& v, std::string_view s) {
-    return std::find(v.begin(), v.end(), s) != v.end();
-}
-
 char lower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
 
 bool same_folded(std::string_view a, std::string_view b) {
@@ -61,6 +57,16 @@ bool same_folded(std::string_view a, std::string_view b) {
     for (size_t i = 0; i < a.size(); ++i)
         if (lower(a[i]) != lower(b[i])) return false;
     return true;
+}
+
+bool ends_with_folded(std::string_view s, std::string_view x) {
+    return s.size() >= x.size() && same_folded(s.substr(s.size() - x.size()), x);
+}
+
+// `s` is in `v`; with `fold`, also when only its case differs.
+bool contains(const std::vector<std::string>& v, std::string_view s, bool fold = false) {
+    return std::any_of(v.begin(), v.end(),
+                       [&](const std::string& x) { return x == s || (fold && same_folded(x, s)); });
 }
 
 // The entry named `name` in `entries`; with `fold`, one differing only in
@@ -95,7 +101,8 @@ bool valid_file_name(std::string_view name) {
                         (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
         if (!ok) return false;
     }
-    return !ends_with(name, ".tmp") && !ends_with(name, ".new");
+    // Without case: on FAT "x.TMP" is StorageManager's "x.tmp".
+    return !ends_with_folded(name, ".tmp") && !ends_with_folded(name, ".new");
 }
 
 const char* scene_files_code(const Error& e) {
@@ -120,9 +127,11 @@ SceneFiles::SceneFiles(StorageManager& storage, SceneFilesConfig config)
 
 bool SceneFiles::sd_online() const { return storage_.roots(Area::Library).size() > 1; }
 
-FilesWant SceneFiles::want_of(std::string_view scene) const {
+FilesWant SceneFiles::want_of(std::string_view scene, bool* installed) const {
+    if (installed != nullptr) *installed = true;
     if (!config_.declared) return FilesWant::Auto;
     Result<FilesWant> w = config_.declared(scene);
+    if (!w && installed != nullptr) *installed = w.error().code != ErrorCode::NotFound;
     return w ? w.value() : FilesWant::Auto;
 }
 
@@ -171,19 +180,19 @@ Result<uint64_t> SceneFiles::count_dir(const std::string& dir,
         return storage_fail<uint64_t>(listed.error());
     }
     bool changed = false;
-    const bool fold = !dir.starts_with(config_.data_root + "/");
+    const bool fold = on_card(dir);
     for (const DirEntry& e : listed.value()) {
         std::string_view name = e.name;
         if (e.kind != EntryKind::File || name.empty() || name.front() != '.') continue;
         if (ends_with(name, kDlSuffix)) {
             std::string_view target = name.substr(1, name.size() - 1 - kDlSuffix.size());
-            if (contains(skip, target)) continue;
+            if (contains(skip, target, fold)) continue;
             if (auto r = storage_.remove_tree(dir + "/" + e.name); !r)
                 WLOG_W(kTag, "%s", r.error().message.c_str());
             changed = true;
         } else if (ends_with(name, kDoneSuffix)) {
             const std::string target(name.substr(1, name.size() - 1 - kDoneSuffix.size()));
-            if (!valid_file_name(target) || contains(skip, target)) continue;
+            if (!valid_file_name(target) || contains(skip, target, fold)) continue;
             // Complete, and newer than any file <name> still beside it. A
             // directory of that name is not ours to remove.
             const DirEntry* old = find_entry(listed.value(), target, fold);
@@ -209,20 +218,45 @@ Result<uint64_t> SceneFiles::count_dir(const std::string& dir,
     return Result<uint64_t>::ok(used);
 }
 
+bool SceneFiles::on_card(const std::string& dir) const {
+    return !dir.starts_with(config_.data_root + "/");
+}
+
 Result<DirEntry> SceneFiles::entry_of(const std::string& dir, std::string_view name) {
-    auto listed = storage_.list_dir(dir);
-    if (!listed) return storage_fail<DirEntry>(listed.error());
-    // Only the card is FAT; internal storage keeps case.
-    const bool fold = !dir.starts_with(config_.data_root + "/");
-    if (const DirEntry* e = find_entry(listed.value(), name, fold)) return Result<DirEntry>::ok(*e);
+    // Visited rather than listed: a directory may hold thousands of files.
+    const bool fold = on_card(dir);
+    DirEntry exact;
+    DirEntry folded;
+    bool found = false;
+    bool found_folded = false;
+    Result<void> r = storage_.visit_dir(dir, [&](const DirEntry& e) {
+        if (e.name == name) {
+            exact = e;
+            found = true;
+            return false;
+        }
+        if (fold && !found_folded && same_folded(e.name, name)) {
+            folded = e;
+            found_folded = true;
+        }
+        return true;
+    });
+    if (!r) return storage_fail<DirEntry>(r.error());
+    if (found) return Result<DirEntry>::ok(std::move(exact));
+    if (found_folded) return Result<DirEntry>::ok(std::move(folded));
     return fail<DirEntry>(ErrorCode::NotFound, "not_found");
 }
 
-Result<uint64_t> SceneFiles::size_of(const std::string& dir, std::string_view name) {
+std::string SceneFiles::name_on_disk(const std::string& dir, std::string_view name) {
+    if (!on_card(dir)) return std::string(name);
     auto e = entry_of(dir, name);
-    if (!e) return Result<uint64_t>::err(e.error().code, e.error().message);
-    if (e.value().kind != EntryKind::File) return fail<uint64_t>(ErrorCode::NotFound, "not_found");
-    return Result<uint64_t>::ok(e.value().size);
+    return e && e.value().kind == EntryKind::File ? e.value().name : std::string(name);
+}
+
+bool SceneFiles::sd_files_exist(std::string_view scene) const {
+    const std::string dir = dir_of(scene, FilesLocation::Sd);
+    if (dir.empty()) return false;
+    return static_cast<bool>(storage_.visit_dir(dir, [](const DirEntry&) { return false; }));
 }
 
 Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choose) {
@@ -266,15 +300,21 @@ Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choo
         r->counted = false;
     }
     if (r->loc == FilesLocation::None) {
-        const FilesWant want = want_of(scene);
+        bool installed = true;
+        const FilesWant want = want_of(scene, &installed);
         const bool card = sd_online();
         // "sd" never falls back to internal storage.
         if (want == FilesWant::Sd && !card)
             return fail<Record*>(ErrorCode::StorageUnavailable, "unavailable");
-        if (!choose) return R::ok(r);
-        const FilesLocation loc = want == FilesWant::Int
-                                      ? FilesLocation::Internal
-                                      : (card ? FilesLocation::Sd : FilesLocation::Internal);
+        // Files the card still holds for this id (left by a delete while
+        // the card was out) are the scene's again, from the first look.
+        const bool adopt = installed && want != FilesWant::Int && card && sd_files_exist(scene);
+        if (!choose && !adopt) return R::ok(r);
+        const FilesLocation loc =
+            adopt || (want != FilesWant::Int && card) ? FilesLocation::Sd : FilesLocation::Internal;
+        if (adopt)
+            WLOG_I(kTag, "%.*s: adopting its files on the card", static_cast<int>(scene.size()),
+                   scene.data());
         const std::string json = std::string(R"({"location":")") + to_string(loc) + "\"}";
         Result<void> saved = storage_.write_atomic(
             record_path(scene),
@@ -355,11 +395,15 @@ Result<void> SceneFiles::write(std::string_view scene, std::string_view name,
     Record& r = *rec.value();
     const std::string dir = dir_of(scene, r.loc);
     if (dir.empty()) return fail<void>(ErrorCode::StorageUnavailable, "unavailable");
-    auto old = size_of(dir, name);
+    // On the card a name differing only in case is that file (FAT): it is
+    // written under the spelling it has on disk.
+    auto old = entry_of(dir, name);
     if (!old && old.error().code != ErrorCode::NotFound) {
         return Result<void>::err(old.error().code, old.error().message);
     }
-    const uint64_t replaced = old ? old.value() : 0;
+    const bool is_file = old && old.value().kind == EntryKind::File;
+    const uint64_t replaced = is_file ? old.value().size : 0;
+    const std::string target = is_file ? old.value().name : std::string(name);
     {
         std::lock_guard<os::Mutex> lock(mu_);
         const uint64_t base = r.used + r.pending - std::min(replaced, r.used);
@@ -367,7 +411,7 @@ Result<void> SceneFiles::write(std::string_view scene, std::string_view name,
             return fail<void>(ErrorCode::QuotaExceeded, "quota_exceeded");
         r.pending += data.size();
     }
-    Result<void> written = storage_.write_atomic(dir + "/" + std::string(name), data);
+    Result<void> written = storage_.write_atomic(dir + "/" + target, data);
     std::lock_guard<os::Mutex> lock(mu_);
     r.pending -= data.size();
     if (!written) return storage_fail<void>(written.error());
@@ -391,7 +435,7 @@ Result<void> SceneFiles::append(std::string_view scene, std::string_view name,
             return fail<void>(ErrorCode::QuotaExceeded, "quota_exceeded");
         r.pending += data.size();
     }
-    Result<void> appended = storage_.append(dir + "/" + std::string(name), data);
+    Result<void> appended = storage_.append(dir + "/" + name_on_disk(dir, name), data);
     std::lock_guard<os::Mutex> lock(mu_);
     r.pending -= data.size();
     if (!appended) return storage_fail<void>(appended.error());
@@ -414,30 +458,48 @@ Result<os::LargeBuffer> SceneFiles::read(std::string_view scene, std::string_vie
     const std::string dir = dir_of(scene, rec.value()->loc);
     if (dir.empty()) return fail<os::LargeBuffer>(ErrorCode::StorageUnavailable, "unavailable");
     auto data = storage_.read_range(dir + "/" + std::string(name), offset, len);
+    if (!data && data.error().code == ErrorCode::NotFound && on_card(dir)) {
+        const std::string found = name_on_disk(dir, name);
+        if (found != name) data = storage_.read_range(dir + "/" + found, offset, len);
+    }
     if (!data) return storage_fail<os::LargeBuffer>(data.error());
     return data;
 }
 
-Result<std::vector<SceneFileEntry>> SceneFiles::list(std::string_view scene) {
-    using R = Result<std::vector<SceneFileEntry>>;
-    std::vector<SceneFileEntry> out;
+Result<SceneFileList> SceneFiles::list(std::string_view scene) {
+    using R = Result<SceneFileList>;
+    SceneFileList out;
     std::lock_guard<os::Mutex> io(io_mu_);
     auto rec = ensure(scene, false);
     if (!rec) return R::err(rec.error().code, rec.error().message);
     if (rec.value()->loc == FilesLocation::None) return R::ok(std::move(out));
     const std::string dir = dir_of(scene, rec.value()->loc);
-    if (dir.empty())
-        return fail<std::vector<SceneFileEntry>>(ErrorCode::StorageUnavailable, "unavailable");
-    auto listed = storage_.list_dir(dir);
-    if (!listed) {
-        if (listed.error().code == ErrorCode::NotFound) return R::ok(std::move(out));
-        return storage_fail<std::vector<SceneFileEntry>>(listed.error());
+    if (dir.empty()) return fail<SceneFileList>(ErrorCode::StorageUnavailable, "unavailable");
+    // The max_list smallest names, kept as a max-heap while the directory
+    // is visited, so at most max_list + 1 entries are ever held.
+    const size_t cap = config_.max_list;
+    auto by_name = [](const SceneFileEntry& a, const SceneFileEntry& b) { return a.name < b.name; };
+    auto& v = out.entries;
+    v.reserve(cap + 1);
+    Result<void> r = storage_.visit_dir(dir, [&](const DirEntry& e) {
+        if (e.kind != EntryKind::File || !valid_file_name(e.name)) return true;
+        if (v.size() == cap) {
+            out.truncated = true;
+            if (cap == 0 || !(e.name < v.front().name)) return true;
+        }
+        v.push_back({e.name, e.size, e.mtime});
+        std::push_heap(v.begin(), v.end(), by_name);
+        if (v.size() > cap) {
+            std::pop_heap(v.begin(), v.end(), by_name);
+            v.pop_back();
+        }
+        return true;
+    });
+    if (!r) {
+        if (r.error().code == ErrorCode::NotFound) return R::ok(std::move(out));
+        return storage_fail<SceneFileList>(r.error());
     }
-    for (DirEntry& e : listed.value()) {
-        if (e.kind != EntryKind::File || !valid_file_name(e.name)) continue;
-        if (out.size() == config_.max_list) break;
-        out.push_back({std::move(e.name), e.size, e.mtime});
-    }
+    std::sort_heap(v.begin(), v.end(), by_name);
     return R::ok(std::move(out));
 }
 
@@ -450,12 +512,13 @@ Result<void> SceneFiles::remove(std::string_view scene, std::string_view name) {
     if (r.loc == FilesLocation::None) return fail<void>(ErrorCode::NotFound, "not_found");
     const std::string dir = dir_of(scene, r.loc);
     if (dir.empty()) return fail<void>(ErrorCode::StorageUnavailable, "unavailable");
-    auto size = size_of(dir, name);
-    if (!size) return Result<void>::err(size.error().code, size.error().message);
-    Result<void> removed = storage_.remove_tree(dir + "/" + std::string(name));
+    auto entry = entry_of(dir, name);
+    if (!entry) return Result<void>::err(entry.error().code, entry.error().message);
+    if (entry.value().kind != EntryKind::File) return fail<void>(ErrorCode::NotFound, "not_found");
+    Result<void> removed = storage_.remove_tree(dir + "/" + entry.value().name);
     if (!removed) return storage_fail<void>(removed.error());
     std::lock_guard<os::Mutex> lock(mu_);
-    r.used -= std::min(size.value(), r.used);
+    r.used -= std::min(entry.value().size, r.used);
     return Result<void>::ok();
 }
 
@@ -521,18 +584,19 @@ Result<std::shared_ptr<FileDownload>> SceneFiles::begin_download(std::string_vie
     Record& r = *rec.value();
     const std::string dir = dir_of(scene, r.loc);
     if (dir.empty()) return R::err(ErrorCode::StorageUnavailable, "unavailable");
+    const bool fold = on_card(dir);
     {
         std::lock_guard<os::Mutex> lock(mu_);
-        if (contains(r.downloading, name))
+        if (contains(r.downloading, name, fold))
             return R::err(ErrorCode::Busy, "a download of this file is in flight");
     }
     auto dl = std::allocate_shared<FileDownload>(os::LargeAllocator<FileDownload>(), *this,
-                                                 std::string(scene), std::string(name), dir);
+                                                 std::string(scene), name_on_disk(dir, name), dir);
     Result<void> made = storage_.remove_tree(dl->dl_path());
     if (made) made = storage_.append(dl->dl_path(), {});
     if (!made) return storage_fail<std::shared_ptr<FileDownload>>(made.error());
     std::lock_guard<os::Mutex> lock(mu_);
-    r.downloading.emplace_back(name);
+    r.downloading.push_back(dl->name_);
     return R::ok(std::move(dl));
 }
 
@@ -578,7 +642,6 @@ Result<uint64_t> SceneFiles::finish_download(FileDownload& dl, bool ok) {
     dl.wake_.give();
     std::lock_guard<os::Mutex> io(io_mu_);
     const std::string dl_path = dl.dl_path();
-    const std::string target = dl.dir_ + "/" + dl.name_;
     const std::string done = dl.dir_ + "/." + dl.name_ + std::string(kDoneSuffix);
     Result<void> r = Result<void>::ok();
     uint64_t replaced = 0;
@@ -604,7 +667,7 @@ Result<uint64_t> SceneFiles::finish_download(FileDownload& dl, bool ok) {
             r = Result<void>::err(ErrorCode::AlreadyExists, "not a file: " + old_name);
         }
         if (r && old) r = storage_.remove_tree(dl.dir_ + "/" + old_name);
-        if (r) r = storage_.rename(done, target);
+        if (r) r = storage_.rename(done, dl.dir_ + "/" + old_name);
     }
     // A ".done" that a failed step left behind is complete: the next count
     // finishes it, so it stays (and the scene is counted again).

@@ -49,6 +49,7 @@ protected:
         ASSERT_TRUE(http->start());
         wisp::core::SceneFilesConfig fc;
         fc.data_root = in + "/scenes";
+        fc.max_list = 3;  // small enough for a test to go past it
         fc.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
         configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) {
@@ -100,8 +101,9 @@ TEST_F(FilesBinding, CallbacksCarryResults) {
 wisp.files.info(function(err, info) print("fresh", err, info.location, info.used) end)
 wisp.files.write("a.txt", "hello", function(err, ok)
   print("write", err, ok)
-  wisp.files.list(function(err, list)
-    print("list", err, #list, list[1].name, list[1].size, math.type(list[1].mtime), list[1].mtime > 0)
+  wisp.files.list(function(err, list, truncated)
+    print("list", err, #list, list[1].name, list[1].size, math.type(list[1].mtime), list[1].mtime > 0,
+          truncated)
     wisp.files.read("a.txt", 1, 3, function(err, data)
       print("read", err, data)
       wisp.files.append("a.txt", "!", function(err, ok)
@@ -118,10 +120,30 @@ end)
     ASSERT_TRUE(rt->open("h"));
     auto lines = wait_log("h", 7);
     EXPECT_EQ(lines, (std::vector<std::string>{"fresh\tnil\tnil\t0", "write\tnil\ttrue",
-                                               "list\tnil\t1\ta.txt\t5\tinteger\ttrue",
+                                               "list\tnil\t1\ta.txt\t5\tinteger\ttrue\tfalse",
                                                "read\tnil\tell", "append\tnil\ttrue",
                                                "info\tnil\tint\t524288\t6", "remove\tnil\ttrue"}));
     EXPECT_FALSE(on_disk(files_dir("h") / "a.txt"));
+}
+
+// Past max_list the list is cut, and the callback says so.
+TEST_F(FilesBinding, ListSaysWhenCut) {
+    start();
+    install_scene("h", R"(
+local names = {"d", "b", "a", "c"}
+local function step(i)
+  if i > #names then
+    wisp.files.list(function(err, list, truncated)
+      print("list", err, #list, list[1].name, list[3].name, truncated)
+    end)
+    return
+  end
+  wisp.files.write(names[i], "x", function() step(i + 1) end)
+end
+step(1)
+)");
+    ASSERT_TRUE(rt->open("h"));
+    EXPECT_EQ(wait_log("h", 1), (std::vector<std::string>{"list\tnil\t3\ta\tc\ttrue"}));
 }
 
 TEST_F(FilesBinding, BadNameIsReportedAsync) {

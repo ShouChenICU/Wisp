@@ -172,17 +172,18 @@ void set_int(lua_State* L, int table, const char* key, int64_t v) {
     lua_setfield(L, table, key);
 }
 
-// Pushes the payload as the callback's second argument.
-void push_payload(lua_State* L, const FilesPayload& p) {
+// Pushes the payload as the callback's arguments after `err`; returns how
+// many: list() adds `truncated`.
+int push_payload(lua_State* L, const FilesPayload& p) {
     if (std::holds_alternative<std::monostate>(p)) {
         lua_pushboolean(L, 1);
     } else if (const auto* data = std::get_if<os::LargeBuffer>(&p)) {
         lua_pushlstring(L, reinterpret_cast<const char*>(data->data()), data->size());
-    } else if (const auto* entries = std::get_if<std::vector<core::SceneFileEntry>>(&p)) {
-        lua_createtable(L, static_cast<int>(entries->size()), 0);
+    } else if (const auto* listed = std::get_if<core::SceneFileList>(&p)) {
+        lua_createtable(L, static_cast<int>(listed->entries.size()), 0);
         const int list = lua_gettop(L);
         lua_Integer i = 0;
-        for (const core::SceneFileEntry& e : *entries) {
+        for (const core::SceneFileEntry& e : listed->entries) {
             lua_createtable(L, 0, 3);
             const int row = lua_gettop(L);
             lua_pushlstring(L, e.name.data(), e.name.size());
@@ -191,6 +192,8 @@ void push_payload(lua_State* L, const FilesPayload& p) {
             set_int(L, row, "mtime", e.mtime);
             lua_rawseti(L, list, ++i);
         }
+        lua_pushboolean(L, listed->truncated ? 1 : 0);
+        return 2;
     } else if (const auto* info = std::get_if<core::SceneFilesInfo>(&p)) {
         lua_createtable(L, 0, 3);
         const int t = lua_gettop(L);
@@ -212,6 +215,7 @@ void push_payload(lua_State* L, const FilesPayload& p) {
     } else {
         lua_pushnil(L);
     }
+    return 1;
 }
 
 int run_entry(lua_State* L) {
@@ -222,14 +226,15 @@ int run_entry(lua_State* L) {
     if (lua_rawgeti(L, 2, c->id) != LUA_TFUNCTION) return 0;  // 3
     lua_pushnil(L);
     lua_rawseti(L, 2, c->id);
+    int n = 1;
     if (!r.error.empty()) {
         lua_pushlstring(L, r.error.data(), r.error.size());
         lua_pushnil(L);
     } else {
         lua_pushnil(L);
-        push_payload(L, r.payload);
+        n = push_payload(L, r.payload);
     }
-    lua_call(L, 2, 0);
+    lua_call(L, 1 + n, 0);
     return 0;
 }
 
