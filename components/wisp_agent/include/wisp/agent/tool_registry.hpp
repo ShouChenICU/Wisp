@@ -53,6 +53,11 @@ struct ToolDef {
     std::string description;
     std::string schema_json;  // JSON Schema subset (validate_args); "" is an empty object
     ToolRisk risk = ToolRisk::Normal;
+    // Where run() runs. The default, Agent, runs it on wisp.agent itself,
+    // whose stack may be in PSRAM (flash_access = false): a tool that
+    // touches flash in any way -- Settings/NVS, StorageManager files on
+    // LittleFS, anything that calls them -- must declare Fs (wisp.fs) or
+    // Io (a one-shot task with an internal stack) instead.
     ToolThread thread = ToolThread::Agent;
     uint32_t timeout_ms = 5000;
     ToolFn run;

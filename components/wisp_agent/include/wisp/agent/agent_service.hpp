@@ -146,6 +146,9 @@ public:
     // The longest model request (each one gets the smaller of this and
     // what is left of the turn).
     static constexpr uint32_t kRequestMs = 300000;
+    // A model request's own deadline lies this far past the turn's, so
+    // the turn's time limit ends it first.
+    static constexpr uint32_t kDeadlineMarginMs = 2 * kCheckMs;
     // A done notice's text: the reply's first line, at most this many
     // bytes.
     static constexpr size_t kNoticeBytes = core::NotificationService::kArgMax;
@@ -161,7 +164,7 @@ public:
 
     // Loads the conversation on the storage worker (and waits), notes a
     // turn a restart cut short, then starts the task. Busy if already
-    // started.
+    // started; after a failure it may be called again.
     Result<void> start();
     // Stops the running turn and the task; waiting messages are dropped.
     void stop();

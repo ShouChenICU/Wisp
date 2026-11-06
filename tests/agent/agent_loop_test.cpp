@@ -18,6 +18,7 @@
 #include "wisp/agent/limits.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/ui/strings.hpp"
 
 using wisp::ErrorCode;
 using wisp::List;
@@ -331,6 +332,64 @@ TEST_F(AgentLoop, StopsAfterTenMinutes) {
     auto n = notes();
     ASSERT_FALSE(n.empty());
     EXPECT_NE(n.back().find("10"), std::string::npos);
+}
+
+TEST_F(AgentLoop, TimeLimitDuringRequestEndsAsTimeLimit) {
+    start({.turn_ms = 300});
+    h->server.push({.status = 200, .chunks = {FakeLlmServer::sse_text("Hel")}, .hold_after = 1});
+    ASSERT_TRUE(svc->submit("slow", Source::Web));
+    ASSERT_TRUE(wait_turns(1, 3000));
+    EXPECT_EQ(h->server.held(), 0);
+    EXPECT_EQ(last_status(), "time_limit");
+    auto n = notes();
+    ASSERT_EQ(n.size(), 1u);
+    EXPECT_EQ(n[0], wisp::ui::tr(wisp::ui::StrId::AgentTimeLimit, wisp::ui::Lang::Zh));
+}
+
+TEST_F(AgentLoop, GeneratedCallIdsAreUniqueAcrossTurns) {
+    add_tool("scene.list");
+    start();
+    for (int turn = 0; turn < 2; ++turn) {
+        // No id from the model: the service makes one up.
+        h->server.push(tool_reply("", "scene_list", "{}"));
+        h->server.push(text_reply("ok"));
+    }
+    ASSERT_TRUE(svc->submit("one", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(svc->submit("two", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    ASSERT_EQ(h->server.requests().size(), 4u);
+    Value body = h->server.body_json(3);
+    std::vector<std::string> asked, answered;
+    for (const Value& m : body.find("messages")->as_list()) {
+        if (const Value* tc = m.find("tool_calls"))
+            for (const Value& c : tc->as_list()) asked.push_back(c.find("id")->as_string());
+        if (const Value* id = m.find("tool_call_id")) answered.push_back(id->as_string());
+    }
+    ASSERT_EQ(asked.size(), 2u);
+    EXPECT_NE(asked[0], asked[1]);
+    EXPECT_EQ(answered, asked);
+}
+
+TEST_F(AgentLoop, FailedStartCanBeRetried) {
+    harness();
+    std::atomic<bool> refuse{true};
+    auto deps = h->deps();
+    deps.submit_io = [&](std::function<void()> fn) {
+        return !refuse.load() && h->worker.submit(std::move(fn));
+    };
+    svc = std::make_unique<AgentService>(std::move(deps));
+    listener = svc->add_listener([this](const AgentEvent& e) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(e);
+    });
+    EXPECT_FALSE(svc->start());
+    refuse = false;
+    ASSERT_TRUE(svc->start());
+    h->server.push(text_reply("ok"));
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(last_status(), "done");
 }
 
 TEST_F(AgentLoop, StopDuringStreamAborts) {

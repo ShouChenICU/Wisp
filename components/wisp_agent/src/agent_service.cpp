@@ -179,6 +179,14 @@ struct AgentService::Impl {
 
     Impl(AgentDeps d, AgentConfig c) : deps(std::move(d)), cfg(c) {}
 
+    // A start() that failed leaves nothing running, so it may be retried.
+    void reset_start() {
+        timer.reset();
+        watch.reset();
+        std::lock_guard<os::Mutex> lock(mu);
+        started = false;
+    }
+
     // --- any thread ----------------------------------------------------
 
     uint64_t now() const { return deps.now_ms ? deps.now_ms() : os::now_ms(); }
@@ -480,7 +488,11 @@ struct AgentService::Impl {
                 net::LlmCall call;
                 call.messages = {req.messages.data(), req.messages.size()};
                 call.tools_json = sv(deps.tools.tools_json());
-                call.timeout_ms = static_cast<uint32_t>(std::min<uint64_t>(left, kRequestMs));
+                // Past the turn's deadline by a margin, so the time limit
+                // (checked every kCheckMs) ends the request, not its own
+                // deadline, which would read as a transport error.
+                call.timeout_ms =
+                    static_cast<uint32_t>(std::min<uint64_t>(left + kDeadlineMarginMs, kRequestMs));
                 call.watch = watch.get();
                 call.on_armed = [this](uint32_t t) {
                     ticket = t;
@@ -519,8 +531,9 @@ struct AgentService::Impl {
                     m.text = res.text;
                     append(std::move(m));
                 }
-                if (abort.load() != static_cast<uint8_t>(Abort::None))
-                    return finish_abort(turn, out);
+                // aborted() also checks the time limit: a request that ran
+                // into it ends as time_limit, not as an error.
+                if (aborted()) return finish_abort(turn, out);
                 ui::StrId why = ui::StrId::AgentErrServer;
                 if (res.error == "no_model") why = ui::StrId::AgentErrNoModel;
                 if (res.error == "unauthorized") why = ui::StrId::AgentErrUnauthorized;
@@ -538,7 +551,10 @@ struct AgentService::Impl {
             reply.text = res.text;
             for (net::LlmToolCall& c : res.tool_calls) {
                 // Every call needs an id for its result to refer to.
-                if (c.id.empty()) c.id = "call_" + std::to_string(++generated);
+                // The turn keeps the id unique in the whole conversation,
+                // where the request builder pairs calls with results.
+                if (c.id.empty())
+                    c.id = "call_" + std::to_string(turn) + "_" + std::to_string(++generated);
                 const ToolDef* def = deps.tools.find_wire(c.name);
                 ToolCallRec rec;
                 rec.id.assign(c.id);
@@ -706,6 +722,7 @@ Result<void> AgentService::start() {
     s.run_io([&] { loaded = s.deps.store.load(); });
     if (!loaded) {
         WLOG_E(kTag, "conversation load failed: %s", loaded.error().message.c_str());
+        s.reset_start();
         return loaded;
     }
     if (std::optional<uint32_t> cut = s.deps.store.interrupted_turn())
@@ -716,6 +733,7 @@ Result<void> AgentService::start() {
     if (!s.task) {
         s.deps.bus.unsubscribe(s.sub);
         s.sub = 0;
+        s.reset_start();
         return Result<void>::err(ErrorCode::NoMemory, "cannot start wisp.agent");
     }
     std::lock_guard<os::Mutex> lock(s.mu);
