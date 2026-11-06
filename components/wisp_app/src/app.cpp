@@ -426,6 +426,7 @@ Result<void> App::start() {
                                     : nullptr,
         .occupancy = &impl_->occupancy,
         .files = scenes != nullptr ? scenes->files() : nullptr,
+        .now_ms = {},  // os::now_ms
     });
     impl_->net->start();
 

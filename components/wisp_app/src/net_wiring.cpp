@@ -24,7 +24,7 @@ NetWiring::~NetWiring() { stop(); }
 
 void NetWiring::start() {
     Platform& platform = deps_.platform;
-    const uint64_t now = os::now_ms();
+    const uint64_t now = deps_.now_ms ? deps_.now_ms() : os::now_ms();
 
     auto wifi_dev = deps_.registry.get<hal::Wifi>("net.wifi");
     if (!platform.random) {
@@ -213,7 +213,7 @@ std::optional<net::WifiState> NetWiring::wifi_state() const {
 
 void NetWiring::run() {
     while (!stopping_.load()) {
-        const uint64_t now = os::now_ms();
+        const uint64_t now = deps_.now_ms ? deps_.now_ms() : os::now_ms();
         if (wifi_) {
             const hal::PowerLevel level = deps_.power_manager != nullptr
                                               ? deps_.power_manager->level()

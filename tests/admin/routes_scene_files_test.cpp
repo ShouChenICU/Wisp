@@ -1,12 +1,15 @@
 // /scenes/{id}/files (scene-device spec 7.2): the list with location,
 // declaration, quota and usage, a download streamed through
 // HttpResponse::stream, and the delete. A real SceneRepository and
-// SceneFiles over the fixture's storage (internal only, no SD card).
+// SceneFiles over the fixture's storage (internal only, except where a
+// test adds an SD card it pulls mid-download).
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <span>
 #include <string>
@@ -14,6 +17,7 @@
 #include <vector>
 
 #include "admin/admin_fixture.hpp"
+#include "support/fake_devices.hpp"
 #include "support/fake_http.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
@@ -69,7 +73,9 @@ const Value& at(const Value& v, const char* key) {
 }
 
 struct FilesFixture {
-    explicit FilesFixture(bool with_files = true, size_t max_list = 256) {
+    explicit FilesFixture(bool with_files = true, size_t max_list = 256,
+                          std::shared_ptr<wisp::test::FakeStorage> sd = nullptr)
+        : f(true, std::move(sd)) {
         SceneFilesConfig cfg;
         cfg.data_root = f.dir + "/scenes";
         cfg.max_list = max_list;
@@ -252,6 +258,60 @@ TEST(AdminSceneFiles, DownloadOfAShrunkFileFails) {
     ASSERT_TRUE(fx.files->write("notes", "a.bin", as_bytes("tiny")));
     std::vector<uint8_t> buf(wisp::net::kStreamChunkBytes);
     EXPECT_FALSE(wisp::net::pump_stream(dl, buf, [](std::span<const uint8_t>) { return true; }));
+}
+
+// The SD card pulled while the admin page downloads one of its files: the
+// stream fails (the server drops the connection; the browser keeps no
+// truncated file), the download's lock goes with the response, the list
+// says the card is unavailable, and once the card is back the same file
+// downloads whole.
+TEST(AdminSceneFiles, CardPulledMidDownload) {
+    const std::string sd_dir = wisp::test::temp_dir().string();
+    auto sd = std::make_shared<wisp::test::FakeStorage>("storage.sd", sd_dir, true);
+    FilesFixture fx(true, 256, sd);
+    fx.install("music", "sd");
+    const std::string big = pattern(100 * 1024);
+    ASSERT_TRUE(fx.files->write("music", "song.bin", as_bytes(big)));
+    auto locks = [&] {
+        int n = 0;
+        for (const auto& l : fx.f.wakelocks.list()) n += l.holder == "system.download";
+        return n;
+    };
+    {
+        HttpResponse dl = fx.call(Method::Get, "/api/v1/scenes/music/files/song.bin");
+        ASSERT_EQ(dl.status, 200) << dl.body;
+        EXPECT_EQ(locks(), 1);
+        std::vector<uint8_t> buf(wisp::net::kStreamChunkBytes);
+        size_t got = 0;
+        const bool ok = wisp::net::pump_stream(dl, buf, [&](std::span<const uint8_t> piece) {
+            got += piece.size();
+            if (got == piece.size()) {
+                // After the first piece the card goes: its files at once,
+                // the storage on its next refresh.
+                sd->online_flag = false;
+                std::filesystem::rename(sd_dir, sd_dir + ".pulled");
+                std::ofstream(sd_dir) << "no card";
+                fx.f.storage->refresh();
+                fx.files->on_sd_changed();
+            }
+            return true;
+        });
+        EXPECT_FALSE(ok);
+        EXPECT_LT(got, big.size());
+    }
+    EXPECT_EQ(locks(), 0);
+    HttpResponse listed = fx.call(Method::Get, "/api/v1/scenes/music/files");
+    EXPECT_EQ(listed.status, 503);
+    EXPECT_EQ(error_code(listed), "unavailable");
+
+    std::filesystem::remove(sd_dir);
+    std::filesystem::rename(sd_dir + ".pulled", sd_dir);
+    sd->online_flag = true;
+    fx.f.storage->refresh();
+    fx.files->on_sd_changed();
+    HttpResponse again = fx.call(Method::Get, "/api/v1/scenes/music/files/song.bin");
+    ASSERT_EQ(again.status, 200) << again.body;
+    EXPECT_TRUE(drain(again) == big);
 }
 
 // A full list (max_list names, more on disk) is written straight into one

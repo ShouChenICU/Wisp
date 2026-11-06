@@ -50,8 +50,11 @@ namespace wisp::test {
 inline constexpr int64_t kFixtureUnixTime = 1767225600;
 
 struct AdminFixture {
-    explicit AdminFixture(bool with_assets = true) : dir(temp_dir().string()) {
+    // `sd`, if given, is registered as the SD card.
+    explicit AdminFixture(bool with_assets = true, std::shared_ptr<FakeStorage> sd = nullptr)
+        : dir(temp_dir().string()) {
         registry.add(std::make_shared<FakeStorage>("storage.int", dir, /*removable=*/false));
+        if (sd) registry.add(sd);
         storage = std::make_unique<core::StorageManager>(registry, bus);
         EXPECT_TRUE(storage->init());
         bus.start();

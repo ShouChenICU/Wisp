@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -418,6 +419,79 @@ TEST(AppScenes, SelfCheckLetsTheImuGoWhileASceneIsInFront) {
     ASSERT_TRUE(b.h.app->scenes()->exit("counter"));
     EXPECT_TRUE(wait_until([&] { return holders() == selfcheck; }, 3000));
     EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 50u; }, 3000));
+}
+
+// Spec 5.1/5.4 across the real pieces: a scene in the background posts a
+// waking notification while the device is in deep standby; PowerManager
+// brings it back to active, the scene in front stays the self-check screen
+// and the banner shows the notification.
+TEST(AppScenes, BackgroundNotificationWakesFromDeepStandbyWithABanner) {
+    Booted b;
+    const fs::path dir = fs::path(b.h.root) / "scenes" / "pomo";
+    fs::create_directories(dir);
+    std::ofstream(dir / "scene.json")
+        << R"({"id":"pomo","name":"番茄钟","version":"1.0.0","schema_version":1,"background":true})";
+    std::ofstream(dir / "main.lua") << R"(
+scene.on_state = function(s)
+  if s == "background" then
+    wisp.timer.after(1500, function()
+      print("notify", wisp.notify{ title = "时间到", body = "休息一下", wake = true })
+    end)
+  end
+end
+return ui.screen { ui.label { text = "pomo" } }
+)";
+    ASSERT_TRUE(b.start());
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    wisp::app::PowerManager* pm = b.h.app->power_manager();
+    ASSERT_NE(rt, nullptr);
+    ASSERT_NE(pm, nullptr);
+    ASSERT_TRUE(rt->open("pomo"));
+    ASSERT_TRUE(rt->close("pomo"));
+    ASSERT_EQ(rt->status("pomo").state, wisp::core::SceneState::Background);
+
+    std::mutex levels_mu;
+    std::vector<std::string> levels;
+    const wisp::core::SubscriptionId levels_sub =
+        b.h.app->bus().subscribe("power.state", [&](const wisp::core::Event& e) {
+            std::lock_guard<std::mutex> lock(levels_mu);
+            levels.push_back(e.payload.at("state").as_string());
+        });
+    run_on_ui_blocking(b.h.app->ui(), [&] { pm->enter_standby(); });
+    pm->tick(wisp::os::now_ms() + 3'600'000);
+    ASSERT_TRUE(
+        wait_until([&] { return pm->level() == wisp::hal::PowerLevel::DeepStandby; }, 1000));
+
+    ASSERT_TRUE(wait_until([] { return count_of(scene_log("pomo"), "notify\tn1") == 1; }, 5000));
+    EXPECT_TRUE(wait_until([&] { return pm->level() == wisp::hal::PowerLevel::Active; }, 3000));
+    EXPECT_TRUE(wait_until(
+        [&] {
+            std::lock_guard<std::mutex> lock(levels_mu);
+            return !levels.empty() && levels.back() == "active";
+        },
+        3000));
+    b.h.app->bus().unsubscribe(levels_sub);
+    {
+        std::lock_guard<std::mutex> lock(levels_mu);
+        EXPECT_EQ(levels, (std::vector<std::string>{"standby", "deep_standby", "active"}));
+    }
+    EXPECT_TRUE(wait_until(
+        [&] {
+            bool shown = false;
+            run_on_ui_blocking(b.h.app->ui(), [&] {
+                lv_obj_t* banner = b.h.app->system_layer()->banner();
+                shown = banner != nullptr && find_label_containing(banner, "时间到") != nullptr &&
+                        find_label_containing(banner, "休息一下") != nullptr;
+            });
+            return shown;
+        },
+        3000));
+    // The scene stays in the background; the self-check screen is in front.
+    EXPECT_EQ(rt->status("pomo").state, wisp::core::SceneState::Background);
+    EXPECT_FALSE(rt->foreground().has_value());
+    lv_obj_t* active = nullptr;
+    run_on_ui_blocking(b.h.app->ui(), [&] { active = lv_screen_active(); });
+    EXPECT_EQ(active, b.screen);
 }
 
 TEST(AppScenes, DeleteConfirmFlow) {

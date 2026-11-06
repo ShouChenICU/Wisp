@@ -124,6 +124,10 @@ struct NetWiringDeps {
     // 503.
     core::OccupancyRegistry* occupancy = nullptr;
     core::SceneFiles* files = nullptr;
+    // The clock the "wisp.net" loop hands WifiService, the NetworkWindow
+    // and the admin services; empty: os::now_ms. Tests move it to reach
+    // the network window's 15 minutes.
+    std::function<uint64_t()> now_ms;
 };
 
 class NetWiring {
