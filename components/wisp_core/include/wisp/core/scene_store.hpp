@@ -59,7 +59,8 @@
 // Data version (scene-device spec 7.3): "meta.json" holds
 // {"schema_version":n}, the structure version of the data. Data without
 // it (written before versions existed) is version 1; a store with no data
-// file at all is new (0) until set_initial_version(). A version change is
+// file at all is new (0) until set_initial_version(); a meta.json that
+// does not parse is kDataVersionUnreadable. A version change is
 // written by the next flush, before any log line of that flush, and a
 // migration's batch and its new version go through one journal (its
 // entry {"f":"meta.json","r":{"schema_version":n}}), so a power cut keeps
@@ -96,6 +97,10 @@
 #include "wisp/os/os.hpp"
 
 namespace wisp::core {
+
+// SceneStore::data_version() when meta.json is there but does not parse:
+// the data could be at any version (scene-device spec 7.3).
+inline constexpr int kDataVersionUnreadable = -1;
 
 struct SceneStoreLimits {
     uint64_t quota_bytes = 1024 * 1024;
@@ -187,8 +192,9 @@ public:
 
     // The data version load() found (see above), or the one set since.
     int data_version() const;
-    // A new store (data_version() == 0) records `v` as its version; any
-    // other store keeps its own.
+    // A new store (data_version() == 0) takes `v` as its version, written
+    // with the first flush that writes data (a scene that stores nothing
+    // leaves no data directory); any other store keeps its own.
     void set_initial_version(int v);
     // Commits the open batch, which must be the outermost one, together
     // with `new_version` (one journal, see above). InvalidArgument

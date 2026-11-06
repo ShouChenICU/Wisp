@@ -767,6 +767,9 @@ struct SceneStore::Impl {
     int version = 0;
     // A version the next flush writes to meta.json.
     std::optional<int> meta_pending;
+    // meta_pending waits for the first flush that writes data: a scene
+    // that never stores anything gets no data directory.
+    bool meta_lazy = false;
     // A committed batch of more than one line is pending. A torn append
     // could keep part of it, so the flush that takes it goes through the
     // journal even when the batch touches a single file.
@@ -1165,6 +1168,7 @@ Result<void> SceneStore::load() {
     Index ix;
     bool journal_dirty = false;
     std::optional<int> version;
+    bool meta_unreadable = false;
 
     const std::string meta_path = m.dir + "/" + std::string(kMeta);
     auto meta = m.deps.storage.read_file_large(meta_path);
@@ -1174,8 +1178,9 @@ Result<void> SceneStore::load() {
     if (meta) {
         version = parse_meta(std::string_view(reinterpret_cast<const char*>(meta.value().data()),
                                               meta.value().size()));
-        if (!version) {
-            WLOG_W(kTag, "%s: unreadable %s ignored", m.dir.c_str(), std::string(kMeta).c_str());
+        meta_unreadable = !version;
+        if (meta_unreadable) {
+            WLOG_W(kTag, "%s: %s unreadable", m.dir.c_str(), std::string(kMeta).c_str());
         }
     }
 
@@ -1326,15 +1331,18 @@ Result<void> SceneStore::load() {
     }
 
     if (!version) {
-        // Data written before versions existed is version 1.
+        // Data written before versions existed is version 1. A meta.json
+        // that does not parse says nothing: the data could be at any
+        // version.
         const bool has_data = !stems.empty() || !ix.colls.empty() || !ix.kv.empty();
-        version = has_data ? 1 : 0;
+        version = meta_unreadable ? kDataVersionUnreadable : has_data ? 1 : 0;
     }
 
     m.journal_dirty = journal_dirty;
     std::lock_guard<os::Mutex> lock(m.mu);
     m.version = *version;
     m.meta_pending.reset();
+    m.meta_lazy = false;
     std::swap(m.ix, ix);
     m.clear_overlay_locked();
     m.loaded = true;
@@ -1735,6 +1743,7 @@ Result<void> SceneStore::commit(std::optional<int> new_version) {
         if (new_version) {
             m.version = *new_version;
             m.meta_pending = new_version;
+            m.meta_lazy = false;
         }
         arm = (lines > 0 || new_version) && m.note_pending_locked();
     }
@@ -1751,19 +1760,14 @@ int SceneStore::data_version() const {
 
 void SceneStore::set_initial_version(int v) {
     Impl& m = *impl_;
-    bool arm = false;
-    {
-        std::lock_guard<os::Mutex> lock(m.mu);
-        if (!m.loaded || m.closed || m.version != 0) {
-            return;
-        }
-        m.version = v;
-        m.meta_pending = v;
-        arm = m.note_pending_locked();
+    std::lock_guard<os::Mutex> lock(m.mu);
+    if (!m.loaded || m.closed || m.version != 0) {
+        return;
     }
-    if (arm) {
-        arm_timer();
-    }
+    // No timer: the first flush with data writes it.
+    m.version = v;
+    m.meta_pending = v;
+    m.meta_lazy = true;
 }
 
 void SceneStore::abort_batch() {
@@ -1875,7 +1879,10 @@ void SceneStore::flush_job(const std::function<void(Result<void>)>& done, bool f
             // either finds a timer still in flight or arms one.
             std::lock_guard<os::Mutex> lock(m.mu);
             batch = m.take_snapshot_locked(items);
-            meta = std::exchange(m.meta_pending, std::nullopt);
+            if (!m.meta_lazy || !items.empty()) {
+                meta = std::exchange(m.meta_pending, std::nullopt);
+                m.meta_lazy = false;
+            }
         }
         if (!items.empty() || meta) {
             result = m.write_items(items, batch, meta);

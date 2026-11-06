@@ -158,12 +158,15 @@ std::optional<ScriptError> SceneInstance::flush(std::optional<ScriptError> err) 
 
 std::optional<ScriptError> SceneInstance::migrate(int from) {
     lua_State* L = vm_->L();
-    if (!lua_checkstack(L, 2)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     core::SceneStore* store = api_.store;
-    if (store != nullptr) store->begin_batch();
-    lua_pushcfunction(L, call_migrate);
-    lua_pushinteger(L, from);
-    auto err = vm_->call(1, 0, Budget::Fresh, kMigrateMs);
+    std::optional<ScriptError> err;
+    if (lua_checkstack(L, 2)) {
+        lua_pushcfunction(L, call_migrate);
+        lua_pushinteger(L, from);
+        err = vm_->call(1, 0, Budget::Fresh, kMigrateMs);
+    } else {
+        err = ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
+    }
     if (store != nullptr) {
         if (err) {
             store->abort_batch();
@@ -192,8 +195,16 @@ std::optional<ScriptError> SceneInstance::start(std::optional<int> migrate_from)
     const std::string& entry = pkg->manifest.entry;
     auto source = file_of(*pkg, entry);
     if (!source) return ScriptError{ScriptFault::Compile, entry, 0, "entry file missing"};
-    if (auto err = vm_->load(entry, *source)) return err;
-    if (auto err = vm_->call(0, 1)) return err;
+    // During a migration main.lua's own writes go into the migration's
+    // batch as well, so a failed migration leaves the data as it was.
+    core::SceneStore* batch = migrate_from ? api_.store : nullptr;
+    if (batch != nullptr) batch->begin_batch();
+    auto entry_err = vm_->load(entry, *source);
+    if (!entry_err) entry_err = vm_->call(0, 1);
+    if (entry_err) {
+        if (batch != nullptr) batch->abort_batch();
+        return entry_err;
+    }
     if (migrate_from) {
         if (auto err = migrate(*migrate_from)) {
             lua_pop(L, 1);

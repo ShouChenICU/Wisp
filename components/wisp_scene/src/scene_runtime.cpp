@@ -1423,6 +1423,8 @@ bool SceneRuntime::run_step(Slot& s, const std::optional<ScriptError>& err) {
 std::optional<ScriptError> SceneRuntime::start_scene(Slot& s) {
     const int want = s.package->manifest.schema_version;
     const int have = s.store ? s.store->data_version() : want;
+    if (have == core::kDataVersionUnreadable)
+        return ScriptError{ScriptFault::Runtime, "", 0, "data version unreadable"};
     if (have == 0) s.store->set_initial_version(want);
     if (have > want)
         return ScriptError{

@@ -1135,11 +1135,23 @@ TEST(SceneStore, DataVersionDefaults) {
         Harness h;
         auto s = h.open();
         EXPECT_EQ(s->data_version(), 0);
-        // A new store records the manifest's version with its first flush.
+        // A new store takes the manifest's version, but writes it only
+        // with its first data: a scene that stores nothing leaves no
+        // data directory behind.
         s->set_initial_version(4);
         EXPECT_EQ(s->data_version(), 4);
+        EXPECT_TRUE(h.timers.empty());
         ASSERT_TRUE(Harness::flush_now(*s));
-        EXPECT_EQ(h.open()->data_version(), 4);
+        EXPECT_FALSE(on_disk(h.dir()));
+        EXPECT_EQ(h.open()->data_version(), 0);
+
+        ASSERT_TRUE(s->kv_set("a", "1"));
+        ASSERT_TRUE(Harness::flush_now(*s));
+        EXPECT_EQ(read_raw(h.dir() / "meta.json"), R"({"schema_version":4})");
+        EXPECT_FALSE(on_disk(h.dir() / "journal.json"));
+        auto again = h.open();
+        EXPECT_EQ(again->data_version(), 4);
+        EXPECT_EQ(str(again->kv_get("a")), "1");
     }
     {
         Harness h;
@@ -1162,6 +1174,19 @@ TEST(SceneStore, DataVersionDefaults) {
         Harness h;
         write_raw(h.dir() / "meta.json", R"({"schema_version":5})");
         EXPECT_EQ(h.open()->data_version(), 5);
+    }
+    // A meta.json that does not parse is not guessed at: the data could
+    // be at any version.
+    for (const char* bad : {"{\"schema_version\":", "garbage", R"({"schema_version":0})",
+                            R"({"schema_version":"2"})", R"({"other":2})"}) {
+        Harness h;
+        write_raw(h.dir() / "kv.log", "{\"op\":\"put\",\"id\":\"a\",\"v\":1}\n");
+        write_raw(h.dir() / "meta.json", bad);
+        auto s = h.open();
+        EXPECT_EQ(s->data_version(), wisp::core::kDataVersionUnreadable) << bad;
+        s->set_initial_version(4);
+        EXPECT_EQ(s->data_version(), wisp::core::kDataVersionUnreadable) << bad;
+        EXPECT_EQ(read_raw(h.dir() / "meta.json"), bad);
     }
 }
 
@@ -1227,6 +1252,23 @@ TEST(SceneStore, MigrationCommitIsAtomicWithVersion) {
         EXPECT_EQ(str(again->find("items", all()).value()[0].json), R"({"name":"a"})");
         EXPECT_FALSE(on_disk(h.dir() / "meta.json"));
         EXPECT_EQ(read_raw(h.dir() / "items.log"), v1);
+    }
+
+    // Cut after meta.json, before the logs: the journal is still there,
+    // and its replay brings the logs up to the version.
+    {
+        Harness h;
+        write_raw(h.dir() / "items.log", v1);
+        write_raw(h.dir() / "meta.json", R"({"schema_version":2})");
+        write_raw(h.dir() / "journal.json",
+                  R"([{"f":"meta.json","r":{"schema_version":2}},)"
+                  R"({"f":"items","r":{"op":"put","id":1,"v":{"name":"a","done":false}}},)"
+                  R"({"f":"items","r":{"op":"put","id":2,"v":{"name":"b","done":false}}}])");
+        auto again = h.open();
+        EXPECT_EQ(again->data_version(), 2);
+        EXPECT_EQ(str(again->find("items", all()).value()[0].json), R"({"name":"a","done":false})");
+        EXPECT_FALSE(on_disk(h.dir() / "journal.json"));
+        EXPECT_EQ(h.open()->data_version(), 2);
     }
 
     // Nothing in the way: everything lands and the journal goes.

@@ -2,6 +2,8 @@
 -- arguments pick how the migration goes: mode = "boom" fails, "loop"
 -- never returns, "none" defines no migrate at all.
 print("v2 main")
+-- A top-level write: during a migration it lands or rolls back with it.
+wisp.store.set("v2_seen", true)
 local args = wisp.scene.args() or {}
 local mode = args.mode
 
