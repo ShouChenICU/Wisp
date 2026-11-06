@@ -435,9 +435,13 @@ void SceneRuntime::on_installed(const std::string& id) {
 }
 
 void SceneRuntime::set_visible(bool visible) {
+    want_visible_.store(visible);
+    // The message only wakes the task; on a full queue the task is busy
+    // and follows want_visible_ after the message it is on.
     msg::Body body = visible ? msg::Body{msg::Show{}} : msg::Body{msg::Hide{}};
     if (!push(make_message("", 0, std::move(body)), 0) && running_)
-        WLOG_W(kTag, "screen %s not passed on: scene queue full", visible ? "on" : "off");
+        WLOG_I(kTag, "screen %s: scene queue full; the scene task catches up",
+               visible ? "on" : "off");
 }
 
 core::SceneStatus SceneRuntime::status(const std::string& id) const {
@@ -571,6 +575,7 @@ void SceneRuntime::run() {
                 WLOG_W(tag.c_str(), "slow message %s %" PRIu64 " ms", message_kind(m->body), ms);
             }
         }
+        follow_visibility();
         run_delayed();
         if (front_ != nullptr) enforce_limits(false);
         run_scene_clock();
@@ -1714,6 +1719,17 @@ void SceneRuntime::hide_scenes() {
         }
         // Spec 6.1: the store flushes before the screen goes off.
         if (s->store) s->store->flush();
+    }
+}
+
+void SceneRuntime::follow_visibility() {
+    const bool want = want_visible_.load();
+    if (want == visible_) return;
+    visible_ = want;
+    if (want) {
+        show_scene(true);
+    } else {
+        hide_scenes();
     }
 }
 
