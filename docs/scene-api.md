@@ -210,6 +210,15 @@ does the system take it, and the widget under it then gets no click.
 Dragging back to the left of that distance before release cancels it and
 nothing happens. A touch on the on-screen keyboard never starts it.
 
+A swipe down that starts within 16 pixels of the top of the visible screen
+(measured from the first visible pixel of the column it starts in) is the
+system's pull-down gesture, at any angle: the touch reaches the scene like
+any other until it has moved 24 pixels down, when the system opens its
+pull-down panel and the widget under the finger gets no click
+(`PRESS_LOST`). It never starts while the keyboard, the error panel or a
+confirmation dialog is up. A tap on the status capsule (at `status_area`, shown while scenes run
+in the background or notifications are unread) opens the panel too.
+
 ## Helpers
 
 - `ui.show_if(s, widget)` returns `widget`, shown while `s` (a state, computed, bind or
@@ -269,8 +278,11 @@ Every scene package has a `scene.json` at its root:
  "permissions": {"http": ["api.example.com"]}}
 ```
 
+Required: `id`, `name`, `version` and `schema_version`; without any of them the
+install is refused.
+
 - `id`: 1 to 32 bytes of `a-z`, `0-9`, `_` and `-`; also the scene's directory.
-- `name`: 1 to 32 bytes of UTF-8. `version`: a semantic version.
+- `name`: 1 to 32 bytes of UTF-8. `version`: a semantic version, at most 64 bytes.
 - `entry` (default `main.lua`) and `icon` (a file under `assets/`) are optional.
 - `schema_version`: an integer from 1 to 1000, the version of the structure of the
   scene's data (see `scene.migrate` below).
@@ -302,7 +314,8 @@ as a message of its own, within the usual 200 ms:
 ## wisp.scene
 
 - `wisp.scene.close()`: goes back, like the back gesture: a scene that declares
-  `background` goes to the background, any other closes.
+  `background` goes to the background, any other closes. Opening another scene does
+  the same to the scene in front.
 - `wisp.scene.exit()`: always closes the scene completely (`on_hide`, `on_close`).
 - `wisp.scene.args()`: the table of arguments the scene was opened with (`{}` for
   none).
@@ -313,12 +326,13 @@ as a message of its own, within the usual 200 ms:
 ## Background scenes
 
 A scene whose `scene.json` declares `"background": true` keeps running after the
-user goes back: `scene.on_hide()`, then its view goes and `scene.on_state("background")`
-runs. Its VM, store, timers and widget tree stay; changes to its state still update
-the tree, which is shown again when the scene comes back to the front (from the
-scene list, a row of the pull-down panel or a tap on one of its notifications), and
-then `scene.on_show()` and `scene.on_state("foreground")` run. Closing it from the
-panel (its ×), from the admin page or with `wisp.scene.exit()` stops it completely.
+user goes back or opens another scene: `scene.on_hide()`, then its view goes and
+`scene.on_state("background")` runs. Its VM, store, timers and widget tree
+stay; changes to its state still update the tree, which is shown again when the
+scene comes back to the front (from the scene list, a row of the pull-down panel or
+a tap on one of its notifications), and then `scene.on_show()` and
+`scene.on_state("foreground")` run. Closing it from the panel (its ×), from the
+admin page or with `wisp.scene.exit()` stops it completely.
 
 - Timers and `wisp.device.on` events keep firing in the background and while the
   screen is off, without pausing and without catching up. `wisp.http`, `wisp.store`,
@@ -438,7 +452,8 @@ wisp.files.info(cb)                       -- cb(err, { location =, want =, quota
   deletes the scene and confirms deleting its data with it, when the scene calls
   `wisp.files.remove`, or when the user deletes one on the admin page. A scene
   reinstalled with the same id finds its old files where it left them.
-- Other codes: `not_found` (no such file), `unavailable`, or the name of a storage
+- Other codes: `not_found` (no such file), `unavailable`, `busy` (the storage worker
+  has too much queued: try again later), `no_memory`, or the name of a storage
   error.
 
 ## wisp.http.download and deep standby

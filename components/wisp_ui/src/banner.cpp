@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "system_layer_internal.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/ui/overlay.hpp"
 #include "wisp/ui/system_layer.hpp"
 
@@ -41,6 +42,9 @@ void SystemLayer::show_next_banner() {
     hal::Span ext = detail::visible_extent(shape_, top, top + kBannerH - 1, kBannerInset);
     if (ext.empty()) ext = {safe_.x1, safe_.x2};
 
+    // Logged (never the text: it may be private) so that a script reading
+    // only the log can tell when a banner is up.
+    WLOG_I("ui", "banner: shown %s/%s", b.source.c_str(), b.id.c_str());
     lv_obj_t* card = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(card);
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
@@ -133,6 +137,7 @@ void SystemLayer::hide_banner() {
             lv_obj_delete(banner_);
         }
         banner_ = nullptr;
+        WLOG_I("ui", "banner: gone");
     }
     banner_tap_ = nullptr;
     show_next_banner();

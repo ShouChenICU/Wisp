@@ -630,6 +630,20 @@ TEST_F(Examples, LevelWithoutASensor) {
     EXPECT_FALSE(error_panel_has(""));
 }
 
+// A sensor that is there but cannot be subscribed (another holder has the
+// IMU to itself): the level says so in a note that stays whole on a
+// circle, and logs why.
+TEST_F(Examples, LevelWhenTheSubscriptionFails) {
+    ASSERT_TRUE(occupancy.acquire("imu.main", "system.test", wisp::core::OccupancyMode::Exclusive));
+    start("circle");
+    install_example("level");
+    ASSERT_TRUE(rt->open("level"));
+    EXPECT_TRUE(wait_label("加速度传感器不可用", 2000)) << ::testing::PrintToString(labels());
+    EXPECT_EQ(clipped(), std::vector<std::string>{});
+    EXPECT_TRUE(log_has("scene.level", "busy"));
+    EXPECT_EQ(rt->status("level").state, SceneState::Running) << rt->status("level").error;
+}
+
 // sysinfo and clock show local time from info().utc_offset, and follow a
 // change of it without being reopened.
 TEST_F(Examples, SysinfoAndClockFollowTheUtcOffset) {

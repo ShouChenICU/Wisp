@@ -40,7 +40,7 @@ end
 
 -- x, y: where the bubble sits, -1..1 of the dial's reach; angle in whole degrees.
 local tilt = state({ x = 0, y = 0, angle = 0 })
-local note = state(nil) -- why there is no reading, if there is none
+local note = state(nil) -- why there is no reading, if there is none; fits LABEL_W
 
 local function draw(g)
   local t = tilt:get()
@@ -86,7 +86,12 @@ end
 
 if wisp.sensor.available().accel then
   local h, err = wisp.sensor.subscribe("accel", { rate = 25 }, on_samples)
-  if not h then note:set("加速度传感器不可用（" .. tostring(err) .. "）") end
+  if not h then
+    -- The note takes the angle's place, which is only LABEL_W wide: the
+    -- reason goes to the log.
+    wisp.log.warn("accel: " .. tostring(err))
+    note:set("加速度传感器不可用")
+  end
 else
   note:set("没有加速度传感器")
 end

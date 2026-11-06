@@ -187,7 +187,7 @@
 场景设备 spec 3；实现在 `scene::SceneRuntime`（`components/wisp_scene/include/wisp/scene/scene_runtime.hpp` 的文件头有完整的生命周期说明）。
 
 - 槽位：所有场景共用 `wisp.scene` 一个任务，最多一个前台、三个后台（`SceneRuntimeConfig::max_background`）。每个槽位有自己的实例号、VM、定时器、分钟节拍和 `SceneStore`；场景在前后台之间移动时实例号不变。每条消息仍有自己的 200 ms 预算，后台场景拖不住前台。
-- 转换：`scene.json` 声明 `"background": true` 的场景，返回手势、`close()`、`wisp.scene.close()` 都让它转入后台（`on_hide` → 释放它持有的唤醒锁 → 撤下视图、回到原屏幕 → `scene.on_state("background")`），VM、存储、定时器和声明树都保留，界面变化只更新声明树、不发给 UI 线程；没有声明的场景照旧关闭。再次打开（列表、面板里的行、点通知）时从声明树重建视图（`SceneInstance::rebuild()`），然后 `on_show`、`scene.on_state("foreground")`。`exit()`、面板里的 ×、`wisp.scene.exit()`、管理后台的 `POST /scenes/{id}/exit` 总是彻底关闭。`scene.state` 事件对后台发 `background`，对前台发 `running`。
+- 转换：`scene.json` 声明 `"background": true` 的场景，返回手势、`close()`、`wisp.scene.close()`，以及在它前台时打开另一个场景，都让它转入后台（`on_hide` → 释放它持有的唤醒锁 → 撤下视图、回到原屏幕 → `scene.on_state("background")`），VM、存储、定时器和声明树都保留，界面变化只更新声明树、不发给 UI 线程；没有声明的场景照旧关闭。再次打开（列表、面板里的行、点通知）时从声明树重建视图（`SceneInstance::rebuild()`），然后 `on_show`、`scene.on_state("foreground")`。`exit()`、面板里的 ×、`wisp.scene.exit()`、管理后台的 `POST /scenes/{id}/exit` 总是彻底关闭。`scene.state` 事件对后台发 `background`，对前台发 `running`。
 - 定时器：声明了 `background` 的场景（不论在前台还是后台）灭屏时定时器和分钟节拍照常运行；其余前台场景灭屏时暂停、亮屏时每个错过的定时器补一次。
 - 后台不能用的 API（spec 3.4）：`wisp.sensor.subscribe`/`on`、`wisp.power.keep_screen_on` 返回 `nil, "not_in_background"`；已有的传感器订阅在转入后台时暂停、回到前台时恢复。
 - 内存预算与淘汰（spec 3.5）：所有 VM 从同一个 `VmPool` 分配，总预算 `scene::kVmBudgetBytes`（3 MB），单个 VM 仍以 2 MB 为上限，也是前台保证能拿到的量；超过任一个的分配按内存错误失败。场景打开、切回前台、转入后台时，以及前台有场景时每条消息之前，按"最久未在前台"的顺序挑出要关闭的后台场景：先是超过数量的，再是让后台总量超过 `预算 - 2 MB` 的。被淘汰的场景照常 `on_close` 并刷盘，日志 `<id>: evicted (...)`，并发一条系统通知。

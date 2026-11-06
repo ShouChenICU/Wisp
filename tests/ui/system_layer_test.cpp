@@ -18,6 +18,7 @@
 #include "lvgl_private.h"  // lv_buttonmatrix_t::button_areas
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/dialog.hpp"
@@ -2257,6 +2258,27 @@ TEST_F(BannerTest, QueuesAndAutoHides) {
     });
     advance(SystemLayer::kBannerMs);
     on_ui([&] { EXPECT_EQ(layer->banner(), nullptr); });
+}
+
+// Each banner logs when it shows and when it goes, so a script that only
+// reads the log (the simulator smoke test) can follow it.
+TEST_F(BannerTest, LogsWhenShownAndGone) {
+    wisp::log::reset_for_test();
+    wisp::log::init(64 * 1024);
+    start("circle");
+    use_fake_tick();
+    on_ui([&] {
+        layer->show_banner({"a", "n1", "A", "Alpha", "First", "one"}, [] {});
+        layer->show_banner({"b", "n2", "B", "Beta", "Second", "two"}, [] {});
+    });
+    advance(SystemLayer::kBannerMs);
+    advance(SystemLayer::kBannerMs);
+    std::vector<std::string> lines;
+    for (const auto& e : wisp::log::ring_entries())
+        if (e.tag == "ui" && e.msg.rfind("banner: ", 0) == 0) lines.push_back(e.msg);
+    EXPECT_EQ(lines, (std::vector<std::string>{"banner: shown a/n1", "banner: gone",
+                                               "banner: shown b/n2", "banner: gone"}));
+    wisp::log::reset_for_test();
 }
 
 TEST_F(BannerTest, WidthFollowsRowSpan) {

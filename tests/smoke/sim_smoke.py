@@ -26,11 +26,11 @@ The background-scene cases (scene-device spec 9.2) drive the simulator
 through "swipe" lines and the "debug panel-tap"/"debug screenshot"
 commands on stdin: "scene_background" sends pomodoro to the background,
 opens the pull-down panel and brings it back from there; "scene_banner"
-screenshots a notification banner and the panel on each screen shape and
-keeps those screenshots (their paths are printed, in a directory that
-WISP_SMOKE_SHOTS names or a new one under the system temp directory) for
-a person to look at; "scene_level" tilts the scripted IMU under the level
-example. Every other case gives the simulator an empty stdin.
+screenshots a notification banner and the panel on each screen shape for
+a person to look at (their paths are printed; they stay in the run's
+temporary directory, removed at exit, unless WISP_SMOKE_SHOTS names a
+directory to keep them in); "scene_level" tilts the scripted IMU under
+the level example. Every other case gives the simulator an empty stdin.
 
 Registered with ctest as the "sim_smoke" test (tests/CMakeLists.txt).
 
@@ -1141,8 +1141,11 @@ SCENE_DELETE_LOG = "counter: delete waiting for confirmation on the screen"
 # every shape: the top zone is 16 px from the column's first visible pixel).
 BACK_SWIPE = "swipe 4,240,240,240"
 PANEL_SWIPE = "swipe 240,4,240,120"
-# A banner stays up this long (ui::SystemLayer::kBannerMs), plus slack.
-BANNER_S = 4.5
+# After a log line says a piece of the system layer is up, what is drawn
+# may still be a frame behind (the UI thread renders on its next frame,
+# and the panel's rows are laid out after "panel: open"): screenshots wait
+# this long first.
+SETTLE_S = 0.3
 
 
 def debug(sim, command, answer_prefix):
@@ -1167,15 +1170,31 @@ def screenshot(sim, path):
     check_screenshot(path)
 
 
-def shots_dir():
-    """Where scene_banner leaves its screenshots: WISP_SMOKE_SHOTS, or a new
-    directory that outlives the run."""
+def shots_dir(tmp_root):
+    """Where scene_banner leaves its screenshots: WISP_SMOKE_SHOTS when set
+    (kept), otherwise a directory in the run's temporary directory, which
+    main() removes at exit."""
     named = os.environ.get("WISP_SMOKE_SHOTS")
     if named:
         path = pathlib.Path(named)
         path.mkdir(parents=True, exist_ok=True)
         return path
-    return pathlib.Path(tempfile.mkdtemp(prefix="wisp_sim_shots_"))
+    path = tmp_root / "shots"
+    path.mkdir()
+    print("SHOT screenshots are removed at exit; set WISP_SMOKE_SHOTS to keep them")
+    return path
+
+
+def banner_shown(sim, scene, start):
+    """Index of the log line saying a banner of `scene` is up."""
+    def match(line):
+        m = LOG_LINE.match(line)
+        return (m is not None and m.group(1) == "ui"
+                and m.group(2).startswith(f"banner: shown {scene}/"))
+    line = sim.wait_line(match, TIMEOUT_S, start=start)
+    expect(line is not None, f"no banner of {scene}; last output:\n{sim.tail()}")
+    with sim.cond:
+        return sim.lines.index(line, start)
 
 
 def case_scene_background(sim_path, tmp_root):
@@ -1205,7 +1224,7 @@ def case_scene_banner(sim_path, tmp_root):
     and posts a notification there, which counts as unread and shows a
     banner (screenshot); once the banner is gone the panel opens over the
     scene and the notification (screenshot). The screenshots are kept."""
-    out = shots_dir()
+    out = shots_dir(tmp_root)
     for shape in ("rect", "rounded_rect", "circle"):
         sim = scene_sim(sim_path, tmp_root / f"scene-banner-{shape}" / "data",
                         ["--shape", shape, "--scenes-dir", str(SCENE_FIXTURES),
@@ -1214,15 +1233,25 @@ def case_scene_banner(sim_path, tmp_root):
             at = wait_log(sim, "scene", "notify_demo: running")
             sim.send(BACK_SWIPE)
             at = wait_log(sim, "scene", "notify_demo: background", at)
-            at = wait_log(sim, "status", "status: background=1 unread=1", at)
-            time.sleep(0.3)
+            # The count and the banner come from separate threads, in
+            # either order.
+            wait_log(sim, "status", "status: background=1 unread=1", at)
+            at = banner_shown(sim, "notify_demo", at)
+            time.sleep(SETTLE_S)
             banner = out / f"banner-{shape}.png"
             screenshot(sim, banner)
             print(f"SHOT {banner}")
-            time.sleep(BANNER_S)
+            at = wait_log(sim, "ui", "banner: gone", at)
+            time.sleep(SETTLE_S)
+            # The same screen without the banner: the banner shot must
+            # differ from it, or the banner was never drawn.
+            after = tmp_root / f"scene-banner-{shape}" / "after.png"
+            screenshot(sim, after)
+            expect(banner.read_bytes() != after.read_bytes(),
+                   f"{banner}: the banner does not show")
             sim.send(PANEL_SWIPE)
             wait_log(sim, "status", "panel: open", at)
-            time.sleep(0.3)
+            time.sleep(SETTLE_S)
             panel = out / f"panel-{shape}.png"
             screenshot(sim, panel)
             print(f"SHOT {panel}")
