@@ -22,7 +22,15 @@ tests/scene/fixtures: "scene_counter" and "scene_hot_reload" click with
 "scene_error" swipes back from a failed scene, and "scene_push" pushes a
 scene with tools/wisp_scene.py (paired through "debug pair-code") and
 deletes it, confirming on the screen; none of them reaches the network.
-Every other case gives the simulator an empty stdin.
+The background-scene cases (scene-device spec 9.2) drive the simulator
+through "swipe" lines and the "debug panel-tap"/"debug screenshot"
+commands on stdin: "scene_background" sends pomodoro to the background,
+opens the pull-down panel and brings it back from there; "scene_banner"
+screenshots a notification banner and the panel on each screen shape and
+keeps those screenshots (their paths are printed, in a directory that
+WISP_SMOKE_SHOTS names or a new one under the system temp directory) for
+a person to look at; "scene_level" tilts the scripted IMU under the level
+example. Every other case gives the simulator an empty stdin.
 
 Registered with ctest as the "sim_smoke" test (tests/CMakeLists.txt).
 
@@ -1128,6 +1136,127 @@ SCENE_DELETE_YES_TAP = RESET_YES_TAP
 SCENE_DELETE_LOG = "counter: delete waiting for confirmation on the screen"
 
 
+# The back gesture (from the left edge at mid-height) and the pull-down
+# swipe (from the top edge at the middle column, which starts at y=0 on
+# every shape: the top zone is 16 px from the column's first visible pixel).
+BACK_SWIPE = "swipe 4,240,240,240"
+PANEL_SWIPE = "swipe 240,4,240,120"
+# A banner stays up this long (ui::SystemLayer::kBannerMs), plus slack.
+BANNER_S = 4.5
+
+
+def debug(sim, command, answer_prefix):
+    """Sends `debug <command>` and returns its answer line."""
+    mark = len(sim.lines)
+    sim.send(f"debug {command}")
+    line = sim.wait_line(lambda l: l.startswith(answer_prefix), TIMEOUT_S, start=mark)
+    expect(line is not None, f"debug {command}: no answer; last output:\n{sim.tail()}")
+    return line
+
+
+def panel_tap(sim, index):
+    line = debug(sim, f"panel-tap {index}", "panel-tap=")
+    expect(line == "panel-tap=ok", f"debug panel-tap {index}: {line!r}")
+
+
+def screenshot(sim, path):
+    """A screenshot of what is on the screen now, checked like the default
+    case's."""
+    line = debug(sim, f"screenshot {path}", "screenshot=")
+    expect(line == "screenshot=ok", f"debug screenshot {path}: {line!r}")
+    check_screenshot(path)
+
+
+def shots_dir():
+    """Where scene_banner leaves its screenshots: WISP_SMOKE_SHOTS, or a new
+    directory that outlives the run."""
+    named = os.environ.get("WISP_SMOKE_SHOTS")
+    if named:
+        path = pathlib.Path(named)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    return pathlib.Path(tempfile.mkdtemp(prefix="wisp_sim_shots_"))
+
+
+def case_scene_background(sim_path, tmp_root):
+    """pomodoro declares "background": the back gesture sends it there and
+    the capsule counts it, a swipe from the top edge opens the panel, and a
+    tap on the panel's first row brings it back and closes the panel."""
+    scenes = copy_examples(tmp_root, "scene-background")
+    sim = scene_sim(sim_path, tmp_root / "scene-background" / "data",
+                    ["--scenes-dir", str(scenes), "--open-scene", "pomodoro"])
+    try:
+        at = wait_log(sim, "scene", "pomodoro: running")
+        sim.send(BACK_SWIPE)
+        at = wait_log(sim, "scene", "pomodoro: background", at)
+        wait_log(sim, "status", "status: background=1 unread=0", at)
+        sim.send(PANEL_SWIPE)
+        at = wait_log(sim, "status", "panel: open", at)
+        panel_tap(sim, 0)
+        wait_log(sim, "scene", "pomodoro: running", at)
+        wait_log(sim, "status", "panel: closed", at)
+        stop_child(sim)
+    finally:
+        sim.kill()
+
+
+def case_scene_banner(sim_path, tmp_root):
+    """On each screen shape: the notify_demo fixture goes to the background
+    and posts a notification there, which counts as unread and shows a
+    banner (screenshot); once the banner is gone the panel opens over the
+    scene and the notification (screenshot). The screenshots are kept."""
+    out = shots_dir()
+    for shape in ("rect", "rounded_rect", "circle"):
+        sim = scene_sim(sim_path, tmp_root / f"scene-banner-{shape}" / "data",
+                        ["--shape", shape, "--scenes-dir", str(SCENE_FIXTURES),
+                         "--open-scene", "notify_demo"])
+        try:
+            at = wait_log(sim, "scene", "notify_demo: running")
+            sim.send(BACK_SWIPE)
+            at = wait_log(sim, "scene", "notify_demo: background", at)
+            at = wait_log(sim, "status", "status: background=1 unread=1", at)
+            time.sleep(0.3)
+            banner = out / f"banner-{shape}.png"
+            screenshot(sim, banner)
+            print(f"SHOT {banner}")
+            time.sleep(BANNER_S)
+            sim.send(PANEL_SWIPE)
+            wait_log(sim, "status", "panel: open", at)
+            time.sleep(0.3)
+            panel = out / f"panel-{shape}.png"
+            screenshot(sim, panel)
+            print(f"SHOT {panel}")
+            stop_child(sim)
+        finally:
+            sim.kill()
+
+
+def case_scene_level(sim_path, tmp_root):
+    """The level example under the scripted IMU: tilted 30 degrees from
+    flat at 2 s, it logs an angle of 30 (give or take one)."""
+    scenes = copy_examples(tmp_root, "scene-level")
+    script = tmp_root / "scene-level" / "imu.txt"
+    script.write_text("2000 tilt 0.5 0 0.87\n", encoding="utf-8")
+    sim = scene_sim(sim_path, tmp_root / "scene-level" / "data",
+                    ["--scenes-dir", str(scenes), "--open-scene", "level",
+                     "--imu-script", str(script)])
+    try:
+        wait_log(sim, "scene", "level: running")
+
+        def tilted(line):
+            m = LOG_LINE.match(line)
+            if m is None or m.group(1) != "scene.level":
+                return False
+            a = re.fullmatch(r"angle=(\d+)", m.group(2))
+            return a is not None and abs(int(a.group(1)) - 30) <= 1
+
+        line = sim.wait_line(tilted, TIMEOUT_S)
+        expect(line is not None, f"no 'angle=30' from the level; last output:\n{sim.tail()}")
+        stop_child(sim)
+    finally:
+        sim.kill()
+
+
 def case_scene_push(sim_path, tmp_root):
     """tools/wisp_scene.py pairs (the code from "debug pair-code" typed into
     its stdin), pushes the counter example and opens it; deleting it with
@@ -1230,6 +1359,9 @@ CASES = (
     ("scene_hot_reload", case_scene_hot_reload),
     ("scene_error", case_scene_error),
     ("scene_push", case_scene_push),
+    ("scene_background", case_scene_background),
+    ("scene_banner", case_scene_banner),
+    ("scene_level", case_scene_level),
 )
 
 

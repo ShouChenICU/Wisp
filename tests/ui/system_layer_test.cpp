@@ -2059,6 +2059,40 @@ TEST_F(SystemLayerTest, PanelRowsCallHandlers) {
     }
 }
 
+// tap_panel_row(i) taps the i-th row (the background scenes, then the
+// notifications) the way a finger does: it calls that row's handler and
+// closes the panel.
+TEST_F(SystemLayerTest, TapPanelRowTapsTheIndexedRow) {
+    start("circle");
+    std::vector<std::string> calls;
+    wisp::ui::PanelHandlers h;
+    h.on_open = [] {};
+    h.open_scene = [&](const std::string& id) { calls.push_back("open " + id); };
+    h.tap_note = [&](const std::string& s, const std::string& id) {
+        calls.push_back("tap " + s + "/" + id);
+    };
+    on_ui([&] {
+        layer->set_panel_handlers(h);
+        layer->update_panel(sample_model());
+        auto closed = layer->tap_panel_row(0);
+        ASSERT_FALSE(closed);
+        EXPECT_EQ(closed.error().message, "the panel is not open");
+
+        layer->open_panel();
+        ASSERT_TRUE(layer->tap_panel_row(1));
+        EXPECT_FALSE(layer->panel_open());
+        layer->open_panel();
+        ASSERT_TRUE(layer->tap_panel_row(3));
+        EXPECT_FALSE(layer->panel_open());
+        layer->open_panel();
+        auto past = layer->tap_panel_row(5);
+        ASSERT_FALSE(past);
+        EXPECT_EQ(past.error().message, "no such row");
+        EXPECT_TRUE(layer->panel_open());
+    });
+    EXPECT_EQ(calls, (std::vector<std::string>{"open b", "tap a/n1"}));
+}
+
 TEST_F(SystemLayerTest, PanelUpdatesWhileOpen) {
     start("circle");
     on_ui([&] {

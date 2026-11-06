@@ -32,6 +32,10 @@ void StdoutLogSink::write(const wisp::LogRecord& rec) {
     // agree on when a line was logged.
     std::printf("%llu %c %s: %s\n", static_cast<unsigned long long>(rec.ts_ms),
                 level_char(rec.level), rec.tag, rec.msg);
+    // Flushed line by line: a script reading a pipe (the smoke tests) waits
+    // for a log line before it acts, and a block-buffered pipe would hold
+    // it back for seconds.
+    std::fflush(stdout);
 }
 
 }  // namespace wisp::port::sim

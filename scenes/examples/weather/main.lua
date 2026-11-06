@@ -1,8 +1,13 @@
 -- Weather: the public Open-Meteo API (https://open-meteo.com), which needs no key.
 -- A scene may only reach the hosts scene.json declares in permissions.http.
--- Fetched on open and then every 30 minutes. The scene gets the whole screen;
--- padding it by the safe area (plus a margin) keeps this centred block visible
--- on round and rounded screens alike.
+-- Fetched on open and then every 30 minutes. scene.json declares "background",
+-- so going back leaves it refreshing in the background, with the screen off
+-- too. In deep standby Wi-Fi is off and a request waits for the system's next
+-- network window (at most every 15 minutes); its answer then comes with
+-- res.deferred = true, and the scene shows the forecast's time as the last
+-- update. The scene gets the whole screen; padding it by the safe area (plus
+-- a margin) keeps this centred block visible on round and rounded screens
+-- alike.
 local CITY = { name = "北京", lat = 39.90, lon = 116.40 }
 local URL = string.format(
   "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f"
@@ -90,7 +95,13 @@ local function fetch()
     end
     days:set(out)
     local time = str(c.time)
-    status:set(time and ("更新于 " .. time:sub(12)) or "已更新")
+    if not time then
+      status:set("已更新")
+    elseif res.deferred then
+      status:set("上次更新 " .. time:sub(12))
+    else
+      status:set("更新于 " .. time:sub(12))
+    end
   end)
 end
 

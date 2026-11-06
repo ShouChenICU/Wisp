@@ -92,8 +92,9 @@
 #include "wisp/net/time_sync.hpp"
 
 namespace wisp::ui {
+class SystemLayer;
 class UiRuntime;
-}
+}  // namespace wisp::ui
 
 namespace wisp::core {
 class ButtonService;
@@ -298,6 +299,9 @@ public:
 
     // nullptr in headless mode (no "display.main" device registered).
     ui::UiRuntime* ui();
+    // The system layer (back gesture, capsule, panel, banners) on ui():
+    // nullptr when ui() is. Its methods are called on the UI thread only.
+    ui::SystemLayer* system_layer();
 
     // The scene runtime (scene-runtime-core spec 3): nullptr in headless
     // mode, and before start() or after stop().

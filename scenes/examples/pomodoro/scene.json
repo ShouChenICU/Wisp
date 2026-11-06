@@ -1,1 +1,2 @@
-{"id": "pomodoro", "name": "番茄钟", "version": "1.0.0", "schema_version": 1}
+{"id": "pomodoro", "name": "番茄钟", "version": "1.0.0", "schema_version": 1,
+ "background": true}

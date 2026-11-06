@@ -53,6 +53,7 @@
 #include <vector>
 
 #include "lvgl.h"
+#include "wisp/base/result.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/theme.hpp"
@@ -214,6 +215,12 @@ public:
     void update_panel(PanelModel m);
     // The panel's content box (the safe area) while open, else nullptr.
     lv_obj_t* panel() const { return panel_; }
+    // Taps row `index` of the open panel as a finger would: the background
+    // scenes' rows from 0, then the notifications' (the header and the
+    // buttons are not rows). For scripts that cannot see the screen (the
+    // simulator's "debug panel-tap"). Errors: "the panel is not open", "no
+    // such row".
+    Result<void> tap_panel_row(size_t index);
 
     // Queues a banner. One shows at a time, near the top of the safe area
     // and as wide as the rows it covers allow; it goes after kBannerMs or

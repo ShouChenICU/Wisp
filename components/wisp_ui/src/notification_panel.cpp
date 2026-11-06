@@ -349,6 +349,22 @@ void SystemLayer::fill_panel() {
     lv_obj_scroll_to_y(panel_, std::min(scroll_y, max_y), LV_ANIM_OFF);
 }
 
+Result<void> SystemLayer::tap_panel_row(size_t index) {
+    if (panel_ == nullptr) return Result<void>::err(ErrorCode::NotFound, "the panel is not open");
+    size_t seen = 0;
+    const uint32_t n = lv_obj_get_child_count(panel_);
+    for (uint32_t i = 0; i < n; ++i) {
+        lv_obj_t* row = lv_obj_get_child(panel_, static_cast<int32_t>(i));
+        const Part part = part_of(row);
+        if (part != Part::SceneRow && part != Part::NoteRow) continue;
+        if (seen++ != index) continue;
+        // Sent by code, without a pointer: panel_cb takes it for a tap.
+        lv_obj_send_event(row, LV_EVENT_CLICKED, nullptr);
+        return Result<void>::ok();
+    }
+    return Result<void>::err(ErrorCode::NotFound, "no such row");
+}
+
 void SystemLayer::discard_panel() {
     if (panel_ == nullptr) return;
     if (panel_event_depth_ > 0) {
