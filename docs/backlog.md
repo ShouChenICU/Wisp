@@ -102,6 +102,15 @@ Source: `feat/agent-core` review records.
   - `compress()` appends while the loop still holds the history snapshot, which forces a full PSRAM copy; append after the snapshot scope closes;
   - a summary request that keeps timing out counts as a transport error, so the history never compresses and every request carries it whole;
   - the four new `AgentLoop` tests sit outside the test namespace.
+- Scene drafts and install:
+  - a power cut after `remove_tree(prev)` and before `rename(dir, prev)` loses the previous version (`recover()` runs with `keep_prev=false`); rename to a temporary name first, or document the window;
+  - `remove_here` returns NotFound before cleaning up `.prev/<id>` when the scene is not installed, so an orphaned `.prev` stays;
+  - `kMaxDraftBytes` repeats `SceneRepoConfig::max_code_bytes` instead of reading it, and the draft file count is not capped at `kMaxFiles` until install;
+  - a `write_file` rejected with `quota_exceeded` still creates the draft (`ensure_draft_here` runs first);
+  - `fold_tree` re-renders the whole tree after each fold (O(n·k)); time a 2000-node tree on the device;
+  - `install()` never checks `ctx.cancelled`, so a stopped turn still waits through confirm, check, install and settle;
+  - `scene_workspace.cpp` re-implements the directory walk from `scene_repository.cpp`;
+  - `wait_stable()` watches the whole-screen frame counter, so a system-layer animation during a turn may keep `stable` false on the device.
 
 ## Glyph partition parked review findings
 
