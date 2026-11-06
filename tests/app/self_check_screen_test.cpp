@@ -1119,18 +1119,18 @@ TEST(SelfCheckScreen, PerformanceCardShowsInternalRamAndPsram) {
 
     std::string ram_text = run_on_ui_thread(
         h.app.ui(), [] { return find_label_text_containing(root_column(), "largest block"); });
-    EXPECT_EQ(ram_text, "79 KB free | largest block 31 KB");
+    EXPECT_EQ(ram_text, "free 79 KB | largest block 31 KB");
 
     std::string psram_text = run_on_ui_thread(
-        h.app.ui(), [] { return find_label_text_containing(root_column(), "MB free"); });
-    EXPECT_EQ(psram_text, "3.9 / 8.0 MB free");
+        h.app.ui(), [] { return find_label_text_containing(root_column(), "MB / total"); });
+    EXPECT_EQ(psram_text, "free 3.9 MB / total 8.0 MB");
 
     h.app.stop();
 }
 
 // A platform that reports no PSRAM (heap_info missing entirely, like the
 // simulator today, or a board with "large_total" 0) shows "-" rather than
-// "0.0 / 0.0 MB free", which would misleadingly read as "completely full".
+// "free 0.0 MB / total 0.0 MB", which would misleadingly read as "completely full".
 TEST(SelfCheckScreen, PerformanceCardShowsDashWithNoHeapInfo) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
     ASSERT_TRUE(h.app.start());

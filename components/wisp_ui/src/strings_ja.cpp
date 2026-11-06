@@ -92,6 +92,8 @@ const char* strings_ja(StrId id) {
             return "空き";
         case StrId::PerfLargestBlock:
             return "最大ブロック";
+        case StrId::PerfTotal:
+            return "合計";
         case StrId::TouchTestArea:
             return "タッチテスト";
         case StrId::TestUntested:

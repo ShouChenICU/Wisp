@@ -91,6 +91,8 @@ const char* strings_zh(StrId id) {
             return "空闲";
         case StrId::PerfLargestBlock:
             return "最大块";
+        case StrId::PerfTotal:
+            return "共";
         case StrId::TouchTestArea:
             return "触摸测试区";
         case StrId::TestUntested:

@@ -181,7 +181,7 @@ void PerfSection::update_ram(int64_t free, int64_t largest, int64_t psram_free,
             // to show (self_check_screen.cpp's build_devices()).
             value = "-";
         } else {
-            value = format_kb(free) + " " + text_->tr(ui::StrId::PerfFree);
+            value = std::string(text_->tr(ui::StrId::PerfFree)) + " " + format_kb(free);
             if (largest >= 0) {
                 value += " | ";
                 value += text_->tr(ui::StrId::PerfLargestBlock);
@@ -195,8 +195,11 @@ void PerfSection::update_ram(int64_t free, int64_t largest, int64_t psram_free,
         if (psram_total <= 0) {
             value = "-";
         } else {
-            value = format_mb(psram_free) + " / " + format_mb(psram_total) + " MB " +
-                    text_->tr(ui::StrId::PerfFree);
+            // Each figure follows its own label so neither reads as the
+            // other ("free 3.9 MB / total 8.0 MB").
+            value = std::string(text_->tr(ui::StrId::PerfFree)) + " " + format_mb(psram_free) +
+                    " MB / " + text_->tr(ui::StrId::PerfTotal) + " " + format_mb(psram_total) +
+                    " MB";
         }
         set_text_if_changed(psram_, value.c_str());
     }
