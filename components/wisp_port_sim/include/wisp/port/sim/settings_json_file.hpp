@@ -6,14 +6,23 @@
 // task adds an NVS-backed wisp::core::SettingsBackend for ESP-IDF with the
 // same validate_settings_name() behavior (see wisp/core/settings.hpp).
 //
+// The file is read once, by the constructor; the store then lives in
+// memory. set()/erase()/erase_all() rewrite the file each time;
+// write_batch(), which core::CachedSettingsBackend uses, rewrites it once
+// per batch.
+//
 // os::Mutex only guards concurrent access from *within this process*: a
 // JsonFileSettingsBackend instance is safe to share across threads, but
 // there is no file locking, so two backend instances (in this process or
 // another) pointed at the same file_path will race and can corrupt each
 // other's writes. Construct exactly one backend per settings file.
 
+#include <atomic>
+#include <cstddef>
 #include <map>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "wisp/base/value.hpp"
 #include "wisp/core/settings.hpp"
@@ -36,6 +45,15 @@ public:
     // Rewrites the file as an empty store; on an IoError nothing changes,
     // in memory or on disk.
     Result<void> erase_all() override;
+    // The in-memory store (the file as the constructor read it, plus every
+    // change since).
+    Result<std::vector<core::SettingsEntry>> load_all() override;
+    // Applies the whole batch, then rewrites the file once; on an IoError
+    // nothing changes, in memory or on disk.
+    Result<void> write_batch(std::span<const core::SettingsChange> changes) override;
+
+    // How many times the file has been rewritten.
+    size_t file_writes() const { return file_writes_.load(); }
 
 private:
     // Rewrites the whole store to file_path_: serializes to JSON, writes
@@ -51,6 +69,7 @@ private:
     std::string file_path_;
     os::Mutex mutex_;
     std::map<std::string, std::map<std::string, Value>> store_;
+    std::atomic<size_t> file_writes_{0};
 };
 
 }  // namespace wisp::port::sim

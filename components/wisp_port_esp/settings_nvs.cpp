@@ -3,6 +3,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "esp_err.h"
 #include "nvs.h"
@@ -215,6 +216,120 @@ Result<void> NvsSettingsBackend::erase_all() {
         }
     }
     WLOG_I(kTag, "erased %u namespaces", static_cast<unsigned>(namespaces.size()));
+    return Result<void>::ok();
+}
+
+Result<std::vector<core::SettingsEntry>> NvsSettingsBackend::load_all() {
+    using R = Result<std::vector<core::SettingsEntry>>;
+    if (!ready_) {
+        return R::err(ErrorCode::IoError, "nvs not initialized");
+    }
+
+    // Collect the names first: reading values through a handle while the
+    // iterator is open is not something NVS promises to support.
+    std::vector<std::pair<std::string, std::string>> names;
+    nvs_iterator_t it = nullptr;
+    esp_err_t err = nvs_entry_find(NVS_DEFAULT_PART_NAME, nullptr, NVS_TYPE_STR, &it);
+    while (err == ESP_OK) {
+        nvs_entry_info_t info = {};
+        err = nvs_entry_info(it, &info);
+        if (err != ESP_OK) {
+            break;
+        }
+        names.emplace_back(info.namespace_name, info.key);
+        err = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+    if (err != ESP_ERR_NVS_NOT_FOUND) {
+        return R::err(ErrorCode::IoError,
+                      std::string("listing nvs entries: ") + esp_err_to_name(err));
+    }
+
+    std::vector<core::SettingsEntry> out;
+    out.reserve(names.size());
+    for (auto& [ns, key] : names) {
+        Result<Value> value = get(ns, key);
+        if (!value) {
+            // Not a Wisp value (ESP-IDF keeps strings of its own here too).
+            WLOG_D(kTag, "skipping nvs entry %s/%s: %s", ns.c_str(), key.c_str(),
+                   value.error().message.c_str());
+            continue;
+        }
+        out.push_back({std::move(ns), std::move(key), std::move(value.value())});
+    }
+    WLOG_I(kTag, "loaded %u settings", static_cast<unsigned>(out.size()));
+    return R::ok(std::move(out));
+}
+
+Result<void> NvsSettingsBackend::write_batch(std::span<const core::SettingsChange> changes) {
+    // Everything that can be checked without NVS, before any write.
+    std::vector<std::string> values(changes.size());
+    for (size_t i = 0; i < changes.size(); ++i) {
+        const core::SettingsChange& c = changes[i];
+        WISP_TRY(core::validate_settings_name(c.ns));
+        WISP_TRY(core::validate_settings_name(c.key));
+        if (!c.value) {
+            continue;
+        }
+        values[i] = to_json_raw(*c.value);
+        if (values[i].size() + 1 > kNvsStringMaxLen) {
+            return Result<void>::err(
+                ErrorCode::InvalidArgument,
+                "settings value too large for NVS (>4000 bytes): " + c.ns + "/" + c.key);
+        }
+    }
+    if (!ready_) {
+        return Result<void>::err(ErrorCode::IoError, "nvs not initialized");
+    }
+
+    // One handle per namespace, in the order the batch first names it.
+    std::vector<std::pair<std::string, nvs_handle_t>> handles;
+    auto close_all = [&handles] {
+        for (auto& [ns, handle] : handles) {
+            nvs_close(handle);
+        }
+    };
+    auto fail = [&close_all](const char* what, esp_err_t err) {
+        close_all();
+        return Result<void>::err(ErrorCode::IoError, std::string(what) + esp_err_to_name(err));
+    };
+    for (size_t i = 0; i < changes.size(); ++i) {
+        const core::SettingsChange& c = changes[i];
+        nvs_handle_t handle = 0;
+        bool found = false;
+        for (const auto& [ns, h] : handles) {
+            if (ns == c.ns) {
+                handle = h;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            esp_err_t err = nvs_open(c.ns.c_str(), NVS_READWRITE, &handle);
+            if (err != ESP_OK) {
+                return fail("nvs_open: ", err);
+            }
+            handles.emplace_back(c.ns, handle);
+        }
+        if (c.value) {
+            esp_err_t err = nvs_set_str(handle, c.key.c_str(), values[i].c_str());
+            if (err != ESP_OK) {
+                return fail("nvs_set_str: ", err);
+            }
+        } else {
+            esp_err_t err = nvs_erase_key(handle, c.key.c_str());
+            if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+                return fail("nvs_erase_key: ", err);
+            }
+        }
+    }
+    for (const auto& [ns, handle] : handles) {
+        esp_err_t err = nvs_commit(handle);
+        if (err != ESP_OK) {
+            return fail("nvs_commit: ", err);
+        }
+    }
+    close_all();
     return Result<void>::ok();
 }
 

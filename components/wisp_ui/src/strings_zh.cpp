@@ -261,6 +261,8 @@ const char* strings_zh(StrId id) {
             return "对话太长，已存档并开始新对话";
         case StrId::NoticeAgentDone:
             return "完成：{}";
+        case StrId::NoticeSettingsNotSaved:
+            return "设置未能保存";
         case StrId::Count:
             break;
     }

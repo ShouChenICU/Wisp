@@ -21,6 +21,9 @@ constexpr const char* kTopic = "system.factory_reset";
 // revocation closes its socket. Bounded: a stalled socket must not keep
 // the device from resetting.
 constexpr uint32_t kFlushMs = 500;
+// How long the settings erase may take on the storage worker (an NVS erase
+// of every namespace; spec 3.7 gives the whole reset 30 s).
+constexpr uint32_t kSettingsEraseMs = 30000;
 // The reset writes flash (LittleFS / NVS) through several layers.
 constexpr size_t kResetStackBytes = 6144;
 
@@ -62,6 +65,9 @@ void factory_reset(App& app) {
 
     if (auto r = app.impl_->platform.settings->erase_all(); !r) {
         WLOG_E(kTag, "erasing settings failed: %s", r.error().message.c_str());
+    } else if (auto f = app.impl_->settings_front.flush(kSettingsEraseMs); !f) {
+        // The settings cache erases the platform on the worker.
+        WLOG_E(kTag, "erasing settings failed: %s", f.error().message.c_str());
     }
     if (net::WifiService* wifi = app.wifi()) wifi->forget_all();
     if (net::PairingService* pairing = app.pairing()) pairing->revoke_all();

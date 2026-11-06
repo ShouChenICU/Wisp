@@ -265,6 +265,8 @@ const char* strings_ja(StrId id) {
             return "会話が長くなったため、保存して新しい会話を始めました";
         case StrId::NoticeAgentDone:
             return "完了：{}";
+        case StrId::NoticeSettingsNotSaved:
+            return "設定を保存できませんでした";
         case StrId::Count:
             break;
     }

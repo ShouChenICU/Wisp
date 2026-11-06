@@ -40,6 +40,12 @@ TEST_F(SystemNotice, EveryCodeInEveryLanguage) {
     wisp::ui::set_lang(Lang::En);
     EXPECT_EQ(wisp::ui::system_notice_text(notice::kBatteryLow, "15").body, "Battery low: 15%");
     EXPECT_EQ(wisp::ui::system_notice_text(notice::kAgentDone, "All set").body, "Done: All set");
+    // No argument.
+    EXPECT_EQ(wisp::ui::system_notice_text(notice::kSettingsNotSaved, "").body,
+              "Settings could not be saved");
+    wisp::ui::set_lang(Lang::Zh);
+    EXPECT_EQ(wisp::ui::system_notice_text(notice::kSettingsNotSaved, "").body, "设置未能保存");
+    wisp::ui::set_lang(Lang::En);
 
     // An unknown code is shown as it is.
     const wisp::ui::NoticeText unknown = wisp::ui::system_notice_text("future_code", "x");

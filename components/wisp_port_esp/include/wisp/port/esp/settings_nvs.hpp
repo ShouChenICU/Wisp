@@ -23,7 +23,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "wisp/base/value.hpp"
 #include "wisp/core/settings.hpp"
@@ -55,6 +57,15 @@ public:
     // behind. Not atomic across namespaces -- a failure partway leaves the
     // namespaces already erased empty; the caller reboots either way.
     Result<void> erase_all() override;
+    // Every string entry of every namespace in the default NVS partition,
+    // decoded as above. Entries that are not Wisp's (another type, or a
+    // string that is not JSON, such as ESP-IDF's own) are skipped.
+    Result<std::vector<core::SettingsEntry>> load_all() override;
+    // Opens each namespace the batch touches once, applies its changes and
+    // commits each handle at the end. Names and value sizes are checked
+    // before NVS is touched. NVS has no transaction across namespaces: a
+    // failure partway may leave earlier entries written.
+    Result<void> write_batch(std::span<const core::SettingsChange> changes) override;
 
 private:
     explicit NvsSettingsBackend(bool ready) : ready_(ready) {}

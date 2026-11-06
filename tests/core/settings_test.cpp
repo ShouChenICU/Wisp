@@ -4,6 +4,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <map>
+#include <optional>
+#include <string>
+
 #include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
@@ -121,4 +125,53 @@ TEST(Settings, EraseAllWriteFailureKeepsValues) {
     chmod(dir.string().c_str(), 0700);
     ASSERT_EQ(result.error().code, wisp::ErrorCode::IoError);
     EXPECT_EQ(be.get("display", "brightness").value().as_int(), 128);
+}
+
+TEST(SettingsJsonFile, WriteBatchRewritesTheFileOnce) {
+    auto path = temp_dir() / "s6.json";
+    {
+        wisp::port::sim::JsonFileSettingsBackend be(path.string());
+        ASSERT_TRUE(be.set("audio", "volume", 30));
+        const size_t before = be.file_writes();
+        const wisp::core::SettingsChange changes[] = {
+            {"display", "brightness", wisp::Value(128)},
+            {"sys", "lang", wisp::Value("en")},
+            {"audio", "volume", std::nullopt},
+        };
+        ASSERT_TRUE(be.write_batch(changes));
+        EXPECT_EQ(be.file_writes(), before + 1);
+        // A key that fails validation fails the batch before anything changes.
+        const wisp::core::SettingsChange bad[] = {
+            {"display", "brightness", wisp::Value(1)},
+            {"display", "a_key_longer_than_15", wisp::Value(1)},
+        };
+        EXPECT_EQ(be.write_batch(bad).error().code, wisp::ErrorCode::InvalidArgument);
+        EXPECT_EQ(be.file_writes(), before + 1);
+    }
+    wisp::port::sim::JsonFileSettingsBackend be(path.string());
+    auto all = be.load_all();
+    ASSERT_TRUE(all);
+    std::map<std::string, wisp::Value> got;
+    for (const auto& e : all.value()) got[e.ns + "/" + e.key] = e.value;
+    EXPECT_EQ(got, (std::map<std::string, wisp::Value>{{"display/brightness", wisp::Value(128)},
+                                                       {"sys/lang", wisp::Value("en")}}));
+}
+
+TEST(SettingsJsonFile, WriteBatchFailureKeepsValues) {
+    if (geteuid() == 0) {
+        GTEST_SKIP() << "running as root: a read-only directory wouldn't block the write";
+    }
+    auto dir = temp_dir();
+    wisp::port::sim::JsonFileSettingsBackend be((dir / "settings.json").string());
+    ASSERT_TRUE(be.set("display", "brightness", 128));
+    ASSERT_EQ(chmod(dir.string().c_str(), 0500), 0);
+    const wisp::core::SettingsChange changes[] = {
+        {"display", "brightness", std::nullopt},
+        {"sys", "lang", wisp::Value("en")},
+    };
+    wisp::Result<void> result = be.write_batch(changes);
+    chmod(dir.string().c_str(), 0700);
+    ASSERT_EQ(result.error().code, wisp::ErrorCode::IoError);
+    EXPECT_EQ(be.get("display", "brightness").value().as_int(), 128);
+    EXPECT_EQ(be.get("sys", "lang").error().code, wisp::ErrorCode::NotFound);
 }

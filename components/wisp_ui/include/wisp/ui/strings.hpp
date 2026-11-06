@@ -211,6 +211,8 @@ enum class StrId : uint16_t {
     // The agent_done notice (agent-core spec 3.7): "{}" is the first line
     // of the reply.
     NoticeAgentDone,
+    // The settings_not_saved notice: changed settings could not be saved.
+    NoticeSettingsNotSaved,
 
     Count,  // not a string; keep last
 };

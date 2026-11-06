@@ -148,6 +148,37 @@ Result<void> JsonFileSettingsBackend::erase_all() {
     return result;
 }
 
+Result<std::vector<core::SettingsEntry>> JsonFileSettingsBackend::load_all() {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    std::vector<core::SettingsEntry> out;
+    for (const auto& [ns, keys] : store_) {
+        for (const auto& [key, value] : keys) out.push_back({ns, key, value});
+    }
+    return Result<std::vector<core::SettingsEntry>>::ok(std::move(out));
+}
+
+Result<void> JsonFileSettingsBackend::write_batch(std::span<const core::SettingsChange> changes) {
+    for (const core::SettingsChange& c : changes) {
+        WISP_TRY(core::validate_settings_name(c.ns));
+        WISP_TRY(core::validate_settings_name(c.key));
+    }
+    std::lock_guard<os::Mutex> lock(mutex_);
+    auto previous = store_;
+    for (const core::SettingsChange& c : changes) {
+        if (c.value) {
+            store_[c.ns][c.key] = *c.value;
+            continue;
+        }
+        auto ns_it = store_.find(c.ns);
+        if (ns_it == store_.end()) continue;
+        ns_it->second.erase(c.key);
+        if (ns_it->second.empty()) store_.erase(ns_it);
+    }
+    Result<void> result = write_through();
+    if (!result) store_ = std::move(previous);
+    return result;
+}
+
 Result<void> JsonFileSettingsBackend::write_through() {
     Map root;
     for (const auto& [ns, keys] : store_) {
@@ -176,6 +207,7 @@ Result<void> JsonFileSettingsBackend::write_through() {
         return Result<void>::err(ErrorCode::IoError,
                                  "failed to rename " + tmp_path + " to " + file_path_);
     }
+    ++file_writes_;
     return Result<void>::ok();
 }
 

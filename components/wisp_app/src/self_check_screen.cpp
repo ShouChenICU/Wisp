@@ -666,7 +666,7 @@ void refresh_self_check_header(ui::UiRuntime& ui, std::unique_ptr<SelfCheck>& se
 }
 
 App::Impl::Impl(Platform p)
-    : platform(std::move(p)), storage(registry, bus), buttons(registry, bus) {}
+    : platform(with_settings_front(std::move(p))), storage(registry, bus), buttons(registry, bus) {}
 App::Impl::~Impl() = default;
 
 }  // namespace wisp::app

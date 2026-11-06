@@ -262,6 +262,8 @@ const char* strings_en(StrId id) {
             return "The conversation got long, so it was archived and a new one started";
         case StrId::NoticeAgentDone:
             return "Done: {}";
+        case StrId::NoticeSettingsNotSaved:
+            return "Settings could not be saved";
         case StrId::Count:
             break;
     }

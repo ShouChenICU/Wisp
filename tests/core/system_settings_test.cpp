@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -273,6 +274,12 @@ public:
         return inner_.erase(ns, key);
     }
     wisp::Result<void> erase_all() override { return inner_.erase_all(); }
+    wisp::Result<std::vector<wisp::core::SettingsEntry>> load_all() override {
+        return inner_.load_all();
+    }
+    wisp::Result<void> write_batch(std::span<const wisp::core::SettingsChange> changes) override {
+        return inner_.write_batch(changes);
+    }
 
 private:
     wisp::core::SettingsBackend& inner_;

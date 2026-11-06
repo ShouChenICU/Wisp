@@ -3,16 +3,23 @@
 // Portable settings facade: a small key/value store, namespaced, backed by
 // a pluggable wisp::core::SettingsBackend. The simulator's backend
 // (wisp::port::sim::JsonFileSettingsBackend, see
-// wisp/port/sim/settings_json_file.hpp) persists to a JSON file; a later
-// task adds an NVS backend for the ESP port with the same interface. Both
+// wisp/port/sim/settings_json_file.hpp) persists to a JSON file, the ESP
+// port's (wisp::port::esp::NvsSettingsBackend) to NVS. At runtime App
+// wraps either in core::CachedSettingsBackend (wisp/core/
+// cached_settings.hpp), which serves reads from memory and writes on the
+// flash thread (spec 3.4 of
+// docs/superpowers/specs/2026-11-06-flash-thread-design.md). Both
 // backends enforce the same 15-character namespace/key limit (the NVS
 // hardware limit) via validate_settings_name(), so a name that is rejected
 // on one port is rejected identically on the other -- see AGENTS.md's
 // "配置键" rule.
 
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
@@ -25,6 +32,21 @@ namespace wisp::core {
 // the top of get()/set()/erase() so the rule behaves identically on every
 // port.
 Result<void> validate_settings_name(std::string_view name);
+
+// One stored key, as SettingsBackend::load_all() returns it.
+struct SettingsEntry {
+    std::string ns;
+    std::string key;
+    Value value;
+};
+
+// One change for SettingsBackend::write_batch(): store `value`, or erase
+// the key when it is nullopt.
+struct SettingsChange {
+    std::string ns;
+    std::string key;
+    std::optional<Value> value;
+};
 
 // Pluggable storage for Settings. A single backend instance may hold
 // multiple namespaces; ns and key are each validated by
@@ -49,6 +71,18 @@ public:
     // stored values are left as they were wherever the backend can
     // guarantee it; see each implementation.
     virtual Result<void> erase_all() = 0;
+
+    // Every key of every namespace. A platform backend reads its storage
+    // (flash); core::CachedSettingsBackend calls this once, at boot or on
+    // the flash thread, and serves get() from memory after that.
+    virtual Result<std::vector<SettingsEntry>> load_all() = 0;
+
+    // Applies `changes` in order, committed together where the backend
+    // can (one file rewrite, one NVS commit per namespace). Every name is
+    // validated first: an invalid one fails the whole batch with
+    // InvalidArgument before anything is written. A platform backend
+    // touches flash here, so it is called on the flash thread.
+    virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
 };
 
 // Convenience wrapper that binds a SettingsBackend to one fixed namespace.

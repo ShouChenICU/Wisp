@@ -44,6 +44,8 @@ constexpr uint32_t kPowerTickMs = 1000;
 // At most 50 short notices to read at boot, or to write at shutdown.
 constexpr uint32_t kNotifyLoadMs = 2000;
 constexpr uint32_t kNotifyFlushMs = 1000;
+// How long stop() waits for changed settings to be written (spec 3.8).
+constexpr uint32_t kSettingsFlushMs = 2000;
 
 // The screen shape the system layer and the self-check screen lay out in
 // (spec 5.6). Invalid shape caps fall back to a circle, the most
@@ -189,6 +191,27 @@ Result<void> App::start() {
             }
             notes->dismiss_source(id->second.as_string(), core::DismissReason::Dismiss);
         });
+    }
+    // Settings from memory from here on, saved on the worker. Loaded
+    // before anything below reads a setting; with the worker running the
+    // load happens on it, else right here (StorageWorker::run_sync()).
+    if (scenes != nullptr) {
+        App::Impl* impl = impl_.get();
+        impl->settings_cache = os::make_large<core::CachedSettingsBackend>(
+            impl->settings_front.platform(), scenes->worker(), [impl] {
+                // Built above, reset only after the cache is gone.
+                if (impl->notifications) {
+                    impl->notifications->post_system(core::notice::kSettingsNotSaved, "");
+                }
+            });
+        if (!impl->settings_cache) {
+            WLOG_E("app", "no memory for the settings cache; settings are written directly");
+        } else {
+            if (auto r = impl->settings_cache->load(); !r) {
+                WLOG_W("app", "settings not loaded: %s", r.error().message.c_str());
+            }
+            impl->settings_front.attach(impl->settings_cache.get());
+        }
     }
     if (auto r = impl_->models.init(); !r) {
         WLOG_W("app", "model profiles unavailable: %s", r.error().message.c_str());
@@ -614,11 +637,25 @@ void App::stop() {
             WLOG_W("app", "notifications not saved before shutdown");
         }
     }
+    // Settings changed so far go to the worker while it still runs.
+    if (auto r = impl_->settings_front.flush(kSettingsFlushMs); !r) {
+        WLOG_W("app", "settings not saved before shutdown: %s", r.error().message.c_str());
+    }
     // Nothing calls into the scenes any more: the proxy, then the worker
     // (drained, so the last scene's flush is on disk), before the
     // storage-refresh timer below.
     if (impl_->scenes) {
         impl_->scenes->stop();
+        // The cache points at the worker: from here on Settings go to the
+        // platform backend, once whatever was changed meanwhile is written
+        // (inline now that the worker has stopped).
+        if (impl_->settings_cache) {
+            impl_->settings_front.attach(nullptr);
+            if (auto r = impl_->settings_cache->flush(os::kForever); !r) {
+                WLOG_W("app", "settings not saved: %s", r.error().message.c_str());
+            }
+            impl_->settings_cache.reset();
+        }
         impl_->scenes.reset();
     }
 

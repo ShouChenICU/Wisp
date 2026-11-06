@@ -24,11 +24,13 @@
 #include "notification_router.hpp"
 #include "scene_wiring.hpp"
 #include "self_check.hpp"
+#include "settings_front.hpp"
 #include "status_shell.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/app/system_notices.hpp"
 #include "wisp/core/button_service.hpp"
+#include "wisp/core/cached_settings.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
@@ -44,8 +46,16 @@
 
 namespace wisp::app {
 
+// `p` with its settings backend behind a SettingsFront, which then owns it.
+inline Platform with_settings_front(Platform p) {
+    p.settings = std::make_unique<SettingsFront>(std::move(p.settings));
+    return p;
+}
+
 struct App::Impl {
+    // Its settings is the SettingsFront below (Impl's constructor).
     Platform platform;
+    SettingsFront& settings_front = static_cast<SettingsFront&>(*platform.settings);
     core::DeviceRegistry registry;
     core::BootReport report;
     core::EventBus bus;
@@ -149,6 +159,12 @@ struct App::Impl {
     // see scene_wiring.hpp.
     // In Mem::Large (scene_wiring.hpp); null without the memory for it.
     os::LargeUnique<SceneWiring> scenes;
+    // Settings served from memory and saved on the scenes' storage worker
+    // (wisp/core/cached_settings.hpp), attached to settings_front from
+    // right after that worker starts until App::stop() has stopped it.
+    // Null without the worker: settings_front then uses the platform
+    // backend directly.
+    os::LargeUnique<core::CachedSettingsBackend> settings_cache;
 
     // The self-check screen's own teardown hook -- see
     // self_check.hpp. Constructed (via start_self_check(), posted onto

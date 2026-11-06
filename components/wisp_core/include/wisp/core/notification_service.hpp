@@ -71,6 +71,9 @@ inline constexpr const char* kBatteryLow = "battery_low";
 inline constexpr const char* kAgentDone = "agent_done";
 // action_arg is the wake lock id; arg is its holder, which must still hold it.
 inline constexpr const char* kActionReleaseLock = "release_lock";
+// Changed settings failed to save three times in a row (spec 3.4 of
+// docs/superpowers/specs/2026-11-06-flash-thread-design.md); no argument.
+inline constexpr const char* kSettingsNotSaved = "settings_not_saved";
 }  // namespace notice
 
 inline constexpr const char* kSystemSource = "system";
