@@ -89,6 +89,7 @@ enum class StrId : uint16_t {
     PerfFree,
     PerfLargestBlock,
     PerfTotal,
+    PerfUsed,
     TouchTestArea,
     TestUntested,
     TestPassed,

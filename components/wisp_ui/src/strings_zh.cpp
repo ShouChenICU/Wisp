@@ -93,6 +93,8 @@ const char* strings_zh(StrId id) {
             return "最大块";
         case StrId::PerfTotal:
             return "共";
+        case StrId::PerfUsed:
+            return "已用";
         case StrId::TouchTestArea:
             return "触摸测试区";
         case StrId::TestUntested:

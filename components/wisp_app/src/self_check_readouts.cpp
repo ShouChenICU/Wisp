@@ -55,6 +55,14 @@ std::string format_mb(int64_t bytes) {
     return buf;
 }
 
+// "used 69% | " ahead of a row's figures, or nothing when the platform
+// does not report the heap's size.
+std::string used_prefix(const PageText& text, int64_t free, int64_t total) {
+    if (total <= 0 || free < 0 || free > total) return {};
+    int64_t pct = ((total - free) * 100 + total / 2) / total;
+    return std::string(text.tr(ui::StrId::PerfUsed)) + " " + std::to_string(pct) + "% | ";
+}
+
 }  // namespace
 
 void PowerClockSection::build(lv_obj_t* col, PageText& text, bool has_power, bool has_clock) {
@@ -171,7 +179,7 @@ void PerfSection::update(const ui::UiPerf& perf) {
     set_text_if_changed(label_, buf);
 }
 
-void PerfSection::update_ram(int64_t free, int64_t largest, int64_t psram_free,
+void PerfSection::update_ram(int64_t free, int64_t largest, int64_t total, int64_t psram_free,
                              int64_t psram_total) {
     if (ram_ != nullptr) {
         std::string value;
@@ -181,7 +189,8 @@ void PerfSection::update_ram(int64_t free, int64_t largest, int64_t psram_free,
             // to show (self_check_screen.cpp's build_devices()).
             value = "-";
         } else {
-            value = std::string(text_->tr(ui::StrId::PerfFree)) + " " + format_kb(free);
+            value = used_prefix(*text_, free, total) + text_->tr(ui::StrId::PerfFree) + " " +
+                    format_kb(free);
             if (largest >= 0) {
                 value += " | ";
                 value += text_->tr(ui::StrId::PerfLargestBlock);
@@ -197,9 +206,9 @@ void PerfSection::update_ram(int64_t free, int64_t largest, int64_t psram_free,
         } else {
             // Each figure follows its own label so neither reads as the
             // other ("free 3.9 MB / total 8.0 MB").
-            value = std::string(text_->tr(ui::StrId::PerfFree)) + " " + format_mb(psram_free) +
-                    " MB / " + text_->tr(ui::StrId::PerfTotal) + " " + format_mb(psram_total) +
-                    " MB";
+            value = used_prefix(*text_, psram_free, psram_total) + text_->tr(ui::StrId::PerfFree) +
+                    " " + format_mb(psram_free) + " MB / " + text_->tr(ui::StrId::PerfTotal) + " " +
+                    format_mb(psram_total) + " MB";
         }
         set_text_if_changed(psram_, value.c_str());
     }

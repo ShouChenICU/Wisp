@@ -157,7 +157,8 @@ struct Platform {
 
     // Returns heap diagnostics in bytes: "internal_free" and
     // "internal_largest" (byte-addressable internal RAM and its largest
-    // free block, checked against wisp/app/ram_budget.hpp), and
+    // free block, checked against wisp/app/ram_budget.hpp),
+    // "internal_total" (that RAM's heap size), and
     // "large_free"/"large_total" (PSRAM: free and total size; a platform
     // with no PSRAM reports "large_total" 0 or leaves it out), for the
     // self-check UI, WISP_PERF and the admin API. A key may be missing;

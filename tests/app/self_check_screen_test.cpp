@@ -1104,6 +1104,7 @@ TEST(SelfCheckScreen, PerformanceCardShowsInternalRamAndPsram) {
         return wisp::Value(wisp::Map{
             {"internal_free", int64_t{79 * 1024}},
             {"internal_largest", int64_t{31 * 1024}},
+            {"internal_total", int64_t{256 * 1024}},
             {"large_free", int64_t{4089446}},           // ~3.9 MiB
             {"large_total", int64_t{8 * 1024 * 1024}},  // 8.0 MiB
         });
@@ -1119,11 +1120,11 @@ TEST(SelfCheckScreen, PerformanceCardShowsInternalRamAndPsram) {
 
     std::string ram_text = run_on_ui_thread(
         h.app.ui(), [] { return find_label_text_containing(root_column(), "largest block"); });
-    EXPECT_EQ(ram_text, "free 79 KB | largest block 31 KB");
+    EXPECT_EQ(ram_text, "used 69% | free 79 KB | largest block 31 KB");
 
     std::string psram_text = run_on_ui_thread(
         h.app.ui(), [] { return find_label_text_containing(root_column(), "MB / total"); });
-    EXPECT_EQ(psram_text, "free 3.9 MB / total 8.0 MB");
+    EXPECT_EQ(psram_text, "used 51% | free 3.9 MB / total 8.0 MB");
 
     h.app.stop();
 }

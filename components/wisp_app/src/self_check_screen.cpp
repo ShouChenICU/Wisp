@@ -559,9 +559,13 @@ void SelfCheck::refresh_ui() {
 void SelfCheck::refresh_perf_ram() {
     // Same Platform::heap_info() map emit_perf_line() reads for WISP_PERF
     // (internal_free/internal_largest/large_free), plus large_total (the
-    // PSRAM's size, so the row can show "used / total").
+    // PSRAM's size) and internal_total, for the used percentages.
     Value heap = app_.platform().heap_info ? app_.platform().heap_info() : Value();
     InternalRam ram = internal_ram(heap);
+    int64_t internal_total = 0;
+    if (const Value* v = heap.find("internal_total")) {
+        internal_total = v->as_int();
+    }
     int64_t psram_free = 0;
     int64_t psram_total = 0;
     if (const Value* v = heap.find("large_free")) {
@@ -570,7 +574,7 @@ void SelfCheck::refresh_perf_ram() {
     if (const Value* v = heap.find("large_total")) {
         psram_total = v->as_int();
     }
-    perf_.update_ram(ram.free, ram.largest, psram_free, psram_total);
+    perf_.update_ram(ram.free, ram.largest, internal_total, psram_free, psram_total);
 }
 
 void SelfCheck::refresh_time_sync() {

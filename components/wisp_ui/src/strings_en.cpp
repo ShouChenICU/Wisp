@@ -92,6 +92,8 @@ const char* strings_en(StrId id) {
             return "largest block";
         case StrId::PerfTotal:
             return "total";
+        case StrId::PerfUsed:
+            return "used";
         case StrId::TouchTestArea:
             return "Touch test area";
         case StrId::TestUntested:
