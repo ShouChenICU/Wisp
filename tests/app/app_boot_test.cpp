@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -27,6 +28,7 @@
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
@@ -525,4 +527,23 @@ TEST(App, RestartFlushesSettingsFirst) {
     ASSERT_TRUE(wisp::core::Settings(*h.app.platform().settings, "test").set("k", 7));
     wisp::app::restart_for_firmware(h.app);
     EXPECT_EQ(on_disk.load(), 7);
+}
+
+TEST(AppNotifications, FailedServiceSavesPostTheSettingsNotice) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::NotificationService* notes = h.app.notifications();
+    ASSERT_NE(notes, nullptr);
+    // A non-empty directory where models.json goes makes every write fail.
+    const std::string system = h.app.storage().write_root(wisp::core::Area::System).value();
+    std::filesystem::create_directories(system + "/secrets/models.json/blocker");
+
+    for (const char* name : {"a", "b", "c"}) {
+        ASSERT_TRUE(h.app.models().create(
+            {.kind = wisp::core::ModelKind::Llm, .name = name, .preset = "openai", .model = "m"}));
+        // One write each, not one for all three.
+        ASSERT_TRUE(h.app.storage_worker()->drain(2000));
+    }
+    ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 2000));
+    EXPECT_EQ(notes->unread()[0].code, wisp::core::notice::kSettingsNotSaved);
 }

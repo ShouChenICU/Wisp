@@ -387,6 +387,7 @@ export default {
   'sys.reset_done_body': 'The device is restarting. It has forgotten its Wi-Fi networks, so set it up again from its setup hotspot; this browser\'s pairing has been removed.',
   'sys.reset_repair': 'Go to pairing',
   'sys.reset_cancelled': 'The reset was cancelled on the device. Nothing was erased.',
+  'sys.reset_not_started': 'The device could not start erasing. Nothing was erased and it did not restart; try again in a moment.',
   'sys.reset_unavailable': 'This device can\'t do a factory reset from the web page yet.',
   'sys.reset_failed': 'Couldn\'t start the reset: {reason}',
   'fw.load_failed': 'Could not read the firmware info: {reason}',

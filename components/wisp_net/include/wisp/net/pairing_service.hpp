@@ -162,6 +162,12 @@ public:
     // if writing clients.json fails (the error is still returned).
     Result<void> revoke(std::string_view id);
 
+    // Called once after LatestSave::kFailuresToReport failed writes in a
+    // row (see core::LatestSave). Set it before the first change.
+    void set_on_persist_failed(std::function<void()> fn) {
+        saver_.set_on_persist_failed(std::move(fn));
+    }
+
     // Factory reset: forgets every client and writes an empty list. If
     // that write fails, clients.json is deleted instead so no old hash
     // survives a reboot.

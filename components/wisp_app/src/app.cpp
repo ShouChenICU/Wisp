@@ -52,8 +52,7 @@ constexpr uint32_t kSettingsFlushMs = 2000;
 // then whatever the storage worker still has queued.
 constexpr uint32_t kShutdownSettingsFlushMs = 2000;
 constexpr uint32_t kShutdownDrainMs = 5000;
-// How long run_io() keeps retrying a full storage queue, and how often.
-constexpr uint32_t kIoBusyRetryMs = 2000;
+// How often run_io() retries a full storage queue.
 constexpr uint32_t kIoBusyPollMs = 10;
 
 // The screen shape the system layer and the self-check screen lay out in
@@ -204,12 +203,8 @@ Result<void> App::start() {
     if (scenes != nullptr) {
         App::Impl* impl = impl_.get();
         impl->settings_cache = os::make_large<core::CachedSettingsBackend>(
-            impl->settings_front.platform(), scenes->worker(), [impl] {
-                // Built above, reset only after the cache is gone.
-                if (impl->notifications) {
-                    impl->notifications->post_system(core::notice::kSettingsNotSaved, "");
-                }
-            });
+            impl->settings_front.platform(), scenes->worker(),
+            [impl] { impl->report_persist_failed(); });
         if (!impl->settings_cache) {
             WLOG_E("app", "no memory for the settings cache; settings are written directly");
         } else if (auto r = impl->settings_front.load_and_attach(*impl->settings_cache); !r) {
@@ -226,6 +221,8 @@ Result<void> App::start() {
                                     [this] { (void)queue_storage_refresh(*this); });
     impl_->storage_timer->start();
     {
+        App::Impl* impl = impl_.get();
+        impl_->models.set_on_persist_failed([impl] { impl->report_persist_failed(); });
         Result<void> loaded = Result<void>::ok();
         if (auto r = impl_->run_io([&] { loaded = impl_->models.init(); }, os::kForever); !r) {
             loaded = r;
@@ -477,6 +474,7 @@ Result<void> App::start() {
         .files = scenes != nullptr ? scenes->files() : nullptr,
         .now_ms = {},  // os::now_ms
         .submit_io = impl_->io_submitter(),
+        .on_persist_failed = [impl = impl_.get()] { impl->report_persist_failed(); },
         .run_io =
             [impl = impl_.get()](std::function<void()> job) {
                 return impl->run_io(std::move(job), os::kForever);
@@ -783,7 +781,8 @@ bool App::Impl::submit_io(std::function<void()> job) {
     return r || r.error().code == ErrorCode::Timeout;
 }
 
-Result<void> App::Impl::run_io(std::function<void()> job, uint32_t timeout_ms) {
+Result<void> App::Impl::run_io(std::function<void()> job, uint32_t timeout_ms,
+                               uint32_t busy_budget_ms) {
     core::StorageWorker* worker = scenes ? &scenes->worker() : nullptr;
     if (worker == nullptr) {
         job();
@@ -792,12 +791,17 @@ Result<void> App::Impl::run_io(std::function<void()> job, uint32_t timeout_ms) {
     // A full Normal lane drains within a few jobs; a worker that is
     // stopping stays Busy until it has stopped, and then runs it inline.
     Result<void> r = worker->run_sync(job, timeout_ms);
-    for (uint32_t waited = 0; !r && r.error().code == ErrorCode::Busy && waited < kIoBusyRetryMs;
+    for (uint32_t waited = 0; !r && r.error().code == ErrorCode::Busy && waited < busy_budget_ms;
          waited += kIoBusyPollMs) {
         os::sleep_ms(kIoBusyPollMs);
         r = worker->run_sync(job, timeout_ms);
     }
     return r;
+}
+
+void App::Impl::report_persist_failed() {
+    // Built before anything saves; reset only once the worker has stopped.
+    if (notifications) notifications->post_system(core::notice::kSettingsNotSaved, "");
 }
 
 void App::flush_storage() {

@@ -53,6 +53,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "wisp/base/result.hpp"
@@ -257,6 +258,12 @@ public:
     // Internal: the kind's active profile with its key, nullopt when the
     // kind has none. Only for the model clients -- see the file header.
     std::optional<ResolvedProfile> active_for_request(ModelKind kind) const;
+
+    // Called once after LatestSave::kFailuresToReport failed writes in a
+    // row (see core::LatestSave). Set it before the first change.
+    void set_on_persist_failed(std::function<void()> fn) {
+        saver_.set_on_persist_failed(std::move(fn));
+    }
 
     // Forgets every profile and deletes the files (factory reset), in
     // place of any write still queued. Failures to delete are logged, not

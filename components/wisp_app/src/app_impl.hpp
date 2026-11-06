@@ -219,6 +219,11 @@ struct App::Impl {
     // made before the screen subscribes, or whose event the bus dropped,
     // still reaches the screen.
     std::atomic<bool> reset_pending{false};
+    // The last reset_task gave up without erasing (factory_reset()) and has
+    // returned, so start_factory_reset() may replace it.
+    std::atomic<bool> reset_failed{false};
+    // How long factory_reset() tries to start its erase (set_reset_erase_budget()).
+    uint32_t reset_erase_ms = 30000;
 
     // The firmware update service (connectivity spec 6.5) over
     // Platform::firmware, built by start() before networking (the admin
@@ -256,10 +261,16 @@ struct App::Impl {
     core::LatestSave::SubmitIo io_submitter() {
         return [this](std::function<void()> job) { return submit_io(std::move(job)); };
     }
+    // Posts the "设置未能保存" system notice: for the settings cache and
+    // the three saving services alike (spec 3.4, 3.5), after their third
+    // failed write in a row. Any thread.
+    void report_persist_failed();
     // run_io() waits up to `timeout_ms` for `job` (os::kForever allowed);
-    // StorageWorker::run_sync()'s errors. A full queue is retried for a
-    // while before Busy is returned.
-    Result<void> run_io(std::function<void()> job, uint32_t timeout_ms);
+    // StorageWorker::run_sync()'s errors. A full queue (or a worker
+    // stopping) is retried for up to `busy_budget_ms` before Busy is
+    // returned.
+    Result<void> run_io(std::function<void()> job, uint32_t timeout_ms,
+                        uint32_t busy_budget_ms = 2000);
 
     // Both the constructor and destructor are declared here but defined
     // out-of-line in self_check_screen.cpp, the one TU where SelfCheck's

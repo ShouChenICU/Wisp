@@ -386,6 +386,7 @@ export default {
   'sys.reset_done_body': '设备正在重启。它已忘记所有 Wi-Fi 网络，需要通过配网热点重新设置；本浏览器的配对也已失效。',
   'sys.reset_repair': '前往配对',
   'sys.reset_cancelled': '已在设备上取消，没有清除任何内容。',
+  'sys.reset_not_started': '设备没能开始清除，没有清除任何内容，也没有重启。请稍后重试。',
   'sys.reset_unavailable': '设备暂不支持从网页恢复出厂设置。',
   'sys.reset_failed': '无法发起恢复出厂设置：{reason}',
   'fw.load_failed': '无法读取固件信息：{reason}',

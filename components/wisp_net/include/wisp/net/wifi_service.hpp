@@ -33,6 +33,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "wisp/base/result.hpp"
@@ -174,6 +175,12 @@ public:
     std::optional<ApSession> ap_session() const;
     // Password-free view of the hotspot, for remote callers (admin API).
     ApStatus ap_status() const;
+
+    // Called once after LatestSave::kFailuresToReport failed writes in a
+    // row (see core::LatestSave). Set it before the first change.
+    void set_on_persist_failed(std::function<void()> fn) {
+        saver_.set_on_persist_failed(std::move(fn));
+    }
 
     // Factory reset: drops and persists an empty network list, closes the
     // hotspot and disconnects.

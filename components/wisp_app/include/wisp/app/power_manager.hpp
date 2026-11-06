@@ -265,6 +265,9 @@ private:
     // "already awake") until the next button press -- no board ships
     // headless.
     mutable os::Mutex transition_mutex_;
+    // go_to() calls so far, guarded by transition_mutex_: a transition that
+    // released the lock can tell another one ran meanwhile.
+    uint64_t transitions_ = 0;
     std::atomic<hal::PowerLevel> level_{hal::PowerLevel::Active};
     std::atomic<uint64_t> last_activity_ms_;
     std::atomic<bool> power_key_owned_{false};

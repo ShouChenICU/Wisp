@@ -326,6 +326,7 @@ void PowerManager::evaluate(std::optional<uint64_t> now_ms) {
 
 void PowerManager::go_to(hal::PowerLevel target, uint64_t now_ms,
                          std::unique_lock<os::Mutex>& lock) {
+    const uint64_t transition = ++transitions_;
     const hal::PowerLevel current = level_.load();
     if (target == current) {
         return;
@@ -352,6 +353,11 @@ void PowerManager::go_to(hal::PowerLevel target, uint64_t now_ms,
             lock.unlock();
             before_deep_standby_();
             lock.lock();
+            // Meanwhile another transition (a wake) may have run, or a
+            // network lock may want the radio: either way this one is stale.
+            if (transitions_ != transition || locks_.held(core::WakeLockKind::Network)) {
+                return;
+            }
         }
         walk_devices(hal::PowerLevel::DeepStandby, Dir::Down);
         set_level(hal::PowerLevel::DeepStandby);

@@ -386,6 +386,7 @@ export default {
   'sys.reset_done_body': 'デバイスは再起動中です。Wi-Fi ネットワークの情報が消去されたので、セットアップ用アクセスポイントから設定し直してください。このブラウザのペアリングも解除されました。',
   'sys.reset_repair': 'ペアリングへ',
   'sys.reset_cancelled': 'デバイス上でキャンセルされました。何も消去されていません。',
+  'sys.reset_not_started': 'デバイスが消去を開始できませんでした。何も消去されておらず、再起動もしていません。しばらくしてからもう一度お試しください。',
   'sys.reset_unavailable': 'このデバイスは、まだ Web ページからの初期化に対応していません。',
   'sys.reset_failed': '初期化を開始できませんでした：{reason}',
   'fw.load_failed': 'ファームウェア情報を取得できません：{reason}',

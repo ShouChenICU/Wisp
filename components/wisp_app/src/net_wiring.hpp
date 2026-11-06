@@ -132,6 +132,8 @@ struct NetWiringDeps {
     // Queues the Wi-Fi and pairing file writes on the flash thread (their
     // submit_io); empty: they write on the calling thread.
     core::LatestSave::SubmitIo submit_io;
+    // Their set_on_persist_failed(); empty: failed writes are only logged.
+    std::function<void()> on_persist_failed;
     // Runs their init() (which reads flash) on the flash thread and waits;
     // empty: on start()'s thread.
     std::function<Result<void>(std::function<void()>)> run_io;

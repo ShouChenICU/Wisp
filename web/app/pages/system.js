@@ -22,7 +22,8 @@
 //
 // Factory reset: the device asks its user to confirm on its own screen
 // and reports the outcome as a system.factory_reset event ({state:
-// "done"|"cancelled"}). A reset revokes every paired browser, so this
+// "done"|"cancelled"|"failed"}; "failed": the erase could not start, so
+// nothing was erased and the device keeps running). A reset revokes every paired browser, so this
 // browser's socket may be closed (and its next request refused with 401)
 // before the "done" event gets out; while waiting, either one counts as
 // done. The page subscribes to events only for that wait.
@@ -1080,7 +1081,7 @@ function FirmwareStatus({ job, current, onClose }) {
 function MaintenanceCard({ onBack }) {
   // null | {phase: 'wait'|'slow'}
   const [reboot, setReboot] = useState(null);
-  // null | 'sending' | 'waiting' | 'done' | 'cancelled' | 'unavailable'
+  // null | 'sending' | 'waiting' | 'done' | 'cancelled' | 'failed' | 'unavailable'
   const [reset, setReset] = useState(null);
   const alive = useRef(true);
   const stopWait = useRef(null);
@@ -1152,7 +1153,7 @@ function MaintenanceCard({ onBack }) {
       (msg) => {
         if (msg.t !== 'event' || msg.topic !== 'system.factory_reset') return;
         const st = msg.payload?.state;
-        if (st === 'done' || st === 'cancelled') end(st);
+        if (st === 'done' || st === 'cancelled' || st === 'failed') end(st);
       },
       { onState: (st) => accepted && st === 'unauthorized' && end('done') },
     );
@@ -1291,7 +1292,12 @@ function ResetStatus({ state, onStop, onClose }) {
       </span>
     </div>`;
   }
-  const text = state === 'cancelled' ? t('sys.reset_cancelled') : t('sys.reset_unavailable');
+  const text =
+    state === 'cancelled'
+      ? t('sys.reset_cancelled')
+      : state === 'failed'
+        ? t('sys.reset_not_started')
+        : t('sys.reset_unavailable');
   return html`<div class=${state === 'cancelled' ? 'alert tone-muted' : 'alert tone-warn'} role="status">
     <${state === 'cancelled' ? IconInfo : IconAlert} size=${18} />
     <span class="alert-body">

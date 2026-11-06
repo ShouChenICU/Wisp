@@ -51,6 +51,7 @@ void NetWiring::start() {
     pairing_ = std::make_unique<net::PairingService>(deps_.storage, deps_.bus, platform.random,
                                                      std::move(unix_now), platform.pairing,
                                                      deps_.submit_io);
+    pairing_->set_on_persist_failed(deps_.on_persist_failed);
     if (auto r = run_io([this] { return pairing_->init(); }); !r) {
         WLOG_W(kTag, "pairing: %s", r.error().message.c_str());
     }
@@ -59,6 +60,7 @@ void NetWiring::start() {
         wifi_ =
             std::make_unique<net::WifiService>(wifi_dev, deps_.storage, deps_.bus, platform.random,
                                                net::WifiServiceConfig{}, deps_.submit_io);
+        wifi_->set_on_persist_failed(deps_.on_persist_failed);
         if (auto r = run_io([this, now] { return wifi_->init(now); }); !r) {
             WLOG_W(kTag, "wifi: %s", r.error().message.c_str());
         }

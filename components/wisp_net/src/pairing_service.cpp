@@ -524,8 +524,13 @@ void PairingService::revoke_all() {
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         clients_.clear();
-        (void)persist_locked(clients_, /*remove_on_failure=*/true);
-        WLOG_I(kTag, "all paired clients revoked");
+        // A failed write logs (and removes the file) itself.
+        if (auto r = persist_locked(clients_, /*remove_on_failure=*/true); !r) {
+            WLOG_E(kTag, "all paired clients revoked, but not saved: %s",
+                   r.error().message.c_str());
+        } else {
+            WLOG_I(kTag, "all paired clients revoked");
+        }
     }
     notify_revoked(std::nullopt);
 }

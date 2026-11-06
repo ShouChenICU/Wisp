@@ -541,3 +541,37 @@ TEST(FactoryReset, ErasesOnTheFlashThread) {
     EXPECT_TRUE(app.wifi()->saved_ssids().empty());
     EXPECT_TRUE(app.pairing()->clients().empty());
 }
+
+TEST(FactoryReset, NeverRestartsWithoutErasing) {
+    UiNetOptions opts;
+    opts.saved = {{"Home", "password1"}};
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    wisp::core::StorageWorker* worker = app.storage_worker();
+    ASSERT_NE(worker, nullptr);
+
+    // The worker is stuck in a job and its queue is full.
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto release = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(worker->submit([entered, release] {
+        entered->give();
+        release->take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(entered->take(2000));
+    while (worker->submit([] {})) {
+    }
+
+    wisp::app::set_reset_erase_budget(app, 300);
+    wisp::app::factory_reset(app);
+    EXPECT_EQ(h.reboots.load(), 0);
+    EXPECT_EQ(reset_states(h), std::vector<std::string>{"failed"});
+    EXPECT_EQ(app.wifi()->saved_ssids().size(), 1u);
+
+    // Once the queue moves again, a new request goes through.
+    release->give();
+    ASSERT_TRUE(worker->drain(5000));
+    wisp::app::factory_reset(app);
+    EXPECT_EQ(h.reboots.load(), 1);
+    EXPECT_TRUE(app.wifi()->saved_ssids().empty());
+}

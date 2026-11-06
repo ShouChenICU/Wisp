@@ -894,6 +894,9 @@ struct Headless {
                               .registry = registry,
                               .locks = locks,
                               .settings = Settings(*backend, "power")};
+        deps.before_deep_standby = [this] {
+            if (before_deep) before_deep();
+        };
         if (with_hook) {
             deps.set_light_sleep = [this](bool on) {
                 std::lock_guard<std::mutex> lock(mutex);
@@ -907,6 +910,9 @@ struct Headless {
         pm.reset();
         bus.stop();
     }
+
+    // PowerManagerDeps::before_deep_standby (App's storage flush).
+    std::function<void()> before_deep;
 
     std::shared_ptr<Probe> add_probe(std::string id, DeviceClass cls, const char* standby) {
         auto probe = std::make_shared<Probe>(std::move(id), cls, standby, log);
@@ -1455,4 +1461,30 @@ TEST(PowerManager, ActivityHookHearsButtonsAndTouches) {
     }
     ui.stop();
     bus.stop();
+}
+
+TEST(PowerManager, FlushesBeforeDevicesGoDeep) {
+    Headless h;
+    h.add_probe("imu.main", DeviceClass::Imu, "off");
+    std::vector<std::string> seen;
+    h.before_deep = [&] { seen = h.log->take(); };
+    h.go_deep();
+    EXPECT_EQ(seen, (Strings{"imu.main:standby"}));
+    EXPECT_EQ(h.log->take(), (Strings{"imu.main:deep_standby"}));
+    EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
+}
+
+TEST(PowerManager, WakeDuringTheFlushAbortsDeepStandby) {
+    Headless h;
+    h.add_probe("imu.main", DeviceClass::Imu, "off");
+    int flushes = 0;
+    h.before_deep = [&] {
+        ++flushes;
+        h.pm->exit_standby();  // the user wakes it while the flush waits
+    };
+    h.go_deep();
+    EXPECT_EQ(flushes, 1);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Active);
+    EXPECT_EQ(h.states(), (Strings{"standby", "active"}));
+    EXPECT_EQ(h.log->take(), (Strings{"imu.main:standby", "imu.main:active"}));
 }

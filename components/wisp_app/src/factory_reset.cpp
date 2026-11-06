@@ -1,6 +1,7 @@
 #include "factory_reset.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -53,21 +54,31 @@ void factory_reset(App& app) {
     WLOG_W(kTag,
            "factory reset: erasing settings, Wi-Fi, pairings, the model profiles and the "
            "agent's conversations");
-    publish_state(app, "done");
 
-    const uint64_t deadline = os::now_ms() + kFlushMs;
-    auto remaining = [deadline] {
-        const uint64_t now = os::now_ms();
-        return static_cast<uint32_t>(now < deadline ? deadline - now : 0);
-    };
-    (void)app.bus().wait_idle(remaining());
-    if (app.impl_->net && !app.impl_->net->flush_admin_ws(remaining())) {
-        WLOG_W(kTag, "admin WebSocket not flushed in time; resetting anyway");
-    }
+    // Pending -> Started (the job) or Abandoned (this task, once the wait
+    // is over): whichever comes first wins, so a job still queued when we
+    // give up never erases behind a device that reported failure.
+    enum : int { kPending, kStarted, kAbandoned };
+    auto stage = std::make_shared<std::atomic<int>>(kPending);
+    auto finished = std::make_shared<os::Semaphore>(1, 0);
 
-    // The erase itself, on the flash thread. The services' own writes
-    // queued from here run inline (App::Impl::submit_io() on the worker).
+    // The whole reset that touches flash, as one job on the flash thread
+    // (spec 3.7). "done" goes out from here, once the erase is certain to
+    // happen, while the browser that asked still has a token -- hence a
+    // socket to hear it on. The services' own writes queued from here run
+    // inline (App::Impl::submit_io() on the worker).
     auto erase_everything = [&app] {
+        publish_state(app, "done");
+        const uint64_t deadline = os::now_ms() + kFlushMs;
+        auto remaining = [deadline] {
+            const uint64_t now = os::now_ms();
+            return static_cast<uint32_t>(now < deadline ? deadline - now : 0);
+        };
+        (void)app.bus().wait_idle(remaining());
+        if (app.impl_->net && !app.impl_->net->flush_admin_ws(remaining())) {
+            WLOG_W(kTag, "admin WebSocket not flushed in time; resetting anyway");
+        }
+
         if (auto r = app.impl_->platform.settings->erase_all(); !r) {
             WLOG_E(kTag, "erasing settings failed: %s", r.error().message.c_str());
         } else if (auto f = app.impl_->settings_front.flush(kEraseMs); !f) {
@@ -85,22 +96,28 @@ void factory_reset(App& app) {
         }
     };
 
-    // Every erase touches flash, so all of it runs as one job on the flash
-    // thread (spec 3.7). The job uses App's services: should the wait time
-    // out, this task waits for the job after the restart call, which only
-    // returns on a platform that cannot restart for real (the simulator),
-    // so App::stop() never tears them down under it.
-    auto finished = std::make_shared<os::Semaphore>(1, 0);
+    // A full queue is retried for the whole budget, not given up on.
+    const uint32_t budget = app.impl_->reset_erase_ms;
     Result<void> erased = app.impl_->run_io(
-        [erase_everything, finished] {
-            erase_everything();
+        [erase_everything, stage, finished] {
+            int expected = kPending;
+            if (stage->compare_exchange_strong(expected, kStarted)) erase_everything();
             finished->give();
         },
-        kEraseMs);
-    const bool still_running = !erased && erased.error().code == ErrorCode::Timeout;
-    if (!erased) {
-        WLOG_E(kTag, "factory reset erase %s: %s",
-               still_running ? "did not finish in time" : "could not start",
+        budget, budget);
+    int expected = kPending;
+    if (!erased && stage->compare_exchange_strong(expected, kAbandoned)) {
+        // Nothing was erased or announced: the device keeps running, and
+        // whoever asked hears so.
+        WLOG_E(kTag, "factory reset could not start (%s); nothing erased, not restarting",
+               erased.error().message.c_str());
+        app.impl_->reset_failed.store(true);
+        publish_state(app, "failed");
+        return;
+    }
+    const bool still_running = !erased;
+    if (still_running) {
+        WLOG_E(kTag, "factory reset erase did not finish in time: %s",
                erased.error().message.c_str());
     }
 
@@ -112,6 +129,9 @@ void factory_reset(App& app) {
     } else {
         WLOG_E(kTag, "factory reset complete but this platform cannot restart");
     }
+    // The job uses App's services. The restart only returns on a platform
+    // that cannot restart for real (the simulator); there App::stop() must
+    // not tear them down under a job still running.
     if (still_running) (void)finished->take(os::kForever);
 }
 
@@ -119,6 +139,12 @@ bool start_factory_reset(App& app) {
     App::Impl& impl = *app.impl_;
     std::lock_guard<os::Mutex> lock(impl.reset_mutex);
     impl.reset_pending.store(false);
+    if (impl.reset_task && impl.reset_failed.exchange(false)) {
+        // That reset gave up without erasing and has returned: a new
+        // request may try again.
+        impl.reset_task->join();
+        impl.reset_task.reset();
+    }
     if (impl.reset_task) {
         WLOG_W(kTag, "factory reset already running");
         return true;
@@ -134,6 +160,8 @@ bool start_factory_reset(App& app) {
     }
     return true;
 }
+
+void set_reset_erase_budget(App& app, uint32_t ms) { app.impl_->reset_erase_ms = ms; }
 
 void set_reset_spawner(App& app, TaskSpawner spawner) {
     std::lock_guard<os::Mutex> lock(app.impl_->reset_mutex);
