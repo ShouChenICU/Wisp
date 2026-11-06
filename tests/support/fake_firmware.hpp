@@ -107,16 +107,22 @@ public:
     size_t capacity() const override { return capacity_bytes; }
 
     Result<void> begin(size_t size) override {
+        // Outside the lock, so a test can hold the flash thread in here.
+        if (on_begin) on_begin();
         std::lock_guard<std::mutex> lock(mutex);
         ++begins;
+        note_thread();
         written.clear();
         began_size = size;
         if (fail_begin) return Result<void>::err(ErrorCode::IoError, "fake begin failure");
         return Result<void>::ok();
     }
     Result<void> write(std::span<const uint8_t> chunk) override {
+        if (on_write) on_write();
         std::lock_guard<std::mutex> lock(mutex);
         ++writes;
+        note_thread();
+        write_sizes.push_back(chunk.size());
         if (fail_write) return Result<void>::err(ErrorCode::IoError, "fake write failure");
         written.insert(written.end(), chunk.begin(), chunk.end());
         return Result<void>::ok();
@@ -124,6 +130,8 @@ public:
     Result<wisp::core::FirmwareImageInfo> finish() override {
         std::lock_guard<std::mutex> lock(mutex);
         ++finishes;
+        note_thread();
+        finish_on_flash_thread = wisp::os::on_flash_thread();
         if (auto v = wisp::core::verify_firmware_image(written); !v) {
             return Result<wisp::core::FirmwareImageInfo>::err(v.error().code, v.error().message);
         }
@@ -132,18 +140,19 @@ public:
     void abort() override {
         std::lock_guard<std::mutex> lock(mutex);
         ++aborts;
+        note_thread();
     }
     Result<void> activate() override {
         std::lock_guard<std::mutex> lock(mutex);
         ++activations;
-        if (!wisp::os::on_flash_thread()) off_flash_thread.fetch_add(1);
+        note_thread();
         if (fail_activate) return Result<void>::err(ErrorCode::IoError, "fake activate failure");
         return Result<void>::ok();
     }
     void mark_valid() override {
         std::lock_guard<std::mutex> lock(mutex);
         ++mark_valid_calls;
-        if (!wisp::os::on_flash_thread()) off_flash_thread.fetch_add(1);
+        note_thread();
         if (on_mark_valid) on_mark_valid();
     }
 
@@ -153,6 +162,9 @@ public:
     bool fail_write = false;
     bool fail_activate = false;
     std::function<void()> on_mark_valid;
+    // Run at the top of begin()/write(), before the lock.
+    std::function<void()> on_begin;
+    std::function<void()> on_write;
 
     mutable std::mutex mutex;
     int begins = 0;
@@ -161,11 +173,18 @@ public:
     int aborts = 0;
     int activations = 0;
     int mark_valid_calls = 0;
-    // activate() and mark_valid() calls made off the flash thread (while
-    // one is registered): both write otadata.
+    // Calls that touch flash (all but target()/running_slot()/capacity())
+    // made off the flash thread while one is registered.
     std::atomic<int> off_flash_thread{0};
+    bool finish_on_flash_thread = false;
     size_t began_size = 0;
+    std::vector<size_t> write_sizes;
     std::vector<uint8_t> written;
+
+private:
+    void note_thread() {
+        if (!wisp::os::on_flash_thread()) off_flash_thread.fetch_add(1);
+    }
 };
 
 }  // namespace wisp::test

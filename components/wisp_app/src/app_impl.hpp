@@ -231,9 +231,6 @@ struct App::Impl {
     // "wisp.fwup" task are gone. firmware_mutex guards firmware_task; see
     // firmware_confirm.hpp for the rest.
     std::unique_ptr<core::FirmwareUpdateService> firmware;
-    // Platform::firmware with the calls that write otadata run on the
-    // storage worker (firmware_confirm.hpp); what `firmware` drives.
-    std::unique_ptr<core::FirmwareUpdater> firmware_updater;
     os::Mutex firmware_mutex;
     std::unique_ptr<os::Task> firmware_task;
     // An image awaits the user's answer and no screen has taken it up yet

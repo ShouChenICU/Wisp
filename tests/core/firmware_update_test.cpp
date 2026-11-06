@@ -2,19 +2,26 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "support/fake_firmware.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/storage_worker.hpp"
+#include "wisp/os/flash_guard.hpp"
+#include "wisp/os/os.hpp"
 
 using wisp::Properties;
 using wisp::core::FirmwareFailure;
 using wisp::core::FirmwareOutcome;
 using wisp::core::FirmwareUpdateService;
+using wisp::core::kIoChunk;
+using wisp::core::StorageWorker;
 using wisp::test::FakeFirmwareUpdater;
 using wisp::test::ImageSpec;
 using wisp::test::make_firmware_image;
@@ -22,7 +29,8 @@ using wisp::test::make_firmware_image;
 namespace {
 
 struct Fixture {
-    explicit Fixture(bool with_updater = true, bool can_confirm = true, bool can_restart = true) {
+    explicit Fixture(bool with_updater = true, bool can_confirm = true, bool can_restart = true,
+                     StorageWorker* worker = nullptr, uint32_t chunk_timeout_ms = 0) {
         FirmwareUpdateService::Deps deps;
         deps.updater = with_updater ? &updater : nullptr;
         deps.running_version = "0.1.0-10-g1111111";
@@ -30,18 +38,20 @@ struct Fixture {
         if (can_confirm) deps.request_confirm = [this] { ++confirm_requests; };
         if (can_restart) deps.restart = [this] { ++restarts; };
         deps.now_ms = [this] { return now; };
-        service = std::make_unique<FirmwareUpdateService>(std::move(deps));
+        if (chunk_timeout_ms != 0) deps.chunk_timeout_ms = chunk_timeout_ms;
+        service = std::make_unique<FirmwareUpdateService>(std::move(deps), worker);
     }
 
-    // Streams `image` in 4 KiB pieces; the first failure ends it.
-    FirmwareOutcome upload(const std::vector<uint8_t>& image, uint32_t* id_out = nullptr) {
+    // Streams `image` in `piece`-byte pieces; the first failure ends it.
+    FirmwareOutcome upload(const std::vector<uint8_t>& image, uint32_t* id_out = nullptr,
+                           size_t piece = 4096) {
         uint32_t id = 0;
         FirmwareOutcome r = service->begin(image.size(), &id);
         if (id_out != nullptr) *id_out = id;
         if (!r.ok()) return r;
         std::span<const uint8_t> rest(image);
         while (!rest.empty()) {
-            const size_t n = std::min<size_t>(rest.size(), 4096);
+            const size_t n = std::min<size_t>(rest.size(), piece);
             r = service->write(id, rest.first(n));
             if (!r.ok()) return r;
             rest = rest.subspan(n);
@@ -345,4 +355,100 @@ TEST(FirmwareUpdate, MarkRunningValidReachesThePlatform) {
     EXPECT_EQ(fx.updater.mark_valid_calls, 1);
     Fixture none(/*with_updater=*/false);
     none.service->mark_running_valid();  // nothing to mark; must not crash
+}
+
+namespace {
+
+// A started worker whose thread is the registered flash thread.
+struct FlashThread {
+    FlashThread() { EXPECT_TRUE(worker.start()); }
+    ~FlashThread() { worker.stop(); }
+    StorageWorker worker;
+};
+
+ImageSpec big_image(const char* version = "0.3.0") {
+    ImageSpec spec;
+    spec.version = version;
+    spec.extra_bytes = 100 * 1024;
+    return spec;
+}
+
+}  // namespace
+
+TEST(FirmwareUpdate, ChunksReachTheUpdaterOnTheFlashThread) {
+    FlashThread ft;
+    Fixture fx(true, true, true, &ft.worker);
+    const auto image = make_firmware_image(big_image());
+    ASSERT_TRUE(fx.upload(image).ok());
+    EXPECT_GT(fx.updater.writes, 0);
+    EXPECT_EQ(fx.updater.written, image);
+    EXPECT_EQ(fx.updater.off_flash_thread.load(), 0);
+
+    // The answer and the bookkeeping around it run there too.
+    ASSERT_TRUE(fx.service->decline().ok());
+    ASSERT_TRUE(ft.worker.drain(5000));
+    EXPECT_EQ(fx.updater.aborts, 1);
+    fx.service->mark_running_valid();
+    EXPECT_EQ(fx.updater.mark_valid_calls, 1);
+    EXPECT_EQ(fx.updater.off_flash_thread.load(), 0);
+}
+
+TEST(FirmwareUpdate, WritesAreBatchedToTheChunkSize) {
+    Fixture fx;
+    const auto image = make_firmware_image(big_image());
+    ASSERT_GE(image.size(), 100u * 1024u);
+    ASSERT_TRUE(fx.upload(image, nullptr, 1024).ok());
+    EXPECT_EQ(fx.updater.written, image);
+    size_t total = 0;
+    for (size_t n : fx.updater.write_sizes) {
+        EXPECT_LE(n, kIoChunk);
+        total += n;
+    }
+    EXPECT_EQ(total, image.size());
+    EXPECT_EQ(fx.updater.write_sizes.size(), (image.size() + kIoChunk - 1) / kIoChunk);
+}
+
+TEST(FirmwareUpdate, EndRunsOnTheFlashThread) {
+    FlashThread ft;
+    Fixture fx(true, true, true, &ft.worker);
+    ASSERT_TRUE(fx.upload(make_firmware_image()).ok());
+    EXPECT_EQ(fx.updater.finishes, 1);
+    EXPECT_TRUE(fx.updater.finish_on_flash_thread);
+    EXPECT_EQ(fx.updater.off_flash_thread.load(), 0);
+
+    // confirm() activates there as well.
+    ASSERT_TRUE(fx.service->confirm().ok());
+    EXPECT_EQ(fx.updater.activations, 1);
+    EXPECT_EQ(fx.updater.off_flash_thread.load(), 0);
+}
+
+// The flash thread does not finish a chunk in time: the upload fails
+// cleanly (write_failed), the late write still finds its data, the abort
+// lands after it, and the next upload goes through.
+TEST(FirmwareUpdate, ChunkTimeoutFailsTheUpload) {
+    FlashThread ft;
+    Fixture fx(true, true, true, &ft.worker, /*chunk_timeout_ms=*/50);
+    wisp::os::Semaphore release(1, 0);
+    std::atomic<bool> hold{true};
+    fx.updater.on_write = [&] {
+        if (hold.exchange(false)) (void)release.take(10000);
+    };
+    const auto image = make_firmware_image(big_image());
+    FirmwareOutcome r = fx.upload(image);
+    EXPECT_EQ(r.failure, FirmwareFailure::WriteFailed);
+    ASSERT_FALSE(fx.events.empty());
+    EXPECT_EQ(fx.last_state(), "failed");
+    EXPECT_EQ(fx.events.back().at("error").as_string(), "write_failed");
+
+    release.give();
+    ASSERT_TRUE(ft.worker.drain(5000));
+    {
+        std::lock_guard<std::mutex> lock(fx.updater.mutex);
+        EXPECT_EQ(fx.updater.writes, 1);
+        EXPECT_EQ(fx.updater.aborts, 1);
+        EXPECT_EQ(fx.updater.write_sizes.at(0), kIoChunk);
+    }
+
+    ASSERT_TRUE(fx.upload(image).ok());
+    EXPECT_EQ(fx.updater.written, image);
 }

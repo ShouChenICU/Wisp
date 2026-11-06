@@ -79,6 +79,7 @@
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/net/asset_pack.hpp"
@@ -125,6 +126,8 @@ struct NetWiringDeps {
     // 503.
     core::OccupancyRegistry* occupancy = nullptr;
     core::SceneFiles* files = nullptr;
+    // AdminDeps::worker (see there).
+    core::StorageWorker* worker = nullptr;
     // The clock the "wisp.net" loop hands WifiService, the NetworkWindow
     // and the admin services; empty: os::now_ms. Tests move it to reach
     // the network window's 15 minutes.

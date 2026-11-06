@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -13,14 +14,17 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "admin/admin_fixture.hpp"
 #include "support/fake_devices.hpp"
 #include "support/fake_http.hpp"
+#include "support/wait.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/core/zip.hpp"
 #include "wisp/net/http.hpp"
 
@@ -74,7 +78,8 @@ const Value& at(const Value& v, const char* key) {
 
 struct FilesFixture {
     explicit FilesFixture(bool with_files = true, size_t max_list = 256,
-                          std::shared_ptr<wisp::test::FakeStorage> sd = nullptr)
+                          std::shared_ptr<wisp::test::FakeStorage> sd = nullptr,
+                          wisp::core::StorageWorker* worker = nullptr)
         : f(true, std::move(sd)) {
         SceneFilesConfig cfg;
         cfg.data_root = f.dir + "/scenes";
@@ -89,6 +94,7 @@ struct FilesFixture {
         f.srv.reset();
         wisp::admin::AdminDeps deps = f.make_deps();
         deps.files = with_files ? files.get() : nullptr;
+        deps.worker = worker;
         f.srv = std::make_unique<wisp::admin::AdminServer>(std::move(deps));
         token = f.token();
     }
@@ -403,4 +409,55 @@ TEST(AdminSceneFiles, EncodedDotsAreRefused) {
             fx.call(Method::Delete, std::string("/api/v1/scenes/notes/files/") + name);
         EXPECT_EQ(del.status, 400) << name;
     }
+}
+
+// Every read of a download runs on the flash thread, one 32 KiB chunk at
+// a time: while that thread is busy the stream waits, and the bytes that
+// come out once it is free are the file's.
+TEST(AdminSceneFiles, DownloadReadsOnTheFlashThread) {
+    wisp::core::StorageWorker worker;
+    ASSERT_TRUE(worker.start());
+    {
+        FilesFixture fx(true, 256, nullptr, &worker);
+        fx.install("notes");
+        const std::string big = pattern(100 * 1024);
+        ASSERT_TRUE(fx.files->write("notes", "big.bin", as_bytes(big)));
+        HttpResponse dl = fx.call(Method::Get, "/api/v1/scenes/notes/files/big.bin");
+        ASSERT_EQ(dl.status, 200) << dl.body;
+        ASSERT_TRUE(dl.stream);
+
+        wisp::os::Semaphore started(1, 0);
+        wisp::os::Semaphore release(1, 0);
+        // A failed assertion below must not leave the worker parked.
+        struct ReleaseOnExit {
+            wisp::os::Semaphore& s;
+            ~ReleaseOnExit() { s.give(); }
+        } guard{release};
+        ASSERT_TRUE(worker.submit([&] {
+            started.give();
+            (void)release.take(wisp::os::kForever);
+        }));
+        ASSERT_TRUE(started.take(5000));
+
+        std::atomic<size_t> got{0};
+        std::string body;
+        size_t pieces = 0;
+        std::thread pump([&] {
+            std::vector<uint8_t> buf(wisp::net::kStreamChunkBytes);
+            EXPECT_TRUE(wisp::net::pump_stream(dl, buf, [&](std::span<const uint8_t> piece) {
+                body.append(reinterpret_cast<const char*>(piece.data()), piece.size());
+                ++pieces;
+                got += piece.size();
+                return true;
+            }));
+        });
+        // The first read is queued behind the parked job, not run here.
+        ASSERT_TRUE(wisp::test::wait_until([&] { return worker.pending() == 2; }, 5000));
+        EXPECT_EQ(got.load(), 0u);
+        release.give();
+        pump.join();
+        EXPECT_TRUE(body == big);
+        EXPECT_EQ(pieces, 4u);
+    }
+    worker.stop();
 }

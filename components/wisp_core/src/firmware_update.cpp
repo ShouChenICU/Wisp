@@ -1,16 +1,55 @@
 #include "wisp/core/firmware_update.hpp"
 
 #include <algorithm>
+#include <cstring>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/os/large.hpp"
 
 namespace wisp::core {
 
 namespace {
 
 constexpr const char* kTag = "firmware";
+
+// A full Bulk lane (downloads share it) drains within a few chunks.
+constexpr uint32_t kBusyRetryMs = 2000;
+constexpr uint32_t kBusyPollMs = 10;
+
+// Runs `job` on `worker`'s Bulk lane and waits up to `timeout_ms`, or
+// right here without a worker.
+Result<void> run_on(StorageWorker* worker, const std::function<void()>& job, uint32_t timeout_ms) {
+    if (worker == nullptr) {
+        job();
+        return Result<void>::ok();
+    }
+    Result<void> r = worker->run_sync(job, timeout_ms, IoLane::Bulk);
+    for (uint32_t waited = 0; !r && r.error().code == ErrorCode::Busy && waited < kBusyRetryMs;
+         waited += kBusyPollMs) {
+        os::sleep_ms(kBusyPollMs);
+        r = worker->run_sync(job, timeout_ms, IoLane::Bulk);
+    }
+    if (!r && r.error().code == ErrorCode::Timeout) {
+        return Result<void>::err(ErrorCode::Timeout, "the flash did not keep up with the upload");
+    }
+    return r;
+}
+
+// `fn`'s result, computed by run_on(). `fn` may outlive a timed-out wait,
+// so it must own (or point at nothing but the platform's updater) what it
+// touches; the slot for its result is shared for the same reason.
+template <typename T, typename Fn>
+Result<T> call_on(StorageWorker* worker, uint32_t timeout_ms, Fn fn) {
+    auto out = std::make_shared<std::optional<Result<T>>>();
+    if (auto r = run_on(worker, [out, fn] { out->emplace(fn()); }, timeout_ms); !r) {
+        return Result<T>::err(r.error().code, r.error().message);
+    }
+    return std::move(**out);
+}
 
 FirmwareOutcome outcome(FirmwareFailure failure, std::string message) {
     FirmwareOutcome r;
@@ -20,6 +59,12 @@ FirmwareOutcome outcome(FirmwareFailure failure, std::string message) {
 }
 
 }  // namespace
+
+// One chunk of the image on its way to FirmwareUpdater::write().
+struct FirmwareUpdateService::Chunk {
+    os::LargeBuffer buf;
+    size_t used = 0;
+};
 
 const char* to_string(FirmwareFailure failure) {
     switch (failure) {
@@ -45,7 +90,8 @@ const char* to_string(FirmwareFailure failure) {
     return "";
 }
 
-FirmwareUpdateService::FirmwareUpdateService(Deps deps) : deps_(std::move(deps)) {
+FirmwareUpdateService::FirmwareUpdateService(Deps deps, StorageWorker* worker)
+    : deps_(std::move(deps)), worker_(worker) {
     if (deps_.updater != nullptr) target_ = deps_.updater->target();
 }
 
@@ -82,6 +128,7 @@ void FirmwareUpdateService::reset_locked() {
     head_.clear();
     head_.shrink_to_fit();
     identified_ = false;
+    chunk_.reset();
     version_.clear();
     pending_since_ms_ = 0;
 }
@@ -133,7 +180,7 @@ FirmwareOutcome FirmwareUpdateService::fail_upload(uint32_t id, FirmwareFailure 
         version = version_;
         // Under the lock: once Idle, a new upload may begin() the platform,
         // and this abort() must not land on it.
-        deps_.updater->abort();
+        abort_updater_locked();
         reset_locked();
     }
     if (event_error == nullptr) event_error = to_string(failure);
@@ -174,23 +221,57 @@ FirmwareOutcome FirmwareUpdateService::write(uint32_t id, std::span<const uint8_
                                "image is for " + info.value().project + " on board \"" +
                                    info.value().board + "\", not this device");
         }
-        if (auto r = deps_.updater->begin(expected_); !r) {
-            return fail_upload(id, FirmwareFailure::WriteFailed, r.error().message);
-        }
-        if (auto r = deps_.updater->write(head); !r) {
-            return fail_upload(id, FirmwareFailure::WriteFailed, r.error().message);
+        FirmwareUpdater* updater = deps_.updater;
+        const size_t size = expected_;
+        auto begun = call_on<void>(worker_, deps_.chunk_timeout_ms,
+                                   [updater, size] { return updater->begin(size); });
+        if (!begun) return fail_upload(id, FirmwareFailure::WriteFailed, begun.error().message);
+        chunk_ = std::allocate_shared<Chunk>(os::LargeAllocator<Chunk>());
+        chunk_->buf = os::LargeBuffer::allocate(kIoChunk);
+        if (!chunk_->buf.ok()) {
+            return fail_upload(id, FirmwareFailure::WriteFailed, "no memory for the upload buffer");
         }
         identified_ = true;
+        if (auto r = gather(head); !r) {
+            return fail_upload(id, FirmwareFailure::WriteFailed, r.error().message);
+        }
         head_.clear();
         head_.shrink_to_fit();
     }
     if (!chunk.empty()) {
-        if (auto r = deps_.updater->write(chunk); !r) {
+        if (auto r = gather(chunk); !r) {
             return fail_upload(id, FirmwareFailure::WriteFailed, r.error().message);
         }
         received_ += chunk.size();
     }
     return {};
+}
+
+Result<void> FirmwareUpdateService::gather(std::span<const uint8_t> bytes) {
+    while (!bytes.empty()) {
+        Chunk& c = *chunk_;
+        const size_t take = std::min(c.buf.size() - c.used, bytes.size());
+        std::memcpy(c.buf.data() + c.used, bytes.data(), take);
+        c.used += take;
+        bytes = bytes.subspan(take);
+        if (c.used == c.buf.size()) {
+            if (auto r = flush_chunk(); !r) return r;
+        }
+    }
+    return Result<void>::ok();
+}
+
+Result<void> FirmwareUpdateService::flush_chunk() {
+    if (!chunk_ || chunk_->used == 0) return Result<void>::ok();
+    std::shared_ptr<Chunk> c = chunk_;
+    FirmwareUpdater* updater = deps_.updater;
+    auto r = call_on<void>(worker_, deps_.chunk_timeout_ms, [c, updater] {
+        return updater->write(std::span<const uint8_t>(c->buf.data(), c->used));
+    });
+    // Only once the job has finished with it: a timed-out one still reads
+    // it, and the upload ends without touching it again.
+    if (r) c->used = 0;
+    return r;
 }
 
 FirmwareOutcome FirmwareUpdateService::end(uint32_t id) {
@@ -203,7 +284,20 @@ FirmwareOutcome FirmwareUpdateService::end(uint32_t id) {
     if (!identified_ || received_ != expected_) {
         return fail_upload(id, FirmwareFailure::InvalidImage, "body shorter than Content-Length");
     }
-    auto written = deps_.updater->finish();
+    if (auto r = flush_chunk(); !r) {
+        return fail_upload(id, FirmwareFailure::WriteFailed, r.error().message);
+    }
+    chunk_.reset();
+    FirmwareUpdater* updater = deps_.updater;
+    auto slot = std::make_shared<std::optional<Result<FirmwareImageInfo>>>();
+    if (auto r = run_on(
+            worker_, [updater, slot] { slot->emplace(updater->finish()); },
+            deps_.finish_timeout_ms);
+        !r) {
+        // The device's failure, not the image's.
+        return fail_upload(id, FirmwareFailure::WriteFailed, r.error().message);
+    }
+    Result<FirmwareImageInfo> written = std::move(**slot);
     if (!written) {
         return fail_upload(id, FirmwareFailure::InvalidImage,
                            "image failed verification: " + written.error().message);
@@ -242,10 +336,14 @@ FirmwareOutcome FirmwareUpdateService::confirm() {
         state_ = State::Installing;
         version = version_;
     }
-    if (auto r = deps_.updater->activate(); !r) {
+    FirmwareUpdater* updater = deps_.updater;
+    // As long as it takes: the user has said yes, and a late switch of the
+    // boot slot after a reported failure would be worse than the wait.
+    if (auto r = call_on<void>(worker_, os::kForever, [updater] { return updater->activate(); });
+        !r) {
         {
             std::lock_guard<os::Mutex> lock(mutex_);
-            deps_.updater->abort();
+            abort_updater_locked();
             reset_locked();
         }
         WLOG_E(kTag, "activating firmware %s failed: %s", version.c_str(),
@@ -274,7 +372,7 @@ FirmwareOutcome FirmwareUpdateService::decline() {
             return outcome(FirmwareFailure::NotPending, "no firmware awaits confirmation");
         }
         version = version_;
-        deps_.updater->abort();
+        abort_updater_locked();
         reset_locked();
     }
     WLOG_I(kTag, "firmware %s declined on the device", version.c_str());
@@ -291,7 +389,7 @@ void FirmwareUpdateService::tick(uint64_t now_ms) {
             return;
         }
         version = version_;
-        deps_.updater->abort();
+        abort_updater_locked();
         reset_locked();
     }
     WLOG_I(kTag, "firmware %s not confirmed in time; discarded", version.c_str());
@@ -299,7 +397,26 @@ void FirmwareUpdateService::tick(uint64_t now_ms) {
 }
 
 void FirmwareUpdateService::mark_running_valid() {
-    if (deps_.updater != nullptr) deps_.updater->mark_valid();
+    FirmwareUpdater* updater = deps_.updater;
+    if (updater == nullptr) return;
+    if (auto r = run_on(worker_, [updater] { updater->mark_valid(); }, os::kForever); !r) {
+        WLOG_E(kTag, "marking the running image valid failed: %s", r.error().message.c_str());
+    }
+}
+
+void FirmwareUpdateService::abort_updater_locked() {
+    FirmwareUpdater* updater = deps_.updater;
+    std::function<void()> job = [updater] { updater->abort(); };
+    if (worker_ == nullptr) {
+        job();
+        return;
+    }
+    if (worker_->submit(job, IoLane::Bulk)) return;
+    // Not running (boot or shutdown: run_sync() runs it right here) or
+    // the lane is full (wait for room).
+    if (auto r = run_on(worker_, job, os::kForever); !r) {
+        WLOG_W(kTag, "could not drop the partial image: %s", r.error().message.c_str());
+    }
 }
 
 }  // namespace wisp::core

@@ -370,22 +370,18 @@ Result<void> App::start() {
     // The firmware update service, before networking routes uploads to
     // it. Only a device with a screen can confirm an update.
     impl_->firmware_pending.store(false);
+    // Every OTA call that touches flash runs on the storage worker (or
+    // right here without one, as on a board without scenes).
     core::FirmwareUpdateService::Deps firmware_deps;
-    if (impl_->platform.firmware) {
-        App::Impl* impl = impl_.get();
-        impl_->firmware_updater =
-            flash_thread_updater(*impl_->platform.firmware, [impl](std::function<void()> job) {
-                return impl->run_io(std::move(job), os::kForever);
-            });
-    }
-    firmware_deps.updater = impl_->firmware_updater.get();
+    firmware_deps.updater = impl_->platform.firmware.get();
     firmware_deps.running_version = impl_->platform.firmware_version;
     firmware_deps.publish = [this](Properties p) {
         impl_->bus.publish({"system.firmware", "app", 0, std::move(p)});
     };
     if (impl_->ui) firmware_deps.request_confirm = [this] { request_firmware_confirm(*this); };
     firmware_deps.restart = [this] { restart_for_firmware(*this); };
-    impl_->firmware = std::make_unique<core::FirmwareUpdateService>(std::move(firmware_deps));
+    impl_->firmware =
+        std::make_unique<core::FirmwareUpdateService>(std::move(firmware_deps), storage_worker());
 
     // The scene runtime, built (not started) before networking so the
     // admin routes can be handed it.
@@ -472,6 +468,7 @@ Result<void> App::start() {
                                     : nullptr,
         .occupancy = &impl_->occupancy,
         .files = scenes != nullptr ? scenes->files() : nullptr,
+        .worker = storage_worker(),
         .now_ms = {},  // os::now_ms
         .submit_io = impl_->io_submitter(),
         .on_persist_failed = [impl = impl_.get()] { impl->report_persist_failed(); },
@@ -659,7 +656,6 @@ void App::stop() {
     }
     // Nothing streams into it any more.
     impl_->firmware.reset();
-    impl_->firmware_updater.reset();
     // Notifications: nothing new from the bus, no more saves on the timer,
     // then whatever is still unsaved goes to the worker before it stops.
     if (impl_->notifications) {

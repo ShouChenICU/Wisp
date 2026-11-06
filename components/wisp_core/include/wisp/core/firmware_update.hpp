@@ -29,10 +29,25 @@
 // status()/pending() (read by the UI thread) never wait for an erase. Only
 // the caller holding the current upload id calls write()/end(), so the
 // platform sees one writer at a time.
+//
+// Flash (spec 3.6 of docs/superpowers/specs/2026-11-06-flash-thread-design.md):
+// with a StorageWorker every FirmwareUpdater call that touches flash runs
+// on it, in its Bulk lane. write() gathers the image into one kIoChunk
+// PSRAM buffer and hands it over each time it fills, waiting for that
+// chunk (chunk_timeout_ms) before taking more, so the uploader is never
+// more than one chunk ahead and queued settings or scene saves wait for
+// at most one chunk. end() hands over the rest and waits for finish()
+// (finish_timeout_ms); confirm() and mark_running_valid() wait for
+// activate()/mark_valid() as long as they take. A chunk that does not
+// finish in time fails the upload with WriteFailed; it may still run
+// later, so it owns its buffer, and the abort queued behind it runs after
+// it. abort() reaches the platform as a queued job and never blocks the
+// caller. Without a worker the calls go straight to the platform.
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -40,6 +55,7 @@
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/firmware_image.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::core {
@@ -123,6 +139,8 @@ struct FirmwarePending {
 class FirmwareUpdateService {
 public:
     static constexpr uint32_t kConfirmTimeoutMs = 2 * 60 * 1000;
+    static constexpr uint32_t kChunkTimeoutMs = 10 * 1000;
+    static constexpr uint32_t kFinishTimeoutMs = 30 * 1000;
 
     struct Deps {
         // Null: this board has no OTA slots; every upload is Unsupported.
@@ -137,9 +155,13 @@ public:
         std::function<void()> restart;
         std::function<uint64_t()> now_ms;
         uint32_t confirm_timeout_ms = kConfirmTimeoutMs;
+        // How long the uploader waits for the flash thread to take one
+        // chunk (begin() included), and for the final verification.
+        uint32_t chunk_timeout_ms = kChunkTimeoutMs;
+        uint32_t finish_timeout_ms = kFinishTimeoutMs;
     };
 
-    explicit FirmwareUpdateService(Deps deps);
+    explicit FirmwareUpdateService(Deps deps, StorageWorker* worker = nullptr);
 
     FirmwareUpdateService(const FirmwareUpdateService&) = delete;
     FirmwareUpdateService& operator=(const FirmwareUpdateService&) = delete;
@@ -184,6 +206,14 @@ private:
 
     // Under mutex_: back to Idle for the next upload.
     void reset_locked();
+    // Queues FirmwareUpdater::abort() behind every earlier call. Under
+    // mutex_, so it lands before a later upload's begin().
+    void abort_updater_locked();
+    // Adds `bytes` to chunk_, handing each full chunk to the platform.
+    Result<void> gather(std::span<const uint8_t> bytes);
+    // Hands the gathered bytes to the platform and waits for them.
+    Result<void> flush_chunk();
+
     // Ends the current upload with `failure`, published as "failed" with
     // `event_error` (default: to_string(failure)). A stale id only returns.
     FirmwareOutcome fail_upload(uint32_t id, FirmwareFailure failure, std::string message,
@@ -191,7 +221,10 @@ private:
     void publish(const char* state, const std::string& version, const char* error = nullptr);
     uint64_t now() const;
 
+    struct Chunk;
+
     Deps deps_;
+    StorageWorker* worker_ = nullptr;
     FirmwareTarget target_;
 
     mutable os::Mutex mutex_;
@@ -203,6 +236,10 @@ private:
     // The first kFirmwareHeadBytes, held until the image is identified.
     std::string head_;
     bool identified_ = false;
+    // Bytes gathered for the next FirmwareUpdater::write(), once the image
+    // is identified. Shared with the job writing it, which may outlive a
+    // timed-out wait.
+    std::shared_ptr<Chunk> chunk_;
     std::string version_;  // of the image being uploaded or awaiting an answer
     uint64_t pending_since_ms_ = 0;
 };

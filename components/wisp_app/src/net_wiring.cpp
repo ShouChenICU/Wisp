@@ -162,6 +162,7 @@ void NetWiring::start() {
             .power_status = [this] { return power_status(); },
             .occupancy = deps_.occupancy,
             .files = deps_.files,
+            .worker = deps_.worker,
         });
         reconcile_http(now);  // http_always_on serves from boot
     }

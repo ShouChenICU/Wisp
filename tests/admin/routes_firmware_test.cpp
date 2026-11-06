@@ -5,19 +5,27 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "admin/admin_fixture.hpp"
 #include "support/fake_firmware.hpp"
 #include "support/fake_http.hpp"
+#include "support/fake_settings_backend.hpp"
+#include "support/wait.hpp"
+#include "wisp/core/cached_settings.hpp"
 #include "wisp/core/firmware_update.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/os/os.hpp"
 
 using wisp::Properties;
 using wisp::Value;
@@ -49,7 +57,8 @@ const Value& at(const Value& v, const char* key) {
 }
 
 struct FirmwareFixture {
-    explicit FirmwareFixture(bool with_service = true) {
+    explicit FirmwareFixture(bool with_service = true,
+                             wisp::core::StorageWorker* worker = nullptr) {
         if (with_service) {
             FirmwareUpdateService::Deps deps;
             deps.updater = &updater;
@@ -59,7 +68,7 @@ struct FirmwareFixture {
                 ++confirm_requests;
                 if (on_confirm_request) on_confirm_request();
             };
-            service = std::make_unique<FirmwareUpdateService>(std::move(deps));
+            service = std::make_unique<FirmwareUpdateService>(std::move(deps), worker);
         }
         f.srv.reset();
         wisp::admin::AdminDeps deps = f.make_deps();
@@ -314,13 +323,18 @@ TEST(AdminFirmware, UploadHoldsNetworkAndCpuLocks) {
     }
     EXPECT_TRUE(ota_locks().empty());
     // A write that fails ends the request from on_data(): the locks go at
-    // once, while the server is still draining the rest of the body.
+    // once, while the server is still draining the rest of the body. The
+    // platform sees the image a full chunk at a time, so it takes more
+    // than one to fail before the end.
     fx.updater.fail_write = true;
     {
-        std::optional<wisp::net::StreamStart> start = fx.stream(fx.head(image.size()));
+        ImageSpec big;
+        big.extra_bytes = 2 * wisp::core::kIoChunk;
+        const auto large = make_firmware_image(big);
+        std::optional<wisp::net::StreamStart> start = fx.stream(fx.head(large.size()));
         ASSERT_TRUE(start && start->sink);
         std::optional<HttpResponse> early;
-        std::span<const uint8_t> body(image);
+        std::span<const uint8_t> body(large);
         while (!early && !body.empty()) {
             const size_t n = std::min(body.size(), wisp::net::kBodyChunkBytes);
             early = start->sink->on_data(body.first(n));
@@ -357,4 +371,55 @@ TEST(AdminFirmware, BufferedUploadIsRefused) {
     HttpResponse res = fx.f.srv->handle(req);
     EXPECT_EQ(res.status, 501);
     EXPECT_EQ(error_code(res), "unsupported");
+}
+
+// A settings change made while an upload's chunk waits for the flash
+// thread is written first: Normal work overtakes queued Bulk chunks, so
+// an OTA never holds up a save by more than the chunk being written.
+TEST(AdminFirmware, SettingsWriteDuringUploadIsNotDelayed) {
+    wisp::core::StorageWorker worker;
+    ASSERT_TRUE(worker.start());
+    wisp::test::FakePlatformBackend platform;
+    wisp::core::CachedSettingsBackend cache(platform, worker, {});
+    ASSERT_TRUE(cache.load());
+    FirmwareFixture fx(true, &worker);
+
+    // Park the flash thread in a Bulk job, so the upload's first chunk
+    // queues behind it.
+    wisp::os::Semaphore started(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    // A failed assertion below must not leave the worker parked.
+    struct ReleaseOnExit {
+        wisp::os::Semaphore& s;
+        ~ReleaseOnExit() { s.give(); }
+    } guard{release};
+    ASSERT_TRUE(worker.submit(
+        [&] {
+            started.give();
+            (void)release.take(wisp::os::kForever);
+        },
+        wisp::core::IoLane::Bulk));
+    ASSERT_TRUE(started.take(5000));
+
+    std::atomic<int> saved_before_begin{-1};
+    fx.updater.on_begin = [&] {
+        std::lock_guard<std::mutex> lock(platform.m);
+        saved_before_begin = platform.batches.empty() ? 0 : 1;
+    };
+    const auto image = make_firmware_image();
+    HttpResponse res;
+    std::thread upload([&] { res = fx.upload(image); });
+    ASSERT_TRUE(wisp::test::wait_until([&] { return worker.pending() == 2; }, 5000));
+
+    ASSERT_TRUE(cache.set("system", "brightness", Value(int64_t{40})));
+    ASSERT_TRUE(wisp::test::wait_until([&] { return worker.pending() == 3; }, 5000));
+    release.give();
+    upload.join();
+
+    EXPECT_EQ(res.status, 202) << res.body;
+    EXPECT_EQ(saved_before_begin.load(), 1);
+    EXPECT_EQ(fx.updater.written, image);
+    EXPECT_EQ(fx.updater.off_flash_thread.load(), 0);
+    ASSERT_TRUE(fx.service->decline().ok());
+    worker.stop();
 }

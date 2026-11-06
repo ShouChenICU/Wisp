@@ -7,13 +7,19 @@
 // Content-Length, so a 64 MB file never sits in memory. Nothing here
 // deletes a file unless DELETE asks for that one file.
 //
-// Every SceneFiles call touches flash: these routes run on the admin
-// server's threads, which may (AdminDeps::files).
+// Every SceneFiles call touches flash, so each one runs on the flash
+// thread (AdminDeps::worker; spec 3.6 of
+// docs/superpowers/specs/2026-11-06-flash-thread-design.md) while the
+// server's thread waits: a download one read of at most kIoChunk at a
+// time in the Bulk lane, so saves queued meanwhile wait for one chunk at
+// most, the rest in the Normal lane. A wait that runs out fails the
+// request (or ends the download short).
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -25,12 +31,40 @@
 #include "admin_internal.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_manifest.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/large.hpp"
 
 namespace wisp::admin::detail {
 
 namespace {
+
+// How long a request waits for the flash thread to run one call: one
+// chunk of a download (a 32 KiB read), a listing, a stat or a delete.
+constexpr uint32_t kFlashWaitMs = 5000;
+// A full lane (an OTA upload and other downloads share Bulk) drains
+// within a few chunks.
+constexpr uint32_t kBusyRetryMs = 2000;
+constexpr uint32_t kBusyPollMs = 10;
+
+// fn() run on the flash thread, or right here without a worker (tests,
+// boards without scenes). The job may outlive a timed-out wait, so `fn`
+// holds copies of what it needs and its result goes to a shared slot; a
+// read's bytes land in the PSRAM buffer SceneFiles::read() returns.
+template <typename T, typename Fn>
+Result<T> on_flash(core::StorageWorker* worker, Fn fn, core::IoLane lane = core::IoLane::Normal) {
+    if (worker == nullptr) return fn();
+    auto out = std::make_shared<std::optional<Result<T>>>();
+    std::function<void()> job = [out, fn] { out->emplace(fn()); };
+    Result<void> r = worker->run_sync(job, kFlashWaitMs, lane);
+    for (uint32_t waited = 0; !r && r.error().code == ErrorCode::Busy && waited < kBusyRetryMs;
+         waited += kBusyPollMs) {
+        os::sleep_ms(kBusyPollMs);
+        r = worker->run_sync(job, kFlashWaitMs, lane);
+    }
+    if (!r) return Result<T>::err(r.error().code, r.error().message);
+    return std::move(**out);
+}
 
 net::HttpResponse unavailable() {
     return net::HttpResponse::error(503, "unavailable", "scene files are not available");
@@ -115,9 +149,12 @@ net::HttpResponse list_files(AdminDeps& deps, const RequestContext& ctx) {
     net::HttpResponse refusal;
     std::optional<std::string> id = installed_scene(deps, ctx, refusal);
     if (!id) return refusal;
-    auto info = deps.files->info(*id);
+    core::SceneFiles* files = deps.files;
+    auto info =
+        on_flash<core::SceneFilesInfo>(deps.worker, [files, id = *id] { return files->info(id); });
     if (!info) return files_error(info.error());
-    auto listed = deps.files->list(*id);
+    auto listed =
+        on_flash<core::SceneFileList>(deps.worker, [files, id = *id] { return files->list(id); });
     if (!listed) return files_error(listed.error());
     const core::SceneFilesInfo& i = info.value();
     const auto& entries = listed.value().entries;
@@ -169,6 +206,7 @@ net::HttpResponse list_files(AdminDeps& deps, const RequestContext& ctx) {
 // deep standby from turning Wi-Fi off under a long one.
 struct Download {
     core::SceneFiles* files = nullptr;
+    core::StorageWorker* worker = nullptr;
     os::LargeString scene;
     os::LargeString name;
     uint64_t offset = 0;
@@ -181,7 +219,9 @@ net::HttpResponse download_file(AdminDeps& deps, const RequestContext& ctx) {
     if (!id) return refusal;
     std::optional<std::string> name = file_name(ctx, refusal);
     if (!name) return refusal;
-    auto entry = deps.files->stat(*id, *name);
+    core::SceneFiles* files = deps.files;
+    auto entry = on_flash<core::SceneFileEntry>(
+        deps.worker, [files, id = *id, name = *name] { return files->stat(id, name); });
     if (!entry) return files_error(entry.error());
 
     net::HttpResponse res;
@@ -195,6 +235,7 @@ net::HttpResponse download_file(AdminDeps& deps, const RequestContext& ctx) {
 
     auto dl = std::allocate_shared<Download>(os::LargeAllocator<Download>());
     dl->files = deps.files;
+    dl->worker = deps.worker;
     dl->scene.assign(id->data(), id->size());
     // On the card, the spelling on disk.
     dl->name.assign(entry.value().name.data(), entry.value().name.size());
@@ -205,10 +246,14 @@ net::HttpResponse download_file(AdminDeps& deps, const RequestContext& ctx) {
     res.stream_length = entry.value().size;
     Download* state = dl.get();
     res.stream = [state](std::span<uint8_t> buf) -> Result<size_t> {
-        const size_t want = std::min(buf.size(), net::kStreamChunkBytes);
-        auto data = state->files->read(std::string_view(state->scene.data(), state->scene.size()),
-                                       std::string_view(state->name.data(), state->name.size()),
-                                       state->offset, want);
+        const size_t want = std::min({buf.size(), net::kStreamChunkBytes, core::kIoChunk});
+        core::SceneFiles* files = state->files;
+        auto data = on_flash<os::LargeBuffer>(
+            state->worker,
+            [files, scene = std::string(state->scene.data(), state->scene.size()),
+             name = std::string(state->name.data(), state->name.size()), offset = state->offset,
+             want] { return files->read(scene, name, offset, want); },
+            core::IoLane::Bulk);
         if (!data) return Result<size_t>::err(data.error().code, data.error().message);
         const size_t n = std::min(data.value().size(), want);
         std::memcpy(buf.data(), data.value().data(), n);
@@ -225,7 +270,9 @@ net::HttpResponse delete_file(AdminDeps& deps, const RequestContext& ctx) {
     if (!id) return refusal;
     std::optional<std::string> name = file_name(ctx, refusal);
     if (!name) return refusal;
-    Result<void> r = deps.files->remove(*id, *name);
+    core::SceneFiles* files = deps.files;
+    Result<void> r = on_flash<void>(
+        deps.worker, [files, id = *id, name = *name] { return files->remove(id, name); });
     if (!r) return files_error(r.error());
     return no_content();
 }

@@ -64,6 +64,7 @@
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/net/asset_pack.hpp"
@@ -139,10 +140,12 @@ struct AdminDeps {
     std::function<Value()> power_status = {};
     // GET /system/occupancy (spec 6.3). Null: 503 unavailable.
     core::OccupancyRegistry* occupancy = nullptr;
-    // GET/DELETE /scenes/{id}/files[/{name}] (spec 7.2). Its methods touch
-    // flash, so the server calling handle() must run on threads that may
-    // (EspHttpServerConfig::flash_access). Null: 503 unavailable.
+    // GET/DELETE /scenes/{id}/files[/{name}] (spec 7.2). Null: 503
+    // unavailable.
     core::SceneFiles* files = nullptr;
+    // The flash thread: every `files` call runs on it, a download chunk by
+    // chunk (Bulk lane). Null (tests): they run on the calling thread.
+    core::StorageWorker* worker = nullptr;
     // Monotonic os::now_ms() timebase; the only clock the router uses.
     // Tests inject their own; left empty, AdminServer uses os::now_ms().
     std::function<uint64_t()> now_ms = [] { return os::now_ms(); };
