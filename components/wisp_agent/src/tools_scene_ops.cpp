@@ -10,9 +10,17 @@
 // work there with run_io().
 //
 // A stopped scene's store is opened for the one call on the worker, with
-// the runtime's own limits, then flushed and closed. A scene opened at that
-// very moment loads the store from disk, so it can miss a write that is
-// still being flushed; the window is the length of that one flush.
+// the runtime's own limits, then flushed and closed, all in one worker
+// job. The scene task answers NotFound from the moment an open begins
+// until it handles that open's Open message, which the open's load job
+// (on the worker) posts once the store is loaded. So a write can find the
+// scene "stopped" while its load job is already queued: the load then runs
+// first, and the write reaches the disk behind a live store whose index
+// lacks it (its next compaction would drop it). After a stopped-store
+// write, data_write therefore sends the key to the runtime once more: the
+// Open was posted before the write's job ran, so this StoreSet queues
+// behind it and lands in the live store; NotFound means the scene really
+// is stopped.
 //
 // Everything a scene wrote -- its data, files, log lines, eval results
 // and errors -- goes back wrapped by scene_data() (spec 6.3).
@@ -216,6 +224,9 @@ Result<void> add_scene_ops_tools(ToolRegistry& reg, SceneOpsDeps deps) {
                 const std::string id = arg_str(a, "id");
                 const Value* wd = a.find("with_data");
                 const bool with_data = wd != nullptr && wd->as_bool();
+                if (ops->d.repo.dev()) {
+                    return tool_error("unsupported", "scenes are read-only in dev mode");
+                }
                 if (ops->busy(id)) return tool_error("busy", "the scene is being replaced");
                 auto removal = ops->d.repo.removal(id, with_data);
                 if (!removal) return fail(removal.error());
@@ -296,6 +307,10 @@ Result<void> add_scene_ops_tools(ToolRegistry& reg, SceneOpsDeps deps) {
                         ctx);
                     r = w ? Result<void>::ok()
                           : Result<void>::err(w.error().code, w.error().message);
+                    if (r) {
+                        Result<void> live = ops->d.runtime.store_set(id, key, json);
+                        if (!live && live.error().code != ErrorCode::NotFound) r = live;
+                    }
                 }
                 if (!r) return fail(r.error());
                 return done({},

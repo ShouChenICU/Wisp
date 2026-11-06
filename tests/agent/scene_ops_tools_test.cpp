@@ -433,3 +433,75 @@ TEST_F(SceneOps, BusyWhileInstalling) {
     ASSERT_TRUE(installing.get());
     EXPECT_TRUE(call("scene_data_read", R"({"id":"counter"})").ok);
 }
+
+// A write to a scene that is not running yet races its open: the scene
+// task answers NotFound while the scene's load job waits on the worker, so
+// the tool writes the stopped store from a job queued behind that load.
+// The live store loaded before the write; the write must still reach it,
+// not only the disk behind it (where its next compaction would drop it).
+TEST_F(SceneOps, DataWriteRacingAnOpenReachesTheLiveStore) {
+    begin();
+    std::promise<void> running;
+    std::promise<void> release;
+    std::shared_future<void> go = release.get_future().share();
+    ASSERT_TRUE(worker.submit([&running, go] {
+        running.set_value();
+        go.wait();
+    }));
+    running.get_future().wait();
+    // The open's load job queues behind the blocked worker.
+    auto opening = std::async(std::launch::async, [this] { return rt->open("counter"); });
+    ASSERT_TRUE(wait_until([this] { return worker.pending() >= 1; }, 3000));
+    auto writing = std::async(std::launch::async, [this] {
+        return call("scene_data_write", R"({"id":"counter","key":"count","value":7})");
+    });
+    // The tool's stopped-store job queues behind the load.
+    ASSERT_TRUE(wait_until([this] { return worker.pending() >= 2; }, 3000));
+    release.set_value();
+    ASSERT_TRUE(opening.get());
+    ToolOutput w = writing.get();
+    ASSERT_TRUE(w.ok) << wisp::to_json(w.result);
+    EXPECT_EQ(eval("return wisp.store.get('count')"), "7");
+    // And it stays there across the scene's own close (its final flush).
+    ASSERT_TRUE(rt->exit("counter"));
+    ASSERT_TRUE(rt->open("counter"));
+    EXPECT_EQ(eval("return wisp.store.get('count')"), "7");
+}
+
+// In dev mode a scene cannot be deleted, so the user is not asked first.
+TEST_F(SceneOps, DeleteInDevModeDoesNotAsk) {
+    begin();
+    wisp::core::SceneRepoConfig rc;
+    rc.code_root = in + "/scenes";
+    rc.data_root = in + "/scenes";
+    rc.dev = true;
+    rc.worker = &worker;
+    wisp::core::SceneRepository dev_repo(*storage, rc);
+    wisp::agent::ToolRegistry reg(wisp::agent::ToolExecutors{});
+    bool deleted = false;
+    ASSERT_TRUE(wisp::agent::add_scene_ops_tools(
+        reg,
+        wisp::agent::SceneOpsDeps{
+            .runtime = *rt,
+            .repo = dev_repo,
+            .files = files.get(),
+            .storage = *storage,
+            .submit_io = [this](std::function<void()> fn) { return worker.submit(std::move(fn)); },
+            .delete_scene =
+                [&deleted](const std::string&, bool, std::function<void(Result<void>)> done) {
+                    deleted = true;
+                    done(Result<void>::ok());
+                },
+            .confirm =
+                [this](const std::string& text, ToolCtx&) {
+                    confirms.push_back(text);
+                    return true;
+                },
+        }));
+    ToolOutput out = reg.call("scene_delete", R"({"id":"counter"})", ctx);
+    ASSERT_FALSE(out.ok);
+    EXPECT_EQ(str(out.result, "error"), "unsupported");
+    EXPECT_TRUE(confirms.empty());
+    EXPECT_FALSE(deleted);
+    EXPECT_TRUE(repo->manifest("counter"));
+}
