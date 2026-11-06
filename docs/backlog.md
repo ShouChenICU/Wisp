@@ -111,6 +111,13 @@ Source: `feat/agent-core` review records.
   - `install()` never checks `ctx.cancelled`, so a stopped turn still waits through confirm, check, install and settle;
   - `scene_workspace.cpp` re-implements the directory walk from `scene_repository.cpp`;
   - `wait_stable()` watches the whole-screen frame counter, so a system-layer animation during a turn may keep `stable` false on the device.
+- Scene-ops and device tools:
+  - `docs.read` copies a topic into a `std::string` (the `lua` topic is ~16 KB, just under the internal-RAM malloc threshold) and `widgets_overview()` grows one; return a view or `os::LargeString`;
+  - the `lua` docs topic repeats the widgets reference (Value types through Widgets), costing ~4K tokens twice; exclude those sections;
+  - `notify.list` builds system-notice text in the device language, not the conversation's;
+  - `AppScenes.DeleteSceneWithoutDialog` needs its own `EventBus` because `os::set_flash_thread()` is one global taken over by a second worker;
+  - `ThreadsRisksAndTimeouts` asserts `timeout_ms` on agent-thread tools, which the registry ignores;
+  - `tr_fill_n` has no direct test in `strings_test.cpp`.
 
 ## Glyph partition parked review findings
 
