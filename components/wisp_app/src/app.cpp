@@ -206,11 +206,10 @@ Result<void> App::start() {
             });
         if (!impl->settings_cache) {
             WLOG_E("app", "no memory for the settings cache; settings are written directly");
-        } else {
-            if (auto r = impl->settings_cache->load(); !r) {
-                WLOG_W("app", "settings not loaded: %s", r.error().message.c_str());
-            }
-            impl->settings_front.attach(impl->settings_cache.get());
+        } else if (auto r = impl->settings_front.load_and_attach(*impl->settings_cache); !r) {
+            WLOG_W("app", "settings not loaded into memory (%s); reading them directly",
+                   r.error().message.c_str());
+            impl->settings_cache.reset();
         }
     }
     if (auto r = impl_->models.init(); !r) {
@@ -649,13 +648,10 @@ void App::stop() {
         // The cache points at the worker: from here on Settings go to the
         // platform backend, once whatever was changed meanwhile is written
         // (inline now that the worker has stopped).
-        if (impl_->settings_cache) {
-            impl_->settings_front.attach(nullptr);
-            if (auto r = impl_->settings_cache->flush(os::kForever); !r) {
-                WLOG_W("app", "settings not saved: %s", r.error().message.c_str());
-            }
-            impl_->settings_cache.reset();
+        if (auto r = impl_->settings_front.detach_and_flush(); !r) {
+            WLOG_W("app", "settings not saved: %s", r.error().message.c_str());
         }
+        impl_->settings_cache.reset();
         impl_->scenes.reset();
     }
 

@@ -18,6 +18,17 @@
 // in a row `on_persist_failed` is called once (App posts the "设置未能保存"
 // system notice); a successful save starts the count again.
 //
+// When the worker's Normal lane is full the save is not queued: the
+// change stays in memory (and dirty) until the next change, a flush() or
+// the shutdown flush writes it.
+//
+// set() and write_batch() refuse, with InvalidArgument and at once, a
+// name validate_settings_name() rejects or a value larger than
+// kSettingsMaxValueBytes, so nothing the platform cannot store reaches
+// the cache. Should the platform still refuse a change as invalid, that
+// change is dropped (logged) rather than kept dirty, so it cannot block
+// every later save.
+//
 // Before the worker starts and after it stops (the single-threaded boot
 // and shutdown phases) StorageWorker::run_sync() runs the job inline, so
 // the cache works without a running worker too: every change is then

@@ -175,3 +175,13 @@ TEST(SettingsJsonFile, WriteBatchFailureKeepsValues) {
     EXPECT_EQ(be.get("display", "brightness").value().as_int(), 128);
     EXPECT_EQ(be.get("sys", "lang").error().code, wisp::ErrorCode::NotFound);
 }
+
+TEST(SettingsJsonFile, RefusesValuesOverTheLimit) {
+    auto path = temp_dir() / "s7.json";
+    wisp::port::sim::JsonFileSettingsBackend be(path.string());
+    const std::string too_big(wisp::core::kSettingsMaxValueBytes - 1, 'a');
+    EXPECT_EQ(be.set("agent", "prompt", too_big).error().code, wisp::ErrorCode::InvalidArgument);
+    const wisp::core::SettingsChange changes[] = {{"agent", "prompt", wisp::Value(too_big)}};
+    EXPECT_EQ(be.write_batch(changes).error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(be.get("agent", "prompt").error().code, wisp::ErrorCode::NotFound);
+}

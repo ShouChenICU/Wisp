@@ -140,6 +140,9 @@ wisp_test(NAME console_test SRCS app/console_test.cpp
 wisp_test(NAME loopback_test SRCS app/loopback_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 target_include_directories(loopback_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+wisp_test(NAME settings_front_test SRCS app/settings_front_test.cpp
+          LIBS wisp_app wisp_port_sim_os TIMEOUT 20)
+target_include_directories(settings_front_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME notification_router_test SRCS app/notification_router_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
 target_include_directories(notification_router_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)

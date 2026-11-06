@@ -14,6 +14,7 @@
 // on one port is rejected identically on the other -- see AGENTS.md's
 // "配置键" rule.
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -32,6 +33,16 @@ namespace wisp::core {
 // the top of get()/set()/erase() so the rule behaves identically on every
 // port.
 Result<void> validate_settings_name(std::string_view name);
+
+// The largest value a setting may hold, as the bytes of its
+// wisp::to_json_raw() text: NVS caps one string entry at 4000 bytes with
+// its terminator. Every backend rejects a larger value with
+// ErrorCode::InvalidArgument, so the limit is the same on every port.
+inline constexpr size_t kSettingsMaxValueBytes = 3999;
+
+// InvalidArgument when `value` serializes to more than
+// kSettingsMaxValueBytes; `ns`/`key` only name it in the message.
+Result<void> validate_settings_value(std::string_view ns, std::string_view key, const Value& value);
 
 // One stored key, as SettingsBackend::load_all() returns it.
 struct SettingsEntry {

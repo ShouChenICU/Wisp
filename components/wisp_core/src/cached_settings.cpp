@@ -129,6 +129,7 @@ Result<void> CachedSettingsBackend::set(const std::string& ns, const std::string
                                         const Value& value) {
     WISP_TRY(validate_settings_name(ns));
     WISP_TRY(validate_settings_name(key));
+    WISP_TRY(validate_settings_value(ns, key, value));
     bool save = false;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
@@ -179,6 +180,7 @@ Result<void> CachedSettingsBackend::write_batch(std::span<const SettingsChange> 
     for (const SettingsChange& c : changes) {
         WISP_TRY(validate_settings_name(c.ns));
         WISP_TRY(validate_settings_name(c.key));
+        if (c.value) WISP_TRY(validate_settings_value(c.ns, c.key, *c.value));
     }
     bool save = false;
     {
@@ -234,6 +236,26 @@ Result<void> CachedSettingsBackend::persist() {
         erased = static_cast<bool>(r);
     }
     if (r && !changes.empty()) r = platform_.write_batch(changes);
+    if (!r && r.error().code == ErrorCode::InvalidArgument && !changes.empty()) {
+        // The platform refuses something in the batch for good (set() has
+        // checked names and sizes, so this should not happen). Kept dirty,
+        // that key would fail every later save too: find it by writing the
+        // changes one at a time, drop what is refused and keep the rest.
+        std::vector<SettingsChange> failed;
+        r = Result<void>::ok();
+        for (SettingsChange& c : changes) {
+            Result<void> one = platform_.write_batch(std::span<const SettingsChange>(&c, 1));
+            if (one) continue;
+            if (one.error().code == ErrorCode::InvalidArgument) {
+                WLOG_W(kTag, "setting %s/%s refused by the platform, not saved: %s", c.ns.c_str(),
+                       c.key.c_str(), one.error().message.c_str());
+                continue;
+            }
+            failed.push_back(std::move(c));
+            r = one;
+        }
+        changes = std::move(failed);
+    }
 
     bool notify = false;
     {

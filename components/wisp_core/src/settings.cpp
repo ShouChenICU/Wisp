@@ -2,12 +2,25 @@
 
 #include <utility>
 
+#include "wisp/base/json.hpp"
+
 namespace wisp::core {
 
 Result<void> validate_settings_name(std::string_view name) {
     if (name.empty() || name.size() > 15) {
         return Result<void>::err(ErrorCode::InvalidArgument,
                                  "settings name must be 1-15 characters: " + std::string(name));
+    }
+    return Result<void>::ok();
+}
+
+Result<void> validate_settings_value(std::string_view ns, std::string_view key,
+                                     const Value& value) {
+    if (to_json_raw(value).size() > kSettingsMaxValueBytes) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "settings value too large (>" +
+                                     std::to_string(kSettingsMaxValueBytes) +
+                                     " bytes): " + std::string(ns) + "/" + std::string(key));
     }
     return Result<void>::ok();
 }

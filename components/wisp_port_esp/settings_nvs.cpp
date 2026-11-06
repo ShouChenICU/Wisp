@@ -20,8 +20,9 @@ constexpr const char* kTag = "settings_nvs";
 
 // NVS's own documented cap on a single string value's length, including
 // the implicit null terminator nvs_set_str() appends -- see
-// settings_nvs.hpp's file comment.
+// settings_nvs.hpp's file comment. The portable limit is derived from it.
 constexpr size_t kNvsStringMaxLen = 4000;
+static_assert(core::kSettingsMaxValueBytes + 1 <= kNvsStringMaxLen);
 
 }  // namespace
 

@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "support/fake_settings_backend.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/os/flash_guard.hpp"
@@ -22,82 +23,9 @@ using wisp::core::Settings;
 using wisp::core::SettingsChange;
 using wisp::core::SettingsEntry;
 using wisp::core::StorageWorker;
+using wisp::test::FakePlatformBackend;
 
 namespace {
-
-// A platform backend that keeps its store in memory and records how it is
-// used: how often each call happens, what each write_batch() carried, and
-// whether every write ran on the flash thread.
-class FakePlatformBackend : public wisp::core::SettingsBackend {
-public:
-    Result<Value> get(const std::string& ns, const std::string& key) override {
-        std::lock_guard<std::mutex> lock(m);
-        ++gets;
-        auto it = store.find({ns, key});
-        if (it == store.end()) return Result<Value>::err(ErrorCode::NotFound, ns + "/" + key);
-        return Result<Value>::ok(it->second);
-    }
-    Result<void> set(const std::string& ns, const std::string& key, const Value& value) override {
-        std::lock_guard<std::mutex> lock(m);
-        store[{ns, key}] = value;
-        return Result<void>::ok();
-    }
-    Result<void> erase(const std::string& ns, const std::string& key) override {
-        std::lock_guard<std::mutex> lock(m);
-        store.erase({ns, key});
-        return Result<void>::ok();
-    }
-    Result<void> erase_all() override {
-        std::lock_guard<std::mutex> lock(m);
-        ++erase_alls;
-        if (!wisp::os::on_flash_thread()) off_thread = true;
-        store.clear();
-        return Result<void>::ok();
-    }
-    Result<std::vector<SettingsEntry>> load_all() override {
-        std::lock_guard<std::mutex> lock(m);
-        ++loads;
-        std::vector<SettingsEntry> out;
-        for (const auto& [name, value] : store) out.push_back({name.first, name.second, value});
-        return Result<std::vector<SettingsEntry>>::ok(std::move(out));
-    }
-    Result<void> write_batch(std::span<const SettingsChange> changes) override {
-        std::lock_guard<std::mutex> lock(m);
-        if (!wisp::os::on_flash_thread()) off_thread = true;
-        batches.emplace_back(changes.begin(), changes.end());
-        if (fail_writes > 0) {
-            --fail_writes;
-            return Result<void>::err(ErrorCode::IoError, "injected");
-        }
-        for (const SettingsChange& c : changes) {
-            if (c.value) {
-                store[{c.ns, c.key}] = *c.value;
-            } else {
-                store.erase({c.ns, c.key});
-            }
-        }
-        return Result<void>::ok();
-    }
-
-    Value stored(const std::string& ns, const std::string& key) {
-        std::lock_guard<std::mutex> lock(m);
-        auto it = store.find({ns, key});
-        return it == store.end() ? Value() : it->second;
-    }
-    size_t batch_count() {
-        std::lock_guard<std::mutex> lock(m);
-        return batches.size();
-    }
-
-    std::mutex m;
-    std::map<std::pair<std::string, std::string>, Value> store;
-    std::vector<std::vector<SettingsChange>> batches;
-    int gets = 0;
-    int loads = 0;
-    int erase_alls = 0;
-    int fail_writes = 0;
-    bool off_thread = false;
-};
 
 // Releases a job blocked on `sem` when the test body exits, including by a
 // failed ASSERT, so the worker's destructor can join. Declare it after the
@@ -313,4 +241,150 @@ TEST(CachedSettings, LoadAllAndWriteBatchServeTheCache) {
     EXPECT_EQ(all.value()[0].value, Value("s"));
     EXPECT_EQ(platform.stored("b", "y"), Value("s"));
     EXPECT_EQ(platform.stored("a", "x"), Value());
+}
+
+TEST(CachedSettings, OversizedValueIsRefusedAtOnce) {
+    FakePlatformBackend platform;
+    StorageWorker w;
+    ASSERT_TRUE(w.start());
+    CachedSettingsBackend cache(platform, w, {});
+    ASSERT_TRUE(cache.load());
+
+    // A string's JSON adds its two quotes.
+    const std::string fits(wisp::core::kSettingsMaxValueBytes - 2, 'a');
+    const std::string too_big(wisp::core::kSettingsMaxValueBytes - 1, 'a');
+    EXPECT_TRUE(cache.set("agent", "prompt", fits));
+    EXPECT_EQ(cache.set("agent", "prompt", too_big).error().code, ErrorCode::InvalidArgument);
+    const SettingsChange batch[] = {{"agent", "other", Value(1)},
+                                    {"agent", "prompt", Value(too_big)}};
+    EXPECT_EQ(cache.write_batch(batch).error().code, ErrorCode::InvalidArgument);
+    ASSERT_TRUE(cache.flush(1000));
+
+    // Nothing of the refused calls reached the cache or the platform.
+    EXPECT_EQ(Settings(cache, "agent").get_string("prompt", ""), fits);
+    EXPECT_EQ(cache.get("agent", "other").error().code, ErrorCode::NotFound);
+    EXPECT_EQ(platform.stored("agent", "prompt"), Value(fits));
+    EXPECT_EQ(platform.stored("agent", "other"), Value());
+}
+
+TEST(CachedSettings, ChangeThePlatformRefusesIsDroppedNotRetried) {
+    FakePlatformBackend platform;
+    platform.refused_key = "bad";
+    std::atomic<int> notices{0};
+    StorageWorker w;
+    ASSERT_TRUE(w.start());
+    CachedSettingsBackend cache(platform, w, [&] { ++notices; });
+    ASSERT_TRUE(cache.load());
+    wisp::os::Semaphore release(1, 0);
+    ReleaseOnExit guard{release};
+    block_worker(w, release);
+
+    ASSERT_TRUE(cache.set("sys", "bad", 1));
+    ASSERT_TRUE(cache.set("sys", "good", 2));
+    release.give();
+    ASSERT_TRUE(cache.flush(1000));
+    EXPECT_EQ(platform.stored("sys", "good"), Value(2));
+    EXPECT_EQ(platform.stored("sys", "bad"), Value());
+
+    // Later saves no longer carry the refused key, and succeed.
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_TRUE(cache.set("sys", "next", i));
+        ASSERT_TRUE(cache.flush(1000));
+        ASSERT_FALSE(platform.batches.empty());
+        EXPECT_EQ(platform.batches.back().size(), 1u);
+        EXPECT_EQ(platform.batches.back()[0].key, "next");
+    }
+    EXPECT_EQ(platform.stored("sys", "next"), Value(3));
+    EXPECT_EQ(notices.load(), 0);
+}
+
+TEST(CachedSettings, SetDuringASaveInFlightPersistsTheNewerValue) {
+    FakePlatformBackend platform;
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    std::atomic<bool> hold{true};
+    platform.on_write = [&] {
+        if (hold.exchange(false)) {
+            entered.give();
+            release.take(wisp::os::kForever);
+        }
+    };
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    CachedSettingsBackend cache(platform, w, {});
+    ASSERT_TRUE(cache.load());
+
+    ASSERT_TRUE(cache.set("display", "brightness", 1));
+    ASSERT_TRUE(entered.take(5000));
+    // The worker is inside write_batch() with the old value.
+    ASSERT_TRUE(cache.set("display", "brightness", 2));
+    release.give();
+    ASSERT_TRUE(cache.flush(1000));
+    ASSERT_TRUE(w.drain(5000));
+
+    EXPECT_EQ(platform.stored("display", "brightness"), Value(2));
+    EXPECT_EQ(Settings(cache, "display").get_int("brightness", 0), 2);
+}
+
+TEST(CachedSettings, EraseAndSetOfOneKeyCoalesce) {
+    FakePlatformBackend platform;
+    platform.store[{"a", "x"}] = Value(0);
+    platform.store[{"a", "y"}] = Value(0);
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    CachedSettingsBackend cache(platform, w, {});
+    ASSERT_TRUE(cache.load());
+    block_worker(w, release);
+
+    // Erase then set: stored with the last value.
+    ASSERT_TRUE(cache.erase("a", "x"));
+    ASSERT_TRUE(cache.set("a", "x", 2));
+    // Set then erase: gone.
+    ASSERT_TRUE(cache.set("a", "y", 3));
+    ASSERT_TRUE(cache.erase("a", "y"));
+    release.give();
+    ASSERT_TRUE(cache.flush(1000));
+
+    ASSERT_EQ(platform.batches.size(), 1u);
+    ASSERT_EQ(platform.batches[0].size(), 2u);
+    EXPECT_EQ(platform.stored("a", "x"), Value(2));
+    EXPECT_EQ(platform.store.count({"a", "y"}), 0u);
+    EXPECT_EQ(cache.get("a", "y").error().code, ErrorCode::NotFound);
+}
+
+TEST(CachedSettings, EraseAllDuringASaveInFlight) {
+    FakePlatformBackend platform;
+    platform.store[{"old", "k"}] = Value(1);
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    std::atomic<bool> hold{true};
+    platform.on_write = [&] {
+        if (hold.exchange(false)) {
+            entered.give();
+            release.take(wisp::os::kForever);
+        }
+    };
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    CachedSettingsBackend cache(platform, w, {});
+    ASSERT_TRUE(cache.load());
+
+    ASSERT_TRUE(cache.set("a", "x", 1));
+    ASSERT_TRUE(entered.take(5000));
+    // The worker is writing a/x; erase everything and set one new key.
+    ASSERT_TRUE(cache.erase_all());
+    ASSERT_TRUE(cache.set("b", "y", 2));
+    release.give();
+    ASSERT_TRUE(cache.flush(1000));
+    ASSERT_TRUE(w.drain(5000));
+
+    EXPECT_EQ(platform.erase_alls, 1);
+    std::lock_guard<std::mutex> lock(platform.m);
+    EXPECT_EQ(platform.store.size(), 1u);
+    EXPECT_EQ(platform.store.count({"b", "y"}), 1u);
+    EXPECT_EQ(cache.get("a", "x").error().code, ErrorCode::NotFound);
 }

@@ -69,6 +69,7 @@ Result<void> JsonFileSettingsBackend::set(const std::string& ns, const std::stri
                                           const Value& value) {
     WISP_TRY(core::validate_settings_name(ns));
     WISP_TRY(core::validate_settings_name(key));
+    WISP_TRY(core::validate_settings_value(ns, key, value));
 
     std::lock_guard<os::Mutex> lock(mutex_);
 
@@ -161,6 +162,7 @@ Result<void> JsonFileSettingsBackend::write_batch(std::span<const core::Settings
     for (const core::SettingsChange& c : changes) {
         WISP_TRY(core::validate_settings_name(c.ns));
         WISP_TRY(core::validate_settings_name(c.key));
+        if (c.value) WISP_TRY(core::validate_settings_value(c.ns, c.key, *c.value));
     }
     std::lock_guard<os::Mutex> lock(mutex_);
     auto previous = store_;
