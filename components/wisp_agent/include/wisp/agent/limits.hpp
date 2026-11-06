@@ -30,14 +30,9 @@ inline constexpr uint32_t kKeepRecentTurns = 2;
 // An unanswered confirmation dialog counts as a refusal after this long.
 inline constexpr uint32_t kConfirmMs = 30000;
 
-// The screen counts as settled after this long without a redraw, waiting
-// at most kSettleMaxMs.
-inline constexpr uint32_t kSettleQuietMs = 300;
-inline constexpr uint32_t kSettleMaxMs = 2000;
-// ui.tree folds past this many characters, keeping this many lines at
-// each end.
-inline constexpr size_t kTreeMaxChars = 2000;
-inline constexpr size_t kTreeKeepEnds = 5;
+// The settle wait and ui.tree's size (kSettleQuietMs, kSettleMaxMs,
+// kTreeMaxChars, kTreeKeepEnds) belong to the scene layer that measures
+// them: wisp/scene/ui_inspector.hpp.
 
 // WS tool summaries: args and result cut to this many characters.
 inline constexpr size_t kSummaryChars = 200;

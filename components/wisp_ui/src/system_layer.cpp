@@ -312,6 +312,21 @@ void SystemLayer::update_pointer_hook() {
     }
 }
 
+std::vector<std::pair<const char*, lv_obj_t*>> SystemLayer::visible_pieces() const {
+    std::vector<std::pair<const char*, lv_obj_t*>> out;
+    auto add = [&out](const char* name, lv_obj_t* obj) {
+        if (obj != nullptr && !lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN))
+            out.emplace_back(name, obj);
+    };
+    add("capsule", capsule_);
+    add("banner", banner_);
+    add("panel", panel_);
+    add("error", error_panel_);
+    add("keyboard", kb_);
+    add("confirm", confirm_box_);
+    return out;
+}
+
 lv_obj_t* SystemLayer::back_arrow() const {
     if (arrow_ == nullptr || lv_obj_has_flag(arrow_, LV_OBJ_FLAG_HIDDEN)) return nullptr;
     return arrow_;

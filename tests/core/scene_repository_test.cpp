@@ -1025,3 +1025,119 @@ TEST(SceneRepository, ConcurrentCallsThroughTheWorkerAreSerialized) {
     EXPECT_GT(installed.load(), 0);
     worker.stop();
 }
+
+namespace {
+
+Result<SceneInfo> install_keeping_prev(Fixture& f, const Files& files) {
+    std::vector<uint8_t> zip = zip_of(files);
+    return f.repo->install(zip, accept_all, {}, {.keep_prev = true});
+}
+
+}  // namespace
+
+TEST(SceneRepositoryTest, KeepPrevMovesOldPackageAside) {
+    Fixture f;
+    ASSERT_TRUE(f.install(todo_files("1.0.0")));
+    ASSERT_TRUE(f.storage->write_atomic(f.repo->data_dir("todo") + "/kv.log", as_bytes("kv\n")));
+    EXPECT_FALSE(f.repo->has_prev("todo"));
+
+    auto r = install_keeping_prev(f, todo_files("2.0.0"));
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_EQ(r.value().manifest.version, "2.0.0");
+    EXPECT_TRUE(f.repo->has_prev("todo"));
+    EXPECT_EQ(read_raw(f.root() / ".prev" / "todo" / "scene.json"), scene_json("1.0.0"));
+    EXPECT_EQ(read_raw(f.root() / ".prev" / "todo" / "lib" / "util.lua"), "return {}\n");
+    // The data stays with the installed package, never in .prev.
+    EXPECT_EQ(read_raw(f.root() / "todo" / "data" / "kv.log"), "kv\n");
+    EXPECT_FALSE(on_disk(f.root() / ".prev" / "todo" / "data"));
+    EXPECT_EQ(f.repo->info("todo").value().manifest.version, "2.0.0");
+
+    // Without keep_prev an install leaves .prev alone.
+    ASSERT_TRUE(f.install(todo_files("3.0.0")));
+    EXPECT_EQ(read_raw(f.root() / ".prev" / "todo" / "scene.json"), scene_json("1.0.0"));
+}
+
+TEST(SceneRepositoryTest, PrevReplacedOnEachInstall) {
+    Fixture f;
+    ASSERT_TRUE(f.install(todo_files("1.0.0")));
+    ASSERT_TRUE(install_keeping_prev(f, todo_files("2.0.0")));
+    ASSERT_TRUE(install_keeping_prev(f, todo_files("3.0.0")));
+    EXPECT_EQ(read_raw(f.root() / ".prev" / "todo" / "scene.json"), scene_json("2.0.0"));
+    EXPECT_EQ(f.repo->info("todo").value().manifest.version, "3.0.0");
+    // A first install has nothing to keep.
+    Fixture g;
+    ASSERT_TRUE(install_keeping_prev(g, todo_files("1.0.0")));
+    EXPECT_FALSE(g.repo->has_prev("todo"));
+}
+
+TEST(SceneRepositoryTest, RemoveDeletesPrev) {
+    Fixture f;
+    ASSERT_TRUE(f.install(todo_files("1.0.0")));
+    ASSERT_TRUE(install_keeping_prev(f, todo_files("2.0.0")));
+    ASSERT_TRUE(f.repo->remove("todo", false));
+    EXPECT_FALSE(f.repo->has_prev("todo"));
+    EXPECT_FALSE(on_disk(f.root() / ".prev" / "todo"));
+
+    ASSERT_TRUE(f.install(todo_files("1.0.0")));
+    ASSERT_TRUE(install_keeping_prev(f, todo_files("2.0.0")));
+    ASSERT_TRUE(f.repo->remove("todo", true));
+    EXPECT_FALSE(on_disk(f.root() / ".prev" / "todo"));
+}
+
+TEST(SceneRepositoryTest, ListSkipsPrevAndDrafts) {
+    Fixture f;
+    ASSERT_TRUE(f.install(todo_files("1.0.0")));
+    ASSERT_TRUE(install_keeping_prev(f, todo_files("2.0.0")));
+    lay_out(f.root() / ".drafts" / "todo", todo_files("3.0.0"));
+    auto list = f.repo->list();
+    ASSERT_TRUE(list);
+    ASSERT_EQ(list.value().size(), 1u);
+    EXPECT_EQ(list.value()[0].manifest.version, "2.0.0");
+    // Neither does a boot's recovery touch them.
+    ASSERT_TRUE(f.repo->recover());
+    EXPECT_TRUE(f.repo->has_prev("todo"));
+    EXPECT_TRUE(on_disk(f.root() / ".drafts" / "todo" / "scene.json"));
+}
+
+TEST(SceneRepositoryTest, PrevZipReinstallsTheOldVersion) {
+    Fixture f;
+    EXPECT_EQ(f.repo->prev_zip("todo").error().code, ErrorCode::NotFound);
+    ASSERT_TRUE(f.install(todo_files("1.0.0")));
+    EXPECT_EQ(f.repo->prev_zip("todo").error().code, ErrorCode::NotFound);
+    ASSERT_TRUE(install_keeping_prev(f, todo_files("2.0.0")));
+
+    auto zip = f.repo->prev_zip("todo");
+    ASSERT_TRUE(zip) << zip.error().message;
+    EXPECT_EQ(zip_paths(zip.value()), (std::vector<std::string>{"assets/icon.png", "lib/util.lua",
+                                                                "main.lua", "scene.json"}));
+    // Reinstalling it keeping the previous one swaps the two.
+    auto back = f.repo->install(zip.value().span(), accept_all, {}, {.keep_prev = true});
+    ASSERT_TRUE(back) << back.error().message;
+    EXPECT_EQ(back.value().manifest.version, "1.0.0");
+    EXPECT_EQ(read_raw(f.root() / ".prev" / "todo" / "scene.json"), scene_json("2.0.0"));
+}
+
+TEST(SceneRepositoryTest, PrevWorksThroughTheWorker) {
+    wisp::core::StorageWorker worker;
+    Fixture f(false, "/scenes", &worker);
+    ASSERT_TRUE(worker.start());
+    ASSERT_TRUE(f.install(todo_files("1.0.0")));
+    ASSERT_TRUE(install_keeping_prev(f, todo_files("2.0.0")));
+    EXPECT_TRUE(f.repo->has_prev("todo"));
+    auto zip = f.repo->prev_zip("todo");
+    ASSERT_TRUE(zip) << zip.error().message;
+    ASSERT_TRUE(f.repo->remove("todo", false));
+    EXPECT_FALSE(f.repo->has_prev("todo"));
+    worker.stop();
+}
+
+TEST(SceneRepositoryTest, ValidPackagePath) {
+    using wisp::core::valid_package_path;
+    for (const char* ok : {"scene.json", "main.lua", "other.lua", "lib/u.lua", "lib/a/b.lua",
+                           "assets/a.png", "assets/x/y.bin"})
+        EXPECT_TRUE(valid_package_path(ok)) << ok;
+    for (const char* bad : {"", "../x", "/x", "data/k", "files/k", "x.txt", "lib/u.txt", "lib/.lua",
+                            "assets/", "assets/../x", "assets//a", "lib/a.tmp/b.lua",
+                            "assets/a.new", "a/main.lua", ".lua", "assets/a\\b", "assets/./a"})
+        EXPECT_FALSE(valid_package_path(bad)) << bad;
+}

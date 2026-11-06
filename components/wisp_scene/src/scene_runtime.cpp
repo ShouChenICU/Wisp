@@ -495,6 +495,45 @@ Result<void> SceneRuntime::check_sources(std::span<const core::SourceFile> files
     return job->result;
 }
 
+Result<void> SceneRuntime::check_build(std::shared_ptr<const core::ScenePackage> package) {
+    if (!running_) return Result<void>::err(ErrorCode::Busy, "scene runtime not running");
+    if (deps_.ui.on_ui_thread() || deps_.worker.on_worker())
+        return Result<void>::err(ErrorCode::Busy, "cannot wait for the scene task here");
+    if (!package) return Result<void>::err(ErrorCode::InvalidArgument, "no package");
+    const std::string& id = package->manifest.id;
+    if (!core::valid_scene_id(id))
+        return Result<void>::err(ErrorCode::InvalidArgument, "invalid scene id: " + id);
+    // The store is loaded from a directory that never exists, so it starts
+    // empty; with no way to queue a flush or a timer it can never write.
+    // load() is the only file access (two misses), on the worker.
+    core::SceneStoreDeps sd{deps_.storage, [](std::function<void()>) { return false; },
+                            [](uint32_t, std::function<void()>) {}};
+    auto store = core::SceneStore::create(std::move(sd), deps_.repo.data_dir(id) + "/.check");
+    Result<void> loaded =
+        core::call_on_worker<void>(&deps_.worker, [&store] { return store->load(); });
+    if (!loaded) return loaded;
+    auto job = std::make_shared<BuildCheckJob>();
+    job->package = std::move(package);
+    job->store = std::move(store);
+    if (task_->is_current()) return run_check_build(job->package, *job->store);
+    if (!push(make_message("", 0, msg::CheckBuild{job}), kPushMs))
+        return Result<void>::err(ErrorCode::Busy, "scene queue full");
+    bool answered = job->sem.take(kWaitMs);
+    std::lock_guard<os::Mutex> lock(job->mu);
+    if (!answered && !job->done) {
+        job->cancelled = true;
+        return Result<void>::err(ErrorCode::Timeout, "the scene task did not answer");
+    }
+    return job->result;
+}
+
+const SceneView* SceneRuntime::ui_current_view() const {
+    if (!ui_side_) return nullptr;
+    const UiSide& u = *ui_side_;
+    if (!u.view || u.token == 0 || u.token != ui_view_.load()) return nullptr;
+    return u.view.get();
+}
+
 Result<void> SceneRuntime::click_ref(std::string_view ref) {
     if (!running_ || !ui_side_)
         return Result<void>::err(ErrorCode::Busy, "scene runtime not running");
@@ -727,6 +766,11 @@ void SceneRuntime::handle(SceneMessage& m) {
             }
         }
         job.finish_locked(std::move(r));
+    } else if (auto* b = std::get_if<msg::CheckBuild>(&body)) {
+        BuildCheckJob& job = *b->job;
+        std::lock_guard<os::Mutex> lock(job.mu);
+        if (job.cancelled) return;
+        job.finish_locked(run_check_build(job.package, *job.store));
     } else if (auto* b = std::get_if<msg::Restore>(&body)) {
         restore(std::move(b->ids));
     } else if (auto* b = std::get_if<msg::Notify>(&body)) {

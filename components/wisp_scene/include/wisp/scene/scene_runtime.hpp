@@ -208,6 +208,7 @@
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/scene_store.hpp"
 #include "wisp/core/sensor_service.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
@@ -229,6 +230,7 @@ class SceneHttp;
 namespace wisp::scene {
 
 struct SceneMessage;
+class SceneView;
 struct DeviceInfo;
 enum class DeviceEvent : uint8_t;
 struct SceneWaiter;
@@ -364,6 +366,10 @@ public:
     // The manifest name of scene `id` while it is in the foreground or the
     // background; "" otherwise. Any thread.
     std::string running_name(std::string_view id) const;
+    // UI thread only: the view of the scene in front, or null while none
+    // is up (none in front, or its view not shown yet). Valid until the UI
+    // thread returns to its loop.
+    const SceneView* ui_current_view() const;
     // Sends a click to the foreground scene's widget with ref = `ref`, as
     // if the user tapped it (the simulator's debug command). NotFound if
     // no running scene has one.
@@ -423,6 +429,16 @@ public:
     // thread or the storage worker (neither may wait); Timeout after 10 s.
     Result<void> check_sources(std::span<const core::SourceFile> files) override;
     void on_installed(const std::string& id) override;
+    // The tree check of an install (agent-core spec 4.1): on the scene
+    // task, a VM of its own runs the package's entry file and builds its
+    // tree, then goes; nothing is shown. The VM has the scenes' own limits
+    // (SceneRuntimeConfig::vm) but not the shared budget, so it never
+    // evicts or starves a running scene. Its wisp.store is an empty store
+    // that is never written to flash; wisp.http and wisp.files take
+    // requests and never answer them; timers never fire. The error is
+    // ScriptError::text() ("main.lua:3: unknown widget ...") as
+    // InvalidArgument. Waits, Busy and Timeout as check_sources().
+    Result<void> check_build(std::shared_ptr<const core::ScenePackage> package);
 
     // Messages dropped because no running scene has their instance, and
     // view events for a scene that has gone to the background.
@@ -510,6 +526,9 @@ private:
     void schedule(uint32_t ms, std::function<void()> fn);
 
     // --- scene task ---
+    // check_build()'s work (check_build.cpp).
+    Result<void> run_check_build(const std::shared_ptr<const core::ScenePackage>& package,
+                                 core::SceneStore& store);
     void run();
     void handle(SceneMessage& m);
     // The slot `m` is for, or nullptr (a stale message is counted).

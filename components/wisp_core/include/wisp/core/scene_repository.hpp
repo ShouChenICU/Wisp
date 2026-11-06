@@ -34,6 +34,16 @@
 // .<id>.newdir. The staging names end in "dir" because StorageManager
 // reserves names ending in ".tmp"/".new" for its own file writes.
 //
+// The previous version (agent-core spec 4.1): an install with
+// InstallOptions::keep_prev renames the old package directory (its data/
+// and files/ already moved out in step 3) to <code_root>/.prev/<id>
+// instead of removing it in step 4, replacing whatever was there. Only
+// one is kept; remove() deletes it with the package. A power cut between
+// that rename and step 5 is finished by recover() as any other replace.
+// list() and recover() skip .prev, like every directory starting with
+// '.' (the agent's drafts, <data_root>/.drafts, live beside it on the
+// device).
+//
 // Threads: the file work runs on the flash thread (SceneRepoConfig::
 // worker; spec 2.1 of docs/superpowers/specs/2026-11-06-flash-thread-
 // design.md). A method called anywhere else queues it there and waits as
@@ -99,6 +109,20 @@ struct ScenePackage {
     os::LargeVector<std::pair<std::string, os::LargeBuffer>> files;
 };
 
+struct InstallOptions {
+    // Keep the package being replaced as the previous version (file
+    // header).
+    bool keep_prev = false;
+};
+
+// Whether `path` may be a file of a scene package: scene.json, a top-level
+// *.lua file (the entry), lib/**/*.lua or assets/**. Relative, '/'
+// separated, without empty, "." or ".." segments, backslashes or a
+// segment ending in ".tmp"/".new" (StorageManager's bookkeeping names).
+// install() additionally requires a top-level .lua file to be the
+// manifest's entry.
+bool valid_package_path(std::string_view path);
+
 struct SceneRepoConfig {
     std::string code_root;
     std::string data_root;
@@ -148,17 +172,25 @@ public:
     // replaces <id> keeping its data. An error from either stops the
     // install. Unsupported in dev mode; Busy while another install of the
     // same id runs. Nothing is written for a rejected package.
+    // With opt.keep_prev the replaced package becomes the previous
+    // version (file header).
     Result<SceneInfo> install(
         std::span<const uint8_t> zip, const SourceChecker& check,
-        const std::function<Result<void>(const SceneManifest&)>& before_replace = {});
+        const std::function<Result<void>(const SceneManifest&)>& before_replace = {},
+        InstallOptions opt = {});
+
+    // Whether <code_root>/.prev/<id>/scene.json exists.
+    bool has_prev(std::string_view id);
+    // The previous version as a zip in Mem::Large (no data), read like
+    // export_zip(). NotFound without one.
+    Result<os::LargeBuffer> prev_zip(std::string_view id);
 
     // The package as a zip in Mem::Large; with_data adds data/**.
     Result<os::LargeBuffer> export_zip(std::string_view id, bool with_data);
 
-    // Removes the package. Without with_data, data_dir(id) and files_dir(id)
-    // stay, so a later install of the same id finds them again; with it,
-    // the SD card's files go too. NotFound if there is nothing to
-    // remove; Unsupported in dev mode.
+    // Removes the package and its previous version. Without with_data, data_dir(id) and
+    // files_dir(id) stay, so a later install of the same id finds them again; with it, the SD
+    // card's files go too. NotFound if there is nothing to remove; Unsupported in dev mode.
     Result<void> remove(std::string_view id, bool with_data);
 
     // Whether an install() of `id` is under way: from the moment its
@@ -198,8 +230,12 @@ private:
     std::string code_dir(std::string_view id) const;
     // scene.json of <id>, checked to name <id>; NotFound if absent.
     Result<SceneManifest> read_manifest(std::string_view id);
+    // The same for the previous version, prev_dir(id).
+    Result<SceneManifest> read_prev_manifest(std::string_view id);
+    Result<SceneManifest> read_manifest_in(const std::string& dir, std::string_view id);
     // Steps 3-5 of the replace in the file header, if .<id>.newdir exists.
-    Result<void> finish_replace(const std::string& id);
+    // With keep_prev, step 4 renames <id> to prev_dir(id) instead.
+    Result<void> finish_replace(const std::string& id, bool keep_prev = false);
     // info() with the lock already held.
     Result<SceneInfo> info_locked(std::string_view id);
     // The public methods' file work, on the flash thread.
@@ -209,7 +245,12 @@ private:
     Result<SceneManifest> manifest_here(std::string_view id);
     Result<ScenePackage> load_here(std::string_view id);
     // install()'s last step: .<id>.tmpdir becomes the package (steps 2-5).
-    Result<SceneInfo> swap_here(const SceneManifest& manifest);
+    Result<SceneInfo> swap_here(const SceneManifest& manifest, bool keep_prev);
+    // <code_root>/.prev/<id>
+    std::string prev_dir(std::string_view id) const;
+    // export_zip() of the package in `dir` (the installed one or the
+    // previous version).
+    Result<os::LargeBuffer> export_dir(std::string_view id, bool prev, bool with_data);
     Result<void> remove_here(std::string_view id, bool with_data);
     Result<SceneRemoval> removal_here(std::string_view id, bool with_data);
 

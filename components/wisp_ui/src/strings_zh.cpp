@@ -265,6 +265,18 @@ const char* strings_zh(StrId id) {
             return "完成：{}";
         case StrId::NoticeSettingsNotSaved:
             return "设置未能保存";
+        case StrId::AgentNoteInstalled:
+            return "已安装「{}」";
+        case StrId::AgentVersionSuffix:
+            return "{}";
+        case StrId::AgentNoteDiscarded:
+            return "已丢弃「{}」的草稿";
+        case StrId::AgentNoteRolledBack:
+            return "已把「{}」恢复到上一个版本";
+        case StrId::AgentConfirmHosts:
+            return "「{}」将可以访问 ";
+        case StrId::AgentListSep:
+            return "、";
         case StrId::Count:
             break;
     }

@@ -72,6 +72,25 @@ struct SourceCheckJob {
     }
 };
 
+// check_build(): the package and the throwaway store travel with the job
+// (shared), so a caller that gave up leaves nothing dangling; `cancelled`
+// (set under `mu` after a timeout) only spares the task the work.
+struct BuildCheckJob {
+    std::shared_ptr<const core::ScenePackage> package;
+    std::shared_ptr<core::SceneStore> store;
+    os::Semaphore sem{1, 0};
+    os::Mutex mu;
+    bool cancelled = false;
+    bool done = false;
+    Result<void> result = Result<void>::ok();
+
+    void finish_locked(Result<void> r) {
+        done = true;
+        result = std::move(r);
+        sem.give();
+    }
+};
+
 namespace msg {
 
 // launch(): the scene task asks the worker to load the scene (or, for one
@@ -165,6 +184,11 @@ struct CheckSources {
     std::shared_ptr<SourceCheckJob> job;
 };
 
+// check_build(): run the package's entry and build its tree, then drop it.
+struct CheckBuild {
+    std::shared_ptr<BuildCheckJob> job;
+};
+
 // A network time sync set the wall clock: each scene whose minute ticks
 // gets one "minute" with the new time and its minute ticker is re-based,
 // so the jump it would also see does not fire a second one.
@@ -189,9 +213,9 @@ struct Notify {
 // stop(): close every scene and end the task.
 struct Quit {};
 
-using Body =
-    std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone, StoreDone,
-                 Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor, FilesDone, Quit>;
+using Body = std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone,
+                          StoreDone, Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor,
+                          FilesDone, Quit, CheckBuild>;
 
 }  // namespace msg
 

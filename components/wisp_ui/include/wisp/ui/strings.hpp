@@ -215,6 +215,16 @@ enum class StrId : uint16_t {
     NoticeAgentDone,
     // The settings_not_saved notice: changed settings could not be saved.
     NoticeSettingsNotSaved,
+    // Scene authoring notes (agent-core spec 4.1), "{}" the scene's name.
+    // AgentNoteInstalled is followed by AgentVersionSuffix with the version.
+    AgentNoteInstalled,
+    AgentVersionSuffix,
+    AgentNoteDiscarded,
+    AgentNoteRolledBack,
+    // The question before a scene gets new http hosts: followed by the
+    // hosts, joined with AgentListSep.
+    AgentConfirmHosts,
+    AgentListSep,
 
     Count,  // not a string; keep last
 };

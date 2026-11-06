@@ -50,6 +50,7 @@
 #include <deque>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "lvgl.h"
@@ -273,6 +274,10 @@ public:
                            std::function<void(bool yes)> on_answer,
                            ButtonRole yes_role = ButtonRole::Primary);
     bool confirm_open() const { return confirm_box_ != nullptr; }
+    // What of the layer is on screen now, for ui.tree() (agent-core spec
+    // 5.2): ("capsule" | "banner" | "panel" | "error" | "keyboard" |
+    // "confirm", its object), in that order. UI thread.
+    std::vector<std::pair<const char*, lv_obj_t*>> visible_pieces() const;
     // Closes `box` (if it is the open dialog) without calling its
     // callback.
     void close_confirm(lv_obj_t* box);

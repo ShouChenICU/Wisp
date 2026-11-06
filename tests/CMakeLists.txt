@@ -390,3 +390,12 @@ wisp_test(NAME agent_loop_test SRCS agent/agent_loop_test.cpp
 # expected text into the build directory when they differ.
 target_compile_definitions(schema_test PRIVATE WISP_ROOT="${WISP_ROOT}"
                                                WISP_BUILD_DIR="${CMAKE_BINARY_DIR}")
+
+# The agent's scene authoring checks: check_build(), the UI tree and the
+# workspace that edits, installs and rolls back drafts.
+wisp_test(NAME check_build_test SRCS scene/check_build_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME ui_tree_test SRCS scene/ui_tree_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME scene_workspace_test SRCS agent/scene_workspace_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)

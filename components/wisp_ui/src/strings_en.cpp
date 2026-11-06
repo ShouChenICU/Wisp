@@ -267,6 +267,18 @@ const char* strings_en(StrId id) {
             return "Done: {}";
         case StrId::NoticeSettingsNotSaved:
             return "Settings could not be saved";
+        case StrId::AgentNoteInstalled:
+            return "Installed \"{}\"";
+        case StrId::AgentVersionSuffix:
+            return " {}";
+        case StrId::AgentNoteDiscarded:
+            return "Discarded the draft of \"{}\"";
+        case StrId::AgentNoteRolledBack:
+            return "Rolled \"{}\" back to its previous version";
+        case StrId::AgentConfirmHosts:
+            return "\"{}\" will be able to reach ";
+        case StrId::AgentListSep:
+            return ", ";
         case StrId::Count:
             break;
     }

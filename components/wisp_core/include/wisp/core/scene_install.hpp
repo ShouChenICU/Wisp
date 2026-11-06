@@ -26,8 +26,10 @@ namespace wisp::core {
 // closes later, on its old package). While this runs, SceneRepository::
 // installing() is true for the id, and the host refuses to open it.
 // Blocks for as long as the check and the host's calls take, so it must not
-// run on the UI thread, the scene task or the storage worker.
+// run on the UI thread, the scene task or the storage worker. Its file work
+// all goes through `repo`, which runs it on the flash thread. `opt` is
+// handed to SceneRepository::install().
 Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
-                                std::span<const uint8_t> zip);
+                                std::span<const uint8_t> zip, InstallOptions opt = {});
 
 }  // namespace wisp::core

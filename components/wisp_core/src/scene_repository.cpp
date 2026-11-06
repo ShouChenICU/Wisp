@@ -19,6 +19,8 @@ constexpr const char* kTag = "scene";
 constexpr std::string_view kManifest = "scene.json";
 constexpr std::string_view kTmpSuffix = ".tmpdir";
 constexpr std::string_view kNewSuffix = ".newdir";
+// The previous versions, one directory per scene (file header).
+constexpr std::string_view kPrevDir = ".prev";
 // Same bound as the zip reader's entry limit, so a dev working directory
 // cannot hold a package that could never be installed.
 constexpr size_t kMaxFiles = 256;
@@ -199,6 +201,33 @@ Result<T> fail(const Error& e) {
 
 }  // namespace
 
+bool valid_package_path(std::string_view path) {
+    if (path.empty() || path.front() == '/' || path.find('\\') != std::string_view::npos) {
+        return false;
+    }
+    for (std::string_view rest = path; !rest.empty();) {
+        const size_t slash = rest.find('/');
+        const std::string_view seg = rest.substr(0, slash);
+        if (seg.empty() || seg == "." || seg == ".." || reserved_name(seg)) {
+            return false;
+        }
+        if (slash == std::string_view::npos) {
+            break;
+        }
+        rest = rest.substr(slash + 1);
+        if (rest.empty()) {
+            return false;  // a trailing '/'
+        }
+    }
+    if (path == kManifest) {
+        return true;
+    }
+    if (path.find('/') == std::string_view::npos) {
+        return is_lua(path) && path.size() > 4;
+    }
+    return allowed_file(path, kManifest);
+}
+
 SceneRepository::SceneRepository(StorageManager& storage, SceneRepoConfig config)
     : storage_(storage), config_(std::move(config)) {
     config_.code_root = trim_slash(std::move(config_.code_root));
@@ -218,12 +247,20 @@ std::string SceneRepository::files_dir(std::string_view id) const {
 }
 
 Result<SceneManifest> SceneRepository::read_manifest(std::string_view id) {
+    return read_manifest_in(code_dir(id), id);
+}
+
+Result<SceneManifest> SceneRepository::read_prev_manifest(std::string_view id) {
+    return read_manifest_in(prev_dir(id), id);
+}
+
+Result<SceneManifest> SceneRepository::read_manifest_in(const std::string& dir,
+                                                        std::string_view id) {
     if (!valid_scene_id(id)) {
         return Result<SceneManifest>::err(ErrorCode::InvalidArgument,
                                           "invalid scene id: " + std::string(id));
     }
-    Result<os::LargeBuffer> raw =
-        storage_.read_file_large(code_dir(id) + "/" + std::string(kManifest));
+    Result<os::LargeBuffer> raw = storage_.read_file_large(dir + "/" + std::string(kManifest));
     if (!raw) {
         if (raw.error().code == ErrorCode::NotFound) {
             return Result<SceneManifest>::err(ErrorCode::NotFound,
@@ -365,7 +402,7 @@ Result<ScenePackage> SceneRepository::load_here(std::string_view id) {
 
 Result<SceneInfo> SceneRepository::install(
     std::span<const uint8_t> zip, const SourceChecker& check,
-    const std::function<Result<void>(const SceneManifest&)>& before_replace) {
+    const std::function<Result<void>(const SceneManifest&)>& before_replace, InstallOptions opt) {
     using R = Result<SceneInfo>;
     if (config_.dev) {
         return R::err(ErrorCode::Unsupported, "scenes are read-only in dev mode");
@@ -520,10 +557,10 @@ Result<SceneInfo> SceneRepository::install(
         return fail<SceneInfo>(staged.error());
     }
     files.clear();
-    return call_on_worker<SceneInfo>(worker, [&] { return swap_here(manifest); });
+    return call_on_worker<SceneInfo>(worker, [&] { return swap_here(manifest, opt.keep_prev); });
 }
 
-Result<SceneInfo> SceneRepository::swap_here(const SceneManifest& manifest) {
+Result<SceneInfo> SceneRepository::swap_here(const SceneManifest& manifest, bool keep_prev) {
     const std::string& id = manifest.id;
     const std::string tmp = config_.code_root + "/." + id + std::string(kTmpSuffix);
     const std::string neu = config_.code_root + "/." + id + std::string(kNewSuffix);
@@ -534,7 +571,7 @@ Result<SceneInfo> SceneRepository::swap_here(const SceneManifest& manifest) {
         return fail<SceneInfo>(renamed.error());
     }
     ++generation_;
-    Result<void> replaced = finish_replace(id);
+    Result<void> replaced = finish_replace(id, keep_prev);
     if (!replaced) {
         return fail<SceneInfo>(replaced.error());
     }
@@ -549,7 +586,11 @@ Result<SceneInfo> SceneRepository::swap_here(const SceneManifest& manifest) {
     return info_locked(id);
 }
 
-Result<void> SceneRepository::finish_replace(const std::string& id) {
+std::string SceneRepository::prev_dir(std::string_view id) const {
+    return config_.code_root + "/" + std::string(kPrevDir) + "/" + std::string(id);
+}
+
+Result<void> SceneRepository::finish_replace(const std::string& id, bool keep_prev) {
     const std::string neu = config_.code_root + "/." + id + std::string(kNewSuffix);
     Result<Kind> staged = probe(storage_, neu);
     if (!staged) {
@@ -592,7 +633,19 @@ Result<void> SceneRepository::finish_replace(const std::string& id) {
         WISP_TRY(storage_.rename(from, to));
     }
     if (config_.on_data_moved) config_.on_data_moved();
-    WISP_TRY(storage_.remove_tree(dir));
+    Result<Kind> old_manifest = probe(storage_, dir + "/" + std::string(kManifest));
+    if (!old_manifest) {
+        return Result<void>::err(old_manifest.error().code, old_manifest.error().message);
+    }
+    if (keep_prev && old_manifest.value() == Kind::Other) {
+        // What is left of the old package (data/ and files/ moved out
+        // above) becomes the previous version.
+        const std::string prev = prev_dir(id);
+        WISP_TRY(storage_.remove_tree(prev));
+        WISP_TRY(storage_.rename(dir, prev));
+    } else {
+        WISP_TRY(storage_.remove_tree(dir));
+    }
     return storage_.rename(neu, dir);
 }
 
@@ -642,7 +695,35 @@ Result<void> SceneRepository::recover_here() {
     return first;
 }
 
-Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id_view, bool with_data) {
+Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id, bool with_data) {
+    return export_dir(id, false, with_data);
+}
+
+bool SceneRepository::has_prev(std::string_view id) {
+    if (!valid_scene_id(id)) {
+        return false;
+    }
+    Result<bool> found = call_on_worker<bool>(config_.worker, [&]() -> Result<bool> {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        Result<Kind> kind = probe(storage_, prev_dir(id) + "/" + std::string(kManifest));
+        if (!kind) {
+            return Result<bool>::err(kind.error().code, kind.error().message);
+        }
+        return Result<bool>::ok(kind.value() == Kind::Other);
+    });
+    return found && found.value();
+}
+
+Result<os::LargeBuffer> SceneRepository::prev_zip(std::string_view id) {
+    if (!valid_scene_id(id)) {
+        return Result<os::LargeBuffer>::err(ErrorCode::InvalidArgument,
+                                            "invalid scene id: " + std::string(id));
+    }
+    return export_dir(id, true, false);
+}
+
+Result<os::LargeBuffer> SceneRepository::export_dir(std::string_view id_view, bool prev,
+                                                    bool with_data) {
     using R = Result<os::LargeBuffer>;
     // The file list first, then every file in flash-thread jobs of at most
     // kIoChunk, so other flash work queued meanwhile runs between them.
@@ -660,7 +741,8 @@ Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id_view, bo
     Result<void> listed = call_on_worker<void>(worker, [&]() -> Result<void> {
         std::lock_guard<os::Mutex> lock(mutex_);
         generation = generation_;
-        Result<SceneManifest> m = read_manifest(id);
+        const std::string dir = prev ? prev_dir(id) : code_dir(id);
+        Result<SceneManifest> m = prev ? read_prev_manifest(id) : read_manifest(id);
         if (!m) {
             return Result<void>::err(m.error().code, m.error().message);
         }
@@ -670,7 +752,6 @@ Result<os::LargeBuffer> SceneRepository::export_zip(std::string_view id_view, bo
                 return Result<void>::ok();
             };
         };
-        const std::string dir = code_dir(id);
         WISP_TRY(walk_package(storage_, dir, m.value().entry, add_from(dir)));
         if (with_data) {
             const std::string data_base = config_.data_root + "/" + id;
@@ -831,6 +912,7 @@ Result<void> SceneRepository::remove_here(std::string_view id_view, bool with_da
     // scene.json goes first, so a remove cut short already reads as "not
     // installed" instead of as a package with missing files.
     WISP_TRY(storage_.remove_tree(dir + "/" + std::string(kManifest)));
+    WISP_TRY(storage_.remove_tree(prev_dir(id)));
     if (with_data) {
         WISP_TRY(storage_.remove_tree(dir));
         // A no-op when the data was inside `dir`.

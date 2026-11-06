@@ -270,6 +270,18 @@ const char* strings_ja(StrId id) {
             return "完了：{}";
         case StrId::NoticeSettingsNotSaved:
             return "設定を保存できませんでした";
+        case StrId::AgentNoteInstalled:
+            return "「{}」をインストールしました";
+        case StrId::AgentVersionSuffix:
+            return "（{}）";
+        case StrId::AgentNoteDiscarded:
+            return "「{}」の下書きを破棄しました";
+        case StrId::AgentNoteRolledBack:
+            return "「{}」を前のバージョンに戻しました";
+        case StrId::AgentConfirmHosts:
+            return "「{}」が次のサイトにアクセスできるようになります：";
+        case StrId::AgentListSep:
+            return "、";
         case StrId::Count:
             break;
     }

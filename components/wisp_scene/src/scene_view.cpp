@@ -143,6 +143,51 @@ std::optional<NodeId> SceneView::find_ref(std::string_view ref) const {
     return it->second;
 }
 
+void SceneView::for_each_node(const std::function<void(const NodeRef&)>& fn) const {
+    if (root_ == 0 || find(root_) == nullptr) return;
+    // Up to kMaxNodes entries each, so in Mem::Large and sorted rather
+    // than hashed.
+    os::LargeVector<std::pair<NodeId, std::string_view>> refs;
+    refs.reserve(refs_.size());
+    for (const auto& [name, id] : refs_) refs.emplace_back(id, std::string_view(name));
+    std::sort(refs.begin(), refs.end());
+    struct Kid {
+        NodeId parent;
+        int64_t order;
+        NodeId id;
+        bool operator<(const Kid& o) const {
+            return parent != o.parent ? parent < o.parent
+                                      : (order != o.order ? order < o.order : id < o.id);
+        }
+    };
+    os::LargeVector<Kid> kids;
+    kids.reserve(nodes_.size());
+    for (const auto& [id, n] : nodes_) {
+        if (id == root_) continue;
+        const int64_t order = n->row_of != 0 ? static_cast<int64_t>(n->row_index)
+                                             : static_cast<int64_t>(lv_obj_get_index(n->obj));
+        kids.push_back({n->parent, order, id});
+    }
+    std::sort(kids.begin(), kids.end());
+    os::LargeVector<NodeId> stack;
+    stack.push_back(root_);
+    while (!stack.empty()) {
+        const NodeId id = stack.back();
+        stack.pop_back();
+        const Node* n = find(id);
+        if (n == nullptr) continue;
+        std::string_view ref;
+        auto r = std::lower_bound(refs.begin(), refs.end(), std::make_pair(id, std::string_view()));
+        if (r != refs.end() && r->first == id) ref = r->second;
+        fn(NodeRef{id, n->parent, n->widget, ref, n->obj});
+        auto first = std::lower_bound(kids.begin(), kids.end(), Kid{id, INT64_MIN, 0});
+        auto last = first;
+        while (last != kids.end() && last->parent == id) ++last;
+        // Pushed last to first, so they come off the stack in order.
+        for (auto it = last; it != first;) stack.push_back((--it)->id);
+    }
+}
+
 SceneView::Node* SceneView::find(NodeId id) const {
     auto it = nodes_.find(id);
     return it == nodes_.end() ? nullptr : it->second.get();

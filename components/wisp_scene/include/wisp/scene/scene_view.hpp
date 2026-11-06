@@ -112,12 +112,23 @@
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/large.hpp"
+#include "wisp/scene/schema.hpp"
 #include "wisp/scene/ui_ops.hpp"
 #include "wisp/ui/system_layer.hpp"
 
 namespace wisp::scene {
 
 enum class UiEvent { Click, LongPress, Change, Focus };
+
+// One node of a view, as for_each_node() hands it out. `ref` is empty for
+// a node without one; it and `obj` are valid during the call only.
+struct NodeRef {
+    NodeId id;
+    NodeId parent;  // 0 for the root
+    Widget widget;
+    std::string_view ref;
+    lv_obj_t* obj;
+};
 
 struct ViewCallbacks {
     // Called on the UI thread; forwards to the scene task.
@@ -160,6 +171,9 @@ public:
     std::optional<NodeId> find_ref(std::string_view ref) const;
     // Nodes in the tree.
     size_t object_count() const { return nodes_.size(); }
+    // Every node, the root first, in pre-order; siblings in the order they
+    // are laid out (list rows by index). ui.tree() reads the view this way.
+    void for_each_node(const std::function<void(const NodeRef&)>& fn) const;
 
 private:
     // One per node, at a fixed address: the node's object carries it as

@@ -7,7 +7,7 @@
 namespace wisp::core {
 
 Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
-                                std::span<const uint8_t> zip) {
+                                std::span<const uint8_t> zip, InstallOptions opt) {
     // A running scene's store keeps flushing into its data/ directory, which
     // the replace moves; a flush landing mid-move is lost, or leaves a stray
     // data/ that blocks the replace for good. So the scene closes first --
@@ -51,7 +51,8 @@ Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
             }
             if (was_running) reopen = m.id;
             return Result<void>::ok();
-        });
+        },
+        opt);
     if (!reopen.empty()) {
         // Whichever package is in place now: the new one, or the old one if
         // the replace failed.
