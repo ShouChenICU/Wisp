@@ -18,4 +18,5 @@ wisp_component(
          src/notification_router.cpp src/status_shell.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_admin wisp_ui wisp_scene
+             wisp_agent
 )

@@ -45,7 +45,9 @@ void cancel_factory_reset(App& app) {
 }
 
 void factory_reset(App& app) {
-    WLOG_W(kTag, "factory reset: erasing settings, Wi-Fi, pairings and the model profiles");
+    WLOG_W(kTag,
+           "factory reset: erasing settings, Wi-Fi, pairings, the model profiles and the "
+           "agent's conversations");
     publish_state(app, "done");
 
     const uint64_t deadline = os::now_ms() + kFlushMs;
@@ -64,6 +66,12 @@ void factory_reset(App& app) {
     if (net::WifiService* wifi = app.wifi()) wifi->forget_all();
     if (net::PairingService* pairing = app.pairing()) pairing->revoke_all();
     app.models().clear();
+    // The agent's conversation and archives (agent-core spec 3.5).
+    if (auto root = app.storage().write_root(core::Area::System); root) {
+        if (auto r = app.storage().remove_tree(root.value() + "/agent"); !r) {
+            WLOG_E(kTag, "erasing the conversations failed: %s", r.error().message.c_str());
+        }
+    }
 
     if (app.impl_->platform.reboot) {
         WLOG_W(kTag, "factory reset complete; restarting");

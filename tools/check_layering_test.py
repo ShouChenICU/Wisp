@@ -263,6 +263,30 @@ class CheckLayeringTest(unittest.TestCase):
         self.assertIn("reverse dependency", errors[0])
         self.assertIn("wisp/scene/x.hpp", errors[0])
 
+    def test_agent_sits_between_scene_and_app(self):
+        write(self.root, "components/wisp_agent/src/ok.cpp", '#include "wisp/scene/x.hpp"\n')
+        write(self.root, "components/wisp_app/src/ok.cpp", '#include "wisp/agent/x.hpp"\n')
+        self.assertEqual(check_layering.run(self.root), [])
+
+        write(self.root, "components/wisp_scene/src/bad.cpp", '#include "wisp/agent/x.hpp"\n')
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("reverse dependency", errors[0])
+        self.assertIn("wisp/agent/x.hpp", errors[0])
+
+        write(self.root, "components/wisp_agent/src/bad.cpp", '#include "wisp/app/app.hpp"\n')
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(any("wisp/app/app.hpp" in e for e in errors), errors)
+
+        write(
+            self.root,
+            "components/wisp_agent/CMakeLists.txt",
+            minimal_cmake("wisp_agent", requires="wisp_scene wisp_app"),
+        )
+        errors = check_layering.run(self.root)
+        self.assertTrue(any("forbidden REQUIRES <wisp_app>" in e for e in errors), errors)
+
     def test_lua_header_outside_scene_is_flagged(self):
         write(
             self.root,

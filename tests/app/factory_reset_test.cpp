@@ -155,6 +155,23 @@ TEST(FactoryReset, ClearsEverythingButLibraryAndReboots) {
     EXPECT_EQ(std::string(scene.value().begin(), scene.value().end()), kept);
 }
 
+// The agent's conversations and archives live under <System>/agent/.
+TEST(FactoryReset, ClearsAgentDirectory) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    const std::string agent = app.storage().write_root(wisp::core::Area::System).value() + "/agent";
+    const std::string line = "{\"seq\":1}\n";
+    const std::span<const uint8_t> bytes(reinterpret_cast<const uint8_t*>(line.data()),
+                                         line.size());
+    ASSERT_TRUE(app.storage().write_atomic(agent + "/current.jsonl", bytes));
+    ASSERT_TRUE(app.storage().write_atomic(agent + "/archive-1.jsonl", bytes));
+
+    wisp::app::factory_reset(app);
+
+    EXPECT_FALSE(std::filesystem::exists(agent));
+}
+
 // The browser that asked must still hear "done": the event goes out (and
 // the admin socket gets a chance to send it) before the tokens -- and
 // with them that socket -- are revoked.

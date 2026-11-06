@@ -1,5 +1,10 @@
 #include "wisp/base/json.hpp"
 
+// ArduinoJson's default (2 bytes of length) stops strings at 65535 bytes,
+// but a stored tool result or a file written by the agent can be 64 KiB
+// or a little more. This is the only file that includes ArduinoJson, so
+// the setting cannot differ between two users of its templates.
+#define ARDUINOJSON_STRING_LENGTH_SIZE 4
 #include <ArduinoJson.h>
 
 #include <cstddef>

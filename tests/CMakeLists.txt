@@ -352,6 +352,12 @@ target_compile_definitions(examples_test PRIVATE WISP_ROOT="${WISP_ROOT}"
 foreach(t list_window_test scene_view_list_test canvas_test)
     target_include_directories(${t} PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 endforeach()
+# wisp_agent: the conversation store and the tool registry.
+wisp_test(NAME conversation_test SRCS agent/conversation_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME tool_registry_test SRCS agent/tool_registry_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
+
 # DocIsUpToDate compares docs/scene-api.md with the schema and writes the
 # expected text into the build directory when they differ.
 target_compile_definitions(schema_test PRIVATE WISP_ROOT="${WISP_ROOT}"

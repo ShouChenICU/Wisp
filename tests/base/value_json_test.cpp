@@ -179,8 +179,8 @@ TEST(Json, RawFormPreservesBytes) {
 // Fixing up the output must stay linear: a log flood of control bytes
 // would otherwise cost seconds per message.
 TEST(Json, BrowserSafePassIsLinear) {
-    // ArduinoJson strings stop at 64 KiB, so the ~480 KB of control bytes
-    // are spread over a list; a quadratic pass would take minutes here.
+    // The ~480 KB of control bytes are spread over a list, as a real log
+    // flood would be; a quadratic pass would take minutes here.
     const std::string ctl(60000, '\x01');
     const wisp::Value v(wisp::List(8, wisp::Value(ctl)));
     const auto t0 = std::chrono::steady_clock::now();
@@ -188,6 +188,16 @@ TEST(Json, BrowserSafePassIsLinear) {
     const auto elapsed = std::chrono::steady_clock::now() - t0;
     EXPECT_EQ(json.size(), 8 * (ctl.size() * 6 + 2) + 7 + 2);
     EXPECT_LT(elapsed, std::chrono::seconds(2));
+}
+
+// A whole 64 KiB file or tool result fits in one string.
+TEST(Json, StringsPast64KiBRoundTrip) {
+    std::string big(70000, 'a');
+    big[100] = '"';
+    const std::string json = wisp::to_json(wisp::Value(wisp::Map{{"s", big}}));
+    auto back = wisp::from_json(json);
+    ASSERT_TRUE(back) << back.error().message;
+    EXPECT_EQ(back.value().find("s")->as_string(), big);
 }
 
 TEST(Json, AppendStringMatchesToJson) {

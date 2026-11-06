@@ -29,6 +29,7 @@ add_subdirectory(${WISP_ROOT}/components/wisp_ui wisp_ui)
 # Vendored Lua (third_party/lua), used only by wisp_scene.
 add_subdirectory(${WISP_ROOT}/third_party/lua lua)
 add_subdirectory(${WISP_ROOT}/components/wisp_scene wisp_scene)
+add_subdirectory(${WISP_ROOT}/components/wisp_agent wisp_agent)
 add_subdirectory(${WISP_ROOT}/components/wisp_app wisp_app)
 add_subdirectory(${WISP_ROOT}/components/wisp_port_sim wisp_port_sim)
 
