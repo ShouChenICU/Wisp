@@ -522,6 +522,23 @@ Result<void> SceneFiles::remove(std::string_view scene, std::string_view name) {
     return Result<void>::ok();
 }
 
+Result<SceneFileEntry> SceneFiles::stat(std::string_view scene, std::string_view name) {
+    using R = Result<SceneFileEntry>;
+    if (!valid_file_name(name)) return fail<SceneFileEntry>(ErrorCode::InvalidArgument, "bad_name");
+    std::lock_guard<os::Mutex> io(io_mu_);
+    auto rec = ensure(scene, false);
+    if (!rec) return R::err(rec.error().code, rec.error().message);
+    if (rec.value()->loc == FilesLocation::None)
+        return fail<SceneFileEntry>(ErrorCode::NotFound, "not_found");
+    const std::string dir = dir_of(scene, rec.value()->loc);
+    if (dir.empty()) return fail<SceneFileEntry>(ErrorCode::StorageUnavailable, "unavailable");
+    auto entry = entry_of(dir, name);
+    if (!entry) return R::err(entry.error().code, entry.error().message);
+    if (entry.value().kind != EntryKind::File)
+        return fail<SceneFileEntry>(ErrorCode::NotFound, "not_found");
+    return R::ok(SceneFileEntry{entry.value().name, entry.value().size, entry.value().mtime});
+}
+
 Result<SceneFilesInfo> SceneFiles::info(std::string_view scene) {
     using R = Result<SceneFilesInfo>;
     std::lock_guard<os::Mutex> io(io_mu_);

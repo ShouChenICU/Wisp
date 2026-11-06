@@ -34,6 +34,8 @@ struct RequestContext {
     std::string client_id;
     // The path segment a route's "*" matched, still URL-encoded.
     std::string param;
+    // What a second "*" matched (/scenes/*/files/*), still URL-encoded.
+    std::string param2;
     // The JSON body; Null when the body was empty.
     Value body;
     // AdminServer's one-shot timer that calls AdminDeps::reboot, so the
@@ -45,8 +47,9 @@ using RouteFn = net::HttpResponse (*)(AdminDeps& deps, const RequestContext& ctx
 
 struct Route {
     net::Method method;
-    // Path after kApiPrefix. One segment may be "*", which matches exactly
-    // one non-empty segment, handed to the handler as RequestContext::param.
+    // Path after kApiPrefix. Up to two segments may be "*", each matching
+    // exactly one non-empty segment, handed to the handler as
+    // RequestContext::param and param2.
     std::string_view path;
     // Reachable without a token (the pairing whitelist). CSRF still applies.
     bool is_public;
@@ -57,10 +60,12 @@ struct Route {
 void add_pair_routes(std::vector<Route>& routes);
 void add_device_routes(std::vector<Route>& routes);  // /device, /devices, /settings
 void add_wifi_routes(std::vector<Route>& routes);
-void add_ai_routes(std::vector<Route>& routes);        // /ai/*
-void add_system_routes(std::vector<Route>& routes);    // /clients, /system/*
-void add_firmware_routes(std::vector<Route>& routes);  // /system/firmware
-void add_scene_routes(std::vector<Route>& routes);     // /scenes
+void add_ai_routes(std::vector<Route>& routes);          // /ai/*
+void add_system_routes(std::vector<Route>& routes);      // /clients, /system/*
+void add_firmware_routes(std::vector<Route>& routes);    // /system/firmware
+void add_scene_routes(std::vector<Route>& routes);       // /scenes
+void add_power_routes(std::vector<Route>& routes);       // /system/power, /system/occupancy
+void add_scene_file_routes(std::vector<Route>& routes);  // /scenes/{id}/files
 
 // The firmware upload, the one streamed request (routes_firmware.cpp).
 constexpr std::string_view kFirmwarePath = "/api/v1/system/firmware";

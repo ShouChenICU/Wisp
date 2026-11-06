@@ -163,6 +163,19 @@ export function exportUrl(id, withData) {
   return `${PREFIX}/scenes/${encodeURIComponent(id)}/export?data=${withData ? 1 : 0}`;
 }
 
+/**
+ * The URL of one of a scene's files (GET /scenes/{id}/files/{name}), for a
+ * download link. Followed rather than fetched: a file may be far larger
+ * than a page should hold in memory.
+ *
+ * @param {string} id
+ * @param {string} name
+ * @returns {string}
+ */
+export function fileUrl(id, name) {
+  return `${PREFIX}/scenes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`;
+}
+
 // Several parts of the app want /info at start-up (boot, the shell, the
 // overview); one request serves them all.
 const INFO_MAX_AGE_MS = 2000;

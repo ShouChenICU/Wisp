@@ -424,6 +424,8 @@ Result<void> App::start() {
                                               return impl_->scenes->request_delete(id, with_data);
                                           })
                                     : nullptr,
+        .occupancy = &impl_->occupancy,
+        .files = scenes != nullptr ? scenes->files() : nullptr,
     });
     impl_->net->start();
 

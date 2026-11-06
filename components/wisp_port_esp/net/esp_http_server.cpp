@@ -17,6 +17,7 @@
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "wisp/core/log.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/port/esp/net_iface.hpp"
 #include "wisp/port/esp/stack_placement.hpp"
 
@@ -212,6 +213,8 @@ void fill_request(httpd_req_t* r, net::HttpRequest& req) {
     req.iface = iface_for(local_ip, peer_ip, local_addresses());
 }
 
+esp_err_t send_streamed(httpd_req_t* r, const net::HttpResponse& res, const char* status);
+
 esp_err_t send_response(httpd_req_t* r, const net::HttpResponse& res) {
     std::string custom;
     const char* status = status_text(res.status);
@@ -219,6 +222,9 @@ esp_err_t send_response(httpd_req_t* r, const net::HttpResponse& res) {
         custom = std::to_string(res.status) + " Status";
         status = custom.c_str();
     }
+    // 1xx, 204 and 304 never carry a body (RFC 9110 section 6.4.1).
+    const bool bodyless =
+        (res.status >= 100 && res.status < 200) || res.status == 204 || res.status == 304;
     httpd_resp_set_status(r, status);
     if (!res.content_type.empty() && !has_crlf(res.content_type)) {
         httpd_resp_set_type(r, res.content_type.c_str());
@@ -231,9 +237,8 @@ esp_err_t send_response(httpd_req_t* r, const net::HttpResponse& res) {
             WLOG_W(kTag, "response header dropped (too many): %s", name.c_str());
         }
     }
-    // 1xx, 204 and 304 never carry a body (RFC 9110 section 6.4.1).
-    const bool bodyless =
-        (res.status >= 100 && res.status < 200) || res.status == 204 || res.status == 304;
+    // The head set above is what a chunked stream goes out with.
+    if (res.stream && !bodyless) return send_streamed(r, res, status);
     const char* data = nullptr;
     size_t len = 0;
     if (!bodyless) {
@@ -247,6 +252,62 @@ esp_err_t send_response(httpd_req_t* r, const net::HttpResponse& res) {
         }
     }
     return httpd_resp_send(r, data, static_cast<ssize_t>(len));
+}
+
+// httpd_send() may take only part of a piece.
+bool send_raw(httpd_req_t* r, const char* data, size_t len) {
+    while (len > 0) {
+        const int n = httpd_send(r, data, len);
+        if (n <= 0) return false;
+        data += n;
+        len -= static_cast<size_t>(n);
+    }
+    return true;
+}
+
+// A body pulled from HttpResponse::stream through one Mem::Large buffer
+// that lives only while this response is sent. Chunked (httpd's own
+// framing, with the head send_response() set) without a stream_length;
+// with one, the head is written here so it can carry a Content-Length,
+// which httpd_resp_send_chunk() cannot and httpd_resp_send() only up to an
+// int. ESP_FAIL once anything fails
+// midway: httpd then closes the session, so the client never takes a
+// short body for a whole one.
+esp_err_t send_streamed(httpd_req_t* r, const net::HttpResponse& res, const char* status) {
+    os::LargeBuffer buf = os::LargeBuffer::allocate(net::kStreamChunkBytes);
+    if (!buf.ok()) {
+        WLOG_W(kTag, "no memory to stream a response");
+        httpd_resp_set_status(r, "503 Service Unavailable");
+        httpd_resp_set_type(r, "application/json");
+        const net::HttpResponse err =
+            net::HttpResponse::error(503, "no_memory", "no memory for the response");
+        httpd_resp_send(r, err.body.data(), static_cast<ssize_t>(err.body.size()));
+        return ESP_OK;
+    }
+    if (res.stream_length == 0) {
+        const bool ok = net::pump_stream(res, buf.span(), [r](std::span<const uint8_t> piece) {
+            return httpd_resp_send_chunk(r, reinterpret_cast<const char*>(piece.data()),
+                                         static_cast<ssize_t>(piece.size())) == ESP_OK;
+        });
+        if (!ok) return ESP_FAIL;
+        return httpd_resp_send_chunk(r, nullptr, 0);
+    }
+    std::string head = std::string("HTTP/1.1 ") + status + "\r\n";
+    if (!res.content_type.empty() && !has_crlf(res.content_type)) {
+        head += "Content-Type: " + res.content_type + "\r\n";
+    }
+    head += "Content-Length: " + std::to_string(res.stream_length) + "\r\n";
+    for (const auto& [name, value] : res.headers) {
+        if (name.empty() || has_crlf(name) || has_crlf(value)) continue;
+        head += name + ": " + value + "\r\n";
+    }
+    head += "\r\n";
+    if (!send_raw(r, head.data(), head.size())) return ESP_FAIL;
+    head = std::string();
+    const bool ok = net::pump_stream(res, buf.span(), [r](std::span<const uint8_t> piece) {
+        return send_raw(r, reinterpret_cast<const char*>(piece.data()), piece.size());
+    });
+    return ok ? ESP_OK : ESP_FAIL;
 }
 
 bool read_body(httpd_req_t* r, std::string& body) {

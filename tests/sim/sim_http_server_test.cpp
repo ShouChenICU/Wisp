@@ -12,6 +12,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -144,6 +145,11 @@ public:
             res.headers[lower(line.substr(0, colon))] = std::string(value);
         }
         buf_.erase(0, end + 4);
+        if (auto te = res.headers.find("transfer-encoding");
+            te != res.headers.end() && lower(te->second) == "chunked") {
+            if (!read_chunked(res.body)) return std::nullopt;
+            return res;
+        }
         size_t length = 0;
         if (auto it = res.headers.find("content-length"); it != res.headers.end()) {
             length = std::stoul(it->second);
@@ -187,6 +193,25 @@ public:
     }
 
 private:
+    // A chunked body (no trailers) into `body`.
+    bool read_chunked(std::string& body) {
+        for (;;) {
+            size_t eol;
+            while ((eol = buf_.find("\r\n")) == std::string::npos) {
+                if (!fill()) return false;
+            }
+            const size_t size = std::stoul(buf_.substr(0, eol), nullptr, 16);
+            buf_.erase(0, eol + 2);
+            while (buf_.size() < size + 2) {
+                if (!fill()) return false;
+            }
+            if (buf_.compare(size, 2, "\r\n") != 0) return false;
+            body.append(buf_, 0, size);
+            buf_.erase(0, size + 2);
+            if (size == 0) return true;
+        }
+    }
+
     bool fill() {
         char tmp[4096];
         for (;;) {
@@ -1177,4 +1202,78 @@ TEST(SimHttpServer, StreamedRouteNeedsContentLength) {
     EXPECT_EQ(res->status, 411);
     std::lock_guard<std::mutex> lock(streamed.mutex);
     EXPECT_TRUE(streamed.heads.empty());
+}
+
+// A body pulled from HttpResponse::stream: with a stream_length it goes out
+// under that Content-Length, without one chunked; either way every byte
+// arrives in order and the connection stays usable.
+TEST(SimHttpServer, StreamedResponseBody) {
+    const std::string body = pattern(3 * 1024 * 1024);
+    std::atomic<size_t> largest{0};
+    auto handler = [&](const HttpRequest& req) {
+        HttpResponse res;
+        res.content_type = "application/octet-stream";
+        auto offset = std::make_shared<size_t>(0);
+        res.stream = [&body, &largest, offset](std::span<uint8_t> buf) -> wisp::Result<size_t> {
+            if (buf.size() > largest.load()) largest.store(buf.size());
+            const size_t n = std::min(buf.size(), body.size() - *offset);
+            std::memcpy(buf.data(), body.data() + *offset, n);
+            *offset += n;
+            return wisp::Result<size_t>::ok(n);
+        };
+        if (req.path == "/sized") res.stream_length = body.size();
+        return res;
+    };
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0, handler, WsHandlers{}).is_ok());
+    Client c(server.port());
+    ASSERT_TRUE(c.connected());
+
+    ASSERT_TRUE(c.send(get_request("/sized")));
+    auto sized = c.read_response();
+    ASSERT_TRUE(sized);
+    EXPECT_EQ(sized->status, 200);
+    EXPECT_EQ(sized->headers["content-length"], std::to_string(body.size()));
+    EXPECT_EQ(sized->headers.count("transfer-encoding"), 0u);
+    EXPECT_EQ(sized->headers["content-type"], "application/octet-stream");
+    EXPECT_TRUE(sized->body == body) << "sized body differs, " << sized->body.size() << " bytes";
+    EXPECT_LE(largest.load(), wisp::net::kStreamChunkBytes);
+
+    ASSERT_TRUE(c.send(get_request("/chunked")));
+    auto chunked = c.read_response();
+    ASSERT_TRUE(chunked);
+    EXPECT_EQ(chunked->status, 200);
+    EXPECT_EQ(chunked->headers["transfer-encoding"], "chunked");
+    EXPECT_EQ(chunked->headers.count("content-length"), 0u);
+    EXPECT_TRUE(chunked->body == body)
+        << "chunked body differs, " << chunked->body.size() << " bytes";
+}
+
+// A stream that fails, or runs dry before its stream_length, ends the
+// connection: the client must not take a short body for a whole one.
+TEST(SimHttpServer, StreamedResponseFailureClosesTheConnection) {
+    auto handler = [](const HttpRequest& req) {
+        HttpResponse res;
+        auto sent = std::make_shared<bool>(false);
+        const bool fail = req.path == "/fail";
+        res.stream = [sent, fail](std::span<uint8_t> buf) -> wisp::Result<size_t> {
+            if (*sent) {
+                if (fail) return wisp::Result<size_t>::err(wisp::ErrorCode::IoError, "gone");
+                return wisp::Result<size_t>::ok(0);
+            }
+            *sent = true;
+            std::memset(buf.data(), 'x', 10);
+            return wisp::Result<size_t>::ok(10);
+        };
+        res.stream_length = 100;
+        return res;
+    };
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0, handler, WsHandlers{}).is_ok());
+    for (const char* path : {"/short", "/fail"}) {
+        Client c(server.port());
+        ASSERT_TRUE(c.send(get_request(path)));
+        EXPECT_FALSE(c.read_response()) << path;
+        EXPECT_TRUE(c.closed_by_peer()) << path;
+    }
 }

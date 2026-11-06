@@ -1200,7 +1200,7 @@ def case_scene_push(sim_path, tmp_root):
                 sim.send("tap {},{}".format(*SCENE_DELETE_YES_TAP))
                 tapped = True
         status, body = api_request(port, "GET", "/api/v1/scenes", {"Cookie": cookie})
-        expect(status == 200 and json.loads(body) == {"scenes": []},
+        expect(status == 200 and json.loads(body).get("scenes") == [],
                f"GET /api/v1/scenes after the delete -> {status} {body}")
         expect(not (data_dir / "int" / "scenes" / "counter").exists(),
                "the scene's directory is still there")

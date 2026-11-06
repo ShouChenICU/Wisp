@@ -168,7 +168,7 @@ wisp_test(NAME imu_script_test SRCS sim/imu_script_test.cpp
           LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os)
 # Real loopback sockets; net/sha1.hpp is private to wisp_port_sim.
 wisp_test(NAME sim_http_server_test SRCS sim/sim_http_server_test.cpp
-          LIBS wisp_port_sim_net TIMEOUT 30)
+          LIBS wisp_port_sim_net wisp_port_sim_os TIMEOUT 30)
 target_include_directories(sim_http_server_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 wisp_test(NAME sim_wifi_test SRCS sim/sim_wifi_test.cpp LIBS wisp_port_sim_net)
 wisp_test(NAME sim_sntp_test SRCS sim/sim_sntp_test.cpp LIBS wisp_port_sim_net)
@@ -281,7 +281,7 @@ wisp_test(NAME time_sync_test SRCS net/time_sync_test.cpp LIBS wisp_net wisp_por
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.
 foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test routes_firmware_test
-                   routes_scenes_test ws_hub_test)
+                   routes_scenes_test routes_power_test routes_scene_files_test ws_hub_test)
     wisp_test(NAME ${admin_test} SRCS admin/${admin_test}.cpp
               LIBS wisp_admin wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
     add_dependencies(${admin_test} wisp_fixture_wpak)

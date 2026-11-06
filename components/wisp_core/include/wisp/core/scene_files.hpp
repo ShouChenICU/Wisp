@@ -178,6 +178,9 @@ public:
     // more); bookkeeping names hidden. Empty before the first write.
     Result<SceneFileList> list(std::string_view scene);
     Result<void> remove(std::string_view scene, std::string_view name);
+    // The entry of file `name` (on the card, its spelling on disk):
+    // NotFound "not_found" when there is none, as for read().
+    Result<SceneFileEntry> stat(std::string_view scene, std::string_view name);
     Result<SceneFilesInfo> info(std::string_view scene);
     // Removes the files in both locations (the card's only while it is in)
     // and the location record. Nothing there is success.

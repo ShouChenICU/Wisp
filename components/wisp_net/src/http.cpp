@@ -1,5 +1,6 @@
 #include "wisp/net/http.hpp"
 
+#include <algorithm>
 #include <cctype>
 
 #include "wisp/base/json.hpp"
@@ -48,6 +49,25 @@ HttpResponse HttpResponse::json(int status, const Value& v) {
 HttpResponse HttpResponse::error(int status, std::string_view code, std::string_view message) {
     Map err{{"code", Value(std::string(code))}, {"message", Value(std::string(message))}};
     return json(status, Value(Map{{"error", Value(std::move(err))}}));
+}
+
+bool pump_stream(const HttpResponse& res, std::span<uint8_t> buf,
+                 const std::function<bool(std::span<const uint8_t>)>& write) {
+    if (!res.stream || buf.empty()) return false;
+    if (buf.size() > kStreamChunkBytes) buf = buf.first(kStreamChunkBytes);
+    const bool sized = res.stream_length > 0;
+    uint64_t left = res.stream_length;
+    while (!sized || left > 0) {
+        std::span<uint8_t> piece = buf;
+        if (sized && left < piece.size()) piece = piece.first(static_cast<size_t>(left));
+        Result<size_t> got = res.stream(piece);
+        if (!got) return false;
+        const size_t n = std::min(got.value(), piece.size());
+        if (n == 0) return !sized;  // dry: the end, or short of the promise
+        if (!write(piece.first(n))) return false;
+        if (sized) left -= n;
+    }
+    return true;
 }
 
 int http_status_for(ErrorCode code) {

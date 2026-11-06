@@ -132,12 +132,16 @@ net::HttpResponse serve_static(const net::AssetPack* assets, const net::HttpRequ
 struct RouteMatch {
     const Route* route = nullptr;
     std::string param;
+    std::string param2;
     bool path_known = false;  // some route has this path, under another method
 };
 
 // `sub` against a route path whose segments are literal or "*" (one
-// non-empty segment, captured into `param`).
-bool path_matches(std::string_view pattern, std::string_view sub, std::string& param) {
+// non-empty segment, the first captured into `param`, the second into
+// `param2`).
+bool path_matches(std::string_view pattern, std::string_view sub, std::string& param,
+                  std::string& param2) {
+    int wildcards = 0;
     while (!pattern.empty() || !sub.empty()) {
         if (pattern.empty() || sub.empty() || pattern[0] != '/' || sub[0] != '/') return false;
         pattern.remove_prefix(1);
@@ -148,7 +152,7 @@ bool path_matches(std::string_view pattern, std::string_view sub, std::string& p
         const std::string_view got = sub.substr(0, se);
         if (want == "*") {
             if (got.empty()) return false;
-            param = std::string(got);
+            (wildcards++ == 0 ? param : param2) = std::string(got);
         } else if (want != got) {
             return false;
         }
@@ -162,10 +166,12 @@ RouteMatch match_route(const std::vector<Route>& routes, net::Method method, std
     RouteMatch m;
     for (const Route& r : routes) {
         std::string param;
-        if (!path_matches(r.path, sub, param)) continue;
+        std::string param2;
+        if (!path_matches(r.path, sub, param, param2)) continue;
         if (r.method == method) {
             m.route = &r;
             m.param = std::move(param);
+            m.param2 = std::move(param2);
             return m;
         }
         m.path_known = true;
@@ -188,6 +194,8 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_system_routes(routes_);
     detail::add_firmware_routes(routes_);
     detail::add_scene_routes(routes_);
+    detail::add_power_routes(routes_);
+    detail::add_scene_file_routes(routes_);
     hub_ = std::make_unique<WsHub>(deps_.bus, deps_.boot_id);
     hub_->set_wake_locks(deps_.wakelocks);
     hub_->start();
@@ -326,8 +334,13 @@ net::HttpResponse AdminServer::handle_api(const net::HttpRequest& req) {
         body = std::move(parsed.value());
     }
 
-    detail::RequestContext ctx{
-        req, now, std::move(client_id), std::move(m.param), std::move(body), reboot_timer_.get()};
+    detail::RequestContext ctx{req,
+                               now,
+                               std::move(client_id),
+                               std::move(m.param),
+                               std::move(m.param2),
+                               std::move(body),
+                               reboot_timer_.get()};
     return m.route->fn(deps_, ctx);
 }
 

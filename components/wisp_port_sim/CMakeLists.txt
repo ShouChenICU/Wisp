@@ -56,7 +56,7 @@ wisp_component(
     SRCS net/sim_http_server.cpp net/sha1.cpp net/sim_http_client.cpp net/sim_wifi.cpp
          net/sim_web_pack.cpp net/sim_sntp.cpp
     INCLUDE_DIRS include
-    REQUIRES wisp_base wisp_hal wisp_core wisp_net
+    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net
     HOST_LIBS Threads::Threads CURL::libcurl ZLIB::ZLIB
 )
 

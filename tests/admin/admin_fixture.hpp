@@ -30,6 +30,7 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/model_profiles.hpp"
+#include "wisp/core/occupancy.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
@@ -115,6 +116,7 @@ struct AdminFixture {
             .scenes = scenes.get(),
             .time_sync = time_sync.get(),
             .wakelocks = &wakelocks,
+            .occupancy = &occupancy,
         };
         if (with_clock) deps.now_ms = [this] { return now.load(); };
         return deps;
@@ -147,6 +149,8 @@ struct AdminFixture {
     core::EventBus bus;
     // The system locks the admin backend takes (uploads, WebSocket).
     core::WakeLockRegistry wakelocks{bus};
+    // Who uses which device (nobody, until a test says so).
+    core::OccupancyRegistry occupancy;
     core::BootReport report;
     std::unique_ptr<core::StorageManager> storage;
     std::unique_ptr<port::sim::JsonFileSettingsBackend> backend;
@@ -175,9 +179,13 @@ struct AdminFixture {
 // that walk all of them: a new GET route belongs here.
 inline const std::vector<std::string>& every_authenticated_get_route() {
     static const std::vector<std::string> paths = {
-        "/api/v1/info",    "/api/v1/device",          "/api/v1/devices",     "/api/v1/settings",
-        "/api/v1/wifi",    "/api/v1/wifi/scan",       "/api/v1/ai/profiles", "/api/v1/ai/presets",
-        "/api/v1/clients", "/api/v1/system/firmware", "/api/v1/scenes",      "/api/v1/system/time",
+        "/api/v1/info",         "/api/v1/device",
+        "/api/v1/devices",      "/api/v1/settings",
+        "/api/v1/wifi",         "/api/v1/wifi/scan",
+        "/api/v1/ai/profiles",  "/api/v1/ai/presets",
+        "/api/v1/clients",      "/api/v1/system/firmware",
+        "/api/v1/scenes",       "/api/v1/system/time",
+        "/api/v1/system/power", "/api/v1/system/occupancy",
     };
     return paths;
 }

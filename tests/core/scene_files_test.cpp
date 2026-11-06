@@ -313,6 +313,33 @@ TEST(SceneFiles, ListRemoveInfo) {
     EXPECT_STREQ(wisp::core::to_string(FilesLocation::None), "none");
 }
 
+// One file's entry, for a download that announces its length; on the card
+// the spelling on disk.
+TEST(SceneFiles, StatOneFile) {
+    Fixture f(false);
+    EXPECT_EQ(code_of(f.files->stat("s", "a.txt")), "not_found");
+    ASSERT_TRUE(f.files->write("s", "a.txt", as_bytes("abc")));
+    auto st = f.files->stat("s", "a.txt");
+    ASSERT_TRUE(st);
+    EXPECT_EQ(st.value().name, "a.txt");
+    EXPECT_EQ(st.value().size, 3u);
+    EXPECT_GT(st.value().mtime, 0);
+    EXPECT_EQ(code_of(f.files->stat("s", "b.txt")), "not_found");
+    EXPECT_EQ(code_of(f.files->stat("s", ".a.txt")), "bad_name");
+    // Bookkeeping is never a file of the scene's.
+    write_raw(f.int_files("s") / ".c.dl", "partial");
+    EXPECT_EQ(code_of(f.files->stat("s", ".c.dl")), "bad_name");
+
+    Fixture card(true);
+    ASSERT_TRUE(card.files->write("c", "Song.MP3", as_bytes("12345")));
+    auto folded = card.files->stat("c", "song.mp3");
+    ASSERT_TRUE(folded);
+    EXPECT_EQ(folded.value().name, "Song.MP3");
+    EXPECT_EQ(folded.value().size, 5u);
+    card.set_sd(false);
+    EXPECT_EQ(code_of(card.files->stat("c", "Song.MP3")), "unavailable");
+}
+
 // Two-phase naming of downloads (".<name>.dl" -> ".<name>.done" -> name):
 // at boot a ".dl" is garbage and a ".done" is a finished download.
 TEST(SceneFiles, UsageScannedAtBootAndRecoversDownloads) {
