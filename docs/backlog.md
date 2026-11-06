@@ -108,3 +108,8 @@ Source: glyph partition review records.
 - After a different image is installed, the old A8 wrapper's cached glyphs keep using the shared 512 KiB arena (simulator and tests only).
 - `a8_set_fallback` silently ignores a font that is not an A8 wrapper; a debug assert would catch misuse.
 - Each `UiRuntime::start()` re-validates the image and briefly allocates about 130 KB of PSRAM before dropping it when the old font is reused.
+
+## Flash-thread parked review findings
+
+- The admin page's reboot runs `App::flush_storage()` (settings flush up to 2 s, then a storage drain up to 5 s) on the esp_timer task, which can stall every other esp_timer callback for up to 7 s; move the flush onto its own short-lived task.
+- When the storage worker cannot start (out of memory at boot), callers have no fallback path: requests are refused rather than run inline; decide whether boot should fail loudly or degrade.
