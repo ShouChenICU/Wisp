@@ -62,8 +62,9 @@ struct SimOptions {
     // A file of scripted IMU steps (wisp/port/sim/imu_script.hpp); empty:
     // none, the arrow keys tilt.
     std::string imu_script;
-    // Shows the wisp on a black screen of its own, cycling its moods
-    // (spec 6.1), instead of the self-check screen.
+    // Shows the wisp on a screen of its own (background from
+    // wisp_background(panel)), cycling its moods (spec 6.1), in front of
+    // the self-check screen.
     bool wisp_demo = false;
 };
 

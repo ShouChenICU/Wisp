@@ -282,7 +282,7 @@ void WispModel::update_geometry() {
     }
 
     cx_ = w_ * 128 + drift_x + shake_x;
-    cy_ = h_ * 256 * 645 / 1000 + drift_y + bob + shake_y - rb * bounce_ / 4096 / 2;
+    cy_ = h_ * 256 * 665 / 1000 + drift_y + bob + shake_y - rb * bounce_ / 4096 / 2;
 }
 
 int32_t WispModel::sway_at(int32_t yn) const {
@@ -309,9 +309,16 @@ int32_t WispModel::half_width_scale(int32_t yn) const {
     return r_ * taper / 256;
 }
 
+// How far the tips reach (Q8): the mood's flame, longer with the level
+// while listening, and riding the speaking bounce so they hop with it.
+int32_t WispModel::tip_flame(int32_t listen_level) const {
+    const int32_t f = params_.flame_height * (256 + listen_level * 64 / 256) / 256;
+    return static_cast<int32_t>(static_cast<int64_t>(f) * (4096 + bounce_ / 2) / 4096);
+}
+
 void WispModel::place_hair(bool snap) {
     const int32_t listen_level = level_ * listen_ / 256;
-    const int32_t flame = params_.flame_height * (256 + listen_level * 64 / 256) / 256;
+    const int32_t flame = tip_flame(listen_level);
     const int32_t scale = r_ * 256 / std::max<int32_t>(r_base(), 1);  // Q8, follows breathing
     for (size_t i = 0; i < hair_.size(); ++i) {
         const HairSpec& s = kHair[i];
@@ -336,7 +343,7 @@ void WispModel::place_hair(bool snap) {
 void WispModel::step_hair(uint32_t dt_ms) {
     place_hair(false);
     const int32_t listen_level = level_ * listen_ / 256;
-    const int32_t flame = params_.flame_height * (256 + listen_level * 64 / 256) / 256;
+    const int32_t flame = tip_flame(listen_level);
     const int32_t scale = r_ * 256 / std::max<int32_t>(r_base(), 1);
     for (size_t i = 0; i < hair_.size(); ++i) {
         const HairSpec& s = kHair[i];

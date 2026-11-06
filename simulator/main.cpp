@@ -641,8 +641,9 @@ bool run_windowed(wisp::app::App& app, const SimOptions& opts, wisp::port::sim::
     return true;
 }
 
-// --wisp-demo (spec 6.1): a black screen of its own with the wisp in the
-// middle at 45% of the safe area's short side. Every 3 s it moves on to the
+// --wisp-demo (spec 6.1): a screen of its own, its background from
+// wisp_background(panel), with the wisp in the middle at 56% of the safe
+// area's short side. Every 3 s it moves on to the
 // next mood; Listening and Speaking get a level swinging at 1 Hz, and every
 // other round Thinking runs busy. The self-check screen stays behind it,
 // so WISP_PERF keeps coming.

@@ -252,6 +252,9 @@ void WispView::frame() {
     const uint64_t now = os::now_ms();
     const auto dt = static_cast<uint32_t>(std::min<uint64_t>(now - last_ms_, 1000));
     last_ms_ = now;
+    // Hidden, or on a screen not shown: nothing to step or draw. The timer
+    // keeps its period, so this costs one check per tick.
+    if (!lv_obj_is_visible(obj_)) return;
 
     WispModel& m = impl_->model;
     const uint64_t t0 = os::now_us();
@@ -334,10 +337,6 @@ void WispView::draw(lv_layer_t* layer) {
             const lv_area_t a = capsule_area(e, ox, oy);
             lv_draw_fill(layer, &fill, &a);
         }
-    }
-    if (s.mouth) {
-        const lv_area_t a = capsule_area(s.mouth_shape, ox, oy);
-        lv_draw_fill(layer, &fill, &a);
     }
     for (int i = 0; i < s.spark_n; ++i) {
         const lv_area_t a = capsule_area(s.sparks[static_cast<size_t>(i)], ox, oy);

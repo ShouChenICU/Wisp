@@ -97,6 +97,9 @@ protected:
     WispView* view_ = nullptr;
 };
 
+// Each frame invalidates the wisp's bounds, this frame's joined with the
+// last one's, not its whole object: every flush lies inside the union of
+// the bounds the frames had, which is narrower than the object.
 TEST_F(WispViewTest, InvalidatesOnlyItsBox) {
     start();
     ui([&] { view_ = WispView::create(lv_screen_active(), 216); });
@@ -104,18 +107,97 @@ TEST_F(WispViewTest, InvalidatesOnlyItsBox) {
     // Let the first frames (and the screen's first full draw) go out.
     wisp::os::sleep_ms(300);
     const lv_area_t box = coords();
-    const size_t seen = display_->areas().size();
-    ui([&] { view_->set_mood(WispMood::Listening); });
+
+    // Samples the model's bounds, in screen pixels, more often than it
+    // makes frames, on the UI thread.
+    struct Probe {
+        WispView* view;
+        lv_area_t box;
+        lv_area_t seen;
+        static void sample(lv_timer_t* t) {
+            auto* p = static_cast<Probe*>(lv_timer_get_user_data(t));
+            const wisp::hal::Area b = p->view->model().bounds();
+            const lv_area_t a{p->box.x1 + b.x1, p->box.y1 + b.y1, p->box.x1 + b.x2,
+                              p->box.y1 + b.y2};
+            p->seen = {std::min(p->seen.x1, a.x1), std::min(p->seen.y1, a.y1),
+                       std::max(p->seen.x2, a.x2), std::max(p->seen.y2, a.y2)};
+        }
+    } probe{view_, box, {}};
+    lv_timer_t* timer = nullptr;
+    size_t seen = 0;
+    ui([&] {
+        const wisp::hal::Area b = view_->model().bounds();
+        probe.seen = {box.x1 + b.x1, box.y1 + b.y1, box.x1 + b.x2, box.y1 + b.y2};
+        timer = lv_timer_create(&Probe::sample, 1, &probe);
+        seen = display_->areas().size();
+        view_->set_mood(WispMood::Listening);
+    });
     wisp::os::sleep_ms(400);
+    lv_area_t u{};
+    ui([&] {
+        lv_timer_delete(timer);
+        u = probe.seen;
+    });
     const std::vector<wisp::hal::Area> areas = display_->areas();
     ASSERT_GT(areas.size(), seen);
     for (size_t i = seen; i < areas.size(); ++i) {
         const wisp::hal::Area& a = areas[i];
-        EXPECT_GE(a.x1, box.x1);
-        EXPECT_GE(a.y1, box.y1);
-        EXPECT_LE(a.x2, box.x2);
-        EXPECT_LE(a.y2, box.y2);
+        EXPECT_GE(a.x1, u.x1) << i;
+        EXPECT_GE(a.y1, u.y1) << i;
+        EXPECT_LE(a.x2, u.x2) << i;
+        EXPECT_LE(a.y2, u.y2) << i;
     }
+    EXPECT_LT(lv_area_get_width(&u), lv_area_get_width(&box));
+}
+
+// Hidden, or on a screen that is not shown, the wisp does not step or
+// draw, without the caller pausing it.
+TEST_F(WispViewTest, HiddenViewMakesNoFrames) {
+    start();
+    ui([&] { view_ = WispView::create(lv_screen_active(), 216); });
+    ASSERT_NE(view_, nullptr);
+    wisp::os::sleep_ms(200);
+    ui([&] { lv_obj_add_flag(view_->obj(), LV_OBJ_FLAG_HIDDEN); });
+    const uint32_t hidden_at = frames();
+    wisp::os::sleep_ms(400);
+    EXPECT_EQ(frames(), hidden_at);
+    ui([&] { lv_obj_remove_flag(view_->obj(), LV_OBJ_FLAG_HIDDEN); });
+    wisp::os::sleep_ms(300);
+    EXPECT_GT(frames(), hidden_at);
+
+    lv_obj_t* other = nullptr;
+    lv_obj_t* home = nullptr;
+    ui([&] {
+        home = lv_screen_active();
+        other = lv_obj_create(nullptr);
+        lv_screen_load(other);
+    });
+    const uint32_t away_at = frames();
+    wisp::os::sleep_ms(400);
+    EXPECT_EQ(frames(), away_at);
+    ui([&] {
+        lv_screen_load(home);
+        lv_obj_delete(other);
+    });
+    wisp::os::sleep_ms(300);
+    EXPECT_GT(frames(), away_at);
+}
+
+// A display UiRuntime did not make reads as a plain LCD, whatever its
+// user data holds.
+TEST_F(WispViewTest, ForeignDisplayReadsAsLcd) {
+    start("rect", 40, "mono");
+    wisp::hal::PanelKind ours = wisp::hal::PanelKind::Lcd, theirs = wisp::hal::PanelKind::Mono;
+    ui([&] {
+        ours = wisp::ui::display_panel(lv_display_get_default());
+        static int junk = 0x5a5a5a5a;
+        lv_display_t* other = lv_display_create(32, 32);
+        lv_display_set_user_data(other, &junk);
+        theirs = wisp::ui::display_panel(other);
+        lv_display_delete(other);
+    });
+    EXPECT_EQ(ours, wisp::hal::PanelKind::Mono);
+    EXPECT_EQ(theirs, wisp::hal::PanelKind::Lcd);
 }
 
 TEST_F(WispViewTest, PausedRendersNoFrames) {

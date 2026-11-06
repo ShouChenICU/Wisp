@@ -5,8 +5,8 @@
 // the screen; tests drive a model directly.
 //
 // The look is a minimal outline: one closed stroke for the drop-shaped
-// body and its three flame tips, two filled eyes, short strokes for the
-// "> <" eyes and the mouth, and a few spark dots on colour panels. No
+// body and its three flame tips, two filled eyes (short strokes for the
+// "> <" eyes), no mouth, and a few spark dots on colour panels. No
 // fill, no glow; moods differ by shape alone, so the same drawing works on
 // colour, mono and e-paper panels.
 //
@@ -57,8 +57,8 @@ struct WispShape {
     static constexpr int kMaxOutline = 112;
     static constexpr int kMaxSparks = 6;
 
-    // A filled stadium: the segment a-b widened by r on every side. Eyes,
-    // the mouth and sparks are capsules; so is every stroke segment.
+    // A filled stadium: the segment a-b widened by r on every side. Eyes
+    // and sparks are capsules; so is every stroke segment.
     struct Capsule {
         WispPoint a, b;
         int32_t r = 0;
@@ -74,10 +74,6 @@ struct WispShape {
     bool chevrons = false;
     std::array<Capsule, 2> eyes{};
     std::array<std::array<WispPoint, 3>, 2> chevron{};
-
-    // Speaking: a filled mouth that is a short line when shut.
-    bool mouth = false;
-    Capsule mouth_shape{};
 
     std::array<Capsule, kMaxSparks> sparks{};
     int spark_n = 0;
@@ -166,6 +162,7 @@ private:
     void spawn(Particle& p, bool initial);
     void step_particles(uint32_t dt_ms);
     void step_hair(uint32_t dt_ms);
+    int32_t tip_flame(int32_t listen_level) const;
     void place_hair(bool snap);
     void update_geometry();
     void build_outline();

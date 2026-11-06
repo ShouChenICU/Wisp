@@ -140,11 +140,20 @@ void WispModel::build_face() {
         const int32_t t = static_cast<int32_t>(blink_ms_) * 512 / static_cast<int32_t>(kBlinkMs);
         open = std::abs(256 - t);
     }
+    // Speaking has no mouth: the eyes squash with the level, riding the
+    // same spring as the body's bounce, so they spring back (and overshoot
+    // a little) when the level drops.
+    const int32_t squash = bounce_ * 2;  // Q12
     const int32_t half_stroke = s.stroke / 2;
-    const int32_t rx = std::max<int32_t>(r_ * 19 / 100, half_stroke);
+    const int32_t rx = std::max<int32_t>(
+        static_cast<int32_t>(static_cast<int64_t>(r_ * 19 / 100) * (4096 + squash / 4) / 4096),
+        half_stroke);
     const int32_t ry_nominal = r_ * 34 / 100;
     const int32_t ry =
-        std::max<int32_t>(ry_nominal * params_.eye_open / 256 * open / 256, half_stroke);
+        std::max<int32_t>(static_cast<int32_t>(static_cast<int64_t>(ry_nominal * params_.eye_open /
+                                                                    256 * open / 256) *
+                                               (4096 - squash) / 4096),
+                          half_stroke);
     const int32_t gx = (params_.gaze_x + glance_x_) * rx / 256 * 9 / 10;
     const int32_t gy = (params_.gaze_y + glance_y_) * ry_nominal / 256;
     const int32_t ey = cy_ - r_ * 10 / 100 + gy;
@@ -165,18 +174,6 @@ void WispModel::build_face() {
         s.chevron[static_cast<size_t>(side)] = {WispPoint{cex - dir * hw, cey - hh},
                                                 WispPoint{cex + dir * hw, cey},
                                                 WispPoint{cex - dir * hw, cey + hh}};
-    }
-
-    // Speaking: a mouth line that opens with the level.
-    s.mouth = speak_ >= 64 && !s.chevrons;
-    if (s.mouth) {
-        const int32_t open_q8 = level_ * speak_ / 256;
-        const int32_t mw = std::max<int32_t>(r_ * 13 / 100 * speak_ / 256, half_stroke);
-        const int32_t mh = half_stroke + r_ * 16 / 100 * open_q8 / 256;
-        const int32_t my = cy_ + r_ * 30 / 100;
-        const int32_t mx =
-            cx_ + sway_at(static_cast<int32_t>(static_cast<int64_t>(my - cy_) * 4096 / r_));
-        s.mouth_shape = blob({mx, my}, mw, mh);
     }
 }
 
@@ -222,7 +219,6 @@ hal::Area WispModel::build() {
     } else {
         for (const auto& e : s.eyes) grow(box, e, kPad);
     }
-    if (s.mouth) grow(box, s.mouth_shape, kPad);
     for (int i = 0; i < s.spark_n; ++i) grow(box, s.sparks[static_cast<size_t>(i)], kPad);
     box.x1 = std::max<int32_t>(box.x1, 0);
     box.y1 = std::max<int32_t>(box.y1, 0);
@@ -271,8 +267,6 @@ uint32_t shape_hash(const WispShape& s) {
     } else {
         for (const auto& e : s.eyes) mix_capsule(e);
     }
-    mix(s.mouth ? 1 : 0);
-    if (s.mouth) mix_capsule(s.mouth_shape);
     mix(s.spark_n);
     for (int i = 0; i < s.spark_n; ++i) mix_capsule(s.sparks[static_cast<size_t>(i)]);
     mix(s.bbox.x1);

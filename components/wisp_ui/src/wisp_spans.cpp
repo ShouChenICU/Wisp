@@ -1,6 +1,6 @@
 // for_each_span() (wisp/ui/wisp_model.hpp): the shape without
 // anti-aliasing, as runs of whole pixels. Everything the wisp draws is a
-// capsule (stroke segments with round ends, the eyes, the mouth, sparks),
+// capsule (stroke segments with round ends, the eyes, sparks),
 // and a capsule is convex, so each one covers a single run of each row:
 // the row's crossing of the segment's side band, and of its two end discs.
 // A pixel is in when its centre is.
@@ -133,7 +133,6 @@ void for_each_span(const WispShape& s, int y1, int y2, void* ctx,
                 if (e.r > 0) visit(e);
             }
         }
-        if (s.mouth) visit(s.mouth_shape);
         for (int i = 0; i < s.spark_n; ++i) visit(s.sparks[static_cast<size_t>(i)]);
     };
 

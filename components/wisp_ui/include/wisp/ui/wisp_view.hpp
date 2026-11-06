@@ -11,6 +11,9 @@
 //
 // The object draws no background; put it on black (on e-paper, white).
 //
+// While the object is hidden or its screen is not shown it neither steps
+// nor draws; set_paused(true) also stops the timer (screen off).
+//
 // UI thread only, like every lv_* call. Deleting obj() frees the view.
 
 #include <cstdint>

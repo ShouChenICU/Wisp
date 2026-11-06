@@ -23,7 +23,7 @@ using wisp::ui::WispShape;
 // The golden shape: seed 42, size 216, 30 steps of 33 ms, then build,
 // hashed with shape_hash(). Any change to the look changes it; say why in
 // the commit that updates it.
-constexpr uint32_t kGolden = 0x45216fcfu;
+constexpr uint32_t kGolden = 0xc84012e3u;
 
 uint32_t hash_after(WispModel& m) {
     m.build();
@@ -316,7 +316,9 @@ TEST(WispModel, NothingClipsInAnyMood) {
             m.set_busy(true);
             m.step(33);
             m.build();
-            ASSERT_TRUE(inside_frame(m.bounds(), m)) << size << " step " << i;
+            ASSERT_TRUE(inside_frame(m.bounds(), m))
+                << size << " step " << i << " bounds " << m.bounds().x1 << "," << m.bounds().y1
+                << " " << m.bounds().x2 << "," << m.bounds().y2;
         }
     }
 }
@@ -383,7 +385,8 @@ const WispShape& settled(WispModel& m, WispMood mood, uint8_t level = 0) {
 int32_t eye_height(const WispShape::Capsule& c) { return std::abs(c.b.y - c.a.y) + 2 * c.r; }
 
 // Moods differ by shape alone (spec 6.1): bigger eyes listening, eyes up
-// and to the right thinking, a mouth speaking, "> <" in error.
+// and to the right thinking, squashed eyes and a taller flame speaking,
+// "> <" in error. Nothing has a mouth.
 TEST(WispModel, MoodsDifferByShape) {
     WispModel idle_m(216, 42), listen_m(216, 42), think_m(216, 42), speak_m(216, 42),
         error_m(216, 42);
@@ -394,27 +397,34 @@ TEST(WispModel, MoodsDifferByShape) {
     const WispShape error = settled(error_m, WispMood::Error);
 
     EXPECT_FALSE(idle.chevrons);
-    EXPECT_FALSE(idle.mouth);
     EXPECT_GT(eye_height(listen.eyes[0]), eye_height(idle.eyes[0]) * 11 / 10);
     // Thinking: eyes clearly higher (relative to the body) and to the right.
     const int32_t idle_rel = idle.eyes[0].a.y - idle_m.centre().y;
     const int32_t think_rel = think.eyes[0].a.y - think_m.centre().y;
     EXPECT_LT(think_rel, idle_rel - eye_height(idle.eyes[0]) / 4);
     EXPECT_GT(think.eyes[0].a.x - think_m.centre().x, idle.eyes[0].a.x - idle_m.centre().x);
-    EXPECT_TRUE(speak.mouth);
+    EXPECT_LT(eye_height(speak.eyes[0]), eye_height(idle.eyes[0]) * 9 / 10);
+    EXPECT_LT(speak.bbox.y1, idle.bbox.y1);
     EXPECT_TRUE(error.chevrons);
-    EXPECT_FALSE(error.mouth);
 }
 
-TEST(WispModel, MouthOpensWithLevel) {
-    WispModel shut(216, 42), open(216, 42);
-    const WispShape a = settled(shut, WispMood::Speaking, 0);
-    const WispShape b = settled(open, WispMood::Speaking, 100);
-    ASSERT_TRUE(a.mouth);
-    ASSERT_TRUE(b.mouth);
-    EXPECT_GT(eye_height(b.mouth_shape), eye_height(a.mouth_shape) * 2);
-    // Shut, it is a line: as tall as the stroke.
-    EXPECT_LE(eye_height(a.mouth_shape), a.stroke + 256);
+// Speaking has no mouth: the eyes squash with the level and spring back
+// when it drops (spec 6.1).
+TEST(WispModel, SpeakingEyesSquashWithLevel) {
+    WispModel quiet(216, 42), loud(216, 42);
+    const WispShape a = settled(quiet, WispMood::Speaking, 0);
+    const WispShape b = settled(loud, WispMood::Speaking, 100);
+    EXPECT_LT(eye_height(b.eyes[0]), eye_height(a.eyes[0]) * 85 / 100);
+    EXPECT_GE(eye_height(b.eyes[0]), eye_height(a.eyes[0]) / 2);
+
+    // The level drops: the eyes open again, back to the quiet eyes give or
+    // take breathing (a couple of per cent), within half a second.
+    WispModel m(216, 42);
+    settled(m, WispMood::Speaking, 100);
+    m.set_level(0);
+    for (int i = 0; i < 15; ++i) m.step(33);
+    m.build();
+    EXPECT_NEAR(eye_height(m.shape().eyes[0]), eye_height(a.eyes[0]), eye_height(a.eyes[0]) / 20);
 }
 
 TEST(WispPerf, RollingFiveSecondWindow) {

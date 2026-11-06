@@ -18,6 +18,7 @@ static_assert(LV_COLOR_DEPTH == 16, "wisp_ui requires LV_COLOR_DEPTH == 16 (RGB5
 #include <utility>
 
 #include "fonts_internal.hpp"
+#include "lvgl_private.h"  // lv_display_t::flush_cb
 #include "theme_internal.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
@@ -860,10 +861,12 @@ bool UiRuntime::perf_overlay_enabled() const {
 }
 
 hal::PanelKind display_panel(lv_display_t* disp) {
-    // Only UiRuntime creates displays, and it keeps its Impl as their user data.
-    auto* impl =
-        disp != nullptr ? static_cast<UiRuntime::Impl*>(lv_display_get_user_data(disp)) : nullptr;
-    return impl != nullptr ? impl->panel : hal::PanelKind::Lcd;
+    // A display UiRuntime made keeps its Impl as the user data; one made by
+    // anyone else may keep anything there. Only our flush callback marks it
+    // as ours, so check that before trusting the pointer.
+    if (disp == nullptr || disp->flush_cb != &UiRuntime::Impl::flush_cb) return hal::PanelKind::Lcd;
+    auto* impl = static_cast<UiRuntime::Impl*>(lv_display_get_user_data(disp));
+    return impl != nullptr && impl->lv_disp == disp ? impl->panel : hal::PanelKind::Lcd;
 }
 
 }  // namespace wisp::ui
