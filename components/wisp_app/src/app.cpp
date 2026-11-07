@@ -112,55 +112,6 @@ void merge_settings(core::SystemSettingsValues& v, const Map& m) {
     get_bool("tts_mute", v.tts_mute);
 }
 
-// The shell's scene list (ShellDeps::list_scenes), on the storage worker:
-// every installed scene with its icon, whether it runs in the background,
-// whether it can run now (its files are not on a card that is out) and
-// whether it has data to delete with it.
-std::vector<shell::ShellScene> list_shell_scenes(SceneWiring& scenes) {
-    std::vector<shell::ShellScene> out;
-    core::SceneRepository* repo = scenes.repository();
-    if (repo == nullptr) return out;
-    auto listed = repo->list();
-    if (!listed) {
-        WLOG_W("app", "listing scenes failed: %s", listed.error().message.c_str());
-        return out;
-    }
-    std::vector<std::string> background;
-    if (scene::SceneRuntime* rt = scenes.runtime())
-        for (const scene::BackgroundScene& b : rt->background_scenes()) background.push_back(b.id);
-    core::SceneFiles* files = scenes.files();
-    for (const core::SceneInfo& info : listed.value()) {
-        const core::SceneManifest& m = info.manifest;
-        shell::ShellScene sc;
-        sc.id = m.id;
-        sc.name = m.name;
-        sc.background = std::find(background.begin(), background.end(), m.id) != background.end();
-        if (files != nullptr && !files->sd_online()) {
-            if (auto fi = files->info(m.id); fi) {
-                const bool on_card = fi.value().location == core::FilesLocation::Sd ||
-                                     (fi.value().location == core::FilesLocation::None &&
-                                      fi.value().want == core::FilesWant::Sd);
-                sc.available = !on_card;
-            } else {
-                // A scene that wants the card and has no files yet is
-                // refused outright while the card is out.
-                sc.available = fi.error().code != ErrorCode::StorageUnavailable;
-            }
-        }
-        if (auto rm = repo->removal(m.id, true); rm) sc.has_data = rm.value().data;
-        if (!m.icon.empty()) {
-            if (auto icon = repo->read_asset(m.id, m.icon, shell::kIconMaxBytes); icon) {
-                sc.icon_png = std::make_shared<const os::LargeBuffer>(std::move(icon.value()));
-            } else {
-                WLOG_W("app", "%s: icon not shown (%s)", m.id.c_str(),
-                       icon.error().message.c_str());
-            }
-        }
-        out.push_back(std::move(sc));
-    }
-    return out;
-}
-
 }  // namespace
 
 App::App(Platform platform) : impl_(std::make_unique<Impl>(std::move(platform))) {}
@@ -763,7 +714,7 @@ Result<void> App::start() {
             .now_ms = {},
             .agent = impl_->agent ? impl_->agent->service() : nullptr,
             .list_scenes = scenes != nullptr ? std::function<std::vector<shell::ShellScene>()>(
-                                                   [scenes] { return list_shell_scenes(*scenes); })
+                                                   [scenes] { return scenes->shell_scenes(); })
                                              : nullptr,
             .open_scene =
                 [impl](const std::string& id) {

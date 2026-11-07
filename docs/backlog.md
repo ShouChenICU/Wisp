@@ -193,3 +193,10 @@ Source: glyph partition review records.
 
 - Sub-pages appear without the slide-in of MVP spec 6.3 (from the left, the right and above): `lv_screen_load_anim()` changes `lv_screen_active()` only when the animation ends, which breaks the scene runtime's check of which screen is in front when it restores or drops its view. Add the slides with the real sub-pages (MVP plan, "子页：对话记录、场景列表与设置"), with a screen-in-front check that does not depend on the animation.
 - Shell home: without a `ConversationController` (voice off), the first-boot "no Wi-Fi / no model" hint never shows. Pass a readiness callback through ShellDeps → HomeDeps from the app wiring so the hint does not depend on voice.
+
+## Shell sub-pages (MVP spec 6.4)
+
+- Device checks not run: `bench scroll` with the conversation history open and with the scene list open (with icons), against the "性能基准" section of the board doc; the cost of the first icon decode on the worker, and the wisp.fs stack high-water mark (`mem`) after opening a scene list with icons, since lodepng now runs on that 8 KB internal stack; touch feel of swipe versus scroll on the sub-pages.
+- The settings page reads the settings once when it is built: a change made by voice or from the admin page while it is open shows only after it is reopened, and the screen-off highlight follows the tap even if the write fails. Subscribe to `system.settings` while the page is open.
+- Small long-lived containers in internal RAM: `SceneRecents`' map and the scene list's `scenes_`/`cards_` vectors (one entry per scene). Tiny today; move to PSRAM containers if the scene count grows.
+- `SceneWiring::shell_scenes()` reads every icon file again on each listing to see whether it changed (decoding happens only on change). A cheaper check (size and mtime) would save the reads if listing shows up on wisp.fs.

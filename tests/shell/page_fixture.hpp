@@ -96,7 +96,7 @@ public:
     void show(shell::Page p) {
         on_ui([&] {
             shell_->show(p);
-            lv_obj_update_layout(shell_->page_screen());
+            if (lv_obj_t* scr = shell_->page_screen()) lv_obj_update_layout(scr);
         });
     }
 

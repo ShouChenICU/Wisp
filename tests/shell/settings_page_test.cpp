@@ -169,7 +169,8 @@ TEST_F(SettingsPageTest, WifiAndAbout) {
     harness->tap(harness->centre_of(page()->wifi_row()));
     EXPECT_EQ(wifi_setups.load(), 1);
 
-    // About -> hardware diagnostics, over the settings page; back returns.
+    // About -> hardware diagnostics, over the settings page. (Its back
+    // swipe goes home, as from the serial `diag`.)
     harness->on_ui([&] {
         lv_obj_t* list = page()->list();
         lv_obj_scroll_to_y(list, LV_COORD_MAX, LV_ANIM_OFF);

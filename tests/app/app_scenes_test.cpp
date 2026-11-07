@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -893,6 +894,129 @@ TEST(AppScenes, DeleteAfterStopRuntimeIsRefused) {
     EXPECT_EQ(run_on_ui_thread(
                   &ui, [] { return find_label_text_containing(lv_layer_top(), "删除场景“"); }),
               "");
+    wiring.stop();
+}
+
+// ask_delete(): the shell's long-press delete, from the UI thread. It
+// returns before the lookup has run (the worker is held here), the dialog
+// opens on the UI thread afterwards, and once stop_runtime() has run it
+// opens nothing.
+TEST(AppScenes, AskDeleteFromTheUiThreadNeverWaits) {
+    Booted b;
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    fs::create_directories(fs::path(b.h.root) / "scenes" / "counter" / "data");
+    std::ofstream(fs::path(b.h.root) / "scenes" / "counter" / "data" / "kv.log") << "x\n";
+    ASSERT_TRUE(b.start());
+    wisp::ui::UiRuntime& ui = *b.h.app->ui();
+
+    wisp::app::Platform platform;
+    wisp::app::SceneWiring wiring(
+        wisp::app::SceneWiringDeps{platform, b.h.app->bus(), b.h.app->storage()});
+    wiring.start_storage();
+    ASSERT_NE(wiring.repository(), nullptr);
+    std::unique_ptr<wisp::ui::SystemLayer> layer;
+    const wisp::hal::ScreenShape shape{wisp::hal::ScreenShapeKind::Rect, 480, 480, 0};
+    run_on_ui_blocking(&ui, [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
+    wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
+    wiring.start_runtime([] { return false; });
+    auto dialog = [&] {
+        return run_on_ui_thread(
+            &ui, [] { return find_label_text_containing(lv_layer_top(), "删除场景“"); });
+    };
+
+    std::promise<void> gate;
+    std::shared_future<void> held = gate.get_future().share();
+    ASSERT_TRUE(wiring.worker().submit([held] { held.wait(); }));
+    bool asked = false;
+    run_on_ui_blocking(&ui, [&] { asked = static_cast<bool>(wiring.ask_delete("counter", true)); });
+    EXPECT_TRUE(asked);
+    EXPECT_EQ(dialog(), "");
+    gate.set_value();
+    ASSERT_TRUE(wait_until([&] { return !dialog().empty(); }, 3000));
+    EXPECT_EQ(dialog(), "删除场景“计数器”？\n场景数据也会一并删除。");
+    ASSERT_EQ(run_on_ui_thread(&ui,
+                               [] {
+                                   lv_obj_t* no = find_button_with_label(lv_layer_top(), "否");
+                                   if (no == nullptr) return "";
+                                   lv_obj_send_event(no, LV_EVENT_CLICKED, nullptr);
+                                   return "ok";
+                               }),
+              "ok");
+    ASSERT_TRUE(wait_until([&] { return dialog().empty(); }, 3000));
+
+    // Nothing by that id: only logged.
+    run_on_ui_blocking(&ui, [&] { asked = static_cast<bool>(wiring.ask_delete("nope", false)); });
+    EXPECT_TRUE(asked);
+    ASSERT_TRUE(wiring.worker().drain(3000));
+    EXPECT_EQ(dialog(), "");
+
+    // Shut down: a lookup still finishing opens nothing on the freed layer.
+    wiring.stop_runtime();
+    run_on_ui_blocking(&ui, [&] { layer.reset(); });
+    (void)wiring.ask_delete("counter", false);
+    ASSERT_TRUE(wiring.worker().drain(3000));
+    EXPECT_EQ(dialog(), "");
+    EXPECT_TRUE(fs::exists(fs::path(b.h.root) / "scenes" / "counter" / "scene.json"));
+    wiring.stop();
+}
+
+// shell_scenes(): what the shell's scene list shows for each scene.
+TEST(AppScenes, ShellScenesListsAvailabilityDataAndIcons) {
+    Booted b;
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    // Data to delete with it.
+    fs::create_directories(fs::path(b.h.root) / "scenes" / "counter" / "data");
+    std::ofstream(fs::path(b.h.root) / "scenes" / "counter" / "data" / "kv.log") << "x\n";
+    // Files wanted on a card this device does not have, never placed.
+    put_scene(b.h.root, "photos", "相册", "return ui.screen {}\n");
+    std::ofstream(fs::path(b.h.root) / "scenes" / "photos" / "scene.json")
+        << R"({"id":"photos","name":"相册","version":"1.0.0","schema_version":1,"files":"sd"})";
+    // An icon.
+    put_scene(b.h.root, "clock", "时钟", "return ui.screen {}\n");
+    std::ofstream(fs::path(b.h.root) / "scenes" / "clock" / "scene.json")
+        << R"({"id":"clock","name":"时钟","version":"1.0.0","schema_version":1,)"
+        << R"("icon":"assets/icon.png"})";
+    fs::create_directories(fs::path(b.h.root) / "scenes" / "clock" / "assets");
+    std::ofstream(fs::path(b.h.root) / "scenes" / "clock" / "assets" / "icon.png", std::ios::binary)
+        << "\x89PNG-bytes";
+    // An icon too large to read.
+    put_scene(b.h.root, "big", "大图", "return ui.screen {}\n");
+    std::ofstream(fs::path(b.h.root) / "scenes" / "big" / "scene.json")
+        << R"({"id":"big","name":"大图","version":"1.0.0","schema_version":1,)"
+        << R"("icon":"assets/icon.png"})";
+    fs::create_directories(fs::path(b.h.root) / "scenes" / "big" / "assets");
+    std::ofstream(fs::path(b.h.root) / "scenes" / "big" / "assets" / "icon.png", std::ios::binary)
+        << std::string(wisp::shell::kIconMaxBytes + 1, 'x');
+    ASSERT_TRUE(b.start());
+
+    wisp::app::Platform platform;
+    wisp::app::SceneWiring wiring(
+        wisp::app::SceneWiringDeps{platform, b.h.app->bus(), b.h.app->storage()});
+    wiring.start_storage();
+    ASSERT_NE(wiring.files(), nullptr);
+    ASSERT_FALSE(wiring.files()->sd_online());
+    std::vector<wisp::shell::ShellScene> got;
+    ASSERT_TRUE(wiring.worker().run_sync([&] { got = wiring.shell_scenes(); }, 5000));
+    std::map<std::string, const wisp::shell::ShellScene*> by_id;
+    for (const auto& s : got) by_id[s.id] = &s;
+    ASSERT_EQ(by_id.size(), 4u);
+
+    EXPECT_EQ(by_id["counter"]->name, "计数器");
+    EXPECT_TRUE(by_id["counter"]->available);
+    EXPECT_TRUE(by_id["counter"]->has_data);
+    EXPECT_FALSE(by_id["counter"]->background);
+    EXPECT_EQ(by_id["counter"]->icon_png, nullptr);
+
+    EXPECT_FALSE(by_id["photos"]->available);
+    EXPECT_FALSE(by_id["photos"]->has_data);
+
+    ASSERT_NE(by_id["clock"]->icon_png, nullptr);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(by_id["clock"]->icon_png->data()),
+                          by_id["clock"]->icon_png->size()),
+              "\x89PNG-bytes");
+    EXPECT_TRUE(by_id["clock"]->available);
+
+    EXPECT_EQ(by_id["big"]->icon_png, nullptr);
     wiring.stop();
 }
 

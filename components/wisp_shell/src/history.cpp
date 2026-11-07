@@ -270,7 +270,7 @@ void HistoryPage::ask_new() {
     }
     ui::UiRuntime* ui = &deps_.ui;
     std::shared_ptr<bool> alive = alive_;
-    deps_.layer.open_confirm(
+    lv_obj_t* box = deps_.layer.open_confirm(
         ui::StrId::HistoryNew, ui::tr(ui::StrId::HistoryNewConfirm),
         [this, agent, ui, alive](bool yes) {
             if (!yes || !*alive) return;
@@ -285,6 +285,8 @@ void HistoryPage::ask_new() {
             if (!r) archived(r);
         },
         ui::ButtonRole::Primary, ui::StrId::Yes, ui::StrId::No);
+    // Another system dialog is up (one at a time): this tap asks nothing.
+    if (box == nullptr) WLOG_W(kTag, "new conversation not asked: a dialog is open");
 }
 
 void HistoryPage::archived(const Result<void>& r) {

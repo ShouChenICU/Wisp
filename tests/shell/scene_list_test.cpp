@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -220,4 +221,126 @@ TEST_F(SceneListTest, SceneStateListsAgain) {
     harness->bus().publish({"scene.state", "test", 0, {{"id", "todo"}, {"state", "installed"}}});
     ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 1; }));
     harness->on_ui([&] { EXPECT_EQ(page()->empty_label(), nullptr); });
+}
+
+// A page reopened while the last page's listing still waits behind other
+// work on the worker lists for itself: it does not come up blank.
+TEST_F(SceneListTest, ReopenedWhileAListingWaitsIsFilled) {
+    boot();
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes = {scene("todo", "待办")};
+    }
+    std::promise<void> gate;
+    std::shared_future<void> opened_gate = gate.get_future().share();
+    ASSERT_TRUE(agent.worker.submit([opened_gate] { opened_gate.wait(); }));
+    harness->show(Page::Scenes);
+    harness->show(Page::Home);
+    harness->show(Page::Scenes);
+    gate.set_value();
+    ASSERT_TRUE(harness->ui_until([&] { return page() != nullptr && page()->cards() == 1; }));
+}
+
+// Icons are decoded off the UI thread, scaled once to the card's icon
+// square, and decoded again only when the file changes.
+TEST(SceneIcon, DecodedAndScaledToTheSquare) {
+    // The decoder's buffers come from handlers lv_init() sets up.
+    if (!lv_is_initialized()) lv_init();
+    auto png = icon();
+    auto big = wisp::shell::decode_scene_icon(*png, 48);
+    ASSERT_NE(big, nullptr);
+    EXPECT_EQ(big->image.header.cf, LV_COLOR_FORMAT_ARGB8888);
+    EXPECT_EQ(big->image.header.w, 48u);
+    EXPECT_EQ(big->image.header.h, 48u);
+    EXPECT_EQ(big->image.header.stride, 48u * 4);
+    auto same = wisp::shell::decode_scene_icon(*png, 16);
+    auto small = wisp::shell::decode_scene_icon(*png, 8);
+    ASSERT_NE(same, nullptr);
+    ASSERT_NE(small, nullptr);
+    EXPECT_EQ(small->image.header.w, 8u);
+    // Opaque in, opaque out; an even colour stays that colour, scaled up
+    // or down.
+    const uint8_t* a = same->pixels.data();
+    for (const auto* icon : {big.get(), small.get()}) {
+        const uint8_t* b = icon->pixels.data();
+        EXPECT_EQ(b[3], 255);
+        EXPECT_EQ(std::memcmp(a, b, 4), 0);
+    }
+
+    // Not a PNG, or one too large: nothing.
+    auto junk = wisp::os::LargeBuffer::allocate(64);
+    std::memset(junk.data(), 0x55, junk.size());
+    EXPECT_EQ(wisp::shell::decode_scene_icon(junk, 48), nullptr);
+    auto wide = wisp::os::LargeBuffer::allocate(sizeof(kIconPng));
+    std::memcpy(wide.data(), kIconPng, sizeof(kIconPng));
+    wide.data()[18] = 0x01;  // width 0x0110 = 272 > kIconMaxSide
+    wide.data()[19] = 0x10;
+    EXPECT_EQ(wisp::shell::decode_scene_icon(wide, 48), nullptr);
+    EXPECT_EQ(wisp::shell::decode_scene_icon(*png, 0), nullptr);
+}
+
+TEST_F(SceneListTest, IconDecodedOnceAcrossListings) {
+    boot();
+    {
+        ShellScene clock = scene("clock", "时钟");
+        clock.icon_png = icon();
+        std::lock_guard<std::mutex> lock(mu);
+        scenes = {std::move(clock)};
+    }
+    open_page(1);
+    const wisp::shell::SceneIcon* first = nullptr;
+    harness->on_ui([&] {
+        first = page()->scene(0).icon.get();
+        ASSERT_NE(first, nullptr);
+        EXPECT_EQ(page()->scene(0).icon_png, nullptr);  // the file's bytes are let go
+        EXPECT_EQ(static_cast<int32_t>(first->image.header.w),
+                  SceneList::icon_side(harness->shape()));
+        EXPECT_EQ(lv_image_get_src(page()->icon(0)), &first->image);
+    });
+    // Read again (a fresh copy of the same bytes): the same pixels.
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes[0].icon_png = icon();
+        scenes.push_back(scene("todo", "待办"));
+    }
+    harness->bus().publish({"scene.state", "test", 0, {{"id", "todo"}, {"state", "installed"}}});
+    ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 2; }));
+    harness->on_ui([&] { EXPECT_EQ(page()->scene(0).icon.get(), first); });
+    // The icon gone from the manifest: the card shows the first character.
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes[0].icon_png = nullptr;
+        scenes.pop_back();
+    }
+    harness->bus().publish({"scene.state", "test", 0, {{"id", "todo"}, {"state", "deleted"}}});
+    ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 1; }));
+    harness->on_ui([&] {
+        EXPECT_EQ(page()->scene(0).icon, nullptr);
+        EXPECT_EQ(page()->icon(0), nullptr);
+    });
+}
+
+// A refresh while the long-press card is up keeps it, unless its scene
+// went away.
+TEST_F(SceneListTest, RefreshKeepsTheLongPressCard) {
+    boot();
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes = {scene("counter", "计数器"), scene("todo", "待办")};
+    }
+    open_page(2);
+    harness->hold(harness->centre_of(page()->card(0)), 700);
+    harness->on_ui([&] { ASSERT_NE(page()->popup(), nullptr); });
+    harness->bus().publish({"scene.state", "test", 0, {{"id", "todo"}, {"state", "running"}}});
+    // The listing ran and its answer, posted before drain() returns, is
+    // handled before the next call on the UI thread.
+    (void)agent.worker.drain(2000);
+    harness->on_ui([&] { EXPECT_NE(page()->popup(), nullptr); });
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes = {scene("todo", "待办")};
+    }
+    harness->bus().publish({"scene.state", "test", 0, {{"id", "counter"}, {"state", "deleted"}}});
+    ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 1; }));
+    harness->on_ui([&] { EXPECT_EQ(page()->popup(), nullptr); });
 }

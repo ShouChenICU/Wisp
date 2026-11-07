@@ -75,6 +75,7 @@
 #include "wisp/os/large.hpp"
 #include "wisp/scene/dir_watcher.hpp"
 #include "wisp/scene/scene_runtime.hpp"
+#include "wisp/shell/scene_list.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -148,6 +149,13 @@ public:
     net::SceneHttp* http() const { return http_.get(); }
     // The "wisp.fs" worker, running from start_storage() until stop().
     core::StorageWorker& worker() { return worker_; }
+
+    // The shell's scene list (ShellDeps::list_scenes): every installed
+    // scene with its icon file, whether it runs in the background, whether
+    // it can run now (its files are not on a card that is out) and whether
+    // it has data to delete with it. Reads flash: on worker() only. Empty
+    // without a repository or when listing fails (logged).
+    std::vector<shell::ShellScene> shell_scenes();
 
     // AdminDeps::request_scene_delete. NotFound when there is nothing to
     // delete (SceneRepository::removal()), Unsupported in dev mode, Busy

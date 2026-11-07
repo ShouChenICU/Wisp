@@ -1,5 +1,6 @@
 #include "scene_wiring.hpp"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <utility>
@@ -470,6 +471,50 @@ bool SceneWiring::storage_status_async(ui::UiRuntime& ui,
             WLOG_W(kTag, "storage status not shown (UI queue full)");
         }
     });
+}
+
+std::vector<shell::ShellScene> SceneWiring::shell_scenes() {
+    std::vector<shell::ShellScene> out;
+    core::SceneRepository* repo = repository();
+    if (repo == nullptr) return out;
+    auto listed = repo->list();
+    if (!listed) {
+        WLOG_W(kTag, "listing scenes failed: %s", listed.error().message.c_str());
+        return out;
+    }
+    std::vector<std::string> background;
+    if (scene::SceneRuntime* rt = runtime())
+        for (const scene::BackgroundScene& b : rt->background_scenes()) background.push_back(b.id);
+    core::SceneFiles* sf = files_.get();
+    for (const core::SceneInfo& info : listed.value()) {
+        const core::SceneManifest& m = info.manifest;
+        shell::ShellScene sc;
+        sc.id = m.id;
+        sc.name = m.name;
+        sc.background = std::find(background.begin(), background.end(), m.id) != background.end();
+        if (sf != nullptr && !sf->sd_online()) {
+            if (auto fi = sf->info(m.id); fi) {
+                const bool on_card = fi.value().location == core::FilesLocation::Sd ||
+                                     (fi.value().location == core::FilesLocation::None &&
+                                      fi.value().want == core::FilesWant::Sd);
+                sc.available = !on_card;
+            } else {
+                // A scene that wants the card and has no files yet is
+                // refused outright while the card is out.
+                sc.available = fi.error().code != ErrorCode::StorageUnavailable;
+            }
+        }
+        if (auto rm = repo->removal(m.id, true); rm) sc.has_data = rm.value().data;
+        if (!m.icon.empty()) {
+            if (auto icon = repo->read_asset(m.id, m.icon, shell::kIconMaxBytes); icon) {
+                sc.icon_png = std::make_shared<const os::LargeBuffer>(std::move(icon.value()));
+            } else {
+                WLOG_W(kTag, "%s: icon not shown (%s)", m.id.c_str(), icon.error().message.c_str());
+            }
+        }
+        out.push_back(std::move(sc));
+    }
+    return out;
 }
 
 }  // namespace wisp::app

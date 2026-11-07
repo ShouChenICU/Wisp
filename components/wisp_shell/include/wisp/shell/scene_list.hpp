@@ -4,9 +4,11 @@
 // scene, in SceneRecents::order() (most recently opened first).
 //
 // Columns: as many kCardMinPx cards as fit across the safe area, sharing
-// its width; each card is square. A card shows the scene's icon (the
-// manifest's PNG, decoded once into PSRAM and drawn scaled to fit) or, without
-// one, the first character of its name, and the name below. A scene running
+// its width; each card is square. A card shows the scene's icon or, without
+// one, the first character of its name, and the name below. The icon comes
+// already decoded and scaled to icon_side() (decode_scene_icon(), run by
+// the shell on the storage worker), so building a card decodes nothing and
+// drawing it is a plain copy, never a per-frame transform. A scene running
 // in the background carries LV_SYMBOL_PLAY; one that cannot run now (its
 // files are on an SD card that is out) is greyed out and takes no tap or
 // long press. A tap opens the scene; a long press opens a small card over
@@ -33,10 +35,19 @@
 
 namespace wisp::shell {
 
+// A decoded icon: ARGB8888 in PSRAM, `image` pointing into `pixels`.
+struct SceneIcon {
+    lv_image_dsc_t image{};
+    os::LargeBuffer pixels;
+};
+
 struct ShellScene {
     std::string id, name;
-    // The icon file's bytes (at most kIconMaxBytes), or null.
+    // The icon file's bytes (at most kIconMaxBytes), or null. What
+    // ShellDeps::list_scenes hands over; the shell turns it into `icon`.
     std::shared_ptr<const os::LargeBuffer> icon_png;
+    // The icon as the card draws it, or null (the first character instead).
+    std::shared_ptr<const SceneIcon> icon;
     bool background = false;  // running in the background
     bool available = true;
     bool has_data = false;  // a data or files directory to delete with it
@@ -44,6 +55,16 @@ struct ShellScene {
 
 // The largest icon file the list reads.
 inline constexpr size_t kIconMaxBytes = 32 * 1024;
+// An icon file's largest side; larger ones are not shown.
+inline constexpr uint32_t kIconMaxSide = 256;
+
+// Decodes the PNG `png` and scales it to fit a `side` x `side` square,
+// keeping its aspect (averaging when it shrinks). Null for anything that
+// is not a PNG of at most kIconMaxSide a side, or without the memory.
+// Changes no LVGL state, so it runs on any thread once lv_init() has run
+// (the shell runs it on the storage worker); its memory comes from
+// Mem::Large.
+std::shared_ptr<const SceneIcon> decode_scene_icon(const os::LargeBuffer& png, int32_t side);
 
 struct SceneListDeps {
     hal::ScreenShape shape;
@@ -58,8 +79,8 @@ class SceneList {
 public:
     // The least side of a card.
     static constexpr int32_t kCardMinPx = 96;
-    // An icon's longest side as decoded; larger ones are not shown.
-    static constexpr uint32_t kIconMaxSide = 256;
+    // The side of the square an icon is drawn in, on a screen of `shape`.
+    static int32_t icon_side(const hal::ScreenShape& shape);
 
     explicit SceneList(SceneListDeps deps);
     ~SceneList();
@@ -71,6 +92,8 @@ public:
     // set_scenes().
     void build(lv_obj_t* list);
     // Replaces the cards, keeping the scroll position as far as it goes.
+    // The long-press card stays up while its scene is still listed and
+    // can run.
     void set_scenes(std::vector<ShellScene> scenes);
 
     // For tests and the simulator's checks.
@@ -100,15 +123,7 @@ private:
         lv_obj_t* name = nullptr;
         lv_obj_t* mark = nullptr;
     };
-    // A decoded icon; `image` points into `pixels`.
-    struct Icon {
-        lv_image_dsc_t image{};
-        os::LargeBuffer pixels;
-    };
-
     void build_cards();
-    // Decodes `png` into an Icon, or null.
-    std::unique_ptr<Icon> decode(const os::LargeBuffer& png) const;
     size_t index_of(lv_obj_t* card) const;
     static void card_cb(lv_event_t* e);
     static void popup_cb(lv_event_t* e);
@@ -121,7 +136,6 @@ private:
     int32_t card_px_ = kCardMinPx;
     std::vector<ShellScene> scenes_;
     std::vector<Card> cards_;
-    std::vector<std::unique_ptr<Icon>> icons_;
     lv_obj_t* popup_ = nullptr;
     lv_obj_t* pop_delete_ = nullptr;
     lv_obj_t* pop_data_ = nullptr;

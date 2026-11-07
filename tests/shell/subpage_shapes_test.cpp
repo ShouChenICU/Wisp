@@ -190,10 +190,10 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
     }
 }
 
-INSTANTIATE_TEST_SUITE_P(Shapes, SubPageShapes,
-                         ::testing::Values(ShapeCase{"rect", 480, 480},
-                                           ShapeCase{"rounded_rect", 480, 480},
-                                           ShapeCase{"circle", 480, 480}),
-                         [](const ::testing::TestParamInfo<ShapeCase>& info) {
-                             return std::string(info.param.shape);
-                         });
+INSTANTIATE_TEST_SUITE_P(
+    Shapes, SubPageShapes,
+    ::testing::Values(ShapeCase{"rect", 480, 480}, ShapeCase{"rounded_rect", 480, 480},
+                      ShapeCase{"circle", 480, 480}, ShapeCase{"circle", 360, 360}),
+    [](const ::testing::TestParamInfo<ShapeCase>& info) {
+        return std::string(info.param.shape) + "_" + std::to_string(info.param.width);
+    });

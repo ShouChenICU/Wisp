@@ -1141,3 +1141,31 @@ TEST(SceneRepositoryTest, ValidPackagePath) {
                             "assets/a.new", "a/main.lua", ".lua", "assets/a\\b", "assets/./a"})
         EXPECT_FALSE(valid_package_path(bad)) << bad;
 }
+
+// read_asset: a file under assets/ only, whole, and refused past the limit.
+TEST(SceneRepository, ReadAssetUnderAssetsOnly) {
+    Fixture fx;
+    ASSERT_TRUE(fx.install(todo_files()));
+    auto icon = fx.repo->read_asset("todo", "assets/icon.png", 64);
+    ASSERT_TRUE(icon) << icon.error().message;
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(icon.value().data()), icon.value().size()),
+              std::string("\x89PNG", 4));
+    // Exactly the limit is fine; one byte less is too large.
+    EXPECT_TRUE(fx.repo->read_asset("todo", "assets/icon.png", 4));
+    auto big = fx.repo->read_asset("todo", "assets/icon.png", 3);
+    ASSERT_FALSE(big);
+    EXPECT_EQ(big.error().code, ErrorCode::QuotaExceeded);
+    EXPECT_EQ(big.error().message, "too_large");
+
+    for (const char* path : {"scene.json", "main.lua", "assets/../scene.json", "../todo/scene.json",
+                             "/assets/icon.png", "assets", ""}) {
+        auto r = fx.repo->read_asset("todo", path, 64);
+        ASSERT_FALSE(r) << path;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << path;
+    }
+    EXPECT_EQ(fx.repo->read_asset("Bad", "assets/icon.png", 64).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(fx.repo->read_asset("todo", "assets/none.png", 64).error().code, ErrorCode::NotFound);
+    EXPECT_EQ(fx.repo->read_asset("other", "assets/icon.png", 64).error().code,
+              ErrorCode::NotFound);
+}

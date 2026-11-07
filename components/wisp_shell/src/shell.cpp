@@ -4,6 +4,7 @@
 
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/os.hpp"
 #include "wisp/shell/gestures.hpp"
 #include "wisp/shell/history.hpp"
 #include "wisp/shell/home.hpp"
@@ -79,6 +80,7 @@ void Shell::start() {
 
     lv_screen_load(home_screen_);
     listing_ = std::make_shared<std::atomic<bool>>(false);
+    icons_ = std::make_shared<IconCache>();
     if (deps_.list_scenes) {
         scene_sub_ = deps_.bus.subscribe("scene.state", [this, alive = alive_](const core::Event&) {
             // On the bus's thread: the list is read again from the UI
@@ -174,6 +176,7 @@ lv_obj_t* Shell::build_page(Page p) {
     detail::PageFrame f = detail::make_page(deps_.shape, title_of(p));
     lv_obj_add_event_cb(f.screen, &Shell::page_event_cb, LV_EVENT_ALL, this);
     page_alive_ = std::make_shared<bool>(true);
+    listing_ = std::make_shared<std::atomic<bool>>(false);
     page_list_ = f.list;
     switch (p) {
         case Page::History:
@@ -224,6 +227,52 @@ void Shell::drop_pages() {
     settings_.reset();
 }
 
+struct Shell::IconCache {
+    struct Entry {
+        uint64_t hash = 0;
+        size_t size = 0;
+        std::shared_ptr<const SceneIcon> icon;  // null: the file did not decode
+    };
+
+    // Fills each scene's `icon` from its `icon_png`, decoding only what
+    // changed, and drops the file bytes. The bytes are hashed rather than
+    // compared by pointer: every listing reads the files again.
+    void resolve(std::vector<ShellScene>& scenes, int32_t side) {
+        std::lock_guard<os::Mutex> lock(mu);
+        std::map<std::string, Entry> next;
+        for (ShellScene& sc : scenes) {
+            if (!sc.icon_png) continue;
+            const os::LargeBuffer& png = *sc.icon_png;
+            const uint64_t h = fnv1a(png);
+            auto it = by_id.find(sc.id);
+            Entry e;
+            if (it != by_id.end() && it->second.hash == h && it->second.size == png.size()) {
+                e = it->second;
+            } else {
+                e = {h, png.size(), decode_scene_icon(png, side)};
+                if (!e.icon)
+                    WLOG_W(kTag, "%s: icon not shown (not a PNG it can draw)", sc.id.c_str());
+            }
+            sc.icon = e.icon;
+            sc.icon_png.reset();
+            next[sc.id] = std::move(e);
+        }
+        by_id = std::move(next);  // deleted scenes and dropped icons go
+    }
+
+    static uint64_t fnv1a(const os::LargeBuffer& b) {
+        uint64_t h = 1469598103934665603ull;
+        for (size_t i = 0; i < b.size(); ++i) {
+            h ^= b.data()[i];
+            h *= 1099511628211ull;
+        }
+        return h;
+    }
+
+    os::Mutex mu;
+    std::map<std::string, Entry> by_id;
+};
+
 void Shell::list_scenes() {
     if (!scenes_) return;
     if (!deps_.list_scenes || !deps_.submit_io) {
@@ -233,9 +282,11 @@ void Shell::list_scenes() {
     // One listing waiting in the queue answers every event before it ran.
     if (listing_->exchange(true)) return;
     auto job = [this, list = deps_.list_scenes, recents = deps_.recents, ui = &deps_.ui,
-                queued = listing_, alive = page_alive_] {
+                queued = listing_, alive = page_alive_, icons = icons_,
+                side = SceneList::icon_side(deps_.shape)] {
         queued->store(false);
         std::vector<ShellScene> got = list();
+        icons->resolve(got, side);
         if (recents != nullptr) {
             std::vector<std::string> ids;
             ids.reserve(got.size());

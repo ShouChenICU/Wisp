@@ -209,10 +209,17 @@ private:
     // Replaced with each sub-page: a scene listing still on its way finds
     // its page gone.
     std::shared_ptr<bool> page_alive_;
-    // scene.state while started; a listing already queued is not queued
-    // again.
+    // scene.state while started.
     core::SubscriptionId scene_sub_ = 0;
+    // Set while a listing for the current page waits on the worker, so a
+    // burst of events queues one. Replaced with each sub-page, like
+    // page_alive_: a new page never waits on an old page's listing, whose
+    // answer it would not get.
     std::shared_ptr<std::atomic<bool>> listing_;
+    // Decoded icons by scene id, kept across listings and pages so an
+    // unchanged icon is decoded once. Touched on the worker only.
+    struct IconCache;
+    std::shared_ptr<IconCache> icons_;
     // The diagnostics' screen while it is open (owned by the App's
     // self-check object).
     lv_obj_t* diag_ = nullptr;

@@ -4,13 +4,19 @@
 #include <cstring>
 #include <utility>
 
-#include "lvgl_private.h"  // lv_image_decoder_dsc_t
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/theme.hpp"
 #include "wisp/ui/theme_tokens.hpp"
+
+// LVGL's bundled lodepng (LV_USE_LODEPNG), compiled as C. Declared here
+// because its header, included from C++, also declares C++ overloads
+// inside its extern "C" block, which does not compile. LVGL's copy hands
+// back an lv_draw_buf_t* in `out` (not raw bytes), its pixels R, G, B, A.
+extern "C" unsigned lodepng_decode32(unsigned char** out, unsigned* w, unsigned* h,
+                                     const unsigned char* in, size_t insize);
 
 namespace wisp::shell {
 
@@ -35,12 +41,116 @@ std::string first_char(const std::string& s) {
 
 int32_t area_w(const hal::Area& a) { return a.x2 - a.x1 + 1; }
 
+struct Grid {
+    int32_t columns;
+    int32_t card_px;
+};
+
+Grid grid_of(const hal::ScreenShape& shape) {
+    const int32_t w = area_w(hal::safe_rect(shape));
+    const int32_t columns = std::max<int32_t>(1, (w + kGap) / (SceneList::kCardMinPx + kGap));
+    return {columns, (w - (columns - 1) * kGap) / columns};
+}
+
+// A PNG's size from its IHDR chunk, read before decoding so an oversized
+// image is refused without its pixels ever being allocated.
+bool png_size(const os::LargeBuffer& png, uint32_t& w, uint32_t& h) {
+    static constexpr uint8_t kSig[8] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+    if (png.size() < 8 + 25 || std::memcmp(png.data(), kSig, 8) != 0 ||
+        std::memcmp(png.data() + 12, "IHDR", 4) != 0) {
+        return false;
+    }
+    const auto be32 = [&](size_t at) {
+        const uint8_t* p = png.data() + at;
+        return (uint32_t{p[0]} << 24) | (uint32_t{p[1]} << 16) | (uint32_t{p[2]} << 8) | p[3];
+    };
+    w = be32(16);
+    h = be32(20);
+    return true;
+}
+
 }  // namespace
 
+std::shared_ptr<const SceneIcon> decode_scene_icon(const os::LargeBuffer& png, int32_t side) {
+    uint32_t w = 0, h = 0;
+    if (side <= 0 || !png_size(png, w, h) || w == 0 || h == 0 || w > kIconMaxSide ||
+        h > kIconMaxSide) {
+        return nullptr;
+    }
+    // Off the UI thread: lodepng and lv_draw_buf_create_ex() only allocate,
+    // through lv_malloc(), which here is os::alloc (lv_mem_wisp.cpp), and
+    // read the draw-buffer handlers lv_init() set; they change no LVGL
+    // state (no cache, no display).
+    unsigned char* out = nullptr;
+    unsigned dw = 0, dh = 0;
+    const unsigned err = lodepng_decode32(&out, &dw, &dh, png.data(), png.size());
+    auto* decoded = reinterpret_cast<lv_draw_buf_t*>(out);
+    if (err != 0 || decoded == nullptr || dw != w || dh != h || decoded->header.stride < w * 4) {
+        if (decoded != nullptr) lv_draw_buf_destroy(decoded);
+        return nullptr;
+    }
+    const uint8_t* rgba = decoded->data;
+    const uint32_t src_stride = decoded->header.stride;
+    // Fit the square, keeping the aspect.
+    const auto out_w =
+        static_cast<uint32_t>(std::max<int64_t>(1, w >= h ? side : int64_t{side} * w / h));
+    const auto out_h =
+        static_cast<uint32_t>(std::max<int64_t>(1, h >= w ? side : int64_t{side} * h / w));
+    auto icon = std::make_shared<SceneIcon>();
+    const uint32_t stride = out_w * 4;
+    icon->pixels = os::LargeBuffer::allocate(size_t{stride} * out_h);
+    if (!icon->pixels.ok()) {
+        lv_draw_buf_destroy(decoded);
+        return nullptr;
+    }
+    uint8_t* dst = icon->pixels.data();
+    for (uint32_t y = 0; y < out_h; ++y) {
+        // The source rows and columns this pixel covers: a box average
+        // when shrinking, the nearest pixel when growing.
+        const uint32_t y0 = y * h / out_h;
+        const uint32_t y1 = std::max(y0 + 1, (y + 1) * h / out_h);
+        for (uint32_t x = 0; x < out_w; ++x) {
+            const uint32_t x0 = x * w / out_w;
+            const uint32_t x1 = std::max(x0 + 1, (x + 1) * w / out_w);
+            uint32_t r = 0, g = 0, b = 0, a = 0, n = 0;
+            for (uint32_t sy = y0; sy < y1; ++sy) {
+                const uint8_t* p = rgba + size_t{sy} * src_stride + size_t{x0} * 4;
+                for (uint32_t sx = x0; sx < x1; ++sx, p += 4) {
+                    // Colour weighted by alpha, so transparent pixels do
+                    // not darken the edges.
+                    r += uint32_t{p[0]} * p[3];
+                    g += uint32_t{p[1]} * p[3];
+                    b += uint32_t{p[2]} * p[3];
+                    a += p[3];
+                    ++n;
+                }
+            }
+            uint8_t* q = dst + size_t{y} * stride + size_t{x} * 4;
+            // LVGL's ARGB8888 is B, G, R, A in memory.
+            q[0] = static_cast<uint8_t>(a ? b / a : 0);
+            q[1] = static_cast<uint8_t>(a ? g / a : 0);
+            q[2] = static_cast<uint8_t>(a ? r / a : 0);
+            q[3] = static_cast<uint8_t>(a / n);
+        }
+    }
+    lv_draw_buf_destroy(decoded);
+    lv_image_dsc_t& img = icon->image;
+    img.header.magic = LV_IMAGE_HEADER_MAGIC;
+    img.header.cf = LV_COLOR_FORMAT_ARGB8888;
+    img.header.w = out_w;
+    img.header.h = out_h;
+    img.header.stride = stride;
+    img.data = icon->pixels.data();
+    img.data_size = static_cast<uint32_t>(icon->pixels.size());
+    return icon;
+}
+
+int32_t SceneList::icon_side(const hal::ScreenShape& shape) { return grid_of(shape).card_px / 2; }
+
 SceneList::SceneList(SceneListDeps deps) : deps_(std::move(deps)) {
-    const int32_t w = area_w(hal::safe_rect(deps_.shape));
-    columns_ = std::max<int32_t>(1, (w + kGap) / (kCardMinPx + kGap));
-    card_px_ = (w - (columns_ - 1) * kGap) / columns_;
+    const Grid g = grid_of(deps_.shape);
+    columns_ = g.columns;
+    card_px_ = g.card_px;
 }
 
 SceneList::~SceneList() = default;
@@ -55,7 +165,14 @@ void SceneList::build(lv_obj_t* list) {
 }
 
 void SceneList::set_scenes(std::vector<ShellScene> scenes) {
-    close_popup();
+    const auto still_there = [&] {
+        for (const ShellScene& s : scenes)
+            if (s.id == pop_id_) return s.available;
+        return false;
+    };
+    // A refresh (any scene.state) must not take the card away from a user
+    // still deciding.
+    if (popup_ != nullptr && !still_there()) close_popup();
     scenes_ = std::move(scenes);
     const int32_t y = lv_obj_get_scroll_y(list_);
     build_cards();
@@ -67,7 +184,6 @@ void SceneList::set_scenes(std::vector<ShellScene> scenes) {
 void SceneList::build_cards() {
     lv_obj_clean(grid_);
     cards_.clear();
-    icons_.clear();
     if (empty_ != nullptr) {
         lv_obj_delete(empty_);
         empty_ = nullptr;
@@ -79,7 +195,7 @@ void SceneList::build_cards() {
         return;
     }
     const bool colour = detail::colour_panel(list_);
-    const int32_t icon_px = card_px_ / 2;
+    const int32_t icon_px = icon_side(deps_.shape);
     for (const ShellScene& s : scenes_) {
         Card c;
         c.card = lv_obj_create(grid_);
@@ -105,13 +221,13 @@ void SceneList::build_cards() {
         lv_obj_add_event_cb(c.card, &SceneList::card_cb, LV_EVENT_SHORT_CLICKED, this);
         lv_obj_add_event_cb(c.card, &SceneList::card_cb, LV_EVENT_LONG_PRESSED, this);
 
-        std::unique_ptr<Icon> icon = s.icon_png ? decode(*s.icon_png) : nullptr;
-        if (icon) {
+        if (s.icon) {
+            // Already icon_px across: drawn as is, centred. scenes_ holds
+            // the pixels for as long as the card shows them.
             c.icon = lv_image_create(c.card);
             lv_obj_set_size(c.icon, icon_px, icon_px);
-            lv_image_set_inner_align(c.icon, LV_IMAGE_ALIGN_CONTAIN);
-            lv_image_set_src(c.icon, &icon->image);
-            icons_.push_back(std::move(icon));
+            lv_image_set_inner_align(c.icon, LV_IMAGE_ALIGN_CENTER);
+            lv_image_set_src(c.icon, &s.icon->image);
         } else {
             lv_obj_t* letter = lv_label_create(c.card);
             lv_obj_set_style_text_font(letter, ui::font(kLetterFontPx), 0);
@@ -133,44 +249,6 @@ void SceneList::build_cards() {
         cards_.push_back(c);
     }
     detail::bubble_tree(grid_);
-}
-
-std::unique_ptr<SceneList::Icon> SceneList::decode(const os::LargeBuffer& png) const {
-    // The file's bytes as an image source LVGL's decoders recognise by
-    // their content (see SceneView::set_image()).
-    lv_image_dsc_t src{};
-    src.header.magic = LV_IMAGE_HEADER_MAGIC;
-    src.header.cf = LV_COLOR_FORMAT_UNKNOWN;
-    src.data = png.data();
-    src.data_size = static_cast<uint32_t>(png.size());
-    lv_image_header_t header;
-    if (lv_image_decoder_get_info(&src, &header) != LV_RESULT_OK || header.w == 0 ||
-        header.h == 0 || header.w > kIconMaxSide || header.h > kIconMaxSide) {
-        return nullptr;
-    }
-    lv_image_decoder_args_t args{};
-    args.no_cache = true;
-    lv_image_decoder_dsc_t dsc;
-    if (lv_image_decoder_open(&dsc, &src, &args) != LV_RESULT_OK) return nullptr;
-    std::unique_ptr<Icon> out;
-    const lv_draw_buf_t* d = dsc.decoded;
-    if (d != nullptr && d->header.w > 0 && d->header.h > 0) {
-        const size_t size = static_cast<size_t>(d->header.stride) * d->header.h;
-        if (size <= d->data_size) {
-            auto icon = std::make_unique<Icon>();
-            icon->pixels = os::LargeBuffer::allocate(size);
-            if (icon->pixels.ok()) {
-                std::memcpy(icon->pixels.data(), d->data, size);
-                icon->image.header = d->header;
-                icon->image.header.flags = 0;
-                icon->image.data = icon->pixels.data();
-                icon->image.data_size = static_cast<uint32_t>(size);
-                out = std::move(icon);
-            }
-        }
-    }
-    lv_image_decoder_close(&dsc);
-    return out;
 }
 
 size_t SceneList::index_of(lv_obj_t* card) const {
