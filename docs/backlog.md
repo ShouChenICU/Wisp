@@ -175,3 +175,8 @@ Source: glyph partition review records.
 
 - `GET /memory` answers 200 with an empty list when `MemoryStore` failed to load, or before `AgentWiring::start()` has loaded it (`net->start()` runs first). The page then says "no notes yet" while the notes are still on flash. Expose `available()` and answer 503 `memory_unavailable`, and give the page an error state. Add a load_failed test.
 - `web/app/pages/memory.js`: when the list is already populated, a failed refresh shows nothing, because the alert only renders while the list is empty. Toast the error instead.
+
+## Voice clients (MVP spec 2)
+
+- `AsrClient`: the 15 s timeout applies to each attempt, so with one retry the worst case is 15 + 1 + 15 = 31 s. `LlmClient` keeps one overall deadline across its retries. Decide whether ASR should do the same.
+- `ModelProfileService` load: when a stored profile's options fail the newer per-kind checks (e.g. `language` on an llm profile), the whole profile is dropped, key included, without a word. Strip the bad options and keep the profile instead.
