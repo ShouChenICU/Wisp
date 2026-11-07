@@ -240,6 +240,35 @@ TEST_F(ConversationTest, HoldInterruptsSpeechAndRunningTurns) {
     EXPECT_EQ(requests(kAsrPath), 0u);
 }
 
+TEST_F(ConversationTest, DroppedVoiceTextFreesTheTalkKey) {
+    start();
+    // The recording starts, then a web turn takes the agent; the
+    // transcript waits behind it.
+    tap_and_say("你好");
+    ASSERT_TRUE(wait_until([&] { return voice->capturing(); }, 2000));
+    server.llm().push(llm_text("never", /*hold_after=*/0));
+    ASSERT_TRUE(agent->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return server.llm().held() == 1; }, 3000));
+    ASSERT_TRUE(wait_until([&] { return agent->view().queued; }, 8000));
+    EXPECT_EQ(voice_locks(), 3u);
+
+    // A stop from the web page drops the waiting voice text as well.
+    agent->stop_turn();
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(statuses(), std::vector<std::string>{"stopped"});
+    // Its round ends now, not at the backstop.
+    ASSERT_TRUE(wait_until([&] { return voice_locks() == 0; }, 3000));
+    EXPECT_FALSE(conv->current().running);
+
+    // The talk key works again.
+    mic->set_script({silence(300), sine(1000)});
+    conv->tap();
+    EXPECT_TRUE(voice->capturing());
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    conv->tap();
+    ASSERT_TRUE(settled());
+}
+
 TEST_F(ConversationTest, HoldOverATranscriptionRecordsAnew) {
     start();
     server.push_asr(FakeReply{.status = 200, .chunks = {R"({"text":"x"})"}, .hold_after = 0});

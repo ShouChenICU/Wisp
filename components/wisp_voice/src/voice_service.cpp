@@ -261,6 +261,7 @@ void VoiceService::stop_speaking() {
 }
 
 void VoiceService::set_llm_busy(bool busy) {
+    touch();
     {
         std::lock_guard<os::Mutex> lock(speech_mu_);
         llm_busy_ = busy;

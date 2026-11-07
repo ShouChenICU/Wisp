@@ -896,7 +896,6 @@ TEST_F(VoiceServiceTest, RoundBackstopEndsAForgottenRound) {
     virtual_ms += wisp::voice::kVoiceRoundBackstopMs - 10000;
     wisp::os::sleep_ms(300);
     EXPECT_EQ(voice_locks(), 3u);
-    voice->set_llm_busy(true);  // not speech activity
     voice->begin_speech();
     virtual_ms += wisp::voice::kVoiceRoundBackstopMs - 10000;
     wisp::os::sleep_ms(300);
@@ -916,6 +915,29 @@ TEST_F(VoiceServiceTest, RoundBackstopEndsAForgottenRound) {
     voice->set_llm_busy(false);
     voice->end_speech();
     EXPECT_EQ(voice->state(), VoiceState::Idle);
+}
+
+TEST_F(VoiceServiceTest, BusyTurnKeepsItsRound) {
+    add_asr();
+    make();
+    capture_turn();
+    ASSERT_TRUE(wait_idle());
+    // The agent works (tools, thinking) for longer than the backstop
+    // without speaking; its state changes keep the round alive.
+    for (int i = 0; i < 4; ++i) {
+        virtual_ms += wisp::voice::kVoiceRoundBackstopMs - 10000;
+        voice->set_llm_busy(i % 2 == 0);
+        wisp::os::sleep_ms(200);
+        EXPECT_EQ(voice_locks(), 3u);
+    }
+    voice->set_llm_busy(false);
+    voice->end_speech();
+    ASSERT_TRUE(wait_until([&] { return voice_locks() == 0; }, 2000));
+    bool logged = false;
+    for (const auto& e : wisp::log::ring_entries()) {
+        logged = logged || (e.tag == "voice" && e.msg == "round backstop");
+    }
+    EXPECT_FALSE(logged);
 }
 
 TEST_F(VoiceServiceTest, LocksAreGoneWhenIdleArrives) {

@@ -140,7 +140,8 @@ private:
     Phase phase() const;
     bool agent_busy() const;
     bool ready() const;
-    void start_capture(voice::CaptureMode mode);
+    // False when the voice refused the capture.
+    bool start_capture(voice::CaptureMode mode);
     void begin_view(agent::Source source, std::string_view heard, uint32_t turn);
 
     void on_agent(const agent::AgentEvent& e);

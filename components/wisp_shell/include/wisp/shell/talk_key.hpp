@@ -35,8 +35,9 @@ public:
 
     // Subscribes to the button's events. Idempotent.
     void start();
-    // Unsubscribes and stops the timer; a hold in progress is ended
-    // (hold_end()). Idempotent.
+    // Unsubscribes and stops the timer; a hold in progress is cancelled
+    // (hold_cancel()): at shutdown its recording has nowhere to go.
+    // Idempotent.
     void stop();
 
 private:

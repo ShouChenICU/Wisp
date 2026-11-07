@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -182,4 +183,16 @@ TEST(AppVoice, NoMicStillBoots) {
     ASSERT_TRUE(wait_until([&] { return !conv->holding(); }, 3000));
     EXPECT_EQ(v.voice_reasons(), std::vector<std::string>{"mic_unavailable"});
     EXPECT_TRUE(v.server->requests().empty());
+}
+
+TEST(AppVoice, AgentNotRunningLeavesVoiceOff) {
+    VoiceApp v(/*with_mic=*/true);
+    // An unreadable conversation file: the agent does not start.
+    std::filesystem::create_directories(v.h->root + "/system/agent/current.jsonl");
+    ASSERT_TRUE(v.start());
+    EXPECT_EQ(v.h->app->conversation(), nullptr);
+    v.key->down = true;
+    wisp::os::sleep_ms(500);
+    v.key->down = false;
+    EXPECT_FALSE(v.saw_voice("listening"));
 }

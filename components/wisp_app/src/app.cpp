@@ -646,6 +646,12 @@ Result<void> App::start() {
         if (impl_->agent) {
             if (auto r = impl_->agent->start(); !r) {
                 WLOG_E("app", "agent not started: %s", r.error().message.c_str());
+                // Every transcript would be refused: the voice stays off,
+                // and says so, rather than recording for nothing.
+                if (impl_->voice) {
+                    WLOG_W("app", "voice off: the agent is not running");
+                    impl_->voice.reset();
+                }
             }
         }
         // Once the agent takes text; without its tasks the voice is off.

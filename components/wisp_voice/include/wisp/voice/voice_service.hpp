@@ -40,8 +40,10 @@
 // transcript with end_speech() (also when nothing is spoken: muted, the
 // agent refused the text, the turn failed) or stop_speaking(). As a
 // safety net only, a round that has delivered its transcript and then
-// seen no begin_speech()/speak()/end_speech()/stop_speaking() for
-// kVoiceRoundBackstopMs ends itself (log "voice: round backstop").
+// seen no begin_speech()/speak()/end_speech()/stop_speaking()/
+// set_llm_busy() for kVoiceRoundBackstopMs ends itself (log "voice: round
+// backstop"). set_llm_busy() counts because a turn that runs tools for
+// minutes without speaking yet is still alive.
 //
 // Sharing the output (spec 4.4). TonePlayer and PcmPlayer must never have
 // the AudioOut open at once. Install may_play_tone() as the TonePlayer's

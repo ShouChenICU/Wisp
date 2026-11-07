@@ -109,14 +109,15 @@ ConversationController::Phase ConversationController::phase() const {
     return Phase::Idle;
 }
 
-void ConversationController::start_capture(voice::CaptureMode mode) {
+bool ConversationController::start_capture(voice::CaptureMode mode) {
     view_.not_heard = false;
     view_.error.reset();
-    if (auto r = deps_.voice.begin_capture(mode); r) {
-        ++captures_;
-    } else {
+    if (auto r = deps_.voice.begin_capture(mode); !r) {
         WLOG_W(kTag, "capture not started: %s", r.error().message.c_str());
+        return false;
     }
+    ++captures_;
+    return true;
 }
 
 void ConversationController::tap() {
@@ -162,12 +163,18 @@ void ConversationController::hold_begin() {
                 // Ends the speech's round, or hands its locks to the new
                 // capture's.
                 deps_.voice.stop_speaking();
+                const bool dropped = submitted_;
                 if (agent_busy()) {
                     deps_.agent.stop_turn();
                     // A waiting voice text was dropped with the stop.
                     submitted_ = false;
                 }
-                start_capture(voice::CaptureMode::Hold);
+                // A failed capture did not take over the dropped text's
+                // round, and no turn will come to end it.
+                if (!start_capture(voice::CaptureMode::Hold) && dropped &&
+                    captures_ == submitted_capture_ && !deps_.voice.capturing()) {
+                    deps_.voice.end_speech();
+                }
                 break;
         }
     }
@@ -282,7 +289,21 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
                                          e.state == agent::AgentState::Output);
                 return;
             case Kind::TurnEnd: {
-                if (!turn_running_) return;
+                // A stop (from the web page, say) drops every waiting
+                // message, the voice text too, without telling us. A text
+                // still waiting is queued at this point, so seeing it
+                // neither queued nor running means it was dropped; its
+                // round ends here unless a newer capture took it over.
+                if (submitted_) {
+                    const agent::ConversationView v = deps_.agent.view();
+                    if (!v.queued && !v.running_turn) {
+                        submitted_ = false;
+                        if (captures_ == submitted_capture_ && !deps_.voice.capturing()) {
+                            deps_.voice.end_speech();
+                        }
+                    }
+                }
+                if (!turn_running_) break;
                 const std::string fallback = parser_.finish();
                 if (speaking_ && !fallback.empty()) {
                     deps_.voice.speak(fallback);

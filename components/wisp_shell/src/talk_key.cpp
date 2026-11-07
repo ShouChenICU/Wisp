@@ -39,7 +39,7 @@ void TalkKey::stop() {
         was_holding = holding_;
         pressed_ = holding_ = false;
     }
-    if (was_holding) conv_.hold_end();
+    if (was_holding) conv_.hold_cancel();
 }
 
 void TalkKey::on_event(const core::Event& e) {
