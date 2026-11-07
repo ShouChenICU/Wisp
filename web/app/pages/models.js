@@ -91,6 +91,10 @@ const MAX_SAMPLE_RATE = 48000;
 const DEFAULT_SAMPLE_RATE = 24000;
 const MIN_SPEED = 0.25;
 const MAX_SPEED = 4.0;
+// What ModelProfileService's parse_speed accepts: digits with at most one
+// '.', not necessarily on both sides ("1", "1.5", "1.", ".5" all parse; a
+// lone "." does not, since there is no digit at all).
+const SPEED_RE = /^(?:\d+\.\d*|\.\d+|\d+)$/;
 // Presets whose spec name is a description rather than a brand.
 const PRESET_LABEL_KEYS = { custom: 'models.preset_custom', ollama: 'models.preset_ollama' };
 
@@ -548,6 +552,9 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
       return { field: 'language', text: t('models.err_language') };
     }
     if (bytes(voice.trim()) > OPTION_MAX_BYTES) return { field: 'voice', text: t('models.err_voice_long', { max: OPTION_MAX_BYTES }) };
+    // The synthesis endpoint needs a voice name (OpenAI's /audio/speech
+    // 400s without one); the server itself stays lenient.
+    if (kind === 'tts' && !voice.trim()) return { field: 'voice', text: t('models.err_voice_required') };
     if (kind === 'tts' && sampleRate.trim()) {
       const n = Number(sampleRate.trim());
       if (!/^\d+$/.test(sampleRate.trim()) || n < MIN_SAMPLE_RATE || n > MAX_SAMPLE_RATE) {
@@ -559,7 +566,7 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
     }
     if (kind === 'tts' && speed.trim()) {
       const n = Number(speed.trim());
-      if (!/^\d+(\.\d+)?$/.test(speed.trim()) || n < MIN_SPEED || n > MAX_SPEED) {
+      if (!SPEED_RE.test(speed.trim()) || n < MIN_SPEED || n > MAX_SPEED) {
         return { field: 'speed', text: t('models.err_speed', { min: MIN_SPEED, max: MAX_SPEED }) };
       }
     }

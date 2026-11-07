@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -96,7 +97,9 @@ TEST(TtsClient, RequestBodyShape) {
         EXPECT_EQ(*body.find("sample_rate"), Value(int64_t{24000}));
         EXPECT_EQ(body.find("speed"), nullptr);
         EXPECT_EQ(f.server.header(0, "authorization"), "Bearer sk-tts");
-        EXPECT_EQ(f.server.requests()[0].timeout_ms, 15000u);
+        // "hello" is 5 code points: 15000 + 5 * 400 (see
+        // TtsClient.TimeoutGrowsWithSentenceLength for the general case).
+        EXPECT_EQ(f.server.requests()[0].timeout_ms, 17000u);
     }
     {
         // speed only when set.
@@ -179,16 +182,62 @@ TEST(TtsClient, ErrorsAndCancel) {
         f.server.push_tts({.hold_after = 0});
         auto watch = wisp::net::RequestWatch::create();
         ASSERT_NE(watch, nullptr);
+        std::atomic<uint32_t> ticket{0};
         TtsResult r;
         std::thread t([&] {
             r = f.client->synthesize(
                 "hi", [](std::span<const int16_t>) { return true; }, [] { return false; },
-                watch.get());
+                watch.get(), [&](uint32_t tk) { ticket = tk; });
         });
         ASSERT_TRUE(wisp::test::wait_until([&] { return f.server.held() == 1; }, 2000));
-        // A fresh RequestWatch's first arm() always returns ticket 1.
-        watch->abort(1);
+        ASSERT_NE(ticket.load(), 0u);
+        watch->abort(ticket.load());
         t.join();
         EXPECT_EQ(r.error, "cancelled");
     }
+}
+
+TEST(TtsClient, FailedResponseBodyNeverReachesOnPcm) {
+    Fixture f;
+    std::vector<std::vector<uint8_t>> chunks = {{1, 2, 3, 4}};
+    f.server.push_tts({.status = 500, .chunks = chunks});
+    bool called = false;
+
+    TtsResult r = f.client->synthesize(
+        "hi",
+        [&](std::span<const int16_t>) {
+            called = true;
+            return true;
+        },
+        [] { return false; });
+
+    EXPECT_EQ(r.error, "server");
+    EXPECT_FALSE(called);
+    EXPECT_EQ(r.bytes, 0u);
+}
+
+TEST(TtsClient, MaxResponseBytesSizedFromTheDeadline) {
+    Fixture f;
+    f.server.push_tts({.status = 200});
+
+    f.client->synthesize("hi", [](std::span<const int16_t>) { return true; }, [] { return false; });
+
+    auto reqs = f.server.requests();
+    ASSERT_EQ(reqs.size(), 1u);
+    // Default rate 24000 Hz, "hi" is 2 code points: timeout = 15000 + 2 *
+    // 400 = 15800 ms; cap = 24000 * 2 * 15800 / 1000.
+    EXPECT_EQ(reqs[0].timeout_ms, 15800u);
+    EXPECT_EQ(reqs[0].max_response_bytes, 758400u);
+}
+
+TEST(TtsClient, TimeoutGrowsWithSentenceLength) {
+    Fixture f;
+    f.server.push_tts({.status = 200});
+    const std::string text(200, 'a');  // 200 code points (ASCII)
+
+    f.client->synthesize(text, [](std::span<const int16_t>) { return true; }, [] { return false; });
+
+    auto reqs = f.server.requests();
+    ASSERT_EQ(reqs.size(), 1u);
+    EXPECT_EQ(reqs[0].timeout_ms, 15000u + 80000u);
 }

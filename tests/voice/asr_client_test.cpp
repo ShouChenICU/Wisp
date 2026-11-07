@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -20,6 +21,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/net/request_watch.hpp"
 #include "wisp/voice/capture_buffer.hpp"
 
 using wisp::Result;
@@ -132,7 +134,9 @@ TEST(AsrClient, RetriesOnceOn429And5xx) {
         EXPECT_EQ(r.error, "");
         EXPECT_EQ(r.text, "ok");
         EXPECT_EQ(r.attempts, 2u);
-        EXPECT_EQ(f.sleeps, (std::vector<uint32_t>{1000}));
+        // The 1 s backoff is sliced into kWaitSliceMs pieces so a cancel
+        // can cut it short.
+        EXPECT_EQ(f.sleeps, (std::vector<uint32_t>(10, 100)));
         EXPECT_EQ(f.server.requests().size(), 2u);
     }
     {
@@ -185,6 +189,43 @@ TEST(AsrClient, CancelStopsTheUpload) {
     EXPECT_EQ(r.error, "cancelled");
     EXPECT_EQ(r.attempts, 1u);
     EXPECT_EQ(f.server.requests().size(), 1u);
+}
+
+TEST(AsrClient, OnArmedFiresEachAttemptAndAbortWorks) {
+    Fixture f;
+    f.server.push_asr({.status = 503});
+    f.server.push_asr({.hold_after = 0});
+    auto audio = make_audio();
+    ASSERT_TRUE(audio);
+    auto watch = wisp::net::RequestWatch::create();
+    ASSERT_NE(watch, nullptr);
+    std::mutex m;
+    std::vector<uint32_t> tickets;
+    AsrResult r;
+
+    std::thread t([&] {
+        r = f.client->transcribe(
+            audio.value(), [] { return false; }, watch.get(),
+            [&](uint32_t ticket) {
+                std::lock_guard<std::mutex> lock(m);
+                tickets.push_back(ticket);
+            });
+    });
+    ASSERT_TRUE(wisp::test::wait_until([&] { return f.server.held() == 1; }, 2000));
+    uint32_t last_ticket = 0;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        // One arm() per attempt, the retry included; a reused watch's
+        // tickets are never the same.
+        ASSERT_EQ(tickets.size(), 2u);
+        EXPECT_NE(tickets[0], tickets[1]);
+        last_ticket = tickets.back();
+    }
+    watch->abort(last_ticket);
+    t.join();
+
+    EXPECT_EQ(r.error, "cancelled");
+    EXPECT_EQ(r.attempts, 2u);
 }
 
 TEST(AsrClient, LogsOnlyMetadata) {

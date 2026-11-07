@@ -301,6 +301,7 @@ export default {
   'models.voice_ph': 'e.g. alloy',
   'models.voice_hint': 'A voice name the platform supports.',
   'models.err_voice_long': 'Voice names are at most {max} bytes.',
+  'models.err_voice_required': 'The speech endpoint needs a voice name.',
   'models.language': 'Language',
   'models.language_ph': 'e.g. en, zh-CN',
   'models.language_hint': 'Optional, 1-8 letters or hyphens: a hint for which language to recognize.',

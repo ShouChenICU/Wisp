@@ -250,6 +250,7 @@
   - `response_format: "pcm"`；
   - `sample_rate` 取配置的值，默认 24000；
   - `speed` 可选。
+- **超时**：15 秒是允许没有新音频到达的时间，不是整句朗读必须在 15 秒内读完；请求的截止时间随句子长度增长。
 - **播放**：
   - 返回的 PCM 写入 PSRAM 环形缓冲（`Mem::Large`，约 2 秒）；
   - 由播放任务送到 `audio_out`，按 `sample_rate` 设置 I2S；

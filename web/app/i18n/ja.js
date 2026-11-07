@@ -300,6 +300,7 @@ export default {
   'models.voice_ph': '例：alloy',
   'models.voice_hint': 'プラットフォームが対応する声の名前を入力します。',
   'models.err_voice_long': '声の名前は {max} バイト以内です。',
+  'models.err_voice_required': '読み上げ API には声の名前が必要です。',
   'models.language': '言語',
   'models.language_ph': '例：en、zh-CN',
   'models.language_hint': '任意。英字またはハイフン1〜8文字で、認識する言語のヒントです。',

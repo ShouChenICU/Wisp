@@ -1,5 +1,6 @@
 #include "wisp/voice/asr_client.hpp"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <utility>
@@ -54,7 +55,7 @@ AsrClient::AsrClient(net::HttpClient& http, core::ModelProfileService& models,
     : http_(http), models_(models), sleep_ms_(std::move(sleep_ms)) {}
 
 AsrResult AsrClient::transcribe(CaptureBuffer& audio, const std::function<bool()>& cancelled,
-                                net::RequestWatch* watch) {
+                                net::RequestWatch* watch, std::function<void(uint32_t)> on_armed) {
     AsrResult result;
     const uint64_t start = os::now_ms();
 
@@ -66,7 +67,8 @@ AsrResult AsrClient::transcribe(CaptureBuffer& audio, const std::function<bool()
     }
 
     const std::string boundary =
-        random_boundary(os::now_us() ^ (static_cast<uint64_t>(start) << 32));
+        random_boundary(os::now_us() ^ (static_cast<uint64_t>(start) << 32) ^
+                        (static_cast<uint64_t>(++boundary_seq_) << 20));
     const std::string language = core::profile_asr_language(profile->options);
     std::span<const uint8_t> body = audio.finish_multipart(boundary, profile->model, language);
     result.bytes = body.size();
@@ -91,8 +93,9 @@ AsrResult AsrClient::transcribe(CaptureBuffer& audio, const std::function<bool()
             break;
         }
         if (watch != nullptr) {
-            watch->arm(req.timeout_ms);
+            const uint32_t ticket = watch->arm(req.timeout_ms);
             req.watch = watch;
+            if (on_armed) on_armed(ticket);
         }
         ++result.attempts;
         net::HttpClientResponse res = http_.request(req);
@@ -128,7 +131,11 @@ AsrResult AsrClient::transcribe(CaptureBuffer& audio, const std::function<bool()
             result.error = "server";
             break;
         }
-        if (!stopped()) sleep_ms_(kRetryDelayMs);
+        for (uint32_t wait = kRetryDelayMs; wait > 0 && !stopped();) {
+            const uint32_t slice = std::min(wait, kWaitSliceMs);
+            sleep_ms_(slice);
+            wait -= slice;
+        }
     }
 
     const auto ms = static_cast<unsigned>(os::now_ms() - start);

@@ -300,6 +300,7 @@ export default {
   'models.voice_ph': '例如 alloy',
   'models.voice_hint': '填写平台支持的音色名称。',
   'models.err_voice_long': '音色名称最长 {max} 字节。',
+  'models.err_voice_required': '朗读接口需要音色名称。',
   'models.language': '语言',
   'models.language_ph': '例如 en、zh-CN',
   'models.language_hint': '可选，1-8 个英文字母或连字符，提示识别使用的语言。',

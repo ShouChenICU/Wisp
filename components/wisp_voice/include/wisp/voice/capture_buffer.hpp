@@ -39,7 +39,7 @@ public:
     static constexpr size_t kHeadReserve = 512;
     static constexpr size_t kTailReserve = 128;
 
-    // nullopt only on allocation failure (PSRAM exhausted).
+    // Fails (ErrorCode::NoMemory) only on allocation failure (PSRAM exhausted).
     static Result<CaptureBuffer> create(uint32_t max_ms = kMaxRecordMs);
 
     CaptureBuffer(CaptureBuffer&&) = default;
