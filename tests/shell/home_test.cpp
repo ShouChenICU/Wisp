@@ -119,6 +119,12 @@ bool overlap(const lv_area_t& a, const lv_area_t& b) {
     return a.x1 <= b.x2 && b.x1 <= a.x2 && a.y1 <= b.y2 && b.y1 <= a.y2;
 }
 
+// Where the idle wisp's centre sits: kWispIdleCentrePercent down the safe
+// area.
+int32_t idle_centre_y(const wisp::hal::Area& safe) {
+    return safe.y1 + (safe.y2 - safe.y1 + 1) * wisp::shell::kWispIdleCentrePercent / 100;
+}
+
 bool inside(const lv_area_t& in, const lv_area_t& out) {
     return in.x1 >= out.x1 && in.x2 <= out.x2 && in.y1 >= out.y1 && in.y2 <= out.y2;
 }
@@ -136,7 +142,13 @@ TEST_P(HomeShapes, LayoutInsideVisibleArea) {
     for (const bool hint : {false, true}) {
         SCOPED_TRACE(hint ? "with a hint" : "no hint");
         const HomeLayout l = home_layout(shape_, false, hint);
-        EXPECT_EQ(lv_area_get_width(&l.wisp), wisp::ui::wisp_size_px(safe, 45));
+        EXPECT_EQ(lv_area_get_width(&l.wisp),
+                  wisp::ui::wisp_size_px(safe, wisp::shell::kWispIdlePercent));
+        // Centred across the safe area, a little above its middle.
+        EXPECT_NEAR((l.wisp.x1 + l.wisp.x2) / 2.0, (safe.x1 + safe.x2) / 2.0, 1.0);
+        EXPECT_NEAR((l.wisp.y1 + l.wisp.y2) / 2.0, idle_centre_y(safe), 1.0);
+        // The sparks die where they leave the wisp's box (WispModel), so
+        // the box on the screen keeps them there too.
         EXPECT_TRUE(box_visible(shape_, l.wisp));
         EXPECT_GT(l.heard.x1, l.heard.x2);  // nothing else idle
         EXPECT_GT(l.column.x1, l.column.x2);
@@ -151,7 +163,8 @@ TEST_P(HomeShapes, LayoutInsideVisibleArea) {
     for (const bool hint : {false, true}) {
         SCOPED_TRACE(hint ? "turn with a hint" : "turn, no hint");
         const HomeLayout l = home_layout(shape_, true, hint);
-        EXPECT_EQ(lv_area_get_width(&l.wisp), wisp::ui::wisp_size_px(safe, 28));
+        EXPECT_EQ(lv_area_get_width(&l.wisp),
+                  wisp::ui::wisp_size_px(safe, wisp::shell::kWispTurnPercent));
         std::vector<const lv_area_t*> boxes{&l.wisp, &l.heard, &l.column};
         if (hint) boxes.push_back(&l.hint);
         for (const lv_area_t* a : boxes) {
@@ -416,7 +429,8 @@ protected:
             const wisp::hal::Area safe = wisp::hal::safe_rect(shape_);
             const lv_area_t a = coords(shell_->wisp()->obj());
             ok = !home().in_turn() && hidden(home().heard_label()) &&
-                 lv_area_get_width(&a) == wisp::ui::wisp_size_px(safe, 45);
+                 lv_area_get_width(&a) ==
+                     wisp::ui::wisp_size_px(safe, wisp::shell::kWispIdlePercent);
         });
         return ok;
     }
@@ -461,7 +475,8 @@ TEST_F(HomeTest, TurnShowsHeardSayAndBody) {
         EXPECT_FALSE(hidden(home().heard_label()));
         EXPECT_FALSE(hidden(home().say_label()));
         const wisp::hal::Area safe = wisp::hal::safe_rect(shape_);
-        EXPECT_EQ(lv_obj_get_width(shell_->wisp()->obj()), wisp::ui::wisp_size_px(safe, 28));
+        EXPECT_EQ(lv_obj_get_width(shell_->wisp()->obj()),
+                  wisp::ui::wisp_size_px(safe, wisp::shell::kWispTurnPercent));
     });
     ASSERT_TRUE(settled());
 
@@ -496,9 +511,10 @@ TEST_F(HomeTest, ReturnsToCentreAfterFade) {
         if (home().in_turn()) return false;
         lv_obj_update_layout(home().screen());
         const lv_area_t a = coords(shell_->wisp()->obj());
-        return lv_area_get_width(&a) == wisp::ui::wisp_size_px(safe, 45) &&
+        return lv_area_get_width(&a) ==
+                   wisp::ui::wisp_size_px(safe, wisp::shell::kWispIdlePercent) &&
                std::abs((a.x1 + a.x2) / 2 - (safe.x1 + safe.x2) / 2) <= 1 &&
-               std::abs((a.y1 + a.y2) / 2 - (safe.y1 + safe.y2) / 2) <= 1 &&
+               std::abs((a.y1 + a.y2) / 2 - idle_centre_y(safe)) <= 1 &&
                hidden(home().heard_label());
     }));
 }

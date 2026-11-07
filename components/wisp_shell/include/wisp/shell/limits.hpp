@@ -9,8 +9,13 @@
 namespace wisp::shell {
 
 // The wisp on the main screen: idle, and during a turn (spec 6.2).
-inline constexpr int kWispIdlePercent = 45;
+inline constexpr int kWispIdlePercent = 55;
+// No larger during a turn: at 32 the 360 px circle's column no longer
+// holds kMinColumnPx (home.hpp) below the wisp.
 inline constexpr int kWispTurnPercent = 28;
+// Idle, the wisp's centre sits this far down the safe area: a little
+// above its middle, leaving the hint below it room.
+inline constexpr int kWispIdleCentrePercent = 42;
 // The <say> text below the wisp, and the heard text above it.
 inline constexpr int kSayFontPx = 28;
 inline constexpr int kHeardMaxLines = 2;

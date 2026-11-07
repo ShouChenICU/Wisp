@@ -4,8 +4,9 @@
 // a one-line hint below the wisp, and the home screen's gestures.
 //
 // Layout (home_layout()). Idle, the wisp is kWispIdlePercent of the safe
-// area's short side, centred in the safe area, with the hint band (up to
-// kHintIdleLines) below it. During a turn the wisp shrinks to
+// area's short side, centred across the safe area with its centre
+// kWispIdleCentrePercent down it, and the hint band (up to kHintIdleLines)
+// below it. During a turn the wisp shrinks to
 // kWispTurnPercent and moves up; above it the heard text (kTextDim, at
 // most kHeardMaxLines lines, cut with "..."), below it one scrolling
 // column: the say text at kSayFontPx, wrapped, then the body

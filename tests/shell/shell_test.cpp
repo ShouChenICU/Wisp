@@ -134,8 +134,9 @@ TEST(Shell, PageNames) {
     EXPECT_STREQ(wisp::shell::to_string(Page::History), "history");
 }
 
-// mvp spec 6.2: the wisp centred in the safe area, kWispIdlePercent of its
-// short side, on a black screen of its own that is the active one.
+// mvp spec 6.2: the wisp centred across the safe area and
+// kWispIdleCentrePercent down it, kWispIdlePercent of its short side, on a
+// black screen of its own that is the active one.
 TEST_P(ShellShapes, HomeWispCentredInSafeArea) {
     const ShapeCase& c = GetParam();
     ShellFixture f(c.shape, c.width, c.height);
@@ -158,7 +159,9 @@ TEST_P(ShellShapes, HomeWispCentredInSafeArea) {
         EXPECT_EQ(lv_area_get_width(&a),
                   wisp::ui::wisp_size_px(safe, wisp::shell::kWispIdlePercent));
         EXPECT_NEAR((a.x1 + a.x2) / 2.0, (safe.x1 + safe.x2) / 2.0, 1.0);
-        EXPECT_NEAR((a.y1 + a.y2) / 2.0, (safe.y1 + safe.y2) / 2.0, 1.0);
+        EXPECT_NEAR((a.y1 + a.y2) / 2.0,
+                    safe.y1 + (safe.y2 - safe.y1 + 1) * wisp::shell::kWispIdleCentrePercent / 100,
+                    1.0);
         EXPECT_GE(a.x1, safe.x1);
         EXPECT_GE(a.y1, safe.y1);
         EXPECT_LE(a.x2, safe.x2);

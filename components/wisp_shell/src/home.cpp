@@ -121,8 +121,8 @@ HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visibl
     text_rows(s, top, bottom);
     HomeLayout l{kEmpty, kEmpty, kEmpty, kEmpty, kEmpty, kEmpty};
     if (!in_turn) {
-        l.wisp =
-            wisp_box(safe, ui::wisp_size_px(safe, kWispIdlePercent), (safe.y1 + safe.y2 + 1) / 2);
+        const int32_t cy = safe.y1 + (safe.y2 - safe.y1 + 1) * kWispIdleCentrePercent / 100;
+        l.wisp = wisp_box(safe, ui::wisp_size_px(safe, kWispIdlePercent), cy);
         const int32_t y1 = l.wisp.y2 + 1 + kGap;
         if (hint_visible)
             l.hint = band(s, y1, std::min(y1 + kHintIdleLines * kBodyLinePx - 1, bottom - kGap));

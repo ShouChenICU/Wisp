@@ -161,6 +161,33 @@ TEST(WispModel, SparksOnlyOnColourPanels) {
     }
 }
 
+// The sparks never leave the model's frame, whatever the mood: the home
+// screen keeps the frame inside the visible area, so the sparks are too.
+TEST(WispModel, SparksStayInsideTheFrame) {
+    const WispMood moods[] = {WispMood::Idle, WispMood::Listening, WispMood::Thinking,
+                              WispMood::Speaking, WispMood::Error};
+    for (int size : {96, 140, 198, 264}) {
+        WispModel m(size, 11);
+        const int32_t w = m.width() * 256, h = m.height() * 256;
+        for (int i = 0; i < 900; ++i) {
+            if (i % 90 == 0) m.set_mood(moods[(i / 90) % 5]);
+            m.set_busy(i % 180 >= 90);
+            m.step(33);
+            m.build();
+            const WispShape& s = m.shape();
+            for (int k = 0; k < s.spark_n; ++k) {
+                const WispShape::Capsule& c = s.sparks[k];
+                for (const wisp::ui::WispPoint& p : {c.a, c.b}) {
+                    ASSERT_GE(p.x - c.r, 0) << size << " frame " << i;
+                    ASSERT_GE(p.y - c.r, 0) << size << " frame " << i;
+                    ASSERT_LE(p.x + c.r, w) << size << " frame " << i;
+                    ASSERT_LE(p.y + c.r, h) << size << " frame " << i;
+                }
+            }
+        }
+    }
+}
+
 TEST(WispModel, DirtyBoxCoversLastAndThisFrame) {
     WispModel m(216, 42);
     const wisp::hal::Area first = m.build();
