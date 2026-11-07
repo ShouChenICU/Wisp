@@ -102,6 +102,19 @@ export function ChatPage() {
   // 7.2: it carries the epoch bump both share), so only clearAll's own
   // request shows the clear-specific toast.
   const clearPendingRef = useRef(false);
+  // seq restarts at 1 in every conversation (spec 7.1), so fullCache and
+  // expanded -- both keyed by seq -- must not survive an epoch change or
+  // they would show a stale seq-3's content under the new conversation's
+  // seq-3. null means "no GET /conversation has landed yet", so the first
+  // one never counts as a change. A reconnect's catchUp() also calls
+  // load(), so this covers a changed boot_id (epoch restarts at 1 on
+  // every boot) the same way, without a separate check.
+  const lastEpoch = useRef(/** @type {number|null} */ (null));
+
+  function resetMessageCaches() {
+    setFullCache(new Map());
+    setExpanded(new Set());
+  }
 
   async function load() {
     if (inFlight.current) {
@@ -113,6 +126,16 @@ export function ChatPage() {
     try {
       const c = await api('GET', '/agent/conversation');
       if (!alive.current) return;
+      if (lastEpoch.current !== null && c.epoch !== lastEpoch.current) resetMessageCaches();
+      lastEpoch.current = c.epoch;
+      // Idle with nothing to confirm means no clear can genuinely be
+      // in flight on the device, so a clearPendingRef stuck true (its
+      // "cleared" frame lost to a dropped WS message, say) cannot
+      // otherwise unstick the "Clear all" menu item.
+      if (c.confirm == null && c.state === 'idle' && clearPendingRef.current) {
+        clearPendingRef.current = false;
+        setClearPending(false);
+      }
       setConv(c);
       setStreamText('');
       setLoadError(null);
@@ -125,6 +148,9 @@ export function ChatPage() {
     if (again.current && alive.current) load();
   }
 
+  // Only for onState("open"): a reconnect's own hello/replay already
+  // brings the socket current, so a catch-up load right after is only
+  // insurance and can wait out a load already in flight or just done.
   function catchUp() {
     if (inFlight.current || Date.now() - lastDone.current < RELOAD_GAP_MS) return;
     load();
@@ -132,7 +158,13 @@ export function ChatPage() {
 
   function onAgentFrame(msg) {
     if (msg.t === 'dropped') {
-      catchUp();
+      // Unlike catchUp(), this must never be skipped: the device just
+      // told us a frame (maybe a state change we need) was lost, so
+      // throttling or an in-flight load here could leave the page stuck.
+      // load() itself coalesces -- a load already running sets `again`
+      // and runs once more right after -- so calling it unconditionally
+      // is still at most one extra request.
+      load();
       return;
     }
     if (msg.t !== 'agent') return;
@@ -162,6 +194,10 @@ export function ChatPage() {
         setClearPending(false);
         if (msg.ok) {
           if (wasClearing) toast(t('chat.cleared'), 'ok');
+          // Don't wait for load() to notice the epoch moved: a tool row
+          // left expanded from the old conversation would otherwise flash
+          // its stale content for one more render.
+          resetMessageCaches();
           load();
         } else if (wasClearing) {
           toast(t('chat.clear_denied'), 'warn');
@@ -275,11 +311,16 @@ export function ChatPage() {
       danger: true,
     });
     if (!ok) return;
+    // Set before the request, not after: the device's "cleared" WS frame
+    // (the denial from a device-side timeout, say) can arrive while this
+    // await is still pending, and onAgentFrame must see it as ours.
+    clearPendingRef.current = true;
+    setClearPending(true);
     try {
       await api('DELETE', '/agent/conversations');
-      clearPendingRef.current = true;
-      setClearPending(true);
     } catch (e) {
+      clearPendingRef.current = false;
+      setClearPending(false);
       if (e.status !== 401) toast(describeError(e), 'err');
     }
   }

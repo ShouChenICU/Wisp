@@ -17,17 +17,27 @@ export function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => ESCAPE_MAP[c]);
 }
 
+const SAY_TAG_RE = /<\/?say>/g;
+
 /**
  * Removes the device's `<say>`/`</say>` markers (agent-core spec 4.3),
  * keeping their content, the same way the device's own `split_say` does:
  * the tags themselves are dropped, a stray `</say>` is dropped too, and
  * an unclosed `<say>` leaves its content in place.
  *
+ * A single left-to-right scan over the original text, matching the
+ * device: removing every `<say>` first and then every `</say>` (two
+ * passes over each other's output) can turn text that only coincidentally
+ * spells one tag once the other is gone into a match that was never
+ * there to begin with, e.g. "</sa" + "<say>" + "y>" -- stripping "<say>"
+ * first leaves "</sa" + "y>" = "</say>", which a second pass would then
+ * also strip, dropping text the device's single pass keeps.
+ *
  * @param {string} text
  * @returns {string}
  */
 export function stripSay(text) {
-  return String(text).split('<say>').join('').split('</say>').join('');
+  return String(text).replace(SAY_TAG_RE, '');
 }
 
 // A fenced block: ``` (optionally with a language tag), a body, then ```
