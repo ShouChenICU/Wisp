@@ -4,27 +4,35 @@
 // a one-line hint below the wisp, and the home screen's gestures.
 //
 // Layout (home_layout()). Idle, the wisp is kWispIdlePercent of the safe
-// area's short side, centred in the safe area, with the hint band below
-// it. During a turn the wisp shrinks to kWispTurnPercent and moves up;
-// above it the heard text (kTextDim, at most kHeardMaxLines lines, cut
-// with "..."), below it one scrolling column: the say text at kSayFontPx,
-// wrapped, then the body (light_markdown(), the 16 px body font). The
-// turn's hint, if any, takes a band at the bottom. Every band is as wide
-// as the narrowest visible row it covers (hal::row_span()), less a margin,
-// and lies on rows at least kTextRowPercent of the screen wide, so text
-// never runs off a rounded or circular screen, and the column's first and
-// last lines are fully visible at its two scroll ends (spec 5.6 of the
+// area's short side, centred in the safe area, with the hint band (up to
+// kHintIdleLines) below it. During a turn the wisp shrinks to
+// kWispTurnPercent and moves up; above it the heard text (kTextDim, at
+// most kHeardMaxLines lines, cut with "..."), below it one scrolling
+// column: the say text at kSayFontPx, wrapped, then the body
+// (light_markdown(), the 16 px body font). The say text is never cut: it
+// is also what is spoken and kept in the history, so it scrolls with the
+// body. While the column has more below, a strip at its bottom says so (a
+// fade to the background on colour panels, a chevron on the others). A
+// hint during a turn takes kHintTurnLines at the bottom, without the admin
+// address; the full hint shows once the text has faded. Every band is as
+// wide as the narrowest visible row it covers (hal::row_span()), less a
+// margin, and lies on rows at least kTextRowPercent of the screen wide, so
+// text never runs off a rounded or circular screen, and the column's first
+// and last lines are fully visible at its two scroll ends (spec 5.6 of the
 // base spec).
 //
 // The turn's text fades kFadeAfterMs after the later of the turn's end
-// and the last touch (a scroll of the column, a press anywhere on the
-// screen), and the wisp goes back to the centre. Turns from the web page
-// show the same way; the controller only leaves them unspoken.
+// and the last time a finger scrolled the column, and the wisp goes back
+// to the centre. Nothing else keeps it, and nothing but a new turn brings
+// it back: a press on the wisp after the fade (a tap, or a hold to talk)
+// leaves the screen idle. Turns from the web page show the same way; the
+// controller only leaves them unspoken.
 //
 // The hint: readiness first (NoWifi: HomeNoWifi; NoLlm: HomeNoLlm and the
 // admin address), else the controller's last voice error (VoiceErr*, with
 // the address for a missing profile) or "not heard" (HomeNotHeard), for
-// kFadeAfterMs after it was first seen.
+// kFadeAfterMs after it was first seen; while the turn's text shows the
+// wait does not run, so the full hint still gets its time after the fade.
 //
 // The wisp's mood follows "agent.state" and "voice.state" (mood_for());
 // listening and speaking pass on their level, a running tool sets
@@ -77,30 +85,41 @@ namespace wisp::shell {
 
 // Line heights the layout reserves: the 16 px body font, and the say text
 // at kSayFontPx.
-inline constexpr int32_t kBodyLinePx = 20;
-// Text bands only use rows at least this wide, in percent of the screen.
-inline constexpr int32_t kTextRowPercent = 60;
+inline constexpr int32_t kBodyLinePx = 20, kSayLinePx = 36;
+// Text bands only use rows at least this wide, in percent of the screen;
+// the one-line hint during a turn, at least kHintRowPercent.
+inline constexpr int32_t kTextRowPercent = 60, kHintRowPercent = 45;
+// The turn's column holds at least the say text's first two lines and,
+// under them, the body's first line, on any screen; where it would not,
+// the heard text gets one line.
+inline constexpr int32_t kMinColumnPx = 2 * kSayLinePx + 8 + kBodyLinePx;
 // The hint's lines below the idle wisp, and during a turn.
-inline constexpr int32_t kHintIdleLines = 3, kHintTurnLines = 3;
+inline constexpr int32_t kHintIdleLines = 3, kHintTurnLines = 1;
+// The column's "more below" strip.
+inline constexpr int32_t kMorePx = 16;
 
 struct HomeLayout {
     lv_area_t wisp;   // the wisp's box (its width is its size)
     lv_area_t heard;  // in a turn: the heard text
-    // In a turn: where the say text starts, at the top of the column.
+    // In a turn: the say text's first line, at the top of the column.
     lv_area_t say;
-    // In a turn: the scrolling column, say and body together; it ends
-    // above `hint` while a hint shows.
-    lv_area_t body;
-    lv_area_t hint;  // the hint band
+    // In a turn: the scrolling column, say and body together, above the
+    // hint when one shows.
+    lv_area_t column;
+    // In a turn: the "more below" strip, the bottom kMorePx of the column.
+    lv_area_t more;
+    lv_area_t hint;  // the hint band, when one shows
 };
 
-// Screen coordinates. Idle (`in_turn` false) leaves heard, say and body
-// empty (x1 > x2).
-HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn);
+// Screen coordinates of what is drawn. Idle (`in_turn` false) leaves
+// heard, say, column and more empty (x1 > x2); hint is empty unless
+// `hint_visible`.
+HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visible);
 
 // When the turn's text fades: kFadeAfterMs after the later of the turn's
 // end and the last interaction. Never while a turn runs; before the first
-// turn there is nothing to show (faded).
+// turn there is nothing to show (faded). Once faded, an interaction
+// changes nothing: only the next turn shows text again.
 class TurnFade {
 public:
     void turn_started();
@@ -146,7 +165,8 @@ public:
     // (which must not be the active one). Idempotent. UI thread.
     void stop();
 
-    // Follows `conv` (nullptr: none, no hint and no voice). UI thread.
+    // Follows `conv` (nullptr: none, no readiness hint and no voice). UI
+    // thread.
     void set_conversation(ConversationController* conv);
 
     // Re-reads what changed and the clock, and shows it. UI thread.
@@ -157,12 +177,13 @@ public:
 
     lv_obj_t* screen() const { return screen_; }
     ui::WispView* wisp() const { return wisp_; }
-    // For tests: the labels (heard, say, hint), the column and whether
-    // the turn layout is showing.
+    // For tests: the labels (heard, say, hint), the column, its "more
+    // below" strip and whether the turn layout is showing.
     lv_obj_t* heard_label() const { return heard_; }
     lv_obj_t* say_label() const { return say_; }
     lv_obj_t* hint_label() const { return hint_; }
     lv_obj_t* column() const { return column_; }
+    lv_obj_t* more() const { return more_; }
     bool in_turn() const { return shown_in_turn_; }
 
 private:
@@ -172,7 +193,8 @@ private:
     void apply_layout(bool in_turn, bool hint_visible);
     void render_text();
     void render_body();
-    std::string hint_text(uint64_t now);
+    std::string hint_text(uint64_t now, bool in_turn);
+    void update_more();
     void start_fade_out();
     void act(WispPress::Action a);
 
@@ -189,6 +211,7 @@ private:
     lv_obj_t* column_ = nullptr;
     lv_obj_t* say_ = nullptr;
     std::vector<lv_obj_t*> blocks_;  // body blocks, in the column after say_
+    lv_obj_t* more_ = nullptr;       // the column's "more below" strip
     lv_obj_t* hint_ = nullptr;
     ui::WispView* wisp_ = nullptr;  // owned by its object
     lv_timer_t* timer_ = nullptr;

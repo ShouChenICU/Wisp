@@ -77,6 +77,10 @@ TEST(TurnFadeTest, FifteenSecondsAfterTheLaterOfEndAndScroll) {
     // An earlier interaction does not shorten it.
     f.interacted(15000);
     EXPECT_FALSE(f.faded(20000 + kFadeAfterMs - 1));
+    // Once faded, a touch does not bring the text back.
+    f.interacted(20000 + kFadeAfterMs + 1);
+    EXPECT_TRUE(f.faded(20000 + kFadeAfterMs + 2));
+    EXPECT_EQ(f.fades_at(), 20000 + kFadeAfterMs);
     // A new turn shows again.
     f.turn_started();
     EXPECT_FALSE(f.faded(100000));
@@ -90,6 +94,8 @@ struct ShapeCase {
     const char* shape;
     int32_t width;
     int32_t height;
+    // The turn's column with a hint up, at least.
+    int32_t min_column_with_hint = wisp::shell::kMinColumnPx;
 };
 
 class HomeShapes : public ::testing::TestWithParam<ShapeCase> {
@@ -107,43 +113,89 @@ protected:
 
 }  // namespace
 
+namespace {
+
+bool overlap(const lv_area_t& a, const lv_area_t& b) {
+    return a.x1 <= b.x2 && b.x1 <= a.x2 && a.y1 <= b.y2 && b.y1 <= a.y2;
+}
+
+bool inside(const lv_area_t& in, const lv_area_t& out) {
+    return in.x1 >= out.x1 && in.x2 <= out.x2 && in.y1 >= out.y1 && in.y2 <= out.y2;
+}
+
+std::string str(const lv_area_t& a) {
+    return std::to_string(a.x1) + "," + std::to_string(a.y1) + " " + std::to_string(a.x2) + "," +
+           std::to_string(a.y2);
+}
+
+}  // namespace
+
 TEST_P(HomeShapes, LayoutInsideVisibleArea) {
+    using wisp::shell::kBodyLinePx;
     const wisp::hal::Area safe = wisp::hal::safe_rect(shape_);
-    {
-        const HomeLayout l = home_layout(shape_, false);
+    for (const bool hint : {false, true}) {
+        SCOPED_TRACE(hint ? "with a hint" : "no hint");
+        const HomeLayout l = home_layout(shape_, false, hint);
         EXPECT_EQ(lv_area_get_width(&l.wisp), wisp::ui::wisp_size_px(safe, 45));
         EXPECT_TRUE(box_visible(shape_, l.wisp));
-        EXPECT_GT(lv_area_get_height(&l.hint), 2 * wisp::shell::kBodyLinePx);
-        EXPECT_TRUE(box_visible(shape_, l.hint));
-        EXPECT_GT(l.hint.y1, l.wisp.y2);
         EXPECT_GT(l.heard.x1, l.heard.x2);  // nothing else idle
+        EXPECT_GT(l.column.x1, l.column.x2);
+        if (hint) {
+            EXPECT_GE(lv_area_get_height(&l.hint), 2 * kBodyLinePx);
+            EXPECT_TRUE(box_visible(shape_, l.hint));
+            EXPECT_GT(l.hint.y1, l.wisp.y2);
+        } else {
+            EXPECT_GT(l.hint.x1, l.hint.x2);
+        }
     }
-    {
-        const HomeLayout l = home_layout(shape_, true);
+    for (const bool hint : {false, true}) {
+        SCOPED_TRACE(hint ? "turn with a hint" : "turn, no hint");
+        const HomeLayout l = home_layout(shape_, true, hint);
         EXPECT_EQ(lv_area_get_width(&l.wisp), wisp::ui::wisp_size_px(safe, 28));
-        for (const lv_area_t* a : {&l.wisp, &l.heard, &l.say, &l.body, &l.hint}) {
+        std::vector<const lv_area_t*> boxes{&l.wisp, &l.heard, &l.column};
+        if (hint) boxes.push_back(&l.hint);
+        for (const lv_area_t* a : boxes) {
             EXPECT_GT(lv_area_get_width(a), 0);
             EXPECT_GT(lv_area_get_height(a), 0);
-            EXPECT_TRUE(box_visible(shape_, *a))
-                << a->x1 << "," << a->y1 << " " << a->x2 << "," << a->y2;
+            EXPECT_TRUE(box_visible(shape_, *a)) << str(*a);
         }
-        // Heard above the wisp, the column below it, starting with say.
-        EXPECT_GE(lv_area_get_height(&l.heard),
-                  wisp::shell::kHeardMaxLines * wisp::shell::kBodyLinePx);
+        for (size_t i = 0; i < boxes.size(); ++i)
+            for (size_t j = i + 1; j < boxes.size(); ++j)
+                EXPECT_FALSE(overlap(*boxes[i], *boxes[j]))
+                    << str(*boxes[i]) << " / " << str(*boxes[j]);
+        // Heard above the wisp, the column below it, starting with say,
+        // ending with the "more below" strip; the hint below it all.
+        EXPECT_GE(lv_area_get_height(&l.heard), kBodyLinePx);
         EXPECT_LT(l.heard.y2, l.wisp.y1);
-        EXPECT_LT(l.wisp.y2, l.say.y1);
-        EXPECT_EQ(l.body.y1, l.say.y1);
-        EXPECT_GE(l.body.y2, l.say.y2);
+        EXPECT_LT(l.wisp.y2, l.column.y1);
+        EXPECT_EQ(l.say.y1, l.column.y1);
+        EXPECT_EQ(lv_area_get_height(&l.say), wisp::shell::kSayLinePx);
+        EXPECT_TRUE(inside(l.say, l.column));
+        EXPECT_EQ(l.more.y2, l.column.y2);
+        EXPECT_EQ(lv_area_get_height(&l.more), wisp::shell::kMorePx);
+        EXPECT_TRUE(inside(l.more, l.column));
+        if (hint) {
+            EXPECT_EQ(lv_area_get_height(&l.hint), wisp::shell::kHintTurnLines * kBodyLinePx);
+            EXPECT_LT(l.column.y2 + 8, l.hint.y1);  // a clear gap
+        } else {
+            EXPECT_GT(l.hint.x1, l.hint.x2);
+        }
         // Clear of the status capsule.
         EXPECT_GT(l.heard.y1, wisp::ui::SystemLayer::status_area(shape_).y2);
-        // Room for a few lines of body under the say text.
-        EXPECT_GE(lv_area_get_height(&l.body), 4 * wisp::shell::kBodyLinePx);
+        // The say text's first two lines and the body's first line under
+        // them; a 360 px circle with a hint has room for the two say lines,
+        // and the "more below" strip says the body follows.
+        EXPECT_GE(lv_area_get_height(&l.column),
+                  hint ? GetParam().min_column_with_hint : wisp::shell::kMinColumnPx)
+            << str(l.column);
     }
 }
 
-// A body of 40 lines in the column: at either scroll end its first and last
-// lines lie on the visible screen.
-TEST_P(HomeShapes, BodyEndsVisibleWhenScrolled) {
+// A turn with a three-line say text and a 40-line body, with and without
+// a hint, as drawn: no two text boxes overlap; scrolled to the top, the
+// say text's first line and the "more below" strip are on the visible
+// screen; at either scroll end the column's first and last lines are too.
+TEST_P(HomeShapes, TurnTextReadableAtBothEnds) {
     wisp::ui::UiRuntime ui(display_, nullptr);
     ASSERT_TRUE(ui.start());
     wisp::core::EventBus bus;
@@ -156,45 +208,87 @@ TEST_P(HomeShapes, BodyEndsVisibleWhenScrolled) {
         before = lv_screen_active();
         ASSERT_TRUE(home.start());
         lv_screen_load(home.screen());
-        TurnView v;
-        v.turn = 1;
-        v.heard = "讲个长的";
-        v.say.assign("好的，这是很长的回答。");
-        std::string body;
-        for (int i = 1; i <= 40; ++i) body += "第 " + std::to_string(i) + " 行\n\n";
-        v.body.assign(body.data(), body.size());
-        home.show_view(v);
-        lv_obj_update_layout(home.screen());
-        ASSERT_TRUE(home.in_turn());
-        lv_obj_t* col = home.column();
-        ASSERT_GT(lv_obj_get_child_count(col), 1u);
-        lv_obj_t* first = lv_obj_get_child(col, 0);
-        lv_obj_t* last = lv_obj_get_child(col, lv_obj_get_child_count(col) - 1);
-        EXPECT_EQ(label_text(first), "好的，这是很长的回答。");
-        // The body font (with the CJK glyphs), not LVGL's built-in default.
-        EXPECT_EQ(lv_obj_get_style_text_font(last, LV_PART_MAIN), wisp::ui::default_font());
-        EXPECT_EQ(lv_obj_get_style_text_font(home.heard_label(), LV_PART_MAIN),
-                  wisp::ui::default_font());
-        EXPECT_GT(lv_obj_get_scroll_bottom(col), 0);  // it does scroll
-
-        const lv_area_t box = coords(col);
-        EXPECT_TRUE(box_visible(shape_, box));
-        lv_obj_scroll_to_y(col, 0, LV_ANIM_OFF);
-        lv_obj_update_layout(home.screen());
-        lv_area_t a = coords(first);
-        EXPECT_GE(a.y1, box.y1);
-        EXPECT_TRUE(box_visible(shape_, a));
-
-        lv_obj_scroll_to_y(col, LV_COORD_MAX, LV_ANIM_OFF);
-        lv_obj_update_layout(home.screen());
-        EXPECT_EQ(lv_obj_get_scroll_bottom(col), 0);
-        // The body is one tall block: its last line, at the bottom of it.
-        a = coords(last);
-        EXPECT_LE(a.y2, box.y2);
-        a.y1 = a.y2 - wisp::shell::kBodyLinePx + 1;
-        EXPECT_GE(a.y1, box.y1);
-        EXPECT_TRUE(box_visible(shape_, a));
     });
+    const std::string say =
+        "好的，这是很长的回答，它的第一句话就足够长，要在屏幕上折成好几行才能放下，"
+        "后面还有更多的字，一直写到第三行以后，才轮到下面的正文细节出场。";
+    for (const bool with_hint : {false, true}) {
+        SCOPED_TRACE(with_hint ? "with a hint" : "no hint");
+        on_ui([&] {
+            TurnView v;
+            v.turn = with_hint ? 2 : 1;
+            v.heard = "讲个长的";
+            v.say.assign(say.data(), say.size());
+            std::string body;
+            for (int i = 1; i <= 40; ++i) body += "第 " + std::to_string(i) + " 行\n\n";
+            v.body.assign(body.data(), body.size());
+            if (with_hint) v.error = wisp::voice::VoiceError::NoTtsProfile;
+            home.show_view(v);
+            lv_obj_update_layout(home.screen());
+            ASSERT_TRUE(home.in_turn());
+            lv_obj_t* col = home.column();
+            ASSERT_GT(lv_obj_get_child_count(col), 1u);
+            lv_obj_t* first = lv_obj_get_child(col, 0);
+            lv_obj_t* last = lv_obj_get_child(col, lv_obj_get_child_count(col) - 1);
+            ASSERT_EQ(first, home.say_label());
+            // The body font (with the CJK glyphs), not LVGL's built-in default.
+            EXPECT_EQ(lv_obj_get_style_text_font(last, LV_PART_MAIN), wisp::ui::default_font());
+            EXPECT_EQ(lv_obj_get_style_text_font(home.heard_label(), LV_PART_MAIN),
+                      wisp::ui::default_font());
+            // The say text is whole, over several lines.
+            EXPECT_EQ(label_text(first), say);
+            EXPECT_GE(lv_obj_get_height(first),
+                      3 * lv_font_get_line_height(wisp::ui::font(wisp::shell::kSayFontPx)));
+            EXPECT_GT(lv_obj_get_scroll_bottom(col), 0);  // it does scroll
+
+            const lv_area_t box = coords(col);
+            const lv_area_t heard = coords(home.heard_label());
+            const lv_area_t wisp = coords(home.wisp()->obj());
+            std::vector<lv_area_t> drawn{box, heard, wisp};
+            EXPECT_EQ(hidden(home.hint_label()), !with_hint);
+            if (with_hint) {
+                const lv_area_t hint = coords(home.hint_label());
+                EXPECT_TRUE(box_visible(shape_, hint)) << str(hint);
+                EXPECT_EQ(lv_area_get_height(&hint), wisp::shell::kBodyLinePx);
+                // The short form: one line, no address.
+                const std::string t = label_text(home.hint_label());
+                EXPECT_EQ(t.find('\n'), std::string::npos) << t;
+                EXPECT_EQ(t.rfind("还没配置语音合成", 0), 0u) << t;
+                drawn.push_back(hint);
+            }
+            for (size_t i = 0; i < drawn.size(); ++i)
+                for (size_t j = i + 1; j < drawn.size(); ++j)
+                    EXPECT_FALSE(overlap(drawn[i], drawn[j]))
+                        << str(drawn[i]) << " / " << str(drawn[j]);
+            EXPECT_TRUE(box_visible(shape_, box));
+            EXPECT_GE(lv_area_get_height(&box),
+                      with_hint ? GetParam().min_column_with_hint : wisp::shell::kMinColumnPx);
+
+            lv_obj_scroll_to_y(col, 0, LV_ANIM_OFF);
+            lv_obj_update_layout(home.screen());
+            lv_area_t a = coords(first);
+            EXPECT_EQ(a.y1, box.y1);
+            a.y2 = a.y1 + wisp::shell::kSayLinePx - 1;
+            EXPECT_TRUE(inside(a, box));
+            EXPECT_TRUE(box_visible(shape_, a));
+            ASSERT_FALSE(hidden(home.more()));
+            const lv_area_t more = coords(home.more());
+            EXPECT_TRUE(inside(more, box)) << str(more);
+            EXPECT_EQ(more.y2, box.y2);
+            EXPECT_TRUE(box_visible(shape_, more));
+
+            lv_obj_scroll_to_y(col, LV_COORD_MAX, LV_ANIM_OFF);
+            lv_obj_update_layout(home.screen());
+            EXPECT_EQ(lv_obj_get_scroll_bottom(col), 0);
+            EXPECT_TRUE(hidden(home.more()));  // nothing more below
+            // The body is one tall block: its last line, at the bottom of it.
+            a = coords(last);
+            EXPECT_LE(a.y2, box.y2);
+            a.y1 = a.y2 - wisp::shell::kBodyLinePx + 1;
+            EXPECT_GE(a.y1, box.y1);
+            EXPECT_TRUE(box_visible(shape_, a));
+        });
+    }
     on_ui([&] {
         lv_screen_load(before);
         home.stop();
@@ -203,17 +297,15 @@ TEST_P(HomeShapes, BodyEndsVisibleWhenScrolled) {
     ui.stop();
 }
 
-INSTANTIATE_TEST_SUITE_P(Shapes, HomeShapes,
-                         ::testing::Values(ShapeCase{"rect", 480, 480},
-                                           ShapeCase{"rounded_rect", 480, 480},
-                                           ShapeCase{"circle", 480, 480},
-                                           ShapeCase{"rounded_rect", 368, 448},
-                                           ShapeCase{"circle", 360, 480}),
-                         [](const ::testing::TestParamInfo<ShapeCase>& info) {
-                             return std::string(info.param.shape) + "_" +
-                                    std::to_string(info.param.width) + "x" +
-                                    std::to_string(info.param.height);
-                         });
+INSTANTIATE_TEST_SUITE_P(
+    Shapes, HomeShapes,
+    ::testing::Values(ShapeCase{"rect", 480, 480}, ShapeCase{"rounded_rect", 480, 480},
+                      ShapeCase{"circle", 480, 480}, ShapeCase{"rounded_rect", 368, 448},
+                      ShapeCase{"circle", 360, 480, 2 * wisp::shell::kSayLinePx}),
+    [](const ::testing::TestParamInfo<ShapeCase>& info) {
+        return std::string(info.param.shape) + "_" + std::to_string(info.param.width) + "x" +
+               std::to_string(info.param.height);
+    });
 
 // --- the home screen over the conversation -------------------------------------
 
@@ -296,6 +388,37 @@ protected:
             p = {(a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2};
         });
         return p;
+    }
+    // A finished turn whose column scrolls.
+    void long_turn() {
+        std::string body;
+        for (int i = 1; i <= 40; ++i) body += "第 " + std::to_string(i) + " 行\n\n";
+        server.llm().push(wisp::test::llm_text("<say>好的。</say>" + body));
+        server.push_tts(wisp::test::tts_pcm());
+        ASSERT_TRUE(conv->voice_text("讲个长的"));
+        ASSERT_TRUE(wait_turns(1));
+        ASSERT_TRUE(ui_until([&] {
+            return home().in_turn() && !conv->current().running &&
+                   lv_obj_get_scroll_bottom(home().column()) > 0;
+        }));
+        ASSERT_TRUE(settled());
+    }
+    // Moves the clock past the fade and waits for the idle layout.
+    void fade_out() {
+        home_ms.fetch_add(kFadeAfterMs + 1000);
+        ASSERT_TRUE(ui_until([&] { return !home().in_turn() && hidden(home().heard_label()); }));
+    }
+    bool idle_and_centred() {
+        bool ok = false;
+        on_ui([&] {
+            home().refresh();
+            lv_obj_update_layout(home().screen());
+            const wisp::hal::Area safe = wisp::hal::safe_rect(shape_);
+            const lv_area_t a = coords(shell_->wisp()->obj());
+            ok = !home().in_turn() && hidden(home().heard_label()) &&
+                 lv_area_get_width(&a) == wisp::ui::wisp_size_px(safe, 45);
+        });
+        return ok;
     }
     lv_obj_t* active() {
         lv_obj_t* s = nullptr;
@@ -521,4 +644,124 @@ TEST_F(HomeTest, PausedWhileScreenOff) {
     EXPECT_EQ(frames(), off);
     h->bus.publish({"power.state", "power", 0, wisp::Properties{{"state", wisp::Value("active")}}});
     EXPECT_TRUE(wait_until([&] { return frames() > off + 2; }, 3000));
+}
+
+// A finger scrolling the column is reading: the swipe opens nothing. Once
+// the text has faded, the column's own reset to the top does not count as
+// reading, and the text stays faded.
+TEST_F(HomeTest, ScrolledTextStaysFaded) {
+    boot();
+    long_turn();
+    lv_area_t col{};
+    on_ui([&] { col = coords(home().column()); });
+    const int32_t x = (col.x1 + col.x2) / 2;
+    drag({x, col.y2 - 20}, {x, col.y2 - 160});
+    wisp::os::sleep_ms(500);  // the throw runs out
+    on_ui([&] { EXPECT_GT(lv_obj_get_scroll_y(home().column()), 0); });
+    EXPECT_EQ(shell_->page(), Page::Home);
+    EXPECT_EQ(active(), shell_->home_screen());
+
+    fade_out();
+    on_ui([&] { EXPECT_EQ(lv_obj_get_scroll_y(home().column()), 0); });
+    wisp::os::sleep_ms(2 * Home::kTickMs);
+    EXPECT_TRUE(idle_and_centred());
+    EXPECT_TRUE(idle_and_centred());
+}
+
+// After the fade, a tap on the centred wisp and a hold to talk leave the
+// screen idle: the last turn's text does not come back.
+TEST_F(HomeTest, TouchAfterFadeKeepsIdle) {
+    boot();
+    server.llm().push(wisp::test::llm_text("<say>好。</say>"));
+    server.push_tts(wisp::test::tts_pcm());
+    ASSERT_TRUE(conv->voice_text("在吗"));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(ui_until([&] { return home().in_turn() && !conv->current().running; }));
+    ASSERT_TRUE(settled());
+    fade_out();
+
+    const lv_point_t c = wisp_centre();
+    const wisp::hal::TouchPoint at{static_cast<int16_t>(c.x), static_cast<int16_t>(c.y), 0};
+    feed({at});
+    feed({at});
+    feed({});
+    EXPECT_TRUE(idle_and_centred());
+
+    // A hold, then a slide up that cancels it.
+    say_into_mic();
+    feed({at});
+    home_ms.fetch_add(wisp::voice::kHoldStartMs + 10);
+    feed({at});
+    ASSERT_TRUE(conv->holding());
+    on_ui([&] {
+        home().refresh();
+        EXPECT_TRUE(hidden(home().heard_label()));
+        EXPECT_TRUE(hidden(home().say_label()) || hidden(home().column()));
+    });
+    feed({{at.x, static_cast<int16_t>(at.y - 100), 0}});
+    feed({});
+    EXPECT_FALSE(conv->holding());
+    EXPECT_TRUE(settled());
+    EXPECT_TRUE(idle_and_centred());
+    EXPECT_EQ(shell_->page(), Page::Home);
+}
+
+// A hold on the wisp that then slides sideways ends the hold on release
+// and opens no page.
+TEST_F(HomeTest, WispHoldThenSidewaysDoesNotNavigate) {
+    boot();
+    const lv_point_t c = wisp_centre();
+    const wisp::hal::TouchPoint at{static_cast<int16_t>(c.x), static_cast<int16_t>(c.y), 0};
+    say_into_mic();
+    feed({at});
+    home_ms.store(wisp::voice::kHoldStartMs + 10);
+    feed({at});
+    ASSERT_TRUE(conv->holding());
+    const wisp::hal::TouchPoint side{static_cast<int16_t>(c.x + 150), at.y, 0};
+    feed({side});
+    feed({side});
+    EXPECT_TRUE(conv->holding());
+    feed({});
+    EXPECT_FALSE(conv->holding());
+    EXPECT_TRUE(settled());
+    wisp::os::sleep_ms(100);
+    on_ui([&] {});
+    EXPECT_EQ(shell_->page(), Page::Home);
+    EXPECT_EQ(active(), shell_->home_screen());
+}
+
+// A hint during a turn is one line without the address; once the text has
+// faded the full hint shows, address included, for its own kFadeAfterMs.
+TEST_F(HomeTest, TurnHintIsShortUntilTheTextFades) {
+    boot();
+    const std::string url = "http://10.0.0.7:8900";
+    const std::string full = std::string(wisp::ui::tr(wisp::ui::StrId::VoiceErrNoTts)) + "\n" + url;
+    auto hint = [&] {
+        std::string s;
+        on_ui([&] {
+            home().refresh();
+            s = hidden(home().hint_label()) ? "" : label_text(home().hint_label());
+        });
+        return s;
+    };
+    on_ui([&] {
+        TurnView v;
+        v.turn = 7;
+        v.heard = "念一下";
+        v.say.assign("好的。");
+        v.error = wisp::voice::VoiceError::NoTtsProfile;
+        home().show_view(v);
+        EXPECT_TRUE(home().in_turn());
+    });
+    std::string h = hint();
+    EXPECT_FALSE(h.empty());
+    EXPECT_EQ(h.find('\n'), std::string::npos) << h;
+    // Shown with the text all the while: the hint's own wait has not run.
+    home_ms.store(kFadeAfterMs - 1000);
+    EXPECT_FALSE(hint().empty());
+    home_ms.store(kFadeAfterMs + 1000);
+    ASSERT_TRUE(ui_until([&] { return !home().in_turn() && hidden(home().heard_label()); }));
+    EXPECT_EQ(hint(), full);
+    home_ms.store(2 * kFadeAfterMs);
+    EXPECT_EQ(hint(), "");
 }

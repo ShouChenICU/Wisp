@@ -22,18 +22,20 @@ constexpr const char* kTag = "shell";
 // Side margin inside a band's visible row, and the gap between bands.
 constexpr int32_t kPad = ui::theme::kGapMd;
 constexpr int32_t kGap = ui::theme::kGapSm;
-// One line of the say text at kSayFontPx.
-constexpr int32_t kSayLinePx = 36;
+// Between the column and the hint below it: more than a line's leading,
+// so a line the column cuts does not read as running into the hint.
+constexpr int32_t kHintGap = ui::theme::kGapMd;
 
 constexpr lv_area_t kEmpty{0, 0, -1, -1};
 
 int32_t span_width(const hal::Span& s) { return s.empty() ? 0 : s.x2 - s.x1 + 1; }
 
 // The rows text may use: the safe area's, grown up and down while rows
-// stay at least kTextRowPercent of the screen wide.
-void text_rows(const hal::ScreenShape& s, int32_t& top, int32_t& bottom) {
+// stay at least `percent` of the screen wide.
+void text_rows(const hal::ScreenShape& s, int32_t& top, int32_t& bottom,
+               int32_t percent = kTextRowPercent) {
     const hal::Area safe = hal::safe_rect(s);
-    const int32_t min_w = s.width * kTextRowPercent / 100;
+    const int32_t min_w = s.width * percent / 100;
     top = safe.y1;
     while (top > 0 && span_width(hal::row_span(s, top - 1)) >= min_w) --top;
     bottom = safe.y2;
@@ -100,8 +102,9 @@ ui::StrId error_text(voice::VoiceError e) {
     return ui::StrId::VoiceErrAsr;
 }
 
-void place(lv_obj_t* obj, const lv_area_t& a) {
-    lv_obj_set_pos(obj, a.x1, a.y1);
+// `a` in screen coordinates, `obj` in a parent whose top left is `origin`.
+void place(lv_obj_t* obj, const lv_area_t& a, lv_point_t origin = {0, 0}) {
+    lv_obj_set_pos(obj, a.x1 - origin.x, a.y1 - origin.y);
     lv_obj_set_size(obj, std::max<int32_t>(lv_area_get_width(&a), 0),
                     std::max<int32_t>(lv_area_get_height(&a), 0));
 }
@@ -112,30 +115,51 @@ bool same(const os::LargeString& a, const os::LargeString& b) {
 
 }  // namespace
 
-HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn) {
+HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visible) {
     const hal::Area safe = hal::safe_rect(s);
     int32_t top = 0, bottom = 0;
     text_rows(s, top, bottom);
-    HomeLayout l{kEmpty, kEmpty, kEmpty, kEmpty, kEmpty};
+    HomeLayout l{kEmpty, kEmpty, kEmpty, kEmpty, kEmpty, kEmpty};
     if (!in_turn) {
         l.wisp =
             wisp_box(safe, ui::wisp_size_px(safe, kWispIdlePercent), (safe.y1 + safe.y2 + 1) / 2);
         const int32_t y1 = l.wisp.y2 + 1 + kGap;
-        l.hint = band(s, y1, std::min(y1 + kHintIdleLines * kBodyLinePx - 1, bottom - kGap));
+        if (hint_visible)
+            l.hint = band(s, y1, std::min(y1 + kHintIdleLines * kBodyLinePx - 1, bottom - kGap));
         return l;
     }
     // Below the status capsule, which may show over the home screen.
     const hal::Area capsule = ui::SystemLayer::status_area(s);
     top = std::max(top + kGap, capsule.y2 + 1 + kGap);
     bottom -= kGap;
-    l.heard = band(s, top, top + kHeardMaxLines * kBodyLinePx - 1);
+    // The turn's one-line hint, cut with "...", may use narrower rows than
+    // the text: below the column where the screen has them.
+    int32_t unused = 0, hint_bottom = 0;
+    text_rows(s, unused, hint_bottom, kHintRowPercent);
+    hint_bottom -= kGap;
+    const int32_t hint_top = hint_bottom - kHintTurnLines * kBodyLinePx + 1;
+    // Where heard and the wisp leave the column less than kMinColumnPx
+    // with a hint, heard gets one line (the same with or without a hint,
+    // so the column does not jump when one comes or goes).
     const int32_t size = ui::wisp_size_px(safe, kWispTurnPercent);
+    const int32_t below_heard = kGap + size * 5 / 4 + kGap;
+    const int32_t col_room = std::min(bottom, hint_top - 1 - kHintGap) -
+                             (top + kHeardMaxLines * kBodyLinePx + below_heard) + 1;
+    const int32_t heard_lines = col_room >= kMinColumnPx ? kHeardMaxLines : 1;
+    l.heard = band(s, top, top + heard_lines * kBodyLinePx - 1);
     const int32_t wisp_top = l.heard.y2 + 1 + kGap;
     l.wisp = wisp_box(safe, size, wisp_top + size * 5 / 4 / 2);
     const int32_t say_top = l.wisp.y2 + 1 + kGap;
-    l.say = band(s, say_top, std::min(say_top + kSayLinePx - 1, bottom));
-    l.body = band(s, say_top, bottom);
-    l.hint = band(s, std::max(bottom - kHintTurnLines * kBodyLinePx + 1, say_top), bottom);
+    int32_t col_bottom = bottom;
+    if (hint_visible) {
+        l.hint = band(s, std::max(hint_top, say_top), hint_bottom);
+        col_bottom = std::max(say_top, std::min(bottom, l.hint.y1 - 1 - kHintGap));
+    }
+    l.column = band(s, say_top, col_bottom);
+    l.say = l.column;
+    l.say.y2 = std::min(l.column.y1 + kSayLinePx - 1, l.column.y2);
+    l.more = l.column;
+    l.more.y1 = std::max(l.column.y1, l.column.y2 - kMorePx + 1);
     return l;
 }
 
@@ -153,7 +177,7 @@ void TurnFade::turn_ended(uint64_t now) {
 }
 
 void TurnFade::interacted(uint64_t now) {
-    if (!running_) last_ = std::max(last_, now);
+    if (!running_ && !faded(now)) last_ = std::max(last_, now);
 }
 
 bool TurnFade::faded(uint64_t now) const {
@@ -196,11 +220,11 @@ bool Home::start() {
     const lv_color_t dim = colour ? lv_color_hex(ui::theme::kTextDim) : ui::wisp_colour(panel);
 
     // The turn's text, under the wisp so a press on the wisp reaches it;
-    // faded as one. It takes no press itself: presses fall through to the
-    // screen, and the column's bubble up to it.
+    // faded as one, and only as large as the text (apply_layout()) since
+    // the fade draws it through a layer. It takes no press itself:
+    // presses fall through to the screen, and the column's bubble up to it.
     turn_box_ = lv_obj_create(screen_);
     lv_obj_remove_style_all(turn_box_);
-    lv_obj_set_size(turn_box_, lv_pct(100), lv_pct(100));
     lv_obj_remove_flag(turn_box_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(turn_box_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(turn_box_, LV_OBJ_FLAG_EVENT_BUBBLE);
@@ -222,6 +246,7 @@ bool Home::start() {
     lv_obj_add_flag(column_, LV_OBJ_FLAG_PRESS_LOCK);
     lv_obj_add_event_cb(column_, &Home::column_cb, LV_EVENT_SCROLL_BEGIN, this);
     lv_obj_add_event_cb(column_, &Home::column_cb, LV_EVENT_SCROLL, this);
+    lv_obj_add_event_cb(column_, &Home::column_cb, LV_EVENT_SCROLL_END, this);
 
     say_ = lv_label_create(column_);
     lv_obj_set_width(say_, lv_pct(100));
@@ -230,6 +255,30 @@ bool Home::start() {
     lv_obj_set_style_text_align(say_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text_static(say_, "");
     lv_obj_add_flag(say_, LV_OBJ_FLAG_HIDDEN);
+
+    // Over the column's bottom edge, not in it (it does not scroll), and
+    // not clickable, so presses there still reach the column.
+    if (colour) {
+        more_ = lv_obj_create(turn_box_);
+        lv_obj_remove_style_all(more_);
+        const lv_color_t bg = ui::wisp_background(panel);
+        lv_obj_set_style_bg_color(more_, bg, 0);
+        lv_obj_set_style_bg_grad_color(more_, bg, 0);
+        lv_obj_set_style_bg_grad_dir(more_, LV_GRAD_DIR_VER, 0);
+        lv_obj_set_style_bg_main_opa(more_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_grad_opa(more_, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_opa(more_, LV_OPA_COVER, 0);
+    } else {
+        // Two-colour panels have no fade: a chevron, from the built-in
+        // font (the body font has no symbols).
+        more_ = lv_label_create(turn_box_);
+        lv_obj_set_style_text_font(more_, LV_FONT_DEFAULT, 0);
+        lv_obj_set_style_text_color(more_, text, 0);
+        lv_obj_set_style_text_align(more_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text_static(more_, LV_SYMBOL_DOWN);
+    }
+    lv_obj_remove_flag(more_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(more_, LV_OBJ_FLAG_HIDDEN);
 
     hint_ = lv_label_create(screen_);
     // Cut to its band ("..." on the last line) rather than run over the
@@ -275,7 +324,7 @@ void Home::stop() {
     lv_timer_delete(timer_);
     timer_ = nullptr;
     lv_obj_delete(screen_);  // frees the wisp with its object, and the fade
-    screen_ = turn_box_ = heard_ = column_ = say_ = hint_ = nullptr;
+    screen_ = turn_box_ = heard_ = column_ = say_ = more_ = hint_ = nullptr;
     blocks_.clear();
     wisp_ = nullptr;
 }
@@ -382,6 +431,7 @@ void Home::refresh() {
         view_ = conv_->current();
         view_changed_ = true;
     }
+    bool new_turn = false;
     if (view_changed_) {
         // A new turn: another turn number, or (before the agent numbers
         // it) another heard text.
@@ -392,6 +442,7 @@ void Home::refresh() {
             shown_turn_heard_ = view_.heard;
             fade_.turn_started();
             was_running_ = true;
+            new_turn = true;
         }
         if (was_running_ && !view_.running) {
             fade_.turn_ended(now);
@@ -420,15 +471,19 @@ void Home::refresh() {
         wisp_->set_paused(standby_.load());
     }
 
-    const std::string hint = hint_text(now);
+    const bool has_text = !view_.heard.empty() || !view_.say.empty() || !view_.body.empty();
+    const bool in_turn = (view_.running || has_text) && !fade_.faded(now);
+
+    // While the turn's text shows, the error hint's wait does not run.
+    if (in_turn && (hint_error_ || hint_not_heard_) && now - hint_since_ < kFadeAfterMs)
+        hint_since_ = now;
+    // The short form while the turn layout is up, fading included.
+    const std::string hint = hint_text(now, in_turn || shown_in_turn_);
     const bool hint_visible = !hint.empty();
     if (hint != shown_hint_) {
         shown_hint_ = hint;
         lv_label_set_text(hint_, hint.c_str());
     }
-
-    const bool has_text = !view_.heard.empty() || !view_.say.empty() || !view_.body.empty();
-    const bool in_turn = (view_.running || has_text) && !fade_.faded(now);
     if (in_turn) {
         if (fading_) {
             lv_anim_delete(turn_box_, nullptr);
@@ -446,18 +501,25 @@ void Home::refresh() {
     if (view_changed_) {
         view_changed_ = false;
         render_text();
+        // A new turn reads from its start, wherever the last one was left.
+        if (new_turn) lv_obj_scroll_to_y(column_, 0, LV_ANIM_OFF);
+        if (shown_in_turn_) {
+            lv_obj_update_layout(screen_);
+            update_more();
+        }
     }
 }
 
-std::string Home::hint_text(uint64_t now) {
-    if (conv_ == nullptr) return {};
-    const std::string url = deps_.admin_url ? deps_.admin_url() : std::string();
+std::string Home::hint_text(uint64_t now, bool in_turn) {
+    // One line during a turn: the address waits for the idle layout.
     auto with_url = [&](ui::StrId id) {
         std::string s = ui::tr(id);
+        if (in_turn || !deps_.admin_url) return s;
+        const std::string url = deps_.admin_url();
         if (!url.empty()) s += "\n" + url;
         return s;
     };
-    switch (conv_->readiness()) {
+    switch (conv_ != nullptr ? conv_->readiness() : Readiness::Ready) {
         case Readiness::NoWifi:
             return ui::tr(ui::StrId::HomeNoWifi);
         case Readiness::NoLlm:
@@ -480,7 +542,7 @@ void Home::apply_layout(bool in_turn, bool hint_visible) {
     laid_out_ = true;
     shown_in_turn_ = in_turn;
     hint_visible_ = hint_visible;
-    const HomeLayout l = home_layout(deps_.shape, in_turn);
+    const HomeLayout l = home_layout(deps_.shape, in_turn, hint_visible);
     if (wisp_ != nullptr) {
         wisp_->set_size(lv_area_get_width(&l.wisp));
         lv_obj_set_pos(wisp_->obj(), l.wisp.x1, l.wisp.y1);
@@ -493,19 +555,33 @@ void Home::apply_layout(bool in_turn, bool hint_visible) {
     }
     if (!in_turn) {
         lv_obj_add_flag(turn_box_, LV_OBJ_FLAG_HIDDEN);
+        // No finger on it: column_cb() does not take this for reading.
         lv_obj_scroll_to_y(column_, 0, LV_ANIM_OFF);
         lv_obj_update_layout(screen_);
         return;
     }
-    place(heard_, l.heard);
-    lv_area_t body = l.body;
-    if (hint_visible) body.y2 = std::max(body.y1, l.hint.y1 - 1 - kGap);
-    place(column_, body);
+    const lv_area_t box{std::min(l.heard.x1, l.column.x1), l.heard.y1,
+                        std::max(l.heard.x2, l.column.x2), l.column.y2};
+    place(turn_box_, box);
+    const lv_point_t origin{box.x1, box.y1};
+    place(heard_, l.heard, origin);
+    place(column_, l.column, origin);
+    place(more_, l.more, origin);
     lv_obj_set_style_opa(turn_box_, LV_OPA_COVER, 0);
     lv_obj_remove_flag(turn_box_, LV_OBJ_FLAG_HIDDEN);
     // Now, not at the next frame: a press arriving before it is hit-tested
     // against these positions.
     lv_obj_update_layout(screen_);
+    update_more();
+}
+
+void Home::update_more() {
+    if (more_ == nullptr) return;
+    if (lv_obj_get_scroll_bottom(column_) > 0) {
+        lv_obj_remove_flag(more_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(more_, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void Home::start_fade_out() {
@@ -527,6 +603,7 @@ void Home::fade_done_cb(lv_anim_t* a) {
     auto* self = static_cast<Home*>(lv_anim_get_user_data(a));
     self->fading_ = false;
     self->apply_layout(false, self->hint_visible_);
+    self->refresh();  // the hint's full form, now the layout is idle
 }
 
 void Home::render_text() {
@@ -598,13 +675,18 @@ void Home::event_cb(lv_event_t* e) { static_cast<Home*>(lv_event_get_user_data(e
 
 void Home::column_cb(lv_event_t* e) {
     auto* self = static_cast<Home*>(lv_event_get_user_data(e));
-    if (lv_event_get_code(e) == LV_EVENT_SCROLL_BEGIN) self->scrolled_ = true;
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_SCROLL_BEGIN) self->update_more();
+    // Only a finger on the column is reading (a drag, or its throw after
+    // the release): LVGL scrolls it too, for the reset when the text
+    // fades and for layout, and those must not keep the text up.
+    if (lv_indev_active() == nullptr) return;
+    if (code == LV_EVENT_SCROLL_BEGIN) self->scrolled_ = true;
     // Reading the body keeps the turn on the screen.
     self->fade_.interacted(self->deps_.now_ms());
 }
 
 void Home::act(WispPress::Action a) {
-    if (a != WispPress::Action::None) fade_.interacted(deps_.now_ms());
     if (conv_ == nullptr) return;
     switch (a) {
         case WispPress::Action::Tap:
@@ -659,7 +741,6 @@ void Home::on_event(lv_event_t* e) {
         case LV_EVENT_RELEASED: {
             if (!tracking_) break;
             tracking_ = false;
-            fade_.interacted(now);
             bool held = false;
             if (on_wisp_) {
                 act(press_.released(p, now));

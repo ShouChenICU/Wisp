@@ -188,3 +188,7 @@ Source: glyph partition review records.
 - `notify()` copies the whole `TurnView` once per listener on every Delta, which is O(n²) over a turn. Revisit if long replies show up in WISP_PERF.
 - Test gaps in the shell tests: TalkKey when the screen turns off mid-hold; settings changes reaching the cached tts_mute and volume.
 - ESP `esp_http_client.cpp` attaches the socket to `RequestWatch` only after `esp_http_client_open()` returns, so a stop pressed during DNS/TCP connect/TLS handshake waits for the connection to succeed or fail (worst case: the open timeout). Needs an interruptible connect in the ESP port; not reproducible in the simulator. (A stop before the LLM request is honoured at the agent layer; verified.)
+
+## Home screen (MVP shell)
+
+- Sub-pages appear without the slide-in of MVP spec 6.3 (from the left, the right and above): `lv_screen_load_anim()` changes `lv_screen_active()` only when the animation ends, which breaks the scene runtime's check of which screen is in front when it restores or drops its view. Add the slides with the real sub-pages (MVP plan, "子页：对话记录、场景列表与设置"), with a screen-in-front check that does not depend on the animation.
