@@ -61,6 +61,7 @@ import {
   IconLogout,
   IconLogs,
   IconMoon,
+  IconNote,
   IconPackage,
   IconPower,
   IconReset,
@@ -1214,6 +1215,16 @@ function MaintenanceCard({ onBack }) {
           <span class="dev-main">
             <span class="row-title">${t('nav.scenes')}</span>
             <span class="row-sub">${t('sys.scenes_desc')}</span>
+          </span>
+          <${IconChevronRight} size=${18} />
+        </a>
+      </li>
+      <li>
+        <a class="link-row" href="#/memory">
+          <span class="dev-icon tone-accent"><${IconNote} size=${18} /></span>
+          <span class="dev-main">
+            <span class="row-title">${t('nav.memory')}</span>
+            <span class="row-sub">${t('sys.memory_desc')}</span>
           </span>
           <${IconChevronRight} size=${18} />
         </a>

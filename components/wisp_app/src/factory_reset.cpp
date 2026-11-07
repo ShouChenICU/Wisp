@@ -91,10 +91,11 @@ void factory_reset(App& app) {
         if (net::WifiService* wifi = app.wifi()) wifi->forget_all();
         if (net::PairingService* pairing = app.pairing()) pairing->revoke_all();
         app.models().clear();
-        // The todos go from memory before their file, so no timer pass,
-        // tool call or reminder action still running can write them back
-        // before the restart.
+        // The todos and the memory notes go from memory before their
+        // files, so no timer pass, tool call or reminder action still
+        // running can write them back before the restart.
         if (app.impl_->reminders) app.impl_->reminders->forget();
+        if (app.impl_->agent) app.impl_->agent->memory()->forget();
         // Notices carry todo titles and scene text; the list goes, and its
         // file with it (a save after this writes what is left: nothing, or
         // what was posted since).

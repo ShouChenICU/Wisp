@@ -181,6 +181,16 @@ export const IconMore = make(
     <circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none" />
     <circle cx="19" cy="12" r="1.7" fill="currentColor" stroke="none" />`,
 );
+export const IconNote = make(
+  () => html`<path d="M6 3.5h9l3 3V20a.6.6 0 0 1-.6.6H6a.6.6 0 0 1-.6-.6V4.1c0-.3.3-.6.6-.6z" />
+    ${paths('M15 3.5V7h3.5', 'M8 11h8', 'M8 14.5h8', 'M8 18h5')}`,
+);
+export const IconChecklist = make(
+  () => html`${paths('M9.5 6.5h10', 'M9.5 12h10', 'M9.5 17.5h10')}
+    <path d="M4 5.3l1.1 1.1L6.8 4.6" />
+    <path d="M4 10.8l1.1 1.1 1.7-1.8" />
+    <path d="M4 16.3l1.1 1.1 1.7-1.8" />`,
+);
 export const IconBrowser = make(
   () => html`<rect x="3" y="4.5" width="18" height="15" rx="2.5" />
     ${paths('M3 9h18', 'M6.5 6.8h.01', 'M9 6.8h.01')}`,

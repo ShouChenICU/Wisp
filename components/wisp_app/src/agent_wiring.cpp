@@ -61,17 +61,6 @@ admin::JsonDoc finish(os::LargeString out) {
     return std::make_shared<const os::LargeString>(std::move(out));
 }
 
-// `conversation_dir` is always "<System>/agent" (AgentWiringDeps' comment
-// on that field); memory notes live in its sibling directory, so this
-// avoids a second System-root plumbing path into AgentWiringDeps for one
-// more file under the same area.
-std::string memory_path_of(const std::string& conversation_dir) {
-    const size_t slash = conversation_dir.find_last_of('/');
-    const std::string system_dir =
-        slash == std::string::npos ? conversation_dir : conversation_dir.substr(0, slash);
-    return system_dir + "/memory/notes.json";
-}
-
 Value model_value(const core::ModelProfileService& models) {
     const core::ProfilesState st = models.get();
     const std::string& id = st.active_for(core::ModelKind::Llm);
@@ -326,8 +315,8 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     }
     llm_ = std::make_unique<net::LlmClient>(*http, deps_.models);
     store_ = std::make_unique<agent::ConversationStore>(deps_.storage, deps_.conversation_dir);
-    memory_ = std::make_unique<core::MemoryStore>(
-        deps_.storage, memory_path_of(deps_.conversation_dir), &deps_.bus, deps_.wall_s);
+    memory_ = std::make_unique<core::MemoryStore>(deps_.storage, deps_.memory_path, &deps_.bus,
+                                                  deps_.wall_s);
     core::StorageWorker* worker = &deps_.worker;
     ui::UiRuntime* ui = &deps_.ui;
     auto on_worker = [worker](std::function<void()> fn) { return worker->submit(std::move(fn)); };

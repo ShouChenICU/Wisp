@@ -1036,6 +1036,12 @@ textarea {
   font-weight: 550;
 }
 
+.row-title.is-done {
+  font-weight: 450;
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+
 .row-sub {
   color: var(--text-dim);
   font-size: var(--fs-xs);

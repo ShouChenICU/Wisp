@@ -21,6 +21,7 @@
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/reminders.hpp"
@@ -214,6 +215,28 @@ TEST(FactoryReset, ClearsMemoryDirectory) {
     wisp::app::factory_reset(app);
 
     EXPECT_FALSE(std::filesystem::exists(memory));
+}
+
+// The same race ReminderScheduler::forget() closes (reminders.hpp): forget()
+// must run before the restart so that a memory.add call still in flight
+// (here, the tool's own underlying call) cannot write the erased directory
+// back.
+TEST(FactoryReset, MemoryToolCannotRecreateNotesAfterReset) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    wisp::core::MemoryStore* memory = app.memory();
+    ASSERT_NE(memory, nullptr);
+    const std::string dir = app.storage().write_root(wisp::core::Area::System).value() + "/memory";
+    on_flash(app, [&] { ASSERT_TRUE(memory->add("取药单号8848")); });
+    ASSERT_TRUE(std::filesystem::exists(dir));
+
+    wisp::app::factory_reset(app);
+
+    EXPECT_FALSE(std::filesystem::exists(dir));
+    // What the memory.add tool would run next, were a call still queued.
+    on_flash(app, [&] { EXPECT_FALSE(memory->add("again")); });
+    EXPECT_FALSE(std::filesystem::exists(dir));
 }
 
 TEST(FactoryReset, ClearsTodoDirectory) {

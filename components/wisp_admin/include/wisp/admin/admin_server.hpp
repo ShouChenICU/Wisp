@@ -60,8 +60,10 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_update.hpp"
+#include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/occupancy.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
@@ -153,6 +155,15 @@ struct AdminDeps {
     // The agent (agent-core spec 7.1). Null (no screen or no scene
     // runtime, so no agent): every /agent route answers 503 unavailable.
     AgentApi* agent = nullptr;
+    // The agent's memory notes (mvp spec 5.1, 5.3): the same instance
+    // AgentWiring's memory.* tools use, never a second one on the same
+    // file. Null: GET/DELETE /memory answer 503 unavailable. list() runs
+    // on the calling thread; DELETE hops to `worker`.
+    core::MemoryStore* memory = nullptr;
+    // The todos and their reminders (mvp spec 5.2, 5.3). Null: GET/DELETE
+    // /todos answer 503 unavailable. list() runs on the calling thread;
+    // DELETE hops to `worker`.
+    core::ReminderScheduler* todos = nullptr;
     // Monotonic os::now_ms() timebase; the only clock the router uses.
     // Tests inject their own; left empty, AdminServer uses os::now_ms().
     std::function<uint64_t()> now_ms = [] { return os::now_ms(); };

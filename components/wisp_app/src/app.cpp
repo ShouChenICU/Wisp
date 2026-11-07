@@ -535,6 +535,8 @@ Result<void> App::start() {
         .files = scenes != nullptr ? scenes->files() : nullptr,
         .worker = storage_worker(),
         .agent = impl_->agent ? impl_->agent->api() : nullptr,
+        .memory = impl_->agent ? impl_->agent->memory() : nullptr,
+        .todos = impl_->reminders.get(),
         .now_ms = {},  // os::now_ms
         .submit_io = impl_->io_submitter(),
         .on_persist_failed = [impl = impl_.get()] { impl->report_persist_failed(); },
@@ -945,6 +947,7 @@ void App::build_agent(const hal::ScreenShape& shape) {
         .repo = *scenes.repository(),
         .files = scenes.files(),
         .conversation_dir = system.value() + "/agent",
+        .memory_path = system.value() + "/memory/notes.json",
         .drafts_root = scenes.data_root() + "/.drafts",
         .http = impl->platform.http_client.get(),
         .run_io =
@@ -1056,6 +1059,7 @@ core::ReminderScheduler* App::reminders() { return impl_->reminders.get(); }
 core::OccupancyRegistry& App::occupancy() { return impl_->occupancy; }
 core::SensorService* App::sensors() { return impl_->sensors.get(); }
 agent::AgentService* App::agent() { return impl_->agent ? impl_->agent->service() : nullptr; }
+core::MemoryStore* App::memory() { return impl_->agent ? impl_->agent->memory() : nullptr; }
 core::StorageWorker* App::storage_worker() {
     return impl_->scenes ? &impl_->scenes->worker() : nullptr;
 }

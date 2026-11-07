@@ -185,7 +185,7 @@ Result<void> MemoryStore::persist_and_publish_locked() {
 
 Result<uint32_t> MemoryStore::add(std::string_view text) {
     std::lock_guard<os::Mutex> lock(mutex_);
-    if (load_failed_) {
+    if (load_failed_ || forgotten_) {
         return Result<uint32_t>::err(ErrorCode::StorageUnavailable, "memory_unavailable");
     }
     if (text.empty()) return Result<uint32_t>::err(ErrorCode::InvalidArgument, "empty");
@@ -213,7 +213,7 @@ Result<uint32_t> MemoryStore::add(std::string_view text) {
 
 Result<void> MemoryStore::update(uint32_t id, std::string_view text) {
     std::lock_guard<os::Mutex> lock(mutex_);
-    if (load_failed_) {
+    if (load_failed_ || forgotten_) {
         return Result<void>::err(ErrorCode::StorageUnavailable, "memory_unavailable");
     }
     auto it = std::find_if(notes_.begin(), notes_.end(),
@@ -239,7 +239,7 @@ Result<void> MemoryStore::update(uint32_t id, std::string_view text) {
 
 Result<void> MemoryStore::remove(uint32_t id) {
     std::lock_guard<os::Mutex> lock(mutex_);
-    if (load_failed_) {
+    if (load_failed_ || forgotten_) {
         return Result<void>::err(ErrorCode::StorageUnavailable, "memory_unavailable");
     }
     auto it = std::find_if(notes_.begin(), notes_.end(),
@@ -260,8 +260,10 @@ Result<void> MemoryStore::remove(uint32_t id) {
 Result<void> MemoryStore::clear() {
     // The explicit override: allowed even while load_failed_ is set, as
     // the file header documents -- it is the one call that still writes
-    // (a fresh, empty file) rather than refusing.
+    // (a fresh, empty file) rather than refusing. forget() is final,
+    // though: once it ran, nothing (clear() included) may write again.
     std::lock_guard<os::Mutex> lock(mutex_);
+    if (forgotten_) return Result<void>::err(ErrorCode::StorageUnavailable, "memory_unavailable");
     os::LargeVector<MemoryNote> old = std::move(notes_);
     notes_.clear();
 
@@ -271,6 +273,12 @@ Result<void> MemoryStore::clear() {
     }
     load_failed_ = false;
     return Result<void>::ok();
+}
+
+void MemoryStore::forget() {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    notes_.clear();
+    forgotten_ = true;
 }
 
 }  // namespace wisp::core

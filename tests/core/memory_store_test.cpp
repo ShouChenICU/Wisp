@@ -357,6 +357,22 @@ TEST_F(MemoryStoreTest, DropsInvalidRecordsOnLoad) {
     EXPECT_EQ(added.value(), 80u);
 }
 
+TEST_F(MemoryStoreTest, ForgetDropsEverythingAndRefusesWrites) {
+    Harness h;
+    auto store = h.open();
+    const auto id = store->add("秘密");
+    ASSERT_TRUE(id);
+    std::filesystem::remove_all(std::filesystem::path(h.path).parent_path());
+
+    store->forget();
+    EXPECT_EQ(store->count(), 0u);
+    EXPECT_EQ(store->add("x").error().message, "memory_unavailable");
+    EXPECT_EQ(store->update(id.value(), "y").error().message, "memory_unavailable");
+    EXPECT_EQ(store->remove(id.value()).error().message, "memory_unavailable");
+    EXPECT_EQ(store->clear().error().message, "memory_unavailable");
+    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(h.path).parent_path()));
+}
+
 TEST_F(MemoryStoreTest, ConcurrentAddsGetDistinctIds) {
     Harness h;
     auto store = h.open();

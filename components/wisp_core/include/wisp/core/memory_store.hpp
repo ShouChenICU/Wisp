@@ -62,6 +62,10 @@
 // Privacy: note text never appears in a log line or an event payload.
 // Every change publishes memory.changed {"count"} (source "memory") with
 // the new note count only.
+//
+// Factory reset: forget() drops every note from memory and refuses every
+// later write, clear() included, so nothing still running (a queued
+// memory.add tool call) can write the erased file back.
 
 #include <cstddef>
 #include <cstdint>
@@ -114,6 +118,10 @@ public:
     // Removes every note (e.g. the admin page's "clear all"); ids already
     // handed out are still never reused.
     Result<void> clear();
+    // Factory reset: drops every note from memory without touching the
+    // file, and makes every later call that would write refuse
+    // ("memory_unavailable"), clear() too. Never cleared.
+    void forget();
 
 private:
     os::LargeString serialize_locked() const;
@@ -135,6 +143,7 @@ private:
     // Set when the file exists but could not even be read; see the file
     // header. Cleared by a successful load() or clear().
     bool load_failed_ = false;
+    bool forgotten_ = false;  // forget() ran; never cleared
 };
 
 }  // namespace wisp::core

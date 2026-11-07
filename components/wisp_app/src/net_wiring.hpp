@@ -72,9 +72,11 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/latest_save.hpp"
+#include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/occupancy.hpp"
 #include "wisp/core/power_monitor.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
@@ -130,6 +132,10 @@ struct NetWiringDeps {
     core::StorageWorker* worker = nullptr;
     // AdminDeps::agent (see there); null: the /agent routes answer 503.
     admin::AgentApi* agent = nullptr;
+    // AdminDeps::memory / todos (see there); null: their routes answer
+    // 503.
+    core::MemoryStore* memory = nullptr;
+    core::ReminderScheduler* todos = nullptr;
     // The clock the "wisp.net" loop hands WifiService, the NetworkWindow
     // and the admin services; empty: os::now_ms. Tests move it to reach
     // the network window's 15 minutes.

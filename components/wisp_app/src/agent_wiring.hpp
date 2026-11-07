@@ -178,8 +178,10 @@ struct AgentWiringDeps {
     scene::SceneRuntime& runtime;
     core::SceneRepository& repo;
     core::SceneFiles* files = nullptr;
-    // <System>/agent and <scene data root>/.drafts.
+    // <System>/agent, <System>/memory/notes.json and <scene data
+    // root>/.drafts.
     std::string conversation_dir{};
+    std::string memory_path{};
     std::string drafts_root{};
     // Platform::http_client; null: every model request fails as a
     // transport error.
@@ -229,6 +231,10 @@ public:
 
     admin::AgentApi* api() { return adapter_.get(); }
     agent::AgentService* service() { return service_.get(); }
+    // The agent's long-term memory notes (mvp spec 5.1); the admin page's
+    // /memory routes read and delete through this same instance rather
+    // than opening a second one on the same file.
+    core::MemoryStore* memory() { return memory_.get(); }
     // Sends the agent frames to `hub` from now on (null: nowhere). The hub
     // must outlive stop() or the next attach_ws().
     void attach_ws(admin::WsHub* hub);

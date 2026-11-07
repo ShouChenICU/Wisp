@@ -197,6 +197,7 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_power_routes(routes_);
     detail::add_scene_file_routes(routes_);
     detail::add_agent_routes(routes_);
+    detail::add_memory_routes(routes_);
     hub_ = std::make_unique<WsHub>(deps_.bus, deps_.boot_id);
     hub_->set_wake_locks(deps_.wakelocks);
     hub_->start();

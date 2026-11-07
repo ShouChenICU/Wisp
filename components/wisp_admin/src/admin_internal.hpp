@@ -67,6 +67,7 @@ void add_scene_routes(std::vector<Route>& routes);       // /scenes
 void add_power_routes(std::vector<Route>& routes);       // /system/power, /system/occupancy
 void add_scene_file_routes(std::vector<Route>& routes);  // /scenes/{id}/files
 void add_agent_routes(std::vector<Route>& routes);       // /agent/*
+void add_memory_routes(std::vector<Route>& routes);      // /memory, /todos
 
 // The firmware upload, the one streamed request (routes_firmware.cpp).
 constexpr std::string_view kFirmwarePath = "/api/v1/system/firmware";

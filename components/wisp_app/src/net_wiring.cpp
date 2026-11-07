@@ -164,6 +164,8 @@ void NetWiring::start() {
             .files = deps_.files,
             .worker = deps_.worker,
             .agent = deps_.agent,
+            .memory = deps_.memory,
+            .todos = deps_.todos,
         });
         reconcile_http(now);  // http_always_on serves from boot
     }

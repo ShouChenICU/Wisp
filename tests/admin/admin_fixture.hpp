@@ -189,6 +189,7 @@ inline const std::vector<std::string>& every_authenticated_get_route() {
         "/api/v1/clients",      "/api/v1/system/firmware",
         "/api/v1/scenes",       "/api/v1/system/time",
         "/api/v1/system/power", "/api/v1/system/occupancy",
+        "/api/v1/memory",       "/api/v1/todos",
     };
     return paths;
 }

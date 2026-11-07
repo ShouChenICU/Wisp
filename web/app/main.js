@@ -18,6 +18,7 @@ import {
   IconLogout,
   IconLogs,
   IconModel,
+  IconNote,
   IconOverview,
   IconPackage,
   IconSystem,
@@ -33,6 +34,7 @@ import { NetworkPage } from './pages/network.js';
 import { ModelsPage } from './pages/models.js';
 import { SystemPage, confirmLogout } from './pages/system.js';
 import { ScenesPage } from './pages/scenes.js';
+import { MemoryPage } from './pages/memory.js';
 
 route('/pair', PairPage);
 route('/chat', ChatPage);
@@ -43,6 +45,7 @@ route('/models', ModelsPage);
 route('/system', SystemPage);
 route('/logs', LogsPage);
 route('/scenes', ScenesPage);
+route('/memory', MemoryPage);
 
 /**
  * Navigation entries; `wide` ones only appear in the sidebar. `href` (a
@@ -56,12 +59,13 @@ const NAV = [
   { path: '/models', href: '/models/llm', label: 'nav.model', icon: IconModel },
   { path: '/system', label: 'nav.system', icon: IconSystem },
   { path: '/scenes', label: 'nav.scenes', icon: IconPackage, wide: true },
+  { path: '/memory', label: 'nav.memory', icon: IconNote, wide: true },
   { path: '/logs', label: 'nav.logs', icon: IconLogs, wide: true },
 ];
 const TITLE_KEYS = Object.fromEntries(NAV.map((n) => [n.path, n.label]));
 const title = (path) => (TITLE_KEYS[path] ? t(TITLE_KEYS[path]) : 'Wisp');
 // Pages the tab bar does not list, and the tab they live under.
-const PARENT = { '/logs': '/system', '/scenes': '/system' };
+const PARENT = { '/logs': '/system', '/scenes': '/system', '/memory': '/system' };
 
 function App() {
   const path = useRoute();

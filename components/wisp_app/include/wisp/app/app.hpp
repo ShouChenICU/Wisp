@@ -104,6 +104,7 @@ class SceneRepository;
 class SystemSettings;
 class NotificationService;
 class ReminderScheduler;
+class MemoryStore;
 class WakeLockRegistry;
 class OccupancyRegistry;
 class SensorService;
@@ -380,6 +381,10 @@ public:
     // The agent (agent-core spec 2), built and started with a screen and a
     // scene runtime; nullptr otherwise, and before start() or after stop().
     agent::AgentService* agent();
+    // The agent's long-term memory notes (mvp spec 5.1), built alongside
+    // it; nullptr under the same conditions as agent(). Its writes run on
+    // storage_worker() only.
+    core::MemoryStore* memory();
 
     // Writes what still waits for flash before the device restarts, powers
     // off or enters deep standby (spec 3.8 of
