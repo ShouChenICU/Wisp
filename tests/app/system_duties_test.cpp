@@ -203,7 +203,16 @@ TEST_F(SystemDutiesTest, PerfLineEveryFiveSeconds) {
         }
         return out;
     };
-    ASSERT_TRUE(wait_until([&] { return !perf_lines().empty(); }, 6000));
+    // The timer is a real periodic os::Timer, so the cadence is measured
+    // in wall time: one line per kPerfReportMs, never a burst. The
+    // tolerance absorbs scheduling delay when ctest runs in parallel.
+    ASSERT_TRUE(wait_until([&] { return !perf_lines().empty(); }, 7000));
+    const uint64_t first_at = wisp::os::now_ms();
+    ASSERT_TRUE(wait_until([&] { return perf_lines().size() >= 2; }, 7000));
+    const uint64_t second_at = wisp::os::now_ms();
+    EXPECT_GE(second_at - first_at, 4000u);
+    EXPECT_LE(second_at - first_at, 6000u);
+    EXPECT_EQ(perf_lines().size(), 2u);
 
     const std::string line = perf_lines().front();
     auto parsed = wisp::from_json(line.substr(std::string("WISP_PERF ").size()));

@@ -1,7 +1,7 @@
 #pragma once
 
 // Accumulates per-device outcomes during boot/device-init, for the
-// self-check screen and the WISP_BOOT_REPORT diagnostics line (see
+// hardware diagnostics screen and the WISP_BOOT_REPORT line (see
 // AGENTS.md). A missing or failed device records a degraded entry here
 // instead of aborting boot -- see the device model rule in AGENTS.md.
 
@@ -29,14 +29,15 @@ struct DeviceReport {
     std::string reason;
 };
 
-// Thread-safe: App::start() keeps writing to its BootReport (record(),
-// set_boot_ms(), set_note()) on the calling thread after the self-check
-// screen has gone up and started posting periodic header refreshes
-// (SelfCheck::refresh_header() -> header_text() -> to_value()) onto the
-// UI thread, with no happens-before edge between the two. Every method
-// below takes mutex_, including entries(), which therefore returns a
-// copy rather than a reference (a reference would outlive the lock
-// that made it safe to read).
+// Thread-safe: App::start() and the services it wires keep writing to
+// the BootReport (record(), set_boot_ms(), set_note()) on their own
+// threads, while the hardware diagnostics screen -- which the `diag`
+// console command can open at any time, even mid-boot -- reads it on the
+// UI thread (SelfCheck::build_devices() -> entries()/find(),
+// SelfCheck::boot_ms() -> to_value()), with no happens-before edge
+// between the two. Every method below takes mutex_, including entries(),
+// which therefore returns a copy rather than a reference (a reference
+// would outlive the lock that made it safe to read).
 class BootReport {
 public:
     BootReport() = default;

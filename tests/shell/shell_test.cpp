@@ -26,8 +26,9 @@ using wisp::shell::ShellDeps;
 
 class ShellFixture {
 public:
-    explicit ShellFixture(const std::string& shape) {
-        display_ = std::make_shared<wisp::test::FakeDisplay>("display.main", 480, 480, 1, shape);
+    explicit ShellFixture(const std::string& shape, int32_t width = 480, int32_t height = 480) {
+        display_ =
+            std::make_shared<wisp::test::FakeDisplay>("display.main", width, height, 1, shape);
         shape_ = wisp::hal::screen_shape_from_caps(display_->info().caps).value();
         ui_ = std::make_unique<wisp::ui::UiRuntime>(display_, nullptr);
         started_ = static_cast<bool>(ui_->start());
@@ -85,7 +86,16 @@ private:
     bool started_ = false;
 };
 
-class ShellShapes : public ::testing::TestWithParam<const char*> {};
+struct ShapeCase {
+    const char* shape;
+    int32_t width;
+    int32_t height;
+};
+
+// Square panels plus portrait ones, where the wisp's size follows the
+// safe area's short side and its vertical centre differs from its
+// horizontal one.
+class ShellShapes : public ::testing::TestWithParam<ShapeCase> {};
 
 }  // namespace
 
@@ -99,7 +109,8 @@ TEST(Shell, PageNames) {
 // mvp spec 6.2: the wisp centred in the safe area, kWispIdlePercent of its
 // short side, on a black screen of its own that is the active one.
 TEST_P(ShellShapes, HomeWispCentredInSafeArea) {
-    ShellFixture f(GetParam());
+    const ShapeCase& c = GetParam();
+    ShellFixture f(c.shape, c.width, c.height);
     ASSERT_TRUE(f.started());
     f.on_ui([&] {
         f.shell().start();
@@ -127,7 +138,15 @@ TEST_P(ShellShapes, HomeWispCentredInSafeArea) {
     });
 }
 
-INSTANTIATE_TEST_SUITE_P(Shapes, ShellShapes, ::testing::Values("rect", "rounded_rect", "circle"));
+INSTANTIATE_TEST_SUITE_P(
+    Shapes, ShellShapes,
+    ::testing::Values(ShapeCase{"rect", 480, 480}, ShapeCase{"rounded_rect", 480, 480},
+                      ShapeCase{"circle", 480, 480}, ShapeCase{"rounded_rect", 368, 448},
+                      ShapeCase{"rect", 410, 502}, ShapeCase{"circle", 360, 480}),
+    [](const ::testing::TestParamInfo<ShapeCase>& info) {
+        return std::string(info.param.shape) + "_" + std::to_string(info.param.width) + "x" +
+               std::to_string(info.param.height);
+    });
 
 TEST(Shell, DiagnosticsOpenOverHomeAndCloseBackToIt) {
     ShellFixture f("rounded_rect");

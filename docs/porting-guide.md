@@ -88,7 +88,7 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 - PSRAM：Lua 堆（`components/wisp_scene/src/vm.cpp` 的分配器）和 LVGL 堆（`components/wisp_ui/src/lv_mem_wisp.cpp`）都在 `os::alloc(Mem::Large)` 上，没有 PSRAM 时退回内部 RAM（容量小得多，几个示例场景同时跑大概装不下，见 AGENTS.md 第 5 节的内部 RAM 预算）。
 - `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` 已在 `firmware/sdkconfig.defaults` 里；`wisp.scene` 128 KB 的栈要放进 PSRAM 依赖它。
 
-验收时除了下面步骤 5 自检界面清单里的"Scenes 卡片"一项，还要把本板硬件文档"真机验收清单"里场景相关的几行跑一遍（参照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`）。
+验收时除了下面步骤 5 硬件诊断清单里的"Scenes 卡片"一项，还要把本板硬件文档"真机验收清单"里场景相关的几行跑一遍（参照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`）。
 
 ## 待机与电源分级
 
@@ -215,16 +215,16 @@ bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware \
 
 ## 步骤 5：验收
 
-对照串口输出和自检界面，不需要额外工具：
+对照串口输出和硬件诊断界面，不需要额外工具。开机进入主界面（黑底，鬼火居中），先确认主界面出现、鬼火在安全区中央；硬件诊断就是原来的自检界面，在串口输入 `diag` 打开（以后从设置 → 关于本机 → 硬件诊断进入），`diag close` 或从屏幕左边缘向右滑回主界面。`bench scroll` 滚的是诊断界面的列表，测之前也要先 `diag`：
 
 1. **启动报告**（`WISP_BOOT_REPORT`）：每个设备状态应为 `ok`（或预期中的 `degraded`/`missing`，并带 `reason`），不应有意料之外的 `failed`。
 2. **能力清单**（`WISP_MANIFEST`）：核对 `board` 字段是板名，每个设备的 `id`/`class`/`model`/`caps` 符合上面的约定；`Display` 的 `safe_area` 没有裁掉圆角/圆形屏的内容。
-3. **自检界面**（spec 第 8 节）：界面每次打开都是英文（页面自己的语言，不读也不改系统语言），下面按英文标签写。所有内容都在安全区内，从上到下依次核对：
+3. **硬件诊断**（spec 第 8 节，`diag` 打开）：界面每次打开都是英文（页面自己的语言，不读也不改系统语言），下面按英文标签写。所有内容都在安全区内，从上到下依次核对：
    - **标题与摘要标签**：顶部大标题是"Self Check"；下面的"Devices n/m OK"是绿色（n = m）；若是黄色（有降级）、红色（有失败）或灰色（只有缺失），点它会滚到第一个不正常的设备。
    - **Board 卡片**：Board（板名，太长时换行、不被裁掉）、Target（芯片目标）、Firmware（版本号）、Boot（启动耗时）四行与实际一致。
    - **语言切换**：在 Board 卡片里依次点一次"中文"和"日本語"，整页文字换成对应语言，字形完整（没有方框）、没有被裁掉；滚动位置和测试结果保持不变。之后点"EN"切回英文。
    - **Devices 卡片**：每个设备前的圆点都是绿色；不是绿色的排在最前，第二行写明状态和原因，原因必须在预期之内（例如没插 SD 卡）。
    - **Interactive tests**：按一下 Touch test area（坐标跟手）、按任意按键、点"Mic test"并听到声音，三项都要从"Not tested"变成"✓ Passed"，摘要标签"Tests 3/3 done"变绿。
-   - **Scenes 卡片**（在"Interactive tests"之后、"Performance"之前）：列出已安装的场景，每行是名字加状态（版本号、绿色"Running"或红色"Error"），没有场景时写"No scenes installed"；每行至少 48 px 高，点一行打开该场景，从屏幕左边缘向右滑回到自检界面。
+   - **Scenes 卡片**（在"Interactive tests"之后、"Performance"之前）：列出已安装的场景，每行是名字加状态（版本号、绿色"Running"或红色"Error"），没有场景时写"No scenes installed"；每行至少 48 px 高，点一行打开该场景，从屏幕左边缘向右滑回到硬件诊断。
    - 其余卡片（Network、Sensors、Power & clock、Storage、Performance）：IMU 数值随倾斜变化、小球跟着移动；电量和 RTC 时间正确；存储容量正确。
 4. 新板子特有的真机验收项，仿照 `docs/hardware/<板名>.md`（新建）的"真机验收清单"一节，参照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md` 的写法逐条列出怎么测、预期结果，留一栏空的"结果"栏。
