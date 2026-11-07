@@ -13,6 +13,7 @@ import {
   IconAlert,
   IconBattery,
   IconBolt,
+  IconChat,
   IconChevronRight,
   IconClock,
   IconPackage,
@@ -48,6 +49,11 @@ const RELOAD_GAP_MS = 2000;
 export function OverviewPage() {
   const visible = useVisible();
   const [snap, setSnap] = useState(null); // {info, device, wifi, battery, sd, at}
+  // undefined: not loaded yet; 'unavailable': 404/503 (older firmware, or the
+  // agent is off); otherwise GET /agent/conversation's body. Kept apart from
+  // snap since its own fetch can fail or lag behind without blunting the
+  // rest of the page.
+  const [agent, setAgent] = useState(undefined);
   const [error, setError] = useState(null);
   const [live, setLive] = useState('closed');
   const [loading, setLoading] = useState(false);
@@ -99,12 +105,33 @@ export function OverviewPage() {
       lastDone.current = Date.now();
       if (alive.current) setLoading(false);
     }
+    loadAgent();
     if (again.current && alive.current) load();
+  }
+
+  // Its own request, apart from the Promise.all above: older firmware
+  // without this route (or the agent turned off) must not blunt the rest
+  // of the page, only this one card.
+  async function loadAgent() {
+    try {
+      const c = await api('GET', '/agent/conversation');
+      if (alive.current) setAgent(c);
+    } catch (e) {
+      if (alive.current && e.status !== 401) setAgent('unavailable');
+    }
   }
 
   function onEvent(msg) {
     if (msg.t === 'dropped') {
       reload();
+      return;
+    }
+    if (msg.t === 'agent') {
+      if (msg.k === 'state') {
+        setAgent((a) =>
+          a && a !== 'unavailable' ? { ...a, state: msg.state, tool: msg.state === 'tool' ? msg.tool : null } : a,
+        );
+      }
       return;
     }
     const p = msg.payload || {};
@@ -157,7 +184,7 @@ export function OverviewPage() {
   useEffect(() => {
     if (!visible) return undefined;
     load();
-    const unsubscribe = subscribe(['events'], onEvent, {
+    const unsubscribe = subscribe(['events', 'agent'], onEvent, {
       onState: (st) => {
         setLive(st);
         // Events sent while the socket was down are lost; catch up.
@@ -207,12 +234,13 @@ export function OverviewPage() {
         </${Card}>`
       : !snap
         ? html`<${Skeleton} />`
-        : html`<div class="grid">
+        : html`<div class="grid grid-overview">
             <${BatteryCard} battery=${snap.battery} />
             <${WifiCard} wifi=${snap.wifi} />
             <${StorageCard} device=${snap.device} sd=${snap.sd} />
             <${UptimeCard} device=${snap.device} at=${snap.at} />
             <${FirmwareCard} info=${info} device=${snap.device} />
+            <${AssistantCard} agent=${agent} />
           </div>`}
     ${error && snap
       ? html`<p class="stale-note" role="status">
@@ -230,8 +258,8 @@ function LiveBadge({ state }) {
 }
 
 function Skeleton() {
-  return html`<div class="grid" aria-busy="true" aria-label=${t('common.loading')}>
-    ${[0, 1, 2, 3, 4].map(
+  return html`<div class="grid grid-overview" aria-busy="true" aria-label=${t('common.loading')}>
+    ${[0, 1, 2, 3, 4, 5].map(
       (i) => html`<section key=${i} class="card skeleton-card">
         <div class="skel skel-title"></div>
         <div class="skel skel-big"></div>
@@ -386,5 +414,49 @@ function FirmwareCard({ info, device }) {
         </dd>
       </div>
     </dl>
+  </${Card}>`;
+}
+
+// agent-core spec 3.8's `state` values, as GET /agent/conversation reports
+// them (agent-core spec 7.1): idle, thinking, tool (+tool name), output,
+// waiting_confirm, error. chat.js's running status line groups
+// thinking/tool/output as "running" the same way.
+function AssistantCard({ agent }) {
+  if (agent === 'unavailable') {
+    return html`<${Card} title=${t('ai.title')} icon=${IconChat}>
+      <p class="stat-empty">${t('ai.unavailable')}</p>
+    </${Card}>`;
+  }
+  if (!agent) {
+    return html`<${Card} title=${t('ai.title')} icon=${IconChat}>
+      <p class="stat-empty">${t('common.loading')}</p>
+    </${Card}>`;
+  }
+  let badge;
+  if (agent.state === 'waiting_confirm') {
+    badge = html`<${Badge} tone="warn" dot>${t('chat.confirm_title')}</${Badge}>`;
+  } else if (agent.state === 'error') {
+    badge = html`<${Badge} tone="err">${t('state.failed')}</${Badge}>`;
+  } else if (agent.state === 'tool') {
+    badge = html`<${Badge} tone="accent" dot pulse>${t('chat.tool_running', { name: agent.tool || '' })}</${Badge}>`;
+  } else if (agent.state === 'thinking' || agent.state === 'output') {
+    badge = html`<${Badge} tone="accent" dot pulse>${t('chat.thinking')}</${Badge}>`;
+  } else if (agent.state === 'idle') {
+    badge = html`<${Badge} tone="muted">${t('ai.idle')}</${Badge}>`;
+  } else {
+    badge = html`<${Badge} tone="muted">${agent.state}</${Badge}>`;
+  }
+  const tone = agent.state === 'error' ? 'err' : agent.state === 'waiting_confirm' ? 'warn' : 'accent';
+  return html`<${Card} title=${t('ai.title')} icon=${IconChat} tone=${tone} actions=${badge}>
+    ${agent.model
+      ? html`<div class="stat-text">${agent.model.name}<span class="mono dim"> · ${agent.model.model}</span></div>`
+      : html`<p class="muted">${t('ai.no_model')}</p>`}
+    <dl class="kv">
+      <div><dt>${t('ai.messages')}</dt><dd>${formatCount(agent.total)}</dd></div>
+    </dl>
+    ${!agent.model
+      ? html`<div><a href="#/models" class="link card-link">${t('chat.model_link')}<${IconChevronRight} size=${14} /></a></div>`
+      : null}
+    <div><a href="#/chat" class="link card-link">${t('ai.go_chat')}<${IconChevronRight} size=${14} /></a></div>
   </${Card}>`;
 }
