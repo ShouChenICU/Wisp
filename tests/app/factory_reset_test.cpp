@@ -35,6 +35,7 @@
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+#include "wisp/shell/scene_recents.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/theme.hpp"
 
@@ -253,6 +254,28 @@ TEST(FactoryReset, ClearsTodoDirectory) {
     wisp::app::factory_reset(app);
 
     EXPECT_FALSE(std::filesystem::exists(todo));
+}
+
+// The scene list's order lives under <System>/shell/ (mvp spec 6.4); a
+// scene opened just before the reset does not write it back.
+TEST(FactoryReset, ClearsShellDirectory) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    const std::string shell = app.storage().write_root(wisp::core::Area::System).value() + "/shell";
+    const std::string body = R"({"version":1,"recent":{"todo":1}})";
+    const std::span<const uint8_t> bytes(reinterpret_cast<const uint8_t*>(body.data()),
+                                         body.size());
+    ASSERT_TRUE(write_on_flash(app, shell + "/recents.json", bytes));
+    app.bus().publish({"scene.state", "test", 0, {{"id", "clock"}, {"state", "running"}}});
+    ASSERT_TRUE(app.bus().wait_idle(1000));
+
+    wisp::app::factory_reset(app);
+
+    EXPECT_FALSE(std::filesystem::exists(shell));
+    wisp::os::sleep_ms(wisp::shell::SceneRecents::kSaveDelayMs + 300);
+    on_flash(app, [] {});
+    EXPECT_FALSE(std::filesystem::exists(shell));
 }
 
 // The todos live in memory too, and their titles in the reminder notices:

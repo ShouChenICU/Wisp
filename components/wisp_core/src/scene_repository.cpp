@@ -292,6 +292,26 @@ Result<SceneManifest> SceneRepository::manifest_here(std::string_view id) {
     return read_manifest(id);
 }
 
+Result<os::LargeBuffer> SceneRepository::read_asset(std::string_view id, std::string_view path,
+                                                    size_t max_bytes) {
+    return call_on_worker<os::LargeBuffer>(config_.worker,
+                                           [&] { return read_asset_here(id, path, max_bytes); });
+}
+
+Result<os::LargeBuffer> SceneRepository::read_asset_here(std::string_view id, std::string_view path,
+                                                         size_t max_bytes) {
+    using R = Result<os::LargeBuffer>;
+    if (!valid_scene_id(id)) return R::err(ErrorCode::InvalidArgument, "bad scene id");
+    if (!valid_package_path(path) || path.rfind("assets/", 0) != 0)
+        return R::err(ErrorCode::InvalidArgument, "not an asset path");
+    std::lock_guard<os::Mutex> lock(mutex_);
+    // One byte past the limit tells a file that is too large.
+    R read = storage_.read_range(code_dir(id) + "/" + std::string(path), 0, max_bytes + 1);
+    if (!read) return read;
+    if (read.value().size() > max_bytes) return R::err(ErrorCode::QuotaExceeded, "too_large");
+    return read;
+}
+
 Result<SceneInfo> SceneRepository::info(std::string_view id) {
     return call_on_worker<SceneInfo>(config_.worker, [&] { return info_here(id); });
 }

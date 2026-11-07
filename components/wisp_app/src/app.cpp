@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <ctime>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "app_impl.hpp"
 #include "console_task.hpp"
@@ -14,6 +16,7 @@
 #include "firmware_confirm.hpp"
 #include "loopback.hpp"
 #include "net_cards.hpp"
+#include "net_section.hpp"
 #include "self_check.hpp"
 #include "storage_io.hpp"
 #include "wisp/agent/context.hpp"
@@ -32,6 +35,7 @@
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/minute_ticker.hpp"
+#include "wisp/shell/scene_list.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -78,6 +82,83 @@ hal::ScreenShape display_shape(const hal::Display& display) {
     fallback.width = width != caps.end() ? static_cast<int32_t>(width->second.as_int()) : 0;
     fallback.height = height != caps.end() ? static_cast<int32_t>(height->second.as_int()) : 0;
     return fallback;
+}
+
+// Folds a system.settings payload (core::to_map()) into `v`; keys missing
+// or of the wrong type leave their value as it was.
+void merge_settings(core::SystemSettingsValues& v, const Map& m) {
+    auto get_int = [&](const char* key, int& out) {
+        auto it = m.find(key);
+        if (it != m.end() && it->second.type() == Value::Type::Int)
+            out = static_cast<int>(it->second.as_int());
+    };
+    auto get_bool = [&](const char* key, bool& out) {
+        auto it = m.find(key);
+        if (it != m.end() && it->second.type() == Value::Type::Bool) out = it->second.as_bool();
+    };
+    auto get_str = [&](const char* key, std::string& out) {
+        auto it = m.find(key);
+        if (it != m.end() && it->second.type() == Value::Type::String) out = it->second.as_string();
+    };
+    get_int("brightness", v.brightness);
+    get_int("volume", v.volume);
+    get_int("screen_off_s", v.screen_off_s);
+    get_str("language", v.language);
+    get_int("utc_offset_min", v.utc_offset_min);
+    get_str("ntp_servers", v.ntp_servers);
+    get_int("deep_after_s", v.deep_after_s);
+    get_bool("light_sleep", v.light_sleep);
+    get_int("notify_vol", v.notify_vol);
+    get_bool("tts_mute", v.tts_mute);
+}
+
+// The shell's scene list (ShellDeps::list_scenes), on the storage worker:
+// every installed scene with its icon, whether it runs in the background,
+// whether it can run now (its files are not on a card that is out) and
+// whether it has data to delete with it.
+std::vector<shell::ShellScene> list_shell_scenes(SceneWiring& scenes) {
+    std::vector<shell::ShellScene> out;
+    core::SceneRepository* repo = scenes.repository();
+    if (repo == nullptr) return out;
+    auto listed = repo->list();
+    if (!listed) {
+        WLOG_W("app", "listing scenes failed: %s", listed.error().message.c_str());
+        return out;
+    }
+    std::vector<std::string> background;
+    if (scene::SceneRuntime* rt = scenes.runtime())
+        for (const scene::BackgroundScene& b : rt->background_scenes()) background.push_back(b.id);
+    core::SceneFiles* files = scenes.files();
+    for (const core::SceneInfo& info : listed.value()) {
+        const core::SceneManifest& m = info.manifest;
+        shell::ShellScene sc;
+        sc.id = m.id;
+        sc.name = m.name;
+        sc.background = std::find(background.begin(), background.end(), m.id) != background.end();
+        if (files != nullptr && !files->sd_online()) {
+            if (auto fi = files->info(m.id); fi) {
+                const bool on_card = fi.value().location == core::FilesLocation::Sd ||
+                                     (fi.value().location == core::FilesLocation::None &&
+                                      fi.value().want == core::FilesWant::Sd);
+                sc.available = !on_card;
+            } else {
+                // A scene that wants the card and has no files yet is
+                // refused outright while the card is out.
+                sc.available = fi.error().code != ErrorCode::StorageUnavailable;
+            }
+        }
+        if (auto rm = repo->removal(m.id, true); rm) sc.has_data = rm.value().data;
+        if (!m.icon.empty()) {
+            if (auto icon = repo->read_asset(m.id, m.icon, shell::kIconMaxBytes); icon) {
+                sc.icon_png = std::make_shared<const os::LargeBuffer>(std::move(icon.value()));
+            } else {
+                WLOG_W("app", "%s: icon not shown (%s)", m.id.c_str(),
+                       icon.error().message.c_str());
+            }
+        }
+        out.push_back(std::move(sc));
+    }
+    return out;
 }
 
 }  // namespace
@@ -210,6 +291,19 @@ Result<void> App::start() {
             }
             if (!r) WLOG_W("app", "todos not loaded: %s", r.error().message.c_str());
         }
+        // The scene list's order (mvp spec 6.4), loaded on the worker too.
+        if (auto system = impl->storage.write_root(core::Area::System); system && worker) {
+            impl->recents = std::make_unique<shell::SceneRecents>(
+                impl->storage, system.value() + "/shell/recents.json",
+                [worker](std::function<void()> job) { return worker->submit(std::move(job)); });
+            shell::SceneRecents* recents = impl->recents.get();
+            Result<void> r = Result<void>::err(ErrorCode::Busy, "storage worker refused");
+            if (auto ran = worker->run_sync([recents, &r] { r = recents->load(); }, os::kForever);
+                !ran) {
+                r = ran;
+            }
+            if (!r) WLOG_W("app", "scene order not loaded: %s", r.error().message.c_str());
+        }
         impl->battery_sub = impl->bus.subscribe("power.battery.low", [notes](const core::Event& e) {
             const Value* pct = nullptr;
             if (auto it = e.payload.find("battery_percent"); it != e.payload.end())
@@ -229,17 +323,24 @@ Result<void> App::start() {
                     notes->dismiss_code(core::notice::kBatteryLow, core::DismissReason::Dismiss);
                 }
             });
-        impl->scene_state_sub = impl->bus.subscribe("scene.state", [notes](const core::Event& e) {
-            auto id = e.payload.find("id");
-            auto state = e.payload.find("state");
-            if (id == e.payload.end() || state == e.payload.end() ||
-                id->second.type() != Value::Type::String ||
-                state->second.type() != Value::Type::String ||
-                state->second.as_string() != "deleted") {
-                return;
-            }
-            notes->dismiss_source(id->second.as_string(), core::DismissReason::Dismiss);
-        });
+        impl->scene_state_sub = impl->bus.subscribe(
+            "scene.state", [notes, recents = impl->recents.get()](const core::Event& e) {
+                auto id = e.payload.find("id");
+                auto state = e.payload.find("state");
+                if (id == e.payload.end() || state == e.payload.end() ||
+                    id->second.type() != Value::Type::String ||
+                    state->second.type() != Value::Type::String) {
+                    return;
+                }
+                const std::string& what = state->second.as_string();
+                if (what == "running") {
+                    if (recents != nullptr) recents->opened(id->second.as_string());
+                    return;
+                }
+                if (what != "deleted") return;
+                if (recents != nullptr) recents->forget(id->second.as_string());
+                notes->dismiss_source(id->second.as_string(), core::DismissReason::Dismiss);
+            });
     }
     // Settings from memory from here on, saved on the worker. Loaded
     // before anything below reads a setting; with the worker running the
@@ -363,8 +464,14 @@ Result<void> App::start() {
             if (it != e.payload.end() && it->second.type() == Value::Type::String) {
                 if (auto lang = ui::parse_lang(it->second.as_string())) impl->lang.store(*lang);
             }
+            std::lock_guard<os::Mutex> lock(impl->settings_mu);
+            merge_settings(impl->settings_now, e.payload);
         });
         const core::SystemSettingsValues now = impl_->system_settings.get();
+        {
+            std::lock_guard<os::Mutex> lock(impl_->settings_mu);
+            impl_->settings_now = now;
+        }
         impl_->notify_vol.store(static_cast<uint8_t>(std::clamp(now.notify_vol, 0, 100)));
         impl_->utc_offset_min.store(now.utc_offset_min);
         if (auto lang = ui::parse_lang(now.language)) impl_->lang.store(*lang);
@@ -654,6 +761,57 @@ Result<void> App::start() {
                 return admin_url(st.ip, impl_->platform.http_port);
             },
             .now_ms = {},
+            .agent = impl_->agent ? impl_->agent->service() : nullptr,
+            .list_scenes = scenes != nullptr ? std::function<std::vector<shell::ShellScene>()>(
+                                                   [scenes] { return list_shell_scenes(*scenes); })
+                                             : nullptr,
+            .open_scene =
+                [impl](const std::string& id) {
+                    scene::SceneRuntime* rt = impl->scenes ? impl->scenes->runtime() : nullptr;
+                    if (rt == nullptr) return;
+                    // On the UI thread launch() only queues.
+                    if (auto r = rt->launch(id, scene::LaunchReason::User); !r)
+                        WLOG_W("app", "scene %s not opened: %s", id.c_str(),
+                               r.error().message.c_str());
+                },
+            .delete_scene = [impl](const std::string& id, bool with_data) -> Result<void> {
+                if (!impl->scenes) return Result<void>::err(ErrorCode::Unsupported, "no scenes");
+                return impl->scenes->ask_delete(id, with_data);
+            },
+            .recents = impl_->recents.get(),
+            .settings =
+                [impl] {
+                    std::lock_guard<os::Mutex> lock(impl->settings_mu);
+                    return impl->settings_now;
+                },
+            .set_settings =
+                [impl](std::map<std::string, Value> changes) {
+                    if (auto r = impl->system_settings.set(changes); !r)
+                        WLOG_W("app", "setting not stored: %s", r.error().message.c_str());
+                },
+            .wifi_status = [this]() -> std::string {
+                net::WifiService* w = wifi();
+                if (w == nullptr) return ui::tr(ui::StrId::NetNoHardware);
+                const std::vector<net::SavedNetwork> saved = w->saved_networks();
+                const bool all_rejected =
+                    !saved.empty() && std::all_of(saved.begin(), saved.end(),
+                                                  [](const auto& n) { return n.auth_failed; });
+                return wifi_status_text(w->status(), !saved.empty(), all_rejected, os::now_ms(),
+                                        ui::lang());
+            },
+            .firmware_version = [impl] { return impl->platform.firmware_version; },
+            .start_wifi_setup =
+                [this] {
+                    net::WifiService* w = wifi();
+                    if (w == nullptr) return;
+                    if (auto r = w->start_provisioning(os::now_ms()); !r)
+                        WLOG_W("app", "provisioning not started: %s", r.error().message.c_str());
+                },
+            .submit_io = scenes != nullptr ? std::function<bool(std::function<void()>)>(
+                                                 [scenes](std::function<void()> job) {
+                                                     return scenes->worker().submit(std::move(job));
+                                                 })
+                                           : nullptr,
         });
         impl_->ui->run_blocking([impl] {
             impl->duties->start();
@@ -825,6 +983,18 @@ void App::stop() {
             WLOG_W("app", "notifications not saved before shutdown");
         }
     }
+    // The scene order too; nothing feeds it any more.
+    if (impl_->recents && impl_->scenes) {
+        // Logged on the worker: past the timeout the job may still run.
+        shell::SceneRecents* recents = impl_->recents.get();
+        auto ran = impl_->scenes->worker().run_sync(
+            [recents] {
+                if (auto r = recents->flush(); !r)
+                    WLOG_W("app", "scene order not saved: %s", r.error().message.c_str());
+            },
+            kSettingsFlushMs);
+        if (!ran) WLOG_W("app", "scene order not saved: %s", ran.error().message.c_str());
+    }
     // Settings changed so far go to the worker while it still runs.
     if (auto r = impl_->settings_front.flush(kSettingsFlushMs); !r) {
         WLOG_W("app", "settings not saved before shutdown: %s", r.error().message.c_str());
@@ -848,6 +1018,8 @@ void App::stop() {
         impl_->settings_cache.reset();
         impl_->scenes.reset();
     }
+    // Its last reader, the shell's listing on the worker, is gone.
+    impl_->recents.reset();
 
     // Nothing subscribes any more: the scene runtime and the self-check
     // screen are gone.

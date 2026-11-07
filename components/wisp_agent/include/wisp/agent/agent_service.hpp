@@ -199,6 +199,12 @@ public:
     // Archives the conversation and starts a new one (Cleared). Busy while
     // a turn runs or a message waits.
     Result<void> new_conversation();
+    // new_conversation() without the wait, for a caller that must not
+    // block (the UI thread): the same Busy answers at once; otherwise
+    // `done` runs once with the archive's outcome, on wisp.agent (Busy
+    // "not_running" from stop() if it had not run yet). It must be quick
+    // and must not call back into the service.
+    Result<void> new_conversation_async(std::function<void(Result<void>)> done);
 
     // The device confirmation the tools' ConfirmFn and request_clear() go
     // through; null (the default) refuses every request. Set it before

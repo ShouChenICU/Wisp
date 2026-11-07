@@ -154,6 +154,12 @@ public:
     // while a dialog is open or once stop_runtime() has run. Not from the
     // UI thread (it waits for it).
     Result<void> request_delete(const std::string& id, bool with_data);
+    // request_delete() for the UI thread, without waiting: the lookup runs
+    // on the worker and the dialog opens on the UI thread afterwards. What
+    // goes wrong after that (nothing to delete, a dialog already open) is
+    // only logged. Unsupported as request_delete(); Busy if the worker took
+    // no job. Any thread.
+    Result<void> ask_delete(const std::string& id, bool with_data);
 
     // Deletes scene `id` without a dialog, for a caller that has already
     // asked the user (the agent's scene.delete): closes the scene if it is
@@ -178,6 +184,9 @@ public:
     bool storage_status_async(ui::UiRuntime& ui, std::function<void(core::StorageStatus)> on_ui);
 
 private:
+    // request_delete()'s dialog, on the UI thread: Busy while another one
+    // is open or once stop_runtime() has run.
+    Result<void> open_delete_dialog(const std::string& id, const std::string& name, bool with_data);
     // delete_scene() once the name is known: from the dialog's "yes" on
     // the UI thread, so it never waits.
     void delete_named(const std::string& id, const std::string& name, bool with_data,
@@ -215,6 +224,9 @@ private:
     ui::UiRuntime* ui_ = nullptr;
     // Cleared on the UI thread by stop_runtime(); read there only after.
     ui::SystemLayer* system_ = nullptr;
+    // Cleared with system_: an ask_delete() dialog still on its way to the
+    // UI thread then does nothing, even once this object is gone.
+    std::shared_ptr<bool> ui_alive_ = std::make_shared<bool>(true);
     std::function<void()> wake_;
     // Set by build_runtime(); may be null.
     core::NotificationService* notices_ = nullptr;

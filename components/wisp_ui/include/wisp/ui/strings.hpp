@@ -297,6 +297,37 @@ enum class StrId : uint16_t {
     PageSettings,
     PageScenes,
     PageHistory,
+    // The history page (mvp spec 6.4): the button at its bottom, its
+    // confirmation, what shows while the agent is busy or nothing was said
+    // yet, and the toggle of a turn's folded body.
+    HistoryNew,
+    HistoryNewConfirm,
+    HistoryBusy,
+    HistoryEmpty,
+    HistoryMore,
+    HistoryLess,
+    // The scene list (mvp spec 6.4): the hint of an empty list and the
+    // long-press card.
+    SceneListEmpty,
+    SceneDeleteButton,
+    SceneDeleteData,
+    // The settings page (mvp spec 6.4). SettingsSeconds and
+    // SettingsMinutes carry the number as "{}"; AboutAddressNone stands
+    // for the admin address while there is none.
+    SettingsBrightness,
+    SettingsVolume,
+    SettingsScreenOff,
+    SettingsSeconds,
+    SettingsMinutes,
+    SettingsNever,
+    SettingsTtsMute,
+    SettingsWifi,
+    SettingsAbout,
+    AboutFirmware,
+    AboutAddress,
+    AboutAddressNone,
+    AboutPairHint,
+    AboutDiagnostics,
 
     Count,  // not a string; keep last
 };

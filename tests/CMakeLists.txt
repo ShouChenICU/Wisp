@@ -338,6 +338,15 @@ wisp_test(NAME shell_test SRCS shell/shell_test.cpp LIBS wisp_shell wisp_port_si
 wisp_test(NAME shell_gestures_test SRCS shell/gestures_test.cpp shell/mood_test.cpp
           shell/body_text_test.cpp LIBS wisp_shell wisp_port_sim_os)
 wisp_test(NAME shell_home_test SRCS shell/home_test.cpp LIBS wisp_shell wisp_port_sim_os TIMEOUT 120)
+# The sub-pages (shell/page_fixture.hpp) and the scene order.
+wisp_test(NAME shell_history_test SRCS shell/history_test.cpp LIBS wisp_shell wisp_port_sim_os
+          TIMEOUT 60)
+wisp_test(NAME shell_scene_list_test SRCS shell/scene_list_test.cpp shell/scene_recents_test.cpp
+          LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME shell_settings_page_test SRCS shell/settings_page_test.cpp
+          LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME shell_subpage_shapes_test SRCS shell/subpage_shapes_test.cpp
+          LIBS wisp_shell wisp_port_sim_os TIMEOUT 90)
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.

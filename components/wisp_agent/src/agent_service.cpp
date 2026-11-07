@@ -88,6 +88,14 @@ struct AgentService::Impl {
     struct Done {
         os::Semaphore sem{1, 0};
         Result<void> result = Result<void>::ok();
+        // new_conversation_async(): called instead of anyone waiting.
+        std::function<void(Result<void>)> then;
+
+        void finish(Result<void> r) {
+            result = r;
+            if (then) then(std::move(r));
+            sem.give();
+        }
     };
 
     struct Command {
@@ -307,6 +315,25 @@ struct AgentService::Impl {
         if (c.cleared) c.cleared(ok);
     }
 
+    // new_conversation()'s checks and queueing; `done` finishes it.
+    Result<void> queue_new(const std::shared_ptr<Done>& done) {
+        Impl& s = *this;
+        // From inside a turn (a tool, a listener) a turn is running.
+        if (s.task && s.task->is_current()) return Result<void>::err(ErrorCode::Busy, "busy");
+        {
+            std::lock_guard<os::Mutex> lock(s.mu);
+            if (!s.accepting) return Result<void>::err(ErrorCode::Busy, "not_running");
+            if (s.slot || s.active || s.clearing || !s.pending.empty())
+                return Result<void>::err(ErrorCode::Busy, "busy");
+            Impl::Command c;
+            c.kind = Impl::Command::Kind::New;
+            c.done = done;
+            s.pending.push_back(std::move(c));
+        }
+        s.wake.give();
+        return Result<void>::ok();
+    }
+
     void run() {
         while (!quit.load()) {
             wake.take(os::kForever);
@@ -328,8 +355,7 @@ struct AgentService::Impl {
                     }
                 }
                 if (c.kind == Command::Kind::New) {
-                    c.done->result = archive();
-                    c.done->sem.give();
+                    c.done->finish(archive());
                 } else if (c.kind == Command::Kind::Clear) {
                     clear_all(c);
                 } else {
@@ -829,10 +855,7 @@ void AgentService::stop() {
         std::lock_guard<os::Mutex> lock(s.mu);
         s.accepting = false;
         for (Impl::Command& c : s.pending) {
-            if (c.done) {
-                c.done->result = Result<void>::err(ErrorCode::Busy, "not_running");
-                c.done->sem.give();
-            }
+            if (c.done) c.done->finish(Result<void>::err(ErrorCode::Busy, "not_running"));
         }
         s.pending.clear();
         if (s.active || s.clearing) s.trigger(Abort::Stop);
@@ -881,23 +904,16 @@ void AgentService::stop_turn() {
 }
 
 Result<void> AgentService::new_conversation() {
-    Impl& s = *impl_;
-    // From inside a turn (a tool, a listener) a turn is running.
-    if (s.task && s.task->is_current()) return Result<void>::err(ErrorCode::Busy, "busy");
     auto done = std::make_shared<Impl::Done>();
-    {
-        std::lock_guard<os::Mutex> lock(s.mu);
-        if (!s.accepting) return Result<void>::err(ErrorCode::Busy, "not_running");
-        if (s.slot || s.active || s.clearing || !s.pending.empty())
-            return Result<void>::err(ErrorCode::Busy, "busy");
-        Impl::Command c;
-        c.kind = Impl::Command::Kind::New;
-        c.done = done;
-        s.pending.push_back(std::move(c));
-    }
-    s.wake.give();
+    WISP_TRY(impl_->queue_new(done));
     done->sem.take(os::kForever);
     return done->result;
+}
+
+Result<void> AgentService::new_conversation_async(std::function<void(Result<void>)> done) {
+    auto d = std::make_shared<Impl::Done>();
+    d->then = std::move(done);
+    return impl_->queue_new(d);
 }
 
 void AgentService::set_confirm(ConfirmService* c) { impl_->confirm = c; }

@@ -48,6 +48,7 @@
 #include "wisp/core/tone_player.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/shell/scene_recents.hpp"
 #include "wisp/shell/shell.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
@@ -163,6 +164,10 @@ struct App::Impl {
     // sys/lang, kept the same way for the agent (wisp.agent may not read
     // Settings either).
     std::atomic<ui::Lang> lang{ui::Lang::Zh};
+    // Every system setting, kept the same way for the shell's settings
+    // page (the UI thread may not read Settings either).
+    mutable os::Mutex settings_mu;
+    core::SystemSettingsValues settings_now{};
     core::SubscriptionId settings_sub = 0;
     // What a posted, tapped or acted-on notification does (wake, sound,
     // banner, its scene). Built once the scene runtime is, stopped first
@@ -218,6 +223,12 @@ struct App::Impl {
     // lv_timer, its bus subscriptions) goes while `ui`/`bus` are still
     // alive to be torn down against.
     std::unique_ptr<SelfCheck> self_check;
+    // The scene list's order (wisp/shell/scene_recents.hpp), with a System
+    // area and the storage worker: built and loaded on the worker with the
+    // todos, fed from scene.state, flushed in stop() before the worker
+    // drains and reset once it has stopped (the shell's listing jobs read
+    // it there).
+    std::unique_ptr<shell::SceneRecents> recents;
 
     // The "wisp.loop" task state for the self-check screen's "Mic test"
     // button (see loopback.cpp's run_loopback()/join_loopback()/

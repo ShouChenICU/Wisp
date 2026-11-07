@@ -160,6 +160,13 @@ public:
     // a malformed id or manifest.
     Result<SceneManifest> manifest(std::string_view id);
 
+    // One file of the package under assets/ (its icon, say), in
+    // Mem::Large. InvalidArgument for a malformed id or a path outside
+    // assets/, NotFound without it, QuotaExceeded "too_large" past
+    // `max_bytes`.
+    Result<os::LargeBuffer> read_asset(std::string_view id, std::string_view path,
+                                       size_t max_bytes);
+
     // Reads scene.json, the entry file, lib/**/*.lua and assets/** into
     // Mem::Large. Anything else in the directory (data/, or stray files in
     // a dev working directory) is not read. QuotaExceeded past
@@ -244,6 +251,8 @@ private:
     Result<SceneInfo> info_here(std::string_view id);
     Result<SceneManifest> manifest_here(std::string_view id);
     Result<ScenePackage> load_here(std::string_view id);
+    Result<os::LargeBuffer> read_asset_here(std::string_view id, std::string_view path,
+                                            size_t max_bytes);
     // install()'s last step: .<id>.tmpdir becomes the package (steps 2-5).
     Result<SceneInfo> swap_here(const SceneManifest& manifest, bool keep_prev);
     // <code_root>/.prev/<id>

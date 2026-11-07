@@ -374,6 +374,53 @@ const char* strings_ja(StrId id) {
             return "シーン";
         case StrId::PageHistory:
             return "会話履歴";
+        case StrId::HistoryNew:
+            return "新しい会話";
+        case StrId::HistoryNewConfirm:
+            return "新しい会話を始めますか？今の会話はアーカイブされます";
+        case StrId::HistoryBusy:
+            return "Agent が返信中です。少し待ってから試してください";
+        case StrId::HistoryEmpty:
+            return "まだ会話がありません。鬼火を長押しして話しかけてください";
+        case StrId::HistoryMore:
+            return "詳細を開く";
+        case StrId::HistoryLess:
+            return "詳細を閉じる";
+        case StrId::SceneListEmpty:
+            return "まだシーンがありません。「ポモドーロタイマーを作って」と話しかけてみてください";
+        case StrId::SceneDeleteButton:
+            return "削除";
+        case StrId::SceneDeleteData:
+            return "データも削除";
+        case StrId::SettingsBrightness:
+            return "明るさ";
+        case StrId::SettingsVolume:
+            return "音量";
+        case StrId::SettingsScreenOff:
+            return "自動消灯";
+        case StrId::SettingsSeconds:
+            return "{} 秒";
+        case StrId::SettingsMinutes:
+            return "{} 分";
+        case StrId::SettingsNever:
+            return "しない";
+        case StrId::SettingsTtsMute:
+            return "読み上げを消音";
+        case StrId::SettingsWifi:
+            return "Wi-Fi";
+        case StrId::SettingsAbout:
+            return "この端末について";
+        case StrId::AboutFirmware:
+            return "ファームウェア";
+        case StrId::AboutAddress:
+            return "管理画面";
+        case StrId::AboutAddressNone:
+            return "未接続";
+        case StrId::AboutPairHint:
+            return "ブラウザで管理画面のアドレスを開き、案内に従って端末に表示されるペアリングコー"
+                   "ドを入力してください";
+        case StrId::AboutDiagnostics:
+            return "ハードウェア診断";
         case StrId::Count:
             break;
     }

@@ -369,6 +369,52 @@ const char* strings_zh(StrId id) {
             return "场景";
         case StrId::PageHistory:
             return "对话记录";
+        case StrId::HistoryNew:
+            return "新对话";
+        case StrId::HistoryNewConfirm:
+            return "开始新对话？当前对话会归档";
+        case StrId::HistoryBusy:
+            return "Agent 正在回复，稍后再试";
+        case StrId::HistoryEmpty:
+            return "还没有对话，按住鬼火说话";
+        case StrId::HistoryMore:
+            return "展开细节";
+        case StrId::HistoryLess:
+            return "收起细节";
+        case StrId::SceneListEmpty:
+            return "还没有场景，试试对我说'做一个番茄钟'";
+        case StrId::SceneDeleteButton:
+            return "删除";
+        case StrId::SceneDeleteData:
+            return "同时删除数据";
+        case StrId::SettingsBrightness:
+            return "亮度";
+        case StrId::SettingsVolume:
+            return "音量";
+        case StrId::SettingsScreenOff:
+            return "自动熄屏";
+        case StrId::SettingsSeconds:
+            return "{} 秒";
+        case StrId::SettingsMinutes:
+            return "{} 分钟";
+        case StrId::SettingsNever:
+            return "从不";
+        case StrId::SettingsTtsMute:
+            return "静音朗读";
+        case StrId::SettingsWifi:
+            return "Wi-Fi";
+        case StrId::SettingsAbout:
+            return "关于本机";
+        case StrId::AboutFirmware:
+            return "固件版本";
+        case StrId::AboutAddress:
+            return "管理后台";
+        case StrId::AboutAddressNone:
+            return "未联网";
+        case StrId::AboutPairHint:
+            return "在浏览器打开管理后台地址，按提示输入设备上显示的配对码";
+        case StrId::AboutDiagnostics:
+            return "硬件诊断";
         case StrId::Count:
             break;
     }

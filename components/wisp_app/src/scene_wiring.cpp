@@ -261,7 +261,12 @@ void SceneWiring::stop_runtime() {
     // App::stop() destroys the system layer next, while the admin server
     // still takes delete requests; request_delete() reads this on the UI
     // thread, so clearing it there orders it against every dialog.
-    if (ui_ != nullptr && system_ != nullptr) ui_->run_blocking([this] { system_ = nullptr; });
+    if (ui_ != nullptr && system_ != nullptr) {
+        ui_->run_blocking([this] {
+            system_ = nullptr;
+            *ui_alive_ = false;
+        });
+    }
 }
 
 void SceneWiring::stop() {
@@ -284,43 +289,66 @@ Result<void> SceneWiring::request_delete(const std::string& id, bool with_data) 
     auto found = repo_->removal(id, with_data);
     if (!found) return R::err(found.error().code, found.error().message);
     const std::string name = found.value().name;
+    // The dialog rule (one at a time) lives in the system layer; ask it on
+    // its own thread and report what it said.
+    R result = R::ok();
+    ui_->run_blocking([&] { result = open_delete_dialog(id, name, with_data); });
+    return result;
+}
 
-    std::string text = ui::tr_fill(ui::StrId::SceneDeletePrompt, found.value().name);
+Result<void> SceneWiring::ask_delete(const std::string& id, bool with_data) {
+    using R = Result<void>;
+    if (!repo_) return R::err(ErrorCode::Unsupported, "scenes are off");
+    if (repo_->dev()) return R::err(ErrorCode::Unsupported, "scenes are read-only in dev mode");
+    if (ui_ == nullptr) return R::err(ErrorCode::Unsupported, "no screen to confirm on");
+    core::SceneRepository* repo = repo_.get();
+    ui::UiRuntime* ui = ui_;
+    const bool queued = worker_.submit([this, repo, ui, id, with_data, alive = ui_alive_] {
+        auto found = repo->removal(id, with_data);
+        if (!found) {
+            WLOG_W(kTag, "%s: nothing to delete (%s)", id.c_str(), found.error().message.c_str());
+            return;
+        }
+        if (!ui->post([this, alive, id, name = found.value().name, with_data] {
+                if (!*alive) return;
+                if (auto r = open_delete_dialog(id, name, with_data); !r)
+                    WLOG_W(kTag, "%s: delete not asked (%s)", id.c_str(),
+                           r.error().message.c_str());
+            })) {
+            WLOG_W(kTag, "%s: delete not asked (UI queue full)", id.c_str());
+        }
+    });
+    return queued ? R::ok() : R::err(ErrorCode::Busy, "storage queue full");
+}
+
+Result<void> SceneWiring::open_delete_dialog(const std::string& id, const std::string& name,
+                                             bool with_data) {
+    using R = Result<void>;
+    if (system_ == nullptr) return R::err(ErrorCode::Busy, "scenes are shutting down");
+    std::string text = ui::tr_fill(ui::StrId::SceneDeletePrompt, name);
     if (with_data) {
         text += "\n";
         text += ui::tr(ui::StrId::SceneDeleteWithData);
     }
-    // The dialog rule (one at a time) lives in the system layer; ask it on
-    // its own thread and report what it said.
-    R result = R::ok();
-    ui_->run_blocking([&] {
-        if (system_ == nullptr) {
-            result = R::err(ErrorCode::Busy, "scenes are shutting down");
-            return;
-        }
-        lv_obj_t* box = nullptr;
-        if (!system_->confirm_open()) {
-            box = system_->open_confirm(
-                ui::StrId::SceneDeleteTitle, text,
-                [this, id, name, with_data](bool yes) {
-                    if (!yes) {
-                        WLOG_I(kTag, "%s: delete declined on the device", id.c_str());
-                        return;
-                    }
-                    delete_named(id, name, with_data, [this, id, name](Result<void> r) {
-                        if (!r) delete_failed(id, name, r.error().message.c_str());
-                    });
-                },
-                ui::ButtonRole::Danger);
-        }
-        if (box == nullptr) {
-            result = R::err(ErrorCode::Busy, "another dialog is open");
-            return;
-        }
-        if (wake_) wake_();
-    });
-    if (result) WLOG_I(kTag, "%s: delete waiting for confirmation on the screen", id.c_str());
-    return result;
+    lv_obj_t* box = nullptr;
+    if (!system_->confirm_open()) {
+        box = system_->open_confirm(
+            ui::StrId::SceneDeleteTitle, text,
+            [this, id, name, with_data](bool yes) {
+                if (!yes) {
+                    WLOG_I(kTag, "%s: delete declined on the device", id.c_str());
+                    return;
+                }
+                delete_named(id, name, with_data, [this, id, name](Result<void> r) {
+                    if (!r) delete_failed(id, name, r.error().message.c_str());
+                });
+            },
+            ui::ButtonRole::Danger);
+    }
+    if (box == nullptr) return R::err(ErrorCode::Busy, "another dialog is open");
+    if (wake_) wake_();
+    WLOG_I(kTag, "%s: delete waiting for confirmation on the screen", id.c_str());
+    return R::ok();
 }
 
 void SceneWiring::delete_scene(const std::string& id, bool with_data,

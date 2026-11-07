@@ -2,10 +2,14 @@
 
 #include <utility>
 
+#include "page_frame.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/shell/gestures.hpp"
+#include "wisp/shell/history.hpp"
 #include "wisp/shell/home.hpp"
 #include "wisp/shell/limits.hpp"
+#include "wisp/shell/scene_recents.hpp"
+#include "wisp/shell/settings_page.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
@@ -17,8 +21,6 @@ namespace wisp::shell {
 
 namespace {
 constexpr const char* kTag = "shell";
-// A sub-page's title.
-constexpr int kTitleFontPx = 28;
 
 ui::StrId title_of(Page p) {
     switch (p) {
@@ -76,11 +78,25 @@ void Shell::start() {
     home_screen_ = home_->screen();
 
     lv_screen_load(home_screen_);
+    listing_ = std::make_shared<std::atomic<bool>>(false);
+    if (deps_.list_scenes) {
+        scene_sub_ = deps_.bus.subscribe("scene.state", [this, alive = alive_](const core::Event&) {
+            // On the bus's thread: the list is read again from the UI
+            // thread, which knows whether it is open.
+            deps_.ui.post([this, alive] {
+                if (*alive && scenes_) list_scenes();
+            });
+        });
+    }
     show(Page::Home);
 }
 
 void Shell::stop() {
     if (home_ == nullptr) return;
+    if (scene_sub_ != 0) {
+        deps_.bus.unsubscribe(scene_sub_);
+        scene_sub_ = 0;
+    }
     if (diag_ != nullptr) close_diagnostics();
     *alive_ = false;
     alive_.reset();
@@ -139,9 +155,14 @@ void Shell::show(Page p) {
         delete_page();
     } else if (p != page_ || sub_ == nullptr) {
         lv_obj_t* old = sub_;
+        sub_ = nullptr;
+        if (old != nullptr) drop_pages();
         sub_ = build_page(p);
+        page_ = p;
         lv_screen_load(sub_);
         if (old != nullptr) lv_obj_delete(old);
+        // Once its screen is loaded: the listing may answer at once.
+        if (p == Page::Scenes) list_scenes();
     } else if (lv_screen_active() != sub_) {
         lv_screen_load(sub_);
     }
@@ -150,32 +171,98 @@ void Shell::show(Page p) {
 }
 
 lv_obj_t* Shell::build_page(Page p) {
-    lv_obj_t* scr = lv_obj_create(nullptr);
-    lv_obj_remove_style_all(scr);
-    const hal::PanelKind panel = ui::display_panel(lv_obj_get_display(scr));
-    lv_obj_set_style_bg_color(scr, ui::wisp_background(panel), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_font(scr, ui::default_font(), 0);
-    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(scr, LV_OBJ_FLAG_PRESS_LOCK);
-    lv_obj_add_event_cb(scr, &Shell::page_event_cb, LV_EVENT_ALL, this);
+    detail::PageFrame f = detail::make_page(deps_.shape, title_of(p));
+    lv_obj_add_event_cb(f.screen, &Shell::page_event_cb, LV_EVENT_ALL, this);
+    page_alive_ = std::make_shared<bool>(true);
+    page_list_ = f.list;
+    switch (p) {
+        case Page::History:
+            history_ = std::make_unique<HistoryPage>(
+                HistoryDeps{.ui = deps_.ui, .layer = deps_.layer, .agent = deps_.agent});
+            history_->build(f.list);
+            break;
+        case Page::Scenes:
+            scenes_ = std::make_unique<SceneList>(SceneListDeps{
+                .shape = deps_.shape,
+                .open_scene = deps_.open_scene,
+                .delete_scene = deps_.delete_scene,
+            });
+            scenes_->build(f.list);
+            break;
+        case Page::Settings:
+            settings_ = std::make_unique<SettingsPage>(SettingsDeps{
+                .settings = deps_.settings,
+                .set_settings = deps_.set_settings,
+                .wifi_status = deps_.wifi_status,
+                .admin_url = deps_.admin_url,
+                .firmware_version = deps_.firmware_version,
+                .start_wifi_setup = deps_.start_wifi_setup,
+                // Posted: it loads another screen from inside this one's
+                // event.
+                .open_diagnostics =
+                    [this, alive = alive_] {
+                        deps_.ui.post([this, alive] {
+                            if (*alive) open_diagnostics();
+                        });
+                    },
+                .submit_io = deps_.submit_io,
+            });
+            settings_->build(f.list);
+            break;
+        case Page::Home:
+            break;
+    }
+    return f.screen;
+}
 
-    // The title, centred at the top of the safe area, below the status
-    // capsule.
-    const hal::Area safe = hal::safe_rect(deps_.shape);
-    const hal::Area capsule = ui::SystemLayer::status_area(deps_.shape);
-    lv_obj_t* title = lv_label_create(scr);
-    lv_obj_set_style_text_font(title, ui::font(kTitleFontPx), 0);
-    lv_obj_set_style_text_color(
-        title,
-        hal::panel_is_colour(panel) ? lv_color_hex(ui::theme::kText) : ui::wisp_colour(panel), 0);
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-    lv_label_set_text(title, ui::tr(title_of(p)));
-    const int32_t y = capsule.y2 + 1 + ui::theme::kGapSm;
-    lv_obj_set_pos(title, safe.x1, y);
-    lv_obj_set_width(title, safe.x2 - safe.x1 + 1);
-    return scr;
+void Shell::drop_pages() {
+    if (page_alive_) *page_alive_ = false;
+    page_alive_.reset();
+    page_list_ = nullptr;
+    history_.reset();
+    scenes_.reset();
+    settings_.reset();
+}
+
+void Shell::list_scenes() {
+    if (!scenes_) return;
+    if (!deps_.list_scenes || !deps_.submit_io) {
+        scenes_->set_scenes({});
+        return;
+    }
+    // One listing waiting in the queue answers every event before it ran.
+    if (listing_->exchange(true)) return;
+    auto job = [this, list = deps_.list_scenes, recents = deps_.recents, ui = &deps_.ui,
+                queued = listing_, alive = page_alive_] {
+        queued->store(false);
+        std::vector<ShellScene> got = list();
+        if (recents != nullptr) {
+            std::vector<std::string> ids;
+            ids.reserve(got.size());
+            for (const ShellScene& sc : got) ids.push_back(sc.id);
+            std::vector<ShellScene> sorted;
+            sorted.reserve(got.size());
+            for (const std::string& id : recents->order(ids)) {
+                for (ShellScene& sc : got) {
+                    if (sc.id == id && !sc.id.empty()) {
+                        sorted.push_back(std::move(sc));
+                        sc.id.clear();
+                        break;
+                    }
+                }
+            }
+            got = std::move(sorted);
+        }
+        if (!ui->post([this, alive, got = std::move(got)]() mutable {
+                if (*alive && scenes_) scenes_->set_scenes(std::move(got));
+            })) {
+            WLOG_W(kTag, "scene list not shown (UI queue full)");
+        }
+    };
+    if (!deps_.submit_io(std::move(job))) {
+        listing_->store(false);
+        WLOG_W(kTag, "scene list not read (storage queue full)");
+    }
 }
 
 void Shell::delete_page() {
@@ -183,28 +270,41 @@ void Shell::delete_page() {
     lv_obj_t* scr = sub_;
     sub_ = nullptr;
     page_tracking_ = false;
+    drop_pages();
     lv_obj_delete(scr);
 }
 
 void Shell::page_event_cb(lv_event_t* e) {
     auto* self = static_cast<Shell*>(lv_event_get_user_data(e));
     const lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_PRESSED && code != LV_EVENT_PRESS_LOST && code != LV_EVENT_RELEASED)
+        return;
     lv_indev_t* indev = lv_indev_active();
     if (indev == nullptr) return;
     lv_point_t p;
     lv_indev_get_point(indev, &p);
     if (code == LV_EVENT_PRESSED) {
-        self->page_tracking_ = true;
+        lv_obj_t* target = lv_event_get_target_obj(e);
+        self->page_tracking_ = target == nullptr || !lv_obj_has_flag(target, detail::kNoSwipe);
         self->page_start_ = p;
         self->page_top_zone_ = ui::SystemLayer::in_top_zone(self->deps_.shape, p.x, p.y);
+        self->page_at_bottom_ = !self->history_ || self->history_->at_bottom();
+        self->page_scroll_y_ = self->page_list_ ? lv_obj_get_scroll_y(self->page_list_) : 0;
     } else if (code == LV_EVENT_PRESS_LOST) {
         self->page_tracking_ = false;
-    } else if (code == LV_EVENT_RELEASED && self->page_tracking_) {
+    } else if (self->page_tracking_) {
         self->page_tracking_ = false;
-        // Nothing on a sub-page scrolls yet: the history is at its bottom
-        // end.
+        // A drag that scrolled the list is no swipe. LVGL starts a scroll
+        // (SCROLL_BEGIN) even at an end it cannot move past, so the offset
+        // itself decides.
+        if (self->page_list_ && lv_obj_get_scroll_y(self->page_list_) != self->page_scroll_y_)
+            return;
         const Swipe s = classify_swipe(self->page_start_, p);
-        if (auto to = navigate(self->page_, s, self->page_top_zone_, true)) self->post_show(*to);
+        if (auto to = navigate(self->page_, s, self->page_top_zone_, self->page_at_bottom_)) {
+            // No click for what the swipe started on.
+            lv_indev_reset(indev, nullptr);
+            self->post_show(*to);
+        }
     }
 }
 

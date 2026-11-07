@@ -371,6 +371,53 @@ const char* strings_en(StrId id) {
             return "Scenes";
         case StrId::PageHistory:
             return "History";
+        case StrId::HistoryNew:
+            return "New conversation";
+        case StrId::HistoryNewConfirm:
+            return "Start a new conversation? This one will be archived";
+        case StrId::HistoryBusy:
+            return "Agent is replying, try again shortly";
+        case StrId::HistoryEmpty:
+            return "No conversation yet. Hold the wisp to talk";
+        case StrId::HistoryMore:
+            return "Show details";
+        case StrId::HistoryLess:
+            return "Hide details";
+        case StrId::SceneListEmpty:
+            return "No scenes yet. Try saying 'make a pomodoro timer'";
+        case StrId::SceneDeleteButton:
+            return "Delete";
+        case StrId::SceneDeleteData:
+            return "Delete its data too";
+        case StrId::SettingsBrightness:
+            return "Brightness";
+        case StrId::SettingsVolume:
+            return "Volume";
+        case StrId::SettingsScreenOff:
+            return "Screen off after";
+        case StrId::SettingsSeconds:
+            return "{} s";
+        case StrId::SettingsMinutes:
+            return "{} min";
+        case StrId::SettingsNever:
+            return "Never";
+        case StrId::SettingsTtsMute:
+            return "Mute spoken replies";
+        case StrId::SettingsWifi:
+            return "Wi-Fi";
+        case StrId::SettingsAbout:
+            return "About";
+        case StrId::AboutFirmware:
+            return "Firmware";
+        case StrId::AboutAddress:
+            return "Admin page";
+        case StrId::AboutAddressNone:
+            return "Offline";
+        case StrId::AboutPairHint:
+            return "Open the admin page address in a browser and enter the pairing code shown on "
+                   "the device when asked";
+        case StrId::AboutDiagnostics:
+            return "Hardware diagnostics";
         case StrId::Count:
             break;
     }

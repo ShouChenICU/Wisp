@@ -96,12 +96,16 @@ void factory_reset(App& app) {
         // running can write them back before the restart.
         if (app.impl_->reminders) app.impl_->reminders->forget();
         if (app.impl_->agent) app.impl_->agent->memory()->forget();
+        // The scene order, likewise, so a save still pending cannot bring
+        // the file back.
+        if (app.impl_->recents) app.impl_->recents->forget_all();
         // Notices carry todo titles and scene text; the list goes, and its
         // file with it (a save after this writes what is left: nothing, or
         // what was posted since).
         if (core::NotificationService* notes = app.notifications()) notes->clear_all();
-        // The agent's conversation, archives, memory notes, todos and the
-        // notifications (agent-core spec 3.5; mvp spec 5.1, 5.2).
+        // The agent's conversation, archives, memory notes, todos, the
+        // notifications and the scene order (agent-core spec 3.5; mvp spec
+        // 5.1, 5.2, 6.4).
         if (auto root = app.storage().write_root(core::Area::System); root) {
             for (const char* suffix : {"", ".tmp", ".new"}) {
                 const std::string file = root.value() + "/notifications.json" + suffix;
@@ -117,6 +121,9 @@ void factory_reset(App& app) {
             }
             if (auto r = app.storage().remove_tree(root.value() + "/todo"); !r) {
                 WLOG_E(kTag, "erasing the todos failed: %s", r.error().message.c_str());
+            }
+            if (auto r = app.storage().remove_tree(root.value() + "/shell"); !r) {
+                WLOG_E(kTag, "erasing the scene order failed: %s", r.error().message.c_str());
             }
         }
     };
