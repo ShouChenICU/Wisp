@@ -40,7 +40,7 @@ Wisp（小鬼火）是一个运行在 ESP32 系列芯片上、完全由 AI 驱�
 ## 3. 架构规则
 
 - **分层**：
-  - 可移植层：`wisp_base` → `wisp_os` → `wisp_hal` → `wisp_core` → `wisp_net` → `wisp_admin` → `wisp_ui` → `wisp_scene` → `wisp_agent` → `wisp_app`。
+  - 可移植层：`wisp_base` → `wisp_os` → `wisp_hal` → `wisp_core` → `wisp_net` → `wisp_voice` → `wisp_admin` → `wisp_ui` → `wisp_scene` → `wisp_agent` → `wisp_app`。
   - 第三方源码原样放在 `third_party/`（如 Lua，由 `tools/vendor_lua.sh` 引入），不改源码；Lua 头文件和 `lua` 组件只有 `wisp_scene` 能用。
   - 平台层：`wisp_port_sim`（PC 模拟器）、`wisp_port_esp`（ESP-IDF）。
   - 板级适配放在 `boards/<板名>/`，芯片驱动放在 `drivers/`。

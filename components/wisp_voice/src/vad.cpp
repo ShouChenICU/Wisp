@@ -1,0 +1,72 @@
+#include "wisp/voice/vad.hpp"
+
+#include <algorithm>
+#include <cmath>
+
+#include "wisp/voice/limits.hpp"
+
+namespace wisp::voice {
+
+namespace {
+
+// Full scale for dBFS: a square wave at 32768 has RMS 32768.
+constexpr double kFullScaleSquared = 32768.0 * 32768.0;
+constexpr double kLevelFloorDb = -60.0;
+
+}  // namespace
+
+Vad::Vad(VadMode mode) : mode_(mode) {}
+
+VadVerdict Vad::verdict_after_speech() const {
+    return speech_ms_ < kMinSpeechMs ? VadVerdict::TooShort : VadVerdict::Done;
+}
+
+VadVerdict Vad::push(std::span<const int16_t> frame) {
+    double e = 0;
+    for (int16_t s : frame) e += static_cast<double>(s) * s;
+    if (!frame.empty()) e /= static_cast<double>(frame.size());
+
+    const double db = e > 0 ? 10.0 * std::log10(e / kFullScaleSquared) : kLevelFloorDb;
+    const double pct = std::clamp((db - kLevelFloorDb) / -kLevelFloorDb, 0.0, 1.0) * 100.0;
+    level_ = static_cast<uint8_t>(std::lround(pct));
+
+    if (final_ != VadVerdict::Continue) return final_;
+
+    const uint32_t t = elapsed_ms_;
+    elapsed_ms_ += kFrameMs;
+    if (t < kNoiseEstimateMs) {
+        ++noise_frames_;
+        noise_ += (e - noise_) / noise_frames_;
+        return VadVerdict::Continue;
+    }
+
+    const bool speech = e > std::max(noise_ * kSpeechRatio, static_cast<double>(kAbsFloor));
+    if (!speech) noise_ += (e - noise_) / 16.0;
+
+    if (!started_) {
+        run_ = speech ? run_ + 1 : 0;
+        if (run_ >= kStartFrames) {
+            started_ = true;
+            speech_ms_ = kStartFrames * kFrameMs;
+        } else if (mode_ == VadMode::Auto && elapsed_ms_ >= kStartTimeoutMs) {
+            final_ = VadVerdict::NoSpeech;
+        }
+        return final_;
+    }
+
+    if (speech) {
+        speech_ms_ += kFrameMs;
+        silence_ms_ = 0;
+    } else {
+        silence_ms_ += kFrameMs;
+    }
+    if (mode_ == VadMode::Auto && silence_ms_ >= kEndSilenceMs) final_ = verdict_after_speech();
+    return final_;
+}
+
+VadVerdict Vad::finish() {
+    if (final_ == VadVerdict::Continue) final_ = verdict_after_speech();
+    return final_;
+}
+
+}  // namespace wisp::voice

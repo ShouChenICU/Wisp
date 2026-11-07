@@ -246,6 +246,30 @@ class CheckLayeringTest(unittest.TestCase):
         self.assertEqual(sum("reverse dependency" in e for e in errors), 2, errors)
         self.assertEqual(sum("forbidden REQUIRES <wisp_ui>" in e for e in errors), 1, errors)
 
+    def test_voice_sits_between_net_and_admin(self):
+        write(self.root, "components/wisp_voice/src/ok.cpp", '#include "wisp/net/http.hpp"\n')
+        write(self.root, "components/wisp_admin/src/ok.cpp", '#include "wisp/voice/vad.hpp"\n')
+        write(
+            self.root,
+            "components/wisp_admin/CMakeLists.txt",
+            minimal_cmake("wisp_admin", requires="wisp_net wisp_voice"),
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+        write(self.root, "components/wisp_net/src/bad.cpp", '#include "wisp/voice/vad.hpp"\n')
+        write(self.root, "components/wisp_voice/src/bad.cpp", '#include "wisp/admin/admin_server.hpp"\n')
+        write(
+            self.root,
+            "components/wisp_voice/CMakeLists.txt",
+            minimal_cmake("wisp_voice", requires="wisp_net wisp_admin"),
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 3, errors)
+        self.assertEqual(sum("reverse dependency" in e for e in errors), 2, errors)
+        self.assertTrue(any("wisp/voice/vad.hpp" in e for e in errors), errors)
+        self.assertTrue(any("wisp/admin/admin_server.hpp" in e for e in errors), errors)
+        self.assertEqual(sum("forbidden REQUIRES <wisp_admin>" in e for e in errors), 1, errors)
+
     def test_admin_platform_include_is_flagged(self):
         write(self.root, "components/wisp_admin/src/p.cpp", '#include "esp_http_server.h"\n')
         errors = check_layering.run(self.root)

@@ -3,7 +3,8 @@
 docs/architecture.md):
 
   - The portable layers (wisp_base, wisp_os, wisp_hal, wisp_core,
-    wisp_net, wisp_admin, wisp_ui, wisp_scene, wisp_agent, wisp_app) must
+    wisp_net, wisp_voice, wisp_admin, wisp_ui, wisp_scene, wisp_agent,
+    wisp_app) must
     never #include a platform header:
     anything starting with esp_, freertos/, driver/, hal/ (ESP-IDF's, as
     opposed to wisp_hal's own wisp/hal/ headers), soc/, rom/, lwip/,
@@ -15,11 +16,12 @@ docs/architecture.md):
     portable code may use them directly (docs/architecture.md).
   - Each portable layer must only #include headers from its own layer
     or a strictly lower one in AGENTS.md's order (wisp_base < wisp_os
-    < wisp_hal < wisp_core < wisp_net < wisp_admin < wisp_ui < wisp_scene
-    < wisp_agent < wisp_app; wisp_net's and wisp_admin's places are fixed
-    by spec 2.2 of the connectivity-admin design, wisp_scene's by spec 2.2
-    of the scene-runtime-core design, wisp_agent's by spec 2 of the
-    agent-core design) -- no reverse
+    < wisp_hal < wisp_core < wisp_net < wisp_voice < wisp_admin < wisp_ui
+    < wisp_scene < wisp_agent < wisp_app; wisp_net's and wisp_admin's
+    places are fixed by spec 2.2 of the connectivity-admin design,
+    wisp_scene's by spec 2.2 of the scene-runtime-core design,
+    wisp_agent's by spec 2 of the agent-core design, wisp_voice's by
+    spec 1.4 of the MVP design) -- no reverse
     dependencies "upward", checked for every layer against every other.
   - Each portable component's CMakeLists.txt's wisp_component()
     call may only declare the two external dependencies the portable
@@ -71,6 +73,7 @@ COMPONENTS = (
     "wisp_hal",
     "wisp_core",
     "wisp_net",
+    "wisp_voice",
     "wisp_admin",
     "wisp_ui",
     "wisp_scene",
@@ -88,6 +91,7 @@ LAYER_INCLUDE_PREFIX = {
     "wisp_hal": "wisp/hal/",
     "wisp_core": "wisp/core/",
     "wisp_net": "wisp/net/",
+    "wisp_voice": "wisp/voice/",
     "wisp_admin": "wisp/admin/",
     "wisp_ui": "wisp/ui/",
     "wisp_scene": "wisp/scene/",

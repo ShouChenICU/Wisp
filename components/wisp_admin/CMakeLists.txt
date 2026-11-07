@@ -9,5 +9,5 @@ wisp_component(
          src/routes_scenes.cpp src/routes_power.cpp src/routes_scene_files.cpp
          src/routes_agent.cpp src/routes_memory.cpp src/ws_hub.cpp
     INCLUDE_DIRS include
-    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net
+    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_voice
 )

@@ -14,6 +14,7 @@
 │  wisp_ui      LVGL 驱动对接、UI 任务                     │  ← 可移植
 ├─────────────────────────────────────────────────────┤
 │  wisp_admin   管理后台路由 · 请求过滤 · WebSocket 推送   │  ← 可移植
+│  wisp_voice   语音：<say> 解析 · VAD · 分句              │  ← 可移植
 │  wisp_net     HTTP 类型 · WispPack · Wi-Fi · 配对        │  ← 可移植
 │  wisp_core    日志 · 事件总线 · 设备注册表 · 配置 · 存储 │  ← 可移植
 ├─────────────────────────────────────────────────────┤
@@ -31,8 +32,8 @@
 
 ## 依赖规则
 
-1. 可移植组件（`wisp_base`、`wisp_os`、`wisp_hal`、`wisp_core`、`wisp_net`、`wisp_admin`、`wisp_ui`、`wisp_scene`、`wisp_agent`、`wisp_app`）禁止 include 任何平台头文件：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/*`、`soc/*`、`rom/*`、`lwip/*`、`mbedtls/*`、`SDL*`、`curl/*`，以及 `sdkconfig.h`、`nvs.h`、`nvs_flash.h`、`sdmmc_cmd.h` 和 bmgr 生成的 `dev_*`/`gen_board_*`（文件名前缀，不带目录）；只能依赖 C++20 标准库（包括 POSIX 文件 API，如 `<unistd.h>`/`<sys/stat.h>`/`<dirent.h>` —— ESP-IDF 的 VFS 和宿主机都提供，`StorageManager` 依赖它遍历/删改文件）、LVGL、ArduinoJson，以及按层次自上而下依赖其他可移植组件。Lua 的头文件（`lua.h`、`lauxlib.h`、`lualib.h`、`lua.hpp`、`luaconf.h`）只有 `wisp_scene` 能 include。
-2. 每个可移植组件只能 include 自己这一层或更低层的头文件（按本文件"分层"一节的顺序：`wisp_base < wisp_os < wisp_hal < wisp_core < wisp_net < wisp_admin < wisp_ui < wisp_scene < wisp_agent < wisp_app`），禁止反向依赖"更上层"。
+1. 可移植组件（`wisp_base`、`wisp_os`、`wisp_hal`、`wisp_core`、`wisp_net`、`wisp_voice`、`wisp_admin`、`wisp_ui`、`wisp_scene`、`wisp_agent`、`wisp_app`）禁止 include 任何平台头文件：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/*`、`soc/*`、`rom/*`、`lwip/*`、`mbedtls/*`、`SDL*`、`curl/*`，以及 `sdkconfig.h`、`nvs.h`、`nvs_flash.h`、`sdmmc_cmd.h` 和 bmgr 生成的 `dev_*`/`gen_board_*`（文件名前缀，不带目录）；只能依赖 C++20 标准库（包括 POSIX 文件 API，如 `<unistd.h>`/`<sys/stat.h>`/`<dirent.h>` —— ESP-IDF 的 VFS 和宿主机都提供，`StorageManager` 依赖它遍历/删改文件）、LVGL、ArduinoJson，以及按层次自上而下依赖其他可移植组件。Lua 的头文件（`lua.h`、`lauxlib.h`、`lualib.h`、`lua.hpp`、`luaconf.h`）只有 `wisp_scene` 能 include。
+2. 每个可移植组件只能 include 自己这一层或更低层的头文件（按本文件"分层"一节的顺序：`wisp_base < wisp_os < wisp_hal < wisp_core < wisp_net < wisp_voice < wisp_admin < wisp_ui < wisp_scene < wisp_agent < wisp_app`），禁止反向依赖"更上层"。
 3. 只有 `wisp_port_esp`、`wisp_port_sim`、`boards/*`、`drivers/*` 和入口层（`firmware/main`、`simulator/`）可以接触平台。
 4. 每个 `components/wisp_{base..app}/CMakeLists.txt` 的 `wisp_component()` 调用，`IDF_REQUIRES`/`HOST_LIBS` 只能出现 ArduinoJson（`wisp_base`）和 LVGL（`wisp_ui`）这两个外部依赖——防止绕开 `#include` 检查，直接在 CMake 里给某个可移植组件挂一个平台或宿主机专属依赖。`REQUIRES` 只能列更低层的可移植组件；唯一的例外是 `third_party/` 下原样引入的组件：`wisp_scene` 可以 `REQUIRES lua`，其他层都不行。
 5. 规则由 `tools/check_layering.py` 强制检查（`bash tools/ci.sh` 会跑它，先跑 `tools/check_layering_test.py` 自测），扫描每个可移植组件下的 `.hpp/.cpp/.h/.c`（`wisp_ui/fonts/` 下的移植字体数据除外）及其 `CMakeLists.txt`。
