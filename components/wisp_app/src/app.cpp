@@ -1052,6 +1052,7 @@ core::SceneRepository* App::scene_repository() {
 PowerManager* App::power_manager() { return impl_->power_manager.get(); }
 core::WakeLockRegistry& App::wakelocks() { return impl_->wakelocks; }
 core::NotificationService* App::notifications() { return impl_->notifications.get(); }
+core::ReminderScheduler* App::reminders() { return impl_->reminders.get(); }
 core::OccupancyRegistry& App::occupancy() { return impl_->occupancy; }
 core::SensorService* App::sensors() { return impl_->sensors.get(); }
 agent::AgentService* App::agent() { return impl_->agent ? impl_->agent->service() : nullptr; }

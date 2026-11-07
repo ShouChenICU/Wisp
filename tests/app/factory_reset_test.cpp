@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <ctime>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -21,6 +22,8 @@
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/model_profiles.hpp"
+#include "wisp/core/notification_service.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
@@ -227,6 +230,64 @@ TEST(FactoryReset, ClearsTodoDirectory) {
     wisp::app::factory_reset(app);
 
     EXPECT_FALSE(std::filesystem::exists(todo));
+}
+
+// The todos live in memory too, and their titles in the reminder notices:
+// after the reset neither the todo file nor the notifications file holds
+// them, whatever the scheduler is asked to do before the restart (a
+// timer pass, a todo tool, a reminder action).
+TEST(FactoryReset, ErasesTodosAndTheirNoticesForGood) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    wisp::core::ReminderScheduler* reminders = app.reminders();
+    wisp::core::NotificationService* notes = app.notifications();
+    ASSERT_NE(reminders, nullptr);
+    ASSERT_NE(notes, nullptr);
+    const std::string system = app.storage().write_root(wisp::core::Area::System).value();
+    const std::string todo = system + "/todo";
+    const std::string notices = system + "/notifications.json";
+    const std::string secret = "取药单号8848";
+
+    on_flash(app, [&] {
+        ASSERT_TRUE(reminders->add(secret, std::time(nullptr) + 3600,
+                                   wisp::core::RepeatRule{wisp::core::Repeat::Daily, 0}));
+    });
+    wisp::core::Notification n;
+    n.source = wisp::core::kReminderSource;
+    n.id = "todo-1";
+    n.title = secret;
+    n.action = wisp::core::notice::kActionTodoDone;
+    n.action_arg = "1";
+    ASSERT_TRUE(notes->post(std::move(n), false));
+    ASSERT_TRUE(notes->flush(5000));
+    auto file_text = [&](const std::string& path) {
+        auto r = read_on_flash(app, path);
+        return r ? std::string(r.value().begin(), r.value().end()) : std::string();
+    };
+    ASSERT_NE(file_text(notices).find(secret), std::string::npos);
+    ASSERT_TRUE(std::filesystem::exists(todo));
+
+    wisp::app::factory_reset(app);
+
+    EXPECT_FALSE(std::filesystem::exists(todo));
+    EXPECT_EQ(notes->unread_count(), 0u);
+    // What a todo tool (add), a reminder action (the router queues done()
+    // or snooze() on the worker) and a timer pass would run.
+    on_flash(app, [&] {
+        EXPECT_FALSE(reminders->add("again", std::nullopt, {}));
+        EXPECT_FALSE(reminders->done(1));
+        EXPECT_FALSE(reminders->snooze(1));
+        reminders->fire_due();
+    });
+    app.bus().publish(
+        wisp::core::Event{"system.time", "test", 0, {{"state", wisp::Value("synced")}}});
+    (void)app.bus().wait_idle(2000);
+    (void)notes->flush(5000);
+    ASSERT_TRUE(app.storage_worker()->drain(5000));
+    EXPECT_FALSE(std::filesystem::exists(todo));
+    EXPECT_EQ(file_text(notices).find(secret), std::string::npos);
+    EXPECT_TRUE(reminders->list(wisp::core::TodoFilter::All).empty());
 }
 
 // The browser that asked must still hear "done": the event goes out (and

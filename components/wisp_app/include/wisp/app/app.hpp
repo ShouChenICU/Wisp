@@ -103,6 +103,7 @@ class ModelProfileService;
 class SceneRepository;
 class SystemSettings;
 class NotificationService;
+class ReminderScheduler;
 class WakeLockRegistry;
 class OccupancyRegistry;
 class SensorService;
@@ -363,6 +364,10 @@ public:
     // Notifications (scene-device spec 5): loaded by start(), saved and
     // reset by stop(); nullptr before start() or after stop().
     core::NotificationService* notifications();
+    // The todos and their reminders (mvp spec 5.2), built and loaded by
+    // start() with a System area and a storage worker; nullptr otherwise,
+    // and after stop(). Its writes run on storage_worker() only.
+    core::ReminderScheduler* reminders();
     // Who uses which device (scene-device spec 6.3); valid for the App's
     // lifetime.
     core::OccupancyRegistry& occupancy();

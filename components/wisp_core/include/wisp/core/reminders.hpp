@@ -26,7 +26,9 @@
 // the scheduler missed is caught within that), and it is armed again after
 // every change, every fire and every system.time event. The timer callback
 // only queues fire_due() on the storage worker (submit_io): firing writes
-// the file.
+// the file. The timer is one-shot, so a pass the worker refuses (its queue
+// full) would leave nothing armed: a refused pass starts a second timer
+// that asks again every kRetryMs until a pass runs.
 //
 // fire_due() goes through every todo whose effective time has come:
 //  - one at most kLateS late rings: a notification from kReminderSource,
@@ -43,7 +45,8 @@
 // (not even when the clock is set back before its due time) unless it is
 // snoozed or given a new due time; a repeating one moves its due time to
 // the next occurrence after now, clears its snooze and records
-// notified_at, which done() then reads as "this occurrence was shown".
+// notified_at, which done() then reads as "this occurrence was shown"
+// while that ring is still the current one (see done()).
 // start() runs the same pass right away, so whatever came due while the
 // device was off is reported at boot; with the clock unset nothing rings
 // and the first system.time event runs it.
@@ -59,6 +62,9 @@
 // reads but does not parse, or names another version, is renamed to
 // "<path>.bad" and the scheduler starts empty. Records are re-validated
 // on load; dropped ones are counted in the log, never shown.
+//
+// Factory reset: forget() drops every todo from memory and refuses all
+// later writes, so nothing still running can write the erased file back.
 //
 // Privacy: logs and events never carry a todo's title. Every change
 // publishes todo.changed {"count"} (source "todo").
@@ -133,9 +139,11 @@ struct TodoFields {
 
 enum class TodoFilter : uint8_t { Open, Done, All, DueToday };
 
-// The scheduler's one timer: arm() (re)starts it to call the fire
-// function once after `ms`, cancel() stops it. Neither is called from the
-// fire function itself; cancel() must wait for a fire in progress.
+// A timer of the scheduler. cancel() stops it and must wait for a fire in
+// progress. The reminder timer's arm() (re)starts it to call its function
+// once after `ms`, and is never called from that function. The retry
+// timer's arm() starts it calling its function every `ms` until cancel();
+// on a running one it is a no-op; its function calls neither.
 struct ReminderTimer {
     std::function<void(uint32_t ms)> arm;
     std::function<void()> cancel;
@@ -156,8 +164,10 @@ struct ReminderDeps {
     // The merged notification's title for `count` missed reminders, in
     // the device language. Empty: the count alone.
     std::function<std::string(size_t count)> missed_title;
-    // Makes the timer, once, in the constructor. Empty: a one-shot
-    // os::Timer made again for each arm().
+    // Makes the timers in the constructor: first the reminder timer, then
+    // the retry timer (see ReminderTimer). Empty: for the first a one-shot
+    // os::Timer made again for each arm(), for the second one periodic
+    // os::Timer made on its first arm().
     std::function<ReminderTimer(std::function<void()> fire)> make_timer;
 };
 
@@ -171,6 +181,11 @@ public:
     // A todo whose effective time passed longer ago than this was missed
     // rather than late.
     static constexpr int64_t kLateS = 60;
+    // How often a pass the worker refused is asked for again.
+    static constexpr uint32_t kRetryMs = 1000;
+    // A repeating todo that rang this long ago, or earlier the same local
+    // day, is still on its current ring for done().
+    static constexpr int64_t kRingCurrentS = 3600;
 
     // `path`: <System>/todo/todos.json; its directory is made on the first
     // write.
@@ -200,8 +215,11 @@ public:
     // notified_at, so the todo rings at its new time.
     Result<void> update(uint32_t id, const TodoFields& f);
     // A one-shot todo is done. A repeating one never is: done() ends the
-    // occurrence that rang (notified_at), or, before it rang, skips the
-    // coming one. Either way its unread reminder goes.
+    // occurrence that rang (notified_at) while that ring is current -- on
+    // the same local day as now, or less than kRingCurrentS ago -- and
+    // otherwise skips the coming occurrence (a ring from yesterday that
+    // was never answered does not stand for today's). Either way its
+    // unread reminder goes.
     Result<void> done(uint32_t id);
     // Rings again kSnoozeS from now. Unsupported "clock_not_set" with the
     // clock unset; InvalidArgument "already_done" for a done todo.
@@ -211,6 +229,11 @@ public:
     // Removes every todo, even after a failed load (it then writes a new,
     // empty file).
     Result<void> clear();
+    // Factory reset, on the worker: drops every todo from memory without
+    // touching the file, stops the timers and makes every later call
+    // that would write refuse ("todo_unavailable"; clear() too), and
+    // fire_due() do nothing. Notifications are the caller's to clear.
+    void forget();
 
     // The timer's job, on the worker: see the file header.
     void fire_due();
@@ -227,10 +250,15 @@ private:
     bool clock_set(int64_t now) const { return now >= kWallClockValidSince; }
     int64_t now_s() const;
     void cancel_notice(uint32_t id);
+    // Queues fire_due() on the worker; a refusal starts the retry timer
+    // unless `from_retry` (that one asks again by itself).
+    void queue_pass(bool from_retry);
+    bool writable_locked() const { return !load_failed_ && !forgotten_; }
 
     ReminderDeps deps_;
     std::string path_;
     ReminderTimer timer_;
+    ReminderTimer retry_;
     // Read by the timer and bus callbacks before they touch this object:
     // false once stop() ran.
     std::shared_ptr<std::atomic<bool>> alive_;
@@ -241,6 +269,7 @@ private:
     os::LargeVector<Todo> todos_;  // ascending by id
     uint32_t next_id_ = 1;
     bool load_failed_ = false;
+    bool forgotten_ = false;  // forget() ran; never cleared
 };
 
 }  // namespace wisp::core

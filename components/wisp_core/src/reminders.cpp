@@ -81,20 +81,18 @@ ReminderScheduler::ReminderScheduler(ReminderDeps deps, std::string path)
     : deps_(std::move(deps)),
       path_(std::move(path)),
       alive_(std::make_shared<std::atomic<bool>>(true)) {
+    // The callbacks only queue the pass: firing writes the file, which
+    // only the storage worker may. `this` is used only while alive_ holds.
     std::shared_ptr<std::atomic<bool>> alive = alive_;
-    std::function<bool(std::function<void()>)> submit = deps_.submit_io;
-    // The callback only queues the pass: firing writes the file, which
-    // only the storage worker may.
-    auto fire = [this, alive, submit] {
-        if (!alive->load() || !submit) return;
-        if (!submit([this, alive] {
-                if (alive->load()) fire_due();
-            })) {
-            WLOG_W(kTag, "storage queue full; reminders checked on the next timer");
-        }
+    auto fire = [this, alive] {
+        if (alive->load()) queue_pass(false);
+    };
+    auto retry = [this, alive] {
+        if (alive->load()) queue_pass(true);
     };
     if (deps_.make_timer) {
         timer_ = deps_.make_timer(std::move(fire));
+        retry_ = deps_.make_timer(std::move(retry));
         return;
     }
     // os::Timer has a fixed period, so each arm() makes a new one-shot.
@@ -117,6 +115,39 @@ ReminderScheduler::ReminderScheduler(ReminderDeps deps, std::string path)
         std::lock_guard<os::Mutex> lock(holder->mu);
         holder->timer.reset();
     };
+    // Made once and kept: its own callback never takes this mutex, so
+    // stopping it under the mutex cannot wait on a callback that waits
+    // for the mutex.
+    auto retry_holder = std::make_shared<Holder>();
+    retry_.arm = [retry_holder, retry](uint32_t ms) {
+        std::lock_guard<os::Mutex> lock(retry_holder->mu);
+        if (!retry_holder->timer) {
+            retry_holder->timer = os::Timer::create("wisp.remretry", ms, true, retry);
+        }
+        if (retry_holder->timer) {
+            retry_holder->timer->start();
+        } else {
+            WLOG_W(kTag, "no retry timer for reminders; checked on the next change");
+        }
+    };
+    retry_.cancel = [retry_holder] {
+        std::lock_guard<os::Mutex> lock(retry_holder->mu);
+        if (retry_holder->timer) retry_holder->timer->stop();
+    };
+}
+
+void ReminderScheduler::queue_pass(bool from_retry) {
+    const std::shared_ptr<std::atomic<bool>> alive = alive_;
+    if (!alive->load() || !deps_.submit_io) return;
+    if (deps_.submit_io([this, alive] {
+            if (alive->load()) fire_due();
+        })) {
+        return;
+    }
+    if (from_retry) return;
+    WLOG_W(kTag, "storage queue full; reminders checked again in %u ms",
+           static_cast<unsigned>(kRetryMs));
+    if (retry_.arm) retry_.arm(kRetryMs);
 }
 
 ReminderScheduler::~ReminderScheduler() { stop(); }
@@ -130,39 +161,37 @@ int ReminderScheduler::utc_offset_min() const {
 void ReminderScheduler::start() {
     if (started_) return;
     started_ = true;
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        if (forgotten_) return;
+    }
     alive_->store(true);
     std::shared_ptr<std::atomic<bool>> alive = alive_;
-    std::function<bool(std::function<void()>)> submit = deps_.submit_io;
-    auto pass = [this, alive, submit] {
-        if (!alive->load() || !submit) return;
-        if (!submit([this, alive] {
-                if (alive->load()) fire_due();
-            })) {
-            WLOG_W(kTag, "storage queue full; reminders checked on the next timer");
-        }
-    };
     // A set clock, or one that jumped: whatever came due meanwhile is
     // reported, and the timer follows the new time.
-    time_sub_ = deps_.bus.subscribe("system.time", [pass](const Event& e) {
+    time_sub_ = deps_.bus.subscribe("system.time", [this, alive](const Event& e) {
+        if (!alive->load()) return;
         auto it = e.payload.find("state");
         if (it != e.payload.end() && it->second.type() == Value::Type::String &&
             it->second.as_string() == "synced") {
-            pass();
+            queue_pass(false);
         }
     });
-    pass();
+    queue_pass(false);
 }
 
 void ReminderScheduler::stop() {
+    alive_->store(false);
     if (!started_) {
         if (timer_.cancel) timer_.cancel();
+        if (retry_.cancel) retry_.cancel();
         return;
     }
     started_ = false;
     deps_.bus.unsubscribe(time_sub_);
     time_sub_ = 0;
-    alive_->store(false);
     if (timer_.cancel) timer_.cancel();
+    if (retry_.cancel) retry_.cancel();
     // A pass queued before this may still be running on the worker; the
     // queue runs in order, so once this job has run none is.
     if (deps_.submit_io && !os::on_flash_thread()) {
@@ -372,7 +401,7 @@ Result<uint32_t> ReminderScheduler::add(std::string_view title, std::optional<in
     uint32_t id = 0;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
-        if (load_failed_) {
+        if (!writable_locked()) {
             return Result<uint32_t>::err(ErrorCode::StorageUnavailable, "todo_unavailable");
         }
         if (title.empty()) return Result<uint32_t>::err(ErrorCode::InvalidArgument, "empty");
@@ -413,7 +442,7 @@ Result<void> ReminderScheduler::update(uint32_t id, const TodoFields& f) {
     size_t count = 0;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
-        if (load_failed_) {
+        if (!writable_locked()) {
             return Result<void>::err(ErrorCode::StorageUnavailable, "todo_unavailable");
         }
         auto it =
@@ -466,7 +495,7 @@ Result<void> ReminderScheduler::done(uint32_t id) {
     size_t count = 0;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
-        if (load_failed_) {
+        if (!writable_locked()) {
             return Result<void>::err(ErrorCode::StorageUnavailable, "todo_unavailable");
         }
         auto it =
@@ -475,11 +504,14 @@ Result<void> ReminderScheduler::done(uint32_t id) {
         const Todo old = *it;
         if (it->repeat.kind == Repeat::None || !it->due) {
             it->done = true;
-        } else if (it->notified_at) {
+        } else if (it->notified_at && (now - *it->notified_at < kRingCurrentS ||
+                                       local_day(*it->notified_at, off) == local_day(now, off))) {
             // The occurrence that rang: its due time has moved on already.
             it->notified_at.reset();
         } else {
-            // Done ahead of time: the coming occurrence is skipped.
+            // Done ahead of time, or after an old ring nobody answered:
+            // the coming occurrence is skipped.
+            it->notified_at.reset();
             it->due = next_occurrence(*it->due, it->repeat, std::max(*it->due, now), off);
         }
         it->snooze_until.reset();
@@ -500,7 +532,7 @@ Result<void> ReminderScheduler::snooze(uint32_t id) {
     size_t count = 0;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
-        if (load_failed_) {
+        if (!writable_locked()) {
             return Result<void>::err(ErrorCode::StorageUnavailable, "todo_unavailable");
         }
         auto it =
@@ -526,7 +558,7 @@ Result<void> ReminderScheduler::remove(uint32_t id) {
     size_t count = 0;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
-        if (load_failed_) {
+        if (!writable_locked()) {
             return Result<void>::err(ErrorCode::StorageUnavailable, "todo_unavailable");
         }
         auto it =
@@ -553,6 +585,9 @@ Result<void> ReminderScheduler::clear() {
     {
         // Allowed after a failed load: it is the explicit way to start over.
         std::lock_guard<os::Mutex> lock(mutex_);
+        if (forgotten_) {
+            return Result<void>::err(ErrorCode::StorageUnavailable, "todo_unavailable");
+        }
         os::LargeVector<Todo> old = std::move(todos_);
         todos_.clear();
         if (Result<void> w = persist_locked(); !w) {
@@ -569,7 +604,22 @@ Result<void> ReminderScheduler::clear() {
     return Result<void>::ok();
 }
 
+void ReminderScheduler::forget() {
+    alive_->store(false);
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        forgotten_ = true;
+        todos_.clear();
+    }
+    // The bus subscription stays until stop(); it checks alive_ first.
+    if (timer_.cancel) timer_.cancel();
+    if (retry_.cancel) retry_.cancel();
+    WLOG_I(kTag, "todos forgotten");
+}
+
 void ReminderScheduler::fire_due() {
+    // This is the pass a refused one asked for.
+    if (retry_.cancel) retry_.cancel();
     const int64_t now = now_s();
     const int off = utc_offset_min();
     // Posted once the lock is let go: the listener may run for a while.
@@ -578,6 +628,7 @@ void ReminderScheduler::fire_due() {
     bool changed = false;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
+        if (forgotten_) return;
         if (!clock_set(now)) {
             rearm_locked(now);
             return;

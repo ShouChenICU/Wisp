@@ -106,6 +106,23 @@ protected:
             .missed_title = [](size_t n) { return "missed " + std::to_string(n); },
             .make_timer =
                 [this](std::function<void()> f) {
+                    // The second timer made is the retry one.
+                    if (fire) {
+                        retry_fire = std::move(f);
+                        return ReminderTimer{
+                            .arm =
+                                [this](uint32_t ms) {
+                                    std::lock_guard<std::mutex> lock(mu);
+                                    retry_arms.push_back(ms);
+                                    retrying = true;
+                                },
+                            .cancel =
+                                [this] {
+                                    std::lock_guard<std::mutex> lock(mu);
+                                    retrying = false;
+                                },
+                        };
+                    }
                     fire = std::move(f);
                     return ReminderTimer{
                         .arm =
@@ -128,6 +145,8 @@ protected:
     // A new scheduler over the same file, loaded and started.
     ReminderScheduler& open() {
         sched.reset();
+        fire = nullptr;
+        retry_fire = nullptr;
         sched = std::make_unique<ReminderScheduler>(deps(), path);
         auto r = sched->load();
         EXPECT_TRUE(r) << r.error().message;
@@ -188,8 +207,11 @@ protected:
     std::atomic<int64_t> now{kT};
     std::atomic<int> offset{480};
     std::function<void()> fire;
+    std::function<void()> retry_fire;
 
     std::mutex mu;
+    std::vector<uint32_t> retry_arms;
+    bool retrying = false;
     std::vector<uint32_t> arms;
     int cancels = 0;
     bool armed = false;
@@ -673,4 +695,162 @@ TEST_F(Reminders, DropsInvalidRecordsOnLoad) {
     EXPECT_TRUE(all[1].done);
     EXPECT_EQ(add("next", std::nullopt), 11u);
     EXPECT_TRUE(log_mentions("dropped 7"));
+}
+
+// The timer is one-shot: a pass the worker refuses must be asked for
+// again, or the reminder would never ring.
+TEST_F(Reminders, RefusedPassIsRetried) {
+    std::atomic<int> refuse{0};
+    std::atomic<int> submits{0};
+    submit_io = [&](std::function<void()> job) {
+        ++submits;
+        if (refuse.load() > 0) {
+            --refuse;
+            return false;
+        }
+        job();
+        return true;
+    };
+    open();
+    add("出门", kT + 60);
+    now = kT + 60;
+    refuse = 1;
+    ring();
+    EXPECT_TRUE(posts().empty());
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        EXPECT_TRUE(retrying);
+        EXPECT_EQ(retry_arms, (std::vector<uint32_t>{ReminderScheduler::kRetryMs}));
+    }
+    // Refused again: the retry timer keeps going by itself, no new arm.
+    refuse = 1;
+    ASSERT_TRUE(retry_fire);
+    retry_fire();
+    EXPECT_TRUE(posts().empty());
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        EXPECT_TRUE(retrying);
+        EXPECT_EQ(retry_arms.size(), 1u);
+    }
+    retry_fire();
+    ASSERT_EQ(posts().size(), 1u);
+    EXPECT_EQ(posts()[0].id, "todo-1");
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_FALSE(retrying);
+    EXPECT_TRUE(log_mentions("checked again in 1000 ms"));
+}
+
+TEST_F(Reminders, RefusedBootPassIsRetried) {
+    std::atomic<int> refuse{0};
+    submit_io = [&](std::function<void()> job) {
+        if (refuse.load() > 0) {
+            --refuse;
+            return false;
+        }
+        job();
+        return true;
+    };
+    open();
+    add("出门", kT + 60);
+    sched.reset();
+    now = kT + 60;
+    refuse = 1;
+    open();
+    EXPECT_TRUE(posts().empty());
+    ASSERT_TRUE(retry_fire);
+    retry_fire();
+    ASSERT_EQ(posts().size(), 1u);
+    EXPECT_EQ(posts()[0].id, "todo-1");
+}
+
+TEST_F(Reminders, StopWithoutStartSilencesTheTimers) {
+    sched = std::make_unique<ReminderScheduler>(deps(), path);
+    ASSERT_TRUE(sched->load());
+    add("出门", kT + 60);
+    sched->stop();
+    std::atomic<int> submits{0};
+    submit_io = [&](std::function<void()>) {
+        ++submits;
+        return true;
+    };
+    now = kT + 60;
+    ring();
+    retry_fire();
+    EXPECT_EQ(submits.load(), 0);
+}
+
+// A daily 08:00 todo rang on Saturday and nobody answered it. Sunday at
+// 07:00 "done" means Sunday's: it must not ring at 08:00.
+TEST_F(Reminders, DoneAfterAnOldRingSkipsTheNext) {
+    now = kT - 3600;
+    open();
+    const uint32_t id = add("吃药", kT, RepeatRule{Repeat::Daily, 0});
+    now = kT;
+    ring();
+    ASSERT_EQ(posts().size(), 1u);
+    ASSERT_EQ(get(id).due, std::optional<int64_t>(kT + 86400));
+
+    // Later the same day it is still that ring.
+    now = kT + 10 * 3600;
+    ASSERT_TRUE(sched->done(id));
+    EXPECT_EQ(get(id).due, std::optional<int64_t>(kT + 86400));
+
+    now = kT + 86400;
+    ring();
+    ASSERT_EQ(posts().size(), 2u);
+    now = kT + 2 * 86400 - 3600;  // the next day, 07:00
+    ASSERT_TRUE(sched->done(id));
+    Todo t = get(id);
+    EXPECT_EQ(t.due, std::optional<int64_t>(kT + 3 * 86400));
+    EXPECT_EQ(t.notified_at, std::nullopt);
+    now = kT + 2 * 86400;
+    ring();
+    EXPECT_EQ(posts().size(), 2u);
+
+    // Just after midnight a ring from 23:30 is still the current one.
+    const int64_t late = kT + 3 * 86400 + 15 * 3600 + 1800;  // 23:30
+    const uint32_t night = add("关灯", late, RepeatRule{Repeat::Daily, 0});
+    now = late;
+    ring();
+    now = late + 2400;  // 00:10
+    ASSERT_TRUE(sched->done(night));
+    EXPECT_EQ(get(night).due, std::optional<int64_t>(late + 86400));
+}
+
+// Factory reset: nothing the scheduler still does may write the todos
+// back.
+TEST_F(Reminders, ForgetDropsEverythingAndRefusesWrites) {
+    open();
+    const uint32_t id = add("秘密", kT + 60, RepeatRule{Repeat::Daily, 0});
+    add("另一个", std::nullopt);
+    now = kT + 60;
+    ring();
+    ASSERT_EQ(posts().size(), 1u);
+    fs::remove_all(fs::path(path).parent_path());
+
+    sched->forget();
+    EXPECT_TRUE(sched->list(TodoFilter::All).empty());
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        EXPECT_FALSE(armed);
+        EXPECT_FALSE(retrying);
+    }
+    EXPECT_EQ(sched->add("x", std::nullopt, {}).error().message, "todo_unavailable");
+    EXPECT_EQ(sched->done(id).error().message, "todo_unavailable");
+    EXPECT_EQ(sched->snooze(id).error().message, "todo_unavailable");
+    EXPECT_EQ(sched->remove(id).error().message, "todo_unavailable");
+    TodoFields rename;
+    rename.title = "y";
+    EXPECT_EQ(sched->update(id, rename).error().message, "todo_unavailable");
+    EXPECT_EQ(sched->clear().error().message, "todo_unavailable");
+    now = kT + 86400 + 60;
+    sched->fire_due();
+    ring();
+    bus.publish(Event{"system.time", "test", 0, {{"state", Value("synced")}}});
+    bus.wait_idle(2000);
+    EXPECT_EQ(posts().size(), 1u);
+    EXPECT_FALSE(fs::exists(fs::path(path).parent_path()));
+    sched->start();
+    sched->stop();
+    EXPECT_FALSE(fs::exists(fs::path(path).parent_path()));
 }

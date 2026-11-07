@@ -445,6 +445,15 @@ TEST(ToolRegistry, TypeListAcceptsAnyOfItsTypes) {
     EXPECT_EQ(error_of(out), "bad_args");
     EXPECT_EQ(field_of(out), "value");
 
+    // A property that may be cleared: ["string", "null"].
+    ASSERT_TRUE(reg.add(tool("todo.update", R"({"type":"object",
+        "properties":{"due":{"type":["string","null"]}}})")));
+    EXPECT_TRUE(reg.call("todo_update", R"({"due":null})", c).ok);
+    EXPECT_TRUE(reg.call("todo_update", R"({"due":"x"})", c).ok);
+    ToolOutput not_null = reg.call("todo_update", R"({"due":5})", c);
+    EXPECT_EQ(error_of(not_null), "bad_args");
+    EXPECT_EQ(field_of(not_null), "due");
+
     std::string why;
     EXPECT_FALSE(wisp::agent::schema_supported(
         wisp::from_json(R"({"type":"object","properties":{"v":{"type":[]}}})").value(), &why));

@@ -4,12 +4,15 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <utility>
 
 #include "app_impl.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/notification_service.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
@@ -52,8 +55,8 @@ void cancel_factory_reset(App& app) {
 
 void factory_reset(App& app) {
     WLOG_W(kTag,
-           "factory reset: erasing settings, Wi-Fi, pairings, the model profiles and the "
-           "agent's conversations");
+           "factory reset: erasing settings, Wi-Fi, pairings, the model profiles, the "
+           "agent's conversations and memory, todos and notifications");
 
     // Pending -> Started (the job) or Abandoned (this task, once the wait
     // is over): whichever comes first wins, so a job still queued when we
@@ -88,9 +91,23 @@ void factory_reset(App& app) {
         if (net::WifiService* wifi = app.wifi()) wifi->forget_all();
         if (net::PairingService* pairing = app.pairing()) pairing->revoke_all();
         app.models().clear();
-        // The agent's conversation, archives, memory notes and todos
-        // (agent-core spec 3.5; mvp spec 5.1, 5.2).
+        // The todos go from memory before their file, so no timer pass,
+        // tool call or reminder action still running can write them back
+        // before the restart.
+        if (app.impl_->reminders) app.impl_->reminders->forget();
+        // Notices carry todo titles and scene text; the list goes, and its
+        // file with it (a save after this writes what is left: nothing, or
+        // what was posted since).
+        if (core::NotificationService* notes = app.notifications()) notes->clear_all();
+        // The agent's conversation, archives, memory notes, todos and the
+        // notifications (agent-core spec 3.5; mvp spec 5.1, 5.2).
         if (auto root = app.storage().write_root(core::Area::System); root) {
+            for (const char* suffix : {"", ".tmp", ".new"}) {
+                const std::string file = root.value() + "/notifications.json" + suffix;
+                if (auto r = app.storage().remove_tree(file); !r) {
+                    WLOG_E(kTag, "erasing the notifications failed: %s", r.error().message.c_str());
+                }
+            }
             if (auto r = app.storage().remove_tree(root.value() + "/agent"); !r) {
                 WLOG_E(kTag, "erasing the conversations failed: %s", r.error().message.c_str());
             }

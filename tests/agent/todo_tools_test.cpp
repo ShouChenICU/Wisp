@@ -143,6 +143,10 @@ TEST_F(TodoTools, AddParsesDueAndRepeat) {
     ToolOutput bad_update = call("todo_update", R"({"id":1,"fields":{"due":"soon"}})");
     ASSERT_FALSE(bad_update.ok);
     EXPECT_EQ(str(bad_update.result, "field"), "fields.due");
+    ToolOutput number_due = call("todo_update", R"({"id":1,"fields":{"due":1794009600}})");
+    ASSERT_FALSE(number_due.ok);
+    EXPECT_EQ(str(number_due.result, "error"), "bad_args");
+    EXPECT_EQ(str(number_due.result, "field"), "fields.due");
 
     ToolOutput done = call("todo_done", R"({"id":1})");
     ASSERT_TRUE(done.ok) << wisp::to_json(done.result);

@@ -13,7 +13,8 @@ namespace wisp::agent {
 
 namespace {
 
-constexpr std::string_view kTypes[] = {"object", "string", "integer", "number", "boolean", "array"};
+constexpr std::string_view kTypes[] = {"object",  "string", "integer", "number",
+                                       "boolean", "array",  "null"};
 
 bool is_number(const Value& v) {
     return v.type() == Value::Type::Int || v.type() == Value::Type::Double;
@@ -36,6 +37,7 @@ bool has_type(const Value& v, std::string_view type) {
     if (type == "array") return v.type() == Value::Type::List;
     if (type == "string") return v.type() == Value::Type::String;
     if (type == "boolean") return v.type() == Value::Type::Bool;
+    if (type == "null") return v.type() == Value::Type::Null;
     if (type == "number") return is_number(v);
     if (type == "integer") {
         if (v.type() == Value::Type::Int) return true;

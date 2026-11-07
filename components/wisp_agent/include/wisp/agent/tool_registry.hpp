@@ -116,8 +116,9 @@ private:
 std::string wire_name(std::string_view dotted);
 
 // The JSON Schema subset tools use: type (object, string, integer, number,
-// boolean, array; a property may list several, ["integer", "string"],
-// and then takes any of them), properties, required, enum, minimum, maximum, maxLength
+// boolean, array, null; a property may list several, ["integer", "string"]
+// or ["string", "null"] for one that may be cleared, and then takes any of
+// them), properties, required, enum, minimum, maximum, maxLength
 // (in code points) and items. Properties not in the schema are allowed.
 // Returns nullopt when `args` conforms, otherwise the path of the failing
 // field ("path", "a.b", "list[2]"; "" for the arguments as a whole), with

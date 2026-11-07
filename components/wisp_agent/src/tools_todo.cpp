@@ -32,7 +32,8 @@ constexpr const char* kAddSchema =
     R"("repeat":{"type":["string","object"]}},"required":["title"]})";
 constexpr const char* kUpdateSchema =
     R"({"type":"object","properties":{"id":{"type":"integer"},"fields":{"type":"object",)"
-    R"("properties":{"title":{"type":"string"},"repeat":{"type":["string","object"]}}}},)"
+    R"("properties":{"title":{"type":"string"},"due":{"type":["string","null"]},)"
+    R"("repeat":{"type":["string","object"]}}}},)"
     R"("required":["id","fields"]})";
 constexpr const char* kIdSchema =
     R"({"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]})";
