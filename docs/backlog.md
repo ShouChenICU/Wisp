@@ -187,4 +187,4 @@ Source: glyph partition review records.
 - `voice.state` events carry no capture id. An `idle`/`not_heard` or `error` that arrives late from capture N can mark capture N+1 as "没听清". Fix this when building the shell UI.
 - `notify()` copies the whole `TurnView` once per listener on every Delta, which is O(n²) over a turn. Revisit if long replies show up in WISP_PERF.
 - The test gaps listed under m8 of the Task 17 review: TalkKey when the screen turns off mid-hold; settings changes reaching the cached tts_mute and volume.
-- Check whether `AgentService::stop_turn()` ends the turn promptly when it arrives before the LLM stream has started. A shell test saw a web turn not end within 8 s when it was stopped before the request was held.
+- ESP `esp_http_client.cpp` attaches the socket to `RequestWatch` only after `esp_http_client_open()` returns, so a stop pressed during DNS/TCP connect/TLS handshake waits for the connection to succeed or fail (worst case: the open timeout). Needs an interruptible connect in the ESP port; not reproducible in the simulator. (A stop before the LLM request is honoured at the agent layer; verified.)
