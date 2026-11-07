@@ -180,3 +180,11 @@ Source: glyph partition review records.
 
 - `AsrClient`: the 15 s timeout applies to each attempt, so with one retry the worst case is 15 + 1 + 15 = 31 s. `LlmClient` keeps one overall deadline across its retries. Decide whether ASR should do the same.
 - `ModelProfileService` load: when a stored profile's options fail the newer per-kind checks (e.g. `language` on an llm profile), the whole profile is dropped, key included, without a word. Strip the bad options and keep the profile instead.
+
+## Conversation controller (MVP shell)
+
+- After the agent dequeues a message and before its TurnBegin, `view()` shows neither running nor queued, and while `run_turn()` checks for a rollover that gap can be long. During it, a tap can start a capture, and `hold_begin()` does not stop the just-dequeued web turn. Fix: AgentService exposes a busy flag that covers the slot/active state, and `hold_begin()` always calls `stop_turn()`.
+- `voice.state` events carry no capture id. An `idle`/`not_heard` or `error` that arrives late from capture N can mark capture N+1 as "没听清". Fix this when building the shell UI.
+- `notify()` copies the whole `TurnView` once per listener on every Delta, which is O(n²) over a turn. Revisit if long replies show up in WISP_PERF.
+- The test gaps listed under m8 of the Task 17 review: TalkKey when the screen turns off mid-hold; settings changes reaching the cached tts_mute and volume.
+- Check whether `AgentService::stop_turn()` ends the turn promptly when it arrives before the LLM stream has started. A shell test saw a web turn not end within 8 s when it was stopped before the request was held.
