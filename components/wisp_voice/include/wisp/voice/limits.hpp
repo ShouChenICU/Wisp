@@ -17,6 +17,11 @@ inline constexpr uint32_t kNoiseEstimateMs = 300;
 inline constexpr uint32_t kStartTimeoutMs = 5000;
 inline constexpr uint32_t kEndSilenceMs = 800;
 inline constexpr uint32_t kMinSpeechMs = 300;
+// Read and dropped right after the mic opens: the codec's pop after an
+// I2S reconfiguration (say from 24 kHz speech back to 16 kHz capture) and
+// the start tone's tail land here, out of the recording and the VAD's
+// noise estimate.
+inline constexpr uint32_t kMicSettleMs = 100;
 
 inline constexpr size_t kFrameSamples = kSampleRate / 1000 * kFrameMs;
 

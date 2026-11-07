@@ -17,7 +17,7 @@ constexpr const char* kTag = "voice";
 // every change of phase also gives data_, so this is only a backstop.
 constexpr uint32_t kIdleWaitMs = 100;
 
-// The same mapping as Vad::level(): RMS in dBFS, -60..0 onto 0..100. In
+// The same mapping as voice::level_of() (vad.hpp): RMS in dBFS, -60..0 onto 0..100. In
 // float and an integer sum: the S3's FPU is single precision, and this
 // runs for every chunk.
 uint8_t level_of(const int16_t* s, size_t n) {

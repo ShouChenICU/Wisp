@@ -1,7 +1,10 @@
 #include "wisp/voice/voice_service.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <mutex>
+#include <optional>
 #include <utility>
 
 #include "wisp/base/value.hpp"
@@ -458,9 +461,32 @@ void VoiceService::capture(const Command& c) {
 
     CaptureBuffer& buf = *buffer_;
     buf.clear();
-    Vad vad(c.mode == CaptureMode::Hold ? VadMode::Hold : VadMode::Auto);
+    // Settle time: read into the buffer's free space and never commit.
+    for (uint32_t ms = 0; ms < kMicSettleMs; ms += kFrameMs) {
+        std::span<int16_t> frame = buf.free_space();
+        frame = frame.first(std::min(frame.size(), kFrameSamples));
+        size_t got = 0;
+        while (got < frame.size()) {
+            auto r = deps_.mic->read(frame.data() + got, frame.size() - got);
+            if (!r || r.value() == 0) {
+                deps_.mic->close();
+                return failed(VoiceError::MicUnavailable);
+            }
+            got += r.value();
+        }
+    }
+    // A press-and-hold never runs the VAD: the release says when the user
+    // is done, and a VAD that misjudged the level (a start-up transient
+    // inflating its noise floor) would drop real speech.
+    const bool hold = c.mode == CaptureMode::Hold;
+    std::optional<Vad> vad;
+    if (!hold) vad.emplace();
     VadVerdict verdict = VadVerdict::Continue;
     bool cancelled = false, read_failed = false;
+    // Signal statistics for the capture log line: levels only, never audio.
+    int64_t sum = 0;
+    int32_t peak = 0;
+    double max_e = 0, head_e = 0;
     for (;;) {
         // Wake-ups that come now are for speech: pump_speech() reads its
         // state after the capture anyway.
@@ -473,7 +499,7 @@ void VoiceService::capture(const Command& c) {
             break;
         }
         if (ended_seq_.load() >= c.capture || buf.full()) {
-            verdict = vad.finish();
+            if (vad) verdict = vad->finish();
             break;
         }
         std::span<int16_t> frame = buf.free_space();
@@ -488,16 +514,34 @@ void VoiceService::capture(const Command& c) {
             got += r.value();
         }
         if (read_failed) break;
-        verdict = vad.push(frame);
+        double e = 0;
+        for (int16_t v : frame) {
+            sum += v;
+            peak = std::max(peak, std::abs(static_cast<int32_t>(v)));
+            e += static_cast<double>(v) * v;
+        }
+        if (!frame.empty()) {
+            e /= static_cast<double>(frame.size());
+            max_e = std::max(max_e, e);
+            if (buf.ms() < kNoiseEstimateMs) head_e = std::max(head_e, e);
+        }
         buf.commit(frame.size());
-        publish_level(VoiceState::Listening, vad.level());
+        if (vad) verdict = vad->push(frame);
+        publish_level(VoiceState::Listening, vad ? vad->level() : level_of(e));
         if (verdict != VadVerdict::Continue) break;
     }
     deps_.mic->close();
+    WLOG_I(kTag, "capture ms=%u speech_ms=%u verdict=%d peak=%d dc=%d max_rms=%d head_rms=%d",
+           static_cast<unsigned>(buf.ms()), static_cast<unsigned>(vad ? vad->speech_ms() : 0),
+           static_cast<int>(verdict), static_cast<int>(peak),
+           static_cast<int>(buf.frames() ? sum / static_cast<int64_t>(buf.frames()) : 0),
+           static_cast<int>(std::sqrt(max_e)), static_cast<int>(std::sqrt(head_e)));
 
     if (cancelled) return finish(nullptr);
     if (read_failed) return failed(VoiceError::MicUnavailable);
-    if (verdict != VadVerdict::Done) return finish("not_heard");
+    // Hold: recorded length alone, kMinSpeechMs or more is sent.
+    const bool send = hold ? buf.ms() >= kMinSpeechMs : verdict == VadVerdict::Done;
+    if (!send) return finish("not_heard");
 
     publish(VoiceState::Transcribing);
     if (deps_.network_up && !deps_.network_up()) return failed(VoiceError::Offline);

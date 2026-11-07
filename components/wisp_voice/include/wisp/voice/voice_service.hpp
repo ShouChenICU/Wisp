@@ -8,11 +8,14 @@
 // "voice_turn") and hands the round to the task, which checks for a mic,
 // an active asr profile and the network, plays the start tone (and waits
 // up to kToneWaitMs for it to end, so the mic does not hear it), opens the
-// mic and reads kFrameMs frames into a CaptureBuffer, feeding each to a
-// Vad. Hold mode ends at end_capture(); Vad mode ends when the Vad says
-// so, or at end_capture() (a second tap). Both end at max_record_ms.
-// Too little speech, no speech, or an empty transcript is "not heard"
-// (not an error): voice.state goes back to idle with result "not_heard".
+// mic, drops its first kMicSettleMs, and reads kFrameMs frames into a
+// CaptureBuffer. Hold mode (press-and-hold, key or screen) never runs the
+// VAD: it ends at end_capture() and sends any recording of kMinSpeechMs
+// or more. Vad mode (a tap) feeds each frame to a Vad and ends when the
+// Vad says so, or at end_capture() (a second tap). Both end at
+// max_record_ms. A shorter hold, a tap capture the Vad does not call
+// Done, or an empty transcript is "not heard" (not an error): voice.state
+// goes back to idle with result "not_heard".
 // Otherwise the recording goes to AsrClient and the text to the
 // on_transcript callback. cancel_capture() drops the recording, or aborts
 // the ASR request already sent. The start tone goes through TonePlayer,

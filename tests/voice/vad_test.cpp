@@ -13,7 +13,6 @@
 using wisp::voice::kFrameMs;
 using wisp::voice::kFrameSamples;
 using wisp::voice::Vad;
-using wisp::voice::VadMode;
 using wisp::voice::VadVerdict;
 
 namespace {
@@ -56,7 +55,7 @@ constexpr int frames(uint32_t ms) { return static_cast<int>(ms / kFrameMs); }
 }  // namespace
 
 TEST(Vad, SpeechBetweenSilencesIsDone) {
-    Vad vad(VadMode::Auto);
+    Vad vad;
     Noise noise;
     for (int i = 0; i < frames(300); ++i)
         ASSERT_EQ(vad.push(noise.frame(300)), VadVerdict::Continue);
@@ -76,7 +75,7 @@ TEST(Vad, SpeechBetweenSilencesIsDone) {
 }
 
 TEST(Vad, NoSpeechWithinFiveSeconds) {
-    Vad vad(VadMode::Auto);
+    Vad vad;
     Noise noise;
     for (int i = 1; i < frames(5000); ++i) {
         ASSERT_EQ(vad.push(noise.frame(300)), VadVerdict::Continue) << "frame " << i;
@@ -86,7 +85,7 @@ TEST(Vad, NoSpeechWithinFiveSeconds) {
 }
 
 TEST(Vad, ShortBurstIsTooShort) {
-    Vad vad(VadMode::Auto);
+    Vad vad;
     Noise noise;
     for (int i = 0; i < frames(300); ++i) vad.push(noise.frame(300));
     for (int i = 0; i < frames(200); ++i) ASSERT_EQ(vad.push(tone(8000)), VadVerdict::Continue);
@@ -99,7 +98,7 @@ TEST(Vad, ShortBurstIsTooShort) {
 }
 
 TEST(Vad, AdaptsToRisingNoise) {
-    Vad vad(VadMode::Auto);
+    Vad vad;
     Noise noise;
     for (int i = 0; i < frames(300); ++i) vad.push(noise.frame(300));
     const int ramp = frames(3000);
@@ -111,26 +110,39 @@ TEST(Vad, AdaptsToRisingNoise) {
     EXPECT_EQ(vad.finish(), VadVerdict::TooShort);
 }
 
-TEST(Vad, HoldModeNeverEndsOnSilence) {
-    Vad vad(VadMode::Hold);
+// A codec pop or the start tone's tail at the start of the estimate
+// window must not raise the floor above the speech that follows. The noise
+// is 200 rms rather than 300: a 600 rms tone over 300 rms noise is only
+// 4x in energy, under kSpeechRatio whatever the floor estimate.
+TEST(Vad, LoudTransientAtStartDoesNotHideSpeech) {
+    Vad vad;
+    Noise noise;
+    for (int i = 0; i < frames(100); ++i) ASSERT_EQ(vad.push(square(32000)), VadVerdict::Continue);
+    for (int i = 0; i < frames(300); ++i)
+        ASSERT_EQ(vad.push(noise.frame(200)), VadVerdict::Continue);
+    for (int i = 0; i < frames(1000); ++i) ASSERT_EQ(vad.push(tone(600)), VadVerdict::Continue);
+    VadVerdict v = VadVerdict::Continue;
+    for (int i = 0; i < frames(900) && v == VadVerdict::Continue; ++i)
+        v = vad.push(noise.frame(200));
+    EXPECT_EQ(v, VadVerdict::Done);
+    EXPECT_GE(vad.speech_ms(), 960u);
+}
+
+TEST(Vad, FinishDecidesOnTheSpeechSoFar) {
+    Vad vad;
     Noise noise;
     for (int i = 0; i < frames(300); ++i) vad.push(noise.frame(300));
     for (int i = 0; i < frames(1000); ++i) ASSERT_EQ(vad.push(tone(8000)), VadVerdict::Continue);
-    for (int i = 0; i < frames(6000); ++i)
-        ASSERT_EQ(vad.push(noise.frame(300)), VadVerdict::Continue);
     EXPECT_EQ(vad.finish(), VadVerdict::Done);
-}
 
-TEST(Vad, HoldModeReleaseWithoutSpeechIsTooShort) {
-    Vad vad(VadMode::Hold);
-    Noise noise;
-    for (int i = 0; i < frames(6000); ++i)
-        ASSERT_EQ(vad.push(noise.frame(300)), VadVerdict::Continue);
-    EXPECT_EQ(vad.finish(), VadVerdict::TooShort);
+    Vad quiet;
+    for (int i = 0; i < frames(1000); ++i)
+        ASSERT_EQ(quiet.push(noise.frame(300)), VadVerdict::Continue);
+    EXPECT_EQ(quiet.finish(), VadVerdict::TooShort);
 }
 
 TEST(Vad, LevelMapsDbfs) {
-    Vad vad(VadMode::Hold);
+    Vad vad;
     vad.push(square(32767));
     EXPECT_EQ(vad.level(), 100);
     vad.push(square(33));  // about -60 dBFS

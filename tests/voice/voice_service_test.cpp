@@ -41,6 +41,7 @@ using wisp::test::FakeTtsReply;
 using wisp::test::wait_until;
 using wisp::test::audio::FakeAudioIn;
 using wisp::test::audio::FakeAudioOut;
+using wisp::test::audio::noise;
 using wisp::test::audio::OrderLog;
 using wisp::test::audio::silence;
 using wisp::test::audio::sine;
@@ -278,11 +279,20 @@ TEST_F(VoiceServiceTest, HoldCaptureSendsOnRelease) {
     ASSERT_TRUE(wait_until([&] { return !got_transcripts().empty(); }, 3000));
     EXPECT_EQ(got_transcripts(), std::vector<std::string>{"你好"});
     EXPECT_EQ(count(kAsrPath), 1u);
-    // The whole recording went: 1.3 s scripted plus the live tail.
-    EXPECT_GT(server.requests()[0].body.size(), 1300u * 32);
+    // The whole recording went: 1.3 s scripted, less the settle time, plus
+    // the live tail.
+    EXPECT_GT(server.requests()[0].body.size(), (1300u - wisp::voice::kMicSettleMs) * 32);
     EXPECT_FALSE(mic->is_open());
     EXPECT_EQ(mic->format().sample_rate, 16000u);
     EXPECT_TRUE(wait_idle());
+    // No VAD, but the level meter still runs.
+    bool loud = false;
+    for (const Map& m : events()) {
+        if (str(m, "state") == "listening" && m.count("level")) {
+            loud = loud || m.at("level").as_int() > 50;
+        }
+    }
+    EXPECT_TRUE(loud);
     // Busy while capturing is the only refusal.
     EXPECT_TRUE(voice->begin_capture(CaptureMode::Hold));
     EXPECT_EQ(voice->begin_capture(CaptureMode::Hold).error().code, wisp::ErrorCode::Busy);
@@ -319,9 +329,10 @@ TEST_F(VoiceServiceTest, NotHeardCases) {
     EXPECT_TRUE(saw("idle", "result", "not_heard"));
     EXPECT_GE(virtual_ms.load(), 5000u);
 
-    // A 200 ms touch on Hold.
+    // A touch on Hold: under kMinSpeechMs recorded once the mic's settle
+    // time (kMicSettleMs, the leading silence) is dropped.
     clear_events();
-    mic->set_script({silence(300), sine(200)});
+    mic->set_script({silence(100), sine(100)});
     ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
     ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
     voice->end_capture();
@@ -340,6 +351,55 @@ TEST_F(VoiceServiceTest, NotHeardCases) {
     EXPECT_TRUE(got_transcripts().empty());
     EXPECT_TRUE(reasons().empty());
     EXPECT_EQ(voice_locks(), 0u);
+}
+
+TEST_F(VoiceServiceTest, HoldSendsWithoutVadSpeech) {
+    add_asr();
+    make();
+    // Nothing the VAD calls speech, yet held for over kMinSpeechMs: sent.
+    server.push_asr(asr_text("嗯"));
+    mic->set_script({silence(100), noise(600)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return !got_transcripts().empty(); }, 3000));
+    EXPECT_EQ(got_transcripts(), std::vector<std::string>{"嗯"});
+    EXPECT_TRUE(wait_idle());
+
+    // An empty transcript is still not heard.
+    clear_events();
+    server.push_asr(asr_text(""));
+    mic->set_script({silence(100), noise(600)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return count(kAsrPath) == 2; }, 3000));
+    ASSERT_TRUE(wait_idle());
+    EXPECT_TRUE(saw("idle", "result", "not_heard"));
+    EXPECT_EQ(got_transcripts().size(), 1u);
+}
+
+TEST_F(VoiceServiceTest, MicSettleTimeIsDropped) {
+    add_asr();
+    make();
+    // The first kMicSettleMs after open (a loud pop here) never reach the
+    // recording.
+    server.push_asr(asr_text("好"));
+    mic->set_script({sine(wisp::voice::kMicSettleMs, 30000), silence(500)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return !got_transcripts().empty(); }, 3000));
+    const std::string body = server.requests().at(0).body;
+    const size_t data = body.find("data", body.find("WAVE"));
+    ASSERT_NE(data, std::string::npos);
+    uint32_t bytes = 0;
+    std::memcpy(&bytes, body.data() + data + 4, 4);
+    ASSERT_GE(bytes, 500u * 32);
+    ASSERT_LE(data + 8 + bytes, body.size());
+    std::vector<int16_t> pcm(bytes / 2);
+    std::memcpy(pcm.data(), body.data() + data + 8, bytes);
+    EXPECT_TRUE(std::all_of(pcm.begin(), pcm.end(), [](int16_t v) { return v == 0; }));
 }
 
 TEST_F(VoiceServiceTest, RecordingCapStopsAndSends) {

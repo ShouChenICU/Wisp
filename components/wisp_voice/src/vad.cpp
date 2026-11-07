@@ -15,7 +15,12 @@ constexpr double kLevelFloorDb = -60.0;
 
 }  // namespace
 
-Vad::Vad(VadMode mode) : mode_(mode) {}
+uint8_t level_of(double mean_square) {
+    const double db =
+        mean_square > 0 ? 10.0 * std::log10(mean_square / kFullScaleSquared) : kLevelFloorDb;
+    const double pct = std::clamp((db - kLevelFloorDb) / -kLevelFloorDb, 0.0, 1.0) * 100.0;
+    return static_cast<uint8_t>(std::lround(pct));
+}
 
 VadVerdict Vad::verdict_after_speech() const {
     return speech_ms_ < kMinSpeechMs ? VadVerdict::TooShort : VadVerdict::Done;
@@ -26,29 +31,39 @@ VadVerdict Vad::push(std::span<const int16_t> frame) {
     for (int16_t s : frame) e += static_cast<double>(s) * s;
     if (!frame.empty()) e /= static_cast<double>(frame.size());
 
-    const double db = e > 0 ? 10.0 * std::log10(e / kFullScaleSquared) : kLevelFloorDb;
-    const double pct = std::clamp((db - kLevelFloorDb) / -kLevelFloorDb, 0.0, 1.0) * 100.0;
-    level_ = static_cast<uint8_t>(std::lround(pct));
+    level_ = level_of(e);
 
     if (final_ != VadVerdict::Continue) return final_;
 
     const uint32_t t = elapsed_ms_;
     elapsed_ms_ += kFrameMs;
     if (t < kNoiseEstimateMs) {
-        ++noise_frames_;
-        noise_ += (e - noise_) / noise_frames_;
+        if (head_count_ < kHeadFrames) head_[head_count_++] = e;
         return VadVerdict::Continue;
+    }
+    if (head_count_ > 0) {
+        // The mean of the quietest half: a transient at the start (a codec
+        // pop, the tone's tail) falls in the loud half and is left out.
+        std::sort(head_.begin(), head_.begin() + head_count_);
+        const size_t n = (head_count_ + 1) / 2;
+        double sum = 0;
+        for (size_t i = 0; i < n; ++i) sum += head_[i];
+        noise_ = sum / static_cast<double>(n);
+        head_count_ = 0;
     }
 
     const bool speech = e > std::max(noise_ * kSpeechRatio, static_cast<double>(kAbsFloor));
-    if (!speech) noise_ += (e - noise_) / 16.0;
+    // Down fast, up slowly: quiet speech under the threshold must not drag
+    // the floor up to its own level, while a background that keeps rising
+    // is still followed (see AdaptsToRisingNoise in tests/voice).
+    if (!speech) noise_ += (e - noise_) / (e < noise_ ? kFallDiv : kRiseDiv);
 
     if (!started_) {
         run_ = speech ? run_ + 1 : 0;
         if (run_ >= kStartFrames) {
             started_ = true;
             speech_ms_ = kStartFrames * kFrameMs;
-        } else if (mode_ == VadMode::Auto && elapsed_ms_ >= kStartTimeoutMs) {
+        } else if (elapsed_ms_ >= kStartTimeoutMs) {
             final_ = VadVerdict::NoSpeech;
         }
         return final_;
@@ -60,7 +75,7 @@ VadVerdict Vad::push(std::span<const int16_t> frame) {
     } else {
         silence_ms_ += kFrameMs;
     }
-    if (mode_ == VadMode::Auto && silence_ms_ >= kEndSilenceMs) final_ = verdict_after_speech();
+    if (silence_ms_ >= kEndSilenceMs) final_ = verdict_after_speech();
     return final_;
 }
 
