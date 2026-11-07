@@ -135,6 +135,10 @@ Source: `feat/agent-core` review records.
   - the chat page hides messages by role rather than the `hidden` field;
   - the `ws.js` typedef comment does not list the `agent` kind;
   - the dropped-frame catch-up and the "allow" branch of Clear all were not exercised live (no scripted LLM traffic, no simulated dialog tap).
+- Wi-Fi pages:
+  - the "已保存的网络" card rows on the network page have no connect button; only a pick in the scan list connects directly;
+  - the setup wizard's step indicator marks "输入密码" done when a saved network was joined without one;
+  - the firmware's app version string is fixed when CMake configures, so an incremental `app-flash` reports an older `git describe`.
 - Firmware builds with `-Werror=missing-field-initializers`, the host build does not, so `tools/ci.sh` misses designated initializers that omit fields; enable the warning on the host or build the firmware in CI.
 
 ## Glyph partition parked review findings
