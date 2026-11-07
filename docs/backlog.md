@@ -128,6 +128,13 @@ Source: `feat/agent-core` review records.
   - the `queued` flag in the 202 can be wrong under a concurrent voice submit;
   - `device.status` storage use lags one call and is null on the first call after boot;
   - with no `net.wifi` device (simulator) the context reports the network as up.
+- Device confirm and chat page:
+  - `AgentService::stop()` clears pending commands, so a queued Clear never answers `cleared` and the web page waits on the device;
+  - the comment at `agent_service.cpp` "history gains no extra system or user message" reads as if no message is added, but a `Note` is (not sent to the model);
+  - a confirm close dropped on a full UI queue leaves the dialog up, and auto screen-off can blank the screen during the 30 s confirm; hold a wake lock while asking;
+  - the chat page hides messages by role rather than the `hidden` field;
+  - the `ws.js` typedef comment does not list the `agent` kind;
+  - the dropped-frame catch-up and the "allow" branch of Clear all were not exercised live (no scripted LLM traffic, no simulated dialog tap).
 - Firmware builds with `-Werror=missing-field-initializers`, the host build does not, so `tools/ci.sh` misses designated initializers that omit fields; enable the warning on the host or build the firmware in CI.
 
 ## Glyph partition parked review findings
