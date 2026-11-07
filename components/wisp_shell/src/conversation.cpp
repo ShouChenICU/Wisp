@@ -121,26 +121,8 @@ bool ConversationController::start_capture(voice::CaptureMode mode) {
 }
 
 void ConversationController::tap() {
-    {
-        std::lock_guard<os::Mutex> lock(mu_);
-        // A hold's capture ends with the hold.
-        if (holding_ || !ready()) return;
-        switch (phase()) {
-            case Phase::Idle:
-                start_capture(voice::CaptureMode::Vad);
-                break;
-            case Phase::Listening:
-                deps_.voice.end_capture();
-                break;
-            case Phase::Speaking:
-                deps_.voice.stop_speaking();
-                break;
-            case Phase::Transcribing:
-            case Phase::Busy:
-                return;
-        }
-    }
-    notify();
+    // Reserved for character interaction (see conversation.hpp); no voice
+    // effect.
 }
 
 void ConversationController::hold_begin() {

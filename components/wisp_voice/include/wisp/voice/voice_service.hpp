@@ -124,6 +124,9 @@ const char* to_string(VoiceState s);
 // "mic_unavailable"
 const char* to_string(VoiceError e);
 
+// Vad is dormant: nothing in the shell starts a Vad capture any more
+// (see wisp/shell/conversation.hpp), but the mode and its Vad class stay
+// for a future tap-driven interaction.
 enum class CaptureMode : uint8_t { Hold, Vad };
 
 struct VoiceDeps {

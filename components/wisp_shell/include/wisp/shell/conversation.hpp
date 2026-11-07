@@ -22,14 +22,15 @@
 // a newer capture has begun since: begin_capture() hands the locks to the
 // new round, and an end_speech() then would end that one instead.
 //
-// Triggers (spec 6.3). tap(): idle -> capture with VAD; listening -> end
-// it and send; speaking -> stop the speech; transcribing or a turn
-// running -> nothing. hold_begin(): in any state stops the speech and the
-// running turn (it ends "stopped") and starts a hold capture; a capture
-// already listening is kept as the hold's, and one already transcribing
-// is cancelled and the hold capture starts once it has ended.
-// hold_end() sends the recording, hold_cancel() drops it. While
-// readiness() is not Ready none of them, nor voice_text(), sends anything.
+// Triggers (spec 6.3). tap() is reserved for character interaction (e.g.
+// patting the wisp's head) and has no voice effect: it starts no capture,
+// ends none, and does not stop speech. hold_begin(): in any state stops
+// the speech and the running turn (it ends "stopped") and starts a hold
+// capture; a capture already listening is kept as the hold's, and one
+// already transcribing is cancelled and the hold capture starts once it
+// has ended. hold_end() sends the recording, hold_cancel() drops it.
+// While readiness() is not Ready neither hold_begin()/hold_end()/
+// hold_cancel() nor voice_text() sends anything.
 //
 // Threads. The triggers, voice_text(), readiness(), current() and the
 // listener calls may come from any thread; the triggers and the
@@ -108,6 +109,8 @@ public:
     void hold_begin();
     void hold_end();
     void hold_cancel();
+    // No voice effect (see the file header); kept so the shell UI can
+    // route taps here for character interaction, designed later.
     void tap();
     // Between hold_begin() and hold_end()/hold_cancel() (also when
     // hold_begin() did nothing because nothing was ready: then false).

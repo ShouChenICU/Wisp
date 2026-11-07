@@ -36,11 +36,13 @@ namespace {
 
 class ConversationTest : public wisp::test::ShellFixture {
 protected:
-    // A recording that the VAD ends, transcribed as `heard`.
-    void tap_and_say(const std::string& heard = "你好") {
+    // A held recording, transcribed as `heard`.
+    void hold_and_say(const std::string& heard = "你好") {
         server.push_asr(asr_text(heard));
         say_into_mic();
-        conv->tap();
+        conv->hold_begin();
+        ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 3000));
+        conv->hold_end();
     }
 
     std::optional<Source> stored_user_source() {
@@ -64,7 +66,7 @@ TEST_F(ConversationTest, VoiceTurnSubmitsWithVoiceSource) {
     start();
     server.llm().push(llm_text("<say>好的。</say>"));
     server.push_tts(tts_pcm());
-    tap_and_say("你好");
+    hold_and_say("你好");
     ASSERT_TRUE(wait_turns(1));
     ASSERT_TRUE(settled());
 
@@ -87,7 +89,7 @@ TEST_F(ConversationTest, SayIsSpokenBodyIsNot) {
     start();
     server.llm().push(llm_text("<say>好的。</say>已建好待办"));
     server.push_tts(tts_pcm());
-    tap_and_say();
+    hold_and_say();
     ASSERT_TRUE(wait_turns(1));
     ASSERT_TRUE(settled());
 
@@ -130,7 +132,7 @@ TEST_F(ConversationTest, TtsMuteShowsWithoutSpeaking) {
     start();
     mute = true;
     server.llm().push(llm_text("<say>好的。</say>正文"));
-    tap_and_say();
+    hold_and_say();
     ASSERT_TRUE(wait_turns(1));
     // The voice round ends with the turn: its three locks go.
     ASSERT_TRUE(settled());
@@ -147,7 +149,7 @@ TEST_F(ConversationTest, RefusedSubmitEndsTheRound) {
     // Over kMaxUserChars: submit() says too_long.
     std::string longest;
     for (size_t i = 0; i <= wisp::agent::kMaxUserChars; ++i) longest += "啊";
-    tap_and_say(longest);
+    hold_and_say(longest);
     ASSERT_TRUE(wait_until([&] { return requests(kAsrPath) == 1 && !voice->capturing(); }, 5000));
     ASSERT_TRUE(settled());
     EXPECT_EQ(voice_locks(), 0u);
@@ -159,7 +161,7 @@ TEST_F(ConversationTest, NoSayFallsBackToFirstSentence) {
     start();
     server.llm().push(llm_text("今天晴。明天雨。"));
     server.push_tts(tts_pcm());
-    tap_and_say();
+    hold_and_say();
     ASSERT_TRUE(wait_turns(1));
     ASSERT_TRUE(settled());
     EXPECT_EQ(tts_inputs(), std::vector<std::string>{"今天晴。"});
@@ -169,12 +171,30 @@ TEST_F(ConversationTest, NoSayFallsBackToFirstSentence) {
     EXPECT_TRUE(v.spoken);
 }
 
-TEST_F(ConversationTest, TapCycle) {
+TEST_F(ConversationTest, TapHasNoVoiceEffect) {
     start();
     out->set_write_ms(20);  // plays in real time
 
-    // Idle: a tap starts a VAD capture.
+    // Idle: a tap changes nothing.
+    conv->tap();
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(mic->opens(), 0);
+    EXPECT_FALSE(voice->capturing());
+    EXPECT_EQ(requests(kAsrPath), 0u);
+
+    // Listening (a hold capture): a tap changes nothing.
     mic->set_script({silence(300), sine(1000)});
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    const int opens_listening = mic->opens();
+    conv->tap();
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(mic->opens(), opens_listening);
+    EXPECT_TRUE(voice->capturing());
+    EXPECT_EQ(requests(kAsrPath), 0u);
+
+    // The hold is released normally so the turn can move on to thinking.
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
     server.push_asr(asr_text("讲个故事"));
     // The model thinks until released.
     server.llm().push({.status = 200,
@@ -182,30 +202,27 @@ TEST_F(ConversationTest, TapCycle) {
                                   FakeLlmServer::sse_finish("stop"), FakeLlmServer::sse_done()},
                        .hold_after = 0});
     server.push_tts(tts_pcm(3000));
-    conv->tap();
-    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
-    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    conv->hold_end();
 
-    // Listening: a tap ends the recording and sends it.
-    conv->tap();
+    // Thinking: a tap does nothing.
     ASSERT_TRUE(wait_until([&] { return server.llm().held() == 1; }, 5000));
     EXPECT_TRUE(saw_state("transcribing"));
     EXPECT_EQ(requests(kAsrPath), 1u);
-
-    // Thinking: a tap does nothing.
-    const int opens = mic->opens();
+    const int opens_thinking = mic->opens();
     conv->tap();
     wisp::os::sleep_ms(150);
-    EXPECT_EQ(mic->opens(), opens);
+    EXPECT_EQ(mic->opens(), opens_thinking);
     EXPECT_FALSE(voice->capturing());
 
-    // Speaking: a tap stops the speech.
+    // Speaking: a tap does not stop the speech.
+    const size_t frames_before_speech = out->frames();  // the start tone already wrote some
     server.release();
     ASSERT_TRUE(wait_until([&] { return voice->speaking(); }, 5000));
     conv->tap();
+    wisp::os::sleep_ms(150);
+    EXPECT_TRUE(voice->speaking());
     ASSERT_TRUE(settled());
-    EXPECT_LT(out->frames(), 24u * 3000);
-    EXPECT_EQ(voice_locks(), 0u);
+    EXPECT_EQ(out->frames() - frames_before_speech, 24u * 3000);
 }
 
 TEST_F(ConversationTest, HoldInterruptsSpeechAndRunningTurns) {
@@ -244,7 +261,7 @@ TEST_F(ConversationTest, DroppedVoiceTextFreesTheTalkKey) {
     start();
     // The recording starts, then a web turn takes the agent; the
     // transcript waits behind it.
-    tap_and_say("你好");
+    hold_and_say("你好");
     ASSERT_TRUE(wait_until([&] { return voice->capturing(); }, 2000));
     server.llm().push(llm_text("never", /*hold_after=*/0));
     ASSERT_TRUE(agent->submit("hi", Source::Web));
@@ -262,10 +279,11 @@ TEST_F(ConversationTest, DroppedVoiceTextFreesTheTalkKey) {
 
     // The talk key works again.
     mic->set_script({silence(300), sine(1000)});
-    conv->tap();
+    conv->hold_begin();
     EXPECT_TRUE(voice->capturing());
     ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
-    conv->tap();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    conv->hold_end();
     ASSERT_TRUE(settled());
 }
 
@@ -273,7 +291,9 @@ TEST_F(ConversationTest, HoldOverATranscriptionRecordsAnew) {
     start();
     server.push_asr(FakeReply{.status = 200, .chunks = {R"({"text":"x"})"}, .hold_after = 0});
     say_into_mic();
-    conv->tap();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 3000));
+    conv->hold_end();
     ASSERT_TRUE(wait_until([&] { return server.held() == 1; }, 5000));
     // The transcription is dropped; the hold records once it has ended.
     mic->set_script({silence(300), sine(1000)});
@@ -384,7 +404,9 @@ TEST_F(ConversationTest, RapidTriggersNeverOverlapTurns) {
 
     // During transcription.
     say_into_mic();
-    conv->tap();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 3000));
+    conv->hold_end();
     ASSERT_TRUE(wait_until([&] { return server.held() == 1; }, 5000));
     EXPECT_EQ(voice->state(), VoiceState::Transcribing);
     burst();
@@ -441,7 +463,7 @@ TEST_F(ConversationTest, AtMostTwoModelConnectionsInAVoiceTurn) {
     server.llm().push(llm_text_then_tool("<say>第二句。</say>", "c2", "test_wait"));
     server.llm().push(llm_text("<say>第三句。</say>完成"));
     for (int i = 0; i < 3; ++i) server.push_tts(tts_pcm(400));
-    tap_and_say();
+    hold_and_say();
     ASSERT_TRUE(wait_turns(1));
     ASSERT_TRUE(settled(15000));
     EXPECT_EQ(tool_runs.load(), 2);
