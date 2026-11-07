@@ -280,6 +280,23 @@ enum class StrId : uint16_t {
     NoteActionTodoDone,
     NoteActionTodoSnooze,
     ReminderMissed,
+    // The home screen's hint below the wisp (mvp spec 4.6, 6.2, 6.6):
+    // what is not set up yet, the last voice error, or "not heard". The
+    // screen adds the admin address on a line of its own after HomeNoLlm,
+    // VoiceErrNoAsr and VoiceErrNoTts.
+    HomeNoWifi,
+    HomeNoLlm,
+    HomeNotHeard,
+    VoiceErrNoAsr,
+    VoiceErrNoTts,
+    VoiceErrOffline,
+    VoiceErrAsr,
+    VoiceErrTts,
+    VoiceErrMic,
+    // The shell's sub-pages' titles.
+    PageSettings,
+    PageScenes,
+    PageHistory,
 
     Count,  // not a string; keep last
 };

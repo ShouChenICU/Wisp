@@ -345,6 +345,30 @@ const char* strings_zh(StrId id) {
             return "10 分钟后";
         case StrId::ReminderMissed:
             return "错过 {} 个提醒";
+        case StrId::HomeNoWifi:
+            return "还没连接 Wi-Fi，右划进入设置 → Wi-Fi";
+        case StrId::HomeNoLlm:
+            return "还没配置模型，请在管理后台的模型页设置";
+        case StrId::HomeNotHeard:
+            return "没听清";
+        case StrId::VoiceErrNoAsr:
+            return "还没配置语音识别，请在管理后台的模型页设置";
+        case StrId::VoiceErrNoTts:
+            return "还没配置语音合成，请在管理后台的模型页设置";
+        case StrId::VoiceErrOffline:
+            return "网络未连接，暂时不能对话";
+        case StrId::VoiceErrAsr:
+            return "语音识别失败，请再说一次";
+        case StrId::VoiceErrTts:
+            return "朗读失败，文字照常显示";
+        case StrId::VoiceErrMic:
+            return "麦克风不可用";
+        case StrId::PageSettings:
+            return "设置";
+        case StrId::PageScenes:
+            return "场景";
+        case StrId::PageHistory:
+            return "对话记录";
         case StrId::Count:
             break;
     }

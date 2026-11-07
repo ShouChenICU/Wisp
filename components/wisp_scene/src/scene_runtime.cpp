@@ -2152,7 +2152,10 @@ void SceneRuntime::ui_drop_view(uint32_t instance) {
     UiSide& u = *ui_side_;
     // Another scene's view (one that came up after this one went) stays.
     if (instance != 0 && u.instance != instance) return;
-    deps_.system.set_back_handler({});
+    // The back gesture is the view's only while it is in front: whoever
+    // loaded another screen over it (the shell going home, say) has
+    // taken the gesture since, and keeps it.
+    if (!u.view || lv_screen_active() == u.view->screen()) deps_.system.set_back_handler({});
     deps_.system.hide_error();
     if (!u.view) return;
     // An active screen must not be deleted: show the one the view

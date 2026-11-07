@@ -54,6 +54,10 @@ struct NotificationRouterDeps {
     // only dismiss the notice.
     core::ReminderScheduler* reminders = nullptr;
     std::function<bool(std::function<void()>)> submit_io;
+    // Opens the home screen: tapping the agent_done notice (mvp spec 6.6,
+    // the reply is there). Called on the tapping thread. Empty: nothing
+    // opens.
+    std::function<void()> open_home;
 };
 
 class NotificationRouter {
@@ -72,7 +76,8 @@ public:
 
     // The user tapped it: dismiss(Tap), silence, and for a scene
     // SceneRuntime::deliver_notification(); a scene that cannot be
-    // launched only loses the notification. A reminder opens nothing.
+    // launched only loses the notification. A reminder opens nothing; the
+    // agent_done notice opens the home screen.
     void tap(const std::string& source, const std::string& id);
     // The notification's action button `index` (0: action, 1: action2):
     // release_lock releases the wake lock it names

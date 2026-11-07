@@ -9,7 +9,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 
 wisp_component(
     NAME wisp_shell
-    SRCS src/conversation.cpp src/talk_key.cpp src/shell.cpp
+    SRCS src/conversation.cpp src/talk_key.cpp src/shell.cpp src/home.cpp src/gestures.cpp
+         src/mood.cpp src/body_text.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_voice wisp_admin wisp_ui wisp_scene
              wisp_agent

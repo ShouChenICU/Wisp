@@ -387,3 +387,32 @@ TEST_F(NotificationRouterTest, TodoActionsReachTheScheduler) {
 }
 
 }  // namespace
+
+// mvp spec 6.6: tapping the agent_done notice opens the home screen;
+// other system notices and scenes' do not.
+TEST_F(NotificationRouterTest, AgentDoneOpensHome) {
+    int opened = 0;
+    router = std::make_unique<NotificationRouter>(NotificationRouterDeps{
+        .notes = *notes,
+        .power = power.get(),
+        .tones = tones.get(),
+        .scenes = nullptr,
+        .locks = &locks,
+        .notify_volume = [] { return uint8_t{50}; },
+        .open_home = [&] { ++opened; },
+    });
+    router->start();
+    const std::string done = notes->post_system(wisp::core::notice::kAgentDone, "好的");
+    ASSERT_FALSE(done.empty());
+    const std::string other = notes->post_system(wisp::core::notice::kBatteryLow, "10");
+    ASSERT_FALSE(other.empty());
+    router->tap(wisp::core::kSystemSource, other);
+    EXPECT_EQ(opened, 0);
+    router->tap(wisp::core::kSystemSource, done);
+    EXPECT_EQ(opened, 1);
+    EXPECT_FALSE(notes->find(wisp::core::kSystemSource, done).has_value());
+    // A scene's notice opens nothing here.
+    const std::string scene_note = post("demo", "x", NotifySound::None, false);
+    router->tap("demo", scene_note);
+    EXPECT_EQ(opened, 1);
+}

@@ -13,6 +13,7 @@
 #include "factory_reset.hpp"
 #include "firmware_confirm.hpp"
 #include "loopback.hpp"
+#include "net_cards.hpp"
 #include "self_check.hpp"
 #include "storage_io.hpp"
 #include "wisp/agent/context.hpp"
@@ -491,6 +492,15 @@ Result<void> App::start() {
                                        return worker->submit(std::move(job));
                                    })
                              : nullptr,
+            // The shell is built later, and goes before the router is
+            // stopped; a post queued meanwhile finds it or nothing.
+            .open_home =
+                [impl] {
+                    if (!impl->ui) return;
+                    impl->ui->post([impl] {
+                        if (impl->shell) impl->shell->show(shell::Page::Home);
+                    });
+                },
         });
         impl_->router->start();
     }
@@ -626,6 +636,24 @@ Result<void> App::start() {
                                      impl->self_check);
                 },
             .close_diagnostics = [impl] { stop_self_check(impl->self_check); },
+            .leave_scene = [impl]() -> Result<bool> {
+                scene::SceneRuntime* rt = impl->scenes ? impl->scenes->runtime() : nullptr;
+                if (rt == nullptr) return Result<bool>::ok(false);
+                std::optional<std::string> id = rt->foreground();
+                if (!id) return Result<bool>::ok(false);
+                // On the UI thread close() only queues the back.
+                if (auto r = rt->close(*id); !r)
+                    return Result<bool>::err(r.error().code, r.error().message);
+                return Result<bool>::ok(true);
+            },
+            .admin_url = [this]() -> std::string {
+                net::WifiService* w = wifi();
+                if (w == nullptr) return {};
+                const net::WifiStatus st = w->status();
+                if (st.state != net::WifiState::Connected || st.ip.empty()) return {};
+                return admin_url(st.ip, impl_->platform.http_port);
+            },
+            .now_ms = {},
         });
         impl_->ui->run_blocking([impl] {
             impl->duties->start();

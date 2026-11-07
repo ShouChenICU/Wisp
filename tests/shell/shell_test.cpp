@@ -53,6 +53,16 @@ public:
                     lv_obj_delete(diag);
                     diag = nullptr;
                 },
+            // A stand-in for the scene runtime: a scene is "in front" while
+            // `scene` is set; sending it back only queues (the screen stays
+            // until the runtime's UI side drops it).
+            .leave_scene = [this]() -> wisp::Result<bool> {
+                ++leaves;
+                if (scene == nullptr) return wisp::Result<bool>::ok(false);
+                if (refuse) return wisp::Result<bool>::err(wisp::ErrorCode::Busy, "queue full");
+                leaving = true;
+                return wisp::Result<bool>::ok(true);
+            },
         });
     }
 
@@ -72,9 +82,27 @@ public:
     Shell& shell() { return *shell_; }
     const wisp::hal::ScreenShape& shape() const { return shape_; }
 
+    // A scene's view put in front, as the scene runtime does.
+    void open_scene() {
+        scene = lv_obj_create(nullptr);
+        lv_screen_load(scene);
+        layer_->set_back_handler([] {});
+    }
+    // The runtime's UI side dropping the view after the scene went back.
+    void drop_scene() {
+        if (lv_screen_active() == scene) lv_screen_load(shell_->home_screen());
+        lv_obj_delete(scene);
+        scene = nullptr;
+    }
+    wisp::ui::SystemLayer& layer() { return *layer_; }
+
     int opens = 0;
     int closes = 0;
+    int leaves = 0;
+    bool refuse = false;
+    bool leaving = false;
     lv_obj_t* diag = nullptr;
+    lv_obj_t* scene = nullptr;
 
 private:
     std::shared_ptr<wisp::test::FakeDisplay> display_;
@@ -183,5 +211,104 @@ TEST(Shell, StopClosesTheDiagnosticsAndLeavesTheHomeScreen) {
         // Idempotent.
         f.shell().stop();
         EXPECT_EQ(f.closes, 1);
+    });
+}
+
+// A scene in front when the shell navigates: it is sent back and the
+// shell's own screen loads at once, so the scene's view is never left
+// running off-screen. One case per path.
+TEST(Shell, HomeSendsTheSceneInFrontBack) {
+    ShellFixture f("rect");
+    ASSERT_TRUE(f.started());
+    f.on_ui([&] {
+        f.shell().start();
+        f.open_scene();
+        f.shell().show(Page::Home);
+        EXPECT_TRUE(f.leaving);
+        EXPECT_EQ(lv_screen_active(), f.shell().home_screen());
+        f.drop_scene();
+        EXPECT_EQ(lv_screen_active(), f.shell().home_screen());
+    });
+}
+
+TEST(Shell, PageSendsTheSceneInFrontBack) {
+    ShellFixture f("rect");
+    ASSERT_TRUE(f.started());
+    f.on_ui([&] {
+        f.shell().start();
+        f.open_scene();
+        f.shell().show(Page::Settings);
+        EXPECT_TRUE(f.leaving);
+        ASSERT_NE(f.shell().page_screen(), nullptr);
+        EXPECT_EQ(lv_screen_active(), f.shell().page_screen());
+        EXPECT_EQ(f.shell().page(), Page::Settings);
+        f.drop_scene();
+        EXPECT_EQ(lv_screen_active(), f.shell().page_screen());
+    });
+}
+
+TEST(Shell, DiagnosticsSendTheSceneInFrontBack) {
+    ShellFixture f("rect");
+    ASSERT_TRUE(f.started());
+    f.on_ui([&] {
+        f.shell().start();
+        f.open_scene();
+        f.shell().open_diagnostics();
+        EXPECT_TRUE(f.leaving);
+        EXPECT_TRUE(f.shell().diagnostics_open());
+        EXPECT_EQ(lv_screen_active(), f.diag);
+        f.drop_scene();
+        EXPECT_EQ(lv_screen_active(), f.diag);
+        // Back from the diagnostics goes home.
+        f.shell().show(Page::Home);
+        EXPECT_EQ(lv_screen_active(), f.shell().home_screen());
+    });
+}
+
+// When the scene cannot be sent back, the navigation is refused: the scene
+// stays in front, its view on the screen.
+TEST(Shell, RefusedLeaveKeepsTheSceneInFront) {
+    ShellFixture f("rect");
+    ASSERT_TRUE(f.started());
+    f.on_ui([&] {
+        f.shell().start();
+        f.open_scene();
+        f.refuse = true;
+        f.shell().show(Page::Home);
+        EXPECT_EQ(lv_screen_active(), f.scene);
+        f.shell().show(Page::Scenes);
+        EXPECT_EQ(lv_screen_active(), f.scene);
+        EXPECT_EQ(f.shell().page_screen(), nullptr);
+        f.shell().open_diagnostics();
+        EXPECT_EQ(f.opens, 0);
+        EXPECT_EQ(lv_screen_active(), f.scene);
+        f.refuse = false;
+        f.shell().show(Page::Home);
+        EXPECT_EQ(lv_screen_active(), f.shell().home_screen());
+        f.drop_scene();
+    });
+}
+
+// The sub-pages: a screen of their own, deleted once the home screen is
+// back.
+TEST(Shell, SubPagesComeAndGo) {
+    ShellFixture f("circle");
+    ASSERT_TRUE(f.started());
+    f.on_ui([&] {
+        f.shell().start();
+        for (Page p : {Page::Settings, Page::Scenes, Page::History}) {
+            f.shell().show(p);
+            EXPECT_EQ(f.shell().page(), p);
+            ASSERT_NE(f.shell().page_screen(), nullptr);
+            EXPECT_EQ(lv_screen_active(), f.shell().page_screen());
+            f.shell().show(Page::Home);
+            EXPECT_EQ(f.shell().page_screen(), nullptr);
+            EXPECT_EQ(lv_screen_active(), f.shell().home_screen());
+        }
+        // Stopped on a sub-page: everything goes.
+        f.shell().show(Page::History);
+        f.shell().stop();
+        EXPECT_EQ(f.shell().page_screen(), nullptr);
+        EXPECT_EQ(f.shell().home_screen(), nullptr);
     });
 }

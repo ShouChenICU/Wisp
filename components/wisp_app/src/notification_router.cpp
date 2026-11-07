@@ -105,8 +105,15 @@ void NotificationRouter::posted(const core::Notification& n) {
 }
 
 void NotificationRouter::tap(const std::string& source, const std::string& id) {
+    // Read before the dismiss removes it.
+    bool agent_done = false;
+    if (source == core::kSystemSource) {
+        auto n = deps_.notes.find(source, id);
+        agent_done = n && n->code == core::notice::kAgentDone;
+    }
     deps_.notes.dismiss(source, id, core::DismissReason::Tap);
     if (deps_.tones != nullptr) deps_.tones->silence();
+    if (agent_done && deps_.open_home) deps_.open_home();
     if (source == core::kSystemSource || source == core::kReminderSource ||
         deps_.scenes == nullptr) {
         return;

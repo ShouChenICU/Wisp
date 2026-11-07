@@ -347,6 +347,30 @@ const char* strings_en(StrId id) {
             return "In 10 min";
         case StrId::ReminderMissed:
             return "{} missed reminders";
+        case StrId::HomeNoWifi:
+            return "No Wi-Fi yet. Swipe right for Settings → Wi-Fi";
+        case StrId::HomeNoLlm:
+            return "No model set up yet. Set one on the admin page's Models tab";
+        case StrId::HomeNotHeard:
+            return "Didn't catch that";
+        case StrId::VoiceErrNoAsr:
+            return "No speech recognition set up. Set it on the admin page's Models tab";
+        case StrId::VoiceErrNoTts:
+            return "No speech voice set up. Set it on the admin page's Models tab";
+        case StrId::VoiceErrOffline:
+            return "Offline: no voice until the network is back";
+        case StrId::VoiceErrAsr:
+            return "Speech recognition failed. Please try again";
+        case StrId::VoiceErrTts:
+            return "Reading aloud failed; the text still shows";
+        case StrId::VoiceErrMic:
+            return "Microphone unavailable";
+        case StrId::PageSettings:
+            return "Settings";
+        case StrId::PageScenes:
+            return "Scenes";
+        case StrId::PageHistory:
+            return "History";
         case StrId::Count:
             break;
     }

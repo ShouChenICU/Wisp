@@ -350,6 +350,30 @@ const char* strings_ja(StrId id) {
             return "10 分後";
         case StrId::ReminderMissed:
             return "{} 件のリマインダーを見逃しました";
+        case StrId::HomeNoWifi:
+            return "Wi-Fi 未接続です。右にスワイプして 設定 → Wi-Fi";
+        case StrId::HomeNoLlm:
+            return "モデルが未設定です。管理画面のモデルページで設定してください";
+        case StrId::HomeNotHeard:
+            return "聞き取れませんでした";
+        case StrId::VoiceErrNoAsr:
+            return "音声認識が未設定です。管理画面のモデルページで設定してください";
+        case StrId::VoiceErrNoTts:
+            return "音声合成が未設定です。管理画面のモデルページで設定してください";
+        case StrId::VoiceErrOffline:
+            return "ネットワークに接続されていません";
+        case StrId::VoiceErrAsr:
+            return "音声認識に失敗しました。もう一度どうぞ";
+        case StrId::VoiceErrTts:
+            return "読み上げに失敗しました。文字はそのまま表示します";
+        case StrId::VoiceErrMic:
+            return "マイクが使えません";
+        case StrId::PageSettings:
+            return "設定";
+        case StrId::PageScenes:
+            return "シーン";
+        case StrId::PageHistory:
+            return "会話履歴";
         case StrId::Count:
             break;
     }

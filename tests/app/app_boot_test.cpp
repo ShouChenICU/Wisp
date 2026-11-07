@@ -688,3 +688,92 @@ TEST(AppBoot, DiagnosticsImuRuleUnchanged) {
     ASSERT_TRUE(wait_until([&] { return active_screen(h) == home; }, 3000));
     EXPECT_FALSE(diagnostics_open(h));
 }
+
+namespace {
+
+// A scene "plain" in the harness's scene directory, opened in front.
+wisp::scene::SceneRuntime* open_plain_scene(UiNetHarness& h) {
+    wisp::scene::SceneRuntime* rt = h.app->scenes();
+    if (rt == nullptr || !rt->open("plain")) return nullptr;
+    if (!wait_until([&] { return rt->foreground() == std::optional<std::string>("plain"); }, 3000))
+        return nullptr;
+    return rt;
+}
+
+void write_plain_scene(UiNetHarness& h) {
+    const std::filesystem::path dir = std::filesystem::path(h.root) / "scenes" / "plain";
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "scene.json")
+        << R"({"id":"plain","name":"Plain","version":"1.0.0","schema_version":1})";
+    std::ofstream(dir / "main.lua") << R"(return ui.screen { ui.label { text = "plain" } })";
+}
+
+}  // namespace
+
+// mvp spec 6.3, 6.6: going home (the agent_done notice's tap, say) with a
+// scene in front sends the scene back and shows the home screen; the
+// scene's view is not left running off-screen.
+TEST(AppBoot, HomeSendsTheSceneInFrontBack) {
+    UiNetHarness h(diag_opts());
+    write_plain_scene(h);
+    ASSERT_TRUE(h.start());
+    lv_obj_t* home = active_screen(h);
+    wisp::scene::SceneRuntime* rt = open_plain_scene(h);
+    ASSERT_NE(rt, nullptr);
+    ASSERT_TRUE(wait_until([&] { return active_screen(h) != home; }, 3000));
+
+    run_on_ui_blocking(h.app->ui(), [&] { h.app->shell()->show(wisp::shell::Page::Home); });
+    EXPECT_EQ(active_screen(h), home);
+    ASSERT_TRUE(wait_until([&] { return !rt->foreground().has_value(); }, 3000));
+    // The view went without loading anything over the home screen.
+    EXPECT_TRUE(wait_until(
+        [&] {
+            bool none = false;
+            run_on_ui_blocking(h.app->ui(), [&] { none = rt->ui_current_view() == nullptr; });
+            return none;
+        },
+        3000));
+    EXPECT_EQ(active_screen(h), home);
+}
+
+// The same over the diagnostics: the scene goes back and the diagnostics
+// close too.
+TEST(AppBoot, HomeOverDiagnosticsSendsTheSceneBack) {
+    UiNetHarness h(diag_opts());
+    write_plain_scene(h);
+    ASSERT_TRUE(h.start());
+    lv_obj_t* home = active_screen(h);
+    lv_obj_t* diag = open_diagnostics(h);
+    ASSERT_NE(diag, home);
+    wisp::scene::SceneRuntime* rt = open_plain_scene(h);
+    ASSERT_NE(rt, nullptr);
+    ASSERT_TRUE(wait_until([&] { return active_screen(h) != diag; }, 3000));
+
+    run_on_ui_blocking(h.app->ui(), [&] { h.app->shell()->show(wisp::shell::Page::Home); });
+    EXPECT_EQ(active_screen(h), home);
+    EXPECT_FALSE(diagnostics_open(h));
+    ASSERT_TRUE(wait_until([&] { return !rt->foreground().has_value(); }, 3000));
+    EXPECT_TRUE(wait_until([&] { return imu_holders(h).empty(); }, 3000));
+    EXPECT_EQ(active_screen(h), home);
+}
+
+// Opening the diagnostics with a scene in front sends it back first, so
+// the back swipe from the diagnostics reaches the home screen.
+TEST(AppBoot, DiagnosticsSendTheSceneInFrontBack) {
+    UiNetHarness h(diag_opts());
+    write_plain_scene(h);
+    ASSERT_TRUE(h.start());
+    lv_obj_t* home = active_screen(h);
+    wisp::scene::SceneRuntime* rt = open_plain_scene(h);
+    ASSERT_NE(rt, nullptr);
+    ASSERT_TRUE(wait_until([&] { return active_screen(h) != home; }, 3000));
+
+    lv_obj_t* diag = open_diagnostics(h);
+    EXPECT_TRUE(diagnostics_open(h));
+    ASSERT_TRUE(wait_until([&] { return !rt->foreground().has_value(); }, 3000));
+    EXPECT_EQ(active_screen(h), diag);
+
+    back_swipe(h);
+    ASSERT_TRUE(wait_until([&] { return active_screen(h) == home; }, 3000));
+    EXPECT_FALSE(diagnostics_open(h));
+}
