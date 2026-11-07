@@ -109,7 +109,9 @@ private:
 //   delta    {"k":"delta","text"}: reply text, coalesced so at most one
 //            frame leaves per coalesce_ms (the rest follows from a timer);
 //   tool     {"k":"tool","phase":"start"|"end","name","args"|"result"
-//            (cut to 200 code points),"ok" (end)};
+//            (cut to 200 code points),"ok" (end)}, and while the model
+//            still writes the call {"k":"tool","phase":"prep","name",
+//            "bytes"} (the arguments' length so far, never their text);
 //   state    {"k":"state","state","tool" (while "tool")};
 //   confirm  {"k":"confirm","text":string|null};
 //   msg      {"k":"msg","msg":agent_message_value(...)};

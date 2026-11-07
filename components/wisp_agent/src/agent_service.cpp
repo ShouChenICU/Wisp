@@ -513,6 +513,14 @@ struct AgentService::Impl {
         call.on_text = std::move(on_text);
         call.on_bytes = [this] { last_byte = now(); };
         call.cancelled = [this] { return aborted(); };
+        call.on_tool = [this](const net::LlmToolProgress& p) {
+            const ToolDef* def = deps.tools.find_wire(p.name);
+            AgentEvent e;
+            e.kind = AgentEvent::Kind::ToolPrep;
+            e.tool.assign(def != nullptr ? std::string_view(def->name) : p.name);
+            e.bytes = static_cast<uint32_t>(std::min<size_t>(p.arg_bytes, UINT32_MAX));
+            emit(e);
+        };
         last_byte = now();
         in_request = true;
         net::LlmResult res = deps.llm.complete(call);

@@ -77,6 +77,13 @@ struct LlmResult {
     std::string model;      // the profile's model name
 };
 
+// A tool call the model is still writing (LlmCall::on_tool).
+struct LlmToolProgress {
+    size_t index = 0;       // the call's stream index
+    std::string_view name;  // the wire name, as the model wrote it
+    size_t arg_bytes = 0;   // the arguments' bytes received so far
+};
+
 struct LlmCall {
     std::span<const LlmMessage> messages;
     std::string_view tools_json;  // a JSON array, "" for none
@@ -89,6 +96,12 @@ struct LlmCall {
     std::function<void(std::string_view)> on_text;
     std::function<void()> on_bytes;   // any body bytes (stall detection)
     std::function<bool()> cancelled;  // also stops the retry waits
+    // A tool call while it streams: once as soon as its name has arrived,
+    // then as its arguments grow, at most once per kToolProgressMs for
+    // each call. Runs on the calling thread, from inside the stream.
+    std::function<void(const LlmToolProgress&)> on_tool;
+    // on_tool's clock; empty: os::now_ms.
+    std::function<uint64_t()> now_ms;
 };
 
 // The request body: {"model","stream":true,"stream_options":
@@ -131,6 +144,9 @@ public:
     static constexpr size_t kMaxStreamBytes = 16 * 1024 * 1024;
     // Highest tool-call index accepted from the stream.
     static constexpr size_t kMaxToolCalls = 64;
+    // LlmCall::on_tool reports a call's growing arguments at most this
+    // often.
+    static constexpr uint32_t kToolProgressMs = 500;
 
     LlmClient(HttpClient& http, core::ModelProfileService& models,
               std::function<void(uint32_t)> sleep_ms = os::sleep_ms);

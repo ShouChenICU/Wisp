@@ -853,6 +853,50 @@ TEST_F(AgentLoop, ListenerSeesDeltasToolsAndMessages) {
     for (size_t i = 0; i < all.size(); ++i) EXPECT_EQ(seqs[i], all[i].seq);
 }
 
+// A call the model is still writing shows as ToolPrep (the dotted name
+// and the bytes so far) before its ToolStart; a text answer has none.
+TEST_F(AgentLoop, ToolPrepBeforeToolStart) {
+    add_tool("scene.write_file");
+    start();
+    h->server.push(
+        {.status = 200,
+         .chunks = {FakeLlmServer::sse_tool(0, "c1", "scene_write_file", ""),
+                    FakeLlmServer::sse_tool(0, "", "", "{\"id\":\"a\"}"),
+                    FakeLlmServer::sse_finish("tool_calls"), FakeLlmServer::sse_done()}});
+    h->server.push({.status = 200,
+                    .chunks = {FakeLlmServer::sse_text("done"), FakeLlmServer::sse_finish("stop"),
+                               FakeLlmServer::sse_done()}});
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    auto ev = snapshot();
+    int prep_at = -1, start_at = -1;
+    for (size_t i = 0; i < ev.size(); ++i) {
+        if (ev[i].kind == Kind::ToolPrep && prep_at < 0) {
+            prep_at = static_cast<int>(i);
+            EXPECT_EQ(ev[i].tool, "scene.write_file");
+            EXPECT_EQ(ev[i].bytes, 0u);
+            EXPECT_TRUE(ev[i].args.empty());
+        }
+        if (ev[i].kind == Kind::ToolStart && start_at < 0) start_at = static_cast<int>(i);
+    }
+    ASSERT_GE(prep_at, 0);
+    ASSERT_GE(start_at, 0);
+    EXPECT_LT(prep_at, start_at);
+    // The second request answered in text: no ToolPrep after the tool.
+    for (size_t i = static_cast<size_t>(start_at); i < ev.size(); ++i)
+        EXPECT_NE(ev[i].kind, Kind::ToolPrep);
+}
+
+TEST_F(AgentLoop, NoToolPrepForATextAnswer) {
+    start();
+    h->server.push({.status = 200,
+                    .chunks = {FakeLlmServer::sse_text("hi"), FakeLlmServer::sse_finish("stop"),
+                               FakeLlmServer::sse_done()}});
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(count(Kind::ToolPrep), 0u);
+}
+
 TEST_F(AgentLoop, NewConversationArchives) {
     start();
     h->server.push(text_reply("one"));

@@ -179,12 +179,38 @@ private:
                 if (const std::string* args = string_field(*fn, "arguments"))
                     out.arguments.append(args->data(), args->size());
             }
+            report(static_cast<size_t>(index), out);
         }
         return true;
     }
 
+    // on_tool for call `index`: at once when its name is first known,
+    // then once kToolProgressMs has passed since the last report and the
+    // arguments have grown.
+    void report(size_t index, const LlmToolCall& c) {
+        if (!call_.on_tool || c.name.empty()) return;
+        if (progress_.size() <= index) progress_.resize(index + 1);
+        Progress& p = progress_[index];
+        const uint64_t now = call_.now_ms ? call_.now_ms() : os::now_ms();
+        if (p.named) {
+            if (c.arguments.size() == p.bytes || now - p.at < LlmClient::kToolProgressMs) return;
+        }
+        p.named = true;
+        p.at = now;
+        p.bytes = c.arguments.size();
+        call_.on_tool(LlmToolProgress{.index = index, .name = c.name, .arg_bytes = p.bytes});
+    }
+
+    struct Progress {
+        bool named = false;
+        uint64_t at = 0;
+        size_t bytes = 0;
+    };
+
     const LlmCall& call_;
     LlmResult& result_;
+    // By stream index, like result_.tool_calls (at most kMaxToolCalls).
+    std::vector<Progress> progress_;
     bool done_ = false;
     bool bad_ = false;
     bool finished_ = false;

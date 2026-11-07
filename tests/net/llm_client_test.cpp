@@ -180,6 +180,75 @@ TEST(LlmClient, AssemblesToolCallFragmentsByIndex) {
     EXPECT_TRUE(r.text.empty());
 }
 
+// The progress of a call still being written: its name as soon as it
+// arrives, then its arguments' length, at most once per kToolProgressMs
+// per call (here the clock moves 200 ms with every chunk).
+TEST(LlmClient, ReportsToolCallsWhileTheyStream) {
+    Fixture f;
+    std::vector<std::string> chunks{FakeLlmServer::sse_text("ok")};
+    chunks.push_back(FakeLlmServer::sse_tool(0, "call_a", "scene_write_file", ""));
+    for (int i = 0; i < 6; ++i) chunks.push_back(FakeLlmServer::sse_tool(0, "", "", "0123456789"));
+    chunks.push_back(FakeLlmServer::sse_tool(1, "call_b", "scene_install", "{}"));
+    chunks.push_back(FakeLlmServer::sse_finish("tool_calls"));
+    chunks.push_back(FakeLlmServer::sse_done());
+    f.server.push({.status = 200, .chunks = chunks});
+    struct Seen {
+        size_t index;
+        std::string name;
+        size_t bytes;
+        uint64_t at;
+    };
+    std::vector<Seen> seen;
+    uint64_t clock = 0;
+    LlmMessage msg{.role = LlmRole::User, .text = "hi"};
+    LlmCall call;
+    call.messages = {&msg, 1};
+    call.on_bytes = [&] { clock += 200; };
+    call.now_ms = [&] { return clock; };
+    call.on_tool = [&](const wisp::net::LlmToolProgress& p) {
+        seen.push_back({p.index, std::string(p.name), p.arg_bytes, clock});
+    };
+
+    LlmResult r = f.run(call);
+
+    ASSERT_EQ(r.error, "");
+    ASSERT_EQ(seen.size(), 4u);
+    // The name first, with nothing written yet.
+    EXPECT_EQ(seen[0].index, 0u);
+    EXPECT_EQ(seen[0].name, "scene_write_file");
+    EXPECT_EQ(seen[0].bytes, 0u);
+    // Then the growing length, no sooner than 500 ms apart.
+    EXPECT_EQ(seen[1].index, 0u);
+    EXPECT_EQ(seen[1].name, "scene_write_file");
+    EXPECT_EQ(seen[1].bytes, 30u);
+    EXPECT_EQ(seen[1].at - seen[0].at, 600u);
+    EXPECT_EQ(seen[2].bytes, 60u);
+    EXPECT_EQ(seen[2].at - seen[1].at, 600u);
+    // The next call's name is reported at once.
+    EXPECT_EQ(seen[3].index, 1u);
+    EXPECT_EQ(seen[3].name, "scene_install");
+    EXPECT_EQ(seen[3].bytes, 2u);
+    for (size_t i = 1; i < seen.size(); ++i) {
+        if (seen[i].index == seen[i - 1].index)
+            EXPECT_GE(seen[i].at - seen[i - 1].at, LlmClient::kToolProgressMs);
+    }
+}
+
+// A reply without tool calls reports none.
+TEST(LlmClient, NoToolProgressForText) {
+    Fixture f;
+    f.server.push({.status = 200,
+                   .chunks = {FakeLlmServer::sse_text("Hel"), FakeLlmServer::sse_text("lo"),
+                              FakeLlmServer::sse_finish("stop"), FakeLlmServer::sse_done()}});
+    int calls = 0;
+    LlmMessage msg{.role = LlmRole::User, .text = "hi"};
+    LlmCall call;
+    call.messages = {&msg, 1};
+    call.on_tool = [&](const wisp::net::LlmToolProgress&) { ++calls; };
+    EXPECT_EQ(f.run(call).error, "");
+    EXPECT_EQ(calls, 0);
+}
+
 TEST(LlmClient, ToolCallIndexOutOfRangeIsBadStream) {
     Fixture f;
     f.server.push(

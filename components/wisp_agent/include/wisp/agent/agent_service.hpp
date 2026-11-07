@@ -42,6 +42,12 @@
 // stored result -- what the model sees next -- carries it as
 // "system_note".
 //
+// While the model is still writing a tool call (a whole scene file can
+// take tens of seconds), ToolPrep reports it: its dotted name as soon as
+// the stream has it, then its arguments' length so far, at most every
+// net::LlmClient::kToolProgressMs for each call. Nothing of the arguments
+// themselves; ToolStart follows once the reply is complete.
+//
 // Threads: submit(), stop_turn(), new_conversation(), state(), view() and
 // the listener calls may come from any thread. Listeners and the
 // agent.state event run on wisp.agent; a listener must not block for
@@ -97,6 +103,7 @@ struct AgentEvent {
         TurnBegin,
         TurnEnd,
         Delta,
+        ToolPrep,
         ToolStart,
         ToolEnd,
         State,
@@ -106,11 +113,12 @@ struct AgentEvent {
     };
     Kind kind = Kind::State;
     std::string text;                     // Delta; Confirm ("" = over); TurnBegin: the user text
-    std::string tool;                     // ToolStart, ToolEnd, State (Tool): dotted
+    std::string tool;                     // ToolPrep, ToolStart, ToolEnd, State (Tool): dotted
     std::string args, result;             // ToolStart, ToolEnd: cut to kSummaryChars code points
     bool ok = true;                       // ToolEnd; Cleared: false when nothing changed
     AgentState state = AgentState::Idle;  // State
     uint64_t seq = 0;                     // Message: the appended message's seq
+    uint32_t bytes = 0;                   // ToolPrep: the arguments' bytes so far
     uint32_t turn = 0;                    // TurnBegin, TurnEnd
     Source source = Source::Web;          // TurnBegin
     std::string status;                   // TurnEnd

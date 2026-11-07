@@ -167,6 +167,26 @@ TEST(AgentWiring, WsFramesFollowSpecShapes) {
     EXPECT_EQ(f[7].find("epoch")->as_int(), 3);
 }
 
+// A call still being written: its name and its bytes so far, nothing of
+// the arguments.
+TEST(AgentWiring, WsToolPrepFrame) {
+    Sink sink;
+    AgentWsBridge bridge(sink.send(), find_none, [] { return uint64_t{0}; });
+    AgentEvent prep = event(Kind::ToolPrep);
+    prep.tool = "scene.write_file";
+    prep.bytes = 3277;
+    bridge.on_event(prep);
+    const std::vector<Value> f = sink.snapshot();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(str(f[0], "t"), "agent");
+    EXPECT_EQ(str(f[0], "k"), "tool");
+    EXPECT_EQ(str(f[0], "phase"), "prep");
+    EXPECT_EQ(str(f[0], "name"), "scene.write_file");
+    ASSERT_NE(f[0].find("bytes"), nullptr);
+    EXPECT_EQ(f[0].find("bytes")->as_int(), 3277);
+    EXPECT_EQ(f[0].find("args"), nullptr);
+}
+
 TEST(AgentWiring, DeltasCoalescedPer100ms) {
     Sink sink;
     AgentWsBridge bridge(sink.send(), find_none, [] { return uint64_t{1}; });

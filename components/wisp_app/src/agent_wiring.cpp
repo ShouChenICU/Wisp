@@ -259,6 +259,12 @@ void AgentWsBridge::on_event(const agent::AgentEvent& e) {
 
     Map frame{{"t", Value("agent")}};
     switch (e.kind) {
+        case Kind::ToolPrep:
+            frame["k"] = Value("tool");
+            frame["phase"] = Value("prep");
+            frame["name"] = Value(e.tool);
+            frame["bytes"] = Value(static_cast<int64_t>(e.bytes));
+            break;
         case Kind::ToolStart:
             frame["k"] = Value("tool");
             frame["phase"] = Value("start");
