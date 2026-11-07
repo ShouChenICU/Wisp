@@ -28,6 +28,7 @@
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
+#include "wisp/ui/wisp_model.hpp"
 
 namespace wisp::app {
 
@@ -330,6 +331,7 @@ void SelfCheck::start_perf_timer() {
 
 void SelfCheck::emit_perf_line() {
     ui::UiPerf perf = ui_->perf();
+    const ui::WispPerf wisp = ui::wisp_perf(os::now_ms());
 
     Value heap = app_.platform().heap_info ? app_.platform().heap_info() : Value();
     int64_t heap_internal_free = 0;
@@ -348,6 +350,8 @@ void SelfCheck::emit_perf_line() {
         {"frames", static_cast<int64_t>(perf.frames)},
         {"heap_internal_free", heap_internal_free},
         {"heap_large_free", heap_large_free},
+        {"wisp_fps", wisp.fps},
+        {"wisp_ms", wisp.ms},
     };
     app_.platform().emit_line("WISP_PERF " + to_json(Value(payload)));
 }

@@ -24,6 +24,16 @@ const Value* find_cap(const Properties& caps, const char* key) {
 
 }  // namespace
 
+PanelKind panel_kind(const Properties& caps) {
+    const Value* panel = find_cap(caps, "panel");
+    if (panel == nullptr) return PanelKind::Lcd;
+    const std::string& v = panel->as_string();
+    if (v == "amoled") return PanelKind::Amoled;
+    if (v == "mono") return PanelKind::Mono;
+    if (v == "epaper") return PanelKind::EPaper;
+    return PanelKind::Lcd;
+}
+
 Result<ScreenShape> screen_shape_from_caps(const Properties& caps) {
     const Value* width = find_cap(caps, "width");
     const Value* height = find_cap(caps, "height");

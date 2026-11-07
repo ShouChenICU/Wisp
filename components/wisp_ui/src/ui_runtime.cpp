@@ -18,6 +18,7 @@ static_assert(LV_COLOR_DEPTH == 16, "wisp_ui requires LV_COLOR_DEPTH == 16 (RGB5
 #include <utility>
 
 #include "fonts_internal.hpp"
+#include "lvgl_private.h"  // lv_display_t::flush_cb
 #include "theme_internal.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
@@ -75,6 +76,7 @@ void prune_duration_samples(std::deque<Sample>& samples, uint64_t now) {
 
 struct UiRuntime::Impl {
     std::shared_ptr<hal::Display> display;
+    hal::PanelKind panel = hal::PanelKind::Lcd;
     std::shared_ptr<hal::Touch> touch;
     UiConfig config;
 
@@ -493,6 +495,7 @@ Result<void> UiRuntime::start() {
     impl_->width = cap_int(caps, "width", 0);
     impl_->height = cap_int(caps, "height", 0);
     impl_->area_align = cap_int(caps, "area_align", 1);
+    impl_->panel = hal::panel_kind(caps);
     auto be_it = caps.find("rgb565_be");
     const bool rgb565_be = be_it != caps.end() && be_it->second.as_bool();
     if (impl_->width <= 0 || impl_->height <= 0) {
@@ -572,6 +575,8 @@ Result<void> UiRuntime::start() {
         return fail_after_lv_init(ErrorCode::NoMemory, "lv_display_create failed");
     }
     lv_display_set_user_data(impl_->lv_disp, impl_.get());
+    // Grey edge pixels mean nothing on a two-colour panel.
+    if (!hal::panel_is_colour(impl_->panel)) lv_display_set_antialiasing(impl_->lv_disp, false);
     // Rendering straight into the panel's byte order costs nothing; swapping
     // each stripe afterwards would cost CPU time on every frame.
     lv_display_set_color_format(
@@ -859,6 +864,15 @@ void UiRuntime::set_perf_overlay(bool enabled) {
 
 bool UiRuntime::perf_overlay_enabled() const {
     return impl_->perf_overlay_enabled.load(std::memory_order_acquire);
+}
+
+hal::PanelKind display_panel(lv_display_t* disp) {
+    // A display UiRuntime made keeps its Impl as the user data; one made by
+    // anyone else may keep anything there. Only our flush callback marks it
+    // as ours, so check that before trusting the pointer.
+    if (disp == nullptr || disp->flush_cb != &UiRuntime::Impl::flush_cb) return hal::PanelKind::Lcd;
+    auto* impl = static_cast<UiRuntime::Impl*>(lv_display_get_user_data(disp));
+    return impl != nullptr && impl->lv_disp == disp ? impl->panel : hal::PanelKind::Lcd;
 }
 
 }  // namespace wisp::ui

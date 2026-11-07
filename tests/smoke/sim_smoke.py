@@ -30,7 +30,9 @@ screenshots a notification banner and the panel on each screen shape for
 a person to look at (their paths are printed; they stay in the run's
 temporary directory, removed at exit, unless WISP_SMOKE_SHOTS names a
 directory to keep them in); "scene_level" tilts the scripted IMU under
-the level example. Every other case gives the simulator an empty stdin.
+the level example. "wisp_demo" runs --wisp-demo (mvp spec 6.1) and
+checks the wisp's frame rate in WISP_PERF. Every other case gives the
+simulator an empty stdin.
 
 Registered with ctest as the "sim_smoke" test (tests/CMakeLists.txt).
 
@@ -952,6 +954,31 @@ def case_shape_circle(sim_path, tmp_root):
     )
 
 
+def case_wisp_demo(sim_path, tmp_root):
+    """mvp spec 6.1: --wisp-demo shows the wisp, and WISP_PERF reports its
+    frame rate: between the calm 15 fps and the busy 30 fps."""
+    data_dir = tmp_root / "wisp-demo"
+    data_dir.mkdir()
+    screenshot = data_dir / "s.png"
+    args = sim_args(sim_path, data_dir, ["--wisp-demo", "--screenshot", str(screenshot)])
+    args[args.index("--exit-after-ms") + 1] = "7000"
+    try:
+        result = subprocess.run(args, input="", capture_output=True, text=True, timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired as exc:
+        raise SmokeError(f"{' '.join(args)} timed out after {TIMEOUT_S}s") from exc
+    expect(result.returncode == 0, f"exit code {result.returncode}, stderr:\n{result.stderr}")
+    perf = [json.loads(line[len("WISP_PERF "):]) for line in result.stdout.splitlines()
+            if line.startswith("WISP_PERF ")]
+    expect(perf, f"no WISP_PERF line in stdout:\n{result.stdout}")
+    for p in perf:
+        for key in ("wisp_fps", "wisp_ms"):
+            expect(isinstance(p.get(key), (int, float)), f"WISP_PERF {key} missing: {p}")
+    fps = perf[-1]["wisp_fps"]
+    expect(15 <= fps <= 30.5, f"WISP_PERF wisp_fps == {fps}, expected 15-30")
+    expect(perf[-1]["wisp_ms"] > 0, f"WISP_PERF wisp_ms == {perf[-1]['wisp_ms']}")
+    check_screenshot(screenshot)
+
+
 def case_font_image_none(sim_path, tmp_root):
     """vector-font spec 3.6: without a font image the simulator boots on
     bitmap fonts and says so."""
@@ -1378,6 +1405,7 @@ CASES = (
     ("disable_imu", case_disable_imu),
     ("no_sd", case_no_sd),
     ("shape_circle", case_shape_circle),
+    ("wisp_demo", case_wisp_demo),
     ("font_image_none", case_font_image_none),
     ("disable_wifi", case_disable_wifi),
     ("http", case_http),

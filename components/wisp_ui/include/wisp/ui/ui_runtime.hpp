@@ -23,6 +23,7 @@
 #include "lvgl.h"
 #include "wisp/base/result.hpp"
 #include "wisp/hal/display.hpp"
+#include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/ui/fonts.hpp"
 
@@ -217,6 +218,12 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    friend hal::PanelKind display_panel(lv_display_t* disp);
 };
+
+// The panel kind (caps "panel") of a display a UiRuntime created; Lcd for
+// any other. Two-colour panels (Mono, EPaper) run without anti-aliasing.
+// UI thread only.
+hal::PanelKind display_panel(lv_display_t* disp);
 
 }  // namespace wisp::ui

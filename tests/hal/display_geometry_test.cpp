@@ -160,3 +160,14 @@ TEST(DisplayGeometry, RowSpanMatchesVisibleOnOddShapes) {
         }
     }
 }
+
+TEST(DisplayGeometry, PanelKind) {
+    EXPECT_EQ(panel_kind(wisp::Properties{}), PanelKind::Lcd);
+    EXPECT_EQ(panel_kind(wisp::Properties{{"panel", wisp::Value("lcd")}}), PanelKind::Lcd);
+    EXPECT_EQ(panel_kind(wisp::Properties{{"panel", wisp::Value("amoled")}}), PanelKind::Amoled);
+    EXPECT_EQ(panel_kind(wisp::Properties{{"panel", wisp::Value("mono")}}), PanelKind::Mono);
+    EXPECT_EQ(panel_kind(wisp::Properties{{"panel", wisp::Value("epaper")}}), PanelKind::EPaper);
+    EXPECT_EQ(panel_kind(wisp::Properties{{"panel", wisp::Value("oled?")}}), PanelKind::Lcd);
+    EXPECT_TRUE(panel_is_colour(PanelKind::Amoled));
+    EXPECT_FALSE(panel_is_colour(PanelKind::EPaper));
+}

@@ -68,6 +68,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -116,6 +117,7 @@
 #include "wisp/shell/conversation.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
+#include "wisp/ui/wisp_view.hpp"
 
 namespace {
 
@@ -224,6 +226,7 @@ constexpr const char* kLogTag = "sim";
 wisp::port::sim::SimBoardConfig to_board_config(const SimOptions& opts) {
     wisp::port::sim::SimBoardConfig config;
     config.shape = opts.shape;
+    config.panel = opts.panel;
     config.disabled = opts.disabled;
     config.no_sd = opts.no_sd;
     config.data_dir = opts.data_dir;
@@ -693,6 +696,74 @@ bool run_windowed(wisp::app::App& app, const SimOptions& opts, wisp::port::sim::
     return true;
 }
 
+// --wisp-demo (spec 6.1): a screen of its own, its background from
+// wisp_background(panel), with the wisp in the middle at 56% of the safe
+// area's short side. Every 3 s it moves on to the
+// next mood; Listening and Speaking get a level swinging at 1 Hz, and every
+// other round Thinking runs busy. The self-check screen stays behind it,
+// so WISP_PERF keeps coming.
+struct WispDemo {
+    wisp::ui::WispView* view = nullptr;
+    uint64_t start_ms = 0;
+    int slot = -1;
+};
+
+void wisp_demo_tick(lv_timer_t* t) {
+    auto* demo = static_cast<WispDemo*>(lv_timer_get_user_data(t));
+    const uint64_t elapsed = wisp::os::now_ms() - demo->start_ms;
+    const int slot = static_cast<int>(elapsed / 3000);
+    const auto mood = static_cast<wisp::ui::WispMood>(slot % 5);
+    if (slot != demo->slot) {
+        demo->slot = slot;
+        demo->view->set_mood(mood);
+        demo->view->set_busy(mood == wisp::ui::WispMood::Thinking && (slot / 5) % 2 == 1);
+        WLOG_I(kLogTag, "wisp demo: mood %d", static_cast<int>(mood));
+    }
+    if (mood == wisp::ui::WispMood::Listening || mood == wisp::ui::WispMood::Speaking) {
+        const double phase = static_cast<double>(elapsed % 1000) / 1000.0;
+        demo->view->set_level(static_cast<uint8_t>(50 + 45 * std::sin(phase * 6.283185307179586)));
+    } else {
+        demo->view->set_level(0);
+    }
+}
+
+void start_wisp_demo(wisp::app::App& app) {
+    wisp::ui::UiRuntime* ui = app.ui();
+    auto display = app.registry().get<wisp::hal::Display>("display.main");
+    if (ui == nullptr || !display) {
+        WLOG_W(kLogTag, "--wisp-demo: no display");
+        return;
+    }
+    auto shape = wisp::hal::screen_shape_from_caps(display->info().caps);
+    if (!shape) {
+        WLOG_W(kLogTag, "--wisp-demo: %s", shape.error().message.c_str());
+        return;
+    }
+    static WispDemo demo;
+    ui->run_blocking([&] {
+        lv_obj_t* scr = lv_obj_create(nullptr);
+        lv_obj_set_style_bg_color(
+            scr, wisp::ui::wisp_background(wisp::ui::display_panel(lv_obj_get_display(scr))), 0);
+        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(scr, 0, 0);
+        lv_obj_set_style_border_width(scr, 0, 0);
+        lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+        // 56% of the safe area's short side makes the wisp itself (tips to
+        // bottom) about half the screen's height; its 5:4 box still fits
+        // the safe area, circle included.
+        demo.view = wisp::ui::WispView::create(
+            scr, wisp::ui::wisp_size_px(wisp::hal::safe_rect(shape.value()), 56));
+        if (demo.view == nullptr) {
+            lv_obj_delete(scr);
+            WLOG_E(kLogTag, "--wisp-demo: out of memory");
+            return;
+        }
+        lv_screen_load(scr);
+        demo.start_ms = wisp::os::now_ms();
+        lv_timer_create(wisp_demo_tick, 50, &demo);
+    });
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -879,6 +950,8 @@ int main(int argc, char** argv) {
                    opened.error().message.c_str());
         }
     }
+
+    if (opts.wisp_demo) start_wisp_demo(app);
 
     int exit_code = 0;
     {

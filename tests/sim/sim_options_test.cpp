@@ -241,3 +241,19 @@ TEST(SimOptions, ImuScript) {
     const char* a3[] = {"wisp_sim", "--imu-script"};
     EXPECT_NE(parse_sim_options(2, a3).error().message.find("--imu-script"), std::string::npos);
 }
+
+TEST(SimOptions, WispDemo) {
+    const char* a1[] = {"wisp_sim"};
+    EXPECT_FALSE(parse_sim_options(1, a1).value().wisp_demo);
+    const char* a2[] = {"wisp_sim", "--wisp-demo"};
+    EXPECT_TRUE(parse_sim_options(2, a2).value().wisp_demo);
+}
+
+TEST(SimOptions, Panel) {
+    const char* a1[] = {"wisp_sim"};
+    EXPECT_EQ(parse_sim_options(1, a1).value().panel, "amoled");
+    const char* a2[] = {"wisp_sim", "--panel", "epaper"};
+    EXPECT_EQ(parse_sim_options(3, a2).value().panel, "epaper");
+    const char* a3[] = {"wisp_sim", "--panel", "crt"};
+    EXPECT_NE(parse_sim_options(3, a3).error().message.find("crt"), std::string::npos);
+}

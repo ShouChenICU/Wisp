@@ -1035,7 +1035,7 @@ TEST(SelfCheckScreen, PerfOverlaySettingPersistsAcrossRestarts) {
 // end to end (format, device lookups, heap_info being empty) rather than
 // only unit-testing pieces of it.
 // docs/architecture.md's "机器可读输出" section documents WISP_PERF's
-// six fields; parse the line (not just its prefix) and check each one
+// fields; parse the line (not just its prefix) and check each one
 // is present with the expected type, so a future change to this set is
 // caught here rather than silently drifting out of sync with that doc.
 TEST(SelfCheckScreen, EmitsWispPerfLine) {
@@ -1089,6 +1089,11 @@ TEST(SelfCheckScreen, EmitsWispPerfLine) {
     const wisp::Value* heap_large_free = v.find("heap_large_free");
     ASSERT_NE(heap_large_free, nullptr);
     EXPECT_EQ(heap_large_free->type(), wisp::Value::Type::Int);
+
+    // No wisp on this screen: both 0.
+    EXPECT_TRUE(is_number(v.find("wisp_fps")));
+    EXPECT_TRUE(is_number(v.find("wisp_ms")));
+    EXPECT_EQ(v.find("wisp_fps")->as_double(), 0);
 
     h.app.stop();
 }

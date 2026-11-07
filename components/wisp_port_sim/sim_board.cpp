@@ -73,7 +73,7 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         record_disabled("display.main", wisp::hal::DeviceClass::Display);
     } else {
         display_ = std::make_shared<SimDisplay>("display.main", kWidth, kHeight, config_.shape,
-                                                kCornerRadius);
+                                                kCornerRadius, config_.panel);
         registry.add(display_);
     }
 

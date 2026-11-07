@@ -90,4 +90,13 @@ struct Span {
 // row is invisible.
 Span row_span(const ScreenShape& shape, int32_t y);
 
+// What the panel can show, from caps "panel", and so how to draw on it:
+// colour panels anti-alias and animate; a mono panel has two colours and
+// a slow refresh; e-paper keeps its picture without power and redraws
+// slowly, so it shows still pictures. A missing or unknown value is Lcd.
+enum class PanelKind { Lcd, Amoled, Mono, EPaper };
+PanelKind panel_kind(const Properties& caps);
+// Lcd and Amoled.
+inline bool panel_is_colour(PanelKind k) { return k == PanelKind::Lcd || k == PanelKind::Amoled; }
+
 }  // namespace wisp::hal

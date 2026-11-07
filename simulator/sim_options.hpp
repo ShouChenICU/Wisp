@@ -40,6 +40,8 @@ struct SimOptions {
     bool no_sd = false;
     std::string data_dir = "./sim-data";
     std::string shape = "rounded_rect";
+    // The display's caps "panel": amoled, lcd, mono or epaper.
+    std::string panel = "amoled";
     // Admin HTTP server port on 127.0.0.1; 0 leaves the server off.
     uint16_t http_port = 8900;
     // Serve the admin page from this directory (packed in memory at
@@ -65,18 +67,22 @@ struct SimOptions {
     // A file of scripted IMU steps (wisp/port/sim/imu_script.hpp); empty:
     // none, the arrow keys tilt.
     std::string imu_script;
+    // Shows the wisp on a screen of its own (background from
+    // wisp_background(panel)), cycling its moods (spec 6.1), in front of
+    // the self-check screen.
+    bool wisp_demo = false;
 };
 
 // Parses argv[1..argc) (argv[0], the program name, is ignored) into a
 // SimOptions. Recognized flags: --headless, --screenshot <path>,
 // --exit-after-ms <n>, --disable <id-or-class> (repeatable, appended to
 // `disabled` in order), --no-sd, --data-dir <path>, --shape
-// <rect|rounded_rect|circle>, --http-port <n> (0-65535; 0 = no admin
-// server), --web-dir <path>, --wifi-fail, --tap <x>,<y>@<ms> and
+// <rect|rounded_rect|circle>, --panel <amoled|lcd|mono|epaper>, --http-port <n> (0-65535; 0 = no
+// admin server), --web-dir <path>, --wifi-fail, --tap <x>,<y>@<ms> and
 // --swipe <x1>,<y1>,<x2>,<y2>@<ms> (both repeatable, appended to
 // `touches` in order), --scenes-dir <path>, --open-scene <id>,
-// --font-image <path|none>, --glyph-image <path|none> and --imu-script
-// <path>.
+// --font-image <path|none>, --glyph-image <path|none>, --imu-script
+// <path> and --wisp-demo.
 //
 // Fails with wisp::ErrorCode::InvalidArgument if:
 //   - an argument is none of the flags above (the error message includes
@@ -84,8 +90,9 @@ struct SimOptions {
 //   - a flag that takes a value is the last argument, so no value
 //     follows it (the message includes the flag name, e.g. "missing
 //     value for --screenshot");
-//   - --shape's value is not one of "rect"/"rounded_rect"/"circle" (the
-//     message includes the offending value);
+//   - --shape's value is not one of "rect"/"rounded_rect"/"circle", or
+//     --panel's not one of "amoled"/"lcd"/"mono"/"epaper" (the message
+//     includes the offending value);
 //   - --exit-after-ms's value is not a plain non-negative base-10
 //     integer that fits in uint32_t (the message includes the offending
 //     value, e.g. "invalid --exit-after-ms value: -5");
