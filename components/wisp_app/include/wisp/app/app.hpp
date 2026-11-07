@@ -27,19 +27,20 @@
 //      and starts its own internal sample Timer, then constructs the
 //      PowerManager (spec 6.7, handed a pointer to the
 //      PowerMonitor just built) and starts its periodic idle-check
-//      Timer, then -- if a UiRuntime was started -- builds the
-//      self-check screen (see src/self_check.hpp's start_self_check(),
-//      spec 8) on it, blocking until that has actually run. PowerManager
-//      is constructed before the self-check screen specifically because
-//      the screen's power-key handling calls into it (see
-//      src/self_check_screen.cpp).
+//      Timer, then -- if a UiRuntime was started -- starts the system
+//      duties (src/system_duties.hpp: the power key, the network cards,
+//      the confirm dialogs, WISP_PERF) and the shell's home screen
+//      (wisp/shell/shell.hpp, mvp spec 6.6) on it, blocking until both
+//      have run. PowerManager is constructed first because the power key
+//      calls into it. The self-check screen (src/self_check.hpp, spec 8)
+//      is the hardware diagnostics, built only when the shell opens it.
 //   Scenes (scene-runtime-core spec; src/scene_wiring.hpp): right after
 //      storage, the "wisp.fs" StorageWorker starts and the scene repository
 //      recovers interrupted installs on it; with a screen, the scene
 //      runtime (and, given Platform::http_client, the scenes' HTTP proxy)
 //      is built before networking -- the admin routes reach it -- and
-//      started once the self-check screen is up, the screen a scene
-//      replaces and returns to.
+//      started once the home screen is up, the screen a scene replaces
+//      and returns to.
 //   4b. Networking (connectivity spec 4.1; src/net_wiring.hpp): builds
 //      PairingService and -- when "net.wifi" is
 //      registered -- WifiService, whose tick() runs on a "wisp.net" task
@@ -57,10 +58,8 @@
 //      "WISP_HTTP {"port":n}". Records the "net" boot-report note:
 //      "missing" (no "net.wifi"), "off" (no saved network) or
 //      "connecting".
-//   5. Records the elapsed boot_ms (now that step 4 -- the self-check
-//      screen included -- has actually finished, per spec 6.1; the
-//      screen's header, which already rendered once with boot_ms still
-//      at its default, is then re-rendered with this final value), emits
+//   5. Records the elapsed boot_ms (now that step 4 -- the home screen
+//      included -- has actually finished, per spec 6.1), emits
 //      "WISP_BOOT_REPORT <json>" and "WISP_MANIFEST <json>" (in that
 //      order) via Platform::emit_line, then publishes
 //      "system.boot.completed".
@@ -121,7 +120,8 @@ class AgentService;
 
 namespace wisp::shell {
 class ConversationController;
-}
+class Shell;
+}  // namespace wisp::shell
 
 namespace wisp::hal {
 struct ScreenShape;
@@ -165,7 +165,7 @@ struct Platform {
     // line ending its destination needs.
     std::function<void(const std::string& line)> emit_line;
 
-    // Fallback shutdown, for the self-check UI's power-off handling when no
+    // Fallback shutdown, for the power key's power-off handling when no
     // "power.*" device capable of powering itself off is
     // registered. May be empty if the platform has no such fallback.
     std::function<void()> request_power_off;
@@ -304,7 +304,8 @@ public:
 
     // Stops the serial console task, then the scene runtime (closing the
     // scene in front, whose last store flush goes to the worker), then the
-    // self-check screen, then networking -- the "wisp.net" task,
+    // shell (with the diagnostics, if open) and the system duties, then
+    // networking -- the "wisp.net" task,
     // then the HTTP server (whose handlers call into PowerManager, the
     // net services and the scenes), then the net services themselves --
     // then the storage-refresh timer, the scenes' HTTP proxy and the
@@ -358,8 +359,8 @@ public:
     // start()'s Step 4) -- constructed regardless of headless mode,
     // since the idle-timeout/platform-power-hook half of PowerManager's
     // job (see power_manager.hpp) is useful even without a display.
-    // Used by the self-check screen's power-key handling (see
-    // src/self_check_screen.cpp) to route screen on/off through it
+    // Used by the power-key handling (see src/system_duties.cpp) to
+    // route screen on/off through it
     // instead of calling hal::Display::set_power() directly. nullptr
     // before start() (or after stop()).
     PowerManager* power_manager();
@@ -392,6 +393,10 @@ public:
     // Voice and agent joined (mvp spec 1.5, 6.3), built and started with
     // the agent; nullptr under the same conditions as agent().
     shell::ConversationController* conversation();
+    // The device's pages (mvp spec 6), the home screen first: started with
+    // a screen; nullptr in headless mode, and before start() or after
+    // stop(). Its members are called on the UI thread only.
+    shell::Shell* shell();
 
     // Writes what still waits for flash before the device restarts, powers
     // off or enters deep standby (spec 3.8 of
@@ -401,10 +406,11 @@ public:
     // thread but the worker's.
     void flush_storage();
 
-    // The Platform this App was constructed from (needed by the
-    // self-check screen for request_power_off, heap_info,
+    // The Platform this App was constructed from (needed by the system
+    // duties and the self-check screen for request_power_off, heap_info,
     // firmware_version, board->name() and the settings backend -- see
-    // src/self_check_screen.cpp). Valid for the whole lifetime of this
+    // src/system_duties.cpp, src/self_check_screen.cpp). Valid for the
+    // whole lifetime of this
     // App, independent of start()/stop().
     const Platform& platform() const;
 

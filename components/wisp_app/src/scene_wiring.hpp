@@ -20,8 +20,9 @@
 //   - with a screen (build_runtime(), after the system layer): the
 //     scenes' HTTP proxy (given Platform::http_client) and the
 //     SceneRuntime, built before networking so the admin routes can be
-//     handed them, and started (start_runtime()) once the self-check
-//     screen is up -- the screen a scene's view replaces and goes back to.
+//     handed them, and started (start_runtime()) once the home screen is
+//     up -- a scene's view replaces whatever screen is in front and goes
+//     back to it.
 //     The runtime then follows power.state: standby hides the scene, waking
 //     shows it. The system layer's back gesture is the runtime's "back":
 //     a scene that declares "background" goes there, any other closes.
@@ -38,8 +39,8 @@
 //     front): it keeps its old code until it exits.
 //
 // Shutdown is split because the pieces sit at different points of
-// App::stop(): stop_runtime() before the self-check screen goes (closing
-// the scene in front loads that screen again), stop() after networking
+// App::stop(): stop_runtime() before the shell goes (closing the scene in
+// front loads the screen it replaced again), stop() after networking
 // (whose handlers use the repository and the runtime) and before the
 // storage-refresh timer: the proxy stops (it may wait for one request in
 // flight), then the worker drains and stops.

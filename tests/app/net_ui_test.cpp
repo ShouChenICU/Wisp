@@ -49,6 +49,12 @@ namespace {
 constexpr Lang kLangs[] = {Lang::Zh, Lang::Ja, Lang::En};
 const char* const kShapes[] = {"rounded_rect", "circle"};
 
+// Boots and opens the hardware diagnostics, where the network section is;
+// the cards (SystemDuties) show over them as over any screen.
+bool start_diag(UiNetHarness& h, const std::string& prefix = "") {
+    return h.start(prefix) && h.open_diagnostics();
+}
+
 std::string text_of(StrId id, Lang lang) { return wisp::ui::tr(id, lang); }
 
 bool on_screen(UiNetHarness& h, const std::string& needle) {
@@ -168,7 +174,7 @@ TEST(NetUi, PairingCodeIsSpacedForReading) {
 
 TEST(NetUi, SectionShowsStateAndButton) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_TRUE(wait_until([&] { return on_screen(h, "Not set up"); }, 3000));
     EXPECT_TRUE(on_screen(h, "Wi-Fi"));
     EXPECT_TRUE(has_button(h, screen, "Set up Wi-Fi"));
@@ -182,7 +188,7 @@ TEST(NetUi, PowerClockCardShowsTheTimeSync) {
     UiNetOptions opts;
     opts.with_sntp = true;
     UiNetHarness h(opts);
-    ASSERT_TRUE(h.start("system.time"));
+    ASSERT_TRUE(start_diag(h, "system.time"));
     ASSERT_TRUE(wait_until([&] { return on_screen(h, "Not synced"); }, 3000));
     EXPECT_TRUE(on_screen(h, "Time sync"));
     {
@@ -213,7 +219,7 @@ TEST(NetUi, TimeSyncWithoutNetworkStaysNotSynced) {
     UiNetOptions opts;
     opts.with_sntp = true;
     UiNetHarness h(opts);
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_NE(h.app->time_sync(), nullptr);
     EXPECT_FALSE(h.app->time_sync()->sync_now());
     wisp::os::sleep_ms(600);
@@ -224,7 +230,7 @@ TEST(NetUi, TimeSyncWithoutNetworkStaysNotSynced) {
 // No Sntp port: no service, and the row still says so.
 TEST(NetUi, NoSntpPortMeansNoTimeSync) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     EXPECT_EQ(h.app->time_sync(), nullptr);
     ASSERT_TRUE(wait_until([&] { return on_screen(h, "Not synced"); }, 3000));
 }
@@ -233,7 +239,7 @@ TEST(NetUi, SectionShowsTheConnectedNetwork) {
     UiNetOptions opts;
     opts.saved = {{"Home", "password1"}};
     UiNetHarness h(opts);
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_TRUE(wait_until([&] { return on_screen(h, "Connected Home"); }, 5000));
     std::string text = run_on_ui_thread(
         h.app->ui(), [] { return find_label_text_containing(lv_screen_active(), "Connected"); });
@@ -251,7 +257,7 @@ TEST(NetUi, SignalStrengthStaysOnOneLine) {
             opts.shape = shape;
             opts.saved = {{"Home", "password1"}};
             UiNetHarness h(opts);
-            ASSERT_TRUE(h.start());
+            ASSERT_TRUE(start_diag(h));
             ASSERT_TRUE(select_page_lang(h.app->ui(), lang));
             ASSERT_TRUE(wait_until([&] { return on_screen(h, "-50 dBm"); }, 5000));
             std::string problem = run_on_ui_thread(h.app->ui(), [] {
@@ -279,7 +285,7 @@ TEST(NetUi, SectionCountsDownToTheNextAttempt) {
     opts.saved = {{"Home", "password1"}};
     opts.wifi_reachable = false;
     UiNetHarness h(opts);
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_TRUE(wait_until([&] { return on_screen(h, "Retrying in "); }, 5000));
     auto seconds = [&] {
         std::string text = run_on_ui_thread(h.app->ui(), [] {
@@ -310,7 +316,7 @@ TEST(NetUi, SectionSaysWhenEveryPasswordWasRejected) {
         opts.saved = {{"Home", "wrongpass"}};
         opts.saved_auth_failed = true;
         UiNetHarness h(opts);
-        ASSERT_TRUE(h.start());
+        ASSERT_TRUE(start_diag(h));
         ASSERT_TRUE(select_page_lang(h.app->ui(), lang));
         ASSERT_TRUE(wait_until([&] { return on_screen(h, line); }, 5000));
         const std::string retrying = text_of(StrId::NetRetrying, lang);
@@ -347,7 +353,7 @@ TEST(NetUi, NonUtf8SsidShowsQuestionMarks) {
     opts.saved = {{gbk, ""}};
     UiNetHarness h(opts);
     h.wifi->networks.push_back({gbk, -40, false});
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_TRUE(wait_until([&] { return on_screen(h, "Connected ????  "); }, 5000));
 }
 
@@ -355,7 +361,7 @@ TEST(NetUi, NoWifiDeviceShowsNoButton) {
     UiNetOptions opts;
     opts.with_wifi = false;
     UiNetHarness h(opts);
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_TRUE(wait_until([&] { return on_screen(h, "No Wi-Fi hardware"); }, 3000));
     EXPECT_FALSE(has_button(h, screen, "Set up Wi-Fi"));
     EXPECT_FALSE(has_button(h, screen, "Stop setup"));
@@ -370,7 +376,7 @@ TEST(NetUi, ProvisioningCardShowsQrAndFitsSafeArea) {
             // The cards follow the system language, the button the page's.
             opts.lang = wisp::ui::lang_code(lang);
             UiNetHarness h(opts);
-            ASSERT_TRUE(h.start());
+            ASSERT_TRUE(start_diag(h));
             ASSERT_TRUE(select_page_lang(h.app->ui(), lang));
             ASSERT_TRUE(wait_until(
                 [&] { return has_button(h, screen, text_of(StrId::StartSetup, lang)); }, 3000));
@@ -464,7 +470,7 @@ std::string check_flat_qr(lv_obj_t* qr, const std::vector<bool>& dark, lv_color_
 // scrolling under the card).
 TEST(NetUi, QrCodeIsFlattenedToTheDisplayFormat) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     for (lv_color_format_t cf : {LV_COLOR_FORMAT_RGB565, LV_COLOR_FORMAT_RGB565_SWAPPED}) {
         SCOPED_TRACE(std::to_string(cf));
         std::string problem = run_on_ui_thread(h.app->ui(), [&] {
@@ -490,7 +496,7 @@ TEST(NetUi, QrCodeIsFlattenedToTheDisplayFormat) {
 
 TEST(NetUi, ProvisioningCardQrUsesTheDisplayFormat) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
     ASSERT_TRUE(wait_until([&] { return qr_shown(h); }, 3000));
     std::string problem = run_on_ui_thread(h.app->ui(), [] {
@@ -511,7 +517,7 @@ TEST(NetUi, ProvisioningCardQrUsesTheDisplayFormat) {
 // shows around it (wisp/ui/overlay.hpp).
 TEST(NetUi, ScrollingUnderTheProvisioningCardLeavesTheCardAlone) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
     ASSERT_TRUE(wait_until([&] { return qr_shown(h); }, 3000));
     // One UI job, so nothing else is drawn between the two frames.
@@ -548,7 +554,7 @@ TEST(NetUi, ScrollingUnderTheProvisioningCardLeavesTheCardAlone) {
 
 TEST(NetUi, ProvisioningCardClosesWhenTheHotspotStopsElsewhere) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
     ASSERT_TRUE(wait_until([&] { return qr_shown(h); }, 3000));
     ASSERT_TRUE(h.app->wifi()->stop_provisioning());
@@ -590,7 +596,7 @@ TEST(NetUi, ProvisioningSuccessViewShowsTheNewAddressInsideSafeArea) {
             opts.shape = shape;
             opts.lang = wisp::ui::lang_code(lang);
             UiNetHarness h(opts);
-            ASSERT_TRUE(h.start());
+            ASSERT_TRUE(start_diag(h));
             provision_home(h, 1);
             ASSERT_TRUE(wait_until([&] { return on_top_layer(h, done_title(lang)); }, 5000));
             EXPECT_FALSE(qr_shown(h));
@@ -644,7 +650,7 @@ TEST(NetUi, ProvisioningSuccessViewShowsTheNewAddressInsideSafeArea) {
 // success view up, so the address stays readable.
 TEST(NetUi, ProvisioningSuccessViewOutlivesTheHotspot) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     provision_home(h, 0);
     ASSERT_TRUE(wait_until([&] { return on_top_layer(h, done_title(Lang::Zh)); }, 5000));
     // Closes once it has been empty for 3 s.
@@ -663,7 +669,7 @@ TEST(NetUi, ProvisioningSuccessViewOutlivesTheHotspot) {
 // The countdown on OK, driven with explicit timestamps.
 TEST(NetUi, ProvisioningSuccessViewCountsDownAndCloses) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     const wisp::hal::Area safe = safe_area(h);
     int stops = 0;
     std::string seen = run_on_ui_thread(h.app->ui(), [&] {
@@ -698,7 +704,7 @@ TEST(NetUi, PairingCardCountsDownAndCloses) {
     UiNetOptions opts;
     opts.pairing_interval_ms = 0;  // a second code right after the first
     UiNetHarness h(opts);
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     wisp::net::PairingService* pairing = h.app->pairing();
     ASSERT_NE(pairing, nullptr);
 
@@ -736,7 +742,7 @@ TEST(NetUi, PairingCardCountsDownAndCloses) {
 
 TEST(NetUi, PairingCodeUsesFont24) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     wisp::net::PairingService* pairing = h.app->pairing();
     ASSERT_NE(pairing, nullptr);
     ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
@@ -758,7 +764,7 @@ TEST(NetUi, PairingCardClosesAtExpiry) {
     UiNetOptions opts;
     opts.pairing_ttl_ms = 2500;
     UiNetHarness h(opts);
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     wisp::net::PairingService* pairing = h.app->pairing();
     ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
     uint64_t expires = 0;
@@ -776,7 +782,7 @@ TEST(NetUi, PairingCardClosesAtExpiry) {
 // services on its own.
 TEST(NetUi, CardsFollowTheServicesWhenEventsAreLost) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_TRUE(wait_until([&] { return on_screen(h, "Not set up"); }, 3000));
 
     wisp::os::Semaphore entered(1, 0);
@@ -830,7 +836,7 @@ TEST(NetUi, PairingCardStacksAboveProvisioningCardInsideSafeArea) {
             // The cards follow the system language, the button the page's.
             opts.lang = wisp::ui::lang_code(lang);
             UiNetHarness h(opts);
-            ASSERT_TRUE(h.start());
+            ASSERT_TRUE(start_diag(h));
             ASSERT_TRUE(select_page_lang(h.app->ui(), lang));
             ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
             ASSERT_TRUE(wait_until([&] { return qr_shown(h); }, 3000));
@@ -870,7 +876,7 @@ TEST(NetUi, PairingCardStacksAboveProvisioningCardInsideSafeArea) {
 // language.
 TEST(NetUi, OpenCardsFollowTheSystemLanguage) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
     ASSERT_TRUE(h.app->pairing()->request_code(wisp::os::now_ms()));
     // The system language starts as Chinese; the page as English.
@@ -919,7 +925,7 @@ TEST(NetUi, OpenCardsFollowTheSystemLanguage) {
 // Someone is waiting at a browser for the code: a sleeping screen wakes.
 TEST(NetUi, PairingCodeWakesTheScreen) {
     UiNetHarness h;
-    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(start_diag(h));
     wisp::app::PowerManager* pm = h.app->power_manager();
     run_on_ui_blocking(h.app->ui(), [&] { pm->enter_standby(); });
     ASSERT_TRUE(pm->standby());

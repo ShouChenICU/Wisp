@@ -202,6 +202,8 @@ struct Booted {
         auto lines = wisp::log::ring_entries();
         g_log_floor = lines.empty() ? 0 : lines.back().seq;
         if (!h.start("scene.")) return false;
+        // The scenes card is on the hardware diagnostics.
+        if (!h.open_diagnostics()) return false;
         screen = nullptr;
         run_on_ui_blocking(h.app->ui(), [&] { screen = lv_screen_active(); });
         return screen != nullptr;

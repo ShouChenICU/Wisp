@@ -609,30 +609,30 @@ Result<void> App::start() {
     if (impl_->reminders) impl_->reminders->start();
 
     if (impl_->ui) {
-        // Block until start_self_check() has actually run on the UI
-        // thread (rather than merely queued) before start() returns:
-        // otherwise a caller that calls stop() right after start()
-        // returns could race a still-pending post() (see
-        // app_impl.hpp's Lifetime note) -- stop() would find
-        // impl_->self_check still null and skip tearing it down, and
-        // the queued start_self_check() would then run during
-        // UiRuntime::stop()'s own final post-queue drain, leaving a
-        // freshly built screen (task, timer, subscription) with
-        // nothing left to tear it down afterwards.
-        os::Semaphore done(1, 0);
-        bool posted = impl_->ui->post([this, &done] {
-            start_self_check(*this, *impl_->system_layer, impl_->scenes.get(), impl_->self_check);
-            done.give();
-        });
-        if (posted) {
-            done.take(os::kForever);
-        } else {
-            WLOG_E("app", "UI post queue full; self-check screen not built");
-        }
-        // Only now: a scene's view remembers the screen it replaces and
-        // loads it again when it goes, so that must be the self-check
-        // screen.
+        // The system duties, then the home screen (mvp spec 6.6), on the
+        // UI thread. run_blocking() returns only once both have run, so a
+        // stop() right after start() always finds them to tear down.
         App::Impl* impl = impl_.get();
+        impl_->duties = std::make_unique<SystemDuties>(*this);
+        impl_->shell = std::make_unique<shell::Shell>(shell::ShellDeps{
+            .ui = *impl_->ui,
+            .layer = *impl_->system_layer,
+            .shape = shape,
+            .bus = impl_->bus,
+            .conversation = nullptr,  // set once the voice has started, below
+            .open_diagnostics =
+                [this, impl] {
+                    start_self_check(*this, *impl->system_layer, impl->scenes.get(),
+                                     impl->self_check);
+                },
+            .close_diagnostics = [impl] { stop_self_check(impl->self_check); },
+        });
+        impl_->ui->run_blocking([impl] {
+            impl->duties->start();
+            impl->shell->start();
+        });
+        // Only now: a scene's view remembers the screen it replaces and
+        // loads it again when it goes, so that must be the home screen.
         if (scenes != nullptr) {
             scenes->start_runtime([impl] { return impl->power_manager->standby(); });
             // Read on this task once the runtime follows system.settings, so
@@ -656,22 +656,16 @@ Result<void> App::start() {
         }
         // Once the agent takes text; without its tasks the voice is off.
         if (impl_->voice && !impl_->voice->start()) impl_->voice.reset();
+        if (impl_->voice) {
+            shell::ConversationController* conv = &impl_->voice->conversation();
+            impl_->ui->run_blocking([impl, conv] { impl->shell->set_conversation(conv); });
+        }
     }
 
-    // boot_ms is recorded here -- right after Step 4, once the self-check
-    // screen (when there is one) has actually finished building -- per
-    // spec 6.1's boot sequence, which only *ends* at step ⑤ (the
-    // self-check screen going up). The screen's header already rendered
-    // once with whatever set_boot_ms() had defaulted to (0) during
-    // build(), so refresh_self_check_header() below re-renders it with
-    // this now-final value. Setting boot_ms any earlier (e.g. right
-    // before Step 4, so the header's *first* render already showed a
-    // non-zero value) would under-count actual boot time by excluding
-    // the screen's own build time.
+    // boot_ms is recorded here -- right after Step 4, once the home
+    // screen (when there is one) is up -- per spec 6.1's boot sequence,
+    // which only *ends* at step ⑤ (the first screen going up).
     impl_->report.set_boot_ms(os::now_ms() - boot_t0);
-    if (impl_->ui) {
-        refresh_self_check_header(*impl_->ui, impl_->self_check);
-    }
 
     // Step 5: finalize and report.
     const std::string board_name = impl_->platform.board->name();
@@ -713,20 +707,13 @@ void App::stop() {
     // earlier stop()), so no `started` guard is needed here -- that flag
     // only gates start() itself.
     //
-    // The self-check screen (and any in-flight "Mic test" loopback task)
-    // is torn down first, before ButtonService/UiRuntime/EventBus -- see
-    // app_impl.hpp's Lifetime note: it holds a bus subscription and a
-    // reference to `ui`/`registry`, so it must release those before the
-    // things it references go away. join_loopback() runs first and
-    // specifically *before* stop_self_check(): the "wisp.loop" task's
-    // on_status callback (see loopback.hpp) posts back onto the UI
-    // thread through a SelfCheck-owned label, so that post must be fully
-    // enqueued (join_loopback() waits for the task itself to return)
-    // before SelfCheck's own destructor enqueues its UI-thread teardown
-    // -- the post queue is FIFO, so ordering these two posts this way
-    // guarantees the loopback callback's queued work runs (while
-    // SelfCheck is still alive) strictly before SelfCheck's teardown
-    // lambda does.
+    // The shell (with the diagnostics, if open) and the system duties
+    // are torn down before ButtonService/UiRuntime/EventBus -- see
+    // app_impl.hpp's Lifetime note: they hold bus subscriptions and
+    // references to `ui`/`registry`, so they must release those before
+    // the things they reference go away. An in-flight "Mic test"
+    // loopback task is joined before them; its status posts check that
+    // the diagnostics are still up before touching them.
     // The console first: its commands reach the net services.
     stop_console(*this);
     // The capsule, the panel and the banners let go of the router and the
@@ -750,6 +737,10 @@ void App::stop() {
     // routes hold its api(), is gone.
     // The voice before the agent it submits to and listens to.
     if (impl_->voice) {
+        if (impl_->ui && impl_->shell) {
+            App::Impl* impl = impl_.get();
+            impl_->ui->run_blocking([impl] { impl->shell->set_conversation(nullptr); });
+        }
         impl_->voice->stop();
         impl_->voice.reset();
     }
@@ -757,11 +748,21 @@ void App::stop() {
     // No more timer or pass on the worker; the router's queued actions,
     // already on the worker's queue, run before stop() returns.
     if (impl_->reminders) impl_->reminders->stop();
-    // Before the self-check screen: closing the scene in front loads that
-    // screen again, and its final store flush goes to the worker.
+    // Before the shell: closing the scene in front loads the screen it
+    // replaced again, and its final store flush goes to the worker.
     if (impl_->scenes) impl_->scenes->stop_runtime();
+    if (impl_->ui && (impl_->shell || impl_->duties)) {
+        App::Impl* impl = impl_.get();
+        impl_->ui->run_blocking([impl] {
+            if (impl->shell) impl->shell->stop();
+            if (impl->duties) impl->duties->stop();
+        });
+    }
+    impl_->shell.reset();
+    impl_->duties.reset();
+    // Closed with the shell; this catches one opened without it.
     stop_self_check(impl_->self_check);
-    // After the screen, which closes its dialogs through it.
+    // After the duties, which close their dialogs through it.
     if (impl_->ui && impl_->system_layer) {
         impl_->ui->run_blocking([&] { impl_->system_layer.reset(); });
     }
@@ -1100,6 +1101,7 @@ core::MemoryStore* App::memory() { return impl_->agent ? impl_->agent->memory() 
 shell::ConversationController* App::conversation() {
     return impl_->voice ? &impl_->voice->conversation() : nullptr;
 }
+shell::Shell* App::shell() { return impl_->shell.get(); }
 core::StorageWorker* App::storage_worker() {
     return impl_->scenes ? &impl_->scenes->worker() : nullptr;
 }

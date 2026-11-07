@@ -1,7 +1,7 @@
 // PC simulator entry point (spec 6.1/8.1): parses
 // SimOptions (including scripted --tap/--swipe touches, see TouchScript), builds the
-// wisp::app::Platform around a SimBoard, runs wisp::app::App::start() (which builds the same
-// self-check UI the ESP firmware will), and then either loops headless or drives an SDL2 window at
+// wisp::app::Platform around a SimBoard, runs wisp::app::App::start() (which boots into the same
+// home screen the ESP firmware does), and then either loops headless or drives an SDL2 window at
 // ~60 Hz. This is the only translation unit in the project that creates an SDL window or pumps SDL
 // events -- see wisp/port/sim/sim_board.hpp's file header on why SimDisplay itself stays SDL-free,
 // and AGENTS.md's layering rule ("只有 wisp_port_sim 和 simulator/ 可以 include SDL*").
@@ -700,8 +700,8 @@ bool run_windowed(wisp::app::App& app, const SimOptions& opts, wisp::port::sim::
 // wisp_background(panel), with the wisp in the middle at 56% of the safe
 // area's short side. Every 3 s it moves on to the
 // next mood; Listening and Speaking get a level swinging at 1 Hz, and every
-// other round Thinking runs busy. The self-check screen stays behind it,
-// so WISP_PERF keeps coming.
+// other round Thinking runs busy. The home screen stays behind it, and
+// WISP_PERF keeps coming (the system duties emit it).
 struct WispDemo {
     wisp::ui::WispView* view = nullptr;
     uint64_t start_ms = 0;

@@ -9,7 +9,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 wisp_component(
     NAME wisp_app
     SRCS src/app.cpp src/self_check_screen.cpp src/self_check_model.cpp
-         src/self_check_layout.cpp src/self_check_overlays.cpp src/self_check_header.cpp
+         src/self_check_layout.cpp src/system_duties.cpp src/self_check_header.cpp
          src/self_check_devices.cpp src/self_check_sensors.cpp src/self_check_readouts.cpp
          src/self_check_tests.cpp src/self_check_sampler.cpp src/loopback.cpp src/power_key_controller.cpp
          src/power_manager.cpp src/format.cpp src/net_wiring.cpp src/net_section.cpp

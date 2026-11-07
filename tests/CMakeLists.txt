@@ -175,7 +175,8 @@ target_include_directories(status_shell_test PRIVATE ${WISP_ROOT}/components/wis
 wisp_test(NAME net_wiring_test SRCS app/net_wiring_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 target_include_directories(net_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
-foreach(app_ui_test net_ui_test factory_reset_test firmware_confirm_test app_scenes_test bench_test)
+foreach(app_ui_test net_ui_test factory_reset_test firmware_confirm_test app_scenes_test bench_test
+        system_duties_test)
     wisp_test(NAME ${app_ui_test} SRCS app/${app_ui_test}.cpp
               LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
     target_include_directories(${app_ui_test} PRIVATE ${WISP_ROOT}/components/wisp_app/src)
@@ -333,6 +334,7 @@ wisp_test(NAME voice_service_test SRCS voice/voice_service_test.cpp
 wisp_test(NAME shell_conversation_test SRCS shell/conversation_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 120)
 wisp_test(NAME talk_key_test SRCS shell/talk_key_test.cpp LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME shell_test SRCS shell/shell_test.cpp LIBS wisp_shell wisp_port_sim_os TIMEOUT 30)
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.

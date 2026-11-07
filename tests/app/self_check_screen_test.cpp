@@ -44,6 +44,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+#include "wisp/shell/shell.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -111,7 +112,7 @@ public:
             // Gives boot_ms (used by both WISP_BOOT_REPORT and the
             // self-check header) a deterministic, non-flaky non-zero
             // floor to assert against -- see
-            // BootTimeIsSetAndHeaderRefreshedAfterScreenIsBuilt below.
+            // BootTimeIsShownInTheBoardCard below.
             wisp::os::sleep_ms(init_sleep_ms_);
         }
         registry.add(display_);
@@ -179,6 +180,19 @@ struct Harness {
         if (sd) {
             sd->online_flag = false;
         }
+    }
+
+    // Boots and opens the hardware diagnostics, the self-check screen
+    // these tests look at (the device boots into the home screen).
+    bool start() {
+        if (!app.start()) return false;
+        if (app.ui() == nullptr || app.shell() == nullptr) return false;
+        bool open = false;
+        run_on_ui_blocking(app.ui(), [&] {
+            app.shell()->open_diagnostics();
+            open = app.shell()->diagnostics_open();
+        });
+        return open;
     }
 
     bool wait_for_flushes(size_t more_than, uint32_t timeout_ms = 3000) {
@@ -336,7 +350,7 @@ std::string board_rows() {
 
 TEST(SelfCheckScreen, RendersNonUniformFrame) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_NE(h.app.ui(), nullptr);
 
     // Give the sampling task and the 100ms UI refresh timer a few ticks,
@@ -377,9 +391,9 @@ TEST(SelfCheckScreen, RendersNonUniformFrame) {
 // deliberate sleep makes this non-flaky: without it, a sub-millisecond boot
 // could legitimately still round to 0ms on a fast machine, and any 0 would
 // then be indistinguishable from the stale pre-refresh header text).
-TEST(SelfCheckScreen, BootTimeIsSetAndHeaderRefreshedAfterScreenIsBuilt) {
+TEST(SelfCheckScreen, BootTimeIsShownInTheBoardCard) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/20);
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
     auto rep = h.app.report().to_value(h.app.platform().board->name());
@@ -414,7 +428,7 @@ TEST(SelfCheckScreen, BootTimeIsSetAndHeaderRefreshedAfterScreenIsBuilt) {
 // from an unrelated side channel.
 TEST(SelfCheckScreen, ImuReadFailureRendersDifferentlyAndDoesNotCrash) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
     auto imu_row_text = [&] {
@@ -462,7 +476,7 @@ TEST(SelfCheckScreen, ImuReadFailureRendersDifferentlyAndDoesNotCrash) {
 // that wiring is already covered by power_manager_test.cpp's own tests.
 TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
     wisp::app::PowerManager* pm = h.app.power_manager();
@@ -504,7 +518,7 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
 // holder "system.selfcheck", not the driver.
 TEST(SelfCheckScreen, ImuReadsThroughSensorService) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
     ASSERT_NE(h.app.sensors(), nullptr);
     auto entries = h.app.occupancy().list();
@@ -549,7 +563,7 @@ TEST(SelfCheckScreen, NoContentOutsideSafeRect) {
             SCOPED_TRACE(std::string(wisp::ui::lang_code(lang.lang)) + " " + shape);
             Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
                       shape);
-            ASSERT_TRUE(h.app.start());
+            ASSERT_TRUE(h.start());
             ASSERT_TRUE(h.wait_for_flushes(5));
             ASSERT_TRUE(select_page_lang(h.app.ui(), lang.lang));
             ASSERT_FALSE(run_on_ui_thread(h.app.ui(), [&] {
@@ -599,7 +613,7 @@ TEST(SelfCheckScreen, ScrollExtremesRestInsideSafeRect) {
             SCOPED_TRACE(std::string(wisp::ui::lang_code(lang.lang)) + " " + shape);
             Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
                       shape);
-            ASSERT_TRUE(h.app.start());
+            ASSERT_TRUE(h.start());
             ASSERT_TRUE(h.wait_for_flushes(5));
             ASSERT_TRUE(select_page_lang(h.app.ui(), lang.lang));
 
@@ -672,7 +686,7 @@ TEST(SelfCheckScreen, LabelsFitTheSafeAreaInEveryLanguage) {
             SCOPED_TRACE(std::string(wisp::ui::lang_code(lang.lang)) + " " + shape);
             Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
                       shape);
-            ASSERT_TRUE(h.app.start());
+            ASSERT_TRUE(h.start());
             ASSERT_TRUE(h.wait_for_flushes(5));
             ASSERT_TRUE(select_page_lang(h.app.ui(), lang.lang));
 
@@ -709,7 +723,7 @@ TEST(SelfCheckScreen, PageOpensInEnglishWhateverTheSystemLanguage) {
     std::string settings_path = wisp::test::temp_dir().string() + "/settings.json";
     seed_language(settings_path, "zh");
     Harness h(settings_path);
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
     EXPECT_EQ(wisp::ui::lang(), Lang::Zh);
 
@@ -742,7 +756,7 @@ TEST(SelfCheckScreen, PageOpensInEnglishWhateverTheSystemLanguage) {
 // that language, while the system language stays what it was.
 TEST(SelfCheckScreen, SwitchingThePageLanguageRetextsItInPlace) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
     const std::string system_lang = h.app.system_settings().get().language;
     const Lang ui_lang = wisp::ui::lang();
@@ -813,7 +827,7 @@ TEST(SelfCheckScreen, SwitchingThePageLanguageRetextsItInPlace) {
 // so the run fails at once with not_found.
 TEST(SelfCheckScreen, LoopbackStatusIsRetranslatedOnLanguageSwitch) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
     auto find_on_screen = [&](const char* needle) {
         return run_on_ui_thread(h.app.ui(), [needle] {
@@ -846,7 +860,7 @@ TEST(SelfCheckScreen, LoopbackStatusIsRetranslatedOnLanguageSwitch) {
 TEST(SelfCheckScreen, PageLanguageSwitchKeepsScrollAndTests) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
               "rounded_rect", /*with_sd=*/false, /*display_size=*/220);
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(0));
 
     ASSERT_EQ(run_on_ui_thread(
@@ -898,7 +912,7 @@ TEST(SelfCheckScreen, PageLanguageSwitchKeepsScrollAndTests) {
 // but re-texts an open confirm dialog, which follows the system language.
 TEST(SelfCheckScreen, SystemLanguageChangeLeavesThePageAndRetextsTheDialog) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
     auto find_on_screen = [&](const char* needle) {
         return run_on_ui_thread(h.app.ui(), [needle] {
@@ -954,7 +968,7 @@ TEST(SelfCheckScreen, SystemLanguageChangeLeavesThePageAndRetextsTheDialog) {
 // delivered, then flooded so it is dropped.
 TEST(SelfCheckScreen, SystemLanguageFollowsSettingsWhenTheEventIsLost) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
     wisp::os::Semaphore entered(1, 0);
@@ -994,7 +1008,7 @@ TEST(SelfCheckScreen, SystemLanguageFollowsSettingsWhenTheEventIsLost) {
 // An earlier version of this test diffed snapshots and was flaky (it
 // "passed" only when something unrelated, like boot_ms jitter in the
 // header, happened to differ between the two App instances).
-TEST(SelfCheckScreen, PerfOverlaySettingPersistsAcrossRestarts) {
+TEST(SystemDutiesTest, PerfOverlaySettingPersistsAcrossRestarts) {
     std::string settings_path = wisp::test::temp_dir().string() + "/settings.json";
 
     {
@@ -1018,9 +1032,9 @@ TEST(SelfCheckScreen, PerfOverlaySettingPersistsAcrossRestarts) {
         Harness h(settings_path);
         ASSERT_TRUE(h.app.start());
         ASSERT_NE(h.app.ui(), nullptr);
-        // start() blocks until the self-check screen's build() -- which
-        // reads "perf_overlay" and, if true, calls
-        // ui_->set_perf_overlay(true) -- has run, but set_perf_overlay()
+        // start() blocks until SystemDuties::start() -- which reads
+        // "perf_overlay" and, if true, calls ui_->set_perf_overlay(true),
+        // diagnostics or not -- has run, but set_perf_overlay()
         // itself only *posts* the actual lv_sysmon_show_performance()
         // call rather than waiting for it (see its doc comment); give
         // the UI task a moment to drain that second, chained post().
@@ -1028,74 +1042,6 @@ TEST(SelfCheckScreen, PerfOverlaySettingPersistsAcrossRestarts) {
             wisp::test::wait_until([&] { return h.app.ui()->perf_overlay_enabled(); }, 1000));
         h.app.stop();
     }
-}
-
-// WISP_PERF is emitted every 5s via Platform::emit_line.
-// Not "cheap" in wall-clock terms, but bounded and worth the ~5s to cover
-// end to end (format, device lookups, heap_info being empty) rather than
-// only unit-testing pieces of it.
-// docs/architecture.md's "机器可读输出" section documents WISP_PERF's
-// fields; parse the line (not just its prefix) and check each one
-// is present with the expected type, so a future change to this set is
-// caught here rather than silently drifting out of sync with that doc.
-TEST(SelfCheckScreen, EmitsWispPerfLine) {
-    Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
-
-    std::string perf_line;
-    bool saw_perf_line = wait_until(
-        [&] {
-            std::lock_guard<std::mutex> lock(h.lines_mutex);
-            for (const auto& line : h.lines) {
-                if (line.rfind("WISP_PERF ", 0) == 0) {
-                    perf_line = line;
-                    return true;
-                }
-            }
-            return false;
-        },
-        6000);
-    ASSERT_TRUE(saw_perf_line);
-
-    auto parsed = wisp::from_json(perf_line.substr(std::string("WISP_PERF ").size()));
-    ASSERT_TRUE(parsed);
-    const wisp::Value& v = parsed.value();
-
-    // fps/flush_ms are computed as doubles, but Value/JSON round-tripping
-    // keeps Int and Double distinct based on the actual value (see
-    // value_json_test.cpp's Json.IntAndDoubleStayDistinct) -- a
-    // momentarily whole-number measurement (e.g. "fps":5) comes back as
-    // Int, not Double, so this accepts either rather than asserting one
-    // specific Value::Type for them.
-    auto is_number = [](const wisp::Value* value) {
-        return value != nullptr && (value->type() == wisp::Value::Type::Int ||
-                                    value->type() == wisp::Value::Type::Double);
-    };
-    EXPECT_TRUE(is_number(v.find("fps")));
-    EXPECT_TRUE(is_number(v.find("flush_ms")));
-
-    const wisp::Value* cpu = v.find("cpu");
-    ASSERT_NE(cpu, nullptr);
-    EXPECT_EQ(cpu->type(), wisp::Value::Type::Int);
-
-    const wisp::Value* frames = v.find("frames");
-    ASSERT_NE(frames, nullptr);
-    EXPECT_EQ(frames->type(), wisp::Value::Type::Int);
-
-    const wisp::Value* heap_internal_free = v.find("heap_internal_free");
-    ASSERT_NE(heap_internal_free, nullptr);
-    EXPECT_EQ(heap_internal_free->type(), wisp::Value::Type::Int);
-
-    const wisp::Value* heap_large_free = v.find("heap_large_free");
-    ASSERT_NE(heap_large_free, nullptr);
-    EXPECT_EQ(heap_large_free->type(), wisp::Value::Type::Int);
-
-    // No wisp on this screen: both 0.
-    EXPECT_TRUE(is_number(v.find("wisp_fps")));
-    EXPECT_TRUE(is_number(v.find("wisp_ms")));
-    EXPECT_EQ(v.find("wisp_fps")->as_double(), 0);
-
-    h.app.stop();
 }
 
 // The Performance card's internal-RAM and PSRAM rows (PerfSection::
@@ -1116,7 +1062,7 @@ TEST(SelfCheckScreen, PerformanceCardShowsInternalRamAndPsram) {
     };
     Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, "rounded_rect", false, 480, {},
               {}, heap_info);
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
     // refresh_perf_ram() runs on SelfCheck's 100 ms lv_timer, not tied to a
     // flush (set_text_if_changed() only triggers one once the row's "--"
@@ -1139,7 +1085,7 @@ TEST(SelfCheckScreen, PerformanceCardShowsInternalRamAndPsram) {
 // "free 0.0 MB / total 0.0 MB", which would misleadingly read as "completely full".
 TEST(SelfCheckScreen, PerformanceCardShowsDashWithNoHeapInfo) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
     wisp::os::sleep_ms(300);
 
@@ -1168,7 +1114,7 @@ TEST(SelfCheckScreen, PerformanceCardShowsDashWithNoHeapInfo) {
 TEST(SelfCheckScreen, DeviceListSdRowTracksLiveStorageStatus) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
               "rounded_rect", /*with_sd=*/true);
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
     auto sd_row = [&] {
@@ -1209,7 +1155,7 @@ TEST(SelfCheckScreen, MeasuresStorageOffTheUiThread) {
         wisp::ui::UiRuntime* ui = h.app.ui();
         ++(ui != nullptr && ui->on_ui_thread() ? on_ui : off_ui);
     };
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
     h.sd->online_flag = true;
@@ -1237,7 +1183,7 @@ TEST(SelfCheckScreen, MeasuresStorageOffTheUiThread) {
 // bus drives exactly the same on_button_event()/PowerKeyController path a
 // real press would, without needing the ButtonService's own debounce
 // timing.
-TEST(SelfCheckScreen, ConfirmDialogWidthClampedToSafeArea) {
+TEST(SystemDutiesTest, ConfirmDialogWidthClampedToSafeArea) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0, "circle",
               /*with_sd=*/false, /*display_size=*/220);
     ASSERT_TRUE(h.app.start());
@@ -1291,7 +1237,7 @@ TEST(SelfCheckScreen, ConfirmDialogWidthClampedToSafeArea) {
 // "是" button, the same path a real touch does (rather than publishing
 // Action::PowerOff directly), so this also exercises
 // PowerKeyController::on_confirm()'s own routing.
-TEST(SelfCheckScreen, RequestsPlatformPowerOffAndTurnsPanelOffWhenPowerOffFails) {
+TEST(SystemDutiesTest, RequestsPlatformPowerOffAndTurnsPanelOffWhenPowerOffFails) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
     ASSERT_TRUE(h.app.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
@@ -1325,7 +1271,7 @@ TEST(SelfCheckScreen, RequestsPlatformPowerOffAndTurnsPanelOffWhenPowerOffFails)
 // fixed order.
 TEST(SelfCheckScreen, SectionCardsInOrder) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
     std::string order = run_on_ui_thread(h.app.ui(), [] {
@@ -1355,7 +1301,7 @@ TEST(SelfCheckScreen, SectionCardsInOrder) {
 // own in a larger font than the text under it; the summary chips follow.
 TEST(SelfCheckScreen, TitleIsSelfCheck) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
     std::string result = run_on_ui_thread(h.app.ui(), [] {
@@ -1389,7 +1335,7 @@ TEST(SelfCheckScreen, BoardCardListsTheBoard) {
     extras.target = "esp32s3";
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
               "rounded_rect", false, 480, extras);
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
     const wisp::Value report = h.app.report().to_value("fake-full");
     const wisp::Value* boot_ms = report.find("boot_ms");
@@ -1439,7 +1385,7 @@ TEST(SelfCheckScreen, LongBoardNameWrapsInsideTheSafeArea) {
         BoardExtras extras;
         extras.name = name;
         Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, shape, false, 220, extras);
-        ASSERT_TRUE(h.app.start());
+        ASSERT_TRUE(h.start());
         ASSERT_TRUE(h.wait_for_flushes(0));
         auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
         ASSERT_TRUE(shape_result);
@@ -1500,7 +1446,7 @@ TEST(SelfCheckScreen, DeviceChipSummarisesTheBootReport) {
         extras.reports = c.reports;
         Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, "rounded_rect", false, 480,
                   extras);
-        ASSERT_TRUE(h.app.start());
+        ASSERT_TRUE(h.start());
         ASSERT_TRUE(h.wait_for_flushes(5));
         EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("Devices "); }), c.expected);
         h.app.stop();
@@ -1521,7 +1467,7 @@ TEST(SelfCheckScreen, DeviceRowsListProblemsFirstWithTheirReason) {
     };
     Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, "rounded_rect", false, 480,
               extras);
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
     std::string rows = run_on_ui_thread(h.app.ui(), [] { return device_rows(); });
@@ -1575,7 +1521,7 @@ TEST(SelfCheckScreen, DeviceChipTapScrollsToTheFirstProblem) {
         }
         Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, "rounded_rect", false, 220,
                   extras);
-        ASSERT_TRUE(h.app.start());
+        ASSERT_TRUE(h.start());
         ASSERT_TRUE(h.wait_for_flushes(0));
 
         auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
@@ -1640,7 +1586,7 @@ TEST(SelfCheckScreen, InteractiveTestsTurnPassedAndAreCounted) {
     extras.with_audio = true;
     Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, "rounded_rect", false, 480,
               extras);
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
     auto state = [&] {
         return run_on_ui_thread(h.app.ui(), [] {
@@ -1693,7 +1639,7 @@ TEST(SelfCheckScreen, InteractiveTestsTurnPassedAndAreCounted) {
 // count as passed.
 TEST(SelfCheckScreen, FailedLoopbackDoesNotPass) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
     ASSERT_EQ(run_on_ui_thread(h.app.ui(),
                                [] {
@@ -1724,7 +1670,7 @@ TEST(SelfCheckScreen, CardsStayInsideTheSafeArea) {
     for (const std::string& shape : kShapes) {
         SCOPED_TRACE(shape);
         Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, shape);
-        ASSERT_TRUE(h.app.start());
+        ASSERT_TRUE(h.start());
         ASSERT_TRUE(h.wait_for_flushes(5));
         auto shape_result = wisp::hal::screen_shape_from_caps(h.display->info().caps);
         ASSERT_TRUE(shape_result);
@@ -1792,7 +1738,7 @@ TEST(SelfCheckScreen, UnchangedReadoutsAreNotRedrawn) {
     for (Lang lang : {Lang::En, Lang::Ja}) {
         SCOPED_TRACE(wisp::ui::lang_code(lang));
         Harness h(wisp::test::temp_dir().string() + "/settings.json");
-        ASSERT_TRUE(h.app.start());
+        ASSERT_TRUE(h.start());
         ASSERT_TRUE(h.wait_for_flushes(5));
         if (lang != Lang::En) ASSERT_TRUE(select_page_lang(h.app.ui(), lang));
         const std::string battery = wisp::ui::tr(StrId::Battery, lang);
@@ -1854,7 +1800,7 @@ TEST(SelfCheckScreen, TitleUsesLargeFontInCurrentLanguage) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
               "rounded_rect", /*with_sd=*/false, /*display_size=*/480, /*extras=*/{},
               test_font_image());
-    ASSERT_TRUE(h.app.start());
+    ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
 
     struct Case {

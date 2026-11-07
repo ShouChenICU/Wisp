@@ -15,6 +15,9 @@
 //   wifi forget <ssid>
 //   wifi ap on                   "ap ssid=<x> ip=<y>"
 //   wifi ap off
+//   diag                         opens the hardware diagnostics over the
+//                                home screen: "ok" or "error: <message>"
+//   diag close                   back to the home screen
 // plus Platform::console_commands. Anything else: "error: unknown command".
 //
 // An <ssid> argument is taken byte for byte as typed (UTF-8 from a

@@ -13,6 +13,8 @@
 #include "wisp/core/log.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/shell/shell.hpp"
+#include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
 
@@ -29,10 +31,13 @@ constexpr const char* kHelp =
     "wifi add <ssid> [password]   save a network (no password: open) and connect\n"
     "wifi forget <ssid>           delete a saved network\n"
     "wifi ap on|off               open / close the setup hotspot\n"
+    "diag [close]                 open / close the hardware diagnostics on the screen\n"
     "  Quote an SSID or password with spaces: wifi add \"My Home\" \"pass word\".\n"
     "  hex:<bytes> gives an SSID by its bytes, e.g. wifi add hex:c4e3bac3 password.";
 
-bool is_builtin(std::string_view name) { return name == "help" || name == "wifi"; }
+bool is_builtin(std::string_view name) {
+    return name == "help" || name == "wifi" || name == "diag";
+}
 
 void append_hex_escape(std::string& out, uint8_t c) {
     char buf[5];
@@ -160,6 +165,29 @@ std::string wifi_command(App& app, const std::vector<std::string>& args) {
     return "error: usage: wifi ap on|off";
 }
 
+// The hardware diagnostics (mvp spec 6.4) from the console: the entry the
+// settings page gives on the screen, for a device without it and for
+// scripts. Runs on the UI thread, where the shell lives.
+std::string diag_command(App& app, const std::vector<std::string>& args) {
+    const bool close = args.size() == 2 && args[1] == "close";
+    if (args.size() > 2 || (args.size() == 2 && !close)) return "error: usage: diag [close]";
+    ui::UiRuntime* ui = app.ui();
+    if (ui == nullptr || app.shell() == nullptr) return "error: no screen";
+    bool open = false;
+    ui->run_blocking([&] {
+        shell::Shell* sh = app.shell();
+        if (sh == nullptr) return;
+        if (close) {
+            if (sh->diagnostics_open()) sh->show(shell::Page::Home);
+        } else {
+            sh->open_diagnostics();
+        }
+        open = sh->diagnostics_open();
+    });
+    if (close) return open ? "error: diagnostics still open" : "ok";
+    return open ? "ok" : "error: diagnostics not opened";
+}
+
 // Best effort: the input line may hold a password.
 void wipe(std::string& s) {
     volatile char* p = s.data();
@@ -244,6 +272,8 @@ std::string run_command(App& app, std::string_view line) {
         }
     } else if (args[0] == "wifi") {
         out = wifi_command(app, args);
+    } else if (args[0] == "diag") {
+        out = diag_command(app, args);
     } else {
         out = "error: unknown command";
         for (const ConsoleCommand& cmd : app.platform().console_commands) {

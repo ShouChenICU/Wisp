@@ -55,8 +55,9 @@ std::string loopback_status_text(const LoopbackStatus& status, ui::Lang lang);
 // since -- this is what makes it safe to trigger
 // "录音回放" concurrently with App::stop(), without risking a "wisp.loop"
 // task that starts after join_loopback() has already returned and so
-// never gets joined, outliving the SelfCheck whose label its on_status
-// callback would otherwise touch after it's been freed).
+// never gets joined). The self-check screen may go while the task runs
+// (the user goes back mid-test): its on_status posts check that the screen
+// is still up before touching it.
 void run_loopback(App& app, std::function<void(const LoopbackStatus&)> on_status);
 
 // Marks `app` as stopping (so every subsequent run_loopback() call on it

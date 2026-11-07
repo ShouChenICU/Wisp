@@ -5,11 +5,12 @@
 // then restarts. Library and Backup data stay.
 //
 // Flow: POST /system/factory-reset only asks for it (request_factory_reset()
-// publishes system.factory_reset {state:"requested"}); the self-check
-// screen shows a confirmation dialog. "No" publishes {state:"cancelled"};
-// "yes" calls start_factory_reset(), which runs factory_reset() on a
-// one-shot "wisp.reset" task -- never on the UI thread, since the reset
-// waits for the network and writes flash.
+// publishes system.factory_reset {state:"requested"}); the system duties
+// (system_duties.hpp) show a confirmation dialog over whatever screen is
+// up. "No" publishes {state:"cancelled"}; "yes" calls
+// start_factory_reset(), which runs factory_reset() on a one-shot
+// "wisp.reset" task -- never on the UI thread, since the reset waits for
+// the network and writes flash.
 
 #include <cstdint>
 #include <functional>

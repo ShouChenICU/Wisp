@@ -98,6 +98,8 @@ TEST(Bench, MainScrollableIsTheLargestShownOneThatScrolls) {
 TEST(Bench, ScrollMovesTheSelfCheckListAndPutsItBack) {
     UiNetHarness h(no_wifi());
     ASSERT_TRUE(h.start());
+    // The home screen does not scroll; the diagnostics' list does.
+    ASSERT_TRUE(h.open_diagnostics());
     wisp::ui::UiRuntime* ui = h.app->ui();
     ASSERT_NE(ui, nullptr);
     lv_obj_t* target = nullptr;

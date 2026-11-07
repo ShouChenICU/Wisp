@@ -1,7 +1,6 @@
-// The self-check screen (spec 8): page framing, lifecycle, bus
-// subscriptions and timers. See self_check_screen.hpp for how the class is
-// split over files, and self_check.hpp for how App::start()/App::stop()
-// own this object's lifetime.
+// The self-check screen (spec 8), the hardware diagnostics: page framing,
+// lifecycle, bus subscriptions and timers. See self_check.hpp for who
+// builds and tears it down.
 
 #include "self_check_screen.hpp"
 
@@ -35,14 +34,10 @@ namespace wisp::app {
 namespace {
 
 constexpr uint32_t kUiRefreshMs = 100;
-// How often the refresh timer re-reads the network services (and the
-// pending factory-reset and firmware requests) even without an event: the
-// bus drops its oldest events when full, and a lost net.ap.state,
-// net.pairing.code, system.factory_reset or system.firmware must not leave
-// a card up (or missing) for good.
-// The reads are a few short lock-protected copies and an atomic.
+// How often the refresh timer re-reads the network state into the network
+// section even without an event: the bus drops its oldest events when
+// full. The reads are a few short lock-protected copies.
 constexpr uint64_t kNetResyncMs = 1000;
-constexpr uint32_t kPerfReportMs = 5000;
 // How often the scene list is read again without a scene.state event, for
 // one the bus dropped. Each is a walk of the scene packages on the storage
 // worker, so far apart; a state change shows within one refresh anyway
@@ -69,17 +64,6 @@ SelfCheck::SelfCheck(App& app, ui::SystemLayer& system, SceneWiring* scenes)
       clock_(app.registry().get<hal::Clock>("clock.main")),
       ui_settings_(*app.platform().settings, "ui"),
       net_section_(app.wifi()),
-      setup_card_([this] {
-          if (net::WifiService* wifi = app_.wifi()) {
-              if (auto r = wifi->stop_provisioning(); !r) {
-                  WLOG_W("self_check", "stopping the setup hotspot failed: %s",
-                         r.error().message.c_str());
-              }
-          }
-      }),
-      pair_card_([this] {
-          if (net::PairingService* pairing = app_.pairing()) pairing->cancel_code();
-      }),
       scenes_(scenes),
       sampler_(app.sensors(), power_, clock_) {}
 
@@ -92,26 +76,11 @@ SelfCheck::~SelfCheck() {
         app_.bus().unsubscribe(power_sub_);
         power_sub_ = 0;
     }
-    // A language change already posted by on_settings_event() still runs
-    // before the UI-thread teardown at the end of this destructor (the post
-    // queue is FIFO), while every dialog it reopens is still alive.
-    if (settings_sub_ != 0) {
-        app_.bus().unsubscribe(settings_sub_);
-        settings_sub_ = 0;
-    }
-    // Same for the network and factory-reset syncs: whatever they already
-    // posted runs before the teardown below.
+    // Whatever the handlers below already posted finds alive_ cleared by
+    // the teardown at the end of this destructor.
     if (net_sub_ != 0) {
         app_.bus().unsubscribe(net_sub_);
         net_sub_ = 0;
-    }
-    if (reset_sub_ != 0) {
-        app_.bus().unsubscribe(reset_sub_);
-        reset_sub_ = 0;
-    }
-    if (fw_sub_ != 0) {
-        app_.bus().unsubscribe(fw_sub_);
-        fw_sub_ = 0;
     }
     if (scene_sub_ != 0) {
         app_.bus().unsubscribe(scene_sub_);
@@ -121,34 +90,14 @@ SelfCheck::~SelfCheck() {
     // Thread-agnostic: nothing the sampler touches requires the UI thread.
     sampler_.stop();
 
-    if (perf_timer_) {
-        perf_timer_->stop();
-        perf_timer_.reset();
-    }
-
     if (button_sub_ != 0) {
         app_.bus().unsubscribe(button_sub_);
         button_sub_ = 0;
     }
 
-    // Give PowerManager's generic "any button wakes standby" handler back
-    // ownership of "button.power" now that this screen's own
-    // PowerKeyController (the thing set_power_key_owned(true) in
-    // subscribe_buttons() handed it off to) is going away -- see
-    // PowerManager::set_power_key_owned()'s doc comment. A no-op today
-    // (App::stop() destroys PowerManager right after this object), but a
-    // future scene that can replace the self-check screen without also
-    // tearing down PowerManager would otherwise be left with "button.power"
-    // permanently un-owned: PowerManager skips it forever, and nothing else
-    // picks it back up, so the power key would stop waking the device from
-    // standby.
-    if (PowerManager* pm = app_.power_manager()) {
-        pm->set_power_key_owned(false);
-    }
-
     // LVGL-specific teardown must run on the UI thread -- see
-    // UiRuntime::run_blocking(). If `ui_` is already gone (shouldn't
-    // happen given app.cpp's teardown order, but safe either way),
+    // UiRuntime::run_blocking(), which runs it inline when this is already
+    // the UI thread (the back gesture's teardown). If `ui_` is already gone
     // there's nothing left to tear down: UiRuntime::stop()'s lv_deinit()
     // already released every lv_obj_t/lv_timer_t this screen created.
     if (ui_ == nullptr) {
@@ -156,21 +105,23 @@ SelfCheck::~SelfCheck() {
     }
     ui_->run_blocking([this] {
         *alive_ = false;
-        close_confirm_dialog();
-        close_reset_dialog();
-        close_firmware_dialog();
-        // The cards live on the top layer, outside root_.
-        setup_card_.close();
-        pair_card_.close();
         if (refresh_timer_ != nullptr) {
             lv_timer_delete(refresh_timer_);
             refresh_timer_ = nullptr;
         }
-        if (root_ != nullptr) {
-            // See root_'s doc comment.
-            lv_obj_delete(root_);
+        // See root_'s doc comment. The shell has loaded another screen
+        // first: an active screen must not be deleted.
+        if (screen_ != nullptr) {
+            lv_obj_delete(screen_);
+            screen_ = nullptr;
             root_ = nullptr;
         }
+    });
+}
+
+bool SelfCheck::post(std::function<void()> fn) {
+    return ui_->post([alive = alive_, fn = std::move(fn)] {
+        if (*alive) fn();
     });
 }
 
@@ -178,10 +129,8 @@ void SelfCheck::build() {
     build_widgets();
 
     sampler_.start();
-    start_perf_timer();
     subscribe_buttons();
     subscribe_power();
-    subscribe_settings();
     subscribe_net();
     // Every scene.state (installed, opened, closed, failed, deleted) lists
     // the scenes again, and says whether a scene now covers this screen.
@@ -193,23 +142,22 @@ void SelfCheck::build() {
     request_scene_list();
     last_scene_list_ms_ = os::now_ms();
     request_storage();
-    // Anything the net services announced before the subscription above
-    // (the build runs after networking has started).
-    sync_wifi();
-    sync_pairing();
-    sync_reset();
-    sync_firmware();
+    // The network state as it is now (networking started long before).
+    sync_net();
+    sync_settings();
+    last_net_resync_ms_ = os::now_ms();
 
     refresh_timer_ = lv_timer_create(&SelfCheck::refresh_timer_cb, kUiRefreshMs, this);
 
+    // SystemDuties applied the stored overlay at boot; the toggle starts
+    // from it.
     overlay_enabled_ = ui_settings_.get_bool("perf_overlay", false);
-    if (overlay_enabled_) {
-        ui_->set_perf_overlay(true);
-    }
+
+    lv_screen_load(screen_);
 }
 
 void SelfCheck::build_widgets() {
-    if (screen_ == nullptr) screen_ = lv_screen_active();
+    screen_ = lv_obj_create(nullptr);
     lv_obj_t* col = lv_obj_create(screen_);
     root_ = col;
     // No theme styles at all: LVGL sets LV_STATE_SCROLLED on the column
@@ -319,101 +267,21 @@ uint64_t SelfCheck::boot_ms() const {
     return v != nullptr ? static_cast<uint64_t>(v->as_int()) : 0;
 }
 
-void SelfCheck::refresh_header() { board_.set_boot_ms(boot_ms()); }
-
 hal::Area SelfCheck::compute_safe_area() const { return hal::safe_rect(system_.shape()); }
 
-void SelfCheck::start_perf_timer() {
-    perf_timer_ = std::make_unique<os::Timer>("wisp.perf", kPerfReportMs, /*periodic=*/true,
-                                              [this] { emit_perf_line(); });
-    perf_timer_->start();
-}
-
-void SelfCheck::emit_perf_line() {
-    ui::UiPerf perf = ui_->perf();
-    const ui::WispPerf wisp = ui::wisp_perf(os::now_ms());
-
-    Value heap = app_.platform().heap_info ? app_.platform().heap_info() : Value();
-    int64_t heap_internal_free = 0;
-    int64_t heap_large_free = 0;
-    if (const Value* v = heap.find("internal_free")) {
-        heap_internal_free = v->as_int();
-    }
-    if (const Value* v = heap.find("large_free")) {
-        heap_large_free = v->as_int();
-    }
-
-    Map payload{
-        {"fps", static_cast<double>(perf.fps)},
-        {"cpu", static_cast<int64_t>(perf.cpu_percent)},
-        {"flush_ms", static_cast<double>(perf.avg_flush_ms)},
-        {"frames", static_cast<int64_t>(perf.frames)},
-        {"heap_internal_free", heap_internal_free},
-        {"heap_large_free", heap_large_free},
-        {"wisp_fps", wisp.fps},
-        {"wisp_ms", wisp.ms},
-    };
-    app_.platform().emit_line("WISP_PERF " + to_json(Value(payload)));
-}
-
 void SelfCheck::subscribe_buttons() {
+    // The button test only; what the power key does is SystemDuties'.
     button_sub_ =
         app_.bus().subscribe("button.", [this](const core::Event& e) { on_button_event(e); });
-
-    // From here on, this screen's own PowerKeyController is the *only*
-    // thing that decides what a "button.power" event does to the screen --
-    // PowerManager's own generic "any button wakes standby" handler
-    // (power_manager.cpp) must leave button.power alone, or the two could
-    // each independently decide to flip the screen for the very same
-    // physical press (one reacting to `down`, the other -- with its own,
-    // now-stale idea of "is the screen on" -- reacting to the
-    // `short`/`long` that follows it), producing a wake-then-immediately-
-    // resleep flash. See PowerManager::set_power_key_owned()'s doc comment.
-    if (PowerManager* pm = app_.power_manager()) {
-        pm->set_power_key_owned(true);
-    }
 }
 
 void SelfCheck::on_button_event(const core::Event& e) {
-    // on_button_event() itself runs on the EventBus dispatcher thread, but
-    // PowerKeyController is not thread-safe against concurrent callers --
-    // on_power_off_answer() also drives it, from the UI thread, via
-    // on_confirm(). Posting the *whole* decision (on_short()/on_long()
-    // included, not just the resulting Action) onto the UI thread is what
-    // makes every PowerKeyController call happen on one single thread.
     std::string topic = e.topic;
-    std::string source = e.source;
-    // A dropped post() here silently loses whatever power-key action
-    // (screen off/on) this event was about to decide -- log it so that
-    // isn't invisible (see event_bus.hpp for why this must not block
-    // waiting for a slot instead).
-    if (!ui_->post([this, topic, source] {
+    if (!post([this, topic] {
             tests_section_.set_button_event(topic);
             pass_test(InteractiveTest::Button);
-
-            PowerKeyController::Action action = PowerKeyController::Action::None;
-            if (source == "button.power") {
-                // PowerManager::standby() -- not any state
-                // PowerKeyController tracks itself -- is the single source
-                // of truth for "is the screen on"; read it fresh right
-                // before deciding, on this same UI thread (the only thread
-                // that ever calls into PowerManager's enter_standby()/
-                // exit_standby() on this screen's behalf, so there is no
-                // race between this read and handle_power_key_action()
-                // below acting on the result).
-                PowerManager* pm = app_.power_manager();
-                bool screen_on = pm == nullptr || !pm->standby();
-                if (topic == "button.power.short") {
-                    action = power_key_.on_short(screen_on);
-                } else if (topic == "button.power.long") {
-                    action = power_key_.on_long(screen_on);
-                }
-            }
-            if (action != PowerKeyController::Action::None) {
-                handle_power_key_action(action);
-            }
         })) {
-        WLOG_W("self_check", "post(power key action) dropped (post queue full)");
+        WLOG_W("self_check", "post(button test) dropped (post queue full)");
     }
 }
 
@@ -433,69 +301,57 @@ void SelfCheck::on_power_event(const core::Event& e) {
     sampler_.set_standby(off);
 }
 
-void SelfCheck::subscribe_settings() {
-    settings_sub_ = app_.bus().subscribe("system.settings",
-                                         [this](const core::Event& e) { on_settings_event(e); });
-}
-
-void SelfCheck::on_settings_event(const core::Event& e) {
-    if (e.payload.find("language") == e.payload.end()) {
-        return;
-    }
-    // The language itself is read back from SystemSettings on the UI
-    // thread rather than taken from the payload, so a stale event queued
-    // behind a newer change can never switch the screen back. If this
-    // post is dropped, the refresh timer's sync_system_language() still
-    // catches the change.
-    if (!ui_->post([this] { sync_system_language(); })) {
-        WLOG_W("self_check", "post(language change) dropped (post queue full)");
-    }
-}
-
 void SelfCheck::subscribe_net() {
     net_sub_ = app_.bus().subscribe("net.", [this](const core::Event& e) { on_net_event(e); });
-    reset_sub_ = app_.bus().subscribe("system.factory_reset",
-                                      [this](const core::Event& e) { on_reset_event(e); });
-    fw_sub_ = app_.bus().subscribe("system.firmware",
-                                   [this](const core::Event& e) { on_firmware_event(e); });
 }
 
 void SelfCheck::on_net_event(const core::Event& e) {
-    bool posted = true;
-    if (e.topic == "net.wifi.state" || e.topic == "net.ap.state") {
-        posted = ui_->post([this] { sync_wifi(); });
-    } else if (e.topic == "net.pairing.code") {
-        posted = ui_->post([this] { sync_pairing(); });
-    }
-    if (!posted) {
+    if (e.topic != "net.wifi.state" && e.topic != "net.ap.state") return;
+    if (!post([this] { sync_net(); })) {
         WLOG_W("self_check", "post(%s) dropped (post queue full)", e.topic.c_str());
     }
 }
 
-void SelfCheck::on_reset_event(const core::Event& e) {
-    auto it = e.payload.find("state");
-    if (it == e.payload.end() || it->second.type() != Value::Type::String ||
-        it->second.as_string() != "requested") {
-        return;
-    }
-    // The pending flag is taken on the UI thread, not here: if this post
-    // is dropped, the flag is still set for the periodic resync.
-    if (!ui_->post([this] { sync_reset(); })) {
-        WLOG_W("self_check", "post(factory reset dialog) dropped (post queue full)");
-    }
+void SelfCheck::sync_net() { net_section_.refresh(os::now_ms()); }
+
+void SelfCheck::sync_settings() {
+    // The revision is read before the value: a change stored in between
+    // moves it again, so the next sync reads the value once more.
+    uint32_t revision = app_.system_settings().revision();
+    if (settings_revision_ == revision) return;
+    settings_revision_ = revision;
+    utc_offset_min_ = app_.system_settings().get().utc_offset_min;
+    refresh_time_sync();
 }
 
-void SelfCheck::on_firmware_event(const core::Event&) {
-    // The state is re-read on the UI thread; a dropped post is made up for
-    // by the periodic resync.
-    if (!ui_->post([this] { sync_firmware(); })) {
-        WLOG_W("self_check", "post(firmware dialog) dropped (post queue full)");
+void SelfCheck::set_page_lang(ui::Lang lang) {
+    if (!text_.set_lang(lang)) {
+        return;
     }
+    // Everything not bound in text_ is re-rendered from what the sections
+    // (or this screen) last showed; each compares before it sets. The
+    // network cards and the dialogs are system UI and keep the system
+    // language (SystemDuties).
+    board_.show_lang(lang);
+    header_.show_devices(devices_.summary());
+    header_.show_tests(tests_.passed_count());
+    devices_.retext();
+    net_section_.retext(os::now_ms());
+    tests_section_.show(tests_);
+    tests_section_.set_loopback(loop_status_);
+    tests_section_.retext();
+    scenes_section_.retext();
+    if (last_storage_) show_storage(*last_storage_);
+    refresh_ui();
 }
 
 void SelfCheck::start_loopback() {
-    run_loopback(app_, [this](const LoopbackStatus& status) {
-        ui_->post([this, status] {
+    // The task may outlive this screen (the user goes back mid-test): it
+    // only reaches the screen through post(), which drops the status once
+    // the screen is gone.
+    run_loopback(app_, [ui = ui_, alive = alive_, this](const LoopbackStatus& status) {
+        ui->post([alive, this, status] {
+            if (!*alive) return;
             loop_status_ = status;
             tests_section_.set_loopback(status);
             if (tests_.on_loopback(status)) {
@@ -521,17 +377,12 @@ void SelfCheck::toggle_perf_overlay() {
 
 void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     auto* self = static_cast<SelfCheck*>(lv_timer_get_user_data(timer));
-    // The fallback for a lost system.settings event: one atomic load per
-    // tick while nothing changes.
-    self->sync_system_language();
+    self->sync_settings();
     self->refresh_ui();
     const uint64_t now = os::now_ms();
     if (now - self->last_net_resync_ms_ >= kNetResyncMs) {
         self->last_net_resync_ms_ = now;
-        self->sync_wifi();
-        self->sync_pairing();
-        self->sync_reset();
-        self->sync_firmware();
+        self->sync_net();
     }
     if (now - self->last_scene_list_ms_ >= kSceneResyncMs) {
         self->last_scene_list_ms_ = now;
@@ -545,8 +396,6 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     }
     if (now - self->last_storage_ms_ >= kStorageResyncMs) self->request_storage();
     self->net_section_.tick(now);
-    self->pair_card_.tick(now);
-    self->setup_card_.tick(now);
 }
 
 void SelfCheck::refresh_ui() {
@@ -562,7 +411,7 @@ void SelfCheck::refresh_ui() {
 }
 
 void SelfCheck::refresh_perf_ram() {
-    // Same Platform::heap_info() map emit_perf_line() reads for WISP_PERF
+    // Same Platform::heap_info() map SystemDuties reads for WISP_PERF
     // (internal_free/internal_largest/large_free), plus large_total (the
     // PSRAM's size) and internal_total, for the used percentages.
     Value heap = app_.platform().heap_info ? app_.platform().heap_info() : Value();
@@ -661,14 +510,6 @@ void start_self_check(App& app, ui::SystemLayer& system, SceneWiring* scenes,
 }
 
 void stop_self_check(std::unique_ptr<SelfCheck>& self_check) { self_check.reset(); }
-
-void refresh_self_check_header(ui::UiRuntime& ui, std::unique_ptr<SelfCheck>& self_check) {
-    if (!self_check) {
-        return;
-    }
-    SelfCheck* self = self_check.get();
-    ui.post([self] { self->refresh_header(); });
-}
 
 App::Impl::Impl(Platform p)
     : platform(with_settings_front(std::move(p))), storage(registry, bus), buttons(registry, bus) {}

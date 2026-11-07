@@ -43,7 +43,7 @@
 // task, because the display may only be called from there (spec 5.3).
 // tick(), note_activity(), the wake-lock change callback and the
 // "any button wakes it" subscriber post their work onto that task; callers
-// already on it (the self-check screen's power key) call enter_standby()/
+// already on it (the system duties' power key) call enter_standby()/
 // exit_standby() directly. A wake-lock change is always posted (coalesced
 // into one job), even from the UI task, so a lock taken or released
 // anywhere -- inside a device's set_power() during a transition included
@@ -175,7 +175,7 @@ public:
     void set_brightness(uint8_t level);
 
     // Excludes "button.power" from the "any button wakes it" subscriber
-    // once some other code (the self-check screen's PowerKeyController)
+    // once some other code (the system duties' PowerKeyController)
     // decides what that key does. Without this one short press in standby
     // ("down" then "short") would be acted on twice: this class wakes on
     // "down", and the owner, reading the screen as on by then, turns it

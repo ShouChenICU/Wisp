@@ -29,6 +29,7 @@
 #include "self_check.hpp"
 #include "settings_front.hpp"
 #include "status_shell.hpp"
+#include "system_duties.hpp"
 #include "voice_wiring.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
@@ -47,6 +48,7 @@
 #include "wisp/core/tone_player.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/shell/shell.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -80,9 +82,9 @@ struct App::Impl {
     // waits for the wake-up (spec 5.4). power_manager is only reset after
     // the HTTP server and the net task have stopped (App::stop()), so no
     // caller races with it going away. Every stored change is published
-    // as system.settings (spec 8.3); the self-check screen moves the
-    // system language (ui::lang()) and an open confirm dialog to a new
-    // language from it.
+    // as system.settings (spec 8.3); SystemDuties moves the system
+    // language (ui::lang()) and an open confirm dialog to a new language
+    // from it.
     core::SystemSettings system_settings{
         *platform.settings,
         [this](uint8_t level) {
@@ -96,7 +98,8 @@ struct App::Impl {
     std::unique_ptr<ui::UiRuntime> ui;
     // The system layer (wisp/ui/system_layer.hpp) on `ui`: built and
     // destroyed on the UI thread, right after `ui` starts and right after
-    // the self-check screen (whose dialogs it holds) is torn down.
+    // the system duties (whose dialogs it holds) and the shell are torn
+    // down.
     std::unique_ptr<ui::SystemLayer> system_layer;
     // Drives queue_storage_refresh() (storage_io.hpp) every 2 s; created
     // once the storage worker runs, stopped before it stops.
@@ -199,12 +202,20 @@ struct App::Impl {
     // backend directly.
     os::LargeUnique<core::CachedSettingsBackend> settings_cache;
 
-    // The self-check screen's own teardown hook -- see
-    // self_check.hpp. Constructed (via start_self_check(), posted onto
-    // `ui`) only when `ui` is started; destroyed by App::stop() before
-    // `ui`/`bus` are stopped, so every task/timer/subscription it owns
-    // (the "wisp.sample" task, its lv_timer, its bus subscriptions,
-    // the 5000ms WISP_PERF timer) is torn down while `ui`/`bus` are still
+    // The power key, the network cards, the confirm dialogs and WISP_PERF
+    // (system_duties.hpp), with a screen: built and started on the UI
+    // thread right before the shell, stopped right after it.
+    std::unique_ptr<SystemDuties> duties;
+    // The device's pages (wisp/shell/shell.hpp), with a screen: started on
+    // the UI thread before the scene runtime (a scene's view returns to the
+    // screen it replaced), stopped by App::stop() once the runtime has
+    // stopped.
+    std::unique_ptr<shell::Shell> shell;
+    // The hardware diagnostics (self_check.hpp) while open: built and torn
+    // down on the UI thread through the shell's hooks; App::stop() tears
+    // it down with the shell, before `ui`/`bus` are stopped, so every
+    // task/timer/subscription it owns (the "wisp.sample" task, its
+    // lv_timer, its bus subscriptions) goes while `ui`/`bus` are still
     // alive to be torn down against.
     std::unique_ptr<SelfCheck> self_check;
 

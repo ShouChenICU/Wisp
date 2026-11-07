@@ -33,6 +33,7 @@
 #include "wisp/hal/device.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+#include "wisp/shell/shell.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::test {
@@ -241,6 +242,18 @@ struct UiNetHarness {
             events.push_back(e);
         });
         return true;
+    }
+
+    // Opens the hardware diagnostics (the self-check screen) over the home
+    // screen the App boots into; true once they are in front.
+    bool open_diagnostics() {
+        if (app->ui() == nullptr || app->shell() == nullptr) return false;
+        bool open = false;
+        app->ui()->run_blocking([&] {
+            app->shell()->open_diagnostics();
+            open = app->shell()->diagnostics_open();
+        });
+        return open;
     }
 
     std::vector<wisp::core::Event> topic(const std::string& t) {

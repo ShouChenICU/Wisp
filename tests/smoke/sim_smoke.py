@@ -254,12 +254,52 @@ def check_screenshot(path):
     expect(len(set(pixels)) > 1, f"{path}: decoded pixel bytes are all identical")
 
 
+def check_home_screenshot(path):
+    """mvp spec 6.6: the screen booted into is the home screen -- black but
+    for the wisp in the middle. No pixel within 60 px of the edges is lit;
+    some in the central square are."""
+    width, height, idat = read_png_chunks(path)
+    raw = inflate_stored_blocks(idat)
+    stride = 1 + width * 3  # filter byte + RGB
+    expect(len(raw) == stride * height, f"{path}: unexpected image data size {len(raw)}")
+
+    def lit(x, y):
+        i = y * stride + 1 + x * 3
+        return max(raw[i], raw[i + 1], raw[i + 2]) > 24
+
+    margin = 60
+    edge = [(x, y) for y in range(height) for x in range(width)
+            if (x < margin or x >= width - margin or y < margin or y >= height - margin)
+            and lit(x, y)]
+    expect(not edge, f"{path}: {len(edge)} lit pixels near the edges, e.g. {edge[:3]}: "
+           "not the black home screen")
+    lo, hi = width // 4, width * 3 // 4
+    centre = sum(1 for y in range(lo, hi) for x in range(lo, hi) if lit(x, y))
+    expect(centre > 100, f"{path}: only {centre} lit pixels in the middle: no wisp")
+
+
+def check_perf_lines(stdout):
+    """WISP_PERF comes every 5 s from boot, whatever screen is up, with
+    exactly the documented fields (docs/architecture.md); the home screen's
+    wisp gives wisp_fps above 0."""
+    perf = [json.loads(line[len("WISP_PERF "):]) for line in stdout.splitlines()
+            if line.startswith("WISP_PERF ")]
+    expect(perf, f"no WISP_PERF line in stdout:\n{stdout}")
+    keys = {"fps", "cpu", "flush_ms", "frames", "heap_internal_free", "heap_large_free",
+            "wisp_fps", "wisp_ms"}
+    for p in perf:
+        expect(set(p) == keys, f"WISP_PERF fields {sorted(p)} != {sorted(keys)}")
+    expect(perf[-1]["wisp_fps"] > 0, f"WISP_PERF wisp_fps == {perf[-1]['wisp_fps']} on home")
+
+
 def case_default(sim_path, tmp_root):
     data_dir = tmp_root / "default"
     data_dir.mkdir()
     screenshot = data_dir / "s.png"
 
-    result = run_sim(sim_path, data_dir, ["--screenshot", str(screenshot)])
+    # Past the first WISP_PERF line (every 5 s).
+    result = run_sim(sim_path, data_dir, ["--screenshot", str(screenshot),
+                                          "--exit-after-ms", "6000"])
     expect(
         result.returncode == 0,
         f"exit code {result.returncode}, stderr:\n{result.stderr}",
@@ -326,8 +366,12 @@ def case_default(sim_path, tmp_root):
         "fonts: image ok, " in result.stdout,
         "no 'fonts: image ok' line in stdout: fonts.bin next to wisp_sim was not used",
     )
+    expect(re.search(r" I shell: page home$", result.stdout, re.M),
+           f"no 'shell: page home' line:\n{result.stdout}")
+    check_perf_lines(result.stdout)
 
     check_screenshot(screenshot)
+    check_home_screenshot(screenshot)
 
 
 def case_disable_wifi(sim_path, tmp_root):
@@ -558,11 +602,12 @@ def case_http(sim_path, tmp_root):
 
 
 # The reset dialog's "Yes" button, in English on the default 480x480
-# rounded_rect screen. The dialog is make_confirm_box() in
-# components/wisp_app/src/self_check_screen.cpp, centred in the safe area;
+# rounded_rect screen. The dialog is SystemLayer::open_confirm() in
+# components/wisp_ui/src/system_layer.cpp, centred in the safe area;
 # move this when that layout or the "Yes" text changes.
 RESET_YES_TAP = (188, 298)
-# Logged by the self-check screen once the reset dialog is laid out.
+# Logged by the system duties (components/wisp_app/src/system_duties.cpp)
+# once the reset dialog is laid out.
 RESET_DIALOG_LOG = "factory reset: waiting for confirmation on the screen"
 
 
@@ -841,11 +886,15 @@ def case_console(sim_path, tmp_root):
     """Serial console commands on stdin (connectivity spec 8.2) are
     answered on stdout, touch lines never reach the console, and neither
     the Wi-Fi password typed into "wifi add" nor anything else secret is
-    ever printed or logged. Joining the network syncs the clock. "bench
-    scroll" answers one WISP_BENCH line."""
+    ever printed or logged. Joining the network syncs the clock. "diag"
+    opens the hardware diagnostics over the home screen (mvp spec 6.6),
+    whose list "bench scroll" scrolls for one WISP_BENCH line, and "diag
+    close" goes back home."""
     commands = [
         "help",
+        "diag",
         "bench scroll 1",
+        "diag close",
         "wifi status",
         f"wifi add WispLab {CONSOLE_PASSWORD}",
         "tap 10,10",
@@ -861,7 +910,11 @@ def case_console(sim_path, tmp_root):
     expect(any(l.startswith("state=") for l in lines), f"no wifi status line:\n{result.stdout}")
     expect(any(l.startswith('ap ssid="Wisp-') and " ip=" in l for l in lines),
            f"no hotspot line:\n{result.stdout}")
-    expect(lines.count("ok") == 2, f"expected two ok lines:\n{result.stdout}")
+    # diag, wifi add, wifi ap off, diag close.
+    expect(lines.count("ok") == 4, f"expected four ok lines:\n{result.stdout}")
+    for needle in ("diagnostics open", "diagnostics closed"):
+        expect(re.search(r" I shell: " + needle + "$", result.stdout, re.M),
+               f"no 'shell: {needle}' line:\n{result.stdout}")
     # Joining WispLab gives the station an IP, which syncs the clock.
     expect(re.search(r" I time: synced from pool\.ntp\.org: unix \d+$", result.stdout, re.M),
            f"no time sync after joining WispLab:\n{result.stdout}")
@@ -1109,7 +1162,7 @@ def case_scene_hot_reload(sim_path, tmp_root):
 
 def case_scene_error(sim_path, tmp_root):
     """A scene that fails while building its tree: the error (file and line)
-    is logged, the back gesture closes it to the self-check screen, and the
+    is logged, the back gesture closes it to the home screen, and the
     screenshot taken at the end is not blank."""
     data_dir = tmp_root / "scene-error"
     shot = data_dir / "shot.png"

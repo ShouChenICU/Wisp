@@ -6,7 +6,7 @@
 //
 // Flow: once an image is written and verified, the service calls
 // request_firmware_confirm(), which marks the request pending; the
-// self-check screen takes it (take_firmware_request(), on the
+// system duties (system_duties.hpp) take it (take_firmware_request(), on the
 // system.firmware "received" event and on its periodic resync) and shows
 // "<current> → <new>" with Yes/No. "Yes" runs start_firmware_install(),
 // which confirms on a one-shot "wisp.fwup" task -- never on the UI thread,

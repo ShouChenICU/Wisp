@@ -69,7 +69,7 @@ struct SimOptions {
     std::string imu_script;
     // Shows the wisp on a screen of its own (background from
     // wisp_background(panel)), cycling its moods (spec 6.1), in front of
-    // the self-check screen.
+    // the home screen.
     bool wisp_demo = false;
 };
 

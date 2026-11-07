@@ -1,7 +1,7 @@
 #pragma once
 
-// The provisioning (setup hotspot) and pairing-code cards of the
-// self-check screen (connectivity spec 8.1).
+// The provisioning (setup hotspot) and pairing-code cards the system
+// duties show over every screen (connectivity spec 8.1).
 //
 // Both are children of lv_layer_top(), so they float above the scrolling
 // screen. Each is centred in the display's safe area (spec 5.6), never

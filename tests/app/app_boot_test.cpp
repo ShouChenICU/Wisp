@@ -8,15 +8,18 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "app/ui_net_harness.hpp"
 #include "firmware_confirm.hpp"
 #include "storage_io.hpp"
 #include "support/fake_devices.hpp"
+#include "support/lvgl_probe.hpp"
 #include "support/temp_dir.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/app.hpp"
@@ -37,6 +40,8 @@
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+#include "wisp/scene/scene_runtime.hpp"
+#include "wisp/shell/shell.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 using wisp::test::FakeButton;
@@ -551,4 +556,135 @@ TEST(AppNotifications, FailedServiceSavesPostTheSettingsNotice) {
     }
     ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 2000));
     EXPECT_EQ(notes->unread()[0].code, wisp::core::notice::kSettingsNotSaved);
+}
+
+// mvp spec 6.6: the device boots into the home screen and the hardware
+// diagnostics, the old self-check screen, are not built at all until asked
+// for. The tests below boot the networked harness with a touch panel (the
+// back gesture) and an IMU (the diagnostics read it while they show).
+namespace {
+
+using wisp::test::run_on_ui_blocking;
+using wisp::test::UiNetHarness;
+using wisp::test::UiNetOptions;
+
+UiNetOptions diag_opts() {
+    UiNetOptions opts;
+    opts.with_touch = true;
+    opts.imu = std::make_shared<FakeImu>("imu.main");
+    return opts;
+}
+
+std::vector<std::string> imu_holders(UiNetHarness& h) {
+    std::vector<std::string> out;
+    for (const auto& e : h.app->occupancy().list()) out.push_back(e.holder);
+    return out;
+}
+
+lv_obj_t* active_screen(UiNetHarness& h) {
+    lv_obj_t* scr = nullptr;
+    run_on_ui_blocking(h.app->ui(), [&] { scr = lv_screen_active(); });
+    return scr;
+}
+
+bool diagnostics_open(UiNetHarness& h) {
+    bool open = false;
+    run_on_ui_blocking(h.app->ui(), [&] { open = h.app->shell()->diagnostics_open(); });
+    return open;
+}
+
+lv_obj_t* open_diagnostics(UiNetHarness& h) {
+    run_on_ui_blocking(h.app->ui(), [&] { h.app->shell()->open_diagnostics(); });
+    return active_screen(h);
+}
+
+// A back swipe from the left edge, as the touch panel reports it.
+void back_swipe(UiNetHarness& h) {
+    lv_indev_t* indev = nullptr;
+    run_on_ui_blocking(h.app->ui(), [&] { indev = lv_indev_get_next(nullptr); });
+    ASSERT_NE(indev, nullptr);
+    auto feed = [&](std::vector<wisp::hal::TouchPoint> points) {
+        h.touch->set_points(std::move(points));
+        run_on_ui_blocking(h.app->ui(), [&] { lv_indev_read(indev); });
+    };
+    for (int16_t x : {4, 4, 60, 120, 180, 240}) feed({{x, 240, 0}});
+    feed({});
+}
+
+const std::vector<std::string> kSelfCheck = {"system.selfcheck"};
+
+}  // namespace
+
+TEST(AppBoot, BootsIntoHome) {
+    UiNetHarness h(diag_opts());
+    ASSERT_TRUE(h.start());
+    ASSERT_NE(h.app->shell(), nullptr);
+    lv_obj_t* home = nullptr;
+    run_on_ui_blocking(h.app->ui(), [&] { home = h.app->shell()->home_screen(); });
+    ASSERT_NE(home, nullptr);
+    EXPECT_EQ(active_screen(h), home);
+    EXPECT_EQ(h.app->shell()->page(), wisp::shell::Page::Home);
+    EXPECT_FALSE(diagnostics_open(h));
+    // No self-check: nothing reads the IMU.
+    wisp::os::sleep_ms(300);
+    EXPECT_TRUE(imu_holders(h).empty());
+}
+
+TEST(AppBoot, DiagnosticsOpensAndBackReturns) {
+    UiNetHarness h(diag_opts());
+    ASSERT_TRUE(h.start());
+    lv_obj_t* home = active_screen(h);
+
+    lv_obj_t* diag = open_diagnostics(h);
+    EXPECT_NE(diag, home);
+    EXPECT_TRUE(diagnostics_open(h));
+    EXPECT_FALSE(wisp::test::run_on_ui_thread(h.app->ui(), [&] {
+                     return wisp::test::find_label_text_containing(diag, "Devices");
+                 }).empty());
+    ASSERT_TRUE(wait_until([&] { return imu_holders(h) == kSelfCheck; }, 3000));
+
+    back_swipe(h);
+    ASSERT_TRUE(wait_until([&] { return active_screen(h) == home; }, 3000));
+    EXPECT_FALSE(diagnostics_open(h));
+    // Torn down: its sampler let the IMU go.
+    EXPECT_TRUE(wait_until([&] { return imu_holders(h).empty(); }, 3000));
+
+    // And it opens again.
+    EXPECT_NE(open_diagnostics(h), home);
+    EXPECT_TRUE(diagnostics_open(h));
+}
+
+// The 3b-1 rule (spec 6.6): a scene over the diagnostics covers them and
+// they let the IMU go; once the scene goes they take it again, and the back
+// gesture is theirs once more.
+TEST(AppBoot, DiagnosticsImuRuleUnchanged) {
+    UiNetHarness h(diag_opts());
+    const std::filesystem::path dir = std::filesystem::path(h.root) / "scenes" / "plain";
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "scene.json")
+        << R"({"id":"plain","name":"Plain","version":"1.0.0","schema_version":1})";
+    std::ofstream(dir / "main.lua") << R"(return ui.screen { ui.label { text = "plain" } })";
+    ASSERT_TRUE(h.start());
+    lv_obj_t* home = active_screen(h);
+    lv_obj_t* diag = open_diagnostics(h);
+    ASSERT_TRUE(wait_until([&] { return imu_holders(h) == kSelfCheck; }, 3000));
+
+    wisp::scene::SceneRuntime* rt = h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    ASSERT_TRUE(rt->open("plain"));
+    ASSERT_TRUE(
+        wait_until([&] { return rt->foreground() == std::optional<std::string>("plain"); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return active_screen(h) != diag; }, 3000));
+    EXPECT_TRUE(wait_until([&] { return imu_holders(h).empty(); }, 3000));
+
+    // The back gesture closes the scene, back to the diagnostics.
+    back_swipe(h);
+    ASSERT_TRUE(wait_until([&] { return !rt->foreground().has_value(); }, 3000));
+    ASSERT_TRUE(wait_until([&] { return active_screen(h) == diag; }, 3000));
+    EXPECT_TRUE(wait_until([&] { return imu_holders(h) == kSelfCheck; }, 3000));
+
+    // ... and from there to the home screen.
+    back_swipe(h);
+    ASSERT_TRUE(wait_until([&] { return active_screen(h) == home; }, 3000));
+    EXPECT_FALSE(diagnostics_open(h));
 }
