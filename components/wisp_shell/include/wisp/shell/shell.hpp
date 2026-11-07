@@ -77,6 +77,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -303,6 +304,12 @@ private:
     // unchanged icon is decoded once. Touched on the worker only.
     struct IconCache;
     std::shared_ptr<IconCache> icons_;
+    // The last listing shown, icons as decoded so far: what the scene list
+    // shows at once when it opens again. Empty before the first.
+    std::optional<std::vector<ShellScene>> scene_cache_;
+    // The open scene list's timing, until its first listing takes it.
+    struct ListTiming;
+    std::shared_ptr<ListTiming> open_timing_;
     // The diagnostics' screen while it is open (owned by the App's
     // self-check object).
     lv_obj_t* diag_ = nullptr;

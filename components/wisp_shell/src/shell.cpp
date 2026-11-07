@@ -53,6 +53,15 @@ std::optional<voice::VoiceState> parse_voice(const std::string& s) {
 }
 }  // namespace
 
+// One page open's listing, for its timing line: written on the worker
+// before each post that carries it on, and on the UI thread after.
+struct Shell::ListTiming {
+    uint64_t asked_us = 0;
+    uint32_t list_ms = 0, icons_ms = 0;
+    uint64_t build_us = 0;
+    size_t scenes = 0, decoded = 0;
+};
+
 const char* to_string(Page p) {
     switch (p) {
         case Page::Home:
@@ -291,7 +300,14 @@ lv_obj_t* Shell::build_page(Page p) {
                 .open_scene = deps_.open_scene,
                 .delete_scene = deps_.delete_scene,
             });
-            scenes_->build(f.list);
+            {
+                open_timing_ = std::make_shared<ListTiming>();
+                const uint64_t t0 = os::now_us();
+                scenes_->build(f.list);
+                // The last listing at once, while storage is read again.
+                if (scene_cache_) scenes_->set_scenes(*scene_cache_);
+                open_timing_->build_us = os::now_us() - t0;
+            }
             break;
         case Page::Settings:
             settings_ = std::make_unique<SettingsPage>(SettingsDeps{
@@ -334,31 +350,48 @@ struct Shell::IconCache {
         size_t size = 0;
         std::shared_ptr<const SceneIcon> icon;  // null: the file did not decode
     };
+    // An icon file not decoded before, or changed since.
+    struct Pending {
+        std::string id;
+        std::shared_ptr<const os::LargeBuffer> png;
+        uint64_t hash = 0;
+    };
 
-    // Fills each scene's `icon` from its `icon_png`, decoding only what
-    // changed, and drops the file bytes. The bytes are hashed rather than
-    // compared by pointer: every listing reads the files again.
-    void resolve(std::vector<ShellScene>& scenes, int32_t side) {
+    // Fills each scene's `icon` from what was decoded before, where its
+    // file is unchanged, and drops the file bytes; the rest it hands back
+    // for decode(). The bytes are hashed rather than compared by pointer:
+    // every listing reads the files again. Scenes no longer listed, or
+    // listed without an icon, are forgotten.
+    std::vector<Pending> lookup(std::vector<ShellScene>& scenes) {
         std::lock_guard<os::Mutex> lock(mu);
         std::map<std::string, Entry> next;
+        std::vector<Pending> pending;
         for (ShellScene& sc : scenes) {
             if (!sc.icon_png) continue;
             const os::LargeBuffer& png = *sc.icon_png;
             const uint64_t h = fnv1a(png);
             auto it = by_id.find(sc.id);
-            Entry e;
             if (it != by_id.end() && it->second.hash == h && it->second.size == png.size()) {
-                e = it->second;
+                sc.icon = it->second.icon;
+                next[sc.id] = it->second;
             } else {
-                e = {h, png.size(), decode_scene_icon(png, side)};
-                if (!e.icon)
-                    WLOG_W(kTag, "%s: icon not shown (not a PNG it can draw)", sc.id.c_str());
+                sc.icon = nullptr;
+                pending.push_back({sc.id, sc.icon_png, h});
             }
-            sc.icon = e.icon;
             sc.icon_png.reset();
-            next[sc.id] = std::move(e);
         }
-        by_id = std::move(next);  // deleted scenes and dropped icons go
+        by_id = std::move(next);
+        return pending;
+    }
+
+    // Decodes one icon lookup() handed back and keeps it (a file that does
+    // not decode is kept too, as none, so it is not tried again).
+    std::shared_ptr<const SceneIcon> decode(const Pending& p, int32_t side) {
+        std::shared_ptr<const SceneIcon> icon = decode_scene_icon(*p.png, side);
+        if (!icon) WLOG_W(kTag, "%s: icon not shown (not a PNG it can draw)", p.id.c_str());
+        std::lock_guard<os::Mutex> lock(mu);
+        by_id[p.id] = {p.hash, p.png->size(), icon};
+        return icon;
     }
 
     static uint64_t fnv1a(const os::LargeBuffer& b) {
@@ -382,12 +415,18 @@ void Shell::list_scenes() {
     }
     // One listing waiting in the queue answers every event before it ran.
     if (listing_->exchange(true)) return;
+    // The page's first listing is the one its timing line is about.
+    std::shared_ptr<ListTiming> timing = std::move(open_timing_);
+    if (timing) timing->asked_us = os::now_us();
     auto job = [this, list = deps_.list_scenes, recents = deps_.recents, ui = &deps_.ui,
                 queued = listing_, alive = page_alive_, icons = icons_,
-                side = SceneList::icon_side(deps_.shape)] {
+                side = SceneList::icon_side(deps_.shape), timing] {
         queued->store(false);
         std::vector<ShellScene> got = list();
-        icons->resolve(got, side);
+        if (timing) {
+            timing->list_ms = static_cast<uint32_t>((os::now_us() - timing->asked_us) / 1000);
+            timing->scenes = got.size();
+        }
         if (recents != nullptr) {
             std::vector<std::string> ids;
             ids.reserve(got.size());
@@ -405,11 +444,41 @@ void Shell::list_scenes() {
             }
             got = std::move(sorted);
         }
-        if (!ui->post([this, alive, got = std::move(got)]() mutable {
-                if (*alive && scenes_) scenes_->set_scenes(std::move(got));
+        // The cards first, with the icons decoded before; the new ones
+        // follow one by one as they decode.
+        const std::vector<IconCache::Pending> pending = icons->lookup(got);
+        if (!ui->post([this, alive, timing, got = std::move(got)]() mutable {
+                if (!*alive || !scenes_) return;
+                const uint64_t t0 = os::now_us();
+                scene_cache_ = got;
+                scenes_->set_scenes(std::move(got));
+                if (timing) timing->build_us += os::now_us() - t0;
             })) {
             WLOG_W(kTag, "scene list not shown (UI queue full)");
+            return;
         }
+        const uint64_t d0 = os::now_us();
+        for (const IconCache::Pending& p : pending) {
+            std::shared_ptr<const SceneIcon> icon = icons->decode(p, side);
+            if (!icon) continue;
+            (void)ui->post([this, alive, timing, id = p.id, icon] {
+                if (!*alive || !scenes_) return;
+                const uint64_t t0 = os::now_us();
+                for (ShellScene& sc : *scene_cache_)
+                    if (sc.id == id) sc.icon = icon;
+                scenes_->set_icon(id, icon);
+                if (timing) timing->build_us += os::now_us() - t0;
+            });
+        }
+        if (!timing) return;
+        timing->icons_ms = static_cast<uint32_t>((os::now_us() - d0) / 1000);
+        timing->decoded = pending.size();
+        (void)ui->post([timing] {
+            WLOG_I(kTag, "scenes ms_list=%u ms_icons=%u ms_build=%u n=%u icons_decoded=%u",
+                   static_cast<unsigned>(timing->list_ms), static_cast<unsigned>(timing->icons_ms),
+                   static_cast<unsigned>(timing->build_us / 1000),
+                   static_cast<unsigned>(timing->scenes), static_cast<unsigned>(timing->decoded));
+        });
     };
     if (!deps_.submit_io(std::move(job))) {
         listing_->store(false);

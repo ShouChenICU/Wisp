@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <future>
 #include <map>
 #include <memory>
 #include <string>
@@ -189,6 +190,32 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
             EXPECT_TRUE(box_visible(h->shape(), coords_of(p->diagnostics())));
         });
     }
+}
+
+// Opened before storage answers, the scene list's loading placeholders
+// all lie on the visible screen, under the title.
+TEST_P(SubPageShapes, LoadingStateInsideVisibleArea) {
+    std::promise<void> gate;
+    std::shared_future<void> f = gate.get_future().share();
+    ASSERT_TRUE(agent_h->worker.submit([f] { f.wait(); }));
+    h->show(Page::Scenes);
+    h->on_ui([&] {
+        wisp::shell::SceneList* p = h->shell().scene_list();
+        ASSERT_NE(p, nullptr);
+        lv_obj_update_layout(lv_screen_active());
+        ASSERT_GT(p->placeholders(), 0u);
+        lv_obj_t* list = lv_obj_get_parent(lv_obj_get_parent(p->placeholder(0)));
+        lv_obj_t* title = lv_obj_get_child(lv_obj_get_parent(list), 0);
+        const lv_area_t t = coords_of(title);
+        EXPECT_TRUE(box_visible(h->shape(), t)) << "title " << str(t);
+        for (size_t i = 0; i < p->placeholders(); ++i) {
+            const lv_area_t a = coords_of(p->placeholder(i));
+            EXPECT_TRUE(box_visible(h->shape(), a)) << i << " " << str(a);
+            EXPECT_GT(a.y1, t.y2) << i;
+        }
+    });
+    gate.set_value();
+    ASSERT_TRUE(h->ui_until([&] { return h->shell().scene_list()->cards() == 9; }));
 }
 
 INSTANTIATE_TEST_SUITE_P(

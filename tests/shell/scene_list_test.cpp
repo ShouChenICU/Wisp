@@ -288,6 +288,7 @@ TEST_F(SceneListTest, IconDecodedOnceAcrossListings) {
         scenes = {std::move(clock)};
     }
     open_page(1);
+    ASSERT_TRUE(harness->ui_until([&] { return page()->icon(0) != nullptr; }));
     const wisp::shell::SceneIcon* first = nullptr;
     harness->on_ui([&] {
         first = page()->scene(0).icon.get();
@@ -297,7 +298,8 @@ TEST_F(SceneListTest, IconDecodedOnceAcrossListings) {
                   SceneList::icon_side(harness->shape()));
         EXPECT_EQ(lv_image_get_src(page()->icon(0)), &first->image);
     });
-    // Read again (a fresh copy of the same bytes): the same pixels.
+    // Read again (a fresh copy of the same bytes): the same pixels, there
+    // with the card.
     {
         std::lock_guard<std::mutex> lock(mu);
         scenes[0].icon_png = icon();
@@ -305,7 +307,10 @@ TEST_F(SceneListTest, IconDecodedOnceAcrossListings) {
     }
     harness->bus().publish({"scene.state", "test", 0, {{"id", "todo"}, {"state", "installed"}}});
     ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 2; }));
-    harness->on_ui([&] { EXPECT_EQ(page()->scene(0).icon.get(), first); });
+    harness->on_ui([&] {
+        EXPECT_EQ(page()->scene(0).icon.get(), first);
+        EXPECT_NE(page()->icon(0), nullptr);
+    });
     // The icon gone from the manifest: the card shows the first character.
     {
         std::lock_guard<std::mutex> lock(mu);
@@ -366,4 +371,137 @@ TEST_F(SceneListTest, DragFromACardOpensNothing) {
     ASSERT_TRUE(harness->ui_until([&] { return !harness->shell().sliding(); }));
     std::lock_guard<std::mutex> lock(mu);
     EXPECT_TRUE(opened.empty());
+}
+
+// The worker held up behind `gate` until it is let go (or the fixture
+// goes), standing in for a slow storage read.
+class HeldWorker {
+public:
+    explicit HeldWorker(wisp::test::AgentHarness& agent) {
+        std::shared_future<void> f = gate_.get_future().share();
+        held_ = agent.worker.submit([f] { f.wait(); });
+    }
+    ~HeldWorker() { release(); }
+    HeldWorker(const HeldWorker&) = delete;
+    HeldWorker& operator=(const HeldWorker&) = delete;
+    bool held() const { return held_; }
+    void release() {
+        if (!released_) gate_.set_value();
+        released_ = true;
+    }
+
+private:
+    std::promise<void> gate_;
+    bool held_ = false;
+    bool released_ = false;
+};
+
+// Opened before storage answers: the page is up at once, loading.
+TEST_F(SceneListTest, ScenesPageShowsLoadingAtOnce) {
+    scenes = {scene("a", "A"), scene("b", "B")};
+    boot();
+    HeldWorker held(agent);
+    ASSERT_TRUE(held.held());
+    harness->show(Page::Scenes);
+    harness->on_ui([&] {
+        ASSERT_NE(page(), nullptr);
+        EXPECT_GT(page()->placeholders(), 0u);
+        EXPECT_EQ(page()->cards(), 0u);
+        EXPECT_EQ(page()->empty_label(), nullptr);  // not "no scenes" yet
+        EXPECT_EQ(page()->card_builds(), 0u);
+    });
+    held.release();
+    ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 2; }));
+    harness->on_ui([&] { EXPECT_EQ(page()->placeholders(), 0u); });
+}
+
+// Opened again: the last listing at once, and storage's same answer after
+// it changes nothing.
+TEST_F(SceneListTest, ScenesPageShowsCachedListAtOnce) {
+    scenes = {scene("a", "A"), scene("b", "B")};
+    boot();
+    open_page(2);
+    harness->show(Page::Home);
+    HeldWorker held(agent);
+    ASSERT_TRUE(held.held());
+    harness->show(Page::Scenes);
+    harness->on_ui([&] {
+        ASSERT_NE(page(), nullptr);
+        EXPECT_EQ(page()->cards(), 2u);
+        EXPECT_EQ(page()->placeholders(), 0u);
+        EXPECT_EQ(page()->card_builds(), 1u);
+    });
+    held.release();
+    (void)agent.worker.drain(5000);
+    harness->on_ui([&] {
+        EXPECT_EQ(page()->cards(), 2u);
+        EXPECT_EQ(page()->card_builds(), 1u);
+    });
+}
+
+// A listing that differs from the one shown replaces it in place, at the
+// same scroll position.
+TEST_F(SceneListTest, CardsFillWhenListingArrives) {
+    for (int i = 0; i < 30; ++i)
+        scenes.push_back(scene("s" + std::to_string(i), "场景" + std::to_string(i)));
+    boot();
+    open_page(30);
+    lv_obj_t* list = nullptr;
+    int32_t y = 0;
+    harness->on_ui([&] {
+        list = lv_obj_get_parent(lv_obj_get_parent(page()->card(0)));
+        lv_obj_scroll_to_y(list, 60, LV_ANIM_OFF);
+        lv_obj_update_layout(list);
+        y = lv_obj_get_scroll_y(list);
+    });
+    ASSERT_GT(y, 0);
+    HeldWorker held(agent);
+    ASSERT_TRUE(held.held());
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes.push_back(scene("s30", "场景30"));
+    }
+    harness->bus().publish({"scene.state", "test", 0, {{"id", "s30"}, {"state", "installed"}}});
+    harness->on_ui([&] { EXPECT_EQ(page()->cards(), 30u); });
+    held.release();
+    ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 31; }));
+    harness->on_ui([&] {
+        EXPECT_EQ(page()->card_builds(), 2u);
+        EXPECT_EQ(lv_obj_get_scroll_y(list), y);
+    });
+}
+
+// The cards come first, each with its first character; an icon not
+// decoded before takes its place in the card already built.
+TEST_F(SceneListTest, IconsSwapInAfterCards) {
+    {
+        ShellScene clock = scene("clock", "时钟");
+        clock.icon_png = icon();
+        scenes = {std::move(clock), scene("todo", "待办")};
+    }
+    boot();
+    open_page(2);
+    ASSERT_TRUE(harness->ui_until([&] { return page()->icon(0) != nullptr; }));
+    harness->on_ui([&] {
+        EXPECT_EQ(page()->card_builds(), 1u);
+        EXPECT_EQ(page()->icon_swaps(), 1u);
+        EXPECT_EQ(lv_image_get_src(page()->icon(0)), &page()->scene(0).icon->image);
+        // The icon in front of the name, where the character was.
+        EXPECT_EQ(lv_obj_get_index(page()->icon(0)), 0);
+        EXPECT_EQ(lv_obj_get_child_count(page()->card(0)), lv_obj_get_child_count(page()->card(1)));
+        EXPECT_EQ(page()->icon(1), nullptr);
+    });
+    // Opened again: the icon is in the cached listing, built with its card.
+    harness->show(Page::Home);
+    harness->show(Page::Scenes);
+    harness->on_ui([&] {
+        ASSERT_NE(page(), nullptr);
+        EXPECT_NE(page()->icon(0), nullptr);
+        EXPECT_EQ(page()->icon_swaps(), 0u);
+    });
+    (void)agent.worker.drain(5000);
+    harness->on_ui([&] {
+        EXPECT_EQ(page()->card_builds(), 1u);
+        EXPECT_EQ(page()->icon_swaps(), 0u);
+    });
 }

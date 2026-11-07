@@ -30,6 +30,14 @@ constexpr int kLetterFontPx = 40;
 constexpr lv_opa_t kUnavailableOpa = LV_OPA_40;
 // The long-press card's widest.
 constexpr int32_t kPopupMaxPx = 320;
+// A loading placeholder.
+constexpr lv_opa_t kPlaceholderOpa = LV_OPA_40;
+
+// What a card shows: the same scene, the same way.
+bool same_card(const ShellScene& a, const ShellScene& b) {
+    return a.id == b.id && a.name == b.name && a.icon == b.icon && a.background == b.background &&
+           a.available == b.available && a.has_data == b.has_data;
+}
 
 // The first UTF-8 character of `s`.
 std::string first_char(const std::string& s) {
@@ -161,7 +169,38 @@ void SceneList::build(lv_obj_t* list) {
     lv_obj_set_flex_flow(grid_, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_style_pad_column(grid_, kGap, 0);
     lv_obj_set_style_pad_row(grid_, kGap, 0);
+    show_loading();
     detail::bubble_tree(list_);
+}
+
+void SceneList::show_loading() {
+    // Rows wholly inside the safe area below the list's top, so every
+    // placeholder is on the visible screen.
+    lv_obj_update_layout(list_);
+    lv_area_t list_area;
+    lv_obj_get_coords(list_, &list_area);
+    const hal::Area safe = hal::safe_rect(deps_.shape);
+    const int32_t room =
+        safe.y2 + 1 - (list_area.y1 + lv_obj_get_style_pad_top(list_, LV_PART_MAIN));
+    const int32_t rows = std::max<int32_t>(1, (room + kGap) / (card_px_ + kGap));
+    const bool colour = detail::colour_panel(list_);
+    for (int32_t i = 0; i < rows * columns_; ++i) {
+        lv_obj_t* p = lv_obj_create(grid_);
+        lv_obj_remove_style_all(p);
+        lv_obj_set_size(p, card_px_, card_px_);
+        lv_obj_remove_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(p, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(p, ui::theme::kRadius, 0);
+        if (colour) {
+            lv_obj_set_style_bg_color(p, lv_color_hex(ui::theme::kSurface), 0);
+            lv_obj_set_style_bg_opa(p, kPlaceholderOpa, 0);
+        } else {
+            lv_obj_set_style_border_color(p, detail::dim_colour(list_), 0);
+            lv_obj_set_style_border_width(p, ui::theme::kBorderWidth, 0);
+            lv_obj_set_style_border_opa(p, kPlaceholderOpa, 0);
+        }
+    }
+    placeholders_ = static_cast<size_t>(rows * columns_);
 }
 
 void SceneList::set_scenes(std::vector<ShellScene> scenes) {
@@ -173,6 +212,14 @@ void SceneList::set_scenes(std::vector<ShellScene> scenes) {
     // A refresh (any scene.state) must not take the card away from a user
     // still deciding.
     if (popup_ != nullptr && !still_there()) close_popup();
+    // A refresh with nothing new (the cached listing shown at once, then
+    // the same one from storage) keeps the cards as they are.
+    if (listed_ && scenes.size() == scenes_.size() &&
+        std::equal(scenes.begin(), scenes.end(), scenes_.begin(), same_card)) {
+        scenes_ = std::move(scenes);
+        return;
+    }
+    listed_ = true;
     scenes_ = std::move(scenes);
     const int32_t y = lv_obj_get_scroll_y(list_);
     build_cards();
@@ -183,6 +230,8 @@ void SceneList::set_scenes(std::vector<ShellScene> scenes) {
 
 void SceneList::build_cards() {
     lv_obj_clean(grid_);
+    placeholders_ = 0;
+    ++card_builds_;
     cards_.clear();
     if (empty_ != nullptr) {
         lv_obj_delete(empty_);
@@ -195,7 +244,6 @@ void SceneList::build_cards() {
         return;
     }
     const bool colour = detail::colour_panel(list_);
-    const int32_t icon_px = icon_side(deps_.shape);
     for (const ShellScene& s : scenes_) {
         Card c;
         c.card = lv_obj_create(grid_);
@@ -221,18 +269,7 @@ void SceneList::build_cards() {
         lv_obj_add_event_cb(c.card, &SceneList::card_cb, LV_EVENT_SHORT_CLICKED, this);
         lv_obj_add_event_cb(c.card, &SceneList::card_cb, LV_EVENT_LONG_PRESSED, this);
 
-        if (s.icon) {
-            // Already icon_px across: drawn as is, centred. scenes_ holds
-            // the pixels for as long as the card shows them.
-            c.icon = lv_image_create(c.card);
-            lv_obj_set_size(c.icon, icon_px, icon_px);
-            lv_image_set_inner_align(c.icon, LV_IMAGE_ALIGN_CENTER);
-            lv_image_set_src(c.icon, &s.icon->image);
-        } else {
-            lv_obj_t* letter = lv_label_create(c.card);
-            lv_obj_set_style_text_font(letter, ui::font(kLetterFontPx), 0);
-            lv_label_set_text(letter, first_char(s.name).c_str());
-        }
+        put_icon(c, s);
         c.name = lv_label_create(c.card);
         lv_obj_set_width(c.name, LV_PCT(100));
         lv_obj_set_style_text_align(c.name, LV_TEXT_ALIGN_CENTER, 0);
@@ -249,6 +286,44 @@ void SceneList::build_cards() {
         cards_.push_back(c);
     }
     detail::bubble_tree(grid_);
+}
+
+// The icon or, without one, the first character, first in the card.
+void SceneList::put_icon(Card& c, const ShellScene& s) {
+    if (s.icon) {
+        // Already icon_side() across: drawn as is, centred. scenes_ holds
+        // the pixels for as long as the card shows them.
+        const int32_t icon_px = icon_side(deps_.shape);
+        c.icon = lv_image_create(c.card);
+        lv_obj_set_size(c.icon, icon_px, icon_px);
+        lv_image_set_inner_align(c.icon, LV_IMAGE_ALIGN_CENTER);
+        lv_image_set_src(c.icon, &s.icon->image);
+        lv_obj_move_to_index(c.icon, 0);
+    } else {
+        c.letter = lv_label_create(c.card);
+        lv_obj_set_style_text_font(c.letter, ui::font(kLetterFontPx), 0);
+        lv_label_set_text(c.letter, first_char(s.name).c_str());
+        lv_obj_move_to_index(c.letter, 0);
+    }
+}
+
+void SceneList::set_icon(const std::string& id, std::shared_ptr<const SceneIcon> icon) {
+    for (size_t i = 0; i < scenes_.size() && i < cards_.size(); ++i) {
+        ShellScene& s = scenes_[i];
+        if (s.id != id) continue;
+        if (s.icon == icon) return;
+        Card& c = cards_[i];
+        lv_obj_t* old = c.icon != nullptr ? c.icon : c.letter;
+        // The old pixels stay until the image showing them is gone.
+        const std::shared_ptr<const SceneIcon> keep = std::move(s.icon);
+        c.icon = c.letter = nullptr;
+        s.icon = std::move(icon);
+        put_icon(c, s);
+        if (old != nullptr) lv_obj_delete(old);
+        detail::bubble_tree(c.card);
+        ++icon_swaps_;
+        return;
+    }
 }
 
 size_t SceneList::index_of(lv_obj_t* card) const {

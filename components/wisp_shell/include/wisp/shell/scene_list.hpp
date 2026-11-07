@@ -18,7 +18,12 @@
 // scenes the page says how to get one (SceneListEmpty).
 //
 // The scenes come from the shell (ShellDeps::list_scenes on the storage
-// worker), handed in with set_scenes() on the UI thread.
+// worker), handed in with set_scenes() on the UI thread. Until the first
+// set_scenes() the page shows it is loading: dim placeholder cards, only
+// as many rows as lie wholly inside the safe area, cheap to draw since
+// they slide along with a page drag. A listing the same as the one shown
+// builds nothing. Icons may come after their cards (set_icon()): a card
+// shows the first character until its icon is there.
 //
 // Threading: everything on the UI thread, the destructor included.
 
@@ -88,13 +93,22 @@ public:
     SceneList(const SceneList&) = delete;
     SceneList& operator=(const SceneList&) = delete;
 
-    // Builds into `list` (a page's list, page_frame.hpp); empty until
-    // set_scenes().
+    // Builds into `list` (a page's list, page_frame.hpp), showing the
+    // loading placeholders until set_scenes().
     void build(lv_obj_t* list);
     // Replaces the cards, keeping the scroll position as far as it goes.
     // The long-press card stays up while its scene is still listed and
-    // can run.
+    // can run. Nothing changes when `scenes` is what is already shown.
     void set_scenes(std::vector<ShellScene> scenes);
+    // Shows `icon` on scene `id`'s card in place of its first character
+    // (null: the character again). No card for `id`: nothing.
+    void set_icon(const std::string& id, std::shared_ptr<const SceneIcon> icon);
+
+    // The loading placeholders still up (0 once set_scenes() came).
+    size_t placeholders() const { return placeholders_; }
+    // How often the cards were built, and icons swapped into built cards.
+    uint32_t card_builds() const { return card_builds_; }
+    uint32_t icon_swaps() const { return icon_swaps_; }
 
     // For tests and the simulator's checks.
     size_t cards() const { return cards_.size(); }
@@ -105,6 +119,9 @@ public:
     lv_obj_t* name_label(size_t i) const { return i < cards_.size() ? cards_[i].name : nullptr; }
     lv_obj_t* icon(size_t i) const { return i < cards_.size() ? cards_[i].icon : nullptr; }
     lv_obj_t* empty_label() const { return empty_; }
+    lv_obj_t* placeholder(size_t i) const {
+        return i < placeholders_ ? lv_obj_get_child(grid_, static_cast<int32_t>(i)) : nullptr;
+    }
     int columns() const { return columns_; }
     // The long-press card while it is up, and its parts.
     lv_obj_t* popup() const { return popup_; }
@@ -122,8 +139,11 @@ private:
         lv_obj_t* icon = nullptr;
         lv_obj_t* name = nullptr;
         lv_obj_t* mark = nullptr;
+        lv_obj_t* letter = nullptr;  // without an icon
     };
+    void show_loading();
     void build_cards();
+    void put_icon(Card& c, const ShellScene& s);
     size_t index_of(lv_obj_t* card) const;
     static void card_cb(lv_event_t* e);
     static void popup_cb(lv_event_t* e);
@@ -134,6 +154,9 @@ private:
     lv_obj_t* empty_ = nullptr;
     int columns_ = 1;
     int32_t card_px_ = kCardMinPx;
+    size_t placeholders_ = 0;
+    bool listed_ = false;  // set_scenes() came
+    uint32_t card_builds_ = 0, icon_swaps_ = 0;
     std::vector<ShellScene> scenes_;
     std::vector<Card> cards_;
     lv_obj_t* popup_ = nullptr;
