@@ -170,3 +170,8 @@ Source: glyph partition review records.
 
 - The admin page's reboot runs `App::flush_storage()` (settings flush up to 2 s, then a storage drain up to 5 s) on the esp_timer task, which can stall every other esp_timer callback for up to 7 s; move the flush onto its own short-lived task.
 - When the storage worker cannot start (out of memory at boot), callers have no fallback path: requests are refused rather than run inline; decide whether boot should fail loudly or degrade.
+
+## Memory page (MVP 5.3)
+
+- `GET /memory` answers 200 with an empty list when `MemoryStore` failed to load, or before `AgentWiring::start()` has loaded it (`net->start()` runs first). The page then says "no notes yet" while the notes are still on flash. Expose `available()` and answer 503 `memory_unavailable`, and give the page an error state. Add a load_failed test.
+- `web/app/pages/memory.js`: when the list is already populated, a failed refresh shows nothing, because the alert only renders while the list is empty. Toast the error instead.
