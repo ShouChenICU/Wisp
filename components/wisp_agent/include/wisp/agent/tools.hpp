@@ -11,6 +11,7 @@
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/memory_store.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
@@ -68,5 +69,14 @@ Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps);
 
 // docs.read (spec 4.4; wisp/agent/docs.hpp).
 Result<void> add_docs_tools(ToolRegistry& reg);
+
+struct MemoryToolDeps {
+    core::MemoryStore& store;
+};
+
+// memory.list, add, update and remove (mvp spec 3.2, 5.1): thin adapters
+// over MemoryStore, run on the flash thread (ToolThread::Fs), since every
+// one of them reads or writes notes.json.
+Result<void> add_memory_tools(ToolRegistry& reg, MemoryToolDeps deps);
 
 }  // namespace wisp::agent

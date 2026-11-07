@@ -41,6 +41,7 @@
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
@@ -193,6 +194,9 @@ struct AgentWiringDeps {
     std::function<bool()> network_up{};
     std::function<std::string()> lang{};
     std::function<int64_t()> wall_s{};
+    // AgentWiring fills DeviceSnapshot::memory in from its own MemoryStore
+    // before handing the snapshot to AgentService; this need not (and, as
+    // cached values only, cannot) set it.
     agent::ContextSource context{};
     // device.status without "storage", which AgentWiring adds from its
     // cache. Cached values only.
@@ -235,6 +239,7 @@ private:
     std::unique_ptr<net::HttpClient> no_http_;
     std::unique_ptr<net::LlmClient> llm_;
     std::unique_ptr<agent::ConversationStore> store_;
+    std::unique_ptr<core::MemoryStore> memory_;
     std::unique_ptr<agent::ToolRegistry> registry_;
     std::unique_ptr<scene::UiInspector> inspector_;
     std::unique_ptr<agent::ConfirmService> confirm_;

@@ -264,6 +264,11 @@ enum class StrId : uint16_t {
     AgentAllow,
     AgentDeny,
     AgentConfirmClear,
+    // Memory notes (mvp spec 3.2, 5.1); AgentNoteMemoryUpdated and
+    // AgentNoteMemoryRemoved carry the note's id as "{}".
+    AgentNoteMemoryAdded,
+    AgentNoteMemoryUpdated,
+    AgentNoteMemoryRemoved,
 
     Count,  // not a string; keep last
 };

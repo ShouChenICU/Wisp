@@ -96,6 +96,8 @@ wisp_test(NAME occupancy_test SRCS core/occupancy_test.cpp LIBS wisp_core wisp_p
 wisp_test(NAME gesture_test SRCS core/gesture_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME sensor_service_test SRCS core/sensor_service_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME memory_store_test SRCS core/memory_store_test.cpp
+          LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME power_monitor_test SRCS core/power_monitor_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings TIMEOUT 20)
 wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui wisp_port_sim_os)
@@ -422,5 +424,7 @@ wisp_test(NAME scene_eval_test SRCS scene/scene_eval_test.cpp
 wisp_test(NAME scene_ops_tools_test SRCS agent/scene_ops_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)
 wisp_test(NAME device_tools_test SRCS agent/device_tools_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME memory_tools_test SRCS agent/memory_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME docs_test SRCS agent/docs_test.cpp LIBS wisp_agent wisp_port_sim_os)

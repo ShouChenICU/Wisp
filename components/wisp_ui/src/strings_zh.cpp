@@ -325,6 +325,12 @@ const char* strings_zh(StrId id) {
             return "拒绝";
         case StrId::AgentConfirmClear:
             return "清空全部 Agent 对话？";
+        case StrId::AgentNoteMemoryAdded:
+            return "已记住一条记忆";
+        case StrId::AgentNoteMemoryUpdated:
+            return "已修改记忆 #{}";
+        case StrId::AgentNoteMemoryRemoved:
+            return "已删除记忆 #{}";
         case StrId::Count:
             break;
     }

@@ -88,10 +88,14 @@ void factory_reset(App& app) {
         if (net::WifiService* wifi = app.wifi()) wifi->forget_all();
         if (net::PairingService* pairing = app.pairing()) pairing->revoke_all();
         app.models().clear();
-        // The agent's conversation and archives (agent-core spec 3.5).
+        // The agent's conversation, archives and memory notes (agent-core
+        // spec 3.5; mvp spec 5.1).
         if (auto root = app.storage().write_root(core::Area::System); root) {
             if (auto r = app.storage().remove_tree(root.value() + "/agent"); !r) {
                 WLOG_E(kTag, "erasing the conversations failed: %s", r.error().message.c_str());
+            }
+            if (auto r = app.storage().remove_tree(root.value() + "/memory"); !r) {
+                WLOG_E(kTag, "erasing the memory notes failed: %s", r.error().message.c_str());
             }
         }
     };

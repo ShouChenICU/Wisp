@@ -327,6 +327,12 @@ const char* strings_en(StrId id) {
             return "Deny";
         case StrId::AgentConfirmClear:
             return "Clear all agent conversations?";
+        case StrId::AgentNoteMemoryAdded:
+            return "Remembered a note.";
+        case StrId::AgentNoteMemoryUpdated:
+            return "Changed memory note #{}";
+        case StrId::AgentNoteMemoryRemoved:
+            return "Deleted memory note #{}";
         case StrId::Count:
             break;
     }

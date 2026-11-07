@@ -330,6 +330,12 @@ const char* strings_ja(StrId id) {
             return "拒否";
         case StrId::AgentConfirmClear:
             return "Agent との会話をすべて消去しますか？";
+        case StrId::AgentNoteMemoryAdded:
+            return "メモを記憶しました";
+        case StrId::AgentNoteMemoryUpdated:
+            return "メモ #{} を修正しました";
+        case StrId::AgentNoteMemoryRemoved:
+            return "メモ #{} を削除しました";
         case StrId::Count:
             break;
     }

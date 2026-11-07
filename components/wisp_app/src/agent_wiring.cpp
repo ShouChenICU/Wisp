@@ -61,6 +61,17 @@ admin::JsonDoc finish(os::LargeString out) {
     return std::make_shared<const os::LargeString>(std::move(out));
 }
 
+// `conversation_dir` is always "<System>/agent" (AgentWiringDeps' comment
+// on that field); memory notes live in its sibling directory, so this
+// avoids a second System-root plumbing path into AgentWiringDeps for one
+// more file under the same area.
+std::string memory_path_of(const std::string& conversation_dir) {
+    const size_t slash = conversation_dir.find_last_of('/');
+    const std::string system_dir =
+        slash == std::string::npos ? conversation_dir : conversation_dir.substr(0, slash);
+    return system_dir + "/memory/notes.json";
+}
+
 Value model_value(const core::ModelProfileService& models) {
     const core::ProfilesState st = models.get();
     const std::string& id = st.active_for(core::ModelKind::Llm);
@@ -315,6 +326,8 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     }
     llm_ = std::make_unique<net::LlmClient>(*http, deps_.models);
     store_ = std::make_unique<agent::ConversationStore>(deps_.storage, deps_.conversation_dir);
+    memory_ = std::make_unique<core::MemoryStore>(
+        deps_.storage, memory_path_of(deps_.conversation_dir), &deps_.bus, deps_.wall_s);
     core::StorageWorker* worker = &deps_.worker;
     ui::UiRuntime* ui = &deps_.ui;
     auto on_worker = [worker](std::function<void()> fn) { return worker->submit(std::move(fn)); };
@@ -334,6 +347,19 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
         .layer = deps_.layer,
         .wake = deps_.wake,
     });
+    // DeviceSnapshot::memory comes from here, not from `deps_.context`
+    // itself: list() is memory-only (no flash) and this runs on
+    // wisp.agent, exactly where it is safe to call.
+    core::MemoryStore* memory = memory_.get();
+    agent::ContextSource outer_context = deps_.context;
+    agent::ContextSource context_with_memory = [outer_context, memory](agent::Source s) {
+        agent::DeviceSnapshot d = outer_context ? outer_context(s) : agent::DeviceSnapshot{};
+        for (const core::MemoryNote& n : memory->list()) {
+            d.memory.push_back("[" + std::to_string(n.id) + "] " +
+                               std::string(n.text.data(), n.text.size()));
+        }
+        return d;
+    };
     service_ = std::make_unique<agent::AgentService>(
         agent::AgentDeps{
             .bus = deps_.bus,
@@ -349,7 +375,7 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
             .lang = deps_.lang,
             .now_ms = os::now_ms,
             .wall_s = deps_.wall_s,
-            .context = deps_.context,
+            .context = std::move(context_with_memory),
         },
         deps_.config);
     service_->set_confirm(confirm_.get());
@@ -389,6 +415,7 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
                                                   .submit_io = on_worker,
                                               }));
     check("docs", agent::add_docs_tools(*registry_));
+    check("memory", agent::add_memory_tools(*registry_, agent::MemoryToolDeps{.store = *memory_}));
 
     adapter_ = std::make_unique<AgentApiAdapter>(AgentApiAdapter::Deps{
         .service = *service_,
@@ -415,6 +442,18 @@ Result<void> AgentWiring::start() {
         });
         listening_ = true;
     }
+    // Loaded here (on the worker, like ConversationStore::load() inside
+    // AgentService::start()) rather than lazily on first use: a missing or
+    // corrupt file only degrades to an empty memory, so this never blocks
+    // the agent from starting.
+    core::MemoryStore* memory = memory_.get();
+    Result<void> loaded = Result<void>::err(ErrorCode::Busy, "storage worker refused");
+    if (deps_.run_io) {
+        deps_.run_io([memory, &loaded] { loaded = memory->load(); });
+    } else {
+        loaded = memory->load();
+    }
+    if (!loaded) WLOG_W(kTag, "memory notes not loaded: %s", loaded.error().message.c_str());
     refresh_storage();
     return service_->start();
 }

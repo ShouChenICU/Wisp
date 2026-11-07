@@ -195,6 +195,24 @@ TEST(FactoryReset, ClearsAgentDirectory) {
     EXPECT_FALSE(std::filesystem::exists(agent));
 }
 
+// The agent's memory notes live under <System>/memory/ (mvp spec 5.1).
+TEST(FactoryReset, ClearsMemoryDirectory) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    const std::string memory =
+        app.storage().write_root(wisp::core::Area::System).value() + "/memory";
+    const std::string body = R"({"version":1,"next_id":2,"notes":[{"id":1,"text":"x",)"
+                             R"("updated":0}]})";
+    const std::span<const uint8_t> bytes(reinterpret_cast<const uint8_t*>(body.data()),
+                                         body.size());
+    ASSERT_TRUE(write_on_flash(app, memory + "/notes.json", bytes));
+
+    wisp::app::factory_reset(app);
+
+    EXPECT_FALSE(std::filesystem::exists(memory));
+}
+
 // The browser that asked must still hear "done": the event goes out (and
 // the admin socket gets a chance to send it) before the tokens -- and
 // with them that socket -- are revoked.

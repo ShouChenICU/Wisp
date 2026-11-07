@@ -20,8 +20,10 @@
 #include "support/wait.hpp"
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/agent/limits.hpp"
+#include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/memory_store.hpp"
 #include "wisp/ui/strings.hpp"
 
 using wisp::ErrorCode;
@@ -997,6 +999,38 @@ TEST_F(AgentLoop, ContextFramesTheRequest) {
     EXPECT_EQ(info.rfind("[1] ", 0), 0u) << info;
     // The snapshot's source is the turn's, whatever the context source says.
     EXPECT_NE(info.find("Source: voice"), std::string::npos) << info;
+}
+
+TEST_F(AgentLoop, MemoryNotesInTheRequest) {
+    const std::string path =
+        harness().storage->write_root(wisp::core::Area::System).value() + "/memory/notes.json";
+    auto memory = std::make_unique<wisp::core::MemoryStore>(
+        *harness().storage, path, &harness().bus, [] { return int64_t{1700000000}; });
+    ASSERT_TRUE(
+        harness().worker.run_sync([&] { ASSERT_TRUE(memory->load()); }, wisp::os::kForever));
+    ASSERT_TRUE(wisp::agent::add_memory_tools(*harness().tools,
+                                              wisp::agent::MemoryToolDeps{.store = *memory}));
+
+    wisp::core::MemoryStore* mem = memory.get();
+    context = [mem](Source) {
+        wisp::agent::DeviceSnapshot d;
+        for (const wisp::core::MemoryNote& n : mem->list()) {
+            d.memory.push_back("[" + std::to_string(n.id) + "] " + str(n.text));
+        }
+        return d;
+    };
+    start();
+
+    h->server.push(tool_reply("c1", "memory_add", R"({"text":"称呼：小陈"})"));
+    h->server.push(text_reply("ok"));
+    ASSERT_TRUE(svc->submit("remember me", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+
+    ASSERT_EQ(h->server.requests().size(), 2u);
+    const Value body = h->server.body_json(1);
+    const List& msgs = body.find("messages")->as_list();
+    const std::string& info = msgs.back().find("content")->as_string();
+    EXPECT_EQ(info.rfind("[1] ", 0), 0u) << info;
 }
 
 TEST_F(AgentLoop, CompressionRequestReplacesOldTurns) {
