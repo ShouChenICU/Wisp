@@ -542,6 +542,7 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     if (now - self->last_storage_ms_ >= kStorageResyncMs) self->request_storage();
     self->net_section_.tick(now);
     self->pair_card_.tick(now);
+    self->setup_card_.tick(now);
 }
 
 void SelfCheck::refresh_ui() {

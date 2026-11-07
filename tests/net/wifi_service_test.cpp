@@ -521,6 +521,126 @@ TEST(WifiService, ApLingersThirtySecondsAfterProvisionedConnect) {
     EXPECT_FALSE(ap.back().payload.at("active").as_bool());
 }
 
+// Joins "Home" through the hotspot with one phone on it: the station is
+// Connected at 2250.
+void provision_home(Fixture& f, WifiService& svc) {
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.start_provisioning(0));
+    f.wifi->ap_client_count = 1;
+    svc.tick(1000);
+    ASSERT_TRUE(svc.add_network("Home", "homepass1", 2000));
+    svc.tick(2000);
+    svc.tick(2250);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+}
+
+TEST(WifiService, ProvisioningClosesSoonAfterThePageSawSuccess) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    auto& svc = f.make();
+    provision_home(f, svc);
+
+    // A result read about another network says nothing about this one.
+    svc.note_result_seen("Other", 4000);
+    svc.tick(7000);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+
+    svc.note_result_seen("Home", 5000);
+    svc.tick(7999);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+    svc.tick(8000);
+    EXPECT_FALSE(f.wifi->ap_active.load());
+    EXPECT_FALSE(svc.ap_session().has_value());
+}
+
+TEST(WifiService, ResultSeenBeforeSuccessDoesNotShortenTheHotspot) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.start_provisioning(0));
+    f.wifi->ap_client_count = 1;
+    svc.tick(1000);
+    svc.note_result_seen("Home", 1500);  // nothing has succeeded yet
+    ASSERT_TRUE(svc.add_network("Home", "homepass1", 2000));
+    svc.tick(2000);
+    svc.tick(2250);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    svc.tick(10'000);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+}
+
+TEST(WifiService, ProvisioningClosesAtOnceWithNoClients) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.start_provisioning(0));
+    ASSERT_TRUE(svc.add_network("Home", "homepass1", 2000));
+    svc.tick(2000);
+    svc.tick(2250);  // connects; nobody is on the hotspot any more
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    EXPECT_FALSE(f.wifi->ap_active.load());
+
+    // The phone leaving after success closes it on the next poll too.
+    Fixture g;
+    g.in_range("Home", -50, "homepass1");
+    auto& svc2 = g.make();
+    provision_home(g, svc2);
+    svc2.tick(3000);
+    EXPECT_TRUE(g.wifi->ap_active.load());
+    g.wifi->ap_client_count = 0;
+    svc2.tick(3250);
+    EXPECT_FALSE(g.wifi->ap_active.load());
+}
+
+TEST(WifiService, ProvisioningLingerStillCapsAt30s) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    auto& svc = f.make();
+    provision_home(f, svc);
+    svc.tick(32249);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+    svc.tick(32250);
+    EXPECT_FALSE(f.wifi->ap_active.load());
+
+    // Seen near the end: the 30 s bound still wins.
+    Fixture g;
+    g.in_range("Home", -50, "homepass1");
+    auto& svc2 = g.make();
+    provision_home(g, svc2);
+    svc2.note_result_seen("Home", 31'000);
+    svc2.tick(32250);
+    EXPECT_FALSE(g.wifi->ap_active.load());
+}
+
+TEST(WifiService, ProvisioningResultOutlivesTheHotspot) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    auto& svc = f.make();
+    EXPECT_FALSE(svc.provisioning_result().has_value());
+    provision_home(f, svc);
+    const uint64_t session = svc.ap_session().value().id;
+    EXPECT_NE(session, 0u);
+    auto r = svc.provisioning_result();
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->session, session);
+    EXPECT_EQ(r->ssid, "Home");
+    EXPECT_EQ(r->ip, svc.status().ip);
+    EXPECT_FALSE(r->ip.empty());
+
+    ASSERT_TRUE(svc.stop_provisioning());
+    r = svc.provisioning_result();
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->session, session);
+
+    // A new session starts without a result and with a new id.
+    auto next = svc.start_provisioning(40'000);
+    ASSERT_TRUE(next);
+    EXPECT_NE(next.value().id, session);
+    EXPECT_FALSE(svc.provisioning_result().has_value());
+}
+
 TEST(WifiService, ApStaysOpenWhenOldNetworkReconnectsDuringProvisioning) {
     Fixture f;
     f.in_range("Old", -50, "oldpass11");

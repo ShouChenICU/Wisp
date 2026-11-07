@@ -102,6 +102,49 @@ TEST(Routes, WifiStatusNeverContainsApPassword) {
     }
 }
 
+// The setup page's read of the success over the hotspot is what lets the
+// hotspot close early (spec 3); the same read from the home network is
+// not the setup page.
+TEST(Routes, WifiStatusOverTheHotspotAfterSuccessClosesItSoon) {
+    AdminFixture f;
+    const std::string token = f.token();
+    f.fake_wifi->networks = {{"Home", -50, true}};
+    f.fake_wifi->passwords["Home"] = "correct-horse";
+    ASSERT_TRUE(f.wifi->start_provisioning(f.now));
+    f.fake_wifi->ap_client_count = 1;
+    f.wifi->tick(f.now);
+
+    auto ap_get = [&] {
+        return with_token(make_req(Get, "/api/v1/wifi", {}, wisp::net::Iface::Ap), token);
+    };
+    // Before the join succeeds, the read counts for nothing.
+    EXPECT_EQ(f.srv->handle(ap_get()).status, 200);
+    ASSERT_EQ(f.srv
+                  ->handle(authed(token, Post, "/api/v1/wifi/networks",
+                                  R"({"ssid":"Home","password":"correct-horse"})"))
+                  .status,
+              202);
+    f.wifi->tick(f.now);
+    f.wifi->tick(f.now);
+    ASSERT_EQ(f.wifi->status().state, wisp::net::WifiState::Connected);
+    const uint64_t success = f.now;
+
+    // From the home network: still the 30 s bound.
+    f.now += 1000;
+    EXPECT_EQ(f.srv->handle(authed(token, Get, "/api/v1/wifi")).status, 200);
+    f.wifi->tick(f.now + 3000);
+    EXPECT_TRUE(f.fake_wifi->ap_active.load());
+
+    f.now += 1000;
+    Value status = body_json(f.srv->handle(ap_get()));
+    EXPECT_EQ(field(status, "state"), Value("connected"));
+    f.wifi->tick(f.now + 2999);
+    EXPECT_TRUE(f.fake_wifi->ap_active.load());
+    f.wifi->tick(f.now + 3000);
+    EXPECT_FALSE(f.fake_wifi->ap_active.load());
+    EXPECT_LT(f.now + 3000, success + 30000);
+}
+
 TEST(Routes, WifiAddScanAndConnect) {
     AdminFixture f;
     const std::string token = f.token();

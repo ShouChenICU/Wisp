@@ -25,6 +25,13 @@ constexpr int32_t kQrSafePercent = 45;
 // the middle, so they read one by one.
 constexpr int32_t kCodeLetterSpace = 6;
 
+// Whole seconds left, rounded up, so a countdown never shows 0 while
+// its deadline is still ahead.
+int64_t seconds_until(uint64_t deadline_ms, uint64_t now_ms) {
+    if (now_ms >= deadline_ms) return 0;
+    return static_cast<int64_t>((deadline_ms - now_ms + 999) / 1000);
+}
+
 int32_t width_of(const hal::Area& a) { return a.x2 - a.x1 + 1; }
 int32_t height_of(const hal::Area& a) { return a.y2 - a.y1 + 1; }
 
@@ -93,6 +100,10 @@ std::string spaced_code(std::string_view code) {
     return std::string(code.substr(0, 3)) + " " + std::string(code.substr(3));
 }
 
+std::string admin_url(std::string_view ip, uint16_t port) {
+    return "http://" + std::string(ip) + ":" + std::to_string(port);
+}
+
 namespace {
 
 void* large_buf_malloc(size_t size, lv_color_format_t) { return os::alloc(size, os::Mem::Large); }
@@ -146,6 +157,7 @@ ProvisioningCard::ProvisioningCard(std::function<void()> on_stop) : on_stop_(std
 void ProvisioningCard::open(const net::ApSession& session, const hal::Area& safe, ui::Lang lang) {
     close();
     session_ = session;
+    lang_ = lang;
     card_ = make_card(safe);
 
     add_text(card_, ui::tr(ui::StrId::SetupTitle, lang));
@@ -173,12 +185,72 @@ void ProvisioningCard::open(const net::ApSession& session, const hal::Area& safe
                &ProvisioningCard::stop_cb, this);
 }
 
+void ProvisioningCard::show_success(std::string ssid, std::string url, uint64_t now_ms,
+                                    const hal::Area& safe, ui::Lang lang) {
+    const uint64_t id = session_.id;
+    close();
+    session_.id = id;
+    done_ssid_ = std::move(ssid);
+    done_url_ = std::move(url);
+    done_closes_at_ms_ = now_ms + kSuccessShowMs;
+    build_success(safe, lang, now_ms);
+}
+
+void ProvisioningCard::build_success(const hal::Area& safe, ui::Lang lang, uint64_t now_ms) {
+    success_ = true;
+    lang_ = lang;
+    card_ = make_card(safe);
+    add_text(card_, std::string(LV_SYMBOL_OK " ") +
+                        ui::tr_fill(ui::StrId::SetupDoneTitle, lang, done_ssid_));
+    add_text(card_, ui::tr_fill(ui::StrId::SetupDoneAddress, lang, done_url_));
+    lv_obj_t* btn = add_button(card_, "", ui::ButtonRole::Primary, &ProvisioningCard::ok_cb, this);
+    ok_label_ = lv_obj_get_child(btn, 0);
+    shown_seconds_ = -1;
+    tick(now_ms);
+}
+
+void ProvisioningCard::reopen(const hal::Area& safe, ui::Lang lang, uint64_t now_ms) {
+    if (card_ == nullptr) return;
+    if (!success_) {
+        net::ApSession session = session_;
+        open(session, safe, lang);
+        return;
+    }
+    lv_obj_delete(card_);
+    card_ = nullptr;
+    ok_label_ = nullptr;
+    build_success(safe, lang, now_ms);
+}
+
+void ProvisioningCard::tick(uint64_t now_ms) {
+    if (card_ == nullptr || !success_) return;
+    const int64_t left = seconds_until(done_closes_at_ms_, now_ms);
+    if (left <= 0) {
+        close();
+        return;
+    }
+    if (left == shown_seconds_) return;
+    shown_seconds_ = left;
+    lv_label_set_text(ok_label_,
+                      ui::tr_fill(ui::StrId::SetupDoneOk, lang_, std::to_string(left)).c_str());
+}
+
+void ProvisioningCard::forget() {
+    card_ = nullptr;
+    ok_label_ = nullptr;
+    success_ = false;
+    shown_seconds_ = -1;
+    done_ssid_.clear();
+    done_url_.clear();
+    done_closes_at_ms_ = 0;
+    // The password is only kept while it is on screen.
+    session_ = {};
+}
+
 void ProvisioningCard::close() {
     if (card_ == nullptr) return;
     lv_obj_delete(card_);
-    card_ = nullptr;
-    // The password is only kept while it is on screen.
-    session_ = {};
+    forget();
 }
 
 void ProvisioningCard::raise() {
@@ -190,14 +262,23 @@ void ProvisioningCard::stop_cb(lv_event_t* e) {
     if (self->on_stop_) self->on_stop_();
 }
 
+void ProvisioningCard::ok_cb(lv_event_t* e) {
+    auto* self = static_cast<ProvisioningCard*>(lv_event_get_user_data(e));
+    if (self->card_ == nullptr) return;
+    // The hotspot may still be up (it waits for the setup page); OK ends it.
+    if (self->on_stop_) self->on_stop_();
+    // Deleted after this event has finished with the button.
+    lv_obj_delete_async(self->card_);
+    self->forget();
+}
+
 // ---------------------------------------------------------------------------
 // PairingCard
 
 PairingCard::PairingCard(std::function<void()> on_reject) : on_reject_(std::move(on_reject)) {}
 
 int64_t PairingCard::seconds_left(uint64_t expires_ms, uint64_t now_ms) {
-    if (now_ms >= expires_ms) return 0;
-    return static_cast<int64_t>((expires_ms - now_ms + 999) / 1000);
+    return seconds_until(expires_ms, now_ms);
 }
 
 void PairingCard::open(std::string code, uint64_t expires_ms, uint64_t now_ms,

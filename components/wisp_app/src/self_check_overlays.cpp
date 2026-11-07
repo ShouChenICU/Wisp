@@ -13,6 +13,7 @@
 #include "firmware_confirm.hpp"
 #include "self_check_screen.hpp"
 #include "wisp/app/app.hpp"
+#include "wisp/app/format.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -29,13 +30,31 @@ void SelfCheck::sync_wifi() {
     net_section_.refresh(now);
     net::WifiService* wifi = app_.wifi();
     std::optional<net::ApSession> ap = wifi != nullptr ? wifi->ap_session() : std::nullopt;
+    // The session the open QR view shows has ended in success: show the new
+    // address instead. The result outlives the hotspot, so this holds even
+    // when the hotspot closed before this sync ran.
+    if (setup_card_.is_open() && !setup_card_.showing_success()) {
+        std::optional<net::ProvisioningResult> done =
+            wifi != nullptr ? wifi->provisioning_result() : std::nullopt;
+        if (done && done->session == setup_card_.session().id) {
+            setup_card_.show_success(displayable_ssid(done->ssid),
+                                     admin_url(done->ip, app_.platform().http_port), now,
+                                     compute_safe_area(), ui::lang());
+            raise_overlays();
+            wake_screen();
+            return;
+        }
+    }
+    // The success view stays until OK or its own timer, whatever the
+    // hotspot does; only a new session replaces it.
+    if (setup_card_.showing_success() && (!ap || ap->id == setup_card_.session().id)) return;
     if (!ap) {
         setup_card_.close();
         return;
     }
     const net::ApSession& shown = setup_card_.session();
-    if (setup_card_.is_open() && shown.ssid == ap->ssid && shown.password == ap->password &&
-        shown.ip == ap->ip) {
+    if (setup_card_.is_open() && !setup_card_.showing_success() && shown.id == ap->id &&
+        shown.ssid == ap->ssid && shown.password == ap->password && shown.ip == ap->ip) {
         return;
     }
     setup_card_.open(*ap, compute_safe_area(), ui::lang());
@@ -103,10 +122,7 @@ void SelfCheck::sync_system_language() {
     // restores their stacking order; the dialogs open above both.
     ui::set_lang(*lang);
     const uint64_t now = os::now_ms();
-    if (setup_card_.is_open()) {
-        net::ApSession session = setup_card_.session();
-        setup_card_.open(session, compute_safe_area(), *lang);
-    }
+    setup_card_.reopen(compute_safe_area(), *lang, now);
     if (pair_card_.is_open()) {
         std::string code = pair_card_.code();
         uint64_t expires = pair_card_.expires_ms();

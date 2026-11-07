@@ -429,7 +429,7 @@ export default {
   'setup.no_ip': 'アドレスはデバイスの画面に表示されます。',
   'setup.mdns_hint': 'wisp.local は多くのパソコンや iPhone で使えます。Android では IP アドレスを使ってください。',
   'setup.open_admin': '管理画面を開く',
-  'setup.ap_closing': 'セットアップ用アクセスポイントは約 30 秒後に自動でオフになります。',
+  'setup.ap_closing': 'セットアップ用アクセスポイントは数秒後に自動でオフになります。',
   'err.unknown': '予期しないエラーが発生しました。',
   'err.network': 'デバイスに接続できません。同じネットワークにいるか確認してください。',
   'err.internal': 'デバイス内部でエラーが発生しました。しばらくしてから再試行してください。',

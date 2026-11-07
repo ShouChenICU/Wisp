@@ -42,8 +42,15 @@ std::optional<std::string> from_hex(const std::string& s) {
     return out;
 }
 
-net::HttpResponse wifi_status(AdminDeps& deps, const RequestContext&) {
+// Over the hotspot, a status showing the station connected is how the
+// setup page learns that its join succeeded (web/app/setup.js reads it once
+// more when the event came first), so the hotspot can close soon after
+// (spec 3). From the home network it is just the admin page.
+net::HttpResponse wifi_status(AdminDeps& deps, const RequestContext& ctx) {
     const net::WifiStatus st = deps.wifi.status();
+    if (ctx.req.iface == net::Iface::Ap && st.state == net::WifiState::Connected) {
+        deps.wifi.note_result_seen(st.ssid, ctx.now_ms);
+    }
     const net::ApStatus ap = deps.wifi.ap_status();
     List saved;
     for (const net::SavedNetwork& n : deps.wifi.saved_networks()) {

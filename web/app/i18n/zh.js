@@ -429,7 +429,7 @@ export default {
   'setup.no_ip': '地址会显示在设备屏幕上。',
   'setup.mdns_hint': '大多数电脑和 iPhone 可以用 wisp.local；安卓手机请用 IP 地址。',
   'setup.open_admin': '进入后台',
-  'setup.ap_closing': '配网热点将在约 30 秒后自动关闭。',
+  'setup.ap_closing': '配网热点将在几秒后自动关闭。',
   'err.unknown': '发生未知错误。',
   'err.network': '无法连接到设备，请确认手机或电脑与设备在同一网络。',
   'err.internal': '设备内部出错，请稍后再试。',

@@ -14,8 +14,10 @@
 //
 // Threading: every member function must be called on the UI thread. The
 // buttons only call the owner's callback, which asks a service to act;
-// the card itself closes when the resulting event comes back, so no card
-// ever deletes itself from inside its own event handler.
+// the card itself closes when the resulting event comes back. The one
+// exception is the provisioning card's OK button in its success view,
+// which closes the card itself through lv_obj_delete_async(), so it is
+// never deleted from inside its own event handler either.
 //
 // Lifetime: close() deletes the LVGL objects. The destructor makes no
 // LVGL call (an owner may be destroyed off the UI thread), so the owner
@@ -42,6 +44,9 @@ std::string wifi_qr_payload(std::string_view ssid, std::string_view password);
 // other length comes back unchanged.
 std::string spaced_code(std::string_view code);
 
+// "http://<ip>:<port>", the admin page's address as the setup page shows it.
+std::string admin_url(std::string_view ip, uint16_t port);
+
 // Replaces the drawn QR code `qr` (an lv_qrcode after a successful
 // lv_qrcode_update(); its draw buf is I1) with the same pixels in `cf`,
 // which must be LV_COLOR_FORMAT_RGB565 or LV_COLOR_FORMAT_RGB565_SWAPPED:
@@ -53,33 +58,61 @@ bool flatten_qr(lv_obj_t* qr, lv_color_format_t cf);
 
 class ProvisioningCard {
 public:
-    // `on_stop` runs (on the UI thread) when the card's stop button is
-    // clicked.
+    // How long the success view stays up untouched.
+    static constexpr uint64_t kSuccessShowMs = 15000;
+
+    // `on_stop` runs (on the UI thread) when the stop button (QR view) or
+    // the OK button (success view) is clicked; it must stop the hotspot if
+    // it is still up and be harmless otherwise.
     explicit ProvisioningCard(std::function<void()> on_stop);
     ~ProvisioningCard() = default;
 
     ProvisioningCard(const ProvisioningCard&) = delete;
     ProvisioningCard& operator=(const ProvisioningCard&) = delete;
 
-    // Shows `session` (replacing a card already open): title, the QR code
-    // (side min(45% of the safe width, 200 px)), hotspot name, password,
-    // "then open http://<ip>" and a stop button. The address is the bare
-    // hotspot IP: phones open port 80 by default, and the device's
-    // captive redirect there forwards to the setup page.
+    // Shows `session` in the QR view (replacing a card already open):
+    // title, the QR code (side min(45% of the safe width, 200 px)), hotspot
+    // name, password, "then open http://<ip>" and a stop button. The
+    // address is the bare hotspot IP: phones open port 80 by default, and
+    // the device's captive redirect there forwards to the setup page.
     void open(const net::ApSession& session, const hal::Area& safe, ui::Lang lang);
+    // Replaces the open card with the success view: "connected to <ssid>",
+    // `url` (the admin page on the new network) and an OK button counting
+    // down the kSuccessShowMs from `now_ms` (os::now_ms() timebase) after
+    // which the card closes itself. The password is dropped.
+    void show_success(std::string ssid, std::string url, uint64_t now_ms, const hal::Area& safe,
+                      ui::Lang lang);
+    // Rebuilds whichever view is open in `lang`; the success view keeps its
+    // deadline.
+    void reopen(const hal::Area& safe, ui::Lang lang, uint64_t now_ms);
+    // Success view: updates the OK button's countdown and closes the card
+    // at its deadline. No-op otherwise.
+    void tick(uint64_t now_ms);
     void close();
     bool is_open() const { return card_ != nullptr; }
-    // The session shown; meaningful only while open.
+    bool showing_success() const { return card_ != nullptr && success_; }
+    // The session shown (in the success view: its id only); meaningful only
+    // while open.
     const net::ApSession& session() const { return session_; }
     // Brings the card to the front of the top layer.
     void raise();
 
 private:
     static void stop_cb(lv_event_t* e);
+    static void ok_cb(lv_event_t* e);
+    void build_success(const hal::Area& safe, ui::Lang lang, uint64_t now_ms);
+    void forget();
 
     std::function<void()> on_stop_;
     net::ApSession session_;
     lv_obj_t* card_ = nullptr;
+    bool success_ = false;
+    std::string done_ssid_;
+    std::string done_url_;
+    uint64_t done_closes_at_ms_ = 0;
+    ui::Lang lang_ = ui::Lang::En;
+    int64_t shown_seconds_ = -1;
+    lv_obj_t* ok_label_ = nullptr;
 };
 
 class PairingCard {

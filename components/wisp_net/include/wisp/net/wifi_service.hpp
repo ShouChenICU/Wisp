@@ -72,6 +72,17 @@ struct ApSession {
     std::string ssid;
     std::string password;
     std::string ip;
+    // Distinct for every start_provisioning() that opened a hotspot (never
+    // 0), so a provisioning result can be matched to the session it ended.
+    uint64_t id = 0;
+};
+
+// How a provisioning session ended in success: the network the phone
+// joined the device to and the device's address there.
+struct ProvisioningResult {
+    uint64_t session = 0;  // ApSession::id
+    std::string ssid;
+    std::string ip;
 };
 
 // The hotspot as the admin page may see it: no password.
@@ -102,7 +113,12 @@ struct SavedNetwork {
 
 struct WifiServiceConfig {
     uint32_t backoff_min_ms = 5000, backoff_max_ms = 300000;
+    // After a provisioning success the hotspot closes: at once when no
+    // phone is on it any more, ap_seen_linger_ms after the setup page has
+    // read the result (note_result_seen()), and ap_linger_ms after the
+    // success at the latest (spec 3).
     uint32_t ap_idle_timeout_ms = 600000, ap_linger_ms = 30000;
+    uint32_t ap_seen_linger_ms = 3000;
     size_t max_networks = 5;
     // An attempt that has not reached Connected this long after connect()
     // counts as a failure (the driver may otherwise sit in Connecting
@@ -175,6 +191,15 @@ public:
     std::optional<ApSession> ap_session() const;
     // Password-free view of the hotspot, for remote callers (admin API).
     ApStatus ap_status() const;
+    // The setup page has read a status showing the station connected to
+    // `ssid`. If that is the network the current hotspot session just
+    // provisioned, the hotspot closes ap_seen_linger_ms from `now_ms`
+    // (never later than it would have anyway); otherwise a no-op.
+    void note_result_seen(std::string_view ssid, uint64_t now_ms);
+    // The success of the latest provisioning session, kept after its
+    // hotspot closes (so the device's screen can still show the address)
+    // until the next start_provisioning() opens a new one.
+    std::optional<ProvisioningResult> provisioning_result() const;
 
     // Called once after LatestSave::kFailuresToReport failed writes in a
     // row (see core::LatestSave). Set it before the first change.
@@ -267,6 +292,10 @@ private:
     int ap_clients_ = 0;
     std::optional<uint64_t> ap_idle_since_ms_;
     std::optional<uint64_t> ap_close_at_ms_;
+    uint64_t last_ap_id_ = 0;
+    // Set when the current session's provisioned network connects; see
+    // provisioning_result().
+    std::optional<ProvisioningResult> provisioned_;
     // SSIDs added through add_network() while the hotspot is up; only one
     // of these connecting means provisioning succeeded.
     std::set<std::string> provisioned_ssids_;

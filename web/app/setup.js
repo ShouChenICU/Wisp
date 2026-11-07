@@ -131,6 +131,11 @@ function Wizard() {
       setStopJoin(null);
       setResult(r);
       setPhase(r.ok ? 'done' : 'failed');
+      // The device closes its hotspot a few seconds after this page has
+      // read the success over it (GET /wifi showing "connected", spec 3).
+      // A result taken from the event socket was not such a read, so make
+      // one; if it never arrives the hotspot still closes on its own.
+      if (r.ok) api('GET', '/wifi').catch(() => {});
     });
     setStopJoin(() => stop);
   }

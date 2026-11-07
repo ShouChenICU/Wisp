@@ -154,6 +154,12 @@ const char* strings_en(StrId id) {
             return "Password: {}";
         case StrId::OpenAddress:
             return "Then open {}";
+        case StrId::SetupDoneTitle:
+            return "Connected to {}";
+        case StrId::SetupDoneAddress:
+            return "Admin page: {}";
+        case StrId::SetupDoneOk:
+            return "OK ({})";
         case StrId::PairTitle:
             return "Pairing request";
         case StrId::PairRemaining:

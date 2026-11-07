@@ -155,6 +155,12 @@ const char* strings_zh(StrId id) {
             return "密码：{}";
         case StrId::OpenAddress:
             return "连上后打开 {}";
+        case StrId::SetupDoneTitle:
+            return "已连接 {}";
+        case StrId::SetupDoneAddress:
+            return "管理页面：{}";
+        case StrId::SetupDoneOk:
+            return "确定（{}）";
         case StrId::PairTitle:
             return "配对请求";
         case StrId::PairRemaining:

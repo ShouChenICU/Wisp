@@ -156,6 +156,12 @@ const char* strings_ja(StrId id) {
             return "パスワード：{}";
         case StrId::OpenAddress:
             return "接続後に {} を開く";
+        case StrId::SetupDoneTitle:
+            return "{} に接続しました";
+        case StrId::SetupDoneAddress:
+            return "管理画面：{}";
+        case StrId::SetupDoneOk:
+            return "OK（{}）";
         case StrId::PairTitle:
             return "ペアリング要求";
         case StrId::PairRemaining:

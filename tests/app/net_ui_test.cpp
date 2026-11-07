@@ -555,6 +555,129 @@ TEST(NetUi, ProvisioningCardClosesWhenTheHotspotStopsElsewhere) {
     ASSERT_TRUE(wait_until([&] { return !qr_shown(h); }, 3000));
 }
 
+// The success view's OK label up to its "{}" (the seconds left).
+std::string ok_prefix(Lang lang) {
+    const std::string full = text_of(StrId::SetupDoneOk, lang);
+    return full.substr(0, full.find("{}"));
+}
+
+std::string done_title(Lang lang) { return wisp::ui::tr_fill(StrId::SetupDoneTitle, lang, "Home"); }
+
+// Starts the hotspot from the screen and joins "Home" (in the harness's
+// range) the way the setup page does. `clients` phones stay on the hotspot.
+void provision_home(UiNetHarness& h, int clients) {
+    ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+    ASSERT_TRUE(wait_until([&] { return qr_shown(h); }, 3000));
+    h.wifi->ap_client_count = clients;
+    ASSERT_TRUE(h.app->wifi()->add_network("Home", "password1", wisp::os::now_ms()));
+}
+
+// Clicks the button whose label starts with `prefix`; false if none.
+bool click_prefixed(UiNetHarness& h, const std::string& prefix) {
+    return run_on_ui_thread(h.app->ui(), [&] {
+               lv_obj_t* label = find_label_containing(lv_layer_top(), prefix.c_str());
+               if (label == nullptr) return "";
+               lv_obj_send_event(lv_obj_get_parent(label), LV_EVENT_CLICKED, nullptr);
+               return "clicked";
+           }) == "clicked";
+}
+
+TEST(NetUi, ProvisioningSuccessViewShowsTheNewAddressInsideSafeArea) {
+    for (Lang lang : kLangs) {
+        for (const char* shape : {"rect", "rounded_rect", "circle"}) {
+            SCOPED_TRACE(std::string(wisp::ui::lang_code(lang)) + " " + shape);
+            UiNetOptions opts;
+            opts.shape = shape;
+            opts.lang = wisp::ui::lang_code(lang);
+            UiNetHarness h(opts);
+            ASSERT_TRUE(h.start());
+            provision_home(h, 1);
+            ASSERT_TRUE(wait_until([&] { return on_top_layer(h, done_title(lang)); }, 5000));
+            EXPECT_FALSE(qr_shown(h));
+            EXPECT_TRUE(on_top_layer(h, "http://192.168.1.50:8900"));
+            EXPECT_FALSE(on_top_layer(h, h.wifi->ap_password()));
+            EXPECT_TRUE(h.wifi->ap_active.load());  // the phone is still on it
+
+            const wisp::hal::Area safe = safe_area(h);
+            const std::string title = done_title(lang);
+            const std::string ok = ok_prefix(lang);
+            std::string problem = run_on_ui_thread(h.app->ui(), [&] {
+                lv_obj_t* card = card_of(title.c_str());
+                if (card == nullptr) return std::string("no card titled ") + title;
+                std::string fit = check_card_fits(card, safe);
+                if (!fit.empty()) return fit;
+                lv_obj_t* label = find_label_containing(card, ok.c_str());
+                if (label == nullptr) return std::string("no OK button");
+                std::string row =
+                    check_action_row(lv_obj_get_parent(label), wisp::ui::kDialogButtonMinHeight,
+                                     wisp::ui::kDialogButtonGap);
+                if (!row.empty()) return "OK button: " + row;
+                return all_label_glyphs_resolvable(lv_layer_top()) ? std::string()
+                                                                   : std::string("missing glyph");
+            });
+            EXPECT_EQ(problem, "");
+
+            // OK closes the card and the hotspot that was still waiting.
+            ASSERT_TRUE(click_prefixed(h, ok));
+            ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, title); }, 3000));
+            ASSERT_TRUE(wait_until([&] { return !h.wifi->ap_active.load(); }, 3000));
+        }
+    }
+}
+
+// The hotspot closing (here at once: nobody is left on it) leaves the
+// success view up, so the address stays readable.
+TEST(NetUi, ProvisioningSuccessViewOutlivesTheHotspot) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start());
+    provision_home(h, 0);
+    ASSERT_TRUE(wait_until([&] { return on_top_layer(h, done_title(Lang::Zh)); }, 5000));
+    ASSERT_TRUE(wait_until([&] { return !h.wifi->ap_active.load(); }, 3000));
+    // Past the screen's one-second resync of the services.
+    wisp::os::sleep_ms(1500);
+    EXPECT_TRUE(on_top_layer(h, done_title(Lang::Zh)));
+    EXPECT_TRUE(on_top_layer(h, "http://192.168.1.50:8900"));
+    ASSERT_TRUE(click_prefixed(h, ok_prefix(Lang::Zh)));
+    ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, done_title(Lang::Zh)); }, 3000));
+    // Closed for good: the result that is still kept does not bring it back.
+    wisp::os::sleep_ms(1500);
+    EXPECT_FALSE(on_top_layer(h, done_title(Lang::Zh)));
+}
+
+// The countdown on OK, driven with explicit timestamps.
+TEST(NetUi, ProvisioningSuccessViewCountsDownAndCloses) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start());
+    const wisp::hal::Area safe = safe_area(h);
+    int stops = 0;
+    std::string seen = run_on_ui_thread(h.app->ui(), [&] {
+        wisp::app::ProvisioningCard card([&] { ++stops; });
+        card.show_success("Home", "http://192.168.1.50:8900", 1000, safe, Lang::Zh);
+        std::string out;
+        auto label = [&] {
+            std::string t = find_label_text_containing(lv_layer_top(), "确定（");
+            return t.empty() ? std::string("closed") : t;
+        };
+        out += label() + "|";
+        for (uint64_t t : {1999u, 2000u, 15000u, 15999u}) {
+            card.tick(t);
+            out += label() + "|";
+        }
+        card.tick(16000);
+        out += std::string(card.is_open() ? "open" : "closed") + "|" + label();
+        // A language change rebuilds the view and keeps its deadline.
+        card.show_success("Home", "http://192.168.1.50:8900", 20000, safe, Lang::Zh);
+        card.reopen(safe, Lang::En, 27000);
+        out += "|" + find_label_text_containing(lv_layer_top(), "OK (") + "|" +
+               std::string(card.showing_success() ? "success" : "qr");
+        card.close();
+        return out;
+    });
+    EXPECT_EQ(seen,
+              "确定（15）|确定（15）|确定（14）|确定（1）|确定（1）|closed|closed|OK (8)|success");
+    EXPECT_EQ(stops, 0);  // the timer only closes the card
+}
+
 TEST(NetUi, PairingCardCountsDownAndCloses) {
     UiNetOptions opts;
     opts.pairing_interval_ms = 0;  // a second code right after the first

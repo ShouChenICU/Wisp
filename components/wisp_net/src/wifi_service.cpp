@@ -304,8 +304,11 @@ void WifiService::poll_link_locked(uint64_t now_ms) {
                 WLOG_W(kTag, "enabling modem sleep failed: %s", to_string(ps.error().code));
             }
             if (ap_ && !ap_close_at_ms_ && provisioned_ssids_.count(link.ssid) != 0) {
+                // The upper bound; tick_ap_locked() and note_result_seen()
+                // close it sooner.
                 ap_close_at_ms_ = now_ms + config_.ap_linger_ms;
-                WLOG_I(kTag, "provisioning succeeded; hotspot closes in %u ms",
+                provisioned_ = ProvisioningResult{ap_->id, link.ssid, link.ip};
+                WLOG_I(kTag, "provisioning succeeded; hotspot closes in at most %u ms",
                        static_cast<unsigned>(config_.ap_linger_ms));
             }
             set_state_locked(WifiState::Connected, link.ssid, link.ip, link.rssi);
@@ -658,7 +661,9 @@ void WifiService::tick_ap_locked(uint64_t now_ms) {
         ap_idle_since_ms_ = now_ms;
     }
 
-    if (ap_close_at_ms_ && now_ms >= *ap_close_at_ms_) {
+    if (ap_close_at_ms_ && (now_ms >= *ap_close_at_ms_ || clients == 0)) {
+        // With nobody left on the hotspot, no page is waiting for the
+        // result over it.
         (void)close_ap_locked("provisioning done");
     } else if (ap_idle_since_ms_ && now_ms >= *ap_idle_since_ms_ &&
                now_ms - *ap_idle_since_ms_ >= config_.ap_idle_timeout_ms) {
@@ -696,10 +701,11 @@ Result<ApSession> WifiService::start_provisioning(uint64_t now_ms) {
         return Result<ApSession>::err(ip.error().code, "starting the hotspot failed");
     }
 
-    ap_ = ApSession{ssid, std::move(password), ip.value()};
+    ap_ = ApSession{ssid, std::move(password), ip.value(), ++last_ap_id_};
     ap_clients_ = 0;
     ap_idle_since_ms_ = now_ms;
     ap_close_at_ms_.reset();
+    provisioned_.reset();
     provisioned_ssids_.clear();
     WLOG_I(kTag, "hotspot '%s' up at %s", ssid, ap_->ip.c_str());
     publish_ap_locked(true, ap_->ssid);
@@ -715,6 +721,25 @@ Result<void> WifiService::stop_provisioning() {
 std::optional<ApSession> WifiService::ap_session() const {
     std::lock_guard<os::Mutex> lock(mutex_);
     return ap_;
+}
+
+void WifiService::note_result_seen(std::string_view ssid, uint64_t now_ms) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    if (!ap_ || !ap_close_at_ms_ || !provisioned_ || provisioned_->session != ap_->id ||
+        provisioned_->ssid != ssid) {
+        return;
+    }
+    const uint64_t at = now_ms + config_.ap_seen_linger_ms;
+    if (at < *ap_close_at_ms_) {
+        ap_close_at_ms_ = at;
+        WLOG_I(kTag, "setup page has the result; hotspot closes in %u ms",
+               static_cast<unsigned>(config_.ap_seen_linger_ms));
+    }
+}
+
+std::optional<ProvisioningResult> WifiService::provisioning_result() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return provisioned_;
 }
 
 ApStatus WifiService::ap_status() const {

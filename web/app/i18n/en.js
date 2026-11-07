@@ -430,7 +430,7 @@ export default {
   'setup.no_ip': 'The address will be shown on the device.',
   'setup.mdns_hint': 'wisp.local works on most computers and iPhones; on Android use the IP address.',
   'setup.open_admin': 'Open the admin page',
-  'setup.ap_closing': 'The setup hotspot turns itself off in about 30 seconds.',
+  'setup.ap_closing': 'The setup hotspot turns itself off in a few seconds.',
   'err.unknown': 'Something went wrong.',
   'err.network': 'Can\'t reach the device. Make sure you\'re on the same network.',
   'err.internal': 'The device hit an internal error. Try again shortly.',

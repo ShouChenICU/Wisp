@@ -132,11 +132,16 @@ enum class StrId : uint16_t {
     StopSetup,
 
     // Provisioning card. Hotspot and Password carry "{}" (the hotspot's
-    // name / password), OpenAddress "{}" (the setup page URL).
+    // name / password), OpenAddress "{}" (the setup page URL). Its success
+    // view: SetupDoneTitle "{}" (the network joined), SetupDoneAddress "{}"
+    // (the admin page URL), SetupDoneOk "{}" (seconds until it closes).
     SetupTitle,
     Hotspot,
     Password,
     OpenAddress,
+    SetupDoneTitle,
+    SetupDoneAddress,
+    SetupDoneOk,
 
     // Pairing-code card. PairRemaining carries "{}" (seconds).
     PairTitle,
