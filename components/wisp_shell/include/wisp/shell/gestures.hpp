@@ -1,14 +1,17 @@
 #pragma once
 
 // The shell's touch gestures (MVP spec 6.3), without LVGL objects: what a
-// press's start and end points make, where a swipe leads from each page,
-// and what a press on the wisp does. The pages feed these from their
-// root objects' PRESSED / PRESSING / RELEASED events (wisp/shell/home.hpp).
+// press's start and end points make, where a drag leads from each page,
+// how a page drag follows the finger, and what a press on the wisp does.
+// The pages feed these from their screens' PRESSED / PRESSING / RELEASED
+// events (wisp/shell/home.hpp, wisp/shell/shell.hpp).
 //
-// A swipe moved more than kSwipeMinPx along its main direction and at
-// least kSwipeDominance times as far along it as across it. Screen
-// coordinates: y grows downwards, so a finger moving up is Up.
+// A swipe (what the talk key's cancel looks for) moved more than
+// kSwipeMinPx along its main direction and at least kSwipeDominance times
+// as far along it as across it. Screen coordinates: y grows downwards, so
+// a finger moving up is Up.
 
+#include <array>
 #include <cstdint>
 #include <optional>
 
@@ -30,6 +33,52 @@ Swipe classify_swipe(lv_point_t start, lv_point_t end);
 // to the one that opened it goes home; for the history, which scrolls
 // vertically, Up does so only once its list is at its bottom end.
 std::optional<Page> navigate(Page from, Swipe s, bool from_top_zone, bool at_bottom_end);
+
+// A page drag (spec 6.3), without LVGL objects: where the finger is along
+// the drag's direction and whether the release completes the navigation.
+// The caller feeds every point of a press; on the move that first takes
+// the finger kDragSlopPx from where it went down along either axis,
+// moved() reports the direction it went along the axis it moved more on
+// (once a press). The caller then start()s the drag or leaves the press
+// alone. From start() on the off-axis motion is ignored and offset() is
+// the distance along the direction, clamped to [0, extent].
+class DragTrack {
+public:
+    void press(lv_point_t p, uint64_t now);
+    // Swipe::None until the slop is passed, and after it.
+    Swipe moved(lv_point_t p, uint64_t now);
+    void start(Swipe dir, int32_t extent);
+    // True from start() to release() or reset().
+    bool dragging() const { return dragging_; }
+    Swipe dir() const { return dir_; }
+    int32_t extent() const { return extent_; }
+    int32_t offset() const;
+    // Ends the drag: true when it completes (at least extent /
+    // kDragCompleteDivisor, or the finger moving on at kFlingPxPerS over
+    // the last kFlingWindowMs).
+    bool release(lv_point_t p, uint64_t now);
+    void reset();
+
+private:
+    struct Sample {
+        uint64_t ms = 0;
+        int32_t along = 0;
+    };
+    int32_t along(lv_point_t p) const;
+    void record(lv_point_t p, uint64_t now);
+
+    lv_point_t start_{};
+    bool pressed_ = false;
+    bool decided_ = false;
+    bool dragging_ = false;
+    Swipe dir_ = Swipe::None;
+    int32_t extent_ = 0;
+    int32_t along_ = 0;
+    // The latest points, oldest first once full; next_ is where the next
+    // one goes.
+    std::array<Sample, 8> samples_{};
+    size_t count_ = 0, next_ = 0;
+};
 
 // A press on the wisp (spec 6.3): held kHoldStartMs (wisp/voice/limits.hpp)
 // without moving more than kSwipeMinPx it is hold-to-talk; let go sooner

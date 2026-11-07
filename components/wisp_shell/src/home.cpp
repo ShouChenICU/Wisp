@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "page_frame.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/shell/body_text.hpp"
 #include "wisp/shell/limits.hpp"
@@ -211,9 +212,12 @@ bool Home::start() {
     lv_obj_remove_flag(screen_, LV_OBJ_FLAG_SCROLLABLE);
     // A press stays with what it started on: LVGL would otherwise hand it
     // to whatever the finger slides onto, with a PRESS_LOST that ends the
-    // swipe.
+    // drag.
     lv_obj_add_flag(screen_, LV_OBJ_FLAG_PRESS_LOCK);
     lv_obj_add_event_cb(screen_, &Home::event_cb, LV_EVENT_ALL, this);
+    // What the screen shows, as one piece the shell slides during a page
+    // drag.
+    root_ = detail::make_root(screen_, deps_.shape);
 
     const bool colour = hal::panel_is_colour(panel);
     const lv_color_t text = colour ? lv_color_hex(ui::theme::kText) : ui::wisp_colour(panel);
@@ -223,7 +227,7 @@ bool Home::start() {
     // faded as one, and only as large as the text (apply_layout()) since
     // the fade draws it through a layer. It takes no press itself:
     // presses fall through to the screen, and the column's bubble up to it.
-    turn_box_ = lv_obj_create(screen_);
+    turn_box_ = lv_obj_create(root_);
     lv_obj_remove_style_all(turn_box_);
     lv_obj_remove_flag(turn_box_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(turn_box_, LV_OBJ_FLAG_SCROLLABLE);
@@ -280,7 +284,7 @@ bool Home::start() {
     lv_obj_remove_flag(more_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(more_, LV_OBJ_FLAG_HIDDEN);
 
-    hint_ = lv_label_create(screen_);
+    hint_ = lv_label_create(root_);
     // Cut to its band ("..." on the last line) rather than run over the
     // text above or off the screen.
     lv_label_set_long_mode(hint_, LV_LABEL_LONG_DOT);
@@ -290,10 +294,10 @@ bool Home::start() {
     lv_obj_add_flag(hint_, LV_OBJ_FLAG_HIDDEN);
 
     const hal::Area safe = hal::safe_rect(deps_.shape);
-    wisp_ = ui::WispView::create(screen_, ui::wisp_size_px(safe, kWispIdlePercent));
+    wisp_ = ui::WispView::create(root_, ui::wisp_size_px(safe, kWispIdlePercent));
     if (wisp_ != nullptr) {
         lv_obj_set_align(wisp_->obj(), LV_ALIGN_TOP_LEFT);
-        // Its presses reach the screen's handler too (the swipes), and
+        // Its presses reach the screen's handlers too (the drags), and
         // stay its own when the finger slides off it.
         lv_obj_add_flag(wisp_->obj(), LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_flag(wisp_->obj(), LV_OBJ_FLAG_PRESS_LOCK);
@@ -324,7 +328,7 @@ void Home::stop() {
     lv_timer_delete(timer_);
     timer_ = nullptr;
     lv_obj_delete(screen_);  // frees the wisp with its object, and the fade
-    screen_ = turn_box_ = heard_ = column_ = say_ = more_ = hint_ = nullptr;
+    screen_ = root_ = turn_box_ = heard_ = column_ = say_ = more_ = hint_ = nullptr;
     blocks_.clear();
     wisp_ = nullptr;
 }
@@ -504,7 +508,7 @@ void Home::refresh() {
         // A new turn reads from its start, wherever the last one was left.
         if (new_turn) lv_obj_scroll_to_y(column_, 0, LV_ANIM_OFF);
         if (shown_in_turn_) {
-            lv_obj_update_layout(screen_);
+            lv_obj_update_layout(root_);
             update_more();
         }
     }
@@ -557,7 +561,7 @@ void Home::apply_layout(bool in_turn, bool hint_visible) {
         lv_obj_add_flag(turn_box_, LV_OBJ_FLAG_HIDDEN);
         // No finger on it: column_cb() does not take this for reading.
         lv_obj_scroll_to_y(column_, 0, LV_ANIM_OFF);
-        lv_obj_update_layout(screen_);
+        lv_obj_update_layout(root_);
         return;
     }
     const lv_area_t box{std::min(l.heard.x1, l.column.x1), l.heard.y1,
@@ -571,7 +575,7 @@ void Home::apply_layout(bool in_turn, bool hint_visible) {
     lv_obj_remove_flag(turn_box_, LV_OBJ_FLAG_HIDDEN);
     // Now, not at the next frame: a press arriving before it is hit-tested
     // against these positions.
-    lv_obj_update_layout(screen_);
+    lv_obj_update_layout(root_);
     update_more();
 }
 
@@ -686,6 +690,19 @@ void Home::column_cb(lv_event_t* e) {
     self->fade_.interacted(self->deps_.now_ms());
 }
 
+bool Home::may_drag() const {
+    // A hold to talk keeps the press; so does a talk-key hold the press
+    // already cancelled.
+    return !(on_wisp_ && press_.holding()) && !key_cancelled_;
+}
+
+void Home::drag_started() {
+    if (!tracking_ || !on_wisp_) return;
+    // Not a tap, and no hold may begin later in this press.
+    act(press_.lost());
+    on_wisp_ = false;
+}
+
 void Home::act(WispPress::Action a) {
     if (conv_ == nullptr) return;
     switch (a) {
@@ -722,7 +739,6 @@ void Home::on_event(lv_event_t* e) {
         case LV_EVENT_PRESSED:
             tracking_ = true;
             start_ = p;
-            from_top_zone_ = ui::SystemLayer::in_top_zone(deps_.shape, p.x, p.y);
             scrolled_ = false;
             key_cancelled_ = false;
             on_wisp_ = wisp_ != nullptr && lv_event_get_target_obj(e) == wisp_->obj();
@@ -746,14 +762,9 @@ void Home::on_event(lv_event_t* e) {
                 act(press_.released(p, now));
                 held = press_.held();
             }
-            const Swipe s = classify_swipe(start_, p);
             if (key_cancelled_ || held || scrolled_) break;
-            if (s == Swipe::Up && conv_ != nullptr && conv_->holding()) {
+            if (classify_swipe(start_, p) == Swipe::Up && conv_ != nullptr && conv_->holding())
                 conv_->hold_cancel();
-                break;
-            }
-            if (auto page = navigate(Page::Home, s, from_top_zone_, true); page && deps_.navigate)
-                deps_.navigate(*page);
             break;
         }
         case LV_EVENT_PRESS_LOST:

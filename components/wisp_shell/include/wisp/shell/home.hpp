@@ -43,9 +43,9 @@
 // Gestures (spec 6.3), tracked on the screen object from its own and its
 // children's PRESSED / PRESSING / RELEASED events; PRESS_LOST (the system
 // layer took the press) drops the press:
-//   - a swipe (classify_swipe()) goes where navigate() says, through
-//     HomeDeps::navigate; not when the press scrolled the text column,
-//     held the wisp or cancelled a hold;
+//   - the page drags to the sub-pages are the shell's (wisp/shell/shell.hpp),
+//     which asks may_drag() before it starts one and tells drag_started()
+//     when it has: a drag is no tap and no hold on the wisp;
 //   - a press on the wisp goes through WispPress: HoldBegin / HoldEnd /
 //     HoldCancel -> the controller's hold_begin() / hold_end() /
 //     hold_cancel(); a tap -> tap(), which has no voice effect;
@@ -143,9 +143,6 @@ struct HomeDeps {
     std::function<uint64_t()> now_ms;
     // "http://<ip>:<port>", or "" while there is none. UI thread.
     std::function<std::string()> admin_url;
-    // A swipe led to `page`. Called from inside an LVGL event of the home
-    // screen: post anything that loads or deletes a screen.
-    std::function<void(Page)> navigate;
 };
 
 class Home {
@@ -177,6 +174,15 @@ public:
     void show_view(const TurnView& v);
 
     lv_obj_t* screen() const { return screen_; }
+    // Everything the screen shows, in one container as large as the
+    // screen (page_frame.hpp's make_root()): what a page drag moves.
+    lv_obj_t* root() const { return root_; }
+
+    // The press under way: whether a page drag may take it (not while it
+    // holds the wisp to talk, or after it cancelled the talk key's hold),
+    // and that one did. UI thread, from inside the press's events.
+    bool may_drag() const;
+    void drag_started();
     ui::WispView* wisp() const { return wisp_; }
     // For tests: the labels (heard, say, hint), the column, its "more
     // below" strip and whether the turn layout is showing.
@@ -207,6 +213,7 @@ private:
 
     HomeDeps deps_;
     lv_obj_t* screen_ = nullptr;
+    lv_obj_t* root_ = nullptr;
     lv_obj_t* turn_box_ = nullptr;  // heard and column; faded as one
     lv_obj_t* heard_ = nullptr;
     lv_obj_t* column_ = nullptr;
@@ -255,7 +262,6 @@ private:
     // The press being tracked.
     bool tracking_ = false;
     bool on_wisp_ = false;
-    bool from_top_zone_ = false;
     bool scrolled_ = false;
     bool key_cancelled_ = false;
     lv_point_t start_{};

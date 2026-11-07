@@ -21,10 +21,21 @@ inline constexpr int kSayFontPx = 28;
 inline constexpr int kHeardMaxLines = 2;
 // The turn's text fades this long after its last interaction.
 inline constexpr uint32_t kFadeAfterMs = 15000;
-// A swipe (spec 6.3): this far, and this many times more along its main
-// direction than across it.
+// A swipe (spec 6.3; the talk key's cancel, the wisp's hold): this far,
+// and this many times more along its main direction than across it.
 inline constexpr int kSwipeMinPx = 40;
 inline constexpr int kSwipeDominance = 2;
+// A page drag (spec 6.3): it starts once the finger is kDragSlopPx along
+// an axis (LVGL's own scroll limit, so the two decide on the same touch
+// read), and on release completes from 1 / kDragCompleteDivisor of the
+// screen on, or when the finger was moving on at kFlingPxPerS or faster
+// over the last kFlingWindowMs. The rest of the way slides in at most
+// kSlideMs, eased out.
+inline constexpr int kDragSlopPx = 10;
+inline constexpr int kDragCompleteDivisor = 3;
+inline constexpr int kFlingPxPerS = 400;
+inline constexpr uint32_t kFlingWindowMs = 50;
+inline constexpr uint32_t kSlideMs = 220;
 // Conversation history pages load this many turns at a time (spec 6.4).
 inline constexpr size_t kHistoryBatch = 50;
 // The in-scene overlay shows the say text this long (spec 6.5).

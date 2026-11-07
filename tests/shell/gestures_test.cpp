@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <optional>
 
 #include "wisp/shell/limits.hpp"
@@ -112,4 +113,108 @@ TEST(WispPressTest, TapHoldCancel) {
         EXPECT_EQ(p.lost(), Action::HoldCancel);
         EXPECT_EQ(p.lost(), Action::None);
     }
+}
+
+// --- DragTrack -------------------------------------------------------------
+
+using wisp::shell::DragTrack;
+
+// The direction comes once, on the move that passes the slop, along the
+// axis the finger moved more on.
+TEST(DragTrack, SlopGivesTheDirectionOnce) {
+    DragTrack t;
+    t.press(pt(100, 100), 0);
+    EXPECT_EQ(t.moved(pt(105, 104), 5), Swipe::None);
+    EXPECT_EQ(t.moved(pt(100 + wisp::shell::kDragSlopPx, 106), 10), Swipe::Right);
+    EXPECT_EQ(t.moved(pt(140, 106), 15), Swipe::None);
+    EXPECT_FALSE(t.dragging());
+
+    t.press(pt(100, 100), 0);
+    EXPECT_EQ(t.moved(pt(94, 88), 5), Swipe::Up);
+    t.press(pt(100, 100), 0);
+    // A tie is vertical, as LVGL decides it.
+    EXPECT_EQ(t.moved(pt(110, 110), 5), Swipe::Down);
+    t.press(pt(100, 100), 0);
+    EXPECT_EQ(t.moved(pt(80, 95), 5), Swipe::Left);
+}
+
+// From start() on: the distance along the direction, the off-axis part
+// ignored, clamped to [0, extent].
+TEST(DragTrack, OffsetFollowsAlongTheAxisOnly) {
+    DragTrack t;
+    t.press(pt(100, 200), 0);
+    ASSERT_EQ(t.moved(pt(90, 200), 10), Swipe::Left);
+    t.start(Swipe::Left, 480);
+    EXPECT_TRUE(t.dragging());
+    t.moved(pt(40, 260), 20);
+    EXPECT_EQ(t.offset(), 60);
+    t.moved(pt(130, 200), 30);  // back past the start
+    EXPECT_EQ(t.offset(), 0);
+    t.press(pt(10, 10), 0);
+    ASSERT_EQ(t.moved(pt(10, 30), 10), Swipe::Down);
+    t.start(Swipe::Down, 300);
+    t.moved(pt(-50, 900), 20);
+    EXPECT_EQ(t.offset(), 300);
+}
+
+// Slow (well under kFlingPxPerS): a third of the extent decides.
+TEST(DragTrack, AThirdCompletesWhenSlow) {
+    DragTrack t;
+    auto slow_to = [&](int32_t x_end) {
+        t.press(pt(0, 100), 0);
+        uint64_t now = 0;
+        int32_t x = 0;
+        t.moved(pt(10, 100), now += 100);
+        t.start(Swipe::Right, 480);
+        while (x < x_end) {
+            x = std::min(x + 5, x_end);
+            t.moved(pt(x, 100), now += 100);  // 0.05 px/ms
+        }
+        return t.release(pt(x, 100), now + 100);
+    };
+    EXPECT_FALSE(slow_to(159));
+    EXPECT_TRUE(slow_to(160));
+    EXPECT_FALSE(t.dragging());
+}
+
+// Short but fast completes; fast the wrong way, or after a pause, does not.
+TEST(DragTrack, FlingCompletes) {
+    DragTrack t;
+    t.press(pt(300, 100), 0);
+    t.moved(pt(290, 100), 10);
+    t.start(Swipe::Left, 480);
+    t.moved(pt(280, 100), 20);
+    t.moved(pt(260, 100), 60);  // 20 px in 40 ms: 0.5 px/ms
+    EXPECT_TRUE(t.release(pt(260, 100), 60));
+
+    t.press(pt(300, 100), 0);
+    t.moved(pt(290, 100), 10);
+    t.start(Swipe::Left, 480);
+    t.moved(pt(280, 100), 20);
+    t.moved(pt(270, 100), 60);  // 10 px in 40 ms: 0.25 px/ms
+    EXPECT_FALSE(t.release(pt(270, 100), 60));
+
+    // Out to 100 px, then back fast.
+    t.press(pt(300, 100), 0);
+    t.moved(pt(290, 100), 10);
+    t.start(Swipe::Left, 480);
+    t.moved(pt(200, 100), 300);
+    t.moved(pt(240, 100), 320);
+    EXPECT_FALSE(t.release(pt(240, 100), 330));
+
+    // Fast, then held still past the window before the release.
+    t.press(pt(300, 100), 0);
+    t.moved(pt(290, 100), 10);
+    t.start(Swipe::Left, 480);
+    t.moved(pt(250, 100), 20);
+    t.moved(pt(250, 100), 100);
+    EXPECT_FALSE(t.release(pt(250, 100), 120));
+}
+
+// Never started: no completion.
+TEST(DragTrack, ReleaseWithoutDragDoesNothing) {
+    DragTrack t;
+    t.press(pt(0, 0), 0);
+    t.moved(pt(300, 0), 1);
+    EXPECT_FALSE(t.release(pt(300, 0), 2));
 }

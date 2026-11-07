@@ -120,8 +120,9 @@ protected:
         lv_obj_update_layout(list);
         EXPECT_LE(lv_obj_get_scroll_bottom(list), 0);
         EXPECT_TRUE(box_visible(s, coords_of(last))) << "last " << str(coords_of(last));
-        // The title too.
-        lv_obj_t* title = lv_obj_get_child(lv_obj_get_screen(list), 0);
+        // The title too: the first thing in the page's root, the list's
+        // parent.
+        lv_obj_t* title = lv_obj_get_child(lv_obj_get_parent(list), 0);
         EXPECT_TRUE(box_visible(s, coords_of(title))) << "title " << str(coords_of(title));
     }
 

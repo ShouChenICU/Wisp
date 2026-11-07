@@ -31,6 +31,18 @@ lv_color_t dim_colour(lv_obj_t* obj) {
     return hal::panel_is_colour(panel) ? lv_color_hex(ui::theme::kTextDim) : ui::wisp_colour(panel);
 }
 
+lv_obj_t* make_root(lv_obj_t* parent, const hal::ScreenShape& shape) {
+    lv_obj_t* root = lv_obj_create(parent);
+    lv_obj_remove_style_all(root);
+    lv_obj_set_pos(root, 0, 0);
+    lv_obj_set_size(root, shape.width, shape.height);
+    // Presses on nothing in particular fall through to the screen.
+    lv_obj_remove_flag(root, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(root, LV_OBJ_FLAG_EVENT_BUBBLE);
+    return root;
+}
+
 PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     PageFrame f;
     f.screen = lv_obj_create(nullptr);
@@ -49,7 +61,8 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     // Centred at the top of the safe area, below the status capsule.
     const hal::Area safe = hal::safe_rect(shape);
     const hal::Area capsule = ui::SystemLayer::status_area(shape);
-    f.title = lv_label_create(scr);
+    f.root = make_root(scr, shape);
+    f.title = lv_label_create(f.root);
     lv_obj_set_style_text_font(f.title, ui::font(kTitleFontPx), 0);
     lv_obj_set_style_text_align(f.title, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(f.title, LV_LABEL_LONG_DOT);
@@ -60,7 +73,7 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     lv_obj_update_layout(f.title);
 
     const int32_t list_y = title_y + lv_obj_get_height(f.title) + kTitleGap;
-    f.list = lv_obj_create(scr);
+    f.list = lv_obj_create(f.root);
     lv_obj_t* list = f.list;
     lv_obj_remove_style_all(list);
     lv_obj_set_pos(list, 0, list_y);
@@ -73,8 +86,8 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
-    // No overscroll: at an end the list stays put, so an up swipe at the
-    // history's bottom end reads as a swipe and not as a scroll.
+    // No overscroll: at an end the list stays put while an up drag at the
+    // history's bottom end takes the page home.
     lv_obj_remove_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
     lv_obj_add_flag(list, LV_OBJ_FLAG_EVENT_BUBBLE);
     return f;

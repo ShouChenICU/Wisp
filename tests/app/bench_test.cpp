@@ -15,6 +15,7 @@
 #include "ui_net_harness.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/shell/shell.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 using wisp::app::bench_command;
@@ -154,6 +155,34 @@ TEST(Bench, ScrollMovesTheSelfCheckListAndPutsItBack) {
     EXPECT_EQ(y_after, y_before);
 }
 
+// The drag bench drags the real shell from Home to Settings and back
+// through an input device of its own, and leaves the home screen in front.
+TEST(Bench, DragGoesToSettingsAndBack) {
+    UiNetHarness h(no_wifi());
+    ASSERT_TRUE(h.start());
+    const std::string out = bench(h, {"bench", "drag", "2"});
+    const std::string prefix = "WISP_BENCH ";
+    ASSERT_EQ(out.rfind(prefix, 0), 0u) << out;
+    auto parsed = wisp::from_json(out.substr(prefix.size()));
+    ASSERT_TRUE(parsed) << out;
+    const wisp::Value& v = parsed.value();
+    ASSERT_NE(v.find("bench"), nullptr);
+    EXPECT_EQ(v.find("bench")->as_string(), "drag");
+    for (const char* key : {"fps", "frames", "ms", "cpu", "px", "navs"}) {
+        ASSERT_NE(v.find(key), nullptr) << key;
+    }
+    EXPECT_GT(v.find("fps")->as_double(), 0.0);
+    EXPECT_EQ(v.find("px")->as_int(), wisp::app::kDragBenchStepPx);
+    // Out and back at least once in two seconds.
+    EXPECT_GE(v.find("navs")->as_int(), 2) << out;
+    bool home = false;
+    run_on_ui_blocking(h.app->ui(), [&] {
+        home = h.app->shell()->page() == wisp::shell::Page::Home &&
+               lv_screen_active() == h.app->shell()->home_screen() && !h.app->shell()->sliding();
+    });
+    EXPECT_TRUE(home);
+}
+
 TEST(Bench, RejectsBadArguments) {
     UiNetHarness h(no_wifi());
     ASSERT_TRUE(h.start());
@@ -164,7 +193,9 @@ TEST(Bench, RejectsBadArguments) {
                                                {"bench", "scroll", "121"},
                                                {"bench", "scroll", "2x"},
                                                {"bench", "scroll", "-1"},
-                                               {"bench", "scroll", "1", "2"}}) {
+                                               {"bench", "scroll", "1", "2"},
+                                               {"bench", "drag", "0"},
+                                               {"bench", "drag", "x"}}) {
         const std::string out = bench(h, args);
         EXPECT_EQ(out.rfind("error: ", 0), 0u) << out;
     }

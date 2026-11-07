@@ -6,15 +6,36 @@
 // background (black; white on e-paper), the current turn's text and the
 // hints.
 //
-// Pages. A swipe on the home screen opens a sub-page and the opposite
-// swipe on it comes back (navigate(), wisp/shell/gestures.hpp). A
-// sub-page is a screen of its own, built when it opens and deleted when
-// the home screen comes back: the history (wisp/shell/history.hpp), the
-// scene list (wisp/shell/scene_list.hpp) and the settings
-// (wisp/shell/settings_page.hpp). Swipes are tracked on the page's
-// screen, which hears its children's presses (page_frame.hpp); a press that
-// scrolled the list, or started on a slider, is no swipe, and the
-// history's up swipe goes home only from its bottom end.
+// Pages. A drag on the home screen opens a sub-page and the opposite drag
+// on it comes back (navigate(), wisp/shell/gestures.hpp). A sub-page is a
+// screen of its own, built when it opens and deleted when the home screen
+// comes back: the history (wisp/shell/history.hpp), the scene list
+// (wisp/shell/scene_list.hpp) and the settings
+// (wisp/shell/settings_page.hpp).
+//
+// Page drags (spec 6.3). Every page's content sits in one root container
+// as large as the screen (Home::root(), page_frame.hpp). Presses are
+// tracked on the page's screen, which hears its children's (DragTrack).
+// Once the finger passes the slop along an axis with a target, the
+// target page is built (a sub-page) and its root moved onto the screen in
+// front, next to the current one; from then on both roots follow the
+// finger along that axis, and nothing else is built or laid out until the
+// release. No drag starts on an object with kNoSwipe (a slider), outside
+// the page's root (a card over it), where a scrollable object under the
+// finger could still scroll that way (the history's list away from its
+// bottom end, the home screen's text column), or while Home keeps the
+// press (Home::may_drag()). While the drag runs, the scrollables under
+// the finger are not scrollable, so LVGL does not scroll them too, and
+// LVGL's long press is held off. The release completes the navigation or
+// snaps back (DragTrack::release()); either way the roots slide the rest
+// of the way, and at the end the target's root goes back to its own
+// screen, which is loaded (completed) or, for a sub-page, deleted
+// (snapped back). A press lost to the system layer snaps back. The screen
+// in front changes only once the slide is over, in one
+// lv_screen_load(), so whoever checks which screen is in front (the scene
+// runtime) never sees a screen half loaded; when another screen came in
+// front meanwhile (a scene), the drag snaps back instead. show(),
+// open_diagnostics() and stop() end a drag or slide at once, snapped back.
 //
 // The scene list is listed on the storage worker (ShellDeps::list_scenes
 // in a submit_io job), sorted by ShellDeps::recents, and handed to the
@@ -45,10 +66,11 @@
 // leave_scene() does. Any "scene.state" event hides it at once, since the
 // scene that was in front may no longer be.
 //
-// Threading: every member is UI thread only, like every lv_* call. A
-// swipe's or back swipe's work is posted (it arrives from inside an LVGL
-// event or the pointer's read callback, where the screen under the finger
-// must not be deleted); a post still queued after stop() does nothing.
+// Threading: every member is UI thread only, like every lv_* call. A back
+// swipe's work is posted (it arrives from inside the pointer's read
+// callback, where the screen under the finger must not be deleted), and a
+// drag's end runs on its slide's animation, never inside the release's
+// event; a post still queued after stop() does nothing.
 
 #include <atomic>
 #include <cstdint>
@@ -80,6 +102,7 @@ class AgentService;
 namespace wisp::shell {
 
 class ConversationController;
+class DragTrack;
 class Home;
 class HistoryPage;
 class SceneRecents;
@@ -87,6 +110,7 @@ class SettingsPage;
 class TalkOverlay;
 
 enum class Page : uint8_t { Home, Settings, Scenes, History };
+enum class Swipe : uint8_t;
 // "home" "settings" "scenes" "history"
 const char* to_string(Page p);
 
@@ -161,10 +185,16 @@ public:
     // the diagnostics if they are open; Home deletes a sub-page's screen.
     void show(Page p);
     Page page() const { return page_; }
+    const hal::ScreenShape& shape() const { return deps_.shape; }
+    // From a page drag's start until its slide is over.
+    bool sliding() const { return drag_.phase != DragPhase::Idle; }
     // nullptr before start() and after stop().
     lv_obj_t* home_screen() const;
-    // The open sub-page's screen, or nullptr on the home screen.
+    // The open sub-page's screen, or nullptr on the home screen. During a
+    // drag from the home screen, the page being dragged in.
     lv_obj_t* page_screen() const { return sub_; }
+    // That page's content (page_frame.hpp's root).
+    lv_obj_t* page_root() const { return sub_root_; }
     // The wisp on the home screen; nullptr without one (no memory).
     ui::WispView* wisp() const;
     // The home screen's content; nullptr before start() and after stop().
@@ -196,7 +226,36 @@ private:
     void drop_pages();
     // Lists the scenes on the worker for the open scene list.
     void list_scenes();
-    static void page_event_cb(lv_event_t* e);
+
+    // Page drags.
+    enum class DragPhase : uint8_t { Idle, Following, Sliding };
+    struct Drag {
+        DragPhase phase = DragPhase::Idle;
+        Page to = Page::Home;
+        // The screen in front, which both roots are on meanwhile.
+        lv_obj_t* host = nullptr;
+        lv_obj_t* from_root = nullptr;
+        lv_obj_t* to_root = nullptr;
+        // The finger's direction, and how far it can go.
+        int32_t ux = 0, uy = 0, extent = 1;
+        int32_t offset = 0;
+        bool complete = false;
+        // Made unscrollable while the drag runs.
+        std::vector<lv_obj_t*> frozen;
+    };
+    static void press_cb(lv_event_t* e);
+    void on_press(lv_event_t* e);
+    // Whether a drag that way may take the press that started on `target`
+    // on the screen `scr`.
+    bool may_drag(lv_obj_t* scr, lv_obj_t* target, Swipe dir) const;
+    void begin_drag(Page to, Swipe dir, lv_obj_t* target);
+    void place_drag(int32_t offset);
+    void settle_drag(bool complete);
+    void finish_drag();
+    // Ends a drag or its slide at once, snapped back.
+    void abort_drag();
+    static void slide_cb(void* var, int32_t v);
+    static void slide_done_cb(lv_anim_t* a);
     void close_diagnostics();
     void set_diag_back_handler();
     static void diag_loaded_cb(lv_event_t* e);
@@ -217,14 +276,16 @@ private:
     lv_obj_t* prev_ = nullptr;
     std::unique_ptr<Home> home_;
     lv_obj_t* home_screen_ = nullptr;
-    // The open sub-page's screen, and the press being tracked on it.
+    // The open sub-page's screen and its content.
     lv_obj_t* sub_ = nullptr;
-    bool page_tracking_ = false;
-    bool page_top_zone_ = false;
-    bool page_at_bottom_ = true;
-    lv_obj_t* page_list_ = nullptr;
-    int32_t page_scroll_y_ = 0;
-    lv_point_t page_start_{};
+    lv_obj_t* sub_root_ = nullptr;
+    // The press being tracked on the page in front, until it becomes a
+    // drag or is ruled out.
+    std::unique_ptr<DragTrack> track_;
+    bool pressing_ = false;
+    bool press_top_zone_ = false;
+    lv_obj_t* press_target_ = nullptr;
+    Drag drag_;
     std::unique_ptr<HistoryPage> history_;
     std::unique_ptr<SceneList> scenes_;
     std::unique_ptr<SettingsPage> settings_;

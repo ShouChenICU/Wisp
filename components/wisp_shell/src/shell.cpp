@@ -5,6 +5,7 @@
 #include <optional>
 #include <utility>
 
+#include "lvgl_private.h"  // lv_indev_t's long-press stamps
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/os/os.hpp"
@@ -66,7 +67,7 @@ const char* to_string(Page p) {
     return "home";
 }
 
-Shell::Shell(ShellDeps deps) : deps_(std::move(deps)) {
+Shell::Shell(ShellDeps deps) : deps_(std::move(deps)), track_(std::make_unique<DragTrack>()) {
     if (!deps_.now_ms) deps_.now_ms = os::now_ms;
 }
 
@@ -87,11 +88,13 @@ void Shell::start() {
         .bus = deps_.bus,
         .now_ms = deps_.now_ms,
         .admin_url = deps_.admin_url,
-        .navigate = [this](Page p) { post_show(p); },
     });
     home_->start();
     home_->set_conversation(deps_.conversation);
     home_screen_ = home_->screen();
+    // After Home's own handler: Home has seen the press when may_drag()
+    // asks about it.
+    lv_obj_add_event_cb(home_screen_, &Shell::press_cb, LV_EVENT_ALL, this);
 
     lv_screen_load(home_screen_);
     listing_ = std::make_shared<std::atomic<bool>>(false);
@@ -139,6 +142,7 @@ void Shell::stop() {
     if (deps_.conversation != nullptr && talk_listener_ != 0)
         deps_.conversation->remove_listener(talk_listener_);
     talk_listener_ = 0;
+    abort_drag();
     if (diag_ != nullptr) close_diagnostics();
     *alive_ = false;
     alive_.reset();
@@ -247,6 +251,7 @@ void Shell::show(Page p) {
         return;
     }
     if (!leave_scene()) return;
+    abort_drag();
     if (diag_ != nullptr) close_diagnostics();
     if (p == Page::Home) {
         if (lv_screen_active() != home_screen_) lv_screen_load(home_screen_);
@@ -270,10 +275,10 @@ void Shell::show(Page p) {
 
 lv_obj_t* Shell::build_page(Page p) {
     detail::PageFrame f = detail::make_page(deps_.shape, title_of(p));
-    lv_obj_add_event_cb(f.screen, &Shell::page_event_cb, LV_EVENT_ALL, this);
+    lv_obj_add_event_cb(f.screen, &Shell::press_cb, LV_EVENT_ALL, this);
     page_alive_ = std::make_shared<bool>(true);
     listing_ = std::make_shared<std::atomic<bool>>(false);
-    page_list_ = f.list;
+    sub_root_ = f.root;
     switch (p) {
         case Page::History:
             history_ = std::make_unique<HistoryPage>(
@@ -317,7 +322,7 @@ lv_obj_t* Shell::build_page(Page p) {
 void Shell::drop_pages() {
     if (page_alive_) *page_alive_ = false;
     page_alive_.reset();
-    page_list_ = nullptr;
+    sub_root_ = nullptr;
     history_.reset();
     scenes_.reset();
     settings_.reset();
@@ -416,48 +421,232 @@ void Shell::delete_page() {
     if (sub_ == nullptr) return;
     lv_obj_t* scr = sub_;
     sub_ = nullptr;
-    page_tracking_ = false;
+    pressing_ = false;
     drop_pages();
     lv_obj_delete(scr);
 }
 
-void Shell::page_event_cb(lv_event_t* e) {
-    auto* self = static_cast<Shell*>(lv_event_get_user_data(e));
+void Shell::press_cb(lv_event_t* e) { static_cast<Shell*>(lv_event_get_user_data(e))->on_press(e); }
+
+namespace {
+
+// Whether `obj` can still scroll the way a finger moving `dir` scrolls it
+// (as LVGL's own search for a scroll decides it).
+bool scrolls_toward(lv_obj_t* obj, Swipe dir) {
+    if (!lv_obj_has_flag(obj, LV_OBJ_FLAG_SCROLLABLE)) return false;
+    const lv_dir_t can = lv_obj_get_scroll_dir(obj);
+    switch (dir) {
+        case Swipe::Right:
+            return (can & LV_DIR_LEFT) != 0 && lv_obj_get_scroll_left(obj) > 0;
+        case Swipe::Left:
+            return (can & LV_DIR_RIGHT) != 0 && lv_obj_get_scroll_right(obj) > 0;
+        case Swipe::Down:
+            return (can & LV_DIR_TOP) != 0 && lv_obj_get_scroll_top(obj) > 0;
+        case Swipe::Up:
+            return (can & LV_DIR_BOTTOM) != 0 && lv_obj_get_scroll_bottom(obj) > 0;
+        case Swipe::None:
+            break;
+    }
+    return false;
+}
+
+// The press is the drag's: no long press on what it started on. Through
+// LVGL's private struct, because lv_indev_reset_long_press() stamps
+// lv_tick_get(), which can be a tick past the read being processed, and
+// LVGL's tick difference then wraps round into a long press at once.
+void hold_off_long_press(lv_indev_t* indev) {
+    indev->pr_timestamp = indev->timestamp;
+    indev->long_pr_sent = 0;
+}
+
+}  // namespace
+
+void Shell::on_press(lv_event_t* e) {
     const lv_event_code_t code = lv_event_get_code(e);
-    if (code != LV_EVENT_PRESSED && code != LV_EVENT_PRESS_LOST && code != LV_EVENT_RELEASED)
+    if (code != LV_EVENT_PRESSED && code != LV_EVENT_PRESSING && code != LV_EVENT_RELEASED &&
+        code != LV_EVENT_PRESS_LOST)
         return;
     lv_indev_t* indev = lv_indev_active();
     if (indev == nullptr) return;
+    lv_obj_t* scr = lv_event_get_current_target_obj(e);
     lv_point_t p;
     lv_indev_get_point(indev, &p);
-    if (code == LV_EVENT_PRESSED) {
-        lv_obj_t* target = lv_event_get_target_obj(e);
-        self->page_tracking_ = target == nullptr || !lv_obj_has_flag(target, detail::kNoSwipe);
-        self->page_start_ = p;
-        self->page_top_zone_ = ui::SystemLayer::in_top_zone(self->deps_.shape, p.x, p.y);
-        self->page_at_bottom_ = !self->history_ || self->history_->at_bottom();
-        self->page_scroll_y_ = self->page_list_ ? lv_obj_get_scroll_y(self->page_list_) : 0;
-    } else if (code == LV_EVENT_PRESS_LOST) {
-        self->page_tracking_ = false;
-    } else if (self->page_tracking_) {
-        self->page_tracking_ = false;
-        // A drag that scrolled the list is no swipe. LVGL starts a scroll
-        // (SCROLL_BEGIN) even at an end it cannot move past, so the offset
-        // itself decides.
-        if (self->page_list_ && lv_obj_get_scroll_y(self->page_list_) != self->page_scroll_y_)
+    const uint64_t now = deps_.now_ms();
+    switch (code) {
+        case LV_EVENT_PRESSED:
+            pressing_ = false;
+            track_->reset();
+            // A press while the pages still slide waits for the next one.
+            if (drag_.phase != DragPhase::Idle || scr != lv_screen_active()) return;
+            pressing_ = true;
+            press_target_ = lv_event_get_target_obj(e);
+            press_top_zone_ = ui::SystemLayer::in_top_zone(deps_.shape, p.x, p.y);
+            track_->press(p, now);
             return;
-        const Swipe s = classify_swipe(self->page_start_, p);
-        if (auto to = navigate(self->page_, s, self->page_top_zone_, self->page_at_bottom_)) {
-            // No click for what the swipe started on.
-            lv_indev_reset(indev, nullptr);
-            self->post_show(*to);
+        case LV_EVENT_PRESSING: {
+            if (drag_.phase == DragPhase::Following) {
+                if (scr != drag_.host) return;
+                track_->moved(p, now);
+                place_drag(track_->offset());
+                hold_off_long_press(indev);
+                return;
+            }
+            if (!pressing_) return;
+            const Swipe dir = track_->moved(p, now);
+            if (dir == Swipe::None) return;
+            pressing_ = false;
+            const bool at_bottom = !history_ || history_->at_bottom();
+            const std::optional<Page> to = navigate(page_, dir, press_top_zone_, at_bottom);
+            if (!to || !may_drag(scr, press_target_, dir)) {
+                track_->reset();
+                return;
+            }
+            begin_drag(*to, dir, press_target_);
+            hold_off_long_press(indev);
+            track_->moved(p, now);
+            place_drag(track_->offset());
+            return;
         }
+        case LV_EVENT_RELEASED:
+            pressing_ = false;
+            if (drag_.phase == DragPhase::Following && scr == drag_.host) {
+                const bool complete = track_->release(p, now);
+                // No click for what the drag started on.
+                lv_indev_reset(indev, nullptr);
+                settle_drag(complete);
+            } else {
+                track_->reset();
+            }
+            return;
+        case LV_EVENT_PRESS_LOST:
+            pressing_ = false;
+            track_->reset();
+            if (drag_.phase == DragPhase::Following && scr == drag_.host) settle_drag(false);
+            return;
+        default:
+            return;
     }
+}
+
+bool Shell::may_drag(lv_obj_t* scr, lv_obj_t* target, Swipe dir) const {
+    lv_obj_t* root = page_ == Page::Home ? (home_ ? home_->root() : nullptr) : sub_root_;
+    if (root == nullptr || lv_obj_get_screen(root) != scr) return false;
+    if (target != nullptr && target != scr) {
+        bool in_root = false;
+        for (lv_obj_t* o = target; o != nullptr && o != scr; o = lv_obj_get_parent(o)) {
+            if (o == root) in_root = true;
+            if (lv_obj_has_flag(o, detail::kNoSwipe) || scrolls_toward(o, dir)) return false;
+        }
+        // Not the page's own (a card over it).
+        if (!in_root) return false;
+    }
+    return page_ != Page::Home || home_->may_drag();
+}
+
+void Shell::begin_drag(Page to, Swipe dir, lv_obj_t* target) {
+    Drag& d = drag_;
+    d = Drag{};
+    d.to = to;
+    d.host = lv_screen_active();
+    d.from_root = page_ == Page::Home ? home_->root() : sub_root_;
+    if (to == Page::Home) {
+        d.to_root = home_->root();
+    } else {
+        sub_ = build_page(to);
+        d.to_root = sub_root_;
+        if (to == Page::Scenes) list_scenes();
+    }
+    lv_obj_set_parent(d.to_root, d.host);
+    // LVGL would otherwise scroll these along with the drag: it looks for
+    // something to scroll after this event, on the same read.
+    for (lv_obj_t* o = target; o != nullptr && o != d.host; o = lv_obj_get_parent(o)) {
+        if (!lv_obj_has_flag(o, LV_OBJ_FLAG_SCROLLABLE)) continue;
+        lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+        d.frozen.push_back(o);
+    }
+    if (target != nullptr && target != d.host) lv_obj_remove_state(target, LV_STATE_PRESSED);
+    if (page_ == Page::Home) home_->drag_started();
+    d.ux = dir == Swipe::Right ? 1 : dir == Swipe::Left ? -1 : 0;
+    d.uy = dir == Swipe::Down ? 1 : dir == Swipe::Up ? -1 : 0;
+    d.extent = d.ux != 0 ? deps_.shape.width : deps_.shape.height;
+    d.phase = DragPhase::Following;
+    track_->start(dir, d.extent);
+    WLOG_D(kTag, "drag %s -> %s", to_string(page_), to_string(to));
+}
+
+void Shell::place_drag(int32_t offset) {
+    Drag& d = drag_;
+    d.offset = offset;
+    // Only positions: the pages keep their layout.
+    lv_obj_set_pos(d.from_root, d.ux * offset, d.uy * offset);
+    lv_obj_set_pos(d.to_root, d.ux * (offset - d.extent), d.uy * (offset - d.extent));
+}
+
+void Shell::settle_drag(bool complete) {
+    Drag& d = drag_;
+    d.phase = DragPhase::Sliding;
+    d.complete = complete;
+    const int32_t end = complete ? d.extent : 0;
+    const int32_t left = std::abs(end - d.offset);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, this);
+    lv_anim_set_values(&a, d.offset, end);
+    // At least a millisecond: the end may delete the screen this release
+    // came from, which must happen on the timer and not inside its event.
+    lv_anim_set_duration(
+        &a, std::max<uint32_t>(static_cast<uint32_t>(int64_t{kSlideMs} * left / d.extent), 1));
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a, &Shell::slide_cb);
+    lv_anim_set_user_data(&a, this);
+    lv_anim_set_completed_cb(&a, &Shell::slide_done_cb);
+    lv_anim_start(&a);
+}
+
+void Shell::slide_cb(void* var, int32_t v) { static_cast<Shell*>(var)->place_drag(v); }
+
+void Shell::slide_done_cb(lv_anim_t* a) {
+    static_cast<Shell*>(lv_anim_get_user_data(a))->finish_drag();
+}
+
+void Shell::finish_drag() {
+    if (drag_.phase == DragPhase::Idle) return;
+    Drag d = std::move(drag_);
+    drag_ = Drag{};
+    for (lv_obj_t* o : d.frozen)
+        if (lv_obj_is_valid(o)) lv_obj_add_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(d.from_root, 0, 0);
+    lv_obj_set_pos(d.to_root, 0, 0);
+    // A screen that came in front meanwhile (a scene) stays there.
+    const bool complete = d.complete && lv_screen_active() == d.host;
+    lv_obj_t* own = d.to == Page::Home ? home_screen_ : sub_;
+    lv_obj_set_parent(d.to_root, own);
+    // Under anything put over the page on its screen.
+    lv_obj_move_to_index(d.to_root, 0);
+    if (!complete) {
+        if (d.to != Page::Home) delete_page();
+        WLOG_D(kTag, "drag to %s snapped back", to_string(d.to));
+        return;
+    }
+    lv_screen_load(own);
+    if (d.to == Page::Home) delete_page();
+    page_ = d.to;
+    WLOG_I(kTag, "page %s", to_string(page_));
+}
+
+void Shell::abort_drag() {
+    if (drag_.phase == DragPhase::Idle) return;
+    lv_anim_delete(this, &Shell::slide_cb);
+    pressing_ = false;
+    track_->reset();
+    drag_.complete = false;
+    finish_drag();
 }
 
 void Shell::open_diagnostics() {
     if (home_ == nullptr || diag_ != nullptr || !deps_.open_diagnostics) return;
     if (!leave_scene()) return;
+    abort_drag();
     // Over the page the user is on; a scene sent back leaves it the
     // active screen no longer.
     lv_obj_t* under = sub_ != nullptr ? sub_ : home_screen_;

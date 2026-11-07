@@ -79,7 +79,7 @@ public:
     // bottom.
     void build(lv_obj_t* list);
 
-    // Scrolled all the way down (where the page opens): an up swipe then
+    // Scrolled all the way down (where the page opens): an up drag then
     // goes home (spec 6.3).
     bool at_bottom() const;
 

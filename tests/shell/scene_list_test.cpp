@@ -344,3 +344,26 @@ TEST_F(SceneListTest, RefreshKeepsTheLongPressCard) {
     ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 1; }));
     harness->on_ui([&] { EXPECT_EQ(page()->popup(), nullptr); });
 }
+
+// A page drag that starts on a card neither opens its scene on the release
+// nor long-presses it while the finger takes its time.
+TEST_F(SceneListTest, DragFromACardOpensNothing) {
+    scenes = {scene("a", "A"), scene("b", "B")};
+    boot();
+    open_page(2);
+    const lv_point_t at = harness->centre_of(page()->card(0));
+    harness->feed({{static_cast<int16_t>(at.x), static_cast<int16_t>(at.y), 0}});
+    // Right is the scene list's way back; slowly, past LVGL's long press.
+    for (int i = 1; i <= 12; ++i) {
+        wisp::os::sleep_ms(60);
+        harness->feed({{static_cast<int16_t>(at.x + 4 * i), static_cast<int16_t>(at.y), 0}});
+    }
+    harness->on_ui([&] {
+        EXPECT_TRUE(harness->shell().sliding());
+        EXPECT_EQ(page()->popup(), nullptr);
+    });
+    harness->feed({});
+    ASSERT_TRUE(harness->ui_until([&] { return !harness->shell().sliding(); }));
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_TRUE(opened.empty());
+}

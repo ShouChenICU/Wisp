@@ -227,3 +227,38 @@ TEST_F(HistoryTest, UpSwipeHomeOnlyAtTheBottom) {
     h_->drag(mid, {240, 150});
     ASSERT_TRUE(h_->ui_until([&] { return h_->shell().page() == Page::Home; }));
 }
+
+// A drag up on the list away from its bottom end scrolls the list and
+// starts no page drag; at the bottom end the same drag goes home.
+TEST_F(HistoryTest, HistoryListMidScrollDoesNotStartBack) {
+    start(30);
+    int32_t before = 0;
+    h_->on_ui([&] {
+        lv_obj_scroll_to_y(page()->list(), 200, LV_ANIM_OFF);
+        before = lv_obj_get_scroll_y(page()->list());
+    });
+    h_->feed({{240, 300, 0}});
+    for (int y = 290; y >= 200; y -= 10) {
+        h_->feed({{240, static_cast<int16_t>(y), 0}});
+        h_->on_ui([&] { EXPECT_FALSE(h_->shell().sliding()); });
+    }
+    h_->on_ui([&] { EXPECT_GT(lv_obj_get_scroll_y(page()->list()), before); });
+    h_->feed({});
+    wisp::os::sleep_ms(300);
+    EXPECT_EQ(h_->shell().page(), Page::History);
+}
+
+TEST_F(HistoryTest, HistoryAtEdgeStartsBack) {
+    start(30);
+    h_->on_ui([&] { lv_obj_scroll_to_y(page()->list(), LV_COORD_MAX, LV_ANIM_OFF); });
+    int32_t bottom = 0;
+    h_->on_ui([&] { bottom = lv_obj_get_scroll_y(page()->list()); });
+    h_->feed({{240, 300, 0}});
+    h_->feed({{240, 280, 0}});
+    h_->on_ui([&] { EXPECT_TRUE(h_->shell().sliding()); });
+    for (int y = 260; y >= 100; y -= 20) h_->feed({{240, static_cast<int16_t>(y), 0}});
+    // The list itself stays where it was.
+    h_->on_ui([&] { EXPECT_EQ(lv_obj_get_scroll_y(page()->list()), bottom); });
+    h_->feed({});
+    ASSERT_TRUE(h_->ui_until([&] { return h_->shell().page() == Page::Home; }));
+}

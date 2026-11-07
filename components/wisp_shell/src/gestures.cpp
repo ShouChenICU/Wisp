@@ -1,5 +1,6 @@
 #include "wisp/shell/gestures.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 
 #include "wisp/shell/limits.hpp"
@@ -51,6 +52,97 @@ std::optional<Page> navigate(Page from, Swipe s, bool from_top_zone, bool at_bot
             return std::nullopt;
     }
     return std::nullopt;
+}
+
+void DragTrack::press(lv_point_t p, uint64_t now) {
+    reset();
+    pressed_ = true;
+    start_ = p;
+    (void)now;
+}
+
+Swipe DragTrack::moved(lv_point_t p, uint64_t now) {
+    if (!pressed_) return Swipe::None;
+    if (dragging_) {
+        record(p, now);
+        return Swipe::None;
+    }
+    if (decided_) return Swipe::None;
+    const int32_t dx = p.x - start_.x;
+    const int32_t dy = p.y - start_.y;
+    if (std::max(std::abs(dx), std::abs(dy)) < kDragSlopPx) return Swipe::None;
+    decided_ = true;
+    // As LVGL picks a scroll's axis: horizontal only when strictly more so.
+    if (std::abs(dx) > std::abs(dy)) return dx > 0 ? Swipe::Right : Swipe::Left;
+    return dy > 0 ? Swipe::Down : Swipe::Up;
+}
+
+void DragTrack::start(Swipe dir, int32_t extent) {
+    if (!pressed_ || dir == Swipe::None) return;
+    dragging_ = true;
+    dir_ = dir;
+    extent_ = std::max<int32_t>(extent, 1);
+    count_ = next_ = 0;
+}
+
+int32_t DragTrack::along(lv_point_t p) const {
+    switch (dir_) {
+        case Swipe::Right:
+            return p.x - start_.x;
+        case Swipe::Left:
+            return start_.x - p.x;
+        case Swipe::Down:
+            return p.y - start_.y;
+        case Swipe::Up:
+            return start_.y - p.y;
+        case Swipe::None:
+            break;
+    }
+    return 0;
+}
+
+void DragTrack::record(lv_point_t p, uint64_t now) {
+    along_ = along(p);
+    samples_[next_] = {now, along_};
+    next_ = (next_ + 1) % samples_.size();
+    count_ = std::min(count_ + 1, samples_.size());
+}
+
+int32_t DragTrack::offset() const {
+    return dragging_ ? std::clamp<int32_t>(along_, 0, extent_) : 0;
+}
+
+bool DragTrack::release(lv_point_t p, uint64_t now) {
+    if (!dragging_) {
+        reset();
+        return false;
+    }
+    record(p, now);
+    const int32_t dist = offset();
+    // The speed from the oldest point inside the window to this one; a
+    // window with no time in it (every point in one millisecond) counts
+    // as one millisecond.
+    const Sample& last = samples_[(next_ + samples_.size() - 1) % samples_.size()];
+    Sample ref = last;
+    for (size_t i = 0; i < count_; ++i) {
+        const Sample& s = samples_[(next_ + samples_.size() - count_ + i) % samples_.size()];
+        if (last.ms - s.ms <= kFlingWindowMs) {
+            ref = s;
+            break;
+        }
+    }
+    const int64_t dt = std::max<int64_t>(static_cast<int64_t>(last.ms - ref.ms), 1);
+    const int64_t moved = last.along - ref.along;
+    const bool fling = moved > 0 && moved * 1000 >= int64_t{kFlingPxPerS} * dt;
+    reset();
+    return dist * kDragCompleteDivisor >= extent_ || fling;
+}
+
+void DragTrack::reset() {
+    pressed_ = decided_ = dragging_ = false;
+    dir_ = Swipe::None;
+    along_ = 0;
+    count_ = next_ = 0;
 }
 
 namespace {

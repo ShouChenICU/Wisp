@@ -55,7 +55,7 @@ lv_obj_t* SettingsPage::add_slider(lv_obj_t* card, int min, int max, int value) 
     lv_slider_set_range(s, min, max);
     lv_slider_set_value(s, std::clamp(value, min, max), LV_ANIM_OFF);
     lv_obj_set_ext_click_area(s, kSliderReachPx);
-    // Dragging it sideways is the slider's, not a swipe.
+    // Dragging it sideways is the slider's, not a page drag.
     lv_obj_add_flag(s, detail::kNoSwipe);
     lv_obj_add_event_cb(s, &SettingsPage::event_cb, LV_EVENT_RELEASED, this);
     return s;

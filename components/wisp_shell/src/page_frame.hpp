@@ -2,7 +2,7 @@
 
 // What the shell's sub-pages (history, scene list, settings) share: the
 // screen with its title, the scrolling list under it, the look of their
-// rows, and the event plumbing the shell's swipe tracking relies on.
+// rows, and the event plumbing the shell's drag tracking relies on.
 //
 // Shape (AGENTS.md, screen shape; spec 5.6 of the base spec). The title
 // sits below the status capsule, as wide as the safe area. The list runs
@@ -12,12 +12,18 @@
 // last row lie wholly in the safe area; in between, rows may pass through
 // the rows the screen does not show.
 //
-// Gestures. The shell tracks swipes on the page's screen, which hears its
+// The page's content (title and list) sits in `root`, a plain container
+// as large as the screen at its top left, so the shell can slide the page
+// as one while a finger drags it, and show it over another page's screen
+// meanwhile (wisp/shell/shell.hpp). Anything that must not move with it
+// (a card over the page) goes on the screen itself.
+//
+// Gestures. The shell tracks drags on the page's screen, which hears its
 // children's presses only if every object between them bubbles its
 // events: bubble_tree() sets LV_OBJ_FLAG_EVENT_BUBBLE on a subtree, and a
 // page calls it on whatever it adds. A handler on a container therefore
 // also hears its children's events and must check the target. An object
-// with kNoSwipe (a slider) starts no swipe: dragging it sideways is its
+// with kNoSwipe (a slider) starts no drag: dragging it sideways is its
 // own gesture.
 //
 // UI thread only, like every lv_* call.
@@ -30,7 +36,7 @@
 
 namespace wisp::shell::detail {
 
-// A press that starts on an object with this flag is not a swipe.
+// A press that starts on an object with this flag starts no page drag.
 inline constexpr lv_obj_flag_t kNoSwipe = LV_OBJ_FLAG_USER_1;
 // The least height of anything a finger taps.
 inline constexpr int32_t kMinTouchPx = 48;
@@ -39,6 +45,8 @@ inline constexpr int kTitleFontPx = 28;
 
 struct PageFrame {
     lv_obj_t* screen = nullptr;
+    // The page's content: everything below is in it.
+    lv_obj_t* root = nullptr;
     lv_obj_t* title = nullptr;
     // Scrolls vertically; a flex column of the page's rows.
     lv_obj_t* list = nullptr;
@@ -46,6 +54,10 @@ struct PageFrame {
 
 // A new screen (not loaded) with the title `title` and the list.
 PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title);
+
+// A page's root on `parent`: as large as the screen, transparent, neither
+// clickable nor scrollable, bubbling its children's events.
+lv_obj_t* make_root(lv_obj_t* parent, const hal::ScreenShape& shape);
 
 // Sets LV_OBJ_FLAG_EVENT_BUBBLE on `obj` and everything below it.
 void bubble_tree(lv_obj_t* obj);

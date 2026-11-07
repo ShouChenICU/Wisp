@@ -215,7 +215,7 @@ TEST_P(HomeShapes, TurnTextReadableAtBothEnds) {
     ASSERT_TRUE(bus.start());
     auto on_ui = [&](const std::function<void()>& fn) { wisp::test::run_on_ui_blocking(&ui, fn); };
     Home home(wisp::shell::HomeDeps{
-        .ui = ui, .shape = shape_, .bus = bus, .now_ms = {}, .admin_url = {}, .navigate = {}});
+        .ui = ui, .shape = shape_, .bus = bus, .now_ms = {}, .admin_url = {}});
     lv_obj_t* before = nullptr;
     on_ui([&] {
         before = lv_screen_active();
