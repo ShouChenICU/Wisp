@@ -4,12 +4,13 @@
 
 namespace wisp::port::sim {
 
-SimButton::SimButton(std::string id, Kind kind, std::shared_ptr<SimInput> input)
+SimButton::SimButton(std::string id, Kind kind, std::shared_ptr<SimInput> input, std::string role)
     : kind_(kind), input_(std::move(input)) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "sdl-key";
     info_.caps = wisp::Properties{{"standby", "wake_source"}};
+    if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
 bool SimButton::pressed() {

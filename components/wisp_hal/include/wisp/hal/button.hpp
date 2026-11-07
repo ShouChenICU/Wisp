@@ -10,7 +10,9 @@ namespace wisp::hal {
 // built on top by the portable ButtonService (see wisp_core), not here.
 // caps keys: "standby" (string, optional: "wake_source" for a button that
 // must keep working at every power level; see StandbyPolicy in
-// wisp/hal/device.hpp).
+// wisp/hal/device.hpp); "role" (string, optional: "talk" for the button
+// held to talk, mvp spec 6.3 -- the board picks it, the shell finds it
+// with shell::find_talk_button()).
 class Button : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Button;

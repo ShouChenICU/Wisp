@@ -53,6 +53,9 @@
 // moves the simulated clock (clock.main and Platform::wall_s) forward,
 // publishes system.time {"state":"synced","server":"debug","time"} as a
 // sync would, and answers "clock-advance=ok" or "clock-advance=<error>".
+// "debug voice-text <text>" hands the text to the conversation as a
+// transcript (ConversationController::voice_text(): source voice, spoken
+// unless muted) and answers "voice-text=ok" or "voice-text=<error>".
 //
 // Scenes (scene-runtime-core spec 6.4): --scenes-dir puts the scene
 // repository in dev mode over that directory (Platform::scenes_dir), with
@@ -110,6 +113,7 @@
 #include "wisp/port/sim/sim_sntp.hpp"
 #include "wisp/port/sim/sim_web_pack.hpp"
 #include "wisp/scene/scene_runtime.hpp"
+#include "wisp/shell/conversation.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -187,8 +191,16 @@ std::string debug_command(wisp::app::App& app, const std::vector<std::string>& a
         auto r = write_screenshot(app, args[2]);
         return "screenshot=" + (r ? std::string("ok") : r.error().message);
     }
+    if (args.size() >= 3 && args[1] == "voice-text") {
+        wisp::shell::ConversationController* conv = app.conversation();
+        if (conv == nullptr) return "voice-text=voice is off";
+        std::string text = args[2];
+        for (size_t i = 3; i < args.size(); ++i) text += " " + args[i];
+        auto r = conv->voice_text(std::move(text));
+        return "voice-text=" + (r ? std::string("ok") : r.error().message);
+    }
     return "error: usage: debug pair-code | debug scene-click <ref> | debug panel-tap <index> | "
-           "debug screenshot <path> | debug clock-advance <seconds>";
+           "debug screenshot <path> | debug clock-advance <seconds> | debug voice-text <text>";
 }
 
 std::vector<wisp::app::ConsoleCommand> debug_commands() {
@@ -198,7 +210,8 @@ std::vector<wisp::app::ConsoleCommand> debug_commands() {
         "debug scene-click <ref>      click a widget of the scene in front (simulator only)\n"
         "debug panel-tap <index>      tap a row of the open pull-down panel (simulator only)\n"
         "debug screenshot <path>      write the screen as a PNG (simulator only)\n"
-        "debug clock-advance <s>      move the clock forward s seconds (simulator only)",
+        "debug clock-advance <s>      move the clock forward s seconds (simulator only)\n"
+        "debug voice-text <text>      send text as if spoken, skipping the mic (simulator only)",
         debug_command,
     }};
 }

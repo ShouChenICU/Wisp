@@ -189,6 +189,9 @@ public:
     void set_llm_busy(bool busy);
 
     VoiceState state() const { return state_.load(); }
+    // From a successful begin_capture() until its recording is dropped,
+    // not heard, failed or transcribed (false before on_transcript runs).
+    bool capturing() const { return capture_busy_.load(); }
     bool speaking() const { return state_.load() == VoiceState::Speaking; }
 
     // For TonePlayer::set_output_guard() (see the file header): an Alarm

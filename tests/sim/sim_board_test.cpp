@@ -23,6 +23,7 @@
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/port/sim/sim_input.hpp"
+#include "wisp/shell/conversation.hpp"
 
 TEST(SimBoardTest, AudioDevicesDegradeWhenSdlAudioNeverInitialized) {
     ASSERT_EQ(SDL_WasInit(SDL_INIT_AUDIO), 0u)
@@ -147,4 +148,9 @@ TEST_F(SimBoard, AudioFollowsPowerLevel) {
         ASSERT_TRUE(in->set_power(wisp::hal::PowerLevel::Dim));
         EXPECT_TRUE(sim_in.powered());
     }
+}
+
+TEST_F(SimBoard, VolDownIsTheTalkKey) {
+    EXPECT_EQ(wisp::shell::find_talk_button(*registry_),
+              std::optional<std::string>("button.vol_down"));
 }

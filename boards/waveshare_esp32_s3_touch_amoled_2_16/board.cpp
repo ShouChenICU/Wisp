@@ -353,14 +353,16 @@ struct ButtonSpec {
     bool active_low;  // Pressed reads 0; also selects pull-up vs. pull-down.
     const char* id;
     const char* model;
+    const char* role;  // caps "role", or "" (wisp/hal/button.hpp)
 };
 
 void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
     constexpr auto cls = wisp::hal::DeviceClass::Button;
     constexpr ButtonSpec kButtons[] = {
-        {kPinBtnPower, false, "button.power", "axp2101-pwrkey"},
-        {kPinBtnVolUp, true, "button.vol_up", "gpio-button"},
-        {kPinBtnVolDown, true, "button.vol_down", "gpio-button"},
+        {kPinBtnPower, false, "button.power", "axp2101-pwrkey", ""},
+        {kPinBtnVolUp, true, "button.vol_up", "gpio-button", ""},
+        // Vol- is the BOOT key (GPIO0): hold-to-talk (mvp spec 6.3).
+        {kPinBtnVolDown, true, "button.vol_down", "gpio-button", "talk"},
     };
     for (const ButtonSpec& spec : kButtons) {
         gpio_config_t cfg = {};
@@ -374,8 +376,8 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
             continue;
         }
         add_device(registry, report,
-                   std::make_shared<wisp::port::esp::EspGpioButton>(spec.pin, spec.active_low,
-                                                                    spec.id, spec.model));
+                   std::make_shared<wisp::port::esp::EspGpioButton>(
+                       spec.pin, spec.active_low, spec.id, spec.model, spec.role));
     }
 }
 

@@ -92,7 +92,9 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         return std::make_shared<SimButton>("button.vol_up", SimButton::Kind::VolUp, input_);
     });
     make_or_fail("button.vol_down", wisp::hal::DeviceClass::Button, [&] {
-        return std::make_shared<SimButton>("button.vol_down", SimButton::Kind::VolDown, input_);
+        // Like the device's Vol-/BOOT key: hold-to-talk.
+        return std::make_shared<SimButton>("button.vol_down", SimButton::Kind::VolDown, input_,
+                                           "talk");
     });
     make_or_fail("net.wifi", wisp::hal::DeviceClass::Network,
                  [&] { return std::make_shared<SimWifi>("net.wifi", config_.wifi_fail); });

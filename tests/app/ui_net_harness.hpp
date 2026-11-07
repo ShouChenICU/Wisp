@@ -11,6 +11,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -29,6 +30,8 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/hal/audio.hpp"
+#include "wisp/hal/device.hpp"
+#include "wisp/net/http.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -66,6 +69,10 @@ struct UiNetOptions {
     std::shared_ptr<wisp::hal::AudioOut> audio_out;
     // Registered as "imu.main" when set.
     std::shared_ptr<wisp::hal::Imu> imu;
+    // Registered as they are (a mic, a talk key, ...).
+    std::vector<std::shared_ptr<wisp::hal::Device>> extra_devices;
+    // Platform::http_client, when set.
+    std::function<std::unique_ptr<wisp::net::HttpClient>()> http_client;
 };
 
 // 2026-01-01 00:00:00 UTC, what the FakeSntp answers.
@@ -76,13 +83,15 @@ public:
     UiNetBoard(std::string root, std::shared_ptr<FakeWifi> wifi,
                std::shared_ptr<FakeDisplay> display, std::shared_ptr<FakeTouch> touch = nullptr,
                std::shared_ptr<wisp::hal::AudioOut> audio_out = nullptr,
-               std::shared_ptr<wisp::hal::Imu> imu = nullptr)
+               std::shared_ptr<wisp::hal::Imu> imu = nullptr,
+               std::vector<std::shared_ptr<wisp::hal::Device>> extra = {})
         : root_(std::move(root)),
           wifi_(std::move(wifi)),
           display_(std::move(display)),
           touch_(std::move(touch)),
           audio_out_(std::move(audio_out)),
-          imu_(std::move(imu)) {}
+          imu_(std::move(imu)),
+          extra_(std::move(extra)) {}
 
     std::string name() const override { return "fake-net-ui"; }
 
@@ -94,6 +103,7 @@ public:
         if (touch_) registry.add(touch_);
         if (audio_out_) registry.add(audio_out_);
         if (imu_) registry.add(imu_);
+        for (const auto& d : extra_) registry.add(d);
     }
 
 private:
@@ -103,6 +113,7 @@ private:
     std::shared_ptr<FakeTouch> touch_;
     std::shared_ptr<wisp::hal::AudioOut> audio_out_;
     std::shared_ptr<wisp::hal::Imu> imu_;
+    std::vector<std::shared_ptr<wisp::hal::Device>> extra_;
 };
 
 struct UiNetHarness {
@@ -151,8 +162,9 @@ struct UiNetHarness {
         }
 
         wisp::app::Platform platform;
-        platform.board =
-            std::make_unique<UiNetBoard>(root, wifi, display, touch, opts.audio_out, opts.imu);
+        platform.board = std::make_unique<UiNetBoard>(root, wifi, display, touch, opts.audio_out,
+                                                      opts.imu, opts.extra_devices);
+        if (opts.http_client) platform.http_client = opts.http_client();
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path());
         if (!opts.lang.empty()) {

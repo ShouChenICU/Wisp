@@ -9,6 +9,7 @@
 │  入口层   firmware/main (真机)   │  simulator/ (PC)   │
 ├─────────────────────────────────────────────────────┤
 │  wisp_app     启动编排 · 自检界面 · PowerManager         │  ← 可移植
+│  wisp_shell   外壳：对话控制（语音 ↔ Agent）· 对话键     │  ← 可移植
 │  wisp_agent   Agent：对话记录 · 工具 · 循环 · 上下文      │  ← 可移植
 │  wisp_scene   Lua 场景运行时（third_party/lua）          │  ← 可移植
 │  wisp_ui      LVGL 驱动对接、UI 任务                     │  ← 可移植
@@ -32,8 +33,8 @@
 
 ## 依赖规则
 
-1. 可移植组件（`wisp_base`、`wisp_os`、`wisp_hal`、`wisp_core`、`wisp_net`、`wisp_voice`、`wisp_admin`、`wisp_ui`、`wisp_scene`、`wisp_agent`、`wisp_app`）禁止 include 任何平台头文件：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/*`、`soc/*`、`rom/*`、`lwip/*`、`mbedtls/*`、`SDL*`、`curl/*`，以及 `sdkconfig.h`、`nvs.h`、`nvs_flash.h`、`sdmmc_cmd.h` 和 bmgr 生成的 `dev_*`/`gen_board_*`（文件名前缀，不带目录）；只能依赖 C++20 标准库（包括 POSIX 文件 API，如 `<unistd.h>`/`<sys/stat.h>`/`<dirent.h>` —— ESP-IDF 的 VFS 和宿主机都提供，`StorageManager` 依赖它遍历/删改文件）、LVGL、ArduinoJson，以及按层次自上而下依赖其他可移植组件。Lua 的头文件（`lua.h`、`lauxlib.h`、`lualib.h`、`lua.hpp`、`luaconf.h`）只有 `wisp_scene` 能 include。
-2. 每个可移植组件只能 include 自己这一层或更低层的头文件（按本文件"分层"一节的顺序：`wisp_base < wisp_os < wisp_hal < wisp_core < wisp_net < wisp_voice < wisp_admin < wisp_ui < wisp_scene < wisp_agent < wisp_app`），禁止反向依赖"更上层"。
+1. 可移植组件（`wisp_base`、`wisp_os`、`wisp_hal`、`wisp_core`、`wisp_net`、`wisp_voice`、`wisp_admin`、`wisp_ui`、`wisp_scene`、`wisp_agent`、`wisp_shell`、`wisp_app`）禁止 include 任何平台头文件：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/*`、`soc/*`、`rom/*`、`lwip/*`、`mbedtls/*`、`SDL*`、`curl/*`，以及 `sdkconfig.h`、`nvs.h`、`nvs_flash.h`、`sdmmc_cmd.h` 和 bmgr 生成的 `dev_*`/`gen_board_*`（文件名前缀，不带目录）；只能依赖 C++20 标准库（包括 POSIX 文件 API，如 `<unistd.h>`/`<sys/stat.h>`/`<dirent.h>` —— ESP-IDF 的 VFS 和宿主机都提供，`StorageManager` 依赖它遍历/删改文件）、LVGL、ArduinoJson，以及按层次自上而下依赖其他可移植组件。Lua 的头文件（`lua.h`、`lauxlib.h`、`lualib.h`、`lua.hpp`、`luaconf.h`）只有 `wisp_scene` 能 include。
+2. 每个可移植组件只能 include 自己这一层或更低层的头文件（按本文件"分层"一节的顺序：`wisp_base < wisp_os < wisp_hal < wisp_core < wisp_net < wisp_voice < wisp_admin < wisp_ui < wisp_scene < wisp_agent < wisp_shell < wisp_app`），禁止反向依赖"更上层"。
 3. 只有 `wisp_port_esp`、`wisp_port_sim`、`boards/*`、`drivers/*` 和入口层（`firmware/main`、`simulator/`）可以接触平台。
 4. 每个 `components/wisp_{base..app}/CMakeLists.txt` 的 `wisp_component()` 调用，`IDF_REQUIRES`/`HOST_LIBS` 只能出现 ArduinoJson（`wisp_base`）和 LVGL（`wisp_ui`）这两个外部依赖——防止绕开 `#include` 检查，直接在 CMake 里给某个可移植组件挂一个平台或宿主机专属依赖。`REQUIRES` 只能列更低层的可移植组件；唯一的例外是 `third_party/` 下原样引入的组件：`wisp_scene` 可以 `REQUIRES lua`，其他层都不行。
 5. 规则由 `tools/check_layering.py` 强制检查（`bash tools/ci.sh` 会跑它，先跑 `tools/check_layering_test.py` 自测），扫描每个可移植组件下的 `.hpp/.cpp/.h/.c`（`wisp_ui/fonts/` 下的移植字体数据除外）及其 `CMakeLists.txt`。
@@ -84,7 +85,7 @@
 
 | 主题 | 发布方 | 说明 |
 |---|---|---|
-| `button.<id>.down` / `.up` / `.short` / `.long` | `core::ButtonService` | `<id>` 为按键设备 id（`button.power`、`button.vol_up`、`button.vol_down`），同时是 `Event::source` |
+| `button.<id>.down` / `.up` / `.short` / `.long` | `core::ButtonService` | `<id>` 为按键设备 id（`button.power`、`button.vol_up`、`button.vol_down`），同时是 `Event::source`；caps `role` 为 `"talk"` 的按键（两块板上都是 `button.vol_down`，真机即 BOOT 键）由 `shell::TalkKey` 按 `down`/`up` 做按住说话 |
 | `power.state` | `app::PowerManager` | 每次级别变化时发布，`payload = {"state": "active"\|"dim"\|"standby"\|"deep_standby"}`；`standby` 与 `deep_standby` 都是灭屏，`dim` 仍亮屏 |
 | `power.wakelock` | `core::WakeLockRegistry` | 每次取得或释放唤醒锁时发布，`Event::source` 为 `power`，`payload = {"op": "acquire"\|"release", "holder": "system.<模块>"\|"scene.<id>", "kind": "network"\|"cpu"\|"screen", "reason": string}` |
 | `notification.posted` | `core::NotificationService` | 场景设备 spec 5.7，每条通知发出时发布（包括前台场景只弹横幅、不进未读列表的那种），`Event::source` 为 `"notifications"`，`payload = {"id": string, "source": "system"\|<场景 id>, "title": string}`，系统通知的 `title` 是它的代码（如 `battery_low`），待办提醒（`source` 为 `"system.reminder"`，mvp spec 5.2）的 `title` 固定为 `"reminder"`，不含待办标题。不含正文。同一来源同一 id 再发一次是替换，只发这一条，旧的不发 `notification.dismissed` |

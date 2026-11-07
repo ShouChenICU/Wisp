@@ -189,7 +189,7 @@ wisp_test(NAME sim_audio_test SRCS sim/sim_audio_test.cpp
           LIBS wisp_port_sim_dev wisp_os wisp_port_sim_os TIMEOUT 20)
 target_include_directories(sim_audio_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 wisp_test(NAME sim_board_test SRCS sim/sim_board_test.cpp
-          LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os TIMEOUT 20)
+          LIBS wisp_port_sim_dev wisp_shell wisp_core wisp_os wisp_port_sim_os TIMEOUT 20)
 target_include_directories(sim_board_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 wisp_test(NAME imu_script_test SRCS sim/imu_script_test.cpp
           LIBS wisp_port_sim_dev wisp_core wisp_os wisp_port_sim_os)
@@ -325,6 +325,13 @@ wisp_test(NAME pcm_player_test SRCS voice/pcm_player_test.cpp
 wisp_test(NAME voice_service_test SRCS voice/voice_service_test.cpp
           LIBS wisp_voice wisp_net wisp_core wisp_port_sim_os TIMEOUT 60)
 
+# wisp_shell: the conversation controller and the talk key over the real
+# agent and voice services (shell/shell_fixture.hpp).
+# (agent/conversation_test is the agent's ConversationStore.)
+wisp_test(NAME shell_conversation_test SRCS shell/conversation_test.cpp
+          LIBS wisp_shell wisp_port_sim_os TIMEOUT 120)
+wisp_test(NAME talk_key_test SRCS shell/talk_key_test.cpp LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
+
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.
 foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test routes_firmware_test
@@ -422,6 +429,9 @@ target_include_directories(agent_wiring_test PRIVATE ${WISP_ROOT}/components/wis
 wisp_test(NAME app_agent_test SRCS app/app_agent_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
 target_include_directories(app_agent_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+wisp_test(NAME voice_wiring_test SRCS app/voice_wiring_test.cpp
+          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
+target_include_directories(voice_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 
 # DocIsUpToDate compares docs/scene-api.md with the schema and writes the
 # expected text into the build directory when they differ.

@@ -29,6 +29,7 @@
 #include "self_check.hpp"
 #include "settings_front.hpp"
 #include "status_shell.hpp"
+#include "voice_wiring.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/app/system_notices.hpp"
@@ -187,6 +188,10 @@ struct App::Impl {
     // its api()); started once the runtime runs. App::stop() stops it
     // before the scene runtime and resets it once networking is gone.
     os::LargeUnique<AgentWiring> agent;
+    // The voice and the conversation controller (voice_wiring.hpp): built
+    // right after the agent, started once it runs, stopped before it
+    // stops and reset right after.
+    os::LargeUnique<VoiceWiring> voice;
     // Settings served from memory and saved on the scenes' storage worker
     // (wisp/core/cached_settings.hpp), attached to settings_front from
     // right after that worker starts until App::stop() has stopped it.

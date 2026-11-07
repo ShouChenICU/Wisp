@@ -25,7 +25,9 @@ namespace wisp::port::esp {
 
 class EspGpioButton : public wisp::hal::Button {
 public:
-    EspGpioButton(gpio_num_t pin, bool active_low, std::string id, std::string model);
+    // `role`, when not empty, becomes caps "role" (wisp/hal/button.hpp).
+    EspGpioButton(gpio_num_t pin, bool active_low, std::string id, std::string model,
+                  std::string role = {});
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
 

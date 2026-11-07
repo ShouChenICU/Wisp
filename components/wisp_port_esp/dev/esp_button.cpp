@@ -4,12 +4,14 @@
 
 namespace wisp::port::esp {
 
-EspGpioButton::EspGpioButton(gpio_num_t pin, bool active_low, std::string id, std::string model)
+EspGpioButton::EspGpioButton(gpio_num_t pin, bool active_low, std::string id, std::string model,
+                             std::string role)
     : pin_(pin), active_low_(active_low) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = std::move(model);
     info_.caps = wisp::Properties{{"standby", wisp::Value("wake_source")}};
+    if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
 Result<void> EspGpioButton::set_power(wisp::hal::PowerLevel /*level*/) {

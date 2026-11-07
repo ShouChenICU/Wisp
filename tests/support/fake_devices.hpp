@@ -273,10 +273,11 @@ private:
 
 class FakeButton : public wisp::hal::Button {
 public:
-    explicit FakeButton(std::string id) {
+    explicit FakeButton(std::string id, wisp::Properties caps = {}) {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
+        info_.caps = std::move(caps);
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }

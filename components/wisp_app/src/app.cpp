@@ -502,6 +502,30 @@ Result<void> App::start() {
         scenes->repository() != nullptr) {
         build_agent(shape);
     }
+    // The voice, with the agent it talks to.
+    if (impl_->agent) {
+        App::Impl* impl = impl_.get();
+        impl_->voice = os::make_large<VoiceWiring>(VoiceWiringDeps{
+            .bus = impl->bus,
+            .registry = impl->registry,
+            .models = impl->models,
+            .settings = impl->system_settings,
+            .agent = *impl->agent->service(),
+            .locks = &impl->wakelocks,
+            .tones = impl->tones.get(),
+            .http = impl->platform.http_client.get(),
+            // As the agent sees it: without a Wi-Fi service the host's
+            // network is assumed.
+            .network_up =
+                [impl] {
+                    std::optional<net::WifiState> st =
+                        impl->net ? impl->net->wifi_state() : std::nullopt;
+                    return !st || *st == net::WifiState::Connected;
+                },
+            .screen_on = [impl] { return impl->power_manager && !impl->power_manager->standby(); },
+        });
+        if (!impl_->voice) WLOG_E("app", "no memory for the voice; voice is off");
+    }
 
     // Step 4b: networking (connectivity spec 4.1), before the self-check
     // screen so that screen can show the network state. Never waits for
@@ -624,6 +648,8 @@ Result<void> App::start() {
                 WLOG_E("app", "agent not started: %s", r.error().message.c_str());
             }
         }
+        // Once the agent takes text; without its tasks the voice is off.
+        if (impl_->voice && !impl_->voice->start()) impl_->voice.reset();
     }
 
     // boot_ms is recorded here -- right after Step 4, once the self-check
@@ -716,6 +742,11 @@ void App::stop() {
     // (a run_sync() after the worker stops would run inline on its stack,
     // which may be in PSRAM). The object stays until networking, whose
     // routes hold its api(), is gone.
+    // The voice before the agent it submits to and listens to.
+    if (impl_->voice) {
+        impl_->voice->stop();
+        impl_->voice.reset();
+    }
     if (impl_->agent) impl_->agent->stop();
     // No more timer or pass on the worker; the router's queued actions,
     // already on the worker's queue, run before stop() returns.
@@ -1060,6 +1091,9 @@ core::OccupancyRegistry& App::occupancy() { return impl_->occupancy; }
 core::SensorService* App::sensors() { return impl_->sensors.get(); }
 agent::AgentService* App::agent() { return impl_->agent ? impl_->agent->service() : nullptr; }
 core::MemoryStore* App::memory() { return impl_->agent ? impl_->agent->memory() : nullptr; }
+shell::ConversationController* App::conversation() {
+    return impl_->voice ? &impl_->voice->conversation() : nullptr;
+}
 core::StorageWorker* App::storage_worker() {
     return impl_->scenes ? &impl_->scenes->worker() : nullptr;
 }

@@ -31,6 +31,7 @@ add_subdirectory(${WISP_ROOT}/components/wisp_ui wisp_ui)
 add_subdirectory(${WISP_ROOT}/third_party/lua lua)
 add_subdirectory(${WISP_ROOT}/components/wisp_scene wisp_scene)
 add_subdirectory(${WISP_ROOT}/components/wisp_agent wisp_agent)
+add_subdirectory(${WISP_ROOT}/components/wisp_shell wisp_shell)
 add_subdirectory(${WISP_ROOT}/components/wisp_app wisp_app)
 add_subdirectory(${WISP_ROOT}/components/wisp_port_sim wisp_port_sim)
 
@@ -64,7 +65,7 @@ include(${WISP_ROOT}/cmake/wisp_version.cmake)
 wisp_version(WISP_SIM_VERSION)
 target_compile_definitions(wisp_sim PRIVATE WISP_VERSION="${WISP_SIM_VERSION}")
 target_link_libraries(wisp_sim PRIVATE
-    wisp_app wisp_core wisp_hal wisp_os wisp_base wisp_ui
+    wisp_app wisp_shell wisp_core wisp_hal wisp_os wisp_base wisp_ui
     wisp_port_sim_os wisp_port_sim_settings wisp_port_sim_dev wisp_port_sim_net
     wisp_port_sim_ui
     SDL2::SDL2

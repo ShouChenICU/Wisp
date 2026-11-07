@@ -16,7 +16,7 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-# Portable components (wisp_base/os/hal/core/net/admin/ui/scene/agent/app) plus
+# Portable components (wisp_base/os/hal/core/net/voice/admin/ui/scene/agent/shell/app) plus
 # the ESP-only wisp_port_esp port all live under components/; vendored
 # upstream sources (third_party/lua, used only by wisp_scene) under
 # third_party/; board-specific code (selected below via WISP_BOARD) lives

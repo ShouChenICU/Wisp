@@ -92,7 +92,8 @@ class SimButton : public wisp::hal::Button {
 public:
     enum class Kind { Power, VolUp, VolDown };
 
-    SimButton(std::string id, Kind kind, std::shared_ptr<SimInput> input);
+    // `role`, when not empty, becomes caps "role" (wisp/hal/button.hpp).
+    SimButton(std::string id, Kind kind, std::shared_ptr<SimInput> input, std::string role = {});
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     bool pressed() override;
     // A wake source: stays on at every level.

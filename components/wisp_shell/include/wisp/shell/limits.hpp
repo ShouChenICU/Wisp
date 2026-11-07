@@ -1,0 +1,30 @@
+#pragma once
+
+// Shell constants (MVP spec 6). Sizes are percentages of the safe area's
+// shorter side or pixels, durations milliseconds.
+
+#include <cstddef>
+#include <cstdint>
+
+namespace wisp::shell {
+
+// The wisp on the main screen: idle, and during a turn (spec 6.2).
+inline constexpr int kWispIdlePercent = 45;
+inline constexpr int kWispTurnPercent = 28;
+// The <say> text below the wisp, and the heard text above it.
+inline constexpr int kSayFontPx = 28;
+inline constexpr int kHeardMaxLines = 2;
+// The turn's text fades this long after its last interaction.
+inline constexpr uint32_t kFadeAfterMs = 15000;
+// A swipe (spec 6.3): this far, and this many times more along its main
+// direction than across it.
+inline constexpr int kSwipeMinPx = 40;
+inline constexpr int kSwipeDominance = 2;
+// Conversation history pages load this many turns at a time (spec 6.4).
+inline constexpr size_t kHistoryBatch = 50;
+// The in-scene overlay shows the say text this long (spec 6.5).
+inline constexpr uint32_t kOverlaySayMs = 5000;
+// The wisp looks upset this long after an error.
+inline constexpr uint32_t kErrorMoodMs = 2000;
+
+}  // namespace wisp::shell

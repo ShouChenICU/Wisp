@@ -119,6 +119,10 @@ namespace wisp::agent {
 class AgentService;
 }
 
+namespace wisp::shell {
+class ConversationController;
+}
+
 namespace wisp::hal {
 struct ScreenShape;
 }
@@ -385,6 +389,9 @@ public:
     // it; nullptr under the same conditions as agent(). Its writes run on
     // storage_worker() only.
     core::MemoryStore* memory();
+    // Voice and agent joined (mvp spec 1.5, 6.3), built and started with
+    // the agent; nullptr under the same conditions as agent().
+    shell::ConversationController* conversation();
 
     // Writes what still waits for flash before the device restarts, powers
     // off or enters deep standby (spec 3.8 of
