@@ -135,6 +135,14 @@ Source: `feat/agent-core` review records.
   - the chat page hides messages by role rather than the `hidden` field;
   - the `ws.js` typedef comment does not list the `agent` kind;
   - the dropped-frame catch-up and the "allow" branch of Clear all were not exercised live (no scripted LLM traffic, no simulated dialog tap).
+- Memory notes:
+  - `AgentLoop.MemoryNotesInTheRequest` rebuilds the context lambda itself; add an `agent_wiring_test` case for `memory_path_of`, the load in `start()` and the context wrapper;
+  - the notes path is derived from `conversation_dir`; give `AgentWiringDeps` its own `memory_path` (an empty `conversation_dir` yields `/memory/notes.json`);
+  - whitespace-only text is accepted as a note;
+  - write-failure rollback and `update` returning `empty`/`too_long` have no test;
+  - the mutex is held across `write_atomic`, so `list()` waits for a write; matters once the admin HTTP thread calls it;
+  - a write that fails after the `.new` file is complete rolls memory back while the next read restores `.new`;
+  - a failed `clear()` leaves `load_failed_` cleared.
 - Wi-Fi pages:
   - the "已保存的网络" card rows on the network page have no connect button; only a pick in the scan list connects directly;
   - the setup wizard's step indicator marks "输入密码" done when a saved network was joined without one;
