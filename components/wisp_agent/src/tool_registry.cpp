@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -91,77 +92,106 @@ std::string scene_data(std::string_view scene_id, std::string_view content) {
     return scene::scene_data(scene_id, content);
 }
 
-ToolRegistry::ToolRegistry(ToolExecutors ex) : ex_(std::move(ex)) { rebuild_json(); }
+ToolRegistry::ToolRegistry(ToolExecutors ex) : ex_(std::move(ex)), json_("[]") {}
 
 Result<void> ToolRegistry::add(ToolDef def) {
+    const std::string name(def.name.data(), def.name.size());
     if (!valid_name(def.name)) {
-        return Result<void>::err(ErrorCode::InvalidArgument, "bad tool name: " + def.name);
+        return Result<void>::err(ErrorCode::InvalidArgument, "bad tool name: " + name);
     }
-    if (by_name_.count(def.name) != 0) {
-        return Result<void>::err(ErrorCode::InvalidArgument, "duplicate tool: " + def.name);
+    if (find(def.name) != nullptr) {
+        return Result<void>::err(ErrorCode::InvalidArgument, "duplicate tool: " + name);
     }
     if (!def.run) {
-        return Result<void>::err(ErrorCode::InvalidArgument, "no run function: " + def.name);
+        return Result<void>::err(ErrorCode::InvalidArgument, "no run function: " + name);
     }
-    auto schema = from_json(def.schema_json.empty() ? kEmptySchema : def.schema_json);
-    if (!schema) {
-        return Result<void>::err(ErrorCode::InvalidArgument,
-                                 def.name + ": schema is not JSON: " + schema.error().message);
+    if (entries_.size() >= std::numeric_limits<uint16_t>::max()) {
+        return Result<void>::err(ErrorCode::InvalidArgument, "too many tools: " + name);
     }
-    std::string why;
-    if (!schema_supported(schema.value(), &why)) {
-        return Result<void>::err(ErrorCode::InvalidArgument, def.name + ": " + why);
+    // Parsed only to check it and to write it compactly into tools_json();
+    // both the tree and the text are freed before anything is kept.
+    std::string parameters;
+    {
+        auto schema = from_json(def.schema_json.empty() ? std::string_view(kEmptySchema)
+                                                        : std::string_view(def.schema_json));
+        if (!schema) {
+            return Result<void>::err(ErrorCode::InvalidArgument,
+                                     name + ": schema is not JSON: " + schema.error().message);
+        }
+        std::string why;
+        if (!schema_supported(schema.value(), &why)) {
+            return Result<void>::err(ErrorCode::InvalidArgument, name + ": " + why);
+        }
+        const Value* type = schema.value().find("type");
+        if (type->as_string() != "object") {
+            return Result<void>::err(ErrorCode::InvalidArgument,
+                                     name + ": arguments must be an object schema");
+        }
+        // Re-serialized, so the text is compact and the same on every boot.
+        parameters = to_json(schema.value());
     }
-    const Value* type = schema.value().find("type");
-    if (type->as_string() != "object") {
-        return Result<void>::err(ErrorCode::InvalidArgument,
-                                 def.name + ": arguments must be an object schema");
-    }
-    std::string wire = wire_name(def.name);
-    by_name_.emplace(def.name, entries_.size());
-    by_wire_.emplace(wire, entries_.size());
-    entries_.push_back(Entry{std::move(def), std::move(wire), std::move(schema.value())});
-    rebuild_json();
+
+    os::LargeString wire(def.name);
+    std::replace(wire.begin(), wire.end(), '.', '_');
+    const auto pos = static_cast<uint16_t>(entries_.size());
+    entries_.push_back(Entry{std::move(def), std::move(wire)});
+    const Entry& e = entries_.back();
+    auto name_at = std::lower_bound(
+        by_name_.begin(), by_name_.end(), e.def.name,
+        [this](uint16_t i, const os::LargeString& k) { return entries_[i].def.name < k; });
+    by_name_.insert(name_at, pos);
+    auto wire_at = std::lower_bound(
+        by_wire_.begin(), by_wire_.end(), e.wire,
+        [this](uint16_t i, const os::LargeString& k) { return entries_[i].wire < k; });
+    by_wire_.insert(wire_at, pos);
+    append_json(e, parameters);
     return Result<void>::ok();
 }
 
+const ToolRegistry::Entry* ToolRegistry::find_entry(std::string_view key, bool wire) const {
+    const os::LargeVector<uint16_t>& index = wire ? by_wire_ : by_name_;
+    auto key_of = [this, wire](uint16_t i) -> std::string_view {
+        const Entry& e = entries_[i];
+        return wire ? std::string_view(e.wire) : std::string_view(e.def.name);
+    };
+    auto it = std::lower_bound(index.begin(), index.end(), key,
+                               [&](uint16_t i, std::string_view k) { return key_of(i) < k; });
+    if (it == index.end() || key_of(*it) != key) return nullptr;
+    return &entries_[*it];
+}
+
 const ToolDef* ToolRegistry::find(std::string_view dotted) const {
-    auto it = by_name_.find(dotted);
-    return it == by_name_.end() ? nullptr : &entries_[it->second].def;
+    const Entry* e = find_entry(dotted, /*wire=*/false);
+    return e == nullptr ? nullptr : &e->def;
 }
 
 const ToolDef* ToolRegistry::find_wire(std::string_view wire) const {
-    auto it = by_wire_.find(wire);
-    return it == by_wire_.end() ? nullptr : &entries_[it->second].def;
+    const Entry* e = find_entry(wire, /*wire=*/true);
+    return e == nullptr ? nullptr : &e->def;
 }
 
 const os::LargeString& ToolRegistry::tools_json() const { return json_; }
 
-void ToolRegistry::rebuild_json() {
-    os::LargeString out;
-    out.push_back('[');
-    for (size_t i = 0; i < entries_.size(); ++i) {
-        const Entry& e = entries_[i];
-        if (i > 0) out.push_back(',');
-        out.append(R"({"type":"function","function":{"name":)");
-        append_json_string(out, e.wire);
-        out.append(R"(,"description":)");
-        append_json_string(out, e.def.description);
-        out.append(R"(,"parameters":)");
-        // Re-serialized, so the text is compact and the same on every boot.
-        out.append(to_json(e.schema));
-        out.append("}}");
-    }
-    out.push_back(']');
-    json_ = std::move(out);
+// Appended in place of the closing ']', so adding a tool costs only its own
+// text and the array is complete after every add().
+void ToolRegistry::append_json(const Entry& e, std::string_view parameters) {
+    json_.pop_back();
+    if (entries_.size() > 1) json_.push_back(',');
+    json_.append(R"({"type":"function","function":{"name":)");
+    append_json_string(json_, e.wire);
+    json_.append(R"(,"description":)");
+    append_json_string(json_, e.def.description);
+    json_.append(R"(,"parameters":)");
+    json_.append(parameters.data(), parameters.size());
+    json_.append("}}]");
 }
 
 ToolOutput ToolRegistry::call(std::string_view wire, std::string_view args_json, ToolCtx& ctx) {
-    auto it = by_wire_.find(wire);
-    if (it == by_wire_.end()) {
+    const Entry* found = find_entry(wire, /*wire=*/true);
+    if (found == nullptr) {
         return tool_error("unknown_tool", "no tool named " + std::string(wire));
     }
-    const Entry& e = entries_[it->second];
+    const Entry& e = *found;
 
     Value args = Value(Map{});
     if (!blank(args_json)) {
@@ -175,8 +205,14 @@ ToolOutput ToolRegistry::call(std::string_view wire, std::string_view args_json,
     if (args.type() != Value::Type::Map) {
         return tool_error("bad_args", "arguments must be a JSON object", Map{{"field", ""}});
     }
+    // add() checked it, so it parses.
+    auto schema = from_json(e.def.schema_json.empty() ? std::string_view(kEmptySchema)
+                                                      : std::string_view(e.def.schema_json));
+    if (!schema) {
+        return tool_error("internal", schema.error().message);
+    }
     std::string why;
-    if (auto field = validate_args(e.schema, args, &why)) {
+    if (auto field = validate_args(schema.value(), args, &why)) {
         return tool_error("bad_args", why, Map{{"field", *field}});
     }
     if (ctx.cancelled && ctx.cancelled()) {

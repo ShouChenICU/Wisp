@@ -46,7 +46,9 @@ uint32_t id_arg(const Value& a) {
 }  // namespace
 
 Result<void> add_memory_tools(ToolRegistry& reg, MemoryToolDeps deps) {
-    auto d = std::make_shared<MemoryToolDeps>(std::move(deps));
+    // Lives as long as the tools, so in PSRAM with the registry.
+    auto d =
+        std::allocate_shared<MemoryToolDeps>(os::LargeAllocator<MemoryToolDeps>(), std::move(deps));
 
     WISP_TRY(reg.add({
         .name = "memory.list",

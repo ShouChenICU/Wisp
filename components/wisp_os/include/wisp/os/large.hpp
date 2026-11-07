@@ -21,6 +21,7 @@
 #include <new>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -145,5 +146,117 @@ LargeUnique<T> make_large(A&&... args) {
     }
     return LargeUnique<T>(::new (p) T(std::forward<A>(args)...));
 }
+
+// A copyable std::function look-alike whose callable always lives in
+// Mem::Large. std::function keeps a callable inline only when it is
+// trivially copyable and no bigger than two pointers, so a lambda holding
+// a shared_ptr or a few references goes to the default heap, internal RAM
+// on the device, for as long as the function lives. Use this for
+// callables kept for the life of the program. Like LargeAllocator it
+// aborts when PSRAM is exhausted, and calling an empty one aborts.
+template <class Sig>
+class LargeFunction;
+
+template <class R, class... A>
+class LargeFunction<R(A...)> {
+public:
+    LargeFunction() = default;
+    LargeFunction(std::nullptr_t) noexcept {}  // NOLINT(google-explicit-constructor)
+
+    template <class F, class D = std::decay_t<F>,
+              class = std::enable_if_t<!std::is_same_v<D, LargeFunction> &&
+                                       !std::is_same_v<D, std::nullptr_t> &&
+                                       std::is_invocable_r_v<R, D&, A...>>>
+    LargeFunction(F&& f) {  // NOLINT(google-explicit-constructor)
+        static_assert(alignof(D) <= alignof(std::max_align_t),
+                      "os::alloc only guarantees malloc's alignment");
+        obj_ = ::new (checked_alloc(sizeof(D))) D(std::forward<F>(f));
+        ops_ = &kOps<D>;
+    }
+
+    LargeFunction(const LargeFunction& other)
+        : obj_(other.ops_ != nullptr ? other.ops_->clone(other.obj_) : nullptr), ops_(other.ops_) {}
+
+    LargeFunction(LargeFunction&& other) noexcept
+        : obj_(std::exchange(other.obj_, nullptr)), ops_(std::exchange(other.ops_, nullptr)) {}
+
+    LargeFunction& operator=(const LargeFunction& other) {
+        if (this != &other) {
+            LargeFunction copy(other);
+            swap(copy);
+        }
+        return *this;
+    }
+
+    LargeFunction& operator=(LargeFunction&& other) noexcept {
+        if (this != &other) {
+            reset();
+            obj_ = std::exchange(other.obj_, nullptr);
+            ops_ = std::exchange(other.ops_, nullptr);
+        }
+        return *this;
+    }
+
+    LargeFunction& operator=(std::nullptr_t) noexcept {
+        reset();
+        return *this;
+    }
+
+    ~LargeFunction() { reset(); }
+
+    explicit operator bool() const noexcept { return ops_ != nullptr; }
+
+    R operator()(A... args) const {
+        if (ops_ == nullptr) {
+            std::abort();
+        }
+        return ops_->call(obj_, std::forward<A>(args)...);
+    }
+
+    void swap(LargeFunction& other) noexcept {
+        std::swap(obj_, other.obj_);
+        std::swap(ops_, other.ops_);
+    }
+
+private:
+    struct Ops {
+        R (*call)(void*, A&&...);
+        void* (*clone)(const void*);
+        void (*destroy)(void*);
+    };
+
+    static void* checked_alloc(size_t bytes) {
+        void* p = alloc(bytes, Mem::Large);
+        if (p == nullptr) {
+            std::abort();
+        }
+        return p;
+    }
+
+    template <class D>
+    static constexpr Ops kOps{
+        [](void* o, A&&... args) -> R {
+            return static_cast<R>((*static_cast<D*>(o))(std::forward<A>(args)...));
+        },
+        [](const void* o) -> void* {
+            return ::new (checked_alloc(sizeof(D))) D(*static_cast<const D*>(o));
+        },
+        [](void* o) {
+            static_cast<D*>(o)->~D();
+            dealloc(o);
+        },
+    };
+
+    void reset() noexcept {
+        if (ops_ != nullptr) {
+            ops_->destroy(obj_);
+        }
+        obj_ = nullptr;
+        ops_ = nullptr;
+    }
+
+    void* obj_ = nullptr;
+    const Ops* ops_ = nullptr;
+};
 
 }  // namespace wisp::os

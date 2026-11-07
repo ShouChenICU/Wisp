@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <string>
 #include <utility>
 
 #include "wisp/os/os.hpp"
@@ -85,4 +87,51 @@ TEST(OsRealloc, PreservesPrefixAndHandlesEdges) {
 
     EXPECT_EQ(realloc(q, 0, Mem::Large), nullptr);
     EXPECT_EQ(realloc(r, 0, Mem::Large), nullptr);
+}
+
+TEST(LargeFunction, CallsCopiesMovesAndEmpties) {
+    LargeFunction<int(int, std::string&)> empty;
+    EXPECT_FALSE(empty);
+    LargeFunction<int(int, std::string&)> null = nullptr;
+    EXPECT_FALSE(null);
+
+    // A shared_ptr capture: what std::function would put on the default heap.
+    auto count = std::make_shared<int>(0);
+    LargeFunction<int(int, std::string&)> f = [count](int x, std::string& out) {
+        ++*count;
+        out += "x";
+        return x * 2;
+    };
+    ASSERT_TRUE(f);
+    std::string s;
+    EXPECT_EQ(f(21, s), 42);
+    EXPECT_EQ(s, "x");
+
+    LargeFunction<int(int, std::string&)> copy = f;
+    EXPECT_EQ(count.use_count(), 3);
+    EXPECT_EQ(copy(1, s), 2);
+    EXPECT_EQ(*count, 2);
+
+    LargeFunction<int(int, std::string&)> moved = std::move(f);
+    EXPECT_FALSE(f);  // NOLINT(bugprone-use-after-move): moved-from state is specified
+    EXPECT_EQ(moved(2, s), 4);
+    EXPECT_EQ(count.use_count(), 3);
+
+    copy = nullptr;
+    EXPECT_FALSE(copy);
+    EXPECT_EQ(count.use_count(), 2);
+    copy = moved;
+    EXPECT_EQ(count.use_count(), 3);
+    moved = std::move(copy);
+    EXPECT_EQ(count.use_count(), 2);
+    moved = LargeFunction<int(int, std::string&)>();
+    EXPECT_EQ(count.use_count(), 1);
+}
+
+TEST(LargeFunction, VoidResult) {
+    int hits = 0;
+    LargeFunction<void()> f = [&hits] { ++hits; };
+    f();
+    f();
+    EXPECT_EQ(hits, 2);
 }

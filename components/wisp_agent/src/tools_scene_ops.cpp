@@ -144,7 +144,8 @@ struct Ops {
 }  // namespace
 
 Result<void> add_scene_ops_tools(ToolRegistry& reg, SceneOpsDeps deps) {
-    auto ops = std::make_shared<Ops>(Ops{std::move(deps)});
+    // Lives as long as the tools, so in PSRAM with the registry.
+    auto ops = std::allocate_shared<Ops>(os::LargeAllocator<Ops>(), Ops{std::move(deps)});
 
     WISP_TRY(reg.add({
         .name = "scene.open",

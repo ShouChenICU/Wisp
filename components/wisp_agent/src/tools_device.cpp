@@ -56,7 +56,9 @@ ui::Lang lang_of(const ToolCtx& ctx) { return ui::parse_lang(ctx.lang).value_or(
 }  // namespace
 
 Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps) {
-    auto d = std::make_shared<DeviceToolDeps>(std::move(deps));
+    // Lives as long as the tools, so in PSRAM with the registry.
+    auto d =
+        std::allocate_shared<DeviceToolDeps>(os::LargeAllocator<DeviceToolDeps>(), std::move(deps));
 
     WISP_TRY(reg.add({
         .name = "device.status",

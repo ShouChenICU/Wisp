@@ -652,7 +652,7 @@ struct AgentService::Impl {
 
     void run_tool(uint32_t turn, const net::LlmToolCall& c, bool cut, Outcome& out) {
         const ToolDef* def = deps.tools.find_wire(c.name);
-        const std::string dotted = def != nullptr ? def->name : c.name;
+        const std::string dotted = def != nullptr ? std::string(sv(def->name)) : c.name;
         set_state(AgentState::Tool, dotted);
         AgentEvent start;
         start.kind = AgentEvent::Kind::ToolStart;

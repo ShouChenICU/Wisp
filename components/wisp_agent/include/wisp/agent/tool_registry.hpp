@@ -15,10 +15,18 @@
 // a reference-counted state with call(). When call() gives up (timeout,
 // cancel) the thread cannot be interrupted: it runs to the end, its
 // cancelled() then returns true, and its result is dropped.
+//
+// Everything the registry keeps for the life of the program lives in
+// Mem::Large (PSRAM on the device): the definitions' text and run
+// functions (os::LargeString, os::LargeFunction), the entries and their
+// indexes, and tools_json(). An ordinary allocation under 16 KB would
+// stay in internal SRAM for good (AGENTS.md section 8), and with dozens
+// of tools that is tens of KB. Argument schemas are kept as text and
+// parsed per call: a parsed Value is a tree of std::map nodes on the
+// default heap, and calls are rare next to the time the registry lives.
 
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -46,16 +54,16 @@ struct ToolOutput {
     std::string note;  // the system note shown to the user, "" for none
 };
 
-using ToolFn = std::function<ToolOutput(const Value& args, ToolCtx& ctx)>;
+using ToolFn = os::LargeFunction<ToolOutput(const Value& args, ToolCtx& ctx)>;
 
 // Asks the user on the device (agent-core spec 6.1); true for yes.
 // AgentService::confirm_fn() provides it.
 using ConfirmFn = std::function<bool(const std::string& text, ToolCtx& ctx)>;
 
 struct ToolDef {
-    std::string name;  // dotted, ^[a-z]+\.[a-z_]+$
-    std::string description;
-    std::string schema_json{};  // JSON Schema subset (validate_args); "" is an empty object
+    os::LargeString name;  // dotted, ^[a-z]+\.[a-z_]+$
+    os::LargeString description;
+    os::LargeString schema_json{};  // JSON Schema subset (validate_args); "" is an empty object
     ToolRisk risk = ToolRisk::Normal;
     // Where run() runs. The default, Agent, runs it on wisp.agent itself,
     // whose stack may be in PSRAM (flash_access = false): a tool that
@@ -100,16 +108,18 @@ public:
 private:
     struct Entry {
         ToolDef def;
-        std::string wire;
-        Value schema;
+        os::LargeString wire;
     };
 
-    void rebuild_json();
+    const Entry* find_entry(std::string_view key, bool wire) const;
+    void append_json(const Entry& e, std::string_view parameters);
 
     ToolExecutors ex_;
-    std::vector<Entry> entries_;
-    std::map<std::string, size_t, std::less<>> by_name_;
-    std::map<std::string, size_t, std::less<>> by_wire_;
+    os::LargeVector<Entry> entries_;
+    // Positions in entries_, sorted by def.name and by wire, for binary
+    // search.
+    os::LargeVector<uint16_t> by_name_;
+    os::LargeVector<uint16_t> by_wire_;
     os::LargeString json_;
 };
 

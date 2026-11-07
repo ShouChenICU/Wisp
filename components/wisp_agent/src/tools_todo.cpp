@@ -75,7 +75,9 @@ constexpr const char* kRepeatWhy = R"(repeat must be "none", "daily" or {"weekly
 }  // namespace
 
 Result<void> add_todo_tools(ToolRegistry& reg, TodoToolDeps deps) {
-    auto d = std::make_shared<TodoToolDeps>(std::move(deps));
+    // Lives as long as the tools, so in PSRAM with the registry.
+    auto d =
+        std::allocate_shared<TodoToolDeps>(os::LargeAllocator<TodoToolDeps>(), std::move(deps));
     auto offset = [d] { return d->scheduler.utc_offset_min(); };
 
     WISP_TRY(reg.add({
