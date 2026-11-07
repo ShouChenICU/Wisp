@@ -1,5 +1,8 @@
 #include "wisp/shell/shell.hpp"
 
+#include <algorithm>
+#include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "page_frame.hpp"
@@ -11,6 +14,7 @@
 #include "wisp/shell/limits.hpp"
 #include "wisp/shell/scene_recents.hpp"
 #include "wisp/shell/settings_page.hpp"
+#include "wisp/shell/talk_overlay.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
@@ -22,6 +26,8 @@ namespace wisp::shell {
 
 namespace {
 constexpr const char* kTag = "shell";
+// The talk overlay's tick(), as often as Home's own refresh timer.
+constexpr uint32_t kTalkTickMs = 250;
 
 ui::StrId title_of(Page p) {
     switch (p) {
@@ -34,6 +40,15 @@ ui::StrId title_of(Page p) {
             break;
     }
     return ui::StrId::PageHistory;
+}
+
+std::optional<voice::VoiceState> parse_voice(const std::string& s) {
+    using voice::VoiceState;
+    for (VoiceState v : {VoiceState::Idle, VoiceState::Listening, VoiceState::Transcribing,
+                         VoiceState::Speaking, VoiceState::Error}) {
+        if (s == voice::to_string(v)) return v;
+    }
+    return std::nullopt;
 }
 }  // namespace
 
@@ -81,14 +96,28 @@ void Shell::start() {
     lv_screen_load(home_screen_);
     listing_ = std::make_shared<std::atomic<bool>>(false);
     icons_ = std::make_shared<IconCache>();
-    if (deps_.list_scenes) {
-        scene_sub_ = deps_.bus.subscribe("scene.state", [this, alive = alive_](const core::Event&) {
-            // On the bus's thread: the list is read again from the UI
-            // thread, which knows whether it is open.
-            deps_.ui.post([this, alive] {
-                if (*alive && scenes_) list_scenes();
-            });
+    // Always subscribed: a scene.state event hides the talk overlay (the
+    // scene that was in front may no longer be) whether or not the scene
+    // list is also listening for it.
+    scene_sub_ = deps_.bus.subscribe("scene.state", [this, alive = alive_](const core::Event&) {
+        // On the bus's thread: the list is read again from the UI
+        // thread, which knows whether it is open.
+        deps_.ui.post([this, alive] {
+            if (!*alive) return;
+            if (talk_) talk_->hide();
+            if (scenes_) list_scenes();
         });
+    });
+    talk_ =
+        std::make_unique<TalkOverlay>(deps_.layer, deps_.shape, [this] { post_show(Page::Home); });
+    // on_voice_bus() only touches atomics directly; request_talk() (which
+    // it calls) does its own posting with its own alive_ check.
+    talk_voice_sub_ =
+        deps_.bus.subscribe("voice.state", [this](const core::Event& e) { on_voice_bus(e); });
+    talk_timer_ = lv_timer_create(&Shell::talk_timer_cb, kTalkTickMs, this);
+    if (deps_.conversation != nullptr) {
+        talk_listener_ =
+            deps_.conversation->add_listener([this](const TurnView&) { request_talk(); });
     }
     show(Page::Home);
 }
@@ -99,6 +128,17 @@ void Shell::stop() {
         deps_.bus.unsubscribe(scene_sub_);
         scene_sub_ = 0;
     }
+    if (talk_voice_sub_ != 0) {
+        deps_.bus.unsubscribe(talk_voice_sub_);
+        talk_voice_sub_ = 0;
+    }
+    if (talk_timer_ != nullptr) {
+        lv_timer_delete(talk_timer_);
+        talk_timer_ = nullptr;
+    }
+    if (deps_.conversation != nullptr && talk_listener_ != 0)
+        deps_.conversation->remove_listener(talk_listener_);
+    talk_listener_ = 0;
     if (diag_ != nullptr) close_diagnostics();
     *alive_ = false;
     alive_.reset();
@@ -109,6 +149,7 @@ void Shell::stop() {
         lv_screen_load(back);
     }
     delete_page();
+    talk_.reset();
     home_->stop();  // deletes the home screen and the wisp with it
     home_.reset();
     home_screen_ = nullptr;
@@ -117,8 +158,63 @@ void Shell::stop() {
 }
 
 void Shell::set_conversation(ConversationController* conversation) {
+    if (deps_.conversation != nullptr && talk_listener_ != 0)
+        deps_.conversation->remove_listener(talk_listener_);
+    talk_listener_ = 0;
     deps_.conversation = conversation;
     if (home_ != nullptr) home_->set_conversation(conversation);
+    if (deps_.conversation != nullptr) {
+        talk_listener_ =
+            deps_.conversation->add_listener([this](const TurnView&) { request_talk(); });
+    }
+    request_talk();
+}
+
+bool Shell::scene_in_front() const {
+    if (home_ == nullptr) return false;
+    lv_obj_t* act = lv_screen_active();
+    return act != home_screen_ && act != sub_ && act != diag_;
+}
+
+void Shell::request_talk() {
+    if (!talk_) return;
+    if (talk_posted_.exchange(true)) return;
+    // A full queue: nothing is lost (the next request_talk() tries again),
+    // but the flag must come back down or every later call would see it
+    // still set and never post again.
+    if (!deps_.ui.post([this, alive = alive_] {
+            talk_posted_.store(false);
+            if (*alive) update_talk();
+        }))
+        talk_posted_.store(false);
+}
+
+void Shell::update_talk() {
+    if (!talk_ || !scene_in_front()) return;
+    const TurnView view =
+        deps_.conversation != nullptr ? deps_.conversation->current() : TurnView{};
+    talk_->on_turn(view, voice_state_.load(), voice_level_.load(), deps_.now_ms());
+}
+
+void Shell::on_voice_bus(const core::Event& e) {
+    auto it = e.payload.find("state");
+    const std::string state = it != e.payload.end() && it->second.type() == Value::Type::String
+                                  ? it->second.as_string()
+                                  : std::string();
+    if (auto v = parse_voice(state)) {
+        voice_state_.store(*v);
+        auto lvl = e.payload.find("level");
+        voice_level_.store(
+            lvl != e.payload.end() && lvl->second.type() == Value::Type::Int
+                ? static_cast<uint8_t>(std::clamp<int64_t>(lvl->second.as_int(), 0, 100))
+                : 0);
+    }
+    request_talk();
+}
+
+void Shell::talk_timer_cb(lv_timer_t* t) {
+    auto* self = static_cast<Shell*>(lv_timer_get_user_data(t));
+    if (self->talk_) self->talk_->tick(self->deps_.now_ms());
 }
 
 bool Shell::leave_scene() {

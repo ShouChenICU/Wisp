@@ -421,6 +421,8 @@ const char* strings_ja(StrId id) {
                    "ドを入力してください";
         case StrId::AboutDiagnostics:
             return "ハードウェア診断";
+        case StrId::TalkThinking:
+            return "考え中…";
         case StrId::Count:
             break;
     }

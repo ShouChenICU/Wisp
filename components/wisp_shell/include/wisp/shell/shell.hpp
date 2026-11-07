@@ -38,6 +38,13 @@
 // loading the screen it replaced. When the scene cannot be sent back the
 // navigation is refused and the scene stays in front.
 //
+// The talk overlay (wisp/shell/talk_overlay.hpp, mvp spec 6.5): while a
+// scene is in front (the active screen is none of the shell's own --
+// scene_in_front()), every change of the conversation or the voice state
+// is forwarded to it; its own tap opens the home screen the same way
+// leave_scene() does. Any "scene.state" event hides it at once, since the
+// scene that was in front may no longer be.
+//
 // Threading: every member is UI thread only, like every lv_* call. A
 // swipe's or back swipe's work is posted (it arrives from inside an LVGL
 // event or the pointer's read callback, where the screen under the finger
@@ -58,6 +65,7 @@
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/shell/scene_list.hpp"
+#include "wisp/voice/voice_service.hpp"
 
 namespace wisp::ui {
 class SystemLayer;
@@ -76,6 +84,7 @@ class Home;
 class HistoryPage;
 class SceneRecents;
 class SettingsPage;
+class TalkOverlay;
 
 enum class Page : uint8_t { Home, Settings, Scenes, History };
 // "home" "settings" "scenes" "history"
@@ -189,6 +198,16 @@ private:
     void set_diag_back_handler();
     static void diag_loaded_cb(lv_event_t* e);
 
+    // The talk overlay. True while the active screen is a scene's own
+    // (none of the shell's).
+    bool scene_in_front() const;
+    // Coalesces a burst of conversation/voice changes into one UI-thread
+    // update_talk() already queued.
+    void request_talk();
+    void update_talk();
+    void on_voice_bus(const core::Event& e);
+    static void talk_timer_cb(lv_timer_t* t);
+
     ShellDeps deps_;
     Page page_ = Page::Home;
     // What was active before start(), loaded again by stop().
@@ -223,6 +242,15 @@ private:
     // The diagnostics' screen while it is open (owned by the App's
     // self-check object).
     lv_obj_t* diag_ = nullptr;
+
+    std::unique_ptr<TalkOverlay> talk_;
+    uint32_t talk_listener_ = 0;  // on deps_.conversation
+    core::SubscriptionId talk_voice_sub_ = 0;
+    lv_timer_t* talk_timer_ = nullptr;
+    std::atomic<voice::VoiceState> voice_state_{voice::VoiceState::Idle};
+    std::atomic<uint8_t> voice_level_{0};
+    std::atomic<bool> talk_posted_{false};
+
     // Cleared by stop(): a back swipe's post queued before it does
     // nothing.
     std::shared_ptr<bool> alive_;

@@ -328,6 +328,9 @@ enum class StrId : uint16_t {
     AboutAddressNone,
     AboutPairHint,
     AboutDiagnostics,
+    // The talk overlay (mvp spec 6.5): shown over a scene while holding to
+    // talk, once the capture has ended and the agent has not replied yet.
+    TalkThinking,
 
     Count,  // not a string; keep last
 };

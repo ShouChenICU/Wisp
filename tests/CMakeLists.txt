@@ -347,6 +347,8 @@ wisp_test(NAME shell_settings_page_test SRCS shell/settings_page_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME shell_subpage_shapes_test SRCS shell/subpage_shapes_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 90)
+wisp_test(NAME shell_talk_overlay_test SRCS shell/talk_overlay_test.cpp
+          LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.

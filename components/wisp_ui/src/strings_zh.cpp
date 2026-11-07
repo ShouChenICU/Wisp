@@ -415,6 +415,8 @@ const char* strings_zh(StrId id) {
             return "在浏览器打开管理后台地址，按提示输入设备上显示的配对码";
         case StrId::AboutDiagnostics:
             return "硬件诊断";
+        case StrId::TalkThinking:
+            return "思考中…";
         case StrId::Count:
             break;
     }

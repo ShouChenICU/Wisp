@@ -418,6 +418,8 @@ const char* strings_en(StrId id) {
                    "the device when asked";
         case StrId::AboutDiagnostics:
             return "Hardware diagnostics";
+        case StrId::TalkThinking:
+            return "Thinking…";
         case StrId::Count:
             break;
     }
