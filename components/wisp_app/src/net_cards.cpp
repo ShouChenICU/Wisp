@@ -24,6 +24,10 @@ constexpr int32_t kQrSafePercent = 45;
 // Digits in a 6-digit code are set apart this far, on top of the space in
 // the middle, so they read one by one.
 constexpr int32_t kCodeLetterSpace = 6;
+// The success view's check badge; the check's points are laid out for
+// this side.
+constexpr int32_t kOkBadgeSide = 64;
+constexpr int32_t kOkCheckWidth = 6;
 
 // Whole seconds left, rounded up, so a countdown never shows 0 while
 // its deadline is still ahead.
@@ -61,6 +65,28 @@ lv_obj_t* make_card(const hal::Area& safe) {
     // redrawing the card on every frame.
     ui::mark_opaque_overlay(card);
     return card;
+}
+
+// A filled circle with a check mark drawn as a line: LV_SYMBOL_OK only
+// exists in the 16 px Montserrat font, too small to read across the room.
+lv_obj_t* add_ok_badge(lv_obj_t* card) {
+    lv_obj_t* badge = lv_obj_create(card);
+    lv_obj_remove_style_all(badge);
+    lv_obj_set_size(badge, kOkBadgeSide, kOkBadgeSide);
+    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(badge, lv_color_hex(ui::theme::kOk), 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(badge, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+
+    // lv_line keeps a pointer to its points, so they must outlive it.
+    static const lv_point_precise_t kCheck[] = {{18, 33}, {28, 43}, {46, 23}};
+    lv_obj_t* check = lv_line_create(badge);
+    lv_line_set_points(check, kCheck, 3);
+    lv_obj_set_style_line_width(check, kOkCheckWidth, 0);
+    lv_obj_set_style_line_rounded(check, true, 0);
+    lv_obj_set_style_line_color(check, lv_color_hex(ui::theme::kSurface), 0);
+    return badge;
 }
 
 lv_obj_t* add_text(lv_obj_t* card, const std::string& text) {
@@ -200,8 +226,8 @@ void ProvisioningCard::build_success(const hal::Area& safe, ui::Lang lang, uint6
     success_ = true;
     lang_ = lang;
     card_ = make_card(safe);
-    add_text(card_, std::string(LV_SYMBOL_OK " ") +
-                        ui::tr_fill(ui::StrId::SetupDoneTitle, lang, done_ssid_));
+    add_ok_badge(card_);
+    add_text(card_, ui::tr_fill(ui::StrId::SetupDoneTitle, lang, done_ssid_));
     add_text(card_, ui::tr_fill(ui::StrId::SetupDoneAddress, lang, done_url_));
     lv_obj_t* btn = add_button(card_, "", ui::ButtonRole::Primary, &ProvisioningCard::ok_cb, this);
     ok_label_ = lv_obj_get_child(btn, 0);

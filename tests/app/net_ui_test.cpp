@@ -606,6 +606,21 @@ TEST(NetUi, ProvisioningSuccessViewShowsTheNewAddressInsideSafeArea) {
                 if (card == nullptr) return std::string("no card titled ") + title;
                 std::string fit = check_card_fits(card, safe);
                 if (!fit.empty()) return fit;
+                // A big check badge first, centred above the title.
+                lv_obj_t* badge = lv_obj_get_child(card, 0);
+                lv_obj_t* title_label = find_label_containing(card, title.c_str());
+                if (badge == nullptr || lv_obj_check_type(badge, &lv_label_class)) {
+                    return std::string("no badge before the title");
+                }
+                lv_area_t b, c, t;
+                lv_obj_get_coords(badge, &b);
+                lv_obj_get_coords(card, &c);
+                lv_obj_get_coords(title_label, &t);
+                if (lv_area_get_width(&b) < 48) return std::string("badge too small");
+                if (std::abs((b.x1 + b.x2) - (c.x1 + c.x2)) > 2) {
+                    return std::string("badge not centred");
+                }
+                if (b.y2 > t.y1) return std::string("badge not above the title");
                 lv_obj_t* label = find_label_containing(card, ok.c_str());
                 if (label == nullptr) return std::string("no OK button");
                 std::string row =
