@@ -534,17 +534,35 @@ Result<void> WifiService::add_network(std::string_view ssid, std::string_view pa
     WLOG_I(kTag, "saved network '%.*s' (%zu saved)", static_cast<int>(ssid.size()), ssid.data(),
            networks_.size());
 
+    try_directly_locked(ssid, now_ms);
+    return Result<void>::ok();
+}
+
+Result<void> WifiService::connect_saved(std::string_view ssid, uint64_t now_ms) {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    if (find_locked(ssid) == nullptr) {
+        return Result<void>::err(ErrorCode::NotFound, "network not saved");
+    }
+    ++generation_;
+    WLOG_I(kTag, "connecting to saved network '%.*s' on request", static_cast<int>(ssid.size()),
+           ssid.data());
+    try_directly_locked(ssid, now_ms);
+    return Result<void>::ok();
+}
+
+void WifiService::try_directly_locked(std::string_view ssid, uint64_t now_ms) {
     if (ap_) provisioned_ssids_.emplace(ssid);
     in_flight_ = false;
     in_flight_ssid_.clear();
+    // A direct attempt connects to this network whatever its auth_failed
+    // mark (finish_attempt_locked() only skips marked ones when scanning).
     direct_ssid_ = std::string(ssid);
     backoff_ms_ = config_.backoff_min_ms;
     // With the radio off the attempt waits for set_power_level() to turn
     // it back on, which connects to this network first.
-    if (radio_off_) return Result<void>::ok();
+    if (radio_off_) return;
     schedule_attempt_locked(now_ms);
     set_state_locked(WifiState::Connecting, std::string(ssid), "", 0);
-    return Result<void>::ok();
 }
 
 Result<void> WifiService::forget_network(std::string_view ssid) {

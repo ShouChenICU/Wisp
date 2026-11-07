@@ -1388,3 +1388,98 @@ TEST(WifiService, FullQueueRefusesTheChange) {
     ASSERT_TRUE(again.init(0));
     EXPECT_EQ(again.saved_ssids(), (std::vector<std::string>{"Cafe"}));
 }
+
+// Picking a saved network connects to it with the stored password at once,
+// skipping the scan and any pending backoff.
+TEST(WifiService, ConnectSavedTriesItAtOnce) {
+    Fixture f;
+    f.in_range("A", -40, "passwordA");
+    f.in_range("B", -70, "passwordB");
+    f.seed({{"A", "passwordA"}, {"B", "passwordB"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    ASSERT_EQ(svc.status().ssid, "A");
+    const int scans = f.wifi->scan_calls.load();
+
+    ASSERT_TRUE(svc.connect_saved("B", 1000));
+    EXPECT_EQ(svc.status().state, WifiState::Connecting);
+    EXPECT_EQ(svc.status().ssid, "B");
+    tick2(svc, 1000);
+    EXPECT_EQ(f.wifi->scan_calls.load(), scans);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+    EXPECT_EQ(svc.status().ssid, "B");
+
+    // Nothing new is persisted: the file still lists the same two networks.
+    auto& again = f.make();
+    ASSERT_TRUE(again.init(0));
+    EXPECT_EQ(again.saved_ssids(), (std::vector<std::string>{"A", "B"}));
+}
+
+TEST(WifiService, ConnectSavedUnknownIsNotFound) {
+    Fixture f;
+    f.in_range("A", -40, "passwordA");
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    auto r = svc.connect_saved("A", 0);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::NotFound);
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    svc.tick(0);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 0);
+}
+
+// The user asked for this network, so its parked password is tried once
+// more; another rejection keeps it parked and automatic selection still
+// skips it. Only a new password clears the mark (spec 3).
+TEST(WifiService, ConnectSavedTriesAnAuthFailedNetworkOnce) {
+    Fixture f;
+    f.in_range("B", -40, "passwordB");
+    f.seed({{"B", "wrongpassB"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    uint64_t now = reject_times(f, svc, 3, 0);
+    ASSERT_TRUE(svc.saved_networks()[0].auth_failed);
+    ASSERT_EQ(f.wifi->connect_calls.load(), 3);
+
+    ASSERT_TRUE(svc.connect_saved("B", now));
+    EXPECT_TRUE(svc.saved_networks()[0].auth_failed);
+    tick2(svc, now);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 4);
+    EXPECT_EQ(svc.status().state, WifiState::Backoff);
+    EXPECT_EQ(svc.status().reason, "auth_failed");
+    EXPECT_TRUE(svc.saved_networks()[0].auth_failed);
+
+    tick2(svc, svc.status().retry_at_ms);  // automatic again: skipped
+    EXPECT_EQ(f.wifi->connect_calls.load(), 4);
+}
+
+// Joining a saved network from the setup page counts as provisioning just
+// like adding one: success arms the hotspot's linger rules.
+TEST(WifiService, ConnectSavedOverTheHotspotCountsAsProvisioning) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    f.seed({{"Home", "homepass1"}});
+    f.wifi->reachable = false;  // the saved network is out of reach at boot
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    ASSERT_EQ(svc.status().state, WifiState::Backoff);
+    ASSERT_TRUE(svc.start_provisioning(0));
+    f.wifi->ap_client_count = 1;
+    svc.tick(1000);
+
+    f.wifi->reachable = true;
+    ASSERT_TRUE(svc.connect_saved("Home", 2000));
+    svc.tick(2000);
+    svc.tick(2250);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    auto result = svc.provisioning_result();
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->ssid, "Home");
+
+    svc.tick(32249);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+    svc.tick(32250);
+    EXPECT_FALSE(f.wifi->ap_active.load());
+}

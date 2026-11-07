@@ -178,6 +178,7 @@ Result<WifiStatus> status();                 // state, ssid, ip, rssi
 Result<std::vector<ScanResult>> scan();      // ssid, rssi, auth, 是否已保存
 Result<void> add_network(std::string_view ssid, std::string_view password);
 Result<void> forget_network(std::string_view ssid);
+Result<void> connect_saved(std::string_view ssid);  // 用保存的密码立即直接尝试；未保存时 NotFound
 std::vector<std::string> saved_ssids();      // 只有 SSID，没有密码
 std::vector<SavedNetwork> saved_networks();  // SSID 与 auth_failed 标记（见 4.2），没有密码
 Result<ApSession> start_provisioning();      // ssid、密码（只交给屏幕显示）、地址
@@ -296,6 +297,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | 设置 | `GET /settings`、`PUT /settings` | 是 | 经 `SystemSettings` 校验并立即生效 |
 | Wi-Fi | `GET /wifi`、`GET /wifi/scan` | 是 | `GET /wifi`：`{state, ssid, ssid_hex, ip, rssi, reason, saved, ap}`，`saved` 的每项为 `{ssid, ssid_hex, auth_failed}`（`auth_failed` 见 4.2）；扫描结果每项为 `{ssid, ssid_hex, rssi, secured, saved}` |
 | | `POST /wifi/networks {ssid \| ssid_hex, password?}`、`DELETE /wifi/networks/{ssid}` | 是 | 添加 / 删除网络；`ssid` 与 `ssid_hex` 必须且只能给一个，`ssid_hex` 不是偶数位十六进制时返回 400；`DELETE` 的路径段按 `%XX` 解码成原始字节 |
+| | `POST /wifi/networks/{ssid}/connect` | 是 | 用设备保存的密码连接这个已保存的网络，返回 202（与添加网络相同，连接在 net 任务上进行）；没有保存时返回 404 `not_found`。路径段与 `DELETE` 相同，按 `%XX` 解码成原始字节。与添加网络一样立即直接尝试它（不扫描、退避重置），即使它被标记为 `auth_failed` 也尝试一次，但不清除标记（只有重新输入密码才清除，见 4.2），也不写入任何东西；经配网热点调用时与添加网络一样算作这次配网的结果（见 4.3） |
 | 模型 | `GET /ai/profiles` | 是 | `{active, profiles}`，见 5.3 |
 | | `GET /ai/presets` | 是 | 预设表 |
 | | `POST /ai/profiles {kind, name, preset, base_url?, model?, options?, api_key? \| api_key_from?}` | 是 | 201，返回新配置（不含 Key） |
@@ -400,11 +402,11 @@ web/
 | 配对 | 未配对时显示：按下"获取配对码"，再输入屏幕上显示的 6 位数字 |
 | 概览 | 电量与充电、Wi-Fi、存储、运行时长、固件版本等状态卡片，通过 WebSocket 事件实时刷新 |
 | 外设 | 设备列表（id、类别、状态），展开可查看 caps |
-| 网络 | 当前连接、已保存的网络（可删除）、扫描并添加网络 |
+| 网络 | 当前连接、已保存的网络（可删除）、扫描并添加网络。在扫描列表里选一个已保存的网络时直接用保存的密码连接（`POST /wifi/networks/{ssid}/connect`），不弹密码框；选中后有一个次要的"改密码"链接，打开原来的添加流程。该网络已被标记 `auth_failed`，或这次连接因 `auth_failed` 失败时，退回密码框。设备正连着的那个网络只显示"改密码" |
 | 模型 | 「对话 / 语音识别 / 语音合成」三个标签页，三类配置严格分开、互不混列：每个标签页只列出、新建、编辑、测试、激活和删除本类型的配置，"设为当前"只影响本类型；所选标签记在地址的 hash 中（如 `#/models/asr`）。各标签页显示该类型的配置列表（名称、平台、地址、模型、Key 已设置/未设置，激活的有标记）；"新建配置"：先选该类型可用的预设，自动填入地址，再填名称、Key（或"沿用某套配置的 Key"，只列出同源的配置）；`tts` 多一个音色输入框；每套配置可编辑、测试连接（成功后模型下拉框列出可选模型，也可手动输入）、设为当前、删除 |
 | 系统 | 亮度、音量、自动熄屏时间、设备语言；网络时间（上次同步时间、服务器、"立即同步"按钮）；已配对的浏览器列表；重启；恢复出厂设置；固件：当前版本与板名、选择文件上传（进度条）、"请在设备上确认"、结果 |
 | 日志 | 实时滚动，可按级别过滤、暂停、清屏 |
-| `/setup` 配网向导 | 选择网络 → 输入密码 → 连接中 → 显示新地址并提供"进入后台"按钮 |
+| `/setup` 配网向导 | 选择网络 → 输入密码 → 连接中 → 显示新地址并提供"进入后台"按钮。选已保存的网络时跳过输入密码，直接用保存的密码连接，连接中页面提供"改密码"链接；该网络已被标记 `auth_failed`，或这次连接因 `auth_failed` 失败时，退回输入密码 |
 
 ### 7.4 多语言
 

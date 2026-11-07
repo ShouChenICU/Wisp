@@ -320,6 +320,55 @@ TEST(Routes, WifiNetworkDeleteDecodesSsid) {
     }
 }
 
+// Picking a saved network connects with its stored password (spec 6.1);
+// the path segment is the URL-encoded SSID, as for DELETE.
+TEST(Routes, ConnectSavedRoute) {
+    AdminFixture f;
+    const std::string token = f.token();
+    f.fake_wifi->networks = {{"My Home", -60, true}, {"咖啡馆", -50, true}};
+    f.fake_wifi->passwords["My Home"] = "correct-horse";
+    f.fake_wifi->passwords["咖啡馆"] = "coffee-beans";
+    ASSERT_TRUE(f.wifi->add_network("My Home", "correct-horse", f.now));
+    ASSERT_TRUE(f.wifi->add_network("咖啡馆", "coffee-beans", f.now));
+    f.wifi->tick(f.now);
+    f.wifi->tick(f.now);
+    ASSERT_EQ(f.wifi->status().ssid, "咖啡馆");
+
+    HttpResponse res =
+        f.srv->handle(authed(token, Post, "/api/v1/wifi/networks/My%20Home/connect"));
+    EXPECT_EQ(res.status, 202);
+    EXPECT_EQ(f.wifi->status().state, wisp::net::WifiState::Connecting);
+    EXPECT_EQ(f.wifi->status().ssid, "My Home");
+    f.wifi->tick(f.now);
+    f.wifi->tick(f.now);
+    EXPECT_EQ(f.wifi->status().state, wisp::net::WifiState::Connected);
+    EXPECT_EQ(f.wifi->status().ssid, "My Home");
+
+    EXPECT_EQ(f.srv
+                  ->handle(authed(token, Post,
+                                  "/api/v1/wifi/networks/%E5%92%96%E5%95%A1%E9%A6%86/connect"))
+                  .status,
+              202);
+    EXPECT_EQ(f.wifi->status().ssid, "咖啡馆");
+
+    HttpResponse missing = f.srv->handle(authed(token, Post, "/api/v1/wifi/networks/Nope/connect"));
+    EXPECT_EQ(missing.status, 404);
+    EXPECT_EQ(error_code(missing), "not_found");
+
+    HttpResponse bad = f.srv->handle(authed(token, Post, "/api/v1/wifi/networks/bad%zz/connect"));
+    EXPECT_EQ(bad.status, 400);
+    EXPECT_EQ(error_code(bad), "invalid_argument");
+
+    // Mutating: no X-Wisp, no attempt; no token, no attempt.
+    HttpResponse no_csrf =
+        f.srv->handle(with_token(make_req(Post, "/api/v1/wifi/networks/My%20Home/connect"), token));
+    EXPECT_EQ(no_csrf.status, 403);
+    EXPECT_EQ(
+        f.srv->handle(with_csrf(make_req(Post, "/api/v1/wifi/networks/My%20Home/connect"))).status,
+        401);
+    EXPECT_EQ(f.wifi->status().ssid, "咖啡馆");
+}
+
 TEST(Routes, SettingsPutValidatesAndApplies) {
     AdminFixture f;
     std::vector<uint8_t> applied;

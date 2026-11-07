@@ -175,6 +175,15 @@ public:
     // after the radio is back on).
     Result<void> add_network(std::string_view ssid, std::string_view password, uint64_t now_ms);
 
+    // Connects to a saved network with its stored password: the next
+    // tick() tries exactly this network, as after add_network(), even one
+    // marked auth_failed (the user asked for it). Its auth_failed mark and
+    // rejection count stay; only new credentials clear them, so another
+    // rejection leaves it parked. Persists nothing. While the hotspot is
+    // up this counts as the setup page's join (provisioning_result()).
+    // NotFound if not saved.
+    Result<void> connect_saved(std::string_view ssid, uint64_t now_ms);
+
     // NotFound if not saved. Forgetting the network currently in use drops
     // the link (and reconnects to another saved network, if any).
     Result<void> forget_network(std::string_view ssid);
@@ -249,6 +258,10 @@ private:
     void schedule_attempt_locked(uint64_t at_ms);
     void fail_attempt_locked(uint64_t now_ms, const char* why, const char* reason);
     void start_connect_locked(const Network& net, uint64_t now_ms);
+    // Makes the next tick() try `ssid` (saved) without scanning, at once
+    // and with the backoff reset; while the hotspot is up, a success there
+    // counts as provisioning.
+    void try_directly_locked(std::string_view ssid, uint64_t now_ms);
     void poll_link_locked(uint64_t now_ms);
     void tick_ap_locked(uint64_t now_ms);
     std::optional<AttemptPlan> plan_attempt_locked(uint64_t now_ms);
@@ -299,7 +312,8 @@ private:
     // Set when the current session's provisioned network connects; see
     // provisioning_result().
     std::optional<ProvisioningResult> provisioned_;
-    // SSIDs added through add_network() while the hotspot is up; only one
+    // SSIDs added through add_network() or picked with connect_saved()
+    // while the hotspot is up; only one
     // of these connecting means provisioning succeeded.
     std::set<std::string> provisioned_ssids_;
 };

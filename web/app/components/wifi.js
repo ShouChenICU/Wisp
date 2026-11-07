@@ -91,7 +91,10 @@ export function ssidField(n) {
   return lossy(n) ? { ssid_hex: n.ssid_hex } : { ssid: n.ssid };
 }
 
-/** The path segment that names network `n` in DELETE /wifi/networks/{ssid}. */
+/**
+ * The path segment that names network `n` in DELETE /wifi/networks/{ssid}
+ * and POST /wifi/networks/{ssid}/connect.
+ */
 export function networkPath(n) {
   return lossy(n) ? n.ssid_hex.replace(/../g, '%$&') : encodeURIComponent(n.ssid);
 }
@@ -135,6 +138,17 @@ export function SignalBars({ rssi }) {
 export function allRejected(wifi) {
   const saved = wifi?.saved;
   return Array.isArray(saved) && saved.length > 0 && saved.every((n) => n.auth_failed);
+}
+
+/**
+ * The scan entries whose saved password the device has parked (GET /wifi
+ * "saved", `auth_failed`), as a set of ssidKey()s. Picking one of those asks
+ * for the password again instead of connecting with the stored one.
+ * @param {{saved?: {ssid: string, ssid_hex?: string, auth_failed: boolean}[]}} wifi
+ */
+export function rejectedKeys(wifi) {
+  const saved = Array.isArray(wifi?.saved) ? wifi.saved : [];
+  return new Set(saved.filter((n) => n.auth_failed).map(ssidKey));
 }
 
 /** The localized cause of a failed join ("not_found", "auth_failed", ...). */
@@ -356,7 +370,10 @@ export function JoinForm({ network, busy, error, submitText, onSubmit, onCancel,
 }
 
 /**
- * Sends a join (POST /wifi/networks) and follows it to an outcome.
+ * Sends a join (POST /wifi/networks) and follows it to an outcome. With
+ * `{saved: true}` it joins a saved network with the password the device
+ * keeps (POST /wifi/networks/{ssid}/connect, `password` unused); a 404
+ * there (`error.code` "not_found") means the network is no longer saved.
  *
  * The device answers 202 and connects on its own task, announcing each
  * step as net.wifi.state. The request goes out once the event socket is
@@ -389,9 +406,10 @@ export function JoinForm({ network, busy, error, submitText, onSubmit, onCancel,
  *                 | {ok: false, timeout: true, lost?: true}
  *                 | {ok: false, error: any}) => void} onResult
  *   called once; `error` is an ApiError from the request itself
+ * @param {{saved?: boolean}} [options]
  * @returns {() => void} stops following (no result is reported after)
  */
-export function joinNetwork(target, password, onResult) {
+export function joinNetwork(target, password, onResult, options = {}) {
   const key = ssidKey(target);
   // Declared before subscribe(): it may report "open" synchronously.
   let done = false;
@@ -482,8 +500,10 @@ export function joinNetwork(target, password, onResult) {
     if (sent || done) return;
     sent = true;
     clearTimeout(openWait);
-    const body = { ...ssidField(target), ...(password ? { password } : {}) };
-    api('POST', '/wifi/networks', body)
+    const request = options.saved
+      ? api('POST', '/wifi/networks/' + networkPath(target) + '/connect')
+      : api('POST', '/wifi/networks', { ...ssidField(target), ...(password ? { password } : {}) });
+    request
       .then(() => {
         if (done) return;
         posted = true;

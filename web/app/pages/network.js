@@ -1,7 +1,10 @@
 // Network (spec 7.3): the current connection, the saved networks (up to
 // five, each removable) and a scan to add one. While the tab is visible
 // the page follows net.wifi.state / net.ap.state, so a join started here
-// (or anywhere else) shows up as it happens.
+// (or anywhere else) shows up as it happens. Picking a saved network in the
+// scan list connects with the password the device keeps; "改密码" opens the
+// password form instead, and so does a parked or rejected stored password
+// (spec 7.3).
 //
 // Networks are identified by ssidKey() (their bytes in hex), never by the
 // displayed name, which is lossy for SSIDs that are not UTF-8.
@@ -26,6 +29,7 @@ import {
   networkPath,
   prepareScan,
   reasonText,
+  rejectedKeys,
   ssidKey,
 } from '../components/wifi.js';
 import { IconAlert, IconCheck, IconKey, IconPlus, IconRefresh, IconSearch, IconTrash, IconWifi } from '../icons.js';
@@ -63,7 +67,9 @@ export function NetworkPage() {
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState(null);
   // Where the join form is open: {where: 'scan'|'saved', key} or
-  // {where: 'manual'} for a hidden network; null when closed.
+  // {where: 'manual'} for a hidden network; null when closed. `stored`:
+  // a saved scan entry, joined with its stored password, whose password
+  // form stays closed until "改密码".
   const [selected, setSelected] = useState(null);
   // {ssid, key, phase: 'busy'|'ok'|'fail', text?, ip?}
   const [join, setJoin] = useState(null);
@@ -140,7 +146,30 @@ export function NetworkPage() {
     setJoin(null);
   }
 
-  function startJoin(target, password) {
+  // A scan entry: a saved one (not parked) connects with its stored
+  // password straight away, unless the device is already on it.
+  function pickScan(n) {
+    if (join?.phase === 'busy') return;
+    const same = selected?.where === 'scan' && selected.key === n.ssid_hex;
+    if (same || !n.saved || rejectedKeys(wifi).has(n.ssid_hex)) {
+      pick('scan', n.ssid_hex);
+      return;
+    }
+    setSelected({ where: 'scan', key: n.ssid_hex, stored: true });
+    if (n.ssid_hex === currentKey) setJoin(null);
+    else startJoin(n, '', true);
+  }
+
+  // "改密码": the password form for the selected saved network.
+  function changePassword() {
+    stopJoin.current?.();
+    stopJoin.current = null;
+    setSelected((sel) => (sel ? { where: sel.where, key: sel.key } : sel));
+    setJoin(null);
+  }
+
+  // `stored`: join with the device's stored password.
+  function startJoin(target, password, stored = false) {
     stopJoin.current?.();
     const key = ssidKey(target);
     const ssid = target.ssid;
@@ -148,6 +177,14 @@ export function NetworkPage() {
     stopJoin.current = joinNetwork(target, password, (r) => {
       stopJoin.current = null;
       if (!alive.current) return;
+      if (stored && !r.ok && (r.reason === 'auth_failed' || r.error?.code === 'not_found')) {
+        // The stored password no longer works, or the network is no
+        // longer saved: open the password form.
+        setSelected((sel) => (sel && sel.key === key ? { where: sel.where, key } : sel));
+        setJoin(r.reason === 'auth_failed' ? { ssid, key, phase: 'fail', text: t('join.saved_rejected') } : null);
+        load();
+        return;
+      }
       if (r.ok) {
         setJoin({ ssid, key, phase: 'ok', ip: r.ip });
         setSelected(null);
@@ -157,7 +194,7 @@ export function NetworkPage() {
         setJoin({ ssid, key, phase: 'fail', text: joinFailureText(r) });
       }
       load();
-    });
+    }, { saved: stored });
   }
 
   /** @param {SavedEntry} entry */
@@ -192,7 +229,9 @@ export function NetworkPage() {
   // Joining another network takes the device off the one this page
   // reaches it through.
   const form = (network) =>
-    html`<div class="scan-join">
+    selected?.stored && network
+      ? storedJoin(network)
+      : html`<div class="scan-join">
       ${currentKey && (!network || network.ssid_hex !== currentKey)
         ? html`<div class="inline-note tone-warn">
             <${IconAlert} size=${15} /><span>${t('net.switch_note')}</span>
@@ -219,6 +258,41 @@ export function NetworkPage() {
         }}
       />
     </div>`;
+
+  // A saved network joined with its stored password: progress or the
+  // outcome, and "改密码" for the password form.
+  const storedJoin = (network) => {
+    const here = network.ssid_hex === currentKey && !join;
+    return html`<div class="scan-join">
+      ${here
+        ? html`<p class="muted" role="status">${t('join.saved_current')}</p>`
+        : currentKey
+          ? html`<div class="inline-note tone-warn">
+              <${IconAlert} size=${15} /><span>${t('net.switch_note')}</span>
+            </div>`
+          : null}
+      ${busy
+        ? html`<p class="join-progress" role="status">
+            <span class="spinner" aria-hidden="true"></span>
+            ${t('net.joining', { ssid: displaySsid(join.ssid) })}
+          </p>`
+        : null}
+      ${!here && !busy && !joinError ? html`<p class="muted">${t('join.saved_note')}</p>` : null}
+      ${joinError
+        ? html`<div class="alert tone-err" role="alert">
+            <${IconAlert} size=${18} /><span>${joinError}</span>
+          </div>`
+        : null}
+      <div class="form-actions">
+        ${network.secured
+          ? html`<button type="button" class="btn btn-link" onClick=${changePassword}>${t('join.change_password')}</button>`
+          : null}
+        ${joinError
+          ? html`<button type="button" class="btn btn-primary" onClick=${() => startJoin(network, '', true)}>${t('common.retry')}</button>`
+          : null}
+      </div>
+    </div>`;
+  };
 
   return html`<div class="page">
     <header class="page-head">
@@ -287,7 +361,7 @@ export function NetworkPage() {
             hidden=${scan.hidden}
             selected=${selected?.where === 'scan' ? selected.key : ''}
             current=${currentKey}
-            onPick=${(n) => pick('scan', n.ssid_hex)}
+            onPick=${pickScan}
             disabled=${busy}
           >
             ${selected?.where === 'scan' ? form(scan.list.find((n) => n.ssid_hex === selected.key)) : null}

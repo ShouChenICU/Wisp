@@ -6,7 +6,10 @@
 // whose interface is loopback, always does), and the wizard falls back to
 // the normal pairing code. Then: pick a network -> password -> connecting
 // (following net.wifi.state for up to a minute) -> the device's new
-// address, or the reason it failed with a way to try again.
+// address, or the reason it failed with a way to try again. A saved
+// network skips the password and connects with the one the device keeps,
+// unless the device has parked that password or rejects it now; then the
+// password form opens (spec 7.3).
 //
 // From the network list on, the wizard holds an `events` subscription, so
 // the shared socket is already open when a join is sent and the join's own
@@ -32,6 +35,7 @@ import {
   joinFailureText,
   joinNetwork,
   prepareScan,
+  rejectedKeys,
 } from './components/wifi.js';
 import { PairPage } from './pages/pair.js';
 import { IconAlert, IconCheck, IconChevronLeft, IconPlus, IconRefresh, WispGlyph } from './icons.js';
@@ -57,15 +61,21 @@ function Wizard() {
   const [scan, setScan] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState(null);
+  // ssidKey()s of saved networks whose stored password is parked.
+  const [rejected, setRejected] = useState(() => new Set());
   // The network being joined: a scan entry, or {ssid, secured, manual}.
   const [network, setNetwork] = useState(null);
   const [manual, setManual] = useState(false);
   const [result, setResult] = useState(null);
   const [joinStart, setJoinStart] = useState(0);
   const [stopJoin, setStopJoin] = useState(null);
+  // Shown on the password form when the stored password was rejected.
+  const [formError, setFormError] = useState('');
   // Kept only for "try again" after a failure that was not the password's
   // fault; never rendered.
   const lastPassword = useRef('');
+  // The current join uses the device's stored password.
+  const savedJoin = useRef(false);
 
   async function authenticate() {
     setPhase('auth');
@@ -104,7 +114,12 @@ function Wizard() {
     setScanning(true);
     setScanError(null);
     try {
-      const r = await api('GET', '/wifi/scan');
+      const [r, wifi] = await Promise.all([
+        api('GET', '/wifi/scan'),
+        // Without it every saved network is tried with its stored password.
+        api('GET', '/wifi').catch(() => null),
+      ]);
+      setRejected(rejectedKeys(wifi));
       setScan(prepareScan(r?.networks));
     } catch (e) {
       if (e.status !== 401) setScanError(e);
@@ -116,27 +131,48 @@ function Wizard() {
   function choose(n) {
     setManual(false);
     setNetwork(n);
-    if (n.secured) setPhase('password');
+    setFormError('');
+    if (n.saved && !rejected.has(n.ssid_hex)) connect(n, '', true);
+    else if (n.secured) setPhase('password');
     else connect(n, '');
   }
 
+  // Leaves a join for the password form of the same network ("改密码").
+  function changePassword() {
+    stopJoin?.();
+    setStopJoin(null);
+    setManual(false);
+    setFormError('');
+    setPhase('password');
+  }
+
   // `target`: a scan entry, or the typed hidden network (JoinForm).
-  function connect(target, password) {
+  // `saved`: join with the device's stored password.
+  function connect(target, password, saved = false) {
     lastPassword.current = password;
+    savedJoin.current = saved;
     setNetwork(target);
     setResult(null);
+    setFormError('');
     setJoinStart(Date.now());
     setPhase('connecting');
     const stop = joinNetwork(target, password, (r) => {
       setStopJoin(null);
       setResult(r);
+      // The stored password no longer works, or the network is no longer
+      // saved: ask for the password as for a new network.
+      if (saved && !r.ok && (r.reason === 'auth_failed' || r.error?.code === 'not_found')) {
+        if (r.reason === 'auth_failed') setFormError(t('join.saved_rejected'));
+        setPhase('password');
+        return;
+      }
       setPhase(r.ok ? 'done' : 'failed');
       // The device closes its hotspot a few seconds after this page has
       // read the success over it (GET /wifi showing "connected", spec 3).
       // A result taken from the event socket was not such a read, so make
       // one; if it never arrives the hotspot still closes on its own.
       if (r.ok) api('GET', '/wifi').catch(() => {});
-    });
+    }, { saved });
     setStopJoin(() => stop);
   }
 
@@ -145,6 +181,7 @@ function Wizard() {
     setStopJoin(null);
     setManual(false);
     setResult(null);
+    setFormError('');
     setPhase('pick');
   }
 
@@ -211,11 +248,17 @@ function Wizard() {
         key=${manual ? 'manual' : network.ssid_hex}
         network=${manual ? undefined : network}
         idPrefix="setup-join"
+        error=${formError}
         submitText=${t('join.connect')}
         onSubmit=${connect}
       />`;
   } else if (phase === 'connecting') {
-    body = html`<${Connecting} ssid=${network?.ssid || ''} since=${joinStart} onBack=${backToList} />`;
+    body = html`<${Connecting}
+      ssid=${network?.ssid || ''}
+      since=${joinStart}
+      onBack=${backToList}
+      onChangePassword=${savedJoin.current && network?.secured ? changePassword : null}
+    />`;
   } else if (phase === 'done') {
     body = html`<${Done} ssid=${network?.ssid || ''} ip=${result?.ip || ''} />`;
   } else if (phase === 'failed') {
@@ -236,7 +279,7 @@ function Wizard() {
           : html`<button
               type="button"
               class="btn btn-primary btn-lg btn-block"
-              onClick=${() => connect(network, lastPassword.current)}
+              onClick=${() => connect(network, lastPassword.current, savedJoin.current)}
             >
               ${t('common.retry')}
             </button>`}
@@ -276,16 +319,21 @@ function Wizard() {
   </main>`;
 }
 
-function Connecting({ ssid, since, onBack }) {
+// `onChangePassword`: set for a join with the stored password.
+function Connecting({ ssid, since, onBack, onChangePassword }) {
   const now = useNow(500);
   const pct = Math.min(100, ((now - since) / JOIN_TIMEOUT_MS) * 100);
   return html`<div class="setup-result" role="status">
       <span class="setup-orb" aria-hidden="true"><${WispGlyph} size=${44} /></span>
       <h2 class="setup-h2">${t('setup.connecting', { ssid: displaySsid(ssid) })}</h2>
       <p class="muted">${t('setup.connecting_hint')}</p>
+      ${onChangePassword ? html`<p class="muted">${t('join.saved_note')}</p>` : null}
       <div class="meter tone-accent setup-meter" aria-hidden="true"><div class="meter-fill" style=${{ width: pct + '%' }}></div></div>
     </div>
-    <button type="button" class="btn btn-ghost btn-block" onClick=${onBack}>${t('setup.cancel')}</button>`;
+    <button type="button" class="btn btn-ghost btn-block" onClick=${onBack}>${t('setup.cancel')}</button>
+    ${onChangePassword
+      ? html`<button type="button" class="btn btn-link setup-manual" onClick=${onChangePassword}>${t('join.change_password')}</button>`
+      : null}`;
 }
 
 function Done({ ssid, ip }) {

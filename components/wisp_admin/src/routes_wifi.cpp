@@ -123,6 +123,16 @@ net::HttpResponse forget_network(AdminDeps& deps, const RequestContext& ctx) {
     return no_content();
 }
 
+// Connects to a saved network with its stored password. 202 like
+// add_network: the attempt happens later, on the net task.
+net::HttpResponse connect_saved(AdminDeps& deps, const RequestContext& ctx) {
+    std::optional<std::string> ssid = percent_decode(ctx.param);
+    if (!ssid) return bad_request("malformed %-escape in SSID");
+    auto r = deps.wifi.connect_saved(*ssid, ctx.now_ms);
+    if (!r) return service_error(r.error());
+    return ok_json(202);
+}
+
 }  // namespace
 
 void add_wifi_routes(std::vector<Route>& routes) {
@@ -131,6 +141,7 @@ void add_wifi_routes(std::vector<Route>& routes) {
     routes.push_back({Method::Get, "/wifi/scan", false, wifi_scan});
     routes.push_back({Method::Post, "/wifi/networks", false, add_network});
     routes.push_back({Method::Delete, "/wifi/networks/*", false, forget_network});
+    routes.push_back({Method::Post, "/wifi/networks/*/connect", false, connect_saved});
 }
 
 }  // namespace wisp::admin::detail
