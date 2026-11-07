@@ -113,12 +113,15 @@ struct SavedNetwork {
 
 struct WifiServiceConfig {
     uint32_t backoff_min_ms = 5000, backoff_max_ms = 300000;
-    // After a provisioning success the hotspot closes: at once when no
-    // phone is on it any more, ap_seen_linger_ms after the setup page has
-    // read the result (note_result_seen()), and ap_linger_ms after the
-    // success at the latest (spec 3).
+    // After a provisioning success the hotspot closes: once no phone has
+    // been on it for ap_empty_linger_ms in a row, ap_seen_linger_ms after
+    // the setup page has read the result (note_result_seen()), and
+    // ap_linger_ms after the success at the latest (spec 3). The empty
+    // grace is there because the station joining a network on another
+    // channel moves the hotspot to that channel, which briefly drops the
+    // phone.
     uint32_t ap_idle_timeout_ms = 600000, ap_linger_ms = 30000;
-    uint32_t ap_seen_linger_ms = 3000;
+    uint32_t ap_seen_linger_ms = 3000, ap_empty_linger_ms = 3000;
     size_t max_networks = 5;
     // An attempt that has not reached Connected this long after connect()
     // counts as a failure (the driver may otherwise sit in Connecting

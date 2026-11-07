@@ -661,9 +661,12 @@ void WifiService::tick_ap_locked(uint64_t now_ms) {
         ap_idle_since_ms_ = now_ms;
     }
 
-    if (ap_close_at_ms_ && (now_ms >= *ap_close_at_ms_ || clients == 0)) {
-        // With nobody left on the hotspot, no page is waiting for the
-        // result over it.
+    // After success, a hotspot nobody has been on for ap_empty_linger_ms
+    // has no page waiting for the result over it. Shorter gaps are the
+    // phone being dropped by the channel switch (see WifiServiceConfig).
+    const bool empty_long_enough = ap_idle_since_ms_ && now_ms >= *ap_idle_since_ms_ &&
+                                   now_ms - *ap_idle_since_ms_ >= config_.ap_empty_linger_ms;
+    if (ap_close_at_ms_ && (now_ms >= *ap_close_at_ms_ || empty_long_enough)) {
         (void)close_ap_locked("provisioning done");
     } else if (ap_idle_since_ms_ && now_ms >= *ap_idle_since_ms_ &&
                now_ms - *ap_idle_since_ms_ >= config_.ap_idle_timeout_ms) {

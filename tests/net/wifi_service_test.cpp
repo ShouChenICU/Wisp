@@ -570,28 +570,60 @@ TEST(WifiService, ResultSeenBeforeSuccessDoesNotShortenTheHotspot) {
     EXPECT_TRUE(f.wifi->ap_active.load());
 }
 
-TEST(WifiService, ProvisioningClosesAtOnceWithNoClients) {
+// The station joining a network on another channel moves the hotspot
+// there and briefly drops the phone, so an empty hotspot only closes after
+// staying empty for ap_empty_linger_ms.
+TEST(WifiService, ProvisioningClosesAfterThreeEmptySeconds) {
     Fixture f;
     f.in_range("Home", -50, "homepass1");
     auto& svc = f.make();
-    ASSERT_TRUE(svc.init(0));
-    ASSERT_TRUE(svc.start_provisioning(0));
-    ASSERT_TRUE(svc.add_network("Home", "homepass1", 2000));
-    svc.tick(2000);
-    svc.tick(2250);  // connects; nobody is on the hotspot any more
-    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    provision_home(f, svc);  // success at 2250
+    f.wifi->ap_client_count = 0;
+    svc.tick(3000);  // empty from here
+    svc.tick(5999);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+    svc.tick(6000);
     EXPECT_FALSE(f.wifi->ap_active.load());
 
-    // The phone leaving after success closes it on the next poll too.
+    // Nobody on the hotspot at success: it was already empty, 3 s from then.
     Fixture g;
     g.in_range("Home", -50, "homepass1");
     auto& svc2 = g.make();
-    provision_home(g, svc2);
-    svc2.tick(3000);
+    ASSERT_TRUE(svc2.init(0));
+    ASSERT_TRUE(svc2.start_provisioning(0));
+    g.wifi->ap_client_count = 1;
+    svc2.tick(1000);
+    ASSERT_TRUE(svc2.add_network("Home", "homepass1", 2000));
+    svc2.tick(2000);
+    g.wifi->ap_client_count = 0;  // dropped by the channel switch
+    svc2.tick(2250);              // connects
+    ASSERT_EQ(svc2.status().state, WifiState::Connected);
+    svc2.tick(5249);
     EXPECT_TRUE(g.wifi->ap_active.load());
-    g.wifi->ap_client_count = 0;
-    svc2.tick(3250);
+    svc2.tick(5250);
     EXPECT_FALSE(g.wifi->ap_active.load());
+}
+
+TEST(WifiService, ProvisioningKeepsTheHotspotWhenThePhoneReturnsWithinTheGrace) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    auto& svc = f.make();
+    provision_home(f, svc);  // success at 2250
+    f.wifi->ap_client_count = 0;
+    svc.tick(3000);
+    svc.tick(5000);
+    f.wifi->ap_client_count = 1;  // back before 3 s were up
+    svc.tick(5750);
+    svc.tick(7000);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+
+    // The grace starts over from the next time it empties.
+    f.wifi->ap_client_count = 0;
+    svc.tick(8000);
+    svc.tick(10'999);
+    EXPECT_TRUE(f.wifi->ap_active.load());
+    svc.tick(11'000);
+    EXPECT_FALSE(f.wifi->ap_active.load());
 }
 
 TEST(WifiService, ProvisioningLingerStillCapsAt30s) {

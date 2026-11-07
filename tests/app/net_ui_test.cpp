@@ -625,14 +625,15 @@ TEST(NetUi, ProvisioningSuccessViewShowsTheNewAddressInsideSafeArea) {
     }
 }
 
-// The hotspot closing (here at once: nobody is left on it) leaves the
+// The hotspot closing (here 3 s after success: nobody is on it) leaves the
 // success view up, so the address stays readable.
 TEST(NetUi, ProvisioningSuccessViewOutlivesTheHotspot) {
     UiNetHarness h;
     ASSERT_TRUE(h.start());
     provision_home(h, 0);
     ASSERT_TRUE(wait_until([&] { return on_top_layer(h, done_title(Lang::Zh)); }, 5000));
-    ASSERT_TRUE(wait_until([&] { return !h.wifi->ap_active.load(); }, 3000));
+    // Closes once it has been empty for 3 s.
+    ASSERT_TRUE(wait_until([&] { return !h.wifi->ap_active.load(); }, 6000));
     // Past the screen's one-second resync of the services.
     wisp::os::sleep_ms(1500);
     EXPECT_TRUE(on_top_layer(h, done_title(Lang::Zh)));
