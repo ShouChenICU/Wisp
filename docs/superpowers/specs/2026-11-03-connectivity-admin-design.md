@@ -332,7 +332,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
   - `ts` 是**开机以来的毫秒数**（模拟器为进程启动以来），与 `seq` 一起在锁内取得，单调不减，与 `GET /device` 的 `status.uptime_ms` 同一基准（即 `os::now_ms()`）。补发的记录带原始的 `ts`、`level` 和 `tag`。
   - 一条日志就是一条消息：`msg` 里含换行也不拆分。
   - **去重与重启识别**：`(boot_id, seq)` 唯一确定一行日志。每次订阅 `log`（包括重连、停止后再开始）都会重新补发，订阅与新日志并发时同一行也可能先后到达两次；多个线程同时写日志时，实时推送的顺序也可能与 `seq` 顺序差几行（sink 在日志锁外调用）。所以前端不按"最大 `seq`"过滤，而是为当前 `boot_id` 记住见过的 `seq`：一个下限 `floor` 加一个集合，`seq` 不大于 `floor` 或已在集合里的是重复，丢弃；否则显示并加入集合。集合超过 4096 个时把 `floor` 提高到丢掉较旧的一半（乱序只有几行，不会跨几千行，所以这样安全）。行按到达顺序显示，不重排。`hello` 里的 `boot_id` 与之前不同说明设备重启过：前端插入一条"设备已重启"标记、清空集合和 `floor`，保留已显示的历史。不依赖时间戳或内容比较。
-- `events`：转发 `net.*`、`power.*`、`scene.*`、`storage.*`、`system.*` 主题，每条为 `{"t":"event","topic","payload"}`。`scene.*`（目前只有 `scene.state`）由场景运行时子项目加入，见场景 spec 3.6。
+- `events`：转发 `memory.*`、`net.*`、`power.*`、`scene.*`、`storage.*`、`system.*`、`todo.*` 主题，每条为 `{"t":"event","topic","payload"}`。`scene.*`（目前只有 `scene.state`）由场景运行时子项目加入，见场景 spec 3.6；`memory.*`/`todo.*`（`memory.changed`/`todo.changed`，只带计数）由 agent 核心子项目加入，用于让打开的后台"记忆"页自动刷新，见 mvp spec 5.3。
 - 最多同时 2 个 WebSocket 连接，超出时拒绝新连接。发送队列积压超过上限时丢弃最旧的日志，并推送一条 `{"t":"dropped","count"}`。
 - **保活**（场景设备 spec 4.3 加入）：打开的连接持有 `system.admin` 唤醒锁，半开的连接（客户端离开 Wi-Fi、合上笔记本）不能一直占着它。设备每 30 秒给每个连接推送 `{"t":"ping"}`，前端立即回 `{"t":"pong"}`；连续 3 轮没收到客户端的任何消息就关闭这个连接。
 

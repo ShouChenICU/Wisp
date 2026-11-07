@@ -441,12 +441,14 @@ TEST(WsHub, ForwardsOnlyAllowedTopics) {
     bus.publish(Event{"system.boot.completed", "test", 0, {}});
     bus.publish(
         Event{"scene.state", "scene", 0, {{"id", Value("todo")}, {"state", Value("running")}}});
+    bus.publish(Event{"memory.changed", "memory", 0, {{"count", Value(int64_t{2})}}});
+    bus.publish(Event{"todo.changed", "todo", 0, {{"count", Value(int64_t{3})}}});
     bus.publish(Event{"networking", "test", 0, {}});
     ASSERT_TRUE(bus.wait_idle(2000));
     hub.pump();
 
     std::vector<Value> sent = events->sent();
-    ASSERT_EQ(sent.size(), 5u);
+    ASSERT_EQ(sent.size(), 7u);
     EXPECT_EQ(sent[0], Value(Map{{"t", Value("event")},
                                  {"topic", Value("net.wifi.state")},
                                  {"payload", Value(Map{{"state", Value("connected")}})}}));
@@ -454,6 +456,12 @@ TEST(WsHub, ForwardsOnlyAllowedTopics) {
     EXPECT_EQ(str(sent[2], "topic"), "storage.sd.inserted");
     EXPECT_EQ(str(sent[3], "topic"), "system.boot.completed");
     EXPECT_EQ(str(sent[4], "topic"), "scene.state");
+    // memory.* and todo.* (routes_memory.cpp): the open Memory page relies
+    // on these to refresh itself without the user having to tap Refresh.
+    EXPECT_EQ(str(sent[5], "topic"), "memory.changed");
+    EXPECT_EQ(sent[5].as_map().at("payload"), Value(Map{{"count", Value(int64_t{2})}}));
+    EXPECT_EQ(str(sent[6], "topic"), "todo.changed");
+    EXPECT_EQ(sent[6].as_map().at("payload"), Value(Map{{"count", Value(int64_t{3})}}));
     EXPECT_EQ(logs->sent_count(), 0u);
     bus.stop();
 }

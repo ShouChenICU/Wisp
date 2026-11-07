@@ -1,7 +1,7 @@
 // Memory (mvp spec 5.3): the agent's long-term memory notes and its todos,
 // each in its own card with a delete button that asks first
-// (confirmDialog), since the device's screen is small and a slip of the
-// thumb should not need to be chased down later.
+// (confirmDialog). Deletes cannot be undone, and a mistaken tap on a touch
+// screen should not lose data.
 
 import { html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
 import { api, describeError, errorDetail } from '../api.js';
@@ -112,7 +112,17 @@ function NotesCard() {
       setNotes((list) => (list || []).filter((n) => n.id !== note.id));
       toast(t('mem.note_deleted'), 'ok');
     } catch (e) {
-      if (e.status !== 401) toast(describeError(e), 'err');
+      if (e.status === 404) {
+        // Already gone (the agent removed it first): the page agreed with
+        // the device anyway, so drop the row without an error toast.
+        setNotes((list) => (list || []).filter((n) => n.id !== note.id));
+      } else if (e.status !== 401) {
+        toast(describeError(e), 'err');
+        // A delete that timed out waiting on the flash thread can still
+        // land afterwards (routes_memory.cpp), so re-fetch rather than
+        // trust that the row is still there.
+        load();
+      }
     } finally {
       if (alive.current) setRemoving(0);
     }
@@ -134,11 +144,12 @@ function NotesCard() {
       : list.length === 0
         ? html`<p class="stat-empty">${t('mem.notes_empty')}</p>`
         : html`<ul class="rows">
-            ${list.map(
-              (n) => html`<li key=${n.id} class="row">
+            ${list.map((n) => {
+              const updated = formatUpdated(n.updated);
+              return html`<li key=${n.id} class="row">
                 <div class="row-main">
                   <span class="row-title">${n.text}</span>
-                  <span class="row-sub">${t('mem.updated', { when: formatUpdated(n.updated) })}</span>
+                  ${updated ? html`<span class="row-sub">${t('mem.updated', { when: updated })}</span>` : null}
                 </div>
                 <div class="row-actions">
                   <button
@@ -152,8 +163,8 @@ function NotesCard() {
                     <${IconTrash} size=${16} />
                   </button>
                 </div>
-              </li>`,
-            )}
+              </li>`;
+            })}
           </ul>`}
     <div class="form-actions">
       <button type="button" class="btn btn-ghost btn-sm" onClick=${load} disabled=${loading}>
@@ -214,7 +225,17 @@ function TodosCard() {
       setTodos((list) => (list || []).filter((x) => x.id !== todo.id));
       toast(t('mem.todo_deleted'), 'ok');
     } catch (e) {
-      if (e.status !== 401) toast(describeError(e), 'err');
+      if (e.status === 404) {
+        // Already gone (the agent removed it first): the page agreed with
+        // the device anyway, so drop the row without an error toast.
+        setTodos((list) => (list || []).filter((x) => x.id !== todo.id));
+      } else if (e.status !== 401) {
+        toast(describeError(e), 'err');
+        // A delete that timed out waiting on the flash thread can still
+        // land afterwards (routes_memory.cpp), so re-fetch rather than
+        // trust that the row is still there.
+        load();
+      }
     } finally {
       if (alive.current) setRemoving(0);
     }

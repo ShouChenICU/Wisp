@@ -600,7 +600,7 @@ export default {
   'mem.due': '到期 {when}',
   'mem.snoozed': '稍后提醒至 {when}',
   'mem.repeat_daily': '每天重复',
-  'mem.repeat_weekly': '每周{days}重复',
+  'mem.repeat_weekly': '每{days}重复',
   'mem.day_sep': '、',
   'day.mon': '周一',
   'day.tue': '周二',

@@ -18,8 +18,11 @@ namespace {
 
 constexpr const char* kTag = "ws";
 
-// Event prefixes forwarded to "events" subscribers (spec 6.2).
-constexpr const char* kForwardedPrefixes[] = {"net.", "power.", "scene.", "storage.", "system."};
+// Event prefixes forwarded to "events" subscribers (spec 6.2). memory.* and
+// todo.* events carry a count only (MemoryStore, ReminderScheduler), never
+// note or todo text, so forwarding them is no privacy issue.
+constexpr const char* kForwardedPrefixes[] = {"memory.",  "net.",    "power.", "scene.",
+                                              "storage.", "system.", "todo."};
 
 constexpr const char* kPing = R"({"t":"ping"})";
 
