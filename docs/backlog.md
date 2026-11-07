@@ -143,6 +143,10 @@ Source: `feat/agent-core` review records.
   - the mutex is held across `write_atomic`, so `list()` waits for a write; matters once the admin HTTP thread calls it;
   - a write that fails after the `.new` file is complete rolls memory back while the next read restores `.new`;
   - a failed `clear()` leaves `load_failed_` cleared.
+- Reminders and todos:
+  - the default `esp_timer` path (`make_timer` empty) is untested; every arm re-creates a timer from internal RAM, measure with `mem` on the device;
+  - no test covers rollback after a failed write in `add`/`update`/`done`/`snooze`/`remove`;
+  - the tool output says `snoozed_until`, the stored field is `snooze_until`.
 - Wi-Fi pages:
   - the "已保存的网络" card rows on the network page have no connect button; only a pick in the scan list connects directly;
   - the setup wizard's step indicator marks "输入密码" done when a saved network was joined without one;
