@@ -40,6 +40,15 @@
 // queues the text for wisp.agent, which writes the conversation through
 // the storage worker, so the callback touches no flash.
 //
+// The agent's steps (TurnView::steps, mvp spec 6.2). ToolPrep starts a
+// running step for a call the model is still writing, or updates it
+// (activity_prep_label(): its size so far); a ToolPrep for another tool,
+// or with fewer bytes than the last, is the reply's next call. ToolStart
+// turns the oldest such step into the real call (activity_label(), with
+// its target), or starts a new one; ToolEnd marks it Done or Failed. A
+// Thinking state once the turn has had a step sets `thinking` until the
+// next step or output. Only the last kTurnSteps steps are kept.
+//
 // Listeners are called after every change with a copy of the view as it
 // is then, on the thread that made the change: wisp.agent (agent events),
 // wisp.voice (a transcript), the event bus's dispatch thread (voice.state:
@@ -48,6 +57,8 @@
 // call back into this controller other than current(); the shell's
 // screens post to the UI thread from it.
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -72,6 +83,16 @@ enum class Readiness : uint8_t { Ready, NoWifi, NoLlm };
 // "ready" "no_wifi" "no_llm"
 const char* to_string(Readiness r);
 
+// One step of the agent's turn as the screen shows it (activity.hpp).
+struct TurnStep {
+    enum class State : uint8_t { Running, Done, Failed };
+    os::LargeString label;
+    State st = State::Running;
+};
+
+// The steps a TurnView keeps: the last ones.
+inline constexpr size_t kTurnSteps = 4;
+
 struct TurnView {
     uint32_t turn = 0;  // 0 until the agent takes the text up
     agent::Source source = agent::Source::Web;
@@ -81,6 +102,23 @@ struct TurnView {
     bool spoken = false;                     // some of it went to the speech
     bool not_heard = false;                  // the last capture heard nothing
     std::optional<voice::VoiceError> error;  // the last voice error
+    // The agent's steps: the last kTurnSteps (oldest first, step_count of
+    // them), how many the turn has had, and when it began and ended
+    // (ConversationDeps::now_ms; ended_ms 0 while it runs). `thinking`:
+    // the model works on its next step after a tool (shown as a passing
+    // "思考中" step, never kept).
+    std::array<TurnStep, kTurnSteps> steps{};
+    uint8_t step_count = 0;
+    uint16_t steps_total = 0;
+    uint64_t started_ms = 0;
+    uint64_t ended_ms = 0;
+    bool thinking = false;
+
+    // The step under way, if the last one still runs.
+    const TurnStep* running_step() const {
+        if (step_count == 0 || steps[step_count - 1].st != TurnStep::State::Running) return nullptr;
+        return &steps[step_count - 1];
+    }
 };
 
 struct ConversationDeps {
@@ -90,6 +128,9 @@ struct ConversationDeps {
     std::function<bool()> tts_mute;  // cached voice/tts_mute; empty: false
     std::function<Readiness()>
         readiness;  // Wi-Fi connected and an llm profile active; empty: Ready
+    // TurnView's started_ms/ended_ms; empty: os::now_ms (the screens'
+    // clock).
+    std::function<uint64_t()> now_ms;
 };
 
 class ConversationController {
@@ -146,6 +187,13 @@ private:
     // False when the voice refused the capture.
     bool start_capture(voice::CaptureMode mode);
     void begin_view(agent::Source source, std::string_view heard, uint32_t turn);
+    uint64_t now() const;
+    // Step `n` (from 1, of the whole turn), if it is still kept.
+    TurnStep* step_no(uint32_t n);
+    // Appends a running step (dropping the oldest when full); its number.
+    uint32_t push_step(os::LargeString label);
+    void on_tool_prep(const agent::AgentEvent& e);
+    void on_tool_start(const agent::AgentEvent& e);
 
     void on_agent(const agent::AgentEvent& e);
     void on_transcript(std::string text);
@@ -178,6 +226,14 @@ private:
     bool voice_turn_ = false;
     uint32_t turn_capture_ = 0;
     bool speaking_ = false;
+    // The turn's steps: the first and last calls being written whose
+    // ToolStart has not come yet (0: none), the last one's tool and
+    // bytes, and the step whose tool runs (0: none).
+    uint32_t prep_first_ = 0;
+    uint32_t prep_last_ = 0;
+    os::LargeString prep_tool_;
+    uint32_t prep_bytes_ = 0;
+    uint32_t tool_step_ = 0;
 
     os::Mutex lmu_;
     std::vector<std::shared_ptr<Listener>> listeners_;

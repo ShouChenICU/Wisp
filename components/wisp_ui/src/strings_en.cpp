@@ -420,6 +420,94 @@ const char* strings_en(StrId id) {
             return "Hardware diagnostics";
         case StrId::TalkThinking:
             return "Thinking…";
+        case StrId::ActivityStep:
+            return "Step {} · {}";
+        case StrId::ActivityDone:
+            return "Steps: {} · {}";
+        case StrId::ActivitySeconds:
+            return "{} s";
+        case StrId::ActivityMinSec:
+            return "{} min {} s";
+        case StrId::ActivityCall:
+            return "Call {}";
+        case StrId::ActivityMarkRunning:
+            return "●";
+        case StrId::ActivityMarkDone:
+            return "✓";
+        case StrId::ActivityMarkFailed:
+            return "×";
+        case StrId::ActSceneList:
+            return "List scenes";
+        case StrId::ActSceneListFiles:
+            return "List scene files";
+        case StrId::ActSceneReadFile:
+            return "Read file";
+        case StrId::ActSceneWriteFile:
+            return "Write file";
+        case StrId::ActSceneEditFile:
+            return "Edit file";
+        case StrId::ActSceneDeleteFile:
+            return "Delete file";
+        case StrId::ActSceneInstall:
+            return "Install scene";
+        case StrId::ActSceneDiscard:
+            return "Discard draft";
+        case StrId::ActSceneRollback:
+            return "Roll back scene";
+        case StrId::ActSceneOpen:
+            return "Open scene";
+        case StrId::ActSceneClose:
+            return "Close scene";
+        case StrId::ActSceneExit:
+            return "Leave the scene";
+        case StrId::ActSceneDelete:
+            return "Delete scene";
+        case StrId::ActSceneEval:
+            return "Run code";
+        case StrId::ActSceneLogs:
+            return "Read logs";
+        case StrId::ActSceneDataRead:
+            return "Read scene data";
+        case StrId::ActSceneDataWrite:
+            return "Write scene data";
+        case StrId::ActSceneFilesList:
+            return "List stored files";
+        case StrId::ActSceneFilesRead:
+            return "Read stored file";
+        case StrId::ActSceneFilesRemove:
+            return "Remove stored file";
+        case StrId::ActMemoryAdd:
+            return "Remember something";
+        case StrId::ActMemoryList:
+            return "Check memories";
+        case StrId::ActMemoryUpdate:
+            return "Update memory";
+        case StrId::ActMemoryRemove:
+            return "Forget memory";
+        case StrId::ActTodoAdd:
+            return "Add to-do";
+        case StrId::ActTodoList:
+            return "Check to-dos";
+        case StrId::ActTodoUpdate:
+            return "Update to-do";
+        case StrId::ActTodoDone:
+            return "Complete to-do";
+        case StrId::ActTodoRemove:
+            return "Remove to-do";
+        case StrId::ActSettingsGet:
+            return "Check settings";
+        case StrId::ActSettingsSet:
+            return "Change a setting";
+        case StrId::ActDeviceStatus:
+            return "Check the device";
+        case StrId::ActNotifyList:
+            return "Check notifications";
+        case StrId::ActNotifyDismiss:
+            return "Dismiss a notification";
+        case StrId::ActDocsRead:
+            return "Read the docs";
+        case StrId::ActUiTree:
+            return "Inspect the screen";
         case StrId::Count:
             break;
     }

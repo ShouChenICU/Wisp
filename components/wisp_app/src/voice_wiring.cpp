@@ -6,6 +6,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/audio.hpp"
+#include "wisp/os/os.hpp"
 
 namespace wisp::app {
 
@@ -81,6 +82,7 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
                 }
                 return shell::Readiness::Ready;
             },
+        .now_ms = os::now_ms,
     });
     talk_button_ = shell::find_talk_button(deps_.registry);
     if (talk_button_) {

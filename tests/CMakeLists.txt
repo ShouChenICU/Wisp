@@ -339,6 +339,7 @@ wisp_test(NAME shell_talk_test SRCS shell/shell_talk_test.cpp LIBS wisp_shell wi
           TIMEOUT 60)
 wisp_test(NAME shell_gestures_test SRCS shell/gestures_test.cpp shell/mood_test.cpp
           shell/body_text_test.cpp LIBS wisp_shell wisp_port_sim_os)
+wisp_test(NAME shell_activity_test SRCS shell/activity_test.cpp LIBS wisp_shell wisp_port_sim_os)
 wisp_test(NAME shell_home_test SRCS shell/home_test.cpp LIBS wisp_shell wisp_port_sim_os TIMEOUT 120)
 # The sub-pages (shell/page_fixture.hpp) and the scene order.
 wisp_test(NAME shell_history_test SRCS shell/history_test.cpp LIBS wisp_shell wisp_port_sim_os

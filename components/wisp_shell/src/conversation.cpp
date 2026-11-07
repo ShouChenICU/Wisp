@@ -6,6 +6,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/button.hpp"
+#include "wisp/shell/activity.hpp"
 
 namespace wisp::shell {
 
@@ -214,6 +215,68 @@ void ConversationController::begin_view(agent::Source source, std::string_view h
     view_.source = source;
     view_.heard.assign(heard);
     view_.running = true;
+    view_.started_ms = now();
+    prep_first_ = prep_last_ = 0;
+    prep_tool_.clear();
+    prep_bytes_ = 0;
+    tool_step_ = 0;
+}
+
+uint64_t ConversationController::now() const {
+    return deps_.now_ms ? deps_.now_ms() : os::now_ms();
+}
+
+TurnStep* ConversationController::step_no(uint32_t n) {
+    const uint32_t first = view_.steps_total - view_.step_count + 1u;
+    if (n < first || n > view_.steps_total) return nullptr;
+    return &view_.steps[n - first];
+}
+
+uint32_t ConversationController::push_step(os::LargeString label) {
+    if (view_.step_count == kTurnSteps) {
+        for (size_t i = 1; i < kTurnSteps; ++i) view_.steps[i - 1] = std::move(view_.steps[i]);
+        --view_.step_count;
+    }
+    TurnStep& s = view_.steps[view_.step_count++];
+    s.label = std::move(label);
+    s.st = TurnStep::State::Running;
+    if (view_.steps_total < UINT16_MAX) ++view_.steps_total;
+    return view_.steps_total;
+}
+
+void ConversationController::on_tool_prep(const agent::AgentEvent& e) {
+    view_.thinking = false;
+    const std::string_view tool(e.tool);
+    const bool same_call = prep_last_ != 0 && e.bytes >= prep_bytes_ &&
+                           tool == std::string_view(prep_tool_.data(), prep_tool_.size());
+    os::LargeString label = activity_prep_label(tool, e.bytes, ui::lang());
+    prep_bytes_ = e.bytes;
+    if (same_call) {
+        if (TurnStep* s = step_no(prep_last_)) s->label = std::move(label);
+        return;
+    }
+    prep_tool_.assign(tool.data(), tool.size());
+    prep_last_ = push_step(std::move(label));
+    if (prep_first_ == 0) prep_first_ = prep_last_;
+}
+
+void ConversationController::on_tool_start(const agent::AgentEvent& e) {
+    view_.thinking = false;
+    os::LargeString label = activity_label(e.tool, e.args, ui::lang());
+    if (prep_first_ == 0) {
+        tool_step_ = push_step(std::move(label));
+        return;
+    }
+    tool_step_ = prep_first_;
+    if (TurnStep* s = step_no(tool_step_)) {
+        s->label = std::move(label);
+        s->st = TurnStep::State::Running;
+    }
+    if (++prep_first_ > prep_last_) {
+        prep_first_ = prep_last_ = 0;
+        prep_tool_.clear();
+        prep_bytes_ = 0;
+    }
 }
 
 void ConversationController::on_transcript(std::string text) {
@@ -264,12 +327,35 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
             }
             case Kind::Delta:
                 if (!turn_running_) return;
+                view_.thinking = false;
                 parser_.feed(e.text);
                 break;
-            case Kind::State:
+            case Kind::ToolPrep:
+                if (!turn_running_) return;
+                on_tool_prep(e);
+                break;
+            case Kind::ToolStart:
+                if (!turn_running_) return;
+                on_tool_start(e);
+                break;
+            case Kind::ToolEnd: {
+                if (!turn_running_) return;
+                TurnStep* s = tool_step_ != 0 ? step_no(tool_step_) : nullptr;
+                tool_step_ = 0;
+                if (s == nullptr) return;
+                s->st = e.ok ? TurnStep::State::Done : TurnStep::State::Failed;
+                break;
+            }
+            case Kind::State: {
                 deps_.voice.set_llm_busy(e.state == agent::AgentState::Thinking ||
                                          e.state == agent::AgentState::Output);
-                return;
+                if (!turn_running_) return;
+                const bool thinking =
+                    e.state == agent::AgentState::Thinking && view_.steps_total > 0;
+                if (thinking == view_.thinking) return;
+                view_.thinking = thinking;
+                break;
+            }
             case Kind::TurnEnd: {
                 // A stop (from the web page, say) drops every waiting
                 // message, the voice text too, without telling us. A text
@@ -298,6 +384,8 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
                 voice_turn_ = false;
                 speaking_ = false;
                 view_.running = false;
+                view_.thinking = false;
+                view_.ended_ms = now();
                 // Ends the round (muted, refused, stopped or spoken alike);
                 // with the speech still playing, once it has played.
                 if (end) deps_.voice.end_speech();

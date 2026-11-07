@@ -132,8 +132,8 @@ TEST(GlyphImage, MatchesBuiltinExactly) {
     EXPECT_EQ(got->stride, want->stride);
 
     const Layout l = layout(image());
-    ASSERT_EQ(l.glyph_count, 8710u);
-    ASSERT_EQ(l.bitmap_bytes, 996827u);
+    ASSERT_EQ(l.glyph_count, 8712u);
+    ASSERT_EQ(l.bitmap_bytes, 996919u);
     for (uint32_t i = 0; i < l.glyph_count; ++i) {
         const auto& g = got->glyph_dsc[i];
         const auto& w = want->glyph_dsc[i];

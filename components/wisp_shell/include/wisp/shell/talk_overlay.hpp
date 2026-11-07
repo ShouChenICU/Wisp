@@ -13,7 +13,8 @@
 //
 // Phase, from on_turn()'s VoiceState and TurnView: Listening while
 // recording (a pulsing dot and the level bar), Thinking while
-// transcribing, or once a turn is running without a say yet ("思考中…"),
+// transcribing, or once a turn is running without a say yet ("思考中…",
+// or the label of the agent's step under way, TurnView::running_step()),
 // Saying once the turn's say text is non-empty. Saying holds for
 // kOverlaySayMs (wisp/shell/limits.hpp) after the say text it shows was
 // last set; tick() ends it. The text is spoken by others
@@ -80,6 +81,7 @@ private:
 
     Phase phase_ = Phase::Hidden;
     os::LargeString say_shown_;
+    os::LargeString step_shown_;  // the running step's label, while thinking
     uint64_t say_since_ = 0;
 };
 

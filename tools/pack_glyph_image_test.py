@@ -235,9 +235,9 @@ class PackGlyphImageTest(unittest.TestCase):
         self.assertEqual(self.metrics["bpp"], 4)
         self.assertEqual(self.metrics["kern_scale"], 16)
         self.assertEqual(self.metrics["cmap_count"], 69)
-        self.assertEqual(self.metrics["glyph_count"], 8710)
-        self.assertEqual(self.metrics["kern_pair_count"], 4516)
-        self.assertEqual(self.metrics["bitmap_bytes"], 996827)
+        self.assertEqual(self.metrics["glyph_count"], 8712)
+        self.assertEqual(self.metrics["kern_pair_count"], 4517)
+        self.assertEqual(self.metrics["bitmap_bytes"], 996919)
 
     def test_glyph_and_bitmap_match_source(self):
         for codepoint, char in ((0x0041, "A"), (0x4F60, "你")):

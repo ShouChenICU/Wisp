@@ -331,6 +331,58 @@ enum class StrId : uint16_t {
     // The talk overlay (mvp spec 6.5): shown over a scene while holding to
     // talk, once the capture has ended and the agent has not replied yet.
     TalkThinking,
+    // The agent's steps on the home screen (mvp spec 6.2;
+    // wisp/shell/activity.hpp). ActivityStep "{} · {}" is the running
+    // step's number and the time so far, ActivityDone the steps a turn
+    // took and its time, each time ActivitySeconds or ActivityMinSec;
+    // ActivityCall "{}" names a tool without a label of its own. The
+    // three marks are the steps' status glyphs, the same in every table.
+    // The Act* labels name one tool each; the screen adds the step's
+    // target after a space.
+    ActivityStep,
+    ActivityDone,
+    ActivitySeconds,
+    ActivityMinSec,
+    ActivityCall,
+    ActivityMarkRunning,
+    ActivityMarkDone,
+    ActivityMarkFailed,
+    ActSceneList,
+    ActSceneListFiles,
+    ActSceneReadFile,
+    ActSceneWriteFile,
+    ActSceneEditFile,
+    ActSceneDeleteFile,
+    ActSceneInstall,
+    ActSceneDiscard,
+    ActSceneRollback,
+    ActSceneOpen,
+    ActSceneClose,
+    ActSceneExit,
+    ActSceneDelete,
+    ActSceneEval,
+    ActSceneLogs,
+    ActSceneDataRead,
+    ActSceneDataWrite,
+    ActSceneFilesList,
+    ActSceneFilesRead,
+    ActSceneFilesRemove,
+    ActMemoryAdd,
+    ActMemoryList,
+    ActMemoryUpdate,
+    ActMemoryRemove,
+    ActTodoAdd,
+    ActTodoList,
+    ActTodoUpdate,
+    ActTodoDone,
+    ActTodoRemove,
+    ActSettingsGet,
+    ActSettingsSet,
+    ActDeviceStatus,
+    ActNotifyList,
+    ActNotifyDismiss,
+    ActDocsRead,
+    ActUiTree,
 
     Count,  // not a string; keep last
 };

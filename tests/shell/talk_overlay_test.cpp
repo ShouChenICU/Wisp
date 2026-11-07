@@ -145,6 +145,31 @@ TEST_F(TalkOverlayTest, ListeningThinkingSaying) {
     });
 }
 
+// Thinking with a step under way shows that step; a done step, or the
+// passing thinking step, shows the plain text again.
+TEST_F(TalkOverlayTest, ThinkingShowsTheCurrentStep) {
+    start();
+    make();
+    on_ui([&] {
+        TurnView v;
+        v.running = true;
+        v.steps_total = 1;
+        v.step_count = 1;
+        v.steps[0].label.assign("写入文件 main.lua");
+        overlay_->on_turn(v, VoiceState::Idle, 0, 1000);
+        ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Thinking);
+        lv_obj_t* label = find_obj_of_class(overlay_->obj(), &lv_label_class);
+        ASSERT_NE(label, nullptr);
+        EXPECT_EQ(label_text(label), "写入文件 main.lua");
+
+        v.steps[0].st = wisp::shell::TurnStep::State::Done;
+        v.thinking = true;
+        overlay_->on_turn(v, VoiceState::Idle, 0, 1100);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Thinking);
+        EXPECT_EQ(label_text(label), wisp::ui::tr(wisp::ui::StrId::TalkThinking));
+    });
+}
+
 TEST_F(TalkOverlayTest, SayHidesAfterFiveSeconds) {
     start();
     make();

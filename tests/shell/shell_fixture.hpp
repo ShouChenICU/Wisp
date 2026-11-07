@@ -163,6 +163,7 @@ protected:
             .voice = *voice,
             .tts_mute = [this] { return mute.load(); },
             .readiness = [this] { return ready.load(); },
+            .now_ms = [this] { return os::now_ms() + virtual_ms.load(); },
         });
         conv->start();
     }

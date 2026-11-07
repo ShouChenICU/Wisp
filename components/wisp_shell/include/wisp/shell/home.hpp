@@ -22,6 +22,19 @@
 // and last lines are fully visible at its two scroll ends (spec 5.6 of the
 // base spec).
 //
+// The agent's steps (TurnView::steps, activity.hpp). While a turn that
+// has had a step runs and no say or body text has come yet (Activity::
+// List), the column's room shows the newest steps that fit, one line each
+// (cut with "..." to that row's visible width) behind a status mark: a dot
+// while it runs (pulsing on colour panels), a tick once done, a cross when
+// it failed; and a passing "思考中" step while the model works on the
+// next one. Under them a muted line counts the steps and the time ("第 N
+// 步 · 42 秒", redrawn on the clock's ticks). Once text comes, and after
+// the turn (Activity::Summary), only that line stays, as the column's
+// first line, scrolling with it ("用了 N 步 · 1 分 12 秒" once the turn is
+// over). A turn without steps shows neither. Neither moves anything else:
+// the layout is the same with or without them.
+//
 // The turn's text fades kFadeAfterMs after the later of the turn's end
 // and the last time a finger scrolled the column, and the wisp goes back
 // to the centre. Nothing else keeps it, and nothing but a new turn brings
@@ -60,11 +73,14 @@
 // clock every kTickMs for the fade, the error mood and the readiness. A
 // post still queued after stop() does nothing.
 
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "lvgl.h"
@@ -98,24 +114,41 @@ inline constexpr int32_t kMinColumnPx = 2 * kSayLinePx + 8 + kBodyLinePx;
 inline constexpr int32_t kHintIdleLines = 3, kHintTurnLines = 1;
 // The column's "more below" strip.
 inline constexpr int32_t kMorePx = 16;
+// The step list's rows: the steps kept and the summary line.
+inline constexpr size_t kActivityRows = kTurnSteps + 1;
+
+// What the turn shows of the agent's steps (see the file header).
+enum class Activity : uint8_t { None, List, Summary };
 
 struct HomeLayout {
-    lv_area_t wisp;   // the wisp's box (its width is its size)
-    lv_area_t heard;  // in a turn: the heard text
+    static constexpr lv_area_t kNone{0, 0, -1, -1};
+    lv_area_t wisp = kNone;   // the wisp's box (its width is its size)
+    lv_area_t heard = kNone;  // in a turn: the heard text
     // In a turn: the say text's first line, at the top of the column.
-    lv_area_t say;
+    lv_area_t say = kNone;
     // In a turn: the scrolling column, say and body together, above the
     // hint when one shows.
-    lv_area_t column;
+    lv_area_t column = kNone;
     // In a turn: the "more below" strip, the bottom kMorePx of the column.
-    lv_area_t more;
-    lv_area_t hint;  // the hint band, when one shows
+    lv_area_t more = kNone;
+    lv_area_t hint = kNone;  // the hint band, when one shows
+    // Activity::List: the step rows and then the summary row, one line
+    // each, top down over the (empty) column, as many as fit in it (at
+    // most kActivityRows). Unused otherwise: the summary alone is the
+    // column's first line.
+    std::array<lv_area_t, kActivityRows> rows{};
+    size_t row_count = 0;
 };
 
 // Screen coordinates of what is drawn. Idle (`in_turn` false) leaves
-// heard, say, column and more empty (x1 > x2); hint is empty unless
-// `hint_visible`.
-HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visible);
+// heard, say, column and more empty (x1 > x2), and rows unused; hint is
+// empty unless `hint_visible`.
+HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visible,
+                       Activity activity = Activity::None);
+
+// What `v` shows of its steps: None without any, List while it runs and
+// no say or body text has come, Summary otherwise.
+Activity activity_for(const TurnView& v);
 
 // When the turn's text fades: kFadeAfterMs after the later of the turn's
 // end and the last interaction. Never while a turn runs; before the first
@@ -192,6 +225,12 @@ public:
     lv_obj_t* column() const { return column_; }
     lv_obj_t* more() const { return more_; }
     bool in_turn() const { return shown_in_turn_; }
+    // The step rows (i < kTurnSteps + 1: the steps and a passing step),
+    // their status marks, the summary line and what the layout shows.
+    lv_obj_t* step_mark(size_t i) const { return rows_[i].mark; }
+    lv_obj_t* step_label(size_t i) const { return rows_[i].text; }
+    lv_obj_t* summary_label() const { return summary_; }
+    Activity activity() const { return shown_activity_; }
 
 private:
     void request(bool conv_changed);
@@ -200,6 +239,15 @@ private:
     void apply_layout(bool in_turn, bool hint_visible);
     void render_text();
     void render_body();
+    void render_activity(uint64_t now);
+    // Sets row `i`'s mark and label; the width they take unclipped.
+    int32_t fill_row(size_t i, std::string_view label, TurnStep::State st);
+    // Places row `i` on `a` (turn_box_ coordinates) as part of a block
+    // `block_w` wide, centred on it.
+    void place_row(size_t i, const lv_area_t& a, int32_t block_w);
+    void hide_row(size_t i);
+    struct Row;
+    void set_pulse(Row& r, bool on);
     std::string hint_text(uint64_t now, bool in_turn);
     void update_more();
     void start_fade_out();
@@ -220,6 +268,17 @@ private:
     lv_obj_t* say_ = nullptr;
     std::vector<lv_obj_t*> blocks_;  // body blocks, in the column after say_
     lv_obj_t* more_ = nullptr;       // the column's "more below" strip
+    struct Row {
+        lv_obj_t* mark = nullptr;
+        lv_obj_t* text = nullptr;
+        bool pulsing = false;
+        int32_t text_w = 0;  // the label's width unclipped
+    };
+    // In turn_box_: the step rows (the steps kept and a passing one).
+    std::array<Row, kTurnSteps + 1> rows_{};
+    // The summary line: in turn_box_ under the list, or the column's
+    // first child (Activity::Summary).
+    lv_obj_t* summary_ = nullptr;
     lv_obj_t* hint_ = nullptr;
     ui::WispView* wisp_ = nullptr;  // owned by its object
     lv_timer_t* timer_ = nullptr;
@@ -248,6 +307,9 @@ private:
     bool was_running_ = false;
     TurnFade fade_;
     bool shown_in_turn_ = false;
+    Activity shown_activity_ = Activity::None;
+    HomeLayout layout_;
+    lv_point_t box_origin_{0, 0};  // turn_box_'s top left on the screen
     bool fading_ = false;
     bool hint_visible_ = false;
     bool laid_out_ = false;

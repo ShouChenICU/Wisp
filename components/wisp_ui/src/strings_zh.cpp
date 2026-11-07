@@ -417,6 +417,94 @@ const char* strings_zh(StrId id) {
             return "硬件诊断";
         case StrId::TalkThinking:
             return "思考中…";
+        case StrId::ActivityStep:
+            return "第 {} 步 · {}";
+        case StrId::ActivityDone:
+            return "用了 {} 步 · {}";
+        case StrId::ActivitySeconds:
+            return "{} 秒";
+        case StrId::ActivityMinSec:
+            return "{} 分 {} 秒";
+        case StrId::ActivityCall:
+            return "调用 {}";
+        case StrId::ActivityMarkRunning:
+            return "●";
+        case StrId::ActivityMarkDone:
+            return "✓";
+        case StrId::ActivityMarkFailed:
+            return "×";
+        case StrId::ActSceneList:
+            return "查看场景列表";
+        case StrId::ActSceneListFiles:
+            return "查看场景文件";
+        case StrId::ActSceneReadFile:
+            return "读取文件";
+        case StrId::ActSceneWriteFile:
+            return "写入文件";
+        case StrId::ActSceneEditFile:
+            return "修改文件";
+        case StrId::ActSceneDeleteFile:
+            return "删除文件";
+        case StrId::ActSceneInstall:
+            return "安装场景";
+        case StrId::ActSceneDiscard:
+            return "丢弃草稿";
+        case StrId::ActSceneRollback:
+            return "回滚场景";
+        case StrId::ActSceneOpen:
+            return "打开场景";
+        case StrId::ActSceneClose:
+            return "关闭场景";
+        case StrId::ActSceneExit:
+            return "退出场景";
+        case StrId::ActSceneDelete:
+            return "删除场景";
+        case StrId::ActSceneEval:
+            return "运行代码";
+        case StrId::ActSceneLogs:
+            return "查看日志";
+        case StrId::ActSceneDataRead:
+            return "读取场景数据";
+        case StrId::ActSceneDataWrite:
+            return "写入场景数据";
+        case StrId::ActSceneFilesList:
+            return "查看存储文件";
+        case StrId::ActSceneFilesRead:
+            return "读取存储文件";
+        case StrId::ActSceneFilesRemove:
+            return "删除存储文件";
+        case StrId::ActMemoryAdd:
+            return "记住一件事";
+        case StrId::ActMemoryList:
+            return "查看记忆";
+        case StrId::ActMemoryUpdate:
+            return "更新记忆";
+        case StrId::ActMemoryRemove:
+            return "删除记忆";
+        case StrId::ActTodoAdd:
+            return "添加待办";
+        case StrId::ActTodoList:
+            return "查看待办";
+        case StrId::ActTodoUpdate:
+            return "修改待办";
+        case StrId::ActTodoDone:
+            return "完成待办";
+        case StrId::ActTodoRemove:
+            return "删除待办";
+        case StrId::ActSettingsGet:
+            return "查看设置";
+        case StrId::ActSettingsSet:
+            return "修改设置";
+        case StrId::ActDeviceStatus:
+            return "查看设备状态";
+        case StrId::ActNotifyList:
+            return "查看通知";
+        case StrId::ActNotifyDismiss:
+            return "清除通知";
+        case StrId::ActDocsRead:
+            return "查阅文档";
+        case StrId::ActUiTree:
+            return "查看界面";
         case StrId::Count:
             break;
     }

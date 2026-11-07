@@ -5,6 +5,7 @@
 
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/shell/activity.hpp"
 #include "wisp/shell/body_text.hpp"
 #include "wisp/shell/limits.hpp"
 #include "wisp/shell/mood.hpp"
@@ -28,6 +29,10 @@ constexpr int32_t kGap = ui::theme::kGapSm;
 constexpr int32_t kHintGap = ui::theme::kGapMd;
 
 constexpr lv_area_t kEmpty{0, 0, -1, -1};
+// A step's status mark: its box, and the gap before the label. The
+// running mark pulses with this half-period.
+constexpr int32_t kMarkPx = 18, kMarkGap = ui::theme::kGapXs;
+constexpr uint32_t kPulseMs = 900;
 
 int32_t span_width(const hal::Span& s) { return s.empty() ? 0 : s.x2 - s.x1 + 1; }
 
@@ -116,11 +121,18 @@ bool same(const os::LargeString& a, const os::LargeString& b) {
 
 }  // namespace
 
-HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visible) {
+Activity activity_for(const TurnView& v) {
+    if (v.steps_total == 0) return Activity::None;
+    const bool output = !v.say.empty() || !v.body.empty();
+    return v.running && !output ? Activity::List : Activity::Summary;
+}
+
+HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visible,
+                       Activity activity) {
     const hal::Area safe = hal::safe_rect(s);
     int32_t top = 0, bottom = 0;
     text_rows(s, top, bottom);
-    HomeLayout l{kEmpty, kEmpty, kEmpty, kEmpty, kEmpty, kEmpty};
+    HomeLayout l;
     if (!in_turn) {
         const int32_t cy = safe.y1 + (safe.y2 - safe.y1 + 1) * kWispIdleCentrePercent / 100;
         l.wisp = wisp_box(safe, ui::wisp_size_px(safe, kWispIdlePercent), cy);
@@ -161,6 +173,15 @@ HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visibl
     l.say.y2 = std::min(l.column.y1 + kSayLinePx - 1, l.column.y2);
     l.more = l.column;
     l.more.y1 = std::max(l.column.y1, l.column.y2 - kMorePx + 1);
+    // The list takes the column's room while it is empty; the summary
+    // alone is the column's first line.
+    if (activity != Activity::List) return l;
+    for (size_t i = 0; i < kActivityRows; ++i) {
+        const int32_t y1 = l.column.y1 + static_cast<int32_t>(i) * kBodyLinePx;
+        const int32_t y2 = y1 + kBodyLinePx - 1;
+        if (y2 > l.column.y2) break;
+        l.rows[l.row_count++] = band(s, y1, y2);
+    }
     return l;
 }
 
@@ -284,6 +305,25 @@ bool Home::start() {
     lv_obj_remove_flag(more_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(more_, LV_OBJ_FLAG_HIDDEN);
 
+    // The agent's steps: a mark and a one-line label each, and the
+    // summary line; none takes a press.
+    auto row_label = [&](lv_color_t colour) {
+        lv_obj_t* l = lv_label_create(turn_box_);
+        lv_obj_remove_flag(l, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_text_color(l, colour, 0);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+        lv_label_set_text_static(l, "");
+        lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
+        return l;
+    };
+    for (Row& r : rows_) {
+        r.mark = row_label(text);
+        lv_obj_set_style_text_align(r.mark, LV_TEXT_ALIGN_CENTER, 0);
+        r.text = row_label(text);
+    }
+    summary_ = row_label(dim);
+    lv_obj_set_style_text_align(summary_, LV_TEXT_ALIGN_CENTER, 0);
+
     hint_ = lv_label_create(root_);
     // Cut to its band ("..." on the last line) rather than run over the
     // text above or off the screen.
@@ -328,7 +368,9 @@ void Home::stop() {
     lv_timer_delete(timer_);
     timer_ = nullptr;
     lv_obj_delete(screen_);  // frees the wisp with its object, and the fade
-    screen_ = root_ = turn_box_ = heard_ = column_ = say_ = more_ = hint_ = nullptr;
+    screen_ = root_ = turn_box_ = heard_ = column_ = say_ = more_ = hint_ = summary_ = nullptr;
+    rows_ = {};
+    shown_activity_ = Activity::None;
     blocks_.clear();
     wisp_ = nullptr;
 }
@@ -494,7 +536,10 @@ void Home::refresh() {
             fading_ = false;
         }
         lv_obj_set_style_opa(turn_box_, LV_OPA_COVER, 0);
-        if (!shown_in_turn_ || hint_visible != hint_visible_ || !laid_out_) {
+        const Activity act = activity_for(view_);
+        if (!shown_in_turn_ || hint_visible != hint_visible_ || !laid_out_ ||
+            act != shown_activity_) {
+            shown_activity_ = act;
             apply_layout(true, hint_visible);
         }
     } else if (shown_in_turn_) {
@@ -502,6 +547,9 @@ void Home::refresh() {
     } else if (!laid_out_ || hint_visible != hint_visible_) {
         apply_layout(false, hint_visible);
     }
+    // The steps (and the elapsed time) on every refresh: the time moves on
+    // without the controller.
+    if (shown_in_turn_) render_activity(now);
     if (view_changed_) {
         view_changed_ = false;
         render_text();
@@ -546,7 +594,9 @@ void Home::apply_layout(bool in_turn, bool hint_visible) {
     laid_out_ = true;
     shown_in_turn_ = in_turn;
     hint_visible_ = hint_visible;
-    const HomeLayout l = home_layout(deps_.shape, in_turn, hint_visible);
+    if (!in_turn) shown_activity_ = Activity::None;
+    layout_ = home_layout(deps_.shape, in_turn, hint_visible, shown_activity_);
+    const HomeLayout& l = layout_;
     if (wisp_ != nullptr) {
         wisp_->set_size(lv_area_get_width(&l.wisp));
         lv_obj_set_pos(wisp_->obj(), l.wisp.x1, l.wisp.y1);
@@ -564,13 +614,32 @@ void Home::apply_layout(bool in_turn, bool hint_visible) {
         lv_obj_update_layout(root_);
         return;
     }
-    const lv_area_t box{std::min(l.heard.x1, l.column.x1), l.heard.y1,
-                        std::max(l.heard.x2, l.column.x2), l.column.y2};
+    lv_area_t box{std::min(l.heard.x1, l.column.x1), l.heard.y1, std::max(l.heard.x2, l.column.x2),
+                  l.column.y2};
+    for (size_t i = 0; i < l.row_count; ++i) {
+        box.x1 = std::min(box.x1, l.rows[i].x1);
+        box.x2 = std::max(box.x2, l.rows[i].x2);
+        box.y2 = std::max(box.y2, l.rows[i].y2);
+    }
     place(turn_box_, box);
     const lv_point_t origin{box.x1, box.y1};
+    box_origin_ = origin;
     place(heard_, l.heard, origin);
     place(column_, l.column, origin);
     place(more_, l.more, origin);
+    // The summary alone reads first in the column and scrolls with it;
+    // with the list it is the list's last row.
+    if (shown_activity_ == Activity::Summary) {
+        if (lv_obj_get_parent(summary_) != column_) {
+            lv_obj_set_parent(summary_, column_);
+            lv_obj_move_to_index(summary_, 0);
+        }
+        lv_obj_set_pos(summary_, 0, 0);
+        lv_obj_set_size(summary_, lv_pct(100), kBodyLinePx);
+    } else if (lv_obj_get_parent(summary_) != turn_box_) {
+        lv_obj_set_parent(summary_, turn_box_);
+    }
+    render_activity(deps_.now_ms());
     lv_obj_set_style_opa(turn_box_, LV_OPA_COVER, 0);
     lv_obj_remove_flag(turn_box_, LV_OBJ_FLAG_HIDDEN);
     // Now, not at the next frame: a press arriving before it is hit-tested
@@ -608,6 +677,128 @@ void Home::fade_done_cb(lv_anim_t* a) {
     self->fading_ = false;
     self->apply_layout(false, self->hint_visible_);
     self->refresh();  // the hint's full form, now the layout is idle
+}
+
+void Home::render_activity(uint64_t now) {
+    if (turn_box_ == nullptr) return;
+    const HomeLayout& l = layout_;
+    const lv_point_t origin = box_origin_;
+    size_t used = 0;
+    if (shown_activity_ == Activity::List && l.row_count > 1) {
+        // The newest steps that fit above the summary row, a passing
+        // thinking step last.
+        const size_t total = size_t{view_.step_count} + (view_.thinking ? 1u : 0u);
+        const size_t shown_n = std::min(total, std::min(l.row_count - 1, rows_.size()));
+        int32_t block_w = 0;
+        for (size_t k = total - shown_n; k < total; ++k, ++used) {
+            int32_t w = 0;
+            if (k < view_.step_count) {
+                const TurnStep& st = view_.steps[k];
+                w = fill_row(used, std::string_view(st.label.data(), st.label.size()), st.st);
+            } else {
+                w = fill_row(used, ui::tr(ui::StrId::TalkThinking), TurnStep::State::Running);
+            }
+            block_w = std::max(block_w, w);
+        }
+        // One block, centred, its marks in a column; a row too narrow for
+        // it is cut to its own width.
+        for (size_t i = 0; i < used; ++i) {
+            lv_area_t r = l.rows[i];
+            r.x1 -= origin.x;
+            r.x2 -= origin.x;
+            r.y1 -= origin.y;
+            r.y2 -= origin.y;
+            place_row(i, r, block_w);
+        }
+    }
+    for (size_t i = used; i < rows_.size(); ++i) hide_row(i);
+    if (shown_activity_ == Activity::None ||
+        (shown_activity_ == Activity::List && l.row_count == 0)) {
+        lv_obj_add_flag(summary_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    const uint64_t end = view_.running ? now : view_.ended_ms;
+    const uint64_t elapsed = end > view_.started_ms ? end - view_.started_ms : 0;
+    const os::LargeString text =
+        activity_summary(view_.steps_total, elapsed, view_.running, ui::lang());
+    const char* old = lv_label_get_text(summary_);
+    if (old == nullptr || std::string_view(old) != std::string_view(text.data(), text.size()))
+        lv_label_set_text(summary_, text.c_str());
+    if (shown_activity_ == Activity::List) {
+        lv_area_t a = l.rows[std::min(used, l.row_count - 1)];
+        place(summary_, a, origin);
+    }
+    lv_obj_remove_flag(summary_, LV_OBJ_FLAG_HIDDEN);
+}
+
+int32_t Home::fill_row(size_t i, std::string_view label, TurnStep::State st) {
+    Row& r = rows_[i];
+    const hal::PanelKind panel = ui::display_panel(lv_obj_get_display(screen_));
+    const bool colour = hal::panel_is_colour(panel);
+    ui::StrId mark = ui::StrId::ActivityMarkRunning;
+    uint32_t hue = ui::theme::kAccent;
+    if (st == TurnStep::State::Done) {
+        mark = ui::StrId::ActivityMarkDone;
+        hue = ui::theme::kOk;
+    } else if (st == TurnStep::State::Failed) {
+        mark = ui::StrId::ActivityMarkFailed;
+        hue = ui::theme::kErr;
+    }
+    lv_label_set_text_static(r.mark, ui::tr(mark));
+    lv_obj_set_style_text_color(r.mark, colour ? lv_color_hex(hue) : ui::wisp_colour(panel), 0);
+    const char* old = lv_label_get_text(r.text);
+    if (old == nullptr || std::string_view(old) != label) {
+        const os::LargeString copy(label.data(), label.size());
+        lv_label_set_text(r.text, copy.c_str());
+    }
+    // Two-colour panels (e-paper among them) get no endless animation.
+    set_pulse(r, colour && st == TurnStep::State::Running);
+    lv_point_t size{0, 0};
+    lv_text_get_size(&size, lv_label_get_text(r.text),
+                     lv_obj_get_style_text_font(r.text, LV_PART_MAIN), 0, 0, LV_COORD_MAX,
+                     LV_TEXT_FLAG_NONE);
+    r.text_w = size.x + 1;
+    return kMarkPx + kMarkGap + r.text_w;
+}
+
+void Home::place_row(size_t i, const lv_area_t& a, int32_t block_w) {
+    Row& r = rows_[i];
+    const int32_t row_w = lv_area_get_width(&a);
+    const int32_t w = std::min(block_w, row_w);
+    const int32_t x = a.x1 + (row_w - w) / 2;
+    const int32_t text_w = std::clamp<int32_t>(r.text_w, 0, w - kMarkPx - kMarkGap);
+    lv_obj_set_pos(r.mark, x, a.y1);
+    lv_obj_set_size(r.mark, kMarkPx, lv_area_get_height(&a));
+    lv_obj_set_pos(r.text, x + kMarkPx + kMarkGap, a.y1);
+    lv_obj_set_size(r.text, std::max<int32_t>(text_w, 0), lv_area_get_height(&a));
+    lv_obj_remove_flag(r.mark, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(r.text, LV_OBJ_FLAG_HIDDEN);
+}
+
+void Home::hide_row(size_t i) {
+    Row& r = rows_[i];
+    set_pulse(r, false);
+    lv_obj_add_flag(r.mark, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(r.text, LV_OBJ_FLAG_HIDDEN);
+}
+
+void Home::set_pulse(Row& r, bool on) {
+    if (on == r.pulsing) return;
+    r.pulsing = on;
+    lv_anim_delete(r.mark, nullptr);
+    lv_obj_set_style_opa(r.mark, LV_OPA_COVER, 0);
+    if (!on) return;
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, r.mark);
+    lv_anim_set_exec_cb(&a, [](void* obj, int32_t v) {
+        lv_obj_set_style_opa(static_cast<lv_obj_t*>(obj), static_cast<lv_opa_t>(v), 0);
+    });
+    lv_anim_set_values(&a, LV_OPA_30, LV_OPA_COVER);
+    lv_anim_set_duration(&a, kPulseMs);
+    lv_anim_set_reverse_duration(&a, kPulseMs);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_start(&a);
 }
 
 void Home::render_text() {

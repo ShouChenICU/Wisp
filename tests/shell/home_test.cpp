@@ -310,6 +310,230 @@ TEST_P(HomeShapes, TurnTextReadableAtBothEnds) {
     ui.stop();
 }
 
+// The step list, as laid out: it takes the empty column's room, one line
+// a row, on rows the screen shows and clear of the wisp, the heard text
+// and the hint, and lays nothing else out differently; the summary alone
+// is the column's first line, so the layout is the plain one.
+TEST_P(HomeShapes, StepRowsInsideVisibleArea) {
+    using wisp::shell::Activity;
+    using wisp::shell::kBodyLinePx;
+    for (const bool hint : {false, true}) {
+        SCOPED_TRACE(hint ? "hint" : "no hint");
+        const HomeLayout plain = home_layout(shape_, true, hint);
+        const HomeLayout sum = home_layout(shape_, true, hint, Activity::Summary);
+        const HomeLayout l = home_layout(shape_, true, hint, Activity::List);
+        EXPECT_EQ(sum.row_count, 0u);
+        EXPECT_EQ(plain.row_count, 0u);
+        for (const HomeLayout* o : {&sum, &l}) {
+            EXPECT_EQ(str(o->column), str(plain.column));
+            EXPECT_EQ(str(o->heard), str(plain.heard));
+            EXPECT_EQ(str(o->wisp), str(plain.wisp));
+            EXPECT_EQ(str(o->hint), str(plain.hint));
+        }
+        // At least two steps and the summary.
+        EXPECT_GE(l.row_count, 3u);
+        EXPECT_LE(l.row_count, wisp::shell::kActivityRows);
+        std::vector<lv_area_t> boxes{l.wisp, l.heard};
+        if (hint) boxes.push_back(l.hint);
+        for (size_t i = 0; i < l.row_count; ++i) {
+            const lv_area_t& r = l.rows[i];
+            EXPECT_EQ(lv_area_get_height(&r), kBodyLinePx);
+            EXPECT_GT(lv_area_get_width(&r), 0);
+            EXPECT_TRUE(box_visible(shape_, r)) << str(r);
+            // Within the column's rows, each as wide as its own rows allow.
+            EXPECT_GE(r.y1, l.column.y1);
+            EXPECT_LE(r.y2, l.column.y2);
+            if (i > 0) EXPECT_GT(r.y1, l.rows[i - 1].y2);
+            for (const lv_area_t& b : boxes)
+                EXPECT_FALSE(overlap(r, b)) << str(r) << " / " << str(b);
+        }
+    }
+}
+
+namespace {
+
+TurnView steps_view(int n, bool thinking) {
+    TurnView v;
+    v.turn = 3;
+    v.heard = "做一个时钟场景";
+    v.running = true;
+    v.started_ms = 1;
+    const char* labels[] = {"查看场景列表", "写入文件 main.lua",
+                            "写入文件 ui/a/very/long/path/to/some/deeply/nested/file.lua",
+                            "安装场景 clock", "打开场景 clock"};
+    for (int i = 0; i < n; ++i) {
+        const std::string l = labels[i % 5];
+        if (v.step_count == wisp::shell::kTurnSteps) {
+            for (size_t k = 1; k < wisp::shell::kTurnSteps; ++k) v.steps[k - 1] = v.steps[k];
+            --v.step_count;
+        }
+        wisp::shell::TurnStep& st = v.steps[v.step_count++];
+        st.label.assign(l.data(), l.size());
+        st.st = i + 1 == n && !thinking ? wisp::shell::TurnStep::State::Running
+                : i == 1                ? wisp::shell::TurnStep::State::Failed
+                                        : wisp::shell::TurnStep::State::Done;
+        ++v.steps_total;
+    }
+    v.thinking = thinking;
+    return v;
+}
+
+}  // namespace
+
+// The steps as drawn on every shape, with and without a hint: each row
+// one line on the visible screen, the hint still one line; once text
+// comes only the summary stays, and the say text's first line is whole;
+// after the turn the summary says how long it took.
+TEST_P(HomeShapes, StepListAsDrawn) {
+    using wisp::shell::Activity;
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    wisp::ui::UiRuntime ui(display_, nullptr);
+    ASSERT_TRUE(ui.start());
+    wisp::core::EventBus bus;
+    ASSERT_TRUE(bus.start());
+    auto on_ui = [&](const std::function<void()>& fn) { wisp::test::run_on_ui_blocking(&ui, fn); };
+    std::atomic<uint64_t> now{42'001};
+    Home home(wisp::shell::HomeDeps{.ui = ui,
+                                    .shape = shape_,
+                                    .bus = bus,
+                                    .now_ms = [&] { return now.load(); },
+                                    .admin_url = {}});
+    lv_obj_t* before = nullptr;
+    on_ui([&] {
+        before = lv_screen_active();
+        ASSERT_TRUE(home.start());
+        lv_screen_load(home.screen());
+    });
+    const int32_t line_h = lv_font_get_line_height(wisp::ui::default_font());
+    for (const bool with_hint : {false, true}) {
+        SCOPED_TRACE(with_hint ? "with a hint" : "no hint");
+        now = 42'001;
+        on_ui([&] {
+            TurnView v = steps_view(6, /*thinking=*/true);
+            v.turn = with_hint ? 5 : 4;
+            if (with_hint) v.error = wisp::voice::VoiceError::NoTtsProfile;
+            home.show_view(v);
+            lv_obj_update_layout(home.screen());
+            ASSERT_TRUE(home.in_turn());
+            ASSERT_EQ(home.activity(), Activity::List);
+            std::vector<lv_area_t> drawn{coords(home.heard_label()), coords(home.wisp()->obj())};
+            if (with_hint) {
+                const lv_area_t hint = coords(home.hint_label());
+                EXPECT_EQ(lv_area_get_height(&hint), wisp::shell::kBodyLinePx);
+                const std::string t = label_text(home.hint_label());
+                EXPECT_EQ(t.find('\n'), std::string::npos) << t;
+                drawn.push_back(hint);
+            }
+            size_t shown = 0;
+            std::string last;
+            for (size_t i = 0; i < wisp::shell::kTurnSteps + 1; ++i) {
+                if (hidden(home.step_label(i))) continue;
+                ++shown;
+                ASSERT_FALSE(hidden(home.step_mark(i)));
+                for (lv_obj_t* o : {home.step_mark(i), home.step_label(i)}) {
+                    const lv_area_t a = coords(o);
+                    EXPECT_TRUE(box_visible(shape_, a)) << str(a);
+                    // One line, cut rather than wrapped.
+                    EXPECT_EQ(lv_area_get_height(&a), wisp::shell::kBodyLinePx);
+                    EXPECT_LE(lv_obj_get_self_height(o), line_h);
+                    for (const lv_area_t& d : drawn)
+                        EXPECT_FALSE(overlap(a, d)) << str(a) << " / " << str(d);
+                }
+                last = label_text(home.step_label(i));
+            }
+            EXPECT_GE(shown, 2u);
+            // The newest last: the passing thinking step.
+            EXPECT_EQ(last, wisp::ui::tr(wisp::ui::StrId::TalkThinking));
+            ASSERT_FALSE(hidden(home.summary_label()));
+            const lv_area_t sum = coords(home.summary_label());
+            EXPECT_TRUE(box_visible(shape_, sum)) << str(sum);
+            for (const lv_area_t& d : drawn)
+                EXPECT_FALSE(overlap(sum, d)) << str(sum) << " / " << str(d);
+            EXPECT_EQ(label_text(home.summary_label()), "第 6 步 · 42 秒");
+        });
+        // The time counts on without the controller.
+        now += 30'000;
+        ASSERT_TRUE(wait_until(
+            [&] {
+                std::string t;
+                on_ui([&] { t = label_text(home.summary_label()); });
+                return t == "第 6 步 · 1 分 12 秒";
+            },
+            3000));
+
+        // Text comes: only the summary stays, above the column.
+        on_ui([&] {
+            TurnView v = steps_view(6, false);
+            v.turn = with_hint ? 5 : 4;
+            if (with_hint) v.error = wisp::voice::VoiceError::NoTtsProfile;
+            const std::string say = "好了，时钟做好了，已经打开，你看看喜不喜欢。";
+            v.say.assign(say.data(), say.size());
+            home.show_view(v);
+            lv_obj_update_layout(home.screen());
+            ASSERT_EQ(home.activity(), Activity::Summary);
+            for (size_t i = 0; i < wisp::shell::kTurnSteps + 1; ++i)
+                EXPECT_TRUE(hidden(home.step_label(i)));
+            std::vector<lv_area_t> drawn{coords(home.heard_label()), coords(home.wisp()->obj())};
+            if (with_hint) drawn.push_back(coords(home.hint_label()));
+            ASSERT_FALSE(hidden(home.summary_label()));
+            // The column's first line, the say text right under it.
+            lv_obj_t* col_obj = home.column();
+            ASSERT_EQ(lv_obj_get_child(col_obj, 0), home.summary_label());
+            ASSERT_EQ(lv_obj_get_child(col_obj, 1), home.say_label());
+            lv_obj_scroll_to_y(col_obj, 0, LV_ANIM_OFF);
+            lv_obj_update_layout(home.screen());
+            const lv_area_t sum = coords(home.summary_label());
+            const lv_area_t col = coords(col_obj);
+            EXPECT_EQ(sum.y1, col.y1);
+            EXPECT_EQ(lv_area_get_height(&sum), wisp::shell::kBodyLinePx);
+            EXPECT_TRUE(inside(sum, col)) << str(sum);
+            EXPECT_TRUE(box_visible(shape_, sum)) << str(sum);
+            for (const lv_area_t& d : drawn)
+                EXPECT_FALSE(overlap(sum, d)) << str(sum) << " / " << str(d);
+            lv_area_t a = coords(home.say_label());
+            EXPECT_GT(a.y1, sum.y2);
+            a.y2 = a.y1 + wisp::shell::kSayLinePx - 1;
+            EXPECT_TRUE(inside(a, col)) << str(a) << " in " << str(col);
+            EXPECT_TRUE(box_visible(shape_, a));
+            EXPECT_EQ(label_text(home.say_label()), say);
+        });
+
+        // The turn ends: what it took.
+        on_ui([&] {
+            TurnView v = steps_view(6, false);
+            v.turn = with_hint ? 5 : 4;
+            if (with_hint) v.error = wisp::voice::VoiceError::NoTtsProfile;
+            v.say.assign("好了");
+            v.running = false;
+            v.ended_ms = v.started_ms + 72'000;
+            home.show_view(v);
+            lv_obj_update_layout(home.screen());
+            ASSERT_EQ(home.activity(), Activity::Summary);
+            ASSERT_FALSE(hidden(home.summary_label()));
+            EXPECT_EQ(label_text(home.summary_label()), "用了 6 步 · 1 分 12 秒");
+        });
+    }
+    // A turn without steps shows neither.
+    on_ui([&] {
+        TurnView v;
+        v.turn = 9;
+        v.heard = "你好";
+        v.running = true;
+        home.show_view(v);
+        lv_obj_update_layout(home.screen());
+        EXPECT_EQ(home.activity(), Activity::None);
+        EXPECT_TRUE(hidden(home.summary_label()));
+        for (size_t i = 0; i < wisp::shell::kTurnSteps + 1; ++i)
+            EXPECT_TRUE(hidden(home.step_label(i)));
+    });
+    on_ui([&] {
+        lv_screen_load(before);
+        home.stop();
+    });
+    bus.stop();
+    ui.stop();
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Shapes, HomeShapes,
     ::testing::Values(ShapeCase{"rect", 480, 480}, ShapeCase{"rounded_rect", 480, 480},

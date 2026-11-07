@@ -124,6 +124,13 @@ void TalkOverlay::on_turn(const TurnView& t, voice::VoiceState v, uint8_t level,
     } else {
         say_shown_.clear();
     }
+    // The step under way, while thinking.
+    const TurnStep* step = next == Phase::Thinking && !t.thinking ? t.running_step() : nullptr;
+    if (step != nullptr) {
+        step_shown_.assign(step->label.data(), step->label.size());
+    } else {
+        step_shown_.clear();
+    }
     phase_ = next;
     apply(level);
 }
@@ -136,6 +143,7 @@ void TalkOverlay::hide() {
     if (phase_ == Phase::Hidden) return;
     phase_ = Phase::Hidden;
     say_shown_.clear();
+    step_shown_.clear();
     apply(0);
 }
 
@@ -152,7 +160,8 @@ void TalkOverlay::apply(uint8_t level) {
     set_pulse(listening);
 
     if (phase_ == Phase::Thinking) {
-        lv_label_set_text(label_, ui::tr(ui::StrId::TalkThinking));
+        lv_label_set_text(
+            label_, step_shown_.empty() ? ui::tr(ui::StrId::TalkThinking) : step_shown_.c_str());
         lv_obj_remove_flag(label_, LV_OBJ_FLAG_HIDDEN);
     } else if (phase_ == Phase::Saying) {
         lv_label_set_text(label_, say_shown_.c_str());

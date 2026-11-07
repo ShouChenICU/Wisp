@@ -423,6 +423,94 @@ const char* strings_ja(StrId id) {
             return "ハードウェア診断";
         case StrId::TalkThinking:
             return "考え中…";
+        case StrId::ActivityStep:
+            return "ステップ {} · {}";
+        case StrId::ActivityDone:
+            return "{} ステップ · {}";
+        case StrId::ActivitySeconds:
+            return "{} 秒";
+        case StrId::ActivityMinSec:
+            return "{} 分 {} 秒";
+        case StrId::ActivityCall:
+            return "{} を呼び出し";
+        case StrId::ActivityMarkRunning:
+            return "●";
+        case StrId::ActivityMarkDone:
+            return "✓";
+        case StrId::ActivityMarkFailed:
+            return "×";
+        case StrId::ActSceneList:
+            return "シーン一覧を確認";
+        case StrId::ActSceneListFiles:
+            return "シーンのファイルを確認";
+        case StrId::ActSceneReadFile:
+            return "ファイルを読む";
+        case StrId::ActSceneWriteFile:
+            return "ファイルを書く";
+        case StrId::ActSceneEditFile:
+            return "ファイルを編集";
+        case StrId::ActSceneDeleteFile:
+            return "ファイルを削除";
+        case StrId::ActSceneInstall:
+            return "シーンをインストール";
+        case StrId::ActSceneDiscard:
+            return "下書きを破棄";
+        case StrId::ActSceneRollback:
+            return "シーンを元に戻す";
+        case StrId::ActSceneOpen:
+            return "シーンを開く";
+        case StrId::ActSceneClose:
+            return "シーンを閉じる";
+        case StrId::ActSceneExit:
+            return "シーンを終了";
+        case StrId::ActSceneDelete:
+            return "シーンを削除";
+        case StrId::ActSceneEval:
+            return "コードを実行";
+        case StrId::ActSceneLogs:
+            return "ログを確認";
+        case StrId::ActSceneDataRead:
+            return "シーンのデータを読む";
+        case StrId::ActSceneDataWrite:
+            return "シーンのデータを書く";
+        case StrId::ActSceneFilesList:
+            return "保存ファイルを確認";
+        case StrId::ActSceneFilesRead:
+            return "保存ファイルを読む";
+        case StrId::ActSceneFilesRemove:
+            return "保存ファイルを削除";
+        case StrId::ActMemoryAdd:
+            return "記憶を追加";
+        case StrId::ActMemoryList:
+            return "記憶を確認";
+        case StrId::ActMemoryUpdate:
+            return "記憶を更新";
+        case StrId::ActMemoryRemove:
+            return "記憶を削除";
+        case StrId::ActTodoAdd:
+            return "ToDo を追加";
+        case StrId::ActTodoList:
+            return "ToDo を確認";
+        case StrId::ActTodoUpdate:
+            return "ToDo を更新";
+        case StrId::ActTodoDone:
+            return "ToDo を完了";
+        case StrId::ActTodoRemove:
+            return "ToDo を削除";
+        case StrId::ActSettingsGet:
+            return "設定を確認";
+        case StrId::ActSettingsSet:
+            return "設定を変更";
+        case StrId::ActDeviceStatus:
+            return "端末の状態を確認";
+        case StrId::ActNotifyList:
+            return "通知を確認";
+        case StrId::ActNotifyDismiss:
+            return "通知を消す";
+        case StrId::ActDocsRead:
+            return "ドキュメントを読む";
+        case StrId::ActUiTree:
+            return "画面を確認";
         case StrId::Count:
             break;
     }

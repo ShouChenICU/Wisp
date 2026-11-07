@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "support/wait.hpp"
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
+#include "wisp/ui/strings.hpp"
 
 using wisp::ErrorCode;
 using wisp::agent::Role;
@@ -469,4 +471,156 @@ TEST_F(ConversationTest, AtMostTwoModelConnectionsInAVoiceTurn) {
     EXPECT_EQ(tool_runs.load(), 2);
     EXPECT_EQ(tts_inputs(), (std::vector<std::string>{"第一句。", "第二句。", "第三句。"}));
     EXPECT_LE(server.max_concurrent(), 2);
+}
+
+// --- the agent's steps (mvp spec 6.2) ---------------------------------------
+
+namespace {
+
+using wisp::shell::TurnStep;
+using wisp::shell::TurnView;
+
+std::string label(const TurnStep& s) { return std::string(s.label.data(), s.label.size()); }
+
+FakeReply tool_call(const std::string& id, const std::string& wire, const std::string& args) {
+    return {.status = 200,
+            .chunks = {FakeLlmServer::sse_tool(0, id, wire, args),
+                       FakeLlmServer::sse_finish("tool_calls"), FakeLlmServer::sse_done()}};
+}
+
+// A tool under a dotted name: ok unless `fail`, and (with `gate`) running
+// until the gate opens.
+void add_test_tool(wisp::agent::ToolRegistry& tools, const std::string& name, bool fail = false,
+                   std::atomic<bool>* gate = nullptr) {
+    wisp::agent::ToolDef def;
+    def.name = name;
+    def.description = "test tool";
+    def.run = [fail, gate](const wisp::Value&, wisp::agent::ToolCtx&) {
+        while (gate != nullptr && !gate->load()) wisp::os::sleep_ms(5);
+        if (fail)
+            return wisp::agent::ToolOutput{.ok = false,
+                                           .result = wisp::Map{{"ok", false}, {"error", "failed"}}};
+        return wisp::agent::ToolOutput{.ok = true, .result = wisp::Map{{"ok", true}}};
+    };
+    ASSERT_TRUE(tools.add(std::move(def)));
+}
+
+}  // namespace
+
+TEST_F(ConversationTest, StepsRunThenEndDoneOrFailed) {
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    std::atomic<bool> gate{false};
+    start(true, [&](wisp::agent::ToolRegistry& tools) {
+        add_test_tool(tools, "scene.write_file", false, &gate);
+        add_test_tool(tools, "todo.add", /*fail=*/true);
+    });
+    server.llm().push(tool_call("c1", "scene_write_file",
+                                R"({"id":"clock","path":"main.lua","content":"x = 1"})"));
+    server.llm().push(tool_call("c2", "todo_add", R"({"title":"买牛奶"})"));
+    server.llm().push(llm_text("好了"));
+    ASSERT_TRUE(agent->submit("做个时钟", Source::Web));
+
+    ASSERT_TRUE(wait_until(
+        [&] {
+            const TurnView v = conv->current();
+            return v.running_step() != nullptr && label(*v.running_step()) == "写入文件 main.lua";
+        },
+        5000));
+    const uint64_t started = conv->current().started_ms;
+    EXPECT_NE(started, 0u);
+    EXPECT_EQ(conv->current().steps_total, 1);
+    EXPECT_EQ(conv->current().ended_ms, 0u);
+    virtual_ms += 42000;
+    gate = true;
+    ASSERT_TRUE(wait_turns(1));
+
+    const TurnView v = conv->current();
+    EXPECT_FALSE(v.running);
+    ASSERT_EQ(v.step_count, 2);
+    EXPECT_EQ(v.steps_total, 2);
+    EXPECT_EQ(label(v.steps[0]), "写入文件 main.lua");
+    EXPECT_EQ(v.steps[0].st, TurnStep::State::Done);
+    EXPECT_EQ(label(v.steps[1]), "添加待办 买牛奶");
+    EXPECT_EQ(v.steps[1].st, TurnStep::State::Failed);
+    EXPECT_EQ(v.started_ms, started);
+    EXPECT_GE(v.ended_ms, started + 42000);
+    EXPECT_FALSE(v.thinking);
+    EXPECT_EQ(v.running_step(), nullptr);
+}
+
+TEST_F(ConversationTest, AFifthStepDropsTheOldest) {
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    start(true, [&](wisp::agent::ToolRegistry& tools) { add_test_tool(tools, "scene.open"); });
+    for (int i = 1; i <= 5; ++i) {
+        const std::string n = std::to_string(i);
+        server.llm().push(tool_call("c" + n, "scene_open", R"({"id":"s)" + n + R"("})"));
+    }
+    server.llm().push(llm_text("好了"));
+    ASSERT_TRUE(agent->submit("开五个", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    const TurnView v = conv->current();
+    ASSERT_EQ(v.step_count, wisp::shell::kTurnSteps);
+    EXPECT_EQ(v.steps_total, 5);
+    for (size_t i = 0; i < wisp::shell::kTurnSteps; ++i) {
+        EXPECT_EQ(label(v.steps[i]), "打开场景 s" + std::to_string(i + 2));
+        EXPECT_EQ(v.steps[i].st, TurnStep::State::Done);
+    }
+}
+
+TEST_F(ConversationTest, ACallBeingWrittenIsAStepAlready) {
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    start(true,
+          [&](wisp::agent::ToolRegistry& tools) { add_test_tool(tools, "scene.write_file"); });
+    server.llm().push(
+        {.status = 200,
+         .chunks = {FakeLlmServer::sse_tool(0, "c1", "scene_write_file", ""),
+                    FakeLlmServer::sse_tool(0, "", "", R"({"id":"clock"})"),
+                    FakeLlmServer::sse_finish("tool_calls"), FakeLlmServer::sse_done()},
+         .hold_after = 1});
+    server.llm().push(llm_text("好了"));
+    ASSERT_TRUE(agent->submit("写个文件", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return conv->current().step_count == 1; }, 5000));
+    {
+        const TurnView v = conv->current();
+        ASSERT_NE(v.running_step(), nullptr);
+        EXPECT_EQ(label(*v.running_step()), "写入文件");
+        EXPECT_EQ(v.steps_total, 1);
+    }
+    server.release();
+    ASSERT_TRUE(wait_turns(1));
+    const TurnView v = conv->current();
+    // The call itself took the same step over.
+    ASSERT_EQ(v.step_count, 1);
+    EXPECT_EQ(v.steps_total, 1);
+    EXPECT_EQ(label(v.steps[0]), "写入文件 clock");
+    EXPECT_EQ(v.steps[0].st, TurnStep::State::Done);
+}
+
+TEST_F(ConversationTest, ThinkingAfterAToolIsAPassingStep) {
+    start(true, [&](wisp::agent::ToolRegistry& tools) { add_test_tool(tools, "scene.list"); });
+    server.llm().push(tool_call("c1", "scene_list", "{}"));
+    // The answer after the tool waits, so the turn stays thinking.
+    server.llm().push({.status = 200,
+                       .chunks = {FakeLlmServer::sse_text("好了"),
+                                  FakeLlmServer::sse_finish("stop"), FakeLlmServer::sse_done()},
+                       .hold_after = 0});
+    // No passing step before the first one.
+    std::atomic<bool> early_thinking{false};
+    const uint32_t id = conv->add_listener([&](const TurnView& v) {
+        if (v.thinking && v.steps_total == 0) early_thinking = true;
+    });
+    ASSERT_TRUE(agent->submit("看看场景", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return conv->current().thinking; }, 5000));
+    {
+        const TurnView v = conv->current();
+        ASSERT_EQ(v.step_count, 1);
+        EXPECT_EQ(v.steps[0].st, TurnStep::State::Done);
+        EXPECT_EQ(v.running_step(), nullptr);
+    }
+    server.release();
+    ASSERT_TRUE(wait_turns(1));
+    conv->remove_listener(id);
+    EXPECT_FALSE(conv->current().thinking);
+    EXPECT_EQ(conv->current().step_count, 1);
+    EXPECT_FALSE(early_thinking.load());
 }

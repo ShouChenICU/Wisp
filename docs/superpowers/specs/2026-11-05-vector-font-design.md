@@ -105,7 +105,7 @@
 ### 3.1 字形来源与子集
 
 - 源字体：Noto Sans CJK SC Regular，`notofonts/noto-cjk` 发布标签 `Sans2.004` 的 `Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf`，SHA-256 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`，与 `tools/gen_cjk_font.py` 锁定的是同一个文件；下载与校验复用它的 `fetch_font()`。
-- 字符集：`gen_cjk_font.build_charset()` 的全部码位（ASCII、GB2312、JIS X 0208 第 1–8 区与第 16–47 区、U+3000–303F、U+FF01–FF5E、字符串表里的字，减去 U+2252；目前 8709 个），再加：
+- 字符集：`gen_cjk_font.build_charset()` 的全部码位（ASCII、GB2312、JIS X 0208 第 1–8 区与第 16–47 区、U+3000–303F、U+FF01–FF5E、字符串表里的字，减去 U+2252；目前 8711 个），再加：
   - Latin-1 补充 U+00A0–U+00FF 全部（源字体全有）；
   - 常用标点 U+2010–U+2027、U+2030–U+203A、U+20AC（€）、U+2122（™）中源字体有字形的那些。源字体缺的码位（实测 U+2017、U+201B、U+201F、U+2023、U+2024、U+2031、U+2034、U+2036–U+2038）在脚本里按 `gen_cjk_font.ABSENT_FROM_SOURCE` 的方式显式列出、排除；列表之外有缺字就失败。
   - 不加拉丁扩展-A：源字体缺其中 98 个码位。
