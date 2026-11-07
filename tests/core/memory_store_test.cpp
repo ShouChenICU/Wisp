@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -24,6 +26,8 @@
 #include "wisp/core/storage_manager.hpp"
 
 using wisp::ErrorCode;
+using wisp::List;
+using wisp::Map;
 using wisp::Value;
 using wisp::core::Event;
 using wisp::core::EventBus;
@@ -34,6 +38,10 @@ using wisp::core::StorageManager;
 namespace {
 
 std::string str(const wisp::os::LargeString& s) { return std::string(s.data(), s.size()); }
+
+std::span<const uint8_t> span_of(const std::string& s) {
+    return {reinterpret_cast<const uint8_t*>(s.data()), s.size()};
+}
 
 struct Harness {
     Harness() : root(wisp::test::temp_dir().string()) {
@@ -214,6 +222,139 @@ TEST_F(MemoryStoreTest, EventAndLogsCarryNoContent) {
     for (const auto& e : wisp::log::ring_entries()) {
         EXPECT_EQ(e.msg.find(secret), std::string::npos) << e.msg;
     }
+}
+
+// A damaged file is never silently clobbered by the next write: load()
+// quarantines it to "<path>.bad" first and continues empty and writable.
+TEST_F(MemoryStoreTest, QuarantinesUnparsableFile) {
+    Harness h;
+    const std::string garbage = "not { valid json at all";
+    ASSERT_TRUE(h.storage->write_atomic(h.path, span_of(garbage)));
+
+    auto store = std::make_unique<MemoryStore>(*h.storage, h.path, nullptr, h.wall_s);
+    ASSERT_TRUE(store->load());
+    EXPECT_EQ(store->count(), 0u);
+
+    ASSERT_TRUE(store->add("fresh note"));
+
+    auto bad = h.storage->read_file(h.path + ".bad");
+    ASSERT_TRUE(bad);
+    const std::string bad_text(reinterpret_cast<const char*>(bad.value().data()),
+                               bad.value().size());
+    EXPECT_EQ(bad_text, garbage);
+
+    auto fresh = h.storage->read_file(h.path);
+    ASSERT_TRUE(fresh);
+    const std::string fresh_text(reinterpret_cast<const char*>(fresh.value().data()),
+                                 fresh.value().size());
+    auto doc = wisp::from_json(fresh_text);
+    ASSERT_TRUE(doc);
+    const auto& notes = doc.value().find("notes")->as_list();
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_EQ(notes[0].find("text")->as_string(), "fresh note");
+
+    // A second corruption replaces the first ".bad" rather than failing
+    // because one already exists.
+    const std::string garbage2 = "still not json";
+    ASSERT_TRUE(h.storage->write_atomic(h.path, span_of(garbage2)));
+    auto store2 = std::make_unique<MemoryStore>(*h.storage, h.path, nullptr, h.wall_s);
+    ASSERT_TRUE(store2->load());
+    auto bad2 = h.storage->read_file(h.path + ".bad");
+    ASSERT_TRUE(bad2);
+    const std::string bad2_text(reinterpret_cast<const char*>(bad2.value().data()),
+                                bad2.value().size());
+    EXPECT_EQ(bad2_text, garbage2);
+}
+
+// A file in a future, unsupported format is quarantined the same way as
+// one that fails to parse at all.
+TEST_F(MemoryStoreTest, QuarantinesFutureVersion) {
+    Harness h;
+    const std::string future = R"({"version":2,"next_id":9,"notes":[{"id":1,"text":"x",)"
+                               R"("updated":1}]})";
+    ASSERT_TRUE(h.storage->write_atomic(h.path, span_of(future)));
+
+    auto store = std::make_unique<MemoryStore>(*h.storage, h.path, nullptr, h.wall_s);
+    ASSERT_TRUE(store->load());
+    EXPECT_EQ(store->count(), 0u);
+
+    auto bad = h.storage->read_file(h.path + ".bad");
+    ASSERT_TRUE(bad);
+    const std::string bad_text(reinterpret_cast<const char*>(bad.value().data()),
+                               bad.value().size());
+    EXPECT_EQ(bad_text, future);
+}
+
+// A file that exists but can't even be read (here: the path turns out to
+// be a directory, so read_file_large() fails with something other than
+// NotFound) must not be overwritten by a write that doesn't know what it
+// would be destroying.
+TEST_F(MemoryStoreTest, ReadErrorBlocksWritesUntilClear) {
+    Harness h;
+    ASSERT_TRUE(std::filesystem::create_directories(h.path));
+
+    MemoryStore store(*h.storage, h.path, nullptr, h.wall_s);
+    auto loaded = store.load();
+    ASSERT_FALSE(loaded);
+    EXPECT_NE(loaded.error().code, ErrorCode::NotFound);
+
+    auto added = store.add("x");
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().message, "memory_unavailable");
+    EXPECT_EQ(store.count(), 0u);
+    EXPECT_TRUE(std::filesystem::is_directory(h.path)) << "a blocked write must not touch the path";
+
+    // clear() is the explicit override: it recovers the store.
+    ASSERT_TRUE(store.clear());
+    EXPECT_TRUE(std::filesystem::is_regular_file(h.path));
+
+    auto recovered = store.add("y");
+    ASSERT_TRUE(recovered);
+    EXPECT_EQ(recovered.value(), 1u);
+}
+
+// A hand-edited (or corrupted-then-partially-recovered) file is
+// re-validated note by note on load, the same way
+// ModelProfileService::load_models() re-validates stored profiles.
+TEST_F(MemoryStoreTest, DropsInvalidRecordsOnLoad) {
+    Harness h;
+
+    auto note = [](int64_t id, std::string text) {
+        return Value(Map{
+            {"id", Value(id)}, {"text", Value(std::move(text))}, {"updated", Value(int64_t{1})}});
+    };
+
+    List notes;
+    notes.push_back(note(0, "zero id"));              // dropped: id 0
+    notes.push_back(note(1, "first"));                // kept
+    notes.push_back(note(1, "duplicate"));            // dropped: duplicate id
+    notes.push_back(note(2, ""));                     // dropped: empty text
+    notes.push_back(note(3, std::string(201, 'x')));  // dropped: too long
+    for (int i = 0; i < 70; ++i) {
+        notes.push_back(note(10 + i, "note " + std::to_string(i)));  // first 63 kept, rest dropped
+    }
+
+    const std::string doc = wisp::to_json(
+        Value(Map{{"version", Value(int64_t{1})}, {"notes", Value(std::move(notes))}}));
+    ASSERT_TRUE(h.storage->write_atomic(h.path, span_of(doc)));
+
+    auto store = std::make_unique<MemoryStore>(*h.storage, h.path, nullptr, h.wall_s);
+    ASSERT_TRUE(store->load());
+
+    // 1 (id 1) + 63 of the 70 "10.." notes = 64, MemoryStore::kMaxNotes.
+    EXPECT_EQ(store->count(), MemoryStore::kMaxNotes);
+    wisp::os::LargeVector<MemoryNote> list = store->list();
+    ASSERT_FALSE(list.empty());
+    EXPECT_EQ(list.front().id, 1u);
+    EXPECT_EQ(str(list.front().text), "first");
+
+    // The store is at kMaxNotes already; free a slot before checking that
+    // next_id_ cleared every id the file named, including ones dropped
+    // for capacity (highest id in the file is 10+69=79).
+    ASSERT_TRUE(store->remove(1));
+    auto added = store->add("new");
+    ASSERT_TRUE(added);
+    EXPECT_EQ(added.value(), 80u);
 }
 
 TEST_F(MemoryStoreTest, ConcurrentAddsGetDistinctIds) {

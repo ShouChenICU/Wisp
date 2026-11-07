@@ -33,6 +33,32 @@
 // touch flash, so they are safe to call from wisp.agent (whose stack may
 // be in PSRAM) or any other thread without a flash-thread hop.
 //
+// A damaged notes.json must never be silently replaced by the next write
+// -- that would destroy whatever the user actually had saved. load()
+// tells the two ways a file can be damaged apart:
+//  - It exists but can't even be read (anything other than NotFound,
+//    e.g. a read error, or the path turning out to be a directory): load()
+//    sets an internal "unavailable" flag and returns the error. While
+//    that flag is set, add()/update()/remove() refuse to run (and so
+//    never call write_atomic()) with ErrorCode::StorageUnavailable
+//    "memory_unavailable"; list()/count() just report zero notes. clear()
+//    is the one call that still works: it is the explicit "start over"
+//    override, and on success it writes a fresh empty file and clears the
+//    flag. A later load() that succeeds also clears it.
+//  - It reads fine but the contents are unparsable, or its "version"
+//    field isn't 1 (a future, incompatible format): load() renames it
+//    aside to "<path>.bad" (replacing any older one) instead of touching
+//    it further, logs one warning with no file content, and continues
+//    with an empty, writable store -- same as a missing file. If that
+//    rename itself fails, load() falls back to the unavailable state
+//    above rather than risk the next write clobbering an unreadable but
+//    not-yet-quarantined file.
+// Either way, every individual note record is also re-validated on a
+// successful parse (id 0, a duplicate id, empty text or over kMaxChars is
+// dropped; at most the first kMaxNotes surviving notes are kept), so a
+// hand-edited file cannot smuggle in anything add()/update() would have
+// refused -- a dropped count is logged, never which notes or why.
+//
 // Privacy: note text never appears in a log line or an event payload.
 // Every change publishes memory.changed {"count"} (source "memory") with
 // the new note count only.
@@ -70,11 +96,10 @@ public:
     MemoryStore(const MemoryStore&) = delete;
     MemoryStore& operator=(const MemoryStore&) = delete;
 
-    // Reads `path`: a missing file is not an error (a fresh, empty store).
-    // A file that exists but cannot be parsed as the format above leaves
-    // the store empty (so it is still usable; the next write replaces the
-    // bad file) and returns the error. Call once, on the flash thread,
-    // before any mutating call.
+    // Reads `path`: a missing file is not an error (a fresh, empty
+    // store). See the file header for how an unreadable or unparsable
+    // file is handled instead. Call once, on the flash thread, before any
+    // mutating call.
     Result<void> load();
 
     // A copy of the notes, ascending by id. Memory only; never touches
@@ -93,6 +118,11 @@ public:
 private:
     os::LargeString serialize_locked() const;
     Result<void> persist_and_publish_locked();
+    // The file exists but isn't parsable, or names an unsupported
+    // version: moves it aside to "<path_>.bad" and continues empty and
+    // writable, or falls back to load_failed_ if even that fails. See
+    // the file header.
+    Result<void> quarantine_locked();
 
     StorageManager& storage_;
     std::string path_;
@@ -102,6 +132,9 @@ private:
     mutable os::Mutex mutex_;
     os::LargeVector<MemoryNote> notes_;  // ascending by id
     uint32_t next_id_ = 1;
+    // Set when the file exists but could not even be read; see the file
+    // header. Cleared by a successful load() or clear().
+    bool load_failed_ = false;
 };
 
 }  // namespace wisp::core
