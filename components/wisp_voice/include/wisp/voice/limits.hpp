@@ -38,5 +38,9 @@ inline constexpr uint32_t kTtsMsPerCodePoint = 400;
 inline constexpr uint32_t kRingMs = 2000;
 inline constexpr uint32_t kLevelIntervalMs = 50;  // 20 Hz
 inline constexpr size_t kWavHeaderBytes = 44;
+// How long a voice round that has delivered its transcript may go without
+// any speech activity before it ends itself (VoiceService's backstop for
+// a caller that never ends the round).
+inline constexpr uint32_t kVoiceRoundBackstopMs = 180000;
 
 }  // namespace wisp::voice

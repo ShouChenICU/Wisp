@@ -16,10 +16,9 @@ constexpr const char* kTag = "voice";
 // How long one push() into the player may wait before the synthesis looks
 // at its stop flag again (and publishes a level).
 constexpr uint32_t kPushSliceMs = 50;
-// How long the idle task sleeps between looks at its quit flag.
+// How long the idle task sleeps between looks at its flags (quit, a lost
+// wake-up, the round backstop).
 constexpr uint32_t kIdleWaitMs = 200;
-// How long a command may wait for room in the queue.
-constexpr uint32_t kPostWaitMs = 100;
 
 bool blank(std::string_view s) {
     return std::all_of(s.begin(), s.end(),
@@ -63,7 +62,7 @@ const char* to_string(VoiceError e) {
 }
 
 VoiceService::VoiceService(VoiceDeps deps, VoiceConfig config)
-    : deps_(std::move(deps)), config_(config) {}
+    : deps_(std::move(deps)), config_(config), cmds_(config.queue_depth) {}
 
 VoiceService::~VoiceService() { stop(); }
 
@@ -90,59 +89,98 @@ Result<void> VoiceService::start() {
     quit_.store(false);
     task_ = os::Task::spawn(task_config(config_), [this] { run(); });
     if (!task_) return Result<void>::err(ErrorCode::NoMemory, "cannot start wisp.voice");
-    started_.store(true);
+    std::lock_guard<os::Mutex> lock(locks_mu_);
+    started_ = true;
     return Result<void>::ok();
 }
 
 void VoiceService::stop() {
     if (!task_) return;
-    started_.store(false);
+    {
+        std::lock_guard<os::Mutex> lock(locks_mu_);
+        started_ = false;
+    }
     quit_.store(true);
     if (uint32_t t = asr_ticket_.load()) watch_->abort(t);
     if (uint32_t t = tts_ticket_.load()) watch_->abort(t);
     deps_.player.stop();
-    post({.cmd = Cmd::Quit});
+    cmds_.push({.cmd = Cmd::Quit}, 0);  // else the task sees quit_ at its next poll
     task_->join();
     task_.reset();
     capture_busy_.store(false);
+    backstop_round_.store(0);
     std::lock_guard<os::Mutex> lock(locks_mu_);
-    lock_screen_.release();
-    lock_network_.release();
-    lock_cpu_.release();
+    release_round_locks();
 }
 
-void VoiceService::post(Command c) {
-    // The commands only wake the task and mark capture boundaries; the
-    // state they act on is in the flags, so one lost to a full queue
-    // (16 deep: nothing sends that many at once) is noticed on the next
-    // look.
-    if (!cmds_.push(c, kPostWaitMs)) WLOG_W(kTag, "command queue full");
+void VoiceService::wake() {
+    if (wake_pending_.exchange(true)) return;
+    if (!cmds_.push({.cmd = Cmd::Wake}, 0)) wake_pending_.store(false);
 }
+
+void VoiceService::touch() { last_activity_ms_.store(deps_.now_ms()); }
 
 Result<void> VoiceService::begin_capture(CaptureMode mode) {
-    if (!started_.load()) return Result<void>::err(ErrorCode::Unsupported, "voice not started");
-    bool idle = false;
-    if (!capture_busy_.compare_exchange_strong(idle, true)) {
-        return Result<void>::err(ErrorCode::Busy, "already capturing");
-    }
-    stop_speaking();
+    // Bumped before the busy check, so a cancel_capture() racing this
+    // call marks the new capture rather than the one before it.
     const uint32_t seq = capture_seq_.fetch_add(1) + 1;
-    uint32_t round = 0;
+    uint32_t round = 0, previous_round = 0;
+    bool had_locks = false;
     {
         std::lock_guard<os::Mutex> lock(locks_mu_);
+        if (!started_) return Result<void>::err(ErrorCode::Unsupported, "voice not started");
+        bool idle = false;
+        if (!capture_busy_.compare_exchange_strong(idle, true)) {
+            return Result<void>::err(ErrorCode::Busy, "already capturing");
+        }
+        previous_round = round_;
+        had_locks = lock_screen_.held();
         round = ++round_;
         acquire_round_locks();
     }
-    post({.cmd = Cmd::BeginCapture, .mode = mode, .capture = seq, .round = round});
+    // The BeginCapture wakes the task for the stop too: no wake-up of its
+    // own to take the queue's room.
+    stop_speech();
+    if (!cmds_.push({.cmd = Cmd::BeginCapture, .mode = mode, .capture = seq, .round = round}, 0)) {
+        // Nothing reached the task: undo what this call did.
+        std::lock_guard<os::Mutex> lock(locks_mu_);
+        capture_busy_.store(false);
+        if (round_ == round) {
+            round_ = previous_round;
+            if (!had_locks) release_round_locks();
+        }
+        WLOG_W(kTag, "capture not started: command queue full");
+        return Result<void>::err(ErrorCode::Busy, "voice queue full");
+    }
     return Result<void>::ok();
 }
 
-void VoiceService::end_capture() { post({.cmd = Cmd::EndCapture, .capture = capture_seq_.load()}); }
+void VoiceService::stop_speech() {
+    touch();
+    {
+        std::lock_guard<os::Mutex> lock(speech_mu_);
+        if (speech_.open) speech_.stopped = true;
+        speech_.open = false;
+        speech_.pending.clear();
+        speech_gen_.fetch_add(1);
+    }
+    if (watch_) {
+        if (uint32_t t = tts_ticket_.load()) watch_->abort(t);
+    }
+    deps_.player.stop();
+}
+
+void VoiceService::end_capture() {
+    ended_seq_.store(capture_seq_.load());
+    wake();
+}
 
 void VoiceService::cancel_capture() {
     cancelled_seq_.store(capture_seq_.load());
-    if (uint32_t t = asr_ticket_.load()) watch_->abort(t);
-    post({.cmd = Cmd::CancelCapture});
+    if (watch_) {
+        if (uint32_t t = asr_ticket_.load()) watch_->abort(t);
+    }
+    wake();
 }
 
 bool VoiceService::capture_cancelled(uint32_t seq) const {
@@ -155,9 +193,11 @@ void VoiceService::set_on_transcript(std::function<void(std::string text)> cb) {
 }
 
 void VoiceService::begin_speech() {
+    touch();
     uint32_t round = 0;
     {
         std::lock_guard<os::Mutex> lock(locks_mu_);
+        if (!started_) return;
         // Speech belongs to the round its transcript came from; one
         // without (none is open) gets a round of its own.
         if (deps_.locks != nullptr && !lock_screen_.held()) ++round_;
@@ -172,10 +212,11 @@ void VoiceService::begin_speech() {
         speech_.splitter.emplace(kTtsMaxChars);
         speech_gen_.fetch_add(1);
     }
-    post({.cmd = Cmd::Wake});
+    wake();
 }
 
 void VoiceService::speak(std::string_view say_delta) {
+    touch();
     bool added = false;
     {
         std::lock_guard<os::Mutex> lock(speech_mu_);
@@ -185,10 +226,11 @@ void VoiceService::speak(std::string_view say_delta) {
             added = true;
         });
     }
-    if (added) post({.cmd = Cmd::Wake});
+    if (added) wake();
 }
 
 void VoiceService::end_speech() {
+    touch();
     uint32_t round = 0;
     {
         std::lock_guard<os::Mutex> lock(locks_mu_);
@@ -210,22 +252,12 @@ void VoiceService::end_speech() {
         }
         speech_.ended = true;
     }
-    post({.cmd = Cmd::Wake});
+    wake();
 }
 
 void VoiceService::stop_speaking() {
-    {
-        std::lock_guard<os::Mutex> lock(speech_mu_);
-        if (speech_.open) speech_.stopped = true;
-        speech_.open = false;
-        speech_.pending.clear();
-        speech_gen_.fetch_add(1);
-    }
-    if (watch_) {
-        if (uint32_t t = tts_ticket_.load()) watch_->abort(t);
-    }
-    deps_.player.stop();
-    post({.cmd = Cmd::Wake});
+    stop_speech();
+    wake();
 }
 
 void VoiceService::set_llm_busy(bool busy) {
@@ -233,16 +265,50 @@ void VoiceService::set_llm_busy(bool busy) {
         std::lock_guard<os::Mutex> lock(speech_mu_);
         llm_busy_ = busy;
     }
-    post({.cmd = Cmd::Wake});
+    wake();
 }
 
 bool VoiceService::may_play_tone(core::ToneKind kind) {
     if (kind == core::ToneKind::Alarm) {
+        // Under out_mu_ only to wait out a begin_output() in progress:
+        // TonePlayer::playing() is already true, so no speech opens the
+        // output after this, and what did open it is stopped next.
+        {
+            std::lock_guard<os::Mutex> lock(out_mu_);
+        }
         stop_speaking();
         wait_for([this] { return !deps_.player.active(); }, kAlarmWaitMs);
         return true;
     }
+    std::lock_guard<os::Mutex> lock(out_mu_);
     return !deps_.player.active();
+}
+
+bool VoiceService::begin_output(uint32_t rate, const std::function<bool()>& stopped) {
+    // The last stream closing, outside the lock: the guard must not wait
+    // behind it.
+    wait_for([this] { return !deps_.player.active(); }, PcmPlayer::kBeginWaitMs);
+    const uint64_t deadline = os::now_ms() + kToneWaitMs;
+    for (;;) {
+        {
+            std::lock_guard<os::Mutex> lock(out_mu_);
+            // A sound that has been asked for owns the output from play()
+            // until it has closed it (TonePlayer::playing()); checking
+            // that and opening under out_mu_ is what the guard decides
+            // against.
+            if (deps_.tones == nullptr || !deps_.tones->playing()) {
+                if (auto r = deps_.player.begin(rate, deps_.volume ? deps_.volume() : 100); !r) {
+                    WLOG_W(kTag, "no speech output: %s", r.error().message.c_str());
+                    return false;
+                }
+                return true;
+            }
+        }
+        // An alarm keeps the output; past kToneWaitMs this turn's speech
+        // gives way.
+        if (stopped() || os::now_ms() >= deadline) return false;
+        os::sleep_ms(1);
+    }
 }
 
 bool VoiceService::wait_for(const std::function<bool()>& done, uint32_t timeout_ms) {
@@ -264,13 +330,45 @@ void VoiceService::acquire_round_locks() {
     take(lock_cpu_, core::WakeLockKind::Cpu);
 }
 
+void VoiceService::release_round_locks() {
+    lock_screen_.release();
+    lock_network_.release();
+    lock_cpu_.release();
+}
+
 void VoiceService::end_round(uint32_t round) {
     std::lock_guard<os::Mutex> lock(locks_mu_);
     // A newer round owns the locks now, or a capture is starting one.
     if (round != round_ || capture_busy_.load()) return;
-    lock_screen_.release();
-    lock_network_.release();
-    lock_cpu_.release();
+    release_round_locks();
+    uint32_t expected = round;
+    backstop_round_.compare_exchange_strong(expected, 0);
+}
+
+void VoiceService::check_backstop() {
+    const uint32_t round = backstop_round_.load();
+    if (round == 0) return;
+    {
+        std::lock_guard<os::Mutex> lock(locks_mu_);
+        if (round != round_) {
+            // A newer round took over; this one is gone already.
+            backstop_round_.store(0);
+            return;
+        }
+    }
+    if (deps_.now_ms() - last_activity_ms_.load() < kVoiceRoundBackstopMs) return;
+    WLOG_W(kTag, "round backstop");
+    backstop_round_.store(0);
+    {
+        std::lock_guard<os::Mutex> lock(speech_mu_);
+        speech_.open = false;
+        speech_.stopped = false;
+        speech_.pending.clear();
+        speech_gen_.fetch_add(1);
+    }
+    end_playback(true);
+    end_round(round);
+    publish(VoiceState::Idle);
 }
 
 void VoiceService::publish(VoiceState s, uint8_t level, const char* reason, const char* result) {
@@ -295,16 +393,15 @@ void VoiceService::publish(VoiceState s, uint8_t level, const char* reason, cons
     }
 }
 
-void VoiceService::publish_level(VoiceState s, uint8_t level, bool force) {
+void VoiceService::publish_level(VoiceState s, uint8_t level) {
     if (state_.load() != s) return;
-    if (!force && (level == last_level_ || deps_.now_ms() - last_level_ms_ < kLevelIntervalMs)) {
-        return;
-    }
+    if (level == last_level_ || deps_.now_ms() - last_level_ms_ < kLevelIntervalMs) return;
     publish(s, level);
 }
 
-void VoiceService::fail(VoiceError e) {
+void VoiceService::fail(VoiceError e, uint32_t round) {
     publish(VoiceState::Error, 0, to_string(e));
+    end_round(round);
     publish(VoiceState::Idle);
 }
 
@@ -313,34 +410,32 @@ void VoiceService::run() {
     while (!quit_.load()) {
         Command c;
         const uint32_t wait = more ? 0 : (player_begun_ ? kLevelIntervalMs : kIdleWaitMs);
-        if (cmds_.pop(c, wait)) handle(c);
+        if (cmds_.pop(c, wait)) {
+            if (c.cmd == Cmd::Wake) wake_pending_.store(false);
+            if (c.cmd == Cmd::BeginCapture) capture(c);
+        }
         if (quit_.load()) break;
         more = pump_speech();
-        if (player_begun_) publish_level(VoiceState::Speaking, deps_.player.level(), false);
+        if (player_begun_) publish_level(VoiceState::Speaking, deps_.player.level());
+        check_backstop();
     }
-    if (player_begun_) end_playback(true);
-}
-
-void VoiceService::handle(const Command& c) {
-    // Every other command only wakes the task: pump_speech() reads the
-    // speech state, and capture() reads its own commands.
-    if (c.cmd == Cmd::BeginCapture) capture(c);
+    if (player_begun_ && end_playback(true)) publish(VoiceState::Idle);
 }
 
 void VoiceService::capture(const Command& c) {
-    auto finish = [&](VoiceState s, const char* result) {
+    // Every ending settles the round before its final idle.
+    auto finish = [&](const char* result) {
         capture_busy_.store(false);
-        publish(s, 0, nullptr, result);
         end_round(c.round);
+        publish(VoiceState::Idle, 0, nullptr, result);
     };
     auto failed = [&](VoiceError e) {
         capture_busy_.store(false);
-        fail(e);
-        end_round(c.round);
+        fail(e, c.round);
     };
 
-    if (player_begun_) end_playback(true);
-    if (capture_cancelled(c.capture)) return finish(VoiceState::Idle, nullptr);
+    if (player_begun_ && end_playback(true)) publish(VoiceState::Idle);
+    if (capture_cancelled(c.capture)) return finish(nullptr);
     if (!deps_.mic) return failed(VoiceError::MicUnavailable);
     if (deps_.models.get().active_for(core::ModelKind::Asr).empty()) {
         return failed(VoiceError::NoAsrProfile);
@@ -364,17 +459,19 @@ void VoiceService::capture(const Command& c) {
     buf.clear();
     Vad vad(c.mode == CaptureMode::Hold ? VadMode::Hold : VadMode::Auto);
     VadVerdict verdict = VadVerdict::Continue;
-    bool ended = false, cancelled = false, read_failed = false;
+    bool cancelled = false, read_failed = false;
     for (;;) {
+        // Wake-ups that come now are for speech: pump_speech() reads its
+        // state after the capture anyway.
         Command cmd;
         while (cmds_.pop(cmd, 0)) {
-            if (cmd.cmd == Cmd::EndCapture && cmd.capture == c.capture) ended = true;
+            if (cmd.cmd == Cmd::Wake) wake_pending_.store(false);
         }
         if (capture_cancelled(c.capture)) {
             cancelled = true;
             break;
         }
-        if (ended || buf.full()) {
+        if (ended_seq_.load() >= c.capture || buf.full()) {
             verdict = vad.finish();
             break;
         }
@@ -392,14 +489,14 @@ void VoiceService::capture(const Command& c) {
         if (read_failed) break;
         verdict = vad.push(frame);
         buf.commit(frame.size());
-        publish_level(VoiceState::Listening, vad.level(), false);
+        publish_level(VoiceState::Listening, vad.level());
         if (verdict != VadVerdict::Continue) break;
     }
     deps_.mic->close();
 
-    if (cancelled) return finish(VoiceState::Idle, nullptr);
+    if (cancelled) return finish(nullptr);
     if (read_failed) return failed(VoiceError::MicUnavailable);
-    if (verdict != VadVerdict::Done) return finish(VoiceState::Idle, "not_heard");
+    if (verdict != VadVerdict::Done) return finish("not_heard");
 
     publish(VoiceState::Transcribing);
     if (deps_.network_up && !deps_.network_up()) return failed(VoiceError::Offline);
@@ -412,15 +509,17 @@ void VoiceService::capture(const Command& c) {
             if (capture_cancelled(seq)) watch_->abort(ticket);
         });
     asr_ticket_.store(0);
-    if (capture_cancelled(seq)) return finish(VoiceState::Idle, nullptr);
+    if (capture_cancelled(seq)) return finish(nullptr);
     if (!r.error.empty()) {
         if (r.error == "no_profile") return failed(VoiceError::NoAsrProfile);
         const bool offline = deps_.network_up && !deps_.network_up();
         return failed(offline ? VoiceError::Offline : VoiceError::AsrFailed);
     }
-    if (blank(r.text)) return finish(VoiceState::Idle, "not_heard");
+    if (blank(r.text)) return finish("not_heard");
 
-    // The round goes on: its speech ends it.
+    // The round goes on: its speech ends it, or the backstop does.
+    touch();
+    backstop_round_.store(c.round);
     capture_busy_.store(false);
     publish(VoiceState::Idle);
     std::function<void(std::string)> cb;
@@ -464,23 +563,26 @@ bool VoiceService::pump_speech() {
             }
         }
     }
-    if (stop_previous) end_playback(true);
+    const bool was_speaking = stop_previous && end_playback(true);
     if (stopped_round != 0) end_round(stopped_round);
+    if (was_speaking) publish(VoiceState::Idle);
 
     if (next == Next::Speak) {
         speak_sentence(text, index, gen);
         return true;
     }
     if (next == Next::Finish) {
+        bool spoke = false;
         if (player_begun_) {
             if (!draining_) {
                 deps_.player.end_of_stream();
                 draining_ = true;
             }
             if (deps_.player.active()) return false;
-            end_playback(false);
+            spoke = end_playback(false);
         }
         finish_speech_turn(gen);
+        if (spoke) publish(VoiceState::Idle);
         return true;
     }
     return false;
@@ -497,9 +599,10 @@ void VoiceService::speak_sentence(const std::string& text, uint32_t index, uint3
             speech_.pending.clear();
             round = speech_.round;
         }
-        if (player_begun_) end_playback(true);
-        if (e) fail(*e);
+        const bool was_speaking = player_begun_ && end_playback(true);
+        if (e) return fail(*e, round);
         end_round(round);
+        if (was_speaking) publish(VoiceState::Idle);
     };
 
     const std::optional<uint32_t> rate = deps_.tts.sample_rate();
@@ -510,15 +613,8 @@ void VoiceService::speak_sentence(const std::string& text, uint32_t index, uint3
     auto on_pcm = [&](std::span<const int16_t> pcm) -> bool {
         if (stopped()) return false;
         if (!player_begun_) {
-            // An alarm keeps the output; this turn's speech gives way.
-            if (deps_.tones != nullptr &&
-                !wait_for([this] { return !deps_.tones->playing(); }, kToneWaitMs)) {
-                no_output = true;
-                return false;
-            }
-            if (auto r = deps_.player.begin(*rate, deps_.volume ? deps_.volume() : 100); !r) {
-                WLOG_W(kTag, "no speech output: %s", r.error().message.c_str());
-                no_output = true;
+            if (!begin_output(*rate, stopped)) {
+                no_output = !stopped();
                 return false;
             }
             player_begun_ = true;
@@ -530,10 +626,10 @@ void VoiceService::speak_sentence(const std::string& text, uint32_t index, uint3
             if (stopped()) return false;
             off += deps_.player.push(pcm.subspan(off), kPushSliceMs);
             if (!deps_.player.active()) {
-                no_output = true;
+                no_output = !stopped();
                 return false;
             }
-            publish_level(VoiceState::Speaking, deps_.player.level(), false);
+            publish_level(VoiceState::Speaking, deps_.player.level());
         }
         return true;
     };
@@ -541,8 +637,7 @@ void VoiceService::speak_sentence(const std::string& text, uint32_t index, uint3
         text, on_pcm, stopped, watch_.get(),
         [this, gen](uint32_t ticket) {
             tts_ticket_.store(ticket);
-            // stop_speaking() may have looked
-            // at the previous ticket.
+            // stop_speaking() may have looked at the previous ticket.
             if (speech_gen_.load() != gen || quit_.load()) watch_->abort(ticket);
         },
         index);
@@ -555,11 +650,11 @@ void VoiceService::speak_sentence(const std::string& text, uint32_t index, uint3
     give_up(offline ? VoiceError::Offline : VoiceError::TtsFailed);
 }
 
-void VoiceService::end_playback(bool stop_player) {
+bool VoiceService::end_playback(bool stop_player) {
     if (stop_player) deps_.player.stop();
     player_begun_ = false;
     draining_ = false;
-    if (state_.load() == VoiceState::Speaking) publish(VoiceState::Idle);
+    return state_.load() == VoiceState::Speaking;
 }
 
 void VoiceService::finish_speech_turn(uint32_t gen) {

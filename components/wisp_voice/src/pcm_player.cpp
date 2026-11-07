@@ -17,15 +17,17 @@ constexpr const char* kTag = "voice";
 // every change of phase also gives data_, so this is only a backstop.
 constexpr uint32_t kIdleWaitMs = 100;
 
-// The same mapping as Vad::level(): RMS in dBFS, -60..0 onto 0..100.
+// The same mapping as Vad::level(): RMS in dBFS, -60..0 onto 0..100. In
+// float and an integer sum: the S3's FPU is single precision, and this
+// runs for every chunk.
 uint8_t level_of(const int16_t* s, size_t n) {
     if (n == 0) return 0;
-    double e = 0;
-    for (size_t i = 0; i < n; ++i) e += static_cast<double>(s[i]) * s[i];
-    e /= static_cast<double>(n);
-    if (e <= 0) return 0;
-    const double db = 10.0 * std::log10(e / (32768.0 * 32768.0));
-    const double pct = std::clamp((db + 60.0) / 60.0, 0.0, 1.0) * 100.0;
+    int64_t sum = 0;
+    for (size_t i = 0; i < n; ++i) sum += static_cast<int32_t>(s[i]) * s[i];
+    const float e = static_cast<float>(sum) / static_cast<float>(n);
+    if (e <= 0.0f) return 0;
+    const float db = 10.0f * std::log10(e / (32768.0f * 32768.0f));
+    const float pct = std::clamp((db + 60.0f) / 60.0f, 0.0f, 1.0f) * 100.0f;
     return static_cast<uint8_t>(std::lround(pct));
 }
 

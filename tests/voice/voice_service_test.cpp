@@ -108,6 +108,7 @@ struct VoiceServiceTest : ::testing::Test {
 
     void TearDown() override {
         server.release();
+        tones.set_output_guard(nullptr);
         voice.reset();
         tones.stop();
         player.stop_task();
@@ -765,17 +766,178 @@ TEST_F(VoiceServiceTest, TaskAndLogs) {
     EXPECT_EQ(c.priority, 3);
 
     add_asr();
+    add_tts();
     make();
     capture_turn("a secret transcript");
+    ASSERT_TRUE(wait_idle());
+    server.push_tts(pcm_reply(ramp(480)));
+    voice->begin_speech();
+    voice->speak("a secret reply.\n");
+    voice->end_speech();
+    ASSERT_TRUE(wait_until([&] { return saw("speaking"); }, 2000));
+    ASSERT_TRUE(wait_until([&] { return voice_locks() == 0; }, 2000));
     ASSERT_TRUE(wait_idle());
     std::vector<std::string> lines;
     for (const auto& e : wisp::log::ring_entries()) {
         EXPECT_EQ(e.msg.find("secret"), std::string::npos) << e.msg;
         if (e.tag == "voice" && e.msg.rfind("state ", 0) == 0) lines.push_back(e.msg);
     }
-    EXPECT_EQ(lines,
-              (std::vector<std::string>{"state listening", "state transcribing", "state idle"}));
+    EXPECT_EQ(lines, (std::vector<std::string>{"state listening", "state transcribing",
+                                               "state idle", "state speaking", "state idle"}));
     for (const Map& m : events()) {
         for (const auto& [k, v] : m) EXPECT_TRUE(k == "state" || k == "level") << k;
     }
+}
+
+TEST_F(VoiceServiceTest, AlarmWinsTheOutputWhileSpeechOpensIt) {
+    add_tts();
+    make();
+    tones.set_output_guard([this](ToneKind k) { return voice->may_play_tone(k); });
+    // Speech's open() is held half-way, as if the codec were slow.
+    std::atomic<bool> in_open{false}, let_go{false};
+    out->set_open_hook([&](int index) {
+        if (index != 0) return;
+        in_open = true;
+        while (!let_go.load()) wisp::os::sleep_ms(1);
+    });
+    server.push_tts(pcm_reply(ramp(4800), /*hold_after=*/1));
+    voice->begin_speech();
+    voice->speak("一。二。");
+    ASSERT_TRUE(wait_until([&] { return in_open.load(); }, 2000));
+
+    // The alarm comes while speech is opening the output: its guard waits
+    // for that decision instead of racing it.
+    tones.play(ToneKind::Alarm, 60);
+    out->set_write_ms(5);
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(out->open_calls(), 1);
+    let_go = true;
+
+    // Speech opened first, so it is stopped, and the alarm opens after.
+    ASSERT_TRUE(wait_until([&] { return out->opens() == 2; }, 2000));
+    EXPECT_EQ(out->overlapping_opens(), 0);
+    EXPECT_TRUE(tones.playing());
+    ASSERT_TRUE(wait_idle());
+    EXPECT_FALSE(player.active());
+    tones.silence();
+    ASSERT_TRUE(wait_until([&] { return !tones.playing(); }, 1000));
+    EXPECT_EQ(out->overlapping_opens(), 0);
+    EXPECT_EQ(out->formats().size(), 2u);
+}
+
+TEST_F(VoiceServiceTest, ToneAskedFirstKeepsSpeechOff) {
+    add_tts();
+    make();
+    tones.set_output_guard([this](ToneKind k) { return voice->may_play_tone(k); });
+    // An alarm owns the output; speech that arrives meanwhile gives way.
+    out->set_write_ms(5);
+    tones.play(ToneKind::Alarm, 60);
+    ASSERT_TRUE(wait_until([&] { return out->opens() == 1; }, 1000));
+    server.push_tts(pcm_reply(ramp(480)));
+    voice->begin_speech();
+    voice->speak("一。");
+    voice->end_speech();
+    ASSERT_TRUE(wait_until([&] { return voice_locks() == 0; }, 2000));
+    EXPECT_EQ(out->opens(), 1);
+    EXPECT_EQ(out->overlapping_opens(), 0);
+    EXPECT_FALSE(saw("speaking"));
+    EXPECT_TRUE(reasons().empty());
+    tones.silence();
+}
+
+TEST_F(VoiceServiceTest, QueueFullRollsBackBeginCapture) {
+    add_asr();
+    make(VoiceConfig{.queue_depth = 1});
+    // The transcript's consumer stalls wisp.voice.
+    std::atomic<bool> stall{true};
+    voice->set_on_transcript([&](std::string) {
+        while (stall.load()) wisp::os::sleep_ms(1);
+    });
+    server.push_asr(asr_text("你好"));
+    mic->set_script({silence(300), sine(600), silence(900)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Vad));
+    ASSERT_TRUE(wait_until([&] { return count(kAsrPath) == 1 && voice_locks() == 3; }, 3000));
+    ASSERT_TRUE(wait_idle());
+    // One wake-up fills the queue.
+    voice->set_llm_busy(true);
+    const int tones_before = out->opens();
+
+    auto r = voice->begin_capture(CaptureMode::Vad);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::Busy);
+    // Nothing changed: no tone, no mic, the round's locks as they were.
+    stall = false;
+    wisp::os::sleep_ms(100);
+    EXPECT_EQ(out->opens(), tones_before);
+    EXPECT_EQ(mic->opens(), 1);
+    EXPECT_EQ(voice->state(), VoiceState::Idle);
+    EXPECT_EQ(voice_locks(), 3u);
+    voice->set_llm_busy(false);
+    voice->end_speech();
+    EXPECT_TRUE(wait_until([&] { return voice_locks() == 0; }, 1000));
+
+    // Not stuck at Busy.
+    mic->set_script({silence(300), sine(1000)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->opens() == 2; }, 2000));
+    voice->cancel_capture();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(voice_locks(), 0u);
+}
+
+TEST_F(VoiceServiceTest, RoundBackstopEndsAForgottenRound) {
+    add_asr();
+    make();
+    capture_turn();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(voice_locks(), 3u);
+
+    // Nearly the backstop, then speech activity: the clock starts again.
+    virtual_ms += wisp::voice::kVoiceRoundBackstopMs - 10000;
+    wisp::os::sleep_ms(300);
+    EXPECT_EQ(voice_locks(), 3u);
+    voice->set_llm_busy(true);  // not speech activity
+    voice->begin_speech();
+    virtual_ms += wisp::voice::kVoiceRoundBackstopMs - 10000;
+    wisp::os::sleep_ms(300);
+    EXPECT_EQ(voice_locks(), 3u);
+
+    // Past it with nothing more: the round ends itself.
+    clear_events();
+    virtual_ms += 20000;
+    ASSERT_TRUE(wait_until([&] { return voice_locks() == 0; }, 1000));
+    ASSERT_TRUE(wait_idle());
+    bool logged = false;
+    for (const auto& e : wisp::log::ring_entries()) {
+        logged = logged || (e.tag == "voice" && e.msg == "round backstop");
+    }
+    EXPECT_TRUE(logged);
+    // A speech turn that ended normally leaves nothing for it.
+    voice->set_llm_busy(false);
+    voice->end_speech();
+    EXPECT_EQ(voice->state(), VoiceState::Idle);
+}
+
+TEST_F(VoiceServiceTest, LocksAreGoneWhenIdleArrives) {
+    add_asr();
+    make();
+    // Every idle that ends a round comes after its locks went.
+    std::atomic<int> idle_with_locks{0};
+    auto check = bus.subscribe("voice.state", [&](const wisp::core::Event& e) {
+        auto it = e.payload.find("state");
+        if (it != e.payload.end() && it->second.as_string() == "idle" && voice_locks() != 0 &&
+            voice->state() == VoiceState::Idle && got_transcripts().empty()) {
+            ++idle_with_locks;
+        }
+    });
+    for (int i = 0; i < 5; ++i) {
+        clear_events();
+        mic->set_script({silence(5000)});
+        ASSERT_TRUE(voice->begin_capture(CaptureMode::Vad));
+        ASSERT_TRUE(wait_idle());
+        EXPECT_EQ(voice_locks(), 0u);
+    }
+    bus.wait_idle(1000);
+    bus.unsubscribe(check);
+    EXPECT_EQ(idle_with_locks.load(), 0);
 }

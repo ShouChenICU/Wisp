@@ -10,9 +10,10 @@
 //
 // FakeAudioOut records the formats it was opened with and every sample
 // written; writes can be made to take time (write_ms) or be held at a
-// gate. Both log their open()/close() calls into an optional shared
-// OrderLog, and FakeAudioOut counts an open() while it is already open
-// (two players sharing one output must never do that).
+// gate, and open() can be held in a hook. Both log their open()/close()
+// calls into an optional shared OrderLog, and FakeAudioOut counts an
+// open() while it is already open -- and fails it, as the device's output
+// does (two players sharing one output must never do that).
 //
 // Not the FakeAudioIn/FakeAudioOut of fake_devices.hpp (those just
 // accept everything): these live in wisp::test::audio.
@@ -22,6 +23,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -214,12 +216,22 @@ public:
     void close_gate() { gate_open_ = false; }
     void open_gate() { gate_open_ = true; }
     void set_fail_open(bool fail) { fail_open_ = fail; }
+    // Called at the start of every open() with its 0-based index; set it
+    // before anything opens.
+    void set_open_hook(std::function<void(int)> hook) { open_hook_ = std::move(hook); }
+    // open() calls begun, counted before the hook runs.
+    int open_calls() const { return open_calls_.load(); }
 
     Result<void> open(const hal::AudioFormat& format) override {
+        const int index = open_calls_.fetch_add(1);
+        if (open_hook_) open_hook_(index);
         if (order_) order_->add("out.open");
         std::lock_guard<std::mutex> lock(mu_);
         ++opens_;
-        if (open_) ++overlapping_opens_;
+        if (open_) {
+            ++overlapping_opens_;
+            return Result<void>::err(ErrorCode::AlreadyExists, "output already open");
+        }
         if (fail_open_) return Result<void>::err(ErrorCode::DeviceFailure, "no codec");
         formats_.push_back(format);
         open_ = true;
@@ -292,6 +304,8 @@ private:
     std::atomic<bool> gate_open_{true};
     std::atomic<bool> fail_open_{false};
     std::atomic<int> writers_waiting_{0};
+    std::atomic<int> open_calls_{0};
+    std::function<void(int)> open_hook_;
     mutable std::mutex mu_;
     std::vector<hal::AudioFormat> formats_;
     std::vector<int16_t> samples_;
