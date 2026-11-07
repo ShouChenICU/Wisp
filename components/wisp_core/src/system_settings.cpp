@@ -49,6 +49,8 @@ const KeySpec kLightSleep{"light_sleep", "power", "light_sleep", Value(kDefaultL
                           [](const Value& v) { return v.type() == Value::Type::Bool; }};
 const KeySpec kNotifyVol{"notify_vol", "audio", "notify_vol", Value(60),
                          [](const Value& v) { return int_in(v, 0, 100); }};
+const KeySpec kTtsMute{"tts_mute", "voice", "tts_mute", Value(false),
+                       [](const Value& v) { return v.type() == Value::Type::Bool; }};
 const KeySpec kLanguage{"language", "sys", "lang", Value("zh"), valid_language};
 
 const KeySpec kUtcOffset{"utc_offset_min", "sys", "tz_min", Value(480),
@@ -79,8 +81,8 @@ bool valid_ntp_servers(const Value& v) {
 const KeySpec kNtpServers{"ntp_servers", "sys", "ntp", Value(kDefaultNtpServers),
                           valid_ntp_servers};
 
-const KeySpec* const kKeys[] = {&kBrightness, &kVolume,    &kScreenOff,  &kLanguage, &kUtcOffset,
-                                &kNtpServers, &kDeepAfter, &kLightSleep, &kNotifyVol};
+const KeySpec* const kKeys[] = {&kBrightness, &kVolume,    &kScreenOff,  &kLanguage,  &kUtcOffset,
+                                &kNtpServers, &kDeepAfter, &kLightSleep, &kNotifyVol, &kTtsMute};
 
 const KeySpec* find_spec(std::string_view name) {
     for (const KeySpec* spec : kKeys) {
@@ -116,6 +118,7 @@ Map to_map(const SystemSettingsValues& values) {
         {"deep_after_s", Value(values.deep_after_s)},
         {"light_sleep", Value(values.light_sleep)},
         {"notify_vol", Value(values.notify_vol)},
+        {"tts_mute", Value(values.tts_mute)},
     };
 }
 
@@ -137,6 +140,7 @@ SystemSettingsValues SystemSettings::get() const {
     values.deep_after_s = static_cast<int>(read(backend_, kDeepAfter).as_int());
     values.light_sleep = read(backend_, kLightSleep).as_bool();
     values.notify_vol = static_cast<int>(read(backend_, kNotifyVol).as_int());
+    values.tts_mute = read(backend_, kTtsMute).as_bool();
     return values;
 }
 

@@ -94,8 +94,10 @@ std::span<const ModelPreset> model_presets();
 const ModelPreset* find_model_preset(std::string_view id);
 
 // Extra per-platform fields: flat, string values. Spec 5.3 defines tts
-// "voice"; the agent adds the two llm options below. Unknown keys are kept
-// as they are.
+// "voice"; the agent adds the two llm options below; the voice path (spec
+// 2) adds asr "language" and tts "sample_rate"/"speed". Each of these is
+// only valid on its own kind: on another kind create()/update() refuse it
+// with InvalidArgument. Unknown keys are kept as they are.
 using ModelOptions = std::map<std::string, std::string>;
 
 // Whether the model takes images: "true" or "false" (absent: false).
@@ -107,8 +109,36 @@ inline constexpr uint32_t kMinContextWindow = 4096;
 inline constexpr uint32_t kMaxContextWindow = 1048576;
 inline constexpr uint32_t kDefaultContextWindow = 65536;
 
+// asr: the language hint sent with a transcription request, 1-8 bytes of
+// [A-Za-z-] (a BCP-47-style primary tag, e.g. "en", "zh-CN"); absent sends
+// none.
+inline constexpr const char* kOptLanguage = "language";
+inline constexpr size_t kMaxLanguageBytes = 8;
+// tts: the voice name, 1-64 bytes of text; absent sends none.
+inline constexpr const char* kOptVoice = "voice";
+// tts: the output sample rate in Hz, a decimal string kMinSampleRate..
+// kMaxSampleRate (absent: the caller's own default).
+inline constexpr const char* kOptSampleRate = "sample_rate";
+inline constexpr uint32_t kMinSampleRate = 8000;
+inline constexpr uint32_t kMaxSampleRate = 48000;
+// tts: the speech rate multiplier, kMinSpeed..kMaxSpeed (absent sends
+// none).
+inline constexpr const char* kOptSpeed = "speed";
+inline constexpr double kMinSpeed = 0.25;
+inline constexpr double kMaxSpeed = 4.0;
+
 bool profile_vision(const ModelOptions& options);
 uint32_t profile_context_window(const ModelOptions& options);
+// "" when absent (kOptLanguage is only ever set on an Asr profile).
+std::string profile_asr_language(const ModelOptions& options);
+// "" when absent (kOptVoice is only ever set on a Tts profile).
+std::string profile_tts_voice(const ModelOptions& options);
+// nullopt when absent or malformed (kOptSampleRate is only ever set on a
+// Tts profile, and check_options() rejects a malformed value before it is
+// stored, so nullopt in practice means absent).
+std::optional<uint32_t> profile_tts_sample_rate(const ModelOptions& options);
+// nullopt when absent or malformed; see profile_tts_sample_rate().
+std::optional<double> profile_tts_speed(const ModelOptions& options);
 
 // What the outside world may see of a profile: everything but the key.
 struct ModelProfile {

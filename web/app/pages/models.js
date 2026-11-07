@@ -84,6 +84,13 @@ const MANUAL = '\u0000manual';
 const MIN_CONTEXT_WINDOW = 4096;
 const MAX_CONTEXT_WINDOW = 1048576;
 const DEFAULT_CONTEXT_WINDOW = 65536;
+// asr.language and tts.sample_rate/speed (spec 2, ModelProfileService).
+const LANGUAGE_RE = /^[A-Za-z-]{1,8}$/;
+const MIN_SAMPLE_RATE = 8000;
+const MAX_SAMPLE_RATE = 48000;
+const DEFAULT_SAMPLE_RATE = 24000;
+const MIN_SPEED = 0.25;
+const MAX_SPEED = 4.0;
 // Presets whose spec name is a description rather than a brand.
 const PRESET_LABEL_KEYS = { custom: 'models.preset_custom', ollama: 'models.preset_ollama' };
 
@@ -473,7 +480,10 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
   const [keyFrom, setKeyFrom] = useState('');
   const [model, setModel] = useState(profile ? profile.model : '');
   const [manualModel, setManualModel] = useState(false);
+  const [language, setLanguage] = useState(profile?.options?.language || '');
   const [voice, setVoice] = useState(profile?.options?.voice || '');
+  const [sampleRate, setSampleRate] = useState(profile?.options?.sample_rate || '');
+  const [speed, setSpeed] = useState(profile?.options?.speed || '');
   const [vision, setVision] = useState(profile?.options?.vision === 'true');
   const [contextWindow, setContextWindow] = useState(profile?.options?.context_window || '');
   const [problem, setProblem] = useState(null); // {field, text}
@@ -504,7 +514,10 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
     setProblem(null);
   }
 
+  const languageNow = profile?.options?.language || '';
   const voiceNow = profile?.options?.voice || '';
+  const sampleRateNow = profile?.options?.sample_rate || '';
+  const speedNow = profile?.options?.speed || '';
   const visionNow = profile?.options?.vision === 'true';
   const contextWindowNow = profile?.options?.context_window || '';
   const dirty =
@@ -513,7 +526,9 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
     name !== profile.name ||
     u !== profile.base_url ||
     model !== profile.model ||
-    (kind === 'tts' && voice.trim() !== voiceNow) ||
+    (kind === 'asr' && language.trim() !== languageNow) ||
+    (kind === 'tts' &&
+      (voice.trim() !== voiceNow || sampleRate.trim() !== sampleRateNow || speed.trim() !== speedNow)) ||
     (kind === 'llm' && (vision !== visionNow || contextWindow.trim() !== contextWindowNow)) ||
     key !== '' ||
     reuse;
@@ -529,7 +544,25 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
     if (keySource === 'reuse' && donors.length > 0 && !keyFrom) return { field: 'key', text: t('models.err_key_from') };
     if (!reuse && !validKey(key)) return { field: 'key', text: t('models.err_key') };
     if (bytes(model) > MODEL_MAX_BYTES) return { field: 'model', text: t('models.err_model_long', { max: MODEL_MAX_BYTES }) };
+    if (kind === 'asr' && language.trim() && !LANGUAGE_RE.test(language.trim())) {
+      return { field: 'language', text: t('models.err_language') };
+    }
     if (bytes(voice.trim()) > OPTION_MAX_BYTES) return { field: 'voice', text: t('models.err_voice_long', { max: OPTION_MAX_BYTES }) };
+    if (kind === 'tts' && sampleRate.trim()) {
+      const n = Number(sampleRate.trim());
+      if (!/^\d+$/.test(sampleRate.trim()) || n < MIN_SAMPLE_RATE || n > MAX_SAMPLE_RATE) {
+        return {
+          field: 'sample_rate',
+          text: t('models.err_sample_rate', { min: formatCount(MIN_SAMPLE_RATE), max: formatCount(MAX_SAMPLE_RATE) }),
+        };
+      }
+    }
+    if (kind === 'tts' && speed.trim()) {
+      const n = Number(speed.trim());
+      if (!/^\d+(\.\d+)?$/.test(speed.trim()) || n < MIN_SPEED || n > MAX_SPEED) {
+        return { field: 'speed', text: t('models.err_speed', { min: MIN_SPEED, max: MAX_SPEED }) };
+      }
+    }
     if (kind === 'llm' && contextWindow.trim()) {
       const n = Number(contextWindow.trim());
       if (!/^\d+$/.test(contextWindow.trim()) || n < MIN_CONTEXT_WINDOW || n > MAX_CONTEXT_WINDOW) {
@@ -550,11 +583,25 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
     if (!profile || name.trim() !== profile.name) body.name = name.trim();
     if (!profile || u !== profile.base_url) body.base_url = u;
     if (profile ? model !== profile.model : model) body.model = model;
-    if (kind === 'tts' && voice.trim() !== voiceNow) {
+    if (kind === 'asr' && language.trim() !== languageNow) {
+      // options is replaced as a whole; keep the keys this page does not edit.
+      const options = { ...(profile?.options || {}) };
+      if (language.trim()) options.language = language.trim();
+      else delete options.language;
+      body.options = options;
+    }
+    if (
+      kind === 'tts' &&
+      (voice.trim() !== voiceNow || sampleRate.trim() !== sampleRateNow || speed.trim() !== speedNow)
+    ) {
       // options is replaced as a whole; keep the keys this page does not edit.
       const options = { ...(profile?.options || {}) };
       if (voice.trim()) options.voice = voice.trim();
       else delete options.voice;
+      if (sampleRate.trim()) options.sample_rate = sampleRate.trim();
+      else delete options.sample_rate;
+      if (speed.trim()) options.speed = speed.trim();
+      else delete options.speed;
       body.options = options;
     }
     if (kind === 'llm' && (vision !== visionNow || contextWindow.trim() !== contextWindowNow)) {
@@ -847,6 +894,31 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
             </p>
           </div>
 
+          ${kind === 'asr'
+            ? html`<div class="field">
+                <label class="field-label" for=${idp + 'language'}>${t('models.language')}</label>
+                <input
+                  id=${idp + 'language'}
+                  class="input mono-input"
+                  type="text"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck=${false}
+                  maxlength="8"
+                  placeholder=${t('models.language_ph')}
+                  value=${language}
+                  onInput=${(e) => {
+                    setLanguage(e.currentTarget.value);
+                    setProblem(null);
+                  }}
+                  disabled=${busy}
+                  aria-invalid=${fieldError('language') ? 'true' : 'false'}
+                  aria-describedby=${idp + 'language-hint'}
+                />
+                ${hint('language', t('models.language_hint'))}
+              </div>`
+            : null}
+
           ${kind === 'tts'
             ? html`<div class="field">
                 <label class="field-label" for=${idp + 'voice'}>${t('models.voice')}</label>
@@ -868,6 +940,50 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
                   aria-describedby=${idp + 'voice-hint'}
                 />
                 ${hint('voice', t('models.voice_hint'))}
+              </div>
+              <div class="field">
+                <label class="field-label" for=${idp + 'sample_rate'}>${t('models.sample_rate')}</label>
+                <input
+                  id=${idp + 'sample_rate'}
+                  class="input mono-input"
+                  type="number"
+                  inputmode="numeric"
+                  min=${MIN_SAMPLE_RATE}
+                  max=${MAX_SAMPLE_RATE}
+                  step="1"
+                  placeholder=${String(DEFAULT_SAMPLE_RATE)}
+                  value=${sampleRate}
+                  onInput=${(e) => {
+                    setSampleRate(e.currentTarget.value);
+                    setProblem(null);
+                  }}
+                  disabled=${busy}
+                  aria-invalid=${fieldError('sample_rate') ? 'true' : 'false'}
+                  aria-describedby=${idp + 'sample_rate-hint'}
+                />
+                ${hint('sample_rate', t('models.sample_rate_hint', { default: formatCount(DEFAULT_SAMPLE_RATE) }))}
+              </div>
+              <div class="field">
+                <label class="field-label" for=${idp + 'speed'}>${t('models.speed')}</label>
+                <input
+                  id=${idp + 'speed'}
+                  class="input mono-input"
+                  type="number"
+                  inputmode="decimal"
+                  min=${MIN_SPEED}
+                  max=${MAX_SPEED}
+                  step="0.05"
+                  placeholder=${t('models.speed_ph')}
+                  value=${speed}
+                  onInput=${(e) => {
+                    setSpeed(e.currentTarget.value);
+                    setProblem(null);
+                  }}
+                  disabled=${busy}
+                  aria-invalid=${fieldError('speed') ? 'true' : 'false'}
+                  aria-describedby=${idp + 'speed-hint'}
+                />
+                ${hint('speed', t('models.speed_hint', { min: MIN_SPEED, max: MAX_SPEED }))}
               </div>`
             : null}
 

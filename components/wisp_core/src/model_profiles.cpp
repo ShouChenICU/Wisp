@@ -2,6 +2,8 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <optional>
 #include <string_view>
@@ -191,7 +193,71 @@ std::optional<uint32_t> parse_context_window(std::string_view s) {
     return n;
 }
 
-Result<void> check_options(const ModelOptions& options) {
+// 1-8 bytes of [A-Za-z-] (kOptLanguage): a BCP-47-style primary tag.
+bool valid_language(std::string_view s) {
+    if (s.empty() || s.size() > kMaxLanguageBytes) return false;
+    for (char c : s) {
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// A decimal string in kMinSampleRate..kMaxSampleRate, digits only.
+std::optional<uint32_t> parse_sample_rate(std::string_view s) {
+    if (s.empty() || s.size() > 5) return std::nullopt;
+    uint32_t n = 0;
+    for (char c : s) {
+        if (c < '0' || c > '9') return std::nullopt;
+        n = n * 10 + static_cast<uint32_t>(c - '0');
+    }
+    if (n < kMinSampleRate || n > kMaxSampleRate) return std::nullopt;
+    return n;
+}
+
+// Digits with at most one '.', in kMinSpeed..kMaxSpeed.
+std::optional<double> parse_speed(std::string_view s) {
+    if (s.empty() || s.size() > 8) return std::nullopt;
+    bool seen_dot = false;
+    for (char c : s) {
+        if (c == '.') {
+            if (seen_dot) return std::nullopt;
+            seen_dot = true;
+        } else if (c < '0' || c > '9') {
+            return std::nullopt;
+        }
+    }
+    char buf[9] = {};
+    std::memcpy(buf, s.data(), s.size());
+    char* end = nullptr;
+    const double v = std::strtod(buf, &end);
+    if (end != buf + s.size()) return std::nullopt;
+    if (v < kMinSpeed || v > kMaxSpeed) return std::nullopt;
+    return v;
+}
+
+// Options whose kind restriction check_options() enforces, and the error
+// each gets wrong-kind or malformed.
+struct KindOption {
+    const char* key;
+    ModelKind kind;
+    const char* wrong_kind_message;
+    bool (*valid)(std::string_view);
+};
+
+bool valid_voice(std::string_view s) { return !s.empty() && s.size() <= 64 && !has_control(s); }
+bool valid_sample_rate_str(std::string_view s) { return parse_sample_rate(s).has_value(); }
+bool valid_speed_str(std::string_view s) { return parse_speed(s).has_value(); }
+
+constexpr KindOption kKindOptions[] = {
+    {kOptLanguage, ModelKind::Asr, "language is only valid on an asr profile", valid_language},
+    {kOptVoice, ModelKind::Tts, "voice is only valid on a tts profile", valid_voice},
+    {kOptSampleRate, ModelKind::Tts, "sample_rate is only valid on a tts profile",
+     valid_sample_rate_str},
+    {kOptSpeed, ModelKind::Tts, "speed is only valid on a tts profile", valid_speed_str},
+};
+
+Result<void> check_options(const ModelOptions& options, ModelKind kind) {
     if (options.size() > ModelProfileService::kMaxOptions) {
         return fail<void>(invalid("options may have at most 8 keys"));
     }
@@ -213,6 +279,14 @@ Result<void> check_options(const ModelOptions& options) {
         if (!parse_context_window(it->second)) {
             return fail<void>(
                 invalid("context_window must be a whole number from 4096 to 1048576"));
+        }
+    }
+    for (const KindOption& opt : kKindOptions) {
+        auto it = options.find(opt.key);
+        if (it == options.end()) continue;
+        if (kind != opt.kind) return fail<void>(invalid(opt.wrong_kind_message));
+        if (!opt.valid(it->second)) {
+            return fail<void>(invalid(std::string(opt.key) + " has an invalid value"));
         }
     }
     return Result<void>::ok();
@@ -278,6 +352,28 @@ uint32_t profile_context_window(const ModelOptions& options) {
     auto it = options.find(kOptContextWindow);
     if (it == options.end()) return kDefaultContextWindow;
     return parse_context_window(it->second).value_or(kDefaultContextWindow);
+}
+
+std::string profile_asr_language(const ModelOptions& options) {
+    auto it = options.find(kOptLanguage);
+    return it != options.end() ? it->second : std::string();
+}
+
+std::string profile_tts_voice(const ModelOptions& options) {
+    auto it = options.find(kOptVoice);
+    return it != options.end() ? it->second : std::string();
+}
+
+std::optional<uint32_t> profile_tts_sample_rate(const ModelOptions& options) {
+    auto it = options.find(kOptSampleRate);
+    if (it == options.end()) return std::nullopt;
+    return parse_sample_rate(it->second);
+}
+
+std::optional<double> profile_tts_speed(const ModelOptions& options) {
+    auto it = options.find(kOptSpeed);
+    if (it == options.end()) return std::nullopt;
+    return parse_speed(it->second);
 }
 
 const char* to_string(ModelKind kind) {
@@ -465,7 +561,7 @@ Result<bool> ModelProfileService::load_models(const std::vector<uint8_t>& bytes)
                     }
                     p.options[k] = v.as_string();
                 }
-                ok = ok && check_options(p.options);
+                ok = ok && check_options(p.options, *kind);
             }
         }
         if (!ok) {
@@ -592,7 +688,7 @@ Result<ModelProfile> ModelProfileService::create(const ProfileInput& in, ModelFa
         if (auto r = check_model(*in.model); !r) return fail<ModelProfile>(r.error());
     }
     if (in.options) {
-        if (auto r = check_options(*in.options); !r) return fail<ModelProfile>(r.error());
+        if (auto r = check_options(*in.options, in.kind); !r) return fail<ModelProfile>(r.error());
     }
     if (in.api_key) {
         if (auto r = check_api_key(*in.api_key); !r) return fail<ModelProfile>(r.error());
@@ -656,9 +752,6 @@ Result<ModelProfile> ModelProfileService::update(std::string_view id, const Prof
     if (u.model) {
         if (auto r = check_model(*u.model); !r) return fail<ModelProfile>(r.error());
     }
-    if (u.options) {
-        if (auto r = check_options(*u.options); !r) return fail<ModelProfile>(r.error());
-    }
     if (u.api_key) {
         if (auto r = check_api_key(*u.api_key); !r) return fail<ModelProfile>(r.error());
     }
@@ -674,6 +767,13 @@ Result<ModelProfile> ModelProfileService::update(std::string_view id, const Prof
     Stored* s = find(next, id);
     if (s == nullptr) return R::err(ErrorCode::NotFound, "no such model profile");
     Profile& p = s->profile;
+    // The kind-restricted options (asr/tts) need the profile's kind, which
+    // never changes on update(); check_options() for everything else could
+    // run earlier, but keeping it here with the rest keeps one place that
+    // validates options.
+    if (u.options) {
+        if (auto r = check_options(*u.options, p.kind); !r) return fail<ModelProfile>(r.error());
+    }
     if (u.preset) {
         if (preset_for(*u.preset, p.kind) == nullptr) {
             return fail<ModelProfile>(invalid("preset is unknown or does not support this kind"));

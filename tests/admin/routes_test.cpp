@@ -387,7 +387,8 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
                         {"ntp_servers", Value("pool.ntp.org,ntp.aliyun.com")},
                         {"deep_after_s", Value(300)},
                         {"light_sleep", Value(true)},
-                        {"notify_vol", Value(60)}}));
+                        {"notify_vol", Value(60)},
+                        {"tts_mute", Value(false)}}));
 
     HttpResponse put = f.srv->handle(
         authed(token, Put, "/api/v1/settings",
@@ -401,7 +402,8 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
                   {"ntp_servers", Value("10.0.0.1")},
                   {"deep_after_s", Value(300)},
                   {"light_sleep", Value(true)},
-                  {"notify_vol", Value(60)}});
+                  {"notify_vol", Value(60)},
+                  {"tts_mute", Value(false)}});
     EXPECT_EQ(body_json(put), now);
     EXPECT_EQ(applied, (std::vector<uint8_t>{100}));
     EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))), now);

@@ -12,6 +12,7 @@
 //   utc_offset_min sys/tz_min          int -720 to 840           (default 480)
 //   ntp_servers    sys/ntp             1-2 hosts, comma-separated
 //                                      (default kDefaultNtpServers)
+//   tts_mute       voice/tts_mute      bool                      (default false)
 // A stored value set() would refuse reads back as its default.
 // utc_offset_min is the local time zone as minutes east of UTC (UTC-12:00
 // to UTC+14:00, half and quarter hours included); scenes read it as
@@ -23,6 +24,8 @@
 // off; light_sleep lets deep standby use automatic light sleep (off while
 // debugging over USB serial, which light sleep may drop); notify_vol is
 // the alert-sound volume (scene-device spec 4.1 and 5.4).
+// tts_mute silences spoken replies (voice spec 4.4): the conversation still
+// shows its text, TtsClient is simply never called.
 // The consumers (App at boot, the audio path, PowerManager::tick()) read
 // these keys fresh, so only brightness needs an explicit "apply now" hook.
 // The device UI language follows `on_changed` (spec 8.3): App publishes it
@@ -66,10 +69,11 @@ struct SystemSettingsValues {
     int deep_after_s;
     bool light_sleep;
     int notify_vol;
+    bool tts_mute;
 };
 
 // {"brightness", "volume", "screen_off_s", "language", "utc_offset_min",
-// "ntp_servers", "deep_after_s", "light_sleep", "notify_vol"}:
+// "ntp_servers", "deep_after_s", "light_sleep", "notify_vol", "tts_mute"}:
 // the shape of GET /settings and of the system.settings event payload.
 Map to_map(const SystemSettingsValues& values);
 
@@ -97,8 +101,8 @@ public:
 
     // Keys are "brightness", "volume", "screen_off_s", "utc_offset_min",
     // "deep_after_s", "notify_vol" (integers), "language" and "ntp_servers"
-    // (strings) and "light_sleep" (a boolean). An unknown key, a value of the wrong type
-    // or an out-of-range value fails the whole batch with InvalidArgument before anything is
+    // (strings) and "light_sleep", "tts_mute" (booleans). An unknown key, a value of the wrong
+    // type or an out-of-range value fails the whole batch with InvalidArgument before anything is
     // written. If the backend fails partway, the keys already written are restored (best effort)
     // and the backend's error returned; the hooks only run once the whole batch is stored.
     Result<void> set(const std::map<std::string, Value>& changes);

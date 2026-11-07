@@ -378,3 +378,24 @@ TEST(SystemSettings, PowerAndNotifyKeys) {
     EXPECT_EQ(map.at("light_sleep"), wisp::Value(true));
     EXPECT_EQ(map.at("notify_vol"), wisp::Value(60));
 }
+
+TEST(SystemSettings, TtsMuteStoredUnderVoice) {
+    Fixture fx;
+    EXPECT_FALSE(fx.settings.get().tts_mute);
+
+    ASSERT_TRUE(fx.settings.set({{"tts_mute", true}}));
+    EXPECT_TRUE(fx.settings.get().tts_mute);
+    EXPECT_TRUE(Settings(fx.backend, "voice").get_bool("tts_mute", false));
+    EXPECT_EQ(wisp::core::to_map(fx.settings.get()).at("tts_mute"), wisp::Value(true));
+
+    ASSERT_TRUE(fx.settings.set({{"tts_mute", false}}));
+    EXPECT_FALSE(fx.settings.get().tts_mute);
+
+    for (const wisp::Value& bad :
+         {wisp::Value("yes"), wisp::Value(1), wisp::Value(0), wisp::Value(wisp::List{})}) {
+        auto r = fx.settings.set({{"tts_mute", bad}});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    EXPECT_FALSE(fx.settings.get().tts_mute);
+}

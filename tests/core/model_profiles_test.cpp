@@ -449,6 +449,47 @@ TEST(ModelProfiles, OptionsLimits) {
               (wisp::core::ModelOptions{{std::string(15, 'k'), std::string(64, 'v')}}));
 }
 
+// asr.language, tts.sample_rate and tts.speed (spec 2): each is valid only
+// on its own kind, and malformed values are refused.
+TEST(ModelProfiles, AsrAndTtsOptionsValidated) {
+    Fixture fx;
+    ModelProfile a = fx.make({.kind = ModelKind::Asr,
+                              .name = "asr",
+                              .preset = "custom",
+                              .base_url = "https://api.example.com/v1"});
+    ModelProfile t = fx.make({.kind = ModelKind::Tts,
+                              .name = "tts",
+                              .preset = "custom",
+                              .base_url = "https://api.example.com/v1"});
+    ModelProfile l = fx.make(llm("chat"));
+
+    auto bad = fx.svc->update(a.id, {.options = wisp::core::ModelOptions{{"language", "z h"}}});
+    ASSERT_FALSE(bad);
+    EXPECT_EQ(bad.error().code, ErrorCode::InvalidArgument);
+    ASSERT_TRUE(fx.svc->update(a.id, {.options = wisp::core::ModelOptions{{"language", "en-US"}}}));
+
+    for (const wisp::core::ModelOptions& o : {wisp::core::ModelOptions{{"sample_rate", "7999"}},
+                                              wisp::core::ModelOptions{{"sample_rate", "x"}}}) {
+        auto r = fx.svc->update(t.id, {.options = o});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    ASSERT_TRUE(
+        fx.svc->update(t.id, {.options = wisp::core::ModelOptions{{"sample_rate", "48000"}}}));
+
+    auto bad_speed = fx.svc->update(
+        t.id, {.options = wisp::core::ModelOptions{{"sample_rate", "48000"}, {"speed", "0.2"}}});
+    ASSERT_FALSE(bad_speed);
+    EXPECT_EQ(bad_speed.error().code, ErrorCode::InvalidArgument);
+    ASSERT_TRUE(fx.svc->update(
+        t.id, {.options = wisp::core::ModelOptions{{"sample_rate", "48000"}, {"speed", "1.5"}}}));
+
+    // Right value, wrong kind.
+    auto wrong_kind = fx.svc->update(l.id, {.options = wisp::core::ModelOptions{{"voice", "x"}}});
+    ASSERT_FALSE(wrong_kind);
+    EXPECT_EQ(wrong_kind.error().code, ErrorCode::InvalidArgument);
+}
+
 TEST(ModelProfiles, ValidatesNameUrlModelAndKey) {
     Fixture fx;
     ModelProfile p = fx.make(llm("p", "http://10.0.0.2:8000/v1", "sk-keep"));

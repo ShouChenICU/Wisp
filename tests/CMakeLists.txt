@@ -314,6 +314,12 @@ wisp_test(NAME time_sync_test SRCS net/time_sync_test.cpp LIBS wisp_net wisp_por
 wisp_test(NAME say_parser_test SRCS voice/say_parser_test.cpp LIBS wisp_voice)
 wisp_test(NAME vad_test SRCS voice/vad_test.cpp LIBS wisp_voice)
 wisp_test(NAME sentences_test SRCS voice/sentences_test.cpp LIBS wisp_voice)
+wisp_test(NAME capture_buffer_test SRCS voice/capture_buffer_test.cpp
+          LIBS wisp_voice wisp_os wisp_port_sim_os)
+wisp_test(NAME asr_client_test SRCS voice/asr_client_test.cpp
+          LIBS wisp_voice wisp_net wisp_core wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME tts_client_test SRCS voice/tts_client_test.cpp
+          LIBS wisp_voice wisp_net wisp_core wisp_port_sim_os TIMEOUT 30)
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.

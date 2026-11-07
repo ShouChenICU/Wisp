@@ -122,6 +122,7 @@ export async function confirmLogout() {
  * @property {number} deep_after_s  0 (never) or 60-3600: deep standby after the screen is off this long
  * @property {boolean} light_sleep  allow light sleep in deep standby
  * @property {number} notify_vol   0-100, the notification sounds
+ * @property {boolean} tts_mute    silence spoken replies (text still shows)
  *
  * @typedef {Object} PowerStatus  GET /system/power
  * @property {'active'|'dim'|'standby'|'deep_standby'} level
@@ -309,6 +310,14 @@ function DisplayCard({ settings, put }) {
         format=${(v) => percent(v, 0, VOLUME_MAX)}
         onCommit=${(v) => put({ notify_vol: v })}
       />
+      <label class="scene-check">
+        <input
+          type="checkbox"
+          checked=${!!settings.tts_mute}
+          onChange=${(e) => put({ tts_mute: e.currentTarget.checked })}
+        />
+        ${t('sys.tts_mute')}
+      </label>
       <div class="field">
         <label class="field-label with-icon" for="sys-screen-off"><${IconMoon} size=${16} />${t('sys.screen_off')}</label>
         <select
