@@ -630,22 +630,15 @@ textarea {
   gap: var(--gap);
 }
 
-/* The overview page's six cards: fixed column counts instead of auto-fill,
-   so the last row never ends up with one card stretched alone. */
+/* The overview page's six cards: like .grid (columns at least 290px wide,
+   sized by the content area, not the window, which also holds the sidebar)
+   but never more than three columns, so six cards always fill whole rows
+   (1, 2 or 3 columns). */
 .grid-overview {
-  grid-template-columns: repeat(1, minmax(0, 1fr));
-}
-
-@media (min-width: 700px) {
-  .grid-overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (min-width: 1100px) {
-  .grid-overview {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(max(min(100%, 290px), calc((100% - 2 * var(--gap)) / 3)), 1fr)
+  );
 }
 
 .err-detail {
