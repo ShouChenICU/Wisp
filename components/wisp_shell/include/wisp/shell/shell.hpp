@@ -173,6 +173,9 @@ public:
     HistoryPage* history() const { return history_.get(); }
     SceneList* scene_list() const { return scenes_.get(); }
     SettingsPage* settings_page() const { return settings_.get(); }
+    // The talk overlay; never null once constructed (hidden, not absent,
+    // while there is nothing to show).
+    TalkOverlay* talk() const { return talk_.get(); }
 
     // Opens the hardware diagnostics over the home screen; a no-op while
     // they are open. The back handler -> close_diagnostics(), show(Home).

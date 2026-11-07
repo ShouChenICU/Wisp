@@ -200,3 +200,7 @@ Source: glyph partition review records.
 - The settings page reads the settings once when it is built: a change made by voice or from the admin page while it is open shows only after it is reopened, and the screen-off highlight follows the tap even if the write fails. Subscribe to `system.settings` while the page is open.
 - Small long-lived containers in internal RAM: `SceneRecents`' map and the scene list's `scenes_`/`cards_` vectors (one entry per scene). Tiny today; move to PSRAM containers if the scene count grows.
 - `SceneWiring::shell_scenes()` reads every icon file again on each listing to see whether it changed (decoding happens only on change). A cheaper check (size and mtime) would save the reads if listing shows up on wisp.fs.
+
+## Talk overlay (MVP spec 6.5)
+
+- `TalkOverlay::decide()` has no phase for a voice error (`VoiceState::Error`) or `TurnView::error`/`not_heard`: it falls through to Hidden. Confirm whether that is the intended split with Home (which may already surface these) before adding one.

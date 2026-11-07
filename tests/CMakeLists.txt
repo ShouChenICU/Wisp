@@ -335,6 +335,8 @@ wisp_test(NAME shell_conversation_test SRCS shell/conversation_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 120)
 wisp_test(NAME talk_key_test SRCS shell/talk_key_test.cpp LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME shell_test SRCS shell/shell_test.cpp LIBS wisp_shell wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME shell_talk_test SRCS shell/shell_talk_test.cpp LIBS wisp_shell wisp_port_sim_os
+          TIMEOUT 60)
 wisp_test(NAME shell_gestures_test SRCS shell/gestures_test.cpp shell/mood_test.cpp
           shell/body_text_test.cpp LIBS wisp_shell wisp_port_sim_os)
 wisp_test(NAME shell_home_test SRCS shell/home_test.cpp LIBS wisp_shell wisp_port_sim_os TIMEOUT 120)

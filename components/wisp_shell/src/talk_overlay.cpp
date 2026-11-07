@@ -84,6 +84,11 @@ TalkOverlay::TalkOverlay(ui::SystemLayer& layer, const hal::ScreenShape& shape,
     label_ = lv_label_create(obj_);
     lv_obj_remove_flag(label_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_width(label_, 0);
+    // LV_LABEL_LONG_MODE_DOTS only truncates with "..." when the label's
+    // own size (not just its width) is kept fixed; an unbounded
+    // (LV_SIZE_CONTENT) height would let it grow past the card instead,
+    // clipped by the parent with no ellipsis to show it was cut.
+    lv_obj_set_height(label_, kCardH);
     lv_obj_set_flex_grow(label_, 1);
     lv_label_set_long_mode(label_, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_color(label_, lv_color_hex(ui::theme::kText), 0);
