@@ -213,6 +213,22 @@ TEST(FactoryReset, ClearsMemoryDirectory) {
     EXPECT_FALSE(std::filesystem::exists(memory));
 }
 
+TEST(FactoryReset, ClearsTodoDirectory) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    const std::string todo = app.storage().write_root(wisp::core::Area::System).value() + "/todo";
+    const std::string body = R"({"version":1,"next_id":2,"todos":[{"id":1,"title":"x",)"
+                             R"("done":false,"created":0,"repeat":"none"}]})";
+    const std::span<const uint8_t> bytes(reinterpret_cast<const uint8_t*>(body.data()),
+                                         body.size());
+    ASSERT_TRUE(write_on_flash(app, todo + "/todos.json", bytes));
+
+    wisp::app::factory_reset(app);
+
+    EXPECT_FALSE(std::filesystem::exists(todo));
+}
+
 // The browser that asked must still hear "done": the event goes out (and
 // the admin socket gets a chance to send it) before the tokens -- and
 // with them that socket -- are revoked.

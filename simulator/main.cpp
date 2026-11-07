@@ -49,7 +49,10 @@
 // panel (SystemLayer::tap_panel_row()) and answers "panel-tap=ok" or
 // "panel-tap=<error>". "debug screenshot <path>" writes what the screen
 // shows now as a PNG, as --screenshot does at exit, and answers
-// "screenshot=ok" or "screenshot=<error>".
+// "screenshot=ok" or "screenshot=<error>". "debug clock-advance <seconds>"
+// moves the simulated clock (clock.main and Platform::wall_s) forward,
+// publishes system.time {"state":"synced","server":"debug","time"} as a
+// sync would, and answers "clock-advance=ok" or "clock-advance=<error>".
 //
 // Scenes (scene-runtime-core spec 6.4): --scenes-dir puts the scene
 // repository in dev mode over that directory (Platform::scenes_dir), with
@@ -67,6 +70,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -86,7 +90,9 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/bench.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/hal/clock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/pairing_service.hpp"
@@ -112,6 +118,9 @@ namespace {
 // Set by the main loop's exit paths: power-off, reboot, SIGINT/SIGTERM.
 // Namespace scope so the signal handler can reach it.
 std::atomic<bool> g_should_exit{false};
+// Seconds the simulated wall clock runs ahead of the host's (`debug
+// clock-advance`).
+std::atomic<int64_t> g_clock_offset_s{0};
 static_assert(std::atomic<bool>::is_always_lock_free, "stored from a signal handler");
 
 extern "C" void on_stop_signal(int) { g_should_exit.store(true); }
@@ -155,12 +164,31 @@ std::string debug_command(wisp::app::App& app, const std::vector<std::string>& a
         ui->run_blocking([&] { r = layer->tap_panel_row(index); });
         return "panel-tap=" + (r ? std::string("ok") : r.error().message);
     }
+    if (args.size() == 3 && args[1] == "clock-advance") {
+        char* end = nullptr;
+        const long long seconds = std::strtoll(args[2].c_str(), &end, 10);
+        if (args[2].empty() || *end != '\0') return "clock-advance=the seconds are not a number";
+        g_clock_offset_s.fetch_add(seconds);
+        if (auto clock = app.registry().get<wisp::hal::Clock>("clock.main")) {
+            if (auto now = clock->get_unix()) (void)clock->set_unix(now.value() + seconds);
+        }
+        const int64_t now = static_cast<int64_t>(std::time(nullptr)) + g_clock_offset_s.load();
+        app.bus().publish(wisp::core::Event{
+            "system.time",
+            "debug",
+            0,
+            {{"state", wisp::Value("synced")},
+             {"server", wisp::Value("debug")},
+             {"time", wisp::Value(now)}},
+        });
+        return std::string("clock-advance=ok");
+    }
     if (args.size() == 3 && args[1] == "screenshot") {
         auto r = write_screenshot(app, args[2]);
         return "screenshot=" + (r ? std::string("ok") : r.error().message);
     }
     return "error: usage: debug pair-code | debug scene-click <ref> | debug panel-tap <index> | "
-           "debug screenshot <path>";
+           "debug screenshot <path> | debug clock-advance <seconds>";
 }
 
 std::vector<wisp::app::ConsoleCommand> debug_commands() {
@@ -169,7 +197,8 @@ std::vector<wisp::app::ConsoleCommand> debug_commands() {
         "debug pair-code              the active pairing code (simulator only)\n"
         "debug scene-click <ref>      click a widget of the scene in front (simulator only)\n"
         "debug panel-tap <index>      tap a row of the open pull-down panel (simulator only)\n"
-        "debug screenshot <path>      write the screen as a PNG (simulator only)",
+        "debug screenshot <path>      write the screen as a PNG (simulator only)\n"
+        "debug clock-advance <s>      move the clock forward s seconds (simulator only)",
         debug_command,
     }};
 }
@@ -777,6 +806,9 @@ int main(int argc, char** argv) {
     // The time sync runs as on the device; set_wall_clock stays empty
     // since the host clock is already right.
     platform.sntp = std::make_unique<wisp::port::sim::SimSntp>();
+    platform.wall_s = [] {
+        return static_cast<int64_t>(std::time(nullptr)) + g_clock_offset_s.load();
+    };
     platform.assets = std::span<const uint8_t>(web_assets);
     platform.http_port = opts.http_port;
     platform.http_always_on = true;

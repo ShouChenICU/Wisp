@@ -1186,3 +1186,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Howard Hinnant's civil date algorithms
+
+- Source: "chrono-Compatible Low-Level Date Algorithms",
+  http://howardhinnant.github.io/date_algorithms.html
+- Used by: `components/wisp_core/src/local_time.cpp`
+  (`days_from_civil()`, `civil_from_days()`), reimplemented from the
+  published algorithms; the file header names the source.
+- License: the page places the algorithms in the public domain. No notice
+  is required; this entry only records the origin.

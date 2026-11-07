@@ -93,7 +93,8 @@ struct PanelNote {
     os::LargeString source, id;
     os::LargeString badge;  // the first character of the scene's name; "" for system
     os::LargeString title, body;
-    os::LargeString action_label;  // "" or the action button's text
+    os::LargeString action_label;   // "" or the action button's text
+    os::LargeString action2_label;  // "" or a second action button's text
 };
 
 // The panel's first row. `battery` < 0: unknown; `wifi` is shown as given
@@ -119,17 +120,20 @@ struct PanelHandlers {
     // The panel is about to open; the owner refreshes the model.
     std::function<void()> on_open;
     std::function<void(const std::string& id)> open_scene, exit_scene;
-    std::function<void(const std::string& source, const std::string& id)> tap_note, dismiss_note,
-        note_action;
+    std::function<void(const std::string& source, const std::string& id)> tap_note, dismiss_note;
+    // An action button: `index` 0 for action_label's, 1 for action2_label's.
+    std::function<void(const std::string& source, const std::string& id, int index)> note_action;
     std::function<void()> clear_all;
     // The open panel went, whichever way it was closed (never from the
     // destructor).
     std::function<void()> on_close;
 };
 
-// One notification banner (spec 5.3).
+// One notification banner (spec 5.3). With an action label it shows that
+// many buttons under the text (a todo reminder, mvp spec 5.2).
 struct BannerInfo {
     std::string source, id, badge, name, title, body;
+    std::string action_label, action2_label;
 };
 
 class SystemLayer {
@@ -157,8 +161,10 @@ public:
     static constexpr int32_t kTopZoneHeight = 16, kTopTriggerDy = 24;
     // The least height of a panel row, and a banner's height.
     static constexpr int32_t kPanelRowMinH = 48, kBannerH = 72;
-    // How long a banner stays up.
-    static constexpr uint32_t kBannerMs = 4000;
+    // How long a banner stays up; one with actions stays as long as an
+    // alarm may ring (core::TonePlayer::kAlarmMaxMs), so it is there to
+    // answer it.
+    static constexpr uint32_t kBannerMs = 4000, kActionBannerMs = 30000;
 
     // Creates nothing yet; each piece is built when first used.
     explicit SystemLayer(const hal::ScreenShape& shape);
@@ -210,7 +216,8 @@ public:
     // open_scene and closes the panel, the close button exit_scene) and
     // the notifications (a tap calls tap_note and closes the panel; a
     // swipe to the left or the close button dismiss_note; the action
-    // button note_action), then a clear-all button (clear_all). A tap on
+    // buttons note_action with their index), then a clear-all button
+    // (clear_all). A tap on
     // no row, an upward swipe where the content does not scroll or is at
     // the bottom of its scroll, or a back swipe closes it; while it is
     // open the back swipe calls no back handler.
@@ -235,8 +242,11 @@ public:
     // Queues a banner. One shows at a time, near the top of the safe area
     // and as wide as the rows it covers allow; it goes after kBannerMs or
     // an upward swipe, and a tap hides it and calls `on_tap`. Then the
-    // next one shows.
-    void show_banner(BannerInfo b, std::function<void()> on_tap);
+    // next one shows. With action labels it is taller by a row of buttons
+    // at least kPanelRowMinH high and stays kActionBannerMs; a button hides
+    // it and calls `on_action` with its index (0 for action_label's).
+    void show_banner(BannerInfo b, std::function<void()> on_tap,
+                     std::function<void(int index)> on_action = {});
     // The banner shown now, else nullptr.
     lv_obj_t* banner() const { return banner_; }
 
@@ -344,6 +354,7 @@ private:
     static void panel_cb(lv_event_t* e);
     static void banner_cb(lv_event_t* e);
     static void banner_timer_cb(lv_timer_t* t);
+    static void banner_action_cb(lv_event_t* e);
     static void panel_refill_cb(void* self);
     static void pointer_read_cb(lv_indev_t* indev, lv_indev_data_t* data);
 
@@ -418,10 +429,12 @@ private:
     struct QueuedBanner {
         BannerInfo info;
         std::function<void()> on_tap;
+        std::function<void(int)> on_action;
     };
     std::deque<QueuedBanner> banners_;  // waiting, the next first
     lv_obj_t* banner_ = nullptr;
     std::function<void()> banner_tap_;
+    std::function<void(int)> banner_action_;
     lv_timer_t* banner_timer_ = nullptr;
     int banner_event_depth_ = 0;
 };

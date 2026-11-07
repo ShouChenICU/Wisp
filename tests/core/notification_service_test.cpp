@@ -704,3 +704,69 @@ TEST(Notifications, DefaultTimerSavesAndRecoversFromAFailedCreate) {
     auto again = h.make();
     EXPECT_EQ(again->unread_count(), 2u);
 }
+
+// The todo reminders' reserved source (mvp spec 5.2): not rate limited nor
+// capped per source, with two actions that are saved and loaded again; any
+// other dotted source is still refused, and a scene still loses actions.
+TEST(NotificationServiceTest, ReminderSourceAllowedNotRateLimited) {
+    using wisp::core::kReminderSource;
+    namespace notice = wisp::core::notice;
+    Harness h;
+    {
+        auto s = h.make();
+        for (int i = 1; i <= 12; ++i) {
+            Notification n;
+            n.source = kReminderSource;
+            n.id = "todo-" + std::to_string(i);
+            n.title = "Take an umbrella";
+            n.body = std::string(NotificationService::kReminderBodyMax, 'b');
+            n.sound = NotifySound::Alarm;
+            n.wake = true;
+            n.action = notice::kActionTodoDone;
+            n.action_arg = std::to_string(i);
+            n.action2 = notice::kActionTodoSnooze;
+            n.action2_arg = std::to_string(i);
+            auto r = s->post(std::move(n), false);
+            ASSERT_TRUE(r) << i << ": " << r.error().message;
+        }
+        EXPECT_EQ(s->unread_count(), 12u);
+
+        auto dotted = s->post(scene_note("sys.x", "t"), false);
+        ASSERT_FALSE(dotted);
+        EXPECT_EQ(dotted.error().code, ErrorCode::InvalidArgument);
+        Notification long_body;
+        long_body.source = kReminderSource;
+        long_body.id = "todo-99";
+        long_body.title = "t";
+        long_body.body = std::string(NotificationService::kReminderBodyMax + 1, 'b');
+        EXPECT_FALSE(s->post(long_body, false));
+
+        auto scene = scene_note("pomodoro", "t", "p");
+        scene.action = notice::kActionTodoDone;
+        scene.action_arg = "1";
+        scene.action2 = notice::kActionTodoSnooze;
+        scene.action2_arg = "1";
+        ASSERT_TRUE(s->post(scene, false));
+        auto stored = s->find("pomodoro", "p");
+        ASSERT_TRUE(stored);
+        EXPECT_EQ(stored->action, "");
+        EXPECT_EQ(stored->action2, "");
+
+        // The event names the source, never the todo's text.
+        auto posted = h.of_topic("notification.posted");
+        ASSERT_FALSE(posted.empty());
+        EXPECT_EQ(field(posted.front(), "source"), kReminderSource);
+        EXPECT_EQ(field(posted.front(), "title"), "reminder");
+        h.fire_timers();
+        EXPECT_EQ(h.submits, 1);
+    }
+    auto again = h.make();
+    auto n = again->find(kReminderSource, "todo-3");
+    ASSERT_TRUE(n);
+    EXPECT_EQ(n->action, notice::kActionTodoDone);
+    EXPECT_EQ(n->action_arg, "3");
+    EXPECT_EQ(n->action2, notice::kActionTodoSnooze);
+    EXPECT_EQ(n->action2_arg, "3");
+    EXPECT_EQ(n->body.size(), NotificationService::kReminderBodyMax);
+    EXPECT_EQ(again->unread_count(), 13u);
+}

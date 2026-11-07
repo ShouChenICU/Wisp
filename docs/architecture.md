@@ -86,7 +86,7 @@
 | `button.<id>.down` / `.up` / `.short` / `.long` | `core::ButtonService` | `<id>` 为按键设备 id（`button.power`、`button.vol_up`、`button.vol_down`），同时是 `Event::source` |
 | `power.state` | `app::PowerManager` | 每次级别变化时发布，`payload = {"state": "active"\|"dim"\|"standby"\|"deep_standby"}`；`standby` 与 `deep_standby` 都是灭屏，`dim` 仍亮屏 |
 | `power.wakelock` | `core::WakeLockRegistry` | 每次取得或释放唤醒锁时发布，`Event::source` 为 `power`，`payload = {"op": "acquire"\|"release", "holder": "system.<模块>"\|"scene.<id>", "kind": "network"\|"cpu"\|"screen", "reason": string}` |
-| `notification.posted` | `core::NotificationService` | 场景设备 spec 5.7，每条通知发出时发布（包括前台场景只弹横幅、不进未读列表的那种），`Event::source` 为 `"notifications"`，`payload = {"id": string, "source": "system"\|<场景 id>, "title": string}`，系统通知的 `title` 是它的代码（如 `battery_low`）。不含正文。同一来源同一 id 再发一次是替换，只发这一条，旧的不发 `notification.dismissed` |
+| `notification.posted` | `core::NotificationService` | 场景设备 spec 5.7，每条通知发出时发布（包括前台场景只弹横幅、不进未读列表的那种），`Event::source` 为 `"notifications"`，`payload = {"id": string, "source": "system"\|<场景 id>, "title": string}`，系统通知的 `title` 是它的代码（如 `battery_low`），待办提醒（`source` 为 `"system.reminder"`，mvp spec 5.2）的 `title` 固定为 `"reminder"`，不含待办标题。不含正文。同一来源同一 id 再发一次是替换，只发这一条，旧的不发 `notification.dismissed` |
 | `notification.dismissed` | `core::NotificationService` | 场景设备 spec 5.7，一条未读通知被移除时发布，`Event::source` 为 `"notifications"`，`payload = {"id", "source", "reason": "tap"\|"dismiss"\|"cancel"\|"evict"}`；`evict` 是超出每场景 5 条或总数 50 条时被挤掉的最旧那条。场景被删除（`scene.state` 为 `deleted`）时它的通知以 `dismiss` 移除 |
 | `power.charging.changed` | `core::PowerMonitor` | `power.main` 设备缺失时不发布；`charging`/`usb_present` 任一变化时发布（首次采样不算"变化"，不发布），`payload = {"charging": bool, "usb_present": bool, "battery_percent": int}`；`Event::source` 为设备 id（`power.main`） |
 | `power.battery.low` | `core::PowerMonitor` | `battery_percent`（已知，即不是 -1）降到 ≤ Settings `power`/`low_batt_pct`（默认 15）时发布一次；回升超过阈值 +5 才重新武装，`payload = {"battery_percent": int}`，`Event::source` 为设备 id |
@@ -104,6 +104,7 @@
 | `model.profiles` | `core::ModelProfileService` | 模型配置增删改或切换当前配置时发布，`Event::source` 为 `"models"`，`payload = {"active": {"llm": string, "asr": string, "tts": string}, "count": int}`（`active` 为各类当前配置 id，没有时为空串；不含任何 API Key） |
 | `agent.state` | `agent::AgentService`（`components/wisp_agent/src/agent_service.cpp`） | Agent 状态变化时在 `wisp.agent` 任务上发布（4a spec 3.8），`Event::source` 为 `"agent"`，`payload = {"state": "idle"\|"thinking"\|"tool"\|"output"\|"waiting_confirm"\|"error", "tool": string（仅 `tool` 时出现，带点的工具名）}`；每次变化同时写一行日志 `agent: state <s>`。网页经 WS 的 `agent` 订阅拿状态，不经 `WsHub` 的事件转发 |
 | `memory.changed` | `core::MemoryStore`（`components/wisp_core/src/memory_store.cpp`） | mvp spec 5.1，每次增删改一条记忆笔记后发布，`Event::source` 为 `"memory"`，`payload = {"count": int}`（改动后的笔记总数）；不含笔记正文 |
+| `todo.changed` | `core::ReminderScheduler`（`components/wisp_core/src/reminders.cpp`） | mvp spec 5.2，每次增删改、完成、推迟待办或提醒到点改写文件后发布，`Event::source` 为 `"todo"`，`payload = {"count": int}`（改动后的待办总数）；不含待办标题 |
 
 `power.charging.changed`/`power.battery.low` 的字段名跟随 `wisp::hal::PowerStatus` 本身的成员名（`charging`/`usb_present`/`battery_percent`），不是 "vbus_present" 这个措辞——后者出自计划中驱动结构体 `axp2101_status_t` 的字段名（`drivers/axp2101/include/axp2101.h`），不是 spec 原文；spec 本身没有提到这个字段名，沿用 hal 已有的字段名更一致。
 

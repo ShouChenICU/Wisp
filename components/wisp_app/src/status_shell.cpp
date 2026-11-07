@@ -131,14 +131,25 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
             p.title = SV(t.title);
             p.body = SV(t.body);
         } else {
-            p.badge = SV(first_char(n.source_name.empty() ? SV(n.source) : SV(n.source_name)));
+            // A reminder is the system's: the bell, not a scene's letter.
+            if (SV(n.source) != core::kReminderSource) {
+                p.badge = SV(first_char(n.source_name.empty() ? SV(n.source) : SV(n.source_name)));
+            }
             p.title = SV(n.title);
             p.body = SV(n.body);
         }
-        if (SV(n.action) == core::notice::kActionReleaseLock) {
-            p.action_label = SV(ui::tr(ui::StrId::NoticeRelease));
-        }
+        p.action_label = SV(action_label(SV(n.action)));
+        p.action2_label = SV(action_label(SV(n.action2)));
         return p;
+    }
+
+    static const char* action_label(std::string_view action) {
+        if (action == core::notice::kActionReleaseLock) return ui::tr(ui::StrId::NoticeRelease);
+        if (action == core::notice::kActionTodoDone) return ui::tr(ui::StrId::NoteActionTodoDone);
+        if (action == core::notice::kActionTodoSnooze) {
+            return ui::tr(ui::StrId::NoteActionTodoSnooze);
+        }
+        return "";
     }
 
     ui::BannerInfo banner_of(const core::Notification& n) {
@@ -147,10 +158,16 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
         b.source = n.source;
         b.id = n.id;
         b.badge = std::string_view(p.badge);
-        if (n.source != core::kSystemSource)
+        if (n.source != core::kSystemSource && n.source != core::kReminderSource)
             b.name = n.source_name.empty() ? n.source : n.source_name;
         b.title = std::string_view(p.title);
         b.body = std::string_view(p.body);
+        // Only actions the banner can answer: a wake-lock notice's release
+        // stays in the panel, as it always has.
+        if (n.source == core::kReminderSource) {
+            b.action_label = std::string_view(p.action_label);
+            b.action2_label = std::string_view(p.action2_label);
+        }
         return b;
     }
 
@@ -274,9 +291,14 @@ void StatusShell::start() {
     // may be after stop(): the tap then does nothing.
     st.deps.router.set_banner([s](const core::Notification& n) {
         if (!post_ui(s, [n](const StatePtr& st) {
-                st->deps.layer.show_banner(st->banner_of(n), [st, source = n.source, id = n.id] {
-                    if (!st->stopped.load()) st->deps.router.tap(source, id);
-                });
+                st->deps.layer.show_banner(
+                    st->banner_of(n),
+                    [st, source = n.source, id = n.id] {
+                        if (!st->stopped.load()) st->deps.router.tap(source, id);
+                    },
+                    [st, source = n.source, id = n.id](int index) {
+                        if (!st->stopped.load()) st->deps.router.act(source, id, index);
+                    });
             })) {
             WLOG_W(kTag, "%s/%s: no banner: UI queue full", n.source.c_str(), n.id.c_str());
         }
@@ -311,8 +333,8 @@ void StatusShell::start() {
             h.dismiss_note = [notes](const std::string& source, const std::string& id) {
                 notes->dismiss(source, id, core::DismissReason::Dismiss);
             };
-            h.note_action = [router](const std::string& source, const std::string& id) {
-                router->act(source, id);
+            h.note_action = [router](const std::string& source, const std::string& id, int index) {
+                router->act(source, id, index);
             };
             h.clear_all = [notes] { notes->clear_all(); };
             st.deps.layer.set_panel_handlers(std::move(h));

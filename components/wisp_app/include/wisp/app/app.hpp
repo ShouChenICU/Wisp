@@ -240,6 +240,10 @@ struct Platform {
     // fails that sync. Empty: left alone (the simulator's host clock is
     // already right).
     std::function<Result<void>(int64_t unix_s)> set_wall_clock;
+    // The wall clock, UTC seconds, as the panel, the agent, notifications
+    // and the todo reminders read it. Empty: std::time(). The simulator's
+    // `debug clock-advance` moves it.
+    std::function<int64_t()> wall_s;
     // Code pairing's limits; the defaults are spec 6.1's (a code lives two
     // minutes). Tests shorten code_ttl_ms to watch a code expire.
     net::PairingConfig pairing;

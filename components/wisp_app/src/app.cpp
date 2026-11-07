@@ -21,6 +21,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -151,8 +152,8 @@ Result<void> App::start() {
             .make_timer = {},
             .now_ms = os::now_ms,
             .wall_s =
-                [] {
-                    const auto t = static_cast<int64_t>(std::time(nullptr));
+                [impl] {
+                    const int64_t t = impl->wall_now();
                     return t >= scene::MinuteTicker::kValidSince ? t : int64_t{0};
                 },
         });
@@ -170,6 +171,43 @@ Result<void> App::start() {
             if (!loaded->take(kNotifyLoadMs)) WLOG_W("app", "notifications still loading");
         } else {
             load();
+        }
+        // The todos (mvp spec 5.2) post to the notifications just made, so
+        // they come right after; loaded on the worker like them.
+        if (auto system = impl->storage.write_root(core::Area::System); !system) {
+            WLOG_W("app", "no System storage; todos and reminders are off");
+        } else if (worker == nullptr) {
+            WLOG_W("app", "no storage worker; todos and reminders are off");
+        } else {
+            impl->reminders = std::make_unique<core::ReminderScheduler>(
+                core::ReminderDeps{
+                    .storage = impl->storage,
+                    .bus = impl->bus,
+                    .notes = notes,
+                    // The worker or nothing: a timer callback must never
+                    // end up running a pass (which writes flash) itself.
+                    .submit_io =
+                        [worker](std::function<void()> job) {
+                            return worker->submit(std::move(job));
+                        },
+                    .wall_s = [impl] { return impl->wall_now(); },
+                    .utc_offset_min = [impl] { return impl->utc_offset_min.load(); },
+                    .missed_title =
+                        [impl](size_t count) {
+                            return ui::tr_fill(ui::StrId::ReminderMissed, impl->lang.load(),
+                                               std::to_string(count));
+                        },
+                    .make_timer = {},
+                },
+                system.value() + "/todo/todos.json");
+            core::ReminderScheduler* reminders = impl->reminders.get();
+            Result<void> r = Result<void>::err(ErrorCode::Busy, "storage worker refused");
+            if (auto ran =
+                    worker->run_sync([reminders, &r] { r = reminders->load(); }, os::kForever);
+                !ran) {
+                r = ran;
+            }
+            if (!r) WLOG_W("app", "todos not loaded: %s", r.error().message.c_str());
         }
         impl->battery_sub = impl->bus.subscribe("power.battery.low", [notes](const core::Event& e) {
             const Value* pct = nullptr;
@@ -446,6 +484,13 @@ Result<void> App::start() {
             .locks = &impl_->wakelocks,
             .notify_volume = [impl] { return impl->notify_vol.load(); },
             .ui = impl_->ui.get(),
+            .reminders = impl_->reminders.get(),
+            .submit_io = impl_->reminders && scenes != nullptr
+                             ? std::function<bool(std::function<void()>)>(
+                                   [worker = &scenes->worker()](std::function<void()> job) {
+                                       return worker->submit(std::move(job));
+                                   })
+                             : nullptr,
         });
         impl_->router->start();
     }
@@ -519,7 +564,7 @@ Result<void> App::start() {
             .scenes = scene_runtime,
             .device_status = std::move(device_status),
             .utc_offset_min = [impl] { return impl->utc_offset_min.load(); },
-            .wall_s = [] { return static_cast<int64_t>(std::time(nullptr)); },
+            .wall_s = [impl] { return impl->wall_now(); },
             .repo = scenes != nullptr ? scenes->repository() : nullptr,
             .submit_io = scenes != nullptr ? std::function<bool(std::function<void()>)>(
                                                  [scenes](std::function<void()> job) {
@@ -533,6 +578,9 @@ Result<void> App::start() {
             WLOG_E("app", "no memory for the status shell; no capsule or panel");
         }
     }
+    // Once the router and the banners are up: what came due while the
+    // device was off is reported now.
+    if (impl_->reminders) impl_->reminders->start();
 
     if (impl_->ui) {
         // Block until start_self_check() has actually run on the UI
@@ -667,6 +715,9 @@ void App::stop() {
     // which may be in PSRAM). The object stays until networking, whose
     // routes hold its api(), is gone.
     if (impl_->agent) impl_->agent->stop();
+    // No more timer or pass on the worker; the router's queued actions,
+    // already on the worker's queue, run before stop() returns.
+    if (impl_->reminders) impl_->reminders->stop();
     // Before the self-check screen: closing the scene in front loads that
     // screen again, and its final store flush goes to the worker.
     if (impl_->scenes) impl_->scenes->stop_runtime();
@@ -690,6 +741,8 @@ void App::stop() {
     }
     // Stopped above; nothing holds its api() any more.
     impl_->agent.reset();
+    // The agent's tools and the router (both gone) were its last users.
+    impl_->reminders.reset();
     // Nothing streams into it any more.
     impl_->firmware.reset();
     // Notifications: nothing new from the bus, no more saves on the timer,
@@ -812,8 +865,8 @@ void App::build_agent(const hal::ScreenShape& shape) {
     // Everything below runs on wisp.agent (or an HTTP thread) and reads only
     // what other tasks keep up to date in memory: never Settings, a file or
     // a device.
-    auto wall_s = [] {
-        const auto t = static_cast<int64_t>(std::time(nullptr));
+    auto wall_s = [impl] {
+        const int64_t t = impl->wall_now();
         return t >= scene::MinuteTicker::kValidSince ? t : int64_t{0};
     };
     auto wifi = [impl]() -> std::string {
@@ -883,6 +936,7 @@ void App::build_agent(const hal::ScreenShape& shape) {
         .models = impl->models,
         .settings = impl->system_settings,
         .notes = *impl->notifications,
+        .reminders = impl->reminders.get(),
         .locks = &impl->wakelocks,
         .ui = *impl->ui,
         .layer = *impl->system_layer,

@@ -11,6 +11,14 @@
 // notices are not rate limited. Posting an id that is already unread for
 // the same source replaces it in place of a dismissal.
 //
+// Reminders (mvp spec 5.2): kReminderSource is reserved for the todo
+// reminders. Its dot keeps it apart from every scene id. It posts through
+// post() like a scene, but is not rate limited nor capped at
+// kUnreadPerScene, may carry the todo actions in `action` and `action2`,
+// and its body may be up to kReminderBodyMax bytes (the whole todo title
+// when the title had to be cut). Its notification.posted carries "reminder"
+// as the title, never the todo's text.
+//
 // Events (spec 5.7), source "notifications", never the body:
 //   notification.posted     {"id", "source", "title"}  (title: the code for
 //                                                        a system notice)
@@ -74,9 +82,14 @@ inline constexpr const char* kActionReleaseLock = "release_lock";
 // Changed settings failed to save three times in a row (spec 3.4 of
 // docs/superpowers/specs/2026-11-06-flash-thread-design.md); no argument.
 inline constexpr const char* kSettingsNotSaved = "settings_not_saved";
+// A todo reminder's actions; the argument is the todo's id.
+inline constexpr const char* kActionTodoDone = "todo_done";
+inline constexpr const char* kActionTodoSnooze = "todo_snooze";
 }  // namespace notice
 
 inline constexpr const char* kSystemSource = "system";
+// The todo reminders' source (see the file header).
+inline constexpr const char* kReminderSource = "system.reminder";
 
 struct Notification {
     std::string source;              // "system" or a scene id
@@ -85,6 +98,8 @@ struct Notification {
     std::string title, body;         // scenes
     std::string code, arg;           // system
     std::string action, action_arg;  // "" or notice::kActionReleaseLock + lock id
+    // A second action ("" or a todo action), for kReminderSource only.
+    std::string action2, action2_arg;
     NotifySound sound = NotifySound::None;
     bool wake = false;
     uint64_t posted_ms = 0;
@@ -95,7 +110,8 @@ struct Notification {
 // PSRAM, since up to kStoredMax of them with their bodies would otherwise
 // be small blocks of internal RAM (AGENTS.md section 8).
 struct StoredNotification {
-    os::LargeString source, id, source_name, title, body, code, arg, action, action_arg;
+    os::LargeString source, id, source_name, title, body, code, arg, action, action_arg, action2,
+        action2_arg;
     NotifySound sound = NotifySound::None;
     bool wake = false;
     uint64_t posted_ms = 0;
@@ -145,6 +161,8 @@ bool valid_notification_id(std::string_view id);
 class NotificationService {
 public:
     static constexpr size_t kTitleMax = 32, kBodyMax = 200, kIdMax = 32;
+    // A reminder's body: the whole todo title (100 code points).
+    static constexpr size_t kReminderBodyMax = 400;
     static constexpr size_t kUnreadPerScene = 5, kPerMinute = 10, kStoredMax = 50;
     static constexpr uint32_t kCoalesceMs = 300;
     // Failed saves in a row before the timer stops until the next change;
@@ -172,8 +190,9 @@ public:
     // anything already posted in memory, which wins on a clash.
     Result<void> load();
 
-    // A scene's post: `n.source` is the scene id, `n.id` empty or valid.
-    // InvalidArgument for a bad title, body or id; RateLimited
+    // A scene's post: `n.source` is the scene id (valid_notification_id())
+    // or kReminderSource, `n.id` empty or valid.
+    // InvalidArgument for a bad source, title, body or id; RateLimited
     // "rate_limited" past kPerMinute posts by this scene in the last 60 s
     // (a sliding window; replacements and foreground posts count, rejected
     // ones do not). A foreground scene's own post (`from_foreground`) is

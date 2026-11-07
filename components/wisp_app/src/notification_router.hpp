@@ -27,6 +27,7 @@
 
 #include "wisp/app/power_manager.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/core/tone_player.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/os.hpp"
@@ -48,6 +49,11 @@ struct NotificationRouterDeps {
     // Where the wake runs (PowerManager's transitions belong to the UI
     // task). Null: on the posting thread.
     ui::UiRuntime* ui = nullptr;
+    // A reminder's actions (mvp spec 5.2) go here, on the storage worker
+    // through `submit_io` (they write the todo file). Either empty: they
+    // only dismiss the notice.
+    core::ReminderScheduler* reminders = nullptr;
+    std::function<bool(std::function<void()>)> submit_io;
 };
 
 class NotificationRouter {
@@ -66,17 +72,21 @@ public:
 
     // The user tapped it: dismiss(Tap), silence, and for a scene
     // SceneRuntime::deliver_notification(); a scene that cannot be
-    // launched only loses the notification.
+    // launched only loses the notification. A reminder opens nothing.
     void tap(const std::string& source, const std::string& id);
-    // The notification's action button: release_lock releases the wake
-    // lock it names (WakeLockRegistry::release), and the notice goes.
-    void act(const std::string& source, const std::string& id);
+    // The notification's action button `index` (0: action, 1: action2):
+    // release_lock releases the wake lock it names
+    // (WakeLockRegistry::release); a reminder's todo_done and todo_snooze
+    // queue ReminderScheduler::done() / snooze() on the worker and silence
+    // the alarm. Either way the notice goes.
+    void act(const std::string& source, const std::string& id, int index = 0);
     // Shows a posted notification (the banner). Any thread.
     void set_banner(std::function<void(const core::Notification&)> show);
 
 private:
     void on_change(const core::NotificationChange& c);
     void posted(const core::Notification& n);
+    void act_reminder(const core::Notification& n, int index);
     uint8_t volume() const;
 
     NotificationRouterDeps deps_;

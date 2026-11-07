@@ -17,6 +17,7 @@
 // that construct several Apps in one process, one after another.
 
 #include <atomic>
+#include <ctime>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -39,6 +40,7 @@
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/occupancy.hpp"
 #include "wisp/core/power_monitor.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/core/sensor_service.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/tone_player.hpp"
@@ -133,6 +135,11 @@ struct App::Impl {
     // it (no more timer saves) before the final flush, and resets it only
     // after power_timer (which posts wake-lock reminders) has stopped.
     std::unique_ptr<core::NotificationService> notifications;
+    // The todos and their reminders (mvp spec 5.2), with a System area:
+    // built and loaded on the worker right after the notifications it
+    // posts to, started once the router and the banners are up, stopped
+    // with the agent (whose tools use it) and reset after it.
+    std::unique_ptr<core::ReminderScheduler> reminders;
     // The notification sounds over "audio_out.main" (scene-device spec
     // 5.4). Built before power_manager, whose activity hook silences it,
     // and reset after it.
@@ -163,6 +170,10 @@ struct App::Impl {
     os::LargeUnique<StatusShell> status_shell;
     core::SubscriptionId battery_sub = 0;
     core::SubscriptionId charging_sub = 0;
+    // Platform::wall_s, or std::time().
+    int64_t wall_now() const {
+        return platform.wall_s ? platform.wall_s() : static_cast<int64_t>(std::time(nullptr));
+    }
     core::SubscriptionId scene_state_sub = 0;
 
     // The storage worker, the scene repository and (with a screen) the

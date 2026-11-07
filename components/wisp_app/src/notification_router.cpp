@@ -107,15 +107,20 @@ void NotificationRouter::posted(const core::Notification& n) {
 void NotificationRouter::tap(const std::string& source, const std::string& id) {
     deps_.notes.dismiss(source, id, core::DismissReason::Tap);
     if (deps_.tones != nullptr) deps_.tones->silence();
-    if (source == core::kSystemSource || deps_.scenes == nullptr) return;
+    if (source == core::kSystemSource || source == core::kReminderSource ||
+        deps_.scenes == nullptr) {
+        return;
+    }
     if (auto r = deps_.scenes->deliver_notification(source, id); !r)
         WLOG_W(kTag, "%s/%s: not delivered: %s", source.c_str(), id.c_str(),
                r.error().message.c_str());
 }
 
-void NotificationRouter::act(const std::string& source, const std::string& id) {
+void NotificationRouter::act(const std::string& source, const std::string& id, int index) {
     auto n = deps_.notes.find(source, id);
-    if (!n || n->action != core::notice::kActionReleaseLock) return;
+    if (!n) return;
+    if (source == core::kReminderSource) return act_reminder(*n, index);
+    if (index != 0 || n->action != core::notice::kActionReleaseLock) return;
     uint32_t lock = 0;
     const char* first = n->action_arg.data();
     const char* last = first + n->action_arg.size();
@@ -130,6 +135,33 @@ void NotificationRouter::act(const std::string& source, const std::string& id) {
                static_cast<unsigned>(lock), n->arg.c_str());
     }
     deps_.notes.dismiss(source, id, core::DismissReason::Dismiss);
+}
+
+void NotificationRouter::act_reminder(const core::Notification& n, int index) {
+    const std::string& action = index == 0 ? n.action : n.action2;
+    const std::string& arg = index == 0 ? n.action_arg : n.action2_arg;
+    const bool is_done = action == core::notice::kActionTodoDone;
+    if (!is_done && action != core::notice::kActionTodoSnooze) return;
+    uint32_t todo = 0;
+    const char* first = arg.data();
+    const char* last = first + arg.size();
+    auto [end, ec] = std::from_chars(first, last, todo);
+    if (deps_.tones != nullptr) deps_.tones->silence();
+    deps_.notes.dismiss(n.source, n.id, core::DismissReason::Dismiss);
+    if (ec != std::errc() || end != last || todo == 0) {
+        WLOG_W(kTag, "%s/%s: bad todo id", n.source.c_str(), n.id.c_str());
+        return;
+    }
+    core::ReminderScheduler* reminders = deps_.reminders;
+    if (reminders == nullptr || !deps_.submit_io) return;
+    const bool queued = deps_.submit_io([reminders, todo, is_done] {
+        Result<void> r = is_done ? reminders->done(todo) : reminders->snooze(todo);
+        if (!r) {
+            WLOG_W(kTag, "todo %u: %s failed: %s", static_cast<unsigned>(todo),
+                   is_done ? "done" : "snooze", r.error().message.c_str());
+        }
+    });
+    if (!queued) WLOG_W(kTag, "todo %u: storage queue full", static_cast<unsigned>(todo));
 }
 
 }  // namespace wisp::app

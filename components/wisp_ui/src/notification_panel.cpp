@@ -77,6 +77,7 @@ enum class Part : uintptr_t {
     NoteRow,
     NoteClose,
     NoteAction,
+    NoteAction2,
     ClearAll
 };
 
@@ -323,15 +324,22 @@ void SystemLayer::fill_panel() {
             lv_obj_set_width(body, LV_PCT(100));
             lv_label_set_long_mode(body, LV_LABEL_LONG_MODE_WRAP);
         }
-        if (!n.action_label.empty()) {
-            lv_obj_t* action = lv_button_create(text);
-            set_button_role(action, ButtonRole::Secondary);
-            lv_obj_set_height(action, LV_SIZE_CONTENT);
-            lv_obj_set_style_min_height(action, kPanelRowMinH, 0);
-            lv_obj_t* label = lv_label_create(action);
-            lv_label_set_text(label, n.action_label.c_str());
-            lv_obj_center(label);
-            touchable(action, Part::NoteAction, i);
+        if (!n.action_label.empty() || !n.action2_label.empty()) {
+            // Side by side, wrapping when the row is too narrow for both.
+            lv_obj_t* actions = make_box(text, LV_FLEX_FLOW_ROW_WRAP);
+            const std::pair<const os::LargeString*, Part> buttons[] = {
+                {&n.action_label, Part::NoteAction}, {&n.action2_label, Part::NoteAction2}};
+            for (const auto& [label_text, part] : buttons) {
+                if (label_text->empty()) continue;
+                lv_obj_t* action = lv_button_create(actions);
+                set_button_role(action, ButtonRole::Secondary);
+                lv_obj_set_height(action, LV_SIZE_CONTENT);
+                lv_obj_set_style_min_height(action, kPanelRowMinH, 0);
+                lv_obj_t* label = lv_label_create(action);
+                lv_label_set_text(label, label_text->c_str());
+                lv_obj_center(label);
+                touchable(action, part, i);
+            }
         }
         make_close(row, Part::NoteClose, i);
     }
@@ -409,8 +417,8 @@ void SystemLayer::panel_cb(lv_event_t* e) {
     const PanelHandlers& h = self->panel_handlers_;
     // A row drawn from an older model whose refill is still queued.
     const bool scene_part = part == Part::SceneRow || part == Part::SceneClose;
-    const bool note_part =
-        part == Part::NoteRow || part == Part::NoteClose || part == Part::NoteAction;
+    const bool note_part = part == Part::NoteRow || part == Part::NoteClose ||
+                           part == Part::NoteAction || part == Part::NoteAction2;
     if ((scene_part && i >= m.scenes.size()) || (note_part && i >= m.notes.size())) return;
 
     // Copies: closing the panel or the handler itself may change both.
@@ -453,8 +461,9 @@ void SystemLayer::panel_cb(lv_event_t* e) {
                 };
                 break;
             case Part::NoteAction:
-                call = [fn = h.note_action, n = m.notes[i]] {
-                    if (fn) fn(std::string(n.source), std::string(n.id));
+            case Part::NoteAction2:
+                call = [fn = h.note_action, n = m.notes[i], index = part == Part::NoteAction2] {
+                    if (fn) fn(std::string(n.source), std::string(n.id), index ? 1 : 0);
                 };
                 break;
             case Part::ClearAll:

@@ -331,6 +331,20 @@ const char* strings_zh(StrId id) {
             return "已修改记忆 #{}";
         case StrId::AgentNoteMemoryRemoved:
             return "已删除记忆 #{}";
+        case StrId::AgentNoteTodoAdded:
+            return "已添加待办「{}」";
+        case StrId::AgentNoteTodoUpdated:
+            return "已修改待办「{}」";
+        case StrId::AgentNoteTodoDone:
+            return "已完成「{}」";
+        case StrId::AgentNoteTodoRemoved:
+            return "已删除待办「{}」";
+        case StrId::NoteActionTodoDone:
+            return "完成";
+        case StrId::NoteActionTodoSnooze:
+            return "10 分钟后";
+        case StrId::ReminderMissed:
+            return "错过 {} 个提醒";
         case StrId::Count:
             break;
     }

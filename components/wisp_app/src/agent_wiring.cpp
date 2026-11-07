@@ -416,6 +416,10 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
                                               }));
     check("docs", agent::add_docs_tools(*registry_));
     check("memory", agent::add_memory_tools(*registry_, agent::MemoryToolDeps{.store = *memory_}));
+    if (deps_.reminders != nullptr) {
+        check("todo", agent::add_todo_tools(*registry_,
+                                            agent::TodoToolDeps{.scheduler = *deps_.reminders}));
+    }
 
     adapter_ = std::make_unique<AgentApiAdapter>(AgentApiAdapter::Deps{
         .service = *service_,

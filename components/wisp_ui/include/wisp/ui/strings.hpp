@@ -269,6 +269,17 @@ enum class StrId : uint16_t {
     AgentNoteMemoryAdded,
     AgentNoteMemoryUpdated,
     AgentNoteMemoryRemoved,
+    // Todos and their reminders (mvp spec 3.2, 5.2). The AgentNoteTodo*
+    // notes carry the todo's title as "{}"; NoteActionTodoDone and
+    // NoteActionTodoSnooze are a reminder's two buttons; ReminderMissed
+    // titles the merged notice, "{}" the count.
+    AgentNoteTodoAdded,
+    AgentNoteTodoUpdated,
+    AgentNoteTodoDone,
+    AgentNoteTodoRemoved,
+    NoteActionTodoDone,
+    NoteActionTodoSnooze,
+    ReminderMissed,
 
     Count,  // not a string; keep last
 };

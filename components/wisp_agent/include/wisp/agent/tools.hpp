@@ -13,6 +13,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
@@ -78,5 +79,14 @@ struct MemoryToolDeps {
 // over MemoryStore, run on the flash thread (ToolThread::Fs), since every
 // one of them reads or writes notes.json.
 Result<void> add_memory_tools(ToolRegistry& reg, MemoryToolDeps deps);
+
+struct TodoToolDeps {
+    core::ReminderScheduler& scheduler;
+};
+
+// todo.list, add, update, done and remove (mvp spec 3.2, 5.2): thin
+// adapters over ReminderScheduler, run on the flash thread
+// (ToolThread::Fs), since the changes write todos.json.
+Result<void> add_todo_tools(ToolRegistry& reg, TodoToolDeps deps);
 
 }  // namespace wisp::agent

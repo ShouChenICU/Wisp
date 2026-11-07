@@ -19,6 +19,7 @@
 #include "lvgl_private.h"  // lv_buttonmatrix_t::button_areas
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
+#include "support/visible.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/os.hpp"
@@ -2022,8 +2023,8 @@ TEST_F(SystemLayerTest, PanelRowsCallHandlers) {
         h.dismiss_note = [&](const std::string& s, const std::string& id) {
             calls.push_back("dismiss " + s + "/" + id);
         };
-        h.note_action = [&](const std::string& s, const std::string& id) {
-            calls.push_back("action " + s + "/" + id);
+        h.note_action = [&](const std::string& s, const std::string& id, int index) {
+            calls.push_back("action " + s + "/" + id + (index == 0 ? "" : " #1"));
         };
         h.clear_all = [&] { calls.push_back("clear"); };
         on_ui([&] {
@@ -2420,6 +2421,127 @@ TEST_F(BannerTest, StacksBelowConfirm) {
         EXPECT_GT(lv_obj_get_index(lv_obj_get_parent(box)), lv_obj_get_index(banner));
         layer->close_confirm(box);
     });
+}
+
+// A banner with actions (a todo reminder, mvp spec 5.2): its two buttons
+// lie on the visible screen, it stays up for kActionBannerMs, and a button
+// hides it and reports its index instead of a tap.
+class SystemLayerBanner : public BannerTest {};
+
+TEST_F(SystemLayerBanner, ActionsShowAndStayUp) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        on_ui([&] {
+            wisp::ui::BannerInfo b{"system.reminder", "todo-1", "", "", "带伞", ""};
+            b.action_label = "完成";
+            b.action2_label = "10 分钟后";
+            layer->show_banner(b, [] {});
+            lv_obj_t* banner = layer->banner();
+            ASSERT_NE(banner, nullptr);
+            lv_obj_update_layout(banner);
+            lv_area_t a;
+            lv_obj_get_coords(banner, &a);
+            EXPECT_TRUE(wisp::test::box_visible(shape, a)) << area_str(a);
+            for (const char* label : {"完成", "10 分钟后"}) {
+                lv_obj_t* btn = find_button_with_label(banner, label);
+                ASSERT_NE(btn, nullptr) << label;
+                lv_area_t ba;
+                lv_obj_get_coords(btn, &ba);
+                EXPECT_TRUE(wisp::test::box_visible(shape, ba)) << label << " " << area_str(ba);
+                EXPECT_TRUE(inside(ba, {a.x1, a.y1, a.x2, a.y2})) << label << " " << area_str(ba);
+                EXPECT_GE(lv_area_get_height(&ba), SystemLayer::kPanelRowMinH) << label;
+            }
+            std::vector<std::pair<std::string, lv_area_t>> labels;
+            wisp::test::collect_labels(banner, labels);
+            for (const auto& [text, la] : labels) {
+                EXPECT_TRUE(inside(la, {a.x1, a.y1, a.x2, a.y2})) << text << " " << area_str(la);
+            }
+            layer.reset();
+            layer = std::make_unique<SystemLayer>(shape);
+        });
+    }
+
+    TearDown();
+    start("circle");
+    use_fake_tick();
+    int taps = 0;
+    std::vector<int> actions;
+    auto show = [&] {
+        on_ui([&] {
+            wisp::ui::BannerInfo b{"system.reminder", "todo-1", "", "", "带伞", ""};
+            b.action_label = "完成";
+            b.action2_label = "10 分钟后";
+            layer->show_banner(b, [&] { ++taps; }, [&](int index) { actions.push_back(index); });
+        });
+    };
+    show();
+    advance(SystemLayer::kActionBannerMs - 1000);
+    on_ui([&] { EXPECT_NE(layer->banner(), nullptr); });
+    advance(1000);
+    on_ui([&] { EXPECT_EQ(layer->banner(), nullptr); });
+
+    show();
+    lv_point_t at{};
+    on_ui([&] { at = center_of(find_button_with_label(layer->banner(), "10 分钟后")); });
+    tap(at);
+    on_ui([&] { EXPECT_EQ(layer->banner(), nullptr); });
+    show();
+    on_ui([&] { at = center_of(find_button_with_label(layer->banner(), "完成")); });
+    tap(at);
+    EXPECT_EQ(actions, (std::vector<int>{1, 0}));
+    EXPECT_EQ(taps, 0);
+    // A banner without actions keeps the short stay.
+    on_ui([&] { layer->show_banner({"a", "n1", "A", "Alpha", "First", "one"}, [] {}); });
+    advance(SystemLayer::kBannerMs);
+    on_ui([&] { EXPECT_EQ(layer->banner(), nullptr); });
+}
+
+class SystemLayerPanel : public SystemLayerTest {};
+
+TEST_F(SystemLayerPanel, NoteWithTwoActions) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        std::vector<std::string> calls;
+        auto model = [] {
+            wisp::ui::PanelModel m = sample_model();
+            wisp::ui::PanelNote n{"system.reminder", "todo-1", "", "带伞", "", "完成"};
+            n.action2_label = "10 分钟后";
+            m.notes.insert(m.notes.begin(), n);
+            return m;
+        };
+        wisp::ui::PanelHandlers h;
+        h.on_open = [&] { layer->update_panel(model()); };
+        h.note_action = [&](const std::string& s, const std::string& id, int index) {
+            calls.push_back(s + "/" + id + " " + std::to_string(index));
+        };
+        on_ui([&] { layer->set_panel_handlers(h); });
+        auto locate = [&](const char* label) {
+            lv_point_t p{-1, -1};
+            on_ui([&] {
+                if (!layer->panel_open()) layer->open_panel();
+                lv_obj_t* btn = find_button_with_label(layer->panel(), label);
+                ASSERT_NE(btn, nullptr) << label;
+                lv_obj_scroll_to_view_recursive(btn, LV_ANIM_OFF);
+                lv_obj_update_layout(lv_layer_top());
+                lv_area_t a;
+                lv_obj_get_coords(btn, &a);
+                EXPECT_TRUE(wisp::test::box_visible(shape, a)) << label << " " << area_str(a);
+                EXPECT_TRUE(inside(a, safe)) << label << " " << area_str(a);
+                EXPECT_GE(lv_area_get_height(&a), SystemLayer::kPanelRowMinH) << label;
+                p = center_of(btn);
+            });
+            return p;
+        };
+        tap(locate("10 分钟后"));
+        tap(locate("完成"));
+        tap(locate("Release"));
+        EXPECT_EQ(calls, (std::vector<std::string>{"system.reminder/todo-1 1",
+                                                   "system.reminder/todo-1 0", "system/w1 0"}));
+    }
 }
 
 }  // namespace

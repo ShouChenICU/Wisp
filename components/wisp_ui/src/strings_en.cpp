@@ -333,6 +333,20 @@ const char* strings_en(StrId id) {
             return "Changed memory note #{}";
         case StrId::AgentNoteMemoryRemoved:
             return "Deleted memory note #{}";
+        case StrId::AgentNoteTodoAdded:
+            return "Added to-do \"{}\"";
+        case StrId::AgentNoteTodoUpdated:
+            return "Changed to-do \"{}\"";
+        case StrId::AgentNoteTodoDone:
+            return "Done: \"{}\"";
+        case StrId::AgentNoteTodoRemoved:
+            return "Deleted to-do \"{}\"";
+        case StrId::NoteActionTodoDone:
+            return "Done";
+        case StrId::NoteActionTodoSnooze:
+            return "In 10 min";
+        case StrId::ReminderMissed:
+            return "{} missed reminders";
         case StrId::Count:
             break;
     }

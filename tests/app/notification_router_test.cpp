@@ -18,6 +18,7 @@
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/tone_player.hpp"
 #include "wisp/core/wakelock.hpp"
@@ -310,6 +311,79 @@ TEST_F(NotificationRouterTest, ReleaseActionLeavesAnotherHoldersLock) {
     EXPECT_TRUE(locks.held(WakeLockKind::Network));
     EXPECT_FALSE(notes->find(wisp::core::kSystemSource, id).has_value());
     locks.release(admin);
+}
+
+// A reminder's two buttons (mvp spec 5.2): "done" and "snooze" reach the
+// scheduler on the storage worker; the notice goes and its alarm stops.
+TEST_F(NotificationRouterTest, TodoActionsReachTheScheduler) {
+    using wisp::core::kReminderSource;
+    using wisp::core::TodoFilter;
+    constexpr int64_t kT = 1793923200;
+    std::atomic<int64_t> now{kT};
+    auto submit = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
+    std::function<void()> fire;
+    auto sched = std::make_unique<wisp::core::ReminderScheduler>(
+        wisp::core::ReminderDeps{
+            .storage = *storage,
+            .bus = bus,
+            .notes = notes.get(),
+            .submit_io = submit,
+            .wall_s = [&now] { return now.load(); },
+            .utc_offset_min = [] { return 480; },
+            .missed_title = {},
+            .make_timer =
+                [&fire](std::function<void()> f) {
+                    fire = std::move(f);
+                    return wisp::core::ReminderTimer{.arm = [](uint32_t) {}, .cancel = [] {}};
+                },
+        },
+        storage->write_root(wisp::core::Area::System).value() + "/todo/todos.json");
+    router = std::make_unique<NotificationRouter>(NotificationRouterDeps{
+        .notes = *notes,
+        .power = power.get(),
+        .tones = tones.get(),
+        .scenes = rt.get(),
+        .locks = &locks,
+        .notify_volume = [] { return uint8_t{50}; },
+        .reminders = sched.get(),
+        .submit_io = submit,
+    });
+    router->start();
+    ASSERT_TRUE(worker.run_sync(
+        [&] {
+            ASSERT_TRUE(sched->load());
+            sched->start();
+            ASSERT_TRUE(sched->add("a", kT + 60, {}));
+            ASSERT_TRUE(sched->add("b", kT + 60, {}));
+        },
+        wisp::os::kForever));
+    now = kT + 60;
+    fire();
+    ASSERT_TRUE(
+        wait_until([&] { return notes->find(kReminderSource, "todo-2").has_value(); }, 2000));
+    ASSERT_TRUE(wait_until([&] { return tones->playing(); }, 2000));
+
+    router->act(kReminderSource, "todo-1", 0);
+    EXPECT_FALSE(notes->find(kReminderSource, "todo-1").has_value());
+    EXPECT_TRUE(wait_until([&] { return !tones->playing(); }, 1000));
+    ASSERT_TRUE(wait_until([&] { return sched->list(TodoFilter::Done).size() == 1; }, 2000));
+    EXPECT_EQ(sched->list(TodoFilter::Done)[0].id, 1u);
+
+    router->act(kReminderSource, "todo-2", 1);
+    EXPECT_FALSE(notes->find(kReminderSource, "todo-2").has_value());
+    ASSERT_TRUE(wait_until(
+        [&] {
+            auto open = sched->list(TodoFilter::Open);
+            return open.size() == 1 && open[0].snooze_until.has_value();
+        },
+        2000));
+    EXPECT_EQ(sched->list(TodoFilter::Open)[0].snooze_until, std::optional<int64_t>(now + 600));
+    EXPECT_EQ(dismissed_reasons(), (std::vector<std::string>{"dismiss", "dismiss"}));
+
+    // A tap opens nothing: the reminder is not a scene's.
+    router->tap(kReminderSource, "missed");
+    router->stop();
+    ASSERT_TRUE(worker.run_sync([&] { sched.reset(); }, wisp::os::kForever));
 }
 
 }  // namespace

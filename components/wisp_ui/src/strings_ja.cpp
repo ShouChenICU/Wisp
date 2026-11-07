@@ -336,6 +336,20 @@ const char* strings_ja(StrId id) {
             return "メモ #{} を修正しました";
         case StrId::AgentNoteMemoryRemoved:
             return "メモ #{} を削除しました";
+        case StrId::AgentNoteTodoAdded:
+            return "ToDo「{}」を追加しました";
+        case StrId::AgentNoteTodoUpdated:
+            return "ToDo「{}」を変更しました";
+        case StrId::AgentNoteTodoDone:
+            return "「{}」を完了しました";
+        case StrId::AgentNoteTodoRemoved:
+            return "ToDo「{}」を削除しました";
+        case StrId::NoteActionTodoDone:
+            return "完了";
+        case StrId::NoteActionTodoSnooze:
+            return "10 分後";
+        case StrId::ReminderMissed:
+            return "{} 件のリマインダーを見逃しました";
         case StrId::Count:
             break;
     }

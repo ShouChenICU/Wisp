@@ -10,6 +10,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/ui/overlay.hpp"
 #include "wisp/ui/system_layer.hpp"
+#include "wisp/ui/theme.hpp"
 
 namespace wisp::ui {
 
@@ -23,11 +24,15 @@ constexpr int32_t kBannerInset = 4;
 constexpr int32_t kSwipe = SystemLayer::kTopTriggerDy;
 // The body's lines at most.
 constexpr int32_t kBodyLines = 2;
+// The button row of a banner with actions, and the gap above it.
+constexpr int32_t kActionsH = SystemLayer::kPanelRowMinH;
+constexpr int32_t kActionsGap = theme::kGapXs;
 
 }  // namespace
 
-void SystemLayer::show_banner(BannerInfo b, std::function<void()> on_tap) {
-    banners_.push_back({std::move(b), std::move(on_tap)});
+void SystemLayer::show_banner(BannerInfo b, std::function<void()> on_tap,
+                              std::function<void(int index)> on_action) {
+    banners_.push_back({std::move(b), std::move(on_tap), std::move(on_action)});
     if (banner_ == nullptr) show_next_banner();
 }
 
@@ -36,10 +41,12 @@ void SystemLayer::show_next_banner() {
     QueuedBanner next = std::move(banners_.front());
     banners_.pop_front();
     const BannerInfo& b = next.info;
+    const bool actions = !b.action_label.empty() || !b.action2_label.empty();
+    const int32_t height = actions ? kBannerH + kActionsGap + kActionsH : kBannerH;
 
     // As wide as all the rows it covers show, less the inset.
     const int32_t top = safe_.y1 + kCapsuleTopGap;
-    hal::Span ext = detail::visible_extent(shape_, top, top + kBannerH - 1, kBannerInset);
+    hal::Span ext = detail::visible_extent(shape_, top, top + height - 1, kBannerInset);
     if (ext.empty()) ext = {safe_.x1, safe_.x2};
 
     // Logged (never the text: it may be private) so that a script reading
@@ -50,7 +57,7 @@ void SystemLayer::show_next_banner() {
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(card, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_set_pos(card, ext.x1, top);
-    lv_obj_set_size(card, ext.x2 - ext.x1 + 1, kBannerH);
+    lv_obj_set_size(card, ext.x2 - ext.x1 + 1, height);
     lv_obj_set_style_radius(card, theme::kRadiusLg, 0);
     lv_obj_set_style_bg_color(card, lv_color_hex(theme::kSurface2), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -66,10 +73,28 @@ void SystemLayer::show_next_banner() {
     lv_obj_add_event_cb(card, &SystemLayer::banner_cb, LV_EVENT_PRESSED, this);
     lv_obj_add_event_cb(card, &SystemLayer::banner_cb, LV_EVENT_CLICKED, this);
 
-    detail::make_badge(card, b.badge, b.source, kBadgeSize);
+    // The badge and the text in a row as tall as a plain banner's content,
+    // the buttons under it.
+    lv_obj_t* content = card;
+    if (actions) {
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(card, kActionsGap, 0);
+        content = lv_obj_create(card);
+        lv_obj_remove_style_all(content);
+        lv_obj_remove_flag(content, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_size(content, LV_PCT(100),
+                        kBannerH - 2 * theme::kGapXs - 2 * theme::kBorderWidth);
+        lv_obj_set_style_pad_column(content, theme::kGapMd, 0);
+        lv_obj_set_flex_flow(content, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+    }
+
+    detail::make_badge(content, b.badge, b.source, kBadgeSize);
 
     // The scene's name and the title on one line, the body under them.
-    lv_obj_t* text = lv_obj_create(card);
+    lv_obj_t* text = lv_obj_create(content);
     lv_obj_remove_style_all(text);
     lv_obj_remove_flag(text, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(text, LV_OBJ_FLAG_SCROLLABLE);
@@ -114,11 +139,42 @@ void SystemLayer::show_next_banner() {
         lv_obj_set_height(body, std::min(kBodyLines * line, room / line * line));
     }
 
+    if (actions) {
+        lv_obj_t* row = lv_obj_create(card);
+        lv_obj_remove_style_all(row);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_size(row, LV_PCT(100), kActionsH);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_column(row, theme::kGapSm, 0);
+        const std::string* labels[] = {&b.action_label, &b.action2_label};
+        for (uintptr_t i = 0; i < 2; ++i) {
+            if (labels[i]->empty()) continue;
+            lv_obj_t* btn = lv_button_create(row);
+            set_button_role(btn, ButtonRole::Secondary);
+            lv_obj_remove_flag(btn, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+            lv_obj_set_height(btn, kActionsH);
+            lv_obj_set_width(btn, 0);
+            lv_obj_set_flex_grow(btn, 1);
+            lv_obj_set_style_pad_hor(btn, theme::kGapXs, 0);
+            lv_obj_set_user_data(btn, reinterpret_cast<void*>(i));
+            lv_obj_add_event_cb(btn, &SystemLayer::banner_action_cb, LV_EVENT_CLICKED, this);
+            lv_obj_t* label = lv_label_create(btn);
+            lv_label_set_text(label, labels[i]->c_str());
+            lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
+            lv_obj_set_width(label, LV_PCT(100));
+            lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_center(label);
+        }
+    }
+
     banner_ = card;
     banner_tap_ = std::move(next.on_tap);
+    banner_action_ = std::move(next.on_action);
     mark_opaque_overlay(card);
     lv_obj_update_layout(card);
-    banner_timer_ = lv_timer_create(&SystemLayer::banner_timer_cb, kBannerMs, this);
+    banner_timer_ =
+        lv_timer_create(&SystemLayer::banner_timer_cb, actions ? kActionBannerMs : kBannerMs, this);
     lv_timer_set_repeat_count(banner_timer_, 1);
     raise();
 }
@@ -140,6 +196,7 @@ void SystemLayer::hide_banner() {
         WLOG_I("ui", "banner: gone");
     }
     banner_tap_ = nullptr;
+    banner_action_ = nullptr;
     show_next_banner();
 }
 
@@ -169,6 +226,18 @@ void SystemLayer::banner_cb(lv_event_t* e) {
     self->hide_banner();
     --self->banner_event_depth_;
     if (on_tap) on_tap();
+}
+
+void SystemLayer::banner_action_cb(lv_event_t* e) {
+    auto* self = static_cast<SystemLayer*>(lv_event_get_user_data(e));
+    auto* btn = static_cast<lv_obj_t*>(lv_event_get_current_target(e));
+    const int index = static_cast<int>(reinterpret_cast<uintptr_t>(lv_obj_get_user_data(btn)));
+    // A copy: hiding the banner lets its callbacks go.
+    std::function<void(int)> on_action = self->banner_action_;
+    ++self->banner_event_depth_;
+    self->hide_banner();
+    --self->banner_event_depth_;
+    if (on_action) on_action(index);
 }
 
 }  // namespace wisp::ui

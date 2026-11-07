@@ -44,6 +44,7 @@
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
@@ -168,6 +169,8 @@ struct AgentWiringDeps {
     core::ModelProfileService& models;
     core::SystemSettings& settings;
     core::NotificationService& notes;
+    // The todos (todo.* tools); null: no todo tools.
+    core::ReminderScheduler* reminders = nullptr;
     core::WakeLockRegistry* locks = nullptr;
     ui::UiRuntime& ui;
     ui::SystemLayer& layer;

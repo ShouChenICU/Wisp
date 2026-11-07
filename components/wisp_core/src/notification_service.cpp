@@ -90,6 +90,8 @@ struct NotificationService::State {
         e.arg = large(n.arg);
         e.action = large(n.action);
         e.action_arg = large(n.action_arg);
+        e.action2 = large(n.action2);
+        e.action2_arg = large(n.action2_arg);
         e.sound = n.sound;
         e.wake = n.wake;
         e.posted_ms = n.posted_ms;
@@ -108,6 +110,8 @@ struct NotificationService::State {
         n.arg = plain(e.arg);
         n.action = plain(e.action);
         n.action_arg = plain(e.action_arg);
+        n.action2 = plain(e.action2);
+        n.action2_arg = plain(e.action2_arg);
         n.sound = e.sound;
         n.wake = e.wake;
         n.posted_ms = e.posted_ms;
@@ -134,7 +138,9 @@ struct NotificationService::State {
         e.payload = Properties{
             {"id", Value(n.id)},
             {"source", Value(n.source)},
-            {"title", Value(n.source == kSystemSource ? n.code : n.title)},
+            {"title", Value(n.source == kSystemSource     ? n.code
+                            : n.source == kReminderSource ? std::string("reminder")
+                                                          : n.title)},
         };
         deps.bus.publish(std::move(e));
     }
@@ -162,7 +168,7 @@ struct NotificationService::State {
 
     // Drops the oldest notices past the per-scene and total limits.
     void enforce_limits(std::string_view source, std::vector<NotificationChange>& changes) {
-        if (source != kSystemSource) {
+        if (source != kSystemSource && source != kReminderSource) {
             size_t count = 0;
             for (const Entry& e : entries) {
                 if (same(e.source, source)) ++count;
@@ -233,6 +239,8 @@ struct NotificationService::State {
                 {"arg", Value(plain(e.arg))},
                 {"action", Value(plain(e.action))},
                 {"action_arg", Value(plain(e.action_arg))},
+                {"action2", Value(plain(e.action2))},
+                {"action2_arg", Value(plain(e.action2_arg))},
                 {"sound", Value(sound_name(e.sound))},
                 {"posted_unix", Value(e.posted_unix)},
             };
@@ -304,6 +312,18 @@ std::string str_field(const Value& v, const char* key) {
     return f != nullptr && f->type() == Value::Type::String ? f->as_string() : std::string();
 }
 
+bool todo_action(std::string_view a) {
+    return a.empty() || a == notice::kActionTodoDone || a == notice::kActionTodoSnooze;
+}
+
+// The actions a reminder may carry: todo actions, each argument at most
+// kActionArgMax bytes.
+bool reminder_actions_ok(const Notification& n) {
+    return todo_action(n.action) && todo_action(n.action2) &&
+           n.action_arg.size() <= NotificationService::kActionArgMax &&
+           n.action2_arg.size() <= NotificationService::kActionArgMax;
+}
+
 // The limits post() and post_system() enforce, for a notice read back from
 // the file (which may be damaged or edited by hand).
 bool loadable(const Notification& n) {
@@ -312,13 +332,19 @@ bool loadable(const Notification& n) {
                n.body.empty() && (n.action.empty() || n.action == notice::kActionReleaseLock) &&
                n.code.size() <= NotificationService::kCodeMax &&
                n.arg.size() <= NotificationService::kArgMax &&
-               n.action_arg.size() <= NotificationService::kActionArgMax;
+               n.action_arg.size() <= NotificationService::kActionArgMax && n.action2.empty() &&
+               n.action2_arg.empty();
     }
-    return valid_notification_id(n.source) && valid_notification_id(n.id) && !n.title.empty() &&
-           n.title.size() <= NotificationService::kTitleMax &&
-           n.body.size() <= NotificationService::kBodyMax &&
-           n.source_name.size() <= NotificationService::kTitleMax && n.code.empty() &&
-           n.arg.empty() && n.action.empty() && n.action_arg.empty();
+    const bool reminder = n.source == kReminderSource;
+    const size_t body_max =
+        reminder ? NotificationService::kReminderBodyMax : NotificationService::kBodyMax;
+    const bool actions_ok = reminder ? reminder_actions_ok(n)
+                                     : n.action.empty() && n.action_arg.empty() &&
+                                           n.action2.empty() && n.action2_arg.empty();
+    return (reminder || valid_notification_id(n.source)) && valid_notification_id(n.id) &&
+           !n.title.empty() && n.title.size() <= NotificationService::kTitleMax &&
+           n.body.size() <= body_max && n.source_name.size() <= NotificationService::kTitleMax &&
+           n.code.empty() && n.arg.empty() && actions_ok;
 }
 
 }  // namespace
@@ -504,6 +530,8 @@ Result<void> NotificationService::load() {
         n.arg = str_field(v, "arg");
         n.action = str_field(v, "action");
         n.action_arg = str_field(v, "action_arg");
+        n.action2 = str_field(v, "action2");
+        n.action2_arg = str_field(v, "action2_arg");
         n.sound = parse_notify_sound(str_field(v, "sound")).value_or(NotifySound::None);
         if (const Value* t = v.find("posted_unix"); t != nullptr && t->type() == Value::Type::Int) {
             n.posted_unix = t->as_int();
@@ -531,7 +559,8 @@ Result<void> NotificationService::load() {
             ++newer;
             if (loaded[j].id == loaded[i].id) duplicate = true;
         }
-        const bool surplus = !same(loaded[i].source, kSystemSource) && newer >= kUnreadPerScene;
+        const bool surplus = !same(loaded[i].source, kSystemSource) &&
+                             !same(loaded[i].source, kReminderSource) && newer >= kUnreadPerScene;
         if (duplicate || surplus) {
             loaded.erase(loaded.begin() + static_cast<std::ptrdiff_t>(i));
             ++skipped;
@@ -558,30 +587,41 @@ Result<void> NotificationService::load() {
 }
 
 Result<std::string> NotificationService::post(Notification n, bool from_foreground) {
+    const bool reminder = n.source == kReminderSource;
     if (n.title.empty() || n.title.size() > kTitleMax) {
         return Result<std::string>::err(ErrorCode::InvalidArgument, "title must be 1-32 bytes");
     }
-    if (n.body.size() > kBodyMax) {
-        return Result<std::string>::err(ErrorCode::InvalidArgument, "body must be 0-200 bytes");
+    if (n.body.size() > (reminder ? kReminderBodyMax : kBodyMax)) {
+        return Result<std::string>::err(
+            ErrorCode::InvalidArgument,
+            reminder ? "body must be 0-400 bytes" : "body must be 0-200 bytes");
     }
     if (!n.id.empty() && !valid_notification_id(n.id)) {
         return Result<std::string>::err(ErrorCode::InvalidArgument,
                                         "id must be 1-32 bytes of [a-z0-9_-]");
     }
-    if (n.source.empty() || n.source == kSystemSource) {
+    if (n.source == kSystemSource || (!reminder && !valid_notification_id(n.source))) {
         return Result<std::string>::err(ErrorCode::InvalidArgument, "bad source");
     }
     n.code.clear();
     n.arg.clear();
-    n.action.clear();
-    n.action_arg.clear();
+    if (reminder) {
+        if (!reminder_actions_ok(n)) {
+            return Result<std::string>::err(ErrorCode::InvalidArgument, "bad action");
+        }
+    } else {
+        n.action.clear();
+        n.action_arg.clear();
+        n.action2.clear();
+        n.action2_arg.clear();
+    }
 
     State& s = *state_;
     std::vector<NotificationChange> changes;
     {
         std::lock_guard<os::Mutex> lock(s.mutex);
         const uint64_t now = s.deps.now_ms();
-        if (!s.take_rate(n.source, now)) {
+        if (!reminder && !s.take_rate(n.source, now)) {
             return Result<std::string>::err(ErrorCode::RateLimited, "rate_limited");
         }
         if (n.id.empty()) {
