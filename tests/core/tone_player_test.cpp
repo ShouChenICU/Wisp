@@ -249,6 +249,53 @@ TEST_F(TonePlayerTest, VolumeScalesAmplitude) {
     EXPECT_EQ(mute->opens(), 0);
 }
 
+TEST_F(TonePlayerTest, OutputGuardSkipsOrDefers) {
+    auto out = std::make_shared<RecordingAudioOut>();
+    TonePlayer player(out, &locks);
+    ASSERT_TRUE(player.start());
+    std::mutex mu;
+    std::vector<ToneKind> asked;
+    std::atomic<bool> waited{false};
+    player.set_output_guard([&](ToneKind kind) {
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            asked.push_back(kind);
+        }
+        if (kind == ToneKind::Tone) return false;
+        // Stands in for stopping speech and waiting for its output to
+        // close: it runs on the tone task, so play() does not wait.
+        wisp::os::sleep_ms(100);
+        waited = true;
+        return true;
+    });
+
+    // Refused: nothing opens the output.
+    player.play(ToneKind::Tone, 60);
+    ASSERT_TRUE(wait_until([&] { return !player.playing(); }, 1000));
+    EXPECT_EQ(out->opens(), 0);
+
+    // Let through after the guard's wait, which play() never sees.
+    const uint64_t t0 = wisp::os::now_ms();
+    player.play(ToneKind::Alarm, 60);
+    EXPECT_LT(wisp::os::now_ms() - t0, 50u);
+    EXPECT_FALSE(waited.load());
+    ASSERT_TRUE(wait_until([&] { return out->frames() > 0; }, 2000));
+    EXPECT_TRUE(waited.load());
+    EXPECT_EQ(out->opens(), 1);
+    player.silence();
+    ASSERT_TRUE(wait_until([&] { return !player.playing(); }, 1000));
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        EXPECT_EQ(asked, (std::vector<ToneKind>{ToneKind::Tone, ToneKind::Alarm}));
+    }
+
+    // Without a guard every sound plays again.
+    player.set_output_guard(nullptr);
+    player.play(ToneKind::Tone, 60);
+    ASSERT_TRUE(wait_until([&] { return !player.playing(); }, 2000));
+    EXPECT_EQ(out->opens(), 2);
+}
+
 TEST(TonePlayer, TaskConfigIsPsramStack) {
     const wisp::os::TaskConfig c = TonePlayer::task_config(TonePlayerConfig{});
     EXPECT_STREQ(c.name, "wisp.tone");

@@ -320,6 +320,10 @@ wisp_test(NAME asr_client_test SRCS voice/asr_client_test.cpp
           LIBS wisp_voice wisp_net wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME tts_client_test SRCS voice/tts_client_test.cpp
           LIBS wisp_voice wisp_net wisp_core wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME pcm_player_test SRCS voice/pcm_player_test.cpp
+          LIBS wisp_voice wisp_ui wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME voice_service_test SRCS voice/voice_service_test.cpp
+          LIBS wisp_voice wisp_net wisp_core wisp_port_sim_os TIMEOUT 60)
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.

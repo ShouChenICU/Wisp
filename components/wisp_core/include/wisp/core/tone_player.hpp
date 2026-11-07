@@ -19,6 +19,14 @@
 // synthesizes into a buffer it owns and writes to the output; it never
 // reads Settings.
 //
+// Sharing the output (MVP spec 4.4): speech plays through the same
+// AudioOut, and the two must never have it open at once. The output guard,
+// when set, is asked on this task before every sound opens the output:
+// false skips the sound (a Tone while speech plays), true lets it play
+// (an Alarm, after the guard has stopped the speech and waited for its
+// output to close). It runs on wisp.tone, so it may wait without making
+// play() wait; it must not touch flash.
+//
 // Threads: play(), silence() and playing() may be called from any thread,
 // and never wait, but not while start() or stop() runs: whoever calls them
 // stops calling before stop() (App stops the router and PowerManager, the
@@ -28,6 +36,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -88,6 +97,9 @@ public:
     // A sound was asked for and has not ended yet.
     bool playing() const;
 
+    // See the file header. Any thread; null removes the guard.
+    void set_output_guard(std::function<bool(ToneKind)> may_play);
+
 private:
     struct Request {
         ToneKind kind;
@@ -106,9 +118,10 @@ private:
     std::unique_ptr<os::Task> task_;
     os::Semaphore wake_{1, 0};
 
-    // Guards pending_ and the moves of playing_ to false.
+    // Guards pending_, guard_ and the moves of playing_ to false.
     mutable os::Mutex mu_;
     std::optional<Request> pending_;
+    std::shared_ptr<const std::function<bool(ToneKind)>> guard_;
     // Moves on with every play() and silence(): the sound in progress
     // stops when it is no longer the one it started with.
     std::atomic<uint32_t> generation_{0};

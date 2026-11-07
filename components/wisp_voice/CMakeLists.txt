@@ -10,7 +10,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 wisp_component(
     NAME wisp_voice
     SRCS src/say_parser.cpp src/vad.cpp src/sentences.cpp src/capture_buffer.cpp
-         src/asr_client.cpp src/tts_client.cpp
+         src/asr_client.cpp src/tts_client.cpp src/pcm_player.cpp src/voice_service.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net
 )

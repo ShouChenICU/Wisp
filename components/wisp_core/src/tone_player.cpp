@@ -131,6 +131,14 @@ void TonePlayer::silence() {
 
 bool TonePlayer::playing() const { return playing_.load(); }
 
+void TonePlayer::set_output_guard(std::function<bool(ToneKind)> may_play) {
+    auto guard = may_play
+                     ? std::make_shared<const std::function<bool(ToneKind)>>(std::move(may_play))
+                     : nullptr;
+    std::lock_guard<os::Mutex> lock(mu_);
+    guard_ = std::move(guard);
+}
+
 void TonePlayer::run() {
     for (;;) {
         wake_.take(os::kForever);
@@ -155,6 +163,13 @@ void TonePlayer::run() {
 
 void TonePlayer::play_one(const Request& r, uint32_t gen) {
     const bool alarm = r.kind == ToneKind::Alarm;
+    std::shared_ptr<const std::function<bool(ToneKind)>> guard;
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        guard = guard_;
+    }
+    if (guard && !(*guard)(r.kind)) return;
+    if (generation_.load() != gen || quit_.load()) return;
     WakeLock cpu;
     if (locks_ != nullptr)
         cpu = WakeLock(*locks_, kHolder, WakeLockKind::Cpu, alarm ? "alarm" : "tone");
