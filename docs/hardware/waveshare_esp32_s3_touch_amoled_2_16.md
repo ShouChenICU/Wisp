@@ -408,6 +408,19 @@ STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动
 - **OTA 不碰字体**：经管理后台上传应用镜像并在设备上确认，重启后仍是 `fonts: image ok`，标题仍是矢量大字。这次验收还暴露了 flash 擦写期间读映射区的崩溃，见上文"flash 擦写与映射读取"和清单第 58 项。
 - **镜像大小**：`idf.py size` 的 Total image size 是 3,967,023 B，占 `ota_0`（0x500000）的 75.7%。矢量字体本身让镜像净减约 55 KB：加入 Tiny TTF 和 stb_truetype 多了 19.5 KB，去掉 Montserrat 24/32/48 少了 72.3 KB。计划里用来对比的 3,169,136 B 是更早的固件的数，那之后 3a 等改动已经让镜像涨到约 4.01 MB。
 
+**Agent 与语音接入之后**（2026-11-07，feat/agent-core 固件 `36ba2a8`，只连 STA；ASR 用硅基流动 SenseVoiceSmall，TTS 用 CosyVoice2，LLM 用 DeepSeek）：
+
+| 状态 | 内部 RAM 空闲 | 最大块 | `min` | `wisp.voice` / `wisp.play` / `wisp.agent` 栈剩余 |
+|---|---|---|---|---|
+| 开机空闲 | 99527 B | 31744 B | 53696 B | 7304 / 3260 / 15440 B（8 / 4 / 16 KB 栈，都在 PSRAM） |
+| 第一句朗读中、LLM 仍在流式输出（TTS 与 LLM 两条 TLS 同时在线） | 85251 B | 31744 B | 49088 B | 3064 / 2812 / 10112 B |
+| 同一轮之后的朗读（只剩 TTS） | 89111 B | 31744 B | 43460 B | 3064 / 2812 / 10112 B |
+
+- 三种状态都高于 `ram_budget.hpp` 的最坏下限（40 KB / 16 KB），`overlap_first_sentence` 保持默认 true。
+- 开机时 Agent 注册工具曾占 54 KB 内部 RAM（`std::string`、`Value` 树、`std::map` 节点都是小块分配，落在内部 RAM，见 AGENTS.md 第 8 节），空闲只剩 43 KB；工具表移进 PSRAM（`36ba2a8`）后回到 99.5 KB。
+- 延迟（一次实测，按住说 5.8 s）：ASR 3.6 s；LLM 首个输出约 6.3 s；第一句 TTS 从发请求到出声约 4 s，52 字的句子整句合成 11.9 s（流式边收边播）。
+- 喇叭播过 24 kHz 的 TTS 后再开麦，开头会有接近满量程的瞬态（`head_rms` 曾到 11000+）。长按说话不跑 VAD，开麦后先丢 100 ms（`kMicSettleMs`）。
+
 ### 场景运行时
 
 真机验收清单第 53 项之外，另外交给用户在真机上执行的实测步骤（场景 spec 2.3）：分别在以下四种状态下执行一次串口命令 `mem`，记录 `internal free`/`largest`/`min`，以及 `wisp.scene`、`wisp.fs`、`wisp.shttp`、`wisp.ntp` 四个任务的栈大小与 high-water mark：
