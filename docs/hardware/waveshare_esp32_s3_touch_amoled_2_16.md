@@ -419,7 +419,7 @@ STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动
 - 三种状态都高于 `ram_budget.hpp` 的最坏下限（40 KB / 16 KB），`overlap_first_sentence` 保持默认 true。
 - 开机时 Agent 注册工具曾占 54 KB 内部 RAM（`std::string`、`Value` 树、`std::map` 节点都是小块分配，落在内部 RAM，见 AGENTS.md 第 8 节），空闲只剩 43 KB；工具表移进 PSRAM（`36ba2a8`）后回到 99.5 KB。
 - 延迟（一次实测，按住说 5.8 s）：ASR 3.6 s；LLM 首个输出约 6.3 s；第一句 TTS 从发请求到出声约 4 s，52 字的句子整句合成 11.9 s（流式边收边播）。
-- 喇叭播过 24 kHz 的 TTS 后再开麦，开头会有接近满量程的瞬态（`head_rms` 曾到 11000+）。长按说话不跑 VAD，开麦后先丢 100 ms（`kMicSettleMs`）。
+- 喇叭播过 24 kHz 的 TTS 后再开麦，录音里出现过接近满量程的瞬态（峰值削顶，单帧 RMS 到 11000–15000，而正常说话约 600–1000）。长按说话不跑 VAD，开麦后先丢 100 ms（`kMicSettleMs`）。
 
 ### 场景运行时
 
