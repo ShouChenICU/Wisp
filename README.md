@@ -33,6 +33,17 @@
 - **数据留在本地**：管理后台只在局域网里用，API Key 只能写入、不能读出，删除场景这类大操作要在设备上确认。
 - **不绑定开发板**：硬件分层抽象，大部分开发在 PC 模拟器上完成。
 
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/scene-clock.png" width="170"><br><sub>时钟</sub></td>
+    <td align="center"><img src="docs/images/scene-pomodoro.png" width="170"><br><sub>番茄钟</sub></td>
+    <td align="center"><img src="docs/images/scene-weather.png" width="170"><br><sub>天气</sub></td>
+    <td align="center"><img src="docs/images/scene-level.png" width="170"><br><sub>水平仪</sub></td>
+  </tr>
+</table>
+
+<sub>以上是 <a href="scenes/examples/"><code>scenes/examples/</code></a> 里的示例场景，每个都只有一个 <code>main.lua</code>，大多不到 200 行。</sub>
+
 ## 👆 怎么用
 
 | 操作 | 作用 |
