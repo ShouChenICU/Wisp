@@ -1,0 +1,17 @@
+# Name,    Type, SubType,  Offset,    Size
+# 32 MB flash (GigaDevice 0xC84019). Everything read through the cache --
+# both app slots and the mmapped glyphs/fonts partitions -- lies entirely
+# below 16 MB: without the experimental 32-bit-address bootloader option
+# the cache can only map the first 16 MB. storage is LittleFS, read and
+# written through esp_flash (4-byte addressing, never mapped), so it takes
+# the whole upper 16 MB. Same partition names as the reference board
+# (docs/porting-guide.md); the two OTA slots are equal and use all the
+# room below 16 MB that glyphs and fonts leave (one 64 KB block spare).
+nvs,       data, nvs,      0x9000,    0x6000
+otadata,   data, ota,      0xF000,    0x2000
+phy_init,  data, phy,      0x11000,   0x1000
+ota_0,     app,  ota_0,    0x20000,   0x5F0000
+ota_1,     app,  ota_1,    0x610000,  0x5F0000
+glyphs,    data, 0x41,     0xC00000,  0x120000
+fonts,     data, 0x40,     0xD20000,  0x2D0000
+storage,   data, littlefs, 0x1000000, 0x1000000

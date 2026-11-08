@@ -88,7 +88,7 @@ cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 
 ### 📟 真机
 
-目前支持 **Waveshare ESP32-S3-Touch-AMOLED-2.16**：480×480 AMOLED 触摸屏，配有双麦克风、扬声器、IMU、RTC、电池管理和 SD 卡槽，不需要焊接。
+目前支持 **Waveshare ESP32-S3-Touch-AMOLED-2.16**：480×480 AMOLED 触摸屏，配有双麦克风、扬声器、IMU、RTC、电池管理和 SD 卡槽，不需要焊接。另外也支持 **Waveshare ESP32-S3-Touch-AMOLED-1.75C**（466×466 圆形 AMOLED，32 MB flash，无 SD 卡槽），尚待真机验收；构建命令见[它的 README](boards/waveshare_esp32_s3_touch_amoled_1_75c/README.md)（英文）。
 
 ```bash
 . ~/esp/esp-idf-v6.0.3/export.sh        # fish 等非 bash 终端请用 bash -c '...' 包起来

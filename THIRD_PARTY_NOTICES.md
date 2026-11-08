@@ -552,6 +552,21 @@ SOFTWARE.
   `LICENSE`)
 - Copyright: 2026 Espressif Systems (Shanghai) CO LTD
 
+## Waveshare ESP32-S3-Touch-AMOLED-1.75C BSP (init table in `boards/waveshare_esp32_s3_touch_amoled_1_75c/setup_device.c`)
+
+- Project: `waveshare/esp32_s3_touch_amoled_1_75c` 3.0.0 on the ESP
+  Component Registry, from https://github.com/waveshareteam/Waveshare-ESP32-components
+  (commit `010c5fb39ea7f0e996efd1f8e162cc70e569e57f`, path
+  `bsp/esp32_s3_touch_amoled_1_75c`)
+- Code adapted: the CO5300 init command table `lcd_init_cmds` of
+  `esp32_s3_touch_amoled_1_75c.c`, copied verbatim, plus the panel column
+  offset and touch orientation from the same file (details in
+  `docs/references.md`). The board YAML in the same directory is derived
+  from the 2.16's ESP-Claw files (see the ESP-Claw section above).
+- License: Apache License 2.0 (same as this project; full text in
+  `LICENSE`). The BSP ships the license text without a copyright line;
+  the copyright holder is Waveshare.
+
 ## esp_lvgl_port (ESP32-S3 SIMD blend routines in `components/wisp_port_esp/lv_blend/esp32s3/`)
 
 - Project: https://github.com/espressif/esp-bsp, `components/esp_lvgl_port`

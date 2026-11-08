@@ -90,7 +90,7 @@ The mouse stands in for your finger. <kbd>P</kbd> is the power key, <kbd>+</kbd>
 
 ### 📟 Device
 
-Supported now: **Waveshare ESP32-S3-Touch-AMOLED-2.16**. It has a 480×480 AMOLED touchscreen, two microphones, a speaker, an IMU, an RTC, battery management and an SD slot, with no soldering needed.
+Supported now: **Waveshare ESP32-S3-Touch-AMOLED-2.16**. It has a 480×480 AMOLED touchscreen, two microphones, a speaker, an IMU, an RTC, battery management and an SD slot, with no soldering needed. Also supported, pending acceptance on the device: **Waveshare ESP32-S3-Touch-AMOLED-1.75C** (466×466 round AMOLED, 32 MB flash, no SD slot); build it with the per-board commands in [its README](boards/waveshare_esp32_s3_touch_amoled_1_75c/README.md).
 
 ```bash
 . ~/esp/esp-idf-v6.0.3/export.sh        # in fish and other non-bash shells, wrap in bash -c '...'

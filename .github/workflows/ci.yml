@@ -41,7 +41,8 @@ jobs:
     # the component manager fetches esp_board_manager, whose idf.py
     # extension provides `idf.py bmgr`; bmgr then generates the
     # (gitignored) firmware/components/gen_bmgr_codes/ from
-    # boards/waveshare_esp32_s3_touch_amoled_2_16/ before the build. Flashing/monitoring a
+    # boards/waveshare_esp32_s3_touch_amoled_2_16/ before the build; the
+    # other boards follow, each rerunning bmgr for itself. Flashing/monitoring a
     # real board is never a CI step (left to a human with the hardware).
     #
     # The IDF image runs via `docker run` rather than a job-level
@@ -56,7 +57,7 @@ jobs:
           sudo docker image prune --all --force
           df -h /
       - uses: actions/checkout@v5
-      - name: idf.py set-target esp32s3 && idf.py bmgr && idf.py build
+      - name: idf.py set-target esp32s3 && idf.py bmgr && idf.py build (every board)
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/project" -w /project/firmware \
             espressif/idf:v6.0.3 bash -c '
@@ -64,7 +65,15 @@ jobs:
               . $IDF_PATH/export.sh
               idf.py set-target esp32s3
               idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16
-              idf.py build'
+              idf.py build
+              # Every other board in its own build directory and sdkconfig
+              # (docs/porting-guide.md, "Building several boards").
+              for board in waveshare_esp32_s3_touch_amoled_1_75c; do
+                idf.py bmgr -c ../boards -b "$board"
+                idf.py -B "build-$board" -D SDKCONFIG="build-$board/sdkconfig" \
+                  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;components/gen_bmgr_codes/board_manager.defaults" \
+                  -DWISP_BOARD="$board" build
+              done'
       # set-target resolves dependencies before gen_bmgr_codes exists and
       # temporarily drops bmgr's entries from the lock file; the build
       # (after bmgr) restores them. The committed lock must match the

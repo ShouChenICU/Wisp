@@ -60,7 +60,7 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* th
 
 After `init()`, `App::start()` automatically adds a `DeviceState::Ok` for every device in the registry that has not been reported, so `init()` only needs to record failures and missing devices.
 
-**Device id convention**: `<class>.<name>`, where the class is the lower-case name matching `wisp::hal::DeviceClass` (`display`/`touch`/`imu`/`power`/`clock`/`button`/`audio_out`/`audio_in`/`storage`/`network`). The exception is the Wi-Fi device, which sub-project 2's spec fixes as `net.wifi` (class `network`). The ids used on this board: `display.main`, `touch.main`, `imu.main`, `power.main`, `clock.main`, `button.power`/`button.vol_up`/`button.vol_down`, `audio_out.main`, `audio_in.main`, `storage.int`, `storage.sd`. New boards should reuse the same set of ids, unless several instances really need to be told apart (such as a future `display.external`).
+**Device id convention**: `<class>.<name>`, where the class is the lower-case name matching `wisp::hal::DeviceClass` (`display`/`touch`/`imu`/`power`/`clock`/`button`/`audio_out`/`audio_in`/`storage`/`network`). The exception is the Wi-Fi device, which sub-project 2's spec fixes as `net.wifi` (class `network`). The ids used on the reference board: `display.main`, `touch.main`, `imu.main`, `power.main`, `clock.main`, `button.power`/`button.vol_up`/`button.vol_down`, `audio_out.main`, `audio_in.main`, `storage.int`, `storage.sd`. New boards should reuse the same set of ids, unless several instances really need to be told apart (such as a future `display.external`). A key without a volume label gets its own name instead of borrowing a volume id: a BOOT key that is not also a volume key is `button.boot` (as on `waveshare_esp32_s3_touch_amoled_1_75c`). Buttons are found by caps (`role`), not by id, so this costs nothing. A board without an RTC records `clock.main` as `missing` ("no RTC") rather than `failed`; a board without an SD slot registers no `storage.sd`.
 
 **Capability field (caps) convention**: each device fills in its own `DeviceInfo::caps` when it is constructed. This is the only source of capability information (the board YAML handles only pins and buses). Required fields per class:
 
@@ -120,7 +120,7 @@ Light sleep must be verified on the device; the simulator cannot test it (it onl
 - `boards/<board>/sdkconfig.defaults.board`: flash size, mode and frequency, PSRAM, the console, and
   `CONFIG_PARTITION_TABLE_CUSTOM=y` and `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../boards/<board>/partitions.csv"` (ESP-IDF resolves relative paths against the project directory `firmware/`). `idf.py bmgr -b <board>` merges it into the generated `board_manager.defaults`, which takes priority over `firmware/sdkconfig.defaults`.
 
-sdkconfig defaults take effect only when `firmware/sdkconfig` does not exist. After switching boards or changing `sdkconfig.defaults.board`, delete `firmware/sdkconfig` first, then run `idf.py bmgr` and `idf.py build`.
+sdkconfig defaults take effect only when `firmware/sdkconfig` does not exist. After changing `sdkconfig.defaults.board`, delete `firmware/sdkconfig` first, then run `idf.py bmgr` and `idf.py build`. When `idf.py bmgr -b` names a different board from the last run, bmgr itself deletes `firmware/sdkconfig` (backing it up as `components/gen_bmgr_codes/sdkconfig.bmgr_board.old`, overwritten by the next switch) and `firmware/build/CMakeCache.txt`, so local menuconfig changes there are lost; keep settings you need in the defaults files, or use a per-board build directory ("Building several boards" below).
 
 ### Partition conventions (new boards must follow them)
 
@@ -135,7 +135,7 @@ The code looks up partitions only by **partition name**; it does not depend on o
 | `fonts` | Optional (large vector text) | The vector font image used for text at 20 px and above (vector font spec 3.2–3.4). Without this partition, large text falls back to the 16 px bitmap font and `UiRuntime::start()` still succeeds. Do not add it on a board without PSRAM: the glyph cache lives in PSRAM, and without PSRAM that memory would squeeze internal RAM |
 | `glyphs` | Optional (16 px body-text bitmap font, glyph partition spec) | The bitmap font image used for body text, kept out of the app image. Without this partition, the firmware has no packaged bitmap body text and falls back to vector 16 px, and failing that only the Montserrat placeholder remains (glyph partition spec 4.3). Like `fonts`, it is read through a mapping, and `UiRuntime::start()` still succeeds |
 
-There is no separate `assets` partition: the web asset pack (WispPack, ≤ 256 KiB) is linked into the app image (see "Firmware and partitions" below). Each board decides its own partition sizes; for example, a 32 MB board can give the extra space to `storage`. For the reference board's partition table, see `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv` and `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`.
+There is no separate `assets` partition: the web asset pack (WispPack, ≤ 256 KiB) is linked into the app image (see "Firmware and partitions" below). Each board decides its own partition sizes; for example, a 32 MB board can give the extra space to `storage`. On flash larger than 16 MB, everything read through the cache (the app slots and the mapped `fonts`/`glyphs` partitions) must lie entirely below 16 MB: the bootloader and cache address only the first 16 MB unless the experimental `CONFIG_BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH` is on, which Wisp does not use. `storage` (LittleFS, never mapped) can sit above 16 MB, provided ESP-IDF's driver for that flash part reports 32-bit address support (`SPI_FLASH_CHIP_CAP_32MB_SUPPORT` in `spi_flash_chip_<vendor>.c`; otherwise it warns at boot and caps the flash at 16 MB). See `boards/waveshare_esp32_s3_touch_amoled_1_75c/partitions.csv`. For the reference board's partition table, see `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv` and `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`.
 
 **Rules for changing the partition table**: when you change the partition table of a board that has already shipped, keep `nvs` and `storage` at their original offsets and sizes, so that settings and data survive. The partition table and the bootloader are outside OTA; a web upload replaces only the app image. So after changing the partition table (or enabling rollback for the first time, or changing the bootloader), you must do one full flash over USB (`idf.py flash`, which writes the bootloader, the partition table, `otadata` and `ota_0`) before web uploads work. Shrinking `storage` (for example to make room for a new `fonts` partition) also counts as changing the partition table: the LittleFS superblock records the block count, so once the partition size changes the mount fails, `format_if_mount_failed` reformats it, and all data in `/int` (installed scenes, scene data, files) is erased. Such a change must be announced to the user in advance; it must not be treated silently as an ordinary "grow a partition".
 
@@ -178,7 +178,7 @@ Adding a `glyphs` partition to a board already in use is a partition table chang
 
 - The boot log is the final word: `W spi_flash: Flash suspend feature is enabled` means ESP-IDF accepted this flash. If it does not, `esp_flash_init_default_chip()` returns an error and an assertion fails at boot: a USB-flashed device reboots over and over, and an OTA-installed image is rolled back. So verify it with a USB flash the first time you enable it; do not push it straight through OTA to boards that have shipped.
 - Before flashing you can check the part: `esptool flash-id` reads the vendor and device ids. For vendor 0x20 (XMC), ESP-IDF reads SFDP byte 0x32 (`esptool read-flash-sfdp 0x32 1`) and treats the chip as the suspend-capable XMC-D series only when bit 3 is 1; when it is 0 (XMC-C) it refuses by default. For other vendors, look at `get_caps` in the matching `spi_flash_chip_<vendor>.c` under ESP-IDF's `components/spi_flash/`.
-- A board whose flash does not support suspend cannot have both XIP and the `fonts`/`glyphs` partitions: drop one of them (do not enable XIP, or do not add these two partitions, so that large text and body text fall back to the bitmap/vector fonts built into the firmware).
+- A board whose flash does not support suspend cannot have both XIP and the `fonts`/`glyphs` partitions: drop one of them (do not enable XIP, or do not add these two partitions, so that large text and body text fall back to the bitmap/vector fonts built into the firmware). `waveshare_esp32_s3_touch_amoled_1_75c` drops XIP (GigaDevice `0xC84019` is not on ESP-IDF's suspend list); its hardware document records the cost.
 - Boards without XIP do not need this item: ESP-IDF disables the cache during erases and writes, so reads never see an intermediate state.
 
 ### Build configurations: release and debug
@@ -221,6 +221,25 @@ bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware \
 ```
 
 The `WISP_BOARD` cache variable of `firmware/CMakeLists.txt` decides which `boards/<name>/board.cpp` is compiled (default `waveshare_esp32_s3_touch_amoled_2_16`); override it with `-DWISP_BOARD=<board>`. As long as the board YAML has not changed, later `idf.py build` runs do not need set-target/bmgr again. For the debug build command, see "Build configurations: release and debug" above.
+
+A board whose bmgr YAML declares no `fs_fat` device (no SD slot) gets no `dev_fs_fat.h`; `wisp_port_esp`'s SD code compiles without it (`CONFIG_ESP_BOARD_DEV_FS_FAT_SUPPORT`), and the board simply never constructs an `EspSdStorage`.
+
+### Building several boards
+
+Give each board its own build directory and sdkconfig, so that switching does not clobber another board's build:
+
+```bash
+cd firmware
+idf.py bmgr -c ../boards -b <board>
+idf.py -B build-<board> -D SDKCONFIG=build-<board>/sdkconfig \
+    -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;components/gen_bmgr_codes/board_manager.defaults" \
+    -DWISP_BOARD=<board> build          # or: -p <port> flash / app-flash / fonts-flash
+```
+
+- `components/gen_bmgr_codes/` is shared by every build directory and holds only the board of the last bmgr run, so rerun `idf.py bmgr -b <board>` whenever you switch. Building with the wrong one fails at configure time (`idf.py bmgr selected board ... but WISP_BOARD is ...`, `firmware/main/CMakeLists.txt`), since `CONFIG_ESP_BOARD_NAME` has no prompt and always follows the generated Kconfig.
+- `SDKCONFIG_DEFAULTS` replaces the default list, so `board_manager.defaults` must be named explicitly (as for the debug build).
+- `build-<board>/sdkconfig` is seeded once from the defaults; bmgr never edits it. Delete it after changing that board's `sdkconfig.defaults.board` or the set of device types in its YAML.
+- `tools/ci.sh`'s format check already skips `firmware/build-*`. The default command (`idf.py build`, using `firmware/build` and `firmware/sdkconfig`) still builds the reference board, `WISP_BOARD`'s default, once bmgr has selected it again; for another board it needs `-DWISP_BOARD=<board>` each time, because bmgr deletes `firmware/build/CMakeCache.txt` on a switch.
 
 For the first flash, use `idf.py -p <port> flash` (it writes the bootloader, partition table, app and font partitions together). After that, for everyday code changes use `idf.py -p <port> app-flash`, or upload `build/wisp.bin` on the admin console's "System" page and confirm on the device, which then restarts into the new version. Neither `app-flash` nor the web upload writes the `fonts` and `glyphs` partitions: after changing fonts or the partition table, run `idf.py -p <port> fonts-flash` again (see "Font partitions" above).
 

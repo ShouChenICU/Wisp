@@ -1,0 +1,41 @@
+# Board-specific sdkconfig defaults for the Waveshare ESP32-S3-Touch-AMOLED-1.75C
+# (ESP32-S3R8: 32 MB QIO flash, GigaDevice 0xC84019; 8 MB octal PSRAM @
+# 80 MHz -- see docs/hardware/waveshare_esp32_s3_touch_amoled_1_75c.md).
+# `idf.py bmgr -b waveshare_esp32_s3_touch_amoled_1_75c` merges this file into
+# components/gen_bmgr_codes/board_manager.defaults, which takes priority over
+# firmware/sdkconfig.defaults. Like every sdkconfig defaults file it only
+# applies to a new sdkconfig: delete the sdkconfig after changing it.
+
+# Flash: QIO, 80 MHz, 32 MB. The bootloader and cache only address the
+# first 16 MB (BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH is experimental and
+# stays off), so partitions.csv keeps everything mapped below 16 MB.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+
+# This board's partition table (layout rules: docs/porting-guide.md). ESP-IDF
+# resolves a relative filename against the project directory (firmware/).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../boards/waveshare_esp32_s3_touch_amoled_1_75c/partitions.csv"
+
+# External octal PSRAM, 80 MHz, usable via malloc() (os::alloc(Mem::Large) --
+# see components/wisp_port_esp/os/os_esp.cpp).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# No XIP from PSRAM, unlike the 2.16: with XIP the cache stays on during
+# flash erase/write, so the mmapped fonts/glyphs partitions would need
+# flash auto-suspend, and ESP-IDF v6.0.3's GigaDevice driver does not list
+# 0xC84019 as suspend-capable (spi_flash_chip_gd.c get_caps). Without XIP
+# ESP-IDF disables the cache and stalls the other core during every flash
+# erase/write, so mapped reads are always correct; the costs are UI stalls
+# while flash is written (OTA, LittleFS, NVS) and slower rendering, since
+# code runs from flash through the instruction cache.
+# CONFIG_SPIRAM_XIP_FROM_PSRAM is not set
+# CONFIG_SPI_FLASH_AUTO_SUSPEND is not set
+
+# Console over USB-Serial-JTAG (no external UART-to-USB bridge on this
+# board).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

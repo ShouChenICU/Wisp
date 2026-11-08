@@ -1,0 +1,106 @@
+# Derived from boards/waveshare_esp32_s3_touch_amoled_2_16/board_devices.yaml
+# (itself adapted from ESP-Claw, Apache-2.0, Copyright Espressif Systems --
+# see docs/references.md). Pins and panel facts from Waveshare's ESP-IDF
+# BSP for this board (waveshare/esp32_s3_touch_amoled_1_75c 3.0.0,
+# Apache-2.0). As on the 2.16, the QMI8658 and AXP2101 are not bmgr
+# devices: Wisp's own drivers (drivers/) bring them up on i2c_master. This
+# board has no SD card slot.
+version: 1.0.0
+# Devices Configuration for Waveshare ESP32-S3-Touch-AMOLED-1.75C
+
+devices:
+  # ES8311 speaker playback path; channel count and gain are set at open()
+  # time by wisp::port::esp::EspAudioOut (see the 2.16's board_devices.yaml
+  # for the esp_codec_dev 2.0 notes). External MCLK on GPIO16.
+  - name: audio_dac
+    chip: es8311
+    type: audio_codec
+    version: default
+    config:
+      adc_enabled: false
+      dac_enabled: true
+      sys_cfg:
+        is_master: false
+        no_mclk: false
+    peripherals:
+      - pa_name: gpio_pa_control
+        active_level: 1
+      - i2s_name: i2s_audio_out
+      - i2c_name: i2c_master
+        address: 0x30
+        frequency: 400000
+
+  # ES7210 dual microphone capture path (EspAudioIn downmixes to mono).
+  - name: audio_adc
+    chip: es7210
+    type: audio_codec
+    version: default
+    config:
+      adc_enabled: true
+      dac_enabled: false
+      sys_cfg:
+        is_master: false
+        no_mclk: false
+    peripherals:
+      - i2s_name: i2s_audio_in
+      - i2c_name: i2c_master
+        address: 0x80
+        frequency: 400000
+
+  # 1.75-inch 466x466 round AMOLED, CO5300 over QSPI, 40 MHz (the
+  # CO5300_PANEL_IO_QSPI_CONFIG default the BSP uses). Native orientation:
+  # no swap or mirror. The 6-column offset is set in setup_device.c.
+  - name: display_lcd
+    chip: co5300
+    type: display_lcd
+    sub_type: spi
+    version: default
+    dependencies:
+      esp_lcd_co5300: "*"
+      esp_lcd_panel_io_additions: "^1"
+    config:
+      x_max: 466
+      y_max: 466
+      swap_xy: false
+      mirror_x: false
+      mirror_y: false
+      io_spi_config:
+        cs_gpio_num: 12
+        dc_gpio_num: -1
+        spi_mode: 0
+        pclk_hz: 40000000
+        lcd_cmd_bits: 32
+        flags:
+          quad_mode: true
+      lcd_panel_config:
+        reset_gpio_num: 1
+        rgb_ele_order: LCD_RGB_ELEMENT_ORDER_RGB
+        bits_per_pixel: 16
+        data_endian: LCD_RGB_DATA_ENDIAN_BIG
+        vendor_config: NULL
+    peripherals:
+      - name: spi_display
+
+  # CST9217 capacitive touch (7-bit 0x5A). Reset/interrupt pins and the
+  # axis flips are set in setup_device.c.
+  - name: lcd_touch
+    chip: cst9217
+    type: lcd_touch
+    sub_type: i2c
+    version: default
+    dependencies:
+      esp_lcd_touch:
+        version: "*"
+        require: public
+      waveshare/esp_lcd_touch_cst9217: "*"
+    config:
+      io_i2c_config:
+        scl_speed_hz: 400000
+      touch_config:
+        x_max: 466
+        y_max: 466
+        rst_gpio_num: 2
+        int_gpio_num: 11
+    peripherals:
+      - name: i2c_master
+        i2c_addr: [0xB4]
