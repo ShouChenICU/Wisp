@@ -631,3 +631,34 @@ TEST_F(SceneListTest, IconsSwapInAfterCards) {
         EXPECT_EQ(page()->icon_swaps(), 0u);
     });
 }
+
+// A long press that goes on into a drag: the card stays up over the page,
+// and the page does not slide out from under it.
+TEST_F(SceneListTest, NoDragWhileTheLongPressCardIsUp) {
+    boot();
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes = {scene("counter", "计数器")};
+    }
+    open_page(1);
+    const lv_point_t at = harness->centre_of(page()->card(0));
+    harness->feed({{static_cast<int16_t>(at.x), static_cast<int16_t>(at.y), 0}});
+    ASSERT_TRUE(harness->ui_until([&] {
+        // Held in place until the card opens.
+        lv_indev_read(lv_indev_get_next(nullptr));
+        return page()->popup() != nullptr;
+    }));
+    // Without lifting, right: the scene list's way back to Home.
+    for (int16_t dx = 10; dx <= 240; dx += 10) {
+        wisp::os::sleep_ms(5);
+        harness->feed({{static_cast<int16_t>(at.x + dx), static_cast<int16_t>(at.y), 0}});
+        harness->on_ui([&] { EXPECT_FALSE(harness->shell().sliding()) << dx; });
+    }
+    harness->feed({});
+    harness->on_ui([&] {
+        EXPECT_FALSE(harness->shell().sliding());
+        EXPECT_EQ(harness->shell().page(), Page::Scenes);
+        EXPECT_NE(page()->popup(), nullptr);
+        page()->close_popup();
+    });
+}

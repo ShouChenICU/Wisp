@@ -616,6 +616,9 @@ void Shell::on_press(lv_event_t* e) {
 bool Shell::may_drag(lv_obj_t* scr, lv_obj_t* target, Swipe dir) const {
     lv_obj_t* root = page_ == Page::Home ? (home_ ? home_->root() : nullptr) : sub_root_;
     if (root == nullptr || lv_obj_get_screen(root) != scr) return false;
+    // The scene list's long-press card stays put on the page's screen: a
+    // press that opened it goes on to the card, not into a drag.
+    if (page_ == Page::Scenes && scenes_ && scenes_->popup() != nullptr) return false;
     if (target != nullptr && target != scr) {
         bool in_root = false;
         for (lv_obj_t* o = target; o != nullptr && o != scr; o = lv_obj_get_parent(o)) {
