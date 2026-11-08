@@ -1,0 +1,27 @@
+# Changelog
+
+Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
+
+## 0.2.0 — 2026-11-08
+
+The first public release.
+
+### Features
+
+- **Shell**: the wisp home screen, drawn in code with its own expressions for idle, listening, thinking and speaking. Finger-following navigation leads to Settings, the scene list and history. Long tool output such as Lua code is folded so it does not slow the screen down.
+- **Settings page**: grouped list, with choice sub-pages for screen-off, deep standby, language and time zone. Language changes apply at once, without a reboot. New 24/12-hour time format (`time_24h`). Restart and power off, each confirmed first. Sub-page titles scroll with their lists.
+- **Scenes**: Lua 5.5 sandbox per scene with a declarative UI, background scenes, notifications and scene tools for the agent. New `on_swipe(dir)` event for layout widgets and the canvas.
+- **Agent**: any OpenAI-compatible model, with the device as its toolbox, plus context compaction. The step limit and turn time limit can be set in the admin console.
+- **Voice**: hold to talk, recognition, `<say>` speech and interruption.
+- **Memory and reminders**: preference notes and to-dos with due times.
+- **Admin console**: Wi-Fi and QR setup, LAN console, model profiles and OTA from the browser.
+- **Icons**: a larger built-in icon set, including a microphone mark for voice prompts in history.
+
+### Boards
+
+- Waveshare ESP32-S3-Touch-AMOLED-2.16 (reference board).
+- Waveshare ESP32-S3-Touch-AMOLED-1.75C (round 466 × 466 screen, 32 MB flash), including its IMU orientation. The wisp is drawn larger on round screens.
+
+### Performance
+
+- Code runs from flash with a 32 KB instruction cache on every board instead of XIP from PSRAM. Scrolling stays at 20–22 fps on both boards, and about 3.5 MB more PSRAM is free (6.7 MB in all). The 2.16 keeps flash auto-suspend, so the UI stays smooth during an OTA upload. The 1.75C's flash cannot use auto-suspend efficiently, so its UI stutters during an upload (`docs/hardware/waveshare_esp32_s3_touch_amoled_1_75c.md`).
