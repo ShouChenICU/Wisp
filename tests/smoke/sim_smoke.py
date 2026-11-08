@@ -31,8 +31,18 @@ a person to look at (their paths are printed; they stay in the run's
 temporary directory, removed at exit, unless WISP_SMOKE_SHOTS names a
 directory to keep them in); "scene_level" tilts the scripted IMU under
 the level example. "wisp_demo" runs --wisp-demo (mvp spec 6.1) and
-checks the wisp's frame rate in WISP_PERF. Every other case gives the
-simulator an empty stdin.
+checks the wisp's frame rate in WISP_PERF. The voice, agent and shell
+cases (mvp spec 7.1) run tools/fake_openai.py as the llm, asr and tts
+endpoint, replaying a script from tests/smoke/, set up the profiles over
+the admin API (a seeded browser) and join the simulated Wi-Fi from the
+console: "voice_turn" asks with "debug voice-text" and follows the agent
+and voice states, the todo it adds and the step list the screen shows
+("debug turn-steps"); "reminder" has a todo due within the minute added
+from the web page, moves the clock past it ("debug clock-advance"),
+screenshots the banner and presses its "完成" ("debug banner-action");
+"navigation" goes from home to each sub-page and back on each screen
+shape with stdin swipes and screenshots every page, kept like
+scene_banner's. Every other case gives the simulator an empty stdin.
 
 Registered with ctest as the "sim_smoke" test (tests/CMakeLists.txt).
 
@@ -1228,6 +1238,29 @@ PANEL_SWIPE = "swipe 240,4,240,120"
 SETTLE_S = 0.3
 
 
+# SimWifi's one network that takes a password (components/wisp_port_sim).
+SIM_WIFI = ("WispLab", "wisp1234")
+
+
+def join_wifi(sim):
+    """Saves and joins the simulated WispLab network over the console; the
+    agent and the voice only run with the station connected."""
+    mark = len(sim.lines)
+    sim.send("wifi add {} {}".format(*SIM_WIFI))
+    wait_log_prefix(sim, "wifi", f"connected to '{SIM_WIFI[0]}'", mark)
+
+
+def wait_log_prefix(sim, tag, prefix, start=0, timeout_s=TIMEOUT_S):
+    """Index of the first log line `tag`: `prefix`... from `start` on."""
+    def match(line):
+        m = LOG_LINE.match(line)
+        return m is not None and m.group(1) == tag and m.group(2).startswith(prefix)
+    line = sim.wait_line(match, timeout_s, start=start)
+    expect(line is not None, f"no log line '{tag}: {prefix}...'; last output:\n{sim.tail()}")
+    with sim.cond:
+        return sim.lines.index(line, start)
+
+
 def debug(sim, command, answer_prefix):
     """Sends `debug <command>` and returns its answer line."""
     mark = len(sim.lines)
@@ -1251,17 +1284,18 @@ def screenshot(sim, path):
 
 
 def shots_dir(tmp_root):
-    """Where scene_banner leaves its screenshots: WISP_SMOKE_SHOTS when set
-    (kept), otherwise a directory in the run's temporary directory, which
-    main() removes at exit."""
+    """Where scene_banner and navigation leave their screenshots:
+    WISP_SMOKE_SHOTS when set (kept), otherwise a directory in the run's
+    temporary directory, which main() removes at exit."""
     named = os.environ.get("WISP_SMOKE_SHOTS")
     if named:
         path = pathlib.Path(named)
         path.mkdir(parents=True, exist_ok=True)
         return path
     path = tmp_root / "shots"
-    path.mkdir()
-    print("SHOT screenshots are removed at exit; set WISP_SMOKE_SHOTS to keep them")
+    if not path.exists():
+        path.mkdir()
+        print("SHOT screenshots are removed at exit; set WISP_SMOKE_SHOTS to keep them")
     return path
 
 
@@ -1452,6 +1486,228 @@ def case_scene_push(sim_path, tmp_root):
         sim.kill()
 
 
+# --- voice, agent and shell (mvp spec 7.1) -----------------------------------
+
+FAKE_OPENAI = ROOT / "tools" / "fake_openai.py"
+SMOKE_DIR = ROOT / "tests" / "smoke"
+FAKE_API_KEY = "test-key"
+SMOKE_TOKEN = "smoke-agent-token"
+# A turn against the fake endpoint takes well under this; the simulator's
+# backstop is longer still.
+TURN_TIMEOUT_S = 30
+AGENT_BACKSTOP_MS = 90000
+
+
+def api_json(port, method, path, body=None, status=200):
+    """A request to the admin API as the seeded browser; the decoded JSON."""
+    headers = {"Cookie": f"wisp_token={SMOKE_TOKEN}"}
+    data = None
+    if method != "GET":
+        headers["X-Wisp"] = "1"
+    if body is not None:
+        data = json.dumps(body)
+        headers["Content-Type"] = "application/json"
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=TIMEOUT_S)
+    try:
+        conn.request(method, "/api/v1" + path, body=data, headers=headers)
+        res = conn.getresponse()
+        text = res.read().decode("utf-8")
+    finally:
+        conn.close()
+    expect(res.status == status, f"{method} {path} -> {res.status} {text}")
+    return json.loads(text) if text else None
+
+
+class AgentRig:
+    """tools/fake_openai.py replaying `script`, and a wisp_sim with its admin
+    server on, a seeded browser, llm, asr and tts profiles on the fake
+    endpoint and the simulated Wi-Fi joined: what a voice turn needs."""
+
+    def __init__(self, sim_path, tmp_root, name, script, extra_args=()):
+        self.fake = self.sim = None
+        try:
+            self.fake = Child([sys.executable, "-I", str(FAKE_OPENAI), "--port", "0",
+                               "--script", str(script), "--asr-text", "", "--exit-on-eof"],
+                              stdin=True)
+            line = self.fake.wait_line(lambda l: l.startswith("FAKE_OPENAI "), TIMEOUT_S)
+            expect(line is not None, f"fake_openai.py did not start: {self.fake.output()[1]}")
+            fake_port = json.loads(line[len("FAKE_OPENAI "):])["port"]
+
+            data_dir = tmp_root / name / "data"
+            seed_paired_client(data_dir, SMOKE_TOKEN, "smoke")
+            self.port = free_port()
+            args = sim_args(sim_path, data_dir, list(extra_args), http_port=self.port)
+            args[args.index("--exit-after-ms") + 1] = str(AGENT_BACKSTOP_MS)
+            self.sim = Child(args, stdin=True)
+            expect(self.sim.wait_line(lambda l: l.startswith("WISP_HTTP "), TIMEOUT_S)
+                   is not None, f"no WISP_HTTP line:\n{self.sim.tail()}")
+            base_url = f"http://127.0.0.1:{fake_port}/v1"
+            for kind in ("llm", "asr", "tts"):
+                made = api_json(self.port, "POST", "/ai/profiles", {
+                    "kind": kind, "name": f"Fake {kind}", "preset": "custom",
+                    "base_url": base_url, "model": "fake-1", "api_key": FAKE_API_KEY},
+                    status=201)
+                expect(made.get("has_key") is True, f"POST /ai/profiles ({kind}): {made}")
+            active = api_json(self.port, "GET", "/ai/profiles")["active"]
+            expect(all(active.get(k) for k in ("llm", "asr", "tts")), f"active: {active}")
+            join_wifi(self.sim)
+        except BaseException:
+            self.kill()
+            raise
+
+    def kill(self):
+        for child in (self.sim, self.fake):
+            if child is not None:
+                child.kill()
+
+    def check_no_key(self):
+        out, err = self.sim.output()
+        expect(FAKE_API_KEY not in out and FAKE_API_KEY not in err,
+               "the API key is in the simulator's output")
+
+
+def log_order(sim, start, wanted):
+    """Index of each (tag, prefix) of `wanted`, found one after the other
+    from `start` on."""
+    at = start
+    found = []
+    for tag, prefix in wanted:
+        at = wait_log_prefix(sim, tag, prefix, at, TURN_TIMEOUT_S)
+        found.append(at)
+        at += 1
+    return found
+
+
+def case_voice_turn(sim_path, tmp_root):
+    """A spoken question without the mic (debug voice-text): the scripted
+    model adds a todo and answers with a <say> part, which the fake TTS
+    speaks. The states go by in order, the screen's step list names the
+    tool, the todo is there and the key is never printed."""
+    rig = AgentRig(sim_path, tmp_root, "voice-turn", SMOKE_DIR / "voice_todo_script.json")
+    try:
+        sim = rig.sim
+        mark = len(sim.lines)
+        answer = debug(sim, "voice-text 明天早上8点提醒我带伞", "voice-text=")
+        expect(answer == "voice-text=ok", f"debug voice-text: {answer!r}")
+        log_order(sim, mark, [
+            ("agent", "turn 1 start source=voice"),
+            ("agent", "state thinking"),
+            ("agent", "tool todo.add ok"),
+            ("agent", "state output"),
+            ("voice", "state speaking"),
+            ("voice", "tts n=1 "),
+        ])
+        end = wait_log_prefix(sim, "agent", "turn 1 end done", mark, TURN_TIMEOUT_S)
+        idle = wait_log_prefix(sim, "voice", "state idle", mark, TURN_TIMEOUT_S)
+        speaking = wait_log_prefix(sim, "voice", "state speaking", mark)
+        expect(idle > speaking, f"the voice was idle before it spoke:\n{sim.tail(40)}")
+        expect(end > speaking, "the turn ended before the speech began")
+
+        steps = debug(sim, "turn-steps", "turn-steps=")
+        expect(steps == "turn-steps=1 ok:添加待办 带伞", f"debug turn-steps: {steps!r}")
+        todos = api_json(rig.port, "GET", "/todos")["todos"]
+        expect([t["title"] for t in todos] == ["带伞"] and todos[0].get("due_local", "").endswith("T08:00"),
+               f"GET /todos: {todos}")
+        stop_child(sim)
+        rig.check_no_key()
+    finally:
+        rig.kill()
+
+
+def case_reminder(sim_path, tmp_root):
+    """A todo due within the minute (asked for on the web page), the clock
+    moved past it: the reminder fires with a banner, whose "完成" button
+    marks the todo done."""
+    rig = AgentRig(sim_path, tmp_root, "reminder", SMOKE_DIR / "reminder_script.json")
+    try:
+        sim = rig.sim
+        mark = len(sim.lines)
+        api_json(rig.port, "POST", "/agent/messages", {"text": "一分钟后提醒我喝水"},
+                 status=202)
+        wait_log_prefix(sim, "agent", "turn 1 end done", mark, TURN_TIMEOUT_S)
+        todos = api_json(rig.port, "GET", "/todos")["todos"]
+        expect(len(todos) == 1 and todos[0]["id"] == 1 and todos[0]["done"] is False,
+               f"GET /todos after the turn: {todos}")
+        at = len(sim.lines)
+        answer = debug(sim, "clock-advance 61", "clock-advance=")
+        expect(answer == "clock-advance=ok", f"debug clock-advance: {answer!r}")
+        # Due within 65 s of the turn (fake_openai.py's {{soon}}): either the
+        # jump passed it or the clock reaches it a few seconds later.
+        wait_log(sim, "reminder", "fired id=1", at)
+        banner_shown(sim, "system.reminder", at)
+        time.sleep(SETTLE_S)
+        shot = tmp_root / "reminder" / "banner.png"
+        screenshot(sim, shot)
+        answer = debug(sim, "banner-action 0", "banner-action=")
+        expect(answer == "banner-action=ok", f"debug banner-action 0: {answer!r}")
+        deadline = time.monotonic() + TIMEOUT_S
+        while not (todos := api_json(rig.port, "GET", "/todos")["todos"])[0]["done"]:
+            expect(time.monotonic() < deadline, f"the todo is not done: {todos}")
+            time.sleep(0.2)
+        stop_child(sim)
+        rig.check_no_key()
+    finally:
+        rig.kill()
+
+
+# Page swipes, on every shape inside the visible area and clear of the
+# wisp, the top zone and the back gesture's left edge. The way back from
+# Settings goes along its title row (its y by shape): lower down its
+# sliders take the drag.
+NAV_SWIPES = {
+    "right": "swipe 120,330,380,330",
+    "left": "swipe 380,330,120,330",
+    "down": "swipe 240,100,240,400",
+    "up": "swipe 240,400,240,100",
+}
+SETTINGS_TITLE_Y = {"rect": 52, "rounded_rect": 67, "circle": 128}
+
+
+def case_navigation(sim_path, tmp_root):
+    """On each screen shape, after one voice turn: home (idle, then in the
+    turn), and right, left and down to Settings, the scene list and the
+    history and back again; then the pull-down panel from the top edge.
+    Every page is screenshot (kept like scene_banner's)."""
+    out = shots_dir(tmp_root)
+    for shape in ("rect", "rounded_rect", "circle"):
+        rig = AgentRig(sim_path, tmp_root, f"navigation-{shape}",
+                       SMOKE_DIR / "voice_todo_script.json", ["--shape", shape])
+        try:
+            sim = rig.sim
+
+            def shot(name):
+                time.sleep(SETTLE_S)
+                path = out / f"nav-{shape}-{name}.png"
+                screenshot(sim, path)
+                print(f"SHOT {path}")
+
+            shot("home")
+            mark = len(sim.lines)
+            answer = debug(sim, "voice-text 明天早上8点提醒我带伞", "voice-text=")
+            expect(answer == "voice-text=ok", f"debug voice-text: {answer!r}")
+            wait_log_prefix(sim, "agent", "turn 1 end done", mark, TURN_TIMEOUT_S)
+            shot("turn")
+
+            mark = len(sim.lines)
+            y = SETTINGS_TITLE_Y[shape]
+            swipes = dict(NAV_SWIPES, left_title=f"swipe 380,{y},120,{y}")
+            for there, back, page in (("right", "left_title", "settings"),
+                                      ("left", "right", "scenes"),
+                                      ("down", "up", "history")):
+                sim.send(swipes[there])
+                mark = wait_log(sim, "shell", f"page {page}", mark) + 1
+                shot(page)
+                sim.send(swipes[back])
+                mark = wait_log(sim, "shell", "page home", mark) + 1
+            sim.send(PANEL_SWIPE)
+            wait_log(sim, "status", "panel: open", mark)
+            shot("panel")
+            stop_child(sim)
+            rig.check_no_key()
+        finally:
+            rig.kill()
+
+
 CASES = (
     ("expected_manifest_ids_unit", case_expected_manifest_ids_unit),
     ("default", case_default),
@@ -1472,6 +1728,9 @@ CASES = (
     ("scene_background", case_scene_background),
     ("scene_banner", case_scene_banner),
     ("scene_level", case_scene_level),
+    ("voice_turn", case_voice_turn),
+    ("reminder", case_reminder),
+    ("navigation", case_navigation),
 )
 
 

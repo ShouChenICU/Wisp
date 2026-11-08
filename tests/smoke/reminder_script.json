@@ -1,0 +1,6 @@
+{
+  "steps": [
+    {"tool_calls": [{"name": "todo_add", "arguments": {"title": "喝水", "due": "{{soon}}"}}]},
+    {"text": "好的，一分钟后提醒你喝水。"}
+  ]
+}

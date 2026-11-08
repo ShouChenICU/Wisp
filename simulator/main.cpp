@@ -47,7 +47,10 @@
 // "scene-click=<error>". "debug panel-tap <index>" taps row <index> (from
 // 0: the background scenes, then the notifications) of the open pull-down
 // panel (SystemLayer::tap_panel_row()) and answers "panel-tap=ok" or
-// "panel-tap=<error>". "debug screenshot <path>" writes what the screen
+// "panel-tap=<error>". "debug banner-action <index>" presses action button
+// <index> (0 or 1: "完成", "10 分钟后" on a reminder) of the banner shown
+// now (SystemLayer::tap_banner_action()) and answers "banner-action=ok" or
+// "banner-action=<error>". "debug screenshot <path>" writes what the screen
 // shows now as a PNG, as --screenshot does at exit, and answers
 // "screenshot=ok" or "screenshot=<error>". "debug clock-advance <seconds>"
 // moves the simulated clock (clock.main and Platform::wall_s) forward,
@@ -56,6 +59,12 @@
 // "debug voice-text <text>" hands the text to the conversation as a
 // transcript (ConversationController::voice_text(): source voice, spoken
 // unless muted) and answers "voice-text=ok" or "voice-text=<error>".
+// "debug turn-steps" answers what the screen shows of the current (or
+// last) turn's steps (ConversationController::current()): "turn-steps=<n>"
+// with the turn's step count, then for each step kept, oldest first, a
+// space, its state ("ok", "failed" or "running"), ':' and its label, e.g.
+// "turn-steps=1 ok:添加待办 带伞". Labels have spaces of their own, so
+// match on the "ok:"/"failed:"/"running:" markers.
 //
 // Scenes (scene-runtime-core spec 6.4): --scenes-dir puts the scene
 // repository in dev mode over that directory (Platform::scenes_dir), with
@@ -170,6 +179,18 @@ std::string debug_command(wisp::app::App& app, const std::vector<std::string>& a
         ui->run_blocking([&] { r = layer->tap_panel_row(index); });
         return "panel-tap=" + (r ? std::string("ok") : r.error().message);
     }
+    if (args.size() == 3 && args[1] == "banner-action") {
+        wisp::ui::UiRuntime* ui = app.ui();
+        wisp::ui::SystemLayer* layer = app.system_layer();
+        if (ui == nullptr || layer == nullptr) return "banner-action=there is no screen";
+        char* end = nullptr;
+        const long index = std::strtol(args[2].c_str(), &end, 10);
+        if (args[2].empty() || *end != '\0' || index < 0 || index > 1)
+            return "banner-action=the index is not 0 or 1";
+        wisp::Result<void> r = wisp::Result<void>::ok();
+        ui->run_blocking([&] { r = layer->tap_banner_action(static_cast<int>(index)); });
+        return "banner-action=" + (r ? std::string("ok") : r.error().message);
+    }
     if (args.size() == 3 && args[1] == "clock-advance") {
         char* end = nullptr;
         const long long seconds = std::strtoll(args[2].c_str(), &end, 10);
@@ -201,8 +222,23 @@ std::string debug_command(wisp::app::App& app, const std::vector<std::string>& a
         auto r = conv->voice_text(std::move(text));
         return "voice-text=" + (r ? std::string("ok") : r.error().message);
     }
+    if (args.size() == 2 && args[1] == "turn-steps") {
+        wisp::shell::ConversationController* conv = app.conversation();
+        if (conv == nullptr) return "turn-steps=voice is off";
+        const wisp::shell::TurnView v = conv->current();
+        std::string out = "turn-steps=" + std::to_string(v.steps_total);
+        for (uint8_t i = 0; i < v.step_count; ++i) {
+            const wisp::shell::TurnStep& step = v.steps[i];
+            out += step.st == wisp::shell::TurnStep::State::Done     ? " ok:"
+                   : step.st == wisp::shell::TurnStep::State::Failed ? " failed:"
+                                                                     : " running:";
+            out.append(step.label.data(), step.label.size());
+        }
+        return out;
+    }
     return "error: usage: debug pair-code | debug scene-click <ref> | debug panel-tap <index> | "
-           "debug screenshot <path> | debug clock-advance <seconds> | debug voice-text <text>";
+           "debug banner-action <index> | debug screenshot <path> | "
+           "debug clock-advance <seconds> | debug voice-text <text> | debug turn-steps";
 }
 
 std::vector<wisp::app::ConsoleCommand> debug_commands() {
@@ -211,9 +247,11 @@ std::vector<wisp::app::ConsoleCommand> debug_commands() {
         "debug pair-code              the active pairing code (simulator only)\n"
         "debug scene-click <ref>      click a widget of the scene in front (simulator only)\n"
         "debug panel-tap <index>      tap a row of the open pull-down panel (simulator only)\n"
+        "debug banner-action <index>  press a button of the banner shown (simulator only)\n"
         "debug screenshot <path>      write the screen as a PNG (simulator only)\n"
         "debug clock-advance <s>      move the clock forward s seconds (simulator only)\n"
-        "debug voice-text <text>      send text as if spoken, skipping the mic (simulator only)",
+        "debug voice-text <text>      send text as if spoken, skipping the mic (simulator only)\n"
+        "debug turn-steps             the steps the screen shows of the turn (simulator only)",
         debug_command,
     }};
 }

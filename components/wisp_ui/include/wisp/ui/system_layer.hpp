@@ -249,6 +249,11 @@ public:
                      std::function<void(int index)> on_action = {});
     // The banner shown now, else nullptr.
     lv_obj_t* banner() const { return banner_; }
+    // Presses action button `index` (0 for action_label's) of the banner
+    // shown now as a finger would, for scripts that cannot see the screen
+    // (the simulator's "debug banner-action"). Errors: "no banner is
+    // shown", "no such action".
+    Result<void> tap_banner_action(int index);
 
     // Shows the error panel, replacing one already up, and hides the
     // keyboard. It is a card as wide as the safe area, as tall as what it

@@ -270,7 +270,8 @@ add_test(NAME sim_smoke COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tests/smoke/s
 
 # End-to-end admin API smoke test: pairs over HTTP with the simulator-only
 # "debug pair-code" console command, exercises the routes, the model probe
-# (against tools/fake_openai.py) and the WebSocket log, then stops wisp_sim
+# and a scripted scene-building agent turn (against tools/fake_openai.py)
+# and the WebSocket log, then stops wisp_sim
 # with SIGTERM. See tests/smoke/admin_smoke.py's file header.
 add_test(NAME admin_smoke COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tests/smoke/admin_smoke.py
          $<TARGET_FILE:wisp_sim>)

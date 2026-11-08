@@ -24,11 +24,19 @@ temporary data dir) and then, over loopback:
      opens, reloads and closes it,
      exports it with and without its data, and has a package with a syntax
      error refused with its file and line;
-  6. subscribes to the log over the WebSocket and waits for an entry;
-  7. checks the CSRF guard (no X-Wisp: 403), the Host check (a foreign
+  6. the agent (agent-core spec 8.2): with the first llm profile active
+     again and tools/fake_openai.py replaying tests/smoke/agent_script.json,
+     POST /agent/messages runs a turn that writes, installs and opens a
+     counter scene ("agent: turn 1 end done steps=3"; the agent needs the
+     network, so the simulated Wi-Fi is joined first); its three tools,
+     the "已安装…" note and the reply show in /agent/conversation, the
+     install's check has the button in its tree, the scene is listed and a
+     click on the button counts;
+  7. subscribes to the log over the WebSocket and waits for an entry;
+  8. checks the CSRF guard (no X-Wisp: 403), the Host check (a foreign
      Host: 403) and the pairing lock (wrong codes until 429 with
      Retry-After), after which the paired cookie still works;
-  8. stops the simulator with SIGTERM, which must end it cleanly (exit 0).
+  9. stops the simulator with SIGTERM, which must end it cleanly (exit 0).
 
 The API key may appear in no HTTP response, WebSocket message or
 simulator output; the pairing token only in the one Set-Cookie that
@@ -64,17 +72,19 @@ import time
 import traceback
 import zipfile
 
-from sim_smoke import Child, SmokeError, WsClient, click, expect, free_port
+from sim_smoke import Child, SmokeError, WsClient, click, expect, free_port, join_wifi
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FAKE_OPENAI = ROOT / "tools" / "fake_openai.py"
 WISP_SCENE = ROOT / "tools" / "wisp_scene.py"
 COUNTER = ROOT / "scenes" / "examples" / "counter"
+AGENT_SCRIPT = ROOT / "tests" / "smoke" / "agent_script.json"
 API_KEY = "test-key"
 STEP_TIMEOUT_S = 20
+AGENT_TIMEOUT_S = 60
 WS_LOG_TIMEOUT_S = 30
 # Long enough for every step; only a killed run ever reaches it.
-BACKSTOP_MS = 120000
+BACKSTOP_MS = 180000
 PORT_ATTEMPTS = 3
 HTTP_FAILED_LOG = "admin server failed to start"
 
@@ -241,6 +251,7 @@ def check_models(api, llm_port):
     for method in ("GET", "PUT"):
         status, _, _ = api.call(method, "/llm", {} if method == "PUT" else None)
         expect(status == 404, f"{method} /llm -> {status}")
+    return chat["id"]
 
 
 def load_wisp_scene():
@@ -305,6 +316,53 @@ def check_scenes(api, sim):
            and err.get("line") == 3, f"POST /scenes with a syntax error -> {status} {text}")
     listed = api.ok_json("GET", "/scenes")["scenes"]
     expect([s["id"] for s in listed] == ["counter"], f"GET /scenes after the refusal: {listed}")
+
+
+AGENT_TOOLS = ["scene.write_file", "scene.write_file", "scene.install"]
+
+
+def check_agent(api, sim, chat_id):
+    """A scene-building turn against tests/smoke/agent_script.json (agent-core
+    spec 8.2): the scripted model writes scene.json and main.lua of a
+    counter, installs it and replies. The installed scene's tree has its
+    button, a click on it counts, and the conversation shows the three
+    tools, a note "已安装…" and the reply."""
+    join_wifi(sim)
+    state = api.ok_json("POST", "/ai/active", {"id": chat_id})
+    expect(state["active"]["llm"] == chat_id, f"POST /ai/active: {state}")
+    mark = len(sim.lines)
+    queued = api.ok_json("POST", "/agent/messages", {"text": "做一个计数器场景"}, status=202)
+    expect(queued == {"queued": False}, f"POST /agent/messages: {queued}")
+    line = sim.wait_line(lambda l: " I agent: turn 1 end " in l, AGENT_TIMEOUT_S, start=mark)
+    expect(line is not None, f"the turn did not end:\n{sim.tail()}")
+    expect(re.search(r" I agent: turn 1 end done steps=3 tokens=\d+$", line),
+           f"turn end: {line!r}\n{sim.tail(40)}")
+
+    deadline = time.monotonic() + STEP_TIMEOUT_S
+    while (conv := api.ok_json("GET", "/agent/conversation"))["state"] != "idle":
+        expect(time.monotonic() < deadline, f"the agent is still {conv['state']}")
+        time.sleep(0.2)
+    messages = conv["messages"]
+    tools = [m for m in messages if m["role"] == "tool"]
+    expect([m["name"] for m in tools] == AGENT_TOOLS and all(m["ok"] for m in tools),
+           f"tool results: {[(m['name'], m['ok']) for m in tools]}")
+    install = api.ok_json("GET", f"/agent/messages/{tools[-1]['seq']}")
+    result = json.loads(install["result"])
+    check = result.get("check", {})
+    expect(check.get("lua_errors") == [] and "button#inc " in check.get("tree", ""),
+           f"scene.install result: {install['result']}")
+    notes = [m["text"] for m in messages if m["role"] == "note"]
+    expect(any(n.startswith("已安装") for n in notes), f"notes: {notes}")
+    replies = [m["text"] for m in messages if m["role"] == "assistant" and m["text"]]
+    expect(replies and replies[-1].startswith("计数器已经装好"), f"replies: {replies}")
+
+    listed = [s["id"] for s in api.ok_json("GET", "/scenes")["scenes"]]
+    expect("tally" in listed, f"GET /scenes after the turn: {listed}")
+    at = len(sim.lines)
+    click(sim, "inc")
+    line = sim.wait_line(lambda l: l.endswith(" I scene.tally: count=1"), STEP_TIMEOUT_S,
+                         start=at)
+    expect(line is not None, f"the click did not count:\n{sim.tail()}")
 
 
 def check_ws_log(port, cookie):
@@ -393,8 +451,8 @@ def stop_sim(sim):
 def run(sim_path, tmp_root):
     fake = sim = None
     try:
-        fake = Child([sys.executable, "-I", str(FAKE_OPENAI), "--port", "0", "--exit-on-eof"],
-                     stdin=True)
+        fake = Child([sys.executable, "-I", str(FAKE_OPENAI), "--port", "0", "--script",
+                      str(AGENT_SCRIPT), "--exit-on-eof"], stdin=True)
         line = fake.wait_line(lambda l: l.startswith("FAKE_OPENAI "), STEP_TIMEOUT_S)
         expect(line is not None, f"fake_openai.py did not start: {fake.output()[1]}")
         llm_port = json.loads(line[len("FAKE_OPENAI "):])["port"]
@@ -405,10 +463,12 @@ def run(sim_path, tmp_root):
         print("PASS pairing")
         check_routes(api)
         print("PASS routes")
-        check_models(api, llm_port)
+        chat_id = check_models(api, llm_port)
         print("PASS models")
         check_scenes(api, sim)
         print("PASS scenes")
+        check_agent(api, sim, chat_id)
+        print("PASS agent")
         ws_texts = check_ws_log(port, token)
         print("PASS websocket log")
         check_guards(api)

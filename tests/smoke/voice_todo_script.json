@@ -1,0 +1,7 @@
+{
+  "steps": [
+    {"tool_calls": [{"name": "todo_add",
+                     "arguments": {"title": "带伞", "due": "{{tomorrow}}T08:00"}}]},
+    {"text": "<say>好的，明天早上8点提醒你带伞。</say>已添加待办。"}
+  ]
+}

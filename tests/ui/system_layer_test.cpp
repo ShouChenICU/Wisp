@@ -2498,6 +2498,51 @@ TEST_F(SystemLayerBanner, ActionsShowAndStayUp) {
     on_ui([&] { EXPECT_EQ(layer->banner(), nullptr); });
 }
 
+// tap_banner_action(i) presses the banner's button i as a finger would:
+// the banner goes and on_action hears i. Without a banner, or without that
+// button, nothing happens.
+TEST_F(SystemLayerBanner, TapBannerActionPressesTheIndexedButton) {
+    start("rounded_rect");
+    use_fake_tick();
+    int taps = 0;
+    std::vector<int> actions;
+    on_ui([&] {
+        auto none = layer->tap_banner_action(0);
+        ASSERT_FALSE(none);
+        EXPECT_EQ(none.error().message, "no banner is shown");
+
+        layer->show_banner(
+            {"a", "n1", "A", "Alpha", "First", "one"}, [&] { ++taps; },
+            [&](int index) { actions.push_back(index); });
+        auto plain = layer->tap_banner_action(0);
+        ASSERT_FALSE(plain);
+        EXPECT_EQ(plain.error().message, "no such action");
+        EXPECT_NE(layer->banner(), nullptr);
+    });
+    advance(SystemLayer::kBannerMs);
+    on_ui([&] { EXPECT_EQ(layer->banner(), nullptr); });
+    auto show = [&] {
+        on_ui([&] {
+            wisp::ui::BannerInfo b{"system.reminder", "todo-1", "", "", "带伞", ""};
+            b.action_label = "完成";
+            b.action2_label = "10 分钟后";
+            layer->show_banner(b, [&] { ++taps; }, [&](int index) { actions.push_back(index); });
+        });
+    };
+    show();
+    on_ui([&] {
+        auto past = layer->tap_banner_action(2);
+        ASSERT_FALSE(past);
+        EXPECT_EQ(past.error().message, "no such action");
+        ASSERT_TRUE(layer->tap_banner_action(1));
+        EXPECT_EQ(layer->banner(), nullptr);
+    });
+    show();
+    on_ui([&] { ASSERT_TRUE(layer->tap_banner_action(0)); });
+    EXPECT_EQ(actions, (std::vector<int>{1, 0}));
+    EXPECT_EQ(taps, 0);
+}
+
 class SystemLayerPanel : public SystemLayerTest {};
 
 TEST_F(SystemLayerPanel, NoteWithTwoActions) {

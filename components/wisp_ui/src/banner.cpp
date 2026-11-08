@@ -228,6 +228,24 @@ void SystemLayer::banner_cb(lv_event_t* e) {
     if (on_tap) on_tap();
 }
 
+Result<void> SystemLayer::tap_banner_action(int index) {
+    if (banner_ == nullptr) return Result<void>::err(ErrorCode::NotFound, "no banner is shown");
+    // The buttons sit in the card's last child, the action row, and carry
+    // their index as user data (show_next_banner()).
+    const uint32_t n = lv_obj_get_child_count(banner_);
+    lv_obj_t* row = n > 1 ? lv_obj_get_child(banner_, static_cast<int32_t>(n - 1)) : nullptr;
+    const uint32_t buttons = row != nullptr ? lv_obj_get_child_count(row) : 0;
+    for (uint32_t i = 0; i < buttons && index >= 0; ++i) {
+        lv_obj_t* btn = lv_obj_get_child(row, static_cast<int32_t>(i));
+        if (!lv_obj_has_class(btn, &lv_button_class)) continue;
+        if (reinterpret_cast<uintptr_t>(lv_obj_get_user_data(btn)) != static_cast<uintptr_t>(index))
+            continue;
+        lv_obj_send_event(btn, LV_EVENT_CLICKED, nullptr);
+        return Result<void>::ok();
+    }
+    return Result<void>::err(ErrorCode::NotFound, "no such action");
+}
+
 void SystemLayer::banner_action_cb(lv_event_t* e) {
     auto* self = static_cast<SystemLayer*>(lv_event_get_user_data(e));
     auto* btn = static_cast<lv_obj_t*>(lv_event_get_current_target(e));

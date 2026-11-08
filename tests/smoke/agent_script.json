@@ -1,0 +1,41 @@
+{
+  "steps": [
+    {
+      "tool_calls": [
+        {
+          "name": "scene_write_file",
+          "arguments": {
+            "id": "tally",
+            "path": "scene.json",
+            "content": "{\"id\": \"tally\", \"name\": \"计数\", \"version\": \"1.0.0\", \"schema_version\": 1}"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "scene_write_file",
+          "arguments": {
+            "id": "tally",
+            "path": "main.lua",
+            "content": "-- A counter written by the agent in the smoke test.\nlocal count = state(wisp.store.get(\"count\") or 0)\nlocal info = wisp.device.info()\nlocal sa = info.safe_area\n\nreturn ui.screen { align = \"center\", justify = \"center\",\n  pad = { sa.y1 + 16, info.width - 1 - sa.x2 + 16, info.height - 1 - sa.y2 + 16, sa.x1 + 16 },\n  ui.column { gap = 16, align = \"center\",\n    ui.label { ref = \"count\", text = count, font = 64 },\n    ui.button { ref = \"inc\", text = \"+1\", on_click = function()\n      count:set(count:get() + 1)\n      wisp.store.set(\"count\", count:get())\n      wisp.log.info(\"count=\" .. count:get())\n    end },\n  },\n}\n"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "scene_install",
+          "arguments": {
+            "id": "tally"
+          }
+        }
+      ]
+    },
+    {
+      "text": "计数器已经装好并打开了，点 +1 就会加一。"
+    }
+  ]
+}
