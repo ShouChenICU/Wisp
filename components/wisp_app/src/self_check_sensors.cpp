@@ -50,15 +50,20 @@ void SensorSection::build(lv_obj_t* col, PageText& text, bool has_imu) {
     lv_label_set_text(status_, "");
     lv_obj_add_flag(status_, LV_OBJ_FLAG_HIDDEN);
 
+    // The ball sits beside the readings when both fit and wraps below them
+    // when not (a narrow round screen).
     lv_obj_t* row = make_plain_row(card, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, kBallGap, 0);
     lv_obj_set_style_pad_row(row, kBallGap, 0);
 
     lv_obj_t* grid = lv_obj_create(row);
     lv_obj_remove_style_all(grid);
+    // No flex grow: LVGL counts a growing item as zero wide when it fills
+    // a wrapped track, so the ball stayed on the same line and covered the
+    // numbers instead of wrapping.
     lv_obj_set_size(grid, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_grow(grid, 1);
     lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_column(grid, kCellGap, 0);
     lv_obj_set_style_pad_row(grid, 4, 0);

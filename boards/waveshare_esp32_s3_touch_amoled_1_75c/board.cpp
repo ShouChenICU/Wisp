@@ -83,6 +83,10 @@ constexpr uint32_t kDisplaySleepOutSettleMs = 120;
 // 0x6A second; init_imu() uses whichever answers.
 constexpr uint8_t kImuAddrs[] = {QMI8658_I2C_ADDR_HIGH, QMI8658_I2C_ADDR_LOW};
 constexpr int kImuProbeTimeoutMs = 50;
+// The QMI8658 sits a quarter turn about z from the screen: measured on the
+// device, held upright the chip's +x pointed up and tilted with the right
+// edge raised its -y pointed up. So screen x = -chip y, screen y = chip x.
+constexpr wisp::hal::ImuAxisMap kImuMount{.from = {1, 0, 2}, .negate = {true, false, false}};
 
 // PCF85063's fixed 7-bit address; probed before EspClock::create().
 constexpr uint16_t kRtcAddr = 0x51;
@@ -294,7 +298,7 @@ void init_imu(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& repo
         record_failed(report, id, cls, "no answer at 0x6B or 0x6A");
         return;
     }
-    auto imu = wisp::port::esp::EspImu::create(i2c_bus, "QMI8658", addr);
+    auto imu = wisp::port::esp::EspImu::create(i2c_bus, "QMI8658", addr, kImuMount);
     if (!imu) {
         record_failed(report, id, cls, imu.error().message);
         return;
