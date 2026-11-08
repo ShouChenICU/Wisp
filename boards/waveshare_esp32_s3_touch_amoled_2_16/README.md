@@ -1,26 +1,26 @@
 # waveshare_esp32_s3_touch_amoled_2_16
 
-Waveshare ESP32-S3-Touch-AMOLED-2.16（480×480 圆角 AMOLED，CO5300 屏幕 + CST9217 触摸）的板级适配。硬件资料（引脚、芯片、勘误）见 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`。
+Board support for the Waveshare ESP32-S3-Touch-AMOLED-2.16: a 480×480 rounded AMOLED, with a CO5300 display and CST9217 touch. Hardware notes (pins, chips, errata) are in `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`.
 
-## 文件
+## Files
 
-| 文件 | 作用 |
+| File | Purpose |
 |---|---|
-| `board_info.yaml`、`board_peripherals.yaml`、`board_devices.yaml` | esp_board_manager（bmgr）板级定义：总线（I2C、I2S、QSPI、GPIO）和 bmgr 负责初始化的设备（屏幕、触摸、音频编解码、SD 卡）。改编自 ESP-Claw，见 `docs/references.md`。 |
-| `setup_device.c` | bmgr 调用的工厂函数：CO5300 的初始化命令序列、CST9217 的复位/中断引脚和坐标方向。由 bmgr 生成的 `gen_bmgr_codes` 组件编译。 |
-| `board.cpp` | Wisp 侧的板级入口 `create_board()`：调用 `esp_board_manager_init()`，再把 bmgr 的句柄包装成 HAL 设备注册（`display.main`、`touch.main`）。由 `firmware/main` 编译（`firmware/CMakeLists.txt` 会把它从 `gen_bmgr_codes` 的源文件中剔除）。 |
-| `partitions.csv` | 本板分区表（16MB Flash），布局见基础 spec 7.4，约定见 `docs/porting-guide.md`。 |
-| `sdkconfig.defaults.board` | 板级 sdkconfig：Flash、八线 PSRAM、USB 串口控制台、分区表路径。`idf.py bmgr` 把它合并进 `board_manager.defaults`；只在 `firmware/sdkconfig` 不存在时生效，改动后要先删掉 `firmware/sdkconfig`。 |
+| `board_info.yaml`, `board_peripherals.yaml`, `board_devices.yaml` | The esp_board_manager (bmgr) board definition: the buses (I2C, I2S, QSPI, GPIO) and the devices bmgr initialises (display, touch, audio codec, SD card). Adapted from ESP-Claw; see `docs/references.md`. |
+| `setup_device.c` | Factory functions bmgr calls: the CO5300 init command sequence, and the CST9217 reset/interrupt pins and axis orientation. Compiled by the `gen_bmgr_codes` component that bmgr generates. |
+| `board.cpp` | Wisp's board entry point, `create_board()`. It calls `esp_board_manager_init()`, then wraps bmgr's handles as HAL devices and registers them (`display.main`, `touch.main`). Compiled by `firmware/main`; `firmware/CMakeLists.txt` removes it from the `gen_bmgr_codes` sources. |
+| `partitions.csv` | This board's partition table (16 MB flash). The layout is in foundation spec 7.4, and the conventions are in `docs/porting-guide.md`. |
+| `sdkconfig.defaults.board` | Board sdkconfig: flash, octal PSRAM, the USB serial console and the partition table path. `idf.py bmgr` merges it into `board_manager.defaults`. It applies only while `firmware/sdkconfig` does not exist, so delete `firmware/sdkconfig` after changing it. |
 
-IMU（QMI8658）和电源管理（AXP2101）不交给 bmgr，由 Wisp 自己的驱动处理。
+The IMU (QMI8658) and the power management chip (AXP2101) are not handed to bmgr; Wisp's own drivers handle them.
 
-## 构建
+## Build
 
 ```bash
 cd firmware
-idf.py set-target esp32s3          # 仅全新检出时需要：让 idf.py 加载 bmgr 扩展
+idf.py set-target esp32s3          # only on a fresh checkout: makes idf.py load the bmgr extension
 idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16
 idf.py build
 ```
 
-改动本目录的 YAML 或 `setup_device.c` 后，要重新执行 `idf.py bmgr`。生成的 `firmware/components/gen_bmgr_codes/` 已被 git 忽略，不要手改。
+After changing this directory's YAML or `setup_device.c`, run `idf.py bmgr` again. The generated `firmware/components/gen_bmgr_codes/` is ignored by git; do not edit it by hand.

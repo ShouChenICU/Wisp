@@ -38,7 +38,7 @@
 // bookkeeping silently discard the still-good orphaned data instead of
 // recovering it), and otherwise discard any leftover "<path>.tmp" as
 // garbage (best-effort, errors ignored) and report the file as not
-// found (ErrorCode::NotFound). See AGENTS.md's "FAT 上的原子写" trap;
+// found (ErrorCode::NotFound). See AGENTS.md's "Atomic writes on FAT" trap;
 // two temp names (rather than just ".tmp") are what let this recovery
 // distinguish a complete-but-unrenamed write from a torn first write --
 // a single-".tmp" scheme can't tell those apart.
