@@ -106,6 +106,9 @@ int dispatch_event(lua_State* L) {
         case UiEvent::Change:
             handler = Prop::OnChange;
             break;
+        case UiEvent::Swipe:
+            handler = Prop::OnSwipe;
+            break;
         case UiEvent::Focus:
             return 0;
     }
@@ -120,7 +123,7 @@ int dispatch_event(lua_State* L) {
     }
     if (!push_node_prop(L, c->node, handler) || lua_type(L, -1) != LUA_TFUNCTION) return 0;
     int nargs = 0;
-    if (c->ev == UiEvent::Change) {
+    if (c->ev == UiEvent::Change || c->ev == UiEvent::Swipe) {
         push_value(L, *c->value);
         nargs = 1;
     }

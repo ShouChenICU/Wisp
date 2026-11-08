@@ -105,10 +105,12 @@ Rules:
 | `on_click` | function | no | function |
 | `on_long_press` | function | no | function |
 | `on_change` | function | no | function |
+| `on_swipe` | function | no | function |
 
 `on_click` and `on_long_press` take no arguments; `on_change(value)` gets the new text,
-value or checked state. `row(item, index)` returns the widget for one list row and is
-only called for visible rows. `draw(g)` draws a canvas.
+value or checked state; `on_swipe(dir)` gets `"up"`, `"down"`, `"left"` or `"right"`
+(see Swipes). `row(item, index)` returns the widget for one list row and is only
+called for visible rows. `draw(g)` draws a canvas.
 
 ## Font sizes
 
@@ -132,13 +134,13 @@ Every widget takes the common properties: `w`, `h`, `grow`, `pad`, `bg`, `fg`, `
 
 | Widget | Children | Properties besides the common ones |
 |---|---|---|
-| `ui.screen` | yes | `gap`, `align`, `justify` |
-| `ui.column` | yes | `gap`, `align`, `justify` |
-| `ui.row` | yes | `gap`, `align`, `justify` |
-| `ui.stack` | yes | `gap`, `align`, `justify` |
-| `ui.grid` | yes | `gap`, `align`, `justify`, `cols` |
+| `ui.screen` | yes | `gap`, `align`, `justify`, `on_swipe` |
+| `ui.column` | yes | `gap`, `align`, `justify`, `on_swipe` |
+| `ui.row` | yes | `gap`, `align`, `justify`, `on_swipe` |
+| `ui.stack` | yes | `gap`, `align`, `justify`, `on_swipe` |
+| `ui.grid` | yes | `gap`, `align`, `justify`, `on_swipe`, `cols` |
 | `ui.spacer` | no | - |
-| `ui.scroll` | yes | `gap`, `align`, `justify`, `direction` |
+| `ui.scroll` | yes | `gap`, `align`, `justify`, `on_swipe`, `direction` |
 | `ui.label` | no | `text`, `wrap` |
 | `ui.icon` | no | `name` |
 | `ui.image` | no | `src` |
@@ -151,7 +153,7 @@ Every widget takes the common properties: `w`, `h`, `grow`, `pad`, `bg`, `fg`, `
 | `ui.arc` | no | `value`, `min`, `max`, `width` |
 | `ui.chart` | no | `type`, `series`, `min`, `max` |
 | `ui.list` | no | `items`, `row` (required), `row_h` |
-| `ui.canvas` | no | `draw` |
+| `ui.canvas` | no | `draw`, `on_swipe` |
 
 ### list, canvas, chart, image, icon
 
@@ -180,6 +182,33 @@ Every widget takes the common properties: `w`, `h`, `grow`, `pad`, `bg`, `fg`, `
   the scene's log. The decoded images and canvases of a scene take at most 4 MB
   together; the one that would pass it stays empty ("too large").
 - `ui.icon`: the symbol `name` in the current `font`.
+
+### Swipes
+
+`on_swipe(dir)` is taken by `ui.screen`, `ui.column`, `ui.row`, `ui.stack`, `ui.grid`, `ui.scroll` and `ui.canvas`.
+It is called once when the finger is lifted after a swipe that started on the
+widget or anywhere inside it -- on a label, a button, a canvas or a stack over
+it -- and goes to the nearest widget with `on_swipe` at or above the one under
+the finger.
+
+- A swipe moved at least 30 pixels (1/16 of the screen's shorter side if that is more)
+  from where the finger went down along one axis, and at least 1.5 times as far
+  along it as along the other. `dir` is where the finger went (y grows downwards:
+  moving up is `"up"`). A diagonal drag is no swipe.
+- A press inside a widget with `on_swipe` that moved that far is never a click,
+  swipe or not. One that moved less is a tap, and clicks as before.
+- A drag along the scroll direction of a `ui.scroll` or `ui.list` it starts in (or
+  that has `on_swipe` itself) scrolls it and is no swipe, even when there is
+  nothing to scroll; across it, it is a swipe. A drag that scrolls content that
+  does not fit is no swipe either. A drag on a `ui.slider` moves the slider.
+- The system's back gesture (rightwards from the left edge) and pull-down
+  gesture (downwards from the top edge) take a press first (see Screen shape).
+- A widget with `on_swipe`, like one with `on_click`, takes the touches on it:
+  widgets behind it in a `ui.stack` get none.
+
+For a game or board controlled by direction (2048, snake, a sliding puzzle), give
+the board's container `on_swipe` and move by `dir`. Do not work out a direction
+from where a tap landed.
 
 ## Screen shape
 
@@ -211,6 +240,7 @@ only once it has moved 24 pixels to the right -- however far up or down --
 does the system take it, and the widget under it then gets no click.
 Dragging back to the left of that distance before release cancels it and
 nothing happens. A touch on the on-screen keyboard never starts it.
+Such a swipe never reaches `on_swipe`.
 
 A swipe down that starts within 16 pixels of the top of the visible screen
 (measured from the first visible pixel of the column it starts in) is the
@@ -219,7 +249,8 @@ any other until it has moved 24 pixels down, when the system opens its
 pull-down panel and the widget under the finger gets no click
 (`PRESS_LOST`). It never starts while the keyboard, the error panel or a
 confirmation dialog is up. A tap on the status capsule (at `status_area`, shown while scenes run
-in the background or notifications are unread) opens the panel too.
+in the background or notifications are unread) opens the panel too. A swipe down
+from the top zone never reaches `on_swipe` while the panel can open.
 
 ## Helpers
 

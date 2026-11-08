@@ -388,6 +388,9 @@ wisp_test(NAME scene_view_test SRCS scene/scene_view_test.cpp LIBS wisp_scene wi
 # image; see font_image_test above for where fonts.bin comes from.
 add_dependencies(scene_view_test wisp_sim_fonts)
 target_compile_definitions(scene_view_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BINARY_DIR}/fonts.bin")
+# on_swipe through a fake touch panel and LVGL's input path.
+wisp_test(NAME scene_view_swipe_test SRCS scene/scene_view_swipe_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 # list_window.hpp and widget_data.hpp are private to wisp_scene.
 wisp_test(NAME list_window_test SRCS scene/list_window_test.cpp LIBS wisp_scene)
 wisp_test(NAME scene_view_list_test SRCS scene/scene_view_list_test.cpp
@@ -418,6 +421,10 @@ wisp_test(NAME store_binding_test SRCS scene/store_binding_test.cpp
 wisp_test(NAME migrate_test SRCS scene/migrate_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 target_compile_definitions(migrate_test PRIVATE WISP_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+# Opens the fixture scene in scene/fixtures/swipe_demo.
+wisp_test(NAME scene_swipe_test SRCS scene/scene_swipe_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+target_compile_definitions(scene_swipe_test PRIVATE WISP_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 wisp_test(NAME http_binding_test SRCS scene/http_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME files_binding_test SRCS scene/files_binding_test.cpp

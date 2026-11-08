@@ -3,6 +3,8 @@
 // Test-only: a UiRuntime over a fake display with a SystemLayer and a
 // SceneView built on its UI thread, recording the events the view
 // reports, plus helpers for building the UiOps the scene task would send.
+// With `with_touch` set before start(), the UiRuntime also gets a fake
+// touch panel, which feed() drives through LVGL's real input path.
 
 #include <gtest/gtest.h>
 
@@ -74,7 +76,8 @@ protected:
                ui::UiConfig ui_config = {}) {
         display = std::make_shared<FakeDisplay>("display.main", 480, 480, 1, display_shape);
         if (rgb565_be) display->set_cap("rgb565_be", Value(true));
-        ui = std::make_unique<ui::UiRuntime>(display, nullptr, std::move(ui_config));
+        if (with_touch) touch = std::make_shared<FakeTouch>("touch.main");
+        ui = std::make_unique<ui::UiRuntime>(display, touch, std::move(ui_config));
         ASSERT_TRUE(ui->start());
         auto parsed = hal::screen_shape_from_caps(display->info().caps);
         ASSERT_TRUE(parsed);
@@ -95,7 +98,14 @@ protected:
         on_ui([&] {
             layer = std::make_unique<ui::SystemLayer>(shape);
             view = std::make_unique<scene::SceneView>(*layer, shape, cb);
+            indev = lv_indev_get_next(nullptr);
         });
+    }
+
+    // One touch read: `points` empty is a release.
+    void feed(std::vector<hal::TouchPoint> points) {
+        touch->set_points(std::move(points));
+        on_ui([&] { lv_indev_read(indev); });
     }
 
     void TearDown() override {
@@ -129,7 +139,10 @@ protected:
         return std::exchange(warnings, {});
     }
 
+    bool with_touch = false;
     std::shared_ptr<FakeDisplay> display;
+    std::shared_ptr<FakeTouch> touch;
+    lv_indev_t* indev = nullptr;
     std::unique_ptr<ui::UiRuntime> ui;
     std::unique_ptr<ui::SystemLayer> layer;
     std::unique_ptr<scene::SceneView> view;

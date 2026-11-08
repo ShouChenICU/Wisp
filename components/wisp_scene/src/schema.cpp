@@ -16,6 +16,7 @@
 #include "wisp/net/scene_http.hpp"
 #include "wisp/scene/patch_batch.hpp"
 #include "wisp/scene/scene_schedule.hpp"
+#include "wisp/scene/scene_view.hpp"
 #include "wisp/scene/theme.hpp"
 #include "wisp/scene/timer_set.hpp"
 #include "wisp/scene/vm.hpp"
@@ -77,6 +78,7 @@ constexpr PropSpec kProps[] = {
     {Prop::OnClick, "on_click", PropType::Fn, false, none},
     {Prop::OnLongPress, "on_long_press", PropType::Fn, false, none},
     {Prop::OnChange, "on_change", PropType::Fn, false, none},
+    {Prop::OnSwipe, "on_swipe", PropType::Fn, false, none},
 };
 static_assert(std::size(kProps) == kPropCount);
 
@@ -127,6 +129,7 @@ constexpr SV kExpects[] = {
     "function",                                                          // on_click
     "function",                                                          // on_long_press
     "function",                                                          // on_change
+    "function",                                                          // on_swipe
 };
 static_assert(std::size(kExpects) == kPropCount);
 
@@ -135,7 +138,8 @@ using P = Prop;
 #define WISP_COMMON_PROPS                                                                        \
     P::W, P::H, P::Grow, P::Pad, P::Bg, P::Fg, P::Radius, P::Border, P::Font, P::Hidden, P::Opa, \
         P::Ref, P::OnClick, P::OnLongPress
-#define WISP_LAYOUT_PROPS WISP_COMMON_PROPS, P::Gap, P::Align, P::Justify
+// Swipes go to the widgets a board or a page is made of (scene_view.hpp).
+#define WISP_LAYOUT_PROPS WISP_COMMON_PROPS, P::Gap, P::Align, P::Justify, P::OnSwipe
 
 constexpr Prop kLayoutProps[] = {WISP_LAYOUT_PROPS};
 constexpr Prop kGridProps[] = {WISP_LAYOUT_PROPS, P::Cols};
@@ -154,7 +158,7 @@ constexpr Prop kBarProps[] = {WISP_COMMON_PROPS, P::Value, P::Min, P::Max};
 constexpr Prop kArcProps[] = {WISP_COMMON_PROPS, P::Value, P::Min, P::Max, P::Width};
 constexpr Prop kChartProps[] = {WISP_COMMON_PROPS, P::Type, P::Series, P::Min, P::Max};
 constexpr Prop kListProps[] = {WISP_COMMON_PROPS, P::Items, P::Row, P::RowH};
-constexpr Prop kCanvasProps[] = {WISP_COMMON_PROPS, P::Draw};
+constexpr Prop kCanvasProps[] = {WISP_COMMON_PROPS, P::Draw, P::OnSwipe};
 
 #undef WISP_LAYOUT_PROPS
 #undef WISP_COMMON_PROPS
@@ -325,10 +329,56 @@ constexpr SV kPropTableHead =
 
 constexpr SV kCallbackNote =
     "`on_click` and `on_long_press` take no arguments; `on_change(value)` gets the new text,\n"
-    "value or checked state. `row(item, index)` returns the widget for one list row and is\n"
-    "only called for visible rows. `draw(g)` draws a canvas.\n";
+    "value or checked state; `on_swipe(dir)` gets `\"up\"`, `\"down\"`, `\"left\"` or `\"right\"`\n"
+    "(see Swipes). `row(item, index)` returns the widget for one list row and is only\n"
+    "called for visible rows. `draw(g)` draws a canvas.\n";
 
 std::string num(uint64_t v) { return std::to_string(v); }
+
+// The widgets that take a property, as "`ui.a`, `ui.b` and `ui.c`".
+std::string widgets_with(Prop p) {
+    std::string names[kWidgetCount];
+    size_t count = 0;
+    for (const auto& w : kWidgets)
+        if (std::find(w.props.begin(), w.props.end(), p) != w.props.end())
+            names[count++] = "`ui." + std::string(w.name) + "`";
+    std::string out;
+    for (size_t i = 0; i < count; ++i) {
+        if (i) out += i + 1 == count ? " and " : ", ";
+        out += names[i];
+    }
+    return out;
+}
+
+// The recognition rules are SceneView's (scene_view.hpp).
+void append_swipes(std::string& out) {
+    out += "\n### Swipes\n\n`on_swipe(dir)` is taken by " + widgets_with(Prop::OnSwipe) +
+           ".\nIt is called once when the finger is lifted after a swipe that started on the\n"
+           "widget or anywhere inside it -- on a label, a button, a canvas or a stack over\n"
+           "it -- and goes to the nearest widget with `on_swipe` at or above the one under\n"
+           "the finger.\n"
+           "\n"
+           "- A swipe moved at least " +
+           num(kSwipeMinPx) + " pixels (1/" + num(kSwipeScreenDivisor) +
+           " of the screen's shorter side if that is more)\n"
+           "  from where the finger went down along one axis, and at least 1.5 times as far\n"
+           "  along it as along the other. `dir` is where the finger went (y grows downwards:\n"
+           "  moving up is `\"up\"`). A diagonal drag is no swipe.\n"
+           "- A press inside a widget with `on_swipe` that moved that far is never a click,\n"
+           "  swipe or not. One that moved less is a tap, and clicks as before.\n"
+           "- A drag along the scroll direction of a `ui.scroll` or `ui.list` it starts in (or\n"
+           "  that has `on_swipe` itself) scrolls it and is no swipe, even when there is\n"
+           "  nothing to scroll; across it, it is a swipe. A drag that scrolls content that\n"
+           "  does not fit is no swipe either. A drag on a `ui.slider` moves the slider.\n"
+           "- The system's back gesture (rightwards from the left edge) and pull-down\n"
+           "  gesture (downwards from the top edge) take a press first (see Screen shape).\n"
+           "- A widget with `on_swipe`, like one with `on_click`, takes the touches on it:\n"
+           "  widgets behind it in a `ui.stack` get none.\n"
+           "\n"
+           "For a game or board controlled by direction (2048, snake, a sliding puzzle), give\n"
+           "the board's container `on_swipe` and move by `dir`. Do not work out a direction\n"
+           "from where a tap landed.\n";
+}
 
 // The Lua side beyond the widgets: the sandbox, reactive state, imports,
 // and the wisp.timer, wisp.device, wisp.log and wisp.http modules
@@ -905,6 +955,7 @@ std::string schema_markdown() {
         "### list, canvas, chart, image, icon\n"
         "\n";
     for (const WidgetNote& n : kWidgetNotes) out += n.text;
+    append_swipes(out);
     out +=
         "\n"
         "## Screen shape\n"
@@ -941,6 +992,7 @@ std::string schema_markdown() {
                   static_cast<int>(ui::SystemLayer::kBackZoneWidth),
                   static_cast<int>(ui::SystemLayer::kBackTriggerDx));
     out += line;
+    out += "Such a swipe never reaches `on_swipe`.\n";
     out += "\nA swipe down that starts within " + num(ui::SystemLayer::kTopZoneHeight) +
            " pixels of the top of the visible screen\n"
            "(measured from the first visible pixel of the column it starts in) is the\n"
@@ -952,7 +1004,8 @@ std::string schema_markdown() {
            "(`PRESS_LOST`). It never starts while the keyboard, the error panel or a\n"
            "confirmation dialog is up. A tap on the status capsule (at `status_area`, shown while "
            "scenes run\n"
-           "in the background or notifications are unread) opens the panel too.\n";
+           "in the background or notifications are unread) opens the panel too. A swipe down\n"
+           "from the top zone never reaches `on_swipe` while the panel can open.\n";
     out +=
         "\n"
         "## Helpers\n"

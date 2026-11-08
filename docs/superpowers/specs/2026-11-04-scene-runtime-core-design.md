@@ -197,7 +197,15 @@ return ui.screen { align = "center", justify = "center",
 
 - 尺寸与布局：`w`/`h`（像素、`"fill"`、`"content"`）、`grow`、`pad`、`gap`、`align`、`justify`。
 - 外观：`bg`、`fg`、`radius`、`border`、`font`（`xs`/`sm`/`md`/`lg`/`xl`/`xxl`）、`hidden`、`opa`。
-- 事件：`on_click`、`on_long_press`、`on_change`（输入类）。
+- 事件：`on_click`、`on_long_press`、`on_change`（输入类）、`on_swipe(dir)`（滑动，只用于布局类控件 `screen`/`column`/`row`/`stack`/`grid`/`scroll` 和 `canvas`）。
+- 滑动 `on_swipe(dir)`：`dir` 为 `"up"`/`"down"`/`"left"`/`"right"`，指手指移动的方向。
+  - 识别：松手时判定，每次按压最多一次。从按下点起沿某一轴移动至少 30 px（屏幕短边的 1/16 更大时取它），且该轴位移不小于另一轴的 1.5 倍（约在轴线 34° 以内）；斜向拖动不算滑动。不用 LVGL 自带的 `LV_EVENT_GESTURE`：它按速度判定，慢滑识别不到，且识别后照样发出点击。
+  - 归属：按下处的控件起向上找，最近一个带 `on_swipe` 的控件接收；在它的子控件（标签、按钮、叠在画布上的栈）上开始的滑动同样算数。带 `on_swipe` 的控件和带 `on_click` 的一样会接收触摸，`stack` 中被它盖住的控件收不到触摸。
+  - 与点击：有接收者的按压只要移动距离达到阈值，无论是否识别为滑动，都不产生点击（也不会切换复选框、开关）；未达阈值的按压是普通点击。
+  - 与滚动：沿 `scroll`/`list` 滚动方向的拖动是滚动，不是滑动（按下点到接收者之间、含接收者本身的滚动容器都算，内容不够滚动时也一样）；垂直于滚动方向的拖动仍是滑动。实际发生了滚动的拖动、在 `slider` 上开始的拖动都不是滑动。
+  - 与系统手势：返回手势（5.2）和下拉手势优先，系统层接管按压后场景收不到松手，也就没有滑动；从其他位置开始的滑动都交给场景。
+  - 调试：`SceneRuntime::swipe_ref(ref, dir)`（模拟器 `debug scene-swipe <ref> <dir>`）把滑动交给该控件及其祖先中最近的 `on_swipe`，供看不见屏幕的脚本测试场景。
+  - 按方向操作的游戏或棋盘（2048、贪吃蛇等）应在棋盘容器上用 `on_swipe`，不要按点击位置推算方向。
 - 颜色写 `#RRGGBB` 或主题令牌：`accent`、`text`、`muted`、`surface`、`bg`、`danger`、`ok`、`warn`。子项目 7 的主题系统在这组令牌上扩展。
 - `pad`：一个数字（四边相同），或 `{上, 右, 下, 左}` 四个数字（CSS 顺序），每个 0…512，四项缺一不可、不能有多余的键。根节点 `ui.screen` 铺满屏幕，不加任何默认内边距：场景拥有整块屏幕，自己按屏幕形状布局（5.2"屏幕形状"、AGENTS.md 第 3 节"屏幕形状"）。原来的 `pad = "safe"` 已取消，写了会在建树时报错，并提示改用 `wisp.device.info().safe_area` 算出内边距。
 - `ref = "名字"` 给节点命名，`ui.ref("名字")` 取得句柄，用于少量命令式操作（如读取输入框的值、滚动到某项）。

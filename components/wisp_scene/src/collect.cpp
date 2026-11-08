@@ -126,6 +126,8 @@ uint32_t event_bit(Prop p) {
             return kEventLongPress;
         case Prop::OnChange:
             return kEventChange;
+        case Prop::OnSwipe:
+            return kEventSwipe;
         default:
             return 0;
     }

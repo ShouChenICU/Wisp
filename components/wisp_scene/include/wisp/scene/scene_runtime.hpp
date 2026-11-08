@@ -380,6 +380,13 @@ public:
     // if the user tapped it (the simulator's debug command). NotFound if
     // no running scene has one.
     Result<void> click_ref(std::string_view ref);
+    // Sends swipe `dir` ("up", "down", "left" or "right") over the
+    // foreground scene's widget with ref = `ref`: the nearest widget at or
+    // above it with on_swipe gets it, as if the user swiped there (the
+    // simulator's debug command). InvalidArgument for another `dir`;
+    // NotFound if no running scene has the ref, or nothing at or above it
+    // has on_swipe.
+    Result<void> swipe_ref(std::string_view ref, std::string_view dir);
 
     // SceneHost. open(), close(), exit() and reload() wait until the scene
     // task has done the work (at most 10 s, then Timeout) -- for exit(),

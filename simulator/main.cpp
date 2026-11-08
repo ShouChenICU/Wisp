@@ -44,7 +44,10 @@
 // output that ever carries a pairing code. "debug scene-click <ref>" clicks
 // the widget with that ref in the scene in front
 // (SceneRuntime::click_ref()) and answers "scene-click=ok" or
-// "scene-click=<error>". "debug panel-tap <index>" taps row <index> (from
+// "scene-click=<error>". "debug scene-swipe <ref> <up|down|left|right>"
+// swipes over that widget (SceneRuntime::swipe_ref(): the nearest widget at
+// or above it with on_swipe gets the direction) and answers
+// "scene-swipe=ok" or "scene-swipe=<error>". "debug panel-tap <index>" taps row <index> (from
 // 0: the background scenes, then the notifications) of the open pull-down
 // panel (SystemLayer::tap_panel_row()) and answers "panel-tap=ok" or
 // "panel-tap=<error>". "debug banner-action <index>" presses action button
@@ -174,6 +177,12 @@ std::string debug_command(wisp::app::App& app, const std::vector<std::string>& a
         if (scenes == nullptr) return "scene-click=scenes are off";
         auto r = scenes->click_ref(args[2]);
         return "scene-click=" + (r ? std::string("ok") : r.error().message);
+    }
+    if (args.size() == 4 && args[1] == "scene-swipe") {
+        wisp::scene::SceneRuntime* scenes = app.scenes();
+        if (scenes == nullptr) return "scene-swipe=scenes are off";
+        auto r = scenes->swipe_ref(args[2], args[3]);
+        return "scene-swipe=" + (r ? std::string("ok") : r.error().message);
     }
     if (args.size() == 3 && args[1] == "panel-tap") {
         wisp::ui::UiRuntime* ui = app.ui();

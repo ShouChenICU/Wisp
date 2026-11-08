@@ -142,11 +142,12 @@ enum class Prop : PropId {
     Wrap,
     OnClick,
     OnLongPress,
-    OnChange
+    OnChange,
+    OnSwipe
 };
 
 inline constexpr size_t kWidgetCount = static_cast<size_t>(Widget::Canvas) + 1;
-inline constexpr size_t kPropCount = static_cast<size_t>(Prop::OnChange) + 1;
+inline constexpr size_t kPropCount = static_cast<size_t>(Prop::OnSwipe) + 1;
 
 enum class PropType {
     Size,

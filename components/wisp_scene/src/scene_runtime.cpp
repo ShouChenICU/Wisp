@@ -638,6 +638,33 @@ Result<void> SceneRuntime::click_ref(std::string_view ref) {
     return r;
 }
 
+Result<void> SceneRuntime::swipe_ref(std::string_view ref, std::string_view dir) {
+    const SwipeDir d = swipe_from_name(dir);
+    if (d == SwipeDir::None)
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "the direction is not up, down, left or right");
+    if (!running_ || !ui_side_)
+        return Result<void>::err(ErrorCode::Busy, "scene runtime not running");
+    Result<void> r = Result<void>::err(ErrorCode::NotFound, "no scene is running");
+    auto swipe = [&] {
+        UiSide& u = *ui_side_;
+        if (!u.view || u.token == 0 || u.token != ui_view_.load()) return;
+        auto node = u.view->find_ref(ref);
+        if (!node) {
+            r = Result<void>::err(ErrorCode::NotFound, "no widget with that ref");
+            return;
+        }
+        r = u.view->swipe(*node, d)
+                ? Result<void>::ok()
+                : Result<void>::err(ErrorCode::NotFound, "no on_swipe at or above that widget");
+    };
+    if (deps_.ui.on_ui_thread())
+        swipe();
+    else
+        deps_.ui.run_blocking(swipe);
+    return r;
+}
+
 void SceneRuntime::set_status(const std::string& id, core::SceneState state, std::string error) {
     std::lock_guard<os::Mutex> lock(status_mu_);
     core::SceneStatus& s = statuses_[id];

@@ -52,6 +52,31 @@
 // Nothing is reported while an op is being applied, so updates the scene
 // sends never come back to it as events.
 //
+// Swipes (Swipe events, a string "up", "down", "left" or "right"): a node
+// with on_swipe is made clickable, so a press anywhere on it lands on it
+// or on a clickable widget inside it. The view follows presses through
+// the pointer input device's own event callbacks, which LVGL calls for
+// PRESSED, RELEASED and the clicks of any object before the object's
+// handlers: at PRESSED the nearest node at or above the pressed object
+// that has on_swipe becomes the press's target; at RELEASED the start and
+// end points go through classify_swipe() and a swipe is reported to that
+// target, at most once per press. LVGL's own LV_EVENT_GESTURE is not used:
+// it is decided while the finger moves, by speed (a slow swipe is none),
+// and LVGL still sends the click after it. No swipe is reported when
+//   - the press started on a slider (its drag moves the slider);
+//   - LVGL scrolled something for the press (indev scroll_obj), or the
+//     swipe runs along the scroll direction of a scroll or list between
+//     the pressed object and the target (included), whether or not that
+//     one has anything to scroll;
+//   - the system layer took the press (back or pull-down gesture): it
+//     resets the input device, so no RELEASED comes.
+// A press with a target that moved at least swipe_min_px() along either
+// axis is no click, swipe or not: the input device's RELEASED, CLICKED
+// and SHORT_CLICKED stop there (lv_indev_stop_processing()), so neither
+// the widget under the finger nor LVGL's own handlers (a checkbox toggles
+// on RELEASED) see them; the view drops the widget's pressed state
+// itself.
+//
 // Lists (virtualized): a ListReset makes the list's content count *
 // row_h tall, drops every row it has, holds the scroll position to what
 // the new content allows and asks for the rows the viewport needs
@@ -118,7 +143,23 @@
 
 namespace wisp::scene {
 
-enum class UiEvent { Click, LongPress, Change, Focus };
+enum class UiEvent { Click, LongPress, Change, Focus, Swipe };
+
+enum class SwipeDir : uint8_t { None, Up, Down, Left, Right };
+// "up", "down", "left", "right"; "" for None.
+const char* swipe_name(SwipeDir d);
+// None for anything but those four names.
+SwipeDir swipe_from_name(std::string_view name);
+
+// The least distance a swipe moves along its axis: kSwipeMinPx, or
+// 1/kSwipeScreenDivisor of the shorter screen side when that is more.
+inline constexpr int32_t kSwipeMinPx = 30;
+inline constexpr int32_t kSwipeScreenDivisor = 16;
+int32_t swipe_min_px(const hal::ScreenShape& shape);
+// A swipe from `start` to `end` (screen coordinates, y down): at least
+// `min_px` along one axis and at least 1.5 times as far along it as along
+// the other (within about 34 degrees of the axis); else None.
+SwipeDir classify_swipe(lv_point_t start, lv_point_t end, int32_t min_px);
 
 // One node of a view, as for_each_node() hands it out. `ref` is empty for
 // a node without one; it and `obj` are valid during the call only.
@@ -174,6 +215,11 @@ public:
     // Every node, the root first, in pre-order; siblings in the order they
     // are laid out (list rows by index). ui.tree() reads the view this way.
     void for_each_node(const std::function<void(const NodeRef&)>& fn) const;
+    // Reports swipe `dir` to the nearest node at or above `node` with
+    // on_swipe, as a finger swiping over `node` would (for scripts that
+    // cannot touch the screen). False when there is no such node or `dir`
+    // is None.
+    bool swipe(NodeId node, SwipeDir dir);
 
 private:
     // One per node, at a fixed address: the node's object carries it as
@@ -244,6 +290,16 @@ private:
 
     static void event_cb(lv_event_t* e);
 
+    // Swipes, through the pointer input device (see above).
+    struct SwipeTrack {
+        NodeId target = 0;  // 0: this press has no target
+        lv_point_t start{};
+        lv_dir_t scroll_dirs = LV_DIR_NONE;  // of the scrolls on the way
+    };
+    void swipe_pressed(lv_obj_t* obj);
+    void swipe_released();
+    static void indev_event_cb(lv_event_t* e);
+
     ui::SystemLayer& system_;
     hal::ScreenShape shape_;
     ViewCallbacks cb_;
@@ -262,6 +318,11 @@ private:
     int applying_ = 0;
     // While a Build runs: grids are laid out once at its end.
     bool building_ = false;
+    // The pointer whose events the view follows, or nullptr.
+    lv_indev_t* indev_ = nullptr;
+    SwipeTrack swipe_;
+    // The press that just ended moved too far to be a click.
+    bool no_click_ = false;
 };
 
 }  // namespace wisp::scene
