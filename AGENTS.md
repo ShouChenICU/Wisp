@@ -1,130 +1,135 @@
-# AGENTS.md — Wisp 项目指令
+# AGENTS.md — Wisp project instructions
 
-> 面向所有在本仓库工作的编程 agent（Claude Code、Codex 等）和人类贡献者。
-> 这里只放全局的、长期稳定的内容：项目目标、规则、约定、工作流程。板子、芯片等硬件资料放在 `docs/hardware/`；进度放在各计划文档里。
-> 这是一份活文档，规则或约定发生变化时要同步更新它（见文末"维护本文件"）。
+> For every coding agent (Claude Code, Codex and others) and every human contributor working in this repository.
+> This file holds only global, long-lived content: project goals, rules, conventions and workflow. Hardware facts about boards and chips go in `docs/hardware/`; progress goes in the plan documents.
+> This is a living document. Update it whenever a rule or convention changes (see "Maintaining this file" at the end).
 
-## 1. 项目目标
+## 1. Project goals
 
-Wisp（小鬼火）是一个运行在 ESP32 系列芯片上、完全由 AI 驱动的掌上个人 Agent 系统。
+Wisp (小鬼火, "little will-o'-the-wisp") is a handheld personal agent system that runs on ESP32-series chips and is driven entirely by AI.
 
-- **没有 App。** 没有传统的桌面、锁屏和应用。一切界面都是"场景"（scene），由 Agent 动态创建、编辑、保存和复用。设备初始只有一个用于对话的"主场景"。
-- **Agent 掌控设备。** LLM 只使用 OpenAI 兼容协议（可以直连，也可以经网关），通过完整的工具调用来控制整台设备。
-- **交互方式。** 以语音输入为主，以屏幕文字输出为主，TTS 为辅。
-- **长期记忆。** Agent 会记住偏好、待办等信息。
-- **轻量、可定制、通用。** 框架提供基础设施和外设抽象，驱动可以插拔，不绑定某一块开发板。
+- **No apps.** There is no traditional desktop, lock screen or app. Every interface is a "scene", which the agent creates, edits, saves and reuses on the fly. Out of the box the device has only one "main scene", for conversation.
+- **The agent controls the device.** The LLM uses only the OpenAI-compatible protocol (directly or through a gateway) and controls the whole device through full tool calling.
+- **Interaction.** Voice is the main input and on-screen text is the main output, with TTS as a supplement.
+- **Long-term memory.** The agent remembers preferences, to-dos and similar information.
+- **Lightweight, customisable, general-purpose.** The framework provides infrastructure and peripheral abstractions. Drivers are pluggable, and nothing is tied to one particular development board.
 
-路线图共 8 个子项目，每个都单独走"设计 → 计划 → 实施"：
-1. 基础骨架
-2. 连接与管理后台
-3. 场景运行时（Lua）
-4. Agent 核心
-5. 语音链路
-6. 记忆与调度
-7. 安全与演化
-8. 主场景与系统外壳（鬼火角色与导航；渲染器原型可提前在模拟器中开发）
+The roadmap has 8 sub-projects. Each one goes through "design → plan → implementation" on its own:
+1. Foundation
+2. Connectivity and admin console
+3. Scene runtime (Lua)
+4. Agent core
+5. Voice pipeline
+6. Memory and scheduling
+7. Security and evolution
+8. Main scene and system shell (the wisp character and navigation; the renderer prototype can be developed early in the simulator)
 
-## 2. 文档与权威顺序
+## 2. Documents and order of authority
 
-| 文档 | 用途 |
+| Document | Purpose |
 |---|---|
-| `docs/superpowers/specs/*-design.md` | 各子项目的设计 spec，**最高权威** |
-| `docs/superpowers/plans/*.md` | 实施计划，是 spec 的展开；两者冲突时以 spec 为准 |
-| `docs/architecture.md` | 分层、启动流程、事件主题清单 |
-| `docs/porting-guide.md` | 如何新增一块开发板 |
-| `CONTRIBUTING.md` | 贡献流程、代码要求与 PR 清单（面向外部贡献者，与本文件一致） |
-| `docs/hardware/<板名>.md` | 各开发板的硬件资料（引脚、芯片、已知勘误、性能基准） |
-| `docs/references.md`、`THIRD_PARTY_NOTICES.md` | 参考来源与第三方许可 |
+| `docs/superpowers/specs/*-design.md` | Design spec of each sub-project, **highest authority** |
+| `docs/superpowers/plans/*.md` | Implementation plans, which expand the specs; when the two conflict, the spec wins |
+| `docs/architecture.md` | Layering, boot flow, list of event topics |
+| `docs/porting-guide.md` | How to add a development board |
+| `CONTRIBUTING.md` | Contribution process, code requirements and PR checklist (for outside contributors, consistent with this file) |
+| `docs/hardware/<board>.md` | Hardware facts for each development board (pins, chips, known errata, performance baselines) |
+| `docs/references.md`, `THIRD_PARTY_NOTICES.md` | Reference sources and third-party licences |
 
-改动涉及某个子项目时，先读它的 spec，再读对应的计划；改动涉及某块板子时，先读它的硬件文档。
+When a change touches a sub-project, read its spec first, then the matching plan. When a change touches a board, read its hardware document first.
 
-## 3. 架构规则
+## 3. Architecture rules
 
-- **分层**：
-  - 可移植层：`wisp_base` → `wisp_os` → `wisp_hal` → `wisp_core` → `wisp_net` → `wisp_voice` → `wisp_admin` → `wisp_ui` → `wisp_scene` → `wisp_agent` → `wisp_shell` → `wisp_app`。
-  - 第三方源码原样放在 `third_party/`（如 Lua，由 `tools/vendor_lua.sh` 引入），不改源码；Lua 头文件和 `lua` 组件只有 `wisp_scene` 能用。
-  - 平台层：`wisp_port_sim`（PC 模拟器）、`wisp_port_esp`（ESP-IDF）。
-  - 板级适配放在 `boards/<板名>/`，芯片驱动放在 `drivers/`。
-- **可移植层禁止 include 平台头文件**：`esp_*`、`freertos/*`、`driver/*`、IDF 的 `hal/`、`soc/*`、`rom/*`、`lwip/*`、`mbedtls/*`、`curl/*`、`sdkconfig.h`、`nvs.h`/`nvs_flash.h`、`sdmmc_cmd.h`、`SDL*`，以及平台层的 `wisp/port/*`。另外每一层只能依赖上面顺序中排在它之前的层，不得反向依赖（例如 `wisp_net` 不得 include `wisp/admin/`、`wisp/ui/`、`wisp/app/`）。这条规则由 `tools/check_layering.py` 强制检查。
-- **板子无关**：可移植层和平台层里不得出现具体板子的引脚、芯片型号或常量。这些只能写在 `boards/` 和 `drivers/` 中，通过设备的 caps 对外暴露。例外：平台层可以按 SoC 目标（`IDF_TARGET`/`CONFIG_IDF_TARGET_*`）选择实现，例如 `wisp_port_esp/lv_blend/<芯片>/` 的渲染加速。这类代码只依赖芯片本身，与板子无关；板级常量仍然禁止。可移植层（含 `lv_conf.h`）不出现芯片名。
-- **服务层约定**：Agent 工具、REST 接口、Lua 绑定都只是同一组服务 API 的薄适配层，不允许绕过服务层直接调用驱动。
-- **屏幕形状**：屏幕不一定是完整矩形（圆角屏、圆形屏），任何界面都不得写死边距或假设整屏可见（基础 spec 5.6）。
-  - 系统界面（自检界面、`ui::SystemLayer` 的对话框、屏幕键盘、错误面板、返回手势区）必须按 Display caps 的 `shape` 和 `hal::safe_rect()`/`row_span()` 布局，保证内容可见。
-  - 场景拥有整块屏幕，自己负责布局：根容器铺满屏幕、没有默认内边距，运行时不替场景收进安全区（场景 spec 5.2"屏幕形状"）。
-  - 运行时向场景（以及将来的 Agent）提供屏幕形状、圆角半径、安全区和 `row_span`（`wisp.device.info()` 的 `shape`/`corner_radius`/`safe_area`，`wisp.device.row_span(y)`）。
-  - 滚动内容可以经过不可见区域，但滚到两端时第一项和最后一项都必须完整可见；示例场景（`scenes/examples/`）演示了这些做法，它们的测试在三种形状上检查。
-- **UI 单线程**：只有 UI 线程可以调用 LVGL，其他线程一律通过 `UiRuntime::post()` 把操作交给 UI 线程；脚本也不直接调用 LVGL。
-- **设备模型**：
-  - 设备注册在 `DeviceRegistry` 里，id 的格式为 `<类别>.<名字>`。
-  - 设备能力通过 caps 声明，由 manifest 对外暴露。
-  - 设备经 caps `standby` 声明待机策略（`off`/`throttle`/`wake_source`，见 `wisp/hal/device.hpp`），声明了就要实现 `set_power(PowerLevel)`；新代码按 caps `standby` 统一驱动设备，不按名字逐个处理。
-  - 设备缺失或初始化失败时只降级运行，不得阻止启动。
-- **存储**：数据分为 System / Library / Backup 三个逻辑区，所有持久化写入都走 `StorageManager::write_atomic`。
+- **Layering**:
+  - Portable layers: `wisp_base` → `wisp_os` → `wisp_hal` → `wisp_core` → `wisp_net` → `wisp_voice` → `wisp_admin` → `wisp_ui` → `wisp_scene` → `wisp_agent` → `wisp_shell` → `wisp_app`.
+  - Third-party source lives unmodified in `third_party/` (for example Lua, brought in by `tools/vendor_lua.sh`). Do not change that source. Only `wisp_scene` may use the Lua headers and the `lua` component.
+  - Platform layers: `wisp_port_sim` (PC simulator), `wisp_port_esp` (ESP-IDF).
+  - Board adaptation goes in `boards/<board>/`; chip drivers go in `drivers/`.
+- **No platform headers in the portable layers**: the portable layers must not include `esp_*`, `freertos/*`, `driver/*`, IDF's `hal/`, `soc/*`, `rom/*`, `lwip/*`, `mbedtls/*`, `curl/*`, `sdkconfig.h`, `nvs.h`/`nvs_flash.h`, `sdmmc_cmd.h`, `SDL*`, or the platform layers' `wisp/port/*`. In addition, each layer may depend only on layers that come before it in the order above, never on a later one (for example `wisp_net` must not include `wisp/admin/`, `wisp/ui/` or `wisp/app/`). `tools/check_layering.py` enforces this rule.
+- **Board independence**: no board-specific pins, chip models or constants may appear in the portable layers or the platform layers. They may appear only in `boards/` and `drivers/`, and are exposed through the devices' caps. Exception: a platform layer may choose an implementation by SoC target (`IDF_TARGET`/`CONFIG_IDF_TARGET_*`), for example the rendering acceleration in `wisp_port_esp/lv_blend/<chip>/`. Such code depends only on the chip itself, not on a board; board-level constants are still forbidden. No chip name appears in the portable layers (including `lv_conf.h`).
+- **Service layer**: agent tools, REST endpoints and Lua bindings are all thin adapters over the same set of service APIs. Nothing may bypass the service layer to call a driver directly.
+- **Screen shape**: a screen is not necessarily a full rectangle (rounded-corner screens, round screens). No interface may hard-code margins or assume the whole screen is visible (base spec 5.6).
+  - System interfaces (the self-check screen, `ui::SystemLayer` dialogs, the on-screen keyboard, the error panel, the back-gesture zone) must lay out by the Display caps `shape` and `hal::safe_rect()`/`row_span()`, so that their content stays visible.
+  - A scene owns the whole screen and does its own layout: its root container fills the screen with no default padding, and the runtime does not pull the scene into the safe area for it (scene spec 5.2 "Screen shape").
+  - The runtime gives scenes (and, later, the agent) the screen shape, corner radius, safe area and `row_span` (`shape`/`corner_radius`/`safe_area` of `wisp.device.info()`, and `wisp.device.row_span(y)`).
+  - Scrolling content may pass through invisible areas, but when scrolled to either end, the first and last items must be fully visible. The example scenes (`scenes/examples/`) demonstrate these techniques, and their tests check them on all three shapes.
+- **Single UI thread**: only the UI thread may call LVGL. Every other thread hands its work to the UI thread through `UiRuntime::post()`. Scripts do not call LVGL directly either.
+- **Device model**:
+  - Devices are registered in `DeviceRegistry`, with ids of the form `<class>.<name>`.
+  - Device capabilities are declared through caps and exposed by the manifest.
+  - A device declares its standby policy through the caps `standby` (`off`/`throttle`/`wake_source`, see `wisp/hal/device.hpp`). A device that declares one must implement `set_power(PowerLevel)`. New code drives devices uniformly by their caps `standby`, not one by one by name.
+  - A missing device or a device that fails to initialise only degrades the system; it must never block boot.
+- **Storage**: data is split into three logical areas, System / Library / Backup. Every persistent write goes through `StorageManager::write_atomic`.
 
-## 4. 构建与验证
+## 4. Build and verification
 
 ```bash
-# 主机侧：单元测试 + 模拟器（日常开发主力）
+# Host side: unit tests + simulator (the main tool for everyday development)
 cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 ctest --test-dir build/sim --output-on-failure
 
-# 提交前的完整检查：格式、分层、构建、测试
+# Full check before committing: formatting, layering, build, tests
 bash tools/ci.sh
 
-# 固件：先激活计划锁定版本的 ESP-IDF 环境（export.sh 是 bash 脚本）
-# 全新检出时先 set-target：bmgr 子命令来自组件管理器拉取的 esp_board_manager
-cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <板名> && idf.py build
+# Firmware: first activate the ESP-IDF environment at the version the plan pins (export.sh is a bash script)
+# On a fresh checkout run set-target first: the bmgr subcommand comes from esp_board_manager, which the component manager fetches
+cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <board> && idf.py build
 ```
 
-- 能在模拟器里验证的，就不要依赖真机。需要真机的验证步骤要明确写出来交给用户执行，不得声称已经验证过。
-- 机器可读的输出（`WISP_BOOT_REPORT`、`WISP_MANIFEST`、`WISP_PERF`）都是"前缀 + 单行 JSON"。修改这些输出的格式时，要同步更新冒烟测试和文档。
-- 改动渲染路径时，要对比 `WISP_PERF` 的数值，不得让帧率低于 spec 和计划中约定的基准。
+- Whatever can be verified in the simulator must not depend on the device. Verification steps that need the device must be written out explicitly and handed to the user to run. Never claim they have been verified.
+- Machine-readable output (`WISP_BOOT_REPORT`, `WISP_MANIFEST`, `WISP_PERF`) is always "prefix + single-line JSON". When you change the format of this output, update the smoke tests and the documentation with it.
+- When you change the rendering path, compare the `WISP_PERF` numbers. The frame rate must not drop below the baseline agreed in the spec and the plan.
 
-## 5. 编码约定
+## 5. Coding conventions
 
-- **语言与错误处理**：C++20，编译选项 `-fno-exceptions -fno-rtti`。不使用 `dynamic_cast` 和 `typeid`，错误一律通过 `wisp::Result<T>` 返回。
-- **命名**：组件前缀 `wisp_`，命名空间 `wisp::<层>`，头文件路径 `wisp/<层>/<名>.hpp`，日志宏 `WLOG_D/I/W/E`。
-- **组件 CMake**：使用 `wisp_component(...)`，让同一份 CMakeLists 同时兼容 idf.py 和普通 CMake。
-- **格式与语言**：格式以 `.clang-format` 为准。代码标识符、注释和提交信息用英文；面向用户的界面文字可以用中文。
-- **测试**：使用 GoogleTest，坚持 TDD（先写失败的测试，再实现）。测试输出要干净，不能有告警。
-- **依赖**：外部依赖锁定精确版本，固件提交 `dependencies.lock`。
-- **配置键**：Settings 的 namespace 和 key 都不能超过 15 个字符，以兼容 NVS。
-- **内存分配**：大块缓冲用 `os::alloc(Mem::Large)`，DMA 缓冲用 `Mem::Dma`，不要直接调用平台的分配函数。
-- **内部 RAM 预算**（ESP32 的内部 SRAM 只有几百 KB，耗尽时报错的地方往往离原因很远，例如 httpd 拿不到栈）：
-  - 内部 SRAM 只留给：DMA 缓冲（`Mem::Dma`）；flash 线程 `wisp.fs` 的栈；ISR 与 IRAM 代码/数据；ESP-IDF 自己的任务与驱动；声明为热路径的任务栈（`os::TaskConfig::hot_stack`，缺省 false，目前只有 UI 线程 `wisp_ui` 声明 true，理由是渲染热路径而非 flash 安全，新增热栈任务要在对应 spec 里说明理由）。其余超过几 KB 的一律用 `Mem::Large`（PSRAM），例如 Lua 堆、LLM 上下文和 JSON、音频环形缓冲、各种缓存。
-  - **只有 `wisp.fs` 访问 flash**：`os::TaskConfig::flash_access`（httpd 实例是 `EspHttpServerConfig::flash_access`）缺省 false，只有 `wisp.fs`（`core::StorageWorker`）声明 true；栈放在哪里由端口根据 `flash_access`/`hot_stack` 的声明按芯片决定，调用方不直接选位置。其他任务要碰 flash（Settings/NVS、StorageManager/LittleFS、OTA、分区读写与映射，经由它调用的服务和它替别人执行的回调都算在内；读已经映射进地址空间的常量和网页资源包不算）时，经 `StorageWorker::submit()`/`run_sync()` 异步交给 `wisp.fs`，分 Normal（设置、JSON、场景数据）和 Bulk（固件分块、文件下载分块）两条队列。`WISP_ASSERT_FLASH_THREAD`（`wisp/os/flash_guard.hpp`）在运行期内强制这条规则：模拟器和单元测试违反时打印调用点后 `abort()`；设备上每个调用点只 `WLOG_E` 一次、不主动 abort（栈在内部 RAM 的任务能继续运行，栈在 PSRAM 的任务会被 ESP-IDF 自己的 cache 检查硬件 abort）。开了 XIP（`CONFIG_SPIRAM_XIP_FROM_PSRAM`）时擦写期间读运行时映射的 flash（如 `fonts` 分区）会读到 0xFF，这类板子必须打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND`（`docs/porting-guide.md`"字体分区"）。栈的大小按 `mem` 命令实测的 high-water mark 加余量来定。
-  - 预算：最坏情况（STA+AP、两个 httpd、WebSocket 日志流、TLS 握手和 OTA 上传同时存在）和空闲状态下内部 RAM 的空闲量、最大块下限定义在 `wisp/app/ram_budget.hpp`。消耗内部 RAM 的改动必须上真机重新测量。
-  - 诊断：固件串口命令 `mem`（各堆和每个任务的栈）；net 每次启动服务打一行 `internal RAM: ...`，低于预算时为警告。各板实测数据记在 `docs/hardware/<板名>.md`。
-- **注释**：只解释现在的代码为什么这样写（约束、不变量、踩过的坑），不写"哪一轮评审/哪次修复改了什么"——修改历史属于提交信息，不属于注释。禁止引用 `.superpowers/` 下的任何文件（`task-*-brief/report/review.md`、`global-constraints.md` 等，这些不提交到 git，新检出后是死链），禁止评审编号式引用（"Fix round N"、"Re-review N"、"R2-N"、"Task N"、裸的发现编号如 "M8"/"N3"/"I1"）。需要引用上下文时改为指向已提交的权威来源：spec 某节（"spec 6.7" 可以保留）、AGENTS.md 某节、`docs/hardware/*.md`，或仓库里的另一个函数/文件。`tools/ci.sh` 对此有 grep 守卫。
+- **Language and error handling**: C++20, compiled with `-fno-exceptions -fno-rtti`. Do not use `dynamic_cast` or `typeid`. All errors are returned through `wisp::Result<T>`.
+- **Naming**: component prefix `wisp_`, namespace `wisp::<layer>`, header path `wisp/<layer>/<name>.hpp`, log macros `WLOG_D/I/W/E`.
+- **Component CMake**: use `wisp_component(...)`, so that the same CMakeLists works with both idf.py and plain CMake.
+- **Formatting and language**:
+  - Formatting follows `.clang-format`.
+  - Code identifiers, code comments, commit messages and the documentation are in English. The documentation means `README.md`, `AGENTS.md`, `CONTRIBUTING.md` and `docs/`, apart from the design specs and plans.
+  - `README.md` (English) is the source. `README.zh-CN.md` (Chinese) and `README.ja.md` (Japanese) are translations of it; update them together with `README.md` whenever it changes.
+  - Design specs and plans (`docs/superpowers/specs/`, `docs/superpowers/plans/`) may be written in Chinese.
+  - User-facing UI text is localised (zh/ja/en).
+- **Testing**: use GoogleTest and follow TDD (write the failing test first, then the implementation). Test output must be clean, with no warnings.
+- **Dependencies**: external dependencies are pinned to exact versions; the firmware commits `dependencies.lock`.
+- **Settings keys**: Settings namespaces and keys must not exceed 15 characters, for NVS compatibility.
+- **Memory allocation**: use `os::alloc(Mem::Large)` for large buffers and `Mem::Dma` for DMA buffers. Do not call the platform's allocation functions directly.
+- **Internal RAM budget** (the ESP32 has only a few hundred KB of internal SRAM, and when it runs out, the error often appears far from the cause, for example httpd failing to get a stack):
+  - Internal SRAM is reserved for: DMA buffers (`Mem::Dma`); the stack of the flash thread `wisp.fs`; ISR and IRAM code/data; ESP-IDF's own tasks and drivers; task stacks declared as hot-path (`os::TaskConfig::hot_stack`, default false; currently only the UI thread `wisp_ui` declares true, because of the rendering hot path rather than flash safety; any new hot-stack task must justify itself in its spec). Everything else larger than a few KB uses `Mem::Large` (PSRAM), for example the Lua heap, LLM context and JSON, audio ring buffers and caches of all kinds.
+  - **Only `wisp.fs` accesses flash**: `os::TaskConfig::flash_access` (for an httpd instance, `EspHttpServerConfig::flash_access`) defaults to false, and only `wisp.fs` (`core::StorageWorker`) declares true. The port decides where a stack goes, per chip, from the `flash_access`/`hot_stack` declarations; callers do not choose the location directly. When another task needs flash (Settings/NVS, StorageManager/LittleFS, OTA, partition reads, writes and mapping; services called through it and callbacks it runs on behalf of others all count; reading constants and the web asset pack that are already mapped into the address space does not), it hands the work asynchronously to `wisp.fs` through `StorageWorker::submit()`/`run_sync()`. There are two queues: Normal (settings, JSON, scene data) and Bulk (firmware chunks, file download chunks). `WISP_ASSERT_FLASH_THREAD` (`wisp/os/flash_guard.hpp`) enforces this rule at run time: in the simulator and unit tests a violation prints the call site and then `abort()`s; on the device each call site logs `WLOG_E` once and does not abort on its own (a task whose stack is in internal RAM keeps running; a task whose stack is in PSRAM is aborted by ESP-IDF's own cache check in hardware). With XIP enabled (`CONFIG_SPIRAM_XIP_FROM_PSRAM`), reading flash that is mapped at run time (such as the `fonts` partition) during an erase or write returns 0xFF, so such boards must enable `CONFIG_SPI_FLASH_AUTO_SUSPEND` (`docs/porting-guide.md` "Font partitions"). Size stacks from the high-water mark measured with the `mem` command, plus a margin.
+  - Budget: the minimum free internal RAM and minimum largest block, for the worst case (STA+AP, two httpd instances, the WebSocket log stream, a TLS handshake and an OTA upload all at once) and for idle, are defined in `wisp/app/ram_budget.hpp`. Any change that consumes internal RAM must be re-measured on the device.
+  - Diagnostics: the firmware serial command `mem` (each heap and each task's stack); every time net starts its services it logs one `internal RAM: ...` line, which is a warning when below budget. Measured data for each board is recorded in `docs/hardware/<board>.md`.
+- **Comments**: explain only why the current code is the way it is (constraints, invariants, pitfalls you hit). Do not write "which review round or which fix changed what": change history belongs in commit messages, not in comments. Do not reference any file under `.superpowers/` (`task-*-brief/report/review.md`, `global-constraints.md` and so on; these are not committed to git and are dead links on a fresh checkout). Do not use review-id references ("Fix round N", "Re-review N", "R2-N", "Task N", bare finding ids such as "M8"/"N3"/"I1"). When you need to point at context, point at a committed authoritative source instead: a section of a spec ("spec 6.7" is fine), a section of AGENTS.md, `docs/hardware/*.md`, or another function or file in the repository. `tools/ci.sh` has a grep guard for this.
 
-## 6. 参考与许可
+## 6. References and licensing
 
-- 项目许可证为 Apache-2.0。
-- **不 fork、不强依赖上游**。其他开源项目只作参考，按需有针对性地重新实现。
-- 移植或改编外部代码时，在文件头注明来源和许可，并登记到 `docs/references.md` 与 `THIRD_PARTY_NOTICES.md`。
-- 不得在代码、请求或日志中泄露用户的个人信息或密钥。API Key 只能写入、不能读出。
+- The project licence is Apache-2.0.
+- **No forks, no hard dependency on upstream.** Other open-source projects serve only as references; reimplement what is needed, in a targeted way.
+- When porting or adapting outside code, state its source and licence in the file header, and register it in `docs/references.md` and `THIRD_PARTY_NOTICES.md`.
+- Never leak the user's personal information or secrets in code, requests or logs. API keys are write-only; they can never be read back.
 
-## 7. 工作流程
+## 7. Workflow
 
-- **流程**：新功能或新子项目先写设计 spec，用户批准后写实施计划，用户审阅计划后才开始实施（brainstorming → writing-plans → subagent-driven-development）。
-- **分支**：不在 `main` 上直接开发，使用功能分支。push、merge、发布之前先征得用户同意。
-- **提交**：采用 Conventional Commits 风格（`feat(core): ...`、`docs: ...`）。agent 创建的提交，按当前环境的署名要求附上 `Co-Authored-By` 行。
-- **沟通**：与用户交流一律使用中文。项目和模块取英文名，并用中文解释含义。
-- **偏差处理**：发现 spec 或计划有误时不得静默绕过。小问题在计划或执行记录中写明裁定并继续推进；大问题停下来问用户。
+- **Process**: a new feature or sub-project starts with a design spec. After the user approves it, write the implementation plan. Implementation starts only after the user has reviewed the plan (brainstorming → writing-plans → subagent-driven-development).
+- **Branches**: do not develop directly on `main`; use feature branches. Ask the user before you push, merge or release.
+- **Commits**: use the Conventional Commits style (`feat(core): ...`, `docs: ...`). Commits created by an agent carry the `Co-Authored-By` line required by the current environment's attribution rules.
+- **Communication**: always talk with the user in Chinese. Give projects and modules English names, and explain their meaning in Chinese.
+- **Deviations**: when you find a mistake in a spec or plan, never work around it silently. For a small issue, write the ruling in the plan or execution record and carry on; for a large issue, stop and ask the user.
 
-## 8. 通用陷阱
+## 8. Common pitfalls
 
-- **FAT 上的原子写**：FAT 文件系统的 `rename` 不能覆盖已存在的文件。原子写采用两阶段命名：写 `.tmp` → fsync → 改名为 `.new`（此时 `.new` 一定完整）→ 删除目标 → `.new` 改名为目标。读取时目标缺失而 `.new` 存在则用 `.new` 恢复；`.tmp` 可能写了一半，一律视为垃圾丢弃。
-- **LVGL 配置**：LVGL 必须使用 `components/wisp_ui/config/lv_conf.h`（由 `WISP_LV_CONF` 宏守卫）。
-- **小块 malloc 默认占内部 RAM**：开了 PSRAM 时，小于 `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`（16 KB）的普通 `malloc`/`new` 会优先从内部 RAM 分配，`std::string`/`std::vector` 增长过程中的中间缓冲也算在内。所以大块数据要一开始就用 `os::alloc(Mem::Large)` 分配，不要靠 malloc 自动落到 PSRAM。
-- **生成代码**：`idf.py bmgr` 生成的代码已被 git 忽略，不要手改。
-- **bmgr 会编译板目录下的全部源文件**：生成的 `gen_bmgr_codes` 用 `SRC_DIRS` 扫描 `boards/<板名>/`，会把 Wisp 自己的 `board.cpp` 也编进去；`firmware/CMakeLists.txt` 负责把它剔除。板目录里新增的 `.c`/`.cpp` 默认都会进入 `gen_bmgr_codes`。
+- **Atomic writes on FAT**: on the FAT file system, `rename` cannot overwrite an existing file. Atomic writes use two-stage naming: write `.tmp` → fsync → rename to `.new` (at this point `.new` is always complete) → delete the target → rename `.new` to the target. On read, if the target is missing and `.new` exists, recover from `.new`. `.tmp` may be half-written and is always discarded as garbage.
+- **LVGL configuration**: LVGL must use `components/wisp_ui/config/lv_conf.h` (guarded by the `WISP_LV_CONF` macro).
+- **Small mallocs land in internal RAM**: with PSRAM enabled, a plain `malloc`/`new` smaller than `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` (16 KB) is served from internal RAM first, and so are the intermediate buffers of a growing `std::string`/`std::vector`. So allocate large data with `os::alloc(Mem::Large)` from the start; do not rely on malloc to fall through to PSRAM.
+- **Generated code**: the code that `idf.py bmgr` generates is git-ignored. Do not edit it by hand.
+- **bmgr compiles every source file in the board directory**: the generated `gen_bmgr_codes` scans `boards/<board>/` with `SRC_DIRS`, so it also compiles Wisp's own `board.cpp`; `firmware/CMakeLists.txt` takes it back out. Any new `.c`/`.cpp` in a board directory goes into `gen_bmgr_codes` by default.
 
-## 9. 维护本文件
+## 9. Maintaining this file
 
-- **何时更新**：
-  - 项目目标、架构规则、约定或流程发生变化时（同时更新相关的 spec 或 `docs/architecture.md`）；
-  - 发现了跨板子、跨子项目都适用的陷阱时。
-- **不要写进来**：硬件资料（放 `docs/hardware/`）、进度和状态（放计划文档）、某次任务的细节（放代码或 spec）。
-- **保持简洁**：过时的条目直接删除，不要堆积历史。
-- **提交**：更新本文件的改动和触发它的改动放在同一个提交里，提交信息使用 `docs(agents): ...`。
+- **When to update it**:
+  - when project goals, architecture rules, conventions or the workflow change (update the related spec or `docs/architecture.md` at the same time);
+  - when you find a pitfall that applies across boards and sub-projects.
+- **What does not belong here**: hardware facts (they go in `docs/hardware/`), progress and status (they go in the plan documents), details of one particular task (they go in the code or the spec).
+- **Keep it short**: delete stale entries outright; do not pile up history.
+- **Commits**: put a change to this file in the same commit as the change that triggered it, with a `docs(agents): ...` commit message.
