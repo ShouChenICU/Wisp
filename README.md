@@ -109,69 +109,17 @@ idf.py build && idf.py -p <port> flash
 
 ## 🧩 Core modules
 
-### 🔥 Shell
-
-> *A native home screen that no broken scene can take away.*
-
-- **The wisp** is drawn live in code, with no image assets.
-  - It has its own expressions for idle, listening, thinking and speaking.
-- **Navigation:** swipe to Settings, the scene list or the conversation history. The pages follow your finger.
-- **During a turn:**
-  - the wisp moves up, and the sentence it speaks appears in large type;
-  - the agent's steps are listed underneath, ticked off ✓ as they finish.
-
-### 🎭 Scenes
-
-> *Every feature is a scene: one folder, one `main.lua`.*
-
-- **Declarative UI:** a Lua table of widgets bound to state. When the state changes, the UI redraws.
-- **Sandboxed:** each scene runs in its own Lua 5.5 VM.
-  - It has memory and time limits.
-  - It can reach the network only through the HTTPS hosts it declares.
-  - It keeps its data in a store of its own.
-- **More than a screen:** a scene can keep running in the background, post notifications and register tools for the agent.
-
-### 🤖 Agent
-
-> *Any OpenAI-compatible model, with the whole device as its toolbox.*
-
-- **Scenes:** create, edit, install, open and delete them.
-- **Memory:** read and write notes and to-dos.
-- **Device:** brightness, volume and other settings.
-- **Long conversations** are compacted to fit the context.
-
-> [!NOTE]
-> Tool results are treated as data, never as instructions. Destructive actions, such as deleting a scene, are confirmed on the device.
-
-### 🎙️ Voice
-
-> *Hold to talk, release to send.*
-
-1. Hold <kbd>BOOT</kbd> or long-press the wisp. When you release, the recording goes to speech recognition.
-2. The model marks the sentence to speak with `<say>`. That sentence is synthesised and played, while the rest of the reply streams to the screen.
-3. Hold again to interrupt. The speaker is shared by priority: alarms come before speech.
-
-Recognition and synthesis each take their own provider. SiliconFlow works well.
-
-### 🧠 Memory & reminders
-
-> *It remembers what matters to you.*
-
-- **Notes:** short facts about your preferences and habits.
-- **To-dos with due times:** when one comes due, the screen lights up and it rings.
-- **In the admin console** you can review and delete both.
-
-### 🌐 Admin console
-
-> *Open `http://wisp.local:8900` on your LAN and sign in with the 6-digit code on the screen.*
-
-- **Chat** with the agent from the browser.
-- **Manage** Wi-Fi, model profiles, memory and scenes.
-- **Watch the logs** live, and **upload firmware**.
-- **About 100 KB** of plain JavaScript, shipped inside the firmware, in Chinese, Japanese and English.
+| Module | Description |
+| --- | --- |
+| 🔥 **Shell** | A native home screen that no broken scene can take away. The wisp is drawn live in code and has its own expressions for idle, listening, thinking and speaking. Swipe to Settings, scenes or history, and the pages follow your finger. During a turn, the spoken sentence shows in large type with the agent's steps underneath. |
+| 🎭 **Scenes** | Every feature is a scene: one folder with one `main.lua`. The UI is declared as a Lua table bound to state. Each scene runs in its own Lua 5.5 sandbox with memory and time limits, and it can reach only the HTTPS hosts it declares. Scenes can run in the background, post notifications and register tools for the agent. |
+| 🤖 **Agent** | Works with any OpenAI-compatible model, with the whole device as its toolbox. It creates, edits, installs, opens and deletes scenes, reads and writes memory and to-dos, and changes settings. Long conversations are compacted to fit the context. |
+| 🎙️ **Voice** | Hold <kbd>BOOT</kbd> or long-press the wisp to talk, and release to send. The sentence marked `<say>` is spoken while the rest streams to the screen. Hold again to interrupt; alarms take the speaker first. Recognition and synthesis can each use their own provider, and SiliconFlow works well. |
+| 🧠 **Memory & reminders** | Short notes about your preferences, plus to-dos with due times. When a to-do comes due, the screen lights up and it rings. You can review both in the admin console. |
+| 🌐 **Admin console** | Open `http://wisp.local:8900` on your LAN and sign in with the 6-digit code on the screen. From there you can chat, manage Wi-Fi, models, memory and scenes, watch the logs and upload firmware. It is about 100 KB of plain JavaScript inside the firmware, in Chinese, Japanese and English. |
 
 > [!IMPORTANT]
-> API keys are write-only. A factory reset or a firmware update must be confirmed on the device.
+> Tool results are treated as data, never as instructions. API keys are write-only. Deleting a scene, a factory reset and a firmware update must all be confirmed on the device.
 
 ## 🔧 Porting to a new board
 
