@@ -194,6 +194,10 @@ private:
     uint32_t push_step(os::LargeString label);
     void on_tool_prep(const agent::AgentEvent& e);
     void on_tool_start(const agent::AgentEvent& e);
+    // Drops the steps of calls written whose ToolStart never came (the
+    // agent skipped them or the reply failed) and resets the mapping;
+    // whether there were any.
+    bool drop_unstarted();
 
     void on_agent(const agent::AgentEvent& e);
     void on_transcript(std::string text);

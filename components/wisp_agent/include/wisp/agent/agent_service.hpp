@@ -46,7 +46,10 @@
 // take tens of seconds), ToolPrep reports it: its dotted name as soon as
 // the stream has it, then its arguments' length so far, at most every
 // net::LlmClient::kToolProgressMs for each call. Nothing of the arguments
-// themselves; ToolStart follows once the reply is complete.
+// themselves; ToolStart follows once the reply is complete. A call skipped
+// (a stop, the step limit) or cut off by a failed reply gets no ToolStart
+// at all: one still without it at the next State Thinking or at TurnEnd
+// never ran (agent spec 3.8).
 //
 // Threads: submit(), stop_turn(), new_conversation(), state(), view() and
 // the listener calls may come from any thread. Listeners and the

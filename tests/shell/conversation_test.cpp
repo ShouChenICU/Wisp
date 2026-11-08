@@ -624,3 +624,94 @@ TEST_F(ConversationTest, ThinkingAfterAToolIsAPassingStep) {
     EXPECT_EQ(conv->current().step_count, 1);
     EXPECT_FALSE(early_thinking.load());
 }
+
+// A call the model wrote but that never ran is no step: it neither stays
+// running nor counts in the total.
+TEST_F(ConversationTest, ACallSkippedAtTheStepLimitIsNoStep) {
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    start(true, [&](wisp::agent::ToolRegistry& tools) { add_test_tool(tools, "scene.list"); });
+    for (uint32_t i = 0; i <= wisp::agent::kMaxSteps; ++i)
+        server.llm().push(tool_call("c" + std::to_string(i), "scene_list", "{}"));
+    ASSERT_TRUE(agent->submit("一直看", Source::Web));
+    ASSERT_TRUE(wait_turns(1, 15000));
+    const TurnView v = conv->current();
+    EXPECT_EQ(v.steps_total, wisp::agent::kMaxSteps);
+    // The skipped call's row is gone; the one it pushed out of the kept
+    // rows does not come back.
+    ASSERT_GE(v.step_count, 1);
+    for (size_t i = 0; i < v.step_count; ++i) {
+        EXPECT_EQ(label(v.steps[i]), "查看场景列表");
+        EXPECT_EQ(v.steps[i].st, TurnStep::State::Done);
+    }
+    EXPECT_EQ(v.running_step(), nullptr);
+}
+
+TEST_F(ConversationTest, ACallSkippedByAStopIsNoStep) {
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    std::atomic<bool> gate{false};
+    start(true, [&](wisp::agent::ToolRegistry& tools) {
+        add_test_tool(tools, "scene.write_file", false, &gate);
+        add_test_tool(tools, "todo.add");
+    });
+    server.llm().push(
+        {.status = 200,
+         .chunks = {FakeLlmServer::sse_tool(0, "c1", "scene_write_file", R"({"path":"a.lua"})"),
+                    FakeLlmServer::sse_tool(1, "c2", "todo_add", R"({"title":"x"})"),
+                    FakeLlmServer::sse_finish("tool_calls"), FakeLlmServer::sse_done()}});
+    ASSERT_TRUE(agent->submit("写完再记", Source::Web));
+    ASSERT_TRUE(wait_until(
+        [&] {
+            const TurnView v = conv->current();
+            return v.step_count == 2 && label(v.steps[0]) == "写入文件 a.lua";
+        },
+        5000));
+    agent->stop_turn();
+    gate = true;
+    ASSERT_TRUE(wait_turns(1));
+    const TurnView v = conv->current();
+    EXPECT_EQ(v.steps_total, 1);
+    ASSERT_EQ(v.step_count, 1);
+    EXPECT_EQ(label(v.steps[0]), "写入文件 a.lua");
+    EXPECT_NE(v.steps[0].st, TurnStep::State::Running);
+    EXPECT_EQ(v.running_step(), nullptr);
+}
+
+TEST_F(ConversationTest, ACallStillBeingWrittenWhenStoppedIsNoStep) {
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    start(true,
+          [&](wisp::agent::ToolRegistry& tools) { add_test_tool(tools, "scene.write_file"); });
+    server.llm().push(
+        {.status = 200,
+         .chunks = {FakeLlmServer::sse_tool(0, "c1", "scene_write_file", R"({"path":"a)"),
+                    FakeLlmServer::sse_tool(0, "", "", R"(.lua"})"),
+                    FakeLlmServer::sse_finish("tool_calls"), FakeLlmServer::sse_done()},
+         .hold_after = 2});
+    ASSERT_TRUE(agent->submit("写个文件", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return conv->current().step_count == 1; }, 5000));
+    agent->stop_turn();
+    ASSERT_TRUE(wait_turns(1));
+    const TurnView v = conv->current();
+    EXPECT_EQ(v.steps_total, 0);
+    EXPECT_EQ(v.step_count, 0);
+    EXPECT_EQ(v.running_step(), nullptr);
+}
+
+TEST_F(ConversationTest, ACallCutByATransportErrorIsNoStep) {
+    wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    start(true,
+          [&](wisp::agent::ToolRegistry& tools) { add_test_tool(tools, "scene.write_file"); });
+    server.llm().push(
+        {.status = 200,
+         .chunks = {FakeLlmServer::sse_tool(0, "c1", "scene_write_file", R"({"path":"a)"),
+                    FakeLlmServer::sse_tool(0, "", "", R"(.lua"})")},
+         .fail = wisp::net::TransportError::Other});
+    ASSERT_TRUE(agent->submit("写个文件", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    bool prepped = false;
+    for (const auto& e : events()) prepped |= e.kind == Kind::ToolPrep;
+    EXPECT_TRUE(prepped);
+    const TurnView v = conv->current();
+    EXPECT_EQ(v.steps_total, 0);
+    EXPECT_EQ(v.step_count, 0);
+    EXPECT_EQ(v.running_step(), nullptr);
+}

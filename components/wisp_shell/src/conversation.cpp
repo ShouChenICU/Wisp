@@ -260,6 +260,22 @@ void ConversationController::on_tool_prep(const agent::AgentEvent& e) {
     if (prep_first_ == 0) prep_first_ = prep_last_;
 }
 
+bool ConversationController::drop_unstarted() {
+    const bool any = prep_first_ != 0;
+    if (any) {
+        // The calls being written are the newest steps: nothing is pushed
+        // past them until their ToolStart takes them over.
+        const uint32_t n = prep_last_ - prep_first_ + 1u;
+        view_.step_count = static_cast<uint8_t>(view_.step_count > n ? view_.step_count - n : 0);
+        view_.steps_total =
+            static_cast<uint16_t>(view_.steps_total > n ? view_.steps_total - n : 0);
+    }
+    prep_first_ = prep_last_ = 0;
+    prep_tool_.clear();
+    prep_bytes_ = 0;
+    return any;
+}
+
 void ConversationController::on_tool_start(const agent::AgentEvent& e) {
     view_.thinking = false;
     os::LargeString label = activity_label(e.tool, e.args, ui::lang());
@@ -350,9 +366,12 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
                 deps_.voice.set_llm_busy(e.state == agent::AgentState::Thinking ||
                                          e.state == agent::AgentState::Output);
                 if (!turn_running_) return;
+                // A reply's ToolStarts all come before the next request:
+                // calls written but not started by then never run.
+                const bool dropped = e.state == agent::AgentState::Thinking && drop_unstarted();
                 const bool thinking =
                     e.state == agent::AgentState::Thinking && view_.steps_total > 0;
-                if (thinking == view_.thinking) return;
+                if (thinking == view_.thinking && !dropped) return;
                 view_.thinking = thinking;
                 break;
             }
@@ -372,6 +391,9 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
                     }
                 }
                 if (!turn_running_) break;
+                // Calls skipped at a stop or the step limit, or cut off by
+                // a failed reply.
+                drop_unstarted();
                 const std::string fallback = parser_.finish();
                 if (speaking_ && !fallback.empty()) {
                     deps_.voice.speak(fallback);
