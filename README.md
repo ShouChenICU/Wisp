@@ -2,7 +2,9 @@
 
 # 🔥 Wisp
 
-**一台由 AI 掌管的掌上设备：没有 App，你说想要什么，它就现场做出来。**
+**English** | [简体中文](README.zh-CN.md)
+
+**A handheld run entirely by AI. There are no apps. Say what you want and it builds it on the spot.**
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-E7352C?style=flat-square&logo=espressif&logoColor=white)
@@ -14,182 +16,184 @@
 
 <table>
   <tr>
-    <td align="center"><img src="docs/images/home.png" width="220"><br><sub>待机</sub></td>
-    <td align="center"><img src="docs/images/agent-steps.png" width="220"><br><sub>Agent 正在动手</sub></td>
-    <td align="center"><img src="docs/images/agent-done.png" width="220"><br><sub>做好了</sub></td>
+    <td align="center"><img src="docs/images/home.png" width="220"><br><sub>Idle</sub></td>
+    <td align="center"><img src="docs/images/agent-steps.png" width="220"><br><sub>The agent at work</sub></td>
+    <td align="center"><img src="docs/images/agent-done.png" width="220"><br><sub>Done</sub></td>
   </tr>
 </table>
+
+<sub>The on-device UI is in Chinese, Japanese or English. These shots were taken in Chinese.</sub>
 
 </div>
 
-## ✨ 它是什么
+## ✨ What it is
 
-按住按键说一句"帮我做个番茄钟"。Agent 会写好界面和逻辑、装好并打开，整个过程都在设备上完成，不用重新编译，也不用连电脑。之后你可以随时重新打开它，或者让 Agent 接着改。
+Hold the key and say "make me a Pomodoro timer". The agent writes the UI and the logic, installs the scene and opens it, all on the device. Nothing is recompiled and no computer is needed. You can reopen the scene any time, or ask the agent to change it.
 
-- **说出需求，就有应用**：每个功能都是 Agent 写的 Lua 场景，改完立即生效。
-- **Agent 掌管整台设备**：屏幕、音频、存储、场景和设置都是它的工具，它做每一步时屏幕上都会显示。
-- **会记住你**：Agent 会记下你的偏好和待办，到点亮屏提醒。
-- **模型自由选择**：对话、语音识别、语音合成都走 OpenAI 兼容接口，每种都可以保存多套配置随时切换。
-- **数据留在本地**：管理后台只在局域网里用，API Key 只能写入、不能读出，删除场景这类大操作要在设备上确认。
-- **不绑定开发板**：硬件分层抽象，大部分开发在 PC 模拟器上完成。
+- **Ask for an app and get one.** Every feature is a Lua scene the agent writes, and changes take effect at once.
+- **The agent runs the whole device.** The screen, audio, storage, scenes and settings are all its tools, and the screen shows each step it takes.
+- **It remembers you.** It keeps your preferences and to-dos, and wakes the screen when a reminder is due.
+- **Bring your own models.** Chat, speech recognition and speech synthesis all use OpenAI-compatible APIs, and each can keep several profiles to switch between.
+- **Your data stays local.** The admin console works only on your LAN. API keys are write-only. Big actions such as deleting a scene are confirmed on the device.
+- **Not tied to one board.** The hardware is abstracted in layers, and most development happens in a PC simulator.
 
 <table>
   <tr>
-    <td align="center"><img src="docs/images/scene-clock.png" width="150"><br><sub>时钟</sub></td>
-    <td align="center"><img src="docs/images/scene-pomodoro.png" width="150"><br><sub>番茄钟</sub></td>
-    <td align="center"><img src="docs/images/scene-weather.png" width="150"><br><sub>天气</sub></td>
-    <td align="center"><img src="docs/images/scene-level.png" width="150"><br><sub>水平仪</sub></td>
-    <td align="center"><img src="docs/images/scene-balls.png" width="150"><br><sub>彩色小球</sub></td>
+    <td align="center"><img src="docs/images/scene-clock.png" width="150"><br><sub>Clock</sub></td>
+    <td align="center"><img src="docs/images/scene-pomodoro.png" width="150"><br><sub>Pomodoro</sub></td>
+    <td align="center"><img src="docs/images/scene-weather.png" width="150"><br><sub>Weather</sub></td>
+    <td align="center"><img src="docs/images/scene-level.png" width="150"><br><sub>Spirit level</sub></td>
+    <td align="center"><img src="docs/images/scene-balls.png" width="150"><br><sub>Colour balls</sub></td>
   </tr>
 </table>
 
-<sub>每个场景都只有一个 <code>main.lua</code>，大多不到 200 行；前四个的源码在 <a href="scenes/examples/"><code>scenes/examples/</code></a>。</sub>
+<sub>Each scene is a single <code>main.lua</code>, most under 200 lines. The first four are in <a href="scenes/examples/"><code>scenes/examples/</code></a>.</sub>
 
-## 👆 怎么用
+## 👆 How to use it
 
-| 操作 | 作用 |
+| Action | What it does |
 | --- | --- |
-| 按住 BOOT 键或长按鬼火 | 说话，松开后发送；它朗读时再按住可以打断 |
-| 右划 / 左划 / 下划 | 设置 / 场景列表 / 对话记录，页面跟着手指走 |
-| 在场景里按住 BOOT 键 | 屏幕底部浮出收音条，不用离开当前场景 |
-| 设置 → 关于本机 → 硬件诊断 | 查看各外设的自检结果 |
+| Hold BOOT, or long-press the wisp | Talk; release to send. Hold again while it speaks to interrupt it |
+| Swipe right / left / down | Settings / scene list / conversation history. Pages follow your finger |
+| Hold BOOT inside a scene | A listening bar slides up at the bottom, so you stay in the scene |
+| Settings → About → Hardware diagnostics | Self-test results for every peripheral |
 
-回复分两层：要朗读的那句话用大字显示，细节以小字显示在下方。Agent 调用工具或写文件时，鬼火下方会逐步列出它正在做什么。
+Replies come in two layers. The sentence to be spoken is shown in large type, and the details appear below in small type. While the agent calls tools or writes files, the steps it is taking are listed under the wisp.
 
-## 🧩 核心模块
+## 🧩 Core modules
 
-| 模块 | 说明 |
+| Module | Description |
 | --- | --- |
-| 🔥 **系统外壳** | 主界面是一团完全由代码实时绘制的蓝色小鬼火，在待机、收听、思考、说话时表情都不一样。外壳用原生 C++ 写成，所以场景写坏了也总能回到主界面。 |
-| 🎭 **场景** | 每个功能都是一个场景：`scene.json` 加 `main.lua`，用声明式界面写成，状态一变界面就跟着更新。每个场景跑在独立的 Lua 沙箱里，有内存和时间上限，只能访问它声明过的 HTTPS 域名。 |
-| 🤖 **Agent** | 平台工具可以创建、修改、打开和删除场景，读写记忆和待办，调整设备设置；场景也可以向 Agent 注册自己的工具。工具的返回值只当作数据，不当作指令。 |
-| 🎙️ **语音** | 按住说话、松开识别，回复中 `<say>` 标出的那句会送去朗读，扬声器按优先级分配，闹钟优先于朗读。识别和合成都可以单独换服务商，推荐用硅基流动。 |
-| 🧠 **记忆与提醒** | 记忆笔记加上带时间的待办，到点亮屏响铃。管理后台可以查看和删除。 |
-| 🌐 **管理后台** | 浏览器打开 `http://wisp.local:8900`，用屏幕上的 6 位配对码登录，可以网页聊天，管理网络、模型、记忆、场景，查看日志、上传固件。整个后台是约 100 KB 的原生 JavaScript，打包在固件里，支持中文、日文和英文。 |
+| 🔥 **Shell** | The home screen is a small blue will-o'-the-wisp, drawn live in code, with its own expressions for idle, listening, thinking and speaking. The shell is native C++, so you can always get back home even when a scene is broken. |
+| 🎭 **Scenes** | Every feature is a scene: a `scene.json` plus a `main.lua` that declares its UI. When the state changes, the UI follows. Each scene runs in its own Lua sandbox with memory and time limits, and it can reach only the HTTPS hosts it declares. |
+| 🤖 **Agent** | Its platform tools create, edit, open and delete scenes, read and write memory and to-dos, and change device settings. Scenes can register tools of their own. Tool results are treated as data, never as instructions. |
+| 🎙️ **Voice** | Hold to talk and release to transcribe. The sentence marked `<say>` in a reply is spoken aloud. The speaker is shared by priority, so alarms come before speech. Recognition and synthesis can each use a different provider; SiliconFlow is recommended. |
+| 🧠 **Memory & reminders** | Memory notes plus to-dos with due times. When one is due, the screen lights up and it rings. You can view and delete them in the admin console. |
+| 🌐 **Admin console** | Open `http://wisp.local:8900` in a browser and sign in with the 6-digit code shown on the screen. From there you can chat, manage networks, models, memory and scenes, watch logs and upload firmware. The console is about 100 KB of plain JavaScript built into the firmware, in Chinese, Japanese and English. |
 
-## 🚀 快速开始
+## 🚀 Quick start
 
-### 💻 模拟器（无需硬件）
+### 💻 Simulator (no hardware)
 
 ```bash
-# Arch：sudo pacman -S cmake ninja sdl2 python curl zlib
-# Debian/Ubuntu：sudo apt-get install cmake ninja-build libsdl2-dev python3 libcurl4-openssl-dev zlib1g-dev
+# Arch: sudo pacman -S cmake ninja sdl2 python curl zlib
+# Debian/Ubuntu: sudo apt-get install cmake ninja-build libsdl2-dev python3 libcurl4-openssl-dev zlib1g-dev
 git clone https://github.com/ShouChenICU/Wisp.git wisp && cd wisp
 cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 ./build/sim/wisp_sim
 ```
 
-模拟器里用鼠标代替手指；`P` 是电源键，`+` `-` 是音量键，`S` 插拔 SD 卡。终端就是串口控制台，输入 `help` 查看所有命令。管理后台地址是 `http://127.0.0.1:8900`。
+The mouse stands in for your finger. `P` is the power key, `+` and `-` are the volume keys, and `S` inserts or removes the SD card. The terminal is the serial console; type `help` to list its commands. The admin console is at `http://127.0.0.1:8900`.
 
 <details>
-<summary>常用启动参数</summary>
+<summary>Common options</summary>
 
-| 参数 | 作用 |
+| Option | What it does |
 | --- | --- |
-| `--shape rect\|rounded_rect\|circle` | 模拟不同形状的屏幕 |
-| `--headless` / `--screenshot <png>` / `--exit-after-ms <n>` | 无窗口运行、截图、定时退出 |
-| `--data-dir <dir>` | 数据目录，默认 `./sim-data` |
-| `--web-dir <dir>` | 直接从源码目录提供后台网页，改完刷新即可 |
-| `--no-sd` / `--disable <id>` / `--wifi-fail` | 模拟没插卡、某个设备坏了、连不上路由器 |
-| `--tap X,Y@MS` / `--swipe X1,Y1,X2,Y2@MS` | 在指定时间点击或滑动 |
+| `--shape rect\|rounded_rect\|circle` | Simulate a different screen shape |
+| `--headless` / `--screenshot <png>` / `--exit-after-ms <n>` | Run without a window, save a screenshot, exit after a delay |
+| `--data-dir <dir>` | Data directory, `./sim-data` by default |
+| `--web-dir <dir>` | Serve the console straight from the source tree; just reload after edits |
+| `--no-sd` / `--disable <id>` / `--wifi-fail` | Simulate no SD card, a failed device, or an unreachable router |
+| `--tap X,Y@MS` / `--swipe X1,Y1,X2,Y2@MS` | Tap or swipe at a given time |
 
 </details>
 
-### 📟 真机
+### 📟 Device
 
-目前支持 **Waveshare ESP32-S3-Touch-AMOLED-2.16**：480×480 AMOLED 触摸屏，配有双麦克风、扬声器、IMU、RTC、电池管理和 SD 卡槽，不需要焊接。
+Supported now: **Waveshare ESP32-S3-Touch-AMOLED-2.16**. It has a 480×480 AMOLED touchscreen, two microphones, a speaker, an IMU, an RTC, battery management and an SD slot, with no soldering needed.
 
 ```bash
-. ~/esp/esp-idf-v6.0.3/export.sh        # fish 等非 bash 终端请用 bash -c '...' 包起来
+. ~/esp/esp-idf-v6.0.3/export.sh        # in fish and other non-bash shells, wrap in bash -c '...'
 cd firmware
 idf.py set-target esp32s3
 idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16
-idf.py build && idf.py -p <串口> flash
+idf.py build && idf.py -p <port> flash
 ```
 
-- **配网**：首次开机时在屏幕上点"开始配网"，用手机扫二维码，或者在串口里输入 `wifi add <名称> <密码>`。
-- **配置模型**：打开管理后台的"模型"页，分别给对话、识别、合成各配一套并设为当前。
-- **更新固件**：
-  - 改了代码之后，用 `idf.py app-flash` 只更新程序，或者在管理后台上传 `wisp.bin` 通过网页更新（OTA）；
-  - 改了字体之后，还要运行 `idf.py fonts-flash`，因为字体存在单独的分区里，只更新程序不会写入。
+- **Wi-Fi:** on first boot, tap "Set up Wi-Fi" on the screen and scan the QR code with your phone, or type `wifi add <ssid> <password>` on the serial console.
+- **Models:** on the admin console's Models page, add a profile for chat, one for recognition and one for synthesis, and make each one active.
+- **Updates:**
+  - after a code change, run `idf.py app-flash`, or upload `wisp.bin` in the admin console (OTA);
+  - after a font change, also run `idf.py fonts-flash`. Fonts live in their own partitions, which an app update does not write.
 
-## 🔧 移植到新开发板
+## 🔧 Porting to a new board
 
-Wisp 不绑定某一块板子。和板子有关的东西只放在 `boards/<板名>/` 和 `drivers/` 两个目录里，上层代码完全不用改。参考实现是 [`boards/waveshare_esp32_s3_touch_amoled_2_16/`](boards/waveshare_esp32_s3_touch_amoled_2_16/)。
+Wisp is not tied to one board. Everything board-specific lives in `boards/<board>/` and `drivers/`, and nothing above them changes. The reference port is [`boards/waveshare_esp32_s3_touch_amoled_2_16/`](boards/waveshare_esp32_s3_touch_amoled_2_16/).
 
-| 步骤 | 做什么 |
+| Step | What to do |
 | --- | --- |
-| 1. 描述硬件 | 用 esp_board_manager 的 YAML 写板型、总线和引脚，屏幕、触摸、音频、SD 卡都在这里声明 |
-| 2. 补驱动 | esp_board_manager 不支持的芯片（IMU、PMU、RTC 等），在 `drivers/<芯片>/` 下写一个 C 组件 |
-| 3. 写 `board.cpp` | 把各个设备包成 `hal::Device`，注册到 `DeviceRegistry`，并通过 caps 声明能力，比如屏幕形状、安全区、有没有麦克风 |
-| 4. 分区与配置 | 按约定写 `partitions.csv`（OTA、`fonts`、`glyphs`、存储）和板级 sdkconfig |
-| 5. 构建与验收 | 用 `-DWISP_BOARD=<板名>` 构建，再对照启动报告、设备清单和硬件诊断页逐项核对 |
+| 1. Describe the hardware | Write the board, buses and pins in esp_board_manager YAML; the display, touch, audio and SD card are declared here |
+| 2. Add drivers | For chips esp_board_manager does not support (IMU, PMU, RTC, …), write a C component under `drivers/<chip>/` |
+| 3. Write `board.cpp` | Wrap each device as a `hal::Device`, register it with `DeviceRegistry`, and declare its capabilities as caps: screen shape, safe area, whether there is a microphone, and so on |
+| 4. Partitions and config | Write `partitions.csv` to the conventions (OTA, `fonts`, `glyphs`, storage) and the board's sdkconfig |
+| 5. Build and verify | Build with `-DWISP_BOARD=<board>`, then check the boot report, the device manifest and the diagnostics page item by item |
 
-缺失或初始化失败的设备只会降级运行，不影响启动，所以可以先点亮屏幕，再逐个补齐外设。
+A missing or failed device only degrades the system; it never stops the boot. So you can get the screen up first and add the other peripherals one at a time.
 
-> 📖 **完整教程见 [移植指南](docs/porting-guide.md)**，包括板名规范、能力字段、分区约定、芯片差异和验收清单。不论是人还是 AI 编程助手，动手前都请先读这份指南和 [`AGENTS.md`](AGENTS.md)，并仿照[已有硬件资料](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md)，为新板子写一份 `docs/hardware/<板名>.md`。
+> 📖 **The full walkthrough is the [porting guide](docs/porting-guide.md).** It covers board naming, capability fields, partition conventions, chip differences and the acceptance checklist. Whether you are a person or an AI coding assistant, read it and [`AGENTS.md`](AGENTS.md) before you start. Then write a `docs/hardware/<board>.md` for the new board, modelled on the [existing hardware notes](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
 
-## 🧱 架构
+## 🧱 Architecture
 
-同一套 C++20 代码可以编译成两个目标：ESP32-S3 固件和 SDL2 模拟器。
+One C++20 code base builds two targets: the ESP32-S3 firmware and an SDL2 simulator.
 
 ```
- wisp_app     启动装配、串口控制台
- wisp_shell   主界面、导航、子页、对话控制
- wisp_agent   对话循环、工具注册、上下文管理
- wisp_scene   Lua 场景运行时
- wisp_ui      LVGL、鬼火渲染、系统层、多语言                可移植层
- wisp_admin   管理后台 REST / WebSocket                     （只依赖下层）
- wisp_voice   收音、ASR、TTS、播放
- wisp_net     Wi-Fi、配对、HTTP
- wisp_core    事件总线、设备注册、存储、记忆、提醒
+ wisp_app     boot wiring, serial console
+ wisp_shell   home screen, navigation, sub-pages, conversation control
+ wisp_agent   conversation loop, tool registry, context management
+ wisp_scene   Lua scene runtime
+ wisp_ui      LVGL, wisp renderer, system layer, i18n          portable layers
+ wisp_admin   admin console REST / WebSocket                   (each depends only
+ wisp_voice   capture, ASR, TTS, playback                       on the ones below)
+ wisp_net     Wi-Fi, pairing, HTTP
+ wisp_core    event bus, device registry, storage, memory, reminders
  wisp_hal · wisp_os · wisp_base
  ───────────────────────────────────────────────
- wisp_port_esp（FreeRTOS + ESP-IDF） │ wisp_port_sim（std::thread + SDL2）
- boards/ 板级定义 · drivers/ 芯片驱动
+ wisp_port_esp (FreeRTOS + ESP-IDF) │ wisp_port_sim (std::thread + SDL2)
+ boards/ board definitions · drivers/ chip drivers
 ```
 
-设计上有几条原则：
+A few principles:
 
-- **分层**：可移植层不引用平台头文件，也不反向依赖上层，由 `tools/check_layering.py` 自动检查。
-- **服务层**：Agent 工具、REST 接口和 Lua 绑定都只是同一组服务的薄适配层，不能绕过服务直接操作驱动。
-- **屏幕形状**：屏幕可能是圆形或圆角的，所有界面都按 Display caps 给出的安全区布局。
-- **内存**：内部 SRAM 按预算使用，大块内存一律放进 PSRAM，每次改动后用串口命令 `mem` 在真机上实测。
+- **Layering.** Portable layers include no platform headers and never depend on a layer above them. `tools/check_layering.py` enforces this.
+- **Services.** Agent tools, REST routes and Lua bindings are thin adapters over one set of services. Nothing bypasses the services to reach a driver.
+- **Screen shape.** Screens may be round or have rounded corners, so every UI lays itself out in the safe area that the Display caps give.
+- **Memory.** Internal SRAM is spent against a budget. Large buffers go to PSRAM, and changes are measured on the device with the `mem` serial command.
 
-详见[架构文档](docs/architecture.md)、[场景 API](docs/scene-api.md) 和[硬件资料](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md)。
+More in the [architecture notes](docs/architecture.md), the [scene API](docs/scene-api.md) and the [hardware notes](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
 
-## 🗺️ 路线图
+## 🗺️ Roadmap
 
-| | 功能 | 内容 | 状态 |
+| | Feature | Scope | Status |
 | --- | --- | --- | --- |
-| 🧱 | 系统底座 | 设备抽象、存储、电源与待机 | ✅ |
-| 🌐 | 管理后台 | Wi-Fi 与扫码配网、局域网后台、多套模型配置、网页更新固件 | ✅ |
-| 🎭 | 场景运行时 | Lua 沙箱、声明式界面、后台场景、通知、场景文件 | ✅ |
-| 🤖 | Agent | 工具调用、场景读写与控制、上下文压缩、步骤实时显示 | ✅ |
-| 🎙️ | 语音 | 按住说话、识别、`<say>` 朗读、打断 | ✅ |
-| 🧠 | 记忆与提醒 | 偏好笔记、带时间的待办、到点提醒 | ✅ |
-| 🔥 | 系统外壳 | 鬼火主界面、跟手导航、设置、场景列表、对话记录 | ✅ |
-| 🔌 | MCP 客户端 | 接入远程 MCP 服务器，把外部工具和数据源交给 Agent | 📋 |
-| 🗣️ | 更自然的语音 | 唤醒词、流式识别与实时字幕、百炼 / 火山 / 讯飞等流式服务 | 📋 |
-| 🐾 | 鬼火互动 | 摸摸头等触摸互动、更多表情、颜色预设、场景内迷你鬼火 | 📋 |
-| ⏰ | 调度与自动化 | 定时任务和事件规则，到点或事件发生时由 Agent 自动执行 | 📋 |
-| 📦 | 场景生态 | 导出分享、版本回滚、固定常用场景、后台场景编辑器 | 📋 |
-| 🛡️ | 安全与自我演化 | 权限分级、操作审计，在可回滚的前提下改进自己的工具和提示词 | 📋 |
+| 🧱 | Foundation | Device abstraction, storage, power and standby | ✅ |
+| 🌐 | Admin console | Wi-Fi and QR setup, LAN console, model profiles, OTA from the browser | ✅ |
+| 🎭 | Scene runtime | Lua sandbox, declarative UI, background scenes, notifications, scene files | ✅ |
+| 🤖 | Agent | Tool calling, scene editing and control, context compaction, live step display | ✅ |
+| 🎙️ | Voice | Hold to talk, recognition, `<say>` speech, interruption | ✅ |
+| 🧠 | Memory & reminders | Preference notes, to-dos with due times, reminders | ✅ |
+| 🔥 | Shell | Wisp home screen, finger-following navigation, settings, scene list, history | ✅ |
+| 🔌 | MCP client | Connect to remote MCP servers, giving the agent outside tools and data sources | 📋 |
+| 🗣️ | More natural voice | Wake word, streaming recognition with live captions, streaming providers such as Bailian, Volcano and iFlytek | 📋 |
+| 🐾 | Wisp interaction | Touch play such as patting its head, more expressions, colour presets, a mini wisp inside scenes | 📋 |
+| ⏰ | Scheduling & automation | Timed jobs and event rules that the agent runs on its own | 📋 |
+| 📦 | Scene ecosystem | Export and sharing, version rollback, pinned scenes, a scene editor in the console | 📋 |
+| 🛡️ | Safety & self-evolution | Permission tiers and audit logs; improving its own tools and prompts, always with rollback | 📋 |
 
-✅ 已完成 · 📋 规划中。更细的待办见 [`docs/backlog.md`](docs/backlog.md)。
+✅ done · 📋 planned. The detailed list is in [`docs/backlog.md`](docs/backlog.md).
 
-## 🤝 贡献代码
+## 🤝 Contributing
 
-欢迎提交 issue 和 PR，人类开发者和 AI 编程助手走同一套流程：
+Issues and pull requests are welcome. People and AI coding assistants follow the same process:
 
-1. **先读规则**：项目规则和约定都在 [`AGENTS.md`](AGENTS.md) 里，动手前先读，再读这次改动涉及的设计 spec。
-2. **按规模走流程**：小修小改可以直接提 PR；新功能和架构改动要先写 spec、讨论通过，再写计划和代码。
-3. **在功能分支上开发**：坚持 TDD，提交前 `bash tools/ci.sh` 必须全部通过。
-4. **提交信息**：用 Conventional Commits 格式。
-5. **PR 描述**：如实写明哪些在模拟器上验证过、哪些在真机上验证过。
+1. **Read the rules first.** The project's rules and conventions are in [`AGENTS.md`](AGENTS.md). Read it, then the design spec your change touches.
+2. **Match the process to the change.** Small fixes can go straight to a PR. New features and architectural changes start with a spec, which is discussed and agreed before the plan and the code.
+3. **Work on a feature branch.** Write the test first, and make sure `bash tools/ci.sh` passes before you commit.
+4. **Write commit messages in the Conventional Commits style.**
+5. **Say how it was verified.** The PR says plainly what was verified in the simulator and what on a device.
 
-📖 **完整的流程、代码要求和 PR 清单见 [贡献指南](CONTRIBUTING.md)。**
+📖 **The full process, code requirements and PR checklist are in the [contributing guide](CONTRIBUTING.md).**
 
-## 📄 许可
+## 📄 License
 
-本项目以 [Apache-2.0](LICENSE) 许可开源。用到和参考的第三方项目登记在 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 和 [`docs/references.md`](docs/references.md)。
+Wisp is open source under the [Apache-2.0](LICENSE) license. Third-party projects used or referenced are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`docs/references.md`](docs/references.md).
