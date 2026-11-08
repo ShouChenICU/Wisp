@@ -17,9 +17,16 @@ idf_component_register(
 # Nothing references the symbol, so the linker is told to keep it.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE WISP_BOARD_NAME="${WISP_BOARD}")
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u wisp_board_desc")
+# By the time this runs, kconfgen has already merged the other board's
+# board_manager.defaults into the sdkconfig, and values taken from a
+# defaults file stick, so that sdkconfig must go too (bmgr deletes only
+# firmware/sdkconfig, not one passed with -D SDKCONFIG).
 if(DEFINED CONFIG_ESP_BOARD_NAME AND NOT CONFIG_ESP_BOARD_NAME STREQUAL WISP_BOARD)
+    idf_build_get_property(_wisp_sdkconfig SDKCONFIG)
     message(FATAL_ERROR "idf.py bmgr selected board \"${CONFIG_ESP_BOARD_NAME}\" but WISP_BOARD is "
-                        "\"${WISP_BOARD}\"; rerun bmgr with -b ${WISP_BOARD} or pass -DWISP_BOARD")
+                        "\"${WISP_BOARD}\"; rerun bmgr with -b ${WISP_BOARD} or pass -DWISP_BOARD. "
+                        "This configure has merged that board's defaults into ${_wisp_sdkconfig}: "
+                        "delete it before building again")
 endif()
 
 # With XIP the cache stays on while flash is erased or programmed, and a
