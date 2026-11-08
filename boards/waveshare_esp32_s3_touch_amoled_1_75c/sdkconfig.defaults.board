@@ -29,9 +29,9 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # flash auto-suspend, and ESP-IDF v6.0.3's GigaDevice driver does not list
 # 0xC84019 as suspend-capable (spi_flash_chip_gd.c get_caps). Without XIP
 # ESP-IDF disables the cache and stalls the other core during every flash
-# erase/write, so mapped reads are always correct; the costs are UI stalls
-# while flash is written (OTA, LittleFS, NVS) and slower rendering, since
-# code runs from flash through the instruction cache.
+# erase/write, so mapped reads are always correct; the cost is UI stalls
+# while flash is written (OTA, LittleFS, NVS). Code runs from flash through
+# the 32 KB instruction cache set in firmware/sdkconfig.defaults.
 # CONFIG_SPIRAM_XIP_FROM_PSRAM is not set
 # CONFIG_SPI_FLASH_AUTO_SUSPEND is not set
 
