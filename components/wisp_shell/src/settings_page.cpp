@@ -188,6 +188,16 @@ void SettingsPage::add_value_row(lv_obj_t* card, Row which, const char* icon, ui
     if (which == Row::Restart || which == Row::PowerOff) {
         // An action, no page behind it: no chevron.
         lv_obj_set_flex_grow(r.name, 1);
+    } else if (which == Row::Address) {
+        // What the user types into a browser: never cut off. The address
+        // gets its own line under the name and wraps if even that is too
+        // narrow (a round screen's rows near the bottom are).
+        lv_obj_set_flex_grow(r.name, 1);
+        lv_obj_t* box = detail::make_row_box(card);
+        lv_obj_set_style_pad_top(box, 0, 0);
+        lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(box, ui::theme::kGapXs, 0);
+        parts.value = detail::make_text(box, "");
     } else if (which != Row::Diagnostics) {
         parts.value = detail::add_row_value(r.row, "", opens);
     } else {
@@ -233,9 +243,8 @@ void SettingsPage::build(lv_obj_t* list) {
     card = add_group(ui::StrId::SettingsGroupSystem);
     add_value_row(card, Row::Version, WISP_SYMBOL_INFO, ui::StrId::AboutFirmware, false);
     add_value_row(card, Row::Address, WISP_SYMBOL_LINK, ui::StrId::AboutAddress, false);
-    hint = detail::make_row_box(card);
-    lv_obj_set_style_pad_top(hint, 0, 0);
-    detail::make_text(hint, ui::tr(ui::StrId::AboutPairHint), true);
+    detail::make_text(lv_obj_get_parent(value(Row::Address)), ui::tr(ui::StrId::AboutPairHint),
+                      true);
     add_value_row(card, Row::Diagnostics, LV_SYMBOL_SETTINGS, ui::StrId::AboutDiagnostics, true);
     if (deps_.layer != nullptr && deps_.restart)
         add_value_row(card, Row::Restart, LV_SYMBOL_REFRESH, ui::StrId::SettingsRestart, true);
