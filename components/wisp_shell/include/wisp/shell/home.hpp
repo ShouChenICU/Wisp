@@ -3,7 +3,7 @@
 // The home screen (MVP spec 6.2, 6.3): the wisp, the current turn's text,
 // a one-line hint below the wisp, and the home screen's gestures.
 //
-// Layout (home_layout()). Idle, the wisp is kWispIdlePercent of the safe
+// Layout (home_layout()). Idle, the wisp is wisp_idle_percent() of the safe
 // area's short side, centred across the safe area with its centre
 // kWispIdleCentrePercent down it, and the hint band (up to kHintIdleLines)
 // below it. During a turn the wisp shrinks to
@@ -144,6 +144,9 @@ struct HomeLayout {
 // Screen coordinates of what is drawn. Idle (`in_turn` false) leaves
 // heard, say, column and more empty (x1 > x2), and rows unused; hint is
 // empty unless `hint_visible`.
+// The idle wisp's share of the safe area on this screen shape.
+int wisp_idle_percent(const hal::ScreenShape& s);
+
 HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visible,
                        Activity activity = Activity::None);
 

@@ -143,7 +143,7 @@ TEST_P(HomeShapes, LayoutInsideVisibleArea) {
         SCOPED_TRACE(hint ? "with a hint" : "no hint");
         const HomeLayout l = home_layout(shape_, false, hint);
         EXPECT_EQ(lv_area_get_width(&l.wisp),
-                  wisp::ui::wisp_size_px(safe, wisp::shell::kWispIdlePercent));
+                  wisp::ui::wisp_size_px(safe, wisp::shell::wisp_idle_percent(shape_)));
         // Centred across the safe area, a little above its middle.
         EXPECT_NEAR((l.wisp.x1 + l.wisp.x2) / 2.0, (safe.x1 + safe.x2) / 2.0, 1.0);
         EXPECT_NEAR((l.wisp.y1 + l.wisp.y2) / 2.0, idle_centre_y(safe), 1.0);
@@ -654,7 +654,7 @@ protected:
             const lv_area_t a = coords(shell_->wisp()->obj());
             ok = !home().in_turn() && hidden(home().heard_label()) &&
                  lv_area_get_width(&a) ==
-                     wisp::ui::wisp_size_px(safe, wisp::shell::kWispIdlePercent);
+                     wisp::ui::wisp_size_px(safe, wisp::shell::wisp_idle_percent(shape_));
         });
         return ok;
     }
@@ -778,7 +778,7 @@ TEST_F(HomeTest, ReturnsToCentreAfterFade) {
         lv_obj_update_layout(home().screen());
         const lv_area_t a = coords(shell_->wisp()->obj());
         return lv_area_get_width(&a) ==
-                   wisp::ui::wisp_size_px(safe, wisp::shell::kWispIdlePercent) &&
+                   wisp::ui::wisp_size_px(safe, wisp::shell::wisp_idle_percent(shape_)) &&
                std::abs((a.x1 + a.x2) / 2 - (safe.x1 + safe.x2) / 2) <= 1 &&
                std::abs((a.y1 + a.y2) / 2 - idle_centre_y(safe)) <= 1 &&
                hidden(home().heard_label());

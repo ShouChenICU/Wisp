@@ -122,6 +122,10 @@ bool same(const os::LargeString& a, const os::LargeString& b) {
 
 }  // namespace
 
+int wisp_idle_percent(const hal::ScreenShape& s) {
+    return s.kind == hal::ScreenShapeKind::Circle ? kWispIdleCirclePercent : kWispIdlePercent;
+}
+
 Activity activity_for(const TurnView& v) {
     if (v.steps_total == 0) return Activity::None;
     const bool output = !v.say.empty() || !v.body.empty();
@@ -136,7 +140,7 @@ HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visibl
     HomeLayout l;
     if (!in_turn) {
         const int32_t cy = safe.y1 + (safe.y2 - safe.y1 + 1) * kWispIdleCentrePercent / 100;
-        l.wisp = wisp_box(safe, ui::wisp_size_px(safe, kWispIdlePercent), cy);
+        l.wisp = wisp_box(safe, ui::wisp_size_px(safe, wisp_idle_percent(s)), cy);
         const int32_t y1 = l.wisp.y2 + 1 + kGap;
         if (hint_visible)
             l.hint = band(s, y1, std::min(y1 + kHintIdleLines * kBodyLinePx - 1, bottom - kGap));
@@ -335,7 +339,7 @@ bool Home::start() {
     lv_obj_add_flag(hint_, LV_OBJ_FLAG_HIDDEN);
 
     const hal::Area safe = hal::safe_rect(deps_.shape);
-    wisp_ = ui::WispView::create(root_, ui::wisp_size_px(safe, kWispIdlePercent));
+    wisp_ = ui::WispView::create(root_, ui::wisp_size_px(safe, wisp_idle_percent(deps_.shape)));
     if (wisp_ != nullptr) {
         lv_obj_set_align(wisp_->obj(), LV_ALIGN_TOP_LEFT);
         // Its presses reach the screen's handlers too (the drags), and
