@@ -536,6 +536,7 @@ export default {
   'scenes.file_deleted': '已删除 {name}',
   'sys.notify_vol': '通知音量',
   'sys.tts_mute': '静音朗读',
+  'sys.time_24h': '设备使用 24 小时制',
   'sys.deep_after': '灭屏多久后进入深度待机',
   'sys.deep_after_hint': '深度待机会关闭 Wi-Fi 以省电；只要有网络唤醒锁（包括打开着的本页）就不会进入。',
   'sys.deep_never': '永不',

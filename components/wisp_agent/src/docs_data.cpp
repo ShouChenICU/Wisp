@@ -341,13 +341,16 @@ open.
 - `wisp.device.info()` returns `width`, `height`, `shape`, `corner_radius`,
   `safe_area` and `status_area` (see Screen shape), `lang` (`"zh"`, `"ja"` or
   `"en"`), `utc_offset` (minutes east of UTC), `time` (seconds since the epoch,
-  `nil` until the clock is set), `battery` (percent, `nil` when unknown),
-  `charging` and `wifi` (`"off"`, `"connecting"`, `"backoff"` or
-  `"connected"`).
+  `nil` until the clock is set), `time_24h` (the user's time format: `true` for a
+  24-hour clock, `false` for 12-hour; a scene that shows a time follows it, the
+  12-hour form as `lang` writes it: `"下午 3:05"`, `"3:05 PM"`, `"午後3:05"`),
+  `battery` (percent, `nil` when unknown), `charging` and `wifi` (`"off"`,
+  `"connecting"`, `"backoff"` or `"connected"`).
 - `wisp.device.row_span(y)`: see Screen shape.
 - `wisp.device.on(event, fn)` calls `fn(info)`, with `info` as `info()` returns
-  it, on each `"battery"` change, each `"minute"` of the clock and each
-  `"lang"` change. Any other event name is an error.
+  it, on each `"battery"` change, each `"minute"` of the clock (and at once
+  when the time zone or `time_24h` changes) and each `"lang"` change. Any other
+  event name is an error.
 )wispdoc"},
     {"lua/files", R"wispdoc(## wisp.files
 

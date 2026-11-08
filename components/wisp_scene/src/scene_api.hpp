@@ -132,6 +132,7 @@ struct DeviceInfo {
     hal::Area status_area;
     char lang[4] = "zh";
     int32_t utc_offset_min = 480;
+    bool time_24h = true;
     bool has_time = false;
     int64_t time = 0;  // seconds since the epoch
     bool has_battery = false;

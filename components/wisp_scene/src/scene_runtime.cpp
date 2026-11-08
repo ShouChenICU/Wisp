@@ -178,6 +178,11 @@ void SceneRuntime::seed_utc_offset(int minutes) {
     utc_offset_min_.compare_exchange_strong(unset, minutes);
 }
 
+void SceneRuntime::seed_time_24h(bool h24) {
+    int unset = -1;
+    time_24h_.compare_exchange_strong(unset, h24 ? 1 : 0);
+}
+
 int SceneRuntime::utc_offset_min() const {
     const int v = utc_offset_min_.load();
     return v == kUnsetOffset ? deps_.utc_offset_min : v;
@@ -226,6 +231,16 @@ Result<void> SceneRuntime::start() {
             if (before != now && !push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) &&
                 running_)
                 WLOG_W(kTag, "time zone change not passed on now (scene queue full): next minute");
+        }
+        auto h24 = e.payload.find("time_24h");
+        if (h24 != e.payload.end() && h24->second.type() == Value::Type::Bool) {
+            const int now = h24->second.as_bool() ? 1 : 0;
+            int before = time_24h_.exchange(now);
+            if (before < 0) before = 1;
+            if (before != now && !push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) &&
+                running_)
+                WLOG_W(kTag,
+                       "time format change not passed on now (scene queue full): next minute");
         }
         auto it = e.payload.find("language");
         if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
@@ -1935,6 +1950,7 @@ DeviceInfo SceneRuntime::device_info() const {
     const char* lang = ui::lang_code(set < 0 ? ui::lang() : static_cast<ui::Lang>(set));
     std::snprintf(i.lang, sizeof(i.lang), "%s", lang);
     i.utc_offset_min = utc_offset_min();
+    i.time_24h = time_24h_.load() != 0;
     if (auto t = wall_now()) {
         i.has_time = true;
         i.time = *t;

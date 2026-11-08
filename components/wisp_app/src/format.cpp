@@ -102,15 +102,4 @@ std::string format_time(int64_t unix_s) {
     return buf;
 }
 
-std::string format_hhmm(int64_t unix_s) {
-    std::time_t t = static_cast<std::time_t>(unix_s);
-    std::tm tm{};
-    gmtime_r(&t, &tm);
-    // The modulos bound what GCC's -Wformat-truncation assumes each field
-    // can print (see format_time()).
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%02d:%02d", tm.tm_hour % 24, tm.tm_min % 60);
-    return buf;
-}
-
 }  // namespace wisp::app

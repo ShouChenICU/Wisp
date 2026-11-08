@@ -244,7 +244,7 @@
 | 工具 | 说明 | 风险 | 超时 |
 |---|---|---|---|
 | `device.status()` | 电量、充电、网络、存储用量、电源级别、外设占用、屏幕形状与安全区 | 普通 | 5 s |
-| `settings.get()` | `display/brightness`、`audio/volume`、`audio/notify_vol`、熄屏时间、语言 | 普通 | 5 s |
+| `settings.get()` | `display/brightness`、`audio/volume`、`audio/notify_vol`、熄屏时间、语言、时间格式 `sys/time_24h` | 普通 | 5 s |
 | `settings.set(key, value)` | 只允许上一行列出的键，校验与网页设置相同（`SystemSettings`） | 说明 | 5 s |
 | `notify.list()`、`notify.dismiss(source, id)` | 通知（3b-1 spec 5） | 普通 | 5 s |
 | `docs.read(topic)` | 主题：`widgets`、`widget/<name>`、`lua`、`lua/<module>`、`screen`、`examples`、`example/<id>`。内容编译进固件，由控件白名单和 `docs/scene-api.md` 生成 | 普通 | 5 s |

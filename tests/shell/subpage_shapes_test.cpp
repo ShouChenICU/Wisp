@@ -1,10 +1,12 @@
 // The sub-pages on every screen shape (AGENTS.md, screen shape; spec 5.6
-// of the base spec): scrolled to either end, the first and the last row
-// lie wholly on the visible screen, and every row or card is a thumb's
-// height at least.
+// of the base spec): the title is the list's first item and scrolls with
+// it; scrolled to the top, the title (below the status capsule) and the
+// first row lie wholly on the visible screen, scrolled to the bottom the
+// last row does, and every row or card is a thumb's height at least.
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <future>
 #include <map>
 #include <memory>
@@ -17,6 +19,7 @@
 #include "wisp/shell/history.hpp"
 #include "wisp/shell/scene_list.hpp"
 #include "wisp/shell/settings_page.hpp"
+#include "wisp/ui/system_layer.hpp"
 
 using wisp::shell::Page;
 using wisp::test::box_visible;
@@ -92,6 +95,8 @@ protected:
         d.wifi_status = [] { return std::string("已连接 WispLab  10.0.0.7"); };
         d.admin_url = [] { return std::string("http://10.0.0.7:8900"); };
         d.firmware_version = [] { return std::string("0.4.2"); };
+        d.restart = [] {};
+        d.power_off = [] {};
         h->boot();
     }
 
@@ -103,30 +108,45 @@ protected:
         agent_h.reset();
     }
 
-    // The visible rows of `list`, top to bottom.
+    // The visible rows of `list` under its title, top to bottom.
     static std::vector<lv_obj_t*> rows(lv_obj_t* list) {
         std::vector<lv_obj_t*> out;
-        for (uint32_t i = 0; i < lv_obj_get_child_count(list); ++i) {
+        for (uint32_t i = 1; i < lv_obj_get_child_count(list); ++i) {
             lv_obj_t* c = lv_obj_get_child(list, static_cast<int32_t>(i));
             if (!is_hidden(c)) out.push_back(c);
         }
         return out;
     }
 
-    // Scrolled to the top `first` is visible, to the bottom `last`.
+    // The page's title: the list's first item.
+    static lv_obj_t* title_of(lv_obj_t* list) { return lv_obj_get_child(list, 0); }
+
+    // Scrolled to the top the title and `first` are visible, the title
+    // below the status capsule; to the bottom `last` is. In between the
+    // title moves with the rows. Left scrolled to the bottom.
     void check_ends(lv_obj_t* list, lv_obj_t* first, lv_obj_t* last) {
         const wisp::hal::ScreenShape& s = h->shape();
+        lv_obj_t* title = title_of(list);
         lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
         lv_obj_update_layout(list);
+        const lv_area_t t = coords_of(title);
+        EXPECT_TRUE(box_visible(s, t)) << "title " << str(t);
+        EXPECT_GT(t.y1, wisp::ui::SystemLayer::status_area(s).y2) << "title " << str(t);
+        EXPECT_GT(coords_of(first).y1, t.y2);
         EXPECT_TRUE(box_visible(s, coords_of(first))) << "first " << str(coords_of(first));
+        // The list starts at the screen's top: the title's rows are the
+        // list's, not a fixed band above it.
+        EXPECT_EQ(coords_of(list).y1, 0);
         lv_obj_scroll_to_y(list, LV_COORD_MAX, LV_ANIM_OFF);
         lv_obj_update_layout(list);
         EXPECT_LE(lv_obj_get_scroll_bottom(list), 0);
         EXPECT_TRUE(box_visible(s, coords_of(last))) << "last " << str(coords_of(last));
-        // The title too: the first thing in the page's root, the list's
-        // parent.
-        lv_obj_t* title = lv_obj_get_child(lv_obj_get_parent(list), 0);
-        EXPECT_TRUE(box_visible(s, coords_of(title))) << "title " << str(coords_of(title));
+        const int32_t n = std::min<int32_t>(40, lv_obj_get_scroll_y(list));
+        lv_obj_scroll_to_y(list, n, LV_ANIM_OFF);
+        lv_obj_update_layout(list);
+        EXPECT_EQ(coords_of(title).y1, t.y1 - n);
+        lv_obj_scroll_to_y(list, LV_COORD_MAX, LV_ANIM_OFF);
+        lv_obj_update_layout(list);
     }
 
     std::unique_ptr<wisp::test::AgentHarness> agent_h;
@@ -186,11 +206,45 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
         h->on_ui([&] {
             wisp::shell::SettingsPage* p = h->shell().settings_page();
             ASSERT_NE(p, nullptr);
-            const auto r = rows(p->list());
-            ASSERT_GE(r.size(), 5u);
-            for (lv_obj_t* row : r) EXPECT_GE(lv_obj_get_height(row), 48);
-            check_ends(p->list(), r.front(), r.back());
-            EXPECT_TRUE(box_visible(h->shape(), coords_of(p->diagnostics())));
+            ASSERT_EQ(p->groups(), 5u);
+            using Row = wisp::shell::SettingsPage::Row;
+            for (Row r : {Row::ScreenOff, Row::DeepStandby, Row::Wifi, Row::Language, Row::TimeZone,
+                          Row::TimeFormat, Row::Version, Row::Address, Row::Diagnostics,
+                          Row::Restart, Row::PowerOff})
+                EXPECT_GE(lv_obj_get_height(p->row(r)), 48);
+            check_ends(p->list(), p->heading(0), p->row(Row::PowerOff));
+            EXPECT_TRUE(box_visible(h->shape(), coords_of(p->row(Row::PowerOff))));
+            // Every row of every card is inside the screen's visible part
+            // once scrolled to; its text inside the row.
+            for (size_t g = 0; g < p->groups(); ++g) {
+                lv_obj_t* card = p->card(g);
+                for (uint32_t i = 0; i < lv_obj_get_child_count(card); ++i) {
+                    lv_obj_t* row = lv_obj_get_child(card, static_cast<int32_t>(i));
+                    lv_obj_scroll_to_view_recursive(row, LV_ANIM_OFF);
+                    lv_obj_update_layout(p->list());
+                    const lv_area_t a = coords_of(row);
+                    EXPECT_TRUE(box_visible(h->shape(), a)) << g << "/" << i << " " << str(a);
+                    for (uint32_t k = 0; k < lv_obj_get_child_count(row); ++k) {
+                        const lv_area_t c =
+                            coords_of(lv_obj_get_child(row, static_cast<int32_t>(k)));
+                        EXPECT_GE(c.x1, a.x1) << g << "/" << i << "/" << k;
+                        EXPECT_LE(c.x2, a.x2) << g << "/" << i << "/" << k;
+                    }
+                }
+            }
+        });
+        // A choice page: its first and last rows at the scroll ends.
+        h->on_ui([&] {
+            lv_obj_send_event(
+                h->shell().settings_page()->row(wisp::shell::SettingsPage::Row::TimeZone),
+                LV_EVENT_CLICKED, nullptr);
+        });
+        ASSERT_TRUE(h->ui_until([&] { return h->shell().choice_page() != nullptr; }));
+        h->on_ui([&] {
+            wisp::shell::ChoicePage* c = h->shell().choice_page();
+            lv_obj_update_layout(c->list());
+            for (size_t i = 0; i < c->count(); ++i) EXPECT_GE(lv_obj_get_height(c->row(i)), 48);
+            check_ends(c->list(), c->row(0), c->row(c->count() - 1));
         });
     }
 }
@@ -208,7 +262,7 @@ TEST_P(SubPageShapes, LoadingStateInsideVisibleArea) {
         lv_obj_update_layout(lv_screen_active());
         ASSERT_GT(p->placeholders(), 0u);
         lv_obj_t* list = lv_obj_get_parent(lv_obj_get_parent(p->placeholder(0)));
-        lv_obj_t* title = lv_obj_get_child(lv_obj_get_parent(list), 0);
+        lv_obj_t* title = title_of(list);
         const lv_area_t t = coords_of(title);
         EXPECT_TRUE(box_visible(h->shape(), t)) << "title " << str(t);
         for (size_t i = 0; i < p->placeholders(); ++i) {
@@ -224,7 +278,9 @@ TEST_P(SubPageShapes, LoadingStateInsideVisibleArea) {
 INSTANTIATE_TEST_SUITE_P(
     Shapes, SubPageShapes,
     ::testing::Values(ShapeCase{"rect", 480, 480}, ShapeCase{"rounded_rect", 480, 480},
-                      ShapeCase{"circle", 480, 480}, ShapeCase{"circle", 360, 360}),
+                      ShapeCase{"circle", 480, 480}, ShapeCase{"circle", 466, 466},
+                      ShapeCase{"circle", 360, 360}, ShapeCase{"circle", 360, 480}),
     [](const ::testing::TestParamInfo<ShapeCase>& info) {
-        return std::string(info.param.shape) + "_" + std::to_string(info.param.width);
+        return std::string(info.param.shape) + "_" + std::to_string(info.param.width) + "x" +
+               std::to_string(info.param.height);
     });

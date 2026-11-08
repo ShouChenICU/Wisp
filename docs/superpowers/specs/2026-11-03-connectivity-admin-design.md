@@ -248,7 +248,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 
 ### 5.4 `SystemSettings`（`wisp_core`）
 
-封装亮度（`display`/`brightness`）、音量、自动熄屏时间、设备界面语言（`sys`/`lang`，取值 `zh`/`ja`/`en`，默认 `zh`，见 8.3）、时区 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480；场景 spec 5.2）、校时服务器 `ntp_servers`（`sys`/`ntp`，逗号分隔的 1–2 个主机名或 IPv4 地址，每个不超过 63 个字符，默认 `pool.ntp.org,ntp.aliyun.com`；见 5.6）、Agent 每轮上限 `agent_max_steps`（`agent`/`max_steps`，8–200，默认 60）与 `agent_turn_min`（`agent`/`turn_min`，2–60 分钟，默认 15；agent-core spec 3.1，从下一轮对话开始生效）这些 Settings 键：校验取值范围，写入后立即生效（例如亮度立即应用到 `display.main`）。后台网页、以后的 Agent 工具和设置页都调用它。
+封装亮度（`display`/`brightness`）、音量、自动熄屏时间、设备界面语言（`sys`/`lang`，取值 `zh`/`ja`/`en`，默认 `zh`，见 8.3）、时区 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480；场景 spec 5.2）、校时服务器 `ntp_servers`（`sys`/`ntp`，逗号分隔的 1–2 个主机名或 IPv4 地址，每个不超过 63 个字符，默认 `pool.ntp.org,ntp.aliyun.com`；见 5.6）、时间格式 `time_24h`（`sys`/`time_24h`，布尔，默认 true 即 24 小时制，false 为 12 小时制；设备上所有面向用户的时钟文字都按它显示，见 MVP spec 6.4）、Agent 每轮上限 `agent_max_steps`（`agent`/`max_steps`，8–200，默认 60）与 `agent_turn_min`（`agent`/`turn_min`，2–60 分钟，默认 15；agent-core spec 3.1，从下一轮对话开始生效）这些 Settings 键：校验取值范围，写入后立即生效（例如亮度立即应用到 `display.main`）。后台网页、以后的 Agent 工具和设置页都调用它。
 
 ### 5.5 事件主题（同步写入 `docs/architecture.md`）
 
@@ -258,7 +258,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | `net.ap.state` | `WifiService` | `{active, ssid, clients}`（不含密码） |
 | `net.pairing.code` | `PairingService` | `{active, expires_ms}`（不含配对码） |
 | `net.pairing.failed` | `PairingService` | `{attempts, locked}` |
-| `system.settings` | `App`（`SystemSettings` 的 `on_changed`） | `{brightness, volume, screen_off_s, language, utc_offset_min, ntp_servers}`：每批设置写入成功后的全部当前值（与 `GET /settings` 同形） |
+| `system.settings` | `App`（`SystemSettings` 的 `on_changed`） | `{brightness, volume, screen_off_s, language, utc_offset_min, ntp_servers, time_24h, …}`：每批设置写入成功后的全部当前值（与 `GET /settings` 同形） |
 | `system.time` | `TimeSyncService` | `{state, server, time}`：每次校时尝试结束后发布；`state` 为 `synced`（`time` 为同步到的 UTC 秒）或 `failed`（不含 `time`，`server` 是最后问过的服务器），见 5.6 |
 | `model.profiles` | `ModelProfileService` | `{active:{llm,asr,tts}, count}`：任何配置被新建、修改、删除或激活后（不含 Key、地址） |
 | `system.firmware` | 固件更新服务 | `{state, version}`：`state` 为 `received`（已写入并校验，等待设备确认）/`confirmed`（即将重启）/`rejected`（设备上点了否或 2 分钟未确认）/`failed`（写入或校验失败，附 `error`） |

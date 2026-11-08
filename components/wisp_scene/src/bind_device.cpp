@@ -128,7 +128,7 @@ namespace detail {
 
 void push_device_info(lua_State* L, const DeviceInfo& i) {
     luaL_checkstack(L, 3, "device info");
-    lua_createtable(L, 0, 12);
+    lua_createtable(L, 0, 13);
     set_int(L, "width", i.shape.width);
     set_int(L, "height", i.shape.height);
     lua_pushstring(L, shape_name(i.shape.kind));
@@ -149,6 +149,8 @@ void push_device_info(lua_State* L, const DeviceInfo& i) {
     lua_pushstring(L, i.lang);
     lua_setfield(L, -2, "lang");
     set_int(L, "utc_offset", i.utc_offset_min);
+    lua_pushboolean(L, i.time_24h ? 1 : 0);
+    lua_setfield(L, -2, "time_24h");
     if (i.has_time) set_int(L, "time", i.time);
     if (i.has_battery) set_int(L, "battery", i.battery);
     lua_pushboolean(L, i.charging ? 1 : 0);

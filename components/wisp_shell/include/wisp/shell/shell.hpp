@@ -37,12 +37,26 @@
 // front meanwhile (a scene), the drag snaps back instead. show(),
 // open_diagnostics() and stop() end a drag or slide at once, snapped back.
 //
+// Choice pages (wisp/shell/choice_page.hpp, mvp spec 6.4). A settings
+// row that opens one has open_choice() build it on a screen of its own
+// and load it, over the settings page, which stays as it is. The page
+// is then still Settings (page()), with choice_page() set. A drag to the
+// right on it brings the settings page back the same way a page drag
+// does, following the finger, and deletes the choice page; so does a
+// pick, at once. show(), open_diagnostics() and stop() close it first.
+//
+// Language. The shell follows ui::lang() (which the system duties set
+// from the system.settings event): when it changes, the home screen
+// re-texts and an open sub-page is built again in the new language, at
+// the scroll position it had, on the talk overlay's tick (at most
+// a quarter of a second later; while a drag runs, once it is over).
+//
 // The scene list is listed on the storage worker (ShellDeps::list_scenes
 // in a submit_io job), sorted by ShellDeps::recents, and handed to the
 // page on the UI thread; while it is open every scene.state event lists it
 // again.
 //
-// The hardware diagnostics (the self-check screen, "About -> Hardware
+// The hardware diagnostics (the self-check screen, "System -> Hardware
 // diagnostics" in spec 6.4) is not built at boot: open_diagnostics() has
 // the App build it on a screen of its own and load it, and a back swipe
 // (or show(Home)) brings the home screen back and has the App tear it
@@ -87,7 +101,9 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/shell/choice_page.hpp"
 #include "wisp/shell/scene_list.hpp"
+#include "wisp/ui/strings.hpp"
 #include "wisp/voice/voice_service.hpp"
 
 namespace wisp::ui {
@@ -174,6 +190,9 @@ struct ShellDeps {
     std::function<void()> start_wifi_setup;
     // Queues a job on the storage worker; false if it was not taken.
     std::function<bool(std::function<void()>)> submit_io;
+    // The settings page's restart and power off, after its confirm dialog;
+    // posted to the UI thread. Empty: the row is not there.
+    std::function<void()> restart, power_off;
 };
 
 class Shell {
@@ -218,6 +237,13 @@ public:
     // while there is nothing to show).
     TalkOverlay* talk() const { return talk_.get(); }
 
+    // Shows a choice page over the settings page; a no-op on any other
+    // page. Its pick, then the page closes (posted).
+    void open_choice(ChoiceSpec spec);
+    // The open choice page and its screen, or nullptr.
+    ChoicePage* choice_page() const { return choice_.get(); }
+    lv_obj_t* choice_screen() const { return choice_screen_; }
+
     // Opens the hardware diagnostics over the home screen; a no-op while
     // they are open. The back handler -> close_diagnostics(), show(Home).
     void open_diagnostics();
@@ -233,6 +259,13 @@ private:
     void post_show(Page p);
     lv_obj_t* build_page(Page p);
     void delete_page();
+    // Deletes the choice page, loading the settings page first when the
+    // choice page is in front.
+    void close_choice();
+    // The open sub-page built again (a language change).
+    void rebuild_page();
+    // Re-texts the pages when ui::lang() changed.
+    void follow_lang();
     // Destroys the sub-page objects (their screen stays).
     void drop_pages();
     // Lists the scenes on the worker for the open scene list.
@@ -251,6 +284,8 @@ private:
         int32_t ux = 0, uy = 0, extent = 1;
         int32_t offset = 0;
         bool complete = false;
+        // From a choice page back to the settings page.
+        bool from_choice = false;
         // Made unscrollable while the drag runs.
         std::vector<lv_obj_t*> frozen;
         // What the press started on (watched for its deletion; nullptr
@@ -314,6 +349,12 @@ private:
     std::unique_ptr<HistoryPage> history_;
     std::unique_ptr<SceneList> scenes_;
     std::unique_ptr<SettingsPage> settings_;
+    // The choice page over the settings page, its screen and root.
+    std::unique_ptr<ChoicePage> choice_;
+    lv_obj_t* choice_screen_ = nullptr;
+    lv_obj_t* choice_root_ = nullptr;
+    // The language the pages were built in.
+    ui::Lang lang_ = ui::Lang::Zh;
     // Replaced with each sub-page: a scene listing still on its way finds
     // its page gone.
     std::shared_ptr<bool> page_alive_;

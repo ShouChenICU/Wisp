@@ -389,13 +389,14 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
                         {"light_sleep", Value(true)},
                         {"notify_vol", Value(60)},
                         {"tts_mute", Value(false)},
+                        {"time_24h", Value(true)},
                         {"agent_max_steps", Value(60)},
                         {"agent_turn_min", Value(15)}}));
 
     HttpResponse put = f.srv->handle(
         authed(token, Put, "/api/v1/settings",
                R"({"brightness":100,"volume":30,"utc_offset_min":-210,"ntp_servers":"10.0.0.1",)"
-               R"("agent_max_steps":120,"agent_turn_min":30})"));
+               R"("agent_max_steps":120,"agent_turn_min":30,"time_24h":false})"));
     EXPECT_EQ(put.status, 200);
     Value now(Map{{"brightness", Value(100)},
                   {"volume", Value(30)},
@@ -407,6 +408,7 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
                   {"light_sleep", Value(true)},
                   {"notify_vol", Value(60)},
                   {"tts_mute", Value(false)},
+                  {"time_24h", Value(false)},
                   {"agent_max_steps", Value(120)},
                   {"agent_turn_min", Value(30)}});
     EXPECT_EQ(body_json(put), now);
@@ -436,6 +438,8 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
                             R"({"agent_turn_min":1})",
                             R"({"agent_turn_min":61})",
                             R"({"agent_turn_min":2.5})",
+                            R"({"time_24h":1})",
+                            R"({"time_24h":"true"})",
                             "[1]",
                             "3"}) {
         HttpResponse r = f.srv->handle(authed(token, Put, "/api/v1/settings", bad));

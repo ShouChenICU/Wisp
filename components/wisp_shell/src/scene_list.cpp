@@ -183,14 +183,13 @@ void SceneList::build(lv_obj_t* list) {
 }
 
 void SceneList::show_loading() {
-    // Rows wholly inside the safe area below the list's top, so every
-    // placeholder is on the visible screen.
+    // Rows wholly inside the safe area below the grid's top (under the
+    // title), so every placeholder is on the visible screen.
     lv_obj_update_layout(list_);
-    lv_area_t list_area;
-    lv_obj_get_coords(list_, &list_area);
+    lv_area_t grid_area;
+    lv_obj_get_coords(grid_, &grid_area);
     const hal::Area safe = hal::safe_rect(deps_.shape);
-    const int32_t room =
-        safe.y2 + 1 - (list_area.y1 + lv_obj_get_style_pad_top(list_, LV_PART_MAIN));
+    const int32_t room = safe.y2 + 1 - grid_area.y1;
     const int32_t rows = std::max<int32_t>(1, (room + kGap) / (card_px_ + kGap));
     const bool colour = detail::colour_panel(list_);
     for (int32_t i = 0; i < rows * columns_; ++i) {

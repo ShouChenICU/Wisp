@@ -178,6 +178,7 @@ private:
     // The utc_offset_min setting as of that sync, for the time sync row.
     // UI thread only.
     int utc_offset_min_ = 480;
+    bool time_24h_ = true;
     // os::now_ms() of the last periodic network resync (see kNetResyncMs).
     uint64_t last_net_resync_ms_ = 0;
     // os::now_ms() of the last periodic scene list (see kSceneResyncMs).

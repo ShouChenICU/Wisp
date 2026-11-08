@@ -144,7 +144,9 @@
 // ticks, since the local time a scene shows has moved. A system.time
 // event of state "synced" (net::TimeSyncService) fires it the same way,
 // the wall clock itself may have moved, unless the minute the clock now
-// reads already fired.
+// reads already fired. info().time_24h (the Settings time format) is that
+// event's time_24h, else the seed_time_24h() value, else true; a change
+// fires "minute" the same way.
 //
 // HTTP (scene-runtime-core spec 5.3): opening a scene gives the proxy
 // (SceneRuntimeDeps::http) its declared hosts; each wisp.http result is an
@@ -359,6 +361,8 @@ public:
     // event, so a seed loses to any event already seen, whose value is at
     // least as new. Values outside -720..840 are ignored. Any thread.
     void seed_utc_offset(int minutes);
+    // The time format setting (sys/time_24h), the same way.
+    void seed_time_24h(bool h24);
     // The screen went on or off. Any thread. The wanted state is kept and
     // the scene task catches up with it on its next pass, so a message
     // dropped on a full queue only delays it.
@@ -779,6 +783,8 @@ private:
     std::atomic<int> utc_offset_min_{kUnsetOffset};
     // utc_offset_min_, or SceneRuntimeDeps::utc_offset_min while unset.
     int utc_offset_min() const;
+    // 1 (24-hour) or 0 (12-hour); -1 until seeded or set by an event.
+    std::atomic<int> time_24h_{-1};
     core::SubscriptionId power_sub_ = 0;
     core::SubscriptionId settings_sub_ = 0;
     core::SubscriptionId time_sub_ = 0;

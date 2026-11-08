@@ -110,6 +110,7 @@ void merge_settings(core::SystemSettingsValues& v, const Map& m) {
     get_bool("light_sleep", v.light_sleep);
     get_int("notify_vol", v.notify_vol);
     get_bool("tts_mute", v.tts_mute);
+    get_bool("time_24h", v.time_24h);
     get_int("agent_max_steps", v.agent_max_steps);
     get_int("agent_turn_min", v.agent_turn_min);
 }
@@ -417,6 +418,10 @@ Result<void> App::start() {
             if (it != e.payload.end() && it->second.type() == Value::Type::String) {
                 if (auto lang = ui::parse_lang(it->second.as_string())) impl->lang.store(*lang);
             }
+            it = e.payload.find("time_24h");
+            if (it != e.payload.end() && it->second.type() == Value::Type::Bool) {
+                impl->time_24h.store(it->second.as_bool());
+            }
             std::lock_guard<os::Mutex> lock(impl->settings_mu);
             merge_settings(impl->settings_now, e.payload);
         });
@@ -427,6 +432,7 @@ Result<void> App::start() {
         }
         impl_->notify_vol.store(static_cast<uint8_t>(std::clamp(now.notify_vol, 0, 100)));
         impl_->utc_offset_min.store(now.utc_offset_min);
+        impl_->time_24h.store(now.time_24h);
         if (auto lang = ui::parse_lang(now.language)) impl_->lang.store(*lang);
     }
 
@@ -660,6 +666,7 @@ Result<void> App::start() {
             .scenes = scene_runtime,
             .device_status = std::move(device_status),
             .utc_offset_min = [impl] { return impl->utc_offset_min.load(); },
+            .time_24h = [impl] { return impl->time_24h.load(); },
             .wall_s = [impl] { return impl->wall_now(); },
             .repo = scenes != nullptr ? scenes->repository() : nullptr,
             .submit_io = scenes != nullptr ? std::function<bool(std::function<void()>)>(
@@ -775,6 +782,15 @@ Result<void> App::start() {
                                                      return scenes->worker().submit(std::move(job));
                                                  })
                                            : nullptr,
+            // As the admin page's restart: what waits for flash first.
+            .restart = impl_->platform.reboot ? std::function<void()>([this] {
+                flush_storage();
+                impl_->platform.reboot();
+            })
+                                              : nullptr,
+            .power_off = impl_->duties->can_power_off()
+                             ? std::function<void()>([impl] { impl->duties->power_off(); })
+                             : nullptr,
         });
         impl_->ui->run_blocking([impl] {
             impl->duties->start();
@@ -788,7 +804,9 @@ Result<void> App::start() {
             // a change stored meanwhile is either read here or arrives as
             // its event; the scene task never reads Settings itself.
             if (scene::SceneRuntime* rt = scenes->runtime()) {
-                rt->seed_utc_offset(impl->system_settings.get().utc_offset_min);
+                const core::SystemSettingsValues now = impl->system_settings.get();
+                rt->seed_utc_offset(now.utc_offset_min);
+                rt->seed_time_24h(now.time_24h);
             }
         }
         // Once the runtime its tools drive runs.

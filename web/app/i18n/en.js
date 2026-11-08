@@ -537,6 +537,7 @@ export default {
   'scenes.file_deleted': 'Deleted {name}',
   'sys.notify_vol': 'Notification volume',
   'sys.tts_mute': 'Mute spoken replies',
+  'sys.time_24h': '24-hour clock on the device',
   'sys.deep_after': 'Deep standby after the screen is off for',
   'sys.deep_after_hint': 'Deep standby turns Wi-Fi off to save power. It waits while anything holds a network wake lock, this page included.',
   'sys.deep_never': 'Never',

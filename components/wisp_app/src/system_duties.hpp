@@ -70,6 +70,13 @@ public:
     // stays up once it returns. Idempotent.
     void stop();
 
+    // Whether power_off() can do anything: a power device, or the
+    // platform's fallback.
+    bool can_power_off() const;
+    // UI thread. Powers off exactly as a confirmed long press of the power
+    // key does (the settings page asks first itself).
+    void power_off() { do_power_off(); }
+
 private:
     // Runs `fn` on the UI thread unless stop() has run by then. False when
     // the post queue was full.

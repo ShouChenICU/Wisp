@@ -215,6 +215,8 @@ public:
 
     // Re-reads what changed and the clock, and shows it. UI thread.
     void refresh();
+    // Shows everything again in the current ui::lang(). UI thread.
+    void retext();
     // Shows `v` as if the controller had reported it, until it reports
     // again (tests). UI thread.
     void show_view(const TurnView& v);

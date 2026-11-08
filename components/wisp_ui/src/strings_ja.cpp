@@ -322,6 +322,8 @@ const char* strings_ja(StrId id) {
             return "画面オフまでの時間";
         case StrId::AgentSetLanguage:
             return "言語";
+        case StrId::AgentSetTimeFormat:
+            return "時刻の表示";
         case StrId::AgentConfirmTitle:
             return "Agent の確認";
         case StrId::AgentAllow:
@@ -408,12 +410,8 @@ const char* strings_ja(StrId id) {
             return "{} 分";
         case StrId::SettingsNever:
             return "しない";
-        case StrId::SettingsTtsMute:
-            return "読み上げを消音";
         case StrId::SettingsWifi:
             return "Wi-Fi";
-        case StrId::SettingsAbout:
-            return "この端末について";
         case StrId::AboutFirmware:
             return "ファームウェア";
         case StrId::AboutAddress:
@@ -425,6 +423,134 @@ const char* strings_ja(StrId id) {
                    "ドを入力してください";
         case StrId::AboutDiagnostics:
             return "ハードウェア診断";
+        case StrId::ClockAm:
+            return "午前{}";
+        case StrId::ClockPm:
+            return "午後{}";
+        case StrId::SettingsGroupDisplay:
+            return "画面とサウンド";
+        case StrId::SettingsGroupPower:
+            return "スリープと電源";
+        case StrId::SettingsGroupNetwork:
+            return "ネットワーク";
+        case StrId::SettingsGroupLangTime:
+            return "言語と時刻";
+        case StrId::SettingsGroupSystem:
+            return "システム";
+        case StrId::SettingsNotifyVol:
+            return "通知音量";
+        case StrId::SettingsSpeak:
+            return "音声読み上げ";
+        case StrId::SettingsDeepStandby:
+            return "ディープスタンバイ";
+        case StrId::SettingsHours:
+            return "{} 時間";
+        case StrId::SettingsLightSleep:
+            return "省電力スリープ";
+        case StrId::SettingsLightSleepHint:
+            return "ディープスタンバイ中はチップを浅く眠らせて節電します";
+        case StrId::SettingsLanguage:
+            return "言語";
+        case StrId::SettingsTimeZone:
+            return "タイムゾーン";
+        case StrId::SettingsTimeFormat:
+            return "時刻の表示";
+        case StrId::SettingsClock24:
+            return "24 時間表示";
+        case StrId::SettingsClock12:
+            return "12 時間表示";
+        case StrId::SettingsRestart:
+            return "再起動";
+        case StrId::SettingsPowerOff:
+            return "電源を切る";
+        case StrId::RestartTitle:
+            return "再起動";
+        case StrId::RestartPrompt:
+            return "デバイスを再起動しますか？";
+        case StrId::LangFullZh:
+            return "简体中文";
+        case StrId::LangFullJa:
+            return "日本語";
+        case StrId::LangFullEn:
+            return "English";
+        case StrId::TzFormat:
+            return "{} {}";
+        case StrId::TzWest1200:
+            return "ベーカー島";
+        case StrId::TzWest1100:
+            return "ミッドウェー";
+        case StrId::TzWest1000:
+            return "ホノルル";
+        case StrId::TzWest0930:
+            return "マルキーズ諸島";
+        case StrId::TzWest0900:
+            return "アンカレッジ";
+        case StrId::TzWest0800:
+            return "ロサンゼルス";
+        case StrId::TzWest0700:
+            return "デンバー";
+        case StrId::TzWest0600:
+            return "シカゴ";
+        case StrId::TzWest0500:
+            return "ニューヨーク";
+        case StrId::TzWest0400:
+            return "カラカス";
+        case StrId::TzWest0330:
+            return "セントジョンズ";
+        case StrId::TzWest0300:
+            return "サンパウロ";
+        case StrId::TzWest0200:
+            return "サウスジョージア";
+        case StrId::TzWest0100:
+            return "アゾレス諸島";
+        case StrId::TzEast0000:
+            return "ロンドン";
+        case StrId::TzEast0100:
+            return "パリ";
+        case StrId::TzEast0200:
+            return "カイロ";
+        case StrId::TzEast0300:
+            return "モスクワ";
+        case StrId::TzEast0330:
+            return "テヘラン";
+        case StrId::TzEast0400:
+            return "ドバイ";
+        case StrId::TzEast0430:
+            return "カブール";
+        case StrId::TzEast0500:
+            return "カラチ";
+        case StrId::TzEast0530:
+            return "ニューデリー";
+        case StrId::TzEast0545:
+            return "カトマンズ";
+        case StrId::TzEast0600:
+            return "ダッカ";
+        case StrId::TzEast0630:
+            return "ヤンゴン";
+        case StrId::TzEast0700:
+            return "バンコク";
+        case StrId::TzEast0800:
+            return "北京";
+        case StrId::TzEast0845:
+            return "ユークラ";
+        case StrId::TzEast0900:
+            return "東京";
+        case StrId::TzEast0930:
+            return "アデレード";
+        case StrId::TzEast1000:
+            return "シドニー";
+        case StrId::TzEast1030:
+            return "ロード・ハウ島";
+        case StrId::TzEast1100:
+            return "ヌーメア";
+        case StrId::TzEast1200:
+            return "オークランド";
+        case StrId::TzEast1245:
+            return "チャタム諸島";
+        case StrId::TzEast1300:
+            return "トンガ";
+        case StrId::TzEast1400:
+            return "ライン諸島";
         case StrId::TalkThinking:
             return "考え中…";
         case StrId::ActivityStep:

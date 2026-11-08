@@ -18,6 +18,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/scene/minute_ticker.hpp"
+#include "wisp/ui/clock_text.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/system_notice.hpp"
@@ -109,6 +110,7 @@ protected:
                                      {"wifi", Value("connected")}});
                 },
             .utc_offset_min = [] { return 480; },
+            .time_24h = [this] { return time_24h.load(); },
             .wall_s = [this] { return wall.load(); },
             .repo = repo.get(),
             .submit_io =
@@ -237,6 +239,7 @@ protected:
     std::unique_ptr<NotificationRouter> router;
     std::unique_ptr<StatusShell> shell;
     std::atomic<int64_t> wall{0};
+    std::atomic<bool> time_24h{true};
 };
 
 TEST_F(StatusShellTest, CapsuleCountsFollowScenesAndNotifications) {
@@ -272,6 +275,19 @@ TEST_F(StatusShellTest, CountsWhatIsThereAtStart) {
         .ui = *ui, .layer = *layer, .bus = bus, .notes = *notes, .router = *router});
     shell->start();
     wait_capsule(LV_SYMBOL_BELL "1");
+}
+
+// The header's time follows the Settings time format (ui::format_clock()).
+TEST_F(StatusShellTest, PanelHeaderFollowsTheTimeFormat) {
+    start_shell();
+    // 12:00 UTC is 20:00 at UTC+8.
+    wall = kNoon + 59;
+    on_ui([&] { EXPECT_EQ(shell->panel_model().header.time, "20:00"); });
+    time_24h = false;
+    on_ui([&] {
+        EXPECT_EQ(std::string_view(shell->panel_model().header.time),
+                  wisp::ui::format_clock(20, 0, false, wisp::ui::lang()));
+    });
 }
 
 TEST_F(StatusShellTest, PanelListsBackgroundScenesAndNotes) {

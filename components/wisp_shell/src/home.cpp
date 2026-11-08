@@ -572,6 +572,14 @@ void Home::refresh() {
     }
 }
 
+void Home::retext() {
+    if (screen_ == nullptr) return;
+    // The hint and the steps are written on every refresh; the reply's
+    // text (its folded code blocks) only when the view changed.
+    view_changed_ = true;
+    refresh();
+}
+
 HomeTextStats Home::take_text_stats() { return std::exchange(text_stats_, HomeTextStats{}); }
 
 std::string Home::hint_text(uint64_t now, bool in_turn) {
