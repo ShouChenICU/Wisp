@@ -142,8 +142,11 @@ TEST_F(HistoryTest, OpensAtTheBottomWithFiftyTurns) {
 TEST_F(HistoryTest, ScrollToTopLoadsFiftyMore) {
     start(120);
     lv_obj_t* old_first = nullptr;
+    lv_obj_t* title = nullptr;
     h_->on_ui([&] {
         old_first = page()->card(0);
+        title = lv_obj_get_child(page()->list(), 0);
+        EXPECT_EQ(text_of(title), "对话记录");
         lv_obj_scroll_to_y(page()->list(), 0, LV_ANIM_OFF);
     });
     ASSERT_TRUE(h_->ui_until([&] { return page()->built() == 100; }));
@@ -157,6 +160,10 @@ TEST_F(HistoryTest, ScrollToTopLoadsFiftyMore) {
         EXPECT_GE(a.y1, list.y1);
         EXPECT_LT(a.y1, list.y2);
         EXPECT_GT(lv_obj_get_scroll_top(page()->list()), 0);
+        // The older turns go under the title, which stays the list's first
+        // item.
+        EXPECT_EQ(lv_obj_get_child(page()->list(), 0), title);
+        EXPECT_EQ(lv_obj_get_child(page()->list(), 1), page()->card(0));
     });
     // And the last 20.
     h_->on_ui([&] { lv_obj_scroll_to_y(page()->list(), 0, LV_ANIM_OFF); });
@@ -223,6 +230,8 @@ TEST_F(HistoryTest, NewConversationAsksThenArchives) {
     ASSERT_TRUE(h_->ui_until([&] { return page()->total() == 0; }));
     EXPECT_EQ(archives(), 1u);
     h_->on_ui([&] {
+        // Rebuilt for the new conversation, under the same title.
+        EXPECT_EQ(text_of(lv_obj_get_child(page()->list(), 0)), "对话记录");
         EXPECT_NE(wisp::test::find_label_containing(page()->list(), "还没有对话"), nullptr);
     });
 

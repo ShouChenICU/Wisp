@@ -11,9 +11,7 @@
 namespace wisp::shell::detail {
 
 namespace {
-// Between the title and the list.
-constexpr int32_t kTitleGap = ui::theme::kGapSm;
-// Between the list's rows.
+// Between the list's rows, the title and the first row too.
 constexpr int32_t kRowGap = ui::theme::kGapSm;
 }  // namespace
 
@@ -58,29 +56,25 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_PRESS_LOCK);
 
-    // Centred at the top of the safe area, below the status capsule.
+    // The list covers the screen and the title is its first item, so the
+    // title scrolls away with the rows instead of keeping a band at the top
+    // (on a round screen the capsule's room and the circle's top above it
+    // took almost a third of the height). The top padding puts the title,
+    // scrolled to the top, below the status capsule; the side and bottom
+    // padding keep the content inside the safe area's columns and end it
+    // at the safe area's bottom row.
     const hal::Area safe = hal::safe_rect(shape);
     const hal::Area capsule = ui::SystemLayer::status_area(shape);
+    const int32_t title_y = std::max<int32_t>(capsule.y2 + 1 + ui::theme::kGapSm, safe.y1);
     f.root = make_root(scr, shape);
-    f.title = lv_label_create(f.root);
-    lv_obj_set_style_text_font(f.title, ui::font(kTitleFontPx), 0);
-    lv_obj_set_style_text_align(f.title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(f.title, LV_LABEL_LONG_DOT);
-    lv_label_set_text(f.title, ui::tr(title));
-    const int32_t title_y = capsule.y2 + 1 + ui::theme::kGapSm;
-    lv_obj_set_pos(f.title, safe.x1, title_y);
-    lv_obj_set_width(f.title, safe.x2 - safe.x1 + 1);
-    lv_obj_update_layout(f.title);
-
-    const int32_t list_y = title_y + lv_obj_get_height(f.title) + kTitleGap;
     f.list = lv_obj_create(f.root);
     lv_obj_t* list = f.list;
     lv_obj_remove_style_all(list);
-    lv_obj_set_pos(list, 0, list_y);
-    lv_obj_set_size(list, shape.width, std::max<int32_t>(shape.height - list_y, 1));
+    lv_obj_set_pos(list, 0, 0);
+    lv_obj_set_size(list, shape.width, shape.height);
     lv_obj_set_style_pad_left(list, safe.x1, 0);
     lv_obj_set_style_pad_right(list, shape.width - 1 - safe.x2, 0);
-    lv_obj_set_style_pad_top(list, 0, 0);
+    lv_obj_set_style_pad_top(list, title_y, 0);
     lv_obj_set_style_pad_bottom(list, shape.height - 1 - safe.y2, 0);
     lv_obj_set_style_pad_row(list, kRowGap, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
@@ -90,7 +84,20 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     // history's bottom end takes the page home.
     lv_obj_remove_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
     lv_obj_add_flag(list, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    f.title = lv_label_create(list);
+    lv_obj_set_width(f.title, LV_PCT(100));
+    lv_obj_set_style_text_font(f.title, ui::font(kTitleFontPx), 0);
+    lv_obj_set_style_text_align(f.title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(f.title, LV_LABEL_LONG_DOT);
+    lv_label_set_text(f.title, ui::tr(title));
+    lv_obj_add_flag(f.title, LV_OBJ_FLAG_EVENT_BUBBLE);
     return f;
+}
+
+void clear_rows(lv_obj_t* list) {
+    while (lv_obj_get_child_count(list) > static_cast<uint32_t>(kFirstRow))
+        lv_obj_delete(lv_obj_get_child(list, -1));
 }
 
 void bubble_tree(lv_obj_t* obj) {

@@ -594,6 +594,13 @@ TEST_F(SceneListTest, CardsFillWhenListingArrives) {
     harness->on_ui([&] {
         EXPECT_EQ(page()->card_builds(), 2u);
         EXPECT_EQ(lv_obj_get_scroll_y(list), y);
+        // The title is still the list's first item, on its own line above
+        // the grid of cards.
+        lv_obj_t* title = lv_obj_get_child(list, 0);
+        EXPECT_EQ(text_of(title), "场景");
+        lv_obj_t* grid = lv_obj_get_parent(page()->card(0));
+        EXPECT_EQ(lv_obj_get_child(list, 1), grid);
+        EXPECT_GT(wisp::test::coords_of(grid).y1, wisp::test::coords_of(title).y2);
     });
 }
 

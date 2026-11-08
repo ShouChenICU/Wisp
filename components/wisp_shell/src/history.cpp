@@ -95,7 +95,7 @@ void HistoryPage::build(lv_obj_t* list) {
 }
 
 void HistoryPage::rebuild() {
-    lv_obj_clean(list_);
+    detail::clear_rows(list_);
     cards_.clear();
     empty_ = busy_ = new_btn_ = nullptr;
     turns_.clear();
@@ -137,8 +137,9 @@ void HistoryPage::add_cards(size_t from, size_t to) {
         lv_obj_set_style_min_height(c.card, detail::kMinTouchPx, 0);
         lv_obj_add_flag(c.card, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(c.card, &HistoryPage::card_cb, LV_EVENT_CLICKED, this);
-        // Above the busy line, the button and the cards already there.
-        lv_obj_move_to_index(c.card, static_cast<int32_t>(i - from));
+        // Under the title, above the busy line, the button and the cards
+        // already there.
+        lv_obj_move_to_index(c.card, detail::kFirstRow + static_cast<int32_t>(i - from));
 
         if (!t.heard.empty()) {
             os::LargeString heard;

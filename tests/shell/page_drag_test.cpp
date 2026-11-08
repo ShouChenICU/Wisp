@@ -357,7 +357,8 @@ TEST_P(PageDragShapes, ToScenesAndBack) {
     ASSERT_TRUE(d.settled());
     d.expect_page(Page::Scenes);
     d.h().on_ui([&] {
-        lv_obj_t* title = lv_obj_get_child(d.shell().page_root(), 0);
+        // The title is the first item of the list, the root's child.
+        lv_obj_t* title = lv_obj_get_child(lv_obj_get_child(d.shell().page_root(), 0), 0);
         EXPECT_TRUE(box_visible(d.h().shape(), coords_of(title)));
     });
     d.slow({40, c.height - 60}, c.width / 2, 0);
