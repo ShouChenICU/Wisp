@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <future>
@@ -68,7 +69,18 @@ protected:
         d.list_scenes = [this] {
             on_worker_listing = agent.worker.on_worker();
             std::lock_guard<std::mutex> lock(mu);
-            return scenes;
+            return wisp::shell::ShellListing{scenes, false};
+        };
+        d.read_scene_icon = [this](const std::string& id) {
+            std::lock_guard<std::mutex> lock(mu);
+            icon_reads.push_back(id);
+            return icon();
+        };
+        d.scene_has_data = [this](const std::string& id) {
+            on_worker_has_data = agent.worker.on_worker();
+            std::lock_guard<std::mutex> lock(mu);
+            ++data_asks;
+            return std::find(with_data.begin(), with_data.end(), id) != with_data.end();
         };
         d.recents = recents.get();
         d.open_scene = [this](const std::string& id) {
@@ -107,7 +119,12 @@ protected:
     std::vector<ShellScene> scenes;
     std::vector<std::string> opened;
     std::vector<std::pair<std::string, bool>> deleted;
+    // The scenes scene_has_data says have data.
+    std::vector<std::string> with_data;
+    int data_asks = 0;
+    std::vector<std::string> icon_reads;
     std::atomic<bool> on_worker_listing{false};
+    std::atomic<bool> on_worker_has_data{false};
 };
 
 TEST_F(SceneListTest, SortedMarkedAndGreyed) {
@@ -117,7 +134,6 @@ TEST_F(SceneListTest, SortedMarkedAndGreyed) {
         clock.icon_png = icon();
         ShellScene counter = scene("counter", "计数器");
         counter.background = true;
-        counter.has_data = true;
         ShellScene cam = scene("sdcam", "相册");
         cam.available = false;
         std::lock_guard<std::mutex> lock(mu);
@@ -157,10 +173,9 @@ TEST_F(SceneListTest, SortedMarkedAndGreyed) {
 TEST_F(SceneListTest, TapOpensLongPressDeletes) {
     boot();
     {
-        ShellScene counter = scene("counter", "计数器");
-        counter.has_data = true;
         std::lock_guard<std::mutex> lock(mu);
-        scenes = {std::move(counter), scene("todo", "待办")};
+        scenes = {scene("counter", "计数器"), scene("todo", "待办")};
+        with_data = {"counter"};
     }
     open_page(2);
     harness->tap(harness->centre_of(page()->card(1)));
@@ -174,6 +189,7 @@ TEST_F(SceneListTest, TapOpensLongPressDeletes) {
         std::lock_guard<std::mutex> lock(mu);
         EXPECT_EQ(opened.size(), 1u);  // no tap on release
     }
+    ASSERT_TRUE(harness->ui_until([&] { return page()->popup_data() != nullptr; }));
     harness->on_ui([&] {
         ASSERT_NE(page()->popup(), nullptr);
         ASSERT_NE(page()->popup_data(), nullptr);
@@ -190,6 +206,7 @@ TEST_F(SceneListTest, TapOpensLongPressDeletes) {
     }
     // A scene without data has no checkbox; the backdrop closes the card.
     harness->hold(harness->centre_of(page()->card(1)), 700);
+    ASSERT_TRUE(harness->ui_until([&] { return !page()->popup_data_pending(); }));
     harness->on_ui([&] {
         ASSERT_NE(page()->popup(), nullptr);
         EXPECT_EQ(page()->popup_data(), nullptr);
@@ -198,6 +215,115 @@ TEST_F(SceneListTest, TapOpensLongPressDeletes) {
     harness->on_ui([&] { EXPECT_EQ(page()->popup(), nullptr); });
     std::lock_guard<std::mutex> lock(mu);
     EXPECT_EQ(deleted.size(), 1u);
+}
+
+// Whether a scene has data is asked on the worker as its long-press card
+// opens, not with the listing: until the answer the card has no "delete
+// its data too", and data written after the listing still shows it.
+TEST_F(SceneListTest, HasDataComputedOnLongPress) {
+    boot();
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes = {scene("counter", "计数器")};
+    }
+    open_page(1);
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        EXPECT_EQ(data_asks, 0);  // the listing asks nothing
+    }
+    // Held up on the worker: the card is up without the option.
+    std::promise<void> gate;
+    std::shared_future<void> held = gate.get_future().share();
+    ASSERT_TRUE(agent.worker.submit([held] { held.wait(); }));
+    harness->hold(harness->centre_of(page()->card(0)), 700);
+    harness->on_ui([&] {
+        ASSERT_NE(page()->popup(), nullptr);
+        EXPECT_TRUE(page()->popup_data_pending());
+        EXPECT_EQ(page()->popup_data(), nullptr);
+        EXPECT_NE(page()->popup_delete(), nullptr);
+    });
+    gate.set_value();
+    ASSERT_TRUE(harness->ui_until([&] { return !page()->popup_data_pending(); }));
+    EXPECT_TRUE(on_worker_has_data.load());
+    harness->on_ui([&] {
+        EXPECT_EQ(page()->popup_data(), nullptr);  // no data yet
+        page()->close_popup();
+    });
+    // The scene writes its first data; the listing is not read again, and
+    // the next long press finds it.
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        with_data = {"counter"};
+    }
+    harness->hold(harness->centre_of(page()->card(0)), 700);
+    ASSERT_TRUE(harness->ui_until([&] { return page()->popup_data() != nullptr; }));
+    harness->on_ui([&] {
+        // Above the delete button, the card still inside the safe area.
+        EXPECT_LT(lv_obj_get_index(page()->popup_data()), lv_obj_get_index(page()->popup_delete()));
+        lv_obj_update_layout(page()->popup());
+        lv_obj_t* card = lv_obj_get_parent(page()->popup_delete());
+        EXPECT_TRUE(wisp::test::box_visible(harness->shape(), wisp::test::coords_of(card)));
+        lv_obj_add_state(page()->popup_data(), LV_STATE_CHECKED);
+        lv_obj_send_event(page()->popup_delete(), LV_EVENT_CLICKED, nullptr);
+    });
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_EQ(data_asks, 2);
+    ASSERT_EQ(deleted.size(), 1u);
+    EXPECT_EQ(deleted[0], (std::pair<std::string, bool>{"counter", true}));
+}
+
+// An answer for a card already closed (or replaced by another) changes
+// nothing.
+TEST_F(SceneListTest, LateHasDataAnswerIsDropped) {
+    boot();
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes = {scene("counter", "计数器"), scene("todo", "待办")};
+        with_data = {"counter"};
+    }
+    open_page(2);
+    std::promise<void> gate;
+    std::shared_future<void> held = gate.get_future().share();
+    ASSERT_TRUE(agent.worker.submit([held] { held.wait(); }));
+    harness->hold(harness->centre_of(page()->card(0)), 700);
+    harness->on_ui([&] { page()->long_press(1); });  // todo's card instead
+    gate.set_value();
+    ASSERT_TRUE(harness->ui_until([&] { return !page()->popup_data_pending(); }));
+    (void)agent.worker.drain(2000);
+    harness->on_ui([&] {
+        ASSERT_NE(page()->popup(), nullptr);
+        EXPECT_EQ(page()->popup_data(), nullptr);
+    });
+}
+
+// A listing that names an icon by its hash alone: read once through
+// read_scene_icon, then reused for as long as the hash stays.
+TEST_F(SceneListTest, IconByHashReadOnlyWhenUnknown) {
+    boot();
+    const uint64_t hash = wisp::shell::icon_hash(icon()->span());
+    {
+        ShellScene clock = scene("clock", "时钟");
+        clock.icon_hash = hash;
+        std::lock_guard<std::mutex> lock(mu);
+        scenes = {std::move(clock)};
+    }
+    open_page(1);
+    ASSERT_TRUE(harness->ui_until([&] { return page()->icon(0) != nullptr; }));
+    harness->show(Page::Home);
+    harness->show(Page::Scenes);
+    (void)agent.worker.drain(5000);
+    harness->on_ui([&] { EXPECT_NE(page()->icon(0), nullptr); });
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        EXPECT_EQ(icon_reads, (std::vector<std::string>{"clock"}));
+        // Another hash: read again.
+        scenes[0].icon_hash = hash + 1;
+    }
+    harness->bus().publish({"scene.state", "test", 0, {{"id", "clock"}, {"state", "installed"}}});
+    EXPECT_TRUE(harness->ui_until([&] {
+        std::lock_guard<std::mutex> lock(mu);
+        return icon_reads.size() == 2;
+    }));
 }
 
 TEST_F(SceneListTest, EmptyHint) {

@@ -143,9 +143,19 @@ struct ShellDeps {
     // The history's conversation and "new conversation".
     agent::AgentService* agent = nullptr;
     // The installed scenes, on the storage worker (a submit_io job): icon
-    // bytes at most kIconMaxBytes, available false while the scene's files
-    // are on an SD card that is out.
-    std::function<std::vector<ShellScene>()> list_scenes;
+    // bytes at most kIconMaxBytes (or only their icon_hash), available
+    // false while the scene's files are on an SD card that is out. Asked
+    // each time the scene list opens or a scene changes, so it should keep
+    // what it read rather than read it all again.
+    std::function<ShellListing()> list_scenes;
+    // Scene `id`'s icon file (at most kIconMaxBytes), or null, on the
+    // storage worker: for an icon list_scenes named by its hash alone that
+    // the shell has not decoded. Empty: such an icon is not shown.
+    std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)> read_scene_icon;
+    // Whether deleting scene `id` would find data to delete with it, on the
+    // storage worker, asked when its long-press card opens. Empty: the card
+    // never offers to delete data.
+    std::function<bool(const std::string&)> scene_has_data;
     // Opens a scene in front (SceneRuntime::launch(), which on the UI thread
     // only queues).
     std::function<void(const std::string&)> open_scene;
@@ -287,6 +297,10 @@ private:
     bool press_top_zone_ = false;
     lv_obj_t* press_target_ = nullptr;
     Drag drag_;
+    // SceneListDeps::has_data over ShellDeps::scene_has_data, asked on the
+    // storage worker; empty without either.
+    std::function<void(const std::string&, std::function<void(bool)>)> scene_has_data_query();
+
     std::unique_ptr<HistoryPage> history_;
     std::unique_ptr<SceneList> scenes_;
     std::unique_ptr<SettingsPage> settings_;

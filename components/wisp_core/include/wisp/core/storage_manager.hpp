@@ -136,6 +136,7 @@
 // exact same code runs on both ports -- see docs/architecture.md's
 // dependency rules on why POSIX file APIs are allowed here.
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -322,6 +323,11 @@ public:
     // "*.tmp"/"*.new" bookkeeping; 0 if `path` does not exist.
     Result<uint64_t> tree_size(const std::string& path);
 
+    // How many operations have named a path so far (a rename counts its
+    // two), whether or not they found anything: for tests and diagnostics
+    // that check a path does no file work. roots() and the like do not count.
+    uint64_t calls() const { return calls_.load(std::memory_order_relaxed); }
+
     // storage.int's normalized mount point ("<int>"). Fails with
     // ErrorCode::StorageUnavailable before init() has succeeded.
     Result<std::string> internal_root() const;
@@ -410,6 +416,8 @@ private:
     std::string int_mount_;  // never has a trailing '/'; see init()
     std::string sd_mount_;   // ditto; empty if storage.sd isn't registered
     bool sd_online_ = false;
+    // calls(); bumped by checked_path().
+    mutable std::atomic<uint64_t> calls_{0};
 
     // True once init() has found "storage.int" and created its
     // directories; roots()/write_atomic()/read_file() all refuse to do

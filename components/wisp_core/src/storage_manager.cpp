@@ -560,6 +560,8 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
                                           std::span<const uint8_t> data) {
     WISP_ASSERT_FLASH_THREAD("StorageManager::write_atomic");
     std::lock_guard<os::Mutex> lock(mutex_);
+    // Its own checks rather than checked_path()'s.
+    calls_.fetch_add(1, std::memory_order_relaxed);
 
     if (!ready_) {
         return Result<void>::err(ErrorCode::StorageUnavailable, "StorageManager not initialized");
@@ -792,6 +794,7 @@ Result<os::LargeBuffer> StorageManager::read_range(const std::string& raw_path, 
 
 Result<std::string> StorageManager::checked_path(const std::string& raw, bool mutating) const {
     using R = Result<std::string>;
+    calls_.fetch_add(1, std::memory_order_relaxed);
     if (!ready_) {
         return R::err(ErrorCode::StorageUnavailable, "StorageManager not initialized");
     }

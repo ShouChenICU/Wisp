@@ -12,8 +12,11 @@
 // in the background carries LV_SYMBOL_PLAY; one that cannot run now (its
 // files are on an SD card that is out) is greyed out and takes no tap or
 // long press. A tap opens the scene; a long press opens a small card over
-// the page with "delete" (SceneDeleteButton) and, when the scene has data,
-// "delete its data too" (SceneDeleteData). Delete hands both to
+// the page with "delete" (SceneDeleteButton) and, once SceneListDeps::
+// has_data answers that the scene has data, "delete its data too"
+// (SceneDeleteData). Asked as the card opens rather than with the listing:
+// a scene may write its first data at any time, and the answer reads
+// storage. Delete hands both to
 // SceneListDeps::delete_scene, which asks with the system dialog. With no
 // scenes the page says how to get one (SceneListEmpty).
 //
@@ -28,8 +31,10 @@
 // Threading: everything on the UI thread, the destructor included.
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -51,12 +56,26 @@ struct ShellScene {
     // The icon file's bytes (at most kIconMaxBytes), or null. What
     // ShellDeps::list_scenes hands over; the shell turns it into `icon`.
     std::shared_ptr<const os::LargeBuffer> icon_png;
+    // icon_hash() of the icon file, for a lister that knows it without
+    // reading the file again: with icon_png null, the shell reuses what it
+    // decoded for this hash and reads the file (ShellDeps::read_scene_icon)
+    // only when it has none. 0 with icon_png null: no icon.
+    uint64_t icon_hash = 0;
     // The icon as the card draws it, or null (the first character instead).
     std::shared_ptr<const SceneIcon> icon;
     bool background = false;  // running in the background
     bool available = true;
-    bool has_data = false;  // a data or files directory to delete with it
 };
+
+// What ShellDeps::list_scenes hands over. `cached`: nothing was read from
+// storage for it (the shell's timing line says so).
+struct ShellListing {
+    std::vector<ShellScene> scenes;
+    bool cached = false;
+};
+
+// An icon file's content hash (64-bit FNV-1a), never 0.
+uint64_t icon_hash(std::span<const uint8_t> bytes);
 
 // The largest icon file the list reads.
 inline constexpr size_t kIconMaxBytes = 32 * 1024;
@@ -78,6 +97,10 @@ struct SceneListDeps {
     // Asks the user and deletes (SceneWiring::request_delete). Empty: the
     // long press does nothing.
     std::function<Result<void>(const std::string&, bool with_data)> delete_scene;
+    // Asks whether scene `id` has data to delete with it; `answer` runs
+    // later on the UI thread (or never, if it could not ask). Empty: no
+    // scene has any.
+    std::function<void(const std::string& id, std::function<void(bool)> answer)> has_data;
 };
 
 class SceneList {
@@ -126,7 +149,10 @@ public:
     // The long-press card while it is up, and its parts.
     lv_obj_t* popup() const { return popup_; }
     lv_obj_t* popup_delete() const { return pop_delete_; }
+    // Null while has_data has not answered, and when the scene has none.
     lv_obj_t* popup_data() const { return pop_data_; }
+    // The long-press card is up and has_data has not answered yet.
+    bool popup_data_pending() const { return popup_ != nullptr && pop_pending_; }
     void close_popup();
 
     // What a tap and a long press on card `i` do.
@@ -147,6 +173,10 @@ private:
     size_t index_of(lv_obj_t* card) const;
     static void card_cb(lv_event_t* e);
     static void popup_cb(lv_event_t* e);
+    // has_data's answer for long-press card `serial`.
+    void on_has_data(uint32_t serial, bool has);
+    // Centres the long-press card in the safe area.
+    void place_popup();
 
     SceneListDeps deps_;
     lv_obj_t* list_ = nullptr;
@@ -160,9 +190,15 @@ private:
     std::vector<ShellScene> scenes_;
     std::vector<Card> cards_;
     lv_obj_t* popup_ = nullptr;
+    lv_obj_t* pop_card_ = nullptr;
     lv_obj_t* pop_delete_ = nullptr;
     lv_obj_t* pop_data_ = nullptr;
     std::string pop_id_;
+    bool pop_pending_ = false;
+    // Which long-press card a has_data answer is for; cleared with
+    // `alive_` when this page goes.
+    uint32_t pop_serial_ = 0;
+    std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 
 }  // namespace wisp::shell

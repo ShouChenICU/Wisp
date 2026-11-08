@@ -208,6 +208,79 @@ TEST(SceneRepository, ListSkipsHiddenAndInvalid) {
     EXPECT_EQ(list.value()[0].manifest.id, "todo");
 }
 
+// manifests(): list() without sizing anything, so one read per scene.
+TEST(SceneRepository, ManifestsReadsOnlyTheManifests) {
+    Fixture f;
+    ASSERT_TRUE(f.install(todo_files()));
+    write_raw(f.root() / "todo" / "data" / "kv.log", "x\n");
+    write_raw(f.root() / "broken" / "scene.json", "{");
+    write_raw(f.root() / "other" / "scene.json", scene_json());
+    write_raw(f.root() / ".hidden" / "scene.json", scene_json());
+    write_raw(f.root() / "kept" / "data" / "kv.log", "x\n");  // data only
+    const uint64_t before = f.storage->calls();
+    auto got = f.repo->manifests();
+    ASSERT_TRUE(got) << got.error().message;
+    ASSERT_EQ(got.value().size(), 1u);
+    EXPECT_EQ(got.value()[0].id, "todo");
+    EXPECT_EQ(got.value()[0].name, "待办");
+    // The root, then scene.json in each of todo, broken, other and kept.
+    EXPECT_EQ(f.storage->calls() - before, 5u);
+}
+
+// changed_since(): the ids each replace or remove touched, with no file
+// work, so a cached listing knows what to read again.
+TEST(SceneRepository, ChangedSinceNamesWhatChanged) {
+    Fixture f;
+    uint64_t gen = 0;
+    EXPECT_TRUE(f.repo->changed_since(0, gen).empty());
+    const uint64_t start = gen;
+    ASSERT_TRUE(f.install(todo_files()));
+    Files clock = todo_files();
+    clock[0].second = R"({"id":"clock","name":"时钟","version":"1.0.0","schema_version":1,)"
+                      R"("icon":"assets/icon.png"})";
+    ASSERT_TRUE(f.install(clock));
+    uint64_t now = 0;
+    std::vector<std::string> changed = f.repo->changed_since(start, now);
+    std::sort(changed.begin(), changed.end());
+    EXPECT_EQ(changed, (std::vector<std::string>{"clock", "todo"}));
+    EXPECT_GT(now, start);
+
+    // Nothing since: nothing, and the same generation.
+    const uint64_t calls = f.storage->calls();
+    uint64_t again = 0;
+    EXPECT_TRUE(f.repo->changed_since(now, again).empty());
+    EXPECT_EQ(again, now);
+    EXPECT_EQ(f.storage->calls(), calls);
+
+    // An update, then a remove: each names its own scene only.
+    ASSERT_TRUE(f.install(todo_files("1.1.0")));
+    EXPECT_EQ(f.repo->changed_since(now, again), (std::vector<std::string>{"todo"}));
+    now = again;
+    ASSERT_TRUE(f.repo->remove("clock", false));
+    EXPECT_EQ(f.repo->changed_since(now, again), (std::vector<std::string>{"clock"}));
+    now = again;
+    // A rejected package changes nothing.
+    Files bad = todo_files();
+    bad.pop_back();  // its icon is missing
+    ASSERT_FALSE(f.install(bad));
+    EXPECT_TRUE(f.repo->changed_since(now, again).empty());
+    // From an older generation, every id once.
+    changed = f.repo->changed_since(start, again);
+    std::sort(changed.begin(), changed.end());
+    EXPECT_EQ(changed, (std::vector<std::string>{"clock", "todo"}));
+}
+
+// recover() finishing an interrupted install counts as a change too.
+TEST(SceneRepository, ChangedSinceIncludesRecoveredInstalls) {
+    Fixture f;
+    uint64_t gen = 0;
+    (void)f.repo->changed_since(0, gen);
+    lay_out(f.root() / ".todo.newdir", todo_files());
+    ASSERT_TRUE(f.repo->recover());
+    uint64_t now = 0;
+    EXPECT_EQ(f.repo->changed_since(gen, now), (std::vector<std::string>{"todo"}));
+}
+
 TEST(SceneRepository, RejectsDeeplyNestedManifest) {
     Fixture f;
     Files files = todo_files();

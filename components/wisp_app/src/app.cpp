@@ -713,9 +713,19 @@ Result<void> App::start() {
             },
             .now_ms = {},
             .agent = impl_->agent ? impl_->agent->service() : nullptr,
-            .list_scenes = scenes != nullptr ? std::function<std::vector<shell::ShellScene>()>(
+            .list_scenes = scenes != nullptr ? std::function<shell::ShellListing()>(
                                                    [scenes] { return scenes->shell_scenes(); })
                                              : nullptr,
+            .read_scene_icon =
+                scenes != nullptr
+                    ? std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)>(
+                          [scenes](const std::string& id) { return scenes->shell_icon(id); })
+                    : nullptr,
+            .scene_has_data = scenes != nullptr ? std::function<bool(const std::string&)>(
+                                                      [scenes](const std::string& id) {
+                                                          return scenes->scene_has_data(id);
+                                                      })
+                                                : nullptr,
             .open_scene =
                 [impl](const std::string& id) {
                     scene::SceneRuntime* rt = impl->scenes ? impl->scenes->runtime() : nullptr;

@@ -76,8 +76,10 @@ protected:
                 s.name = "场景 " + std::to_string(i);
                 out.push_back(std::move(s));
             }
-            return out;
+            return wisp::shell::ShellListing{std::move(out), false};
         };
+        // The long-press card at its tallest, with "delete its data too".
+        d.scene_has_data = [](const std::string&) { return true; };
         d.settings = [] {
             wisp::core::SystemSettingsValues v{};
             v.brightness = 200;
@@ -168,6 +170,7 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
         });
         // The long-press card fits too.
         h->hold(h->centre_of(h->shell().scene_list()->card(8)), 700);
+        ASSERT_TRUE(h->ui_until([&] { return h->shell().scene_list()->popup_data() != nullptr; }));
         h->on_ui([&] {
             wisp::shell::SceneList* p = h->shell().scene_list();
             ASSERT_NE(p->popup(), nullptr);

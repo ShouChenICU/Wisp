@@ -849,3 +849,21 @@ TEST(StorageManager, ReadRangeAndMtime) {
     EXPECT_EQ(listed.value()[0].mtime, static_cast<int64_t>(st.st_mtime));
     EXPECT_GT(listed.value()[0].mtime, 0);
 }
+
+// calls(): every operation that names a path counts, whatever it finds;
+// asking for the roots does not.
+TEST(StorageManager, CallsCountsPathOperations) {
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    const uint64_t before = f.mgr->calls();
+    (void)f.mgr->roots(Area::Library);
+    (void)f.mgr->write_root(Area::System);
+    EXPECT_EQ(f.mgr->calls(), before);
+    const std::string p = f.in + "/system/c.json";
+    ASSERT_TRUE(f.mgr->write_atomic(p, bytes("x")));
+    ASSERT_TRUE(f.mgr->read_file(p));
+    EXPECT_FALSE(f.mgr->read_file(p + "x"));
+    ASSERT_TRUE(f.mgr->list_dir(f.in + "/system"));
+    ASSERT_TRUE(f.mgr->tree_size(f.in + "/system"));
+    EXPECT_EQ(f.mgr->calls(), before + 5);
+}

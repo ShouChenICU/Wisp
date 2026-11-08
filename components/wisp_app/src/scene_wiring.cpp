@@ -103,6 +103,7 @@ void SceneWiring::start_storage() {
         // The card's scenes are counted again on the worker (spec 7.2).
         for (const char* topic : {"storage.sd.inserted", "storage.sd.removed"}) {
             sd_subs_.push_back(deps_.bus.subscribe(topic, [this, files](const core::Event&) {
+                sd_changes_.fetch_add(1);
                 if (!worker_.submit([files] { files->on_sd_changed(); }))
                     WLOG_W(kTag, "storage worker busy: scene files on the card not recounted");
             }));
@@ -473,48 +474,160 @@ bool SceneWiring::storage_status_async(ui::UiRuntime& ui,
     });
 }
 
-std::vector<shell::ShellScene> SceneWiring::shell_scenes() {
-    std::vector<shell::ShellScene> out;
+SceneWiring::ListedScene SceneWiring::listed_scene(const core::SceneManifest& m,
+                                                   std::shared_ptr<const os::LargeBuffer>& bytes) {
+    ListedScene e;
+    e.id.assign(m.id.data(), m.id.size());
+    e.name.assign(m.name.data(), m.name.size());
+    e.icon.assign(m.icon.data(), m.icon.size());
+    bytes.reset();
+    if (m.icon.empty()) return e;
+    if (auto icon = repo_->read_asset(m.id, m.icon, shell::kIconMaxBytes); icon) {
+        e.icon_hash = shell::icon_hash(icon.value().span());
+        bytes = std::make_shared<const os::LargeBuffer>(std::move(icon.value()));
+    } else {
+        WLOG_W(kTag, "%s: icon not shown (%s)", m.id.c_str(), icon.error().message.c_str());
+    }
+    return e;
+}
+
+bool SceneWiring::can_run(const os::LargeString& id, bool online) {
+    core::SceneFiles* sf = files_.get();
+    if (sf == nullptr || online) return true;
+    const std::string_view sid(id.data(), id.size());
+    auto fi = sf->info(sid);
+    if (!fi) {
+        // A scene that wants the card and has no files yet is refused
+        // outright while the card is out.
+        return fi.error().code != ErrorCode::StorageUnavailable;
+    }
+    const bool on_card = fi.value().location == core::FilesLocation::Sd ||
+                         (fi.value().location == core::FilesLocation::None &&
+                          fi.value().want == core::FilesWant::Sd);
+    return !on_card;
+}
+
+shell::ShellListing SceneWiring::shell_scenes() {
+    shell::ShellListing out;
     core::SceneRepository* repo = repository();
     if (repo == nullptr) return out;
-    auto listed = repo->list();
-    if (!listed) {
-        WLOG_W(kTag, "listing scenes failed: %s", listed.error().message.c_str());
-        return out;
+    const uint64_t t0 = os::now_us();
+    // Asked before reading, so a change landing while this reads is read
+    // again next time.
+    uint64_t gen = 0;
+    const std::vector<std::string> changed = repo->changed_since(listed_gen_, gen);
+    const uint64_t sd = sd_changes_.load();
+    const bool online = files_ == nullptr || files_->sd_online();
+    const bool full = !listed_ || repo->dev();
+    const bool card = !full && (sd != listed_sd_ || online != listed_online_);
+    // Icons read for this call, handed over as bytes.
+    std::vector<std::pair<std::string, std::shared_ptr<const os::LargeBuffer>>> read;
+    std::shared_ptr<const os::LargeBuffer> bytes;
+    const auto keep_bytes = [&](const os::LargeString& id) {
+        if (bytes) read.emplace_back(std::string(id.data(), id.size()), std::move(bytes));
+    };
+    const auto by_id = [](const ListedScene& e, std::string_view id) {
+        return std::string_view(e.id.data(), e.id.size()) < id;
+    };
+    if (full) {
+        listed_ = false;
+        listing_.clear();
+        auto listed = repo->manifests();
+        if (!listed) {
+            WLOG_W(kTag, "listing scenes failed: %s", listed.error().message.c_str());
+            return out;
+        }
+        listing_.reserve(listed.value().size());
+        for (const core::SceneManifest& m : listed.value()) {
+            listing_.push_back(listed_scene(m, bytes));
+            listing_.back().available = can_run(listing_.back().id, online);
+            keep_bytes(listing_.back().id);
+        }
+    } else {
+        for (const std::string& id : changed) {
+            auto it = std::lower_bound(listing_.begin(), listing_.end(), id, by_id);
+            const bool there =
+                it != listing_.end() && std::string_view(it->id.data(), it->id.size()) == id;
+            Result<core::SceneManifest> m = repo->manifest(id);
+            if (!m) {
+                if (there) listing_.erase(it);
+                const ErrorCode code = m.error().code;
+                if (code == ErrorCode::InvalidArgument) {
+                    WLOG_W(kTag, "skipping scene '%s': %s", id.c_str(), m.error().message.c_str());
+                } else if (code != ErrorCode::NotFound) {
+                    // Not known to be gone: everything is read again next time.
+                    WLOG_W(kTag, "reading scene %s failed: %s", id.c_str(),
+                           m.error().message.c_str());
+                    listed_ = false;
+                }
+                continue;
+            }
+            ListedScene e = listed_scene(m.value(), bytes);
+            e.available = can_run(e.id, online);
+            keep_bytes(e.id);
+            if (there) {
+                *it = std::move(e);
+            } else {
+                listing_.insert(it, std::move(e));
+            }
+        }
+        if (card) {
+            for (ListedScene& e : listing_) e.available = can_run(e.id, online);
+        }
     }
+    if (full || !changed.empty() || card) {
+        // A failed read above leaves listed_ false for a full read next time.
+        listed_ = full || listed_;
+        listed_gen_ = gen;
+        listed_sd_ = sd;
+        listed_online_ = online;
+    }
+    out.cached = !full && changed.empty() && !card;
+    const uint64_t t1 = os::now_us();
+
     std::vector<std::string> background;
     if (scene::SceneRuntime* rt = runtime())
         for (const scene::BackgroundScene& b : rt->background_scenes()) background.push_back(b.id);
-    core::SceneFiles* sf = files_.get();
-    for (const core::SceneInfo& info : listed.value()) {
-        const core::SceneManifest& m = info.manifest;
+    out.scenes.reserve(listing_.size());
+    for (const ListedScene& e : listing_) {
         shell::ShellScene sc;
-        sc.id = m.id;
-        sc.name = m.name;
-        sc.background = std::find(background.begin(), background.end(), m.id) != background.end();
-        if (sf != nullptr && !sf->sd_online()) {
-            if (auto fi = sf->info(m.id); fi) {
-                const bool on_card = fi.value().location == core::FilesLocation::Sd ||
-                                     (fi.value().location == core::FilesLocation::None &&
-                                      fi.value().want == core::FilesWant::Sd);
-                sc.available = !on_card;
-            } else {
-                // A scene that wants the card and has no files yet is
-                // refused outright while the card is out.
-                sc.available = fi.error().code != ErrorCode::StorageUnavailable;
-            }
+        sc.id.assign(e.id.data(), e.id.size());
+        sc.name.assign(e.name.data(), e.name.size());
+        sc.icon_hash = e.icon_hash;
+        sc.available = e.available;
+        sc.background = std::find(background.begin(), background.end(), sc.id) != background.end();
+        for (auto& [id, png] : read) {
+            if (id == sc.id) sc.icon_png = std::move(png);
         }
-        if (auto rm = repo->removal(m.id, true); rm) sc.has_data = rm.value().data;
-        if (!m.icon.empty()) {
-            if (auto icon = repo->read_asset(m.id, m.icon, shell::kIconMaxBytes); icon) {
-                sc.icon_png = std::make_shared<const os::LargeBuffer>(std::move(icon.value()));
-            } else {
-                WLOG_W(kTag, "%s: icon not shown (%s)", m.id.c_str(), icon.error().message.c_str());
-            }
-        }
-        out.push_back(std::move(sc));
+        out.scenes.push_back(std::move(sc));
     }
+    WLOG_D(kTag, "shell listing: us_read=%u us_build=%u read=%u n=%u cached=%u",
+           static_cast<unsigned>(t1 - t0), static_cast<unsigned>(os::now_us() - t1),
+           static_cast<unsigned>(full ? listing_.size() : changed.size()),
+           static_cast<unsigned>(listing_.size()), out.cached ? 1u : 0u);
     return out;
+}
+
+std::shared_ptr<const os::LargeBuffer> SceneWiring::shell_icon(const std::string& id) {
+    if (!repo_) return nullptr;
+    std::string path;
+    for (const ListedScene& e : listing_) {
+        if (std::string_view(e.id.data(), e.id.size()) == id)
+            path.assign(e.icon.data(), e.icon.size());
+    }
+    if (path.empty()) return nullptr;
+    auto icon = repo_->read_asset(id, path, shell::kIconMaxBytes);
+    if (!icon) {
+        WLOG_W(kTag, "%s: icon not shown (%s)", id.c_str(), icon.error().message.c_str());
+        return nullptr;
+    }
+    return std::make_shared<const os::LargeBuffer>(std::move(icon.value()));
+}
+
+bool SceneWiring::scene_has_data(const std::string& id) {
+    if (!repo_) return false;
+    auto rm = repo_->removal(id, true);
+    return rm && rm.value().data;
 }
 
 }  // namespace wisp::app

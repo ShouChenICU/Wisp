@@ -60,6 +60,7 @@ struct Shell::ListTiming {
     uint32_t list_ms = 0, icons_ms = 0;
     uint64_t build_us = 0;
     size_t scenes = 0, decoded = 0;
+    bool cached = false;
 };
 
 const char* to_string(Page p) {
@@ -299,6 +300,7 @@ lv_obj_t* Shell::build_page(Page p) {
                 .shape = deps_.shape,
                 .open_scene = deps_.open_scene,
                 .delete_scene = deps_.delete_scene,
+                .has_data = scene_has_data_query(),
             });
             {
                 open_timing_ = std::make_shared<ListTiming>();
@@ -346,8 +348,7 @@ void Shell::drop_pages() {
 
 struct Shell::IconCache {
     struct Entry {
-        uint64_t hash = 0;
-        size_t size = 0;
+        uint64_t hash = 0;                      // icon_hash() of the file
         std::shared_ptr<const SceneIcon> icon;  // null: the file did not decode
     };
     // An icon file not decoded before, or changed since.
@@ -358,27 +359,31 @@ struct Shell::IconCache {
     };
 
     // Fills each scene's `icon` from what was decoded before, where its
-    // file is unchanged, and drops the file bytes; the rest it hands back
-    // for decode(). The bytes are hashed rather than compared by pointer:
-    // every listing reads the files again. Scenes no longer listed, or
+    // file is unchanged (the same icon_hash()), and drops the file bytes;
+    // the rest it hands back for decode(), reading with `read` the files
+    // the listing named by hash alone. Hashed rather than compared by
+    // pointer: a lister may read a file again. Scenes no longer listed, or
     // listed without an icon, are forgotten.
-    std::vector<Pending> lookup(std::vector<ShellScene>& scenes) {
+    std::vector<Pending> lookup(
+        std::vector<ShellScene>& scenes,
+        const std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)>& read) {
         std::lock_guard<os::Mutex> lock(mu);
         std::map<std::string, Entry> next;
         std::vector<Pending> pending;
         for (ShellScene& sc : scenes) {
-            if (!sc.icon_png) continue;
-            const os::LargeBuffer& png = *sc.icon_png;
-            const uint64_t h = fnv1a(png);
+            std::shared_ptr<const os::LargeBuffer> png = std::move(sc.icon_png);
+            sc.icon = nullptr;
+            const uint64_t h = png ? icon_hash(png->span()) : sc.icon_hash;
+            if (h == 0) continue;
             auto it = by_id.find(sc.id);
-            if (it != by_id.end() && it->second.hash == h && it->second.size == png.size()) {
+            if (it != by_id.end() && it->second.hash == h) {
                 sc.icon = it->second.icon;
                 next[sc.id] = it->second;
-            } else {
-                sc.icon = nullptr;
-                pending.push_back({sc.id, sc.icon_png, h});
+                continue;
             }
-            sc.icon_png.reset();
+            if (!png && read) png = read(sc.id);
+            if (!png) continue;
+            pending.push_back({sc.id, png, icon_hash(png->span())});
         }
         by_id = std::move(next);
         return pending;
@@ -390,17 +395,8 @@ struct Shell::IconCache {
         std::shared_ptr<const SceneIcon> icon = decode_scene_icon(*p.png, side);
         if (!icon) WLOG_W(kTag, "%s: icon not shown (not a PNG it can draw)", p.id.c_str());
         std::lock_guard<os::Mutex> lock(mu);
-        by_id[p.id] = {p.hash, p.png->size(), icon};
+        by_id[p.id] = {p.hash, icon};
         return icon;
-    }
-
-    static uint64_t fnv1a(const os::LargeBuffer& b) {
-        uint64_t h = 1469598103934665603ull;
-        for (size_t i = 0; i < b.size(); ++i) {
-            h ^= b.data()[i];
-            h *= 1099511628211ull;
-        }
-        return h;
     }
 
     os::Mutex mu;
@@ -418,12 +414,14 @@ void Shell::list_scenes() {
     // The page's first listing is the one its timing line is about.
     std::shared_ptr<ListTiming> timing = std::move(open_timing_);
     if (timing) timing->asked_us = os::now_us();
-    auto job = [this, list = deps_.list_scenes, recents = deps_.recents, ui = &deps_.ui,
-                queued = listing_, alive = page_alive_, icons = icons_,
-                side = SceneList::icon_side(deps_.shape), timing] {
+    auto job = [this, list = deps_.list_scenes, read_icon = deps_.read_scene_icon,
+                recents = deps_.recents, ui = &deps_.ui, queued = listing_, alive = page_alive_,
+                icons = icons_, side = SceneList::icon_side(deps_.shape), timing] {
         queued->store(false);
-        std::vector<ShellScene> got = list();
+        ShellListing listing = list();
+        std::vector<ShellScene> got = std::move(listing.scenes);
         if (timing) {
+            timing->cached = listing.cached;
             timing->list_ms = static_cast<uint32_t>((os::now_us() - timing->asked_us) / 1000);
             timing->scenes = got.size();
         }
@@ -446,7 +444,7 @@ void Shell::list_scenes() {
         }
         // The cards first, with the icons decoded before; the new ones
         // follow one by one as they decode.
-        const std::vector<IconCache::Pending> pending = icons->lookup(got);
+        const std::vector<IconCache::Pending> pending = icons->lookup(got, read_icon);
         if (!ui->post([this, alive, timing, got = std::move(got)]() mutable {
                 if (!*alive || !scenes_) return;
                 const uint64_t t0 = os::now_us();
@@ -474,16 +472,34 @@ void Shell::list_scenes() {
         timing->icons_ms = static_cast<uint32_t>((os::now_us() - d0) / 1000);
         timing->decoded = pending.size();
         (void)ui->post([timing] {
-            WLOG_I(kTag, "scenes ms_list=%u ms_icons=%u ms_build=%u n=%u icons_decoded=%u",
+            WLOG_I(kTag,
+                   "scenes ms_list=%u ms_icons=%u ms_build=%u n=%u icons_decoded=%u cached=%u",
                    static_cast<unsigned>(timing->list_ms), static_cast<unsigned>(timing->icons_ms),
                    static_cast<unsigned>(timing->build_us / 1000),
-                   static_cast<unsigned>(timing->scenes), static_cast<unsigned>(timing->decoded));
+                   static_cast<unsigned>(timing->scenes), static_cast<unsigned>(timing->decoded),
+                   timing->cached ? 1u : 0u);
         });
     };
     if (!deps_.submit_io(std::move(job))) {
         listing_->store(false);
         WLOG_W(kTag, "scene list not read (storage queue full)");
     }
+}
+
+std::function<void(const std::string&, std::function<void(bool)>)> Shell::scene_has_data_query() {
+    if (!deps_.scene_has_data || !deps_.submit_io) return {};
+    return [this](const std::string& id, std::function<void(bool)> answer) {
+        auto job = [has = deps_.scene_has_data, ui = &deps_.ui, alive = page_alive_, id,
+                    answer = std::move(answer)]() mutable {
+            const bool data = has(id);
+            (void)ui->post([alive, answer = std::move(answer), data] {
+                if (*alive) answer(data);
+            });
+        };
+        if (!deps_.submit_io(std::move(job)))
+            WLOG_W(kTag, "scene %s: whether it has data not asked (storage queue full)",
+                   id.c_str());
+    };
 }
 
 void Shell::delete_page() {

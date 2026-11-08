@@ -36,7 +36,7 @@ constexpr lv_opa_t kPlaceholderOpa = LV_OPA_40;
 // What a card shows: the same scene, the same way.
 bool same_card(const ShellScene& a, const ShellScene& b) {
     return a.id == b.id && a.name == b.name && a.icon == b.icon && a.background == b.background &&
-           a.available == b.available && a.has_data == b.has_data;
+           a.available == b.available;
 }
 
 // The first UTF-8 character of `s`.
@@ -78,6 +78,15 @@ bool png_size(const os::LargeBuffer& png, uint32_t& w, uint32_t& h) {
 }
 
 }  // namespace
+
+uint64_t icon_hash(std::span<const uint8_t> bytes) {
+    uint64_t h = 1469598103934665603ull;
+    for (uint8_t b : bytes) {
+        h ^= b;
+        h *= 1099511628211ull;
+    }
+    return h != 0 ? h : 1;
+}
 
 std::shared_ptr<const SceneIcon> decode_scene_icon(const os::LargeBuffer& png, int32_t side) {
     uint32_t w = 0, h = 0;
@@ -161,7 +170,7 @@ SceneList::SceneList(SceneListDeps deps) : deps_(std::move(deps)) {
     card_px_ = g.card_px;
 }
 
-SceneList::~SceneList() = default;
+SceneList::~SceneList() { *alive_ = false; }
 
 void SceneList::build(lv_obj_t* list) {
     list_ = list;
@@ -369,17 +378,12 @@ void SceneList::long_press(size_t i) {
 
     const hal::Area safe = hal::safe_rect(deps_.shape);
     lv_obj_t* card = detail::make_card(popup_);
+    pop_card_ = card;
     lv_obj_set_width(card, std::min(area_w(safe), kPopupMaxPx));
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);  // a tap on it is not outside
     lv_obj_t* name = detail::make_text(card, s.name.c_str());
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
     pop_data_ = nullptr;
-    if (s.has_data) {
-        pop_data_ = lv_checkbox_create(card);
-        lv_checkbox_set_text(pop_data_, ui::tr(ui::StrId::SceneDeleteData));
-        lv_obj_set_style_min_height(pop_data_, detail::kMinTouchPx, 0);
-        lv_obj_set_flex_flow(pop_data_, LV_FLEX_FLOW_ROW);
-    }
     pop_delete_ = lv_button_create(card);
     lv_obj_set_size(pop_delete_, LV_PCT(100), detail::kMinTouchPx);
     ui::set_button_role(pop_delete_, ui::ButtonRole::Danger);
@@ -387,12 +391,40 @@ void SceneList::long_press(size_t i) {
     lv_label_set_text(label, ui::tr(ui::StrId::SceneDeleteButton));
     lv_obj_center(label);
     lv_obj_add_event_cb(pop_delete_, &SceneList::popup_cb, LV_EVENT_CLICKED, this);
+    place_popup();
+    detail::bubble_tree(popup_);
+    // Without the option until the answer comes; deleting before it does
+    // keeps the data, as leaving the box unticked would.
+    pop_pending_ = static_cast<bool>(deps_.has_data);
+    if (pop_pending_) {
+        const uint32_t serial = ++pop_serial_;
+        deps_.has_data(pop_id_, [this, alive = alive_, serial](bool has) {
+            if (*alive) on_has_data(serial, has);
+        });
+    }
+}
+
+void SceneList::on_has_data(uint32_t serial, bool has) {
+    if (popup_ == nullptr || serial != pop_serial_ || !pop_pending_) return;
+    pop_pending_ = false;
+    if (!has) return;
+    pop_data_ = lv_checkbox_create(pop_card_);
+    lv_checkbox_set_text(pop_data_, ui::tr(ui::StrId::SceneDeleteData));
+    lv_obj_set_style_min_height(pop_data_, detail::kMinTouchPx, 0);
+    lv_obj_set_flex_flow(pop_data_, LV_FLEX_FLOW_ROW);
+    // Above the delete button, as if it had been there from the start.
+    lv_obj_move_to_index(pop_data_, lv_obj_get_index(pop_delete_));
+    detail::bubble_tree(pop_data_);
+    place_popup();
+}
+
+void SceneList::place_popup() {
     // Centred in the safe area, which on a round screen is not the screen's
     // centre row by row but is by its box.
-    lv_obj_update_layout(card);
-    lv_obj_set_pos(card, (safe.x1 + safe.x2 + 1 - lv_obj_get_width(card)) / 2,
-                   (safe.y1 + safe.y2 + 1 - lv_obj_get_height(card)) / 2);
-    detail::bubble_tree(popup_);
+    const hal::Area safe = hal::safe_rect(deps_.shape);
+    lv_obj_update_layout(pop_card_);
+    lv_obj_set_pos(pop_card_, (safe.x1 + safe.x2 + 1 - lv_obj_get_width(pop_card_)) / 2,
+                   (safe.y1 + safe.y2 + 1 - lv_obj_get_height(pop_card_)) / 2);
 }
 
 void SceneList::popup_cb(lv_event_t* e) {
@@ -418,7 +450,8 @@ void SceneList::close_popup() {
     if (popup_ == nullptr) return;
     // From inside one of its own events: deleted once the event is over.
     lv_obj_delete_async(popup_);
-    popup_ = pop_delete_ = pop_data_ = nullptr;
+    popup_ = pop_card_ = pop_delete_ = pop_data_ = nullptr;
+    pop_pending_ = false;
     pop_id_.clear();
 }
 

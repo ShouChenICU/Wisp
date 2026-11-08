@@ -151,6 +151,18 @@ public:
     // skipped. A missing code root is an empty list.
     Result<std::vector<SceneInfo>> list();
 
+    // list() without sizing the packages or their data: only each
+    // scene.json is read. Skips what list() skips.
+    Result<std::vector<SceneManifest>> manifests();
+
+    // The scenes a replace (an install, an update, an interrupted one that
+    // recover() or the next install finished) or a remove touched after
+    // generation `since`, each once, in no particular order, and in `now`
+    // the generation to ask from next time. A failed replace or remove may
+    // be named too: it may have changed something. 0 is older than every
+    // change. No file work; a short lock of its own, as installing().
+    std::vector<std::string> changed_since(uint64_t since, uint64_t& now) const;
+
     // NotFound if `id` has no scene.json; InvalidArgument for a malformed id
     // or manifest.
     Result<SceneInfo> info(std::string_view id);
@@ -261,6 +273,9 @@ private:
     // previous version).
     Result<os::LargeBuffer> export_dir(std::string_view id, bool prev, bool with_data);
     Result<void> remove_here(std::string_view id, bool with_data);
+    Result<std::vector<SceneManifest>> manifests_here();
+    // Records that `id` changed, for changed_since().
+    void note_change(std::string_view id);
     Result<SceneRemoval> removal_here(std::string_view id, bool with_data);
 
     StorageManager& storage_;
@@ -274,6 +289,10 @@ private:
     mutable os::Mutex marks_mutex_;
     std::vector<std::string> installing_;
     std::vector<std::string> removing_;  // one entry per begin_removing()
+    // Also under marks_mutex_: the last change of each scene that changed,
+    // by change count.
+    uint64_t changes_ = 0;
+    std::vector<std::pair<std::string, uint64_t>> changed_;
 };
 
 }  // namespace wisp::core

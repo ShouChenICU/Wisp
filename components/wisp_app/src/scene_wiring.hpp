@@ -151,11 +151,33 @@ public:
     core::StorageWorker& worker() { return worker_; }
 
     // The shell's scene list (ShellDeps::list_scenes): every installed
-    // scene with its icon file, whether it runs in the background, whether
-    // it can run now (its files are not on a card that is out) and whether
-    // it has data to delete with it. Reads flash: on worker() only. Empty
-    // without a repository or when listing fails (logged).
-    std::vector<shell::ShellScene> shell_scenes();
+    // scene with its icon, whether it runs in the background and whether
+    // it can run now (its files are not on a card that is out). On
+    // worker() only. Empty without a repository or when listing fails
+    // (logged).
+    //
+    // Kept between calls (outside dev mode, whose working directory
+    // changes behind the repository's back): only what changed since the
+    // last call is read again, so a listing with nothing new does no file
+    // work and says `cached`. What it reads again:
+    //   - the scenes SceneRepository::changed_since() names (an install,
+    //     update, remove or recovered install): their scene.json and icon;
+    //   - whether each scene can run, when the card went in or out
+    //     (storage.sd.inserted/removed, or SceneFiles::sd_online() reading
+    //     otherwise than last time). With the card out it cannot change
+    //     otherwise: a scene's files keep the place their first write
+    //     picked, and only deleting the scene removes them.
+    // Running in the background comes from the runtime each time, never
+    // from storage. An icon comes as its bytes when read for this call and
+    // as its icon_hash alone after that (shell_icon() reads it again).
+    shell::ShellListing shell_scenes();
+    // ShellDeps::read_scene_icon: scene `id`'s icon file, or null. On
+    // worker() only.
+    std::shared_ptr<const os::LargeBuffer> shell_icon(const std::string& id);
+    // ShellDeps::scene_has_data: whether deleting `id` with its data would
+    // find any (SceneRepository::removal()). Read when asked, never kept:
+    // a scene writes its first data whenever it likes. On worker() only.
+    bool scene_has_data(const std::string& id);
 
     // AdminDeps::request_scene_delete. NotFound when there is nothing to
     // delete (SceneRepository::removal()), Unsupported in dev mode, Busy
@@ -212,6 +234,20 @@ private:
     // its files changed.
     void poll_scenes();
 
+    // shell_scenes()'s copy of one scene; in Mem::Large with this object.
+    struct ListedScene {
+        os::LargeString id, name;
+        os::LargeString icon;  // the manifest's icon path, or ""
+        uint64_t icon_hash = 0;
+        bool available = true;
+    };
+    // shell_scenes() helpers, on the worker: the entry for manifest `m`
+    // (its icon read into `bytes`), and whether `id` can run with the card
+    // as `online` says.
+    ListedScene listed_scene(const core::SceneManifest& m,
+                             std::shared_ptr<const os::LargeBuffer>& bytes);
+    bool can_run(const os::LargeString& id, bool online);
+
     SceneWiringDeps deps_;
     core::StorageWorker worker_;
     // The services sit in Mem::Large, like the worker inside this object
@@ -225,6 +261,18 @@ private:
     os::LargeUnique<core::SceneFiles> files_;
     // storage.sd.inserted/removed, which recount the card's scenes.
     std::vector<core::SubscriptionId> sd_subs_;
+    // Bumped by those events (on the bus thread); shell_scenes() then
+    // asks again whether each scene can run.
+    std::atomic<uint64_t> sd_changes_{0};
+    // shell_scenes()'s listing, sorted by id; worker only. `listed_` is
+    // false until one has been read (and after a failed read), `listed_gen_`
+    // the repository generation it is up to date with, and `listed_online_`
+    // / `listed_sd_` the card as its `available` flags saw it.
+    os::LargeVector<ListedScene> listing_;
+    bool listed_ = false;
+    uint64_t listed_gen_ = 0;
+    bool listed_online_ = true;
+    uint64_t listed_sd_ = 0;
     // Declared before runtime_, so the runtime goes first: it cancels its
     // scene's requests through the proxy while it stops.
     os::LargeUnique<net::SceneHttp> http_;

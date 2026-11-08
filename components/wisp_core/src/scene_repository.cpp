@@ -374,6 +374,53 @@ Result<std::vector<SceneInfo>> SceneRepository::list_here() {
     return R::ok(std::move(out));
 }
 
+Result<std::vector<SceneManifest>> SceneRepository::manifests() {
+    return call_on_worker<std::vector<SceneManifest>>(config_.worker,
+                                                      [&] { return manifests_here(); });
+}
+
+Result<std::vector<SceneManifest>> SceneRepository::manifests_here() {
+    using R = Result<std::vector<SceneManifest>>;
+    std::lock_guard<os::Mutex> lock(mutex_);
+    std::vector<SceneManifest> out;
+    Result<std::vector<DirEntry>> listed = storage_.list_dir(config_.code_root);
+    if (!listed) {
+        if (listed.error().code == ErrorCode::NotFound) return R::ok(std::move(out));
+        return fail<std::vector<SceneManifest>>(listed.error());
+    }
+    for (const DirEntry& e : listed.value()) {
+        if (e.kind != EntryKind::Dir || !valid_scene_id(e.name)) continue;
+        Result<SceneManifest> m = read_manifest(e.name);
+        if (m) {
+            out.push_back(std::move(m.value()));
+        } else if (m.error().code != ErrorCode::NotFound) {
+            WLOG_W(kTag, "skipping scene '%s': %s", e.name.c_str(), m.error().message.c_str());
+        }
+    }
+    return R::ok(std::move(out));
+}
+
+std::vector<std::string> SceneRepository::changed_since(uint64_t since, uint64_t& now) const {
+    std::lock_guard<os::Mutex> lock(marks_mutex_);
+    now = changes_;
+    std::vector<std::string> out;
+    for (const auto& [id, at] : changed_)
+        if (at > since) out.push_back(id);
+    return out;
+}
+
+void SceneRepository::note_change(std::string_view id) {
+    std::lock_guard<os::Mutex> lock(marks_mutex_);
+    ++changes_;
+    for (auto& [known, at] : changed_) {
+        if (known == id) {
+            at = changes_;
+            return;
+        }
+    }
+    changed_.emplace_back(std::string(id), changes_);
+}
+
 Result<ScenePackage> SceneRepository::load(std::string_view id) {
     return call_on_worker<ScenePackage>(config_.worker, [&] { return load_here(id); });
 }
@@ -591,6 +638,7 @@ Result<SceneInfo> SceneRepository::swap_here(const SceneManifest& manifest, bool
         return fail<SceneInfo>(renamed.error());
     }
     ++generation_;
+    note_change(id);
     Result<void> replaced = finish_replace(id, keep_prev);
     if (!replaced) {
         return fail<SceneInfo>(replaced.error());
@@ -619,6 +667,7 @@ Result<void> SceneRepository::finish_replace(const std::string& id, bool keep_pr
     if (staged.value() == Kind::Missing) {
         return Result<void>::ok();
     }
+    note_change(id);
     if (staged.value() != Kind::Dir) {
         return storage_.remove_tree(neu);
     }
@@ -898,6 +947,7 @@ Result<void> SceneRepository::remove_here(std::string_view id_view, bool with_da
     const std::string id(id_view);
     std::lock_guard<os::Mutex> lock(mutex_);
     ++generation_;
+    note_change(id);
     WISP_TRY(finish_replace(id));
 
     const std::string dir = code_dir(id);

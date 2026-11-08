@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -36,6 +37,7 @@
 #include "wisp/core/sensor_service.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/core/zip.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
@@ -996,28 +998,303 @@ TEST(AppScenes, ShellScenesListsAvailabilityDataAndIcons) {
     ASSERT_NE(wiring.files(), nullptr);
     ASSERT_FALSE(wiring.files()->sd_online());
     std::vector<wisp::shell::ShellScene> got;
-    ASSERT_TRUE(wiring.worker().run_sync([&] { got = wiring.shell_scenes(); }, 5000));
+    ASSERT_TRUE(wiring.worker().run_sync([&] { got = wiring.shell_scenes().scenes; }, 5000));
     std::map<std::string, const wisp::shell::ShellScene*> by_id;
     for (const auto& s : got) by_id[s.id] = &s;
     ASSERT_EQ(by_id.size(), 4u);
 
     EXPECT_EQ(by_id["counter"]->name, "计数器");
     EXPECT_TRUE(by_id["counter"]->available);
-    EXPECT_TRUE(by_id["counter"]->has_data);
     EXPECT_FALSE(by_id["counter"]->background);
     EXPECT_EQ(by_id["counter"]->icon_png, nullptr);
+    EXPECT_EQ(by_id["counter"]->icon_hash, 0u);
 
     EXPECT_FALSE(by_id["photos"]->available);
-    EXPECT_FALSE(by_id["photos"]->has_data);
 
+    const std::string png = "\x89PNG-bytes";
     ASSERT_NE(by_id["clock"]->icon_png, nullptr);
     EXPECT_EQ(std::string(reinterpret_cast<const char*>(by_id["clock"]->icon_png->data()),
                           by_id["clock"]->icon_png->size()),
-              "\x89PNG-bytes");
+              png);
+    EXPECT_EQ(by_id["clock"]->icon_hash,
+              wisp::shell::icon_hash(std::span<const uint8_t>(
+                  reinterpret_cast<const uint8_t*>(png.data()), png.size())));
     EXPECT_TRUE(by_id["clock"]->available);
 
     EXPECT_EQ(by_id["big"]->icon_png, nullptr);
+    EXPECT_EQ(by_id["big"]->icon_hash, 0u);
+
+    // Whether there is data to delete is asked on its own.
+    bool counter_data = false, photos_data = true;
+    std::shared_ptr<const wisp::os::LargeBuffer> again;
+    ASSERT_TRUE(wiring.worker().run_sync(
+        [&] {
+            counter_data = wiring.scene_has_data("counter");
+            photos_data = wiring.scene_has_data("photos");
+            again = wiring.shell_icon("clock");
+        },
+        5000));
+    EXPECT_TRUE(counter_data);
+    EXPECT_FALSE(photos_data);
+    ASSERT_NE(again, nullptr);
+    EXPECT_EQ(again->size(), png.size());
     wiring.stop();
+}
+
+// shell_scenes() kept between listings: storage with a card slot, a
+// repository over <int>/scenes and the wiring, without the rest of the app.
+namespace {
+
+std::span<const uint8_t> bytes_of(const std::string& s) {
+    return {reinterpret_cast<const uint8_t*>(s.data()), s.size()};
+}
+
+using wisp::test::FakeStorage;
+
+struct ListingRig {
+    explicit ListingRig(bool card_in = true)
+        : in(wisp::test::temp_dir().string()), sd(wisp::test::temp_dir().string()) {
+        int_dev = std::make_shared<FakeStorage>("storage.int", in, /*removable=*/false);
+        sd_dev = std::make_shared<FakeStorage>("storage.sd", sd, /*removable=*/true);
+        sd_dev->online_flag = card_in;
+        registry.add(int_dev);
+        registry.add(sd_dev);
+        bus.start();
+        storage = std::make_unique<wisp::core::StorageManager>(registry, bus);
+        EXPECT_TRUE(storage->init());
+    }
+    ~ListingRig() {
+        if (wiring) wiring->stop();
+        wiring.reset();
+        storage.reset();
+        bus.stop();
+    }
+
+    void start() {
+        wiring = std::make_unique<wisp::app::SceneWiring>(
+            wisp::app::SceneWiringDeps{platform, bus, *storage});
+        wiring->start_storage();
+        ASSERT_NE(wiring->repository(), nullptr);
+    }
+
+    // A package laid out on disk, as one installed before boot.
+    void put(const std::string& id, const std::string& name, const std::string& extra = {},
+             const std::string& icon = {}) {
+        const fs::path dir = fs::path(in) / "scenes" / id;
+        fs::create_directories(dir);
+        std::ofstream(dir / "scene.json")
+            << R"({"id":")" << id << R"(","name":")" << name
+            << R"(","version":"1.0.0","schema_version":1)" << extra
+            << (icon.empty() ? "" : R"(,"icon":"assets/icon.png")") << "}";
+        std::ofstream(dir / "main.lua") << "return ui.screen {}\n";
+        if (!icon.empty()) {
+            fs::create_directories(dir / "assets");
+            std::ofstream(dir / "assets" / "icon.png", std::ios::binary) << icon;
+        }
+    }
+
+    wisp::Result<wisp::core::SceneInfo> install(const std::string& id, const std::string& name,
+                                                const std::string& icon = {}) {
+        wisp::core::ZipWriter w;
+        const std::string manifest = R"({"id":")" + id + R"(","name":")" + name +
+                                     R"(","version":"1.0.0","schema_version":1)" +
+                                     (icon.empty() ? "" : R"(,"icon":"assets/icon.png")") + "}";
+        const std::string lua = "return ui.screen {}\n";
+        w.add("scene.json", bytes_of(manifest));
+        w.add("main.lua", bytes_of(lua));
+        if (!icon.empty()) w.add("assets/icon.png", bytes_of(icon));
+        wisp::os::LargeBuffer zip = w.finish();
+        return wiring->repository()->install(zip.span(), {});
+    }
+
+    wisp::shell::ShellListing list() {
+        wisp::shell::ShellListing out;
+        EXPECT_TRUE(wiring->worker().run_sync([&] { out = wiring->shell_scenes(); }, 5000));
+        return out;
+    }
+
+    // StorageManager::refresh() on the flash thread, as the app runs it.
+    void refresh() {
+        EXPECT_TRUE(wiring->worker().run_sync([&] { storage->refresh(); }, 5000));
+    }
+
+    static const wisp::shell::ShellScene* find(const wisp::shell::ShellListing& l,
+                                               const std::string& id) {
+        for (const auto& s : l.scenes)
+            if (s.id == id) return &s;
+        return nullptr;
+    }
+
+    // Rewrites a scene.json behind the repository's back: a listing that
+    // shows the old name did not read it.
+    void scribble(const std::string& id) {
+        std::ofstream(fs::path(in) / "scenes" / id / "scene.json")
+            << R"({"id":")" << id
+            << R"(","name":"scribbled","version":"1.0.0","schema_version":1})";
+    }
+
+    std::string in, sd;
+    wisp::core::DeviceRegistry registry;
+    wisp::core::EventBus bus;
+    std::shared_ptr<FakeStorage> int_dev, sd_dev;
+    std::unique_ptr<wisp::core::StorageManager> storage;
+    wisp::app::Platform platform;
+    std::unique_ptr<wisp::app::SceneWiring> wiring;
+};
+
+}  // namespace
+
+TEST(AppScenes, ListingCachedAcrossOpens) {
+    ListingRig r;
+    r.put("clock", "时钟", "", "\x89PNG-clock");
+    r.put("counter", "计数器");
+    fs::create_directories(fs::path(r.in) / "scenes" / "counter" / "data");
+    r.put("todo", "待办");
+    r.start();
+
+    const wisp::shell::ShellListing first = r.list();
+    EXPECT_FALSE(first.cached);
+    ASSERT_EQ(first.scenes.size(), 3u);
+    const auto* clock = ListingRig::find(first, "clock");
+    ASSERT_NE(clock, nullptr);
+    ASSERT_NE(clock->icon_png, nullptr);  // read for this listing
+    EXPECT_NE(clock->icon_hash, 0u);
+
+    const uint64_t calls = r.storage->calls();
+    const wisp::shell::ShellListing second = r.list();
+    EXPECT_EQ(r.storage->calls(), calls);  // no file work at all
+    EXPECT_TRUE(second.cached);
+    ASSERT_EQ(second.scenes.size(), 3u);
+    const auto* again = ListingRig::find(second, "clock");
+    ASSERT_NE(again, nullptr);
+    EXPECT_EQ(again->name, "时钟");
+    EXPECT_EQ(again->icon_png, nullptr);  // the hash alone
+    EXPECT_EQ(again->icon_hash, clock->icon_hash);
+    EXPECT_EQ(ListingRig::find(second, "counter")->name, "计数器");
+}
+
+TEST(AppScenes, InstallInvalidatesListing) {
+    ListingRig r;
+    r.put("clock", "时钟", "", "\x89PNG-clock");
+    r.put("counter", "计数器");
+    r.start();
+    (void)r.list();
+    r.scribble("counter");
+    ASSERT_TRUE(r.install("todo", "待办", "\x89PNG-todo"));
+    const uint64_t calls = r.storage->calls();
+    const wisp::shell::ShellListing got = r.list();
+    EXPECT_FALSE(got.cached);
+    ASSERT_EQ(got.scenes.size(), 3u);
+    const auto* todo = ListingRig::find(got, "todo");
+    ASSERT_NE(todo, nullptr);
+    EXPECT_EQ(todo->name, "待办");
+    ASSERT_NE(todo->icon_png, nullptr);
+    // Only the new scene was read: its scene.json and its icon.
+    EXPECT_EQ(r.storage->calls() - calls, 2u);
+    EXPECT_EQ(ListingRig::find(got, "counter")->name, "计数器");
+    EXPECT_EQ(ListingRig::find(got, "clock")->icon_png, nullptr);
+    EXPECT_TRUE(r.list().cached);
+}
+
+TEST(AppScenes, UpdateInvalidatesListing) {
+    ListingRig r;
+    r.start();
+    ASSERT_TRUE(r.install("clock", "时钟", "\x89PNG-one"));
+    ASSERT_TRUE(r.install("todo", "待办"));
+    const wisp::shell::ShellListing before = r.list();
+    const uint64_t old_hash = ListingRig::find(before, "clock")->icon_hash;
+    r.scribble("todo");
+    ASSERT_TRUE(r.install("clock", "新时钟", "\x89PNG-two"));
+    const wisp::shell::ShellListing got = r.list();
+    EXPECT_FALSE(got.cached);
+    const auto* clock = ListingRig::find(got, "clock");
+    ASSERT_NE(clock, nullptr);
+    EXPECT_EQ(clock->name, "新时钟");
+    EXPECT_NE(clock->icon_hash, old_hash);
+    ASSERT_NE(clock->icon_png, nullptr);
+    EXPECT_EQ(ListingRig::find(got, "todo")->name, "待办");
+}
+
+TEST(AppScenes, DeleteInvalidatesListing) {
+    ListingRig r;
+    r.put("clock", "时钟");
+    r.put("counter", "计数器");
+    r.start();
+    ASSERT_EQ(r.list().scenes.size(), 2u);
+    ASSERT_TRUE(r.wiring->repository()->remove("counter", false));
+    const wisp::shell::ShellListing got = r.list();
+    EXPECT_FALSE(got.cached);
+    ASSERT_EQ(got.scenes.size(), 1u);
+    EXPECT_EQ(got.scenes[0].id, "clock");
+    EXPECT_TRUE(r.list().cached);
+}
+
+// The card going out greys out the scenes whose files are on it without
+// reading the packages again; it coming back undoes that.
+TEST(AppScenes, CardRemovalChangesAvailabilityWithoutRelist) {
+    ListingRig r(/*card_in=*/true);
+    r.put("photos", "相册", R"(,"files":"sd")");
+    r.put("clock", "时钟");
+    r.start();
+    wisp::shell::ShellListing got = r.list();
+    EXPECT_TRUE(ListingRig::find(got, "photos")->available);
+    r.scribble("clock");
+
+    r.sd_dev->online_flag = false;
+    r.refresh();
+    got = r.list();
+    EXPECT_FALSE(got.cached);
+    EXPECT_FALSE(ListingRig::find(got, "photos")->available);
+    EXPECT_TRUE(ListingRig::find(got, "clock")->available);
+    EXPECT_EQ(ListingRig::find(got, "clock")->name, "时钟");  // not read again
+    // Once the card events are in, nothing new.
+    ASSERT_TRUE(wait_until([&] { return r.list().cached; }, 3000));
+    EXPECT_FALSE(ListingRig::find(r.list(), "photos")->available);
+
+    r.sd_dev->online_flag = true;
+    r.refresh();
+    got = r.list();
+    EXPECT_TRUE(ListingRig::find(got, "photos")->available);
+    EXPECT_EQ(ListingRig::find(got, "clock")->name, "时钟");
+}
+
+// Whether a scene has data is read when asked, so data written after a
+// listing is found.
+TEST(AppScenes, HasDataReadWhenAsked) {
+    ListingRig r;
+    r.put("counter", "计数器");
+    r.start();
+    (void)r.list();
+    bool has = true;
+    ASSERT_TRUE(
+        r.wiring->worker().run_sync([&] { has = r.wiring->scene_has_data("counter"); }, 5000));
+    EXPECT_FALSE(has);
+    fs::create_directories(fs::path(r.in) / "scenes" / "counter" / "data");
+    std::ofstream(fs::path(r.in) / "scenes" / "counter" / "data" / "kv.log") << "x\n";
+    EXPECT_TRUE(r.list().cached);
+    ASSERT_TRUE(
+        r.wiring->worker().run_sync([&] { has = r.wiring->scene_has_data("counter"); }, 5000));
+    EXPECT_TRUE(has);
+}
+
+// Dev mode's working directory changes behind the repository's back, so
+// its listing is read every time.
+TEST(AppScenes, DevModeListingIsNotCached) {
+    ListingRig r;
+    const std::string work = wisp::test::temp_dir().string();
+    r.platform.scenes_dir = work;
+    fs::create_directories(fs::path(work) / "clock");
+    std::ofstream(fs::path(work) / "clock" / "scene.json")
+        << R"({"id":"clock","name":"时钟","version":"1.0.0","schema_version":1})";
+    std::ofstream(fs::path(work) / "clock" / "main.lua") << "return ui.screen {}\n";
+    r.start();
+    EXPECT_FALSE(r.list().cached);
+    std::ofstream(fs::path(work) / "clock" / "scene.json")
+        << R"({"id":"clock","name":"闹钟","version":"1.0.0","schema_version":1})";
+    const wisp::shell::ShellListing got = r.list();
+    EXPECT_FALSE(got.cached);
+    ASSERT_EQ(got.scenes.size(), 1u);
+    EXPECT_EQ(got.scenes[0].name, "闹钟");
 }
 
 // The scene services are long-lived and small, so malloc would put them
