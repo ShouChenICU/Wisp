@@ -198,7 +198,20 @@ Source: glyph partition review records.
 - Device checks not run: `bench scroll` with the conversation history open and with the scene list open (with icons), against the "性能基准" section of the board doc; the cost of the first icon decode on the worker, and the wisp.fs stack high-water mark (`mem`) after opening a scene list with icons, since lodepng now runs on that 8 KB internal stack; touch feel of swipe versus scroll on the sub-pages.
 - The settings page reads the settings once when it is built: a change made by voice or from the admin page while it is open shows only after it is reopened, and the screen-off highlight follows the tap even if the write fails. Subscribe to `system.settings` while the page is open.
 - Scene list open on the device (9 scenes, no icons, no SD card): the first open after boot lists in 539 ms (was 770–1283 ms), later opens in 8–40 ms (`cached=1`); the build is 38–66 ms. The first open still re-reads each `scene.json` in the wisp.files lookups with the card out; listing once in the background after boot, or keeping the chosen files location with the cached listing, would remove it. Not yet measured: how long the long-press card takes to show "同时删除数据" (one `removal()` probe, about 16 file calls).
-- Small long-lived containers in internal RAM: `SceneRecents`' map and the scene list's `scenes_`/`cards_` vectors (one entry per scene). Tiny today; move to PSRAM containers if the scene count grows.
+- Small long-lived containers in internal RAM: `SceneRecents`' map and the scene list's `scenes_`/`cards_` vectors (one entry per scene), and also:
+  - `SceneRepository::changed_` (`std::vector<std::pair<std::string, uint64_t>>`), never pruned: every scene ever installed or removed keeps an entry for the life of the process; drop entries older than every reader's generation, or cap it at 2×`kMaxScenes`;
+  - `Shell::scene_cache_` (`std::vector<ShellScene>` with `std::string` id and name);
+  - `Shell::IconCache::by_id` (`std::map<std::string, Entry>`).
+
+  Tiny today; move to PSRAM containers (`os::LargeVector`/`LargeString`) if the scene count grows.
+
+## Agent steps and page drags (MVP spec 6.1–6.3)
+
+- Home's step rows are restyled and relaid out on every `refresh()` while a turn is shown (each 250 ms tick plus each controller change, rate-limited to 50 ms): `fill_row()` in `home.cpp` sets the mark's text and colour and measures every label even when nothing changed, so four rows redraw about 4–20 times a second. Small, but it is redraw on the device during a turn; skip a row whose label and state are unchanged, keeping the last state per row.
+- Device checks not run: the larger wisp (`kWispIdlePercent` 45 → 55) and the drag bench have simulator numbers only (the simulator caps at about 62 fps). AGENTS.md §4 asks for a `WISP_PERF` comparison and spec 6.1 for at least 20 fps on the device: measure `wisp_fps`/`wisp_ms` idle on Home at 55%, and `bench drag 10` fps/cpu, against the board doc's baseline.
+- The activity label table (`activity.cpp` kLabels) and its test (`tests/shell/activity_test.cpp`) both list the registry's tools by hand: a tool added later silently falls back to "调用 <tool>" and the test does not notice. Add an app-level test that owns a full `ToolRegistry` (for example in `agent_wiring_test`), walks the registered tools and asserts `activity_label()` uses no fallback for any of them.
+- `hold_off_long_press()` in `shell.cpp` writes LVGL's private `pr_timestamp`/`long_pr_sent`. Correct for the pinned LVGL 9.5.0, but an LVGL bump can rename or repurpose those fields without a compile error; add a `static_assert` on `LVGL_VERSION_MAJOR`/`LVGL_VERSION_MINOR` next to it so an upgrade forces a recheck.
+- A skipped call's step row is dropped at the next Thinking or TurnEnd; when the step list was already full, the older row it pushed out of the last four does not come back, so the list may show three rows. Harmless; keep one spare row if it shows.
 
 ## Talk overlay (MVP spec 6.5)
 
