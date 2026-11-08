@@ -248,7 +248,7 @@ const char* strings_zh(StrId id) {
         case StrId::AgentStepLimit:
             return "步骤太多，已停止";
         case StrId::AgentTimeLimit:
-            return "超过 10 分钟，已停止";
+            return "超过 15 分钟，已停止";
         case StrId::AgentStopped:
             return "已中止";
         case StrId::AgentInterrupted:

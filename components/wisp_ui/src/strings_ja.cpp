@@ -250,7 +250,7 @@ const char* strings_ja(StrId id) {
         case StrId::AgentStepLimit:
             return "ステップが多すぎるため停止しました";
         case StrId::AgentTimeLimit:
-            return "10 分を超えたため停止しました";
+            return "15 分を超えたため停止しました";
         case StrId::AgentStopped:
             return "中止しました";
         case StrId::AgentInterrupted:

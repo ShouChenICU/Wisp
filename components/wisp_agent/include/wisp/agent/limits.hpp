@@ -9,8 +9,8 @@
 namespace wisp::agent {
 
 // A turn: at most this many tool calls, and this long in all.
-inline constexpr uint32_t kMaxSteps = 24;
-inline constexpr uint32_t kTurnMs = 600000;
+inline constexpr uint32_t kMaxSteps = 60;
+inline constexpr uint32_t kTurnMs = 900000;
 // A model stream with no new bytes for this long is aborted.
 inline constexpr uint32_t kStallMs = 60000;
 // A user message, counted in Unicode code points.

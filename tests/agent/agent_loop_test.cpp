@@ -333,7 +333,7 @@ TEST_F(AgentLoop, RunsToolCallsInOrderThenAnswers) {
     EXPECT_TRUE(t->ok);
 }
 
-TEST_F(AgentLoop, StopsAfter24ToolCalls) {
+TEST_F(AgentLoop, StopsAfterMaxToolCalls) {
     add_tool("scene.list");
     start();
     for (uint32_t i = 0; i <= wisp::agent::kMaxSteps; ++i)
@@ -348,11 +348,11 @@ TEST_F(AgentLoop, StopsAfter24ToolCalls) {
     // The call not run still has its answer, so the next request is valid.
     std::optional<Message> t = last_of(history(), Role::Tool);
     ASSERT_TRUE(t.has_value());
-    EXPECT_EQ(str(t->call_id), "call_24");
+    EXPECT_EQ(str(t->call_id), "call_" + std::to_string(wisp::agent::kMaxSteps));
     EXPECT_FALSE(t->ok);
 }
 
-TEST_F(AgentLoop, StopsAfterTenMinutes) {
+TEST_F(AgentLoop, StopsAfterTurnTimeLimit) {
     add_tool("scene.list", [this](const Value&, ToolCtx&) {
         h->advance(wisp::agent::kTurnMs + 1);
         return ToolOutput{.ok = true, .result = Map{{"ok", true}}};
@@ -366,7 +366,7 @@ TEST_F(AgentLoop, StopsAfterTenMinutes) {
     EXPECT_EQ(h->server.requests().size(), 1u);
     auto n = notes();
     ASSERT_FALSE(n.empty());
-    EXPECT_NE(n.back().find("10"), std::string::npos);
+    EXPECT_NE(n.back().find(std::to_string(wisp::agent::kTurnMs / 60000)), std::string::npos);
 }
 
 TEST_F(AgentLoop, TimeLimitDuringRequestEndsAsTimeLimit) {
