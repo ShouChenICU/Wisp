@@ -5,7 +5,13 @@
 #include <string>
 #include <utility>
 
+// bmgr generates the fs_fat device type (and its header) only for a board
+// that declares an fs_fat device; a board without an SD slot never
+// constructs an EspSdStorage.
+#include "sdkconfig.h"
+#if CONFIG_ESP_BOARD_DEV_FS_FAT_SUPPORT
 #include "dev_fs_fat.h"
+#endif
 #include "esp_board_manager.h"
 #include "esp_err.h"
 #include "esp_littlefs.h"
@@ -255,7 +261,11 @@ bool EspSdStorage::try_mount(uint64_t now) {
         return false;
     }
 
+#if CONFIG_ESP_BOARD_DEV_FS_FAT_SUPPORT
     sdmmc_card_t* card = static_cast<dev_fs_fat_handle_t*>(handle)->card;
+#else
+    sdmmc_card_t* card = nullptr;
+#endif
     {
         std::lock_guard<wisp::os::Mutex> lock(state_mutex_);
         card_ = card;
