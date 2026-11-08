@@ -34,6 +34,11 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # code runs from flash through the instruction cache.
 # CONFIG_SPIRAM_XIP_FROM_PSRAM is not set
 # CONFIG_SPI_FLASH_AUTO_SUSPEND is not set
+# Code runs from flash, so every instruction-cache miss is a QSPI flash
+# read: a 32 KB instruction cache (default 16 KB) took the diagnostics
+# scroll from 12.5 to 22 fps on this board, for 16 KB of internal RAM.
+# A 64-byte data-cache line was measured too and gave nothing.
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 
 # Console over USB-Serial-JTAG (no external UART-to-USB bridge on this
 # board).

@@ -63,7 +63,15 @@ Most of the hardware matches the reference board (`docs/hardware/waveshare_esp32
 The reference board runs code from PSRAM (`CONFIG_SPIRAM_XIP_FROM_PSRAM`), which keeps the cache on during flash erases and writes and therefore needs flash auto-suspend for the mapped `fonts`/`glyphs` partitions ("Font partitions" in `docs/porting-guide.md`). ESP-IDF v6.0.3's GigaDevice driver lists only `0xC84016/17/18` and `0xC84319` as suspend-capable (`spi_flash_chip_gd.c`), not this board's `0xC84019`, so this board enables neither XIP nor auto-suspend and keeps both font partitions. Without XIP, ESP-IDF disables the cache and stalls the other core for every flash erase and write, so mapped reads can never see a half-written state. The costs:
 
 - The UI stalls while flash is being written: OTA upload, LittleFS writes (`/int`), NVS. Each erase or program command holds the cache off until it finishes, so scrolling during an OTA upload will stutter.
-- Code runs from flash through the 16 KB instruction cache: on the reference board XIP raised the diagnostics-list scroll from 14 to 20 fps, so expect roughly the reference board's pre-XIP frame rate here (to be measured; checklist).
+- Code runs from flash through the instruction cache, so every cache miss is a QSPI flash read (about 1 µs for a 32-byte line at 80 MHz, against about 0.4 µs from octal PSRAM). One frame's code (LVGL rendering, layout, the shell, drivers) is far larger than the cache, so the miss cost sets the frame rate. Measured with `diag` and `bench scroll 10` (2026-11-08, hotspot off):
+
+  | Configuration | fps | `internal free` (idle) |
+  |---|---|---|
+  | 16 KB instruction cache (ESP-IDF default) | 12.5 | 103 KB |
+  | 32 KB instruction cache (`sdkconfig.defaults.board`) | 22.0 | 87 KB |
+  | 32 KB instruction cache + 64-byte data-cache line | 21.2 | 87 KB |
+
+  For comparison, the reference board (XIP, 16 KB instruction cache) scrolls the same list at about 21.7 fps, and 11.1 fps with XIP turned off. The 32 KB cache takes 16 KB of internal RAM; the worst case of AGENTS.md section 5 still has to be measured on this board (checklist).
 - The task stack rules do not change (AGENTS.md section 5): without XIP, a task that touches flash with its stack in PSRAM aborts in the flash driver at once, which is what `flash_access` already prevents. Nothing in the shared code assumes XIP: `stack_placement.hpp` keeps flash-touching stacks internal on every target, and `firmware/main/CMakeLists.txt` only checks that XIP is not on without auto-suspend.
 
 The 32 MB flash is used without the experimental `BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH`: the bootloader and the cache address only the first 16 MB, which is why the partition table keeps everything mapped there.
@@ -108,4 +116,5 @@ The board has not been brought up yet; every item is still to be tested. Fill in
 | 17 | LittleFS above 16 MB | `diag` storage card shows ~16 MB internal; install or write a scene, power-cycle the board (not just reset), open the scene list | Capacity ≈ 16 MB; the scene is still there after the power cycle; no flash errors in the log | |
 | 18 | OTA upload | Upload `build-waveshare_esp32_s3_touch_amoled_1_75c/wisp.bin` on the admin console's "System" page and confirm on the device | Accepted (not `wrong_board`), the device restarts into the new image and marks it valid; the UI may stutter during the upload (no XIP) but must not crash | |
 | 19 | Wake from standby | Short-press PWR to enter standby, wait more than 10 minutes, then press PWR (and separately BOOT) | Wakes on either key; panel, touch and IMU work after waking; brightness not reset | |
-| 20 | Frame rate baseline | `diag`, then `bench scroll 10` with the hotspot off and on; note `WISP_PERF` fps/cpu/flush_ms | Recorded here as this board's baseline (no XIP: expected below the reference board's XIP numbers); `internal free` from `mem` recorded too | |
+| 20 | Frame rate baseline | `diag`, then `bench scroll 10` with the hotspot off and on; note `WISP_PERF` fps/cpu/flush_ms | Recorded in "Flash: no suspend, no XIP" above; `internal free` from `mem` recorded too | Hotspot off: 22.0 fps with the 32 KB instruction cache (2026-11-08); hotspot on not yet measured |
+| 21 | Internal RAM worst case (AGENTS.md section 5; the 32 KB instruction cache costs 16 KB) | Same procedure as the reference board's checklist item 44 (`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`): STA + `wifi ap on` with a phone on the setup page, the admin "Logs" page open, a model connection test over HTTPS, one firmware upload; `mem` every few seconds | `internal free` stays ≥ 40 KB and `largest` ≥ 16 KB; no `internal RAM` warning | |
