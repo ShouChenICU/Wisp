@@ -202,6 +202,8 @@ TEST(Context, SystemPromptTeachesSay) {
     EXPECT_TRUE(has(p, "</say>"));
     EXPECT_TRUE(has(p, "Markdown"));
     EXPECT_TRUE(has(p, "<say>番茄钟装好了，点开始就能用。</say>")) << p;
+    // Scene code goes through the tools, never into the reply.
+    EXPECT_TRUE(has(p, "Never paste source code into a reply")) << p;
 }
 
 TEST(Context, SystemPromptStatesMemoryRules) {

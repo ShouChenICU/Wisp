@@ -96,6 +96,8 @@ std::string system_prompt(const DeviceSnapshot& d) {
          "conclusion. The device reads them aloud and shows them large. Inside <say> use no "
          "Markdown, lists, code, links or emoji, only plain sentences.\n"
          "- Then write the body with the details, if there are any; Markdown is fine there.\n"
+         "- Never paste source code into a reply: scene code goes only through the scene tools, "
+         "and the reply just sums up what you made. The device folds code blocks away.\n"
          "- Example:\n"
          "<say>番茄钟装好了，点开始就能用。</say>\n"
          "已安装场景 pomodoro 1.0.0：专注 25 分钟、休息 5 分钟，时间到会响铃。\n\n";
