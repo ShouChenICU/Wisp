@@ -407,12 +407,8 @@ const char* strings_en(StrId id) {
             return "{} min";
         case StrId::SettingsNever:
             return "Never";
-        case StrId::SettingsTtsMute:
-            return "Mute spoken replies";
         case StrId::SettingsWifi:
             return "Wi-Fi";
-        case StrId::SettingsAbout:
-            return "About";
         case StrId::AboutFirmware:
             return "Firmware";
         case StrId::AboutAddress:

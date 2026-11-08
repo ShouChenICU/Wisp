@@ -90,4 +90,42 @@ lv_obj_t* make_card(lv_obj_t* parent);
 // A label in the body font that wraps at its parent's width.
 lv_obj_t* make_text(lv_obj_t* parent, const char* text, bool dim = false);
 
+// Grouped lists (the settings page and its choice pages, mvp spec 6.4): a
+// dim heading over each group, the group a card of rows.
+//
+// A heading above a group's card.
+lv_obj_t* make_group_heading(lv_obj_t* parent, const char* text);
+// A card for rows: like make_card() but without padding, so that a row's
+// pressed state reaches the card's edges; the rows pad themselves.
+lv_obj_t* make_row_card(lv_obj_t* card_parent);
+// A part of a row card that is not a row (a slider, a hint): a box padded
+// like a row.
+lv_obj_t* make_row_box(lv_obj_t* card);
+// Parts `obj` from what is above it in its card: a hairline on colour
+// panels, a gap on two-tone ones (which have no grey for a hairline).
+void add_divider(lv_obj_t* obj);
+
+struct ListRow {
+    lv_obj_t* row = nullptr;
+    lv_obj_t* name = nullptr;
+};
+// A row of a row card, at least kMinTouchPx high: `icon` (an LV_SYMBOL_*
+// or WISP_SYMBOL_*, or nullptr) and `name` at its left, under a divider
+// unless it is the card's first. A `clickable` row shows a pressed state.
+// Whatever is added to the row afterwards goes after the name, at its
+// right end.
+ListRow make_list_row(lv_obj_t* card, const char* icon, const char* name, bool clickable);
+// Pads `row` so that content `content_h` high sits in the middle of a
+// kMinTouchPx row.
+void fit_row(lv_obj_t* row, int32_t content_h);
+// A value at the right end of `row`: dim, one line, cut short with dots
+// when the row has no room for it all, and followed by a chevron when the
+// row opens something.
+lv_obj_t* add_row_value(lv_obj_t* row, const char* text, bool chevron);
+// The height of one line of the body font.
+int32_t line_height(lv_obj_t* obj);
+// The accent colour of `obj`'s display (the text colour on two-tone
+// panels).
+lv_color_t accent_colour(lv_obj_t* obj);
+
 }  // namespace wisp::shell::detail

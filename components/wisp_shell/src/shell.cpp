@@ -91,6 +91,7 @@ void Shell::start() {
     if (home_ != nullptr) return;
     alive_ = std::make_shared<bool>(true);
     prev_ = lv_screen_active();
+    lang_ = ui::lang();
 
     home_ = std::make_unique<Home>(HomeDeps{
         .ui = deps_.ui,
@@ -156,6 +157,7 @@ void Shell::stop() {
     if (diag_ != nullptr) close_diagnostics();
     *alive_ = false;
     alive_.reset();
+    close_choice();
     if (lv_screen_active() == home_screen_ || (sub_ != nullptr && lv_screen_active() == sub_)) {
         // An active screen must not be deleted.
         lv_obj_t* back =
@@ -187,7 +189,7 @@ void Shell::set_conversation(ConversationController* conversation) {
 bool Shell::scene_in_front() const {
     if (home_ == nullptr) return false;
     lv_obj_t* act = lv_screen_active();
-    return act != home_screen_ && act != sub_ && act != diag_;
+    return act != home_screen_ && act != sub_ && act != diag_ && act != choice_screen_;
 }
 
 void Shell::request_talk() {
@@ -230,6 +232,7 @@ void Shell::talk_timer_cb(lv_timer_t* t) {
     auto* self = static_cast<Shell*>(lv_timer_get_user_data(t));
     if (self->talk_) self->talk_->tick(self->deps_.now_ms());
     self->check_drag();
+    self->follow_lang();
 }
 
 bool Shell::leave_scene() {
@@ -264,6 +267,7 @@ void Shell::show(Page p) {
     if (!leave_scene()) return;
     abort_drag();
     if (diag_ != nullptr) close_diagnostics();
+    close_choice();
     if (p == Page::Home) {
         if (lv_screen_active() != home_screen_) lv_screen_load(home_screen_);
         delete_page();
@@ -328,6 +332,7 @@ lv_obj_t* Shell::build_page(Page p) {
                             if (*alive) open_diagnostics();
                         });
                     },
+                .open_choice = [this](ChoiceSpec spec) { open_choice(std::move(spec)); },
                 .submit_io = deps_.submit_io,
             });
             settings_->build(f.list);
@@ -504,6 +509,7 @@ std::function<void(const std::string&, std::function<void(bool)>)> Shell::scene_
 }
 
 void Shell::delete_page() {
+    close_choice();
     if (sub_ == nullptr) return;
     lv_obj_t* scr = sub_;
     sub_ = nullptr;
@@ -582,7 +588,10 @@ void Shell::on_press(lv_event_t* e) {
             if (dir == Swipe::None) return;
             pressing_ = false;
             const bool at_bottom = !history_ || history_->at_bottom();
-            const std::optional<Page> to = navigate(page_, dir, press_top_zone_, at_bottom);
+            // A choice page goes back to the settings page to the right.
+            const std::optional<Page> to =
+                choice_ ? (dir == Swipe::Right ? std::optional<Page>(Page::Settings) : std::nullopt)
+                        : navigate(page_, dir, press_top_zone_, at_bottom);
             if (!to || !may_drag(scr, press_target_, dir)) {
                 track_->reset();
                 return;
@@ -616,7 +625,9 @@ void Shell::on_press(lv_event_t* e) {
 }
 
 bool Shell::may_drag(lv_obj_t* scr, lv_obj_t* target, Swipe dir) const {
-    lv_obj_t* root = page_ == Page::Home ? (home_ ? home_->root() : nullptr) : sub_root_;
+    lv_obj_t* root = choice_               ? choice_root_
+                     : page_ == Page::Home ? (home_ ? home_->root() : nullptr)
+                                           : sub_root_;
     if (root == nullptr || lv_obj_get_screen(root) != scr) return false;
     // The scene list's long-press card stays put on the page's screen: a
     // press that opened it goes on to the card, not into a drag.
@@ -639,7 +650,12 @@ void Shell::begin_drag(Page to, Swipe dir, lv_obj_t* target) {
     d.to = to;
     d.host = lv_screen_active();
     d.from_root = page_ == Page::Home ? home_->root() : sub_root_;
-    if (to == Page::Home) {
+    if (choice_) {
+        // The settings page is built already, under the choice page.
+        d.from_choice = true;
+        d.from_root = choice_root_;
+        d.to_root = sub_root_;
+    } else if (to == Page::Home) {
         d.to_root = home_->root();
     } else {
         sub_ = build_page(to);
@@ -659,7 +675,7 @@ void Shell::begin_drag(Page to, Swipe dir, lv_obj_t* target) {
         d.target = target;
         lv_obj_add_event_cb(target, &Shell::target_deleted_cb, LV_EVENT_DELETE, this);
     }
-    if (page_ == Page::Home) home_->drag_started();
+    if (page_ == Page::Home && !d.from_choice) home_->drag_started();
     d.ux = dir == Swipe::Right ? 1 : dir == Swipe::Left ? -1 : 0;
     d.uy = dir == Swipe::Down ? 1 : dir == Swipe::Up ? -1 : 0;
     d.extent = d.ux != 0 ? deps_.shape.width : deps_.shape.height;
@@ -737,11 +753,12 @@ void Shell::finish_drag() {
     // Under anything put over the page on its screen.
     lv_obj_move_to_index(d.to_root, 0);
     if (!complete) {
-        if (d.to != Page::Home) delete_page();
+        if (d.to != Page::Home && !d.from_choice) delete_page();
         WLOG_D(kTag, "drag to %s snapped back", to_string(d.to));
         return;
     }
     lv_screen_load(own);
+    if (d.from_choice) close_choice();
     if (d.to == Page::Home) delete_page();
     page_ = d.to;
     WLOG_I(kTag, "page %s", to_string(page_));
@@ -760,6 +777,7 @@ void Shell::open_diagnostics() {
     if (home_ == nullptr || diag_ != nullptr || !deps_.open_diagnostics) return;
     if (!leave_scene()) return;
     abort_drag();
+    close_choice();
     // Over the page the user is on; a scene sent back leaves it the
     // active screen no longer.
     lv_obj_t* under = sub_ != nullptr ? sub_ : home_screen_;
@@ -805,6 +823,70 @@ void Shell::close_diagnostics() {
     lv_obj_remove_event_cb_with_user_data(diag, &Shell::diag_loaded_cb, this);
     if (deps_.close_diagnostics) deps_.close_diagnostics();
     WLOG_I(kTag, "diagnostics closed");
+}
+
+void Shell::open_choice(ChoiceSpec spec) {
+    if (home_ == nullptr || page_ != Page::Settings || sub_ == nullptr || !settings_) return;
+    abort_drag();
+    close_choice();
+    detail::PageFrame f = detail::make_page(deps_.shape, spec.title);
+    lv_obj_add_event_cb(f.screen, &Shell::press_cb, LV_EVENT_ALL, this);
+    std::function<void(size_t)> pick = std::move(spec.on_pick);
+    // The page goes once the tap's event is over.
+    spec.on_pick = [this, pick = std::move(pick), alive = alive_](size_t i) {
+        if (pick) pick(i);
+        deps_.ui.post([this, alive] {
+            if (*alive) close_choice();
+        });
+    };
+    choice_ = std::make_unique<ChoicePage>(std::move(spec));
+    choice_screen_ = f.screen;
+    choice_root_ = f.root;
+    lv_screen_load(choice_screen_);
+    choice_->build(f.list);
+    pressing_ = false;
+    WLOG_I(kTag, "choice open");
+}
+
+void Shell::close_choice() {
+    if (choice_screen_ == nullptr) return;
+    abort_drag();
+    lv_obj_t* scr = choice_screen_;
+    choice_screen_ = nullptr;
+    choice_root_ = nullptr;
+    choice_.reset();
+    pressing_ = false;
+    if (lv_screen_active() == scr) lv_screen_load(sub_ != nullptr ? sub_ : home_screen_);
+    lv_obj_delete(scr);
+    WLOG_I(kTag, "choice closed");
+}
+
+void Shell::rebuild_page() {
+    lv_obj_t* old = sub_;
+    if (old == nullptr) return;
+    lv_obj_t* old_list = sub_root_ != nullptr ? lv_obj_get_child(sub_root_, 0) : nullptr;
+    const int32_t y = old_list != nullptr ? lv_obj_get_scroll_y(old_list) : 0;
+    const bool front = lv_screen_active() == old;
+    sub_ = nullptr;
+    drop_pages();
+    sub_ = build_page(page_);
+    if (front) lv_screen_load(sub_);
+    lv_obj_delete(old);
+    if (lv_obj_t* list = lv_obj_get_child(sub_root_, 0)) {
+        lv_obj_update_layout(list);
+        lv_obj_scroll_to_y(list, y, LV_ANIM_OFF);
+    }
+    if (page_ == Page::Scenes) list_scenes();
+}
+
+void Shell::follow_lang() {
+    const ui::Lang now = ui::lang();
+    if (now == lang_ || home_ == nullptr || drag_.phase != DragPhase::Idle) return;
+    lang_ = now;
+    close_choice();
+    home_->retext();
+    rebuild_page();
+    WLOG_I(kTag, "language %s", ui::lang_code(now));
 }
 
 }  // namespace wisp::shell

@@ -410,12 +410,8 @@ const char* strings_ja(StrId id) {
             return "{} 分";
         case StrId::SettingsNever:
             return "しない";
-        case StrId::SettingsTtsMute:
-            return "読み上げを消音";
         case StrId::SettingsWifi:
             return "Wi-Fi";
-        case StrId::SettingsAbout:
-            return "この端末について";
         case StrId::AboutFirmware:
             return "ファームウェア";
         case StrId::AboutAddress:

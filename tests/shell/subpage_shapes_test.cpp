@@ -204,11 +204,44 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
         h->on_ui([&] {
             wisp::shell::SettingsPage* p = h->shell().settings_page();
             ASSERT_NE(p, nullptr);
-            const auto r = rows(p->list());
-            ASSERT_GE(r.size(), 5u);
-            for (lv_obj_t* row : r) EXPECT_GE(lv_obj_get_height(row), 48);
-            check_ends(p->list(), r.front(), r.back());
-            EXPECT_TRUE(box_visible(h->shape(), coords_of(p->diagnostics())));
+            ASSERT_EQ(p->groups(), 5u);
+            using Row = wisp::shell::SettingsPage::Row;
+            for (Row r : {Row::ScreenOff, Row::DeepStandby, Row::Wifi, Row::Language, Row::TimeZone,
+                          Row::TimeFormat, Row::Version, Row::Address, Row::Diagnostics})
+                EXPECT_GE(lv_obj_get_height(p->row(r)), 48);
+            check_ends(p->list(), p->heading(0), p->card(4));
+            EXPECT_TRUE(box_visible(h->shape(), coords_of(p->row(Row::Diagnostics))));
+            // Every row of every card is inside the screen's visible part
+            // once scrolled to; its text inside the row.
+            for (size_t g = 0; g < p->groups(); ++g) {
+                lv_obj_t* card = p->card(g);
+                for (uint32_t i = 0; i < lv_obj_get_child_count(card); ++i) {
+                    lv_obj_t* row = lv_obj_get_child(card, static_cast<int32_t>(i));
+                    lv_obj_scroll_to_view_recursive(row, LV_ANIM_OFF);
+                    lv_obj_update_layout(p->list());
+                    const lv_area_t a = coords_of(row);
+                    EXPECT_TRUE(box_visible(h->shape(), a)) << g << "/" << i << " " << str(a);
+                    for (uint32_t k = 0; k < lv_obj_get_child_count(row); ++k) {
+                        const lv_area_t c =
+                            coords_of(lv_obj_get_child(row, static_cast<int32_t>(k)));
+                        EXPECT_GE(c.x1, a.x1) << g << "/" << i << "/" << k;
+                        EXPECT_LE(c.x2, a.x2) << g << "/" << i << "/" << k;
+                    }
+                }
+            }
+        });
+        // A choice page: its first and last rows at the scroll ends.
+        h->on_ui([&] {
+            lv_obj_send_event(
+                h->shell().settings_page()->row(wisp::shell::SettingsPage::Row::TimeZone),
+                LV_EVENT_CLICKED, nullptr);
+        });
+        ASSERT_TRUE(h->ui_until([&] { return h->shell().choice_page() != nullptr; }));
+        h->on_ui([&] {
+            wisp::shell::ChoicePage* c = h->shell().choice_page();
+            lv_obj_update_layout(c->list());
+            for (size_t i = 0; i < c->count(); ++i) EXPECT_GE(lv_obj_get_height(c->row(i)), 48);
+            check_ends(c->list(), c->row(0), c->row(c->count() - 1));
         });
     }
 }

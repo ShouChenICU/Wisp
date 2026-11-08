@@ -405,12 +405,8 @@ const char* strings_zh(StrId id) {
             return "{} 分钟";
         case StrId::SettingsNever:
             return "从不";
-        case StrId::SettingsTtsMute:
-            return "静音朗读";
         case StrId::SettingsWifi:
             return "Wi-Fi";
-        case StrId::SettingsAbout:
-            return "关于本机";
         case StrId::AboutFirmware:
             return "固件版本";
         case StrId::AboutAddress:

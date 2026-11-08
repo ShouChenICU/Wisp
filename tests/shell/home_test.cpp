@@ -841,7 +841,8 @@ TEST_F(HomeTest, SwipesOpenPages) {
     EXPECT_TRUE(ui_until([&] { return shell_->page() == Page::Settings; }));
     EXPECT_TRUE(logged("page settings"));
     EXPECT_EQ(active(), shell_->page_screen());
-    drag({340, 300}, {200, 300});
+    // On the title: a sideways drag on a slider is the slider's.
+    drag({340, 60}, {200, 60});
     EXPECT_TRUE(ui_until([&] { return shell_->page() == Page::Home; }));
     EXPECT_EQ(active(), home_scr);
 
