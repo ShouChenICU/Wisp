@@ -187,9 +187,15 @@ os::LargeString activity_target(std::string_view args) {
     os::LargeString best;
     int best_rank = 4;
     os::LargeString key;
+    // Only the top-level object's keys name the target (spec 6.2): a
+    // nested object or list is a value, and its keys are content. Depth
+    // is counted outside strings, so a cut summary still reads leniently.
+    int depth = 0;
     size_t i = 0;
     while (i < args.size()) {
         if (args[i] != '"') {
+            if (args[i] == '{' || args[i] == '[') ++depth;
+            if ((args[i] == '}' || args[i] == ']') && depth > 0) --depth;
             ++i;
             continue;
         }
@@ -201,7 +207,7 @@ os::LargeString activity_target(std::string_view args) {
         if (i >= args.size() || args[i] != ':') continue;
         ++i;
         skip_space(args, i);
-        const int rank = key_rank(key);
+        const int rank = depth == 1 ? key_rank(key) : -1;
         if (i >= args.size()) break;
         if (args[i] == '"') {
             ++i;
@@ -220,7 +226,7 @@ os::LargeString activity_target(std::string_view args) {
                 best_rank = rank;
             }
         }
-        // Objects and lists are read on: their keys count too.
+        // Objects and lists are read on; their keys sit one level deeper.
     }
     cut_code_points(best, kActivityTargetChars);
     return best;

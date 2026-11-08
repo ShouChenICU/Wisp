@@ -86,6 +86,22 @@ TEST(Activity, TargetComesFromKeysNotFromValues) {
               wisp::shell::kActivityTargetChars);
 }
 
+TEST(Activity, TargetComesFromTopLevelKeysOnly) {
+    // A data value is content, not the target (spec 6.2): its nested
+    // keys never outrank the call's own id.
+    EXPECT_EQ(
+        s(activity_label("scene.data_write",
+                         R"({"id":"contacts","key":"me","value":{"name":"Jane Doe","phone":"1"}})",
+                         Lang::Zh)),
+        "写入场景数据 contacts");
+    EXPECT_EQ(s(activity_target(R"({"id":3,"fields":{"title":"secret"}})")), "3");
+    EXPECT_EQ(s(activity_target(R"({"id":"a","items":[{"path":"p"},"x"],"name":"n"})")), "n");
+    // A key after a nested object is top level again.
+    EXPECT_EQ(s(activity_target(R"({"value":{"name":"inner"},"path":"main.lua"})")), "main.lua");
+    // Cut inside a nested object: the top-level id still wins.
+    EXPECT_EQ(s(activity_target(R"({"id":"contacts","value":{"name":"Ja)")), "contacts");
+}
+
 TEST(Activity, UnknownToolsFallBack) {
     EXPECT_EQ(s(activity_label("weather.get", R"({"city":"x"})", Lang::Zh)), "调用 weather.get");
     EXPECT_EQ(s(activity_label("weather.get", "", Lang::En)), "Call weather.get");
