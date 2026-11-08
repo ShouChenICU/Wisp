@@ -35,14 +35,15 @@
 
 <table>
   <tr>
-    <td align="center"><img src="docs/images/scene-clock.png" width="170"><br><sub>时钟</sub></td>
-    <td align="center"><img src="docs/images/scene-pomodoro.png" width="170"><br><sub>番茄钟</sub></td>
-    <td align="center"><img src="docs/images/scene-weather.png" width="170"><br><sub>天气</sub></td>
-    <td align="center"><img src="docs/images/scene-level.png" width="170"><br><sub>水平仪</sub></td>
+    <td align="center"><img src="docs/images/scene-clock.png" width="150"><br><sub>时钟</sub></td>
+    <td align="center"><img src="docs/images/scene-pomodoro.png" width="150"><br><sub>番茄钟</sub></td>
+    <td align="center"><img src="docs/images/scene-weather.png" width="150"><br><sub>天气</sub></td>
+    <td align="center"><img src="docs/images/scene-level.png" width="150"><br><sub>水平仪</sub></td>
+    <td align="center"><img src="docs/images/scene-balls.png" width="150"><br><sub>彩色小球</sub></td>
   </tr>
 </table>
 
-<sub>以上是 <a href="scenes/examples/"><code>scenes/examples/</code></a> 里的示例场景，每个都只有一个 <code>main.lua</code>，大多不到 200 行。</sub>
+<sub>每个场景都只有一个 <code>main.lua</code>，大多不到 200 行；前四个的源码在 <a href="scenes/examples/"><code>scenes/examples/</code></a>。</sub>
 
 ## 👆 怎么用
 
