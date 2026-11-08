@@ -14,7 +14,7 @@
 //     PCF85063 answers at 0x51: the vendor's BSP, schematic and examples
 //     show no RTC on this board, though its product page lists one. Absent,
 //     clock.main is recorded as missing and the time comes from SNTP alone.
-//   - i2c_master + drivers/qmi8658 at 0x6A -> imu.main (EspImu)
+//   - i2c_master + drivers/qmi8658 at 0x6B or 0x6A -> imu.main (EspImu)
 //   - the AXP2101's PWRON key -> button.power (EspPmuPowerKey: no GPIO
 //     follows the key on this board, so its IRQ bits are polled over I2C)
 //   - GPIO0 (BOOT) -> button.boot (EspGpioButton), the talk key
@@ -77,8 +77,12 @@ constexpr int kAreaAlign = 2;
 // driver's sleep into a GRAM-clearing deep standby.
 constexpr uint32_t kDisplaySleepOutSettleMs = 120;
 
-// The IMU's SA0 strap is low on this board (the 2.16's is high).
-constexpr uint8_t kImuAddr = QMI8658_I2C_ADDR_LOW;
+// The IMU's SA0 strap: Waveshare's examples pass SensorLib's
+// QMI8658_L_SLAVE_ADDRESS, which SensorLib defines as 0x6B (its "L"/"H"
+// names are the reverse of the datasheet's), so 0x6B is tried first and
+// 0x6A second; init_imu() uses whichever answers.
+constexpr uint8_t kImuAddrs[] = {QMI8658_I2C_ADDR_HIGH, QMI8658_I2C_ADDR_LOW};
+constexpr int kImuProbeTimeoutMs = 50;
 
 // PCF85063's fixed 7-bit address; probed before EspClock::create().
 constexpr uint16_t kRtcAddr = 0x51;
@@ -279,7 +283,18 @@ void init_imu(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& repo
         record_failed(report, id, cls, "no i2c_master bus handle");
         return;
     }
-    auto imu = wisp::port::esp::EspImu::create(i2c_bus, "QMI8658", kImuAddr);
+    uint8_t addr = 0;
+    for (uint8_t a : kImuAddrs) {
+        if (i2c_master_probe(i2c_bus, a, kImuProbeTimeoutMs) == ESP_OK) {
+            addr = a;
+            break;
+        }
+    }
+    if (addr == 0) {
+        record_failed(report, id, cls, "no answer at 0x6B or 0x6A");
+        return;
+    }
+    auto imu = wisp::port::esp::EspImu::create(i2c_bus, "QMI8658", addr);
     if (!imu) {
         record_failed(report, id, cls, imu.error().message);
         return;

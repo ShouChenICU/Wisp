@@ -12,7 +12,7 @@ Board support for the Waveshare ESP32-S3-Touch-AMOLED-1.75C: a 466×466 round AM
 | `partitions.csv` | This board's partition table (32 MB flash: everything the cache maps below 16 MB, `storage` in the upper 16 MB). The conventions are in `docs/porting-guide.md`. |
 | `sdkconfig.defaults.board` | Board sdkconfig: 32 MB QIO flash, octal PSRAM without XIP, the USB serial console and the partition table path. `idf.py bmgr` merges it into `board_manager.defaults`. It applies only to a new sdkconfig, so delete the sdkconfig after changing it. |
 
-The IMU (QMI8658, at 0x6A), the power management chip (AXP2101, which also delivers the PWR key) and the optional PCF85063 RTC are not handed to bmgr; Wisp's own drivers handle them.
+The IMU (QMI8658, at 0x6B or 0x6A, probed), the power management chip (AXP2101, which also delivers the PWR key) and the optional PCF85063 RTC are not handed to bmgr; Wisp's own drivers handle them.
 
 ## Build
 

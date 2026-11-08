@@ -34,7 +34,7 @@ Most of the hardware matches the reference board (`docs/hardware/waveshare_esp32
 | Display | CO5300, 1.75" 466×466 round AMOLED | QSPI 40 MHz: CS 12, SCLK 38, D0–D3 = 4/5/6/7, RST 1; no TE, no backlight pin (brightness is DCS 0x51); visible columns start at controller column 6 (gap x=6, y=0) | — |
 | Touch | CST9217 | I2C; INT 11, RST 2 (both active low); BSP orientation: mirror X and Y, no swap | 0x5A |
 | Power management | AXP2101 | I2C; the PWR key goes only to the AXP2101's PWRON pin, so its state is read from the PMU's IRQ status registers over I2C | 0x34 |
-| IMU | QMI8658 (no magnetometer) | I2C; SA0 low; INT1/INT2 not wired to a known GPIO (polled) | **0x6A** |
+| IMU | QMI8658 (no magnetometer) | I2C; INT1/INT2 not wired to a known GPIO (polled) | **0x6B** expected, 0x6A also probed |
 | RTC | none found (see errata) | — board.cpp probes 0x51 for a PCF85063 | (0x51) |
 | Audio DAC | ES8311 | I2S + I2C | 0x18 |
 | Audio ADC | ES7210 (two microphones) | I2S + I2C | 0x40 |
@@ -53,7 +53,7 @@ Most of the hardware matches the reference board (`docs/hardware/waveshare_esp32
 - **PWR key**: no GPIO follows the key (the reference board's GPIO16 is this board's I2S MCLK). `button.power` is `EspPmuPowerKey` (`wisp/port/esp/esp_button.hpp`): `ButtonService` polls it every 20 ms (50 ms in standby), each poll reads REG 0x49 over I2C, and `axp2101_pwrkey_update()` rebuilds the key level from the latched PWRON negative (press) and positive (release) edge bits, so short and long presses are timed exactly as for a GPIO key. The bit layout is taken from XPowersLib; which edge is the press has not been checked on the device yet (checklist). If this chip revision latches no edge bits, the short-press bit alone still gives one short press per press, and long presses are lost. The AXP2101's IRQ output is not used. Holding the key for several seconds still triggers the PMU's hardware power-off, independently of software.
 - **RTC**: the product page says "RTC: yes", but the BSP, the examples and the schematic show no RTC chip (the schematic has only a `VCC-RTC` net at the AXP2101). `board.cpp` probes 0x51 with `i2c_master_probe()`: with no answer it records `clock.main` as `missing` ("no RTC") and the system clock is set only by SNTP once Wi-Fi connects (`wisp_net` time sync works without an RTC); if a PCF85063 does answer, it is brought up as on the reference board.
 - **SD card**: the product page says "SD card: yes"; the board has no slot (BSP `BSP_CAPS_SDCARD 0`, no SD pins, confirmed by the user). No `storage.sd` is registered. bmgr then generates no `fs_fat` device type, so `wisp_port_esp/dev/esp_storage.cpp` compiles its SD code without `dev_fs_fat.h`.
-- **IMU address**: 0x6A (SA0 low), unlike the reference board's 0x6B. `drivers/qmi8658` takes the address as a parameter.
+- **IMU address**: Waveshare's examples pass SensorLib's `QMI8658_L_SLAVE_ADDRESS`, which SensorLib defines as 0x6B (its L/H names are the reverse of the datasheet's SA0 levels). A first build that used 0x6A got no answer (`ESP_ERR_INVALID_RESPONSE`), so `board.cpp` probes 0x6B, then 0x6A, and uses whichever answers. `drivers/qmi8658` takes the address as a parameter.
 - **Product page vs this board**: the product page's "round", "RTC: yes" and "SD card: yes" all match the 1.75 (non-C) board; treat that page with care.
 - When initialising the AXP2101, do not change the voltage or on/off state of any power rail (same rule as the reference board). The BSP never touches the AXP2101 either; the rails' power-on defaults run everything.
 
