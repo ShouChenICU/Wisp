@@ -24,13 +24,19 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 # No XIP from PSRAM: code runs from flash through the 32 KB instruction
 # cache (firmware/sdkconfig.defaults), which scrolls as fast as XIP with the
-# 16 KB cache did and leaves the ~3.3 MB image copy free for the heap.
-# Without XIP, ESP-IDF disables the cache during every flash erase/write, so
-# the mapped fonts/glyphs partitions never read a half-written state and
-# flash auto-suspend is not needed (measurements: docs/hardware/
-# waveshare_esp32_s3_touch_amoled_2_16.md, "Code from flash").
+# 16 KB cache did and leaves the ~3.5 MB image copy free for the heap.
 # CONFIG_SPIRAM_XIP_FROM_PSRAM is not set
-# CONFIG_SPI_FLASH_AUTO_SUSPEND is not set
+# Auto-suspend keeps the cache on during flash erase/write (ESP-IDF's
+# spi_flash_os_func_app.c, SPI_FLASH_CACHE_NO_DISABLE): a cache miss
+# suspends the erase or write, reads, and resumes. Without it ESP-IDF turns
+# the cache off for every erase/write, and since code now runs from flash,
+# the UI dropped to 2-7 fps during an OTA upload. It depends on the flash
+# chip: this board's XMC 0x204018 advertises suspend in SFDP and ESP-IDF
+# enables it ("Flash suspend feature is enabled" at boot); a flash ESP-IDF
+# does not accept fails an assert at boot. Measurements and the check for
+# another flash: docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md,
+# docs/porting-guide.md.
+CONFIG_SPI_FLASH_AUTO_SUSPEND=y
 
 # Console over USB-Serial-JTAG (no external UART-to-USB bridge on this
 # board -- see docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
