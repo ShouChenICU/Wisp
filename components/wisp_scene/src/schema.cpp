@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <string>
 
+#include "icons.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/sensor_service.hpp"
@@ -33,11 +34,6 @@ constexpr SV kAligns[] = {"start", "center", "end"};
 constexpr SV kJustifies[] = {"start", "center", "end", "between", "around", "evenly"};
 constexpr SV kDirections[] = {"v", "h"};
 constexpr SV kChartTypes[] = {"line", "bar"};
-// The built-in icon set; the UI maps each to its LV_SYMBOL_*.
-constexpr SV kIcons[] = {"home",   "settings", "wifi",    "battery", "bell",  "play",  "pause",
-                         "stop",   "prev",     "next",    "plus",    "minus", "ok",    "close",
-                         "trash",  "edit",     "refresh", "left",    "right", "up",    "down",
-                         "upload", "download", "save",    "list",    "image", "audio", "warning"};
 
 constexpr std::span<const SV> none{};
 
@@ -62,7 +58,7 @@ constexpr PropSpec kProps[] = {
     {Prop::Placeholder, "placeholder", PropType::String, true, none},
     {Prop::Password, "password", PropType::Bool, true, none},
     {Prop::MaxLen, "max_len", PropType::Int, true, none},
-    {Prop::Name, "name", PropType::Enum, true, kIcons},
+    {Prop::Name, "name", PropType::Enum, true, icons::kIconNames},
     {Prop::Src, "src", PropType::String, false, none},
     {Prop::Value, "value", PropType::Number, true, none},
     {Prop::Min, "min", PropType::Number, true, none},

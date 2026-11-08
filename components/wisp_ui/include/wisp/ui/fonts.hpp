@@ -24,8 +24,9 @@ inline constexpr int kVectorMinPx = 20;
 inline constexpr std::array<int, 10> kFontSteps = {20, 24, 28, 32, 40, 48, 64, 80, 96, 128};
 
 // The default UI font: lv_font_montserrat_16, falling back glyph by
-// glyph to a CJK font for Chinese and Japanese text (glyph-partition
-// spec 4.2, 4.3). While a UiRuntime runs that is the 16 px body font
+// glyph to the Wisp icons (wisp/ui/symbols.hpp) and then to a CJK font for
+// Chinese and Japanese text (glyph-partition spec 4.2, 4.3). While a
+// UiRuntime runs the CJK font is the 16 px body font
 // (GB2312 plus Japanese kana and level-1 kanji, 4bpp; see
 // tools/gen_cjk_font.py) read from UiConfig::glyph_image; failing that,
 // the same font built into host builds, a 16 px vector font, or nothing.

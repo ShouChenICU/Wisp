@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "icons.hpp"
 #include "lvgl_private.h"  // lv_image_decoder_dsc_t
 #include "scene_view_internal.hpp"
 #include "wisp/core/log.hpp"
@@ -18,43 +19,6 @@ namespace {
 
 // The series colours, in series order.
 constexpr std::string_view kSeriesColors[kMaxSeries] = {"accent", "ok", "warn", "danger"};
-
-struct IconSymbol {
-    std::string_view name;
-    const char* symbol;
-};
-
-// Every name of the schema's `name` prop (schema.cpp).
-constexpr IconSymbol kIconSymbols[] = {
-    {"home", LV_SYMBOL_HOME},
-    {"settings", LV_SYMBOL_SETTINGS},
-    {"wifi", LV_SYMBOL_WIFI},
-    {"battery", LV_SYMBOL_BATTERY_FULL},
-    {"bell", LV_SYMBOL_BELL},
-    {"play", LV_SYMBOL_PLAY},
-    {"pause", LV_SYMBOL_PAUSE},
-    {"stop", LV_SYMBOL_STOP},
-    {"prev", LV_SYMBOL_PREV},
-    {"next", LV_SYMBOL_NEXT},
-    {"plus", LV_SYMBOL_PLUS},
-    {"minus", LV_SYMBOL_MINUS},
-    {"ok", LV_SYMBOL_OK},
-    {"close", LV_SYMBOL_CLOSE},
-    {"trash", LV_SYMBOL_TRASH},
-    {"edit", LV_SYMBOL_EDIT},
-    {"refresh", LV_SYMBOL_REFRESH},
-    {"left", LV_SYMBOL_LEFT},
-    {"right", LV_SYMBOL_RIGHT},
-    {"up", LV_SYMBOL_UP},
-    {"down", LV_SYMBOL_DOWN},
-    {"upload", LV_SYMBOL_UPLOAD},
-    {"download", LV_SYMBOL_DOWNLOAD},
-    {"save", LV_SYMBOL_SAVE},
-    {"list", LV_SYMBOL_LIST},
-    {"image", LV_SYMBOL_IMAGE},
-    {"audio", LV_SYMBOL_AUDIO},
-    {"warning", LV_SYMBOL_WARNING},
-};
 
 bool ends_with(std::string_view s, std::string_view suffix) {
     return s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix;
@@ -218,11 +182,8 @@ void SceneView::set_image(Node& n, const PropValue& v) {
 // --- Icon ---
 
 void SceneView::set_icon(Node& n, const PropValue& v) {
-    const char* symbol = "";
-    if (const auto* name = as_string(v))
-        for (const IconSymbol& i : kIconSymbols)
-            if (i.name == std::string_view(*name)) symbol = i.symbol;
-    lv_label_set_text(n.obj, symbol);
+    const auto* name = as_string(v);
+    lv_label_set_text(n.obj, name != nullptr ? icons::symbol(std::string_view(*name)) : "");
 }
 
 }  // namespace wisp::scene

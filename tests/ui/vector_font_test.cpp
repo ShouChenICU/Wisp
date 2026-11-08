@@ -14,6 +14,7 @@
 #include "wisp/ui/font_image.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/lv_heap.hpp"
+#include "wisp/ui/symbols.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 using wisp::test::FakeDisplay;
@@ -190,6 +191,29 @@ TEST(VectorFont, IconsResolveFromIconFont) {
         EXPECT_GE(ok32.box_h, 20);
         EXPECT_LE(ok32.box_h, 32);
         EXPECT_LE(glyph(font(20), 0xF00C).box_h, 16);
+    });
+    ui->stop();
+}
+
+// The Wisp icons come from the icon font of the step, like LV_SYMBOL_*:
+// large at 24 and up, from the 16 px body font at 20.
+TEST(VectorFont, WispIconsAtEveryStep) {
+    auto ui = start_ui(test_font_image());
+    ui->run_blocking([] {
+        for (int px : kFontSteps) {
+            const int icon_px = px >= 48 ? 48 : px >= 32 ? 32 : px >= 24 ? 24 : 16;
+            for (const wisp::ui::WispIcon& icon : wisp::ui::kWispIcons) {
+                const auto* u = reinterpret_cast<const unsigned char*>(icon.symbol);
+                const uint32_t cp =
+                    (uint32_t{u[0] & 0x0Fu} << 12) | (uint32_t{u[1] & 0x3Fu} << 6) | (u[2] & 0x3Fu);
+                const auto g = glyph(font(px), cp);
+                ASSERT_NE(g.resolved_font, nullptr) << icon.name << " at " << px << " px";
+                EXPECT_NE(g.resolved_font, font(px)) << icon.name << " at " << px << " px";
+                EXPECT_GT(g.box_w, 0) << icon.name << " at " << px << " px";
+                EXPECT_GT(g.box_h, icon_px / 2) << icon.name << " at " << px << " px";
+                EXPECT_LE(g.box_h, icon_px + 2) << icon.name << " at " << px << " px";
+            }
+        }
     });
     ui->stop();
 }
