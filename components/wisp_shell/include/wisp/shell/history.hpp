@@ -15,13 +15,12 @@
 // above, keeping in view the turn that was at the top. Each turn is a
 // card: the user's message (WISP_SYMBOL_MICROPHONE before a spoken one, in the
 // secondary colour), the say text, and, when there is a body, a line
-// saying so; tapping the card unfolds the body (light_markdown()) and
-// tapping again folds it. Below the turns sits "new conversation"
-// (HistoryNew): it asks first (HistoryNewConfirm, through the system
-// layer's dialog) and then archives the conversation
-// (AgentService::new_conversation_async()), after which the page lists
-// the new, empty one. While a turn runs or a message waits it shows
-// HistoryBusy instead, for kBusyShowMs.
+// saying so; tapping the card unfolds the body (light_markdown(), each
+// code block folded to one line) and tapping again folds it. Below the turns sits "new
+// conversation" (HistoryNew): it asks first (HistoryNewConfirm, through the system layer's dialog)
+// and then archives the conversation (AgentService::new_conversation_async()), after which the page
+// lists the new, empty one. While a turn runs or a message waits it shows HistoryBusy instead, for
+// kBusyShowMs.
 //
 // Memory: the grouped turns are in PSRAM (os::LargeString); the cards are
 // LVGL objects, in LVGL's heap.

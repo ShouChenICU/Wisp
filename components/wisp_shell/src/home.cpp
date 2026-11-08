@@ -5,6 +5,7 @@
 
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/os/os.hpp"
 #include "wisp/shell/activity.hpp"
 #include "wisp/shell/body_text.hpp"
 #include "wisp/shell/limits.hpp"
@@ -552,6 +553,7 @@ void Home::refresh() {
     if (shown_in_turn_) render_activity(now);
     if (view_changed_) {
         view_changed_ = false;
+        const uint64_t text_from = os::now_us();
         render_text();
         // A new turn reads from its start, wherever the last one was left.
         if (new_turn) lv_obj_scroll_to_y(column_, 0, LV_ANIM_OFF);
@@ -559,8 +561,14 @@ void Home::refresh() {
             lv_obj_update_layout(root_);
             update_more();
         }
+        const uint64_t took = os::now_us() - text_from;
+        ++text_stats_.refreshes;
+        text_stats_.total_us += took;
+        text_stats_.max_us = std::max<uint32_t>(text_stats_.max_us, static_cast<uint32_t>(took));
     }
 }
+
+HomeTextStats Home::take_text_stats() { return std::exchange(text_stats_, HomeTextStats{}); }
 
 std::string Home::hint_text(uint64_t now, bool in_turn) {
     // One line during a turn: the address waits for the idle layout.
@@ -840,12 +848,17 @@ void Home::render_body() {
     for (size_t i = 0; i < blocks.size(); ++i) {
         lv_obj_t* l = blocks_[i];
         const BodyBlock& b = blocks[i];
+        // Only a changed block is set again: while a reply streams, its
+        // earlier blocks stay as they are and a folded code block changes
+        // only when its line count does.
+        const std::string fold = b.code ? code_fold_text(b) : std::string();
+        const std::string_view want =
+            b.code ? std::string_view(fold) : std::string_view(b.text.data(), b.text.size());
         const char* old = lv_label_get_text(l);
-        if (old == nullptr ||
-            std::string_view(old) != std::string_view(b.text.data(), b.text.size()))
-            lv_label_set_text(l, b.text.c_str());
-        // No monospaced font on the device: code is the body font on a
-        // muted background (a frame on two-colour panels).
+        if (old == nullptr || std::string_view(old) != want)
+            lv_label_set_text(l, b.code ? fold.c_str() : b.text.c_str());
+        // A folded code block is one line of the body font on a muted
+        // background (a frame on two-colour panels).
         if (b.code) {
             lv_obj_set_style_pad_all(l, kGap, 0);
             lv_obj_set_style_radius(l, ui::theme::kRadiusSm, 0);

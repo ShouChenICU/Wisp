@@ -715,6 +715,48 @@ TEST_F(HomeTest, TurnShowsHeardSayAndBody) {
     }));
 }
 
+// A reply with a 300-line code block, streamed a line at a time: the
+// column shows the block as one folded line (counting as it streams), never
+// its text.
+TEST_F(HomeTest, StreamedCodeBlockFoldsToOneLine) {
+    boot();
+    using wisp::test::FakeLlmServer;
+    wisp::test::FakeReply reply{.status = 200, .chunks = {}};
+    reply.chunks.push_back(FakeLlmServer::sse_text("<say>写好了。</say>代码：\n```lua\n"));
+    for (int i = 0; i < 300; ++i)
+        reply.chunks.push_back(FakeLlmServer::sse_text("local x" + std::to_string(i) + " = " +
+                                                       std::to_string(i) + "\n"));
+    // Held here, mid-block, until released.
+    reply.hold_after = static_cast<int>(reply.chunks.size());
+    reply.chunks.push_back(FakeLlmServer::sse_text("```\n已安装。"));
+    reply.chunks.push_back(FakeLlmServer::sse_finish("stop"));
+    reply.chunks.push_back(FakeLlmServer::sse_done());
+    server.llm().push(reply);
+    ASSERT_TRUE(agent->submit("做个场景", wisp::agent::Source::Web));
+    // say, "代码：", the folded block.
+    EXPECT_TRUE(ui_until([&] {
+        lv_obj_t* col = home().column();
+        return lv_obj_get_child_count(col) == 3 &&
+               label_text(lv_obj_get_child(col, 2)) == "lua 代码 · 300 行";
+    }));
+    server.llm().release();
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_TRUE(ui_until([&] {
+        lv_obj_t* col = home().column();
+        return !conv->current().running && lv_obj_get_child_count(col) == 4 &&
+               label_text(lv_obj_get_child(col, 1)) == "代码：" &&
+               label_text(lv_obj_get_child(col, 2)) == "lua 代码 · 300 行" &&
+               label_text(lv_obj_get_child(col, 3)) == "已安装。";
+    }));
+    on_ui([&] {
+        uint32_t code_lines = 0;
+        for (uint32_t i = 0; i < lv_obj_get_child_count(home().column()); ++i)
+            code_lines += label_text(lv_obj_get_child(home().column(), i)).find("local x") !=
+                          std::string::npos;
+        EXPECT_EQ(code_lines, 0u);
+    });
+}
+
 // kFadeAfterMs after the turn the text fades and the wisp is back in the
 // centre at its idle size.
 TEST_F(HomeTest, ReturnsToCentreAfterFade) {

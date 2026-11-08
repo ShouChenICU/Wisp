@@ -383,6 +383,10 @@ const char* strings_en(StrId id) {
             return "Show details";
         case StrId::HistoryLess:
             return "Hide details";
+        case StrId::BodyCode:
+            return "Code · {} lines";
+        case StrId::BodyCodeLang:
+            return "{} code · {} lines";
         case StrId::SceneListEmpty:
             return "No scenes yet. Try saying 'make a pomodoro timer'";
         case StrId::SceneDeleteButton:

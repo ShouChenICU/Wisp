@@ -17,6 +17,11 @@ constexpr std::string_view kClose = "</say>";
 // takes at most 4 bytes per code point.
 constexpr size_t kBodyHeadMax = kTtsMaxChars * 4;
 
+constexpr std::string_view kFence = "```";
+// A line's indentation is looked at this far for a fence; longer, the
+// line is text.
+constexpr size_t kFenceLookMax = 64;
+
 // The longest suffix of `s` that is a proper prefix of `tag`.
 size_t partial_tag(std::string_view s, std::string_view tag) {
     for (size_t n = std::min(s.size(), tag.size() - 1); n > 0; --n) {
@@ -48,10 +53,50 @@ void SayParser::emit(std::string_view text) {
         if (out_.say) out_.say(text);
         return;
     }
-    if (body_head_.size() < kBodyHeadMax && !has_sentence(body_head_)) {
-        body_head_.append(text.substr(0, kBodyHeadMax - body_head_.size()));
-    }
+    if (body_head_.size() < kBodyHeadMax && !has_sentence(body_head_)) add_head(text);
     if (out_.body) out_.body(text);
+}
+
+void SayParser::add_head(std::string_view text) {
+    std::string prose;
+    auto keep = [&](std::string_view s) {
+        if (!head_code_) prose.append(s);
+    };
+    for (char c : text) {
+        if (c == '\n') {
+            if (head_kind_ == HeadLine::Undecided) keep(head_line_);
+            if (head_kind_ != HeadLine::Fence) keep("\n");
+            head_line_.clear();
+            head_kind_ = HeadLine::Undecided;
+            continue;
+        }
+        switch (head_kind_) {
+            case HeadLine::Fence:
+                break;
+            case HeadLine::Text:
+                keep(std::string_view(&c, 1));
+                break;
+            case HeadLine::Undecided: {
+                head_line_.push_back(c);
+                const size_t at = head_line_.find_first_not_of(" \t");
+                if (at == std::string::npos && head_line_.size() < kFenceLookMax) break;
+                const std::string_view rest = at == std::string::npos
+                                                  ? std::string_view{}
+                                                  : std::string_view(head_line_).substr(at);
+                if (rest.starts_with(kFence)) {
+                    head_kind_ = HeadLine::Fence;
+                    head_code_ = !head_code_;
+                } else if (rest.empty() || !kFence.starts_with(rest) ||
+                           head_line_.size() >= kFenceLookMax) {
+                    head_kind_ = HeadLine::Text;
+                    keep(head_line_);
+                }
+                if (head_kind_ != HeadLine::Undecided) head_line_.clear();
+                break;
+            }
+        }
+    }
+    body_head_.append(prose.substr(0, kBodyHeadMax - body_head_.size()));
 }
 
 void SayParser::feed(std::string_view delta) {
@@ -85,12 +130,20 @@ std::string SayParser::finish() {
     emit(pending_);
     pending_.clear();
     if (saw_say_) return {};
+    // A last line still undecided ("``", say) is text.
+    if (head_kind_ == HeadLine::Undecided && !head_code_ && body_head_.size() < kBodyHeadMax)
+        body_head_.append(head_line_.substr(0, kBodyHeadMax - body_head_.size()));
+    head_line_.clear();
+    head_kind_ = HeadLine::Undecided;
     return first_sentence(body_head_);
 }
 
 void SayParser::reset() {
     pending_.clear();
     body_head_.clear();
+    head_line_.clear();
+    head_kind_ = HeadLine::Undecided;
+    head_code_ = false;
     inside_ = false;
     saw_say_ = false;
 }

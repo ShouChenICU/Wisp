@@ -81,8 +81,9 @@ protected:
         harness_.reset();
     }
 
-    // `turns` turns, every third one spoken, each with a body.
-    void start(size_t turns, const std::string& shape = "rect") {
+    // `turns` turns, every third one spoken, each with a body (the last
+    // one's `last_body` when that is given).
+    void start(size_t turns, const std::string& shape = "rect", const std::string& last_body = "") {
         harness_ = std::make_unique<wisp::test::AgentHarness>();
         ASSERT_TRUE(harness_->worker.run_sync(
             [&] {
@@ -91,9 +92,10 @@ protected:
                     const Source src = i % 3 == 0 ? Source::Voice : Source::Web;
                     ASSERT_TRUE(harness_->store->append(
                         msg(t, Role::User, "问题 " + std::to_string(i), src)));
+                    const std::string body =
+                        i == turns && !last_body.empty() ? last_body : "细节 " + std::to_string(i);
                     ASSERT_TRUE(harness_->store->append(msg(
-                        t, Role::Assistant,
-                        "<say>回答 " + std::to_string(i) + "。</say>细节 " + std::to_string(i))));
+                        t, Role::Assistant, "<say>回答 " + std::to_string(i) + "。</say>" + body)));
                 }
             },
             wisp::os::kForever));
@@ -185,6 +187,26 @@ TEST_F(HistoryTest, VoiceIconAndCollapsedBody) {
         lv_obj_send_event(page()->card(2), LV_EVENT_CLICKED, nullptr);
         EXPECT_FALSE(page()->expanded(2));
         EXPECT_TRUE(is_hidden(page()->body_box(2)));
+    });
+}
+
+// An unfolded body shows a code block as one folded line, not its text.
+TEST_F(HistoryTest, CodeBlockFoldsToOneLine) {
+    std::string body = "写好了：\n```lua\n";
+    for (int i = 0; i < 300; ++i)
+        body += "local x" + std::to_string(i) + " = " + std::to_string(i) + "\n";
+    body += "```\n已安装。";
+    start(1, "rect", body);
+    h_->on_ui([&] {
+        ASSERT_EQ(page()->built(), 1u);
+        lv_obj_send_event(page()->card(0), LV_EVENT_CLICKED, nullptr);
+        lv_obj_t* box = page()->body_box(0);
+        ASSERT_NE(box, nullptr);
+        ASSERT_EQ(lv_obj_get_child_count(box), 3u);
+        EXPECT_EQ(text_of(lv_obj_get_child(box, 0)), "写好了：");
+        EXPECT_EQ(text_of(lv_obj_get_child(box, 1)), "lua 代码 · 300 行");
+        EXPECT_EQ(text_of(lv_obj_get_child(box, 2)), "已安装。");
+        EXPECT_EQ(wisp::test::find_label_containing(box, "local x"), nullptr);
     });
 }
 

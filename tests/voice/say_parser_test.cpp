@@ -79,6 +79,40 @@ TEST(SayParser, NoSayFallsBackToFirstSentence) {
     EXPECT_FALSE(s.parser.saw_say());
 }
 
+// The fallback never speaks code: fenced blocks (their fence lines too)
+// are skipped, even when the deltas cut a fence apart.
+TEST(SayParser, FallbackSkipsFencedCode) {
+    {
+        Sink s;
+        s.parser.feed("```lua\nlocal x = 1\n```\n装好了。还有");
+        EXPECT_EQ(s.parser.finish(), "装好了。");
+        EXPECT_EQ(s.body, "```lua\nlocal x = 1\n```\n装好了。还有");
+    }
+    {
+        Sink s;
+        for (std::string_view d : {"  `", "`", "`py\nprint(1)\n", "``", "`\n", "完成"})
+            s.parser.feed(d);
+        EXPECT_EQ(s.parser.finish(), "完成");
+    }
+    {
+        // A long block before the text: the text is still found.
+        Sink s;
+        s.parser.feed("```\n");
+        for (int i = 0; i < 2000; ++i) s.parser.feed("x = 1。\n");
+        s.parser.feed("```\n好了。");
+        EXPECT_EQ(s.parser.finish(), "好了。");
+    }
+    {
+        // Only code: nothing to speak. Backticks inside a line are text.
+        Sink s;
+        s.parser.feed("```\nx\n");
+        EXPECT_EQ(s.parser.finish(), "");
+        Sink t;
+        t.parser.feed("用 ```x``` 吧。");
+        EXPECT_EQ(t.parser.finish(), "用 ```x``` 吧。");
+    }
+}
+
 TEST(SayParser, ResetStartsANewTurn) {
     Sink s;
     s.parser.feed("<say>一");
