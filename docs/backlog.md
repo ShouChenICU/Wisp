@@ -216,3 +216,7 @@ Source: glyph partition review records.
 ## Talk overlay (MVP spec 6.5)
 
 - `TalkOverlay::decide()` has no phase for a voice error (`VoiceState::Error`) or `TurnView::error`/`not_heard`: it falls through to Hidden. Confirm whether that is the intended split with Home (which may already surface these) before adding one.
+
+## CI speed
+
+- `tools/ci.sh` runs ctest serially (about 390 s; `sim_smoke` alone takes 92 s). `ctest -j 20` finished in 92 s on a 20-core host, but under that load `AppScenes.DeleteAfterStopRuntimeIsRefused` aborted once (it passes alone, three runs out of three). Find its timing assumption first, then run ctest in parallel, keeping the smoke tests `RUN_SERIAL` if they share ports.
