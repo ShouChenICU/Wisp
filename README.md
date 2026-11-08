@@ -4,7 +4,7 @@
 
 🇺🇸 **English** | 🇨🇳 [简体中文](README.zh-CN.md) | 🇯🇵 [日本語](README.ja.md)
 
-**A handheld run entirely by AI. There are no apps. Say what you want and it builds it on the spot.**
+**An all-in-one handheld agent that runs on the ESP32.**
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-E7352C?style=flat-square&logo=espressif&logoColor=white)
@@ -28,7 +28,7 @@
 
 ## ✨ What it is
 
-Hold the key and say "make me a Pomodoro timer". The agent writes the UI and the logic, installs the scene and opens it, all on the device. Nothing is recompiled and no computer is needed. You can reopen the scene any time, or ask the agent to change it.
+Wisp is your own handheld agent. It chats with you, keeps a memory of its own, and builds and manages apps for you on the fly. For example, hold the key and say "make me a Pomodoro timer". It writes the UI and the logic, installs the app and opens it, all on the device, with nothing recompiled and no computer needed. You can reopen the app any time, or ask Wisp to change it.
 
 - **Ask for an app and get one.** Every feature is a Lua scene the agent writes, and changes take effect at once.
 - **The agent runs the whole device.** The screen, audio, storage, scenes and settings are all its tools, and the screen shows each step it takes.

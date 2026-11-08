@@ -4,7 +4,7 @@
 
 🇺🇸 [English](README.md) | 🇨🇳 **简体中文** | 🇯🇵 [日本語](README.ja.md)
 
-**一台由 AI 掌管的掌上设备：没有 App，你说想要什么，它就现场做出来。**
+**一个运行在 ESP32 上的全能掌上 Agent。**
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-E7352C?style=flat-square&logo=espressif&logoColor=white)
@@ -26,7 +26,7 @@
 
 ## ✨ 它是什么
 
-按住按键说一句"帮我做个番茄钟"。Agent 会写好界面和逻辑、装好并打开，整个过程都在设备上完成，不用重新编译，也不用连电脑。之后你可以随时重新打开它，或者让 Agent 接着改。
+它是你的专属掌上 Agent，能陪你聊天，有自己的记忆，还能按你的需要动态地创建和管理应用。例如，按住按键说一句"帮我做个番茄钟"，它会写好界面和逻辑、装好并打开。整个过程都在设备上完成，不用重新编译，也不用连电脑。之后你可以随时重新打开这个应用，或者让它接着改。
 
 - **说出需求，就有应用**：每个功能都是 Agent 写的 Lua 场景，改完立即生效。
 - **Agent 掌管整台设备**：屏幕、音频、存储、场景和设置都是它的工具，它做每一步时屏幕上都会显示。
