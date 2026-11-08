@@ -13,12 +13,23 @@
 // Kept header-only/pure so these can be unit-tested on the host without
 // pulling in driver/i2c_master.h -- see tests/drivers/qmi8658_conv_test.cpp.
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// The two 7-bit I2C addresses the QMI8658's SA0 strap selects: 0x6A with
+// SA0 low, 0x6B with SA0 high. Boards wire either; the board passes its
+// one to qmi8658_init().
+#define QMI8658_I2C_ADDR_LOW 0x6A
+#define QMI8658_I2C_ADDR_HIGH 0x6B
+
+static inline bool qmi8658_addr_valid(uint8_t addr) {
+    return addr == QMI8658_I2C_ADDR_LOW || addr == QMI8658_I2C_ADDR_HIGH;
+}
 
 // Little-endian 16-bit sample, as the QMI8658 output registers are laid
 // out (low byte first). Ported from MyOS's le_i16().

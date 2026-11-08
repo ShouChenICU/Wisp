@@ -4,10 +4,11 @@
 // from MyOS (MIT, Copyright (c) 2026 ShouChen): register sequences and
 // conversion formulas taken from src/hal/hal_power.cpp (HalPower) -- see
 // docs/references.md. MyOS-specific logic is dropped: power-rail
-// (BLDO1/OLED) control, PWRON IRQ handling (Wisp's EspGpioButton polls
-// the PWRON detect pin directly instead -- see
-// components/wisp_port_esp/dev/esp_button.cpp), esp_pm DFS/light-sleep,
-// and deep-sleep.
+// (BLDO1/OLED) control, MyOS's PWRON IRQ handling, esp_pm
+// DFS/light-sleep, and deep-sleep. A board with a GPIO that follows the
+// PWRON key reads it with EspGpioButton; a board without one polls the
+// PWRON edge IRQ bits instead (axp2101_pwrkey_irq_enable()/_take() below,
+// newly written against XPowersLib's register map, not from MyOS).
 //
 // axp2101_init() never changes any power-rail voltage or on/off state
 // (AGENTS.md's "Board independence" rule plus the hardware doc's AXP2101 erratum
@@ -89,6 +90,18 @@ esp_err_t axp2101_charging_config_status(axp2101_handle_t handle);
 // cuts every rail it controls. Only a PWRON cold-boot press can power the
 // board back on afterwards.
 esp_err_t axp2101_power_off(axp2101_handle_t handle);
+
+// Enables the four PWRON key IRQs in REG 0x41 (read-modify-write; other
+// IRQ enables are left as they are) and clears their latched status, so
+// that axp2101_pwrkey_irq_take() starts from a clean slate. Only the
+// status bits are used -- polled over I2C -- so the chip's IRQ output pin
+// does not need to be wired. Touches no power rail.
+esp_err_t axp2101_pwrkey_irq_enable(axp2101_handle_t handle);
+
+// Reads the latched PWRON key bits of REG 0x49 into `*bits`
+// (AXP2101_IRQ2_PKEY_* in axp2101_conv.h, other bits masked off) and
+// clears exactly those bits. Feed the result to axp2101_pwrkey_update().
+esp_err_t axp2101_pwrkey_irq_take(axp2101_handle_t handle, uint8_t* bits);
 
 #ifdef __cplusplus
 }

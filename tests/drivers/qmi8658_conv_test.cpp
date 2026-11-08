@@ -46,3 +46,12 @@ TEST(Qmi8658Conv, OdrCodePicksNearestRate) {
     // 1050Hz is closer to the 1000Hz entry than to the 2000Hz one.
     EXPECT_EQ(qmi8658_odr_code_for_hz(1050), 3);
 }
+
+TEST(Qmi8658Conv, AddressValidOnlyForTheTwoStrapOptions) {
+    EXPECT_TRUE(qmi8658_addr_valid(QMI8658_I2C_ADDR_LOW));
+    EXPECT_TRUE(qmi8658_addr_valid(QMI8658_I2C_ADDR_HIGH));
+    EXPECT_EQ(QMI8658_I2C_ADDR_LOW, 0x6A);
+    EXPECT_EQ(QMI8658_I2C_ADDR_HIGH, 0x6B);
+    EXPECT_FALSE(qmi8658_addr_valid(0x00));
+    EXPECT_FALSE(qmi8658_addr_valid(0x6C));
+}

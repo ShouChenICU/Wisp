@@ -1,9 +1,9 @@
 #pragma once
 
-// QMI8658 6-axis IMU driver (I2C, 7-bit address 0x6B; no magnetometer on
-// this chip). Ported from MyOS (MIT, Copyright (c) 2026 ShouChen):
-// chip-ID verification, soft-reset and accelerometer register sequence
-// taken from src/hal/hal_imu.cpp (HalImu) -- see docs/references.md.
+// QMI8658 6-axis IMU driver (I2C, 7-bit address 0x6A or 0x6B, chosen by
+// the board -- see qmi8658_conv.h; no magnetometer on this chip). Ported from MyOS (MIT, Copyright
+// (c) 2026 ShouChen): chip-ID verification, soft-reset and accelerometer register sequence taken
+// from src/hal/hal_imu.cpp (HalImu) -- see docs/references.md.
 //
 // MyOS only ever drove the accelerometer at +/-2g/62.5Hz for a level
 // (tilt) indicator; Wisp additionally enables the gyroscope and uses
@@ -22,6 +22,7 @@
 
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+#include "qmi8658_conv.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,12 +39,14 @@ typedef struct {
     float gz_dps;
 } qmi8658_sample_t;
 
-// Adds the QMI8658 device at address 0x6B on `bus`, verifies WHO_AM_I,
+// Adds the QMI8658 device at `addr` (QMI8658_I2C_ADDR_LOW or _HIGH, per
+// the board's SA0 strap; anything else is ESP_ERR_INVALID_ARG) on `bus`,
+// verifies WHO_AM_I,
 // soft-resets the chip, and configures the accelerometer (+/-4g) and
 // gyroscope (+/-512dps) at a default output data rate of 125Hz, with
 // polling (DRDY interrupt disabled). On success `*out` is a
 // heap-allocated handle owned by the caller.
-esp_err_t qmi8658_init(i2c_master_bus_handle_t bus, qmi8658_handle_t* out);
+esp_err_t qmi8658_init(i2c_master_bus_handle_t bus, uint8_t addr, qmi8658_handle_t* out);
 
 // Reads the latest accelerometer + gyroscope sample (units g / dps).
 esp_err_t qmi8658_read(qmi8658_handle_t handle, qmi8658_sample_t* out);

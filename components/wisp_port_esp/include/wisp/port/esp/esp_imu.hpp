@@ -22,9 +22,11 @@ namespace wisp::port::esp {
 
 class EspImu : public wisp::hal::Imu {
 public:
-    // Calls qmi8658_init(bus) and wraps the resulting handle. Fails with
-    // DeviceFailure if that returns anything other than ESP_OK.
-    static Result<std::shared_ptr<EspImu>> create(i2c_master_bus_handle_t bus, std::string model);
+    // Calls qmi8658_init(bus, addr) and wraps the resulting handle. Fails
+    // with DeviceFailure if that returns anything other than ESP_OK. The
+    // address is the board's SA0 strap (qmi8658_conv.h).
+    static Result<std::shared_ptr<EspImu>> create(i2c_master_bus_handle_t bus, std::string model,
+                                                  uint8_t addr = QMI8658_I2C_ADDR_HIGH);
 
     ~EspImu() override;
 

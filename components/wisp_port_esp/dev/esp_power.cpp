@@ -72,4 +72,10 @@ esp_err_t EspPower::charging_config_status() const {
     return axp2101_charging_config_status(handle_);
 }
 
+esp_err_t EspPower::enable_power_key_irqs() { return axp2101_pwrkey_irq_enable(handle_); }
+
+esp_err_t EspPower::take_power_key_irqs(uint8_t* bits) {
+    return axp2101_pwrkey_irq_take(handle_, bits);
+}
+
 }  // namespace wisp::port::esp

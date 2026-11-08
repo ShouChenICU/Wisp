@@ -16,7 +16,6 @@
 
 static const char* TAG = "qmi8658";
 
-#define QMI8658_I2C_ADDR 0x6B
 #define QMI8658_I2C_FREQ_HZ 400000
 /* Named _TICKS, not _MS: this already holds a tick count --
  * pdMS_TO_TICKS() converts once, at this macro's expansion site. */
@@ -102,8 +101,8 @@ static esp_err_t configure_sensors(qmi8658_handle_t h, uint8_t odr_code) {
     return ESP_OK;
 }
 
-esp_err_t qmi8658_init(i2c_master_bus_handle_t bus, qmi8658_handle_t* out) {
-    if (bus == NULL || out == NULL) {
+esp_err_t qmi8658_init(i2c_master_bus_handle_t bus, uint8_t addr, qmi8658_handle_t* out) {
+    if (bus == NULL || out == NULL || !qmi8658_addr_valid(addr)) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -114,7 +113,7 @@ esp_err_t qmi8658_init(i2c_master_bus_handle_t bus, qmi8658_handle_t* out) {
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = QMI8658_I2C_ADDR,
+        .device_address = addr,
         .scl_speed_hz = QMI8658_I2C_FREQ_HZ,
     };
     esp_err_t ret = i2c_master_bus_add_device(bus, &dev_cfg, &h->dev);
@@ -152,9 +151,9 @@ esp_err_t qmi8658_init(i2c_master_bus_handle_t bus, qmi8658_handle_t* out) {
 
     *out = h;
     ESP_LOGI(TAG,
-             "QMI8658 init done: WHO=0x%02X REV=0x%02X accel=+/-%dg gyro=+/-%ddps odr=%dHz "
-             "STATUS0=0x%02X",
-             id[0], id[1], ACCEL_FS_G, GYRO_FS_DPS, DEFAULT_ODR_HZ, status);
+             "QMI8658 init done at 0x%02X: WHO=0x%02X REV=0x%02X accel=+/-%dg gyro=+/-%ddps "
+             "odr=%dHz STATUS0=0x%02X",
+             addr, id[0], id[1], ACCEL_FS_G, GYRO_FS_DPS, DEFAULT_ODR_HZ, status);
     return ESP_OK;
 
 fail:

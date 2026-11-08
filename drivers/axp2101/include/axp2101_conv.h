@@ -18,6 +18,7 @@
 // setChargeTargetVoltage()/setPrechargeCurr()), a public, widely used,
 // read-only reference for this exact chip's register encodings.
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -124,6 +125,68 @@ static inline uint8_t axp2101_iprechg_code(uint16_t ma) {
 static inline bool axp2101_battery_present_after_pct_read(bool preliminary_present,
                                                           bool pct_read_ok) {
     return preliminary_present && pct_read_ok;
+}
+
+// REG 0x49 (INTSTS2) PWRON key bits, per XPowersLib's
+// xpowers_axp2101_irq_t (XPOWERS_AXP2101_PKEY_*_IRQ, bits 8-11 of its
+// 24-bit IRQ word, i.e. bits 0-3 of the second status register). The
+// same bit positions enable each IRQ in REG 0x41 (INTEN2). Each status
+// bit latches until written back as 1. PWRON is pulled low while the key
+// is held, so the negative edge is the press and the positive edge the
+// release.
+#define AXP2101_IRQ2_PKEY_POSITIVE 0x01
+#define AXP2101_IRQ2_PKEY_NEGATIVE 0x02
+#define AXP2101_IRQ2_PKEY_LONG 0x04
+#define AXP2101_IRQ2_PKEY_SHORT 0x08
+#define AXP2101_IRQ2_PKEY_ALL 0x0F
+
+// The PWRON key's level, rebuilt from the latched edge bits for boards
+// where no GPIO follows the key (wisp::port::esp::EspPmuPowerKey).
+// Zero-initialise; `down` is the level the last update left behind.
+typedef struct {
+    bool down;
+    // Set once any edge bit has been seen: from then on the edges alone
+    // drive the level and the short-press bit is ignored, since it may
+    // latch in a later read than the release edge it belongs to.
+    bool edges_seen;
+} axp2101_pwrkey_tracker_t;
+
+// Feeds one read of REG 0x49 (only the AXP2101_IRQ2_PKEY_* bits matter)
+// and returns the level to report for this poll:
+//   - press edge only: held;
+//   - release edge only: released (a release with no press before it is
+//     the power-on press, which was still held when init cleared the
+//     edges, and is not a press);
+//   - both edges in one read: they alternate, so the level before says
+//     which came first. Released before: a press shorter than the poll
+//     period, reported held for this one poll and released on the next.
+//     Held before: released and pressed again, still held;
+//   - no edge: the previous level, except that until an edge has ever
+//     been seen a short-press bit alone counts as a one-poll press, so
+//     the key still works if this chip revision latches no edge bits.
+//     The long-press bit is never used: ButtonService times long presses
+//     from the level itself.
+static inline bool axp2101_pwrkey_update(axp2101_pwrkey_tracker_t* t, uint8_t intsts2) {
+    const bool press = (intsts2 & AXP2101_IRQ2_PKEY_NEGATIVE) != 0;
+    const bool release = (intsts2 & AXP2101_IRQ2_PKEY_POSITIVE) != 0;
+    if (press || release) {
+        t->edges_seen = true;
+    }
+    if (press && release) {
+        return true;  // t->down is already the level after both edges.
+    }
+    if (press) {
+        t->down = true;
+        return true;
+    }
+    if (release) {
+        t->down = false;
+        return false;
+    }
+    if (!t->edges_seen && !t->down && (intsts2 & AXP2101_IRQ2_PKEY_SHORT) != 0) {
+        return true;
+    }
+    return t->down;
 }
 
 #ifdef __cplusplus

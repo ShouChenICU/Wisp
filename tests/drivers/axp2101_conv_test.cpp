@@ -109,3 +109,69 @@ TEST(Axp2101Conv, BatteryPresentAfterPctReadStaysFalseWhenNoBatteryWasWired) {
     EXPECT_FALSE(axp2101_battery_present_after_pct_read(/*preliminary_present=*/false,
                                                         /*pct_read_ok=*/false));
 }
+
+// axp2101_pwrkey_update(): the PWRON key's level rebuilt from the edge
+// IRQ bits of REG 0x49, one call per poll.
+
+TEST(Axp2101PwrkeyTracker, StartsReleased) {
+    axp2101_pwrkey_tracker_t t = {};
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, 0));
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, 0));
+}
+
+TEST(Axp2101PwrkeyTracker, PressEdgeHoldsUntilReleaseEdge) {
+    axp2101_pwrkey_tracker_t t = {};
+    EXPECT_TRUE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_NEGATIVE));
+    EXPECT_TRUE(axp2101_pwrkey_update(&t, 0));
+    EXPECT_TRUE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_LONG));
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_POSITIVE));
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, 0));
+}
+
+TEST(Axp2101PwrkeyTracker, PressAndReleaseInOneReadReportsOnePollDown) {
+    axp2101_pwrkey_tracker_t t = {};
+    EXPECT_TRUE(axp2101_pwrkey_update(
+        &t, AXP2101_IRQ2_PKEY_NEGATIVE | AXP2101_IRQ2_PKEY_POSITIVE | AXP2101_IRQ2_PKEY_SHORT));
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, 0));
+}
+
+TEST(Axp2101PwrkeyTracker, ReleaseAndPressInOneReadWhileHeldStaysDown) {
+    axp2101_pwrkey_tracker_t t = {};
+    EXPECT_TRUE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_NEGATIVE));
+    EXPECT_TRUE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_NEGATIVE | AXP2101_IRQ2_PKEY_POSITIVE));
+    EXPECT_TRUE(axp2101_pwrkey_update(&t, 0));
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_POSITIVE));
+}
+
+TEST(Axp2101PwrkeyTracker, StrayReleaseIsNotAPress) {
+    // The power-on press is still held when the edges are cleared at
+    // init, so its release arrives with no press before it.
+    axp2101_pwrkey_tracker_t t = {};
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_POSITIVE));
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, 0));
+}
+
+TEST(Axp2101PwrkeyTracker, ShortPressBitAloneIsAPulseUntilAnEdgeIsSeen) {
+    axp2101_pwrkey_tracker_t t = {};
+    EXPECT_TRUE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_SHORT));
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, 0));
+}
+
+TEST(Axp2101PwrkeyTracker, ShortPressBitIgnoredOnceEdgesWork) {
+    axp2101_pwrkey_tracker_t t = {};
+    EXPECT_TRUE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_NEGATIVE));
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_POSITIVE));
+    // A short-press bit latched a little after the release edge must not
+    // become a second press.
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_SHORT));
+}
+
+TEST(Axp2101PwrkeyTracker, LongPressBitAloneIsIgnored) {
+    axp2101_pwrkey_tracker_t t = {};
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, AXP2101_IRQ2_PKEY_LONG));
+}
+
+TEST(Axp2101PwrkeyTracker, OtherBitsAreIgnored) {
+    axp2101_pwrkey_tracker_t t = {};
+    EXPECT_FALSE(axp2101_pwrkey_update(&t, 0xF0));
+}

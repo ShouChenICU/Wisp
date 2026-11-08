@@ -44,6 +44,12 @@ public:
     // registered either way; the board decides whether/how to log this.
     esp_err_t charging_config_status() const;
 
+    // axp2101_pwrkey_irq_enable()/axp2101_pwrkey_irq_take(), for a board
+    // whose PWRON key is read through this PMU rather than a GPIO (see
+    // EspPmuPowerKey, wisp/port/esp/esp_button.hpp).
+    esp_err_t enable_power_key_irqs();
+    esp_err_t take_power_key_irqs(uint8_t* bits);
+
 private:
     EspPower(axp2101_handle_t handle, std::string model);
 

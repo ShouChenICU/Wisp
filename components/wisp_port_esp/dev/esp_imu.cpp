@@ -9,14 +9,15 @@
 
 namespace wisp::port::esp {
 
-Result<std::shared_ptr<EspImu>> EspImu::create(i2c_master_bus_handle_t bus, std::string model) {
+Result<std::shared_ptr<EspImu>> EspImu::create(i2c_master_bus_handle_t bus, std::string model,
+                                               uint8_t addr) {
     using R = Result<std::shared_ptr<EspImu>>;
     if (bus == nullptr) {
         return R::err(ErrorCode::InvalidArgument, "null i2c bus handle");
     }
 
     qmi8658_handle_t handle = nullptr;
-    esp_err_t err = qmi8658_init(bus, &handle);
+    esp_err_t err = qmi8658_init(bus, addr, &handle);
     if (err != ESP_OK) {
         return R::err(ErrorCode::DeviceFailure,
                       std::string("qmi8658_init: ") + esp_err_to_name(err));

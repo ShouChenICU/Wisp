@@ -25,6 +25,8 @@ static const char* TAG = "axp2101";
 #define REG_COMM_CFG 0x10 /* bit0: write 1 to request shutdown */
 #define REG_IRQ_OFF_ON_LEVEL_CTRL 0x27
 #define REG_ADC_CHANNEL_CTRL 0x30 /* ADC channel enable */
+#define REG_INTEN2 0x41           /* IRQ enable 2: PWRON edges/presses, battery, VBUS */
+#define REG_INTSTS2 0x49          /* IRQ status 2, same bits; write 1 to clear */
 #define REG_BAT_VOLT_H 0x34
 #define REG_BAT_VOLT_L 0x35
 #define REG_TS_PIN_CTRL 0x50    /* TS pin function control */
@@ -281,4 +283,44 @@ esp_err_t axp2101_power_off(axp2101_handle_t handle) {
     cfg |= 0x01;
     ESP_LOGI(TAG, "AXP2101 power off requested");
     return axp_write_reg(handle, REG_COMM_CFG, cfg);
+}
+
+esp_err_t axp2101_pwrkey_irq_enable(axp2101_handle_t handle) {
+    if (handle == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t en = 0;
+    esp_err_t ret = axp_read_reg(handle, REG_INTEN2, &en, 1);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = axp_write_reg(handle, REG_INTEN2, (uint8_t)(en | AXP2101_IRQ2_PKEY_ALL));
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    /* Drop whatever latched before anyone was polling, typically the
+     * press that powered the board on. */
+    return axp_write_reg(handle, REG_INTSTS2, AXP2101_IRQ2_PKEY_ALL);
+}
+
+esp_err_t axp2101_pwrkey_irq_take(axp2101_handle_t handle, uint8_t* bits) {
+    if (handle == NULL || bits == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t sts = 0;
+    esp_err_t ret = axp_read_reg(handle, REG_INTSTS2, &sts, 1);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    sts &= AXP2101_IRQ2_PKEY_ALL;
+    if (sts != 0) {
+        /* Clear only the bits just read, so an edge that latches between
+         * the read and this write survives for the next call. */
+        ret = axp_write_reg(handle, REG_INTSTS2, sts);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
+    *bits = sts;
+    return ESP_OK;
 }
