@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔥 Wisp · 小鬼火
+# Wisp
 
 **一台由 AI 掌管的掌上设备：没有 App，你说想要什么，它就现场做出来。**
 
