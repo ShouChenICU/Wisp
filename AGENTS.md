@@ -32,6 +32,7 @@ Wisp（小鬼火）是一个运行在 ESP32 系列芯片上、完全由 AI 驱�
 | `docs/superpowers/plans/*.md` | 实施计划，是 spec 的展开；两者冲突时以 spec 为准 |
 | `docs/architecture.md` | 分层、启动流程、事件主题清单 |
 | `docs/porting-guide.md` | 如何新增一块开发板 |
+| `CONTRIBUTING.md` | 贡献流程、代码要求与 PR 清单（面向外部贡献者，与本文件一致） |
 | `docs/hardware/<板名>.md` | 各开发板的硬件资料（引脚、芯片、已知勘误、性能基准） |
 | `docs/references.md`、`THIRD_PARTY_NOTICES.md` | 参考来源与第三方许可 |
 
