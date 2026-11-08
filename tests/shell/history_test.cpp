@@ -15,6 +15,7 @@
 #include "support/fake_llm.hpp"
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/shell/limits.hpp"
+#include "wisp/ui/symbols.hpp"
 
 using wisp::agent::Message;
 using wisp::agent::Role;
@@ -165,8 +166,14 @@ TEST_F(HistoryTest, VoiceIconAndCollapsedBody) {
     h_->on_ui([&] {
         ASSERT_EQ(page()->built(), 3u);
         // Turn 3 was spoken, turn 2 typed.
-        EXPECT_EQ(text_of(page()->heard_label(2)), LV_SYMBOL_AUDIO " 问题 3");
+        EXPECT_EQ(text_of(page()->heard_label(2)), WISP_SYMBOL_MICROPHONE " 问题 3");
         EXPECT_EQ(text_of(page()->heard_label(1)), "问题 2");
+        // The label's font draws the microphone rather than a placeholder.
+        lv_font_glyph_dsc_t mic{};
+        const lv_font_t* f = lv_obj_get_style_text_font(page()->heard_label(2), LV_PART_MAIN);
+        ASSERT_TRUE(lv_font_get_glyph_dsc(f, &mic, 0xF130, 0));
+        EXPECT_GT(mic.box_w, 0);
+        EXPECT_GT(mic.box_h, 0);
         EXPECT_EQ(page()->body_box(2), nullptr);
         ASSERT_NE(page()->fold_label(2), nullptr);
         EXPECT_FALSE(page()->expanded(2));

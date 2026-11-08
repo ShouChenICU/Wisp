@@ -13,7 +13,7 @@
 // scrolled to the bottom. It builds the newest kHistoryBatch turns; once
 // the list is scrolled to its top it adds kHistoryBatch earlier ones
 // above, keeping in view the turn that was at the top. Each turn is a
-// card: the user's message (LV_SYMBOL_AUDIO before a spoken one, in the
+// card: the user's message (WISP_SYMBOL_MICROPHONE before a spoken one, in the
 // secondary colour), the say text, and, when there is a body, a line
 // saying so; tapping the card unfolds the body (light_markdown()) and
 // tapping again folds it. Below the turns sits "new conversation"
