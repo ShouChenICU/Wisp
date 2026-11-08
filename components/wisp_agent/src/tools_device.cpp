@@ -32,7 +32,7 @@ struct SettingKey {
 constexpr SettingKey kKeys[] = {
     {"brightness", ui::StrId::AgentSetBrightness}, {"volume", ui::StrId::AgentSetVolume},
     {"notify_vol", ui::StrId::AgentSetNotifyVol},  {"screen_off_s", ui::StrId::AgentSetScreenOff},
-    {"language", ui::StrId::AgentSetLanguage},
+    {"language", ui::StrId::AgentSetLanguage},     {"time_24h", ui::StrId::AgentSetTimeFormat},
 };
 
 Map agent_view(const core::SystemSettingsValues& v) {
@@ -45,7 +45,8 @@ Map agent_view(const core::SystemSettingsValues& v) {
     return out;
 }
 
-std::string text_of(const Value& v) {
+std::string text_of(const std::string& key, const Value& v) {
+    if (key == "time_24h" && v.type() == Value::Type::Bool) return v.as_bool() ? "24h" : "12h";
     if (v.type() == Value::Type::String) return v.as_string();
     if (v.type() == Value::Type::Int) return std::to_string(v.as_int());
     return to_json(v);
@@ -81,8 +82,8 @@ Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps) {
     WISP_TRY(reg.add({
         .name = "settings.get",
         .description = "The settings the agent may change: brightness (10-255), volume and "
-                       "notify_vol (0-100), screen_off_s (0 never, or 15-3600) and language "
-                       "(zh, ja, en).",
+                       "notify_vol (0-100), screen_off_s (0 never, or 15-3600), language "
+                       "(zh, ja, en) and time_24h (true: 24-hour clock, false: 12-hour).",
         .thread = ToolThread::Agent,
         .run =
             [d](const Value&, ToolCtx& ctx) {
@@ -99,8 +100,9 @@ Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps) {
         .description = "Changes one setting, checked as the settings page checks it; see "
                        "settings.get for the keys and ranges.",
         .schema_json = R"({"type":"object","properties":{"key":{"type":"string","enum":)"
-                       R"(["brightness","volume","notify_vol","screen_off_s","language"]},)"
-                       R"("value":{"type":["integer","string"]}},"required":["key","value"]})",
+                       R"(["brightness","volume","notify_vol","screen_off_s","language",)"
+                       R"("time_24h"]},"value":{"type":["integer","string","boolean"]}},)"
+                       R"("required":["key","value"]})",
         .risk = ToolRisk::Note,
         .thread = ToolThread::Agent,
         .run =
@@ -125,9 +127,10 @@ Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps) {
                     if (key == k.key) label = k.label;
                 }
                 const ui::Lang lang = lang_of(ctx);
-                std::string note = ui::tr_fill_n(
-                    ui::StrId::AgentNoteSetting, lang,
-                    {ui::tr(label, lang), text_of(r.value().before), text_of(r.value().after)});
+                std::string note =
+                    ui::tr_fill_n(ui::StrId::AgentNoteSetting, lang,
+                                  {ui::tr(label, lang), text_of(key, r.value().before),
+                                   text_of(key, r.value().after)});
                 return done({{"key", Value(key)}, {"value", r.value().after}}, std::move(note));
             },
     }));

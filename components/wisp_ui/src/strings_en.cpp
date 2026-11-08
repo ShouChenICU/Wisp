@@ -319,6 +319,8 @@ const char* strings_en(StrId id) {
             return "Screen off after";
         case StrId::AgentSetLanguage:
             return "Language";
+        case StrId::AgentSetTimeFormat:
+            return "Time format";
         case StrId::AgentConfirmTitle:
             return "Agent request";
         case StrId::AgentAllow:
@@ -422,6 +424,134 @@ const char* strings_en(StrId id) {
                    "the device when asked";
         case StrId::AboutDiagnostics:
             return "Hardware diagnostics";
+        case StrId::ClockAm:
+            return "{} AM";
+        case StrId::ClockPm:
+            return "{} PM";
+        case StrId::SettingsGroupDisplay:
+            return "Display & sound";
+        case StrId::SettingsGroupPower:
+            return "Screen & power";
+        case StrId::SettingsGroupNetwork:
+            return "Network";
+        case StrId::SettingsGroupLangTime:
+            return "Language & time";
+        case StrId::SettingsGroupSystem:
+            return "System";
+        case StrId::SettingsNotifyVol:
+            return "Alert volume";
+        case StrId::SettingsSpeak:
+            return "Spoken replies";
+        case StrId::SettingsDeepStandby:
+            return "Deep standby";
+        case StrId::SettingsHours:
+            return "{} h";
+        case StrId::SettingsLightSleep:
+            return "Power-saving sleep";
+        case StrId::SettingsLightSleepHint:
+            return "Lets the chip light-sleep in deep standby to save power";
+        case StrId::SettingsLanguage:
+            return "Language";
+        case StrId::SettingsTimeZone:
+            return "Time zone";
+        case StrId::SettingsTimeFormat:
+            return "Time format";
+        case StrId::SettingsClock24:
+            return "24-hour";
+        case StrId::SettingsClock12:
+            return "12-hour";
+        case StrId::SettingsRestart:
+            return "Restart";
+        case StrId::SettingsPowerOff:
+            return "Power off";
+        case StrId::RestartTitle:
+            return "Restart";
+        case StrId::RestartPrompt:
+            return "Restart the device?";
+        case StrId::LangFullZh:
+            return "简体中文";
+        case StrId::LangFullJa:
+            return "日本語";
+        case StrId::LangFullEn:
+            return "English";
+        case StrId::TzFormat:
+            return "{} {}";
+        case StrId::TzWest1200:
+            return "Baker Island";
+        case StrId::TzWest1100:
+            return "Midway";
+        case StrId::TzWest1000:
+            return "Honolulu";
+        case StrId::TzWest0930:
+            return "Marquesas";
+        case StrId::TzWest0900:
+            return "Anchorage";
+        case StrId::TzWest0800:
+            return "Los Angeles";
+        case StrId::TzWest0700:
+            return "Denver";
+        case StrId::TzWest0600:
+            return "Chicago";
+        case StrId::TzWest0500:
+            return "New York";
+        case StrId::TzWest0400:
+            return "Caracas";
+        case StrId::TzWest0330:
+            return "St. John's";
+        case StrId::TzWest0300:
+            return "Sao Paulo";
+        case StrId::TzWest0200:
+            return "South Georgia";
+        case StrId::TzWest0100:
+            return "Azores";
+        case StrId::TzEast0000:
+            return "London";
+        case StrId::TzEast0100:
+            return "Paris";
+        case StrId::TzEast0200:
+            return "Cairo";
+        case StrId::TzEast0300:
+            return "Moscow";
+        case StrId::TzEast0330:
+            return "Tehran";
+        case StrId::TzEast0400:
+            return "Dubai";
+        case StrId::TzEast0430:
+            return "Kabul";
+        case StrId::TzEast0500:
+            return "Karachi";
+        case StrId::TzEast0530:
+            return "New Delhi";
+        case StrId::TzEast0545:
+            return "Kathmandu";
+        case StrId::TzEast0600:
+            return "Dhaka";
+        case StrId::TzEast0630:
+            return "Yangon";
+        case StrId::TzEast0700:
+            return "Bangkok";
+        case StrId::TzEast0800:
+            return "Beijing";
+        case StrId::TzEast0845:
+            return "Eucla";
+        case StrId::TzEast0900:
+            return "Tokyo";
+        case StrId::TzEast0930:
+            return "Adelaide";
+        case StrId::TzEast1000:
+            return "Sydney";
+        case StrId::TzEast1030:
+            return "Lord Howe";
+        case StrId::TzEast1100:
+            return "Noumea";
+        case StrId::TzEast1200:
+            return "Auckland";
+        case StrId::TzEast1245:
+            return "Chatham Islands";
+        case StrId::TzEast1300:
+            return "Tonga";
+        case StrId::TzEast1400:
+            return "Line Islands";
         case StrId::TalkThinking:
             return "Thinking…";
         case StrId::ActivityStep:

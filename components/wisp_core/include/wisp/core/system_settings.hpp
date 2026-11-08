@@ -13,6 +13,7 @@
 //   ntp_servers    sys/ntp             1-2 hosts, comma-separated
 //                                      (default kDefaultNtpServers)
 //   tts_mute       voice/tts_mute      bool                      (default false)
+//   time_24h       sys/time_24h        bool                      (default true)
 //   agent_max_steps agent/max_steps    int 8-200                 (default 60)
 //   agent_turn_min agent/turn_min      int 2-60                  (default 15)
 // A stored value set() would refuse reads back as its default.
@@ -28,6 +29,9 @@
 // the alert-sound volume (scene-device spec 4.1 and 5.4).
 // tts_mute silences spoken replies (voice spec 4.4): the conversation still
 // shows its text, TtsClient is simply never called.
+// time_24h is how the device shows a wall-clock time to the user: a
+// 24-hour clock, or a 12-hour one with the day half (mvp spec 6.4;
+// ui::format_clock()).
 // agent_max_steps and agent_turn_min are the agent's per-turn limits, tool
 // calls and minutes (agent-core spec 3.6); App hands them to AgentService,
 // which applies them from the next turn on.
@@ -84,13 +88,14 @@ struct SystemSettingsValues {
     bool light_sleep;
     int notify_vol;
     bool tts_mute;
+    bool time_24h;
     int agent_max_steps;
     int agent_turn_min;
 };
 
 // {"brightness", "volume", "screen_off_s", "language", "utc_offset_min",
 // "ntp_servers", "deep_after_s", "light_sleep", "notify_vol", "tts_mute",
-// "agent_max_steps", "agent_turn_min"}:
+// "time_24h", "agent_max_steps", "agent_turn_min"}:
 // the shape of GET /settings and of the system.settings event payload.
 Map to_map(const SystemSettingsValues& values);
 
@@ -118,11 +123,11 @@ public:
 
     // Keys are "brightness", "volume", "screen_off_s", "utc_offset_min",
     // "deep_after_s", "notify_vol", "agent_max_steps", "agent_turn_min" (integers), "language" and
-    // "ntp_servers" (strings) and "light_sleep", "tts_mute" (booleans). An unknown key, a value of
-    // the wrong type or an out-of-range value fails the whole batch with InvalidArgument before
-    // anything is written. If the backend fails partway, the keys already written are restored
-    // (best effort) and the backend's error returned; the hooks only run once the whole batch is
-    // stored.
+    // "ntp_servers" (strings) and "light_sleep", "tts_mute", "time_24h" (booleans). An unknown key,
+    // a value of the wrong type or an out-of-range value fails the whole batch with InvalidArgument
+    // before anything is written. If the backend fails partway, the keys already written are
+    // restored (best effort) and the backend's error returned; the hooks only run once the whole
+    // batch is stored.
     Result<void> set(const std::map<std::string, Value>& changes);
 
 private:

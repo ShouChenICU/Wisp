@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdio>
 #include <map>
 #include <memory>
 #include <set>
@@ -16,6 +15,7 @@
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/minute_ticker.hpp"
+#include "wisp/ui/clock_text.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_notice.hpp"
 
@@ -176,12 +176,8 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
         const int64_t t = deps.wall_s ? deps.wall_s() : 0;
         if (t >= scene::MinuteTicker::kValidSince) {
             const int offset = deps.utc_offset_min ? deps.utc_offset_min() : kDefaultUtcOffsetMin;
-            int64_t local = (t + int64_t{offset} * 60) % 86400;
-            if (local < 0) local += 86400;
-            char buf[8];
-            std::snprintf(buf, sizeof(buf), "%02d:%02d", static_cast<int>(local / 3600),
-                          static_cast<int>(local % 3600 / 60));
-            h.time = std::string_view(buf);
+            const bool h24 = deps.time_24h ? deps.time_24h() : true;
+            h.time = std::string_view(ui::format_local_clock(t, offset, h24, ui::lang()));
         } else {
             h.time = "--:--";
         }

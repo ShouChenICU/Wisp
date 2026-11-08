@@ -11,17 +11,15 @@
 //     notifications} and rebuilds the panel's model while it is open. A
 //     change of counts is logged "status: background=<n> unread=<m>".
 //   - Panel: the model is built when it opens and on every refresh while
-//     it is open. Its header is the local time (HH:MM, "--:--" while the
-//     clock is unset), the battery and the Wi-Fi state from device_status;
-//     then the background scenes and the unread notifications, newest
-//     first. A system notice reads in the UI language: its argument goes
-//     in as posted (a scene notice carries the scene's name already), a
-//     wake-lock holder through ui::holder_label(): "scene.<id>" by the
-//     scene's name -- the runtime's while it runs, else its manifest's,
-//     read on the storage worker and kept -- and by its id only while that
-//     is unknown or the scene is not installed. Opening and closing are
-//     logged "panel: open" / "panel: closed". The screen going off closes
-//     it.
+//     it is open. Its header is the local time (ui::format_clock() in the
+//     Settings time format, "--:--" while the clock is unset), the battery and the Wi-Fi state from
+//     device_status; then the background scenes and the unread notifications, newest first. A
+//     system notice reads in the UI language: its argument goes in as posted (a scene notice
+//     carries the scene's name already), a wake-lock holder through ui::holder_label():
+//     "scene.<id>" by the scene's name -- the runtime's while it runs, else its manifest's, read on
+//     the storage worker and kept -- and by its id only while that is unknown or the scene is not
+//     installed. Opening and closing are logged "panel: open" / "panel: closed". The screen going
+//     off closes it.
 //   - Rows: a scene row brings the scene forward (launch(User)), its close
 //     button exits it; a notification row is NotificationRouter::tap(), its
 //     close button or a swipe dismisses it, its action button is
@@ -63,6 +61,9 @@ struct StatusShellDeps {
     // The time zone, minutes east of UTC. Called on the UI thread, so it
     // returns a cached value. Empty: UTC+8.
     std::function<int()> utc_offset_min;
+    // Whether the time shows as a 24-hour clock (sys/time_24h), cached the
+    // same way. Empty: 24-hour.
+    std::function<bool()> time_24h;
     // Seconds since the epoch; 0 (or empty) while the clock is unset.
     std::function<int64_t()> wall_s;
     // Where the name of a scene that is not running is read (its

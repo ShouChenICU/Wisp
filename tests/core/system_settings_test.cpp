@@ -400,6 +400,32 @@ TEST(SystemSettings, TtsMuteStoredUnderVoice) {
     EXPECT_FALSE(fx.settings.get().tts_mute);
 }
 
+// The clock format (mvp spec 6.4), stored as sys/time_24h: true (the
+// default) for a 24-hour clock, false for 12-hour.
+TEST(SystemSettings, Time24hStoredUnderSys) {
+    Fixture fx;
+    EXPECT_TRUE(fx.settings.get().time_24h);
+    EXPECT_EQ(wisp::core::to_map(fx.settings.get()).at("time_24h"), wisp::Value(true));
+
+    ASSERT_TRUE(fx.settings.set({{"time_24h", false}}));
+    EXPECT_FALSE(fx.settings.get().time_24h);
+    EXPECT_FALSE(Settings(fx.backend, "sys").get_bool("time_24h", true));
+    ASSERT_FALSE(fx.changed.empty());
+    EXPECT_FALSE(fx.changed.back().time_24h);
+    EXPECT_EQ(wisp::core::to_map(fx.changed.back()).at("time_24h"), wisp::Value(false));
+
+    for (const wisp::Value& bad : {wisp::Value("12"), wisp::Value(12), wisp::Value(0)}) {
+        auto r = fx.settings.set({{"time_24h", bad}});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    EXPECT_FALSE(fx.settings.get().time_24h);
+
+    // A stored value set() would refuse reads back as the default.
+    ASSERT_TRUE(fx.backend.set("sys", "time_24h", wisp::Value(int64_t{12})));
+    EXPECT_TRUE(fx.settings.get().time_24h);
+}
+
 // The agent's per-turn limits (agent-core spec 3.6): agent/max_steps
 // 8-200 tool calls (default 60) and agent/turn_min 2-60 minutes (15).
 TEST(SystemSettings, AgentLimitsStoredUnderAgent) {

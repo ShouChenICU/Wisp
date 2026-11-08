@@ -317,6 +317,8 @@ const char* strings_zh(StrId id) {
             return "熄屏时间";
         case StrId::AgentSetLanguage:
             return "语言";
+        case StrId::AgentSetTimeFormat:
+            return "时间格式";
         case StrId::AgentConfirmTitle:
             return "Agent 请求确认";
         case StrId::AgentAllow:
@@ -419,6 +421,134 @@ const char* strings_zh(StrId id) {
             return "在浏览器打开管理后台地址，按提示输入设备上显示的配对码";
         case StrId::AboutDiagnostics:
             return "硬件诊断";
+        case StrId::ClockAm:
+            return "上午 {}";
+        case StrId::ClockPm:
+            return "下午 {}";
+        case StrId::SettingsGroupDisplay:
+            return "显示与声音";
+        case StrId::SettingsGroupPower:
+            return "屏幕与电源";
+        case StrId::SettingsGroupNetwork:
+            return "网络";
+        case StrId::SettingsGroupLangTime:
+            return "语言与时间";
+        case StrId::SettingsGroupSystem:
+            return "系统";
+        case StrId::SettingsNotifyVol:
+            return "提醒音量";
+        case StrId::SettingsSpeak:
+            return "语音播报";
+        case StrId::SettingsDeepStandby:
+            return "深度待机";
+        case StrId::SettingsHours:
+            return "{} 小时";
+        case StrId::SettingsLightSleep:
+            return "省电睡眠";
+        case StrId::SettingsLightSleepHint:
+            return "深度待机时让芯片浅睡省电";
+        case StrId::SettingsLanguage:
+            return "系统语言";
+        case StrId::SettingsTimeZone:
+            return "时区";
+        case StrId::SettingsTimeFormat:
+            return "时间格式";
+        case StrId::SettingsClock24:
+            return "24 小时制";
+        case StrId::SettingsClock12:
+            return "12 小时制";
+        case StrId::SettingsRestart:
+            return "重启";
+        case StrId::SettingsPowerOff:
+            return "关机";
+        case StrId::RestartTitle:
+            return "重启确认";
+        case StrId::RestartPrompt:
+            return "是否重启设备？";
+        case StrId::LangFullZh:
+            return "简体中文";
+        case StrId::LangFullJa:
+            return "日本語";
+        case StrId::LangFullEn:
+            return "English";
+        case StrId::TzFormat:
+            return "{} {}";
+        case StrId::TzWest1200:
+            return "贝克岛";
+        case StrId::TzWest1100:
+            return "中途岛";
+        case StrId::TzWest1000:
+            return "檀香山";
+        case StrId::TzWest0930:
+            return "马克萨斯群岛";
+        case StrId::TzWest0900:
+            return "安克雷奇";
+        case StrId::TzWest0800:
+            return "洛杉矶";
+        case StrId::TzWest0700:
+            return "丹佛";
+        case StrId::TzWest0600:
+            return "芝加哥";
+        case StrId::TzWest0500:
+            return "纽约";
+        case StrId::TzWest0400:
+            return "加拉加斯";
+        case StrId::TzWest0330:
+            return "圣约翰斯";
+        case StrId::TzWest0300:
+            return "圣保罗";
+        case StrId::TzWest0200:
+            return "南乔治亚";
+        case StrId::TzWest0100:
+            return "亚速尔群岛";
+        case StrId::TzEast0000:
+            return "伦敦";
+        case StrId::TzEast0100:
+            return "巴黎";
+        case StrId::TzEast0200:
+            return "开罗";
+        case StrId::TzEast0300:
+            return "莫斯科";
+        case StrId::TzEast0330:
+            return "德黑兰";
+        case StrId::TzEast0400:
+            return "迪拜";
+        case StrId::TzEast0430:
+            return "喀布尔";
+        case StrId::TzEast0500:
+            return "卡拉奇";
+        case StrId::TzEast0530:
+            return "新德里";
+        case StrId::TzEast0545:
+            return "加德满都";
+        case StrId::TzEast0600:
+            return "达卡";
+        case StrId::TzEast0630:
+            return "仰光";
+        case StrId::TzEast0700:
+            return "曼谷";
+        case StrId::TzEast0800:
+            return "北京";
+        case StrId::TzEast0845:
+            return "尤克拉";
+        case StrId::TzEast0900:
+            return "东京";
+        case StrId::TzEast0930:
+            return "阿德莱德";
+        case StrId::TzEast1000:
+            return "悉尼";
+        case StrId::TzEast1030:
+            return "豪勋爵岛";
+        case StrId::TzEast1100:
+            return "努美阿";
+        case StrId::TzEast1200:
+            return "奥克兰";
+        case StrId::TzEast1245:
+            return "查塔姆群岛";
+        case StrId::TzEast1300:
+            return "汤加";
+        case StrId::TzEast1400:
+            return "莱恩群岛";
         case StrId::TalkThinking:
             return "思考中…";
         case StrId::ActivityStep:

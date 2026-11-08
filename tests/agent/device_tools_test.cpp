@@ -91,7 +91,7 @@ TEST_F(DeviceTools, StatusShape) {
     EXPECT_EQ(submitted, 0);
 }
 
-TEST_F(DeviceTools, SettingsGetListsFiveKeys) {
+TEST_F(DeviceTools, SettingsGetListsSixKeys) {
     ToolOutput out = call("settings_get", "");
     ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
     const Value* s = out.result.find("settings");
@@ -99,7 +99,8 @@ TEST_F(DeviceTools, SettingsGetListsFiveKeys) {
     std::vector<std::string> keys;
     for (const auto& [k, v] : s->as_map()) keys.push_back(k);
     EXPECT_EQ(keys, (std::vector<std::string>{"brightness", "language", "notify_vol",
-                                              "screen_off_s", "volume"}));
+                                              "screen_off_s", "time_24h", "volume"}));
+    EXPECT_TRUE(s->find("time_24h")->as_bool());
     EXPECT_EQ(s->find("brightness")->as_int(), 200);
     EXPECT_EQ(s->find("language")->as_string(), "zh");
 }
@@ -123,6 +124,12 @@ TEST_F(DeviceTools, SettingsSetValidatesLikeTheWebPage) {
     ToolOutput lang = call("settings_set", R"({"key":"language","value":"en"})");
     ASSERT_TRUE(lang.ok) << wisp::to_json(lang.result);
     EXPECT_EQ(lang.note, "语言 zh → en");
+    ToolOutput h12 = call("settings_set", R"({"key":"time_24h","value":false})");
+    ASSERT_TRUE(h12.ok) << wisp::to_json(h12.result);
+    EXPECT_EQ(h12.note, "时间格式 24h → 12h");
+    EXPECT_FALSE(settings->get().time_24h);
+    EXPECT_EQ(str(call("settings_set", R"({"key":"time_24h","value":1})").result, "error"),
+              "invalid_value");
     ctx.lang = "en";
     ToolOutput vol = call("settings_set", R"({"key":"volume","value":30})");
     ASSERT_TRUE(vol.ok);

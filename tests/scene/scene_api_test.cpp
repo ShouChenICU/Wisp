@@ -588,6 +588,44 @@ wisp.device.on("minute", function(i) print("minute") end)
     EXPECT_EQ(scene_log("ts"), (std::vector<std::string>{"minute"}));
 }
 
+// info().time_24h (the Settings time format) starts true, takes App's
+// seed and then follows the system.settings event; a change fires
+// "minute", since a clock on screen has to be written again.
+TEST_F(SceneApiTest, Time24hFollowsSettings) {
+    wall = kNoon;
+    start();
+    install("tf", std::string(R"(
+print("open", tostring(wisp.device.info().time_24h))
+wisp.device.on("minute", function(i) print("minute", tostring(i.time_24h)) end)
+)") + kScreen);
+    ASSERT_TRUE(rt->open("tf"));
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_EQ(scene_log("tf"), (std::vector<std::string>{"open\ttrue"}));
+
+    // The same value, or one of the wrong type: nothing fires.
+    publish("system.settings", {{"language", Value("zh")}, {"time_24h", Value(true)}});
+    publish("system.settings", {{"language", Value("zh")}, {"time_24h", Value(int64_t{0})}});
+    publish("system.settings", {{"language", Value("zh")}, {"time_24h", Value(false)}});
+    ASSERT_TRUE(wait_log("tf", 2));
+    bus.wait_idle(1000);
+    ASSERT_TRUE(rt->check_sources({}));
+    EXPECT_EQ(scene_log("tf"), (std::vector<std::string>{"open\ttrue", "minute\tfalse"}));
+    // A seed loses to the event already seen.
+    rt->seed_time_24h(true);
+    ASSERT_TRUE(rt->reload("tf"));
+    EXPECT_EQ(scene_log("tf").back(), "open\tfalse");
+}
+
+TEST_F(SceneApiTest, Time24hSeed) {
+    start();
+    install("tf", std::string(R"(
+scene.on_show = function() print("tf", tostring(wisp.device.info().time_24h)) end
+)") + kScreen);
+    rt->seed_time_24h(false);
+    ASSERT_TRUE(rt->open("tf"));
+    EXPECT_EQ(scene_log("tf"), (std::vector<std::string>{"tf\tfalse"}));
+}
+
 // App seeds the offset it reads after start(): a seed loses to any
 // system.settings event the runtime has already seen, which carries a
 // value at least as new.

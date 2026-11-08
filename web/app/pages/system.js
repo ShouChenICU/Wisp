@@ -128,6 +128,7 @@ export async function confirmLogout() {
  * @property {boolean} light_sleep  allow light sleep in deep standby
  * @property {number} notify_vol   0-100, the notification sounds
  * @property {boolean} tts_mute    silence spoken replies (text still shows)
+ * @property {boolean} time_24h    24-hour clock on the device (false: 12-hour)
  * @property {number} agent_max_steps  8-200 tool calls per agent turn
  * @property {number} agent_turn_min   2-60 minutes per agent turn
  *
@@ -528,6 +529,14 @@ function TimeZoneCard({ settings, put }) {
         </select>
         <p id="sys-tz-hint" class="field-hint">${t('sys.tz_hint')}</p>
       </div>
+      <label class="scene-check">
+        <input
+          type="checkbox"
+          checked=${settings.time_24h !== false}
+          onChange=${(e) => put({ time_24h: e.currentTarget.checked })}
+        />
+        ${t('sys.time_24h')}
+      </label>
     </div>
   </${Card}>`;
 }

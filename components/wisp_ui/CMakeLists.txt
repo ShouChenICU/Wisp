@@ -30,6 +30,7 @@ set(WISP_UI_SRCS
     src/overlay.cpp src/theme.cpp src/ui_runtime.cpp src/strings.cpp src/strings_zh.cpp
     src/strings_ja.cpp src/strings_en.cpp src/system_layer.cpp src/status_capsule.cpp
     src/notification_panel.cpp src/banner.cpp src/system_notice.cpp src/pinyin_dict.cpp
+    src/clock_text.cpp
     src/wisp_model.cpp src/wisp_shape.cpp src/wisp_spans.cpp src/wisp_view.cpp
     fonts/lv_font_wisp_icons_16.c fonts/lv_font_wisp_icons_24.c fonts/lv_font_wisp_icons_32.c
     fonts/lv_font_wisp_icons_48.c

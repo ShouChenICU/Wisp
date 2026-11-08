@@ -536,6 +536,7 @@ export default {
   'scenes.file_deleted': '{name} を削除しました',
   'sys.notify_vol': '通知音量',
   'sys.tts_mute': '読み上げをミュート',
+  'sys.time_24h': 'デバイスで 24 時間表示を使う',
   'sys.deep_after': '画面オフからディープスタンバイまで',
   'sys.deep_after_hint': 'ディープスタンバイでは省電力のためWi-Fiがオフになります。このページを含め、ネットワークのウェイクロックがある間は入りません。',
   'sys.deep_never': 'しない',

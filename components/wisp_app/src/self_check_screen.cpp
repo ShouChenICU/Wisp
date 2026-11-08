@@ -320,7 +320,9 @@ void SelfCheck::sync_settings() {
     uint32_t revision = app_.system_settings().revision();
     if (settings_revision_ == revision) return;
     settings_revision_ = revision;
-    utc_offset_min_ = app_.system_settings().get().utc_offset_min;
+    const core::SystemSettingsValues now = app_.system_settings().get();
+    utc_offset_min_ = now.utc_offset_min;
+    time_24h_ = now.time_24h;
     refresh_time_sync();
 }
 
@@ -437,7 +439,7 @@ void SelfCheck::refresh_time_sync() {
         const net::TimeSyncStatus st = sync->status();
         if (st.synced) local = st.last_sync + int64_t{utc_offset_min_} * 60;
     }
-    power_clock_.show_sync(local);
+    power_clock_.show_sync(local, time_24h_);
 }
 
 void SelfCheck::follow_foreground() {

@@ -161,6 +161,8 @@ struct App::Impl {
     // may read Settings.
     std::atomic<uint8_t> notify_vol{60};
     std::atomic<int> utc_offset_min{480};
+    // sys/time_24h, for the status shell's clock the same way.
+    std::atomic<bool> time_24h{true};
     // sys/lang, kept the same way for the agent (wisp.agent may not read
     // Settings either).
     std::atomic<ui::Lang> lang{ui::Lang::Zh};

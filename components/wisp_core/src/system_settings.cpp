@@ -51,6 +51,8 @@ const KeySpec kNotifyVol{"notify_vol", "audio", "notify_vol", Value(60),
                          [](const Value& v) { return int_in(v, 0, 100); }};
 const KeySpec kTtsMute{"tts_mute", "voice", "tts_mute", Value(false),
                        [](const Value& v) { return v.type() == Value::Type::Bool; }};
+const KeySpec kTime24h{"time_24h", "sys", "time_24h", Value(true),
+                       [](const Value& v) { return v.type() == Value::Type::Bool; }};
 const KeySpec kAgentMaxSteps{
     "agent_max_steps", "agent", "max_steps", Value(kDefaultAgentMaxSteps),
     [](const Value& v) { return int_in(v, kMinAgentMaxSteps, kMaxAgentMaxSteps); }};
@@ -87,9 +89,9 @@ bool valid_ntp_servers(const Value& v) {
 const KeySpec kNtpServers{"ntp_servers", "sys", "ntp", Value(kDefaultNtpServers),
                           valid_ntp_servers};
 
-const KeySpec* const kKeys[] = {&kBrightness, &kVolume,     &kScreenOff,     &kLanguage,
-                                &kUtcOffset,  &kNtpServers, &kDeepAfter,     &kLightSleep,
-                                &kNotifyVol,  &kTtsMute,    &kAgentMaxSteps, &kAgentTurnMin};
+const KeySpec* const kKeys[] = {
+    &kBrightness, &kVolume,    &kScreenOff, &kLanguage, &kUtcOffset,     &kNtpServers,  &kDeepAfter,
+    &kLightSleep, &kNotifyVol, &kTtsMute,   &kTime24h,  &kAgentMaxSteps, &kAgentTurnMin};
 
 const KeySpec* find_spec(std::string_view name) {
     for (const KeySpec* spec : kKeys) {
@@ -126,6 +128,7 @@ Map to_map(const SystemSettingsValues& values) {
         {"light_sleep", Value(values.light_sleep)},
         {"notify_vol", Value(values.notify_vol)},
         {"tts_mute", Value(values.tts_mute)},
+        {"time_24h", Value(values.time_24h)},
         {"agent_max_steps", Value(values.agent_max_steps)},
         {"agent_turn_min", Value(values.agent_turn_min)},
     };
@@ -150,6 +153,7 @@ SystemSettingsValues SystemSettings::get() const {
     values.light_sleep = read(backend_, kLightSleep).as_bool();
     values.notify_vol = static_cast<int>(read(backend_, kNotifyVol).as_int());
     values.tts_mute = read(backend_, kTtsMute).as_bool();
+    values.time_24h = read(backend_, kTime24h).as_bool();
     values.agent_max_steps = static_cast<int>(read(backend_, kAgentMaxSteps).as_int());
     values.agent_turn_min = static_cast<int>(read(backend_, kAgentTurnMin).as_int());
     return values;

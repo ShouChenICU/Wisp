@@ -6,6 +6,7 @@
 
 #include "self_check_layout.hpp"
 #include "wisp/app/format.hpp"
+#include "wisp/ui/clock_text.hpp"
 #include "wisp/ui/strings.hpp"
 
 namespace wisp::app {
@@ -79,14 +80,14 @@ void PowerClockSection::build(lv_obj_t* col, PageText& text, bool has_power, boo
     show_sync(std::nullopt);
 }
 
-void PowerClockSection::show_sync(std::optional<int64_t> local_unix) {
+void PowerClockSection::show_sync(std::optional<int64_t> local_unix, bool h24) {
     if (sync_ == nullptr) return;
     if (!local_unix) {
         set_text_if_changed(sync_, text_->tr(ui::StrId::TimeNotSynced));
         return;
     }
-    set_text_if_changed(sync_,
-                        text_->tr_fill(ui::StrId::TimeSynced, format_hhmm(*local_unix)).c_str());
+    const std::string clock = ui::format_local_clock(*local_unix, 0, h24, text_->lang());
+    set_text_if_changed(sync_, text_->tr_fill(ui::StrId::TimeSynced, clock).c_str());
 }
 
 void PowerClockSection::update(const SampleSnapshot& snap) {
