@@ -10,7 +10,8 @@
 // kWispTurnPercent and moves up; above it the heard text (kTextDim, at
 // most kHeardMaxLines lines, cut with "..."), below it one scrolling
 // column: the say text at kSayFontPx, wrapped, then the body
-// (light_markdown(), the 16 px body font). The say text is never cut: it
+// (light_markdown(), the 16 px body font: each code block folded to one
+// line, the text capped at kBodyMaxChars). The say text is never cut: it
 // is also what is spoken and kept in the history, so it scrolls with the
 // body. While the column has more below, a strip at its bottom says so (a
 // fade to the background on colour panels, a chevron on the others). A
@@ -169,6 +170,15 @@ private:
     uint64_t last_ = 0;
 };
 
+// What the refreshes that showed new turn text cost (the say, the body and
+// the layout after them; drawing comes later, in LVGL's render), for the
+// simulator's "debug home-perf". Wall time on the UI thread.
+struct HomeTextStats {
+    uint32_t refreshes = 0;
+    uint64_t total_us = 0;
+    uint32_t max_us = 0;
+};
+
 struct HomeDeps {
     ui::UiRuntime& ui;
     hal::ScreenShape shape;
@@ -231,6 +241,8 @@ public:
     lv_obj_t* step_label(size_t i) const { return rows_[i].text; }
     lv_obj_t* summary_label() const { return summary_; }
     Activity activity() const { return shown_activity_; }
+    // The stats since the last call, which starts them again. UI thread.
+    HomeTextStats take_text_stats();
 
 private:
     void request(bool conv_changed);
@@ -302,6 +314,7 @@ private:
     uint64_t last_refresh_ = 0;
     TurnView view_;
     bool view_changed_ = false;
+    HomeTextStats text_stats_;
     uint32_t shown_turn_ = 0;
     std::string shown_turn_heard_;
     bool was_running_ = false;

@@ -188,7 +188,8 @@ void HistoryPage::toggle(size_t i) {
         lv_obj_set_style_pad_row(c.body, ui::theme::kGapSm, 0);
         const bool colour = detail::colour_panel(c.card);
         for (const BodyBlock& b : light_markdown(view_of(t.body))) {
-            lv_obj_t* l = detail::make_text(c.body, b.text.c_str());
+            lv_obj_t* l =
+                detail::make_text(c.body, b.code ? code_fold_text(b).c_str() : b.text.c_str());
             if (!b.code) continue;
             lv_obj_set_style_pad_all(l, ui::theme::kGapSm, 0);
             lv_obj_set_style_radius(l, ui::theme::kRadiusSm, 0);

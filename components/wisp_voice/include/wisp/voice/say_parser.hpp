@@ -12,9 +12,11 @@
 //   calls can speak too; reset() at the start of each turn.
 // - finish() flushes what is held back to the current side (an unclosed
 //   say ends as say). When no <say> appeared this turn it returns the
-//   body's first sentence, for speaking only; the body was already
-//   delivered unchanged.
+//   body's first sentence outside fenced code (a block between lines
+//   starting "```", fence lines included, is never spoken), for speaking
+//   only; the body was already delivered unchanged.
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -36,12 +38,21 @@ public:
 
 private:
     void emit(std::string_view text);
+    // Adds the part of `text` outside fenced code to body_head_.
+    void add_head(std::string_view text);
 
     Out out_;
     std::string pending_;
     // The start of this turn's body, kept only until it holds a complete
     // sentence (bounded): all finish() needs for its fallback.
     std::string body_head_;
+    // The fence filter add_head() runs: the current line while it may
+    // still turn out to be a fence (blanks and up to two backticks), what
+    // the line turned out to be, and whether a fence is open.
+    enum class HeadLine : uint8_t { Undecided, Fence, Text };
+    std::string head_line_;
+    HeadLine head_kind_ = HeadLine::Undecided;
+    bool head_code_ = false;
     bool inside_ = false;
     bool saw_say_ = false;
 };

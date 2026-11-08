@@ -386,6 +386,10 @@ const char* strings_ja(StrId id) {
             return "詳細を開く";
         case StrId::HistoryLess:
             return "詳細を閉じる";
+        case StrId::BodyCode:
+            return "コード · {} 行";
+        case StrId::BodyCodeLang:
+            return "{} コード · {} 行";
         case StrId::SceneListEmpty:
             return "まだシーンがありません。「ポモドーロタイマーを作って」と話しかけてみてください";
         case StrId::SceneDeleteButton:

@@ -306,6 +306,12 @@ enum class StrId : uint16_t {
     HistoryEmpty,
     HistoryMore,
     HistoryLess,
+    // A reply's fenced code block, folded to one line on the home screen
+    // and the history page (mvp spec 6.2): BodyCode "{}" is its line
+    // count, BodyCodeLang "{}", "{}" the fence's language tag and the
+    // count.
+    BodyCode,
+    BodyCodeLang,
     // The scene list (mvp spec 6.4): the hint of an empty list and the
     // long-press card.
     SceneListEmpty,

@@ -64,7 +64,12 @@
 // with the turn's step count, then for each step kept, oldest first, a
 // space, its state ("ok", "failed" or "running"), ':' and its label, e.g.
 // "turn-steps=1 ok:添加待办 带伞". Labels have spaces of their own, so
-// match on the "ok:"/"failed:"/"running:" markers.
+// match on the "ok:"/"failed:"/"running:" markers. "debug home-perf"
+// answers what the home screen's refreshes that showed new turn text cost
+// since it was last asked (Home::take_text_stats(), which starts them
+// again): "home-perf=refreshes=<n> total_us=<us> mean_us=<us> max_us=<us>",
+// for measuring a long streamed reply (the fake endpoint of
+// tools/fake_openai.py streams one through the real Delta path).
 //
 // Scenes (scene-runtime-core spec 6.4): --scenes-dir puts the scene
 // repository in dev mode over that directory (Platform::scenes_dir), with
@@ -124,6 +129,8 @@
 #include "wisp/port/sim/sim_web_pack.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/shell/conversation.hpp"
+#include "wisp/shell/home.hpp"
+#include "wisp/shell/shell.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 #include "wisp/ui/wisp_view.hpp"
@@ -236,9 +243,22 @@ std::string debug_command(wisp::app::App& app, const std::vector<std::string>& a
         }
         return out;
     }
+    if (args.size() == 2 && args[1] == "home-perf") {
+        wisp::ui::UiRuntime* ui = app.ui();
+        wisp::shell::Shell* shell = app.shell();
+        if (ui == nullptr || shell == nullptr || shell->home() == nullptr)
+            return "home-perf=there is no home screen";
+        wisp::shell::HomeTextStats st;
+        ui->run_blocking([&] { st = shell->home()->take_text_stats(); });
+        const uint64_t mean = st.refreshes != 0 ? st.total_us / st.refreshes : 0;
+        return "home-perf=refreshes=" + std::to_string(st.refreshes) +
+               " total_us=" + std::to_string(st.total_us) + " mean_us=" + std::to_string(mean) +
+               " max_us=" + std::to_string(st.max_us);
+    }
     return "error: usage: debug pair-code | debug scene-click <ref> | debug panel-tap <index> | "
            "debug banner-action <index> | debug screenshot <path> | "
-           "debug clock-advance <seconds> | debug voice-text <text> | debug turn-steps";
+           "debug clock-advance <seconds> | debug voice-text <text> | debug turn-steps | "
+           "debug home-perf";
 }
 
 std::vector<wisp::app::ConsoleCommand> debug_commands() {
@@ -251,7 +271,9 @@ std::vector<wisp::app::ConsoleCommand> debug_commands() {
         "debug screenshot <path>      write the screen as a PNG (simulator only)\n"
         "debug clock-advance <s>      move the clock forward s seconds (simulator only)\n"
         "debug voice-text <text>      send text as if spoken, skipping the mic (simulator only)\n"
-        "debug turn-steps             the steps the screen shows of the turn (simulator only)",
+        "debug turn-steps             the steps the screen shows of the turn (simulator only)\n"
+        "debug home-perf              what showing turn text has cost since last asked (simulator "
+        "only)",
         debug_command,
     }};
 }

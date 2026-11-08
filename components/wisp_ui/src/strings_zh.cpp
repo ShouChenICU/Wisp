@@ -381,6 +381,10 @@ const char* strings_zh(StrId id) {
             return "展开细节";
         case StrId::HistoryLess:
             return "收起细节";
+        case StrId::BodyCode:
+            return "代码 · {} 行";
+        case StrId::BodyCodeLang:
+            return "{} 代码 · {} 行";
         case StrId::SceneListEmpty:
             return "还没有场景，试试对我说'做一个番茄钟'";
         case StrId::SceneDeleteButton:
