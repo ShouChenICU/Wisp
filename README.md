@@ -53,9 +53,9 @@ Hold the key and say "make me a Pomodoro timer". The agent writes the UI and the
 
 | Action | What it does |
 | --- | --- |
-| Hold BOOT, or long-press the wisp | Talk; release to send. Hold again while it speaks to interrupt it |
+| Hold <kbd>BOOT</kbd>, or long-press the wisp | Talk; release to send. Hold again while it speaks to interrupt it |
 | Swipe right / left / down | Settings / scene list / conversation history. Pages follow your finger |
-| Hold BOOT inside a scene | A listening bar slides up at the bottom, so you stay in the scene |
+| Hold <kbd>BOOT</kbd> inside a scene | A listening bar slides up at the bottom, so you stay in the scene |
 | Settings → About → Hardware diagnostics | Self-test results for every peripheral |
 
 Replies come in two layers. The sentence to be spoken is shown in large type, and the details appear below in small type. While the agent calls tools or writes files, the steps it is taking are listed under the wisp.
@@ -72,7 +72,7 @@ cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 ./build/sim/wisp_sim
 ```
 
-The mouse stands in for your finger. `P` is the power key, `+` and `-` are the volume keys, and `S` inserts or removes the SD card. The terminal is the serial console; type `help` to list its commands. The admin console is at `http://127.0.0.1:8900`.
+The mouse stands in for your finger. <kbd>P</kbd> is the power key, <kbd>+</kbd> and <kbd>-</kbd> are the volume keys, and <kbd>S</kbd> inserts or removes the SD card. The terminal is the serial console; type `help` to list its commands. The admin console is at `http://127.0.0.1:8900`.
 
 <details>
 <summary>Common options</summary>
@@ -102,35 +102,76 @@ idf.py build && idf.py -p <port> flash
 
 - **Wi-Fi:** on first boot, tap "Set up Wi-Fi" on the screen and scan the QR code with your phone, or type `wifi add <ssid> <password>` on the serial console.
 - **Models:** on the admin console's Models page, add a profile for chat, one for recognition and one for synthesis, and make each one active.
-- **Updates:**
-  - after a code change, run `idf.py app-flash`, or upload `wisp.bin` in the admin console (OTA);
-  - after a font change, also run `idf.py fonts-flash`. Fonts live in their own partitions, which an app update does not write.
+- **Updates:** after a code change, run `idf.py app-flash`, or upload `wisp.bin` in the admin console (OTA).
+
+> [!TIP]
+> After a font change, also run `idf.py fonts-flash`. Fonts live in their own partitions, which an app update does not write.
 
 ## 🧩 Core modules
 
 ### 🔥 Shell
 
-The home screen is a small blue will-o'-the-wisp, drawn live in code with no image assets. It has its own expressions for idle, listening, thinking and speaking. Swipe to reach Settings, the scene list or the conversation history; the pages follow your finger. During a turn the wisp moves up, the sentence it speaks appears in large type, and the agent's steps are listed underneath. The shell is native C++, not a scene, so a broken scene can never lock you out of the home screen.
+> *A native home screen that no broken scene can take away.*
+
+- **The wisp** is drawn live in code, with no image assets.
+  - It has its own expressions for idle, listening, thinking and speaking.
+- **Navigation:** swipe to Settings, the scene list or the conversation history. The pages follow your finger.
+- **During a turn:**
+  - the wisp moves up, and the sentence it speaks appears in large type;
+  - the agent's steps are listed underneath, ticked off ✓ as they finish.
 
 ### 🎭 Scenes
 
-Every feature is a scene: a folder holding a `scene.json` and a `main.lua`. The UI is declared as a Lua table of widgets bound to state, so when the state changes, the UI redraws. Each scene runs in its own Lua 5.5 sandbox with memory and time limits. It can reach the network only through the HTTPS hosts it declares, and it keeps its data in a store of its own. Scenes can keep running in the background, post notifications and register tools for the agent.
+> *Every feature is a scene: one folder, one `main.lua`.*
+
+- **Declarative UI:** a Lua table of widgets bound to state. When the state changes, the UI redraws.
+- **Sandboxed:** each scene runs in its own Lua 5.5 VM.
+  - It has memory and time limits.
+  - It can reach the network only through the HTTPS hosts it declares.
+  - It keeps its data in a store of its own.
+- **More than a screen:** a scene can keep running in the background, post notifications and register tools for the agent.
 
 ### 🤖 Agent
 
-The agent works with any OpenAI-compatible model and drives the device through tools. With them it creates, edits, installs, opens and deletes scenes, reads and writes memory and to-dos, and changes brightness, volume and other settings. A long conversation is compacted to fit the context. Tool results are treated as data, never as instructions. Destructive actions, such as deleting a scene, ask for confirmation on the device.
+> *Any OpenAI-compatible model, with the whole device as its toolbox.*
+
+- **Scenes:** create, edit, install, open and delete them.
+- **Memory:** read and write notes and to-dos.
+- **Device:** brightness, volume and other settings.
+- **Long conversations** are compacted to fit the context.
+
+> [!NOTE]
+> Tool results are treated as data, never as instructions. Destructive actions, such as deleting a scene, are confirmed on the device.
 
 ### 🎙️ Voice
 
-Hold BOOT or long-press the wisp to talk; when you release, the recording goes to speech recognition. The model marks the sentence to speak with `<say>`. That sentence goes to speech synthesis and plays while the rest of the reply streams to the screen. The speaker is shared by priority, so alarms come before speech, and holding again interrupts. Recognition and synthesis can each use their own provider; SiliconFlow works well.
+> *Hold to talk, release to send.*
+
+1. Hold <kbd>BOOT</kbd> or long-press the wisp. When you release, the recording goes to speech recognition.
+2. The model marks the sentence to speak with `<say>`. That sentence is synthesised and played, while the rest of the reply streams to the screen.
+3. Hold again to interrupt. The speaker is shared by priority: alarms come before speech.
+
+Recognition and synthesis each take their own provider. SiliconFlow works well.
 
 ### 🧠 Memory & reminders
 
-The agent keeps short notes about you and a list of to-dos with due times. When a to-do comes due, the screen lights up and it rings. You can view and delete notes and to-dos in the admin console.
+> *It remembers what matters to you.*
+
+- **Notes:** short facts about your preferences and habits.
+- **To-dos with due times:** when one comes due, the screen lights up and it rings.
+- **In the admin console** you can review and delete both.
 
 ### 🌐 Admin console
 
-On the same LAN, open `http://wisp.local:8900` and sign in with the 6-digit pairing code shown on the screen. From there you can chat, manage Wi-Fi, model profiles, memory and scenes, watch the logs live and upload firmware. The console is about 100 KB of plain JavaScript shipped inside the firmware, in Chinese, Japanese and English. API keys are write-only, and a factory reset or a firmware update must be confirmed on the device.
+> *Open `http://wisp.local:8900` on your LAN and sign in with the 6-digit code on the screen.*
+
+- **Chat** with the agent from the browser.
+- **Manage** Wi-Fi, model profiles, memory and scenes.
+- **Watch the logs** live, and **upload firmware**.
+- **About 100 KB** of plain JavaScript, shipped inside the firmware, in Chinese, Japanese and English.
+
+> [!IMPORTANT]
+> API keys are write-only. A factory reset or a firmware update must be confirmed on the device.
 
 ## 🔧 Porting to a new board
 
@@ -144,7 +185,8 @@ Wisp is not tied to one board. Everything board-specific lives in `boards/<board
 | 4. Partitions and config | Write `partitions.csv` to the conventions (OTA, `fonts`, `glyphs`, storage) and the board's sdkconfig |
 | 5. Build and verify | Build with `-DWISP_BOARD=<board>`, then check the boot report, the device manifest and the diagnostics page item by item |
 
-A missing or failed device only degrades the system; it never stops the boot. So you can get the screen up first and add the other peripherals one at a time.
+> [!TIP]
+> A missing or failed device only degrades the system; it never stops the boot. So you can get the screen up first and add the other peripherals one at a time.
 
 > 📖 **The full walkthrough is the [porting guide](docs/porting-guide.md).** It covers board naming, capability fields, partition conventions, chip differences and the acceptance checklist. Whether you are a person or an AI coding assistant, read it and [`AGENTS.md`](AGENTS.md) before you start. Then write a `docs/hardware/<board>.md` for the new board, modelled on the [existing hardware notes](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
 
