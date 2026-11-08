@@ -24,9 +24,11 @@ class EspImu : public wisp::hal::Imu {
 public:
     // Calls qmi8658_init(bus, addr) and wraps the resulting handle. Fails
     // with DeviceFailure if that returns anything other than ESP_OK. The
-    // address is the board's SA0 strap (qmi8658_conv.h).
+    // address is the board's SA0 strap (qmi8658_conv.h); `mount` is how
+    // the chip sits relative to the screen, applied to every sample.
     static Result<std::shared_ptr<EspImu>> create(i2c_master_bus_handle_t bus, std::string model,
-                                                  uint8_t addr = QMI8658_I2C_ADDR_HIGH);
+                                                  uint8_t addr = QMI8658_I2C_ADDR_HIGH,
+                                                  wisp::hal::ImuAxisMap mount = {});
 
     ~EspImu() override;
 
@@ -53,10 +55,11 @@ public:
     Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
-    EspImu(qmi8658_handle_t handle, std::string model);
+    EspImu(qmi8658_handle_t handle, std::string model, wisp::hal::ImuAxisMap mount);
 
     wisp::hal::DeviceInfo info_;
     qmi8658_handle_t handle_;
+    wisp::hal::ImuAxisMap mount_;
     // Mirrors the chip's actual CTRL7 enable state, written only by a
     // successful set_power() call; read() consults this rather than the
     // chip itself (cheaper, and avoids ambiguity about what a read

@@ -10,7 +10,7 @@
 namespace wisp::port::esp {
 
 Result<std::shared_ptr<EspImu>> EspImu::create(i2c_master_bus_handle_t bus, std::string model,
-                                               uint8_t addr) {
+                                               uint8_t addr, wisp::hal::ImuAxisMap mount) {
     using R = Result<std::shared_ptr<EspImu>>;
     if (bus == nullptr) {
         return R::err(ErrorCode::InvalidArgument, "null i2c bus handle");
@@ -23,10 +23,11 @@ Result<std::shared_ptr<EspImu>> EspImu::create(i2c_master_bus_handle_t bus, std:
                       std::string("qmi8658_init: ") + esp_err_to_name(err));
     }
     // Not make_shared: the constructor is private.
-    return R::ok(std::shared_ptr<EspImu>(new EspImu(handle, std::move(model))));
+    return R::ok(std::shared_ptr<EspImu>(new EspImu(handle, std::move(model), mount)));
 }
 
-EspImu::EspImu(qmi8658_handle_t handle, std::string model) : handle_(handle) {
+EspImu::EspImu(qmi8658_handle_t handle, std::string model, wisp::hal::ImuAxisMap mount)
+    : handle_(handle), mount_(mount) {
     info_.id = "imu.main";
     info_.cls = kClass;
     info_.model = std::move(model);
@@ -64,7 +65,7 @@ Result<wisp::hal::ImuSample> EspImu::read() {
     out.gy = raw.gy_dps;
     out.gz = raw.gz_dps;
     out.ts_ms = wisp::os::now_ms();
-    return R::ok(out);
+    return R::ok(wisp::hal::to_screen_frame(out, mount_));
 }
 
 Result<void> EspImu::set_rate(uint32_t hz) {
