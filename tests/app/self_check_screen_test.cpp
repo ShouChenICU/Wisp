@@ -1729,6 +1729,43 @@ TEST(SelfCheckScreen, CardsStayInsideTheSafeArea) {
     }
 }
 
+// The tilt ball never covers the IMU readings: on a narrow screen (the
+// 466 px circle) it wraps below them instead.
+TEST(SelfCheckScreen, ImuBallDoesNotCoverTheReadings) {
+    for (int size : {466, 480}) {
+        for (const std::string& shape : kShapes) {
+            SCOPED_TRACE(shape + " " + std::to_string(size));
+            Harness h(wisp::test::temp_dir().string() + "/settings.json", 0, shape, false, size);
+            ASSERT_TRUE(h.start());
+            ASSERT_TRUE(h.wait_for_flushes(5));
+            std::string overlap = run_on_ui_thread(h.app.ui(), [] {
+                lv_obj_t* card = find_card("Sensors");
+                if (card == nullptr) return std::string("no card");
+                lv_obj_update_layout(card);
+                lv_obj_t* row = lv_obj_get_child(card, -1);
+                if (lv_obj_get_child_count(row) != 2) return std::string("no row");
+                lv_obj_t* grid = lv_obj_get_child(row, 0);
+                lv_area_t frame;
+                lv_obj_get_coords(lv_obj_get_child(row, 1), &frame);
+                std::string out;
+                for (uint32_t i = 0; i < lv_obj_get_child_count(grid); ++i) {
+                    lv_obj_t* label = lv_obj_get_child(grid, static_cast<int32_t>(i));
+                    lv_area_t a;
+                    lv_obj_get_coords(label, &a);
+                    if (a.x1 <= frame.x2 && frame.x1 <= a.x2 && a.y1 <= frame.y2 &&
+                        frame.y1 <= a.y2) {
+                        out += lv_label_get_text(label);
+                        out += ";";
+                    }
+                }
+                return out;
+            });
+            EXPECT_EQ(overlap, "");
+            h.app.stop();
+        }
+    }
+}
+
 // spec 6.7 / AGENTS.md rendering budget: the 100 ms refresh only touches a
 // readout when its value changed. With every fake device holding still,
 // nothing on the battery, time or storage rows is flushed again.
