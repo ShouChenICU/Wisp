@@ -9,7 +9,7 @@
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
 # LVGL must use wisp_ui's own lv_conf.h (see firmware/CMakeLists.txt's
-# LV_CONF_PATH wiring and AGENTS.md's "LVGL 配置" trap), not LVGL's
+# LV_CONF_PATH wiring and AGENTS.md's "LVGL configuration" pitfall), not LVGL's
 # Kconfig-generated one.
 CONFIG_LV_CONF_SKIP=n
 

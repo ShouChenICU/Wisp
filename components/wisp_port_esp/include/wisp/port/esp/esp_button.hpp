@@ -5,7 +5,7 @@
 // on this board (see boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp), so one
 // class covers all three. Pin, polarity, id and model (e.g.
 // "gpio-button" vs. the power key's "axp2101-pwrkey") are all supplied
-// by the board (AGENTS.md "板子无关" rule).
+// by the board (AGENTS.md "Board independence" rule).
 //
 // This class does not itself call gpio_config(): polarity and
 // pull-up/pull-down needs differ per pin (e.g. this board's power-key

@@ -44,7 +44,7 @@ wisp_version(PROJECT_VER)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-# LVGL configuration (AGENTS.md's "LVGL 配置" trap): the lvgl/lvgl
+# LVGL configuration (AGENTS.md's "LVGL configuration" pitfall): the lvgl/lvgl
 # component's own CMake (env_support/cmake/esp.cmake) publicly defines
 # LV_CONF_INCLUDE_SIMPLE, but lv_conf_internal.h checks LV_CONF_PATH
 # *first* -- if it is defined (as it is here), that wins and LVGL

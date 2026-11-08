@@ -65,8 +65,8 @@ public:
     // is in record() order (not sorted). `fw` (the running firmware/app
     // version, e.g. Platform::firmware_version) defaults to "" for
     // callers that don't have one to hand (e.g. a unit test building a
-    // BootReport in isolation) -- see docs/architecture.md's "机器可读
-    // 输出" section for this format's full field list.
+    // BootReport in isolation) -- see docs/architecture.md's
+    // "Machine-readable output" section for this format's full field list.
     Value to_value(const std::string& board, const std::string& fw = "") const;
 
 private:

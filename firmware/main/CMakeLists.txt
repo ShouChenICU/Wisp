@@ -26,7 +26,7 @@ endif()
 # read of a runtime flash mapping in that window returns 0xFF: the fonts
 # partition (a crash while drawing text), the OTA end check and otadata.
 # Flash auto-suspend makes those reads wait instead (docs/porting-guide.md
-# "字体分区"). A firmware/sdkconfig made before the board turned it on keeps
+# "Font partitions"). A firmware/sdkconfig made before the board turned it on keeps
 # it off, since sdkconfig.defaults only seeds a new sdkconfig.
 if(CONFIG_SPIRAM_XIP_FROM_PSRAM AND NOT CONFIG_SPI_FLASH_AUTO_SUSPEND)
     message(FATAL_ERROR "CONFIG_SPIRAM_XIP_FROM_PSRAM is on but CONFIG_SPI_FLASH_AUTO_SUSPEND is off; "

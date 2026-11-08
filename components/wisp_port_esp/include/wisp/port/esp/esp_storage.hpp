@@ -15,12 +15,12 @@
 //     device is never constructed at all -- board.cpp then doesn't
 //     register "storage.int", which is exactly the signal
 //     core::StorageManager::init() uses to report the app's read-only
-//     degrade (AGENTS.md's storage rule; spec 6.1's "内置 Flash 存储挂载
-//     失败...进入只读降级").
+//     degrade (AGENTS.md's storage rule; spec 6.1: if the internal
+//     flash fails to mount, storage degrades to read-only).
 //
 //   - EspSdStorage ("storage.sd", caps removable=true, fs="fat"): wraps
 //     bmgr's SDMMC fs_fat device (name/model passed in by board.cpp --
-//     see the constructor; AGENTS.md's "板子无关" rule keeps the actual
+//     see the constructor; AGENTS.md's "Board independence" rule keeps the actual
 //     bmgr device name/chip model string out of this ESP-only *portable*
 //     component). Always registered, even when no card is present at
 //     boot (board.cpp then records DeviceState::Missing/"no card").
@@ -149,7 +149,7 @@ class EspSdStorage : public wisp::hal::Storage {
 public:
     // `mount_point` is the fs_sdcard bmgr device's configured mount point
     // ("/sd" -- board_devices.yaml). `bmgr_device_name`/`model` are
-    // board-specific facts board.cpp passes in (AGENTS.md's "板子无关"
+    // board-specific facts board.cpp passes in (AGENTS.md's "Board independence"
     // rule: this ESP-only *portable* component must not itself name a
     // specific board's bmgr device or chip model). `already_mounted`/
     // `card` reflect

@@ -3,7 +3,7 @@
 // ESP-IDF wisp::hal::Touch backed by an esp_lcd_touch handle (e.g. the one
 // esp_board_manager's lcd_touch device hands out -- see
 // boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp). The chip model and the
-// coordinate range are passed in by the board (AGENTS.md's "板子无关"
+// coordinate range are passed in by the board (AGENTS.md's "Board independence"
 // rule); orientation (swap/mirror) is the esp_lcd_touch driver's job,
 // configured when the handle was created.
 

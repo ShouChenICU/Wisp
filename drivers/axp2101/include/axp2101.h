@@ -10,7 +10,7 @@
 // and deep-sleep.
 //
 // axp2101_init() never changes any power-rail voltage or on/off state
-// (AGENTS.md's "板子无关" rule plus the hardware doc's AXP2101 erratum
+// (AGENTS.md's "Board independence" rule plus the hardware doc's AXP2101 erratum
 // note) -- it only configures charging parameters and the PWRON
 // cold-boot press-on threshold, both of which MyOS's init() already
 // verified work without touching rails.

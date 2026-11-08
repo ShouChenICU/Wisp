@@ -3,7 +3,7 @@
 // ESP-IDF wisp::hal::Clock backed by drivers/pcf85063 (the board's own
 // bmgr i2c_master bus handle -- see boards/waveshare_esp32_s3_touch_amoled_2_16/
 // board.cpp). The chip model string is passed in by the board (AGENTS.md
-// "板子无关" rule). get_unix()/set_unix() both work in UTC -- see
+// "Board independence" rule). get_unix()/set_unix() both work in UTC -- see
 // pcf85063.h; converting to a local display time, if ever needed, is the
 // caller's job, not this class's.
 

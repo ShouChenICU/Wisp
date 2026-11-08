@@ -10,7 +10,7 @@
 //
 // The scroll bench is the method the reference board's rendering baseline
 // was measured with (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md,
-// "性能基准", the "raw" column): on the UI thread, the active screen's main
+// "Performance baselines", the "raw" column): on the UI thread, the active screen's main
 // scrollable object moves 6 px per rendered frame with
 // lv_obj_scroll_by_raw(), between one SCROLL_BEGIN and one SCROLL_END as in
 // a finger drag, turning around at either end. Afterwards it goes back to

@@ -17,7 +17,7 @@
 // LVGL's own TLSF heap (LV_STDLIB_BUILTIN) with its pool in PSRAM, and
 // keeping small or render-time blocks in internal RAM, were measured
 // against this and were no faster; see
-// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md, "LVGL 堆".
+// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md, "LVGL heap".
 //
 // No LVGL or platform headers here (see wisp/os/os.hpp for the rule).
 

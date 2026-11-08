@@ -12,7 +12,7 @@
 // backends enforce the same 15-character namespace/key limit (the NVS
 // hardware limit) via validate_settings_name(), so a name that is rejected
 // on one port is rejected identically on the other -- see AGENTS.md's
-// "配置键" rule.
+// "Settings keys" rule.
 
 #include <cstddef>
 #include <cstdint>

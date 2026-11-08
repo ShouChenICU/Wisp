@@ -3,8 +3,8 @@
 // The LVGL 9.5 runtime over wisp::hal::Display/Touch: a dedicated UI task
 // that owns every lv_* call, a post() queue other threads use to schedule
 // work onto it, aligned partial flushes (see align.hpp), an off-thread
-// snapshot_rgb888(), and a rolling 1s perf window. See AGENTS.md's "UI
-// 单线程" rule: nothing outside UiRuntime's own UI task may call lv_*
+// snapshot_rgb888(), and a rolling 1s perf window. See AGENTS.md's "Single UI
+// thread" rule: nothing outside UiRuntime's own UI task may call lv_*
 // directly.
 //
 // This header (like ui_runtime.cpp) is built against the exact same

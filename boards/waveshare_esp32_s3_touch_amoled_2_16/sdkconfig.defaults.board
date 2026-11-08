@@ -26,7 +26,7 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # copies them there at boot. The 80 MHz octal PSRAM refills the 16 KB
 # instruction cache faster than the 80 MHz quad flash, and LVGL's render
 # loop misses that cache a lot: scrolling the self-check list goes from 14
-# to 20 fps (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md, "性能基准"). Costs
+# to 20 fps (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md, "Performance baselines"). Costs
 # about as much PSRAM as the image (~3 MB) and almost no internal RAM.
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 # With XIP, ESP-IDF no longer disables the cache while it erases or writes

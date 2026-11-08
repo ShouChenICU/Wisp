@@ -95,7 +95,7 @@ constexpr const char* kBmgrSdcard = "fs_sdcard";
 constexpr const char* kSdMountPoint = "/sd";
 // Chip/module string reported as storage.sd's DeviceInfo::model. Passed
 // into EspSdStorage's constructor rather than hard-coded in wisp_port_esp
-// (AGENTS.md's "板子无关" rule).
+// (AGENTS.md's "Board independence" rule).
 constexpr const char* kSdModel = "sdcard-sdmmc";
 
 // Shared I2C bus peripheral name as declared in board_peripherals.yaml
@@ -112,8 +112,8 @@ constexpr int kCornerRadius = 70;
 constexpr int kAreaAlign = 2;
 // Deliberate, user-approved deviation from calling
 // esp_lcd_panel_disp_sleep() directly -- see
-// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md's "待机与省电" section: this
-// board's CO5300 is wired with a hardware reset GPIO
+// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md's "Standby and power saving"
+// section: this board's CO5300 is wired with a hardware reset GPIO
 // (board_devices.yaml's lcd_panel_config.reset_gpio_num), which makes
 // esp_lcd_panel_disp_sleep() escalate to a deep standby that clears GRAM
 // and forces a full ~1.36s re-init sequence on wake. Standard MIPI DCS
@@ -403,8 +403,8 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
 //   - the display panel's CS: see kPinDisplayCs's
 //     comment -- low risk, but cheap to hold at its idle-high level
 //     alongside the other three.
-// See docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md's "待机与省电" section for
-// the on-device verification step this motivates.
+// See docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md's "Standby and power saving"
+// section for the on-device verification step this motivates.
 void hold_outputs_during_light_sleep() {
     constexpr gpio_num_t kPins[] = {kPinDisplayReset, kPinTouchReset, kPinAudioPaEnable,
                                     kPinDisplayCs};

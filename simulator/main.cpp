@@ -4,7 +4,7 @@
 // home screen the ESP firmware does), and then either loops headless or drives an SDL2 window at
 // ~60 Hz. This is the only translation unit in the project that creates an SDL window or pumps SDL
 // events -- see wisp/port/sim/sim_board.hpp's file header on why SimDisplay itself stays SDL-free,
-// and AGENTS.md's layering rule ("只有 wisp_port_sim 和 simulator/ 可以 include SDL*").
+// and AGENTS.md's layering rule (only wisp_port_sim and simulator/ may include SDL*).
 //
 // The audio subsystem (and, for --headless, its dummy-driver hint) is
 // initialized here, before app.start() runs --

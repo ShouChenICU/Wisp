@@ -87,9 +87,9 @@ cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <board> 
 - **Component CMake**: use `wisp_component(...)`, so that the same CMakeLists works with both idf.py and plain CMake.
 - **Formatting and language**:
   - Formatting follows `.clang-format`.
-  - Code identifiers, code comments, commit messages and the documentation are in English. The documentation means `README.md`, `AGENTS.md`, `CONTRIBUTING.md` and `docs/`, apart from the design specs and plans.
+  - Code identifiers, code comments, commit messages and the documentation are in English. The documentation means `README.md`, `AGENTS.md`, `CONTRIBUTING.md` and `docs/`, apart from the design specs and plans and `docs/backlog.md`.
   - `README.md` (English) is the source. `README.zh-CN.md` (Chinese) and `README.ja.md` (Japanese) are translations of it; update them together with `README.md` whenever it changes.
-  - Design specs and plans (`docs/superpowers/specs/`, `docs/superpowers/plans/`) may be written in Chinese.
+  - Design specs and plans (`docs/superpowers/specs/`, `docs/superpowers/plans/`) and the backlog (`docs/backlog.md`) may be written in Chinese.
   - User-facing UI text is localised (zh/ja/en).
 - **Testing**: use GoogleTest and follow TDD (write the failing test first, then the implementation). Test output must be clean, with no warnings.
 - **Dependencies**: external dependencies are pinned to exact versions; the firmware commits `dependencies.lock`.

@@ -24,7 +24,7 @@
 //     with Connection: close after which httpd discards the rest of the
 //     body (up to kBodyDrainBytes) before closing;
 //   - known limits of the single httpd task, accepted as they are
-//     (docs/architecture.md "真机的网络"): a body larger than
+//     (docs/architecture.md "Networking on the device"): a body larger than
 //     kBodyDrainBytes is answered but not drained, so the client usually
 //     sees a connection reset rather than the 413; requests are served one
 //     at a time, so a second upload waits for the first to finish and

@@ -25,7 +25,7 @@ constexpr uint32_t kFlushTimeoutMs = 250;
 // Standard MIPI DCS commands used by set_brightness() and, with
 // EspDisplayConfig::PanelSleep::DcsSleep, set_power() -- see
 // EspDisplayConfig::PanelSleep's doc comment. None of these are chip
-// -specific (AGENTS.md's "板子无关" rule): every panel this codebase
+// -specific (AGENTS.md's "Board independence" rule): every panel this codebase
 // targets implements the standard MIPI DCS command set.
 constexpr int kDcsWriteBrightness = 0x51;
 constexpr int kDcsDispOff = 0x28;

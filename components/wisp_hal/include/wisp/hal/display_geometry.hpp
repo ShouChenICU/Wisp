@@ -5,7 +5,7 @@
 // so every layer that places UI content -- the self-check screen, the
 // scene runtime, DeviceRegistry::manifest()'s "safe_area" -- goes through
 // these pure functions instead of hardcoding margins or assuming the
-// whole screen is visible. See AGENTS.md's "屏幕形状" rule.
+// whole screen is visible. See AGENTS.md's "Screen shape" rule.
 //
 // This header (like display_geometry.cpp) must stay free of LVGL and
 // platform headers -- it depends only on wisp_base -- and must never log

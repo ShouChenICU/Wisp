@@ -42,7 +42,9 @@ public:
     // null -- Platform::settings must never be null, see
     // firmware/main/main.cpp) but whose get()/set()/erase() all
     // immediately fail with ErrorCode::IoError without touching NVS
-    // again: AGENTS.md's "缺失或初始化失败时只降级运行，不得阻止启动" --
+    // again: AGENTS.md's device-model rule ("a missing device or a
+    // device that fails to initialise only degrades the system; it must
+    // never block boot") --
     // a dead NVS partition degrades Settings to defaults-only (see
     // core::Settings::get_*()'s "any failure falls back to the caller's
     // default" contract) rather than blocking boot.

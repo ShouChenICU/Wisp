@@ -191,7 +191,7 @@ TEST_F(SystemDutiesTest, PairingAndProvisioningCards) {
 }
 
 // WISP_PERF every 5 s via Platform::emit_line, with exactly the fields
-// docs/architecture.md's "机器可读输出" section documents. The home screen
+// docs/architecture.md's "Machine-readable output" section documents. The home screen
 // shows the wisp, so its frame rate is not 0.
 TEST_F(SystemDutiesTest, PerfLineEveryFiveSeconds) {
     boot();

@@ -1,7 +1,7 @@
 #include "wisp/ui/ui_runtime.hpp"
 
 // Sanity check: this translation unit must be compiled against wisp_ui's
-// own components/wisp_ui/config/lv_conf.h (see AGENTS.md's "LVGL 配置"
+// own components/wisp_ui/config/lv_conf.h (see AGENTS.md's "LVGL configuration"
 // trap and cmake/wisp_host_deps.cmake's LV_BUILD_CONF_PATH wiring), not
 // some other lv_conf.h LVGL happened to find via its __has_include probe.
 #ifndef WISP_LV_CONF

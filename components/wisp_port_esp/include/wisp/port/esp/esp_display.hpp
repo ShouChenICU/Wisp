@@ -4,7 +4,7 @@
 // (e.g. the handles esp_board_manager's display_lcd device hands out --
 // see boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp). Chip/board-specific facts
 // (model, size, screen shape, flush alignment, command framing, pixel
-// byte order) are not hard-coded here -- AGENTS.md's "板子无关" rule --
+// byte order) are not hard-coded here -- AGENTS.md's "Board independence" rule --
 // but passed in via EspDisplayConfig by the board.
 
 #include <cstddef>
@@ -56,7 +56,7 @@ struct EspDisplayConfig {
     // chip model: both options are implemented entirely in terms of the
     // standard esp_lcd_panel_* API and standard MIPI DCS commands, never
     // anything chip-specific -- that stays board-agnostic regardless of
-    // which one a given board picks (AGENTS.md's "板子无关" rule).
+    // which one a given board picks (AGENTS.md's "Board independence" rule).
     enum class PanelSleep {
         // esp_lcd_panel_disp_on_off(false) + esp_lcd_panel_disp_sleep
         // (true) to sleep, reversed to wake -- the esp_lcd panel

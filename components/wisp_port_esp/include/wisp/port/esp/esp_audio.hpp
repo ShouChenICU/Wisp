@@ -13,7 +13,7 @@
 // preferred way to tie PA power to codec state whenever bmgr makes it
 // available for a board's PA. Chip models, pins and the PA GPIO are
 // board-level facts
-// (AGENTS.md's "板子无关" rule) and never appear here.
+// (AGENTS.md's "Board independence" rule) and never appear here.
 //
 // esp_codec_dev's own output volume/mic gain both start at 0 (muted) on a
 // freshly opened device (esp_codec_dev_new() calloc's its internal state,
@@ -56,7 +56,7 @@
 // I2S peripheral enables the board's channels at boot and leaves them
 // enabled while no stream is open, so automatic light sleep never happens
 // unless they are disabled (docs/hardware/
-// waveshare_esp32_s3_touch_amoled_2_16.md, "浅睡兼容性（3b-1 spike）").
+// waveshare_esp32_s3_touch_amoled_2_16.md, "Light-sleep compatibility (3b-1 spike)").
 // set_power() therefore disables the device's own I2S channel at
 // Standby/DeepStandby and enables it again at Active/Dim. The board passes
 // that channel to create() alongside the codec handle, because

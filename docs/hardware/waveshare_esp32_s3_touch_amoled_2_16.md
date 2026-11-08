@@ -1,626 +1,636 @@
 # Waveshare ESP32-S3-Touch-AMOLED-2.16
 
-板名（`WISP_BOARD` / bmgr）：`waveshare_esp32_s3_touch_amoled_2_16`。板级代码：`boards/waveshare_esp32_s3_touch_amoled_2_16/`。
+Board name (`WISP_BOARD` / bmgr): `waveshare_esp32_s3_touch_amoled_2_16`. Board code: `boards/waveshare_esp32_s3_touch_amoled_2_16/`.
 
-资料来源：MyOS 项目（MIT，作者 ShouChen，只读参考，**以其代码为准，它的文档有误**）、Waveshare 官方 BSP、ESP-Claw 中同款板的板级定义（Apache-2.0）、[官方产品页](https://docs.waveshare.net/ESP32-S3-Touch-AMOLED-2.16/)。
+Sources: the MyOS project (MIT, by ShouChen, read-only reference; **its code is the authority, its documentation has errors**), Waveshare's official BSP, the board definition of the same board in ESP-Claw (Apache-2.0), and the [official product page](https://docs.waveshare.net/ESP32-S3-Touch-AMOLED-2.16/).
 
-## 主控与存储
+## SoC and storage
 
-- ESP32-S3R8：16 MB QIO flash，8 MB octal PSRAM（80 MHz）
-- 分区表见 `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv`（Flash、PSRAM、控制台等板级 sdkconfig 见同目录的 `sdkconfig.defaults.board`）：
+- ESP32-S3R8: 16 MB QIO flash, 8 MB octal PSRAM (80 MHz)
+- For the partition table, see `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv` (for the board-level sdkconfig of flash, PSRAM, the console and so on, see `sdkconfig.defaults.board` in the same directory):
 
-  | 分区 | 偏移 | 大小 |
+  | Partition | Offset | Size |
   |---|---|---|
   | `nvs` | 0x9000 | 24 KB |
   | `otadata` | 0xF000 | 8 KB |
   | `phy_init` | 0x11000 | 4 KB |
   | `ota_0` | 0x20000 | 4.5 MB |
   | `ota_1` | 0x4A0000 | 4.5 MB |
-  | `glyphs`（16 px 正文位图字镜像，字形分区 spec 2，data 子类型 0x41） | 0x920000 | 1.125 MB |
-  | `storage`（LittleFS） | 0xA40000 | 2.94 MB |
-  | `fonts`（矢量字体镜像，矢量字体 spec 3.4） | 0xD30000 | 2.81 MB |
+  | `glyphs` (16 px body-text bitmap font image, glyph partition spec 2, data subtype 0x41) | 0x920000 | 1.125 MB |
+  | `storage` (LittleFS) | 0xA40000 | 2.94 MB |
+  | `fonts` (vector font image, vector font spec 3.4) | 0xD30000 | 2.81 MB |
 
-  网页资源包链接在应用镜像里，没有 `assets` 分区。`nvs` 的偏移和大小跨历次换表都没有变，亮度、语言等存在 NVS 里的设置都保留；但已保存的 Wi-Fi 网络（`/int/net/wifi.json`）和已配对的客户端（`/int/net/clients.json`）在 `/int` 里，换表后会丢失，需要重新配网、重新配对。`fonts` 的偏移和大小同样不变。这是第二次换表：第一次（矢量字体 spec 3.4）为了给新增的 `fonts` 分区腾出空间，把 `storage` 从 5.875 MB 缩小到 3.06 MB；这一次（字形分区 spec 2）为了给新增的 `glyphs` 分区腾出空间，又把两个 OTA 槽从 5 MB 取整缩小到 4.5 MB，`storage` 跟着从 3.06 MB 缩小到 2.94 MB（偏移从 0xA20000 挪到 0xA40000）。两次道理相同：LittleFS 的超级块记着块数，分区大小一变挂载就会失败，`format_if_mount_failed` 随即重新格式化——**每次换成新表时 `/int` 里的数据（已保存的 Wi-Fi 网络、配对记录、已安装的场景、场景数据、文件）全部清空**，用户已批准这次换表（字形分区 spec 2）。从旧分区表（两个 4 MB 应用槽加 2 MB 的 `assets` 分区，没有 `fonts` 分区的上一版 `storage` 0x5E0000，或两个 5 MB 应用槽、没有 `glyphs` 分区的上一版 `storage` 0xA20000）换过来时，以及第一次用上打开了回滚功能的引导程序时，都必须用 USB 完整烧录一次（`idf.py -p <PORT> flash`，写入引导程序、分区表、`otadata`、`ota_0`、`fonts` 和 `glyphs`），之后才能在网页上传固件；只想换字体用 `idf.py -p <PORT> fonts-flash`（同时写 `fonts.bin` 和 `glyphs.bin`），日常改代码用 `idf.py -p <PORT> app-flash`（见 `docs/porting-guide.md`"字体分区"）。
-  还在上一版分区表（两个 5 MB 应用槽、没有 `glyphs` 分区）上的板子，如果没有完整烧录、直接经网页上传了新固件：新固件能正常运行，`storage` 按名字查找，`/int` 不受影响；但没有 `glyphs` 分区，正文退到矢量 16 px（比位图字略虚），直到用 USB 完整烧录一次（`idf.py -p <PORT> flash`）换上新表为止。
-- 镜像大小（ESP-IDF v6.0.3，`idf.py size`）：发布版 3,114,019 B（新的 `ota_0`，0x480000，的 66.0%，2026-11-06 字形分区换表后，`glyphs.bin` 1,122,464 B；调试版没有重测）；预算为单个 OTA 槽的 80%。更早的 3,967,023 B（`ota_0` 旧值 5 MB 的 75.7%，2026-11-05 矢量字体验收时，含 3a 和矢量字体）是换表前的数字，`lv_font_cjk_16` 挪进 `glyphs` 分区后不再链接进镜像。
+  The web asset pack is linked into the app image; there is no `assets` partition. The offset and size of `nvs` have not changed across any of the table changes, so settings stored in NVS, such as brightness and language, are kept. But saved Wi-Fi networks (`/int/net/wifi.json`) and paired clients (`/int/net/clients.json`) live in `/int` and are lost when the table changes, so Wi-Fi must be set up and clients paired again. The offset and size of `fonts` also stay the same. This is the second table change: the first (vector font spec 3.4) shrank `storage` from 5.875 MB to 3.06 MB to make room for the new `fonts` partition; this one (glyph partition spec 2) shrank the two OTA slots from 5 MB to a round 4.5 MB to make room for the new `glyphs` partition, and `storage` shrank with them from 3.06 MB to 2.94 MB (its offset moved from 0xA20000 to 0xA40000). The reasoning is the same both times: the LittleFS superblock records the block count, so once the partition size changes the mount fails and `format_if_mount_failed` immediately reformats it. **Every time a new table goes on, all data in `/int` (saved Wi-Fi networks, pairing records, installed scenes, scene data, files) is erased.** The user approved this table change (glyph partition spec 2). When coming from an old partition table (two 4 MB app slots plus a 2 MB `assets` partition; the previous version with `storage` at 0x5E0000 and no `fonts` partition; or the previous version with two 5 MB app slots, no `glyphs` partition and `storage` at 0xA20000), and the first time a bootloader with rollback enabled is used, you must do one full USB flash (`idf.py -p <PORT> flash`, which writes the bootloader, the partition table, `otadata`, `ota_0`, `fonts` and `glyphs`) before firmware can be uploaded through the web page. To change only the fonts, use `idf.py -p <PORT> fonts-flash` (which writes both `fonts.bin` and `glyphs.bin`); for everyday code changes, use `idf.py -p <PORT> app-flash` (see "Font partitions" in `docs/porting-guide.md`).
+  On a board still on the previous partition table (two 5 MB app slots, no `glyphs` partition) that has had new firmware uploaded through the web page without a full flash, the new firmware runs normally, `storage` is looked up by name, and `/int` is not affected; but there is no `glyphs` partition, so body text falls back to vector 16 px (slightly blurrier than the bitmap font) until one full USB flash (`idf.py -p <PORT> flash`) puts the new table on.
+- Image size (ESP-IDF v6.0.3, `idf.py size`): release build 3,114,019 B (66.0% of the new `ota_0`, 0x480000, after the glyph partition table change on 2026-11-06, with `glyphs.bin` at 1,122,464 B; the debug build was not re-measured). The budget is 80% of one OTA slot. The earlier 3,967,023 B (75.7% of the old 5 MB `ota_0`, at the vector font acceptance on 2026-11-05, including 3a and the vector font) is from before the table change; once `lv_font_cjk_16` moved into the `glyphs` partition it is no longer linked into the image.
 
-## 外设与引脚
+## Peripherals and pins
 
-| 外设 | 芯片 | 接口与引脚 | 地址（7 位） |
+| Peripheral | Chip | Interface and pins | Address (7-bit) |
 |---|---|---|---|
-| 屏幕 | CO5300，480×480 AMOLED，圆角半径 70（实测，见下方"已知勘误与注意事项"） | QSPI：CS 12、SCLK 38、D0–D3 = 4/5/6/7、RST 39 | — |
-| 触摸 | **CST9217**（MyOS 文档误写为 CST9220） | I2C；INT 11、RST 40 | 0x5A |
-| 电源管理 | AXP2101 | I2C；PWR 键状态由 GPIO16 读出（**按下时为高电平**） | 0x34 |
-| IMU | QMI8658（无磁力计） | I2C；INT1 17、INT2 21 | 0x6B |
-| RTC | PCF85063 | I2C；INT 13 | 0x51 |
-| 音频 DAC | ES8311 | I2S + I2C | 0x18 |
-| 音频 ADC | ES7210 | I2S + I2C | 0x40 |
-| 功放 | — | PA_EN GPIO46 | — |
-| SD 卡 | — | **1-bit SDMMC**：CLK 2、CMD 1、D0 3 | — |
-| 按键 | — | 音量+ GPIO18；音量−/BOOT GPIO0（均为低电平有效） | — |
+| Display | CO5300, 480×480 AMOLED, corner radius 70 (measured, see "Known errata and notes" below) | QSPI: CS 12, SCLK 38, D0–D3 = 4/5/6/7, RST 39 | — |
+| Touch | **CST9217** (the MyOS documentation wrongly says CST9220) | I2C; INT 11, RST 40 | 0x5A |
+| Power management | AXP2101 | I2C; the PWR key state is read from GPIO16 (**high while pressed**) | 0x34 |
+| IMU | QMI8658 (no magnetometer) | I2C; INT1 17, INT2 21 | 0x6B |
+| RTC | PCF85063 | I2C; INT 13 | 0x51 |
+| Audio DAC | ES8311 | I2S + I2C | 0x18 |
+| Audio ADC | ES7210 | I2S + I2C | 0x40 |
+| Amplifier | — | PA_EN GPIO46 | — |
+| SD card | — | **1-bit SDMMC**: CLK 2, CMD 1, D0 3 | — |
+| Buttons | — | Volume+ GPIO18; Volume−/BOOT GPIO0 (both active low) | — |
 
-- I2C 总线：SDA 15、SCL 14，400 kHz，所有 I2C 器件共用这一条总线。
-- I2S：MCLK 42、BCLK 9、LRCK/WS 45、DOUT 8、DIN 10。
+- I2C bus: SDA 15, SCL 14, 400 kHz; every I2C device shares this one bus.
+- I2S: MCLK 42, BCLK 9, LRCK/WS 45, DOUT 8, DIN 10.
 
-## 已知勘误与注意事项
+## Known errata and notes
 
-- 触摸芯片实际为 CST9217，驱动使用 `waveshare/esp_lcd_touch_cst9217`。
-- SD 卡走 SDMMC 而不是 SPI。
-- 屏幕的局部刷新区域需要按 2 像素对齐（`area_align = 2`）。
-- 面板实际圆角半径比厂商资料给的 40 大得多：在自检界面之外另写一个校准场景，在屏幕四角画出半径 40、50、60、70、80 的四分之一圆弧（圆心在 `(R,R)`），逐一目视核对对角线方向上哪一段还能看到、哪一段已经被实际的圆角裁掉。结果是 60 px 的弧在对角线方向完全不可见，70 px 的弧只有一部分可见，由此反推可见边界在对角线上离角大约 20 px，对应半径约 70（`board.cpp` 的 `kCornerRadius`）。按厂商数据表的 40 来算安全区会裁掉文字或控件的角，新板子务必用这种画弧比对的方法实测，不要直接用数据表的值（见 `docs/porting-guide.md`）。
-- AXP2101 初始化时不要改动任何电源轨的电压或开关。
-- GPIO16 反映 PWR 键的状态：松开时被驱动为低电平，按住时为高电平（实测，官方资料只把它标为 `SYS_OUT`）。它不是 AXP2101 的中断输出，按普通按键读取即可，短按/长按由 `ButtonService` 计时判断，不需要读 AXP2101 的 IRQ 寄存器。实测时 AXP2101 的 PWRON 长按 IRQ 也恰好在按住 1 s 时置位，与 GPIO16 的电平一致。
-- 按住 PWR 键数秒（AXP2101 的 OFFLEVEL）会触发芯片的硬件强制关机，与软件无关。
-- 本板必须打开 flash 自动挂起（`CONFIG_SPI_FLASH_AUTO_SUSPEND`，`sdkconfig.defaults.board`）：开了 XIP 之后，flash 擦写期间读运行时映射的 `fonts` 分区会读到 0xFF，矢量字体因此崩溃。详见下方"flash 擦写与映射读取"。
-- 网页上传固件的已知限制（httpd 单任务，接受现状，见 `docs/architecture.md`"真机的网络"）：超过 8 MiB 的文件得到的是连接重置而不是 413（被提前拒绝时剩余部分超过 8 MiB 的上传都是如此）；两个浏览器同时上传时，第二个要等第一个传完才得到 409 `busy`；上传期间日志页暂停推送。
+- The touch chip is actually the CST9217, and the driver is `waveshare/esp_lcd_touch_cst9217`.
+- The SD card uses SDMMC, not SPI.
+- The display's partial refresh areas must be aligned to 2 pixels (`area_align = 2`).
+- The panel's actual corner radius is much larger than the 40 in the vendor's documentation. Separately from the self-check screen, we wrote a calibration scene that draws quarter-circle arcs of radius 40, 50, 60, 70 and 80 in the four corners of the screen (centred at `(R,R)`), and checked by eye, one by one, which arcs could still be seen along the diagonal and which had been clipped by the real rounded corner. The result: the 60 px arc is completely invisible along the diagonal and the 70 px arc is only partly visible, from which the visible boundary on the diagonal works out at about 20 px from the corner, corresponding to a radius of about 70 (`kCornerRadius` in `board.cpp`). Computing the safe area from the datasheet's 40 clips the corners of text or controls. On a new board, always measure with this arc comparison; do not use the datasheet value directly (see `docs/porting-guide.md`).
+- When initialising the AXP2101, do not change the voltage or on/off state of any power rail.
+- GPIO16 reflects the PWR key state: it is driven low when released and high when held (measured; the official documentation only labels it `SYS_OUT`). It is not the AXP2101's interrupt output; read it as an ordinary button, with short and long presses timed by `ButtonService`, and there is no need to read the AXP2101's IRQ registers. In the measurements, the AXP2101's PWRON long-press IRQ also happened to set at 1 s of holding, consistent with the level of GPIO16.
+- Holding the PWR key for several seconds (the AXP2101's OFFLEVEL) triggers the chip's hardware forced power-off, independently of software.
+- This board must enable flash auto-suspend (`CONFIG_SPI_FLASH_AUTO_SUSPEND`, `sdkconfig.defaults.board`): with XIP on, reading the `fonts` partition, which is mapped at run time, during a flash erase or write returns 0xFF, and the vector font crashes as a result. For details, see "Flash erase/write and mapped reads" below.
+- Known limitations of uploading firmware through the web page (httpd has a single task; accepted as they are, see "Networking on the device" in `docs/architecture.md`): a file over 8 MiB gets a connection reset rather than a 413 (as does any upload rejected early with more than 8 MiB left to send); when two browsers upload at the same time, the second has to wait until the first has finished before it gets 409 `busy`; the logs page pauses its push during an upload.
 
-## flash 擦写与映射读取（2026-11-05）
+## Flash erase/write and mapped reads (2026-11-05)
 
-**现象**：网页上传固件（OTA）期间 UI 任务崩溃，LoadProhibited，core 0，EXCVADDR `0xbc804b19`，栈为 `font_image_has_glyph` ← `vector_glyph_dsc`（`components/wisp_ui/src/fonts.cpp`）← `lv_font_get_glyph_dsc`。任何 flash 写入（OTA、LittleFS `/int`、NVS，包括 IDF 自己的 Wi-Fi/PHY NVS 写入）赶上 UI 正在画未缓存的矢量字形，都可能触发。
+**Symptom**: while uploading firmware through the web page (OTA), the UI task crashed with LoadProhibited on core 0, EXCVADDR `0xbc804b19`, with the stack `font_image_has_glyph` ← `vector_glyph_dsc` (`components/wisp_ui/src/fonts.cpp`) ← `lv_font_get_glyph_dsc`. Any flash write (OTA, LittleFS `/int`, NVS, including IDF's own Wi-Fi/PHY NVS writes) that coincides with the UI drawing an uncached vector glyph can trigger it.
 
-**根因**：本板开了 XIP（`CONFIG_SPIRAM_XIP_FROM_PSRAM`），ESP-IDF 因此在 SPI1 擦写 flash 时不关 cache，只拿一把互斥锁（`spi_flash/spi_flash_os_func_app.c` 的 `SPI_FLASH_CACHE_NO_DISABLE`）。擦写进行中 flash 处于忙状态，这时 cache miss 落在 `esp_partition_mmap` 映射的 `fonts` 分区上，读回来的全是 0xFF。`font_image_has_glyph()` 当时每次都从映射区重读 cmap 子表的格式和计数，读到 0xFFFF 就走了格式 12 分支，分组数 0xFFFFFFFF，`12 * mid` 在 32 位下回绕，指针算到映射区之外。代码和只读数据在 XIP 启动时已经拷进 PSRAM，网页资源包同理，不受影响；受影响的是运行时映射的 flash：`fonts` 分区，以及 ESP-IDF 自己映射读取的新镜像（`esp_ota_end()` 和 `esp_ota_set_boot_partition()` 里的 `esp_image_verify()`）和 `otadata`（`read_otadata()`）。后两者在并发写入时会把 OTA 误判为失败，或把两条 `otadata` 记录都读成无效。不开 XIP 的板子不受影响：IDF 会在擦写期间关 cache 并停住另一个核。
+**Root cause**: this board has XIP enabled (`CONFIG_SPIRAM_XIP_FROM_PSRAM`), so ESP-IDF does not disable the cache while SPI1 erases or writes flash, and only takes a mutex (`SPI_FLASH_CACHE_NO_DISABLE` in `spi_flash/spi_flash_os_func_app.c`). While an erase or write is in progress the flash is busy, and a cache miss that lands on the `fonts` partition mapped with `esp_partition_mmap` reads back all 0xFF. `font_image_has_glyph()` at the time re-read the format and counts of the cmap subtable from the mapped area every time; reading 0xFFFF sent it down the format 12 branch with a group count of 0xFFFFFFFF, and `12 * mid` wrapped around in 32 bits, so the pointer ended up outside the mapped area. Code and read-only data had already been copied into PSRAM at XIP startup, as had the web asset pack, so they are not affected. What is affected is flash mapped at run time: the `fonts` partition, plus the new image that ESP-IDF itself maps to read (`esp_image_verify()` inside `esp_ota_end()` and `esp_ota_set_boot_partition()`) and `otadata` (`read_otadata()`). Under concurrent writes, the latter two can misjudge an OTA as failed, or read both `otadata` records as invalid. Boards without XIP are not affected: IDF disables the cache and stalls the other core during erases and writes.
 
-**修复**：
-- 板级打开 `CONFIG_SPI_FLASH_AUTO_SUSPEND`：映射读取赶上擦写时，硬件先挂起擦写、读完再恢复，读到的就是正确数据。
-- 加固（不是修复）：`open_font_image()` 校验 cmap 时把子表格式和分段/分组数拷进 `FontImage`，查字形只用这份拷贝；唯一由运行时读到的值算出的偏移（glyphIdArray 位置）和子表长度比较一次。字形数据和 stb_truetype 的读取仍然来自映射区，只靠 auto-suspend 保证正确。
+**Fix**:
+- The board enables `CONFIG_SPI_FLASH_AUTO_SUSPEND`: when a mapped read coincides with an erase or write, the hardware first suspends the erase or write, finishes the read and then resumes, so the data read is correct.
+- Hardening (not a fix): when `open_font_image()` validates the cmap, it copies the subtable format and segment/group counts into `FontImage`, and glyph lookups use only that copy; the one offset computed from a value read at run time (the glyphIdArray position) is compared once against the subtable length. Glyph data and stb_truetype's reads still come from the mapped area, and only auto-suspend keeps them correct.
 
-**flash 型号**：`esptool flash-id` 读到厂商 0x20、器件 0x4018，即 XMC 128 Mbit。ESP-IDF v6.0.3 对厂商 0x20 读 SFDP 字节 0x32，bit3 为 1 就当作 XMC-D 系列、支持挂起（`spi_flash_chip_generic.c` 的 `get_caps`）；这片读到 0xF9（`esptool read-flash-sfdp 0x32 1`），bit3 为 1。启动日志有 `W spi_flash: Flash suspend feature is enabled`。
+**Flash part**: `esptool flash-id` reads vendor 0x20, device 0x4018, i.e. XMC 128 Mbit. For vendor 0x20, ESP-IDF v6.0.3 reads SFDP byte 0x32 and treats the chip as the suspend-capable XMC-D series when bit 3 is 1 (`get_caps` in `spi_flash_chip_generic.c`); this chip reads 0xF9 (`esptool read-flash-sfdp 0x32 1`), so bit 3 is 1. The boot log has `W spi_flash: Flash suspend feature is enabled`.
 
-**实测**（`fprobe` 是只为这次测量加的临时命令，不在固件里：把映射区拷一份到 PSRAM 作参照、反复 memcmp；或在顶层放一个 128 px 标签，每 20 ms 换 6 个汉字让字形缓存一直 miss；同时另起一个任务在 `ota_1` 里循环做 64 KB 擦除 + 64 KB 写入）：
+**Measurements** (`fprobe` was a temporary command added only for this measurement and is not in the firmware: it copies the mapped area into PSRAM as a reference and memcmps it repeatedly, or puts a 128 px label on the top layer and changes its 6 Chinese characters every 20 ms so that the glyph cache keeps missing; meanwhile another task loops doing 64 KB erases + 64 KB writes in `ota_1`):
 
-| 测试 | 不开 suspend | 打开 suspend |
+| Test | Without suspend | With suspend |
 |---|---|---|
-| 一边写 flash 一边比对映射区 | 29 遍读到 41,817,016 字节错，全是 0xFF（约占读到字节的 59%） | 19 遍和 24 遍，0 字节错 |
-| 一边写 flash 一边换 128 px 字形 | 开写后 5 s 内崩溃，栈与 OTA 崩溃相同 | 180 s 写 56.6 MB，没有崩；修复提交上再测 150 s 写 46.9 MB、1587 次更新，没有崩 |
-| 一边换字形一边网页上传 3.97 MB 固件 | 就是原始崩溃 | 没有崩，24.0 s，返回 202 |
-| 网页上传 3,971,952 B（空闲自检界面） | 20.4–20.7 s | 20.6 s（两次） |
-| 纯写吞吐（无读者） | 338.5–340.9 KB/s | 355.8–365.6 KB/s |
-| `bench scroll 10`（同一界面，关热点） | 18.8–19.1 fps | 18.8–19.0 fps；修复提交 `352ad8f` 上 18.72 / 18.75 |
+| Compare the mapped area while writing flash | 29 passes read 41,817,016 wrong bytes, all 0xFF (about 59% of the bytes read) | 19 and 24 passes, 0 wrong bytes |
+| Change 128 px glyphs while writing flash | Crashes within 5 s of the writes starting, with the same stack as the OTA crash | 180 s writing 56.6 MB, no crash; tested again on the fix commit, 150 s writing 46.9 MB with 1587 updates, no crash |
+| Change glyphs while uploading 3.97 MB of firmware through the web page | This is the original crash | No crash, 24.0 s, returned 202 |
+| Web upload of 3,971,952 B (idle self-check screen) | 20.4–20.7 s | 20.6 s (twice) |
+| Pure write throughput (no readers) | 338.5–340.9 KB/s | 355.8–365.6 KB/s |
+| `bench scroll 10` (same screen, hotspot off) | 18.8–19.1 fps | 18.8–19.0 fps; 18.72 / 18.75 on the fix commit `352ad8f` |
 | `boot_ms` | 2416 | 2411 |
 
-所有 suspend 测试里都没有看门狗报警或 flash 错误。只有在"满速比对映射区 + 同时写 flash"这个极端组合下（没有真实代码这样读），`power_monitor` 每隔几秒报一次 `axp2101_read_status: ESP_ERR_TIMEOUT`，下一次读取就恢复；单独满速比对、单独写、换字形加写入都没有出现。
+None of the suspend tests produced a watchdog alarm or a flash error. Only in the extreme combination "compare the mapped area at full speed + write flash at the same time" (no real code reads like this) did `power_monitor` report `axp2101_read_status: ESP_ERR_TIMEOUT` every few seconds, recovering on the next read; it did not appear with full-speed comparison alone, writing alone, or changing glyphs while writing.
 
-**风险**：auto-suspend 依赖 flash 型号。同款板子如果换了一批 ESP-IDF 不认可挂起的 flash（例如 XMC-C 系列，SFDP[0x32] 的 bit3 为 0），`esp_flash_init_default_chip()` 返回错误，启动时触发 `assert(flash_ret == ESP_OK)`（`esp_flash_spi_init.c`）：经 OTA 装上的固件会被回滚，USB 烧录的会反复重启。失败很明显，不会悄悄出错。遇到时先用 `esptool flash-id` 和 `read-flash-sfdp` 确认型号；ESP-IDF 文档还提醒中断很频繁时擦除会变慢，实测 Wi-Fi 和异步 flush 同时工作时没有看到。
+**Risk**: auto-suspend depends on the flash part. If a batch of this board ships with flash that ESP-IDF does not accept for suspend (for example the XMC-C series, with bit 3 of SFDP[0x32] at 0), `esp_flash_init_default_chip()` returns an error and `assert(flash_ret == ESP_OK)` fires at boot (`esp_flash_spi_init.c`): firmware installed through OTA is rolled back, and a USB-flashed one reboots over and over. The failure is obvious and does not go wrong silently. If it happens, first confirm the part with `esptool flash-id` and `read-flash-sfdp`. The ESP-IDF documentation also warns that erases get slower when interrupts are very frequent; in the measurements this was not seen with Wi-Fi and asynchronous flushes working at the same time.
 
-## 真机验收清单
+## Device acceptance checklist
 
-汇总各子任务实现过程中记录下来的"需要用户在真机上执行"的手动验证项，以及 spec 第 10 节的验收标准。本板已上真机，未填结果的项待测；"结果"栏留空，验收时填写实测结果（通过/不通过 + 简短说明），不通过的项回到对应实现修复。
+This gathers the manual verification items recorded during the implementation of each sub-task as "needs the user to run on the device", plus the acceptance criteria of spec section 10. This board has been on the device; items without a result are still to be tested. The "Result" column is left empty, to be filled in with the measured result at acceptance (pass/fail + a short note); a failing item goes back to its implementation to be fixed.
 
-每项前标注的来源，对应该检查来自哪部分实现；标 "spec 10.n" 的是设计文档第 10 节的验收标准原文。
+The source in front of each item tells which part of the implementation the check comes from; items marked "spec 10.n" are the acceptance criteria quoted from section 10 of the design document.
 
-开机进入主界面（黑底，鬼火居中）。下面提到的"硬件诊断"就是原来的自检界面：在串口输入 `diag` 打开，或者在主界面向右滑进设置页，点"关于本机"下的"硬件诊断"，`diag close` 或从屏幕左边缘向右滑回主界面。凡是要看诊断界面的项，先 `diag` 打开。
+The device boots into the home screen (black background, wisp in the centre). "Hardware diagnostics" below is the former self-check screen: open it by typing `diag` on the serial console, or by swiping right on the home screen into Settings and tapping "Hardware diagnostics" under "About"; close it with `diag close`, or by swiping right from the left edge of the screen back to the home screen. For every item that looks at the diagnostics screen, open it with `diag` first.
 
-| # | 项目（来自） | 怎么测 | 预期结果 | 结果 |
+| # | Item (from) | How to test | Expected result | Result |
 |---|---|---|---|---|
-| 1 | 启动耗时（spec 10.1） | `idf.py -p <PORT> flash monitor`，从上电到主界面（黑底、鬼火居中）出现用肉眼或串口时间戳计时；同时看 `WISP_BOOT_REPORT` 的 `boot_ms` | `boot_ms` < 3000 | |
-| 2 | 启动报告/能力清单格式（spec 10.4，wisp_core::BootReport/DeviceRegistry::manifest()） | 串口查看 `WISP_BOOT_REPORT <json>`、`WISP_MANIFEST <json>` 两行 | 均为合法单行 JSON；设备状态符合预期（没插 SD 卡时 `storage.sd` 报缺失是正常的） |  |
-| 3 | IMU 无磁力计（spec 10.4） | 查看 `WISP_MANIFEST` 中 `imu.main.caps` | `magnetometer` 为 `false` |  |
-| 4 | Display 能力清单（屏幕驱动：esp_display） | 查看 `WISP_MANIFEST` 中 `display.main` | `model` 为 `CO5300`；`caps` 含 `width:480 height:480 shape:"rounded_rect" corner_radius:70 panel:"amoled" brightness:true area_align:2 rgb565_be:true`；`safe_area` 为 `{24,24,455,455}` |  |
-| 5 | Touch 型号（触摸驱动：bmgr dev_lcd_touch） | 查看 `WISP_MANIFEST` 中 `touch.main` | `model` 为 `CST9217` |  |
-| 6 | 屏幕颜色（字节序：esp_display 发布 caps `rgb565_be`，wisp_ui 据此直接按高字节在前渲染） | `diag` 打开硬件诊断，显示纯色色块或背景，目视核对纯红、纯蓝 | 红蓝不互换、不发花；如互换说明字节序判断有误 |  |
-| 7 | 四角不裁切（spec 8，10.2） | 目视主界面和硬件诊断（`diag`）的四角 | 内容不被圆角裁掉 |  |
-| 8 | 触摸坐标方向（触摸驱动：esp_display_touch 坐标映射） | 手指依次点触屏幕四角 | 左上角坐标接近 (0,0)，右下角接近 (479,479)；不镜像、不 XY 互换 |  |
-| 9 | 局部刷新无错位（屏幕驱动：esp_display flush_async()/area 对齐，两块缓冲轮流传输） | `diag` 打开硬件诊断，上下快速滚动设备列表 | 不出现条纹、错位或某一段显示成上一帧/另一段的内容 |  |
-| 10 | 亮度初始化（屏幕驱动：esp_display set_brightness()） | 对比刚上电瞬间与主界面稳定后的亮度 | 启动后设为 200，应比初始化时的 0xFF 略暗 |  |
-| 11 | IMU 跟随倾斜（spec 10.2） | `diag` 打开硬件诊断，倾斜设备看小球；水平放置看 `az` | 小球平稳跟随倾斜；水平时 `az` 接近 1.0g |  |
-| 12 | 陀螺仪数值合理（drivers/qmi8658，新写寄存器配置，重点核实） | `diag` 打开硬件诊断，静止与转动设备，看 `gx/gy/gz` | 静止时接近 0 dps；转动时方向与幅度符合直觉；若轴向颠倒或量程异常，检查 `drivers/qmi8658/qmi8658.c` 的 CTRL3 FS/ODR 编码 |  |
-| 13 | 电量与充电状态更新（spec 10.2，drivers/axp2101） | `diag` 打开硬件诊断，看电量百分比和"充电中/未充电"状态；插拔 USB 电源；也可以看串口上 `power_monitor` 的 `power.charging.changed` 日志行（见下面第 35 项） | 百分比在合理范围；插拔后充电状态在 1 秒内更新 |  |
-| 14 | 三个按键事件（spec 10.2，wisp_core::ButtonService） | `diag` 打开硬件诊断，分别短按/长按 power、vol_up、vol_down | 诊断界面均有对应事件提示 |  |
-| 15 | 电源键短按（spec 10.3） | 亮屏时短按电源键，再短按一次 | 第一次灭屏（进入待机），第二次重新点亮 |  |
-| 16 | 电源键长按关机（spec 10.3，drivers/axp2101 power_off，wisp_app::PowerKeyController） | 亮屏时按住电源键约 1 秒（不松手） | 按住时即弹出关机确认框；开机时为开机而按住的那一次不会触发；确认后整机断电（用电流表或指示灯判断，不能只看屏幕熄灭） |  |
-| 17 | 关机状态开机（spec 10.3） | 关机状态下长按电源键 | 重新开机 |  |
-| 18 | RTC 持续计时（spec 10.2，drivers/pcf85063） | 看启动日志是否有 "system clock set from clock.main RTC"；断电（拔 USB 和电池）重启后再看一次时间。如果 RTC 从未设置过（芯片第一次通电），`get_unix()` 会失败，日志只有一条 `WLOG_W`，系统时间不会被设置——此时先连上 Wi-Fi：网络校时（连接 spec 5.6）成功后日志出现 `time: synced from <服务器>: unix <秒数>`，同时写入 RTC，再重启验证本项 | 日志出现 "system clock set from clock.main RTC"；重启后时间连续，不跳回 1970 或固定值 |  |
-| 19 | 充电电流曲线（drivers/axp2101 充电参数配置） | 用一块电量明显偏低的电池，经 USB 功率计供电，观察充电过程电流；同时看启动日志是否出现 `power.main: charging configuration failed: ...`（`board.cpp` 的 `WLOG_W`） | 恒流阶段稳定在约 400mA；接近 4.2V 时电流渐降；充满后 `charging` 翻 `false`，电流降到维持量级，不持续大电流过充；不出现 `charging configuration failed` 日志（出现则说明 `axp2101_charging_config_status()` 返回非 `ESP_OK`，充电参数可能停留在芯片出厂默认值） |  |
-| 20 | 音频/存储设备状态（wisp_port_esp::EspAudio/EspStorage） | 看 `WISP_BOOT_REPORT` 中 `audio_out.main`/`audio_in.main`/`storage.int`/`storage.sd` | 前三者为 `ok`；`storage.sd` 视是否插卡为 `ok` 或 `missing`（"no card"） |  |
-| 21 | 开机无爆音（屏幕驱动上电顺序，wisp_port_esp::EspAudio 初始化） | 接好喇叭，听开机瞬间 | 主界面出现前无可闻的啪声/爆音 |  |
-| 22 | 录音回放（spec 10.2，wisp_app::loopback） | `diag` 打开硬件诊断，点"Mic test"按钮（中文界面为"录音回放"） | 录 3 秒后播放，音量合适，声音正确，不失真、不卡顿、不静音 |  |
-| 23 | 存储容量与 SD 热插拔（spec 10.2，wisp_port_esp::EspStorage/sd_retry） | `diag` 打开硬件诊断，看内置 Flash/SD 卡容量；运行中插入/拔出 SD 卡 | 容量数字正确；插入约 2 秒内上线，不需要重启；拔出后几秒内被检测为离线 |  |
-| 24 | NVS 设置持久化（wisp_port_esp::NvsSettingsBackend） | 改一项会在启动时读取的设置（如亮度），整机断电重启（不是软重启） | 修改值在重启后仍生效 |  |
-| 25 | 内部存储降级路径（可选，wisp_port_esp::EspStorage 降级路径） | 如方便的话，人为让 `storage.int` 挂载失败 | 系统仍以降级/只读模式启动，不中止 |  |
-| 26 | 待机进入/退出与唤醒（spec 6.7/10.3，wisp_app::PowerManager/PowerKeyController） | 亮屏时短按电源键进入待机；按任意键唤醒；再测试：电源键确认框打开时等待自动熄屏触发，分别用短按/长按唤醒 | 待机后任意键均可唤醒；确认框场景下两种按法都能唤醒（对话框可能仍留在界面上），不会因为"唤醒"和"确认框"逻辑冲突而异常 |  |
-| 27 | 唤醒延迟（spec 10.5） | 从按电源键到面板实际重新点亮计时（秒表或逻辑分析仪） | ≤ 300 ms（见下方"待机与省电"一节的 `DcsSleep` 估算，约 200 ms，仅为估算） |  |
-| 28 | 待机电流（spec 10.5） | 见下方"验收第 5 条"的详细测量方法 | 待机平均电流 ≤ 亮屏静止平均电流的 1/10 |  |
-| 29 | 多次浅睡眠后无异常（wisp_app::PowerManager 轻睡眠） | 待机 10 分钟以上（确保发生过多次自动浅睡眠）后唤醒 | 面板无花屏、亮度未被意外重置；触摸正常响应；扬声器无异常噗声或底噪（见下方"验收第 5 条"第 1 条） | 通过（2026-11-05，裁定 A，见上方"浅睡兼容性（3b-1 spike）"一节）：运行 2 待机 10 分钟、`sleeps` 751366 次，唤醒后面板、触摸正常；前提是待机期间关闭音频 I2S 通道 |
-| 30 | IMU 掉电恢复（wisp_app::PowerManager 待机，drivers/qmi8658） | 待机前记一次 IMU 读数，唤醒后再看 | 读数恢复正常更新，不是待机前最后一次读数，也不是全零/明显错误值（见"验收第 5 条"第 4 条） |  |
-| 31 | SD 探测暂停（wisp_port_esp::sd_retry 待机期间暂停探测） | 插卡待机若干分钟后唤醒；可选在待机期间物理插拔 SD 卡 | 唤醒后 `online()` 仍正确；待机期间的插拔只在唤醒后才被发现（预期行为，不是 bug，见"验收第 5 条"第 5 条） |  |
-| 32 | 触摸复位引脚功耗（可选测量，待机功耗评估） | 待机期间尝试拉低触摸复位引脚（GPIO40），对比前后电流 | 仅用于评估是否值得做后续省电项，不代表现在代码需要改动（见"验收第 5 条"第 6 条） |  |
-| 33 | UI 帧率基准（spec 10 性能基准） | `diag` 打开硬件诊断，手指持续滚动诊断列表 10 秒，看串口 `WISP_PERF` | 目标 fps ≥ 30。验收线（用户 2026-11-04 裁定，见 foundation spec 第 10 节"已记录的偏差"）：不低于下方"性能基准"一节记下的当前基准（2026-11-05 用户同意在当前硬件诊断界面（原自检界面）上重测，见该节"当前基准"）：关热点 18.3 fps，开热点（配网卡片显示时）29.8 fps；用 `bench scroll` 测，手指滚动只作参考；把 fps/cpu/flush_ms 三个数值记入该节 |  |
-| 34 | DFS 不拖累帧率（firmware/main.cpp apply_pm_config，DFS/light sleep） | 对比开启/关闭 `CONFIG_PM_ENABLE` 前后的 `WISP_PERF` | 开启 DFS 后帧率仍不低于上一项的基准 |  |
-| 35 | `power.charging.changed` 事件（spec 6.3，wisp_core::PowerMonitor） | 插拔 USB 电源，看串口上 `power_monitor` 的 `power.charging.changed: charging=... usb_present=... battery_percent=...` 日志行 | 插拔后 1 秒内出现该日志行，`charging`/`usb_present` 的值与实际状态一致 |  |
-| 36 | `power.battery.low` 事件（spec 6.3，wisp_core::PowerMonitor） | 电量明显偏低时观察串口日志；子项目 1 还没有 CLI/REST 能改 Settings，想快速触发可以临时在 `components/wisp_app/src/app.cpp` 里 `core::Settings power_settings(*impl_->platform.settings, "power");`（约第 102 行）之后加一行 `power_settings.set("low_batt_pct", int64_t{100});`，重新编译固件验证完后删掉这行（不要提交） | 只出现一次 `power_monitor` 的 `power.battery.low: battery_percent=... (threshold=...)` 日志行（不持续重复）；电量回升超过阈值+5 后再降回阈值以下会再出现一次；没有接电池、只接 USB 供电时不出现该日志 |  |
-| 37 | 新分区表首次完整烧录（connectivity spec 3.2） | 在已经有设置和数据（配过 Wi-Fi、配对过浏览器、改过亮度、`/int` 里有文件）的板子上执行 `idf.py -p <PORT> flash` | 正常启动；串口没有分区相关报错；Wi-Fi、配对、亮度等设置和 `/int` 数据都还在；管理后台"系统"页的固件卡片显示版本、`waveshare_esp32_s3_touch_amoled_2_16` 和运行分区 `ota_0` |  |
-| 38 | 网页上传并确认（connectivity spec 6.5） | 改一点代码再构建，在"系统"页上传 `firmware/build/wisp.bin`；设备上弹出确认框后点"是" | 进度条走完后网页提示"请在设备上确认"；确认框显示旧版本 → 新版本；点"是"后设备重启，网页提示正在运行新版本；固件卡片的运行分区变成 `ota_1`；串口没有回滚日志 |  |
-| 39 | 网页上传后拒绝 | 再上传一次，设备上点"否"；再上传一次，2 分钟内不操作 | 两次网页都提示"已在设备上拒绝"；设备不重启，版本与运行分区不变 |  |
-| 40 | 拒绝其他板子的镜像 | 用 `-DWISP_BOARD=<另一块板>` 构建（或上传任何非 Wisp 的 ESP-IDF 应用 `.bin`）后上传 | 网页立即提示"这个固件是为其他开发板或芯片构建的"（400 `wrong_board`），设备上不弹确认框，Flash 未被写入（再上传一次正确镜像仍然正常） |  |
-| 41 | 启动失败自动回滚（`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`） | 临时在 `firmware/main/main.cpp` 的 `app_main()` 开头加一行 `abort();` 构建（不要提交），上传并在设备上确认 | 新镜像崩溃复位后，引导程序回到旧镜像；网页提示"设备重启后运行的仍是旧版本，已回滚"；之后上传正常镜像仍能装上 |  |
-| 42 | 发布版帧率（全局 `-Os`、渲染路径 `-O2`） | 用默认（发布版）配置构建烧录，重复第 33 项 | `WISP_PERF` 的 fps 不低于第 33 项的验收线（关热点 18.3、开热点 29.8 fps；目标仍是 30）。`esp_driver_spi` 改用 `-O2` 已实测无收益（见该节），不用再试 |  |
-| 43 | 上传期间的日志推送 | 上传固件时打开"日志"页 | 上传期间日志暂停推送（httpd 只有一个任务，被上传请求占着），上传结束后恢复推送，WebSocket 不断开 |  |
-| 44 | 内部 RAM 最坏情况（AGENTS.md 第 5 节的预算） | 设备连上家里的 Wi-Fi 后在串口执行 `wifi ap on`，手机连上热点打开设置页；电脑经 STA 地址打开管理页的"日志"页（WebSocket），在"模型"页对一个真实的 HTTPS 端点做连通性测试，再上传一次固件；全程每隔几秒执行一次 `mem` | 日志里 `admin server listening on port 8900` 和 `captive redirect listening on port 80` 都出现，后面的 `internal RAM: ...` 行不是警告；`mem` 的 `internal free` 始终 ≥ 40 KB、`largest` ≥ 16 KB（`min` 是各内存区各自最低点之和，偏低，只能当下限看）；`wisp.ws`、`wisp.dns` 和端口 80 的 `httpd` 的栈在 `psram`，端口 8900 的 `httpd` 的栈在 `internal`；整个过程 STA 不掉线、日志里没有反复重连（RX BA 窗口只有 10，换路由器时也看一眼） | |
-| 45 | 不透明卡片的遮挡裁剪（`wisp/ui/overlay.hpp`） | `wifi ap on` 让配网卡片显示，`diag` 打开硬件诊断，手指上下滚动诊断列表；再执行 `wifi ap off` 关掉卡片 | 滚动时卡片周围和卡片上没有残影、撕裂或缺块；关掉卡片后，卡片原来位置下面的列表内容完整、与周围一致 | 用户 2026-11-04 确认开热点滚动无残影（之后修过渲染期间的探测和隐藏图层的处理，建议复看一次） |
-| 46 | 配网二维码（按屏幕像素格式存，`net_cards.cpp` 的 `flatten_qr()`） | `wifi ap on` 后用手机相机扫配网卡片上的二维码 | 黑白没有反，手机能识别并提示连接热点 | 用户 2026-11-04 确认能扫 |
-| 47 | 默认字体的 8 位字形缓存（`components/wisp_ui/src/a8_font.cpp`） | 看硬件诊断（`diag`）和配网卡片上的中、日、英文文字 | 与改动前一样：没有缺字、错字、发虚或错位 |  |
-| 48 | 开 XIP 后的待机与唤醒（`CONFIG_SPIRAM_XIP_FROM_PSRAM`） | 开 XIP 的固件上重复第 26–29 项（待机进入与唤醒、唤醒延迟、待机电流、多次浅睡眠） | 结果与第 26–29 项的预期一致；浅睡眠唤醒后没有花屏、复位或卡死 | 通过（2026-11-05）：探针固件延续本板默认配置（已开 XIP），见上方"浅睡兼容性（3b-1 spike）"一节；结论同第 29 项 |
-| 49 | 网络校时（连接 spec 5.6，`net::TimeSyncService`、`wisp_port_esp` 的 `EspSntp`） | 连上 Wi-Fi 后看串口日志和硬件诊断（`diag`）的"电源与时钟"卡片；再用 `mem` 看 `wisp.ntp` 任务；在管理后台"系统"页点"立即校时"；把 `ntp_servers` 改成 `down.invalid,ntp.aliyun.com` 再校时一次 | 拿到 IP 后几秒内出现 `time: synced from pool.ntp.org`（或回落到 `ntp.aliyun.com`）；卡片显示"Synced HH:MM"（本地时间）；`wisp.ntp` 栈在 PSRAM 且 high-water mark 余量足够（4096 字节栈），按实测调整 `NetWiring::kNtpStackBytes`；空闲时内部 RAM 不低于预算；第二次校时回落到 `ntp.aliyun.com` |  |
-| 50 | 两种安装方式（scene spec 9.4.1） | 网页"场景"页上传 `counter` 的 zip；`python3 tools/wisp_scene.py --host <IP>:8900 push scenes/examples/todo --open`；`diag` 打开硬件诊断，从"场景"区块打开两者 | 都安装成功，推送输出显示声明的域名；列表点击即打开 | 2026-11-05：通过。API 推送与网页 zip 上传都安装成功（日志 `admin: scene upload started` 后场景正常安装/打开/关闭）。 |
-| 51 | 示例功能与断电保留（scene spec 9.4.2） | 逐个打开 7 个示例；在待办加 3 条、记账加 2 条后拔电池和 USB 断电重启 | 功能正常；重启后数据仍在 |  |
-| 52 | 返回手势与错误面板（scene spec 9.4.3） | 从圆角屏左边缘 16 px 以内起、向右滑动超过 24 px（任意角度，`ui::SystemLayer::kBackZoneWidth`/`kBackTriggerDx`，见 `components/wisp_ui/include/wisp/ui/system_layer.hpp`）；推送 `tests/scene/fixtures/broken` 并打开，点"返回"，再打开点"重载" | 手势可用；错误面板显示文件与行号（`main.lua:5`），返回与重载正常 |  |
-| 53 | 长列表帧率与内存（scene spec 9.4.4） | 待办放 200 条，手指持续滚动 10 s，看 `WISP_PERF`；同时执行 `mem`；记下日志里 `slow message` 的最大耗时（GC 停顿） | fps 不低于硬件诊断界面关热点的基准 18.3（下方"性能基准"一节的"当前基准"）；`internal free` ≥ 60 KB、`largest` ≥ 20 KB（`ram_budget.hpp` 的 `kIdleInternalFreeMin`/`kIdleInternalLargestMin`） | 2026-11-05：todo200 持续滚动 fps 22–26，偶尔掉到 14；`internal free` ≥ 84 KB，高于 60 KB 下限；`slow message open` 115–196 ms。短暂掉到 14 fps 低于基准，本次没有继续排查。 |
-| 54 | 熄屏恢复与待机耗电（scene spec 9.4.5） | 番茄钟和时钟运行时熄屏 3 分钟再亮屏；按"验收第 5 条：待机耗电实测"一节的方法测待机电流，对比无场景时 | 剩余时间与表盘正确，`minute` 只补一次；待机电流与无场景时相当 |  |
-| 55 | 未声明域名被拒（scene spec 9.4.6） | 临时把天气场景的 URL 改成未声明的主机后推送打开 | 回调收到 `permission_denied`，没有出站连接 |  |
-| 56 | LVGL 堆在 PSRAM 后的帧率 | 不开场景，在最终固件上先 `diag` 打开硬件诊断，重复"UI 帧率基准"一行，不开热点与开热点各测一次（LVGL 堆改到 PSRAM 后已经在真机上测过一次，见下方"性能基准"一节的"LVGL 堆"小节） | `bench scroll` 的 fps 不开热点 ≥ 18.3、开热点 ≥ 29.8（下方"性能基准"一节的"当前基准"）；低于时停下来报告，不要自行改回 | 2026-11-05：不开热点 22–24 fps，达标（基准 22.7）；开热点 23–24 fps，当时按 28.2 的基准记为低于基准、待排查。验收线改为开热点 ≥ 22.7 之后，这个结果达标。 |
-| 57 | 内部 RAM 最坏情况复测（mbedTLS 的分配全部改到 PSRAM 之后，`firmware/sdkconfig.defaults` 的 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`；UI 任务栈也已从 8 KB 加到 10 KB） | 烧录包含这项改动的固件（改 `sdkconfig.defaults` 后要先删掉 `firmware/sdkconfig` 再构建，否则不生效；构建后 `firmware/sdkconfig` 里应是 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`）。按第 44 项的同一场景操作：STA 连家里的 Wi-Fi，`wifi ap on`，手机连热点打开设置页，电脑经 STA 打开管理页"日志"页（WebSocket）；然后同时进行：打开天气场景（HTTPS）、在"模型"页对真实 HTTPS 端点做连通性测试、上传一次固件。全程每隔 1–2 秒执行一次 `mem` | 每次 `mem` 的 `internal free` 都 ≥ 40 KB（`kWorstInternalFreeMin`）、`largest` ≥ 16 KB；记下所有采样里最低的 `internal free` 和最后的 `min`。`internal free` 是同一时刻的快照，以它为准；`min` 是各内存区各自最低点之和，偏低，只作参考。若采样都 ≥ 40 KB 但 `min` < 40 KB，记下两者，不算不达标（需要精确最低点时，可以临时在固件里用 `heap_caps_monitor_local_minimum_free_size_start/stop(MALLOC_CAP_INTERNAL)` 包住这段操作）。同时确认：天气场景和连通性测试都成功（握手变慢但不超时），STA 不掉线。结果低于 40 KB 时停下来报告 | 2026-11-05 达标（固件 `0.1.0-463-g9b24c06`，主题分支合并版，含 3a、矢量字体和 flash 自动挂起）：STA 连着家里的 Wi-Fi，`wifi ap on`，电脑的无线网卡连上热点、每 2 s 取一次 `setup.html`（全部 200），电脑经 STA 订阅场景日志（WebSocket）；同时推送并打开天气场景（HTTPS 取数成功）、对一个 DeepSeek 端点做连通性测试（用假密钥，完整 TLS 握手后得到 HTTP 401，2.2 s，测完删掉这个配置）、上传一次 3.97 MB 固件（202，之后未确认、按超时丢弃）。每 1.5 s 一次 `mem`，共 51 个采样：`internal free` 最低 62635 B、`largest` 始终 31744 B，都高于 40 KB / 16 KB；最后的 `min` 是 39732 B（各内存区最低点之和，偏低，只作参考）。`wisp.ws`、`wisp.dns` 和端口 80 的 `httpd` 栈在 `psram`，端口 8900 的 `httpd` 在 `internal`（high-water mark 剩余最低 3220 B）；全程 STA 没有断线。连通性测试和上传是先后进行的（测试结束 11 ms 后上传开始），没有完全重叠。 |
-| 58 | flash 写入期间渲染矢量字形（上文"flash 擦写与映射读取"） | 启动日志确认有 `Flash suspend feature is enabled`；打开一个有大字号汉字的界面（或不断切换含大字的场景），同时在管理后台上传一次固件 | 不崩溃；上传成功（202）并在重启后运行新固件；大字显示正常、没有乱码字形 | 2026-11-05：真机 OTA 通过：「大字测试」显示时经管理后台上传 `0.1.0-449-gc0be5e3`（202），上传和重启期间不崩溃，重启后启动日志有 `Flash suspend feature is enabled`、`fonts: image ok`，用户确认标题是矢量大字。此前用 `fprobe` 临时命令压测（128 px 换字 150 s + 同时擦写 `ota_1` 46.9 MB）也没有崩溃，比对映射区 24 遍 0 字节错 |
-| 59 | `wisp.sd` 栈在 PSRAM 不触发 flash 保护（flash-thread spec 3.9：`wisp.sd` 只做 SD 卡的挂载探测，声明 `flash_access = false`） | 插入 SD 卡，反复拔插触发 `EspSdStorage` 的挂载/卸载重试（见上文"存储容量与 SD 热插拔"一项）；同时用 `mem` 核对 `wisp.sd` 任务的栈位置 | `wisp.sd` 栈在 `psram`；挂载、卸载、重试过程不 abort、不触发"flash access off the flash thread" | |
-| 60 | 管理后台 httpd（8900）栈改到 PSRAM（flash-thread spec 3.6/3.9：OTA 与 Settings 都已经经 `run_sync` 交给 `wisp.fs`，httpd 自己不再碰 flash，`EspHttpServerConfig::flash_access` 缺省改为 false）——这改变了上文"内部 RAM"一节第 44、57 项记录的基线（当时 8900 的 httpd 栈在 `internal`） | 重复第 44/57 项的最坏情况组合（STA+AP、两个 httpd、WebSocket 日志、TLS 握手、OTA 上传同时进行），用 `mem` 核对 8900 的 `httpd` 栈位置并记录新的 `internal free`/`largest` | 8900 的 `httpd` 栈在 `psram`（不再是 `internal`）；上传、设置读写和配网流程均不出现"flash access off the flash thread"；`internal free` 相对第 57 项的基线应有提升（约 10 KB，`stack_bytes` 从内部挪到 PSRAM） | |
-| 61 | 新分区表换表烧录（字形分区 spec 5.1） | 在已经有设置和矢量大字（已走过第 37 项那张表）的板子上执行 `idf.py -p <PORT> flash`，写入新分区表、应用、`fonts.bin` 和 `glyphs.bin` | 正常启动；Wi-Fi、配对、亮度等设置和矢量大字都还在；`/int` 已重新格式化（场景列表为空）；重新推送一个示例场景能正常安装和打开；启动日志里有 `glyphs` 镜像校验通过的一行 |  |
-| 62 | 镜像大小与 PSRAM 总量（字形分区 spec 5.2） | `idf.py size` 看 Total image size；硬件诊断（`diag`）看 PSRAM"共"；记录换表前后 `WISP_BOOT_REPORT` 的 `boot_ms`（字形分区 spec 4.4：新增的 `glyphs` 镜像 CRC 校验以它衡量） | 镜像约 3.13 MB；PSRAM"共"约 5 MB；记下两次 `boot_ms` 及差值 |  |
-| 63 | 开关热点的滚动帧率（字形分区 spec 5.3） | 先 `diag` 打开硬件诊断，`bench scroll 10` 分别在不开热点、开热点（配网卡片显示）时测一次 | fps 不低于下方"性能基准"一节记下的当前基准 |  |
-| 64 | 正文显示不变（字形分区 spec 5.4） | 目测硬件诊断、番茄钟、待办等界面的中文正文 | 与换表前一致，没有缺字、错字、发虚或错位 |  |
-| 65 | 仅擦 `glyphs` 分区的降级（字形分区 spec 5.5） | 只烧应用（`idf.py app-flash`），再 `parttool.py erase_partition --partition-name=glyphs` | 正常启动；中文正文以矢量 16 px 显示；启动日志有警告；`idf.py fonts-flash` 后恢复为位图正文 |  |
-| 66 | OTA 期间滚动正文（字形分区 spec 5.6） | 打开一个有中文正文的界面并持续滚动，同时经管理后台上传一次固件 | 显示正常、不崩溃；上传成功并在重启后运行新固件 |  |
+| 1 | Boot time (spec 10.1) | `idf.py -p <PORT> flash monitor`; time from power-on until the home screen (black background, wisp in the centre) appears, by eye or with serial timestamps; also look at `boot_ms` in `WISP_BOOT_REPORT` | `boot_ms` < 3000 | |
+| 2 | Boot report/capability list format (spec 10.4, wisp_core::BootReport/DeviceRegistry::manifest()) | Look at the two lines `WISP_BOOT_REPORT <json>` and `WISP_MANIFEST <json>` on the serial port | Both are valid single-line JSON; device states are as expected (`storage.sd` reported as missing with no SD card inserted is normal) |  |
+| 3 | IMU has no magnetometer (spec 10.4) | Look at `imu.main.caps` in `WISP_MANIFEST` | `magnetometer` is `false` |  |
+| 4 | Display capability list (display driver: esp_display) | Look at `display.main` in `WISP_MANIFEST` | `model` is `CO5300`; `caps` contains `width:480 height:480 shape:"rounded_rect" corner_radius:70 panel:"amoled" brightness:true area_align:2 rgb565_be:true`; `safe_area` is `{24,24,455,455}` |  |
+| 5 | Touch model (touch driver: bmgr dev_lcd_touch) | Look at `touch.main` in `WISP_MANIFEST` | `model` is `CST9217` |  |
+| 6 | Display colours (byte order: esp_display publishes the caps `rgb565_be`, and wisp_ui renders high byte first directly from it) | Open hardware diagnostics with `diag`, show solid colour blocks or backgrounds, and check pure red and pure blue by eye | Red and blue are not swapped and not speckled; if they are swapped, the byte order was judged wrong |  |
+| 7 | No clipping in the four corners (spec 8, 10.2) | Look at the four corners of the home screen and hardware diagnostics (`diag`) | Content is not clipped by the rounded corners |  |
+| 8 | Touch coordinate orientation (touch driver: esp_display_touch coordinate mapping) | Tap the four corners of the screen in turn | The top-left corner is near (0,0) and the bottom-right near (479,479); not mirrored, X and Y not swapped |  |
+| 9 | Partial refresh without misalignment (display driver: esp_display flush_async()/area alignment, two buffers transferred in turn) | Open hardware diagnostics with `diag` and scroll the device list up and down quickly | No stripes, misalignment, or a section showing the previous frame or another section's content |  |
+| 10 | Brightness initialisation (display driver: esp_display set_brightness()) | Compare the brightness right at power-on with the brightness once the home screen has settled | Set to 200 after boot, so it should be slightly darker than the 0xFF at initialisation |  |
+| 11 | IMU follows tilt (spec 10.2) | Open hardware diagnostics with `diag`, tilt the device and watch the ball; lay it flat and look at `az` | The ball follows the tilt smoothly; when flat, `az` is close to 1.0g |  |
+| 12 | Gyroscope values are sensible (drivers/qmi8658, newly written register configuration, check carefully) | Open hardware diagnostics with `diag`, keep the device still and then rotate it, and look at `gx/gy/gz` | Close to 0 dps when still; direction and magnitude match intuition when rotating; if an axis is reversed or the range is off, check the CTRL3 FS/ODR encoding in `drivers/qmi8658/qmi8658.c` |  |
+| 13 | Battery level and charging state updates (spec 10.2, drivers/axp2101) | Open hardware diagnostics with `diag` and look at the battery percentage and the "Charging"/"Not charging" (充电中/未充电) state; plug and unplug USB power; you can also look at the `power.charging.changed` log line of `power_monitor` on the serial port (see item 35 below) | The percentage is in a sensible range; after plugging or unplugging, the charging state updates within 1 second |  |
+| 14 | Events from the three buttons (spec 10.2, wisp_core::ButtonService) | Open hardware diagnostics with `diag` and short-press/long-press power, vol_up and vol_down in turn | The diagnostics screen shows the matching event for each |  |
+| 15 | Short press of the power key (spec 10.3) | With the screen on, short-press the power key, then short-press it again | The first press turns the screen off (enters standby), the second turns it on again |  |
+| 16 | Long press of the power key to power off (spec 10.3, drivers/axp2101 power_off, wisp_app::PowerKeyController) | With the screen on, hold the power key for about 1 second (without releasing) | The power-off confirmation dialog appears while it is held; the press held to power on at boot does not trigger it; after confirming, the whole device loses power (judge with an ammeter or an indicator light, not just by the screen going dark) |  |
+| 17 | Power on from the off state (spec 10.3) | Long-press the power key while powered off | It powers on again |  |
+| 18 | RTC keeps time (spec 10.2, drivers/pcf85063) | Check the boot log for "system clock set from clock.main RTC"; remove power (unplug USB and the battery), restart and check the time again. If the RTC has never been set (the chip's first power-up), `get_unix()` fails, the log has only one `WLOG_W`, and the system time is not set. In that case, connect to Wi-Fi first: once network time sync (connectivity spec 5.6) succeeds, the log shows `time: synced from <server>: unix <seconds>` and the RTC is written at the same time; then restart to verify this item | The log shows "system clock set from clock.main RTC"; after restarting the time is continuous and does not jump back to 1970 or a fixed value |  |
+| 19 | Charge current profile (drivers/axp2101 charge parameter configuration) | With a clearly low battery, power the device through a USB power meter and watch the current during charging; also check whether the boot log shows `power.main: charging configuration failed: ...` (the `WLOG_W` in `board.cpp`) | The constant-current phase holds at about 400mA; the current tapers off near 4.2V; once full, `charging` flips to `false` and the current drops to a maintenance level, without a sustained high-current overcharge; no `charging configuration failed` log (if it appears, `axp2101_charging_config_status()` returned something other than `ESP_OK`, and the charge parameters may have stayed at the chip's factory defaults) |  |
+| 20 | Audio/storage device states (wisp_port_esp::EspAudio/EspStorage) | Look at `audio_out.main`/`audio_in.main`/`storage.int`/`storage.sd` in `WISP_BOOT_REPORT` | The first three are `ok`; `storage.sd` is `ok` or `missing` ("no card") depending on whether a card is inserted |  |
+| 21 | No pop at boot (display driver power-up sequence, wisp_port_esp::EspAudio initialisation) | With a speaker connected, listen at the moment of boot | No audible click or pop before the home screen appears |  |
+| 22 | Mic test (spec 10.2, wisp_app::loopback) | Open hardware diagnostics with `diag` and tap the "Mic test" button ("录音回放" in the Chinese UI) | It records for 3 seconds and then plays back, at a suitable volume, with the correct sound, not distorted, not stuttering, not silent |  |
+| 23 | Storage capacity and SD hot-plug (spec 10.2, wisp_port_esp::EspStorage/sd_retry) | Open hardware diagnostics with `diag` and look at the internal flash/SD card capacities; insert and remove the SD card while running | The capacity figures are correct; after insertion the card comes online within about 2 seconds with no restart; after removal it is detected as offline within a few seconds |  |
+| 24 | NVS settings persistence (wisp_port_esp::NvsSettingsBackend) | Change a setting that is read at boot (such as brightness), then remove power from the whole device and restart (not a soft restart) | The changed value still applies after the restart |  |
+| 25 | Internal storage degraded path (optional, wisp_port_esp::EspStorage degraded path) | If convenient, make `storage.int` fail to mount on purpose | The system still boots in degraded/read-only mode, without aborting |  |
+| 26 | Entering/leaving standby and waking (spec 6.7/10.3, wisp_app::PowerManager/PowerKeyController) | With the screen on, short-press the power key to enter standby; press any key to wake. Then also test: with the power key confirmation dialog open, wait for the automatic screen-off to trigger, then wake with a short press and with a long press | Any key wakes from standby; with the dialog open both kinds of press wake it (the dialog may still be on screen), with no misbehaviour from the "wake" and "confirmation dialog" logic clashing |  |
+| 27 | Wake latency (spec 10.5) | Time from pressing the power key until the panel actually lights again (stopwatch or logic analyser) | ≤ 300 ms (see the `DcsSleep` estimate in the "Standby and power saving" section below, about 200 ms, only an estimate) |  |
+| 28 | Standby current (spec 10.5) | See the detailed measurement method in "Acceptance item 5" below | Average standby current ≤ 1/10 of the average current with the screen on and idle |  |
+| 29 | No problems after repeated light sleep (wisp_app::PowerManager light sleep) | Wake after more than 10 minutes in standby (making sure several automatic light sleeps have happened) | No garbled panel and the brightness has not been reset unexpectedly; touch responds normally; no unusual pops or noise floor from the speaker (see item 1 of "Acceptance item 5" below) | Pass (2026-11-05, ruling A, see the "Light-sleep compatibility (3b-1 spike)" section above): run 2 was in standby for 10 minutes with `sleeps` at 751366, and the panel and touch were normal after waking; this assumes the audio I2S channels are closed during standby |
+| 30 | IMU recovery after power-down (wisp_app::PowerManager standby, drivers/qmi8658) | Note an IMU reading before standby, and look again after waking | The readings update normally again; they are neither the last reading before standby nor all zeros/clearly wrong values (see item 4 of "Acceptance item 5") |  |
+| 31 | SD probing pauses (wisp_port_esp::sd_retry pauses probing during standby) | With a card inserted, stay in standby for a few minutes and wake; optionally insert/remove the SD card physically during standby | After waking, `online()` is still correct; insertions and removals during standby are noticed only after waking (expected behaviour, not a bug, see item 5 of "Acceptance item 5") |  |
+| 32 | Power use of the touch reset pin (optional measurement, standby power evaluation) | During standby, try pulling the touch reset pin (GPIO40) low and compare the current before and after | Only for evaluating whether a later power-saving item is worthwhile; it does not mean the code needs to change now (see item 6 of "Acceptance item 5") |  |
+| 33 | UI frame rate baseline (spec 10 performance baseline) | Open hardware diagnostics with `diag`, keep scrolling the diagnostics list with a finger for 10 seconds, and look at `WISP_PERF` on the serial port | Target fps ≥ 30. Acceptance line (ruled by the user on 2026-11-04, see "Recorded deviations" in section 10 of the foundation spec): not below the current baseline recorded in the "Performance baselines" section below (on 2026-11-05 the user agreed to re-measure on the current hardware diagnostics screen (the former self-check screen), see "Current baseline" in that section): 18.3 fps with the hotspot off, 29.8 fps with the hotspot on (while the Wi-Fi setup card shows); measure with `bench scroll`, with finger scrolling only for reference; record the three values fps/cpu/flush_ms in that section |  |
+| 34 | DFS does not hurt the frame rate (firmware/main.cpp apply_pm_config, DFS/light sleep) | Compare `WISP_PERF` with `CONFIG_PM_ENABLE` on and off | With DFS on, the frame rate is still not below the previous item's baseline |  |
+| 35 | `power.charging.changed` event (spec 6.3, wisp_core::PowerMonitor) | Plug and unplug USB power and look at the `power.charging.changed: charging=... usb_present=... battery_percent=...` log line of `power_monitor` on the serial port | The log line appears within 1 second of plugging or unplugging, and the values of `charging`/`usb_present` match the real state |  |
+| 36 | `power.battery.low` event (spec 6.3, wisp_core::PowerMonitor) | Watch the serial log when the battery is clearly low. Sub-project 1 has no CLI/REST yet to change Settings; to trigger it quickly, you can temporarily add a line `power_settings.set("low_batt_pct", int64_t{100});` after `core::Settings power_settings(*impl_->platform.settings, "power");` (around line 102) in `components/wisp_app/src/app.cpp`, rebuild the firmware, and delete the line once verified (do not commit it) | The `power.battery.low: battery_percent=... (threshold=...)` log line of `power_monitor` appears only once (not repeated continuously); after the level recovers above the threshold + 5 and then drops below the threshold again, it appears once more; with no battery and only USB power, the log does not appear |  |
+| 37 | First full flash with the new partition table (connectivity spec 3.2) | On a board that already has settings and data (Wi-Fi set up, a browser paired, brightness changed, files in `/int`), run `idf.py -p <PORT> flash` | Boots normally; no partition-related errors on the serial port; the Wi-Fi, pairing, brightness and other settings and the `/int` data are all still there; the firmware card on the admin console's "System" page shows the version, `waveshare_esp32_s3_touch_amoled_2_16` and the running partition `ota_0` |  |
+| 38 | Web upload and confirm (connectivity spec 6.5) | Change a little code and build, then upload `firmware/build/wisp.bin` on the "System" page; when the confirmation dialog appears on the device, tap "Yes" | After the progress bar finishes, the web page says "Confirm on the device"; the confirmation dialog shows old version → new version; after "Yes", the device restarts and the web page says the new version is running; the running partition on the firmware card changes to `ota_1`; no rollback log on the serial port |  |
+| 39 | Rejecting after a web upload | Upload again and tap "No" on the device; upload once more and do nothing for 2 minutes | Both times the web page says the upload was declined on the device ("Declined on the device. Nothing was installed."); the device does not restart, and the version and running partition do not change |  |
+| 40 | Rejecting another board's image | Build with `-DWISP_BOARD=<another board>` (or take any non-Wisp ESP-IDF app `.bin`) and upload it | The web page immediately says "This firmware is for another board or chip." (400 `wrong_board`); no confirmation dialog appears on the device, and flash is not written (uploading a correct image afterwards still works) |  |
+| 41 | Automatic rollback on boot failure (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`) | Temporarily add a line `abort();` at the start of `app_main()` in `firmware/main/main.cpp` and build (do not commit it), upload it and confirm on the device | After the new image crashes and resets, the bootloader goes back to the old image; the web page says the device came back running the old version and the new firmware was rolled back; uploading a normal image afterwards still installs |  |
+| 42 | Release-build frame rate (global `-Os`, rendering path `-O2`) | Build and flash with the default (release) configuration and repeat item 33 | The fps of `WISP_PERF` is not below the acceptance line of item 33 (18.3 fps with the hotspot off, 29.8 with it on; the target is still 30). `-O2` for `esp_driver_spi` has been measured to bring no gain (see that section); no need to try it again |  |
+| 43 | Log push during an upload | Open the "Logs" page while uploading firmware | Log push pauses during the upload (httpd has only one task, and the upload request occupies it), resumes after the upload ends, and the WebSocket does not disconnect |  |
+| 44 | Internal RAM worst case (the budget of AGENTS.md section 5) | With the device connected to the home Wi-Fi, run `wifi ap on` on the serial port and open the setup page on a phone connected to the hotspot; on a computer, open the admin page's "Logs" page (WebSocket) through the STA address, run a connection test against a real HTTPS endpoint on the "Model" page, then upload firmware once; run `mem` every few seconds throughout | Both `admin server listening on port 8900` and `captive redirect listening on port 80` appear in the log, and the later `internal RAM: ...` lines are not warnings; the `internal free` of `mem` stays ≥ 40 KB and `largest` ≥ 16 KB (`min` is the sum of each memory region's own low point, which is too low, so only treat it as a lower bound); the stacks of `wisp.ws`, `wisp.dns` and the port-80 `httpd` are in `psram`, and the stack of the port-8900 `httpd` is in `internal`; STA never drops throughout and the log shows no repeated reconnects (the RX BA window is only 10, so take a look when changing routers too) | |
+| 45 | Occlusion clipping for opaque cards (`wisp/ui/overlay.hpp`) | Show the Wi-Fi setup card with `wifi ap on`, open hardware diagnostics with `diag`, and scroll the diagnostics list up and down with a finger; then close the card with `wifi ap off` | No ghosting, tearing or missing blocks around or on the card while scrolling; after the card closes, the list content where the card used to be is complete and consistent with its surroundings | The user confirmed on 2026-11-04 that scrolling with the hotspot on shows no ghosting (the probing during rendering and the handling of hidden layers were fixed later; worth a second look) |
+| 46 | Wi-Fi setup QR code (stored in the screen's pixel format, `flatten_qr()` in `net_cards.cpp`) | After `wifi ap on`, scan the QR code on the Wi-Fi setup card with a phone camera | Black and white are not inverted, and the phone recognises it and offers to join the hotspot | The user confirmed on 2026-11-04 that it scans |
+| 47 | 8-bit glyph cache of the default font (`components/wisp_ui/src/a8_font.cpp`) | Look at the Chinese, Japanese and English text in hardware diagnostics (`diag`) and on the Wi-Fi setup card | Same as before the change: no missing or wrong characters, no blur or misalignment |  |
+| 48 | Standby and wake with XIP on (`CONFIG_SPIRAM_XIP_FROM_PSRAM`) | On firmware with XIP on, repeat items 26–29 (entering standby and waking, wake latency, standby current, repeated light sleep) | Results match the expectations of items 26–29; no garbled screen, reset or hang after waking from light sleep | Pass (2026-11-05): the probe firmware kept this board's default configuration (XIP already on), see the "Light-sleep compatibility (3b-1 spike)" section above; same conclusion as item 29 |
+| 49 | Network time sync (connectivity spec 5.6, `net::TimeSyncService`, `EspSntp` in `wisp_port_esp`) | After connecting to Wi-Fi, look at the serial log and the "Power & clock" card of hardware diagnostics (`diag`); then look at the `wisp.ntp` task with `mem`; tap "Sync now" on the admin console's "System" page; change `ntp_servers` to `down.invalid,ntp.aliyun.com` and sync once more | Within a few seconds of getting an IP, `time: synced from pool.ntp.org` appears (or it falls back to `ntp.aliyun.com`); the card shows "Synced HH:MM" (local time); the `wisp.ntp` stack is in PSRAM with enough high-water-mark margin (4096-byte stack), and `NetWiring::kNtpStackBytes` is adjusted from the measurement; idle internal RAM is not below budget; the second sync falls back to `ntp.aliyun.com` |  |
+| 50 | Both install methods (scene spec 9.4.1) | Upload the `counter` zip on the web "Scenes" page; `python3 tools/wisp_scene.py --host <IP>:8900 push scenes/examples/todo --open`; open hardware diagnostics with `diag` and open both from the "Scenes" card | Both install successfully, and the push output shows the declared domains; tapping in the list opens them | 2026-11-05: pass. Both the API push and the web zip upload installed successfully (after the log line `admin: scene upload started`, the scene installed, opened and closed normally). |
+| 51 | Example features and persistence across power loss (scene spec 9.4.2) | Open the 7 examples one by one; after adding 3 to-dos and 2 ledger entries, remove the battery and USB to cut power and restart | Features work; the data is still there after the restart |  |
+| 52 | Back gesture and error panel (scene spec 9.4.3) | Start within 16 px of the rounded screen's left edge and swipe right by more than 24 px (at any angle, `ui::SystemLayer::kBackZoneWidth`/`kBackTriggerDx`, see `components/wisp_ui/include/wisp/ui/system_layer.hpp`); push `tests/scene/fixtures/broken` and open it, tap "Back", then open it again and tap "Reload" | The gesture works; the error panel shows the file and line number (`main.lua:5`), and Back and Reload work |  |
+| 53 | Long-list frame rate and memory (scene spec 9.4.4) | Put 200 to-dos in, keep scrolling with a finger for 10 s and look at `WISP_PERF`; run `mem` at the same time; note the longest `slow message` duration in the log (GC pauses) | fps not below the hotspot-off baseline of the hardware diagnostics screen, 18.3 ("Current baseline" in the "Performance baselines" section below); `internal free` ≥ 60 KB, `largest` ≥ 20 KB (`kIdleInternalFreeMin`/`kIdleInternalLargestMin` in `ram_budget.hpp`) | 2026-11-05: with todo200 scrolled continuously, fps 22–26, occasionally dropping to 14; `internal free` ≥ 84 KB, above the 60 KB minimum; `slow message open` 115–196 ms. The brief drop to 14 fps is below the baseline and was not investigated further this time. |
+| 54 | Recovery after screen-off and standby power (scene spec 9.4.5) | With the pomodoro and clock running, turn the screen off for 3 minutes and then on; measure the standby current by the method in the "Acceptance item 5: measured standby power" section and compare with no scene | Remaining time and dial are correct, and `minute` catches up only once; standby current is comparable to having no scene |  |
+| 55 | Undeclared domains are refused (scene spec 9.4.6) | Temporarily change the weather scene's URL to an undeclared host, then push and open it | The callback receives `permission_denied`, and there is no outgoing connection |  |
+| 56 | Frame rate with the LVGL heap in PSRAM | With no scene open, on the final firmware, first open hardware diagnostics with `diag` and repeat the "UI frame rate baseline" row, once with the hotspot off and once with it on (measured once on the device already after moving the LVGL heap to PSRAM, see the "LVGL heap" subsection of the "Performance baselines" section below) | `bench scroll` fps ≥ 18.3 with the hotspot off and ≥ 29.8 with it on ("Current baseline" in the "Performance baselines" section below); if lower, stop and report; do not change it back on your own | 2026-11-05: 22–24 fps with the hotspot off, meeting the line (baseline 22.7); 23–24 fps with the hotspot on, recorded at the time as below the 28.2 baseline and to be investigated. After the acceptance line was changed to ≥ 22.7 with the hotspot on, this result meets the line. |
+| 57 | Internal RAM worst case re-measured (after all mbedTLS allocations moved to PSRAM, `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC` in `firmware/sdkconfig.defaults`; the UI task stack has also grown from 8 KB to 10 KB) | Flash firmware that includes this change (after changing `sdkconfig.defaults`, delete `firmware/sdkconfig` before building, or it does not take effect; after building, `firmware/sdkconfig` should contain `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`). Use the same scenario as item 44: STA on the home Wi-Fi, `wifi ap on`, a phone on the hotspot with the setup page open, a computer with the admin page's "Logs" page (WebSocket) open through STA; then, at the same time: open the weather scene (HTTPS), run a connection test against a real HTTPS endpoint on the "Model" page, and upload firmware once. Run `mem` every 1–2 seconds throughout | Every `mem` shows `internal free` ≥ 40 KB (`kWorstInternalFreeMin`) and `largest` ≥ 16 KB; note the lowest `internal free` of all the samples and the final `min`. `internal free` is a snapshot at one moment and is the authority; `min` is the sum of each memory region's own low point, which is too low, and only for reference. If all samples are ≥ 40 KB but `min` < 40 KB, note both; this does not count as failing (when the exact low point is needed, you can temporarily wrap this sequence in the firmware with `heap_caps_monitor_local_minimum_free_size_start/stop(MALLOC_CAP_INTERNAL)`). Also confirm that the weather scene and the connection test both succeed (the handshake is slower but does not time out), and that STA does not drop. If the result is below 40 KB, stop and report | 2026-11-05 met (firmware `0.1.0-463-g9b24c06`, the merged theme branch, including 3a, the vector font and flash auto-suspend): STA on the home Wi-Fi, `wifi ap on`, a computer's wireless card on the hotspot fetching `setup.html` every 2 s (all 200), the computer subscribed to scene logs (WebSocket) through STA; at the same time, the weather scene was pushed and opened (HTTPS fetch succeeded), a connection test ran against a DeepSeek endpoint (with a fake key: a full TLS handshake and then HTTP 401, 2.2 s; the profile was deleted after the test), and 3.97 MB of firmware was uploaded once (202, then not confirmed and discarded on timeout). `mem` every 1.5 s, 51 samples in all: lowest `internal free` 62635 B, `largest` always 31744 B, both above 40 KB / 16 KB; the final `min` was 39732 B (the sum of each memory region's low point, too low, only for reference). The stacks of `wisp.ws`, `wisp.dns` and the port-80 `httpd` were in `psram`, and the port-8900 `httpd` in `internal` (lowest high-water mark remaining 3220 B); STA never disconnected. The connection test and the upload ran one after the other (the upload started 11 ms after the test ended), so they did not fully overlap. |
+| 58 | Rendering vector glyphs during flash writes (see "Flash erase/write and mapped reads" above) | Confirm the boot log has `Flash suspend feature is enabled`; open a screen with large Chinese characters (or keep switching between scenes with large text), and upload firmware once through the admin console at the same time | No crash; the upload succeeds (202) and the new firmware runs after the restart; large text displays normally with no garbled glyphs | 2026-11-05: device OTA pass: while the "大字测试" (large-text test) scene was showing, `0.1.0-449-gc0be5e3` was uploaded through the admin console (202); no crash during the upload or the restart; after the restart the boot log had `Flash suspend feature is enabled` and `fonts: image ok`, and the user confirmed that the title was large vector text. Earlier stress tests with the temporary `fprobe` command (changing 128 px characters for 150 s + erasing and writing 46.9 MB in `ota_1` at the same time) also did not crash, and 24 passes of comparing the mapped area found 0 wrong bytes |
+| 59 | A `wisp.sd` stack in PSRAM does not trigger the flash guard (flash-thread spec 3.9: `wisp.sd` only does SD card mount probing and declares `flash_access = false`) | Insert an SD card, and remove and insert it repeatedly to trigger the mount/unmount retries of `EspSdStorage` (see the "Storage capacity and SD hot-plug" item above); check the stack location of the `wisp.sd` task with `mem` at the same time | The `wisp.sd` stack is in `psram`; mounting, unmounting and retrying do not abort or trigger "flash access off the flash thread" | |
+| 60 | Admin console httpd (8900) stack moved to PSRAM (flash-thread spec 3.6/3.9: OTA and Settings are both handed to `wisp.fs` through `run_sync`, httpd itself no longer touches flash, and the default of `EspHttpServerConfig::flash_access` changed to false). This changes the baseline recorded in items 44 and 57 of the "Internal RAM" section above (where the 8900 httpd stack was in `internal`) | Repeat the worst-case combination of items 44/57 (STA+AP, two httpd instances, WebSocket logs, a TLS handshake and an OTA upload all at once), check the location of the 8900 `httpd` stack with `mem`, and record the new `internal free`/`largest` | The 8900 `httpd` stack is in `psram` (no longer `internal`); uploads, settings reads and writes, and the Wi-Fi setup flow never trigger "flash access off the flash thread"; `internal free` should improve on item 57's baseline (by about 10 KB, as `stack_bytes` moves from internal RAM to PSRAM) | |
+| 61 | Flashing the new partition table (glyph partition spec 5.1) | On a board that already has settings and large vector text (already on the table from item 37), run `idf.py -p <PORT> flash`, writing the new partition table, the app, `fonts.bin` and `glyphs.bin` | Boots normally; the Wi-Fi, pairing, brightness and other settings and the large vector text are all still there; `/int` has been reformatted (the scene list is empty); pushing an example scene again installs and opens it normally; the boot log has a line saying the `glyphs` image passed validation |  |
+| 62 | Image size and total PSRAM (glyph partition spec 5.2) | Look at the Total image size from `idf.py size`; look at the PSRAM "total" (共) in hardware diagnostics (`diag`); record `boot_ms` of `WISP_BOOT_REPORT` before and after the table change (glyph partition spec 4.4: the CRC check of the new `glyphs` image is measured by it) | Image about 3.13 MB; PSRAM "total" about 5 MB; note both `boot_ms` values and their difference |  |
+| 63 | Scrolling frame rate with the hotspot off and on (glyph partition spec 5.3) | First open hardware diagnostics with `diag`, then measure `bench scroll 10` once with the hotspot off and once with it on (Wi-Fi setup card showing) | fps not below the current baseline recorded in the "Performance baselines" section below |  |
+| 64 | Body text unchanged (glyph partition spec 5.4) | Look at the Chinese body text on hardware diagnostics, the pomodoro, the to-dos and other screens | Same as before the table change: no missing or wrong characters, no blur or misalignment |  |
+| 65 | Degradation with only the `glyphs` partition erased (glyph partition spec 5.5) | Flash only the app (`idf.py app-flash`), then `parttool.py erase_partition --partition-name=glyphs` | Boots normally; Chinese body text shows in vector 16 px; the boot log has a warning; after `idf.py fonts-flash` it goes back to bitmap body text |  |
+| 66 | Scrolling body text during OTA (glyph partition spec 5.6) | Open a screen with Chinese body text and keep scrolling it, while uploading firmware once through the admin console | Displays normally with no crash; the upload succeeds and the new firmware runs after the restart |  |
 
-## 待机与省电（spec 6.7）
+## Standby and power saving (spec 6.7)
 
-- **屏幕睡眠（CO5300）——改用标准 MIPI DCS 睡眠，不走厂商深度待机（经用户确认采用）**：
-  - 最初的实现直接依次调用 `esp_lcd_panel_disp_on_off()`/`esp_lcd_panel_disp_sleep()`。
-    但本板 `board_devices.yaml` 给 `display_lcd` 配了 `reset_gpio_num: 39`（屏幕确实接了
-    硬件 RST），这会让 `espressif__esp_lcd_co5300` 驱动（`esp_lcd_co5300_spi.c`）在
-    `disp_sleep(true)` 时**额外**发送 `DSTBON`（深度待机）；唤醒时 `disp_sleep(false)`
-    会先硬复位面板（`panel_co5300_reset()`，10 ms + 150 ms）并把 `needs_init` 置 `true`，
-    强制重新跑一遍完整初始化序列。本板 `setup_device.c` 的 `s_lcd_init_cmds[]` 首尾两条
-    命令（`0x11` SLPOUT、`0x29` DISPON）各带 600 ms 延时，合计（160 + 600 + 600 =
-    1360 ms）预计唤醒一次面板要 **~1.36 s**，远超验收第 5 条"按电源键后 300 ms 内亮屏"
-    的目标；而且硬复位会清空 GRAM，初始化序列第 45 行就发 DISPON（之后还要等 600 ms），
-    期间会先显示未初始化的 GRAM（花屏/黑屏）。
-  - 现改为 `EspDisplayConfig::PanelSleep::DcsSleep`（`components/wisp_port_esp/dev/esp_display.cpp`，
-    `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp` 的 `kDisplaySleepOutSettleMs` 开启）：完全不调用
-    `esp_lcd_panel_disp_sleep()`/`disp_on_off()`，改为用 `esp_lcd_panel_io_tx_param()`（和
-    `set_brightness()` 同一条路径）直接发送标准 MIPI DCS 命令——入睡：`DISPOFF`(0x28) +
-    `SLPIN`(0x10)；唤醒：`SLPOUT`(0x11) + 等待 `sleep_out_settle_ms`（本板配置 120 ms，
-    MIPI DCS 规范对这一等待的下限）+ `DISPON`(0x29)。这是标准 DCS 命令，不涉及任何
-    CO5300 私有内容。普通睡眠不清空 GRAM，唤醒后立即显示上次画面，随后正常重绘，不会
-    触发硬复位。
-  - **唤醒耗时估算（未经真机验证）**：按键轮询延迟（待机时 50 ms）+ `sleep_out_settle_ms`
-    （120 ms）+ 少量命令传输时间，预计在 **200 ms 左右**，应能满足 300 ms 的目标——这是
-    估算，**没有在真机上测过**，见下面"验收第 5 条"的真机验证步骤。
-  - 一旦选了 `DcsSleep`，`EspDisplay` 就再也不会调用 `esp_lcd_panel_disp_sleep()`/
-    `disp_on_off()`（会和它们内部的 `sleep_mode` 记录状态冲突）；深度待机（DSTB）留给
-    spec 1.6 的"深度待机"一级，不在子项目 1 范围内。
-  - **亮度丢失**：无论哪种睡眠方式，唤醒后面板的亮度寄存器都可能被重置（本板
-    init 序列里 `0x51` 被写成 `0xFF`，`DcsSleep` 路径虽然不走这段 init，但为了稳妥仍然
-    保留这层防护）。`EspDisplay::set_brightness()` 现在会记住最后一次设置的值，
-    `set_power(true)` 成功后自动重发一次该亮度，用户设置不会在每次待机后被重置为
-    最大亮度。
-- **触摸睡眠（CST9217）**：`waveshare__esp_lcd_touch_cst9217` 驱动（见
-  `esp_lcd_touch_cst9217.c`）只给 `esp_lcd_touch_s` 的 `read_data`/`get_xy`/`del` 三个
-  字段赋值，`enter_sleep`/`exit_sleep` 始终是空指针。`esp_lcd_touch_enter_sleep()`/
-  `exit_sleep()` 本身在字段为空时会 `ESP_LOGE` 后返回 `ESP_FAIL`——为了避免每次待机
-  切换都打一条错误日志，`EspTouch::set_power()` 改为直接检查这两个函数指针，为空就直接
-  返回 `ErrorCode::Unsupported`，完全不调用这两个函数（见
-  `components/wisp_port_esp/dev/esp_touch.cpp`）。也就是说本板触摸芯片**没有**硬件睡眠：
-  待机时触摸确实不会再产生触点（因为 `UiRuntime` 暂停后不再调用 `Touch::read()`），但
-  CST9217 本身的功耗在待机期间不会下降。
-- **自动浅睡眠期间 GPIO 会被隔离**：`CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`
-  在 ESP32-S3 上会自动选中 `CONFIG_PM_SLP_DISABLE_GPIO`（`ESP_SLEEP_GPIO_RESET_WORKAROUND`
-  的 Kconfig 默认依赖；生成的 `firmware/sdkconfig` 里也确实是 `y`）——每次自动浅睡眠时，
-  **所有** GPIO 的方向、电平和上下拉都会被禁用（浮空），直到浅睡眠结束才恢复。面板 RST
-  （GPIO39）、触摸 RST（GPIO40）、功放使能（GPIO46）、**面板 SPI 的 CS（GPIO12，
-  `board_devices.yaml` 的 `io_spi_config.cs_gpio_num`）**这四个必须
-  在睡眠期间保持电平的输出如果浮空：面板/触摸可能被意外复位（配合上面的 `DcsSleep` 会
-  直接抵消它要避免的那次重新初始化），CS 浮空还可能让面板在浅睡眠期间误采样到总线上的
-  随机电平、把无关的 SPI 数据当成发给自己的命令，功放浮空可能有爆音或漏电风险。
-  `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp` 的 `hold_outputs_during_light_sleep()`（在板级
-  `init()` 的最后调用）对这四个引脚分别调用 `gpio_sleep_sel_dis()`，让它们在浅睡眠期间
-  继续保持配置好的电平/方向。**待验证**：真机上连续经历多次自动浅睡眠/唤醒循环（例如
-  待机 10 分钟以上，确保期间发生过几十次自动浅睡眠-唤醒）后，确认面板画面正常（没有
-  花屏、没有被意外复位过的痕迹，例如亮度被重置——见上面"亮度丢失"一条）、触摸依旧能正常
-  响应、扬声器没有异常噗声或底噪——见下面"验收第 5 条"的验证步骤。
-- **USB-Serial-JTAG 与自动浅睡眠**：本板用 USB-Serial-JTAG 做控制台（没有外置
-  UART 转 USB 芯片），而 ESP32-S3 上 `SOC_USB_SERIAL_JTAG_SUPPORT_LIGHT_SLEEP` 未定义
-  （`components/soc/esp32s3/include/soc/soc_caps.h`：这个宏目前只在还没落地的
-  `esp32h2`/`esp32c6` 等型号的 Kconfig 注释里出现，ESP32-S3 完全不支持"浅睡眠期间保持
-  最小 USB 通信"）。`esp_driver_usb_serial_jtag`/Kconfig 的 `USJ_NO_AUTO_LS_ON_CONNECTION`
-  选项正是为这种芯片准备的：开启后，只要 USB-Serial-JTAG 端口处于连接状态（主机侧完成了
-  USB 枚举，靠 SOF 信号判断——和有没有打开虚拟串口监视器无关），系统会自动持有一个
-  `ESP_PM_NO_LIGHT_SLEEP` 锁，阻止自动浅睡眠；拔掉 USB 数据线之后锁被释放，自动浅睡眠
-  才能真正发生。`firmware/sdkconfig.defaults` 已经加上 `CONFIG_PM_ENABLE=y`、
-  `CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`、`CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y` 三项——
-  结论是：**接着 USB 调试时不需要、也不会进入浅睡眠（串口监视器开不开都一样，不影响
-  这把锁）；只用电池供电、或者只接 USB 供电但不接数据线（哪怕是只充电的 USB 线，没有
-  数据引脚）时，没有 SOF、锁会被释放，才会真正睡下去**。验收第 5 条的电流测量必须真的
-  让数据线处于未连接状态（断开数据线本身，不是"只是没打开串口监视器"）。
-- **后台仍在运行、会限制浅睡眠深度/频率的任务**（下面按"待机期间的行为"分类；记录现状，
-  不代表现在就要再去改动）：
-  - **已在待机期间完全暂停、只在真正被 `give()` 唤醒时才醒的**：
-    - 自检屏幕采样任务的 IMU 读取分支（`SelfCheck::sample_loop()`，原本以
-      `kSampleTaskPeriodMs` = 20 ms 的周期读取 IMU）：订阅了 `power.state`，进入待机
-      后完全停止读 IMU——这是系统里最快的周期性唤醒源（20 ms，比 ButtonService 的
-      50 ms 还快），待机时完全消除。`PowerManager::exit_standby()` 唤醒时立即
-      `give()` 恢复采样。电源状态/RTC 的"慢采样"分支**不**完全停止，见下一条分类。
-    - `wisp::hal::Imu::set_power(false)`：`PowerManager::enter_standby()` 关闭
-      QMI8658 的加速度计/陀螺仪使能位（`CTRL7`），待机期间芯片本身也不再采样，
-      `exit_standby()` 时恢复到之前选定的 ODR。
-    - `EspSdStorage` 的 SD 卡探测 worker（`components/wisp_port_esp/dev/esp_storage.cpp`）
-      原本固定以 `kWorkerPollMs` = 100 ms 的粒度轮询（`Mounted` 态下每 ~1 s 探测一次卡
-      是否还在，`Unmounted` 态下每 2 s 重试一次 mount，但循环本身每 100 ms 就醒一次
-      检查状态/`worker_running_`，即以 10 Hz 唤醒 CPU）。待机期间关闭的方式是给它加了
-      `set_standby()`（经 `StorageManager::set_standby()` 转发，`PowerManager` 在
-      `enter_standby()`/`exit_standby()` 时调用）：worker 完全阻塞在自己的信号量上
-      （无超时的 `os::kForever` 等待——`set_standby(false)` 和析构都保证一定会
-      `give()`，不存在漏收信号的情形），不再探测/重试；`online()`/`capacity()` 不受
-      影响，一直返回缓存的上一次状态，不会在待机期间卡住或报错。`Mounted` 态下探测
-      间隔之间的等待也会检查待机标志，一旦在等待期间进入待机就直接跳过这次探测，不会
-      多发一次 CMD13。
-  - **降频到约 30 s 一次，而不是完全停止（按 spec 6.7 字面要求）**：
-    - 自检屏幕采样任务的电源状态/RTC"慢采样"分支（原本以 `kSlowSampleIntervalMs`
-      = 1000 ms 读一次）：待机期间改为每 `kStandbySlowSampleMs` = 30000 ms 读一次
-      （阻塞在 `standby_wake_` 上，超时就读一次，被 `give()` 唤醒就直接跳过），退出
-      待机时同样立即 `give()` 恢复到原来 1 s 一次的节奏。这个分支读到的值只用于自检
-      界面显示（界面本身已经暂停渲染）。
-    - `wisp::core::PowerMonitor` 自己的采样定时器（`"wisp.pwrmon"`，见 spec 6.3/6.7）：
-      亮屏时 1 s、待机时 30 s 轮询一次 `power.main`（每次最多 5 次 I2C 读；
-      `low_batt_pct` 阈值做了缓存，每 20 次采样（或每次 `start()`）才重读 1 次
-      NVS，不是每次采样都读），发布 `power.charging.changed`/
-      `power.battery.low`。这是一个真正的消费者：`power.battery.low` 在电量降到
-      Settings `power`/`low_batt_pct`（默认 15）以下时发布一次（带滞后重新武装），
-      两个事件发布时都会打一行 `WLOG_I`，串口上可以直接观察到。
-  - **待机期间仍按原周期继续唤醒 CPU（有意保留，见下面的说明）**：
-    - `wisp::os::Timer` 在 ESP 口径下全部跑在同一个 esp_timer 任务上：`App` 的
-      `wisp.storage`（2000 ms 一次，`StorageManager::refresh()`）和 `wisp.power`
-      （1000 ms 一次，`PowerManager::tick()`）即便在待机期间也会继续按周期唤醒。
-      这是有意的裁定，不是遗漏：`2026-11-01-foundation-design.md` 的统一外设省电
-      设计明确要求"StorageManager 的 2 s 状态刷新保持不变，但不触发 SD 检测"——
-      `refresh()` 本身只读一次 `sd_dev_->online()` 缓存标志（上面已暂停的是真正的
-      SD 探测本身，不是这次 `refresh()` 调用），改动它会违反这条裁定；`wisp.power`
-      的 `tick()` 在 `standby_` 为真时第一行就直接返回（见
-      `components/wisp_app/src/power_manager.cpp`），待机期间这个 1 Hz 定时器
-      本身唤醒 CPU 的开销已经是这几个后台源里最小的一个，进一步拉长它的周期对实测
-      待机电流的收益预计微乎其微，在"最小改动"的原则下没有跟着改。
-    - 自检屏幕的性能上报定时器（`"wisp.perf"`，`kPerfReportMs` = 5000 ms，
-      `SelfCheck::emit_perf_line()`）**不会**被上面的 `power.state` 订阅暂停——它和
-      采样任务是两个独立的 `wisp::os::Timer`/任务。待机期间它仍然每 5 s 唤醒一次、
-      照常打印一行 `WISP_PERF`，只是其中的 `fps`/`frames`/`flush_ms` 会是 0（因为
-      `UiRuntime` 暂停后没有任何帧被渲染）。这属于预期行为，不是 bug：待机期间的
-      `WISP_PERF` 日志本身就是用来确认"确实没有渲染"的信号之一；真机验收时如果
-      发现待机日志里 `WISP_PERF` 的 `fps` 不是 0，才说明暂停渲染这个处理出现了回归。
-    - `core::ButtonService` 待机时以 50 ms 轮询一次按键（`PowerManager::enter_standby()`
-      放宽的间隔）；`ui::UiRuntime` 暂停后**不再**自己周期性醒来——它的待机循环现在
-      无限等待 `post()` 任务，没有事可做时完全不会主动醒来。
-  - 目前，`core::ButtonService` 的 **50 ms** 轮询是系统里最短的周期性唤醒源（自检
-    采样任务的 IMU 分支 20 ms 已被消除；电源/RTC 慢采样分支和 `wisp.pwrmon` 都降到
-    了 30 s；SD worker 待机期间完全不主动醒来）。以上都只是"周期性唤醒 CPU 一下就
-    继续睡"，不会阻止自动浅睡眠本身发生（没有常驻的 `ESP_PM_NO_LIGHT_SLEEP`/
-    `ESP_PM_CPU_FREQ_MAX` 锁），但会把浅睡眠的最长连续时长限制在 `ButtonService` 的
-    50 ms 量级，略微拉高平均功耗。真机测得的待机电流如果明显高于预期，这些仍是优先
-    排查的来源。
+- **Display sleep (CO5300): standard MIPI DCS sleep instead of the vendor's deep standby (adopted with the user's confirmation)**:
+  - The first implementation called `esp_lcd_panel_disp_on_off()`/`esp_lcd_panel_disp_sleep()` directly, in turn.
+    But this board's `board_devices.yaml` gives `display_lcd` a `reset_gpio_num: 39` (the panel really is wired to a
+    hardware RST), which makes the `espressif__esp_lcd_co5300` driver (`esp_lcd_co5300_spi.c`) send `DSTBON`
+    (deep standby) **in addition** on `disp_sleep(true)`; on wake, `disp_sleep(false)` first hard-resets the panel
+    (`panel_co5300_reset()`, 10 ms + 150 ms) and sets `needs_init` to `true`, forcing the whole initialisation
+    sequence to run again. The first and last commands of `s_lcd_init_cmds[]` in this board's `setup_device.c`
+    (`0x11` SLPOUT, `0x29` DISPON) each carry a 600 ms delay, so in total (160 + 600 + 600 = 1360 ms) one panel
+    wake was expected to take **~1.36 s**, far beyond the acceptance item 5 target of "screen on within 300 ms of
+    pressing the power key". Worse, the hard reset clears GRAM, and the initialisation sequence sends DISPON on
+    line 45 (and then still waits 600 ms), so uninitialised GRAM is shown first (garbled or black screen).
+  - It now uses `EspDisplayConfig::PanelSleep::DcsSleep` (`components/wisp_port_esp/dev/esp_display.cpp`, enabled by
+    `kDisplaySleepOutSettleMs` in `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp`): it never calls
+    `esp_lcd_panel_disp_sleep()`/`disp_on_off()`, and instead uses `esp_lcd_panel_io_tx_param()` (the same path as
+    `set_brightness()`) to send standard MIPI DCS commands directly. To sleep: `DISPOFF`(0x28) +
+    `SLPIN`(0x10); to wake: `SLPOUT`(0x11) + a wait of `sleep_out_settle_ms` (120 ms on this board, the lower
+    bound the MIPI DCS specification sets for this wait) + `DISPON`(0x29). These are standard DCS commands, with
+    nothing private to the CO5300. Ordinary sleep does not clear GRAM, so after waking the last picture shows
+    immediately, followed by a normal redraw, and no hard reset is triggered.
+  - **Wake time estimate (not verified on the device)**: button polling delay (50 ms in standby) + `sleep_out_settle_ms`
+    (120 ms) + a little command transfer time, expected to be **around 200 ms**, which should meet the 300 ms target.
+    This is an estimate and **has not been measured on the device**; see the device verification steps in
+    "Acceptance item 5" below.
+  - Once `DcsSleep` is selected, `EspDisplay` never calls `esp_lcd_panel_disp_sleep()`/
+    `disp_on_off()` again (that would conflict with the `sleep_mode` state they record internally). Deep standby
+    (DSTB) is left for the "deep standby" level of spec 1.6, outside the scope of sub-project 1.
+  - **Lost brightness**: whichever way the panel sleeps, its brightness register may be reset after waking (this
+    board's init sequence writes `0x51` as `0xFF`; the `DcsSleep` path does not go through that init, but the
+    safeguard is kept to be safe). `EspDisplay::set_brightness()` now remembers the last value set,
+    and resends that brightness automatically once `set_power(true)` succeeds, so the user's setting is not reset
+    to maximum brightness after every standby.
+- **Touch sleep (CST9217)**: the `waveshare__esp_lcd_touch_cst9217` driver (see
+  `esp_lcd_touch_cst9217.c`) assigns only three fields of `esp_lcd_touch_s`, `read_data`/`get_xy`/`del`;
+  `enter_sleep`/`exit_sleep` are always null pointers. `esp_lcd_touch_enter_sleep()`/
+  `exit_sleep()` themselves log `ESP_LOGE` and return `ESP_FAIL` when the field is null. To avoid an error log
+  on every standby switch, `EspTouch::set_power()` checks these two function pointers directly, returns
+  `ErrorCode::Unsupported` straight away when they are null, and never calls the two functions (see
+  `components/wisp_port_esp/dev/esp_touch.cpp`). In other words, this board's touch chip has **no** hardware sleep:
+  touch really does produce no more touch points in standby (because `UiRuntime` no longer calls `Touch::read()`
+  once paused), but the CST9217's own power draw does not drop during standby.
+- **GPIOs are isolated during automatic light sleep**: on the ESP32-S3, `CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`
+  automatically selects `CONFIG_PM_SLP_DISABLE_GPIO` (the Kconfig default dependency of
+  `ESP_SLEEP_GPIO_RESET_WORKAROUND`; the generated `firmware/sdkconfig` really does have it as `y`). On every
+  automatic light sleep, the direction, level and pull-ups/pull-downs of **all** GPIOs are disabled (floating) until
+  the light sleep ends. Four outputs must keep their level during sleep: the panel RST (GPIO39), the touch RST
+  (GPIO40), the amplifier enable (GPIO46) and **the panel SPI's CS (GPIO12, `io_spi_config.cs_gpio_num` in
+  `board_devices.yaml`)**. If they float, the panel or touch may be reset unexpectedly (together with `DcsSleep`
+  above, that would directly undo the very reinitialisation it is meant to avoid); a floating CS may also make the
+  panel sample random levels on the bus during light sleep and take unrelated SPI data as commands meant for it;
+  and a floating amplifier enable risks pops or leakage.
+  `hold_outputs_during_light_sleep()` in `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp` (called at the
+  end of the board's `init()`) calls `gpio_sleep_sel_dis()` on each of these four pins, so they keep their
+  configured level and direction during light sleep. **To be verified**: after many consecutive automatic
+  light-sleep/wake cycles on the device (for example more than 10 minutes in standby, making sure dozens of
+  automatic light-sleep/wake cycles have happened), confirm that the panel picture is normal (no garbling, no
+  signs of an unexpected reset such as the brightness being reset; see "Lost brightness" above), that touch still
+  responds normally, and that the speaker has no unusual pops or noise floor; see the verification steps in
+  "Acceptance item 5" below.
+- **USB-Serial-JTAG and automatic light sleep**: this board uses USB-Serial-JTAG as the console (there is no external
+  UART-to-USB chip), and on the ESP32-S3 `SOC_USB_SERIAL_JTAG_SUPPORT_LIGHT_SLEEP` is not defined
+  (`components/soc/esp32s3/include/soc/soc_caps.h`: so far this macro appears only in Kconfig comments of models
+  such as `esp32h2`/`esp32c6` that have not landed yet; the ESP32-S3 does not support "keeping minimal USB
+  communication during light sleep" at all). The `USJ_NO_AUTO_LS_ON_CONNECTION` option of
+  `esp_driver_usb_serial_jtag`/Kconfig exists for exactly this kind of chip: with it on, as long as the
+  USB-Serial-JTAG port is connected (the host has completed USB enumeration, judged from the SOF signal,
+  regardless of whether a virtual serial monitor is open), the system automatically holds an
+  `ESP_PM_NO_LIGHT_SLEEP` lock that prevents automatic light sleep; once the USB data cable is unplugged, the lock
+  is released and automatic light sleep can really happen. `firmware/sdkconfig.defaults` already has the three
+  items `CONFIG_PM_ENABLE=y`, `CONFIG_FREERTOS_USE_TICKLESS_IDLE=y` and `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y`.
+  The conclusion: **while connected over USB for debugging, it does not need to and will not enter light sleep
+  (whether the serial monitor is open or not makes no difference to this lock); only on battery power, or with
+  USB power but no data connection (even a charge-only USB cable with no data pins), is there no SOF, so the lock
+  is released and it really sleeps**. The current measurement of acceptance item 5 must really have the data
+  cable disconnected (the data cable itself unplugged, not "just no serial monitor open").
+- **Tasks that keep running in the background and limit the depth/frequency of light sleep** (grouped below by
+  "behaviour during standby"; this records the current state and does not mean they need changing now):
+  - **Fully paused during standby, waking only when really woken by `give()`**:
+    - The IMU-reading branch of the self-check screen's sampling task (`SelfCheck::sample_loop()`, which originally
+      read the IMU with a period of `kSampleTaskPeriodMs` = 20 ms): it subscribes to `power.state` and stops
+      reading the IMU completely in standby. This is the fastest periodic wake source in the system (20 ms,
+      faster even than ButtonService's 50 ms), and it is eliminated completely in standby.
+      `PowerManager::exit_standby()` calls `give()` on waking to resume sampling immediately. The "slow sampling"
+      branch for the power state/RTC does **not** stop completely; see the next group.
+    - `wisp::hal::Imu::set_power(false)`: `PowerManager::enter_standby()` clears the QMI8658's accelerometer/
+      gyroscope enable bits (`CTRL7`), so the chip itself stops sampling during standby, and
+      `exit_standby()` restores the previously selected ODR.
+    - The SD card probing worker of `EspSdStorage` (`components/wisp_port_esp/dev/esp_storage.cpp`) originally
+      polled at a fixed granularity of `kWorkerPollMs` = 100 ms (in the `Mounted` state it probed whether the card
+      was still there about every 1 s, and in the `Unmounted` state it retried the mount every 2 s, but the loop
+      itself woke every 100 ms to check the state/`worker_running_`, i.e. it woke the CPU at 10 Hz). It is shut
+      off during standby through a new `set_standby()` (forwarded by `StorageManager::set_standby()`, which
+      `PowerManager` calls in `enter_standby()`/`exit_standby()`): the worker blocks completely on its own
+      semaphore (an `os::kForever` wait with no timeout; `set_standby(false)` and the destructor both guarantee a
+      `give()`, so no signal can be missed), and no longer probes or retries. `online()`/`capacity()` are not
+      affected and keep returning the cached last state, so they never hang or report errors during standby. In
+      the `Mounted` state, the wait between probes also checks the standby flag, so if standby starts during the
+      wait, that probe is skipped outright and no extra CMD13 is sent.
+  - **Slowed to about once every 30 s rather than stopped completely (as spec 6.7 literally requires)**:
+    - The power state/RTC "slow sampling" branch of the self-check screen's sampling task (originally once every
+      `kSlowSampleIntervalMs` = 1000 ms): during standby it reads once every `kStandbySlowSampleMs` = 30000 ms
+      (blocking on `standby_wake_`, reading once on timeout, and skipping straight on when woken by `give()`); on
+      leaving standby it likewise calls `give()` immediately to resume the original once-a-second rhythm. The
+      values this branch reads are used only for the self-check screen display (and the screen itself has
+      already stopped rendering).
+    - The sampling timer of `wisp::core::PowerMonitor` itself (`"wisp.pwrmon"`, see spec 6.3/6.7):
+      polls `power.main` once every 1 s with the screen on and every 30 s in standby (at most 5 I2C reads each
+      time; the `low_batt_pct` threshold is cached and NVS is reread only once every 20 samples (or on every
+      `start()`), not on every sample), and publishes `power.charging.changed`/
+      `power.battery.low`. This is a real consumer: `power.battery.low` is published once when the battery drops
+      below Settings `power`/`low_batt_pct` (default 15) (re-arming with hysteresis), and both events log a line
+      with `WLOG_I` when published, so they can be watched directly on the serial port.
+  - **Still waking the CPU on their original periods during standby (kept on purpose, see the explanation below)**:
+    - Under ESP, `wisp::os::Timer`s all run on the same esp_timer task: `App`'s `wisp.storage` (once every
+      2000 ms, `StorageManager::refresh()`) and `wisp.power` (once every 1000 ms, `PowerManager::tick()`) keep
+      waking periodically even during standby. This is a deliberate ruling, not an oversight: the unified
+      peripheral power-saving design of `2026-11-01-foundation-design.md` explicitly requires that "StorageManager's
+      2 s status refresh stays unchanged, but does not trigger SD detection". `refresh()` itself only reads the
+      cached flag `sd_dev_->online()` once (what has been paused above is the real SD probing itself, not this
+      `refresh()` call), and changing it would violate that ruling. `wisp.power`'s `tick()` returns on its very
+      first line when `standby_` is true (see `components/wisp_app/src/power_manager.cpp`), so during standby the
+      cost of this 1 Hz timer waking the CPU is already the smallest of these background sources; lengthening its
+      period further is expected to bring a negligible gain in measured standby current, so under the "minimal
+      change" principle it was left alone.
+    - The self-check screen's performance report timer (`"wisp.perf"`, `kPerfReportMs` = 5000 ms,
+      `SelfCheck::emit_perf_line()`) is **not** paused by the `power.state` subscription above: it and the
+      sampling task are two separate `wisp::os::Timer`/tasks. During standby it still wakes once every 5 s and
+      prints a `WISP_PERF` line as usual, only with `fps`/`frames`/`flush_ms` at 0 (because no frames are rendered
+      once `UiRuntime` is paused). This is expected behaviour, not a bug: the `WISP_PERF` log during standby is
+      itself one of the signals that confirm "nothing is really being rendered"; if at device acceptance the
+      standby log shows a `WISP_PERF` `fps` other than 0, that means the pausing of rendering has regressed.
+    - `core::ButtonService` polls the buttons once every 50 ms in standby (the interval widened by
+      `PowerManager::enter_standby()`); once paused, `ui::UiRuntime` **no longer** wakes up periodically on its
+      own: its standby loop now waits indefinitely for `post()` jobs, and when there is nothing to do it never
+      wakes up of its own accord.
+  - At present, the **50 ms** polling of `core::ButtonService` is the shortest periodic wake source in the system
+    (the 20 ms IMU branch of the self-check sampling task has been eliminated; the power/RTC slow sampling branch
+    and `wisp.pwrmon` have both dropped to 30 s; the SD worker does not wake on its own at all during standby).
+    All of these only "wake the CPU briefly on a period and then go back to sleep"; they do not prevent automatic
+    light sleep itself from happening (there is no resident `ESP_PM_NO_LIGHT_SLEEP`/
+    `ESP_PM_CPU_FREQ_MAX` lock), but they limit the longest continuous stretch of light sleep to the order of
+    `ButtonService`'s 50 ms, slightly raising the average power. If the measured standby current on the device is
+    clearly higher than expected, these are still the first sources to investigate.
 
-### 浅睡兼容性（3b-1 spike）
+### Light-sleep compatibility (3b-1 spike)
 
-日期：2026-11-05。探针固件在一次性分支 `spike/light-sleep`（不合入）上，HEAD 为
-`3cc43ec`；运行 1 用的是该分支更早的提交 `64ce0dd`，运行 2、3 用的是 `3cc43ec`（即
-加上"待机期间关闭 I2S 通道"之后）。
+Date: 2026-11-05. The probe firmware is on the throwaway branch `spike/light-sleep` (not merged), with HEAD at
+`3cc43ec`; run 1 used the branch's earlier commit `64ce0dd`, and runs 2 and 3 used `3cc43ec` (i.e. with
+"close the I2S channels during standby" added).
 
-**运行 1**（I2S 保持开启，电池供电放置 10 分钟）：`light_sleep_counts` 为 0，完全没有
-进入浅睡眠。`pm_locks` 里有两条 `i2s_driver APB_FREQ_MAX` 锁，100% 的时间都处于持有
-状态——esp_board_manager 的 `periph_i2s` 在启动时打开了 I2S0 的 TX、RX 通道并一直保持
-开启，这两把锁挡住了所有自动浅睡眠。除了这一项，其余全部通过：`psram_ok` 为
-true，`timer_missed` 0，最大迟到 0.05 ms，`rtc_drift_ms` 1758，`wifi_reconnect_ms`
-5501；唤醒后画面和触摸正常。
+**Run 1** (I2S kept open, on battery for 10 minutes): `light_sleep_counts` was 0, so it never
+entered light sleep at all. `pm_locks` had two `i2s_driver APB_FREQ_MAX` locks, held 100% of the time:
+esp_board_manager's `periph_i2s` opens the TX and RX channels of I2S0 at boot and keeps them open,
+and these two locks blocked all automatic light sleep. Apart from this one item, everything passed: `psram_ok` was
+true, `timer_missed` 0, maximum lateness 0.05 ms, `rtc_drift_ms` 1758, `wifi_reconnect_ms`
+5501; the picture and touch were normal after waking.
 
-**运行 2**（待机期间关闭音频 I2S 通道）：原始 JSON（`WISP_SPIKE` 一行）：
+**Run 2** (audio I2S channels closed during standby): raw JSON (one `WISP_SPIKE` line):
 
 ```
 WISP_SPIKE {"battery_end":100,"battery_start":100,"i2s_off_err":"rx=ESP_OK tx=ESP_OK","i2s_on_err":"tx=ESP_OK rx=ESP_OK","interrupted":false,"minutes":10,"pm_locks":"Time since boot up: 645307580 us\nLock stats:\nName            Type            Arg    Active    Total_count    Time(us)        Time(%) \nmpi_cpu         CPU_FREQ_MAX    0      0         14             5166            1  %\nmpi_sleep       NO_LIGHT_SLEEP  0      0         14             5164            1  %\nwifi            APB_FREQ_MAX    0      0         337            8552606         2  %\nsdmmc           APB_FREQ_MAX    0      0         83             37382           1  %\nspi_master      APB_FREQ_MAX    0      0         1766           771117          1  %\ni2s_driver      APB_FREQ_MAX    0      0         1              45106293        7  %\ni2s_driver      APB_FREQ_MAX    0      0         1              45109157        7  %\nI2C0            NO_LIGHT_SLEEP  0      0         7753           3333635         1  %\nusb_serial_jtag NO_LIGHT_SLEEP  0      0         48             26287575        5  %\nrtos1           CPU_FREQ_MAX    0      0         135180         26275935        5  %\nrtos0           CPU_FREQ_MAX    0      1         142031         30117165        5  %\n\nMode stats:\nMode      CPU_freq    Time(us)    Time(%)   \nSLEEP     80 M        568030455   88%\nAPB_MIN   80 M        28290       0 %\nAPB_MAX   80 M        23033955    3 %\nCPU_MAX   240M        54213633    8 %\n\nSleep stats:\nlight_sleep_counts:15880  light_sleep_reject_counts:3\n","psram_ok":true,"reset_reason":"usb","rtc_drift_ms":639,"run_s":600,"sleep_ratio":0.879084954,"sleep_ratio_reported":0.869085396,"sleeps":751366,"standby_entered":true,"timer_fires":600,"timer_max_late_ms":0.21,"timer_mean_late_ms":0.16914,"timer_missed":0,"uptime_end_s":651,"wifi_reconnect_ms":5503,"wifi_stop_err":"ESP_OK"}
 ```
 
-唤醒后（10 分钟自动熄屏触发后）面板、触摸均正常（用户目测）。
+After waking (after the 10-minute automatic screen-off had triggered), the panel and touch were both normal (checked by eye by the user).
 
-**运行 3**（约 3 分钟时按电源键唤醒）：原始 JSON：
+**Run 3** (woken with the power key at about 3 minutes): raw JSON:
 
 ```
 WISP_SPIKE {"battery_end":100,"battery_start":100,"i2s_off_err":"rx=ESP_OK tx=ESP_OK","i2s_on_err":"tx=ESP_OK rx=ESP_OK","interrupted":true,"minutes":10,"pm_locks":"Time since boot up: 339262644 us\nLock stats:\nName            Type            Arg    Active    Total_count    Time(us)        Time(%) \nmpi_cpu         CPU_FREQ_MAX    0      0         14             5183            1  %\nmpi_sleep       NO_LIGHT_SLEEP  0      0         14             5179            1  %\nwifi            APB_FREQ_MAX    0      0         337            8898276         3  %\nsdmmc           APB_FREQ_MAX    0      0         83             37069           1  %\nspi_master      APB_FREQ_MAX    0      0         209            82976           1  %\ni2s_driver      APB_FREQ_MAX    0      0         1              45105280        14 %\ni2s_driver      APB_FREQ_MAX    0      0         1              45108117        14 %\nI2C0            NO_LIGHT_SLEEP  0      0         7457           3185981         1  %\nusb_serial_jtag NO_LIGHT_SLEEP  0      0         47             28849385        9  %\nrtos1           CPU_FREQ_MAX    0      1         78864          14296463        5  %\nrtos0           CPU_FREQ_MAX    0      1         85722          21982219        7  %\n\nMode stats:\nMode      CPU_freq    Time(us)    Time(%)   \nAPB_MIN   80 M        127265      0 %\nAPB_MAX   80 M        24359624    7 %\nCPU_MAX   240M        34747379    10%\n","psram_ok":true,"reset_reason":"usb","rtc_drift_ms":-77,"run_s":294,"sleep_ratio":0.911800832,"sleep_ratio_reported":0.905153316,"sleeps":245634,"standby_entered":true,"timer_fires":294,"timer_max_late_ms":0.213,"timer_mean_late_ms":0.122802721,"timer_missed":0,"uptime_end_s":349,"wifi_reconnect_ms":10302,"wifi_stop_err":"ESP_OK"}
 ```
 
-`interrupted` 为 true（被电源键提前打断）。用户观察：短按电源键后屏幕"立刻"点亮，画面、
-触摸均正常。
+`interrupted` is true (interrupted early by the power key). The user's observation: after a short press of the power key the screen lit up "instantly", and the picture and
+touch were both normal.
 
-**c 项（USB 串口不复位重连）**：无法判断。控制端串口工具打开端口时会置位 DTR/RTS，
-这会触发板子复位，所以读到的 `reset_reason` 在读取时刻总是 `usb`。运行期间本身是否
-连续，只能从 `uptime_end_s` 相对 `run_s` 加等待延时的关系间接判断，不能用
-`reset_reason` 判断。只记录现象；按计划 Step 4，这一项不影响裁定。
+**Item c (USB serial reconnects without a reset)**: cannot be judged. When the serial tool on the controlling side opens the port it asserts DTR/RTS,
+which resets the board, so the `reset_reason` read at that moment is always `usb`. Whether the run itself was
+continuous can be judged only indirectly, from the relation of `uptime_end_s` to `run_s` plus the waiting delay, not from
+`reset_reason`. Only the observation is recorded; per Step 4 of the plan, this item does not affect the ruling.
 
-**裁定表**（对照 Step 4 的通过线）：
+**Ruling table** (against the pass lines of Step 4):
 
-| 项 | 结论 |
+| Item | Conclusion |
 |---|---|
-| 确实进入了浅睡 | 运行 2：`sleeps` 751366，`sleep_ratio` 0.879 ≥ 0.5，通过（运行 1 的 0 次是 I2S 锁所致，已查明原因并在运行 2 解除） |
-| PSRAM | 运行 2、3 的 `psram_ok` 均为 true，通过 |
-| 屏幕、触摸 | b、d 均目测正常；唤醒延迟按观察"立刻"，视为 ≤ 300 ms，通过 |
-| 定时器精度 | `timer_missed` 均为 0；`timer_max_late_ms` 远低于 50 ms；`rtc_drift_ms` 639 和 -77，均 ≤ 2000 ms，通过 |
-| 没有复位 | `reset_reason` 为 `usb` 是串口工具重新开口导致的，不是运行期间复位；`uptime_end_s` 与 `run_s`、等待延时的关系表明运行期间连续，通过 |
-| Wi-Fi 恢复 | `wifi_reconnect_ms` 5503（运行 2）、10302（运行 3），均 ≤ 15000，通过 |
-| USB 串口重连 | 无法判断（见上一段），不影响裁定 |
+| Really entered light sleep | Run 2: `sleeps` 751366, `sleep_ratio` 0.879 ≥ 0.5, pass (run 1's 0 was caused by the I2S locks; the cause was found and removed in run 2) |
+| PSRAM | `psram_ok` true in both runs 2 and 3, pass |
+| Display, touch | b and d both normal by eye; the wake latency was observed as "instant", taken as ≤ 300 ms, pass |
+| Timer accuracy | `timer_missed` 0 in both; `timer_max_late_ms` far below 50 ms; `rtc_drift_ms` 639 and -77, both ≤ 2000 ms, pass |
+| No reset | `reset_reason` being `usb` was caused by the serial tool reopening the port, not by a reset during the run; the relation of `uptime_end_s` to `run_s` and the waiting delay shows the run was continuous, pass |
+| Wi-Fi recovery | `wifi_reconnect_ms` 5503 (run 2) and 10302 (run 3), both ≤ 15000, pass |
+| USB serial reconnection | Cannot be judged (see the previous paragraph); does not affect the ruling |
 
-**最终裁定：A**，深度待机打开自动浅睡眠。
+**Final ruling: A**, automatic light sleep is enabled in deep standby.
 
-**前提条件**：音频 I2S 通道必须在 Standby/DeepStandby 期间关闭，否则
-`i2s_driver APB_FREQ_MAX` 锁会 100% 时间持有，阻止任何浅睡眠发生（运行 1 即为反例）。
+**Precondition**: the audio I2S channels must be closed during Standby/DeepStandby; otherwise the
+`i2s_driver APB_FREQ_MAX` locks are held 100% of the time and prevent any light sleep (run 1 is the counterexample).
 
-## 内部 RAM
+## Internal RAM
 
-预算和规则见 AGENTS.md 第 5 节。以下数据用串口命令 `mem` 实测（ESP-IDF v6.0.3，发布版）。`largest` 是 IDF 报告的可分配最大块；`min` 是各内存区各自最低点之和，偏低，只能当下限看。
+For the budget and rules, see AGENTS.md section 5. The data below was measured with the serial command `mem` (ESP-IDF v6.0.3, release build). `largest` is the largest allocatable block IDF reports; `min` is the sum of each memory region's own low point, which is too low, so only treat it as a lower bound.
 
-**问题**：没有保存任何网络时执行 `wifi ap on`，端口 80 的重定向能起来，端口 8900 的管理服务器却起不来（`httpd_start: ESP_ERR_HTTPD_TASK`）。当时内部 RAM 空闲 13.5 KB，最大块 7.7 KB，放不下 10 KB 的 httpd 栈。启动后内部堆的主要占用：
+**Problem**: running `wifi ap on` with no saved network, the redirect on port 80 came up, but the admin server on port 8900 did not (`httpd_start: ESP_ERR_HTTPD_TASK`). At that point internal RAM had 13.5 KB free, with a largest block of 7.7 KB, which cannot hold the 10 KB httpd stack. The main users of the internal heap after boot:
 
-| 占用 | 大小 |
+| User | Size |
 |---|---|
-| LVGL 局部刷新缓冲 2 × 480 × 48 × 2 B（`Mem::Dma`） | 90 KB |
-| Wi-Fi 静态 RX/TX 缓冲各 16 个（IDF 在开了 PSRAM 时的默认值） | 54 KB |
-| `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` 预留池（只给 DMA 和任务栈用，并没有浪费） | 32 KB |
-| 任务栈（`wisp_ui` 8 KB，`wisp.console`/`wisp.net`/`wisp.bus` 各 6 KB，`esp_timer`/`wifi` 各 6.5 KB 等） | 约 75 KB |
+| LVGL partial refresh buffers 2 × 480 × 48 × 2 B (`Mem::Dma`) | 90 KB |
+| Wi-Fi static RX/TX buffers, 16 each (IDF's default with PSRAM enabled) | 54 KB |
+| `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` reserved pool (only for DMA and task stacks, not wasted) | 32 KB |
+| Task stacks (`wisp_ui` 8 KB, `wisp.console`/`wisp.net`/`wisp.bus` 6 KB each, `esp_timer`/`wifi` 6.5 KB each, and so on) | About 75 KB |
 
-当时 `hal::Display::flush()` 要等传输完成才返回，LVGL 不可能一边往第二块缓冲画、一边传第一块，所以第二块缓冲（46 KB）完全没有用。（后来 flush 改成异步，又换回两块各 24 行的缓冲，总量仍是 46 KB，见下方"性能基准"。）
+At the time `hal::Display::flush()` waited for the transfer to complete before returning, so LVGL could never draw into the second buffer while transferring the first, and the second buffer (46 KB) was completely useless. (Later, flush became asynchronous and it went back to two buffers of 24 lines each, still 46 KB in total; see "Performance baselines" below.)
 
-**改动**：LVGL 只用一块 48 行的缓冲；Wi-Fi 静态 RX/TX 缓冲改为 10/10、RX BA 窗口改为 10（`firmware/sdkconfig.defaults`）；`wisp.ws`、`wisp.dns` 和端口 80 的 httpd 不碰 flash，栈改放 PSRAM。
+**Changes**: LVGL uses only one 48-line buffer; the Wi-Fi static RX/TX buffers became 10/10 and the RX BA window 10 (`firmware/sdkconfig.defaults`); `wisp.ws`, `wisp.dns` and the port-80 httpd do not touch flash, so their stacks moved to PSRAM.
 
-**哪些任务的栈能放 PSRAM**（规则见 AGENTS.md 第 5 节）：ESP-IDF 做 flash 操作时会停掉 cache，并断言当前任务的栈在内部 RAM（`spi_flash/cache_utils.c`），读和写都一样，经 NVS、LittleFS、`esp_partition_read` 间接调用也一样。本板开了 XIP（`CONFIG_SPIRAM_XIP_FROM_PSRAM`）之后，`esp_flash` 的读写改为只拿一把互斥锁、不再停 cache（`spi_flash/spi_flash_os_func_app.c` 的 `SPI_FLASH_CACHE_NO_DISABLE`），但映射和解除映射 flash（`esp_partition_mmap`、OTA 收尾时校验镜像）仍然冻结 cache 并做同样的栈检查（`esp_mm/esp_cache_utils.c`）。所以规则不因 XIP 放宽：XIP 只是板级配置，规则对所有板子都成立。PSRAM 栈只在 `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` 打开时使用（`firmware/sdkconfig.defaults` 固定为 y），关掉时自动退回内部栈。
+**Which task stacks can go in PSRAM** (for the rule, see AGENTS.md section 5): when ESP-IDF does a flash operation, it stops the cache and asserts that the current task's stack is in internal RAM (`spi_flash/cache_utils.c`), for reads and writes alike, and also when called indirectly through NVS, LittleFS or `esp_partition_read`. With XIP enabled on this board (`CONFIG_SPIRAM_XIP_FROM_PSRAM`), `esp_flash` reads and writes only take a mutex and no longer stop the cache (`SPI_FLASH_CACHE_NO_DISABLE` in `spi_flash/spi_flash_os_func_app.c`), but mapping and unmapping flash (`esp_partition_mmap`, verifying the image at the end of an OTA) still freeze the cache and do the same stack check (`esp_mm/esp_cache_utils.c`). So the rule is not relaxed by XIP: XIP is only a board-level configuration, and the rule holds for every board. PSRAM stacks are used only when `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` is on (fixed to y in `firmware/sdkconfig.defaults`); with it off, they automatically fall back to internal stacks.
 
-已核对的三个任务：`wisp.ws` 只把排队的帧经 `httpd_queue_work()` 交给管理 httpd 去发；`wisp.dns` 只收发 UDP；端口 80 的 httpd 只用内存里的热点状态拼一个 302。三者都不读 Settings、不读文件，日志只进内存环形缓冲和串口。网页资源包链接在应用镜像里，经 cache 读取（开 XIP 后在 PSRAM 里），不触发 flash 操作，而且只由端口 8900 的管理 httpd 提供。
+The three tasks checked: `wisp.ws` only hands queued frames to the admin httpd to send through `httpd_queue_work()`; `wisp.dns` only sends and receives UDP; the port-80 httpd only builds a 302 from the hotspot state in memory. None of the three reads Settings or files, and their logs go only to the in-memory ring buffer and the serial port. The web asset pack is linked into the app image and read through the cache (in PSRAM with XIP on), without triggering a flash operation, and it is served only by the port-8900 admin httpd.
 
-停掉任一个 httpd 实例（关热点、STA 断开）时，httpd 任务用 `vTaskDeleteWithCaps()` 删除自己，这需要临时创建一个内部栈的辅助任务（约 2 KB），创建失败就 abort（ESP-IDF 的 `idf_additions.c`）。最坏情况 40 KB 的下限已经包含这部分余量。
+When either httpd instance stops (hotspot closed, STA disconnected), the httpd task deletes itself with `vTaskDeleteWithCaps()`, which needs a temporary helper task with an internal stack (about 2 KB), and aborts if creating it fails (ESP-IDF's `idf_additions.c`). The worst-case minimum of 40 KB already includes this margin.
 
-| 状态（空闲，服务都已启动） | 改动前 | 改动后 |
+| State (idle, services started) | Before the changes | After the changes |
 |---|---|---|
-| 启动后，无网络 | 36.3 KB（最大块 21.5 KB） | 105.0 KB（31.7 KB） |
-| 只开热点（两个 httpd） | 13.5 KB（7.7 KB），管理服务器起不来 | 75.9 KB（31.7 KB） |
-| 只连 STA（管理 httpd + mDNS） | 62.6 KB¹ | 85.1 KB（31.7 KB） |
-| STA + 热点 | 41.1 KB¹（26.6 KB） | 70.5–71.9 KB（31.7 KB） |
+| After boot, no network | 36.3 KB (largest block 21.5 KB) | 105.0 KB (31.7 KB) |
+| Hotspot only (two httpd instances) | 13.5 KB (7.7 KB), admin server fails to start | 75.9 KB (31.7 KB) |
+| STA only (admin httpd + mDNS) | 62.6 KB¹ | 85.1 KB (31.7 KB) |
+| STA + hotspot | 41.1 KB¹ (26.6 KB) | 70.5–71.9 KB (31.7 KB) |
 
-¹ 只把 LVGL 改成一块缓冲之后测得。
+¹ Measured after only changing LVGL to one buffer.
 
-STA + 热点下各种操作期间的内部 RAM 最低值（`min` 下限，改动后）：配对 58 KB；扫描 58 KB；WebSocket 日志流加 TLS 握手 51 KB；WebSocket 加 OTA 上传 3.18 MB 约 60 KB；手机侧设置流程（302 跳转、`setup.html`、`/pair/ap`、扫描、WebSocket）51 KB。TLS 只测到证书校验失败为止：固件只开了 TLS 1.2，被拒绝的证书在 ECDHE 和签名校验之前就会中断握手，完整握手估计还要再多用几 KB，仍然高于 40 KB 的预算。真实端点的连通性测试见上面清单第 44 项。
+Lowest internal RAM during various operations with STA + hotspot (`min` lower bound, after the changes): pairing 58 KB; scanning 58 KB; WebSocket log stream plus a TLS handshake 51 KB; WebSocket plus an OTA upload of 3.18 MB about 60 KB; the phone-side setup flow (302 redirect, `setup.html`, `/pair/ap`, scan, WebSocket) 51 KB. TLS was measured only up to the certificate verification failure: the firmware enables only TLS 1.2, and a rejected certificate aborts the handshake before ECDHE and signature verification, so a full handshake is estimated to use a few KB more, still above the 40 KB budget. For the connection test against a real endpoint, see item 44 of the checklist above.
 
-代价：OTA 上传 3.18 MB 从 15.1 s 变成 17.5 s（RX 缓冲少了）。用程序滚动自检列表（每帧 6 px），改动前后都是 8–9 fps，原因与本改动无关，见下方"性能基准"。RX BA 窗口 10 低于 IDF 对开了 PSRAM 的板子建议的 16（`CONFIG_ESP_WIFI_RX_BA_WIN` 的帮助说 16 对吞吐和与各种 AP 的兼容性更好）；目前只在电脑网卡开的热点上测过，个别路由器可能在窗口小时吞吐骤降或反复重连，见清单第 44 项。
+Cost: an OTA upload of 3.18 MB went from 15.1 s to 17.5 s (fewer RX buffers). Scrolling the self-check list by program (6 px per frame) gave 8–9 fps both before and after the changes, for reasons unrelated to this change; see "Performance baselines" below. An RX BA window of 10 is below the 16 that IDF recommends for boards with PSRAM (the help of `CONFIG_ESP_WIFI_RX_BA_WIN` says 16 is better for throughput and for compatibility with various APs); so far it has been tested only on a hotspot opened by a computer's network card, and some routers may see throughput collapse or repeated reconnects with a small window; see item 44 of the checklist.
 
-**改成异步双缓冲、XIP 之后**（下方"性能基准"的最终配置）：启动后 103.3 KB（最大块 31.7 KB），只开热点 73.5–74.0 KB（31.7 KB），关掉热点回到 101.5 KB；滚动期间 102–105 KB（`WISP_PERF` 的 `heap_internal_free`）。比上表的"改动后"少约 2 KB：`LV_OBJ_STYLE_CACHE` 约 0.8 KB，XIP 约 0.6 KB，剩下约 0.6 KB 没有细分。热点打开过程中的 `min` 下限是 40.0 KB（改之前 41.7 KB）。STA + 热点没有重测（不连真实网络），按上表推算约 68–70 KB。
+**After switching to asynchronous double buffering and XIP** (the final configuration of "Performance baselines" below): 103.3 KB after boot (largest block 31.7 KB), 73.5–74.0 KB with the hotspot only (31.7 KB), back to 101.5 KB after closing the hotspot; 102–105 KB while scrolling (`heap_internal_free` of `WISP_PERF`). About 2 KB less than "after the changes" in the table above: `LV_OBJ_STYLE_CACHE` about 0.8 KB, XIP about 0.6 KB, and the remaining 0.6 KB or so not broken down. The `min` lower bound while opening the hotspot is 40.0 KB (41.7 KB before). STA + hotspot was not re-measured (no real network connected); by extrapolation from the table above it is about 68–70 KB.
 
-**加上渲染优化之后**（二维码按屏幕格式存、跳过被卡片挡住的区域、8 位字形缓存、SIMD；字形缓存和二维码在 PSRAM）：启动后 103.1 KB（最大块 31.7 KB，`min` 56.3 KB），只开热点 76.9–79.6 KB（31.7 KB），热点打开过程中的 `min` 下限 40.9–41.6 KB。
+**After the rendering optimisations** (QR code stored in screen format, skipping areas covered by cards, 8-bit glyph cache, SIMD; the glyph cache and the QR code are in PSRAM): 103.1 KB after boot (largest block 31.7 KB, `min` 56.3 KB), 76.9–79.6 KB with the hotspot only (31.7 KB), and a `min` lower bound of 40.9–41.6 KB while opening the hotspot.
 
-**接入场景运行时之后**（2026-11-04，固件 e9e11a7，只连 STA、空闲、未打开场景）：内部 RAM 空闲 92.6 KB（`min` 58.3 KB），接入前 97.5 KB（`min` 62.8 KB），净少 4.9 KB（`min` 净少 4.5 KB）。这是两项改动的净值：`os::Queue` 的槽位同时移进了 PSRAM（事件总线 64 × 80 B、UI 投递队列 32 × 16 B，约 5.6 KB），扣除后场景子系统本身约占 10 KB 内部 RAM，划分见场景 spec 2.3。新任务的栈：`wisp.fs` 4093 B，放内部 RAM（它读写 flash），high-water mark 剩 1532 B；`wisp.shttp` 8181 B 和 `wisp.scene` 131057 B，都在 PSRAM。最坏情况（STA + 热点、两个 httpd、WebSocket 日志、TLS 握手、OTA 上传同时进行）没有在这一版本上重测。
+**After adding the scene runtime** (2026-11-04, firmware e9e11a7, STA only, idle, no scene open): 92.6 KB of internal RAM free (`min` 58.3 KB), against 97.5 KB (`min` 62.8 KB) before, a net 4.9 KB less (`min` a net 4.5 KB less). This is the net of two changes: the slots of `os::Queue` moved into PSRAM at the same time (event bus 64 × 80 B, UI post queue 32 × 16 B, about 5.6 KB); taking that into account, the scene subsystem itself uses about 10 KB of internal RAM, broken down in scene spec 2.3. Stacks of the new tasks: `wisp.fs` 4093 B, in internal RAM (it reads and writes flash), with 1532 B of high-water mark remaining; `wisp.shttp` 8181 B and `wisp.scene` 131057 B, both in PSRAM. The worst case (STA + hotspot, two httpd instances, WebSocket logs, a TLS handshake and an OTA upload at the same time) was not re-measured on this version.
 
-**`wisp.fs` 栈从 4 KB 加到 6 KB**（2026-11-05，固件 5fab9ac 加临时 12 KB 栈实测）：装了一个场景后，开机列出场景时在这个线程上解析各场景的 manifest，4 KB 栈溢出，表现为开机约 3 秒就重启，反复循环（日志里是 `stack overflow in task wisp.fs`，或者溢出写坏了旁边的队列，变成 `Interrupt wdt timeout`）。装上 7 个示例场景后实测：开机列出场景时用了 4.3 KB，安装并打开 ledger、weather 后峰值 4.5 KB，所以定为 6 KB，留约 1.7 KB 余量。同一次测量里，安装场景加 weather 的 HTTPS 请求期间，内部 RAM `min` 降到 39.7 KB（当时 `wisp.fs` 用的是 12 KB 临时栈；改成 6 KB 后相当于约 45.7 KB）。
+**`wisp.fs` stack raised from 4 KB to 6 KB** (2026-11-05, measured on firmware 5fab9ac with a temporary 12 KB stack): with one scene installed, listing the scenes at boot parses each scene's manifest on this thread, and the 4 KB stack overflowed, showing up as a reboot about 3 seconds after boot, over and over (the log shows `stack overflow in task wisp.fs`, or the overflow corrupts a neighbouring queue and it becomes `Interrupt wdt timeout`). Measured with the 7 example scenes installed: listing the scenes at boot used 4.3 KB, and the peak after installing and opening ledger and weather was 4.5 KB, so it was set to 6 KB, leaving about 1.7 KB of margin. In the same measurement, during a scene install plus weather's HTTPS request, the internal RAM `min` dropped to 39.7 KB (with `wisp.fs` on the temporary 12 KB stack at the time; with 6 KB that is equivalent to about 45.7 KB).
 
-**STA 和热点互斥能省多少**：只开热点比 STA + 热点只多 5.4 KB（mDNS 任务栈 4 KB 加 DHCP 客户端和关联状态），只连 STA 比 STA + 热点多 14.6 KB。热点部分本身：softAP 驱动、netif 和 DHCP 服务器约 10.6 KB；端口 80 的 httpd 约 3 KB（栈已移到 PSRAM，移之前是 7.1 KB）；DNS 任务 0.4 KB（移之前是 3.4 KB）。配网时热点不能不开，所以互斥只能把峰值降低约 5 KB。
+**How much making STA and the hotspot mutually exclusive would save**: hotspot only has just 5.4 KB more than STA + hotspot (the 4 KB mDNS task stack plus the DHCP client and association state), and STA only has 14.6 KB more than STA + hotspot. The hotspot part itself: softAP driver, netif and DHCP server about 10.6 KB; the port-80 httpd about 3 KB (its stack has moved to PSRAM; 7.1 KB before the move); the DNS task 0.4 KB (3.4 KB before the move). The hotspot cannot be left off during Wi-Fi setup, so mutual exclusion could lower the peak by only about 5 KB.
 
-**矢量字体（2026-11-05，可行性验证分支 `spike/vector-font` 的实测，代码已丢弃，只取结论）**：`wisp_ui` 任务栈从 8 KB 加到 10 KB 后，用 `mem` 命令实测到的 high-water mark 余量从 1208 B 降到 808 B——stb_truetype 光栅化在栈上约用了 0.5 KB 扫描线缓冲。`fonts` 分区整个 `esp_partition_mmap()` 之后，内部 RAM 只多了约 80 B（映射本身的记账，不含映射出的 2.81 MB 本身，那部分在数据地址空间里不占堆）。这两个数字都只是 spike 分支上的一次性测量，不是这版固件的常设预算；接入矢量字体的正式实测（最坏情况 STA + 热点、两个 httpd、WebSocket 日志、TLS 握手、OTA 上传同时进行）留给真机验收（本文档"真机验收清单"）。
+**Vector font (2026-11-05, measured on the feasibility branch `spike/vector-font`; the code was discarded and only the conclusions kept)**: after the `wisp_ui` task stack was raised from 8 KB to 10 KB, the high-water-mark margin measured with the `mem` command dropped from 1208 B to 808 B: stb_truetype's rasterisation uses about 0.5 KB of scanline buffer on the stack. After `esp_partition_mmap()` of the whole `fonts` partition, internal RAM grew by only about 80 B (the bookkeeping of the mapping itself, not the 2.81 MB that is mapped, which lives in the data address space and takes no heap). Both numbers are one-off measurements on the spike branch, not standing budgets of this firmware version; the formal measurement with the vector font in place (the worst case of STA + hotspot, two httpd instances, WebSocket logs, a TLS handshake and an OTA upload at the same time) is left to device acceptance (this document's "Device acceptance checklist").
 
-**矢量字体真机验收（2026-11-05，主题分支合并后的固件 `40d24f4`/`c09a2cc`，它包含矢量字体和 3a；STA 连着家里的 Wi-Fi，内部 Flash 装了 12 个场景）**：
+**Vector font device acceptance (2026-11-05, firmware `40d24f4`/`c09a2cc` after merging the theme branch, which includes the vector font and 3a; STA on the home Wi-Fi, 12 scenes installed in internal flash)**:
 
-| 状态 | 内部 RAM 空闲 | 最大块 | `min` | `wisp_ui` 栈剩余（10 KB 栈） | PSRAM 空闲 |
+| State | Internal RAM free | Largest block | `min` | `wisp_ui` stack remaining (10 KB stack) | PSRAM free |
 |---|---|---|---|---|---|
-| 开机空闲 | 86679 B | 31744 B | 51960 B | 3412 B | 4.04 MB |
-| 番茄钟运行过、「大字测试」（128 px 汉字、xxl 混排、图标）打开 | 84283 B | 31744 B | 43680 B | 2484 B | 3.89 MB |
+| Idle after boot | 86679 B | 31744 B | 51960 B | 3412 B | 4.04 MB |
+| Pomodoro has run, "大字测试" (large-text test: 128 px Chinese characters, mixed xxl text, icons) open | 84283 B | 31744 B | 43680 B | 2484 B | 3.89 MB |
 
-两种状态都满足 `ram_budget.hpp` 的空闲 ≥ 60 KB、最大块 ≥ 20 KB，`wisp_ui` 剩余高于 1024 B。这一版同一时间只运行一个场景，打开「大字测试」时番茄钟已经关闭，所以第二行是先后运行，不是同时运行。
+Both states meet `ram_budget.hpp`'s free ≥ 60 KB and largest block ≥ 20 KB, with `wisp_ui` remaining above 1024 B. This version runs only one scene at a time, and the pomodoro had already closed when "大字测试" was opened, so the second row is sequential, not simultaneous.
 
-- **启动**：`boot_ms` 2411–2418；字体分区擦空时（镜像校验在读魔数时就失败）是 2219，所以整个镜像的 CRC 校验约 195 ms。映射分区本身只要 42–50 µs。
-- **冷渲染**：第一次打开「大字测试」，场景的 `open` 消息用了 67 ms，第二次（字形已在缓存里）也是 67 ms。现有日志不给出单帧耗时，128 px 字形第一次光栅化的耗时没有单独测出来；用户没有看到停顿。
-- **帧率**：见"性能基准"一节的"当前基准"（这一版就是当时测基准的固件）。
-- **降级**：擦掉 `fonts` 分区后日志是 `fonts partition holds no font image; large text uses bitmap fonts`；只写入镜像前 1 MB（截断）后日志是 `font image CRC mismatch; large text uses bitmap fonts`。两种情况都不崩溃，大字退到 16 px，图标仍是大号（用户确认）。`idf.py fonts-flash` 后恢复为 `fonts: image ok`。
-- **OTA 不碰字体**：经管理后台上传应用镜像并在设备上确认，重启后仍是 `fonts: image ok`，标题仍是矢量大字。这次验收还暴露了 flash 擦写期间读映射区的崩溃，见上文"flash 擦写与映射读取"和清单第 58 项。
-- **镜像大小**：`idf.py size` 的 Total image size 是 3,967,023 B，占 `ota_0`（0x500000）的 75.7%。矢量字体本身让镜像净减约 55 KB：加入 Tiny TTF 和 stb_truetype 多了 19.5 KB，去掉 Montserrat 24/32/48 少了 72.3 KB。计划里用来对比的 3,169,136 B 是更早的固件的数，那之后 3a 等改动已经让镜像涨到约 4.01 MB。
+- **Boot**: `boot_ms` 2411–2418; with the font partition erased (image validation fails when reading the magic) it is 2219, so the CRC check of the whole image takes about 195 ms. Mapping the partition itself takes only 42–50 µs.
+- **Cold rendering**: the first time "大字测试" was opened, the scene's `open` message took 67 ms, and the second time (glyphs already cached) also 67 ms. The existing logs give no per-frame time, so the time of the first rasterisation of 128 px glyphs was not measured separately; the user saw no pause.
+- **Frame rate**: see "Current baseline" in the "Performance baselines" section (this version is the firmware the baseline was measured on).
+- **Degradation**: after erasing the `fonts` partition the log says `fonts partition holds no font image; large text uses bitmap fonts`; after writing only the first 1 MB of the image (truncated) it says `font image CRC mismatch; large text uses bitmap fonts`. Neither case crashes; large text falls back to 16 px, and icons are still large (confirmed by the user). After `idf.py fonts-flash` it is back to `fonts: image ok`.
+- **OTA leaves the fonts alone**: after uploading an app image through the admin console and confirming on the device, it is still `fonts: image ok` after the restart, and the title is still large vector text. This acceptance also exposed the crash when reading the mapped area during flash erases and writes; see "Flash erase/write and mapped reads" above and item 58 of the checklist.
+- **Image size**: the Total image size of `idf.py size` is 3,967,023 B, 75.7% of `ota_0` (0x500000). The vector font itself made the image a net 55 KB smaller: adding Tiny TTF and stb_truetype added 19.5 KB, and removing Montserrat 24/32/48 saved 72.3 KB. The 3,169,136 B the plan compared against is from older firmware; since then 3a and other changes had grown the image to about 4.01 MB.
 
-**Agent 与语音接入之后**（2026-11-07，feat/agent-core 固件 `36ba2a8`，只连 STA；ASR 用硅基流动 SenseVoiceSmall，TTS 用 CosyVoice2，LLM 用 DeepSeek）：
+**After adding the agent and voice** (2026-11-07, feat/agent-core firmware `36ba2a8`, STA only; ASR is SiliconFlow's SenseVoiceSmall, TTS is CosyVoice2, LLM is DeepSeek):
 
-| 状态 | 内部 RAM 空闲 | 最大块 | `min` | `wisp.voice` / `wisp.play` / `wisp.agent` 栈剩余 |
+| State | Internal RAM free | Largest block | `min` | `wisp.voice` / `wisp.play` / `wisp.agent` stack remaining |
 |---|---|---|---|---|
-| 开机空闲 | 99527 B | 31744 B | 53696 B | 7304 / 3260 / 15440 B（8 / 4 / 16 KB 栈，都在 PSRAM） |
-| 第一句朗读中、LLM 仍在流式输出（TTS 与 LLM 两条 TLS 同时在线） | 85251 B | 31744 B | 49088 B | 3064 / 2812 / 10112 B |
-| 同一轮之后的朗读（只剩 TTS） | 89111 B | 31744 B | 43460 B | 3064 / 2812 / 10112 B |
+| Idle after boot | 99527 B | 31744 B | 53696 B | 7304 / 3260 / 15440 B (8 / 4 / 16 KB stacks, all in PSRAM) |
+| Speaking the first sentence while the LLM is still streaming (two TLS connections, TTS and LLM, online at once) | 85251 B | 31744 B | 49088 B | 3064 / 2812 / 10112 B |
+| Speaking later in the same turn (only TTS left) | 89111 B | 31744 B | 43460 B | 3064 / 2812 / 10112 B |
 
-- 三种状态都高于 `ram_budget.hpp` 的最坏下限（40 KB / 16 KB），`overlap_first_sentence` 保持默认 true。
-- 开机时 Agent 注册工具曾占 54 KB 内部 RAM（`std::string`、`Value` 树、`std::map` 节点都是小块分配，落在内部 RAM，见 AGENTS.md 第 8 节），空闲只剩 43 KB；工具表移进 PSRAM（`36ba2a8`）后回到 99.5 KB。
-- 延迟（一次实测，按住说 5.8 s）：ASR 3.6 s；LLM 首个输出约 6.3 s；第一句 TTS 从发请求到出声约 4 s，52 字的句子整句合成 11.9 s（流式边收边播）。
-- 喇叭播过 24 kHz 的 TTS 后再开麦，录音里出现过接近满量程的瞬态（峰值削顶，单帧 RMS 到 11000–15000，而正常说话约 600–1000）。长按说话不跑 VAD，开麦后先丢 100 ms（`kMicSettleMs`）。
+- All three states are above the worst-case minimums of `ram_budget.hpp` (40 KB / 16 KB), and `overlap_first_sentence` keeps its default of true.
+- At boot, registering the agent's tools once took 54 KB of internal RAM (`std::string`, `Value` trees and `std::map` nodes are all small allocations and land in internal RAM, see AGENTS.md section 8), leaving only 43 KB free; after the tool table moved into PSRAM (`36ba2a8`) it went back to 99.5 KB.
+- Latency (one measurement, holding to talk for 5.8 s): ASR 3.6 s; first LLM output about 6.3 s; the first sentence's TTS took about 4 s from request to sound, and synthesising a whole 52-character sentence took 11.9 s (streamed, played while receiving).
+- When the microphone is opened after the speaker has played 24 kHz TTS, the recording has shown a near-full-scale transient (peaks clipped, single-frame RMS up to 11000–15000, against about 600–1000 for normal speech). Push-to-talk runs no VAD, and the first 100 ms after opening the microphone are discarded (`kMicSettleMs`).
 
-### 场景运行时
+### Scene runtime
 
-真机验收清单第 53 项之外，另外交给用户在真机上执行的实测步骤（场景 spec 2.3）：分别在以下四种状态下执行一次串口命令 `mem`，记录 `internal free`/`largest`/`min`，以及 `wisp.scene`、`wisp.fs`、`wisp.shttp`、`wisp.ntp` 四个任务的栈大小与 high-water mark：
+Besides item 53 of the device acceptance checklist, there are further measurement steps handed to the user to run on the device (scene spec 2.3): run the serial command `mem` once in each of the following four states, and record `internal free`/`largest`/`min`, plus the stack size and high-water mark of the four tasks `wisp.scene`, `wisp.fs`, `wisp.shttp` and `wisp.ntp`:
 
-(a) 开机空闲、未打开任何场景；
-(b) 打开待办场景并滚动 200 条；
-(c) 天气场景发出 HTTPS 请求期间；
-(d) STA + 热点 + 网页日志页 + 上传一个场景 zip 时。
+(a) idle after boot, no scene open;
+(b) the to-do scene open and scrolling 200 entries;
+(c) while the weather scene makes an HTTPS request;
+(d) STA + hotspot + the web logs page + uploading a scene zip.
 
-(b)–(d) 相对 (a) 的内部 RAM 增量，对照 spec 2.3 给出的 ≤ 2 KB 预计，以及上方"接入场景运行时之后"一段已经测过的净值（接入场景运行时本身净少约 4.9 KB，因为 `os::Queue` 槽位同时移进了 PSRAM）。测完后把三个在 PSRAM 上的任务按 high-water mark 加余量调整 `*StackBytes`/`stack_bytes`，`wisp.fs` 已按同样方法从 4 KB 调到现在的 6144 B（见上方"`wisp.fs` 栈从 4 KB 加到 6 KB"一段）；调整后同步改 `docs/architecture.md`。
+Compare the internal RAM increase of (b)–(d) over (a) with the ≤ 2 KB expected in spec 2.3, and with the net value already measured in the "After adding the scene runtime" paragraph above (adding the scene runtime itself is a net 4.9 KB less, because the `os::Queue` slots moved into PSRAM at the same time). After measuring, adjust `*StackBytes`/`stack_bytes` of the three tasks in PSRAM from the high-water mark plus a margin; `wisp.fs` has already been adjusted the same way from 4 KB to the current 6144 B (see the "`wisp.fs` stack raised from 4 KB to 6 KB" paragraph above). After adjusting, update `docs/architecture.md` to match.
 
-四个任务的预期落点和配置栈大小（按代码里的 `task_config()`/`TaskConfig` 核对，`flash_access = true` 的任务栈在内部 RAM，`false` 的在 PSRAM）：
+Expected locations and configured stack sizes of the four tasks (checked against `task_config()`/`TaskConfig` in the code; tasks with `flash_access = true` have their stacks in internal RAM, those with `false` in PSRAM):
 
-| 任务 | 预期所在 | 配置栈大小 | 依据 |
+| Task | Expected location | Configured stack size | Basis |
 |---|---|---|---|
-| `wisp.scene` | PSRAM | 131072 B | `SceneRuntime::task_config()`（`components/wisp_scene/src/scene_runtime.cpp`）的 `flash_access = false`；大小是 `SceneRuntimeConfig::stack_bytes`（`components/wisp_scene/include/wisp/scene/scene_runtime.hpp`），按 Lua `LUAI_MAXCCALLS` 的 `string.gsub` 递归深度定的 |
-| `wisp.fs` | 内部 RAM | 6144 B | `StorageWorker::task_config()`（`components/wisp_core/src/storage_worker.cpp`）的 `flash_access = true`（读写 flash）；大小是 `StorageWorkerConfig::stack_bytes`（`components/wisp_core/include/wisp/core/storage_worker.hpp`） |
-| `wisp.shttp` | PSRAM | 8192 B | `SceneHttp::task_config()`（`components/wisp_net/src/scene_http.cpp`）的 `flash_access = false` |
-| `wisp.ntp` | PSRAM | 4096 B | `NetWiring` 里 `os::Task::spawn()` 的 `flash_access = false`（`components/wisp_app/src/net_wiring.cpp`）；大小是 `kNtpStackBytes`（`components/wisp_app/src/net_wiring.hpp`） |
+| `wisp.scene` | PSRAM | 131072 B | `flash_access = false` in `SceneRuntime::task_config()` (`components/wisp_scene/src/scene_runtime.cpp`); the size is `SceneRuntimeConfig::stack_bytes` (`components/wisp_scene/include/wisp/scene/scene_runtime.hpp`), set from the recursion depth of `string.gsub` under Lua's `LUAI_MAXCCALLS` |
+| `wisp.fs` | Internal RAM | 6144 B | `flash_access = true` in `StorageWorker::task_config()` (`components/wisp_core/src/storage_worker.cpp`) (it reads and writes flash); the size is `StorageWorkerConfig::stack_bytes` (`components/wisp_core/include/wisp/core/storage_worker.hpp`) |
+| `wisp.shttp` | PSRAM | 8192 B | `flash_access = false` in `SceneHttp::task_config()` (`components/wisp_net/src/scene_http.cpp`) |
+| `wisp.ntp` | PSRAM | 4096 B | `flash_access = false` of `os::Task::spawn()` in `NetWiring` (`components/wisp_app/src/net_wiring.cpp`); the size is `kNtpStackBytes` (`components/wisp_app/src/net_wiring.hpp`) |
 
-实测结果（2026-11-05，真机验收，固件 `0.1.0-387-gac2c5d0-dirty`；(a)–(d) 四种状态下各任务的栈大小与 high-water mark，B；额外记了 `wisp_ui`/`httpd`/`wisp.ws` 三个任务，因为这次顺带测到了 `wisp_ui` 的新低点）：
+Measured results (2026-11-05, device acceptance, firmware `0.1.0-387-gac2c5d0-dirty`; stack size and high-water mark of each task in the four states (a)–(d), in B; three more tasks, `wisp_ui`/`httpd`/`wisp.ws`, were recorded because this round also caught a new low for `wisp_ui`):
 
-| 任务 | 配置栈大小 | (a) HWM | (b) HWM | (c) HWM | (d) HWM |
+| Task | Configured stack size | (a) HWM | (b) HWM | (c) HWM | (d) HWM |
 |---|---|---|---|---|---|
 | `wisp.scene` | 131072 | 130140 | 124892 | 124892 | 124892 |
 | `wisp.fs` | 6144 | 1752 | 1688 | 1688 | 1688 |
 | `wisp.shttp` | 8192 | 7344 | 7344 | 3664 | 3664 |
 | `wisp.ntp` | 4096 | 1620 | 1620 | 1620 | 1620 |
-| `wisp_ui` | 8192（测量时）¹ | 1120 | 480 | 432 | 432 |
-| `httpd`（端口 8900，管理服务器） | 10240 | 9064 | 9064 | 9064 | 4280 |
+| `wisp_ui` | 8192 (at the time of measurement)¹ | 1120 | 480 | 432 | 432 |
+| `httpd` (port 8900, admin server) | 10240 | 9064 | 9064 | 9064 | 4280 |
 | `wisp.ws` | 4096 | 3264 | 3264 | 3264 | 2208 |
 
-¹ 这次测量用的还是改动前的 8192 字节栈。(c)/(d) 里 `wisp_ui` 的 high-water mark 只剩 432 B，是本次验收测到的全场最低点；8 KB 栈几乎打满，按此把 `UiConfig::task_stack`（`components/wisp_ui/include/wisp/ui/ui_runtime.hpp`）从 8192 调到 10240，多占内部 RAM 2 KB。(a) 空闲时 internal free 88899 B，扣掉这 2 KB 后约 86851 B，仍远高于 `kIdleInternalFreeMin`（60 KB）下限，不需要跟着调整 idle 预算。
+¹ This measurement still used the 8192-byte stack from before the change. In (c)/(d) the high-water mark of `wisp_ui` had only 432 B left, the lowest point measured in this whole acceptance round; the 8 KB stack was nearly full, so `UiConfig::task_stack` (`components/wisp_ui/include/wisp/ui/ui_runtime.hpp`) was raised from 8192 to 10240 on this basis, using 2 KB more internal RAM. In (a), idle, internal free was 88899 B; less these 2 KB, about 86851 B, still far above the `kIdleInternalFreeMin` (60 KB) minimum, so the idle budget does not need to change with it.
 
-内部 RAM（B）：
+Internal RAM (B):
 
-| 状态 | internal free | largest | min |
+| State | internal free | largest | min |
 |---|---|---|---|
-| (a) 空闲，未打开场景 | 88899 | 31744 | 54656 |
-| (b) 待办场景，滚动 200 条 | 88615 | 31744 | 48924 |
-| (c) 天气场景，HTTPS 请求期间 | 88851 | 31744 | 39772 |
-| (d) STA + 热点 + 日志页 + 上传场景 zip | 86287 | 31744 | 33772 |
+| (a) Idle, no scene open | 88899 | 31744 | 54656 |
+| (b) To-do scene, scrolling 200 entries | 88615 | 31744 | 48924 |
+| (c) Weather scene, during the HTTPS request | 88851 | 31744 | 39772 |
+| (d) STA + hotspot + logs page + uploading a scene zip | 86287 | 31744 | 33772 |
 
-(b)/(c) 相对 (a) 的瞬时 `internal free` 降幅分别为 284 B、48 B，都在 spec 2.3 给出的 ≤ 2 KB 以内；(d) 降幅约 2.6 KB，略高一些，但 (d) 叠加了热点、两个 httpd 和一次上传，开销不只是场景子系统本身的。
+The instantaneous drops of `internal free` in (b)/(c) relative to (a) are 284 B and 48 B, both within the ≤ 2 KB given in spec 2.3; the drop in (d) is about 2.6 KB, slightly higher, but (d) stacks up the hotspot, two httpd instances and an upload, so the cost is not just the scene subsystem itself.
 
-`largest` 全程保持 31744 B，高于 `components/wisp_app/include/wisp/app/ram_budget.hpp` 的 `kWorstInternalLargestMin`（16 × 1024 = 16384 B）和 `kIdleInternalLargestMin`（20 × 1024 = 20480 B），两项都达标。(a) 的 `internal free` 88899 B 高于 `kIdleInternalFreeMin`（60 × 1024 = 61440 B），达标。
+`largest` stays at 31744 B throughout, above both `kWorstInternalLargestMin` (16 × 1024 = 16384 B) and `kIdleInternalLargestMin` (20 × 1024 = 20480 B) of `components/wisp_app/include/wisp/app/ram_budget.hpp`, so both are met. The `internal free` of 88899 B in (a) is above `kIdleInternalFreeMin` (60 × 1024 = 61440 B), so it is met.
 
-`min` 是开机以来的历史最低点：这次验收触到的内部 RAM 历史最低点是 33772 B（TLS 连通性测试叠加热点上传前后出现，一直保持到测试结束），对照 `kWorstInternalFreeMin`（40 × 1024 = 40960 B）：33772 < 40960，**不达标**，需要跟进（日志显示这个低点是在热点打开、WebSocket 日志连上之后、上传之前的区间内出现的，具体触发点还没有继续拆开排查）。
+`min` is the historic low since boot: the historic internal RAM low reached in this acceptance round was 33772 B (appearing around the TLS connection test combined with the hotspot upload, and staying until the end of the test). Against `kWorstInternalFreeMin` (40 × 1024 = 40960 B): 33772 < 40960, **not met**, needs follow-up (the log shows this low appeared in the interval after the hotspot opened and the WebSocket logs connected, and before the upload; the exact trigger has not yet been taken apart further).
 
-2026-11-05 按清单第 57 项复测（mbedTLS 的分配已改到 PSRAM）：同样的组合下 `internal free` 的采样最低 62635 B，`min` 39732 B，比上面的 33772 B 高约 6 KB；`internal free` 的采样全部高于 40 KB，按第 57 项的判定达标。
+2026-11-05, re-measured per item 57 of the checklist (mbedTLS allocations already moved to PSRAM): in the same combination, the lowest sampled `internal free` was 62635 B and `min` 39732 B, about 6 KB higher than the 33772 B above; all `internal free` samples were above 40 KB, so it is met by the criterion of item 57.
 
-跟进（2026-11-05，未上机）：TLS 会话的大部分内部 RAM 来自 mbedTLS 小于 16 KB 的分配（4 KB 发送缓冲、SSL 上下文、握手状态、解析后的证书链、大数临时变量），按默认 `malloc` 规则都落在内部 RAM，估计握手期间 15–20 KB；TLS 闸门只串行化握手，场景的 HTTPS 会话和连通性测试的握手可以重叠。现在 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y` 把 mbedTLS 的分配全部放进 PSRAM（理由和代价见 `firmware/sdkconfig.defaults` 中该项的注释）。另外这次测量之后 UI 任务栈从 8 KB 加到了 10 KB，内部 RAM 常驻多占 2 KB。需要按清单第 57 项在真机上复测，复测前不能算达标。
+Follow-up (2026-11-05, not run on the device): most of a TLS session's internal RAM comes from mbedTLS allocations smaller than 16 KB (the 4 KB send buffer, the SSL context, handshake state, the parsed certificate chain, bignum temporaries), which by the default `malloc` rule all land in internal RAM, estimated at 15–20 KB during a handshake; the TLS gate only serialises handshakes, so a scene's HTTPS session and the connection test's handshake can overlap. Now `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y` puts all mbedTLS allocations into PSRAM (for the reasons and the cost, see the comment on that item in `firmware/sdkconfig.defaults`). In addition, after this measurement the UI task stack grew from 8 KB to 10 KB, permanently using 2 KB more internal RAM. This needs re-measuring on the device per item 57 of the checklist, and cannot count as met until then.
 
-## 性能基准
+## Performance baselines
 
-ESP-IDF v6.0.3，发布版（全局 `-Os`，LVGL、esp_lcd 和 wisp_ui 的渲染路径 `-O2`），CPU 240 MHz，QSPI 40 MHz。"程序滚动"是临时加在固件里的测试命令（没有提交），在 UI 线程里每帧把自检列表滚动 6 px，往返 10 s：
+ESP-IDF v6.0.3, release build (global `-Os`, `-O2` for the rendering path of LVGL, esp_lcd and wisp_ui), CPU 240 MHz, QSPI 40 MHz. "Programmatic scrolling" was a test command temporarily added to the firmware (not committed) that scrolls the self-check list by 6 px per frame on the UI thread, back and forth for 10 s:
 
-- **raw**：`lv_obj_scroll_by_raw()`，前后各发一次 `SCROLL_BEGIN`/`SCROLL_END`，和手指拖动时 LVGL 的做法一样。
-- **scroll_by**：每帧调用一次 `lv_obj_scroll_by()`。每次调用都会发一对 `SCROLL_BEGIN`/`SCROLL_END`，切换 `LV_STATE_SCROLLED` 状态，触发整棵树重新布局，每帧多出约 11 ms。手指滚动不会这样，所以以 raw 为准。
+- **raw**: `lv_obj_scroll_by_raw()`, with one `SCROLL_BEGIN`/`SCROLL_END` before and after, the same as LVGL does for a finger drag.
+- **scroll_by**: one call to `lv_obj_scroll_by()` per frame. Every call sends a `SCROLL_BEGIN`/`SCROLL_END` pair, toggles the `LV_STATE_SCROLLED` state and triggers a relayout of the whole tree, adding about 11 ms per frame. Finger scrolling does not do this, so raw is the authority.
 
-fps 按 LVGL 的 `REFR_READY` 事件计数，`WISP_PERF` 的数值与之一致。raw 的测法现在是固件里常驻的串口命令 `bench scroll [秒数]`（默认 10 s，输出一行 `WISP_BENCH`，见 `docs/architecture.md`"机器可读输出"），测前先 `diag` 打开硬件诊断（开机是主界面，上面没有可滚动的列表），确认性能浮层关着、列表在顶部。"热点"指 `wifi ap on`（只开热点，不连任何网络），这时配网卡片（带二维码）盖在列表上面。
+fps is counted from LVGL's `REFR_READY` events, and the `WISP_PERF` numbers agree with it. The raw measurement is now the serial command `bench scroll [seconds]`, resident in the firmware (default 10 s, printing one `WISP_BENCH` line, see "Machine-readable output" in `docs/architecture.md`). Before measuring, open hardware diagnostics with `diag` (the device boots into the home screen, which has no scrollable list), and make sure the performance overlay is off and the list is at the top. "Hotspot" means `wifi ap on` (hotspot only, not connected to any network), when the Wi-Fi setup card (with its QR code) covers the list.
 
-| 配置 | raw fps | raw fps（热点） | scroll_by fps | `WISP_PERF`（滚动中） | 启动后内部 RAM 空闲 |
+| Configuration | raw fps | raw fps (hotspot) | scroll_by fps | `WISP_PERF` (while scrolling) | Internal RAM free after boot |
 |---|---|---|---|---|---|
-| 最初：同步 flush，一块 48 行缓冲，CPU 交换字节 | 10.6 | — | 8.6–8.8 | fps 9，cpu 100，flush_ms 4.2–4.4 | 105.2 KB |
-| 异步 flush，两块 24 行缓冲，按面板字节序渲染，XIP，`LV_OBJ_STYLE_CACHE` | 19.8–20.4 | 11.8–12.2 | 14.8 | fps 20，cpu 100，flush_ms 0.22–0.23 | 103.3 KB |
-| **现在**：再加上二维码按屏幕格式存、跳过被不透明卡片挡住的区域、默认字体缓存 8 位字形、S3 SIMD 填充/拷贝、内联的带遮罩填充 | **22.7** | **28.2** | 15.8 | fps 22–23（热点 28），cpu 97–100，flush_ms 0.24–0.27 | 103.1 KB |
-| LVGL 堆改到 PSRAM（`LV_STDLIB_CUSTOM`，`wisp/ui/lv_heap.hpp`）；STA 连着家里的 Wi-Fi，"热点"一列是 STA + 热点 | 21.8 | 27.7 | — | fps 22（热点 28），cpu 97–100，flush_ms 0.23–0.27 | 98.8–99.8 KB |
+| Original: synchronous flush, one 48-line buffer, CPU byte swapping | 10.6 | — | 8.6–8.8 | fps 9, cpu 100, flush_ms 4.2–4.4 | 105.2 KB |
+| Asynchronous flush, two 24-line buffers, rendering in the panel's byte order, XIP, `LV_OBJ_STYLE_CACHE` | 19.8–20.4 | 11.8–12.2 | 14.8 | fps 20, cpu 100, flush_ms 0.22–0.23 | 103.3 KB |
+| **Now**: plus the QR code stored in screen format, skipping areas covered by opaque cards, an 8-bit glyph cache for the default font, S3 SIMD fill/copy, and an inlined masked fill | **22.7** | **28.2** | 15.8 | fps 22–23 (hotspot 28), cpu 97–100, flush_ms 0.24–0.27 | 103.1 KB |
+| LVGL heap moved to PSRAM (`LV_STDLIB_CUSTOM`, `wisp/ui/lv_heap.hpp`); STA on the home Wi-Fi, and the "hotspot" column is STA + hotspot | 21.8 | 27.7 | — | fps 22 (hotspot 28), cpu 97–100, flush_ms 0.23–0.27 | 98.8–99.8 KB |
 
-静止时自检界面仍然是 10 fps（它每 100 ms 刷新约 7 个标签）：`WISP_PERF` cpu 22–23、flush_ms 0.70–0.87；开热点后 cpu 24–25、flush_ms 0.22–0.25。LVGL 堆改到 PSRAM 之后（STA 连着网络）：cpu 22–24，开热点后 25–26，UI 任务真实占用的 CPU 不变（见下方"LVGL 堆"）。`boot_ms` 1826–1828。XIP 要在启动时把镜像拷进 PSRAM，app 开始运行的时刻从 960 ms 推迟到 1042 ms（ESP 日志里 `Pro cpu start user code` 的时间戳），还占用 3.1 MB PSRAM。默认字体的 8 位字形缓存在 PSRAM 里，上限 512 KB（`components/wisp_ui/src/a8_font.hpp`）。
+At rest the self-check screen is still at 10 fps (it refreshes about 7 labels every 100 ms): `WISP_PERF` cpu 22–23, flush_ms 0.70–0.87; with the hotspot on, cpu 24–25, flush_ms 0.22–0.25. After the LVGL heap moved to PSRAM (STA connected to a network): cpu 22–24, 25–26 with the hotspot on, while the CPU the UI task really uses does not change (see "LVGL heap" below). `boot_ms` 1826–1828. XIP has to copy the image into PSRAM at boot, which pushes the moment the app starts running from 960 ms to 1042 ms (the timestamp of `Pro cpu start user code` in the ESP log), and it also takes 3.1 MB of PSRAM. The default font's 8-bit glyph cache is in PSRAM, capped at 512 KB (`components/wisp_ui/src/a8_font.hpp`).
 
-**静止 cpu 对代码布局敏感**：链接时排在 LVGL 前面的组件（`wisp_port_esp`、`main`、`wisp_app`、`wisp_admin`、`wisp_ui`）多出 1–3 KB 代码，就会把整个 LVGL 挪位，16 KB 指令 cache 里的冲突随之改变。同一界面、同样的缓冲，实测静止 cpu 在 24 和 33 之间跳动，fps 不变。所以改了这些组件要重测 `WISP_PERF`；不在渲染路径上的新代码优先放进链接在 LVGL 之后的组件（如 `wisp_hal`、`wisp_core`）。
+**Idle cpu is sensitive to code layout**: when the components linked before LVGL (`wisp_port_esp`, `main`, `wisp_app`, `wisp_admin`, `wisp_ui`) grow by 1–3 KB of code, the whole of LVGL moves, and the conflicts in the 16 KB instruction cache change with it. On the same screen with the same buffers, the measured idle cpu jumped between 24 and 33, with the same fps. So re-measure `WISP_PERF` after changing these components, and put new code that is not on the rendering path preferably into components linked after LVGL (such as `wisp_hal` and `wisp_core`).
 
-**每项改动的收益**（raw fps，关热点 / 开热点）：
+**Gain of each change** (raw fps, hotspot off / hotspot on):
 
-| 改动 | 关热点 | 开热点 | 说明 |
+| Change | Hotspot off | Hotspot on | Notes |
 |---|---|---|---|
-| 二维码按屏幕格式存（`net_cards.cpp` 的 `flatten_qr()`） | 19.9 | 11.8 → 14.5 | `lv_qrcode` 存的是 1 位索引图，每次重画卡片都要逐像素查调色板 |
-| 跳过被不透明卡片挡住的区域（`wisp/ui/overlay.hpp`） | 19.8 | 14.5 → 27.2 | 列表在卡片下面滚动时，LVGL 会把整块失效区（包括卡片）重画；现在只重画卡片外的部分，每帧失效像素从约 28 万降到约 12 万 |
-| 默认字体缓存 8 位字形（`a8_font.cpp`） | 19.8 → 22.0 | — | LVGL 对 4 位字形每画一次就展开一次；缓存后走 LVGL 的静态 A8 位图路径 |
-| S3 SIMD 纯色填充和 16 位拷贝（`components/wisp_port_esp/lv_blend/esp32s3/`） | 22.0–22.1 | 27.9 | 这个界面上在噪声范围内；只在 ESP32-S3 构建时启用 |
-| 带遮罩的纯色填充改为内联（`lv_blend_mask_rgb565.h`） | 22.9 | 28.2 | 字形和圆角边缘的混合，结果与 LVGL 逐位一致 |
+| QR code stored in screen format (`flatten_qr()` in `net_cards.cpp`) | 19.9 | 11.8 → 14.5 | `lv_qrcode` stores a 1-bit indexed image, so every redraw of the card looked up the palette pixel by pixel |
+| Skipping areas covered by opaque cards (`wisp/ui/overlay.hpp`) | 19.8 | 14.5 → 27.2 | When the list scrolls under the card, LVGL redraws the whole invalidated area (including the card); now only the part outside the card is redrawn, and the invalidated pixels per frame drop from about 280,000 to about 120,000 |
+| 8-bit glyph cache for the default font (`a8_font.cpp`) | 19.8 → 22.0 | — | LVGL expands a 4-bit glyph every time it draws it; with the cache it takes LVGL's static A8 bitmap path |
+| S3 SIMD solid fill and 16-bit copy (`components/wisp_port_esp/lv_blend/esp32s3/`) | 22.0–22.1 | 27.9 | Within the noise on this screen; enabled only in ESP32-S3 builds |
+| Masked solid fill inlined (`lv_blend_mask_rgb565.h`) | 22.9 | 28.2 | Blending of glyphs and rounded-corner edges, bit-for-bit identical to LVGL |
 
-这些是逐项改动后各测一次的数，同一固件重复测量的波动约 ±0.3 fps；最终基准以上面总表的 22.7 / 28.2 为准（"内联"一行的 22.9 与最终的 22.7 之差在波动范围内，不是后续改动造成的回退）。
+These are single measurements taken after each change; repeated measurements of the same firmware vary by about ±0.3 fps. The final baseline is the 22.7 / 28.2 of the overall table above (the difference between the 22.9 of the "inlined" row and the final 22.7 is within the variation, not a regression from a later change).
 
-**每帧的时间花在哪里**（现在的配置，关热点，raw 滚动）：
+**Where the time goes in each frame** (the current configuration, hotspot off, raw scrolling):
 
-- **周期**：每帧约 44 ms，其中渲染（`REFR_START` 到 `REFR_READY`）平均 40.2 ms、最长约 52 ms，约 9.6 M 周期。滚动时整个列表区域每帧都要重画（每帧失效约 28 万像素，传输 480 × 480）。
-- **CPU 时间分布**（UI 核上的 PC 采样）：文字排版和字形查找 20%，像素混合和填充 17%，对象树遍历和刷新调度 13%，样式查找 12%，ROM 里的代码 11%（大部分在临界区退出 `vPortExitCritical` 之后，即 LVGL 内存分配和 SPI 提交时关中断的那一段），事件分发 8%，SPI 提交 6%，矩形、圆角和阴影 4%，其他 10%。阴影只占 0.4%，圆角约 1.5%。
-- **流水线**：每帧执行约 430 万条指令（IPC 约 0.45）。约 32% 的周期卡在取指上（16 KB 指令 cache 的缺失，代码从 PSRAM 取），数据 cache 缺失约 1%。
-- **传输**：40 MHz QSPI 实测约 17.9 MB/s，480 × 480 RGB565 整帧在线上约 25.7 ms。每段还要先发 CASET/RASET，提交一段约 0.15–0.25 ms（每帧 20 段，共 3–5 ms）。整帧刷新的链路上限约 36 fps。传输已经和下一段的渲染重叠。
-- **CPU 频率**：开着 DFS（`CONFIG_PM_ENABLE`），渲染期间一直是 240 MHz；滚动时持有 `ESP_PM_CPU_FREQ_MAX` 锁，结果没有变化。所以 DFS 不拖帧率（第 34 项）。
-- **flash 和 PSRAM**：QIO 80 MHz flash，octal 80 MHz PSRAM。渲染循环频繁 miss 16 KB 指令 cache，所以把代码放进 PSRAM 运行（XIP，`CONFIG_SPIRAM_XIP_FROM_PSRAM`）收益最大：同样的代码从 14.9 fps 升到 20.2 fps。
+- **Cycle**: about 44 ms per frame, of which rendering (`REFR_START` to `REFR_READY`) averages 40.2 ms with a maximum of about 52 ms, about 9.6 M cycles. While scrolling, the whole list area is redrawn every frame (about 280,000 invalidated pixels per frame, 480 × 480 transferred).
+- **CPU time distribution** (PC sampling on the UI core): text layout and glyph lookup 20%, pixel blending and filling 17%, object tree traversal and refresh scheduling 13%, style lookup 12%, code in ROM 11% (mostly after the critical-section exit `vPortExitCritical`, i.e. the stretch with interrupts off during LVGL memory allocation and SPI submission), event dispatch 8%, SPI submission 6%, rectangles, rounded corners and shadows 4%, other 10%. Shadows take only 0.4%, and rounded corners about 1.5%.
+- **Pipeline**: about 4.3 million instructions per frame (IPC about 0.45). About 32% of the cycles stall on instruction fetch (misses in the 16 KB instruction cache, with code fetched from PSRAM), and data cache misses are about 1%.
+- **Transfer**: 40 MHz QSPI measures about 17.9 MB/s, so a whole 480 × 480 RGB565 frame takes about 25.7 ms on the wire. Each segment also has to send CASET/RASET first, and submitting a segment takes about 0.15–0.25 ms (20 segments per frame, 3–5 ms in all). The link limit for whole-frame refresh is about 36 fps. Transfer already overlaps the rendering of the next segment.
+- **CPU frequency**: with DFS on (`CONFIG_PM_ENABLE`), it stays at 240 MHz throughout rendering; holding an `ESP_PM_CPU_FREQ_MAX` lock while scrolling changed nothing. So DFS does not hurt the frame rate (item 34).
+- **Flash and PSRAM**: QIO 80 MHz flash, octal 80 MHz PSRAM. The rendering loop misses the 16 KB instruction cache often, so running code from PSRAM (XIP, `CONFIG_SPIRAM_XIP_FROM_PSRAM`) gives the largest gain: the same code went from 14.9 fps to 20.2 fps.
 
-**试过的其他方案**（raw fps；内部 RAM 是带临时测试代码时测的启动后空闲值，比正式固件低 2–3 KB）：
+**Other approaches tried** (raw fps; internal RAM is the free value after boot measured with temporary test code, 2–3 KB lower than the release firmware):
 
-| 方案 | raw fps | 内部 RAM | 结论 |
+| Approach | raw fps | Internal RAM | Conclusion |
 |---|---|---|---|
-| 异步 2 × 24 行，不开 XIP | 14.2–14.9 | 100.8 KB | 不开 XIP 时的基础收益 |
-| 异步 2 × 48 行 | 19.1 | 55.2 KB | 超出预算 |
-| 异步 2 × 48 行 + XIP | 25.5 | 约 55 KB（推算） | 超出预算 |
-| 2 × 24 行 + XIP + 32 KB 指令 cache | 23.4 | 83.3 KB | 多占 16.7 KB，热点 + STA 的最坏情况会跌破 40 KB |
-| 2 × 48 行 + XIP + 32 KB 指令 cache | 28.1 | 35.7 KB | 最接近 30，但启动后就低于 60 KB 的预算 |
-| 关掉 `LV_OBJ_STYLE_CACHE` | 19.2 | 多 0.8 KB | 保留 style cache（+1 fps） |
-| LVGL 两个软件渲染单元（`LV_USE_OS LV_OS_FREERTOS`、`LV_DRAW_SW_DRAW_UNIT_CNT 2`） | 16.7 | 80.2 KB | 更慢，还多占内部 RAM |
-| `esp_driver_spi` 改用 `-O2`（第 42 项） | 20.1 | 不变 | 无收益，未采用 |
-| 绘制缓冲放 PSRAM（只渲染，不传输） | 24 行每帧 46.5 ms，240 行每帧 35.4 ms | 省 46 KB | 渲染更慢。从 PSRAM 直接 DMA 还要 esp_lcd 的 `psram_dma_direct`，bmgr 0.7.5 只在 IDF ≥ 6.1 时生成这个字段 |
-| UI 任务固定在 core 1 | 20.1 | 不变 | 无收益（UI 原本就没和别的任务抢 CPU） |
-| LVGL 的 `src/draw/sw/**`（29 个文件）用 `-O3`（在 SIMD 之前测） | 19.4–19.9（对照 19.8–20.0） | 不变 | 无收益；app 大 37 KB |
-| 整个 LVGL 用 `-O3`（现在的配置上测） | 23.1（对照 22.7） | 不变 | 不到 1 fps，未采用；app 大 65 KB，指令数少约 4%，但取指停顿从 31.6% 升到 33.2%，抵掉了大部分收益 |
-| 简化自检界面样式 | — | — | 没有改：按钮阴影（主题默认，50% 灰）和圆角都看得见，去掉会改变外观，而且合计不到 2%；没有渐变、半透明图层和变换 |
-| LVGL 热点函数放进 IRAM | — | — | 没有做：IRAM 和 DRAM 共用同一块 SRAM，热点集合要占 10 KB 以上，而开热点时 `min` 下限只比 40 KB 高约 1 KB |
+| Asynchronous 2 × 24 lines, no XIP | 14.2–14.9 | 100.8 KB | The base gain without XIP |
+| Asynchronous 2 × 48 lines | 19.1 | 55.2 KB | Over budget |
+| Asynchronous 2 × 48 lines + XIP | 25.5 | About 55 KB (extrapolated) | Over budget |
+| 2 × 24 lines + XIP + 32 KB instruction cache | 23.4 | 83.3 KB | Uses 16.7 KB more; the worst case of hotspot + STA would fall below 40 KB |
+| 2 × 48 lines + XIP + 32 KB instruction cache | 28.1 | 35.7 KB | Closest to 30, but below the 60 KB budget right after boot |
+| `LV_OBJ_STYLE_CACHE` off | 19.2 | 0.8 KB more | Keep the style cache (+1 fps) |
+| Two LVGL software render units (`LV_USE_OS LV_OS_FREERTOS`, `LV_DRAW_SW_DRAW_UNIT_CNT 2`) | 16.7 | 80.2 KB | Slower, and uses more internal RAM |
+| `-O2` for `esp_driver_spi` (item 42) | 20.1 | Unchanged | No gain, not adopted |
+| Draw buffers in PSRAM (rendering only, no transfer) | 46.5 ms per frame with 24 lines, 35.4 ms per frame with 240 lines | Saves 46 KB | Rendering is slower. DMA directly from PSRAM would also need esp_lcd's `psram_dma_direct`, and bmgr 0.7.5 generates that field only for IDF ≥ 6.1 |
+| UI task pinned to core 1 | 20.1 | Unchanged | No gain (the UI was not competing with other tasks for the CPU anyway) |
+| `-O3` for LVGL's `src/draw/sw/**` (29 files) (measured before SIMD) | 19.4–19.9 (control 19.8–20.0) | Unchanged | No gain; app 37 KB larger |
+| `-O3` for all of LVGL (measured on the current configuration) | 23.1 (control 22.7) | Unchanged | Less than 1 fps, not adopted; app 65 KB larger, about 4% fewer instructions, but instruction-fetch stalls rose from 31.6% to 33.2%, cancelling most of the gain |
+| Simplifying the self-check screen's styles | — | — | Not changed: the button shadows (theme default, 50% grey) and rounded corners are visible, removing them would change the look, and together they are under 2%; there are no gradients, translucent layers or transforms |
+| LVGL hot functions in IRAM | — | — | Not done: IRAM and DRAM share the same SRAM, the hot set would take more than 10 KB, and with the hotspot on the `min` lower bound is only about 1 KB above 40 KB |
 
-没有用 `-Ofast`/`-ffast-math`：LVGL 的软件渲染主要是整数运算，fast-math 只影响浮点，却可能改变变换和渐变里浮点计算的语义（NaN、舍入、结合律），收益很小。
+`-Ofast`/`-ffast-math` was not used: LVGL's software rendering is mostly integer arithmetic, and fast-math affects only floating point, but could change the semantics of floating-point computation in transforms and gradients (NaN, rounding, associativity), for very little gain.
 
-**为什么到不了 30 fps**：在预算内（启动后 ≥ 60 KB，最坏情况 ≥ 40 KB），每帧光渲染就要约 40 ms，CPU 时间分散在文字排版、样式查找、对象遍历和混合上，没有一个能单独砍掉 25% 的热点。约三分之一的周期花在等取指上。要达到 30 fps，需要以下其中之一：
+**Why it cannot reach 30 fps**: within budget (≥ 60 KB after boot, ≥ 40 KB in the worst case), rendering alone takes about 40 ms per frame, with the CPU time spread over text layout, style lookup, object traversal and blending, and no single hot spot that could cut 25% on its own. About a third of the cycles are spent waiting on instruction fetch. To reach 30 fps would need one of the following:
 
-- 在内部 RAM 预算放宽后改用 32 KB 指令 cache 加更大的缓冲；
-- 等 bmgr 支持 `psram_dma_direct`，把缓冲放进 PSRAM，腾出内部 RAM 给 32 KB 指令 cache；
-- 减少滚动区域里的对象和标签数（界面设计层面的取舍）。
+- switching to the 32 KB instruction cache plus larger buffers once the internal RAM budget is relaxed;
+- waiting for bmgr to support `psram_dma_direct`, putting the buffers in PSRAM and freeing internal RAM for the 32 KB instruction cache;
+- fewer objects and labels in the scrolling area (a trade-off at the level of UI design).
 
-开热点时曾经到 28.2 fps：那是旧版自检界面上测的（`b16bfc3`，只开热点、不连 STA，用上面的程序滚动），配网卡片挡住了一半列表，每帧要画的像素更少，并不是开热点本身让渲染变快。之后自检界面改版了两次（内容和分区卡片都变了），安全区变小（圆角半径 70，安全区 `{24,24,455,455}`），配网卡片也变大了（大号对话框按钮），卡片挡住的比例不再相同，所以 28.2 和现在的界面没有可比性。现在的开热点基准是在当前界面上按同样的方法重测的，见下方"当前基准"。那次 23–24 fps 与关热点的数相同，可能是卡片的遮挡裁剪没有生效，例如性能浮层（LVGL sysmon 标签）开着：它是系统层上没有标记的可见对象，任何碰到它的失效区域都会关掉裁剪（`components/wisp_ui/src/overlay.cpp`）。
+It once reached 28.2 fps with the hotspot on: that was measured on the old self-check screen (`b16bfc3`, hotspot only, no STA, with the programmatic scrolling above), where the Wi-Fi setup card covered half the list and fewer pixels had to be drawn per frame; it was not the hotspot itself that made rendering faster. Since then the self-check screen has been redesigned twice (both the content and the section cards changed), the safe area became smaller (corner radius 70, safe area `{24,24,455,455}`), and the Wi-Fi setup card also became larger (large dialog buttons), so the card no longer covers the same proportion, and 28.2 cannot be compared with the current screen. The current hotspot-on baseline was re-measured on the current screen by the same method; see "Current baseline" below. That earlier 23–24 fps, the same as with the hotspot off, may mean that the card's occlusion clipping was not taking effect, for example because the performance overlay (the LVGL sysmon label) was on: it is an unmarked visible object on the system layer, and any invalidated area that touches it turns clipping off (`components/wisp_ui/src/overlay.cpp`).
 
-### LVGL 堆
+### LVGL heap
 
-LVGL 的堆放在 PSRAM（`LV_STDLIB_CUSTOM`，`components/wisp_ui/src/lv_mem_wisp.cpp`），启动后内部 RAM 比用 CLIB `malloc` 时多约 17 KB，STA + 热点的 `min` 从 39.7 KB 升到 56.8–57.2 KB（正式固件实测）。没有 PSRAM 或 PSRAM 用完时退回内部 RAM，这部分用 `wisp::ui::lv_heap_internal_bytes()` 单独计数。
+LVGL's heap is in PSRAM (`LV_STDLIB_CUSTOM`, `components/wisp_ui/src/lv_mem_wisp.cpp`), which leaves about 17 KB more internal RAM after boot than with CLIB `malloc`, and raises the STA + hotspot `min` from 39.7 KB to 56.8–57.2 KB (measured on the release firmware). Without PSRAM, or when PSRAM runs out, it falls back to internal RAM, counted separately by `wisp::ui::lv_heap_internal_bytes()`.
 
-改到 PSRAM 后曾测到静止 cpu 高约 11 个点、滚动帧率低 0.16–0.47 fps。复测发现这两个数都不是堆造成的：
+After the move to PSRAM, the idle cpu was once measured about 11 points higher and the scrolling frame rate 0.16–0.47 fps lower. Re-measuring showed that neither number was caused by the heap:
 
-- **`WISP_PERF` 的 cpu 不是 CPU 时间。** 它是 `lv_timer_handler()` 里度过的墙钟时间，包括等 flush 等阻塞。同一个固件每次启动都不一样，启动后就固定下来：用 CLIB 堆的固件静止时 8 次启动在 23 到 29 之间，而用 FreeRTOS 运行时统计量的 `wisp_ui` 任务 CPU 每次都是 11.6–11.9%。另外，滚动测试结束时列表停的位置取决于帧数，停在不同位置时静止重画的标签不同，"滚动之后"的静止 cpu 就不可比。把列表滚回顶部再测，所有方案的 UI 任务 CPU 都一样（见下表）。
-- **帧率差在代码布局的噪声以内。** 同一个固件反复测，raw fps 相差不到 0.05；但只改测试命令、重新链接一次，同样用 CLIB 堆的固件就从 22.31 变成 21.64（热点 28.51 → 27.97）。代码从 PSRAM 执行，约三分之一的周期在等取指（见上文），函数位置一变指令 cache 的冲突就变。几种堆方案之间的差别（±0.35 fps）都比这小，而且换一次链接排序就会倒过来。
+- **The cpu of `WISP_PERF` is not CPU time.** It is the wall-clock time spent in `lv_timer_handler()`, including blocking such as waiting for flushes. It differs on every boot of the same firmware and then stays fixed after boot: the firmware with the CLIB heap was between 23 and 29 at rest over 8 boots, while the CPU of the `wisp_ui` task, from FreeRTOS run-time statistics, was 11.6–11.9% every time. In addition, where the list stops at the end of a scroll test depends on the frame count, and different stopping positions redraw different labels at rest, so the idle cpu "after scrolling" is not comparable. With the list scrolled back to the top before measuring, the UI task CPU is the same for every approach (see the table below).
+- **The frame-rate difference is within the noise of code layout.** Measuring the same firmware repeatedly, raw fps differs by less than 0.05; but changing only the test command and relinking once took the same CLIB-heap firmware from 22.31 to 21.64 (hotspot 28.51 → 27.97). Code runs from PSRAM, and about a third of the cycles wait on instruction fetch (see above), so when function positions change, the instruction cache conflicts change. The differences between the heap approaches (±0.35 fps) are all smaller than this, and reverse with a different link order.
 
-测法：临时的程序滚动命令（同上，每帧 6 px，30 s），外加一条用 `uxTaskGetSystemState()` 统计 12 s 内各任务 CPU 时间的命令（临时打开 `CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS`，所以下表的内部 RAM 比正式固件低约 9 KB）。STA 一直连着家里的 Wi-Fi，"热点"指 STA + 热点。每个方案测两遍，同一组的固件除堆以外完全相同：
+Method: the temporary programmatic scrolling command (as above, 6 px per frame, 30 s), plus a command that uses `uxTaskGetSystemState()` to total each task's CPU time over 12 s (with `CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS` temporarily on, so the internal RAM in the table below is about 9 KB lower than the release firmware). STA stayed connected to the home Wi-Fi throughout, and "hotspot" means STA + hotspot. Each approach was measured twice, and within a group the firmware was identical apart from the heap:
 
-| LVGL 堆 | raw fps | raw fps（热点） | UI 任务 CPU：静止 / 静止（热点） | 启动后内部 RAM | STA + 热点 `min` | 启动后 PSRAM |
+| LVGL heap | raw fps | raw fps (hotspot) | UI task CPU: idle / idle (hotspot) | Internal RAM after boot | STA + hotspot `min` | PSRAM after boot |
 |---|---|---|---|---|---|---|
-| CLIB `malloc`（改之前） | 21.64 / 21.64 | 27.97 / 27.96 | 11.9% / 15.0–15.2% | 72.3–72.9 KB | 39.8 KB | 5,106 KB |
-| PSRAM（现在） | 21.84 / 21.80 | 27.68 / 27.67 | 12.1–12.2% / 15.3–15.4% | 89.5–90.0 KB | 46.2–46.6 KB | 5,084 KB |
-| LVGL 自带的 TLSF，512 KB 池在 PSRAM | 21.99 / 21.98 | 27.86 / 27.87 | 11.7–12.0% / 15.2% | 89.3–89.8 KB | 47.0 KB | 4,580 KB |
+| CLIB `malloc` (before the change) | 21.64 / 21.64 | 27.97 / 27.96 | 11.9% / 15.0–15.2% | 72.3–72.9 KB | 39.8 KB | 5,106 KB |
+| PSRAM (now) | 21.84 / 21.80 | 27.68 / 27.67 | 12.1–12.2% / 15.3–15.4% | 89.5–90.0 KB | 46.2–46.6 KB | 5,084 KB |
+| LVGL's bundled TLSF, 512 KB pool in PSRAM | 21.99 / 21.98 | 27.86 / 27.87 | 11.7–12.0% / 15.2% | 89.3–89.8 KB | 47.0 KB | 4,580 KB |
 
-另一组固件上试过的混合方案（这一组 CLIB 是 22.31 / 28.51，PSRAM 是 21.83–21.88 / 27.63–27.76）：
+Hybrid approaches tried on another group of firmware (in this group CLIB was 22.31 / 28.51 and PSRAM 21.83–21.88 / 27.63–27.76):
 
-| 方案 | raw fps | raw fps（热点） | 启动后内部 RAM | STA + 热点 `min` |
+| Approach | raw fps | raw fps (hotspot) | Internal RAM after boot | STA + hotspot `min` |
 |---|---|---|---|---|
-| 渲染期间（`RENDER_START` 到 `RENDER_READY`）≤ 512 字节的块放内部 RAM | 21.78–21.79 | 27.61–27.62 | 89.4–90.0 KB | 46.6–46.8 KB |
-| ≤ 256 字节的块放内部 RAM | 21.90–21.92 | 27.79–27.81 | 71.9–72.0 KB | 39.7 KB |
-| ≤ 16 KB 的块放内部 RAM（等于 CLIB 的规则，单次） | 22.08 | 28.04 | 67.4 KB | 39.7 KB |
+| Blocks ≤ 512 bytes in internal RAM during rendering (`RENDER_START` to `RENDER_READY`) | 21.78–21.79 | 27.61–27.62 | 89.4–90.0 KB | 46.6–46.8 KB |
+| Blocks ≤ 256 bytes in internal RAM | 21.90–21.92 | 27.79–27.81 | 71.9–72.0 KB | 39.7 KB |
+| Blocks ≤ 16 KB in internal RAM (the same as CLIB's rule, single run) | 22.08 | 28.04 | 67.4 KB | 39.7 KB |
 
-结论：保留 PSRAM 堆。TLSF 不更快，而且 LVGL 9.5 不会自己扩池（`LV_MEM_POOL_EXPAND_SIZE` 只放宽单个池和单块的上限），固定的池装不下 2000 个控件的场景（主机上约 300 字节/控件），截图用的 690–920 KB 绘制缓冲也要另外处理。把块放回内部 RAM 的方案要么没有收益，要么把 17 KB 的收益吃回去。
+Conclusion: keep the PSRAM heap. TLSF is not faster, and LVGL 9.5 does not grow the pool by itself (`LV_MEM_POOL_EXPAND_SIZE` only relaxes the limits for a single pool and a single block), so a fixed pool cannot hold a scene with 2000 widgets (about 300 bytes per widget on the host), and the 690–920 KB draw buffer used for screenshots would need separate handling too. Approaches that put blocks back into internal RAM either bring no gain or eat the 17 KB gain back.
 
-### 自检界面的存储读数（2026-11-05）
+### Storage readings on the self-check screen (2026-11-05)
 
-`bench scroll`（关热点，STA 连着家里的 Wi-Fi，内部 Flash 装了 12 个场景，已用 248 KB）测出 3a 的固件只有 15.6–15.8 fps，比上面的 22.7 低了 7 fps。原因有两个，都不在场景运行时里：
+`bench scroll` (hotspot off, STA on the home Wi-Fi, 12 scenes installed in internal flash, 248 KB used) measured the 3a firmware at only 15.6–15.8 fps, 7 fps below the 22.7 above. There were two causes, neither of them in the scene runtime:
 
-- **自检界面每 100 ms 在 UI 线程上读一次存储容量**（`StorageManager::status()`）。LittleFS 的 `esp_littlefs_info()` 要把用到的每个块都读一遍（`lfs_fs_size()`，读块、算 CRC），实测每次 18 ms，等于 UI 线程 18% 的时间，拖掉约 4 fps；`lfs_fs_size()` 遍历所有在用的块，存的东西越多越慢（3a 验收时手指滚动还有 22–24 fps，可能就是当时存的少，没有复现）。这个读法从自检界面一开始就有，所以同一台设备上，老固件（`d7e98d5`，当时测出 21.8）现在也只有 18.2，去掉这次读取就回到 22.6。现在改为在存储工作线程（`wisp.fs`）上每秒读一次，结果交回 UI 线程（`SceneWiring::storage_status_async()`），3a 固件从 15.6–15.8 回到 19.1–19.4。
-- **自检界面改版**（`dbf75f0`，状态摘要和卡片）本身每帧多画不少东西：同样去掉存储读数，改版前 22.5–22.6，改版后 19.5。3a 之后的提交没有再带来超过噪声的变化（`842d6f3` 和 `43a2caf` 都是 15.6–15.8）。
+- **The self-check screen read the storage capacity on the UI thread every 100 ms** (`StorageManager::status()`). LittleFS's `esp_littlefs_info()` has to read every block in use (`lfs_fs_size()`, reading blocks and computing CRCs), measured at 18 ms each time, i.e. 18% of the UI thread's time, costing about 4 fps; `lfs_fs_size()` walks every block in use, so the more is stored, the slower it gets (at the 3a acceptance, finger scrolling still gave 22–24 fps, probably because little was stored then, so it did not reproduce). This read had been there since the self-check screen first existed, so on the same device the old firmware (`d7e98d5`, measured at 21.8 at the time) now also gives only 18.2, and goes back to 22.6 without this read. It now reads once a second on the storage worker thread (`wisp.fs`) and hands the result back to the UI thread (`SceneWiring::storage_status_async()`), and the 3a firmware went from 15.6–15.8 back to 19.1–19.4.
+- **The self-check screen redesign** (`dbf75f0`, the status summary and cards) itself draws quite a lot more per frame: likewise without the storage reading, 22.5–22.6 before the redesign and 19.5 after. Commits after 3a brought no change beyond the noise (`842d6f3` and `43a2caf` are both 15.6–15.8).
 
-所以 3a 固件在现在的自检界面上是 19.1–19.4 fps（这个界面、这台设备）；22.7 是改版前的界面上测的，两者不能直接比。
+So the 3a firmware runs at 19.1–19.4 fps on the current self-check screen (this screen, this device); the 22.7 was measured on the screen before the redesign, and the two cannot be compared directly.
 
-### 当前基准（2026-11-05）
+### Current baseline (2026-11-05)
 
-上面总表的 22.7 / 28.2 是改版前的自检界面测的，只用来说明各项渲染改动的收益。2026-11-05 起验收线（清单第 33、42、53、56 项）改为在当前硬件诊断界面（原自检界面）上重测的值：
+The 22.7 / 28.2 of the overall table above were measured on the self-check screen before the redesign, and are used only to show the gain of each rendering change. From 2026-11-05 the acceptance lines (checklist items 33, 42, 53, 56) are the values re-measured on the current hardware diagnostics screen (the former self-check screen):
 
-| 固件 | 关热点 | 开热点（只开热点，配网卡片显示） |
+| Firmware | Hotspot off | Hotspot on (hotspot only, Wi-Fi setup card showing) |
 |---|---|---|
-| 主题 + 矢量字体 + 3a（`40d24f4`，含上面的存储读数修复） | 18.38 / 18.66 / 18.66 | 29.86 / 29.93 / 29.87 |
+| Theme + vector font + 3a (`40d24f4`, including the storage reading fix above) | 18.38 / 18.66 / 18.66 | 29.86 / 29.93 / 29.87 |
 
-测法：先 `diag` 打开硬件诊断，`bench scroll 10`，每种各 3 次，STA 连着家里的 Wi-Fi，内部 Flash 装了 12 个场景，性能浮层关着，列表在顶部；`cpu` 都是 99–100。验收线取关热点 18.3、开热点 29.8：同一固件重复测量的波动约 ±0.3 fps（见上文），验收线比最低一次的读数低一点，免得定基准的固件自己都过不了。开热点更快是因为卡片挡住了大半个列表，每帧要画的像素少（见上文"开热点时曾经到 28.2 fps"一段）。同一界面上只有 3a 时是 19.1–19.4，主题和矢量字体合起来约少 0.5 fps。自检界面以后再改版、或配网卡片尺寸改变时，要在同一固件上重测这两个数并更新本表。
+Method: first open hardware diagnostics with `diag`, then `bench scroll 10`, 3 times for each, with STA on the home Wi-Fi, 12 scenes installed in internal flash, the performance overlay off and the list at the top; `cpu` was 99–100 in all of them. The acceptance lines are 18.3 with the hotspot off and 29.8 with it on: repeated measurements of the same firmware vary by about ±0.3 fps (see above), and the acceptance lines are set slightly below the lowest reading, so that the firmware that set the baseline does not fail it itself. It is faster with the hotspot on because the card covers most of the list, so fewer pixels are drawn per frame (see the "It once reached 28.2 fps with the hotspot on" paragraph above). On the same screen with only 3a it was 19.1–19.4, so the theme and the vector font together cost about 0.5 fps. If the self-check screen is redesigned again, or the size of the Wi-Fi setup card changes, re-measure these two numbers on the same firmware and update this table.
 
-## 验收第 5 条：待机耗电实测
+## Acceptance item 5: measured standby power
 
-（真机验收后填写。测量方法：拔掉 USB 数据线，只用电池供电，在电池正极与电池之间串联
-一个电流表（或用带电流检测的电源分析仪）；分别记录"亮屏静止"和"短按电源键熄屏待机"
-下的平均电流，待机电流应不超过亮屏的 1/10；另外记录从短按电源键唤醒到屏幕实际点亮的
-耗时——见上面"待机与省电"一节，改用 `DcsSleep` 后估算约 200 ms，应能满足 300 ms 的
-目标，但这只是估算，需要实测确认。
+(To be filled in after device acceptance. Measurement method: unplug the USB data cable and run on battery only, with an ammeter in series between the battery positive and the battery
+(or use a power analyser with current sensing); record the average current both "screen on, idle" and "screen off in standby after a short press of the power key";
+the standby current should be no more than 1/10 of the screen-on current. Also record the time from a short press of the power key to wake until the screen actually lights,
+see the "Standby and power saving" section above: with `DcsSleep` it is estimated at about 200 ms, which should meet the 300 ms
+target, but this is only an estimate and needs confirming by measurement.
 
-另外几项验证：
-1. 待机若干分钟（确保发生过自动浅睡眠）后，用音量键或电源键唤醒，确认触摸依旧正常
-   响应、扬声器没有异常噗声或持续底噪——验证 `gpio_sleep_sel_dis()` 处理是否真的
-   覆盖了面板 RST、触摸 RST、功放使能、面板 CS 这四个引脚。
-2. 自动熄屏后短按电源键唤醒，确认屏幕不会先闪亮一下又熄灭；电源键熄屏后用音量键唤醒，
-   确认下一次电源键短按能正常关屏——验证 PowerManager 是屏幕状态的唯一真相来源，在
-   真机上同样成立。
-3. 开着电源键确认对话框（长按电源键）的状态下，等待自动熄屏触发，再分别用短按/长按
-   电源键唤醒——确认两种按法都能唤醒屏幕（对话框可能仍留在界面上），不会因为"唤醒"
-   和"确认对话框"两套逻辑抢着处理同一次按键而出现异常（`PowerKeyController::
-   on_short()`/`on_long()` 总是先检查"屏幕是否已经是关的"，唤醒优先于确认对话框
-   逻辑）。
-4. IMU 掉电/恢复：待机前 `diag` 打开硬件诊断，读一次上面的 IMU 数值，进入待机，唤醒后确认 IMU 数值
-   恢复正常更新（不是卡在掉电前的最后一次读数，也不是全零/明显错误的数值）——验证
-   `qmi8658_set_power()` 唤醒时正确恢复了之前选定的 ODR，不是恢复成了驱动的默认值。
-5. SD 卡探测暂停：插着 SD 卡待机若干分钟后唤醒，确认卡仍然在线（`online()` 没有被
-   误判为掉线）；另外可以在待机期间物理拔掉/插入 SD 卡，确认热插拔检测在**唤醒后**
-   才会被重新注意到（待机期间 worker 已暂停，不会在待机过程中探测到这次插拔）——这是
-   预期行为，不是 bug。
-6. 待机电流的进一步拆解（可选，仅测量，不需要改代码）：如果上面测得的待机电流仍
-   明显偏高，可以尝试在待机期间额外把触摸芯片 CST9217 的复位引脚（GPIO40）拉低
-   （而不是像现在这样保持上电前的电平），单独测量这一项操作前后的电流差异，评估
-   "触摸芯片复位期间功耗"是否值得作为后续一个单独的省电项——这只是一次性的测量
-   方法，不代表现在的代码需要据此改动。）
+Further checks:
+1. After a few minutes in standby (making sure automatic light sleep has happened), wake with the volume key or the power key, and confirm that touch still responds
+   normally and that the speaker has no unusual pops or continuous noise floor. This verifies that the `gpio_sleep_sel_dis()` handling really
+   covers the four pins panel RST, touch RST, amplifier enable and panel CS.
+2. After an automatic screen-off, wake with a short press of the power key and confirm that the screen does not flash on and then go dark again; after turning the screen off with the power key, wake with the volume key
+   and confirm that the next short press of the power key turns the screen off normally. This verifies that PowerManager being the single source of truth for the screen state
+   holds on the device too.
+3. With the power key confirmation dialog open (long press on the power key), wait for the automatic screen-off to trigger, then wake with a short press and with a long press of
+   the power key. Confirm that both kinds of press wake the screen (the dialog may still be on screen), with no misbehaviour from the "wake"
+   and "confirmation dialog" logic competing for the same key press (`PowerKeyController::
+   on_short()`/`on_long()` always check "is the screen already off" first, so waking takes priority over the confirmation dialog
+   logic).
+4. IMU power-down/recovery: before standby, open hardware diagnostics with `diag` and read the IMU values on it once, enter standby, and after waking confirm that the IMU values
+   update normally again (not stuck at the last reading before power-down, and not all zeros or clearly wrong values). This verifies that
+   `qmi8658_set_power()` correctly restores the previously selected ODR on waking, rather than the driver's default.
+5. SD probing pause: with an SD card inserted, wake after a few minutes in standby and confirm that the card is still online (`online()` was not
+   wrongly judged as offline); you can also physically remove/insert the SD card during standby and confirm that the hot-plug detection notices it only **after waking**
+   (the worker is paused during standby, so it does not detect this insertion or removal during standby). This is
+   expected behaviour, not a bug.
+6. Further breakdown of the standby current (optional, measurement only, no code change needed): if the standby current measured above is still
+   clearly too high, you can try additionally pulling the reset pin of the touch chip CST9217 (GPIO40) low during standby
+   (rather than keeping the level from before power-up, as now), and measure the current difference before and after this one operation, to evaluate
+   whether "touch chip power during reset" is worth a separate power-saving item later. This is only a one-off measurement
+   method, and does not mean the current code needs to change because of it.)

@@ -83,8 +83,8 @@ COMPONENTS = (
 )
 SOURCE_SUFFIXES = (".hpp", ".cpp", ".h", ".c")
 
-# Each component's header namespace (AGENTS.md section 5: "头文件路径
-# wisp/<层>/<名>.hpp"), in the same order as COMPONENTS -- used to
+# Each component's header namespace (AGENTS.md section 5: "header path
+# wisp/<layer>/<name>.hpp"), in the same order as COMPONENTS -- used to
 # generalize the reverse-dependency check below.
 LAYER_INCLUDE_PREFIX = {
     "wisp_base": "wisp/base/",

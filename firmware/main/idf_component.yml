@@ -1,6 +1,6 @@
-# Pinned third-party dependencies for the firmware build (AGENTS.md: "所有
-# 外部依赖锁定版本"). lvgl/lvgl matches components/wisp_ui's LVGL 9.5.0 (see
-# cmake/wisp_host_deps.cmake for the host-side pin); bblanchon/arduinojson
+# Pinned third-party dependencies for the firmware build (AGENTS.md: "external
+# dependencies are pinned to exact versions"). lvgl/lvgl matches
+# components/wisp_ui's LVGL 9.5.0 (see cmake/wisp_host_deps.cmake for the host-side pin); bblanchon/arduinojson
 # matches components/wisp_base's host-side pin (cmake/wisp_host_deps.cmake).
 # Board bring-up: esp_board_manager plus the CO5300 panel and
 # CST9217 touch drivers its board YAML uses, and esp_lcd_touch (pulled in
