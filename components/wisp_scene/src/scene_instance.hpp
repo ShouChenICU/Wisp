@@ -58,8 +58,8 @@ public:
     std::optional<ScriptError> hook(const char* name, const char* arg = nullptr);
     // A widget event: a Change first updates what ui.ref():value()
     // reports (__wisp.set_value), then the node's handler (on_click,
-    // on_long_press, on_change(value)) runs if it has one. One budget for
-    // both.
+    // on_long_press, on_change(value), on_swipe(dir)) runs if it has one.
+    // One budget for both.
     std::optional<ScriptError> event(NodeId node, UiEvent ev, const PropValue& value);
     // SceneView::on_list_range: builds the list's rows (build_list_rows()).
     std::optional<ScriptError> list_range(NodeId list, uint32_t first, uint32_t count);

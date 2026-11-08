@@ -6,8 +6,10 @@
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <variant>
 
 #include "scene_view_internal.hpp"
@@ -113,14 +115,59 @@ const char* text_of(const PropValue& v, char* buf, size_t size) {
 
 }  // namespace
 
+const char* swipe_name(SwipeDir d) {
+    switch (d) {
+        case SwipeDir::Up:
+            return "up";
+        case SwipeDir::Down:
+            return "down";
+        case SwipeDir::Left:
+            return "left";
+        case SwipeDir::Right:
+            return "right";
+        case SwipeDir::None:
+            break;
+    }
+    return "";
+}
+
+SwipeDir swipe_from_name(std::string_view name) {
+    for (SwipeDir d : {SwipeDir::Up, SwipeDir::Down, SwipeDir::Left, SwipeDir::Right})
+        if (name == swipe_name(d)) return d;
+    return SwipeDir::None;
+}
+
+int32_t swipe_min_px(const hal::ScreenShape& shape) {
+    return std::max(kSwipeMinPx, std::min(shape.width, shape.height) / kSwipeScreenDivisor);
+}
+
+SwipeDir classify_swipe(lv_point_t start, lv_point_t end, int32_t min_px) {
+    const int32_t dx = end.x - start.x, dy = end.y - start.y;
+    const int32_t ax = std::abs(dx), ay = std::abs(dy);
+    // The dominant axis at least 1.5 times the other, in integers.
+    if (ax >= min_px && 2 * ax >= 3 * ay) return dx > 0 ? SwipeDir::Right : SwipeDir::Left;
+    if (ay >= min_px && 2 * ay >= 3 * ax) return dy > 0 ? SwipeDir::Down : SwipeDir::Up;
+    return SwipeDir::None;
+}
+
 SceneView::SceneView(ui::SystemLayer& system, const hal::ScreenShape& shape, ViewCallbacks cb)
     : system_(system), shape_(shape), cb_(std::move(cb)) {
     screen_ = lv_obj_create(nullptr);
     group_ = lv_group_create();
     reset_screen_style();
+    for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i)) {
+        if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER) {
+            indev_ = i;
+            lv_indev_add_event_cb(indev_, indev_event_cb, LV_EVENT_ALL, this);
+            break;
+        }
+    }
 }
 
 SceneView::~SceneView() {
+    // The device may be gone already when the UI stopped first.
+    for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i))
+        if (i == indev_) lv_indev_remove_event_cb_with_user_data(i, indev_event_cb, this);
     ++applying_;
     lv_obj_delete(screen_);
     lv_group_delete(group_);
@@ -404,6 +451,9 @@ lv_obj_t* SceneView::create_object(Node& n, lv_obj_t* parent) {
 }
 
 void SceneView::attach_events(Node& n) {
+    // A press anywhere on a node with on_swipe has to land in its subtree
+    // (scene_view.hpp).
+    if (n.events & kEventSwipe) lv_obj_add_flag(n.obj, LV_OBJ_FLAG_CLICKABLE);
     const bool touch = (n.events & (kEventClick | kEventLongPress)) != 0;
     if (touch) {
         lv_obj_add_flag(n.obj, LV_OBJ_FLAG_CLICKABLE);
@@ -1006,6 +1056,92 @@ void SceneView::event_cb(lv_event_t* e) {
             break;
         case LV_EVENT_VALUE_CHANGED:
             view->report_change(*n);
+            break;
+        default:
+            break;
+    }
+}
+
+bool SceneView::swipe(NodeId node, SwipeDir dir) {
+    if (dir == SwipeDir::None) return false;
+    for (Node* n = find(node); n != nullptr; n = n->parent != 0 ? find(n->parent) : nullptr) {
+        if (n->events & kEventSwipe) {
+            report(*n, UiEvent::Swipe, PropValue{os::LargeString(swipe_name(dir))});
+            return true;
+        }
+    }
+    return false;
+}
+
+void SceneView::swipe_pressed(lv_obj_t* obj) {
+    swipe_ = {};
+    no_click_ = false;
+    if (obj == nullptr || lv_obj_get_screen(obj) != screen_) return;
+    lv_dir_t scroll_dirs = LV_DIR_NONE;
+    bool first = true;
+    for (lv_obj_t* o = obj; o != nullptr; o = lv_obj_get_parent(o)) {
+        // Every object on the screen is a node's (user data: its Node) or
+        // a part of one (a button's label, a list's filler: none).
+        auto* n = static_cast<Node*>(lv_obj_get_user_data(o));
+        if (n == nullptr) continue;
+        if (first && n->widget == Widget::Slider) return;
+        first = false;
+        if (n->widget == Widget::Scroll || n->widget == Widget::List)
+            scroll_dirs = static_cast<lv_dir_t>(scroll_dirs | lv_obj_get_scroll_dir(o));
+        if (n->events & kEventSwipe) {
+            swipe_.target = n->id;
+            swipe_.scroll_dirs = scroll_dirs;
+            lv_indev_get_point(indev_, &swipe_.start);
+            return;
+        }
+    }
+}
+
+void SceneView::swipe_released() {
+    const SwipeTrack t = std::exchange(swipe_, SwipeTrack{});
+    if (t.target == 0) return;
+    lv_point_t end;
+    lv_indev_get_point(indev_, &end);
+    const int32_t min_px = swipe_min_px(shape_);
+    if (std::abs(end.x - t.start.x) >= min_px || std::abs(end.y - t.start.y) >= min_px)
+        no_click_ = true;
+    if (lv_indev_get_scroll_obj(indev_) != nullptr) return;
+    const SwipeDir dir = classify_swipe(t.start, end, min_px);
+    if (dir == SwipeDir::None) return;
+    const bool horizontal = dir == SwipeDir::Left || dir == SwipeDir::Right;
+    if ((t.scroll_dirs & (horizontal ? LV_DIR_HOR : LV_DIR_VER)) != 0) return;
+    Node* n = find(t.target);
+    if (n == nullptr) return;
+    report(*n, UiEvent::Swipe, PropValue{os::LargeString(swipe_name(dir))});
+}
+
+void SceneView::indev_event_cb(lv_event_t* e) {
+    auto* view = static_cast<SceneView*>(lv_event_get_user_data(e));
+    if (view->applying_ > 0) return;
+    switch (lv_event_get_code(e)) {
+        case LV_EVENT_PRESSED:
+            view->swipe_pressed(static_cast<lv_obj_t*>(lv_event_get_param(e)));
+            break;
+        case LV_EVENT_RELEASED:
+            view->swipe_released();
+            if (view->no_click_) {
+                // LVGL toggles a checkbox or switch on RELEASED; dropping
+                // the pressed look is all the object would do besides.
+                lv_indev_stop_processing(view->indev_);
+                if (auto* obj = static_cast<lv_obj_t*>(lv_event_get_param(e)))
+                    lv_obj_remove_state(obj, LV_STATE_PRESSED);
+            }
+            break;
+        case LV_EVENT_SHORT_CLICKED:
+            if (view->no_click_) lv_indev_stop_processing(view->indev_);
+            break;
+        case LV_EVENT_CLICKED:
+            if (view->no_click_) lv_indev_stop_processing(view->indev_);
+            view->no_click_ = false;
+            break;
+        case LV_EVENT_INDEV_RESET:
+            view->swipe_ = {};
+            view->no_click_ = false;
             break;
         default:
             break;

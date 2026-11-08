@@ -22,6 +22,7 @@ using PropValue = std::variant<std::monostate, bool, int64_t, double, os::LargeS
 inline constexpr uint32_t kEventClick = 1;
 inline constexpr uint32_t kEventLongPress = 2;
 inline constexpr uint32_t kEventChange = 4;
+inline constexpr uint32_t kEventSwipe = 8;
 
 struct NodeDesc {
     NodeId id = 0;

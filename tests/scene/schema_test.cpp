@@ -26,6 +26,7 @@ using wisp::scene::install_prelude;
 using wisp::scene::install_ui;
 using wisp::scene::kEventChange;
 using wisp::scene::kEventClick;
+using wisp::scene::kEventSwipe;
 using wisp::scene::kMaxNodes;
 using wisp::scene::nearest_name;
 using wisp::scene::NodeDesc;
@@ -154,6 +155,44 @@ TEST(Schema, UnknownPropSuggestsNearest) {
     // here.
     expect_build_error("return ui.screen{ ui.spacer{text = 'a'} }",
                        "main.lua:1: ui.spacer: unknown property 'text' (did you mean 'font'?)");
+}
+
+// on_swipe belongs to the layout widgets and the canvas; on any other
+// widget it is an unknown property, as a property of other widgets is.
+TEST(Schema, OnSwipeOnlyOnLayoutsAndCanvas) {
+    Scene s;
+    ASSERT_FALSE(s.installed) << describe(s.installed);
+    auto err = s.build(R"(local f = function(dir) end
+return ui.screen{ on_swipe = f,
+    ui.column{on_swipe = f}, ui.row{on_swipe = f}, ui.stack{on_swipe = f},
+    ui.grid{on_swipe = f}, ui.scroll{on_swipe = f}, ui.canvas{on_swipe = f},
+    ui.label{} })");
+    ASSERT_FALSE(err) << describe(err);
+    ASSERT_EQ(s.tree.nodes.size(), 8u);
+    for (size_t i = 0; i < 7; ++i) {
+        SCOPED_TRACE(i);
+        EXPECT_EQ(s.node(i).events, kEventSwipe);
+        EXPECT_EQ(prop_of(s.node(i), Prop::OnSwipe), nullptr);
+    }
+    EXPECT_EQ(s.node(7).events, 0u);
+    ASSERT_TRUE(push_node_prop(s.vm->L(), 7, Prop::OnSwipe));
+    EXPECT_EQ(lua_type(s.vm->L(), -1), LUA_TFUNCTION);
+    lua_pop(s.vm->L(), 1);
+
+    for (const char* w : {"label", "button", "spacer", "image", "slider", "list"}) {
+        SCOPED_TRACE(w);
+        const std::string src =
+            std::string("return ui.screen{ ui.") + w + "{on_swipe = function() end} }";
+        Scene bad;
+        ASSERT_FALSE(bad.installed) << describe(bad.installed);
+        auto e = bad.build(src);
+        ASSERT_TRUE(e);
+        EXPECT_NE(e->text().find(std::string("ui.") + w + ": unknown property 'on_swipe'"),
+                  std::string::npos)
+            << e->text();
+    }
+    expect_build_error("return ui.screen{ on_swipe = 'left' }",
+                       "main.lua:1: ui.screen: property 'on_swipe' expects function, got string");
 }
 
 TEST(Schema, TypeMismatchNamesExpectedType) {
@@ -919,6 +958,9 @@ TEST(Schema, WidgetMarkdownForButton) {
     // Only its own properties.
     EXPECT_EQ(md.find("`row_h`"), std::string::npos);
     EXPECT_NE(wisp::scene::widget_markdown("list").find("row_h"), std::string::npos);
+    EXPECT_EQ(md.find("`on_swipe`"), std::string::npos);
+    EXPECT_NE(wisp::scene::widget_markdown("stack").find("`on_swipe`"), std::string::npos);
+    EXPECT_NE(wisp::scene::widget_markdown("canvas").find("`on_swipe`"), std::string::npos);
     EXPECT_EQ(wisp::scene::widget_markdown("nope"), "");
     EXPECT_EQ(wisp::scene::widget_markdown("ui.button"), "");
 }
