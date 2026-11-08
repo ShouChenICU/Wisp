@@ -101,7 +101,21 @@ idf.py build && idf.py -p <串口> flash
   - 改了代码之后，用 `idf.py app-flash` 只更新程序，或者在管理后台上传 `wisp.bin` 通过网页更新（OTA）；
   - 改了字体之后，还要运行 `idf.py fonts-flash`，因为字体存在单独的分区里，只更新程序不会写入。
 
-其他开发板可以参考[移植指南](docs/porting-guide.md)来适配。
+## 🔧 移植到新开发板
+
+Wisp 不绑定某一块板子。和板子有关的东西只放在 `boards/<板名>/` 和 `drivers/` 两个目录里，上层代码完全不用改。参考实现是 [`boards/waveshare_esp32_s3_touch_amoled_2_16/`](boards/waveshare_esp32_s3_touch_amoled_2_16/)。
+
+| 步骤 | 做什么 |
+| --- | --- |
+| 1. 描述硬件 | 用 esp_board_manager 的 YAML 写板型、总线和引脚，屏幕、触摸、音频、SD 卡都在这里声明 |
+| 2. 补驱动 | esp_board_manager 不支持的芯片（IMU、PMU、RTC 等），在 `drivers/<芯片>/` 下写一个 C 组件 |
+| 3. 写 `board.cpp` | 把各个设备包成 `hal::Device`，注册到 `DeviceRegistry`，并通过 caps 声明能力，比如屏幕形状、安全区、有没有麦克风 |
+| 4. 分区与配置 | 按约定写 `partitions.csv`（OTA、`fonts`、`glyphs`、存储）和板级 sdkconfig |
+| 5. 构建与验收 | 用 `-DWISP_BOARD=<板名>` 构建，再对照启动报告、设备清单和硬件诊断页逐项核对 |
+
+缺失或初始化失败的设备只会降级运行，不影响启动，所以可以先点亮屏幕，再逐个补齐外设。
+
+> 📖 **完整教程见 [移植指南](docs/porting-guide.md)**，包括板名规范、能力字段、分区约定、芯片差异和验收清单。不论是人还是 AI 编程助手，动手前都请先读这份指南和 [`AGENTS.md`](AGENTS.md)，并仿照[已有硬件资料](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md)，为新板子写一份 `docs/hardware/<板名>.md`。
 
 ## 🧱 架构
 
