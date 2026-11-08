@@ -62,7 +62,15 @@ Most of the hardware matches the reference board (`docs/hardware/waveshare_esp32
 
 XIP (`CONFIG_SPIRAM_XIP_FROM_PSRAM`, which the reference board used until 2026-11-08) keeps the cache on during flash erases and writes and therefore needs flash auto-suspend for the mapped `fonts`/`glyphs` partitions ("Font partitions" in `docs/porting-guide.md`). ESP-IDF v6.0.3's GigaDevice driver lists only `0xC84016/17/18` and `0xC84319` as suspend-capable (`spi_flash_chip_gd.c`), not this board's `0xC84019`, so this board enables neither XIP nor auto-suspend and keeps both font partitions. Without XIP, ESP-IDF disables the cache and stalls the other core for every flash erase and write, so mapped reads can never see a half-written state. The costs:
 
-- The UI stalls while flash is being written: OTA upload, LittleFS writes (`/int`), NVS. Each erase or program command holds the cache off until it finishes, so scrolling during an OTA upload will stutter.
+- The UI stalls while flash is being written: OTA upload, LittleFS writes (`/int`), NVS. Each erase or program command holds the cache off until it finishes. During an OTA upload the flash is busy most of the time: measured on 2026-11-08 (32 KB instruction cache, `bench scroll 5` on `diag` while `POST /api/v1/system/firmware` uploaded a 3.55 MB image), scrolling ran at 0.8–0.9 fps and the upload took 48 s. Finger scrolling feels like a few frames per second. Short writes (settings, scenes, history) stall the UI only briefly.
+- **Auto-suspend was tried and rejected (2026-11-08).** The part does support suspend: its SFDP basic table has DWORD 12 = 0x331662EC (bit 31 clear: suspend/resume supported) and DWORD 13 = 0x757A757A (suspend 0x75, resume 0x7A, the commands ESP-IDF's GigaDevice driver uses). A board-level chip driver list (`CONFIG_SPI_FLASH_OVERRIDE_CHIP_DRIVER_LIST`) that reported `SPI_FLASH_CHIP_CAP_SUSPEND` for 0xC84019 booted with "Flash suspend feature is enabled" and scrolled at the same 22 fps when idle. But during an OTA upload code runs from flash and nearly every instruction-cache miss suspends the erase or program, and on this part that thrashes:
+
+  | `CONFIG_SPI_FLASH_SUSPEND_TSUS_VAL_US` | Scrolling during the upload | Upload time | Notes |
+  |---|---|---|---|
+  | 50 (default) | 0–6.5 fps, often no frame for seconds | 103 s; one earlier attempt failed with 500 `write_failed` | Task watchdog fired on IDLE0 three times |
+  | 100 (the maximum on the S3) | 2.4–13 fps, often no frame for seconds | 68–75 s | No watchdog |
+
+  The reference board's XMC flash with the same settings stays smooth (`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`, "Code from flash"), so the difference is the part's suspend/resume timing, not the configuration. The failed upload also makes the driver a data-integrity risk, so it was removed.
 - Code runs from flash through the instruction cache, so every cache miss is a QSPI flash read (about 1 µs for a 32-byte line at 80 MHz, against about 0.4 µs from octal PSRAM). One frame's code (LVGL rendering, layout, the shell, drivers) is far larger than the cache, so the miss cost sets the frame rate. Measured with `diag` and `bench scroll 10` (2026-11-08, hotspot off):
 
   | Configuration | fps | `internal free` (idle) |
