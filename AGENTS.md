@@ -35,6 +35,7 @@ The roadmap has 8 sub-projects. Each one goes through "design → plan → imple
 | `CONTRIBUTING.md` | Contribution process, code requirements and PR checklist (for outside contributors, consistent with this file) |
 | `docs/hardware/<board>.md` | Hardware facts for each development board (pins, chips, known errata, performance baselines) |
 | `docs/references.md`, `THIRD_PARTY_NOTICES.md` | Reference sources and third-party licences |
+| `CHANGELOG.md` | Notable changes per released version (see "Versions" in section 7) |
 
 When a change touches a sub-project, read its spec first, then the matching plan. When a change touches a board, read its hardware document first.
 
@@ -114,6 +115,7 @@ cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <board> 
 - **Process**: a new feature or sub-project starts with a design spec. After the user approves it, write the implementation plan. Implementation starts only after the user has reviewed the plan (brainstorming → writing-plans → subagent-driven-development).
 - **Branches**: do not develop directly on `main`; use feature branches. Ask the user before you push, merge or release.
 - **Commits**: use the Conventional Commits style (`feat(core): ...`, `docs: ...`). Commits created by an agent carry the `Co-Authored-By` line required by the current environment's attribution rules.
+- **Versions**: every merge into `main` that is pushed is a release with a new version, following Semantic Versioning: bump the minor version for new features or behaviour changes, the patch version for fixes, docs and tooling only (while the version is below 1.0.0, breaking changes also bump the minor version). In the same change: set `WISP_BASE_VERSION` in `cmake/wisp_version.cmake` and add an entry at the top of `CHANGELOG.md`. After merging, tag the merge commit `vX.Y.Z` (annotated) and push the tag with `main`. The firmware version comes from that tag (`git describe`), and the device uses it to tell an upgrade from a downgrade.
 - **Communication**: always talk with the user in Chinese. Give projects and modules English names, and explain their meaning in Chinese.
 - **Deviations**: when you find a mistake in a spec or plan, never work around it silently. For a small issue, write the ruling in the plan or execution record and carry on; for a large issue, stop and ask the user.
 
