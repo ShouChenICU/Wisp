@@ -72,6 +72,8 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 | `Power` | `battery`、`charging_status` |
 | `Storage` | `removable`、`fs` |
 | `Network` | `ap`（bool，是否支持热点 `start_ap()`；为 false 时 `WifiService` 不开配网热点）、`bands`（频段列表，如 `["2.4GHz"]`） |
+| `Button` | 无必填；对话键加 `role: "talk"`（见下面"语音与对话键"） |
+| `AudioIn`/`AudioOut` | 无必填；随电源级别关闭的加 `standby: "off"` |
 
 另外，要随电源级别开关的设备都声明 `standby`（见下面"待机与电源分级"）。
 
@@ -89,6 +91,15 @@ std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* �
 - `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` 已在 `firmware/sdkconfig.defaults` 里；`wisp.scene` 128 KB 的栈要放进 PSRAM 依赖它。
 
 验收时除了下面步骤 5 硬件诊断清单里的"Scenes 卡片"一项，还要把本板硬件文档"真机验收清单"里场景相关的几行跑一遍（参照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`）。
+
+## 语音与对话键
+
+语音链路（mvp spec 4，`wisp_voice`）和对话键（`shell::TalkKey`）都是可移植层，新板子只需要按下面的约定注册设备，不写任何语音代码：
+
+- **对话键**：把用来按住说话的那个按键的 caps 加上 `role: "talk"`（`wisp/hal/button.hpp`）。外壳用 `shell::find_talk_button()` 按这个角色找键，认的是 caps 不是 id 或引脚；参考板是 BOOT 键（`button.vol_down`），模拟器也是 `button.vol_down`。只支持按住说话：按住满 300 ms（`voice::kHoldStartMs`）开始录音，松开发送；按住期间不跑 VAD，录到 300 ms 以上就送去识别，识别结果为空记"没听清"。短按什么都不做。没有声明 `role: "talk"` 的板子照样能用，只是只能在主界面长按鬼火说话。
+- **`audio_in.main`**：`open()` 必须能按 `AudioFormat{16000, 1}`（16 kHz、单声道、16 位）给出录音（`voice::kSampleRate`）；硬件只有立体声或别的采样率时，在 `hal::AudioIn` 实现里自己下混、重采样，不要把这件事留给上层。没有麦克风的板子不注册它，语音就降级为"麦克风不可用"，网页对话照常。
+- **`audio_out.main`**：`open()` 要能按 TTS 配置的采样率（`tts` 配置的 `sample_rate`，8000–48000，默认 24000）单声道打开；同一个输出也给提示音用（16 kHz），所以每次 `close()` 之后要能换一个采样率重新 `open()`。`voice::PcmPlayer` 与 `core::TonePlayer` 保证不会同时打开它。
+- 这三个设备的 caps 都写 `standby` 时，灭屏期间不能录音和播放；语音一轮会持有 `screen` 唤醒锁，所以正常使用时不受影响。
 
 ## 待机与电源分级
 
@@ -211,7 +222,7 @@ bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware \
 
 `firmware/CMakeLists.txt` 的 `WISP_BOARD` 缓存变量决定编译哪个 `boards/<名>/board.cpp`（默认 `waveshare_esp32_s3_touch_amoled_2_16`），用 `-DWISP_BOARD=<板名>` 覆盖。只要没改板子 YAML，后续重新 `idf.py build` 不需要重复 set-target/bmgr。调试版的构建命令见上文"构建配置：发布版与调试版"。
 
-第一次烧录用 `idf.py -p <端口> flash`（引导程序、分区表和应用一起写）；之后可以在管理后台"系统"页上传 `build/wisp.bin` 更新，设备上确认后重启进入新版本。
+第一次烧录用 `idf.py -p <端口> flash`（引导程序、分区表、应用和字体分区一起写）；之后日常改代码用 `idf.py -p <端口> app-flash`，或在管理后台"系统"页上传 `build/wisp.bin` 更新，设备上确认后重启进入新版本。`app-flash` 和网页上传都**不写** `fonts`、`glyphs` 两个分区：改了字体或换了分区表之后要再跑一次 `idf.py -p <端口> fonts-flash`（见上文"字体分区"）。
 
 ## 步骤 5：验收
 
@@ -227,4 +238,5 @@ bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware \
    - **Interactive tests**：按一下 Touch test area（坐标跟手）、按任意按键、点"Mic test"并听到声音，三项都要从"Not tested"变成"✓ Passed"，摘要标签"Tests 3/3 done"变绿。
    - **Scenes 卡片**（在"Interactive tests"之后、"Performance"之前）：列出已安装的场景，每行是名字加状态（版本号、绿色"Running"或红色"Error"），没有场景时写"No scenes installed"；每行至少 48 px 高，点一行打开该场景，从屏幕左边缘向右滑回到硬件诊断。
    - 其余卡片（Network、Sensors、Power & clock、Storage、Performance）：IMU 数值随倾斜变化、小球跟着移动；电量和 RTC 时间正确；存储容量正确。
-4. 新板子特有的真机验收项，仿照 `docs/hardware/<板名>.md`（新建）的"真机验收清单"一节，参照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md` 的写法逐条列出怎么测、预期结果，留一栏空的"结果"栏。
+4. **语音与主界面**：在管理后台配好 `llm`、`asr`、`tts` 三类模型配置并连上 Wi-Fi，按住对话键（`role: "talk"` 的那个）说一句话再松开，主界面依次显示听到的话、Agent 的步骤和回复，并朗读 `<say>` 里的部分；长按鬼火也能完成一轮；在主界面向右、向左、向下拖动分别进入设置、场景列表和对话记录，反向拖回主界面。
+5. 新板子特有的真机验收项，仿照 `docs/hardware/<板名>.md`（新建）的"真机验收清单"一节，参照 `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md` 的写法逐条列出怎么测、预期结果，留一栏空的"结果"栏。

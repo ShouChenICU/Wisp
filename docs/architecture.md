@@ -1,6 +1,6 @@
-# 架构（子项目 1：基础骨架 + 子项目 3：场景运行时与设备侧接口）
+# 架构（基础骨架、场景运行时与设备侧接口、Agent、语音与外壳）
 
-最高权威是 `docs/superpowers/specs/2026-11-01-foundation-design.md`（基础骨架）、`docs/superpowers/specs/2026-11-04-scene-runtime-core-design.md`（场景运行时）和 `docs/superpowers/specs/2026-11-05-scene-device-design.md`（场景设备侧接口：后台场景、电源分级、通知、传感器、场景文件）；本文档是对当前代码的概述，与 spec 冲突以 spec 为准，但本文档只记录已经落地的内容。
+最高权威是 `docs/superpowers/specs/2026-11-01-foundation-design.md`（基础骨架）、`docs/superpowers/specs/2026-11-04-scene-runtime-core-design.md`（场景运行时）、`docs/superpowers/specs/2026-11-05-scene-device-design.md`（场景设备侧接口：后台场景、电源分级、通知、传感器、场景文件）、`docs/superpowers/specs/2026-11-05-agent-core-design.md`（Agent 核心）和 `docs/superpowers/specs/2026-11-06-mvp-design.md`（MVP：语音链路、记忆与提醒、系统外壳与鬼火主界面）；本文档是对当前代码的概述，与 spec 冲突以 spec 为准，但本文档只记录已经落地的内容。
 
 ## 分层
 
@@ -15,7 +15,7 @@
 │  wisp_ui      LVGL 驱动对接、UI 任务                     │  ← 可移植
 ├─────────────────────────────────────────────────────┤
 │  wisp_admin   管理后台路由 · 请求过滤 · WebSocket 推送   │  ← 可移植
-│  wisp_voice   语音：<say> 解析 · VAD · 分句              │  ← 可移植
+│  wisp_voice   语音：收音 · ASR/TTS · <say> 解析 · 播放   │  ← 可移植
 │  wisp_net     HTTP 类型 · WispPack · Wi-Fi · 配对        │  ← 可移植
 │  wisp_core    日志 · 事件总线 · 设备注册表 · 配置 · 存储 │  ← 可移植
 ├─────────────────────────────────────────────────────┤
@@ -76,6 +76,9 @@
 | `wisp.loop` | `app::App`（`components/wisp_app/src/loopback.cpp`） | 4096（默认） | `false`，真机放 PSRAM | 硬件诊断"录音回放"：录音与回放都读写 PSRAM 缓冲；`audio/volume` 只读 Settings 的内存缓存，不碰文件 |
 | `wisp.sample` | `app::SelfCheckSampler`（`components/wisp_app/src/self_check_sampler.cpp`） | 4096（默认） | `false`，真机放 PSRAM | 硬件诊断（打开时）每秒采样一次电量（`PowerMonitor::last_status()`）和时钟，只读内存，不碰文件 |
 | `wisp.sd` | `port::esp::EspSdStorage`（`components/wisp_port_esp/dev/esp_storage.cpp`） | 4096（默认，bmgr/sdmmc/fatfs 调用链较深，留足余量） | `false`，真机放 PSRAM | SD 卡的挂载/卸载重试与容量查询；卡上文件本身的读写仍经 `wisp.fs` |
+| `wisp.agent` | `agent::AgentService`（`components/wisp_agent/src/agent_service.cpp`） | 16 KB（`AgentConfig::stack_bytes`） | `false`，真机放 PSRAM | Agent 一轮的循环：LLM 流式请求、工具分派、上下文压缩；对话文件的读写经 `run_io` 交给 `wisp.fs`，声明 `ToolThread::Fs` 的工具（记忆、待办、场景文件）也在 `wisp.fs` 上执行，`ToolThread::Ui` 的在 UI 线程上执行。另有一个同名的 `os::Timer`（每 `kCheckMs`）在一轮进行中检查卡顿和总时长 |
+| `wisp.voice` | `voice::VoiceService`（`components/wisp_voice/src/voice_service.cpp`） | 8 KB（`VoiceConfig::stack_bytes`） | `false`，真机放 PSRAM | 一轮语音：读麦克风进 `CaptureBuffer`（`Mem::Large`，最长 30 s）、ASR 请求、逐句 TTS 请求并把 PCM 推给 `wisp.play`；只读 `ModelProfileService` 的内存状态。`on_transcript` 回调也在这个任务上，它只把文字交给 `wisp.agent` 的队列，不碰 flash |
+| `wisp.play` | `voice::PcmPlayer`（`components/wisp_voice/src/pcm_player.cpp`） | 4096（`PcmPlayerConfig::stack_bytes`） | `false`，真机放 PSRAM | 把 TTS 的 PCM 从环形缓冲（`Mem::Large`，约 2 s）按 TTS 采样率写到 `audio_out.main`；与 `wisp.tone` 由 `VoiceService::may_play_tone()` 保证不同时打开输出 |
 
 **失败处理**（spec 6.1）：设备初始化失败只记录、不注册，系统降级继续；`Display` 失败则不启动 UI，走 headless 路径；内置 Flash 挂载失败走只读降级。`WISP_BOOT_REPORT`、`WISP_MANIFEST`、`WISP_PERF` 都是"前缀 + 单行 JSON"（AGENTS.md 第 4 节）。
 
@@ -105,6 +108,7 @@
 | `scene.state` | `scene::SceneRuntime`；删除时 `app::App`（`scene_wiring.cpp`） | 场景 spec 3.6，`Event::source` 为 `"scene"`，`payload = {"id": string, "state": "stopped"\|"running"\|"background"\|"error"\|"deleted"}`；`running` 是前台，`background` 是转入后台继续运行（场景设备 spec 3.2，声明了 `"background": true` 的场景返回时转入后台，切回前台时再发 `running`）。`deleted` 在设备上确认删除、文件删掉之后发布；硬件诊断打开时，它的"场景"卡片收到任何 `scene.state` 都重新列一遍（另有 30 s 一次的兜底重列）。`SceneRuntime` 发布的每一条同时以 `scene` 标签写一行日志 `<id>: <state>`，场景关闭、界面回到原屏幕后再写一行 `<id>: closed`（出错后关闭不再发布事件，状态仍为 `error`），供只看日志的一方（串口、冒烟测试）跟踪 |
 | `model.profiles` | `core::ModelProfileService` | 模型配置增删改或切换当前配置时发布，`Event::source` 为 `"models"`，`payload = {"active": {"llm": string, "asr": string, "tts": string}, "count": int}`（`active` 为各类当前配置 id，没有时为空串；不含任何 API Key） |
 | `agent.state` | `agent::AgentService`（`components/wisp_agent/src/agent_service.cpp`） | Agent 状态变化时在 `wisp.agent` 任务上发布（4a spec 3.8），`Event::source` 为 `"agent"`，`payload = {"state": "idle"\|"thinking"\|"tool"\|"output"\|"waiting_confirm"\|"error", "tool": string（仅 `tool` 时出现，带点的工具名）}`；每次变化同时写一行日志 `agent: state <s>`。网页经 WS 的 `agent` 订阅拿状态，不经 `WsHub` 的事件转发 |
+| `voice.state` | `voice::VoiceService`（`components/wisp_voice/src/voice_service.cpp`） | mvp spec 4，每次语音状态变化时发布，`Event::source` 为 `"voice"`，`payload = {"state": "idle"\|"listening"\|"transcribing"\|"speaking"\|"error", "level": int（0–100，仅 `listening`/`speaking`，最多每 50 ms 一次）, "reason": "no_asr_profile"\|"no_tts_profile"\|"offline"\|"asr_failed"\|"tts_failed"\|"mic_unavailable"（仅 `error`，随后立即发 `idle`）, "result": "not_heard"（仅 `idle`，可选）}`；状态变化时写一行日志 `voice: state <s>`（带 `reason=`/`result=` 时附上）。不含识别文字或朗读文字 |
 | `memory.changed` | `core::MemoryStore`（`components/wisp_core/src/memory_store.cpp`） | mvp spec 5.1，每次增删改一条记忆笔记后发布，`Event::source` 为 `"memory"`，`payload = {"count": int}`（改动后的笔记总数）；不含笔记正文 |
 | `todo.changed` | `core::ReminderScheduler`（`components/wisp_core/src/reminders.cpp`） | mvp spec 5.2，每次增删改、完成、推迟待办或提醒到点改写文件后发布，`Event::source` 为 `"todo"`，`payload = {"count": int}`（改动后的待办总数）；不含待办标题 |
 
@@ -112,7 +116,7 @@
 
 事件总线本身（`wisp_core/event_bus.hpp`）：前缀订阅（空串匹配所有主题）、按发布顺序派发、单个分发任务、队列默认容量 64（满时丢弃最旧并计数，见 `dropped()`；和所有 `os::Queue` 一样，槽位放在 `Mem::Large`，没有时退回 `Mem::Fast`）、处理函数里可以安全地再 `publish`/`subscribe`/`unsubscribe`。
 
-管理后台 WebSocket 的 `events` 订阅（`admin::WsHub`，连接 spec 6.2）转发的主题前缀是 `net.`、`power.`、`scene.`、`storage.`、`system.`（`kForwardedPrefixes`）；`button.*` 和 `model.profiles` 不转发。
+管理后台 WebSocket 的 `events` 订阅（`admin::WsHub`，连接 spec 6.2）转发的主题前缀是 `memory.`、`net.`、`power.`、`scene.`、`storage.`、`system.`、`todo.`（`kForwardedPrefixes`）；`button.*`、`model.profiles`、`voice.state` 不转发，`agent.state` 和对话的增量由 WS 的 `agent` 订阅另行推送（`AgentWsBridge`）。
 
 ## 机器可读输出
 
@@ -159,6 +163,7 @@
 - 管理后台由 `SimHttpServer` 提供，只监听 `127.0.0.1`，端口 `--http-port`（默认 8900，与真机后台端口相同；0 表示不启动）。模拟器没有 80 端口的强制门户服务（`Platform::captive_server` 为空）。出站请求（模型连通测试 `POST /ai/profiles/{id}/test`）走 `SimHttpClient`（libcurl，主机构建 `find_package(CURL 7.80 REQUIRED)`；可移植层禁止 include `curl/`）。
 - 触摸脚本：`--tap X,Y@MS`（按下 100 ms）和 `--swipe X1,Y1,X2,Y2@MS`（400 ms 内拖动，停 200 ms 后松开）在主循环开始后第 MS 毫秒向 `SimInput` 注入触摸，可重复使用，坐标 0–479。标准输入里以 `tap` / `swipe` 开头的行（`tap X,Y` / `swipe X1,Y1,X2,Y2`）也立即执行，供需要先等设备上某件事发生再点的脚本使用：冒烟测试 `factory_reset` 和 `firmware` 等到 WebSocket 日志里出现确认框的日志行，再经标准输入点"Yes"。
 - 场景开发（场景 spec 6.4）：`--scenes-dir <目录>` 让场景仓库以该目录为代码根运行在开发模式，数据仍落在 `<data-dir>/scenes/<id>/data`；前台场景的文件一变就重新加载。`--open-scene <id>` 在 `App::start()` 返回后立即打开一个场景。只在 `wisp_sim` 目标定义 `WISP_SIM_DEBUG_COMMANDS` 时才有的调试命令 `debug scene-click <ref>` 点击前台场景里 `ref` 为该名字的部件（`SceneRuntime::click_ref()`），回答 `scene-click=ok` 或 `scene-click=<错误>`。`debug panel-tap <序号>` 点已打开的下拉面板的第几行（从 0 起，先是后台场景，再是通知；`SystemLayer::tap_panel_row()`），回答 `panel-tap=ok` 或 `panel-tap=<错误>`；`debug screenshot <路径>` 把屏幕当前的样子写成 PNG（与 `--screenshot` 相同，只是随时可用），回答 `screenshot=ok` 或 `screenshot=<错误>`。日志行每行写完就刷新标准输出，读管道的脚本（冒烟测试）不会被缓冲拖住。`--imu-script <文件>` 按脚本驱动模拟 IMU（`wisp/port/sim/imu_script.hpp`：`<毫秒> tilt <x> <y> <z>`、`shake`、`flip`）。
+- 语音、Agent 与外壳的调试命令（mvp spec 7.1，同样只在 `WISP_SIM_DEBUG_COMMANDS` 下编译）：`debug voice-text <文字>` 跳过录音和 ASR，把文字当作一句语音提问交给 `ConversationController::voice_text()`（来源 `voice`，没静音就朗读回复），回答 `voice-text=ok` 或 `voice-text=<错误>`（没连 Wi-Fi、没有 `llm` 配置、正在录音/朗读/跑一轮时拒绝）；`debug clock-advance <秒>` 把模拟时钟（`clock.main` 和 `Platform::wall_s`）往前拨，并像一次校时那样发布 `system.time` `{"state":"synced","server":"debug","time"}`，提醒随之补报，回答 `clock-advance=ok`；`debug banner-action <0|1>` 按下当前横幅的第几个动作按钮（待办提醒是"完成""10 分钟后"；`SystemLayer::tap_banner_action()`），回答 `banner-action=ok` 或 `banner-action=<错误>`；`debug turn-steps` 回答主界面正在显示的这一轮（或上一轮）的步骤：`turn-steps=<总步数>`，再对保留的每一步（最旧的在前）加一个空格、状态（`ok`/`failed`/`running`）、`:` 和标签，例如 `turn-steps=1 ok:添加待办 带伞`。冒烟测试 `voice_turn`、`reminder`、`navigation`（`tests/smoke/sim_smoke.py`）用 `tools/fake_openai.py` 按 `tests/smoke/*_script.json` 回放模型回复，并模拟 ASR 与 TTS（440 Hz 的 PCM）。
 - 标准输入只有一个读取者（`simulator/sim_stdin.hpp` 的 `StdinReader`，带超时轮询，退出时不会卡在阻塞读上）：不论是否 `--headless`、stdin 是不是终端都会读取；触摸行交给触摸脚本，其余每行都是串口控制台（serial console）命令，经 `Platform::read_line` 交给控制台任务；控制台没有 `tap`/`swipe` 命令。`tap`/`swipe` 与坐标之间可以是空格或制表符。stdin 是控制终端且进程在后台进程组（`wisp_sim &`）时读取者暂不读，`fg` 后恢复；模拟器忽略 `SIGTTIN`，所以不会被作业控制停住。
 - 信号：`SIGINT`/`SIGTERM` 让主循环像重启一样返回，经正常的 `App::stop()` 以退出码 0 结束（SDL 自己的信号处理被 `SDL_HINT_NO_SIGNAL_HANDLERS` 关掉，否则无头模式收不到）；处理是一次性的，关机卡住时再发一次信号按默认方式结束进程。
 
@@ -175,9 +180,10 @@
 ## 串口控制台
 
 - 连接 spec 8.2：命令解析在可移植层（`wisp/app/console.hpp`：`split_command()`、`run_command()`），读输入在平台层（`Platform::read_line`：最多等待 `timeout_ms`，返回 `Line`/`Timeout`/`Closed`）。控制台跑在自己的 `wisp.console` 任务上（可能阻塞几秒的命令不占用 UI 线程），`App::start()` 最后启动、`App::stop()` 最先停止。
-- 命令：`help`；`wifi status`（`state=… ssid="…" ip=… rssi=…`，Backoff 时加 `reason=…`；之后每个已保存网络一行 `saved ssid="…"`，密码被拒的加 ` auth_failed`；热点开着时一行 `ap ssid="…" clients=n`）；`wifi add <ssid> [password]`；`wifi forget <ssid>`；`wifi ap on|off`。含空格的参数用双引号，引号内 `\"`、`\\` 转义；`hex:<字节>` 按十六进制字节给出 SSID（对应 API 的 `ssid_hex`）。输出的 SSID 一律加双引号，控制字符和非法 UTF-8 字节写成 `\xNN`。
+- 命令：`help`；`wifi status`（`state=… ssid="…" ip=… rssi=…`，Backoff 时加 `reason=…`；之后每个已保存网络一行 `saved ssid="…"`，密码被拒的加 ` auth_failed`；热点开着时一行 `ap ssid="…" clients=n`）；`wifi add <ssid> [password]`；`wifi forget <ssid>`；`wifi ap on|off`。含空格的参数用双引号，引号内 `\"`、`\\` 转义；`hex:<字节>` 按十六进制字节给出 SSID（对应 API 的 `ssid_hex`）。输出的 SSID 一律加双引号，控制字符和非法 UTF-8 字节写成 `\xNN`；`diag [close]`（在屏幕上打开或关闭硬件诊断，回答 `ok`；mvp spec 6.6）。
 - 保密：控制台不回显输入、不把输入行写进日志（输出走 `emit_line`，不经 `WLOG`），任何输出都不含 Wi-Fi 密码、热点密码、配对码、令牌或 API Key（唯一例外：模拟器调试构建的 `debug pair-code` 打印当前配对码，见上文机器可读输出）；`wifi ap on` 只打印热点 SSID 和地址，密码只显示在屏幕上。终端程序自己的本地回显不受设备控制。
 - 平台扩展：`Platform::console_commands` 追加平台专用命令（出现在 `help` 末尾，不能覆盖内置命令），例如模拟器专用的调试命令 `debug pair-code`。
+- 平台命令：真机有 `mem`（各堆与每个任务的栈，`wisp/port/esp/mem_report.hpp`）；真机和模拟器都有 `bench scroll|drag [秒数]`（`WISP_BENCH`，见上文机器可读输出）；模拟器调试构建还有 `debug …`（下一条）。
 - 真机：`wisp::port::esp::EspConsole`（`components/wisp_port_esp/console_esp.cpp`）安装 USB-Serial-JTAG（或 UART）驱动并让 VFS 走驱动，日志输出照常；`read_line` 用驱动的带超时读取，不忙等。
 - `--screenshot` 的截图（`UiRuntime::take_snapshot`）包含活动屏幕和 `lv_layer_top()`（确认框、配网卡片、配对卡片都在这一层），不含 `lv_layer_sys()`。
 - 固件上传：`wisp::port::sim::SimFirmwareUpdater` 把上传的镜像写到数据目录的 `firmware.bin`，目标板名为 `simulator`、不限芯片，容量按 5 MB 计；确认后照常重启（`WISP_REBOOT`），但模拟器不能运行 ESP 镜像，重启后仍是原来的版本（网页会显示"已回滚"）。版本号来自 `cmake/wisp_version.cmake`（与固件同一规则，见 `docs/porting-guide.md`）。
@@ -266,6 +272,40 @@
   - `ls`：列出已装场景；`logs <id>`：订阅管理后台 WebSocket 的 `log`，只打印标签为 `scene.<id>` 的行。
   - 首次访问一台设备会走配对流程（配对码要在设备屏幕上读出来输进去）；令牌存在 `<配置目录>/scene_tool.json`（默认 `$XDG_CONFIG_HOME/wisp` 或 `~/.config/wisp`），权限 0600，原子替换写入；收到 401 说明设备忘记了这个令牌（撤销或恢复出厂），重新配对一次即可。
   - 每次请求的超时由环境变量 `WISP_SCENE_TIMEOUT_S` 覆盖（默认 30 s；日志跟随流不设超时，设备安静多久都等）。
+
+## Agent、语音与外壳（MVP）
+
+一轮语音对话的数据流（mvp spec 1.5）：对话键或长按鬼火 → `wisp.voice` 录音、ASR → `ConversationController` 把文字交给 `AgentService::submit(…, Source::Voice)` → `wisp.agent` 跑 LLM 与工具 → 回复的增量经 `SayParser` 拆出 `<say>` → `VoiceService::speak()` 逐句 TTS → `wisp.play` 播放；屏幕（主界面或场景上的对话浮层）跟着 `TurnView` 刷新。网页发来的消息走同一个 `AgentService`，只是不朗读。
+
+装配在 `App::start()` 里：`ReminderScheduler` 在 `wisp.fs` 上加载待办，`AgentWiring`（`AgentService`、`MemoryStore`、工具注册、管理后台的 `AgentApi`）和 `VoiceWiring`（`VoiceService`、`PcmPlayer`、`ConversationController`，有对话键时还有 `TalkKey`）在外壳之前构造，外壳建好后进入主界面。缺 `audio_in.main` 或没有 `asr`/`tts` 配置时语音降级（`voice.state` 报错误原因），Agent 和网页对话照常。
+
+### `wisp_agent`（Agent 核心）
+
+- 文件：`components/wisp_agent/`：`agent_service`（队列、一轮的循环、确认、事件）、`conversation`（对话记录与归档）、`context`（上下文与压缩）、`tool_registry`、`tools_*.cpp`（场景编写与操作、UI、记忆、待办、设备、设置、文档）、`scene_workspace`（场景草稿与安装检查）、`docs`（`docs.read` 的内置文档，由 `tools/gen_agent_docs.py` 生成）。App 侧接线在 `components/wisp_app/src/agent_wiring.{hpp,cpp}`（工具注册、管理后台的 `AgentApi`、WS 推送）。
+- 任务：`wisp.agent`（见上面的任务表，`flash_access = false`）；会碰 flash 的工具声明 `ToolThread::Fs`，在 `wisp.fs` 上执行。
+- 持久化：System 区的 `agent/current.jsonl`（当前对话，逐条 `append()`）与 `agent/archive-<n>.jsonl`（归档）、`memory/notes.json`（`core::MemoryStore`，最多 64 条）、`todo/todos.json`（`core::ReminderScheduler`，最多 200 条）；后两者都经 `write_atomic` 写入。
+- 事件：总线上的 `agent.state`、`memory.changed`、`todo.changed`（见上面的事件主题清单）。进程内另有 `AgentEvent`（`set_listener()`/`add_listener()`）：`TurnBegin`、`TurnEnd`、`Delta`、`ToolPrep`、`ToolStart`、`ToolEnd`、`State`、`Confirm`、`Message`、`Cleared`。`ToolPrep` 在模型还在写一个工具调用时就发出：一拿到工具名发一次，之后随参数增长最多每 `net::LlmClient::kToolProgressMs` 一次，只带工具名和已收到的参数字节数，不带参数内容；回复完整后才发 `ToolStart`。
+- 确认：Agent 删除场景（`scene.delete`）和删除场景文件（`scene.files_remove`）是 `ToolRisk::Confirm`，在设备上弹确认框，用户点"是"才执行；记忆和待办的增删改是 `ToolRisk::Note`，不确认，只在对话里留一行说明。用户自己在设备或网页上删除东西时，界面照常弹确认框，防止误触。
+- 日志（只记元数据，不记用户或模型的文字）：`agent: turn <n> start source=<web|device_text|voice>`、`agent: state <s>`、`agent: tool <名字> <ok|error:<代码>> <ms> ms`、`agent: turn <n> end <状态> steps=<k> tokens=<t>`、`agent: context <summarized|dropped> seq <a>-<b>`；LLM 请求另记一行 `llm: model=<m> status=<s> ms=<t> tokens=<u>`。
+
+### `wisp_voice`（语音链路）
+
+- 文件：`components/wisp_voice/`：`voice_service`（一轮语音的状态机与唤醒锁）、`capture_buffer`、`vad`、`asr_client`（`POST <base_url>/audio/transcriptions`，multipart）、`tts_client`（`POST <base_url>/audio/speech`，`response_format: "pcm"`，按 `tts` 配置的 `sample_rate` 取 16 位单声道 PCM 流）、`say_parser`、`sentences`（分句符 `。！？!?；;` 与换行，每轮最多朗读 200 个码点）、`pcm_player`；常量在 `wisp/voice/limits.hpp`。App 侧接线在 `components/wisp_app/src/voice_wiring.{hpp,cpp}`。
+- 任务：`wisp.voice`、`wisp.play`（任务表），都声明 `flash_access = false`；录音缓冲和 TTS 环形缓冲在 `Mem::Large`。
+- 录音只有按住说话一种用法（`CaptureMode::Hold`）：不跑 VAD，录到 300 ms（`kMinSpeechMs`）以上就送 ASR，识别结果为空记"没听清"（`voice.state` 回到 `idle`，`result: "not_heard"`），最长 30 s。`Vad` 模式仍在 `VoiceService` 里，但外壳不用它。
+- 一轮语音从开始录音起持有 `system.voice` 的 `screen`、`network`、`cpu` 三把唤醒锁，到朗读放完（或出错、取消、被打断）才释放；同一时刻最多两路模型连接（LLM 流加第一句 TTS，`wisp/net/tls_gate.hpp`）。
+- 事件：`voice.state`（事件主题清单）。日志：`voice: state <s>`、`voice: capture ms=… speech_ms=…`（只有时长与电平统计）、`voice: tts n=<句号> chars=<码点数> ms=<耗时> status=<HTTP 状态>`；不记识别文字和朗读文字。
+- 设置：`voice`/`tts_mute`（布尔，默认 false）静音朗读，屏幕上照常显示文字。
+
+### `wisp_shell`（系统外壳）
+
+- 文件：`components/wisp_shell/`：`shell`（页面与拖动导航）、`home`（主界面）、`history`（对话记录页）、`scene_list`（场景列表页）、`settings_page`（设置页）、`talk_overlay`（场景上的对话浮层）、`conversation`（`ConversationController`）、`talk_key`（对话键）、`activity`（步骤标签）、`gestures`、`mood`（鬼火表情）、`scene_recents`（场景列表的顺序，System 区的 `shell/recents.json`）；常量在 `wisp/shell/limits.hpp`。鬼火本身是 `wisp_ui` 的 `ui::WispView`。
+- 开机进入主界面：黑底（电子纸白底）上的鬼火，待机时占安全区短边的 55%（`kWispIdlePercent`），中心在安全区高度的 42%（`kWispIdleCentrePercent`）处；一轮对话中缩到 28% 并上移，上方是听到的话，下方是滚动的回复（`<say>` 部分用大字）。一轮进行中、还没有回复文字时，回复的位置列出 Agent 的步骤（最近 4 步，每步一行，`ToolPrep`/`ToolStart` 时出现，`ToolEnd` 时打勾或打叉）和"第 N 步 · 用时"，有了文字之后只留一行"用了 N 步 · 用时"。
+- 说话：对话键（caps `role: "talk"` 的按键，参考板与模拟器都是 `button.vol_down`，真机即 BOOT 键）按住 300 ms 开始、松开发送；在主界面长按鬼火同样。点一下鬼火不触发语音（留给以后的角色互动）。按住对话键时在屏幕上上划取消这次录音。
+- 导航跟手（mvp spec 6.3）：在主界面向右拖进设置页、向左拖进场景列表、向下拖进对话记录，反向拖回主界面；从顶边下划是系统层的下拉面板。拖过 10 px 起两页一起跟着手指走，松手时过了 1/3 或甩得够快就完成，否则弹回。每次换页记一行 `shell: page <home|settings|scenes|history>`。场景列表一打开就显示，在 `wisp.fs` 上读完后再填进去。
+- 硬件诊断（原来的自检界面）不再是首页：设置 → 关于本机 → 硬件诊断，或串口命令 `diag`。
+- 场景在前台时说话：屏幕上叠一层对话浮层（`TalkOverlay`），显示录音电平、正在执行的步骤和 `<say>` 文字，不动场景自己的界面；点浮层回到主界面。
+- 线程：页面全在 UI 线程上；`ConversationController` 的回调来自 `wisp.agent`、`wisp.voice` 和事件总线，只记下变化并投递一次刷新（`UiRuntime::post()`）。
 
 ## 相对 spec 的细化（实施前已核实，经用户确认）
 
