@@ -60,7 +60,7 @@ Most of the hardware matches the reference board (`docs/hardware/waveshare_esp32
 
 ### Flash: no suspend, no XIP
 
-The reference board runs code from PSRAM (`CONFIG_SPIRAM_XIP_FROM_PSRAM`), which keeps the cache on during flash erases and writes and therefore needs flash auto-suspend for the mapped `fonts`/`glyphs` partitions ("Font partitions" in `docs/porting-guide.md`). ESP-IDF v6.0.3's GigaDevice driver lists only `0xC84016/17/18` and `0xC84319` as suspend-capable (`spi_flash_chip_gd.c`), not this board's `0xC84019`, so this board enables neither XIP nor auto-suspend and keeps both font partitions. Without XIP, ESP-IDF disables the cache and stalls the other core for every flash erase and write, so mapped reads can never see a half-written state. The costs:
+XIP (`CONFIG_SPIRAM_XIP_FROM_PSRAM`, which the reference board used until 2026-11-08) keeps the cache on during flash erases and writes and therefore needs flash auto-suspend for the mapped `fonts`/`glyphs` partitions ("Font partitions" in `docs/porting-guide.md`). ESP-IDF v6.0.3's GigaDevice driver lists only `0xC84016/17/18` and `0xC84319` as suspend-capable (`spi_flash_chip_gd.c`), not this board's `0xC84019`, so this board enables neither XIP nor auto-suspend and keeps both font partitions. Without XIP, ESP-IDF disables the cache and stalls the other core for every flash erase and write, so mapped reads can never see a half-written state. The costs:
 
 - The UI stalls while flash is being written: OTA upload, LittleFS writes (`/int`), NVS. Each erase or program command holds the cache off until it finishes, so scrolling during an OTA upload will stutter.
 - Code runs from flash through the instruction cache, so every cache miss is a QSPI flash read (about 1 µs for a 32-byte line at 80 MHz, against about 0.4 µs from octal PSRAM). One frame's code (LVGL rendering, layout, the shell, drivers) is far larger than the cache, so the miss cost sets the frame rate. Measured with `diag` and `bench scroll 10` (2026-11-08, hotspot off):
@@ -68,10 +68,10 @@ The reference board runs code from PSRAM (`CONFIG_SPIRAM_XIP_FROM_PSRAM`), which
   | Configuration | fps | `internal free` (idle) |
   |---|---|---|
   | 16 KB instruction cache (ESP-IDF default) | 12.5 | 103 KB |
-  | 32 KB instruction cache (`sdkconfig.defaults.board`) | 22.0 | 87 KB |
+  | 32 KB instruction cache (`firmware/sdkconfig.defaults`) | 22.0 | 87 KB |
   | 32 KB instruction cache + 64-byte data-cache line | 21.2 | 87 KB |
 
-  For comparison, the reference board (XIP, 16 KB instruction cache) scrolls the same list at about 21.7 fps, and 11.1 fps with XIP turned off. The 32 KB cache takes 16 KB of internal RAM; the worst case of AGENTS.md section 5 still has to be measured on this board (checklist).
+  The 32 KB instruction cache is set for every board in `firmware/sdkconfig.defaults`; the reference board dropped XIP for the same reason (`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`, "Code from flash"). The 32 KB cache takes 16 KB of internal RAM; the worst case of AGENTS.md section 5 still has to be measured on this board (checklist).
 - The task stack rules do not change (AGENTS.md section 5): without XIP, a task that touches flash with its stack in PSRAM aborts in the flash driver at once, which is what `flash_access` already prevents. Nothing in the shared code assumes XIP: `stack_placement.hpp` keeps flash-touching stacks internal on every target, and `firmware/main/CMakeLists.txt` only checks that XIP is not on without auto-suspend.
 
 The 32 MB flash is used without the experimental `BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH`: the bootloader and the cache address only the first 16 MB, which is why the partition table keeps everything mapped there.

@@ -22,25 +22,15 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
-# Run code and read-only data from PSRAM instead of flash: the bootloader
-# copies them there at boot. The 80 MHz octal PSRAM refills the 16 KB
-# instruction cache faster than the 80 MHz quad flash, and LVGL's render
-# loop misses that cache a lot: scrolling the self-check list goes from 14
-# to 20 fps (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md, "Performance baselines"). Costs
-# about as much PSRAM as the image (~3 MB) and almost no internal RAM.
-CONFIG_SPIRAM_XIP_FROM_PSRAM=y
-# With XIP, ESP-IDF no longer disables the cache while it erases or writes
-# flash, so a cache miss on a runtime flash mapping during that time reads
-# 0xFF instead of the data. Runtime mappings here are the vector-font
-# partition (read on every uncached glyph; garbage there crashed the UI
-# task during OTA) and the images ESP-IDF maps itself: the new app that
-# esp_ota_end() verifies and otadata. Auto-suspend pauses the erase or
-# write for those reads. It depends on the flash chip: this board's XMC
-# 0x204018 advertises suspend in SFDP and ESP-IDF enables it ("Flash
-# suspend feature is enabled" at boot). A flash ESP-IDF does not accept
-# fails an assert at boot. Measurements and the check for another flash:
-# docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md, docs/porting-guide.md.
-CONFIG_SPI_FLASH_AUTO_SUSPEND=y
+# No XIP from PSRAM: code runs from flash through the 32 KB instruction
+# cache (firmware/sdkconfig.defaults), which scrolls as fast as XIP with the
+# 16 KB cache did and leaves the ~3.3 MB image copy free for the heap.
+# Without XIP, ESP-IDF disables the cache during every flash erase/write, so
+# the mapped fonts/glyphs partitions never read a half-written state and
+# flash auto-suspend is not needed (measurements: docs/hardware/
+# waveshare_esp32_s3_touch_amoled_2_16.md, "Code from flash").
+# CONFIG_SPIRAM_XIP_FROM_PSRAM is not set
+# CONFIG_SPI_FLASH_AUTO_SUSPEND is not set
 
 # Console over USB-Serial-JTAG (no external UART-to-USB bridge on this
 # board -- see docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).

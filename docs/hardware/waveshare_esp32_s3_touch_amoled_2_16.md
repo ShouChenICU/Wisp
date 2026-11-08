@@ -54,7 +54,25 @@ Sources: the MyOS project (MIT, by ShouChen, read-only reference; **its code is 
 - This board must enable flash auto-suspend (`CONFIG_SPI_FLASH_AUTO_SUSPEND`, `sdkconfig.defaults.board`): with XIP on, reading the `fonts` partition, which is mapped at run time, during a flash erase or write returns 0xFF, and the vector font crashes as a result. For details, see "Flash erase/write and mapped reads" below.
 - Known limitations of uploading firmware through the web page (httpd has a single task; accepted as they are, see "Networking on the device" in `docs/architecture.md`): a file over 8 MiB gets a connection reset rather than a 413 (as does any upload rejected early with more than 8 MiB left to send); when two browsers upload at the same time, the second has to wait until the first has finished before it gets 409 `busy`; the logs page pauses its push during an upload.
 
+## Code from flash (2026-11-08)
+
+This board no longer runs code from PSRAM: `sdkconfig.defaults.board` turns off `CONFIG_SPIRAM_XIP_FROM_PSRAM` and `CONFIG_SPI_FLASH_AUTO_SUSPEND`, and the shared `firmware/sdkconfig.defaults` doubles the instruction cache to 32 KB. Every instruction-cache miss is then a QSPI flash read (about 1 µs for a 32-byte line at 80 MHz, against about 0.4 µs from octal PSRAM), and one frame's rendering code is far larger than the cache, so the cache size matters more than where the code lives. Measured with `diag` and `bench scroll 10`, hotspot off, firmware `934adf6` plus the configuration change:
+
+| Configuration | fps | `internal free` (idle) | `psram free` (idle) |
+|---|---|---|---|
+| XIP, 16 KB instruction cache (the configuration before) | 18.0–19.0 | 94.9 KB | 3.23 MB |
+| No XIP, 16 KB instruction cache | 11.1 | — | — |
+| XIP, 32 KB instruction cache | 24.8–24.9 | 76.8 KB | 3.23 MB |
+| **No XIP, 32 KB instruction cache** (now) | 20.2–21.9 | 77.0–78.8 KB | 6.76 MB |
+
+With the hotspot on (Wi-Fi setup card showing), the current configuration scrolls at 31.2–32.7 fps, with 70.8 KB of internal RAM free. Both are above the acceptance lines of "Current baseline" below. XIP with the 32 KB cache is about 3 fps faster, but it costs the ~3.5 MB image copy in PSRAM and depends on flash auto-suspend, which depends on the flash part (see "Risk" below).
+
+Without XIP, ESP-IDF disables the cache and stalls the other core for every flash erase and write. Mapped reads (`fonts`, `glyphs`, otadata, the OTA image check) therefore never see a half-written state, and the 0xFF problem of the next section cannot happen. The cost is that the UI stalls while flash is written; it shows during an OTA upload (checklist item 67). The 32 KB cache takes 16 KB of internal RAM, so the worst case has to be measured again (checklist item 68).
+
 ## Flash erase/write and mapped reads (2026-11-05)
+
+This section describes the board while it still ran code from PSRAM (XIP). Since 2026-11-08 it does not (see "Code from flash" above), and auto-suspend is off; the measurements stay here because any board that turns XIP back on meets the same problem.
+
 
 **Symptom**: while uploading firmware through the web page (OTA), the UI task crashed with LoadProhibited on core 0, EXCVADDR `0xbc804b19`, with the stack `font_image_has_glyph` ← `vector_glyph_dsc` (`components/wisp_ui/src/fonts.cpp`) ← `lv_font_get_glyph_dsc`. Any flash write (OTA, LittleFS `/int`, NVS, including IDF's own Wi-Fi/PHY NVS writes) that coincides with the UI drawing an uncached vector glyph can trigger it.
 
@@ -158,6 +176,8 @@ The device boots into the home screen (black background, wisp in the centre). "H
 | 64 | Body text unchanged (glyph partition spec 5.4) | Look at the Chinese body text on hardware diagnostics, the pomodoro, the to-dos and other screens | Same as before the table change: no missing or wrong characters, no blur or misalignment |  |
 | 65 | Degradation with only the `glyphs` partition erased (glyph partition spec 5.5) | Flash only the app (`idf.py app-flash`), then `parttool.py erase_partition --partition-name=glyphs` | Boots normally; Chinese body text shows in vector 16 px; the boot log has a warning; after `idf.py fonts-flash` it goes back to bitmap body text |  |
 | 66 | Scrolling body text during OTA (glyph partition spec 5.6) | Open a screen with Chinese body text and keep scrolling it, while uploading firmware once through the admin console | Displays normally with no crash; the upload succeeds and the new firmware runs after the restart |  |
+| 67 | Stalls during flash writes without XIP (see "Code from flash" above) | Open hardware diagnostics with `diag`, start a firmware upload on the admin console's "System" page, keep scrolling with a finger during the upload, and do not confirm the new firmware; time the upload | Scrolling may stutter but the UI does not freeze for more than about a second at a time; no crash or watchdog; the upload returns 202; note the upload time against the 20.6 s of "Flash erase/write and mapped reads" | |
+| 68 | Internal RAM worst case with the 32 KB instruction cache (16 KB more internal RAM) | Same scenario as item 57 | `internal free` stays ≥ 40 KB and `largest` ≥ 16 KB in every `mem` sample | |
 
 ## Standby and power saving (spec 6.7)
 
