@@ -1,6 +1,6 @@
 <div align="center">
 
-# Wisp · 小鬼火
+# 🔥 Wisp · 小鬼火
 
 **一台由 AI 掌管的掌上设备：没有 App，你说想要什么，它就现场做出来。**
 
@@ -22,7 +22,7 @@
 
 </div>
 
-## 它是什么
+## ✨ 它是什么
 
 按住按键说一句"帮我做个番茄钟"。Agent 会写好界面和逻辑、装好并打开，整个过程都在设备上完成，不用重新编译，也不用连电脑。之后你可以随时重新打开它，或者让 Agent 接着改。
 
@@ -33,7 +33,7 @@
 - **数据留在本地**：管理后台只在局域网里用，API Key 只能写入、不能读出，删除场景这类大操作要在设备上确认。
 - **不绑定开发板**：硬件分层抽象，大部分开发在 PC 模拟器上完成。
 
-## 怎么用
+## 👆 怎么用
 
 | 操作 | 作用 |
 | --- | --- |
@@ -44,7 +44,7 @@
 
 回复分两层：要朗读的那句话用大字显示，细节以小字显示在下方。Agent 调用工具或写文件时，鬼火下方会逐步列出它正在做什么。
 
-## 核心模块
+## 🧩 核心模块
 
 | 模块 | 说明 |
 | --- | --- |
@@ -55,9 +55,9 @@
 | 🧠 **记忆与提醒** | 记忆笔记加上带时间的待办，到点亮屏响铃。管理后台可以查看和删除。 |
 | 🌐 **管理后台** | 浏览器打开 `http://wisp.local:8900`，用屏幕上的 6 位配对码登录，可以网页聊天，管理网络、模型、记忆、场景，查看日志、上传固件。整个后台是约 100 KB 的原生 JavaScript，打包在固件里，支持中文、日文和英文。 |
 
-## 快速开始
+## 🚀 快速开始
 
-### 模拟器（无需硬件）
+### 💻 模拟器（无需硬件）
 
 ```bash
 # Arch：sudo pacman -S cmake ninja sdl2 python curl zlib
@@ -83,7 +83,7 @@ cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 
 </details>
 
-### 真机
+### 📟 真机
 
 目前支持 **Waveshare ESP32-S3-Touch-AMOLED-2.16**：480×480 AMOLED 触摸屏，配有双麦克风、扬声器、IMU、RTC、电池管理和 SD 卡槽，不需要焊接。
 
@@ -103,7 +103,7 @@ idf.py build && idf.py -p <串口> flash
 
 其他开发板可以参考[移植指南](docs/porting-guide.md)来适配。
 
-## 架构
+## 🧱 架构
 
 同一套 C++20 代码可以编译成两个目标：ESP32-S3 固件和 SDL2 模拟器。
 
@@ -132,7 +132,7 @@ idf.py build && idf.py -p <串口> flash
 
 详见[架构文档](docs/architecture.md)、[场景 API](docs/scene-api.md) 和[硬件资料](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md)。
 
-## 进度
+## 🚧 进度
 
 MVP 已完成，正在真机试用：不接电脑也能语音对话、记待办、让 Agent 写场景。
 
@@ -149,7 +149,7 @@ MVP 已完成，正在真机试用：不接电脑也能语音对话、记待办�
 
 后续计划见 [`docs/backlog.md`](docs/backlog.md)，包括唤醒词、流式识别与实时字幕、鬼火的更多表情和互动。
 
-## 参与开发
+## 🛠️ 参与开发
 
 先读 [`AGENTS.md`](AGENTS.md)，项目的规则、约定和流程都在里面，人类开发者和 AI 编程助手都要遵守。各阶段的设计文档在 [`docs/superpowers/specs/`](docs/superpowers/specs/)，实施计划在 [`docs/superpowers/plans/`](docs/superpowers/plans/)；两者冲突时以设计文档为准。
 
@@ -162,6 +162,6 @@ bash tools/ci.sh    # 依次检查格式、分层和注释规范，然后构建�
 
 提交信息采用 [Conventional Commits](https://www.conventionalcommits.org/) 风格。
 
-## 许可
+## 📄 许可
 
 本项目以 [Apache-2.0](LICENSE) 许可开源。用到和参考的第三方项目登记在 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 和 [`docs/references.md`](docs/references.md)。
