@@ -196,7 +196,8 @@ TEST(VectorFont, IconsResolveFromIconFont) {
 }
 
 // The Wisp icons come from the icon font of the step, like LV_SYMBOL_*:
-// large at 24 and up, from the 16 px body font at 20.
+// large at 24 and up, from the 16 px body font at 20. From 48 up an icon
+// outside the 48 px font's common set is drawn at 32 px.
 TEST(VectorFont, WispIconsAtEveryStep) {
     auto ui = start_ui(test_font_image());
     ui->run_blocking([] {
@@ -210,10 +211,38 @@ TEST(VectorFont, WispIconsAtEveryStep) {
                 ASSERT_NE(g.resolved_font, nullptr) << icon.name << " at " << px << " px";
                 EXPECT_NE(g.resolved_font, font(px)) << icon.name << " at " << px << " px";
                 EXPECT_GT(g.box_w, 0) << icon.name << " at " << px << " px";
-                EXPECT_GT(g.box_h, icon_px / 2) << icon.name << " at " << px << " px";
+                const int min_px = px >= 48 ? 32 : icon_px;
+                EXPECT_GT(g.box_h, min_px / 2) << icon.name << " at " << px << " px";
                 EXPECT_LE(g.box_h, icon_px + 2) << icon.name << " at " << px << " px";
             }
         }
+    });
+    ui->stop();
+}
+
+// The 48 px icon font holds only the common icons; the rest come from the
+// 32 px one, never as a placeholder box.
+TEST(VectorFont, RareIconsAt48ComeFrom32) {
+    auto ui = start_ui(test_font_image());
+    ui->run_blocking([] {
+        const auto mic = glyph(font(48), 0xF130);       // WISP_SYMBOL_MICROPHONE, common
+        const auto keyboard = glyph(font(48), 0xF11C);  // LV_SYMBOL_KEYBOARD, rare
+        const auto gamepad = glyph(font(48), 0xF11B);   // WISP_SYMBOL_GAMEPAD, rare
+        ASSERT_NE(mic.resolved_font, nullptr);
+        ASSERT_NE(keyboard.resolved_font, nullptr);
+        ASSERT_NE(gamepad.resolved_font, nullptr);
+        EXPECT_GE(mic.box_h, 40);
+        EXPECT_NE(keyboard.resolved_font, mic.resolved_font);
+        EXPECT_EQ(keyboard.resolved_font, glyph(font(32), 0xF11C).resolved_font);
+        EXPECT_EQ(gamepad.resolved_font, glyph(font(32), 0xF11B).resolved_font);
+        EXPECT_GT(keyboard.box_h, 12);
+        EXPECT_LE(keyboard.box_h, 34);
+        EXPECT_GT(gamepad.box_h, 12);
+        EXPECT_LE(gamepad.box_h, 34);
+        // Text still falls through both icon fonts to the body font.
+        EXPECT_EQ(glyph(font(48), 0x81EA).resolved_font, font(48));  // 自, vector
+        lv_font_glyph_dsc_t han{};
+        EXPECT_FALSE(lv_font_get_glyph_dsc(font(48), &han, 0xD55C, 0));  // 한, nowhere
     });
     ui->stop();
 }

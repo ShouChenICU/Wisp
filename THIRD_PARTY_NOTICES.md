@@ -318,9 +318,10 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
   lv_font_conv 1.5.3 from LVGL 9.5.0's
   `scripts/built_in_font/FontAwesome5-Solid+Brands+Regular.woff` (fetched as
   part of the LVGL source tree the build already pulls in, not downloaded
-  separately). The 24/32/48 px fonts hold every `LV_SYMBOL_*` code point
+  separately). The 24/32 px fonts hold every `LV_SYMBOL_*` code point
   plus the Wisp icons (the `WISP_ICONS` table in the generator,
-  `WISP_SYMBOL_*` in `wisp/ui/symbols.hpp`); `ui::font(px)` falls back to
+  `WISP_SYMBOL_*` in `wisp/ui/symbols.hpp`), the 48 px font only the 15
+  common icons of the generator's `SUBSET_48`; `ui::font(px)` falls back to
   one of them for icons, since the vector font has none (vector-font spec
   4.2, 4.6). The 16 px font holds only the Wisp icons: the body font
   `lv_font_montserrat_16` carries the `LV_SYMBOL_*` icons itself and falls

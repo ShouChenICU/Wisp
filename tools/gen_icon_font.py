@@ -2,9 +2,9 @@
 """Generates the icon fonts and the icon header of wisp_ui:
 
 - components/wisp_ui/fonts/lv_font_wisp_icons_{16,24,32,48}.c, icon-only
-  bitmap fonts (4 bpp, uncompressed). 24/32/48 hold every LV_SYMBOL_* and
-  every Wisp icon (WISP_ICONS below) and back the large UI fonts
-  (vector-font spec 4.6). 16 holds only the Wisp icons: the body font is
+  bitmap fonts (4 bpp, uncompressed). 24 and 32 hold every LV_SYMBOL_* and
+  every Wisp icon (WISP_ICONS below), 48 only the common ones (SUBSET_48);
+  they back the large UI fonts (vector-font spec 4.6). 16 holds only the Wisp icons: the body font is
   lv_font_montserrat_16, which carries the LV_SYMBOL_* icons itself and
   falls back to this font before its CJK font
   (components/wisp_ui/src/fonts.cpp).
@@ -33,8 +33,8 @@ Usage:
       temporary one by default) must be outside the repository.
   gen_icon_font.py [--lvgl <LVGL source dir>] --check
       Offline: fails when the code points in the committed fonts differ
-      from the current lv_symbol_def.h and WISP_ICONS, or the header from
-      what WISP_ICONS gives.
+      from the current lv_symbol_def.h, WISP_ICONS and SUBSET_48, or the
+      header from what WISP_ICONS gives.
 Without --lvgl the script looks in build/sim/_deps/lvgl-src (the
 simulator's FetchContent checkout) and firmware/managed_components/
 lvgl__lvgl (the component manager's).
@@ -150,7 +150,32 @@ WISP_ICONS = [
     ("redo", 0xF01E),
 ]
 
-_SYMBOL = re.compile(r'#define\s+LV_SYMBOL_\w+\s+"((?:\\x[0-9A-Fa-f]{2})+)"')
+# The 48 px font holds only these icons (at most 15), the ones a scene
+# most likely shows big: 48 px glyphs cost about 1.9 KB each, and 48 px is
+# rarely used. No shell or app code draws icons at 48 px or more. An icon not here falls back to the 32 px icon
+# font (components/wisp_ui/src/fonts.cpp), so it is drawn smaller, never
+# as a placeholder box. LV_SYMBOL_<NAME> for LVGL's icons, the scene name
+# for Wisp icons.
+SUBSET_SIZE = 48
+SUBSET_48 = [
+    "microphone",
+    "clock",
+    "calendar",
+    "sun",
+    "cloud",
+    "cloud_sun",
+    "cloud_rain",
+    "snowflake",
+    "heart",
+    "check_circle",
+    "LV_SYMBOL_OK",
+    "LV_SYMBOL_WARNING",
+    "LV_SYMBOL_BELL",
+    "LV_SYMBOL_PLAY",
+    "LV_SYMBOL_PAUSE",
+]
+
+_SYMBOL = re.compile(r'#define\s+LV_SYMBOL_(\w+)\s+"((?:\\x[0-9A-Fa-f]{2})+)"')
 _GLYPH_COMMENT = re.compile(r"/\* U\+([0-9A-Fa-f]{4,6})\b")
 _NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
 
@@ -184,18 +209,45 @@ def find_lvgl(explicit):
     )
 
 
+def symbols(lvgl_root):
+    """{name after LV_SYMBOL_: private-use code point} for every one-character
+    LV_SYMBOL_* but DUMMY."""
+    text = (lvgl_root / SYMBOL_DEF).read_text(encoding="utf-8")
+    out = {}
+    for m in _SYMBOL.finditer(text):
+        raw = bytes(int(h, 16) for h in m.group(2).split("\\x")[1:])
+        chars = raw.decode("utf-8")
+        if len(chars) != 1:
+            continue
+        cp = ord(chars)
+        if PUA_FIRST <= cp <= PUA_LAST and cp != SYMBOL_DUMMY:
+            out[m.group(1)] = cp
+    if not out:
+        sys.exit(f"error: no LV_SYMBOL_* code points found in {lvgl_root / SYMBOL_DEF}")
+    return out
+
+
 def symbol_code_points(lvgl_root):
     """The sorted private-use code points of every LV_SYMBOL_* but DUMMY."""
-    text = (lvgl_root / SYMBOL_DEF).read_text(encoding="utf-8")
+    return sorted(set(symbols(lvgl_root).values()))
+
+
+def subset_code_points(lvgl_root):
+    """The code points of SUBSET_48, sorted; fails on a name that is not an
+    LV_SYMBOL_* or a Wisp icon."""
+    lv = symbols(lvgl_root)
+    wisp = dict(WISP_ICONS)
     points = set()
-    for m in _SYMBOL.finditer(text):
-        raw = bytes(int(h, 16) for h in m.group(1).split("\\x")[1:])
-        for ch in raw.decode("utf-8"):
-            cp = ord(ch)
-            if PUA_FIRST <= cp <= PUA_LAST and cp != SYMBOL_DUMMY:
-                points.add(cp)
-    if not points:
-        sys.exit(f"error: no LV_SYMBOL_* code points found in {lvgl_root / SYMBOL_DEF}")
+    unknown = []
+    for name in SUBSET_48:
+        if name.startswith("LV_SYMBOL_") and name[len("LV_SYMBOL_") :] in lv:
+            points.add(lv[name[len("LV_SYMBOL_") :]])
+        elif name in wisp:
+            points.add(wisp[name])
+        else:
+            unknown.append(name)
+    if unknown:
+        sys.exit(f"error: SUBSET_48 names no icon: {unknown}")
     return sorted(points)
 
 
@@ -242,12 +294,16 @@ def code_points(lvgl_root, size):
     wisp = wisp_code_points(lvgl_root)
     if size == BODY_SIZE:
         return wisp
+    if size == SUBSET_SIZE:
+        return subset_code_points(lvgl_root)
     return sorted(set(symbol_code_points(lvgl_root)) | set(wisp))
 
 
 def contents(size):
     if size == BODY_SIZE:
         return "the Wisp icons (WISP_SYMBOL_*)"
+    if size == SUBSET_SIZE:
+        return "the common icons (SUBSET_48 in the generator)"
     return "the LV_SYMBOL_* and Wisp (WISP_SYMBOL_*) icons"
 
 
@@ -327,7 +383,8 @@ def check(lvgl_root):
         sys.exit(1)
     print(
         f"icon fonts match lv_symbol_def.h ({len(symbol_code_points(lvgl_root))} icons) "
-        f"and WISP_ICONS ({len(WISP_ICONS)} icons), sizes {SIZES}"
+        f"and WISP_ICONS ({len(WISP_ICONS)} icons), sizes {SIZES}; "
+        f"{SUBSET_SIZE} px holds SUBSET_48 ({len(subset_code_points(lvgl_root))} icons)"
     )
 
 

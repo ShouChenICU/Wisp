@@ -200,7 +200,7 @@
 ### 4.2 回退链
 
 ```
-矢量字(档位) → 图标字(不大于档位的最大一个：24/32/48；档位 20 没有) → default_font()（Montserrat 16 → CJK 16）
+矢量字(档位) → 图标字(不大于档位的最大一个：24/32/48，48 再回退到 32；档位 20 没有) → default_font()（Montserrat 16 → Wisp 图标 16 → CJK 16）
 ```
 
 - Tiny TTF 找不到字形时返回 false，LVGL 按 `fallback` 逐字往下找。Noto 没有 `LV_SYMBOL_*`（FontAwesome 的私用区码位），这些字由图标字给出；字符集以外的字回退到 16 px。
@@ -235,13 +235,13 @@ Tiny TTF 按 `hhea` 的上伸 1160、下沉 −288（单位 1/1000 em）算行�
 
 ### 4.6 图标字与移除 Montserrat 24/32/48
 
-- `tools/gen_icon_font.py` 读 LVGL 9.5.0 源码（`build/sim/_deps/lvgl-src` 或 `firmware/managed_components/lvgl__lvgl`，与 `gen_pinyin_dict.py` 的查找方式相同；不下载）里的 `scripts/built_in_font/FontAwesome5-Solid+Brands+Regular.woff`，用锁定的 `lv_font_conv@1.5.3`（经 `npx`）生成 16、24、32、48 px、4 bpp、不压缩的 `lv_font_wisp_icons_{16,24,32,48}.c`。24/32/48 的码位是 `src/font/lv_symbol_def.h` 的全部 `LV_SYMBOL_*`（私用区 U+E000–U+F8FF，去掉 `LV_SYMBOL_DUMMY` U+F8FF）加上 Wisp 图标；16 px 只含 Wisp 图标，挂在正文字的回退链上（Montserrat 16 → 它 → CJK 字），因为 Montserrat 16 自带 `LV_SYMBOL_*`。
+- `tools/gen_icon_font.py` 读 LVGL 9.5.0 源码（`build/sim/_deps/lvgl-src` 或 `firmware/managed_components/lvgl__lvgl`，与 `gen_pinyin_dict.py` 的查找方式相同；不下载）里的 `scripts/built_in_font/FontAwesome5-Solid+Brands+Regular.woff`，用锁定的 `lv_font_conv@1.5.3`（经 `npx`）生成 16、24、32、48 px、4 bpp、不压缩的 `lv_font_wisp_icons_{16,24,32,48}.c`。24/32 的码位是 `src/font/lv_symbol_def.h` 的全部 `LV_SYMBOL_*`（私用区 U+E000–U+F8FF，去掉 `LV_SYMBOL_DUMMY` U+F8FF）加上 Wisp 图标；48 px 很少用，只含脚本 `SUBSET_48` 列出的最多 15 个常用图标（麦克风、时钟、天气、播放等；壳层和应用代码没有在 48 档及以上画图标），它回退到 32 px 图标字，所以其他图标在 48 档以 32 px 显示，不会变成方框；16 px 只含 Wisp 图标，挂在正文字的回退链上（Montserrat 16 → 它 → CJK 字），因为 Montserrat 16 自带 `LV_SYMBOL_*`。
 - Wisp 图标是 LVGL 图标集缺少的常用图标（麦克风、天气、时间、待办、聊天等），只在生成脚本的 `WISP_ICONS` 表里列一次（场景名 → Font Awesome 5 Free 码位）。脚本同时生成 `wisp/ui/symbols.hpp`：每个图标一个 `WISP_SYMBOL_<名>` 宏（UTF-8，用法同 `LV_SYMBOL_*`）和 `kWispIcons` 名字表；场景的 `ui.icon` 通过 `components/wisp_scene/src/icons.hpp` 用同一张表。
 - 字体名不含"Font Awesome"：FontAwesome 的字体许可（OFL 1.1）保留了这个名字，修改版不能用（第 6 节）。
 - 4 bpp 不压缩，可以和 16 px 字一样经 A8 包装缓存 8 位字形。
-- `tools/gen_icon_font.py --check`（纳入 `tools/ci.sh`，在 cmake 配置之后、离线）检查已提交的四个字体的码位与当前 LVGL 的 `LV_SYMBOL_*` 加 `WISP_ICONS` 一致，`symbols.hpp` 与 `WISP_ICONS` 一致。
-- 之后 `lv_conf.h` 关掉 `LV_FONT_MONTSERRAT_24/32/48`，代码里不再直接引用这三个字体（配对卡片的数字改用 `ui::font(24)`，自检标题改用 `ui::font(32)`）。镜像净省约 70 KB（三个 Montserrat 约 171 KB，减去图标字约 100 KB；以 `idf.py size` 实测为准）。
-- 档位 64 及以上的图标用 48 px 图标字，与现在（`font(px)` 超过 48 一律取 Montserrat 48）相同。
+- `tools/gen_icon_font.py --check`（纳入 `tools/ci.sh`，在 cmake 配置之后、离线）检查已提交的四个字体的码位与当前 LVGL 的 `LV_SYMBOL_*`、`WISP_ICONS` 和 `SUBSET_48` 一致，`symbols.hpp` 与 `WISP_ICONS` 一致。
+- 之后 `lv_conf.h` 关掉 `LV_FONT_MONTSERRAT_24/32/48`，代码里不再直接引用这三个字体（配对卡片的数字改用 `ui::font(24)`，自检标题改用 `ui::font(32)`）。三个 Montserrat 约 171 KB；四个图标字实测共 117,845 B（固件目标文件的只读数据，`size -A`：16 px 8,888、24 px 34,105、32 px 58,202、48 px 16,650），镜像净省约 55 KB。
+- 档位 64 及以上的图标用 48 px 图标字（不在其中的用 32 px）。
 
 ---
 
@@ -359,6 +359,6 @@ Python（标准库）：`tools/pack_font_image_test.py`（头部字段、CRC 与
 4. **烧录方式**：`idf.py flash` 每次都写字体分区；`idf.py fonts-flash` 只写字体，`idf.py app-flash` 只写应用；管理后台上传字体留给以后。
 5. **场景字号写法**：沿用 `font` 属性，令牌之外接受 16–128 的整数像素，不另加属性。
 6. **加入的拉丁字符**：Latin-1 补充全部与常用标点；不加拉丁扩展-A（源字体缺 98 个）。
-7. **图标字**：24/32/48 三个尺寸，包含全部 `LV_SYMBOL_*` 和 Wisp 图标；64 档以上用 48 px 图标。16 px 另有一个只含 Wisp 图标的字，接在正文字后面（4.6）。
+7. **图标字**：24/32 包含全部 `LV_SYMBOL_*` 和 Wisp 图标，48 只含最多 15 个常用图标、其余回退到 32 px；64 档以上用 48 px 图标字。16 px 另有一个只含 Wisp 图标的字，接在正文字后面（4.6）。
 8. **开机完整 CRC 校验**（约 0.1–0.15 s，实测为准）；字体状态只写日志，不进 `WISP_BOOT_REPORT`。
 9. **提交生成物**：子集 TTF（约 2.4 MB）提交进仓库，构建时只做打包，离线可构建。

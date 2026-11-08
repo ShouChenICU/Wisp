@@ -122,7 +122,9 @@ only called for visible rows. `draw(g)` draws a canvas.
 font too; from 20 on the text is drawn from a vector font in steps of 20, 24, 28, 32,
 40, 48, 64, 80, 96 and 128 pixels, and a size between two steps gets the lower one
 (50 is 48). Symbols (`ui.icon`) come in 16, 24, 32 and 48 pixels, again the largest
-that is not above the size.
+that is not above the size. Only these have 48 pixels, the rest stay at 32:
+`microphone`, `clock`, `calendar`, `sun`, `cloud`, `cloud_sun`, `cloud_rain`,
+`snowflake`, `heart`, `check_circle`, `ok`, `warning`, `bell`, `play`, `pause`.
 
 Large sizes suit short text such as a number or a time. Each glyph is drawn the
 first time it is shown at a size, which takes a few milliseconds at the largest
