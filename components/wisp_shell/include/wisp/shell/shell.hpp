@@ -253,6 +253,10 @@ private:
         bool complete = false;
         // Made unscrollable while the drag runs.
         std::vector<lv_obj_t*> frozen;
+        // What the press started on (watched for its deletion; nullptr
+        // when that is the host itself), and the press's input device.
+        lv_obj_t* target = nullptr;
+        lv_indev_t* indev = nullptr;
     };
     static void press_cb(lv_event_t* e);
     void on_press(lv_event_t* e);
@@ -265,6 +269,12 @@ private:
     void finish_drag();
     // Ends a drag or its slide at once, snapped back.
     void abort_drag();
+    // A drag whose press can no longer end it on the host snaps back:
+    // the object it started on was deleted (LVGL sends no PRESS_LOST
+    // then, and the press may go on to something outside the host), or
+    // the device reads released without the host seeing it.
+    static void target_deleted_cb(lv_event_t* e);
+    void check_drag();
     static void slide_cb(void* var, int32_t v);
     static void slide_done_cb(lv_anim_t* a);
     void close_diagnostics();

@@ -271,6 +271,64 @@ TEST(PageDrag, ShowEndsADrag) {
     d.expect_page(Page::History);
 }
 
+// A pressable thing on Home's page under kHomeLeft, for a drag to start on.
+lv_obj_t* add_pad(Drags& d) {
+    lv_obj_t* pad = nullptr;
+    d.h().on_ui([&] {
+        pad = lv_obj_create(d.shell().home()->root());
+        lv_obj_add_flag(pad, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_remove_flag(pad, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(pad, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_pos(pad, kHomeLeft.x - 50, kHomeLeft.y - 50);
+        lv_obj_set_size(pad, 100, 100);
+        lv_obj_update_layout(d.shell().home_screen());
+    });
+    return pad;
+}
+
+// The object the drag started on is deleted under the finger. LVGL sends
+// no PRESS_LOST for it, and the press goes on to whatever is under the
+// finger now: here something on the top layer, which never reaches the
+// page's screen. The drag snaps back at once, the finger still down.
+TEST(PageDrag, PressedObjectDeletedSnapsBack) {
+    Drags d;
+    ASSERT_TRUE(d.started());
+    lv_obj_t* pad = add_pad(d);
+    d.slow(kHomeLeft, d.width() / 2, 0);
+    lv_obj_t* cover = nullptr;
+    d.h().on_ui([&] {
+        ASSERT_TRUE(d.shell().sliding());
+        ASSERT_EQ(lv_indev_get_active_obj(), nullptr);  // outside a read
+        lv_obj_delete(pad);
+        cover = lv_obj_create(lv_layer_top());
+        lv_obj_set_size(cover, d.width(), d.height());
+    });
+    d.to({kHomeLeft.x + d.width() / 2 + 10, kHomeLeft.y});
+    d.to({kHomeLeft.x + d.width() / 2 + 20, kHomeLeft.y});
+    ASSERT_TRUE(d.settled());
+    d.expect_home();
+    d.up();
+    d.h().on_ui([&] { lv_obj_delete(cover); });
+    d.expect_home();
+}
+
+// The release reaches only what the drag started on, not the page's
+// screen: the drag still settles.
+TEST(PageDrag, ReleaseNotSeenStillSettles) {
+    Drags d;
+    ASSERT_TRUE(d.started());
+    lv_obj_t* pad = add_pad(d);
+    d.slow(kHomeLeft, d.width() / 2, 0);
+    d.h().on_ui([&] {
+        ASSERT_TRUE(d.shell().sliding());
+        lv_obj_remove_flag(pad, LV_OBJ_FLAG_EVENT_BUBBLE);
+    });
+    d.up();
+    ASSERT_TRUE(d.settled());
+    d.h().on_ui([&] { lv_obj_delete(pad); });
+    d.expect_home();
+}
+
 // --- every shape ------------------------------------------------------------
 
 namespace {

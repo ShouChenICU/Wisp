@@ -229,6 +229,7 @@ void Shell::on_voice_bus(const core::Event& e) {
 void Shell::talk_timer_cb(lv_timer_t* t) {
     auto* self = static_cast<Shell*>(lv_timer_get_user_data(t));
     if (self->talk_) self->talk_->tick(self->deps_.now_ms());
+    self->check_drag();
 }
 
 bool Shell::leave_scene() {
@@ -587,6 +588,7 @@ void Shell::on_press(lv_event_t* e) {
                 return;
             }
             begin_drag(*to, dir, press_target_);
+            drag_.indev = indev;
             hold_off_long_press(indev);
             track_->moved(p, now);
             place_drag(track_->offset());
@@ -652,7 +654,11 @@ void Shell::begin_drag(Page to, Swipe dir, lv_obj_t* target) {
         lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
         d.frozen.push_back(o);
     }
-    if (target != nullptr && target != d.host) lv_obj_remove_state(target, LV_STATE_PRESSED);
+    if (target != nullptr && target != d.host) {
+        lv_obj_remove_state(target, LV_STATE_PRESSED);
+        d.target = target;
+        lv_obj_add_event_cb(target, &Shell::target_deleted_cb, LV_EVENT_DELETE, this);
+    }
     if (page_ == Page::Home) home_->drag_started();
     d.ux = dir == Swipe::Right ? 1 : dir == Swipe::Left ? -1 : 0;
     d.uy = dir == Swipe::Down ? 1 : dir == Swipe::Up ? -1 : 0;
@@ -691,6 +697,23 @@ void Shell::settle_drag(bool complete) {
     lv_anim_start(&a);
 }
 
+void Shell::target_deleted_cb(lv_event_t* e) {
+    auto* self = static_cast<Shell*>(lv_event_get_user_data(e));
+    self->drag_.target = nullptr;
+    if (self->drag_.phase != DragPhase::Following) return;
+    self->pressing_ = false;
+    self->track_->reset();
+    self->settle_drag(false);
+}
+
+void Shell::check_drag() {
+    if (drag_.phase != DragPhase::Following || drag_.indev == nullptr) return;
+    if (lv_indev_get_state(drag_.indev) != LV_INDEV_STATE_RELEASED) return;
+    pressing_ = false;
+    track_->reset();
+    settle_drag(false);
+}
+
 void Shell::slide_cb(void* var, int32_t v) { static_cast<Shell*>(var)->place_drag(v); }
 
 void Shell::slide_done_cb(lv_anim_t* a) {
@@ -701,6 +724,8 @@ void Shell::finish_drag() {
     if (drag_.phase == DragPhase::Idle) return;
     Drag d = std::move(drag_);
     drag_ = Drag{};
+    if (d.target != nullptr)
+        lv_obj_remove_event_cb_with_user_data(d.target, &Shell::target_deleted_cb, this);
     for (lv_obj_t* o : d.frozen)
         if (lv_obj_is_valid(o)) lv_obj_add_flag(o, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_pos(d.from_root, 0, 0);
