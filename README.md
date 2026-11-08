@@ -60,17 +60,6 @@ Hold the key and say "make me a Pomodoro timer". The agent writes the UI and the
 
 Replies come in two layers. The sentence to be spoken is shown in large type, and the details appear below in small type. While the agent calls tools or writes files, the steps it is taking are listed under the wisp.
 
-## 🧩 Core modules
-
-| Module | Description |
-| --- | --- |
-| 🔥 **Shell** | The home screen is a small blue will-o'-the-wisp, drawn live in code, with its own expressions for idle, listening, thinking and speaking. The shell is native C++, so you can always get back home even when a scene is broken. |
-| 🎭 **Scenes** | Every feature is a scene: a `scene.json` plus a `main.lua` that declares its UI. When the state changes, the UI follows. Each scene runs in its own Lua sandbox with memory and time limits, and it can reach only the HTTPS hosts it declares. |
-| 🤖 **Agent** | Its platform tools create, edit, open and delete scenes, read and write memory and to-dos, and change device settings. Scenes can register tools of their own. Tool results are treated as data, never as instructions. |
-| 🎙️ **Voice** | Hold to talk and release to transcribe. The sentence marked `<say>` in a reply is spoken aloud. The speaker is shared by priority, so alarms come before speech. Recognition and synthesis can each use a different provider; SiliconFlow is recommended. |
-| 🧠 **Memory & reminders** | Memory notes plus to-dos with due times. When one is due, the screen lights up and it rings. You can view and delete them in the admin console. |
-| 🌐 **Admin console** | Open `http://wisp.local:8900` in a browser and sign in with the 6-digit code shown on the screen. From there you can chat, manage networks, models, memory and scenes, watch logs and upload firmware. The console is about 100 KB of plain JavaScript built into the firmware, in Chinese, Japanese and English. |
-
 ## 🚀 Quick start
 
 ### 💻 Simulator (no hardware)
@@ -116,6 +105,32 @@ idf.py build && idf.py -p <port> flash
 - **Updates:**
   - after a code change, run `idf.py app-flash`, or upload `wisp.bin` in the admin console (OTA);
   - after a font change, also run `idf.py fonts-flash`. Fonts live in their own partitions, which an app update does not write.
+
+## 🧩 Core modules
+
+### 🔥 Shell
+
+The home screen is a small blue will-o'-the-wisp, drawn live in code with no image assets. It has its own expressions for idle, listening, thinking and speaking. Swipe to reach Settings, the scene list or the conversation history; the pages follow your finger. During a turn the wisp moves up, the sentence it speaks appears in large type, and the agent's steps are listed underneath. The shell is native C++, not a scene, so a broken scene can never lock you out of the home screen.
+
+### 🎭 Scenes
+
+Every feature is a scene: a folder holding a `scene.json` and a `main.lua`. The UI is declared as a Lua table of widgets bound to state, so when the state changes, the UI redraws. Each scene runs in its own Lua 5.5 sandbox with memory and time limits. It can reach the network only through the HTTPS hosts it declares, and it keeps its data in a store of its own. Scenes can keep running in the background, post notifications and register tools for the agent.
+
+### 🤖 Agent
+
+The agent works with any OpenAI-compatible model and drives the device through tools. With them it creates, edits, installs, opens and deletes scenes, reads and writes memory and to-dos, and changes brightness, volume and other settings. A long conversation is compacted to fit the context. Tool results are treated as data, never as instructions. Destructive actions, such as deleting a scene, ask for confirmation on the device.
+
+### 🎙️ Voice
+
+Hold BOOT or long-press the wisp to talk; when you release, the recording goes to speech recognition. The model marks the sentence to speak with `<say>`. That sentence goes to speech synthesis and plays while the rest of the reply streams to the screen. The speaker is shared by priority, so alarms come before speech, and holding again interrupts. Recognition and synthesis can each use their own provider; SiliconFlow works well.
+
+### 🧠 Memory & reminders
+
+The agent keeps short notes about you and a list of to-dos with due times. When a to-do comes due, the screen lights up and it rings. You can view and delete notes and to-dos in the admin console.
+
+### 🌐 Admin console
+
+On the same LAN, open `http://wisp.local:8900` and sign in with the 6-digit pairing code shown on the screen. From there you can chat, manage Wi-Fi, model profiles, memory and scenes, watch the logs live and upload firmware. The console is about 100 KB of plain JavaScript shipped inside the firmware, in Chinese, Japanese and English. API keys are write-only, and a factory reset or a firmware update must be confirmed on the device.
 
 ## 🔧 Porting to a new board
 
