@@ -2,7 +2,7 @@
 
 # 🔥 Wisp
 
-**English** | [简体中文](README.zh-CN.md)
+🇺🇸 **English** | 🇨🇳 [简体中文](README.zh-CN.md) | 🇯🇵 [日本語](README.ja.md)
 
 **A handheld run entirely by AI. There are no apps. Say what you want and it builds it on the spot.**
 

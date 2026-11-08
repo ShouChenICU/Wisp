@@ -2,7 +2,7 @@
 
 # 🔥 Wisp
 
-[English](README.md) | **简体中文**
+🇺🇸 [English](README.md) | 🇨🇳 **简体中文** | 🇯🇵 [日本語](README.ja.md)
 
 **一台由 AI 掌管的掌上设备：没有 App，你说想要什么，它就现场做出来。**
 
@@ -129,7 +129,7 @@ Wisp 不绑定某一块板子。和板子有关的东西只放在 `boards/<板�
 
 缺失或初始化失败的设备只会降级运行，不影响启动，所以可以先点亮屏幕，再逐个补齐外设。
 
-> 📖 **完整教程见 [移植指南](docs/porting-guide.md)**，包括板名规范、能力字段、分区约定、芯片差异和验收清单。不论是人还是 AI 编程助手，动手前都请先读这份指南和 [`AGENTS.md`](AGENTS.md)，并仿照[已有硬件资料](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md)，为新板子写一份 `docs/hardware/<板名>.md`。
+> 📖 **完整教程见 [移植指南](docs/porting-guide.md)（英文）**，包括板名规范、能力字段、分区约定、芯片差异和验收清单。不论是人还是 AI 编程助手，动手前都请先读这份指南和 [`AGENTS.md`](AGENTS.md)，并仿照[已有硬件资料](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md)，为新板子写一份 `docs/hardware/<板名>.md`。
 
 ## 🧱 架构
 
@@ -158,7 +158,7 @@ Wisp 不绑定某一块板子。和板子有关的东西只放在 `boards/<板�
 - **屏幕形状**：屏幕可能是圆形或圆角的，所有界面都按 Display caps 给出的安全区布局。
 - **内存**：内部 SRAM 按预算使用，大块内存一律放进 PSRAM，每次改动后用串口命令 `mem` 在真机上实测。
 
-详见[架构文档](docs/architecture.md)、[场景 API](docs/scene-api.md) 和[硬件资料](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md)。
+详见[架构文档](docs/architecture.md)、[场景 API](docs/scene-api.md) 和[硬件资料](docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md)（均为英文）。
 
 ## 🗺️ 路线图
 
@@ -190,7 +190,7 @@ Wisp 不绑定某一块板子。和板子有关的东西只放在 `boards/<板�
 4. **提交信息**：用 Conventional Commits 格式。
 5. **PR 描述**：如实写明哪些在模拟器上验证过、哪些在真机上验证过。
 
-📖 **完整的流程、代码要求和 PR 清单见 [贡献指南](CONTRIBUTING.md)。**
+📖 **完整的流程、代码要求和 PR 清单见 [贡献指南](CONTRIBUTING.md)（英文）。**
 
 ## 📄 许可
 
