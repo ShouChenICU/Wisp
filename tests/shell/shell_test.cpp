@@ -13,6 +13,7 @@
 #include "support/lvgl_probe.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/shell/home.hpp"
 #include "wisp/shell/limits.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -135,7 +136,7 @@ TEST(Shell, PageNames) {
 }
 
 // mvp spec 6.2: the wisp centred across the safe area and
-// kWispIdleCentrePercent down it, kWispIdlePercent of its short side, on a
+// kWispIdleCentrePercent down it, wisp_idle_percent() of its short side, on a
 // black screen of its own that is the active one.
 TEST_P(ShellShapes, HomeWispCentredInSafeArea) {
     const ShapeCase& c = GetParam();
@@ -157,7 +158,7 @@ TEST_P(ShellShapes, HomeWispCentredInSafeArea) {
         lv_obj_get_coords(wisp->obj(), &a);
         const wisp::hal::Area safe = wisp::hal::safe_rect(f.shape());
         EXPECT_EQ(lv_area_get_width(&a),
-                  wisp::ui::wisp_size_px(safe, wisp::shell::kWispIdlePercent));
+                  wisp::ui::wisp_size_px(safe, wisp::shell::wisp_idle_percent(f.shape())));
         EXPECT_NEAR((a.x1 + a.x2) / 2.0, (safe.x1 + safe.x2) / 2.0, 1.0);
         EXPECT_NEAR((a.y1 + a.y2) / 2.0,
                     safe.y1 + (safe.y2 - safe.y1 + 1) * wisp::shell::kWispIdleCentrePercent / 100,

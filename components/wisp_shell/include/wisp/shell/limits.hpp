@@ -10,6 +10,10 @@ namespace wisp::shell {
 
 // The wisp on the main screen: idle, and during a turn (spec 6.2).
 inline constexpr int kWispIdlePercent = 55;
+// On a round screen the safe area is the inscribed square, about 70% of
+// the diameter, so the same share looked small inside the black ring
+// around it; there the idle wisp takes this share of the safe area.
+inline constexpr int kWispIdleCirclePercent = 66;
 // No larger during a turn: at 32 the 360 px circle's column no longer
 // holds kMinColumnPx (home.hpp) below the wisp.
 inline constexpr int kWispTurnPercent = 28;
