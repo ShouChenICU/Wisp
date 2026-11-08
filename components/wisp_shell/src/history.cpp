@@ -9,6 +9,7 @@
 #include "wisp/shell/body_text.hpp"
 #include "wisp/shell/limits.hpp"
 #include "wisp/ui/strings.hpp"
+#include "wisp/ui/symbols.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/theme.hpp"
 #include "wisp/ui/theme_tokens.hpp"
@@ -141,7 +142,7 @@ void HistoryPage::add_cards(size_t from, size_t to) {
 
         if (!t.heard.empty()) {
             os::LargeString heard;
-            if (t.source == agent::Source::Voice) heard = LV_SYMBOL_AUDIO " ";
+            if (t.source == agent::Source::Voice) heard = WISP_SYMBOL_MICROPHONE " ";
             heard += t.heard;
             c.heard = detail::make_text(c.card, heard.c_str(), true);
         }

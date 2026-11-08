@@ -6,12 +6,15 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 
+#include "icons.hpp"
 #include "support/scene_harness.hpp"
 #include "wisp/port/sim/image_decoders.hpp"
 #include "wisp/scene/theme.hpp"
+#include "wisp/ui/symbols.hpp"
 
 namespace {
 
@@ -298,6 +301,28 @@ TEST_F(SceneViewMedia, IconShowsItsSymbol) {
         EXPECT_STREQ(lv_label_get_text(view->object(2)), LV_SYMBOL_HOME);
         EXPECT_STREQ(lv_label_get_text(view->object(3)), LV_SYMBOL_WARNING);
     });
+}
+
+// The Wisp icons (wisp/ui/symbols.hpp) are scene names too.
+TEST_F(SceneViewMedia, IconShowsWispSymbol) {
+    start("rect");
+    auto err = open(R"(
+        return ui.screen { ui.icon { name = "microphone" }, ui.icon { name = "cloud_sun", font = "lg" } }
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    on_ui([&] {
+        EXPECT_STREQ(lv_label_get_text(view->object(2)), WISP_SYMBOL_MICROPHONE);
+        EXPECT_STREQ(lv_label_get_text(view->object(3)), WISP_SYMBOL_CLOUD_SUN);
+    });
+}
+
+TEST(SceneIcons, NamesAreUniqueAndShowSomething) {
+    std::set<std::string_view> seen;
+    for (std::string_view name : wisp::scene::icons::kIconNames) {
+        EXPECT_TRUE(seen.insert(name).second) << name;
+        EXPECT_STRNE(wisp::scene::icons::symbol(name), "") << name;
+    }
+    EXPECT_STREQ(wisp::scene::icons::symbol("no_such_icon"), "");
 }
 
 TEST_F(SceneViewMedia, JpegFromAssets) {

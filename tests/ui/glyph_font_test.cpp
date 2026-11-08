@@ -10,12 +10,14 @@
 #include <iterator>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "a8_font.hpp"
 #include "support/fake_devices.hpp"
 #include "support/font_image.hpp"
 #include "wisp/ui/fonts.hpp"
+#include "wisp/ui/symbols.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 extern "C" {
@@ -83,6 +85,65 @@ TEST_F(GlyphFontTest, BuiltinBeforeAnyRuntime) {
     lv_font_glyph_dsc_t dsc{};
     ASSERT_TRUE(lv_font_get_glyph_dsc(default_font(), &dsc, kNi, 0));
     EXPECT_EQ(dsc.resolved_font, a8_font(&lv_font_cjk_16));
+}
+
+// The code point of a WISP_SYMBOL_*: one three-byte UTF-8 character, as
+// every private-use code point is.
+uint32_t code_point(const char* s) {
+    const auto* u = reinterpret_cast<const unsigned char*>(s);
+    return (uint32_t{u[0] & 0x0Fu} << 12) | (uint32_t{u[1] & 0x3Fu} << 6) | (u[2] & 0x3Fu);
+}
+
+// Every icon the body font has (Montserrat's LV_SYMBOL_* or the 16 px
+// Wisp icons), or "" -- with the problems found.
+std::string body_icon_problems(const lv_font_t* body) {
+    std::string problems;
+    for (const wisp::ui::WispIcon& icon : wisp::ui::kWispIcons) {
+        lv_font_glyph_dsc_t dsc{};
+        const bool found = lv_font_get_glyph_dsc(body, &dsc, code_point(icon.symbol), 0);
+        if (!found || dsc.box_w == 0 || dsc.box_h == 0 || dsc.box_h > 18 ||
+            dsc.resolved_font == body) {
+            problems += std::string(" ") + icon.name;
+        }
+    }
+    return problems;
+}
+
+// The Wisp icons sit between Montserrat and the CJK font, so they are
+// there whichever CJK fallback a runtime chose, and so is CJK text behind
+// them.
+TEST_F(GlyphFontTest, WispIconsBeforeAnyRuntime) {
+    EXPECT_EQ(body_icon_problems(default_font()), "");
+    EXPECT_EQ(code_point(WISP_SYMBOL_MICROPHONE), 0xF130u);
+}
+
+TEST_F(GlyphFontTest, WispIconsWithEveryCjkFallback) {
+    struct Case {
+        std::span<const uint8_t> glyphs;
+        bool builtin;
+        std::span<const uint8_t> vector;
+        bool cjk;
+    };
+    const Case cases[] = {
+        {glyph_image(), true, {}, true},
+        {{}, true, {}, true},
+        {{}, false, test_font_image(), true},
+        {{}, false, {}, false},
+    };
+    for (size_t i = 0; i < std::size(cases); ++i) {
+        const Case& c = cases[i];
+        start(c.glyphs, c.builtin, c.vector);
+        std::string problems;
+        ui_->run_blocking([&] { problems = body_icon_problems(default_font()); });
+        EXPECT_EQ(problems, "") << "case " << i;
+        EXPECT_EQ(lookup(kNi).found, c.cjk) << "case " << i;
+        EXPECT_TRUE(lookup('A').found) << "case " << i;
+        ui_->stop();
+        ui_.reset();
+        EXPECT_EQ(body_icon_problems(default_font()), "") << "case " << i;
+        lv_font_glyph_dsc_t dsc{};
+        EXPECT_TRUE(lv_font_get_glyph_dsc(default_font(), &dsc, kNi, 0)) << "case " << i;
+    }
 }
 
 TEST_F(GlyphFontTest, UsesGlyphImage) {

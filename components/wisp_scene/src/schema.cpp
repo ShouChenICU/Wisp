@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <string>
 
+#include "icons.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/sensor_service.hpp"
@@ -33,11 +34,6 @@ constexpr SV kAligns[] = {"start", "center", "end"};
 constexpr SV kJustifies[] = {"start", "center", "end", "between", "around", "evenly"};
 constexpr SV kDirections[] = {"v", "h"};
 constexpr SV kChartTypes[] = {"line", "bar"};
-// The built-in icon set; the UI maps each to its LV_SYMBOL_*.
-constexpr SV kIcons[] = {"home",   "settings", "wifi",    "battery", "bell",  "play",  "pause",
-                         "stop",   "prev",     "next",    "plus",    "minus", "ok",    "close",
-                         "trash",  "edit",     "refresh", "left",    "right", "up",    "down",
-                         "upload", "download", "save",    "list",    "image", "audio", "warning"};
 
 constexpr std::span<const SV> none{};
 
@@ -62,7 +58,7 @@ constexpr PropSpec kProps[] = {
     {Prop::Placeholder, "placeholder", PropType::String, true, none},
     {Prop::Password, "password", PropType::Bool, true, none},
     {Prop::MaxLen, "max_len", PropType::Int, true, none},
-    {Prop::Name, "name", PropType::Enum, true, kIcons},
+    {Prop::Name, "name", PropType::Enum, true, icons::kIconNames},
     {Prop::Src, "src", PropType::String, false, none},
     {Prop::Value, "value", PropType::Number, true, none},
     {Prop::Min, "min", PropType::Number, true, none},
@@ -862,7 +858,9 @@ std::string schema_markdown() {
         "font too; from 20 on the text is drawn from a vector font in steps of 20, 24, 28, 32,\n"
         "40, 48, 64, 80, 96 and 128 pixels, and a size between two steps gets the lower one\n"
         "(50 is 48). Symbols (`ui.icon`) come in 16, 24, 32 and 48 pixels, again the largest\n"
-        "that is not above the size.\n"
+        "that is not above the size. Only these have 48 pixels, the rest stay at 32:\n"
+        "`microphone`, `clock`, `calendar`, `sun`, `cloud`, `cloud_sun`, `cloud_rain`,\n"
+        "`snowflake`, `heart`, `check_circle`, `ok`, `warning`, `bell`, `play`, `pause`.\n"
         "\n"
         "Large sizes suit short text such as a number or a time. Each glyph is drawn the\n"
         "first time it is shown at a size, which takes a few milliseconds at the largest\n"

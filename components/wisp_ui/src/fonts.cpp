@@ -28,6 +28,7 @@ extern "C" {
 #ifdef WISP_UI_BUILTIN_CJK16
 extern const lv_font_t lv_font_cjk_16;
 #endif
+extern const lv_font_t lv_font_wisp_icons_16;
 extern const lv_font_t lv_font_wisp_icons_24;
 extern const lv_font_t lv_font_wisp_icons_32;
 extern const lv_font_t lv_font_wisp_icons_48;
@@ -47,15 +48,26 @@ const lv_font_t* idle_cjk_fallback() {
 #endif
 }
 
-// lv_font_montserrat_16 is `const`, so it can't be modified in place;
-// this is a mutable copy whose `fallback` is the CJK font. Function-local
-// static: constructed exactly once (C++11 magic statics are thread-safe),
-// the first time anyone (UiRuntime::start() or an outside caller, e.g.
-// wisp_app's self-check UI) asks for the body font.
+// The body font's chain is Montserrat (Latin and the LV_SYMBOL_* icons),
+// then the 16 px Wisp icons (wisp/ui/symbols.hpp), then the CJK font.
+// The fonts are `const`, so these are mutable copies, each with its
+// `fallback` set. Function-local statics: constructed exactly
+// once (C++11 magic statics are thread-safe), the first time anyone
+// (UiRuntime::start() or an outside caller, e.g. wisp_app's self-check
+// UI) asks for the body font.
+lv_font_t& icons_base() {
+    static lv_font_t s_base = [] {
+        lv_font_t font = lv_font_wisp_icons_16;
+        font.fallback = idle_cjk_fallback();
+        return font;
+    }();
+    return s_base;
+}
+
 lv_font_t& body_base() {
     static lv_font_t s_base = [] {
         lv_font_t font = lv_font_montserrat_16;
-        font.fallback = idle_cjk_fallback();
+        font.fallback = &icons_base();
         return font;
     }();
     return s_base;
@@ -123,43 +135,48 @@ const GlyphFont* keep_glyph_font(std::span<const uint8_t> raw, std::unique_ptr<G
     return kept_glyph_fonts().back().font.get();
 }
 
-// Points the body font at `cjk` for the characters Montserrat lacks.
+// Points the body font at `cjk` for the characters Montserrat and the
+// Wisp icons lack: the end of the chain, behind the icons.
 void set_cjk_fallback(const lv_font_t* cjk) {
+    // Wraps the chain first, so the icons' wrapper (if any) exists.
     const lv_font_t* body = default_font();
-    if (body == &body_base()) {
-        // a8_font() declined to wrap Montserrat; the copy is the body font.
-        body_base().fallback = cjk;
-    } else {
-        a8_set_fallback(body, cjk);
-    }
+    // The copy is what an unwrapped chain reaches: a8_font() declined to
+    // wrap Montserrat (whose copy then falls back to this one directly)
+    // or the icon font.
+    icons_base().fallback = cjk;
+    const lv_font_t* icons = body == &body_base() ? &icons_base() : body->fallback;
+    if (icons != &icons_base()) a8_set_fallback(icons, cjk);
 }
 
-// A copy of the icon font `base` falling back to the body fonts, drawn
+// A copy of the icon font `base` falling back to `fallback`, drawn
 // through the A8 cache; see default_font().
-const lv_font_t* wrap_icons(lv_font_t& copy, const lv_font_t& base) {
+const lv_font_t* wrap_icons(lv_font_t& copy, const lv_font_t& base, const lv_font_t* fallback) {
     copy = base;
-    copy.fallback = default_font();
+    copy.fallback = fallback;
     return a8_font(&copy);
 }
 
 // The icon font for a step: the largest of 24, 32 and 48 px not above it,
-// none for 20 (spec 4.2). The vector font has no LV_SYMBOL_* glyphs (they
-// are FontAwesome's private-use code points), so icons come from here,
-// and everything else it lacks falls through to the body fonts.
+// none for 20 (spec 4.2). The vector font has no LV_SYMBOL_* or Wisp icons
+// (they are FontAwesome's private-use code points), so icons come from here,
+// and everything else it lacks falls through to the body fonts. The 48 px
+// font holds only the common icons (tools/gen_icon_font.py's SUBSET_48);
+// it falls back to the 32 px one, so a rarer icon is drawn at 32 px
+// rather than as a placeholder box.
 const lv_font_t* icon_font(int step) {
     if (step >= 48) {
         static lv_font_t s_base;
-        static const lv_font_t* s_font = wrap_icons(s_base, lv_font_wisp_icons_48);
+        static const lv_font_t* s_font = wrap_icons(s_base, lv_font_wisp_icons_48, icon_font(32));
         return s_font;
     }
     if (step >= 32) {
         static lv_font_t s_base;
-        static const lv_font_t* s_font = wrap_icons(s_base, lv_font_wisp_icons_32);
+        static const lv_font_t* s_font = wrap_icons(s_base, lv_font_wisp_icons_32, default_font());
         return s_font;
     }
     if (step >= 24) {
         static lv_font_t s_base;
-        static const lv_font_t* s_font = wrap_icons(s_base, lv_font_wisp_icons_24);
+        static const lv_font_t* s_font = wrap_icons(s_base, lv_font_wisp_icons_24, default_font());
         return s_font;
     }
     return nullptr;

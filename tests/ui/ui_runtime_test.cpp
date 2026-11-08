@@ -840,7 +840,10 @@ TEST(UiRuntime, SmallSizesUseBodyFont) {
         EXPECT_EQ(font(8), wisp::ui::default_font());
         EXPECT_EQ(font(16), wisp::ui::default_font());
         EXPECT_EQ(font(19), wisp::ui::default_font());
-        const lv_font_t* cjk = wisp::ui::default_font()->fallback;
+        // Montserrat, then the Wisp icons, then the CJK font.
+        const lv_font_t* icons = wisp::ui::default_font()->fallback;
+        ASSERT_NE(icons, nullptr);
+        const lv_font_t* cjk = icons->fallback;
         ASSERT_NE(cjk, nullptr);
         EXPECT_EQ(cjk->line_height, lv_font_cjk_16.line_height);
         lv_font_glyph_dsc_t han{};

@@ -168,7 +168,10 @@ echo "==> tools/gen_pinyin_dict.py --check"
 python3 tools/gen_pinyin_dict.py --check
 
 # The committed icon fonts must hold exactly the pinned LVGL's LV_SYMBOL_*
-# icons (vector-font spec 4.6). Reads the same LVGL source; offline.
+# icons and the generator's Wisp icons, and wisp/ui/symbols.hpp must match
+# the latter (vector-font spec 4.6). Reads the same LVGL source; offline.
+echo "==> tools/gen_icon_font_test.py"
+python3 tools/gen_icon_font_test.py
 echo "==> tools/gen_icon_font.py --check"
 python3 tools/gen_icon_font.py --check
 

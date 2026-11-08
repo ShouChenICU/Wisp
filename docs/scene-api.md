@@ -86,7 +86,7 @@ Rules:
 | `placeholder` | string | yes | string |
 | `password` | boolean | yes | boolean |
 | `max_len` | integer | yes | integer 0 to 65535 |
-| `name` | enum | yes | `home`, `settings`, `wifi`, `battery`, `bell`, `play`, `pause`, `stop`, `prev`, `next`, `plus`, `minus`, `ok`, `close`, `trash`, `edit`, `refresh`, `left`, `right`, `up`, `down`, `upload`, `download`, `save`, `list`, `image`, `audio`, `warning` |
+| `name` | enum | yes | `home`, `settings`, `wifi`, `battery`, `bell`, `play`, `pause`, `stop`, `prev`, `next`, `plus`, `minus`, `ok`, `close`, `trash`, `edit`, `refresh`, `left`, `right`, `up`, `down`, `upload`, `download`, `save`, `list`, `image`, `audio`, `warning`, `volume`, `mute`, `envelope`, `eye`, `eye_slash`, `bluetooth`, `gps`, `power`, `bolt`, `phone`, `file`, `folder`, `keyboard`, `shuffle`, `loop`, `copy`, `cut`, `paste`, `drop`, `microphone`, `microphone_slash`, `headphones`, `comment`, `comments`, `robot`, `brain`, `magic`, `lightbulb`, `clock`, `stopwatch`, `hourglass`, `calendar`, `history`, `sun`, `moon`, `cloud`, `cloud_sun`, `cloud_moon`, `cloud_rain`, `snowflake`, `wind`, `thermometer`, `umbrella`, `fire`, `tasks`, `check_circle`, `check_square`, `square`, `sticky_note`, `book`, `bookmark`, `flag`, `newspaper`, `info`, `question`, `exclamation`, `times_circle`, `lock`, `unlock`, `user`, `heart`, `star`, `smile`, `frown`, `thumbs_up`, `trophy`, `gift`, `search`, `globe`, `map_marker`, `link`, `share`, `camera`, `gamepad`, `sliders`, `filter`, `calculator`, `coffee`, `utensils`, `shopping_cart`, `car`, `bed`, `running`, `undo`, `redo` |
 | `src` | string | no | a path assets/&lt;name>.png, .jpg or .jpeg |
 | `value` | number | yes | number |
 | `min` | number | yes | number |
@@ -117,7 +117,9 @@ only called for visible rows. `draw(g)` draws a canvas.
 font too; from 20 on the text is drawn from a vector font in steps of 20, 24, 28, 32,
 40, 48, 64, 80, 96 and 128 pixels, and a size between two steps gets the lower one
 (50 is 48). Symbols (`ui.icon`) come in 16, 24, 32 and 48 pixels, again the largest
-that is not above the size.
+that is not above the size. Only these have 48 pixels, the rest stay at 32:
+`microphone`, `clock`, `calendar`, `sun`, `cloud`, `cloud_sun`, `cloud_rain`,
+`snowflake`, `heart`, `check_circle`, `ok`, `warning`, `bell`, `play`, `pause`.
 
 Large sizes suit short text such as a number or a time. Each glyph is drawn the
 first time it is shown at a size, which takes a few milliseconds at the largest
