@@ -22,6 +22,24 @@ namespace {
 
 constexpr const char* kTag = "agent";
 
+static_assert(agent::kMaxSteps == core::kDefaultAgentMaxSteps);
+static_assert(agent::kTurnMs == core::kDefaultAgentTurnMin * 60000);
+
+// Settings' agent_max_steps and agent_turn_min, clamped to their ranges
+// (SystemSettings only stores values within them); 0 leaves a limit as it
+// is.
+void apply_turn_limits(agent::AgentService& service, int64_t steps, int64_t minutes) {
+    const uint32_t s = steps == 0 ? 0
+                                  : static_cast<uint32_t>(std::clamp(steps, core::kMinAgentMaxSteps,
+                                                                     core::kMaxAgentMaxSteps));
+    const uint32_t ms =
+        minutes == 0
+            ? 0
+            : static_cast<uint32_t>(
+                  std::clamp(minutes, core::kMinAgentTurnMin, core::kMaxAgentTurnMin) * 60000);
+    service.set_turn_limits(s, ms);
+}
+
 // What a model request gets when the platform has no HTTP client: a
 // transport error, which the agent reports as "no connection".
 class NoHttpClient final : public net::HttpClient {
@@ -373,6 +391,23 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
             .context = std::move(context_with_memory),
         },
         deps_.config);
+    // The per-turn limits from Settings, then whatever the settings page
+    // stores (each change applies from the next turn on). Subscribed
+    // before the seed is read, so a change stored in between is not lost.
+    agent::AgentService* service = service_.get();
+    settings_sub_ = deps_.bus.subscribe("system.settings", [service](const core::Event& e) {
+        auto steps = e.payload.find("agent_max_steps");
+        auto minutes = e.payload.find("agent_turn_min");
+        apply_turn_limits(*service,
+                          steps != e.payload.end() && steps->second.type() == Value::Type::Int
+                              ? steps->second.as_int()
+                              : 0,
+                          minutes != e.payload.end() && minutes->second.type() == Value::Type::Int
+                              ? minutes->second.as_int()
+                              : 0);
+    });
+    const core::SystemSettingsValues now = deps_.settings.get();
+    apply_turn_limits(*service_, now.agent_max_steps, now.agent_turn_min);
     service_->set_confirm(confirm_.get());
     const agent::ConfirmFn confirm = service_->confirm_fn();
     workspace_ = std::make_unique<agent::SceneWorkspace>(agent::SceneWorkspaceDeps{
@@ -431,7 +466,10 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
         [adapter = adapter_.get()] { return adapter->epoch(); });
 }
 
-AgentWiring::~AgentWiring() { stop(); }
+AgentWiring::~AgentWiring() {
+    stop();
+    deps_.bus.unsubscribe(settings_sub_);
+}
 
 Result<void> AgentWiring::start() {
     if (!listening_) {

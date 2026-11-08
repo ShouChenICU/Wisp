@@ -247,7 +247,7 @@ const char* strings_en(StrId id) {
         case StrId::AgentStepLimit:
             return "Too many steps; stopped";
         case StrId::AgentTimeLimit:
-            return "Over 15 minutes; stopped";
+            return "Over {} minutes; stopped";
         case StrId::AgentStopped:
             return "Stopped";
         case StrId::AgentInterrupted:

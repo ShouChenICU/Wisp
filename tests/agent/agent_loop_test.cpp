@@ -352,6 +352,60 @@ TEST_F(AgentLoop, StopsAfterMaxToolCalls) {
     EXPECT_FALSE(t->ok);
 }
 
+TEST_F(AgentLoop, ChangedStepLimitAppliesFromTheNextTurn) {
+    add_tool("scene.list");
+    start();
+    svc->set_turn_limits(3, wisp::agent::kTurnMs);
+    for (uint32_t i = 0; i <= 3; ++i)
+        h->server.push(tool_reply("call_" + std::to_string(i), "scene_list", "{}"));
+    ASSERT_TRUE(svc->submit("loop", Source::Web));
+    ASSERT_TRUE(wait_turns(1, 10000));
+    EXPECT_EQ(tool_calls().size(), 3u);
+    EXPECT_EQ(last_status(), "step_limit");
+}
+
+TEST_F(AgentLoop, LimitChangeDuringATurnWaitsForTheNextTurn) {
+    // The first call lowers the limit to one call; the running turn still
+    // makes its three calls and answers.
+    add_tool("scene.list", [this](const Value&, ToolCtx&) {
+        svc->set_turn_limits(1, wisp::agent::kTurnMs);
+        return ToolOutput{.ok = true, .result = Map{{"ok", true}}};
+    });
+    start();
+    for (int i = 0; i < 3; ++i)
+        h->server.push(tool_reply("c" + std::to_string(i), "scene_list", "{}"));
+    h->server.push(text_reply("done"));
+    ASSERT_TRUE(svc->submit("first", Source::Web));
+    ASSERT_TRUE(wait_turns(1, 10000));
+    EXPECT_EQ(tool_calls().size(), 3u);
+    EXPECT_EQ(last_status(), "done");
+
+    // The next turn stops after one call.
+    for (int i = 0; i < 2; ++i)
+        h->server.push(tool_reply("d" + std::to_string(i), "scene_list", "{}"));
+    ASSERT_TRUE(svc->submit("second", Source::Web));
+    ASSERT_TRUE(wait_turns(2, 10000));
+    EXPECT_EQ(tool_calls().size(), 4u);
+    EXPECT_EQ(last_status(), "step_limit");
+}
+
+TEST_F(AgentLoop, TimeLimitNoteNamesTheConfiguredMinutes) {
+    add_tool("scene.list", [this](const Value&, ToolCtx&) {
+        h->advance(7 * 60000 + 1);
+        return ToolOutput{.ok = true, .result = Map{{"ok", true}}};
+    });
+    start();
+    svc->set_turn_limits(wisp::agent::kMaxSteps, 7 * 60000);
+    h->server.push(tool_reply("c1", "scene_list", "{}"));
+    h->server.push(text_reply("never"));
+    ASSERT_TRUE(svc->submit("slow", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(last_status(), "time_limit");
+    auto n = notes();
+    ASSERT_FALSE(n.empty());
+    EXPECT_EQ(n.back(), "超过 7 分钟，已停止");
+}
+
 TEST_F(AgentLoop, StopsAfterTurnTimeLimit) {
     add_tool("scene.list", [this](const Value&, ToolCtx&) {
         h->advance(wisp::agent::kTurnMs + 1);
@@ -378,7 +432,8 @@ TEST_F(AgentLoop, TimeLimitDuringRequestEndsAsTimeLimit) {
     EXPECT_EQ(last_status(), "time_limit");
     auto n = notes();
     ASSERT_EQ(n.size(), 1u);
-    EXPECT_EQ(n[0], wisp::ui::tr(wisp::ui::StrId::AgentTimeLimit, wisp::ui::Lang::Zh));
+    // Under a minute still reads as one.
+    EXPECT_EQ(n[0], "超过 1 分钟，已停止");
 }
 
 TEST_F(AgentLoop, GeneratedCallIdsAreUniqueAcrossTurns) {

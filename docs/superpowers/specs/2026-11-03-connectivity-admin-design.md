@@ -248,7 +248,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 
 ### 5.4 `SystemSettings`（`wisp_core`）
 
-封装亮度（`display`/`brightness`）、音量、自动熄屏时间、设备界面语言（`sys`/`lang`，取值 `zh`/`ja`/`en`，默认 `zh`，见 8.3）、时区 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480；场景 spec 5.2）、校时服务器 `ntp_servers`（`sys`/`ntp`，逗号分隔的 1–2 个主机名或 IPv4 地址，每个不超过 63 个字符，默认 `pool.ntp.org,ntp.aliyun.com`；见 5.6）这些 Settings 键：校验取值范围，写入后立即生效（例如亮度立即应用到 `display.main`）。后台网页、以后的 Agent 工具和设置页都调用它。
+封装亮度（`display`/`brightness`）、音量、自动熄屏时间、设备界面语言（`sys`/`lang`，取值 `zh`/`ja`/`en`，默认 `zh`，见 8.3）、时区 `utc_offset_min`（`sys`/`tz_min`，UTC 以东的分钟数，−720…840，默认 480；场景 spec 5.2）、校时服务器 `ntp_servers`（`sys`/`ntp`，逗号分隔的 1–2 个主机名或 IPv4 地址，每个不超过 63 个字符，默认 `pool.ntp.org,ntp.aliyun.com`；见 5.6）、Agent 每轮上限 `agent_max_steps`（`agent`/`max_steps`，8–200，默认 60）与 `agent_turn_min`（`agent`/`turn_min`，2–60 分钟，默认 15；agent-core spec 3.1，从下一轮对话开始生效）这些 Settings 键：校验取值范围，写入后立即生效（例如亮度立即应用到 `display.main`）。后台网页、以后的 Agent 工具和设置页都调用它。
 
 ### 5.5 事件主题（同步写入 `docs/architecture.md`）
 

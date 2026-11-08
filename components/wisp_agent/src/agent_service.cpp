@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <mutex>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -115,7 +116,8 @@ struct AgentService::Impl {
         std::atomic<bool> removed{false};
     };
 
-    Impl(AgentDeps d, AgentConfig c) : deps(std::move(d)), cfg(c) {}
+    Impl(AgentDeps d, AgentConfig c)
+        : deps(std::move(d)), cfg(c), next_steps(c.max_steps), next_turn_ms(c.turn_ms) {}
 
     // A start() that failed leaves nothing running, so it may be retried.
     void reset_start() {
@@ -139,7 +141,7 @@ struct AgentService::Impl {
 
     // Also the turn's time limit: every check of it counts.
     bool aborted() {
-        if (in_turn.load() && now() - turn_start.load() > cfg.turn_ms) trigger(Abort::Time);
+        if (in_turn.load() && now() - turn_start.load() > turn_ms.load()) trigger(Abort::Time);
         return abort.load() != static_cast<uint8_t>(Abort::None);
     }
 
@@ -211,13 +213,20 @@ struct AgentService::Impl {
     }
 
     void note(ui::StrId id, uint32_t turn, Outcome* out = nullptr) {
+        note_text(ui::tr(id, lang()), turn, out);
+    }
+
+    void note_text(std::string_view text, uint32_t turn, Outcome* out = nullptr) {
         Message m;
         m.role = Role::Note;
         m.turn = turn;
-        m.text = ui::tr(id, lang());
+        m.text.assign(text);
         if (out != nullptr) out->last_text = m.text;
         append(std::move(m));
     }
+
+    // A time limit in whole minutes for the note, at least 1.
+    static uint64_t minutes(uint64_t ms) { return std::max<uint64_t>(1, (ms + 30000) / 60000); }
 
     void marker(uint32_t turn, const char* kind, const char* status) {
         Message m;
@@ -372,6 +381,9 @@ struct AgentService::Impl {
             std::lock_guard<os::Mutex> lock(mu);
             running_turn = turn;
         }
+        // This turn's limits: a change from now on waits for the next one.
+        max_steps = next_steps.load();
+        turn_ms = next_turn_ms.load();
         const uint64_t start = now();
         turn_start = start;
         last_byte = start;
@@ -444,7 +456,9 @@ struct AgentService::Impl {
     const char* finish_abort(uint32_t turn, Outcome& out) {
         switch (static_cast<Abort>(abort.load())) {
             case Abort::Time:
-                note(ui::StrId::AgentTimeLimit, turn, &out);
+                note_text(ui::tr_fill(ui::StrId::AgentTimeLimit, lang(),
+                                      std::to_string(minutes(turn_ms.load()))),
+                          turn, &out);
                 return "time_limit";
             case Abort::Network:
             case Abort::Stall:
@@ -496,7 +510,8 @@ struct AgentService::Impl {
     net::LlmResult request(std::span<const net::LlmMessage> messages, std::string_view tools_json,
                            std::function<void(std::string_view)> on_text) {
         const uint64_t spent = now() - turn_start.load();
-        const uint64_t left = spent >= cfg.turn_ms ? 1 : cfg.turn_ms - spent;
+        const uint64_t limit = turn_ms.load();
+        const uint64_t left = spent >= limit ? 1 : limit - spent;
         net::LlmCall call;
         call.messages = messages;
         call.tools_json = tools_json;
@@ -671,7 +686,7 @@ struct AgentService::Impl {
                     skip_calls(turn, calls.subspan(i), "the turn was stopped");
                     return finish_abort(turn, out);
                 }
-                if (out.steps >= cfg.max_steps) {
+                if (out.steps >= max_steps) {
                     skip_calls(turn, calls.subspan(i), "the turn reached its step limit");
                     note(ui::StrId::AgentStepLimit, turn, &out);
                     return "step_limit";
@@ -701,7 +716,8 @@ struct AgentService::Impl {
                            Map{{"field", ""}});
         } else {
             const uint64_t spent = now() - turn_start.load();
-            const uint64_t left = spent >= cfg.turn_ms ? 0 : cfg.turn_ms - spent;
+            const uint64_t limit = turn_ms.load();
+            const uint64_t left = spent >= limit ? 0 : limit - spent;
             ToolCtx ctx;
             ctx.cancelled = [this] { return aborted(); };
             ctx.deadline_ms = os::now_ms() + left;
@@ -794,6 +810,12 @@ struct AgentService::Impl {
     std::atomic<bool> in_request{false};
     std::atomic<uint32_t> ticket{0};
     std::atomic<uint64_t> turn_start{0};
+    // set_turn_limits()'s values, taken at each turn's start into
+    // max_steps (wisp.agent only) and turn_ms (also read by the timer).
+    std::atomic<uint32_t> next_steps;
+    std::atomic<uint32_t> next_turn_ms;
+    uint32_t max_steps = 0;
+    std::atomic<uint32_t> turn_ms{0};
     std::atomic<uint64_t> last_byte{0};
     std::atomic<int> net_state{-1};  // -1 before any net.wifi.state event
     os::LargeUnique<net::RequestWatch> watch;
@@ -909,6 +931,15 @@ void AgentService::stop_turn() {
     std::erase_if(s.pending,
                   [](const Impl::Command& c) { return c.kind == Impl::Command::Kind::Message; });
     if (s.active || s.clearing) s.trigger(Abort::Stop);
+}
+
+void AgentService::set_turn_limits(uint32_t max_steps, uint32_t turn_ms) {
+    if (max_steps != 0) impl_->next_steps.store(max_steps);
+    if (turn_ms != 0) impl_->next_turn_ms.store(turn_ms);
+}
+
+AgentService::TurnLimits AgentService::turn_limits() const {
+    return {impl_->next_steps.load(), impl_->next_turn_ms.load()};
 }
 
 Result<void> AgentService::new_conversation() {

@@ -110,6 +110,8 @@ void merge_settings(core::SystemSettingsValues& v, const Map& m) {
     get_bool("light_sleep", v.light_sleep);
     get_int("notify_vol", v.notify_vol);
     get_bool("tts_mute", v.tts_mute);
+    get_int("agent_max_steps", v.agent_max_steps);
+    get_int("agent_turn_min", v.agent_turn_min);
 }
 
 }  // namespace

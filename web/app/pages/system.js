@@ -60,6 +60,7 @@ import {
   IconInfo,
   IconLogout,
   IconLogs,
+  IconModel,
   IconMoon,
   IconNote,
   IconPackage,
@@ -72,6 +73,10 @@ import {
 } from '../icons.js';
 
 // SystemSettings' accepted ranges (spec 5.4).
+const AGENT_STEPS_MIN = 8;
+const AGENT_STEPS_MAX = 200;
+const AGENT_MIN_MIN = 2;
+const AGENT_MIN_MAX = 60;
 const BRIGHTNESS_MIN = 10;
 const BRIGHTNESS_MAX = 255;
 const VOLUME_MAX = 100;
@@ -123,6 +128,8 @@ export async function confirmLogout() {
  * @property {boolean} light_sleep  allow light sleep in deep standby
  * @property {number} notify_vol   0-100, the notification sounds
  * @property {boolean} tts_mute    silence spoken replies (text still shows)
+ * @property {number} agent_max_steps  8-200 tool calls per agent turn
+ * @property {number} agent_turn_min   2-60 minutes per agent turn
  *
  * @typedef {Object} PowerStatus  GET /system/power
  * @property {'active'|'dim'|'standby'|'deep_standby'} level
@@ -224,6 +231,7 @@ export function SystemPage() {
       <${TimeSyncCard} settings=${settings} put=${put} />
     </div>
     <${PowerCard} settings=${settings} put=${put} />
+    <${AgentLimitsCard} settings=${settings} put=${put} />
     <${OccupancyCard} />
     <${ClientsCard} clients=${clients} error=${clientsError} reload=${loadClients} />
     <${FirmwareCard} />
@@ -690,6 +698,73 @@ function TimeSyncCard({ settings, put }) {
           </button>
         </div>
         <p id="sys-ntp-hint" class="field-hint">${t('sys.time_servers_hint')}</p>
+      </div>
+    </div>
+  </${Card}>`;
+}
+
+/** A whole number within [min, max], or null. */
+function wholeIn(text, min, max) {
+  const v = Number(text);
+  return Number.isInteger(v) && v >= min && v <= max ? v : null;
+}
+
+// The agent's per-turn limits (agent-core spec 3.1): saved together, they
+// apply from the next turn on.
+function AgentLimitsCard({ settings, put }) {
+  const [steps, setSteps] = useState(/** @type {string|null} */ (null));
+  const [minutes, setMinutes] = useState(/** @type {string|null} */ (null));
+  const [saving, setSaving] = useState(false);
+  if (!settings) return html`<${SkeletonCard} />`;
+  const stepsShown = steps ?? String(settings.agent_max_steps ?? 60);
+  const minutesShown = minutes ?? String(settings.agent_turn_min ?? 15);
+  const stepsValue = wholeIn(stepsShown, AGENT_STEPS_MIN, AGENT_STEPS_MAX);
+  const minutesValue = wholeIn(minutesShown, AGENT_MIN_MIN, AGENT_MIN_MAX);
+  const valid = stepsValue !== null && minutesValue !== null;
+  const changed = stepsValue !== settings.agent_max_steps || minutesValue !== settings.agent_turn_min;
+
+  async function save() {
+    if (!valid || saving) return;
+    setSaving(true);
+    if (await put({ agent_max_steps: stepsValue, agent_turn_min: minutesValue })) {
+      setSteps(null);
+      setMinutes(null);
+      toast(t('sys.agent_saved'), 'ok');
+    }
+    setSaving(false);
+  }
+
+  const numberField = (id, label, shown, ok, min, max, set) => html`<div class="field">
+    <label class="field-label" for=${id}>${label}</label>
+    <input
+      id=${id}
+      class="input mono"
+      type="number"
+      inputmode="numeric"
+      min=${min}
+      max=${max}
+      step="1"
+      value=${shown}
+      aria-invalid=${ok ? null : 'true'}
+      aria-describedby="sys-agent-hint"
+      onInput=${(e) => set(e.currentTarget.value)}
+    />
+  </div>`;
+
+  return html`<${Card} title=${t('sys.agent_title')} icon=${IconModel}>
+    <div class="form">
+      <div class="grid grid-2">
+        ${numberField('sys-agent-steps', t('sys.agent_steps'), stepsShown, stepsValue !== null, AGENT_STEPS_MIN, AGENT_STEPS_MAX, setSteps)}
+        ${numberField('sys-agent-minutes', t('sys.agent_minutes'), minutesShown, minutesValue !== null, AGENT_MIN_MIN, AGENT_MIN_MAX, setMinutes)}
+      </div>
+      <p id="sys-agent-hint" class="field-hint">
+        ${t('sys.agent_hint', { smin: AGENT_STEPS_MIN, smax: AGENT_STEPS_MAX, mmin: AGENT_MIN_MIN, mmax: AGENT_MIN_MAX })}
+      </p>
+      <div>
+        <button type="button" class="btn btn-secondary" onClick=${save} disabled=${!valid || !changed || saving}>
+          ${saving ? html`<span class="spinner" aria-hidden="true"></span>` : null}
+          ${t('sys.agent_save')}
+        </button>
       </div>
     </div>
   </${Card}>`;

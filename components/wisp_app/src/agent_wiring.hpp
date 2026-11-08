@@ -18,6 +18,9 @@
 // queue on the storage worker (wisp.fs, the one thread that touches
 // flash).
 //
+// The per-turn limits follow Settings' agent_max_steps and agent_turn_min
+// (the system.settings event), from the next turn on.
+//
 // Everything the agent reads about the device while it runs (the context
 // source, device.status) comes from cached values: wisp.agent may have its
 // stack in PSRAM and must never touch flash. Storage use is refreshed on
@@ -259,6 +262,7 @@ private:
     std::unique_ptr<AgentApiAdapter> adapter_;
     std::unique_ptr<AgentWsBridge> bridge_;
     bool tools_ok_ = true;
+    core::SubscriptionId settings_sub_ = 0;
 
     os::Mutex hub_mu_;
     admin::WsHub* hub_ = nullptr;

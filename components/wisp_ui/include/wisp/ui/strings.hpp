@@ -205,7 +205,8 @@ enum class StrId : uint16_t {
     PanelJustNow,
     PanelMinutes,
     PanelHours,
-    // Notes the agent adds to the conversation (agent-core spec 3.4).
+    // Notes the agent adds to the conversation (agent-core spec 3.4);
+    // AgentTimeLimit "{}" is the turn's time limit in minutes.
     AgentStepLimit,
     AgentTimeLimit,
     AgentStopped,

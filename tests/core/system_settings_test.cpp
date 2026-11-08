@@ -399,3 +399,48 @@ TEST(SystemSettings, TtsMuteStoredUnderVoice) {
     }
     EXPECT_FALSE(fx.settings.get().tts_mute);
 }
+
+// The agent's per-turn limits (agent-core spec 3.6): agent/max_steps
+// 8-200 tool calls (default 60) and agent/turn_min 2-60 minutes (15).
+TEST(SystemSettings, AgentLimitsStoredUnderAgent) {
+    Fixture fx;
+    auto v = fx.settings.get();
+    EXPECT_EQ(v.agent_max_steps, 60);
+    EXPECT_EQ(v.agent_turn_min, 15);
+
+    ASSERT_TRUE(fx.settings.set({{"agent_max_steps", 8}, {"agent_turn_min", 60}}));
+    v = fx.settings.get();
+    EXPECT_EQ(v.agent_max_steps, 8);
+    EXPECT_EQ(v.agent_turn_min, 60);
+    EXPECT_EQ(Settings(fx.backend, "agent").get_int("max_steps", 0), 8);
+    EXPECT_EQ(Settings(fx.backend, "agent").get_int("turn_min", 0), 60);
+    auto m = wisp::core::to_map(v);
+    EXPECT_EQ(m.at("agent_max_steps"), wisp::Value(8));
+    EXPECT_EQ(m.at("agent_turn_min"), wisp::Value(60));
+
+    ASSERT_TRUE(fx.settings.set({{"agent_max_steps", 200}, {"agent_turn_min", 2}}));
+    for (const auto& [key, bad] : std::vector<std::pair<std::string, wisp::Value>>{
+             {"agent_max_steps", wisp::Value(7)},
+             {"agent_max_steps", wisp::Value(201)},
+             {"agent_max_steps", wisp::Value("60")},
+             {"agent_turn_min", wisp::Value(1)},
+             {"agent_turn_min", wisp::Value(61)},
+             {"agent_turn_min", wisp::Value(true)},
+         }) {
+        auto r = fx.settings.set({{key, bad}});
+        ASSERT_FALSE(r) << key;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    }
+    v = fx.settings.get();
+    EXPECT_EQ(v.agent_max_steps, 200);
+    EXPECT_EQ(v.agent_turn_min, 2);
+}
+
+TEST(SystemSettings, AgentLimitsOutOfRangeInStoreReadAsDefaults) {
+    Fixture fx;
+    ASSERT_TRUE(Settings(fx.backend, "agent").set("max_steps", int64_t{5000}));
+    ASSERT_TRUE(Settings(fx.backend, "agent").set("turn_min", "ten"));
+    auto v = fx.settings.get();
+    EXPECT_EQ(v.agent_max_steps, 60);
+    EXPECT_EQ(v.agent_turn_min, 15);
+}

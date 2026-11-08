@@ -132,3 +132,30 @@ TEST(AppAgent, StopsWithATurnInFlight) {
     h.app->stop();
     EXPECT_EQ(h.app->agent(), nullptr);
 }
+
+// The per-turn limits come from Settings (agent/max_steps, agent/turn_min)
+// and follow PUT /settings without a restart.
+TEST(AppAgent, TurnLimitsFollowTheSettings) {
+    UiNetHarness h(with_server(true));
+    ASSERT_TRUE(h.start());
+    ASSERT_NE(h.app->agent(), nullptr);
+    EXPECT_EQ(h.app->agent()->turn_limits().max_steps, wisp::agent::kMaxSteps);
+    EXPECT_EQ(h.app->agent()->turn_limits().turn_ms, wisp::agent::kTurnMs);
+    const std::string token = pair_browser(h);
+
+    HttpResponse put = h.server->handle(with_csrf(with_token(
+        make_req(Method::Put, "/api/v1/settings", R"({"agent_max_steps":8,"agent_turn_min":3})"),
+        token)));
+    ASSERT_EQ(put.status, 200) << put.body;
+    EXPECT_TRUE(wait_until(
+        [&] {
+            auto l = h.app->agent()->turn_limits();
+            return l.max_steps == 8 && l.turn_ms == 3u * 60000;
+        },
+        5000));
+
+    HttpResponse bad = h.server->handle(with_csrf(
+        with_token(make_req(Method::Put, "/api/v1/settings", R"({"agent_turn_min":0})"), token)));
+    EXPECT_EQ(bad.status, 400);
+    EXPECT_EQ(h.app->agent()->turn_limits().turn_ms, 3u * 60000);
+}

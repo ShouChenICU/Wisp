@@ -9,7 +9,9 @@
 //   - is framed by turn_begin/turn_end markers in the ConversationStore;
 //     every message is appended on the storage worker (run_io) and the
 //     loop waits for it, so the file always holds what listeners saw;
-//   - runs at most max_steps tool calls and turn_ms in all;
+//   - runs at most max_steps tool calls and turn_ms in all (AgentConfig's
+//     values until set_turn_limits() changes them; a turn keeps the limits
+//     it started with);
 //   - holds a cpu and a network wake lock ("system.agent", "agent_turn");
 //   - ends with one of the statuses "done", "stopped", "step_limit",
 //     "time_limit", "error" (and, found after a restart, "interrupted").
@@ -207,6 +209,16 @@ public:
     Result<void> submit(std::string text, Source source);
     // Stops the running turn (if any) and drops the waiting messages.
     void stop_turn();
+    // The tool-call and time limits for every turn that starts from now
+    // on; the running turn keeps its own. Zero leaves that limit as it is.
+    // Any thread, never blocks.
+    void set_turn_limits(uint32_t max_steps, uint32_t turn_ms);
+    struct TurnLimits {
+        uint32_t max_steps;
+        uint32_t turn_ms;
+    };
+    // The limits the next turn starts with.
+    TurnLimits turn_limits() const;
     // Archives the conversation and starts a new one (Cleared). Busy while
     // a turn runs or a message waits.
     Result<void> new_conversation();

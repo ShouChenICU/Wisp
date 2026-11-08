@@ -388,11 +388,14 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
                         {"deep_after_s", Value(300)},
                         {"light_sleep", Value(true)},
                         {"notify_vol", Value(60)},
-                        {"tts_mute", Value(false)}}));
+                        {"tts_mute", Value(false)},
+                        {"agent_max_steps", Value(60)},
+                        {"agent_turn_min", Value(15)}}));
 
     HttpResponse put = f.srv->handle(
         authed(token, Put, "/api/v1/settings",
-               R"({"brightness":100,"volume":30,"utc_offset_min":-210,"ntp_servers":"10.0.0.1"})"));
+               R"({"brightness":100,"volume":30,"utc_offset_min":-210,"ntp_servers":"10.0.0.1",)"
+               R"("agent_max_steps":120,"agent_turn_min":30})"));
     EXPECT_EQ(put.status, 200);
     Value now(Map{{"brightness", Value(100)},
                   {"volume", Value(30)},
@@ -403,19 +406,38 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
                   {"deep_after_s", Value(300)},
                   {"light_sleep", Value(true)},
                   {"notify_vol", Value(60)},
-                  {"tts_mute", Value(false)}});
+                  {"tts_mute", Value(false)},
+                  {"agent_max_steps", Value(120)},
+                  {"agent_turn_min", Value(30)}});
     EXPECT_EQ(body_json(put), now);
     EXPECT_EQ(applied, (std::vector<uint8_t>{100}));
     EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))), now);
 
     // Each rejected batch leaves every value as it was.
-    for (const char* bad :
-         {R"({"brightness":5})", R"({"volume":30.5})", R"({"volume":"30"})",
-          R"({"screen_off_s":true})", R"({"color":1})", R"({"language":"fr"})", R"({"language":1})",
-          R"({"language":"ja","volume":101})", R"({"utc_offset_min":900})",
-          R"({"utc_offset_min":-721})", R"({"utc_offset_min":"8"})", R"({"utc_offset_min":5.5})",
-          R"({"ntp_servers":""})", R"({"ntp_servers":"a,b,c"})", R"({"ntp_servers":"a b"})",
-          R"({"ntp_servers":1})", "[1]", "3"}) {
+    for (const char* bad : {R"({"brightness":5})",
+                            R"({"volume":30.5})",
+                            R"({"volume":"30"})",
+                            R"({"screen_off_s":true})",
+                            R"({"color":1})",
+                            R"({"language":"fr"})",
+                            R"({"language":1})",
+                            R"({"language":"ja","volume":101})",
+                            R"({"utc_offset_min":900})",
+                            R"({"utc_offset_min":-721})",
+                            R"({"utc_offset_min":"8"})",
+                            R"({"utc_offset_min":5.5})",
+                            R"({"ntp_servers":""})",
+                            R"({"ntp_servers":"a,b,c"})",
+                            R"({"ntp_servers":"a b"})",
+                            R"({"ntp_servers":1})",
+                            R"({"agent_max_steps":7})",
+                            R"({"agent_max_steps":201})",
+                            R"({"agent_max_steps":"60"})",
+                            R"({"agent_turn_min":1})",
+                            R"({"agent_turn_min":61})",
+                            R"({"agent_turn_min":2.5})",
+                            "[1]",
+                            "3"}) {
         HttpResponse r = f.srv->handle(authed(token, Put, "/api/v1/settings", bad));
         EXPECT_EQ(r.status, 400) << bad;
         EXPECT_EQ(error_code(r), "invalid_argument") << bad;

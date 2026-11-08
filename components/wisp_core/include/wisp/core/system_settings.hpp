@@ -13,6 +13,8 @@
 //   ntp_servers    sys/ntp             1-2 hosts, comma-separated
 //                                      (default kDefaultNtpServers)
 //   tts_mute       voice/tts_mute      bool                      (default false)
+//   agent_max_steps agent/max_steps    int 8-200                 (default 60)
+//   agent_turn_min agent/turn_min      int 2-60                  (default 15)
 // A stored value set() would refuse reads back as its default.
 // utc_offset_min is the local time zone as minutes east of UTC (UTC-12:00
 // to UTC+14:00, half and quarter hours included); scenes read it as
@@ -26,6 +28,9 @@
 // the alert-sound volume (scene-device spec 4.1 and 5.4).
 // tts_mute silences spoken replies (voice spec 4.4): the conversation still
 // shows its text, TtsClient is simply never called.
+// agent_max_steps and agent_turn_min are the agent's per-turn limits, tool
+// calls and minutes (agent-core spec 3.6); App hands them to AgentService,
+// which applies them from the next turn on.
 // The consumers (App at boot, the audio path, PowerManager::tick()) read
 // these keys fresh, so only brightness needs an explicit "apply now" hook.
 // The device UI language follows `on_changed` (spec 8.3): App publishes it
@@ -59,6 +64,15 @@ inline constexpr bool kDefaultLightSleep = true;
 bool valid_screen_off_s(int64_t seconds);  // 0 (never) or 15-3600
 bool valid_deep_after_s(int64_t seconds);  // 0 (never) or 60-3600
 
+// The agent limits' defaults and ranges. wisp::agent's kMaxSteps and
+// kTurnMs are the same defaults (App checks that they agree).
+inline constexpr int64_t kDefaultAgentMaxSteps = 60;
+inline constexpr int64_t kMinAgentMaxSteps = 8;
+inline constexpr int64_t kMaxAgentMaxSteps = 200;
+inline constexpr int64_t kDefaultAgentTurnMin = 15;
+inline constexpr int64_t kMinAgentTurnMin = 2;
+inline constexpr int64_t kMaxAgentTurnMin = 60;
+
 struct SystemSettingsValues {
     int brightness;
     int volume;
@@ -70,10 +84,13 @@ struct SystemSettingsValues {
     bool light_sleep;
     int notify_vol;
     bool tts_mute;
+    int agent_max_steps;
+    int agent_turn_min;
 };
 
 // {"brightness", "volume", "screen_off_s", "language", "utc_offset_min",
-// "ntp_servers", "deep_after_s", "light_sleep", "notify_vol", "tts_mute"}:
+// "ntp_servers", "deep_after_s", "light_sleep", "notify_vol", "tts_mute",
+// "agent_max_steps", "agent_turn_min"}:
 // the shape of GET /settings and of the system.settings event payload.
 Map to_map(const SystemSettingsValues& values);
 
@@ -100,11 +117,12 @@ public:
     uint32_t revision() const;
 
     // Keys are "brightness", "volume", "screen_off_s", "utc_offset_min",
-    // "deep_after_s", "notify_vol" (integers), "language" and "ntp_servers"
-    // (strings) and "light_sleep", "tts_mute" (booleans). An unknown key, a value of the wrong
-    // type or an out-of-range value fails the whole batch with InvalidArgument before anything is
-    // written. If the backend fails partway, the keys already written are restored (best effort)
-    // and the backend's error returned; the hooks only run once the whole batch is stored.
+    // "deep_after_s", "notify_vol", "agent_max_steps", "agent_turn_min" (integers), "language" and
+    // "ntp_servers" (strings) and "light_sleep", "tts_mute" (booleans). An unknown key, a value of
+    // the wrong type or an out-of-range value fails the whole batch with InvalidArgument before
+    // anything is written. If the backend fails partway, the keys already written are restored
+    // (best effort) and the backend's error returned; the hooks only run once the whole batch is
+    // stored.
     Result<void> set(const std::map<std::string, Value>& changes);
 
 private:
