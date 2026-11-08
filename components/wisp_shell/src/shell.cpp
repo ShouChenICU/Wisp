@@ -316,7 +316,17 @@ lv_obj_t* Shell::build_page(Page p) {
                 open_timing_->build_us = os::now_us() - t0;
             }
             break;
-        case Page::Settings:
+        case Page::Settings: {
+            // Out of the dialog's event first: a restart or a power off
+            // flushes storage and does not come back.
+            auto posted = [this](const std::function<void()>& f) -> std::function<void()> {
+                if (!f) return nullptr;
+                return [this, f, alive = alive_] {
+                    deps_.ui.post([f, alive] {
+                        if (*alive) f();
+                    });
+                };
+            };
             settings_ = std::make_unique<SettingsPage>(SettingsDeps{
                 .settings = deps_.settings,
                 .set_settings = deps_.set_settings,
@@ -333,10 +343,14 @@ lv_obj_t* Shell::build_page(Page p) {
                         });
                     },
                 .open_choice = [this](ChoiceSpec spec) { open_choice(std::move(spec)); },
+                .restart = posted(deps_.restart),
+                .power_off = posted(deps_.power_off),
+                .layer = &deps_.layer,
                 .submit_io = deps_.submit_io,
             });
             settings_->build(f.list);
             break;
+        }
         case Page::Home:
             break;
     }

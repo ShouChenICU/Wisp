@@ -523,6 +523,10 @@ void SystemDuties::close_confirm_dialog() {
     msgbox_ = nullptr;
 }
 
+bool SystemDuties::can_power_off() const {
+    return power_ != nullptr || static_cast<bool>(app_.platform().request_power_off);
+}
+
 void SystemDuties::do_power_off() {
     // What still waits for flash goes first (spec 3.8 of the flash-thread
     // design); the screen stays as it is for those few seconds at most.

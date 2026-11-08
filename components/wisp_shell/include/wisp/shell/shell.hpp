@@ -190,6 +190,9 @@ struct ShellDeps {
     std::function<void()> start_wifi_setup;
     // Queues a job on the storage worker; false if it was not taken.
     std::function<bool(std::function<void()>)> submit_io;
+    // The settings page's restart and power off, after its confirm dialog;
+    // posted to the UI thread. Empty: the row is not there.
+    std::function<void()> restart, power_off;
 };
 
 class Shell {

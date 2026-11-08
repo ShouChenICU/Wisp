@@ -16,8 +16,10 @@
 //     (kTimeZones) and the time format (time_24h), each a value row opening
 //     a choice page;
 //   - system: the firmware version, the admin page's address (with the
-//     IP), how to pair (AboutPairHint) and "hardware diagnostics", which
-//     opens the self-check screen.
+//     IP), how to pair (AboutPairHint), "hardware diagnostics", which
+//     opens the self-check screen, then restart and power off, each asking
+//     first in the system layer's confirm dialog (a row only when its
+//     SettingsDeps callback is set and there is a layer).
 // A value row's choice page is the shell's (SettingsDeps::open_choice,
 // wisp/shell/choice_page.hpp): a pick writes the setting and the row
 // shows it at once; going back without one writes nothing. A setting
@@ -30,6 +32,9 @@
 // the page keeps what it wrote since. The Wi-Fi status and the address
 // are read again every kRefreshMs. A language change rebuilds the page
 // (the shell follows ui::lang()).
+//
+// A confirm dialog still open goes with the page (closed unanswered), so
+// its answer never reaches a page that is gone.
 //
 // Threading: everything on the UI thread, the destructor included.
 
@@ -47,6 +52,10 @@
 #include "wisp/shell/choice_page.hpp"
 #include "wisp/ui/strings.hpp"
 
+namespace wisp::ui {
+class SystemLayer;
+}
+
 namespace wisp::shell {
 
 struct SettingsDeps {
@@ -58,6 +67,11 @@ struct SettingsDeps {
     // Shows a choice page over this one. Empty: the value rows open
     // nothing.
     std::function<void(ChoiceSpec)> open_choice;
+    // Restarts the device / powers it off, once the user said yes; called
+    // on the UI thread. Empty: no such row.
+    std::function<void()> restart, power_off;
+    // Where the confirm dialogs open; nullptr: no restart or power-off row.
+    ui::SystemLayer* layer = nullptr;
     // The storage worker; empty: set_settings runs here.
     std::function<bool(std::function<void()>)> submit_io;
 };
@@ -106,6 +120,9 @@ public:
         Version,
         Address,
         Diagnostics,
+        // nullptr rows when SettingsDeps cannot do them.
+        Restart,
+        PowerOff,
         Count,
     };
 
@@ -120,13 +137,16 @@ public:
     lv_obj_t* speak() const { return speak_; }
     lv_obj_t* light_sleep() const { return light_sleep_; }
     lv_obj_t* row(Row r) const { return rows_[static_cast<size_t>(r)].row; }
-    // nullptr for the diagnostics row, which shows no value.
+    // nullptr for the rows that show no value (diagnostics, restart, power
+    // off).
     lv_obj_t* value(Row r) const { return rows_[static_cast<size_t>(r)].value; }
     // The groups in order: their headings and their cards.
     size_t groups() const { return headings_.size(); }
     lv_obj_t* heading(size_t i) const { return i < headings_.size() ? headings_[i] : nullptr; }
     lv_obj_t* card(size_t i) const { return i < cards_.size() ? cards_[i] : nullptr; }
     lv_obj_t* list() const { return list_; }
+    // The restart or power-off question while it is open, else nullptr.
+    lv_obj_t* confirm() const { return confirm_; }
     // What the page now takes the settings to be.
     const core::SystemSettingsValues& values() const { return now_; }
 
@@ -144,6 +164,7 @@ private:
     void add_value_row(lv_obj_t* card, Row r, const char* icon, ui::StrId name, bool opens);
     void show_values();
     void open(Row r);
+    void ask(Row r);
     void write(std::map<std::string, Value> changes);
     static void event_cb(lv_event_t* e);
 
@@ -161,6 +182,7 @@ private:
     std::array<RowParts, static_cast<size_t>(Row::Count)> rows_{};
     std::vector<lv_obj_t*> headings_, cards_;
     lv_timer_t* timer_ = nullptr;
+    lv_obj_t* confirm_ = nullptr;
     std::string shown_wifi_, shown_address_;
 };
 

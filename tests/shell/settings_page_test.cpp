@@ -30,7 +30,8 @@ namespace {
 
 class SettingsPageTest : public ::testing::Test {
 protected:
-    void boot(const std::string& shape = "rect", int32_t w = 480, int32_t h = 480) {
+    void boot(const std::string& shape = "rect", int32_t w = 480, int32_t h = 480,
+              bool can_power = true) {
         ASSERT_TRUE(worker.start());
         harness = std::make_unique<wisp::test::PageHarness>(shape, w, h);
         ASSERT_TRUE(harness->started());
@@ -55,6 +56,10 @@ protected:
             lv_obj_delete(diag);
             diag = nullptr;
         };
+        if (can_power) {
+            d.restart = [this] { ++restarts; };
+            d.power_off = [this] { ++power_offs; };
+        }
         harness->boot();
         harness->show(Page::Settings);
         ASSERT_NE(page(), nullptr);
@@ -125,6 +130,7 @@ protected:
     bool all_on_worker = true;
     std::atomic<int> wifi_setups{0};
     std::atomic<int> diag_opens{0};
+    std::atomic<int> restarts{0}, power_offs{0};
     lv_obj_t* diag = nullptr;
 };
 
@@ -150,12 +156,14 @@ TEST_F(SettingsPageTest, GroupsAndRowsInOrder) {
                                 page()->light_sleep(),        page()->row(Row::Wifi),
                                 page()->row(Row::Language),   page()->row(Row::TimeZone),
                                 page()->row(Row::TimeFormat), page()->row(Row::Version),
-                                page()->row(Row::Address),    page()->row(Row::Diagnostics)};
+                                page()->row(Row::Address),    page()->row(Row::Diagnostics),
+                                page()->row(Row::Restart),    page()->row(Row::PowerOff)};
         for (size_t i = 1; i < std::size(in_order); ++i)
             EXPECT_GT(coords_of(in_order[i]).y1, coords_of(in_order[i - 1]).y1) << i;
         // Every row is a thumb's height.
         for (Row r : {Row::ScreenOff, Row::DeepStandby, Row::Wifi, Row::Language, Row::TimeZone,
-                      Row::TimeFormat, Row::Version, Row::Address, Row::Diagnostics})
+                      Row::TimeFormat, Row::Version, Row::Address, Row::Diagnostics, Row::Restart,
+                      Row::PowerOff})
             EXPECT_GE(lv_obj_get_height(page()->row(r)), 48);
 
         // The values.
@@ -468,4 +476,58 @@ TEST_F(SettingsPageTest, WifiAndSystem) {
     ASSERT_TRUE(harness->ui_until([&] { return harness->shell().diagnostics_open(); }));
     EXPECT_EQ(diag_opens.load(), 1);
     EXPECT_EQ(harness->active(), diag);
+}
+
+// Restart and power off ask first: No does nothing, Yes does it (on the UI
+// thread, after the dialog's own event).
+TEST_F(SettingsPageTest, RestartAndPowerOffAskFirst) {
+    boot();
+    struct Case {
+        Row row;
+        const char* prompt;
+        std::atomic<int>* calls;
+    };
+    for (const Case& c : {Case{Row::Restart, "是否重启设备？", &restarts},
+                          Case{Row::PowerOff, "是否关机？", &power_offs}}) {
+        SCOPED_TRACE(c.prompt);
+        ASSERT_NE(page()->row(c.row), nullptr);
+        EXPECT_EQ(page()->value(c.row), nullptr);
+        tap_row(c.row);
+        ASSERT_TRUE(harness->ui_until([&] { return page()->confirm() != nullptr; }));
+        harness->on_ui([&] {
+            EXPECT_NE(wisp::test::find_label_containing(lv_layer_top(), c.prompt), nullptr);
+        });
+        ASSERT_TRUE(harness->click_dialog("否"));
+        ASSERT_TRUE(harness->ui_until([&] { return !harness->layer().confirm_open(); }));
+        harness->on_ui([] {});  // what a No posted, if anything, has run
+        EXPECT_EQ(c.calls->load(), 0);
+        EXPECT_EQ(page()->confirm(), nullptr);
+
+        tap_row(c.row);
+        ASSERT_TRUE(harness->ui_until([&] { return page()->confirm() != nullptr; }));
+        ASSERT_TRUE(harness->click_dialog("是"));
+        ASSERT_TRUE(harness->ui_until([&] { return c.calls->load() == 1; }));
+    }
+    EXPECT_EQ(restarts.load(), 1);
+    EXPECT_EQ(power_offs.load(), 1);
+    EXPECT_TRUE(written().empty());
+}
+
+// Leaving the page with the question open takes the question away
+// unanswered.
+TEST_F(SettingsPageTest, LeavingClosesTheQuestion) {
+    boot();
+    tap_row(Row::PowerOff);
+    ASSERT_TRUE(harness->ui_until([&] { return page()->confirm() != nullptr; }));
+    harness->show(Page::Home);
+    ASSERT_TRUE(harness->ui_until([&] { return !harness->layer().confirm_open(); }));
+    EXPECT_EQ(power_offs.load(), 0);
+}
+
+// Without a way to restart or power off, neither row is there.
+TEST_F(SettingsPageTest, NoRestartOrPowerOffWithoutThePlatform) {
+    boot("rect", 480, 480, false);
+    EXPECT_EQ(page()->row(Row::Restart), nullptr);
+    EXPECT_EQ(page()->row(Row::PowerOff), nullptr);
+    EXPECT_NE(page()->row(Row::Diagnostics), nullptr);
 }

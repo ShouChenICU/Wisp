@@ -95,6 +95,8 @@ protected:
         d.wifi_status = [] { return std::string("已连接 WispLab  10.0.0.7"); };
         d.admin_url = [] { return std::string("http://10.0.0.7:8900"); };
         d.firmware_version = [] { return std::string("0.4.2"); };
+        d.restart = [] {};
+        d.power_off = [] {};
         h->boot();
     }
 
@@ -207,10 +209,11 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
             ASSERT_EQ(p->groups(), 5u);
             using Row = wisp::shell::SettingsPage::Row;
             for (Row r : {Row::ScreenOff, Row::DeepStandby, Row::Wifi, Row::Language, Row::TimeZone,
-                          Row::TimeFormat, Row::Version, Row::Address, Row::Diagnostics})
+                          Row::TimeFormat, Row::Version, Row::Address, Row::Diagnostics,
+                          Row::Restart, Row::PowerOff})
                 EXPECT_GE(lv_obj_get_height(p->row(r)), 48);
-            check_ends(p->list(), p->heading(0), p->card(4));
-            EXPECT_TRUE(box_visible(h->shape(), coords_of(p->row(Row::Diagnostics))));
+            check_ends(p->list(), p->heading(0), p->row(Row::PowerOff));
+            EXPECT_TRUE(box_visible(h->shape(), coords_of(p->row(Row::PowerOff))));
             // Every row of every card is inside the screen's visible part
             // once scrolled to; its text inside the row.
             for (size_t g = 0; g < p->groups(); ++g) {

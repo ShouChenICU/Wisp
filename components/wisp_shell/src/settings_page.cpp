@@ -9,6 +9,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/symbols.hpp"
+#include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/theme_tokens.hpp"
 
 namespace wisp::shell {
@@ -113,6 +114,7 @@ SettingsPage::SettingsPage(SettingsDeps deps) : deps_(std::move(deps)) {
 
 SettingsPage::~SettingsPage() {
     if (timer_ != nullptr) lv_timer_delete(timer_);
+    if (confirm_ != nullptr && deps_.layer != nullptr) deps_.layer->close_confirm(confirm_);
 }
 
 lv_obj_t* SettingsPage::add_group(ui::StrId heading) {
@@ -183,7 +185,10 @@ void SettingsPage::add_value_row(lv_obj_t* card, Row which, const char* icon, ui
     detail::ListRow r = detail::make_list_row(card, icon, ui::tr(name), opens);
     RowParts& parts = rows_[static_cast<size_t>(which)];
     parts.row = r.row;
-    if (which != Row::Diagnostics) {
+    if (which == Row::Restart || which == Row::PowerOff) {
+        // An action, no page behind it: no chevron.
+        lv_obj_set_flex_grow(r.name, 1);
+    } else if (which != Row::Diagnostics) {
         parts.value = detail::add_row_value(r.row, "", opens);
     } else {
         // Nothing to show, only somewhere to go.
@@ -232,6 +237,10 @@ void SettingsPage::build(lv_obj_t* list) {
     lv_obj_set_style_pad_top(hint, 0, 0);
     detail::make_text(hint, ui::tr(ui::StrId::AboutPairHint), true);
     add_value_row(card, Row::Diagnostics, LV_SYMBOL_SETTINGS, ui::StrId::AboutDiagnostics, true);
+    if (deps_.layer != nullptr && deps_.restart)
+        add_value_row(card, Row::Restart, LV_SYMBOL_REFRESH, ui::StrId::SettingsRestart, true);
+    if (deps_.layer != nullptr && deps_.power_off)
+        add_value_row(card, Row::PowerOff, LV_SYMBOL_POWER, ui::StrId::SettingsPowerOff, true);
 
     lv_label_set_text(value(Row::Version),
                       deps_.firmware_version ? deps_.firmware_version().c_str() : "");
@@ -348,6 +357,24 @@ void SettingsPage::write(std::map<std::string, Value> changes) {
     }
 }
 
+void SettingsPage::ask(Row r) {
+    if (confirm_ != nullptr || deps_.layer == nullptr) return;
+    const bool restart = r == Row::Restart;
+    // The layer keeps one dialog at a time: with another question up
+    // (a factory reset, a firmware update) this one is not asked.
+    confirm_ = deps_.layer->open_confirm(
+        restart ? ui::StrId::RestartTitle : ui::StrId::PowerOffTitle,
+        ui::tr(restart ? ui::StrId::RestartPrompt : ui::StrId::PowerOffPrompt),
+        [this, restart](bool yes) {
+            confirm_ = nullptr;
+            if (!yes) return;
+            WLOG_I(kTag, "settings: %s", restart ? "restart" : "power off");
+            if (restart && deps_.restart) deps_.restart();
+            if (!restart && deps_.power_off) deps_.power_off();
+        });
+    if (confirm_ == nullptr) WLOG_I(kTag, "settings: another dialog is open");
+}
+
 void SettingsPage::event_cb(lv_event_t* e) {
     auto* self = static_cast<SettingsPage*>(lv_event_get_user_data(e));
     lv_obj_t* obj = lv_event_get_current_target_obj(e);
@@ -384,6 +411,8 @@ void SettingsPage::event_cb(lv_event_t* e) {
         if (self->deps_.start_wifi_setup) self->deps_.start_wifi_setup();
     } else if (obj == self->row(Row::Diagnostics)) {
         if (self->deps_.open_diagnostics) self->deps_.open_diagnostics();
+    } else if (obj == self->row(Row::Restart) || obj == self->row(Row::PowerOff)) {
+        self->ask(obj == self->row(Row::Restart) ? Row::Restart : Row::PowerOff);
     } else {
         for (Row r :
              {Row::ScreenOff, Row::DeepStandby, Row::Language, Row::TimeZone, Row::TimeFormat}) {

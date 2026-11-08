@@ -782,6 +782,15 @@ Result<void> App::start() {
                                                      return scenes->worker().submit(std::move(job));
                                                  })
                                            : nullptr,
+            // As the admin page's restart: what waits for flash first.
+            .restart = impl_->platform.reboot ? std::function<void()>([this] {
+                flush_storage();
+                impl_->platform.reboot();
+            })
+                                              : nullptr,
+            .power_off = impl_->duties->can_power_off()
+                             ? std::function<void()>([impl] { impl->duties->power_off(); })
+                             : nullptr,
         });
         impl_->ui->run_blocking([impl] {
             impl->duties->start();
