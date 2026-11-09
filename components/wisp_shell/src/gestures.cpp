@@ -24,13 +24,13 @@ const char* to_string(Swipe s) {
     return "none";
 }
 
-Swipe classify_swipe(lv_point_t start, lv_point_t end) {
+Swipe classify_swipe(lv_point_t start, lv_point_t end, int32_t min_px) {
     const int32_t dx = end.x - start.x;
     const int32_t dy = end.y - start.y;
     const int32_t ax = std::abs(dx);
     const int32_t ay = std::abs(dy);
-    if (ax > kSwipeMinPx && ax >= kSwipeDominance * ay) return dx > 0 ? Swipe::Right : Swipe::Left;
-    if (ay > kSwipeMinPx && ay >= kSwipeDominance * ax) return dy > 0 ? Swipe::Down : Swipe::Up;
+    if (ax > min_px && ax >= kSwipeDominance * ay) return dx > 0 ? Swipe::Right : Swipe::Left;
+    if (ay > min_px && ay >= kSwipeDominance * ax) return dy > 0 ? Swipe::Down : Swipe::Up;
     return Swipe::None;
 }
 
@@ -70,7 +70,7 @@ Swipe DragTrack::moved(lv_point_t p, uint64_t now) {
     if (decided_) return Swipe::None;
     const int32_t dx = p.x - start_.x;
     const int32_t dy = p.y - start_.y;
-    if (std::max(std::abs(dx), std::abs(dy)) < kDragSlopPx) return Swipe::None;
+    if (std::max(std::abs(dx), std::abs(dy)) < slop_px_) return Swipe::None;
     decided_ = true;
     // As LVGL picks a scroll's axis: horizontal only when strictly more so.
     if (std::abs(dx) > std::abs(dy)) return dx > 0 ? Swipe::Right : Swipe::Left;
@@ -82,7 +82,7 @@ void DragTrack::start(Swipe dir, int32_t extent) {
     dragging_ = true;
     dir_ = dir;
     extent_ = std::max<int32_t>(extent, 1);
-    count_ = next_ = 0;
+    fling_.reset();
 }
 
 int32_t DragTrack::along(lv_point_t p) const {
@@ -103,9 +103,7 @@ int32_t DragTrack::along(lv_point_t p) const {
 
 void DragTrack::record(lv_point_t p, uint64_t now) {
     along_ = along(p);
-    samples_[next_] = {now, along_};
-    next_ = (next_ + 1) % samples_.size();
-    count_ = std::min(count_ + 1, samples_.size());
+    fling_.add(along_, now);
 }
 
 int32_t DragTrack::offset() const {
@@ -119,39 +117,21 @@ bool DragTrack::release(lv_point_t p, uint64_t now) {
     }
     record(p, now);
     const int32_t dist = offset();
-    // The speed from the oldest point inside the window to this one; a
-    // window with no time in it (every point in one millisecond) counts
-    // as one millisecond.
-    const Sample& last = samples_[(next_ + samples_.size() - 1) % samples_.size()];
-    Sample ref = last;
-    for (size_t i = 0; i < count_; ++i) {
-        const Sample& s = samples_[(next_ + samples_.size() - count_ + i) % samples_.size()];
-        if (last.ms - s.ms <= kFlingWindowMs) {
-            ref = s;
-            break;
-        }
-    }
-    const int64_t dt = std::max<int64_t>(static_cast<int64_t>(last.ms - ref.ms), 1);
-    const int64_t moved = last.along - ref.along;
-    const bool fling = moved > 0 && moved * 1000 >= int64_t{kFlingPxPerS} * dt;
+    const bool fling = fling_.fling();
     reset();
-    return dist * kDragCompleteDivisor >= extent_ || fling;
+    return ui::drag_completes(dist, extent_, fling);
 }
 
 void DragTrack::reset() {
     pressed_ = decided_ = dragging_ = false;
     dir_ = Swipe::None;
     along_ = 0;
-    count_ = next_ = 0;
+    fling_.reset();
 }
 
-namespace {
-
-bool beyond(lv_point_t a, lv_point_t b) {
-    return std::abs(b.x - a.x) > kSwipeMinPx || std::abs(b.y - a.y) > kSwipeMinPx;
+bool WispPress::beyond(lv_point_t p) const {
+    return std::abs(p.x - start_.x) > swipe_px_ || std::abs(p.y - start_.y) > swipe_px_;
 }
-
-}  // namespace
 
 WispPress::Action WispPress::pressed(lv_point_t p, uint64_t now) {
     // A press without a release before it (a lost release) ends the
@@ -166,14 +146,14 @@ WispPress::Action WispPress::pressed(lv_point_t p, uint64_t now) {
 
 WispPress::Action WispPress::moved(lv_point_t p, uint64_t now) {
     if (state_ == State::Holding) {
-        if (start_.y - p.y > kSwipeMinPx) {
+        if (start_.y - p.y > swipe_px_) {
             state_ = State::Done;
             return Action::HoldCancel;
         }
         return Action::None;
     }
     if (state_ != State::Pressed) return Action::None;
-    if (beyond(start_, p)) {
+    if (beyond(p)) {
         state_ = State::Moved;
         return Action::None;
     }
@@ -196,7 +176,7 @@ WispPress::Action WispPress::released(lv_point_t p, uint64_t now) {
         case State::Pressed:
             // Held long enough but never ticked: too late for a tap, and
             // no hold began that could end.
-            if (beyond(start_, p) || now - start_ms_ >= voice::kHoldStartMs) return Action::None;
+            if (beyond(p) || now - start_ms_ >= voice::kHoldStartMs) return Action::None;
             return Action::Tap;
         default:
             return Action::None;

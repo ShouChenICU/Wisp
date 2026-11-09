@@ -18,8 +18,11 @@
 //     carries the scene's name already), a wake-lock holder through ui::holder_label():
 //     "scene.<id>" by the scene's name -- the runtime's while it runs, else its manifest's, read on
 //     the storage worker and kept -- and by its id only while that is unknown or the scene is not
-//     installed. Opening and closing are logged "panel: open" / "panel: closed". The screen going
-//     off closes it.
+//     installed. Opening and closing are logged "panel: open" / "panel: closed"; a top swipe
+//     opens it (and fetches the model) as soon as the panel starts following the finger, and one
+//     that slides back up closes it again (SystemLayer logs "ui: panel: shown" once it rests
+//     fully open). on_open only fetches the model, so nothing is undone when it slides back.
+//     The screen going off closes it at once.
 //   - Rows: a scene row brings the scene forward (launch(User)), its close
 //     button exits it; a notification row is NotificationRouter::tap(), its
 //     close button or a swipe dismisses it, its action button is

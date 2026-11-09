@@ -1,10 +1,14 @@
 #pragma once
 
 // Shell constants (MVP spec 6). Sizes are percentages of the safe area's
-// shorter side or pixels, durations milliseconds.
+// shorter side or pixels, touch distances percentages of the screen's
+// shorter side, durations milliseconds.
 
 #include <cstddef>
 #include <cstdint>
+
+#include "wisp/hal/display_geometry.hpp"
+#include "wisp/ui/drag.hpp"
 
 namespace wisp::shell {
 
@@ -25,21 +29,26 @@ inline constexpr int kSayFontPx = 28;
 inline constexpr int kHeardMaxLines = 2;
 // The turn's text fades this long after its last interaction.
 inline constexpr uint32_t kFadeAfterMs = 15000;
-// A swipe (spec 6.3; the talk key's cancel, the wisp's hold): this far,
-// and this many times more along its main direction than across it.
-inline constexpr int kSwipeMinPx = 40;
+// A swipe (spec 6.3; the talk key's cancel, the wisp's hold): more than
+// kSwipeMinPercent of the screen's shorter side (38 px on a 480 px
+// screen), and this many times more along its main direction than across
+// it.
+inline constexpr int kSwipeMinPercent = 8;
 inline constexpr int kSwipeDominance = 2;
-// A page drag (spec 6.3): it starts once the finger is kDragSlopPx along
-// an axis (LVGL's own scroll limit, so the two decide on the same touch
-// read), and on release completes from 1 / kDragCompleteDivisor of the
-// screen on, or when the finger was moving on at kFlingPxPerS or faster
-// over the last kFlingWindowMs. The rest of the way slides in at most
-// kSlideMs, eased out.
-inline constexpr int kDragSlopPx = 10;
-inline constexpr int kDragCompleteDivisor = 3;
-inline constexpr int kFlingPxPerS = 400;
-inline constexpr uint32_t kFlingWindowMs = 50;
-inline constexpr uint32_t kSlideMs = 220;
+inline constexpr int32_t swipe_min_px(const hal::ScreenShape& s) {
+    return hal::share_of_screen(s, kSwipeMinPercent);
+}
+// A page drag (spec 6.3): it starts once the finger is drag_slop_px()
+// along an axis, LVGL's own scroll limit (UiRuntime sets it from the same
+// function), so the two decide on the same touch read. On release it
+// completes and slides like the pull-down panel (wisp/ui/drag.hpp, whose
+// constants these are).
+inline constexpr int kDragSlopPercent = ui::kDragSlopPercent;
+inline constexpr int32_t drag_slop_px(const hal::ScreenShape& s) { return ui::drag_slop_px(s); }
+inline constexpr int kDragCompleteDivisor = ui::kDragCompleteDivisor;
+inline constexpr int kFlingPxPerS = ui::kFlingPxPerS;
+inline constexpr uint32_t kFlingWindowMs = ui::kFlingWindowMs;
+inline constexpr uint32_t kSlideMs = ui::kSlideMs;
 // Conversation history pages load this many turns at a time (spec 6.4).
 inline constexpr size_t kHistoryBatch = 50;
 // The in-scene overlay shows the say text this long (spec 6.5).

@@ -171,3 +171,22 @@ TEST(DisplayGeometry, PanelKind) {
     EXPECT_TRUE(panel_is_colour(PanelKind::Amoled));
     EXPECT_FALSE(panel_is_colour(PanelKind::EPaper));
 }
+
+// Touch distances scale with the screen: a share of its shorter side,
+// rounded to the nearest pixel, whatever its shape.
+TEST(DisplayGeometry, ShareOfScreen) {
+    const ScreenShape sq{ScreenShapeKind::Rect, 480, 480, 0};
+    EXPECT_EQ(share_of_screen(sq, 8), 38);  // 38.4
+    EXPECT_EQ(share_of_screen(sq, 5), 24);
+    EXPECT_EQ(share_of_screen(sq, 2), 10);  // 9.6
+    EXPECT_EQ(share_of_screen(sq, 0), 0);
+    EXPECT_EQ(share_of_screen(sq, 100), 480);
+    const ScreenShape c466{ScreenShapeKind::Circle, 466, 466, 0};
+    EXPECT_EQ(share_of_screen(c466, 8), 37);  // 37.28
+    EXPECT_EQ(share_of_screen(c466, 5), 23);  // 23.3
+    EXPECT_EQ(share_of_screen(c466, 2), 9);   // 9.32
+    // The shorter side, either way round.
+    EXPECT_EQ(share_of_screen({ScreenShapeKind::Rect, 360, 480, 0}, 8), 29);  // 28.8
+    EXPECT_EQ(share_of_screen({ScreenShapeKind::Rect, 480, 360, 0}, 5), 18);
+    EXPECT_EQ(share_of_screen({ScreenShapeKind::RoundedRect, 480, 360, 40}, 2), 7);  // 7.2
+}

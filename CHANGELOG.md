@@ -2,6 +2,16 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
+## 0.3.0 — 2026-11-09
+
+### Features
+
+- **Pull-down panel**: it now follows the finger. A swipe down from the top edge pulls the panel down over the screen like a sheet, its bottom edge under the finger, while what is underneath stays in place. Let go past a third of the screen, or flick down, and it slides fully open; otherwise it slides back up. An upward swipe on the panel takes it back up the same way, and a tap on empty space or the back gesture slides it shut instead of making it vanish. A small handle at the bottom of the panel shows where it ends.
+
+### Fixes
+
+- Edge gestures now scale with the screen: the top and left edge zones are 8% of the screen's shorter side (38 px on a 480 px screen, before a fixed 16 px), and the trigger distances, the shell's swipes and the drag slop are shares of it too. This also fixes a swipe down from the top edge sometimes opening the conversation history instead of the pull-down panel: a finger coming in over the bezel is first seen up to about 26 px below the edge.
+
 ## 0.2.1 — 2026-11-08
 
 ### Fixes

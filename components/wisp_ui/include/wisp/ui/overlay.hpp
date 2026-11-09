@@ -54,6 +54,15 @@ enum class OwnChanges {
 // no-op.
 void mark_opaque_overlay(lv_obj_t* obj, OwnChanges own = OwnChanges::InsideBox);
 
+// Pauses or resumes a marked overlay. Paused, it counts as not covering
+// anything, like a hidden one: nothing is cut for it and its last drawn
+// box is redrawn on the next refresh. For an overlay that moves (the
+// pull-down panel following the finger): an area invalidated before the
+// move would otherwise be cut by where the overlay still is, though the
+// move uncovers it. Resumed, it counts again from the next frame that
+// draws it. No-op on an unmarked object.
+void pause_opaque_overlay(lv_obj_t* obj, bool paused);
+
 // Tells the marked overlays of `disp` that the panel may no longer show
 // them (a stripe failed to reach it): nothing is cut out of the areas
 // invalidated before the next frame draws them again.

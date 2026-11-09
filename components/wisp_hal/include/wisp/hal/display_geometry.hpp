@@ -34,6 +34,14 @@ struct ScreenShape {
     int32_t corner_radius = 0;
 };
 
+// `percent` of the screen's shorter side, rounded to the nearest pixel.
+// Touch distances (edge zones, swipe and drag thresholds) use it, so a
+// gesture feels the same on screens of other resolutions.
+constexpr int32_t share_of_screen(const ScreenShape& s, int percent) {
+    const int64_t side = s.width < s.height ? s.width : s.height;
+    return static_cast<int32_t>((side * percent + 50) / 100);
+}
+
 // Parses a Display's caps ("width", "height", "shape", "corner_radius" --
 // see display.hpp) into a ScreenShape. Fails with ErrorCode::InvalidArgument
 // if:

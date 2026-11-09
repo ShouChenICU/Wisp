@@ -210,6 +210,10 @@ hal::Span visible_extent(const hal::ScreenShape& shape, int32_t y1, int32_t y2, 
 SystemLayer::SystemLayer(const hal::ScreenShape& shape)
     : shape_(shape), safe_(hal::safe_rect(shape)), pinyin_(lang() == Lang::Zh) {}
 
+void SystemLayer::set_clock(std::function<uint64_t()> now_ms) { now_ms_ = std::move(now_ms); }
+
+uint64_t SystemLayer::now_ms() const { return now_ms_ ? now_ms_() : lv_tick_get(); }
+
 SystemLayer::~SystemLayer() {
     close_confirm(confirm_box_);
     hide_error();
@@ -262,14 +266,14 @@ bool SystemLayer::in_back_zone(const hal::ScreenShape& s, int32_t x, int32_t y) 
     if (y < safe.y1 || y > safe.y2) return false;
     const hal::Span span = hal::row_span(s, y);
     if (span.empty()) return false;
-    return x >= span.x1 && x < span.x1 + kBackZoneWidth;
+    return x >= span.x1 && x < span.x1 + hal::share_of_screen(s, kBackZonePercent);
 }
 
 bool SystemLayer::is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end) {
     if (!in_back_zone(s, start.x, start.y)) return false;
     // Any angle, as on Android: thumbs slant, and a press that starts at
     // the very edge and travels right is meant as back.
-    return end.x - start.x >= kBackTriggerDx;
+    return end.x - start.x >= hal::share_of_screen(s, kBackTriggerPercent);
 }
 
 bool SystemLayer::in_top_zone(const hal::ScreenShape& s, int32_t x, int32_t y) {
@@ -287,13 +291,13 @@ bool SystemLayer::in_top_zone(const hal::ScreenShape& s, int32_t x, int32_t y) {
             lo = mid + 1;
         }
     }
-    return y < lo + kTopZoneHeight;
+    return y < lo + hal::share_of_screen(s, kTopZonePercent);
 }
 
 bool SystemLayer::is_top_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end) {
     if (!in_top_zone(s, start.x, start.y)) return false;
     // Any angle, like the back swipe.
-    return end.y - start.y >= kTopTriggerDy;
+    return end.y - start.y >= hal::share_of_screen(s, kTopTriggerPercent);
 }
 
 void SystemLayer::set_back_handler(std::function<void()> on_back) {
@@ -391,21 +395,24 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         const bool was_pressed = pressed_;
         pressed_ = false;
         if (!was_pressed) return;
+        // The panel following the finger settles on its own.
+        if ((top_taken_ || up_taken_) && motion_ == PanelMotion::Follow) {
+            end_swipe();
+            release_panel(p);
+            return;
+        }
         // Only the distance in the swipe's direction counts: dragging back
         // below the trigger cancels.
-        const bool back = taken_ && p.x - start_.x >= kBackTriggerDx;
-        const bool top = top_taken_ && p.y - start_.y >= kTopTriggerDy;
-        const bool up = up_taken_ && start_.y - p.y >= kTopTriggerDy;
+        const bool back =
+            taken_ && p.x - start_.x >= hal::share_of_screen(shape_, kBackTriggerPercent);
         end_swipe();
-        if (up || (back && panel_open())) {
+        if (back && panel_open()) {
             // The panel is what the back swipe leaves.
-            close_panel();
+            slide_panel(false);
         } else if (back && on_back_) {
             // A copy: the handler may replace or clear itself.
             std::function<void()> on_back = on_back_;
             on_back();
-        } else if (top) {
-            open_panel();
         }
         return;
     }
@@ -413,7 +420,14 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
     if (!pressed_) {
         pressed_ = true;
         start_ = p;
+        press_ms_ = now_ms();
         end_swipe();
+        if (panel_moving()) {
+            // The sheet slides: neither its rows nor a new gesture take
+            // the press, which LVGL now leaves alone until it lifts.
+            lv_indev_wait_release(indev);
+            return;
+        }
         candidate_ = (on_back_ || panel_open()) && confirm_box_ == nullptr && !point_in(kb_, p) &&
                      !point_in(candidates_, p) && in_back_zone(shape_, p.x, p.y);
         top_candidate_ = can_open_panel() && in_top_zone(shape_, p.x, p.y);
@@ -435,20 +449,29 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         candidate_ = false;
         if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
         cancel_press(indev);
-    } else if (up_candidate_ && !up_taken_ && !taken_ && start_.y - p.y >= kTopTriggerDy &&
+        // The press stays taken if the panel cannot be there after all.
+        begin_panel_follow(true);
+    } else if (up_candidate_ && !up_taken_ && !taken_ &&
+               start_.y - p.y >= hal::share_of_screen(shape_, kTopTriggerPercent) &&
                start_.y - p.y > std::abs(p.x - start_.x)) {
         up_taken_ = true;
         candidate_ = false;
         if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
         cancel_press(indev);
+        begin_panel_follow(false);
+    }
+    if ((top_taken_ || up_taken_) && motion_ == PanelMotion::Follow) {
+        follow_panel(p);
+        return;
     }
     if (!candidate_) return;
 
     const int32_t dx = p.x - start_.x;
     // The slop keeps a scroll along the edge, wobbling a little to the
     // right, from flashing the arrow.
-    if (taken_ || dx >= kBackArrowSlop) {
-        show_arrow(p, dx, dx >= kBackTriggerDx);
+    const int32_t trigger = hal::share_of_screen(shape_, kBackTriggerPercent);
+    if (taken_ || dx >= hal::share_of_screen(shape_, kBackArrowSlopPercent)) {
+        show_arrow(p, dx, dx >= trigger);
     } else if (arrow_ != nullptr) {
         lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
     }
@@ -527,12 +550,13 @@ void SystemLayer::show_arrow(lv_point_t at, int32_t dx, bool armed) {
     }
     x_in += kArrowEdgeInset;
     // Below the trigger it is partly in and see-through, in step with dx.
-    const int32_t d = std::clamp(dx, int32_t{0}, kBackTriggerDx);
-    const int32_t x = armed ? x_in : x_in - half * (kBackTriggerDx - d) / kBackTriggerDx;
+    const int32_t trigger = std::max(hal::share_of_screen(shape_, kBackTriggerPercent), int32_t{1});
+    const int32_t d = std::clamp(dx, int32_t{0}, trigger);
+    const int32_t x = armed ? x_in : x_in - half * (trigger - d) / trigger;
     const int32_t faint = LV_OPA_30;
     const int32_t strong = LV_OPA_80;
     const auto opa = static_cast<lv_opa_t>(armed ? int32_t{LV_OPA_COVER}
-                                                 : faint + (strong - faint) * d / kBackTriggerDx);
+                                                 : faint + (strong - faint) * d / trigger);
     lv_obj_set_pos(arrow_, x, y1);
     lv_obj_set_style_opa(arrow_, opa, 0);
 }
@@ -905,8 +929,8 @@ void SystemLayer::confirm_btn_cb(lv_event_t* e) {
 // --- Stacking ---
 
 void SystemLayer::raise() {
-    for (lv_obj_t* piece : {capsule_, banner_, panel_backdrop_, panel_, error_backdrop_,
-                            error_panel_, kb_, candidates_, arrow_}) {
+    for (lv_obj_t* piece : {capsule_, banner_, panel_backdrop_, panel_, panel_handle_,
+                            error_backdrop_, error_panel_, kb_, candidates_, arrow_}) {
         if (piece != nullptr) lv_obj_move_foreground(piece);
     }
     // The dialog's backdrop holds the box.

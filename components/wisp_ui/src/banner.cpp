@@ -20,8 +20,8 @@ constexpr int32_t kBadgeSize = 40;
 // How far in from the visible edge of its rows a banner stays on each
 // side, like hal::safe_rect()'s corner margin.
 constexpr int32_t kBannerInset = 4;
-// An upward swipe this long puts a banner away.
-constexpr int32_t kSwipe = SystemLayer::kTopTriggerDy;
+// An upward swipe as long as the top-edge swipe puts a banner away.
+constexpr int kSwipePercent = SystemLayer::kTopTriggerPercent;
 // The body's lines at most.
 constexpr int32_t kBodyLines = 2;
 // The button row of a banner with actions, and the gap above it.
@@ -216,9 +216,10 @@ void SystemLayer::banner_cb(lv_event_t* e) {
         self->press_at_ = at;
         return;
     }
-    const detail::PressEnd end = indev != nullptr
-                                     ? detail::classify_press(self->press_at_, at, kSwipe)
-                                     : detail::PressEnd::Tap;
+    const detail::PressEnd end =
+        indev != nullptr ? detail::classify_press(self->press_at_, at,
+                                                  hal::share_of_screen(self->shape_, kSwipePercent))
+                         : detail::PressEnd::Tap;
     if (end != detail::PressEnd::Tap && end != detail::PressEnd::SwipeUp) return;
     // A swipe up only puts it away; the notification stays unread.
     std::function<void()> on_tap = end == detail::PressEnd::Tap ? self->banner_tap_ : nullptr;

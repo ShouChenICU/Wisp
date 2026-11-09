@@ -7,16 +7,16 @@
 // events (wisp/shell/home.hpp, wisp/shell/shell.hpp).
 //
 // A swipe (what the talk key's cancel looks for) moved more than
-// kSwipeMinPx along its main direction and at least kSwipeDominance times
-// as far along it as across it. Screen coordinates: y grows downwards, so
-// a finger moving up is Up.
+// swipe_min_px() (wisp/shell/limits.hpp) along its main direction and at least kSwipeDominance
+// times as far along it as across it. Screen coordinates: y grows downwards, so a finger moving up
+// is Up.
 
-#include <array>
 #include <cstdint>
 #include <optional>
 
 #include "lvgl.h"
 #include "wisp/shell/shell.hpp"
+#include "wisp/ui/drag.hpp"
 
 namespace wisp::shell {
 
@@ -24,7 +24,8 @@ enum class Swipe : uint8_t { None, Left, Right, Up, Down };
 // "none" "left" "right" "up" "down"
 const char* to_string(Swipe s);
 
-Swipe classify_swipe(lv_point_t start, lv_point_t end);
+// `min_px` is the least distance, swipe_min_px() of the screen.
+Swipe classify_swipe(lv_point_t start, lv_point_t end, int32_t min_px);
 
 // Where swipe `s` leads from page `from`, if anywhere. On the home screen
 // Right opens Settings, Left the scene list and Down the history; a Down
@@ -37,13 +38,16 @@ std::optional<Page> navigate(Page from, Swipe s, bool from_top_zone, bool at_bot
 // A page drag (spec 6.3), without LVGL objects: where the finger is along
 // the drag's direction and whether the release completes the navigation.
 // The caller feeds every point of a press; on the move that first takes
-// the finger kDragSlopPx from where it went down along either axis,
+// the finger `slop_px` (drag_slop_px() of the screen) from where it went
+// down along either axis,
 // moved() reports the direction it went along the axis it moved more on
 // (once a press). The caller then start()s the drag or leaves the press
 // alone. From start() on the off-axis motion is ignored and offset() is
 // the distance along the direction, clamped to [0, extent].
 class DragTrack {
 public:
+    explicit DragTrack(int32_t slop_px) : slop_px_(slop_px) {}
+
     void press(lv_point_t p, uint64_t now);
     // Swipe::None until the slop is passed, and after it.
     Swipe moved(lv_point_t p, uint64_t now);
@@ -60,13 +64,10 @@ public:
     void reset();
 
 private:
-    struct Sample {
-        uint64_t ms = 0;
-        int32_t along = 0;
-    };
     int32_t along(lv_point_t p) const;
     void record(lv_point_t p, uint64_t now);
 
+    int32_t slop_px_;
     lv_point_t start_{};
     bool pressed_ = false;
     bool decided_ = false;
@@ -74,20 +75,20 @@ private:
     Swipe dir_ = Swipe::None;
     int32_t extent_ = 0;
     int32_t along_ = 0;
-    // The latest points, oldest first once full; next_ is where the next
-    // one goes.
-    std::array<Sample, 8> samples_{};
-    size_t count_ = 0, next_ = 0;
+    ui::FlingTrack fling_;
 };
 
 // A press on the wisp (spec 6.3): held kHoldStartMs (wisp/voice/limits.hpp)
-// without moving more than kSwipeMinPx it is hold-to-talk; let go sooner
-// it is a tap. While holding, a move up by more than kSwipeMinPx cancels
+// without moving more than `swipe_px` (swipe_min_px() of the screen) it is
+// hold-to-talk; let go sooner it is a tap. While holding, a move up by
+// more than `swipe_px` cancels
 // the hold. A press that moved too far before the hold began is a swipe
 // and does nothing here. Times are milliseconds on any one clock.
 class WispPress {
 public:
     enum class Action : uint8_t { None, Tap, HoldBegin, HoldEnd, HoldCancel };
+
+    explicit WispPress(int32_t swipe_px) : swipe_px_(swipe_px) {}
 
     Action pressed(lv_point_t p, uint64_t now);
     Action moved(lv_point_t p, uint64_t now);
@@ -105,6 +106,9 @@ public:
 private:
     enum class State : uint8_t { Idle, Pressed, Holding, Moved, Done };
 
+    bool beyond(lv_point_t p) const;
+
+    int32_t swipe_px_;
     State state_ = State::Idle;
     lv_point_t start_{};
     uint64_t start_ms_ = 0;

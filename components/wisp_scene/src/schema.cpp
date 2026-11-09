@@ -983,32 +983,39 @@ std::string schema_markdown() {
         "corners, but when scrolled to either end its first and last item must be whole on the\n"
         "visible screen: pad the list (per side) so that `row_span` at the item's top and\n"
         "bottom rows covers its left and right edges.\n";
-    std::snprintf(line, sizeof(line),
-                  "\n"
-                  "A swipe to the right that starts within %d pixels of the left edge of the\n"
-                  "visible screen (rows within the safe area's height) is the system's back\n"
-                  "gesture, at any angle: a touch there reaches the scene like any other, and\n"
-                  "only once it has moved %d pixels to the right -- however far up or down --\n"
-                  "does the system take it, and the widget under it then gets no click.\n"
-                  "Dragging back to the left of that distance before release cancels it and\n"
-                  "nothing happens. A touch on the on-screen keyboard never starts it.\n",
-                  static_cast<int>(ui::SystemLayer::kBackZoneWidth),
-                  static_cast<int>(ui::SystemLayer::kBackTriggerDx));
-    out += line;
+    // The docs are the same for every device, so they give the distances as
+    // shares of the screen with their size on a 480 px screen.
+    const hal::ScreenShape s480{.width = 480, .height = 480};
+    auto share = [&](int percent) {
+        return num(percent) + "% (" + num(hal::share_of_screen(s480, percent)) + " px)";
+    };
+    out +=
+        "\nThe system's edge gestures measure their distances as a share of the screen's\n"
+        "shorter side, so they are alike on every screen; the pixels in brackets are for a\n"
+        "480-pixel screen.\n";
+    out += "\nA swipe to the right that starts within " + share(ui::SystemLayer::kBackZonePercent) +
+           " of the left edge of the visible\n"
+           "screen (rows within the safe area's height) is the system's back gesture, at any\n"
+           "angle: a touch there reaches the scene like any other, and only once it has moved\n" +
+           share(ui::SystemLayer::kBackTriggerPercent) +
+           " to the right -- however far up or down -- does the system take it, and\n"
+           "the widget under it then gets no click. Dragging back to the left of that\n"
+           "distance before release cancels it and nothing happens. A touch on the on-screen\n"
+           "keyboard never starts it.\n";
     out += "Such a swipe never reaches `on_swipe`.\n";
-    out += "\nA swipe down that starts within " + num(ui::SystemLayer::kTopZoneHeight) +
-           " pixels of the top of the visible screen\n"
+    out += "\nA swipe down that starts within " + share(ui::SystemLayer::kTopZonePercent) +
+           " of the top of the visible screen\n"
            "(measured from the first visible pixel of the column it starts in) is the\n"
            "system's pull-down gesture, at any angle: the touch reaches the scene like\n"
            "any other until it has moved " +
-           num(ui::SystemLayer::kTopTriggerDy) +
-           " pixels down, when the system opens its\n"
+           share(ui::SystemLayer::kTopTriggerPercent) +
+           " down, when the system opens its\n"
            "pull-down panel and the widget under the finger gets no click\n"
            "(`PRESS_LOST`). It never starts while the keyboard, the error panel or a\n"
-           "confirmation dialog is up. A tap on the status capsule (at `status_area`, shown while "
-           "scenes run\n"
-           "in the background or notifications are unread) opens the panel too. A swipe down\n"
-           "from the top zone never reaches `on_swipe` while the panel can open.\n";
+           "confirmation dialog is up. A tap on the status capsule (at `status_area`, shown\n"
+           "while scenes run in the background or notifications are unread) opens the panel\n"
+           "too. A swipe down from the top zone never reaches `on_swipe` while the panel can\n"
+           "open.\n";
     out +=
         "\n"
         "## Helpers\n"
