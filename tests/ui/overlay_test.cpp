@@ -333,4 +333,42 @@ TEST(Overlay, HidingOrDeletingABandRevealsWhatScrolledBeneath) {
         same_as_full_redraw_of(build_band, {scroll, [](Scene& s) { lv_obj_delete(s.card); }}));
 }
 
+// A marked sheet that moves (the pull-down panel following the finger)
+// cuts what it moves over unless it is paused: an area invalidated before
+// a move is cut by where the sheet still is, though the move uncovers it.
+Scene build_sheet() {
+    Scene s = build_band();
+    lv_obj_set_pos(s.card, 0, 0);
+    lv_obj_set_size(s.card, kSide, kSide);
+    lv_obj_update_layout(s.card);
+    return s;
+}
+
+void pause(Scene& s) { wisp::ui::pause_opaque_overlay(s.card, true); }
+void resume(Scene& s) { wisp::ui::pause_opaque_overlay(s.card, false); }
+Step move_to(int32_t y) {
+    return [y](Scene& s) { lv_obj_set_y(s.card, y); };
+}
+
+TEST(Overlay, APausedSheetMovingUpAndDownIsDrawn) {
+    EXPECT_TRUE(
+        same_as_full_redraw_of(build_sheet, {scroll, pause, move_to(-60), move_to(-150),
+                                             move_to(-40), move_to(0), resume, scroll, scroll}));
+}
+
+// Paused, nothing is cut; resumed, it counts again once a frame has drawn
+// it (here the first scroll's), and the scrolls after that are skipped
+// under it again: wholly covered, what is left is a single pixel.
+TEST(Overlay, APausedSheetCutsNothingUntilResumed) {
+    const Result r = render_scene(build_sheet, {pause, scroll, resume, scroll, scroll}, true);
+    ASSERT_EQ(r.flushed.size(), 5u);
+    EXPECT_FALSE(r.flushed[1].empty());  // paused: the scroll is drawn
+    EXPECT_FALSE(r.flushed[3].empty());
+    for (const auto& f : r.flushed[4]) {
+        EXPECT_TRUE(f.x1 == f.x2 && f.y1 == f.y2)
+            << f.x1 << "," << f.y1 << "-" << f.x2 << "," << f.y2;
+    }
+    EXPECT_TRUE(same_as_full_redraw_of(build_sheet, {pause, scroll, resume, scroll, scroll}));
+}
+
 }  // namespace

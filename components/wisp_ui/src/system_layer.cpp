@@ -210,6 +210,10 @@ hal::Span visible_extent(const hal::ScreenShape& shape, int32_t y1, int32_t y2, 
 SystemLayer::SystemLayer(const hal::ScreenShape& shape)
     : shape_(shape), safe_(hal::safe_rect(shape)), pinyin_(lang() == Lang::Zh) {}
 
+void SystemLayer::set_clock(std::function<uint64_t()> now_ms) { now_ms_ = std::move(now_ms); }
+
+uint64_t SystemLayer::now_ms() const { return now_ms_ ? now_ms_() : lv_tick_get(); }
+
 SystemLayer::~SystemLayer() {
     close_confirm(confirm_box_);
     hide_error();
@@ -391,21 +395,23 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         const bool was_pressed = pressed_;
         pressed_ = false;
         if (!was_pressed) return;
+        // The panel following the finger settles on its own.
+        if ((top_taken_ || up_taken_) && motion_ == PanelMotion::Follow) {
+            end_swipe();
+            release_panel(p);
+            return;
+        }
         // Only the distance in the swipe's direction counts: dragging back
         // below the trigger cancels.
         const bool back = taken_ && p.x - start_.x >= kBackTriggerDx;
-        const bool top = top_taken_ && p.y - start_.y >= kTopTriggerDy;
-        const bool up = up_taken_ && start_.y - p.y >= kTopTriggerDy;
         end_swipe();
-        if (up || (back && panel_open())) {
+        if (back && panel_open()) {
             // The panel is what the back swipe leaves.
-            close_panel();
+            slide_panel(false);
         } else if (back && on_back_) {
             // A copy: the handler may replace or clear itself.
             std::function<void()> on_back = on_back_;
             on_back();
-        } else if (top) {
-            open_panel();
         }
         return;
     }
@@ -413,7 +419,14 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
     if (!pressed_) {
         pressed_ = true;
         start_ = p;
+        press_ms_ = now_ms();
         end_swipe();
+        if (panel_moving()) {
+            // The sheet slides: neither its rows nor a new gesture take
+            // the press, which LVGL now leaves alone until it lifts.
+            lv_indev_wait_release(indev);
+            return;
+        }
         candidate_ = (on_back_ || panel_open()) && confirm_box_ == nullptr && !point_in(kb_, p) &&
                      !point_in(candidates_, p) && in_back_zone(shape_, p.x, p.y);
         top_candidate_ = can_open_panel() && in_top_zone(shape_, p.x, p.y);
@@ -435,12 +448,19 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         candidate_ = false;
         if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
         cancel_press(indev);
+        // The press stays taken if the panel cannot be there after all.
+        begin_panel_follow(true);
     } else if (up_candidate_ && !up_taken_ && !taken_ && start_.y - p.y >= kTopTriggerDy &&
                start_.y - p.y > std::abs(p.x - start_.x)) {
         up_taken_ = true;
         candidate_ = false;
         if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
         cancel_press(indev);
+        begin_panel_follow(false);
+    }
+    if ((top_taken_ || up_taken_) && motion_ == PanelMotion::Follow) {
+        follow_panel(p);
+        return;
     }
     if (!candidate_) return;
 

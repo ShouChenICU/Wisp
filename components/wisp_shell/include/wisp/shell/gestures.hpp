@@ -11,12 +11,12 @@
 // as far along it as across it. Screen coordinates: y grows downwards, so
 // a finger moving up is Up.
 
-#include <array>
 #include <cstdint>
 #include <optional>
 
 #include "lvgl.h"
 #include "wisp/shell/shell.hpp"
+#include "wisp/ui/drag.hpp"
 
 namespace wisp::shell {
 
@@ -60,10 +60,6 @@ public:
     void reset();
 
 private:
-    struct Sample {
-        uint64_t ms = 0;
-        int32_t along = 0;
-    };
     int32_t along(lv_point_t p) const;
     void record(lv_point_t p, uint64_t now);
 
@@ -74,10 +70,7 @@ private:
     Swipe dir_ = Swipe::None;
     int32_t extent_ = 0;
     int32_t along_ = 0;
-    // The latest points, oldest first once full; next_ is where the next
-    // one goes.
-    std::array<Sample, 8> samples_{};
-    size_t count_ = 0, next_ = 0;
+    ui::FlingTrack fling_;
 };
 
 // A press on the wisp (spec 6.3): held kHoldStartMs (wisp/voice/limits.hpp)

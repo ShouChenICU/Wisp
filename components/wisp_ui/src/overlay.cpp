@@ -22,6 +22,8 @@ struct Overlay {
     OwnChanges own = OwnChanges::InsideBox;
     // How deep LVGL is in sending it events (OwnChanges::InOwnEvents).
     int event_depth = 0;
+    // pause_opaque_overlay(): counted as not covering anything.
+    bool paused = false;
 };
 
 // The marked overlays of every display, in marking order. Only touched on
@@ -102,6 +104,11 @@ bool drawn_plainly(lv_obj_t* obj) {
            lv_obj_get_style_transform_width(obj, m) == 0 &&
            lv_obj_get_style_transform_height(obj, m) == 0;
 }
+
+bool covers(lv_obj_t* obj);
+
+// Whether `o` counts now: not paused, and covering its core.
+bool counts(const Overlay& o) { return !o.paused && covers(o.obj); }
 
 // Whether `obj` currently covers its core: it and every ancestor are shown
 // and drawn plainly, and its own background is opaque everywhere.
@@ -191,7 +198,7 @@ void invalidate_cb(lv_event_t* e) {
     std::array<lv_obj_t*, kMaxCovering> covering{};
     size_t n_covering = 0;
     for (const Overlay& o : overlays()) {
-        if (!o.covered || lv_obj_get_display(o.obj) != disp || !covers(o.obj)) continue;
+        if (!o.covered || lv_obj_get_display(o.obj) != disp || !counts(o)) continue;
         // May be the overlay's own change.
         if ((o.own == OwnChanges::InsideBox || own_event) && inside(*area, box_of(o.obj))) {
             return;
@@ -244,7 +251,7 @@ void refr_start_cb(lv_event_t* e) {
     auto* disp = static_cast<lv_display_t*>(lv_event_get_current_target(e));
     lv_obj_t* sys = lv_display_get_layer_sys(disp);
     for (Overlay& o : overlays()) {
-        if (!o.covered || lv_obj_get_display(o.obj) != disp || covers(o.obj)) continue;
+        if (!o.covered || lv_obj_get_display(o.obj) != disp || counts(o)) continue;
         o.covered = false;
         lv_obj_invalidate_area(sys, &o.box);
     }
@@ -256,7 +263,7 @@ void render_start_cb(lv_event_t* e) {
     auto* disp = static_cast<lv_display_t*>(lv_event_get_current_target(e));
     for (Overlay& o : overlays()) {
         if (lv_obj_get_display(o.obj) != disp) continue;
-        o.covered = covers(o.obj);
+        o.covered = counts(o);
         if (o.covered) o.box = box_of(o.obj);
     }
     rendering = disp;
@@ -309,6 +316,11 @@ void forget_drawn_overlays(lv_display_t* disp) {
     }
 }
 
+void pause_opaque_overlay(lv_obj_t* obj, bool paused) {
+    Overlay* o = find(obj);
+    if (o != nullptr) o->paused = paused;
+}
+
 void mark_opaque_overlay(lv_obj_t* obj, OwnChanges own) {
     if (obj == nullptr || marked(obj)) return;
     lv_display_t* disp = lv_obj_get_display(obj);
@@ -320,7 +332,7 @@ void mark_opaque_overlay(lv_obj_t* obj, OwnChanges own) {
         lv_display_add_event_cb(disp, &render_start_cb, LV_EVENT_RENDER_START, nullptr);
         lv_display_add_event_cb(disp, &render_ready_cb, LV_EVENT_RENDER_READY, nullptr);
     }
-    overlays().push_back(Overlay{obj, false, {}, own, 0});
+    overlays().push_back(Overlay{obj, false, {}, own, 0, false});
     lv_obj_add_event_cb(obj, &delete_cb, LV_EVENT_DELETE, nullptr);
     if (own == OwnChanges::InOwnEvents) {
         // Around every event: first of the preprocess handlers, last of

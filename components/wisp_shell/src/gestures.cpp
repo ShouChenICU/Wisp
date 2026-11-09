@@ -82,7 +82,7 @@ void DragTrack::start(Swipe dir, int32_t extent) {
     dragging_ = true;
     dir_ = dir;
     extent_ = std::max<int32_t>(extent, 1);
-    count_ = next_ = 0;
+    fling_.reset();
 }
 
 int32_t DragTrack::along(lv_point_t p) const {
@@ -103,9 +103,7 @@ int32_t DragTrack::along(lv_point_t p) const {
 
 void DragTrack::record(lv_point_t p, uint64_t now) {
     along_ = along(p);
-    samples_[next_] = {now, along_};
-    next_ = (next_ + 1) % samples_.size();
-    count_ = std::min(count_ + 1, samples_.size());
+    fling_.add(along_, now);
 }
 
 int32_t DragTrack::offset() const {
@@ -119,30 +117,16 @@ bool DragTrack::release(lv_point_t p, uint64_t now) {
     }
     record(p, now);
     const int32_t dist = offset();
-    // The speed from the oldest point inside the window to this one; a
-    // window with no time in it (every point in one millisecond) counts
-    // as one millisecond.
-    const Sample& last = samples_[(next_ + samples_.size() - 1) % samples_.size()];
-    Sample ref = last;
-    for (size_t i = 0; i < count_; ++i) {
-        const Sample& s = samples_[(next_ + samples_.size() - count_ + i) % samples_.size()];
-        if (last.ms - s.ms <= kFlingWindowMs) {
-            ref = s;
-            break;
-        }
-    }
-    const int64_t dt = std::max<int64_t>(static_cast<int64_t>(last.ms - ref.ms), 1);
-    const int64_t moved = last.along - ref.along;
-    const bool fling = moved > 0 && moved * 1000 >= int64_t{kFlingPxPerS} * dt;
+    const bool fling = fling_.fling();
     reset();
-    return dist * kDragCompleteDivisor >= extent_ || fling;
+    return ui::drag_completes(dist, extent_, fling);
 }
 
 void DragTrack::reset() {
     pressed_ = decided_ = dragging_ = false;
     dir_ = Swipe::None;
     along_ = 0;
-    count_ = next_ = 0;
+    fling_.reset();
 }
 
 namespace {

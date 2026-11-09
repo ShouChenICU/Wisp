@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "system_layer_internal.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/ui/dialog.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/overlay.hpp"
@@ -180,9 +181,106 @@ void SystemLayer::open_panel() {
     if (!can_open_panel()) return;
     build_panel();
     raise();
+    WLOG_I("ui", "panel: shown");
 }
 
 void SystemLayer::close_panel() { discard_panel(); }
+
+// --- Following the finger, sliding ---
+
+void SystemLayer::begin_panel_follow(bool opening) {
+    if (opening) {
+        if (!can_open_panel()) return;
+        if (std::function<void()> on_open = panel_handlers_.on_open) on_open();
+        if (!can_open_panel()) return;
+        build_panel();
+        raise();
+    } else if (panel_ == nullptr) {
+        return;
+    }
+    // No slide runs now (observe() ignores a press made during one), but
+    // one would carry the sheet away from the finger.
+    lv_anim_delete(this, &SystemLayer::panel_slide_cb);
+    pause_panel_marks(true);
+    motion_ = PanelMotion::Follow;
+    follow_opening_ = opening;
+    // From where the finger went down: a swipe quick from the start is a
+    // flick, however few reads it took to cross the trigger.
+    panel_fling_.reset();
+    panel_fling_.add(0, press_ms_);
+}
+
+void SystemLayer::follow_panel(lv_point_t p) {
+    if (panel_ == nullptr || motion_ != PanelMotion::Follow) return;
+    const int32_t along = follow_opening_ ? p.y - start_.y : start_.y - p.y;
+    panel_fling_.add(along, now_ms());
+    const int32_t moved = std::clamp(along, int32_t{0}, shape_.height);
+    place_panel(follow_opening_ ? moved : shape_.height - moved);
+}
+
+void SystemLayer::release_panel(lv_point_t p) {
+    if (panel_ == nullptr || motion_ != PanelMotion::Follow) return;
+    follow_panel(p);
+    const int32_t moved = follow_opening_ ? panel_offset_ : shape_.height - panel_offset_;
+    const bool complete = drag_completes(moved, shape_.height, panel_fling_.fling());
+    panel_fling_.reset();
+    slide_panel(follow_opening_ == complete);
+}
+
+void SystemLayer::place_panel(int32_t offset) {
+    panel_offset_ = offset;
+    // Only positions: the content keeps its layout and scroll.
+    const int32_t dy = offset - shape_.height;
+    lv_obj_set_y(panel_backdrop_, dy);
+    lv_obj_set_y(panel_, safe_.y1 + dy);
+}
+
+void SystemLayer::slide_panel(bool open) {
+    if (panel_ == nullptr) return;
+    pause_panel_marks(true);
+    motion_ = PanelMotion::Slide;
+    slide_open_ = open;
+    const int32_t end = open ? shape_.height : 0;
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, this);
+    lv_anim_set_values(&a, panel_offset_, end);
+    // Never 0 ms: the end may delete the panel, which must happen on the
+    // animation timer and not inside the event (a tap on the panel) or
+    // read that started the slide.
+    lv_anim_set_duration(&a, slide_ms(end - panel_offset_, shape_.height));
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a, &SystemLayer::panel_slide_cb);
+    lv_anim_set_user_data(&a, this);
+    lv_anim_set_completed_cb(&a, &SystemLayer::panel_slide_done_cb);
+    lv_anim_start(&a);
+}
+
+void SystemLayer::panel_slide_cb(void* self, int32_t offset) {
+    auto* layer = static_cast<SystemLayer*>(self);
+    if (layer->panel_ != nullptr) layer->place_panel(offset);
+}
+
+void SystemLayer::panel_slide_done_cb(lv_anim_t* a) {
+    static_cast<SystemLayer*>(lv_anim_get_user_data(a))->finish_slide();
+}
+
+void SystemLayer::finish_slide() {
+    if (panel_ == nullptr || motion_ != PanelMotion::Slide) return;
+    if (!slide_open_) {
+        discard_panel();
+        return;
+    }
+    motion_ = PanelMotion::Still;
+    place_panel(shape_.height);
+    pause_panel_marks(false);
+    WLOG_I("ui", "panel: shown");
+}
+
+void SystemLayer::pause_panel_marks(bool paused) {
+    pause_opaque_overlay(panel_backdrop_, paused);
+    pause_opaque_overlay(panel_, paused);
+}
 
 void SystemLayer::update_panel(PanelModel m) {
     model_ = std::move(m);
@@ -237,6 +335,8 @@ void SystemLayer::build_panel() {
 
     mark_opaque_overlay(panel_backdrop_, OwnChanges::InOwnEvents);
     mark_opaque_overlay(panel_);
+    motion_ = PanelMotion::Still;
+    panel_offset_ = shape_.height;
     fill_panel();
 }
 
@@ -360,6 +460,7 @@ void SystemLayer::fill_panel() {
 
 Result<void> SystemLayer::tap_panel_row(size_t index) {
     if (panel_ == nullptr) return Result<void>::err(ErrorCode::NotFound, "the panel is not open");
+    if (panel_moving()) return Result<void>::err(ErrorCode::Busy, "the panel is moving");
     size_t seen = 0;
     const uint32_t n = lv_obj_get_child_count(panel_);
     for (uint32_t i = 0; i < n; ++i) {
@@ -376,6 +477,8 @@ Result<void> SystemLayer::tap_panel_row(size_t index) {
 
 void SystemLayer::discard_panel() {
     if (panel_ == nullptr) return;
+    lv_anim_delete(this, &SystemLayer::panel_slide_cb);
+    motion_ = PanelMotion::Still;
     if (panel_event_depth_ > 0) {
         // Inside one of its events LVGL still uses the object afterwards.
         lv_obj_add_flag(panel_, LV_OBJ_FLAG_HIDDEN);
@@ -390,6 +493,7 @@ void SystemLayer::discard_panel() {
     panel_backdrop_ = nullptr;
     // A closed panel keeps nothing it showed; on_open builds the next model.
     model_ = PanelModel{};
+    WLOG_I("ui", "panel: gone");
     // A copy: the owner may replace the handlers from it.
     if (std::function<void()> on_close = panel_handlers_.on_close) on_close();
 }
@@ -404,6 +508,10 @@ void SystemLayer::panel_cb(lv_event_t* e) {
         self->press_at_ = at;
         return;
     }
+    // While the sheet follows a finger or slides its rows are not where
+    // they will rest: no press reaches them then (observe() ignores one
+    // made meanwhile), and no click sent by code may tap them either.
+    if (self->motion_ != PanelMotion::Still) return;
     // The rows drawn now are an older model's until the queued refill
     // runs; an index may name another notification by then.
     if (self->refill_queued_) return;
@@ -472,7 +580,12 @@ void SystemLayer::panel_cb(lv_event_t* e) {
         }
     }
     ++self->panel_event_depth_;
-    if (close) self->close_panel();
+    if (close && call) {
+        // The row opens something: the panel goes at once.
+        self->close_panel();
+    } else if (close) {
+        self->slide_panel(false);
+    }
     if (call) call();
     --self->panel_event_depth_;
 }

@@ -1230,7 +1230,10 @@ SCENE_DELETE_LOG = "counter: delete waiting for confirmation on the screen"
 # swipe (from the top edge at the middle column, which starts at y=0 on
 # every shape: the top zone is 16 px from the column's first visible pixel).
 BACK_SWIPE = "swipe 4,240,240,240"
-PANEL_SWIPE = "swipe 240,4,240,120"
+# The panel follows the finger and opens on release from a third of the
+# screen's height down (the scripted swipe rests before it lifts, so it is
+# never a flick); "ui: panel: shown" once it has slid fully open.
+PANEL_SWIPE = "swipe 240,4,240,300"
 # After a log line says a piece of the system layer is up, what is drawn
 # may still be a frame behind (the UI thread renders on its next frame,
 # and the panel's rows are laid out after "panel: open"): screenshots wait
@@ -1325,6 +1328,7 @@ def case_scene_background(sim_path, tmp_root):
         wait_log(sim, "status", "status: background=1 unread=0", at)
         sim.send(PANEL_SWIPE)
         at = wait_log(sim, "status", "panel: open", at)
+        at = wait_log(sim, "ui", "panel: shown", at)
         panel_tap(sim, 0)
         wait_log(sim, "scene", "pomodoro: running", at)
         wait_log(sim, "status", "panel: closed", at)
@@ -1364,7 +1368,8 @@ def case_scene_banner(sim_path, tmp_root):
             expect(banner.read_bytes() != after.read_bytes(),
                    f"{banner}: the banner does not show")
             sim.send(PANEL_SWIPE)
-            wait_log(sim, "status", "panel: open", at)
+            at = wait_log(sim, "status", "panel: open", at)
+            wait_log(sim, "ui", "panel: shown", at)
             time.sleep(SETTLE_S)
             panel = out / f"panel-{shape}.png"
             screenshot(sim, panel)
@@ -1700,7 +1705,8 @@ def case_navigation(sim_path, tmp_root):
                 sim.send(swipes[back])
                 mark = wait_log(sim, "shell", "page home", mark) + 1
             sim.send(PANEL_SWIPE)
-            wait_log(sim, "status", "panel: open", mark)
+            mark = wait_log(sim, "status", "panel: open", mark)
+            wait_log(sim, "ui", "panel: shown", mark)
             shot("panel")
             stop_child(sim)
             rig.check_no_key()

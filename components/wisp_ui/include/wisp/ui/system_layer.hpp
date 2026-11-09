@@ -36,7 +36,11 @@
 //     is cut by both only where it reaches beyond the content box: one
 //     that lies wholly inside it may be the panel's own (InsideBox), so it
 //     is redrawn. On a rectangle the content box is the whole screen, so
-//     nothing under the panel is cut there.
+//     nothing under the panel is cut there. The two move together as one
+//     sheet while the panel follows a finger or slides; both marks are
+//     paused then (pause_opaque_overlay()), since an area invalidated
+//     before a move would be cut by where the sheet still is although the
+//     move uncovers it, and resumed once it rests fully open.
 //   - A confirm dialog is an lv_msgbox under LVGL's full-screen backdrop.
 //     The dialogs guard dangerous actions (factory reset, firmware
 //     install, deleting a scene), so the backdrop keeps every touch
@@ -57,6 +61,7 @@
 #include "wisp/base/result.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/large.hpp"
+#include "wisp/ui/drag.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/theme.hpp"
 
@@ -117,15 +122,18 @@ struct PanelModel {
 
 // What the panel's rows do. All empty: there is no panel.
 struct PanelHandlers {
-    // The panel is about to open; the owner refreshes the model.
+    // The panel is about to open; the owner refreshes the model. For a
+    // top swipe that is when the swipe crosses its trigger and the panel
+    // starts following the finger: it may still slide back up on release
+    // and go (on_close) without having opened, so this only fetches.
     std::function<void()> on_open;
     std::function<void(const std::string& id)> open_scene, exit_scene;
     std::function<void(const std::string& source, const std::string& id)> tap_note, dismiss_note;
     // An action button: `index` 0 for action_label's, 1 for action2_label's.
     std::function<void(const std::string& source, const std::string& id, int index)> note_action;
     std::function<void()> clear_all;
-    // The open panel went, whichever way it was closed (never from the
-    // destructor).
+    // The panel went, whichever way it was closed or slid back up, once
+    // for each on_open that built it (never from the destructor).
     std::function<void()> on_close;
 };
 
@@ -204,39 +212,62 @@ public:
     // touches. The swipe is watched like the back gesture: a press from
     // the top zone (in_top_zone()) reaches the screen below, and once it
     // has moved kTopTriggerDy down (is_top_swipe()) it is taken from the
-    // widget under it, which gets LV_EVENT_PRESS_LOST; the release opens
-    // the panel. A press never starts it while the keyboard, the error
-    // panel or a confirm dialog is up, or the panel is already open.
+    // widget under it, which gets LV_EVENT_PRESS_LOST. Then on_open is
+    // called and the panel comes down over the screen with the finger,
+    // like a sheet pulled from the top (scene-device spec 5.6): its bottom
+    // edge is as far down the screen as the finger has moved from where it
+    // went down (clamped to the screen), and what is under it stays where
+    // it is. On release it decides like a shell page drag
+    // (wisp/ui/drag.hpp): from a third of the height on, or flicked down,
+    // it slides the rest of the way open; else it slides back up and goes
+    // (on_close) without having opened. A press never starts it while
+    // the keyboard, the error panel or a confirm dialog is up, or a panel
+    // is already there (open, following a finger or sliding).
     void set_panel_handlers(PanelHandlers h);
-    // Calls on_open, then shows the model over the whole screen. Does
-    // nothing while the keyboard, the error panel or a confirm dialog is
-    // up: the panel would open under them.
+    // Calls on_open, then shows the model over the whole screen at once.
+    // Does nothing while the keyboard, the error panel or a confirm dialog
+    // is up (the panel would open under them), or a panel is there.
     // Rows inside the safe area, each at least kPanelRowMinH tall: the
     // header (time, battery, Wi-Fi), the background scenes (a tap calls
-    // open_scene and closes the panel, the close button exit_scene) and
-    // the notifications (a tap calls tap_note and closes the panel; a
-    // swipe to the left or the close button dismiss_note; the action
-    // buttons note_action with their index), then a clear-all button
-    // (clear_all). A tap on
-    // no row, an upward swipe where the content does not scroll or is at
-    // the bottom of its scroll, or a back swipe closes it; while it is
-    // open the back swipe calls no back handler.
+    // open_scene and closes the panel at once, the close button
+    // exit_scene) and the notifications (a tap calls tap_note and closes
+    // the panel at once; a swipe to the left or the close button
+    // dismiss_note; the action buttons note_action with their index),
+    // then a clear-all button (clear_all). A tap on no row or a back
+    // swipe slides it up and closes it (while it is there the back swipe
+    // calls no back handler). An upward swipe where the content does not
+    // scroll or is at the bottom of its scroll takes the sheet up with
+    // the finger and on release closes it like the opening decides: from
+    // a third of the height up, or flicked up, it slides shut; else it
+    // slides back open. While it follows a finger or slides, a new press
+    // anywhere is ignored until it lifts: no row takes it and no gesture
+    // starts.
     void open_panel();
+    // Closes the panel at once, wherever it is (following a finger or
+    // sliding too), without sliding: for the owner (the screen going off,
+    // the handlers going), where a slide would show over what comes next.
     void close_panel();
+    // Whether the panel is there: open, following a finger or sliding.
     bool panel_open() const { return panel_ != nullptr; }
+    // Whether it follows a finger or slides, rather than rests open.
+    bool panel_moving() const { return panel_ != nullptr && motion_ != PanelMotion::Still; }
+    // The clock the panel's flick speed is measured on, in milliseconds;
+    // lv_tick_get() by default. For tests that move time themselves.
+    void set_clock(std::function<uint64_t()> now_ms);
     // The model the panel shows; empty once it closes.
     const PanelModel& panel_model() const { return model_; }
-    // Keeps `m` for the next open_panel(), and shows it now if open. The
-    // panel lets it go when it closes, so on_open gives each opening its
-    // model.
+    // Keeps `m` for the next open_panel(), and shows it now if the panel
+    // is there. The panel lets it go when it closes, so on_open gives each
+    // opening its model.
     void update_panel(PanelModel m);
-    // The panel's content box (the safe area) while open, else nullptr.
+    // The panel's content box (the safe area once fully open) while the
+    // panel is there, else nullptr.
     lv_obj_t* panel() const { return panel_; }
     // Taps row `index` of the open panel as a finger would: the background
     // scenes' rows from 0, then the notifications' (the header and the
     // buttons are not rows). For scripts that cannot see the screen (the
-    // simulator's "debug panel-tap"). Errors: "the panel is not open", "no
-    // such row".
+    // simulator's "debug panel-tap"). Errors: "the panel is not open", "the
+    // panel is moving" (it follows a finger or slides), "no such row".
     Result<void> tap_panel_row(size_t index);
 
     // Queues a banner. One shows at a time, near the top of the safe area
@@ -352,6 +383,26 @@ private:
     // Removes the panel now or, from inside one of its events, on the
     // next timer pass.
     void discard_panel();
+
+    // The panel following the finger and sliding (scene-device spec 5.6).
+    // The offset is how far down the screen the sheet's bottom edge is:
+    // 0 all the way up (gone), the screen's height fully open.
+    enum class PanelMotion : uint8_t { Still, Follow, Slide };
+    // A swipe took the press: an opening one (from the top zone) calls
+    // on_open and builds the panel first, unless it cannot be there.
+    void begin_panel_follow(bool opening);
+    void follow_panel(lv_point_t p);
+    // The finger lifted at `p`: slides the panel open or shut.
+    void release_panel(lv_point_t p);
+    void place_panel(int32_t offset);
+    // Slides from where it is to fully open, or up and away.
+    void slide_panel(bool open);
+    void finish_slide();
+    // Pauses the marks while the sheet moves (see the header comment).
+    void pause_panel_marks(bool paused);
+    uint64_t now_ms() const;
+    static void panel_slide_cb(void* self, int32_t offset);
+    static void panel_slide_done_cb(lv_anim_t* a);
     void show_next_banner();
     void hide_banner();
 
@@ -397,6 +448,7 @@ private:
     bool up_candidate_ = false;
     bool up_taken_ = false;
     lv_point_t start_{};
+    uint64_t press_ms_ = 0;      // when it went down, on now_ms()
     lv_obj_t* arrow_ = nullptr;  // hidden while no swipe shows it
 
     lv_obj_t* error_panel_ = nullptr;  // the card
@@ -425,6 +477,12 @@ private:
     PanelModel model_;
     lv_obj_t* panel_ = nullptr;  // the content box
     lv_obj_t* panel_backdrop_ = nullptr;
+    PanelMotion motion_ = PanelMotion::Still;
+    int32_t panel_offset_ = 0;
+    bool follow_opening_ = false;  // the finger pulls it down, not up
+    bool slide_open_ = false;      // where the slide ends
+    FlingTrack panel_fling_;
+    std::function<uint64_t()> now_ms_;
     lv_point_t press_at_{};  // where the press on the panel or banner began
     // > 0 while one of the panel's event callbacks runs: the panel must
     // then outlive the event.

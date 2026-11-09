@@ -718,8 +718,7 @@ void Shell::settle_drag(bool complete) {
     lv_anim_set_values(&a, d.offset, end);
     // At least a millisecond: the end may delete the screen this release
     // came from, which must happen on the timer and not inside its event.
-    lv_anim_set_duration(
-        &a, std::max<uint32_t>(static_cast<uint32_t>(int64_t{kSlideMs} * left / d.extent), 1));
+    lv_anim_set_duration(&a, ui::slide_ms(left, d.extent));
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_set_exec_cb(&a, &Shell::slide_cb);
     lv_anim_set_user_data(&a, this);

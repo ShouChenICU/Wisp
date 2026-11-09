@@ -171,6 +171,11 @@ protected:
         on_ui([&] {
             top_children_before = lv_obj_get_child_count(lv_layer_top());
             layer = std::make_unique<SystemLayer>(shape);
+            // A clock that only moves when a test says: a finger moving
+            // between two reads moves infinitely fast, so every swipe
+            // that is not made slow on purpose (step()) is a fling.
+            clock_ms = 1000;
+            layer->set_clock([this] { return clock_ms.load(); });
             indev = lv_indev_get_next(nullptr);
         });
     }
@@ -192,6 +197,30 @@ protected:
     }
 
     void tap(lv_point_t p) { tap(static_cast<int16_t>(p.x), static_cast<int16_t>(p.y)); }
+
+    // Feeds one touch read `ms` later on the layer's clock. The clock
+    // moves on the UI thread with the read, so no read of LVGL's own
+    // timer comes in between with the old point at the new time.
+    void step(std::vector<wisp::hal::TouchPoint> points, uint32_t ms) {
+        touch->set_points(std::move(points));
+        on_ui([&] {
+            clock_ms += ms;
+            lv_indev_read(indev);
+        });
+    }
+
+    // Waits (on the real clock, which runs LVGL's animations) until the
+    // pull-down panel neither follows a finger nor slides.
+    bool panel_settled(uint32_t timeout_ms = 2000) {
+        const uint64_t until = wisp::os::now_ms() + timeout_ms;
+        for (;;) {
+            bool moving = true;
+            on_ui([&] { moving = layer->panel_moving(); });
+            if (!moving) return true;
+            if (wisp::os::now_ms() > until) return false;
+            wisp::os::sleep_ms(5);
+        }
+    }
 
     void tap(int16_t x, int16_t y) {
         feed({{x, y, 0}});
@@ -216,6 +245,7 @@ protected:
     std::unique_ptr<wisp::ui::UiRuntime> ui;
     std::unique_ptr<SystemLayer> layer;
     lv_indev_t* indev = nullptr;
+    std::atomic<uint64_t> clock_ms{1000};
     ScreenShape shape;
     Area safe{};
     uint32_t top_children_before = 0;
@@ -1862,13 +1892,18 @@ TEST_F(SystemLayerTest, TopSwipeDownTakesPressAndOpens) {
         feed({{240, 40, 0}});
         on_ui([&] {
             EXPECT_FALSE(lv_obj_has_state(btn, LV_STATE_PRESSED));
-            EXPECT_FALSE(layer->panel_open());  // only on release
+            // It comes down with the finger from here on.
+            EXPECT_TRUE(layer->panel_open());
+            EXPECT_TRUE(layer->panel_moving());
         });
         EXPECT_EQ(lost, 1);
+        EXPECT_EQ(opens, 1);
+        // Fast: a fling, so it opens though short.
         feed({{240, 90, 0}});
         feed({});
         EXPECT_EQ(clicks, 0);
         EXPECT_EQ(opens, 1);
+        ASSERT_TRUE(panel_settled());
         on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
     }
 }
@@ -1985,6 +2020,7 @@ TEST_F(SystemLayerTest, PanelBackGestureOnlyClosesPanel) {
         };
         swipe();
         EXPECT_EQ(backs, 0);
+        ASSERT_TRUE(panel_settled());
         on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
         swipe();
         EXPECT_EQ(backs, 1);
@@ -2002,6 +2038,7 @@ TEST_F(SystemLayerTest, PanelClosesWithoutABackHandler) {
     feed({{x0, 240, 0}});
     feed({{static_cast<int16_t>(x0 + 60), 240, 0}});
     feed({});
+    ASSERT_TRUE(panel_settled());
     on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
 }
 
@@ -2165,6 +2202,7 @@ TEST_F(SystemLayerTest, PanelModelIsClearedOnClose) {
         EXPECT_NE(find_label_containing(layer->panel(), "Note one"), nullptr);
     });
     tap(240, 470);  // a tap on blank space
+    ASSERT_TRUE(panel_settled());
     on_ui([&] {
         EXPECT_FALSE(layer->panel_open());
         EXPECT_TRUE(layer->panel_model().notes.empty());
@@ -2187,6 +2225,7 @@ TEST_F(SystemLayerTest, PanelOnCloseFollowsEveryClose) {
         layer->open_panel();
     });
     tap(240, 470);  // a tap on blank space
+    ASSERT_TRUE(panel_settled());
     on_ui([&] {
         EXPECT_FALSE(layer->panel_open());
         EXPECT_EQ(closes, 2);
@@ -2208,11 +2247,13 @@ TEST_F(SystemLayerTest, PanelTapOnBlankCloses) {
         layer->open_panel();
     });
     tap(240, 470);  // below the safe area
+    ASSERT_TRUE(panel_settled());
     on_ui([&] {
         EXPECT_FALSE(layer->panel_open());
         layer->open_panel();
     });
     tap(240, 400);  // the empty part of the safe area
+    ASSERT_TRUE(panel_settled());
     on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
 }
 
@@ -2229,6 +2270,7 @@ TEST_F(SystemLayerTest, PanelSwipeUpCloses) {
     feed({{240, 250, 0}});
     feed({{240, 200, 0}});
     feed({});
+    ASSERT_TRUE(panel_settled());
     on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
 }
 
@@ -2265,7 +2307,352 @@ TEST_F(SystemLayerTest, PanelSwipeUpAtTheBottomCloses) {
         EXPECT_LE(lv_obj_get_scroll_bottom(layer->panel()), 0);
     });
     swipe_up();
+    ASSERT_TRUE(panel_settled());
     on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+}
+
+// --- The pull-down panel following the finger (scene-device spec 5.6) ---
+
+// A SystemLayerTest whose panel shows sample_model(), with the panel's
+// sheet (its backdrop) and the screen's content measurable.
+class PanelFollowTest : public SystemLayerTest {
+protected:
+    void begin(const char* display_shape = "rect", int corner_radius = 0) {
+        start(display_shape, wisp::ui::Lang::Zh, corner_radius);
+        wisp::ui::PanelHandlers h;
+        h.on_open = [this] {
+            ++opens;
+            layer->update_panel(sample_model());
+        };
+        h.on_close = [this] { ++closes; };
+        h.open_scene = [this](const std::string& id) { calls.push_back("open " + id); };
+        h.tap_note = [this](const std::string& s, const std::string& id) {
+            calls.push_back("tap " + s + "/" + id);
+        };
+        h.clear_all = [this] { calls.push_back("clear"); };
+        on_ui([&] {
+            layer->set_panel_handlers(h);
+            content = make_counting_button(0, 200, kSide, 200, &clicks);
+            content_at = coords_of_obj(content);
+        });
+    }
+
+    static lv_area_t coords_of_obj(lv_obj_t* o) {
+        lv_obj_update_layout(o);
+        lv_area_t a;
+        lv_obj_get_coords(o, &a);
+        return a;
+    }
+
+    // The full-screen sheet the content box moves with: the top-layer
+    // child right under the content box.
+    lv_obj_t* sheet() const {
+        lv_obj_t* p = layer->panel();
+        if (p == nullptr) return nullptr;
+        return lv_obj_get_child(lv_layer_top(), lv_obj_get_index(p) - 1);
+    }
+
+    // How far down the sheet's bottom edge is (the screen's height once
+    // fully open), checked against the content box moving with it; -1
+    // without a panel.
+    int32_t panel_bottom() {
+        int32_t bottom = -1;
+        on_ui([&] {
+            if (layer->panel() == nullptr) return;
+            lv_obj_update_layout(lv_layer_top());
+            const lv_area_t s = coords_of_obj(sheet());
+            const lv_area_t p = coords_of_obj(layer->panel());
+            EXPECT_EQ(lv_area_get_height(&s), shape.height);
+            EXPECT_EQ(p.y1 - s.y1, safe.y1);
+            bottom = s.y2 + 1;
+        });
+        return bottom;
+    }
+
+    void down(lv_point_t p) {
+        step({{static_cast<int16_t>(p.x), static_cast<int16_t>(p.y), 0}}, 0);
+    }
+    void to(lv_point_t p, uint32_t ms = 100) {
+        step({{static_cast<int16_t>(p.x), static_cast<int16_t>(p.y), 0}}, ms);
+    }
+    void up(uint32_t ms = 100) { step({}, ms); }
+    // From `from` straight down (dy > 0) or up by |dy|, in steps of at
+    // most 10 px 100 ms apart (0.1 px/ms, far from a fling); the finger
+    // stays down.
+    void slow(lv_point_t from, int32_t dy) {
+        down(from);
+        const int32_t n = std::abs(dy) / 10 + 1;
+        for (int32_t i = 1; i <= n; ++i) to({from.x, from.y + dy * i / n});
+    }
+
+    bool content_unmoved() {
+        bool same = false;
+        on_ui([&] {
+            const lv_area_t a = coords_of_obj(content);
+            same = a.x1 == content_at.x1 && a.y1 == content_at.y1 && a.x2 == content_at.x2 &&
+                   a.y2 == content_at.y2;
+        });
+        return same;
+    }
+
+    int opens = 0, closes = 0, clicks = 0;
+    std::vector<std::string> calls;
+    lv_obj_t* content = nullptr;
+    lv_area_t content_at{};
+};
+
+// From the trigger on, the sheet's bottom edge is at the finger, as far
+// down as it has moved from where it went down; the content under it
+// stays put.
+TEST_F(PanelFollowTest, OpeningFollowsTheFinger) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        opens = closes = clicks = 0;
+        begin(c.shape, c.corner_radius);
+        down({240, 4});
+        to({240, 4 + SystemLayer::kTopTriggerDy - 1});
+        EXPECT_EQ(opens, 0);
+        EXPECT_EQ(panel_bottom(), -1);
+        to({240, 40});
+        EXPECT_EQ(opens, 1);
+        on_ui([&] {
+            EXPECT_TRUE(layer->panel_moving());
+            // The model on_open gave is there already.
+            EXPECT_NE(find_label_containing(layer->panel(), "Alpha"), nullptr);
+        });
+        EXPECT_EQ(panel_bottom(), 36);
+        for (int16_t y : {100, 300, 180, 479}) {
+            to({250, y});
+            EXPECT_EQ(panel_bottom(), y - 4);
+            EXPECT_TRUE(content_unmoved());
+        }
+        // Back above where it started: all the way up, still following.
+        to({240, 0});
+        EXPECT_EQ(panel_bottom(), 0);
+        to({240, 200});
+        EXPECT_EQ(panel_bottom(), 196);
+        EXPECT_EQ(opens, 1);
+        up();
+        ASSERT_TRUE(panel_settled());
+        EXPECT_EQ(panel_bottom(), shape.height);
+        EXPECT_EQ(clicks, 0);
+        EXPECT_TRUE(content_unmoved());
+    }
+}
+
+// Released short of a third of the height, slowly, it slides back up and
+// goes as if it never opened; from a third on it slides open.
+TEST_F(PanelFollowTest, ReleaseDecidesByAThird) {
+    begin();
+    const int32_t third = shape.height / wisp::ui::kDragCompleteDivisor;
+    slow({240, 4}, third - 1);
+    EXPECT_EQ(panel_bottom(), third - 1);
+    up();
+    on_ui([&] { EXPECT_TRUE(layer->panel_moving()); });
+    ASSERT_TRUE(panel_settled());
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+    EXPECT_EQ(opens, 1);
+    EXPECT_EQ(closes, 1);
+    EXPECT_TRUE(calls.empty());
+    EXPECT_EQ(clicks, 0);
+
+    slow({240, 4}, third);
+    up();
+    ASSERT_TRUE(panel_settled());
+    on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
+    EXPECT_EQ(panel_bottom(), shape.height);
+    EXPECT_EQ(opens, 2);
+    EXPECT_EQ(closes, 1);
+    EXPECT_TRUE(calls.empty());
+}
+
+// A short fast flick opens it; the same distance slowly does not.
+TEST_F(PanelFollowTest, AFlickOpensASlowShortDragDoesNot) {
+    begin();
+    down({240, 4});
+    to({240, 30}, 10);
+    to({240, 60}, 10);
+    to({240, 90}, 10);  // 3 px/ms
+    up(10);
+    ASSERT_TRUE(panel_settled());
+    on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
+    on_ui([&] { layer->close_panel(); });
+
+    slow({240, 4}, 86);
+    up();
+    ASSERT_TRUE(panel_settled());
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+}
+
+// An upward swipe on the open panel (nothing to scroll) takes the sheet up
+// with the finger; short and slow it springs back open, past a third (or
+// flicked) it closes.
+TEST_F(PanelFollowTest, ClosingFollowsTheFinger) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        opens = closes = clicks = 0;
+        begin(c.shape, c.corner_radius);
+        // At the bottom of its scroll, if it scrolls.
+        auto open_at_bottom = [&] {
+            on_ui([&] {
+                layer->open_panel();
+                lv_obj_update_layout(layer->panel());
+                lv_obj_scroll_to_y(layer->panel(), LV_COORD_MAX, LV_ANIM_OFF);
+            });
+        };
+        open_at_bottom();
+        const int16_t y0 = static_cast<int16_t>(safe.y2 - 20);
+        down({240, y0});
+        to({240, static_cast<int16_t>(y0 - SystemLayer::kTopTriggerDy)});
+        on_ui([&] { EXPECT_TRUE(layer->panel_moving()); });
+        EXPECT_EQ(panel_bottom(), shape.height - SystemLayer::kTopTriggerDy);
+        for (int16_t dy : {60, 140, 100}) {
+            to({240, static_cast<int16_t>(y0 - dy)});
+            EXPECT_EQ(panel_bottom(), shape.height - dy);
+            EXPECT_TRUE(content_unmoved());
+        }
+        up();
+        ASSERT_TRUE(panel_settled());
+        on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
+        EXPECT_EQ(panel_bottom(), shape.height);
+        EXPECT_EQ(closes, 0);
+
+        slow({240, y0}, -(shape.height / 3 + 10));
+        up();
+        ASSERT_TRUE(panel_settled());
+        on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+        EXPECT_EQ(closes, 1);
+        EXPECT_TRUE(calls.empty());
+        EXPECT_EQ(clicks, 0);
+
+        // Flicked up a little: it closes.
+        open_at_bottom();
+        down({240, y0});
+        to({240, static_cast<int16_t>(y0 - 30)}, 10);
+        to({240, static_cast<int16_t>(y0 - 60)}, 10);
+        up(10);
+        ASSERT_TRUE(panel_settled());
+        on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+        EXPECT_EQ(closes, 2);
+    }
+}
+
+// A tap on no row and the back swipe slide the panel up; it is still
+// there while it slides and gone once it has.
+TEST_F(PanelFollowTest, TapOutsideAndBackSwipeSlideItUp) {
+    begin("circle");
+    on_ui([&] { layer->open_panel(); });
+    tap(240, 470);
+    on_ui([&] {
+        EXPECT_TRUE(layer->panel_open());
+        EXPECT_TRUE(layer->panel_moving());
+    });
+    ASSERT_TRUE(panel_settled());
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+    EXPECT_EQ(closes, 1);
+
+    on_ui([&] { layer->open_panel(); });
+    const int16_t x0 = static_cast<int16_t>(wisp::hal::row_span(shape, 240).x1 + 2);
+    feed({{x0, 240, 0}});
+    feed({{static_cast<int16_t>(x0 + 60), 240, 0}});
+    feed({});
+    on_ui([&] { EXPECT_TRUE(layer->panel_moving()); });
+    ASSERT_TRUE(panel_settled());
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+    EXPECT_EQ(closes, 2);
+    EXPECT_TRUE(calls.empty());
+}
+
+// While the sheet slides, a press does nothing: no row is tapped, even
+// once the slide is over before the finger lifts, no second panel starts
+// and tap_panel_row() refuses.
+TEST_F(PanelFollowTest, PressesWhileItSlidesDoNothing) {
+    begin("circle");
+    slow({240, 4}, 200);
+    up();
+    on_ui([&] {
+        ASSERT_TRUE(layer->panel_moving());
+        auto r = layer->tap_panel_row(0);
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().message, "the panel is moving");
+    });
+    // Where the first row is once open.
+    lv_point_t row{};
+    on_ui([&] {
+        lv_obj_t* label = find_label_containing(layer->panel(), "Alpha");
+        ASSERT_NE(label, nullptr);
+        lv_obj_update_layout(lv_layer_top());
+        const lv_area_t a = coords_of_obj(clickable_of(label));
+        const lv_area_t s = coords_of_obj(sheet());
+        row = {(a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2 - s.y1};
+    });
+    feed({{static_cast<int16_t>(row.x), static_cast<int16_t>(row.y), 0}});
+    ASSERT_TRUE(panel_settled());
+    feed({{static_cast<int16_t>(row.x), static_cast<int16_t>(row.y), 0}});
+    feed({});
+    EXPECT_TRUE(calls.empty());
+    on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
+
+    // A top swipe while it slides shut starts nothing.
+    tap(240, 470);
+    feed({{240, 4, 0}});
+    feed({{240, 4, 0}});
+    feed({{240, 200, 0}});
+    feed({});
+    ASSERT_TRUE(panel_settled());
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+    EXPECT_EQ(opens, 1);
+    EXPECT_EQ(clicks, 0);
+}
+
+// The panel closed by code while the finger holds it goes at once, and
+// the release then does nothing; the layer going mid-slide leaves no
+// animation behind.
+TEST_F(PanelFollowTest, ClosedOrDestroyedWhileMoving) {
+    begin();
+    slow({240, 4}, 100);
+    on_ui([&] {
+        layer->close_panel();
+        EXPECT_FALSE(layer->panel_open());
+        EXPECT_FALSE(layer->panel_moving());
+    });
+    up();
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+    EXPECT_EQ(closes, 1);
+
+    slow({240, 4}, 300);
+    up();
+    on_ui([&] {
+        ASSERT_TRUE(layer->panel_moving());
+        void* var = layer.get();
+        EXPECT_NE(lv_anim_get(var, nullptr), nullptr);
+        layer.reset();
+        EXPECT_EQ(lv_anim_get(var, nullptr), nullptr);
+    });
+    wisp::os::sleep_ms(300);
+    on_ui([] { lv_timer_handler(); });
+    EXPECT_EQ(closes, 1);  // never from the destructor
+}
+
+// A row tap still closes the panel at once: it opens something.
+TEST_F(PanelFollowTest, RowTapClosesAtOnce) {
+    begin("circle");
+    on_ui([&] { layer->open_panel(); });
+    lv_point_t p{};
+    on_ui([&] {
+        lv_obj_t* row = clickable_of(find_label_containing(layer->panel(), "Alpha"));
+        ASSERT_NE(row, nullptr);
+        lv_obj_scroll_to_view_recursive(row, LV_ANIM_OFF);
+        p = center_of(row);
+    });
+    tap(p);
+    on_ui([&] {
+        EXPECT_FALSE(layer->panel_open());
+        EXPECT_FALSE(layer->panel_moving());
+    });
+    EXPECT_EQ(calls, (std::vector<std::string>{"open a"}));
 }
 
 class BannerTest : public SystemLayerTest {
