@@ -103,7 +103,7 @@ TEST(WakeLockRegistry, HeldByKind) {
     Fixture f;
     EXPECT_FALSE(f.reg.held(WakeLockKind::Network));
     uint32_t a = f.reg.acquire("system.ntp", WakeLockKind::Network, "time sync");
-    uint32_t b = f.reg.acquire("system.admin", WakeLockKind::Network, "admin session");
+    uint32_t b = f.reg.acquire("system.upload", WakeLockKind::Network, "scene upload");
     EXPECT_NE(a, b);
     EXPECT_TRUE(f.reg.held(WakeLockKind::Network));
     EXPECT_FALSE(f.reg.held(WakeLockKind::Cpu));
@@ -145,11 +145,11 @@ TEST(WakeLockRegistry, ReleaseHolderDropsAll) {
 // remembered from an older lock may belong to someone else by now.
 TEST(WakeLockRegistry, ReleaseIfChecksTheHolder) {
     Fixture f;
-    const uint32_t admin = f.reg.acquire("system.admin", WakeLockKind::Network, "ws");
+    const uint32_t admin = f.reg.acquire("system.upload", WakeLockKind::Network, "scene upload");
     const uint32_t scene = f.reg.acquire("scene.a", WakeLockKind::Screen, "keep_screen_on");
 
     EXPECT_FALSE(f.reg.release_if(admin, "scene.a"));
-    EXPECT_TRUE(f.reg.holds(admin, "system.admin"));
+    EXPECT_TRUE(f.reg.holds(admin, "system.upload"));
     EXPECT_FALSE(f.reg.holds(admin, "scene.a"));
     EXPECT_FALSE(f.reg.release_if(0, "scene.a"));
     EXPECT_FALSE(f.reg.release_if(999, "scene.a"));
@@ -157,7 +157,7 @@ TEST(WakeLockRegistry, ReleaseIfChecksTheHolder) {
     EXPECT_TRUE(f.reg.release_if(scene, "scene.a"));
     EXPECT_FALSE(f.reg.holds(scene, "scene.a"));
     EXPECT_FALSE(f.reg.release_if(scene, "scene.a"));
-    EXPECT_TRUE(f.reg.holds(admin, "system.admin"));
+    EXPECT_TRUE(f.reg.holds(admin, "system.upload"));
     EXPECT_FALSE(f.reg.holds(0, "scene.a"));
 
     auto events = f.drained();

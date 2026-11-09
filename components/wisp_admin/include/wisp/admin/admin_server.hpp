@@ -127,12 +127,8 @@ struct AdminDeps {
     // Network time (connectivity spec 5.6). Null (no Sntp port): GET
     // /system/time and POST /system/time/sync answer 503 unavailable.
     net::TimeSyncService* time_sync = nullptr;
-    // System wake locks (scene-device spec 4.3): "system.admin" (network)
-    // while at least one WebSocket is open ("admin session") and for
-    // kAdminLeaseMs after each authenticated API request ("admin request":
-    // pages that only use the REST API open no WebSocket), "system.upload"
-    // (network) for
-    // a scene upload and "system.ota" (network + cpu) for a firmware
+    // System wake locks (scene-device spec 4.3): "system.upload" (network)
+    // for a scene upload and "system.ota" (network + cpu) for a firmware
     // upload, each from its first byte to its end or abort, and
     // "system.download" (network) while a scene file is being sent.
     // Null: none.
@@ -219,20 +215,15 @@ public:
     // The hub behind /api/v1/ws, alive as long as this server.
     WsHub& ws_hub() { return *hub_; }
 
-    // Periodic upkeep, from the owner's loop (at least once a second; on a
-    // task that may access flash, since releasing a lock may run a power
-    // transition): a WebSocket keepalive round every kWsKeepaliveMs
-    // (WsHub::keepalive()), and the "admin request" lock released once
-    // kAdminLeaseMs have passed since the last authenticated request.
-    // `now_ms` is on AdminDeps::now_ms's clock.
+    // Periodic upkeep, from the owner's loop (at least once a second): a
+    // WebSocket keepalive round every kWsKeepaliveMs
+    // (WsHub::keepalive()). `now_ms` is on AdminDeps::now_ms's clock.
     void tick(uint64_t now_ms);
 
-    static constexpr uint64_t kAdminLeaseMs = 2 * 60 * 1000;
     static constexpr uint64_t kWsKeepaliveMs = 30000;
 
 private:
     net::HttpResponse handle_api(const net::HttpRequest& req);
-    void renew_lease(uint64_t now_ms);
 
     AdminDeps deps_;
     std::vector<detail::Route> routes_;
@@ -244,10 +235,6 @@ private:
     os::Mutex ws_auth_mutex_;
     int revoke_listener_ = 0;
 
-    // The "admin request" lock and when it lapses; under lease_mutex_.
-    os::Mutex lease_mutex_;
-    core::WakeLock lease_;
-    uint64_t lease_until_ms_ = 0;
     // Only tick()'s.
     uint64_t next_keepalive_ms_ = 0;
 };

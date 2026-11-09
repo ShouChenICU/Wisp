@@ -157,10 +157,7 @@ bool WsHub::open(std::shared_ptr<net::WsConnection> conn, std::string client_id)
         }
     }
     // The hello goes out on the sender's next pass.
-    if (outcome == Outcome::Accepted) {
-        wake_.give();
-        sync_lock();
-    }
+    if (outcome == Outcome::Accepted) wake_.give();
     // Logged outside mutex_: write() takes it.
     switch (outcome) {
         case Outcome::Accepted:
@@ -264,26 +261,7 @@ void WsHub::close(int id) {
             found = true;
         }
     }
-    if (found) {
-        sync_lock();
-        WLOG_I(kTag, "client %d disconnected", id);
-    }
-}
-
-void WsHub::sync_lock() {
-    if (locks_ == nullptr) return;
-    std::lock_guard<os::Mutex> guard(lock_mutex_);
-    bool any = false;
-    {
-        std::lock_guard<os::Mutex> lock(mutex_);
-        any = !clients_.empty();
-    }
-    if (any && !admin_lock_.held()) {
-        admin_lock_ =
-            core::WakeLock(*locks_, "system.admin", core::WakeLockKind::Network, "admin session");
-    } else if (!any && admin_lock_.held()) {
-        admin_lock_.release();
-    }
+    if (found) WLOG_I(kTag, "client %d disconnected", id);
 }
 
 void WsHub::close_matching(const std::function<bool(const Client&)>& match, const char* why) {
@@ -306,7 +284,6 @@ void WsHub::close_matching(const std::function<bool(const Client&)>& match, cons
         c->conn->close();
         WLOG_I(kTag, "client %d closed: %s", c->id, why);
     }
-    if (!closing.empty()) sync_lock();
 }
 
 void WsHub::close_client(std::string_view client_id) {

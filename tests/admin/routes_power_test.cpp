@@ -100,8 +100,9 @@ TEST(AdminPower, ReportsLevelLightSleepAndLocks) {
     EXPECT_EQ(at(v, "deferred"), Value(int64_t{0}));
     const Value& locks = at(v, "locks");
     ASSERT_EQ(locks.type(), Value::Type::List);
-    // The two locks, plus the lease this very request took.
-    ASSERT_EQ(locks.as_list().size(), 3u) << res.body;
+    // Only the two locks: reading the page takes none (an open admin page
+    // never keeps the device awake).
+    ASSERT_EQ(locks.as_list().size(), 2u) << res.body;
     const Value n = lock_of(locks, "system.ntp");
     EXPECT_EQ(at(n, "id"), Value(static_cast<int64_t>(ntp)));
     EXPECT_EQ(at(n, "kind"), Value("network"));
@@ -111,8 +112,6 @@ TEST(AdminPower, ReportsLevelLightSleepAndLocks) {
     EXPECT_EQ(at(m, "kind"), Value("cpu"));
     EXPECT_EQ(at(m, "reason"), Value("playing"));
     EXPECT_EQ(at(m, "held_ms"), Value(int64_t{500}));
-    const Value admin = lock_of(locks, "system.admin");
-    EXPECT_EQ(at(admin, "held_ms"), Value(int64_t{0}));
 
     // held_ms follows the clock.
     fx.f.now += 10000;

@@ -214,8 +214,6 @@ const char* strings_en(StrId id) {
             return "Battery low: {}%";
         case StrId::NoticeRelease:
             return "Release";
-        case StrId::HolderAdmin:
-            return "Admin page";
         case StrId::HolderUpload:
             return "Upload";
         case StrId::HolderOta:
