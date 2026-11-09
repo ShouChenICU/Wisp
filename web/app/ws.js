@@ -136,7 +136,7 @@ function open() {
     if (!msg || typeof msg !== 'object') return;
     if (msg.t === 'ping') {
       // The device closes a client it has not heard from in a while (a
-      // vanished peer would keep Wi-Fi awake); answering keeps this one.
+      // vanished peer would hold a client slot); answering keeps this one.
       try {
         s.send(JSON.stringify({ t: 'pong' }));
       } catch {

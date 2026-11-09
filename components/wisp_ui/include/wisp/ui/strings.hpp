@@ -188,7 +188,6 @@ enum class StrId : uint16_t {
     NoticeWakeLock,
     NoticeBatteryLow,
     NoticeRelease,
-    HolderAdmin,
     HolderUpload,
     HolderOta,
     HolderTimeSync,

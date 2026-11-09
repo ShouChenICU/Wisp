@@ -217,8 +217,6 @@ const char* strings_ja(StrId id) {
             return "バッテリー残量低下：{}%";
         case StrId::NoticeRelease:
             return "解除";
-        case StrId::HolderAdmin:
-            return "管理画面";
         case StrId::HolderUpload:
             return "アップロード";
         case StrId::HolderOta:

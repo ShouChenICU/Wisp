@@ -1137,7 +1137,7 @@ TEST(PowerManager, DeepAfterZeroNeverGoesDeep) {
 // the deep timer runs from entering standby, whatever the locks did.
 TEST(PowerManager, NetworkLockBlocksAndLeavesDeepStandby) {
     Headless h;
-    uint32_t first = h.locks.acquire("system.admin", WakeLockKind::Network, "admin session");
+    uint32_t first = h.locks.acquire("system.upload", WakeLockKind::Network, "scene upload");
     h.go_deep();
     EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
 
@@ -1333,7 +1333,7 @@ TEST(PowerManager, LockChangesWithUiRunAsAUiJob) {
     ASSERT_EQ(f.light_sleep_calls, (std::vector<bool>{true}));
 
     // From the test thread.
-    uint32_t net = f.locks.acquire("system.admin", WakeLockKind::Network, "admin session");
+    uint32_t net = f.locks.acquire("system.upload", WakeLockKind::Network, "scene upload");
     f.drain_ui();
     EXPECT_EQ(f.pm->level(), PowerLevel::Standby);
     EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true, false}));
@@ -1384,7 +1384,7 @@ TEST(PowerManager, LockChangesCoalesceIntoOneEvaluation) {
     for (int i = 0; i < 50; ++i) {
         f.locks.release(f.locks.acquire("system.ota", WakeLockKind::Cpu, "firmware update"));
     }
-    f.locks.acquire("system.admin", WakeLockKind::Network, "admin session");
+    f.locks.acquire("system.upload", WakeLockKind::Network, "scene upload");
 
     int free_slots = 0;
     while (f.ui->post([] {})) {

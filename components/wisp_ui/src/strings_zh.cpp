@@ -215,8 +215,6 @@ const char* strings_zh(StrId id) {
             return "电量低：{}%";
         case StrId::NoticeRelease:
             return "释放";
-        case StrId::HolderAdmin:
-            return "管理后台";
         case StrId::HolderUpload:
             return "上传";
         case StrId::HolderOta:

@@ -227,7 +227,7 @@ TEST(NetworkWindow, LeavingDeepStandbyStopsDeferringOnceConnected) {
     // Standby kept up by someone else's network lock: once Wi-Fi is up,
     // nothing waits.
     Fixture g;
-    WakeLock admin(g.locks, "system.admin", WakeLockKind::Network, "admin session");
+    WakeLock admin(g.locks, "system.upload", WakeLockKind::Network, "scene upload");
     g.tick(3 * kInterval, PowerLevel::DeepStandby);
     EXPECT_EQ(g.deferring, true);
     g.tick(3 * kInterval + 250, PowerLevel::Standby);

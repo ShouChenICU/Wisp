@@ -205,6 +205,42 @@ TEST_F(SettingsPageTest, LongValuesStayOnTheirRow) {
     });
 }
 
+// The admin address is what the user types into a browser, so it is never
+// cut off: it gets its own line under the row's name, and wraps if even
+// that is too narrow.
+class SettingsAddressTest : public SettingsPageTest {
+protected:
+    void check(const std::string& shape, int32_t size) {
+        boot(shape, size, size);
+        harness->on_ui([&] {
+            lv_obj_t* v = page()->value(Row::Address);
+            lv_label_set_text(v, "http://192.168.100.200:8900");
+            lv_obj_update_layout(page()->list());
+            const lv_area_t row = coords_of(page()->row(Row::Address));
+            const lv_area_t va = coords_of(v);
+            EXPECT_EQ(lv_label_get_long_mode(v), LV_LABEL_LONG_WRAP);
+            EXPECT_GE(va.y1, row.y2);
+            EXPECT_GE(va.x1, row.x1);
+            EXPECT_LE(va.x2, row.x2);
+            lv_point_t full;
+            lv_text_get_size(&full, lv_label_get_text(v),
+                             lv_obj_get_style_text_font(v, LV_PART_MAIN), 0, 0, LV_COORD_MAX,
+                             LV_TEXT_FLAG_NONE);
+            const int32_t width = std::max<int32_t>(1, lv_obj_get_content_width(v));
+            const int32_t lines = (full.x + width - 1) / width;
+            EXPECT_GE(lv_obj_get_height(v), lines * full.y);
+            lv_obj_t* hint =
+                wisp::test::find_label_containing(page()->list(), "在浏览器打开管理后台地址");
+            ASSERT_NE(hint, nullptr);
+            EXPECT_GE(coords_of(hint).y1, va.y2);
+        });
+    }
+};
+
+TEST_F(SettingsAddressTest, Circle466) { check("circle", 466); }
+TEST_F(SettingsAddressTest, Circle360) { check("circle", 360); }
+TEST_F(SettingsAddressTest, RoundedRect480) { check("rounded_rect", 480); }
+
 TEST_F(SettingsPageTest, ControlsWriteSettings) {
     boot();
     harness->on_ui([&] {

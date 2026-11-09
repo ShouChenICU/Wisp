@@ -173,14 +173,11 @@ TEST(WsHub, ThirdClientRejected) {
 // least one connection is open.
 // A peer that vanished without closing (out of Wi-Fi range, a laptop lid
 // shut) never reports a close. keepalive() pings every client; one that
-// has sent nothing for three rounds is closed, and with the last one the
-// admin lock goes.
+// has sent nothing for three rounds is closed.
 TEST(WsHub, KeepaliveClosesASilentClient) {
     wisp::log::reset_for_test();
     wisp::log::init(16 * 1024);
     EventBus bus;
-    wisp::core::WakeLockRegistry locks(bus);
-    auto admin_held = [&locks] { return locks.held(wisp::core::WakeLockKind::Network); };
     auto pings = [](const FakeWsConnection& c) {
         size_t n = 0;
         for (const Value& v : c.sent())
@@ -188,7 +185,6 @@ TEST(WsHub, KeepaliveClosesASilentClient) {
         return n;
     };
     WsHub hub(bus);
-    hub.set_wake_locks(&locks);
     auto quiet = std::make_shared<FakeWsConnection>(1);
     auto chatty = std::make_shared<FakeWsConnection>(2);
     ASSERT_TRUE(hub.open(quiet, "a"));
@@ -207,7 +203,6 @@ TEST(WsHub, KeepaliveClosesASilentClient) {
     EXPECT_TRUE(quiet->closed);
     EXPECT_FALSE(chatty->closed);
     EXPECT_NE(wisp::log::ring_snapshot().find("client 1 closed: silent"), std::string::npos);
-    EXPECT_TRUE(admin_held());
 
     // Anything the client sends counts, even a message the hub ignores.
     // The round after it resets the count; three silent ones follow.
@@ -218,50 +213,7 @@ TEST(WsHub, KeepaliveClosesASilentClient) {
     EXPECT_FALSE(chatty->closed);
     hub.keepalive();
     EXPECT_TRUE(chatty->closed);
-    EXPECT_FALSE(admin_held());
     wisp::log::reset_for_test();
-}
-
-TEST(WsHub, HoldsAdminLockWhileConnected) {
-    wisp::log::reset_for_test();
-    wisp::log::init(4096);
-    EventBus bus;
-    wisp::core::WakeLockRegistry locks(bus);
-    auto admin_locks = [&locks] {
-        int n = 0;
-        for (const auto& l : locks.list()) {
-            if (l.holder == "system.admin" && l.kind == wisp::core::WakeLockKind::Network &&
-                l.reason == "admin session")
-                ++n;
-        }
-        return n;
-    };
-    {
-        WsHub hub(bus);
-        hub.set_wake_locks(&locks);
-        EXPECT_EQ(admin_locks(), 0);
-        ASSERT_TRUE(hub.open(std::make_shared<FakeWsConnection>(1), "a"));
-        EXPECT_EQ(admin_locks(), 1);
-        ASSERT_TRUE(hub.open(std::make_shared<FakeWsConnection>(2), "b"));
-        EXPECT_FALSE(hub.open(std::make_shared<FakeWsConnection>(3), "c"));
-        EXPECT_EQ(admin_locks(), 1);
-        hub.close(1);
-        EXPECT_EQ(admin_locks(), 1);
-        hub.close(2);
-        EXPECT_EQ(admin_locks(), 0);
-
-        ASSERT_TRUE(hub.open(std::make_shared<FakeWsConnection>(4), "a"));
-        hub.close_client("a");
-        EXPECT_EQ(admin_locks(), 0);
-        ASSERT_TRUE(hub.open(std::make_shared<FakeWsConnection>(5), "a"));
-        hub.close_all();
-        EXPECT_EQ(admin_locks(), 0);
-
-        // Destroyed with a connection open: the lock goes with it.
-        ASSERT_TRUE(hub.open(std::make_shared<FakeWsConnection>(6), "a"));
-        EXPECT_EQ(admin_locks(), 1);
-    }
-    EXPECT_EQ(admin_locks(), 0);
 }
 
 TEST(WsHub, BackfillsRingThenStreamsLive) {
@@ -755,6 +707,23 @@ TEST(AdminServer, WsRefusesAForeignOrigin) {
         ws.on_open(c2, origin(wisp::test::host(req, "WISP.local:8900"), "http://wisp.local:8900")));
 }
 
+// An open admin page never keeps the device awake: with the screen off it
+// must be free to drop Wi-Fi and sleep, or a forgotten browser tab drains
+// the battery. Neither its requests nor its WebSocket take a wake lock;
+// only real transfers (firmware, scene uploads, downloads) do.
+TEST(AdminServer, AdminPageHoldsNoWakeLock) {
+    AdminFixture f;
+    const std::string token = f.token();
+    EXPECT_EQ(f.srv->handle(with_token(make_req(Method::Get, "/api/v1/settings"), token)).status,
+              200);
+    wisp::net::WsHandlers ws = f.srv->ws_handlers();
+    auto conn = std::make_shared<FakeWsConnection>(7);
+    ASSERT_TRUE(ws.on_open(conn, with_token(make_req(Method::Get, "/api/v1/ws"), token)));
+    f.srv->tick(f.now);
+    for (const auto& l : f.wakelocks.list()) EXPECT_NE(l.holder, "system.admin") << l.reason;
+    ws.on_close(7);
+}
+
 // Logout, DELETE /clients/{id} and revoke_all() (factory reset) close the
 // revoked browsers' WebSockets at once; other browsers keep streaming.
 TEST(AdminServer, RevokedClientsLoseTheirWebSocket) {
@@ -765,13 +734,6 @@ TEST(AdminServer, RevokedClientsLoseTheirWebSocket) {
     const std::string token_b = f.token();
     auto a_id = f.pairing->authenticate(token_a, f.now);
     ASSERT_TRUE(a_id);
-    // The first authenticated request takes the "admin request" lock, a
-    // power.wakelock event that would reach `a` too: take it now, before
-    // the count below, so the revoking request only renews it.
-    ASSERT_EQ(f.srv->handle(with_token(make_req(Method::Get, "/api/v1/settings"), token_b)).status,
-              200);
-    ASSERT_TRUE(f.bus.wait_idle(2000));
-
     auto a = std::make_shared<FakeWsConnection>(21);
     auto b = std::make_shared<FakeWsConnection>(22);
     ASSERT_TRUE(ws.on_open(a, with_token(req, token_a)));
@@ -781,8 +743,6 @@ TEST(AdminServer, RevokedClientsLoseTheirWebSocket) {
     // Both got their hello; nothing reaches `a` after the revocation.
     ASSERT_TRUE(
         wait_until([&] { return a->hellos().size() == 1 && b->hellos().size() == 1; }, 2000));
-    // The opens took the "admin session" lock; its power.wakelock event may
-    // still be on its way to the subscribers. Let it arrive first.
     ASSERT_TRUE(f.bus.wait_idle(2000));
     ASSERT_TRUE(f.srv->flush_ws(2000));
     const int a_calls = a->send_calls.load();

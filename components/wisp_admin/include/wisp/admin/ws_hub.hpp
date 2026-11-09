@@ -28,15 +28,14 @@
 // are skipped without being reported as dropped, since the client never
 // fell behind on them.
 //
-// Wake lock: with set_wake_locks(), the hub holds one network lock
-// ("system.admin", "admin session") while at least one connection is
-// open, so deep standby does not turn Wi-Fi off under an open admin page
-// (scene-device spec 4.3).
+// No wake lock: an open admin page does not keep the device awake, so
+// with the screen off deep standby still turns Wi-Fi off and the page
+// loses its connection until the device wakes (scene-device spec 4.3).
 //
 // Keepalive: a peer that vanished without closing (left Wi-Fi range, a
-// laptop lid shut, a router reboot) never reports a close, and its lock
-// would keep Wi-Fi on until reboot. keepalive(), called periodically by
-// the owner, sends every client {"t":"ping"}; the page answers
+// laptop lid shut, a router reboot) never reports a close, and its
+// connection would hold a client slot and its queue until reboot. keepalive(), called periodically
+// by the owner, sends every client {"t":"ping"}; the page answers
 // {"t":"pong"}, and any message from a client counts as hearing from it.
 // A client not heard from for kKeepaliveMisses calls in a row is closed
 // ("client N closed: silent"). The server's TCP keepalive (where the port
@@ -75,7 +74,6 @@
 
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/wakelock.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/os/os.hpp"
 
@@ -94,10 +92,6 @@ public:
 
     WsHub(const WsHub&) = delete;
     WsHub& operator=(const WsHub&) = delete;
-
-    // The registry for the "system.admin" lock; set once, before the first
-    // open(). It must outlive the hub.
-    void set_wake_locks(core::WakeLockRegistry* locks) { locks_ = locks; }
 
     // Spawns the sender task that calls pump() whenever something is
     // queued (and every 100 ms while a socket keeps refusing). Idempotent.
@@ -159,10 +153,6 @@ private:
     void forget_locked(Client& c);
     bool has_pending() const;
     void run();
-    // Holds the admin lock exactly while a connection is open. Called
-    // without mutex_ (taking a lock publishes an event, which the hub's own
-    // handler receives).
-    void sync_lock();
 
     core::EventBus& bus_;
     const std::string hello_;  // the hello frame, built once
@@ -186,11 +176,6 @@ private:
     std::atomic<bool> running_{false};
 
     std::vector<core::SubscriptionId> subscriptions_;
-
-    core::WakeLockRegistry* locks_ = nullptr;
-    // Serializes sync_lock(); taken before mutex_.
-    os::Mutex lock_mutex_;
-    core::WakeLock admin_lock_;
 };
 
 }  // namespace wisp::admin
