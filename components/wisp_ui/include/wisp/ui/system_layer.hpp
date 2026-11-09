@@ -150,13 +150,19 @@ struct BannerInfo {
 
 class SystemLayer {
 public:
+    // The edge gestures' distances are percentages of the screen's shorter
+    // side (hal::share_of_screen()), so they feel the same on every
+    // resolution; the values in brackets are for a 480 px screen.
+    //
     // Width of the back gesture zone along the left edge of each row of
-    // the safe area (spec 3.5).
-    static constexpr int32_t kBackZoneWidth = 16;
-    // How far right a press from the zone moves before it is a back swipe.
-    static constexpr int32_t kBackTriggerDx = 24;
-    // How far right a press from the zone moves before the arrow shows.
-    static constexpr int32_t kBackArrowSlop = 8;
+    // the safe area (spec 3.5; 38 px).
+    static constexpr int kBackZonePercent = 8;
+    // How far right a press from the zone moves before it is a back swipe
+    // (24 px).
+    static constexpr int kBackTriggerPercent = 5;
+    // How far right a press from the zone moves before the arrow shows
+    // (10 px).
+    static constexpr int kBackArrowSlopPercent = 2;
     // Diameter of the back arrow shown during a swipe.
     static constexpr int32_t kBackArrowSize = 40;
     // The keyboard's language key, naming the current input: pinyin or
@@ -168,9 +174,13 @@ public:
     // (spec 5.5; see status_area()).
     static constexpr int32_t kCapsuleW = 72, kCapsuleH = 24, kCapsuleTopGap = 4;
     // The top-edge swipe (spec 5.6): the zone's depth below each column's
-    // first visible pixel, and how far down a press from it moves before
-    // it opens the panel.
-    static constexpr int32_t kTopZoneHeight = 16, kTopTriggerDy = 24;
+    // first visible pixel (38 px), and how far down a press from it moves
+    // before it opens the panel (24 px; the panel's own upward swipe uses
+    // it too). The zones are this deep because a finger swiping in over
+    // the bezel is first seen 9-26 px from the edge on a 480 px screen:
+    // the touch reports the contact's centre
+    // (docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
+    static constexpr int kTopZonePercent = 8, kTopTriggerPercent = 5;
     // The least height of a panel row, and a banner's height.
     static constexpr int32_t kPanelRowMinH = 48, kBannerH = 72;
     // The pill at the bottom of the pull-down panel.
@@ -217,7 +227,7 @@ public:
     // is no panel (an open one closes), no swipe, and the capsule takes no
     // touches. The swipe is watched like the back gesture: a press from
     // the top zone (in_top_zone()) reaches the screen below, and once it
-    // has moved kTopTriggerDy down (is_top_swipe()) it is taken from the
+    // has moved kTopTriggerPercent down (is_top_swipe()) it is taken from the
     // widget under it, which gets LV_EVENT_PRESS_LOST. Then on_open is
     // called and the panel comes down over the screen with the finger,
     // like a sheet pulled from the top (scene-device spec 5.6): its bottom
@@ -344,10 +354,11 @@ public:
     void raise();
 
     // Whether (x, y) is in the back gesture zone: a row of the safe area,
-    // within kBackZoneWidth pixels of that row's visible left edge.
+    // within kBackZonePercent of the screen of that row's visible left
+    // edge.
     static bool in_back_zone(const hal::ScreenShape& s, int32_t x, int32_t y);
     // Whether a press from `start` now at `end` is a back swipe: it
-    // started in the zone and moved right by at least kBackTriggerDx, at
+    // started in the zone and moved right by at least kBackTriggerPercent, at
     // any angle.
     static bool is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end);
 
@@ -356,11 +367,11 @@ public:
     // the capsule shows, so a scene can keep clear of it.
     static hal::Area status_area(const hal::ScreenShape& s);
     // Whether (x, y) is in the top-edge zone: visible, and less than
-    // kTopZoneHeight below the first visible pixel of column x (on a
+    // kTopZonePercent below the first visible pixel of column x (on a
     // circle the middle columns start at y = 0).
     static bool in_top_zone(const hal::ScreenShape& s, int32_t x, int32_t y);
     // Whether a press from `start` now at `end` is a top-edge swipe: it
-    // started in the zone and moved down by at least kTopTriggerDy, at any
+    // started in the zone and moved down by at least kTopTriggerPercent, at any
     // angle.
     static bool is_top_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end);
 

@@ -12,6 +12,7 @@ static_assert(LV_COLOR_DEPTH == 16, "wisp_ui requires LV_COLOR_DEPTH == 16 (RGB5
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -26,6 +27,7 @@ static_assert(LV_COLOR_DEPTH == 16, "wisp_ui requires LV_COLOR_DEPTH == 16 (RGB5
 #include "wisp/os/os.hpp"
 #include "wisp/os/queue.hpp"
 #include "wisp/ui/align.hpp"
+#include "wisp/ui/drag.hpp"
 #include "wisp/ui/font_image.hpp"
 #include "wisp/ui/overlay.hpp"
 #include "wisp/ui/theme.hpp"
@@ -622,6 +624,11 @@ Result<void> UiRuntime::start() {
         lv_indev_set_display(impl_->lv_indev, impl_->lv_disp);
         lv_indev_set_user_data(impl_->lv_indev, impl_.get());
         lv_indev_set_read_cb(impl_->lv_indev, &Impl::indev_read_cb);
+        // The same slop as the shell's page drags (wisp/ui/drag.hpp), in
+        // place of LVGL's fixed LV_INDEV_DEF_SCROLL_LIMIT.
+        const hal::ScreenShape screen{.width = impl_->width, .height = impl_->height};
+        lv_indev_set_scroll_limit(impl_->lv_indev, static_cast<uint8_t>(std::clamp<int32_t>(
+                                                       drag_slop_px(screen), 1, UINT8_MAX)));
     }
 
     impl_->running.store(true, std::memory_order_release);

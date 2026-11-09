@@ -13,7 +13,19 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "wisp/hal/display_geometry.hpp"
+
 namespace wisp::ui {
+
+// A press becomes a drag (a shell page drag, or LVGL's own scroll) once
+// the finger is this share of the screen's shorter side from where it
+// went down (10 px on a 480 px screen). UiRuntime sets the touch input's
+// LVGL scroll limit to drag_slop_px(), so the shell and LVGL decide on
+// the same touch read.
+inline constexpr int kDragSlopPercent = 2;
+constexpr int32_t drag_slop_px(const hal::ScreenShape& s) {
+    return hal::share_of_screen(s, kDragSlopPercent);
+}
 
 inline constexpr int kDragCompleteDivisor = 3;
 inline constexpr int kFlingPxPerS = 400;

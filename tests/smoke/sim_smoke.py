@@ -1228,7 +1228,8 @@ SCENE_DELETE_LOG = "counter: delete waiting for confirmation on the screen"
 
 # The back gesture (from the left edge at mid-height) and the pull-down
 # swipe (from the top edge at the middle column, which starts at y=0 on
-# every shape: the top zone is 16 px from the column's first visible pixel).
+# every shape: the top zone reaches 8% of the shorter side, 38 px on the
+# 480 px simulator, below the column's first visible pixel).
 BACK_SWIPE = "swipe 4,240,240,240"
 # The panel follows the finger and opens on release from a third of the
 # screen's height down (the scripted swipe rests before it lifts, so it is

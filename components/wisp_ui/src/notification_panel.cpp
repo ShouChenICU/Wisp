@@ -99,7 +99,7 @@ size_t index_of(lv_obj_t* obj) {
 
 constexpr int32_t kBadgeSize = 32;
 // A swipe on the panel: as far as the top-edge swipe that opens it.
-constexpr int32_t kSwipe = SystemLayer::kTopTriggerDy;
+constexpr int kSwipePercent = SystemLayer::kTopTriggerPercent;
 
 lv_obj_t* make_text(lv_obj_t* parent, const char* text, uint32_t color) {
     lv_obj_t* label = lv_label_create(parent);
@@ -545,9 +545,10 @@ void SystemLayer::panel_cb(lv_event_t* e) {
     // runs; an index may name another notification by then.
     if (self->refill_queued_) return;
     // A click without a pointer (sent by code) is a tap.
-    const detail::PressEnd end = indev != nullptr
-                                     ? detail::classify_press(self->press_at_, at, kSwipe)
-                                     : detail::PressEnd::Tap;
+    const detail::PressEnd end =
+        indev != nullptr ? detail::classify_press(self->press_at_, at,
+                                                  hal::share_of_screen(self->shape_, kSwipePercent))
+                         : detail::PressEnd::Tap;
     const Part part = part_of(obj);
     const size_t i = index_of(obj);
     const PanelModel& m = self->model_;

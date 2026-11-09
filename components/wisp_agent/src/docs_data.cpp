@@ -587,24 +587,29 @@ corners, but when scrolled to either end its first and last item must be whole o
 visible screen: pad the list (per side) so that `row_span` at the item's top and
 bottom rows covers its left and right edges.
 
-A swipe to the right that starts within 16 pixels of the left edge of the
-visible screen (rows within the safe area's height) is the system's back
-gesture, at any angle: a touch there reaches the scene like any other, and
-only once it has moved 24 pixels to the right -- however far up or down --
-does the system take it, and the widget under it then gets no click.
-Dragging back to the left of that distance before release cancels it and
-nothing happens. A touch on the on-screen keyboard never starts it.
+The system's edge gestures measure their distances as a share of the screen's
+shorter side, so they are alike on every screen; the pixels in brackets are for a
+480-pixel screen.
+
+A swipe to the right that starts within 8% (38 px) of the left edge of the visible
+screen (rows within the safe area's height) is the system's back gesture, at any
+angle: a touch there reaches the scene like any other, and only once it has moved
+5% (24 px) to the right -- however far up or down -- does the system take it, and
+the widget under it then gets no click. Dragging back to the left of that
+distance before release cancels it and nothing happens. A touch on the on-screen
+keyboard never starts it.
 Such a swipe never reaches `on_swipe`.
 
-A swipe down that starts within 16 pixels of the top of the visible screen
+A swipe down that starts within 8% (38 px) of the top of the visible screen
 (measured from the first visible pixel of the column it starts in) is the
 system's pull-down gesture, at any angle: the touch reaches the scene like
-any other until it has moved 24 pixels down, when the system opens its
+any other until it has moved 5% (24 px) down, when the system opens its
 pull-down panel and the widget under the finger gets no click
 (`PRESS_LOST`). It never starts while the keyboard, the error panel or a
-confirmation dialog is up. A tap on the status capsule (at `status_area`, shown while scenes run
-in the background or notifications are unread) opens the panel too. A swipe down
-from the top zone never reaches `on_swipe` while the panel can open.
+confirmation dialog is up. A tap on the status capsule (at `status_area`, shown
+while scenes run in the background or notifications are unread) opens the panel
+too. A swipe down from the top zone never reaches `on_swipe` while the panel can
+open.
 )wispdoc"},
     {"examples", R"wispdoc(# Example scenes
 

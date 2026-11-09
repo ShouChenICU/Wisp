@@ -52,6 +52,17 @@ constexpr int kSide = 480;
 ScreenShape rect480() { return {ScreenShapeKind::Rect, kSide, kSide, 0}; }
 ScreenShape circle480() { return {ScreenShapeKind::Circle, kSide, kSide, 0}; }
 
+// The gesture distances on screen `s` (shares of its shorter side).
+int32_t back_zone(const ScreenShape& s) {
+    return wisp::hal::share_of_screen(s, SystemLayer::kBackZonePercent);
+}
+int32_t back_trigger(const ScreenShape& s) {
+    return wisp::hal::share_of_screen(s, SystemLayer::kBackTriggerPercent);
+}
+int32_t top_trigger(const ScreenShape& s) {
+    return wisp::hal::share_of_screen(s, SystemLayer::kTopTriggerPercent);
+}
+
 bool inside(const lv_area_t& a, const Area& safe) {
     return a.x1 >= safe.x1 && a.y1 >= safe.y1 && a.x2 <= safe.x2 && a.y2 <= safe.y2;
 }
@@ -326,31 +337,33 @@ uint32_t fake_tick() { return static_cast<uint32_t>(wisp::os::now_ms()) + g_tick
 
 TEST(SystemLayerZone, BackZoneFollowsRowSpan) {
     const ScreenShape rect = rect480();
+    const int32_t z = wisp::hal::share_of_screen(rect, SystemLayer::kBackZonePercent);
+    ASSERT_EQ(z, 38);
     const Area rs = wisp::hal::safe_rect(rect);
     for (int32_t y : {rs.y1, int32_t{240}, rs.y2}) {
         EXPECT_TRUE(SystemLayer::in_back_zone(rect, 0, y)) << y;
-        EXPECT_TRUE(SystemLayer::in_back_zone(rect, 15, y)) << y;
-        EXPECT_FALSE(SystemLayer::in_back_zone(rect, 16, y)) << y;
+        EXPECT_TRUE(SystemLayer::in_back_zone(rect, z - 1, y)) << y;
+        EXPECT_FALSE(SystemLayer::in_back_zone(rect, z, y)) << y;
     }
 
     const ScreenShape circle = circle480();
     const Area cs = wisp::hal::safe_rect(circle);
-    for (int32_t x = 0; x < 16; ++x) {
+    for (int32_t x = 0; x < z; ++x) {
         EXPECT_TRUE(SystemLayer::in_back_zone(circle, x, 240)) << x;
     }
-    EXPECT_FALSE(SystemLayer::in_back_zone(circle, 16, 240));
+    EXPECT_FALSE(SystemLayer::in_back_zone(circle, z, 240));
 
     const wisp::hal::Span s100 = wisp::hal::row_span(circle, 100);
     ASSERT_GT(s100.x1, 0);
     EXPECT_FALSE(SystemLayer::in_back_zone(circle, s100.x1 - 1, 100));
     EXPECT_TRUE(SystemLayer::in_back_zone(circle, s100.x1, 100));
-    EXPECT_TRUE(SystemLayer::in_back_zone(circle, s100.x1 + 15, 100));
-    EXPECT_FALSE(SystemLayer::in_back_zone(circle, s100.x1 + 16, 100));
+    EXPECT_TRUE(SystemLayer::in_back_zone(circle, s100.x1 + z - 1, 100));
+    EXPECT_FALSE(SystemLayer::in_back_zone(circle, s100.x1 + z, 100));
 
     // Rows outside the safe area, even where they are visible.
     for (int32_t y : {int32_t{0}, cs.y1 - 1, cs.y2 + 1, int32_t{kSide - 1}}) {
         const wisp::hal::Span s = wisp::hal::row_span(circle, y);
-        for (int32_t x = std::max(0, s.x1); x < s.x1 + 16; ++x) {
+        for (int32_t x = std::max(0, s.x1); x < s.x1 + z; ++x) {
             EXPECT_FALSE(SystemLayer::in_back_zone(circle, x, y)) << x << "," << y;
         }
     }
@@ -358,16 +371,61 @@ TEST(SystemLayerZone, BackZoneFollowsRowSpan) {
 
 TEST(SystemLayerZone, BackSwipeNeedsTriggerDistance) {
     const ScreenShape rect = rect480();
-    constexpr int32_t d = SystemLayer::kBackTriggerDx;
+    const int32_t d = wisp::hal::share_of_screen(rect, SystemLayer::kBackTriggerPercent);
+    ASSERT_EQ(d, 24);
+    const int32_t out = wisp::hal::share_of_screen(rect, SystemLayer::kBackZonePercent);
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d - 1, 240}));
     EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 240}));
     EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {200, 240}));
-    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {20, 240}, {300, 240}));  // starts outside
+    EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {out, 240}, {300, 240}));  // starts outside
     // Any angle: only the distance to the right counts.
     EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 440}));  // steeply down
     EXPECT_TRUE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d, 40}));   // steeply up
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {4, 240}, {4 + d - 1, 440}));
     EXPECT_FALSE(SystemLayer::is_back_swipe(rect, {200, 240}, {4, 240}));  // leftwards
+}
+
+// The edge zones and trigger distances are shares of the screen's shorter
+// side, so a screen of another size behaves the same. A finger swiping in
+// over the bezel is first seen up to 26 px from the edge on the 480 px
+// board (the touch reports the contact's centre;
+// docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md), inside both zones.
+TEST(SystemLayerZone, ZonesAndTriggersScaleWithTheShorterSide) {
+    struct Case {
+        ScreenShape shape;
+        int32_t zone, trigger;
+    };
+    const Case cases[] = {
+        {rect480(), 38, 24},
+        {circle480(), 38, 24},
+        {{ScreenShapeKind::Circle, 466, 466, 0}, 37, 23},
+        {{ScreenShapeKind::Rect, 360, 480, 0}, 29, 18},
+    };
+    for (const Case& c : cases) {
+        const ScreenShape& s = c.shape;
+        SCOPED_TRACE(std::to_string(s.width) + "x" + std::to_string(s.height));
+        EXPECT_EQ(wisp::hal::share_of_screen(s, SystemLayer::kBackZonePercent), c.zone);
+        EXPECT_EQ(wisp::hal::share_of_screen(s, SystemLayer::kTopZonePercent), c.zone);
+        EXPECT_EQ(wisp::hal::share_of_screen(s, SystemLayer::kBackTriggerPercent), c.trigger);
+        EXPECT_EQ(wisp::hal::share_of_screen(s, SystemLayer::kTopTriggerPercent), c.trigger);
+
+        const int32_t my = s.height / 2;
+        const int32_t left = wisp::hal::row_span(s, my).x1;
+        EXPECT_TRUE(SystemLayer::in_back_zone(s, left + c.zone - 1, my));
+        EXPECT_FALSE(SystemLayer::in_back_zone(s, left + c.zone, my));
+        const lv_point_t from{left + 4, my};
+        EXPECT_FALSE(SystemLayer::is_back_swipe(s, from, {from.x + c.trigger - 1, my}));
+        EXPECT_TRUE(SystemLayer::is_back_swipe(s, from, {from.x + c.trigger, my}));
+
+        const int32_t mx = s.width / 2;  // its column starts at y = 0
+        EXPECT_TRUE(SystemLayer::in_top_zone(s, mx, c.zone - 1));
+        EXPECT_FALSE(SystemLayer::in_top_zone(s, mx, c.zone));
+        EXPECT_FALSE(SystemLayer::is_top_swipe(s, {mx, 4}, {mx, 4 + c.trigger - 1}));
+        EXPECT_TRUE(SystemLayer::is_top_swipe(s, {mx, 4}, {mx, 4 + c.trigger}));
+    }
+    const ScreenShape board = rect480();
+    EXPECT_TRUE(SystemLayer::in_top_zone(board, 240, 26));
+    EXPECT_TRUE(SystemLayer::in_back_zone(board, 26, 240));
 }
 
 // A press in the zone goes to the widget under it like any other: a tap
@@ -408,7 +466,7 @@ TEST_F(SystemLayerTest, SwipeFromTheZoneGoesBackInsteadOfClicking) {
     feed({{4, 240, 0}});
     feed({{4, 240, 0}});
     on_ui([&] { EXPECT_TRUE(lv_obj_has_state(btn, LV_STATE_PRESSED)); });
-    feed({{4 + SystemLayer::kBackTriggerDx, 242, 0}});
+    feed({{static_cast<int16_t>(4 + back_trigger(shape)), 242, 0}});
     on_ui([&] { EXPECT_FALSE(lv_obj_has_state(btn, LV_STATE_PRESSED)); });
     feed({{80, 244, 0}});
     feed({{160, 244, 0}});
@@ -434,7 +492,7 @@ TEST_F(SystemLayerTest, ReleaseBelowTheTriggerIsAnOrdinaryPress) {
         make_counting_button(0, 200, kSide, 80, &clicks);
         layer->set_back_handler([&] { ++backs; });
     });
-    const int16_t end_x = static_cast<int16_t>(4 + SystemLayer::kBackTriggerDx - 1);
+    const int16_t end_x = static_cast<int16_t>(4 + back_trigger(shape) - 1);
     feed({{4, 240, 0}});
     feed({{12, 240, 0}});
     feed({{end_x, 240, 0}});
@@ -560,7 +618,7 @@ TEST_F(SystemLayerTest, PressOutsideTheZoneNeverStartsAGesture) {
     start("rect");
     int backs = 0;
     on_ui([&] { layer->set_back_handler([&] { ++backs; }); });
-    feed({{SystemLayer::kBackZoneWidth, 240, 0}});
+    feed({{static_cast<int16_t>(back_zone(shape)), 240, 0}});
     for (int16_t x : {40, 100, 200, 300}) {
         feed({{x, 240, 0}});
         on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
@@ -596,7 +654,7 @@ TEST_F(SystemLayerTest, ArrowFollowsTheFinger) {
     EXPECT_LT(opa, LV_OPA_COVER);
 
     lv_area_t full{};
-    feed({{4 + SystemLayer::kBackTriggerDx, 251, 0}});
+    feed({{static_cast<int16_t>(4 + back_trigger(shape)), 251, 0}});
     arrow_box(&full, &opa);
     EXPECT_NEAR((full.y1 + full.y2) / 2, 251, 1);
     EXPECT_GT(full.x1, part.x1);  // further in
@@ -655,8 +713,7 @@ TEST_F(SystemLayerTest, ArrowStaysVisibleOnEveryShape) {
         }
         // Just outside the zone on a rounded row: no gesture.
         const int32_t y = safe.y1 + 30;
-        const auto x =
-            static_cast<int16_t>(wisp::hal::row_span(shape, y).x1 + SystemLayer::kBackZoneWidth);
+        const auto x = static_cast<int16_t>(wisp::hal::row_span(shape, y).x1 + back_zone(shape));
         const int before = backs;
         feed({{x, static_cast<int16_t>(y), 0}});
         feed({{static_cast<int16_t>(x + 60), static_cast<int16_t>(y), 0}});
@@ -1815,40 +1872,46 @@ TEST_F(SystemLayerTest, FirstGestureToCrossItsTriggerWins) {
 
 TEST(TopSwipe, ZoneFollowsRowSpan) {
     const ScreenShape circle = circle480();
+    const int32_t z = wisp::hal::share_of_screen(circle, SystemLayer::kTopZonePercent);
+    ASSERT_EQ(z, 38);
     const Area cs = wisp::hal::safe_rect(circle);
     // The middle column starts at the physical top edge.
     EXPECT_TRUE(SystemLayer::in_top_zone(circle, 240, 0));
     EXPECT_TRUE(SystemLayer::in_top_zone(circle, 240, 10));
-    EXPECT_TRUE(SystemLayer::in_top_zone(circle, 240, 15));
-    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 240, 16));
+    // A finger coming in over the bezel lands up to 26 px down (the touch
+    // reports the contact's centre; docs/hardware/*2_16.md).
+    EXPECT_TRUE(SystemLayer::in_top_zone(circle, 240, 26));
+    EXPECT_TRUE(SystemLayer::in_top_zone(circle, 240, z - 1));
+    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 240, z));
     EXPECT_FALSE(SystemLayer::in_top_zone(circle, 100, 10));  // not visible
-    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 240, cs.y1 + 16));
+    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 240, cs.y1 + z));
     // A column further out starts lower, and so does its zone.
     int32_t top100 = 0;
     while (!wisp::hal::visible(circle, 100, top100)) ++top100;
     EXPECT_FALSE(SystemLayer::in_top_zone(circle, 100, top100 - 1));
     EXPECT_TRUE(SystemLayer::in_top_zone(circle, 100, top100));
-    EXPECT_TRUE(SystemLayer::in_top_zone(circle, 100, top100 + 15));
-    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 100, top100 + 16));
+    EXPECT_TRUE(SystemLayer::in_top_zone(circle, 100, top100 + z - 1));
+    EXPECT_FALSE(SystemLayer::in_top_zone(circle, 100, top100 + z));
 
     const ScreenShape rect = rect480();
     EXPECT_TRUE(SystemLayer::in_top_zone(rect, 0, 0));
-    EXPECT_TRUE(SystemLayer::in_top_zone(rect, 479, 15));
-    EXPECT_FALSE(SystemLayer::in_top_zone(rect, 0, 16));
+    EXPECT_TRUE(SystemLayer::in_top_zone(rect, 479, z - 1));
+    EXPECT_FALSE(SystemLayer::in_top_zone(rect, 0, z));
 
     const ScreenShape rounded = rounded480();
     EXPECT_FALSE(SystemLayer::in_top_zone(rounded, 0, 0));
     int32_t top0 = 0;
     while (!wisp::hal::visible(rounded, 0, top0)) ++top0;
-    EXPECT_TRUE(SystemLayer::in_top_zone(rounded, 0, top0 + 15));
-    EXPECT_FALSE(SystemLayer::in_top_zone(rounded, 0, top0 + 16));
+    EXPECT_TRUE(SystemLayer::in_top_zone(rounded, 0, top0 + z - 1));
+    EXPECT_FALSE(SystemLayer::in_top_zone(rounded, 0, top0 + z));
     EXPECT_TRUE(SystemLayer::in_top_zone(rounded, 240, 0));
 
-    constexpr int32_t d = SystemLayer::kTopTriggerDy;
+    const int32_t d = wisp::hal::share_of_screen(circle, SystemLayer::kTopTriggerPercent);
+    ASSERT_EQ(d, 24);
     EXPECT_FALSE(SystemLayer::is_top_swipe(circle, {240, 10}, {240, 10 + d - 1}));
     EXPECT_TRUE(SystemLayer::is_top_swipe(circle, {240, 10}, {240, 10 + d}));
     EXPECT_TRUE(SystemLayer::is_top_swipe(circle, {240, 10}, {400, 10 + d}));  // any angle
-    EXPECT_FALSE(SystemLayer::is_top_swipe(circle, {240, 30}, {240, 200}));    // outside
+    EXPECT_FALSE(SystemLayer::is_top_swipe(circle, {240, z}, {240, 200}));     // outside
 }
 
 TEST_F(SystemLayerTest, TopSwipeTapInZoneReachesWidget) {
@@ -2444,7 +2507,7 @@ TEST_F(PanelFollowTest, OpeningFollowsTheFinger) {
         opens = closes = clicks = 0;
         begin(c.shape, c.corner_radius);
         down({240, 4});
-        to({240, 4 + SystemLayer::kTopTriggerDy - 1});
+        to({240, 4 + top_trigger(shape) - 1});
         EXPECT_EQ(opens, 0);
         EXPECT_EQ(panel_bottom(), -1);
         to({240, 40});
@@ -2560,9 +2623,9 @@ TEST_F(PanelFollowTest, ClosingFollowsTheFinger) {
         open_at_bottom();
         const int16_t y0 = static_cast<int16_t>(safe.y2 - 20);
         down({240, y0});
-        to({240, static_cast<int16_t>(y0 - SystemLayer::kTopTriggerDy)});
+        to({240, static_cast<int16_t>(y0 - top_trigger(shape))});
         on_ui([&] { EXPECT_TRUE(layer->panel_moving()); });
-        EXPECT_EQ(panel_bottom(), shape.height - SystemLayer::kTopTriggerDy);
+        EXPECT_EQ(panel_bottom(), shape.height - top_trigger(shape));
         for (int16_t dy : {60, 140, 100}) {
             to({240, static_cast<int16_t>(y0 - dy)});
             EXPECT_EQ(panel_bottom(), shape.height - dy);

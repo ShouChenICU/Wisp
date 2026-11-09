@@ -322,7 +322,12 @@ TEST_P(SceneViewSwipe, PullDownKeepsPriority) {
     });
     EXPECT_TRUE(take_events().empty());
 
-    swipe_over(kButton, 0, 70);
+    // The same swipe from just below the zone, over the button, is the
+    // scene's.
+    while (SystemLayer::in_top_zone(shape, x, y)) ++y;
+    const lv_point_t c = center(kButton);
+    ASSERT_GE(c.y, y);
+    drag({c.x, c.y}, {c.x, c.y + 70});
     auto got = take_events();
     ASSERT_EQ(got.size(), 1u);
     EXPECT_EQ(got[0].node, kBoard);

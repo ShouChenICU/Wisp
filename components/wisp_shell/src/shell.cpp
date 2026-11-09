@@ -77,7 +77,8 @@ const char* to_string(Page p) {
     return "home";
 }
 
-Shell::Shell(ShellDeps deps) : deps_(std::move(deps)), track_(std::make_unique<DragTrack>()) {
+Shell::Shell(ShellDeps deps)
+    : deps_(std::move(deps)), track_(std::make_unique<DragTrack>(drag_slop_px(deps_.shape))) {
     if (!deps_.now_ms) deps_.now_ms = os::now_ms;
 }
 

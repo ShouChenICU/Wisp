@@ -266,14 +266,14 @@ bool SystemLayer::in_back_zone(const hal::ScreenShape& s, int32_t x, int32_t y) 
     if (y < safe.y1 || y > safe.y2) return false;
     const hal::Span span = hal::row_span(s, y);
     if (span.empty()) return false;
-    return x >= span.x1 && x < span.x1 + kBackZoneWidth;
+    return x >= span.x1 && x < span.x1 + hal::share_of_screen(s, kBackZonePercent);
 }
 
 bool SystemLayer::is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end) {
     if (!in_back_zone(s, start.x, start.y)) return false;
     // Any angle, as on Android: thumbs slant, and a press that starts at
     // the very edge and travels right is meant as back.
-    return end.x - start.x >= kBackTriggerDx;
+    return end.x - start.x >= hal::share_of_screen(s, kBackTriggerPercent);
 }
 
 bool SystemLayer::in_top_zone(const hal::ScreenShape& s, int32_t x, int32_t y) {
@@ -291,13 +291,13 @@ bool SystemLayer::in_top_zone(const hal::ScreenShape& s, int32_t x, int32_t y) {
             lo = mid + 1;
         }
     }
-    return y < lo + kTopZoneHeight;
+    return y < lo + hal::share_of_screen(s, kTopZonePercent);
 }
 
 bool SystemLayer::is_top_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end) {
     if (!in_top_zone(s, start.x, start.y)) return false;
     // Any angle, like the back swipe.
-    return end.y - start.y >= kTopTriggerDy;
+    return end.y - start.y >= hal::share_of_screen(s, kTopTriggerPercent);
 }
 
 void SystemLayer::set_back_handler(std::function<void()> on_back) {
@@ -403,7 +403,8 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         }
         // Only the distance in the swipe's direction counts: dragging back
         // below the trigger cancels.
-        const bool back = taken_ && p.x - start_.x >= kBackTriggerDx;
+        const bool back =
+            taken_ && p.x - start_.x >= hal::share_of_screen(shape_, kBackTriggerPercent);
         end_swipe();
         if (back && panel_open()) {
             // The panel is what the back swipe leaves.
@@ -450,7 +451,8 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         cancel_press(indev);
         // The press stays taken if the panel cannot be there after all.
         begin_panel_follow(true);
-    } else if (up_candidate_ && !up_taken_ && !taken_ && start_.y - p.y >= kTopTriggerDy &&
+    } else if (up_candidate_ && !up_taken_ && !taken_ &&
+               start_.y - p.y >= hal::share_of_screen(shape_, kTopTriggerPercent) &&
                start_.y - p.y > std::abs(p.x - start_.x)) {
         up_taken_ = true;
         candidate_ = false;
@@ -467,8 +469,9 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
     const int32_t dx = p.x - start_.x;
     // The slop keeps a scroll along the edge, wobbling a little to the
     // right, from flashing the arrow.
-    if (taken_ || dx >= kBackArrowSlop) {
-        show_arrow(p, dx, dx >= kBackTriggerDx);
+    const int32_t trigger = hal::share_of_screen(shape_, kBackTriggerPercent);
+    if (taken_ || dx >= hal::share_of_screen(shape_, kBackArrowSlopPercent)) {
+        show_arrow(p, dx, dx >= trigger);
     } else if (arrow_ != nullptr) {
         lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
     }
@@ -547,12 +550,13 @@ void SystemLayer::show_arrow(lv_point_t at, int32_t dx, bool armed) {
     }
     x_in += kArrowEdgeInset;
     // Below the trigger it is partly in and see-through, in step with dx.
-    const int32_t d = std::clamp(dx, int32_t{0}, kBackTriggerDx);
-    const int32_t x = armed ? x_in : x_in - half * (kBackTriggerDx - d) / kBackTriggerDx;
+    const int32_t trigger = std::max(hal::share_of_screen(shape_, kBackTriggerPercent), int32_t{1});
+    const int32_t d = std::clamp(dx, int32_t{0}, trigger);
+    const int32_t x = armed ? x_in : x_in - half * (trigger - d) / trigger;
     const int32_t faint = LV_OPA_30;
     const int32_t strong = LV_OPA_80;
     const auto opa = static_cast<lv_opa_t>(armed ? int32_t{LV_OPA_COVER}
-                                                 : faint + (strong - faint) * d / kBackTriggerDx);
+                                                 : faint + (strong - faint) * d / trigger);
     lv_obj_set_pos(arrow_, x, y1);
     lv_obj_set_style_opa(arrow_, opa, 0);
 }

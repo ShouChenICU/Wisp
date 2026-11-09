@@ -8,7 +8,12 @@
 #include <algorithm>
 #include <optional>
 
+#include "lvgl_private.h"
+#include "support/fake_devices.hpp"
+#include "wisp/hal/display_geometry.hpp"
 #include "wisp/shell/limits.hpp"
+#include "wisp/ui/drag.hpp"
+#include "wisp/ui/ui_runtime.hpp"
 #include "wisp/voice/limits.hpp"
 
 using wisp::shell::classify_swipe;
@@ -22,20 +27,60 @@ namespace {
 
 lv_point_t pt(int32_t x, int32_t y) { return lv_point_t{x, y}; }
 
+using wisp::hal::ScreenShape;
+using wisp::hal::ScreenShapeKind;
+
+const ScreenShape k480{ScreenShapeKind::Rect, 480, 480, 0};
+// The distances on the 480 px screen the coordinates below are for.
+const int32_t kSwipe480 = wisp::shell::swipe_min_px(k480);
+const int32_t kSlop480 = wisp::shell::drag_slop_px(k480);
+
 }  // namespace
 
 TEST(Gestures, FourDirectionsAndThreshold) {
     const lv_point_t o = pt(100, 100);
-    EXPECT_EQ(classify_swipe(o, pt(141, 100)), Swipe::Right);
-    EXPECT_EQ(classify_swipe(o, pt(59, 100)), Swipe::Left);
-    EXPECT_EQ(classify_swipe(o, pt(100, 141)), Swipe::Down);
-    EXPECT_EQ(classify_swipe(o, pt(100, 59)), Swipe::Up);
-    // Not past kSwipeMinPx.
-    EXPECT_EQ(classify_swipe(o, pt(140, 100)), Swipe::None);
+    const int32_t m = kSwipe480;
+    ASSERT_EQ(m, 38);
+    EXPECT_EQ(classify_swipe(o, pt(100 + m + 1, 100), m), Swipe::Right);
+    EXPECT_EQ(classify_swipe(o, pt(100 - m - 1, 100), m), Swipe::Left);
+    EXPECT_EQ(classify_swipe(o, pt(100, 100 + m + 1), m), Swipe::Down);
+    EXPECT_EQ(classify_swipe(o, pt(100, 100 - m - 1), m), Swipe::Up);
+    // Not past the least distance.
+    EXPECT_EQ(classify_swipe(o, pt(100 + m, 100), m), Swipe::None);
     // Too diagonal: less than kSwipeDominance times across.
-    EXPECT_EQ(classify_swipe(o, pt(150, 130)), Swipe::None);
-    EXPECT_EQ(classify_swipe(o, pt(150, 125)), Swipe::Right);
-    EXPECT_EQ(classify_swipe(o, o), Swipe::None);
+    EXPECT_EQ(classify_swipe(o, pt(150, 130), m), Swipe::None);
+    EXPECT_EQ(classify_swipe(o, pt(150, 125), m), Swipe::Right);
+    EXPECT_EQ(classify_swipe(o, o, m), Swipe::None);
+}
+
+// The swipe and the drag slop are shares of the screen's shorter side, and
+// LVGL's own scroll limit (UiRuntime sets it) equals the drag slop, so a
+// page drag and a scroll decide on the same touch read on every size.
+TEST(Gestures, DistancesScaleWithTheScreen) {
+    struct Case {
+        int32_t w, h, swipe, slop;
+    };
+    for (const Case c : {Case{480, 480, 38, 10}, Case{466, 466, 37, 9}, Case{360, 480, 29, 7}}) {
+        SCOPED_TRACE(std::to_string(c.w) + "x" + std::to_string(c.h));
+        const ScreenShape s{ScreenShapeKind::Rect, c.w, c.h, 0};
+        EXPECT_EQ(wisp::shell::swipe_min_px(s), c.swipe);
+        EXPECT_EQ(wisp::shell::drag_slop_px(s), c.slop);
+        EXPECT_EQ(classify_swipe(pt(0, 0), pt(c.swipe + 1, 0), c.swipe), Swipe::Right);
+        EXPECT_EQ(classify_swipe(pt(0, 0), pt(c.swipe, 0), c.swipe), Swipe::None);
+
+        auto disp = std::make_shared<wisp::test::FakeDisplay>("display.main", c.w, c.h, 2);
+        auto touch = std::make_shared<wisp::test::FakeTouch>("touch.main");
+        wisp::ui::UiRuntime ui(disp, touch);
+        ASSERT_TRUE(ui.start());
+        int32_t limit = -1;
+        ui.run_blocking([&] {
+            lv_indev_t* indev = lv_indev_get_next(nullptr);
+            ASSERT_NE(indev, nullptr);
+            limit = indev->scroll_limit;
+        });
+        EXPECT_EQ(limit, wisp::shell::drag_slop_px(s));
+        ui.stop();
+    }
 }
 
 TEST(Gestures, NavigationTable) {
@@ -70,7 +115,7 @@ TEST(WispPressTest, TapHoldCancel) {
     constexpr uint64_t kHold = wisp::voice::kHoldStartMs;
     {
         // Let go after 200 ms: a tap.
-        WispPress p;
+        WispPress p(kSwipe480);
         EXPECT_EQ(p.pressed(pt(50, 50), 1000), Action::None);
         EXPECT_EQ(p.tick(1200), Action::None);
         EXPECT_EQ(p.released(pt(52, 51), 1200), Action::Tap);
@@ -78,7 +123,7 @@ TEST(WispPressTest, TapHoldCancel) {
     }
     {
         // Held 300 ms: the hold begins, and the release ends it.
-        WispPress p;
+        WispPress p(kSwipe480);
         p.pressed(pt(50, 50), 1000);
         EXPECT_EQ(p.tick(1000 + kHold - 1), Action::None);
         EXPECT_EQ(p.moved(pt(55, 52), 1000 + kHold), Action::HoldBegin);
@@ -89,17 +134,18 @@ TEST(WispPressTest, TapHoldCancel) {
         EXPECT_TRUE(p.held());
     }
     {
-        // Holding, then up 41 px: cancelled; the release does nothing more.
-        WispPress p;
+        // Holding, then up past the swipe distance: cancelled; the
+        // release does nothing more.
+        WispPress p(kSwipe480);
         p.pressed(pt(50, 100), 1000);
         EXPECT_EQ(p.tick(1000 + kHold), Action::HoldBegin);
-        EXPECT_EQ(p.moved(pt(50, 60), 1400), Action::None);
-        EXPECT_EQ(p.moved(pt(50, 59), 1410), Action::HoldCancel);
-        EXPECT_EQ(p.released(pt(50, 59), 1500), Action::None);
+        EXPECT_EQ(p.moved(pt(50, 100 - kSwipe480), 1400), Action::None);
+        EXPECT_EQ(p.moved(pt(50, 99 - kSwipe480), 1410), Action::HoldCancel);
+        EXPECT_EQ(p.released(pt(50, 99 - kSwipe480), 1500), Action::None);
     }
     {
         // Moved away before the hold: a swipe, neither tap nor hold.
-        WispPress p;
+        WispPress p(kSwipe480);
         p.pressed(pt(50, 50), 1000);
         EXPECT_EQ(p.moved(pt(100, 50), 1100), Action::None);
         EXPECT_EQ(p.tick(1000 + kHold), Action::None);
@@ -107,7 +153,7 @@ TEST(WispPressTest, TapHoldCancel) {
     }
     {
         // The press taken away while holding cancels the hold.
-        WispPress p;
+        WispPress p(kSwipe480);
         p.pressed(pt(50, 50), 1000);
         p.tick(1000 + kHold);
         EXPECT_EQ(p.lost(), Action::HoldCancel);
@@ -122,10 +168,10 @@ using wisp::shell::DragTrack;
 // The direction comes once, on the move that passes the slop, along the
 // axis the finger moved more on.
 TEST(DragTrack, SlopGivesTheDirectionOnce) {
-    DragTrack t;
+    DragTrack t(kSlop480);
     t.press(pt(100, 100), 0);
     EXPECT_EQ(t.moved(pt(105, 104), 5), Swipe::None);
-    EXPECT_EQ(t.moved(pt(100 + wisp::shell::kDragSlopPx, 106), 10), Swipe::Right);
+    EXPECT_EQ(t.moved(pt(100 + kSlop480, 106), 10), Swipe::Right);
     EXPECT_EQ(t.moved(pt(140, 106), 15), Swipe::None);
     EXPECT_FALSE(t.dragging());
 
@@ -141,7 +187,7 @@ TEST(DragTrack, SlopGivesTheDirectionOnce) {
 // From start() on: the distance along the direction, the off-axis part
 // ignored, clamped to [0, extent].
 TEST(DragTrack, OffsetFollowsAlongTheAxisOnly) {
-    DragTrack t;
+    DragTrack t(kSlop480);
     t.press(pt(100, 200), 0);
     ASSERT_EQ(t.moved(pt(90, 200), 10), Swipe::Left);
     t.start(Swipe::Left, 480);
@@ -159,7 +205,7 @@ TEST(DragTrack, OffsetFollowsAlongTheAxisOnly) {
 
 // Slow (well under kFlingPxPerS): a third of the extent decides.
 TEST(DragTrack, AThirdCompletesWhenSlow) {
-    DragTrack t;
+    DragTrack t(kSlop480);
     auto slow_to = [&](int32_t x_end) {
         t.press(pt(0, 100), 0);
         uint64_t now = 0;
@@ -179,7 +225,7 @@ TEST(DragTrack, AThirdCompletesWhenSlow) {
 
 // Short but fast completes; fast the wrong way, or after a pause, does not.
 TEST(DragTrack, FlingCompletes) {
-    DragTrack t;
+    DragTrack t(kSlop480);
     t.press(pt(300, 100), 0);
     t.moved(pt(290, 100), 10);
     t.start(Swipe::Left, 480);
@@ -213,7 +259,7 @@ TEST(DragTrack, FlingCompletes) {
 
 // Never started: no completion.
 TEST(DragTrack, ReleaseWithoutDragDoesNothing) {
-    DragTrack t;
+    DragTrack t(kSlop480);
     t.press(pt(0, 0), 0);
     t.moved(pt(300, 0), 1);
     EXPECT_FALSE(t.release(pt(300, 0), 2));

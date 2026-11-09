@@ -217,7 +217,7 @@ uint64_t TurnFade::fades_at() const { return shown_ && !running_ ? last_ + kFade
 
 // --- Home -----------------------------------------------------------------
 
-Home::Home(HomeDeps deps) : deps_(std::move(deps)) {
+Home::Home(HomeDeps deps) : deps_(std::move(deps)), press_(swipe_min_px(deps_.shape)) {
     if (!deps_.now_ms) deps_.now_ms = os::now_ms;
 }
 
@@ -965,7 +965,7 @@ void Home::on_event(lv_event_t* e) {
             if (on_wisp_) act(press_.moved(p, now));
             // The talk key is held (not the wisp): a swipe up drops it.
             if (conv_ != nullptr && !key_cancelled_ && !press_.holding() && conv_->holding() &&
-                classify_swipe(start_, p) == Swipe::Up) {
+                classify_swipe(start_, p, swipe_min_px(deps_.shape)) == Swipe::Up) {
                 key_cancelled_ = true;
                 conv_->hold_cancel();
             }
@@ -979,7 +979,8 @@ void Home::on_event(lv_event_t* e) {
                 held = press_.held();
             }
             if (key_cancelled_ || held || scrolled_) break;
-            if (classify_swipe(start_, p) == Swipe::Up && conv_ != nullptr && conv_->holding())
+            if (classify_swipe(start_, p, swipe_min_px(deps_.shape)) == Swipe::Up &&
+                conv_ != nullptr && conv_->holding())
                 conv_->hold_cancel();
             break;
         }

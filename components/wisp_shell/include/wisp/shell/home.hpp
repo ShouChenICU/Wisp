@@ -64,7 +64,7 @@
 //     HoldCancel -> the controller's hold_begin() / hold_end() /
 //     hold_cancel(); a tap -> tap(), which has no voice effect;
 //   - while the controller is holding for the talk key, a swipe up past
-//     kSwipeMinPx anywhere on the screen -> hold_cancel().
+//     swipe_min_px() anywhere on the screen -> hold_cancel().
 //
 // Threading. start(), stop(), set_conversation(), refresh() and every
 // LVGL callback run on the UI thread. The controller's listener and the
