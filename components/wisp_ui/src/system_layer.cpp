@@ -925,8 +925,8 @@ void SystemLayer::confirm_btn_cb(lv_event_t* e) {
 // --- Stacking ---
 
 void SystemLayer::raise() {
-    for (lv_obj_t* piece : {capsule_, banner_, panel_backdrop_, panel_, error_backdrop_,
-                            error_panel_, kb_, candidates_, arrow_}) {
+    for (lv_obj_t* piece : {capsule_, banner_, panel_backdrop_, panel_, panel_handle_,
+                            error_backdrop_, error_panel_, kb_, candidates_, arrow_}) {
         if (piece != nullptr) lv_obj_move_foreground(piece);
     }
     // The dialog's backdrop holds the box.

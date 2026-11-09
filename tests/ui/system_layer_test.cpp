@@ -1999,6 +1999,39 @@ TEST_F(SystemLayerTest, PanelLayoutInsideVisibleArea) {
     }
 }
 
+// A pill marks the open panel's bottom edge: centred, fully visible on
+// every shape, below the content box and not over it, gone with the panel.
+TEST_F(SystemLayerTest, PanelHandleMarksTheBottomEdge) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        on_ui([&] {
+            EXPECT_EQ(layer->panel_handle(), nullptr);
+            layer->set_panel_handlers({.on_open = [] {}});
+            layer->update_panel(sample_model());
+            layer->open_panel();
+            lv_obj_t* handle = layer->panel_handle();
+            ASSERT_NE(handle, nullptr);
+            lv_obj_update_layout(lv_layer_top());
+            lv_area_t h;
+            lv_obj_get_coords(handle, &h);
+            lv_area_t box;
+            lv_obj_get_coords(layer->panel(), &box);
+            EXPECT_TRUE(fully_visible(shape, h)) << area_str(h);
+            EXPECT_GT(h.y1, box.y2) << area_str(h) << " under " << area_str(box);
+            EXPECT_EQ(h.x1 + h.x2 + 1, shape.width) << area_str(h);
+            EXPECT_EQ(lv_area_get_height(&h), SystemLayer::kPanelHandleH);
+            EXPECT_EQ(lv_area_get_width(&h), SystemLayer::kPanelHandleW);
+            // In the lowest rows of the screen, as an edge marker is.
+            EXPECT_GE(h.y1, shape.height - 3 * wisp::ui::theme::kGap) << area_str(h);
+            EXPECT_FALSE(lv_obj_has_flag(handle, LV_OBJ_FLAG_CLICKABLE));
+            layer->close_panel();
+            EXPECT_EQ(layer->panel_handle(), nullptr);
+        });
+    }
+}
+
 TEST_F(SystemLayerTest, PanelBackGestureOnlyClosesPanel) {
     for (const ShapeCase& c : kShapeCases) {
         SCOPED_TRACE(c.shape);
@@ -2439,6 +2472,28 @@ TEST_F(PanelFollowTest, OpeningFollowsTheFinger) {
         EXPECT_EQ(clicks, 0);
         EXPECT_TRUE(content_unmoved());
     }
+}
+
+// The pill rides on the sheet: it stays the same distance above the
+// sheet's bottom edge while the finger drags it.
+TEST_F(PanelFollowTest, HandleMovesWithTheSheet) {
+    begin();
+    down({240, 4});
+    int32_t gap = -1;
+    for (int16_t y : {120, 300, 479}) {
+        to({240, y});
+        const int32_t bottom = panel_bottom();
+        on_ui([&] {
+            lv_obj_t* handle = layer->panel_handle();
+            ASSERT_NE(handle, nullptr);
+            const lv_area_t h = coords_of_obj(handle);
+            EXPECT_GT(bottom - (h.y2 + 1), 0);
+            if (gap < 0) gap = bottom - (h.y2 + 1);
+            EXPECT_EQ(bottom - (h.y2 + 1), gap);
+        });
+    }
+    up();
+    ASSERT_TRUE(panel_settled());
 }
 
 // Released short of a third of the height, slowly, it slides back up and

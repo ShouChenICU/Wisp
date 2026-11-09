@@ -233,6 +233,7 @@ void SystemLayer::place_panel(int32_t offset) {
     const int32_t dy = offset - shape_.height;
     lv_obj_set_y(panel_backdrop_, dy);
     lv_obj_set_y(panel_, safe_.y1 + dy);
+    lv_obj_set_y(panel_handle_, panel_handle_y_ + dy);
 }
 
 void SystemLayer::slide_panel(bool open) {
@@ -280,6 +281,7 @@ void SystemLayer::finish_slide() {
 void SystemLayer::pause_panel_marks(bool paused) {
     pause_opaque_overlay(panel_backdrop_, paused);
     pause_opaque_overlay(panel_, paused);
+    pause_opaque_overlay(panel_handle_, paused);
 }
 
 void SystemLayer::update_panel(PanelModel m) {
@@ -316,12 +318,19 @@ void SystemLayer::build_panel() {
     lv_obj_add_event_cb(panel_backdrop_, &SystemLayer::panel_cb, LV_EVENT_PRESSED, this);
     lv_obj_add_event_cb(panel_backdrop_, &SystemLayer::panel_cb, LV_EVENT_CLICKED, this);
 
-    // The content: exactly the safe area, so every row of it is visible
-    // wherever it scrolls to; it scrolls when the rows are taller.
+    // The handle sits a fixed gap above the sheet's bottom edge, which
+    // shows the edge in the middle of a drag as well. On a round or
+    // rounded screen the middle columns reach down that far, and a pill
+    // that narrow is inside them.
+    panel_handle_y_ = shape_.height - theme::kGapMd - kPanelHandleH;
+    // The content: the safe area, ended above the handle where the safe
+    // area reaches down to it, so every row of it is visible wherever it
+    // scrolls to; it scrolls when the rows are taller.
+    const int32_t content_y2 = std::min(safe_.y2, panel_handle_y_ - theme::kGapSm - 1);
     panel_ = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(panel_);
     lv_obj_set_pos(panel_, safe_.x1, safe_.y1);
-    lv_obj_set_size(panel_, safe_.x2 - safe_.x1 + 1, safe_.y2 - safe_.y1 + 1);
+    lv_obj_set_size(panel_, safe_.x2 - safe_.x1 + 1, content_y2 - safe_.y1 + 1);
     lv_obj_set_style_bg_color(panel_, lv_color_hex(theme::kBg), 0);
     lv_obj_set_style_bg_opa(panel_, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(panel_, theme::kGapSm, 0);
@@ -333,8 +342,24 @@ void SystemLayer::build_panel() {
     lv_obj_add_event_cb(panel_, &SystemLayer::panel_cb, LV_EVENT_PRESSED, this);
     lv_obj_add_event_cb(panel_, &SystemLayer::panel_cb, LV_EVENT_CLICKED, this);
 
+    // Not clickable: a touch on it reaches the backdrop and closes the
+    // panel, like any touch outside the content.
+    panel_handle_ = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(panel_handle_);
+    lv_obj_set_size(panel_handle_, kPanelHandleW, kPanelHandleH);
+    lv_obj_set_pos(panel_handle_, (shape_.width - kPanelHandleW) / 2, panel_handle_y_);
+    lv_obj_set_style_radius(panel_handle_, theme::kRadiusPill, 0);
+    // Opaque, so it can be marked: an unmarked object would keep every
+    // area touching it from being cut.
+    lv_obj_set_style_bg_color(panel_handle_,
+                              lv_color_hex(theme::blend(theme::kTextFaint, theme::kBg, 60)), 0);
+    lv_obj_set_style_bg_opa(panel_handle_, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(panel_handle_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(panel_handle_, LV_OBJ_FLAG_SCROLLABLE);
+
     mark_opaque_overlay(panel_backdrop_, OwnChanges::InOwnEvents);
     mark_opaque_overlay(panel_);
+    mark_opaque_overlay(panel_handle_);
     motion_ = PanelMotion::Still;
     panel_offset_ = shape_.height;
     fill_panel();
@@ -483,14 +508,18 @@ void SystemLayer::discard_panel() {
         // Inside one of its events LVGL still uses the object afterwards.
         lv_obj_add_flag(panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(panel_backdrop_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(panel_handle_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_delete_async(panel_);
         lv_obj_delete_async(panel_backdrop_);
+        lv_obj_delete_async(panel_handle_);
     } else {
         lv_obj_delete(panel_);
         lv_obj_delete(panel_backdrop_);
+        lv_obj_delete(panel_handle_);
     }
     panel_ = nullptr;
     panel_backdrop_ = nullptr;
+    panel_handle_ = nullptr;
     // A closed panel keeps nothing it showed; on_open builds the next model.
     model_ = PanelModel{};
     WLOG_I("ui", "panel: gone");

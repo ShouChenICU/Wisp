@@ -32,15 +32,19 @@
 //     at a time, and marked.
 //   - The pull-down panel is a full-screen opaque backdrop without
 //     children, marked like the error panel's, and over it a content
-//     box exactly the safe area, marked as well. A change under the panel
-//     is cut by both only where it reaches beyond the content box: one
-//     that lies wholly inside it may be the panel's own (InsideBox), so it
-//     is redrawn. On a rectangle the content box is the whole screen, so
-//     nothing under the panel is cut there. The two move together as one
-//     sheet while the panel follows a finger or slides; both marks are
-//     paused then (pause_opaque_overlay()), since an area invalidated
-//     before a move would be cut by where the sheet still is although the
-//     move uncovers it, and resumed once it rests fully open.
+//     box, marked as well: the safe area, cut short at the bottom where
+//     needed to clear the handle, a small pill near the sheet's bottom
+//     edge that shows where the sheet ends (spec 5.6). The handle is a
+//     separate object on the top layer, opaque and marked too. A change
+//     under the panel is cut only where it reaches beyond the content
+//     box: one that lies wholly inside it may be the panel's own
+//     (InsideBox), so it is redrawn. On a rectangle the content box is
+//     all but the handle's strip, so little under the panel is cut
+//     there. The three move together as one sheet while the panel
+//     follows a finger or slides; all marks are paused then
+//     (pause_opaque_overlay()), since an area invalidated before a move
+//     would be cut by where the sheet still is although the move
+//     uncovers it, and resumed once it rests fully open.
 //   - A confirm dialog is an lv_msgbox under LVGL's full-screen backdrop.
 //     The dialogs guard dangerous actions (factory reset, firmware
 //     install, deleting a scene), so the backdrop keeps every touch
@@ -169,6 +173,8 @@ public:
     static constexpr int32_t kTopZoneHeight = 16, kTopTriggerDy = 24;
     // The least height of a panel row, and a banner's height.
     static constexpr int32_t kPanelRowMinH = 48, kBannerH = 72;
+    // The pill at the bottom of the pull-down panel.
+    static constexpr int32_t kPanelHandleW = 40, kPanelHandleH = 4;
     // How long a banner stays up; one with actions stays as long as an
     // alarm may ring (core::TonePlayer::kAlarmMaxMs), so it is there to
     // answer it.
@@ -260,9 +266,12 @@ public:
     // is there. The panel lets it go when it closes, so on_open gives each
     // opening its model.
     void update_panel(PanelModel m);
-    // The panel's content box (the safe area once fully open) while the
+    // The panel's content box (in the safe area once fully open) while the
     // panel is there, else nullptr.
     lv_obj_t* panel() const { return panel_; }
+    // The pill marking the panel's bottom edge while the panel is there,
+    // else nullptr.
+    lv_obj_t* panel_handle() const { return panel_handle_; }
     // Taps row `index` of the open panel as a finger would: the background
     // scenes' rows from 0, then the notifications' (the header and the
     // buttons are not rows). For scripts that cannot see the screen (the
@@ -477,6 +486,8 @@ private:
     PanelModel model_;
     lv_obj_t* panel_ = nullptr;  // the content box
     lv_obj_t* panel_backdrop_ = nullptr;
+    lv_obj_t* panel_handle_ = nullptr;
+    int32_t panel_handle_y_ = 0;  // its top once fully open
     PanelMotion motion_ = PanelMotion::Still;
     int32_t panel_offset_ = 0;
     bool follow_opening_ = false;  // the finger pulls it down, not up
