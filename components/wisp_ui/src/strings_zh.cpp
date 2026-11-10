@@ -299,6 +299,8 @@ const char* strings_zh(StrId id) {
             return "删除了「{}」的文件 {}";
         case StrId::AgentNoteFetch:
             return "访问 {}";
+        case StrId::AgentNoteLuaRun:
+            return "运行 Lua 脚本";
         case StrId::AgentConfirmDelete:
             return "Agent 要删除场景「{}」";
         case StrId::AgentConfirmWithData:

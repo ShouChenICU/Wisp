@@ -204,6 +204,16 @@ public:
     // Bytes the Lua heap holds right now; never above limits.memory_bytes.
     // The pool, if any, holds exactly this much for this VM.
     size_t used_bytes() const { return used_; }
+    // The most used_bytes() has been since the VM was made.
+    size_t peak_bytes() const { return peak_; }
+
+    // Where print and wisp.log go (log_lua_args()): their lines are logged
+    // under `tag` instead of "scene.<id>" (at most log::kMaxTagBytes), and
+    // `out`, if set, also gets each one whole, not cut at kLuaLogMaxBytes:
+    // the pieces of a line one by one, then "\n". `out` runs on the thread
+    // running the VM, in the middle of a Lua call: it must not call Lua.
+    // Before any code runs.
+    void set_output(std::string tag, std::function<void(std::string_view)> out);
 
     // Where wisp.import reads lib/ files from.
     void set_sources(SourceLookup lookup);
@@ -274,6 +284,9 @@ public:
     static Vm* of(lua_State* L);
 
 private:
+    // Reads the set_output() state.
+    friend void log_lua_args(lua_State* L, LogLevel level);
+
     // Memory: past limits.memory_bytes; Budget: past the pool's budget.
     enum class Fault : uint8_t { None, Timeout, Memory, Budget };
 
@@ -306,6 +319,10 @@ private:
     // thread's hook fire on its next instruction after a memory fault.
     lua_State* current_ = nullptr;
     size_t used_ = 0;
+    size_t peak_ = 0;
+    // set_output(); an empty tag is "scene.<id>".
+    std::string log_tag_;
+    std::function<void(std::string_view)> output_;
     Fault fault_ = Fault::None;
     bool running_ = false;
     // Set by the destructor: every instruction lua_close might run raises.
@@ -387,7 +404,8 @@ bool new_binding_metatable(lua_State* L, const char* name);
 // Converts every value on the stack with luaL_tolstring, joins them with
 // '\t', cuts the result at kLuaLogMaxBytes (on a UTF-8 character
 // boundary) and logs it at `level` with tag "scene.<id>" (the id of the
-// Vm that owns L; the tag fits the longest scene id). It goes to the log's
+// Vm that owns L; the tag fits the longest scene id), or the Vm's
+// set_output() tag, which also gets the whole line. It goes to the log's
 // ring and sinks only, never to a file, so it is safe on the scene task.
 // Leaves the stack as it was. May raise (a __tostring metamethod can).
 void log_lua_args(lua_State* L, LogLevel level);

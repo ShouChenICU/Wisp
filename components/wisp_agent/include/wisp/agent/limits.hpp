@@ -65,4 +65,11 @@ inline constexpr uint32_t kHttpMaxTimeoutMs = 120000;
 inline constexpr size_t kHttpDefaultMaxBytes = 16384;
 inline constexpr size_t kHttpMaxMaxBytes = 65536;
 
+// lua.run (agent-tools spec 4.1, 4.3): the registered tool timeout (the
+// longest run plus margin), and the defaults of timeout_ms and memory_kb.
+// Their ranges are scene::SceneRuntime::run_lua()'s (kLuaRun*).
+inline constexpr uint32_t kLuaRunToolMs = 305000;
+inline constexpr uint32_t kLuaRunDefaultTimeoutMs = 30000;
+inline constexpr uint32_t kLuaRunDefaultMemoryKb = 1024;
+
 }  // namespace wisp::agent

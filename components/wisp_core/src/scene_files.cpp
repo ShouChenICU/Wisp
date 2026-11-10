@@ -127,8 +127,22 @@ SceneFiles::SceneFiles(StorageManager& storage, SceneFilesConfig config)
 
 bool SceneFiles::sd_online() const { return storage_.roots(Area::Library).size() > 1; }
 
+bool SceneFiles::valid_owner(std::string_view scene) {
+    // "@agent" is the one exception to the scene id rules (file header);
+    // the rules themselves stay as they are for everything else.
+    return valid_scene_id(scene) || scene == kAgentFilesId;
+}
+
+std::string SceneFiles::agent_int_root() const {
+    // roots(Library) ends with the internal library, card or no card.
+    std::vector<std::string> roots = storage_.roots(Area::Library);
+    return roots.empty() ? std::string() : roots.back() + "/agent";
+}
+
 FilesWant SceneFiles::want_of(std::string_view scene, bool* installed) const {
     if (installed != nullptr) *installed = true;
+    // Always there, like an installed scene that declares "auto".
+    if (scene == kAgentFilesId) return FilesWant::Auto;
     if (!config_.declared) return FilesWant::Auto;
     Result<FilesWant> w = config_.declared(scene);
     if (!w && installed != nullptr) *installed = w.error().code != ErrorCode::NotFound;
@@ -159,10 +173,25 @@ uint64_t SceneFiles::quota_of(FilesLocation loc) const {
 }
 
 std::string SceneFiles::record_path(std::string_view scene) const {
+    if (scene == kAgentFilesId) {
+        const std::string root = agent_int_root();
+        return root.empty() ? root : root + "/files_loc.json";
+    }
     return config_.data_root + "/" + std::string(scene) + "/data/files_loc.json";
 }
 
 std::string SceneFiles::dir_of(std::string_view scene, FilesLocation loc) const {
+    if (scene == kAgentFilesId) {
+        if (loc == FilesLocation::Internal) {
+            const std::string root = agent_int_root();
+            return root.empty() ? root : root + "/files";
+        }
+        if (loc == FilesLocation::Sd) {
+            std::vector<std::string> roots = storage_.roots(Area::Library);
+            return roots.size() < 2 ? std::string() : roots.front() + "/agent/files";
+        }
+        return {};
+    }
     if (loc == FilesLocation::Internal)
         return config_.data_root + "/" + std::string(scene) + "/files";
     if (loc == FilesLocation::Sd) {
@@ -219,7 +248,9 @@ Result<uint64_t> SceneFiles::count_dir(const std::string& dir,
 }
 
 bool SceneFiles::on_card(const std::string& dir) const {
-    return !dir.starts_with(config_.data_root + "/");
+    if (dir.starts_with(config_.data_root + "/")) return false;
+    const std::string agent = agent_int_root();
+    return agent.empty() || !dir.starts_with(agent + "/");
 }
 
 Result<DirEntry> SceneFiles::entry_of(const std::string& dir, std::string_view name) {
@@ -261,7 +292,7 @@ bool SceneFiles::sd_files_exist(std::string_view scene) const {
 
 Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choose) {
     using R = Result<Record*>;
-    if (!valid_scene_id(scene)) return R::err(ErrorCode::InvalidArgument, "invalid scene id");
+    if (!valid_owner(scene)) return R::err(ErrorCode::InvalidArgument, "invalid scene id");
     Record* r = nullptr;
     {
         std::lock_guard<os::Mutex> lock(mu_);

@@ -101,6 +101,14 @@ Result<void> add_http_tools(ToolRegistry& reg, HttpToolDeps deps);
 // conversation, that made it.
 void http_tools_drop_cache();
 
+struct LuaToolDeps {
+    scene::SceneRuntime& runtime;
+};
+
+// lua.run (agent-tools spec 4): runs a script on a VM of its own on the
+// scene task (SceneRuntime::run_lua()), waiting on ToolThread::Agent.
+Result<void> add_lua_tools(ToolRegistry& reg, LuaToolDeps deps);
+
 struct TodoToolDeps {
     core::ReminderScheduler& scheduler;
 };

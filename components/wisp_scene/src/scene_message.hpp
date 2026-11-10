@@ -12,12 +12,14 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
 #include "scene_api.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/scene_store.hpp"
 #include "wisp/net/scene_http.hpp"
@@ -115,6 +117,75 @@ struct SceneQuery {
         }
         sem.give();
     }
+};
+
+// run_lua(): the script and its limits, and once the scene task has ended
+// the run, its result. Shared like SceneQuery, so a caller that gave up
+// leaves nothing the task could write into.
+struct LuaRunJob {
+    os::LargeString code;
+    size_t memory_bytes = 0;
+    uint32_t timeout_ms = 0;
+    // os::now_ms() when run_lua() was called, and when the run must end.
+    uint64_t start_ms = 0;
+    uint64_t deadline_ms = 0;
+    os::Semaphore sem{1, 0};
+    os::Mutex mu;
+    bool done = false;
+    Result<LuaRunResult> result = Result<LuaRunResult>::err(ErrorCode::Timeout, "not answered");
+
+    void finish(Result<LuaRunResult> r) {
+        {
+            std::lock_guard<os::Mutex> lock(mu);
+            if (done) return;
+            done = true;
+            result = std::move(r);
+        }
+        sem.give();
+    }
+};
+
+// The output of a run: the tail of what print and wisp.log wrote
+// (LuaRunResult::output). In PSRAM, and never more than twice
+// kLuaRunOutputBytes, whatever the script prints.
+class OutputTail {
+public:
+    void add(std::string_view piece);
+    // The kept tail, "…" in front when anything was dropped.
+    os::LargeString take();
+
+private:
+    os::LargeString buf_;
+    bool cut_ = false;
+};
+
+// One scene's downloads: begun on the worker while `open`, cancelled all
+// at once by cancel_files(). The lock is held across a download's
+// SceneHttp::submit(), so once cancel_files() has closed the gate every
+// request of the scene is either cancelled here or not sent at all.
+struct SceneRuntime::FilesGate {
+    os::Mutex mu;
+    bool open = true;
+    std::vector<std::shared_ptr<core::FileDownload>> active;
+
+    void forget(const core::FileDownload* dl) {
+        std::lock_guard<os::Mutex> lock(mu);
+        std::erase_if(active, [dl](const auto& p) { return p.get() == dl; });
+    }
+};
+
+// run_lua()'s VM on the scene task (scene_runtime_lua.cpp). `api` is
+// declared before `vm`, which points at it, so it is destroyed after.
+struct SceneRuntime::AgentRun {
+    std::shared_ptr<LuaRunJob> job;
+    uint32_t instance = 0;
+    SceneApi api;
+    std::shared_ptr<FilesGate> files_gate;
+    OutputTail output;
+    // The task ended (SceneApi::task_done) with `outcome`.
+    bool ended = false;
+    TaskOutcome outcome;
+    std::unique_ptr<Vm> vm;
 };
 
 namespace msg {
@@ -249,12 +320,21 @@ struct StoreSet {
     std::shared_ptr<SceneQuery> job;
 };
 
+// run_lua(): start the run.
+struct LuaRun {
+    std::shared_ptr<LuaRunJob> job;
+};
+// run_lua() was cancelled: end the run of `job` if it is still going.
+struct LuaStop {
+    std::shared_ptr<LuaRunJob> job;
+};
+
 // stop(): close every scene and end the task.
 struct Quit {};
 
 using Body = std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone,
                           StoreDone, Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor,
-                          FilesDone, Quit, CheckBuild, Eval, StoreDump, StoreSet>;
+                          FilesDone, Quit, CheckBuild, Eval, StoreDump, StoreSet, LuaRun, LuaStop>;
 
 }  // namespace msg
 

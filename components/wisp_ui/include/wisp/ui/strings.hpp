@@ -246,6 +246,8 @@ enum class StrId : uint16_t {
     AgentNoteFileRemoved,
     // http.fetch's note (agent-tools spec 3.1), "{}" the host only.
     AgentNoteFetch,
+    // lua.run's note (agent-tools spec 4.1).
+    AgentNoteLuaRun,
     // Device confirmations (spec 6.1): deleting a scene, followed by
     // AgentConfirmWithData when its data goes too; removing one of its
     // files ("{}" the scene's name, then the file name).

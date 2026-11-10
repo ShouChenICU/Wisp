@@ -166,6 +166,22 @@
 // scene's downloads before its requests: the transfer stops and the
 // worker removes the partial file.
 //
+// The agent's Lua (agent-tools spec 4.2, 4.3; scene_runtime_lua.cpp):
+// run_lua() hands a script to the scene task, which runs it in a VM of its
+// own, made for the call and destroyed when it ends. That VM is no scene:
+// it has no slot, view, store or `scene` table, only the bindings spec 4.2
+// lists (wisp.http as the Agent principal under net::kAgentHttpId,
+// wisp.files in core::kAgentFilesId's area, wisp.notify as "Wisp",
+// wisp.device, wisp.log, wisp.json and wisp.sleep). It draws on the
+// scenes' VmPool, never more than is left there (no scene is evicted for
+// it), and runs the script as a task (lua_task.hpp) with
+// kLuaRunSliceMs slices. Each slice, each result the script waits for and
+// each of its wisp.sleep timers is a message of its own, between the
+// scenes' messages, so the scenes keep running while the script waits.
+// print and wisp.log go to the log (tag "agent.lua") and into the
+// result's output. The VM gets a new instance number, so a result that
+// arrives after it is gone is dropped as stale.
+//
 // A hook is a function the scene stores in its `scene` table
 // (scene.on_show = function() ... end).
 //
@@ -234,6 +250,8 @@ namespace wisp::scene {
 
 struct SceneMessage;
 struct SceneQuery;
+struct LuaRunJob;
+struct SceneApi;
 class SceneView;
 struct DeviceInfo;
 enum class DeviceEvent : uint8_t;
@@ -269,6 +287,42 @@ struct BackgroundScene {
 // SceneRuntime::eval()'s default budget (agent-core spec 4.2); the most
 // JSON its result may take is kEvalResultMaxBytes (lua_task.hpp).
 inline constexpr uint32_t kEvalMs = 200;
+
+// run_lua() (agent-tools spec 4.1, 4.2): one slice's limit, the output
+// kept, the least memory a run starts with, the source's and the run's
+// limits.
+inline constexpr uint32_t kLuaRunSliceMs = 1000;
+inline constexpr size_t kLuaRunOutputBytes = 8 * 1024;
+inline constexpr size_t kLuaRunMinMemory = 256 * 1024;
+inline constexpr size_t kLuaRunMaxMemory = 2 * 1024 * 1024;
+inline constexpr size_t kLuaRunMaxSource = 64 * 1024;
+inline constexpr uint32_t kLuaRunMinMs = 1000;
+inline constexpr uint32_t kLuaRunMaxMs = 300000;
+
+struct LuaRunOptions {
+    uint32_t timeout_ms = 30000;        // kLuaRunMinMs-kLuaRunMaxMs
+    size_t memory_bytes = 1024 * 1024;  // kLuaRunMinMemory-kLuaRunMaxMemory
+    // Polled every 20 ms while the run waits; true stops it ("cancelled").
+    std::function<bool()> cancelled;
+};
+
+struct LuaRunResult {
+    bool ok = false;
+    // ok: the return values as JSON (none -> null, one -> it, several ->
+    // an array), at most kEvalResultMaxBytes.
+    os::LargeString json;
+    // !ok: compile | runtime | timeout | memory | too_large | no_memory |
+    // cancelled.
+    std::string error;
+    // ScriptError::text() for the script's own errors, else a short reason.
+    std::string message;
+    // What print and wisp.log wrote, one line each: the last
+    // kLuaRunOutputBytes, with "…" in front when earlier output was dropped.
+    os::LargeString output;
+    uint32_t ms = 0;
+    // The VM's peak heap (Vm::peak_bytes()).
+    size_t memory_peak = 0;
+};
 
 struct SceneRuntimeDeps {
     core::EventBus& bus;
@@ -481,6 +535,17 @@ public:
     // returns), which the scene's wisp.store.get() sees at once.
     Result<void> store_set(const std::string& id, std::string_view key, std::string_view json);
 
+    // Runs `code` (the chunk "run") on a VM of its own (file header) and
+    // waits for it to end, for opts.timeout_ms at most (then "timeout"),
+    // polling opts.cancelled. Its own failures are in the LuaRunResult. Busy
+    // when the runtime is not running, its queue stays full, another
+    // run_lua() is under way, or on the UI thread, the scene task or the
+    // storage worker; InvalidArgument for options out of range or code past
+    // kLuaRunMaxSource.
+    Result<LuaRunResult> run_lua(std::string_view code, LuaRunOptions opts);
+    // What the scenes' VmPool holds right now (and the run_lua() VM with it).
+    size_t vm_pool_used() const { return pool_.used(); }
+
     // Messages dropped because no running scene has their instance, and
     // view events for a scene that has gone to the background.
     uint64_t stale_dropped() const { return stale_dropped_.load(); }
@@ -500,6 +565,8 @@ private:
     // One running scene, in front or in the background; scene task only.
     struct Slot;
     struct FilesGate;
+    // run_lua()'s VM and what goes with it (scene task only).
+    struct AgentRun;
     // At most one scene in front and kMaxBackground behind it, and for a
     // moment one more: a scene sent to the background before the eviction
     // that follows it.
@@ -628,6 +695,15 @@ private:
     // Gives the scene's wisp.http its proxy: the declared hosts, and
     // results that come back as HttpDone messages for this instance.
     void wire_http(Slot& s);
+    // wire_http()'s and wire_files()'s work on `api`, for scene `id`'s
+    // `instance`. `hosts`: what a download is checked against; null for
+    // the Agent principal, whose URLs SceneHttp checks its own way.
+    void wire_http_api(SceneApi& api, const std::string& id, uint32_t instance);
+    void wire_files_api(SceneApi& api, const std::string& id, uint32_t instance,
+                        const std::shared_ptr<FilesGate>& gate,
+                        const std::vector<std::string>* hosts);
+    // cancel_files()'s work on a gate.
+    void close_gate(const std::shared_ptr<FilesGate>& gate);
     // Gives the scene's wisp.sensor the service, and batches that come
     // back as Sensor messages for this instance.
     void wire_sensors(Slot& s);
@@ -698,6 +774,24 @@ private:
     bool wants_minute(const Slot& s) const;
     // Whether the scene's minute ticks now (file header).
     bool minute_ticks(const Slot& s) const;
+
+    // run_lua() on the scene task (scene_runtime_lua.cpp).
+    void lua_start(const std::shared_ptr<LuaRunJob>& job);
+    // The caller stopped waiting (`cancelled`) or the runtime stops.
+    void lua_stop(const LuaRunJob* job, const char* error, std::string message);
+    // A result for the run's VM (HttpDone, FilesDone); false if `m` is not
+    // for it.
+    bool lua_message(SceneMessage& m);
+    // After each step of the run: ends it once its task has ended or `err`
+    // (what the step returned) stopped it.
+    void lua_settle(const std::optional<ScriptError>& err);
+    // Ends the run: the result goes to its caller, every request and
+    // download of the VM is cancelled and the VM goes.
+    void lua_end(LuaRunResult r);
+    // Fires the run's due wisp.sleep timers, and stops it at its deadline.
+    void lua_clock();
+    // How long the task may wait for the run's timers and deadline.
+    uint64_t lua_wait_ms(uint64_t now) const;
 
     // --- UI thread ---
     void ui_frame();
@@ -796,6 +890,11 @@ private:
     // post_ui()'s jobs not yet run.
     os::Mutex ui_jobs_mu_;
     os::LargeVector<UiJob> ui_jobs_;
+
+    // A run_lua() call is under way (any thread).
+    std::atomic<bool> lua_busy_{false};
+    // Scene task only; destroyed before pool_ (declared after it).
+    os::LargeUnique<AgentRun> agent_;
 };
 
 }  // namespace wisp::scene

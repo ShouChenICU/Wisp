@@ -99,21 +99,6 @@ const char* to_string(LaunchReason r) {
     return "user";
 }
 
-// One scene's downloads: begun on the worker while `open`, cancelled all
-// at once by cancel_files(). The lock is held across a download's
-// SceneHttp::submit(), so once cancel_files() has closed the gate every
-// request of the scene is either cancelled here or not sent at all.
-struct SceneRuntime::FilesGate {
-    os::Mutex mu;
-    bool open = true;
-    std::vector<std::shared_ptr<core::FileDownload>> active;
-
-    void forget(const core::FileDownload* dl) {
-        std::lock_guard<os::Mutex> lock(mu);
-        std::erase_if(active, [dl](const auto& p) { return p.get() == dl; });
-    }
-};
-
 struct SceneRuntime::Slot {
     std::string id;
     std::string name;
@@ -796,6 +781,7 @@ SceneRuntime::Slot* SceneRuntime::target(const SceneMessage& m) {
 
 void SceneRuntime::handle(SceneMessage& m) {
     msg::Body& body = m.body;
+    if (lua_message(m)) return;
     if (auto* b = std::get_if<msg::Load>(&body)) {
         begin_open(m.scene_id, std::move(b->args), b->reason, b->restore, b->done, b->reopen);
     } else if (std::holds_alternative<msg::Open>(body)) {
@@ -902,10 +888,15 @@ void SceneRuntime::handle(SceneMessage& m) {
         restore(std::move(b->ids));
     } else if (auto* b = std::get_if<msg::Notify>(&body)) {
         notify(m.scene_id, b->note_id);
+    } else if (auto* b = std::get_if<msg::LuaRun>(&body)) {
+        lua_start(b->job);
+    } else if (auto* b = std::get_if<msg::LuaStop>(&body)) {
+        lua_stop(b->job.get(), "cancelled", "cancelled");
     } else if (std::holds_alternative<msg::Quit>(body)) {
         // First: the scenes closed here stay on the background list
         // (persist_background() writes nothing from now on).
         quit_ = true;
+        lua_stop(nullptr, "cancelled", "the scene runtime stopped");
         for (uint32_t instance : instances())
             if (Slot* s = find(instance)) close_slot(*s);
     }
@@ -1400,23 +1391,24 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason)
 }
 
 void SceneRuntime::wire_http(Slot& s) {
+    deps_.http->set_hosts(s.id, s.package->manifest.http_hosts);
+    wire_http_api(s.scene->api(), s.id, s.instance);
+}
+
+void SceneRuntime::wire_http_api(SceneApi& api, const std::string& id, uint32_t instance) {
     net::SceneHttp& http = *deps_.http;
-    http.set_hosts(s.id, s.package->manifest.http_hosts);
     // Results come back from the proxy's task (or, for a request refused
     // at once, from inside submit() on this task) as messages for this
     // instance; one for an instance that is gone is dropped like any
     // stale message.
-    auto deliver = [link = link_, id = s.id, instance = s.instance](uint32_t cb,
-                                                                    net::SceneHttpResult r) {
+    auto deliver = [link = link_, id, instance](uint32_t cb, net::SceneHttpResult r) {
         auto m = make_message(id, instance, msg::HttpDone{cb, std::move(r)});
         std::lock_guard<os::Mutex> lock(link->mu);
         if (link->rt == nullptr) return;
         if (!post_scene_message(*link->rt, std::move(m)))
             WLOG_W(scene_tag(id).c_str(), "http: a result was dropped: scene queue full");
     };
-    SceneApi& api = s.scene->api();
-    api.http_submit = [&http, deliver, id = s.id, instance = s.instance](
-                          uint32_t cb, net::SceneHttpRequest req) {
+    api.http_submit = [&http, deliver, id, instance](uint32_t cb, net::SceneHttpRequest req) {
         req.scene_id = id;
         req.instance = instance;
         http.submit(std::move(req),
@@ -1448,13 +1440,19 @@ void SceneRuntime::wire_sensors(Slot& s) {
 }
 
 void SceneRuntime::wire_files(Slot& s) {
+    s.files_gate = std::allocate_shared<FilesGate>(os::LargeAllocator<FilesGate>());
+    wire_files_api(s.scene->api(), s.id, s.instance, s.files_gate, &s.package->manifest.http_hosts);
+}
+
+void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t instance,
+                                  const std::shared_ptr<FilesGate>& gate,
+                                  const std::vector<std::string>* hosts) {
     core::SceneFiles& files = *deps_.files;
     core::StorageWorker& worker = deps_.worker;
-    s.files_gate = std::allocate_shared<FilesGate>(os::LargeAllocator<FilesGate>());
     // Results come back from the worker (or, for a refusal, from this
     // task) as messages for this instance; one for an instance that is
     // gone is dropped like any stale message.
-    auto deliver = [link = link_, id = s.id, instance = s.instance](uint32_t cb, FilesResult r) {
+    auto deliver = [link = link_, id, instance](uint32_t cb, FilesResult r) {
         auto m = make_message(id, instance, msg::FilesDone{cb, std::move(r)});
         std::lock_guard<os::Mutex> lock(link->mu);
         if (link->rt == nullptr) return;
@@ -1466,8 +1464,7 @@ void SceneRuntime::wire_files(Slot& s) {
         r.error = "busy";
         deliver(cb, std::move(r));
     };
-    SceneApi& api = s.scene->api();
-    api.files_run = [&files, &worker, deliver, busy, id = s.id](uint32_t cb, FilesJob job) {
+    api.files_run = [&files, &worker, deliver, busy, id](uint32_t cb, FilesJob job) {
         const bool queued = worker.submit(
             [&files, deliver, id, cb, job = std::move(job)] { deliver(cb, job(files, id)); });
         if (!queued) busy(cb);
@@ -1479,12 +1476,15 @@ void SceneRuntime::wire_files(Slot& s) {
     };
     if (deps_.http == nullptr) return;
     net::SceneHttp& http = *deps_.http;
-    api.files_download = [&files, &worker, &http, deliver, busy, gate = s.files_gate, id = s.id,
-                          instance = s.instance, hosts = s.package->manifest.http_hosts](
-                             uint32_t cb, net::SceneHttpRequest req, std::string name) {
+    std::optional<std::vector<std::string>> checked;
+    if (hosts != nullptr) checked = *hosts;
+    api.files_download = [&files, &worker, &http, deliver, busy, gate, id, instance,
+                          hosts = std::move(checked)](uint32_t cb, net::SceneHttpRequest req,
+                                                      std::string name) {
         // SceneHttp checks the URL again; checked here first so a refused
         // download never picks the scene's files location.
-        if (std::string code = net::SceneHttp::check_url(req.url, hosts); !code.empty()) {
+        std::string code = hosts ? net::SceneHttp::check_url(req.url, *hosts) : std::string();
+        if (!code.empty()) {
             FilesResult r;
             r.error = std::move(code);
             deliver(cb, std::move(r));
@@ -1555,13 +1555,15 @@ void SceneRuntime::wire_files(Slot& s) {
     };
 }
 
-void SceneRuntime::cancel_files(Slot& s) {
-    if (!s.files_gate) return;
+void SceneRuntime::cancel_files(Slot& s) { close_gate(s.files_gate); }
+
+void SceneRuntime::close_gate(const std::shared_ptr<FilesGate>& gate) {
+    if (!gate) return;
     std::vector<std::shared_ptr<core::FileDownload>> active;
     {
-        std::lock_guard<os::Mutex> lock(s.files_gate->mu);
-        s.files_gate->open = false;
-        active.swap(s.files_gate->active);
+        std::lock_guard<os::Mutex> lock(gate->mu);
+        gate->open = false;
+        active.swap(gate->active);
     }
     for (auto& dl : active) {
         dl->cancel();
@@ -1994,11 +1996,13 @@ uint32_t SceneRuntime::scene_wait_ms() {
             wait = std::min<uint64_t>(wait, *due > now ? *due - now : 0);
         if (minute_ticks(*s)) wait = std::min(wait, s->ticker.next_poll_ms(wall_now(), now));
     }
+    wait = std::min(wait, lua_wait_ms(now));
     return static_cast<uint32_t>(std::min<uint64_t>(wait, os::kForever));
 }
 
 void SceneRuntime::run_scene_clock() {
     run_timers();
+    lua_clock();
     for (uint32_t instance : instances()) {
         Slot* s = find(instance);
         if (s != nullptr && minute_ticks(*s) && s->ticker.poll(wall_now(), os::now_ms()))

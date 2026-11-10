@@ -449,6 +449,7 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
         check("http",
               agent::add_http_tools(*registry_, agent::HttpToolDeps{.http = *deps_.scene_http}));
     }
+    check("lua", agent::add_lua_tools(*registry_, agent::LuaToolDeps{.runtime = deps_.runtime}));
     check("memory", agent::add_memory_tools(*registry_, agent::MemoryToolDeps{.store = *memory_}));
     if (deps_.reminders != nullptr) {
         check("todo", agent::add_todo_tools(*registry_,

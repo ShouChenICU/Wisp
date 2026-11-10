@@ -301,6 +301,8 @@ const char* strings_en(StrId id) {
             return "Deleted a file of \"{}\": {}";
         case StrId::AgentNoteFetch:
             return "Fetched {}";
+        case StrId::AgentNoteLuaRun:
+            return "Ran a Lua script";
         case StrId::AgentConfirmDelete:
             return "The agent wants to delete the scene \"{}\"";
         case StrId::AgentConfirmWithData:

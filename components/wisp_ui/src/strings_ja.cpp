@@ -304,6 +304,8 @@ const char* strings_ja(StrId id) {
             return "「{}」のファイル {} を削除しました";
         case StrId::AgentNoteFetch:
             return "{} にアクセス";
+        case StrId::AgentNoteLuaRun:
+            return "Lua スクリプトを実行";
         case StrId::AgentConfirmDelete:
             return "Agent がシーン「{}」を削除しようとしています";
         case StrId::AgentConfirmWithData:
