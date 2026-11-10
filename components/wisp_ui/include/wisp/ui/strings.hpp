@@ -244,6 +244,8 @@ enum class StrId : uint16_t {
     AgentNoteEval,
     AgentNoteDeleted,
     AgentNoteFileRemoved,
+    // http.fetch's note (agent-tools spec 3.1), "{}" the host only.
+    AgentNoteFetch,
     // Device confirmations (spec 6.1): deleting a scene, followed by
     // AgentConfirmWithData when its data goes too; removing one of its
     // files ("{}" the scene's name, then the file name).

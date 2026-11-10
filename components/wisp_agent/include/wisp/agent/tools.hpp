@@ -18,6 +18,7 @@
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/net/scene_http.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/scene/ui_inspector.hpp"
 
@@ -79,6 +80,26 @@ struct MemoryToolDeps {
 // over MemoryStore, run on the flash thread (ToolThread::Fs), since every
 // one of them reads or writes notes.json.
 Result<void> add_memory_tools(ToolRegistry& reg, MemoryToolDeps deps);
+
+struct HttpToolDeps {
+    net::SceneHttp& http;
+};
+
+// http.fetch (agent-tools spec 3): a thin adapter over SceneHttp's Agent
+// principal, on ToolThread::Agent (spec 3.4). Holds the single most
+// recent response in a process-wide cache (spec 3.3), keyed by `ref`; its
+// own free functions, not a handle on HttpToolDeps, since the cache
+// outlives any one HttpToolDeps/ToolRegistry built over it (the only
+// alternative would be a second place -- AgentWiring -- that has to agree
+// with this one on a lifetime, for no benefit: there is ever one agent
+// core per process).
+Result<void> add_http_tools(ToolRegistry& reg, HttpToolDeps deps);
+
+// Drops the http.fetch response cache, invalidating any `ref` (spec 3.3):
+// AgentService calls this at the end of every turn and from
+// new_conversation(), so a `ref` never reaches past the turn, or the
+// conversation, that made it.
+void http_tools_drop_cache();
 
 struct TodoToolDeps {
     core::ReminderScheduler& scheduler;

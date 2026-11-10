@@ -302,6 +302,8 @@ const char* strings_ja(StrId id) {
             return "「{}」を削除しました";
         case StrId::AgentNoteFileRemoved:
             return "「{}」のファイル {} を削除しました";
+        case StrId::AgentNoteFetch:
+            return "{} にアクセス";
         case StrId::AgentConfirmDelete:
             return "Agent がシーン「{}」を削除しようとしています";
         case StrId::AgentConfirmWithData:

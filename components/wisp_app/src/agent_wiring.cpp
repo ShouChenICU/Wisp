@@ -445,6 +445,10 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
                                                   .submit_io = on_worker,
                                               }));
     check("docs", agent::add_docs_tools(*registry_));
+    if (deps_.scene_http != nullptr) {
+        check("http",
+              agent::add_http_tools(*registry_, agent::HttpToolDeps{.http = *deps_.scene_http}));
+    }
     check("memory", agent::add_memory_tools(*registry_, agent::MemoryToolDeps{.store = *memory_}));
     if (deps_.reminders != nullptr) {
         check("todo", agent::add_todo_tools(*registry_,

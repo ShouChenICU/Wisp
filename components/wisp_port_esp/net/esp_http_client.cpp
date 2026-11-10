@@ -73,6 +73,14 @@ bool method_of(net::Method m, esp_http_client_method_t& out, const char*& name) 
             out = HTTP_METHOD_DELETE;
             name = "DELETE";
             return true;
+        case net::Method::Patch:
+            out = HTTP_METHOD_PATCH;
+            name = "PATCH";
+            return true;
+        case net::Method::Head:
+            out = HTTP_METHOD_HEAD;
+            name = "HEAD";
+            return true;
         case net::Method::Other:
             break;
     }

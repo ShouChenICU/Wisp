@@ -57,6 +57,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/llm_client.hpp"
+#include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/scene_runtime.hpp"
@@ -183,6 +184,8 @@ struct AgentWiringDeps {
     scene::SceneRuntime& runtime;
     core::SceneRepository& repo;
     core::SceneFiles* files = nullptr;
+    // SceneWiring::http(); null: no http.fetch tool.
+    net::SceneHttp* scene_http = nullptr;
     // <System>/agent, <System>/memory/notes.json and <scene data
     // root>/.drafts.
     std::string conversation_dir{};

@@ -67,6 +67,10 @@ const char* method_name(Method m) {
             return "PUT";
         case Method::Delete:
             return "DELETE";
+        case Method::Patch:
+            return "PATCH";
+        case Method::Head:
+            return "HEAD";
         case Method::Other:
             break;
     }

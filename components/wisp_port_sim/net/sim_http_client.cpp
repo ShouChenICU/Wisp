@@ -137,6 +137,10 @@ const char* method_name(net::Method m) {
             return "PUT";
         case net::Method::Delete:
             return "DELETE";
+        case net::Method::Patch:
+            return "PATCH";
+        case net::Method::Head:
+            return "HEAD";
         case net::Method::Other:
             break;
     }
@@ -222,6 +226,8 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
     if (req.method == net::Method::Get) {
         curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    } else if (req.method == net::Method::Head) {
+        curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
     } else if (req.method != net::Method::Delete || body_size != 0) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body_size));

@@ -24,7 +24,10 @@ namespace wisp::net {
 // esp_http_server/esp_http_client, wisp_port_sim uses POSIX sockets and
 // libcurl. Routing lives above this layer, behind a single HttpHandler.
 
-enum class Method { Get, Post, Put, Delete, Other };
+// Patch and Head exist for the agent's http.fetch tool (agent-tools spec
+// 3.1), which lets the caller pick any of the six; nothing else sends
+// them yet.
+enum class Method { Get, Post, Put, Delete, Patch, Head, Other };
 
 // Which network interface a request arrived on; routes use it to restrict
 // provisioning endpoints to the setup hotspot.

@@ -9,6 +9,7 @@
 #include <string_view>
 #include <utility>
 
+#include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/ui/strings.hpp"
@@ -256,6 +257,9 @@ struct AgentService::Impl {
     }
 
     Result<void> archive() {
+        // A new conversation drops http.fetch's response cache too (spec
+        // 3.3), whether or not archiving the old one succeeds.
+        http_tools_drop_cache();
         Result<void> r = Result<void>::err(ErrorCode::Busy, "storage worker refused");
         run_io([&] { r = deps.store.archive(); });
         if (!r) {
@@ -420,6 +424,9 @@ struct AgentService::Impl {
         if (timer) timer->stop();
         in_turn = false;
         marker(turn, "turn_end", out.status);
+        // Drops http.fetch's response cache (agent-tools spec 3.3): a
+        // `ref` never reaches past the turn that made it.
+        http_tools_drop_cache();
         set_state(AgentState::Idle);
         cpu_lock.release();
         net_lock.release();

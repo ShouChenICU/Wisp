@@ -142,9 +142,16 @@ bool schema_supported(const Value& schema, std::string* why);
 // {"ok":false,"error":code,"message":message} plus `extra`.
 ToolOutput tool_error(std::string_view code, std::string_view message, Map extra = {});
 
-// Wraps text that came from a scene (agent-core spec 6.3):
-// <data source="scene:<id>">content</data>, with every "</data>" inside
-// (any letter case) neutralised to "&lt;/data>".
+// Wraps content from outside the conversation (agent-core spec 6.3,
+// agent-tools spec 7.1): <data source="...">content</data>, with every
+// "</data>" inside (any letter case) neutralised to "&lt;/data>" so the
+// content cannot close the wrapper and speak as the system. `source` is
+// used as given: "scene:<id>" (scene_data() below), "http:<host>"
+// (http.fetch) or "lua" (lua.run).
+std::string external_data(std::string_view source, std::string_view content);
+
+// external_data("scene:" + scene_id, content): text that came from a
+// scene.
 std::string scene_data(std::string_view scene_id, std::string_view content);
 
 }  // namespace wisp::agent
