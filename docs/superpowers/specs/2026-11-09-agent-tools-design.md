@@ -274,6 +274,7 @@
   - `wisp.http.post(url, body[, opts])` → `err, res`；
   - `wisp.http.request(opts)` → `err, res`（新：`opts = {method, url, headers, body, timeout_ms, follow}`，所有身份都可用，场景身份照旧受场景规则约束）；
   - `wisp.http.download(url, name[, opts])` → `err, res`；
+  - `wisp.files.write/append/read/list/remove/info(...)` → `err, res`（参数同回调式，去掉最后的 `cb`）；
   - `wisp.sleep(ms)`：0–300000 ms，返回 nil；
 - 给了回调时行为不变（回调式）；
 - 不在任务协程里（场景普通事件处理、`scene.eval`）不给回调：参数错误，与现在相同；`wisp.sleep` 在任务协程外调用报错；
