@@ -8,6 +8,10 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 
 - Faster boot: the PSRAM test at boot is off, the panel's long vendor waits after power-up are gone, and a wake from deep sleep skips the bootloader's image check. On the 1.75C board a normal boot's `boot_ms` went from 2410 to 1336 ms, and a wake from deep sleep to the home screen from 3.64 to 1.56 s.
 
+### Fixes
+
+- Speech synthesis: the request no longer carries `sample_rate` unless the TTS profile sets one. It is not part of OpenAI's request, and servers that check strictly, such as speech.cpp, refused every sentence with 400 "Unrecognized request argument supplied: sample_rate".
+
 ### Tooling
 
 - New serial command `sleep`: how the chip used light sleep in deep standby (time asleep, number and lengths of sleeps, wake causes, battery drain per hour) for the running and the last session, plus the PM locks and the time in each PM mode. The sessions survive the reset that opening the serial port can cause. `sleep reset` clears them. How to measure standby on battery is in `docs/hardware/waveshare_esp32_s3_touch_amoled_1_75c.md`.
