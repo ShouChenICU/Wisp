@@ -15,7 +15,10 @@
 // still needs the callback (an argument error, as before), and so does a
 // task stopped inside a C call that cannot yield (a sort comparator, a
 // metamethod). A plain coroutine.yield() at the task's own level ends the
-// task with an error: nothing would ever resume it.
+// task with an error: nothing would ever resume it. Only the host resumes
+// a task: coroutine.resume and coroutine.close refuse a task thread (a
+// script can reach one through coroutine.running()), so a wait is never
+// cut short and its marker value never reaches a script.
 //
 // Every task ends exactly once: SceneApi::task_done runs when it returns,
 // raises, faults or is cancelled. It runs on the scene task inside the call
@@ -65,9 +68,16 @@ using TaskDone = std::function<void(uint32_t task, TaskOutcome outcome)>;
 // is each slice's time limit (0: SceneApi::task_slice_ms, and if that is 0
 // too the VM's exec_ms); a result whose JSON exceeds `max_json` ends the task
 // with "result too large". Needs install_api(); refuses a faulted VM.
+// Once the task has started, whatever the first slice does (including a
+// timeout or memory fault) is reported only through task_done (and
+// Vm::faulted()); the returned id is still the task's. The start itself
+// fails with Timeout or NoMemory when the VM's limits stop it, and with
+// InvalidArgument, Unsupported or Busy for a non-function, a VM without
+// install_api() or a faulted VM.
 Result<uint32_t> start_task(Vm& vm, const Value* args, uint32_t slice_ms, size_t max_json);
 
-// Drops every unfinished task without resuming it (its waits are forgotten).
+// Drops every unfinished task without resuming it. Its wait is dropped too:
+// the callback-table entry goes, and a wisp.sleep timer is cancelled.
 // Each gets task_done with ScriptFault::Runtime, message "cancelled". Safe on
 // a faulted VM; a host calls it before it destroys a VM that ran tasks.
 void cancel_tasks(Vm& vm);
@@ -75,5 +85,9 @@ void cancel_tasks(Vm& vm);
 // The id of the task coroutine running `L`, 0 when `L` is not one (the main
 // thread, or a coroutine the script made itself).
 uint32_t current_task(lua_State* L);
+
+// True when the value at `idx` is a task thread that has not ended.
+// Non-raising; needs three free stack slots.
+bool is_task_thread(lua_State* L, int idx);
 
 }  // namespace wisp::scene

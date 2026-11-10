@@ -149,6 +149,19 @@ std::optional<ScriptError> step(Vm& vm, SceneApi& api, uint32_t id, lua_State* c
     return finish(vm, api, id, std::move(o));
 }
 
+// Drops what task `t` waits for, if anything: its entry in the callback
+// table (only while it still holds the task's thread) and its wisp.sleep
+// timer, so a cancelled wait holds no TimerSet slot. Non-raising.
+void drop_wait(lua_State* L, SceneApi& api, const SceneApi::TaskSlot& t) {
+    if (t.wait_key == nullptr || !lua_checkstack(L, 3) || !push_table(L, t.wait_key)) return;
+    if (lua_rawgeti(L, -1, t.wait_id) == LUA_TTHREAD && task_of(L, -1) == t.id) {
+        lua_pushnil(L);
+        lua_rawseti(L, -3, t.wait_id);
+        if (t.wait_timer) api.timers.cancel(t.wait_id);
+    }
+    lua_pop(L, 2);
+}
+
 struct StartCtx {
     const Value* args;
     uint32_t id;
@@ -213,9 +226,11 @@ Result<uint32_t> start_task(Vm& vm, const Value* args, uint32_t slice_ms, size_t
     lua_insert(L, -2);
     lua_pushlightuserdata(L, &ctx);
     if (auto err = vm.call(2, 0)) {
-        return Result<uint32_t>::err(
-            err->fault == ScriptFault::Memory ? ErrorCode::NoMemory : ErrorCode::InvalidArgument,
-            err->text());
+        // Only the VM's limits can stop start_entry (it runs no script code).
+        const ErrorCode code = err->fault == ScriptFault::Timeout  ? ErrorCode::Timeout
+                               : err->fault == ScriptFault::Memory ? ErrorCode::NoMemory
+                                                                   : ErrorCode::InvalidArgument;
+        return Result<uint32_t>::err(code, err->text());
     }
     api->tasks.push_back({id, slice_ms != 0 ? slice_ms : api->task_slice_ms, max_json});
     step(vm, *api, id, ctx.co, 1);
@@ -228,7 +243,10 @@ void cancel_tasks(Vm& vm) {
     if (api == nullptr) return;
     std::vector<SceneApi::TaskSlot> tasks;
     tasks.swap(api->tasks);
-    for (const auto& t : tasks) forget(L, t.id);
+    for (const auto& t : tasks) {
+        drop_wait(L, *api, t);
+        forget(L, t.id);
+    }
     TaskDone done = api->task_done;
     if (!done) return;
     for (const auto& t : tasks) done(t.id, failed({ScriptFault::Runtime, "", 0, "cancelled"}));
@@ -240,6 +258,10 @@ uint32_t current_task(lua_State* L) {
     const uint32_t id = task_of(L, -1);
     lua_pop(L, 1);
     return id;
+}
+
+bool is_task_thread(lua_State* L, int idx) {
+    return lua_type(L, idx) == LUA_TTHREAD && lua_checkstack(L, 2) && task_of(L, idx) != 0;
 }
 
 namespace detail {
@@ -269,7 +291,14 @@ bool take_callback(lua_State* L, int cb) {
     return true;
 }
 
-int wait(lua_State* L) {
+int wait(lua_State* L, const void* key, uint32_t id, bool timer) {
+    if (SceneApi* api = find_api(L)) {
+        if (SceneApi::TaskSlot* slot = slot_of(*api, current_task(L))) {
+            slot->wait_key = key;
+            slot->wait_id = id;
+            slot->wait_timer = timer;
+        }
+    }
     lua_pushlightuserdata(L, &kWaitKey);
     return lua_yield(L, 1);
 }

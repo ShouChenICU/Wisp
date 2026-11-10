@@ -6,7 +6,6 @@
 // that frame; decode() decodes inside protect() as well, and any error that
 // is the VM's limits (or memory) is raised again once nothing is held.
 
-#include <cstring>
 #include <string_view>
 
 #include "scene_api.hpp"
@@ -54,29 +53,32 @@ int encode(lua_State* L) {
     return 1;
 }
 
+struct DecodeCtx {
+    Text text;
+    const char* kind;
+};
+
 void decode_text(lua_State* L, void* ctx) {
-    const auto* t = static_cast<const Text*>(ctx);
-    decode_json(L, std::string_view(t->data, t->size));
+    auto* c = static_cast<DecodeCtx*>(ctx);
+    decode_json(L, std::string_view(c->text.data, c->text.size), &c->kind);
 }
 
 int decode(lua_State* L) {
     luaL_checktype(L, 1, LUA_TSTRING);
     lua_settop(L, 1);
-    Text t{};
-    t.data = lua_tolstring(L, 1, &t.size);
-    const int status = protect(L, decode_text, &t);
+    DecodeCtx c{};
+    c.text.data = lua_tolstring(L, 1, &c.text.size);
+    const int status = protect(L, decode_text, &c);
     if (status == LUA_OK) return 1;
     Vm* vm = Vm::of(L);
-    if (status == LUA_ERRMEM || vm->past_limits()) {
+    // Anything but the text's own fault (memory, the VM's limits) is
+    // raised again.
+    if (c.kind == nullptr || vm->past_limits()) {
         vm->check_limits(L);
         return lua_error(L);
     }
-    // decode_json's own messages: "JSON nested more than N deep" or
-    // "invalid JSON at byte N".
-    const char* msg = lua_tostring(L, -1);
-    const bool deep = msg != nullptr && std::strstr(msg, "nested") != nullptr;
     lua_pushnil(L);
-    lua_pushstring(L, deep ? "too_deep" : "bad_json");
+    lua_pushstring(L, c.kind);
     return 2;
 }
 

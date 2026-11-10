@@ -94,7 +94,7 @@ int sleep(lua_State* L) {
         return luaL_error(L, "wisp.sleep: too_many_timers");
     lua_pushvalue(L, 2);
     lua_rawseti(L, 3, id);
-    return detail::wait(L);
+    return detail::wait(L, &kCallbacksKey, id, true);
 }
 
 struct RunCtx {

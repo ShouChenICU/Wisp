@@ -262,6 +262,12 @@ struct SceneApi {
         uint32_t id = 0;
         uint32_t slice_ms = 0;
         size_t max_json = kEvalResultMaxBytes;
+        // What it waits for while suspended: callback `wait_id` in the
+        // registry table at `wait_key`, a wisp.sleep timer when
+        // `wait_timer` (cancel_tasks() drops both).
+        const void* wait_key = nullptr;
+        uint32_t wait_id = 0;
+        bool wait_timer = false;
     };
     std::vector<TaskSlot> tasks;
     uint32_t next_task_id = 1;
@@ -336,9 +342,14 @@ void push_waiter(lua_State* L, int cb);
 // (false); nil or none is replaced by push_waiter()'s thread (true, the
 // call waits); anything else raises an argument error.
 bool take_callback(lua_State* L, int cb);
-// Suspends the running task until resume_waiting() resumes it; a binding
-// returns this, with only trivially destructible locals in its frame.
-int wait(lua_State* L);
+// Suspends the running task until resume_waiting() resumes it, noting
+// that it waits for callback `id` in the registry table at `key` (and,
+// with `timer`, for TimerSet timer `id`) so cancel_tasks() can drop the
+// wait. A binding returns this, with only trivially destructible locals
+// in its frame.
+int wait(lua_State* L, const void* key, uint32_t id, bool timer);
+// wait() for wisp.files callback `id` (register_files_callback()).
+int wait_files(lua_State* L, uint32_t id);
 // True when callback `id` in the registry table at `key` is a waiting task
 // thread. Non-raising.
 bool is_waiting(lua_State* L, const void* key, uint32_t id);

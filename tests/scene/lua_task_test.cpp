@@ -173,8 +173,9 @@ return r.status
     EXPECT_EQ(req.url, "https://x/p");
     EXPECT_EQ(std::string(req.body), "b");
     EXPECT_EQ(req.principal, wisp::net::HttpPrincipal::Scene);
-    EXPECT_EQ(req.timeout_ms, 5000u);
-    EXPECT_EQ(req.max_redirects, wisp::net::AgentHttpLimits::kMaxRedirects);
+    // A scene keeps the proxy's deadline and never follows redirects.
+    EXPECT_EQ(req.timeout_ms, 0u);
+    EXPECT_EQ(req.max_redirects, 0u);
     EXPECT_EQ(req.headers, (std::vector<std::pair<std::string, std::string>>{{"X-A", "1"}}));
     EXPECT_FALSE(wisp::scene::run_http_callback(*vm, http[0].first, status(201)));
     ASSERT_EQ(done.size(), 1u);
@@ -189,6 +190,12 @@ TEST_F(LuaTask, AgentPrincipalFromApi) {
     EXPECT_EQ(http[0].second.principal, wisp::net::HttpPrincipal::Agent);
     EXPECT_EQ(http[0].second.method, wisp::net::Method::Head);
     EXPECT_EQ(http[0].second.max_redirects, 0u);
+    EXPECT_EQ(http[0].second.timeout_ms, 0u);
+    ASSERT_TRUE(
+        start(R"(wisp.http.request{url = "https://x/", timeout_ms = 5000, follow = true})"));
+    ASSERT_EQ(http.size(), 2u);
+    EXPECT_EQ(http[1].second.timeout_ms, 5000u);
+    EXPECT_EQ(http[1].second.max_redirects, wisp::net::AgentHttpLimits::kMaxRedirects);
 }
 
 TEST_F(LuaTask, AwaitFilesAndSleep) {
@@ -343,14 +350,55 @@ table.sort(t, function(a, b) wisp.sleep(100) return a < b end)
     EXPECT_EQ(api.timers.size(), 0u);
 }
 
+TEST_F(LuaTask, ScriptCannotResumeOrCloseTask) {
+    make();
+    auto id = start(R"(
+_G.T = coroutine.running()
+local e, r = wisp.http.get("https://x/")
+return r.status
+)");
+    ASSERT_TRUE(id);
+    ASSERT_EQ(http.size(), 1u);
+    EXPECT_FALSE(run(R"(
+local ok, e = pcall(coroutine.resume, _G.T)
+assert(not ok and e:find("cannot resume a task"), e)
+ok, e = pcall(coroutine.close, _G.T)
+assert(not ok and e:find("cannot close a task"), e)
+local w = coroutine.wrap(function() return coroutine.resume(_G.T) end)
+ok, e = pcall(w)
+assert(not ok and e:find("cannot resume a task"), e)
+assert(coroutine.status(_G.T) == "suspended")
+)"));
+    // Another task cannot either.
+    ASSERT_TRUE(start("return pcall(coroutine.resume, _G.T)"));
+    ASSERT_EQ(done.size(), 1u);
+    EXPECT_NE(std::string(done[0].second.json).find("cannot resume a task"), std::string::npos)
+        << std::string(done[0].second.json);
+    EXPECT_FALSE(vm->faulted());
+    // The task still gets its own answer.
+    EXPECT_FALSE(wisp::scene::run_http_callback(*vm, http[0].first, status(200)));
+    ASSERT_EQ(done.size(), 2u);
+    EXPECT_EQ(done[1].first, id.value());
+    EXPECT_EQ(std::string(done[1].second.json), "200");
+    // Once ended it is an ordinary dead coroutine.
+    EXPECT_FALSE(run(R"(
+local ok, e = coroutine.resume(_G.T)
+assert(not ok and e:find("dead"), e)
+)"));
+}
+
 TEST_F(LuaTask, BareYieldIsError) {
     make();
     ASSERT_TRUE(start("coroutine.yield(1) return 2"));
-    ASSERT_EQ(done.size(), 1u);
-    EXPECT_FALSE(done[0].second.ok);
-    ASSERT_TRUE(done[0].second.error);
-    EXPECT_EQ(done[0].second.error->fault, ScriptFault::Runtime);
-    EXPECT_NE(done[0].second.error->message.find("yield"), std::string::npos);
+    ASSERT_TRUE(start("coroutine.yield() return 2"));
+    ASSERT_TRUE(start("coroutine.yield(coroutine.running()) return 2"));
+    ASSERT_EQ(done.size(), 3u);
+    for (auto& d : done) {
+        EXPECT_FALSE(d.second.ok);
+        ASSERT_TRUE(d.second.error);
+        EXPECT_EQ(d.second.error->fault, ScriptFault::Runtime);
+        EXPECT_NE(d.second.error->message.find("yield"), std::string::npos);
+    }
 }
 
 TEST_F(LuaTask, OutsideTaskNoCallbackIsError) {
@@ -467,6 +515,8 @@ TEST_F(LuaTask, CancelDropsWaits) {
         EXPECT_EQ(d.second.error->fault, ScriptFault::Runtime);
         EXPECT_EQ(d.second.error->message, "cancelled");
     }
+    // The cancelled sleep holds no timer slot any more.
+    EXPECT_EQ(api.timers.size(), 0u);
     EXPECT_FALSE(wisp::scene::run_http_callback(*vm, http[0].first, status(200)));
     now += 100;
     fire_timers();

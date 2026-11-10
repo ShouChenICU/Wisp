@@ -46,6 +46,8 @@ inline constexpr char kJsonTooLarge[] = "record_too_large";
 // The VM's time or memory limit was reached during the walk; the caller
 // must call Vm::check_limits() once its C++ objects are gone.
 inline constexpr char kJsonLimits[] = "limits";
+// Malformed JSON text (decode_json()).
+inline constexpr char kJsonInvalid[] = "bad_json";
 
 // Encodes the value at `idx` into `out` (replacing its contents).
 // Returns nullptr on success or one of the kJson* codes above; never
@@ -69,7 +71,10 @@ bool push_json(lua_State* L, std::string_view json);
 // push_json() without the protection: raises a Lua error on malformed
 // text and checks the VM's limits every 256 values. For code already
 // inside protect() (or another lua_pcall) with no C++ objects on its
-// frames. `json` must stay valid until it returns.
-void decode_json(lua_State* L, std::string_view json);
+// frames. `json` must stay valid until it returns. When it raises for the
+// text itself it first sets *kind (if given) to kJsonInvalid or
+// kJsonTooDeep; any other error (memory, the VM's limits) leaves *kind
+// as it was.
+void decode_json(lua_State* L, std::string_view json, const char** kind = nullptr);
 
 }  // namespace wisp::scene

@@ -33,9 +33,9 @@
 //       POST, PUT, PATCH, DELETE or HEAD in any case; body as for post (a
 //       table also gets the JSON content type); timeout_ms an integer
 //       1000-120000 and follow a boolean (follow redirects, up to
-//       AgentHttpLimits::kMaxRedirects). Both go into the request, but
-//       SceneHttp honours them for the Agent principal only: a scene's
-//       request keeps the scene rules (no redirects, the proxy's timeout).
+//       AgentHttpLimits::kMaxRedirects). Both are checked for every
+//       principal but used only for the Agent one: a scene's request
+//       keeps the scene rules (no redirects, the proxy's timeout).
 //       cb as for get.
 // Requests go out as SceneApi::http_principal, with that principal's size
 // caps. In a task the callback may be left out: the call then waits and
@@ -162,9 +162,13 @@ bool do_send(lua_State* L, SceneApi& api, const SendArgs& a) {
     net::SceneHttpRequest req;
     req.principal = api.http_principal;
     req.method = a.method;
-    // SceneHttp applies these to the Agent principal only.
-    req.timeout_ms = a.timeout_ms;
-    req.max_redirects = a.follow ? net::AgentHttpLimits::kMaxRedirects : 0;
+    // Only the agent may choose its deadline and follow redirects: SceneHttp
+    // honours a request's timeout_ms whatever its principal, so a scene's
+    // request keeps 0 (the proxy's own deadline) and never follows.
+    if (api.http_principal == net::HttpPrincipal::Agent) {
+        req.timeout_ms = a.timeout_ms;
+        req.max_redirects = a.follow ? net::AgentHttpLimits::kMaxRedirects : 0;
+    }
     const bool has_type = fill_request(L, req, a.url, a.headers, caps);
     if (a.body != 0) {
         if (lua_type(L, a.body) == LUA_TSTRING) {
@@ -228,7 +232,7 @@ int submit(lua_State* L, SendArgs& a, int cb, bool waits) {
         Vm::of(L)->check_limits(L);
         return luaL_error(L, "wisp.http: limits reached");
     }
-    return waits ? detail::wait(L) : 0;
+    return waits ? detail::wait(L, &kCallbacksKey, a.id, false) : 0;
 }
 
 void check_available(lua_State* L) {
@@ -346,7 +350,7 @@ int download(lua_State* L) {
     const int headers = check_opts(L, opts);
     const uint32_t id = detail::register_files_callback(L, api, cb);
     do_download(L, api, id, headers);
-    return waits ? detail::wait(L) : 0;
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 int get(lua_State* L) { return send(L, false); }

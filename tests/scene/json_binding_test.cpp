@@ -69,6 +69,8 @@ TEST_F(JsonBinding, Errors) {
     EXPECT_EQ(eval("local v, e = wisp.json.decode('{') return tostring(v) .. ',' .. e"),
               "nil,bad_json");
     EXPECT_EQ(eval("local v, e = wisp.json.decode('') return e"), "bad_json");
+    EXPECT_EQ(eval("local v, e = wisp.json.decode('[1,]') return e"), "bad_json");
+    EXPECT_EQ(eval(R"(local v, e = wisp.json.decode('"nested"x') return e)"), "bad_json");
     EXPECT_EQ(eval("local v, e = wisp.json.decode(string.rep('[', 40) .. string.rep(']', 40)) "
                    "return e"),
               "too_deep");

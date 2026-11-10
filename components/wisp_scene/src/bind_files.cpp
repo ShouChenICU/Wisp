@@ -87,7 +87,7 @@ int write_like(lua_State* L, bool append) {
     SceneApi& api = checked_api(L);
     const uint32_t id = detail::register_files_callback(L, api, 3);
     do_write(L, api, id, append);
-    return waits ? detail::wait(L) : 0;
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 int write(lua_State* L) { return write_like(L, false); }
@@ -115,7 +115,7 @@ int read(lua_State* L) {
     // Anything past max_read is "too_large" anyway; this keeps it in size_t.
     const size_t capped = static_cast<size_t>(std::min<lua_Integer>(len, 1 << 30));
     do_read(L, api, id, static_cast<uint64_t>(offset), capped);
-    return waits ? detail::wait(L) : 0;
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 void do_remove(lua_State* L, SceneApi& api, uint32_t id) {
@@ -132,7 +132,7 @@ int remove(lua_State* L) {
     SceneApi& api = checked_api(L);
     const uint32_t id = detail::register_files_callback(L, api, 2);
     do_remove(L, api, id);
-    return waits ? detail::wait(L) : 0;
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 void do_list(SceneApi& api, uint32_t id) {
@@ -148,15 +148,17 @@ void do_info(SceneApi& api, uint32_t id) {
 int list(lua_State* L) {
     const bool waits = detail::take_callback(L, 1);
     SceneApi& api = checked_api(L);
-    do_list(api, detail::register_files_callback(L, api, 1));
-    return waits ? detail::wait(L) : 0;
+    const uint32_t id = detail::register_files_callback(L, api, 1);
+    do_list(api, id);
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 int info(lua_State* L) {
     const bool waits = detail::take_callback(L, 1);
     SceneApi& api = checked_api(L);
-    do_info(api, detail::register_files_callback(L, api, 1));
-    return waits ? detail::wait(L) : 0;
+    const uint32_t id = detail::register_files_callback(L, api, 1);
+    do_info(api, id);
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 struct RunCtx {
@@ -249,6 +251,8 @@ int args_entry(lua_State* L) {
 }  // namespace
 
 namespace detail {
+
+int wait_files(lua_State* L, uint32_t id) { return wait(L, &kCallbacksKey, id, false); }
 
 uint32_t register_files_callback(lua_State* L, SceneApi& api, int cb) {
     cb = lua_absindex(L, cb);

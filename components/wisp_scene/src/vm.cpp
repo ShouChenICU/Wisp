@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "wisp/core/scene_manifest.hpp"
+#include "wisp/scene/lua_task.hpp"
 
 namespace wisp::scene {
 
@@ -1021,9 +1022,18 @@ int Vm::co_switch(lua_State* L, lua_State* co) {
     return lua_gettop(L);
 }
 
-int Vm::co_resume(lua_State* L) { return co_switch(L, lua_tothread(L, 1)); }
+// A task thread (lua_task.hpp) belongs to its host: resuming it from a
+// script would hand the script the wait marker and leave the host's wait
+// pending, and closing it would end the task behind the host's back.
+int Vm::co_resume(lua_State* L) {
+    if (is_task_thread(L, 1)) return luaL_error(L, "cannot resume a task");
+    return co_switch(L, lua_tothread(L, 1));
+}
 
-int Vm::co_close(lua_State* L) { return co_switch(L, lua_tothread(L, 1)); }
+int Vm::co_close(lua_State* L) {
+    if (is_task_thread(L, 1)) return luaL_error(L, "cannot close a task");
+    return co_switch(L, lua_tothread(L, 1));
+}
 
 // coroutine.wrap, written out instead of wrapping lcorolib's: on an error
 // the original closes the dead coroutine (lua_closethread), which runs its
