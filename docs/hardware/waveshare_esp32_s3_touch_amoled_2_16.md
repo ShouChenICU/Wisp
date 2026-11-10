@@ -330,6 +330,9 @@ The device boots into the home screen (black background, wisp in the centre). "H
     `ESP_PM_CPU_FREQ_MAX` lock), but they limit the longest continuous stretch of light sleep to the order of
     `ButtonService`'s 50 ms, slightly raising the average power. If the measured standby current on the device is
     clearly higher than expected, these are still the first sources to investigate.
+- **Measuring a standby session**: the serial command `sleep` reports the last deep-standby session (time asleep,
+  sleep lengths, wake causes, battery drain per hour) and the PM locks; the procedure and the meaning of each line
+  are in "Measuring standby" in `docs/hardware/waveshare_esp32_s3_touch_amoled_1_75c.md`, and apply to this board too.
 
 ### Light-sleep compatibility (3b-1 spike)
 
