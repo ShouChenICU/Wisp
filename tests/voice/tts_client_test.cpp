@@ -94,7 +94,9 @@ TEST(TtsClient, RequestBodyShape) {
         EXPECT_EQ(*body.find("input"), Value("hello"));
         EXPECT_EQ(*body.find("voice"), Value("alex"));
         EXPECT_EQ(*body.find("response_format"), Value("pcm"));
-        EXPECT_EQ(*body.find("sample_rate"), Value(int64_t{24000}));
+        // Not part of OpenAI's request: servers such as speech.cpp refuse
+        // unknown fields with 400, so it is sent only when set.
+        EXPECT_EQ(body.find("sample_rate"), nullptr);
         EXPECT_EQ(body.find("speed"), nullptr);
         EXPECT_EQ(f.server.header(0, "authorization"), "Bearer sk-tts");
         // "hello" is 5 code points: 15000 + 5 * 400 (see
@@ -109,6 +111,15 @@ TEST(TtsClient, RequestBodyShape) {
             "hi", [](std::span<const int16_t>) { return true; }, [] { return false; });
         Value body = f.server.body_json(0);
         EXPECT_EQ(*body.find("speed"), Value(1.5));
+    }
+    {
+        // sample_rate only when set.
+        Fixture f(/*with_profile=*/true, ModelOptions{{"sample_rate", "16000"}});
+        f.server.push_tts({.status = 200});
+        f.client->synthesize(
+            "hi", [](std::span<const int16_t>) { return true; }, [] { return false; });
+        Value body = f.server.body_json(0);
+        EXPECT_EQ(*body.find("sample_rate"), Value(int64_t{16000}));
     }
 }
 

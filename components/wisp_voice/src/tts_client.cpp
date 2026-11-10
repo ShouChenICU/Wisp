@@ -100,7 +100,8 @@ TtsResult TtsClient::synthesize(std::string_view text,
         return result;
     }
 
-    const uint32_t rate = core::profile_tts_sample_rate(profile->options).value_or(kTtsDefaultRate);
+    const std::optional<uint32_t> asked_rate = core::profile_tts_sample_rate(profile->options);
+    const uint32_t rate = asked_rate.value_or(kTtsDefaultRate);
     const std::string voice = core::profile_tts_voice(profile->options);
     const std::optional<double> speed = core::profile_tts_speed(profile->options);
 
@@ -108,8 +109,11 @@ TtsResult TtsClient::synthesize(std::string_view text,
         {"model", Value(profile->model)},
         {"input", Value(std::string(text))},
         {"response_format", Value(std::string("pcm"))},
-        {"sample_rate", Value(static_cast<int64_t>(rate))},
     };
+    // OpenAI's request has no sample rate (its pcm is 24 kHz, the default);
+    // servers that follow it strictly, such as speech.cpp, answer 400 to an
+    // unknown field. Only a profile that sets one sends it.
+    if (asked_rate) body_map["sample_rate"] = Value(static_cast<int64_t>(*asked_rate));
     if (!voice.empty()) body_map["voice"] = Value(voice);
     if (speed) body_map["speed"] = Value(*speed);
     const std::string json_body = to_json(Value(std::move(body_map)));
