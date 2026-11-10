@@ -107,6 +107,29 @@ idf.py build && idf.py -p <port> flash
 > [!TIP]
 > After a font change, also run `idf.py fonts-flash`. Fonts live in their own partitions, which an app update does not write.
 
+## 🏠 Self-hosting the AI services
+
+Wisp talks to its models over OpenAI-compatible APIs, so chat, speech recognition and speech synthesis can each run on a machine of your own instead of a cloud provider.
+
+**Voice: [speech.cpp](https://github.com/nyosegawa/speech.cpp) is recommended.** It is a C++ server (MIT) that runs speech recognition and synthesis locally on CPU, Metal or Vulkan, with no Python, and serves OpenAI's `/v1/audio/transcriptions` and `/v1/audio/speech`. Qwen3-ASR and Qwen3-TTS understand and speak Chinese, English, Japanese and other languages, and Qwen3-TTS comes with several voices.
+
+```bash
+# on the machine that will serve the models (macOS or Linux; Windows has install.ps1)
+curl -fsSL https://raw.githubusercontent.com/nyosegawa/speech.cpp/main/install.sh | sh
+speech models                      # list the models it can download
+speech serve --host 0.0.0.0 qwen3-tts-0.6b qwen3-asr-0.6b
+```
+
+The first run downloads the models. Then, on the admin console's Models page:
+
+- **Speech recognition:** add a profile with the preset "OpenAI-compatible (custom)", the address `http://<server-ip>:8080/v1` and no API key. "Test connection" lists the models; pick the Qwen3-ASR one.
+- **Speech synthesis:** the same address; pick the Qwen3-TTS model and a voice such as `serena`. Leave the sample rate empty: Qwen3-TTS speaks at 24 kHz, which is what Wisp plays by default.
+
+> [!WARNING]
+> speech.cpp has no authentication and no TLS. Listen on `0.0.0.0` only on a network you trust, or put it behind a proxy that adds them.
+
+**Chat:** any OpenAI-compatible server works, such as [Ollama](https://ollama.com) (it has its own preset) or llama.cpp's `llama-server`. The agent drives the device through tool calling, so choose a model that handles tool calls well; small models often do not.
+
 ## 🧩 Core modules
 
 | Module | Description |
