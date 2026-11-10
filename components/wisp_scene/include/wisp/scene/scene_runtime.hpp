@@ -103,19 +103,27 @@
 //           "background", and it is neither counted towards the
 //           background's limit nor put on the background list, nor ever
 //           evicted; wisp.scene.state() is "headless" and the APIs spec
-//           3.4 refuses in the background refuse here too. Its VM draws on
-//           the shared budget: before it loads, the background scenes are
-//           evicted, least recently in front first, until it has its own
-//           limit (vm.memory_bytes) without touching what the scene in
-//           front is guaranteed; it then gets at most what is left, and
-//           with nothing left (or too little to start) the call is
-//           "no_memory". At most one scene is headless: a call to another
+//           3.4 refuses in the background refuse here too, but its timers
+//           run whether the screen is on or off. Its VM draws on the shared
+//           budget: its limit is what the budget leaves after what a scene
+//           in front is guaranteed (max(vm.memory_bytes, the front's
+//           bytes), kept even with none in front) and everything else
+//           running, at most vm.memory_bytes. Only when that is under
+//           kHeadlessMinMemory are background scenes evicted for it, least
+//           recently in front first, until it is not; if it still is, the
+//           call is "no_memory" (so is a memory fault while it loads). Once
+//           it runs, enforce_limits() charges what it holds against the
+//           background's room. At most one scene is headless: a call to another
 //           scene's tool closes it first. SceneRuntimeConfig::
 //           headless_idle_ms after its last call ended without another
 //           one, it closes like exit() (on_close, the final flush;
 //           on_state is not called). An open of it (or a notification)
-//           brings it forward as a resume does, without reloading, and it
-//           is an ordinary scene from then on. A failure while it loads is
+//           brings it forward as a resume does, without reloading, its VM
+//           limit raised to vm.memory_bytes (Vm::raise_memory_limit()), and
+//           it is an ordinary scene from then on. A boot launch or
+//           open_background() of it, if it declares "background", sends it
+//           to the background the same way (to_background()), onto the
+//           background list. A failure while it loads is
 //           the call's ("load_failed", or "no_memory" for a memory fault),
 //           and a fault later is logged like one in the background, but
 //           sends no notice: the agent's call reports it.
@@ -343,6 +351,9 @@ inline constexpr uint32_t kLuaRunMaxMs = 300000;
 inline constexpr uint32_t kToolCallMinMs = 1000;
 inline constexpr uint32_t kToolCallMaxMs = 120000;
 inline constexpr uint32_t kHeadlessIdleMs = 60000;
+// The least of the VM budget a headless scene starts with; less, after
+// evicting the background, is "no_memory" (file header).
+inline constexpr size_t kHeadlessMinMemory = 256 * 1024;
 
 struct ToolCallResult {
     bool ok = false;
@@ -773,8 +784,9 @@ private:
     // Shows the view of `s` (now in front) on the UI thread.
     void show_view(Slot& s);
     // Makes the slot of a loaded scene (VM not started yet), with `limits`
-    // (null: config_.vm); null without the memory for it.
-    Slot* add_slot(SceneMessage& m, LaunchReason reason, const VmLimits* limits = nullptr);
+    // (null: config_.vm), headless or not; null without the memory for it.
+    Slot* add_slot(SceneMessage& m, LaunchReason reason, const VmLimits* limits = nullptr,
+                   bool headless = false);
     // Gives the scene's wisp.http its proxy: the declared hosts, and
     // results that come back as HttpDone messages for this instance.
     void wire_http(Slot& s);
@@ -802,6 +814,9 @@ private:
     void go_back(Slot& s, std::shared_ptr<SceneWaiter> done, const Slot* except = nullptr);
     void to_background(Slot& s, std::shared_ptr<SceneWaiter> done, const Slot* except);
     void resume(Slot& s, std::shared_ptr<SceneWaiter> done);
+    // A boot launch or open_background() of a scene that is headless and
+    // declares "background": it goes there as it is (to_background()).
+    void headless_to_background(Slot& s, std::shared_ptr<SceneWaiter> done);
     // No scene is in front any more (foreground() says so).
     void forget_front();
     // The view of `s` goes: its patches stop, the UI thread drops it and
@@ -898,11 +913,11 @@ private:
         ToolCallResult result;
     };
     // Takes off the call running in the slot of `instance` (it closes or
-    // faults): with its task's outcome if the task already ended, else
-    // with `error`. Its caller hears it from tool_answer(), once the
-    // scene's state says what happened.
+    // faults): with its task's outcome if the task already ended and
+    // `keep_outcome` (a close), else with `error`. Its caller hears it from
+    // tool_answer(), once the scene's state says what happened.
     std::optional<ToolEnding> tool_abort(uint32_t instance, const char* error,
-                                         const std::string& message);
+                                         const std::string& message, bool keep_outcome);
     void tool_answer(std::optional<ToolEnding> ending);
     // Ends every call still loading a scene whose load left loading_.
     void tool_loads_dropped();

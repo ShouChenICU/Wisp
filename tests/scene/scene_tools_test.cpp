@@ -41,7 +41,11 @@ std::string tools_manifest(const std::string& id, const std::string& extra = "")
            R"({"name":"boom","description":"Raises"},)" +
            R"({"name":"spin","description":"Loops"},)" +
            R"({"name":"fetch","description":"Waits for HTTP"},)" +
-           R"({"name":"nap","description":"Sleeps"}])" + extra + "}";
+           R"({"name":"nap","description":"Sleeps"},)" +
+           R"({"name":"doze","description":"Sleeps a little"},)" +
+           R"({"name":"hog","description":"Holds args.kb KiB"},)" +
+           R"({"name":"deny","description":"Asks for the screen and a sensor"},)" +
+           R"({"name":"poison","description":"Breaks a binding"}])" + extra + "}";
 }
 
 const char* kNotes = R"(
@@ -60,10 +64,30 @@ wisp.tools.register("fetch", function()
   return res and res.body or err
 end)
 wisp.tools.register("nap", function() wisp.sleep(60000) print("woke") return 1 end)
-return ui.screen { ui.label { text = "notes scene" } }
+wisp.tools.register("doze", function() wisp.sleep(50) return "rested" end)
+wisp.tools.register("hog", function(args)
+  -- 64 KiB pieces: no single buffer twice the size, as one string.rep would need.
+  scene.keep = {}
+  for i = 1, args.kb // 64 do scene.keep[i] = string.rep("x", 65536) end
+  return #scene.keep
+end)
+wisp.tools.register("deny", function()
+  local a, e1 = wisp.power.keep_screen_on(true)
+  local b, e2 = wisp.sensor.subscribe("accel", function() end)
+  return e1, e2
+end)
+local level = state(0)
+wisp.tools.register("poison", function() level:set(1) return "fine" end)
+return ui.screen {
+  ui.label { text = "notes scene" },
+  ui.label { text = bind(level, function(v)
+    if v > 0 then error("bad bind") end
+    return "level ok"
+  end) },
+}
 )";
 
-constexpr uint32_t kIdleMs = 800;
+constexpr uint32_t kIdleMs = 1500;
 
 class CallTool : public wisp::test::SceneRuntimeFixture {
 protected:
@@ -156,18 +180,19 @@ TEST_F(CallTool, HeadlessIdleClose) {
     start();
     install_notes();
     ASSERT_TRUE(call("notes", "get").ok);
-    std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs * 6 / 10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     ASSERT_EQ(rt->status("notes").state, SceneState::Headless);
-    // A new call starts the idle time again.
+    // A new call starts the idle time again: 2000 ms after the first one,
+    // past kIdleMs, it is still there.
     ASSERT_TRUE(call("notes", "get").ok);
     const auto t1 = std::chrono::steady_clock::now();
-    std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs * 6 / 10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     EXPECT_EQ(rt->status("notes").state, SceneState::Headless);
-    ASSERT_TRUE(wait_state("notes", SceneState::Stopped));
+    ASSERT_TRUE(wait_state("notes", SceneState::Stopped, 3000));
     const auto ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1)
             .count();
-    EXPECT_GE(ms, kIdleMs - 50);
+    EXPECT_GE(ms, kIdleMs - 100);
     EXPECT_EQ(count_log("notes", "close"), 1u);
     EXPECT_EQ(events().back(), (StateEvent{"notes", "stopped"}));
     EXPECT_TRUE(log_has("scene", "notes: closed"));
@@ -309,6 +334,104 @@ return ui.screen { ui.label { text = "big" } }
     ASSERT_EQ(notices.size(), 1u);
     EXPECT_EQ(notices[0].kind, wisp::scene::SceneNoticeKind::EvictedMemory);
     EXPECT_EQ(notices[0].id, "big");
+}
+
+// Default budget ratios (3 MiB, 2 MiB per scene): a headless start with a
+// scene in front leaves a small background scene where it is.
+TEST_F(CallTool, BackgroundSurvivesHeadlessStart) {
+    std::vector<wisp::scene::SceneNotice> notices;
+    std::mutex notice_mu;
+    configure_deps = [&](wisp::scene::SceneRuntimeDeps& d) {
+        d.http = http.get();
+        d.files = files.get();
+        d.on_notice = [&](const wisp::scene::SceneNotice& n) {
+            std::lock_guard<std::mutex> lock(notice_mu);
+            notices.push_back(n);
+        };
+    };
+    start();
+    install("bgs", "return ui.screen { ui.label { text = 'bgs' } }",
+            {{"scene.json", R"({"id":"bgs","name":"Bg","version":"1.0.0","schema_version":1,)"
+                            R"("background":true})"}});
+    install("front", "return ui.screen { ui.label { text = 'front' } }");
+    install_notes();
+    ASSERT_TRUE(rt->open("bgs"));
+    ASSERT_TRUE(rt->open("front"));
+    ASSERT_EQ(rt->status("bgs").state, SceneState::Background);
+    ToolCallResult r = call("notes", "get");
+    EXPECT_TRUE(r.ok) << r.error << " " << r.message;
+    EXPECT_EQ(rt->status("bgs").state, SceneState::Background);
+    EXPECT_EQ(rt->status("front").state, SceneState::Running);
+    std::lock_guard<std::mutex> lock(notice_mu);
+    EXPECT_TRUE(notices.empty());
+}
+
+// With no scene in front, a headless one still leaves vm.memory_bytes of
+// the budget for a scene the user may open.
+TEST_F(CallTool, HeadlessLeavesFrontReserve) {
+    start();
+    install_notes();
+    ToolCallResult r = call("notes", "hog", R"({"kb":512})");
+    ASSERT_TRUE(r.ok) << r.error << " " << r.message;
+    EXPECT_EQ(str(r.json), "8");
+    // 3 MiB budget - 2 MiB reserve: 1.5 MiB does not fit.
+    r = call("notes", "hog", R"({"kb":1536})");
+    EXPECT_FALSE(r.ok);
+    EXPECT_EQ(r.error, "scene_error");
+}
+
+// A headless scene's timers run with the screen off.
+TEST_F(CallTool, ScreenOffTimersRun) {
+    start();
+    install_notes();
+    rt->set_visible(false);
+    ToolCallResult r = call("notes", "doze", "{}", 3000);
+    ASSERT_TRUE(r.ok) << r.error << " " << r.message;
+    EXPECT_EQ(str(r.json), R"("rested")");
+}
+
+// Spec 3.4's rules: no screen lock and no sensors without a view.
+TEST_F(CallTool, HeadlessRefusesPowerAndSensors) {
+    start();
+    install_notes();
+    ToolCallResult r = call("notes", "deny");
+    ASSERT_TRUE(r.ok) << r.error << " " << r.message;
+    EXPECT_EQ(str(r.json), R"(["not_in_background","not_in_background"])");
+}
+
+// A fault in the flush after the tool's last slice is the call's error.
+TEST_F(CallTool, FlushFaultIsCallError) {
+    start();
+    install_notes();
+    ToolCallResult r = call("notes", "poison");
+    EXPECT_FALSE(r.ok);
+    EXPECT_EQ(r.error, "scene_error");
+    EXPECT_NE(r.message.find("bad bind"), std::string::npos) << r.message;
+    EXPECT_EQ(rt->status("notes").state, SceneState::Error);
+}
+
+// A boot launch or open_background() of a headless scene that declares
+// "background" sends it there, onto the background list.
+TEST_F(CallTool, BootOfHeadlessGoesToBackground) {
+    start();
+    install("bgn", kNotes, {{"scene.json", tools_manifest("bgn", R"(,"background":true)")}});
+    install("bgo", kNotes, {{"scene.json", tools_manifest("bgo", R"(,"background":true)")}});
+    ASSERT_TRUE(call("bgn", "get").ok);
+    ASSERT_EQ(rt->status("bgn").state, SceneState::Headless);
+    ASSERT_TRUE(rt->launch("bgn", wisp::scene::LaunchReason::Boot));
+    EXPECT_EQ(rt->status("bgn").state, SceneState::Background);
+    ASSERT_TRUE(call("bgo", "get").ok);
+    ASSERT_TRUE(rt->open_background("bgo"));
+    EXPECT_EQ(rt->status("bgo").state, SceneState::Background);
+    std::vector<std::string> ids;
+    for (const auto& b : rt->background_scenes()) ids.push_back(b.id);
+    EXPECT_EQ(ids, (std::vector<std::string>{"bgn", "bgo"}));
+    EXPECT_EQ(count_log("bgn", "main"), 1u);
+    EXPECT_EQ(count_log("bgn", "state:background"), 1u);
+    // No idle close any more.
+    std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs + 300));
+    EXPECT_EQ(rt->status("bgn").state, SceneState::Background);
+    EXPECT_EQ(rt->status("bgo").state, SceneState::Background);
 }
 
 TEST_F(CallTool, SceneClosedWhileAwaiting) {

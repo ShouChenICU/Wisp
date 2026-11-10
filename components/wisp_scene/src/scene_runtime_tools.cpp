@@ -264,7 +264,8 @@ void SceneRuntime::finish_headless(SceneMessage& m, const PendingLoad& load) {
     const size_t room = headless_room();
     VmLimits limits = config_.vm;
     limits.memory_bytes = std::min(limits.memory_bytes, room);
-    Slot* added = limits.memory_bytes == 0 ? nullptr : add_slot(m, LaunchReason::User, &limits);
+    Slot* added =
+        room < kHeadlessMinMemory ? nullptr : add_slot(m, LaunchReason::User, &limits, true);
     if (added == nullptr) {
         char text[96];
         std::snprintf(text, sizeof(text), "the scenes leave %zu KiB of the Lua budget",
@@ -274,10 +275,6 @@ void SceneRuntime::finish_headless(SceneMessage& m, const PendingLoad& load) {
         return;
     }
     Slot& s = *added;
-    s.headless = true;
-    SceneApi& api = s.scene->api();
-    api.background = true;
-    api.headless = true;
     update_background_list();
     std::optional<ScriptError> err = start_scene(s);
     if (!err) err = s.scene->hook("on_state", "headless");
@@ -301,18 +298,18 @@ void SceneRuntime::finish_headless(SceneMessage& m, const PendingLoad& load) {
 
 size_t SceneRuntime::headless_room() {
     for (;;) {
-        // What the scene in front is guaranteed (spec 3.5) stays its own;
-        // everything else that holds memory (the background, the agent's
-        // Lua run) counts against the headless scene.
+        // What a scene in front is guaranteed (spec 3.5) stays its own, also
+        // with none in front yet, for the one the user may open while this
+        // runs; everything else that holds memory (the background, the
+        // agent's Lua run) counts against the headless scene.
         const size_t front_bytes =
             front_ != nullptr && front_->scene ? front_->scene->vm_bytes() : 0;
-        const size_t reserve =
-            front_ != nullptr ? std::max(config_.vm.memory_bytes, front_bytes) : 0;
+        const size_t reserve = std::max(config_.vm.memory_bytes, front_bytes);
         const size_t used = pool_.used();
         const size_t others = used > front_bytes ? used - front_bytes : 0;
         const size_t room =
             config_.vm_budget > reserve + others ? config_.vm_budget - reserve - others : 0;
-        if (room >= config_.vm.memory_bytes) return room;
+        if (room >= kHeadlessMinMemory) return room;
         const std::vector<const Slot*> order = background_order();
         if (order.empty()) return room;
         Slot* victim = find(order.front()->instance);
@@ -368,13 +365,16 @@ void SceneRuntime::headless_idle(uint32_t instance, uint64_t gen) {
 
 std::optional<SceneRuntime::ToolEnding> SceneRuntime::tool_abort(uint32_t instance,
                                                                  const char* error,
-                                                                 const std::string& message) {
+                                                                 const std::string& message,
+                                                                 bool keep_outcome) {
     auto it = std::find_if(tool_runs_.begin(), tool_runs_.end(),
                            [&](const ToolRun& r) { return !r.loading && r.instance == instance; });
     if (it == tool_runs_.end()) return std::nullopt;
-    // A task that ended before its scene closed or faulted (wisp.scene.exit()
-    // in the tool, a flush that failed after it) keeps its own outcome.
-    ToolEnding ending{it->job, it->ended ? from_outcome(it->outcome) : failure(error, message)};
+    // A task that ended before its scene closed (wisp.scene.exit() in the
+    // tool) keeps its own outcome; a fault (the flush after its last slice,
+    // say) is the call's whatever the task returned.
+    ToolEnding ending{
+        it->job, it->ended && keep_outcome ? from_outcome(it->outcome) : failure(error, message)};
     tool_runs_.erase(it);
     return ending;
 }

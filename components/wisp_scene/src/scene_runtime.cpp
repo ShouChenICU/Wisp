@@ -916,6 +916,13 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
             coming->then_boot = true;
             coming->restore = coming->restore || restore;
         }
+        if (running != nullptr && running->headless && running->scene &&
+            running->declares_background) {
+            // Restored or reinstalled while a tool call had it up headless:
+            // it stays, in the background, and on the background list.
+            headless_to_background(*running, std::move(waiter));
+            return;
+        }
         if (running != nullptr || coming != loading_.end()) {
             if (waiter) waiter->finish(Result<void>::ok());
             return;
@@ -1070,11 +1077,16 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         done(Result<void>::err(open.error.code, open.error.message));
         return;
     }
-    if (boot && find_id(id) != nullptr) {
+    if (Slot* running = boot ? find_id(id) : nullptr; running != nullptr) {
         // Already running (begin_open() lets no other load of it start
         // while this one is out; this only keeps two slots of one scene
-        // impossible).
+        // impossible), or started headless meanwhile (as in begin_open()).
         open.store->close();
+        if (running->headless && running->scene && running->declares_background) {
+            headless_to_background(*running, open.done);
+            open.done = nullptr;
+            return;
+        }
         done(Result<void>::ok());
         return;
     }
@@ -1341,7 +1353,7 @@ void SceneRuntime::show_view(Slot& s) {
 }
 
 SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason,
-                                           const VmLimits* limits) {
+                                           const VmLimits* limits, bool headless) {
     auto& open = std::get<msg::Open>(m.body);
     auto slot = os::make_large<Slot>();
     if (!slot) return nullptr;
@@ -1357,7 +1369,10 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason,
     s.args = std::move(open.args);
     s.store = std::move(open.store);
     s.declares_background = s.package->manifest.background;
+    s.headless = headless;
     SceneApi& api = s.scene->api();
+    api.background = headless;
+    api.headless = headless;
     api.device = [this] { return device_info(); };
     api.screen = deps_.shape;
     api.args = &s.args;
@@ -1380,8 +1395,9 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason,
     if (deps_.sensors != nullptr) wire_sensors(s);
     if (deps_.files != nullptr) wire_files(s);
     // Opened in front with the screen off: the timers of a scene that does
-    // not declare "background" wait for it to come on.
-    if (!visible_ && reason != LaunchReason::Boot && !s.declares_background)
+    // not declare "background" wait for it to come on. A headless scene is
+    // in no front: its timers (and its tools' wisp.sleep) always run.
+    if (!visible_ && !headless && reason != LaunchReason::Boot && !s.declares_background)
         api.timers.pause(os::now_ms());
     const DeviceInfo now = device_info();
     s.has_battery = now.has_battery;
@@ -1597,7 +1613,12 @@ bool SceneRuntime::submit(Slot& s) {
 }
 
 bool SceneRuntime::run_step(Slot& s, const std::optional<ScriptError>& err) {
-    return step(s, err) && submit(s);
+    const bool ok = step(s, err) && submit(s);
+    // A tool call whose task ended in this step has had its flush (and,
+    // had that failed, its fault): it ends now, before another message
+    // of the scene could fault it.
+    tool_settle();
+    return ok;
 }
 
 std::optional<ScriptError> SceneRuntime::start_scene(Slot& s) {
@@ -1660,8 +1681,8 @@ void SceneRuntime::fault(Slot& s, const ScriptError& err) {
     const std::string text = err.text();
     // Taken before the tasks are cancelled below, answered once the state
     // is Error.
-    std::optional<ToolEnding> call =
-        tool_abort(s.instance, err.fault == ScriptFault::Timeout ? "timeout" : "scene_error", text);
+    std::optional<ToolEnding> call = tool_abort(
+        s.instance, err.fault == ScriptFault::Timeout ? "timeout" : "scene_error", text, false);
     if (s.scene) {
         s.scene->batch().clear();
         s.scene->cancel_tasks();
@@ -1793,6 +1814,12 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
     s.background = false;
     // A headless scene comes forward the same way (file header), and is an
     // ordinary scene from now on: no idle close.
+    if (s.headless) {
+        // It started with what the budget left then (headless_room()); in
+        // front it is guaranteed the full limit, which enforce_limits()
+        // below makes room for.
+        s.scene->raise_memory_limit(config_.vm.memory_bytes);
+    }
     s.headless = false;
     ++s.idle_gen;
     s.last_front_ms = os::now_ms();
@@ -1827,8 +1854,16 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
     done(Result<void>::ok());
 }
 
+void SceneRuntime::headless_to_background(Slot& s, std::shared_ptr<SceneWaiter> done) {
+    s.headless = false;
+    ++s.idle_gen;
+    s.scene->api().headless = false;
+    s.scene->raise_memory_limit(config_.vm.memory_bytes);
+    to_background(s, std::move(done), nullptr);
+}
+
 void SceneRuntime::close_slot(Slot& s, std::shared_ptr<SceneWaiter> done) {
-    std::optional<ToolEnding> call = tool_abort(s.instance, "cancelled", "the scene closed");
+    std::optional<ToolEnding> call = tool_abort(s.instance, "cancelled", "the scene closed", true);
     const bool was_running = s.scene != nullptr;
     if (was_running && s.background && !quit_) {
         // For open_background() (a reinstall closes the scene first).

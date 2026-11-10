@@ -102,6 +102,11 @@ public:
     void cancel_task(uint32_t id);
     void cancel_tasks();
 
+    // Vm::raise_memory_limit(); nothing before start().
+    void raise_memory_limit(size_t bytes) {
+        if (vm_) vm_->raise_memory_limit(bytes);
+    }
+
     // What its VM holds now (0 before start()).
     size_t vm_bytes() const { return vm_ ? vm_->used_bytes() : 0; }
 

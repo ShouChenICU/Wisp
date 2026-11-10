@@ -206,6 +206,12 @@ public:
     size_t used_bytes() const { return used_; }
     // The most used_bytes() has been since the VM was made.
     size_t peak_bytes() const { return peak_; }
+    // Raises limits.memory_bytes to `bytes` (never lowers it): the
+    // allocator reads the limit on every request, so the next one may use
+    // it. On the thread running the VM.
+    void raise_memory_limit(size_t bytes) {
+        if (bytes > limits_.memory_bytes) limits_.memory_bytes = bytes;
+    }
 
     // Where print and wisp.log go (log_lua_args()): their lines are logged
     // under `tag` instead of "scene.<id>" (at most log::kMaxTagBytes), and
