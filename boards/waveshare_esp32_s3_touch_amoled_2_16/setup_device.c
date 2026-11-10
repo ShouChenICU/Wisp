@@ -26,8 +26,11 @@
 
 static const char* TAG = "wisp_board";
 
+/* The vendor table waits 600 ms after SLPOUT and after DISPON; MIPI DCS
+ * needs only 120 ms after SLPOUT and nothing after DISPON (docs/hardware/
+ * waveshare_esp32_s3_touch_amoled_2_16.md, "Boot time"). */
 static const co5300_lcd_init_cmd_t s_lcd_init_cmds[] = {
-    {0x11, (uint8_t[]){0x00}, 0, 600},
+    {0x11, (uint8_t[]){0x00}, 0, 120},
     {0xFE, (uint8_t[]){0x20}, 1, 0},
     {0x19, (uint8_t[]){0x10}, 1, 0},
     {0x1C, (uint8_t[]){0xA0}, 1, 0},
@@ -42,7 +45,7 @@ static const co5300_lcd_init_cmd_t s_lcd_init_cmds[] = {
     {0x2A, (uint8_t[]){0x00, 0x00, 0x01, 0xDF}, 4, 0},
     {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xDF}, 4, 0},
     {0x36, (uint8_t[]){0xA0}, 1, 0},
-    {0x29, (uint8_t[]){0x00}, 0, 600},
+    {0x29, (uint8_t[]){0x00}, 0, 0},
 };
 
 static const co5300_vendor_config_t s_lcd_vendor_config = {

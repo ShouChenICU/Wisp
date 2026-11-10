@@ -77,6 +77,13 @@ CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
 # resets before App::start() has marked it valid.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
+# Boot time: the PSRAM test reads and writes all of it on every boot
+# (420 ms with 8 MB); a wake from deep sleep skips the bootloader's
+# check of the app image (about 400 ms), which already passed on the boot
+# that went to sleep.
+# CONFIG_SPIRAM_MEMTEST is not set
+CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP=y
+
 # Power management (spec 6.7): PM_ENABLE compiles in DFS/light
 # -sleep support; firmware/main/main.cpp's apply_pm_config() keeps DFS
 # (240<->80 MHz) always on via esp_pm_configure() and only toggles
@@ -92,6 +99,17 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
+# Light-sleep statistics (the `sleep` console command,
+# wisp/port/esp/sleep_stats.hpp): LIGHT_SLEEP_CALLBACKS lets it count each
+# light sleep and its wake cause from ESP-IDF's exit callback, a few dozen
+# instructions per wake. PROFILING adds held time and take count to every
+# PM lock and the time spent in each PM mode, shown by esp_pm_dump_locks():
+# one esp_timer read (a systimer register read) each time a lock goes from
+# free to held or back, an addition on each PM mode switch, and 20 bytes of
+# RAM per lock. Both are cheap enough to stay on in release builds, where
+# battery drain is actually measured.
+CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y
+CONFIG_PM_PROFILING=y
 
 # Networking (connectivity spec 2.1, 3.1, 10). Wi-Fi and lwIP buffers go to
 # PSRAM where the driver allows it, so the radio does not squeeze LVGL and

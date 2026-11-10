@@ -15,14 +15,15 @@
 # EspSntp (net/esp_sntp.cpp, the network time query),
 # plus EspFirmwareUpdater (esp_firmware.cpp, the OTA writer behind the
 # admin page's firmware upload), mem_report() (mem_report.cpp, the
-# firmware's `mem` console command) and the LVGL JPEG decoder for scene
+# firmware's `mem` console command), the light-sleep statistics behind
+# the `sleep` command (sleep_stats.cpp) and the LVGL JPEG decoder for scene
 # images (ui/esp_jpeg_decoder.cpp, on esp_new_jpeg), and the mapped
 # "fonts" partition behind the vector font (ui/esp_font_partition.cpp).
 # Like wisp_port_sim, this component is never built on the host
 # (ESP_PLATFORM is never defined for it there, and no host CMakeLists adds
 # it) -- only firmware/main pulls it in. (A handful of pure, platform-free headers factored out of the audio/
 # storage/networking code -- audio_downmix.hpp, sd_retry.hpp,
-# wifi_reason.hpp, net_iface.hpp, dns_reply.hpp, sntp_packet.hpp -- *are*
+# wifi_reason.hpp, net_iface.hpp, dns_reply.hpp, sntp_packet.hpp, sleep_record.hpp -- *are*
 # unit-tested on the host; see tests/CMakeLists.txt's port_esp/ tests, which add this
 # component's include/ directly rather than depending on this whole
 # component.)
@@ -37,7 +38,7 @@ wisp_component(
          dev/esp_power.cpp dev/esp_clock.cpp dev/esp_imu.cpp dev/esp_button.cpp dev/esp_audio.cpp
          dev/esp_storage.cpp console_esp.cpp net/esp_wifi.cpp net/captive_dns.cpp
          net/esp_http_server.cpp net/esp_http_client.cpp net/esp_sntp.cpp esp_firmware.cpp
-         mem_report.cpp
+         mem_report.cpp sleep_stats.cpp
          ui/esp_jpeg_decoder.cpp ui/esp_font_partition.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net
@@ -45,7 +46,7 @@ wisp_component(
                  axp2101 pcf85063 qmi8658 esp_codec_dev esp_driver_i2s nvs_flash fatfs sdmmc esp_driver_sdmmc
                  littlefs esp_board_manager esp_driver_usb_serial_jtag esp_driver_uart
                  esp_wifi esp_netif esp_event lwip esp_http_server esp_http_client esp-tls
-                 mbedtls mdns app_update esp_partition lvgl__lvgl espressif__esp_new_jpeg
+                 mbedtls mdns app_update esp_partition esp_pm lvgl__lvgl espressif__esp_new_jpeg
 )
 
 # Rendering path: the display flush and touch read are always -O2,

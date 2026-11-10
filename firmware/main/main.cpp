@@ -32,6 +32,7 @@
 #include "wisp/app/board.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/hal/power.hpp"
 #include "wisp/port/esp/console_esp.hpp"
 #include "wisp/port/esp/esp_firmware.hpp"
 #include "wisp/port/esp/esp_font_partition.hpp"
@@ -42,6 +43,7 @@
 #include "wisp/port/esp/log_esp.hpp"
 #include "wisp/port/esp/mem_report.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
+#include "wisp/port/esp/sleep_stats.hpp"
 #include "wisp/port/esp/wall_clock.hpp"
 #include "wisp_board_desc.h"
 
@@ -77,6 +79,26 @@ void apply_pm_config(bool light_sleep_enable) {
     if (err != ESP_OK) {
         WLOG_W("main", "esp_pm_configure(light_sleep_enable=%d) failed: %s", light_sleep_enable,
                esp_err_to_name(err));
+    }
+}
+
+// Set once App exists; the light-sleep hook below reads power.main through
+// it. Light sleep is only switched by PowerManager, which App starts.
+wisp::app::App* g_app = nullptr;
+
+// Automatic light sleep on or off, bracketed by a light-sleep statistics
+// session (wisp/port/esp/sleep_stats.hpp). PowerManager calls this on the
+// UI task; the battery read there is an I2C transfer of a few ms, like a
+// touch read, and takes none of PowerManager's locks.
+void set_light_sleep(bool on) {
+    std::shared_ptr<wisp::hal::Power> power =
+        g_app != nullptr ? g_app->registry().get<wisp::hal::Power>("power.main") : nullptr;
+    if (on) {
+        wisp::port::esp::sleep_stats_begin(power.get());
+        apply_pm_config(/*light_sleep_enable=*/true);
+    } else {
+        apply_pm_config(/*light_sleep_enable=*/false);
+        wisp::port::esp::sleep_stats_end(power.get());
     }
 }
 
@@ -137,7 +159,7 @@ extern "C" void app_main() {
         info["large_total"] = static_cast<int64_t>(heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
         return wisp::Value(std::move(info));
     };
-    platform.set_light_sleep = [](bool on) { apply_pm_config(/*light_sleep_enable=*/on); };
+    platform.set_light_sleep = set_light_sleep;
     // The vector font (vector-font spec 2.3). Mapping flash has to happen
     // on a task whose stack is in internal RAM (AGENTS.md section 5), and
     // app_main's is; the UI task only reads the mapping afterwards, which
@@ -185,6 +207,20 @@ extern "C" void app_main() {
              if (args.size() != 1) return "error: usage: mem";
              return wisp::port::esp::mem_report();
          }});
+    // `sleep`: light-sleep statistics of the running and the last deep
+    // standby, and the PM locks (wisp/port/esp/sleep_stats.hpp).
+    platform.console_commands.push_back(
+        {"sleep",
+         "sleep                        light sleep in standby: sessions, wakes, battery, PM locks\n"
+         "sleep reset                  forget the recorded sessions",
+         [](wisp::app::App&, const std::vector<std::string>& args) -> std::string {
+             if (args.size() == 1) return wisp::port::esp::sleep_stats_report();
+             if (args.size() == 2 && args[1] == "reset") {
+                 wisp::port::esp::sleep_stats_reset();
+                 return "ok";
+             }
+             return "error: usage: sleep [reset]";
+         }});
     // `bench scroll`: the rendering baseline's programmatic scroll, one
     // WISP_BENCH line (wisp/app/bench.hpp).
     platform.console_commands.push_back(wisp::app::bench_command());
@@ -219,6 +255,9 @@ extern "C" void app_main() {
     // DFS always on; light sleep off until PowerManager reaches deep standby
     // (see apply_pm_config()'s comment above).
     apply_pm_config(/*light_sleep_enable=*/false);
+    // Before anything can turn light sleep on: picks up a session a reset
+    // interrupted and hooks the light-sleep exit.
+    wisp::port::esp::sleep_stats_init();
 
     // Static storage duration: app_main() returns
     // by deleting its own task below rather than by a normal function
@@ -228,6 +267,7 @@ extern "C" void app_main() {
     // the intent rather than relying on that FreeRTOS implementation
     // detail.
     static wisp::app::App app(std::move(platform));
+    g_app = &app;
     auto started = app.start();
     if (!started) {
         WLOG_E("main", "App::start() failed: %s", started.error().message.c_str());

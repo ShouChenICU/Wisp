@@ -84,6 +84,47 @@ XIP (`CONFIG_SPIRAM_XIP_FROM_PSRAM`, which the reference board used until 2026-1
 
 The 32 MB flash is used without the experimental `BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH`: the bootloader and the cache address only the first 16 MB, which is why the partition table keeps everything mapped there.
 
+## Boot time (2026-11-09)
+
+Measured on the device with a throwaway build that timed a wake from deep sleep on the RTC clock (`esp_rtc_get_time_us()`, which keeps running in deep sleep): from the wake timer firing to `App::start()` returning, after which the home screen is up.
+
+| | Before | After |
+|---|---|---|
+| ROM + bootloader + startup, to `app_main` | 1135 ms | 151 ms |
+| `App::start()` | 2505 ms | 1406 ms |
+| Total | 3.64 s | 1.56 s (two runs, 1558 and 1557 ms) |
+
+What made the difference:
+- The PSRAM test (`CONFIG_SPIRAM_MEMTEST`) read and wrote all 8 MB on every boot: 420 ms. It is off (`firmware/sdkconfig.defaults`); normal boots gain this too.
+- The bootloader checks the SHA of the 2.5 MB app image on every boot (about 380 ms). `CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` skips it on a wake from deep sleep only; normal boots still check.
+- The BSP's CO5300 init table waits 600 ms after RASET and 600 ms after SLPOUT, so panel bring-up took 1.36 s. With no wait after RASET and the MIPI DCS 120 ms after SLPOUT it takes 0.28 s, and the picture, brightness and colours look the same (checked by the user).
+
+Still left in the boot: the CRC of the `fonts` and `glyphs` images (about 300 ms, `ui: fonts: ... crc`), the touch, PMU and IMU bring-up and Wi-Fi start.
+
+## Measuring standby
+
+Standby on battery drained 100% to 33% in about 9 hours with the screen off, and there is no ammeter. The serial command `sleep` shows what the chip did instead (`wisp/port/esp/sleep_stats.hpp`). A session runs from automatic light sleep being turned on (deep standby, `power`/`deep_after_s` after the screen went off) until it is turned off again (any wake). The running session and the last finished one are kept in RTC memory, so they survive the reset that opening the serial port can cause, but not a power loss.
+
+While the USB data cable is connected, `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION` holds light sleep off, so only a run on battery alone gives real numbers:
+
+1. Charge the battery, then unplug USB.
+2. Turn the screen off (short press of PWR, or wait) and leave the device for N hours (at least 5 minutes more than `deep_after_s`, so that deep standby is reached).
+3. Press PWR to wake it **before** plugging USB back in: that ends the session with a battery reading taken on battery.
+4. Plug USB in and run `sleep` on the serial console. `sleep reset` forgets the recorded sessions.
+
+The `last session` block (and the `current session` block for one still running):
+
+| Line | Meaning |
+|---|---|
+| `last session: 7h12m` | Wall time from light sleep on to off. `(ended by a reset, up to the last wake)` means the chip reset while it ran (for example the serial port was opened first); the time then runs to its last light sleep and the end battery is unknown |
+| `asleep 6h37m (92.0%), 18400 sleeps, shortest …, longest …` | Total time in light sleep and its share of the session, the number of light sleeps, and the shortest and longest one. A share near 0% means something kept the chip awake |
+| `lengths: <10ms …, 10-50ms …, …, >=5s … (median …)` | How many sleeps fell in each length band. With nothing else running, the 50 ms button poll (`EspPmuPowerKey`, an I2C read of the AXP2101) caps sleeps at about 50 ms, so most land in `10-50ms` |
+| `wakes: timer 18000 gpio 3 …` | Wake causes per sleep (`esp_sleep_get_wakeup_causes()`); `timer` is a software timer or task deadline, `gpio` a pin, `undefined` a sleep the hardware refused |
+| `battery: start 100% 4180 mV, end 33% 3650 mV, 9.3%/h` | power.main at the start and end, and the drain per hour |
+| `note: USB …` | USB was connected at the start: the debug port holds light sleep off, or VBUS was charging the battery; the numbers do not describe standby on battery |
+
+After the sessions come `esp_pm_dump_locks()`'s tables: each PM lock with whether it is held now, how often it was taken and for how long (a `NO_LIGHT_SLEEP` or `APB_FREQ_MAX` lock held for most of the session is what blocks light sleep), then the time in each PM mode (`SLEEP` is light sleep) and `light_sleep_counts`/`light_sleep_reject_counts` since boot. The `sleepstat` lock is the command's own, held only for a moment around each update. When a session ends, the log also gets one line: `power: light sleep session: 7h12m, asleep 92%, 18400 sleeps, median 10-50 ms, wakes: timer 18000 gpio 3, battery 100% -> 33% (9.3%/h)`.
+
 ## First flash
 
 From the `firmware/` directory, with the pinned ESP-IDF environment active (`. ~/esp/esp-idf-v6.0.3/export.sh`). This board builds in its own build directory and sdkconfig, so the reference board's `firmware/build` and `firmware/sdkconfig` are not touched (see "Building several boards" in `docs/porting-guide.md`):
@@ -126,3 +167,4 @@ The board has not been brought up yet; every item is still to be tested. Fill in
 | 19 | Wake from standby | Short-press PWR to enter standby, wait more than 10 minutes, then press PWR (and separately BOOT) | Wakes on either key; panel, touch and IMU work after waking; brightness not reset | |
 | 20 | Frame rate baseline | `diag`, then `bench scroll 10` with the hotspot off and on; note `WISP_PERF` fps/cpu/flush_ms | Recorded in "Flash: no suspend, no XIP" above; `internal free` from `mem` recorded too | Hotspot off: 22.0 fps with the 32 KB instruction cache (2026-11-08); hotspot on not yet measured |
 | 21 | Internal RAM worst case (AGENTS.md section 5; the 32 KB instruction cache costs 16 KB) | Same procedure as the reference board's checklist item 44 (`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`): STA + `wifi ap on` with a phone on the setup page, the admin "Logs" page open, a model connection test over HTTPS, one firmware upload; `mem` every few seconds | `internal free` stays ≥ 40 KB and `largest` ≥ 16 KB; no `internal RAM` warning | |
+| 22 | Standby drain on battery | "Measuring standby" above: a run of at least 4 hours on battery alone, then `sleep` | Record the `last session` block and the PM lock table. Light sleep should take most of the session; note the drain in %/h, the median sleep length and the main wake causes | |

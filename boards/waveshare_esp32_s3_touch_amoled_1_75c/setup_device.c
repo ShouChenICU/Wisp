@@ -58,8 +58,12 @@ static const co5300_lcd_init_cmd_t s_lcd_init_cmds[] = {
     {0x51, (uint8_t[]){0xFF}, 1, 0},
     {0x63, (uint8_t[]){0xFF}, 1, 0},
     {0x2A, (uint8_t[]){0x00, 0x06, 0x01, 0xD7}, 4, 0},
-    {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xD1}, 4, 600},
-    {0x11, NULL, 0, 600},
+    /* The BSP waits 600 ms after RASET and after SLPOUT; MIPI DCS needs
+     * only 120 ms after SLPOUT. The shorter waits cut 1.1 s from every
+     * boot and the panel comes up the same (docs/hardware/
+     * waveshare_esp32_s3_touch_amoled_1_75c.md, "Boot time"). */
+    {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xD1}, 4, 0},
+    {0x11, NULL, 0, 120},
     {0x29, NULL, 0, 0},
 };
 
