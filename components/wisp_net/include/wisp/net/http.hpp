@@ -214,6 +214,13 @@ struct HttpClientRequest {
     // TooLarge (checked against Content-Length first, then as it
     // arrives). 0: the client's own default cap.
     size_t max_response_bytes = 0;
+    // Changes what happens past max_response_bytes: instead of failing
+    // the request, the client stops at exactly that many bytes (whatever
+    // Content-Length said) and returns normally, status and headers kept,
+    // with HttpClientResponse::truncated set. SceneHttp sets this for the
+    // Agent principal (agent-tools spec 3.1's response cap is a
+    // truncation, not an error); every other caller leaves it false.
+    bool truncate_at_limit = false;
     // When set, the body is handed over in pieces as it arrives and
     // HttpClientResponse::body stays empty; returning false stops the
     // transfer (Cancelled).
@@ -243,6 +250,9 @@ struct HttpClientResponse {
     // The final response's headers, under keep_response_header()'s limits.
     // Empty when the transfer failed.
     std::vector<std::pair<std::string, std::string>> headers;
+    // Set (transport None) when truncate_at_limit cut the body off at
+    // max_response_bytes instead of failing it.
+    bool truncated = false;
 };
 
 // Every client: no redirects (a 3xx is the response; following one could

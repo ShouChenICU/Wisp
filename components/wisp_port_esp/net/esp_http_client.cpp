@@ -291,7 +291,7 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         return failed(classify(client.get(), ESP_ERR_HTTP_FETCH_HEADER), "headers",
                       ESP_ERR_HTTP_FETCH_HEADER);
     }
-    if (static_cast<uint64_t>(length) > limit) {
+    if (static_cast<uint64_t>(length) > limit && !req.truncate_at_limit) {
         return failed(net::TransportError::TooLarge, "body (too large)", ESP_ERR_INVALID_SIZE);
     }
     res.status = esp_http_client_get_status_code(client.get());
@@ -301,6 +301,7 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
     // so this costs no internal RAM there.
     char buf[512];
     size_t received = 0;
+    bool truncated = false;
     for (;;) {
         if (cancelled()) return failed(net::TransportError::Cancelled, "body", ESP_OK);
         if (!arm()) return failed(net::TransportError::Timeout, "body", ESP_ERR_TIMEOUT);
@@ -312,30 +313,47 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
             return failed(classify(client.get(), ESP_FAIL), "body", ESP_FAIL);
         }
         if (n == 0) break;
-        if (static_cast<size_t>(n) > limit - received) {
-            return failed(net::TransportError::TooLarge, "body (too large)", ESP_ERR_INVALID_SIZE);
-        }
-        received += static_cast<size_t>(n);
-        if (req.on_body) {
-            if (!req.on_body({reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n)})) {
-                return failed(net::TransportError::Cancelled, "body", ESP_OK);
+        size_t take = static_cast<size_t>(n);
+        if (take > limit - received) {
+            if (!req.truncate_at_limit) {
+                return failed(net::TransportError::TooLarge, "body (too large)",
+                              ESP_ERR_INVALID_SIZE);
             }
-        } else {
-            res.body.append(buf, static_cast<size_t>(n));
+            // Keep exactly up to the limit, then stop reading: a
+            // successful, truncated response (the Agent principal's cap,
+            // agent-tools spec 3.1/3.2), not an error.
+            take = limit - received;
+            truncated = true;
         }
+        received += take;
+        if (take != 0) {
+            if (req.on_body) {
+                if (!req.on_body({reinterpret_cast<const uint8_t*>(buf), take})) {
+                    return failed(net::TransportError::Cancelled, "body", ESP_OK);
+                }
+            } else {
+                res.body.append(buf, take);
+            }
+        }
+        if (truncated) break;
     }
     // A read on a socket the watch shut down can end like a clean EOF.
     if (fired() != net::RequestWatch::Reason::None) {
         return failed(net::TransportError::Other, "body", ESP_FAIL);
     }
-    // A body delimited by the connection closing has nothing to check.
-    const bool delimited = length > 0 || esp_http_client_is_chunked_response(client.get());
-    if (delimited && !esp_http_client_is_complete_data_received(client.get())) {
-        return failed(net::TransportError::Other, "body (incomplete)",
-                      ESP_ERR_HTTP_INCOMPLETE_DATA);
+    // A body delimited by the connection closing has nothing to check; a
+    // truncated one was deliberately not read to completion, so the
+    // "more was promised" check below does not apply to it either.
+    if (!truncated) {
+        const bool delimited = length > 0 || esp_http_client_is_chunked_response(client.get());
+        if (delimited && !esp_http_client_is_complete_data_received(client.get())) {
+            return failed(net::TransportError::Other, "body (incomplete)",
+                          ESP_ERR_HTTP_INCOMPLETE_DATA);
+        }
     }
     if (watch != nullptr) watch->disarm();
     esp_http_client_close(client.get());
+    res.truncated = truncated;
     return res;
 }
 

@@ -6,25 +6,55 @@
 // over it; it holds the rules, not the binding.
 //
 // Two principals submit requests, told apart by SceneHttpRequest::principal:
-//   - Scene (the default): the rules below, unchanged.
+//   - Scene (the default): the rules below, unchanged. max_redirects is
+//     ignored (redirects are an Agent-only feature): a 3xx always comes
+//     back as it is.
 //   - Agent: the device's own agent core. Its requests skip the https-only,
-//     host-allowlist, header_allowed() and per-scene rate limit checks (the
-//     agent is trusted code, not a sandboxed scene); the URL just needs a
-//     http:// or https:// scheme and a parseable host (else "bad_url"), and
-//     Host/Content-Length/Transfer-Encoding/Connection headers (any case)
-//     are dropped rather than forwarded or rejected. Its size limits are
-//     AgentHttpLimits, always, not SceneHttpLimits. It is never rate
-//     limited or deferred: while deferring (Wi-Fi going off) it fails at
-//     once with "offline" instead of waiting. Its requests are recorded
-//     under the scene id kAgentHttpId ("@agent", which no real scene id can
-//     collide with); cancel_scene(kAgentHttpId) cancels them. A response
-//     past its cap is truncated (SceneHttpResult::body_truncated = true,
-//     error ""), not an error. The worker follows redirects for it (and
-//     for any request with max_redirects > 0) up to max_redirects hops,
-//     resolving a relative Location against the request URL, keeping
-//     method and body on 301/302/307/308 and switching to a bodyless GET on
-//     303; a hop past the limit, or one with no Location, comes back as
-//     the 3xx itself. final_url is the URL that was actually answered.
+//     host-allowlist and per-scene rate limit checks, and header_allowed()'s
+//     policy (allowlist) half, but not its syntax half: a header name that
+//     is not an RFC 9110 token, or a value with CR, LF or NUL, is still
+//     "bad_header" (the agent is trusted code, not a sandboxed scene, but a
+//     malformed header could still inject a second one past it). The URL
+//     just needs a http:// or https:// scheme and a parseable host (no
+//     IPv6 literals; else "bad_url"), and Host/Content-Length/
+//     Transfer-Encoding/Connection headers (any case) are dropped rather
+//     than forwarded or rejected. Its size limits are AgentHttpLimits,
+//     always, not SceneHttpLimits; it also bypasses limits_.queue (an agent
+//     call waits for its own result before making another, so this never
+//     grows unbounded in practice). It is never rate limited or deferred:
+//     while deferring (Wi-Fi going off) it fails at once with "offline"
+//     instead of waiting. Its requests are recorded under the scene id
+//     kAgentHttpId ("@agent", which no real scene id can collide with);
+//     cancel_scene(kAgentHttpId) cancels them. A response past its cap is
+//     truncated (SceneHttpResult::body_truncated = true, error ""), not an
+//     error -- the request is sent with HttpClientRequest::
+//     truncate_at_limit, so the client itself stops at the cap instead of
+//     failing it; a 3xx body is truncated exactly the same way if huge,
+//     and (being a redirect's own body, not what was asked for) is then
+//     just not followed.
+//
+//     The worker follows redirects for an Agent request up to
+//     max_redirects hops, one deadline for the whole chain (the watch is
+//     re-armed, with the time left, before every later hop, so
+//     cancellation and the deadline both still reach it): 301/302/307/308
+//     keep the method and body, 303 switches to a bodyless GET. Location
+//     is resolved against the request URL as an absolute URL, a
+//     scheme-relative "//host/path", an absolute path, a query ("?a=1",
+//     keeping the current path) or a relative path (merged with the
+//     current path's directory, with "." and ".." segments collapsed);
+//     any other form is not understood. Every hop's resolved target is
+//     re-checked exactly as a fresh URL would be (agent_url_error(),
+//     AgentHttpLimits::kMaxUrlBytes); a hop that does not resolve, or
+//     resolves to something invalid or past the limit, ends the chain
+//     with that 3xx returned as it is, not followed. A hop that crosses
+//     to a different scheme, host or port drops Authorization, Cookie and
+//     Proxy-Authorization (case-insensitive) from then on, so a
+//     credential for the first host is never sent to another one.
+//     final_url is the URL that was actually answered.
+//
+//     Privacy: besides the rule below, every Agent request logs one line
+//     with its method, host, final status (0 on a transport failure) and
+//     elapsed time, and nothing else (agent-tools spec 3.2).
 //
 // Rules for the Scene principal, checked in this order when a request is
 // submitted:
@@ -187,8 +217,8 @@ struct SceneHttpRequest {
 
 struct SceneHttpResult {
     // "" or permission_denied not_https too_large rate_limited
-    // deferred_queue_full deferred_timeout bad_url offline, or a transport
-    // error: dns connect tls timeout other.
+    // deferred_queue_full deferred_timeout bad_url bad_header offline, or a
+    // transport error: dns connect tls timeout other.
     std::string error;
     int status = 0;
     // Lowercase names (keep_response_header()'s limits).
@@ -261,8 +291,14 @@ public:
     // cookie2, proxy-authorization, host, connection, content-length,
     // transfer-encoding, upgrade, te, trailer, keep-alive, expect, x-wisp,
     // and any proxy-* or sec-* (case-insensitive). Authorization and
-    // other ordinary headers pass.
+    // other ordinary headers pass. header_allowed() is this and
+    // header_syntax_ok() together.
     static bool header_allowed(std::string_view name, std::string_view value);
+    // The syntax half of header_allowed(), with none of its policy: false
+    // for a malformed name or a value with CR, LF or NUL. What the Agent
+    // principal is held to (else "bad_header"): CRLF injection is refused
+    // even for trusted code, but none of the allowlist is.
+    static bool header_syntax_ok(std::string_view name, std::string_view value);
 
 private:
     struct Job;

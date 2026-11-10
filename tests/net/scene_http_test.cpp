@@ -712,6 +712,33 @@ TEST_F(SceneHttpTest, AgentPrincipalLimits) {
 
     EXPECT_EQ(run(agent_get("ftp://x.example.com/")).error, "bad_url");
     EXPECT_EQ(run(agent_get("https:///x")).error, "bad_url");
+    // No IPv6 literals (host characters outside [a-z0-9.-]).
+    EXPECT_EQ(run(agent_get("https://[::1]/x")).error, "bad_url");
+}
+
+// The Agent principal skips header_allowed()'s policy (the Scene
+// denylist), but not its syntax half: a malformed name or a CRLF-carrying
+// value is still refused outright, since a header injection is still a
+// header injection even from trusted code.
+TEST_F(SceneHttpTest, AgentPrincipalBadHeaderSyntax) {
+    make();
+    client.next = {.status = 200, .body = "ok"};
+    auto crlf = agent_get("https://x.example.com/");
+    crlf.headers = {{"X-A", "a\r\nX-B: c"}};
+    EXPECT_EQ(run(std::move(crlf)).error, "bad_header");
+
+    auto bad_name = agent_get("https://x.example.com/");
+    bad_name.headers = {{"Bad Name", "v"}};
+    EXPECT_EQ(run(std::move(bad_name)).error, "bad_header");
+
+    // A header the Scene denylist would block (sec-*) is fine here: only
+    // the syntax check applies.
+    auto sec = agent_get("https://x.example.com/");
+    sec.headers = {{"Sec-Fake", "v"}};
+    EXPECT_EQ(run(std::move(sec)).error, "");
+    ASSERT_TRUE(client.last());
+    ASSERT_EQ(client.last()->headers.size(), 1u);
+    EXPECT_EQ(client.last()->headers[0], (std::pair<std::string, std::string>{"Sec-Fake", "v"}));
 }
 
 TEST_F(SceneHttpTest, AgentPrincipalHopByHopHeadersIgnored) {
@@ -746,22 +773,57 @@ TEST_F(SceneHttpTest, AgentPrincipalNeverDeferred) {
     EXPECT_EQ(r.got[0].error, "");
 }
 
+// The Agent principal also bypasses limits_.queue (file header): a full
+// run queue still accepts it rather than answering "rate_limited".
+TEST_F(SceneHttpTest, AgentPrincipalBypassesQueueCap) {
+    SceneHttpLimits limits;
+    limits.queue = 1;
+    make(limits);
+    client.hold = true;
+    Results r;
+    http->submit(get("https://api.example.com/0"), r.sink());
+    ASSERT_TRUE(wait_until([&] { return client.held.load() == 1; }, 2000));
+    http->submit(get("https://api.example.com/1"), r.sink());  // fills queue_ (capacity 1)
+    wisp::os::sleep_ms(20);
+    EXPECT_EQ(r.size(), 0u);
+    EXPECT_EQ(run(get("https://api.example.com/2")).error, "rate_limited");
+
+    Results ar;
+    http->submit(agent_get("https://x.example.com/"), ar.sink());
+    wisp::os::sleep_ms(20);
+    EXPECT_EQ(ar.size(), 0u);  // accepted, just waiting behind the others
+
+    client.hold = false;
+    ASSERT_TRUE(wait_until([&] { return ar.size() == 1; }, 3000));
+    EXPECT_EQ(ar.got[0].error, "");
+}
+
+// The fake client mimics the real ones (esp_http_client, curl): over the
+// cap without truncate_at_limit fails the request; SceneHttp sets it only
+// for the Agent principal's plain (non-download) requests, so this goes
+// through the same path a real client does, not a test-only shortcut.
 TEST_F(SceneHttpTest, AgentPrincipalResponseCapTruncates) {
     make();
-    client.ignore_limit = true;
-    client.next = {.status = 200, .body = std::string(AgentHttpLimits::kMaxResponse + 10, 'x')};
+    client.next = {.status = 200,
+                   .body = std::string(AgentHttpLimits::kMaxResponse + 10, 'x'),
+                   .headers = {{"x-thing", "v"}}};
     auto r = run(agent_get("https://x.example.com/big"));
     EXPECT_EQ(r.error, "");
     EXPECT_TRUE(r.body_truncated);
     EXPECT_EQ(r.body.size(), AgentHttpLimits::kMaxResponse);
+    EXPECT_EQ(r.status, 200);
+    ASSERT_EQ(r.headers.size(), 1u);
+    ASSERT_TRUE(client.last());
+    EXPECT_TRUE(client.last()->truncate_at_limit);
 
     // The Scene principal is still held to its own (smaller) cap, as an
-    // error, not a truncation.
-    client.ignore_limit = false;
+    // error, not a truncation; it never asks the client to truncate.
     client.next = {.status = 200, .body = std::string(262145, 'x')};
     auto r2 = run(get("https://api.example.com/big"));
     EXPECT_EQ(r2.error, "too_large");
     EXPECT_FALSE(r2.body_truncated);
+    ASSERT_TRUE(client.last());
+    EXPECT_FALSE(client.last()->truncate_at_limit);
 }
 
 TEST_F(SceneHttpTest, AgentPrincipalRedirects) {
@@ -810,6 +872,155 @@ TEST_F(SceneHttpTest, AgentPrincipalRedirects) {
     EXPECT_EQ(call, 1);
     EXPECT_EQ(r0.final_url, "https://one.example.com/");
 
+    // Scene requests ignore max_redirects outright: a 3xx always comes
+    // back as it is, even if a caller set it.
+    call = 0;
+    auto scene_req = get("https://api.example.com/");
+    scene_req.max_redirects = 5;
+    auto scene_r = run(std::move(scene_req));
+    EXPECT_EQ(scene_r.error, "");
+    EXPECT_EQ(scene_r.status, 302);
+    EXPECT_EQ(call, 1);
+
+    client.responder = nullptr;
+}
+
+// Location forms beyond a plain absolute URL or absolute path (finding:
+// scheme-relative, query-only, relative-path merge with ".."/".",  and a
+// base with a query but no path building a sane origin).
+TEST_F(SceneHttpTest, AgentPrincipalRedirectLocationForms) {
+    make();
+    auto follow_once = [&](const std::string& original, const std::string& location) {
+        int call = 0;
+        client.responder =
+            [&](const wisp::net::HttpClientRequest&) -> wisp::net::HttpClientResponse {
+            ++call;
+            if (call == 1) return {.status = 302, .headers = {{"location", location}}};
+            return {.status = 200, .body = "ok"};
+        };
+        auto req = agent_get(original);
+        req.max_redirects = 1;
+        auto r = run(std::move(req));
+        client.responder = nullptr;
+        EXPECT_EQ(r.error, "") << original << " -> " << location;
+        EXPECT_EQ(r.status, 200) << original << " -> " << location;
+        return r.final_url;
+    };
+
+    EXPECT_EQ(follow_once("https://one.example.com/a/b", "//two.example.com/p"),
+              "https://two.example.com/p");
+    EXPECT_EQ(follow_once("https://one.example.com/a/b?x=1", "?page=2"),
+              "https://one.example.com/a/b?page=2");
+    EXPECT_EQ(follow_once("https://one.example.com/a/b", "c"), "https://one.example.com/a/c");
+    EXPECT_EQ(follow_once("https://one.example.com/a/b/c", "../x"), "https://one.example.com/a/x");
+    EXPECT_EQ(follow_once("https://one.example.com?x=1", "/next"), "https://one.example.com/next");
+}
+
+// Every hop's resolved target is re-checked exactly like a fresh request's
+// URL: an invalid one (here, an unsupported scheme) ends the chain with
+// the 3xx that pointed at it, not followed, rather than being sent as is.
+TEST_F(SceneHttpTest, AgentPrincipalRedirectTargetIsRevalidated) {
+    make();
+    int call = 0;
+    client.responder = [&](const wisp::net::HttpClientRequest&) -> wisp::net::HttpClientResponse {
+        ++call;
+        return {.status = 302, .headers = {{"location", "ftp://bad.example.com/"}}};
+    };
+    auto req = agent_get("https://one.example.com/");
+    req.max_redirects = 5;
+    auto r = run(std::move(req));
+    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.status, 302);
+    EXPECT_EQ(call, 1);
+    EXPECT_EQ(r.final_url, "https://one.example.com/");
+    client.responder = nullptr;
+}
+
+// A hop that crosses to a different scheme, host or port drops
+// Authorization (and, by the same rule, Cookie/Proxy-Authorization) from
+// then on, so a credential for the first host never reaches another one.
+TEST_F(SceneHttpTest, AgentPrincipalDropsCredentialsAcrossOrigin) {
+    make();
+    int call = 0;
+    bool call1_has_auth = false;
+    bool call2_has_auth = false;
+    bool call3_has_auth = false;
+    client.responder = [&](const wisp::net::HttpClientRequest& r) -> wisp::net::HttpClientResponse {
+        ++call;
+        bool has_auth = false;
+        for (const auto& [n, v] : r.headers)
+            if (n == "Authorization") has_auth = true;
+        if (call == 1) {
+            call1_has_auth = has_auth;
+            return {.status = 302, .headers = {{"location", "https://two.example.com/"}}};
+        }
+        if (call == 2) {
+            call2_has_auth = has_auth;
+            return {.status = 302, .headers = {{"location", "/p3"}}};
+        }
+        call3_has_auth = has_auth;
+        return {.status = 200, .body = "ok"};
+    };
+    auto req = agent_get("https://one.example.com/");
+    req.max_redirects = 5;
+    req.headers = {{"Authorization", "Bearer secret"}, {"X-Keep", "v"}};
+    auto r = run(std::move(req));
+    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(call, 3);
+    EXPECT_TRUE(call1_has_auth);
+    EXPECT_FALSE(call2_has_auth);
+    EXPECT_FALSE(call3_has_auth);
+    client.responder = nullptr;
+}
+
+// One deadline for the whole chain (finding: hops 2+ must stay watched
+// and bounded by the same deadline, not a fresh one each).
+TEST_F(SceneHttpTest, AgentPrincipalRedirectChainSharesOneDeadline) {
+    make();
+    int call = 0;
+    client.responder = [&](const wisp::net::HttpClientRequest&) -> wisp::net::HttpClientResponse {
+        ++call;
+        now += 20000;
+        return {.status = 302, .headers = {{"location", "/next"}}};
+    };
+    auto req = agent_get("https://one.example.com/");
+    req.max_redirects = 5;
+    req.timeout_ms = 50000;
+    auto r = run(std::move(req));
+    EXPECT_EQ(r.error, "timeout");
+    // Hop 1 (+20s) and hop 2 (+40s) are each still under 50 s when sent;
+    // the chain's one deadline is past by the time hop 3 would start.
+    EXPECT_EQ(call, 3);
+    client.responder = nullptr;
+}
+
+// The watch is re-armed before every later hop (not left disarmed after
+// hop 1), so a cancel during hop 2 still reaches it.
+TEST_F(SceneHttpTest, AgentPrincipalCancelDuringSecondHop) {
+    make();
+    int call = 0;
+    client.responder = [&](const wisp::net::HttpClientRequest&) -> wisp::net::HttpClientResponse {
+        ++call;
+        if (call == 1)
+            return {.status = 302, .headers = {{"location", "https://two.example.com/"}}};
+        client.hold = true;
+        return {};
+    };
+    Results r;
+    auto req = agent_get("https://one.example.com/");
+    req.max_redirects = 5;
+    http->submit(std::move(req), r.sink());
+    ASSERT_TRUE(wait_until([&] { return client.held.load() == 1; }, 2000));
+    EXPECT_EQ(call, 2);
+    http->cancel_scene(std::string(kAgentHttpId));
+    ASSERT_TRUE(wait_until([&] { return client.saw_cancel.load(); }, 2000));
+    client.hold = false;
+    // cancel_scene() suppresses done() entirely (file header, same as the
+    // Scene principal): the point of this test is that the abort actually
+    // reached hop 2, not that a result was delivered.
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(r.size(), 0u);
+    EXPECT_EQ(call, 2);
     client.responder = nullptr;
 }
 
@@ -829,6 +1040,22 @@ TEST_F(SceneHttpTest, AgentPrincipalPerRequestTimeout) {
     EXPECT_EQ(client.last()->timeout_ms, AgentHttpLimits::kMaxTimeoutMs);
 }
 
+// The 50 s is an actual deadline, not just a number handed to the client:
+// it fires on schedule (checked between pieces with the fake clock, as
+// TimeoutIsOneDeadlineForTheWholeRequest does for the Scene principal's
+// own timeout), neither sooner (the Scene default of 15 s) nor never.
+TEST_F(SceneHttpTest, AgentPrincipalPerRequestTimeoutFiresOnSchedule) {
+    make();
+    client.next = {.status = 200, .body = std::string(4 * 4096, 'x')};
+    client.before_piece = [this] { now += 20000; };
+    auto req = agent_get("https://x.example.com/trickle");
+    req.timeout_ms = 50000;
+    auto r = run(std::move(req));
+    EXPECT_EQ(r.error, "timeout");
+    // Pieces at +20 s, +40 s; the one at +60 s is past the 50 s deadline.
+    EXPECT_EQ(client.pieces.load(), 2);
+}
+
 TEST_F(SceneHttpTest, AgentPrincipalLogPrivacy) {
     make();
     client.next = {.status = 200, .body = "ok"};
@@ -843,6 +1070,10 @@ TEST_F(SceneHttpTest, AgentPrincipalLogPrivacy) {
     const std::string log = wisp::log::ring_snapshot();
     for (const char* s : {"AGENTSECRET", "AGENTBODYSECRET", "QUERYSECRET", "/p"})
         EXPECT_EQ(log.find(s), std::string::npos) << s << " in:\n" << log;
+    // agent-tools spec 3.2's one log line per request (method, host,
+    // status, duration) is there, not just silence.
+    EXPECT_NE(log.find("x.example.com"), std::string::npos) << log;
+    EXPECT_NE(log.find("POST"), std::string::npos) << log;
 }
 
 TEST(SceneHttpTask, Config) {

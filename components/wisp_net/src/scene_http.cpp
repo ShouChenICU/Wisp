@@ -55,6 +55,24 @@ std::string scene_tag(std::string_view id) {
     return tag;
 }
 
+// For the Agent principal's one log line per request (file header,
+// agent-tools spec 3.2): never the URL past the host.
+const char* method_name(Method m) {
+    switch (m) {
+        case Method::Get:
+            return "GET";
+        case Method::Post:
+            return "POST";
+        case Method::Put:
+            return "PUT";
+        case Method::Delete:
+            return "DELETE";
+        case Method::Other:
+            break;
+    }
+    return "?";
+}
+
 bool is_hop_by_hop_header(std::string_view name) {
     static constexpr std::string_view kHopByHop[] = {"host", "content-length", "transfer-encoding",
                                                      "connection"};
@@ -101,19 +119,110 @@ std::string agent_url_error(std::string_view url) {
     return "";
 }
 
-// Resolves a Location header against the request URL. Only an absolute URL
-// or an absolute path is understood; anything else (a relative path with
-// no leading '/') fails to resolve and the redirect is not followed.
+// Collapses "." and ".." path segments (RFC 3986 5.2.4, the parts of it a
+// server redirect can plausibly need): `path` always starts with '/' and
+// keeps any query/fragment verbatim, untouched, as the tail of its last
+// segment.
+std::string normalize_dot_segments(std::string_view path) {
+    const bool trailing_slash = path.size() > 1 && path.back() == '/';
+    std::vector<std::string_view> out;
+    size_t i = 1;
+    while (i <= path.size()) {
+        const size_t next = path.find('/', i);
+        const std::string_view seg =
+            next == std::string_view::npos ? path.substr(i) : path.substr(i, next - i);
+        if (seg == ".") {
+            // dropped
+        } else if (seg == "..") {
+            if (!out.empty()) out.pop_back();
+        } else if (!seg.empty()) {
+            out.push_back(seg);
+        }
+        if (next == std::string_view::npos) break;
+        i = next + 1;
+    }
+    std::string result = "/";
+    for (size_t k = 0; k < out.size(); ++k) {
+        result.append(out[k]);
+        if (k + 1 < out.size()) result.push_back('/');
+    }
+    if (trailing_slash && !out.empty()) result.push_back('/');
+    return result;
+}
+
+// Resolves a Location header against the request URL: an absolute URL, a
+// scheme-relative "//host/path" (the base's own scheme), an absolute path,
+// a query-only "?a=1" (the base's own path) or a relative path (merged
+// with the base path's directory, "." and ".." collapsed). "" for
+// anything else (a bare fragment, or a base with no scheme), meaning the
+// redirect is not followed.
 std::string resolve_location(const std::string& base, const std::string& location) {
-    if (location.empty()) return {};
+    if (location.empty() || location[0] == '#') return {};
     if (istarts_with(location, "http://") || istarts_with(location, "https://")) return location;
-    if (location[0] != '/') return {};
+    // Any other "scheme://..." is an absolute URL too, just in a scheme
+    // the Agent principal does not support: returned as it is, so the
+    // caller's own URL check rejects it (and the hop is then not
+    // followed) instead of this merging it into the path as if it were a
+    // relative reference.
+    if (const size_t colon = location.find(':');
+        colon != std::string::npos && colon > 0 && location.compare(colon, 3, "://") == 0) {
+        bool scheme_ok = true;
+        for (size_t i = 0; scheme_ok && i < colon; ++i) {
+            const char c = location[i];
+            scheme_ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
+        }
+        if (scheme_ok) return location;
+    }
     const size_t scheme_end = base.find("://");
     if (scheme_end == std::string::npos) return {};
-    size_t authority_end = base.find('/', scheme_end + 3);
-    const std::string origin =
-        authority_end == std::string::npos ? base : base.substr(0, authority_end);
-    return origin + location;
+    if (location.size() >= 2 && location[0] == '/' && location[1] == '/')
+        return base.substr(0, scheme_end) + ":" + location;
+
+    const size_t authority_start = scheme_end + 3;
+    const size_t path_start = base.find_first_of("/?#", authority_start);
+    const std::string origin = path_start == std::string::npos ? base : base.substr(0, path_start);
+    const std::string_view rest = path_start == std::string::npos
+                                      ? std::string_view()
+                                      : std::string_view(base).substr(path_start);
+    const size_t q = rest.find_first_of("?#");
+    std::string_view base_path = q == std::string_view::npos ? rest : rest.substr(0, q);
+    if (base_path.empty()) base_path = "/";
+
+    if (location[0] == '/') return origin + normalize_dot_segments(location);
+    if (location[0] == '?') return origin + std::string(base_path) + location;
+    const size_t slash = base_path.rfind('/');
+    const std::string dir =
+        slash == std::string_view::npos ? "/" : std::string(base_path.substr(0, slash + 1));
+    return origin + normalize_dot_segments(dir + location);
+}
+
+// The scheme and host:port a redirect hop is at, lowercased, for deciding
+// whether it crossed origins (file header): everything past the URL's
+// authority is irrelevant to that, and is dropped.
+std::string origin_key(std::string_view url) {
+    const size_t scheme_end = url.find("://");
+    if (scheme_end == std::string_view::npos) return std::string(url);
+    const size_t authority_start = scheme_end + 3;
+    const size_t authority_end = url.find_first_of("/?#", authority_start);
+    std::string key(
+        url.substr(0, authority_end == std::string_view::npos ? url.size() : authority_end));
+    for (char& c : key) c = lower(c);
+    return key;
+}
+
+// Authorization, Cookie and Proxy-Authorization: dropped from a redirect
+// hop that crosses to a different scheme, host or port (file header).
+void drop_cross_origin_credentials(std::vector<std::pair<std::string, std::string>>& headers) {
+    static constexpr std::string_view kCredentials[] = {"authorization", "cookie",
+                                                        "proxy-authorization"};
+    headers.erase(std::remove_if(headers.begin(), headers.end(),
+                                 [](const auto& h) {
+                                     for (std::string_view c : kCredentials)
+                                         if (iequals(h.first, c)) return true;
+                                     return false;
+                                 }),
+                  headers.end());
 }
 
 // A response body growing in Mem::Large up to `max` bytes.
@@ -276,6 +385,7 @@ void SceneHttp::reject(const SceneHttpRequest& req, const char* code,
            host_for_log(req.url).c_str());
     SceneHttpResult r;
     r.error = code;
+    r.final_url = req.url;
     if (done) done(std::move(r));
 }
 
@@ -292,12 +402,18 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
             return;
         }
         // Hop-by-hop headers are dropped, not rejected and not forwarded
-        // (the client sets them itself); the rest skip header_allowed().
+        // (the client sets them itself); the rest skip header_allowed()'s
+        // policy but not its syntax (header_syntax_ok(), file header).
         std::vector<std::pair<std::string, std::string>> kept;
         kept.reserve(req.headers.size());
         for (auto& [name, value] : req.headers)
             if (!is_hop_by_hop_header(name)) kept.emplace_back(std::move(name), std::move(value));
         req.headers = std::move(kept);
+        for (const auto& [name, value] : req.headers)
+            if (!header_syntax_ok(name, value)) {
+                reject(req, "bad_header", done);
+                return;
+            }
         if (req.headers.size() > AgentHttpLimits::kMaxHeaders) code = "too_large";
         if (req.url.size() > AgentHttpLimits::kMaxUrlBytes ||
             req.body.size() > AgentHttpLimits::kMaxRequestBody)
@@ -570,6 +686,7 @@ void SceneHttp::execute(Job& job) {
     const bool is_agent = job.principal == HttpPrincipal::Agent;
     const uint32_t timeout_ms = timeout_of(job);
     const bool streamed = static_cast<bool>(job.on_body);
+    const uint64_t started_at = now_ms_();
 
     // The response cap: SceneHttpLimits/AgentHttpLimits unless the job
     // asked for a smaller one (never a bigger one than the Agent
@@ -577,8 +694,10 @@ void SceneHttp::execute(Job& job) {
     size_t response_cap = is_agent ? AgentHttpLimits::kMaxResponse : limits_.max_response;
     if (job.max_response != 0) response_cap = std::min(response_cap, job.max_response);
 
-    uint8_t max_redirects = job.max_redirects;
-    if (is_agent) max_redirects = std::min<uint8_t>(max_redirects, AgentHttpLimits::kMaxRedirects);
+    // Redirects are an Agent-only feature (file header): a Scene request
+    // ignores max_redirects outright, whatever it is.
+    uint8_t max_redirects =
+        is_agent ? std::min<uint8_t>(job.max_redirects, AgentHttpLimits::kMaxRedirects) : 0;
 
     // One deadline for the whole request, every hop included (spec 5.3's
     // 15 s, or the Agent principal's own timeout_ms). A client's own
@@ -586,7 +705,9 @@ void SceneHttp::execute(Job& job) {
     // and a server that trickles its answer would then hold the one worker
     // for as long as it likes. So the watch interrupts a call blocked in
     // the client at the deadline (and on cancel), and between pieces the
-    // deadline is checked here as well.
+    // deadline is checked here as well. Each later hop re-arms the watch
+    // (and job.ticket, under mu_, so cancel_scene() still aborts the right
+    // request) with only the time left of it, never a fresh full timeout.
     const uint64_t deadline = now_ms_() + timeout_ms;
     auto expired = [this, deadline] { return now_ms_() >= deadline; };
 
@@ -594,28 +715,47 @@ void SceneHttp::execute(Job& job) {
     Method method = job.method;
     const uint8_t* body_data = reinterpret_cast<const uint8_t*>(job.body.data());
     size_t body_size = job.body.size();
+    std::vector<std::pair<std::string, std::string>> headers;
+    headers.reserve(job.headers.size());
+    for (const auto& [name, value] : job.headers)
+        headers.emplace_back(std::string(name.data(), name.size()),
+                             std::string(value.data(), value.size()));
 
     BodyBuffer body(response_cap);
     SceneHttpResult result;
     result.deferred = job.deferred;
+    bool final_truncated = false;
 
     for (uint8_t attempt = 0;; ++attempt) {
+        const uint64_t now = now_ms_();
+        if (now >= deadline) {
+            result.error = "timeout";
+            break;
+        }
+        const uint32_t remaining = static_cast<uint32_t>(deadline - now);
+        if (attempt != 0) {
+            std::lock_guard<os::Mutex> lock(mu_);
+            job.ticket = watch_->arm(remaining);
+        }
+
         // Ordinary heap copies of the URL and headers for the client, only
         // for the request being sent (their sizes are capped in submit()).
         HttpClientRequest req;
         req.method = method;
         req.url = url;
-        req.headers.reserve(job.headers.size());
-        for (const auto& [name, value] : job.headers)
-            req.headers.emplace_back(std::string(name.data(), name.size()),
-                                     std::string(value.data(), value.size()));
+        req.headers = headers;
         req.body_ref = {body_data, body_size};
-        req.timeout_ms = timeout_ms;
+        req.timeout_ms = remaining;
         req.max_response_bytes = response_cap;
         if (streamed) {
             const uint64_t cap =
                 job.max_body != 0 ? job.max_body : SceneHttpRequest::kMaxDownloadBody;
             req.max_response_bytes = static_cast<size_t>(cap);
+        } else if (is_agent) {
+            // The Agent principal's cap is a truncation, not an error
+            // (file header): the client itself stops at it instead of
+            // failing the request.
+            req.truncate_at_limit = true;
         }
         req.watch = watch_.get();
 
@@ -630,7 +770,6 @@ void SceneHttp::execute(Job& job) {
         bool too_large = false;
         bool no_memory = false;
         bool timed_out = false;
-        bool truncated = false;
         req.on_status = [&status](int st) { status = st; };
         req.on_body = [&](std::span<const uint8_t> chunk) {
             if (job.cancelled.load()) return false;
@@ -655,15 +794,7 @@ void SceneHttp::execute(Job& job) {
                 return job.on_body(chunk);
             }
             if (chunk.size() > body.remaining()) {
-                // The Agent principal keeps what fits instead of failing
-                // (file header); the Scene principal is held to its cap.
-                if (is_agent) {
-                    const size_t take = body.remaining();
-                    if (take != 0) body.add(chunk.first(take));
-                    truncated = true;
-                } else {
-                    too_large = true;
-                }
+                too_large = true;
                 return false;
             }
             switch (body.add(chunk)) {
@@ -681,7 +812,6 @@ void SceneHttp::execute(Job& job) {
         req.cancelled = [&job, &expired] { return job.cancelled.load() || expired(); };
 
         HttpClientResponse res = client_.request(req);
-        watch_->disarm();
         const bool watch_deadline = watch_->reason() == RequestWatch::Reason::Deadline;
 
         if (timed_out || (res.transport == TransportError::Cancelled && expired()) ||
@@ -703,21 +833,6 @@ void SceneHttp::execute(Job& job) {
             result.error = "other";
             break;
         }
-        if (truncated) {
-            // The Agent principal's cap is not an error (file header):
-            // the client reports the on_body refusal as Cancelled, same
-            // as a real cancellation, so this is checked first.
-            result.body = body.take();
-            if (!result.body.ok()) {
-                WLOG_W(kTag, "%s: no memory for a response body", job.scene_id.c_str());
-                result.error = "other";
-            } else {
-                result.status = status;
-                result.headers = std::move(res.headers);
-                result.body_truncated = true;
-            }
-            break;
-        }
         if (res.transport == TransportError::Cancelled) {
             // The scene was cancelled (nothing is delivered below) or a
             // piece was refused for a reason handled above.
@@ -730,18 +845,29 @@ void SceneHttp::execute(Job& job) {
         }
 
         // A real response came back. Follow it if it is a redirect this
-        // job still has hops left for and that resolves to somewhere;
-        // otherwise this is the final answer, as it stands.
-        std::string location;
+        // job still has hops left for, that resolves to somewhere, and
+        // whose resolved target is itself a valid Agent URL (file header:
+        // redirect targets are re-checked exactly like a fresh request's
+        // URL); otherwise this is the final answer, as it stands.
+        bool follow = false;
+        std::string resolved;
         if (status >= 300 && status < 400 && attempt < max_redirects) {
+            std::string location;
             for (const auto& [name, value] : res.headers)
                 if (iequals(name, "location")) {
                     location = value;
                     break;
                 }
+            if (!location.empty()) {
+                resolved = resolve_location(url, location);
+                if (!resolved.empty() && resolved.size() <= AgentHttpLimits::kMaxUrlBytes &&
+                    agent_url_error(resolved).empty()) {
+                    follow = true;
+                }
+            }
         }
-        std::string resolved = location.empty() ? std::string() : resolve_location(url, location);
-        if (!resolved.empty()) {
+        if (follow) {
+            if (origin_key(resolved) != origin_key(url)) drop_cross_origin_credentials(headers);
             // POST becomes a bodyless GET on 303; the other redirect
             // statuses keep the method and body (file header).
             if (status == 303) {
@@ -764,13 +890,23 @@ void SceneHttp::execute(Job& job) {
             } else {
                 result.status = status;
                 result.headers = std::move(res.headers);
-                if (truncated) result.body_truncated = true;
+                final_truncated = res.truncated;
             }
         }
         break;
     }
     result.final_url = url;
+    result.body_truncated = final_truncated && result.error.empty();
     if (!result.error.empty()) result.body = os::LargeBuffer();
+    watch_->disarm();
+
+    if (is_agent) {
+        // agent-tools spec 3.2: method, host, final status and elapsed
+        // time, nothing past the host.
+        WLOG_I(kTag, "agent http: %s %s -> %d (%llu ms)", method_name(job.method),
+               host_for_log(url).c_str(), result.status,
+               static_cast<unsigned long long>(now_ms_() - started_at));
+    }
 
     std::lock_guard<os::Mutex> lock(deliver_mu_);
     if (job.cancelled.load() || !job.done) return;
@@ -815,12 +951,17 @@ std::string SceneHttp::check_url(std::string_view url, const std::vector<std::st
     return "permission_denied";
 }
 
-bool SceneHttp::header_allowed(std::string_view name, std::string_view value) {
+bool SceneHttp::header_syntax_ok(std::string_view name, std::string_view value) {
     if (name.empty()) return false;
     for (char c : name)
         if (!is_tchar(c)) return false;
     for (char c : value)
         if (c == '\r' || c == '\n' || c == '\0') return false;
+    return true;
+}
+
+bool SceneHttp::header_allowed(std::string_view name, std::string_view value) {
+    if (!header_syntax_ok(name, value)) return false;
     static constexpr std::string_view kDenied[] = {
         "cookie",     "cookie2",        "proxy-authorization", "host",
         "connection", "content-length", "transfer-encoding",   "upgrade",
