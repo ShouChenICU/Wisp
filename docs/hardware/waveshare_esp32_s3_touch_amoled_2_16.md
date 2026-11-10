@@ -55,6 +55,10 @@ Sources: the MyOS project (MIT, by ShouChen, read-only reference; **its code is 
 - This board must enable flash auto-suspend (`CONFIG_SPI_FLASH_AUTO_SUSPEND`, `sdkconfig.defaults.board`): with XIP on, reading the `fonts` partition, which is mapped at run time, during a flash erase or write returns 0xFF, and the vector font crashes as a result. For details, see "Flash erase/write and mapped reads" below.
 - Known limitations of uploading firmware through the web page (httpd has a single task; accepted as they are, see "Networking on the device" in `docs/architecture.md`): a file over 8 MiB gets a connection reset rather than a 413 (as does any upload rejected early with more than 8 MiB left to send); when two browsers upload at the same time, the second has to wait until the first has finished before it gets 409 `busy`; the logs page pauses its push during an upload.
 
+## Boot time (2026-11-09)
+
+The vendor's CO5300 init table waited 600 ms after SLPOUT and 600 ms after DISPON. `setup_device.c` now waits the MIPI DCS 120 ms after SLPOUT and nothing after DISPON, as on the 1.75C board, where the same change cut panel bring-up from 1.36 s to 0.28 s with no visible difference (`docs/hardware/waveshare_esp32_s3_touch_amoled_1_75c.md`, "Boot time"). The PSRAM test is off for every board (420 ms on 8 MB). Not yet checked on this board: that the panel comes up as before (picture, brightness, colours) and the new `boot_ms` in `WISP_BOOT_REPORT` (checklist).
+
 ## Code from flash (2026-11-08)
 
 This board no longer runs code from PSRAM: `sdkconfig.defaults.board` turns off `CONFIG_SPIRAM_XIP_FROM_PSRAM` but keeps `CONFIG_SPI_FLASH_AUTO_SUSPEND`, and the shared `firmware/sdkconfig.defaults` doubles the instruction cache to 32 KB. Every instruction-cache miss is then a QSPI flash read (about 1 µs for a 32-byte line at 80 MHz, against about 0.4 µs from octal PSRAM), and one frame's rendering code is far larger than the cache, so the cache size matters more than where the code lives. Measured with `diag` and `bench scroll 10`, hotspot off, firmware `934adf6` plus the configuration change:
@@ -180,6 +184,7 @@ The device boots into the home screen (black background, wisp in the centre). "H
 | 66 | Scrolling body text during OTA (glyph partition spec 5.6) | Open a screen with Chinese body text and keep scrolling it, while uploading firmware once through the admin console | Displays normally with no crash; the upload succeeds and the new firmware runs after the restart |  |
 | 67 | Scrolling during an OTA upload without XIP (see "Code from flash" above) | Open hardware diagnostics with `diag`, start a firmware upload on the admin console's "System" page, keep scrolling with a finger during the upload, and do not confirm the new firmware; time the upload | Scrolling may stutter but the UI does not freeze for more than about a second at a time; no crash or watchdog; the upload returns 202; note the upload time against the 20.6 s of "Flash erase/write and mapped reads" || 2026-11-08: without auto-suspend, 2–3 fps, at most 7 (no freeze, upload completed); with auto-suspend, smooth (user observation) |
 | 68 | Internal RAM worst case with the 32 KB instruction cache (16 KB more internal RAM) | Same scenario as item 57 | `internal free` stays ≥ 40 KB and `largest` ≥ 16 KB in every `mem` sample | |
+| 69 | Panel bring-up with the shorter CO5300 waits ("Boot time") | Flash, power-cycle and watch the screen; read `boot_ms` in `WISP_BOOT_REPORT` | The picture, brightness and colours are as before; `boot_ms` drops by about 1 s | |
 
 ## Standby and power saving (spec 6.7)
 

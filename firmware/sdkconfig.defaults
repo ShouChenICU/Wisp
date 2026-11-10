@@ -77,6 +77,13 @@ CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
 # resets before App::start() has marked it valid.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
+# Boot time: the PSRAM test reads and writes all of it on every boot
+# (420 ms with 8 MB); a wake from deep sleep skips the bootloader's
+# check of the app image (about 400 ms), which already passed on the boot
+# that went to sleep.
+# CONFIG_SPIRAM_MEMTEST is not set
+CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP=y
+
 # Power management (spec 6.7): PM_ENABLE compiles in DFS/light
 # -sleep support; firmware/main/main.cpp's apply_pm_config() keeps DFS
 # (240<->80 MHz) always on via esp_pm_configure() and only toggles

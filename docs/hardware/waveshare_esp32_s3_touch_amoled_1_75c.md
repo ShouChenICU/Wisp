@@ -84,6 +84,23 @@ XIP (`CONFIG_SPIRAM_XIP_FROM_PSRAM`, which the reference board used until 2026-1
 
 The 32 MB flash is used without the experimental `BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH`: the bootloader and the cache address only the first 16 MB, which is why the partition table keeps everything mapped there.
 
+## Boot time (2026-11-09)
+
+Measured on the device with a throwaway build that timed a wake from deep sleep on the RTC clock (`esp_rtc_get_time_us()`, which keeps running in deep sleep): from the wake timer firing to `App::start()` returning, after which the home screen is up.
+
+| | Before | After |
+|---|---|---|
+| ROM + bootloader + startup, to `app_main` | 1135 ms | 151 ms |
+| `App::start()` | 2505 ms | 1406 ms |
+| Total | 3.64 s | 1.56 s (two runs, 1558 and 1557 ms) |
+
+What made the difference:
+- The PSRAM test (`CONFIG_SPIRAM_MEMTEST`) read and wrote all 8 MB on every boot: 420 ms. It is off (`firmware/sdkconfig.defaults`); normal boots gain this too.
+- The bootloader checks the SHA of the 2.5 MB app image on every boot (about 380 ms). `CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` skips it on a wake from deep sleep only; normal boots still check.
+- The BSP's CO5300 init table waits 600 ms after RASET and 600 ms after SLPOUT, so panel bring-up took 1.36 s. With no wait after RASET and the MIPI DCS 120 ms after SLPOUT it takes 0.28 s, and the picture, brightness and colours look the same (checked by the user).
+
+Still left in the boot: the CRC of the `fonts` and `glyphs` images (about 300 ms, `ui: fonts: ... crc`), the touch, PMU and IMU bring-up and Wi-Fi start.
+
 ## First flash
 
 From the `firmware/` directory, with the pinned ESP-IDF environment active (`. ~/esp/esp-idf-v6.0.3/export.sh`). This board builds in its own build directory and sdkconfig, so the reference board's `firmware/build` and `firmware/sdkconfig` are not touched (see "Building several boards" in `docs/porting-guide.md`):
