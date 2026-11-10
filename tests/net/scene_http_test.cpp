@@ -19,6 +19,9 @@
 
 namespace {
 
+using wisp::net::AgentHttpLimits;
+using wisp::net::HttpPrincipal;
+using wisp::net::kAgentHttpId;
 using wisp::net::Method;
 using wisp::net::SceneHttp;
 using wisp::net::SceneHttpLimits;
@@ -32,6 +35,17 @@ const std::vector<std::string> kHosts = {"api.example.com"};
 SceneHttpRequest get(std::string url, std::string scene = "s") {
     SceneHttpRequest r;
     r.scene_id = std::move(scene);
+    r.instance = 1;
+    r.method = Method::Get;
+    r.url = std::move(url);
+    return r;
+}
+
+// The Agent principal's requests do not need a declared scene (agent-tools
+// spec 3.2); scene_id is overwritten with kAgentHttpId by submit() anyway.
+SceneHttpRequest agent_get(std::string url) {
+    SceneHttpRequest r;
+    r.principal = HttpPrincipal::Agent;
     r.instance = 1;
     r.method = Method::Get;
     r.url = std::move(url);
@@ -652,6 +666,183 @@ TEST_F(SceneHttpTest, StopDropsDeferredWithoutCallbacks) {
     http->stop();
     EXPECT_EQ(r.size(), 0u);
     EXPECT_EQ(http->deferred_count(), 0u);
+}
+
+// agent-tools spec 3.2: the Agent principal skips the https-only rule, the
+// host allowlist and the per-scene rate limit; a Scene request to the same
+// host is still held to all three.
+TEST_F(SceneHttpTest, AgentPrincipalSkipsHttpsHostAndRate) {
+    make();
+    client.next = {.status = 200, .body = "ok"};
+    for (int i = 0; i < 40; ++i) EXPECT_EQ(run(agent_get("http://lan.local/x")).error, "") << i;
+    EXPECT_EQ(client.calls(), 40u);
+
+    EXPECT_EQ(run(get("http://lan.local/x")).error, "not_https");
+    EXPECT_EQ(run(get("https://lan.local/x")).error, "permission_denied");
+    for (int i = 0; i < 30; ++i) {
+        now += 1000;
+        EXPECT_EQ(run(get("https://api.example.com/")).error, "") << i;
+    }
+    EXPECT_EQ(run(get("https://api.example.com/")).error, "rate_limited");
+}
+
+TEST_F(SceneHttpTest, AgentPrincipalLimits) {
+    make();
+    client.next = {.status = 200, .body = "ok"};
+
+    std::string url = "https://x.example.com/";
+    url.append(AgentHttpLimits::kMaxUrlBytes - url.size(), 'p');
+    ASSERT_EQ(url.size(), AgentHttpLimits::kMaxUrlBytes);
+    EXPECT_EQ(run(agent_get(url)).error, "");
+    url.push_back('p');
+    EXPECT_EQ(run(agent_get(url)).error, "too_large");
+
+    auto many = agent_get("https://x.example.com/");
+    for (int i = 0; i < 33; ++i) many.headers.emplace_back("X-H" + std::to_string(i), "v");
+    EXPECT_EQ(run(std::move(many)).error, "too_large");
+
+    auto big_body = agent_get("https://x.example.com/");
+    big_body.method = Method::Post;
+    big_body.body.assign(AgentHttpLimits::kMaxRequestBody, 'b');
+    EXPECT_EQ(run(std::move(big_body)).error, "");
+    auto too_big_body = agent_get("https://x.example.com/");
+    too_big_body.method = Method::Post;
+    too_big_body.body.assign(AgentHttpLimits::kMaxRequestBody + 1, 'b');
+    EXPECT_EQ(run(std::move(too_big_body)).error, "too_large");
+
+    EXPECT_EQ(run(agent_get("ftp://x.example.com/")).error, "bad_url");
+    EXPECT_EQ(run(agent_get("https:///x")).error, "bad_url");
+}
+
+TEST_F(SceneHttpTest, AgentPrincipalHopByHopHeadersIgnored) {
+    make();
+    client.next = {.status = 200, .body = "ok"};
+    auto req = agent_get("https://x.example.com/");
+    req.headers = {{"Host", "evil.example.com"},
+                   {"content-length", "999"},
+                   {"Transfer-Encoding", "chunked"},
+                   {"CONNECTION", "keep-alive"},
+                   {"X-Api-Key", "k1"}};
+    EXPECT_EQ(run(std::move(req)).error, "");
+    ASSERT_TRUE(client.last());
+    ASSERT_EQ(client.last()->headers.size(), 1u);
+    EXPECT_EQ(client.last()->headers[0], (std::pair<std::string, std::string>{"X-Api-Key", "k1"}));
+}
+
+TEST_F(SceneHttpTest, AgentPrincipalNeverDeferred) {
+    make();
+    http->set_deferring(true);
+    EXPECT_EQ(run(agent_get("https://x.example.com/")).error, "offline");
+    EXPECT_EQ(client.calls(), 0u);
+    EXPECT_EQ(http->deferred_count(), 0u);
+
+    // A Scene request still waits, as before.
+    Results r;
+    http->submit(get("https://api.example.com/"), r.sink());
+    EXPECT_EQ(r.size(), 0u);
+    EXPECT_EQ(http->deferred_count(), 1u);
+    http->set_deferring(false);
+    ASSERT_TRUE(wait_until([&] { return r.size() == 1; }, 3000));
+    EXPECT_EQ(r.got[0].error, "");
+}
+
+TEST_F(SceneHttpTest, AgentPrincipalResponseCapTruncates) {
+    make();
+    client.ignore_limit = true;
+    client.next = {.status = 200, .body = std::string(AgentHttpLimits::kMaxResponse + 10, 'x')};
+    auto r = run(agent_get("https://x.example.com/big"));
+    EXPECT_EQ(r.error, "");
+    EXPECT_TRUE(r.body_truncated);
+    EXPECT_EQ(r.body.size(), AgentHttpLimits::kMaxResponse);
+
+    // The Scene principal is still held to its own (smaller) cap, as an
+    // error, not a truncation.
+    client.ignore_limit = false;
+    client.next = {.status = 200, .body = std::string(262145, 'x')};
+    auto r2 = run(get("https://api.example.com/big"));
+    EXPECT_EQ(r2.error, "too_large");
+    EXPECT_FALSE(r2.body_truncated);
+}
+
+TEST_F(SceneHttpTest, AgentPrincipalRedirects) {
+    make();
+    int call = 0;
+    client.responder = [&](const wisp::net::HttpClientRequest&) -> wisp::net::HttpClientResponse {
+        ++call;
+        if (call == 1)
+            return {.status = 301, .headers = {{"location", "https://two.example.com/"}}};
+        if (call == 2)
+            return {.status = 301, .headers = {{"location", "https://three.example.com/"}}};
+        return {.status = 200, .body = "done"};
+    };
+    auto req = agent_get("https://one.example.com/");
+    req.max_redirects = 5;
+    auto r = run(std::move(req));
+    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.status, 200);
+    EXPECT_EQ(r.final_url, "https://three.example.com/");
+    EXPECT_EQ(call, 3);
+
+    // Six hops in a row, one more than the limit: the sixth 3xx, not
+    // followed, comes back as it is.
+    call = 0;
+    client.responder = [&](const wisp::net::HttpClientRequest&) -> wisp::net::HttpClientResponse {
+        ++call;
+        return {.status = 302, .headers = {{"location", "/next"}}};
+    };
+    auto req6 = agent_get("https://one.example.com/");
+    req6.max_redirects = 5;
+    auto r6 = run(std::move(req6));
+    EXPECT_EQ(r6.error, "");
+    EXPECT_EQ(r6.status, 302);
+    EXPECT_EQ(call, 6);
+    EXPECT_EQ(r6.final_url, "https://one.example.com/next");
+
+    // max_redirects left at 0: the first 3xx comes back unfollowed.
+    call = 0;
+    client.responder = [&](const wisp::net::HttpClientRequest&) -> wisp::net::HttpClientResponse {
+        ++call;
+        return {.status = 302, .headers = {{"location", "https://elsewhere.example.com/"}}};
+    };
+    auto r0 = run(agent_get("https://one.example.com/"));
+    EXPECT_EQ(r0.error, "");
+    EXPECT_EQ(r0.status, 302);
+    EXPECT_EQ(call, 1);
+    EXPECT_EQ(r0.final_url, "https://one.example.com/");
+
+    client.responder = nullptr;
+}
+
+TEST_F(SceneHttpTest, AgentPrincipalPerRequestTimeout) {
+    make();
+    client.next = {.status = 200, .body = "ok"};
+    auto req = agent_get("https://x.example.com/");
+    req.timeout_ms = 50000;
+    EXPECT_EQ(run(std::move(req)).error, "");
+    ASSERT_TRUE(client.last());
+    EXPECT_EQ(client.last()->timeout_ms, 50000u);
+
+    auto over = agent_get("https://x.example.com/");
+    over.timeout_ms = 150000;
+    EXPECT_EQ(run(std::move(over)).error, "");
+    ASSERT_TRUE(client.last());
+    EXPECT_EQ(client.last()->timeout_ms, AgentHttpLimits::kMaxTimeoutMs);
+}
+
+TEST_F(SceneHttpTest, AgentPrincipalLogPrivacy) {
+    make();
+    client.next = {.status = 200, .body = "ok"};
+    auto req = agent_get("https://x.example.com/p?key=QUERYSECRET-9");
+    req.method = Method::Post;
+    req.headers = {{"Authorization", "Bearer AGENTSECRET-1"}};
+    req.body = "AGENTBODYSECRET-2";
+    EXPECT_EQ(run(std::move(req)).error, "");
+    client.next = {.transport = TransportError::Tls};
+    EXPECT_EQ(run(agent_get("https://x.example.com/p?key=QUERYSECRET-9")).error, "tls");
+
+    const std::string log = wisp::log::ring_snapshot();
+    for (const char* s : {"AGENTSECRET", "AGENTBODYSECRET", "QUERYSECRET", "/p"})
+        EXPECT_EQ(log.find(s), std::string::npos) << s << " in:\n" << log;
 }
 
 TEST(SceneHttpTask, Config) {

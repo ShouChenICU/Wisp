@@ -55,6 +55,67 @@ std::string scene_tag(std::string_view id) {
     return tag;
 }
 
+bool is_hop_by_hop_header(std::string_view name) {
+    static constexpr std::string_view kHopByHop[] = {"host", "content-length", "transfer-encoding",
+                                                     "connection"};
+    for (std::string_view h : kHopByHop)
+        if (iequals(name, h)) return true;
+    return false;
+}
+
+// The Agent principal's URL check (file header): http:// or https://, a
+// parseable host, nothing a client could read as a line break or a second
+// token. No host allowlist, no https-only rule.
+std::string agent_url_error(std::string_view url) {
+    std::string_view rest;
+    if (istarts_with(url, "https://"))
+        rest = url.substr(8);
+    else if (istarts_with(url, "http://"))
+        rest = url.substr(7);
+    else
+        return "bad_url";
+    for (char c : url) {
+        const auto u = static_cast<unsigned char>(c);
+        if (u <= 0x20 || u == 0x7f || c == '\\') return "bad_url";
+    }
+    std::string_view authority = rest.substr(0, rest.find_first_of("/?#"));
+    if (authority.find('@') != std::string_view::npos) return "bad_url";
+    std::string_view host = authority;
+    if (size_t colon = authority.find(':'); colon != std::string_view::npos) {
+        host = authority.substr(0, colon);
+        std::string_view port = authority.substr(colon + 1);
+        if (port.empty() || port.size() > 5) return "bad_url";
+        uint32_t n = 0;
+        for (char c : port) {
+            if (c < '0' || c > '9') return "bad_url";
+            n = n * 10 + static_cast<uint32_t>(c - '0');
+        }
+        if (n == 0 || n > 65535) return "bad_url";
+    }
+    if (host.empty()) return "bad_url";
+    for (char c : host) {
+        c = lower(c);
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-'))
+            return "bad_url";
+    }
+    return "";
+}
+
+// Resolves a Location header against the request URL. Only an absolute URL
+// or an absolute path is understood; anything else (a relative path with
+// no leading '/') fails to resolve and the redirect is not followed.
+std::string resolve_location(const std::string& base, const std::string& location) {
+    if (location.empty()) return {};
+    if (istarts_with(location, "http://") || istarts_with(location, "https://")) return location;
+    if (location[0] != '/') return {};
+    const size_t scheme_end = base.find("://");
+    if (scheme_end == std::string::npos) return {};
+    size_t authority_end = base.find('/', scheme_end + 3);
+    const std::string origin =
+        authority_end == std::string::npos ? base : base.substr(0, authority_end);
+    return origin + location;
+}
+
 // A response body growing in Mem::Large up to `max` bytes.
 class BodyBuffer {
 public:
@@ -64,6 +125,12 @@ public:
     BodyBuffer& operator=(const BodyBuffer&) = delete;
 
     enum class Add { Ok, TooLarge, NoMemory };
+
+    size_t remaining() const { return max_ - size_; }
+
+    // Keeps the allocation, drops the content: a fresh buffer for the next
+    // hop of a redirect chain without reallocating.
+    void reset() { size_ = 0; }
 
     Add add(std::span<const uint8_t> chunk) {
         if (chunk.size() > max_ - size_) return Add::TooLarge;
@@ -102,6 +169,7 @@ private:
 struct SceneHttp::Job {
     std::string scene_id;
     uint32_t instance = 0;
+    HttpPrincipal principal = HttpPrincipal::Scene;
     Method method = Method::Get;
     os::LargeString url;
     os::LargeVector<std::pair<os::LargeString, os::LargeString>> headers;
@@ -109,6 +177,9 @@ struct SceneHttp::Job {
     std::function<bool(std::span<const uint8_t>)> on_body;
     uint64_t max_body = 0;
     bool download = false;
+    size_t max_response = 0;
+    uint32_t timeout_ms = 0;
+    uint8_t max_redirects = 0;
     std::function<void(SceneHttpResult)> done;
     // Set under mu_ by cancel_scene()/stop(); read by the client between
     // pieces and by the worker under deliver_mu_.
@@ -131,7 +202,10 @@ SceneHttp::SceneHttp(HttpClient& client, SceneHttpLimits limits, std::function<u
 SceneHttp::~SceneHttp() { stop(); }
 
 uint32_t SceneHttp::timeout_of(const Job& job) const {
-    return job.download ? SceneHttpRequest::kDownloadTimeoutMs : limits_.timeout_ms;
+    if (job.download) return SceneHttpRequest::kDownloadTimeoutMs;
+    uint32_t t = job.timeout_ms != 0 ? job.timeout_ms : limits_.timeout_ms;
+    if (job.principal == HttpPrincipal::Agent) t = std::min(t, AgentHttpLimits::kMaxTimeoutMs);
+    return t;
 }
 
 os::TaskConfig SceneHttp::task_config() {
@@ -206,29 +280,58 @@ void SceneHttp::reject(const SceneHttpRequest& req, const char* code,
 }
 
 void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)> done) {
+    const bool is_agent = req.principal == HttpPrincipal::Agent;
+    if (is_agent) req.scene_id = kAgentHttpId;
+
     // The order of the checks is the one the header documents.
     const char* code = nullptr;
-    std::vector<std::string> hosts;
-    {
-        std::lock_guard<os::Mutex> lock(mu_);
-        if (auto it = scenes_.find(req.scene_id); it != scenes_.end()) hosts = it->second.hosts;
-    }
-    std::string url_code = check_url(req.url, hosts);
-    if (!url_code.empty()) {
-        reject(req, url_code == "not_https" ? "not_https" : "permission_denied", done);
-        return;
-    }
-    if (req.headers.size() > kMaxHeaders) code = "permission_denied";
-    for (const auto& [name, value] : req.headers)
-        if (code == nullptr && !header_allowed(name, value)) code = "permission_denied";
-    if (code == nullptr) {
-        if (req.url.size() > kMaxUrlBytes || req.body.size() > kMaxRequestBody) code = "too_large";
+    if (is_agent) {
+        std::string url_code = agent_url_error(req.url);
+        if (!url_code.empty()) {
+            reject(req, "bad_url", done);
+            return;
+        }
+        // Hop-by-hop headers are dropped, not rejected and not forwarded
+        // (the client sets them itself); the rest skip header_allowed().
+        std::vector<std::pair<std::string, std::string>> kept;
+        kept.reserve(req.headers.size());
+        for (auto& [name, value] : req.headers)
+            if (!is_hop_by_hop_header(name)) kept.emplace_back(std::move(name), std::move(value));
+        req.headers = std::move(kept);
+        if (req.headers.size() > AgentHttpLimits::kMaxHeaders) code = "too_large";
+        if (req.url.size() > AgentHttpLimits::kMaxUrlBytes ||
+            req.body.size() > AgentHttpLimits::kMaxRequestBody)
+            code = "too_large";
         size_t total = 0;
         for (const auto& [name, value] : req.headers) {
             total += name.size() + value.size();
-            if (name.size() + value.size() > kMaxHeaderBytes) code = "too_large";
+            if (name.size() + value.size() > AgentHttpLimits::kMaxHeaderBytes) code = "too_large";
         }
-        if (total > kMaxHeadersTotal) code = "too_large";
+        if (total > AgentHttpLimits::kMaxHeadersTotal) code = "too_large";
+    } else {
+        std::vector<std::string> hosts;
+        {
+            std::lock_guard<os::Mutex> lock(mu_);
+            if (auto it = scenes_.find(req.scene_id); it != scenes_.end()) hosts = it->second.hosts;
+        }
+        std::string url_code = check_url(req.url, hosts);
+        if (!url_code.empty()) {
+            reject(req, url_code == "not_https" ? "not_https" : "permission_denied", done);
+            return;
+        }
+        if (req.headers.size() > kMaxHeaders) code = "permission_denied";
+        for (const auto& [name, value] : req.headers)
+            if (code == nullptr && !header_allowed(name, value)) code = "permission_denied";
+        if (code == nullptr) {
+            if (req.url.size() > kMaxUrlBytes || req.body.size() > kMaxRequestBody)
+                code = "too_large";
+            size_t total = 0;
+            for (const auto& [name, value] : req.headers) {
+                total += name.size() + value.size();
+                if (name.size() + value.size() > kMaxHeaderBytes) code = "too_large";
+            }
+            if (total > kMaxHeadersTotal) code = "too_large";
+        }
     }
     if (code != nullptr) {
         reject(req, code, done);
@@ -243,6 +346,7 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
     }
     job->scene_id = req.scene_id;
     job->instance = req.instance;
+    job->principal = req.principal;
     job->method = req.method;
     job->url.assign(req.url.data(), req.url.size());
     job->headers.reserve(req.headers.size());
@@ -253,12 +357,24 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
     job->on_body = std::move(req.on_body);
     job->max_body = req.max_body;
     job->download = req.download;
+    job->max_response = req.max_response;
+    job->timeout_ms = req.timeout_ms;
+    job->max_redirects = req.max_redirects;
     job->done = std::move(done);
 
     {
         std::lock_guard<os::Mutex> lock(mu_);
         if (!running_) {
             code = "other";
+        } else if (is_agent) {
+            // Never rate limited or deferred (file header): while
+            // deferring it fails at once instead of waiting, and
+            // otherwise it always goes straight into the run queue.
+            if (deferring_) {
+                code = "offline";
+            } else {
+                queue_.push_back(std::move(job));
+            }
         } else {
             SceneState& st = scenes_[req.scene_id];
             const uint64_t now = now_ms_();
@@ -451,117 +567,209 @@ void SceneHttp::run() {
 }
 
 void SceneHttp::execute(Job& job) {
-    // Ordinary heap copies of the URL and headers for the client, only
-    // for the request being sent (their sizes are capped in submit()).
-    HttpClientRequest req;
-    req.method = job.method;
-    req.url.assign(job.url.data(), job.url.size());
-    req.headers.reserve(job.headers.size());
-    for (const auto& [name, value] : job.headers)
-        req.headers.emplace_back(std::string(name.data(), name.size()),
-                                 std::string(value.data(), value.size()));
-    req.body_ref = {reinterpret_cast<const uint8_t*>(job.body.data()), job.body.size()};
+    const bool is_agent = job.principal == HttpPrincipal::Agent;
     const uint32_t timeout_ms = timeout_of(job);
     const bool streamed = static_cast<bool>(job.on_body);
-    req.timeout_ms = timeout_ms;
-    req.max_response_bytes = limits_.max_response;
-    if (streamed) {
-        const uint64_t cap = job.max_body != 0 ? job.max_body : SceneHttpRequest::kMaxDownloadBody;
-        req.max_response_bytes = static_cast<size_t>(cap);
-    }
-    // One deadline for the whole request (spec 5.3's 15 s). A client's own
+
+    // The response cap: SceneHttpLimits/AgentHttpLimits unless the job
+    // asked for a smaller one (never a bigger one than the Agent
+    // principal's hard cap).
+    size_t response_cap = is_agent ? AgentHttpLimits::kMaxResponse : limits_.max_response;
+    if (job.max_response != 0) response_cap = std::min(response_cap, job.max_response);
+
+    uint8_t max_redirects = job.max_redirects;
+    if (is_agent) max_redirects = std::min<uint8_t>(max_redirects, AgentHttpLimits::kMaxRedirects);
+
+    // One deadline for the whole request, every hop included (spec 5.3's
+    // 15 s, or the Agent principal's own timeout_ms). A client's own
     // timeout may apply to each low-level read (esp_http_client's does),
     // and a server that trickles its answer would then hold the one worker
     // for as long as it likes. So the watch interrupts a call blocked in
     // the client at the deadline (and on cancel), and between pieces the
     // deadline is checked here as well.
-    req.watch = watch_.get();
     const uint64_t deadline = now_ms_() + timeout_ms;
     auto expired = [this, deadline] { return now_ms_() >= deadline; };
 
-    BodyBuffer body(limits_.max_response);
-    size_t streamed_bytes = 0;
-    // A download's body goes to on_body only with a 2xx status; any other
-    // answer's body (an error page) is read and dropped, up to the plain
-    // response cap, after which the transfer stops with the status kept.
-    int status = 0;
-    bool error_body_cut = false;
-    if (streamed) req.on_status = [&status](int st) { status = st; };
-    bool too_large = false;
-    bool no_memory = false;
-    bool timed_out = false;
-    req.on_body = [&](std::span<const uint8_t> chunk) {
-        if (job.cancelled.load()) return false;
-        if (expired()) {
-            timed_out = true;
-            return false;
-        }
-        if (streamed && status != 0 && (status < 200 || status >= 300)) {
-            if (chunk.size() > limits_.max_response - streamed_bytes) {
-                error_body_cut = true;
-                return false;
-            }
-            streamed_bytes += chunk.size();
-            return true;
-        }
-        if (streamed) {
-            if (chunk.size() > req.max_response_bytes - streamed_bytes) {
-                too_large = true;
-                return false;
-            }
-            streamed_bytes += chunk.size();
-            return job.on_body(chunk);
-        }
-        switch (body.add(chunk)) {
-            case BodyBuffer::Add::Ok:
-                return true;
-            case BodyBuffer::Add::TooLarge:
-                too_large = true;
-                return false;
-            case BodyBuffer::Add::NoMemory:
-                no_memory = true;
-                return false;
-        }
-        return false;
-    };
-    req.cancelled = [&job, &expired] { return job.cancelled.load() || expired(); };
+    std::string url(job.url.data(), job.url.size());
+    Method method = job.method;
+    const uint8_t* body_data = reinterpret_cast<const uint8_t*>(job.body.data());
+    size_t body_size = job.body.size();
 
-    HttpClientResponse res = client_.request(req);
-    watch_->disarm();
-    const bool watch_deadline = watch_->reason() == RequestWatch::Reason::Deadline;
-
+    BodyBuffer body(response_cap);
     SceneHttpResult result;
     result.deferred = job.deferred;
-    if (timed_out || (res.transport == TransportError::Cancelled && expired()) ||
-        (watch_deadline && res.transport != TransportError::None)) {
-        result.error = "timeout";
-    } else if (too_large || res.transport == TransportError::TooLarge) {
-        result.error = "too_large";
-    } else if (error_body_cut) {
-        result.status = status;
-        result.headers = std::move(res.headers);
-    } else if (no_memory) {
-        WLOG_W(kTag, "%s: no memory for a response body", job.scene_id.c_str());
-        result.error = "other";
-    } else if (res.transport == TransportError::Cancelled) {
-        // The scene was cancelled (nothing is delivered below) or a piece
-        // was refused for a reason handled above.
-        result.error = "other";
-    } else if (res.transport != TransportError::None) {
-        result.error = to_string(res.transport);
-    } else if (streamed) {
-        result.status = res.status;
-        result.headers = std::move(res.headers);
-    } else {
-        result.body = body.take();
-        if (!result.body.ok()) {
+
+    for (uint8_t attempt = 0;; ++attempt) {
+        // Ordinary heap copies of the URL and headers for the client, only
+        // for the request being sent (their sizes are capped in submit()).
+        HttpClientRequest req;
+        req.method = method;
+        req.url = url;
+        req.headers.reserve(job.headers.size());
+        for (const auto& [name, value] : job.headers)
+            req.headers.emplace_back(std::string(name.data(), name.size()),
+                                     std::string(value.data(), value.size()));
+        req.body_ref = {body_data, body_size};
+        req.timeout_ms = timeout_ms;
+        req.max_response_bytes = response_cap;
+        if (streamed) {
+            const uint64_t cap =
+                job.max_body != 0 ? job.max_body : SceneHttpRequest::kMaxDownloadBody;
+            req.max_response_bytes = static_cast<size_t>(cap);
+        }
+        req.watch = watch_.get();
+
+        body.reset();
+        size_t streamed_bytes = 0;
+        // A download's body goes to on_body only with a 2xx status; any
+        // other answer's body (an error page) is read and dropped, up to
+        // the plain response cap, after which the transfer stops with the
+        // status kept.
+        int status = 0;
+        bool error_body_cut = false;
+        bool too_large = false;
+        bool no_memory = false;
+        bool timed_out = false;
+        bool truncated = false;
+        req.on_status = [&status](int st) { status = st; };
+        req.on_body = [&](std::span<const uint8_t> chunk) {
+            if (job.cancelled.load()) return false;
+            if (expired()) {
+                timed_out = true;
+                return false;
+            }
+            if (streamed && status != 0 && (status < 200 || status >= 300)) {
+                if (chunk.size() > limits_.max_response - streamed_bytes) {
+                    error_body_cut = true;
+                    return false;
+                }
+                streamed_bytes += chunk.size();
+                return true;
+            }
+            if (streamed) {
+                if (chunk.size() > req.max_response_bytes - streamed_bytes) {
+                    too_large = true;
+                    return false;
+                }
+                streamed_bytes += chunk.size();
+                return job.on_body(chunk);
+            }
+            if (chunk.size() > body.remaining()) {
+                // The Agent principal keeps what fits instead of failing
+                // (file header); the Scene principal is held to its cap.
+                if (is_agent) {
+                    const size_t take = body.remaining();
+                    if (take != 0) body.add(chunk.first(take));
+                    truncated = true;
+                } else {
+                    too_large = true;
+                }
+                return false;
+            }
+            switch (body.add(chunk)) {
+                case BodyBuffer::Add::Ok:
+                    return true;
+                case BodyBuffer::Add::TooLarge:
+                    too_large = true;
+                    return false;
+                case BodyBuffer::Add::NoMemory:
+                    no_memory = true;
+                    return false;
+            }
+            return false;
+        };
+        req.cancelled = [&job, &expired] { return job.cancelled.load() || expired(); };
+
+        HttpClientResponse res = client_.request(req);
+        watch_->disarm();
+        const bool watch_deadline = watch_->reason() == RequestWatch::Reason::Deadline;
+
+        if (timed_out || (res.transport == TransportError::Cancelled && expired()) ||
+            (watch_deadline && res.transport != TransportError::None)) {
+            result.error = "timeout";
+            break;
+        }
+        if (too_large || res.transport == TransportError::TooLarge) {
+            result.error = "too_large";
+            break;
+        }
+        if (error_body_cut) {
+            result.status = status;
+            result.headers = std::move(res.headers);
+            break;
+        }
+        if (no_memory) {
             WLOG_W(kTag, "%s: no memory for a response body", job.scene_id.c_str());
             result.error = "other";
-        } else {
-            result.status = res.status;
-            result.headers = std::move(res.headers);
+            break;
         }
+        if (truncated) {
+            // The Agent principal's cap is not an error (file header):
+            // the client reports the on_body refusal as Cancelled, same
+            // as a real cancellation, so this is checked first.
+            result.body = body.take();
+            if (!result.body.ok()) {
+                WLOG_W(kTag, "%s: no memory for a response body", job.scene_id.c_str());
+                result.error = "other";
+            } else {
+                result.status = status;
+                result.headers = std::move(res.headers);
+                result.body_truncated = true;
+            }
+            break;
+        }
+        if (res.transport == TransportError::Cancelled) {
+            // The scene was cancelled (nothing is delivered below) or a
+            // piece was refused for a reason handled above.
+            result.error = "other";
+            break;
+        }
+        if (res.transport != TransportError::None) {
+            result.error = to_string(res.transport);
+            break;
+        }
+
+        // A real response came back. Follow it if it is a redirect this
+        // job still has hops left for and that resolves to somewhere;
+        // otherwise this is the final answer, as it stands.
+        std::string location;
+        if (status >= 300 && status < 400 && attempt < max_redirects) {
+            for (const auto& [name, value] : res.headers)
+                if (iequals(name, "location")) {
+                    location = value;
+                    break;
+                }
+        }
+        std::string resolved = location.empty() ? std::string() : resolve_location(url, location);
+        if (!resolved.empty()) {
+            // POST becomes a bodyless GET on 303; the other redirect
+            // statuses keep the method and body (file header).
+            if (status == 303) {
+                method = Method::Get;
+                body_data = nullptr;
+                body_size = 0;
+            }
+            url = std::move(resolved);
+            continue;
+        }
+
+        if (streamed) {
+            result.status = status;
+            result.headers = std::move(res.headers);
+        } else {
+            result.body = body.take();
+            if (!result.body.ok()) {
+                WLOG_W(kTag, "%s: no memory for a response body", job.scene_id.c_str());
+                result.error = "other";
+            } else {
+                result.status = status;
+                result.headers = std::move(res.headers);
+                if (truncated) result.body_truncated = true;
+            }
+        }
+        break;
     }
+    result.final_url = url;
     if (!result.error.empty()) result.body = os::LargeBuffer();
 
     std::lock_guard<os::Mutex> lock(deliver_mu_);

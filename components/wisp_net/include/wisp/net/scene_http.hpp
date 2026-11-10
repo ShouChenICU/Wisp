@@ -1,9 +1,33 @@
 #pragma once
 
-// SceneHttp: the scenes' outbound HTTP proxy (scene-runtime-core spec 5.3).
-// wisp.http is a thin adapter over it; it holds the rules, not the binding.
+// SceneHttp: the scenes' outbound HTTP proxy (scene-runtime-core spec 5.3),
+// now shared with the agent's own http.fetch tool (agent-tools spec 3.2).
+// wisp.http (and, for the agent, the http.fetch tool) are thin adapters
+// over it; it holds the rules, not the binding.
 //
-// Rules, checked in this order when a request is submitted:
+// Two principals submit requests, told apart by SceneHttpRequest::principal:
+//   - Scene (the default): the rules below, unchanged.
+//   - Agent: the device's own agent core. Its requests skip the https-only,
+//     host-allowlist, header_allowed() and per-scene rate limit checks (the
+//     agent is trusted code, not a sandboxed scene); the URL just needs a
+//     http:// or https:// scheme and a parseable host (else "bad_url"), and
+//     Host/Content-Length/Transfer-Encoding/Connection headers (any case)
+//     are dropped rather than forwarded or rejected. Its size limits are
+//     AgentHttpLimits, always, not SceneHttpLimits. It is never rate
+//     limited or deferred: while deferring (Wi-Fi going off) it fails at
+//     once with "offline" instead of waiting. Its requests are recorded
+//     under the scene id kAgentHttpId ("@agent", which no real scene id can
+//     collide with); cancel_scene(kAgentHttpId) cancels them. A response
+//     past its cap is truncated (SceneHttpResult::body_truncated = true,
+//     error ""), not an error. The worker follows redirects for it (and
+//     for any request with max_redirects > 0) up to max_redirects hops,
+//     resolving a relative Location against the request URL, keeping
+//     method and body on 301/302/307/308 and switching to a bodyless GET on
+//     303; a hop past the limit, or one with no Location, comes back as
+//     the 3xx itself. final_url is the URL that was actually answered.
+//
+// Rules for the Scene principal, checked in this order when a request is
+// submitted:
 //   - the URL must start with https:// (else "not_https");
 //   - its host, lowercased, must equal one of the hosts the scene declared
 //     in scene.json (permissions.http) exactly: no wildcards, no
@@ -91,6 +115,27 @@
 
 namespace wisp::net {
 
+// Which code submitted a request (see the file header).
+enum class HttpPrincipal : uint8_t { Scene, Agent };
+
+// The scene id the Agent principal's requests are recorded under; no real
+// scene id contains '@', so this can never collide with one.
+inline constexpr const char* kAgentHttpId = "@agent";
+
+// The Agent principal's size and redirect limits (agent-tools spec 3.1),
+// used instead of SceneHttpLimits regardless of what SceneHttp was built
+// with.
+struct AgentHttpLimits {
+    static constexpr size_t kMaxUrlBytes = 8192;
+    static constexpr size_t kMaxHeaders = 32;
+    static constexpr size_t kMaxHeaderBytes = 4096;
+    static constexpr size_t kMaxHeadersTotal = 16384;
+    static constexpr size_t kMaxRequestBody = 256 * 1024;
+    static constexpr size_t kMaxResponse = 1024 * 1024;
+    static constexpr uint32_t kMaxTimeoutMs = 120000;
+    static constexpr uint8_t kMaxRedirects = 5;
+};
+
 struct SceneHttpLimits {
     size_t max_response = 256 * 1024;
     uint32_t per_minute = 30;
@@ -112,9 +157,16 @@ struct SceneHttpRequest {
 
     std::string scene_id;
     uint32_t instance = 0;
+    HttpPrincipal principal = HttpPrincipal::Scene;
     Method method = Method::Get;
     std::string url;
     std::vector<std::pair<std::string, std::string>> headers;
+    // 0 = use SceneHttpLimits (Agent: AgentHttpLimits) instead. max_redirects
+    // 0 means do not follow (a 3xx comes back as it is, the Scene
+    // principal's unchanged default).
+    size_t max_response = 0;
+    uint32_t timeout_ms = 0;
+    uint8_t max_redirects = 0;
     // In PSRAM from the start: it can be up to kMaxRequestBody bytes and
     // waits in the queue.
     os::LargeString body;
@@ -135,8 +187,8 @@ struct SceneHttpRequest {
 
 struct SceneHttpResult {
     // "" or permission_denied not_https too_large rate_limited
-    // deferred_queue_full deferred_timeout, or a transport error: dns
-    // connect tls timeout other.
+    // deferred_queue_full deferred_timeout bad_url offline, or a transport
+    // error: dns connect tls timeout other.
     std::string error;
     int status = 0;
     // Lowercase names (keep_response_header()'s limits).
@@ -144,6 +196,12 @@ struct SceneHttpResult {
     os::LargeBuffer body;
     // The request waited in the deferred list (deep standby).
     bool deferred = false;
+    // The URL that was actually answered: the request URL, or, once
+    // redirects were followed, the last one.
+    std::string final_url;
+    // The Agent principal only: the response was cut off at its cap, kept
+    // (not an error) up to that many bytes.
+    bool body_truncated = false;
 };
 
 class SceneHttp {

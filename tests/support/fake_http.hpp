@@ -114,7 +114,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             requests_.push_back(req);
-            res = next;
+            res = responder ? responder(req) : next;
         }
         if (hold.load()) {
             auto shut = std::make_shared<std::atomic<bool>>(false);
@@ -185,6 +185,10 @@ public:
     }
 
     net::HttpClientResponse next{.transport = net::TransportError::None, .status = 200, .body = {}};
+    // Set before the request: one answer per call (by call order), in
+    // place of the fixed `next` -- for a server that answers a sequence
+    // differently each time (redirects). Set before the request.
+    std::function<net::HttpClientResponse(const net::HttpClientRequest&)> responder;
     std::atomic<bool> hold{false};
     std::atomic<int> held{0};
     std::atomic<bool> saw_cancel{false};
