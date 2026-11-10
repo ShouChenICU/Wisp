@@ -21,6 +21,7 @@
 #include "scene_api.hpp"
 #include "scene_message.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/scene/lua_task.hpp"
@@ -34,8 +35,9 @@ namespace {
 // How often the caller looks at its cancel flag.
 constexpr uint32_t kPollMs = 20;
 // How long, past the run's own deadline, the caller waits for the scene
-// task to answer before it gives up.
-constexpr uint32_t kGraceMs = 10000;
+// task to answer before it gives up: the longest run plus this stays
+// within lua.run's registered 305000 ms.
+constexpr uint32_t kGraceMs = 4000;
 // How long run_lua() waits for room in the scene queue.
 constexpr uint32_t kPushMs = 1000;
 // The log tag of print and wisp.log in the run's VM.
@@ -203,12 +205,16 @@ void SceneRuntime::lua_start(const std::shared_ptr<LuaRunJob>& job) {
     AgentRun& a = *run;
     a.job = job;
     a.instance = next_instance_++;
+    if (next_instance_ == 0) next_instance_ = 1;
     SceneApi& api = a.api;
     api.device = [this] { return device_info(); };
     api.screen = deps_.shape;
     api.notifications = deps_.notifications;
-    api.scene_id = net::kAgentHttpId;
+    api.scene_id = core::kAgentSource;
     api.scene_name = kNotifyName;
+    // No view, like a scene in the background: wisp.notify's notices are
+    // kept rather than shown as a foreground scene's own banner.
+    api.background = true;
     api.http_principal = net::HttpPrincipal::Agent;
     api.task_slice_ms = kLuaRunSliceMs;
     api.task_max_json = kEvalResultMaxBytes;
@@ -301,7 +307,10 @@ void SceneRuntime::lua_settle(const std::optional<ScriptError>& err) {
         lua_end(failure(*err));
         return;
     }
-    if (a.vm->faulted()) lua_end(failure("memory", "the VM faulted"));
+    if (a.vm->faulted()) {
+        ScriptError fault = a.vm->fault_report("run");
+        lua_end(failure(fault));
+    }
 }
 
 void SceneRuntime::lua_end(LuaRunResult r) {

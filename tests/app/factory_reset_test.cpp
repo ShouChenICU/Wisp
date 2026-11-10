@@ -200,6 +200,28 @@ TEST(FactoryReset, ClearsAgentDirectory) {
     EXPECT_FALSE(std::filesystem::exists(agent));
 }
 
+// lua.run's files live under <Library>/agent/ (agent-tools spec 4.2): the
+// internal library's and the card's.
+TEST(FactoryReset, ClearsAgentFiles) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    const std::vector<std::string> roots = app.storage().roots(wisp::core::Area::Library);
+    ASSERT_FALSE(roots.empty());
+    const std::string text = "x";
+    const std::span<const uint8_t> bytes(reinterpret_cast<const uint8_t*>(text.data()),
+                                         text.size());
+    for (const std::string& root : roots)
+        ASSERT_TRUE(write_on_flash(app, root + "/agent/files/a.txt", bytes));
+    const std::string kept = roots.back() + "/scenes/x.json";
+    ASSERT_TRUE(write_on_flash(app, kept, bytes));
+
+    wisp::app::factory_reset(app);
+
+    for (const std::string& root : roots) EXPECT_FALSE(std::filesystem::exists(root + "/agent"));
+    EXPECT_TRUE(std::filesystem::exists(kept));
+}
+
 // The agent's memory notes live under <System>/memory/ (mvp spec 5.1).
 TEST(FactoryReset, ClearsMemoryDirectory) {
     UiNetHarness h;

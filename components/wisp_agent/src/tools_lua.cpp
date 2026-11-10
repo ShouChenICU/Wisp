@@ -78,7 +78,10 @@ ToolOutput run(scene::SceneRuntime& runtime, const Value& args, ToolCtx& ctx) {
             {"memory_peak_kb", peak_kb},
         });
     } else {
-        out = tool_error(r.error, r.message,
+        // A script's own error text can carry anything it fetched (spec
+        // 7.1); the runtime's reasons (no_memory, cancelled) are its own.
+        const bool from_script = r.error != "no_memory" && r.error != "cancelled";
+        out = tool_error(r.error, from_script ? external_data(kSource, r.message) : r.message,
                          Map{{"output", output}, {"ms", ms}, {"memory_peak_kb", peak_kb}});
     }
     return out;

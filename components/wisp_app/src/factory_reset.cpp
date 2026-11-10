@@ -106,6 +106,13 @@ void factory_reset(App& app) {
         // The agent's conversation, archives, memory notes, todos, the
         // notifications and the scene order (agent-core spec 3.5; mvp spec
         // 5.1, 5.2, 6.4).
+        // lua.run's files (agent-tools spec 4.2): the agent's, not a
+        // scene's, in every Library root (the card's while it is in).
+        for (const std::string& root : app.storage().roots(core::Area::Library)) {
+            if (auto r = app.storage().remove_tree(root + "/agent"); !r) {
+                WLOG_E(kTag, "erasing the agent's files failed: %s", r.error().message.c_str());
+            }
+        }
         if (auto root = app.storage().write_root(core::Area::System); root) {
             for (const char* suffix : {"", ".tmp", ".new"}) {
                 const std::string file = root.value() + "/notifications.json" + suffix;

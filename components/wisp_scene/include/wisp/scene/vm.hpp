@@ -253,6 +253,11 @@ public:
 
     // True after a timeout or memory fault; the VM must be destroyed.
     bool faulted() const { return fault_ != Fault::None; }
+    // The fault as call() reports it (only meaningful while faulted()),
+    // naming `fallback_file` when the hook saw no position.
+    ScriptError fault_report(std::string_view fallback_file) const {
+        return fault_error(fallback_file);
+    }
 
     // Clears a timeout fault once the top-level call() that hit it has
     // returned, so the VM can run again; true if it did. Only for a step

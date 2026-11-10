@@ -113,8 +113,10 @@ void NotificationRouter::tap(const std::string& source, const std::string& id) {
     }
     deps_.notes.dismiss(source, id, core::DismissReason::Tap);
     if (deps_.tones != nullptr) deps_.tones->silence();
-    if (agent_done && deps_.open_home) deps_.open_home();
-    if (source == core::kSystemSource || source == core::kReminderSource ||
+    // lua.run's notices are Wisp's own: there is no scene to open.
+    const bool agent = source == core::kAgentSource;
+    if ((agent_done || agent) && deps_.open_home) deps_.open_home();
+    if (agent || source == core::kSystemSource || source == core::kReminderSource ||
         deps_.scenes == nullptr) {
         return;
     }

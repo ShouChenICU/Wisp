@@ -14,6 +14,7 @@
 #include "support/fake_http.hpp"
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
+#include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/os.hpp"
@@ -42,9 +43,12 @@ protected:
         fc.data_root = in + "/scenes";
         fc.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
+        notes = std::make_unique<wisp::core::NotificationService>(wisp::core::NotificationDeps{
+            .bus = bus, .storage = *storage, .submit_io = {}, .make_timer = {}});
         configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) {
             d.http = http.get();
             d.files = files.get();
+            d.notifications = notes.get();
         };
     }
 
@@ -54,6 +58,7 @@ protected:
         http.reset();
         SceneRuntimeFixture::TearDown();
         files.reset();
+        notes.reset();
     }
 
     LuaRunResult run(const std::string& code, LuaRunOptions opts = {}) {
@@ -65,6 +70,7 @@ protected:
     wisp::test::FakeHttpClient client;
     std::unique_ptr<wisp::net::SceneHttp> http;
     std::unique_ptr<wisp::core::SceneFiles> files;
+    std::unique_ptr<wisp::core::NotificationService> notes;
 };
 
 TEST_F(RunLua, ReturnAndPrint) {
@@ -135,12 +141,17 @@ TEST_F(RunLua, AwaitHttpAgentPrincipal) {
     // Plain http:// to an undeclared host: only the Agent principal may.
     LuaRunResult r = run(R"(
 local err, res = wisp.http.get("http://lan/x")
-return {err = err, status = res and res.status, body = res and res.body}
+return tostring(err), res and res.status, res and res.body
 )");
     ASSERT_TRUE(r.ok) << r.error << " " << r.message;
-    EXPECT_EQ(str(r.json), R"({"body":"pong","status":200})");
+    // Several values, not a table: the order of a table's keys is not fixed.
+    EXPECT_EQ(str(r.json), R"(["nil",200,"pong"])");
     ASSERT_TRUE(client.last());
     EXPECT_EQ(client.last()->url, "http://lan/x");
+    // SceneHttp asks the client to truncate only for the Agent principal.
+    // The scene id is not passed to the client at all: CancelWhileAwaiting
+    // shows it through cancel_scene("@agent").
+    EXPECT_TRUE(client.last()->truncate_at_limit);
 }
 
 TEST_F(RunLua, FilesInAgentArea) {
@@ -156,6 +167,18 @@ return data
     std::ifstream f(fs::path(in) / "library" / "agent" / "files" / "note.txt");
     std::string body((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     EXPECT_EQ(body, "hello");
+}
+
+// Spec 4.2: posted as Wisp itself, and kept like a background scene's.
+TEST_F(RunLua, NotifyAsWisp) {
+    start();
+    LuaRunResult r = run(R"(return wisp.notify{title = "done", body = "b", id = "n1"})");
+    ASSERT_TRUE(r.ok) << r.error << " " << r.message;
+    EXPECT_EQ(str(r.json), R"("n1")");
+    auto n = notes->find(wisp::core::kAgentSource, "n1");
+    ASSERT_TRUE(n.has_value());
+    EXPECT_EQ(n->source_name, "Wisp");
+    EXPECT_EQ(n->title, "done");
 }
 
 TEST_F(RunLua, Sandbox) {
@@ -265,26 +288,38 @@ TEST_F(RunLua, SceneTaskNotBlocked) {
 return ui.screen { ui.label { text = "t" } }
 )");
     ASSERT_TRUE(rt->open("tick"));
+    std::atomic<bool> stop{false};
     std::atomic<bool> done{false};
-    size_t during = 0;
+    const size_t idle = rt->vm_pool_used();
     std::thread t([&] {
-        run("wisp.sleep(1500) return 1");
+        LuaRunOptions opts;
+        opts.cancelled = [&] { return stop.load(); };
+        run("wisp.sleep(60000) return 1", opts);
         done = true;
     });
-    wisp::os::sleep_ms(1000);
-    during = scene_log("tick").size();
+    // The run's VM is up and waiting: the scene's timer still fires.
+    ASSERT_TRUE(wait_until([&] { return rt->vm_pool_used() > idle; }, 5000));
+    const size_t before = scene_log("tick").size();
+    EXPECT_TRUE(wait_until([&] { return scene_log("tick").size() >= before + 3; }, 10000));
+    EXPECT_FALSE(done.load());
+    stop = true;
     t.join();
-    EXPECT_TRUE(done);
-    EXPECT_GE(during, 5u);
 }
 
 TEST_F(RunLua, BusyAndBadOptions) {
     start();
-    std::thread t([&] { run("wisp.sleep(800) return 1"); });
-    wisp::os::sleep_ms(200);
+    std::atomic<bool> stop{false};
+    const size_t idle = rt->vm_pool_used();
+    std::thread t([&] {
+        LuaRunOptions opts;
+        opts.cancelled = [&] { return stop.load(); };
+        run("wisp.sleep(60000) return 1", opts);
+    });
+    ASSERT_TRUE(wait_until([&] { return rt->vm_pool_used() > idle; }, 5000));
     auto second = rt->run_lua("return 1", {});
     ASSERT_FALSE(second);
     EXPECT_EQ(second.error().code, ErrorCode::Busy);
+    stop = true;
     t.join();
 
     LuaRunOptions opts;

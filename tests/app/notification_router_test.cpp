@@ -388,6 +388,34 @@ TEST_F(NotificationRouterTest, TodoActionsReachTheScheduler) {
 
 }  // namespace
 
+// agent-tools spec 4.2: lua.run's notices come from Wisp itself; a tap
+// opens the conversation, never a scene named after their source.
+TEST_F(NotificationRouterTest, AgentSourceOpensHome) {
+    start();
+    install("other", "return ui.screen { ui.label { text = 'other' } }");
+    ASSERT_TRUE(rt->open("other"));
+    int opened = 0;
+    router = std::make_unique<NotificationRouter>(NotificationRouterDeps{
+        .notes = *notes,
+        .power = power.get(),
+        .tones = tones.get(),
+        .scenes = rt.get(),
+        .locks = &locks,
+        .notify_volume = [] { return uint8_t{50}; },
+        .open_home = [&] { ++opened; },
+    });
+    router->start();
+    const std::string id = post(wisp::core::kAgentSource, "done", NotifySound::None, false);
+    ASSERT_FALSE(id.empty());
+    router->tap(wisp::core::kAgentSource, id);
+    EXPECT_EQ(opened, 1);
+    EXPECT_FALSE(notes->find(wisp::core::kAgentSource, id).has_value());
+    EXPECT_EQ(dismissed_reasons(), (std::vector<std::string>{"tap"}));
+    wisp::os::sleep_ms(100);
+    EXPECT_FALSE(log_has("scene", "no such scene"));
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("other"));
+}
+
 // mvp spec 6.6: tapping the agent_done notice opens the home screen;
 // other system notices and scenes' do not.
 TEST_F(NotificationRouterTest, AgentDoneOpensHome) {
