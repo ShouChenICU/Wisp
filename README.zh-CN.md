@@ -105,6 +105,29 @@ idf.py build && idf.py -p <串口> flash
 > [!TIP]
 > 改了字体之后，还要运行 `idf.py fonts-flash`。字体存在单独的分区里，只更新程序不会写入。
 
+## 🏠 自部署 AI 服务
+
+Wisp 通过 OpenAI 兼容接口调用模型，所以对话、语音识别和语音合成都可以各自跑在你自己的机器上，不必依赖云服务。
+
+**语音推荐 [speech.cpp](https://github.com/nyosegawa/speech.cpp)。** 它是一个 C++ 写的服务（MIT 许可），在本机用 CPU、Metal 或 Vulkan 跑语音识别和语音合成，不需要 Python，并提供 OpenAI 的 `/v1/audio/transcriptions` 和 `/v1/audio/speech` 接口。Qwen3-ASR 和 Qwen3-TTS 能听、能说中文、英文、日文等多种语言，Qwen3-TTS 还自带多种音色。
+
+```bash
+# 在用来跑模型的机器上（macOS 或 Linux；Windows 用 install.ps1）
+curl -fsSL https://raw.githubusercontent.com/nyosegawa/speech.cpp/main/install.sh | sh
+speech models                      # 列出可下载的模型
+speech serve qwen3-tts-0.6b qwen3-asr-0.6b --host 0.0.0.0
+```
+
+第一次运行会下载模型。之后在管理后台的"模型"页：
+
+- **语音识别：** 新建配置，预设选"OpenAI 兼容（自定义）"，地址填 `http://<服务器 IP>:8080/v1`，不填 API Key。点"测试连接"会列出模型，选 Qwen3-ASR。
+- **语音合成：** 地址相同，选 Qwen3-TTS 模型和一个音色，例如 `serena`。采样率留空：Qwen3-TTS 输出 24 kHz，正是 Wisp 默认的播放采样率。
+
+> [!WARNING]
+> speech.cpp 没有鉴权，也没有 TLS。只在可信的网络里监听 `0.0.0.0`，否则请放在能加上鉴权和 TLS 的反向代理后面。
+
+**对话：** 任何 OpenAI 兼容的服务都可以，比如 [Ollama](https://ollama.com)（有专门的预设）或 llama.cpp 的 `llama-server`。Agent 靠工具调用来操作设备，请选工具调用能力强的模型，小模型往往不行。
+
 ## 🧩 核心模块
 
 | 模块 | 说明 |

@@ -107,6 +107,29 @@ idf.py build && idf.py -p <ポート> flash
 > [!TIP]
 > フォントを変えたら `idf.py fonts-flash` も実行してください。フォントは専用のパーティションにあり、アプリの更新では書き込まれません。
 
+## 🏠 AI サービスのセルフホスト
+
+Wisp は OpenAI 互換 API でモデルを呼び出すので、チャット、音声認識、音声合成をそれぞれクラウドではなく自分のマシンで動かせます。
+
+**音声には [speech.cpp](https://github.com/nyosegawa/speech.cpp) がおすすめです。** C++ で書かれたサーバー（MIT ライセンス）で、音声認識と音声合成を CPU・Metal・Vulkan でローカル実行し、Python は不要です。OpenAI の `/v1/audio/transcriptions` と `/v1/audio/speech` を提供します。Qwen3-ASR と Qwen3-TTS は中国語・英語・日本語などを聞き取り、話すことができ、Qwen3-TTS には複数のボイスがあります。
+
+```bash
+# モデルを動かすマシンで（macOS または Linux。Windows は install.ps1）
+curl -fsSL https://raw.githubusercontent.com/nyosegawa/speech.cpp/main/install.sh | sh
+speech models                      # ダウンロードできるモデルの一覧
+speech serve qwen3-tts-0.6b qwen3-asr-0.6b --host 0.0.0.0
+```
+
+初回の実行でモデルがダウンロードされます。その後、管理画面の「モデル」ページで：
+
+- **音声認識：** プリセット「OpenAI 互換（カスタム）」でプロファイルを追加し、アドレスに `http://<サーバーの IP>:8080/v1` を入れ、API キーは空のままにします。「接続をテスト」でモデルが一覧されるので、Qwen3-ASR を選びます。
+- **音声合成：** 同じアドレスで、Qwen3-TTS のモデルと `serena` などのボイスを選びます。サンプルレートは空のままにしてください。Qwen3-TTS は 24 kHz で出力し、これは Wisp の既定の再生レートです。
+
+> [!WARNING]
+> speech.cpp には認証も TLS もありません。`0.0.0.0` で待ち受けるのは信頼できるネットワークの中だけにするか、それらを付けるリバースプロキシの後ろに置いてください。
+
+**チャット：** OpenAI 互換のサーバーなら何でも使えます。たとえば [Ollama](https://ollama.com)（専用のプリセットあり）や llama.cpp の `llama-server` です。エージェントはツール呼び出しでデバイスを操作するので、ツール呼び出しに強いモデルを選んでください。小さなモデルではうまくいかないことが多いです。
+
 ## 🧩 主なモジュール
 
 | モジュール | 説明 |
