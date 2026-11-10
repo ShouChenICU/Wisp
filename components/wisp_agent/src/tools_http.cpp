@@ -91,6 +91,15 @@ std::string host_of(std::string_view url) {
     std::string_view authority = url.substr(start, end - start);
     const size_t at = authority.rfind('@');
     if (at != std::string_view::npos) authority = authority.substr(at + 1);
+    // A bracketed IPv6 literal ("[::1]:8080"): keep the brackets, whole,
+    // and do not let the literal's own colons be mistaken for the port
+    // separator (SceneHttp refuses these requests outright, but the note
+    // and the wrap source for that refusal must still not be garbage).
+    if (!authority.empty() && authority.front() == '[') {
+        const size_t close = authority.find(']');
+        return lower_str(close == std::string_view::npos ? authority
+                                                         : authority.substr(0, close + 1));
+    }
     const size_t colon = authority.rfind(':');
     if (colon != std::string_view::npos) authority = authority.substr(0, colon);
     return lower_str(authority);
@@ -115,24 +124,35 @@ bool is_text_content_type(std::string_view content_type) {
     return lowered == "application/x-www-form-urlencoded";
 }
 
-// Duplicate header names joined with ", ", at most the first 32 pairs
-// (spec 3.1).
-Value headers_value(const std::vector<std::pair<std::string, std::string>>& headers) {
-    Map out;
+// The response's headers as one string, one "name: value" line each
+// (lowercase names, duplicates joined with ", ", at most the first 32
+// pairs); the caller wraps it with external_data() (spec 3.1 amended:
+// headers reach the model as data, same as the body).
+std::string headers_text(const std::vector<std::pair<std::string, std::string>>& headers) {
+    Map merged;
+    std::vector<std::string> order;
     const size_t keep = std::min<size_t>(headers.size(), 32);
     for (size_t i = 0; i < keep; ++i) {
         const auto& [name, value] = headers[i];
-        auto it = out.find(name);
-        if (it == out.end()) {
-            out[name] = Value(value);
+        auto it = merged.find(name);
+        if (it == merged.end()) {
+            merged[name] = Value(value);
+            order.push_back(name);
         } else {
-            std::string merged = it->second.as_string();
-            merged += ", ";
-            merged += value;
-            it->second = Value(std::move(merged));
+            std::string joined = it->second.as_string();
+            joined += ", ";
+            joined += value;
+            it->second = Value(std::move(joined));
         }
     }
-    return Value(std::move(out));
+    std::string out;
+    for (const std::string& name : order) {
+        if (!out.empty()) out.push_back('\n');
+        out += name;
+        out += ": ";
+        out += merged[name].as_string();
+    }
+    return out;
 }
 
 ui::Lang lang_of(const ToolCtx& ctx) { return ui::parse_lang(ctx.lang).value_or(ui::Lang::Zh); }
@@ -184,12 +204,29 @@ bool parse_ref(std::string_view ref, uint64_t* id) {
 // boundary when it would otherwise split one (spec 3.1): the cut moves
 // earlier, never later, so returned_bytes never claims a byte of a
 // character it did not also return in full.
-size_t utf8_boundary(std::string_view data, size_t end) {
+size_t utf8_boundary_back(std::string_view data, size_t end) {
     if (end == 0 || end >= data.size()) return end;
     if ((static_cast<unsigned char>(data[end]) & 0xC0) != 0x80) return end;
     size_t start = end;
     while (start > 0 && (static_cast<unsigned char>(data[start]) & 0xC0) == 0x80) --start;
     return start;
+}
+
+// Rounds `pos` forward to a UTF-8 character boundary when it starts
+// inside one (an `offset` that landed mid-character from an earlier,
+// differently-cut read): skips the stray continuation bytes rather than
+// returning a fragment nothing could decode.
+size_t utf8_boundary_forward(std::string_view data, size_t pos) {
+    while (pos < data.size() && (static_cast<unsigned char>(data[pos]) & 0xC0) == 0x80) ++pos;
+    return pos;
+}
+
+// One full character's length starting at `pos` (a lead byte or ASCII),
+// at least 1 even for a lone/invalid lead byte.
+size_t utf8_char_len(std::string_view data, size_t pos) {
+    size_t at = pos + 1;
+    while (at < data.size() && (static_cast<unsigned char>(data[at]) & 0xC0) == 0x80) ++at;
+    return at - pos;
 }
 
 // Builds the result for one slice of `e`'s response, without touching
@@ -212,18 +249,30 @@ ToolOutput slice_of(CacheEntry& e, const std::string& as, int64_t offset_arg,
     const size_t total = e.is_text ? data.size() : e.raw.size();
     size_t offset = offset_arg < 0 ? 0 : static_cast<size_t>(offset_arg);
     if (offset > total) offset = total;
+    // An offset that lands mid-character (an earlier read cut there) moves
+    // forward to the next whole character, never back into one already
+    // spent (spec 3.1 amended).
+    if (e.is_text) offset = utf8_boundary_forward(data, offset);
     const size_t max_bytes =
         max_bytes_arg <= 0 ? kHttpDefaultMaxBytes : static_cast<size_t>(max_bytes_arg);
     size_t end = offset + max_bytes;
     if (end > total) end = total;
-    if (e.is_text) end = utf8_boundary(data, end);
+    if (e.is_text) {
+        end = utf8_boundary_back(data, end);
+        // max_bytes was not even enough for the one character at offset:
+        // take it whole rather than reporting no progress while more
+        // remains (spec 3.1 amended).
+        if (end <= offset && offset < total)
+            end = std::min(offset + utf8_char_len(data, offset), total);
+    }
     if (end < offset) end = offset;
 
+    const std::string source = "http:" + e.host;
     Map out{
         {"status", Value(static_cast<int64_t>(e.status))},
         {"final_url", Value(e.final_url)},
         {"content_type", Value(e.content_type)},
-        {"headers", headers_value(e.headers)},
+        {"headers", Value(external_data(source, headers_text(e.headers)))},
         {"ref", Value("r" + std::to_string(e.id))},
         {"total_bytes", Value(static_cast<int64_t>(total))},
         {"offset", Value(static_cast<int64_t>(offset))},
@@ -231,7 +280,7 @@ ToolOutput slice_of(CacheEntry& e, const std::string& as, int64_t offset_arg,
         {"more", Value(end < total)},
     };
     if (e.is_text) {
-        out["body"] = Value(external_data("http:" + e.host, data.substr(offset, end - offset)));
+        out["body"] = Value(external_data(source, data.substr(offset, end - offset)));
     }
     if (e.body_truncated) out["body_truncated"] = Value(true);
     out["ok"] = Value(true);
@@ -240,18 +289,29 @@ ToolOutput slice_of(CacheEntry& e, const std::string& as, int64_t offset_arg,
     return result;
 }
 
-constexpr const char* kSchema = R"({"type":"object","properties":{
-"url":{"type":"string","maxLength":8192},
-"method":{"type":"string","enum":["GET","POST","PUT","PATCH","DELETE","HEAD"]},
-"headers":{"type":"object"},
-"body":{"type":["string","object"]},
-"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000},
-"follow":{"type":"boolean"},
-"as":{"type":"string","enum":["raw","text"]},
-"offset":{"type":"integer","minimum":0},
-"max_bytes":{"type":"integer","minimum":1,"maximum":65536},
-"ref":{"type":"string"}
-}})";
+// Built, rather than a literal, so the timeout_ms and max_bytes bounds
+// stay the one place (limits.hpp) that states them (spec 3.1's numbers,
+// used verbatim).
+std::string build_schema() {
+    return "{\"type\":\"object\",\"properties\":{"
+           "\"url\":{\"type\":\"string\",\"maxLength\":8192},"
+           "\"method\":{\"type\":\"string\",\"enum\":[\"GET\",\"POST\",\"PUT\",\"PATCH\","
+           "\"DELETE\","
+           "\"HEAD\"]},"
+           "\"headers\":{\"type\":\"object\"},"
+           "\"body\":{\"type\":[\"string\",\"object\"]},"
+           "\"timeout_ms\":{\"type\":\"integer\",\"minimum\":" +
+           std::to_string(kHttpMinTimeoutMs) + ",\"maximum\":" + std::to_string(kHttpMaxTimeoutMs) +
+           "},"
+           "\"follow\":{\"type\":\"boolean\"},"
+           "\"as\":{\"type\":\"string\",\"enum\":[\"raw\",\"text\"]},"
+           "\"offset\":{\"type\":\"integer\",\"minimum\":0},"
+           "\"max_bytes\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":" +
+           std::to_string(kHttpMaxMaxBytes) +
+           "},"
+           "\"ref\":{\"type\":\"string\"}"
+           "}}";
+}
 
 struct Fetch {
     net::SceneHttp& http;
@@ -267,6 +327,16 @@ struct Fetch {
             return tool_error("bad_args", "'method' must be GET, POST, PUT, PATCH, DELETE or HEAD",
                               Map{{"field", "method"}});
         }
+        // The note always names the request's own host (spec 3.1), not
+        // wherever a redirect ends up, and goes out on every path once a
+        // request is actually submitted below -- success, a transport
+        // error or a cancel alike.
+        const std::string note_host = host_of(url);
+        auto with_note = [&](ToolOutput out) {
+            out.note = ui::tr_fill_n(ui::StrId::AgentNoteFetch, lang_of(ctx),
+                                     {std::string_view(note_host)});
+            return out;
+        };
 
         net::SceneHttpRequest req;
         req.principal = net::HttpPrincipal::Agent;
@@ -302,6 +372,12 @@ struct Fetch {
         req.max_redirects =
             bool_arg(args, "follow", false) ? net::AgentHttpLimits::kMaxRedirects : uint8_t{0};
 
+        // Dropped before submit(), not after the response arrives: an
+        // old ref is invalidated whether or not this request succeeds,
+        // and the old cached body (up to ~1 MiB) does not sit in PSRAM
+        // alongside the new one while this request is in flight.
+        http_tools_drop_cache();
+
         struct Wait {
             os::Semaphore sem{1, 0};
             net::SceneHttpResult result;
@@ -316,14 +392,14 @@ struct Fetch {
             if (w->sem.take(kPollMs)) break;
             if (ctx.cancelled && ctx.cancelled()) {
                 http.cancel_scene(std::string(net::kAgentHttpId));
-                return tool_error("cancelled", "the turn was stopped");
+                return with_note(tool_error("cancelled", "the turn was stopped"));
             }
         }
         net::SceneHttpResult result = std::move(w->result);
-        if (!result.error.empty()) return tool_error(result.error, result.error);
+        if (!result.error.empty()) return with_note(tool_error(result.error, result.error));
 
         const std::string final_url = result.final_url.empty() ? url : result.final_url;
-        const std::string host = host_of(final_url);
+        const std::string data_host = host_of(final_url);
 
         Cache& c = cache_state();
         std::lock_guard<os::Mutex> lock(c.mu);
@@ -331,7 +407,7 @@ struct Fetch {
         e.id = c.next_id++;
         e.status = result.status;
         e.final_url = final_url;
-        e.host = host;
+        e.host = data_host;
         for (const auto& [name, value] : result.headers) {
             if (name == "content-type") {
                 e.content_type = value;
@@ -346,11 +422,9 @@ struct Fetch {
         c.entry = std::move(e);
         c.has = true;
 
-        ToolOutput out =
+        return with_note(
             slice_of(c.entry, str_arg(args, "as", "raw"), int_arg(args, "offset", 0),
-                     int_arg(args, "max_bytes", static_cast<int64_t>(kHttpDefaultMaxBytes)));
-        out.note = ui::tr_fill_n(ui::StrId::AgentNoteFetch, lang_of(ctx), {std::string_view(host)});
-        return out;
+                     int_arg(args, "max_bytes", static_cast<int64_t>(kHttpDefaultMaxBytes))));
     }
 
     ToolOutput from_ref(const std::string& ref, const Value& args) {
@@ -368,19 +442,20 @@ struct Fetch {
 
 Result<void> add_http_tools(ToolRegistry& reg, HttpToolDeps deps) {
     auto fetch = std::make_shared<Fetch>(Fetch{deps.http});
-    return reg.add(ToolDef{
-        .name = "http.fetch",
-        .description =
-            "Fetches a URL over http:// or https:// (GET by default). Reads the response as raw "
-            "bytes or, with as:\"text\", HTML stripped to plain text; a large response pages "
-            "with offset/max_bytes, or re-read with ref without a new request. Binary responses "
-            "report their size and content type but not their body.",
-        .schema_json = kSchema,
-        .risk = ToolRisk::Note,
-        .thread = ToolThread::Agent,
-        .timeout_ms = kHttpFetchToolMs,
-        .run = [fetch](const Value& args, ToolCtx& ctx) { return fetch->run(args, ctx); },
-    });
+    const std::string schema = build_schema();
+    ToolDef def;
+    def.name = "http.fetch";
+    def.description =
+        "Fetches a URL over http:// or https:// (GET by default). Reads the response as raw "
+        "bytes or, with as:\"text\", HTML stripped to plain text; a large response pages "
+        "with offset/max_bytes, or re-read with ref without a new request. Binary responses "
+        "report their size and content type but not their body.";
+    def.schema_json.assign(schema.data(), schema.size());
+    def.risk = ToolRisk::Note;
+    def.thread = ToolThread::Agent;
+    def.timeout_ms = kHttpFetchToolMs;
+    def.run = [fetch](const Value& args, ToolCtx& ctx) { return fetch->run(args, ctx); };
+    return reg.add(std::move(def));
 }
 
 void http_tools_drop_cache() {

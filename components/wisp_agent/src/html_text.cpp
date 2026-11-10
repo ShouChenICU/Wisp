@@ -175,7 +175,13 @@ os::LargeString extract(std::string_view html) {
     size_t i = 0;
     while (i < html.size()) {
         const char c = html[i];
-        if (c == '<') {
+        // "<" only opens a tag/comment when followed by a letter, '/' or
+        // '!' (spec 3.1 amended); otherwise ("1 < 2", a trailing "<") it
+        // is plain text.
+        const char next = i + 1 < html.size() ? html[i + 1] : '\0';
+        const bool tag_start = next == '!' || next == '/' || (next >= 'a' && next <= 'z') ||
+                               (next >= 'A' && next <= 'Z');
+        if (c == '<' && tag_start) {
             if (starts_with_ci(html, i, "<!--")) {
                 const size_t end = html.find("-->", i + 4);
                 i = end == std::string_view::npos ? html.size() : end + 3;
@@ -245,13 +251,25 @@ os::LargeString collapse(const os::LargeString& raw) {
     size_t i = 0;
     while (i < raw.size()) {
         if (is_ws(raw[i])) {
-            bool has_nl = false;
+            // A run with at least one blank line (two or more newlines)
+            // collapses to exactly one blank line, keeping the paragraph
+            // break; a run with a single line break stays a single "\n";
+            // a run with none is inline whitespace, one space (spec 3.1
+            // amended).
+            size_t newlines = 0;
             size_t j = i;
             while (j < raw.size() && is_ws(raw[j])) {
-                if (raw[j] == '\n') has_nl = true;
+                if (raw[j] == '\n') ++newlines;
                 ++j;
             }
-            out.push_back(has_nl ? '\n' : ' ');
+            if (newlines == 0) {
+                out.push_back(' ');
+            } else if (newlines == 1) {
+                out.push_back('\n');
+            } else {
+                out.push_back('\n');
+                out.push_back('\n');
+            }
             i = j;
         } else {
             out.push_back(raw[i]);

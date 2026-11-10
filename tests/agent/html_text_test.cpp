@@ -26,9 +26,12 @@ TEST(HtmlText, StripsScriptStyleComments) {
 }
 
 TEST(HtmlText, BlockTagsBecomeNewlines) {
+    // Adjacent closing/opening tags (</div><div>) leave two newlines, a
+    // paragraph break that stays a paragraph break (spec 3.1 amended);
+    // <br> alone leaves one, a plain line break.
     EXPECT_EQ(text("<div>A</div><div>B</div><p>C</p><br>D<li>E</li>"
                    "<h1>F</h1><h2>G</h2><tr>H</tr>"),
-              "A\nB\nC\nD\nE\nF\nG\nH");
+              "A\n\nB\n\nC\n\nD\nE\n\nF\n\nG\n\nH");
 }
 
 TEST(HtmlText, DecodesEntities) {
@@ -36,7 +39,18 @@ TEST(HtmlText, DecodesEntities) {
               "&<>\"' \xE4\xBD\xA0\xE4\xBD\xA0");
 }
 
-TEST(HtmlText, CollapsesWhitespace) { EXPECT_EQ(text("a   b\n\n\nc\t\td   \n  e"), "a b\nc d\ne"); }
+TEST(HtmlText, CollapsesWhitespace) {
+    // A run of 3+ newlines (a blank line) collapses to one blank line,
+    // not to a single newline (spec 3.1 amended).
+    EXPECT_EQ(text("a   b\n\n\nc\t\td   \n  e"), "a b\n\nc d\ne");
+}
+
+TEST(HtmlText, LoneAngleBracketIsText) {
+    // "<" followed by anything but a letter, '/' or '!' is not a tag
+    // (spec 3.1 amended): ">" was never special either way.
+    EXPECT_EQ(text("a < b and c > d"), "a < b and c > d");
+    EXPECT_EQ(text("x <"), "x <");
+}
 
 TEST(HtmlText, Malformed) {
     // An unclosed raw-text element goes to the end of input (a half-

@@ -299,11 +299,21 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         return failed(classify(client.get(), ESP_ERR_HTTP_FETCH_HEADER), "headers",
                       ESP_ERR_HTTP_FETCH_HEADER);
     }
-    if (static_cast<uint64_t>(length) > limit && !req.truncate_at_limit) {
+    if (req.method != net::Method::Head && static_cast<uint64_t>(length) > limit &&
+        !req.truncate_at_limit) {
         return failed(net::TransportError::TooLarge, "body (too large)", ESP_ERR_INVALID_SIZE);
     }
     res.status = esp_http_client_get_status_code(client.get());
     if (req.on_status) req.on_status(res.status);
+
+    if (req.method == net::Method::Head) {
+        // HEAD never has a body, whatever Content-Length claims; reading
+        // or checking completeness below would wait for bytes that were
+        // never coming (the hang this works around).
+        if (watch != nullptr) watch->disarm();
+        esp_http_client_close(client.get());
+        return res;
+    }
 
     // On the caller's stack: the scene proxy's task has its stack in PSRAM,
     // so this costs no internal RAM there.
