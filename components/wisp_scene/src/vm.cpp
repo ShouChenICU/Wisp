@@ -1278,6 +1278,65 @@ std::optional<ScriptError> Vm::call(int nargs, int nresults, Budget budget, uint
     return std::nullopt;
 }
 
+std::optional<ScriptError> Vm::resume(lua_State* co, int nargs, int* nresults, bool* yielded,
+                                      uint32_t budget_ms) {
+    *nresults = 0;
+    *yielded = false;
+    if (faulted()) return fault_error("");
+    if (running_) return ScriptError{ScriptFault::Runtime, "", 0, "resume while Lua is running"};
+    // lua_resume reports a thread it cannot resume by pushing a new string,
+    // which may allocate outside any protected call; such a thread is
+    // refused here instead.
+    lua_Debug ar;
+    const int status_before = lua_status(co);
+    const bool fresh = status_before == LUA_OK && lua_getstack(co, 0, &ar) == 0 &&
+                       lua_gettop(co) > nargs && lua_type(co, -nargs - 1) == LUA_TFUNCTION;
+    if (!fresh && status_before != LUA_YIELD)
+        return ScriptError{ScriptFault::Runtime, "", 0, "cannot resume this coroutine"};
+    // The task's file, for errors that carry no position.
+    char callee[LUA_IDSIZE] = "";
+    if (fresh && lua_checkstack(co, 1)) {
+        lua_pushvalue(co, -nargs - 1);
+        if (lua_getinfo(co, ">S", &ar) && std::strcmp(ar.what, "C") != 0)
+            std::snprintf(callee, sizeof(callee), "%s", ar.short_src);
+    }
+
+    start_ms_ = now_ms_();
+    started_ = true;
+    exec_ms_ = budget_ms != 0 ? budget_ms : limits_.exec_ms;
+    running_ = true;
+    current_ = co;
+    // Also puts back a count a refusal shortened in an earlier slice.
+    lua_sethook(co, &Vm::hook, LUA_MASKCOUNT, limits_.hook_instructions);
+    int nres = 0;
+    const int status = lua_resume(co, L_, nargs, &nres);
+    running_ = false;
+    current_ = nullptr;
+    settle_refusal();
+    if (faulted()) {
+        // Whatever the fault, it hit a coroutine: never clear it.
+        fault_off_main_ = true;
+        return fault_error(callee);
+    }
+    if (status == LUA_YIELD) {
+        *yielded = true;
+        *nresults = nres;
+        return std::nullopt;
+    }
+    if (status == LUA_OK) {
+        *nresults = nres;
+        return std::nullopt;
+    }
+    if (callee[0] == '\0') {
+        // A dead coroutine keeps its frames: the outermost Lua one is the
+        // task's function.
+        for (int level = 0; lua_getstack(co, level, &ar); ++level)
+            if (lua_getinfo(co, "S", &ar) && std::strcmp(ar.what, "C") != 0)
+                std::snprintf(callee, sizeof(callee), "%s", ar.short_src);
+    }
+    return error_from_top(co, ScriptFault::Runtime, callee);
+}
+
 std::optional<ScriptError> compile_check(std::string_view path, std::string_view source) {
     if (is_binary(source))
         return ScriptError{ScriptFault::Compile, std::string(path), 0,

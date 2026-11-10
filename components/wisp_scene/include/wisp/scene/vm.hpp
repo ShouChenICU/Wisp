@@ -46,9 +46,21 @@
 // O(n*m), pattern matching can backtrack) is not interrupted, so the
 // time limit can be overrun by one such call.
 //
-// Scene code may run only under Vm::call(): the time limit is measured
-// from there, and code a host runs with its own lua_pcall outside a call
-// is not timed at all.
+// Task coroutines (lua_task.hpp) and the hooks-off rule: a task thread
+// runs only under Vm::resume(), which times it like call() and marks a
+// timeout there as one off the main thread (recover_timeout() refuses it).
+// A task thread killed by a fault is in the state described above, hooks
+// off for good, so the task code never resumes it again and never closes
+// it: it is dropped from the registry, and lua_close leaves it alone like
+// any other coroutine. Every resume is refused once the VM has faulted, so
+// a task that was waiting when something else faulted the VM is not run
+// either. A task thread that ended with an ordinary error or was cancelled
+// is dropped without lua_closethread as well (its pending __close values
+// never run), which keeps one rule for every way a task ends.
+//
+// Scene code may run only under Vm::call() (and task threads under
+// Vm::resume()): the time limit is measured from there, and code a host
+// runs with its own lua_pcall outside a call is not timed at all.
 //
 // Limits: the allocator counts every byte in PSRAM and refuses requests
 // past VmLimits::memory_bytes, or past what VmLimits::pool (the budget all
@@ -214,6 +226,20 @@ public:
     // timeout's error names it.
     std::optional<ScriptError> call(int nargs, int nresults, Budget budget = Budget::Fresh,
                                     uint32_t exec_ms = 0);
+
+    // Resumes task coroutine `co` (lua_task.hpp) with the `nargs` values on
+    // top of its stack, like lua_resume, as a top-level slice with a fresh
+    // time budget of `budget_ms` (0: limits().exec_ms). `co` is either a new
+    // thread with its function below the arguments or one suspended in a
+    // yield whose values the caller has already popped. On a yield sets
+    // *yielded and leaves the *nresults yielded values on co's stack; on a
+    // return leaves its *nresults results there. On an error returns it
+    // (Runtime, or Timeout/Memory for a fault); co is then dead and must be
+    // dropped, never resumed or closed. A faulted VM refuses (returns its
+    // fault without touching co), and so does a call made while Lua code
+    // is running. Calls only non-raising Lua APIs.
+    std::optional<ScriptError> resume(lua_State* co, int nargs, int* nresults, bool* yielded,
+                                      uint32_t budget_ms);
 
     // True after a timeout or memory fault; the VM must be destroyed.
     bool faulted() const { return fault_ != Fault::None; }

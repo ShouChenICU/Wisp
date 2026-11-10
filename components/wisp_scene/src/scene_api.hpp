@@ -90,6 +90,25 @@
 //       for a download also a wisp.http transport or proxy error. Data,
 //       names and arguments that are not strings or integers raise
 //       argument errors.
+//   wisp.json (bind_json.cpp; agent-tools spec 4.2): encode(v) -> string,
+//       or nil and not_serializable | too_deep | too_large; decode(s) ->
+//       value, or nil and bad_json | too_deep. The rules are lua_json.hpp's
+//       (null decodes to nil); output is capped at kLuaJsonMaxBytes. A
+//       decode argument that is not a string raises an argument error.
+//   wisp.sleep(ms) (bind_timer.cpp): suspends the running task for ms
+//       (0-300000; below TimerSet::kMinIntervalMs it waits that long) with
+//       an after timer, and returns nothing. Outside a task, or with ms
+//       out of range, an argument error; too many timers raises an error.
+//
+// Awaitable calls (agent-tools spec 6, lua_task.hpp): in a task coroutine
+// (start_task()), every wisp.http and wisp.files call above may leave out
+// its callback; it then suspends the task and returns the callback's
+// arguments (err, res; list adds truncated) once the result's message has
+// arrived and run_http_callback() / run_files_callback() resumed it. The
+// callback table holds the task's thread in place of a function. Outside a
+// task, or in a coroutine the script made, a missing callback is the same
+// argument error as before. Results must come back as later messages,
+// never from inside http_submit / files_run / *_fail themselves.
 
 #include <cstddef>
 #include <cstdint>
@@ -111,6 +130,7 @@
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/scene/lua_task.hpp"
 #include "wisp/scene/timer_set.hpp"
 #include "wisp/scene/vm.hpp"
 
@@ -229,6 +249,22 @@ struct SceneApi {
     uint32_t next_sensor_id = 1;
     // wisp.device.on() was called for the event at least once.
     bool has_handlers[kDeviceEventCount] = {};
+    // Which principal wisp.http's requests go out as (SceneHttp's rules
+    // for it); the agent's own VM sets Agent.
+    net::HttpPrincipal http_principal = net::HttpPrincipal::Scene;
+    // Task coroutines (lua_task.hpp): told once per task when it ends; the
+    // default slice (0: the VM's exec_ms) and result cap of start_task().
+    TaskDone task_done;
+    uint32_t task_slice_ms = 0;
+    size_t task_max_json = kEvalResultMaxBytes;
+    // The live tasks, kept by lua_task.cpp.
+    struct TaskSlot {
+        uint32_t id = 0;
+        uint32_t slice_ms = 0;
+        size_t max_json = kEvalResultMaxBytes;
+    };
+    std::vector<TaskSlot> tasks;
+    uint32_t next_task_id = 1;
 
     bool wants(DeviceEvent ev) const { return has_handlers[static_cast<size_t>(ev)]; }
 };
@@ -281,8 +317,38 @@ void install_power(lua_State* L, int wisp);
 void install_notify(lua_State* L, int wisp);
 void install_sensor(lua_State* L, int wisp);
 void install_files(lua_State* L, int wisp);
-// Keeps the function at `cb` as a wisp.files callback and returns its id.
+// Sets wisp.json.
+void install_json(lua_State* L, int wisp);
+// Keeps the function (or waiting task thread) at `cb` as a wisp.files
+// callback and returns its id.
 uint32_t register_files_callback(lua_State* L, SceneApi& api, int cb);
+// Pushes `v` as a Lua value (maps as tables, lists as sequences). Raises
+// past 32 levels of nesting.
+void push_value(lua_State* L, const Value& v);
+
+// For an awaitable binding whose callback (at `cb`) was left out: outside
+// a task (or in a coroutine the script made) raises the argument error a
+// missing callback always got; in a task that cannot yield here raises an
+// error; otherwise pushes the running thread, which the binding registers
+// in place of the callback before it submits its job and returns wait().
+void push_waiter(lua_State* L, int cb);
+// The callback at `cb`, with the stack cut to it: a function is kept
+// (false); nil or none is replaced by push_waiter()'s thread (true, the
+// call waits); anything else raises an argument error.
+bool take_callback(lua_State* L, int cb);
+// Suspends the running task until resume_waiting() resumes it; a binding
+// returns this, with only trivially destructible locals in its frame.
+int wait(lua_State* L);
+// True when callback `id` in the registry table at `key` is a waiting task
+// thread. Non-raising.
+bool is_waiting(lua_State* L, const void* key, uint32_t id);
+// Forgets callback `id` (a thread, see is_waiting()) and resumes its task
+// with the values `build` (run under Vm::call() with `ctx` as its light
+// userdata argument; null: none) returns, as a fresh slice. A task that
+// has ended or was cancelled is not resumed. Returns the VM's fault, if
+// any; the task's own outcome goes to task_done.
+std::optional<ScriptError> resume_waiting(Vm& vm, const void* key, uint32_t id, lua_CFunction build,
+                                          void* ctx);
 // The SceneApi install_api() put in the registry, or null in a VM that
 // has none (the ui table alone, in tests).
 SceneApi* find_api(lua_State* L);

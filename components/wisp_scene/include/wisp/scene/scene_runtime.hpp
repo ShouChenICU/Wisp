@@ -219,6 +219,7 @@
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/os/queue.hpp"
+#include "wisp/scene/lua_task.hpp"
 #include "wisp/scene/patch_queue.hpp"
 #include "wisp/scene/scene_schedule.hpp"
 #include "wisp/scene/vm.hpp"
@@ -265,10 +266,9 @@ struct BackgroundScene {
     bool operator==(const BackgroundScene&) const = default;
 };
 
-// SceneRuntime::eval()'s default budget, and the most JSON its result may
-// take (agent-core spec 4.2).
+// SceneRuntime::eval()'s default budget (agent-core spec 4.2); the most
+// JSON its result may take is kEvalResultMaxBytes (lua_task.hpp).
 inline constexpr uint32_t kEvalMs = 200;
-inline constexpr size_t kEvalResultMaxBytes = 64 * 1024;
 
 struct SceneRuntimeDeps {
     core::EventBus& bus;

@@ -439,6 +439,14 @@ wisp_test(NAME http_binding_test SRCS scene/http_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME files_binding_test SRCS scene/files_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+# Task coroutines and wisp.json on a bare Vm (agent-tools spec 4.2, 6);
+# scene_api.hpp is private to wisp_scene.
+wisp_test(NAME lua_task_test SRCS scene/lua_task_test.cpp LIBS wisp_scene wisp_port_sim_os
+          TIMEOUT 60)
+wisp_test(NAME json_binding_test SRCS scene/json_binding_test.cpp LIBS wisp_scene wisp_port_sim_os)
+foreach(t lua_task_test json_binding_test)
+    target_include_directories(${t} PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
+endforeach()
 wisp_test(NAME timer_set_test SRCS scene/timer_set_test.cpp LIBS wisp_scene)
 wisp_test(NAME scene_schedule_test SRCS scene/scene_schedule_test.cpp LIBS wisp_scene)
 wisp_test(NAME minute_ticker_test SRCS scene/minute_ticker_test.cpp LIBS wisp_scene)

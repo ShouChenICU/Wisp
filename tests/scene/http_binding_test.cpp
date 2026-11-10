@@ -3,7 +3,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -231,6 +234,55 @@ wisp.http.get("https://api.example.com/b", nil, function(err, res) print("b", er
 )");
     ASSERT_TRUE(rt->open("g"));
     EXPECT_EQ(wait_log("g", 1), (std::vector<std::string>{"b\tnil\tnil"}));
+}
+
+TEST_F(HttpBinding, RequestMethods) {
+    start();
+    std::mutex mu;
+    std::map<std::string, wisp::net::Method> seen;
+    client.responder = [&](const wisp::net::HttpClientRequest& req) {
+        std::lock_guard<std::mutex> lock(mu);
+        seen[req.url] = req.method;
+        return wisp::net::HttpClientResponse{.status = 200};
+    };
+    install_http("h", R"(
+local function show(err, res) print(err, res and res.status) end
+for _, m in ipairs({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}) do
+    wisp.http.request({method = m, url = "https://api.example.com/" .. m, body = "b"}, show)
+end
+wisp.http.request({url = "https://api.example.com/default"}, show)
+wisp.http.request({method = "get", url = "https://other.example.com/"}, show)
+wisp.http.request({url = "http://api.example.com/", follow = true, timeout_ms = 2000}, show)
+print(pcall(wisp.http.request, {method = "TRACE", url = "https://api.example.com/"}, show))
+print(pcall(wisp.http.request, {method = "GET"}, show))
+print(pcall(wisp.http.request, "https://api.example.com/", show))
+print(pcall(wisp.http.request, {url = "https://api.example.com/", timeout_ms = 999}, show))
+print(pcall(wisp.http.request, {url = "https://api.example.com/", timeout_ms = 120001}, show))
+print(pcall(wisp.http.request, {url = "https://api.example.com/", follow = 1}, show))
+print(pcall(wisp.http.request, {url = "https://api.example.com/", body = 5}, show))
+print(pcall(wisp.http.request, {url = "https://api.example.com/"}))
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 17);
+    ASSERT_EQ(lines.size(), 17u);
+    for (size_t i = 0; i < 8; ++i) EXPECT_EQ(lines[i].rfind("false\t", 0), 0u) << lines[i];
+    EXPECT_NE(lines[0].find("method"), std::string::npos) << lines[0];
+    EXPECT_NE(lines[7].find("function expected"), std::string::npos) << lines[7];
+    std::vector<std::string> answers(lines.begin() + 8, lines.end());
+    std::sort(answers.begin(), answers.end());
+    EXPECT_EQ(answers, (std::vector<std::string>{"nil\t200", "nil\t200", "nil\t200", "nil\t200",
+                                                 "nil\t200", "nil\t200", "nil\t200",
+                                                 "not_https\tnil", "permission_denied\tnil"}))
+        << ::testing::PrintToString(lines);
+    std::lock_guard<std::mutex> lock(mu);
+    using M = wisp::net::Method;
+    EXPECT_EQ(seen, (std::map<std::string, M>{{"https://api.example.com/GET", M::Get},
+                                              {"https://api.example.com/POST", M::Post},
+                                              {"https://api.example.com/PUT", M::Put},
+                                              {"https://api.example.com/PATCH", M::Patch},
+                                              {"https://api.example.com/DELETE", M::Delete},
+                                              {"https://api.example.com/HEAD", M::Head},
+                                              {"https://api.example.com/default", M::Get}}));
 }
 
 TEST_F(HttpBinding, UnavailableWithoutAProxy) {
