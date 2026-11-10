@@ -249,7 +249,7 @@
 - **请求**：`POST {base_url}/audio/speech`，请求体为：
   - `model`、`input`、`voice`；
   - `response_format: "pcm"`；
-  - `sample_rate` 取配置的值，默认 24000；
+  - `sample_rate` 只在配置里设置了时才发送（它不是 OpenAI 请求的字段，speech.cpp 这类严格按 OpenAI 校验的服务遇到未知字段会回 400）；不设置时按 24000 播放，即 OpenAI pcm 的采样率；
   - `speed` 可选。
 - **超时**：15 秒是允许没有新音频到达的时间，不是整句朗读必须在 15 秒内读完；请求的截止时间随句子长度增长。
 - **播放**：
