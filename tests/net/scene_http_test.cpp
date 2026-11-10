@@ -826,6 +826,28 @@ TEST_F(SceneHttpTest, AgentPrincipalResponseCapTruncates) {
     EXPECT_FALSE(client.last()->truncate_at_limit);
 }
 
+// A huge 3xx body is truncated, not followed: it comes back as the final
+// answer (file header), not merged into the redirect chain.
+TEST_F(SceneHttpTest, AgentPrincipalTruncated3xxIsNotFollowed) {
+    make();
+    int call = 0;
+    client.responder = [&](const wisp::net::HttpClientRequest&) -> wisp::net::HttpClientResponse {
+        ++call;
+        return {.status = 302,
+                .body = std::string(AgentHttpLimits::kMaxResponse + 10, 'x'),
+                .headers = {{"location", "https://two.example.com/"}}};
+    };
+    auto req = agent_get("https://one.example.com/");
+    req.max_redirects = 5;
+    auto r = run(std::move(req));
+    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.status, 302);
+    EXPECT_TRUE(r.body_truncated);
+    EXPECT_EQ(call, 1);
+    EXPECT_EQ(r.final_url, "https://one.example.com/");
+    client.responder = nullptr;
+}
+
 TEST_F(SceneHttpTest, AgentPrincipalRedirects) {
     make();
     int call = 0;
@@ -914,6 +936,18 @@ TEST_F(SceneHttpTest, AgentPrincipalRedirectLocationForms) {
     EXPECT_EQ(follow_once("https://one.example.com/a/b", "c"), "https://one.example.com/a/c");
     EXPECT_EQ(follow_once("https://one.example.com/a/b/c", "../x"), "https://one.example.com/a/x");
     EXPECT_EQ(follow_once("https://one.example.com?x=1", "/next"), "https://one.example.com/next");
+
+    // Dot-segment removal applies to the path only: a query value that
+    // itself looks like a URL or a path with ".." must survive untouched
+    // (finding: normalize_dot_segments was rewriting past the '?').
+    EXPECT_EQ(follow_once("https://one.example.com/x", "/cb?u=https://a.com/x"),
+              "https://one.example.com/cb?u=https://a.com/x");
+    EXPECT_EQ(follow_once("https://one.example.com/x", "/login?r=/x/../y"),
+              "https://one.example.com/login?r=/x/../y");
+    // Empty path segments are kept, not collapsed.
+    EXPECT_EQ(follow_once("https://one.example.com/x", "/a//b"), "https://one.example.com/a//b");
+    // A trailing ".." leaves a trailing "/" (RFC 3986 5.2.4's own example).
+    EXPECT_EQ(follow_once("https://one.example.com/x", "/a/b/.."), "https://one.example.com/a/");
 }
 
 // Every hop's resolved target is re-checked exactly like a fresh request's
@@ -942,34 +976,39 @@ TEST_F(SceneHttpTest, AgentPrincipalRedirectTargetIsRevalidated) {
 TEST_F(SceneHttpTest, AgentPrincipalDropsCredentialsAcrossOrigin) {
     make();
     int call = 0;
-    bool call1_has_auth = false;
-    bool call2_has_auth = false;
-    bool call3_has_auth = false;
+    bool call1_has_creds = false;
+    bool call2_has_creds = false;
+    bool call3_has_creds = false;
+    auto has_creds = [](const wisp::net::HttpClientRequest& r) {
+        for (const auto& [n, v] : r.headers)
+            if (n == "Authorization" || n == "Cookie" || n == "Proxy-Authorization") return true;
+        return false;
+    };
     client.responder = [&](const wisp::net::HttpClientRequest& r) -> wisp::net::HttpClientResponse {
         ++call;
-        bool has_auth = false;
-        for (const auto& [n, v] : r.headers)
-            if (n == "Authorization") has_auth = true;
         if (call == 1) {
-            call1_has_auth = has_auth;
+            call1_has_creds = has_creds(r);
             return {.status = 302, .headers = {{"location", "https://two.example.com/"}}};
         }
         if (call == 2) {
-            call2_has_auth = has_auth;
+            call2_has_creds = has_creds(r);
             return {.status = 302, .headers = {{"location", "/p3"}}};
         }
-        call3_has_auth = has_auth;
+        call3_has_creds = has_creds(r);
         return {.status = 200, .body = "ok"};
     };
     auto req = agent_get("https://one.example.com/");
     req.max_redirects = 5;
-    req.headers = {{"Authorization", "Bearer secret"}, {"X-Keep", "v"}};
+    req.headers = {{"Authorization", "Bearer secret"},
+                   {"Cookie", "s=1"},
+                   {"Proxy-Authorization", "Basic x"},
+                   {"X-Keep", "v"}};
     auto r = run(std::move(req));
     EXPECT_EQ(r.error, "");
     EXPECT_EQ(call, 3);
-    EXPECT_TRUE(call1_has_auth);
-    EXPECT_FALSE(call2_has_auth);
-    EXPECT_FALSE(call3_has_auth);
+    EXPECT_TRUE(call1_has_creds);
+    EXPECT_FALSE(call2_has_creds);
+    EXPECT_FALSE(call3_has_creds);
     client.responder = nullptr;
 }
 
@@ -988,8 +1027,9 @@ TEST_F(SceneHttpTest, AgentPrincipalRedirectChainSharesOneDeadline) {
     req.timeout_ms = 50000;
     auto r = run(std::move(req));
     EXPECT_EQ(r.error, "timeout");
-    // Hop 1 (+20s) and hop 2 (+40s) are each still under 50 s when sent;
-    // the chain's one deadline is past by the time hop 3 would start.
+    // Hop 1 is sent at +0s, hop 2 at +20s (both still under the 50s
+    // deadline); the chain's one deadline is past by +40s, when hop 3
+    // would otherwise start.
     EXPECT_EQ(call, 3);
     client.responder = nullptr;
 }

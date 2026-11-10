@@ -119,24 +119,39 @@ std::string agent_url_error(std::string_view url) {
     return "";
 }
 
-// Collapses "." and ".." path segments (RFC 3986 5.2.4, the parts of it a
-// server redirect can plausibly need): `path` always starts with '/' and
-// keeps any query/fragment verbatim, untouched, as the tail of its last
-// segment.
+// Splits a path-and-tail string (a Location header's absolute path, or a
+// relative path still carrying its own query/fragment) at the first '?' or
+// '#'. The tail is returned untouched -- it is never a path and
+// remove_dot_segments must never look inside it (an app's own query value
+// can itself look like a path, "/cb?u=https://a.com/x").
+std::pair<std::string_view, std::string_view> split_path_tail(std::string_view s) {
+    const size_t p = s.find_first_of("?#");
+    if (p == std::string_view::npos) return {s, {}};
+    return {s.substr(0, p), s.substr(p)};
+}
+
+// Collapses "." and ".." path segments (RFC 3986 5.2.4): `path` always
+// starts with '/' and holds only the path -- no query or fragment (callers
+// split those off with split_path_tail() first and reattach the tail
+// verbatim). Segments are not otherwise touched: an empty segment ("//")
+// survives, and a trailing "." or ".." leaves a trailing "/" (RFC 3986's
+// own worked example, "/a/b/.." -> "/a/").
 std::string normalize_dot_segments(std::string_view path) {
-    const bool trailing_slash = path.size() > 1 && path.back() == '/';
     std::vector<std::string_view> out;
+    bool trailing_slash = false;
     size_t i = 1;
-    while (i <= path.size()) {
+    while (true) {
         const size_t next = path.find('/', i);
         const std::string_view seg =
             next == std::string_view::npos ? path.substr(i) : path.substr(i, next - i);
         if (seg == ".") {
-            // dropped
+            trailing_slash = true;
         } else if (seg == "..") {
             if (!out.empty()) out.pop_back();
-        } else if (!seg.empty()) {
+            trailing_slash = true;
+        } else {
             out.push_back(seg);
+            trailing_slash = false;
         }
         if (next == std::string_view::npos) break;
         i = next + 1;
@@ -189,12 +204,16 @@ std::string resolve_location(const std::string& base, const std::string& locatio
     std::string_view base_path = q == std::string_view::npos ? rest : rest.substr(0, q);
     if (base_path.empty()) base_path = "/";
 
-    if (location[0] == '/') return origin + normalize_dot_segments(location);
+    if (location[0] == '/') {
+        const auto [loc_path, loc_tail] = split_path_tail(location);
+        return origin + normalize_dot_segments(loc_path) + std::string(loc_tail);
+    }
     if (location[0] == '?') return origin + std::string(base_path) + location;
     const size_t slash = base_path.rfind('/');
     const std::string dir =
         slash == std::string_view::npos ? "/" : std::string(base_path.substr(0, slash + 1));
-    return origin + normalize_dot_segments(dir + location);
+    const auto [loc_path, loc_tail] = split_path_tail(location);
+    return origin + normalize_dot_segments(dir + std::string(loc_path)) + std::string(loc_tail);
 }
 
 // The scheme and host:port a redirect hop is at, lowercased, for deciding
@@ -851,7 +870,7 @@ void SceneHttp::execute(Job& job) {
         // URL); otherwise this is the final answer, as it stands.
         bool follow = false;
         std::string resolved;
-        if (status >= 300 && status < 400 && attempt < max_redirects) {
+        if (status >= 300 && status < 400 && attempt < max_redirects && !res.truncated) {
             std::string location;
             for (const auto& [name, value] : res.headers)
                 if (iequals(name, "location")) {
