@@ -2573,6 +2573,49 @@ textarea {
   font-size: var(--fs-xs);
 }
 
+/* "Fetch" beside the model field: as tall as the input. */
+.model-fetch {
+  flex: none;
+  height: 42px;
+}
+
+.model-form .input-group .select {
+  min-width: 0;
+}
+
+.model-speed-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--gap-sm);
+}
+
+.model-speed-value .btn-inline {
+  margin-left: 0;
+}
+
+/* Rarely needed TTS settings, folded away. */
+.model-advanced {
+  border-top: 1px solid var(--border);
+  padding-top: var(--gap-sm);
+}
+
+.model-advanced > summary {
+  width: fit-content;
+  padding: 4px 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.model-advanced > summary:hover {
+  color: var(--text);
+}
+
+.model-advanced[open] > summary {
+  margin-bottom: var(--gap-sm);
+}
+
 /* System page: a titled list card whose rows can grow a status line. */
 .maint-card .card-head {
   margin: 0;

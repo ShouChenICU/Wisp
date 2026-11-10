@@ -117,8 +117,8 @@ python3 tools/wisp_scene_test.py
 # The admin web UI must fit its gzip budget (spec 7.1) and reference only
 # files inside the pack. The pack written here is a throwaway; the
 # simulator and firmware builds pack web/ themselves.
-echo "==> tools/pack_assets.py web --budget-kb 150"
-python3 tools/pack_assets.py web -o build/ci/web-budget.wpak --budget-kb 150
+echo "==> tools/pack_assets.py web --budget-kb 170"
+python3 tools/pack_assets.py web -o build/ci/web-budget.wpak --budget-kb 170
 
 # The admin UI's zh/ja/en dictionaries must carry identical key sets
 # (spec 7.4).

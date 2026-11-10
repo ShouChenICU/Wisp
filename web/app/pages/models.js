@@ -21,11 +21,24 @@
 // The test (POST /ai/profiles/{id}/test) runs against what is saved, so
 // with unsaved edits the button saves first and says so; a new profile is
 // created first and the form stays open on it so a model can be picked
-// from the list the test returns.
+// from the list the test returns. "Fetch" next to the model field is the
+// same save-then-test.
+//
+// What the list says about a model (`details`) turns typing into picking:
+// the models of this tab's kind (a model the server gives no kind shows on
+// every tab), the chosen TTS model's voices, the ASR model's languages, and
+// an LLM's context window and image input, filled in when a model is
+// picked and those fields were not touched. Without details the fields
+// stay text inputs, and every list keeps a "type it in" option.
+//
+// The TTS sample rate is never filled in from the model: a set rate is
+// sent with every request, and servers that check strictly (speech.cpp)
+// refuse it. The model's rate only shows, as the placeholder and in the
+// hint.
 
 import { html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
 import { api, describeError, errorDetail } from '../api.js';
-import { t } from '../i18n/index.js';
+import { getLang, locale, t } from '../i18n/index.js';
 import { currentPath, useRoute } from '../router.js';
 import { Card } from '../components/card.js';
 import { Badge } from '../components/badge.js';
@@ -58,12 +71,28 @@ import { formatCount } from '../util.js';
  * @property {{llm: string, asr: string, tts: string}} active  '' = none
  * @property {Profile[]} profiles
  *
+ * @typedef {Object} Voice  one of ModelDetail "voices"
+ * @property {string} name
+ * @property {string} [language]
+ * @property {string} [gender]
+ * @property {string} [description]
+ *
+ * @typedef {Object} ModelDetail  one of ProbeResult "details"; only what the list said
+ * @property {string} id
+ * @property {Kind} [kind]
+ * @property {number} [sample_rate]
+ * @property {number} [context_window]
+ * @property {boolean} [vision]
+ * @property {string[]} [languages]
+ * @property {Voice[]} [voices]
+ *
  * @typedef {Object} ProbeResult  POST /ai/profiles/{id}/test
  * @property {boolean} ok
  * @property {null|'dns'|'connect'|'tls'|'timeout'|'other'|'http'|'no_model_list'} error
  * @property {number} http_status  0 when no HTTP response arrived
  * @property {number} latency_ms
  * @property {string[]} models
+ * @property {ModelDetail[]} details
  */
 
 const KINDS = [
@@ -95,6 +124,9 @@ const MAX_SPEED = 4.0;
 // '.', not necessarily on both sides ("1", "1.5", "1.", ".5" all parse; a
 // lone "." does not, since there is no digit at all).
 const SPEED_RE = /^(?:\d+\.\d*|\.\d+|\d+)$/;
+// Offered for ASR when the model does not list its languages.
+const COMMON_LANGUAGES = ['zh', 'en', 'ja', 'ko', 'yue', 'fr', 'de', 'es', 'it', 'pt', 'ru'];
+const NO_CATALOG = { models: [], details: {} };
 // Presets whose spec name is a description rather than a brand.
 const PRESET_LABEL_KEYS = { custom: 'models.preset_custom', ollama: 'models.preset_ollama' };
 
@@ -104,6 +136,26 @@ const bytes = (s) => new TextEncoder().encode(s).length;
 function kindOf(path) {
   const k = path.split('/')[2] || '';
   return KINDS.some((x) => x.id === k) ? k : null;
+}
+
+/** A language code's name in the page's language ("zh" -> "中文"), or the code. */
+function langName(code) {
+  try {
+    const name = new Intl.DisplayNames([locale()], { type: 'language' }).of(code);
+    return name && name !== code ? name : code;
+  } catch {
+    return code;
+  }
+}
+
+function voiceLabel(v) {
+  return [v.name, v.language ? langName(v.language) : '', v.description || ''].filter(Boolean).join(' · ');
+}
+
+/** The models of the last test fit for `kind`: those the server gives that kind or none. */
+function catalogFor(catalog, kind) {
+  if (!catalog) return NO_CATALOG;
+  return { models: catalog.models.filter((m) => !catalog.details[m]?.kind || catalog.details[m].kind === kind), details: catalog.details };
 }
 
 function presetLabel(preset) {
@@ -150,8 +202,9 @@ export function ModelsPage() {
   const [loadError, setLoadError] = useState(null);
   // Per profile id: {testing, result, error} of the last test.
   const [tests, setTests] = useState({});
-  // Per profile id: the model ids its last successful test listed.
-  const [modelLists, setModelLists] = useState({});
+  // Per profile id: {models, details} of its last successful test, the
+  // model ids sorted and the details by model id.
+  const [catalogs, setCatalogs] = useState({});
   const alive = useRef(true);
 
   // A bare "#/models" opens the chat tab; replacing the history entry
@@ -189,7 +242,9 @@ export function ModelsPage() {
       setTests((m) => ({ ...m, [id]: { result: r } }));
       if (r.ok) {
         const list = [...new Set((r.models || []).filter((m) => typeof m === 'string' && m))].sort();
-        setModelLists((m) => ({ ...m, [id]: list }));
+        const details = {};
+        for (const d of r.details || []) if (d && typeof d.id === 'string') details[d.id] = d;
+        setCatalogs((m) => ({ ...m, [id]: { models: list, details } }));
       }
     } catch (e) {
       if (alive.current) setTests((m) => ({ ...m, [id]: e.status === 401 ? undefined : { error: e } }));
@@ -234,7 +289,7 @@ export function ModelsPage() {
       state=${state}
       presets=${presets}
       tests=${tests}
-      modelLists=${modelLists}
+      catalogs=${catalogs}
       onState=${setState}
       onReload=${load}
       onTest=${runTest}
@@ -252,7 +307,7 @@ function Head() {
 }
 
 /** One tab: the profiles of one kind, and the form that edits them. */
-function KindPanel({ kind, state, presets, tests, modelLists, onState, onReload, onTest }) {
+function KindPanel({ kind, state, presets, tests, catalogs, onState, onReload, onTest }) {
   // null, 'new' or the id of the profile being edited.
   const [editing, setEditing] = useState(/** @type {string|null} */ (null));
   const [busy, setBusy] = useState(''); // id with an activate/delete in flight
@@ -305,7 +360,7 @@ function KindPanel({ kind, state, presets, tests, modelLists, onState, onReload,
     profile=${profile}
     presets=${presets}
     all=${state.profiles}
-    models=${profile ? modelLists[profile.id] || [] : []}
+    catalog=${profile ? catalogFor(catalogs[profile.id], kind) : NO_CATALOG}
     testing=${profile ? !!tests[profile.id]?.testing : false}
     onSaved=${async (saved, { keepOpen, test }) => {
       await onReload();
@@ -353,7 +408,7 @@ function KindPanel({ kind, state, presets, tests, modelLists, onState, onReload,
                       active=${p.id === activeId}
                       busy=${busy === p.id}
                       test=${tests[p.id]}
-                      models=${modelLists[p.id] || []}
+                      models=${catalogFor(catalogs[p.id], kind).models}
                       editing=${editing === p.id}
                       form=${editing === p.id ? form(p) : null}
                       onActivate=${() => activate(p)}
@@ -474,7 +529,8 @@ function TestOutcome({ test, profile, models, onPick }) {
  * `keepOpen` keeps the form on that profile (a just-created profile being
  * tested, or a key the device dropped), `test` asks for its test.
  */
-function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, onCancel }) {
+function ProfileForm({ kind, profile, presets, all, catalog, testing, onSaved, onCancel }) {
+  const { models, details } = catalog;
   const choices = presets.filter((p) => p.kinds.includes(kind));
   const [presetId, setPresetId] = useState(profile ? profile.preset : '');
   const [name, setName] = useState(profile ? profile.name : '');
@@ -490,6 +546,11 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
   const [speed, setSpeed] = useState(profile?.options?.speed || '');
   const [vision, setVision] = useState(profile?.options?.vision === 'true');
   const [contextWindow, setContextWindow] = useState(profile?.options?.context_window || '');
+  const [manualVoice, setManualVoice] = useState(false);
+  const [manualLanguage, setManualLanguage] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(!!profile?.options?.sample_rate);
+  // Fields the user changed by hand: picking a model no longer fills them.
+  const touched = useRef({ vision: false, context_window: false });
   const [problem, setProblem] = useState(null); // {field, text}
   const [saving, setSaving] = useState(false);
   // The last save moved the address to another origin and the device
@@ -539,7 +600,9 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
   // Saving now would drop the stored key.
   const willDropKey = hasKey && key === '' && !reuse && u !== profile.base_url && originOf(u) !== originOf(profile.base_url);
 
-  function check() {
+  // `forTest`: saved to run the test, which needs no voice yet (it may come
+  // from the list the test returns).
+  function check(forTest = false) {
     if (!preset) return { field: 'preset', text: t('models.err_preset') };
     if (!name.trim() || bytes(name.trim()) > NAME_MAX_BYTES) return { field: 'name', text: t('models.err_name', { max: NAME_MAX_BYTES }) };
     if (!u) return { field: 'url', text: t('models.err_url_empty') };
@@ -554,7 +617,7 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
     if (bytes(voice.trim()) > OPTION_MAX_BYTES) return { field: 'voice', text: t('models.err_voice_long', { max: OPTION_MAX_BYTES }) };
     // The synthesis endpoint needs a voice name (OpenAI's /audio/speech
     // 400s without one); the server itself stays lenient.
-    if (kind === 'tts' && !voice.trim()) return { field: 'voice', text: t('models.err_voice_required') };
+    if (kind === 'tts' && !voice.trim() && !forTest) return { field: 'voice', text: t('models.err_voice_required') };
     if (kind === 'tts' && sampleRate.trim()) {
       const n = Number(sampleRate.trim());
       if (!/^\d+$/.test(sampleRate.trim()) || n < MIN_SAMPLE_RATE || n > MAX_SAMPLE_RATE) {
@@ -582,9 +645,12 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
   // Creates or updates; with `test`, the test follows (and reports for
   // itself, so no toast).
   async function save(test = false) {
-    const bad = check();
+    const bad = check(test);
     setProblem(bad);
-    if (bad) return;
+    if (bad) {
+      if (bad.field === 'sample_rate') setAdvancedOpen(true);
+      return;
+    }
     const body = {};
     if (!profile || presetId !== profile.preset) body.preset = presetId;
     if (!profile || name.trim() !== profile.name) body.name = name.trim();
@@ -685,6 +751,28 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
     </p>`;
   const useSelect = models.length > 0 && !manualModel;
   const selectValue = models.includes(model) ? model : '';
+  const info = details[model];
+
+  // A picked model brings what the list says about it into the fields the
+  // user has not changed by hand.
+  function pickModel(v) {
+    setModel(v);
+    const d = details[v];
+    if (kind !== 'llm' || !d) return;
+    if (!touched.current.context_window && d.context_window >= MIN_CONTEXT_WINDOW) {
+      setContextWindow(String(Math.min(d.context_window, MAX_CONTEXT_WINDOW)));
+    }
+    if (!touched.current.vision && typeof d.vision === 'boolean') setVision(d.vision);
+  }
+
+  const voices = (kind === 'tts' && info?.voices) || [];
+  const voiceInList = voices.some((v) => v.name === voice.trim());
+  // A saved voice the list does not have stays typed.
+  const useVoiceSelect = voices.length > 0 && !manualVoice && (!voice.trim() || voiceInList);
+  const listedLanguages = info?.languages?.length ? info.languages : COMMON_LANGUAGES;
+  const useLanguageSelect = !manualLanguage && (!language.trim() || listedLanguages.includes(language.trim()));
+  const modelRate = kind === 'tts' && info?.sample_rate >= MIN_SAMPLE_RATE && info.sample_rate <= MAX_SAMPLE_RATE ? info.sample_rate : 0;
+  const speedValue = SPEED_RE.test(speed.trim()) ? Math.min(MAX_SPEED, Math.max(MIN_SPEED, Number(speed.trim()))) : 1;
 
   // A new profile starts with the platform; the rest follows once chosen.
   const presetField = html`<div class="field">
@@ -853,6 +941,7 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
 
           <div class="field">
             <label class="field-label" for=${idp + 'model'}>${t('models.model')}</label>
+            <div class="input-group">
             ${useSelect
               ? html`<select
                   id=${idp + 'model'}
@@ -861,7 +950,7 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
                   onChange=${(e) => {
                     const v = e.currentTarget.value;
                     if (v === MANUAL) setManualModel(true);
-                    else setModel(v);
+                    else pickModel(v);
                     setProblem(null);
                   }}
                   disabled=${busy}
@@ -888,6 +977,17 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
                   aria-invalid=${fieldError('model') ? 'true' : 'false'}
                   aria-describedby=${idp + 'model-hint'}
                 />`}
+              <button
+                type="button"
+                class="btn btn-secondary model-fetch"
+                onClick=${() => save(true)}
+                disabled=${busy}
+                title=${t('models.fetch_label')}
+              >
+                ${testing ? html`<span class="spinner" aria-hidden="true"></span>` : html`<${IconRefresh} size=${16} />`}
+                <span>${t('models.fetch')}</span>
+              </button>
+            </div>
             <p id=${idp + 'model-hint'} class=${fieldError('model') ? 'field-hint is-error' : 'field-hint'}>
               ${fieldError('model') ||
               (useSelect
@@ -904,94 +1004,189 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
           ${kind === 'asr'
             ? html`<div class="field">
                 <label class="field-label" for=${idp + 'language'}>${t('models.language')}</label>
-                <input
-                  id=${idp + 'language'}
-                  class="input mono-input"
-                  type="text"
-                  autocomplete="off"
-                  autocapitalize="off"
-                  spellcheck=${false}
-                  maxlength="8"
-                  placeholder=${t('models.language_ph')}
-                  value=${language}
-                  onInput=${(e) => {
-                    setLanguage(e.currentTarget.value);
-                    setProblem(null);
-                  }}
-                  disabled=${busy}
-                  aria-invalid=${fieldError('language') ? 'true' : 'false'}
-                  aria-describedby=${idp + 'language-hint'}
-                />
-                ${hint('language', t('models.language_hint'))}
+                ${useLanguageSelect
+                  ? html`<select
+                      id=${idp + 'language'}
+                      class="input select"
+                      value=${language.trim()}
+                      onChange=${(e) => {
+                        const v = e.currentTarget.value;
+                        if (v === MANUAL) setManualLanguage(true);
+                        else setLanguage(v);
+                        setProblem(null);
+                      }}
+                      disabled=${busy}
+                      aria-describedby=${idp + 'language-hint'}
+                    >
+                      <option value="">${t('models.language_auto')}</option>
+                      ${listedLanguages.map((c) => html`<option key=${c} value=${c}>${langName(c)} (${c})</option>`)}
+                      <option value=${MANUAL}>${t('models.manual_option')}</option>
+                    </select>`
+                  : html`<input
+                      id=${idp + 'language'}
+                      class="input mono-input"
+                      type="text"
+                      autocomplete="off"
+                      autocapitalize="off"
+                      spellcheck=${false}
+                      maxlength="8"
+                      placeholder=${t('models.language_ph')}
+                      value=${language}
+                      onInput=${(e) => {
+                        setLanguage(e.currentTarget.value);
+                        setProblem(null);
+                      }}
+                      disabled=${busy}
+                      aria-invalid=${fieldError('language') ? 'true' : 'false'}
+                      aria-describedby=${idp + 'language-hint'}
+                    />`}
+                <p id=${idp + 'language-hint'} class=${fieldError('language') ? 'field-hint is-error' : 'field-hint'}>
+                  ${fieldError('language') ||
+                  (useLanguageSelect
+                    ? t('models.language_hint_list')
+                    : html`${t('models.language_hint_manual')}
+                        <button
+                          type="button"
+                          class="btn btn-link btn-inline"
+                          onClick=${() => {
+                            setManualLanguage(false);
+                            if (!listedLanguages.includes(language.trim())) setLanguage('');
+                            setProblem(null);
+                          }}
+                        >
+                          ${t('models.back_to_list')}
+                        </button>`)}
+                </p>
               </div>`
             : null}
 
           ${kind === 'tts'
             ? html`<div class="field">
                 <label class="field-label" for=${idp + 'voice'}>${t('models.voice')}</label>
-                <input
-                  id=${idp + 'voice'}
-                  class="input mono-input"
-                  type="text"
-                  autocomplete="off"
-                  autocapitalize="off"
-                  spellcheck=${false}
-                  placeholder=${t('models.voice_ph')}
-                  value=${voice}
-                  onInput=${(e) => {
-                    setVoice(e.currentTarget.value);
-                    setProblem(null);
-                  }}
-                  disabled=${busy}
-                  aria-invalid=${fieldError('voice') ? 'true' : 'false'}
-                  aria-describedby=${idp + 'voice-hint'}
-                />
-                ${hint('voice', t('models.voice_hint'))}
+                ${useVoiceSelect
+                  ? html`<select
+                      id=${idp + 'voice'}
+                      class="input select"
+                      value=${voiceInList ? voice.trim() : ''}
+                      onChange=${(e) => {
+                        const v = e.currentTarget.value;
+                        if (v === MANUAL) setManualVoice(true);
+                        else setVoice(v);
+                        setProblem(null);
+                      }}
+                      disabled=${busy}
+                      aria-invalid=${fieldError('voice') ? 'true' : 'false'}
+                      aria-describedby=${idp + 'voice-hint'}
+                    >
+                      ${voiceInList ? null : html`<option value="" disabled>${t('models.voice_pick')}</option>`}
+                      ${voices.map((v) => html`<option key=${v.name} value=${v.name}>${voiceLabel(v)}</option>`)}
+                      <option value=${MANUAL}>${t('models.manual_option')}</option>
+                    </select>`
+                  : html`<input
+                      id=${idp + 'voice'}
+                      class="input mono-input"
+                      type="text"
+                      autocomplete="off"
+                      autocapitalize="off"
+                      spellcheck=${false}
+                      placeholder=${t('models.voice_ph')}
+                      value=${voice}
+                      onInput=${(e) => {
+                        setVoice(e.currentTarget.value);
+                        setProblem(null);
+                      }}
+                      disabled=${busy}
+                      aria-invalid=${fieldError('voice') ? 'true' : 'false'}
+                      aria-describedby=${idp + 'voice-hint'}
+                    />`}
+                <p id=${idp + 'voice-hint'} class=${fieldError('voice') ? 'field-hint is-error' : 'field-hint'}>
+                  ${fieldError('voice') ||
+                  (useVoiceSelect
+                    ? t('models.voice_hint_list', { count: formatCount(voices.length) })
+                    : voices.length
+                      ? html`${t('models.voice_hint_manual')}
+                          <button
+                            type="button"
+                            class="btn btn-link btn-inline"
+                            onClick=${() => {
+                              setManualVoice(false);
+                              if (!voiceInList) setVoice('');
+                              setProblem(null);
+                            }}
+                          >
+                            ${t('models.back_to_list')}
+                          </button>`
+                      : t('models.voice_hint'))}
+                </p>
               </div>
-              <div class="field">
-                <label class="field-label" for=${idp + 'sample_rate'}>${t('models.sample_rate')}</label>
-                <input
-                  id=${idp + 'sample_rate'}
-                  class="input mono-input"
-                  type="number"
-                  inputmode="numeric"
-                  min=${MIN_SAMPLE_RATE}
-                  max=${MAX_SAMPLE_RATE}
-                  step="1"
-                  placeholder=${String(DEFAULT_SAMPLE_RATE)}
-                  value=${sampleRate}
-                  onInput=${(e) => {
-                    setSampleRate(e.currentTarget.value);
-                    setProblem(null);
-                  }}
-                  disabled=${busy}
-                  aria-invalid=${fieldError('sample_rate') ? 'true' : 'false'}
-                  aria-describedby=${idp + 'sample_rate-hint'}
-                />
-                ${hint('sample_rate', t('models.sample_rate_hint', { default: formatCount(DEFAULT_SAMPLE_RATE) }))}
-              </div>
-              <div class="field">
-                <label class="field-label" for=${idp + 'speed'}>${t('models.speed')}</label>
+              <div class="field range-field">
+                <div class="field-row">
+                  <label class="field-label" for=${idp + 'speed'}>${t('models.speed')}</label>
+                  <span class="model-speed-value">
+                    <output class=${speed.trim() ? 'range-value mono' : 'range-value'} for=${idp + 'speed'}>
+                      ${speed.trim() ? speedValue.toFixed(2) + '×' : t('models.speed_default')}
+                    </output>
+                    <button
+                      type="button"
+                      class="btn btn-link btn-inline"
+                      onClick=${() => {
+                        setSpeed('');
+                        setProblem(null);
+                      }}
+                      disabled=${busy || !speed.trim()}
+                    >
+                      ${t('models.speed_reset')}
+                    </button>
+                  </span>
+                </div>
                 <input
                   id=${idp + 'speed'}
-                  class="input mono-input"
-                  type="number"
-                  inputmode="decimal"
+                  class="range"
+                  type="range"
                   min=${MIN_SPEED}
                   max=${MAX_SPEED}
                   step="0.05"
-                  placeholder=${t('models.speed_ph')}
-                  value=${speed}
+                  value=${speedValue}
+                  style=${{ '--fill': ((speedValue - MIN_SPEED) / (MAX_SPEED - MIN_SPEED)) * 100 + '%' }}
                   onInput=${(e) => {
                     setSpeed(e.currentTarget.value);
                     setProblem(null);
                   }}
                   disabled=${busy}
-                  aria-invalid=${fieldError('speed') ? 'true' : 'false'}
+                  aria-valuetext=${speed.trim() ? speedValue.toFixed(2) + '×' : t('models.speed_default')}
                   aria-describedby=${idp + 'speed-hint'}
                 />
                 ${hint('speed', t('models.speed_hint', { min: MIN_SPEED, max: MAX_SPEED }))}
-              </div>`
+              </div>
+              <details class="model-advanced" open=${advancedOpen} onToggle=${(e) => setAdvancedOpen(e.currentTarget.open)}>
+                <summary>${t('models.advanced')}</summary>
+                <div class="field">
+                  <label class="field-label" for=${idp + 'sample_rate'}>${t('models.sample_rate')}</label>
+                  <input
+                    id=${idp + 'sample_rate'}
+                    class="input mono-input"
+                    type="number"
+                    inputmode="numeric"
+                    min=${MIN_SAMPLE_RATE}
+                    max=${MAX_SAMPLE_RATE}
+                    step="1"
+                    placeholder=${String(modelRate || DEFAULT_SAMPLE_RATE)}
+                    value=${sampleRate}
+                    onInput=${(e) => {
+                      setSampleRate(e.currentTarget.value);
+                      setProblem(null);
+                    }}
+                    disabled=${busy}
+                    aria-invalid=${fieldError('sample_rate') ? 'true' : 'false'}
+                    aria-describedby=${idp + 'sample_rate-hint'}
+                  />
+                  <p id=${idp + 'sample_rate-hint'} class=${fieldError('sample_rate') ? 'field-hint is-error' : 'field-hint'}>
+                    ${fieldError('sample_rate') ||
+                    t('models.sample_rate_hint', { default: formatCount(DEFAULT_SAMPLE_RATE) }) +
+                      (modelRate ? (getLang() === 'en' ? ' ' : '') + t('models.sample_rate_model', { rate: formatCount(modelRate) }) : '')}
+                  </p>
+                </div>
+              </details>`
             : null}
 
           ${kind === 'llm'
@@ -1004,6 +1199,7 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
                     checked=${vision}
                     onChange=${(e) => {
                       setVision(e.currentTarget.checked);
+                      touched.current.vision = true;
                       setProblem(null);
                     }}
                     disabled=${busy}
@@ -1026,6 +1222,7 @@ function ProfileForm({ kind, profile, presets, all, models, testing, onSaved, on
                   value=${contextWindow}
                   onInput=${(e) => {
                     setContextWindow(e.currentTarget.value);
+                    touched.current.context_window = true;
                     setProblem(null);
                   }}
                   disabled=${busy}
