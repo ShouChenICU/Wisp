@@ -58,7 +58,7 @@ os::LargeUnique<SceneMessage> make_lua_message(msg::Body body) {
 // shared with the scenes and adds every binding.
 int strip_bindings(lua_State* L) {
     if (lua_getglobal(L, "wisp") != LUA_TTABLE) return luaL_error(L, "wisp table missing");
-    for (const char* name : {"timer", "store", "scene", "sensor", "power", "import"}) {
+    for (const char* name : {"timer", "store", "scene", "sensor", "power", "import", "tools"}) {
         lua_pushnil(L);
         lua_setfield(L, -2, name);
     }

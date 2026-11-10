@@ -99,6 +99,17 @@
 //       (0-300000; below TimerSet::kMinIntervalMs it waits that long) with
 //       an after timer, and returns nothing. Outside a task, or with ms
 //       out of range, an argument error; too many timers raises an error.
+//   wisp.tools.register(name, fn) (bind_tools.cpp; agent-tools spec 5.2):
+//       binds `fn` to a tool `name` the scene declared in scene.json's
+//       "tools" array (SceneApi::tool_names, filled by the runtime from
+//       the manifest when it loads the scene); kept in a table in the
+//       registry, by name. A `name` the manifest did not declare, one
+//       already bound, or a non-function `fn` raise an argument error.
+//       Ruling: the spec shows main.lua calling this at its top level
+//       (load time), but nothing here requires that -- a call made later
+//       only binds a name already declared, which is harmless, so this
+//       works any time. Task 6 runs `fn` as a task coroutine when
+//       tools.call reaches this scene, through detail::push_tool().
 //
 // Awaitable calls (agent-tools spec 6, lua_task.hpp): in a task coroutine
 // (start_task()), every wisp.http and wisp.files call above may leave out
@@ -271,6 +282,12 @@ struct SceneApi {
     };
     std::vector<TaskSlot> tasks;
     uint32_t next_task_id = 1;
+    // wisp.tools.register: the full set of names scene.json declared
+    // (SceneToolDecl::name), filled by the runtime when it loads the
+    // scene. Names bound to a function live in a separate table in the
+    // registry (bind_tools.cpp); this is only the declared set
+    // wisp.tools.register checks against.
+    std::vector<std::string> tool_names;
 
     bool wants(DeviceEvent ev) const { return has_handlers[static_cast<size_t>(ev)]; }
 };
@@ -325,6 +342,12 @@ void install_sensor(lua_State* L, int wisp);
 void install_files(lua_State* L, int wisp);
 // Sets wisp.json.
 void install_json(lua_State* L, int wisp);
+// Sets wisp.tools.
+void install_tools(lua_State* L, int wisp);
+// Pushes the function wisp.tools.register bound to `name` and returns
+// true; false (nothing pushed) if no scene code has registered that name
+// yet ("not_registered", task 6).
+bool push_tool(lua_State* L, std::string_view name);
 // Keeps the function (or waiting task thread) at `cb` as a wisp.files
 // callback and returns its id.
 uint32_t register_files_callback(lua_State* L, SceneApi& api, int cb);

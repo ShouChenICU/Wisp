@@ -181,17 +181,126 @@ TEST(SceneManifest, FilesField) {
 
 // Parsing recurses once per level, and scene.json is parsed on the storage
 // worker's small stack at every boot (wisp/core/storage_worker.hpp): its
-// nesting is capped, unknown fields included.
-TEST(SceneManifest, NestingIsCappedAtFourLevels) {
-    // permissions.http[] is three deep; one more level is still fine.
-    EXPECT_TRUE(accepts(manifest("todo", "x", "1.0.0", R"(,"x":{"y":[[1]]})")));
-    for (const char* extra :
-         {R"(,"x":{"y":[[[1]]]})", R"(,"x":[[[[[[[[[1]]]]]]]]])",
-          R"(,"x":{"a":{"a":{"a":{"a":1}}}})", R"(,"permissions":{"http":[[["a.com"]]]})"}) {
-        auto r = parse_scene_manifest(manifest("todo", "x", "1.0.0", extra));
-        ASSERT_FALSE(r) << extra;
-        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << extra;
-        EXPECT_EQ(r.error().message, "scene.json: nested deeper than 4 levels") << extra;
+// nesting is capped, unknown fields included. The cap is 8 so a tool's
+// "parameters" schema (tools[].parameters.properties.<name>.type) still
+// fits.
+TEST(SceneManifest, NestingIsCappedAtEightLevels) {
+    auto nested = [](int n) {
+        std::string s(static_cast<size_t>(n), '[');
+        s += "1";
+        s.append(static_cast<size_t>(n), ']');
+        return s;
+    };
+    // "x" itself is the first bracket, so depth = 1 (root) + n brackets.
+    EXPECT_TRUE(accepts(manifest("todo", "x", "1.0.0", R"(,"x":)" + nested(7))));
+    auto r = parse_scene_manifest(manifest("todo", "x", "1.0.0", R"(,"x":)" + nested(8)));
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(r.error().message, "scene.json: nested deeper than 8 levels");
+}
+
+namespace {
+std::string tools_manifest(const std::string& tools_json) {
+    return manifest("todo", "x", "1.0.0", R"(,"tools":)" + tools_json);
+}
+}  // namespace
+
+// Spec 5.1's example, plus the defaults ("parameters" omitted, "timeout_ms"
+// omitted) and the no-"tools" case.
+TEST(SceneManifest, ToolsParsed) {
+    const std::string json = tools_manifest(R"([
+        {"name": "today",
+         "description": "Today's weather for the saved city: temperature, condition, rain chance.",
+         "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+         "timeout_ms": 30000}])");
+    auto r = parse_scene_manifest(json);
+    ASSERT_TRUE(r) << r.error().message;
+    ASSERT_EQ(r.value().tools.size(), 1u);
+    const auto& t = r.value().tools[0];
+    EXPECT_EQ(t.name, "today");
+    EXPECT_EQ(t.description,
+              "Today's weather for the saved city: temperature, condition, rain chance.");
+    EXPECT_EQ(t.parameters, R"({"properties":{"city":{"type":"string"}},"type":"object"})");
+    EXPECT_EQ(t.timeout_ms, 30000u);
+
+    auto r2 = parse_scene_manifest(tools_manifest(R"([{"name": "a", "description": "d"}])"));
+    ASSERT_TRUE(r2) << r2.error().message;
+    ASSERT_EQ(r2.value().tools.size(), 1u);
+    EXPECT_EQ(r2.value().tools[0].parameters, "");
+    EXPECT_EQ(r2.value().tools[0].timeout_ms, 30000u);
+
+    auto r3 = parse_scene_manifest(manifest());
+    ASSERT_TRUE(r3) << r3.error().message;
+    EXPECT_TRUE(r3.value().tools.empty());
+
+    // "parameters" serializing to exactly 4096 bytes is still accepted
+    // (4088 'x' bytes plus the fixed '{"d":"' ... '"}' wrapper).
+    auto at_cap = parse_scene_manifest(
+        tools_manifest(R"([{"name":"a","description":"d","parameters":{"d":")" +
+                       std::string(4088, 'x') + R"("}}])"));
+    ASSERT_TRUE(at_cap) << at_cap.error().message;
+    EXPECT_EQ(at_cap.value().tools[0].parameters.size(), 4096u);
+}
+
+TEST(SceneManifest, ToolsRejected) {
+    std::string seventeen = "[";
+    for (int i = 0; i < 17; ++i) {
+        if (i != 0) seventeen += ",";
+        seventeen += R"({"name":"t)" + std::to_string(i) + R"(","description":"d"})";
+    }
+    seventeen += "]";
+    auto too_many = parse_scene_manifest(tools_manifest(seventeen));
+    ASSERT_FALSE(too_many);
+    EXPECT_EQ(too_many.error().message, "scene.json: tools lists more than 16 tools");
+
+    auto with_name = [](const std::string& name) {
+        return tools_manifest(R"([{"name":")" + name + R"(","description":"d"}])");
+    };
+    for (const std::string& name :
+         {std::string("Today"), std::string("1a"), std::string(33, 'a')}) {
+        auto r = parse_scene_manifest(with_name(name));
+        ASSERT_FALSE(r) << name;
+        EXPECT_EQ(r.error().message, "scene.json: tools[0].name must match ^[a-z][a-z0-9_]{0,31}$")
+            << name;
+    }
+
+    auto dup = parse_scene_manifest(
+        tools_manifest(R"([{"name":"a","description":"d"},{"name":"a","description":"d2"}])"));
+    ASSERT_FALSE(dup);
+    EXPECT_EQ(dup.error().message, "scene.json: tools[1].name 'a' is already used");
+
+    auto empty_desc = parse_scene_manifest(tools_manifest(R"([{"name":"a","description":""}])"));
+    ASSERT_FALSE(empty_desc);
+    EXPECT_EQ(empty_desc.error().message,
+              "scene.json: tools[0].description must be 1-512 code points of valid UTF-8");
+
+    const std::string long_desc(513, 'd');
+    auto too_long = parse_scene_manifest(
+        tools_manifest(R"([{"name":"a","description":")" + long_desc + R"("}])"));
+    ASSERT_FALSE(too_long);
+    EXPECT_EQ(too_long.error().message,
+              "scene.json: tools[0].description must be 1-512 code points of valid UTF-8");
+
+    auto bad_params = parse_scene_manifest(
+        tools_manifest(R"([{"name":"a","description":"d","parameters":"x"}])"));
+    ASSERT_FALSE(bad_params);
+    EXPECT_EQ(bad_params.error().message, "scene.json: tools[0].parameters must be an object");
+
+    // "parameters" serializing to 4097 bytes (one 'x' over the cap).
+    auto too_big = parse_scene_manifest(
+        tools_manifest(R"([{"name":"a","description":"d","parameters":{"d":")" +
+                       std::string(4089, 'x') + R"("}}])"));
+    ASSERT_FALSE(too_big);
+    EXPECT_EQ(too_big.error().message,
+              "scene.json: tools[0].parameters is larger than 4096 bytes serialized");
+
+    for (const char* timeout : {"999", "120001"}) {
+        auto r = parse_scene_manifest(tools_manifest(
+            R"([{"name":"a","description":"d","timeout_ms":)" + std::string(timeout) + "}]"));
+        ASSERT_FALSE(r) << timeout;
+        EXPECT_EQ(r.error().message,
+                  "scene.json: tools[0].timeout_ms must be an integer from 1000 to 120000")
+            << timeout;
     }
 }
 

@@ -17,7 +17,7 @@ wisp_component(
          src/scene_runtime.cpp src/scene_runtime_lua.cpp src/timer_set.cpp src/minute_ticker.cpp
          src/bind_timer.cpp src/bind_device.cpp src/bind_log.cpp src/bind_scene.cpp
          src/bind_store.cpp src/bind_http.cpp src/bind_power.cpp src/bind_notify.cpp
-         src/bind_sensor.cpp src/bind_files.cpp src/bind_json.cpp src/lua_task.cpp
+         src/bind_sensor.cpp src/bind_files.cpp src/bind_json.cpp src/bind_tools.cpp src/lua_task.cpp
          src/lua_json.cpp src/scene_data.cpp src/check_build.cpp src/ui_inspector.cpp src/ui_tree.cpp
          src/dir_watcher.cpp src/scene_schedule.cpp
     INCLUDE_DIRS include

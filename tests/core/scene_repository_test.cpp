@@ -288,7 +288,7 @@ TEST(SceneRepository, RejectsDeeplyNestedManifest) {
     auto r = f.install(files);
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
-    EXPECT_EQ(r.error().message, "scene.json: nested deeper than 4 levels");
+    EXPECT_EQ(r.error().message, "scene.json: nested deeper than 8 levels");
     EXPECT_FALSE(fs::exists(f.root() / "todo"));
 
     // One already on disk (put there before the cap) is skipped by the

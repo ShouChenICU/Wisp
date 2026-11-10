@@ -21,12 +21,22 @@ constexpr size_t kMaxVersionBytes = 64;
 constexpr size_t kMaxHosts = 16;
 constexpr size_t kMaxHostBytes = 253;
 constexpr int64_t kMaxSchemaVersion = 1000;
-// The manifest needs three levels (permissions.http[]); one more leaves
-// room for a future field. Parsing recurses once per level, and the
-// storage worker parses every manifest at boot on a stack of a few KB
+// The manifest needs three levels (permissions.http[]), plus one more for
+// headroom, plus up to four more for a tool's "parameters" JSON-Schema
+// shape (tools[].parameters.properties.<name>.type is 4 levels below
+// "parameters" itself). Parsing recurses once per level, and the storage
+// worker parses every manifest at boot on a stack of a few KB
 // (wisp/core/storage_worker.hpp): without a cap, a package with a deeply
-// nested unknown field would overflow it on every boot.
-constexpr uint8_t kMaxManifestDepth = 4;
+// nested unknown field would overflow it on every boot; 8 levels of
+// recursion is still trivially cheap on that stack.
+constexpr uint8_t kMaxManifestDepth = 8;
+// ^[a-z][a-z0-9_]{0,31}$, so 1-32 bytes.
+constexpr size_t kMaxToolNameBytes = 32;
+constexpr size_t kMinToolDescriptionCodePoints = 1;
+constexpr size_t kMaxToolDescriptionCodePoints = 512;
+constexpr int64_t kMinToolTimeoutMs = 1000;
+constexpr int64_t kMaxToolTimeoutMs = 120000;
+constexpr uint32_t kDefaultToolTimeoutMs = 30000;
 
 Result<SceneManifest> invalid(const std::string& what) {
     return Result<SceneManifest>::err(ErrorCode::InvalidArgument, "scene.json: " + what);
@@ -195,6 +205,36 @@ bool valid_host(std::string_view h) {
     return true;
 }
 
+// ^[a-z][a-z0-9_]{0,31}$ (agent-tools spec 5.1).
+bool valid_tool_name(std::string_view name) {
+    if (name.empty() || name.size() > kMaxToolNameBytes) {
+        return false;
+    }
+    if (name[0] < 'a' || name[0] > 'z') {
+        return false;
+    }
+    for (size_t i = 1; i < name.size(); ++i) {
+        const char c = name[i];
+        if (!(is_digit(c) || (c >= 'a' && c <= 'z') || c == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The number of Unicode code points in `s`, which must already be valid
+// UTF-8: counts the bytes that start a sequence (everything but a
+// continuation byte, 10xxxxxx).
+size_t count_code_points(std::string_view s) {
+    size_t n = 0;
+    for (char c : s) {
+        if ((static_cast<uint8_t>(c) & 0xC0) != 0x80) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 // Reads an optional string field into `out`. False if it is present but not
 // a string.
 bool string_field(const Value& root, std::string_view key, std::string& out, bool& present) {
@@ -231,7 +271,7 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
     Result<Value> parsed = from_json(json, kMaxManifestDepth);
     if (!parsed) {
         if (parsed.error().code == ErrorCode::QuotaExceeded) {
-            return invalid("nested deeper than 4 levels");
+            return invalid("nested deeper than " + std::to_string(kMaxManifestDepth) + " levels");
         }
         return invalid("not valid JSON: " + parsed.error().message);
     }
@@ -327,6 +367,68 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
             m.files = FilesWant::Int;
         } else {
             return invalid("files must be \"auto\", \"sd\" or \"int\"");
+        }
+    }
+
+    if (const Value* tools = root.find("tools")) {
+        if (tools->type() != Value::Type::List) {
+            return invalid("tools must be an array");
+        }
+        const List& list = tools->as_list();
+        if (list.size() > kMaxSceneTools) {
+            return invalid("tools lists more than 16 tools");
+        }
+        for (size_t i = 0; i < list.size(); ++i) {
+            const Value& item = list[i];
+            const std::string prefix = "tools[" + std::to_string(i) + "]";
+            if (item.type() != Value::Type::Map) {
+                return invalid(prefix + " must be an object");
+            }
+
+            SceneToolDecl decl;
+            bool field_present = false;
+            if (!string_field(item, "name", decl.name, field_present) || !field_present) {
+                return invalid(prefix + ".name must be a string");
+            }
+            if (!valid_tool_name(decl.name)) {
+                return invalid(prefix + ".name must match ^[a-z][a-z0-9_]{0,31}$");
+            }
+            for (const SceneToolDecl& existing : m.tools) {
+                if (existing.name == decl.name) {
+                    return invalid(prefix + ".name '" + decl.name + "' is already used");
+                }
+            }
+
+            if (!string_field(item, "description", decl.description, field_present) ||
+                !field_present) {
+                return invalid(prefix + ".description must be a string");
+            }
+            const size_t description_cps = count_code_points(decl.description);
+            if (!valid_utf8(decl.description) || description_cps < kMinToolDescriptionCodePoints ||
+                description_cps > kMaxToolDescriptionCodePoints) {
+                return invalid(prefix + ".description must be 1-512 code points of valid UTF-8");
+            }
+
+            if (const Value* params = item.find("parameters")) {
+                if (params->type() != Value::Type::Map) {
+                    return invalid(prefix + ".parameters must be an object");
+                }
+                decl.parameters = to_json(*params);
+                if (decl.parameters.size() > kMaxToolSchemaBytes) {
+                    return invalid(prefix + ".parameters is larger than 4096 bytes serialized");
+                }
+            }
+
+            decl.timeout_ms = kDefaultToolTimeoutMs;
+            if (const Value* timeout = item.find("timeout_ms")) {
+                if (timeout->type() != Value::Type::Int || timeout->as_int() < kMinToolTimeoutMs ||
+                    timeout->as_int() > kMaxToolTimeoutMs) {
+                    return invalid(prefix + ".timeout_ms must be an integer from 1000 to 120000");
+                }
+                decl.timeout_ms = static_cast<uint32_t>(timeout->as_int());
+            }
+
+            m.tools.push_back(std::move(decl));
         }
     }
 

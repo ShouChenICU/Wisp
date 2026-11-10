@@ -109,6 +109,7 @@ int install(lua_State* L) {
     detail::install_sensor(L, 1);
     detail::install_files(L, 1);
     detail::install_json(L, 1);
+    detail::install_tools(L, 1);
     return 0;
 }
 

@@ -1374,6 +1374,9 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason)
     api.notifications = deps_.notifications;
     api.scene_id = s.id;
     api.scene_name = s.name;
+    for (const core::SceneToolDecl& t : s.package->manifest.tools) {
+        api.tool_names.push_back(t.name);
+    }
     if (deps_.http != nullptr) wire_http(s);
     if (deps_.sensors != nullptr) wire_sensors(s);
     if (deps_.files != nullptr) wire_files(s);
