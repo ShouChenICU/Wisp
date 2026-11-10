@@ -310,7 +310,7 @@ export default {
   'models.err_sample_rate': 'サンプルレートは {min} から {max} の整数で指定してください。',
   'models.speed': '話速',
   'models.speed_ph': '例：1.0',
-  'models.speed_hint': '読み上げ速度の倍率（{min} 〜 {max}）。空欄はプラットフォームの既定値を使います。',
+  'models.speed_hint': '読み上げ速度の倍率（{min} 〜 {max}）。「既定に戻す」でプラットフォームの既定値を使います。',
   'models.fetch': '自動取得',
   'models.fetch_label': 'プラットフォームからモデル一覧を取得',
   'models.voice_pick': '声を選択',

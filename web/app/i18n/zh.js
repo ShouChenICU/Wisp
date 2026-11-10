@@ -310,7 +310,7 @@ export default {
   'models.err_sample_rate': '采样率需为 {min} 到 {max} 之间的整数。',
   'models.speed': '语速',
   'models.speed_ph': '例如 1.0',
-  'models.speed_hint': '朗读语速的倍率，{min} 到 {max} 之间；留空使用平台默认值。',
+  'models.speed_hint': '朗读语速的倍率，{min} 到 {max} 之间；点“恢复默认”使用平台默认值。',
   'models.fetch': '自动获取',
   'models.fetch_label': '从平台获取模型列表',
   'models.voice_pick': '请选择音色',
