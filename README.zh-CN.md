@@ -115,7 +115,7 @@ Wisp 通过 OpenAI 兼容接口调用模型，所以对话、语音识别和语�
 # 在用来跑模型的机器上（macOS 或 Linux；Windows 用 install.ps1）
 curl -fsSL https://raw.githubusercontent.com/nyosegawa/speech.cpp/main/install.sh | sh
 speech models                      # 列出可下载的模型
-speech serve --host 0.0.0.0 qwen3-tts-0.6b qwen3-asr-0.6b
+speech serve qwen3-tts-0.6b qwen3-asr-0.6b --host 0.0.0.0
 ```
 
 第一次运行会下载模型。之后在管理后台的"模型"页：

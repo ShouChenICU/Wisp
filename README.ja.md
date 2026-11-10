@@ -117,7 +117,7 @@ Wisp は OpenAI 互換 API でモデルを呼び出すので、チャット、�
 # モデルを動かすマシンで（macOS または Linux。Windows は install.ps1）
 curl -fsSL https://raw.githubusercontent.com/nyosegawa/speech.cpp/main/install.sh | sh
 speech models                      # ダウンロードできるモデルの一覧
-speech serve --host 0.0.0.0 qwen3-tts-0.6b qwen3-asr-0.6b
+speech serve qwen3-tts-0.6b qwen3-asr-0.6b --host 0.0.0.0
 ```
 
 初回の実行でモデルがダウンロードされます。その後、管理画面の「モデル」ページで：

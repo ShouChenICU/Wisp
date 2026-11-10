@@ -117,7 +117,7 @@ Wisp talks to its models over OpenAI-compatible APIs, so chat, speech recognitio
 # on the machine that will serve the models (macOS or Linux; Windows has install.ps1)
 curl -fsSL https://raw.githubusercontent.com/nyosegawa/speech.cpp/main/install.sh | sh
 speech models                      # list the models it can download
-speech serve --host 0.0.0.0 qwen3-tts-0.6b qwen3-asr-0.6b
+speech serve qwen3-tts-0.6b qwen3-asr-0.6b --host 0.0.0.0
 ```
 
 The first run downloads the models. Then, on the admin console's Models page:
