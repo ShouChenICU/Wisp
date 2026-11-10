@@ -100,20 +100,20 @@
 
 ```json
 {"ok":true,"status":200,"final_url":"https://…","content_type":"text/html",
- "headers":{"content-type":"…"},"ref":"r7","total_bytes":183204,
+ "headers":"<data source=\"http:example.com\">content-type: text/html\n…</data>","ref":"r7","total_bytes":183204,
  "offset":0,"returned_bytes":16384,"more":true,"body":"…"}
 ```
 
-- `headers` 的名一律小写，重复的头用 `, ` 连接，只返回前 32 个；
+- `headers` 是一个字符串：每行 `name: value`，名一律小写，重复的头用 `, ` 连接，只返回前 32 个，整体按外部内容包装（7.1）；
 - 截断按 UTF-8 字符边界向前取整，`returned_bytes` 是实际字节数；
 - 内容类型不是文本（`text/*`、`*json*`、`*xml*`、`*javascript*`、`application/x-www-form-urlencoded` 以外）时不返回 `body`，只给大小与类型；要保存二进制内容用 `lua.run` 里的 `wisp.http.download`；
 - 响应体整份最多收 1 MiB（PSRAM），超出时停止接收，结果带 `"body_truncated":true`，前 1 MiB 照常可读；
 - `body` 用 `scene_data()` 的同一套包装标注来源 `<data source="http:<host>">…</data>`，作为不可信内容（4a spec 6.3）；
-- 失败：`{"ok":false,"error":<code>}`，code 为 `bad_url`、`too_large`（请求超限）、`dns`、`connect`、`tls`、`timeout`、`offline`、`cancelled`、`other`、`no_ref`。
+- 失败：`{"ok":false,"error":<code>}`，code 为 `bad_url`、`bad_header`（头的名或值含非法字符）、`too_large`（请求超限）、`dns`、`connect`、`tls`、`timeout`、`offline`、`cancelled`、`other`、`no_ref`。
 
 系统说明行：`访问 example.com`（只有主机名）。
 
-`as: "text"`：删除 `<script>`、`<style>`、`<noscript>` 与注释的全部内容，块级标签（`p`、`div`、`br`、`li`、`h1`–`h6`、`tr`）换成换行，其余标签去掉；解码 `&amp; &lt; &gt; &quot; &#39; &nbsp;` 和数字实体；连续空白压成一个空格、连续空行压成一个。`total_bytes`、`offset` 都按转换后的文字计。
+`as: "text"`：删除 `<script>`、`<style>`、`<noscript>` 与注释的全部内容，块级标签（`p`、`div`、`br`、`li`、`h1`–`h6`、`tr`）换成换行，其余标签去掉；解码 `&amp; &lt; &gt; &quot; &#39; &nbsp;` 和数字实体；行内连续空白压成一个空格，连续多个空行压成一个空行（保留段落间隔）；`<` 后面不是字母、`/`、`!` 时按普通文字处理。`total_bytes`、`offset` 都按转换后的文字计。
 
 ### 3.2 `net::SceneHttp` 的扩展
 
