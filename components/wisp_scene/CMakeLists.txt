@@ -14,7 +14,8 @@ wisp_component(
          src/collect.cpp src/patch_queue.cpp src/scene_view.cpp src/theme.cpp
          src/widgets.cpp src/scene_view_list.cpp src/scene_view_canvas.cpp
          src/scene_view_media.cpp src/scene_message.cpp src/scene_instance.cpp
-         src/scene_runtime.cpp src/scene_runtime_lua.cpp src/timer_set.cpp src/minute_ticker.cpp
+         src/scene_runtime.cpp src/scene_runtime_lua.cpp
+         src/scene_runtime_tools.cpp src/timer_set.cpp src/minute_ticker.cpp
          src/bind_timer.cpp src/bind_device.cpp src/bind_log.cpp src/bind_scene.cpp
          src/bind_store.cpp src/bind_http.cpp src/bind_power.cpp src/bind_notify.cpp
          src/bind_sensor.cpp src/bind_files.cpp src/bind_json.cpp src/bind_tools.cpp src/lua_task.cpp

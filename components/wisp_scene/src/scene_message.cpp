@@ -8,7 +8,7 @@ const char* message_kind(const msg::Body& body) {
         "hide",       "event",         "list_range",  "http_done", "store_done", "device",
         "clock_set",  "check_sources", "wake",        "restore",   "notify",     "sensor",
         "files_done", "quit",          "check_build", "eval",      "store_dump", "store_set",
-        "lua_run",    "lua_stop"};
+        "lua_run",    "lua_stop",      "tool_call",   "tool_stop"};
     static_assert(std::size(kNames) == std::variant_size_v<msg::Body>);
     return kNames[body.index()];
 }
@@ -32,6 +32,10 @@ void fail_message(SceneMessage& m, const Result<void>& r) {
     if (auto* b = std::get_if<msg::LuaRun>(&m.body)) {
         b->job->finish(r ? Result<LuaRunResult>::err(ErrorCode::Busy, "not handled")
                          : Result<LuaRunResult>::err(r.error().code, r.error().message));
+    }
+    if (auto* b = std::get_if<msg::ToolCall>(&m.body)) {
+        b->job->finish(r ? Result<ToolCallResult>::err(ErrorCode::Busy, "not handled")
+                         : Result<ToolCallResult>::err(r.error().code, r.error().message));
     }
     if (auto* b = std::get_if<msg::CheckSources>(&m.body)) {
         std::lock_guard<os::Mutex> lock(b->job->mu);

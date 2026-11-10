@@ -450,7 +450,10 @@ wisp_test(NAME tools_binding_test SRCS scene/tools_binding_test.cpp
 # lua.run's headless VM (agent-tools spec 4.2).
 wisp_test(NAME scene_run_lua_test SRCS scene/scene_run_lua_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 90)
-foreach(t lua_task_test json_binding_test tools_binding_test)
+# SceneRuntime::call_tool() and headless scenes (agent-tools spec 5.4).
+wisp_test(NAME scene_tools_test SRCS scene/scene_tools_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 90)
+foreach(t lua_task_test json_binding_test tools_binding_test scene_tools_test)
     target_include_directories(${t} PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 endforeach()
 wisp_test(NAME timer_set_test SRCS scene/timer_set_test.cpp LIBS wisp_scene)

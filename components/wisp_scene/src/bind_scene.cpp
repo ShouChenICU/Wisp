@@ -72,7 +72,8 @@ int exit_scene(lua_State* L) {
 }
 
 int state(lua_State* L) {
-    lua_pushstring(L, detail::api_of(L).background ? "background" : "foreground");
+    const SceneApi& api = detail::api_of(L);
+    lua_pushstring(L, api.headless ? "headless" : api.background ? "background" : "foreground");
     return 1;
 }
 

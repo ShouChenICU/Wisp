@@ -99,42 +99,6 @@ const char* to_string(LaunchReason r) {
     return "user";
 }
 
-struct SceneRuntime::Slot {
-    std::string id;
-    std::string name;
-    uint32_t instance = 0;
-    Value args;
-    std::shared_ptr<const core::ScenePackage> package;
-    std::shared_ptr<core::SceneStore> store;
-    // Null once the scene faulted (in front: its error panel is up).
-    os::LargeUnique<SceneInstance> scene;
-    // scene.json's "background": going back sends it there.
-    bool declares_background = false;
-    // In the background: no view, its batches are dropped.
-    bool background = false;
-    // scene.on_show() ran and on_hide() has not.
-    bool shown = false;
-    // os::now_ms() when it last left the front (0: never in front), and
-    // when it last went to the background.
-    uint64_t last_front_ms = 0;
-    uint64_t background_since_ms = 0;
-    // Orders scenes that left the front in the same millisecond (and
-    // those never in front): taken each time it goes to the background.
-    uint64_t seq = 0;
-    // Starting from a boot launch: a failure is a RestoreFailed notice.
-    bool restoring = false;
-    // What wisp.scene.launch() reports.
-    LaunchReason reason = LaunchReason::User;
-    MinuteTicker ticker;
-    // Its downloads in flight (wire_files()); shared with the jobs.
-    std::shared_ptr<FilesGate> files_gate;
-    // What the scene last saw, for "battery" and "lang".
-    bool has_battery = false;
-    int64_t battery = 0;
-    bool charging = false;
-    std::string lang;
-};
-
 struct SceneRuntime::UiSide {
     std::unique_ptr<SceneView> view;
     uint32_t instance = 0;
@@ -726,6 +690,8 @@ void SceneRuntime::run() {
         run_delayed();
         if (front_ != nullptr) enforce_limits(false);
         run_scene_clock();
+        tool_clock();
+        tool_settle();
         persist_background();
     }
 }
@@ -892,11 +858,21 @@ void SceneRuntime::handle(SceneMessage& m) {
         lua_start(b->job);
     } else if (auto* b = std::get_if<msg::LuaStop>(&body)) {
         lua_stop(b->job.get(), "cancelled", "cancelled");
+    } else if (auto* b = std::get_if<msg::ToolCall>(&body)) {
+        tool_call(b->job);
+    } else if (auto* b = std::get_if<msg::ToolStop>(&body)) {
+        tool_stop(b->job.get());
     } else if (std::holds_alternative<msg::Quit>(body)) {
         // First: the scenes closed here stay on the background list
         // (persist_background() writes nothing from now on).
         quit_ = true;
         lua_stop(nullptr, "cancelled", "the scene runtime stopped");
+        while (!tool_runs_.empty()) {
+            ToolCallResult r;
+            r.error = "cancelled";
+            r.message = "the scene runtime stopped";
+            tool_end(tool_runs_.front().job.get(), std::move(r));
+        }
         for (uint32_t instance : instances())
             if (Slot* s = find(instance)) close_slot(*s);
     }
@@ -911,7 +887,7 @@ void SceneRuntime::notify(const std::string& id, const std::string& note_id) {
         begin_open(id, {}, LaunchReason::Notification, false, nullptr, false, note_id);
         return;
     }
-    if (s->background) {
+    if (s->background || s->headless) {
         const uint32_t instance = s->instance;
         // As an open of it would: the opens still on their way lose.
         supersede_loads({});
@@ -935,7 +911,7 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
         // stays). Riding on a user open, it is not lost if a later open
         // supersedes that one (PendingLoad).
         auto coming = std::find_if(loading_.begin(), loading_.end(),
-                                   [&](const PendingLoad& p) { return p.id == id; });
+                                   [&](const PendingLoad& p) { return p.id == id && !p.headless; });
         if (coming != loading_.end() && coming->reason != LaunchReason::Boot) {
             coming->then_boot = true;
             coming->restore = coming->restore || restore;
@@ -944,7 +920,7 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
             if (waiter) waiter->finish(Result<void>::ok());
             return;
         }
-    } else if (running != nullptr && running->background) {
+    } else if (running != nullptr && (running->background || running->headless)) {
         // Nothing to load; the user opens still on their way were
         // superseded by this one.
         supersede_loads({});
@@ -982,7 +958,15 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
         }
     }
     loading_.push_back(std::move(load));
+    if (!queue_load(id, instance, reason, std::move(args), waiter)) {
+        std::erase_if(loading_, [&](const PendingLoad& p) { return p.instance == instance; });
+        WLOG_W(kTag, "%s: not opened: storage worker busy", id.c_str());
+        if (waiter) waiter->finish(Result<void>::err(ErrorCode::Busy, "storage worker busy"));
+    }
+}
 
+bool SceneRuntime::queue_load(const std::string& id, uint32_t instance, LaunchReason reason,
+                              Value args, std::shared_ptr<SceneWaiter> waiter) {
     std::shared_ptr<Link> link = link_;
     core::StorageWorker& worker = deps_.worker;
     core::SceneStoreDeps store_deps{
@@ -993,8 +977,8 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
             if (link->rt != nullptr) link->rt->schedule(ms, std::move(cb));
         }};
     core::SceneRepository& repo = deps_.repo;
-    bool queued = worker.submit([link, &repo, store_deps, id, instance, reason,
-                                 args = std::move(args), waiter]() mutable {
+    const bool queued = worker.submit([link, &repo, store_deps, id, instance, reason,
+                                       args = std::move(args), waiter]() mutable {
         msg::Open open;
         open.args = std::move(args);
         open.done = waiter;
@@ -1021,11 +1005,7 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
         if (!post_scene_message(*link->rt, std::move(m)))
             WLOG_W(kTag, "%s: loaded, but the scene queue is full", id.c_str());
     });
-    if (!queued) {
-        std::erase_if(loading_, [&](const PendingLoad& p) { return p.instance == instance; });
-        WLOG_W(kTag, "%s: not opened: storage worker busy", id.c_str());
-        if (waiter) waiter->finish(Result<void>::err(ErrorCode::Busy, "storage worker busy"));
-    }
+    return queued;
 }
 
 void SceneRuntime::finish_open(SceneMessage& m) {
@@ -1045,6 +1025,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
     }
     const PendingLoad load = *pending;
     loading_.erase(pending);
+    if (load.headless) return finish_headless(m, load);
     const std::string id = m.scene_id;
     const LaunchReason reason = load.reason;
     const bool boot = reason == LaunchReason::Boot;
@@ -1122,12 +1103,14 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         // Spec 3.5: room for the scene about to open.
         enforce_limits(true);
     }
-    if (slots_.size() > config_.max_background) {
+    const size_t visible_slots = static_cast<size_t>(std::count_if(
+        slots_.begin(), slots_.end(), [](const os::LargeUnique<Slot>& p) { return !p->headless; }));
+    if (visible_slots > config_.max_background) {
         // Never: the scene in front just left (a boot launch keeps it, but
         // the background had room for one more), and the background keeps
         // to max_background.
         WLOG_E(kTag, "%s: not opened: %u scenes already run", id.c_str(),
-               static_cast<unsigned>(slots_.size()));
+               static_cast<unsigned>(visible_slots));
         open.store->close();
         refused("too many scenes running");
         done(Result<void>::err(ErrorCode::Busy, "too many scenes running"));
@@ -1195,6 +1178,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
 void SceneRuntime::cancel_loads(std::string_view id) {
     list_dirty_ = true;
     std::erase_if(loading_, [&](const PendingLoad& p) { return p.id == id; });
+    tool_loads_dropped();
 }
 
 SceneRuntime::Carried SceneRuntime::supersede_loads(std::string_view id) {
@@ -1207,16 +1191,18 @@ SceneRuntime::Carried SceneRuntime::supersede_loads(std::string_view id) {
                 carried.restore = carried.restore || p.restore;
                 carried.seq = p.seq;
             }
-        } else if (p.reason != LaunchReason::Boot && p.then_boot) {
+        } else if (!p.headless && p.reason != LaunchReason::Boot && p.then_boot) {
             // The boot launch that rode on it carries on alone.
             p.reason = LaunchReason::Boot;
             p.shown = LaunchReason::Boot;
             p.then_boot = false;
         }
     }
+    // A headless load of another scene is no open the user superseded.
     std::erase_if(loading_, [&](const PendingLoad& p) {
-        return (!id.empty() && p.id == id) || p.reason != LaunchReason::Boot;
+        return (!id.empty() && p.id == id) || (p.reason != LaunchReason::Boot && !p.headless);
     });
+    tool_loads_dropped();
     return carried;
 }
 
@@ -1237,11 +1223,17 @@ void SceneRuntime::enforce_limits(bool opening, const Slot* coming) {
     // The common case, with nothing to close, allocates nothing: this runs
     // before every message while a scene is in front.
     const size_t reserve = config_.vm.memory_bytes;
-    const size_t room = config_.vm_budget > reserve ? config_.vm_budget - reserve : 0;
     bool front = opening;
     size_t count = 0;
     size_t bytes = 0;
+    // A headless scene is never evicted, but what its VM holds is not the
+    // background's to have (file header).
+    size_t headless = 0;
     for (const auto& s : slots_) {
+        if (s->headless) {
+            headless += s->scene ? s->scene->vm_bytes() : 0;
+            continue;
+        }
         if (!s->background || s.get() == coming) {
             front = true;
             continue;
@@ -1249,6 +1241,8 @@ void SceneRuntime::enforce_limits(bool opening, const Slot* coming) {
         ++count;
         bytes += s->scene ? s->scene->vm_bytes() : 0;
     }
+    const size_t budget = config_.vm_budget > headless ? config_.vm_budget - headless : 0;
+    const size_t room = budget > reserve ? budget - reserve : 0;
     if (count <= config_.max_background && (!front || bytes <= room)) return;
 
     std::vector<SlotInfo> infos;
@@ -1257,7 +1251,7 @@ void SceneRuntime::enforce_limits(bool opening, const Slot* coming) {
         infos.push_back({s->id, false, s->last_front_ms, s->scene ? s->scene->vm_bytes() : 0});
     }
     for (const Eviction& e :
-         pick_evictions(infos, front, config_.max_background, config_.vm_budget, reserve)) {
+         pick_evictions(infos, front, config_.max_background, budget, reserve)) {
         Slot* s = find_id(e.id);
         if (s != nullptr && s->background) evict(*s, e.memory);
     }
@@ -1346,7 +1340,8 @@ void SceneRuntime::show_view(Slot& s) {
     ui_view_.store(token);
 }
 
-SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason) {
+SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason,
+                                           const VmLimits* limits) {
     auto& open = std::get<msg::Open>(m.body);
     auto slot = os::make_large<Slot>();
     if (!slot) return nullptr;
@@ -1357,7 +1352,7 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason)
     s.package = open.package;
     // Allocated before the store and the arguments move in: on failure the
     // caller still holds the store and closes it.
-    s.scene = os::make_large<SceneInstance>(s.id, s.package, config_.vm);
+    s.scene = os::make_large<SceneInstance>(s.id, s.package, limits ? *limits : config_.vm);
     if (!s.scene) return nullptr;
     s.args = std::move(open.args);
     s.store = std::move(open.store);
@@ -1377,6 +1372,10 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason)
     for (const core::SceneToolDecl& t : s.package->manifest.tools) {
         api.tool_names.push_back(t.name);
     }
+    // Only records it (lua_task.hpp: never destroy the VM in here).
+    api.task_done = [this, instance = s.instance](uint32_t task, TaskOutcome outcome) {
+        tool_task_done(instance, task, std::move(outcome));
+    };
     if (deps_.http != nullptr) wire_http(s);
     if (deps_.sensors != nullptr) wire_sensors(s);
     if (deps_.files != nullptr) wire_files(s);
@@ -1659,7 +1658,14 @@ void SceneRuntime::erase_slot(Slot& s) {
 
 void SceneRuntime::fault(Slot& s, const ScriptError& err) {
     const std::string text = err.text();
-    if (s.scene) s.scene->batch().clear();
+    // Taken before the tasks are cancelled below, answered once the state
+    // is Error.
+    std::optional<ToolEnding> call =
+        tool_abort(s.instance, err.fault == ScriptFault::Timeout ? "timeout" : "scene_error", text);
+    if (s.scene) {
+        s.scene->batch().clear();
+        s.scene->cancel_tasks();
+    }
     release_locks(s);
     if (s.scene) release_sensors(s.scene->api());
     s.scene.reset();  // the VM goes with it, and its timers
@@ -1675,11 +1681,14 @@ void SceneRuntime::fault(Slot& s, const ScriptError& err) {
     set_status(s.id, core::SceneState::Error, text);
     WLOG_E(scene_tag(s.id).c_str(), "%s", text.c_str());
     publish(s.id, "error");
+    tool_answer(std::move(call));
     if (&s != front_) {
         // Spec 3.2: no panel for a scene nobody is looking at, a system
         // notice instead; the slot goes. One that fails while it is being
-        // restored never came up: the restore failed (spec 3.6).
-        notice(s.restoring ? SceneNoticeKind::RestoreFailed : SceneNoticeKind::Faulted, s);
+        // restored never came up: the restore failed (spec 3.6). A headless
+        // one's fault reaches the agent through its call instead.
+        if (!s.headless)
+            notice(s.restoring ? SceneNoticeKind::RestoreFailed : SceneNoticeKind::Faulted, s);
         erase_slot(s);
         return;
     }
@@ -1782,9 +1791,14 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
     // background's limit, as it is leaving it.
     if (front_ != nullptr && front_ != &s) go_back(*front_, nullptr, &s);
     s.background = false;
+    // A headless scene comes forward the same way (file header), and is an
+    // ordinary scene from now on: no idle close.
+    s.headless = false;
+    ++s.idle_gen;
     s.last_front_ms = os::now_ms();
     SceneApi& api = s.scene->api();
     api.background = false;
+    api.headless = false;
     pause_sensors(api, false);
     if (!visible_ && !s.declares_background) api.timers.pause(os::now_ms());
     front_ = &s;
@@ -1814,6 +1828,7 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
 }
 
 void SceneRuntime::close_slot(Slot& s, std::shared_ptr<SceneWaiter> done) {
+    std::optional<ToolEnding> call = tool_abort(s.instance, "cancelled", "the scene closed");
     const bool was_running = s.scene != nullptr;
     if (was_running && s.background && !quit_) {
         // For open_background() (a reinstall closes the scene first).
@@ -1835,7 +1850,10 @@ void SceneRuntime::close_slot(Slot& s, std::shared_ptr<SceneWaiter> done) {
     // After the hooks, so a lock, a request or a subscription on_close
     // takes goes too.
     release_locks(s);
-    if (s.scene) release_sensors(s.scene->api());
+    if (s.scene) {
+        release_sensors(s.scene->api());
+        s.scene->cancel_tasks();
+    }
     s.scene.reset();
     cancel_files(s);
     if (deps_.http != nullptr) deps_.http->cancel_scene(s.id);
@@ -1849,6 +1867,7 @@ void SceneRuntime::close_slot(Slot& s, std::shared_ptr<SceneWaiter> done) {
         set_status(s.id, core::SceneState::Stopped, "");
         publish(s.id, "stopped");
     }
+    tool_answer(std::move(call));
     if (s.store) {
         // A caller of close() is answered once the final flush has run, so
         // it may move the scene's data/ (an install) without a write
@@ -2000,6 +2019,7 @@ uint32_t SceneRuntime::scene_wait_ms() {
         if (minute_ticks(*s)) wait = std::min(wait, s->ticker.next_poll_ms(wall_now(), now));
     }
     wait = std::min(wait, lua_wait_ms(now));
+    wait = std::min(wait, tool_wait_ms(now));
     return static_cast<uint32_t>(std::min<uint64_t>(wait, os::kForever));
 }
 

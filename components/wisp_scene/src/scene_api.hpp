@@ -31,7 +31,8 @@
 //       goes to the background, any other closes.
 //   wisp.scene.exit(): sets exit_requested; the runtime closes the scene
 //       for good once the current message is done.
-//   wisp.scene.state() -> "foreground" | "background" (SceneApi::background).
+//   wisp.scene.state() -> "foreground" | "background" | "headless"
+//       (SceneApi::background, SceneApi::headless).
 //   wisp.scene.launch() -> "user" | "boot" | "notification"
 //       (SceneApi::launch).
 //   wisp.power.keep_screen_on(on) (bind_power.cpp): in the foreground takes
@@ -108,8 +109,8 @@
 //       Ruling: the spec shows main.lua calling this at its top level
 //       (load time), but nothing here requires that -- a call made later
 //       only binds a name already declared, which is harmless, so this
-//       works any time. Task 6 runs `fn` as a task coroutine when
-//       tools.call reaches this scene, through detail::push_tool().
+//       works any time. SceneRuntime::call_tool() runs `fn` as a task
+//       coroutine (SceneInstance::tool(), through detail::push_tool()).
 //
 // Awaitable calls (agent-tools spec 6, lua_task.hpp): in a task coroutine
 // (start_task()), every wisp.http and wisp.files call above may leave out
@@ -230,6 +231,9 @@ struct SceneApi {
     // In the background: no view, and the APIs of spec 3.4 refuse with
     // "not_in_background". Set by the runtime.
     bool background = false;
+    // Headless (agent-tools spec 5.4): `background` is set as well, so the
+    // same APIs refuse; only wisp.scene.state() tells the two apart.
+    bool headless = false;
     // What wisp.scene.launch() reports; a string literal.
     const char* launch = "user";
     // wisp.power.keep_screen_on(): the registry (null: "unavailable"), the
@@ -346,7 +350,8 @@ void install_json(lua_State* L, int wisp);
 void install_tools(lua_State* L, int wisp);
 // Pushes the function wisp.tools.register bound to `name` and returns
 // true; false (nothing pushed) if no scene code has registered that name
-// yet ("not_registered", task 6).
+// yet (SceneRuntime::call_tool()'s "not_registered"). Raises only on a
+// memory error: call it inside Vm::call().
 bool push_tool(lua_State* L, std::string_view name);
 // Keeps the function (or waiting task thread) at `cb` as a wisp.files
 // callback and returns its id.

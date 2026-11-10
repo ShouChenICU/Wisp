@@ -129,6 +129,9 @@ void SceneSection::render(Row& row) {
             lv_obj_set_style_bg_opa(row.chip, LV_OPA_COVER, 0);
             break;
         }
+        // A headless scene only runs the agent's calls and has nothing to
+        // show; to the user it is as if it were not running.
+        case core::SceneState::Headless:
         case core::SceneState::Stopped:
             set_text_if_changed(row.status, row.entry.version.c_str());
             set_text_color_if_changed(row.status, kColorDimText);

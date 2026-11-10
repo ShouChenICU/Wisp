@@ -1,7 +1,10 @@
 // Task coroutines (lua_task.hpp; agent-tools spec 6).
 //
 // Two registry tables hold the live tasks: id -> thread and thread -> id
-// (current_task() reads the second). A task's slice and result limit live
+// (current_task() reads the second). The second has weak keys, and a task
+// cancelled on its own (cancel_task()) stays in it with id 0: no longer a
+// task, still refused to coroutine.resume and coroutine.close for as long
+// as the script holds its thread. A task's slice and result limit live
 // in its SceneApi::TaskSlot. A binding that waits registers the task's
 // thread in its own callback table where a function would go and yields
 // the address of kWaitKey, which no script can produce: a yield that does
@@ -18,6 +21,7 @@
 #include "wisp/scene/lua_task.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,26 +44,39 @@ bool push_table(lua_State* L, const void* key) {
     return false;
 }
 
-// The id of the task whose thread is at `idx`, 0 if it is none (or has
-// ended). Non-raising; needs two free stack slots.
-uint32_t task_of(lua_State* L, int idx) {
+// What the ids table holds for the thread at `idx`: its id, 0 for a task
+// cancelled on its own, -1 for anything else. Non-raising; needs two free
+// stack slots.
+int64_t id_entry(lua_State* L, int idx) {
     idx = lua_absindex(L, idx);
-    if (!push_table(L, &kTaskIdsKey)) return 0;
+    if (!push_table(L, &kTaskIdsKey)) return -1;
     lua_pushvalue(L, idx);
     lua_rawget(L, -2);
-    const uint32_t id = lua_isinteger(L, -1) ? static_cast<uint32_t>(lua_tointeger(L, -1)) : 0;
+    const int64_t id = lua_isinteger(L, -1) ? static_cast<int64_t>(lua_tointeger(L, -1)) : -1;
     lua_pop(L, 2);
     return id;
 }
 
-// Removes task `id` from both registry tables. Non-raising: both keys are
-// set to nil, which never allocates.
-void forget(lua_State* L, uint32_t id) {
+// The id of the task whose thread is at `idx`, 0 if it is none (or has
+// ended, or was cancelled). Non-raising; needs two free stack slots.
+uint32_t task_of(lua_State* L, int idx) {
+    const int64_t id = id_entry(L, idx);
+    return id > 0 ? static_cast<uint32_t>(id) : 0;
+}
+
+// Removes task `id` from both registry tables; with `keep_refused` its
+// thread stays in the ids table as 0 (cancel_task()). Non-raising: one key
+// is set to nil, the other to nil or to 0 where it already exists, and
+// neither allocates.
+void forget(lua_State* L, uint32_t id, bool keep_refused = false) {
     if (!lua_checkstack(L, 4) || !push_table(L, &kTaskThreadsKey)) return;
     const int threads = lua_gettop(L);
     if (lua_rawgeti(L, threads, id) == LUA_TTHREAD && push_table(L, &kTaskIdsKey)) {
         lua_pushvalue(L, threads + 1);
-        lua_pushnil(L);
+        if (keep_refused)
+            lua_pushinteger(L, 0);
+        else
+            lua_pushnil(L);
         lua_rawset(L, -3);
     }
     lua_pushnil(L);
@@ -178,6 +195,13 @@ int start_entry(lua_State* L) {
         if (lua_rawgetp(L, LUA_REGISTRYINDEX, key) == LUA_TTABLE) continue;
         lua_pop(L, 1);
         lua_newtable(L);
+        if (key == &kTaskIdsKey) {
+            // Weak keys: a cancelled thread the script no longer holds goes.
+            lua_createtable(L, 0, 1);
+            lua_pushliteral(L, "k");
+            lua_setfield(L, -2, "__mode");
+            lua_setmetatable(L, -2);
+        }
         lua_pushvalue(L, -1);
         lua_rawsetp(L, LUA_REGISTRYINDEX, key);
     }
@@ -252,6 +276,21 @@ void cancel_tasks(Vm& vm) {
     for (const auto& t : tasks) done(t.id, failed({ScriptFault::Runtime, "", 0, "cancelled"}));
 }
 
+void cancel_task(Vm& vm, uint32_t id) {
+    lua_State* L = vm.L();
+    SceneApi* api = detail::find_api(L);
+    if (api == nullptr) return;
+    const SceneApi::TaskSlot* slot = slot_of(*api, id);
+    if (slot == nullptr) return;
+    drop_wait(L, *api, *slot);
+    forget(L, id, true);
+    api->tasks.erase(std::remove_if(api->tasks.begin(), api->tasks.end(),
+                                    [id](const SceneApi::TaskSlot& s) { return s.id == id; }),
+                     api->tasks.end());
+    TaskDone done = api->task_done;
+    if (done) done(id, failed({ScriptFault::Runtime, "", 0, "cancelled"}));
+}
+
 uint32_t current_task(lua_State* L) {
     if (!lua_checkstack(L, 3)) return 0;
     lua_pushthread(L);
@@ -261,7 +300,7 @@ uint32_t current_task(lua_State* L) {
 }
 
 bool is_task_thread(lua_State* L, int idx) {
-    return lua_type(L, idx) == LUA_TTHREAD && lua_checkstack(L, 2) && task_of(L, idx) != 0;
+    return lua_type(L, idx) == LUA_TTHREAD && lua_checkstack(L, 2) && id_entry(L, idx) >= 0;
 }
 
 namespace detail {

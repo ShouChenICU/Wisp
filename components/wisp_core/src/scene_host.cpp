@@ -10,6 +10,8 @@ const char* to_string(SceneState s) {
             return "running";
         case SceneState::Background:
             return "background";
+        case SceneState::Headless:
+            return "headless";
         case SceneState::Error:
             return "error";
     }

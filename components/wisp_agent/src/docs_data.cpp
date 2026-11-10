@@ -284,9 +284,10 @@ as a message of its own, within the usual 200 ms:
 - `scene.on_show()` and `scene.on_hide()`: the scene's view appears or goes (it opens,
   the screen turns on or off, it comes back from or goes to the background).
 - `scene.on_close()`: the scene is closing; its store is flushed after it.
-- `scene.on_state(state)`: the scene is now `"foreground"` or `"background"`. It
-  is called when the scene first opens (with the state it opened in) and on every
-  move between the two, never on a close.
+- `scene.on_state(state)`: the scene is now `"foreground"` or `"background"`, or
+  `"headless"` when it was started without a view only to run a call of one of its
+  tools. It is called when the scene first opens (with the state it opened in) and
+  on every move between them, never on a close.
 - `scene.on_notification(id)`: the user tapped the scene's notification `id`. It is
   called once the scene is in front: one in the background comes forward first, and
   one that is not running is opened first (`wisp.scene.launch()` is then
@@ -486,7 +487,7 @@ hooks).
 - `wisp.scene.exit()`: always closes the scene completely (`on_hide`, `on_close`).
 - `wisp.scene.args()`: the table of arguments the scene was opened with (`{}` for
   none).
-- `wisp.scene.state()`: `"foreground"` or `"background"`.
+- `wisp.scene.state()`: `"foreground"`, `"background"` or `"headless"`.
 - `wisp.scene.launch()`: why the scene was started: `"user"`, `"boot"` (restored
   in the background after a restart) or `"notification"`.
 )wispdoc"},

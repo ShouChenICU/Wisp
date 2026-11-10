@@ -82,11 +82,20 @@ Result<uint32_t> start_task(Vm& vm, const Value* args, uint32_t slice_ms, size_t
 // a faulted VM; a host calls it before it destroys a VM that ran tasks.
 void cancel_tasks(Vm& vm);
 
+// Drops task `id` alone, as cancel_tasks() does, while the VM goes on (a
+// host that stops waiting for one task): task_done gets "cancelled" unless
+// the task already ended. Its thread stays refused to coroutine.resume and
+// coroutine.close (is_task_thread() stays true) for as long as the script
+// holds it, so a script that kept coroutine.running() cannot resume it
+// past its cancelled wait. Non-raising.
+void cancel_task(Vm& vm, uint32_t id);
+
 // The id of the task coroutine running `L`, 0 when `L` is not one (the main
 // thread, or a coroutine the script made itself).
 uint32_t current_task(lua_State* L);
 
-// True when the value at `idx` is a task thread that has not ended.
+// True when the value at `idx` is a task thread that has not ended, or one
+// cancel_task() cancelled.
 // Non-raising; needs three free stack slots.
 bool is_task_thread(lua_State* L, int idx);
 

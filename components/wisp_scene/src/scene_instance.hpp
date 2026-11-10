@@ -87,6 +87,21 @@ public:
     std::optional<ScriptError> eval(std::string_view lua, uint32_t budget_ms, os::LargeString& out,
                                     bool* fatal);
 
+    // A scene tool call (agent-tools spec 5.2): the function the scene
+    // bound to `name` with wisp.tools.register starts as a task coroutine
+    // (lua_task.hpp) with `args` as its argument, its slices the VM's
+    // exec_ms; the first slice runs now, then the reactive flush. The
+    // task's end goes to SceneApi::task_done. *registered is false (and
+    // nothing ran) when no function is bound to `name`; *task is the
+    // task's id once it started. An error returned is the scene's (a
+    // fault, or the flush), as for any message.
+    std::optional<ScriptError> tool(std::string_view name, const Value& args, bool* registered,
+                                    uint32_t* task);
+    // cancel_task() and cancel_tasks() (lua_task.hpp) on the VM; nothing
+    // before start().
+    void cancel_task(uint32_t id);
+    void cancel_tasks();
+
     // What its VM holds now (0 before start()).
     size_t vm_bytes() const { return vm_ ? vm_->used_bytes() : 0; }
 

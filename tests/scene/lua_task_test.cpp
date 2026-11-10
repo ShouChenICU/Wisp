@@ -529,6 +529,52 @@ TEST_F(LuaTask, CancelDropsWaits) {
     EXPECT_EQ(marks, 1);
 }
 
+// One task cancelled while the VM goes on (a scene tool's call timing out):
+// its wait goes, it never resumes, and a script that kept its thread still
+// cannot resume or close it; the other tasks are untouched.
+TEST_F(LuaTask, CancelOneKeepsItRefused) {
+    make();
+    auto a = start(R"(
+_G.T = coroutine.running()
+local e, r = wisp.http.get("https://x/")
+_G.mark()
+)");
+    auto b = start("wisp.sleep(100) return 2");
+    ASSERT_TRUE(a);
+    ASSERT_TRUE(b);
+    ASSERT_EQ(http.size(), 1u);
+    wisp::scene::cancel_task(*vm, a.value());
+    ASSERT_EQ(done.size(), 1u);
+    EXPECT_EQ(done[0].first, a.value());
+    EXPECT_FALSE(done[0].second.ok);
+    ASSERT_TRUE(done[0].second.error);
+    EXPECT_EQ(done[0].second.error->message, "cancelled");
+    // An unknown or ended task: nothing happens.
+    wisp::scene::cancel_task(*vm, a.value());
+    wisp::scene::cancel_task(*vm, 999);
+    EXPECT_EQ(done.size(), 1u);
+    // Its late answer does not resume it.
+    EXPECT_FALSE(wisp::scene::run_http_callback(*vm, http[0].first, status(200)));
+    EXPECT_EQ(marks, 0);
+    // The script still holds the thread: it stays refused.
+    EXPECT_FALSE(run(R"(
+local ok, e = pcall(coroutine.resume, _G.T)
+assert(not ok and e:find("cannot resume a task"), e)
+ok, e = pcall(coroutine.close, _G.T)
+assert(not ok and e:find("cannot close a task"), e)
+)"));
+    EXPECT_EQ(marks, 0);
+    // The other task goes on.
+    now += 100;
+    fire_timers();
+    ASSERT_EQ(done.size(), 2u);
+    EXPECT_EQ(done[1].first, b.value());
+    EXPECT_EQ(std::string(done[1].second.json), "2");
+    wisp::scene::cancel_tasks(*vm);
+    EXPECT_EQ(done.size(), 2u);
+    EXPECT_FALSE(vm->faulted());
+}
+
 TEST_F(LuaTask, ResultTooLarge) {
     make();
     ASSERT_TRUE(start(R"(return string.rep("a", 100))", nullptr, 0, 16));

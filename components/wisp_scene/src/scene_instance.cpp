@@ -6,6 +6,7 @@
 #include <variant>
 
 #include "wisp/scene/lua_json.hpp"
+#include "wisp/scene/lua_task.hpp"
 #include "wisp/scene/reactive.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/scene/schema.hpp"
@@ -136,6 +137,13 @@ int refresh_all(lua_State* L) {
     lua_getfield(L, -1, "refresh_all");
     lua_call(L, 0, 0);
     return 0;
+}
+
+// push_tool_fn(&name) -> the function bound to name, or nil.
+int push_tool_fn(lua_State* L) {
+    const auto* name = static_cast<const std::string_view*>(lua_touserdata(L, 1));
+    if (!detail::push_tool(L, *name)) lua_pushnil(L);
+    return 1;
 }
 
 std::optional<std::string_view> file_of(const core::ScenePackage& pkg, std::string_view path) {
@@ -342,6 +350,43 @@ std::optional<ScriptError> SceneInstance::eval(std::string_view lua, uint32_t bu
         return flushed;
     }
     return err;
+}
+
+std::optional<ScriptError> SceneInstance::tool(std::string_view name, const Value& args,
+                                               bool* registered, uint32_t* task) {
+    *registered = false;
+    *task = 0;
+    lua_State* L = vm_->L();
+    if (!lua_checkstack(L, 2)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
+    lua_pushcfunction(L, push_tool_fn);
+    lua_pushlightuserdata(L, &name);
+    if (auto err = vm_->call(1, 1)) return err;
+    if (lua_type(L, -1) != LUA_TFUNCTION) {
+        lua_pop(L, 1);
+        return std::nullopt;
+    }
+    *registered = true;
+    Result<uint32_t> started = start_task(*vm_, &args, 0, kEvalResultMaxBytes);
+    if (!started) {
+        const ErrorCode code = started.error().code;
+        const ScriptFault fault = code == ErrorCode::Timeout    ? ScriptFault::Timeout
+                                  : code == ErrorCode::NoMemory ? ScriptFault::Memory
+                                                                : ScriptFault::Runtime;
+        return ScriptError{fault, "", 0, started.error().message};
+    }
+    *task = started.value();
+    // The first slice's own outcome went to task_done; a fault it left is
+    // the scene's as well.
+    if (vm_->faulted()) return vm_->fault_report(package_->manifest.entry);
+    return flush_reactive(*vm_);
+}
+
+void SceneInstance::cancel_task(uint32_t id) {
+    if (vm_) scene::cancel_task(*vm_, id);
+}
+
+void SceneInstance::cancel_tasks() {
+    if (vm_) scene::cancel_tasks(*vm_);
 }
 
 std::optional<ScriptError> SceneInstance::refresh() {
