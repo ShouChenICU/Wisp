@@ -43,7 +43,7 @@ endif()
 
 # The admin web UI (connectivity spec 2.3): tools/pack_assets.py packs web/
 # into wisp_web.wpak (failing the build over the pack's 256 KiB or the
-# 150 KiB gzip budget), which is linked into the app image, 4-byte aligned,
+# 170 KiB gzip budget), which is linked into the app image, 4-byte aligned,
 # as _binary_wisp_web_pack_start/_end. The web page and the firmware are
 # thus always the same version, and switch OTA slots together. The pack
 # depends on every file and directory under web/: deleting or renaming a
@@ -63,7 +63,7 @@ idf_build_get_property(_wisp_python PYTHON)
 add_custom_command(
     OUTPUT ${WISP_WEB_WPAK}
     COMMAND ${_wisp_python} ${CMAKE_CURRENT_LIST_DIR}/../../tools/pack_assets.py ${WISP_WEB_DIR}
-            -o ${WISP_WEB_WPAK} --budget-kb 150
+            -o ${WISP_WEB_WPAK} --budget-kb 170
     DEPENDS ${CMAKE_CURRENT_LIST_DIR}/../../tools/pack_assets.py ${WISP_WEB_FILES}
     COMMENT "Packing web/ into wisp_web.wpak"
     VERBATIM

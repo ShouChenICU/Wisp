@@ -61,6 +61,7 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/latest_save.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::core {
@@ -194,16 +195,44 @@ enum class ModelFailure { None, LimitReached, ActiveProfile, KeyOriginMismatch }
 // "limit_reached", "active_profile", "key_origin_mismatch"; "" for None.
 const char* to_string(ModelFailure failure);
 
+// One voice a speech synthesis model offers (speech.cpp's
+// speech.voices[]). Only `name` is always set.
+struct ModelVoiceInfo {
+    os::LargeString name;
+    os::LargeString language;     // a language code, "" when not given
+    os::LargeString gender;       // as the server words it, "" when not given
+    os::LargeString description;  // shortened when long, "" when not given
+};
+
+// What a /models entry says about its model beyond the id (spec 5.3):
+// speech.cpp's "speech" object (task, sample_rate, languages, voices),
+// OpenRouter's context_length and architecture.input_modalities. Fields
+// the server does not give stay empty, 0 or nullopt.
+struct ModelInfo {
+    os::LargeString id;
+    std::optional<ModelKind> kind;  // speech.task: synthesis -> Tts, recognition -> Asr
+    uint32_t sample_rate = 0;       // Hz of the audio it takes or makes
+    uint32_t context_window = 0;    // tokens
+    std::optional<bool> vision;     // takes images
+    os::LargeVector<os::LargeString> languages;
+    os::LargeVector<ModelVoiceInfo> voices;
+};
+
 // Result of test(). `error` is "" on success, otherwise the category:
 // "dns", "connect", "tls", "timeout", "other" (no request could be made),
 // "no_model_list" (HTTP 404: the platform has no /models) or "http" (any
 // other HTTP status, or a 200 that is not a model list).
+//
+// In Mem::Large: a list can name hundreds of models (AGENTS.md section 8).
+// `details` holds only the models the list says something about beyond
+// their id, in list order.
 struct ModelProbe {
     bool ok = false;
     std::string error;
     int http_status = 0;  // 0 when no HTTP response arrived
     uint32_t latency_ms = 0;
-    std::vector<std::string> models;
+    os::LargeVector<os::LargeString> models;
+    os::LargeVector<ModelInfo> details;
 };
 
 // What a model client needs to send a request: internal, see the header.

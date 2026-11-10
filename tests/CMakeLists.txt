@@ -311,6 +311,7 @@ wisp_test(NAME wifi_service_test SRCS net/wifi_service_test.cpp
 wisp_test(NAME pairing_service_test SRCS net/pairing_service_test.cpp
           LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME model_probe_test SRCS net/model_probe_test.cpp LIBS wisp_net wisp_core wisp_port_sim_os)
+target_compile_definitions(model_probe_test PRIVATE WISP_NET_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/net/fixtures")
 wisp_test(NAME sse_parser_test SRCS net/sse_parser_test.cpp LIBS wisp_net wisp_port_sim_os)
 wisp_test(NAME llm_client_test SRCS net/llm_client_test.cpp LIBS wisp_net wisp_core wisp_port_sim_os
           TIMEOUT 30)

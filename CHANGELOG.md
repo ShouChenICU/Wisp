@@ -2,6 +2,12 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
+## Unreleased
+
+### Features
+
+- Admin page, models: a **Fetch** button next to the model field lists the platform's models (saving the profile first, like "Test connection"), and the model becomes a dropdown of the models of that tab's kind. Values that can be picked are now picked: the TTS voice from the model's voices (name, language and description), the ASR language from the model's languages or a common list (with "Auto" first), each with a "type it in" option; TTS speed is a slider with a reset to the default; the sample rate moved into a folded "Advanced" section and shows the model's rate without filling it in; picking a chat model fills in its context window and image input. The connectivity test returns these per-model `details` (from speech.cpp's `speech` object and OpenRouter-style `context_length`/`architecture`), read into PSRAM and bounded. The web UI's gzip budget is now 170 KiB.
+
 ## 0.3.1 — 2026-11-09
 
 ### Changes

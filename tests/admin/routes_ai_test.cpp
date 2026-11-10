@@ -206,6 +206,43 @@ TEST(AdminAi, CrudActivateAndTestRoutes) {
     EXPECT_EQ(field(okv, "models"), Value(List{Value("m1"), Value("m2")}));
     EXPECT_EQ(field(okv, "latency_ms").type(), Value::Type::Int);
     EXPECT_EQ(f.http.last()->url, "http://192.168.1.9:11434/v1/models");
+    EXPECT_EQ(field(okv, "details"), Value(List{}));
+
+    // What the list says about each model comes along in "details".
+    f.http.next = {
+        .status = 200,
+        .body =
+            R"({"data":[{"id":"tts-1","speech":{"task":"synthesis","sample_rate":24000,)"
+            R"("languages":["zh","en"],"voices":[{"name":"serena","language":"zh",)"
+            R"("gender":"female","description":"Warm \"gentle\" voice."},{"name":"bob"}]}},)"
+            R"({"id":"asr-1","speech":{"task":"recognition","sample_rate":16000}},)"
+            R"({"id":"vlm","context_length":128000,"architecture":{"input_modalities":["image"]}},)"
+            R"({"id":"plain"}]})"};
+    HttpResponse rich = f.srv->handle(authed(token, Post, "/api/v1/ai/profiles/" + id2 + "/test"));
+    ASSERT_EQ(rich.status, 200);
+    Value richv = body_json(rich);
+    EXPECT_EQ(field(richv, "models"),
+              Value(List{Value("tts-1"), Value("asr-1"), Value("vlm"), Value("plain")}));
+    EXPECT_EQ(
+        field(richv, "details"),
+        Value(List{
+            Value(Map{
+                {"id", Value("tts-1")},
+                {"kind", Value("tts")},
+                {"sample_rate", Value(int64_t{24000})},
+                {"languages", Value(List{Value("zh"), Value("en")})},
+                {"voices", Value(List{Value(Map{{"name", Value("serena")},
+                                                {"language", Value("zh")},
+                                                {"gender", Value("female")},
+                                                {"description", Value("Warm \"gentle\" voice.")}}),
+                                      Value(Map{{"name", Value("bob")}})})}}),
+            Value(Map{{"id", Value("asr-1")},
+                      {"kind", Value("asr")},
+                      {"sample_rate", Value(int64_t{16000})}}),
+            Value(Map{{"id", Value("vlm")},
+                      {"context_window", Value(int64_t{128000})},
+                      {"vision", Value(true)}}),
+        }));
 
     struct Case {
         TransportError transport;
@@ -225,7 +262,8 @@ TEST(AdminAi, CrudActivateAndTestRoutes) {
         EXPECT_EQ(field(v, "error"), Value(c.error));
         EXPECT_EQ(field(v, "http_status"), Value(int64_t{c.status}));
         EXPECT_EQ(field(v, "models"), Value(List{}));
-        EXPECT_FALSE(contains(res.body, "upstream-body"));
+        EXPECT_EQ(field(v, "details"), Value(List{}));
+        EXPECT_FALSE(contains(wisp::test::body_text(res), "upstream-body"));
     }
     EXPECT_EQ(f.srv->handle(authed(token, Post, "/api/v1/ai/profiles/00000000/test")).status, 404);
     // Method and path mistakes.
