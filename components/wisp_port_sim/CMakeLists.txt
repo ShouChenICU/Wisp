@@ -38,7 +38,7 @@ find_package(Threads REQUIRED)
 
 wisp_component(
     NAME wisp_port_sim_os
-    SRCS os/os_sim.cpp log_stdout.cpp
+    SRCS os/os_sim.cpp os/isr_queue_sim.cpp log_stdout.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_os wisp_core
     HOST_LIBS Threads::Threads

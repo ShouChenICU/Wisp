@@ -3,10 +3,12 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "wisp/os/isr_queue.hpp"
 #include "wisp/os/queue.hpp"
 #include "wisp/port/sim/sim_os.hpp"
 
@@ -103,6 +105,151 @@ TEST(Queue, DropOldestWhenFull) {
     q.pop(v, 0);
     EXPECT_EQ(v, 3);
 }
+TEST(IsrQueue, FifoAndTimeout) {
+    auto result = IsrQueue::create(2);
+    ASSERT_TRUE(result);
+    auto q = std::move(result.value());
+    EXPECT_TRUE(q->push_from_isr({7, 1, 0x123456789abcdef0ULL}));
+    EXPECT_TRUE(q->push({8, 0, 200}));
+
+    IsrQueueRecord item;
+    ASSERT_TRUE(q->pop(item, 0));
+    EXPECT_EQ(item.source, 7u);
+    EXPECT_EQ(item.value, 1u);
+    EXPECT_EQ(item.timestamp_us, 0x123456789abcdef0ULL);
+    ASSERT_TRUE(q->pop(item, 0));
+    EXPECT_EQ(item.source, 8u);
+    EXPECT_EQ(item.value, 0u);
+    EXPECT_EQ(item.timestamp_us, 200u);
+    EXPECT_FALSE(q->pop(item, 0));
+
+    auto start = now_ms();
+    EXPECT_FALSE(q->pop(item, 30));
+    EXPECT_GE(now_ms() - start, 25u);
+    EXPECT_EQ(q->dropped(), 0u);
+}
+
+TEST(IsrQueue, OverflowIsBounded) {
+    auto result = IsrQueue::create(2);
+    ASSERT_TRUE(result);
+    auto q = std::move(result.value());
+    EXPECT_TRUE(q->push_from_isr({1, 1, 100}));
+    EXPECT_TRUE(q->push({2, 0, 200}));
+    EXPECT_FALSE(q->push_from_isr({3, 1, 300}));
+    EXPECT_FALSE(q->push({4, 0, 400}));
+    EXPECT_EQ(q->dropped(), 2u);
+
+    IsrQueueRecord item;
+    ASSERT_TRUE(q->pop(item, 0));
+    EXPECT_EQ(item.source, 1u);
+    EXPECT_TRUE(q->push_from_isr({5, 1, 500}));  // wrap the ring
+    ASSERT_TRUE(q->pop(item, 0));
+    EXPECT_EQ(item.source, 2u);
+    ASSERT_TRUE(q->pop(item, 0));
+    EXPECT_EQ(item.source, 5u);
+    EXPECT_FALSE(q->pop(item, 0));
+    EXPECT_EQ(q->dropped(), 2u);
+}
+
+TEST(IsrQueue, WakeUnblocksPop) {
+    auto result = IsrQueue::create(1);
+    ASSERT_TRUE(result);
+    auto q = std::move(result.value());
+    Semaphore ready(1, 0);
+    Semaphore finished(1, 0);
+    auto consumer = Task::spawn({}, [&] {
+        IsrQueueRecord item{99, 99, 99};
+        ready.give();
+        EXPECT_FALSE(q->pop(item, kForever));
+        EXPECT_EQ(item.source, 99u);  // wake does not fabricate a record
+        finished.give();
+    });
+    ASSERT_NE(consumer, nullptr);
+    EXPECT_TRUE(ready.take(1000));
+    q->wake();
+    EXPECT_TRUE(finished.take(1000));
+    consumer->join();
+    EXPECT_EQ(q->dropped(), 0u);
+}
+
+TEST(IsrQueue, WakeIsLatchedAndCoalescedWithoutDroppingRecords) {
+    auto result = IsrQueue::create(1);
+    ASSERT_TRUE(result);
+    auto q = std::move(result.value());
+    q->wake();
+    q->wake();
+    EXPECT_TRUE(q->push({3, 1, 42}));
+    IsrQueueRecord item;
+    ASSERT_TRUE(q->pop(item, 0));
+    EXPECT_EQ(item.source, 3u);
+    EXPECT_FALSE(q->pop(item, kForever));  // queued data precedes the pending wake
+    auto start = now_ms();
+    EXPECT_FALSE(q->pop(item, 30));
+    EXPECT_GE(now_ms() - start, 25u);
+}
+
+TEST(IsrQueue, ConcurrentTaskConsumer) {
+    constexpr uint32_t kCount = 1000;
+    auto result = IsrQueue::create(8);
+    ASSERT_TRUE(result);
+    auto q = std::move(result.value());
+    Semaphore batch_consumed(1, 0);
+    std::atomic<bool> records_correct{true};
+    auto consumer = Task::spawn({}, [&] {
+        for (uint32_t i = 0; i < kCount; ++i) {
+            IsrQueueRecord item;
+            if (!q->pop(item, 1000) || item.source != i || item.value != i % 2 ||
+                item.timestamp_us != uint64_t{10000000000} + i) {
+                records_correct = false;
+            }
+            if (i % 8 == 7) batch_consumed.give();
+        }
+    });
+    ASSERT_NE(consumer, nullptr);
+    for (uint32_t i = 0; i < kCount; ++i) {
+        IsrQueueRecord item{i, i % 2, uint64_t{10000000000} + i};
+        EXPECT_TRUE(i % 2 == 0 ? q->push_from_isr(item) : q->push(item));
+        if (i % 8 == 7) EXPECT_TRUE(batch_consumed.take(1000));
+    }
+    consumer->join();
+    EXPECT_TRUE(records_correct.load());
+    EXPECT_EQ(q->dropped(), 0u);
+}
+
+TEST(IsrQueue, RejectsInvalidCapacity) {
+    auto zero = IsrQueue::create(0);
+    ASSERT_FALSE(zero);
+    EXPECT_EQ(zero.error().code, wisp::ErrorCode::InvalidArgument);
+    auto overflow = IsrQueue::create(std::numeric_limits<size_t>::max());
+    ASSERT_FALSE(overflow);
+    EXPECT_EQ(overflow.error().code, wisp::ErrorCode::InvalidArgument);
+}
+
+TEST(IsrQueue, RequiresFastMemoryButDoesNotAllocateWhileInUse) {
+    wisp::port::sim::set_alloc_failure(Mem::Fast, true);
+    auto failed = IsrQueue::create(2);
+    wisp::port::sim::set_alloc_failure(Mem::Fast, false);
+    ASSERT_FALSE(failed);
+    EXPECT_EQ(failed.error().code, wisp::ErrorCode::NoMemory);
+
+    wisp::port::sim::set_alloc_failure(Mem::Large, true);
+    auto result = IsrQueue::create(2);
+    wisp::port::sim::set_alloc_failure(Mem::Large, false);
+    ASSERT_TRUE(result);
+    auto q = std::move(result.value());
+    wisp::port::sim::set_alloc_failure(Mem::Fast, true);
+    wisp::port::sim::set_alloc_failure(Mem::Large, true);
+    bool pushed = q->push_from_isr({1, 1, 12}) && q->push({2, 0, 34});
+    IsrQueueRecord item;
+    bool popped = q->pop(item, 0);
+    q->wake();
+    wisp::port::sim::set_alloc_failure(Mem::Fast, false);
+    wisp::port::sim::set_alloc_failure(Mem::Large, false);
+    EXPECT_TRUE(pushed);
+    EXPECT_TRUE(popped);
+    EXPECT_EQ(item.source, 1u);
+}
+
 TEST(Os, AllocKinds) {
     for (auto m : {Mem::Fast, Mem::Large, Mem::Dma, Mem::DmaLarge}) {
         void* p = alloc(64, m);

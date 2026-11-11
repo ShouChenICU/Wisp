@@ -59,6 +59,19 @@ struct Fixture {
 
 }  // namespace
 
+TEST(ButtonService, BaseButtonDefaultsToPollOnlyWithoutStandbyFallback) {
+    FakeButton device("button.power");
+    const wisp::hal::Button& button = device;
+    EXPECT_EQ(button.input_mode(), wisp::hal::ButtonInputMode::PollOnly);
+    EXPECT_EQ(button.standby_poll_ms(), 0u);
+    wisp::hal::ButtonEdgeSink sink;
+    EXPECT_EQ(sink.context, nullptr);
+    EXPECT_EQ(sink.push, nullptr);
+    auto result = device.set_edge_sink(sink);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().code, wisp::ErrorCode::Unsupported);
+}
+
 TEST(ButtonService, ShortPress) {
     Fixture f;
     f.btn->down = true;
