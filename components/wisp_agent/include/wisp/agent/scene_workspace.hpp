@@ -72,6 +72,8 @@ struct SceneWorkspaceDeps {
     // The check after install() and rollback(); null: no tree, and
     // "stable" is false.
     scene::UiInspector* inspector = nullptr;
+    // Called with the installed manifest after install() or rollback().
+    std::function<void(const core::SceneManifest&)> on_tools_changed{};
 };
 
 struct InstallError {

@@ -31,6 +31,10 @@ Result<void> SceneRuntime::run_check_build(const std::shared_ptr<const core::Sce
     api.store = &store;
     api.scene_id = m.id;
     api.scene_name = m.name;
+    // The declared tools, so wisp.tools.register() finds the names the
+    // manifest lists (bind_tools.cpp); the same set the runtime fills when
+    // it loads a scene for real (scene_runtime.cpp).
+    for (const core::SceneToolDecl& t : m.tools) api.tool_names.push_back(t.name);
     api.http_submit = [](uint32_t, net::SceneHttpRequest) {};
     api.http_fail = [](uint32_t, const char*) {};
     api.files_run = [](uint32_t, FilesJob) {};

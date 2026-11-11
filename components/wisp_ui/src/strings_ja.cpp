@@ -306,6 +306,8 @@ const char* strings_ja(StrId id) {
             return "{} にアクセス";
         case StrId::AgentNoteLuaRun:
             return "Lua スクリプトを実行";
+        case StrId::AgentNoteToolCall:
+            return "「{}」を呼び出し · {}";
         case StrId::AgentConfirmDelete:
             return "Agent がシーン「{}」を削除しようとしています";
         case StrId::AgentConfirmWithData:

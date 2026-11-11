@@ -19,6 +19,7 @@
 #include <new>
 #include <string>
 
+#include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
 
@@ -123,6 +124,36 @@ wisp::Result<void> add_sample_tools(ToolRegistry& reg, const std::shared_ptr<Dep
 }
 
 }  // namespace
+
+TEST(ToolRegistryHeap, SearchResultsStayInLargeMemory) {
+    wisp::agent::ToolIndex index;
+    std::vector<wisp::core::SceneToolDecl> declarations;
+    declarations.reserve(200);
+    for (int i = 0; i < 200; ++i) {
+        declarations.push_back(
+            {"tool_" + std::to_string(i), "A description for an indexed tool", "", 30000});
+    }
+    index.replace_scene("many", "Many", declarations);
+    std::string query;
+    for (int i = 0; i < 200; ++i) query += " description";
+
+    long blocks = 0;
+    long bytes = 0;
+    long total = 0;
+    size_t result_count = 0;
+    {
+        Counting counting;
+        const auto results = index.search(query, "", 200);
+        result_count = results.size();
+        t_counting = false;
+        blocks = g_live_blocks.load();
+        bytes = g_live_bytes.load();
+        total = g_total_blocks.load();
+    }
+    EXPECT_EQ(result_count, 200u);
+    EXPECT_EQ(blocks, 0) << bytes << " bytes in " << blocks << " blocks stay on the default heap";
+    EXPECT_EQ(total, 0) << total << " temporary blocks were allocated on the default heap";
+}
 
 TEST(ToolRegistryHeap, RegistrationKeepsNothingOnTheDefaultHeap) {
     auto deps = std::make_shared<Deps>();

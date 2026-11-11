@@ -141,6 +141,18 @@ bool supported(const Value& schema, const std::string& where, std::string* why) 
         return false;
     };
     if (schema.type() != Value::Type::Map) return no("not an object");
+    for (const auto& [key, value] : schema.as_map()) {
+        (void)value;
+        bool accepted = false;
+        for (const char* known : {"type", "properties", "required", "enum", "minimum", "maximum",
+                                  "maxLength", "items"}) {
+            if (key == known) {
+                accepted = true;
+                break;
+            }
+        }
+        if (!accepted) return no("unsupported keyword " + key);
+    }
     auto known = [](const Value& t) {
         if (t.type() != Value::Type::String) return false;
         for (std::string_view k : kTypes) {

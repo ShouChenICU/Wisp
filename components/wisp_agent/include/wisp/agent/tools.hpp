@@ -8,6 +8,7 @@
 #include <string>
 
 #include "wisp/agent/scene_workspace.hpp"
+#include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
@@ -108,6 +109,15 @@ struct LuaToolDeps {
 // lua.run (agent-tools spec 4): runs a script on a VM of its own on the
 // scene task (SceneRuntime::run_lua()), waiting on ToolThread::Agent.
 Result<void> add_lua_tools(ToolRegistry& reg, LuaToolDeps deps);
+
+struct SceneToolDeps {
+    ToolIndex& index;
+    scene::SceneRuntime& runtime;
+};
+
+// tools.find and tools.call (agent-tools spec 5.3): discover and invoke
+// installed scene tools without changing the model's fixed tool array.
+Result<void> add_scene_tool_tools(ToolRegistry& reg, SceneToolDeps deps);
 
 struct TodoToolDeps {
     core::ReminderScheduler& scheduler;

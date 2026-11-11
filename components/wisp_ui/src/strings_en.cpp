@@ -303,6 +303,8 @@ const char* strings_en(StrId id) {
             return "Fetched {}";
         case StrId::AgentNoteLuaRun:
             return "Ran a Lua script";
+        case StrId::AgentNoteToolCall:
+            return "Call {} · {}";
         case StrId::AgentConfirmDelete:
             return "The agent wants to delete the scene \"{}\"";
         case StrId::AgentConfirmWithData:

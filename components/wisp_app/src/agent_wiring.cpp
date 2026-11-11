@@ -329,6 +329,91 @@ void AgentWsBridge::on_event(const agent::AgentEvent& e) {
     send_(json);
 }
 
+// --- SceneToolIndexObserver ---
+
+SceneToolIndexObserver::SceneToolIndexObserver(core::EventBus& bus, core::StorageWorker& worker,
+                                               core::SceneRepository& repo, agent::ToolIndex& index)
+    : bus_(bus),
+      worker_(worker),
+      repo_(repo),
+      index_(index),
+      refresh_state_(std::make_shared<RefreshState>()) {
+    refresh_state_->repo = &repo_;
+    refresh_state_->index = &index_;
+    subscription_ =
+        bus_.subscribe("scene.state", [this](const core::Event& event) { on_event(event); });
+}
+
+SceneToolIndexObserver::~SceneToolIndexObserver() {
+    if (subscription_ != 0) bus_.unsubscribe(subscription_);
+    std::lock_guard<os::Mutex> lock(refresh_state_->mutex);
+    refresh_state_->repo = nullptr;
+    refresh_state_->index = nullptr;
+}
+
+void SceneToolIndexObserver::on_manifest(const core::SceneManifest& manifest) {
+    index_.replace_scene(manifest.id, manifest.name, manifest.tools);
+}
+
+Result<void> SceneToolIndexObserver::load_installed() {
+    // One worker job reads every scene.json and rebuilds the index; the
+    // worker serialises it against installs still in flight. run_sync runs
+    // inline before the worker starts (boot) and on its thread otherwise.
+    return worker_.run_sync(
+        [this] {
+            auto manifests = repo_.manifests();
+            if (!manifests) {
+                WLOG_W(kTag, "scene tool index not loaded: %s", manifests.error().message.c_str());
+                return;
+            }
+            for (const core::SceneManifest& m : manifests.value()) {
+                index_.replace_scene(m.id, m.name, m.tools);
+            }
+        },
+        os::kForever);
+}
+
+void SceneToolIndexObserver::on_event(const core::Event& event) {
+    auto id = event.payload.find("id");
+    auto state = event.payload.find("state");
+    if (id == event.payload.end() || state == event.payload.end()) return;
+    if (id->second.type() != Value::Type::String || state->second.type() != Value::Type::String)
+        return;
+    const std::string& scene_id = id->second.as_string();
+    const std::string& scene_state = state->second.as_string();
+    if (scene_state == "deleted") {
+        index_.remove_scene(scene_id);
+        return;
+    }
+    // An install reaches the bus as "stopped" (a scene that was not running)
+    // or "running"/"background" (one reopened after its replace); a normal
+    // open and close publish the same states, so refresh() reads the
+    // manifest back from flash and is a no-op when nothing changed.
+    if (scene_state == "stopped" || scene_state == "running" || scene_state == "background" ||
+        scene_state == "headless") {
+        refresh(scene_id);
+    }
+}
+
+void SceneToolIndexObserver::refresh(const std::string& scene_id) {
+    // The worker owns flash access. Queued jobs share a guarded state rather
+    // than this observer, so destruction can invalidate it before its refs go.
+    const std::shared_ptr<RefreshState> state = refresh_state_;
+    if (!worker_.submit([state, scene_id] {
+            std::lock_guard<os::Mutex> lock(state->mutex);
+            if (state->repo == nullptr || state->index == nullptr) return;
+            auto manifest = state->repo->manifest(scene_id);
+            if (manifest) {
+                state->index->replace_scene(manifest.value().id, manifest.value().name,
+                                            manifest.value().tools);
+            } else {
+                state->index->remove_scene(scene_id);
+            }
+        })) {
+        WLOG_W(kTag, "scene tool index refresh not queued for %s", scene_id.c_str());
+    }
+}
+
 // --- AgentWiring ---
 
 AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
@@ -410,6 +495,8 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     apply_turn_limits(*service_, now.agent_max_steps, now.agent_turn_min);
     service_->set_confirm(confirm_.get());
     const agent::ConfirmFn confirm = service_->confirm_fn();
+    tool_index_observer_ =
+        std::make_unique<SceneToolIndexObserver>(deps_.bus, deps_.worker, deps_.repo, tool_index_);
     workspace_ = std::make_unique<agent::SceneWorkspace>(agent::SceneWorkspaceDeps{
         .repo = deps_.repo,
         .runtime = deps_.runtime,
@@ -418,6 +505,10 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
         .confirm = confirm,
         .drafts_root = deps_.drafts_root,
         .inspector = inspector_.get(),
+        .on_tools_changed =
+            [this](const core::SceneManifest& manifest) {
+                tool_index_observer_->on_manifest(manifest);
+            },
     });
 
     auto check = [this](const char* what, Result<void> r) {
@@ -450,6 +541,9 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
               agent::add_http_tools(*registry_, agent::HttpToolDeps{.http = *deps_.scene_http}));
     }
     check("lua", agent::add_lua_tools(*registry_, agent::LuaToolDeps{.runtime = deps_.runtime}));
+    check("scene tools",
+          agent::add_scene_tool_tools(
+              *registry_, agent::SceneToolDeps{.index = tool_index_, .runtime = deps_.runtime}));
     check("memory", agent::add_memory_tools(*registry_, agent::MemoryToolDeps{.store = *memory_}));
     if (deps_.reminders != nullptr) {
         check("todo", agent::add_todo_tools(*registry_,
@@ -496,6 +590,9 @@ Result<void> AgentWiring::start() {
         loaded = memory->load();
     }
     if (!loaded) WLOG_W(kTag, "memory notes not loaded: %s", loaded.error().message.c_str());
+    if (Result<void> indexed = tool_index_observer_->load_installed(); !indexed) {
+        WLOG_W(kTag, "scene tool index not loaded: %s", indexed.error().message.c_str());
+    }
     refresh_storage();
     return service_->start();
 }

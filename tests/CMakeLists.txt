@@ -476,6 +476,10 @@ wisp_test(NAME conversation_test SRCS agent/conversation_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME tool_registry_test SRCS agent/tool_registry_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME tool_index_test SRCS agent/tool_index_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME scene_tools_tools_test SRCS agent/scene_tools_tools_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)
 # Its own binary: it replaces the global operator new to see what stays on
 # the default heap (internal RAM on the device).
 wisp_test(NAME tool_registry_heap_test SRCS agent/tool_registry_heap_test.cpp
@@ -491,6 +495,10 @@ wisp_test(NAME confirm_test SRCS agent/confirm_test.cpp
 wisp_test(NAME agent_wiring_test SRCS app/agent_wiring_test.cpp
           LIBS wisp_app wisp_port_sim_os TIMEOUT 30)
 target_include_directories(agent_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+wisp_test(NAME scene_tool_index_observer_test SRCS app/scene_tool_index_observer_test.cpp
+          LIBS wisp_app wisp_agent wisp_port_sim_os TIMEOUT 30)
+target_include_directories(scene_tool_index_observer_test PRIVATE
+                           ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME app_agent_test SRCS app/app_agent_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
 target_include_directories(app_agent_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
