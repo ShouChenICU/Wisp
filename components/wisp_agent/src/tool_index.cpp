@@ -15,6 +15,9 @@ bool ascii_space(char c) {
 
 char lower_ascii(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
 
+// UTF-8 descriptions are searched bytewise, with folding limited to ASCII
+// letters. Full Unicode case folding is language-specific and is not part of
+// the scene-tool query contract.
 bool contains_folded(std::string_view text, std::string_view needle) {
     if (needle.empty()) return true;
     if (needle.size() > text.size()) return false;

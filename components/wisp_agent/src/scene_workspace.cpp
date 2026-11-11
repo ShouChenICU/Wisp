@@ -8,7 +8,6 @@
 
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
-#include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/scene_install.hpp"
 #include "wisp/core/scene_manifest.hpp"
@@ -469,30 +468,11 @@ ToolOutput SceneWorkspace::install(const std::string& id, ToolCtx& ctx) {
         return check_failed({{std::string(kManifest), 0,
                               "id '" + m.id + "' does not match the draft's id '" + id + "'",
                               "\"id\": \"" + id + "\""}});
-    std::vector<InstallError> errors;
-    for (size_t i = 0; i < m.tools.size(); ++i) {
-        const core::SceneToolDecl& tool = m.tools[i];
-        if (tool.parameters.empty()) continue;
-        auto schema = from_json(tool.parameters);
-        const std::string path = "tools[" + std::to_string(i) + "].parameters";
-        if (!schema) {
-            errors.push_back({std::string(kManifest), 0,
-                              path + ": schema is not valid JSON: " + schema.error().message, ""});
-            continue;
-        }
-        std::string why;
-        if (!schema_supported(schema.value(), &why)) {
-            errors.push_back({std::string(kManifest), 0, path + ": " + why, ""});
-            continue;
-        }
-        const Value* type = schema.value().find("type");
-        if (type == nullptr || type->type() != Value::Type::String ||
-            type->as_string() != "object") {
-            errors.push_back(
-                {std::string(kManifest), 0, path + ": parameters must describe an object", ""});
-        }
+    if (Result<void> schemas = core::validate_scene_tool_schemas(m); !schemas) {
+        return check_failed(
+            {{std::string(kManifest), 0, "scene.json: " + schemas.error().message, ""}});
     }
-    if (!errors.empty()) return check_failed(std::move(errors));
+    std::vector<InstallError> errors;
     bool has_entry = false;
     bool has_icon = m.icon.empty();
     for (const auto& [path, body] : files) {

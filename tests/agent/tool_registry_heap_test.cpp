@@ -19,9 +19,11 @@
 #include <new>
 #include <string>
 
+#include "support/scene_runtime_fixture.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
+#include "wisp/base/json.hpp"
 
 namespace {
 
@@ -36,6 +38,7 @@ thread_local bool t_counting = false;
 std::atomic<long> g_live_blocks{0};
 std::atomic<long> g_live_bytes{0};
 std::atomic<long> g_total_blocks{0};
+std::atomic<long> g_peak_bytes{0};
 
 void* counted_new(size_t n) {
     auto* h = static_cast<Header*>(std::malloc(sizeof(Header) + n));
@@ -44,7 +47,10 @@ void* counted_new(size_t n) {
     h->counted = t_counting;
     if (h->counted) {
         g_live_blocks.fetch_add(1);
-        g_live_bytes.fetch_add(static_cast<long>(n));
+        const long live = g_live_bytes.fetch_add(static_cast<long>(n)) + static_cast<long>(n);
+        long peak = g_peak_bytes.load();
+        while (peak < live && !g_peak_bytes.compare_exchange_weak(peak, live)) {
+        }
         g_total_blocks.fetch_add(1);
     }
     return h + 1;
@@ -78,11 +84,20 @@ using wisp::agent::ToolCtx;
 using wisp::agent::ToolOutput;
 using wisp::agent::ToolRegistry;
 
+Value output_value(const ToolOutput& output) {
+    if (output.result_json.empty()) return output.result;
+    auto parsed =
+        wisp::from_json(std::string_view(output.result_json.data(), output.result_json.size()));
+    EXPECT_TRUE(parsed) << parsed.error().message;
+    return parsed ? std::move(parsed.value()) : Value{};
+}
+
 struct Counting {
     Counting() {
         g_live_blocks = 0;
         g_live_bytes = 0;
         g_total_blocks = 0;
+        g_peak_bytes = 0;
         t_counting = true;
     }
     ~Counting() { t_counting = false; }
@@ -153,6 +168,93 @@ TEST(ToolRegistryHeap, SearchResultsStayInLargeMemory) {
     EXPECT_EQ(result_count, 200u);
     EXPECT_EQ(blocks, 0) << bytes << " bytes in " << blocks << " blocks stay on the default heap";
     EXPECT_EQ(total, 0) << total << " temporary blocks were allocated on the default heap";
+}
+
+class ToolRegistryHeapSceneTest : public wisp::test::SceneRuntimeFixture {};
+
+TEST_F(ToolRegistryHeapSceneTest, FindResponsesUseLargeMemory) {
+    start();
+    wisp::agent::ToolIndex index;
+    std::vector<wisp::core::SceneToolDecl> declarations;
+    declarations.reserve(200);
+    std::string description;
+    for (int i = 0; i < 512; ++i) description += "é";
+    std::string large_enum = "\"";
+    large_enum.append(3600, 'x');
+    large_enum += "\"";
+    const std::string schema =
+        R"({"type":"object","properties":{"value":{"type":"string","enum":[)" + large_enum + "]}}}";
+    for (int i = 0; i < 200; ++i) {
+        declarations.push_back({"tool_" + std::to_string(i), description, schema, 30000});
+    }
+    index.replace_scene("many", "Many", declarations);
+    wisp::agent::ToolIndex empty_index;
+    wisp::agent::ToolRegistry empty_registry(wisp::agent::ToolExecutors{});
+    ASSERT_TRUE(wisp::agent::add_scene_tool_tools(
+        empty_registry, wisp::agent::SceneToolDeps{.index = empty_index, .runtime = *rt}));
+    wisp::agent::ToolRegistry registry(wisp::agent::ToolExecutors{});
+    ASSERT_TRUE(wisp::agent::add_scene_tool_tools(
+        registry, wisp::agent::SceneToolDeps{.index = index, .runtime = *rt}));
+    wisp::agent::ToolCtx ctx;
+    ctx.cancelled = [] { return false; };
+
+    long list_baseline = 0;
+    {
+        Counting counting;
+        const ToolOutput empty = empty_registry.call("tools_find", "{}", ctx);
+        t_counting = false;
+        ASSERT_TRUE(empty.ok);
+        list_baseline = g_peak_bytes.load();
+    }
+    ToolOutput listed;
+    long list_peak = 0;
+    {
+        Counting counting;
+        listed = registry.call("tools_find", "{}", ctx);
+        t_counting = false;
+        list_peak = g_peak_bytes.load();
+    }
+    ASSERT_TRUE(listed.ok);
+    EXPECT_LE(list_peak - list_baseline, 512)
+        << "list output added " << list_peak - list_baseline << " peak bytes on the default heap";
+    const Value listed_value = output_value(listed);
+    ASSERT_EQ(listed_value.find("tools")->as_list().size(), 200u);
+    listed = ToolOutput{};
+
+    ToolOutput filtered;
+    long filtered_peak = 0;
+    long filtered_baseline = 0;
+    {
+        Counting counting;
+        const ToolOutput empty = empty_registry.call("tools_find", R"({"query":"tool"})", ctx);
+        t_counting = false;
+        ASSERT_TRUE(empty.ok);
+        filtered_baseline = g_peak_bytes.load();
+    }
+    {
+        Counting counting;
+        filtered = registry.call("tools_find", R"({"query":"tool"})", ctx);
+        t_counting = false;
+        filtered_peak = g_peak_bytes.load();
+    }
+    ASSERT_TRUE(filtered.ok);
+    const Value filtered_value = output_value(filtered);
+    ASSERT_EQ(filtered_value.find("tools")->as_list().size(), 20u);
+    ASSERT_EQ(filtered_value.find("tools")
+                  ->as_list()
+                  .front()
+                  .find("parameters")
+                  ->find("properties")
+                  ->find("value")
+                  ->find("enum")
+                  ->as_list()
+                  .front()
+                  .as_string()
+                  .size(),
+              3600u);
+    EXPECT_LE(filtered_peak, filtered_baseline + 512)
+        << "filtered output added " << filtered_peak - filtered_baseline
+        << " peak bytes on the default heap";
 }
 
 TEST(ToolRegistryHeap, RegistrationKeepsNothingOnTheDefaultHeap) {

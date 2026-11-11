@@ -8,13 +8,11 @@
 
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/core/scene_manifest.hpp"
 
 namespace wisp::agent {
 
 namespace {
-
-constexpr std::string_view kTypes[] = {"object",  "string", "integer", "number",
-                                       "boolean", "array",  "null"};
 
 bool is_number(const Value& v) {
     return v.type() == Value::Type::Int || v.type() == Value::Type::Double;
@@ -135,77 +133,6 @@ std::optional<std::string> check(const Value& schema, const Value& v, const std:
     return std::nullopt;
 }
 
-bool supported(const Value& schema, const std::string& where, std::string* why) {
-    auto no = [&](const std::string& reason) {
-        if (why != nullptr) *why = (where.empty() ? std::string("schema") : where) + ": " + reason;
-        return false;
-    };
-    if (schema.type() != Value::Type::Map) return no("not an object");
-    for (const auto& [key, value] : schema.as_map()) {
-        (void)value;
-        bool accepted = false;
-        for (const char* known : {"type", "properties", "required", "enum", "minimum", "maximum",
-                                  "maxLength", "items"}) {
-            if (key == known) {
-                accepted = true;
-                break;
-            }
-        }
-        if (!accepted) return no("unsupported keyword " + key);
-    }
-    auto known = [](const Value& t) {
-        if (t.type() != Value::Type::String) return false;
-        for (std::string_view k : kTypes) {
-            if (t.as_string() == k) return true;
-        }
-        return false;
-    };
-    const Value* type = schema.find("type");
-    if (type == nullptr) return no("no type");
-    if (type->type() == Value::Type::List) {
-        // A list of types is for a property; the arguments are an object.
-        if (where.empty()) return no("type list at the root");
-        if (type->as_list().empty()) return no("empty type list");
-        for (const Value& t : type->as_list()) {
-            if (!known(t)) return no("unsupported type in list");
-        }
-    } else if (type->type() != Value::Type::String) {
-        return no("no type");
-    } else if (!known(*type)) {
-        return no("unsupported type " + type->as_string());
-    }
-
-    if (const Value* p = schema.find("properties")) {
-        if (p->type() != Value::Type::Map) return no("properties is not an object");
-        for (const auto& [name, sub] : p->as_map()) {
-            if (!supported(sub, join(where, name), why)) return false;
-        }
-    }
-    if (const Value* r = schema.find("required")) {
-        if (r->type() != Value::Type::List) return no("required is not an array");
-        for (const Value& name : r->as_list()) {
-            if (name.type() != Value::Type::String) return no("required holds a non-string");
-        }
-    }
-    if (const Value* e = schema.find("enum");
-        e != nullptr && (e->type() != Value::Type::List || e->as_list().empty())) {
-        return no("enum is not a non-empty array");
-    }
-    for (const char* k : {"minimum", "maximum"}) {
-        if (const Value* n = schema.find(k); n != nullptr && !is_number(*n)) {
-            return no(std::string(k) + " is not a number");
-        }
-    }
-    if (const Value* m = schema.find("maxLength");
-        m != nullptr && (m->type() != Value::Type::Int || m->as_int() < 0)) {
-        return no("maxLength is not a non-negative integer");
-    }
-    if (const Value* items = schema.find("items")) {
-        if (!supported(*items, where + "[]", why)) return false;
-    }
-    return true;
-}
-
 }  // namespace
 
 std::optional<std::string> validate_args(const Value& schema, const Value& args, std::string* why) {
@@ -213,7 +140,7 @@ std::optional<std::string> validate_args(const Value& schema, const Value& args,
 }
 
 bool schema_supported(const Value& schema, std::string* why) {
-    return supported(schema, std::string(), why);
+    return core::scene_tool_schema_supported(schema, why);
 }
 
 }  // namespace wisp::agent

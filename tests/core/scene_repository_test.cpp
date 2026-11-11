@@ -152,6 +152,22 @@ std::vector<std::string> zip_paths(const wisp::os::LargeBuffer& zip) {
 
 }  // namespace
 
+TEST(SceneRepository, InstallRejectsUnsupportedSceneToolSchema) {
+    Fixture fx;
+    Files files = todo_files();
+    files.front().second =
+        R"({"id":"todo","name":"待办","version":"1.0.0","schema_version":1,)"
+        R"("icon":"assets/icon.png","tools":[{"name":"lookup",)"
+        R"("description":"Lookup a value","parameters":{"type":"object","oneOf":[]}}]})";
+
+    const auto installed = fx.install(files);
+
+    ASSERT_FALSE(installed);
+    EXPECT_EQ(installed.error().code, ErrorCode::InvalidArgument);
+    EXPECT_NE(installed.error().message.find("tools[0].parameters"), std::string::npos);
+    EXPECT_TRUE(fx.repo->list().value().empty());
+}
+
 TEST(SceneRepository, InstallsAndLists) {
     Fixture f;
     std::vector<std::string> checked;

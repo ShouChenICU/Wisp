@@ -26,6 +26,14 @@ std::string str(const Value& value, std::string_view key) {
                                                                     : std::string();
 }
 
+Value result_value(const ToolOutput& output) {
+    if (output.result_json.empty()) return output.result;
+    auto parsed =
+        wisp::from_json(std::string_view(output.result_json.data(), output.result_json.size()));
+    EXPECT_TRUE(parsed) << parsed.error().message;
+    return parsed ? std::move(parsed.value()) : Value{};
+}
+
 std::string manifest(std::string_view id, std::string_view name, std::string_view declarations) {
     return "{\"id\":\"" + std::string(id) + "\",\"name\":\"" + std::string(name) +
            "\",\"version\":\"1.0.0\",\"schema_version\":1,\"tools\":" + std::string(declarations) +
@@ -88,8 +96,9 @@ TEST_F(SceneTools, FindWithQueryReturnsSortedMetadataAndWrappedDescription) {
 
     ToolOutput out = call("tools_find", Value(wisp::Map{{"query", Value("TEMPERATURE city")}}));
 
-    ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
-    const Value& match = out.result.find("tools")->as_list().front();
+    const Value found = result_value(out);
+    ASSERT_TRUE(out.ok) << out.result_json;
+    const Value& match = found.find("tools")->as_list().front();
     EXPECT_EQ(str(match, "name"), "weather.lookup");
     EXPECT_EQ(str(match, "description"),
               "<data source=\"scene:weather\">Local daily temperature for a saved city "
@@ -108,18 +117,20 @@ TEST_F(SceneTools, FindLimitsMatchesAndListsOnlyNamesAndDescriptions) {
     index.replace_scene("many", "Many", declarations);
 
     ToolOutput listed = call("tools_find");
-    ASSERT_TRUE(listed.ok) << wisp::to_json(listed.result);
-    ASSERT_EQ(listed.result.find("tools")->as_list().size(), 200u);
-    EXPECT_EQ(listed.result.find("total")->as_int(), 201);
-    const Value& item = listed.result.find("tools")->as_list().front();
+    const Value listed_result = result_value(listed);
+    ASSERT_TRUE(listed.ok) << listed.result_json;
+    ASSERT_EQ(listed_result.find("tools")->as_list().size(), 200u);
+    EXPECT_EQ(listed_result.find("total")->as_int(), 201);
+    const Value& item = listed_result.find("tools")->as_list().front();
     EXPECT_EQ(item.as_map().size(), 2u);
     EXPECT_EQ(item.find("parameters"), nullptr);
     EXPECT_NE(item.find("description"), nullptr);
 
     ToolOutput queried = call("tools_find", Value(wisp::Map{{"query", Value("matching")}}));
+    const Value queried_result = result_value(queried);
     ASSERT_TRUE(queried.ok);
-    EXPECT_EQ(queried.result.find("tools")->as_list().size(), 20u);
-    EXPECT_FALSE(queried.result.find("tools")->as_list().front().find("parameters") == nullptr);
+    EXPECT_EQ(queried_result.find("tools")->as_list().size(), 20u);
+    EXPECT_FALSE(queried_result.find("tools")->as_list().front().find("parameters") == nullptr);
 }
 
 TEST_F(SceneTools, CallValidatesArgumentsWrapsResultAndAddsLocalizedNote) {
@@ -141,7 +152,8 @@ TEST_F(SceneTools, CallValidatesArgumentsWrapsResultAndAddsLocalizedNote) {
         call("tools_call", Value(wisp::Map{{"name", Value("weather.lookup")},
                                            {"args", Value(wisp::Map{{"city", Value("Paris")}})}}));
     ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
-    const std::string wrapped_result = str(out.result, "result");
+    const Value call_result = result_value(out);
+    const std::string wrapped_result = str(call_result, "result");
     constexpr std::string_view prefix = "<data source=\"scene:weather\">";
     constexpr std::string_view suffix = "</data>";
     ASSERT_TRUE(wrapped_result.starts_with(prefix));

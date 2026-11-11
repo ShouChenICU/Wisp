@@ -42,6 +42,14 @@ TEST(ToolIndex, ReplaceRemoveSearch) {
     EXPECT_FALSE(index.find("alpha.today"));
 }
 
+TEST(ToolIndex, NonAsciiDescriptionMatchingUsesExactBytes) {
+    wisp::agent::ToolIndex index;
+    index.replace_scene("language", "Language", {tool("lookup", "Äther")});
+
+    EXPECT_EQ(index.search("ÄTHER", "", 10).size(), 1u);
+    EXPECT_TRUE(index.search("äTHER", "", 10).empty());
+}
+
 TEST(ToolIndex, ConcurrentSearchAndReplacement) {
     wisp::agent::ToolIndex index;
     const std::vector<wisp::core::SceneToolDecl> tools{tool("lookup", "A city lookup")};

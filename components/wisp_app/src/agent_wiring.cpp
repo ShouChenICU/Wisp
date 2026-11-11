@@ -386,11 +386,12 @@ void SceneToolIndexObserver::on_event(const core::Event& event) {
         return;
     }
     // An install reaches the bus as "stopped" (a scene that was not running)
-    // or "running"/"background" (one reopened after its replace); a normal
-    // open and close publish the same states, so refresh() reads the
-    // manifest back from flash and is a no-op when nothing changed.
+    // or "running"/"background"/"error" after a scene that was reopened
+    // following its replace. A normal open and close publish the same states,
+    // so refresh() reads the manifest back from flash and is a no-op when
+    // nothing changed.
     if (scene_state == "stopped" || scene_state == "running" || scene_state == "background" ||
-        scene_state == "headless") {
+        scene_state == "headless" || scene_state == "error") {
         refresh(scene_id);
     }
 }

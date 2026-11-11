@@ -250,7 +250,114 @@ bool string_field(const Value& root, std::string_view key, std::string& out, boo
     return true;
 }
 
+bool json_number(const Value& value) {
+    return value.type() == Value::Type::Int || value.type() == Value::Type::Double;
+}
+
+bool supported_tool_schema(const Value& schema, const std::string& where, std::string* why) {
+    auto no = [&](const std::string& reason) {
+        if (why != nullptr) *why = (where.empty() ? std::string("schema") : where) + ": " + reason;
+        return false;
+    };
+    if (schema.type() != Value::Type::Map) return no("not an object");
+    for (const auto& [key, value] : schema.as_map()) {
+        (void)value;
+        bool accepted = false;
+        for (const char* known : {"type", "properties", "required", "enum", "minimum", "maximum",
+                                  "maxLength", "items"}) {
+            if (key == known) {
+                accepted = true;
+                break;
+            }
+        }
+        if (!accepted) return no("unsupported keyword " + key);
+    }
+    auto known_type = [](const Value& type) {
+        if (type.type() != Value::Type::String) return false;
+        for (std::string_view known :
+             {"object", "string", "integer", "number", "boolean", "array", "null"}) {
+            if (type.as_string() == known) return true;
+        }
+        return false;
+    };
+    const Value* type = schema.find("type");
+    if (type == nullptr) return no("no type");
+    if (type->type() == Value::Type::List) {
+        if (where.empty()) return no("type list at the root");
+        if (type->as_list().empty()) return no("empty type list");
+        for (const Value& item : type->as_list()) {
+            if (!known_type(item)) return no("unsupported type in list");
+        }
+    } else if (type->type() != Value::Type::String) {
+        return no("no type");
+    } else if (!known_type(*type)) {
+        return no("unsupported type " + type->as_string());
+    }
+
+    if (const Value* properties = schema.find("properties")) {
+        if (properties->type() != Value::Type::Map) return no("properties is not an object");
+        for (const auto& [name, child] : properties->as_map()) {
+            const std::string path = where.empty() ? name : where + "." + name;
+            if (!supported_tool_schema(child, path, why)) return false;
+        }
+    }
+    if (const Value* required = schema.find("required")) {
+        if (required->type() != Value::Type::List) return no("required is not an array");
+        for (const Value& name : required->as_list()) {
+            if (name.type() != Value::Type::String) return no("required holds a non-string");
+        }
+    }
+    if (const Value* values = schema.find("enum");
+        values != nullptr && (values->type() != Value::Type::List || values->as_list().empty())) {
+        return no("enum is not a non-empty array");
+    }
+    for (const char* key : {"minimum", "maximum"}) {
+        if (const Value* value = schema.find(key); value != nullptr && !json_number(*value)) {
+            return no(std::string(key) + " is not a number");
+        }
+    }
+    if (const Value* max_length = schema.find("maxLength");
+        max_length != nullptr &&
+        (max_length->type() != Value::Type::Int || max_length->as_int() < 0)) {
+        return no("maxLength is not a non-negative integer");
+    }
+    if (const Value* items = schema.find("items")) {
+        if (!supported_tool_schema(*items, where + "[]", why)) return false;
+    }
+    return true;
+}
+
 }  // namespace
+
+bool scene_tool_schema_supported(const Value& schema, std::string* why) {
+    return supported_tool_schema(schema, {}, why);
+}
+
+Result<void> validate_scene_tool_schemas(const SceneManifest& manifest) {
+    for (size_t i = 0; i < manifest.tools.size(); ++i) {
+        const SceneToolDecl& tool = manifest.tools[i];
+        if (tool.parameters.empty()) continue;
+
+        const std::string prefix = "tools[" + std::to_string(i) + "].parameters";
+        auto schema = from_json(tool.parameters, kMaxManifestDepth);
+        if (!schema) {
+            return Result<void>::err(
+                ErrorCode::InvalidArgument,
+                prefix + ": schema is not valid JSON: " + schema.error().message);
+        }
+        std::string why;
+        if (!scene_tool_schema_supported(schema.value(), &why)) {
+            return Result<void>::err(ErrorCode::InvalidArgument, prefix + ": " + why);
+        }
+        const Value* type = schema.value().find("type");
+        if (type == nullptr || type->type() != Value::Type::String ||
+            type->as_string() != "object") {
+            return Result<void>::err(ErrorCode::InvalidArgument,
+                                     prefix + " must describe an object");
+        }
+    }
+    return Result<void>::ok();
+}
 
 bool valid_scene_id(std::string_view id) {
     if (id.empty() || id.size() > kMaxSceneIdBytes) {

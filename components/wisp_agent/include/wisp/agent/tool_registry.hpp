@@ -50,7 +50,9 @@ struct ToolCtx {
 
 struct ToolOutput {
     bool ok = true;
-    Value result;      // {"ok":..., ...}; tool_error() builds failures
+    Value result;  // Small structured results; tool_error() builds failures.
+    // Large results may be pre-serialized into Mem::Large to avoid a default-heap Value tree.
+    os::LargeString result_json;
     std::string note;  // the system note shown to the user, "" for none
 };
 

@@ -417,6 +417,29 @@ TEST_F(SceneWorkspaceTest, RollbackSwapsWithPrev) {
     EXPECT_EQ(rt->foreground(), "counter");
 }
 
+TEST_F(SceneWorkspaceTest, RollbackRejectsUnsupportedToolSchemaFromPreviousPackage) {
+    begin();
+    write("counter", "scene.json", counter_json("2.0.0"));
+    ASSERT_TRUE(ws->install("counter", ctx).ok);
+
+    const fs::path previous_manifest = fs::path(in) / "scenes" / ".prev" / "counter" / "scene.json";
+    const std::string unsupported =
+        R"({"id":"counter","name":"计数器","version":"1.0.0","schema_version":1,)"
+        R"("tools":[{"name":"lookup","description":"Lookup",)"
+        R"("parameters":{"type":"object","oneOf":[]}}]})";
+    {
+        std::ofstream file(previous_manifest, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.good());
+        file << unsupported;
+    }
+
+    const ToolOutput rolled_back = ws->rollback("counter", ctx);
+
+    ASSERT_FALSE(rolled_back.ok);
+    EXPECT_NE(str(rolled_back.result, "message").find("tools[0].parameters"), std::string::npos);
+    EXPECT_EQ(repo->info("counter").value().manifest.version, "2.0.0");
+}
+
 TEST_F(SceneWorkspaceTest, RollbackWithoutPrevIsNotFound) {
     begin();
     ToolOutput out = ws->rollback("counter", ctx);

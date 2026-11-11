@@ -3,6 +3,7 @@
 
 #include "wisp/agent/tools.hpp"
 
+#include <charconv>
 #include <string>
 #include <string_view>
 
@@ -14,7 +15,6 @@ namespace wisp::agent {
 
 namespace {
 
-using detail::done;
 using detail::fail;
 
 constexpr const char* kFindSchema =
@@ -29,25 +29,59 @@ const std::string& arg_string(const Value& args, const char* key) {
     return value != nullptr && value->type() == Value::Type::String ? value->as_string() : empty;
 }
 
-Value find_entry(const IndexedTool& tool, bool include_details,
-                 const scene::SceneRuntime& runtime) {
-    const std::string_view description(tool.description.data(), tool.description.size());
-    Map entry{{"name", Value(std::string(tool.full_name.data(), tool.full_name.size()))},
-              {"description",
-               Value(scene_data(std::string_view(tool.scene_id.data(), tool.scene_id.size()),
-                                description))}};
+os::LargeString external_data_large(std::string_view scene_id, std::string_view content) {
+    constexpr std::string_view kClose = "</data>";
+    os::LargeString out;
+    out.reserve(scene_id.size() + content.size() + 48);
+    out.append("<data source=\"scene:");
+    out.append(scene_id.data(), scene_id.size());
+    out.append("\">");
+    size_t i = 0;
+    while (i < content.size()) {
+        bool closing = content.size() - i >= kClose.size();
+        for (size_t k = 0; closing && k < kClose.size(); ++k) {
+            char c = content[i + k];
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            closing = c == kClose[k];
+        }
+        if (closing) {
+            out.append("&lt;");
+            out.append(content.data() + i + 1, kClose.size() - 1);
+            i += kClose.size();
+        } else {
+            out.push_back(content[i++]);
+        }
+    }
+    out.append(kClose.data(), kClose.size());
+    return out;
+}
+
+os::LargeString serialize_find_entry(const IndexedTool& tool, bool include_details,
+                                     const scene::SceneRuntime& runtime) {
+    os::LargeString out;
+    out.push_back('{');
+    out.append("\"name\":");
+    append_json_string(out, std::string_view(tool.full_name.data(), tool.full_name.size()));
+    out.append(",\"description\":");
+    const os::LargeString description =
+        external_data_large(std::string_view(tool.scene_id.data(), tool.scene_id.size()),
+                            std::string_view(tool.description.data(), tool.description.size()));
+    append_json_string(out, std::string_view(description.data(), description.size()));
     if (include_details) {
-        auto parameters =
-            from_json(std::string_view(tool.parameters.data(), tool.parameters.size()));
-        if (parameters) entry["parameters"] = std::move(parameters.value());
-        entry["scene_name"] = std::string(tool.scene_name.data(), tool.scene_name.size());
+        out.append(",\"parameters\":");
+        out.append(tool.parameters.data(), tool.parameters.size());
+        out.append(",\"scene_name\":");
+        append_json_string(out, std::string_view(tool.scene_name.data(), tool.scene_name.size()));
+        out.append(",\"running\":");
         const core::SceneState state =
             runtime.status(std::string(tool.scene_id.data(), tool.scene_id.size())).state;
-        entry["running"] = state == core::SceneState::Running ||
-                           state == core::SceneState::Background ||
-                           state == core::SceneState::Headless;
+        out.append(state == core::SceneState::Running || state == core::SceneState::Background ||
+                           state == core::SceneState::Headless
+                       ? "true"
+                       : "false");
     }
-    return Value(std::move(entry));
+    out.push_back('}');
+    return out;
 }
 
 ui::Lang lang_of(const ToolCtx& ctx) { return ui::parse_lang(ctx.lang).value_or(ui::Lang::Zh); }
@@ -69,14 +103,27 @@ Result<void> add_scene_tool_tools(ToolRegistry& reg, SceneToolDeps deps) {
                 const std::string& scene_id = arg_string(args, "scene");
                 const size_t limit = include_details ? kFindMax : kListMax;
                 const os::LargeVector<IndexedTool> matches = index.search(query, scene_id, limit);
-                List results;
-                results.reserve(matches.size());
+
+                // Schemas are already validated JSON. Stream them into Large memory
+                // rather than building a default-heap tree for every matching tool.
+                ToolOutput out;
+                out.result_json = R"({"ok":true,"tools":[)";
+                bool first = true;
                 for (const IndexedTool& tool : matches) {
-                    results.push_back(find_entry(tool, include_details, runtime));
+                    if (!first) out.result_json.push_back(',');
+                    first = false;
+                    out.result_json += serialize_find_entry(tool, include_details, runtime);
                 }
-                Map fields{{"tools", Value(std::move(results))}};
-                if (!include_details) fields["total"] = Value(static_cast<int64_t>(index.size()));
-                return done(std::move(fields));
+                out.result_json.push_back(']');
+                if (!include_details) {
+                    out.result_json.append(",\"total\":");
+                    char total[32];
+                    const auto converted =
+                        std::to_chars(total, total + sizeof(total), index.size());
+                    out.result_json.append(total, static_cast<size_t>(converted.ptr - total));
+                }
+                out.result_json.push_back('}');
+                return out;
             },
     }));
 
@@ -117,8 +164,14 @@ Result<void> add_scene_tool_tools(ToolRegistry& reg, SceneToolDeps deps) {
                     return tool_error(result.value().error,
                                       scene_data(scene_id, result.value().message));
                 }
-                ToolOutput out =
-                    done({{"result", Value(scene_data(scene_id, result.value().json))}});
+                ToolOutput out;
+                out.result_json = R"({"ok":true,"result":)";
+                const os::LargeString wrapped = external_data_large(
+                    std::string_view(tool->scene_id.data(), tool->scene_id.size()),
+                    std::string_view(result.value().json.data(), result.value().json.size()));
+                append_json_string(out.result_json,
+                                   std::string_view(wrapped.data(), wrapped.size()));
+                out.result_json.push_back('}');
                 out.note = ui::tr_fill_n(
                     ui::StrId::AgentNoteToolCall, lang_of(ctx),
                     {std::string_view(tool->scene_name.data(), tool->scene_name.size()),

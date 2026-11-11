@@ -18,10 +18,9 @@
 // root object is level 1): scene.json's own structure needs up to 4
 // (permissions.http[]), and a tool's "parameters" needs up to 4 more for a
 // JSON-Schema shape like type/properties/<name>/type (agent-tools spec
-// 5.1). "parameters" is only checked here for being an object no larger
-// than kMaxToolSchemaBytes serialized; wisp_core cannot depend on
-// wisp_agent, so whether it is a schema_supported() shape is checked where
-// a tool is installed (agent-tools spec 5.1, task 7).
+// 5.1). Tool parameters use the shared argument-schema subset enforced here,
+// so installs through the repository, admin upload and agent rollback all
+// reject unsupported declarations before changing the package.
 
 #include <cstddef>
 #include <cstdint>
@@ -30,6 +29,7 @@
 #include <vector>
 
 #include "wisp/base/result.hpp"
+#include "wisp/base/value.hpp"
 
 namespace wisp::core {
 
@@ -80,6 +80,17 @@ inline constexpr size_t kMaxSceneIdBytes = 32;
 
 // True if `id` matches ^[a-z0-9_-]{1,32}$.
 bool valid_scene_id(std::string_view id);
+
+// Whether `schema` uses only the bounded argument subset.
+// The reason is written to `why` when provided. This lives in wisp_core so
+// every package install path enforces the same schema without depending on
+// the agent layer.
+bool scene_tool_schema_supported(const Value& schema, std::string* why = nullptr);
+
+// Validates declared schemas in an already parsed manifest. Keeping this
+// separate lets drafts be inspected before install, while all package
+// installation entry points apply the same schema subset.
+Result<void> validate_scene_tool_schemas(const SceneManifest& manifest);
 
 // Parses and validates scene.json. Every failure is InvalidArgument with a
 // message naming the field ("scene.json: version ...").

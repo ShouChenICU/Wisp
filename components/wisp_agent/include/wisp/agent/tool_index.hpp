@@ -29,6 +29,7 @@ public:
     void remove_scene(const std::string& scene_id);
     std::optional<IndexedTool> find(std::string_view full_name) const;
     // query is whitespace-split; every word must occur in the name or description.
+    // ASCII letters are case-insensitive; other UTF-8 bytes are matched exactly.
     os::LargeVector<IndexedTool> search(std::string_view query, std::string_view scene,
                                         size_t max) const;
     size_t size() const;

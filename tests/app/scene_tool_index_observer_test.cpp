@@ -15,12 +15,18 @@
 #include "support/wait.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/core/scene_install.hpp"
 #include "wisp/core/scene_manifest.hpp"
+#include "wisp/core/zip.hpp"
 
 namespace {
 
 using wisp::Value;
 using wisp::test::wait_until;
+
+std::span<const uint8_t> bytes(std::string_view text) {
+    return {reinterpret_cast<const uint8_t*>(text.data()), text.size()};
+}
 
 std::string manifest(std::string_view id, std::string_view name, std::string_view tools) {
     return "{\"id\":\"" + std::string(id) + "\",\"name\":\"" + std::string(name) +
@@ -86,6 +92,29 @@ TEST_F(SceneToolIndexObserverTest, RebuiltOnInstallAndDelete) {
     stopped.source = "scene";
     stopped.payload = {{"id", Value("weather")}, {"state", Value("stopped")}};
     bus.publish(std::move(stopped));
+    ASSERT_TRUE(wait_until([&] { return index->find("weather.forecast").has_value(); }, 2000));
+    EXPECT_FALSE(index->find("weather.lookup").has_value());
+}
+
+TEST_F(SceneToolIndexObserverTest, SuccessfulInstallWithReloadFailureRefreshesToolIndex) {
+    start();
+    boot_with("weather", "Weather", R"([{"name":"lookup","description":"Old forecast"}])");
+    ASSERT_TRUE(rt->open("weather"));
+    ASSERT_TRUE(wait_until(
+        [&] { return rt->status("weather").state == wisp::core::SceneState::Running; }, 2000));
+
+    const std::string replacement =
+        manifest("weather", "Weather", R"([{"name":"forecast","description":"New forecast"}])");
+    wisp::core::ZipWriter zip;
+    zip.add("scene.json", bytes(replacement));
+    zip.add("main.lua", bytes("error('reload failed')\n"));
+    wisp::os::LargeBuffer archive = zip.finish();
+    ASSERT_TRUE(archive.ok());
+
+    const auto installed = wisp::core::install_scene(*repo, *rt, archive.span());
+    ASSERT_TRUE(installed) << installed.error().message;
+    ASSERT_TRUE(wait_until(
+        [&] { return rt->status("weather").state == wisp::core::SceneState::Error; }, 2000));
     ASSERT_TRUE(wait_until([&] { return index->find("weather.forecast").has_value(); }, 2000));
     EXPECT_FALSE(index->find("weather.lookup").has_value());
 }
