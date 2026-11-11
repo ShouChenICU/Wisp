@@ -225,6 +225,20 @@ TEST(IsrQueue, RejectsInvalidCapacity) {
     EXPECT_EQ(overflow.error().code, wisp::ErrorCode::InvalidArgument);
 }
 
+TEST(IsrQueue, RepresentableCapacityReachesAllocation) {
+    // A host queue must not inherit the signal primitive's count limit:
+    // the ring, not a semaphore token per record, bounds its capacity.
+    constexpr size_t capacity = std::numeric_limits<uint32_t>::max();
+    if (capacity > std::numeric_limits<size_t>::max() / sizeof(IsrQueueRecord)) {
+        GTEST_SKIP() << "capacity does not fit this platform's address space";
+    }
+    wisp::port::sim::set_alloc_failure(Mem::Fast, true);
+    auto result = IsrQueue::create(capacity);
+    wisp::port::sim::set_alloc_failure(Mem::Fast, false);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().code, wisp::ErrorCode::NoMemory);
+}
+
 TEST(IsrQueue, RequiresFastMemoryButDoesNotAllocateWhileInUse) {
     wisp::port::sim::set_alloc_failure(Mem::Fast, true);
     auto failed = IsrQueue::create(2);

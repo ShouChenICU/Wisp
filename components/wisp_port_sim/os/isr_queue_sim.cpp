@@ -1,8 +1,8 @@
-#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <limits>
+#include <mutex>
 #include <new>
-#include <semaphore>
 
 #include "wisp/os/isr_queue.hpp"
 #include "wisp/os/os.hpp"
@@ -11,32 +11,23 @@ namespace wisp::os {
 
 struct IsrQueue::Impl {
     Impl(size_t queue_capacity, IsrQueueRecord* queue_slots)
-        : capacity(queue_capacity), slots(queue_slots), signal(0) {}
+        : capacity(queue_capacity), slots(queue_slots) {}
 
-    void lock_state() const noexcept {
-        while (state_lock.test_and_set(std::memory_order_acquire)) {
-        }
-    }
-
-    void unlock_state() const noexcept { state_lock.clear(std::memory_order_release); }
-
-    bool enqueue(const IsrQueueRecord& item) noexcept {
-        lock_state();
+    bool enqueue(const IsrQueueRecord& item) {
+        std::lock_guard<std::mutex> lock(mutex);
         if (size == capacity) {
             ++dropped_count;
-            unlock_state();
             return false;
         }
         slots[tail] = item;
         tail = (tail + 1) % capacity;
         ++size;
-        unlock_state();
-        signal.release();
+        condition.notify_one();
         return true;
     }
 
-    // The producer cannot take a condition-variable mutex from ISR context.
-    mutable std::atomic_flag state_lock = ATOMIC_FLAG_INIT;
+    mutable std::mutex mutex;
+    std::condition_variable condition;
     size_t capacity;
     IsrQueueRecord* slots;
     size_t head = 0;
@@ -44,12 +35,10 @@ struct IsrQueue::Impl {
     size_t size = 0;
     uint32_t dropped_count = 0;
     bool wake_pending = false;
-    std::counting_semaphore<> signal;
 };
 
 Result<std::unique_ptr<IsrQueue>> IsrQueue::create(size_t capacity) {
-    if (capacity == 0 || capacity > std::numeric_limits<size_t>::max() / sizeof(IsrQueueRecord) ||
-        capacity >= static_cast<size_t>(std::counting_semaphore<>::max())) {
+    if (capacity == 0 || capacity > std::numeric_limits<size_t>::max() / sizeof(IsrQueueRecord)) {
         return Result<std::unique_ptr<IsrQueue>>::err(ErrorCode::InvalidArgument,
                                                       "invalid ISR queue capacity");
     }
@@ -96,52 +85,37 @@ bool IsrQueue::push_from_isr(const IsrQueueRecord& item) noexcept { return impl_
 bool IsrQueue::push(const IsrQueueRecord& item) noexcept { return impl_->enqueue(item); }
 
 bool IsrQueue::pop(IsrQueueRecord& item, uint32_t timeout_ms) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-    for (;;) {
-        if (timeout_ms == kForever) {
-            impl_->signal.acquire();
-        } else if (timeout_ms == 0) {
-            if (!impl_->signal.try_acquire()) {
-                return false;
-            }
-        } else if (!impl_->signal.try_acquire_until(deadline)) {
-            if (std::chrono::steady_clock::now() >= deadline) {
-                return false;
-            }
-        }
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    const auto ready = [this] { return impl_->size > 0 || impl_->wake_pending; };
 
-        impl_->lock_state();
-        if (impl_->size > 0) {
-            item = impl_->slots[impl_->head];
-            impl_->head = (impl_->head + 1) % impl_->capacity;
-            --impl_->size;
-            impl_->unlock_state();
-            return true;
-        }
-        if (impl_->wake_pending) {
-            impl_->wake_pending = false;
-            impl_->unlock_state();
-            return false;
-        }
-        impl_->unlock_state();
+    if (timeout_ms == kForever) {
+        impl_->condition.wait(lock, ready);
+    } else if (!impl_->condition.wait_for(lock, std::chrono::milliseconds(timeout_ms), ready)) {
+        return false;
     }
+
+    if (impl_->size > 0) {
+        item = impl_->slots[impl_->head];
+        impl_->head = (impl_->head + 1) % impl_->capacity;
+        --impl_->size;
+        return true;
+    }
+
+    impl_->wake_pending = false;
+    return false;
 }
 
 void IsrQueue::wake() {
-    impl_->lock_state();
-    const bool should_signal = !impl_->wake_pending;
-    impl_->wake_pending = true;
-    impl_->unlock_state();
-    if (should_signal) {
-        impl_->signal.release();
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->wake_pending = true;
     }
+    impl_->condition.notify_one();
 }
 
 uint32_t IsrQueue::dropped() const {
-    impl_->lock_state();
-    uint32_t count = impl_->dropped_count;
-    impl_->unlock_state();
-    return count;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->dropped_count;
 }
 
 }  // namespace wisp::os
