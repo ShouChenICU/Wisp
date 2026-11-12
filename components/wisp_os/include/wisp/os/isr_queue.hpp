@@ -46,6 +46,16 @@ public:
     void wake();
     uint32_t dropped() const;
 
+    // Single-consumer resynchronization: atomically discard all queued records
+    // and reset a sticky producer-attempt flag; return the drop count at that
+    // boundary. Sample external levels, then validate with resync_unchanged().
+    // Every push attempt (including overflow) invalidates that sample window.
+    // Do not pop or begin another resync between the boundary and validation.
+    // On false, discard and resample on a later turn; never replay old records.
+    // A push after successful validation is part of the new input history.
+    uint32_t begin_resync();
+    bool resync_unchanged() const;
+
     static void operator delete(void* ptr) noexcept;
 
 private:

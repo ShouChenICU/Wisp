@@ -61,10 +61,19 @@ Result<void> ButtonService::start() {
         worker_running_.store(false, std::memory_order_release);
         stopping_.store(true, std::memory_order_release);
         detach_edge_sinks();
+        // Quiescent detach closes the input history. Consume valid queued
+        // gestures before changing mode, rather than treating them as boot-held.
+        drain_edges(0);
         {
             std::lock_guard<os::Mutex> state_lock(state_mutex_);
+            recover_overflow(os::now_us());
+            process_deadlines(os::now_us());
             for (auto& state : buttons_) {
                 if (state.mode == hal::ButtonInputMode::EdgeEvent) {
+                    if (!state.saw_edge && !state.pressed && !state.candidate_valid) {
+                        state.ignore_until_release = state.button->pressed();
+                    }
+                    state.candidate_valid = false;
                     state.mode = hal::ButtonInputMode::PollOnly;
                 }
             }
@@ -109,6 +118,7 @@ void ButtonService::stop() {
         last_poll_ms_ = 0;
         last_dropped_ = 0;
         overflow_warned_ = false;
+        recovering_ = false;
     }
 }
 
@@ -232,17 +242,9 @@ void ButtonService::run_worker() {
     while (!stopping_.load(std::memory_order_acquire)) {
         const uint64_t now_us = os::now_us();
         const uint32_t timeout_ms = next_wait_ms(now_us);
-        os::IsrQueueRecord record;
         {
             std::lock_guard<os::Mutex> queue_lock(queue_consumer_mutex_);
-            if (edge_queue_ != nullptr && edge_queue_->pop(record, timeout_ms)) {
-                process_edge(ButtonEdgeEvent{static_cast<uint16_t>(record.source),
-                                             record.value != 0, record.timestamp_us});
-                while (edge_queue_->pop(record, 0)) {
-                    process_edge(ButtonEdgeEvent{static_cast<uint16_t>(record.source),
-                                                 record.value != 0, record.timestamp_us});
-                }
-            }
+            drain_edges(timeout_ms);
         }
         if (!stopping_.load(std::memory_order_acquire)) {
             poll_internal(os::now_ms());
@@ -250,8 +252,28 @@ void ButtonService::run_worker() {
     }
 }
 
+void ButtonService::drain_edges(uint32_t timeout_ms) {
+    if (edge_queue_ == nullptr) return;
+    for (;;) {
+        {
+            std::lock_guard<os::Mutex> state_lock(state_mutex_);
+            if (recovering_ || edge_queue_->dropped() != last_dropped_) return;
+        }
+        os::IsrQueueRecord record;
+        if (!edge_queue_->pop(record, timeout_ms)) return;
+        {
+            std::lock_guard<os::Mutex> state_lock(state_mutex_);
+            if (edge_queue_->dropped() != last_dropped_) return;
+        }
+        process_edge(ButtonEdgeEvent{static_cast<uint16_t>(record.source), record.value != 0,
+                                     record.timestamp_us});
+        timeout_ms = 0;
+    }
+}
+
 uint32_t ButtonService::next_wait_ms(uint64_t now_us) const {
     std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    if (recovering_) return 0;
     uint64_t deadline_us = std::numeric_limits<uint64_t>::max();
     for (const auto& state : buttons_) {
         if (state.mode == hal::ButtonInputMode::PollOnly &&
@@ -297,6 +319,7 @@ void ButtonService::process_edge(const ButtonEdgeEvent& event) {
         return;
     }
 
+    state.saw_edge = true;
     state.button->service_input();
     process_deadlines(event.timestamp_us);
     if (event.pressed == state.pressed) {
@@ -392,26 +415,33 @@ void ButtonService::recover_overflow(uint64_t now_us) {
     if (edge_queue_ == nullptr) {
         return;
     }
-    const uint32_t dropped = edge_queue_->dropped();
-    if (dropped == last_dropped_) {
+    if (!recovering_ && edge_queue_->dropped() == last_dropped_) {
         return;
     }
+    recovering_ = true;
     if (!overflow_warned_) {
         WLOG_W(kTag, "edge queue overflow; resynchronizing button levels");
         overflow_warned_ = true;
     }
-    last_dropped_ = dropped;
 
+    // The queue lock excludes other consumers, not ISR producers. Discard at
+    // an atomic boundary, sample outside the ISR critical section, then accept
+    // only a window with no producer attempts (including dropped records).
+    // One attempt per turn bounds recovery work under continuous input.
+    const uint32_t dropped = edge_queue_->begin_resync();
     for (auto& state : buttons_) {
-        if (state.mode != hal::ButtonInputMode::EdgeEvent) {
-            continue;
-        }
+        if (state.mode != hal::ButtonInputMode::EdgeEvent) continue;
         state.button->service_input();
-        const bool pressed = state.button->pressed();
+        state.recovery_level = state.button->pressed();
+    }
+    if (!edge_queue_->resync_unchanged()) return;
+
+    last_dropped_ = dropped;
+    recovering_ = false;
+    for (auto& state : buttons_) {
+        if (state.mode != hal::ButtonInputMode::EdgeEvent) continue;
         state.candidate_valid = false;
-        if (pressed != state.pressed) {
-            commit_edge(state, pressed, now_us);
-        }
+        commit_edge(state, state.recovery_level, now_us);
     }
 }
 
@@ -436,12 +466,7 @@ void ButtonService::poll_internal(uint64_t now_ms) {
 
     std::unique_lock<os::Mutex> queue_lock(queue_consumer_mutex_, std::try_to_lock);
     if (!worker_running_.load(std::memory_order_acquire) && queue_lock.owns_lock()) {
-        os::IsrQueueRecord record;
-        os::IsrQueue* queue = edge_queue_raw_.load(std::memory_order_acquire);
-        while (queue != nullptr && queue->pop(record, 0)) {
-            process_edge(ButtonEdgeEvent{static_cast<uint16_t>(record.source), record.value != 0,
-                                         record.timestamp_us});
-        }
+        drain_edges(0);
     }
 
     std::lock_guard<os::Mutex> state_lock(state_mutex_);
@@ -465,8 +490,8 @@ void ButtonService::poll_internal(uint64_t now_ms) {
             state.next_poll_ms = now_ms + interval;
         }
     }
-    process_deadlines(now_us);
     recover_overflow(now_us);
+    if (!recovering_) process_deadlines(now_us);
 }
 
 bool ButtonService::has_fallback_polling() const {

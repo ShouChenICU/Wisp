@@ -151,6 +151,35 @@ TEST(IsrQueue, OverflowIsBounded) {
     EXPECT_EQ(q->dropped(), 2u);
 }
 
+TEST(IsrQueue, ResyncDiscardsOldRecordsAndDetectsEveryProducerAttempt) {
+    auto result = IsrQueue::create(1);
+    ASSERT_TRUE(result);
+    auto q = std::move(result.value());
+    ASSERT_TRUE(q->push({1, 1, 100}));
+    ASSERT_FALSE(q->push_from_isr({1, 0, 200}));
+    EXPECT_EQ(q->begin_resync(), 1u);
+    EXPECT_TRUE(q->resync_unchanged());
+    IsrQueueRecord record;
+    EXPECT_FALSE(q->pop(record, 0));
+    q->wake();
+    EXPECT_TRUE(q->resync_unchanged());
+    ASSERT_TRUE(q->push_from_isr({1, 1, 300}));
+    EXPECT_FALSE(q->resync_unchanged());
+    ASSERT_FALSE(q->push({1, 0, 400}));
+    EXPECT_FALSE(q->resync_unchanged());
+    EXPECT_EQ(q->begin_resync(), 2u);
+    EXPECT_TRUE(q->resync_unchanged());
+    std::thread producer([&] { EXPECT_TRUE(q->push({1, 0, 500})); });
+    producer.join();
+    EXPECT_FALSE(q->resync_unchanged());
+    EXPECT_EQ(q->begin_resync(), 2u);
+    EXPECT_TRUE(q->resync_unchanged());
+    // An enqueue after successful validation belongs to the new input history.
+    ASSERT_TRUE(q->push({1, 1, 600}));
+    ASSERT_TRUE(q->pop(record, 0));
+    EXPECT_EQ(record.timestamp_us, 600u);
+}
+
 TEST(IsrQueue, WakeUnblocksPop) {
     auto result = IsrQueue::create(1);
     ASSERT_TRUE(result);

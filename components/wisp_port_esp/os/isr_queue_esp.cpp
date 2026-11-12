@@ -25,6 +25,7 @@ struct IsrQueue::Impl {
     size_t size = 0;
     uint32_t dropped_count = 0;
     bool wake_pending = false;
+    bool produced_since_resync = false;
     StaticSemaphore_t signal_storage{};
     SemaphoreHandle_t signal;
 };
@@ -36,6 +37,7 @@ bool IRAM_ATTR IsrQueue::Impl::enqueue(const IsrQueueRecord& item, bool from_isr
     } else {
         portENTER_CRITICAL(&lock);
     }
+    produced_since_resync = true;
     if (size == capacity) {
         ++dropped_count;
     } else {
@@ -175,6 +177,23 @@ void IsrQueue::wake() {
     impl_->wake_pending = true;
     portEXIT_CRITICAL(&impl_->lock);
     xSemaphoreGive(impl_->signal);
+}
+
+uint32_t IsrQueue::begin_resync() {
+    portENTER_CRITICAL(&impl_->lock);
+    impl_->head = impl_->tail;
+    impl_->size = 0;
+    impl_->produced_since_resync = false;
+    const uint32_t count = impl_->dropped_count;
+    portEXIT_CRITICAL(&impl_->lock);
+    return count;
+}
+
+bool IsrQueue::resync_unchanged() const {
+    portENTER_CRITICAL(&impl_->lock);
+    const bool unchanged = !impl_->produced_since_resync;
+    portEXIT_CRITICAL(&impl_->lock);
+    return unchanged;
 }
 
 uint32_t IsrQueue::dropped() const {

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -73,7 +74,9 @@ public:
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     bool pressed() override {
         ++pressed_calls;
-        return down.load();
+        const bool level = down.load();
+        if (on_sample) on_sample();
+        return level;
     }
     wisp::hal::ButtonInputMode input_mode() const override {
         return wisp::hal::ButtonInputMode::EdgeEvent;
@@ -113,6 +116,7 @@ public:
 
     void service_input() override { ++maintenance_calls; }
     std::atomic<size_t> maintenance_calls{0};
+    std::function<void()> on_sample;
     bool reject_sink = false;
     wisp::os::Semaphore detach_entered{1, 0};
     std::atomic<bool> down{false};
@@ -136,6 +140,7 @@ public:
             sample_times_us_.push_back(wisp::os::now_us());
             samples_changed_.notify_all();
         }
+        if (on_sample) on_sample();
         return FakeButton::pressed();
     }
     uint32_t standby_poll_ms() const override { return standby_poll_ms_; }
@@ -150,6 +155,7 @@ public:
                                          [&] { return sample_times_us_.size() >= count; });
     }
 
+    std::function<void()> on_sample;
     std::atomic<size_t> pressed_calls{0};
 
 private:
@@ -278,6 +284,169 @@ void check_fallback_transition_with_timer_failure(bool fail_task, bool target_st
 }
 
 }  // namespace
+
+TEST(ButtonService, OverflowDuringPollSampleDoesNotReplayOldPress) {
+    DeviceRegistry registry;
+    auto power = std::make_shared<EdgeButton>("button.power");
+    auto talk = std::make_shared<EdgeButton>("button.talk");
+    auto polled = std::make_shared<PollButton>("button.pmu", 0);
+    ASSERT_TRUE(registry.add(power));
+    ASSERT_TRUE(registry.add(talk));
+    ASSERT_TRUE(registry.add(polled));
+    EventLog events;
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    bus.subscribe("", [&](const Event& event) { events.append(event); });
+    ButtonService service(registry, bus, 100);
+    service.poll(0);
+    polled->on_sample = [&] {
+        for (unsigned i = 0; i < 31; ++i) EXPECT_TRUE(talk->emit(i % 2 == 0, 21'000 + i));
+        EXPECT_TRUE(power->emit(true, 22'000));
+        EXPECT_FALSE(talk->emit(false, 23'000));
+        EXPECT_FALSE(power->emit(false, 23'001));
+    };
+    service.poll(20);
+    polled->on_sample = {};
+    service.poll(50);
+    service.poll(200);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_TRUE(events.snapshot().empty());
+    EXPECT_FALSE(power->down.load());
+    EXPECT_FALSE(talk->down.load());
+    ASSERT_TRUE(power->emit(true, 210'000));
+    ASSERT_TRUE(power->emit(false, 260'000));
+    service.poll(280);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(events.snapshot(), (std::vector<std::string>{"button.power.down", "button.power.up",
+                                                           "button.power.short"}));
+    service.stop();
+    bus.stop();
+}
+
+TEST(ButtonService, OverflowSnapshotRetriesWhenProducerContinuesDuringSampling) {
+    DeviceRegistry registry;
+    auto power = std::make_shared<EdgeButton>("button.power");
+    ASSERT_TRUE(registry.add(power));
+    EventLog events;
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    bus.subscribe("", [&](const Event& event) { events.append(event); });
+    ButtonService service(registry, bus, 100);
+    service.poll(0);
+    for (unsigned i = 0; i < 33; ++i) power->emit(true, 1000 + i);
+    unsigned samples = 0;
+    power->on_sample = [&] {
+        ++samples;
+        // Change the physical level after pressed() has captured its result.
+        // Alternate enough attempts to require progress across worker turns.
+        if (samples <= 4) {
+            for (unsigned i = 0; i < 33; ++i) power->emit(i % 2 != 0, 2000 + samples * 100 + i);
+            power->emit(false, 3000 + samples * 100);
+        }
+    };
+    for (uint64_t now = 10; now <= 60; now += 10) service.poll(now);
+    power->on_sample = {};
+    service.poll(300);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_GE(samples, 5u);
+    EXPECT_TRUE(events.snapshot().empty());
+    ASSERT_TRUE(power->emit(true, 310'000));
+    ASSERT_TRUE(power->emit(false, 360'000));
+    service.poll(380);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(events.snapshot(), (std::vector<std::string>{"button.power.down", "button.power.up",
+                                                           "button.power.short"}));
+    service.stop();
+    bus.stop();
+}
+
+void check_boot_held_fallback(unsigned failure) {
+    FailureReset failures;
+    DeviceRegistry registry;
+    auto power = std::make_shared<EdgeButton>("button.power");
+    power->down.store(true);
+    power->reject_sink = failure == 2;
+    auto clock = std::make_shared<PollButton>("button.clock", 0);
+    ASSERT_TRUE(registry.add(power));
+    ASSERT_TRUE(registry.add(clock));
+    EventLog events;
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    bus.subscribe("", [&](const Event& event) { events.append(event); });
+    ButtonService service(registry, bus, 40, 5);
+    wisp::port::sim::set_task_failure(failure == 0);
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Fast, failure == 1);
+    ASSERT_TRUE(service.start());
+    ASSERT_TRUE(clock->wait_for_samples(20));
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_TRUE(events.snapshot().empty());
+    power->down.store(false);
+    ASSERT_TRUE(clock->wait_for_samples(clock->sample_times().size() + 4));
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_TRUE(events.snapshot().empty());
+    power->down.store(true);
+    ASSERT_TRUE(events.wait_for(1));
+    power->down.store(false);
+    ASSERT_TRUE(events.wait_for(3));
+    service.stop();
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(events.snapshot(), (std::vector<std::string>{"button.power.down", "button.power.up",
+                                                           "button.power.short"}));
+    bus.stop();
+}
+
+TEST(ButtonService, WorkerFailureSuppressesBootHeld) { check_boot_held_fallback(0); }
+TEST(ButtonService, QueueFailureSuppressesBootHeld) { check_boot_held_fallback(1); }
+TEST(ButtonService, AttachFailureSuppressesBootHeld) { check_boot_held_fallback(2); }
+
+TEST(ButtonService, WorkerFailurePreservesQueuedGestureAfterAttach) {
+    FailureReset failures;
+    DeviceRegistry registry;
+    auto power = std::make_shared<EdgeButton>("button.power");
+    ASSERT_TRUE(registry.add(power));
+    EventLog events;
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    bus.subscribe("", [&](const Event& event) { events.append(event); });
+    ButtonService service(registry, bus);
+    service.poll(0);
+    ASSERT_TRUE(power->emit(true, wisp::os::now_us()));
+    wisp::os::sleep_ms(30);
+    ASSERT_TRUE(power->emit(false, wisp::os::now_us()));
+    wisp::os::sleep_ms(25);
+    wisp::port::sim::set_task_failure(true);
+    ASSERT_TRUE(service.start());
+    ASSERT_TRUE(events.wait_for(3));
+    service.stop();
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(events.snapshot(), (std::vector<std::string>{"button.power.down", "button.power.up",
+                                                           "button.power.short"}));
+    bus.stop();
+}
+
+TEST(ButtonService, WorkerFailurePreservesNewHeldPressAfterAttach) {
+    FailureReset failures;
+    DeviceRegistry registry;
+    auto power = std::make_shared<EdgeButton>("button.power");
+    ASSERT_TRUE(registry.add(power));
+    EventLog events;
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    bus.subscribe("", [&](const Event& event) { events.append(event); });
+    ButtonService service(registry, bus, 50, 5);
+    service.poll(0);
+    ASSERT_TRUE(power->emit(true, wisp::os::now_us()));
+    wisp::port::sim::set_task_failure(true);
+    ASSERT_TRUE(service.start());
+    ASSERT_TRUE(events.wait_for(2));
+    power->down.store(false);
+    ASSERT_TRUE(events.wait_for(3));
+    service.stop();
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(events.snapshot(), (std::vector<std::string>{"button.power.down", "button.power.long",
+                                                           "button.power.up"}));
+    bus.stop();
+}
 
 TEST(ButtonService, QueueFallbackSurvivesTimerFailureEnteringStandby) {
     check_fallback_transition_with_timer_failure(false, true);
@@ -508,7 +677,9 @@ TEST(EdgeEvent, OverflowAlsoMaintainsWakeForDroppedRelease) {
     ASSERT_FALSE(button->emit(false, 2000));
     EXPECT_EQ(button->maintenance_calls.load(), 0u);
     service.poll(3);
-    EXPECT_EQ(button->maintenance_calls.load(), 33u);
+    // Overflow discards the ambiguous records; the recovery sample still
+    // performs deferred wake maintenance for the dropped release.
+    EXPECT_EQ(button->maintenance_calls.load(), 1u);
     EXPECT_FALSE(button->down.load());
 }
 

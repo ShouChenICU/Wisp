@@ -43,6 +43,8 @@ private:
         std::string id;
         hal::ButtonInputMode mode = hal::ButtonInputMode::PollOnly;
         bool edge_attached = false;
+        bool saw_edge = false;
+        bool recovery_level = false;
         bool pressed = false;
         bool ignore_until_release = false;
         bool long_sent = false;
@@ -58,6 +60,7 @@ private:
     void attach_edge_sinks();
     void detach_edge_sinks();
     void run_worker();
+    void drain_edges(uint32_t timeout_ms);
     void poll_internal(uint64_t now_ms);
     uint32_t next_wait_ms(uint64_t now_us) const;
     uint32_t poll_interval_ms(const ButtonState& state) const;
@@ -86,6 +89,7 @@ private:
     bool standby_ = false;
     bool have_poll_time_ = false;
     bool overflow_warned_ = false;
+    bool recovering_ = false;
     uint64_t last_poll_ms_ = 0;
     uint32_t last_dropped_ = 0;
     uint32_t warned_sink_failures_ = 0;

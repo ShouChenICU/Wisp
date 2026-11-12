@@ -15,6 +15,7 @@ struct IsrQueue::Impl {
 
     bool enqueue(const IsrQueueRecord& item) {
         std::lock_guard<std::mutex> lock(mutex);
+        produced_since_resync = true;
         if (size == capacity) {
             ++dropped_count;
             return false;
@@ -35,6 +36,7 @@ struct IsrQueue::Impl {
     size_t size = 0;
     uint32_t dropped_count = 0;
     bool wake_pending = false;
+    bool produced_since_resync = false;
 };
 
 Result<std::unique_ptr<IsrQueue>> IsrQueue::create(size_t capacity) {
@@ -124,6 +126,19 @@ void IsrQueue::wake() {
         impl_->wake_pending = true;
     }
     impl_->condition.notify_one();
+}
+
+uint32_t IsrQueue::begin_resync() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->head = impl_->tail;
+    impl_->size = 0;
+    impl_->produced_since_resync = false;
+    return impl_->dropped_count;
+}
+
+bool IsrQueue::resync_unchanged() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return !impl_->produced_since_resync;
 }
 
 uint32_t IsrQueue::dropped() const {
