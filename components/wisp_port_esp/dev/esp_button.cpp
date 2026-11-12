@@ -23,7 +23,7 @@ namespace wisp::port::esp {
 namespace {
 constexpr const char* kTag = "button";
 os::Mutex service_mutex;
-int service_core = -1;
+bool service_installed = false;
 }  // namespace
 
 struct EspGpioButton::Input {
@@ -37,29 +37,40 @@ struct EspGpioButton::Input {
     ButtonWakeState wake;
     bool attached = false;
     bool warned = false;
-    esp_err_t registration_error = ESP_OK;
 
     static void operator delete(void* ptr) noexcept { os::dealloc(ptr); }
 
     static void on_edge(void* context);
 
-    static void add_on_core(void* context) {
-        auto* input = static_cast<Input*>(context);
-        input->registration_error = gpio_set_intr_type(input->pin, GPIO_INTR_ANYEDGE);
-        if (input->registration_error == ESP_OK) {
-            input->registration_error = gpio_isr_handler_add(input->pin, on_edge, input);
-        }
-        input->attached = input->registration_error == ESP_OK;
+    esp_err_t add_handler() {
+        esp_err_t err = gpio_set_intr_type(pin, GPIO_INTR_ANYEDGE);
+        // IDF routes this pin using its actual service interrupt handle.
+        if (err == ESP_OK) err = gpio_isr_handler_add(pin, on_edge, this);
+        attached = err == ESP_OK;
+        return err;
     }
 
-    static void remove_on_core(void* context) {
-        auto* input = static_cast<Input*>(context);
-        // IDF's remove alone does not wait for a callback on the other core.
-        // Running removal on the interrupt's core means its old ISR has
-        // finished before this task can execute, and no new one can start.
-        ESP_ERROR_CHECK(gpio_isr_handler_remove(input->pin));
-        input->attached = false;
-        input->sink = {};
+    bool disable_input() {
+        // IDF's GPIO HAL disables delivery and clears pending pin status.
+        // An ISR may still hold an earlier status snapshot, so retain both
+        // handler and sink until a task barrier has run on every CPU core.
+        return gpio_intr_disable(pin) == ESP_OK;
+    }
+    static void drained_on_core(void* /*context*/) {}
+    bool synchronize_core(uint32_t core) {
+#if CONFIG_FREERTOS_UNICORE
+        // A task on the only enabled CPU cannot overlap an earlier ISR;
+        // IDF's blocking IPC dispatcher is not available in unicore mode.
+        return core == 0;
+#else
+        return esp_ipc_call_blocking(core, drained_on_core, nullptr) == ESP_OK;
+#endif
+    }
+    bool remove_handler() {
+        if (gpio_isr_handler_remove(pin) != ESP_OK) return false;
+        attached = false;
+        sink = {};
+        return true;
     }
 
     bool lock_sleep() { return esp_pm_lock_acquire(sleep_lock) == ESP_OK; }
@@ -92,11 +103,11 @@ void IRAM_ATTR EspGpioButton::Input::on_edge(void* context) {
 
 Result<void> EspGpioButton::prepare_edge_input() {
     std::lock_guard<os::Mutex> lock(service_mutex);
-    if (service_core >= 0) return Result<void>::ok();
+    if (service_installed) return Result<void>::ok();
     // A service installed without IRAM flags cannot promise cache-off delivery.
     const esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL1);
     if (err != ESP_OK) return Result<void>::err(ErrorCode::IoError, esp_err_to_name(err));
-    service_core = xPortGetCoreID();
+    service_installed = true;
     return Result<void>::ok();
 }
 
@@ -115,7 +126,7 @@ EspGpioButton::~EspGpioButton() { detach(); }
 void EspGpioButton::detach() {
     if (!input_) return;
     if (input_->attached) {
-        ESP_ERROR_CHECK(esp_ipc_call_blocking(service_core, Input::remove_on_core, input_.get()));
+        ESP_ERROR_CHECK(quiesce_button_input(*input_, portNUM_PROCESSORS) ? ESP_OK : ESP_FAIL);
     }
     ESP_ERROR_CHECK(input_->wake.reset(*input_) ? ESP_OK : ESP_FAIL);
     if (input_->sleep_lock != nullptr) ESP_ERROR_CHECK(esp_pm_lock_delete(input_->sleep_lock));
@@ -148,10 +159,7 @@ Result<void> EspGpioButton::set_edge_sink(hal::ButtonEdgeSink sink) {
     err = gpio_sleep_sel_dis(pin_);
     if (err == ESP_OK) err = esp_sleep_enable_gpio_wakeup();
     if (err == ESP_OK && !input_->wake.update(pressed(), *input_)) err = ESP_FAIL;
-    if (err == ESP_OK) {
-        err = esp_ipc_call_blocking(service_core, Input::add_on_core, input_.get());
-        if (err == ESP_OK) err = input_->registration_error;
-    }
+    if (err == ESP_OK) err = input_->add_handler();
     if (err != ESP_OK) {
         detach();
         return Result<void>::err(ErrorCode::IoError, esp_err_to_name(err));

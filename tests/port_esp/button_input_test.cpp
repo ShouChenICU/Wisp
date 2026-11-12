@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <vector>
+
 using namespace wisp::port::esp;
 
 namespace {
@@ -27,7 +29,100 @@ struct WakeOps {
         return !fail_disable;
     }
 };
+
+// Models a callback already executing on the driver-selected core. Disabling
+// a pin clears hardware pending state, but cannot finish that old callback.
+struct DetachOps {
+    uint32_t irq_core = 0;
+    uint32_t caller_core = 0;
+    int failed_core = -1;
+    bool disable_ok = true;
+    bool remove_ok = true;
+    bool enabled = true;
+    bool pending = true;
+    bool in_flight = true;
+    bool removed = false;
+    bool invalid_order = false;
+    std::vector<uint32_t> synchronized;
+
+    bool disable_input() {
+        if (!disable_ok) return false;
+        enabled = false;
+        pending = false;
+        return true;
+    }
+    bool synchronize_core(uint32_t core) {
+        if (enabled || pending) invalid_order = true;
+        synchronized.push_back(core);
+        if (static_cast<int>(core) == failed_core) return false;
+        if (core == irq_core) in_flight = false;
+        return true;
+    }
+    bool remove_handler() {
+        if (enabled || pending || in_flight) {
+            invalid_order = true;
+            return false;
+        }
+        removed = remove_ok;
+        return remove_ok;
+    }
+};
 }  // namespace
+
+TEST(ButtonDetach, MigratedInstallerDoesNotDetermineIsrCore) {
+    DetachOps ops;
+    ops.irq_core = 0;
+    ops.caller_core = 1;
+    ASSERT_TRUE(quiesce_button_input(ops, 2));
+    EXPECT_FALSE(ops.in_flight);
+    EXPECT_TRUE(ops.removed);
+    EXPECT_FALSE(ops.invalid_order);
+    EXPECT_EQ(ops.synchronized, (std::vector<uint32_t>{0, 1}));
+}
+TEST(ButtonDetach, PreselectedOtherCoreIsDrainedBeforeRemoval) {
+    DetachOps ops;
+    ops.irq_core = 1;
+    ops.caller_core = 0;
+    ASSERT_TRUE(quiesce_button_input(ops, 2));
+    EXPECT_FALSE(ops.in_flight);
+    EXPECT_TRUE(ops.removed);
+    EXPECT_FALSE(ops.invalid_order);
+}
+TEST(ButtonDetach, SingleCoreAlsoDisablesAndDrainsBeforeRemoval) {
+    DetachOps ops;
+    ASSERT_TRUE(quiesce_button_input(ops, 1));
+    EXPECT_EQ(ops.synchronized, (std::vector<uint32_t>{0}));
+    EXPECT_FALSE(ops.invalid_order);
+    EXPECT_TRUE(ops.removed);
+}
+TEST(ButtonDetach, FailedDisableDoesNotRemoveLiveCallback) {
+    DetachOps ops;
+    ops.disable_ok = false;
+    EXPECT_FALSE(quiesce_button_input(ops, 2));
+    EXPECT_TRUE(ops.synchronized.empty());
+    EXPECT_FALSE(ops.removed);
+    EXPECT_TRUE(ops.in_flight);
+}
+TEST(ButtonDetach, FailedBarrierDoesNotRemoveCallback) {
+    DetachOps ops;
+    ops.irq_core = 1;
+    ops.failed_core = 1;
+    EXPECT_FALSE(quiesce_button_input(ops, 2));
+    EXPECT_FALSE(ops.removed);
+    EXPECT_TRUE(ops.in_flight);
+}
+TEST(ButtonDetach, RemoveFailureIsNotReportedAsQuiescentDetach) {
+    DetachOps ops;
+    ops.remove_ok = false;
+    EXPECT_FALSE(quiesce_button_input(ops, 2));
+    EXPECT_FALSE(ops.removed);
+    EXPECT_FALSE(ops.in_flight);
+}
+TEST(ButtonDetach, EmptyCoreSetCannotProveQuiescence) {
+    DetachOps ops;
+    EXPECT_FALSE(quiesce_button_input(ops, 0));
+    EXPECT_FALSE(ops.removed);
+}
 
 TEST(ButtonInput, ActiveHighMapsBothEdges) {
     EXPECT_FALSE(button_pressed(false, false));

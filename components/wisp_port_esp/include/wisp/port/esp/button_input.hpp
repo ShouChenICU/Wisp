@@ -10,6 +10,19 @@ constexpr bool power_button_use_gpio(bool validated, bool configured, bool edge_
     return validated && configured && edge_ready;
 }
 
+// Task-context teardown protocol. Disable delivery and clear pending pin
+// status first; then task barriers on all enabled cores drain any earlier
+// ISR snapshots before removal. No installer-task affinity is assumed.
+// Ops must not re-enable this pin while the protocol is in progress.
+template <class Ops>
+bool quiesce_button_input(Ops& ops, uint32_t core_count) {
+    if (core_count == 0 || !ops.disable_input()) return false;
+    for (uint32_t core = 0; core < core_count; ++core) {
+        if (!ops.synchronize_core(core)) return false;
+    }
+    return ops.remove_handler();
+}
+
 // Task-context wake policy. Holding the sleep lock before disabling a
 // level wake source closes the held-key immediate sleep/wake loop.
 class ButtonWakeState {
