@@ -2,9 +2,9 @@
 
 # 🔥 Wisp
 
-🇺🇸 **English** | 🇨🇳 [简体中文](README.zh-CN.md) | 🇯🇵 [日本語](README.ja.md)
+**A personal agent on ESP32 that builds the apps you ask for.**
 
-**An all-in-one handheld agent that runs on the ESP32.**
+🇺🇸 **English** | 🇨🇳 [简体中文](README.zh-CN.md) | 🇯🇵 [日本語](README.ja.md)
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-E7352C?style=flat-square&logo=espressif&logoColor=white)
@@ -14,51 +14,18 @@
 ![Lua](https://img.shields.io/badge/Lua-5.5-2C2D72?style=flat-square&logo=lua&logoColor=white)
 ![Status](https://img.shields.io/badge/status-active-brightgreen?style=flat-square)
 
-<table>
-  <tr>
-    <td align="center"><img src="docs/images/home.png" width="220"><br><sub>Idle</sub></td>
-    <td align="center"><img src="docs/images/agent-steps.png" width="220"><br><sub>The agent at work</sub></td>
-    <td align="center"><img src="docs/images/agent-done.png" width="220"><br><sub>Done</sub></td>
-  </tr>
-</table>
-
-<sub>The on-device UI is in Chinese, Japanese or English. These shots were taken in Chinese.</sub>
-
 </div>
 
-## ✨ What it is
+Wisp is your personal handheld agent. It can chat with you, has a memory of its own and, most importantly, can create and modify apps to suit your needs through an extremely lightweight, custom Lua app framework. Say “make me a Pomodoro timer,” for example, and it writes the interface and logic, installs the app and opens it. The whole process takes place on the device, with no recompilation or computer needed. You can reopen the app whenever you like or ask Wisp to keep refining it, all running on ESP32. Let your creativity and imagination run free, and bring whatever you have in mind to life.
 
-Wisp is your own handheld agent. It chats with you, keeps a memory of its own, and builds and manages apps for you on the fly. For example, hold the key and say "make me a Pomodoro timer". It writes the UI and the logic, installs the app and opens it, all on the device, with nothing recompiled and no computer needed. You can reopen the app any time, or ask Wisp to change it.
+## ✨ Highlights
 
-- **Ask for an app and get one.** Every feature is a Lua scene the agent writes, and changes take effect at once.
-- **The agent runs the whole device.** The screen, audio, storage, scenes and settings are all its tools, and the screen shows each step it takes.
-- **It remembers you.** It keeps your preferences and to-dos, and wakes the screen when a reminder is due.
-- **Bring your own models.** Chat, speech recognition and speech synthesis all use OpenAI-compatible APIs, and each can keep several profiles to switch between.
-- **Your data stays local.** The admin console works only on your LAN. API keys are write-only. Big actions such as deleting a scene are confirmed on the device.
-- **Not tied to one board.** The hardware is abstracted in layers, and most development happens in a PC simulator.
-
-<table>
-  <tr>
-    <td align="center"><img src="docs/images/scene-clock.png" width="150"><br><sub>Clock</sub></td>
-    <td align="center"><img src="docs/images/scene-pomodoro.png" width="150"><br><sub>Pomodoro</sub></td>
-    <td align="center"><img src="docs/images/scene-weather.png" width="150"><br><sub>Weather</sub></td>
-    <td align="center"><img src="docs/images/scene-level.png" width="150"><br><sub>Spirit level</sub></td>
-    <td align="center"><img src="docs/images/scene-balls.png" width="150"><br><sub>Colour balls</sub></td>
-  </tr>
-</table>
-
-<sub>Each scene is a single <code>main.lua</code>, most under 200 lines. The first four are in <a href="scenes/examples/"><code>scenes/examples/</code></a>.</sub>
-
-## 👆 How to use it
-
-| Action | What it does |
-| --- | --- |
-| Hold <kbd>BOOT</kbd>, or long-press the wisp | Talk; release to send. Hold again while it speaks to interrupt it |
-| Swipe right / left / down | Settings / scene list / conversation history. Pages follow your finger |
-| Hold <kbd>BOOT</kbd> inside a scene | A listening bar slides up at the bottom, so you stay in the scene |
-| Settings → About → Hardware diagnostics | Self-test results for every peripheral |
-
-Replies come in two layers. The sentence to be spoken is shown in large type, and the details appear below in small type. While the agent calls tools or writes files, the steps it is taking are listed under the wisp.
+- **Create apps on demand**: Turn a request into a Lua scene you can use and refine immediately.
+- **Control the device**: Tools for scenes, networking, scripts and settings, with progress on screen.
+- **Remember and remind**: Persistent preferences, to-dos and reminders that wake the screen.
+- **Choose your models**: OpenAI-compatible chat, ASR and TTS, with switchable profiles.
+- **Manage locally**: LAN admin console, write-only API keys and on-device confirmation for sensitive actions.
+- **Build across boards**: Pluggable hardware and a PC simulator for everyday development.
 
 ## 🚀 Quick start
 
@@ -107,6 +74,56 @@ idf.py build && idf.py -p <port> flash
 > [!TIP]
 > After a font change, also run `idf.py fonts-flash`. Fonts live in their own partitions, which an app update does not write.
 
+## 📸 Interface preview
+
+The on-device UI supports Chinese, Japanese and English. These screenshots show Chinese.
+
+### Conversation & agent activity
+
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center"><img alt="Idle" src="docs/images/home.png" width="200"><br><sub>Idle</sub></td>
+    <td align="center"><img alt="The agent at work" src="docs/images/agent-steps.png" width="200"><br><sub>The agent at work</sub></td>
+    <td align="center"><img alt="Done" src="docs/images/agent-done.png" width="200"><br><sub>Done</sub></td>
+  </tr>
+</table>
+
+</div>
+
+### Example scenes
+
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center"><img alt="Clock" src="docs/images/scene-clock.png" width="200"><br><sub>Clock</sub></td>
+    <td align="center"><img alt="Pomodoro" src="docs/images/scene-pomodoro.png" width="200"><br><sub>Pomodoro</sub></td>
+    <td align="center"><img alt="Weather" src="docs/images/scene-weather-round.png" width="200"><br><sub>Weather</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img alt="Spirit level" src="docs/images/scene-level.png" width="200"><br><sub>Spirit level</sub></td>
+    <td align="center"><img alt="Colour balls" src="docs/images/scene-balls.png" width="200"><br><sub>Colour balls</sub></td>
+    <td align="center"><img alt="2048" src="docs/images/scene-game2048-round.png" width="200"><br><sub>2048</sub></td>
+  </tr>
+</table>
+
+</div>
+
+<sub>Example source: <a href="scenes/examples/clock/">clock</a>, <a href="scenes/examples/pomodoro/">Pomodoro</a>, <a href="scenes/examples/weather-round/">weather</a>, <a href="scenes/examples/level/">spirit level</a> and <a href="scenes/examples/game2048/">2048</a>.</sub>
+
+## 👆 How to use it
+
+| Action | What it does |
+| --- | --- |
+| Hold <kbd>BOOT</kbd>, or long-press the wisp | Talk; release to send. Hold again while it speaks to interrupt it |
+| Swipe right / left / down | Settings / scene list / conversation history. Pages follow your finger |
+| Hold <kbd>BOOT</kbd> inside a scene | A listening bar slides up at the bottom, so you stay in the scene |
+| Settings → About → Hardware diagnostics | Self-test results for every peripheral |
+
+Replies come in two layers. The sentence to be spoken is shown in large type, and the details appear below in small type. While the agent calls tools or writes files, the steps it is taking are listed under the wisp.
+
 ## 🏠 Self-hosting the AI services
 
 Wisp talks to its models over OpenAI-compatible APIs, so chat, speech recognition and speech synthesis can each run on a machine of your own instead of a cloud provider.
@@ -146,19 +163,14 @@ The first run downloads the models. Then, on the admin console's Models page:
 
 ## 🤖 What the agent can do
 
-The model reasons through your configured OpenAI-compatible service; Wisp executes its tool calls on the device. The core tools fall into **nine groups by purpose**:
+The model reasons through your configured OpenAI-compatible service; Wisp executes its tool calls on the device. The core tools fall into **four groups by purpose**:
 
 | Group | Tools | What they enable |
 | --- | --- | --- |
-| Scene authoring & versions | `scene.list`, `scene.list_files`, `scene.read_file`, `scene.write_file`, `scene.edit_file`, `scene.delete_file`, `scene.install`, `scene.discard_draft`, `scene.rollback` | Inspect existing scenes, write Lua and UI files, install a draft, discard changes or restore the previous version. |
-| Scene lifecycle & data | `scene.open`, `scene.close`, `scene.exit`, `scene.delete`, `scene.data_read`, `scene.data_write`, `scene.files_list`, `scene.files_read`, `scene.files_remove` | Open and close scenes, return home, manage saved scene data, and inspect or clean up scene files. |
-| UI inspection & debugging | `ui.tree`, `scene.logs`, `scene.eval` | Inspect the current widget tree, read scene logs and run Lua in a running scene to diagnose or adjust its behavior. |
-| Web & APIs | `http.fetch` | Make HTTP/HTTPS requests to websites, APIs and LAN services, send headers and request bodies, extract text from HTML, and read long responses in pages without fetching them again. |
-| Computation & scripting | `lua.run` | Run a one-off Lua 5.5 script in a fresh sandbox: calculate, process JSON, chain requests, download files and read or write the agent's own files. HTTP and file operations can wait for their results, so a multi-step task fits in one script. Memory and execution time are bounded. |
-| Scene tool discovery & calls | `tools.find`, `tools.call` | Discover tools exported by installed scenes, obtain their parameter schemas on demand and call them. A scene can supply a reusable capability without changing the firmware. |
-| Memory & to-dos | `memory.list`, `memory.add`, `memory.update`, `memory.remove`; `todo.list`, `todo.add`, `todo.update`, `todo.done`, `todo.remove` | Remember preferences, maintain task lists, and set due times or recurring reminders that wake the screen and ring. |
-| Device & notifications | `device.status`, `settings.get`, `settings.set`, `notify.list`, `notify.dismiss` | Check battery, network, storage and peripherals; adjust brightness, volume, screen timeout, language and clock format; review or dismiss notifications. |
-| Built-in reference | `docs.read` | Read the on-device scene API reference by topic, so the agent can look up widgets, Lua APIs and scene conventions while building a feature. |
+| Scene development & runtime | `scene.*`, `ui.tree`, `docs.read`, `tools.find`, `tools.call` | Read the built-in API reference, create and edit scenes, install or roll back versions, manage their lifecycle, data and files, and inspect widgets and logs for debugging. Discover and call tools exported by installed scenes to add reusable capabilities without changing the firmware. |
+| Web & scripting | `http.fetch`, `lua.run` | Access websites, APIs and LAN services over HTTP/HTTPS, extract text from HTML and read long responses in pages. Run sandboxed Lua 5.5 scripts to calculate, process JSON, chain requests, download files and read or write the agent's own files. HTTP and file operations can wait for results; memory and execution time are bounded. |
+| Memory & to-dos | `memory.*`, `todo.*` | Remember preferences, maintain task lists, and set due times or recurring reminders that wake the screen and ring. |
+| Device & notifications | `device.status`, `settings.*`, `notify.list`, `notify.dismiss` | Check battery, network, storage and peripherals; adjust brightness, volume, screen timeout, language and clock format; review or dismiss notifications. |
 
 These tools can be combined in a conversation. For example:
 

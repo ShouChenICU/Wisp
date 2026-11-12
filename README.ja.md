@@ -2,9 +2,9 @@
 
 # 🔥 Wisp
 
-🇺🇸 [English](README.md) | 🇨🇳 [简体中文](README.zh-CN.md) | 🇯🇵 **日本語**
+**ESP32 で動き、頼んだアプリを作ってくれる、あなた専用の手のひらエージェント。**
 
-**ESP32 で動く、なんでもこなす手のひらエージェント。**
+🇺🇸 [English](README.md) | 🇨🇳 [简体中文](README.zh-CN.md) | 🇯🇵 **日本語**
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-E7352C?style=flat-square&logo=espressif&logoColor=white)
@@ -14,51 +14,18 @@
 ![Lua](https://img.shields.io/badge/Lua-5.5-2C2D72?style=flat-square&logo=lua&logoColor=white)
 ![Status](https://img.shields.io/badge/status-active-brightgreen?style=flat-square)
 
-<table>
-  <tr>
-    <td align="center"><img src="docs/images/home.png" width="220"><br><sub>待機中</sub></td>
-    <td align="center"><img src="docs/images/agent-steps.png" width="220"><br><sub>エージェントが作業中</sub></td>
-    <td align="center"><img src="docs/images/agent-done.png" width="220"><br><sub>完成</sub></td>
-  </tr>
-</table>
-
-<sub>端末の画面は日本語・中国語・英語に対応しています。スクリーンショットは中国語表示です。</sub>
-
 </div>
 
-## ✨ Wisp とは
+Wisp はあなた専用の手のひらエージェントです。話し相手になり、自分の記憶を持ち、何よりも、非常に軽量な独自の Lua アプリフレームワークを通じて、あなたの要望に合わせたアプリをその場で作成・修正できます。たとえば「ポモドーロタイマーを作って」と話しかけると、画面とロジックを書き、インストールして開きます。すべて端末上で完結し、再コンパイルもパソコンへの接続も必要ありません。作ったアプリはいつでも開き直せますし、さらに手直しを頼むこともでき、そのすべてが ESP32 上で動きます。あとは創造力と想像力を自由に働かせて、思い描いたものを形にしてください。
 
-Wisp はあなた専用の手のひらエージェントです。話し相手になり、自分の記憶を持ち、必要なアプリをその場で作って管理してくれます。たとえば、キーを押したまま「ポモドーロタイマーを作って」と話しかけると、画面とロジックを書き、インストールして開きます。すべて端末の上で完結し、再コンパイルもパソコンも要りません。作ったアプリはいつでも開き直せますし、手直しを頼むこともできます。
+## ✨ 特長
 
-- **頼めばアプリができる**：機能はすべてエージェントが書く Lua のシーンで、変更はすぐに反映されます。
-- **エージェントが端末全体を操る**：画面、オーディオ、ストレージ、シーン、設定のすべてがエージェントのツールです。作業の一つひとつが画面に表示されます。
-- **あなたを覚える**：好みや ToDo を記憶し、時間になると画面を点けて知らせます。
-- **モデルは自由に選べる**：対話・音声認識・音声合成はどれも OpenAI 互換 API で、それぞれ複数の設定を保存して切り替えられます。
-- **データは手元に**：管理画面は LAN 内だけで使えます。API キーは書き込み専用で読み出せません。シーンの削除のような大きな操作は端末上で確認します。
-- **ボードに縛られない**：ハードウェアは階層的に抽象化されており、開発の大部分は PC のシミュレーターで行えます。
-
-<table>
-  <tr>
-    <td align="center"><img src="docs/images/scene-clock.png" width="150"><br><sub>時計</sub></td>
-    <td align="center"><img src="docs/images/scene-pomodoro.png" width="150"><br><sub>ポモドーロ</sub></td>
-    <td align="center"><img src="docs/images/scene-weather.png" width="150"><br><sub>天気</sub></td>
-    <td align="center"><img src="docs/images/scene-level.png" width="150"><br><sub>水準器</sub></td>
-    <td align="center"><img src="docs/images/scene-balls.png" width="150"><br><sub>カラーボール</sub></td>
-  </tr>
-</table>
-
-<sub>どのシーンも <code>main.lua</code> 一つだけで、ほとんどが 200 行未満です。最初の四つのソースは <a href="scenes/examples/"><code>scenes/examples/</code></a> にあります。</sub>
-
-## 👆 使い方
-
-| 操作 | 動作 |
-| --- | --- |
-| <kbd>BOOT</kbd> キーを押し続ける、またはウィスプを長押し | 話しかけます。離すと送信。読み上げ中にもう一度押し続けると中断します |
-| 右 / 左 / 下にスワイプ | 設定 / シーン一覧 / 会話履歴。ページは指の動きについてきます |
-| シーンの中で <kbd>BOOT</kbd> キーを押し続ける | 画面の下に聞き取りバーが現れ、シーンを離れずに話せます |
-| 設定 → この端末について → ハードウェア診断 | 各周辺機器の自己診断の結果 |
-
-返答は二層で表示されます。読み上げる一文は大きな文字で、詳細はその下に小さな文字で表示されます。エージェントがツールを呼んだりファイルを書いたりしている間は、いま何をしているかがウィスプの下に一つずつ並びます。
+- **必要なアプリをその場で作成**：自然な言葉で頼むと Lua シーンを生成。いつでも修正し、すぐに反映。
+- **ツールで端末を操作**：シーン管理、通信、スクリプト実行、設定変更の進行状況を画面に表示。
+- **記憶とリマインダー**：好みや ToDo を保存し、時間になると画面で通知。
+- **モデルを自由に選択**：対話・音声認識・音声合成は OpenAI 互換 API に対応。複数の設定を切り替え可能。
+- **ローカルで管理**：LAN 内の管理画面、書き込み専用の API キー、重要な操作は端末で確認。
+- **柔軟なハードウェア対応**：交換可能なドライバーと、日常の開発に使える PC シミュレーター。
 
 ## 🚀 クイックスタート
 
@@ -107,6 +74,56 @@ idf.py build && idf.py -p <ポート> flash
 > [!TIP]
 > フォントを変えたら `idf.py fonts-flash` も実行してください。フォントは専用のパーティションにあり、アプリの更新では書き込まれません。
 
+## 📸 画面プレビュー
+
+端末の画面は日本語・中国語・英語に対応しています。以下は中国語表示のスクリーンショットです。
+
+### 会話とエージェントの動作
+
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center"><img alt="待機中" src="docs/images/home.png" width="200"><br><sub>待機中</sub></td>
+    <td align="center"><img alt="エージェントが作業中" src="docs/images/agent-steps.png" width="200"><br><sub>エージェントが作業中</sub></td>
+    <td align="center"><img alt="完成" src="docs/images/agent-done.png" width="200"><br><sub>完成</sub></td>
+  </tr>
+</table>
+
+</div>
+
+### シーンの例
+
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center"><img alt="時計" src="docs/images/scene-clock.png" width="200"><br><sub>時計</sub></td>
+    <td align="center"><img alt="ポモドーロ" src="docs/images/scene-pomodoro.png" width="200"><br><sub>ポモドーロ</sub></td>
+    <td align="center"><img alt="天気" src="docs/images/scene-weather-round.png" width="200"><br><sub>天気</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img alt="水準器" src="docs/images/scene-level.png" width="200"><br><sub>水準器</sub></td>
+    <td align="center"><img alt="カラーボール" src="docs/images/scene-balls.png" width="200"><br><sub>カラーボール</sub></td>
+    <td align="center"><img alt="2048" src="docs/images/scene-game2048-round.png" width="200"><br><sub>2048</sub></td>
+  </tr>
+</table>
+
+</div>
+
+<sub>サンプルソース：<a href="scenes/examples/clock/">時計</a>、<a href="scenes/examples/pomodoro/">ポモドーロ</a>、<a href="scenes/examples/weather-round/">天気</a>、<a href="scenes/examples/level/">水準器</a>、<a href="scenes/examples/game2048/">2048</a>。</sub>
+
+## 👆 使い方
+
+| 操作 | 動作 |
+| --- | --- |
+| <kbd>BOOT</kbd> キーを押し続ける、またはウィスプを長押し | 話しかけます。離すと送信。読み上げ中にもう一度押し続けると中断します |
+| 右 / 左 / 下にスワイプ | 設定 / シーン一覧 / 会話履歴。ページは指の動きについてきます |
+| シーンの中で <kbd>BOOT</kbd> キーを押し続ける | 画面の下に聞き取りバーが現れ、シーンを離れずに話せます |
+| 設定 → この端末について → ハードウェア診断 | 各周辺機器の自己診断の結果 |
+
+返答は二層で表示されます。読み上げる一文は大きな文字で、詳細はその下に小さな文字で表示されます。エージェントがツールを呼んだりファイルを書いたりしている間は、いま何をしているかがウィスプの下に一つずつ並びます。
+
 ## 🏠 AI サービスのセルフホスト
 
 Wisp は OpenAI 互換 API でモデルを呼び出すので、チャット、音声認識、音声合成をそれぞれクラウドではなく自分のマシンで動かせます。
@@ -146,19 +163,14 @@ speech serve qwen3-tts-0.6b qwen3-asr-0.6b --host 0.0.0.0
 
 ## 🤖 エージェントにできること
 
-モデルは設定した OpenAI 互換サービスで推論し、Wisp が端末上でツール呼び出しを実行します。コアツールは用途別に **9 種類**に分かれます。
+モデルは設定した OpenAI 互換サービスで推論し、Wisp が端末上でツール呼び出しを実行します。コアツールは用途別に **4 種類**に分かれます。
 
 | 分類 | ツール | できること |
 | --- | --- | --- |
-| シーンの作成とバージョン管理 | `scene.list`, `scene.list_files`, `scene.read_file`, `scene.write_file`, `scene.edit_file`, `scene.delete_file`, `scene.install`, `scene.discard_draft`, `scene.rollback` | 既存のシーンを調べ、Lua と画面のファイルを書き、下書きをインストールします。変更の破棄や前のバージョンへの復元もできます。 |
-| シーンの実行とデータ管理 | `scene.open`, `scene.close`, `scene.exit`, `scene.delete`, `scene.data_read`, `scene.data_write`, `scene.files_list`, `scene.files_read`, `scene.files_remove` | シーンの起動・終了、ホームへの復帰、保存データの管理、シーンファイルの閲覧や削除ができます。 |
-| 画面の検査とデバッグ | `ui.tree`, `scene.logs`, `scene.eval` | 現在のウィジェットツリーやシーンのログを調べ、実行中のシーンで Lua を動かして問題を調査したり動作を調整したりできます。 |
-| Web と API | `http.fetch` | Web ページ、API、LAN 内のサービスへ HTTP/HTTPS リクエストを送り、ヘッダーや本文を指定し、HTML からテキストを抽出できます。長い応答は再取得せずに分割して読めます。 |
-| 計算とスクリプト処理 | `lua.run` | 新しいサンドボックスで一時的な Lua 5.5 スクリプトを実行し、計算、JSON 処理、連続リクエスト、ダウンロード、エージェント専用ファイルの読み書きができます。HTTP とファイル操作は結果を待てるので、複数の手順を一つのスクリプトにまとめられます。メモリと実行時間には上限があります。 |
-| シーンツールの発見と呼び出し | `tools.find`, `tools.call` | インストール済みシーンが公開するツールを探し、必要なときに引数の定義を取得して呼び出します。ファームウェアを変えずに、シーンで再利用可能な能力を追加できます。 |
-| 記憶と ToDo | `memory.list`, `memory.add`, `memory.update`, `memory.remove`; `todo.list`, `todo.add`, `todo.update`, `todo.done`, `todo.remove` | 好みを覚え、タスクを管理し、期限や繰り返しのリマインダーを設定できます。時刻が来ると画面が点いて音が鳴ります。 |
-| 端末の状態と通知 | `device.status`, `settings.get`, `settings.set`, `notify.list`, `notify.dismiss` | バッテリー、ネットワーク、ストレージ、周辺機器の状態を確認し、明るさ、音量、画面消灯時間、言語、時計表示を調整できます。通知の確認と消去もできます。 |
-| 内蔵リファレンス | `docs.read` | 端末内のシーン API 文書をトピック別に読み、機能を作りながらウィジェット、Lua API、シーンの規約を調べられます。 |
+| シーンの開発と実行 | `scene.*`, `ui.tree`, `docs.read`, `tools.find`, `tools.call` | 内蔵 API 文書を読み、シーンを作成・編集し、インストールやバージョンの復元、実行状態・データ・ファイルの管理、ウィジェットツリーやログによるデバッグができます。シーンが公開するツールを探して呼び出し、ファームウェアを変えずに再利用可能な能力を追加できます。 |
+| Web とスクリプト | `http.fetch`, `lua.run` | HTTP/HTTPS で Web ページ、API、LAN 内のサービスへアクセスし、HTML からのテキスト抽出や長い応答の分割読み取りができます。Lua 5.5 サンドボックスで計算、JSON 処理、連続リクエスト、ダウンロード、エージェント専用ファイルの読み書きができます。HTTP とファイル操作は結果を待て、メモリと実行時間には上限があります。 |
+| 記憶と ToDo | `memory.*`, `todo.*` | 好みを覚え、タスクを管理し、期限や繰り返しのリマインダーを設定できます。時刻が来ると画面が点いて音が鳴ります。 |
+| 端末と通知 | `device.status`, `settings.*`, `notify.list`, `notify.dismiss` | バッテリー、ネットワーク、ストレージ、周辺機器の状態を確認し、明るさ、音量、画面消灯時間、言語、時計表示を調整できます。通知の確認と消去もできます。 |
 
 会話の中でこれらのツールを組み合わせられます。たとえば：
 
