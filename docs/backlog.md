@@ -220,3 +220,7 @@ Source: glyph partition review records.
 ## CI speed
 
 - `tools/ci.sh` runs ctest serially (about 390 s; `sim_smoke` alone takes 92 s). `ctest -j 20` finished in 92 s on a 20-core host, but under that load `AppScenes.DeleteAfterStopRuntimeIsRefused` aborted once (it passes alone, three runs out of three). Find its timing assumption first, then run ctest in parallel, keeping the smoke tests `RUN_SERIAL` if they share ports.
+
+## Agent core tool enhancements
+
+- `lua.run` failures now carry their full payload in `ToolOutput.result_json`, while `AgentService::execute_tool` still reads the diagnostic error code only from `ToolOutput.result`. Runtime/compile/timeout/memory/cancelled failures therefore log `error:failed`; the model result and ToolEnd summary remain correct. Preserve a small structured error code or expose explicit metadata without parsing the large JSON payload. Add a regression at the production consumer boundary.
