@@ -1,7 +1,8 @@
 #include "wisp/core/button_service.hpp"
 
+#include <algorithm>
 #include <cstring>
-#include <mutex>
+#include <limits>
 #include <utility>
 
 #include "wisp/core/log.hpp"
@@ -11,6 +12,9 @@ namespace wisp::core {
 namespace {
 constexpr const char* kTag = "button_service";
 constexpr const char* kIdPrefix = "button.";
+constexpr size_t kEdgeQueueCapacity = 32;
+constexpr uint64_t kDebounceUs = 20'000;
+constexpr uint32_t kFallbackStandbyMs = 100;
 }  // namespace
 
 ButtonService::ButtonService(DeviceRegistry& registry, EventBus& bus, uint32_t long_press_ms,
@@ -19,58 +23,195 @@ ButtonService::ButtonService(DeviceRegistry& registry, EventBus& bus, uint32_t l
       bus_(bus),
       long_press_ms_(long_press_ms),
       poll_ms_(poll_ms),
-      timer_(std::make_unique<os::Timer>("wisp.button", poll_ms_, /*periodic=*/true,
-                                         [this] { poll(os::now_ms()); })) {}
+      compatibility_poll_ms_(poll_ms) {}
 
-void ButtonService::start() {
-    std::lock_guard<os::Mutex> timer_lock(timer_mutex_);
-    if (timer_->active()) {
-        // Already running: a second start() must be a true no-op,
-        // including leaving buttons_ untouched -- see the doc comment on
-        // start() for why re-running refresh_buttons() here would be
-        // unsafe.
-        return;
+ButtonService::~ButtonService() { stop(); }
+
+Result<void> ButtonService::start() {
+    ensure_initialized();
+    std::lock_guard<os::Mutex> lifecycle_lock(lifecycle_mutex_);
+    if (worker_ != nullptr || (fallback_timer_ != nullptr && fallback_timer_->active())) {
+        return Result<void>::ok();
     }
+
+    service_started_.store(true, std::memory_order_release);
     {
-        std::lock_guard<os::Mutex> lock(mutex_);
-        refresh_buttons();
-        for (auto& state : buttons_) {
-            state.ignore_until_release = state.button->pressed();
+        std::lock_guard<os::Mutex> state_lock(state_mutex_);
+        if (!initial_level_checked_) {
+            for (auto& state : buttons_) {
+                if (state.mode == hal::ButtonInputMode::PollOnly && !state.pressed &&
+                    !state.candidate_valid) {
+                    state.ignore_until_release = state.button->pressed();
+                }
+            }
+            initial_level_checked_ = true;
         }
     }
-    timer_->start();
+
+    if (fallback_mode_ || edge_queue_ == nullptr) {
+        return use_legacy_fallback();
+    }
+
+    stopping_.store(false, std::memory_order_release);
+    std::lock_guard<os::Mutex> queue_lock(queue_consumer_mutex_);
+    worker_running_.store(true, std::memory_order_release);
+    os::TaskConfig config;
+    config.name = "wisp.button";
+    config.stack_bytes = 4096;
+    config.priority = 5;
+    config.flash_access = false;
+    config.hot_stack = false;
+    worker_ = os::Task::spawn(config, [this] { run_worker(); });
+    if (worker_ == nullptr) {
+        worker_running_.store(false, std::memory_order_release);
+        stopping_.store(true, std::memory_order_release);
+        detach_edge_sinks();
+        {
+            std::lock_guard<os::Mutex> state_lock(state_mutex_);
+            for (auto& state : buttons_) {
+                if (state.mode == hal::ButtonInputMode::EdgeEvent) {
+                    state.mode = hal::ButtonInputMode::PollOnly;
+                }
+            }
+        }
+        fallback_mode_ = true;
+        WLOG_W(kTag, "worker creation failed; using timer polling fallback");
+        return use_legacy_fallback();
+    }
+
+    fallback_mode_ = false;
+    edge_queue_->wake();
+    return Result<void>::ok();
 }
 
 void ButtonService::stop() {
-    std::lock_guard<os::Mutex> timer_lock(timer_mutex_);
-    timer_->stop();
+    std::lock_guard<os::Mutex> lifecycle_lock(lifecycle_mutex_);
+    stopping_.store(true, std::memory_order_release);
+    detach_edge_sinks();
+    if (edge_queue_ != nullptr) {
+        edge_queue_->wake();
+    }
+    if (worker_ != nullptr) {
+        worker_->join();
+        worker_.reset();
+    }
+    worker_running_.store(false, std::memory_order_release);
+    stop_fallback_timer();
+    fallback_mode_ = false;
+    stopping_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<os::Mutex> queue_lock(queue_consumer_mutex_);
+        edge_queue_raw_.store(nullptr, std::memory_order_release);
+        edge_queue_.reset();
+    }
+    service_started_.store(false, std::memory_order_release);
+    initialized_.store(false, std::memory_order_release);
+    initial_level_checked_ = false;
+    {
+        std::lock_guard<os::Mutex> state_lock(state_mutex_);
+        buttons_.clear();
+        bindings_.clear();
+        have_poll_time_ = false;
+        last_poll_ms_ = 0;
+        last_dropped_ = 0;
+        overflow_warned_ = false;
+    }
+}
+
+void ButtonService::set_standby(bool standby) {
+    {
+        std::lock_guard<os::Mutex> state_lock(state_mutex_);
+        if (standby_ == standby) {
+            return;
+        }
+        standby_ = standby;
+        const uint64_t now_ms = have_poll_time_ ? last_poll_ms_ : os::now_ms();
+        for (auto& state : buttons_) {
+            if (state.mode == hal::ButtonInputMode::PollOnly) {
+                const uint32_t interval = poll_interval_ms(state);
+                state.next_poll_ms =
+                    interval == 0 ? std::numeric_limits<uint64_t>::max() : now_ms + interval;
+            }
+        }
+    }
+
+    std::lock_guard<os::Mutex> lifecycle_lock(lifecycle_mutex_);
+    if (edge_queue_ != nullptr) {
+        edge_queue_->wake();
+    }
+    if (fallback_mode_) {
+        auto result = start_fallback_timer();
+        if (!result) {
+            WLOG_E(kTag, "unable to update fallback polling timer");
+        }
+    }
 }
 
 void ButtonService::set_poll_interval_ms(uint32_t poll_ms) {
-    std::lock_guard<os::Mutex> timer_lock(timer_mutex_);
-    if (poll_ms_ == poll_ms) {
-        return;
-    }
-    bool was_active = timer_->active();
-    if (was_active) {
-        timer_->stop();
-    }
-    poll_ms_ = poll_ms;
-    timer_ = std::make_unique<os::Timer>("wisp.button", poll_ms_, /*periodic=*/true,
-                                         [this] { poll(os::now_ms()); });
-    if (was_active) {
-        timer_->start();
-    }
+    std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    compatibility_poll_ms_ = poll_ms;
 }
 
 uint32_t ButtonService::poll_interval_ms() const {
-    std::lock_guard<os::Mutex> timer_lock(timer_mutex_);
-    return poll_ms_;
+    std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    return compatibility_poll_ms_;
+}
+
+bool ButtonService::push_edge(void* context, bool pressed, uint64_t timestamp_us) noexcept {
+    auto* binding = static_cast<ButtonBinding*>(context);
+    return binding != nullptr && binding->service != nullptr &&
+           binding->service->enqueue_edge(binding->index, pressed, timestamp_us);
+}
+
+bool ButtonService::enqueue_edge(uint16_t index, bool pressed, uint64_t timestamp_us) noexcept {
+    os::IsrQueue* queue = edge_queue_raw_.load(std::memory_order_acquire);
+    if (queue == nullptr) {
+        return false;
+    }
+    return queue->push_from_isr(os::IsrQueueRecord{index, pressed ? 1u : 0u, timestamp_us});
+}
+
+void ButtonService::ensure_initialized() {
+    if (initialized_.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    std::lock_guard<os::Mutex> lifecycle_lock(lifecycle_mutex_);
+    if (initialized_.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    refresh_buttons();
+    auto queue_result = os::IsrQueue::create(kEdgeQueueCapacity);
+    if (!queue_result) {
+        {
+            std::lock_guard<os::Mutex> state_lock(state_mutex_);
+            for (auto& state : buttons_) {
+                if (state.mode == hal::ButtonInputMode::EdgeEvent) {
+                    state.mode = hal::ButtonInputMode::PollOnly;
+                }
+            }
+        }
+        fallback_mode_ = true;
+        WLOG_W(kTag, "edge queue creation failed; using polling fallback");
+    } else {
+        edge_queue_ = std::move(queue_result.value());
+        edge_queue_raw_.store(edge_queue_.get(), std::memory_order_release);
+        attach_edge_sinks();
+    }
+    initialized_.store(true, std::memory_order_release);
 }
 
 void ButtonService::refresh_buttons() {
-    std::vector<ButtonState> fresh;
-    for (auto& button : registry_.list<hal::Button>()) {
+    std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    buttons_.clear();
+    bindings_.clear();
+
+    auto devices = registry_.list<hal::Button>();
+    buttons_.reserve(devices.size());
+    bindings_.resize(
+        std::min(devices.size(), static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1));
+    for (auto& button : devices) {
         const std::string& id = button->info().id;
         if (id.compare(0, std::strlen(kIdPrefix), kIdPrefix) != 0) {
             WLOG_W(kTag, "button device id '%s' does not start with '%s'; topic will be malformed",
@@ -78,58 +219,324 @@ void ButtonService::refresh_buttons() {
         }
         ButtonState state;
         state.id = id;
+        state.mode = button->input_mode();
         state.button = std::move(button);
-        fresh.push_back(std::move(state));
+        state.next_poll_ms = 0;
+        buttons_.push_back(std::move(state));
     }
-    buttons_ = std::move(fresh);
-    buttons_loaded_ = true;
+    for (size_t i = 0; i < bindings_.size(); ++i) {
+        bindings_[i] = ButtonBinding{this, static_cast<uint16_t>(i)};
+    }
+}
+
+void ButtonService::attach_edge_sinks() {
+    std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    for (size_t i = 0; i < buttons_.size() && i < bindings_.size(); ++i) {
+        auto& state = buttons_[i];
+        if (state.mode != hal::ButtonInputMode::EdgeEvent) {
+            continue;
+        }
+        auto result = state.button->set_edge_sink(
+            hal::ButtonEdgeSink{&bindings_[i], &ButtonService::push_edge});
+        if (result) {
+            state.edge_attached = true;
+        } else {
+            state.mode = hal::ButtonInputMode::PollOnly;
+            ++warned_sink_failures_;
+            WLOG_W(kTag, "edge input unavailable for '%s'; using polling fallback",
+                   state.id.c_str());
+        }
+    }
+}
+
+void ButtonService::detach_edge_sinks() {
+    std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    for (auto& state : buttons_) {
+        if (state.edge_attached) {
+            auto result = state.button->set_edge_sink({});
+            if (!result) {
+                WLOG_W(kTag, "failed to detach edge input for '%s'", state.id.c_str());
+            }
+            state.edge_attached = false;
+        }
+    }
+}
+
+void ButtonService::run_worker() {
+    while (!stopping_.load(std::memory_order_acquire)) {
+        const uint64_t now_us = os::now_us();
+        const uint32_t timeout_ms = next_wait_ms(now_us);
+        os::IsrQueueRecord record;
+        {
+            std::lock_guard<os::Mutex> queue_lock(queue_consumer_mutex_);
+            if (edge_queue_ != nullptr && edge_queue_->pop(record, timeout_ms)) {
+                process_edge(ButtonEdgeEvent{static_cast<uint16_t>(record.source),
+                                             record.value != 0, record.timestamp_us});
+                while (edge_queue_->pop(record, 0)) {
+                    process_edge(ButtonEdgeEvent{static_cast<uint16_t>(record.source),
+                                                 record.value != 0, record.timestamp_us});
+                }
+            }
+        }
+        if (!stopping_.load(std::memory_order_acquire)) {
+            poll_internal(os::now_ms(), false);
+        }
+    }
+}
+
+uint32_t ButtonService::next_wait_ms(uint64_t now_us) const {
+    std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    uint64_t deadline_us = std::numeric_limits<uint64_t>::max();
+    for (const auto& state : buttons_) {
+        if (state.mode == hal::ButtonInputMode::PollOnly &&
+            state.next_poll_ms != std::numeric_limits<uint64_t>::max()) {
+            deadline_us = std::min(deadline_us, state.next_poll_ms * 1000);
+        }
+        if (state.candidate_valid) {
+            deadline_us = std::min(deadline_us, state.candidate_at_us + kDebounceUs);
+        }
+        if (state.pressed && !state.long_sent) {
+            deadline_us = std::min(deadline_us,
+                                   state.down_at_us + static_cast<uint64_t>(long_press_ms_) * 1000);
+        }
+    }
+    if (deadline_us == std::numeric_limits<uint64_t>::max()) {
+        return os::kForever;
+    }
+    if (deadline_us <= now_us) {
+        return 0;
+    }
+    const uint64_t delta_ms = (deadline_us - now_us + 999) / 1000;
+    return static_cast<uint32_t>(std::min<uint64_t>(delta_ms, os::kForever - 1));
+}
+
+uint32_t ButtonService::poll_interval_ms(const ButtonState& state) const {
+    if (!standby_) {
+        return poll_ms_;
+    }
+    if (state.id != "button.power") {
+        return 0;
+    }
+    const uint32_t interval = state.button->standby_poll_ms();
+    return interval != 0 || !fallback_mode_ ? interval : kFallbackStandbyMs;
+}
+
+void ButtonService::process_edge(const ButtonEdgeEvent& event) {
+    std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    if (event.button_index >= buttons_.size()) {
+        return;
+    }
+    auto& state = buttons_[event.button_index];
+    if (state.mode != hal::ButtonInputMode::EdgeEvent) {
+        return;
+    }
+
+    process_deadlines(event.timestamp_us);
+    if (event.pressed == state.pressed) {
+        if (state.candidate_valid && state.candidate_pressed != event.pressed) {
+            state.candidate_valid = false;
+        }
+        return;
+    }
+    if (state.candidate_valid) {
+        if (state.candidate_pressed == event.pressed) {
+            return;
+        }
+        state.candidate_valid = false;
+        if (event.pressed == state.pressed) {
+            return;
+        }
+    }
+    state.candidate_valid = true;
+    state.candidate_pressed = event.pressed;
+    state.candidate_at_us = event.timestamp_us;
+}
+
+void ButtonService::process_deadlines(uint64_t now_us) {
+    for (auto& state : buttons_) {
+        if (state.mode == hal::ButtonInputMode::EdgeEvent && state.candidate_valid &&
+            now_us >= state.candidate_at_us + kDebounceUs) {
+            const bool pressed = state.candidate_pressed;
+            const uint64_t confirmed_at_us = state.candidate_at_us + kDebounceUs;
+            state.candidate_valid = false;
+            commit_edge(state, pressed, confirmed_at_us);
+        }
+        if (state.pressed && !state.long_sent &&
+            now_us >= state.down_at_us + static_cast<uint64_t>(long_press_ms_) * 1000) {
+            state.long_sent = true;
+            publish_event(state, "long");
+        }
+    }
+}
+
+void ButtonService::commit_edge(ButtonState& state, bool pressed, uint64_t at_us) {
+    if (state.ignore_until_release) {
+        if (!pressed) {
+            state.ignore_until_release = false;
+        }
+        return;
+    }
+    if (pressed == state.pressed) {
+        return;
+    }
+    if (pressed) {
+        state.pressed = true;
+        state.down_at_us = at_us;
+        state.long_sent = false;
+        publish_event(state, "down");
+        return;
+    }
+    // A delayed worker may confirm release after the long deadline. Preserve
+    // chronological gesture order even when both deadlines are processed now.
+    if (!state.long_sent &&
+        at_us >= state.down_at_us + static_cast<uint64_t>(long_press_ms_) * 1000) {
+        state.long_sent = true;
+        publish_event(state, "long");
+    }
+    state.pressed = false;
+    publish_event(state, "up");
+    if (!state.long_sent) {
+        publish_event(state, "short");
+    }
+}
+
+void ButtonService::sample_poll_only(ButtonState& state, bool pressed, uint64_t at_us) {
+    if (state.ignore_until_release) {
+        if (!pressed) {
+            state.ignore_until_release = false;
+        }
+        return;
+    }
+    if (pressed && !state.pressed) {
+        state.pressed = true;
+        state.down_at_us = at_us;
+        state.long_sent = false;
+        publish_event(state, "down");
+    } else if (!pressed && state.pressed) {
+        state.pressed = false;
+        publish_event(state, "up");
+        if (!state.long_sent) {
+            publish_event(state, "short");
+        }
+    }
+}
+
+void ButtonService::recover_overflow(uint64_t now_us) {
+    if (edge_queue_ == nullptr) {
+        return;
+    }
+    const uint32_t dropped = edge_queue_->dropped();
+    if (dropped == last_dropped_) {
+        return;
+    }
+    if (!overflow_warned_) {
+        WLOG_W(kTag, "edge queue overflow; resynchronizing button levels");
+        overflow_warned_ = true;
+    }
+    last_dropped_ = dropped;
+
+    for (auto& state : buttons_) {
+        if (state.mode != hal::ButtonInputMode::EdgeEvent) {
+            continue;
+        }
+        const bool pressed = state.button->pressed();
+        state.candidate_valid = false;
+        if (pressed != state.pressed) {
+            commit_edge(state, pressed, now_us);
+        }
+    }
 }
 
 void ButtonService::publish_event(const ButtonState& state, const char* suffix) {
-    Event e;
-    e.topic = state.id + "." + suffix;
-    e.source = state.id;
-    bus_.publish(std::move(e));
+    Event event;
+    event.topic = state.id + "." + suffix;
+    event.source = state.id;
+    bus_.publish(std::move(event));
 }
 
-void ButtonService::poll(uint64_t now_ms) {
-    std::lock_guard<os::Mutex> lock(mutex_);
+void ButtonService::poll(uint64_t now_ms) { poll_internal(now_ms, service_started_.load()); }
 
-    if (!buttons_loaded_) {
-        refresh_buttons();
+void ButtonService::poll_internal(uint64_t now_ms, bool force_poll) {
+    ensure_initialized();
+    const uint64_t now_us = now_ms * 1000;
+
+    std::unique_lock<os::Mutex> queue_lock(queue_consumer_mutex_, std::try_to_lock);
+    if (!worker_running_.load(std::memory_order_acquire) && queue_lock.owns_lock()) {
+        os::IsrQueueRecord record;
+        os::IsrQueue* queue = edge_queue_raw_.load(std::memory_order_acquire);
+        while (queue != nullptr && queue->pop(record, 0)) {
+            process_edge(ButtonEdgeEvent{static_cast<uint16_t>(record.source), record.value != 0,
+                                         record.timestamp_us});
+        }
     }
 
+    std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    have_poll_time_ = true;
+    last_poll_ms_ = now_ms;
     for (auto& state : buttons_) {
-        bool down = state.button->pressed();
-
-        if (state.ignore_until_release) {
-            state.ignore_until_release = down;
+        if (state.mode != hal::ButtonInputMode::PollOnly) {
             continue;
         }
-
-        if (down && !state.pressed) {
-            // Freshly pressed.
-            state.pressed = true;
-            state.down_at = now_ms;
-            state.long_sent = false;
-            publish_event(state, "down");
-        } else if (down && state.pressed) {
-            // Still held: fire `long` exactly once per press, once the
-            // hold duration crosses the threshold.
-            if (!state.long_sent && now_ms - state.down_at >= long_press_ms_) {
-                state.long_sent = true;
-                publish_event(state, "long");
-            }
-        } else if (!down && state.pressed) {
-            // Released: `up`, plus `short` only if `long` never fired.
-            state.pressed = false;
-            publish_event(state, "up");
-            if (!state.long_sent) {
-                publish_event(state, "short");
-            }
+        const uint32_t interval = poll_interval_ms(state);
+        if (interval == 0) {
+            state.next_poll_ms = std::numeric_limits<uint64_t>::max();
+            continue;
         }
-        // !down && !state.pressed: idle, nothing to do.
+        if (state.next_poll_ms == std::numeric_limits<uint64_t>::max()) {
+            state.next_poll_ms = now_ms + interval;
+            continue;
+        }
+        if (force_poll || now_ms >= state.next_poll_ms) {
+            sample_poll_only(state, state.button->pressed(), now_us);
+            state.next_poll_ms = now_ms + interval;
+        }
     }
+    process_deadlines(now_us);
+    recover_overflow(now_us);
+}
+
+bool ButtonService::has_fallback_polling() const {
+    std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    for (const auto& state : buttons_) {
+        if (state.mode == hal::ButtonInputMode::PollOnly && poll_interval_ms(state) != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+Result<void> ButtonService::start_fallback_timer() {
+    if (!has_fallback_polling()) {
+        stop_fallback_timer();
+        return Result<void>::ok();
+    }
+    uint32_t period_ms = poll_ms_;
+    {
+        std::lock_guard<os::Mutex> state_lock(state_mutex_);
+        if (standby_) {
+            period_ms = kFallbackStandbyMs;
+        }
+    }
+    stop_fallback_timer();
+    fallback_timer_ =
+        os::Timer::create("wisp.button", period_ms, true, [this] { poll(os::now_ms()); });
+    if (fallback_timer_ == nullptr) {
+        return Result<void>::err(ErrorCode::NoMemory, "button fallback timer creation failed");
+    }
+    fallback_timer_->start();
+    return Result<void>::ok();
+}
+
+void ButtonService::stop_fallback_timer() {
+    if (fallback_timer_ != nullptr) {
+        fallback_timer_->stop();
+        fallback_timer_.reset();
+    }
+}
+
+Result<void> ButtonService::use_legacy_fallback() {
+    fallback_mode_ = true;
+    return start_fallback_timer();
 }
 
 }  // namespace wisp::core

@@ -28,6 +28,11 @@ public:
 
     virtual bool pressed() = 0;
     virtual ButtonInputMode input_mode() const { return ButtonInputMode::PollOnly; }
+
+    // A failed attach must not retain the sink. For an installed sink,
+    // set_edge_sink({}) must succeed and be quiescent: disable new callbacks
+    // and wait for all in-flight callbacks before returning, so the caller
+    // may immediately destroy the sink context. Call from task context only.
     virtual Result<void> set_edge_sink(ButtonEdgeSink) {
         return Result<void>::err(ErrorCode::Unsupported);
     }

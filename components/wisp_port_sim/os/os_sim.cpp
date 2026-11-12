@@ -22,6 +22,7 @@ std::atomic<bool> g_fail[static_cast<size_t>(Mem::DmaLarge) + 1] = {};
 
 // set_timer_failure() flag.
 std::atomic<bool> g_timer_fail{false};
+std::atomic<bool> g_task_fail{false};
 
 bool failing(Mem kind) { return g_fail[static_cast<int>(kind)].load(std::memory_order_relaxed); }
 
@@ -79,6 +80,7 @@ void set_alloc_failure(os::Mem kind, bool fail) {
 }
 
 void set_timer_failure(bool fail) { os::g_timer_fail.store(fail, std::memory_order_relaxed); }
+void set_task_failure(bool fail) { os::g_task_fail.store(fail, std::memory_order_relaxed); }
 
 }  // namespace wisp::port::sim
 
@@ -151,6 +153,9 @@ Task::Task() = default;
 Task::~Task() { join(); }
 
 std::unique_ptr<Task> Task::spawn(const TaskConfig& config, std::function<void()> fn) {
+    if (g_task_fail.load(std::memory_order_relaxed)) {
+        return nullptr;
+    }
     // The host simulator has no stack-size/priority/core-affinity controls
     // comparable to an RTOS task; the config is accepted for API parity
     // with the ESP-IDF port but otherwise ignored here.

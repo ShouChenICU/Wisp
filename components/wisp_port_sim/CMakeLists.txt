@@ -36,13 +36,22 @@ if(NOT ESP_PLATFORM)
 
 find_package(Threads REQUIRED)
 
+# OS implementations satisfy portable interfaces, so their consumers can
+# appear later on the link line than the platform archive. Pass the objects
+# explicitly instead of relying on archive extraction order or a reverse
+# dependency from a portable layer to the platform.
+add_library(wisp_port_sim_os_impl OBJECT os/os_sim.cpp os/isr_queue_sim.cpp)
+target_include_directories(wisp_port_sim_os_impl PRIVATE include)
+target_link_libraries(wisp_port_sim_os_impl PRIVATE wisp_os wisp_base Threads::Threads)
+
 wisp_component(
     NAME wisp_port_sim_os
-    SRCS os/os_sim.cpp os/isr_queue_sim.cpp log_stdout.cpp
+    SRCS log_stdout.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_os wisp_core
     HOST_LIBS Threads::Threads
 )
+target_sources(wisp_port_sim_os INTERFACE $<TARGET_OBJECTS:wisp_port_sim_os_impl>)
 
 wisp_component(
     NAME wisp_port_sim_settings
