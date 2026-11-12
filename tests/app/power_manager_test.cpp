@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 
+#include "dev/sim_devices.hpp"
 #include "support/fake_devices.hpp"
 #include "support/temp_dir.hpp"
 #include "support/wait.hpp"
@@ -53,6 +54,28 @@ using wisp::ui::UiRuntime;
 
 namespace {
 
+class CountedButton : public FakeButton {
+public:
+    explicit CountedButton(std::string id) : FakeButton(std::move(id)) {}
+    bool pressed() override {
+        ++reads;
+        return FakeButton::pressed();
+    }
+    uint32_t standby_poll_ms() const override { return 100; }
+    std::atomic<size_t> reads{0};
+};
+
+class CountedEdgeButton : public wisp::port::sim::SimButton {
+public:
+    explicit CountedEdgeButton(std::shared_ptr<wisp::port::sim::SimInput> input)
+        : SimButton("button.power", Kind::Power, std::move(input)) {}
+    bool pressed() override {
+        ++reads;
+        return SimButton::pressed();
+    }
+    std::atomic<size_t> reads{0};
+};
+
 // Everything a PowerManager test needs: a real (but Fake-backed) Display/
 // Touch/UiRuntime/ButtonService/EventBus, plus a JSON-file Settings
 // backend under a fresh temp dir -- see tests/core/settings_test.cpp for
@@ -70,7 +93,7 @@ struct Fixture {
     // `with_power_monitor=false` passes a null PowerMonitor*; see
     // NullPowerMonitorIsToleratedByStandbyTransitions below.
     explicit Fixture(int64_t screen_off_s = 60, bool with_storage = true,
-                     bool with_power_monitor = true) {
+                     bool with_power_monitor = true, bool edge_power = false) {
         settings_path = (temp_dir() / "power_settings.json").string();
         backend = std::make_unique<JsonFileSettingsBackend>(settings_path);
         Settings power_settings(*backend, "power");
@@ -87,7 +110,10 @@ struct Fixture {
             power_events.push_back(e);
         });
 
-        registry.add(btn);
+        if (edge_power)
+            registry.add(edge_btn);
+        else
+            registry.add(btn);
         registry.add(vol_btn);
         registry.add(display);
         registry.add(touch);
@@ -109,7 +135,8 @@ struct Fixture {
         }
 
         buttons = std::make_unique<ButtonService>(registry, bus);
-        buttons->start();
+        // Deterministic input clock: no worker competes with synthetic polls.
+        buttons->poll(0);
 
         // A real PowerMonitor (Fake-backed), so PowerManager's
         // set_standby() forwarding to it can be exercised the same way as
@@ -209,8 +236,11 @@ struct Fixture {
     std::shared_ptr<FakeImu> imu = std::make_shared<FakeImu>("imu.main");
     std::shared_ptr<FakePower> power = std::make_shared<FakePower>("power.main");
     std::unique_ptr<PowerMonitor> power_monitor;
-    std::shared_ptr<FakeButton> btn = std::make_shared<FakeButton>("button.power");
-    std::shared_ptr<FakeButton> vol_btn = std::make_shared<FakeButton>("button.vol_up");
+    std::shared_ptr<wisp::port::sim::SimInput> input =
+        std::make_shared<wisp::port::sim::SimInput>();
+    std::shared_ptr<CountedEdgeButton> edge_btn = std::make_shared<CountedEdgeButton>(input);
+    std::shared_ptr<CountedButton> btn = std::make_shared<CountedButton>("button.power");
+    std::shared_ptr<CountedButton> vol_btn = std::make_shared<CountedButton>("button.vol_up");
 
     std::shared_ptr<FakeStorage> int_storage =
         std::make_shared<FakeStorage>("storage.int", temp_dir().string(), /*removable=*/false);
@@ -284,28 +314,30 @@ private:
 };
 
 // Simulates one physical short press on `btn` (down, then up+short after
-// a few ms -- comfortably under ButtonService's default 1000ms
+// 100ms -- comfortably under ButtonService's default 1000ms
 // long_press_ms) by driving ButtonService::poll() directly with
 // synthetic timestamps, the same way tests/core/button_service_test.cpp
 // does.
+uint64_t input_clock = 0;
+
 void press_short(ButtonService& buttons, FakeButton& btn) {
-    uint64_t t = wisp::os::now_ms();
+    const uint64_t t = (input_clock += 5000);
     btn.down = true;
     buttons.poll(t);
     btn.down = false;
-    buttons.poll(t + 5);
+    buttons.poll(t + 100);
 }
 
 // Simulates one physical long press on `btn` (down, held past
 // ButtonService's default 1000ms long_press_ms, then up -- no trailing
 // `short`, since `long` already fired for this press).
 void press_long(ButtonService& buttons, FakeButton& btn) {
-    uint64_t t = wisp::os::now_ms();
+    const uint64_t t = (input_clock += 5000);
     btn.down = true;
     buttons.poll(t);
     buttons.poll(t + 1001);
     btn.down = false;
-    buttons.poll(t + 1010);
+    buttons.poll(t + 1200);
 }
 
 }  // namespace
@@ -322,7 +354,6 @@ TEST(PowerManager, EnterStandbySleepsEverythingAndPublishesState) {
     EXPECT_TRUE(f.sd_storage->standby());
     EXPECT_EQ(f.int_storage->set_standby_calls(), 0);
     EXPECT_TRUE(wait_until([&] { return f.ui->paused(); }, 2000));
-    EXPECT_EQ(f.buttons->poll_interval_ms(), 50u);
     // Light sleep is for deep standby only (spec 4.1).
     EXPECT_TRUE(f.light_sleep_calls.empty());
 
@@ -347,7 +378,6 @@ TEST(PowerManager, ExitStandbyRestoresEverything) {
     EXPECT_TRUE(f.imu->powered());
     EXPECT_FALSE(f.sd_storage->standby());
     EXPECT_TRUE(wait_until([&] { return !f.ui->paused(); }, 2000));
-    EXPECT_EQ(f.buttons->poll_interval_ms(), 20u);
     EXPECT_TRUE(f.light_sleep_calls.empty());
 
     ASSERT_TRUE(wait_until([&] { return f.power_event_count() >= 2; }, 2000));
@@ -393,7 +423,6 @@ TEST(PowerManager, UnsupportedTouchSleepIsNotAnErrorAndStandbyStillSucceeds) {
     EXPECT_TRUE(f.pm->standby());
     EXPECT_FALSE(f.display->powered());
     EXPECT_TRUE(wait_until([&] { return f.ui->paused(); }, 2000));
-    EXPECT_EQ(f.buttons->poll_interval_ms(), 50u);
 }
 
 // IMU power-down stopgap: mirrors UnsupportedTouchSleepIsNotAnError
@@ -414,7 +443,6 @@ TEST(PowerManager, UnsupportedImuSleepIsNotAnErrorAndStandbyStillSucceeds) {
     EXPECT_FALSE(f.touch->powered());
     EXPECT_TRUE(f.imu->powered());  // set_power() failed, so unchanged.
     EXPECT_TRUE(wait_until([&] { return f.ui->paused(); }, 2000));
-    EXPECT_EQ(f.buttons->poll_interval_ms(), 50u);
 }
 
 // `storage` is nullable (headless-style), just like
@@ -537,9 +565,7 @@ TEST(PowerManager, AnyButtonEventWhileInStandbyWakesIt) {
     f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 
-    f.btn->down = true;
-    f.buttons->poll(wisp::os::now_ms());
-    f.btn->down = false;
+    press_short(*f.buttons, *f.btn);
 
     EXPECT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
 }
@@ -598,9 +624,9 @@ TEST(PowerManager, PowerKeyScreenOffThenVolumeKeyWakeThenNextPowerShortTurnsItOf
 
     // A *different* button -- never routed through the owned wiring --
     // wakes it via PowerManager's own generic handler.
-    f.vol_btn->down = true;
-    f.buttons->poll(wisp::os::now_ms());
-    f.vol_btn->down = false;
+    // Generic wake semantics are tested with an edge-source event: ordinary
+    // PollOnly volume buttons intentionally cannot wake from standby.
+    f.bus.publish({"button.vol_up.down", "button.vol_up"});
     ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
 
     // The next power-key short press must still see the screen as on
@@ -1252,7 +1278,6 @@ TEST(PowerManager, WakeFromDeepStandbyRestoresAll) {
     EXPECT_TRUE(out->powered());
     EXPECT_FALSE(f.ui->paused());
     EXPECT_FALSE(f.sd_storage->standby());
-    EXPECT_EQ(f.buttons->poll_interval_ms(), 20u);
     EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true, false}));
     EXPECT_EQ(log->take(), (Strings{"audio_in.main:standby", "audio_out.main:standby",
                                     "audio_in.main:deep_standby", "audio_out.main:deep_standby",
@@ -1487,4 +1512,73 @@ TEST(PowerManager, WakeDuringTheFlushAbortsDeepStandby) {
     EXPECT_EQ(h.pm->level(), PowerLevel::Active);
     EXPECT_EQ(h.states(), (Strings{"standby", "active"}));
     EXPECT_EQ(h.log->take(), (Strings{"imu.main:standby", "imu.main:active"}));
+}
+
+TEST(PowerManager, StandbyUsesPerDeviceCadenceAndMonitorStaysIndependent) {
+    Fixture f;
+    f.buttons->stop();
+    f.buttons->poll(0);
+    const auto power = f.btn->reads.load();
+    const auto ordinary = f.vol_btn->reads.load();
+    f.run_on_ui([&] { f.pm->enter_standby(); });
+    f.buttons->poll(50);
+    EXPECT_EQ(f.btn->reads.load(), power);
+    EXPECT_EQ(f.vol_btn->reads.load(), ordinary);
+    f.buttons->poll(99);
+    EXPECT_EQ(f.btn->reads.load(), power);
+    f.buttons->poll(100);
+    EXPECT_EQ(f.btn->reads.load(), power + 1);
+    EXPECT_EQ(f.vol_btn->reads.load(), ordinary);
+    EXPECT_EQ(f.power_monitor->sample_interval_ms(), 30000u);
+    f.run_on_ui([&] { f.pm->exit_standby(); });
+    f.buttons->poll(119);
+    EXPECT_EQ(f.btn->reads.load(), power + 1);
+    f.buttons->poll(120);
+    EXPECT_EQ(f.btn->reads.load(), power + 2);
+    EXPECT_EQ(f.vol_btn->reads.load(), ordinary + 1);
+    EXPECT_EQ(f.power_monitor->sample_interval_ms(), 1000u);
+}
+
+TEST(PowerManager, OwnedEdgePowerStaysEventDrivenAcrossPendingDebounceAndWake) {
+    Fixture f(60, true, true, true);
+    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
+    f.input->key_power(true, 0);
+    f.buttons->poll(10);  // pending debounce when standby begins
+    f.run_on_ui([&] { f.pm->enter_standby(); });
+    f.buttons->poll(20);
+    ASSERT_TRUE(f.bus.wait_idle(1000));
+    f.drain_ui();
+    EXPECT_TRUE(f.pm->standby());  // owned down must not light the panel
+    EXPECT_FALSE(f.display->powered());
+    f.input->key_power(false, 60000);
+    f.buttons->poll(80);
+    ASSERT_TRUE(f.bus.wait_idle(1000));
+    f.drain_ui();
+    EXPECT_FALSE(f.pm->standby());
+    EXPECT_EQ(f.power_event_count(), 2u);  // standby + exactly one wake
+    f.buttons->poll(1000);
+    EXPECT_EQ(f.edge_btn->reads.load(), 0u);
+    EXPECT_EQ(f.power_monitor->sample_interval_ms(), 1000u);
+}
+
+TEST(PowerManager, EdgeLongDeadlineSurvivesStandbyAndActiveTransitions) {
+    Fixture f(60, true, true, true);
+    f.pm->set_power_key_owned(true);
+    std::vector<std::string> events;
+    const auto sub =
+        f.bus.subscribe("button.power.", [&](const Event& e) { events.push_back(e.topic); });
+    f.input->key_power(true, 0);
+    f.buttons->poll(20);
+    f.run_on_ui([&] { f.pm->enter_standby(); });
+    f.buttons->poll(500);
+    f.run_on_ui([&] { f.pm->exit_standby(); });
+    f.buttons->poll(1020);
+    f.buttons->poll(1100);
+    f.input->key_power(false, 1200000);
+    f.buttons->poll(1220);
+    ASSERT_TRUE(f.bus.wait_idle(1000));
+    EXPECT_EQ(events, (std::vector<std::string>{"button.power.down", "button.power.long",
+                                                "button.power.up"}));
+    EXPECT_EQ(f.edge_btn->reads.load(), 0u);
+    f.bus.unsubscribe(sub);
 }

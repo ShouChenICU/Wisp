@@ -15,8 +15,7 @@
 //     show no RTC on this board, though its product page lists one. Absent,
 //     clock.main is recorded as missing and the time comes from SNTP alone.
 //   - i2c_master + drivers/qmi8658 at 0x6B or 0x6A -> imu.main (EspImu)
-//   - the AXP2101's PWRON key -> button.power (EspPmuPowerKey: no GPIO
-//     follows the key on this board, so its IRQ bits are polled over I2C)
+//   - PWR -> button.power (PMU fallback until GPIO3 hardware acceptance)
 //   - GPIO0 (BOOT) -> button.boot (EspGpioButton), the talk key
 //   - bmgr's audio_dac/audio_adc -> audio_out.main/audio_in.main
 //     (EspAudioOut/EspAudioIn, ES8311/ES7210)
@@ -94,6 +93,11 @@ constexpr int kRtcProbeTimeoutMs = 20;
 
 // BOOT key: active low, no external pull-up.
 constexpr gpio_num_t kPinBtnBoot = GPIO_NUM_0;
+// SYS_OUT polarity is schematic-derived only; acceptance must cover
+// the strapping and light-sleep behavior in the button-interrupt spec 5/8.2.
+constexpr gpio_num_t kPinBtnPower = GPIO_NUM_3;
+constexpr bool kUseSysOut = true;
+constexpr bool kPowerActiveLow = false;
 
 // Outputs held through automatic light sleep (see the 2.16's
 // hold_outputs_during_light_sleep()). They duplicate board_devices.yaml's
@@ -310,7 +314,28 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
                   std::shared_ptr<wisp::port::esp::EspPower> power) {
     constexpr auto cls = wisp::hal::DeviceClass::Button;
 
-    if (power) {
+    bool configured = false;
+    bool edge_ready = false;
+    if (kUseSysOut) {
+        gpio_config_t power_cfg = {};
+        power_cfg.pin_bit_mask = 1ULL << kPinBtnPower;
+        power_cfg.mode = GPIO_MODE_INPUT;
+        // SYS_OUT already has the schematic's external pull network.
+        configured = gpio_config(&power_cfg) == ESP_OK;
+        edge_ready = configured && wisp::port::esp::EspGpioButton::prepare_edge_input().is_ok();
+    }
+    if (wisp::port::esp::power_button_use_gpio(kUseSysOut, configured, edge_ready)) {
+        WLOG_W(
+            kTag,
+            "button.power: GPIO3 active-high selected; verify polarity/strapping/wake on hardware");
+        add_device(registry, report,
+                   std::make_shared<wisp::port::esp::EspGpioButton>(
+                       kPinBtnPower, kPowerActiveLow, "button.power", "gpio-button", "",
+                       wisp::hal::ButtonInputMode::EdgeEvent));
+    } else if (power) {
+        WLOG_W(kTag,
+               "button.power: PMU fallback; GPIO3 polarity/strapping/wake NOT hardware validated; "
+               "standby metadata 100 ms");
         add_device(registry, report,
                    std::make_shared<wisp::port::esp::EspPmuPowerKey>(
                        std::move(power), "button.power", "axp2101-pwrkey"));
@@ -318,7 +343,7 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
         record_failed(report, "button.power", cls, "power.main unavailable");
     }
 
-    // The BOOT key is this board's only GPIO button and has no volume
+    // The BOOT key has no volume
     // label, so it gets its own id rather than the 2.16's button.vol_down;
     // the shell finds the talk key by its role, not its id.
     gpio_config_t cfg = {};
@@ -332,8 +357,9 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
         return;
     }
     add_device(registry, report,
-               std::make_shared<wisp::port::esp::EspGpioButton>(kPinBtnBoot, true, "button.boot",
-                                                                "gpio-button", "talk"));
+               std::make_shared<wisp::port::esp::EspGpioButton>(
+                   kPinBtnBoot, true, "button.boot", "gpio-button", "talk",
+                   wisp::hal::ButtonInputMode::EdgeEvent));
 }
 
 void hold_outputs_during_light_sleep() {

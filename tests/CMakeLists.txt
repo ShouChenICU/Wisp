@@ -146,7 +146,9 @@ target_include_directories(app_boot_test PRIVATE ${WISP_ROOT}/components/wisp_ap
 wisp_test(NAME power_key_controller_test SRCS app/power_key_controller_test.cpp LIBS wisp_app)
 wisp_test(NAME power_manager_test SRCS app/power_manager_test.cpp
           LIBS wisp_app wisp_ui wisp_core wisp_hal wisp_port_sim_os wisp_port_sim_settings
+               wisp_port_sim_dev
           TIMEOUT 30)
+target_include_directories(power_manager_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 wisp_test(NAME format_test SRCS app/format_test.cpp LIBS wisp_app wisp_core)
 wisp_test(NAME ram_budget_test SRCS app/ram_budget_test.cpp LIBS wisp_app wisp_base)
 wisp_test(NAME self_check_screen_test SRCS app/self_check_screen_test.cpp
@@ -239,6 +241,8 @@ target_include_directories(qmi8658_conv_test PRIVATE ${WISP_ROOT}/drivers/qmi865
 # path (the host build has no hooks) is the reference.
 wisp_test(NAME lv_blend_mask_test SRCS port_esp/lv_blend_mask_test.cpp LIBS wisp_ui wisp_port_sim_os)
 target_include_directories(lv_blend_mask_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp)
+wisp_test(NAME button_input_test SRCS port_esp/button_input_test.cpp)
+target_include_directories(button_input_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 wisp_test(NAME audio_downmix_test SRCS port_esp/audio_downmix_test.cpp)
 target_include_directories(audio_downmix_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 wisp_test(NAME jpeg_header_test SRCS port_esp/jpeg_header_test.cpp)

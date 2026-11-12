@@ -23,6 +23,7 @@ Sources: the MyOS project (MIT, by ShouChen, read-only reference; **its code is 
   The web asset pack is linked into the app image; there is no `assets` partition. The offset and size of `nvs` have not changed across any of the table changes, so settings stored in NVS, such as brightness and language, are kept. But saved Wi-Fi networks (`/int/net/wifi.json`) and paired clients (`/int/net/clients.json`) live in `/int` and are lost when the table changes, so Wi-Fi must be set up and clients paired again. The offset and size of `fonts` also stay the same. This is the second table change: the first (vector font spec 3.4) shrank `storage` from 5.875 MB to 3.06 MB to make room for the new `fonts` partition; this one (glyph partition spec 2) shrank the two OTA slots from 5 MB to a round 4.5 MB to make room for the new `glyphs` partition, and `storage` shrank with them from 3.06 MB to 2.94 MB (its offset moved from 0xA20000 to 0xA40000). The reasoning is the same both times: the LittleFS superblock records the block count, so once the partition size changes the mount fails and `format_if_mount_failed` immediately reformats it. **Every time a new table goes on, all data in `/int` (saved Wi-Fi networks, pairing records, installed scenes, scene data, files) is erased.** The user approved this table change (glyph partition spec 2). When coming from an old partition table (two 4 MB app slots plus a 2 MB `assets` partition; the previous version with `storage` at 0x5E0000 and no `fonts` partition; or the previous version with two 5 MB app slots, no `glyphs` partition and `storage` at 0xA20000), and the first time a bootloader with rollback enabled is used, you must do one full USB flash (`idf.py -p <PORT> flash`, which writes the bootloader, the partition table, `otadata`, `ota_0`, `fonts` and `glyphs`) before firmware can be uploaded through the web page. To change only the fonts, use `idf.py -p <PORT> fonts-flash` (which writes both `fonts.bin` and `glyphs.bin`); for everyday code changes, use `idf.py -p <PORT> app-flash` (see "Font partitions" in `docs/porting-guide.md`).
   On a board still on the previous partition table (two 5 MB app slots, no `glyphs` partition) that has had new firmware uploaded through the web page without a full flash, the new firmware runs normally, `storage` is looked up by name, and `/int` is not affected; but there is no `glyphs` partition, so body text falls back to vector 16 px (slightly blurrier than the bitmap font) until one full USB flash (`idf.py -p <PORT> flash`) puts the new table on.
 - Image size (ESP-IDF v6.0.3, `idf.py size`): release build 3,114,019 B (66.0% of the new `ota_0`, 0x480000, after the glyph partition table change on 2026-11-06, with `glyphs.bin` at 1,122,464 B; the debug build was not re-measured). The budget is 80% of one OTA slot. The earlier 3,967,023 B (75.7% of the old 5 MB `ota_0`, at the vector font acceptance on 2026-11-05, including 3a and the vector font) is from before the table change; once `lv_font_cjk_16` moved into the `glyphs` partition it is no longer linked into the image.
+- Interrupt-first verification build (2026-11-12, ESP-IDF v6.0.3, source base `505b6f9` plus documentation): `wisp.bin` 3,667,472 B (0x37F610), 77.72% of the 0x480000 OTA slot, below but close to the 80% budget. This binary size is build-only evidence, not a new device acceptance measurement; keep the dated `idf.py size` measurements above in their original context.
 
 ## Peripherals and pins
 
@@ -207,10 +208,10 @@ The device boots into the home screen (black background, wisp in the centre). "H
     bound the MIPI DCS specification sets for this wait) + `DISPON`(0x29). These are standard DCS commands, with
     nothing private to the CO5300. Ordinary sleep does not clear GRAM, so after waking the last picture shows
     immediately, followed by a normal redraw, and no hard reset is triggered.
-  - **Wake time estimate (not verified on the device)**: button polling delay (50 ms in standby) + `sleep_out_settle_ms`
-    (120 ms) + a little command transfer time, expected to be **around 200 ms**, which should meet the 300 ms target.
-    This is an estimate and **has not been measured on the device**; see the device verification steps in
-    "Acceptance item 5" below.
+  - **Wake time estimate (not verified on the device)**: the former estimate used a 50 ms standby button poll + `sleep_out_settle_ms`
+    (120 ms) + command transfer, around 200 ms. Current GPIO16 PWR requests EdgeEvent with no periodic polling;
+    failed edge attachment uses 100 ms standby PollOnly deadlines. Re-measure end-to-end wake latency rather than
+    treating either cadence as a measured result. See the device verification steps in "Acceptance item 5" below.
   - Once `DcsSleep` is selected, `EspDisplay` never calls `esp_lcd_panel_disp_sleep()`/
     `disp_on_off()` again (that would conflict with the `sleep_mode` state they record internally). Deep standby
     (DSTB) is left for the "deep standby" level of spec 1.6, outside the scope of sub-project 1.
@@ -267,8 +268,8 @@ The device boots into the home screen (black background, wisp in the centre). "H
   - **Fully paused during standby, waking only when really woken by `give()`**:
     - The IMU-reading branch of the self-check screen's sampling task (`SelfCheck::sample_loop()`, which originally
       read the IMU with a period of `kSampleTaskPeriodMs` = 20 ms): it subscribes to `power.state` and stops
-      reading the IMU completely in standby. This is the fastest periodic wake source in the system (20 ms,
-      faster even than ButtonService's 50 ms), and it is eliminated completely in standby.
+      reading the IMU completely in standby. This removed its 20 ms periodic wake source (the earlier button
+      policy still polled every 50 ms at the time).
       `PowerManager::exit_standby()` calls `give()` on waking to resume sampling immediately. The "slow sampling"
       branch for the power state/RTC does **not** stop completely; see the next group.
     - `wisp::hal::Imu::set_power(false)`: `PowerManager::enter_standby()` clears the QMI8658's accelerometer/
@@ -318,18 +319,25 @@ The device boots into the home screen (black background, wisp in the centre). "H
       once `UiRuntime` is paused). This is expected behaviour, not a bug: the `WISP_PERF` log during standby is
       itself one of the signals that confirm "nothing is really being rendered"; if at device acceptance the
       standby log shows a `WISP_PERF` `fps` other than 0, that means the pausing of rendering has regressed.
-    - `core::ButtonService` polls the buttons once every 50 ms in standby (the interval widened by
-      `PowerManager::enter_standby()`); once paused, `ui::UiRuntime` **no longer** wakes up periodically on its
-      own: its standby loop now waits indefinitely for `post()` jobs, and when there is nothing to do it never
-      wakes up of its own accord.
-  - At present, the **50 ms** polling of `core::ButtonService` is the shortest periodic wake source in the system
-    (the 20 ms IMU branch of the self-check sampling task has been eliminated; the power/RTC slow sampling branch
-    and `wisp.pwrmon` have both dropped to 30 s; the SD worker does not wake on its own at all during standby).
-    All of these only "wake the CPU briefly on a period and then go back to sleep"; they do not prevent automatic
-    light sleep itself from happening (there is no resident `ESP_PM_NO_LIGHT_SLEEP`/
-    `ESP_PM_CPU_FREQ_MAX` lock), but they limit the longest continuous stretch of light sleep to the order of
-    `ButtonService`'s 50 ms, slightly raising the average power. If the measured standby current on the device is
-    clearly higher than expected, these are still the first sources to investigate.
+    - Once paused, `ui::UiRuntime` waits indefinitely for `post()` jobs rather than waking periodically.
+  - **Button input (interrupt-first implementation; hardware acceptance pending)**: GPIO16 PWR, GPIO18 Volume+
+    and GPIO0 BOOT/TalkKey request EdgeEvent. Normal edge input has no periodic button poll; one `wisp.button`
+    worker waits for edges and debounce/long deadlines. Failed attachment downgrades that device to PollOnly:
+    20 ms active, ordinary keys paused in standby, PWR 100 ms standby/deep standby. Queue/task resource failure
+    instead uses an emergency Timer retaining its normally 20 ms scheduler tick to avoid replacement-allocation
+    failure, while device reads still obey those 20/100 ms deadlines. PMU status sampling stays 1 s/30 s,
+    independent of button input. The GPIO wake channel uses independent RTC IO level wake without replacing
+    digital ANYEDGE; non-RTC pins and unknown existing ISR-service flags fall back to polling. The 4096 B
+    `wisp.button` stack is non-hot/non-flash, eligible for preferred PSRAM placement but able to fall back to
+    internal RAM when an external stack is unavailable or external task creation fails. Actual stack
+    location/high-water mark remain pending `mem` acceptance; internal Fast queue/bindings and PM-lock
+    overhead also require fresh idle/worst-case measurements against unchanged budgets. See "Button input and standby" in
+    `docs/architecture.md` for teardown/barrier boundaries and the round board's "Button interrupt acceptance"
+    checklist for the shared wake, held-key, ISR stress, RAM and PMU checks (GPIO3 electrical/strapping checks
+    apply only to that board).
+  - Earlier measurements below used the old global 50 ms ButtonService poll. That policy limited continuous
+    sleep to about 50 ms but did not itself prevent light sleep. Those historical observations do not validate
+    the new edge/wake path or its RAM use; other system timers and PM locks still affect sleep length.
 - **Measuring a standby session**: the serial command `sleep` reports the last deep-standby session (time asleep,
   sleep lengths, wake causes, battery drain per hour) and the PM locks; the procedure and the meaning of each line
   are in "Measuring standby" in `docs/hardware/waveshare_esp32_s3_touch_amoled_1_75c.md`, and apply to this board too.

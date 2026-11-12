@@ -40,6 +40,7 @@
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+#include "wisp/port/sim/sim_os.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/shell/shell.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -265,8 +266,8 @@ TEST(AppBoot, StopBeforeStartAndStopTwiceAreSafe) {
 // App::stop() while in standby must leave standby first: buttons/storage
 // are members of App::Impl (not torn down by stop() itself), so without
 // this, a subsequent start() on the same App instance would resume with
-// the screen asleep and the poll period still widened to the standby
-// value -- see app.cpp's doc comment on the exit_standby() call stop()
+// the screen asleep and button input still in standby mode
+// -- see app.cpp's doc comment on the exit_standby() call stop()
 // makes.
 TEST(AppBoot, RestartAfterStoppingWhileInStandbyResetsScreenAndButtons) {
     auto h = make_app({.with_display = true});
@@ -288,14 +289,21 @@ TEST(AppBoot, RestartAfterStoppingWhileInStandbyResetsScreenAndButtons) {
     }));
     entered->take(wisp::os::kForever);
     ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
-    ASSERT_TRUE(wait_until([&] { return h.app.buttons().poll_interval_ms() == 50u; }, 2000));
 
     h.app.stop();
     ASSERT_TRUE(h.app.start());
 
     ASSERT_NE(h.app.ui(), nullptr);
     EXPECT_FALSE(h.app.ui()->paused());
-    EXPECT_EQ(h.app.buttons().poll_interval_ms(), 20u);
+    auto button = h.app.registry().get<wisp::hal::Button>("button.power");
+    ASSERT_NE(button, nullptr);
+    std::atomic<bool> received{false};
+    const auto sub =
+        h.app.bus().subscribe("button.power.down", [&](const auto&) { received.store(true); });
+    static_cast<FakeButton&>(*button).down = true;
+    EXPECT_TRUE(wait_until([&] { return received.load(); }, 2000));
+    static_cast<FakeButton&>(*button).down = false;
+    h.app.bus().unsubscribe(sub);
 
     h.app.stop();
 }
@@ -362,7 +370,6 @@ TEST(AppBoot, StopUndoesStandbyQueuedJustBeforeTheCheck) {
     task->join();
 
     EXPECT_TRUE(h.display->powered());
-    EXPECT_EQ(h.app.buttons().poll_interval_ms(), 20u);
 }
 
 TEST(AppNotifications, BatteryLowPostsSystemNotice) {
@@ -776,4 +783,19 @@ TEST(AppBoot, DiagnosticsSendTheSceneInFrontBack) {
     back_swipe(h);
     ASSERT_TRUE(wait_until([&] { return active_screen(h) == home; }, 3000));
     EXPECT_FALSE(diagnostics_open(h));
+}
+
+TEST(AppBoot, ButtonStartupFailureIsReportedWithoutBlockingBoot) {
+    auto h = make_app({.with_display = false});
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Fast, true);
+    wisp::port::sim::set_timer_failure(true);
+    auto result = h.app.start();
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Fast, false);
+    wisp::port::sim::set_timer_failure(false);
+    ASSERT_TRUE(result);
+    auto entry = h.app.report().find("button.power");
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->state, wisp::core::DeviceState::Failed);
+    EXPECT_EQ(entry->reason, "button service unavailable");
+    h.app.stop();
 }

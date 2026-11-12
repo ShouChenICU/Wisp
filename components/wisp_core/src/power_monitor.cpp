@@ -72,7 +72,7 @@ void PowerMonitor::set_standby(bool standby) {
     if (power_ == nullptr || timer_ == nullptr) {
         return;  // Nothing running yet -- the next start() uses standby_ already.
     }
-    // Mirrors wisp::core::ButtonService::set_poll_interval_ms(): swap the
+    // Swap the
     // Timer for a new one at the new period. `timer_mutex_` is never held
     // by sample() (see the header's thread-safety note), so this never
     // deadlocks against the Timer's own callback the way holding

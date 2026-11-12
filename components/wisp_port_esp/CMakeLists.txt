@@ -34,7 +34,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 
 wisp_component(
     NAME wisp_port_esp
-    SRCS os/os_esp.cpp log_esp.cpp settings_nvs.cpp dev/esp_display.cpp dev/esp_touch.cpp
+    SRCS os/os_esp.cpp os/isr_queue_esp.cpp log_esp.cpp settings_nvs.cpp dev/esp_display.cpp dev/esp_touch.cpp
          dev/esp_power.cpp dev/esp_clock.cpp dev/esp_imu.cpp dev/esp_button.cpp dev/esp_audio.cpp
          dev/esp_storage.cpp console_esp.cpp net/esp_wifi.cpp net/captive_dns.cpp
          net/esp_http_server.cpp net/esp_http_client.cpp net/esp_sntp.cpp esp_firmware.cpp
@@ -48,6 +48,11 @@ wisp_component(
                  esp_wifi esp_netif esp_event lwip esp_http_server esp_http_client esp-tls
                  mbedtls mdns app_update esp_partition esp_pm lvgl__lvgl espressif__esp_new_jpeg
 )
+
+# OS interfaces are first consumed by later portable archives. Force the
+# platform objects into the link rather than depending on archive scan order;
+# --gc-sections still discards unused functions/data.
+idf_component_set_property(${COMPONENT_NAME} WHOLE_ARCHIVE TRUE)
 
 # Rendering path: the display flush and touch read are always -O2,
 # whatever the global level (connectivity spec 3.2; see

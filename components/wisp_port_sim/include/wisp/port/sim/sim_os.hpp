@@ -15,4 +15,7 @@ void set_alloc_failure(os::Mem kind, bool fail);
 // it has no internal RAM left for a timer.
 void set_timer_failure(bool fail);
 
+// While set, os::Task::spawn() returns nullptr to exercise worker fallback.
+void set_task_failure(bool fail);
+
 }  // namespace wisp::port::sim
