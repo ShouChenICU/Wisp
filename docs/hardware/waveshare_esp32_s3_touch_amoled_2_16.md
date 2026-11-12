@@ -328,8 +328,10 @@ The device boots into the home screen (black background, wisp in the centre). "H
     failure, while device reads still obey those 20/100 ms deadlines. PMU status sampling stays 1 s/30 s,
     independent of button input. The GPIO wake channel uses independent RTC IO level wake without replacing
     digital ANYEDGE; non-RTC pins and unknown existing ISR-service flags fall back to polling. The 4096 B
-    `wisp.button` stack is PSRAM, non-hot/non-flash; internal Fast queue/bindings and PM-lock overhead require
-    fresh idle/worst-case `mem` measurements against unchanged budgets. See "Button input and standby" in
+    `wisp.button` stack is non-hot/non-flash, eligible for preferred PSRAM placement but able to fall back to
+    internal RAM when an external stack is unavailable or external task creation fails. Actual stack
+    location/high-water mark remain pending `mem` acceptance; internal Fast queue/bindings and PM-lock
+    overhead also require fresh idle/worst-case measurements against unchanged budgets. See "Button input and standby" in
     `docs/architecture.md` for teardown/barrier boundaries and the round board's "Button interrupt acceptance"
     checklist for the shared wake, held-key, ISR stress, RAM and PMU checks (GPIO3 electrical/strapping checks
     apply only to that board).
