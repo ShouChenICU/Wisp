@@ -2,11 +2,16 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
-## Unreleased
+## 0.5.0 — 2026-11-13
 
 ### Features
 
-- Agent HTTP fetching with cached chunk reads, temporary Lua execution with waiting HTTP/file calls, and discoverable scene-exported tools with headless execution. Adds localized activity labels and stronger prompt-injection rules for external content; device RAM and adversarial-page acceptance remain pending.
+- Agent HTTP fetching with cached chunk reads, temporary Lua execution with waiting HTTP/file calls, and discoverable scene-exported tools with headless execution. Adds localized activity labels and stronger prompt-injection rules for external content. The user reported normal operation on both supported boards; targeted RAM measurements and adversarial-page acceptance remain pending.
+- Round-screen weather and 2048 example scenes, available to the agent through the built-in example documentation.
+
+### Documentation
+
+- Refresh the English, Chinese and Japanese README introductions, summarize the core tools in four groups, and reorganize quick start, interface previews and usage instructions. Add round-screen weather and 2048 screenshots with transparent backgrounds.
 
 ## 0.4.0 — 2026-11-12
 
