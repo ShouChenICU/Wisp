@@ -33,7 +33,9 @@ fi
 
 # Every C/C++ source file in the repo, except build output,
 # components/wisp_ui/fonts/ (generated font data -- see
-# tools/gen_cjk_font.py / docs/references.md),
+# tools/gen_cjk_font.py / docs/references.md), hidden agent/tool state
+# (.claude/, .playwright-mcp/, .superpowers/, which may contain independent
+# worktrees or scratch sources),
 # firmware/build/, firmware/build-*/ and firmware/managed_components/ (ESP-IDF build
 # output and third-party sources fetched by the component manager --
 # both gitignored, neither ours to format), and
@@ -41,7 +43,9 @@ fi
 # gitignored), and third_party/ (upstream sources vendored verbatim,
 # e.g. Lua by tools/vendor_lua.sh -- never reformatted).
 mapfile -t SOURCE_FILES < <(find . \
-    \( -path './build' -o -path './.git' -o -path './components/wisp_ui/fonts' \
+    \( -path './build' -o -path './.git' -o -path './.claude' \
+       -o -path './.playwright-mcp' -o -path './.superpowers' \
+       -o -path './components/wisp_ui/fonts' \
        -o -path './firmware/build' -o -path './firmware/build-*' \
        -o -path './firmware/managed_components' \
        -o -path './firmware/components/gen_bmgr_codes' -o -path './third_party' \) -prune -o \
