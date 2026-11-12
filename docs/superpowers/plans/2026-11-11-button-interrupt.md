@@ -206,3 +206,11 @@
 ## Execution Order and Handoff
 
 Tasks 1–4 are implementation tasks with independent test cycles and should be reviewed after each task. Task 5 is the final verification/documentation task. The implementation must not begin until this plan is reviewed and approved; after approval, use the selected execution method (subagent-driven or native) and follow TDD for every behavior change.
+
+## 2026-11-12 integration ruling
+
+All five software tasks and final scoped review are complete. The user reported button-function testing successful on both boards and authorised merging into `main` with a version update. Use version 0.4.0 for this behaviour change; do not push without separate authorisation.
+
+Ruling: promote the exercised GPIO3 path to the round-board default (`kUseSysOut=true`) while keeping electrical level/strapping, battery-only light-sleep wake, cache-off stress and worst-case RAM/power checks explicitly pending. This relaxes the spec's original all-hardware-checks-before-enable gate in response to functional acceptance and integration approval; it does not claim those unperformed checks passed. Cost: the default ships with those hardware acceptance risks still open. PMU preparation fallback and GPIO sink-failure PollOnly downgrade remain available.
+
+Device bring-up reproduced a Level-1 interrupt-allocation failure followed by IPC stack overflow. Requesting IRAM-safe C interrupt levels 1–3 instead of Level 1 alone allowed boot, and both boards then passed user-reported button testing. The allocation-failure IPC stack-pressure path itself remains untested under exhaustion; normal success is not proof of that fallback path.

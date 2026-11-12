@@ -6,8 +6,8 @@ namespace wisp::port::esp {
 
 constexpr uint32_t kButtonStandbyPollMs = 100;
 constexpr bool button_pressed(bool high, bool active_low) { return high != active_low; }
-constexpr bool power_button_use_gpio(bool validated, bool configured, bool edge_ready) {
-    return validated && configured && edge_ready;
+constexpr bool power_button_use_gpio(bool enabled, bool configured, bool edge_ready) {
+    return enabled && configured && edge_ready;
 }
 
 // Task-context teardown protocol. Disable delivery and clear pending pin

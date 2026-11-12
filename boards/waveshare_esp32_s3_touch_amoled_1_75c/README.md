@@ -12,22 +12,21 @@ Board support for the Waveshare ESP32-S3-Touch-AMOLED-1.75C: a 466×466 round AM
 | `partitions.csv` | This board's partition table (32 MB flash: everything the cache maps below 16 MB, `storage` in the upper 16 MB). The conventions are in `docs/porting-guide.md`. |
 | `sdkconfig.defaults.board` | Board sdkconfig: 32 MB QIO flash, octal PSRAM without XIP, the USB serial console and the partition table path. `idf.py bmgr` merges it into `board_manager.defaults`. It applies only to a new sdkconfig, so delete the sdkconfig after changing it. |
 
-The IMU (QMI8658, at 0x6B or 0x6A, probed), the power management chip (AXP2101, which also delivers the PWR key) and the optional PCF85063 RTC are not handed to bmgr; Wisp's own drivers handle them.
+The IMU (QMI8658, at 0x6B or 0x6A, probed), the power management chip (AXP2101, with a PMU PWR-key fallback) and the optional PCF85063 RTC are not handed to bmgr; Wisp's own drivers handle them.
 
 ## Button input selection
 
-`button.boot` explicitly requests GPIO EdgeEvent input. `button.power` has
-exactly one registration: by default it remains the AXP2101 PollOnly key,
-whose standby interval metadata is 100 ms. Applying standby scheduling is
-owned by ButtonService/PowerManager integration, not this board file.
+`button.boot` explicitly requests GPIO EdgeEvent input. With `kUseSysOut=true`,
+`button.power` selects GPIO3/SYS_OUT EdgeEvent input by default. Exactly one
+power key is registered. ButtonService/PowerManager owns standby scheduling.
 
-GPIO3/SYS_OUT is declared in `board.cpp`, but
-`kSysOutHardwareValidated = false` keeps this strapping pin untouched. Its
-active-high polarity is **schematic-derived, not measured**. Only after the
-polarity, held-at-reset/boot/USB-JTAG and light-sleep wake checks in the
-button-interrupt design spec sections 5 and 8.2 pass may that board-level
-choice be changed. The selection log explicitly reports this pending state;
-it is not hardware evidence.
+The user reported button-function tests passing on this board and the 2.16
+on 2026-11-12, and approved merging this default. Active-high polarity is
+schematic-derived and functionally exercised, not an electrical measurement.
+Held-at-reset/boot strapping, battery-only light-sleep wake, cache-off stress
+and worst-case RAM/power acceptance remain pending; enabling the input does
+not claim those checks passed. See the hardware document for evidence and
+remaining acceptance steps.
 
 When enabled, GPIO configuration/shared edge-service failure selects the PMU
 fallback before registration. A later sink/resource failure leaves the one
@@ -38,8 +37,9 @@ high/low level detector plus global GPIO wake enable, preserving the digital
 ANYEDGE interrupt type (the generic GPIO wake API overwrites that type).
 Non-RTC-capable pins downgrade to polling. A NO_LIGHT_SLEEP lock is held
 while pressed; task-context edge maintenance disarms wake until release and
-then re-arms it. No polarity/strapping/wake or internal-RAM
-measurements have been performed for this implementation.
+then re-arms it. A USB-connected startup snapshot placed `wisp.button` in
+PSRAM with 3196 B of stack high-water-mark remaining; it is not worst-case
+RAM or standby-power acceptance.
 
 ## Build
 

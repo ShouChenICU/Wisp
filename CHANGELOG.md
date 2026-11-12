@@ -4,9 +4,16 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 
 ## Unreleased
 
+## 0.4.0 — 2026-11-12
+
 ### Changes
 
-- Interrupt-first button input: one deadline-driven worker handles timestamped edges without periodic polling. PollOnly buttons keep 20 ms active sampling; screen-off pauses ordinary keys and keeps a 100 ms power-key fallback. Queue/task creation failure retains an emergency 20 ms Timer tick while device reads still follow those deadlines. PMU battery/charging/VBUS sampling remains 1 s active / 30 s standby. GPIO buttons request independent RTC light-sleep wake; unsupported wake pins or unknown ISR-service ownership degrade to polling. On 1.75C, GPIO3 PWR support remains disabled pending polarity, strapping and physical wake acceptance: the default PWR still uses PMU polling. Device RAM and wake/stress acceptance remain pending.
+- Interrupt-first button input: one deadline-driven worker handles timestamped edges without periodic polling. PollOnly buttons keep 20 ms active sampling; screen-off pauses ordinary keys and keeps a 100 ms power-key fallback. Queue/task creation failure retains an emergency 20 ms Timer tick while device reads still follow those deadlines. PMU battery/charging/VBUS sampling remains 1 s active / 30 s standby. GPIO buttons request independent RTC light-sleep wake; unsupported wake pins or unknown ISR-service ownership degrade to polling. The 1.75C now selects GPIO3 for PWR by default after user-reported button-function tests on both boards. Electrical/strapping, physical light-sleep wake, worst-case RAM and power/stress measurements remain pending.
+
+### Fixes
+
+- GPIO input accepts IRAM-safe C interrupt levels 1–3 rather than requiring a free level-1 input. This resolves the interrupt-allocation failure observed while bringing up GPIO3 on the round board; the failure had also triggered an IPC task stack overflow. The allocation-failure stack-pressure path has not been separately stress-tested.
+
 
 ### Features
 

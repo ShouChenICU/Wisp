@@ -93,10 +93,10 @@ constexpr int kRtcProbeTimeoutMs = 20;
 
 // BOOT key: active low, no external pull-up.
 constexpr gpio_num_t kPinBtnBoot = GPIO_NUM_0;
-// SYS_OUT polarity is schematic-derived only. Keep the strapping pin
-// untouched until hardware acceptance in the button-interrupt spec 5/8.2.
+// SYS_OUT polarity is schematic-derived only; acceptance must cover
+// the strapping and light-sleep behavior in the button-interrupt spec 5/8.2.
 constexpr gpio_num_t kPinBtnPower = GPIO_NUM_3;
-constexpr bool kSysOutHardwareValidated = false;
+constexpr bool kUseSysOut = true;
 constexpr bool kPowerActiveLow = false;
 
 // Outputs held through automatic light sleep (see the 2.16's
@@ -316,7 +316,7 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
 
     bool configured = false;
     bool edge_ready = false;
-    if (kSysOutHardwareValidated) {
+    if (kUseSysOut) {
         gpio_config_t power_cfg = {};
         power_cfg.pin_bit_mask = 1ULL << kPinBtnPower;
         power_cfg.mode = GPIO_MODE_INPUT;
@@ -324,7 +324,7 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
         configured = gpio_config(&power_cfg) == ESP_OK;
         edge_ready = configured && wisp::port::esp::EspGpioButton::prepare_edge_input().is_ok();
     }
-    if (wisp::port::esp::power_button_use_gpio(kSysOutHardwareValidated, configured, edge_ready)) {
+    if (wisp::port::esp::power_button_use_gpio(kUseSysOut, configured, edge_ready)) {
         WLOG_W(
             kTag,
             "button.power: GPIO3 active-high selected; verify polarity/strapping/wake on hardware");

@@ -105,7 +105,9 @@ Result<void> EspGpioButton::prepare_edge_input() {
     std::lock_guard<os::Mutex> lock(service_mutex);
     if (service_installed) return Result<void>::ok();
     // A service installed without IRAM flags cannot promise cache-off delivery.
-    const esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL1);
+    // Other boot-time drivers can exhaust level-1 inputs on the selected CPU.
+    // Levels 1-3 support the C ISR and its FreeRTOS FromISR queue operations.
+    const esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LOWMED);
     if (err != ESP_OK) return Result<void>::err(ErrorCode::IoError, esp_err_to_name(err));
     service_installed = true;
     return Result<void>::ok();

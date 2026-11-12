@@ -13,7 +13,7 @@
 # or checkout (it depends on .git/logs/HEAD), but not after merely editing
 # a file, so "-dirty" can lag until the next reconfigure.
 
-set(WISP_BASE_VERSION "0.3.1")
+set(WISP_BASE_VERSION "0.4.0")
 
 function(wisp_version out_var)
     set(root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/..")
