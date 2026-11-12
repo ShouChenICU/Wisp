@@ -640,6 +640,14 @@ const char* strings_en(StrId id) {
             return "Dismiss a notification";
         case StrId::ActDocsRead:
             return "Read the docs";
+        case StrId::ActHttpFetch:
+            return "Fetch web page";
+        case StrId::ActLuaRun:
+            return "Run Lua script";
+        case StrId::ActToolsFind:
+            return "Find scene tools";
+        case StrId::ActToolsCall:
+            return "Call scene tool";
         case StrId::ActUiTree:
             return "Inspect the screen";
         case StrId::Count:

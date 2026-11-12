@@ -1028,8 +1028,8 @@ TEST_F(SceneHttpTest, AgentPrincipalRedirectChainSharesOneDeadline) {
     auto r = run(std::move(req));
     EXPECT_EQ(r.error, "timeout");
     // Hop 1 is sent at +0s, hop 2 at +20s (both still under the 50s
-    // deadline); the chain's one deadline is past by +40s, when hop 3
-    // would otherwise start.
+    // deadline), and hop 3 at +40s. At +60s the deadline has passed,
+    // so hop 4 is never sent.
     EXPECT_EQ(call, 3);
     client.responder = nullptr;
 }

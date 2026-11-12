@@ -643,6 +643,14 @@ const char* strings_ja(StrId id) {
             return "通知を消す";
         case StrId::ActDocsRead:
             return "ドキュメントを読む";
+        case StrId::ActHttpFetch:
+            return "ウェブページを取得";
+        case StrId::ActLuaRun:
+            return "Lua スクリプトを実行";
+        case StrId::ActToolsFind:
+            return "シーンツールを検索";
+        case StrId::ActToolsCall:
+            return "シーンツールを呼び出す";
         case StrId::ActUiTree:
             return "画面を確認";
         case StrId::Count:

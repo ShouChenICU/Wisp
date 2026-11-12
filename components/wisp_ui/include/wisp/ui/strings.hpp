@@ -463,6 +463,10 @@ enum class StrId : uint16_t {
     ActNotifyDismiss,
     ActDocsRead,
     ActUiTree,
+    ActHttpFetch,
+    ActLuaRun,
+    ActToolsFind,
+    ActToolsCall,
 
     Count,  // not a string; keep last
 };

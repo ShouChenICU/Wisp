@@ -306,6 +306,43 @@ The wiring is in `App::start()`: `ReminderScheduler` loads the to-dos on `wisp.f
 - Confirmation: the agent deleting a scene (`scene.delete`) and deleting a scene file (`scene.files_remove`) are `ToolRisk::Confirm`, which opens a confirmation dialog on the device and runs only after the user taps "Allow"; adding, removing and changing memory notes and to-dos is `ToolRisk::Note`, with no confirmation, only a line of explanation left in the conversation. When the user deletes something themselves on the device or the web page, the UI still opens a confirmation dialog as usual, to prevent accidental taps.
 - Logs (metadata only, never the user's or the model's text): `agent: turn <n> start source=<web|device_text|voice>`, `agent: state <s>`, `agent: tool <name> <ok|error:<code>> <ms> ms`, `agent: turn <n> end <status> steps=<k> tokens=<t>`, `agent: context <summarized|dropped> seq <a>-<b>`; each LLM request also logs a line `llm: model=<m> status=<s> ms=<t> tokens=<u>`.
 
+### Agent extension tools and headless scenes
+
+The core tools include `http.fetch`, `lua.run`, `tools.find` and `tools.call`
+(wire names replace dots with underscores). All four show an activity line
+without device confirmation. API keys remain write-only. External content is
+wrapped as untrusted data: `http:<host>` for fetch headers and body, `lua` for
+Lua results/output/errors, and `scene:<id>` for scene tool descriptions/results.
+The fixed security prompt treats such content as information, never instructions.
+
+`net::SceneHttp` runs both Scene and Agent principals on the existing `wisp.shttp`
+worker. Scene policy is unchanged. Agent identity `@agent` bypasses HTTPS-only,
+host allowlist and rate policy, permits bounded redirect following, and fails
+`offline` instead of entering the standby deferred queue. Syntax and resource
+bounds still apply; cross-origin redirects drop credentials. Logs contain only
+method, host, status and duration, never path, query, body or header values.
+
+`scene::AgentRunner` creates a temporary budgeted VM on the existing scene task
+for `lua.run`. Host-managed task coroutines wait for HTTP/files/sleep without
+blocking other scene messages; CPU slices exclude waiting. Agent files persist
+under `<Library>/agent/files/`; factory reset removes them. No extra OS task is
+created. Shared VM memory and large buffers use PSRAM.
+
+`agent::ToolIndex` stores installed scene.json tool declarations in PSRAM and
+refreshes after installation, rollback and deletion (including admin actions).
+`tools.find` searches the index; `tools.call` validates parameters and dispatches
+to `SceneRuntime::call_tool`. Scene tools never change the core model tools array
+or fixed prompt, preserving the provider's prefix cache.
+
+A stopped scene starts in `headless` state for a tool: tree without view or
+`on_show`, with `on_state("headless")`, no background permission/count or boot
+restore. It uses the shared VM budget and may evict background VMs when needed.
+At most one headless scene exists, closing after 60 s idle after the last call;
+opening it promotes the same VM without reload. Its launch reason stays `user`,
+including later transitions. Overall call timeout cancels the task while keeping
+a healthy scene; a VM CPU/memory fault uses normal scene fault handling.
+Hardware RAM and prompt-injection acceptance remain user-run (agent-tools spec 8.2).
+
 ### `wisp_voice` (voice pipeline)
 
 - Files: `components/wisp_voice/`: `voice_service` (the state machine of a voice turn, and wake locks), `capture_buffer`, `vad`, `asr_client` (`POST <base_url>/audio/transcriptions`, multipart), `tts_client` (`POST <base_url>/audio/speech`, `response_format: "pcm"`, a 16-bit mono PCM stream at the `sample_rate` of the `tts` profile, which is sent in the request only when the profile sets it, since OpenAI's request has no such field and strict servers refuse unknown ones), `say_parser`, `sentences` (sentence separators `。！？!?；;` and newlines; at most 200 code points read aloud per turn), `pcm_player`; constants are in `wisp/voice/limits.hpp`. The App-side wiring is in `components/wisp_app/src/voice_wiring.{hpp,cpp}`.

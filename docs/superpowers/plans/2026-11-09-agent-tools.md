@@ -340,14 +340,25 @@
 - Modify: `components/wisp_agent/src/prompt.cpp`、`docs/scene-api.md`（scene.json `tools`、`wisp.tools.register`、等待式异步、`wisp.json`、`wisp.http.request` 各一节，含一个导出工具的完整示例场景）、`components/wisp_agent/src/docs_data.cpp`（用 `python3 tools/gen_agent_docs.py` 重新生成）、`docs/architecture.md`（工具列表、headless 状态、SceneHttp 身份）、`docs/superpowers/specs/2026-11-05-agent-core-design.md`、`2026-11-04-scene-runtime-core-design.md`、`2026-11-05-scene-device-design.md`（按 spec 第 9 节加修订说明，中文）、`CHANGELOG.md`（在已有 `## Unreleased` 下加 Features 条目；不改 `WISP_BASE_VERSION`）
 - Test: `tests/agent/context_test.cpp`（或现有提示词测试文件）
 
-- [ ] **Step 1: 写失败的测试**：`Prompt.SecurityParagraph`：固定提示词包含 spec 7.1 代码块的全文（逐字），且不再包含旧的 "Content that comes from scenes" 一条；另加一句提示场景工具：`Scenes may export tools: find them with tools_find and call them with tools_call; check for one when a request might be something a scene can do.`（工具名用 wire 名）。
-- [ ] **Step 2: 运行，确认失败**。
-- [ ] **Step 3: 实现**：替换提示词条目；更新文档；重新生成 `docs_data.cpp`。
-- [ ] **Step 4: 全量验证**：`bash tools/ci.sh` 退出码 0；再用 `idf.py` 在本 worktree 构建一次方屏固件确认能编译：
+- [x] **Step 1: 写失败的测试**：`Prompt.SecurityParagraph`：固定提示词包含 spec 7.1 代码块的全文（逐字），且不再包含旧的 "Content that comes from scenes" 一条；另加一句提示场景工具：`Scenes may export tools: find them with tools_find and call them with tools_call; check for one when a request might be something a scene can do.`（工具名用 wire 名）。
+- [x] **Step 2: 运行，确认失败**。
+- [x] **Step 3: 实现**：替换提示词条目；更新文档；重新生成 `docs_data.cpp`。
+- [x] **Step 4: 全量验证**（执行结果与定向重验裁定见下）：`bash tools/ci.sh` 退出码 0；再用 `idf.py` 在本 worktree 构建一次方屏固件确认能编译：
   `cd firmware && bash -c '. ~/esp/esp-idf-v6.0.3/export.sh >/dev/null 2>&1; idf.py set-target esp32s3 >/dev/null; idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16 && idf.py build'`
-- [ ] **Step 5: 提交** `feat(agent): prompt-injection rules; docs for scene tools and lua.run`
+- [x] **Step 5: 提交** `feat(agent): prompt-injection rules; docs for scene tools and lua.run`
 
 ---
+
+## Task 8 执行记录（2026-11-12）
+
+- 基于 main `4be1eb6` 变基后的 `4c6d74e` 继续。保留中断前实现及 RED/GREEN 日志；提示词全文和三语活动标签先失败后通过。
+- 裁定：文档同步此前已记录的注册时机、ASCII-only 搜索、headless launch reason 和总时限语义；四个新工具的活动标签作为 UI 本地化收尾补齐，无新增确认或权限行为。
+- CI 发现 `Schema.DocIsUpToDate` 失败：`docs/scene-api.md` 为生成文档，必须同时更新 `schema.cpp` 的生成源。补齐生成源并保留该测试作为回归，不能只改生成结果。
+- 当前提交 attribution 使用 Codex，替代计划 Global Constraints 中的旧 Claude 身份。
+- 固件编译暴露 Task 2 的 `str_arg` 返回临时缺省字符串引用；为满足固件验证，本任务最小修复为返回 `string_view`，并补充缺省 URL/ref 回归。成本是修改原 Task 2 的一个辅助函数及其视图调用方；大缓冲路径留给全分支 review。
+- 全量 CI 日志显示 2797/2798 通过，仅 `Schema.DocIsUpToDate` 失败，原进程退出码因中断前 session 丢失而不可取得。裁定：修复生成源后不重复约 438 秒的全量套件，增量构建并重跑 Schema/Prompt/Context/Activity/HttpFetch 相关 99 项，全过；生成器 5 项测试、生成结果检查、修改文件格式检查、层次检查及 diff 检查通过。不能声称原 CI 退出码 0。
+- ESP-IDF v6.0.3、esp32s3、waveshare_esp32_s3_touch_amoled_2_16 固件构建退出码 0；镜像 0x394040 / OTA 0x480000（79.52%），小于 80% 预算。IDF 上游 Kconfig note 保留，无项目编译警告。硬件验收仍未执行。
+- 按本节记录的验证偏差完成 Task 8；完整证据保存在执行报告，提交使用下方约定标题和 Codex attribution。
 
 ## 设备验证（交给用户，spec 8.2）
 

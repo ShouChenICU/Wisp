@@ -44,7 +44,7 @@ std::string lower_str(std::string_view s) {
     return out;
 }
 
-const std::string& str_arg(const Value& a, const char* key, const std::string& fallback) {
+std::string_view str_arg(const Value& a, const char* key, std::string_view fallback) {
     const Value* v = a.find(key);
     return v != nullptr && v->type() == Value::Type::String ? v->as_string() : fallback;
 }
@@ -231,8 +231,7 @@ size_t utf8_char_len(std::string_view data, size_t pos) {
 
 // Builds the result for one slice of `e`'s response, without touching
 // the network: used for a fresh fetch and for a `ref` call alike.
-ToolOutput slice_of(CacheEntry& e, const std::string& as, int64_t offset_arg,
-                    int64_t max_bytes_arg) {
+ToolOutput slice_of(CacheEntry& e, std::string_view as, int64_t offset_arg, int64_t max_bytes_arg) {
     const bool want_text = as == "text";
     std::string_view data;
     if (e.is_text) {
@@ -317,10 +316,10 @@ struct Fetch {
     net::SceneHttp& http;
 
     ToolOutput run(const Value& args, ToolCtx& ctx) {
-        const std::string& ref = str_arg(args, "ref", {});
+        const std::string_view ref = str_arg(args, "ref", {});
         if (!ref.empty()) return from_ref(ref, args);
 
-        const std::string& url = str_arg(args, "url", {});
+        const std::string_view url = str_arg(args, "url", {});
         if (url.empty()) return tool_error("bad_args", "'url' is required", Map{{"field", "url"}});
         net::Method method;
         if (!method_of(str_arg(args, "method", "GET"), method)) {
@@ -398,7 +397,8 @@ struct Fetch {
         net::SceneHttpResult result = std::move(w->result);
         if (!result.error.empty()) return with_note(tool_error(result.error, result.error));
 
-        const std::string final_url = result.final_url.empty() ? url : result.final_url;
+        const std::string final_url(result.final_url.empty() ? url
+                                                             : std::string_view(result.final_url));
         const std::string data_host = host_of(final_url);
 
         Cache& c = cache_state();
@@ -427,7 +427,7 @@ struct Fetch {
                      int_arg(args, "max_bytes", static_cast<int64_t>(kHttpDefaultMaxBytes))));
     }
 
-    ToolOutput from_ref(const std::string& ref, const Value& args) {
+    ToolOutput from_ref(std::string_view ref, const Value& args) {
         uint64_t id = 0;
         if (!parse_ref(ref, &id)) return tool_error("no_ref", "unknown or expired ref");
         Cache& c = cache_state();

@@ -447,3 +447,10 @@ Lua 组件与沙箱 → `SceneStore` → `SceneRepository` → 响应式核心 �
 | 场景经 HTTP 外发数据 | 只放行声明的域名；声明可见；Agent 新增域名时告知用户（子项目 4、7） |
 | 中文屏幕键盘占用字体与内存 | 复用现有字体子集；候选与词库放 PSRAM；真机实测内存 |
 | 渲染帧率受场景界面复杂度影响 | 控件数上限；`list` 虚拟化；真机验收第 4 条对比基准 |
+
+## 2026-11-12 修订：Agent 扩展工具（4b-1）
+
+本节修订优先于本文对应的旧条款；完整规则见 [`2026-11-09-agent-tools-design.md`](2026-11-09-agent-tools-design.md) 第 9 节及其指向章节。
+
+- 5.3：`wisp.http.request(opts[, cb])` 支持 GET/POST/PUT/PATCH/DELETE/HEAD；场景身份继续执行既有 HTTPS、域名、频率、超时和不跟随重定向规则。SceneHttp 增加 `@agent` 身份，宽限策略与资源上限见 4b-1 第 3.2 节，不得向 Lua 暴露 API Key。
+- 第 5 节：增加 `wisp.json.encode/decode`；`lua.run` 与场景工具函数采用宿主管理任务协程，可省略异步 HTTP、文件 API 的回调来等待结果，并支持 `wisp.sleep`。普通事件、scene.eval 和嵌套协程仍不能等待；CPU 执行片与总时限分开，详见 4b-1 第 6 节。

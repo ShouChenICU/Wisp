@@ -49,7 +49,8 @@ TEST(Activity, EveryLanguageHasALabelForEveryTool) {
           "memory.add",       "memory.list",       "memory.update",    "memory.remove",
           "todo.add",         "todo.list",         "todo.update",      "todo.done",
           "todo.remove",      "settings.get",      "settings.set",     "device.status",
-          "notify.list",      "notify.dismiss",    "docs.read",        "ui.tree"}) {
+          "notify.list",      "notify.dismiss",    "docs.read",        "ui.tree",
+          "http.fetch",       "lua.run",           "tools.find",       "tools.call"}) {
         for (Lang lang : wisp::ui::kAllLangs) {
             const std::string label = s(activity_label(tool, "", lang));
             EXPECT_FALSE(label.empty()) << tool;
@@ -137,4 +138,16 @@ TEST(Activity, SummaryCountsStepsAndTime) {
     EXPECT_EQ(s(activity_summary(5, 72'000, false, Lang::Zh)), "用了 5 步 · 1 分 12 秒");
     EXPECT_EQ(s(activity_summary(1, 500, true, Lang::En)), "Step 1 · 0 s");
     EXPECT_EQ(s(activity_summary(2, 61'000, false, Lang::En)), "Steps: 2 · 1 min 1 s");
+}
+
+TEST(Activity, ExtendedToolsDoNotExposeScriptOrRequestData) {
+    const char* args =
+        R"({"url":"http://secret/path?token=secret","headers":{"secret":"secret"},"code":"secret","name":"secret","args":{"name":"secret"}})";
+    for (Lang lang : wisp::ui::kAllLangs) {
+        for (const char* tool : {"http.fetch", "lua.run", "tools.find", "tools.call"}) {
+            const auto label = s(activity_label(tool, args, lang));
+            EXPECT_EQ(label.find("secret"), std::string::npos);
+            EXPECT_EQ(label.find(tool), std::string::npos);
+        }
+    }
 }

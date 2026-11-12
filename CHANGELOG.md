@@ -4,6 +4,10 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 
 ## Unreleased
 
+### Features
+
+- Agent HTTP fetching with cached chunk reads, temporary Lua execution with waiting HTTP/file calls, and discoverable scene-exported tools with headless execution. Adds localized activity labels and stronger prompt-injection rules for external content; device RAM and adversarial-page acceptance remain pending.
+
 ## 0.4.0 — 2026-11-12
 
 ### Changes

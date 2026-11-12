@@ -637,6 +637,14 @@ const char* strings_zh(StrId id) {
             return "清除通知";
         case StrId::ActDocsRead:
             return "查阅文档";
+        case StrId::ActHttpFetch:
+            return "访问网页";
+        case StrId::ActLuaRun:
+            return "运行 Lua 脚本";
+        case StrId::ActToolsFind:
+            return "查找场景工具";
+        case StrId::ActToolsCall:
+            return "调用场景工具";
         case StrId::ActUiTree:
             return "查看界面";
         case StrId::Count:

@@ -116,6 +116,21 @@ TEST_F(HttpFetch, SchemaAndDefaults) {
               "bad_args");
 }
 
+TEST_F(HttpFetch, MissingUrlOrRefUsesSafeDefaults) {
+    auto missing = call(R"({})");
+    EXPECT_EQ(str(missing.result, "error"), "bad_args");
+    EXPECT_EQ(client.calls(), 0u);
+
+    client.next = {.status = 200, .body = "safe defaults"};
+    auto fetched = call(R"({"url":"https://e.example.com/"})");
+    ASSERT_TRUE(ok_of(fetched)) << wisp::to_json(fetched.result);
+    const auto ref = str(fetched.result, "ref");
+    ASSERT_FALSE(ref.empty());
+    auto cached = call(R"({"ref":")" + ref + R"("})");
+    EXPECT_TRUE(ok_of(cached)) << wisp::to_json(cached.result);
+    EXPECT_EQ(client.calls(), 1u);
+}
+
 TEST_F(HttpFetch, Paging) {
     std::string body(200 * 1024, 'x');
     // A 3-byte character straddling the default 16384-byte cut point: the
