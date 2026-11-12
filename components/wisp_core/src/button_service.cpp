@@ -506,20 +506,19 @@ bool ButtonService::has_fallback_polling() const {
 }
 
 Result<void> ButtonService::start_fallback_timer() {
-    if (!has_fallback_polling()) {
-        stop_fallback_timer();
+    // This is the only input channel after queue/worker failure. Keep its
+    // lifetime independent of mode changes, which must not need fresh RAM.
+    // The retained base tick also services the active cadence after wake;
+    // per-device deadlines suppress standby reads between their 100 ms polls.
+    if (fallback_timer_ != nullptr && fallback_timer_->active()) {
         return Result<void>::ok();
     }
-    uint32_t period_ms = poll_ms_;
-    {
-        std::lock_guard<os::Mutex> state_lock(state_mutex_);
-        if (standby_) {
-            period_ms = kFallbackStandbyMs;
-        }
+    if (!has_fallback_polling()) {
+        return Result<void>::ok();
     }
-    stop_fallback_timer();
-    fallback_timer_ =
-        os::Timer::create("wisp.button", period_ms, true, [this] { poll(os::now_ms()); });
+    const uint32_t period_ms = std::min(poll_ms_, kFallbackStandbyMs);
+    fallback_timer_ = os::Timer::create("wisp.button", period_ms, true,
+                                        [this] { poll_internal(os::now_ms(), false); });
     if (fallback_timer_ == nullptr) {
         return Result<void>::err(ErrorCode::NoMemory, "button fallback timer creation failed");
     }
