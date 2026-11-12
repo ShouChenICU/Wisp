@@ -13,6 +13,12 @@ SimButton::SimButton(std::string id, Kind kind, std::shared_ptr<SimInput> input,
     if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
+SimButton::~SimButton() { (void)set_edge_sink({}); }
+
+wisp::Result<void> SimButton::set_edge_sink(wisp::hal::ButtonEdgeSink sink) {
+    return input_->set_button_sink(kind_, this, sink);
+}
+
 bool SimButton::pressed() {
     switch (kind_) {
         case Kind::Power:

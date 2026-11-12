@@ -152,7 +152,15 @@ Result<void> App::start() {
     if (!impl_->storage.init()) {
         impl_->report.set_note("storage", "readonly");
     }
-    impl_->buttons.start();
+    auto buttons_started = impl_->buttons.start();
+    if (!buttons_started) {
+        WLOG_E("app", "button input unavailable: %s", buttons_started.error().message.c_str());
+        impl_->report.set_note("buttons", "unavailable");
+        for (const auto& button : impl_->registry.list<hal::Button>()) {
+            impl_->report.record({button->info().id, hal::DeviceClass::Button,
+                                  core::DeviceState::Failed, "button service unavailable"});
+        }
+    }
     // Scenes: the storage worker, and the repository recovered on it,
     // before anything can list or open a scene.
     impl_->scenes =
@@ -1024,7 +1032,7 @@ void App::stop() {
     // later start() on the very same App instance (App supports
     // start()/stop()/start() -- see reset_loopback()'s own doc comment)
     // would resume with the screen still asleep, SD probing still
-    // paused, and the button/power-monitor poll periods still widened.
+    // paused, and button input / power monitoring still in standby mode.
     //
     // The standby() check below must run on the UI task, not here: the
     // power_timer tick that was in flight (or already queued onto the UI

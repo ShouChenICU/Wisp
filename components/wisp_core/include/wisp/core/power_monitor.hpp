@@ -8,32 +8,11 @@
 // needs a hal:: device, an EventBus and Settings, nothing from wisp_app/
 // wisp_ui.
 //
-// Modeled directly on wisp::core::ButtonService's own Timer-ownership
-// pattern (see button_service.hpp): this class owns its sample Timer
-// outright (named "wisp.pwrmon") rather than being driven by a Timer some
-// owner (e.g. App) constructs externally, because -- unlike StorageManager
-// ::refresh(), which always runs on the same fixed 2s cadence regardless
-// of standby -- this class's own sample period must itself change between
-// active (~1s) and standby (~30s, spec 6.7), the same way ButtonService's
-// poll period widens from 20ms to 50ms. set_standby() below is this
-// class's equivalent of ButtonService::set_poll_interval_ms(): it swaps
-// the Timer for a new one at the appropriate period, idempotent, and
-// never actually stops/destroys the old Timer while holding a lock
-// sample() itself takes (see timer_mutex_'s doc comment) -- the same
-// deadlock os::Timer::stop() warns about (any Timer's callback may be
-// dispatched from one shared task; stopping one while holding a lock a
-// *different* due Timer's callback needs can hang that shared task, and
-// so every Timer in the process, not just this one).
-//
-// Hook position: wisp::app::PowerManager calls set_standby(true)/(false)
-// from inside enter_standby()/exit_standby(), in the same relative
-// position (and under the same "release the transition lock first"
-// discipline) as its existing StorageManager::set_standby() call -- see
-// power_manager.cpp. Unlike StorageManager's set_standby() (a pure
-// software hint to a device-owned background thread that never fails and
-// never blocks), this one *does* block (the Timer swap), which is exactly
-// why PowerManager releases its own lock around the call, the same way it
-// already does around ButtonService::set_poll_interval_ms().
+// Owns its independent sample timer ("wisp.pwrmon"): active 1s and
+// standby 30s (spec 6.7). Button input mode never changes this cadence.
+// set_standby() swaps the timer without holding sample_mutex_: stopping
+// a timer may wait for the shared timer task, whose callbacks take that
+// mutex. PowerManager likewise drops its transition lock around this call.
 //
 // Device-optional, like every other hal:: pointer App hands around: if no
 // "power.main" device is registered, `power` is null and this class is

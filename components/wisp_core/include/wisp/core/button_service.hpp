@@ -33,12 +33,9 @@ public:
     Result<void> start();
     void stop();
     void set_standby(bool standby);
+    // Deterministic deadline processing without starting a worker. Ignored
+    // while running; production input is driven only by its worker or fallback.
     void poll(uint64_t now_ms);
-
-    // Transitional observation-only adapters until PowerManager migrates to
-    // set_standby(). They do not change the per-device production cadence.
-    void set_poll_interval_ms(uint32_t poll_ms);
-    uint32_t poll_interval_ms() const;
 
 private:
     struct ButtonState {
@@ -56,12 +53,12 @@ private:
         uint64_t next_poll_ms = 0;
     };
 
-    void ensure_initialized();
+    void initialize_locked();
     void refresh_buttons();
     void attach_edge_sinks();
     void detach_edge_sinks();
     void run_worker();
-    void poll_internal(uint64_t now_ms, bool force_poll);
+    void poll_internal(uint64_t now_ms);
     uint32_t next_wait_ms(uint64_t now_us) const;
     uint32_t poll_interval_ms(const ButtonState& state) const;
     void process_edge(const ButtonEdgeEvent& event);
@@ -79,7 +76,6 @@ private:
     EventBus& bus_;
     uint32_t long_press_ms_;
     const uint32_t poll_ms_;
-    uint32_t compatibility_poll_ms_;
 
     mutable os::Mutex state_mutex_;
     os::Mutex queue_consumer_mutex_;
@@ -96,7 +92,6 @@ private:
     std::unique_ptr<os::IsrQueue> edge_queue_;
     std::atomic<os::IsrQueue*> edge_queue_raw_{nullptr};
     std::atomic<bool> worker_running_{false};
-    std::atomic<bool> service_started_{false};
     os::Mutex lifecycle_mutex_;
     std::unique_ptr<os::Task> worker_;
     std::unique_ptr<os::Timer> fallback_timer_;

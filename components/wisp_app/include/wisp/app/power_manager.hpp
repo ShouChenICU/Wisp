@@ -37,7 +37,8 @@
 // device still in use) is logged once and asked again on every tick and
 // level change until it agrees. StorageManager, PowerMonitor and
 // ButtonService are services, not devices, and keep their own standby
-// calls (set_standby(true), the 50 ms button poll).
+// calls (set_standby(true/false)); button input policy and PMU sampling
+// cadence remain independent.
 //
 // Threading: whenever a UiRuntime exists, every transition runs on its
 // task, because the display may only be called from there (spec 5.3).
@@ -256,8 +257,8 @@ private:
 
     // Serializes transitions (and every field below it marked so) against
     // each other. Released around PowerMonitor::set_standby() and
-    // ButtonService::set_poll_interval_ms(): both swap an os::Timer and
-    // wait for the shared esp_timer task, which also runs tick(), so
+    // ButtonService::set_standby(): service lifecycle work can wait for
+    // background tasks, which also run tick(), so
     // holding this lock across that wait could deadlock. Released around
     // before_deep_standby too, which waits seconds for the storage worker. With a UiRuntime
     // every transition runs on its one task, so nothing interleaves in
@@ -295,8 +296,6 @@ private:
     std::atomic<bool> busy_pending_{false};
 
     // Guarded by transition_mutex_ from here on.
-    // The ButtonService poll interval to restore on wake.
-    uint32_t saved_poll_ms_ = 20;
     // The level devices were last walked to, and the ids that answered
     // Busy (in no particular order).
     hal::PowerLevel device_level_ = hal::PowerLevel::Active;

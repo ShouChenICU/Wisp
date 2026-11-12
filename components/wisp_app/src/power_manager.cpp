@@ -14,7 +14,6 @@ namespace wisp::app {
 namespace {
 
 constexpr const char* kTag = "power_manager";
-constexpr uint32_t kStandbyPollMs = 50;
 constexpr int kMinDimBrightness = 10;
 
 bool screen_lit(hal::PowerLevel level) { return level < hal::PowerLevel::Standby; }
@@ -386,10 +385,9 @@ void PowerManager::screen_off(uint64_t now_ms, std::unique_lock<os::Mutex>& lock
         lock.lock();
     }
     if (buttons_ != nullptr) {
-        saved_poll_ms_ = buttons_->poll_interval_ms();
         core::ButtonService* buttons = buttons_;
         lock.unlock();
-        buttons->set_poll_interval_ms(kStandbyPollMs);
+        buttons->set_standby(true);
         lock.lock();
     }
     standby_since_ms_.store(now_ms);
@@ -400,10 +398,9 @@ void PowerManager::screen_off(uint64_t now_ms, std::unique_lock<os::Mutex>& lock
 void PowerManager::screen_on(std::unique_lock<os::Mutex>& lock) {
     light_sleep_off();
     if (buttons_ != nullptr) {
-        uint32_t restore_ms = saved_poll_ms_;
         core::ButtonService* buttons = buttons_;  // see transition_mutex_
         lock.unlock();
-        buttons->set_poll_interval_ms(restore_ms);
+        buttons->set_standby(false);
         lock.lock();
     }
     if (power_monitor_ != nullptr) {

@@ -146,7 +146,9 @@ target_include_directories(app_boot_test PRIVATE ${WISP_ROOT}/components/wisp_ap
 wisp_test(NAME power_key_controller_test SRCS app/power_key_controller_test.cpp LIBS wisp_app)
 wisp_test(NAME power_manager_test SRCS app/power_manager_test.cpp
           LIBS wisp_app wisp_ui wisp_core wisp_hal wisp_port_sim_os wisp_port_sim_settings
+               wisp_port_sim_dev
           TIMEOUT 30)
+target_include_directories(power_manager_test PRIVATE ${WISP_ROOT}/components/wisp_port_sim)
 wisp_test(NAME format_test SRCS app/format_test.cpp LIBS wisp_app wisp_core)
 wisp_test(NAME ram_budget_test SRCS app/ram_budget_test.cpp LIBS wisp_app wisp_base)
 wisp_test(NAME self_check_screen_test SRCS app/self_check_screen_test.cpp

@@ -559,7 +559,7 @@ TEST(EdgeEvent, LongDeadlineBeforeDebouncedRelease) {
     bus.stop();
 }
 
-TEST(PollOnly, LegacyAdapterDoesNotOverridePerDevicePolicy) {
+TEST(PollOnly, ModeSwitchUsesPerDevicePolicy) {
     DeviceRegistry registry;
     auto button = std::make_shared<PollButton>("button.vol_up", 0);
     ASSERT_TRUE(registry.add(button));
@@ -568,8 +568,6 @@ TEST(PollOnly, LegacyAdapterDoesNotOverridePerDevicePolicy) {
 
     service.poll(0);
     const size_t initial_calls = button->pressed_calls.load();
-    service.set_poll_interval_ms(50);
-    EXPECT_EQ(service.poll_interval_ms(), 50u);  // Compatibility observation only.
     service.poll(20);
     EXPECT_EQ(button->pressed_calls.load(), initial_calls + 1);
     service.set_standby(true);
@@ -770,70 +768,27 @@ TEST(ButtonService, LongPressFiresOnceWhileHeld) {
                                                   "button.power.up"}));
 }
 
-// PowerManager widens the poll period to 50ms while in
-// standby. The short/long press semantics (including the 1000ms long
-// threshold) must keep working identically at the new period -- only the
-// detection resolution (how quickly a transition is noticed) changes.
-TEST(ButtonService, PollIntervalChangeKeepsShortAndLongDetection) {
-    Fixture f;
-    EXPECT_EQ(f.svc.poll_interval_ms(), 20u);
-    f.svc.set_poll_interval_ms(50);
-    EXPECT_EQ(f.svc.poll_interval_ms(), 50u);
-
-    f.btn->down = true;
-    f.svc.poll(0);
-    f.btn->down = false;
-    f.svc.poll(300);
-    f.bus.wait_idle(1000);
-    EXPECT_EQ(f.topics, (std::vector<std::string>{"button.power.down", "button.power.up",
-                                                  "button.power.short"}));
-}
-
-TEST(ButtonService, PollIntervalChangeLongPressThresholdUnchanged) {
-    Fixture f;
-    f.svc.set_poll_interval_ms(50);
-
-    f.btn->down = true;
-    f.svc.poll(0);
-    f.svc.poll(999);
-    f.svc.poll(1000);
-    f.svc.poll(1500);
-    f.btn->down = false;
-    f.svc.poll(1550);
-    f.bus.wait_idle(1000);
-    EXPECT_EQ(f.topics, (std::vector<std::string>{"button.power.down", "button.power.long",
-                                                  "button.power.up"}));
-}
-
-// set_poll_interval_ms() must be safe to call while the real Timer is
-// running (not just against synthetic poll() calls), and must not
-// disturb per-button in-progress state (buttons_ is never touched by
-// it) -- the held button keeps timing its hold across the switch.
-TEST(ButtonService, SetPollIntervalWhileRunningSwitchesLiveTimer) {
+TEST(ButtonService, StandbyWhileRunningPreservesPendingLongPress) {
     DeviceRegistry registry;
-    auto btn = std::make_shared<FakeButton>("button.power");
-    registry.add(btn);
+    auto btn = std::make_shared<PollButton>("button.power", 100);
+    ASSERT_TRUE(registry.add(btn));
+    EventLog events;
     EventBus bus;
-    bus.start();
-    std::vector<std::string> topics;
-    bus.subscribe("", [&](const Event& e) { topics.push_back(e.topic); });
-
-    ButtonService svc(registry, bus, /*long_press_ms=*/200, /*poll_ms=*/5);
-    svc.start();
+    ASSERT_TRUE(bus.start());
+    bus.subscribe("", [&](const Event& e) { events.append(e); });
+    ButtonService svc(registry, bus, 200, 5);
+    ASSERT_TRUE(svc.start());
     btn->down = true;
-    wisp::os::sleep_ms(30);  // several 5ms polls have observed `down`
-    svc.set_poll_interval_ms(50);
-    EXPECT_EQ(svc.poll_interval_ms(), 50u);
-    wisp::os::sleep_ms(250);  // cross the 200ms long_press_ms threshold at 50ms resolution
+    ASSERT_TRUE(events.wait_for(1));
+    svc.set_standby(true);
+    ASSERT_TRUE(events.wait_for(2));
     btn->down = false;
-    wisp::os::sleep_ms(100);
+    ASSERT_TRUE(events.wait_for(3));
     svc.stop();
     ASSERT_TRUE(bus.wait_idle(1000));
-
-    EXPECT_EQ(std::count(topics.begin(), topics.end(), "button.power.down"), 1);
-    EXPECT_EQ(std::count(topics.begin(), topics.end(), "button.power.long"), 1);
-    EXPECT_EQ(topics, (std::vector<std::string>{"button.power.down", "button.power.long",
-                                                "button.power.up"}));
+    EXPECT_EQ(events.snapshot(), (std::vector<std::string>{"button.power.down", "button.power.long",
+                                                           "button.power.up"}));
+    bus.stop();
 }
 
 TEST(ButtonService, IndependentButtons) {
@@ -912,4 +867,18 @@ TEST(ButtonService, ButtonHeldAtStartIsIgnoredUntilReleased) {
 
     EXPECT_EQ(topics, (std::vector<std::string>{"button.power.down", "button.power.up",
                                                 "button.power.short"}));
+}
+
+TEST(ButtonService, ManualPollCannotBypassRunningProductionCadence) {
+    DeviceRegistry registry;
+    auto button = std::make_shared<PollButton>("button.power", 100);
+    ASSERT_TRUE(registry.add(button));
+    EventBus bus;
+    ButtonService service(registry, bus, 1000, 1000);
+    ASSERT_TRUE(service.start());
+    ASSERT_TRUE(button->wait_for_samples(2));  // startup check + first scheduled poll
+    const auto reads = button->pressed_calls.load();
+    for (int i = 0; i < 100; ++i) service.poll(wisp::os::now_ms() + 100000);
+    EXPECT_EQ(button->pressed_calls.load(), reads);
+    service.stop();
 }

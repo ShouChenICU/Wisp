@@ -19,22 +19,17 @@ constexpr uint32_t kFallbackStandbyMs = 100;
 
 ButtonService::ButtonService(DeviceRegistry& registry, EventBus& bus, uint32_t long_press_ms,
                              uint32_t poll_ms)
-    : registry_(registry),
-      bus_(bus),
-      long_press_ms_(long_press_ms),
-      poll_ms_(poll_ms),
-      compatibility_poll_ms_(poll_ms) {}
+    : registry_(registry), bus_(bus), long_press_ms_(long_press_ms), poll_ms_(poll_ms) {}
 
 ButtonService::~ButtonService() { stop(); }
 
 Result<void> ButtonService::start() {
-    ensure_initialized();
     std::lock_guard<os::Mutex> lifecycle_lock(lifecycle_mutex_);
+    initialize_locked();
     if (worker_ != nullptr || (fallback_timer_ != nullptr && fallback_timer_->active())) {
         return Result<void>::ok();
     }
 
-    service_started_.store(true, std::memory_order_release);
     {
         std::lock_guard<os::Mutex> state_lock(state_mutex_);
         if (!initial_level_checked_) {
@@ -104,7 +99,6 @@ void ButtonService::stop() {
         edge_queue_raw_.store(nullptr, std::memory_order_release);
         edge_queue_.reset();
     }
-    service_started_.store(false, std::memory_order_release);
     initialized_.store(false, std::memory_order_release);
     initial_level_checked_ = false;
     {
@@ -119,13 +113,15 @@ void ButtonService::stop() {
 }
 
 void ButtonService::set_standby(bool standby) {
+    std::lock_guard<os::Mutex> lifecycle_lock(lifecycle_mutex_);
     {
         std::lock_guard<os::Mutex> state_lock(state_mutex_);
         if (standby_ == standby) {
             return;
         }
         standby_ = standby;
-        const uint64_t now_ms = have_poll_time_ ? last_poll_ms_ : os::now_ms();
+        const bool running = worker_ != nullptr || fallback_timer_ != nullptr;
+        const uint64_t now_ms = !running && have_poll_time_ ? last_poll_ms_ : os::now_ms();
         for (auto& state : buttons_) {
             if (state.mode == hal::ButtonInputMode::PollOnly) {
                 const uint32_t interval = poll_interval_ms(state);
@@ -135,7 +131,6 @@ void ButtonService::set_standby(bool standby) {
         }
     }
 
-    std::lock_guard<os::Mutex> lifecycle_lock(lifecycle_mutex_);
     if (edge_queue_ != nullptr) {
         edge_queue_->wake();
     }
@@ -147,22 +142,7 @@ void ButtonService::set_standby(bool standby) {
     }
 }
 
-void ButtonService::set_poll_interval_ms(uint32_t poll_ms) {
-    std::lock_guard<os::Mutex> state_lock(state_mutex_);
-    compatibility_poll_ms_ = poll_ms;
-}
-
-uint32_t ButtonService::poll_interval_ms() const {
-    std::lock_guard<os::Mutex> state_lock(state_mutex_);
-    return compatibility_poll_ms_;
-}
-
-void ButtonService::ensure_initialized() {
-    if (initialized_.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    std::lock_guard<os::Mutex> lifecycle_lock(lifecycle_mutex_);
+void ButtonService::initialize_locked() {
     if (initialized_.load(std::memory_order_relaxed)) {
         return;
     }
@@ -265,7 +245,7 @@ void ButtonService::run_worker() {
             }
         }
         if (!stopping_.load(std::memory_order_acquire)) {
-            poll_internal(os::now_ms(), false);
+            poll_internal(os::now_ms());
         }
     }
 }
@@ -442,10 +422,16 @@ void ButtonService::publish_event(const ButtonState& state, const char* suffix) 
     bus_.publish(std::move(event));
 }
 
-void ButtonService::poll(uint64_t now_ms) { poll_internal(now_ms, service_started_.load()); }
+void ButtonService::poll(uint64_t now_ms) {
+    std::lock_guard<os::Mutex> lifecycle_lock(lifecycle_mutex_);
+    if (worker_ != nullptr || fallback_timer_ != nullptr) {
+        return;
+    }
+    initialize_locked();
+    poll_internal(now_ms);
+}
 
-void ButtonService::poll_internal(uint64_t now_ms, bool force_poll) {
-    ensure_initialized();
+void ButtonService::poll_internal(uint64_t now_ms) {
     const uint64_t now_us = now_ms * 1000;
 
     std::unique_lock<os::Mutex> queue_lock(queue_consumer_mutex_, std::try_to_lock);
@@ -474,7 +460,7 @@ void ButtonService::poll_internal(uint64_t now_ms, bool force_poll) {
             state.next_poll_ms = now_ms + interval;
             continue;
         }
-        if (force_poll || now_ms >= state.next_poll_ms) {
+        if (now_ms >= state.next_poll_ms) {
             sample_poll_only(state, state.button->pressed(), now_us);
             state.next_poll_ms = now_ms + interval;
         }
@@ -505,8 +491,8 @@ Result<void> ButtonService::start_fallback_timer() {
         return Result<void>::ok();
     }
     const uint32_t period_ms = std::min(poll_ms_, kFallbackStandbyMs);
-    fallback_timer_ = os::Timer::create("wisp.button", period_ms, true,
-                                        [this] { poll_internal(os::now_ms(), false); });
+    fallback_timer_ =
+        os::Timer::create("wisp.button", period_ms, true, [this] { poll_internal(os::now_ms()); });
     if (fallback_timer_ == nullptr) {
         return Result<void>::err(ErrorCode::NoMemory, "button fallback timer creation failed");
     }
