@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "wisp/agent/limits.hpp"
+#include "wisp/agent/tool_registry.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/scene_install.hpp"
 #include "wisp/core/scene_manifest.hpp"
@@ -467,6 +468,10 @@ ToolOutput SceneWorkspace::install(const std::string& id, ToolCtx& ctx) {
         return check_failed({{std::string(kManifest), 0,
                               "id '" + m.id + "' does not match the draft's id '" + id + "'",
                               "\"id\": \"" + id + "\""}});
+    if (Result<void> schemas = core::validate_scene_tool_schemas(m); !schemas) {
+        return check_failed(
+            {{std::string(kManifest), 0, "scene.json: " + schemas.error().message, ""}});
+    }
     std::vector<InstallError> errors;
     bool has_entry = false;
     bool has_icon = m.icon.empty();
@@ -561,6 +566,7 @@ ToolOutput SceneWorkspace::install_zip(const std::string& id, std::span<const ui
                                          core::InstallOptions{.keep_prev = true});
     if (!installed) return from_error(installed.error());
     const core::SceneManifest& m = installed.value().manifest;
+    if (deps_.on_tools_changed) deps_.on_tools_changed(m);
 
     // 7. In front: install_scene() already reopened one that was there.
     Map out{{"ok", Value(true)},

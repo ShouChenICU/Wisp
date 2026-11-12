@@ -21,12 +21,22 @@ constexpr size_t kMaxVersionBytes = 64;
 constexpr size_t kMaxHosts = 16;
 constexpr size_t kMaxHostBytes = 253;
 constexpr int64_t kMaxSchemaVersion = 1000;
-// The manifest needs three levels (permissions.http[]); one more leaves
-// room for a future field. Parsing recurses once per level, and the
-// storage worker parses every manifest at boot on a stack of a few KB
+// The manifest needs three levels (permissions.http[]), plus one more for
+// headroom, plus up to four more for a tool's "parameters" JSON-Schema
+// shape (tools[].parameters.properties.<name>.type is 4 levels below
+// "parameters" itself). Parsing recurses once per level, and the storage
+// worker parses every manifest at boot on a stack of a few KB
 // (wisp/core/storage_worker.hpp): without a cap, a package with a deeply
-// nested unknown field would overflow it on every boot.
-constexpr uint8_t kMaxManifestDepth = 4;
+// nested unknown field would overflow it on every boot; 8 levels of
+// recursion is still trivially cheap on that stack.
+constexpr uint8_t kMaxManifestDepth = 8;
+// ^[a-z][a-z0-9_]{0,31}$, so 1-32 bytes.
+constexpr size_t kMaxToolNameBytes = 32;
+constexpr size_t kMinToolDescriptionCodePoints = 1;
+constexpr size_t kMaxToolDescriptionCodePoints = 512;
+constexpr int64_t kMinToolTimeoutMs = 1000;
+constexpr int64_t kMaxToolTimeoutMs = 120000;
+constexpr uint32_t kDefaultToolTimeoutMs = 30000;
 
 Result<SceneManifest> invalid(const std::string& what) {
     return Result<SceneManifest>::err(ErrorCode::InvalidArgument, "scene.json: " + what);
@@ -195,6 +205,36 @@ bool valid_host(std::string_view h) {
     return true;
 }
 
+// ^[a-z][a-z0-9_]{0,31}$ (agent-tools spec 5.1).
+bool valid_tool_name(std::string_view name) {
+    if (name.empty() || name.size() > kMaxToolNameBytes) {
+        return false;
+    }
+    if (name[0] < 'a' || name[0] > 'z') {
+        return false;
+    }
+    for (size_t i = 1; i < name.size(); ++i) {
+        const char c = name[i];
+        if (!(is_digit(c) || (c >= 'a' && c <= 'z') || c == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The number of Unicode code points in `s`, which must already be valid
+// UTF-8: counts the bytes that start a sequence (everything but a
+// continuation byte, 10xxxxxx).
+size_t count_code_points(std::string_view s) {
+    size_t n = 0;
+    for (char c : s) {
+        if ((static_cast<uint8_t>(c) & 0xC0) != 0x80) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 // Reads an optional string field into `out`. False if it is present but not
 // a string.
 bool string_field(const Value& root, std::string_view key, std::string& out, bool& present) {
@@ -210,7 +250,114 @@ bool string_field(const Value& root, std::string_view key, std::string& out, boo
     return true;
 }
 
+bool json_number(const Value& value) {
+    return value.type() == Value::Type::Int || value.type() == Value::Type::Double;
+}
+
+bool supported_tool_schema(const Value& schema, const std::string& where, std::string* why) {
+    auto no = [&](const std::string& reason) {
+        if (why != nullptr) *why = (where.empty() ? std::string("schema") : where) + ": " + reason;
+        return false;
+    };
+    if (schema.type() != Value::Type::Map) return no("not an object");
+    for (const auto& [key, value] : schema.as_map()) {
+        (void)value;
+        bool accepted = false;
+        for (const char* known : {"type", "properties", "required", "enum", "minimum", "maximum",
+                                  "maxLength", "items"}) {
+            if (key == known) {
+                accepted = true;
+                break;
+            }
+        }
+        if (!accepted) return no("unsupported keyword " + key);
+    }
+    auto known_type = [](const Value& type) {
+        if (type.type() != Value::Type::String) return false;
+        for (std::string_view known :
+             {"object", "string", "integer", "number", "boolean", "array", "null"}) {
+            if (type.as_string() == known) return true;
+        }
+        return false;
+    };
+    const Value* type = schema.find("type");
+    if (type == nullptr) return no("no type");
+    if (type->type() == Value::Type::List) {
+        if (where.empty()) return no("type list at the root");
+        if (type->as_list().empty()) return no("empty type list");
+        for (const Value& item : type->as_list()) {
+            if (!known_type(item)) return no("unsupported type in list");
+        }
+    } else if (type->type() != Value::Type::String) {
+        return no("no type");
+    } else if (!known_type(*type)) {
+        return no("unsupported type " + type->as_string());
+    }
+
+    if (const Value* properties = schema.find("properties")) {
+        if (properties->type() != Value::Type::Map) return no("properties is not an object");
+        for (const auto& [name, child] : properties->as_map()) {
+            const std::string path = where.empty() ? name : where + "." + name;
+            if (!supported_tool_schema(child, path, why)) return false;
+        }
+    }
+    if (const Value* required = schema.find("required")) {
+        if (required->type() != Value::Type::List) return no("required is not an array");
+        for (const Value& name : required->as_list()) {
+            if (name.type() != Value::Type::String) return no("required holds a non-string");
+        }
+    }
+    if (const Value* values = schema.find("enum");
+        values != nullptr && (values->type() != Value::Type::List || values->as_list().empty())) {
+        return no("enum is not a non-empty array");
+    }
+    for (const char* key : {"minimum", "maximum"}) {
+        if (const Value* value = schema.find(key); value != nullptr && !json_number(*value)) {
+            return no(std::string(key) + " is not a number");
+        }
+    }
+    if (const Value* max_length = schema.find("maxLength");
+        max_length != nullptr &&
+        (max_length->type() != Value::Type::Int || max_length->as_int() < 0)) {
+        return no("maxLength is not a non-negative integer");
+    }
+    if (const Value* items = schema.find("items")) {
+        if (!supported_tool_schema(*items, where + "[]", why)) return false;
+    }
+    return true;
+}
+
 }  // namespace
+
+bool scene_tool_schema_supported(const Value& schema, std::string* why) {
+    return supported_tool_schema(schema, {}, why);
+}
+
+Result<void> validate_scene_tool_schemas(const SceneManifest& manifest) {
+    for (size_t i = 0; i < manifest.tools.size(); ++i) {
+        const SceneToolDecl& tool = manifest.tools[i];
+        if (tool.parameters.empty()) continue;
+
+        const std::string prefix = "tools[" + std::to_string(i) + "].parameters";
+        auto schema = from_json(tool.parameters, kMaxManifestDepth);
+        if (!schema) {
+            return Result<void>::err(
+                ErrorCode::InvalidArgument,
+                prefix + ": schema is not valid JSON: " + schema.error().message);
+        }
+        std::string why;
+        if (!scene_tool_schema_supported(schema.value(), &why)) {
+            return Result<void>::err(ErrorCode::InvalidArgument, prefix + ": " + why);
+        }
+        const Value* type = schema.value().find("type");
+        if (type == nullptr || type->type() != Value::Type::String ||
+            type->as_string() != "object") {
+            return Result<void>::err(ErrorCode::InvalidArgument,
+                                     prefix + " must describe an object");
+        }
+    }
+    return Result<void>::ok();
+}
 
 bool valid_scene_id(std::string_view id) {
     if (id.empty() || id.size() > kMaxSceneIdBytes) {
@@ -231,7 +378,7 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
     Result<Value> parsed = from_json(json, kMaxManifestDepth);
     if (!parsed) {
         if (parsed.error().code == ErrorCode::QuotaExceeded) {
-            return invalid("nested deeper than 4 levels");
+            return invalid("nested deeper than " + std::to_string(kMaxManifestDepth) + " levels");
         }
         return invalid("not valid JSON: " + parsed.error().message);
     }
@@ -327,6 +474,68 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
             m.files = FilesWant::Int;
         } else {
             return invalid("files must be \"auto\", \"sd\" or \"int\"");
+        }
+    }
+
+    if (const Value* tools = root.find("tools")) {
+        if (tools->type() != Value::Type::List) {
+            return invalid("tools must be an array");
+        }
+        const List& list = tools->as_list();
+        if (list.size() > kMaxSceneTools) {
+            return invalid("tools lists more than 16 tools");
+        }
+        for (size_t i = 0; i < list.size(); ++i) {
+            const Value& item = list[i];
+            const std::string prefix = "tools[" + std::to_string(i) + "]";
+            if (item.type() != Value::Type::Map) {
+                return invalid(prefix + " must be an object");
+            }
+
+            SceneToolDecl decl;
+            bool field_present = false;
+            if (!string_field(item, "name", decl.name, field_present) || !field_present) {
+                return invalid(prefix + ".name must be a string");
+            }
+            if (!valid_tool_name(decl.name)) {
+                return invalid(prefix + ".name must match ^[a-z][a-z0-9_]{0,31}$");
+            }
+            for (const SceneToolDecl& existing : m.tools) {
+                if (existing.name == decl.name) {
+                    return invalid(prefix + ".name '" + decl.name + "' is already used");
+                }
+            }
+
+            if (!string_field(item, "description", decl.description, field_present) ||
+                !field_present) {
+                return invalid(prefix + ".description must be a string");
+            }
+            const size_t description_cps = count_code_points(decl.description);
+            if (!valid_utf8(decl.description) || description_cps < kMinToolDescriptionCodePoints ||
+                description_cps > kMaxToolDescriptionCodePoints) {
+                return invalid(prefix + ".description must be 1-512 code points of valid UTF-8");
+            }
+
+            if (const Value* params = item.find("parameters")) {
+                if (params->type() != Value::Type::Map) {
+                    return invalid(prefix + ".parameters must be an object");
+                }
+                decl.parameters = to_json(*params);
+                if (decl.parameters.size() > kMaxToolSchemaBytes) {
+                    return invalid(prefix + ".parameters is larger than 4096 bytes serialized");
+                }
+            }
+
+            decl.timeout_ms = kDefaultToolTimeoutMs;
+            if (const Value* timeout = item.find("timeout_ms")) {
+                if (timeout->type() != Value::Type::Int || timeout->as_int() < kMinToolTimeoutMs ||
+                    timeout->as_int() > kMaxToolTimeoutMs) {
+                    return invalid(prefix + ".timeout_ms must be an integer from 1000 to 120000");
+                }
+                decl.timeout_ms = static_cast<uint32_t>(timeout->as_int());
+            }
+
+            m.tools.push_back(std::move(decl));
         }
     }
 

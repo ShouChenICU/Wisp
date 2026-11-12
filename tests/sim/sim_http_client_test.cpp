@@ -129,6 +129,62 @@ TEST(SimHttpClient, OversizedResponseIsRefused) {
     EXPECT_EQ(res.body.size(), SimHttpClient::kMaxResponseBytes);
 }
 
+// truncate_at_limit (agent-tools spec 3.1/3.2's Agent response cap): over
+// the limit succeeds instead, keeping exactly max_response_bytes, status
+// and headers, with HttpClientResponse::truncated set.
+TEST(SimHttpClient, TruncatesAtLimitWhenAsked) {
+    static const std::vector<uint8_t> big(5000, 'x');
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0,
+                             [](const HttpRequest&) {
+                                 HttpResponse res;
+                                 res.content_type = "text/plain";
+                                 res.headers = {{"X-Thing", "v1"}};
+                                 res.static_body = std::span<const uint8_t>(big);
+                                 return res;
+                             },
+                             {}));
+
+    SimHttpClient client;
+    HttpClientRequest req;
+    req.url = url(server.port(), "/big");
+    req.max_response_bytes = 4000;
+    req.truncate_at_limit = true;
+    auto res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::None);
+    EXPECT_EQ(res.status, 200);
+    EXPECT_TRUE(res.truncated);
+    EXPECT_EQ(res.body.size(), 4000u);
+    EXPECT_EQ(res.body, std::string(4000, 'x'));
+    ASSERT_FALSE(res.headers.empty());
+
+    // on_body gets exactly the capped amount, piece by piece, truncated
+    // not cancelled.
+    std::string got;
+    req.on_body = [&](std::span<const uint8_t> chunk) {
+        got.append(reinterpret_cast<const char*>(chunk.data()), chunk.size());
+        return true;
+    };
+    res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::None);
+    EXPECT_TRUE(res.truncated);
+    EXPECT_EQ(got.size(), 4000u);
+
+    // Without truncate_at_limit, the same request is still refused.
+    req.on_body = nullptr;
+    req.truncate_at_limit = false;
+    res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::TooLarge);
+
+    // Comfortably under the limit: not truncated.
+    req.truncate_at_limit = true;
+    req.max_response_bytes = big.size() + 1;
+    res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::None);
+    EXPECT_FALSE(res.truncated);
+    EXPECT_EQ(res.body.size(), big.size());
+}
+
 TEST(SimHttpClient, StreamsBodyHeadersAndCancels) {
     static const std::vector<uint8_t> body(100000, 'z');
     SimHttpServer server;

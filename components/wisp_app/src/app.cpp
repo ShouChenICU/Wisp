@@ -1173,6 +1173,7 @@ void App::build_agent(const hal::ScreenShape& shape) {
         .runtime = *runtime,
         .repo = *scenes.repository(),
         .files = scenes.files(),
+        .scene_http = scenes.http(),
         .conversation_dir = system.value() + "/agent",
         .memory_path = system.value() + "/memory/notes.json",
         .drafts_root = scenes.data_root() + "/.drafts",

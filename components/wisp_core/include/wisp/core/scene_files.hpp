@@ -23,6 +23,14 @@
 // (the scene was deleted while the card was out) are only logged, by
 // scan() and on_sd_changed().
 //
+// The agent's own files (agent-tools spec 4.2): the id kAgentFilesId
+// ("@agent", which valid_scene_id() never accepts, so no scene can take
+// it) is the only one outside the scene id rules. It is chosen and counted
+// like a scene that declares "auto", with the same quotas, but lives in
+// the Library instead:
+//   sd:  <sd>/wisp/library/agent/files
+//   int: <int>/library/agent/files, record <int>/library/agent/files_loc.json
+//
 // Names: valid_file_name(), one level only. Names starting with '.' are
 // this class's own bookkeeping and never listed; names ending in ".tmp" or
 // ".new" are StorageManager's (write_atomic()) and refused too.
@@ -140,6 +148,9 @@ struct SceneFilesConfig {
     std::function<bool(std::function<void()>)> submit_io;
 };
 
+// The agent's files (file header).
+inline constexpr const char* kAgentFilesId = "@agent";
+
 // [A-Za-z0-9._-]{1,64}, not starting with '.', not ending in ".tmp" or
 // ".new".
 bool valid_file_name(std::string_view name);
@@ -218,6 +229,11 @@ private:
     // config_.declared, Auto when it has no answer; `installed` false when
     // it says NotFound.
     FilesWant want_of(std::string_view scene, bool* installed = nullptr) const;
+    // Whether `scene` names the files: a scene id, or kAgentFilesId.
+    static bool valid_owner(std::string_view scene);
+    // <int>/library/agent ("" without a Library root): the agent's
+    // internal files and its location record.
+    std::string agent_int_root() const;
     // `dir` is on the card (FAT: names compare without case).
     bool on_card(const std::string& dir) const;
     // `name` as a file in `dir` is spelled on disk (on the card it may

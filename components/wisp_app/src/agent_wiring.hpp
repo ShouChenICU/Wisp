@@ -40,6 +40,7 @@
 #include "wisp/agent/context.hpp"
 #include "wisp/agent/conversation.hpp"
 #include "wisp/agent/scene_workspace.hpp"
+#include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
@@ -57,6 +58,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/llm_client.hpp"
+#include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/scene_runtime.hpp"
@@ -183,6 +185,8 @@ struct AgentWiringDeps {
     scene::SceneRuntime& runtime;
     core::SceneRepository& repo;
     core::SceneFiles* files = nullptr;
+    // SceneWiring::http(); null: no http.fetch tool.
+    net::SceneHttp* scene_http = nullptr;
     // <System>/agent, <System>/memory/notes.json and <scene data
     // root>/.drafts.
     std::string conversation_dir{};
@@ -212,6 +216,43 @@ struct AgentWiringDeps {
     // cache. Cached values only.
     std::function<Value()> device_status{};
     agent::AgentConfig config{};
+};
+
+// Keeps scene tools in sync with installation and deletion events. Manifest
+// reads always run through StorageWorker; deletion only removes cached data.
+class SceneToolIndexObserver {
+public:
+    SceneToolIndexObserver(core::EventBus& bus, core::StorageWorker& worker,
+                           core::SceneRepository& repo, agent::ToolIndex& index);
+    ~SceneToolIndexObserver();
+
+    SceneToolIndexObserver(const SceneToolIndexObserver&) = delete;
+    SceneToolIndexObserver& operator=(const SceneToolIndexObserver&) = delete;
+
+    // The manifest handed over right after an install or rollback by the
+    // agent's own tools (SceneWorkspace::on_tools_changed): the index is
+    // updated at once, without reading it back from flash.
+    void on_manifest(const core::SceneManifest& manifest);
+
+    // Reads every installed scene.json on the worker and builds the index.
+    Result<void> load_installed();
+
+private:
+    struct RefreshState {
+        os::Mutex mutex;
+        core::SceneRepository* repo = nullptr;
+        agent::ToolIndex* index = nullptr;
+    };
+
+    void on_event(const core::Event& event);
+    void refresh(const std::string& scene_id);
+
+    core::EventBus& bus_;
+    core::StorageWorker& worker_;
+    core::SceneRepository& repo_;
+    agent::ToolIndex& index_;
+    std::shared_ptr<RefreshState> refresh_state_;
+    core::SubscriptionId subscription_ = 0;
 };
 
 class AgentWiring {
@@ -254,6 +295,8 @@ private:
     std::unique_ptr<net::LlmClient> llm_;
     std::unique_ptr<agent::ConversationStore> store_;
     std::unique_ptr<core::MemoryStore> memory_;
+    agent::ToolIndex tool_index_;
+    std::unique_ptr<SceneToolIndexObserver> tool_index_observer_;
     std::unique_ptr<agent::ToolRegistry> registry_;
     std::unique_ptr<scene::UiInspector> inspector_;
     std::unique_ptr<agent::ConfirmService> confirm_;

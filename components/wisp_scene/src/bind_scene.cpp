@@ -72,7 +72,8 @@ int exit_scene(lua_State* L) {
 }
 
 int state(lua_State* L) {
-    lua_pushstring(L, detail::api_of(L).background ? "background" : "foreground");
+    const SceneApi& api = detail::api_of(L);
+    lua_pushstring(L, api.headless ? "headless" : api.background ? "background" : "foreground");
     return 1;
 }
 
@@ -108,6 +109,8 @@ int install(lua_State* L) {
     detail::install_notify(L, 1);
     detail::install_sensor(L, 1);
     detail::install_files(L, 1);
+    detail::install_json(L, 1);
+    detail::install_tools(L, 1);
     return 0;
 }
 
@@ -116,6 +119,8 @@ int install(lua_State* L) {
 namespace detail {
 
 SceneApi& api_of(lua_State* L) { return *find_api(L); }
+
+void push_value(lua_State* L, const Value& v) { wisp::scene::push_value(L, v, 1); }
 
 SceneApi* find_api(lua_State* L) {
     lua_rawgetp(L, LUA_REGISTRYINDEX, &kApiKey);

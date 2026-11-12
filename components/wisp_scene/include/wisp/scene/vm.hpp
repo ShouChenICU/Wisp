@@ -46,9 +46,21 @@
 // O(n*m), pattern matching can backtrack) is not interrupted, so the
 // time limit can be overrun by one such call.
 //
-// Scene code may run only under Vm::call(): the time limit is measured
-// from there, and code a host runs with its own lua_pcall outside a call
-// is not timed at all.
+// Task coroutines (lua_task.hpp) and the hooks-off rule: a task thread
+// runs only under Vm::resume(), which times it like call() and marks a
+// timeout there as one off the main thread (recover_timeout() refuses it).
+// A task thread killed by a fault is in the state described above, hooks
+// off for good, so the task code never resumes it again and never closes
+// it: it is dropped from the registry, and lua_close leaves it alone like
+// any other coroutine. Every resume is refused once the VM has faulted, so
+// a task that was waiting when something else faulted the VM is not run
+// either. A task thread that ended with an ordinary error or was cancelled
+// is dropped without lua_closethread as well (its pending __close values
+// never run), which keeps one rule for every way a task ends.
+//
+// Scene code may run only under Vm::call() (and task threads under
+// Vm::resume()): the time limit is measured from there, and code a host
+// runs with its own lua_pcall outside a call is not timed at all.
 //
 // Limits: the allocator counts every byte in PSRAM and refuses requests
 // past VmLimits::memory_bytes, or past what VmLimits::pool (the budget all
@@ -192,6 +204,22 @@ public:
     // Bytes the Lua heap holds right now; never above limits.memory_bytes.
     // The pool, if any, holds exactly this much for this VM.
     size_t used_bytes() const { return used_; }
+    // The most used_bytes() has been since the VM was made.
+    size_t peak_bytes() const { return peak_; }
+    // Raises limits.memory_bytes to `bytes` (never lowers it): the
+    // allocator reads the limit on every request, so the next one may use
+    // it. On the thread running the VM.
+    void raise_memory_limit(size_t bytes) {
+        if (bytes > limits_.memory_bytes) limits_.memory_bytes = bytes;
+    }
+
+    // Where print and wisp.log go (log_lua_args()): their lines are logged
+    // under `tag` instead of "scene.<id>" (at most log::kMaxTagBytes), and
+    // `out`, if set, also gets each one whole, not cut at kLuaLogMaxBytes:
+    // the pieces of a line one by one, then "\n". `out` runs on the thread
+    // running the VM, in the middle of a Lua call: it must not call Lua.
+    // Before any code runs.
+    void set_output(std::string tag, std::function<void(std::string_view)> out);
 
     // Where wisp.import reads lib/ files from.
     void set_sources(SourceLookup lookup);
@@ -215,8 +243,27 @@ public:
     std::optional<ScriptError> call(int nargs, int nresults, Budget budget = Budget::Fresh,
                                     uint32_t exec_ms = 0);
 
+    // Resumes task coroutine `co` (lua_task.hpp) with the `nargs` values on
+    // top of its stack, like lua_resume, as a top-level slice with a fresh
+    // time budget of `budget_ms` (0: limits().exec_ms). `co` is either a new
+    // thread with its function below the arguments or one suspended in a
+    // yield whose values the caller has already popped. On a yield sets
+    // *yielded and leaves the *nresults yielded values on co's stack; on a
+    // return leaves its *nresults results there. On an error returns it
+    // (Runtime, or Timeout/Memory for a fault); co is then dead and must be
+    // dropped, never resumed or closed. A faulted VM refuses (returns its
+    // fault without touching co), and so does a call made while Lua code
+    // is running. Calls only non-raising Lua APIs.
+    std::optional<ScriptError> resume(lua_State* co, int nargs, int* nresults, bool* yielded,
+                                      uint32_t budget_ms);
+
     // True after a timeout or memory fault; the VM must be destroyed.
     bool faulted() const { return fault_ != Fault::None; }
+    // The fault as call() reports it (only meaningful while faulted()),
+    // naming `fallback_file` when the hook saw no position.
+    ScriptError fault_report(std::string_view fallback_file) const {
+        return fault_error(fallback_file);
+    }
 
     // Clears a timeout fault once the top-level call() that hit it has
     // returned, so the VM can run again; true if it did. Only for a step
@@ -248,6 +295,9 @@ public:
     static Vm* of(lua_State* L);
 
 private:
+    // Reads the set_output() state.
+    friend void log_lua_args(lua_State* L, LogLevel level);
+
     // Memory: past limits.memory_bytes; Budget: past the pool's budget.
     enum class Fault : uint8_t { None, Timeout, Memory, Budget };
 
@@ -280,6 +330,10 @@ private:
     // thread's hook fire on its next instruction after a memory fault.
     lua_State* current_ = nullptr;
     size_t used_ = 0;
+    size_t peak_ = 0;
+    // set_output(); an empty tag is "scene.<id>".
+    std::string log_tag_;
+    std::function<void(std::string_view)> output_;
     Fault fault_ = Fault::None;
     bool running_ = false;
     // Set by the destructor: every instruction lua_close might run raises.
@@ -361,7 +415,8 @@ bool new_binding_metatable(lua_State* L, const char* name);
 // Converts every value on the stack with luaL_tolstring, joins them with
 // '\t', cuts the result at kLuaLogMaxBytes (on a UTF-8 character
 // boundary) and logs it at `level` with tag "scene.<id>" (the id of the
-// Vm that owns L; the tag fits the longest scene id). It goes to the log's
+// Vm that owns L; the tag fits the longest scene id), or the Vm's
+// set_output() tag, which also gets the whole line. It goes to the log's
 // ring and sinks only, never to a file, so it is safe on the scene task.
 // Leaves the stack as it was. May raise (a __tostring metamethod can).
 void log_lua_args(lua_State* L, LogLevel level);

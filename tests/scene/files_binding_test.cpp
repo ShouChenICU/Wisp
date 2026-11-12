@@ -175,6 +175,28 @@ print(pcall(wisp.files.list, 5))
     EXPECT_EQ(client.calls(), 0u);
 }
 
+// Leaving the callback out only waits in a task (agent-tools spec 6); a
+// scene's own code still gets the argument error it always got.
+TEST_F(FilesBinding, MissingCallbackOutsideTaskIsError) {
+    start();
+    install_scene("h", R"(
+print(pcall(wisp.files.write, "a", "d"))
+print(pcall(wisp.files.read, "a", 0, 1))
+print(pcall(wisp.files.list))
+print(pcall(wisp.files.info, nil))
+print(pcall(wisp.files.remove, "a"))
+print(pcall(wisp.http.download, "https://api.example.com/f", "f"))
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 6);
+    ASSERT_EQ(lines.size(), 6u);
+    for (const auto& l : lines) {
+        EXPECT_EQ(l.rfind("false\t", 0), 0u) << l;
+        EXPECT_NE(l.find("function expected"), std::string::npos) << l;
+    }
+    EXPECT_EQ(client.calls(), 0u);
+}
+
 TEST_F(FilesBinding, DownloadWritesFileWithinQuota) {
     start();
     const std::string body(300 * 1024, 'f');

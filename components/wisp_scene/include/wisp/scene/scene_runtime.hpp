@@ -95,6 +95,38 @@
 //           VM goes, and for the scene in front the UI thread loads the
 //           remembered screen and deletes the view.
 //   reload  exit, then open in front with the same arguments; data stays.
+//   headless
+//           call_tool() for a scene that is not running (agent-tools spec
+//           5.4): loaded like a boot launch (the tree is built, no view, no
+//           on_show), then scene.on_state("headless") and the state
+//           Headless (published "headless"). It need not declare
+//           "background", and it is neither counted towards the
+//           background's limit nor put on the background list, nor ever
+//           evicted; wisp.scene.state() is "headless" and the APIs spec
+//           3.4 refuses in the background refuse here too, but its timers
+//           run whether the screen is on or off. Its VM draws on the shared
+//           budget: its limit is what the budget leaves after what a scene
+//           in front is guaranteed (max(vm.memory_bytes, the front's
+//           bytes), kept even with none in front) and everything else
+//           running, at most vm.memory_bytes. Only when that is under
+//           kHeadlessMinMemory are background scenes evicted for it, least
+//           recently in front first, until it is not; if it still is, the
+//           call is "no_memory" (so is a memory fault while it loads). Once
+//           it runs, enforce_limits() charges what it holds against the
+//           background's room. At most one scene is headless: a call to another
+//           scene's tool closes it first. SceneRuntimeConfig::
+//           headless_idle_ms after its last call ended without another
+//           one, it closes like exit() (on_close, the final flush;
+//           on_state is not called). An open of it (or a notification)
+//           brings it forward as a resume does, without reloading, its VM
+//           limit raised to vm.memory_bytes (Vm::raise_memory_limit()), and
+//           it is an ordinary scene from then on. A boot launch or
+//           open_background() of it, if it declares "background", sends it
+//           to the background the same way (to_background()), onto the
+//           background list. A failure while it loads is
+//           the call's ("load_failed", or "no_memory" for a memory fault),
+//           and a fault later is logged like one in the background, but
+//           sends no notice: the agent's call reports it.
 // Every move between foreground and background calls scene.on_state with
 // the new state ("foreground" or "background"; also on the first open,
 // never on a close) and publishes it ("running" or "background").
@@ -166,6 +198,35 @@
 // scene's downloads before its requests: the transfer stops and the
 // worker removes the partial file.
 //
+// The agent's Lua (agent-tools spec 4.2, 4.3; scene_runtime_lua.cpp):
+// run_lua() hands a script to the scene task, which runs it in a VM of its
+// own, made for the call and destroyed when it ends. That VM is no scene:
+// it has no slot, view, store or `scene` table, only the bindings spec 4.2
+// lists (wisp.http as the Agent principal under net::kAgentHttpId,
+// wisp.files in core::kAgentFilesId's area, wisp.notify as "Wisp",
+// wisp.device, wisp.log, wisp.json and wisp.sleep). It draws on the
+// scenes' VmPool, never more than is left there (no scene is evicted for
+// it), and runs the script as a task (lua_task.hpp) with
+// kLuaRunSliceMs slices. Each slice, each result the script waits for and
+// each of its wisp.sleep timers is a message of its own, between the
+// scenes' messages, so the scenes keep running while the script waits.
+// print and wisp.log go to the log (tag "agent.lua") and into the
+// result's output. The VM gets a new instance number, so a result that
+// arrives after it is gone is dropped as stale.
+//
+// Scene tools (agent-tools spec 5.2, 5.4; scene_runtime_tools.cpp):
+// call_tool() hands the call to the scene task, which runs the function
+// the scene bound with wisp.tools.register as a task (lua_task.hpp) in the
+// scene's own VM, with the scene's own 200 ms slices, whether the scene is
+// in front, in the background or headless (above). Each slice and each
+// result it waits for is a message of the scene's own, run and flushed as
+// any other. One call per scene at a time. The call ends with the task;
+// at its timeout_ms, or when its caller cancels, the task alone is
+// cancelled (cancel_task(), so the script can never resume it) and the
+// scene runs on; a fault in a slice (its 200 ms, its memory) faults the
+// scene as any message would ("timeout" or "scene_error"); a scene that
+// closes or is evicted meanwhile ends it "cancelled".
+//
 // A hook is a function the scene stores in its `scene` table
 // (scene.on_show = function() ... end).
 //
@@ -219,6 +280,7 @@
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/os/queue.hpp"
+#include "wisp/scene/lua_task.hpp"
 #include "wisp/scene/patch_queue.hpp"
 #include "wisp/scene/scene_schedule.hpp"
 #include "wisp/scene/vm.hpp"
@@ -233,6 +295,9 @@ namespace wisp::scene {
 
 struct SceneMessage;
 struct SceneQuery;
+struct LuaRunJob;
+struct ToolCallJob;
+struct SceneApi;
 class SceneView;
 struct DeviceInfo;
 enum class DeviceEvent : uint8_t;
@@ -265,10 +330,67 @@ struct BackgroundScene {
     bool operator==(const BackgroundScene&) const = default;
 };
 
-// SceneRuntime::eval()'s default budget, and the most JSON its result may
-// take (agent-core spec 4.2).
+// SceneRuntime::eval()'s default budget (agent-core spec 4.2); the most
+// JSON its result may take is kEvalResultMaxBytes (lua_task.hpp).
 inline constexpr uint32_t kEvalMs = 200;
-inline constexpr size_t kEvalResultMaxBytes = 64 * 1024;
+
+// run_lua() (agent-tools spec 4.1, 4.2): one slice's limit, the output
+// kept, the least memory a run starts with, the source's and the run's
+// limits.
+inline constexpr uint32_t kLuaRunSliceMs = 1000;
+inline constexpr size_t kLuaRunOutputBytes = 8 * 1024;
+inline constexpr size_t kLuaRunMinMemory = 256 * 1024;
+inline constexpr size_t kLuaRunMaxMemory = 2 * 1024 * 1024;
+inline constexpr size_t kLuaRunMaxSource = 64 * 1024;
+inline constexpr uint32_t kLuaRunMinMs = 1000;
+inline constexpr uint32_t kLuaRunMaxMs = 300000;
+
+// call_tool() (agent-tools spec 5.1, 5.4): the range of its timeout_ms,
+// and how long a headless scene stays without a call (the default of
+// SceneRuntimeConfig::headless_idle_ms).
+inline constexpr uint32_t kToolCallMinMs = 1000;
+inline constexpr uint32_t kToolCallMaxMs = 120000;
+inline constexpr uint32_t kHeadlessIdleMs = 60000;
+// The least of the VM budget a headless scene starts with; less, after
+// evicting the background, is "no_memory" (file header).
+inline constexpr size_t kHeadlessMinMemory = 256 * 1024;
+
+struct ToolCallResult {
+    bool ok = false;
+    // ok: the function's return values as JSON (none -> null, one -> it,
+    // several -> an array), at most kEvalResultMaxBytes.
+    os::LargeString json;
+    // !ok: not_registered | scene_error | timeout | load_failed |
+    // no_memory | cancelled | not_found.
+    std::string error;
+    // ScriptError::text() for the scene's own errors, else a short reason.
+    std::string message;
+};
+
+struct LuaRunOptions {
+    uint32_t timeout_ms = 30000;        // kLuaRunMinMs-kLuaRunMaxMs
+    size_t memory_bytes = 1024 * 1024;  // kLuaRunMinMemory-kLuaRunMaxMemory
+    // Polled every 20 ms while the run waits; true stops it ("cancelled").
+    std::function<bool()> cancelled;
+};
+
+struct LuaRunResult {
+    bool ok = false;
+    // ok: the return values as JSON (none -> null, one -> it, several ->
+    // an array), at most kEvalResultMaxBytes.
+    os::LargeString json;
+    // !ok: compile | runtime | timeout | memory | too_large | no_memory |
+    // cancelled.
+    std::string error;
+    // ScriptError::text() for the script's own errors, else a short reason.
+    std::string message;
+    // What print and wisp.log wrote, one line each: the last
+    // kLuaRunOutputBytes, with "…" in front when earlier output was dropped.
+    os::LargeString output;
+    uint32_t ms = 0;
+    // The VM's peak heap (Vm::peak_bytes()).
+    size_t memory_peak = 0;
+};
 
 struct SceneRuntimeDeps {
     core::EventBus& bus;
@@ -330,6 +452,9 @@ struct SceneRuntimeConfig {
     // deepest use of the C stack (vm.hpp); this is sized for it.
     size_t stack_bytes = 128 * 1024;
     int priority = 3;
+    // How long a headless scene stays after its last tool call (file
+    // header).
+    uint32_t headless_idle_ms = kHeadlessIdleMs;
 };
 
 class SceneRuntime : public core::SceneHost {
@@ -481,6 +606,31 @@ public:
     // returns), which the scene's wisp.store.get() sees at once.
     Result<void> store_set(const std::string& id, std::string_view key, std::string_view json);
 
+    // Runs `code` (the chunk "run") on a VM of its own (file header) and
+    // waits for it to end, for opts.timeout_ms at most (then "timeout"),
+    // polling opts.cancelled. Its own failures are in the LuaRunResult. Busy
+    // when the runtime is not running, its queue stays full, another
+    // run_lua() is under way, or on the UI thread, the scene task or the
+    // storage worker; InvalidArgument for options out of range or code past
+    // kLuaRunMaxSource.
+    Result<LuaRunResult> run_lua(std::string_view code, LuaRunOptions opts);
+    // Calls tool `tool` of scene `scene_id` with `args_json` (a JSON
+    // object; empty: {}) and waits for it to end, for timeout_ms at most
+    // (then "timeout"), polling `cancelled` (may be empty) every 20 ms
+    // (then "cancelled"). A scene that is not running is started headless
+    // (file header). The call's own failures are in the ToolCallResult.
+    // Busy when the runtime is not running, its queue stays full, another
+    // call to the same scene is under way, the scene is being installed or
+    // deleted, or on the UI thread, the scene task or the storage worker;
+    // InvalidArgument for timeout_ms outside kToolCallMinMs-kToolCallMaxMs
+    // or args_json that is not a JSON object.
+    Result<ToolCallResult> call_tool(const std::string& scene_id, const std::string& tool,
+                                     std::string_view args_json, uint32_t timeout_ms,
+                                     std::function<bool()> cancelled);
+
+    // What the scenes' VmPool holds right now (and the run_lua() VM with it).
+    size_t vm_pool_used() const { return pool_.used(); }
+
     // Messages dropped because no running scene has their instance, and
     // view events for a scene that has gone to the background.
     uint64_t stale_dropped() const { return stale_dropped_.load(); }
@@ -500,10 +650,15 @@ private:
     // One running scene, in front or in the background; scene task only.
     struct Slot;
     struct FilesGate;
-    // At most one scene in front and kMaxBackground behind it, and for a
-    // moment one more: a scene sent to the background before the eviction
-    // that follows it.
-    static constexpr size_t kMaxSlots = kMaxBackground + 2;
+    // run_lua()'s VM and what goes with it (scene task only).
+    struct AgentRun;
+    // A call_tool() call on the scene task: loading its scene headless, or
+    // running its task in the scene.
+    struct ToolRun;
+    // At most one scene in front, kMaxBackground behind it and one
+    // headless, and for a moment one more: a scene sent to the background
+    // before the eviction that follows it.
+    static constexpr size_t kMaxSlots = kMaxBackground + 3;
     // The instances of every slot, copied for loops whose steps may close
     // slots; fixed size, as these loops run on every timer tick.
     struct Instances {
@@ -538,6 +693,8 @@ private:
         // A notification launch: the id scene.on_notification() gets once
         // the scene is up.
         std::string notification;
+        // Loaded for a tool call, to run headless (file header).
+        bool headless = false;
     };
     // A scene that left the background by an exit: what open_background()
     // gives it back (the last few, scene task only).
@@ -589,6 +746,10 @@ private:
     void begin_open(const std::string& id, Value args, LaunchReason reason, bool restore,
                     std::shared_ptr<SceneWaiter> waiter, bool reopen = false,
                     std::string notification = {});
+    // Hands the load of `instance` (already in loading_) to the worker;
+    // false if the worker takes no job.
+    bool queue_load(const std::string& id, uint32_t instance, LaunchReason reason, Value args,
+                    std::shared_ptr<SceneWaiter> waiter);
     // msg::Notify (deliver_notification()).
     void notify(const std::string& id, const std::string& note_id);
     void finish_open(SceneMessage& m);
@@ -622,12 +783,22 @@ private:
     void persist_background();
     // Shows the view of `s` (now in front) on the UI thread.
     void show_view(Slot& s);
-    // Makes the slot of a loaded scene (VM not started yet); null without
-    // the memory for it.
-    Slot* add_slot(SceneMessage& m, LaunchReason reason);
+    // Makes the slot of a loaded scene (VM not started yet), with `limits`
+    // (null: config_.vm), headless or not; null without the memory for it.
+    Slot* add_slot(SceneMessage& m, LaunchReason reason, const VmLimits* limits = nullptr,
+                   bool headless = false);
     // Gives the scene's wisp.http its proxy: the declared hosts, and
     // results that come back as HttpDone messages for this instance.
     void wire_http(Slot& s);
+    // wire_http()'s and wire_files()'s work on `api`, for scene `id`'s
+    // `instance`. `hosts`: what a download is checked against; null for
+    // the Agent principal, whose URLs SceneHttp checks its own way.
+    void wire_http_api(SceneApi& api, const std::string& id, uint32_t instance);
+    void wire_files_api(SceneApi& api, const std::string& id, uint32_t instance,
+                        const std::shared_ptr<FilesGate>& gate,
+                        const std::vector<std::string>* hosts);
+    // cancel_files()'s work on a gate.
+    void close_gate(const std::shared_ptr<FilesGate>& gate);
     // Gives the scene's wisp.sensor the service, and batches that come
     // back as Sensor messages for this instance.
     void wire_sensors(Slot& s);
@@ -643,6 +814,9 @@ private:
     void go_back(Slot& s, std::shared_ptr<SceneWaiter> done, const Slot* except = nullptr);
     void to_background(Slot& s, std::shared_ptr<SceneWaiter> done, const Slot* except);
     void resume(Slot& s, std::shared_ptr<SceneWaiter> done);
+    // A boot launch or open_background() of a scene that is headless and
+    // declares "background": it goes there as it is (to_background()).
+    void headless_to_background(Slot& s, std::shared_ptr<SceneWaiter> done);
     // No scene is in front any more (foreground() says so).
     void forget_front();
     // The view of `s` goes: its patches stop, the UI thread drops it and
@@ -698,6 +872,63 @@ private:
     bool wants_minute(const Slot& s) const;
     // Whether the scene's minute ticks now (file header).
     bool minute_ticks(const Slot& s) const;
+
+    // run_lua() on the scene task (scene_runtime_lua.cpp).
+    void lua_start(const std::shared_ptr<LuaRunJob>& job);
+    // The caller stopped waiting (`cancelled`) or the runtime stops.
+    void lua_stop(const LuaRunJob* job, const char* error, std::string message);
+    // A result for the run's VM (HttpDone, FilesDone); false if `m` is not
+    // for it.
+    bool lua_message(SceneMessage& m);
+    // After each step of the run: ends it once its task has ended or `err`
+    // (what the step returned) stopped it.
+    void lua_settle(const std::optional<ScriptError>& err);
+    // Ends the run: the result goes to its caller, every request and
+    // download of the VM is cancelled and the VM goes.
+    void lua_end(LuaRunResult r);
+    // Fires the run's due wisp.sleep timers, and stops it at its deadline.
+    void lua_clock();
+    // How long the task may wait for the run's timers and deadline.
+    uint64_t lua_wait_ms(uint64_t now) const;
+
+    // call_tool() on the scene task (scene_runtime_tools.cpp).
+    void tool_call(const std::shared_ptr<ToolCallJob>& job);
+    // The caller cancelled.
+    void tool_stop(const ToolCallJob* job);
+    // Starts the call of `job` in the running scene `s`.
+    void tool_start(Slot& s, const std::shared_ptr<ToolCallJob>& job);
+    // The load of a headless scene arrived (finish_open()).
+    void finish_headless(SceneMessage& m, const PendingLoad& load);
+    // How much of the VM budget a headless scene may have, after evicting
+    // background scenes for it (file header).
+    size_t headless_room();
+    // SceneApi::task_done of the slot of `instance`: records the outcome.
+    void tool_task_done(uint32_t instance, uint32_t task, TaskOutcome outcome);
+    // Ends the call of `job` with `r`; a headless scene left without a call
+    // starts its idle time.
+    void tool_end(const ToolCallJob* job, ToolCallResult r);
+    // A call taken off tool_runs_ whose caller is still to hear `result`.
+    struct ToolEnding {
+        std::shared_ptr<ToolCallJob> job;
+        ToolCallResult result;
+    };
+    // Takes off the call running in the slot of `instance` (it closes or
+    // faults): with its task's outcome if the task already ended and
+    // `keep_outcome` (a close), else with `error`. Its caller hears it from
+    // tool_answer(), once the scene's state says what happened.
+    std::optional<ToolEnding> tool_abort(uint32_t instance, const char* error,
+                                         const std::string& message, bool keep_outcome);
+    void tool_answer(std::optional<ToolEnding> ending);
+    // Ends every call still loading a scene whose load left loading_.
+    void tool_loads_dropped();
+    // Ends the calls whose task has ended (after each pass of the task).
+    void tool_settle();
+    // Ends the calls whose timeout_ms has passed.
+    void tool_clock();
+    uint64_t tool_wait_ms(uint64_t now) const;
+    // The headless slot of `instance` closes if `gen` is still its idle
+    // generation and no call is under way.
+    void headless_idle(uint32_t instance, uint64_t gen);
 
     // --- UI thread ---
     void ui_frame();
@@ -796,6 +1027,16 @@ private:
     // post_ui()'s jobs not yet run.
     os::Mutex ui_jobs_mu_;
     os::LargeVector<UiJob> ui_jobs_;
+
+    // A run_lua() call is under way (any thread).
+    std::atomic<bool> lua_busy_{false};
+    // The scenes with a call_tool() under way (any thread).
+    os::Mutex tool_mu_;
+    std::vector<std::string> tool_scenes_;
+    // Scene task only.
+    std::vector<ToolRun> tool_runs_;
+    // Scene task only; destroyed before pool_ (declared after it).
+    os::LargeUnique<AgentRun> agent_;
 };
 
 }  // namespace wisp::scene

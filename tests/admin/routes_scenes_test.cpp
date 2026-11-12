@@ -298,6 +298,21 @@ TEST(AdminScenes, RequiresAuthAndCsrf) {
     EXPECT_FALSE(fx.stream(fx.authed(Method::Get, kScenes)).has_value());
 }
 
+TEST(AdminScenes, InstallRejectsUnsupportedSceneToolSchema) {
+    ScenesFixture fx;
+    Files files = todo_files();
+    files.front().second = R"({"id":"todo","name":"待办","version":"1.0.0","schema_version":1,)"
+                           R"("tools":[{"name":"lookup","description":"Lookup a value",)"
+                           R"("parameters":{"type":"object","oneOf":[]}}]})";
+
+    HttpResponse res = fx.upload(zip_of(files));
+
+    ASSERT_EQ(res.status, 400) << res.body;
+    EXPECT_EQ(error_code(res), "invalid_scene");
+    EXPECT_NE(res.body.find("tools[0].parameters"), std::string::npos);
+    EXPECT_TRUE(fx.files_on_disk().empty());
+}
+
 TEST(AdminScenes, ListShape) {
     ScenesFixture fx;
     HttpResponse empty = fx.call(Method::Get, kScenes);

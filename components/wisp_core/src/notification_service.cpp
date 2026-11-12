@@ -341,10 +341,11 @@ bool loadable(const Notification& n) {
     const bool actions_ok = reminder ? reminder_actions_ok(n)
                                      : n.action.empty() && n.action_arg.empty() &&
                                            n.action2.empty() && n.action2_arg.empty();
-    return (reminder || valid_notification_id(n.source)) && valid_notification_id(n.id) &&
-           !n.title.empty() && n.title.size() <= NotificationService::kTitleMax &&
-           n.body.size() <= body_max && n.source_name.size() <= NotificationService::kTitleMax &&
-           n.code.empty() && n.arg.empty() && actions_ok;
+    return (reminder || n.source == kAgentSource || valid_notification_id(n.source)) &&
+           valid_notification_id(n.id) && !n.title.empty() &&
+           n.title.size() <= NotificationService::kTitleMax && n.body.size() <= body_max &&
+           n.source_name.size() <= NotificationService::kTitleMax && n.code.empty() &&
+           n.arg.empty() && actions_ok;
 }
 
 }  // namespace
@@ -600,7 +601,8 @@ Result<std::string> NotificationService::post(Notification n, bool from_foregrou
         return Result<std::string>::err(ErrorCode::InvalidArgument,
                                         "id must be 1-32 bytes of [a-z0-9_-]");
     }
-    if (n.source == kSystemSource || (!reminder && !valid_notification_id(n.source))) {
+    if (n.source == kSystemSource ||
+        (!reminder && n.source != kAgentSource && !valid_notification_id(n.source))) {
         return Result<std::string>::err(ErrorCode::InvalidArgument, "bad source");
     }
     n.code.clear();

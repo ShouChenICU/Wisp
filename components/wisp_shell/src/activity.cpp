@@ -55,6 +55,10 @@ constexpr ToolLabel kLabels[] = {
     {"notify.dismiss", StrId::ActNotifyDismiss, false},
     {"docs.read", StrId::ActDocsRead, false},
     {"ui.tree", StrId::ActUiTree, false},
+    {"http.fetch", StrId::ActHttpFetch, false},
+    {"lua.run", StrId::ActLuaRun, false},
+    {"tools.find", StrId::ActToolsFind, false},
+    {"tools.call", StrId::ActToolsCall, false},
 };
 
 const ToolLabel* find_label(std::string_view tool) {

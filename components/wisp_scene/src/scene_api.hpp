@@ -31,7 +31,8 @@
 //       goes to the background, any other closes.
 //   wisp.scene.exit(): sets exit_requested; the runtime closes the scene
 //       for good once the current message is done.
-//   wisp.scene.state() -> "foreground" | "background" (SceneApi::background).
+//   wisp.scene.state() -> "foreground" | "background" | "headless"
+//       (SceneApi::background, SceneApi::headless).
 //   wisp.scene.launch() -> "user" | "boot" | "notification"
 //       (SceneApi::launch).
 //   wisp.power.keep_screen_on(on) (bind_power.cpp): in the foreground takes
@@ -90,6 +91,36 @@
 //       for a download also a wisp.http transport or proxy error. Data,
 //       names and arguments that are not strings or integers raise
 //       argument errors.
+//   wisp.json (bind_json.cpp; agent-tools spec 4.2): encode(v) -> string,
+//       or nil and not_serializable | too_deep | too_large; decode(s) ->
+//       value, or nil and bad_json | too_deep. The rules are lua_json.hpp's
+//       (null decodes to nil); output is capped at kLuaJsonMaxBytes. A
+//       decode argument that is not a string raises an argument error.
+//   wisp.sleep(ms) (bind_timer.cpp): suspends the running task for ms
+//       (0-300000; below TimerSet::kMinIntervalMs it waits that long) with
+//       an after timer, and returns nothing. Outside a task, or with ms
+//       out of range, an argument error; too many timers raises an error.
+//   wisp.tools.register(name, fn) (bind_tools.cpp; agent-tools spec 5.2):
+//       binds `fn` to a tool `name` the scene declared in scene.json's
+//       "tools" array (SceneApi::tool_names, filled by the runtime from
+//       the manifest when it loads the scene); kept in a table in the
+//       registry, by name. A `name` the manifest did not declare, one
+//       already bound, or a non-function `fn` raise an argument error.
+//       Ruling: the spec shows main.lua calling this at its top level
+//       (load time), but nothing here requires that -- a call made later
+//       only binds a name already declared, which is harmless, so this
+//       works any time. SceneRuntime::call_tool() runs `fn` as a task
+//       coroutine (SceneInstance::tool(), through detail::push_tool()).
+//
+// Awaitable calls (agent-tools spec 6, lua_task.hpp): in a task coroutine
+// (start_task()), every wisp.http and wisp.files call above may leave out
+// its callback; it then suspends the task and returns the callback's
+// arguments (err, res; list adds truncated) once the result's message has
+// arrived and run_http_callback() / run_files_callback() resumed it. The
+// callback table holds the task's thread in place of a function. Outside a
+// task, or in a coroutine the script made, a missing callback is the same
+// argument error as before. Results must come back as later messages,
+// never from inside http_submit / files_run / *_fail themselves.
 
 #include <cstddef>
 #include <cstdint>
@@ -111,6 +142,7 @@
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/scene/lua_task.hpp"
 #include "wisp/scene/timer_set.hpp"
 #include "wisp/scene/vm.hpp"
 
@@ -199,6 +231,9 @@ struct SceneApi {
     // In the background: no view, and the APIs of spec 3.4 refuse with
     // "not_in_background". Set by the runtime.
     bool background = false;
+    // Headless (agent-tools spec 5.4): `background` is set as well, so the
+    // same APIs refuse; only wisp.scene.state() tells the two apart.
+    bool headless = false;
     // What wisp.scene.launch() reports; a string literal.
     const char* launch = "user";
     // wisp.power.keep_screen_on(): the registry (null: "unavailable"), the
@@ -229,6 +264,34 @@ struct SceneApi {
     uint32_t next_sensor_id = 1;
     // wisp.device.on() was called for the event at least once.
     bool has_handlers[kDeviceEventCount] = {};
+    // Which principal wisp.http's requests go out as (SceneHttp's rules
+    // for it); the agent's own VM sets Agent.
+    net::HttpPrincipal http_principal = net::HttpPrincipal::Scene;
+    // Task coroutines (lua_task.hpp): told once per task when it ends; the
+    // default slice (0: the VM's exec_ms) and result cap of start_task().
+    TaskDone task_done;
+    uint32_t task_slice_ms = 0;
+    size_t task_max_json = kEvalResultMaxBytes;
+    // The live tasks, kept by lua_task.cpp.
+    struct TaskSlot {
+        uint32_t id = 0;
+        uint32_t slice_ms = 0;
+        size_t max_json = kEvalResultMaxBytes;
+        // What it waits for while suspended: callback `wait_id` in the
+        // registry table at `wait_key`, a wisp.sleep timer when
+        // `wait_timer` (cancel_tasks() drops both).
+        const void* wait_key = nullptr;
+        uint32_t wait_id = 0;
+        bool wait_timer = false;
+    };
+    std::vector<TaskSlot> tasks;
+    uint32_t next_task_id = 1;
+    // wisp.tools.register: the full set of names scene.json declared
+    // (SceneToolDecl::name), filled by the runtime when it loads the
+    // scene. Names bound to a function live in a separate table in the
+    // registry (bind_tools.cpp); this is only the declared set
+    // wisp.tools.register checks against.
+    std::vector<std::string> tool_names;
 
     bool wants(DeviceEvent ev) const { return has_handlers[static_cast<size_t>(ev)]; }
 };
@@ -281,8 +344,50 @@ void install_power(lua_State* L, int wisp);
 void install_notify(lua_State* L, int wisp);
 void install_sensor(lua_State* L, int wisp);
 void install_files(lua_State* L, int wisp);
-// Keeps the function at `cb` as a wisp.files callback and returns its id.
+// Sets wisp.json.
+void install_json(lua_State* L, int wisp);
+// Sets wisp.tools.
+void install_tools(lua_State* L, int wisp);
+// Pushes the function wisp.tools.register bound to `name` and returns
+// true; false (nothing pushed) if no scene code has registered that name
+// yet (SceneRuntime::call_tool()'s "not_registered"). Raises only on a
+// memory error: call it inside Vm::call().
+bool push_tool(lua_State* L, std::string_view name);
+// Keeps the function (or waiting task thread) at `cb` as a wisp.files
+// callback and returns its id.
 uint32_t register_files_callback(lua_State* L, SceneApi& api, int cb);
+// Pushes `v` as a Lua value (maps as tables, lists as sequences). Raises
+// past 32 levels of nesting.
+void push_value(lua_State* L, const Value& v);
+
+// For an awaitable binding whose callback (at `cb`) was left out: outside
+// a task (or in a coroutine the script made) raises the argument error a
+// missing callback always got; in a task that cannot yield here raises an
+// error; otherwise pushes the running thread, which the binding registers
+// in place of the callback before it submits its job and returns wait().
+void push_waiter(lua_State* L, int cb);
+// The callback at `cb`, with the stack cut to it: a function is kept
+// (false); nil or none is replaced by push_waiter()'s thread (true, the
+// call waits); anything else raises an argument error.
+bool take_callback(lua_State* L, int cb);
+// Suspends the running task until resume_waiting() resumes it, noting
+// that it waits for callback `id` in the registry table at `key` (and,
+// with `timer`, for TimerSet timer `id`) so cancel_tasks() can drop the
+// wait. A binding returns this, with only trivially destructible locals
+// in its frame.
+int wait(lua_State* L, const void* key, uint32_t id, bool timer);
+// wait() for wisp.files callback `id` (register_files_callback()).
+int wait_files(lua_State* L, uint32_t id);
+// True when callback `id` in the registry table at `key` is a waiting task
+// thread. Non-raising.
+bool is_waiting(lua_State* L, const void* key, uint32_t id);
+// Forgets callback `id` (a thread, see is_waiting()) and resumes its task
+// with the values `build` (run under Vm::call() with `ctx` as its light
+// userdata argument; null: none) returns, as a fresh slice. A task that
+// has ended or was cancelled is not resumed. Returns the VM's fault, if
+// any; the task's own outcome goes to task_done.
+std::optional<ScriptError> resume_waiting(Vm& vm, const void* key, uint32_t id, lua_CFunction build,
+                                          void* ctx);
 // The SceneApi install_api() put in the registry, or null in a VM that
 // has none (the ui table alone, in tests).
 SceneApi* find_api(lua_State* L);

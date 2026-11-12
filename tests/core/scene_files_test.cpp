@@ -699,3 +699,27 @@ TEST(SceneFiles, CardFilesAdoptedOnFirstLook) {
     EXPECT_FALSE(on_disk(f.record("ghost")));
     EXPECT_EQ(read_raw(f.sd_files("ghost") / "x"), "ghost");
 }
+
+// The agent's own files (agent-tools spec 4.2): the "@agent" id, which no
+// scene id can be, lives in <Library>/agent/files with a scene's quota.
+TEST(SceneFiles, AgentAreaInTheLibrary) {
+    Fixture f(/*sd_online=*/false);
+    ASSERT_TRUE(f.files->write(wisp::core::kAgentFilesId, "a.txt", as_bytes("hi")));
+    EXPECT_EQ(read_raw(fs::path(f.in) / "library" / "agent" / "files" / "a.txt"), "hi");
+    EXPECT_FALSE(on_disk(fs::path(f.in) / "scenes" / "@agent"));
+    auto info = f.files->info(wisp::core::kAgentFilesId);
+    ASSERT_TRUE(info);
+    EXPECT_EQ(info.value().location, FilesLocation::Internal);
+    EXPECT_EQ(info.value().quota, 512u * 1024);
+    EXPECT_EQ(text(f.files->read(wisp::core::kAgentFilesId, "a.txt", 0, 10).value()), "hi");
+
+    // With a card, a first write goes to the card's library.
+    Fixture g(/*sd_online=*/true);
+    ASSERT_TRUE(g.files->write(wisp::core::kAgentFilesId, "b.txt", as_bytes("yo")));
+    EXPECT_EQ(read_raw(fs::path(g.sd) / "wisp" / "library" / "agent" / "files" / "b.txt"), "yo");
+    EXPECT_EQ(g.files->info(wisp::core::kAgentFilesId).value().location, FilesLocation::Sd);
+
+    // Other ids outside the scene id rules stay refused.
+    EXPECT_FALSE(f.files->write("@other", "a.txt", as_bytes("x")));
+    EXPECT_FALSE(f.files->write("agent/..", "a.txt", as_bytes("x")));
+}

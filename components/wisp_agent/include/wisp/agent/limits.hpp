@@ -52,4 +52,24 @@ inline constexpr uint32_t kEvalMs = 200;
 // The install check reports at most this many W and E log lines each.
 inline constexpr size_t kCheckLogsPerLevel = 20;
 
+// http.fetch (agent-tools spec 3.1, 3.4): the registered tool timeout
+// (the longest a request's own timeout_ms may be, plus margin), and the
+// request-level default and range duplicated here because they are
+// numbers the schema and the tool both need, not AgentHttpLimits'
+// (net::AgentHttpLimits caps what SceneHttp accepts; these are the
+// defaults http.fetch itself applies before that).
+inline constexpr uint32_t kHttpFetchToolMs = 125000;
+inline constexpr uint32_t kHttpDefaultTimeoutMs = 30000;
+inline constexpr uint32_t kHttpMinTimeoutMs = 1000;
+inline constexpr uint32_t kHttpMaxTimeoutMs = 120000;
+inline constexpr size_t kHttpDefaultMaxBytes = 16384;
+inline constexpr size_t kHttpMaxMaxBytes = 65536;
+
+// lua.run (agent-tools spec 4.1, 4.3): the registered tool timeout (the
+// longest run plus margin), and the defaults of timeout_ms and memory_kb.
+// Their ranges are scene::SceneRuntime::run_lua()'s (kLuaRun*).
+inline constexpr uint32_t kLuaRunToolMs = 305000;
+inline constexpr uint32_t kLuaRunDefaultTimeoutMs = 30000;
+inline constexpr uint32_t kLuaRunDefaultMemoryKb = 1024;
+
 }  // namespace wisp::agent

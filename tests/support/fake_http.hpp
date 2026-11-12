@@ -114,7 +114,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             requests_.push_back(req);
-            res = next;
+            res = responder ? responder(req) : next;
         }
         if (hold.load()) {
             auto shut = std::make_shared<std::atomic<bool>>(false);
@@ -138,24 +138,40 @@ public:
             }
         }
         if (res.transport != net::TransportError::None) return res;
-        if (req.max_response_bytes != 0 && res.body.size() > req.max_response_bytes &&
-            !ignore_limit.load())
-            return {.transport = net::TransportError::TooLarge};
+        // Mirrors the real clients (esp_http_client, curl): over the cap
+        // fails the request, unless truncate_at_limit asks to keep the
+        // first max_response_bytes instead and succeed. ignore_limit is
+        // the one escape hatch left, for a test that wants to show
+        // SceneHttp's own accounting still catches a client that (like a
+        // real one might) does not enforce its cap.
+        bool truncate = false;
+        size_t deliver = res.body.size();
+        if (req.max_response_bytes != 0 && res.body.size() > req.max_response_bytes) {
+            if (req.truncate_at_limit) {
+                truncate = true;
+                deliver = req.max_response_bytes;
+            } else if (!ignore_limit.load()) {
+                return {.transport = net::TransportError::TooLarge};
+            }
+        }
         if (req.on_status) req.on_status(res.status);
         if (req.on_body) {
             const auto* p = reinterpret_cast<const uint8_t*>(res.body.data());
-            for (size_t at = 0; at < res.body.size(); at += 4096) {
+            for (size_t at = 0; at < deliver; at += 4096) {
                 if (before_piece) before_piece();
                 if (req.cancelled && req.cancelled()) {
                     saw_cancel = true;
                     return {.transport = net::TransportError::Cancelled};
                 }
                 ++pieces;
-                const size_t n = std::min<size_t>(4096, res.body.size() - at);
+                const size_t n = std::min<size_t>(4096, deliver - at);
                 if (!req.on_body({p + at, n})) return {.transport = net::TransportError::Cancelled};
             }
             res.body.clear();
+        } else if (truncate) {
+            res.body.resize(deliver);
         }
+        res.truncated = truncate;
         return res;
     }
 
@@ -185,6 +201,10 @@ public:
     }
 
     net::HttpClientResponse next{.transport = net::TransportError::None, .status = 200, .body = {}};
+    // Set before the request: one answer per call (by call order), in
+    // place of the fixed `next` -- for a server that answers a sequence
+    // differently each time (redirects). Set before the request.
+    std::function<net::HttpClientResponse(const net::HttpClientRequest&)> responder;
     std::atomic<bool> hold{false};
     std::atomic<int> held{0};
     std::atomic<bool> saw_cancel{false};

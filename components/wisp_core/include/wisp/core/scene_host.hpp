@@ -7,9 +7,11 @@
 //
 // Every change of a scene's state is published on the event bus as
 // "scene.state" with source "scene" and payload {"id": <scene id>,
-// "state": "stopped" | "running" | "background" | "error" | "deleted"}.
-// "running" is the scene in the foreground; "background" one that keeps
-// running without a view (scene-device spec 3.2).
+// "state": "stopped" | "running" | "background" | "headless" | "error" |
+// "deleted"}. "running" is the scene in the foreground; "background" one
+// that keeps running without a view (scene-device spec 3.2); "headless"
+// one started without a view only to run the agent's calls of its tools
+// (agent-tools spec 5.4), which closes once they stop.
 
 #include <span>
 #include <string>
@@ -20,9 +22,9 @@
 
 namespace wisp::core {
 
-enum class SceneState { Stopped, Running, Background, Error };
+enum class SceneState { Stopped, Running, Background, Headless, Error };
 
-// "stopped", "running", "background", "error".
+// "stopped", "running", "background", "headless", "error".
 const char* to_string(SceneState s);
 
 struct SceneStatus {

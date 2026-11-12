@@ -503,6 +503,10 @@ Result<SceneInfo> SceneRepository::install(
         return fail<SceneInfo>(parsed.error());
     }
     const SceneManifest& manifest = parsed.value();
+    Result<void> schemas = validate_scene_tool_schemas(manifest);
+    if (!schemas) {
+        return R::err(schemas.error().code, schemas.error().message);
+    }
     const std::string& id = manifest.id;
 
     // From here until this install returns, opens of `id` are refused

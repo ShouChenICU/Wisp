@@ -8,7 +8,9 @@
 // Callbacks wait in a registry table by id until their result arrives;
 // results for a closed scene never arrive (the runtime drops stale
 // messages), and the table goes with the VM. wisp.http.download keeps its
-// callback here too (register_files_callback()).
+// callback here too (register_files_callback()). A task that left the
+// callback out waits there as its thread instead (lua_task.hpp), and
+// run_files_callback() resumes it with the callback's arguments.
 //
 // longjmp rule (vm.hpp): each binding checks its arguments with raising
 // Lua calls while its frame holds only trivially destructible locals, then
@@ -81,12 +83,11 @@ void do_write(lua_State* L, SceneApi& api, uint32_t id, bool append) {
 int write_like(lua_State* L, bool append) {
     luaL_checktype(L, 1, LUA_TSTRING);
     luaL_checktype(L, 2, LUA_TSTRING);
-    luaL_checktype(L, 3, LUA_TFUNCTION);
-    lua_settop(L, 3);
+    const bool waits = detail::take_callback(L, 3);
     SceneApi& api = checked_api(L);
     const uint32_t id = detail::register_files_callback(L, api, 3);
     do_write(L, api, id, append);
-    return 0;
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 int write(lua_State* L) { return write_like(L, false); }
@@ -108,14 +109,13 @@ int read(lua_State* L) {
     const lua_Integer len = luaL_checkinteger(L, 3);
     luaL_argcheck(L, offset >= 0, 2, "offset must not be negative");
     luaL_argcheck(L, len >= 0, 3, "len must not be negative");
-    luaL_checktype(L, 4, LUA_TFUNCTION);
-    lua_settop(L, 4);
+    const bool waits = detail::take_callback(L, 4);
     SceneApi& api = checked_api(L);
     const uint32_t id = detail::register_files_callback(L, api, 4);
     // Anything past max_read is "too_large" anyway; this keeps it in size_t.
     const size_t capped = static_cast<size_t>(std::min<lua_Integer>(len, 1 << 30));
     do_read(L, api, id, static_cast<uint64_t>(offset), capped);
-    return 0;
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 void do_remove(lua_State* L, SceneApi& api, uint32_t id) {
@@ -128,12 +128,11 @@ void do_remove(lua_State* L, SceneApi& api, uint32_t id) {
 
 int remove(lua_State* L) {
     luaL_checktype(L, 1, LUA_TSTRING);
-    luaL_checktype(L, 2, LUA_TFUNCTION);
-    lua_settop(L, 2);
+    const bool waits = detail::take_callback(L, 2);
     SceneApi& api = checked_api(L);
     const uint32_t id = detail::register_files_callback(L, api, 2);
     do_remove(L, api, id);
-    return 0;
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 void do_list(SceneApi& api, uint32_t id) {
@@ -147,19 +146,19 @@ void do_info(SceneApi& api, uint32_t id) {
 }
 
 int list(lua_State* L) {
-    luaL_checktype(L, 1, LUA_TFUNCTION);
-    lua_settop(L, 1);
+    const bool waits = detail::take_callback(L, 1);
     SceneApi& api = checked_api(L);
-    do_list(api, detail::register_files_callback(L, api, 1));
-    return 0;
+    const uint32_t id = detail::register_files_callback(L, api, 1);
+    do_list(api, id);
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 int info(lua_State* L) {
-    luaL_checktype(L, 1, LUA_TFUNCTION);
-    lua_settop(L, 1);
+    const bool waits = detail::take_callback(L, 1);
     SceneApi& api = checked_api(L);
-    do_info(api, detail::register_files_callback(L, api, 1));
-    return 0;
+    const uint32_t id = detail::register_files_callback(L, api, 1);
+    do_info(api, id);
+    return waits ? detail::wait_files(L, id) : 0;
 }
 
 struct RunCtx {
@@ -218,29 +217,42 @@ int push_payload(lua_State* L, const FilesPayload& p) {
     return 1;
 }
 
+// Pushes cb's arguments: err and the payload (nil and the payload, or the
+// error and nil). Returns how many.
+int push_args(lua_State* L, const FilesResult& r) {
+    if (!r.error.empty()) {
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        lua_pushnil(L);
+        return 2;
+    }
+    lua_pushnil(L);
+    return 1 + push_payload(L, r.payload);
+}
+
 int run_entry(lua_State* L) {
     const auto* c = static_cast<const RunCtx*>(lua_touserdata(L, 1));
-    const FilesResult& r = *c->result;
     luaL_checkstack(L, 8, "wisp.files");
     lua_rawgetp(L, LUA_REGISTRYINDEX, &kCallbacksKey);        // 2
     if (lua_rawgeti(L, 2, c->id) != LUA_TFUNCTION) return 0;  // 3
     lua_pushnil(L);
     lua_rawseti(L, 2, c->id);
-    int n = 1;
-    if (!r.error.empty()) {
-        lua_pushlstring(L, r.error.data(), r.error.size());
-        lua_pushnil(L);
-    } else {
-        lua_pushnil(L);
-        n = push_payload(L, r.payload);
-    }
-    lua_call(L, 1 + n, 0);
+    lua_call(L, push_args(L, *c->result), 0);
     return 0;
+}
+
+// The waiting task's values (detail::resume_waiting()).
+int args_entry(lua_State* L) {
+    const auto* c = static_cast<const RunCtx*>(lua_touserdata(L, 1));
+    lua_settop(L, 0);
+    luaL_checkstack(L, 8, "wisp.files");
+    return push_args(L, *c->result);
 }
 
 }  // namespace
 
 namespace detail {
+
+int wait_files(lua_State* L, uint32_t id) { return wait(L, &kCallbacksKey, id, false); }
 
 uint32_t register_files_callback(lua_State* L, SceneApi& api, int cb) {
     cb = lua_absindex(L, cb);
@@ -280,6 +292,8 @@ std::optional<ScriptError> run_files_callback(Vm& vm, uint32_t id, const FilesRe
     lua_State* L = vm.L();
     if (!lua_checkstack(L, 2)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     RunCtx ctx{id, &r};
+    if (detail::is_waiting(L, &kCallbacksKey, id))
+        return detail::resume_waiting(vm, &kCallbacksKey, id, args_entry, &ctx);
     lua_pushcfunction(L, run_entry);
     lua_pushlightuserdata(L, &ctx);
     return vm.call(1, 0, Budget::Fresh);

@@ -439,6 +439,23 @@ wisp_test(NAME http_binding_test SRCS scene/http_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME files_binding_test SRCS scene/files_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+# Task coroutines and wisp.json on a bare Vm (agent-tools spec 4.2, 6);
+# scene_api.hpp is private to wisp_scene.
+wisp_test(NAME lua_task_test SRCS scene/lua_task_test.cpp LIBS wisp_scene wisp_port_sim_os
+          TIMEOUT 60)
+wisp_test(NAME json_binding_test SRCS scene/json_binding_test.cpp LIBS wisp_scene wisp_port_sim_os)
+# wisp.tools.register and detail::push_tool (agent-tools spec 5.2).
+wisp_test(NAME tools_binding_test SRCS scene/tools_binding_test.cpp
+          LIBS wisp_scene wisp_port_sim_os)
+# lua.run's headless VM (agent-tools spec 4.2).
+wisp_test(NAME scene_run_lua_test SRCS scene/scene_run_lua_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 90)
+# SceneRuntime::call_tool() and headless scenes (agent-tools spec 5.4).
+wisp_test(NAME scene_tools_test SRCS scene/scene_tools_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 90)
+foreach(t lua_task_test json_binding_test tools_binding_test scene_tools_test)
+    target_include_directories(${t} PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
+endforeach()
 wisp_test(NAME timer_set_test SRCS scene/timer_set_test.cpp LIBS wisp_scene)
 wisp_test(NAME scene_schedule_test SRCS scene/scene_schedule_test.cpp LIBS wisp_scene)
 wisp_test(NAME minute_ticker_test SRCS scene/minute_ticker_test.cpp LIBS wisp_scene)
@@ -459,6 +476,10 @@ wisp_test(NAME conversation_test SRCS agent/conversation_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME tool_registry_test SRCS agent/tool_registry_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME tool_index_test SRCS agent/tool_index_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME scene_tools_tools_test SRCS agent/scene_tools_tools_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)
 # Its own binary: it replaces the global operator new to see what stays on
 # the default heap (internal RAM on the device).
 wisp_test(NAME tool_registry_heap_test SRCS agent/tool_registry_heap_test.cpp
@@ -474,6 +495,10 @@ wisp_test(NAME confirm_test SRCS agent/confirm_test.cpp
 wisp_test(NAME agent_wiring_test SRCS app/agent_wiring_test.cpp
           LIBS wisp_app wisp_port_sim_os TIMEOUT 30)
 target_include_directories(agent_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+wisp_test(NAME scene_tool_index_observer_test SRCS app/scene_tool_index_observer_test.cpp
+          LIBS wisp_app wisp_agent wisp_port_sim_os TIMEOUT 30)
+target_include_directories(scene_tool_index_observer_test PRIVATE
+                           ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME app_agent_test SRCS app/app_agent_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
 target_include_directories(app_agent_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
@@ -507,3 +532,11 @@ wisp_test(NAME memory_tools_test SRCS agent/memory_tools_test.cpp
 wisp_test(NAME todo_tools_test SRCS agent/todo_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME docs_test SRCS agent/docs_test.cpp LIBS wisp_agent wisp_port_sim_os)
+# http.fetch (agent-tools spec 3): the "as":"text" HTML conversion, and the
+# tool itself over a real SceneHttp with a fake HttpClient.
+wisp_test(NAME html_text_test SRCS agent/html_text_test.cpp LIBS wisp_agent wisp_port_sim_os)
+wisp_test(NAME http_tools_test SRCS agent/http_tools_test.cpp
+          LIBS wisp_agent wisp_net wisp_port_sim_os TIMEOUT 60)
+# lua.run over a real SceneRuntime (agent-tools spec 4.1).
+wisp_test(NAME lua_tools_test SRCS agent/lua_tools_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)

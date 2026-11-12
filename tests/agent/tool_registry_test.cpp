@@ -432,8 +432,14 @@ TEST(SceneData, WrapsAndNeutralisesClosingTag) {
     EXPECT_EQ(wisp::agent::scene_data("b", ""), "<data source=\"scene:b\"></data>");
 }
 
-// A property that takes more than one type (settings.set's value) lists
-// them: "type": ["integer", "string"].
+TEST(ToolRegistry, SchemaSupportedRejectsUnknownKeywords) {
+    auto schema = wisp::from_json(R"({"type":"object","oneOf":[]})");
+    ASSERT_TRUE(schema);
+    std::string why;
+    EXPECT_FALSE(wisp::agent::schema_supported(schema.value(), &why));
+    EXPECT_NE(why.find("oneOf"), std::string::npos);
+}
+
 TEST(ToolRegistry, TypeListAcceptsAnyOfItsTypes) {
     ToolRegistry reg(ToolExecutors{});
     ASSERT_TRUE(reg.add(tool("settings.set", R"({"type":"object",

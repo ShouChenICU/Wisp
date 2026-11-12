@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "wisp/core/scene_manifest.hpp"
+#include "wisp/scene/lua_task.hpp"
 
 namespace wisp::scene {
 
@@ -687,6 +688,11 @@ std::string ScriptError::text() const {
 
 std::string_view global_preamble() { return kPreamble; }
 
+void Vm::set_output(std::string tag, std::function<void(std::string_view)> out) {
+    log_tag_ = std::move(tag);
+    output_ = std::move(out);
+}
+
 Vm::Vm(std::string scene_id, VmLimits limits, std::function<uint64_t()> now_ms)
     : scene_id_(std::move(scene_id)),
       limits_(limits),
@@ -911,6 +917,7 @@ void* Vm::alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
         return nullptr;
     }
     vm->used_ += grow;
+    if (vm->used_ > vm->peak_) vm->peak_ = vm->used_;
     if (vm->refused_) {
         vm->refused_ = false;
         if (!same) vm->fault(vm->refused_by_pool_ ? Fault::Budget : Fault::Memory);
@@ -1021,9 +1028,18 @@ int Vm::co_switch(lua_State* L, lua_State* co) {
     return lua_gettop(L);
 }
 
-int Vm::co_resume(lua_State* L) { return co_switch(L, lua_tothread(L, 1)); }
+// A task thread (lua_task.hpp) belongs to its host: resuming it from a
+// script would hand the script the wait marker and leave the host's wait
+// pending, and closing it would end the task behind the host's back.
+int Vm::co_resume(lua_State* L) {
+    if (is_task_thread(L, 1)) return luaL_error(L, "cannot resume a task");
+    return co_switch(L, lua_tothread(L, 1));
+}
 
-int Vm::co_close(lua_State* L) { return co_switch(L, lua_tothread(L, 1)); }
+int Vm::co_close(lua_State* L) {
+    if (is_task_thread(L, 1)) return luaL_error(L, "cannot close a task");
+    return co_switch(L, lua_tothread(L, 1));
+}
 
 // coroutine.wrap, written out instead of wrapping lcorolib's: on an error
 // the original closes the dead coroutine (lua_closethread), which runs its
@@ -1278,6 +1294,65 @@ std::optional<ScriptError> Vm::call(int nargs, int nresults, Budget budget, uint
     return std::nullopt;
 }
 
+std::optional<ScriptError> Vm::resume(lua_State* co, int nargs, int* nresults, bool* yielded,
+                                      uint32_t budget_ms) {
+    *nresults = 0;
+    *yielded = false;
+    if (faulted()) return fault_error("");
+    if (running_) return ScriptError{ScriptFault::Runtime, "", 0, "resume while Lua is running"};
+    // lua_resume reports a thread it cannot resume by pushing a new string,
+    // which may allocate outside any protected call; such a thread is
+    // refused here instead.
+    lua_Debug ar;
+    const int status_before = lua_status(co);
+    const bool fresh = status_before == LUA_OK && lua_getstack(co, 0, &ar) == 0 &&
+                       lua_gettop(co) > nargs && lua_type(co, -nargs - 1) == LUA_TFUNCTION;
+    if (!fresh && status_before != LUA_YIELD)
+        return ScriptError{ScriptFault::Runtime, "", 0, "cannot resume this coroutine"};
+    // The task's file, for errors that carry no position.
+    char callee[LUA_IDSIZE] = "";
+    if (fresh && lua_checkstack(co, 1)) {
+        lua_pushvalue(co, -nargs - 1);
+        if (lua_getinfo(co, ">S", &ar) && std::strcmp(ar.what, "C") != 0)
+            std::snprintf(callee, sizeof(callee), "%s", ar.short_src);
+    }
+
+    start_ms_ = now_ms_();
+    started_ = true;
+    exec_ms_ = budget_ms != 0 ? budget_ms : limits_.exec_ms;
+    running_ = true;
+    current_ = co;
+    // Also puts back a count a refusal shortened in an earlier slice.
+    lua_sethook(co, &Vm::hook, LUA_MASKCOUNT, limits_.hook_instructions);
+    int nres = 0;
+    const int status = lua_resume(co, L_, nargs, &nres);
+    running_ = false;
+    current_ = nullptr;
+    settle_refusal();
+    if (faulted()) {
+        // Whatever the fault, it hit a coroutine: never clear it.
+        fault_off_main_ = true;
+        return fault_error(callee);
+    }
+    if (status == LUA_YIELD) {
+        *yielded = true;
+        *nresults = nres;
+        return std::nullopt;
+    }
+    if (status == LUA_OK) {
+        *nresults = nres;
+        return std::nullopt;
+    }
+    if (callee[0] == '\0') {
+        // A dead coroutine keeps its frames: the outermost Lua one is the
+        // task's function.
+        for (int level = 0; lua_getstack(co, level, &ar); ++level)
+            if (lua_getinfo(co, "S", &ar) && std::strcmp(ar.what, "C") != 0)
+                std::snprintf(callee, sizeof(callee), "%s", ar.short_src);
+    }
+    return error_from_top(co, ScriptFault::Runtime, callee);
+}
+
 std::optional<ScriptError> compile_check(std::string_view path, std::string_view source) {
     if (is_binary(source))
         return ScriptError{ScriptFault::Compile, std::string(path), 0,
@@ -1316,16 +1391,31 @@ static_assert(kSceneTagBytes <= log::kMaxTagBytes);
 static_assert(kLuaLogMaxBytes <= log::kMaxTextBytes);
 
 void log_lua_args(lua_State* L, LogLevel level) {
+    Vm* vm = Vm::of(L);
+    // Only a pointer: the call does not keep a C++ object in this frame,
+    // and `out` itself calls no Lua (set_output()).
+    const std::function<void(std::string_view)>* out = vm->output_ ? &vm->output_ : nullptr;
     char line[kLuaLogMaxBytes + 1];
     size_t len = 0;
+    bool full = false;
     int n = lua_gettop(L);
     for (int i = 1; i <= n; ++i) {
-        if (i > 1) {
-            if (len == kLuaLogMaxBytes) break;
-            line[len++] = '\t';
+        if (out != nullptr && i > 1) (*out)(std::string_view("\t", 1));
+        if (!full && i > 1) {
+            if (len == kLuaLogMaxBytes) {
+                full = true;
+            } else {
+                line[len++] = '\t';
+            }
         }
+        if (full && out == nullptr) break;
         size_t size = 0;
         const char* s = luaL_tolstring(L, i, &size);
+        if (out != nullptr) (*out)(std::string_view(s, size));
+        if (full) {
+            lua_pop(L, 1);
+            continue;
+        }
         size_t room = kLuaLogMaxBytes - len;
         bool cut = size > room;
         if (cut) {
@@ -1336,11 +1426,16 @@ void log_lua_args(lua_State* L, LogLevel level) {
         std::memcpy(line + len, s, size);
         len += size;
         lua_pop(L, 1);
-        if (cut) break;
+        if (cut) full = true;
     }
+    if (out != nullptr) (*out)(std::string_view("\n", 1));
     line[len] = '\0';
+    if (!vm->log_tag_.empty()) {
+        log::write_text(level, vm->log_tag_.c_str(), line);
+        return;
+    }
     char tag[kSceneTagBytes + 1];
-    std::snprintf(tag, sizeof(tag), "scene.%s", Vm::of(L)->scene_id().c_str());
+    std::snprintf(tag, sizeof(tag), "scene.%s", vm->scene_id().c_str());
     log::write_text(level, tag, line);
 }
 

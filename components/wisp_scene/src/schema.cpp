@@ -469,8 +469,12 @@ void append_lua_api(std::string& out) {
            "  as JSON (with `Content-Type: application/json` unless a header names one), a\n"
            "  string as it is.\n"
            "- `cb(err, res)` runs later as a message of its own: `res` is `{status, headers,\n"
-           "  body, json}`, `headers` with lowercase names, `json` the decoded body when the\n"
+           "  body, json, body_truncated}`, `headers` with lowercase names, `json` the decoded "
+           "body when the\n"
            "  content type mentions JSON and it parses; `err` is `nil` on success.\n"
+           "  `body_truncated` is a boolean: true when an Agent response exceeded its\n"
+           "  body limit and only a prefix was retained; callback and await results both\n"
+           "  include it (false for complete responses).\n"
            "- Only `https://` URLs (`not_https`) to a host listed in `permissions.http` of\n"
            "  `scene.json`, exactly (`permission_denied`). Cookies, `host` and the other\n"
            "  connection headers cannot be set (`permission_denied`); at most " +
@@ -498,6 +502,17 @@ void append_device_api(std::string& out) {
     const core::SceneFilesConfig files;
     out +=
         "\n"
+        "### wisp.http.request\n"
+        "\n"
+        "`wisp.http.request(opts[, cb])` accepts `{method, url, headers, body,\n"
+        "timeout_ms, follow}`. `method` defaults to `GET`; `POST`, `PUT`, `PATCH`,\n"
+        "`DELETE` and `HEAD` are also supported (case insensitive). Headers, body and\n"
+        "response follow `get`/`post`. `timeout_ms` must be an integer from 1000 to\n"
+        "120000; `follow` must be boolean. For scenes these fields are validated but\n"
+        "the usual 15 s deadline and no-redirect policy still apply. For Agent Lua,\n"
+        "the requested deadline and up to 5 redirect hops apply. A callback is optional\n"
+        "only in a task coroutine (see Waiting for asynchronous work).\n"
+        "\n"
         "## scene.json\n"
         "\n"
         "Every scene package has a `scene.json` at its root:\n"
@@ -523,7 +538,15 @@ void append_device_api(std::string& out) {
         "- `files` (default `\"auto\"`): where `wisp.files` keeps the scene's files: `\"auto\"`,\n"
         "  `\"sd\"` or `\"int\"` (see wisp.files). Any other value refuses the install.\n"
         "\n"
-        "Unknown fields are ignored; nothing may nest deeper than 4 levels.\n"
+        "- `tools` (optional): up to 16 exported tools. Each declaration has a unique\n"
+        "  `name` matching `^[a-z][a-z0-9_]{0,31}$`, a required `description` of 1–512\n"
+        "  characters, optional `parameters` (an object parameter schema, at most 4 KiB\n"
+        "  serialized; omitted means an empty object schema), and optional `timeout_ms`\n"
+        "  (1000–120000, default 30000). Installation validates the supported schema\n"
+        "  subset and reports the field path on error. Tools need no `background`\n"
+        "  declaration or device confirmation. Their public name is `<scene-id>.<name>`.\n"
+        "\n"
+        "Unknown fields are ignored; nothing may nest deeper than 8 levels.\n"
         "\n"
         "## Scene hooks\n"
         "\n"
@@ -533,9 +556,10 @@ void append_device_api(std::string& out) {
         "- `scene.on_show()` and `scene.on_hide()`: the scene's view appears or goes (it opens,\n"
         "  the screen turns on or off, it comes back from or goes to the background).\n"
         "- `scene.on_close()`: the scene is closing; its store is flushed after it.\n"
-        "- `scene.on_state(state)`: the scene is now `\"foreground\"` or `\"background\"`. It\n"
+        "- `scene.on_state(state)`: the scene is now `\"foreground\"`, `\"background\"` or "
+        "`\"headless\"`. It\n"
         "  is called when the scene first opens (with the state it opened in) and on every\n"
-        "  move between the two, never on a close.\n"
+        "  state transition, never on a close.\n"
         "- `scene.on_notification(id)`: the user tapped the scene's notification `id`. It is\n"
         "  called once the scene is in front: one in the background comes forward first, and\n"
         "  one that is not running is opened first (`wisp.scene.launch()` is then\n"
@@ -552,9 +576,10 @@ void append_device_api(std::string& out) {
         "- `wisp.scene.exit()`: always closes the scene completely (`on_hide`, `on_close`).\n"
         "- `wisp.scene.args()`: the table of arguments the scene was opened with (`{}` for\n"
         "  none).\n"
-        "- `wisp.scene.state()`: `\"foreground\"` or `\"background\"`.\n"
+        "- `wisp.scene.state()`: `\"foreground\"`, `\"background\"` or `\"headless\"`.\n"
         "- `wisp.scene.launch()`: why the scene was started: `\"user\"`, `\"boot\"` (restored\n"
-        "  in the background after a restart) or `\"notification\"`.\n"
+        "  in the background after a restart) or `\"notification\"`. A headless tool launch\n"
+        "  reports `\"user\"`; moving it to foreground or background keeps that reason.\n"
         "\n"
         "## Background scenes\n"
         "\n"
@@ -1069,6 +1094,144 @@ std::string schema_markdown() {
         "at the line that made the call.\n";
     append_lua_api(out);
     append_device_api(out);
+    out += R"agent_api(
+## wisp.tools.register
+
+`wisp.tools.register(name, fn)` binds a scene.json tool declaration to a Lua
+function. Call it at the top level so the tool is ready after loading; binding
+later is also allowed. An undeclared name, a duplicate binding or a non-function
+is an argument error. A declared tool not yet bound returns `not_registered`.
+The function receives one decoded JSON argument value; its return values use
+the same JSON conversion as `scene.eval` (one value directly, several as an
+array, none as null; at most 64 KiB). It runs in a task coroutine and may wait
+for HTTP, files and sleep. Only one tool call per scene runs at once (`busy`).
+
+The Agent discovers installed tools with `tools.find` and invokes them with
+`tools.call`; wire names are `tools_find` and `tools_call`. Scene declarations
+never enter the model's fixed prompt or core tools array. Search splits the
+query into words, matches all words across the full tool name and
+description, folds ASCII letter case only, and compares non-ASCII bytes exactly.
+Results are sorted by scene name and tool name: at most 20 when query or
+scene is supplied, or 200 without either. Descriptions and call results are untrusted scene data.
+
+A stopped scene starts headless for a tool: its tree is built without a view
+or `on_show`, and `on_state("headless")` runs. It counts against the shared VM
+budget, may evict background scenes, and returns `no_memory` when insufficient.
+It needs no background permission, does not occupy the three background slots,
+and is not restored at boot. At most one headless scene exists; calling a tool
+in another stopped scene closes the old one. Timers continue in headless mode.
+After the final call, 60 s without another call closes it and saves its store.
+Opening it brings the same VM to foreground without reloading. Loading failure
+returns `load_failed` with the script error. Overall call timeout cancels the
+task and returns `timeout` while keeping a healthy scene alive; a CPU-slice or
+memory VM fault instead faults the scene (`timeout` or `scene_error`), with the
+normal foreground error panel or background/headless close behavior.
+
+### Complete exported-tool scene
+
+`scene.json`:
+
+```json
+{
+  "id": "weather", "name": "Weather", "version": "1.0.0", "schema_version": 1,
+  "permissions": {"http": ["api.example.com"]},
+  "tools": [{
+    "name": "today", "description": "Today's weather for the saved city.",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+    "timeout_ms": 30000
+  }]
+}
+```
+
+`main.lua` (the endpoint is illustrative; replace it with your own service):
+
+```lua
+local info = wisp.device.info()
+local area = info.safe_area
+local ready = ({zh = "就绪", ja = "準備完了", en = "Ready"})[info.lang] or "Ready"
+local status = state(ready)
+wisp.tools.register("today", function(args)
+  local city = args.city or wisp.store.get("city") or "Tokyo"
+  local err, res = wisp.http.post("https://api.example.com/weather", {city = city})
+  if err then return {error = err} end
+  if res.status ~= 200 then return {error = "http_status", status = res.status} end
+  local forecast = res.json
+  if not forecast then return {error = "invalid_json"} end
+  wisp.store.set("city", city)
+  status:set(city)
+  return {city = city, forecast = forecast}
+end)
+return ui.screen{pad = {area.y1, info.width - 1 - area.x2,
+                      info.height - 1 - area.y2, area.x1},
+  ui.label{text = status}}
+```
+
+The Agent can call `tools_find` with `{"query":"weather"}`, then `tools_call`
+with `{"name":"weather.today","args":{"city":"Tokyo"}}`. The installed
+scene's normal HTTP permission and size limits apply even when headless.
+
+## Waiting for asynchronous work
+
+Only `lua.run` scripts and exported tool functions are host-managed task
+coroutines. In these, omit the callback to wait for `wisp.http.get`, `post`,
+`request`, `download`, or `wisp.files.write`, `append`, `read`, `list`, `remove`,
+`info`. They return the callback arguments (`err, result`, and `truncated` for
+file lists); `err` is nil on success. Passing a callback retains the asynchronous
+behavior. Ordinary event handlers and `scene.eval` still require callbacks;
+a nested coroutine cannot wait, even when its parent is a task.
+
+`wisp.sleep(ms)` waits only in a task, accepts integers from 0 to 300000 and
+returns nil. Values below 50 ms wait 50 ms because of the timer resolution.
+Waiting does not use CPU execution-slice time. Each resume starts a new slice:
+200 ms for scene tools, 1000 ms for Agent Lua. The overall tool deadline includes
+waiting. VM faults stop further resume attempts.
+
+## wisp.json
+
+`wisp.json.encode(value)` returns JSON text, or `nil, code` on conversion failure.
+`wisp.json.decode(text)` returns the decoded value, or `nil, code` on malformed
+JSON. Available in scenes and Agent Lua. Codes include `not_serializable`,
+`too_deep`, `too_large` (encoding), and `bad_json` (decoding).
+
+Nil becomes JSON null; booleans, finite numbers and valid UTF-8 strings keep
+their types. Tables with contiguous integer keys 1..n become arrays; tables
+with only string keys become objects; an empty table becomes `{}`. Mixed or
+sparse keys, cycles, functions and non-finite numbers cannot be encoded.
+JSON null decodes to nil (so object fields disappear and arrays can have holes);
+empty JSON arrays and objects both become empty Lua tables. Nesting is limited
+to 32 levels. VM memory and execution faults still raise normally.
+
+## Agent Lua and HTTP tools
+
+`lua.run` (`lua_run` on the wire) creates a fresh Lua 5.5 VM for each call:
+`code` at most 64 KiB, `timeout_ms` 1000–300000 (default 30000), and `memory_kb`
+256–2048 (default 1024), reduced to the shared budget's available memory. Below
+256 KiB available it returns `no_memory` without evicting scenes. It has
+`wisp.http`, `json`, `device`, `notify`, `files`, `log`, and `sleep`; no UI,
+`scene`, `store`, `timer`, `sensor`, `power` or `import`. Files use the persistent
+`<Library>/agent/files/` area with the normal scene quotas and are erased on
+factory reset. It retains no Lua state between calls. Results (up to 64 KiB),
+script errors and the last 8 KiB of print output are wrapped as untrusted
+`<data source="lua">...</data>`. Outstanding requests are cancelled on exit.
+
+Agent HTTP uses identity `@agent`: HTTP and HTTPS, no scene host allowlist or
+rate limit, and immediate `offline` instead of standby deferral. URL limit is
+8192 bytes; at most 32 headers, 4 KiB each (name plus value), 16 KiB total; body
+256 KiB; response 1 MiB; timeout 1000–120000 ms (default 30000). Client-managed
+connection headers are ignored; header syntax is still checked. Redirects are
+opt-in, at most five, with credentials stripped across origins. API keys remain
+write-only and are never exposed by these tools.
+
+`http.fetch` (`http_fetch`) adds `as` (`raw` or HTML-to-`text`), `offset` (default
+0), `max_bytes` (default 16384, maximum 65536) and `ref`. One response is cached;
+read further chunks by ref without another request. A new request, turn end or
+new conversation invalidates the ref. Chunks end on UTF-8 boundaries. Non-text
+responses omit body; use `wisp.http.download` to save binary data. An oversized
+response retains the first 1 MiB with `body_truncated: true`. Response headers
+are one string of lowercase `name: value` lines and, like body, are wrapped in
+`<data source="http:<host>">...</data>`. Embedded closing data tags are escaped
+case insensitively for every external source, including `scene:<id>`.
+)agent_api";
     return out;
 }
 

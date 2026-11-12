@@ -101,6 +101,10 @@ protected:
                 },
             .drafts_root = in + "/scenes/.drafts",
             .inspector = inspector.get(),
+            .on_tools_changed =
+                [this](const wisp::core::SceneManifest& manifest) {
+                    tool_changes.push_back(manifest);
+                },
         });
     }
 
@@ -133,6 +137,7 @@ protected:
     std::unique_ptr<SceneWorkspace> ws;
     ToolCtx ctx;
     std::vector<std::string> confirms;
+    std::vector<wisp::core::SceneManifest> tool_changes;
     bool answer = true;
     Value listed;
 };
@@ -317,6 +322,49 @@ TEST_F(SceneWorkspaceTest, BadManifestLeavesInstalledAlone) {
     EXPECT_EQ(repo->info("counter").value().manifest.version, "1.0.0");
 }
 
+TEST_F(SceneWorkspaceTest, InstallRejectsUnsupportedSchema) {
+    begin();
+    write("counter", "scene.json",
+          R"json({"id":"counter","name":"计数器","version":"2.0.0","schema_version":1,
+                 "tools":[{"name":"lookup","description":"Looks up a value",
+                           "parameters":{"type":"object","oneOf":[]}}]})json");
+
+    ToolOutput out = ws->install("counter", ctx);
+
+    ASSERT_FALSE(out.ok) << wisp::to_json(out.result);
+    const Value* errors = field(out.result, "errors");
+    ASSERT_NE(errors, nullptr) << wisp::to_json(out.result);
+    ASSERT_FALSE(errors->as_list().empty());
+    EXPECT_NE(str(errors->as_list()[0], "message").find("tools[0].parameters"), std::string::npos);
+    EXPECT_EQ(repo->info("counter").value().manifest.version, "1.0.0");
+}
+
+TEST_F(SceneWorkspaceTest, InstallAndRollbackNotifyNewToolDeclarations) {
+    const std::string lua =
+        "wisp.tools.register('old_tool', function(args) return true end)\nreturn ui.screen {}\n";
+    const std::string old_manifest =
+        R"({"id":"counter","name":"计数器","version":"1.0.0","schema_version":1,)"
+        R"("tools":[{"name":"old_tool","description":"The old tool"}]})";
+    install("counter", lua, {{"scene.json", old_manifest}});
+    begin(false);
+
+    const std::string new_manifest =
+        R"({"id":"counter","name":"计数器","version":"2.0.0","schema_version":1,)"
+        R"("tools":[{"name":"new_tool","description":"The new tool"}]})";
+    write("counter", "scene.json", new_manifest);
+    write("counter", "main.lua",
+          "wisp.tools.register('new_tool', function(args) return true end)\nreturn ui.screen {}\n");
+    ASSERT_TRUE(ws->install("counter", ctx).ok);
+    ASSERT_EQ(tool_changes.size(), 1u);
+    ASSERT_EQ(tool_changes.back().tools.size(), 1u);
+    EXPECT_EQ(tool_changes.back().tools[0].name, "new_tool");
+
+    ASSERT_TRUE(ws->rollback("counter", ctx).ok);
+    ASSERT_EQ(tool_changes.size(), 2u);
+    ASSERT_EQ(tool_changes.back().tools.size(), 1u);
+    EXPECT_EQ(tool_changes.back().tools[0].name, "old_tool");
+}
+
 TEST_F(SceneWorkspaceTest, TreeErrorSuggestsAName) {
     begin();
     write("counter", "main.lua", "return ui.screen {\n  ui.labl { text = 'x' },\n}\n");
@@ -367,6 +415,29 @@ TEST_F(SceneWorkspaceTest, RollbackSwapsWithPrev) {
     EXPECT_EQ(slurp(fs::path(in) / "scenes" / ".prev" / "counter" / "scene.json"),
               counter_json("2.0.0"));
     EXPECT_EQ(rt->foreground(), "counter");
+}
+
+TEST_F(SceneWorkspaceTest, RollbackRejectsUnsupportedToolSchemaFromPreviousPackage) {
+    begin();
+    write("counter", "scene.json", counter_json("2.0.0"));
+    ASSERT_TRUE(ws->install("counter", ctx).ok);
+
+    const fs::path previous_manifest = fs::path(in) / "scenes" / ".prev" / "counter" / "scene.json";
+    const std::string unsupported =
+        R"({"id":"counter","name":"计数器","version":"1.0.0","schema_version":1,)"
+        R"("tools":[{"name":"lookup","description":"Lookup",)"
+        R"("parameters":{"type":"object","oneOf":[]}}]})";
+    {
+        std::ofstream file(previous_manifest, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.good());
+        file << unsupported;
+    }
+
+    const ToolOutput rolled_back = ws->rollback("counter", ctx);
+
+    ASSERT_FALSE(rolled_back.ok);
+    EXPECT_NE(str(rolled_back.result, "message").find("tools[0].parameters"), std::string::npos);
+    EXPECT_EQ(repo->info("counter").value().manifest.version, "2.0.0");
 }
 
 TEST_F(SceneWorkspaceTest, RollbackWithoutPrevIsNotFound) {

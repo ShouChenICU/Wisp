@@ -2,9 +2,9 @@
 
 # 🔥 Wisp
 
-🇺🇸 [English](README.md) | 🇨🇳 **简体中文** | 🇯🇵 [日本語](README.ja.md)
+**运行在 ESP32 上，能为你创建应用的个人掌上 Agent。**
 
-**一个运行在 ESP32 上的全能掌上 Agent。**
+🇺🇸 [English](README.md) | 🇨🇳 **简体中文** | 🇯🇵 [日本語](README.ja.md)
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-E7352C?style=flat-square&logo=espressif&logoColor=white)
@@ -14,49 +14,18 @@
 ![Lua](https://img.shields.io/badge/Lua-5.5-2C2D72?style=flat-square&logo=lua&logoColor=white)
 ![Status](https://img.shields.io/badge/status-active-brightgreen?style=flat-square)
 
-<table>
-  <tr>
-    <td align="center"><img src="docs/images/home.png" width="220"><br><sub>待机</sub></td>
-    <td align="center"><img src="docs/images/agent-steps.png" width="220"><br><sub>Agent 正在动手</sub></td>
-    <td align="center"><img src="docs/images/agent-done.png" width="220"><br><sub>做好了</sub></td>
-  </tr>
-</table>
-
 </div>
 
-## ✨ 它是什么
+Wisp 你的专属掌上 Agent，能陪你聊天，有自己的记忆，最重要的是能根据你的需求动态创建和修改应用，通过一个极轻量的定制 Lua 应用框架实现。例如，说一句"帮我做个番茄钟"，它会写好界面和逻辑、装好并打开。整个过程都在设备上完成，不用重新编译，也不用连电脑，之后你可以随时重新打开这个应用，或者让它接着改，这一切都运行在 ESP32 上。你要做的就是释放你的创意，发挥你的想象，你就可以拥有一切。
 
-它是你的专属掌上 Agent，能陪你聊天，有自己的记忆，还能按你的需要动态地创建和管理应用。例如，按住按键说一句"帮我做个番茄钟"，它会写好界面和逻辑、装好并打开。整个过程都在设备上完成，不用重新编译，也不用连电脑。之后你可以随时重新打开这个应用，或者让它接着改。
+## ✨ 亮点
 
-- **说出需求，就有应用**：每个功能都是 Agent 写的 Lua 场景，改完立即生效。
-- **Agent 掌管整台设备**：屏幕、音频、存储、场景和设置都是它的工具，它做每一步时屏幕上都会显示。
-- **会记住你**：Agent 会记下你的偏好和待办，到点亮屏提醒。
-- **模型自由选择**：对话、语音识别、语音合成都走 OpenAI 兼容接口，每种都可以保存多套配置随时切换。
-- **数据留在本地**：管理后台只在局域网里用，API Key 只能写入、不能读出，删除场景这类大操作要在设备上确认。
-- **不绑定开发板**：硬件分层抽象，大部分开发在 PC 模拟器上完成。
-
-<table>
-  <tr>
-    <td align="center"><img src="docs/images/scene-clock.png" width="150"><br><sub>时钟</sub></td>
-    <td align="center"><img src="docs/images/scene-pomodoro.png" width="150"><br><sub>番茄钟</sub></td>
-    <td align="center"><img src="docs/images/scene-weather.png" width="150"><br><sub>天气</sub></td>
-    <td align="center"><img src="docs/images/scene-level.png" width="150"><br><sub>水平仪</sub></td>
-    <td align="center"><img src="docs/images/scene-balls.png" width="150"><br><sub>彩色小球</sub></td>
-  </tr>
-</table>
-
-<sub>每个场景都只有一个 <code>main.lua</code>，大多不到 200 行；前四个的源码在 <a href="scenes/examples/"><code>scenes/examples/</code></a>。</sub>
-
-## 👆 怎么用
-
-| 操作 | 作用 |
-| --- | --- |
-| 按住 <kbd>BOOT</kbd> 键或长按鬼火 | 说话，松开后发送；它朗读时再按住可以打断 |
-| 右划 / 左划 / 下划 | 设置 / 场景列表 / 对话记录，页面跟着手指走 |
-| 在场景里按住 <kbd>BOOT</kbd> 键 | 屏幕底部浮出收音条，不用离开当前场景 |
-| 设置 → 关于本机 → 硬件诊断 | 查看各外设的自检结果 |
-
-回复分两层：要朗读的那句话用大字显示，细节以小字显示在下方。Agent 调用工具或写文件时，鬼火下方会逐步列出它正在做什么。
+- **动态创建应用**：用自然语言描述需求，生成可用的 Lua 场景，随时修改、即改即用。
+- **工具驱动设备**：管理场景、联网、执行脚本和调整设置，过程实时可见。
+- **记忆与提醒**：保存偏好与待办，到点亮屏提醒。
+- **自由选择模型**：对话、语音识别与合成兼容 OpenAI 接口，支持多配置切换。
+- **本地管理**：局域网后台、只写 API Key，敏感操作在设备上确认。
+- **灵活适配硬件**：驱动可插拔，日常开发可在 PC 模拟器中完成。
 
 ## 🚀 快速开始
 
@@ -105,6 +74,56 @@ idf.py build && idf.py -p <串口> flash
 > [!TIP]
 > 改了字体之后，还要运行 `idf.py fonts-flash`。字体存在单独的分区里，只更新程序不会写入。
 
+## 📸 界面预览
+
+设备界面支持中文、日文和英文，以下截图使用中文。
+
+### 对话与 Agent 执行过程
+
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center"><img alt="待机" src="docs/images/home.png" width="200"><br><sub>待机</sub></td>
+    <td align="center"><img alt="Agent 正在动手" src="docs/images/agent-steps.png" width="200"><br><sub>Agent 正在动手</sub></td>
+    <td align="center"><img alt="做好了" src="docs/images/agent-done.png" width="200"><br><sub>做好了</sub></td>
+  </tr>
+</table>
+
+</div>
+
+### 场景示例
+
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center"><img alt="时钟" src="docs/images/scene-clock.png" width="200"><br><sub>时钟</sub></td>
+    <td align="center"><img alt="番茄钟" src="docs/images/scene-pomodoro.png" width="200"><br><sub>番茄钟</sub></td>
+    <td align="center"><img alt="天气" src="docs/images/scene-weather-round.png" width="200"><br><sub>天气</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img alt="水平仪" src="docs/images/scene-level.png" width="200"><br><sub>水平仪</sub></td>
+    <td align="center"><img alt="彩色小球" src="docs/images/scene-balls.png" width="200"><br><sub>彩色小球</sub></td>
+    <td align="center"><img alt="2048" src="docs/images/scene-game2048-round.png" width="200"><br><sub>2048</sub></td>
+  </tr>
+</table>
+
+</div>
+
+<sub>示例源码：<a href="scenes/examples/clock/">时钟</a>、<a href="scenes/examples/pomodoro/">番茄钟</a>、<a href="scenes/examples/weather-round/">天气</a>、<a href="scenes/examples/level/">水平仪</a>和 <a href="scenes/examples/game2048/">2048</a>。</sub>
+
+## 👆 怎么用
+
+| 操作 | 作用 |
+| --- | --- |
+| 按住 <kbd>BOOT</kbd> 键或长按鬼火 | 说话，松开后发送；它朗读时再按住可以打断 |
+| 右划 / 左划 / 下划 | 设置 / 场景列表 / 对话记录，页面跟着手指走 |
+| 在场景里按住 <kbd>BOOT</kbd> 键 | 屏幕底部浮出收音条，不用离开当前场景 |
+| 设置 → 关于本机 → 硬件诊断 | 查看各外设的自检结果 |
+
+回复分两层：要朗读的那句话用大字显示，细节以小字显示在下方。Agent 调用工具或写文件时，鬼火下方会逐步列出它正在做什么。
+
 ## 🏠 自部署 AI 服务
 
 Wisp 通过 OpenAI 兼容接口调用模型，所以对话、语音识别和语音合成都可以各自跑在你自己的机器上，不必依赖云服务。
@@ -134,13 +153,33 @@ speech serve qwen3-tts-0.6b qwen3-asr-0.6b --host 0.0.0.0
 | --- | --- |
 | 🔥 **系统外壳** | 原生的主界面，任何场景写坏了都影响不到它。小鬼火由代码实时绘制，待机、收听、思考、说话时各有不同的表情。滑动进入设置、场景列表和对话记录，页面跟着手指走。对话时，要朗读的那句话用大字显示，下面逐条列出 Agent 正在做的步骤。 |
 | 🎭 **场景** | 每个功能都是一个场景：一个目录，一个 `main.lua`。界面用 Lua 表声明并绑定到状态。每个场景跑在独立的 Lua 5.5 沙箱里，有内存和执行时间上限，只能访问它声明过的 HTTPS 域名。场景可以在后台运行、发通知，还能给 Agent 注册工具。 |
-| 🤖 **Agent** | 可以接任何 OpenAI 兼容的模型，整台设备都是它的工具箱。它能创建、修改、安装、打开和删除场景，读写记忆和待办，调整设置。对话太长时会自动压缩上下文。 |
+| 🤖 **Agent** | 可以接任何 OpenAI 兼容的模型，整台设备都是它的工具箱。它能创建、修改、安装、打开和删除场景，访问网页与 API、运行 Lua 脚本、调用场景导出的工具，管理记忆和待办，调整设置。对话太长时会自动压缩上下文。 |
 | 🎙️ **语音** | 按住 <kbd>BOOT</kbd> 键或长按鬼火说话，松开发送。`<say>` 标出的那句会朗读出来，其余内容同时显示在屏幕上。朗读时再按住可以打断，闹钟优先占用扬声器。识别和合成可以分别用不同的服务商，推荐硅基流动。 |
 | 🧠 **记忆与提醒** | 记下关于你偏好的简短笔记，以及带截止时间的待办。待办到期时屏幕亮起并响铃。两者都可以在管理后台查看。 |
 | 🌐 **管理后台** | 在局域网里打开 `http://wisp.local:8900`，用屏幕上的 6 位配对码登录。可以网页聊天，管理 Wi-Fi、模型、记忆和场景，查看日志，上传固件。后台是约 100 KB 的原生 JavaScript，打包在固件里，支持中文、日文和英文。 |
 
 > [!IMPORTANT]
 > 工具的返回值只当作数据，不当作指令；API Key 只能写入、不能读出；删除场景、恢复出厂设置和固件更新，都必须在设备上确认。
+
+## 🤖 Agent 能做什么
+
+模型通过你配置的 OpenAI 兼容服务进行推理，Wisp 在设备上执行它的工具调用。核心工具集按用途分为 **四类**：
+
+| 类别 | 工具 | 赋予的能力 |
+| --- | --- | --- |
+| 场景开发与运行 | `scene.*`、`ui.tree`、`docs.read`、`tools.find`、`tools.call` | 查阅内置 API 文档，创建和修改场景、安装或回滚版本，管理场景运行、数据和文件，检查控件树与日志来调试；发现并调用场景导出的工具，无需修改固件就能扩展可复用的能力。 |
+| 联网与脚本 | `http.fetch`、`lua.run` | 通过 HTTP/HTTPS 访问网页、API 和局域网服务，提取 HTML 文本、分段读取长响应；用 Lua 5.5 沙箱脚本完成计算、JSON 处理、连续请求、文件下载和 Agent 自有文件读写。HTTP 和文件操作可以等待结果，内存和执行时间均有上限。 |
+| 记忆与待办 | `memory.*`、`todo.*` | 记住偏好、维护任务清单，设置到期时间或重复提醒，到点亮屏并响铃。 |
+| 设备与通知 | `device.status`、`settings.*`、`notify.list`、`notify.dismiss` | 查看电量、网络、存储和外设状态；调整亮度、音量、息屏时间、语言和时钟格式；查看或清除通知。 |
+
+这些工具可以在一次对话中组合使用，例如：
+
+- **“帮我做个番茄钟，再把数字放大一点。”** 查阅 API 文档，编写并安装 Lua 场景，打开后继续修改布局；如果上一版更合适，可以回滚。
+- **“读一下这个网页并总结，再从这个 API 取数据算出总额。”** 用 `http.fetch` 获取内容，再用 `lua.run` 解析 JSON、计算或保存结果。能否访问 API 取决于对应服务及其所需凭据。
+- **“用我的天气场景查一下明天的天气。”** 如果场景导出了天气查询工具，Agent 就能发现并调用它。尚未运行的场景可以无界面启动来完成调用，保持当前屏幕不变，空闲 60 秒后自动关闭。
+- **“记住我喜欢喝茶，明天九点提醒我买茶叶。”** 保存一条偏好记忆，再建立定时待办，到点设备亮屏并响铃。
+
+核心工具直接可用，场景工具则按需发现，不必把所有场景工具的定义塞进每次模型请求。Agent 因而可以通过创建和复用场景持续扩展能力。场景开发和工具导出的详细用法见[场景 API 文档](docs/scene-api.md)（英文）。
 
 ## 🔧 移植到新开发板
 
@@ -195,7 +234,7 @@ Wisp 不绑定某一块板子。和板子有关的东西只放在 `boards/<板�
 | 🧱 | 系统底座 | 设备抽象、存储、电源与待机 | ✅ |
 | 🌐 | 管理后台 | Wi-Fi 与扫码配网、局域网后台、多套模型配置、网页更新固件 | ✅ |
 | 🎭 | 场景运行时 | Lua 沙箱、声明式界面、后台场景、通知、场景文件 | ✅ |
-| 🤖 | Agent | 工具调用、场景读写与控制、上下文压缩、步骤实时显示 | ✅ |
+| 🤖 | Agent | 场景读写与控制、HTTP 请求、Lua 脚本、场景工具发现、上下文压缩、步骤实时显示 | ✅ |
 | 🎙️ | 语音 | 按住说话、识别、`<say>` 朗读、打断 | ✅ |
 | 🧠 | 记忆与提醒 | 偏好笔记、带时间的待办、到点提醒 | ✅ |
 | 🔥 | 系统外壳 | 鬼火主界面、跟手导航、设置、场景列表、对话记录 | ✅ |

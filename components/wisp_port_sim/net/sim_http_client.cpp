@@ -22,6 +22,7 @@ struct Transfer {
     size_t limit = 0;
     size_t received = 0;
     bool too_large = false;
+    bool truncated = false;
     bool cancelled = false;
     CURL* curl = nullptr;
     bool status_sent = false;  // req->on_status has been called
@@ -54,7 +55,26 @@ size_t on_data(char* data, size_t size, size_t nmemb, void* user) {
         return 0;
     }
     if (n > t->limit - t->received) {
-        t->too_large = true;
+        if (!t->req->truncate_at_limit) {
+            t->too_large = true;
+            return 0;
+        }
+        // Keep exactly up to the limit, then stop the transfer: a
+        // successful, truncated response, not an error (the Agent
+        // principal's cap, agent-tools spec 3.1/3.2).
+        const size_t take = t->limit - t->received;
+        t->truncated = true;
+        if (take > 0) {
+            t->received += take;
+            send_status(t);
+            if (t->req->on_body) {
+                if (!t->req->on_body({reinterpret_cast<const uint8_t*>(data), take})) {
+                    t->cancelled = true;
+                }
+            } else {
+                t->res->body.append(data, take);
+            }
+        }
         return 0;
     }
     t->received += n;
@@ -117,6 +137,10 @@ const char* method_name(net::Method m) {
             return "PUT";
         case net::Method::Delete:
             return "DELETE";
+        case net::Method::Patch:
+            return "PATCH";
+        case net::Method::Head:
+            return "HEAD";
         case net::Method::Other:
             break;
     }
@@ -202,6 +226,8 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
     if (req.method == net::Method::Get) {
         curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    } else if (req.method == net::Method::Head) {
+        curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
     } else if (req.method != net::Method::Delete || body_size != 0) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body_size));
@@ -220,8 +246,12 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &t);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     }
-    // Refuses a too-large Content-Length before any of the body arrives.
-    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, static_cast<curl_off_t>(t.limit));
+    // Refuses a too-large Content-Length before any of the body arrives;
+    // with truncate_at_limit the body itself is capped instead (on_data),
+    // so a Content-Length past the limit is not refused up front.
+    curl_easy_setopt(
+        curl, CURLOPT_MAXFILESIZE_LARGE,
+        req.truncate_at_limit ? static_cast<curl_off_t>(0) : static_cast<curl_off_t>(t.limit));
     // Same scope as the device's client: plain http and https only, no
     // redirects (a redirect could carry the Authorization header elsewhere).
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
@@ -241,6 +271,11 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
         res.transport = net::TransportError::Timeout;
     } else if (t.cancelled || rc == CURLE_ABORTED_BY_CALLBACK) {
         res.transport = net::TransportError::Cancelled;
+    } else if (t.truncated) {
+        // on_data() stopped the transfer deliberately, after keeping the
+        // first max_response_bytes of the body (truncate_at_limit): a
+        // success, not CURLE_WRITE_ERROR.
+        res.transport = net::TransportError::None;
     } else if (t.too_large || rc == CURLE_FILESIZE_EXCEEDED) {
         res.transport = net::TransportError::TooLarge;
     } else {
@@ -251,6 +286,7 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
         long status = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
         res.status = static_cast<int>(status);
+        res.truncated = t.truncated;
     } else {
         res.body.clear();
         res.headers.clear();

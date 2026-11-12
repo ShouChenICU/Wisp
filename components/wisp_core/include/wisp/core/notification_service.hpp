@@ -90,6 +90,10 @@ inline constexpr const char* kActionTodoSnooze = "todo_snooze";
 inline constexpr const char* kSystemSource = "system";
 // The todo reminders' source (see the file header).
 inline constexpr const char* kReminderSource = "system.reminder";
+// The agent's own lua.run (agent-tools spec 4.2): it posts like a scene,
+// as Wisp itself, under this source, which no scene id can be. Tapping
+// such a notice opens the conversation, not a scene.
+inline constexpr const char* kAgentSource = "@agent";
 
 struct Notification {
     std::string source;              // "system" or a scene id
@@ -190,8 +194,8 @@ public:
     // anything already posted in memory, which wins on a clash.
     Result<void> load();
 
-    // A scene's post: `n.source` is the scene id (valid_notification_id())
-    // or kReminderSource, `n.id` empty or valid.
+    // A scene's post: `n.source` is the scene id (valid_notification_id()),
+    // kReminderSource or kAgentSource, `n.id` empty or valid.
     // InvalidArgument for a bad source, title, body or id; RateLimited
     // "rate_limited" past kPerMinute posts by this scene in the last 60 s
     // (a sliding window; replacements and foreground posts count, rejected

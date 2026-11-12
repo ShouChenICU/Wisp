@@ -1,0 +1,11 @@
+{
+  "id": "weather-round",
+  "name": "天气",
+  "version": "1.0.0",
+  "schema_version": 1,
+  "permissions": {
+    "http": [
+      "api.open-meteo.com"
+    ]
+  }
+}

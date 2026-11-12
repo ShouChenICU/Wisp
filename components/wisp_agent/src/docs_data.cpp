@@ -274,7 +274,15 @@ install is refused.
 - `files` (default `"auto"`): where `wisp.files` keeps the scene's files: `"auto"`,
   `"sd"` or `"int"` (see wisp.files). Any other value refuses the install.
 
-Unknown fields are ignored; nothing may nest deeper than 4 levels.
+- `tools` (optional): up to 16 exported tools. Each declaration has a unique
+  `name` matching `^[a-z][a-z0-9_]{0,31}$`, a required `description` of 1–512
+  characters, optional `parameters` (an object parameter schema, at most 4 KiB
+  serialized; omitted means an empty object schema), and optional `timeout_ms`
+  (1000–120000, default 30000). Installation validates the supported schema
+  subset and reports the field path on error. Tools need no `background`
+  declaration or device confirmation. Their public name is `<scene-id>.<name>`.
+
+Unknown fields are ignored; nothing may nest deeper than 8 levels.
 
 ## Scene hooks
 
@@ -284,9 +292,9 @@ as a message of its own, within the usual 200 ms:
 - `scene.on_show()` and `scene.on_hide()`: the scene's view appears or goes (it opens,
   the screen turns on or off, it comes back from or goes to the background).
 - `scene.on_close()`: the scene is closing; its store is flushed after it.
-- `scene.on_state(state)`: the scene is now `"foreground"` or `"background"`. It
+- `scene.on_state(state)`: the scene is now `"foreground"`, `"background"` or `"headless"`. It
   is called when the scene first opens (with the state it opened in) and on every
-  move between the two, never on a close.
+  state transition, never on a close.
 - `scene.on_notification(id)`: the user tapped the scene's notification `id`. It is
   called once the scene is in front: one in the background comes forward first, and
   one that is not running is opened first (`wisp.scene.launch()` is then
@@ -335,6 +343,53 @@ was and puts the scene in error with `migrate failed: <message>`. A scene with n
 `scene.migrate` just has its version raised. Data from a higher version than the
 scene's (an older scene installed over a newer one) is refused: the scene does not
 open.
+
+## Waiting for asynchronous work
+
+Only `lua.run` scripts and exported tool functions are host-managed task
+coroutines. In these, omit the callback to wait for `wisp.http.get`, `post`,
+`request`, `download`, or `wisp.files.write`, `append`, `read`, `list`, `remove`,
+`info`. They return the callback arguments (`err, result`, and `truncated` for
+file lists); `err` is nil on success. Passing a callback retains the asynchronous
+behavior. Ordinary event handlers and `scene.eval` still require callbacks;
+a nested coroutine cannot wait, even when its parent is a task.
+
+`wisp.sleep(ms)` waits only in a task, accepts integers from 0 to 300000 and
+returns nil. Values below 50 ms wait 50 ms because of the timer resolution.
+Waiting does not use CPU execution-slice time. Each resume starts a new slice:
+200 ms for scene tools, 1000 ms for Agent Lua. The overall tool deadline includes
+waiting. VM faults stop further resume attempts.
+
+## Agent Lua and HTTP tools
+
+`lua.run` (`lua_run` on the wire) creates a fresh Lua 5.5 VM for each call:
+`code` at most 64 KiB, `timeout_ms` 1000–300000 (default 30000), and `memory_kb`
+256–2048 (default 1024), reduced to the shared budget's available memory. Below
+256 KiB available it returns `no_memory` without evicting scenes. It has
+`wisp.http`, `json`, `device`, `notify`, `files`, `log`, and `sleep`; no UI,
+`scene`, `store`, `timer`, `sensor`, `power` or `import`. Files use the persistent
+`<Library>/agent/files/` area with the normal scene quotas and are erased on
+factory reset. It retains no Lua state between calls. Results (up to 64 KiB),
+script errors and the last 8 KiB of print output are wrapped as untrusted
+`<data source="lua">...</data>`. Outstanding requests are cancelled on exit.
+
+Agent HTTP uses identity `@agent`: HTTP and HTTPS, no scene host allowlist or
+rate limit, and immediate `offline` instead of standby deferral. URL limit is
+8192 bytes; at most 32 headers, 4 KiB each (name plus value), 16 KiB total; body
+256 KiB; response 1 MiB; timeout 1000–120000 ms (default 30000). Client-managed
+connection headers are ignored; header syntax is still checked. Redirects are
+opt-in, at most five, with credentials stripped across origins. API keys remain
+write-only and are never exposed by these tools.
+
+`http.fetch` (`http_fetch`) adds `as` (`raw` or HTML-to-`text`), `offset` (default
+0), `max_bytes` (default 16384, maximum 65536) and `ref`. One response is cached;
+read further chunks by ref without another request. A new request, turn end or
+new conversation invalidates the ref. Chunks end on UTF-8 boundaries. Non-text
+responses omit body; use `wisp.http.download` to save binary data. An oversized
+response retains the first 1 MiB with `body_truncated: true`. Response headers
+are one string of lowercase `name: value` lines and, like body, are wrapped in
+`<data source="http:<host>">...</data>`. Embedded closing data tags are escaped
+case insensitively for every external source, including `scene:<id>`.
 )wispdoc"},
     {"lua/device", R"wispdoc(## wisp.device
 
@@ -407,8 +462,11 @@ wisp.http.post(url, { a = 1 }, { headers = { authorization = "Bearer x" } }, cb)
   as JSON (with `Content-Type: application/json` unless a header names one), a
   string as it is.
 - `cb(err, res)` runs later as a message of its own: `res` is `{status, headers,
-  body, json}`, `headers` with lowercase names, `json` the decoded body when the
+  body, json, body_truncated}`, `headers` with lowercase names, `json` the decoded body when the
   content type mentions JSON and it parses; `err` is `nil` on success.
+  `body_truncated` is a boolean: true when an Agent response exceeded its
+  body limit and only a prefix was retained; callback and await results both
+  include it (false for complete responses).
 - Only `https://` URLs (`not_https`) to a host listed in `permissions.http` of
   `scene.json`, exactly (`permission_denied`). Cookies, `host` and the other
   connection headers cannot be set (`permission_denied`); at most 16 headers.
@@ -419,6 +477,17 @@ wisp.http.post(url, { a = 1 }, { headers = { authorization = "Bearer x" } }, cb)
   `deferred_timeout` (see below), `not_serializable` and `too_deep` (a body table
   that cannot be sent as JSON). Errors always arrive through `cb`; only arguments
   of the wrong type are a Lua error at the call.
+
+### wisp.http.request
+
+`wisp.http.request(opts[, cb])` accepts `{method, url, headers, body,
+timeout_ms, follow}`. `method` defaults to `GET`; `POST`, `PUT`, `PATCH`,
+`DELETE` and `HEAD` are also supported (case insensitive). Headers, body and
+response follow `get`/`post`. `timeout_ms` must be an integer from 1000 to
+120000; `follow` must be boolean. For scenes these fields are validated but
+the usual 15 s deadline and no-redirect policy still apply. For Agent Lua,
+the requested deadline and up to 5 redirect hops apply. A callback is optional
+only in a task coroutine (see Waiting for asynchronous work).
 
 ## wisp.http.download and deep standby
 
@@ -434,6 +503,21 @@ wisp.http.post(url, { a = 1 }, { headers = { authorization = "Bearer x" } }, cb)
   it), until the system turns Wi-Fi on for a short network window, at most every 15
   minutes. A request that waited gets `res.deferred = true`; one that waited more
   than an hour fails with `deferred_timeout`.
+)wispdoc"},
+    {"lua/json", R"wispdoc(## wisp.json
+
+`wisp.json.encode(value)` returns JSON text, or `nil, code` on conversion failure.
+`wisp.json.decode(text)` returns the decoded value, or `nil, code` on malformed
+JSON. Available in scenes and Agent Lua. Codes include `not_serializable`,
+`too_deep`, `too_large` (encoding), and `bad_json` (decoding).
+
+Nil becomes JSON null; booleans, finite numbers and valid UTF-8 strings keep
+their types. Tables with contiguous integer keys 1..n become arrays; tables
+with only string keys become objects; an empty table becomes `{}`. Mixed or
+sparse keys, cycles, functions and non-finite numbers cannot be encoded.
+JSON null decodes to nil (so object fields disappear and arrays can have holes);
+empty JSON arrays and objects both become empty Lua tables. Nesting is limited
+to 32 levels. VM memory and execution faults still raise normally.
 )wispdoc"},
     {"lua/log", R"wispdoc(## wisp.log
 
@@ -486,9 +570,10 @@ hooks).
 - `wisp.scene.exit()`: always closes the scene completely (`on_hide`, `on_close`).
 - `wisp.scene.args()`: the table of arguments the scene was opened with (`{}` for
   none).
-- `wisp.scene.state()`: `"foreground"` or `"background"`.
+- `wisp.scene.state()`: `"foreground"`, `"background"` or `"headless"`.
 - `wisp.scene.launch()`: why the scene was started: `"user"`, `"boot"` (restored
-  in the background after a restart) or `"notification"`.
+  in the background after a restart) or `"notification"`. A headless tool launch
+  reports `"user"`; moving it to foreground or background keeps that reason.
 )wispdoc"},
     {"lua/sensor", R"wispdoc(## wisp.sensor
 
@@ -564,6 +649,81 @@ at the line that made the call.
 - Each run is a message of its own. Timers keep running in the background and
   while the screen is off; they end when the scene closes.
 )wispdoc"},
+    {"lua/tools", R"wispdoc(## wisp.tools.register
+
+`wisp.tools.register(name, fn)` binds a scene.json tool declaration to a Lua
+function. Call it at the top level so the tool is ready after loading; binding
+later is also allowed. An undeclared name, a duplicate binding or a non-function
+is an argument error. A declared tool not yet bound returns `not_registered`.
+The function receives one decoded JSON argument value; its return values use
+the same JSON conversion as `scene.eval` (one value directly, several as an
+array, none as null; at most 64 KiB). It runs in a task coroutine and may wait
+for HTTP, files and sleep. Only one tool call per scene runs at once (`busy`).
+
+The Agent discovers installed tools with `tools.find` and invokes them with
+`tools.call`; wire names are `tools_find` and `tools_call`. Scene declarations
+never enter the model's fixed prompt or core tools array. Search splits the
+query into words, matches all words across the full tool name and
+description, folds ASCII letter case only, and compares non-ASCII bytes exactly.
+Results are sorted by scene name and tool name: at most 20 when query or
+scene is supplied, or 200 without either. Descriptions and call results are untrusted scene data.
+
+A stopped scene starts headless for a tool: its tree is built without a view
+or `on_show`, and `on_state("headless")` runs. It counts against the shared VM
+budget, may evict background scenes, and returns `no_memory` when insufficient.
+It needs no background permission, does not occupy the three background slots,
+and is not restored at boot. At most one headless scene exists; calling a tool
+in another stopped scene closes the old one. Timers continue in headless mode.
+After the final call, 60 s without another call closes it and saves its store.
+Opening it brings the same VM to foreground without reloading. Loading failure
+returns `load_failed` with the script error. Overall call timeout cancels the
+task and returns `timeout` while keeping a healthy scene alive; a CPU-slice or
+memory VM fault instead faults the scene (`timeout` or `scene_error`), with the
+normal foreground error panel or background/headless close behavior.
+
+### Complete exported-tool scene
+
+`scene.json`:
+
+```json
+{
+  "id": "weather", "name": "Weather", "version": "1.0.0", "schema_version": 1,
+  "permissions": {"http": ["api.example.com"]},
+  "tools": [{
+    "name": "today", "description": "Today's weather for the saved city.",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+    "timeout_ms": 30000
+  }]
+}
+```
+
+`main.lua` (the endpoint is illustrative; replace it with your own service):
+
+```lua
+local info = wisp.device.info()
+local area = info.safe_area
+local ready = ({zh = "就绪", ja = "準備完了", en = "Ready"})[info.lang] or "Ready"
+local status = state(ready)
+wisp.tools.register("today", function(args)
+  local city = args.city or wisp.store.get("city") or "Tokyo"
+  local err, res = wisp.http.post("https://api.example.com/weather", {city = city})
+  if err then return {error = err} end
+  if res.status ~= 200 then return {error = "http_status", status = res.status} end
+  local forecast = res.json
+  if not forecast then return {error = "invalid_json"} end
+  wisp.store.set("city", city)
+  status:set(city)
+  return {city = city, forecast = forecast}
+end)
+return ui.screen{pad = {area.y1, info.width - 1 - area.x2,
+                      info.height - 1 - area.y2, area.x1},
+  ui.label{text = status}}
+```
+
+The Agent can call `tools_find` with `{"query":"weather"}`, then `tools_call`
+with `{"name":"weather.today","args":{"city":"Tokyo"}}`. The installed
+scene's normal HTTP permission and size limits apply even when headless.
+)wispdoc"},
     {"screen", R"wispdoc(## Screen shape
 
 The screen may be a rectangle, a rounded rectangle or a circle, and a scene gets all of
@@ -617,12 +777,14 @@ Read one with docs.read("example/<id>").
 
 - `clock`: 时钟
 - `counter`: 计数器
+- `game2048`: 2048
 - `ledger`: 记账
 - `level`: 水平仪
 - `pomodoro`: 番茄钟
 - `sysinfo`: 系统状态
 - `todo`: 待办
 - `weather`: 天气
+- `weather-round`: 天气
 )wispdoc"},
     {"example/clock", R"wispdoc(# Example: clock
 
@@ -762,6 +924,277 @@ return ui.screen { align = "center", justify = "center",
       ui.button { ref = "plus", text = "+1", on_click = function() save(count:get() + 1) end },
     },
   },
+}
+```
+)wispdoc"},
+    {"example/game2048", R"wispdoc(# Example: game2048
+
+### scene.json
+
+```json
+{
+  "id": "game2048",
+  "name": "2048",
+  "version": "1.0.0",
+  "schema_version": 1
+}
+```
+
+### main.lua
+
+```lua
+-- 2048: swipe the 4x4 board to move tiles using on_swipe.
+-- wisp.store persists the best score; undo restores the previous move.
+-- The canvas draws tile backgrounds; labels render the numbers above them.
+-- Every board layer handles swipes so gestures work anywhere on the board.
+local N = 4
+local CELL = 64          -- Cell size.
+local TILE = CELL - 6    -- Leave a 3 px gap around each tile.
+local BOARD = CELL * N
+
+local function new_board()
+  local b = {}
+  for i = 1, N * N do b[i] = 0 end
+  return b
+end
+
+local function copy(b)
+  local c = {}
+  for i = 1, #b do c[i] = b[i] end
+  return c
+end
+
+local function add_tile(b)
+  local free = {}
+  for i = 1, #b do
+    if b[i] == 0 then free[#free + 1] = i end
+  end
+  if #free == 0 then return end
+  b[free[math.random(#free)]] = math.random(10) <= 1 and 4 or 2
+end
+
+local function fresh()
+  local b = new_board()
+  add_tile(b)
+  add_tile(b)
+  return b
+end
+
+-- Compress and merge a row to the left, returning the row and score gained.
+local function slide(line)
+  local packed = {}
+  for _, v in ipairs(line) do
+    if v ~= 0 then packed[#packed + 1] = v end
+  end
+  local out, gain, i = {}, 0, 1
+  while i <= #packed do
+    if i < #packed and packed[i] == packed[i + 1] then
+      out[#out + 1] = packed[i] * 2
+      gain = gain + packed[i] * 2
+      i = i + 2
+    else
+      out[#out + 1] = packed[i]
+      i = i + 1
+    end
+  end
+  while #out < N do out[#out + 1] = 0 end
+  return out, gain
+end
+
+-- Map row/column coordinates to board indices for each move direction.
+local DIRS = {
+  up    = function(r, c) return c * N + r + 1 end,
+  down  = function(r, c) return c * N + (N - 1 - r) + 1 end,
+  left  = function(r, c) return r * N + c + 1 end,
+  right = function(r, c) return r * N + (N - 1 - c) + 1 end,
+}
+
+local function stuck(b)
+  for i = 1, #b do
+    if b[i] == 0 then return false end
+    local r, c = (i - 1) // N, (i - 1) % N
+    if c + 1 < N and b[i] == b[i + 1] then return false end
+    if r + 1 < N and b[i] == b[i + N] then return false end
+  end
+  return true
+end
+
+local function top_tile(b)
+  local t = 0
+  for i = 1, #b do
+    if b[i] > t then t = b[i] end
+  end
+  return t
+end
+
+-- Persist the game on close so the next session resumes it.
+-- Remember reaching 2048 without replaying the win prompt.
+local function load_game()
+  local s = wisp.store.get("game")
+  if type(s) ~= "table" then return {} end
+  local b = {}
+  for i = 1, N * N do
+    local v = s.board and s.board[i]
+    if type(v) ~= "number" or v < 0 then return {} end
+    b[i] = v
+  end
+  return {
+    board = b,
+    score = math.max(0, math.floor(tonumber(s.score) or 0)),
+    status = s.status == "lose" and "lose" or "",
+    won = s.won and true or false,
+  }
+end
+
+local saved = load_game()
+local board = state(saved.board or fresh())
+local score = state(saved.score or 0)
+local best = state(wisp.store.get("best") or 0)
+local status = state(saved.status or "") -- "" | "win" | "lose"
+local undo = nil
+local won = saved.won
+
+local function save_game()
+  wisp.store.set("game", {
+    board = board:get(),
+    score = score:get(),
+    status = status:get(),
+    won = won,
+  })
+  wisp.log.info("saved score=" .. score:get())
+end
+
+local function new_game()
+  undo = nil
+  won = false
+  board:set(fresh())
+  score:set(0)
+  status:set("")
+  save_game()
+  wisp.log.info("new game")
+end
+
+local function move(dir)
+  if status:get() == "lose" then return end
+  local old = board:get()
+  local b = copy(old)
+  local f = DIRS[dir]
+  local gain, changed = 0, false
+  for r = 0, N - 1 do
+    local line = {}
+    for c = 0, N - 1 do line[c + 1] = b[f(r, c)] end
+    local out, g = slide(line)
+    gain = gain + g
+    for c = 0, N - 1 do
+      local i = f(r, c)
+      if b[i] ~= out[c + 1] then changed = true end
+      b[i] = out[c + 1]
+    end
+  end
+  if not changed then return end
+  undo = { b = old, s = score:get() }
+  add_tile(b)
+  board:set(b)
+  if gain > 0 then
+    local s = score:get() + gain
+    score:set(s)
+    if s > best:get() then
+      best:set(s)
+      wisp.store.set("best", s)
+    end
+  end
+  if top_tile(b) >= 2048 and not won then
+    won = true
+    status:set("win")
+  elseif stuck(b) then
+    status:set("lose")
+  end
+  wisp.log.info("move " .. dir .. " score=" .. score:get())
+end
+
+local function undo_move()
+  if not undo then return end
+  board:set(undo.b)
+  score:set(undo.s)
+  status:set("")
+  undo = nil
+  wisp.log.info("undo")
+end
+
+-- Save when returning, closing, or moving to the background.
+scene.on_hide = save_game
+scene.on_close = save_game
+
+local TILE_BG = {
+  [0] = "#CDC1B4", [2] = "#EEE4DA", [4] = "#EDE0C8", [8] = "#F2B179",
+  [16] = "#F59563", [32] = "#F67C5F", [64] = "#F65E3B", [128] = "#EDCF72",
+  [256] = "#EDCC61", [512] = "#EDC850", [1024] = "#EDC53F", [2048] = "#EDC22E",
+}
+
+local function tile_bg(v)
+  return TILE_BG[v] or "#B6A8D8"
+end
+
+-- Draw tile backgrounds; overlay labels supply the numbers.
+local function draw(g)
+  local b = board:get()
+  g:fill("#BBADA0")
+  for i = 0, N * N - 1 do
+    local r, cc = i // N, i % N
+    g:rect(cc * CELL + 3, r * CELL + 3, TILE, TILE,
+      { color = tile_bg(b[i + 1]), fill = true, radius = 6 })
+  end
+end
+
+local cells = {}
+for i = 1, N * N do
+  cells[i] = ui.stack {
+    w = CELL, h = CELL, align = "center", justify = "center",
+    on_swipe = move, -- Handle swipes that start and end on the same cell.
+    ui.label {
+      text = bind(board, function(b) return b[i] > 0 and tostring(b[i]) or "" end),
+      fg = "#776E65", font = 24,
+    },
+  }
+end
+
+-- Centre the score row, board and hint vertically with equal space above and below.
+-- This keeps the hint clear of the lower edge on round screens.
+return ui.screen {
+  bg = "#FAF3E8", align = "center", justify = "center", gap = 8,
+  -- Score, best score and two action buttons.
+  ui.row { gap = 8, align = "center",
+    ui.label { text = bind(score, function(v) return "分 " .. v end), font = 16, fg = "#776E65" },
+    ui.label { text = bind(best, function(v) return "最佳 " .. v end), font = 16, fg = "#776E65" },
+    ui.button { text = "悔棋", font = 16, h = 30, on_click = undo_move },
+    ui.button { text = "新局", font = 16, h = 30, on_click = new_game },
+  },
+  -- Board layers: backgrounds, numbers, then the win/lose overlay.
+  -- Each layer handles swipes anywhere on the board.
+  ui.stack { align = "center", justify = "center", on_swipe = move,
+    ui.canvas { w = BOARD, h = BOARD, radius = 8, draw = draw, on_swipe = move },
+    ui.grid { cols = N, gap = 0, on_swipe = move, table.unpack(cells) },
+    ui.stack {
+      w = BOARD, h = BOARD, radius = 8, bg = "#EEE4DA",
+      align = "center", justify = "center",
+      hidden = bind(status, function(s) return s == "" end),
+      ui.column { gap = 10, align = "center",
+        ui.label {
+          text = bind(status, function(s) return s == "win" and "到 2048 了" or "没有路了" end),
+          font = "lg", fg = "#776E65",
+        },
+        ui.row { gap = 8,
+          ui.button {
+            text = "继续", font = 16,
+            hidden = bind(status, function(s) return s ~= "win" end),
+            on_click = function() status:set("") end,
+          },
+          ui.button { text = "再来一局", font = 16, on_click = new_game },
+        },
+      },
+    },
+  },
+  ui.label { text = "在棋盘上滑动", font = 16, fg = "muted" },
 }
 ```
 )wispdoc"},
@@ -1634,6 +2067,344 @@ return ui.screen { gap = 8, align = "center", justify = "center",
   end) },
   ui.column { w = "fill", gap = 4, day_row(1), day_row(2), day_row(3) },
   ui.label { text = status, font = "sm", fg = "muted" },
+}
+```
+)wispdoc"},
+    {"example/weather-round", R"wispdoc(# Example: weather-round
+
+### scene.json
+
+```json
+{
+  "id": "weather-round",
+  "name": "天气",
+  "version": "1.0.0",
+  "schema_version": 1,
+  "permissions": {
+    "http": [
+      "api.open-meteo.com"
+    ]
+  }
+}
+```
+
+### main.lua
+
+```lua
+-- Weather uses the public Open-Meteo API (https://open-meteo.com), without a key.
+-- Fetch on open and every 30 minutes; the top-right button refreshes manually.
+-- Tapping the city cycles presets; wisp.store persists the selected city.
+-- Current conditions and hourly temperatures precede a scrollable four-day forecast.
+-- The device safe area keeps the content visible on round screens.
+local info = wisp.device.info()
+local W, H = info.width, info.height
+local SA = info.safe_area
+
+local CITIES = {
+  { name = "深圳", lat = 22.5431, lon = 114.0579 },
+  { name = "广州", lat = 23.1291, lon = 113.2644 },
+  { name = "北京", lat = 39.9042, lon = 116.4074 },
+  { name = "上海", lat = 31.2304, lon = 121.4737 },
+  { name = "杭州", lat = 30.2741, lon = 120.1551 },
+  { name = "成都", lat = 30.5728, lon = 104.0668 },
+  { name = "西安", lat = 34.3416, lon = 108.9398 },
+}
+
+local function load_city()
+  local i = wisp.store.get("city")
+  if type(i) ~= "number" or i ~= math.floor(i) or i < 1 or i > #CITIES then
+    return 1
+  end
+  return i
+end
+
+local city_i = state(load_city())
+
+-- Data parsing.
+
+local function num(v) return type(v) == "number" and v or nil end
+local function str(v) return type(v) == "string" and v or nil end
+local function at(t, i) return type(t) == "table" and t[i] or nil end
+
+-- WMO weather codes map to descriptions and day/night icons.
+local function describe(code, day)
+  if code == nil then return "未知", "cloud", "muted" end
+  if code == 0 then return "晴", day and "sun" or "moon", "warn" end
+  if code <= 2 then return "多云", day and "cloud_sun" or "cloud_moon", "accent" end
+  if code == 3 then return "阴", "cloud", "muted" end
+  if code <= 48 then return "雾", "cloud", "muted" end
+  if code <= 57 then return "毛毛雨", "cloud_rain", "accent" end
+  if code <= 67 then return "雨", "cloud_rain", "accent" end
+  if code <= 77 then return "雪", "snowflake", "accent" end
+  if code <= 86 then return "阵雨", "cloud_rain", "accent" end
+  return "雷雨", "bolt", "danger"
+end
+
+local WD = { "周日", "周一", "周二", "周三", "周四", "周五", "周六" }
+local function weekday(y, m, d)
+  if m < 3 then y = y - 1 end
+  local off = { [1] = 0, [2] = 3, [3] = 2, [4] = 5, [5] = 0, [6] = 3, [7] = 5,
+                [8] = 1, [9] = 4, [10] = 6, [11] = 2, [12] = 4 }
+  return (y + y // 4 - y // 100 + y // 400 + off[m] + d) % 7
+end
+
+-- Forecast dates use local YYYY-MM-DD; labels depend on their list position.
+local function day_label(date, k)
+  if k == 1 then return "今天" end
+  if k == 2 then return "明天" end
+  if k == 3 then return "后天" end
+  local y, m, d = date:match("^(%d+)-(%d+)-(%d+)$")
+  if y then return WD[weekday(tonumber(y), tonumber(m), tonumber(d)) + 1] end
+  return date:sub(6)
+end
+
+local function fmt_temp(v)
+  v = num(v)
+  return v and string.format("%d°", math.floor(v + 0.5)) or "--"
+end
+
+local function url_for(c)
+  return string.format(
+    "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
+      .. "&current=temperature_2m,apparent_temperature,relative_humidity_2m"
+      .. ",weather_code,wind_speed_10m,is_day"
+      .. "&hourly=temperature_2m,precipitation_probability"
+      .. "&daily=weather_code,temperature_2m_max,temperature_2m_min"
+      .. ",precipitation_probability_max,uv_index_max,sunrise,sunset"
+      .. "&timezone=auto&forecast_days=4&wind_speed_unit=kmh",
+    c.lat, c.lon)
+end
+
+local ERR = {
+  timeout = "网络超时，稍后再试",
+  rate_limited = "刷新太频繁，稍后再试",
+  permission_denied = "没有访问天气服务的权限",
+  too_large = "数据太大，显示不了",
+  dns = "解析天气服务失败",
+  connect = "连不上天气服务",
+  tls = "安全连接失败",
+  deferred_timeout = "待机中网络没醒，稍后再试",
+}
+
+-- Reactive state.
+
+local status = state("正在获取…")
+local advice = state("")
+local big_temp = state("--")
+local big_desc = state("")
+local big_icon = state("cloud")
+local big_fg = state("muted")
+local big_range = state("")
+local feels = state("--")
+local humid = state("--")
+local wind = state("--")
+local astro = state("")
+local hours = state({})          -- Hourly temperatures for the chart, from 00:00 through 23:00.
+local lo, hi = state(-10), state(45)
+local days = state({})          -- Forecast rows.
+
+local function set_day_rows(d, today)
+  local out = {}
+  for i = 1, 4 do
+    local date = str(at(d.time, i))
+    if date then
+      local code = num(at(d.weather_code, i))
+      local text, icon, fg = describe(code, true)
+      local prob = num(at(d.precipitation_probability_max, i))
+      out[#out + 1] = {
+        label = day_label(date, i),
+        icon = icon,
+        fg = fg,
+        desc = text,
+        rain = prob and string.format("%d%%", math.floor(prob + 0.5)) or "",
+        range = fmt_temp(at(d.temperature_2m_min, i)) .. " " .. fmt_temp(at(d.temperature_2m_max, i)),
+      }
+    end
+  end
+  days:set(out)
+end
+
+-- Build the chart from the full day of hourly temperatures.
+local function set_hours(h, today)
+  local vals, n = {}, 0
+  local times = h.time
+  if type(times) ~= "table" then return end
+  for i = 1, #times do
+    if str(times[i]) == today .. "T00:00" then
+      for k = i, math.min(i + 23, #times) do
+        local v = num(at(h.temperature_2m, k))
+        if v then
+          n = n + 1
+          vals[n] = v
+        end
+      end
+      break
+    end
+  end
+  if n < 2 then return end
+  local mn, mx = vals[1], vals[1]
+  for _, v in ipairs(vals) do
+    if v < mn then mn = v end
+    if v > mx then mx = v end
+  end
+  lo:set(mn - 2)
+  hi:set(mx + 2)
+  hours:set(vals)
+end
+
+local function set_advice(prob, uv, t)
+  if prob and prob >= 70 then
+    advice:set("今天大概率有雨，出门带伞")
+  elseif prob and prob >= 40 then
+    advice:set("可能有雨，最好带把伞")
+  elseif uv and uv >= 8 then
+    advice:set("紫外线很强，注意防晒")
+  elseif t and t >= 33 then
+    advice:set("天气炎热，记得多补水")
+  elseif t and t <= 5 then
+    advice:set("天冷，注意保暖")
+  else
+    advice:set("")
+  end
+end
+
+local function fetch()
+  local idx = city_i:get()
+  status:set("正在获取…")
+  wisp.http.get(url_for(CITIES[idx]), nil, function(err, res)
+    if idx ~= city_i:get() then return end -- Ignore responses for a city that is no longer selected.
+    if err then
+      status:set(ERR[err] or "网络不可用，稍后再试")
+      return
+    end
+    local j = res.json
+    if res.status ~= 200 or type(j) ~= "table" then
+      status:set("天气服务暂时不可用，稍后再试")
+      return
+    end
+    local c = type(j.current) == "table" and j.current or {}
+    local code = num(c.weather_code)
+    local day = c.is_day ~= 0
+    local text, icon, fg = describe(code, day)
+    big_temp:set(fmt_temp(c.temperature_2m))
+    big_desc:set(text)
+    big_icon:set(icon)
+    big_fg:set(fg)
+    feels:set(fmt_temp(c.apparent_temperature))
+    humid:set(num(c.relative_humidity_2m) and (string.format("%d%%", math.floor(c.relative_humidity_2m + 0.5))) or "--")
+    wind:set(num(c.wind_speed_10m) and (string.format("%.0f km/h", c.wind_speed_10m)) or "--")
+
+    local d = type(j.daily) == "table" and j.daily or {}
+    local today = (str(c.time) or ""):sub(1, 10)
+    local mx = num(at(d.temperature_2m_max, 1))
+    local mn = num(at(d.temperature_2m_min, 1))
+    if mx or mn then
+      big_range:set((mn and string.format("%d°", math.floor(mn + 0.5)) or "--")
+        .. " ~ " .. (mx and string.format("%d°", math.floor(mx + 0.5)) or "--"))
+    else
+      big_range:set("")
+    end
+    local sr, ss = str(at(d.sunrise, 1)), str(at(d.sunset, 1))
+    if sr and ss then astro:set("日出 " .. sr:sub(12, 16) .. " · 日落 " .. ss:sub(12, 16)) end
+    set_day_rows(d, today)
+    set_hours(type(j.hourly) == "table" and j.hourly or {}, today)
+    set_advice(num(at(d.precipitation_probability_max, 1)), num(at(d.uv_index_max, 1)), num(c.temperature_2m))
+
+    local t = str(c.time)
+    if not t then
+      status:set("已更新")
+    elseif res.deferred then
+      status:set("上次更新 " .. t:sub(12, 16))
+    else
+      status:set("更新于 " .. t:sub(12, 16))
+    end
+    wisp.log.info("ok " .. CITIES[idx].name .. " " .. big_temp:get())
+  end)
+end
+
+local function next_city()
+  local i = city_i:get() % #CITIES + 1
+  city_i:set(i)
+  wisp.store.set("city", i)
+  days:set({})
+  hours:set({})
+  advice:set("")
+  big_range:set("")
+  astro:set("")
+  wisp.log.info("city -> " .. CITIES[i].name)
+  fetch()
+end
+
+fetch()
+wisp.timer.every(30 * 60 * 1000, fetch)
+
+-- Interface.
+
+local function stat_cell(label, value)
+  return ui.column { w = "fill", gap = 2, align = "center",
+    ui.label { text = label, font = "xs", fg = "muted" },
+    ui.label { text = value, font = "md", fg = "text" },
+  }
+end
+
+local function day_row(d)
+  return ui.row { w = "fill", h = 46, gap = 10, align = "center",
+    ui.label { text = d.label, font = "sm", fg = "text" },
+    ui.icon { name = d.icon, font = 20, fg = d.fg },
+    ui.label { text = d.desc, font = "xs", fg = "muted", grow = 1 },
+    ui.label { text = d.rain, font = "xs", fg = "accent" },
+    ui.label { text = d.range, font = "sm", fg = "text" },
+  }
+end
+
+return ui.screen { bg = "bg",
+  pad = { SA.y1, W - 1 - SA.x2, H - 1 - SA.y2, SA.x1 },
+  ui.column { w = "fill", grow = 1, gap = 10,
+    -- Header: tap the city to cycle presets, or refresh manually.
+    ui.row { w = "fill", gap = 8, align = "center",
+      ui.icon { name = "map_marker", font = 18, fg = "accent" },
+      ui.label { text = bind(city_i, function(i) return CITIES[i].name end),
+        font = 20, fg = "text", on_click = next_city },
+      ui.label { text = "换", font = "xs", fg = "muted", on_click = next_city },
+      ui.spacer { grow = 1 },
+      ui.icon { name = "refresh", font = 20, fg = "accent", on_click = fetch },
+    },
+    -- Current conditions.
+    ui.row { w = "fill", gap = 10, align = "center",
+      ui.icon { name = big_icon, font = 44, fg = big_fg },
+      ui.label { text = big_temp, font = 56, fg = "text" },
+      ui.column { gap = 2,
+        ui.label { text = big_desc, font = "md", fg = "text" },
+        ui.label { text = big_range, font = "sm", fg = "muted" },
+      },
+    },
+    ui.row { w = "fill",
+      stat_cell("体感", feels), stat_cell("湿度", humid), stat_cell("风", wind),
+    },
+    -- Bottom padding keeps the last forecast row visible at the end of scrolling.
+    ui.scroll { w = "fill", grow = 1, gap = 8, pad = { 0, 0, 26, 0 },
+      ui.row { w = "fill", justify = "between",
+        ui.label { text = "今天逐时气温", font = "xs", fg = "muted" },
+        ui.label { text = status, font = "xs", fg = "muted" },
+      },
+      ui.chart { w = "fill", h = 72, type = "line", series = bind(hours, function(v) return { v } end),
+        min = lo, max = hi, bg = "surface", radius = 8 },
+      ui.row { w = "fill", justify = "between",
+        ui.label { text = "0时", font = "xs", fg = "muted" },
+        ui.label { text = "6时", font = "xs", fg = "muted" },
+        ui.label { text = "12时", font = "xs", fg = "muted" },
+        ui.label { text = "18时", font = "xs", fg = "muted" },
+        ui.label { text = "23时", font = "xs", fg = "muted" },
+      },
+      ui.label { text = advice, w = "fill", font = "xs", fg = "warn",
+        hidden = bind(advice, function(t) return t == "" end) },
+      ui.label { text = astro, w = "fill", font = "xs", fg = "muted",
+        hidden = bind(astro, function(t) return t == "" end) },
+      ui.label { text = "未来几天", font = "xs", fg = "muted" },
+      ui.list { w = "fill", h = 4 * 46, items = days, row = day_row, row_h = 46 },
+      ui.spacer { h = 6 },
+    },
+  },
 }
 ```
 )wispdoc"},

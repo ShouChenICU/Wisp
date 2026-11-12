@@ -302,6 +302,12 @@ const char* strings_ja(StrId id) {
             return "「{}」を削除しました";
         case StrId::AgentNoteFileRemoved:
             return "「{}」のファイル {} を削除しました";
+        case StrId::AgentNoteFetch:
+            return "{} にアクセス";
+        case StrId::AgentNoteLuaRun:
+            return "Lua スクリプトを実行";
+        case StrId::AgentNoteToolCall:
+            return "「{}」を呼び出し · {}";
         case StrId::AgentConfirmDelete:
             return "Agent がシーン「{}」を削除しようとしています";
         case StrId::AgentConfirmWithData:
@@ -637,6 +643,14 @@ const char* strings_ja(StrId id) {
             return "通知を消す";
         case StrId::ActDocsRead:
             return "ドキュメントを読む";
+        case StrId::ActHttpFetch:
+            return "ウェブページを取得";
+        case StrId::ActLuaRun:
+            return "Lua スクリプトを実行";
+        case StrId::ActToolsFind:
+            return "シーンツールを検索";
+        case StrId::ActToolsCall:
+            return "シーンツールを呼び出す";
         case StrId::ActUiTree:
             return "画面を確認";
         case StrId::Count:

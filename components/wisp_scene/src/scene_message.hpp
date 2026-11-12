@@ -12,17 +12,21 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
 #include "scene_api.hpp"
+#include "scene_instance.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/scene_store.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/scene/minute_ticker.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/scene/scene_view.hpp"
 #include "wisp/scene/ui_ops.hpp"
@@ -115,6 +119,157 @@ struct SceneQuery {
         }
         sem.give();
     }
+};
+
+// run_lua(): the script and its limits, and once the scene task has ended
+// the run, its result. Shared like SceneQuery, so a caller that gave up
+// leaves nothing the task could write into.
+struct LuaRunJob {
+    os::LargeString code;
+    size_t memory_bytes = 0;
+    uint32_t timeout_ms = 0;
+    // os::now_ms() when run_lua() was called, and when the run must end.
+    uint64_t start_ms = 0;
+    uint64_t deadline_ms = 0;
+    os::Semaphore sem{1, 0};
+    os::Mutex mu;
+    bool done = false;
+    Result<LuaRunResult> result = Result<LuaRunResult>::err(ErrorCode::Timeout, "not answered");
+
+    void finish(Result<LuaRunResult> r) {
+        {
+            std::lock_guard<os::Mutex> lock(mu);
+            if (done) return;
+            done = true;
+            result = std::move(r);
+        }
+        sem.give();
+    }
+};
+
+// call_tool(): the call and, once the scene task has ended it, its result.
+// Shared like LuaRunJob, so a caller that gave up leaves nothing the task
+// could write into.
+struct ToolCallJob {
+    std::string scene_id;
+    std::string tool;
+    Value args;
+    uint32_t timeout_ms = 0;
+    // os::now_ms() when the call must end.
+    uint64_t deadline_ms = 0;
+    os::Semaphore sem{1, 0};
+    os::Mutex mu;
+    bool done = false;
+    Result<ToolCallResult> result = Result<ToolCallResult>::err(ErrorCode::Timeout, "not answered");
+
+    void finish(Result<ToolCallResult> r) {
+        {
+            std::lock_guard<os::Mutex> lock(mu);
+            if (done) return;
+            done = true;
+            result = std::move(r);
+        }
+        sem.give();
+    }
+};
+
+// The output of a run: the tail of what print and wisp.log wrote
+// (LuaRunResult::output). In PSRAM, and never more than twice
+// kLuaRunOutputBytes, whatever the script prints.
+class OutputTail {
+public:
+    void add(std::string_view piece);
+    // The kept tail, "…" in front when anything was dropped.
+    os::LargeString take();
+
+private:
+    os::LargeString buf_;
+    bool cut_ = false;
+};
+
+// One scene's downloads: begun on the worker while `open`, cancelled all
+// at once by cancel_files(). The lock is held across a download's
+// SceneHttp::submit(), so once cancel_files() has closed the gate every
+// request of the scene is either cancelled here or not sent at all.
+struct SceneRuntime::FilesGate {
+    os::Mutex mu;
+    bool open = true;
+    std::vector<std::shared_ptr<core::FileDownload>> active;
+
+    void forget(const core::FileDownload* dl) {
+        std::lock_guard<os::Mutex> lock(mu);
+        std::erase_if(active, [dl](const auto& p) { return p.get() == dl; });
+    }
+};
+
+// One running scene (scene_runtime.hpp, "Scenes"); scene task only.
+struct SceneRuntime::Slot {
+    std::string id;
+    std::string name;
+    uint32_t instance = 0;
+    Value args;
+    std::shared_ptr<const core::ScenePackage> package;
+    std::shared_ptr<core::SceneStore> store;
+    // Null once the scene faulted (in front: its error panel is up).
+    os::LargeUnique<SceneInstance> scene;
+    // scene.json's "background": going back sends it there.
+    bool declares_background = false;
+    // In the background: no view, its batches are dropped.
+    bool background = false;
+    // Headless (file header): no view either, but not in the background.
+    bool headless = false;
+    // Taken by every tool call and by leaving the headless state: an idle
+    // close scheduled before it does nothing.
+    uint64_t idle_gen = 0;
+    // scene.on_show() ran and on_hide() has not.
+    bool shown = false;
+    // os::now_ms() when it last left the front (0: never in front), and
+    // when it last went to the background.
+    uint64_t last_front_ms = 0;
+    uint64_t background_since_ms = 0;
+    // Orders scenes that left the front in the same millisecond (and
+    // those never in front): taken each time it goes to the background.
+    uint64_t seq = 0;
+    // Starting from a boot launch: a failure is a RestoreFailed notice.
+    bool restoring = false;
+    // What wisp.scene.launch() reports.
+    LaunchReason reason = LaunchReason::User;
+    MinuteTicker ticker;
+    // Its downloads in flight (wire_files()); shared with the jobs.
+    std::shared_ptr<FilesGate> files_gate;
+    // What the scene last saw, for "battery" and "lang".
+    bool has_battery = false;
+    int64_t battery = 0;
+    bool charging = false;
+    std::string lang;
+};
+
+// run_lua()'s VM on the scene task (scene_runtime_lua.cpp). `api` is
+// declared before `vm`, which points at it, so it is destroyed after.
+struct SceneRuntime::AgentRun {
+    std::shared_ptr<LuaRunJob> job;
+    uint32_t instance = 0;
+    SceneApi api;
+    std::shared_ptr<FilesGate> files_gate;
+    OutputTail output;
+    // The task ended (SceneApi::task_done) with `outcome`.
+    bool ended = false;
+    TaskOutcome outcome;
+    std::unique_ptr<Vm> vm;
+};
+
+// A call_tool() call on the scene task (scene_runtime_tools.cpp).
+// `instance` is the pending load's while `loading`, then the slot's; `task`
+// is its task once started (0 before, or while the first slice runs).
+struct SceneRuntime::ToolRun {
+    std::shared_ptr<ToolCallJob> job;
+    std::string scene_id;
+    uint32_t instance = 0;
+    bool loading = false;
+    uint32_t task = 0;
+    // The task ended (SceneApi::task_done) with `outcome`.
+    bool ended = false;
+    TaskOutcome outcome;
 };
 
 namespace msg {
@@ -249,12 +404,32 @@ struct StoreSet {
     std::shared_ptr<SceneQuery> job;
 };
 
+// run_lua(): start the run.
+struct LuaRun {
+    std::shared_ptr<LuaRunJob> job;
+};
+// run_lua() was cancelled: end the run of `job` if it is still going.
+struct LuaStop {
+    std::shared_ptr<LuaRunJob> job;
+};
+
+// call_tool(): call the tool in the scene, starting it headless first if
+// it is not running.
+struct ToolCall {
+    std::shared_ptr<ToolCallJob> job;
+};
+// call_tool() was cancelled: end the call of `job` if it is still going.
+struct ToolStop {
+    std::shared_ptr<ToolCallJob> job;
+};
+
 // stop(): close every scene and end the task.
 struct Quit {};
 
-using Body = std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone,
-                          StoreDone, Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor,
-                          FilesDone, Quit, CheckBuild, Eval, StoreDump, StoreSet>;
+using Body =
+    std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone, StoreDone,
+                 Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor, FilesDone, Quit,
+                 CheckBuild, Eval, StoreDump, StoreSet, LuaRun, LuaStop, ToolCall, ToolStop>;
 
 }  // namespace msg
 

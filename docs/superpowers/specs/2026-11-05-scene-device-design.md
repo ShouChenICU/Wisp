@@ -518,3 +518,10 @@ wisp.http.download(url, name, opts, cb)   -- 流式写入文件，受配额和 h
 | 场景频繁发通知打扰用户 | 每分钟 10 条的限额，加每场景 5 条未读上限；以后在子项目 7 加用户屏蔽 |
 | 开机恢复的场景反复出错拖慢启动 | 失败的场景从列表中移除，下次开机不再恢复 |
 | SD 卡热插拔时 files 处于中间状态 | 写入经 `wisp.fs` 串行执行；SD 卡移除事件让该场景的 files 进入 `unavailable`，进行中的写入返回错误 |
+
+## 2026-11-12 修订：Agent 扩展工具（4b-1）
+
+本节修订优先于本文对应的旧条款；完整规则见 [`2026-11-09-agent-tools-design.md`](2026-11-09-agent-tools-design.md) 第 9 节及其指向章节。
+
+- 场景状态新增 `headless`，scene.json 新增 `tools` 声明。未运行场景可因工具调用而无视图启动，不要求 background，不占后台数量，不持久化后台列表；共用 VM 预算，同时仅一个，最后调用结束后闲置 60 s 关闭并落盘。
+- `scene.on_state` 与 `wisp.scene.state()` 支持 headless；打开时沿用同一 VM 转前台。headless 启动及转前台、后台保留 launch reason `user`。总调用超时只取消任务；VM 执行片或内存故障才触发场景故障处理。详见 4b-1 第 5.4 节。

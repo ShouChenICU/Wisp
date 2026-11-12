@@ -290,9 +290,12 @@ struct Dec {
     const char* begin;
     Vm* vm;
     uint32_t count = 0;
+    // Where decode_json() reports which of its own errors it raised.
+    const char** kind = nullptr;
 };
 
 [[noreturn]] void bad(Dec& d) {
+    if (d.kind != nullptr) *d.kind = kJsonInvalid;
     luaL_error(d.L, "invalid JSON at byte %d", static_cast<int>(d.p - d.begin));
     std::abort();  // luaL_error does not return
 }
@@ -556,8 +559,10 @@ void decode_value(Dec& d, int depth) {
             return;
         case '[':
         case '{':
-            if (depth == kLuaJsonMaxDepth)
+            if (depth == kLuaJsonMaxDepth) {
+                if (d.kind != nullptr) *d.kind = kJsonTooDeep;
                 luaL_error(d.L, "JSON nested more than %d deep", kLuaJsonMaxDepth);
+            }
             luaL_checkstack(d.L, 4, "JSON");
             if (*d.p == '[') {
                 decode_array(d, depth + 1);
@@ -611,8 +616,9 @@ const char* lua_record_to_json(lua_State* L, int idx, os::LargeString& out, size
     return to_json(L, idx, out, max_bytes, true);
 }
 
-void decode_json(lua_State* L, std::string_view json) {
+void decode_json(lua_State* L, std::string_view json, const char** kind) {
     Dec d{L, json.data(), json.data() + json.size(), json.data(), Vm::of(L)};
+    d.kind = kind;
     decode_value(d, 0);
     skip_ws(d);
     if (d.p != d.end) bad(d);
