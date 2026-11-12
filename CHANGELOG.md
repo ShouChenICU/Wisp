@@ -4,6 +4,10 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 
 ## Unreleased
 
+### Changes
+
+- Interrupt-first button input: one deadline-driven worker handles timestamped edges without periodic polling. PollOnly buttons keep 20 ms active sampling; screen-off pauses ordinary keys and keeps a 100 ms power-key fallback. Queue/task creation failure retains an emergency 20 ms Timer tick while device reads still follow those deadlines. PMU battery/charging/VBUS sampling remains 1 s active / 30 s standby. GPIO buttons request independent RTC light-sleep wake; unsupported wake pins or unknown ISR-service ownership degrade to polling. On 1.75C, GPIO3 PWR support remains disabled pending polarity, strapping and physical wake acceptance: the default PWR still uses PMU polling. Device RAM and wake/stress acceptance remain pending.
+
 ### Features
 
 - Admin page, models: a **Fetch** button next to the model field lists the platform's models (saving the profile first, like "Test connection"), and the model becomes a dropdown of the models of that tab's kind. Values that can be picked are now picked: the TTS voice from the model's voices (name, language and description), the ASR language from the model's languages or a common list (with "Auto" first), each with a "type it in" option; TTS speed is a slider with a reset to the default; the sample rate moved into a folded "Advanced" section and shows the model's rate without filling it in; picking a chat model fills in its context window and image input. The connectivity test returns these per-model `details` (from speech.cpp's `speech` object and OpenRouter-style `context_length`/`architecture`), read into PSRAM and bounded. The web UI's gzip budget is now 170 KiB.
