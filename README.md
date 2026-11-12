@@ -136,13 +136,38 @@ The first run downloads the models. Then, on the admin console's Models page:
 | --- | --- |
 | 🔥 **Shell** | A native home screen that no broken scene can take away. The wisp is drawn live in code and has its own expressions for idle, listening, thinking and speaking. Swipe to Settings, scenes or history, and the pages follow your finger. During a turn, the spoken sentence shows in large type with the agent's steps underneath. |
 | 🎭 **Scenes** | Every feature is a scene: one folder with one `main.lua`. The UI is declared as a Lua table bound to state. Each scene runs in its own Lua 5.5 sandbox with memory and time limits, and it can reach only the HTTPS hosts it declares. Scenes can run in the background, post notifications and register tools for the agent. |
-| 🤖 **Agent** | Works with any OpenAI-compatible model, with the whole device as its toolbox. It creates, edits, installs, opens and deletes scenes, reads and writes memory and to-dos, and changes settings. Long conversations are compacted to fit the context. |
+| 🤖 **Agent** | Works with any OpenAI-compatible model, with the whole device as its toolbox. It creates, edits, installs, opens and deletes scenes, fetches web content and APIs, runs Lua scripts, calls tools exported by scenes, manages memory and to-dos, and changes settings. Long conversations are compacted to fit the context. |
 | 🎙️ **Voice** | Hold <kbd>BOOT</kbd> or long-press the wisp to talk, and release to send. The sentence marked `<say>` is spoken while the rest streams to the screen. Hold again to interrupt; alarms take the speaker first. Recognition and synthesis can each use their own provider, and SiliconFlow works well. |
 | 🧠 **Memory & reminders** | Short notes about your preferences, plus to-dos with due times. When a to-do comes due, the screen lights up and it rings. You can review both in the admin console. |
 | 🌐 **Admin console** | Open `http://wisp.local:8900` on your LAN and sign in with the 6-digit code on the screen. From there you can chat, manage Wi-Fi, models, memory and scenes, watch the logs and upload firmware. It is about 100 KB of plain JavaScript inside the firmware, in Chinese, Japanese and English. |
 
 > [!IMPORTANT]
 > Tool results are treated as data, never as instructions. API keys are write-only. Deleting a scene, a factory reset and a firmware update must all be confirmed on the device.
+
+## 🤖 What the agent can do
+
+The model reasons through your configured OpenAI-compatible service; Wisp executes its tool calls on the device. The core tools fall into **nine groups by purpose**:
+
+| Group | Tools | What they enable |
+| --- | --- | --- |
+| Scene authoring & versions | `scene.list`, `scene.list_files`, `scene.read_file`, `scene.write_file`, `scene.edit_file`, `scene.delete_file`, `scene.install`, `scene.discard_draft`, `scene.rollback` | Inspect existing scenes, write Lua and UI files, install a draft, discard changes or restore the previous version. |
+| Scene lifecycle & data | `scene.open`, `scene.close`, `scene.exit`, `scene.delete`, `scene.data_read`, `scene.data_write`, `scene.files_list`, `scene.files_read`, `scene.files_remove` | Open and close scenes, return home, manage saved scene data, and inspect or clean up scene files. |
+| UI inspection & debugging | `ui.tree`, `scene.logs`, `scene.eval` | Inspect the current widget tree, read scene logs and run Lua in a running scene to diagnose or adjust its behavior. |
+| Web & APIs | `http.fetch` | Make HTTP/HTTPS requests to websites, APIs and LAN services, send headers and request bodies, extract text from HTML, and read long responses in pages without fetching them again. |
+| Computation & scripting | `lua.run` | Run a one-off Lua 5.5 script in a fresh sandbox: calculate, process JSON, chain requests, download files and read or write the agent's own files. HTTP and file operations can wait for their results, so a multi-step task fits in one script. Memory and execution time are bounded. |
+| Scene tool discovery & calls | `tools.find`, `tools.call` | Discover tools exported by installed scenes, obtain their parameter schemas on demand and call them. A scene can supply a reusable capability without changing the firmware. |
+| Memory & to-dos | `memory.list`, `memory.add`, `memory.update`, `memory.remove`; `todo.list`, `todo.add`, `todo.update`, `todo.done`, `todo.remove` | Remember preferences, maintain task lists, and set due times or recurring reminders that wake the screen and ring. |
+| Device & notifications | `device.status`, `settings.get`, `settings.set`, `notify.list`, `notify.dismiss` | Check battery, network, storage and peripherals; adjust brightness, volume, screen timeout, language and clock format; review or dismiss notifications. |
+| Built-in reference | `docs.read` | Read the on-device scene API reference by topic, so the agent can look up widgets, Lua APIs and scene conventions while building a feature. |
+
+These tools can be combined in a conversation. For example:
+
+- **“Make me a Pomodoro timer, then make the digits bigger.”** Read the API reference, create and install a Lua scene, open it, then edit its layout. Roll back if the previous version worked better.
+- **“Read this page and summarize it; fetch this API and calculate the totals.”** Use `http.fetch` to retrieve content and `lua.run` to parse JSON, calculate or save results. API access depends on the service and any credentials it requires.
+- **“Use my weather scene to check tomorrow's forecast.”** If that scene exports a forecast tool, discover and call it. A stopped scene can run without a UI for the call, leaving the current screen in place; it closes after 60 seconds idle.
+- **“Remember that I prefer tea, and remind me tomorrow at nine to buy some.”** Save a preference and create a timed to-do; the device lights up and rings when it is due.
+
+Core tools are available directly; scene tools are discovered when needed rather than all being added to every model request. This lets the agent grow its capabilities by creating and reusing scenes. See the [scene API reference](docs/scene-api.md) for scene development and tool exports.
 
 ## 🔧 Porting to a new board
 
@@ -197,7 +222,7 @@ More in the [architecture notes](docs/architecture.md), the [scene API](docs/sce
 | 🧱 | Foundation | Device abstraction, storage, power and standby | ✅ |
 | 🌐 | Admin console | Wi-Fi and QR setup, LAN console, model profiles, OTA from the browser | ✅ |
 | 🎭 | Scene runtime | Lua sandbox, declarative UI, background scenes, notifications, scene files | ✅ |
-| 🤖 | Agent | Tool calling, scene editing and control, context compaction, live step display | ✅ |
+| 🤖 | Agent | Scene editing and control, HTTP requests, Lua scripts, scene tool discovery, context compaction, live step display | ✅ |
 | 🎙️ | Voice | Hold to talk, recognition, `<say>` speech, interruption | ✅ |
 | 🧠 | Memory & reminders | Preference notes, to-dos with due times, reminders | ✅ |
 | 🔥 | Shell | Wisp home screen, finger-following navigation, settings, scene list, history | ✅ |
