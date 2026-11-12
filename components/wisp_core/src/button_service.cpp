@@ -157,20 +157,6 @@ uint32_t ButtonService::poll_interval_ms() const {
     return compatibility_poll_ms_;
 }
 
-bool ButtonService::push_edge(void* context, bool pressed, uint64_t timestamp_us) noexcept {
-    auto* binding = static_cast<ButtonBinding*>(context);
-    return binding != nullptr && binding->service != nullptr &&
-           binding->service->enqueue_edge(binding->index, pressed, timestamp_us);
-}
-
-bool ButtonService::enqueue_edge(uint16_t index, bool pressed, uint64_t timestamp_us) noexcept {
-    os::IsrQueue* queue = edge_queue_raw_.load(std::memory_order_acquire);
-    if (queue == nullptr) {
-        return false;
-    }
-    return queue->push_from_isr(os::IsrQueueRecord{index, pressed ? 1u : 0u, timestamp_us});
-}
-
 void ButtonService::ensure_initialized() {
     if (initialized_.load(std::memory_order_acquire)) {
         return;
@@ -224,9 +210,6 @@ void ButtonService::refresh_buttons() {
         state.next_poll_ms = 0;
         buttons_.push_back(std::move(state));
     }
-    for (size_t i = 0; i < bindings_.size(); ++i) {
-        bindings_[i] = ButtonBinding{this, static_cast<uint16_t>(i)};
-    }
 }
 
 void ButtonService::attach_edge_sinks() {
@@ -236,8 +219,11 @@ void ButtonService::attach_edge_sinks() {
         if (state.mode != hal::ButtonInputMode::EdgeEvent) {
             continue;
         }
-        auto result = state.button->set_edge_sink(
-            hal::ButtonEdgeSink{&bindings_[i], &ButtonService::push_edge});
+        bindings_[i] = edge_queue_->bind_edge(static_cast<uint32_t>(i));
+        auto result = bindings_[i] == nullptr
+                          ? Result<void>::err(ErrorCode::NoMemory)
+                          : state.button->set_edge_sink(hal::ButtonEdgeSink{
+                                bindings_[i].get(), &os::IsrQueue::EdgeBinding::push_edge});
         if (result) {
             state.edge_attached = true;
         } else {
@@ -331,6 +317,7 @@ void ButtonService::process_edge(const ButtonEdgeEvent& event) {
         return;
     }
 
+    state.button->service_input();
     process_deadlines(event.timestamp_us);
     if (event.pressed == state.pressed) {
         if (state.candidate_valid && state.candidate_pressed != event.pressed) {
@@ -439,6 +426,7 @@ void ButtonService::recover_overflow(uint64_t now_us) {
         if (state.mode != hal::ButtonInputMode::EdgeEvent) {
             continue;
         }
+        state.button->service_input();
         const bool pressed = state.button->pressed();
         state.candidate_valid = false;
         if (pressed != state.pressed) {

@@ -80,6 +80,19 @@ IsrQueue::~IsrQueue() {
 
 void IsrQueue::operator delete(void* ptr) noexcept { dealloc(ptr); }
 
+std::unique_ptr<IsrQueue::EdgeBinding> IsrQueue::bind_edge(uint32_t source) {
+    void* memory = alloc(sizeof(EdgeBinding), Mem::Fast);
+    if (memory == nullptr) return nullptr;
+    return std::unique_ptr<EdgeBinding>(new (memory) EdgeBinding{this, source});
+}
+
+void IsrQueue::EdgeBinding::operator delete(void* ptr) noexcept { dealloc(ptr); }
+
+bool IsrQueue::EdgeBinding::push_edge(void* context, bool pressed, uint64_t timestamp_us) noexcept {
+    auto* binding = static_cast<EdgeBinding*>(context);
+    return binding->queue->push_from_isr({binding->source, pressed ? 1u : 0u, timestamp_us});
+}
+
 bool IsrQueue::push_from_isr(const IsrQueueRecord& item) noexcept { return impl_->enqueue(item); }
 
 bool IsrQueue::push(const IsrQueueRecord& item) noexcept { return impl_->enqueue(item); }

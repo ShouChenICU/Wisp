@@ -24,11 +24,24 @@ public:
     IsrQueue(const IsrQueue&) = delete;
     IsrQueue& operator=(const IsrQueue&) = delete;
 
+    // A platform-owned ISR callback and internal-RAM context. No portable
+    // service object or container is dereferenced on the interrupt path.
+    // Detach all producers quiescently before destroying a binding/queue.
+    struct EdgeBinding {
+        static bool push_edge(void* context, bool pressed, uint64_t timestamp_us) noexcept;
+        static void operator delete(void* ptr) noexcept;
+        IsrQueue* queue;
+        uint32_t source;
+    };
+    std::unique_ptr<EdgeBinding> bind_edge(uint32_t source);
+
     bool push_from_isr(const IsrQueueRecord& item) noexcept;
     bool push(const IsrQueueRecord& item) noexcept;
 
     // Returns true when a record was removed. Returns false on timeout or
-    // when wake() interrupts the wait without adding a record.
+    // when wake() interrupts the wait without adding a record. Finite waits
+    // are rounded up to the port's scheduling tick (ESP: at most one extra
+    // tick before ordinary scheduler latency); timestamps are not rounded.
     bool pop(IsrQueueRecord& item, uint32_t timeout_ms);
     void wake();
     uint32_t dropped() const;

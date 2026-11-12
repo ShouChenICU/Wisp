@@ -377,7 +377,8 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
         }
         add_device(registry, report,
                    std::make_shared<wisp::port::esp::EspGpioButton>(
-                       spec.pin, spec.active_low, spec.id, spec.model, spec.role));
+                       spec.pin, spec.active_low, spec.id, spec.model, spec.role,
+                       wisp::hal::ButtonInputMode::EdgeEvent));
     }
 }
 

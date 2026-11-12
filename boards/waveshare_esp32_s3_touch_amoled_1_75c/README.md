@@ -14,6 +14,33 @@ Board support for the Waveshare ESP32-S3-Touch-AMOLED-1.75C: a 466×466 round AM
 
 The IMU (QMI8658, at 0x6B or 0x6A, probed), the power management chip (AXP2101, which also delivers the PWR key) and the optional PCF85063 RTC are not handed to bmgr; Wisp's own drivers handle them.
 
+## Button input selection
+
+`button.boot` explicitly requests GPIO EdgeEvent input. `button.power` has
+exactly one registration: by default it remains the AXP2101 PollOnly key,
+whose standby interval metadata is 100 ms. Applying standby scheduling is
+owned by ButtonService/PowerManager integration, not this board file.
+
+GPIO3/SYS_OUT is declared in `board.cpp`, but
+`kSysOutHardwareValidated = false` keeps this strapping pin untouched. Its
+active-high polarity is **schematic-derived, not measured**. Only after the
+polarity, held-at-reset/boot/USB-JTAG and light-sleep wake checks in the
+button-interrupt design spec sections 5 and 8.2 pass may that board-level
+choice be changed. The selection log explicitly reports this pending state;
+it is not hardware evidence.
+
+When enabled, GPIO configuration/shared edge-service failure selects the PMU
+fallback before registration. A later sink/resource failure leaves the one
+GPIO device registered and ButtonService polls it (100 ms for power standby);
+it never adds a second `button.power`. Such GPIO polling can miss a pulse
+shorter than the polling interval. GPIO wake uses the independent RTC IO
+high/low level detector plus global GPIO wake enable, preserving the digital
+ANYEDGE interrupt type (the generic GPIO wake API overwrites that type).
+Non-RTC-capable pins downgrade to polling. A NO_LIGHT_SLEEP lock is held
+while pressed; task-context edge maintenance disarms wake until release and
+then re-arms it. No polarity/strapping/wake or internal-RAM
+measurements have been performed for this implementation.
+
 ## Build
 
 A separate build directory and sdkconfig keep this board from clobbering the reference board's `firmware/build` and `firmware/sdkconfig` (see "Building several boards" in `docs/porting-guide.md`):

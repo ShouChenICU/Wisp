@@ -111,6 +111,8 @@ public:
         return sink_.push != nullptr;
     }
 
+    void service_input() override { ++maintenance_calls; }
+    std::atomic<size_t> maintenance_calls{0};
     bool reject_sink = false;
     wisp::os::Semaphore detach_entered{1, 0};
     std::atomic<bool> down{false};
@@ -474,6 +476,40 @@ TEST(EdgeEvent, LongPressFiresOnceWhileHeld) {
                                                            "button.power.up"}));
     EXPECT_EQ(btn->pressed_calls.load(), 0u);
     bus.stop();
+}
+
+TEST(EdgeEvent, WakeMaintenanceIsDeferredUntilTaskDrain) {
+    DeviceRegistry registry;
+    auto button = std::make_shared<EdgeButton>("button.power");
+    ASSERT_TRUE(registry.add(button));
+    EventBus bus;
+    ButtonService service(registry, bus);
+    service.poll(0);
+    ASSERT_TRUE(button->emit(true, 1000));
+    EXPECT_EQ(button->maintenance_calls.load(), 0u);
+    service.poll(1);
+    EXPECT_EQ(button->maintenance_calls.load(), 1u);
+    service.poll(100);
+    EXPECT_EQ(button->maintenance_calls.load(), 1u);
+    ASSERT_TRUE(button->emit(false, 101000));
+    EXPECT_EQ(button->maintenance_calls.load(), 1u);
+    service.poll(102);
+    EXPECT_EQ(button->maintenance_calls.load(), 2u);
+}
+
+TEST(EdgeEvent, OverflowAlsoMaintainsWakeForDroppedRelease) {
+    DeviceRegistry registry;
+    auto button = std::make_shared<EdgeButton>("button.power");
+    ASSERT_TRUE(registry.add(button));
+    EventBus bus;
+    ButtonService service(registry, bus);
+    service.poll(0);
+    for (unsigned i = 0; i < 32; ++i) ASSERT_TRUE(button->emit(true, 1000 + i));
+    ASSERT_FALSE(button->emit(false, 2000));
+    EXPECT_EQ(button->maintenance_calls.load(), 0u);
+    service.poll(3);
+    EXPECT_EQ(button->maintenance_calls.load(), 33u);
+    EXPECT_FALSE(button->down.load());
 }
 
 TEST(EdgeEvent, DebounceAndDuplicateEdges) {

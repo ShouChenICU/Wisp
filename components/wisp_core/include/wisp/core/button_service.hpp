@@ -56,13 +56,6 @@ private:
         uint64_t next_poll_ms = 0;
     };
 
-    struct ButtonBinding {
-        ButtonService* service = nullptr;
-        uint16_t index = 0;
-    };
-
-    static bool push_edge(void* context, bool pressed, uint64_t timestamp_us) noexcept;
-    bool enqueue_edge(uint16_t index, bool pressed, uint64_t timestamp_us) noexcept;
     void ensure_initialized();
     void refresh_buttons();
     void attach_edge_sinks();
@@ -91,7 +84,7 @@ private:
     mutable os::Mutex state_mutex_;
     os::Mutex queue_consumer_mutex_;
     std::vector<ButtonState> buttons_;
-    std::vector<ButtonBinding> bindings_;
+    std::vector<std::unique_ptr<os::IsrQueue::EdgeBinding>> bindings_;
     std::atomic<bool> initialized_{false};
     bool initial_level_checked_ = false;
     bool standby_ = false;

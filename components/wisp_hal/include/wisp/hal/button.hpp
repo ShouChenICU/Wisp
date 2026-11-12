@@ -36,6 +36,9 @@ public:
     virtual Result<void> set_edge_sink(ButtonEdgeSink) {
         return Result<void>::err(ErrorCode::Unsupported);
     }
+    // Task-context maintenance after an edge or overflow recovery. Platforms
+    // may update level-wake/sleep inhibition here, never in the ISR callback.
+    virtual void service_input() {}
     virtual uint32_t standby_poll_ms() const { return 0; }
 };
 

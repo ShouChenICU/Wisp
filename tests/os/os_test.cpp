@@ -264,6 +264,35 @@ TEST(IsrQueue, RequiresFastMemoryButDoesNotAllocateWhileInUse) {
     EXPECT_EQ(item.source, 1u);
 }
 
+TEST(IsrQueue, EdgeBindingPreservesSourceAndTimestampWithoutServiceAccess) {
+    auto result = IsrQueue::create(2);
+    ASSERT_TRUE(result);
+    auto q = std::move(result.value());
+    auto binding = q->bind_edge(7);
+    ASSERT_NE(binding, nullptr);
+    EXPECT_TRUE(IsrQueue::EdgeBinding::push_edge(binding.get(), true, 0x123456789abcdef0ULL));
+    EXPECT_TRUE(IsrQueue::EdgeBinding::push_edge(binding.get(), false, 99));
+    EXPECT_FALSE(IsrQueue::EdgeBinding::push_edge(binding.get(), true, 100));
+    IsrQueueRecord record;
+    ASSERT_TRUE(q->pop(record, 0));
+    EXPECT_EQ(record.source, 7u);
+    EXPECT_EQ(record.value, 1u);
+    EXPECT_EQ(record.timestamp_us, 0x123456789abcdef0ULL);
+    ASSERT_TRUE(q->pop(record, 0));
+    EXPECT_EQ(record.value, 0u);
+    EXPECT_EQ(record.timestamp_us, 99u);
+    EXPECT_EQ(q->dropped(), 1u);
+}
+
+TEST(IsrQueue, EdgeBindingAllocationFailureIsRecoverable) {
+    auto result = IsrQueue::create(1);
+    ASSERT_TRUE(result);
+    wisp::port::sim::set_alloc_failure(Mem::Fast, true);
+    auto binding = result.value()->bind_edge(0);
+    wisp::port::sim::set_alloc_failure(Mem::Fast, false);
+    EXPECT_EQ(binding, nullptr);
+}
+
 TEST(Os, AllocKinds) {
     for (auto m : {Mem::Fast, Mem::Large, Mem::Dma, Mem::DmaLarge}) {
         void* p = alloc(64, m);

@@ -15,38 +15,7 @@ struct IsrQueue::Impl {
           slots(queue_slots),
           signal(xSemaphoreCreateBinaryStatic(&signal_storage)) {}
 
-    bool IRAM_ATTR enqueue(const IsrQueueRecord& item, bool from_isr) noexcept {
-        bool accepted = false;
-        if (from_isr) {
-            portENTER_CRITICAL_ISR(&lock);
-        } else {
-            portENTER_CRITICAL(&lock);
-        }
-        if (size == capacity) {
-            ++dropped_count;
-        } else {
-            slots[tail] = item;
-            tail = (tail + 1) % capacity;
-            ++size;
-            accepted = true;
-        }
-        if (from_isr) {
-            portEXIT_CRITICAL_ISR(&lock);
-        } else {
-            portEXIT_CRITICAL(&lock);
-        }
-
-        if (accepted) {
-            if (from_isr) {
-                BaseType_t higher_priority_task_woken = pdFALSE;
-                xSemaphoreGiveFromISR(signal, &higher_priority_task_woken);
-                portYIELD_FROM_ISR(higher_priority_task_woken);
-            } else {
-                xSemaphoreGive(signal);
-            }
-        }
-        return accepted;
-    }
+    bool enqueue(const IsrQueueRecord& item, bool from_isr) noexcept;
 
     mutable portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
     size_t capacity;
@@ -59,6 +28,30 @@ struct IsrQueue::Impl {
     StaticSemaphore_t signal_storage{};
     SemaphoreHandle_t signal;
 };
+
+bool IRAM_ATTR IsrQueue::Impl::enqueue(const IsrQueueRecord& item, bool from_isr) noexcept {
+    bool accepted = false;
+    if (from_isr) {
+        portENTER_CRITICAL_ISR(&lock);
+    } else {
+        portENTER_CRITICAL(&lock);
+    }
+    if (size == capacity) {
+        ++dropped_count;
+    } else {
+        slots[tail] = item;
+        tail = (tail + 1) % capacity;
+        ++size;
+        accepted = true;
+    }
+    if (from_isr) {
+        portEXIT_CRITICAL_ISR(&lock);
+    } else {
+        portEXIT_CRITICAL(&lock);
+    }
+
+    return accepted;
+}
 
 Result<std::unique_ptr<IsrQueue>> IsrQueue::create(size_t capacity) {
     if (capacity == 0 || capacity > std::numeric_limits<size_t>::max() / sizeof(IsrQueueRecord)) {
@@ -112,11 +105,33 @@ IsrQueue::~IsrQueue() {
 
 void IsrQueue::operator delete(void* ptr) noexcept { dealloc(ptr); }
 
-bool IRAM_ATTR IsrQueue::push_from_isr(const IsrQueueRecord& item) noexcept {
-    return impl_->enqueue(item, true);
+std::unique_ptr<IsrQueue::EdgeBinding> IsrQueue::bind_edge(uint32_t source) {
+    void* memory = alloc(sizeof(EdgeBinding), Mem::Fast);
+    if (memory == nullptr) return nullptr;
+    return std::unique_ptr<EdgeBinding>(new (memory) EdgeBinding{this, source});
 }
 
-bool IsrQueue::push(const IsrQueueRecord& item) noexcept { return impl_->enqueue(item, false); }
+void IsrQueue::EdgeBinding::operator delete(void* ptr) noexcept { dealloc(ptr); }
+
+bool IRAM_ATTR IsrQueue::EdgeBinding::push_edge(void* context, bool pressed,
+                                                uint64_t timestamp_us) noexcept {
+    auto* binding = static_cast<EdgeBinding*>(context);
+    return binding->queue->push_from_isr({binding->source, pressed ? 1u : 0u, timestamp_us});
+}
+
+bool IRAM_ATTR IsrQueue::push_from_isr(const IsrQueueRecord& item) noexcept {
+    if (!impl_->enqueue(item, true)) return false;
+    BaseType_t higher_priority_task_woken = pdFALSE;
+    xSemaphoreGiveFromISR(impl_->signal, &higher_priority_task_woken);
+    portYIELD_FROM_ISR(higher_priority_task_woken);
+    return true;
+}
+
+bool IsrQueue::push(const IsrQueueRecord& item) noexcept {
+    if (!impl_->enqueue(item, false)) return false;
+    xSemaphoreGive(impl_->signal);
+    return true;
+}
 
 bool IsrQueue::pop(IsrQueueRecord& item, uint32_t timeout_ms) {
     const uint64_t start_ms = now_ms();

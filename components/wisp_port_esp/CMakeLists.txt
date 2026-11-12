@@ -49,6 +49,11 @@ wisp_component(
                  mbedtls mdns app_update esp_partition esp_pm lvgl__lvgl espressif__esp_new_jpeg
 )
 
+# OS interfaces are first consumed by later portable archives. Force the
+# platform objects into the link rather than depending on archive scan order;
+# --gc-sections still discards unused functions/data.
+idf_component_set_property(${COMPONENT_NAME} WHOLE_ARCHIVE TRUE)
+
 # Rendering path: the display flush and touch read are always -O2,
 # whatever the global level (connectivity spec 3.2; see
 # firmware/CMakeLists.txt). Source options come after the target's on the
