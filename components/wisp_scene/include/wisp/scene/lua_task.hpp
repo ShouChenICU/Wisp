@@ -96,7 +96,8 @@ uint32_t current_task(lua_State* L);
 
 // True when the value at `idx` is a task thread that has not ended, or one
 // cancel_task() cancelled.
-// Non-raising; needs three free stack slots.
+// Non-raising; reserves its own three temporary stack slots and returns
+// false if the stack cannot grow.
 bool is_task_thread(lua_State* L, int idx);
 
 }  // namespace wisp::scene

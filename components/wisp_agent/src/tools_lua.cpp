@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "tools_json.hpp"
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/ui/strings.hpp"
@@ -65,25 +66,30 @@ ToolOutput run(scene::SceneRuntime& runtime, const Value& args, ToolCtx& ctx) {
         return tool_error("timeout", ran.error().message);
     }
     scene::LuaRunResult& r = ran.value();
-    const Value output(external_data(kSource, view(r.output)));
-    const Value ms(static_cast<int64_t>(r.ms));
-    const Value peak_kb(static_cast<int64_t>((r.memory_peak + 1023) / 1024));
     ToolOutput out;
+    out.ok = r.ok;
+    auto& json = out.result_json;
+    json = r.ok ? R"({"ok":true,"result":)" : R"({"ok":false,"error":)";
     if (r.ok) {
-        out.result = Value(Map{
-            {"ok", Value(true)},
-            {"result", Value(external_data(kSource, view(r.json)))},
-            {"output", output},
-            {"ms", ms},
-            {"memory_peak_kb", peak_kb},
-        });
+        detail::append_external(json, kSource, view(r.json));
     } else {
+        append_json_string(json, r.error);
+        json.append(",\"message\":");
         // A script's own error text can carry anything it fetched (spec
         // 7.1); the runtime's reasons (no_memory, cancelled) are its own.
         const bool from_script = r.error != "no_memory" && r.error != "cancelled";
-        out = tool_error(r.error, from_script ? external_data(kSource, r.message) : r.message,
-                         Map{{"output", output}, {"ms", ms}, {"memory_peak_kb", peak_kb}});
+        if (from_script)
+            detail::append_external(json, kSource, r.message);
+        else
+            append_json_string(json, r.message);
     }
+    json.append(",\"output\":");
+    detail::append_external(json, kSource, view(r.output));
+    json.append(",\"ms\":");
+    detail::append_number(json, r.ms);
+    json.append(",\"memory_peak_kb\":");
+    detail::append_number(json, (r.memory_peak + 1023) / 1024);
+    json.push_back('}');
     return out;
 }
 

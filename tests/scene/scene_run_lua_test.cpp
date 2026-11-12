@@ -154,6 +154,36 @@ return tostring(err), res and res.status, res and res.body
     EXPECT_TRUE(client.last()->truncate_at_limit);
 }
 
+TEST_F(RunLua, AgentHttpReportsCompleteAndTruncatedBodies) {
+    start();
+    const size_t cap = wisp::net::AgentHttpLimits::kMaxResponse;
+    for (const bool truncated : {false, true}) {
+        SCOPED_TRACE(truncated);
+        client.next = {.status = 200, .body = std::string(truncated ? cap + 1 : 16, 'x')};
+        LuaRunOptions opts;
+        opts.memory_bytes = 2 * 1024 * 1024;
+        auto r = run(R"(
+local err, res = wisp.http.get("http://lan/x")
+return err, #res.body, res.body_truncated
+)",
+                     opts);
+        ASSERT_TRUE(r.ok) << r.error << " " << r.message;
+        EXPECT_EQ(str(r.json), truncated ? "[null,1048576,true]" : "[null,16,false]");
+        r = run(R"(
+local done, length, truncated = false, 0, false
+wisp.http.get("http://lan/x", function(err, res)
+    assert(err == nil)
+    length, truncated, done = #res.body, res.body_truncated, true
+end)
+while not done do wisp.sleep(1) end
+return length, truncated
+)",
+                opts);
+        ASSERT_TRUE(r.ok) << r.error << " " << r.message;
+        EXPECT_EQ(str(r.json), truncated ? "[1048576,true]" : "[16,false]");
+    }
+}
+
 TEST_F(RunLua, FilesInAgentArea) {
     start();
     LuaRunResult r = run(R"(

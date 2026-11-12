@@ -628,4 +628,48 @@ TEST_F(LuaTask, CurrentTaskInsideTask) {
     EXPECT_EQ(seen, id.value());
 }
 
+TEST_F(LuaTask, AgentHttpTruncationReachesAwaitAndCallback) {
+    make();
+    api.http_principal = wisp::net::HttpPrincipal::Agent;
+    ASSERT_TRUE(start(R"(local e, r = wisp.http.get("http://x/")
+        return e, r.status, r.body, r.body_truncated)"));
+    ASSERT_EQ(http.size(), 1u);
+    auto result = status(200);
+    result.body = wisp::os::LargeBuffer::allocate(6);
+    std::memcpy(result.body.data(), "prefix", 6);
+    result.body_truncated = true;
+    EXPECT_FALSE(wisp::scene::run_http_callback(*vm, http[0].first, result));
+    ASSERT_EQ(done.size(), 1u);
+    EXPECT_EQ(std::string(done[0].second.json), R"([null,200,"prefix",true])");
+    ASSERT_FALSE(run(R"(wisp.http.get("http://x/", function(e, r)
+        if e == nil and r.status == 200 and r.body == "prefix" and r.body_truncated == true
+        then _G.mark() end end))"));
+    ASSERT_EQ(http.size(), 2u);
+    EXPECT_FALSE(wisp::scene::run_http_callback(*vm, http[1].first, result));
+    EXPECT_EQ(marks, 1);
+}
+
+TEST_F(LuaTask, CancellationPreservesCrowdedHostStackAndDropsSleep) {
+    make();
+    ASSERT_TRUE(start("_G.saved = coroutine.running(); wisp.sleep(1000); _G.mark()"));
+    ASSERT_EQ(api.tasks.size(), 1u);
+    const uint32_t task = api.tasks.front().id;
+    lua_State* L = vm->L();
+    ASSERT_TRUE(lua_checkstack(L, 10000));
+    const int base = lua_gettop(L);
+    for (int i = 0; i < 10000; ++i) lua_pushnil(L);
+    wisp::scene::cancel_task(*vm, task);
+    EXPECT_EQ(lua_gettop(L), base + 10000);
+    lua_settop(L, base);
+    EXPECT_TRUE(api.tasks.empty());
+    ASSERT_EQ(done.size(), 1u);
+    EXPECT_FALSE(done[0].second.ok);
+    now += 2000;
+    fire_timers();
+    EXPECT_EQ(marks, 0);
+    EXPECT_EQ(done.size(), 1u);
+    EXPECT_FALSE(run(R"(local ok, e = pcall(coroutine.resume, _G.saved)
+        assert(not ok and e:find("cannot resume a task")))"));
+}
+
 }  // namespace

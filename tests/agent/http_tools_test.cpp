@@ -85,7 +85,14 @@ protected:
     }
 
     ToolOutput call(const std::string& args_json) {
-        return tools->call("http_fetch", args_json, ctx);
+        ToolOutput out = tools->call("http_fetch", args_json, ctx);
+        if (!out.result_json.empty()) {
+            auto parsed =
+                wisp::from_json(std::string_view(out.result_json.data(), out.result_json.size()));
+            EXPECT_TRUE(parsed);
+            if (parsed) out.result = std::move(parsed.value());
+        }
+        return out;
     }
 
     FakeHttpClient client;

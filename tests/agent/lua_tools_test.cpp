@@ -48,7 +48,16 @@ protected:
         SceneRuntimeFixture::TearDown();
     }
 
-    ToolOutput call(const Value& args) { return tools->call("lua_run", wisp::to_json(args), ctx); }
+    ToolOutput call(const Value& args) {
+        ToolOutput out = tools->call("lua_run", wisp::to_json(args), ctx);
+        if (!out.result_json.empty()) {
+            auto parsed =
+                wisp::from_json(std::string_view(out.result_json.data(), out.result_json.size()));
+            EXPECT_TRUE(parsed);
+            if (parsed) out.result = std::move(parsed.value());
+        }
+        return out;
+    }
 
     ToolCtx ctx;
     std::unique_ptr<wisp::agent::ToolRegistry> tools;

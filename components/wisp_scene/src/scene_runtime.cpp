@@ -918,8 +918,8 @@ void SceneRuntime::begin_open(const std::string& id, Value args, LaunchReason re
         }
         if (running != nullptr && running->headless && running->scene &&
             running->declares_background) {
-            // Restored or reinstalled while a tool call had it up headless:
-            // it stays, in the background, and on the background list.
+            // Restore and reinstall keep the existing VM, subject to the
+            // same background admission limit as an ordinary Boot load.
             headless_to_background(*running, std::move(waiter));
             return;
         }
@@ -1855,6 +1855,13 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
 }
 
 void SceneRuntime::headless_to_background(Slot& s, std::shared_ptr<SceneWaiter> done) {
+    // Boot admission is identical for a new load and an existing headless
+    // VM: a tool call does not give it priority over the user's backgrounds.
+    if (background_count(nullptr) >= config_.max_background) {
+        if (done)
+            done->finish(Result<void>::err(ErrorCode::Busy, "too many scenes in the background"));
+        return;
+    }
     s.headless = false;
     ++s.idle_gen;
     s.scene->api().headless = false;

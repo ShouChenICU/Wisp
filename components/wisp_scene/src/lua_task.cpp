@@ -69,7 +69,7 @@ uint32_t task_of(lua_State* L, int idx) {
 // is set to nil, the other to nil or to 0 where it already exists, and
 // neither allocates.
 void forget(lua_State* L, uint32_t id, bool keep_refused = false) {
-    if (!lua_checkstack(L, 4) || !push_table(L, &kTaskThreadsKey)) return;
+    if (!lua_checkstack(L, 5) || !push_table(L, &kTaskThreadsKey)) return;
     const int threads = lua_gettop(L);
     if (lua_rawgeti(L, threads, id) == LUA_TTHREAD && push_table(L, &kTaskIdsKey)) {
         lua_pushvalue(L, threads + 1);
@@ -170,7 +170,7 @@ std::optional<ScriptError> step(Vm& vm, SceneApi& api, uint32_t id, lua_State* c
 // table (only while it still holds the task's thread) and its wisp.sleep
 // timer, so a cancelled wait holds no TimerSet slot. Non-raising.
 void drop_wait(lua_State* L, SceneApi& api, const SceneApi::TaskSlot& t) {
-    if (t.wait_key == nullptr || !lua_checkstack(L, 3) || !push_table(L, t.wait_key)) return;
+    if (t.wait_key == nullptr || !lua_checkstack(L, 4) || !push_table(L, t.wait_key)) return;
     if (lua_rawgeti(L, -1, t.wait_id) == LUA_TTHREAD && task_of(L, -1) == t.id) {
         lua_pushnil(L);
         lua_rawseti(L, -3, t.wait_id);

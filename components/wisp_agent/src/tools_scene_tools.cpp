@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "tool_io.hpp"
+#include "tools_json.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -30,30 +31,9 @@ const std::string& arg_string(const Value& args, const char* key) {
 }
 
 os::LargeString external_data_large(std::string_view scene_id, std::string_view content) {
-    constexpr std::string_view kClose = "</data>";
-    os::LargeString out;
-    out.reserve(scene_id.size() + content.size() + 48);
-    out.append("<data source=\"scene:");
-    out.append(scene_id.data(), scene_id.size());
-    out.append("\">");
-    size_t i = 0;
-    while (i < content.size()) {
-        bool closing = content.size() - i >= kClose.size();
-        for (size_t k = 0; closing && k < kClose.size(); ++k) {
-            char c = content[i + k];
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-            closing = c == kClose[k];
-        }
-        if (closing) {
-            out.append("&lt;");
-            out.append(content.data() + i + 1, kClose.size() - 1);
-            i += kClose.size();
-        } else {
-            out.push_back(content[i++]);
-        }
-    }
-    out.append(kClose.data(), kClose.size());
-    return out;
+    os::LargeString source = "scene:";
+    source.append(scene_id.data(), scene_id.size());
+    return detail::external_data_large(std::string_view(source.data(), source.size()), content);
 }
 
 os::LargeString serialize_find_entry(const IndexedTool& tool, bool include_details,

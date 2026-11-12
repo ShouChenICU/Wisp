@@ -19,6 +19,7 @@
 #include <new>
 #include <string>
 
+#include "support/fake_http.hpp"
 #include "support/scene_runtime_fixture.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
@@ -39,6 +40,7 @@ std::atomic<long> g_live_blocks{0};
 std::atomic<long> g_live_bytes{0};
 std::atomic<long> g_total_blocks{0};
 std::atomic<long> g_peak_bytes{0};
+std::atomic<size_t> g_largest_block{0};
 
 void* counted_new(size_t n) {
     auto* h = static_cast<Header*>(std::malloc(sizeof(Header) + n));
@@ -46,6 +48,9 @@ void* counted_new(size_t n) {
     h->size = n;
     h->counted = t_counting;
     if (h->counted) {
+        size_t largest = g_largest_block.load();
+        while (largest < n && !g_largest_block.compare_exchange_weak(largest, n)) {
+        }
         g_live_blocks.fetch_add(1);
         const long live = g_live_bytes.fetch_add(static_cast<long>(n)) + static_cast<long>(n);
         long peak = g_peak_bytes.load();
@@ -98,6 +103,7 @@ struct Counting {
         g_live_bytes = 0;
         g_total_blocks = 0;
         g_peak_bytes = 0;
+        g_largest_block = 0;
         t_counting = true;
     }
     ~Counting() { t_counting = false; }
@@ -304,4 +310,83 @@ TEST(ToolRegistryHeap, CallsReleaseWhatTheyAllocate) {
     }
     EXPECT_EQ(deps->calls, 1);
     EXPECT_EQ(blocks, 0);
+}
+
+// Input Values already own their strings. Count only the calling adapter
+// thread: the shared HTTP service has its own bounded transport copies.
+// A 4 KiB ceiling catches 8 KiB wrapper copies before malloc can fall back.
+TEST(ToolRegistryHeap, FetchAdaptersKeepPayloadsInLargeMemory) {
+    wisp::test::FakeHttpClient client;
+    wisp::net::SceneHttp http(client);
+    ASSERT_TRUE(http.start());
+    ToolRegistry registry(wisp::agent::ToolExecutors{});
+    ASSERT_TRUE(wisp::agent::add_http_tools(registry, {.http = http}));
+    ToolCtx ctx;
+    ctx.cancelled = [] { return false; };
+    for (const size_t bytes : {size_t{8192}, size_t{65536}, size_t{262144}}) {
+        for (const bool structured : {false, true}) {
+            SCOPED_TRACE(bytes);
+            SCOPED_TRACE(structured);
+            const size_t response_bytes = std::min(bytes, size_t{65536});
+            const size_t payload = structured ? bytes - 8 : bytes;
+            Value body = structured ? Value(wisp::Map{{"x", std::string(payload, 'b')}})
+                                    : Value(std::string(payload, 'b'));
+            Value args(wisp::Map{{"url", "http://example.com/"},
+                                 {"body", std::move(body)},
+                                 {"max_bytes", int64_t{65536}}});
+            client.next = {.status = 200,
+                           .body = std::string(response_bytes, 'r'),
+                           .headers = {{"content-type", "text/plain"},
+                                       {"x-big", std::string(8192, 'h')},
+                                       {"x-big", "tail"}}};
+            ToolOutput out;
+            size_t largest = 0;
+            {
+                Counting counting;
+                out = registry.find("http.fetch")->run(args, ctx);
+                t_counting = false;
+                largest = g_largest_block.load();
+            }
+            EXPECT_LT(largest, 4096u);
+            const Value result = output_value(out);
+            ASSERT_NE(result.find("body"), nullptr);
+            EXPECT_GT(result.find("body")->as_string().size(), response_bytes);
+            EXPECT_NE(result.find("headers")->as_string().find("h, tail"), std::string::npos);
+            ASSERT_TRUE(client.last());
+            EXPECT_EQ(client.last()->body_ref.size(), bytes);
+        }
+    }
+    wisp::agent::http_tools_drop_cache();
+}
+
+TEST_F(ToolRegistryHeapSceneTest, LuaAdaptersKeepResultsAndErrorOutputInLargeMemory) {
+    start();
+    ToolRegistry registry(wisp::agent::ToolExecutors{});
+    ASSERT_TRUE(wisp::agent::add_lua_tools(registry, {.runtime = *rt}));
+    ToolCtx ctx;
+    ctx.cancelled = [] { return false; };
+    for (const size_t bytes : {size_t{8192}, size_t{65534}}) {
+        for (const bool fails : {false, true}) {
+            SCOPED_TRACE(bytes);
+            SCOPED_TRACE(fails);
+            const std::string code =
+                "print(string.rep('p',8191)); " +
+                (fails ? "error(string.rep('e'," + std::to_string(bytes) + "))"
+                       : "return string.rep('r'," + std::to_string(bytes) + ")");
+            const Value args(wisp::Map{{"code", code}});
+            ToolOutput out;
+            size_t largest = 0;
+            {
+                Counting counting;
+                out = registry.find("lua.run")->run(args, ctx);
+                t_counting = false;
+                largest = g_largest_block.load();
+            }
+            EXPECT_LT(largest, 4096u);
+            EXPECT_EQ(out.ok, !fails);
+            const Value result = output_value(out);
+            ASSERT_NE(result.find("output"), nullptr);
+            EXPECT_GT(result.find("output")->as_string().size(), 8192u);
+        }
+    }
 }

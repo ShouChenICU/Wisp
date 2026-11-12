@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "tools_json.hpp"
 #include "wisp/agent/html_text.hpp"
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tools.hpp"
@@ -128,29 +129,23 @@ bool is_text_content_type(std::string_view content_type) {
 // (lowercase names, duplicates joined with ", ", at most the first 32
 // pairs); the caller wraps it with external_data() (spec 3.1 amended:
 // headers reach the model as data, same as the body).
-std::string headers_text(const std::vector<std::pair<std::string, std::string>>& headers) {
-    Map merged;
-    std::vector<std::string> order;
+os::LargeString headers_text(const std::vector<std::pair<std::string, std::string>>& headers) {
+    os::LargeString out;
     const size_t keep = std::min<size_t>(headers.size(), 32);
     for (size_t i = 0; i < keep; ++i) {
         const auto& [name, value] = headers[i];
-        auto it = merged.find(name);
-        if (it == merged.end()) {
-            merged[name] = Value(value);
-            order.push_back(name);
-        } else {
-            std::string joined = it->second.as_string();
-            joined += ", ";
-            joined += value;
-            it->second = Value(std::move(joined));
-        }
-    }
-    std::string out;
-    for (const std::string& name : order) {
+        bool seen = false;
+        for (size_t j = 0; j < i; ++j) seen = seen || headers[j].first == name;
+        if (seen) continue;
         if (!out.empty()) out.push_back('\n');
-        out += name;
-        out += ": ";
-        out += merged[name].as_string();
+        out.append(name.data(), name.size());
+        out.append(": ");
+        out.append(value.data(), value.size());
+        for (size_t j = i + 1; j < keep; ++j) {
+            if (headers[j].first != name) continue;
+            out.append(", ");
+            out.append(headers[j].second.data(), headers[j].second.size());
+        }
     }
     return out;
 }
@@ -267,24 +262,33 @@ ToolOutput slice_of(CacheEntry& e, std::string_view as, int64_t offset_arg, int6
     if (end < offset) end = offset;
 
     const std::string source = "http:" + e.host;
-    Map out{
-        {"status", Value(static_cast<int64_t>(e.status))},
-        {"final_url", Value(e.final_url)},
-        {"content_type", Value(e.content_type)},
-        {"headers", Value(external_data(source, headers_text(e.headers)))},
-        {"ref", Value("r" + std::to_string(e.id))},
-        {"total_bytes", Value(static_cast<int64_t>(total))},
-        {"offset", Value(static_cast<int64_t>(offset))},
-        {"returned_bytes", Value(static_cast<int64_t>(end - offset))},
-        {"more", Value(end < total)},
-    };
-    if (e.is_text) {
-        out["body"] = Value(external_data(source, data.substr(offset, end - offset)));
-    }
-    if (e.body_truncated) out["body_truncated"] = Value(true);
-    out["ok"] = Value(true);
     ToolOutput result;
-    result.result = Value(std::move(out));
+    auto& out = result.result_json;
+    out = R"({"ok":true,"status":)";
+    detail::append_number(out, static_cast<uint64_t>(e.status));
+    out.append(",\"final_url\":");
+    append_json_string(out, e.final_url);
+    out.append(",\"content_type\":");
+    append_json_string(out, e.content_type);
+    out.append(",\"headers\":");
+    const auto headers = headers_text(e.headers);
+    detail::append_external(out, source, std::string_view(headers.data(), headers.size()));
+    out.append(",\"ref\":\"r");
+    detail::append_number(out, e.id);
+    out.append("\",\"total_bytes\":");
+    detail::append_number(out, total);
+    out.append(",\"offset\":");
+    detail::append_number(out, offset);
+    out.append(",\"returned_bytes\":");
+    detail::append_number(out, end - offset);
+    out.append(",\"more\":");
+    out.append(end < total ? "true" : "false");
+    if (e.is_text) {
+        out.append(",\"body\":");
+        detail::append_external(out, source, data.substr(offset, end - offset));
+    }
+    if (e.body_truncated) out.append(",\"body_truncated\":true");
+    out.push_back('}');
     return result;
 }
 
@@ -357,16 +361,14 @@ struct Fetch {
                 req.headers.emplace_back(name, value.as_string());
             }
         }
-        std::string body_text;
         if (const Value* b = args.find("body"); b != nullptr && !b->is_null()) {
             if (b->type() == Value::Type::String) {
-                body_text = b->as_string();
+                req.body.assign(b->as_string().data(), b->as_string().size());
             } else {
-                body_text = to_json(*b);
+                detail::append_value(req.body, *b);
                 if (!has_content_type) req.headers.emplace_back("Content-Type", "application/json");
             }
         }
-        req.body.assign(body_text.data(), body_text.size());
         req.timeout_ms = static_cast<uint32_t>(int_arg(args, "timeout_ms", kHttpDefaultTimeoutMs));
         req.max_redirects =
             bool_arg(args, "follow", false) ? net::AgentHttpLimits::kMaxRedirects : uint8_t{0};
@@ -416,7 +418,8 @@ struct Fetch {
         }
         e.is_text = is_text_content_type(e.content_type);
         const size_t keep = std::min<size_t>(result.headers.size(), 32);
-        e.headers.assign(result.headers.begin(), result.headers.begin() + static_cast<long>(keep));
+        e.headers = std::move(result.headers);
+        e.headers.resize(keep);
         e.body_truncated = result.body_truncated;
         e.raw = std::move(result.body);
         c.entry = std::move(e);

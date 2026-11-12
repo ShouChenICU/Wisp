@@ -385,7 +385,7 @@ void push_args(lua_State* L, const net::SceneHttpResult& r) {
         return;
     }
     lua_pushnil(L);
-    lua_createtable(L, 0, 5);
+    lua_createtable(L, 0, 6);
     const int res = lua_gettop(L);
     lua_pushinteger(L, r.status);
     lua_setfield(L, res, "status");
@@ -400,6 +400,8 @@ void push_args(lua_State* L, const net::SceneHttpResult& r) {
     const std::string_view body(reinterpret_cast<const char*>(r.body.data()), r.body.size());
     lua_pushlstring(L, body.data(), body.size());
     lua_setfield(L, res, "body");
+    lua_pushboolean(L, r.body_truncated);
+    lua_setfield(L, res, "body_truncated");
     if (r.deferred) {
         lua_pushboolean(L, 1);
         lua_setfield(L, res, "deferred");

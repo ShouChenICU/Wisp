@@ -469,8 +469,12 @@ void append_lua_api(std::string& out) {
            "  as JSON (with `Content-Type: application/json` unless a header names one), a\n"
            "  string as it is.\n"
            "- `cb(err, res)` runs later as a message of its own: `res` is `{status, headers,\n"
-           "  body, json}`, `headers` with lowercase names, `json` the decoded body when the\n"
+           "  body, json, body_truncated}`, `headers` with lowercase names, `json` the decoded "
+           "body when the\n"
            "  content type mentions JSON and it parses; `err` is `nil` on success.\n"
+           "  `body_truncated` is a boolean: true when an Agent response exceeded its\n"
+           "  body limit and only a prefix was retained; callback and await results both\n"
+           "  include it (false for complete responses).\n"
            "- Only `https://` URLs (`not_https`) to a host listed in `permissions.http` of\n"
            "  `scene.json`, exactly (`permission_denied`). Cookies, `host` and the other\n"
            "  connection headers cannot be set (`permission_denied`); at most " +

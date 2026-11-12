@@ -494,3 +494,23 @@ TEST_F(CallTool, BusyOnSameScene) {
 }
 
 }  // namespace
+
+TEST_F(CallTool, FullBackgroundRefusesHeadlessBootPromotion) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) { c.max_background = 1; };
+    start();
+    for (const char* id : {"existing", "headless"})
+        install(id, kNotes, {{"scene.json", tools_manifest(id, R"(,"background":true)")}});
+    ASSERT_TRUE(rt->open_background("existing"));
+    ASSERT_TRUE(rt->call_tool("headless", "get", "{}", 30000, {}));
+    ASSERT_EQ(rt->status("headless").state, SceneState::Headless);
+    for (const bool explicit_open : {false, true}) {
+        auto result = explicit_open ? rt->open_background("headless")
+                                    : rt->launch("headless", wisp::scene::LaunchReason::Boot);
+        ASSERT_FALSE(result);
+        EXPECT_EQ(result.error().code, ErrorCode::Busy);
+        EXPECT_EQ(rt->status("headless").state, SceneState::Headless);
+        EXPECT_EQ(rt->status("existing").state, SceneState::Background);
+        ASSERT_EQ(rt->background_scenes().size(), 1u);
+        EXPECT_EQ(rt->background_scenes()[0].id, "existing");
+    }
+}

@@ -462,8 +462,11 @@ wisp.http.post(url, { a = 1 }, { headers = { authorization = "Bearer x" } }, cb)
   as JSON (with `Content-Type: application/json` unless a header names one), a
   string as it is.
 - `cb(err, res)` runs later as a message of its own: `res` is `{status, headers,
-  body, json}`, `headers` with lowercase names, `json` the decoded body when the
+  body, json, body_truncated}`, `headers` with lowercase names, `json` the decoded body when the
   content type mentions JSON and it parses; `err` is `nil` on success.
+  `body_truncated` is a boolean: true when an Agent response exceeded its
+  body limit and only a prefix was retained; callback and await results both
+  include it (false for complete responses).
 - Only `https://` URLs (`not_https`) to a host listed in `permissions.http` of
   `scene.json`, exactly (`permission_denied`). Cookies, `host` and the other
   connection headers cannot be set (`permission_denied`); at most 16 headers.

@@ -23,6 +23,10 @@
 - 安全：`rm` 只用于 scratchpad 或 worktree 内的字面绝对路径；不用变量路径；不 `git clean`；不烧录、不碰串口；不读 `~/.config/wisp`。
 - 每个任务结束前：`cmake --build build/sim && ctest --test-dir build/sim --output-on-failure -R <相关>` 通过；最后一个任务跑 `bash tools/ci.sh`。
 
+## 执行状态总览（2026-11-12）
+
+Task 1–7 已在历史实现提交中完成；下面保留其原始步骤清单作为实施说明，未勾选项不表示仍待实现。Task 8 已按其执行记录完成，原全量 CI 的 2797/2798 事实和后续 99 项定向验证保持原样；最终修复后的完整验证另记于本计划末尾。
+
 ## Review Focus
 
 1. **Agent 在挂起等待时用户中止对话**：工具返回 `cancelled`，VM 被销毁，在途 HTTP 被 `cancel_scene("@agent")` 取消，之后到达的结果被丢弃不崩溃 → Task 4 的 `RunLua.CancelWhileAwaiting`。
@@ -359,6 +363,17 @@
 - 全量 CI 日志显示 2797/2798 通过，仅 `Schema.DocIsUpToDate` 失败，原进程退出码因中断前 session 丢失而不可取得。裁定：修复生成源后不重复约 438 秒的全量套件，增量构建并重跑 Schema/Prompt/Context/Activity/HttpFetch 相关 99 项，全过；生成器 5 项测试、生成结果检查、修改文件格式检查、层次检查及 diff 检查通过。不能声称原 CI 退出码 0。
 - ESP-IDF v6.0.3、esp32s3、waveshare_esp32_s3_touch_amoled_2_16 固件构建退出码 0；镜像 0x394040 / OTA 0x480000（79.52%），小于 80% 预算。IDF 上游 Kconfig note 保留，无项目编译警告。硬件验收仍未执行。
 - 按本节记录的验证偏差完成 Task 8；完整证据保存在执行报告，提交使用下方约定标题和 Codex attribution。
+
+## 最终修复执行记录（2026-11-12）
+
+- 基于 `ddbd661` 一次处理最终检查的四项问题；不扩大到共享 HTTP header 容器、运行时 header 重组、Unicode 搜索或 main 已知测试装置问题。
+- HTTP 请求字符串直接从既有 Value 视图写入 LargeString，结构化请求递归序列化到 LargeString；响应头缓存采用 move，头合并和外部数据包装全部使用 LargeString。HTTP 与 Lua 成功/错误/输出直接生成 `ToolOutput.result_json`，复用 scene tools 的 allocator-aware 包装逻辑。既有输入 Value 所有权和公共服务发送期间的有界 URL/header 普通堆副本不在此次接口重构范围。
+- Lua HTTP 的公共结果构造器始终导出布尔 `body_truncated`，await/callback 一致；生成源、scene-api 与 docs_data 同步。真实 SceneHttp 回归覆盖完整响应和 1 MiB+1 响应的两种 Lua 调用方式。
+- Lua registry 清理按实际峰值分别预留 5/4 个栈槽；`is_task_thread` 注释注明自行检查容量。保留 crowded-host-stack 取消、清理 timer、拒绝复活的边界回归；公开 API 无法控制 Lua 内部剩余槽位，不把该回归说成可确定复现旧越界。
+- 裁定 headless Boot promotion 遵守普通 Boot 的后台准入：满容量返回 Busy，保留 headless 与已有用户后台。公共提升入口统一检查，覆盖 begin_open/finish_open；满容量回归检查 open_background 和 Boot launch。
+- 修正测试装置后，暂时还原四个生产文件重跑 RED：5/5 指定回归失败，退出码 8；恢复修复后执行 GREEN。分配检测只监测 adapter 调用线程的普通 new（阈值 4096 字节，小于 8 KiB），隔离已有网络服务线程副本；覆盖 8 KiB/64 KiB/256 KiB 字符串与结构化请求、8 KiB/64 KiB 响应、8 KiB header、Lua 8 KiB 输出和最大 64 KiB JSON/错误。
+- 恢复全部修复后，定向回归 81/81 通过，退出码 0。最终 `bash tools/ci.sh` 退出码 0：10 组 Python 测试 123/123 通过，CTest 2805/2805 通过（含两个 smoke，432.79 s）；766 个文件格式、分层、文档/字体生成检查均通过，无项目警告。完整日志 `/tmp/wisp-final-ci.log`。
+- 固定 ESP-IDF v6.0.3（工具链目录的 git tag 已核对）、esp32s3、waveshare_esp32_s3_touch_amoled_2_16 的 `idf.py build` 退出码 0，使用既有独立 firmware/build；镜像 0x393d90 / OTA 0x480000（79.50066%），小于 80%，距离预算 23561.6 字节。日志 `/tmp/wisp-final-firmware.log`；仅保留上游 Kconfig NOTE，环境激活临时脚本另有 `INFO:: command not found` 输出但不影响成功构建。设备验证仍未执行。
 
 ## 设备验证（交给用户，spec 8.2）
 
