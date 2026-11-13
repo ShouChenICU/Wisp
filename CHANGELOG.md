@@ -13,6 +13,7 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 
 - Enable automatic light sleep by default, with a build-time opt-out through `WISP_ENABLE_LIGHT_SLEEP`; remove the runtime setting from device settings and the web console. Keep Wi-Fi active while externally powered.
 - Hide network lists and the status-panel Wi-Fi indicator immediately when Wi-Fi is disabled. Manual disconnection retains credentials and pauses automatic reconnection until an explicit connection, radio off/on cycle or reboot.
+- Split daily CI from full release checks. Daily simulator smoke covers eight core scenarios; release checks retain all 22. Select tool self-tests from changed tools and inputs with conservative fallback, keep gesture coverage by screen shape, and run screenshot previews manually.
 
 ### Fixes
 

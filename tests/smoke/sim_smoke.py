@@ -46,9 +46,11 @@ scene_banner's. Every other case gives the simulator an empty stdin.
 
 Registered with ctest as the "sim_smoke" test (tests/CMakeLists.txt).
 
-Usage: python3 tests/smoke/sim_smoke.py <path-to-wisp_sim>
+Usage: python3 tests/smoke/sim_smoke.py <path-to-wisp_sim> [--full]
+By default only core paths run; --full includes every scenario described above.
 """
 
+import argparse
 import base64
 import hashlib
 import os
@@ -1741,11 +1743,17 @@ CASES = (
 )
 
 
+# Degradation and scene errors are common failures worth checking on every PR.
+CORE_CASES = frozenset({"expected_manifest_ids_unit", "default", "disable_imu",
+                        "disable_wifi", "http", "scene_counter", "scene_error", "voice_turn"})
+
+
 def main(argv):
-    if len(argv) != 2:
-        print(f"usage: {argv[0]} <path-to-wisp_sim>", file=sys.stderr)
-        return 2
-    sim_path = pathlib.Path(argv[1]).resolve()
+    parser = argparse.ArgumentParser(description="Simulator end-to-end smoke checks")
+    parser.add_argument("simulator")
+    parser.add_argument("--full", action="store_true", help="run all scenarios")
+    args = parser.parse_args(argv[1:])
+    sim_path = pathlib.Path(args.simulator).resolve()
     if not sim_path.is_file():
         print(f"{sim_path}: not found", file=sys.stderr)
         return 2
@@ -1753,6 +1761,8 @@ def main(argv):
     tmp_root = pathlib.Path(tempfile.mkdtemp(prefix="wisp_sim_smoke_"))
     try:
         for name, case in CASES:
+            if not args.full and name not in CORE_CASES:
+                continue
             try:
                 case(sim_path, tmp_root)
             except Exception as exc:  # noqa: BLE001 -- any case failure (an

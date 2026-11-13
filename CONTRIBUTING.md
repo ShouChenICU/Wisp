@@ -25,12 +25,15 @@ The spec takes priority over the plan and the code. If you find a problem in the
 ## Commits and PRs
 
 1. **Branch**: create a feature branch from `main`, for example `feat/xxx` or `fix/xxx`. Do not develop directly on `main`.
-2. **Full check**: before you commit, run this locally. Everything must pass:
+2. **Checks**: run daily checks before committing and full checks before release. Everything selected must pass:
 
    ```bash
    pip install clang-format==23.1.3
-   bash tools/ci.sh    # formatting, layering, comment rules, build, all unit tests and smoke tests
+   bash tools/ci.sh           # repository checks, build, unit tests and core smoke paths
+   bash tools/ci.sh --full    # all tool self-tests and end-to-end scenarios
    ```
+
+   See [Testing](docs/testing.md) for changed-tool selection and manual screenshot previews.
 
 3. **Commit messages**: use the [Conventional Commits](https://www.conventionalcommits.org/) style, written in English, for example `feat(shell): ...` or `fix(voice): ...`. Commits created by an AI coding assistant carry a `Co-Authored-By` attribution.
 4. **PR description**: cover the following:

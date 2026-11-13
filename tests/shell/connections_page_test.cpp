@@ -620,7 +620,7 @@ TEST_F(ConnectionsTest, ModelProfilesShareAGroupWithCurrentCheckAndActionRows) {
 namespace {
 class ConnectionsPreview : public ConnectionsTest, public ::testing::WithParamInterface<bool> {};
 }  // namespace
-TEST_P(ConnectionsPreview, ListFeedbackAndPasswordNavigation) {
+TEST_P(ConnectionsPreview, DISABLED_ListFeedbackAndPasswordNavigation) {
     const bool circle = GetParam();
     const int size = circle ? 466 : 480;
     const std::string prefix = circle ? "circle-" : "square-";
@@ -809,7 +809,15 @@ TEST_F(ConnectionsTest, ConnectedDetailsDisconnectWithoutForgettingAndCanReconne
     EXPECT_EQ(wifi->status().state, wisp::net::WifiState::Connected);
 }
 
-TEST_P(ConnectionsShapes, DetailsScrollFromTextAndFollowFingerBackToNetworkList) {
+// Language affects layout above, but the gesture state machine is shared.
+namespace {
+class ConnectionsGestures : public ConnectionsShapes {};
+}  // namespace
+INSTANTIATE_TEST_SUITE_P(ScreenShapes, ConnectionsGestures,
+                         ::testing::Combine(::testing::Values("rect", "rounded_rect", "circle"),
+                                            ::testing::Values(wisp::ui::Lang::Zh)));
+
+TEST_P(ConnectionsGestures, DetailsScrollFromTextAndFollowFingerBackToNetworkList) {
     const auto [shape, lang] = GetParam();
     boot(shape, 360, lang);
     ASSERT_TRUE(wifi->add_network("Locked", "password123", 0));

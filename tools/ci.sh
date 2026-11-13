@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Pre-commit / CI entry point (AGENTS.md section 4): format check,
-# layering check, host build and the full ctest suite (including the
-# simulator smoke tests sim_smoke and admin_smoke, which needs Python 3
-# only: tools/fake_openai.py is standard library). Safe to run from any
-# directory; it cd's to the repository root itself.
+# Daily CI: repository checks, host build, unit tests and core smoke paths.
+# Use --full for all tool self-tests and simulator scenarios before release.
+# WISP_CI_BASE optionally selects tool self-tests from a Git comparison;
+# without a usable baseline all tool self-tests run.
 #
 # Note: this only checks formatting (clang-format --dry-run --Werror);
 # it does not reformat anything. Run `clang-format -i` yourself first
@@ -12,6 +11,31 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+FULL=OFF
+SELECT_ARGS=()
+case "${1:-}" in
+    "") ;;
+    --full) FULL=ON; SELECT_ARGS+=(--full) ;;
+    *) echo "usage: bash tools/ci.sh [--full]" >&2; exit 2 ;;
+esac
+if (( $# > 1 )); then
+    echo "usage: bash tools/ci.sh [--full]" >&2
+    exit 2
+fi
+if [[ -n "${WISP_CI_BASE:-}" ]]; then
+    SELECT_ARGS+=(--base "$WISP_CI_BASE")
+fi
+python3 tools/ci_tool_tests_test.py
+SELECTED_TOOL_TESTS="$(python3 tools/ci_tool_tests.py "${SELECT_ARGS[@]}")"
+run_tool_test() {
+    if grep -Fxq "$1" <<< "$SELECTED_TOOL_TESTS"; then
+        echo "==> tools/$1.py"
+        python3 "tools/$1.py"
+    else
+        echo "==> skip tools/$1.py (tool and inputs unchanged)"
+    fi
+}
 
 # The clang-format version this repo is formatted against -- this is
 # the single place that version is recorded:
@@ -104,19 +128,16 @@ if [[ -n "$GUARD_MATCHES" ]]; then
     exit 1
 fi
 
-echo "==> tools/check_layering_test.py (self-test)"
-python3 tools/check_layering_test.py
+run_tool_test check_layering_test
 
 echo "==> tools/check_layering.py"
 python3 tools/check_layering.py
 
-echo "==> tools/pack_assets_test.py"
-python3 tools/pack_assets_test.py
+run_tool_test pack_assets_test
 
 # The scene push tool (scene-runtime-core spec 7.3), against a fake device
 # served from the test itself.
-echo "==> tools/wisp_scene_test.py"
-python3 tools/wisp_scene_test.py
+run_tool_test wisp_scene_test
 
 # The admin web UI must fit its gzip budget (spec 7.1) and reference only
 # files inside the pack. The pack written here is a throwaway; the
@@ -126,43 +147,37 @@ python3 tools/pack_assets.py web -o build/ci/web-budget.wpak --budget-kb 170
 
 # The admin UI's zh/ja/en dictionaries must carry identical key sets
 # (spec 7.4).
-echo "==> tools/check_i18n_test.py"
-python3 tools/check_i18n_test.py
+run_tool_test check_i18n_test
 
 echo "==> tools/check_i18n.py"
 python3 tools/check_i18n.py
 
 # The committed CJK font must match tools/gen_cjk_font.py's character set
 # (including every character the device UI string tables use; spec 8.3).
-echo "==> tools/gen_cjk_font_test.py"
-python3 tools/gen_cjk_font_test.py
+run_tool_test gen_cjk_font_test
 
 # The committed vector (TrueType) font subset must be a hinting-free
 # glyf font whose cmap matches tools/gen_vector_font.py's character set
 # (spec 3.1).
-echo "==> tools/gen_vector_font_test.py"
-python3 tools/gen_vector_font_test.py
+run_tool_test gen_vector_font_test
 
 # The fonts partition image: header layout, reproducibility, and the
 # committed font fitting the reference board's partition (spec 3.2).
-echo "==> tools/pack_font_image_test.py"
-python3 tools/pack_font_image_test.py
+run_tool_test pack_font_image_test
 
 # The glyphs partition image: header and section layout, reproducibility,
 # and that it reproduces the committed CJK body font exactly (glyph-partition
 # spec 3.1).
-echo "==> tools/pack_glyph_image_test.py"
-python3 tools/pack_glyph_image_test.py
+run_tool_test pack_glyph_image_test
 
 # docs.read's compiled-in topics must be what tools/gen_agent_docs.py
 # makes of docs/scene-api.md and scenes/examples (agent-core spec 4.4).
-echo "==> tools/gen_agent_docs_test.py"
-python3 tools/gen_agent_docs_test.py
+run_tool_test gen_agent_docs_test
 echo "==> tools/gen_agent_docs.py --check"
 python3 tools/gen_agent_docs.py --check
 
 echo "==> cmake -S simulator -B build/sim -G Ninja"
-cmake -S simulator -B build/sim -G Ninja
+cmake -S simulator -B build/sim -G Ninja -DWISP_FULL_SMOKE="$FULL"
 
 # The keyboard's pinyin dictionary must be what tools/gen_pinyin_dict.py
 # makes of the pinned LVGL's default one and the CJK font's character set.
@@ -174,8 +189,7 @@ python3 tools/gen_pinyin_dict.py --check
 # The committed icon fonts must hold exactly the pinned LVGL's LV_SYMBOL_*
 # icons and the generator's Wisp icons, and wisp/ui/symbols.hpp must match
 # the latter (vector-font spec 4.6). Reads the same LVGL source; offline.
-echo "==> tools/gen_icon_font_test.py"
-python3 tools/gen_icon_font_test.py
+run_tool_test gen_icon_font_test
 echo "==> tools/gen_icon_font.py --check"
 python3 tools/gen_icon_font.py --check
 
