@@ -1048,6 +1048,7 @@ TEST(WifiService, ConcurrentCallsAreSafe) {
     std::thread ui([&] {
         for (int i = 0; i < 200; ++i) {
             (void)svc.status();
+            (void)svc.set_enabled(i % 3 != 0, now.load());
             (void)svc.saved_ssids();
             (void)svc.ap_session();
             if (i % 50 == 0) (void)svc.start_provisioning(now.load());
@@ -1482,4 +1483,113 @@ TEST(WifiService, ConnectSavedOverTheHotspotCountsAsProvisioning) {
     EXPECT_TRUE(f.wifi->ap_active.load());
     svc.tick(32250);
     EXPECT_FALSE(f.wifi->ap_active.load());
+}
+
+TEST(WifiService, UserOffSurvivesPowerChangesAndRestart) {
+    Fixture f;
+    f.seed({{"home", "password"}});
+    auto& wifi = f.make();
+    ASSERT_TRUE(wifi.init(0));
+    ASSERT_TRUE(wifi.set_enabled(false, 1));
+    EXPECT_FALSE(wifi.enabled());
+    wifi.set_power_level(PowerLevel::DeepStandby, 2);
+    wifi.set_power_level(PowerLevel::Active, 3);
+    wifi.tick(4);
+    EXPECT_EQ(wifi.status().state, WifiState::Off);
+    EXPECT_FALSE(wifi.scan());
+    EXPECT_FALSE(wifi.start_provisioning(5));
+    auto& rebooted = f.make();
+    ASSERT_TRUE(rebooted.init(6));
+    EXPECT_FALSE(rebooted.enabled());
+    EXPECT_EQ(rebooted.saved_ssids().size(), 1u);
+    rebooted.tick(7);
+    EXPECT_EQ(rebooted.status().state, WifiState::Off);
+    ASSERT_TRUE(rebooted.set_enabled(true, 8));
+    EXPECT_TRUE(rebooted.enabled());
+    EXPECT_EQ(rebooted.status().state, WifiState::Connecting);
+}
+
+TEST(WifiService, UserOffClosesHotspotAndLegacyFilesDefaultOn) {
+    Fixture f;
+    f.seed({});
+    auto& wifi = f.make();
+    ASSERT_TRUE(wifi.init(0));
+    EXPECT_TRUE(wifi.enabled());
+    ASSERT_TRUE(wifi.start_provisioning(1));
+    ASSERT_TRUE(wifi.set_enabled(false, 2));
+    EXPECT_FALSE(wifi.ap_status().active);
+    EXPECT_TRUE(wifi.saved_ssids().empty());
+}
+
+TEST(WifiService, ManualDisconnectKeepsRadioAndCredentialsWithoutReconnectingOnWake) {
+    Fixture f;
+    f.in_range("Home", -50, "password");
+    f.seed({{"Home", "password"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    const auto connects = f.wifi->connect_calls.load();
+    ASSERT_TRUE(svc.disconnect());
+    EXPECT_TRUE(svc.enabled());
+    EXPECT_EQ(svc.saved_ssids().size(), 1u);
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    EXPECT_TRUE(svc.status().ssid.empty());
+    EXPECT_TRUE(svc.status().ip.empty());
+    svc.tick(10000);
+    svc.set_power_level(PowerLevel::DeepStandby, 10001);
+    svc.set_power_level(PowerLevel::Active, 10002);
+    svc.tick(20000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), connects);
+    ASSERT_TRUE(svc.scan());
+    ASSERT_TRUE(svc.connect_saved("Home", 20001));
+    tick2(svc, 20001);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+    ASSERT_TRUE(svc.disconnect());
+    ASSERT_TRUE(svc.set_enabled(false, 30000));
+    ASSERT_TRUE(svc.set_enabled(true, 30001));
+    tick2(svc, 30001);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+}
+
+TEST(WifiService, ManualDisconnectCancelsPendingAttempt) {
+    Fixture f;
+    f.in_range("Home", -50, "password");
+    f.seed({{"Home", "password"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.disconnect());
+    svc.tick(10000);
+    EXPECT_EQ(f.wifi->connect_calls.load(), 0);
+    EXPECT_EQ(svc.status().state, WifiState::Off);
+    ASSERT_TRUE(svc.add_network("Home", "password", 10001));
+    tick2(svc, 10001);
+    EXPECT_EQ(svc.status().state, WifiState::Connected);
+}
+
+TEST(WifiService, DetailsFollowStrongestAccessPointAndClearAfterDisconnect) {
+    Fixture f;
+    f.in_range("Home", -70);
+    f.in_range("Home", -30);
+    f.wifi->networks[0].details.channel = 1;
+    f.wifi->networks[1].details.channel = 6;
+    f.wifi->networks[1].details.bssid = "02:11:22:33:44:55";
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    auto scan = svc.scan();
+    ASSERT_TRUE(scan);
+    ASSERT_EQ(scan.value().size(), 1u);
+    EXPECT_EQ(scan.value()[0].details.channel, 6);
+    ASSERT_TRUE(svc.add_network("Home", "", 0));
+    svc.tick(0);
+    auto link = f.wifi->link();
+    link.details = scan.value()[0].details;
+    link.details.gateway = "192.168.1.1";
+    f.wifi->set_link(link);
+    svc.tick(1);
+    EXPECT_EQ(svc.status().details.gateway, "192.168.1.1");
+    EXPECT_EQ(svc.status().details.bssid, "02:11:22:33:44:55");
+    ASSERT_TRUE(svc.disconnect());
+    EXPECT_TRUE(svc.status().details.gateway.empty());
+    EXPECT_TRUE(svc.status().details.bssid.empty());
 }

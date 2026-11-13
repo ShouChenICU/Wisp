@@ -66,6 +66,7 @@ struct WifiStatus {
     // When the next attempt is due (now_ms timebase); only set in Backoff,
     // 0 otherwise. The device screen counts down to it.
     uint64_t retry_at_ms = 0;
+    hal::WifiDetails details{};
 };
 
 struct ApSession {
@@ -97,6 +98,7 @@ struct ScanResult {
     int rssi = 0;
     bool secured = true;
     bool saved = false;
+    hal::WifiDetails details{};
 };
 
 // A saved network as callers may see it: no password.
@@ -109,6 +111,7 @@ struct SavedNetwork {
     // away from one that works (spec 4.2). One rejection is not enough: a
     // lost handshake frame looks the same.
     bool auth_failed = false;
+    bool secured = true;
 };
 
 struct WifiServiceConfig {
@@ -143,9 +146,9 @@ public:
 
     // Loads <System>/net/wifi.json. With at least one saved network the
     // state becomes Connecting and the first attempt runs on the next
-    // tick(); never touches the radio itself, so boot never waits for
-    // Wi-Fi. A missing file is not an error. A corrupt or unreadable file
-    // is reported, but the service stays usable with no saved networks.
+    // tick(). A persisted user disable turns the radio off; init never
+    // scans or connects, so boot never waits for Wi-Fi. A missing file is not an error. A corrupt
+    // or unreadable file is reported, but the service stays usable with no saved networks.
     Result<void> init(uint64_t now_ms);
 
     // Advances the state machine: starts due attempts (scan + connect),
@@ -155,12 +158,16 @@ public:
     // Follows PowerManager's level (scene-device spec 4.1). DeepStandby
     // closes the hotspot, disconnects and turns the radio off
     // (hal::Wifi::set_radio(false)): state Off, nothing retried. Any other
-    // level turns the radio back on and, with networks saved, reconnects at
+    // level permits the radio on if the user enabled it and, with networks saved, reconnects at
     // once. Standby keeps the station as it is. No-op when the level does
     // not change that.
     void set_power_level(hal::PowerLevel level, uint64_t now_ms);
 
     WifiStatus status() const;
+    bool enabled() const;
+    // User intent, persisted independently of temporary power-policy suspension.
+    // May wait for a scan to finish; call from a network worker.
+    Result<void> set_enabled(bool enabled, uint64_t now_ms);
 
     // Blocking device scan (up to ~3 s), deduplicated by SSID (strongest
     // entry wins) and sorted by descending RSSI. Hidden networks (empty
@@ -183,6 +190,10 @@ public:
     // up this counts as the setup page's join (provisioning_result()).
     // NotFound if not saved.
     Result<void> connect_saved(std::string_view ssid, uint64_t now_ms);
+
+    // Keeps credentials and the radio enabled, suspending automatic retries until
+    // an explicit connection, a user off/on cycle or reboot. Run on a network worker.
+    Result<void> disconnect();
 
     // NotFound if not saved. Forgetting the network currently in use drops
     // the link (and reconnects to another saved network, if any).
@@ -252,6 +263,7 @@ private:
     // flagged networks.
     void note_rejection_locked(const std::string& ssid);
 
+    void apply_radio_locked(uint64_t now_ms);
     void set_state_locked(WifiState state, std::string ssid, std::string ip, int rssi);
     void publish_ap_locked(bool active, const std::string& ssid);
     Result<void> close_ap_locked(const char* why);
@@ -288,6 +300,7 @@ private:
     // mutex_ for a scan can tell its plan went stale.
     uint64_t generation_ = 0;
 
+    bool manually_disconnected_ = false;
     bool attempt_due_ = false;  // Connecting/Backoff: an attempt is scheduled
     uint64_t next_attempt_ms_ = 0;
     uint32_t backoff_ms_ = 0;  // wait applied after the next failure
@@ -303,6 +316,8 @@ private:
 
     // Deep standby turned the radio off (set_power_level()).
     bool radio_off_ = false;
+    bool enabled_ = true;
+    bool power_off_ = false;
 
     std::optional<ApSession> ap_;
     int ap_clients_ = 0;

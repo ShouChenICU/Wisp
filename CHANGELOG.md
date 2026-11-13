@@ -2,6 +2,28 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
+## 0.5.1 — 2026-11-13
+
+### Features
+
+- Device settings now offer quick connectivity tests and activation for saved chat, speech recognition and speech synthesis profiles. Profile creation and editing remain in the web console.
+- Add dedicated Wi-Fi settings with a radio switch, network scanning, saved-network connection and explicit disconnection. Network details group available security, signal, channel, access-point and address information. Password entry uses a modal dialog, and details support scrolling from text and interactive swipe-back navigation.
+
+### Changes
+
+- Enable automatic light sleep by default, with a build-time opt-out through `WISP_ENABLE_LIGHT_SLEEP`; remove the runtime setting from device settings and the web console. Keep Wi-Fi active while externally powered.
+- Hide network lists and the status-panel Wi-Fi indicator immediately when Wi-Fi is disabled. Manual disconnection retains credentials and pauses automatic reconnection until an explicit connection, radio off/on cycle or reboot.
+- Split daily CI from full release checks. Daily simulator smoke covers eight core scenarios; release checks retain all 22. Select tool self-tests from changed tools and inputs with conservative fallback, keep gesture coverage by screen shape, and run screenshot previews manually.
+
+### Fixes
+
+- Improve settings layouts across screen shapes and languages, preserve visible spacing between independent controls, centre trailing icons, and keep password input visible above the keyboard.
+- Synchronize scene test startup before installing a second storage worker, avoiding intermittent flash-thread assertions from unfinished diagnostics listings.
+
+### Documentation
+
+- Document shared UI layout conventions, including control spacing, touch targets and icon alignment.
+
 ## 0.5.0 — 2026-11-13
 
 ### Features

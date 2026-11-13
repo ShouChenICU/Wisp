@@ -435,6 +435,127 @@ const char* strings_ja(StrId id) {
             return "画面とサウンド";
         case StrId::SettingsGroupPower:
             return "スリープと電源";
+        case StrId::SettingsGroupModels:
+            return "モデル";
+        case StrId::ModelLlm:
+            return "会話モデル";
+        case StrId::ModelAsr:
+            return "音声認識";
+        case StrId::ModelTts:
+            return "音声合成";
+        case StrId::ModelNone:
+            return "未設定";
+        case StrId::ModelCurrent:
+            return "使用中";
+        case StrId::ModelTest:
+            return "接続テスト";
+        case StrId::ModelActivate:
+            return "有効にする";
+        case StrId::ModelTestOk:
+            return "接続できました";
+        case StrId::ModelTestTimeout:
+            return "接続がタイムアウトしました";
+        case StrId::ModelTestNetwork:
+            return "サービスに接続できません。ネットワークを確認してください";
+        case StrId::ModelTestTls:
+            return "安全な接続に失敗しました。URLと証明書を確認してください";
+        case StrId::ModelTestAuth:
+            return "認証に失敗しました。管理画面でキーを確認してください";
+        case StrId::ModelTestNoList:
+            return "モデル一覧に対応していないサービスです";
+        case StrId::ModelTestHttp:
+            return "サービスの応答が正常ではありません";
+        case StrId::WifiSecured:
+            return "暗号化ネットワーク";
+        case StrId::WifiOpen:
+            return "オープンネットワーク";
+        case StrId::WifiNotFound:
+            return "ネットワークが見つかりません。再検索してください";
+        case StrId::ModelTestFailed:
+            return "接続できません。管理画面で設定を確認してください";
+        case StrId::ModelActivated:
+            return "有効にしました";
+        case StrId::ModelManageHint:
+            return "サービスの追加・編集はブラウザーの管理画面で行ってください。テストでは接続とモ"
+                   "デル一覧を確認します。";
+        case StrId::ConnectionBusy:
+            return "処理中…";
+        case StrId::ConnectionFailed:
+            return "操作できません。もう一度お試しください";
+        case StrId::ConnectionUnavailable:
+            return "利用できません";
+        case StrId::ModelManage:
+            return "プロバイダー管理";
+        case StrId::WifiNearby:
+            return "近くのネットワーク";
+        case StrId::WifiStrong:
+            return "電波良好";
+        case StrId::WifiWeak:
+            return "電波が弱い";
+        case StrId::WifiShowPassword:
+            return "表示";
+        case StrId::WifiDisconnect:
+            return "接続を解除";
+        case StrId::WifiChannel:
+            return "チャンネル";
+        case StrId::WifiBssid:
+            return "アクセスポイント (BSSID)";
+        case StrId::WifiSubnet:
+            return "サブネットマスク";
+        case StrId::WifiGateway:
+            return "ルーター";
+        case StrId::WifiDns:
+            return "DNS サーバー";
+        case StrId::WifiMac:
+            return "端末アドレス (MAC)";
+        case StrId::WifiIpAddress:
+            return "IP アドレス";
+        case StrId::WifiSignal:
+            return "電波強度";
+        case StrId::WifiSecurity:
+            return "セキュリティ";
+        case StrId::WifiDetails:
+            return "詳細";
+        case StrId::WifiScanning:
+            return "スキャン中…";
+        case StrId::WifiPasswordLength:
+            return "8-63文字";
+        case StrId::WifiHidePassword:
+            return "隠す";
+        case StrId::WifiEnabled:
+            return "Wi-Fi";
+        case StrId::WifiScan:
+            return "ネットワークを検索";
+        case StrId::WifiSetupPhone:
+            return "スマートフォンで設定";
+        case StrId::WifiSaved:
+            return "保存済み";
+        case StrId::WifiAuthFailed:
+            return "パスワードを入力し直してください";
+        case StrId::WifiConnect:
+            return "接続";
+        case StrId::WifiPassword:
+            return "パスワード";
+        case StrId::WifiChangePassword:
+            return "パスワードを再入力";
+        case StrId::WifiPasswordInvalid:
+            return "パスワードは8〜63文字で入力してください";
+        case StrId::WifiCancel:
+            return "キャンセル";
+        case StrId::WifiOff:
+            return "Wi-Fiはオフです";
+        case StrId::WifiConnected:
+            return "接続済み";
+        case StrId::WifiConnecting:
+            return "接続中";
+        case StrId::WifiDisconnected:
+            return "未接続";
+        case StrId::WifiEmpty:
+            return "ネットワークが見つかりません。再検索するかスマートフォンで設定してください";
+        case StrId::WifiScanFailed:
+            return "検索できません。もう一度お試しください";
+        case StrId::WifiScheduled:
+            return "接続を開始しました";
         case StrId::SettingsGroupNetwork:
             return "ネットワーク";
         case StrId::SettingsGroupLangTime:
@@ -449,10 +570,6 @@ const char* strings_ja(StrId id) {
             return "ディープスタンバイ";
         case StrId::SettingsHours:
             return "{} 時間";
-        case StrId::SettingsLightSleep:
-            return "省電力スリープ";
-        case StrId::SettingsLightSleepHint:
-            return "ディープスタンバイ中はチップを浅く眠らせて節電します";
         case StrId::SettingsLanguage:
             return "言語";
         case StrId::SettingsTimeZone:

@@ -182,7 +182,7 @@ struct Platform {
 
     // Turns automatic light sleep on or off (scene-device spec 4.1):
     // wisp::app::PowerManager calls it with `true` in deep standby while
-    // power/light_sleep is set and no cpu wake lock is held, and with
+    // WISP_ENABLE_LIGHT_SLEEP is enabled and no cpu wake lock is held, and with
     // `false` when any of that stops. On real hardware dynamic frequency
     // scaling stays on and only tickless light sleep is toggled
     // (firmware/main/main.cpp); the simulator logs. Empty when the board

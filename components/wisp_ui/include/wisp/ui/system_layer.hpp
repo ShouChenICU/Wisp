@@ -338,6 +338,8 @@ public:
                            std::function<void(bool yes)> on_answer,
                            ButtonRole yes_role = ButtonRole::Primary, StrId yes = StrId::Yes,
                            StrId no = StrId::No);
+    // Modal container for custom forms. Close with close_confirm().
+    lv_obj_t* open_dialog();
     bool confirm_open() const { return confirm_box_ != nullptr; }
     // What of the layer is on screen now, for ui.tree() (agent-core spec
     // 5.2): ("capsule" | "banner" | "panel" | "error" | "keyboard" |
@@ -350,7 +352,8 @@ public:
     // Moves every piece that is up to the front of the top layer, from
     // the bottom: the capsule, the banner, the panel, the error panel, the
     // keyboard, the back arrow and the dialog (with its backdrop). Whoever
-    // adds other top-layer objects calls this afterwards.
+    // adds other top-layer objects calls this afterwards. A modal form
+    // keeps its own keyboard above the dialog backdrop.
     void raise();
 
     // Whether (x, y) is in the back gesture zone: a row of the safe area,

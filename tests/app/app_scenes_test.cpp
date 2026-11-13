@@ -209,6 +209,9 @@ struct Booted {
         if (!h.open_diagnostics()) return false;
         screen = nullptr;
         run_on_ui_blocking(h.app->ui(), [&] { screen = lv_screen_active(); });
+        // Some tests start a separate SceneWiring, which becomes the registered
+        // flash thread. Finish the diagnostics' initial listing before that.
+        if (auto* worker = h.app->storage_worker(); worker && !worker->drain(3000)) return false;
         return screen != nullptr;
     }
 

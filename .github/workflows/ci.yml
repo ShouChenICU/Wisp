@@ -3,12 +3,15 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   host:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       # A setup-python interpreter is not "externally managed" (PEP 668),
       # so pip can install into it directly.
       - uses: actions/setup-python@v5
@@ -32,7 +35,15 @@ jobs:
           python -m pip install "clang-format==${CLANG_FORMAT_VERSION}"
           clang-format --version
       - name: Run tools/ci.sh
-        run: bash tools/ci.sh
+        env:
+          WISP_CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          WISP_FULL_CI: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+        run: |
+          if [[ "$WISP_FULL_CI" == "true" ]]; then
+            bash tools/ci.sh --full
+          else
+            bash tools/ci.sh
+          fi
 
   firmware:
     runs-on: ubuntu-latest

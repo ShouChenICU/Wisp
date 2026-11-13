@@ -105,7 +105,6 @@ SettingsPage::SettingsPage(SettingsDeps deps) : deps_(std::move(deps)) {
         now_.notify_vol = 60;
         now_.screen_off_s = static_cast<int>(core::kDefaultScreenOffS);
         now_.deep_after_s = static_cast<int>(core::kDefaultDeepAfterS);
-        now_.light_sleep = core::kDefaultLightSleep;
         now_.language = "zh";
         now_.utc_offset_min = 480;
         now_.time_24h = true;
@@ -226,14 +225,13 @@ void SettingsPage::build(lv_obj_t* list) {
     add_value_row(card, Row::ScreenOff, WISP_SYMBOL_MOON, ui::StrId::SettingsScreenOff, true);
     add_value_row(card, Row::DeepStandby, WISP_SYMBOL_HOURGLASS, ui::StrId::SettingsDeepStandby,
                   true);
-    light_sleep_ =
-        add_switch(card, LV_SYMBOL_CHARGE, ui::StrId::SettingsLightSleep, now_.light_sleep);
-    lv_obj_t* hint = detail::make_row_box(card);
-    lv_obj_set_style_pad_top(hint, 0, 0);
-    detail::make_text(hint, ui::tr(ui::StrId::SettingsLightSleepHint), true);
-
     card = add_group(ui::StrId::SettingsGroupNetwork);
     add_value_row(card, Row::Wifi, LV_SYMBOL_WIFI, ui::StrId::SettingsWifi, true);
+
+    card = add_group(ui::StrId::SettingsGroupModels);
+    add_value_row(card, Row::ModelLlm, nullptr, ui::StrId::ModelLlm, true);
+    add_value_row(card, Row::ModelAsr, nullptr, ui::StrId::ModelAsr, true);
+    add_value_row(card, Row::ModelTts, nullptr, ui::StrId::ModelTts, true);
 
     card = add_group(ui::StrId::SettingsGroupLangTime);
     add_value_row(card, Row::Language, WISP_SYMBOL_GLOBE, ui::StrId::SettingsLanguage, true);
@@ -271,6 +269,15 @@ void SettingsPage::show_values() {
 }
 
 void SettingsPage::refresh() {
+    for (auto kind : core::kModelKinds) {
+        Row r = kind == core::ModelKind::Llm   ? Row::ModelLlm
+                : kind == core::ModelKind::Asr ? Row::ModelAsr
+                                               : Row::ModelTts;
+        if (value(r)) {
+            auto name = deps_.model_name ? deps_.model_name(kind) : std::string();
+            lv_label_set_text(value(r), name.empty() ? ui::tr(ui::StrId::ModelNone) : name.c_str());
+        }
+    }
     if (value(Row::Wifi) == nullptr) return;
     std::string wifi = deps_.wifi_status ? deps_.wifi_status() : std::string();
     if (wifi != shown_wifi_) {
@@ -413,11 +420,14 @@ void SettingsPage::event_cb(lv_event_t* e) {
     if (obj == self->speak_) {
         self->now_.tts_mute = !lv_obj_has_state(obj, LV_STATE_CHECKED);
         self->write({{"tts_mute", Value(self->now_.tts_mute)}});
-    } else if (obj == self->light_sleep_) {
-        self->now_.light_sleep = lv_obj_has_state(obj, LV_STATE_CHECKED);
-        self->write({{"light_sleep", Value(self->now_.light_sleep)}});
     } else if (obj == self->row(Row::Wifi)) {
         if (self->deps_.start_wifi_setup) self->deps_.start_wifi_setup();
+    } else if (obj == self->row(Row::ModelLlm) || obj == self->row(Row::ModelAsr) ||
+               obj == self->row(Row::ModelTts)) {
+        if (self->deps_.open_model)
+            self->deps_.open_model(obj == self->row(Row::ModelLlm)   ? core::ModelKind::Llm
+                                   : obj == self->row(Row::ModelAsr) ? core::ModelKind::Asr
+                                                                     : core::ModelKind::Tts);
     } else if (obj == self->row(Row::Diagnostics)) {
         if (self->deps_.open_diagnostics) self->deps_.open_diagnostics();
     } else if (obj == self->row(Row::Restart) || obj == self->row(Row::PowerOff)) {

@@ -95,6 +95,7 @@ public:
             next.state = wisp::hal::WifiLinkState::Connected;
             next.ip = "192.168.1.50";
             next.rssi = entry->rssi;
+            next.details = entry->details;
         }
         link_ = std::move(next);
         return wisp::Result<void>::ok();

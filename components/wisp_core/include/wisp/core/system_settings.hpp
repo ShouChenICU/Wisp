@@ -6,7 +6,6 @@
 //   volume         audio/volume        int 0-100                 (default 60)
 //   screen_off_s   power/screen_off_s  int 0 (never) or 15-3600  (default 60)
 //   deep_after_s   power/deep_after_s  int 0 (never) or 60-3600  (default 300)
-//   light_sleep    power/light_sleep   bool                      (default true)
 //   notify_vol     audio/notify_vol    int 0-100                 (default 60)
 //   language       sys/lang            "zh", "ja" or "en"        (default "zh")
 //   utc_offset_min sys/tz_min          int -720 to 840           (default 480)
@@ -24,8 +23,7 @@
 // each a host name or an IPv4 address of 1-63 characters [A-Za-z0-9.-],
 // no spaces (connectivity spec 5.4).
 // deep_after_s is how long standby lasts before deep standby turns Wi-Fi
-// off; light_sleep lets deep standby use automatic light sleep (off while
-// debugging over USB serial, which light sleep may drop); notify_vol is
+// off; automatic light sleep is controlled at build time. notify_vol is
 // the alert-sound volume (scene-device spec 4.1 and 5.4).
 // tts_mute silences spoken replies (voice spec 4.4): the conversation still
 // shows its text, TtsClient is simply never called.
@@ -64,7 +62,6 @@ inline constexpr const char* kDefaultNtpServers = "pool.ntp.org,ntp.aliyun.com";
 // stored value set() would refuse as the default, as get() does.
 inline constexpr int64_t kDefaultScreenOffS = 60;
 inline constexpr int64_t kDefaultDeepAfterS = 300;
-inline constexpr bool kDefaultLightSleep = true;
 bool valid_screen_off_s(int64_t seconds);  // 0 (never) or 15-3600
 bool valid_deep_after_s(int64_t seconds);  // 0 (never) or 60-3600
 
@@ -85,7 +82,6 @@ struct SystemSettingsValues {
     int utc_offset_min;
     std::string ntp_servers;
     int deep_after_s;
-    bool light_sleep;
     int notify_vol;
     bool tts_mute;
     bool time_24h;
@@ -94,7 +90,7 @@ struct SystemSettingsValues {
 };
 
 // {"brightness", "volume", "screen_off_s", "language", "utc_offset_min",
-// "ntp_servers", "deep_after_s", "light_sleep", "notify_vol", "tts_mute",
+// "ntp_servers", "deep_after_s", "notify_vol", "tts_mute",
 // "time_24h", "agent_max_steps", "agent_turn_min"}:
 // the shape of GET /settings and of the system.settings event payload.
 Map to_map(const SystemSettingsValues& values);
@@ -123,7 +119,7 @@ public:
 
     // Keys are "brightness", "volume", "screen_off_s", "utc_offset_min",
     // "deep_after_s", "notify_vol", "agent_max_steps", "agent_turn_min" (integers), "language" and
-    // "ntp_servers" (strings) and "light_sleep", "tts_mute", "time_24h" (booleans). An unknown key,
+    // "ntp_servers" (strings) and "tts_mute", "time_24h" (booleans). An unknown key,
     // a value of the wrong type or an out-of-range value fails the whole batch with InvalidArgument
     // before anything is written. If the backend fails partway, the keys already written are
     // restored (best effort) and the backend's error returned; the hooks only run once the whole

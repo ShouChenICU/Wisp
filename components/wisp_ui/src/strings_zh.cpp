@@ -429,6 +429,126 @@ const char* strings_zh(StrId id) {
             return "显示与声音";
         case StrId::SettingsGroupPower:
             return "屏幕与电源";
+        case StrId::SettingsGroupModels:
+            return "模型";
+        case StrId::ModelLlm:
+            return "对话模型";
+        case StrId::ModelAsr:
+            return "语音识别";
+        case StrId::ModelTts:
+            return "语音合成";
+        case StrId::ModelNone:
+            return "未配置";
+        case StrId::ModelCurrent:
+            return "当前使用";
+        case StrId::ModelTest:
+            return "测试连接";
+        case StrId::ModelActivate:
+            return "启用";
+        case StrId::ModelTestOk:
+            return "连接正常";
+        case StrId::ModelTestTimeout:
+            return "连接超时";
+        case StrId::ModelTestNetwork:
+            return "无法连接服务，请检查网络";
+        case StrId::ModelTestTls:
+            return "安全连接失败，请检查服务地址和证书";
+        case StrId::ModelTestAuth:
+            return "认证失败，请在管理后台检查密钥";
+        case StrId::ModelTestNoList:
+            return "服务不提供模型列表";
+        case StrId::ModelTestHttp:
+            return "服务响应异常";
+        case StrId::WifiSecured:
+            return "加密网络";
+        case StrId::WifiOpen:
+            return "开放网络";
+        case StrId::WifiNotFound:
+            return "找不到网络，请重新扫描";
+        case StrId::ModelTestFailed:
+            return "连接失败，请在管理后台检查配置";
+        case StrId::ModelActivated:
+            return "已启用";
+        case StrId::ModelManageHint:
+            return "新增和编辑服务商，请使用浏览器管理后台。连接测试仅检查服务连接和模型列表。";
+        case StrId::ConnectionBusy:
+            return "正在处理…";
+        case StrId::ConnectionFailed:
+            return "操作失败，请重试";
+        case StrId::ConnectionUnavailable:
+            return "暂不可用";
+        case StrId::ModelManage:
+            return "管理服务商";
+        case StrId::WifiNearby:
+            return "附近网络";
+        case StrId::WifiStrong:
+            return "信号良好";
+        case StrId::WifiWeak:
+            return "信号较弱";
+        case StrId::WifiShowPassword:
+            return "显示";
+        case StrId::WifiDisconnect:
+            return "断开连接";
+        case StrId::WifiChannel:
+            return "信道";
+        case StrId::WifiBssid:
+            return "接入点 (BSSID)";
+        case StrId::WifiSubnet:
+            return "子网掩码";
+        case StrId::WifiGateway:
+            return "路由器";
+        case StrId::WifiDns:
+            return "DNS 服务器";
+        case StrId::WifiMac:
+            return "设备地址 (MAC)";
+        case StrId::WifiIpAddress:
+            return "IP 地址";
+        case StrId::WifiSignal:
+            return "信号";
+        case StrId::WifiSecurity:
+            return "安全性";
+        case StrId::WifiDetails:
+            return "详情";
+        case StrId::WifiScanning:
+            return "正在扫描…";
+        case StrId::WifiPasswordLength:
+            return "需8-63位";
+        case StrId::WifiHidePassword:
+            return "隐藏";
+        case StrId::WifiEnabled:
+            return "Wi-Fi 开关";
+        case StrId::WifiScan:
+            return "扫描网络";
+        case StrId::WifiSetupPhone:
+            return "用手机配网";
+        case StrId::WifiSaved:
+            return "已保存";
+        case StrId::WifiAuthFailed:
+            return "密码错误，请重新输入";
+        case StrId::WifiConnect:
+            return "连接";
+        case StrId::WifiPassword:
+            return "密码";
+        case StrId::WifiChangePassword:
+            return "重新输入密码";
+        case StrId::WifiPasswordInvalid:
+            return "密码需为 8-63 个字符";
+        case StrId::WifiCancel:
+            return "取消";
+        case StrId::WifiOff:
+            return "Wi-Fi 已关闭";
+        case StrId::WifiConnected:
+            return "已连接";
+        case StrId::WifiConnecting:
+            return "正在连接";
+        case StrId::WifiDisconnected:
+            return "未连接";
+        case StrId::WifiEmpty:
+            return "未发现网络，请重试扫描或用手机配网";
+        case StrId::WifiScanFailed:
+            return "扫描失败，请重试";
+        case StrId::WifiScheduled:
+            return "已开始连接";
         case StrId::SettingsGroupNetwork:
             return "网络";
         case StrId::SettingsGroupLangTime:
@@ -443,10 +563,6 @@ const char* strings_zh(StrId id) {
             return "深度待机";
         case StrId::SettingsHours:
             return "{} 小时";
-        case StrId::SettingsLightSleep:
-            return "省电睡眠";
-        case StrId::SettingsLightSleepHint:
-            return "深度待机时让芯片浅睡省电";
         case StrId::SettingsLanguage:
             return "系统语言";
         case StrId::SettingsTimeZone:

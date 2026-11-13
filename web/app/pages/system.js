@@ -125,7 +125,6 @@ export async function confirmLogout() {
  * @property {number} utc_offset_min  the time zone, minutes east of UTC (-720 to 840)
  * @property {string} ntp_servers  1-2 time servers, comma-separated
  * @property {number} deep_after_s  0 (never) or 60-3600: deep standby after the screen is off this long
- * @property {boolean} light_sleep  allow light sleep in deep standby
  * @property {number} notify_vol   0-100, the notification sounds
  * @property {boolean} tts_mute    silence spoken replies (text still shows)
  * @property {boolean} time_24h    24-hour clock on the device (false: 12-hour)
@@ -432,14 +431,6 @@ function PowerCard({ settings, put }) {
             </select>
             <p id="sys-deep-after-hint" class="field-hint">${t('sys.deep_after_hint')}</p>
           </div>
-          <label class="scene-check">
-            <input
-              type="checkbox"
-              checked=${settings.light_sleep !== false}
-              onChange=${(e) => put({ light_sleep: e.currentTarget.checked })}
-            />
-            ${t('sys.light_sleep')}
-          </label>
         </div>`
       : null}
   </${Card}>`;

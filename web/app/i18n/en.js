@@ -553,7 +553,6 @@ export default {
   'sys.deep_after': 'Deep standby after the screen is off for',
   'sys.deep_after_hint': 'Deep standby turns Wi-Fi off to save power. It waits while anything holds a network wake lock, this page included.',
   'sys.deep_never': 'Never',
-  'sys.light_sleep': 'Allow light sleep in deep standby',
   'power.title': 'Power',
   'power.level.active': 'Active',
   'power.level.dim': 'Dimmed',

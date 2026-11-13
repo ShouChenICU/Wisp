@@ -102,6 +102,7 @@
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/shell/choice_page.hpp"
+#include "wisp/shell/connections_page.hpp"
 #include "wisp/shell/scene_list.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/voice/voice_service.hpp"
@@ -193,6 +194,9 @@ struct ShellDeps {
     // The settings page's restart and power off, after its confirm dialog;
     // posted to the UI thread. Empty: the row is not there.
     std::function<void()> restart, power_off;
+    net::WifiService* wifi = nullptr;
+    core::ModelProfileService* models = nullptr;
+    std::function<bool(std::function<void()>)> submit_network;
 };
 
 class Shell {
@@ -240,6 +244,8 @@ public:
     // Shows a choice page over the settings page; a no-op on any other
     // page. Its pick, then the page closes (posted).
     void open_choice(ChoiceSpec spec);
+    void open_connections(ConnectionKind kind);
+    ConnectionsPage* connections_page() const { return connections_.get(); }
     // The open choice page and its screen, or nullptr.
     ChoicePage* choice_page() const { return choice_.get(); }
     lv_obj_t* choice_screen() const { return choice_screen_; }
@@ -286,6 +292,7 @@ private:
         bool complete = false;
         // From a choice page back to the settings page.
         bool from_choice = false;
+        bool from_detail = false;
         // Made unscrollable while the drag runs.
         std::vector<lv_obj_t*> frozen;
         // What the press started on (watched for its deletion; nullptr
@@ -351,6 +358,7 @@ private:
     std::unique_ptr<SettingsPage> settings_;
     // The choice page over the settings page, its screen and root.
     std::unique_ptr<ChoicePage> choice_;
+    std::unique_ptr<ConnectionsPage> connections_;
     lv_obj_t* choice_screen_ = nullptr;
     lv_obj_t* choice_root_ = nullptr;
     // The language the pages were built in.

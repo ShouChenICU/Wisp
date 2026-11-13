@@ -45,8 +45,6 @@ const KeySpec kScreenOff{
 const KeySpec kDeepAfter{
     "deep_after_s", "power", "deep_after_s", Value(kDefaultDeepAfterS),
     [](const Value& v) { return v.type() == Value::Type::Int && valid_deep_after_s(v.as_int()); }};
-const KeySpec kLightSleep{"light_sleep", "power", "light_sleep", Value(kDefaultLightSleep),
-                          [](const Value& v) { return v.type() == Value::Type::Bool; }};
 const KeySpec kNotifyVol{"notify_vol", "audio", "notify_vol", Value(60),
                          [](const Value& v) { return int_in(v, 0, 100); }};
 const KeySpec kTtsMute{"tts_mute", "voice", "tts_mute", Value(false),
@@ -89,9 +87,9 @@ bool valid_ntp_servers(const Value& v) {
 const KeySpec kNtpServers{"ntp_servers", "sys", "ntp", Value(kDefaultNtpServers),
                           valid_ntp_servers};
 
-const KeySpec* const kKeys[] = {
-    &kBrightness, &kVolume,    &kScreenOff, &kLanguage, &kUtcOffset,     &kNtpServers,  &kDeepAfter,
-    &kLightSleep, &kNotifyVol, &kTtsMute,   &kTime24h,  &kAgentMaxSteps, &kAgentTurnMin};
+const KeySpec* const kKeys[] = {&kBrightness, &kVolume,     &kScreenOff,     &kLanguage,
+                                &kUtcOffset,  &kNtpServers, &kDeepAfter,     &kNotifyVol,
+                                &kTtsMute,    &kTime24h,    &kAgentMaxSteps, &kAgentTurnMin};
 
 const KeySpec* find_spec(std::string_view name) {
     for (const KeySpec* spec : kKeys) {
@@ -125,7 +123,6 @@ Map to_map(const SystemSettingsValues& values) {
         {"utc_offset_min", Value(values.utc_offset_min)},
         {"ntp_servers", Value(values.ntp_servers)},
         {"deep_after_s", Value(values.deep_after_s)},
-        {"light_sleep", Value(values.light_sleep)},
         {"notify_vol", Value(values.notify_vol)},
         {"tts_mute", Value(values.tts_mute)},
         {"time_24h", Value(values.time_24h)},
@@ -150,7 +147,6 @@ SystemSettingsValues SystemSettings::get() const {
     values.utc_offset_min = static_cast<int>(read(backend_, kUtcOffset).as_int());
     values.ntp_servers = read(backend_, kNtpServers).as_string();
     values.deep_after_s = static_cast<int>(read(backend_, kDeepAfter).as_int());
-    values.light_sleep = read(backend_, kLightSleep).as_bool();
     values.notify_vol = static_cast<int>(read(backend_, kNotifyVol).as_int());
     values.tts_mute = read(backend_, kTtsMute).as_bool();
     values.time_24h = read(backend_, kTime24h).as_bool();

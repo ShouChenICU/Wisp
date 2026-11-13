@@ -275,8 +275,14 @@ target_include_directories(esp_http_server_config_test PRIVATE ${WISP_ROOT}/comp
 # through a handful of --headless scenarios and checks its
 # WISP_BOOT_REPORT/WISP_MANIFEST stdout and screenshot. See
 # tests/smoke/sim_smoke.py's file header.
+option(WISP_FULL_SMOKE "Run all simulator smoke scenarios" OFF)
+set(WISP_SMOKE_ARGS)
+if(WISP_FULL_SMOKE)
+    list(APPEND WISP_SMOKE_ARGS --full)
+endif()
 add_test(NAME sim_smoke COMMAND ${Python3_EXECUTABLE} ${WISP_ROOT}/tests/smoke/sim_smoke.py
-         $<TARGET_FILE:wisp_sim>)
+         $<TARGET_FILE:wisp_sim> ${WISP_SMOKE_ARGS})
+set_tests_properties(sim_smoke PROPERTIES TIMEOUT 240)
 
 # End-to-end admin API smoke test: pairs over HTTP with the simulator-only
 # "debug pair-code" console command, exercises the routes, the model probe
@@ -358,7 +364,7 @@ wisp_test(NAME shell_history_test SRCS shell/history_test.cpp LIBS wisp_shell wi
           TIMEOUT 60)
 wisp_test(NAME shell_scene_list_test SRCS shell/scene_list_test.cpp shell/scene_recents_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
-wisp_test(NAME shell_settings_page_test SRCS shell/settings_page_test.cpp
+wisp_test(NAME shell_settings_page_test SRCS shell/settings_page_test.cpp shell/connections_page_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME shell_subpage_shapes_test SRCS shell/subpage_shapes_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 90)

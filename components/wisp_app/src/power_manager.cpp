@@ -168,7 +168,6 @@ void PowerManager::read_settings() {
                                     core::valid_deep_after_s, core::kDefaultDeepAfterS);
     screen_off_ms_.store(seconds_to_ms(off_s));
     deep_after_ms_.store(seconds_to_ms(deep_s));
-    light_sleep_setting_.store(settings_.get_bool("light_sleep", core::kDefaultLightSleep));
 }
 
 void PowerManager::tick(uint64_t now_ms) {
@@ -305,8 +304,8 @@ hal::PowerLevel PowerManager::wanted_level(std::optional<uint64_t> now_ms) const
 }
 
 bool PowerManager::wants_light_sleep(hal::PowerLevel level) const {
-    return level == hal::PowerLevel::DeepStandby && light_sleep_setting_.load() &&
-           set_light_sleep_ && !locks_.held(core::WakeLockKind::Cpu);
+    return level == hal::PowerLevel::DeepStandby && WISP_ENABLE_LIGHT_SLEEP && set_light_sleep_ &&
+           !locks_.held(core::WakeLockKind::Cpu);
 }
 
 void PowerManager::evaluate(std::optional<uint64_t> now_ms) {

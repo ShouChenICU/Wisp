@@ -20,7 +20,7 @@
 //                the locks did meanwhile.
 //
 // Automatic light sleep (Platform::set_light_sleep) is on exactly while the
-// level is DeepStandby, "power"/"light_sleep" (default true) is set and no
+// level is DeepStandby, WISP_ENABLE_LIGHT_SLEEP is enabled and no
 // cpu lock is held. A screen lock keeps the screen at Active: no dim, no
 // idle screen-off; enter_standby() still turns it off and leaves the lock.
 // Every level change publishes "power.state" ({"state": to_string(level)})
@@ -283,7 +283,6 @@ private:
     // Cached so UI-task work never reads Settings.
     std::atomic<int64_t> screen_off_ms_{60000};   // 0: never
     std::atomic<int64_t> deep_after_ms_{300000};  // 0: never
-    std::atomic<bool> light_sleep_setting_{true};
     // The deep timer had run out at the last tick-driven evaluation; lock
     // changes, which have no clock of their own, go by this.
     std::atomic<bool> deep_due_{false};

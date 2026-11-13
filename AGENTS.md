@@ -55,6 +55,7 @@ When a change touches a sub-project, read its spec first, then the matching plan
   - The runtime gives scenes (and, later, the agent) the screen shape, corner radius, safe area and `row_span` (`shape`/`corner_radius`/`safe_area` of `wisp.device.info()`, and `wisp.device.row_span(y)`).
   - Scrolling content may pass through invisible areas, but when scrolled to either end, the first and last items must be fully visible. The example scenes (`scenes/examples/`) demonstrate these techniques, and their tests check them on all three shapes.
 - **Single UI thread**: only the UI thread may call LVGL. Every other thread hands its work to the UI thread through `UiRuntime::post()`. Scripts do not call LVGL directly either.
+- **UI layout**: follow `docs/ui-style-guide.md`. Independent controls must have visible gaps (at least `theme::kGapSm`, 8 px); never place standalone buttons edge to edge. Centre trailing icons vertically within the full row and verify final geometry on all screen shapes.
 - **Device model**:
   - Devices are registered in `DeviceRegistry`, with ids of the form `<class>.<name>`.
   - Device capabilities are declared through caps and exposed by the manifest.
@@ -69,8 +70,10 @@ When a change touches a sub-project, read its spec first, then the matching plan
 cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 ctest --test-dir build/sim --output-on-failure
 
-# Full check before committing: formatting, layering, build, tests
+# Daily check before committing: formatting, layering, build, regression tests
 bash tools/ci.sh
+# Full tool self-tests and end-to-end scenarios before release
+bash tools/ci.sh --full
 
 # Firmware: first activate the ESP-IDF environment at the version the plan pins (export.sh is a bash script)
 # On a fresh checkout run set-target first: the bmgr subcommand comes from esp_board_manager, which the component manager fetches
@@ -92,7 +95,7 @@ cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <board> 
   - `README.md` (English) is the source. `README.zh-CN.md` (Chinese) and `README.ja.md` (Japanese) are translations of it; update them together with `README.md` whenever it changes.
   - Design specs and plans (`docs/superpowers/specs/`, `docs/superpowers/plans/`) and the backlog (`docs/backlog.md`) may be written in Chinese.
   - User-facing UI text is localised (zh/ja/en).
-- **Testing**: use GoogleTest and follow TDD (write the failing test first, then the implementation). Test output must be clean, with no warnings.
+- **Testing**: use GoogleTest and follow TDD (write the failing test first, then the implementation). Cover essential behaviour and common edge cases; expand shape/language combinations only when they affect the behaviour under test. Screenshot previews run manually. See `docs/testing.md` for CI scope. Test output must be clean, with no warnings.
 - **Dependencies**: external dependencies are pinned to exact versions; the firmware commits `dependencies.lock`.
 - **Settings keys**: Settings namespaces and keys must not exceed 15 characters, for NVS compatibility.
 - **Memory allocation**: use `os::alloc(Mem::Large)` for large buffers and `Mem::Dma` for DMA buffers. Do not call the platform's allocation functions directly.

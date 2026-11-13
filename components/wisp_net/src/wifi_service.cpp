@@ -118,7 +118,7 @@ Result<void> WifiService::persist_locked(const std::vector<Network>& networks, c
         if (n.auth_failed) entry.emplace("auth_failed", true);
         list.push_back(std::move(entry));
     }
-    const std::string json = to_json_raw(Map{{"networks", std::move(list)}});
+    const std::string json = to_json_raw(Map{{"networks", std::move(list)}, {"enabled", enabled_}});
     // The write runs on the flash thread, possibly after this service is
     // gone: it owns its snapshot and finds the path itself.
     return saver_.save([&storage = storage_, snapshot = os::LargeString(json.begin(), json.end()),
@@ -168,6 +168,8 @@ const WifiService::Network* WifiService::find_locked(std::string_view ssid) cons
 Result<void> WifiService::init(uint64_t now_ms) {
     std::lock_guard<os::Mutex> lock(mutex_);
     networks_.clear();
+    enabled_ = true;
+    manually_disconnected_ = false;
 
     Result<void> result = Result<void>::ok();
     std::string path = wifi_path();
@@ -183,6 +185,8 @@ Result<void> WifiService::init(uint64_t now_ms) {
         // password), so it is deliberately not passed on.
         auto doc = from_json(std::string_view(reinterpret_cast<const char*>(bytes.value().data()),
                                               bytes.value().size()));
+        const Value* enabled = doc ? doc.value().find("enabled") : nullptr;
+        if (enabled && enabled->type() == Value::Type::Bool) enabled_ = enabled->as_bool();
         const Value* list = doc ? doc.value().find("networks") : nullptr;
         if (list == nullptr || list->type() != Value::Type::List) {
             result = Result<void>::err(ErrorCode::InvalidArgument, "net/wifi.json is malformed");
@@ -218,7 +222,8 @@ Result<void> WifiService::init(uint64_t now_ms) {
     WLOG_I(kTag, "%zu saved network(s)", networks_.size());
 
     backoff_ms_ = config_.backoff_min_ms;
-    if (!networks_.empty()) {
+    if (!enabled_) apply_radio_locked(now_ms);
+    if (!radio_off_ && !networks_.empty()) {
         schedule_attempt_locked(now_ms);
         set_state_locked(WifiState::Connecting, "", "", 0);
     } else {
@@ -236,6 +241,7 @@ void WifiService::set_state_locked(WifiState state, std::string ssid, std::strin
     const char* reason = state == WifiState::Backoff ? fail_reason_ : "";
     bool changed = state != status_.state || ssid != status_.ssid || ip != status_.ip ||
                    std::string_view(reason) != status_.reason;
+    if (state != WifiState::Connected) status_.details = {};
     status_.state = state;
     status_.ssid = std::move(ssid);
     status_.ip = std::move(ip);
@@ -311,6 +317,7 @@ void WifiService::poll_link_locked(uint64_t now_ms) {
                 WLOG_I(kTag, "provisioning succeeded; hotspot closes in at most %u ms",
                        static_cast<unsigned>(config_.ap_linger_ms));
             }
+            status_.details = link.details;
             set_state_locked(WifiState::Connected, link.ssid, link.ip, link.rssi);
         } else if (link.state == hal::WifiLinkState::Failed &&
                    (link.ssid.empty() || link.ssid == in_flight_ssid_)) {
@@ -334,6 +341,7 @@ void WifiService::poll_link_locked(uint64_t now_ms) {
             schedule_attempt_locked(now_ms);
             set_state_locked(WifiState::Connecting, "", "", 0);
         } else if (link.state == hal::WifiLinkState::Connected) {
+            status_.details = link.details;
             set_state_locked(WifiState::Connected, status_.ssid, link.ip, link.rssi);
         }
     }
@@ -443,12 +451,38 @@ void WifiService::set_power_level(hal::PowerLevel level, uint64_t now_ms) {
     // radio_mutex_ first: the radio must not go off under a scan.
     std::lock_guard<os::Mutex> radio(radio_mutex_);
     std::lock_guard<os::Mutex> lock(mutex_);
-    const bool off = level == hal::PowerLevel::DeepStandby;
+    power_off_ = level == hal::PowerLevel::DeepStandby;
+    apply_radio_locked(now_ms);
+}
+
+bool WifiService::enabled() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return enabled_;
+}
+
+Result<void> WifiService::set_enabled(bool enabled, uint64_t now_ms) {
+    std::lock_guard<os::Mutex> radio(radio_mutex_);
+    std::lock_guard<os::Mutex> lock(mutex_);
+    if (enabled_ == enabled) return Result<void>::ok();
+    enabled_ = enabled;
+    auto result = persist_locked(networks_);
+    if (!result) {
+        enabled_ = !enabled;
+        return result;
+    }
+    manually_disconnected_ = false;
+    apply_radio_locked(now_ms);
+    bus_.publish(core::Event{"net.wifi.enabled", source_, 0, Properties{{"enabled", enabled_}}});
+    return Result<void>::ok();
+}
+
+void WifiService::apply_radio_locked(uint64_t now_ms) {
+    const bool off = !enabled_ || power_off_;
     if (off == radio_off_) return;
     radio_off_ = off;
     ++generation_;
     if (off) {
-        if (ap_) (void)close_ap_locked("deep standby");
+        if (ap_) (void)close_ap_locked("radio disabled");
         const bool active = in_flight_ || status_.state != WifiState::Off;
         attempt_due_ = false;
         in_flight_ = false;
@@ -458,14 +492,14 @@ void WifiService::set_power_level(hal::PowerLevel level, uint64_t now_ms) {
         if (auto r = wifi_->set_radio(false); !r && r.error().code != ErrorCode::Unsupported) {
             WLOG_W(kTag, "turning the radio off failed: %s", to_string(r.error().code));
         }
-        WLOG_I(kTag, "deep standby: Wi-Fi off");
+        WLOG_I(kTag, "Wi-Fi radio off");
         set_state_locked(WifiState::Off, "", "", 0);
         return;
     }
     if (auto r = wifi_->set_radio(true); !r && r.error().code != ErrorCode::Unsupported) {
         WLOG_W(kTag, "turning the radio on failed: %s", to_string(r.error().code));
     }
-    if (!networks_.empty()) {
+    if (!networks_.empty() && !manually_disconnected_) {
         WLOG_I(kTag, "awake: reconnecting");
         backoff_ms_ = config_.backoff_min_ms;
         schedule_attempt_locked(now_ms);
@@ -485,6 +519,10 @@ WifiStatus WifiService::status() const {
 
 Result<std::vector<ScanResult>> WifiService::scan() {
     std::lock_guard<os::Mutex> radio(radio_mutex_);
+    {
+        std::lock_guard<os::Mutex> lock(mutex_);
+        if (radio_off_) return Result<std::vector<ScanResult>>::err(ErrorCode::Busy, "Wi-Fi off");
+    }
     auto entries = wifi_->scan();  // blocking; mutex_ deliberately not held
     if (!entries) {
         return Result<std::vector<ScanResult>>::err(entries.error().code, entries.error().message);
@@ -501,7 +539,7 @@ Result<std::vector<ScanResult>> WifiService::scan() {
     std::vector<ScanResult> out;
     out.reserve(best.size());
     for (const auto& [ssid, e] : best) {
-        out.push_back({ssid, e.rssi, e.secured, find_locked(ssid) != nullptr});
+        out.push_back({ssid, e.rssi, e.secured, find_locked(ssid) != nullptr, e.details});
     }
     std::stable_sort(out.begin(), out.end(),
                      [](const ScanResult& a, const ScanResult& b) { return a.rssi > b.rssi; });
@@ -513,6 +551,7 @@ Result<void> WifiService::add_network(std::string_view ssid, std::string_view pa
     WISP_TRY(validate(ssid, password));
 
     std::lock_guard<os::Mutex> lock(mutex_);
+    if (!enabled_) return Result<void>::err(ErrorCode::Busy, "Wi-Fi off");
     std::vector<Network> updated = networks_;
     auto it = std::find_if(updated.begin(), updated.end(),
                            [&](const Network& n) { return n.ssid == ssid; });
@@ -540,6 +579,7 @@ Result<void> WifiService::add_network(std::string_view ssid, std::string_view pa
 
 Result<void> WifiService::connect_saved(std::string_view ssid, uint64_t now_ms) {
     std::lock_guard<os::Mutex> lock(mutex_);
+    if (!enabled_) return Result<void>::err(ErrorCode::Busy, "Wi-Fi off");
     if (find_locked(ssid) == nullptr) {
         return Result<void>::err(ErrorCode::NotFound, "network not saved");
     }
@@ -550,7 +590,22 @@ Result<void> WifiService::connect_saved(std::string_view ssid, uint64_t now_ms) 
     return Result<void>::ok();
 }
 
+Result<void> WifiService::disconnect() {
+    std::lock_guard<os::Mutex> radio(radio_mutex_);
+    std::lock_guard<os::Mutex> lock(mutex_);
+    WISP_TRY(wifi_->disconnect());
+    ++generation_;
+    manually_disconnected_ = true;
+    attempt_due_ = false;
+    in_flight_ = false;
+    in_flight_ssid_.clear();
+    direct_ssid_.reset();
+    set_state_locked(WifiState::Off, "", "", 0);
+    return Result<void>::ok();
+}
+
 void WifiService::try_directly_locked(std::string_view ssid, uint64_t now_ms) {
+    manually_disconnected_ = false;
     if (ap_) provisioned_ssids_.emplace(ssid);
     in_flight_ = false;
     in_flight_ssid_.clear();
@@ -619,14 +674,18 @@ std::vector<SavedNetwork> WifiService::saved_networks() const {
     std::lock_guard<os::Mutex> lock(mutex_);
     std::vector<SavedNetwork> out;
     out.reserve(networks_.size());
-    for (const auto& n : networks_) out.push_back({n.ssid, n.auth_failed});
+    for (const auto& n : networks_) out.push_back({n.ssid, n.auth_failed, !n.password.empty()});
     return out;
 }
 
 void WifiService::forget_all() {
+    std::lock_guard<os::Mutex> radio_lock(radio_mutex_);
     std::lock_guard<os::Mutex> lock(mutex_);
     ++generation_;
     networks_.clear();
+    enabled_ = true;
+    manually_disconnected_ = false;
+    apply_radio_locked(os::now_ms());
     // On a failed write the networks come back after a reboot; the write
     // says so.
     (void)persist_locked(networks_, "factory reset of saved networks was not persisted");

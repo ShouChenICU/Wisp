@@ -6,7 +6,7 @@
 // start() runs on App::start()'s thread, after PowerManager exists:
 //   - builds PairingService (and, with a "net.wifi" device, WifiService)
 //     and init()s them through run_io -- WifiService::init() only loads
-//     the saved list, so nothing here touches the radio;
+//     the saved list and user enable flag; disabled state shuts the radio off;
 //   - subscribes to power.state, net.wifi.state and net.ap.state, only to
 //     wake the task: each tick it applies PowerManager::level() to
 //     WifiService::set_power_level() and reads which interfaces are up from
@@ -51,6 +51,10 @@
 // The "wisp.net" task also runs AdminServer::tick() (the admin WebSocket
 // keepalive and the REST requests' wake lock).
 //
+// Device settings scans and model probes run on a separate bounded
+// "wisp.netcfg" worker. It never accesses flash directly. stop() joins
+// this worker before destroying the services its jobs use.
+//
 // stop() joins the task, stops both servers (their on_close callbacks run
 // while they join connection threads; nothing here holds a lock then),
 // unsubscribes and destroys the AdminServer before the services it
@@ -58,6 +62,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -180,6 +185,10 @@ public:
     // without an admin server. Not concurrently with stop().
     bool flush_admin_ws(uint32_t timeout_ms);
 
+    // Blocking scans and model probes run here, never on the UI or flash thread.
+    // At most four jobs wait; stop discards pending jobs and joins the running one.
+    bool submit_settings(std::function<void()> job);
+
     net::WifiService* wifi() const { return wifi_.get(); }
     // The Wi-Fi state as of the "wisp.net" task's last tick (nullopt
     // without a WifiService): one atomic load, never a lock, for readers
@@ -194,6 +203,8 @@ public:
 private:
     void run();
     void run_ntp();
+    void run_settings();
+    void reconcile_external_power();
     // Holds "system.hotspot" exactly while `up`. On the "wisp.net" task.
     void hold_hotspot_lock(bool up);
     // Starts or stops the HTTP servers to match the interface state. Runs
@@ -218,6 +229,8 @@ private:
     // Ticked and owned by the "wisp.net" task once start() has returned.
     std::unique_ptr<net::NetworkWindow> window_;
     core::WakeLock hotspot_lock_;
+    core::WakeLock powered_lock_;
+    bool reports_external_power_ = false;
     net::AssetPack assets_;
     bool has_assets_ = false;
     std::unique_ptr<admin::AdminServer> admin_;
@@ -251,6 +264,11 @@ private:
     // The "wisp.ntp" worker: woken when tick() has prepared an attempt.
     os::Semaphore ntp_wake_{1, 0};
     std::unique_ptr<os::Task> ntp_task_;
+    os::Mutex settings_mutex_;
+    std::deque<std::function<void()>> settings_jobs_;
+    os::Semaphore settings_wake_{1, 0};
+    std::unique_ptr<os::Task> settings_task_;
+    bool settings_accepting_ = false;
 };
 
 }  // namespace wisp::app

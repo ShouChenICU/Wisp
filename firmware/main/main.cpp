@@ -55,7 +55,7 @@ namespace {
 // DFS (dynamic frequency scaling) is always on; only automatic tickless
 // light sleep is toggled, by PowerManager via Platform::set_light_sleep:
 // on in deep standby (scene-device spec 4.1) unless a cpu wake lock or
-// power/light_sleep says otherwise. This board passed the light-sleep
+// WISP_ENABLE_LIGHT_SLEEP=OFF says otherwise. This board passed the light-sleep
 // compatibility check with the audio I2S channels off in standby (see
 // "Light-sleep compatibility (3b-1 spike)" in
 // docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md). Requires CONFIG_PM_ENABLE and

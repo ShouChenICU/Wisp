@@ -206,11 +206,12 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
         h->on_ui([&] {
             wisp::shell::SettingsPage* p = h->shell().settings_page();
             ASSERT_NE(p, nullptr);
-            ASSERT_EQ(p->groups(), 5u);
+            ASSERT_EQ(p->groups(), 6u);
             using Row = wisp::shell::SettingsPage::Row;
-            for (Row r : {Row::ScreenOff, Row::DeepStandby, Row::Wifi, Row::Language, Row::TimeZone,
-                          Row::TimeFormat, Row::Version, Row::Address, Row::Diagnostics,
-                          Row::Restart, Row::PowerOff})
+            for (Row r :
+                 {Row::ScreenOff, Row::DeepStandby, Row::Wifi, Row::ModelLlm, Row::ModelAsr,
+                  Row::ModelTts, Row::Language, Row::TimeZone, Row::TimeFormat, Row::Version,
+                  Row::Address, Row::Diagnostics, Row::Restart, Row::PowerOff})
                 EXPECT_GE(lv_obj_get_height(p->row(r)), 48);
             check_ends(p->list(), p->heading(0), p->row(Row::PowerOff));
             EXPECT_TRUE(box_visible(h->shape(), coords_of(p->row(Row::PowerOff))));
