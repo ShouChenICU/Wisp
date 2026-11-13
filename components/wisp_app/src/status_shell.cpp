@@ -193,6 +193,8 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
                 h.charging = c->as_bool();
             }
         }
+        const Value* enabled = status.find("wifi_enabled");
+        if (enabled && enabled->type() == Value::Type::Bool && !enabled->as_bool()) return h;
         if (const Value* w = status.find("wifi");
             w != nullptr && w->type() == Value::Type::String) {
             h.wifi = std::string_view(wifi_text(w->as_string()));
@@ -269,6 +271,7 @@ void StatusShell::start() {
     auto refresh = [s](const core::Event&) { request_refresh(s); };
     subs_[0] = st.deps.bus.subscribe("scene.state", refresh);
     subs_[1] = st.deps.bus.subscribe("notification.", refresh);
+    subs_[3] = st.deps.bus.subscribe("net.wifi.", refresh);
     subs_[2] = st.deps.bus.subscribe("power.state", [s](const core::Event& e) {
         auto it = e.payload.find("state");
         const bool off =

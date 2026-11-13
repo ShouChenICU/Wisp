@@ -77,7 +77,6 @@ protected:
         v.notify_vol = 40;
         v.screen_off_s = 60;
         v.deep_after_s = 300;
-        v.light_sleep = true;
         v.language = "zh";
         v.utc_offset_min = 480;
         v.time_24h = true;
@@ -140,9 +139,9 @@ TEST_F(SettingsPageTest, GroupsAndRowsInOrder) {
     boot();
     harness->on_ui([&] {
         lv_obj_update_layout(page()->list());
-        const char* headings[] = {"显示与声音", "屏幕与电源", "网络", "语言与时间", "系统"};
-        ASSERT_EQ(page()->groups(), 5u);
-        for (size_t i = 0; i < 5; ++i) {
+        const char* headings[] = {"显示与声音", "屏幕与电源", "网络", "模型", "语言与时间", "系统"};
+        ASSERT_EQ(page()->groups(), 6u);
+        for (size_t i = 0; i < 6; ++i) {
             EXPECT_EQ(text_of(page()->heading(i)), headings[i]);
             // Each heading sits right above its card.
             EXPECT_LT(coords_of(page()->heading(i)).y2, coords_of(page()->card(i)).y1);
@@ -150,14 +149,14 @@ TEST_F(SettingsPageTest, GroupsAndRowsInOrder) {
                 EXPECT_GT(coords_of(page()->heading(i)).y1, coords_of(page()->card(i - 1)).y2);
         }
         // The rows top to bottom.
-        lv_obj_t* in_order[] = {page()->brightness(),         page()->volume(),
-                                page()->notify_volume(),      page()->speak(),
-                                page()->row(Row::ScreenOff),  page()->row(Row::DeepStandby),
-                                page()->light_sleep(),        page()->row(Row::Wifi),
-                                page()->row(Row::Language),   page()->row(Row::TimeZone),
-                                page()->row(Row::TimeFormat), page()->row(Row::Version),
-                                page()->row(Row::Address),    page()->row(Row::Diagnostics),
-                                page()->row(Row::Restart),    page()->row(Row::PowerOff)};
+        lv_obj_t* in_order[] = {page()->brightness(),          page()->volume(),
+                                page()->notify_volume(),       page()->speak(),
+                                page()->row(Row::ScreenOff),   page()->row(Row::DeepStandby),
+                                page()->row(Row::Wifi),        page()->row(Row::Language),
+                                page()->row(Row::TimeZone),    page()->row(Row::TimeFormat),
+                                page()->row(Row::Version),     page()->row(Row::Address),
+                                page()->row(Row::Diagnostics), page()->row(Row::Restart),
+                                page()->row(Row::PowerOff)};
         for (size_t i = 1; i < std::size(in_order); ++i)
             EXPECT_GT(coords_of(in_order[i]).y1, coords_of(in_order[i - 1]).y1) << i;
         // Every row is a thumb's height.
@@ -171,7 +170,6 @@ TEST_F(SettingsPageTest, GroupsAndRowsInOrder) {
         EXPECT_EQ(text_of(page()->volume_value()), "60%");
         EXPECT_EQ(text_of(page()->notify_value()), "40%");
         EXPECT_TRUE(lv_obj_has_state(page()->speak(), LV_STATE_CHECKED));
-        EXPECT_TRUE(lv_obj_has_state(page()->light_sleep(), LV_STATE_CHECKED));
         EXPECT_EQ(text_of(page()->value(Row::ScreenOff)), "1 分钟");
         EXPECT_EQ(text_of(page()->value(Row::DeepStandby)), "5 分钟");
         EXPECT_EQ(text_of(page()->value(Row::Wifi)), "已连接 WispLab  10.0.0.7");
@@ -180,7 +178,7 @@ TEST_F(SettingsPageTest, GroupsAndRowsInOrder) {
         EXPECT_EQ(text_of(page()->value(Row::TimeFormat)), "24 小时制");
         EXPECT_EQ(text_of(page()->value(Row::Version)), "0.4.2");
         EXPECT_EQ(text_of(page()->value(Row::Address)), "http://10.0.0.7:8900");
-        EXPECT_NE(wisp::test::find_label_containing(page()->list(), "深度待机时让芯片浅睡省电"),
+        EXPECT_EQ(wisp::test::find_label_containing(page()->list(), "深度待机时让芯片浅睡省电"),
                   nullptr);
         EXPECT_NE(wisp::test::find_label_containing(
                       page()->list(), "在浏览器打开管理后台地址，按提示输入设备上显示的配对码"),
@@ -297,13 +295,10 @@ TEST_F(SettingsPageTest, ControlsWriteSettings) {
         // Spoken replies off: tts_mute on.
         lv_obj_remove_state(page()->speak(), LV_STATE_CHECKED);
         lv_obj_send_event(page()->speak(), LV_EVENT_VALUE_CHANGED, nullptr);
-        lv_obj_remove_state(page()->light_sleep(), LV_STATE_CHECKED);
-        lv_obj_send_event(page()->light_sleep(), LV_EVENT_VALUE_CHANGED, nullptr);
     });
     w = written();
-    ASSERT_EQ(w.size(), 5u);
+    ASSERT_EQ(w.size(), 4u);
     EXPECT_TRUE(w[3]["tts_mute"].as_bool());
-    EXPECT_FALSE(w[4]["light_sleep"].as_bool());
     std::lock_guard<std::mutex> lock(mu);
     EXPECT_TRUE(all_on_worker);
 }
@@ -502,7 +497,9 @@ TEST_F(SettingsPageTest, LanguageChangeRetextsThePages) {
 TEST_F(SettingsPageTest, WifiAndSystem) {
     boot();
     tap_row(Row::Wifi);
-    EXPECT_EQ(wifi_setups.load(), 1);
+    ASSERT_TRUE(harness->ui_until([&] { return harness->shell().connections_page() != nullptr; }));
+    EXPECT_EQ(wifi_setups.load(), 0);
+    harness->on_ui([&] { harness->shell().show(Page::Settings); });
     EXPECT_EQ(harness->shell().choice_page(), nullptr);
 
     // System -> hardware diagnostics, over the settings page. (Its back

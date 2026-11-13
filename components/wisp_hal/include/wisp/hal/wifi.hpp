@@ -10,10 +10,22 @@
 
 namespace wisp::hal {
 
+// Empty fields mean the radio could not report that information.
+struct WifiDetails {
+    std::string bssid;
+    uint16_t channel = 0;
+    std::string security;
+    std::string gateway;
+    std::string netmask;
+    std::string dns;
+    std::string mac;
+};
+
 struct WifiScanEntry {
     std::string ssid;
     int rssi = 0;  // dBm
     bool secured = true;
+    WifiDetails details{};
 };
 
 enum class WifiLinkState { Idle, Connecting, Connected, Failed };
@@ -28,6 +40,7 @@ struct WifiLink {
     std::string ip;
     int rssi = 0;
     WifiFailReason reason = WifiFailReason::None;
+    WifiDetails details{};
 };
 
 // Station + provisioning-AP radio. Deliberately poll-based (no callbacks):

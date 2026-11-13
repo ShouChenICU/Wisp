@@ -552,7 +552,6 @@ export default {
   'sys.deep_after': '画面オフからディープスタンバイまで',
   'sys.deep_after_hint': 'ディープスタンバイでは省電力のためWi-Fiがオフになります。このページを含め、ネットワークのウェイクロックがある間は入りません。',
   'sys.deep_never': 'しない',
-  'sys.light_sleep': 'ディープスタンバイ中のライトスリープを許可',
   'power.title': '電源',
   'power.level.active': 'アクティブ',
   'power.level.dim': '減光',

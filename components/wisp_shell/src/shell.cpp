@@ -334,7 +334,12 @@ lv_obj_t* Shell::build_page(Page p) {
                 .wifi_status = deps_.wifi_status,
                 .admin_url = deps_.admin_url,
                 .firmware_version = deps_.firmware_version,
-                .start_wifi_setup = deps_.start_wifi_setup,
+                .start_wifi_setup =
+                    [this, alive = alive_] {
+                        deps_.ui.post([this, alive] {
+                            if (*alive) open_connections(ConnectionKind::Wifi);
+                        });
+                    },
                 // Posted: it loads another screen from inside this one's
                 // event.
                 .open_diagnostics =
@@ -348,6 +353,23 @@ lv_obj_t* Shell::build_page(Page p) {
                 .power_off = posted(deps_.power_off),
                 .layer = &deps_.layer,
                 .submit_io = deps_.submit_io,
+                .open_model =
+                    [this, alive = alive_](core::ModelKind kind) {
+                        auto mode = kind == core::ModelKind::Llm   ? ConnectionKind::Llm
+                                    : kind == core::ModelKind::Asr ? ConnectionKind::Asr
+                                                                   : ConnectionKind::Tts;
+                        deps_.ui.post([this, alive, mode] {
+                            if (*alive) open_connections(mode);
+                        });
+                    },
+                .model_name =
+                    [this](core::ModelKind kind) {
+                        if (!deps_.models) return std::string();
+                        auto state = deps_.models->get();
+                        for (auto& p : state.profiles)
+                            if (p.id == state.active_for(kind)) return p.name;
+                        return std::string();
+                    },
             });
             settings_->build(f.list);
             break;
@@ -605,8 +627,9 @@ void Shell::on_press(lv_event_t* e) {
             const bool at_bottom = !history_ || history_->at_bottom();
             // A choice page goes back to the settings page to the right.
             const std::optional<Page> to =
-                choice_ ? (dir == Swipe::Right ? std::optional<Page>(Page::Settings) : std::nullopt)
-                        : navigate(page_, dir, press_top_zone_, at_bottom);
+                choice_screen_
+                    ? (dir == Swipe::Right ? std::optional<Page>(Page::Settings) : std::nullopt)
+                    : navigate(page_, dir, press_top_zone_, at_bottom);
             if (!to || !may_drag(scr, press_target_, dir)) {
                 track_->reset();
                 return;
@@ -640,9 +663,11 @@ void Shell::on_press(lv_event_t* e) {
 }
 
 bool Shell::may_drag(lv_obj_t* scr, lv_obj_t* target, Swipe dir) const {
-    lv_obj_t* root = choice_               ? choice_root_
+    if (connections_ && connections_->password()) return false;
+    lv_obj_t* root = choice_screen_        ? choice_root_
                      : page_ == Page::Home ? (home_ ? home_->root() : nullptr)
                                            : sub_root_;
+    if (connections_ && connections_->detail_root()) root = connections_->detail_root();
     if (root == nullptr || lv_obj_get_screen(root) != scr) return false;
     // The scene list's long-press card stays put on the page's screen: a
     // press that opened it goes on to the card, not into a drag.
@@ -665,7 +690,11 @@ void Shell::begin_drag(Page to, Swipe dir, lv_obj_t* target) {
     d.to = to;
     d.host = lv_screen_active();
     d.from_root = page_ == Page::Home ? home_->root() : sub_root_;
-    if (choice_) {
+    if (connections_ && connections_->detail_root()) {
+        d.from_detail = true;
+        d.from_root = connections_->detail_root();
+        d.to_root = choice_root_;
+    } else if (choice_screen_) {
         // The settings page is built already, under the choice page.
         d.from_choice = true;
         d.from_root = choice_root_;
@@ -762,6 +791,11 @@ void Shell::finish_drag() {
     lv_obj_set_pos(d.to_root, 0, 0);
     // A screen that came in front meanwhile (a scene) stays there.
     const bool complete = d.complete && lv_screen_active() == d.host;
+    if (d.from_detail) {
+        lv_obj_move_to_index(d.to_root, 0);
+        if (complete && connections_) connections_->back();
+        return;
+    }
     lv_obj_t* own = d.to == Page::Home ? home_screen_ : sub_;
     lv_obj_set_parent(d.to_root, own);
     // Under anything put over the page on its screen.
@@ -862,6 +896,31 @@ void Shell::open_choice(ChoiceSpec spec) {
     WLOG_I(kTag, "choice open");
 }
 
+void Shell::open_connections(ConnectionKind kind) {
+    if (!home_ || page_ != Page::Settings || !sub_ || !settings_) return;
+    abort_drag();
+    close_choice();
+    auto f = detail::make_page(deps_.shape, ConnectionsPage::title(kind));
+    lv_obj_add_event_cb(f.screen, &Shell::press_cb, LV_EVENT_ALL, this);
+    connections_ = std::make_unique<ConnectionsPage>(
+        ConnectionsDeps{
+            .ui = deps_.ui,
+            .layer = deps_.layer,
+            .wifi = deps_.wifi,
+            .models = deps_.models,
+            .submit = deps_.submit_network,
+            .start_wifi_setup = deps_.start_wifi_setup,
+            .admin_url = deps_.admin_url,
+            .cancel_navigation = [this] { abort_drag(); },
+        },
+        kind);
+    choice_screen_ = f.screen;
+    choice_root_ = f.root;
+    lv_screen_load(f.screen);
+    connections_->build(f.list);
+    pressing_ = false;
+}
+
 void Shell::close_choice() {
     if (choice_screen_ == nullptr) return;
     abort_drag();
@@ -869,6 +928,7 @@ void Shell::close_choice() {
     choice_screen_ = nullptr;
     choice_root_ = nullptr;
     choice_.reset();
+    connections_.reset();
     pressing_ = false;
     if (lv_screen_active() == scr) lv_screen_load(sub_ != nullptr ? sub_ : home_screen_);
     lv_obj_delete(scr);

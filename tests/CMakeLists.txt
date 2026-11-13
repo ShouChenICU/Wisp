@@ -358,7 +358,7 @@ wisp_test(NAME shell_history_test SRCS shell/history_test.cpp LIBS wisp_shell wi
           TIMEOUT 60)
 wisp_test(NAME shell_scene_list_test SRCS shell/scene_list_test.cpp shell/scene_recents_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
-wisp_test(NAME shell_settings_page_test SRCS shell/settings_page_test.cpp
+wisp_test(NAME shell_settings_page_test SRCS shell/settings_page_test.cpp shell/connections_page_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME shell_subpage_shapes_test SRCS shell/subpage_shapes_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 90)

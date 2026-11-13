@@ -432,6 +432,127 @@ const char* strings_en(StrId id) {
             return "Display & sound";
         case StrId::SettingsGroupPower:
             return "Screen & power";
+        case StrId::SettingsGroupModels:
+            return "Models";
+        case StrId::ModelLlm:
+            return "Chat model";
+        case StrId::ModelAsr:
+            return "Speech recognition";
+        case StrId::ModelTts:
+            return "Speech synthesis";
+        case StrId::ModelNone:
+            return "Not configured";
+        case StrId::ModelCurrent:
+            return "Active";
+        case StrId::ModelTest:
+            return "Test connection";
+        case StrId::ModelActivate:
+            return "Activate";
+        case StrId::ModelTestOk:
+            return "Connection successful";
+        case StrId::ModelTestTimeout:
+            return "Connection timed out";
+        case StrId::ModelTestNetwork:
+            return "Cannot reach the service. Check the network.";
+        case StrId::ModelTestTls:
+            return "Secure connection failed. Check the service URL and certificate.";
+        case StrId::ModelTestAuth:
+            return "Authentication failed. Check the key in the admin console.";
+        case StrId::ModelTestNoList:
+            return "The service does not provide a model list";
+        case StrId::ModelTestHttp:
+            return "Unexpected service response";
+        case StrId::WifiSecured:
+            return "Secured network";
+        case StrId::WifiOpen:
+            return "Open network";
+        case StrId::WifiNotFound:
+            return "Network not found. Scan again.";
+        case StrId::ModelTestFailed:
+            return "Connection failed. Check the admin console.";
+        case StrId::ModelActivated:
+            return "Activated";
+        case StrId::ModelManageHint:
+            return "Add or edit providers in the browser admin console. Connection tests check the "
+                   "service and model list.";
+        case StrId::ConnectionBusy:
+            return "Working…";
+        case StrId::ConnectionFailed:
+            return "Operation failed. Try again.";
+        case StrId::ConnectionUnavailable:
+            return "Unavailable";
+        case StrId::ModelManage:
+            return "Manage providers";
+        case StrId::WifiNearby:
+            return "Nearby networks";
+        case StrId::WifiStrong:
+            return "Strong signal";
+        case StrId::WifiWeak:
+            return "Weak signal";
+        case StrId::WifiShowPassword:
+            return "Show";
+        case StrId::WifiDisconnect:
+            return "Disconnect";
+        case StrId::WifiChannel:
+            return "Channel";
+        case StrId::WifiBssid:
+            return "Access point (BSSID)";
+        case StrId::WifiSubnet:
+            return "Subnet mask";
+        case StrId::WifiGateway:
+            return "Router";
+        case StrId::WifiDns:
+            return "DNS server";
+        case StrId::WifiMac:
+            return "Device address (MAC)";
+        case StrId::WifiIpAddress:
+            return "IP address";
+        case StrId::WifiSignal:
+            return "Signal";
+        case StrId::WifiSecurity:
+            return "Security";
+        case StrId::WifiDetails:
+            return "Details";
+        case StrId::WifiScanning:
+            return "Scanning…";
+        case StrId::WifiPasswordLength:
+            return "8-63 chars";
+        case StrId::WifiHidePassword:
+            return "Hide";
+        case StrId::WifiEnabled:
+            return "Wi-Fi";
+        case StrId::WifiScan:
+            return "Scan networks";
+        case StrId::WifiSetupPhone:
+            return "Set up with phone";
+        case StrId::WifiSaved:
+            return "Saved";
+        case StrId::WifiAuthFailed:
+            return "Incorrect password. Enter it again.";
+        case StrId::WifiConnect:
+            return "Connect";
+        case StrId::WifiPassword:
+            return "Password";
+        case StrId::WifiChangePassword:
+            return "Re-enter password";
+        case StrId::WifiPasswordInvalid:
+            return "Password must be 8-63 characters";
+        case StrId::WifiCancel:
+            return "Cancel";
+        case StrId::WifiOff:
+            return "Wi-Fi is off";
+        case StrId::WifiConnected:
+            return "Connected";
+        case StrId::WifiConnecting:
+            return "Connecting";
+        case StrId::WifiDisconnected:
+            return "Disconnected";
+        case StrId::WifiEmpty:
+            return "No networks found. Scan again or set up with your phone.";
+        case StrId::WifiScanFailed:
+            return "Scan failed. Try again.";
+        case StrId::WifiScheduled:
+            return "Connection started";
         case StrId::SettingsGroupNetwork:
             return "Network";
         case StrId::SettingsGroupLangTime:
@@ -446,10 +567,6 @@ const char* strings_en(StrId id) {
             return "Deep standby";
         case StrId::SettingsHours:
             return "{} h";
-        case StrId::SettingsLightSleep:
-            return "Power-saving sleep";
-        case StrId::SettingsLightSleepHint:
-            return "Lets the chip light-sleep in deep standby to save power";
         case StrId::SettingsLanguage:
             return "Language";
         case StrId::SettingsTimeZone:

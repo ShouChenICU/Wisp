@@ -317,11 +317,19 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
 // spec 4.1 and 5.4: power/deep_after_s (0 never, else 60-3600, default
 // 300), power/light_sleep (a boolean, default true) and audio/notify_vol
 // (0-100, default 60).
+TEST(SystemSettings, LightSleepIsNotARuntimeSetting) {
+    Fixture fx;
+    ASSERT_TRUE(Settings(fx.backend, "power").set("light_sleep", false));
+    EXPECT_EQ(wisp::core::to_map(fx.settings.get()).count("light_sleep"), 0u);
+    auto result = fx.settings.set({{"light_sleep", true}});
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().code, ErrorCode::InvalidArgument);
+}
+
 TEST(SystemSettings, PowerAndNotifyKeys) {
     Fixture fx;
     auto v = fx.settings.get();
     EXPECT_EQ(v.deep_after_s, 300);
-    EXPECT_TRUE(v.light_sleep);
     EXPECT_EQ(v.notify_vol, 60);
 
     for (int ok : {0, 60, 900, 3600}) {
@@ -336,20 +344,6 @@ TEST(SystemSettings, PowerAndNotifyKeys) {
         EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
     }
     EXPECT_EQ(fx.settings.get().deep_after_s, 3600);
-
-    ASSERT_TRUE(fx.settings.set({{"light_sleep", false}}));
-    EXPECT_FALSE(fx.settings.get().light_sleep);
-    EXPECT_FALSE(Settings(fx.backend, "power").get_bool("light_sleep", true));
-    EXPECT_FALSE(fx.changed.back().light_sleep);
-    for (const wisp::Value& bad :
-         {wisp::Value(1), wisp::Value(0), wisp::Value("true"), wisp::Value(wisp::List{})}) {
-        auto r = fx.settings.set({{"light_sleep", bad}});
-        ASSERT_FALSE(r);
-        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
-    }
-    EXPECT_FALSE(fx.settings.get().light_sleep);
-    ASSERT_TRUE(fx.settings.set({{"light_sleep", true}}));
-    EXPECT_TRUE(fx.settings.get().light_sleep);
 
     for (int ok : {0, 35, 100}) {
         ASSERT_TRUE(fx.settings.set({{"notify_vol", ok}})) << ok;
@@ -370,12 +364,10 @@ TEST(SystemSettings, PowerAndNotifyKeys) {
     ASSERT_TRUE(Settings(fx.backend, "audio").set("notify_vol", int64_t{500}));
     v = fx.settings.get();
     EXPECT_EQ(v.deep_after_s, 300);
-    EXPECT_TRUE(v.light_sleep);
     EXPECT_EQ(v.notify_vol, 60);
 
     auto map = wisp::core::to_map(v);
     EXPECT_EQ(map.at("deep_after_s"), wisp::Value(300));
-    EXPECT_EQ(map.at("light_sleep"), wisp::Value(true));
     EXPECT_EQ(map.at("notify_vol"), wisp::Value(60));
 }
 

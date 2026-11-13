@@ -909,6 +909,13 @@ lv_obj_t* SystemLayer::open_confirm(StrId title, const std::string& text,
     return box;
 }
 
+lv_obj_t* SystemLayer::open_dialog() {
+    if (confirm_box_) return nullptr;
+    confirm_box_ = lv_msgbox_create(nullptr);
+    lv_obj_set_width(confirm_box_, std::min(kConfirmMaxWidth, width_of(safe_)));
+    return confirm_box_;
+}
+
 void SystemLayer::close_confirm(lv_obj_t* box) {
     if (box == nullptr || box != confirm_box_) return;
     lv_msgbox_close(box);
@@ -934,7 +941,18 @@ void SystemLayer::raise() {
         if (piece != nullptr) lv_obj_move_foreground(piece);
     }
     // The dialog's backdrop holds the box.
-    if (confirm_box_ != nullptr) lv_obj_move_foreground(lv_obj_get_parent(confirm_box_));
+    if (confirm_box_ != nullptr) {
+        lv_obj_move_foreground(lv_obj_get_parent(confirm_box_));
+        // A form's keyboard must remain touchable above its modal backdrop.
+        if (ta_ != nullptr && lv_obj_is_valid(ta_)) {
+            for (auto* o = ta_; o != nullptr; o = lv_obj_get_parent(o)) {
+                if (o != confirm_box_) continue;
+                if (kb_) lv_obj_move_foreground(kb_);
+                if (candidates_) lv_obj_move_foreground(candidates_);
+                break;
+            }
+        }
+    }
 }
 
 }  // namespace wisp::ui

@@ -86,7 +86,7 @@ bool holds(wisp::core::WakeLockRegistry& locks, const std::string& holder) {
 }
 
 struct Rig {
-    Rig() {
+    explicit Rig(bool with_power = false) {
         wisp::log::reset_for_test();
         wisp::log::init(64 * 1024);
         registry.add(std::make_shared<FakeStorage>("storage.int", dir, /*removable=*/false));
@@ -136,6 +136,12 @@ struct Rig {
         EXPECT_TRUE(http->start());
         http->set_hosts("s", {"api.example.com"});
 
+        if (with_power) {
+            power = std::make_shared<wisp::test::FakePower>("power.main");
+            registry.add(power);
+            monitor = std::make_unique<wisp::core::PowerMonitor>(
+                bus, power, wisp::core::Settings(*backend, "power"));
+        }
         net = std::make_unique<wisp::app::NetWiring>(wisp::app::NetWiringDeps{
             .platform = platform,
             .registry = registry,
@@ -144,6 +150,7 @@ struct Rig {
             .storage = *storage,
             .models = *models,
             .system_settings = *system_settings,
+            .power_monitor = monitor.get(),
             .power_manager = pm.get(),
             .wakelocks = &locks,
             .scene_http = http.get(),
@@ -185,6 +192,8 @@ struct Rig {
     wisp::core::BootReport report;
     wisp::core::WakeLockRegistry locks{bus};
     std::shared_ptr<FakeWifi> wifi;
+    std::shared_ptr<wisp::test::FakePower> power;
+    std::unique_ptr<wisp::core::PowerMonitor> monitor;
     std::unique_ptr<wisp::core::StorageManager> storage;
     std::unique_ptr<wisp::port::sim::JsonFileSettingsBackend> backend;
     std::unique_ptr<wisp::core::ModelProfileService> models;
@@ -288,3 +297,84 @@ TEST(NetWiring, NetworkWindowDeliversADeferredRequest) {
 }
 
 }  // namespace
+
+TEST(NetWiring, ExternalPowerKeepsNetworkWithoutWakingScreenAndUserOffWins) {
+    Rig r(true);
+    // Full battery still counts as plugged in; the baseline emits no event.
+    r.power->set_status({.battery_percent = 100, .charging = false, .usb_present = true});
+    r.monitor->sample();
+    r.net->start();
+    ASSERT_TRUE(wait_until([&] { return holds(r.locks, "system.powered_wifi"); }, 5000));
+    ASSERT_TRUE(
+        wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Connected; }, 5000));
+    r.pm->enter_standby();
+    r.pm->tick(wisp::os::now_ms() + 3'600'000);
+    EXPECT_EQ(r.pm->level(), PowerLevel::Standby);
+    EXPECT_TRUE(r.wifi->radio_on.load());
+    ASSERT_TRUE(r.net->wifi()->set_enabled(false, wisp::os::now_ms()));
+    ASSERT_TRUE(wait_until([&] { return !holds(r.locks, "system.powered_wifi"); }, 5000));
+    EXPECT_FALSE(r.wifi->radio_on.load());
+    r.pm->exit_standby();
+    wisp::os::sleep_ms(300);
+    EXPECT_FALSE(r.wifi->radio_on.load());
+    ASSERT_TRUE(r.net->wifi()->set_enabled(true, wisp::os::now_ms()));
+    ASSERT_TRUE(wait_until([&] { return holds(r.locks, "system.powered_wifi"); }, 5000));
+    r.power->set_status({.battery_percent = 100, .usb_present = false});
+    r.monitor->sample();
+    ASSERT_TRUE(wait_until([&] { return !holds(r.locks, "system.powered_wifi"); }, 5000));
+}
+
+TEST(NetWiring, SettingsWorkerIsSeparateAndStopsBeforeServices) {
+    Rig r;
+    r.net->start();
+    wisp::os::Semaphore done{1, 0};
+    ASSERT_TRUE(r.net->submit_settings([&] {
+        EXPECT_NE(r.net->wifi(), nullptr);
+        done.give();
+    }));
+    EXPECT_TRUE(done.take(2000));
+    r.net->stop();
+    EXPECT_FALSE(r.net->submit_settings([] {}));
+}
+
+TEST(NetWiring, PluggingInDuringDeepStandbyRestoresNetworkAndUnknownPowerReleasesOnlyOwnLock) {
+    Rig r(true);
+    r.net->start();  // No baseline yet: unknown power must not hold Wi-Fi on.
+    ASSERT_TRUE(
+        wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Connected; }, 5000));
+    // Link-up precedes the NTP worker acquiring its network lock.
+    ASSERT_TRUE(wait_until([&] { return r.ntp_queries.load() > 0; }, 5000));
+    ASSERT_TRUE(wait_until([&] { return !holds(r.locks, "system.ntp"); }, 5000));
+    EXPECT_FALSE(holds(r.locks, "system.powered_wifi"));
+    r.pm->enter_standby();
+    r.pm->tick(wisp::os::now_ms() + 3'600'000);
+    ASSERT_EQ(r.pm->level(), PowerLevel::DeepStandby);
+    ASSERT_TRUE(wait_until([&] { return !r.wifi->radio_on.load(); }, 5000));
+    r.power->set_status({.battery_percent = 70, .charging = true, .usb_present = true});
+    r.monitor->sample();
+    ASSERT_TRUE(wait_until(
+        [&] { return r.pm->level() == PowerLevel::Standby && r.wifi->radio_on.load(); }, 5000));
+    wisp::core::WakeLock other(r.locks, "test.other", wisp::core::WakeLockKind::Network,
+                               "transfer");
+    r.power->set_next_error(wisp::ErrorCode::DeviceFailure);
+    r.monitor->sample();
+    ASSERT_TRUE(wait_until([&] { return !holds(r.locks, "system.powered_wifi"); }, 5000));
+    EXPECT_TRUE(holds(r.locks, "test.other"));
+    EXPECT_EQ(r.pm->level(), PowerLevel::Standby);
+}
+
+TEST(NetWiring, SettingsWorkerRejectsOverflowWithoutBlockingCaller) {
+    Rig r;
+    r.net->start();
+    wisp::os::Semaphore entered{1, 0}, release{1, 0};
+    std::atomic<int> completed{0};
+    ASSERT_TRUE(r.net->submit_settings([&] {
+        entered.give();
+        (void)release.take(wisp::os::kForever);
+    }));
+    EXPECT_TRUE(entered.take(2000));
+    for (int i = 0; i < 4; ++i) EXPECT_TRUE(r.net->submit_settings([&] { ++completed; }));
+    EXPECT_FALSE(r.net->submit_settings([] {}));
+    release.give();
+    EXPECT_TRUE(wait_until([&] { return completed.load() == 4; }, 2000));
+}

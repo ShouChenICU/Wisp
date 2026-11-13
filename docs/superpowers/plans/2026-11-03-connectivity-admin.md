@@ -140,6 +140,11 @@ TEST(ErrorCode, NewCodesHaveNames) {
 
 ---
 
+### 网络详情快照修订（2026-11-13）
+
+- 根据连接 UX 设计追加可选 `WifiDetails`，ESP 扫描提供无线信息，链路轮询提供地址配置；服务按最强信号选择扫描详情并在离开连接状态时清空。
+- 扩展 FakeWifi 与服务回归测试，覆盖元数据去重、连接传播与断开清除；既有事件及 REST 输出不新增敏感字段。
+
 ### Task 3: `hal::Wifi` 接口与 `FakeWifi`
 
 **Files:**

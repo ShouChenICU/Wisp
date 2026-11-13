@@ -58,7 +58,8 @@ struct StatusShellDeps {
     // Null: no scenes (none counted, no scene rows).
     scene::SceneRuntime* scenes = nullptr;
     // The same as SceneRuntimeDeps::device_status: {"battery": {"percent",
-    // "charging"} or nil, "wifi": WifiState name}. Called on the UI thread,
+    // "charging"} or nil, "wifi": WifiState name, "wifi_enabled": bool}.
+    // A disabled radio hides the Wi-Fi item. Called on the UI thread,
     // so it must not touch flash. Empty: no battery or Wi-Fi item.
     std::function<Value()> device_status;
     // The time zone, minutes east of UTC. Called on the UI thread, so it
@@ -107,7 +108,7 @@ private:
     std::shared_ptr<State> state_;
     bool started_ = false;
     // scene.state, notification.*, power.state.
-    core::SubscriptionId subs_[3] = {};
+    core::SubscriptionId subs_[4] = {};
 };
 
 }  // namespace wisp::app

@@ -107,7 +107,6 @@ void merge_settings(core::SystemSettingsValues& v, const Map& m) {
     get_int("utc_offset_min", v.utc_offset_min);
     get_str("ntp_servers", v.ntp_servers);
     get_int("deep_after_s", v.deep_after_s);
-    get_bool("light_sleep", v.light_sleep);
     get_int("notify_vol", v.notify_vol);
     get_bool("tts_mute", v.tts_mute);
     get_bool("time_24h", v.time_24h);
@@ -513,7 +512,8 @@ Result<void> App::start() {
     // wisp.device.info() and the panel's header. Runs on the scene task
     // and the UI thread, neither of which may touch flash: PowerMonitor's
     // last sample (a copy under its lock) and the net task's Wi-Fi snapshot
-    // (an atomic), never a read of the power chip, Settings or a file. Both
+    // (an atomic) and the service's cached enabled flag, never a read of
+    // the power chip, Settings or a file. Both
     // pointers are set before the runtime and the status shell start and
     // reset only after they have stopped.
     std::function<Value()> device_status;
@@ -533,6 +533,7 @@ Result<void> App::start() {
             if (std::optional<net::WifiState> wifi =
                     impl->net ? impl->net->wifi_state() : std::nullopt) {
                 status.emplace("wifi", Value(net::to_string(*wifi)));
+                status.emplace("wifi_enabled", Value(impl->net->wifi()->enabled()));
             }
             return Value(std::move(status));
         };
@@ -770,6 +771,7 @@ Result<void> App::start() {
             .wifi_status = [this]() -> std::string {
                 net::WifiService* w = wifi();
                 if (w == nullptr) return ui::tr(ui::StrId::NetNoHardware);
+                if (!w->enabled()) return ui::tr(ui::StrId::WifiOff);
                 const std::vector<net::SavedNetwork> saved = w->saved_networks();
                 const bool all_rejected =
                     !saved.empty() && std::all_of(saved.begin(), saved.end(),
@@ -799,6 +801,12 @@ Result<void> App::start() {
             .power_off = impl_->duties->can_power_off()
                              ? std::function<void()>([impl] { impl->duties->power_off(); })
                              : nullptr,
+            .wifi = wifi(),
+            .models = &impl->models,
+            .submit_network =
+                [impl](std::function<void()> job) {
+                    return impl->net && impl->net->submit_settings(std::move(job));
+                },
         });
         impl_->ui->run_blocking([impl] {
             impl->duties->start();

@@ -20,3 +20,12 @@ wisp_component(
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_voice wisp_admin wisp_ui wisp_scene
              wisp_agent wisp_shell
 )
+
+option(WISP_ENABLE_LIGHT_SLEEP "Allow automatic light sleep in deep standby" ON)
+if(ESP_PLATFORM)
+    set(wisp_app_target ${COMPONENT_LIB})
+else()
+    set(wisp_app_target wisp_app)
+endif()
+target_compile_definitions(${wisp_app_target} PUBLIC
+    WISP_ENABLE_LIGHT_SLEEP=$<BOOL:${WISP_ENABLE_LIGHT_SLEEP}>)

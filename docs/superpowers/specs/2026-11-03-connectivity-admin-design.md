@@ -142,12 +142,17 @@ HTTPS 与 Flash 加密（子项目 7 评估）、设备自动联网拉取更新�
    └ Provisioning（热点）：与上面的状态并存（APSTA）
 ```
 
+- **手动断开**：`disconnect()` 保留密码与开关状态，取消当前连接和重试；本次运行中暂停自动重连（包括深度待机后唤醒），直到显式连接、用户关闭再开启 Wi-Fi 或重启。射频保持开启，可继续扫描和配网。
 - **连接**：扫描后，在已保存的网络里选信号最强的连接。最多保存 5 个网络。
 - **密码错误**：某个网络**连续 3 次**尝试都因密码错误（`auth_failed`）失败后，才被标记为 `auth_failed`，不再参加自动选择，直到用户重新输入它的密码（重新添加会清除标记并立即直接尝试它）；标记与网络一起存进 `net/wifi.json`，重启后仍然有效。一次握手失败不算数：路由器重启或信道拥挤丢了 EAPOL 帧，看起来和密码错误一样。连续计数只在内存里：连接成功、重新添加（即用户再次选择这个网络）或重启都会让它归零；其他原因的失败（找不到网络、超时等）既不计数也不清零。这样，用户给一个信号更强的网络填错密码，也不会让设备离开原本能用的网络后再也回不来。
 - **全部被拒**：所有已保存的网络都被标记为 `auth_failed` 时，自动尝试不可能成功：设备照常按退避节奏扫描，但状态的 `reason` 报 `auth_failed`、`ssid` 报其中一个网络（优先报在范围内信号最强的），设备屏幕显示"密码被拒绝，请重新配网"（见 8.1）而不是"重试中"，后台网页同样提示重新输入密码。
 - **退避**：每次失败后等待时间翻倍，从 5 秒开始，上限 5 分钟；连接成功后重置。退避期间不打扰前台。
 - **省电**：已连接时默认开启 modem sleep。设备进入待机（`power.state = standby`）超过 Settings `net`/`idle_off_min`（默认 10 分钟）后断开 Wi-Fi，唤醒后自动重连。更细的唤醒锁属于子项目 3。
   - **已被取代**：上面的待机断网规则（含 `net`/`idle_off_min`）已由场景设备 spec（`2026-11-05-scene-device-design.md`）4.1/4.4 取代：Wi-Fi 只在深度待机时关闭，普通待机保持连接；深度待机期间场景的请求排队，由每 15 分钟的联网窗口发出。`idle_off_min` 不再读取，残留在 NVS 里的值无效。
+
+### 4.2.1 网络详情快照
+
+`hal::WifiScanEntry` 与 `hal::WifiLink` 追加可选 `WifiDetails`：BSSID、信道、加密协议，以及已连接链路的网关、子网掩码、DNS、设备 MAC。空字符串或信道 0 表示未报告，不得伪造。`WifiService` 透传至 `ScanResult` / `WifiStatus`，SSID 去重使用最强接入点的元数据；离开 Connected 立即清空链路详情。仅平台适配层读取驱动和网络栈，UI 通过服务快照读取，既有事件及 REST 格式保持兼容。
 
 ### 4.3 配网会话（热点）
 
@@ -178,6 +183,7 @@ Result<WifiStatus> status();                 // state, ssid, ip, rssi
 Result<std::vector<ScanResult>> scan();      // ssid, rssi, auth, 是否已保存
 Result<void> add_network(std::string_view ssid, std::string_view password);
 Result<void> forget_network(std::string_view ssid);
+Result<void> disconnect();                  // 保留配置，暂停自动重连
 Result<void> connect_saved(std::string_view ssid);  // 用保存的密码立即直接尝试；未保存时 NotFound
 std::vector<std::string> saved_ssids();      // 只有 SSID，没有密码
 std::vector<SavedNetwork> saved_networks();  // SSID 与 auth_failed 标记（见 4.2），没有密码

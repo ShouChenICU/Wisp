@@ -104,10 +104,13 @@ protected:
             .router = *router,
             .scenes = rt.get(),
             .device_status =
-                [] {
-                    return Value(Map{{"battery", Value(Map{{"percent", Value(int64_t{80})},
-                                                           {"charging", Value(false)}})},
-                                     {"wifi", Value("connected")}});
+                [this] {
+                    return Value(Map{
+                        {"battery",
+                         Value(Map{{"percent", Value(int64_t{80})}, {"charging", Value(false)}})},
+                        {"wifi",
+                         Value(wifi_off.load() || wifi_disconnected.load() ? "off" : "connected")},
+                        {"wifi_enabled", Value(!wifi_off.load())}});
                 },
             .utc_offset_min = [] { return 480; },
             .time_24h = [this] { return time_24h.load(); },
@@ -240,6 +243,8 @@ protected:
     std::unique_ptr<StatusShell> shell;
     std::atomic<int64_t> wall{0};
     std::atomic<bool> time_24h{true};
+    std::atomic<bool> wifi_off{false};
+    std::atomic<bool> wifi_disconnected{false};
 };
 
 TEST_F(StatusShellTest, CapsuleCountsFollowScenesAndNotifications) {
@@ -537,3 +542,20 @@ TEST_F(StatusShellTest, StopUninstalls) {
 }
 
 }  // namespace
+
+TEST_F(StatusShellTest, DisabledWifiHasNoPanelIndicator) {
+    start_shell();
+    on_ui([&] { EXPECT_FALSE(shell->panel_model().header.wifi.empty()); });
+    open_panel();
+    EXPECT_TRUE(panel_has(wisp::ui::tr(StrId::NetConnected)));
+    wifi_off = true;
+    bus.publish(wisp::core::Event{"net.wifi.state", "net.wifi", 0, {}});
+    EXPECT_TRUE(wait_until([&] { return !panel_has(wisp::ui::tr(StrId::NetConnected)); }, 2000));
+    on_ui([&] { EXPECT_TRUE(shell->panel_model().header.wifi.empty()); });
+}
+
+TEST_F(StatusShellTest, EnabledButDisconnectedWifiRetainsPanelIndicator) {
+    start_shell();
+    wifi_disconnected = true;
+    on_ui([&] { EXPECT_EQ(shell->panel_model().header.wifi, wisp::ui::tr(StrId::NetOff)); });
+}

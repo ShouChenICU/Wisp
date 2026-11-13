@@ -1145,8 +1145,9 @@ TEST(PowerManager, DeepStandbyAfterDeepAfterS) {
     EXPECT_EQ(h.states(), (Strings{"standby", "deep_standby"}));
     EXPECT_EQ(h.log->take(), (Strings{"imu.main:standby", "imu.main:deep_standby"}));
     EXPECT_FALSE(off->powered());
-    EXPECT_EQ(h.light_sleep(), (std::vector<bool>{true}));
-    EXPECT_TRUE(h.pm->light_sleep_on());
+    EXPECT_EQ(h.light_sleep(),
+              (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true} : std::vector<bool>{}));
+    EXPECT_EQ(h.pm->light_sleep_on(), bool(WISP_ENABLE_LIGHT_SLEEP));
 }
 
 TEST(PowerManager, DeepAfterZeroNeverGoesDeep) {
@@ -1175,41 +1176,38 @@ TEST(PowerManager, NetworkLockBlocksAndLeavesDeepStandby) {
     EXPECT_FALSE(h.pm->light_sleep_on());
     h.locks.release(window);
     EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
-    EXPECT_TRUE(h.pm->light_sleep_on());
+    EXPECT_EQ(h.pm->light_sleep_on(), bool(WISP_ENABLE_LIGHT_SLEEP));
 
     EXPECT_EQ(h.states(), (Strings{"standby", "deep_standby", "standby", "deep_standby"}));
 }
 
-TEST(PowerManager, LightSleepFollowsCpuLockAndSetting) {
+TEST(PowerManager, LightSleepFollowsCpuLockAndIgnoresLegacySetting) {
     Headless h;
     EXPECT_TRUE(h.pm->light_sleep_supported());
     h.go_deep();
-    EXPECT_EQ(h.light_sleep(), (std::vector<bool>{true}));
+    EXPECT_EQ(h.light_sleep(),
+              (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true} : std::vector<bool>{}));
 
     uint32_t cpu = h.locks.acquire("system.ota", WakeLockKind::Cpu, "firmware update");
-    EXPECT_EQ(h.light_sleep(), (std::vector<bool>{true, false}));
+    EXPECT_EQ(h.light_sleep(),
+              (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true, false} : std::vector<bool>{}));
     EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);  // cpu locks keep Wi-Fi off
     h.locks.release(cpu);
-    EXPECT_EQ(h.light_sleep(), (std::vector<bool>{true, false, true}));
+    EXPECT_EQ(h.light_sleep(), (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true, false, true}
+                                                        : std::vector<bool>{}));
 
     h.pm->exit_standby();
-    EXPECT_EQ(h.light_sleep(), (std::vector<bool>{true, false, true, false}));
+    EXPECT_EQ(h.light_sleep(),
+              (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true, false, true, false}
+                                       : std::vector<bool>{}));
     EXPECT_FALSE(h.pm->light_sleep_on());
 
-    // With power/light_sleep off, deep standby never turns it on.
+    // A legacy setting no longer overrides the compiled policy.
     ASSERT_TRUE(Settings(*h.backend, "power").set("light_sleep", false));
     h.settings_changed();
     h.go_deep();
     EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
-    EXPECT_EQ(h.light_sleep().size(), 4u);
-    EXPECT_FALSE(h.pm->light_sleep_on());
-
-    // Turning it back on takes effect at the next tick.
-    ASSERT_TRUE(Settings(*h.backend, "power").set("light_sleep", true));
-    h.settings_changed();
-    h.pm->tick(wisp::os::now_ms());
-    EXPECT_EQ(h.light_sleep().back(), true);
-    EXPECT_TRUE(h.pm->light_sleep_on());
+    EXPECT_EQ(h.pm->light_sleep_on(), bool(WISP_ENABLE_LIGHT_SLEEP));
 }
 
 TEST(PowerManager, NoLightSleepHookStillGoesDeep) {
@@ -1267,7 +1265,8 @@ TEST(PowerManager, WakeFromDeepStandbyRestoresAll) {
     EXPECT_FALSE(f.touch->powered());
     EXPECT_FALSE(f.imu->powered());
     EXPECT_TRUE(f.ui->paused());
-    EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true}));
+    EXPECT_EQ(f.light_sleep_calls,
+              (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true} : std::vector<bool>{}));
 
     f.run_on_ui([&] { f.pm->exit_standby(); });
     EXPECT_EQ(f.pm->level(), PowerLevel::Active);
@@ -1278,7 +1277,8 @@ TEST(PowerManager, WakeFromDeepStandbyRestoresAll) {
     EXPECT_TRUE(out->powered());
     EXPECT_FALSE(f.ui->paused());
     EXPECT_FALSE(f.sd_storage->standby());
-    EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true, false}));
+    EXPECT_EQ(f.light_sleep_calls,
+              (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true, false} : std::vector<bool>{}));
     EXPECT_EQ(log->take(), (Strings{"audio_in.main:standby", "audio_out.main:standby",
                                     "audio_in.main:deep_standby", "audio_out.main:deep_standby",
                                     "audio_out.main:active", "audio_in.main:active"}));
@@ -1355,17 +1355,20 @@ TEST(PowerManager, LockChangesWithUiRunAsAUiJob) {
     f.pm->tick(t0 + 60050 + 300000);
     f.drain_ui();
     ASSERT_EQ(f.pm->level(), PowerLevel::DeepStandby);
-    ASSERT_EQ(f.light_sleep_calls, (std::vector<bool>{true}));
+    ASSERT_EQ(f.light_sleep_calls,
+              (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true} : std::vector<bool>{}));
 
     // From the test thread.
     uint32_t net = f.locks.acquire("system.upload", WakeLockKind::Network, "scene upload");
     f.drain_ui();
     EXPECT_EQ(f.pm->level(), PowerLevel::Standby);
-    EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true, false}));
+    EXPECT_EQ(f.light_sleep_calls,
+              (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true, false} : std::vector<bool>{}));
     f.locks.release(net);
     f.drain_ui();
     EXPECT_EQ(f.pm->level(), PowerLevel::DeepStandby);
-    EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true, false, true}));
+    EXPECT_EQ(f.light_sleep_calls, (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true, false, true}
+                                                            : std::vector<bool>{}));
 
     // From the UI task: still a job of its own, not run inside acquire().
     f.run_on_ui([&] { f.pm->exit_standby(); });
@@ -1421,7 +1424,8 @@ TEST(PowerManager, LockChangesCoalesceIntoOneEvaluation) {
     f.drain_ui();
     EXPECT_EQ(f.pm->level(), PowerLevel::Standby);
     // One evaluation saw the final state: light sleep off once, no flapping.
-    EXPECT_EQ(f.light_sleep_calls, (std::vector<bool>{true, false}));
+    EXPECT_EQ(f.light_sleep_calls,
+              (WISP_ENABLE_LIGHT_SLEEP ? std::vector<bool>{true, false} : std::vector<bool>{}));
 }
 
 // A device that takes or releases a wake lock inside set_power() -- in the

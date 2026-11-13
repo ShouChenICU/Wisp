@@ -7,8 +7,7 @@
 //     spoken replies (a switch, on while tts_mute is off);
 //   - screen and power: when the screen goes off (kScreenOffChoices, "never"
 //     being 0) and when deep standby starts (kDeepStandbyChoices), each a
-//     value row opening a choice page; power-saving sleep (light_sleep) as
-//     a switch with a line saying what it does;
+//     value row opening a choice page;
 //   - network: Wi-Fi, its status; a tap starts the device's own
 //     provisioning (WifiService::start_provisioning(); the card itself is
 //     the system duties');
@@ -48,6 +47,7 @@
 
 #include "lvgl.h"
 #include "wisp/base/value.hpp"
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/shell/choice_page.hpp"
 #include "wisp/ui/strings.hpp"
@@ -74,6 +74,8 @@ struct SettingsDeps {
     ui::SystemLayer* layer = nullptr;
     // The storage worker; empty: set_settings runs here.
     std::function<bool(std::function<void()>)> submit_io;
+    std::function<void(core::ModelKind)> open_model;
+    std::function<std::string(core::ModelKind)> model_name;
 };
 
 struct TimeZoneChoice {
@@ -123,6 +125,9 @@ public:
         // nullptr rows when SettingsDeps cannot do them.
         Restart,
         PowerOff,
+        ModelLlm,
+        ModelAsr,
+        ModelTts,
         Count,
     };
 
@@ -135,7 +140,6 @@ public:
     lv_obj_t* volume_value() const { return volume_value_; }
     lv_obj_t* notify_value() const { return notify_value_; }
     lv_obj_t* speak() const { return speak_; }
-    lv_obj_t* light_sleep() const { return light_sleep_; }
     lv_obj_t* row(Row r) const { return rows_[static_cast<size_t>(r)].row; }
     // nullptr for the rows that show no value (diagnostics, restart, power
     // off).
@@ -178,7 +182,6 @@ private:
     lv_obj_t* volume_value_ = nullptr;
     lv_obj_t* notify_value_ = nullptr;
     lv_obj_t* speak_ = nullptr;
-    lv_obj_t* light_sleep_ = nullptr;
     std::array<RowParts, static_cast<size_t>(Row::Count)> rows_{};
     std::vector<lv_obj_t*> headings_, cards_;
     lv_timer_t* timer_ = nullptr;

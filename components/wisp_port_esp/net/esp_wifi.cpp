@@ -1,6 +1,7 @@
 #include "wisp/port/esp/esp_wifi.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <utility>
@@ -93,6 +94,51 @@ std::string ip_string(uint32_t network_order) {
     esp_ip4_addr_t addr = {network_order};
     esp_ip4addr_ntoa(&addr, buf, sizeof(buf));
     return buf;
+}
+
+std::string mac_string(const uint8_t* mac) {
+    char buf[18];
+    snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3],
+             mac[4], mac[5]);
+    return buf;
+}
+
+hal::WifiDetails ap_details(const wifi_ap_record_t& ap) {
+    hal::WifiDetails details;
+    details.bssid = mac_string(ap.bssid);
+    details.channel = ap.primary;
+    switch (ap.authmode) {
+        case WIFI_AUTH_OPEN:
+            details.security = "Open";
+            break;
+        case WIFI_AUTH_WEP:
+            details.security = "WEP";
+            break;
+        case WIFI_AUTH_WPA_PSK:
+            details.security = "WPA-Personal";
+            break;
+        case WIFI_AUTH_WPA2_PSK:
+            details.security = "WPA2-Personal";
+            break;
+        case WIFI_AUTH_WPA_WPA2_PSK:
+            details.security = "WPA/WPA2-Personal";
+            break;
+        case WIFI_AUTH_WPA2_ENTERPRISE:
+            details.security = "WPA2-Enterprise";
+            break;
+        case WIFI_AUTH_WPA3_PSK:
+            details.security = "WPA3-Personal";
+            break;
+        case WIFI_AUTH_WPA2_WPA3_PSK:
+            details.security = "WPA2/WPA3-Personal";
+            break;
+        case WIFI_AUTH_OWE:
+            details.security = "OWE";
+            break;
+        default:
+            break;
+    }
+    return details;
 }
 
 // Zeroes a config that held a password before it leaves the stack.
@@ -404,6 +450,7 @@ Result<std::vector<hal::WifiScanEntry>> EspWifi::scan() {
         hal::WifiScanEntry e;
         e.ssid.assign(ssid, strnlen(ssid, kMaxSsid));
         e.rssi = r.rssi;
+        e.details = ap_details(r);
         // OWE ("enhanced open") needs no password either.
         e.secured = r.authmode != WIFI_AUTH_OPEN && r.authmode != WIFI_AUTH_OWE;
         out.push_back(std::move(e));
@@ -480,7 +527,22 @@ hal::WifiLink EspWifi::link() {
     }
     if (out.state == hal::WifiLinkState::Connected) {
         wifi_ap_record_t ap = {};
-        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) out.rssi = ap.rssi;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            out.rssi = ap.rssi;
+            out.details = ap_details(ap);
+        }
+        esp_netif_ip_info_t ip{};
+        if (esp_netif_get_ip_info(impl_->sta, &ip) == ESP_OK) {
+            out.details.gateway = ip_string(ip.gw.addr);
+            out.details.netmask = ip_string(ip.netmask.addr);
+        }
+        esp_netif_dns_info_t dns{};
+        if (esp_netif_get_dns_info(impl_->sta, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK &&
+            dns.ip.type == ESP_IPADDR_TYPE_V4) {
+            out.details.dns = ip_string(dns.ip.u_addr.ip4.addr);
+        }
+        uint8_t mac[6]{};
+        if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) out.details.mac = mac_string(mac);
         // Started here rather than from the event handler: mdns_init()
         // creates a task and registers handlers, more than the small
         // default event loop stack should be asked to carry. The caller

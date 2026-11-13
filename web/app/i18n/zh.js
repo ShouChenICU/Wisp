@@ -552,7 +552,6 @@ export default {
   'sys.deep_after': '灭屏多久后进入深度待机',
   'sys.deep_after_hint': '深度待机会关闭 Wi-Fi 以省电；只要有网络唤醒锁（包括打开着的本页）就不会进入。',
   'sys.deep_never': '永不',
-  'sys.light_sleep': '深度待机时允许浅睡眠',
   'power.title': '电源',
   'power.level.active': '活动',
   'power.level.dim': '变暗',

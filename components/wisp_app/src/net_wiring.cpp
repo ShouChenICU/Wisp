@@ -1,6 +1,7 @@
 #include "net_wiring.hpp"
 
 #include <algorithm>
+#include <mutex>
 #include <string>
 #include <utility>
 
@@ -8,6 +9,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/clock.hpp"
+#include "wisp/hal/power.hpp"
 #include "wisp/hal/wifi.hpp"
 
 namespace wisp::app {
@@ -170,11 +172,36 @@ void NetWiring::start() {
         reconcile_http(now);  // http_always_on serves from boot
     }
 
+    if (auto power = deps_.registry.get<hal::Power>("power.main")) {
+        const auto& caps = power->info().caps;
+        auto it = caps.find("charging_status");
+        reports_external_power_ =
+            it != caps.end() && it->second.type() == Value::Type::Bool && it->second.as_bool();
+    }
     stopping_.store(false);
+    {
+        std::lock_guard lock(settings_mutex_);
+        settings_accepting_ = true;
+    }
+    settings_task_ =
+        os::Task::spawn({.name = "wisp.netcfg", .stack_bytes = 16384}, [this] { run_settings(); });
+    {
+        std::lock_guard lock(settings_mutex_);
+        settings_accepting_ = settings_task_ != nullptr;
+    }
     task_ = os::Task::spawn({.name = "wisp.net", .stack_bytes = 6144}, [this] { run(); });
 }
 
 void NetWiring::stop() {
+    {
+        std::lock_guard lock(settings_mutex_);
+        settings_accepting_ = false;
+    }
+    if (settings_task_) {
+        settings_wake_.give();
+        settings_task_->join();
+        settings_task_.reset();
+    }
     if (task_) {
         stopping_.store(true);
         wake_.give();
@@ -204,6 +231,7 @@ void NetWiring::stop() {
     for (core::SubscriptionId id : subscriptions_) deps_.bus.unsubscribe(id);
     subscriptions_.clear();
     hotspot_lock_.release();
+    powered_lock_.release();
     window_.reset();
     sta_up_.store(false);
     ap_up_.store(false);
@@ -230,6 +258,7 @@ void NetWiring::run() {
     while (!stopping_.load()) {
         const uint64_t now = deps_.now_ms ? deps_.now_ms() : os::now_ms();
         if (wifi_) {
+            reconcile_external_power();
             const hal::PowerLevel level = deps_.power_manager != nullptr
                                               ? deps_.power_manager->level()
                                               : hal::PowerLevel::Active;
@@ -249,6 +278,46 @@ void NetWiring::run() {
         reconcile_http(now);
         (void)wake_.take(kNetTickMs);
     }
+}
+
+bool NetWiring::submit_settings(std::function<void()> job) {
+    std::lock_guard lock(settings_mutex_);
+    if (!settings_accepting_ || settings_jobs_.size() >= 4) return false;
+    settings_jobs_.push_back(std::move(job));
+    settings_wake_.give();
+    return true;
+}
+
+void NetWiring::run_settings() {
+    while (true) {
+        std::function<void()> job;
+        {
+            std::lock_guard lock(settings_mutex_);
+            if (!settings_jobs_.empty()) {
+                job = std::move(settings_jobs_.front());
+                settings_jobs_.pop_front();
+            } else if (!settings_accepting_) {
+                return;
+            }
+        }
+        if (job)
+            job();
+        else
+            (void)settings_wake_.take(os::kForever);
+    }
+}
+
+void NetWiring::reconcile_external_power() {
+    bool plugged = false;
+    if (reports_external_power_ && deps_.power_monitor != nullptr && wifi_->enabled()) {
+        if (auto sample = deps_.power_monitor->last_status()) plugged = sample->usb_present;
+    }
+    if (deps_.wakelocks == nullptr || plugged == powered_lock_.held()) return;
+    if (plugged) {
+        powered_lock_ = core::WakeLock(*deps_.wakelocks, "system.powered_wifi",
+                                       core::WakeLockKind::Network, "external power");
+    } else
+        powered_lock_.release();
 }
 
 void NetWiring::run_ntp() {
