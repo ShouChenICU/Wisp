@@ -35,6 +35,7 @@ wisp_test(NAME draw_buf_policy_test SRCS hal/draw_buf_policy_test.cpp LIBS wisp_
 wisp_test(NAME wifi_types_test SRCS hal/wifi_types_test.cpp LIBS wisp_hal)
 wisp_test(NAME power_level_test SRCS hal/power_level_test.cpp LIBS wisp_hal)
 wisp_test(NAME device_identity_test SRCS hal/device_identity_test.cpp LIBS wisp_hal)
+wisp_test(NAME device_schema_test SRCS hal/device_schema_test.cpp LIBS wisp_hal wisp_base)
 wisp_test(NAME imu_axis_map_test SRCS hal/imu_axis_map_test.cpp LIBS wisp_hal)
 wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
 wisp_test(NAME value_test SRCS base/value_test.cpp LIBS wisp_base)

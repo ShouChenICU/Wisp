@@ -120,6 +120,7 @@ export default {
   'class.audio_in': '麦克风',
   'class.storage': '存储',
   'class.network': '网络',
+  'class.other': '其他',
   'logs.subtitle': '设备运行日志，按需开启实时推送',
   'logs.start': '开始实时日志',
   'logs.stop': '停止',

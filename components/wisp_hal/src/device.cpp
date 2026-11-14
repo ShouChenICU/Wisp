@@ -138,4 +138,12 @@ Result<void> Device::set_power(PowerLevel /*level*/) {
     return Result<void>::err(ErrorCode::Unsupported, "power levels unsupported");
 }
 
+Result<Value> Device::get(std::string_view /*prop*/) {
+    return Result<Value>::err(ErrorCode::Unsupported, "no properties");
+}
+
+Result<Value> Device::invoke(std::string_view /*cmd*/, const Map& /*args*/) {
+    return Result<Value>::err(ErrorCode::Unsupported, "no commands");
+}
+
 }  // namespace wisp::hal

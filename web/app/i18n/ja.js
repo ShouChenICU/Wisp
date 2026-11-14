@@ -120,6 +120,7 @@ export default {
   'class.audio_in': 'マイク',
   'class.storage': 'ストレージ',
   'class.network': 'ネットワーク',
+  'class.other': 'その他',
   'logs.subtitle': 'デバイスの動作ログ。必要なときだけライブで表示します',
   'logs.start': 'ライブログを開始',
   'logs.stop': '停止',

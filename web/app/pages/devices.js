@@ -30,6 +30,7 @@ const KNOWN_CLASSES = new Set([
   'audio_in',
   'storage',
   'network',
+  'other',
 ]);
 const STATE_TONE = { ok: 'ok', degraded: 'warn', missing: 'muted', failed: 'err' };
 

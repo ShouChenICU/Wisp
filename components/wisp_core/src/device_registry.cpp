@@ -8,6 +8,7 @@
 
 #include "wisp/core/log.hpp"
 #include "wisp/hal/button.hpp"
+#include "wisp/hal/device_schema.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/roles.hpp"
 
@@ -79,6 +80,33 @@ bool same_role_scope(const hal::Device& a, const hal::Device& b) {
            std::string_view(id_b).substr(0, id_b.find('.'));
 }
 
+// The schema rules of spec 3.2-3.4 for a device about to be added. The
+// schema is generated from describe(), so caps may not carry one; a
+// Display's calls all belong to the UI thread and a typed device's state
+// changes belong to its service, so neither offers commands.
+Result<void> check_device_schema(const hal::Device& device) {
+    const hal::DeviceInfo& info = device.info();
+    if (info.caps.count("schema") != 0) {
+        return Result<void>::err(
+            ErrorCode::InvalidArgument,
+            info.id + ": caps must not carry \"schema\"; describe() supplies it");
+    }
+    const hal::DeviceSchema* schema = device.describe();
+    if (schema == nullptr) return Result<void>::ok();
+    if (device.interface() == hal::Interface::Display) {
+        return Result<void>::err(ErrorCode::InvalidArgument, info.id + ": a display has no schema");
+    }
+    if (auto checked = hal::check_schema(*schema); !checked) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 info.id + ": " + checked.error().message);
+    }
+    if (device.interface() != hal::Interface::None && !schema->cmds.empty()) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 info.id + ": commands are only for generic devices");
+    }
+    return Result<void>::ok();
+}
+
 }  // namespace
 
 Result<void> DeviceRegistry::add(std::shared_ptr<hal::Device> device) {
@@ -97,6 +125,7 @@ Result<void> DeviceRegistry::add(std::shared_ptr<hal::Device> device) {
             ErrorCode::InvalidArgument,
             info.id + ": a generic device id is <kind>.<name>, at most 32 bytes");
     }
+    if (auto checked = check_device_schema(*device); !checked) return checked;
     std::lock_guard<os::Mutex> lock(mutex_);
     const std::string& id = info.id;
     for (const auto& existing : devices_) {
@@ -168,7 +197,7 @@ Value DeviceRegistry::manifest(const std::string& board) const {
         entry["id"] = info.id;
         entry["class"] = std::string(hal::to_string(info.cls));
         entry["model"] = info.model;
-        entry["caps"] = info.caps;
+        entry["caps"] = hal::caps_of(*device);
         if (info.cls == hal::DeviceClass::Display) {
             auto shape = hal::screen_shape_from_caps(info.caps);
             std::optional<hal::Area> area;

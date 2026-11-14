@@ -14,6 +14,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/boot_report.hpp"
 #include "wisp/hal/device.hpp"
+#include "wisp/hal/device_schema.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/imu.hpp"
 #include "wisp/hal/roles.hpp"
@@ -367,4 +368,102 @@ TEST(DeviceClass, StringRoundTrip) {
     EXPECT_EQ(wisp::hal::class_from_string("other"), wisp::hal::DeviceClass::Other);
     EXPECT_STREQ(wisp::hal::to_string(wisp::hal::DeviceClass::Other), "other");
     EXPECT_FALSE(wisp::hal::class_from_string("gpu").has_value());
+}
+
+namespace {
+
+const wisp::hal::ParamSpec kTempProps[] = {
+    {.name = "temp_c", .type = wisp::hal::ParamType::Number, .unit = "°C"}};
+const wisp::hal::CmdSpec kCalibrate[] = {{.name = "calibrate", .desc = "Calibrate", .args = {}}};
+const wisp::hal::DeviceSchema kTempSchema{.props = kTempProps, .cmds = {}};
+const wisp::hal::DeviceSchema kCalibrateSchema{.props = kTempProps, .cmds = kCalibrate};
+const wisp::hal::CmdSpec kBadCmds[] = {{.name = "Pulse", .desc = "", .args = {}}};
+const wisp::hal::DeviceSchema kBadSchema{.props = {}, .cmds = kBadCmds};
+
+// A typed device that describes itself with `schema`.
+class DescribedImu : public FakeImu {
+public:
+    DescribedImu(std::string id, const wisp::hal::DeviceSchema* schema)
+        : FakeImu(std::move(id)), schema_(schema) {}
+    const wisp::hal::DeviceSchema* describe() const override { return schema_; }
+
+private:
+    const wisp::hal::DeviceSchema* schema_;
+};
+
+class DescribedDisplay : public FakeDisplay {
+public:
+    DescribedDisplay() : FakeDisplay("display.main", 480, 480) {}
+    const wisp::hal::DeviceSchema* describe() const override { return &kTempSchema; }
+};
+
+}  // namespace
+
+TEST(DeviceRegistry, RejectsHandWrittenSchemaCaps) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(std::make_shared<FakeGeneric>("haptic.main", wisp::hal::DeviceClass::Other,
+                                                       wisp::Properties{{"schema", wisp::Map{}}}));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message,
+              "haptic.main: caps must not carry \"schema\"; describe() supplies it");
+    EXPECT_EQ(reg.find("haptic.main"), nullptr);
+}
+
+TEST(DeviceRegistry, RejectsAnInvalidSchema) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(std::make_shared<FakeGeneric>("haptic.main", &kBadSchema));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message,
+              "haptic.main: cmd 'Pulse': name must match [a-z][a-z0-9_]{0,31}");
+    EXPECT_EQ(reg.find("haptic.main"), nullptr);
+}
+
+TEST(DeviceRegistry, RejectsCommandsOnTypedDevices) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(std::make_shared<DescribedImu>("imu.main", &kCalibrateSchema));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message, "imu.main: commands are only for generic devices");
+    EXPECT_EQ(reg.find("imu.main"), nullptr);
+}
+
+TEST(DeviceRegistry, AcceptsPropertiesOnTypedDevices) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(reg.add(std::make_shared<DescribedImu>("imu.main", &kTempSchema)));
+    const wisp::Value manifest = reg.manifest("b");
+    const wisp::Value& entry = manifest.find("devices")->as_list()[0];
+    const wisp::Value* schema = entry.find("caps")->find("schema");
+    ASSERT_NE(schema, nullptr);
+    EXPECT_EQ(schema->find("props")->as_list()[0].find("name")->as_string(), "temp_c");
+    EXPECT_TRUE(schema->find("cmds")->as_list().empty());
+}
+
+TEST(DeviceRegistry, RejectsAnySchemaOnADisplay) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(std::make_shared<DescribedDisplay>());
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message, "display.main: a display has no schema");
+    EXPECT_EQ(reg.find("display.main"), nullptr);
+}
+
+TEST(DeviceRegistry, ManifestRendersTheSchema) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(reg.add(std::make_shared<FakeGeneric>(
+        "haptic.main", &wisp::test::kFakeGenericSchema, wisp::Properties{}, "main")));
+    ASSERT_TRUE(reg.add(std::make_shared<FakeImu>("imu.main")));
+    const wisp::Value manifest = reg.manifest("b");
+    const auto& devices = manifest.find("devices")->as_list();
+    ASSERT_EQ(devices.size(), 2u);
+    const wisp::Value& haptic = devices[0];
+    EXPECT_EQ(haptic.find("id")->as_string(), "haptic.main");
+    EXPECT_EQ(haptic.find("class")->as_string(), "other");
+    EXPECT_EQ(*haptic.find("caps"),
+              wisp::Value(
+                  wisp::Map{{"role", "main"},
+                            {"schema", wisp::hal::render_schema(wisp::test::kFakeGenericSchema)}}));
+    // A device without a schema is unchanged.
+    EXPECT_EQ(devices[1].find("caps")->find("schema"), nullptr);
 }

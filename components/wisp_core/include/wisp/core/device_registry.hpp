@@ -35,6 +35,11 @@ public:
     //     caught here at boot rather than at a cast), and for a generic
     //     device (interface None) whose id is not "<kind>.<name>"
     //     ([a-z][a-z0-9_]*\.[a-z0-9_]+) of at most 32 bytes;
+    //   - InvalidArgument for a device whose caps carry "schema" (it is
+    //     rendered from describe()), whose describe() table fails
+    //     hal::check_schema() ("<id>: <what is wrong>"), that is a Display
+    //     with any schema, or that is typed and describes commands
+    //     ("<id>: commands are only for generic devices", spec 3.4);
     //   - AlreadyExists if a device with the same id is registered, or
     //     ("role <role> already taken by <other id>") if one of its caps
     //     roles is already held by a registered device of the same
@@ -95,7 +100,9 @@ public:
 
     // Builds a manifest Value describing every registered device:
     // {"board": <board>, "devices": [{"id","class","model","caps",
-    // "safe_area"?}, ...]}, devices sorted by id. A Display-class entry's
+    // "safe_area"?}, ...]}, devices sorted by id. "caps" is
+    // hal::caps_of(): info().caps plus "schema" for a device that
+    // describes itself. A Display-class entry's
     // "safe_area" ({"x1","y1","x2","y2"}, int) is derived from its caps
     // via wisp::hal::screen_shape_from_caps()/safe_rect() (spec 5.6); it
     // is omitted if those caps don't even carry a usable width/height (an

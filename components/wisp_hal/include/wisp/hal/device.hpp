@@ -131,6 +131,7 @@ class AudioOut;
 class AudioIn;
 class Storage;
 class Wifi;
+struct DeviceSchema;
 
 class Device {
 public:
@@ -149,6 +150,38 @@ public:
     // state the device is already in must not resend hardware commands.
     // The default reports ErrorCode::Unsupported.
     virtual Result<void> set_power(PowerLevel level);
+
+    // The generic path (spec 3): a device no core service knows describes
+    // its properties and commands with a static table (device_schema.hpp),
+    // and core::DeviceService reaches them through get()/invoke(). The
+    // pointer must stay valid for the device's lifetime; it is normally a
+    // driver's static table, so describing costs no RAM per device. The
+    // defaults (no schema, Unsupported) cost nothing beyond the vtable
+    // slots. A typed device may describe properties only; commands are for
+    // devices whose interface is None, and a Display never has a schema
+    // (DeviceRegistry::add() refuses both).
+    virtual const DeviceSchema* describe() const { return nullptr; }
+
+    // The current value of property `prop`; invoke() runs command `cmd`
+    // and returns null or a small Map. Contract for overrides:
+    //   - Only DeviceService calls them, so `prop`/`cmd` are in the schema
+    //     and `args` is validated against it, with defaults filled
+    //     (validate_args()). Clamp anyway: board code and tests can call a
+    //     driver directly.
+    //   - Called from any task except the UI thread and ISRs, possibly from
+    //     several at once (the service does not serialise calls), so the
+    //     device must be internally thread-safe.
+    //   - Return within kDeviceCallBudgetMs (a bus transaction of a few
+    //     milliseconds is fine). A longer action (a 2 s vibration, a fade)
+    //     is started by the call and finished by the driver itself, e.g.
+    //     with an os::Timer.
+    //   - Never touch flash (AGENTS.md section 5: only wisp.fs does), so no
+    //     Settings or StorageManager either.
+    //   - Errors use the existing codes: DeviceFailure for a bus error,
+    //     Busy while powered down for standby.
+    // The defaults report ErrorCode::Unsupported.
+    virtual Result<Value> get(std::string_view prop);
+    virtual Result<Value> invoke(std::string_view cmd, const Map& args);
 
 protected:
     Device() = default;
