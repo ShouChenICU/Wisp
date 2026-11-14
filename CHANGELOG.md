@@ -2,6 +2,16 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
+## Unreleased
+
+### Changes
+
+- Speech continues once the reply's say block has closed, while the model goes on streaming the rest of the reply.
+- The microphone is primed at the talk key's press and keeps a 500 ms pre-roll, so the first words of a hold are recorded (`VoiceConfig::preroll_ms`; 0 turns priming off). The start tone is part of a primed recording.
+- Recognition waits up to 8 s for a network that is expected (Wi-Fi enabled with a saved network, for example reconnecting after deep standby) instead of failing offline at once.
+
+These are in the voice service only; the shell does not call them yet (that comes in a later change), and the device checks are still pending.
+
 ## 0.5.2 — 2026-11-14
 
 ### Fixes
