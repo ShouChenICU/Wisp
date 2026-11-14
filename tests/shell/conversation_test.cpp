@@ -953,3 +953,100 @@ TEST_F(ConversationTest, ANewTurnClearsTheLastOutcome) {
     EXPECT_TRUE(v.end_reason.empty()) << v.end_reason;
     EXPECT_TRUE(v.end_note.empty());
 }
+
+// --- the say's end and the press -------------------------------------------
+
+// The model goes on writing the body after "</say>": the voice is told the
+// say has closed, so its second sentence is synthesized while the model
+// still streams (without say_closed() it would wait for the stream's end).
+TEST_F(ConversationTest, ClosedSayIsReportedToTheVoice) {
+    start();
+    server.llm().push(llm_text("<say>一。二。</say>正文", /*hold_after=*/1));
+    server.push_tts(tts_pcm());
+    server.push_tts(tts_pcm());
+    ASSERT_TRUE(conv->voice_text("讲"));
+    ASSERT_TRUE(wait_until([&] { return server.llm().held() == 1; }, 3000));
+    ASSERT_TRUE(wait_until([&] { return requests(kTtsPath) == 2; }, 3000));
+    EXPECT_EQ(server.llm().held(), 1);
+    EXPECT_EQ(tts_inputs(), (std::vector<std::string>{"一。", "二。"}));
+    server.release();
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    EXPECT_EQ(text(conv->current().body), "正文");
+}
+
+// Muted: nothing is spoken, so there is no say to report closed; the turn
+// and its round end as usual.
+TEST_F(ConversationTest, MutedTurnDoesNotReportSayClosed) {
+    start();
+    mute = true;
+    server.llm().push(llm_text("<say>一。二。</say>正文", /*hold_after=*/1));
+    ASSERT_TRUE(conv->voice_text("讲"));
+    ASSERT_TRUE(wait_until([&] { return server.llm().held() == 1; }, 3000));
+    wisp::os::sleep_ms(100);
+    EXPECT_EQ(requests(kTtsPath), 0u);
+    server.release();
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    EXPECT_EQ(voice_locks(), 0u);
+    EXPECT_EQ(requests(kTtsPath), 0u);
+    EXPECT_FALSE(saw_state("speaking"));
+    EXPECT_EQ(text(conv->current().say), "一。二。");
+}
+
+// A press opens the mic at once (primed: no state, no lock); one that ends
+// without a hold closes it well before the priming would time out.
+TEST_F(ConversationTest, PressPrimesAndAShortPressUnprimes) {
+    start();
+    // Live silence only: a scripted mic moves the voice's clock as it is
+    // read, which would run the priming out (kPrimeMaxMs) by itself.
+    mic->set_script({});
+    conv->press_begin();
+    ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 1000));
+    EXPECT_EQ(voice_locks(), 0u);
+    conv->press_end();
+    ASSERT_TRUE(wait_until([&] { return !mic->is_open(); }, 500));
+    EXPECT_EQ(mic->opens(), 1);
+    EXPECT_FALSE(voice->capturing());
+    EXPECT_FALSE(conv->holding());
+    EXPECT_TRUE(voice_states().empty());
+    EXPECT_EQ(requests(kAsrPath), 0u);
+}
+
+// A press that becomes a hold: the capture takes the primed mic (opened
+// once), and the press's end leaves the recording alone.
+TEST_F(ConversationTest, PressThenHoldDoesNotUnprime) {
+    start();
+    server.push_asr(asr_text("你好"));
+    server.llm().push(llm_text("<say>好。</say>"));
+    server.push_tts(tts_pcm());
+    say_into_mic();
+    // The fake reads its script as fast as it is read: the words wait for
+    // the hold, as a user's would.
+    mic->hold_at(0);
+    conv->press_begin();
+    ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 1000));
+    conv->hold_begin();
+    // Right after hold_begin(), as the inputs do: the hold took the mic.
+    conv->press_end();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    EXPECT_TRUE(mic->is_open());
+    mic->release();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 3000));
+    conv->hold_end();
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    EXPECT_EQ(mic->opens(), 1);
+    EXPECT_EQ(requests(kAsrPath), 1u);
+    EXPECT_EQ(begins().at(0).text, "你好");
+}
+
+TEST_F(ConversationTest, PressWhenNotReadyDoesNotPrime) {
+    start();
+    ready = Readiness::NoWifi;
+    conv->press_begin();
+    wisp::os::sleep_ms(100);
+    EXPECT_EQ(mic->opens(), 0);
+    conv->press_end();
+    EXPECT_EQ(mic->opens(), 0);
+}

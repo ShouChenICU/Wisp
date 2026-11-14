@@ -817,6 +817,10 @@ protected:
             ms);
     }
 
+    // A mic that only reads live silence, in real time: a scripted one
+    // moves the voice's clock as it is read, which would run a priming
+    // out (kPrimeMaxMs) by itself.
+    void live_mic() { mic->set_script({}); }
     // One touch read: `points` empty is a release.
     void feed(std::vector<wisp::hal::TouchPoint> points) {
         touch_->set_points(std::move(points));
@@ -1116,6 +1120,63 @@ TEST_F(HomeTest, WispTapAndHoldReachTheController) {
     EXPECT_FALSE(conv->holding());
     EXPECT_TRUE(settled());
     EXPECT_EQ(shell_->page(), Page::Home);
+}
+
+// A press on the wisp primes the mic at touch-down; every way the press
+// ends without a hold closes it again, well before the priming would time
+// out (kPrimeMaxMs).
+TEST_F(HomeTest, WispPressPrimesAndAnEarlyReleaseUnprimes) {
+    boot();
+    live_mic();
+    const lv_point_t c = wisp_centre();
+    const wisp::hal::TouchPoint at{static_cast<int16_t>(c.x), static_cast<int16_t>(c.y), 0};
+    feed({at});
+    ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 1000));
+    feed({at});
+    feed({});
+    ASSERT_TRUE(wait_until([&] { return !mic->is_open(); }, 500));
+    EXPECT_FALSE(conv->holding());
+    EXPECT_FALSE(voice->capturing());
+    EXPECT_EQ(mic->opens(), 1);
+}
+
+TEST_F(HomeTest, WispPressThatMovesAwayUnprimes) {
+    boot();
+    live_mic();
+    const lv_point_t c = wisp_centre();
+    const int32_t far = wisp::shell::swipe_min_px(shape_) + 10;
+    feed({{static_cast<int16_t>(c.x), static_cast<int16_t>(c.y), 0}});
+    ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 1000));
+    // Sideways past the hold slop: the start of a page drag, still down.
+    for (int32_t dx = 0; dx <= far; dx += far / 4)
+        feed({{static_cast<int16_t>(c.x - dx), static_cast<int16_t>(c.y), 0}});
+    ASSERT_TRUE(wait_until([&] { return !mic->is_open(); }, 500));
+    // Held on past the hold time: no hold begins.
+    home_ms.store(wisp::voice::kHoldStartMs + 10);
+    feed({{static_cast<int16_t>(c.x - far), static_cast<int16_t>(c.y), 0}});
+    EXPECT_FALSE(conv->holding());
+    feed({});
+    EXPECT_FALSE(voice->capturing());
+    EXPECT_EQ(mic->opens(), 1);
+}
+
+TEST_F(HomeTest, ScreenOffMidPressUnprimes) {
+    boot();
+    live_mic();
+    const lv_point_t c = wisp_centre();
+    const wisp::hal::TouchPoint at{static_cast<int16_t>(c.x), static_cast<int16_t>(c.y), 0};
+    feed({at});
+    ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 1000));
+    h->bus.publish(
+        {"power.state", "power", 0, wisp::Properties{{"state", wisp::Value("standby")}}});
+    ASSERT_TRUE(wait_until([&] { return !mic->is_open(); }, 500));
+    // The press is over: held on past the hold time, nothing starts.
+    home_ms.store(wisp::voice::kHoldStartMs + 10);
+    feed({at});
+    EXPECT_FALSE(conv->holding());
+    feed({});
+    EXPECT_FALSE(voice->capturing());
+    EXPECT_EQ(mic->opens(), 1);
 }
 
 // While the talk key holds, a swipe up on the home screen cancels the
@@ -1444,6 +1505,9 @@ TEST_F(HomeTest, RunningTurnShowsAStopControlThatStopsIt) {
     feed({at});
     EXPECT_FALSE(conv->holding());
     EXPECT_FALSE(voice->capturing());
+    // Not a press on the wisp: the mic is not primed either.
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(mic->opens(), 0);
     feed({});
     ASSERT_TRUE(wait_turns(1));
     EXPECT_EQ(statuses(), std::vector<std::string>{"stopped"});

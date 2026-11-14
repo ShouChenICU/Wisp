@@ -74,7 +74,11 @@
 //     when it has: a drag is no tap and no hold on the wisp;
 //   - a press on the wisp goes through WispPress: HoldBegin / HoldEnd /
 //     HoldCancel -> the controller's hold_begin() / hold_end() /
-//     hold_cancel(); a tap -> tap(), which has no voice effect;
+//     hold_cancel(); a tap -> tap(), which has no voice effect. Its
+//     touch-down calls press_begin() (the mic primes), and the moment it
+//     stops being WispPress::pending() -- held, released, moved beyond the
+//     hold slop, taken by a page drag or PRESS_LOST, or dropped because
+//     the screen went dark -- press_end();
 //   - while the controller is holding for the talk key, a swipe up past
 //     swipe_min_px() anywhere on the screen -> hold_cancel().
 //
@@ -293,6 +297,9 @@ private:
     void place_stop();
     void start_fade_out();
     void act(WispPress::Action a);
+    // After a WispPress call: press_end() once the press stopped being
+    // pending (`was_pending` before the call).
+    void settle_press(bool was_pending);
 
     static void event_cb(lv_event_t* e);
     static void column_cb(lv_event_t* e);

@@ -33,13 +33,19 @@ void TalkKey::stop() {
         sub_ = 0;
     }
     if (timer_) timer_->stop();
+    bool was_pressed = false;
     bool was_holding = false;
     {
         std::lock_guard<os::Mutex> lock(mu_);
+        was_pressed = pressed_;
         was_holding = holding_;
         pressed_ = holding_ = false;
     }
-    if (was_holding) conv_.hold_cancel();
+    if (was_holding) {
+        conv_.hold_cancel();
+    } else if (was_pressed) {
+        conv_.press_end();
+    }
 }
 
 void TalkKey::on_event(const core::Event& e) {
@@ -51,14 +57,16 @@ void TalkKey::on_event(const core::Event& e) {
 }
 
 void TalkKey::on_down() {
-    // The press that wakes the screen does only that.
-    if (screen_on_ && !screen_on_()) return;
+    // From a dark screen the press counts too (its event already woke the
+    // screen), but the mic is left alone: the wake is still powering it up.
+    const bool lit = !screen_on_ || screen_on_();
     {
         std::lock_guard<os::Mutex> lock(mu_);
         pressed_ = true;
         holding_ = false;
         down_ms_ = now_ms_();
     }
+    if (lit) conv_.press_begin();
     // Not under mu_: start() may wait for a tick that takes it.
     if (timer_) timer_->start();
 }
@@ -74,7 +82,11 @@ void TalkKey::on_up() {
     // A tick that saw the press set holding_ before the read above; this
     // waits for it to return, so its hold_begin() comes first.
     if (timer_) timer_->stop();
-    if (was_holding) conv_.hold_end();
+    if (was_holding) {
+        conv_.hold_end();
+    } else {
+        conv_.press_end();
+    }
 }
 
 void TalkKey::tick() {
@@ -86,6 +98,9 @@ void TalkKey::tick() {
     }
     if (timer_) timer_->stop();
     conv_.hold_begin();
+    // The press is a hold now (or, refused, never will be): the controller
+    // unprimes unless the hold's capture took the mic.
+    conv_.press_end();
 }
 
 }  // namespace wisp::shell

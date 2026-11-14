@@ -397,6 +397,8 @@ void Home::stop() {
 
 void Home::set_conversation(ConversationController* conv) {
     if (conv == conv_) return;
+    // The controller primed for a press it will not see end.
+    if (conv_ != nullptr && tracking_ && on_wisp_ && press_.pending()) conv_->press_end();
     if (conv_ != nullptr && listener_ != 0) conv_->remove_listener(listener_);
     listener_ = 0;
     conv_ = conv;
@@ -492,6 +494,15 @@ void Home::refresh() {
     if (screen_ == nullptr) return;
     const uint64_t now = deps_.now_ms();
     last_refresh_ = now;
+
+    // The screen went dark under a press on the wisp that is not a hold
+    // yet: no release may come (the touch sleeps), so the press ends here
+    // and the primed mic closes. A hold keeps its own round's screen lock.
+    if (standby_.load() && tracking_ && on_wisp_ && press_.pending()) {
+        act(press_.lost());
+        settle_press(true);
+        on_wisp_ = false;
+    }
 
     if (conv_dirty_.exchange(false) && conv_ != nullptr) {
         view_ = conv_->current();
@@ -996,8 +1007,14 @@ bool Home::may_drag() const {
 void Home::drag_started() {
     if (!tracking_ || !on_wisp_) return;
     // Not a tap, and no hold may begin later in this press.
+    const bool was_pending = press_.pending();
     act(press_.lost());
+    settle_press(was_pending);
     on_wisp_ = false;
+}
+
+void Home::settle_press(bool was_pending) {
+    if (conv_ != nullptr && was_pending && !press_.pending()) conv_->press_end();
 }
 
 void Home::act(WispPress::Action a) {
@@ -1039,11 +1056,18 @@ void Home::on_event(lv_event_t* e) {
             scrolled_ = false;
             key_cancelled_ = false;
             on_wisp_ = wisp_ != nullptr && lv_event_get_target_obj(e) == wisp_->obj();
-            if (on_wisp_) act(press_.pressed(p, now));
+            if (on_wisp_) {
+                act(press_.pressed(p, now));
+                if (conv_ != nullptr) conv_->press_begin();
+            }
             break;
         case LV_EVENT_PRESSING:
             if (!tracking_) break;
-            if (on_wisp_) act(press_.moved(p, now));
+            if (on_wisp_) {
+                const bool was_pending = press_.pending();
+                act(press_.moved(p, now));
+                settle_press(was_pending);
+            }
             // The talk key is held (not the wisp): a swipe up drops it.
             if (conv_ != nullptr && !key_cancelled_ && !press_.holding() && conv_->holding() &&
                 classify_swipe(start_, p, swipe_min_px(deps_.shape)) == Swipe::Up) {
@@ -1056,7 +1080,9 @@ void Home::on_event(lv_event_t* e) {
             tracking_ = false;
             bool held = false;
             if (on_wisp_) {
+                const bool was_pending = press_.pending();
                 act(press_.released(p, now));
+                settle_press(was_pending);
                 held = press_.held();
             }
             if (key_cancelled_ || held || scrolled_) break;
@@ -1068,7 +1094,11 @@ void Home::on_event(lv_event_t* e) {
         case LV_EVENT_PRESS_LOST:
             if (!tracking_) break;
             tracking_ = false;
-            if (on_wisp_) act(press_.lost());
+            if (on_wisp_) {
+                const bool was_pending = press_.pending();
+                act(press_.lost());
+                settle_press(was_pending);
+            }
             break;
         default:
             break;

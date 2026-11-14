@@ -7,8 +7,11 @@
 // to agent.submit(text, Source::Voice). At the turn's TurnBegin the
 // SayParser is reset and, for a voice turn with tts_mute() false, the
 // speech opens (voice.begin_speech()); each Delta goes through the
-// parser, its say part both into the view and to voice.speak(); every
-// State sets voice.set_llm_busy() (thinking or output: the LLM streams).
+// parser, its say part both into the view and to voice.speak(), and the
+// say's "</say>" to voice.say_closed() (so the rest of the say is
+// synthesized while the model writes the body); every State sets
+// voice.set_llm_busy() (thinking or output: the LLM streams). A turn not
+// spoken (muted, or its speech stopped by a hold) reports no closed say.
 // At TurnEnd the parser finishes, its fallback sentence (no <say> this
 // turn) is spoken, and the speech ends (voice.end_speech()). Turns from
 // the web page update the view the same way and are never spoken.
@@ -22,6 +25,17 @@
 // only when a newer capture has begun since: begin_capture() hands the
 // locks to the new round, and an end_speech() then would end that one
 // instead.
+//
+// Presses. A hold is only told from a tap kHoldStartMs after the press,
+// so the press itself primes the mic (voice.prime(), see
+// wisp/voice/voice_service.hpp): press_begin() at touch-down or key-down
+// primes when ready and no capture runs. press_end() comes once the press
+// can no longer become a hold: it ended early, moved away, was taken by a
+// drag, the screen went dark, the input stopped -- or hold_begin() was
+// just called for it. Unless that hold_begin() started a hold (whose
+// capture has taken the primed mic), it unprimes, so the mic closes at once
+// instead of at kPrimeMaxMs. Every press_begin() is followed by one
+// press_end().
 //
 // Triggers (spec 6.3). tap() is reserved for character interaction (e.g.
 // patting the wisp's head) and has no voice effect: it starts no capture,
@@ -161,6 +175,10 @@ public:
     void start();
     void stop();
 
+    // A press (talk key or wisp) went down / ended without a hold (see
+    // the file header).
+    void press_begin();
+    void press_end();
     void hold_begin();
     void hold_end();
     void hold_cancel();
@@ -231,6 +249,9 @@ private:
     TurnView view_;
     voice::SayParser parser_;
     bool holding_ = false;
+    // hold_begin() started a hold since the last press_begin(): its
+    // capture took the primed mic.
+    bool press_held_ = false;
     // A hold waits for the capture it cancelled to end before its own.
     bool deferred_hold_ = false;
     // Successful begin_capture() calls; the transcript always belongs to

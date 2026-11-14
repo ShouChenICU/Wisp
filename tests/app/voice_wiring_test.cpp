@@ -139,10 +139,14 @@ TEST(AppVoice, BootWiresVoiceAndTalkKey) {
                                      wisp::test::FakeLlmServer::sse_done()}});
     v.server->push_tts(pcm(200));
     v.mic->set_script({silence(300), sine(1000)});
+    // The press primes the mic, and the fake reads its script as fast as
+    // it is read: the words come once the hold has begun.
+    v.mic->hold_at(0);
 
     // Held past 300 ms: wisp.voice records.
     v.key->down = true;
     ASSERT_TRUE(wait_until([&] { return conv->holding(); }, 3000));
+    v.mic->release();
     ASSERT_TRUE(wait_until([&] { return v.saw_voice("listening"); }, 3000));
     ASSERT_TRUE(wait_until([&] { return v.mic->script_done(); }, 3000));
     v.key->down = false;

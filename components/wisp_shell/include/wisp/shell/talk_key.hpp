@@ -3,9 +3,20 @@
 // TalkKey (MVP spec 4.1, 6.3): the button whose caps "role" is "talk"
 // (find_talk_button()) as hold-to-talk. Held for voice::kHoldStartMs from
 // its "<id>.down" it calls hold_begin(); its "<id>.up" then calls
-// hold_end(). Released sooner, the press does nothing. A press that
-// starts while the screen is off only wakes the device (PowerManager does
-// that) and is ignored here, its release included.
+// hold_end(). Released sooner, the press is no hold.
+//
+// The press primes the mic (the controller's press_begin() at the down)
+// and every press ends with press_end(): right after hold_begin(), at a
+// release before the hold, or at stop() (see conversation.hpp).
+//
+// From a dark screen the key talks too: the button event itself wakes the
+// screen (PowerManager's activity hook), and held kHoldStartMs it starts
+// the capture like any other press; released sooner it only woke the
+// screen. Such a press does not prime the mic, which standby powered down
+// and the wake is still powering up. This needs the key's down/up events
+// in standby: an EdgeEvent button delivers them, while a PollOnly button
+// is not read in standby (docs/architecture.md "Button input and
+// standby"), so its press wakes nothing and is not seen here at all.
 //
 // The hold is timed with now_ms() on a kPollMs timer that runs only while
 // the key is down. The bus callbacks and the timer may call into the
@@ -55,7 +66,7 @@ private:
     core::SubscriptionId sub_ = 0;
 
     os::Mutex mu_;
-    bool pressed_ = false;  // a press that counts is down
+    bool pressed_ = false;  // the key is down
     bool holding_ = false;  // ... and has called hold_begin()
     uint64_t down_ms_ = 0;
 };

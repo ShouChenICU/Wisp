@@ -58,6 +58,12 @@ ConversationController::ConversationController(ConversationDeps deps)
                   }
               },
           .body = [this](std::string_view d) { view_.body.append(d.data(), d.size()); },
+          // Only speech still open hears of it: a hold that stopped the
+          // speech, or a muted turn, has none.
+          .say_end =
+              [this] {
+                  if (speaking_) deps_.voice.say_closed();
+              },
       }) {}
 
 ConversationController::~ConversationController() { stop(); }
@@ -160,11 +166,27 @@ void ConversationController::stop_turn() {
     if (changed) notify();
 }
 
+void ConversationController::press_begin() {
+    std::lock_guard<os::Mutex> lock(mu_);
+    press_held_ = false;
+    // A capture under way would spend the prime anyway; not ready, no hold
+    // will start to take the mic.
+    if (!ready() || deps_.voice.capturing()) return;
+    deps_.voice.prime();
+}
+
+void ConversationController::press_end() {
+    std::lock_guard<os::Mutex> lock(mu_);
+    if (press_held_) return;
+    deps_.voice.unprime();
+}
+
 void ConversationController::hold_begin() {
     {
         std::lock_guard<os::Mutex> lock(mu_);
         if (holding_ || !ready()) return;
         holding_ = true;
+        press_held_ = true;
         switch (phase()) {
             case Phase::Listening:
                 // Already recording: that capture becomes the hold's.
