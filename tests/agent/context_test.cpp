@@ -310,7 +310,7 @@ TEST(Context, EarlierTurnsToolResultsCutTo4KiB) {
     c.add(Role::User, "next");
 
     const BuiltRequest r = build_history(c.h());
-    ASSERT_GE(r.messages.size(), 5u);
+    ASSERT_EQ(r.messages.size(), 6u);
     const std::string cut = text(r.messages[2]);
     EXPECT_EQ(r.messages[2].role, LlmRole::Tool);
     EXPECT_EQ(r.messages[2].tool_call_id, "c1");
@@ -347,6 +347,7 @@ TEST(Context, RunningTurnToolResultCutAtTheLiveCap) {
     const BuiltRequest r = build_history(c.h());
     const std::string cut = text(r.messages[2]);
     EXPECT_TRUE(cut.ends_with("bytes total]"));
+    EXPECT_GT(cut.size(), wisp::agent::kLiveToolResultBytes - 8);
     EXPECT_LT(cut.size(), wisp::agent::kLiveToolResultBytes + 64);
 }
 
