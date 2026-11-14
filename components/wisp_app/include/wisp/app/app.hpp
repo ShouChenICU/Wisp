@@ -325,6 +325,12 @@ public:
     core::DeviceRegistry& registry();
     core::BootReport& report();
     core::EventBus& bus();
+
+    // One line, "bus dropped=<n> cell_subs=<n>" (no trailing newline): events
+    // the bus dropped on overflow and live state-cell subscriptions. Reads
+    // atomics only, so any thread may call it; it is what the firmware `mem`
+    // command appends to the heap report.
+    std::string dispatch_report() const;
     core::StorageManager& storage();
     core::ButtonService& buttons();
 

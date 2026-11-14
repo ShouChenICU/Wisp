@@ -1289,6 +1289,11 @@ bool queue_storage_refresh(App& app) {
 core::DeviceRegistry& App::registry() { return impl_->registry; }
 core::BootReport& App::report() { return impl_->report; }
 core::EventBus& App::bus() { return impl_->bus; }
+
+std::string App::dispatch_report() const {
+    return "bus dropped=" + std::to_string(impl_->bus.dropped()) +
+           " cell_subs=" + std::to_string(impl_->bus.cell_subscriptions());
+}
 core::StorageManager& App::storage() { return impl_->storage; }
 core::ButtonService& App::buttons() { return impl_->buttons; }
 ui::UiRuntime* App::ui() { return impl_->ui.get(); }

@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <span>
 #include <string>
 #include <thread>
@@ -18,6 +19,7 @@
 #include "app/ui_net_harness.hpp"
 #include "firmware_confirm.hpp"
 #include "storage_io.hpp"
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/temp_dir.hpp"
@@ -250,6 +252,27 @@ TEST(AppBoot, StartingTwiceIsBusy) {
     EXPECT_FALSE(second);
     EXPECT_EQ(second.error().code, wisp::ErrorCode::Busy);
     EXPECT_EQ(h.lines.size(), 2u);
+}
+
+// The App's bus has the default capacity (64 events), so 200 events
+// published while the dispatcher is parked overflow it for certain.
+TEST(AppBoot, DispatchReportShowsBusDropsAndCellSubscriptions) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_TRUE(
+        std::regex_match(h.app.dispatch_report(), std::regex("^bus dropped=0 cell_subs=[0-9]+$")));
+
+    {
+        wisp::test::BusFlood flood(h.app.bus());
+        flood.hold();
+        flood.flood(200);
+        flood.release();
+    }
+    EXPECT_TRUE(h.app.bus().wait_idle(2000));
+    EXPECT_GT(h.app.bus().dropped(), 0u);
+    EXPECT_EQ(
+        h.app.dispatch_report().rfind("bus dropped=" + std::to_string(h.app.bus().dropped()), 0),
+        0u);
 }
 
 // stop() must be safe (and a no-op) even if start() never succeeded --
