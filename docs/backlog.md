@@ -284,6 +284,14 @@ Source: `docs/superpowers/plans/2026-11-14-scene-scheduling-install-safety.md`. 
 - In the simulator, a request stuck in its TLS handshake (a server that accepts and never answers) is not stopped by `cancel_scene()` or `SceneHttp::stop()`: libcurl's progress callback did not run during that wait, so `wisp_sim` took 13.6 s to exit on SIGTERM with a scene `wisp.http.get` in that state (its 15 s deadline) and would wait up to the 5-minute deadline for a download. The worker and `SimHttpClient` code path is the same as before the two lanes; check whether the device's client stops at an abort there. With two lanes, two requests can be stuck at once; `stop()` aborts both before joining, so the waits overlap and the worst case is the longer one.
 - `queue_load` still drops a loaded-package message when the scene queue is full (`<id>: loaded, but the scene queue is full`); call results no longer go through the queue, but this receipt does.
 
+## State cells primitives: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-state-cells-1-primitives.md`. Simulator and unit tests only so far.
+
+- Build the firmware first: the ESP-only branch of `dispatch_misuse()`, the bounded wait in the cell's teardown and the `mem` change in `firmware/main/main.cpp` have never been compiled.
+- `mem` at idle on both boards: the line `bus dropped=0 cell_subs=0`; internal free and largest block unchanged within noise against the last values in `docs/hardware/<board>.md` (the plan adds two `os::Mutex` objects, about 200 bytes of internal RAM); the `wisp.bus` and `wisp_ui` stack high-water marks.
+- `WISP_PERF` on Home and in a scene: frame rate not below the baseline (the UI loop now checks an empty ready list once per iteration).
+
 ## CI speed
 
 - `tools/ci.sh` runs ctest serially (about 390 s; `sim_smoke` alone takes 92 s). `ctest -j 20` finished in 92 s on a 20-core host, but under that load `AppScenes.DeleteAfterStopRuntimeIsRefused` aborted once (it passes alone, three runs out of three). Find its timing assumption first, then run ctest in parallel, keeping the smoke tests `RUN_SERIAL` if they share ports.

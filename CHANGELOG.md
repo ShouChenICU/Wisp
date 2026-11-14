@@ -6,6 +6,7 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 
 ### Features
 
+- The serial `mem` command ends with a line `bus dropped=<n> cell_subs=<n>`: events the bus dropped on overflow and live state-cell subscriptions.
 - Add a Stop button right of the wisp on the home screen while a turn runs, with a 48 px touch target on every screen shape.
 - The home screen says why a turn did not finish (stopped, a limit reached, no model, a refused key, no network, a lost connection, a server error, a conversation too long) in one short line, with the admin address where the fix is there. The full explanation stays in the conversation.
 - `docs.read` returns long topics in pages the agent reads on with `next_offset`.

@@ -1,7 +1,7 @@
 # Testing
 
 Run `bash tools/ci.sh` before committing. This always checks formatting,
-layering, comment rules, translations, asset budgets and generated files, builds
+layering, the event topic registry, comment rules, translations, asset budgets and generated files, builds
 the simulator and runs the C++ regression suite and admin API smoke test.
 Simulator smoke covers boot, missing peripherals, network access, scene execution,
 scene errors and an Agent conversation. Cheap unit tests remain enabled; test
