@@ -630,6 +630,19 @@ TEST(LlmClient, ErrorBodyNeverLeaksTheKey) {
     }
 }
 
+// A provider that echoes a prefix of the key as its code (a "key
+// sk-proj-abcd... is invalid" kind of error) gives that piece no way out.
+TEST(LlmClient, ErrorCodeThatIsAPieceOfTheKeyIsDropped) {
+    const std::string key = "sk-proj-abcdefghijklmnop";
+    Fixture f(/*with_profile=*/true, key.c_str());
+    f.server.push(
+        {.status = 400,
+         .chunks = {R"({"error":{"code":")" + key.substr(0, 12) + R"(","message":"bad"}})"}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.code, "");
+}
+
 TEST(LlmClient, BrokenEventIsBadStream) {
     Fixture f;
     f.server.push({.status = 200,

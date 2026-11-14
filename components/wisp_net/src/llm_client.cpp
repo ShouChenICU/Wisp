@@ -243,18 +243,24 @@ bool contains_folded(std::string_view text, std::string_view lower_needle) {
 }
 
 // {"error":{"code","type","message"}} as OpenAI and most gateways send it.
-// The body may quote the key (a 401's often does), so only a code that is
-// a plain identifier without the key comes out of here.
+// The body may quote the key (a 401's often does), whole or a prefix of
+// it, so only a code that is a plain identifier holding neither the key
+// nor a piece of it long enough to matter comes out of here. A piece under
+// 8 bytes is not dropped: short real codes ("invalid") can occur in a key
+// by chance and say nothing about it.
 ProviderError read_provider_error(std::string_view body, int status, std::string_view key) {
+    constexpr size_t kMinKeyPiece = 8;
     ProviderError out;
     auto parsed = from_json(body, kMaxEventDepth);
     const Value* error = parsed ? field(parsed.value(), "error") : nullptr;
     if (error == nullptr) return out;
     const std::string* code = string_field(*error, "code");
     if (code == nullptr) code = string_field(*error, "type");
+    const bool holds_key = !key.empty() && code != nullptr &&
+                           (code->find(key) != std::string::npos ||
+                            (code->size() >= kMinKeyPiece && key.find(*code) != std::string::npos));
     if (code != nullptr && !code->empty() && code->size() <= 64 &&
-        std::all_of(code->begin(), code->end(), code_char) &&
-        (key.empty() || code->find(key) == std::string::npos))
+        std::all_of(code->begin(), code->end(), code_char) && !holds_key)
         out.code = *code;
     if (code != nullptr && *code == "context_length_exceeded") {
         out.context_length = true;
