@@ -285,8 +285,12 @@ public:
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     bool pressed() override { return down.load(); }
+    uint32_t standby_poll_ms() const override { return standby_poll.load(); }
 
     std::atomic<bool> down{false};
+    // What standby_poll_ms() reports; 0, the default, is not polled in
+    // standby.
+    std::atomic<uint32_t> standby_poll{0};
 
 private:
     wisp::hal::DeviceInfo info_;

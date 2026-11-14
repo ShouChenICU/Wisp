@@ -30,6 +30,7 @@
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/power.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/net/model_probe.hpp"
 #include "wisp/net/wifi_service.hpp"
@@ -73,7 +74,7 @@ hal::ScreenShape display_shape(const hal::Display& display) {
     if (shape) {
         return shape.value();
     }
-    WLOG_W("app", "display.main: invalid shape caps (%s); treating as circle",
+    WLOG_W("app", "%s: invalid shape caps (%s); treating as circle", display.info().id.c_str(),
            shape.error().message.c_str());
     hal::ScreenShape fallback;
     fallback.kind = hal::ScreenShapeKind::Circle;
@@ -348,7 +349,7 @@ Result<void> App::start() {
     if (auto lang = ui::parse_lang(impl_->system_settings.get().language)) {
         ui::set_lang(*lang);
     }
-    auto display = impl_->registry.get<hal::Display>("display.main");
+    auto display = impl_->registry.by_role<hal::Display>(hal::role::kMain);
     std::shared_ptr<hal::Touch> touch;
     hal::ScreenShape shape;
     int64_t boot_brightness = 200;
@@ -357,7 +358,7 @@ Result<void> App::start() {
         boot_brightness = std::clamp<int64_t>(display_settings.get_int("brightness", 200), 0, 255);
         display->set_brightness(static_cast<uint8_t>(boot_brightness));
 
-        touch = impl_->registry.get<hal::Touch>("touch.main");
+        touch = impl_->registry.by_role<hal::Touch>(hal::role::kMain);
         ui::UiConfig ui_config;
         ui_config.install_image_decoders = impl_->platform.install_image_decoders;
         ui_config.font_image = impl_->platform.font_image;
@@ -391,11 +392,12 @@ Result<void> App::start() {
     // PowerMonitor is constructed here too -- before
     // PowerManager, which holds a non-owning pointer into it -- and, like
     // PowerManager itself, regardless of headless mode: polling
-    // "power.main" and publishing power.charging.changed/power.battery.
-    // low has nothing to do with whether there's a screen. It's
-    // completely inert if no "power.main" device is registered (see
+    // the main power device and publishing
+    // power.charging.changed/power.battery.low has nothing to do with
+    // whether there's a screen. It's completely inert if no Power device
+    // has role main (see
     // power_monitor.hpp).
-    auto power_dev = impl_->registry.get<hal::Power>("power.main");
+    auto power_dev = impl_->registry.by_role<hal::Power>(hal::role::kMain);
     impl_->power_monitor = std::make_unique<core::PowerMonitor>(
         impl_->bus, power_dev, core::Settings(*impl_->platform.settings, "power"));
     impl_->power_monitor->start();
@@ -403,7 +405,7 @@ Result<void> App::start() {
     // The notification sounds, before PowerManager (its activity hook
     // silences them). Without a speaker they are skipped.
     impl_->tones = std::make_unique<core::TonePlayer>(
-        impl_->registry.get<hal::AudioOut>("audio_out.main"), &impl_->wakelocks);
+        impl_->registry.by_role<hal::AudioOut>(hal::role::kMain), &impl_->wakelocks);
     if (auto r = impl_->tones->start(); !r) {
         WLOG_W("app", "notification sounds off: %s", r.error().message.c_str());
     }
@@ -448,7 +450,7 @@ Result<void> App::start() {
     // subscription (spec 6.1); the state comes from the payload, as the
     // service keeps no reference to PowerManager.
     impl_->sensors = std::make_unique<core::SensorService>(
-        impl_->registry.get<hal::Imu>("imu.main"), impl_->occupancy);
+        impl_->registry.by_role<hal::Imu>(hal::role::kMain), impl_->occupancy);
     if (auto r = impl_->sensors->start(); !r) {
         WLOG_W("app", "sensors off: %s", r.error().message.c_str());
     }

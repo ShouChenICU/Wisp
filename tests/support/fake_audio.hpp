@@ -90,6 +90,8 @@ public:
     }
 
     const hal::DeviceInfo& info() const override { return info_; }
+    // Another id, before the device is registered.
+    void set_id(std::string id) { info_.id = std::move(id); }
 
     // Replaces the script; the next open() starts it from the beginning.
     void set_script(std::vector<Segment> script) {

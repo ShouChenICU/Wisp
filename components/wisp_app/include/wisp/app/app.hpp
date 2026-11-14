@@ -19,9 +19,9 @@
 //      continues read-only rather than failing), starts ButtonService and
 //      the storage worker, and a periodic 2000ms timer that queues
 //      StorageManager::refresh() on that worker.
-//   4. If "display.main" is registered: applies the `display` settings
-//      namespace's `brightness` key (default 200) to it, starts a
-//      UiRuntime over it (plus "touch.main" if also registered).
+//   4. If a display with role main is registered: applies the `display`
+//      settings namespace's `brightness` key (default 200) to it, starts a
+//      UiRuntime over it (plus the touch panel with role main, if any).
 //      Otherwise records the "mode": "headless" boot-report note.
 //      Either way, constructs the PowerMonitor (spec 6.3/6.7)
 //      and starts its own internal sample Timer, then constructs the
@@ -42,7 +42,7 @@
 //      started once the home screen is up, the screen a scene replaces
 //      and returns to.
 //   4b. Networking (connectivity spec 4.1; src/net_wiring.hpp): builds
-//      PairingService and -- when "net.wifi" is
+//      PairingService and -- when a Wi-Fi device with role main is
 //      registered -- WifiService, whose tick() runs on a "wisp.net" task
 //      every 250 ms so boot never waits for Wi-Fi; applies
 //      PowerManager::level() to WifiService::set_power_level() (deep
@@ -56,7 +56,7 @@
 //      has an IP (connectivity spec 5.6). Each successful admin server
 //      start emits
 //      "WISP_HTTP {"port":n}". Records the "net" boot-report note:
-//      "missing" (no "net.wifi"), "off" (no saved network) or
+//      "missing" (no main Wi-Fi device), "off" (no saved network) or
 //      "connecting".
 //   5. Records the elapsed boot_ms (now that step 4 -- the home screen
 //      included -- has actually finished, per spec 6.1), emits
@@ -216,7 +216,7 @@ struct Platform {
 
     // Fills the buffer with cryptographically strong random bytes (pairing
     // tokens and codes, the hotspot password). Required for networking:
-    // without it no net service is built, as if "net.wifi" were missing.
+    // without it no net service is built, as if there were no Wi-Fi device.
     std::function<void(uint8_t*, size_t)> random;
 
     // The admin page's HTTP server. Empty: no admin backend at all.
@@ -328,7 +328,7 @@ public:
     core::StorageManager& storage();
     core::ButtonService& buttons();
 
-    // nullptr in headless mode (no "display.main" device registered).
+    // nullptr in headless mode (no display with role main registered).
     ui::UiRuntime* ui();
     // The system layer (back gesture, capsule, panel, banners) on ui():
     // nullptr when ui() is. Its methods are called on the UI thread only.
@@ -342,8 +342,8 @@ public:
     // mode too (the admin API lists and deletes scenes without a screen).
     core::SceneRepository* scene_repository();
 
-    // Networking services (step 4b). wifi() is nullptr without a "net.wifi"
-    // device; both are nullptr without Platform::random, and before start()
+    // Networking services (step 4b). wifi() is nullptr without a Wi-Fi
+    // device with role main; both are nullptr without Platform::random, and before start()
     // or after stop().
     net::WifiService* wifi();
     net::PairingService* pairing();

@@ -111,8 +111,8 @@ struct App::Impl {
     // Constructed just before power_manager (which holds a
     // non-owning pointer into it -- see PowerManager::enter_standby()/
     // exit_standby()'s PowerMonitor::set_standby() hook), via its own new
-    // "power.main" device lookup in App::start() -- separate from, and
-    // parallel to, the existing "imu.main" lookup that App::start()
+    // main-power-device lookup in App::start() -- separate from, and
+    // parallel to, the main-IMU lookup that App::start()
     // already did for power_manager's own `imu` parameter. Owns its own
     // internal sample Timer (see power_monitor.hpp), so -- unlike
     // storage_timer below -- there is no separate App-owned Timer object
@@ -145,7 +145,7 @@ struct App::Impl {
     // posts to, started once the router and the banners are up, stopped
     // with the agent (whose tools use it) and reset after it.
     std::unique_ptr<core::ReminderScheduler> reminders;
-    // The notification sounds over "audio_out.main" (scene-device spec
+    // The notification sounds over the main speaker (scene-device spec
     // 5.4). Built before power_manager, whose activity hook silences it,
     // and reset after it.
     std::unique_ptr<core::TonePlayer> tones;

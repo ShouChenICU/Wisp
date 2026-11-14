@@ -11,6 +11,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/hal/audio.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -33,8 +34,8 @@ void record_and_play(App& app, core::SettingsBackend* settings_backend,
         on_status(LoopbackStatus{ui::StrId::LoopFailed, code});
     };
 
-    auto audio_in = app.registry().get<hal::AudioIn>("audio_in.main");
-    auto audio_out = app.registry().get<hal::AudioOut>("audio_out.main");
+    auto audio_in = app.registry().by_role<hal::AudioIn>(hal::role::kMain);
+    auto audio_out = app.registry().by_role<hal::AudioOut>(hal::role::kMain);
     if (!audio_in || !audio_out) {
         fail(ErrorCode::NotFound);
         return;

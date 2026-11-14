@@ -6,6 +6,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/audio.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::app {
@@ -53,10 +54,10 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
     asr_ = std::make_unique<voice::AsrClient>(*http, deps_.models);
     tts_ = std::make_unique<voice::TtsClient>(*http, deps_.models);
     player_ =
-        std::make_unique<voice::PcmPlayer>(deps_.registry.get<hal::AudioOut>("audio_out.main"));
+        std::make_unique<voice::PcmPlayer>(deps_.registry.by_role<hal::AudioOut>(hal::role::kMain));
     voice_ = std::make_unique<voice::VoiceService>(voice::VoiceDeps{
         .bus = deps_.bus,
-        .mic = deps_.registry.get<hal::AudioIn>("audio_in.main"),
+        .mic = deps_.registry.by_role<hal::AudioIn>(hal::role::kMain),
         .player = *player_,
         .asr = *asr_,
         .tts = *tts_,

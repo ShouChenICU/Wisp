@@ -33,10 +33,12 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
+#include "wisp/hal/button.hpp"
 #include "wisp/hal/roles.hpp"
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
@@ -66,6 +68,12 @@ struct MakeAppOptions {
     std::shared_ptr<FakeStorage> sd;
     // Every settings write_batch() first sleeps this long.
     uint32_t settings_write_delay_ms = 0;
+    // The same devices under other ids ("display.panel", "imu.accel",
+    // "storage.flash", "button.side"), with the same roles: the app must
+    // find them by role.
+    bool renamed_ids = false;
+    // The display's caps "role"; empty is no role.
+    std::string display_role = wisp::hal::role::kMain;
 };
 
 // The simulator's JSON file backend, with writes slowed down so a test can
@@ -99,7 +107,8 @@ private:
 
 // A wisp::app::Board that registers a fixed, test-controlled set of fake
 // devices: "display.main" (if with_display), "storage.int" (if
-// with_internal_storage), "imu.main" and "button.power" -- except that
+// with_internal_storage), "imu.main" and "button.power" (other ids with
+// renamed_ids) -- except that
 // any id listed in `opts.fail` is instead recorded into the BootReport as
 // DeviceState::Failed (with the configured reason) and never added to the
 // registry, exercising App::start()'s "boot continues past a failed
@@ -118,15 +127,17 @@ public:
         if (opts_.with_internal_storage) {
             maybe_register(
                 registry, report,
-                std::make_shared<FakeStorage>("storage.int", wisp::test::temp_dir().string(),
+                std::make_shared<FakeStorage>(opts_.renamed_ids ? "storage.flash" : "storage.int",
+                                              wisp::test::temp_dir().string(),
                                               /*removable=*/false));
         }
         if (opts_.sd) maybe_register(registry, report, opts_.sd);
-        maybe_register(registry, report, std::make_shared<FakeImu>("imu.main"));
-        maybe_register(
-            registry, report,
-            std::make_shared<FakeButton>(
-                "button.power", wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
+        maybe_register(registry, report,
+                       std::make_shared<FakeImu>(opts_.renamed_ids ? "imu.accel" : "imu.main"));
+        maybe_register(registry, report,
+                       std::make_shared<FakeButton>(
+                           opts_.renamed_ids ? "button.side" : "button.power",
+                           wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
     }
 
 private:
@@ -162,7 +173,9 @@ struct Harness {
 private:
     wisp::app::Platform build_platform(const MakeAppOptions& opts) {
         if (opts.with_display) {
-            display = std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/1);
+            display = std::make_shared<FakeDisplay>(
+                opts.renamed_ids ? "display.panel" : "display.main", 480, 480, /*area_align=*/1,
+                "rounded_rect", opts.display_role);
         }
 
         wisp::app::Platform platform;
@@ -216,6 +229,70 @@ TEST(AppBoot, StartsUiWhenDisplayPresent) {
 
 // vector-font spec 3.6: without a font image the UI still starts, on
 // bitmap fonts, and the boot report is printed as usual.
+// Spec 2.3: the app asks for "the main display", "the main IMU", "the
+// internal medium" and "the power key", never for an id.
+TEST(AppBoot, DevicesAreFoundByRoleNotById) {
+    auto h = make_app({.with_display = true, .renamed_ids = true});
+    ASSERT_TRUE(h.app.start());
+
+    ASSERT_NE(h.app.ui(), nullptr);
+    EXPECT_TRUE(wait_until([&] { return h.display->flush_count() > 0; }, 2000));
+    auto rep = wisp::from_json(h.lines[0].substr(17)).value();
+    const wisp::Value* notes = rep.find("notes");
+    ASSERT_NE(notes, nullptr);
+    EXPECT_EQ(notes->find("mode"), nullptr);
+    EXPECT_EQ(notes->find("storage"), nullptr);
+
+    // The IMU: a subscription holds it.
+    wisp::core::SensorService* sensors = h.app.sensors();
+    ASSERT_NE(sensors, nullptr);
+    ASSERT_TRUE(sensors->available(wisp::core::SensorKind::Accel));
+    auto sub = sensors->subscribe(wisp::core::SensorKind::Accel, 10, "system.test",
+                                  [](const wisp::core::SensorBatch&) {});
+    ASSERT_TRUE(sub);
+    auto held = h.app.occupancy().list();
+    ASSERT_EQ(held.size(), 1u);
+    EXPECT_EQ(held[0].device, "imu.accel");
+    EXPECT_EQ(held[0].holder, "system.test");
+    sensors->unsubscribe(sub.value());
+
+    // The power key: in standby only the power-role key is polled, and it
+    // still is under its own id.
+    auto key = h.app.registry().get<wisp::hal::Button>("button.side");
+    ASSERT_NE(key, nullptr);
+    static_cast<FakeButton&>(*key).standby_poll = 20;
+    wisp::app::PowerManager* pm = h.app.power_manager();
+    ASSERT_NE(pm, nullptr);
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(h.app.ui()->post([pm, entered] {
+        pm->enter_standby();
+        entered->give();
+    }));
+    entered->take(wisp::os::kForever);
+    ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
+    std::atomic<bool> pressed{false};
+    const auto key_sub =
+        h.app.bus().subscribe("button.side.down", [&](const auto&) { pressed.store(true); });
+    static_cast<FakeButton&>(*key).down = true;
+    EXPECT_TRUE(wait_until([&] { return pressed.load(); }, 2000));
+    static_cast<FakeButton&>(*key).down = false;
+    h.app.bus().unsubscribe(key_sub);
+
+    h.app.stop();
+}
+
+// A display that does not declare the role is not the main display: the
+// device boots headless, as with no display at all.
+TEST(AppBoot, ADisplayWithoutTheRoleIsLikeNoDisplay) {
+    auto h = make_app({.with_display = true, .display_role = ""});
+    ASSERT_TRUE(h.app.start());
+    auto rep = wisp::from_json(h.lines[0].substr(17)).value();
+    const wisp::Value* mode = rep.find("notes")->find("mode");
+    ASSERT_NE(mode, nullptr);
+    EXPECT_EQ(mode->as_string(), "headless");
+    EXPECT_EQ(h.app.ui(), nullptr);
+}
+
 TEST(App, BootsWithoutFontImage) {
     auto h = make_app({.with_display = true, .font_image = {}});
     // The log ring is shared by the whole process, so only lines logged by
