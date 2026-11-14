@@ -26,7 +26,9 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/topics.hpp"
 
 using wisp::ErrorCode;
 using wisp::core::DeviceRegistry;
@@ -39,6 +41,7 @@ using wisp::net::Iface;
 using wisp::net::PairedClient;
 using wisp::net::PairingConfig;
 using wisp::net::PairingService;
+using wisp::net::PairingSnapshot;
 using wisp::test::FakeIoQueue;
 using wisp::test::FakeStorage;
 
@@ -146,6 +149,23 @@ struct Fixture {
         bus.wait_idle(2000);
         std::lock_guard<std::mutex> lock(mutex);
         return events;
+    }
+
+    // The net.pairing.* events in publication order, as "code:1:<expires>"
+    // / "code:0:<expires>" / "failed:<attempts>:<locked>".
+    std::vector<std::string> pairing_frames() {
+        std::vector<std::string> out;
+        for (const auto& e : all_events()) {
+            if (e.topic == wisp::core::topics::kNetPairingCode) {
+                out.push_back(std::string("code:") +
+                              (e.payload.at("active").as_bool() ? "1:" : "0:") +
+                              std::to_string(e.payload.at("expires_ms").as_int()));
+            } else if (e.topic == wisp::core::topics::kNetPairingFailed) {
+                out.push_back("failed:" + std::to_string(e.payload.at("attempts").as_int()) + ":" +
+                              (e.payload.at("locked").as_bool() ? "1" : "0"));
+            }
+        }
+        return out;
     }
 
     std::string dir;
@@ -889,4 +909,96 @@ TEST(PairingService, RevokeAllSupersedesAQueuedSave) {
     EXPECT_EQ(f.read_clients().find("\"hash\""), std::string::npos) << f.read_clients();
     auto& again = f.make();
     EXPECT_TRUE(again.clients().empty());
+}
+
+// The cell holds only {active, expires_ms}: the code itself never enters it.
+TEST(PairingService, CellFollowsIssueAndLapse) {
+    Fixture f;
+    const PairingConfig config;
+    auto& svc = f.make(config);
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{false, 0}));
+    svc.cancel_code();  // nothing active: the cell does not move
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{false, 0}));
+
+    ASSERT_TRUE(svc.request_code(1000));
+    const uint64_t deadline = 1000 + config.code_ttl_ms;
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{true, deadline}));
+    // A request that reuses the valid code changes nothing.
+    ASSERT_TRUE(svc.request_code(2000));
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{true, deadline}));
+
+    svc.cancel_code();
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{false, 0}));
+
+    EXPECT_EQ(f.pairing_frames(),
+              (std::vector<std::string>{"code:1:" + std::to_string(deadline), "code:0:0"}));
+    for (const auto& e : f.topic(wisp::core::topics::kNetPairingCode)) {
+        EXPECT_EQ(e.source, wisp::net::kPairingSource);
+        EXPECT_EQ(e.payload.size(), 2u);
+    }
+}
+
+// A lapse is observed by tick() or by the next request; either way the
+// inactive frame comes before the new code's frame.
+TEST(PairingService, ReissueMovesTheDeadline) {
+    Fixture f;
+    const PairingConfig config{.min_code_interval_ms = 0};
+    auto& svc = f.make(config);
+    const uint64_t first = 1000 + config.code_ttl_ms;
+    ASSERT_TRUE(svc.request_code(1000));
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{true, first}));
+
+    // The request itself notices the lapse and issues anew at the same instant.
+    const uint64_t later = first + 5;
+    ASSERT_TRUE(svc.request_code(later));
+    const uint64_t second = later + config.code_ttl_ms;
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{true, second}));
+    EXPECT_NE(first, second);
+
+    // tick() notices a lapse too, and a second tick announces nothing more.
+    svc.tick(second);
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{false, 0}));
+    svc.tick(second + 1);
+
+    // Issued again after the lapse, a code gets a fresh deadline.
+    const uint64_t third = second + 2 + config.code_ttl_ms;
+    ASSERT_TRUE(svc.request_code(second + 2));
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{true, third}));
+
+    EXPECT_EQ(f.pairing_frames(),
+              (std::vector<std::string>{"code:1:" + std::to_string(first), "code:0:0",
+                                        "code:1:" + std::to_string(second), "code:0:0",
+                                        "code:1:" + std::to_string(third)}));
+}
+
+// A successful pairing consumes the code: one inactive frame, none for the
+// other failure-free paths.
+TEST(PairingService, ConsumingTheCodeClearsTheCell) {
+    Fixture f;
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.request_code(1000));
+    ASSERT_TRUE(svc.pairing_cell().get().active);
+    ASSERT_TRUE(svc.confirm(svc.active_code(1000).value_or(""), browser(), 1001));
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{false, 0}));
+    svc.cancel_code();
+    svc.tick(1000 + 120000);
+    EXPECT_EQ(f.pairing_frames(),
+              (std::vector<std::string>{"code:1:" + std::to_string(1000 + 120000), "code:0:0"}));
+}
+
+// The lock drops the code before net.pairing.failed is published, as before
+// the cell; wrong codes alone move neither the cell nor the code frames.
+TEST(PairingService, LockDropsTheCodeBeforeTheFailedEvent) {
+    Fixture f;
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.request_code(1000));
+    const std::string bad = wrong_code(svc.active_code(1000).value_or(""));
+    for (int i = 1; i <= 5; ++i) {
+        ASSERT_FALSE(svc.confirm(bad, browser(), 1000 + i));
+    }
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{false, 0}));
+    EXPECT_EQ(f.pairing_frames(),
+              (std::vector<std::string>{"code:1:" + std::to_string(1000 + 120000), "failed:1:0",
+                                        "failed:2:0", "failed:3:0", "failed:4:0", "code:0:0",
+                                        "failed:5:1"}));
 }

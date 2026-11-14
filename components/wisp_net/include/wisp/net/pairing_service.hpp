@@ -28,7 +28,9 @@
 // Threading: confirm()/authenticate() run on HTTP server threads while
 // request_code()/active_code()/tick() run on the UI or console; one
 // mutex guards all state. EventBus::publish() never blocks on handlers,
-// so events are published while holding it. Revoke listeners have a lock
+// so events are published while holding it. net.pairing.code is published
+// by the mirror of pairing_cell(), under the cell's lock, which is taken
+// inside mutex_ and never the other way round. Revoke listeners have a lock
 // of their own and are called without the state mutex (see
 // add_revoke_listener()).
 //
@@ -48,6 +50,7 @@
 #include "wisp/base/result.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/latest_save.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/random.hpp"
@@ -71,6 +74,20 @@ struct PairedClient {
 // Why confirm() refused a code, for an error the browser can act on
 // (spec 6.1): an expired code needs a fresh one, a wrong one a retry.
 enum class ConfirmFailure { None, WrongCode, ExpiredCode, Locked };
+
+// Event::source of net.pairing.code and net.pairing.failed.
+inline constexpr char kPairingSource[] = "pairing";
+
+// Whether a pairing code is on offer, and until when; what net.pairing.code
+// announces. The code itself is deliberately not part of it: a cell's value
+// reaches every follower, and only active_code() hands the code out, for
+// the device's own screen. 16 bytes (the cell's value, lock and list
+// pointers add to that; its lock is the only internal-RAM part).
+struct PairingSnapshot {
+    bool active = false;
+    uint64_t expires_ms = 0;  // deadline in the os::now_ms() timebase; 0 while inactive
+    bool operator==(const PairingSnapshot&) const = default;
+};
 
 struct PairingConfig {
     uint32_t code_ttl_ms = 120000;
@@ -117,6 +134,12 @@ public:
     // net.pairing.code carried -- so the screen can resync from the service
     // alone when it missed that event.
     std::optional<std::string> active_code(uint64_t now_ms, uint64_t* expires_ms = nullptr) const;
+
+    // The code on offer as net.pairing.code announces it: it moves exactly
+    // when that event is published. Followers (the device's pairing card)
+    // read it from any thread, and must release their subscription before
+    // PairingService is destroyed (App::stop() order; wisp/core/state_cell.hpp).
+    const core::StateCell<PairingSnapshot>& pairing_cell() const { return pairing_cell_; }
 
     // Drops the active code at once (the device's "reject" button) and
     // publishes net.pairing.code {active:false}, as an expiry would. Typing
@@ -238,6 +261,12 @@ private:
     std::optional<std::string> expired_code_;
     int failures_ = 0;
     std::optional<uint64_t> locked_until_ms_;
+
+    // Set only under mutex_, at the two places the code appears or goes
+    // (request_code(), clear_code_locked()), so it changes in the order of
+    // the events it publishes. Declared after bus_, which its constructor
+    // uses; PairingService is destroyed before the bus stops (App::stop()).
+    core::StateCell<PairingSnapshot> pairing_cell_;
 
     void notify_revoked(const std::optional<std::string>& id);
 

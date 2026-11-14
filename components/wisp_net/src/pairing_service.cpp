@@ -24,7 +24,7 @@ namespace wisp::net {
 namespace {
 
 constexpr const char* kTag = "pairing";
-constexpr const char* kSource = "pairing";
+constexpr const char* kSource = kPairingSource;
 constexpr const char* kClientsFile = "/net/clients.json";
 constexpr size_t kTokenBytes = 32;
 constexpr size_t kIdChars = 12;
@@ -112,6 +112,15 @@ std::string label_for(std::string_view ua) {
     return {};
 }
 
+// Reproduces net.pairing.code: {active, expires_ms}, expires_ms being 0 while
+// inactive. The code never reaches this function.
+void pairing_mirror(core::EventBus& bus, const PairingSnapshot& /*before*/,
+                    const PairingSnapshot& after) {
+    bus.publish(core::Event{core::topics::kNetPairingCode, kPairingSource, 0,
+                            Properties{{"active", after.active},
+                                       {"expires_ms", static_cast<int64_t>(after.expires_ms)}}});
+}
+
 }  // namespace
 
 PairingService::PairingService(core::StorageManager& storage, core::EventBus& bus, RandomFn random,
@@ -122,7 +131,8 @@ PairingService::PairingService(core::StorageManager& storage, core::EventBus& bu
       random_(std::move(random)),
       unix_now_(std::move(unix_now)),
       config_(config),
-      saver_(std::move(submit_io)) {}
+      saver_(std::move(submit_io)),
+      pairing_cell_(bus_, PairingSnapshot{}, &pairing_mirror) {}
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -258,8 +268,10 @@ void PairingService::clear_code_locked() {
     if (!code_) return;
     code_.reset();
     code_expires_ms_ = 0;
-    bus_.publish(core::Event{core::topics::kNetPairingCode, kSource, 0,
-                             Properties{{"active", false}, {"expires_ms", int64_t{0}}}});
+    // No event is lost to an equal value: the cell is active exactly while
+    // code_ is set (request_code() sets both, this resets both), and the
+    // return above leaves only the active case, so this always changes it.
+    pairing_cell_.set(PairingSnapshot{});
 }
 
 std::string PairingService::draw_code_locked() {
@@ -292,9 +304,10 @@ Result<void> PairingService::request_code(uint64_t now_ms) {
     expired_code_.reset();
     WLOG_I(kTag, "pairing code shown on screen (valid %u s)",
            static_cast<unsigned>(config_.code_ttl_ms / 1000));
-    bus_.publish(core::Event{
-        core::topics::kNetPairingCode, kSource, 0,
-        Properties{{"active", true}, {"expires_ms", static_cast<int64_t>(code_expires_ms_)}}});
+    // No event is lost to an equal value: observe_locked() above dropped an
+    // expired code and the early return keeps a valid one, so code_ was
+    // unset and the cell inactive, and an active snapshot always differs.
+    pairing_cell_.set(PairingSnapshot{true, code_expires_ms_});
     return Result<void>::ok();
 }
 
