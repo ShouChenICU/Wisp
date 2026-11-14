@@ -89,7 +89,8 @@ void SceneView::list_event_cb(lv_event_t* e) {
     // (ScrollTo) needs its rows like one the user made.
     if (n->resetting) return;
     // A request not passed on here leaves stale rows to the reset's own
-    // request, which was, and whose ListRows drops them.
+    // request: that one was passed on (otherwise the reset dropped the
+    // rows), and its ListRows drops them.
     n->view->update_window(*n, false);
 }
 
