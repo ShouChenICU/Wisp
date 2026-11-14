@@ -450,6 +450,24 @@ TEST(SceneFiles, DownloadFinishReplacesTarget) {
     EXPECT_EQ(f.files->info("d").value().used, body.size());
 }
 
+// A download given up without its finish job (the scene closed and the
+// lane was full) leaves its ".dl" behind: the next call counts the scene
+// again, which removes it, so its bytes neither stay on disk nor escape
+// the quota.
+TEST(SceneFiles, AbandonedDownloadIsCountedAgain) {
+    Fixture f(false);
+    ASSERT_TRUE(f.files->write("d", "keep.bin", as_bytes("kept")));
+    auto dl = f.files->begin_download("d", "f.bin").value();
+    const std::string body(100 * 1024, 'p');
+    EXPECT_TRUE(dl->push(as_bytes(body)));
+    ASSERT_TRUE(on_disk(f.int_files("d") / ".f.bin.dl"));
+    dl->abandon();
+    auto info = f.files->info("d");
+    ASSERT_TRUE(info) << info.error().message;
+    EXPECT_FALSE(on_disk(f.int_files("d") / ".f.bin.dl"));
+    EXPECT_EQ(info.value().used, 4u);
+}
+
 // The manifest's "files" (spec 7.2): "int" ignores the card, "sd" never
 // falls back to internal storage, "auto" takes the card when it is there.
 TEST(SceneFiles, DeclarationPicksTheLocation) {

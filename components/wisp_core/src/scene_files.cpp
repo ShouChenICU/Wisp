@@ -839,6 +839,9 @@ void SceneFiles::release(const std::string& scene, const std::string& name, uint
     Record& r = it->second;
     r.pending -= std::min(reserved, r.pending);
     std::erase(r.downloading, name);
+    // The download's ".dl" stays behind with bytes the usage never
+    // counted: the scene's next call counts it again, which removes it.
+    r.counted = false;
 }
 
 Result<uint64_t> SceneFiles::finish_download(FileDownload& dl, bool ok) {

@@ -360,6 +360,7 @@ private:
 
     // For FileDownload, under mu_ only (no flash). reserve() is called with
     // the download's own lock held: that lock comes first, never after mu_.
+    // release() is abandon()'s: it also marks the record not counted.
     bool reserve(const std::string& scene, uint64_t n);
     void release(const std::string& scene, const std::string& name, uint64_t reserved);
     // On the download's worker: FileDownload::finish().
@@ -417,7 +418,8 @@ public:
     // .dl.
     void cancel();
     // When finish() cannot be queued: lets go of the reservation without
-    // touching flash. The ".dl" left behind goes at the next count.
+    // touching flash, and marks the scene to be counted again, so the
+    // ".dl" left behind goes at its next call.
     void abandon();
     // "" or "quota_exceeded", "unavailable", "no_memory", "busy", or a
     // storage error's snake_case code.
