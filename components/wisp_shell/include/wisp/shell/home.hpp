@@ -50,7 +50,8 @@
 // (HomeNotHeard), first seen, and why the last turn did not end "done"
 // (TurnView::end_reason as a short HomeTurn* string, with the address for
 // "no_model" and "unauthorized"; the full note stays in the
-// conversation), from its ended_ms; each for kFadeAfterMs. While the
+// conversation), from its ended_ms, until the next turn or capture; each
+// for kFadeAfterMs. While the
 // turn's text shows the wait does not run, so the full hint still gets its
 // time after the fade.
 //
@@ -348,8 +349,8 @@ private:
     std::optional<voice::VoiceError> hint_error_;
     bool hint_not_heard_ = false;
     std::optional<ui::StrId> hint_turn_;
-    uint32_t hint_note_turn_ = 0;
-    uint64_t hint_note_ended_ = 0;
+    uint32_t hint_turn_end_turn_ = 0;
+    uint64_t hint_turn_end_ms_ = 0;
     uint64_t hint_since_ = 0;
 
     // The press being tracked.

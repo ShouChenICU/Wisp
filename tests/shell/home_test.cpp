@@ -541,7 +541,8 @@ constexpr const char* kLongUrl = "http://192.168.100.100:8900";
 
 // The address as the hint shows it on this shape: whole where it fits on
 // one line, without its scheme on the 360 px circle, where it is 1 px too
-// wide (Home::fitted_url()).
+// wide (Home::fitted_url()). Pinned to that shape on purpose rather than
+// measured here, so a change in the band's width shows up as a failure.
 std::string shown_url(const ShapeCase& c) {
     const std::string url = kLongUrl;
     return std::string(c.shape) == "circle" && c.width == 360 ? url.substr(7) : url;
@@ -1246,5 +1247,52 @@ TEST_F(HomeTest, DoneTurnShowsNoNote) {
     ASSERT_TRUE(ui_until([&] { return home().in_turn() && !conv->current().running; }));
     EXPECT_EQ(hint_shown(), "");
     fade_out();
+    EXPECT_EQ(hint_shown(), "");
+}
+
+// A new turn takes the last turn's outcome off the hint: a retry that goes
+// well shows none while it runs or after its text fades.
+TEST_F(HomeTest, NextTurnClearsTheOutcomeHint) {
+    boot();
+    for (int i = 0; i < 3; ++i) server.llm().push({.status = 500, .chunks = {}});
+    ASSERT_TRUE(agent->submit("你好", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(ui_until([&] { return !conv->current().running; }));
+    ASSERT_EQ(hint_shown(), wisp::ui::tr(wisp::ui::StrId::HomeTurnServer));
+
+    server.llm().push({.status = 200,
+                       .chunks = {wisp::test::FakeLlmServer::sse_text("<say>好。</say>"),
+                                  wisp::test::FakeLlmServer::sse_finish("stop"),
+                                  wisp::test::FakeLlmServer::sse_done()},
+                       .hold_after = 1});
+    ASSERT_TRUE(agent->submit("再试", wisp::agent::Source::Web));
+    ASSERT_TRUE(ui_until([&] { return home().in_turn() && conv->current().running; }));
+    EXPECT_EQ(hint_shown(), "");
+    server.llm().release();
+    ASSERT_TRUE(wait_turns(2));
+    ASSERT_TRUE(ui_until([&] { return !conv->current().running; }));
+    EXPECT_EQ(hint_shown(), "");
+    home_ms.store(kFadeAfterMs - 1000);
+    EXPECT_EQ(hint_shown(), "");
+    home_ms.store(kFadeAfterMs + 1000);
+    ASSERT_TRUE(ui_until([&] { return !home().in_turn() && hidden(home().heard_label()); }));
+    EXPECT_EQ(hint_shown(), "");
+}
+
+// Pressing to talk after a failed turn takes its outcome off the hint.
+TEST_F(HomeTest, CaptureClearsTheOutcomeHint) {
+    boot();
+    for (int i = 0; i < 3; ++i) server.llm().push({.status = 500, .chunks = {}});
+    ASSERT_TRUE(agent->submit("你好", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(ui_until([&] { return !conv->current().running; }));
+    ASSERT_EQ(hint_shown(), wisp::ui::tr(wisp::ui::StrId::HomeTurnServer));
+
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(conv->holding());
+    EXPECT_TRUE(wait_until([&] { return hint_shown().empty(); }, 3000));
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
     EXPECT_EQ(hint_shown(), "");
 }

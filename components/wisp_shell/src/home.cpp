@@ -507,6 +507,8 @@ void Home::refresh() {
             fade_.turn_started();
             was_running_ = true;
             new_turn = true;
+            // The last turn's outcome is not this one's.
+            hint_turn_.reset();
         }
         if (was_running_ && !view_.running) {
             fade_.turn_ended(now);
@@ -520,14 +522,18 @@ void Home::refresh() {
             hint_since_ = now;
             hint_turn_.reset();
         }
+        // Both in one refresh: the turn's end came last, so its hint wins.
         if (!view_.running && !view_.end_reason.empty() &&
-            (view_.turn != hint_note_turn_ || view_.ended_ms != hint_note_ended_)) {
-            hint_note_turn_ = view_.turn;
-            hint_note_ended_ = view_.ended_ms;
+            (view_.turn != hint_turn_end_turn_ || view_.ended_ms != hint_turn_end_ms_)) {
+            hint_turn_end_turn_ = view_.turn;
+            hint_turn_end_ms_ = view_.ended_ms;
             hint_turn_ = turn_text(view_.end_reason);
             hint_since_ = view_.ended_ms != 0 && view_.ended_ms <= now ? view_.ended_ms : now;
         }
     }
+
+    // A capture is the user's next try: the last turn's outcome goes.
+    if (voice_state_.load() == voice::VoiceState::Listening) hint_turn_.reset();
 
     // The wisp.
     if (wisp_ != nullptr) {

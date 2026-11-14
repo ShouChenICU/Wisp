@@ -134,9 +134,9 @@ struct AgentEvent {
     Source source = Source::Web;          // TurnBegin
     std::string status;                   // TurnEnd
     // TurnEnd: why a turn not "done" ended -- "stopped", "step_limit",
-    // "time_limit", "no_model", "unauthorized", "network" (no connection
-    // to start with), "network_lost" (it broke mid-reply), "server" or
-    // "context"; "" when done. `note`: that turn's note as written to the
+    // "time_limit", "no_model", "unauthorized", "network" (no connection,
+    // or nothing came back), "network_lost" (it broke mid-reply),
+    // "server" or "context"; "" when done. `note`: that turn's note as written to the
     // conversation (localised), cut to kSummaryChars code points; "" when
     // done.
     std::string reason;
