@@ -1,6 +1,8 @@
 #include "notification_router.hpp"
 
+#include <atomic>
 #include <charconv>
+#include <memory>
 #include <mutex>
 #include <utility>
 
@@ -163,7 +165,11 @@ void NotificationRouter::act_reminder(const core::Notification& n, int index) {
     }
     core::ReminderScheduler* reminders = deps_.reminders;
     if (reminders == nullptr || !deps_.submit_io) return;
-    const bool queued = deps_.submit_io([reminders, todo, is_done] {
+    // The scheduler may be stopped and destroyed before this job runs
+    // (ReminderScheduler::alive_token()).
+    std::shared_ptr<const std::atomic<bool>> alive = reminders->alive_token();
+    const bool queued = deps_.submit_io([reminders, alive, todo, is_done] {
+        if (!alive->load()) return;
         Result<void> r = is_done ? reminders->done(todo) : reminders->snooze(todo);
         if (!r) {
             WLOG_W(kTag, "todo %u: %s failed: %s", static_cast<unsigned>(todo),

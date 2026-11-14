@@ -386,6 +386,81 @@ TEST_F(NotificationRouterTest, TodoActionsReachTheScheduler) {
     ASSERT_TRUE(worker.run_sync([&] { sched.reset(); }, wisp::os::kForever));
 }
 
+// stop() waits for queued jobs only when its barrier job can be queued; with
+// the lane full it returns at once and App::stop() destroys the scheduler
+// before the worker drains. A done/snooze the router queued earlier must
+// then do nothing.
+TEST_F(NotificationRouterTest, QueuedTodoActionDoesNothingOnceTheSchedulerStopped) {
+    using wisp::core::kReminderSource;
+    using wisp::core::TodoFilter;
+    std::atomic<bool> refuse{false};
+    auto submit = [this, &refuse](std::function<void()> job) {
+        return !refuse.load() && worker.submit(std::move(job));
+    };
+    auto sched = std::make_unique<wisp::core::ReminderScheduler>(
+        wisp::core::ReminderDeps{
+            .storage = *storage,
+            .bus = bus,
+            .notes = notes.get(),
+            .submit_io = submit,
+            .wall_s = [] { return int64_t{1793923200}; },
+            .utc_offset_min = [] { return 480; },
+            .missed_title = {},
+            .make_timer =
+                [](std::function<void()>) {
+                    return wisp::core::ReminderTimer{.arm = [](uint32_t) {}, .cancel = [] {}};
+                },
+        },
+        storage->write_root(wisp::core::Area::System).value() + "/todo/todos.json");
+    router = std::make_unique<NotificationRouter>(NotificationRouterDeps{
+        .notes = *notes,
+        .power = power.get(),
+        .tones = tones.get(),
+        .scenes = rt.get(),
+        .locks = &locks,
+        .notify_volume = [] { return uint8_t{50}; },
+        .reminders = sched.get(),
+        .submit_io = submit,
+    });
+    router->start();
+    ASSERT_TRUE(worker.run_sync(
+        [&] {
+            ASSERT_TRUE(sched->load());
+            sched->start();
+            ASSERT_TRUE(sched->add("a", std::nullopt, {}));
+        },
+        wisp::os::kForever));
+    // The first pass start() queued.
+    ASSERT_TRUE(worker.run_sync([] {}, wisp::os::kForever));
+
+    Notification n;
+    n.source = kReminderSource;
+    n.id = "todo-1";
+    n.title = "a";
+    n.action = wisp::core::notice::kActionTodoDone;
+    n.action_arg = "1";
+    ASSERT_TRUE(notes->post(std::move(n), false));
+
+    // Hold the worker so the action stays queued.
+    auto gate = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(worker.submit([gate, entered] {
+        entered->give();
+        gate->take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(entered->take(2000));
+    router->act(kReminderSource, "todo-1", 0);
+
+    refuse = true;
+    sched->stop();
+    gate->give();
+    ASSERT_TRUE(worker.run_sync([] {}, wisp::os::kForever));
+    EXPECT_TRUE(sched->list(TodoFilter::Done).empty());
+
+    router->stop();
+    sched.reset();
+}
+
 }  // namespace
 
 // agent-tools spec 4.2: lua.run's notices come from Wisp itself; a tap

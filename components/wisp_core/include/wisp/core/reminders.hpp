@@ -241,6 +241,12 @@ public:
     // The local time zone the scheduler uses (ReminderDeps::utc_offset_min).
     int utc_offset_min() const;
 
+    // False once stop() or forget() ran, and stays readable after this
+    // object is gone: a job queued on the worker on the scheduler's behalf
+    // checks it before touching the scheduler, since stop() waits for
+    // queued jobs only when its own barrier job can be queued.
+    std::shared_ptr<const std::atomic<bool>> alive_token() const { return alive_; }
+
 private:
     os::LargeString serialize_locked() const;
     Result<void> persist_locked();
