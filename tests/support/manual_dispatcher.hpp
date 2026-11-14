@@ -1,7 +1,7 @@
 #pragma once
 
 // A core::Dispatcher a test steps by hand: scheduled slots run only inside
-// run_all(), on the thread that calls it, so a test decides exactly when
+// run_all() or run_one(), on the thread that calls it, so a test decides exactly when
 // callbacks happen instead of waiting for a dispatcher task.
 
 #include <cstddef>
@@ -27,18 +27,28 @@ public:
     // Runs queued slots on the calling thread until none is queued,
     // including slots queued by the runs themselves; returns how many ran.
     size_t run_all() {
+        size_t ran = 0;
+        while (run_one()) {
+            ++ran;
+        }
+        return ran;
+    }
+
+    // Runs the slot at the head of the queue, if any, on the calling
+    // thread: one dispatcher step, for tests of what a single run does and
+    // of who runs next. Returns whether a slot ran.
+    bool run_one() {
         const ManualDispatcher* outer = running_;
         running_ = this;
-        size_t ran = 0;
-        while (core::DispatchSlot* slot = slots_.take()) {
+        core::DispatchSlot* slot = slots_.take();
+        if (slot != nullptr) {
             slot->run(*slot);
             // done() may hand the slot to its owner's finish(), which frees
             // it: nothing touches `slot` after this line.
             slots_.done(*slot);
-            ++ran;
         }
         running_ = outer;
-        return ran;
+        return slot != nullptr;
     }
 
     // Slots waiting to run (plus the one running, when asked from inside
