@@ -102,6 +102,18 @@ TEST_F(DeviceCallTools, ListStopsAt32) {
     EXPECT_EQ(r.find("truncated")->as_bool(), true);
 }
 
+// Exactly the cap is everything: nothing was cut, so no "truncated".
+TEST_F(DeviceCallTools, ListOfExactly32IsNotTruncated) {
+    for (int i = 0; i < 31; ++i) {
+        char id[16];
+        std::snprintf(id, sizeof(id), "other.g%02d", i);
+        ASSERT_TRUE(registry.add(std::make_shared<FakeGeneric>(id, &kFakeGenericSchema)));
+    }
+    Value r = result_of(call("device_list", ""));
+    EXPECT_EQ(r.find("devices")->as_list().size(), 32u);
+    EXPECT_EQ(r.find("truncated"), nullptr);
+}
+
 // A schema whose descriptions are `desc_bytes` long, for the byte budget.
 struct BigSchema {
     explicit BigSchema(size_t desc_bytes)
