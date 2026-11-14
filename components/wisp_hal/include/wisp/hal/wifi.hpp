@@ -54,7 +54,6 @@ class Wifi : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Network;
     static constexpr Interface kInterface = Interface::Wifi;
-    using InterfaceType = Wifi;
 
     // Blocking; may take up to about 3 s.
     virtual Result<std::vector<WifiScanEntry>> scan() = 0;

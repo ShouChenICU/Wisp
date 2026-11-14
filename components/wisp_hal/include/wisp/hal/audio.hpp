@@ -21,7 +21,6 @@ class AudioOut : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::AudioOut;
     static constexpr Interface kInterface = Interface::AudioOut;
-    using InterfaceType = AudioOut;
 
     virtual Result<void> open(const AudioFormat& format) = 0;
     virtual Result<size_t> write(const int16_t* frames, size_t count) = 0;
@@ -36,7 +35,6 @@ class AudioIn : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::AudioIn;
     static constexpr Interface kInterface = Interface::AudioIn;
-    using InterfaceType = AudioIn;
 
     virtual Result<void> open(const AudioFormat& format) = 0;
     virtual Result<size_t> read(int16_t* frames, size_t count) = 0;

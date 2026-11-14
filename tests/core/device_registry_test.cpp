@@ -149,6 +149,16 @@ static_assert(!Listable<FakeDisplay>);
 static_assert(!Gettable<wisp::test::FakeWifi>);
 static_assert(!Gettable<wisp::hal::Device>);
 
+// Naming itself as the interface does not make a concrete device one: the
+// accepted set is the closed list of interface classes.
+class SelfNamedDisplay : public FakeDisplay {
+public:
+    using InterfaceType = SelfNamedDisplay;
+    using FakeDisplay::FakeDisplay;
+};
+static_assert(!Gettable<SelfNamedDisplay>);
+static_assert(!Listable<SelfNamedDisplay>);
+
 }  // namespace
 
 // A generic device can say Display in its class, but has no way to report

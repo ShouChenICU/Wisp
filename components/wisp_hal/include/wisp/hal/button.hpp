@@ -26,7 +26,6 @@ class Button : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Button;
     static constexpr Interface kInterface = Interface::Button;
-    using InterfaceType = Button;
 
     virtual bool pressed() = 0;
     virtual ButtonInputMode input_mode() const { return ButtonInputMode::PollOnly; }

@@ -60,7 +60,6 @@ class Imu : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Imu;
     static constexpr Interface kInterface = Interface::Imu;
-    using InterfaceType = Imu;
 
     virtual Result<ImuSample> read() = 0;
     virtual Result<void> set_rate(uint32_t hz) = 0;

@@ -20,7 +20,6 @@ class Power : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Power;
     static constexpr Interface kInterface = Interface::Power;
-    using InterfaceType = Power;
 
     virtual Result<PowerStatus> status() = 0;
     virtual Result<void> power_off() = 0;

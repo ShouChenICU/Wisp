@@ -21,11 +21,11 @@
 // is a data field a device fills in itself and is only a display category
 // (spec 2.1).
 
+#include <concepts>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <type_traits>
 
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
@@ -173,11 +173,14 @@ private:
 };
 
 // An interface class itself (Display, Wifi, ...), not a device deriving
-// from one: each interface names itself as InterfaceType, which a concrete
-// device inherits unchanged. DeviceRegistry::get<T>/list<T> require it,
-// since the tag check cannot tell one Display implementation from another.
+// from one. DeviceRegistry::get<T>/list<T> require it, since the tag check
+// cannot tell one Display implementation from another. A closed list rather
+// than a trait a class declares, so a concrete device cannot opt in.
 template <class T>
 concept TypedInterface =
-    requires { typename T::InterfaceType; } && std::is_same_v<T, typename T::InterfaceType>;
+    std::same_as<T, Display> || std::same_as<T, Touch> || std::same_as<T, Imu> ||
+    std::same_as<T, Power> || std::same_as<T, Clock> || std::same_as<T, Button> ||
+    std::same_as<T, AudioOut> || std::same_as<T, AudioIn> || std::same_as<T, Storage> ||
+    std::same_as<T, Wifi>;
 
 }  // namespace wisp::hal

@@ -47,7 +47,6 @@ class Display : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Display;
     static constexpr Interface kInterface = Interface::Display;
-    using InterfaceType = Display;
 
     // Writes `rgb565` (area.x2 - area.x1 + 1) * (area.y2 - area.y1 + 1)
     // pixels, row-major, into `area`, in the byte order caps "rgb565_be"
