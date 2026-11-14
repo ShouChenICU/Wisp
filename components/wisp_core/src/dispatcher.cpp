@@ -29,12 +29,14 @@ void Dispatcher::check_detached(const char* who) const {
     char what[96];
     std::snprintf(what, sizeof(what), "%s destroyed with %u attached slot%s", who,
                   static_cast<unsigned>(n), n == 1 ? "" : "s");
-    detail::misuse(what);
+    dispatch_misuse(what);
 }
 
 bool SlotQueue::push(DispatchSlot& slot) {
     std::lock_guard<os::Mutex> lock(mu_);
-    if ((slot.flags & (DispatchSlot::kQueued | DispatchSlot::kCancelled)) != 0) {
+    constexpr uint8_t kRefused =
+        DispatchSlot::kQueued | DispatchSlot::kCancelled | DispatchSlot::kDetaching;
+    if ((slot.flags & kRefused) != 0) {
         return false;
     }
     bool was_empty = (head_ == nullptr);
@@ -73,6 +75,8 @@ void SlotQueue::done(DispatchSlot& slot) {
     {
         std::lock_guard<os::Mutex> lock(mu_);
         running_ = nullptr;
+        // kDetaching stays set: the waiting cancel() clears it when it
+        // returns, so nothing re-queues the slot in between.
         slot.flags = static_cast<uint8_t>(slot.flags & ~DispatchSlot::kRunning);
         if ((slot.flags & DispatchSlot::kCancelled) != 0) {
             slot.flags = 0;
@@ -101,11 +105,22 @@ bool SlotQueue::cancel(DispatchSlot& slot, bool on_dispatch_thread) {
                 // dispatch thread: the dispatcher still touches the slot
                 // when the run returns, so done() hands it to finish().
                 slot.flags |= DispatchSlot::kCancelled;
-                return false;
+                if (slot.finish != nullptr) {
+                    return false;
+                }
+            } else {
+                // Refuse re-queues from here on (the run's own included):
+                // otherwise the slot could be taken again between done()
+                // and the next poll, and this would wait for that run too.
+                slot.flags |= DispatchSlot::kDetaching;
             }
         }
-        // A run of this slot is in progress on the dispatcher's thread;
-        // it may queue the slot again, which the next pass unlinks.
+        if (on_dispatch_thread) {
+            // Outside the lock, which is a leaf: nothing runs under it.
+            dispatch_misuse("slot cancelled inside its own run without a finish hook");
+            return false;
+        }
+        // A run of this slot is in progress on the dispatcher's thread.
         os::sleep_ms(kCancelPollMs);
     }
 }
@@ -136,9 +151,7 @@ void SlotQueue::unlink_locked(DispatchSlot& slot) {
     }
 }
 
-namespace detail {
-
-void misuse(const char* what) {
+void dispatch_misuse(const char* what) {
 #if defined(ESP_PLATFORM)
     // As WISP_ASSERT_FLASH_THREAD does on the device: report and keep
     // running; the host builds' abort is what catches the bug in tests.
@@ -149,7 +162,5 @@ void misuse(const char* what) {
     std::abort();
 #endif
 }
-
-}  // namespace detail
 
 }  // namespace wisp::core

@@ -20,10 +20,15 @@ namespace wisp::core {
 // inbox). Intrusive: scheduling never allocates. `flags` and `next` belong
 // to the dispatcher holding it and are guarded by its ready-list lock.
 struct DispatchSlot {
-    static constexpr uint8_t kQueued = 1, kRunning = 2, kCancelled = 4;
+    // kDetaching: an off-thread cancel() is waiting for the current run;
+    // schedule() is refused until that cancel() returns.
+    static constexpr uint8_t kQueued = 1, kRunning = 2, kCancelled = 4, kDetaching = 8;
     void (*run)(DispatchSlot&) = nullptr;
     // Called by the dispatcher after a run during which cancel() returned
     // false, once it no longer touches the slot; the owner frees it here.
+    // Required for a slot whose run may cancel it: without it the owner
+    // never learns when it may free the slot, so such a cancel() reports
+    // misuse.
     void (*finish)(DispatchSlot&) = nullptr;
     DispatchSlot* next = nullptr;
     uint8_t flags = 0;
@@ -35,15 +40,18 @@ public:
     // Any thread. Queues `slot` to run once on this dispatcher's thread;
     // a slot already queued stays queued once (coalescing). A slot that is
     // running is queued again and runs once more after the current run.
-    // Never blocks on a run, never allocates, never fails.
+    // Never blocks on a run, never allocates, never fails -- except that a
+    // slot being cancelled (from inside its run, or by a cancel() waiting
+    // for its run) is not queued: the owner is freeing it.
     virtual void schedule(DispatchSlot& slot) = 0;
     // Unqueues `slot`. Returns true when the owner may free it now: off
     // this dispatcher's thread, after waiting for a run of `slot` in
-    // progress (only that one) to return. Returns false only when called
+    // progress (only that one: schedules of `slot` made meanwhile, its own
+    // included, are refused) to return. Returns false only when called
     // on this dispatcher's thread from inside `slot`'s own run; the
-    // dispatcher then calls slot.finish after the run. Never waits after
-    // the dispatcher has stopped. Must not be called while holding a lock
-    // the slot's own run takes.
+    // dispatcher then calls slot.finish, which must be set, after the run.
+    // Never waits after the dispatcher has stopped. Must not be called
+    // while holding a lock the slot's own run takes.
     [[nodiscard]] virtual bool cancel(DispatchSlot& slot) = 0;
     virtual bool on_dispatch_thread() const = 0;
 
@@ -71,14 +79,16 @@ private:
 // calls after releasing it.
 class SlotQueue {
 public:
-    // Queues `slot` unless it is already queued or was cancelled inside
-    // its own run. True when the list was empty before (a running slot
-    // does not count): the caller then wakes its dispatcher, and any later
-    // push finds the list non-empty until the dispatcher has drained it.
+    // Queues `slot` unless it is already queued or is being cancelled
+    // (inside its own run, or by a cancel() waiting for that run). True
+    // when the list was empty before (a running slot does not count): the
+    // caller then wakes its dispatcher, and any later push finds the list
+    // non-empty until the dispatcher has drained it.
     bool push(DispatchSlot& slot);
     DispatchSlot* take();           // pops the head, marks it running; nullptr when empty
     void done(DispatchSlot& slot);  // ends take()'s run; calls finish when cancelled inside it
-    // Dispatcher::cancel()'s rule; off the thread polls every 1 ms.
+    // Dispatcher::cancel()'s rule; off the thread polls every 1 ms for the
+    // run to end.
     bool cancel(DispatchSlot& slot, bool on_dispatch_thread);
     size_t pending() const;  // queued slots plus the one running
 
@@ -92,13 +102,12 @@ private:
     size_t queued_ = 0;
 };
 
-namespace detail {
 // Misuse that would corrupt memory later (a dispatcher destroyed with
-// slots attached, a cell re-entered from its own callback).
+// slots attached, a slot cancelled in its run without a finish hook, a
+// cell re-entered from its own callback).
 // Host builds: prints "wisp: misuse: <what>" to stderr and aborts, so the
 // test that causes it fails with the call site named.
 // ESP_PLATFORM: WLOG_E("core", "misuse: %s", what) and returns.
-void misuse(const char* what);
-}  // namespace detail
+void dispatch_misuse(const char* what);
 
 }  // namespace wisp::core

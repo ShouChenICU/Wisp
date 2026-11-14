@@ -142,6 +142,83 @@ TEST(SlotQueue, CancelFromAnotherThreadWaitsForTheRun) {
     EXPECT_EQ(a.finished, 0);
 }
 
+TEST(SlotQueue, CancelFromAnotherThreadWaitsForExactlyTheCurrentRun) {
+    using wisp::os::kForever;
+    using wisp::os::Semaphore;
+    using wisp::os::Task;
+    std::vector<int> log;
+    TestSlot a(1, &log);
+    SlotQueue q;
+    q.push(a);
+
+    Semaphore rearmed(1, 0);
+    Semaphore gate(1, 0);
+    std::atomic<int> runs{0};
+    std::atomic<bool> late_push_woke{true};
+    auto runner = Task::spawn({.name = "runner"}, [&] {
+        // Run 1 re-schedules itself before and after the cancel starts;
+        // later runs (only reachable when the cancel let the slot back in)
+        // just count.
+        DispatchSlot* slot = q.take();
+        ASSERT_EQ(slot, &a);
+        runs.fetch_add(1);
+        q.push(a);
+        rearmed.give();
+        gate.take(kForever);
+        late_push_woke.store(q.push(a));
+        q.done(a);
+        while ((slot = q.take()) != nullptr) {
+            runs.fetch_add(1);
+            q.done(*slot);
+        }
+    });
+    ASSERT_TRUE(rearmed.take(1000));
+    ASSERT_EQ(q.pending(), 2u);  // the run plus its re-push
+
+    std::atomic<bool> returned{false};
+    std::atomic<bool> result{false};
+    auto canceller = Task::spawn({.name = "canceller"}, [&] {
+        result.store(q.cancel(a, false));
+        returned.store(true);
+    });
+    // The cancel has looked at the slot during run 1 once it unlinked the
+    // first re-push.
+    bool cancel_started = wisp::test::wait_until([&] { return q.pending() == 1u; }, 1000);
+    gate.give();
+    ASSERT_TRUE(cancel_started);
+    ASSERT_TRUE(wisp::test::wait_until([&] { return returned.load(); }, 1000));
+    runner->join();
+    canceller->join();
+    EXPECT_TRUE(result.load());
+    // The re-push after the cancel started is refused: with the list empty
+    // an accepted push would report it woke the dispatcher.
+    EXPECT_FALSE(late_push_woke.load());
+    EXPECT_EQ(runs.load(), 1);
+    EXPECT_EQ(a.finished, 0);
+    EXPECT_EQ(q.pending(), 0u);
+
+    // The slot is free again: a later schedule queues it.
+    EXPECT_TRUE(q.push(a));
+    EXPECT_EQ(q.take(), &a);
+    q.done(a);
+    EXPECT_EQ(a.finished, 0);
+}
+
+TEST(SlotQueue, CancelInsideOwnRunWithoutFinishAborts) {
+    RestoreDeathStyle restore;
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+        {
+            DispatchSlot a;
+            a.run = [](DispatchSlot&) {};
+            SlotQueue q;
+            q.push(a);
+            q.take();
+            (void)q.cancel(a, true);
+        },
+        "cancelled inside its own run without a finish hook");
+}
+
 TEST(ManualDispatcher, RunsOnTheCallingThreadAndSaysSo) {
     ManualDispatcher d;
     struct Probe : DispatchSlot {

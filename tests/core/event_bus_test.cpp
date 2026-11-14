@@ -677,3 +677,138 @@ TEST(EventBus, DestroyedWithAnAttachedSlotAborts) {
         },
         "EventBus destroyed with 1 attached slot");
 }
+
+namespace {
+
+// A slot that cancels itself through the bus from inside its first run,
+// then schedules itself again in that same run (which the cancel refuses).
+struct SelfCancellingSlot : DispatchSlot {
+    explicit SelfCancellingSlot(EventBus* bus_) : bus(bus_) {
+        run = [](DispatchSlot& s) {
+            auto& self = static_cast<SelfCancellingSlot&>(s);
+            int n = self.runs.fetch_add(1) + 1;
+            if (n == 1) {
+                self.cancel_result.store(self.bus->cancel(self) ? 1 : 0);
+                self.bus->schedule(self);
+            }
+            self.run_returned.store(n);
+        };
+        finish = [](DispatchSlot& s) {
+            auto& self = static_cast<SelfCancellingSlot&>(s);
+            self.finish_after_run.store(self.run_returned.load());
+            self.finished.fetch_add(1);
+        };
+    }
+    EventBus* bus;
+    std::atomic<int> runs{0};
+    std::atomic<int> cancel_result{-1};
+    std::atomic<int> run_returned{0};
+    std::atomic<int> finish_after_run{0};
+    std::atomic<int> finished{0};
+};
+
+// A BusSlot whose finish hook counts its calls.
+struct FinishCountingSlot : BusSlot {
+    explicit FinishCountingSlot(EventBus* bus_) : BusSlot(bus_) {
+        finish = [](DispatchSlot& s) { static_cast<FinishCountingSlot&>(s).finished.fetch_add(1); };
+    }
+    std::atomic<int> finished{0};
+};
+
+// A BusSlot that schedules itself again in every run while `rearm` holds.
+struct RearmingSlot : BusSlot {
+    RearmingSlot(EventBus* bus_, std::atomic<bool>* rearm_) : BusSlot(bus_), rearm(rearm_) {
+        run = [](DispatchSlot& s) {
+            auto& self = static_cast<RearmingSlot&>(s);
+            self.runs.fetch_add(1);
+            if (self.rearm->load()) {
+                self.bus->schedule(self);
+            }
+        };
+    }
+    std::atomic<bool>* rearm;
+};
+
+}  // namespace
+
+TEST(EventBus, SlotCancelsItselfInsideItsOwnRun) {
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    SelfCancellingSlot a(&bus);
+    bus.schedule(a);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    // On wisp.bus inside its own run: cancel() cannot free it now.
+    EXPECT_EQ(a.cancel_result.load(), 0);
+    // finish runs once, after the run returned; the schedule() made in the
+    // run after the cancel was refused, so the slot did not run again.
+    EXPECT_EQ(a.finished.load(), 1);
+    EXPECT_EQ(a.finish_after_run.load(), 1);
+    EXPECT_EQ(a.runs.load(), 1);
+
+    // Once finish has run the slot is like a new one: Dispatcher::schedule
+    // never fails, so a later schedule queues and runs it.
+    bus.schedule(a);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(a.runs.load(), 2);
+    EXPECT_EQ(a.finished.load(), 1);
+}
+
+TEST(EventBus, CancelOfAnIdleSlotFreesItAtOnce) {
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    FinishCountingSlot never(&bus), ran(&bus);
+    EXPECT_TRUE(bus.cancel(never));
+    bus.schedule(ran);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_TRUE(bus.cancel(ran));
+    EXPECT_EQ(never.runs.load(), 0);
+    EXPECT_EQ(ran.runs.load(), 1);
+    EXPECT_EQ(never.finished.load(), 0);
+    EXPECT_EQ(ran.finished.load(), 0);
+}
+
+TEST(EventBus, SelfReschedulingSlotAndEventsShareTheDispatcher) {
+    constexpr int kEvents = 8;
+    EventBus bus(kEvents + 1);
+    wisp::os::Semaphore gate(1, 0);
+    wisp::os::Semaphore blocked(1, 0);
+    std::atomic<bool> rearm{true};
+    // Slot runs seen by each "n" event's handler; touched only on wisp.bus
+    // until wait_idle().
+    std::vector<int> runs_at_event;
+    RearmingSlot a(&bus, &rearm);
+    bus.subscribe("", [&](const Event& e) {
+        if (e.topic == "first") {
+            blocked.give();
+            gate.take(wisp::os::kForever);
+        } else if (e.topic == "n") {
+            runs_at_event.push_back(a.runs.load());
+            if (static_cast<int>(runs_at_event.size()) == kEvents) {
+                rearm.store(false);
+            }
+        }
+    });
+    ASSERT_TRUE(bus.start());
+    bus.publish({.topic = "first"});
+    ASSERT_TRUE(blocked.take(1000));
+    for (int i = 0; i < kEvents; ++i) {
+        bus.publish({.topic = "n"});
+    }
+    bus.schedule(a);
+    gate.give();
+    ASSERT_TRUE(bus.wait_idle(1000));
+
+    // Each drain step takes one slot, then one event (run_dispatcher()),
+    // so the k-th event is handled right after the slot's k-th run: the
+    // slot re-arming itself every run holds back no event, and the events
+    // hold back no run.
+    std::vector<int> want;
+    for (int k = 1; k <= kEvents; ++k) {
+        want.push_back(k);
+    }
+    EXPECT_EQ(runs_at_event, want);
+    // The run before the last event re-armed once more; that run sees
+    // rearm == false and stops.
+    EXPECT_EQ(a.runs.load(), kEvents + 1);
+    EXPECT_EQ(bus.dropped(), 0u);
+}
