@@ -792,6 +792,10 @@ const char* strings_en(StrId id) {
             return "Check notifications";
         case StrId::ActNotifyDismiss:
             return "Dismiss a notification";
+        case StrId::ActDeviceList:
+            return "Check peripherals";
+        case StrId::ActDeviceCall:
+            return "Use peripheral";
         case StrId::ActDocsRead:
             return "Read the docs";
         case StrId::ActHttpFetch:

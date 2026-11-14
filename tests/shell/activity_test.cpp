@@ -50,7 +50,8 @@ TEST(Activity, EveryLanguageHasALabelForEveryTool) {
           "todo.add",         "todo.list",         "todo.update",      "todo.done",
           "todo.remove",      "settings.get",      "settings.set",     "device.status",
           "notify.list",      "notify.dismiss",    "docs.read",        "ui.tree",
-          "http.fetch",       "lua.run",           "tools.find",       "tools.call"}) {
+          "http.fetch",       "lua.run",           "tools.find",       "tools.call",
+          "device.list",      "device.call"}) {
         for (Lang lang : wisp::ui::kAllLangs) {
             const std::string label = s(activity_label(tool, "", lang));
             EXPECT_FALSE(label.empty()) << tool;

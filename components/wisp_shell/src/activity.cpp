@@ -53,6 +53,10 @@ constexpr ToolLabel kLabels[] = {
     {"device.status", StrId::ActDeviceStatus, false},
     {"notify.list", StrId::ActNotifyList, false},
     {"notify.dismiss", StrId::ActNotifyDismiss, false},
+    {"device.list", StrId::ActDeviceList, false},
+    // No target: activity_target() would pick "name" (the command or
+    // property) over "id", and "use peripheral pulse" names no device.
+    {"device.call", StrId::ActDeviceCall, false},
     {"docs.read", StrId::ActDocsRead, false},
     {"ui.tree", StrId::ActUiTree, false},
     {"http.fetch", StrId::ActHttpFetch, false},

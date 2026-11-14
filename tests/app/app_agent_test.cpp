@@ -17,6 +17,8 @@
 #include "wisp/core/log.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/shell/activity.hpp"
+#include "wisp/ui/strings.hpp"
 
 using wisp::Value;
 using wisp::net::HttpRequest;
@@ -132,6 +134,33 @@ TEST(AppAgent, DeviceToolsFollowTheNotificationTools) {
     EXPECT_LT(dismiss, list);
     EXPECT_LT(list, call);
     EXPECT_LT(call, docs);
+}
+
+// Every tool the wired agent registers has an activity label of its own in
+// every language, so a new tool cannot show "Call <tool>" to the user.
+TEST(AppAgent, EveryRegisteredToolHasAnActivityLabel) {
+    UiNetHarness h(with_server(true));
+    ASSERT_TRUE(h.start());
+    const wisp::agent::ToolRegistry* tools = h.app->agent_tools();
+    ASSERT_NE(tools, nullptr);
+    auto parsed =
+        wisp::from_json(std::string_view(tools->tools_json().data(), tools->tools_json().size()));
+    ASSERT_TRUE(parsed);
+    size_t checked = 0;
+    for (const Value& t : parsed.value().as_list()) {
+        const std::string& wire = t.find("function")->find("name")->as_string();
+        const wisp::agent::ToolDef* def = tools->find_wire(wire);
+        ASSERT_NE(def, nullptr) << wire;
+        const std::string dotted(def->name.data(), def->name.size());
+        for (wisp::ui::Lang lang : wisp::ui::kAllLangs) {
+            const auto label = wisp::shell::activity_label(dotted, "", lang);
+            EXPECT_EQ(std::string_view(label.data(), label.size()).find(dotted),
+                      std::string_view::npos)
+                << dotted << " has no label";
+        }
+        ++checked;
+    }
+    EXPECT_GT(checked, 30u);
 }
 
 TEST(AppAgent, HeadlessHasNoAgent) {
