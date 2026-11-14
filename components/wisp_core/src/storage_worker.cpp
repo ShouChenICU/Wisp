@@ -205,10 +205,10 @@ void StorageWorker::run() {
             any = any || queued[l];
         }
         if (!any) {
-            // Once stopping_ is set nothing more can be pushed, so empty
-            // lanes mean every accepted job has run. Before that, this
-            // count belongs to an item an earlier wake-up already took
-            // (size() shows an item before its count is given).
+            // Each count is given after its push and each wake-up pops
+            // one item, so a wake-up holding a job's count always finds an
+            // item: the only empty wake-up is stop()'s, and every accepted
+            // job has run by then. The continue is defensive.
             if (stopping_.load()) break;
             continue;
         }

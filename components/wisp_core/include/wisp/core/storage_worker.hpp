@@ -22,9 +22,13 @@
 // The worker takes the highest non-empty lane, except that a lower lane
 // that has been passed over by kLaneTurnAfter higher jobs while it waited
 // gets one forced turn, and two forced turns never run back to back. So a
-// steady stream of higher work cannot starve Normal or Bulk, and an
-// Interactive job waits at most for the job already running (one Bulk
-// chunk at worst) plus one forced turn of a lower lane.
+// steady stream of higher work cannot starve Normal or Bulk. Besides the
+// job already running when it was queued, a job at the head of its lane
+// waits for at most: Interactive, one forced turn of a lower lane (so
+// Bulk delays it by one chunk at most); Bulk, 9 jobs (8 higher ones that
+// earn its turn, plus one more if Normal's forced turn came just before);
+// Normal, 10 jobs (8 Interactive ones, plus a forced Bulk turn, which does
+// not count toward Normal's, and the Interactive job that must follow it).
 // submit() never blocks: a full lane is reported to the caller, which
 // decides whether to retry, merge or drop. A job must not block on
 // another job submitted after it (the worker would wait on itself) and
@@ -162,7 +166,9 @@ private:
     };
 
     // Written only by the worker thread; relaxed atomics are enough since
-    // each field stands alone, and they cost the hot path no lock.
+    // each field stands alone. They take no lock on the host; on 32-bit
+    // targets a 64-bit atomic is a short emulated critical section, which
+    // is negligible next to a flash job.
     struct AtomicLaneStats {
         std::atomic<uint64_t> jobs{0};
         std::atomic<uint64_t> max_wait_us{0};

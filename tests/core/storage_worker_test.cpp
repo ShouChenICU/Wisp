@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -355,6 +356,83 @@ TEST(StorageWorker, LowerLanesGetATurnAfterEightJobs) {
     ASSERT_TRUE(w.drain(5000));
     EXPECT_EQ(rec.get(), (std::vector<std::string>{"I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8",
                                                    "B1", "I9", "N1"}));
+}
+
+namespace {
+
+// Submits job `prefix`+`n` on `lane`; when it runs it records its name and
+// submits job n + 1 of the same lane, up to `last`, so the lane keeps
+// receiving work while the worker drains rather than holding one backlog.
+void submit_chain(StorageWorker& w, Recorder& rec, IoLane lane, const char* prefix, int n,
+                  int last) {
+    ASSERT_TRUE(w.submit(
+        [&w, &rec, lane, prefix, n, last] {
+            {
+                std::lock_guard<std::mutex> lock(rec.m);
+                rec.order.push_back(prefix + std::to_string(n));
+            }
+            if (n < last) submit_chain(w, rec, lane, prefix, n + 1, last);
+        },
+        lane));
+}
+
+std::vector<std::string> names(const char* prefix, int first, int last) {
+    std::vector<std::string> out;
+    for (int i = first; i <= last; ++i) out.push_back(prefix + std::to_string(i));
+    return out;
+}
+
+std::vector<std::string> concat(std::initializer_list<std::vector<std::string>> parts) {
+    std::vector<std::string> out;
+    for (const auto& p : parts) out.insert(out.end(), p.begin(), p.end());
+    return out;
+}
+
+}  // namespace
+
+TEST(StorageWorker, ArrivingInteractiveJobsDoNotStarveLowerLanes) {
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_NO_FATAL_FAILURE(block_worker(w, release));
+
+    Recorder rec;
+    ASSERT_TRUE(w.submit(rec.record("B1"), IoLane::Bulk));
+    ASSERT_TRUE(w.submit(rec.record("N1"), IoLane::Normal));
+    ASSERT_NO_FATAL_FAILURE(submit_chain(w, rec, IoLane::Interactive, "I", 1, 12));
+
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+    // Bulk runs as the 9th job, Normal as the 11th: a forced Bulk turn
+    // does not count toward Normal's.
+    EXPECT_EQ(rec.get(), concat({names("I", 1, 8), {"B1", "I9", "N1"}, names("I", 10, 12)}));
+}
+
+TEST(StorageWorker, ArrivingInteractiveAndNormalJobsDoNotStarveBulk) {
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_NO_FATAL_FAILURE(block_worker(w, release));
+
+    Recorder rec;
+    ASSERT_TRUE(w.submit(rec.record("B1"), IoLane::Bulk));
+    ASSERT_TRUE(w.submit(rec.record("B2"), IoLane::Bulk));
+    ASSERT_NO_FATAL_FAILURE(submit_chain(w, rec, IoLane::Normal, "N", 1, 6));
+    ASSERT_NO_FATAL_FAILURE(submit_chain(w, rec, IoLane::Interactive, "I", 1, 20));
+
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+    // With both higher lanes never empty, each Bulk job waits for at most
+    // kLaneTurnAfter higher jobs (B2 runs 8 jobs after B1), and Normal
+    // still gets its own turns in between.
+    EXPECT_EQ(rec.get(), concat({names("I", 1, 8),
+                                 {"B1", "I9", "N1"},
+                                 names("I", 10, 15),
+                                 {"B2", "I16", "I17", "N2"},
+                                 names("I", 18, 20),
+                                 names("N", 3, 6)}));
 }
 
 TEST(StorageWorker, InteractiveRunsRightAfterTheRunningBulkJob) {
