@@ -270,6 +270,14 @@ TEST(DeviceRegistry, SecondDeviceWithTheSameRoleIsRejected) {
     EXPECT_TRUE(reg.add(std::make_shared<FakeImu>("imu.c", "")));
 }
 
+TEST(DeviceRegistry, AnEmptyRoleIsNoRole) {
+    wisp::core::DeviceRegistry reg;
+    EXPECT_TRUE(reg.add(std::make_shared<FakeButton>("button.a", wisp::Properties{{"role", ""}})));
+    EXPECT_TRUE(reg.add(std::make_shared<FakeButton>(
+        "button.b", wisp::Properties{{"role", wisp::List{wisp::Value("")}}})));
+    EXPECT_EQ(reg.by_role<wisp::hal::Button>(""), nullptr);
+}
+
 TEST(DeviceRegistry, SameRoleOnDifferentInterfacesIsFine) {
     wisp::core::DeviceRegistry reg;
     EXPECT_TRUE(reg.add(std::make_shared<FakeDisplay>("display.main", 480, 480)));

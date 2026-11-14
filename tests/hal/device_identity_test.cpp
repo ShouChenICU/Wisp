@@ -76,3 +76,13 @@ TEST(DeviceRoles, OtherTypesAreNoRole) {
     EXPECT_FALSE(wisp::hal::has_role(none, "main"));
     EXPECT_TRUE(wisp::hal::roles_of(none).empty());
 }
+
+TEST(DeviceRoles, EmptyStringsAreNoRole) {
+    auto empty = with_role(wisp::Value(""));
+    EXPECT_FALSE(wisp::hal::has_role(empty, ""));
+    EXPECT_TRUE(wisp::hal::roles_of(empty).empty());
+
+    auto listed = with_role(wisp::Value(wisp::List{wisp::Value(""), wisp::Value("talk")}));
+    EXPECT_FALSE(wisp::hal::has_role(listed, ""));
+    EXPECT_EQ(wisp::hal::roles_of(listed), (std::vector<std::string>{"talk"}));
+}
