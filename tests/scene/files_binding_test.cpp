@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -183,6 +184,41 @@ print(pcall(wisp.files.list, 5))
     EXPECT_EQ(client.calls(), 0u);
 }
 
+// wisp.http and wisp.files share one cap on the calls waiting for results.
+TEST_F(FilesBinding, HttpAndFilesShareTheCap) {
+    start();
+    install_scene("h", R"(
+local function show(tag) return function(err) print(tag, err) end end
+for i = 1, 10 do wisp.http.get("https://other.example.com/", show("http")) end
+for i = 1, 6 do wisp.files.read("../bad", 0, 1, show("read")) end
+print(pcall(wisp.files.list, show("list")))
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 17);
+    ASSERT_EQ(lines.size(), 17u);
+    EXPECT_EQ(lines[0].rfind("false\t", 0), 0u) << lines[0];
+    EXPECT_NE(lines[0].find("too many calls waiting"), std::string::npos) << lines[0];
+    std::vector<std::string> answers(lines.begin() + 1, lines.end());
+    EXPECT_EQ(std::count(answers.begin(), answers.end(), "http\tpermission_denied"), 10);
+    EXPECT_EQ(std::count(answers.begin(), answers.end(), "read\tbad_name"), 6);
+    EXPECT_EQ(client.calls(), 0u);
+}
+
+// Results wait in the scene's box, not in its queue: refusals all arrive,
+// in order, even past a queue with room for two messages.
+TEST_F(FilesBinding, BadNamesPastAFullQueueAllArrive) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) { c.queue_capacity = 2; };
+    start();
+    install_scene("h", R"(
+for i = 1, 6 do wisp.files.read("../x", 0, 1, function(err) print(i, err) end) end
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 6);
+    EXPECT_EQ(lines, (std::vector<std::string>{"1\tbad_name", "2\tbad_name", "3\tbad_name",
+                                               "4\tbad_name", "5\tbad_name", "6\tbad_name"}));
+    EXPECT_FALSE(log_has("scene.h", "dropped"));
+}
+
 // Leaving the callback out only waits in a task (agent-tools spec 6); a
 // scene's own code still gets the argument error it always got.
 TEST_F(FilesBinding, MissingCallbackOutsideTaskIsError) {
@@ -330,6 +366,43 @@ wisp.http.download("https://api.example.com/f", "f.bin", nil, function(err, res)
     EXPECT_FALSE(on_disk(files_dir("h") / "f.bin"));
     EXPECT_TRUE(printed("h").empty());
     EXPECT_EQ(files->info("h").value().used, 0u);
+}
+
+// A download streaming for a long time does not hold up the scene's
+// ordinary requests: they run on the other worker.
+TEST_F(FilesBinding, GetCompletesDuringADownload) {
+    start();
+    client.responder = [](const wisp::net::HttpClientRequest& req) {
+        wisp::net::HttpClientResponse res{.transport = wisp::net::TransportError::None,
+                                          .status = 200};
+        if (req.url == "https://api.example.com/f") res.body = std::string(64 * 1024, 'f');
+        return res;
+    };
+    // The first piece of the download waits until the test lets it go on.
+    // Shared pointers, not locals, and `release` is the fixture's: the
+    // worker may still call this after a failed assertion has left the
+    // body (TearDown sets `release` before the proxy goes).
+    auto armed = std::make_shared<std::atomic<bool>>(true);
+    auto waiting = std::make_shared<std::atomic<bool>>(false);
+    client.before_piece = [this, armed, waiting] {
+        if (!armed->exchange(false)) return;
+        *waiting = true;
+        while (!release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    };
+    install_scene("h", R"(
+wisp.http.download("https://api.example.com/f", "f.bin", nil, function(err, res)
+  print("download done", err)
+end)
+)");
+    ASSERT_TRUE(rt->open("h"));
+    ASSERT_TRUE(wait_until([&] { return waiting->load(); }, 3000));
+    // Only now, with the download holding its worker, does the get go out.
+    ASSERT_TRUE(rt->eval("h", R"(
+wisp.http.get("https://api.example.com/x", function(err, res) print("get done", err) end)
+)"));
+    EXPECT_EQ(wait_log("h", 1), (std::vector<std::string>{"get done\tnil"}));
+    release = true;
+    EXPECT_EQ(wait_log("h", 2), (std::vector<std::string>{"get done\tnil", "download done\tnil"}));
 }
 
 // wisp.files on the SD card, as the app runs it: the scene's card work on

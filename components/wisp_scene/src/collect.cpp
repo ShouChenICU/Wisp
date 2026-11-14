@@ -544,11 +544,23 @@ std::optional<ScriptError> build_list_rows(Vm& vm, NodeId list, uint32_t first, 
         return err;
     }
     next_id = rows.next;
+    bool answered = false;
     for (ListRows& run : runs) {
         if (run.rows.empty()) continue;
         // The walk counted every byte against the same limit, so this only
         // fails if the batch is not the one collect_row() measured.
         if (rows.batch == nullptr || !rows.batch->push(std::move(run)).is_ok())
+            return ScriptError{ScriptFault::Runtime, "", 0, "ui update too large"};
+        answered = true;
+    }
+    // Nothing built (every row already there, or the first one past the
+    // widget limit) still answers, empty: the view keeps a reset list's
+    // old rows until a ListRows comes (scene_view.hpp).
+    if (!answered && rows.batch != nullptr) {
+        ListRows none;
+        none.list = list;
+        none.first = first;
+        if (!rows.batch->push(std::move(none)).is_ok())
             return ScriptError{ScriptFault::Runtime, "", 0, "ui update too large"};
     }
     return std::nullopt;

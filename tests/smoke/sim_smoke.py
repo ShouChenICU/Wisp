@@ -1276,6 +1276,20 @@ def debug(sim, command, answer_prefix):
     return line
 
 
+def voice_text(sim, text):
+    """Hands `text` to the conversation with "debug voice-text". The
+    readiness it checks reads the Wi-Fi snapshot the "wisp.net" loop writes
+    every 250 ms, which can lag the "connected to" log line join_wifi()
+    waits for, so "no_wifi" is asked again until the snapshot catches up."""
+    deadline = time.monotonic() + TIMEOUT_S
+    while True:
+        answer = debug(sim, f"voice-text {text}", "voice-text=")
+        if answer != "voice-text=no_wifi" or time.monotonic() >= deadline:
+            expect(answer == "voice-text=ok", f"debug voice-text: {answer!r}")
+            return
+        time.sleep(0.1)
+
+
 def panel_tap(sim, index):
     line = debug(sim, f"panel-tap {index}", "panel-tap=")
     expect(line == "panel-tap=ok", f"debug panel-tap {index}: {line!r}")
@@ -1595,8 +1609,7 @@ def case_voice_turn(sim_path, tmp_root):
     try:
         sim = rig.sim
         mark = len(sim.lines)
-        answer = debug(sim, "voice-text 明天早上8点提醒我带伞", "voice-text=")
-        expect(answer == "voice-text=ok", f"debug voice-text: {answer!r}")
+        voice_text(sim, "明天早上8点提醒我带伞")
         log_order(sim, mark, [
             ("agent", "turn 1 start source=voice"),
             ("agent", "state thinking"),
@@ -1691,8 +1704,7 @@ def case_navigation(sim_path, tmp_root):
 
             shot("home")
             mark = len(sim.lines)
-            answer = debug(sim, "voice-text 明天早上8点提醒我带伞", "voice-text=")
-            expect(answer == "voice-text=ok", f"debug voice-text: {answer!r}")
+            voice_text(sim, "明天早上8点提醒我带伞")
             wait_log_prefix(sim, "agent", "turn 1 end done", mark, TURN_TIMEOUT_S)
             shot("turn")
 

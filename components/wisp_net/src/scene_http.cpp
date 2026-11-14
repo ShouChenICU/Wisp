@@ -316,20 +316,19 @@ struct SceneHttp::Job {
     // Set under mu_ by cancel_scene()/stop(); read by the client between
     // pieces and by the worker under deliver_mu_.
     std::atomic<bool> cancelled{false};
-    // Its ticket for watch_, set under mu_ when the worker takes it.
+    // Its ticket for its lane's watch, set under mu_ when the worker takes
+    // it.
     uint32_t ticket = 0;
+    // When it was accepted, across both lanes: set_deferring(true) puts
+    // both lanes' waiting jobs back in this order. Under mu_.
+    uint64_t seq = 0;
     // It went through deferred_; when it was put there.
     bool deferred = false;
     uint64_t deferred_at = 0;
 };
 
 SceneHttp::SceneHttp(HttpClient& client, SceneHttpLimits limits, std::function<uint64_t()> now_ms)
-    : client_(client),
-      limits_(limits),
-      now_ms_(std::move(now_ms)),
-      // The worker drains the whole queue on each wake, so surplus gives
-      // past the maximum are harmless.
-      wake_(1024, 0) {}
+    : client_(client), limits_(limits), now_ms_(std::move(now_ms)) {}
 
 SceneHttp::~SceneHttp() { stop(); }
 
@@ -340,9 +339,17 @@ uint32_t SceneHttp::timeout_of(const Job& job) const {
     return t;
 }
 
-os::TaskConfig SceneHttp::task_config() {
+HttpLane SceneHttp::lane_of(const Job& job) {
+    return job.download ? HttpLane::Download : HttpLane::Interactive;
+}
+
+size_t SceneHttp::queue_cap(HttpLane l) const {
+    return l == HttpLane::Download ? limits_.download_queue : limits_.queue;
+}
+
+os::TaskConfig SceneHttp::task_config(HttpLane lane) {
     os::TaskConfig t;
-    t.name = "wisp.shttp";
+    t.name = lane == HttpLane::Download ? "wisp.shttp.dl" : "wisp.shttp";
     t.stack_bytes = 8192;
     t.priority = 3;
     t.core = -1;
@@ -356,44 +363,66 @@ Result<void> SceneHttp::start() {
         if (started_) return Result<void>::err(ErrorCode::Busy, "scene HTTP already started");
         started_ = true;
     }
-    // Made once and reused by every request, so a request allocates no
-    // timer; without it the proxy stays off (submit() answers "other").
-    watch_ = RequestWatch::create();
-    if (!watch_) return Result<void>::err(ErrorCode::NoMemory, "cannot make the scene HTTP watch");
+    // Made once per lane and reused by every request, so a request
+    // allocates no timer; without them the proxy stays off (submit()
+    // answers "other").
+    for (Lane& l : lanes_) {
+        l.watch = RequestWatch::create();
+        if (!l.watch)
+            return Result<void>::err(ErrorCode::NoMemory, "cannot make the scene HTTP watch");
+    }
     {
         std::lock_guard<os::Mutex> lock(mu_);
         running_ = true;
     }
-    task_ = os::Task::spawn(task_config(), [this] { run(); });
-    if (!task_) {
+    for (HttpLane l : {HttpLane::Interactive, HttpLane::Download}) {
+        lane(l).task = os::Task::spawn(task_config(l), [this, l] { run(l); });
+        if (!lane(l).task) {
+            // Joins the one already running; the proxy stays off. Nothing
+            // was accepted yet (accepting_ is still false), so nothing is
+            // dropped without its done().
+            stop();
+            return Result<void>::err(ErrorCode::NoMemory, "cannot start a scene HTTP task");
+        }
+    }
+    {
         std::lock_guard<os::Mutex> lock(mu_);
-        running_ = false;
-        return Result<void>::err(ErrorCode::NoMemory, "cannot start the scene HTTP task");
+        accepting_ = running_;
     }
     return Result<void>::ok();
 }
 
 void SceneHttp::stop() {
     Deque<os::LargeUnique<Job>> dropped;
-    uint32_t ticket = 0;
+    std::array<uint32_t, 2> tickets{};
     {
         std::lock_guard<os::Mutex> lock(mu_);
         if (!running_) return;
         running_ = false;
-        dropped.swap(queue_);
+        accepting_ = false;
+        for (size_t i = 0; i < lanes_.size(); ++i) {
+            Lane& l = lanes_[i];
+            for (auto& job : l.queue) dropped.push_back(std::move(job));
+            l.queue.clear();
+            if (l.current != nullptr) {
+                l.current->cancelled = true;
+                tickets[i] = l.current->ticket;
+            }
+        }
         for (auto& job : deferred_) dropped.push_back(std::move(job));
         deferred_.clear();
         for (auto& [id, st] : scenes_) st.deferred = 0;
-        if (current_ != nullptr) {
-            current_->cancelled = true;
-            ticket = current_->ticket;
-        }
     }
-    if (ticket != 0) watch_->abort(ticket);
-    wake_.give();
-    if (task_) {
-        task_->join();
-        task_.reset();
+    for (size_t i = 0; i < lanes_.size(); ++i) {
+        Lane& l = lanes_[i];
+        if (tickets[i] != 0) l.watch->abort(tickets[i]);
+        l.wake.give();
+    }
+    for (Lane& l : lanes_) {
+        if (l.task) {
+            l.task->join();
+            l.task.reset();
+        }
     }
 }
 
@@ -501,18 +530,22 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
     job->max_redirects = req.max_redirects;
     job->done = std::move(done);
 
+    const HttpLane target = lane_of(*job);
+    Lane& lane_to = lane(target);
+    bool to_deferred = false;
     {
         std::lock_guard<os::Mutex> lock(mu_);
-        if (!running_) {
+        job->seq = next_seq_++;
+        if (!accepting_) {
             code = "other";
         } else if (is_agent) {
             // Never rate limited or deferred (file header): while
             // deferring it fails at once instead of waiting, and
-            // otherwise it always goes straight into the run queue.
+            // otherwise it always goes straight into its lane's queue.
             if (deferring_) {
                 code = "offline";
             } else {
-                queue_.push_back(std::move(job));
+                lane_to.queue.push_back(std::move(job));
             }
         } else {
             SceneState& st = scenes_[req.scene_id];
@@ -529,10 +562,13 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
                     job->deferred = true;
                     job->deferred_at = now;
                     deferred_.push_back(std::move(job));
+                    to_deferred = true;
                 }
-            } else if (!deferred_.empty()) {
-                // Waiting requests are still draining into the run queue:
-                // line up behind them, in submission order.
+            } else if (std::any_of(deferred_.begin(), deferred_.end(),
+                                   [target](const auto& j) { return lane_of(*j) == target; })) {
+                // Waiting requests of this lane are still draining into its
+                // queue: line up behind them, in submission order. (The
+                // other lane's backlog is no reason to wait.)
                 if (st.deferred >= limits_.max_deferred_per_scene) {
                     code = "rate_limited";
                 } else {
@@ -540,12 +576,13 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
                     ++st.deferred;
                     job->deferred_at = now;
                     deferred_.push_back(std::move(job));
+                    to_deferred = true;
                 }
-            } else if (queue_.size() >= limits_.queue) {
+            } else if (lane_to.queue.size() >= queue_cap(target)) {
                 code = "rate_limited";
             } else {
                 st.sent.push_back(now);
-                queue_.push_back(std::move(job));
+                lane_to.queue.push_back(std::move(job));
             }
         }
     }
@@ -553,42 +590,47 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
         reject(req, code, job->done);
         return;
     }
-    wake_.give();
+    // A job that went to deferred_ is moved on by this lane's worker once
+    // the lane has room, and timed out only by the interactive worker,
+    // which may be asleep with nothing to time out: it must start its
+    // periodic check now, even for a download.
+    lane_to.wake.give();
+    if (to_deferred && target != HttpLane::Interactive) lane(HttpLane::Interactive).wake.give();
 }
 
 void SceneHttp::cancel_scene(const std::string& scene_id) {
     Deque<os::LargeUnique<Job>> dropped;
-    uint32_t ticket = 0;
+    std::array<uint32_t, 2> tickets{};
+    const auto drop_from = [&](Deque<os::LargeUnique<Job>>& from) {
+        for (auto it = from.begin(); it != from.end();) {
+            if ((*it)->scene_id == scene_id) {
+                dropped.push_back(std::move(*it));
+                it = from.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    };
     {
         std::lock_guard<os::Mutex> lock(mu_);
-        for (auto it = queue_.begin(); it != queue_.end();) {
-            if ((*it)->scene_id == scene_id) {
-                dropped.push_back(std::move(*it));
-                it = queue_.erase(it);
-            } else {
-                ++it;
+        for (size_t i = 0; i < lanes_.size(); ++i) {
+            Lane& l = lanes_[i];
+            drop_from(l.queue);
+            if (l.current != nullptr && l.current->scene_id == scene_id) {
+                l.current->cancelled = true;
+                tickets[i] = l.current->ticket;
             }
         }
-        for (auto it = deferred_.begin(); it != deferred_.end();) {
-            if ((*it)->scene_id == scene_id) {
-                dropped.push_back(std::move(*it));
-                it = deferred_.erase(it);
-            } else {
-                ++it;
-            }
-        }
+        drop_from(deferred_);
         if (auto st = scenes_.find(scene_id); st != scenes_.end()) st->second.deferred = 0;
-        if (current_ != nullptr && current_->scene_id == scene_id) {
-            current_->cancelled = true;
-            ticket = current_->ticket;
-        }
     }
     // Outside mu_, and abort() only asks: the socket is shut down on the
     // watch's timer task, so a slow shutdown cannot hold up this (UI)
     // thread. A ticket the worker has moved past is ignored.
-    if (ticket != 0) watch_->abort(ticket);
-    // A done() that started before the mark finishes before this returns;
-    // one that had not started sees the mark.
+    for (size_t i = 0; i < lanes_.size(); ++i)
+        if (tickets[i] != 0) lanes_[i].watch->abort(tickets[i]);
+    // A done() (from either worker) that started before the mark finishes
+    // before this returns; one that had not started sees the mark.
     std::lock_guard<os::Mutex> barrier(deliver_mu_);
 }
 
@@ -599,15 +641,19 @@ void SceneHttp::set_deferring(bool on) {
         deferring_ = on;
         if (on) {
             // Whatever has not started goes back to wait (Wi-Fi is going
-            // off), ahead of the rest: everything in the run queue was
-            // submitted before anything still waiting. The per-scene cap
-            // is not applied to these.
+            // off), ahead of the rest, in the order it was accepted. The
+            // per-scene cap is not applied to these.
             const uint64_t now = now_ms_();
-            while (!queue_.empty()) {
-                os::LargeUnique<Job> job = std::move(queue_.back());
-                queue_.pop_back();
-                ++scenes_[job->scene_id].deferred;
-                deferred_.push_front(std::move(job));
+            Deque<os::LargeUnique<Job>> back;
+            for (Lane& l : lanes_) {
+                for (auto& job : l.queue) back.push_back(std::move(job));
+                l.queue.clear();
+            }
+            std::sort(back.begin(), back.end(),
+                      [](const auto& a, const auto& b) { return a->seq < b->seq; });
+            for (auto it = back.rbegin(); it != back.rend(); ++it) {
+                ++scenes_[(*it)->scene_id].deferred;
+                deferred_.push_front(std::move(*it));
             }
             for (auto& job : deferred_) {
                 if (job->deferred) continue;
@@ -616,9 +662,9 @@ void SceneHttp::set_deferring(bool on) {
             }
         }
     }
-    // The worker moves the waiting requests (off) or starts timing them out
-    // (on).
-    wake_.give();
+    // The workers move the waiting requests (off), or the interactive one
+    // starts timing them out (on).
+    for (Lane& l : lanes_) l.wake.give();
 }
 
 size_t SceneHttp::deferred_count() const {
@@ -628,7 +674,10 @@ size_t SceneHttp::deferred_count() const {
 
 bool SceneHttp::idle() const {
     std::lock_guard<os::Mutex> lock(mu_);
-    return deferred_.empty() && queue_.empty() && current_ == nullptr;
+    if (!deferred_.empty()) return false;
+    for (const Lane& l : lanes_)
+        if (!l.queue.empty() || l.current != nullptr) return false;
+    return true;
 }
 
 void SceneHttp::expire_locked(uint64_t now, Deque<os::LargeUnique<Job>>& out) {
@@ -646,25 +695,38 @@ void SceneHttp::expire_locked(uint64_t now, Deque<os::LargeUnique<Job>>& out) {
     }
 }
 
-void SceneHttp::promote_locked() {
-    while (!deferring_ && !deferred_.empty() && queue_.size() < limits_.queue) {
-        os::LargeUnique<Job> job = std::move(deferred_.front());
-        deferred_.pop_front();
-        if (auto st = scenes_.find(job->scene_id); st != scenes_.end() && st->second.deferred > 0)
+void SceneHttp::promote_locked(HttpLane which) {
+    if (deferring_) return;
+    Lane& to = lane(which);
+    // Only this lane's jobs, oldest first: each lane's worker moves its
+    // own, so one lane's order is decided by one thread, as with a single
+    // worker; the other lane's jobs stay in place for their worker.
+    for (auto it = deferred_.begin();
+         it != deferred_.end() && to.queue.size() < queue_cap(which);) {
+        if (lane_of(**it) != which) {
+            ++it;
+            continue;
+        }
+        if (auto st = scenes_.find((*it)->scene_id); st != scenes_.end() && st->second.deferred > 0)
             --st->second.deferred;
-        queue_.push_back(std::move(job));
+        to.queue.push_back(std::move(*it));
+        it = deferred_.erase(it);
     }
 }
 
-void SceneHttp::run() {
+void SceneHttp::run(HttpLane which) {
+    Lane& self = lane(which);
+    // Only one worker times out deferred requests: the interactive one,
+    // which a download never holds for minutes.
+    const bool expires = which == HttpLane::Interactive;
     uint32_t wait = os::kForever;
     for (;;) {
-        wake_.take(wait);
+        self.wake.take(wait);
         for (;;) {
             // Timed-out deferred requests are answered under deliver_mu_,
             // taken before they leave deferred_: a cancel_scene() that
             // missed them in deferred_ then waits for these done() calls.
-            {
+            if (expires) {
                 std::lock_guard<os::Mutex> deliver(deliver_mu_);
                 {
                     std::lock_guard<os::Mutex> lock(mu_);
@@ -686,26 +748,26 @@ void SceneHttp::run() {
             {
                 std::lock_guard<os::Mutex> lock(mu_);
                 if (!running_) return;
-                promote_locked();
-                if (queue_.empty()) {
-                    wait = deferred_.empty() ? os::kForever : limits_.deferred_check_ms;
+                promote_locked(which);
+                if (self.queue.empty()) {
+                    wait = expires && !deferred_.empty() ? limits_.deferred_check_ms : os::kForever;
                     break;
                 }
-                job = std::move(queue_.front());
-                queue_.pop_front();
-                current_ = job.get();
+                job = std::move(self.queue.front());
+                self.queue.pop_front();
+                self.current = job.get();
                 // arm() never blocks (the timer is only started), so it
                 // can run under mu_, where cancel_scene() reads the ticket.
-                job->ticket = watch_->arm(timeout_of(*job));
+                job->ticket = self.watch->arm(timeout_of(*job));
             }
-            execute(*job);
+            execute(*job, self);
             std::lock_guard<os::Mutex> lock(mu_);
-            current_ = nullptr;
+            self.current = nullptr;
         }
     }
 }
 
-void SceneHttp::execute(Job& job) {
+void SceneHttp::execute(Job& job, Lane& own) {
     const bool is_agent = job.principal == HttpPrincipal::Agent;
     const uint32_t timeout_ms = timeout_of(job);
     const bool streamed = static_cast<bool>(job.on_body);
@@ -725,8 +787,8 @@ void SceneHttp::execute(Job& job) {
     // One deadline for the whole request, every hop included (spec 5.3's
     // 15 s, or the Agent principal's own timeout_ms). A client's own
     // timeout may apply to each low-level read (esp_http_client's does),
-    // and a server that trickles its answer would then hold the one worker
-    // for as long as it likes. So the watch interrupts a call blocked in
+    // and a server that trickles its answer would then hold this lane's
+    // worker for as long as it likes. So the watch interrupts a call blocked in
     // the client at the deadline (and on cancel), and between pieces the
     // deadline is checked here as well. Each later hop re-arms the watch
     // (and job.ticket, under mu_, so cancel_scene() still aborts the right
@@ -758,7 +820,7 @@ void SceneHttp::execute(Job& job) {
         const uint32_t remaining = static_cast<uint32_t>(deadline - now);
         if (attempt != 0) {
             std::lock_guard<os::Mutex> lock(mu_);
-            job.ticket = watch_->arm(remaining);
+            job.ticket = own.watch->arm(remaining);
         }
 
         // Ordinary heap copies of the URL and headers for the client, only
@@ -780,7 +842,7 @@ void SceneHttp::execute(Job& job) {
             // failing the request.
             req.truncate_at_limit = true;
         }
-        req.watch = watch_.get();
+        req.watch = own.watch.get();
 
         body.reset();
         size_t streamed_bytes = 0;
@@ -835,7 +897,7 @@ void SceneHttp::execute(Job& job) {
         req.cancelled = [&job, &expired] { return job.cancelled.load() || expired(); };
 
         HttpClientResponse res = client_.request(req);
-        const bool watch_deadline = watch_->reason() == RequestWatch::Reason::Deadline;
+        const bool watch_deadline = own.watch->reason() == RequestWatch::Reason::Deadline;
 
         if (timed_out || (res.transport == TransportError::Cancelled && expired()) ||
             (watch_deadline && res.transport != TransportError::None)) {
@@ -921,7 +983,7 @@ void SceneHttp::execute(Job& job) {
     result.final_url = url;
     result.body_truncated = final_truncated && result.error.empty();
     if (!result.error.empty()) result.body = os::LargeBuffer();
-    watch_->disarm();
+    own.watch->disarm();
 
     if (is_agent) {
         // agent-tools spec 3.2: method, host, final status and elapsed

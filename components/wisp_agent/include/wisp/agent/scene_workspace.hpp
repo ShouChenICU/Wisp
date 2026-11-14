@@ -21,7 +21,8 @@
 //   4. compiles every .lua file (SceneRuntime::check_sources());
 //   5. builds the tree (SceneRuntime::check_build());
 //   6. zips the draft and installs it with core::install_scene(), keeping
-//      the installed version as the previous one;
+//      the installed version as the previous one unless this turn already
+//      installed the scene (below);
 //   7. opens the scene in front;
 //   8. drops the draft;
 // and then checks it (spec 5.1): waits for the screen to settle
@@ -33,6 +34,22 @@
 //
 // rollback() installs the previous version (SceneRepository::prev_zip())
 // the same way from step 6, which makes the current one the previous one.
+// It returns to the version from before the turn's first install; a
+// second rollback swaps again and brings back the version rolled back
+// from (a redo), so it loses none. The turn's earlier installs between
+// the first and the last are not kept.
+//
+// The previous version is the one from before the turn (agent-core spec
+// section 4.1):
+// the first successful install of a scene in an agent turn (ToolCtx::turn,
+// unique per boot) starts a session, and later installs of that scene in the same turn
+// leave .prev alone (InstallOptions::keep_prev false: the replaced package
+// is removed instead). The session ends with the turn, at discard() or
+// rollback(), and when anything else replaces or removes the scene
+// (SceneRepository::changed_since()). Sessions live in RAM: after a restart
+// the next install keeps the installed version again, which at worst
+// makes a version from inside the interrupted turn the previous one.
+// Calls outside a turn (turn 0) always keep it.
 //
 // Threads: every draft method does its file work on the flash thread
 // (core::call_on_worker(), inline when already there), so the tools that
@@ -50,6 +67,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/result.hpp"
@@ -58,6 +76,7 @@
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/os/large.hpp"
+#include "wisp/os/os.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/scene/ui_inspector.hpp"
 
@@ -129,10 +148,30 @@ private:
     // else the id.
     std::string name_here(const std::string& id);
     // install()'s steps 6-8 and the check, for a package already checked.
+    // keep_prev: the replaced package becomes the previous version. A
+    // successful replace records the session (note_install()).
     ToolOutput install_zip(const std::string& id, std::span<const uint8_t> zip, bool drop_draft,
-                           const std::string& note, ToolCtx& ctx);
+                           bool keep_prev, const std::string& note, ToolCtx& ctx);
+
+    // The scenes this turn already installed: their .prev is the version
+    // from before the turn. RAM only; one entry per scene.
+    struct Session {
+        std::string id;
+        uint32_t turn = 0;
+        // SceneRepository::changed_since()'s `now` after our install.
+        uint64_t generation = 0;
+    };
+    // Whether `turn` already installed `id` and nothing else changed the
+    // scene since. Erases the scene's entry when it no longer holds.
+    bool in_session(const std::string& id, uint32_t turn);
+    // Records (or refreshes) the session after a successful install and
+    // drops the entries of other turns. Nothing for turn 0.
+    void note_install(const std::string& id, uint32_t turn);
+    void end_session(const std::string& id);
 
     SceneWorkspaceDeps deps_;
+    os::Mutex sessions_mu_;  // install/rollback run on wisp.agent, discard on wisp.fs
+    std::vector<Session> sessions_;
 };
 
 }  // namespace wisp::agent

@@ -15,6 +15,7 @@
 
 #include "scene_api.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/scene/vm.hpp"
 
 namespace {
@@ -670,6 +671,100 @@ TEST_F(LuaTask, CancellationPreservesCrowdedHostStackAndDropsSleep) {
     EXPECT_EQ(done.size(), 1u);
     EXPECT_FALSE(run(R"(local ok, e = pcall(coroutine.resume, _G.saved)
         assert(not ok and e:find("cannot resume a task")))"));
+}
+
+// The count of calls waiting for results goes down on every way a result
+// comes back: its callback runs, it resumes a task, or its task was
+// cancelled before it arrived. A call that is refused takes no place.
+TEST_F(LuaTask, CallsInFlightCountEveryWayAResultReturns) {
+    make();
+    using wisp::scene::kMaxCallsInFlight;
+    ASSERT_EQ(kMaxCallsInFlight, 16u);
+    // Only ever refused here.
+    api.files_download = [](uint32_t, wisp::net::SceneHttpRequest, std::string) {
+        ADD_FAILURE() << "download submitted past the cap";
+    };
+    // Callbacks (8 http, one of them a table body answered through
+    // http_fail, and 7 files).
+    EXPECT_FALSE(run(R"(
+for i = 1, 7 do wisp.http.get("https://x/", function() end) end
+wisp.http.post("https://x/", {f = print}, function() end)
+for i = 1, 7 do wisp.files.list(function() end) end
+)"));
+    // A task waiting on a call, then cancelled.
+    auto t = start(R"(local e, r = wisp.http.get("https://x/") _G.mark())");
+    ASSERT_TRUE(t);
+    EXPECT_EQ(api.calls_in_flight, 16u);
+    EXPECT_FALSE(run(R"lua(
+local ok, e = pcall(wisp.files.info, function() end)
+assert(not ok and e:find("too many calls waiting for results %(at most 16%)"), e)
+ok, e = pcall(wisp.http.download, "https://x/", "f", function() end)
+assert(not ok and e:find("too many calls waiting"), e)
+ok, e = pcall(wisp.http.request, {url = "https://x/"}, function() end)
+assert(not ok and e:find("too many calls waiting"), e)
+)lua"));
+    EXPECT_EQ(api.calls_in_flight, 16u);
+    ASSERT_EQ(http.size(), 8u);
+    ASSERT_EQ(fails.size(), 1u);
+    ASSERT_EQ(files.size(), 7u);
+    wisp::scene::cancel_task(*vm, t.value());
+    EXPECT_EQ(api.calls_in_flight, 16u);
+    // Answer them all: callbacks, the failed body, the cancelled task.
+    for (auto& [id, req] : http) EXPECT_FALSE(wisp::scene::run_http_callback(*vm, id, status(200)));
+    EXPECT_FALSE(wisp::scene::run_http_callback(*vm, fails[0].first, status(0)));
+    for (auto& [id, job] : files)
+        EXPECT_FALSE(wisp::scene::run_files_callback(*vm, id, FilesResult{}));
+    EXPECT_EQ(api.calls_in_flight, 0u);
+    EXPECT_EQ(marks, 0);
+    // The count came back down: 16 more fit, the 17th is refused.
+    http.clear();
+    EXPECT_FALSE(run(R"(
+for i = 1, 16 do wisp.http.get("https://x/", function() end) end
+assert(not pcall(wisp.http.get, "https://x/", function() end))
+)"));
+    EXPECT_EQ(api.calls_in_flight, 16u);
+    // A waiting task resumed by its answer frees its place as well.
+    for (auto& [id, req] : http) EXPECT_FALSE(wisp::scene::run_http_callback(*vm, id, status(200)));
+    http.clear();
+    auto w = start(R"(local e, r = wisp.http.get("https://x/") _G.mark() return r.status)");
+    ASSERT_TRUE(w);
+    EXPECT_EQ(api.calls_in_flight, 1u);
+    ASSERT_EQ(http.size(), 1u);
+    EXPECT_FALSE(wisp::scene::run_http_callback(*vm, http[0].first, status(204)));
+    EXPECT_EQ(marks, 1);
+    EXPECT_EQ(api.calls_in_flight, 0u);
+}
+
+// A callback that faults still gave its place back before it ran.
+TEST_F(LuaTask, CallsInFlightCountDownBeforeTheCallbackRuns) {
+    make();
+    EXPECT_FALSE(run(R"(wisp.http.get("https://x/", function() error("boom") end))"));
+    ASSERT_EQ(http.size(), 1u);
+    EXPECT_EQ(api.calls_in_flight, 1u);
+    auto err = wisp::scene::run_http_callback(*vm, http[0].first, status(200));
+    ASSERT_TRUE(err);
+    EXPECT_EQ(api.calls_in_flight, 0u);
+}
+
+// A result with no call counted (a double count-down) leaves the count at
+// 0 and says so in the log.
+TEST_F(LuaTask, ResultWithNoCallWaitingIsLogged) {
+    wisp::log::reset_for_test();
+    wisp::log::init(16 * 1024);
+    make();
+    EXPECT_FALSE(wisp::scene::run_http_callback(*vm, 77, status(200)));
+    EXPECT_FALSE(wisp::scene::run_files_callback(*vm, 78, FilesResult{}));
+    EXPECT_EQ(api.calls_in_flight, 0u);
+    int http_lines = 0, files_lines = 0;
+    for (const auto& e : wisp::log::ring_entries()) {
+        if (e.msg.find("http result 77 arrived with no call waiting") != std::string::npos)
+            ++http_lines;
+        if (e.msg.find("files result 78 arrived with no call waiting") != std::string::npos)
+            ++files_lines;
+    }
+    EXPECT_EQ(http_lines, 1);
+    EXPECT_EQ(files_lines, 1);
+    wisp::log::reset_for_test();
 }
 
 }  // namespace

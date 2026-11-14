@@ -353,7 +353,7 @@ TEST_F(SceneRuntimeTest, StaleMessagesAreDropped) {
         msg->scene_id = "counter";
         msg->instance = first;
         if (i == 0)
-            msg->body = wisp::scene::msg::HttpDone{};
+            msg->body = wisp::scene::msg::Completed{};
         else
             msg->body = wisp::scene::msg::StoreDone{};
         ASSERT_TRUE(wisp::scene::post_scene_message(*rt, std::move(msg)));
@@ -853,6 +853,71 @@ TEST_F(SceneRuntimeTest, OneStandInScreenForAHomeThatIsGone) {
     ASSERT_TRUE(rt->close("counter"));
     ASSERT_TRUE(wait_until([&] { return active_screen() != scene_screen; }, 1000));
     EXPECT_EQ(active_screen(), stand_in);
+}
+
+// A tap on an old list row that stays on screen after its items were
+// replaced reaches the scene after the scene dropped that row: no handler
+// runs, the scene goes on, and nothing is logged as a warning or error.
+// The UI thread is held while the reset runs on the scene task, so the
+// tap is queued before the range request the reset's batch makes.
+TEST_F(SceneRuntimeTest, TapOnAKeptOldListRowRunsNothing) {
+    start("rect");
+    install("rows", R"(
+_G.items = state({"item 1", "item 2", "item 3"})
+return ui.screen {
+  ui.list { items = _G.items, row_h = 56, row = function(item, i)
+    return ui.row { ui.label { text = item },
+                    ui.button { text = "tap " .. i, on_click = function() print("tapped " .. item) end } }
+  end },
+}
+)");
+    ASSERT_TRUE(rt->open("rows"));
+    ASSERT_TRUE(wait_label("item 1"));
+    lv_obj_t* old_button = nullptr;
+    on_ui([&] { old_button = wisp::test::find_button_with_label(lv_screen_active(), "tap 1"); });
+    ASSERT_NE(old_button, nullptr);
+    // The UI's start-up warnings (no font image in the test) come before.
+    uint32_t last_seq = 0;
+    for (const auto& e : wisp::log::ring_entries()) last_seq = std::max(last_seq, e.seq);
+
+    std::promise<void> held;
+    std::promise<void> go;
+    std::promise<void> tapped;
+    ASSERT_TRUE(ui->post([&, f = go.get_future().share()] {
+        held.set_value();
+        f.wait();
+        lv_obj_send_event(old_button, LV_EVENT_CLICKED, nullptr);
+        tapped.set_value();
+    }));
+    held.get_future().wait();
+    auto r = rt->eval("rows", R"(_G.items:set({"new 1", "new 2", "new 3"}))");
+    go.set_value();
+    ASSERT_TRUE(r) << r.error().message;
+    tapped.get_future().wait();
+
+    // The range request the reset made comes after the tap in the queue.
+    ASSERT_TRUE(wait_label("new 1"));
+    for (const auto& line : scene_log("rows"))
+        EXPECT_EQ(line.find("tapped"), std::string::npos) << line;
+    EXPECT_EQ(rt->status("rows").state, SceneState::Running);
+    for (const auto& e : wisp::log::ring_entries())
+        if (e.seq > last_seq)
+            EXPECT_TRUE(e.level != wisp::LogLevel::Warn && e.level != wisp::LogLevel::Error)
+                << e.tag << ": " << e.msg;
+
+    // A tap on a new row runs its handler.
+    on_ui([&] {
+        lv_obj_t* fresh = wisp::test::find_button_with_label(lv_screen_active(), "tap 1");
+        ASSERT_NE(fresh, nullptr);
+        lv_obj_send_event(fresh, LV_EVENT_CLICKED, nullptr);
+    });
+    EXPECT_TRUE(wait_until(
+        [&] {
+            for (const auto& line : scene_log("rows"))
+                if (line.find("tapped new 1") != std::string::npos) return true;
+            return false;
+        },
+        1000));
 }
 
 }  // namespace

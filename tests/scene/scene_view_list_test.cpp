@@ -4,12 +4,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <variant>
 #include <vector>
 
 #include "list_window.hpp"
+#include "node.hpp"
 #include "support/scene_harness.hpp"
 #include "wisp/core/log.hpp"
 
@@ -66,10 +68,38 @@ protected:
     std::string label_of(NodeId row) {
         std::string text;
         on_ui([&] {
+            if (view->object(row) == nullptr) return;
             lv_obj_t* label = wisp::test::find_obj_of_class(view->object(row), &lv_label_class);
             if (label) text = lv_label_get_text(label);
         });
         return text;
+    }
+
+    // Runs a chunk and flushes it into the batch, without applying it.
+    void run_unpumped(std::string_view src) {
+        lua_State* L = vm->L();
+        auto err = vm->load("main.lua", src);
+        ASSERT_FALSE(err) << describe(err);
+        if (!wisp::scene::push_wisp_internal(L)) lua_pushnil(L);
+        err = vm->call(1, 0);
+        ASSERT_FALSE(err) << describe(err);
+        err = wisp::scene::flush_reactive(*vm);
+        ASSERT_FALSE(err) << describe(err);
+    }
+
+    // Applies what the batch holds on the UI thread; the ranges the view
+    // asks for stay unanswered until pump().
+    void apply_batch() {
+        wisp::scene::UiBatch b = batch.take(kInstance);
+        on_ui([&] {
+            for (const auto& op : b.ops) view->apply(op);
+        });
+    }
+
+    // The ranges asked for and not yet answered.
+    std::vector<RecordedRange> pending_ranges() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return ranges;
     }
 
     bool has_click_handler(NodeId node) {
@@ -389,6 +419,206 @@ TEST_F(SceneViewList, RowsBeyondTheWidgetLimitAreNotBuilt) {
     ASSERT_FALSE(err) << describe(err);
     EXPECT_EQ(rows(), 9u);
     EXPECT_LE(view->object_count(), wisp::scene::kMaxNodes);
+}
+
+constexpr const char* kNewItems = R"(
+    local t = {}
+    for i = 1, 200 do t[i] = "new " .. i end
+    _G.items:set(t)
+)";
+
+// Between a reset and the rows of the new items, the old rows stay on
+// screen: the list never shows empty for a frame.
+TEST_F(SceneViewList, ResetKeepsOldRowsUntilNewRowsArrive) {
+    start("rect");
+    auto err = open(kTwoHundredRows);
+    ASSERT_FALSE(err) << describe(err);
+    const size_t built = rows_built();
+    ASSERT_GT(built, 0u);
+    const NodeId old = row_node(0);
+    ASSERT_NE(old, 0u);
+    take_ranges();
+
+    run_unpumped(kNewItems);
+    apply_batch();
+    EXPECT_EQ(rows_built(), built);
+    EXPECT_NE(view->object(old), nullptr);
+    EXPECT_EQ(label_of(old), "item 1");
+    const auto asked = pending_ranges();
+    ASSERT_FALSE(asked.empty());
+    EXPECT_EQ(asked.back().list, kList);
+
+    err = pump();
+    ASSERT_FALSE(err) << describe(err);
+    EXPECT_EQ(view->object(old), nullptr);
+    EXPECT_EQ(rows_built(), built);
+    EXPECT_EQ(label_of(row_node(0)), "new 1");
+    EXPECT_EQ(view->object_count(), 2 + built * 3);
+}
+
+// A tap on an old row still on screen reaches the scene with the old
+// row's node, which the scene already dropped: no handler runs. Node ids
+// only grow, so no new row can take that id.
+TEST_F(SceneViewList, TapOnAKeptOldRowFindsNoHandler) {
+    start("rect");
+    auto err = open(kTwoHundredRows);
+    ASSERT_FALSE(err) << describe(err);
+    const NodeId old_button = row_node(0) + 2;
+    ASSERT_TRUE(has_click_handler(old_button));
+    take_events();
+
+    run_unpumped(kNewItems);
+    apply_batch();
+    ASSERT_NE(view->object(old_button), nullptr);
+    on_ui([&] { lv_obj_send_event(view->object(old_button), LV_EVENT_CLICKED, nullptr); });
+    auto events = take_events();
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].node, old_button);
+    EXPECT_FALSE(has_click_handler(old_button));
+    // A Change for that node does not bring it back as a value either.
+    run_unpumped("local W = ... W.set_value(" + std::to_string(old_button) + ", true)");
+    lua_State* L = vm->L();
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &wisp::scene::node::kValuesKey);
+    EXPECT_EQ(lua_rawgeti(L, -1, old_button), LUA_TNIL);
+    lua_pop(L, 2);
+
+    err = pump();
+    ASSERT_FALSE(err) << describe(err);
+    const NodeId fresh = row_node(0);
+    EXPECT_GT(fresh, old_button);
+    EXPECT_TRUE(has_click_handler(fresh + 2));
+    EXPECT_FALSE(has_click_handler(old_button));
+}
+
+// Old rows past the new end go at the reset, so the content is as tall
+// as the new items and the scroll position cannot pass their end.
+TEST_F(SceneViewList, ResetToFewerItemsDropsRowsPastTheEnd) {
+    start("rect");
+    auto err = open(kTwoHundredRows);
+    ASSERT_FALSE(err) << describe(err);
+    run_unpumped("_G.items:set({'x', 'y', 'z'})");
+    apply_batch();
+    EXPECT_EQ(rows_built(), 3u);
+    EXPECT_EQ(label_of(row_node(2)), "item 3");
+    on_ui([&] {
+        lv_obj_update_layout(view->screen());
+        EXPECT_EQ(lv_obj_get_scroll_y(list_obj()), 0);
+        EXPECT_LE(lv_obj_get_scroll_bottom(list_obj()), 0);
+    });
+    err = pump();
+    ASSERT_FALSE(err) << describe(err);
+    EXPECT_EQ(rows_built(), 3u);
+    EXPECT_EQ(label_of(row_node(0)), "x");
+    EXPECT_EQ(label_of(row_node(1)), "y");
+    EXPECT_EQ(label_of(row_node(2)), "z");
+}
+
+// Scrolled to the end, a shorter list clamps the scroll position at the
+// reset; the old rows that fall in the new window stay until theirs come.
+TEST_F(SceneViewList, ResetWhileScrolledKeepsOnlyRowsInTheNewWindow) {
+    start("rect");
+    auto err = open(kTwoHundredRows);
+    ASSERT_FALSE(err) << describe(err);
+    const int32_t h = viewport();
+    on_ui([&] { lv_obj_scroll_to_y(list_obj(), 200 * 56, LV_ANIM_OFF); });
+    err = pump();
+    ASSERT_FALSE(err) << describe(err);
+    run_unpumped("local t = {} for i = 1, 195 do t[i] = 'n' .. i end _G.items:set(t)");
+    apply_batch();
+    const ListWindow w = visible_rows(195 * 56 - h, h, 56, 195);
+    on_ui([&] {
+        lv_obj_update_layout(view->screen());
+        EXPECT_EQ(lv_obj_get_scroll_y(list_obj()), 195 * 56 - h);
+        EXPECT_EQ(lv_obj_get_scroll_bottom(list_obj()), 0);
+    });
+    // The old rows still in the new window stay; those past the new end
+    // (195..199) are gone.
+    const ListWindow before = visible_rows(200 * 56 - h, h, 56, 200);
+    const uint32_t kept = 195 - std::max(before.first, w.first);
+    ASSERT_GT(kept, 0u);
+    ASSERT_LT(kept, w.count);
+    EXPECT_EQ(rows_built(), kept);
+    EXPECT_EQ(label_of(row_node(194)), "item 195");
+    err = pump();
+    ASSERT_FALSE(err) << describe(err);
+    EXPECT_EQ(rows_built(), w.count);
+    EXPECT_EQ(label_of(row_node(194)), "n195");
+}
+
+TEST_F(SceneViewList, ResetToNoItemsDropsEveryRow) {
+    start("rect");
+    auto err = open(kTwoHundredRows);
+    ASSERT_FALSE(err) << describe(err);
+    run_unpumped("_G.items:set({})");
+    apply_batch();
+    EXPECT_EQ(rows_built(), 0u);
+    EXPECT_EQ(view->object_count(), 2u);
+}
+
+// No rows will come for a range the view could not ask for.
+TEST_F(SceneViewList, UnansweredResetDropsTheOldRows) {
+    start("rect");
+    auto err = open(kTwoHundredRows);
+    ASSERT_FALSE(err) << describe(err);
+    refuse_ranges = true;
+    run_unpumped(kNewItems);
+    apply_batch();
+    EXPECT_EQ(rows_built(), 0u);
+    EXPECT_EQ(view->object_count(), 2u);
+}
+
+// A second reset before the first one's rows: the old rows still wait
+// for the newest items' rows, and those replace them.
+TEST_F(SceneViewList, SecondResetBeforeTheRowsKeepsWaiting) {
+    start("rect");
+    auto err = open(kTwoHundredRows);
+    ASSERT_FALSE(err) << describe(err);
+    const size_t built = rows_built();
+    const NodeId old = row_node(0);
+    run_unpumped(kNewItems);
+    apply_batch();
+    run_unpumped("local t = {} for i = 1, 200 do t[i] = 'third ' .. i end _G.items:set(t)");
+    apply_batch();
+    EXPECT_EQ(rows_built(), built);
+    EXPECT_EQ(label_of(old), "item 1");
+    err = pump();
+    ASSERT_FALSE(err) << describe(err);
+    EXPECT_EQ(view->object(old), nullptr);
+    EXPECT_EQ(rows_built(), built);
+    EXPECT_EQ(label_of(row_node(0)), "third 1");
+}
+
+// New rows too large for the widget limit: the scene builds none, and
+// still answers, so the old rows do not stay on screen.
+TEST_F(SceneViewList, ResetWhoseRowsDoNotFitDropsTheOldRows) {
+    start("rect");
+    // screen, stack, 1970 labels and the list: 1973 nodes; a row of
+    // 30 labels does not fit beside them, one label does.
+    auto err = open(R"(
+        local labels = {}
+        for i = 1, 1970 do labels[i] = ui.label { text = "x" } end
+        _G.items = state({1, 2, 3})
+        return ui.screen {
+          ui.stack(labels),
+          ui.list { items = _G.items, row_h = 30, row = function(item)
+            if item ~= "big" then return ui.label { text = item } end
+            local t = {}
+            for i = 1, 30 do t[i] = ui.label { text = "y" } end
+            return ui.row(t)
+          end },
+        }
+    )");
+    ASSERT_FALSE(err) << describe(err);
+    constexpr NodeId kBigList = 1973;
+    auto rows = [&] {
+        size_t n = 0;
+        on_ui([&] { n = lv_obj_get_child_count(view->object(kBigList)) - 1; });
+        return n;
+    };
+    ASSERT_EQ(rows(), 3u);
+    err = message("_G.items:set({'big', 'big'})");
+    ASSERT_FALSE(err) << describe(err);
+    EXPECT_EQ(rows(), 0u);
 }
 
 }  // namespace

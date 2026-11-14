@@ -259,9 +259,34 @@ TEST_F(RunLua, SliceLimit) {
             .count();
     EXPECT_FALSE(r.ok);
     EXPECT_EQ(r.error, "timeout");
-    EXPECT_NE(r.message.find("1000 ms"), std::string::npos) << r.message;
-    EXPECT_GE(ms, 900);
+    EXPECT_NE(r.message.find("200 ms"), std::string::npos) << r.message;
+    EXPECT_GE(ms, 150);
     EXPECT_LT(ms, 5000);
+}
+
+// The agent's run has the same cap on calls waiting for results.
+TEST_F(RunLua, CallsPastTheCapRaise) {
+    start();
+    LuaRunResult r =
+        run("for i = 1, 16 do wisp.http.request({url = 'bad'}, function() end) end "
+            "return select(2, pcall(wisp.http.request, {url = 'bad'}, function() end))");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_NE(r.json.find("too many calls waiting"), std::string::npos) << r.json;
+}
+
+// The run's results wait in its box, not in the scene queue: all six
+// refusals arrive past a queue with room for two messages.
+TEST_F(RunLua, RefusalsPastAFullQueueAllArrive) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) { c.queue_capacity = 2; };
+    start();
+    LuaRunOptions opts;
+    opts.timeout_ms = 3000;
+    LuaRunResult r = run(
+        "local n = 0 for i = 1, 6 do wisp.http.request({url = 'bad'}, function() n = n + 1 end) "
+        "end while n < 6 do wisp.sleep(10) end return n",
+        opts);
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_EQ(r.json, "6");
 }
 
 TEST_F(RunLua, MemoryLimit) {

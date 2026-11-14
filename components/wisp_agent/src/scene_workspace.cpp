@@ -441,7 +441,9 @@ Result<void> SceneWorkspace::discard(const std::string& id, std::string* name) {
         if (!draft_exists_here(id))
             return fail<void>(ErrorCode::NotFound, "not_found", "no draft of " + id);
         if (name != nullptr) *name = name_here(id);
-        return deps_.storage.remove_tree(draft_dir(id));
+        WISP_TRY(deps_.storage.remove_tree(draft_dir(id)));
+        end_session(id);
+        return Result<void>::ok();
     });
 }
 
@@ -549,7 +551,8 @@ ToolOutput SceneWorkspace::install(const std::string& id, ToolCtx& ctx) {
     const ui::Lang lang = lang_of(ctx);
     const std::string note = ui::tr_fill(ui::StrId::AgentNoteInstalled, lang, m.name) +
                              ui::tr_fill(ui::StrId::AgentVersionSuffix, lang, m.version);
-    return install_zip(id, archive.span(), true, note, ctx);
+    const bool keep_prev = !in_session(id, ctx.turn);
+    return install_zip(id, archive.span(), true, keep_prev, note, ctx);
 }
 
 ToolOutput SceneWorkspace::rollback(const std::string& id, ToolCtx& ctx) {
@@ -562,16 +565,59 @@ ToolOutput SceneWorkspace::rollback(const std::string& id, ToolCtx& ctx) {
     std::string name = id;
     if (auto m = deps_.repo.manifest(id); m && !m.value().name.empty()) name = m.value().name;
     const std::string note = ui::tr_fill(ui::StrId::AgentNoteRolledBack, lang_of(ctx), name);
-    return install_zip(id, zip.value().span(), false, note, ctx);
+    // A swap, as always: the version rolled back from becomes the previous
+    // one, and the next install of the turn starts a new session (the one
+    // install_zip() recorded ends here).
+    ToolOutput out = install_zip(id, zip.value().span(), false, true, note, ctx);
+    if (out.ok) end_session(id);
+    return out;
+}
+
+bool SceneWorkspace::in_session(const std::string& id, uint32_t turn) {
+    if (turn == 0) return false;
+    std::lock_guard<os::Mutex> lock(sessions_mu_);
+    auto it = std::find_if(sessions_.begin(), sessions_.end(),
+                           [&](const Session& s) { return s.id == id; });
+    if (it == sessions_.end()) return false;
+    bool valid = it->turn == turn;
+    if (valid) {
+        uint64_t now = 0;
+        const std::vector<std::string> changed = deps_.repo.changed_since(it->generation, now);
+        valid = std::find(changed.begin(), changed.end(), id) == changed.end();
+    }
+    if (!valid) sessions_.erase(it);
+    return valid;
+}
+
+void SceneWorkspace::note_install(const std::string& id, uint32_t turn) {
+    if (turn == 0) return;
+    // Read right after our replace, which is already counted, so a later
+    // change of the scene is someone else's. One that lands between the
+    // replace and this read goes unnoticed: install_scene() reopening the
+    // scene is all that runs in between.
+    uint64_t now = 0;
+    (void)deps_.repo.changed_since(UINT64_MAX, now);
+    std::lock_guard<os::Mutex> lock(sessions_mu_);
+    std::erase_if(sessions_, [&](const Session& s) { return s.turn != turn || s.id == id; });
+    sessions_.push_back(Session{id, turn, now});
+}
+
+void SceneWorkspace::end_session(const std::string& id) {
+    std::lock_guard<os::Mutex> lock(sessions_mu_);
+    std::erase_if(sessions_, [&](const Session& s) { return s.id == id; });
 }
 
 ToolOutput SceneWorkspace::install_zip(const std::string& id, std::span<const uint8_t> zip,
-                                       bool drop_draft, const std::string& note, ToolCtx&) {
+                                       bool drop_draft, bool keep_prev, const std::string& note,
+                                       ToolCtx& ctx) {
     // 6. Lines the scene logs from here on belong to the new version.
     const uint64_t since_ms = os::now_ms();
     auto installed = core::install_scene(deps_.repo, deps_.runtime, zip,
-                                         core::InstallOptions{.keep_prev = true});
+                                         core::InstallOptions{.keep_prev = keep_prev});
+    // A failed install records nothing, so a failed first install starts
+    // no session.
     if (!installed) return from_error(installed.error());
+    note_install(id, ctx.turn);
     const core::SceneManifest& m = installed.value().manifest;
     if (deps_.on_tools_changed) deps_.on_tools_changed(m);
 

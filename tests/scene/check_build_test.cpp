@@ -94,6 +94,33 @@ TEST_F(CheckBuild, RuntimeErrorInEntryFails) {
     EXPECT_NE(bad.error().message.find("ui.screen"), std::string::npos) << bad.error().message;
 }
 
+// The check's VM answers no call, so an entry file that starts more
+// calls at load than a scene may have waiting fails the check with the
+// error the real open would raise (wisp.http and wisp.files share the cap).
+TEST_F(CheckBuild, TooManyCallsAtLoadFail) {
+    start();
+    auto r = rt->check_build(package_of("demo", R"(
+for i = 1, 8 do wisp.http.get("https://example.com/", function() end) end
+for i = 1, 8 do wisp.files.list(function() end) end
+wisp.files.list(function() end)
+return ui.screen {}
+)"));
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(r.error().message.rfind("main.lua:4:", 0), 0u) << r.error().message;
+    EXPECT_NE(r.error().message.find("too many calls waiting for results (at most 16)"),
+              std::string::npos)
+        << r.error().message;
+
+    // Sixteen are within the cap.
+    auto ok = rt->check_build(package_of("demo", R"(
+for i = 1, 8 do wisp.http.get("https://example.com/", function() end) end
+for i = 1, 8 do wisp.files.list(function() end) end
+return ui.screen {}
+)"));
+    EXPECT_TRUE(ok) << ok.error().message;
+}
+
 TEST_F(CheckBuild, LeavesTheRealStoreAlone) {
     install("demo", "wisp.store.set('k', 1)\nreturn ui.screen {}\n");
     start();

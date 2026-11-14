@@ -395,6 +395,7 @@ struct AgentService::Impl {
     void run_turn(const Command& c) {
         const bool rolled = deps.store.needs_rollover() && archive();
         const uint32_t turn = deps.store.last_turn() + 1;
+        ++turn_serial;
         {
             std::lock_guard<os::Mutex> lock(mu);
             running_turn = turn;
@@ -842,6 +843,7 @@ struct AgentService::Impl {
             ctx.cancelled = [this] { return aborted(); };
             ctx.deadline_ms = os::now_ms() + left;
             ctx.lang = ui::lang_code(lang());
+            ctx.turn = turn_serial;
             o = deps.tools.call(c.name, sv(c.arguments), ctx);
         }
         ++out.steps;
@@ -931,6 +933,11 @@ struct AgentService::Impl {
     std::string tool;
     std::optional<uint32_t> running_turn;
     std::optional<Source> running_source;
+    // ToolCtx::turn of the running turn. Conversation turn numbers start
+    // at 1 again in a new conversation, so tools that keep state per turn
+    // (SceneWorkspace's sessions) get this serial instead; it is never
+    // reset. Only the agent task reads or writes it.
+    uint32_t turn_serial = 0;
 
     std::atomic<ConfirmService*> confirm{nullptr};
 

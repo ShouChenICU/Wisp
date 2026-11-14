@@ -1,13 +1,14 @@
 // wisp.files (scene_api.hpp; scene-device spec 7.1): a thin adapter over
 // core::SceneFiles. Nothing here touches flash: each call checks its
 // arguments, copies what the job needs (the data into PSRAM) and hands a
-// job to SceneApi::files_run, which runs it on the wisp.fs worker; the
-// result comes back as a message and run_files_callback() calls the
-// scene's function with it.
+// job to SceneApi::files_run, which runs it on the scene's storage worker
+// (wisp.fs, or wisp.sd.io for files on the card); the result waits in the
+// VM's completion box and run_files_callback() calls the scene's function
+// with it.
 //
 // Callbacks wait in a registry table by id until their result arrives;
-// results for a closed scene never arrive (the runtime drops stale
-// messages), and the table goes with the VM. wisp.http.download keeps its
+// results for a closed scene never arrive (its box closes with the
+// VM), and the table goes with the VM. wisp.http.download keeps its
 // callback here too (register_files_callback()). A task that left the
 // callback out waits there as its thread instead (lua_task.hpp), and
 // run_files_callback() resumes it with the callback's arguments.
@@ -24,6 +25,7 @@
 #include <utility>
 
 #include "scene_api.hpp"
+#include "wisp/core/log.hpp"
 
 namespace wisp::scene {
 
@@ -256,12 +258,18 @@ int wait_files(lua_State* L, uint32_t id) { return wait(L, &kCallbacksKey, id, f
 
 uint32_t register_files_callback(lua_State* L, SceneApi& api, int cb) {
     cb = lua_absindex(L, cb);
+    if (api.calls_in_flight >= kMaxCallsInFlight)
+        luaL_error(L, "too many calls waiting for results (at most %d)",
+                   static_cast<int>(kMaxCallsInFlight));
     const uint32_t id = api.next_files_id++;
     if (api.next_files_id == 0) api.next_files_id = 1;
     lua_rawgetp(L, LUA_REGISTRYINDEX, &kCallbacksKey);
     lua_pushvalue(L, cb);
     lua_rawseti(L, -2, id);
     lua_pop(L, 1);
+    // Every caller hands the id to files_run, files_fail or files_download
+    // right after, so exactly one result comes back to count it down.
+    ++api.calls_in_flight;
     return id;
 }
 
@@ -290,6 +298,18 @@ void install_files(lua_State* L, int wisp) {
 
 std::optional<ScriptError> run_files_callback(Vm& vm, uint32_t id, const FilesResult& r) {
     lua_State* L = vm.L();
+    // As run_http_callback(): one result per counted call, whatever became
+    // of its callback, so count it down first.
+    if (SceneApi* api = detail::find_api(L); api != nullptr) {
+        // At 0 a result came for a call that was not counted, or one was
+        // counted down twice: the count is low, and more than
+        // kMaxCallsInFlight calls could wait.
+        if (api->calls_in_flight > 0)
+            --api->calls_in_flight;
+        else
+            WLOG_W("scene", "%s: files result %u arrived with no call waiting",
+                   api->scene_id.c_str(), static_cast<unsigned>(id));
+    }
     if (!lua_checkstack(L, 2)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     RunCtx ctx{id, &r};
     if (detail::is_waiting(L, &kCallbacksKey, id))

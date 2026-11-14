@@ -78,9 +78,16 @@
 // itself.
 //
 // Lists (virtualized): a ListReset makes the list's content count *
-// row_h tall, drops every row it has, holds the scroll position to what
-// the new content allows and asks for the rows the viewport needs
-// (on_list_range with visible_rows(), list_window.hpp). Scrolling and a
+// row_h tall, drops the rows at indexes past the new count, holds the
+// scroll position to what the new content allows and asks for the rows
+// the viewport needs (on_list_range with visible_rows(), list_window.hpp).
+// The old items' rows still in that window stay on screen until the next
+// ListRows, which drops them all before it builds anything, so the list
+// never shows empty while the scene builds the new rows. When no ListRows
+// can come (the new window is empty, or on_list_range could not pass the
+// request on), the reset drops them at once. A tap on such a row reaches
+// the scene with a node id the scene already dropped (ids are never
+// reused), so no handler runs. Scrolling and a
 // change of the list's size ask again whenever that window changes, and
 // rows that left it are deleted at once (objects and nodes). A ListRows
 // row is built only if its index is still in the list's window; one that
@@ -174,7 +181,8 @@ struct NodeRef {
 struct ViewCallbacks {
     // Called on the UI thread; forwards to the scene task.
     std::function<void(NodeId node, UiEvent ev, PropValue value)> on_event;
-    std::function<void(NodeId list, uint32_t first, uint32_t count)> on_list_range;
+    // false: the request was not passed on, so no rows will come for it.
+    std::function<bool(NodeId list, uint32_t first, uint32_t count)> on_list_range;
     // A problem the scene should hear about (a missing image file); the
     // scene host logs it to the scene's log.
     std::function<void(NodeId node, std::string_view message)> on_warning;
@@ -250,7 +258,8 @@ private:
     void drop_row(Node& list, size_t slot);
     void drop_rows(Node& list);
     // Recomputes the list's window; `force` asks for it even unchanged.
-    void update_window(Node& list, bool force);
+    // Returns on_list_range's answer (true when nothing was asked).
+    bool update_window(Node& list, bool force);
     void place_row(Node& root);
     static void list_event_cb(lv_event_t* e);
 

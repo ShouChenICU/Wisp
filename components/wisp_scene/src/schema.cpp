@@ -10,6 +10,7 @@
 #include <string>
 
 #include "icons.hpp"
+#include "scene_api.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/sensor_service.hpp"
@@ -492,7 +493,15 @@ void append_lua_api(std::string& out) {
            "- Other errors: `dns`, `connect`, `tls`, `other`, `deferred_queue_full`,\n"
            "  `deferred_timeout` (see below), `not_serializable` and `too_deep` (a body table\n"
            "  that cannot be sent as JSON). Errors always arrive through `cb`; only arguments\n"
-           "  of the wrong type are a Lua error at the call.\n";
+           "  of the wrong type, and a call past the limit below, are a Lua error at the call.\n"
+           "- At most " +
+           num(kMaxCallsInFlight) +
+           " calls of `wisp.http` and `wisp.files` together may wait for their results;\n"
+           "  one more raises the Lua error `too many calls waiting for results (at most " +
+           num(kMaxCallsInFlight) +
+           ")`,\n"
+           "  which `pcall` can catch. A place is free again as soon as a call's result\n"
+           "  arrives (its callback runs, or a waiting task resumes).\n";
 }
 
 // The manifest, the hooks and the device-side APIs (scene-device spec 3,
@@ -746,7 +755,15 @@ void append_device_api(std::string& out) {
         "  reinstalled with the same id finds its old files where it left them.\n"
         "- Other codes: `not_found` (no such file), `unavailable`, `busy` (the storage worker\n"
         "  has too much queued: try again later), `no_memory`, or the name of a storage\n"
-        "  error.\n"
+        "  error.\n";
+    out += "- At most " + num(kMaxCallsInFlight) +
+           " calls of `wisp.http` and `wisp.files` together may wait for their results;\n"
+           "  one more raises the Lua error `too many calls waiting for results (at most " +
+           num(kMaxCallsInFlight) +
+           ")`,\n"
+           "  which `pcall` can catch. A place is free again as soon as a call's result\n"
+           "  arrives (its callback runs, or a waiting task resumes).\n";
+    out +=
         "\n"
         "## wisp.http.download and deep standby\n"
         "\n"
@@ -757,6 +774,9 @@ void append_device_api(std::string& out) {
         "  scene's quota. `cb(err, res)`: `res = {status, size, deferred}`. A response that\n"
         "  is not 2xx leaves the file as it was and gives `size = 0`. Errors are those of\n"
         "  `wisp.http` and of `wisp.files`.\n"
+        "- At most 2 downloads wait device-wide (`download_queue`); one more is answered\n"
+        "  `rate_limited`. A download and an ordinary request of one scene may complete in\n"
+        "  either order.\n"
         "- In deep standby (the screen has been off for a while) Wi-Fi is off. Requests and\n"
         "  downloads then wait in a queue, at most 4 per scene (`deferred_queue_full` past\n"
         "  it), until the system turns Wi-Fi on for a short network window, at most every 15\n"
@@ -1183,7 +1203,7 @@ a nested coroutine cannot wait, even when its parent is a task.
 `wisp.sleep(ms)` waits only in a task, accepts integers from 0 to 300000 and
 returns nil. Values below 50 ms wait 50 ms because of the timer resolution.
 Waiting does not use CPU execution-slice time. Each resume starts a new slice:
-200 ms for scene tools, 1000 ms for Agent Lua. The overall tool deadline includes
+200 ms for scene tools and for Agent Lua. The overall tool deadline includes
 waiting. VM faults stop further resume attempts.
 
 ## wisp.json

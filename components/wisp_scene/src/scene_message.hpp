@@ -16,6 +16,7 @@
 #include <variant>
 #include <vector>
 
+#include "completion_box.hpp"
 #include "scene_api.hpp"
 #include "scene_instance.hpp"
 #include "wisp/base/result.hpp"
@@ -237,6 +238,16 @@ struct SceneRuntime::Slot {
     MinuteTicker ticker;
     // Its downloads in flight (wire_files()); shared with the jobs.
     std::shared_ptr<FilesGate> files_gate;
+    // Its finished wisp.http / wisp.files calls (add_slot()); shared with
+    // the deliver lambdas, closed when the VM goes.
+    std::shared_ptr<CompletionBox> box;
+    // Timer ids TimerSet::due() returned and the lanes have not run yet,
+    // oldest first (scene_runtime.hpp, "Scheduling"). Ids taken before the
+    // timers paused (screen off) still run: each was already due, and
+    // dropping them would lose after timers due() already removed from
+    // the set. run_timers_of() skips ids already waiting here, so a
+    // resume does not fire one twice.
+    std::vector<uint32_t> due_timers;
     // What the scene last saw, for "battery" and "lang".
     bool has_battery = false;
     int64_t battery = 0;
@@ -251,6 +262,10 @@ struct SceneRuntime::AgentRun {
     uint32_t instance = 0;
     SceneApi api;
     std::shared_ptr<FilesGate> files_gate;
+    // As Slot::box, closed by lua_end().
+    std::shared_ptr<CompletionBox> box;
+    // As Slot::due_timers, for its wisp.sleep timers.
+    std::vector<uint32_t> due_timers;
     OutputTail output;
     // The task ended (SceneApi::task_done) with `outcome`.
     bool ended = false;
@@ -332,22 +347,14 @@ struct ListRange {
     uint32_t count = 0;
 };
 
-// A wisp.http result for callback `id` (SceneApi::http_submit).
-struct HttpDone {
-    uint32_t id = 0;
-    net::SceneHttpResult result;
-};
+// Results are waiting in the box of SceneMessage::instance (Slot::box,
+// AgentRun::box): a wake-up only, the results stay in the box.
+struct Completed {};
 // A wisp.sensor batch for the binding's handle `handle` (empty for a
 // gesture), from the service's task.
 struct Sensor {
     uint32_t handle = 0;
     core::SensorBatch samples;
-};
-// A wisp.files (or wisp.http.download) result for callback `id`, from
-// the wisp.fs worker (SceneApi::files_run).
-struct FilesDone {
-    uint32_t id = 0;
-    FilesResult result;
 };
 // A completion the store bindings will send.
 struct StoreDone {};
@@ -427,8 +434,8 @@ struct ToolStop {
 struct Quit {};
 
 using Body =
-    std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, HttpDone, StoreDone,
-                 Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor, FilesDone, Quit,
+    std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, Completed,
+                 StoreDone, Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor, Quit,
                  CheckBuild, Eval, StoreDump, StoreSet, LuaRun, LuaStop, ToolCall, ToolStop>;
 
 }  // namespace msg
