@@ -703,6 +703,23 @@ TEST_P(HomeShapes, HintFitsTheSafeAreaOnAllShapes) {
                 expect_hint_fits(home, shape_, GetParam(), TurnView{}, c.text, c.with_url);
             });
         }
+        // A tap's hint (HomeHoldToTalk) needs a controller to tap through,
+        // which this Home has not; it takes the same idle band as the hints
+        // above, without the address, so it is measured in that band.
+        on_ui([&] {
+            const std::string tap = wisp::ui::tr(StrId::HomeHoldToTalk, lang);
+            SCOPED_TRACE(tap);
+            home.show_readiness(Readiness{.net = Readiness::Net::Down});
+            home.show_view(TurnView{});
+            lv_obj_update_layout(home.screen());
+            lv_obj_t* label = home.hint_label();
+            ASSERT_FALSE(hidden(label));
+            lv_point_t size;
+            lv_text_get_size(&size, tap.c_str(), lv_obj_get_style_text_font(label, LV_PART_MAIN), 0,
+                             0, lv_obj_get_content_width(label), LV_TEXT_FLAG_NONE);
+            EXPECT_LE(size.y, lv_obj_get_content_height(label));
+            EXPECT_TRUE(box_visible(shape_, coords(label))) << str(coords(label));
+        });
     }
     on_ui([&] {
         wisp::ui::set_lang(Lang::Zh);
@@ -1571,10 +1588,11 @@ TEST_F(HomeTest, MissingProfilesAreListedWithTheAdminUrl) {
     EXPECT_EQ(hint_shown(), "还差：对话模型、语音合成");
 }
 
-// A muted device needs no speech profile (the wiring reports tts while
-// muted, AppVoice.MutedDeviceDoesNotAskForTts): with everything else there
-// the hint is empty.
-TEST_F(HomeTest, MutedDeviceDoesNotAskForTts) {
+// Home asks for a speech profile only while readiness lacks tts: once it
+// is there (a tts profile, or muted -- that rule is the wiring's,
+// AppVoice.MutedDeviceDoesNotAskForTts) and everything else is too, the
+// hint is empty.
+TEST_F(HomeTest, SatisfiedTtsTakesTheSpeechItemAway) {
     boot();
     ready.store(wisp::shell::Readiness{.tts = false});
     EXPECT_EQ(hint_shown(), "还差：语音合成\nhttp://10.0.0.7:8900");
