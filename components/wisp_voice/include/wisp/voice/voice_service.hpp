@@ -56,7 +56,9 @@
 // turn may be requested while the LLM is still streaming
 // (set_llm_busy(true)), and with overlap_first_sentence = false not even
 // that one -- until say_closed() says the say block has closed: then the
-// rest of the queue is synthesized while the model streams the body.
+// say's unterminated tail is queued too, and the rest of the queue is
+// synthesized while the model streams the body (a later say of the turn
+// keeps feeding the same splitter and cap).
 // Either way it is one TTS request at a time, so a turn never holds more
 // than two model connections (the LLM stream and one TTS). A TTS failure
 // ends the turn's speech (the text is still shown by others).

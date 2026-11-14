@@ -693,6 +693,81 @@ TEST_F(VoiceServiceTest, SayClosedLetsLaterSentencesRunWhileTheLlmIsBusy) {
     ASSERT_TRUE(wait_idle());
 }
 
+TEST_F(VoiceServiceTest, SayClosedSpeaksTheUnterminatedTail) {
+    add_tts();
+    make();
+    server.push_tts(pcm_reply(ramp(480)));
+    server.push_tts(pcm_reply(ramp(480)));
+    voice->set_llm_busy(true);
+    voice->begin_speech();
+    voice->speak("一。二");
+    voice->say_closed();
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 2; }, 2000));
+    EXPECT_EQ(tts_inputs(), (std::vector<std::string>{"一。", "二"}));
+    voice->set_llm_busy(false);
+    voice->end_speech();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(count(kTtsPath), 2u);
+}
+
+TEST_F(VoiceServiceTest, SayClosedSpeaksAnEnglishSayWhileTheLlmIsBusy) {
+    add_tts();
+    make();
+    server.push_tts(pcm_reply(ramp(480)));
+    voice->set_llm_busy(true);
+    voice->begin_speech();
+    voice->speak("Done. Tap start");
+    voice->speak(" to use it");
+    voice->say_closed();
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 1; }, 2000));
+    EXPECT_EQ(tts_inputs(), (std::vector<std::string>{"Done. Tap start to use it"}));
+    voice->set_llm_busy(false);
+    voice->end_speech();
+    ASSERT_TRUE(wait_idle());
+}
+
+TEST_F(VoiceServiceTest, ASecondSayAfterAFlushedOneStillSpeaks) {
+    add_tts();
+    make();
+    for (int i = 0; i < 3; ++i) server.push_tts(pcm_reply(ramp(480)));
+    voice->set_llm_busy(true);
+    voice->begin_speech();
+    voice->speak("一");
+    voice->say_closed();
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 1; }, 2000));
+    voice->speak("二。三");
+    voice->say_closed();
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 3; }, 2000));
+    voice->set_llm_busy(false);
+    voice->end_speech();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(tts_inputs(), (std::vector<std::string>{"一", "二。", "三"}));
+}
+
+TEST_F(VoiceServiceTest, SayClosedKeepsTheCap) {
+    add_tts();
+    make();
+    for (int i = 0; i < 8; ++i) server.push_tts(pcm_reply(ramp(48)));
+    // Two says of 150 code points without a terminator: the first is
+    // spoken whole at its close, the second only up to the 200 cap.
+    std::string say;
+    for (int i = 0; i < 150; ++i) say += "字";
+    voice->begin_speech();
+    voice->speak(say);
+    voice->say_closed();
+    voice->speak(say);
+    voice->say_closed();
+    voice->end_speech();
+    ASSERT_TRUE(wait_idle());
+    wisp::os::sleep_ms(50);
+    size_t code_points = 0;
+    for (const std::string& in : tts_inputs()) {
+        for (unsigned char c : in) code_points += (c & 0xC0) != 0x80;
+    }
+    EXPECT_EQ(code_points, 200u);
+    EXPECT_EQ(count(kTtsPath), 2u);
+}
+
 TEST_F(VoiceServiceTest, SayClosedDoesNotLeakIntoTheNextSpeech) {
     add_tts();
     make();

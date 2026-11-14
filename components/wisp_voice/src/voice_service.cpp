@@ -292,6 +292,14 @@ void VoiceService::say_closed() {
         std::lock_guard<os::Mutex> lock(speech_mu_);
         if (!speech_.open) return;
         speech_.say_closed = true;
+        // The say's tail need not end in a terminator (an English say
+        // rarely does: "." is not one), and it would otherwise wait in the
+        // splitter until end_speech(), after the body and any tool call.
+        // A later say of the turn feeds the same splitter, under its cap.
+        if (!speech_.ended) {
+            speech_.splitter->flush(
+                [&](std::string s) { speech_.pending.push_back(std::move(s)); });
+        }
     }
     wake();
 }
