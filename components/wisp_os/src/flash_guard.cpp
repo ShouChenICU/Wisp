@@ -97,10 +97,10 @@ void sd_guard_abort_if_violated(const char* what) {
     std::abort();
 }
 
-void flash_guard_report(const char* what) {
+void flash_guard_report(const char* what, bool sd) {
     FlashViolationReporter reporter = g_flash_violation_reporter.load(std::memory_order_acquire);
     if (reporter != nullptr) {
-        reporter(what);
+        reporter(what, sd);
     }
 }
 

@@ -14,10 +14,12 @@ namespace {
 // pointer, which cannot carry a capture. State lives at file scope
 // instead and each test resets it before use.
 const char* g_last_reported = nullptr;
+bool g_last_sd = false;
 int g_report_count = 0;
 
-void capture_violation(const char* what) {
+void capture_violation(const char* what, bool sd) {
     g_last_reported = what;
+    g_last_sd = sd;
     ++g_report_count;
 }
 
@@ -35,11 +37,30 @@ TEST(FlashGuard, ReporterHookReceivesTheCallSite) {
     g_report_count = 0;
     set_flash_violation_reporter(&capture_violation);
 
-    detail::flash_guard_report("StorageManager::write_atomic");
+    detail::flash_guard_report("StorageManager::write_atomic", false);
 
     EXPECT_EQ(g_report_count, 1);
     ASSERT_NE(g_last_reported, nullptr);
     EXPECT_STREQ(g_last_reported, "StorageManager::write_atomic");
+    EXPECT_FALSE(g_last_sd);
+
+    set_flash_violation_reporter(nullptr);
+}
+
+// An SD-rule violation reaches the same reporter marked as such, so the
+// installed reporter can word it as an SD violation rather than a flash
+// one.
+TEST(FlashGuard, ReporterHookTellsAnSdViolationApart) {
+    g_last_reported = nullptr;
+    g_report_count = 0;
+    set_flash_violation_reporter(&capture_violation);
+
+    detail::flash_guard_report("StorageManager::append", true);
+
+    EXPECT_EQ(g_report_count, 1);
+    ASSERT_NE(g_last_reported, nullptr);
+    EXPECT_STREQ(g_last_reported, "StorageManager::append");
+    EXPECT_TRUE(g_last_sd);
 
     set_flash_violation_reporter(nullptr);
 }
@@ -49,7 +70,7 @@ TEST(FlashGuard, ReporterHookReceivesTheCallSite) {
 // not a crash.
 TEST(FlashGuard, NoReporterInstalledIsSilent) {
     set_flash_violation_reporter(nullptr);
-    detail::flash_guard_report("StorageManager::write_atomic");
+    detail::flash_guard_report("StorageManager::write_atomic", false);
 }
 
 // With no flash thread ever registered (the common case for a test that

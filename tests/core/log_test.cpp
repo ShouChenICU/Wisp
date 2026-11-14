@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 
 namespace {
@@ -443,4 +444,21 @@ TEST(Log, ForEachRingEntryOnEmptyRing) {
     int calls = 0;
     wisp::log::for_each_ring_entry([&](const wisp::LogEntryView&) { ++calls; });
     EXPECT_EQ(calls, 0);
+}
+
+// log::init() installs the flash guard's device reporter; it words each
+// violation by its rule and logs it under that rule's tag.
+TEST(Log, GuardReporterNamesTheViolatedRule) {
+    wisp::log::reset_for_test();
+    wisp::log::init(1024);
+    CaptureSink s;
+    wisp::log::add_sink(&s);
+
+    wisp::os::detail::flash_guard_report("NvsSettingsBackend::set", false);
+    wisp::os::detail::flash_guard_report("StorageManager::append", true);
+
+    ASSERT_EQ(s.lines.size(), 2u);
+    EXPECT_EQ(s.lines[0], "flash|flash access off the flash thread: NvsSettingsBackend::set");
+    EXPECT_EQ(s.lines[1], "sd|sd access off the sd i/o thread: StorageManager::append");
+    wisp::log::remove_sink(&s);
 }

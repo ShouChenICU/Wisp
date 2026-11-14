@@ -66,18 +66,18 @@ bool on_sd_io_thread();
 bool sd_io_allowed();
 
 // Called, at most once per call site, on an ESP-IDF device build's
-// violation (see WISP_ASSERT_FLASH_THREAD below). wisp_os cannot call
-// WLOG_E itself (wisp/core/log.hpp sits above it -- AGENTS.md section 3),
-// so it reports through this hook instead: a higher layer installs one at
-// boot (wisp_core's logging setup installs one that calls WLOG_E) via
-// set_flash_violation_reporter(). Unlike the earlier approach of simply
-// naming WLOG_E inside the macro and relying on every call site to have
-// included wisp/core/log.hpp first, this compiles independently of what
-// the call site itself includes. Null (the default, and every build that
-// never installs one, including every host/sim build, which never
-// reaches the ESP-IDF branch below at all): a violation is just not
-// reported through this path.
-using FlashViolationReporter = void (*)(const char* what);
+// violation of either rule (see WISP_ASSERT_FLASH_THREAD and
+// WISP_ASSERT_SD_IO_THREAD below); `sd` is true for an SD-rule violation
+// and false for a flash-rule one, so the reporter can name the rule that
+// was broken. wisp_os cannot call WLOG_E itself (wisp/core/log.hpp sits
+// above it -- AGENTS.md section 3), so it reports through this hook
+// instead: a higher layer installs one at boot (wisp_core's logging setup
+// installs one that calls WLOG_E) via set_flash_violation_reporter().
+// This compiles independently of what the call site itself includes.
+// Null (the default, and every build that never installs one, including
+// every host/sim build, which never reaches the ESP-IDF branches below at
+// all): a violation is just not reported through this path.
+using FlashViolationReporter = void (*)(const char* what, bool sd);
 void set_flash_violation_reporter(FlashViolationReporter reporter);
 
 namespace detail {
@@ -92,12 +92,13 @@ void flash_guard_abort_if_violated(const char* what);
 // and aborts unless sd_io_allowed(). Go through the macro.
 void sd_guard_abort_if_violated(const char* what);
 
-// Calls the reporter installed by set_flash_violation_reporter(), if any;
-// a silent no-op otherwise. Used by WISP_ASSERT_FLASH_THREAD's ESP-IDF
-// device branch below; exposed here (rather than kept private to
+// Calls the reporter installed by set_flash_violation_reporter(), if any,
+// passing `sd` through; a silent no-op otherwise. Used by the ESP-IDF
+// device branches of WISP_ASSERT_FLASH_THREAD (sd false) and
+// WISP_ASSERT_SD_IO_THREAD (sd true) below; exposed here (rather than kept private to
 // flash_guard.cpp) so the hook itself can be unit-tested on the host
 // without needing an ESP-IDF build.
-void flash_guard_report(const char* what);
+void flash_guard_report(const char* what, bool sd);
 
 }  // namespace detail
 
@@ -125,7 +126,7 @@ void flash_guard_report(const char* what);
         if (!::wisp::os::on_flash_thread()) {                                          \
             static std::atomic<bool> wisp_flash_guard_logged_{false};                  \
             if (!wisp_flash_guard_logged_.exchange(true, std::memory_order_relaxed)) { \
-                ::wisp::os::detail::flash_guard_report(what);                          \
+                ::wisp::os::detail::flash_guard_report(what, false);                   \
             }                                                                          \
         }                                                                              \
     } while (0)
@@ -137,14 +138,14 @@ void flash_guard_report(const char* what);
 // site. Off both the SD I/O thread and the flash thread (sd_io_allowed()
 // false): host builds print the call site and abort; ESP-IDF device
 // builds report once per call site through the same reporter hook as
-// WISP_ASSERT_FLASH_THREAD and keep running.
+// WISP_ASSERT_FLASH_THREAD, with `sd` true, and keep running.
 #if defined(ESP_PLATFORM)
 #define WISP_ASSERT_SD_IO_THREAD(what)                                              \
     do {                                                                            \
         if (!::wisp::os::sd_io_allowed()) {                                         \
             static std::atomic<bool> wisp_sd_guard_logged_{false};                  \
             if (!wisp_sd_guard_logged_.exchange(true, std::memory_order_relaxed)) { \
-                ::wisp::os::detail::flash_guard_report(what);                       \
+                ::wisp::os::detail::flash_guard_report(what, true);                 \
             }                                                                       \
         }                                                                           \
     } while (0)

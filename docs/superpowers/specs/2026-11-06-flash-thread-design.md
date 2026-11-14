@@ -152,8 +152,9 @@ bool on_flash_thread();
 
 // Device builds report a violation through this hook (wisp_os sits below
 // the logging layer); wisp_core's log::init() installs one that logs with
-// WLOG_E. Null: not reported.
-using FlashViolationReporter = void (*)(const char* what);
+// WLOG_E. `sd` tells an SD I/O thread rule violation (WISP_ASSERT_SD_IO_THREAD)
+// from a flash one. Null: not reported.
+using FlashViolationReporter = void (*)(const char* what, bool sd);
 void set_flash_violation_reporter(FlashViolationReporter reporter);
 }  // namespace wisp::os
 
@@ -164,7 +165,7 @@ void set_flash_violation_reporter(FlashViolationReporter reporter);
 
 - **登记**：登记的是线程 id（每个线程第一次用到守卫时从计数器取一个不重复的 32 位 id，不复用，已退出的线程不会被后来的线程冒充）。`clear_flash_thread()` 只有登记的那个线程调用才生效；后登记的线程接管，先前那个线程之后的 clear 不会撤掉新的登记。所以同一进程里同时有两个 worker（测试）时，一个停下不会让守卫对另一个失效。
 - **模拟器与单元测试**：违反时向 stderr 打印 `flash access off the flash thread: <调用点>`，然后 `abort()`，所以放错线程的代码在 ctest 里就会失败。
-- **设备**：违反时每个调用点只报告一次（宏展开处的静态标志），经 `set_flash_violation_reporter()` 装上的钩子发出；`log::init()` 装的钩子打 `WLOG_E("flash", "flash access off the flash thread: %s", what)`。不主动 abort：栈在 PSRAM 的任务会被硬件 abort，栈在内部 RAM 的任务能继续运行，日志留下线索。
+- **设备**：违反时每个调用点只报告一次（宏展开处的静态标志），经 `set_flash_violation_reporter()` 装上的钩子发出；`log::init()` 装的钩子打 `WLOG_E("flash", "flash access off the flash thread: %s", what)`（SD I/O 线程规则的违反，`sd` 为 true，则打 `WLOG_E("sd", "sd access off the sd i/o thread: %s", what)`）。不主动 abort：栈在 PSRAM 的任务会被硬件 abort，栈在内部 RAM 的任务能继续运行，日志留下线索。
 - `StorageWorker::on_worker()` 是 `t_current_worker == this`（worker 线程在 `run()` 里记下的线程局部指针），不用 `on_flash_thread()`：后者在没有登记时也返回 true（会让开机、关机阶段任何线程上的 `run_sync()` 都就地执行），也分不清同时存在的两个 worker。
 - 测试里大量直接在 gtest 主线程调用 `StorageManager`：没有注册 flash 线程时守卫放行，所以不启动 `StorageWorker` 的测试不受影响。启动了 worker、又在测试线程直接访问存储的测试要改成经 `run_sync`，或在启动 worker 之前做完准备，这本身就是在消除同类问题。
 
