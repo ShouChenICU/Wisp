@@ -223,6 +223,55 @@ TEST_F(ShellTalkTest, FailedTurnOnASubPageShowsItsNote) {
     EXPECT_EQ(phase(), Phase::Hidden);
 }
 
+// A turn started from the web page shows nothing over Settings while it
+// runs (it may run for minutes, and the card would cover the page's last
+// rows), nor its say once it ends well; a web turn that fails still says
+// why.
+TEST_F(ShellTalkTest, WebTurnOverSettingsShowsOnlyItsFailure) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    server.llm().push(wisp::test::llm_text("<say>场景做好了。</say>", /*hold_after=*/0));
+
+    ASSERT_TRUE(agent->submit("做一个番茄钟场景", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_until([&] { return server.llm().held() == 1; }, 5000));
+    ASSERT_TRUE(wait_until([&] { return conv->current().running; }, 2000));
+    h->bus.wait_idle(500);
+    on_ui([] {});
+    EXPECT_EQ(phase(), Phase::Hidden);
+    EXPECT_FALSE(overlay_shown());
+
+    server.release();
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(wait_until([&] { return !conv->current().running; }, 2000));
+    on_ui([] {});
+    EXPECT_EQ(phase(), Phase::Hidden);
+
+    for (int i = 0; i < 3; ++i)
+        server.llm().push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+    ASSERT_TRUE(agent->submit("再做一个", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    ASSERT_TRUE(wait_phase(Phase::Note, 3000));
+    EXPECT_EQ(overlay_text(), wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
+    EXPECT_TRUE(overlay_shown());
+}
+
+// A spoken turn over Settings shows that it is being worked on.
+TEST_F(ShellTalkTest, VoiceTurnOverSettingsShowsThinking) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    server.llm().push(wisp::test::llm_text("<say>好的。</say>", /*hold_after=*/0));
+    server.push_tts(wisp::test::tts_pcm());
+
+    ASSERT_TRUE(conv->voice_text("提醒我喝水"));
+    ASSERT_TRUE(wait_until([&] { return server.llm().held() == 1; }, 5000));
+    ASSERT_TRUE(wait_phase(Phase::Thinking, 2000));
+    EXPECT_TRUE(overlay_shown());
+
+    server.release();
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+}
+
 // Home coming to the front hides the overlay: it shows the same itself.
 TEST_F(ShellTalkTest, HomeInFrontHidesTheOverlay) {
     make_shell();

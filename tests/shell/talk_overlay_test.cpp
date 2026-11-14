@@ -43,6 +43,14 @@ lv_area_t coords_of(lv_obj_t* o) {
 
 bool is_hidden(lv_obj_t* o) { return o == nullptr || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN); }
 
+// A view of a turn the user spoke: the overlay shows its progress and its
+// say (a turn from the web page or device text shows only how it ended).
+TurnView voice_view() {
+    TurnView v;
+    v.source = wisp::agent::Source::Voice;
+    return v;
+}
+
 std::string label_text(lv_obj_t* o) {
     const char* t = lv_label_get_text(o);
     return t != nullptr ? t : "";
@@ -138,7 +146,7 @@ TEST_F(TalkOverlayTest, ListeningThinkingSaying) {
         ASSERT_NE(label, nullptr);
         EXPECT_EQ(label_text(label), wisp::ui::tr(wisp::ui::StrId::TalkThinking));
 
-        TurnView v;
+        TurnView v = voice_view();
         v.say.assign("好的，明天早上8点提醒你带伞。");
         overlay_->on_turn(v, VoiceState::Idle, 0, 1200);
         EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Saying);
@@ -152,7 +160,7 @@ TEST_F(TalkOverlayTest, ThinkingShowsTheCurrentStep) {
     start();
     make();
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.running = true;
         v.steps_total = 1;
         v.step_count = 1;
@@ -175,7 +183,7 @@ TEST_F(TalkOverlayTest, SayHidesAfterFiveSeconds) {
     start();
     make();
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.say.assign("好的。");
         overlay_->on_turn(v, VoiceState::Idle, 0, 1000);
         ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Saying);
@@ -236,7 +244,7 @@ TEST_F(TalkOverlayTest, FailedTurnShowsItsNoteOnce) {
     start();
     make();
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.turn = 3;
         v.say.assign("好的");
         v.ended_ms = 900;
@@ -267,7 +275,7 @@ TEST_F(TalkOverlayTest, CaptureEndsTheNote) {
     start();
     make();
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.turn = 1;
         v.ended_ms = 900;
         v.end_reason = "server";
@@ -286,7 +294,7 @@ TEST_F(TalkOverlayTest, VoiceErrorIsShown) {
     start();
     make();
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.error = wisp::voice::VoiceError::Offline;
         overlay_->on_turn(v, VoiceState::Error, 0, 1000);
         ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Note);
@@ -308,7 +316,7 @@ TEST_F(TalkOverlayTest, SayShownOnce) {
     start();
     make();
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.turn = 2;
         v.say.assign("好的。");
         overlay_->on_turn(v, VoiceState::Speaking, 0, 1000);
@@ -326,7 +334,7 @@ TEST_F(TalkOverlayTest, WhatHomeShowedIsNotShownAgain) {
     start();
     make();
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.turn = 2;
         v.say.assign("好的。");
         overlay_->on_home(v);
@@ -340,13 +348,62 @@ TEST_F(TalkOverlayTest, WhatHomeShowedIsNotShownAgain) {
     });
 }
 
+// A turn from the web page or device text (which can run for minutes)
+// shows nothing while it runs, not its steps nor its say: the card would
+// sit over the page's last rows all that time. How it ended still shows,
+// and a recording over it still does.
+TEST_F(TalkOverlayTest, NonVoiceTurnShowsOnlyHowItEnded) {
+    start();
+    make();
+    on_ui([&] {
+        for (wisp::agent::Source src :
+             {wisp::agent::Source::Web, wisp::agent::Source::DeviceText}) {
+            TurnView v;
+            v.source = src;
+            v.turn = src == wisp::agent::Source::Web ? 4 : 5;
+            v.started_ms = 1000u * v.turn;
+            v.running = true;
+            overlay_->on_turn(v, VoiceState::Idle, 0, v.started_ms);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+            EXPECT_TRUE(is_hidden(overlay_->obj()));
+            v.steps_total = 1;
+            v.step_count = 1;
+            v.steps[0].label.assign("写入文件 main.lua");
+            overlay_->on_turn(v, VoiceState::Idle, 0, v.started_ms + 10);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+            v.say.assign("场景做好了。");
+            overlay_->on_turn(v, VoiceState::Idle, 0, v.started_ms + 20);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+            // A recording over it shows, and the turn still shows nothing
+            // once it ends.
+            overlay_->on_turn(v, VoiceState::Listening, 30, v.started_ms + 30);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Listening);
+            overlay_->on_turn(v, VoiceState::Idle, 0, v.started_ms + 40);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+            overlay_->tick(v.started_ms + kOverlaySayMs + 100);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+
+            v.running = false;
+            v.ended_ms = v.started_ms + 50;
+            v.end_reason = "network";
+            overlay_->on_turn(v, VoiceState::Idle, 0, v.started_ms + 50);
+            ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Note);
+            lv_obj_t* label = find_obj_of_class(overlay_->obj(), &lv_label_class);
+            ASSERT_NE(label, nullptr);
+            EXPECT_EQ(label_text(label), wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
+            overlay_->tick(v.started_ms + 50 + kOverlaySayMs);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+        }
+    });
+}
+
 // A say longer than a line grows the card, up to three lines, without
 // cutting it; the card keeps to the visible area.
 TEST_F(TalkOverlayTest, LongSayGrowsToThreeLines) {
     start("circle", 466, 466);
     make();
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         // 40 CJK characters: past one line on the 466 px circle, inside
         // three.
         v.say.assign("好的，明天早上八点提醒你带伞，下午三点提醒你开会，晚上记得给家里打个电话。");
@@ -412,7 +469,7 @@ protected:
 
 TEST_P(TalkOverlayShapes, InsideVisibleArea) {
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.say.assign("好的，已经记下来了。");
         overlay_->on_turn(v, VoiceState::Idle, 0, 0);
         ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Saying);
@@ -425,7 +482,7 @@ TEST_P(TalkOverlayShapes, InsideVisibleArea) {
 // the visible area and above the safe area's bottom.
 TEST_P(TalkOverlayShapes, ThreeLinesAtMostInsideVisibleArea) {
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         std::string say;
         for (int i = 0; i < 30; ++i) say += "好的，已经记下来了。";
         v.say.assign(say);
@@ -450,6 +507,8 @@ TEST_P(TalkOverlayShapes, ThreeLinesAtMostInsideVisibleArea) {
         const lv_area_t l = coords_of(label);
         EXPECT_GE(l.y1, box.y1);
         EXPECT_LE(l.y2, box.y2);
+        // The tallest card is where the pages keep their end room from.
+        EXPECT_EQ(box.y1, wisp::shell::talk_overlay_top(shape_));
     });
 }
 

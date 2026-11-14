@@ -30,6 +30,7 @@ TEST(ConnectionsPage, MissingServicesAndBackNavigation) {
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/shell/talk_overlay.hpp"
 #include "wisp/ui/symbols.hpp"
 #include "wisp/ui/theme.hpp"
 
@@ -416,6 +417,9 @@ TEST_P(ConnectionsShapes, DetailActionsHaveGapsAndTrailingIconsAreCentred) {
         lv_obj_update_layout(page()->view());
         EXPECT_TRUE(
             wisp::test::box_visible(h->shape(), wisp::test::coords_of(lv_obj_get_parent(change))));
+        // Clear of the talk overlay's tallest card too.
+        EXPECT_LE(wisp::test::coords_of(lv_obj_get_parent(change)).y2 + wisp::ui::theme::kGapSm,
+                  wisp::shell::talk_overlay_top(h->shape()) - 1);
     });
 }
 

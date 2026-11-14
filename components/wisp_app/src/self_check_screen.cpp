@@ -24,6 +24,7 @@
 #include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/scene/scene_runtime.hpp"
+#include "wisp/shell/talk_overlay.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -172,7 +173,9 @@ void SelfCheck::build_widgets() {
     // (spec 5.6). Each side pads by that side's safe inset plus kInnerPad,
     // so: horizontally nothing ever leaves the safe columns, and vertically
     // rows may scroll through the top/bottom bands (corners) but at either
-    // scroll extreme the first/last row rests fully inside the safe area.
+    // scroll extreme the first/last row rests fully inside the safe area;
+    // at the bottom also clear of the talk overlay's tallest card, which
+    // the shell shows over this page while talking.
     hal::Area safe = compute_safe_area();
     int32_t screen_w = lv_display_get_horizontal_resolution(nullptr);
     int32_t screen_h = lv_display_get_vertical_resolution(nullptr);
@@ -181,7 +184,10 @@ void SelfCheck::build_widgets() {
     lv_obj_set_style_pad_left(col, safe.x1 + kInnerPad, 0);
     lv_obj_set_style_pad_right(col, screen_w - 1 - safe.x2 + kInnerPad, 0);
     lv_obj_set_style_pad_top(col, safe.y1 + kInnerPad, 0);
-    lv_obj_set_style_pad_bottom(col, screen_h - 1 - safe.y2 + kInnerPad, 0);
+    lv_obj_set_style_pad_bottom(
+        col,
+        std::max(screen_h - 1 - safe.y2 + kInnerPad, shell::talk_overlay_end_room(system_.shape())),
+        0);
     lv_obj_set_style_pad_row(col, kSectionGap, 0);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(col, LV_DIR_VER);

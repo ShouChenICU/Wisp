@@ -17,12 +17,14 @@
 //
 // Phase, from on_turn()'s VoiceState and TurnView: Listening while
 // recording (a pulsing dot and the level bar), Thinking while
-// transcribing, or once a turn is running with nothing newer to show
-// ("思考中…", or the label of the agent's step under way,
-// TurnView::running_step()), Saying once the turn's say text is new, and
-// Note once a turn ends with a reason (TurnView::end_reason) or a voice
+// transcribing, or once a voice turn is running with nothing newer to
+// show ("思考中…", or the label of the agent's step under way,
+// TurnView::running_step()), Saying once a voice turn's say text is new,
+// and Note once any turn ends with a reason (TurnView::end_reason) or a voice
 // error is new: the same short words Home's hint uses (not the agent's
-// full note, which does not fit the small round screens). Saying and Note
+// full note, which does not fit the small round screens). A turn from the
+// web page or device text shows nothing while it runs: it can run for
+// minutes, and the card would cover the page's last rows all that time. Saying and Note
 // each hold for kOverlaySayMs (wisp/shell/limits.hpp) after what they show
 // was first seen (a say: last changed); tick() ends them, and what one
 // showed is not shown again when the view is next seen unchanged (the
@@ -32,7 +34,9 @@
 //
 // The card sits above the safe area's bottom edge and grows upward to fit
 // its text, three lines at most, then the text ends with an ellipsis; at
-// every height it keeps to the rows the screen shows.
+// every height it keeps to the rows the screen shows. The scrolling
+// screens it shows over leave room for it at their end
+// (talk_overlay_end_room()).
 //
 // A tap calls `open_home` (Shell::show(Home): a scene in front is sent
 // back first, as the back gesture does; a sub-page or the diagnostics
@@ -57,6 +61,17 @@ class SystemLayer;
 }  // namespace wisp::ui
 
 namespace wisp::shell {
+
+// The top row of the card at its tallest on `shape`. A scrolling screen
+// the card may show over (a sub-page, the diagnostics) keeps its content's
+// end kGapSm above it, so that scrolled to the end its last item is clear
+// of the card whatever the card shows (AGENTS.md section 3: the last item
+// fully visible).
+int32_t talk_overlay_top(const hal::ScreenShape& shape);
+// The bottom padding that gives a scrolling column as tall as `shape`
+// that end room: from talk_overlay_top() less kGapSm to the screen's
+// bottom edge.
+int32_t talk_overlay_end_room(const hal::ScreenShape& shape);
 
 class TalkOverlay {
 public:
@@ -112,7 +127,7 @@ private:
     Phase phase_ = Phase::Hidden;
     os::LargeString step_shown_;  // the running step's label, while thinking
 
-    bool running_ = false;  // the last view's turn still runs
+    bool voice_running_ = false;  // the last view's turn is spoken and still runs
 
     // The last view seen: its turn, its say, how its last turn ended and
     // its voice error, so only what changed starts a Saying or a Note.

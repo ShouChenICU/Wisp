@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "wisp/shell/talk_overlay.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/theme_tokens.hpp"
@@ -63,7 +64,8 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     lv_obj_add_flag(scr, LV_OBJ_FLAG_PRESS_LOCK);
 
     // The title scrolls with the rows. Padding keeps the first and last
-    // items inside the safe area at either end of the scroll range.
+    // items inside the safe area at either end of the scroll range, the
+    // last one also above the talk overlay's card.
     const hal::Area safe = hal::safe_rect(shape);
     const int32_t title_y = safe.y1;
     f.root = make_root(scr, shape);
@@ -75,7 +77,10 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     lv_obj_set_style_pad_left(list, safe.x1, 0);
     lv_obj_set_style_pad_right(list, shape.width - 1 - safe.x2, 0);
     lv_obj_set_style_pad_top(list, title_y, 0);
-    lv_obj_set_style_pad_bottom(list, shape.height - 1 - safe.y2, 0);
+    // Past the safe area's bottom, room for the talk overlay's tallest
+    // card: scrolled to the end, the last row lies clear of it, whatever
+    // the card shows over the page.
+    lv_obj_set_style_pad_bottom(list, talk_overlay_end_room(shape), 0);
     lv_obj_set_style_pad_row(list, kRowGap, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);

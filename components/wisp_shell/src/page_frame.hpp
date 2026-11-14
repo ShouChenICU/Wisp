@@ -8,10 +8,12 @@
 // covers the whole screen and the title is its first item, so the title
 // scrolls with the rows rather than holding a band at the top. The list's
 // padding keeps the content inside the safe area's columns, starts it
-// at the safe area's top and ends it at the safe area's bottom row:
-// scrolled to the top, the title and the first row lie wholly in the safe
-// area; scrolled to the bottom, the last row does; in between, the title
-// and the rows may pass through the rows the screen does not show.
+// at the safe area's top and ends it above the talk overlay's tallest
+// card (talk_overlay_end_room(), wisp/shell/talk_overlay.hpp): scrolled to
+// the top, the title and the first row lie wholly in the safe area;
+// scrolled to the bottom, the last row does, clear of the card; in
+// between, the title and the rows may pass through the rows the screen
+// does not show.
 //
 // A page adds its rows after the title (they start at kFirstRow), keeps
 // it when it rebuilds them (clear_rows(), not lv_obj_clean()) and puts
