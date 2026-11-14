@@ -26,13 +26,39 @@ constexpr uint32_t kThresholdRefreshSamples = 20;
 
 uint32_t interval_for(bool standby) { return standby ? kStandbySampleMs : kActiveSampleMs; }
 
+// The supply cell's mirror: the two events sample() published before the
+// cell, in the same order, under the same conditions (the file header of
+// power_monitor.hpp). A change of the percent alone publishes nothing.
+void supply_mirror(EventBus& bus, const PowerSupply& before, const PowerSupply& after) {
+    if (after.charging != before.charging || after.usb_present != before.usb_present) {
+        Event e;
+        e.topic = topics::kPowerChargingChanged;
+        e.source = kPowerMonitorSource;
+        e.payload = Properties{
+            {"charging", Value(after.charging)},
+            {"usb_present", Value(after.usb_present)},
+            {"battery_percent", Value(static_cast<int64_t>(after.battery_percent))},
+        };
+        bus.publish(std::move(e));
+    }
+    if (!before.low && after.low) {
+        Event e;
+        e.topic = topics::kPowerBatteryLow;
+        e.source = kPowerMonitorSource;
+        e.payload = Properties{
+            {"battery_percent", Value(static_cast<int64_t>(after.battery_percent))},
+        };
+        bus.publish(std::move(e));
+    }
+}
+
 }  // namespace
 
 PowerMonitor::PowerMonitor(EventBus& bus, std::shared_ptr<hal::Power> power, Settings settings)
     : bus_(bus),
       power_(std::move(power)),
-      source_(power_ != nullptr ? power_->info().id : std::string()),
-      settings_(std::move(settings)) {}
+      settings_(std::move(settings)),
+      supply_(bus_, PowerSupply{}, &supply_mirror) {}
 
 PowerMonitor::~PowerMonitor() { stop(); }
 
@@ -111,10 +137,10 @@ void PowerMonitor::sample() {
         // sample -- a real failure (I2C bus fault, device unplugged)
         // tends to persist for many consecutive 1 Hz samples, and a
         // WLOG_W every single one would flood the log without adding
-        // information. have_sample_/last_charging_/last_usb_present_/
-        // low_fired_ are deliberately left untouched here: a failed read
-        // must not be treated as "no change" against the next good
-        // sample, nor silently re-arm/disarm the low-battery check.
+        // information. have_sample_ and the supply cell are deliberately
+        // left untouched here: a failed read must not be treated as "no
+        // change" against the next good sample, nor silently
+        // re-arm/disarm the low-battery check.
         if (status_ok_.exchange(false, std::memory_order_relaxed)) {
             WLOG_W(kTag, "status() failed: %s", result.error().message.c_str());
         }
@@ -136,41 +162,40 @@ void PowerMonitor::sample() {
     }
     --samples_until_threshold_refresh_;
 
+    // Read under sample_mutex_, which every write of the cell holds too, so
+    // nothing moves it between this read and the set() below.
+    const PowerSupply prev = supply_.get();
     if (have_sample_ &&
-        (status.charging != last_charging_ || status.usb_present != last_usb_present_)) {
+        (status.charging != prev.charging || status.usb_present != prev.usb_present)) {
         WLOG_I(kTag, "power.charging.changed: charging=%d usb_present=%d battery_percent=%d",
                status.charging, status.usb_present, status.battery_percent);
-        Event e;
-        e.topic = topics::kPowerChargingChanged;
-        e.source = source_;
-        e.payload = Properties{
-            {"charging", Value(status.charging)},
-            {"usb_present", Value(status.usb_present)},
-            {"battery_percent", Value(static_cast<int64_t>(status.battery_percent))},
-        };
-        bus_.publish(std::move(e));
     }
-    have_sample_ = true;
-    last_charging_ = status.charging;
-    last_usb_present_ = status.usb_present;
 
+    // An unknown percent (-1) neither triggers nor re-arms: `low` stays.
+    bool low = prev.low;
     if (status.battery_percent != -1) {
         int64_t threshold = cached_low_batt_pct_;
-        if (!low_fired_ && status.battery_percent <= threshold) {
-            low_fired_ = true;
+        if (!prev.low && status.battery_percent <= threshold) {
+            low = true;
             WLOG_I(kTag, "power.battery.low: battery_percent=%d (threshold=%lld)",
                    status.battery_percent, static_cast<long long>(threshold));
-            Event e;
-            e.topic = topics::kPowerBatteryLow;
-            e.source = source_;
-            e.payload = Properties{
-                {"battery_percent", Value(static_cast<int64_t>(status.battery_percent))},
-            };
-            bus_.publish(std::move(e));
-        } else if (low_fired_ && status.battery_percent > threshold + kLowBattHysteresis) {
-            low_fired_ = false;
+        } else if (prev.low && status.battery_percent > threshold + kLowBattHysteresis) {
+            low = false;
         }
     }
+
+    if (!have_sample_) {
+        // The baseline is not a change anyone announced: seed it with `low`
+        // still clear, so the set() below publishes power.battery.low only
+        // when the first sample is already low, as before the cell.
+        have_sample_ = true;
+        supply_.seed(
+            PowerSupply{status.charging, status.usb_present, status.battery_percent, false});
+    }
+    // No event is lost to an equal value: each event fires only when a
+    // field of the cell changes (charging/usb_present, or low false ->
+    // true), and such a value never equals the one before it.
+    supply_.set(PowerSupply{status.charging, status.usb_present, status.battery_percent, low});
 }
 
 }  // namespace wisp::core

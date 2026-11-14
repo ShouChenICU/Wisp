@@ -7,11 +7,15 @@
 #include <string>
 #include <vector>
 
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
+#include "support/manual_dispatcher.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/core/state_cell.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 
@@ -19,6 +23,7 @@ using wisp::ErrorCode;
 using wisp::core::Event;
 using wisp::core::EventBus;
 using wisp::core::PowerMonitor;
+using wisp::core::PowerSupply;
 using wisp::core::Settings;
 using wisp::hal::PowerStatus;
 using wisp::port::sim::JsonFileSettingsBackend;
@@ -129,7 +134,7 @@ TEST(PowerMonitor, ChargingChangeAfterBaselinePublishesEventWithExpectedPayload)
     ASSERT_EQ(f.event_count(), 1u);
     Event e = f.event_at(0);
     EXPECT_EQ(e.topic, "power.charging.changed");
-    EXPECT_EQ(e.source, "power.main");
+    EXPECT_EQ(e.source, wisp::core::kPowerMonitorSource);
     ASSERT_NE(e.payload.find("charging"), e.payload.end());
     EXPECT_TRUE(e.payload.find("charging")->second.as_bool());
     ASSERT_NE(e.payload.find("usb_present"), e.payload.end());
@@ -175,7 +180,7 @@ TEST(PowerMonitor, BatteryLowFiresOnceAtDefaultThreshold) {
     ASSERT_EQ(f.event_count(), 1u);
     Event e = f.event_at(0);
     EXPECT_EQ(e.topic, "power.battery.low");
-    EXPECT_EQ(e.source, "power.main");
+    EXPECT_EQ(e.source, wisp::core::kPowerMonitorSource);
     ASSERT_NE(e.payload.find("battery_percent"), e.payload.end());
     EXPECT_EQ(e.payload.find("battery_percent")->second.as_int(), 15);
 
@@ -483,4 +488,141 @@ TEST(PowerMonitor, LastStatusIsTheLatestSample) {
     Fixture none(nullptr);
     none.mon->sample();
     EXPECT_FALSE(none.mon->last_status().has_value());
+}
+
+// The supply cell beside the two events: its first value is the first
+// sample, which was never announced before the cell either.
+TEST(PowerMonitor, FirstSampleSeedsTheSupplyWithoutAnEvent) {
+    Fixture f;
+    f.power->set_status(PowerStatus{80, 4000, /*charging=*/true, /*usb_present=*/true});
+    f.mon->sample();
+    f.wait_idle();
+
+    EXPECT_EQ(f.mon->supply().get(), (PowerSupply{true, true, 80, false}));
+    EXPECT_EQ(f.event_count(), 0u);
+}
+
+TEST(PowerMonitor, LowBatteryAtTheFirstSampleStillPublishes) {
+    Fixture f;
+    f.power->set_status(PowerStatus{10, 0, false, false});
+    f.mon->sample();
+    f.wait_idle();
+
+    EXPECT_EQ(f.mon->supply().get(), (PowerSupply{false, false, 10, true}));
+    ASSERT_EQ(f.event_count(), 1u);
+    Event e = f.event_at(0);
+    EXPECT_EQ(e.topic, wisp::core::topics::kPowerBatteryLow);
+    EXPECT_EQ(e.source, wisp::core::kPowerMonitorSource);
+    EXPECT_EQ(e.payload, (wisp::Properties{{"battery_percent", wisp::Value(int64_t{10})}}));
+}
+
+// A first sample equal to the cell's initial value moves nothing, yet it is
+// still the baseline the next sample is compared with.
+TEST(PowerMonitor, FirstSampleEqualToTheDefaultIsStillTheBaseline) {
+    Fixture f;
+    f.power->set_status(PowerStatus{-1, 0, false, false});
+    f.mon->sample();
+    EXPECT_EQ(f.mon->supply().revision(), 1u);
+
+    f.power->set_status(PowerStatus{-1, 0, true, true});
+    f.mon->sample();
+    f.wait_idle();
+    ASSERT_EQ(f.event_count(), 1u);
+    EXPECT_EQ(f.event_at(0).topic, wisp::core::topics::kPowerChargingChanged);
+    EXPECT_EQ(f.mon->supply().get(), (PowerSupply{true, true, -1, false}));
+}
+
+// The percent alone is a change of the cell, never an event.
+TEST(PowerMonitor, PercentChangeMovesTheCellButPublishesNothing) {
+    wisp::test::ManualDispatcher md;
+    Fixture f;
+    f.power->set_status(PowerStatus{80, 0, false, false});
+    f.mon->sample();
+    std::vector<int> seen;
+    wisp::core::CellSubscription sub = f.mon->supply().subscribe(
+        [&](const PowerSupply& s) { seen.push_back(s.battery_percent); }, &md);
+    md.run_all();
+    uint32_t before = f.mon->supply().revision();
+
+    f.power->set_status(PowerStatus{79, 0, false, false});
+    f.mon->sample();
+    md.run_all();
+    f.wait_idle();
+
+    EXPECT_NE(f.mon->supply().revision(), before);
+    EXPECT_EQ(seen, (std::vector<int>{80, 79}));
+    EXPECT_EQ(f.event_count(), 0u);
+}
+
+TEST(PowerMonitor, ChargingAndLowInOneSamplePublishInTodaysOrder) {
+    Fixture f;
+    f.power->set_status(PowerStatus{20, 0, false, false});
+    f.mon->sample();
+    f.power->set_status(PowerStatus{12, 0, true, true});
+    f.mon->sample();
+    f.wait_idle();
+
+    ASSERT_EQ(f.event_count(), 2u);
+    EXPECT_EQ(f.event_at(0).topic, wisp::core::topics::kPowerChargingChanged);
+    EXPECT_EQ(f.event_at(0).payload, (wisp::Properties{
+                                         {"charging", wisp::Value(true)},
+                                         {"usb_present", wisp::Value(true)},
+                                         {"battery_percent", wisp::Value(int64_t{12})},
+                                     }));
+    EXPECT_EQ(f.event_at(1).topic, wisp::core::topics::kPowerBatteryLow);
+    EXPECT_EQ(f.mon->supply().get(), (PowerSupply{true, true, 12, true}));
+}
+
+TEST(PowerMonitor, FailedReadLeavesTheSupply) {
+    Fixture f;
+    f.power->set_status(PowerStatus{50, 0, true, false});
+    f.mon->sample();
+    uint32_t revision = f.mon->supply().revision();
+
+    f.power->set_next_error(ErrorCode::DeviceFailure, "injected");
+    f.mon->sample();
+
+    EXPECT_EQ(f.mon->supply().revision(), revision);
+    EXPECT_EQ(f.mon->supply().get(), (PowerSupply{true, false, 50, false}));
+}
+
+// An unknown percent neither sets nor clears `low`: the cell keeps the
+// state the hysteresis left.
+TEST(PowerMonitor, UnknownPercentKeepsTheLowState) {
+    Fixture f;
+    f.power->set_status(PowerStatus{10, 0, false, false});
+    f.mon->sample();
+    f.power->set_status(PowerStatus{-1, 0, false, false});
+    f.mon->sample();
+    EXPECT_EQ(f.mon->supply().get(), (PowerSupply{false, false, -1, true}));
+
+    f.power->set_status(PowerStatus{30, 0, false, false});
+    f.mon->sample();  // past threshold + 5: re-armed, no event
+    EXPECT_FALSE(f.mon->supply().get().low);
+    f.power->set_status(PowerStatus{-1, 0, false, false});
+    f.mon->sample();
+    EXPECT_FALSE(f.mon->supply().get().low);
+    f.wait_idle();
+    EXPECT_EQ(f.event_count(), 1u);  // the first sample's low only
+}
+
+// A power.battery.low the saturated bus drops has no other path; the cell
+// still holds the low state for whoever follows it.
+TEST(PowerMonitor, SupplyCellHoldsLowWhenTheEventIsDropped) {
+    Fixture f;
+    f.power->set_status(PowerStatus{40, 0, false, false});
+    f.mon->sample();
+    f.wait_idle();
+    {
+        wisp::test::BusFlood flood(f.bus);
+        flood.hold();
+        f.power->set_status(PowerStatus{10, 0, false, false});
+        f.mon->sample();
+        flood.flood(128);
+        flood.release();
+    }
+    f.wait_idle();
+
+    EXPECT_EQ(f.event_count(), 0u);
+    EXPECT_TRUE(f.mon->supply().get().low);
 }
