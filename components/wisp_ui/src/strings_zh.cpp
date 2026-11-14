@@ -377,6 +377,8 @@ const char* strings_zh(StrId id) {
             return "模型服务出错了";
         case StrId::HomeTurnContext:
             return "对话太长，请开始新对话";
+        case StrId::HomeStop:
+            return "停止";
         case StrId::VoiceErrNoAsr:
             return "还没配置语音识别，请在管理后台的模型页设置";
         case StrId::VoiceErrNoTts:

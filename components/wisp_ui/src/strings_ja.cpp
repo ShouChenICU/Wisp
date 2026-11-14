@@ -383,6 +383,8 @@ const char* strings_ja(StrId id) {
             return "モデルサービスでエラーが発生しました";
         case StrId::HomeTurnContext:
             return "会話が長すぎます。新しい会話を始めてください";
+        case StrId::HomeStop:
+            return "停止";
         case StrId::VoiceErrNoAsr:
             return "音声認識が未設定です。管理画面のモデルページで設定してください";
         case StrId::VoiceErrNoTts:

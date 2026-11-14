@@ -14,6 +14,7 @@
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
+#include "wisp/ui/theme.hpp"
 #include "wisp/ui/theme_tokens.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 #include "wisp/ui/wisp_view.hpp"
@@ -191,6 +192,16 @@ HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visibl
     l.say.y2 = std::min(l.column.y1 + kSayLinePx - 1, l.column.y2);
     l.more = l.column;
     l.more.y1 = std::max(l.column.y1, l.column.y2 - kMorePx + 1);
+    // Stop's room: right of the wisp, on its rows, which the heard text
+    // and the column leave alone, so it moves nothing when it comes.
+    {
+        const int32_t y1 = (l.wisp.y1 + l.wisp.y2 + 1) / 2 - kStopPx / 2;
+        const int32_t y2 = y1 + kStopPx - 1;
+        const hal::Span a = hal::row_span(s, y1);
+        const hal::Span b = hal::row_span(s, y2);
+        if (!a.empty() && !b.empty())
+            l.stop = lv_area_t{l.wisp.x2 + 1 + kGap, y1, std::min(a.x2, b.x2) - kPad, y2};
+    }
     // The list takes the column's room while it is empty; the summary
     // alone is the column's first line.
     if (activity != Activity::List) return l;
@@ -342,6 +353,24 @@ bool Home::start() {
     summary_ = row_label(dim);
     lv_obj_set_style_text_align(summary_, LV_TEXT_ALIGN_CENTER, 0);
 
+    // Stop, while a turn runs. It does not bubble its presses: the screen's
+    // handlers (the wisp's press, the page drags, the swipe up) never see
+    // them, so a press here is neither a hold nor a drag.
+    stop_ = lv_button_create(root_);
+    ui::set_button_role(stop_, ui::ButtonRole::Secondary);
+    lv_obj_set_style_pad_hor(stop_, kPad, 0);
+    lv_obj_set_style_pad_ver(stop_, 0, 0);
+    lv_obj_remove_flag(stop_, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_event_cb(stop_, &Home::stop_cb, LV_EVENT_CLICKED, this);
+    {
+        lv_obj_t* l = lv_label_create(stop_);
+        // Dim, so it does not compete with the reply.
+        lv_obj_set_style_text_color(l, dim, 0);
+        lv_label_set_text_static(l, "");
+        lv_obj_center(l);
+    }
+    lv_obj_add_flag(stop_, LV_OBJ_FLAG_HIDDEN);
+
     hint_ = lv_label_create(root_);
     // Cut to its band ("..." on the last line) rather than run over the
     // text above or off the screen.
@@ -386,7 +415,8 @@ void Home::stop() {
     lv_timer_delete(timer_);
     timer_ = nullptr;
     lv_obj_delete(screen_);  // frees the wisp with its object, and the fade
-    screen_ = root_ = turn_box_ = heard_ = column_ = say_ = more_ = hint_ = summary_ = nullptr;
+    screen_ = root_ = turn_box_ = heard_ = column_ = say_ = more_ = hint_ = summary_ = stop_ =
+        nullptr;
     rows_ = {};
     shown_activity_ = Activity::None;
     blocks_.clear();
@@ -580,6 +610,12 @@ void Home::refresh() {
     } else if (!laid_out_ || hint_visible != hint_visible_) {
         apply_layout(false, hint_visible);
     }
+    // Stop: exactly while a turn runs (the turn layout is up then).
+    if (view_.running && shown_in_turn_ && !fading_) {
+        lv_obj_remove_flag(stop_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(stop_, LV_OBJ_FLAG_HIDDEN);
+    }
     // The steps (and the elapsed time) on every refresh: the time moves on
     // without the controller.
     if (shown_in_turn_) render_activity(now);
@@ -604,6 +640,7 @@ void Home::retext() {
     if (screen_ == nullptr) return;
     // The hint and the steps are written on every refresh; the reply's
     // text (its folded code blocks) only when the view changed.
+    place_stop();
     view_changed_ = true;
     refresh();
 }
@@ -694,6 +731,7 @@ void Home::apply_layout(bool in_turn, bool hint_visible) {
     place(heard_, l.heard, origin);
     place(column_, l.column, origin);
     place(more_, l.more, origin);
+    place_stop();
     // The summary alone reads first in the column and scrolls with it;
     // with the list it is the list's last row.
     if (shown_activity_ == Activity::Summary) {
@@ -713,6 +751,30 @@ void Home::apply_layout(bool in_turn, bool hint_visible) {
     // against these positions.
     lv_obj_update_layout(root_);
     update_more();
+}
+
+void Home::place_stop() {
+    const lv_area_t& room = layout_.stop;
+    lv_obj_t* label = lv_obj_get_child(stop_, 0);
+    lv_label_set_text_static(label, ui::tr(ui::StrId::HomeStop));
+    if (room.x2 < room.x1) {
+        lv_obj_add_flag(stop_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_point_t size{0, 0};
+    lv_text_get_size(&size, lv_label_get_text(label),
+                     lv_obj_get_style_text_font(label, LV_PART_MAIN), 0, 0, LV_COORD_MAX,
+                     LV_TEXT_FLAG_NONE);
+    const int32_t room_w = lv_area_get_width(&room);
+    const int32_t w = std::clamp<int32_t>(size.x + 1 + 2 * kPad, kStopPx, room_w);
+    const int32_t x = room.x1 + (room_w - w) / 2;
+    lv_obj_set_pos(stop_, x, room.y1);
+    lv_obj_set_size(stop_, w, kStopPx);
+}
+
+void Home::stop_cb(lv_event_t* e) {
+    auto* self = static_cast<Home*>(lv_event_get_user_data(e));
+    if (self->conv_ != nullptr) self->conv_->stop_turn();
 }
 
 void Home::update_more() {

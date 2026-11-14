@@ -380,6 +380,8 @@ const char* strings_en(StrId id) {
             return "Model service error";
         case StrId::HomeTurnContext:
             return "Conversation too long; start a new one";
+        case StrId::HomeStop:
+            return "Stop";
         case StrId::VoiceErrNoAsr:
             return "No speech recognition set up. Set it on the admin page's Models tab";
         case StrId::VoiceErrNoTts:

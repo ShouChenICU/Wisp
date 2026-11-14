@@ -358,6 +358,38 @@ TEST_F(ConversationTest, StopTurnStopsSpeechAndTheAgent) {
     EXPECT_FALSE(conv->current().running);
 }
 
+// A voice text waiting while the agent does something other than a turn
+// (a new conversation, held up on the storage worker): stop_turn() drops
+// it, and since no turn will ever end it, the view ends "stopped" itself.
+TEST_F(ConversationTest, StopTurnEndsAViewNoTurnWillEnd) {
+    start();
+    std::atomic<bool> gate{false};
+    ASSERT_TRUE(h->worker.submit([&] {
+        while (!gate.load()) wisp::os::sleep_ms(5);
+    }));
+    std::atomic<bool> archived{false};
+    ASSERT_TRUE(agent->new_conversation_async([&](wisp::Result<void>) { archived = true; }));
+    // The agent has taken the new conversation up: its archive waits behind
+    // the gate.
+    ASSERT_TRUE(wait_until([&] { return h->worker.pending() == 2; }, 3000));
+    ASSERT_TRUE(conv->voice_text("你好"));
+    ASSERT_TRUE(agent->view().queued);
+    ASSERT_TRUE(conv->current().running);
+
+    conv->stop_turn();
+    EXPECT_FALSE(agent->view().queued);
+    const wisp::shell::TurnView v = conv->current();
+    EXPECT_FALSE(v.running);
+    EXPECT_EQ(v.end_reason, "stopped");
+    EXPECT_EQ(v.heard, "你好");
+
+    gate = true;
+    ASSERT_TRUE(wait_until([&] { return archived.load(); }, 3000));
+    ASSERT_TRUE(settled());
+    EXPECT_EQ(count(Kind::TurnBegin), 0u);
+    EXPECT_EQ(requests(kLlmPath), 0u);
+}
+
 TEST_F(ConversationTest, DroppedVoiceTextFreesTheTalkKey) {
     std::atomic<bool> gate{false};
     start(true, [&](wisp::agent::ToolRegistry& tools) {

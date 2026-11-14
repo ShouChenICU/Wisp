@@ -307,6 +307,8 @@ enum class StrId : uint16_t {
     HomeTurnNetworkLost,
     HomeTurnServer,
     HomeTurnContext,
+    // The home screen's control that stops the running turn.
+    HomeStop,
     VoiceErrNoAsr,
     VoiceErrNoTts,
     VoiceErrOffline,
