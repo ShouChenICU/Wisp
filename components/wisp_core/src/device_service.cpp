@@ -115,6 +115,14 @@ Result<Value> DeviceService::get(const std::string& id, const std::string& prop)
     return finish(id, prop, Kind::Prop, started, device->get(prop));
 }
 
+bool DeviceService::changes_state(const std::string& id, const std::string& cmd) const {
+    if (id.size() > kMaxIdBytes) return false;
+    auto device = registry_.find(id);
+    const hal::DeviceSchema* schema = device ? device->describe() : nullptr;
+    const hal::CmdSpec* spec = schema != nullptr ? hal::find_cmd(*schema, cmd) : nullptr;
+    return spec != nullptr && spec->changes_state;
+}
+
 Result<Value> DeviceService::call(const std::string& id, const std::string& cmd, const Value& args,
                                   const std::string& holder) {
     auto target = find_target(registry_, id);

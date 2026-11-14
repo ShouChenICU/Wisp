@@ -316,6 +316,8 @@ const char* strings_en(StrId id) {
             return "The agent wants to delete a file of \"{}\": {}";
         case StrId::AgentNoteSetting:
             return "{} {} → {}";
+        case StrId::AgentNoteDevice:
+            return "Device {}: {}";
         case StrId::AgentSetBrightness:
             return "Brightness";
         case StrId::AgentSetVolume:

@@ -536,6 +536,10 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
                                                   .notes = deps_.notes,
                                                   .submit_io = on_worker,
                                               }));
+    if (deps_.devices != nullptr) {
+        check("device call", agent::add_device_call_tools(
+                                 *registry_, agent::DeviceCallToolDeps{.devices = *deps_.devices}));
+    }
     check("docs", agent::add_docs_tools(*registry_));
     if (deps_.scene_http != nullptr) {
         check("http",

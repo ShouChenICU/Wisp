@@ -1246,6 +1246,7 @@ void App::build_agent(const hal::ScreenShape& shape) {
         .lang = [impl] { return std::string(ui::lang_code(impl->lang.load())); },
         .wall_s = wall_s,
         .context = std::move(context),
+        .devices = impl->devices.get(),
         .device_status = std::move(device_status),
     });
     if (!impl->agent) WLOG_E("app", "no memory for the agent; the agent is off");
@@ -1330,6 +1331,9 @@ core::OccupancyRegistry& App::occupancy() { return impl_->occupancy; }
 core::SensorService* App::sensors() { return impl_->sensors.get(); }
 core::DeviceService* App::devices() { return impl_->devices.get(); }
 agent::AgentService* App::agent() { return impl_->agent ? impl_->agent->service() : nullptr; }
+const agent::ToolRegistry* App::agent_tools() const {
+    return impl_->agent ? impl_->agent->tools() : nullptr;
+}
 core::MemoryStore* App::memory() { return impl_->agent ? impl_->agent->memory() : nullptr; }
 shell::ConversationController* App::conversation() {
     return impl_->voice ? &impl_->voice->conversation() : nullptr;

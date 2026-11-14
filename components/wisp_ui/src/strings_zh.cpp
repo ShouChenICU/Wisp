@@ -313,6 +313,8 @@ const char* strings_zh(StrId id) {
             return "Agent 要删除「{}」的文件 {}";
         case StrId::AgentNoteSetting:
             return "{} {} → {}";
+        case StrId::AgentNoteDevice:
+            return "设备 {}：{}";
         case StrId::AgentSetBrightness:
             return "亮度";
         case StrId::AgentSetVolume:

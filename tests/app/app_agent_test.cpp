@@ -12,6 +12,7 @@
 #include "support/fake_http.hpp"
 #include "support/wait.hpp"
 #include "wisp/agent/agent_service.hpp"
+#include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/net/pairing_service.hpp"
@@ -112,10 +113,32 @@ TEST(AppAgent, BootStartsAgentWithAScreen) {
     wisp::log::reset_for_test();
 }
 
+// device.list and device.call sit right after the notification tools,
+// before docs.read: the order the model sees (and the provider caches).
+TEST(AppAgent, DeviceToolsFollowTheNotificationTools) {
+    UiNetHarness h(with_server(true));
+    ASSERT_TRUE(h.start());
+    const wisp::agent::ToolRegistry* tools = h.app->agent_tools();
+    ASSERT_NE(tools, nullptr);
+    const std::string json(tools->tools_json().data(), tools->tools_json().size());
+    const size_t dismiss = json.find("\"notify_dismiss\"");
+    const size_t list = json.find("\"device_list\"");
+    const size_t call = json.find("\"device_call\"");
+    const size_t docs = json.find("\"docs_read\"");
+    ASSERT_NE(dismiss, std::string::npos);
+    ASSERT_NE(list, std::string::npos);
+    ASSERT_NE(call, std::string::npos);
+    ASSERT_NE(docs, std::string::npos);
+    EXPECT_LT(dismiss, list);
+    EXPECT_LT(list, call);
+    EXPECT_LT(call, docs);
+}
+
 TEST(AppAgent, HeadlessHasNoAgent) {
     UiNetHarness h(with_server(false));
     ASSERT_TRUE(h.start());
     EXPECT_EQ(h.app->agent(), nullptr);
+    EXPECT_EQ(h.app->agent_tools(), nullptr);
     const std::string token = pair_browser(h);
     HttpResponse conv = get(h, token, "/api/v1/agent/conversation");
     EXPECT_EQ(conv.status, 503);

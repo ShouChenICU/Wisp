@@ -117,7 +117,8 @@ class SceneRuntime;
 
 namespace wisp::agent {
 class AgentService;
-}
+class ToolRegistry;
+}  // namespace wisp::agent
 
 namespace wisp::shell {
 class ConversationController;
@@ -390,6 +391,9 @@ public:
     // The agent (agent-core spec 2), built and started with a screen and a
     // scene runtime; nullptr otherwise, and before start() or after stop().
     agent::AgentService* agent();
+    // The agent's tool registry (for tests of the tool order); nullptr
+    // under the same conditions as agent().
+    const agent::ToolRegistry* agent_tools() const;
     // The agent's long-term memory notes (mvp spec 5.1), built alongside
     // it; nullptr under the same conditions as agent(). Its writes run on
     // storage_worker() only.

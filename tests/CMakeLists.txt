@@ -545,6 +545,8 @@ wisp_test(NAME scene_ops_tools_test SRCS agent/scene_ops_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)
 wisp_test(NAME device_tools_test SRCS agent/device_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME device_call_tools_test SRCS agent/device_call_tools_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME memory_tools_test SRCS agent/memory_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME todo_tools_test SRCS agent/todo_tools_test.cpp

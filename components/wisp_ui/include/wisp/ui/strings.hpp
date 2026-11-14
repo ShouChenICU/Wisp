@@ -260,6 +260,9 @@ enum class StrId : uint16_t {
     // settings.set's note (spec 6.2): "{} {} → {}", the setting's name
     // (one of the AgentSet* below), the old value and the new one.
     AgentNoteSetting,
+    // device.call's note for a command that changes state (device model
+    // spec 4.2): "{}" the device id, then the command.
+    AgentNoteDevice,
     AgentSetBrightness,
     AgentSetVolume,
     AgentSetNotifyVol,

@@ -319,6 +319,8 @@ const char* strings_ja(StrId id) {
             return "Agent が「{}」のファイル {} を削除しようとしています";
         case StrId::AgentNoteSetting:
             return "{} {} → {}";
+        case StrId::AgentNoteDevice:
+            return "デバイス {}：{}";
         case StrId::AgentSetBrightness:
             return "明るさ";
         case StrId::AgentSetVolume:

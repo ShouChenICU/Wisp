@@ -110,6 +110,12 @@ public:
     Result<Value> call(const std::string& id, const std::string& cmd, const Value& args,
                        const std::string& holder);
 
+    // Whether command `cmd` of device `id` changes state (CmdSpec::
+    // changes_state): the agent's device.call shows a note only for one
+    // that does. False for an unknown device or command. Reads the schema
+    // only: no driver call, no rate stamp, no log.
+    bool changes_state(const std::string& id, const std::string& cmd) const;
+
     // From power.state: at Standby/DeepStandby, "standby: off" devices are
     // unreachable (Busy). The service never wakes a device. Starts at
     // Active, the level the device boots in. The event arrives after
