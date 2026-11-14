@@ -371,8 +371,9 @@ TEST_F(FilesBinding, GetCompletesDuringADownload) {
         return res;
     };
     // The first piece of the download waits until the test lets it go on.
-    // Shared, not locals: the worker may still call it after a failed
-    // assertion has left this body.
+    // Shared pointers, not locals, and `release` is the fixture's: the
+    // worker may still call this after a failed assertion has left the
+    // body (TearDown sets `release` before the proxy goes).
     auto armed = std::make_shared<std::atomic<bool>>(true);
     auto waiting = std::make_shared<std::atomic<bool>>(false);
     client.before_piece = [this, armed, waiting] {

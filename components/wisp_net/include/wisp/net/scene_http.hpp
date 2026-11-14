@@ -398,7 +398,11 @@ private:
     uint64_t next_seq_ = 0;
     bool deferring_ = false;
     bool started_ = false;
+    // The workers run while running_; submit() accepts only once both
+    // have been spawned, so a start() that fails half way has accepted
+    // nothing it would then drop without done().
     bool running_ = false;
+    bool accepting_ = false;
 };
 
 }  // namespace wisp::net

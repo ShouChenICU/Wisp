@@ -378,10 +378,16 @@ Result<void> SceneHttp::start() {
     for (HttpLane l : {HttpLane::Interactive, HttpLane::Download}) {
         lane(l).task = os::Task::spawn(task_config(l), [this, l] { run(l); });
         if (!lane(l).task) {
-            // Joins the one already running; the proxy stays off.
+            // Joins the one already running; the proxy stays off. Nothing
+            // was accepted yet (accepting_ is still false), so nothing is
+            // dropped without its done().
             stop();
             return Result<void>::err(ErrorCode::NoMemory, "cannot start a scene HTTP task");
         }
+    }
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        accepting_ = running_;
     }
     return Result<void>::ok();
 }
@@ -393,6 +399,7 @@ void SceneHttp::stop() {
         std::lock_guard<os::Mutex> lock(mu_);
         if (!running_) return;
         running_ = false;
+        accepting_ = false;
         for (size_t i = 0; i < lanes_.size(); ++i) {
             Lane& l = lanes_[i];
             for (auto& job : l.queue) dropped.push_back(std::move(job));
@@ -525,10 +532,11 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
 
     const HttpLane target = lane_of(*job);
     Lane& lane_to = lane(target);
+    bool to_deferred = false;
     {
         std::lock_guard<os::Mutex> lock(mu_);
         job->seq = next_seq_++;
-        if (!running_) {
+        if (!accepting_) {
             code = "other";
         } else if (is_agent) {
             // Never rate limited or deferred (file header): while
@@ -554,6 +562,7 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
                     job->deferred = true;
                     job->deferred_at = now;
                     deferred_.push_back(std::move(job));
+                    to_deferred = true;
                 }
             } else if (std::any_of(deferred_.begin(), deferred_.end(),
                                    [target](const auto& j) { return lane_of(*j) == target; })) {
@@ -567,6 +576,7 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
                     ++st.deferred;
                     job->deferred_at = now;
                     deferred_.push_back(std::move(job));
+                    to_deferred = true;
                 }
             } else if (lane_to.queue.size() >= queue_cap(target)) {
                 code = "rate_limited";
@@ -581,8 +591,11 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
         return;
     }
     // A job that went to deferred_ is moved on by this lane's worker once
-    // the lane has room.
+    // the lane has room, and timed out only by the interactive worker,
+    // which may be asleep with nothing to time out: it must start its
+    // periodic check now, even for a download.
     lane_to.wake.give();
+    if (to_deferred && target != HttpLane::Interactive) lane(HttpLane::Interactive).wake.give();
 }
 
 void SceneHttp::cancel_scene(const std::string& scene_id) {

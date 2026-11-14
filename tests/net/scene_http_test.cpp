@@ -1386,6 +1386,55 @@ TEST_F(SceneHttpLaneTest, DeferredRequestsGoToTheirLanes) {
     EXPECT_TRUE(r.got[0].deferred);
 }
 
+// Only the interactive worker times out deferred requests, so a download
+// deferred while it sleeps (nothing else waiting) must still wake it.
+TEST_F(SceneHttpLaneTest, DeferredDownloadTimesOut) {
+    SceneHttpLimits limits;
+    limits.deferred_check_ms = 10;
+    make(limits);
+    http->set_deferring(true);
+    // Both workers have seen the empty deferred list and gone to sleep.
+    wisp::os::sleep_ms(50);
+    Results r;
+    http->submit(download("https://api.example.com/a/dl"), r.sink());
+    EXPECT_EQ(http->deferred_count(), 1u);
+    now += 3600001;
+    ASSERT_TRUE(wait_until([&] { return r.size() == 1; }, 3000));
+    std::lock_guard<std::mutex> lock(r.mu);
+    EXPECT_EQ(r.got[0].error, "deferred_timeout");
+    EXPECT_TRUE(r.got[0].deferred);
+    EXPECT_EQ(client.calls(), 0u);
+}
+
+// The same for a download that lines up behind a deferred backlog of its
+// own lane (deferring already off, the download worker busy).
+TEST_F(SceneHttpLaneTest, DownloadBehindTheBacklogTimesOut) {
+    SceneHttpLimits limits;
+    limits.deferred_check_ms = 10;
+    limits.download_queue = 1;
+    make(limits);
+    Results held;
+    hold_download(held);
+    http->set_deferring(true);
+    Results r;
+    http->submit(download("https://api.example.com/b/dl"), r.sink());
+    http->set_deferring(false);
+    // B waits for the busy download worker; C lines up behind it.
+    wisp::os::sleep_ms(50);
+    http->submit(download("https://api.example.com/c/dl"), r.sink());
+    EXPECT_EQ(http->deferred_count(), 2u);
+    now += 3600001;
+    ASSERT_TRUE(wait_until([&] { return r.size() == 2; }, 3000));
+    {
+        std::lock_guard<std::mutex> lock(r.mu);
+        EXPECT_EQ(r.got[0].error, "deferred_timeout");
+        EXPECT_EQ(r.got[1].error, "deferred_timeout");
+    }
+    release = true;
+    ASSERT_TRUE(wait_until([&] { return held.size() == 1; }, 3000));
+    EXPECT_EQ(client.calls(), 1u);
+}
+
 TEST_F(SceneHttpLaneTest, IdleCoversBothLanes) {
     make();
     Results r;
