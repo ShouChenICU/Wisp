@@ -4,7 +4,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 
 wisp_component(
     NAME wisp_core
-    SRCS src/log.cpp src/event_bus.cpp src/device_registry.cpp src/boot_report.cpp
+    SRCS src/log.cpp src/dispatcher.cpp src/event_bus.cpp src/device_registry.cpp src/boot_report.cpp
          src/button_service.cpp src/settings.cpp src/cached_settings.cpp src/latest_save.cpp
          src/storage_manager.cpp
          src/storage_worker.cpp

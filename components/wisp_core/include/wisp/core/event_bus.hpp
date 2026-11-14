@@ -7,6 +7,18 @@
 // when publish() is itself called from within a handler (on the
 // dispatcher task), which is explicitly supported.
 //
+// The bus is also a core::Dispatcher: the same task, wisp.bus, runs the
+// dispatch slots scheduled on it (state-cell subscriptions, inboxes;
+// spec 3.2 of the state-cells design). On every wake it drains both
+// kinds, one slot then one event per step, until a step finds neither,
+// so a burst of one kind cannot hold the other back for long and nothing
+// is left queued when it blocks again. Its wake tokens (ready_) are
+// therefore hints, not a count of work: a publish() gives one per event,
+// a schedule() gives one only when the ready list was empty, and an
+// extra token only costs one empty pass. A token dropped because ready_
+// is saturated is harmless for the same reason: a saturated semaphore
+// guarantees at least one more wake, and that wake drains everything.
+//
 // Concurrency note on the underlying queue: wisp::os::Queue::push_drop_oldest()
 // documents that it supports any number of concurrent pop() callers, but
 // NOT concurrent callers of push_drop_oldest() itself -- it is designed
@@ -28,6 +40,7 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/dispatcher.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/os/queue.hpp"
 
@@ -43,17 +56,19 @@ struct Event {
 using EventHandler = std::function<void(const Event&)>;
 using SubscriptionId = uint32_t;
 
-class EventBus {
+class EventBus : public Dispatcher {
 public:
     explicit EventBus(size_t capacity = 64);
 
-    // Equivalent to calling stop(). Not safe to call from within one of
+    // Equivalent to calling stop(), then reports misuse (aborts in host
+    // builds) when an owner still has a slot attached: its slot would
+    // dangle in, or outlive, this bus. Not safe to call from within one of
     // this bus's own handlers (the same way os::Timer documents that
     // destroying a Timer from inside its own callback is not supported):
     // destroying the object out from under a callback currently running
     // on one of its member threads is a caller lifetime bug no amount of
     // internal locking can paper over.
-    ~EventBus();
+    ~EventBus() override;
 
     EventBus(const EventBus&) = delete;
     EventBus& operator=(const EventBus&) = delete;
@@ -142,11 +157,11 @@ public:
     void publish(Event e);
 
     // Polls (does not busy-spin indefinitely) for up to timeout_ms for
-    // the queue to drain and every handler invocation in flight to
-    // finish. Returns true if that idle state was reached, false if
-    // timeout_ms elapsed first. Never returns true while a handler is
-    // still running, even under concurrent publish() calls from multiple
-    // threads.
+    // the queue and the ready list to drain and every handler invocation
+    // and slot run in flight to finish. Returns true if that idle state
+    // was reached, false if timeout_ms elapsed first. Never returns true
+    // while a handler or slot is still running, even under concurrent
+    // publish() calls from multiple threads.
     bool wait_idle(uint32_t timeout_ms);
 
     // Thread-safe. Total number of events dropped (due to queue overflow)
@@ -155,6 +170,20 @@ public:
     // throttled (logged for the first drop, then again only every 64th)
     // to avoid flooding the log under sustained overflow.
     uint64_t dropped() const;
+
+    // Dispatcher. A slot runs on wisp.bus like a handler, outside every
+    // bus lock; unsubscribe() does not wait for slot runs, and cancel()
+    // waits only for a run of the slot it is given. schedule() before
+    // start() or after stop() queues the slot; it runs once the
+    // dispatcher (re)starts, as events do.
+    void schedule(DispatchSlot& slot) override;
+    [[nodiscard]] bool cancel(DispatchSlot& slot) override;
+    bool on_dispatch_thread() const override;
+
+    // Live state-cell subscriptions on this bus, for `mem`. StateCell is
+    // the only caller of note_cell_subscription().
+    void note_cell_subscription(int delta);
+    uint32_t cell_subscriptions() const;
 
 private:
     struct Subscription {
@@ -175,11 +204,12 @@ private:
     os::Queue<Event> queue_;
     os::Mutex publish_mutex_;  // serializes publish() callers; see file header note
 
-    // Signals the dispatcher task that it has work to do: given exactly
-    // once per publish() call (whether or not that call also dropped an
-    // older event -- the new event is always a genuinely new deliverable
-    // item), and once by stop()/start() to wake a dispatcher that might
-    // be idly blocked waiting for work so it can notice it should exit.
+    // Signals the dispatcher task that it has work to do: given once per
+    // publish() call (whether or not that call also dropped an older
+    // event), once by a schedule() that found the ready list empty, and
+    // once by stop()/start() to wake a dispatcher that might be idly
+    // blocked waiting for work so it can notice it should exit. Hints
+    // only: see the file header for why a wake drains everything.
     // This -- rather than a polling pop() timeout -- is what lets the
     // dispatcher block indefinitely (no periodic wake-ups to burn power)
     // while still being promptly interruptible.
@@ -231,6 +261,16 @@ private:
     // its own increment ran, making wait_idle() briefly observe
     // inflight_ == 0 while a handler is actually still executing.
     std::atomic<int64_t> inflight_{0};
+
+    // The ready list of slots scheduled on this bus (see Dispatcher).
+    SlotQueue slots_;
+    // True while the dispatcher is inside a drain pass, from before its
+    // first step until a step found neither a slot nor an event. A slot
+    // can publish an event and a handler can schedule a slot, so work can
+    // move between inflight_ and slots_ between wait_idle()'s two reads;
+    // reading this flag last closes that gap (see wait_idle()).
+    std::atomic<bool> draining_{false};
+    std::atomic<uint32_t> cell_subscriptions_{0};
 };
 
 }  // namespace wisp::core

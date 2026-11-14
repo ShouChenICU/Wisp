@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "support/wait.hpp"
@@ -498,4 +499,181 @@ TEST(EventBus, StopFromHandlerThenStartRepeatedlyNeverStrandsAnEvent) {
     ASSERT_TRUE(bus.wait_idle(5000));
     EXPECT_EQ(static_cast<uint64_t>(delivered.load()) + bus.dropped(),
               static_cast<uint64_t>(total_published));
+}
+
+namespace {
+
+using wisp::core::DispatchSlot;
+
+// A slot counting its runs; optionally blocks on `gate` inside its run
+// (after announcing `entered`), and records what the bus said about the
+// thread it ran on.
+struct BusSlot : DispatchSlot {
+    explicit BusSlot(EventBus* bus_) : bus(bus_) {
+        run = [](DispatchSlot& s) {
+            auto& self = static_cast<BusSlot&>(s);
+            self.on_dispatch_thread.store(self.bus->on_dispatch_thread());
+            self.thread = std::this_thread::get_id();
+            if (self.gate != nullptr) {
+                self.entered.give();
+                self.gate->take(wisp::os::kForever);
+            }
+            self.runs.fetch_add(1);
+        };
+    }
+    EventBus* bus;
+    wisp::os::Semaphore* gate = nullptr;
+    wisp::os::Semaphore entered{1, 0};
+    std::atomic<int> runs{0};
+    std::atomic<bool> on_dispatch_thread{false};
+    std::thread::id thread;
+};
+
+}  // namespace
+
+TEST(EventBus, ScheduledSlotRunsOnTheDispatcher) {
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    BusSlot a(&bus);
+    bus.schedule(a);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(a.runs.load(), 1);
+    EXPECT_TRUE(a.on_dispatch_thread.load());
+    EXPECT_NE(a.thread, std::this_thread::get_id());
+    EXPECT_FALSE(bus.on_dispatch_thread());
+}
+
+TEST(EventBus, SlotsAndEventsBothDrain) {
+    EventBus bus;
+    wisp::os::Semaphore gate(1, 0);
+    wisp::os::Semaphore blocked(1, 0);
+    std::atomic<int> events{0};
+    bus.subscribe("", [&](const Event& e) {
+        if (e.topic == "first") {
+            blocked.give();
+            gate.take(wisp::os::kForever);
+        }
+        events.fetch_add(1);
+    });
+    ASSERT_TRUE(bus.start());
+    BusSlot a(&bus), b(&bus);
+    bus.publish({.topic = "first"});
+    ASSERT_TRUE(blocked.take(1000));
+    for (int i = 0; i < 3; ++i) {
+        bus.publish({.topic = "e"});
+    }
+    bus.schedule(a);
+    bus.schedule(b);
+    gate.give();
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(events.load(), 4);
+    EXPECT_EQ(a.runs.load(), 1);
+    EXPECT_EQ(b.runs.load(), 1);
+}
+
+TEST(EventBus, WaitIdleWaitsForQueuedAndRunningSlots) {
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    wisp::os::Semaphore gate(1, 0);
+    BusSlot a(&bus);
+    a.gate = &gate;
+    bus.schedule(a);
+    ASSERT_TRUE(a.entered.take(1000));
+    EXPECT_FALSE(bus.wait_idle(50));
+    gate.give();
+    EXPECT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(a.runs.load(), 1);
+}
+
+TEST(EventBus, SaturatedTokensStrandNothing) {
+    EventBus bus(4);  // ready_ saturates at 5 tokens
+    wisp::os::Semaphore gate(1, 0);
+    wisp::os::Semaphore blocked(1, 0);
+    std::vector<int> got;  // touched only on wisp.bus until wait_idle()
+    bus.subscribe("", [&](const Event& e) {
+        if (e.topic == "first") {
+            blocked.give();
+            gate.take(wisp::os::kForever);
+        } else if (e.topic == "n") {
+            got.push_back(static_cast<int>(e.payload.at("i").as_int()));
+        }
+    });
+    ASSERT_TRUE(bus.start());
+    BusSlot a(&bus), b(&bus), c(&bus);
+    bus.publish({.topic = "first"});
+    ASSERT_TRUE(blocked.take(1000));
+    for (int i = 0; i < 20; ++i) {
+        bus.publish({.topic = "n", .payload = {{"i", i}}});
+    }
+    bus.schedule(a);
+    bus.schedule(b);
+    bus.schedule(c);
+    gate.give();
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(got, (std::vector<int>{16, 17, 18, 19}));
+    EXPECT_EQ(bus.dropped(), 16u);
+    EXPECT_EQ(a.runs.load(), 1);
+    EXPECT_EQ(b.runs.load(), 1);
+    EXPECT_EQ(c.runs.load(), 1);
+}
+
+TEST(EventBus, CancelOffTheDispatcherWaitsOnlyForThatSlot) {
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    wisp::os::Semaphore gate(1, 0);
+    BusSlot a(&bus), b(&bus);
+    a.gate = &gate;
+    bus.schedule(a);
+    ASSERT_TRUE(a.entered.take(1000));  // a is running, b queues behind it
+    bus.schedule(b);
+    // Cancelled from another task, so a cancel() that wrongly waited for
+    // a's run fails the check below instead of hanging the test.
+    std::atomic<bool> returned{false};
+    std::atomic<bool> result{false};
+    auto canceller = wisp::os::Task::spawn({.name = "canceller"}, [&] {
+        result.store(bus.cancel(b));
+        returned.store(true);
+    });
+    EXPECT_TRUE(wisp::test::wait_until([&] { return returned.load(); }, 1000));
+    gate.give();  // only now does a's run return
+    canceller->join();
+    EXPECT_TRUE(result.load());
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(a.runs.load(), 1);
+    EXPECT_EQ(b.runs.load(), 0);
+}
+
+TEST(EventBus, NoSlotRunsWhileStopped) {
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    bus.stop();
+    BusSlot a(&bus);
+    bus.schedule(a);
+    wisp::os::sleep_ms(20);
+    EXPECT_EQ(a.runs.load(), 0);
+    ASSERT_TRUE(bus.start());
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(a.runs.load(), 1);
+}
+
+TEST(EventBus, CountsCellSubscriptions) {
+    EventBus bus;
+    bus.note_cell_subscription(+1);
+    bus.note_cell_subscription(+1);
+    bus.note_cell_subscription(-1);
+    EXPECT_EQ(bus.cell_subscriptions(), 1u);
+}
+
+TEST(EventBus, DestroyedWithAnAttachedSlotAborts) {
+    struct RestoreStyle {
+        std::string old = GTEST_FLAG_GET(death_test_style);
+        ~RestoreStyle() { GTEST_FLAG_SET(death_test_style, old); }
+    } restore;
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+        {
+            EventBus bus;
+            bus.attach();
+        },
+        "EventBus destroyed with 1 attached slot");
 }

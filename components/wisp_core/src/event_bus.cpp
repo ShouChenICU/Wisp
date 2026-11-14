@@ -29,7 +29,10 @@ thread_local const EventBus* tls_dispatching = nullptr;
 EventBus::EventBus(size_t capacity)
     : queue_(capacity), ready_(static_cast<uint32_t>(capacity) + 1, 0) {}
 
-EventBus::~EventBus() { stop(); }
+EventBus::~EventBus() {
+    stop();
+    check_detached("EventBus");
+}
 
 Result<void> EventBus::start() {
     if (tls_dispatching == this) {
@@ -187,10 +190,18 @@ void EventBus::publish(Event e) {
 }
 
 bool EventBus::wait_idle(uint32_t timeout_ms) {
+    // draining_ is read last: work only moves between inflight_ and slots_
+    // inside a drain pass, so if no pass is running after both counts read
+    // zero, no pass hid work from them (a pass that ended in between ended
+    // because it found both empty).
+    auto idle = [this] {
+        return inflight_.load(std::memory_order_seq_cst) == 0 && slots_.pending() == 0 &&
+               !draining_.load(std::memory_order_seq_cst);
+    };
     uint64_t start = os::now_ms();
-    while (inflight_.load(std::memory_order_acquire) != 0) {
+    while (!idle()) {
         if (os::now_ms() - start >= timeout_ms) {
-            return inflight_.load(std::memory_order_acquire) == 0;
+            return idle();
         }
         os::sleep_ms(kWaitIdlePollMs);
     }
@@ -198,6 +209,27 @@ bool EventBus::wait_idle(uint32_t timeout_ms) {
 }
 
 uint64_t EventBus::dropped() const { return dropped_.load(std::memory_order_relaxed); }
+
+void EventBus::schedule(DispatchSlot& slot) {
+    // Only the empty-to-non-empty push wakes the dispatcher: a later push
+    // finds the list non-empty, and the pass woken by the first one keeps
+    // taking slots until the list is empty (see run_dispatcher()).
+    if (slots_.push(slot)) {
+        ready_.give();
+    }
+}
+
+bool EventBus::cancel(DispatchSlot& slot) { return slots_.cancel(slot, on_dispatch_thread()); }
+
+bool EventBus::on_dispatch_thread() const { return tls_dispatching == this; }
+
+void EventBus::note_cell_subscription(int delta) {
+    cell_subscriptions_.fetch_add(static_cast<uint32_t>(delta), std::memory_order_relaxed);
+}
+
+uint32_t EventBus::cell_subscriptions() const {
+    return cell_subscriptions_.load(std::memory_order_relaxed);
+}
 
 void EventBus::dispatch(const Event& e) {
     // Held for the whole call (copy + invoke), so unsubscribe() from a
@@ -239,31 +271,45 @@ void EventBus::run_dispatcher(uint64_t my_generation) {
 
     while (true) {
         ready_.take(os::kForever);
-        if (!running_.load(std::memory_order_acquire) ||
-            generation_.load(std::memory_order_acquire) != my_generation) {
-            // Give the token we just took back before exiting: it may
-            // have been a synthetic stop()/start() wake (harmless to
-            // return -- some dispatcher's next pop(e, 0) will just find
-            // nothing and loop again) or it may have belonged to a real,
-            // still-undelivered event. Either way, nothing else is going
-            // to give a replacement for it, so returning without giving
-            // it back would leave the count of available tokens
-            // permanently short of the number of real undelivered
-            // events -- stranding the last one until some unrelated
-            // future publish() happens to cover for it.
-            ready_.give();
-            return;
+        draining_.store(true, std::memory_order_seq_cst);
+        while (true) {
+            if (!running_.load(std::memory_order_acquire) ||
+                generation_.load(std::memory_order_acquire) != my_generation) {
+                // Give the token we took back before exiting: whatever is
+                // still queued (events or slots) was announced by tokens
+                // this pass already consumed, and nothing else is going to
+                // give a replacement. Without it, the next dispatcher could
+                // block with work queued until some unrelated publish()
+                // happened to wake it. One token suffices, since the pass
+                // it starts drains everything.
+                draining_.store(false, std::memory_order_seq_cst);
+                ready_.give();
+                return;
+            }
+            bool progressed = false;
+            if (DispatchSlot* slot = slots_.take()) {
+                slot->run(*slot);
+                // done() may hand the slot to its owner's finish(), which
+                // frees it: nothing touches `slot` after this line.
+                slots_.done(*slot);
+                progressed = true;
+            }
+            Event e;
+            if (queue_.pop(e, 0)) {
+                dispatch(e);
+                inflight_.fetch_sub(1, std::memory_order_acq_rel);
+                progressed = true;
+            }
+            if (!progressed) {
+                // Both lists were empty. Anything queued from now on gives a
+                // token (publish() always; schedule() because the list is
+                // empty), so blocking again cannot miss it. Leftover tokens
+                // from events this pass already drained cost one empty
+                // pass each.
+                break;
+            }
         }
-        Event e;
-        if (!queue_.pop(e, 0)) {
-            // A spurious wake with nothing to pop: either a stop()/
-            // start() wake token (handled above) or a ready_ token whose
-            // event was later evicted by push_drop_oldest() before we
-            // got to it. Either way, just wait for the next one.
-            continue;
-        }
-        dispatch(e);
-        inflight_.fetch_sub(1, std::memory_order_acq_rel);
+        draining_.store(false, std::memory_order_seq_cst);
     }
 }
 

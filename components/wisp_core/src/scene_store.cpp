@@ -813,8 +813,8 @@ struct SceneStore::Impl {
     }
 
     // Writes are refused before load() and after close().
-    detail::ErrorProxy refuse_write() const {
-        return detail::ErrorProxy{
+    wisp::detail::ErrorProxy refuse_write() const {
+        return wisp::detail::ErrorProxy{
             Error{ErrorCode::StorageUnavailable, closed ? "closed" : "not_loaded"}};
     }
 
