@@ -1293,11 +1293,6 @@ bool queue_storage_refresh(App& app) {
 core::DeviceRegistry& App::registry() { return impl_->registry; }
 core::BootReport& App::report() { return impl_->report; }
 core::EventBus& App::bus() { return impl_->bus; }
-
-std::string App::dispatch_report() const {
-    return "bus dropped=" + std::to_string(impl_->bus.dropped()) +
-           " cell_subs=" + std::to_string(impl_->bus.cell_subscriptions());
-}
 core::StorageManager& App::storage() { return impl_->storage; }
 core::ButtonService& App::buttons() { return impl_->buttons; }
 ui::UiRuntime* App::ui() { return impl_->ui.get(); }
@@ -1327,5 +1322,10 @@ net::TimeSyncService* App::time_sync() { return impl_->net ? impl_->net->time_sy
 core::ModelProfileService& App::models() { return impl_->models; }
 core::SystemSettings& App::system_settings() { return impl_->system_settings; }
 const Platform& App::platform() const { return impl_->platform; }
+
+std::string App::dispatch_report() const {
+    return "bus dropped=" + std::to_string(impl_->bus.dropped()) +
+           " cell_subs=" + std::to_string(impl_->bus.cell_subscriptions());
+}
 
 }  // namespace wisp::app

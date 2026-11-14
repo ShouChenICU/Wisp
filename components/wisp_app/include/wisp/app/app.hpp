@@ -325,12 +325,6 @@ public:
     core::DeviceRegistry& registry();
     core::BootReport& report();
     core::EventBus& bus();
-
-    // One line, "bus dropped=<n> cell_subs=<n>" (no trailing newline): events
-    // the bus dropped on overflow and live state-cell subscriptions. Reads
-    // atomics only, so any thread may call it; it is what the firmware `mem`
-    // command appends to the heap report.
-    std::string dispatch_report() const;
     core::StorageManager& storage();
     core::ButtonService& buttons();
 
@@ -403,6 +397,13 @@ public:
     // a screen; nullptr in headless mode, and before start() or after
     // stop(). Its members are called on the UI thread only.
     shell::Shell* shell();
+
+    // One line, "bus dropped=<n> cell_subs=<n>" (no trailing newline): events
+    // the bus dropped on overflow and live state-cell subscriptions. Reads
+    // atomics only, so any thread may call it; it is what the firmware `mem`
+    // command appends to the heap report. Anything later added to the
+    // report must keep that promise.
+    std::string dispatch_report() const;
 
     // Writes what still waits for flash before the device restarts, powers
     // off or enters deep standby (spec 3.8 of
