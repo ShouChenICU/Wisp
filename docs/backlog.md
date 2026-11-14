@@ -101,7 +101,7 @@ Source: `feat/agent-core` review records.
   - a summary request that keeps timing out counts as a transport error, so the history never compresses and every request carries it whole;
   - the four new `AgentLoop` tests sit outside the test namespace.
 - Scene drafts and install:
-  - a power cut after `remove_tree(prev)` and before `rename(dir, prev)` loses the previous version (`recover()` runs with `keep_prev=false`); rename to a temporary name first, or document the window;
+  - a power cut after `remove_tree(prev)` and before `rename(dir, prev)` loses the previous version (`recover()` runs with `keep_prev=false`); rename to a temporary name first, or document the window. Only a turn's first install of a scene (and `scene.rollback`, and installs outside a turn) still pass through this window: later installs of the same turn leave `.prev` alone (agent-core spec 4.1);
   - `remove_here` returns NotFound before cleaning up `.prev/<id>` when the scene is not installed, so an orphaned `.prev` stays;
   - `kMaxDraftBytes` repeats `SceneRepoConfig::max_code_bytes` instead of reading it, and the draft file count is not capped at `kMaxFiles` until install;
   - a `write_file` rejected with `quota_exceeded` still creates the draft (`ensure_draft_here` runs first);
@@ -262,6 +262,27 @@ Source: `docs/superpowers/plans/2026-11-14-voice-wake-responsiveness.md`. Simula
 - A tap hint can interrupt an error hint's window: a tap during a voice error's or turn reason's `kFadeAfterMs` shows `HomeHoldToTalk` in its place for that time.
 - "." is not a sentence terminator in `SentenceSplitter`, so an English say is synthesized as one piece: its first audio waits for the whole say, up to the say's close.
 - The English checklist wording ("Needed: chat, listening") is terse, shortened to fit the 360 px round shape; the owner may want to reword it (the ja `HomeNeedLlm` "対話" likewise).
+
+## Scene scheduling: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-scene-scheduling-install-safety.md`. Simulator and unit tests only so far.
+
+- `mem` at the worst case: a large `wisp.http.download` in flight and an agent `http.fetch` of an HTTPS page at the same time (two TLS sessions from the proxy at once), with STA+AP and both httpd instances up. Internal free and largest block against `kWorstInternalFreeMin`/`kWorstInternalLargestMin` (`ram_budget.hpp`), and the stack high-water marks of `wisp.shttp` and `wisp.shttp.dl`. Record them in `docs/hardware/<board>.md`.
+- `mem` idle after boot: the cost of the second HTTP worker (TCB, watch timer, semaphore) against `kIdleInternalFreeMin`.
+- The agent's usual `lua.run` scripts (JSON over a fetched page, a loop over a 64 KB result) on the S3 at the 200 ms slice: none ends in `timeout`.
+- Tap latency on the front scene while a background scene runs a 50 ms timer and the agent waits on fetches: no visible lag.
+- `WISP_PERF` while scrolling and while replacing the items of a long list (ledger example) against the baseline, and no blank frame on the reset, on the 2.16 and the 1.75C round panel; and how long a large list reset takes to rebuild on the device.
+- Two `scene.install` calls of one scene in one spoken turn, then "undo" (`scene.rollback`): the version from before the turn comes back after a restart too (the `.prev` on flash).
+
+## Scene scheduling parked review findings
+
+- After a list reset the old rows' image and canvas pixels count toward the view's 4 MB media budget until the new rows arrive, so a media growth in the same batch can be refused where it used to fit.
+- A narrow race between the install session check (`SceneWorkspace::in_session()`) and the start of staging: an admin upload of the same id that completes in between is replaced without becoming `.prev`.
+- No test for `SceneHttp::start()` failing on only the second worker (the simulator's spawn hook fails every spawn).
+- No integration test of the `no_memory` result path (a box item with a null payload) through `run_completions()`, nor of `Link::complete`'s `wake_failed()` branch with a live runtime.
+- A VM whose callbacks keep producing immediate results (a refused call made from each callback) delays its own due timers: within one VM a waiting result runs before a taken timer.
+- In the simulator, a request stuck in its TLS handshake (a server that accepts and never answers) is not stopped by `cancel_scene()` or `SceneHttp::stop()`: libcurl's progress callback did not run during that wait, so `wisp_sim` took 13.6 s to exit on SIGTERM with a scene `wisp.http.get` in that state (its 15 s deadline) and would wait up to the 5-minute deadline for a download. The worker and `SimHttpClient` code path is the same as before the two lanes; check whether the device's client stops at an abort there.
+- `queue_load` still drops a loaded-package message when the scene queue is full (`<id>: loaded, but the scene queue is full`); call results no longer go through the queue, but this receipt does.
 
 ## CI speed
 

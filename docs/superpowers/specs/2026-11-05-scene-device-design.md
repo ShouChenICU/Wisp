@@ -402,6 +402,7 @@ wisp.http.download(url, name, opts, cb)   -- 流式写入文件，受配额和 h
 - 写操作都经 `wisp.fs` 执行；`write` 用 `write_atomic`，`append` 是直接追加。
 - 单次 `write` 或 `append` 的数据不超过 256 KB。更大的数据请用 `download` 或多次 `append`。
 - `download` 不受 3a 中 256 KB 响应体上限限制，只受配额限制。它和普通 HTTP 共用频率限额，在深度待机中按 4.4 排队。
+- 2026-11-14 修订：下载有自己的工作线程 `wisp.shttp.dl`（3a spec 5.3），一个下载最长 5 分钟（`SceneHttpRequest::kDownloadTimeoutMs`），期间只占下载线程，同一场景和其他场景的普通请求、Agent 的 `http.fetch` 照常在 `wisp.shttp` 上完成。下载排队最多 `SceneHttpLimits::download_queue` = 2 个（Agent 身份不受此限），超出返回 `rate_limited`。同一场景的下载和普通请求完成先后不定。`download` 与其他 `wisp.files` 调用、`wisp.http` 调用一起计入每个 VM 16 个等待结果调用的上限（`kMaxCallsInFlight`，3a spec 5.3）。
 
 ### 7.2 位置与配额
 

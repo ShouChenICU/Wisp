@@ -482,13 +482,14 @@ Besides item 53 of the device acceptance checklist, there are further measuremen
 
 Compare the internal RAM increase of (b)–(d) over (a) with the ≤ 2 KB expected in spec 2.3, and with the net value already measured in the "After adding the scene runtime" paragraph above (adding the scene runtime itself is a net 4.9 KB less, because the `os::Queue` slots moved into PSRAM at the same time). After measuring, adjust `*StackBytes`/`stack_bytes` of the three tasks in PSRAM from the high-water mark plus a margin; `wisp.fs` has already been adjusted the same way from 4 KB to the current 6144 B (see the "`wisp.fs` stack raised from 4 KB to 6 KB" paragraph above). After adjusting, update `docs/architecture.md` to match.
 
-Expected locations and configured stack sizes of the four tasks (checked against `task_config()`/`TaskConfig` in the code; tasks with `flash_access = true` have their stacks in internal RAM, those with `false` in PSRAM):
+Expected locations and configured stack sizes of the tasks (checked against `task_config()`/`TaskConfig` in the code; tasks with `flash_access = true` have their stacks in internal RAM, those with `false` in PSRAM):
 
 | Task | Expected location | Configured stack size | Basis |
 |---|---|---|---|
 | `wisp.scene` | PSRAM | 131072 B | `flash_access = false` in `SceneRuntime::task_config()` (`components/wisp_scene/src/scene_runtime.cpp`); the size is `SceneRuntimeConfig::stack_bytes` (`components/wisp_scene/include/wisp/scene/scene_runtime.hpp`), set from the recursion depth of `string.gsub` under Lua's `LUAI_MAXCCALLS` |
 | `wisp.fs` | Internal RAM | 6144 B | `flash_access = true` in `StorageWorker::task_config()` (`components/wisp_core/src/storage_worker.cpp`) (it reads and writes flash); the size is `StorageWorkerConfig::stack_bytes` (`components/wisp_core/include/wisp/core/storage_worker.hpp`) |
-| `wisp.shttp` | PSRAM | 8192 B | `flash_access = false` in `SceneHttp::task_config()` (`components/wisp_net/src/scene_http.cpp`) |
+| `wisp.shttp` | PSRAM | 8192 B | `flash_access = false` in `SceneHttp::task_config(HttpLane::Interactive)` (`components/wisp_net/src/scene_http.cpp`) |
+| `wisp.shttp.dl` | PSRAM | 8192 B | `flash_access = false` in `SceneHttp::task_config(HttpLane::Download)` (same file); added with the download lane after the measurements below, so it has no measured high-water mark yet (`docs/backlog.md`, "Scene scheduling: device checks not run") |
 | `wisp.ntp` | PSRAM | 4096 B | `flash_access = false` of `os::Task::spawn()` in `NetWiring` (`components/wisp_app/src/net_wiring.cpp`); the size is `kNtpStackBytes` (`components/wisp_app/src/net_wiring.hpp`) |
 
 Measured results (2026-11-05, device acceptance, firmware `0.1.0-387-gac2c5d0-dirty`; stack size and high-water mark of each task in the four states (a)–(d), in B; three more tasks, `wisp_ui`/`httpd`/`wisp.ws`, were recorded because this round also caught a new low for `wisp_ui`):

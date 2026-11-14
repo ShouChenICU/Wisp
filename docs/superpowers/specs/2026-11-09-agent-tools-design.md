@@ -173,13 +173,13 @@
   - 有：`wisp.http`（Agent 身份，第 3.2 节）、`wisp.json`（新，见下）、`wisp.device`、`wisp.notify`（来源记为 Wisp 自己）、`wisp.files`（根目录为 `<Library>/agent/files/`，配额与场景相同）、`wisp.log`、`wisp.sleep`；
   - 没有：控件构造函数与界面相关全局、`wisp.store`、`wisp.timer`、`wisp.sensor`、`wisp.power`、`wisp.scene`、`wisp.import`；
 - `wisp.json.encode(v)` / `wisp.json.decode(s)`：新增，场景 VM 也可用，转换规则与 `lua_json.hpp` 相同，失败时返回 `nil, err`；
-- 单次 CPU 执行片 1000 ms（场景为 200 ms）：一次恢复执行连续运行超过 1 s 判超时；挂起等待的时间不计入；
+- 单次 CPU 执行片 200 ms（`kLuaRunSliceMs`，与场景相同；2026-11-14 修订，原为 1000 ms）：一次恢复执行连续运行超过 200 ms 判超时；挂起等待的时间不计入。整个调用仍以自己的 `timeout_ms` 为总时限。执行片缩短是为了让场景任务的三条通道（3a spec 3.1）里前台场景的点击不必等 Agent 的 Lua 跑满 1 s；`lua.run` 的执行片与后台场景一起轮转；
 - 整个调用超过 `timeout_ms` 时：取消该 VM 的全部 HTTP 请求，销毁 VM，返回 `timeout`；
 - 调用结束（成功、失败、超时、取消）后 VM 立刻销毁，未完成的请求全部取消。
 
 ### 4.3 线程
 
-工具在 `wisp.agent` 上等待；`AgentRunner` 把脚本交给场景线程，作为场景线程的一条消息执行，每次恢复协程也是一条消息。场景线程在等待期间照常处理场景的消息，不会被 `lua.run` 卡住（只有 1 s 执行片内会）。注册的超时为 305000 ms。
+工具在 `wisp.agent` 上等待；`AgentRunner` 把脚本交给场景线程，作为场景线程的一条消息执行，每次恢复协程也是一条消息。场景线程在等待期间照常处理场景的消息，不会被 `lua.run` 卡住（只有 200 ms 执行片内会；2026-11-14 修订，原为 1 s）。HTTP 与文件结果放进该 VM 自己的完成箱，箱满不会发生：同一 VM 最多 16 个调用等待结果（`kMaxCallsInFlight`，3a spec 5.3），第 17 个抛 Lua 错误。注册的超时为 305000 ms。
 
 ---
 

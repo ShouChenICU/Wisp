@@ -90,6 +90,7 @@
   - 其余都放 PSRAM：`os::Queue` 的槽位（这一改动对所有队列生效，事件总线的 64 槽队列和 UI 的投递队列也一并从内部 RAM 移走；没有 PSRAM 或 PSRAM 用完时退回内部 RAM）、`SceneHttp` 的请求队列、`SceneWiring`/`SceneRepository`/`SceneRuntime`/`SceneHttp`/`RequestWatch` 等常驻对象本身（`os::make_large`）。
   - 实测（`waveshare_esp32_s3_touch_amoled_2_16`，STA、空闲、未打开场景，`mem`）：内部 RAM 空闲 92.6 KB（min 58.3 KB），接入场景前为 97.5 KB（min 62.8 KB），整机净少 4.9 KB（min 净少 4.5 KB）。这是净值：同一改动把事件总线（64 × 80 B）和 UI 投递队列（32 × 16 B）的槽位约 5.6 KB 一并移进了 PSRAM，扣除这部分后，场景子系统本身约占 10 KB 内部 RAM，高于上面约 8 KB 的估算，差额尚未逐项拆分。空闲预算（`kIdleInternalFreeMin`，60 KB）仍满足；最坏情况（STA+AP、两个 httpd、WebSocket 日志、TLS 握手、OTA 上传同时进行）尚未在这一版本上重测。
   - 真机用 `mem` 实测后写入硬件文档，并按新的最坏情况复核 `wisp/app/ram_budget.hpp`。
+  - 2026-11-14 修订：下载有了自己的工作线程 `wisp.shttp.dl`（5.3），多一个任务的 TCB、它的 `RequestWatch` 定时器和信号量留在内部 RAM；栈（8192 字节，`flash_access = false`）在 PSRAM。每个 VM 的完成箱（3.1）在 `Mem::Large`。这部分的内部 RAM 开销尚待真机 `mem` 实测。
 - 场景任务不碰 Flash：所有文件读写交给 `StorageManager` 的存储工作线程，场景任务只投递请求、在消息里收回调。
 
 ---
@@ -101,6 +102,13 @@
 - **UI 线程**（现有）：唯一调用 LVGL 的线程。把控件事件转成场景消息投递给场景任务；每帧开始前应用场景提交的界面改动。
 - **场景任务**（新，优先级低于 UI 任务，栈在 PSRAM；与 UI 任务都不绑核，由 SMP 调度器分配到两个核上）：从一个消息队列取消息，在对应场景的 VM 里执行。消息种类：控件事件、定时器到期、HTTP 完成、存储回调、设备事件、生命周期（打开、关闭、重载、显示、隐藏）。
 - 3a 只运行一个场景（前台场景），但 VM 与消息都带场景 id，按多场景设计。
+- **结果放进完成箱**（2026-11-14 修订）：`wisp.http`、`wisp.http.download` 与 `wisp.files` 的结果不再作为消息排队。每个 VM（场景槽位、Agent 的 `lua.run` VM）有一个完成箱 `CompletionBox`：`kMaxCallsInFlight`（16，见 5.3）个条目的固定环形缓冲，在 `Mem::Large` 中随 VM 一次分配好。生产者（两个 HTTP 工作线程 `wisp.shttp`/`wisp.shttp.dl`、`wisp.fs`、在调用内当场拒绝时的场景任务自己）把结果放进箱子，消息队列里只放一条 `Completed` 唤醒。活着的 VM 的结果一条都不丢；VM 已关闭或故障时，箱里的结果被释放并计入 `stale_dropped()`，回调不运行，也不会落到同一场景的下一个实例；连保存结果的内存都分配不到时，回调仍运行一次，收到错误 `no_memory`。消息队列从此只承载控件事件与控制消息（打开、关闭、`eval` 等查询、`lua.run` 与工具调用的开始和停止、设备事件、加载回执）。
+- **三条通道**（2026-11-14 修订）：场景任务的每一步（一条消息、一个结果、一个定时器回调、Agent Lua 的一个执行片，各不超过 200 ms）从三条通道里取：
+  1. 消息队列：按到达顺序一次一条（控件事件和控制消息的先后不能打乱，所以整个队列是一条通道）；
+  2. 前台场景：它最早的结果，没有结果时是它的一个到期定时器；
+  3. 后台：后台与 headless 场景、Agent 的 `lua.run`，从上次运行的来源之后按实例号轮转。
+
+  严格按通道顺序会让一个结果和定时器永不停歇的前台饿死其他通道，所以：连续 `kQueueBurst`（8）条队列消息之后，若有通道项在等，先跑一个通道项；连续 `kFrontBurst`（4）个前台项之后，若有后台项在等（中间穿插的队列消息不清零计数），下一个通道项取后台项。队列与前台都饱和时，一个等待中的后台项最多在 (kQueueBurst + 1) × kFrontBurst + kQueueBurst = 44 项之后运行。同一 VM 内，等待中的结果先于已取出的到期定时器运行。
 
 ### 3.2 一次交互的流程
 
@@ -190,7 +198,7 @@ return ui.screen { align = "center", justify = "center",
 | 文本与图像 | `label`、`icon`（内置图标集）、`image`（只能引用本包 `assets/`；PNG 与 baseline JPEG，不支持 progressive JPEG） |
 | 输入 | `button`、`checkbox`、`switch`、`slider`、`input`（聚焦时弹出系统屏幕键盘，支持中英文） |
 | 进度与数据 | `bar`、`arc`（进度环）、`chart`（折线、柱状） |
-| 列表 | `list`：`items` 为状态或数组，`row = function(item, index)` 只为可见行调用；`items` 变化时只重建可见范围 |
+| 列表 | `list`：`items` 为状态或数组，`row = function(item, index)` 只为可见行调用；`items` 变化时只重建可见范围。2026-11-14 修订：`items` 被整体替换（重置）后，旧行留在屏幕上，直到重置之后的第一批 `ListRows` 到达才换下，列表不会空一帧；超出新项数的旧行在重置时就去掉。以下情况旧行立即去掉，因为不会再有新行到来：新的可见窗口为空、范围请求没能入队、一行都没建成（空的 `ListRows`）。保留期间旧行上的事件找不到处理函数，不执行任何代码；新行到达前，旧行的图片和画布像素仍计入 4 MB 像素预算（5.6） |
 | 绘制 | `canvas`：`draw = function(g) ... end`，`g` 提供 `line`、`circle`、`arc`、`rect`、`fill`、`text`；依赖的状态变化时重绘 |
 
 ### 4.4 通用属性
@@ -262,6 +270,8 @@ wisp.http.post(url, body, opts, cb)  -- cb(err, {status, headers, body, json})
 - 响应体上限 256 KB，每个场景每分钟最多 30 次请求，超时 15 秒。
 - `json` 字段在响应为 JSON 时提供解析结果。
 - 拒绝时 `err` 为 `permission_denied`、`not_https`、`too_large`、`rate_limited` 之一。
+- **等待结果的调用上限**（2026-11-14 修订）：每个 VM 同时等待结果的 `wisp.http`、`wisp.http.download` 与 `wisp.files` 调用合计最多 `kMaxCallsInFlight` = 16 个，从登记回调（或等待中的任务）起算，到回调运行为止；结果一到、回调运行，名额就腾出来。第 17 个调用抛出 Lua 错误 `too many calls waiting for results (at most 16)`，可以用 `pcall` 捕获。它不能像其他拒绝那样经回调回答：那个回答本身就是一个超出上限的结果。入口文件加载时就发起超过 16 个调用的场景，安装检查（`check_build()`）同样以这个错误失败。
+- **两个工作线程**（2026-11-14 修订）：`SceneHttp` 分两条通道，各有自己的队列和工作线程：`wisp.shttp`（交互：Agent 的请求和场景的普通请求）与 `wisp.shttp.dl`（下载：`wisp.http.download`，两种身份都走这里）。两者都是 8192 字节栈、优先级 3、`flash_access = false`。下载通道的队列为 `SceneHttpLimits::download_queue` = 2（Agent 身份不受此限），一个下载最长 5 分钟，只占下载线程，不再挡住其他请求。同一场景的请求在同一通道内保持顺序；下载和普通请求的完成先后不定。只有交互线程检查延期请求是否超时，任何请求进入延期列表时都会唤醒它。两个工作线程都已启动后才接受请求。`TlsGate` 不变，只在连接与握手期间持有。
 - **留给后续子项目**：Agent 修改场景时新增域名，要在对话中明确告知用户（子项目 4、7）。场景密钥（只写不读）在 3b 或子项目 7 设计。
 
 ### 5.4 数据（`SceneStore` 的 Lua 绑定）
@@ -296,6 +306,7 @@ wisp.scene.args()                              -- 打开时传入的参数表
 | 集合数 | 16 |
 | HTTP 响应 | 256 KB |
 | HTTP 频率 | 30 次/分钟 |
+| 等待结果的调用 | 每个 VM 16 个（`kMaxCallsInFlight`，`wisp.http`、`wisp.http.download`、`wisp.files` 合计；超出抛 Lua 错误，见 5.3；2026-11-14 修订） |
 | 定时器 | 最小间隔 50 ms，最多 32 个 |
 | 单个字符串属性值 | 64 KB（超出报 `value too large`；实施时裁定：每次改动都复制字符串，防止一条大字符串撑爆 PSRAM） |
 | 一条消息的界面改动 | 1 MB（字符串字节 + 每个操作/节点/属性按 64 字节估算；超出报 `ui update too large` 并整批丢弃；实施时裁定：同一字符串绑到多个控件会被复制多份，不设上限时可耗尽 PSRAM 并 abort） |
@@ -454,3 +465,13 @@ Lua 组件与沙箱 → `SceneStore` → `SceneRepository` → 响应式核心 �
 
 - 5.3：`wisp.http.request(opts[, cb])` 支持 GET/POST/PUT/PATCH/DELETE/HEAD；场景身份继续执行既有 HTTPS、域名、频率、超时和不跟随重定向规则。SceneHttp 增加 `@agent` 身份，宽限策略与资源上限见 4b-1 第 3.2 节，不得向 Lua 暴露 API Key。
 - 第 5 节：增加 `wisp.json.encode/decode`；`lua.run` 与场景工具函数采用宿主管理任务协程，可省略异步 HTTP、文件 API 的回调来等待结果，并支持 `wisp.sleep`。普通事件、scene.eval 和嵌套协程仍不能等待；CPU 执行片与总时限分开，详见 4b-1 第 6 节。
+
+## 2026-11-14 修订：场景调度与安装安全
+
+本节修订优先于本文对应的旧条款；规则已写进各节，实施计划见 [`../plans/2026-11-14-scene-scheduling-install-safety.md`](../plans/2026-11-14-scene-scheduling-install-safety.md)。
+
+- 2.3：多一个下载工作线程的 TCB 与同步对象留在内部 RAM。
+- 3.1：结果进每个 VM 的完成箱，队列只放唤醒；场景任务按三条通道取活，`kQueueBurst`（8）与 `kFrontBurst`（4）防饿死。
+- 4.3：列表重置时旧行保留到新行到达。
+- 5.3：每个 VM 最多 16 个等待结果的调用（`kMaxCallsInFlight`）；下载有自己的工作线程 `wisp.shttp.dl` 与 `download_queue`。
+- 5.6：限额表增加"等待结果的调用"。
