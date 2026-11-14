@@ -294,6 +294,9 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-1-primitives.md`. Simulat
 - Deep standby for 10 minutes or more on both boards: light-sleep residency and wake counts against `docs/hardware/<board>.md` (the bus loop and the paused UI branch changed).
 - Factory reset and firmware confirm on the device: the admin page still shows `system.factory_reset` `done` and `system.firmware` `confirmed` before the reboot, now that `wait_idle()` also covers slots.
 - Parked for the later state-cell plans: an edge payload that carries a device id in a `FixedString<31>` must check `assign()`'s result, since ids are chosen by the board.
+- Parked: LeakSanitizer reports the glyph slot table in `a8_font.cpp` (kept for the whole process) in every UI test binary, so ASan runs of `ui_runtime_test` and `ui_cells_test` need `detect_leaks=0` or a suppression file.
+- Parked: `tools/check_topics.py` would report a dotted code identifier or file name (`` `wisp.fs` ``) in the first column of another table inside the "Event topics" section as a topic row; no such table exists there today.
+- Parked: no test fails if `UiRuntime`'s final drain after `stop()` were to run dispatch slots.
 
 ## CI speed
 
