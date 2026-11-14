@@ -108,14 +108,6 @@ protected:
         harness();
         wisp::agent::AgentDeps deps = h->deps();
         deps.context = context;
-        // The fake server speaks HTTP, and the client reports a 400 as
-        // "http"; a provider's context-length refusal is scripted as a 400
-        // and reported the way the loop sees it.
-        deps.complete = [this](const wisp::net::LlmCall& c) {
-            wisp::net::LlmResult r = h->llm->complete(c);
-            if (r.error == "http" && r.status == 400) r.error = "context_length";
-            return r;
-        };
         svc = std::make_unique<AgentService>(std::move(deps), cfg);
         if (ch) svc->set_confirm(ch->confirm.get());
         listener = svc->add_listener([this](const AgentEvent& e) {

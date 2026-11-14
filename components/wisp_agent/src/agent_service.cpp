@@ -550,7 +550,7 @@ struct AgentService::Impl {
         };
         last_byte = now();
         in_request = true;
-        net::LlmResult res = deps.complete ? deps.complete(call) : deps.llm.complete(call);
+        net::LlmResult res = deps.llm.complete(call);
         in_request = false;
         return res;
     }

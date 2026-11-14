@@ -168,9 +168,6 @@ struct AgentDeps {
     std::function<uint64_t()> now_ms = os::now_ms;
     std::function<int64_t()> wall_s;  // message timestamps; empty: 0
     ContextSource context;            // empty: the history only
-    // Stands in for llm.complete(), so a test can script results the
-    // client does not produce from a fake server. Empty: llm.complete().
-    std::function<net::LlmResult(const net::LlmCall&)> complete;
 };
 
 struct AgentConfig {
