@@ -1281,12 +1281,33 @@ TEST_F(AgentLoop, ContextLengthErrorCompressesAndRetriesOnce) {
 }
 
 TEST_F(AgentLoop, SecondContextLengthErrorEndsTheTurnWithANote) {
+    set_window(4096);
+    start();
+    const std::string big(4000, 'a');
+    run_turn("q1", big);
+    run_turn("q2", big);
+    h->server.push(context_length_reply());
+    h->server.push(text_reply("they asked q1"));
+    h->server.push(context_length_reply());
+    ASSERT_TRUE(svc->submit("q3", Source::Web));
+    ASSERT_TRUE(wait_turns(3));
+    // The refused request, the summary, the refused retry.
+    EXPECT_EQ(h->server.requests().size(), 5u);
+    EXPECT_EQ(last_status(), "error");
+    auto n = notes();
+    ASSERT_EQ(n.size(), 1u);
+    EXPECT_EQ(n[0], wisp::ui::tr(wisp::ui::StrId::AgentErrContext, wisp::ui::Lang::Zh));
+}
+
+// Nothing to summarize and no result to cut: the retry would be the same
+// request, refused the same way.
+TEST_F(AgentLoop, ContextLengthWithNothingToShrinkIsNotRetried) {
     start();
     h->server.push(context_length_reply());
-    h->server.push(context_length_reply());
+    h->server.push(text_reply("never"));
     ASSERT_TRUE(svc->submit("hi", Source::Web));
     ASSERT_TRUE(wait_turns(1));
-    EXPECT_EQ(h->server.requests().size(), 2u);
+    EXPECT_EQ(h->server.requests().size(), 1u);
     EXPECT_EQ(last_status(), "error");
     auto n = notes();
     ASSERT_EQ(n.size(), 1u);
@@ -1340,6 +1361,32 @@ TEST_F(AgentLoop, UsageCalibratesTheEstimate) {
     EXPECT_NE(sum.find("messages")->as_list()[1].find("content")->as_string().find("User: q1"),
               std::string::npos);
     EXPECT_TRUE(last_of(history(), Role::Summary));
+}
+
+// The calibration belongs to the model that reported it: after a switch
+// the plain estimate counts again, and turn 3 fits without a summary.
+TEST_F(AgentLoop, ModelSwitchResetsTheCalibration) {
+    set_window(4096);
+    start();
+    run_turn("q1", std::string(3000, 'a'));
+    h->server.push(usage_reply("ok", 2002));
+    ASSERT_TRUE(svc->submit("q2", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    ASSERT_EQ(h->server.requests().size(), 2u);
+
+    ASSERT_TRUE(h->worker.run_sync(
+        [&] {
+            const std::string id = h->models->get().active_for(wisp::core::ModelKind::Llm);
+            wisp::core::ProfileUpdate u;
+            u.model = "m2";
+            ASSERT_TRUE(h->models->update(id, u));
+        },
+        wisp::os::kForever));
+    run_turn(std::string(3000, 'q'), "done");
+    EXPECT_EQ(last_status(), "done");
+    ASSERT_EQ(h->server.requests().size(), 3u);
+    EXPECT_EQ(*h->server.body_json(2).find("model"), Value("m2"));
+    EXPECT_FALSE(last_of(history(), Role::Summary));
 }
 
 namespace {

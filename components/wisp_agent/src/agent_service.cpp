@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -420,7 +421,13 @@ struct AgentService::Impl {
         set_state(AgentState::Thinking);
 
         Outcome out;
-        out.status = loop(turn, c.source, context_window(), out);
+        const ActiveLlm llm = active_llm();
+        // The calibration is the last model's count, not this one's.
+        if (llm.model != scale_model) {
+            est_scale_pct = 100;
+            scale_model = llm.model;
+        }
+        out.status = loop(turn, c.source, llm.window, out);
 
         if (timer) timer->stop();
         in_turn = false;
@@ -497,13 +504,19 @@ struct AgentService::Impl {
         }
     }
 
-    // The active llm profile's context window, read once per turn.
-    uint32_t context_window() const {
+    struct ActiveLlm {
+        uint32_t window = kDefaultContextWindow;
+        std::string model;
+    };
+
+    // The active llm profile's context window and model, read once per
+    // turn.
+    ActiveLlm active_llm() const {
         const core::ProfilesState st = deps.models.get();
         const std::string& id = st.active_for(core::ModelKind::Llm);
         for (const core::ModelProfile& p : st.profiles)
-            if (p.id == id) return core::profile_context_window(p.options);
-        return kDefaultContextWindow;
+            if (p.id == id) return {core::profile_context_window(p.options), p.model};
+        return {};
     }
 
     BuiltRequest build(std::span<const Message> h, Source source, BuildOptions opts = {}) const {
@@ -613,6 +626,9 @@ struct AgentService::Impl {
         // turn.
         bool overflow = false;
         bool overflow_retried = false;
+        // The refused request's estimate while its retry is being
+        // prepared: a retry that did not shrink is the same request.
+        std::optional<size_t> refused_tokens;
         const std::string_view tools_json = sv(deps.tools.tools_json());
         const size_t tools_tokens = tools_json.size() / 3;
         for (;;) {
@@ -667,6 +683,14 @@ struct AgentService::Impl {
                 compressed_deep = false;
                 overflow = false;
                 sent_tokens = req.est_tokens + tools_tokens;
+                if (refused_tokens && sent_tokens >= *refused_tokens) {
+                    // Nothing was summarized or cut: the model would refuse
+                    // it again.
+                    set_state(AgentState::Error);
+                    note(ui::StrId::AgentErrContext, turn, &out);
+                    return "error";
+                }
+                refused_tokens.reset();
                 bool output = false;
                 res = request({req.messages.data(), req.messages.size()}, tools_json,
                               [&](std::string_view d) {
@@ -686,6 +710,7 @@ struct AgentService::Impl {
                     uint64_t{res.usage->prompt} * 100 / std::max<size_t>(1, sent_tokens);
                 est_scale_pct =
                     static_cast<uint32_t>(std::clamp<uint64_t>(pct, kMinScalePct, kMaxScalePct));
+                scale_model = res.model;
             }
 
             if (!whole(res)) {
@@ -704,7 +729,9 @@ struct AgentService::Impl {
                     // less from now on, compress harder and try once more.
                     overflow_retried = true;
                     overflow = true;
+                    refused_tokens = sent_tokens;
                     est_scale_pct = std::max(est_scale_pct, kOverflowScalePct);
+                    scale_model = res.model;
                     WLOG_W(kTag, "context too long for the model: compressing and retrying");
                     continue;
                 }
@@ -904,11 +931,13 @@ struct AgentService::Impl {
     // The token estimate's multiplier in percent (wisp.agent only): the
     // model's reported prompt tokens over the bytes / 3 estimate of the
     // last request it answered, kept across turns. A context-length
-    // refusal raises it to at least kOverflowScalePct.
+    // refusal raises it to at least kOverflowScalePct. It holds for
+    // scale_model only: a turn on another model starts again from 100.
     static constexpr uint32_t kMinScalePct = 50;
     static constexpr uint32_t kMaxScalePct = 300;
     static constexpr uint32_t kOverflowScalePct = 150;
     uint32_t est_scale_pct = 100;
+    std::string scale_model;
 
     os::Mutex lmu;
     std::vector<std::shared_ptr<Listener>> listeners;
