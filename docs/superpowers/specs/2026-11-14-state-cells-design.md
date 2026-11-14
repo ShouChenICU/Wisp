@@ -1,7 +1,7 @@
 # State Cells and Event Bus Semantics — Design
 
 - Date: 2026-11-14
-- Status: draft, awaiting the owner's approval
+- Status: approved by the owner on 2026-11-14 (see "Approval" at the end)
 - Scope: phase D of `docs/superpowers/plans/2026-11-14-architecture-optimization-roadmap.md`. State that other components follow moves from the lossy event bus to `core::StateCell<T>`; commands and input edges get paths that cannot lose them; the bus keeps notifications and telemetry, with the wire formats of the admin WebSocket and the scenes unchanged.
 - Builds on: the foundation spec (event bus, power levels), the connectivity spec (`system.settings`, `system.firmware`, `system.factory_reset`, WebSocket `events`), the flash-thread design (`2026-11-06-flash-thread-design.md`, threading and internal-RAM rules).
 - Serves: phase E (the settings snapshot lives in a cell), phase F (`wisp.net` and `wisp.power` can wait on state changes instead of polling), phase L (commands are already off the bus; `core::Dispatcher` is the executor interface PowerManager needs).
@@ -471,3 +471,13 @@ Cannot be verified in the simulator (device checks for the owner, written into t
 3. **Microphone level.** Accept a polled `VoiceService::level()` instead of the roadmap's `voice.level` topic? *Recommendation: yes* (section 3.4).
 4. **Legacy topics without consumers.** After migration, `agent.state`, `voice.state`, `notification.*`, `button.*` and `model.profiles` have no device subscriber and are not forwarded. Keep publishing them (cheap, documented, useful in logs and for phase I) or delete them? *Recommendation: keep in this phase*; deleting documented topics is a separate decision with no benefit beyond a few events per minute.
 5. **Settings caches in D, not E.** Accept moving the replacement of `merge_settings()` and the private caches into this phase? *Recommendation: yes* (section 9).
+
+## Approval
+
+The owner approved this spec on 2026-11-14, answering each question of section 10 with its recommendation:
+
+1. UI delivery by the cell: yes. `UiRuntime` implements `core::Dispatcher`; UI subscribers' callbacks run on the UI thread, delivered by the UI runtime.
+2. Button edges in this phase: yes. All four button consumers move to `ButtonService` listeners with per-consumer inboxes now.
+3. Microphone level: yes. Home and the talk overlay read `VoiceService::level()`; there is no `voice.level` topic.
+4. Legacy topics without a device subscriber: keep publishing them in this phase.
+5. Settings caches: yes. `merge_settings()` and the private settings caches are removed in this phase, not in the settings-schema phase.
