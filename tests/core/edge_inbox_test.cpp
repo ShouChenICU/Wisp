@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 
+#include "support/gate_and_join.hpp"
 #include "support/manual_dispatcher.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
@@ -18,6 +19,7 @@
 using wisp::core::DispatchSlot;
 using wisp::core::EdgeInbox;
 using wisp::core::EventBus;
+using wisp::test::GateAndJoin;
 using wisp::test::ManualDispatcher;
 
 namespace {
@@ -40,33 +42,6 @@ struct CaptureSink : wisp::LogSink {
 struct RestoreDeathStyle {
     std::string old = GTEST_FLAG_GET(death_test_style);
     ~RestoreDeathStyle() { GTEST_FLAG_SET(death_test_style, old); }
-};
-
-// Declared after a test's threads (and before it starts them): on every
-// way out of the test, a failed ASSERT included, it opens the gate and
-// joins the threads, so the failure is reported by gtest instead of
-// std::terminate on a joinable thread.
-class GateAndJoin {
-public:
-    GateAndJoin(wisp::os::Semaphore& gate, std::vector<std::thread>& threads, int opens = 1)
-        : gate_(gate), threads_(threads), opens_(opens) {}
-    ~GateAndJoin() {
-        for (int i = 0; i < opens_; ++i) {
-            gate_.give();
-        }
-        for (std::thread& t : threads_) {
-            if (t.joinable()) {
-                t.join();
-            }
-        }
-    }
-    GateAndJoin(const GateAndJoin&) = delete;
-    GateAndJoin& operator=(const GateAndJoin&) = delete;
-
-private:
-    wisp::os::Semaphore& gate_;
-    std::vector<std::thread>& threads_;
-    int opens_;
 };
 
 }  // namespace

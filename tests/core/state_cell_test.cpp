@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
-#include <initializer_list>
 #include <latch>
 #include <memory>
 #include <mutex>
@@ -16,6 +15,7 @@
 #include <vector>
 
 #include "support/bus_flood.hpp"
+#include "support/gate_and_join.hpp"
 #include "support/manual_dispatcher.hpp"
 #include "support/wait.hpp"
 #include "wisp/base/fixed_string.hpp"
@@ -27,6 +27,7 @@ using wisp::core::EventBus;
 template <class T>
 using Cell = wisp::core::StateCell<T>;
 using wisp::test::BusFlood;
+using wisp::test::GateAndJoin;
 using wisp::test::ManualDispatcher;
 using wisp::test::wait_until;
 
@@ -56,30 +57,6 @@ namespace {
 // the cell's release bound (kReleaseWaitLimitMs, 3 s, in state_cell.cpp),
 // so a failed teardown test reports instead of aborting the binary.
 constexpr uint32_t kGateMs = 2000;
-
-// Declared after a test's threads (and before it starts them): on every
-// way out of the test, a failed ASSERT included, it opens the gate and
-// joins the threads, so the failure is reported by gtest instead of
-// std::terminate on a joinable thread.
-class GateAndJoin {
-public:
-    GateAndJoin(wisp::os::Semaphore& gate, std::initializer_list<std::thread*> threads)
-        : gate_(gate), threads_(threads) {}
-    ~GateAndJoin() {
-        gate_.give();
-        for (std::thread* t : threads_) {
-            if (t->joinable()) {
-                t->join();
-            }
-        }
-    }
-    GateAndJoin(const GateAndJoin&) = delete;
-    GateAndJoin& operator=(const GateAndJoin&) = delete;
-
-private:
-    wisp::os::Semaphore& gate_;
-    std::vector<std::thread*> threads_;
-};
 
 struct Seen {
     int value;
