@@ -299,8 +299,8 @@ TEST(NetWiring, NetworkWindowDeliversADeferredRequest) {
 }  // namespace
 
 // What the voice reads before waiting for recognition: a connection is
-// on its way exactly while Wi-Fi is enabled and a network is saved, the
-// radio being off in deep standby included.
+// on its way exactly while one is being made (WifiService::
+// connection_expected()), the radio being off in deep standby included.
 TEST(NetWiring, NetworkExpectedFollowsEnabledAndSavedNetworks) {
     Rig r;
     EXPECT_FALSE(r.net->network_expected());
@@ -323,6 +323,29 @@ TEST(NetWiring, NetworkExpectedFollowsEnabledAndSavedNetworks) {
     EXPECT_TRUE(wait_until([&] { return !r.net->network_expected(); }, 5000));
     ASSERT_TRUE(r.net->wifi()->set_enabled(true, wisp::os::now_ms()));
     EXPECT_TRUE(wait_until([&] { return r.net->network_expected(); }, 5000));
+
+    // A user disconnect holds retries: nothing is on its way.
+    r.pm->exit_standby();
+    ASSERT_TRUE(
+        wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Connected; }, 5000));
+    ASSERT_TRUE(r.net->wifi()->disconnect());
+    EXPECT_TRUE(wait_until([&] { return !r.net->network_expected(); }, 5000));
+    ASSERT_TRUE(r.net->wifi()->connect_saved("Home", wisp::os::now_ms() + r.skew.load()));
+    EXPECT_TRUE(wait_until([&] { return r.net->network_expected(); }, 5000));
+
+    // The only network parked for a rejected password: its attempts
+    // scan and give up, so nothing is on its way.
+    ASSERT_TRUE(r.net->wifi()->add_network("Home", "wrongpass1", wisp::os::now_ms() + r.skew));
+    ASSERT_TRUE(wait_until(
+        [&] {
+            if (r.net->wifi()->saved_networks()[0].auth_failed) return true;
+            r.skew += 400'000;  // past any backoff
+            return false;
+        },
+        10000));
+    ASSERT_TRUE(
+        wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Backoff; }, 5000));
+    EXPECT_FALSE(r.net->network_expected());
 
     ASSERT_TRUE(r.net->wifi()->forget_network("Home"));
     EXPECT_TRUE(wait_until([&] { return !r.net->network_expected(); }, 5000));

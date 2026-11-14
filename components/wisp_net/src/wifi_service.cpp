@@ -460,6 +460,27 @@ bool WifiService::enabled() const {
     return enabled_;
 }
 
+bool WifiService::connection_expected() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    if (!enabled_ || manually_disconnected_) return false;
+    if (std::all_of(networks_.begin(), networks_.end(),
+                    [](const Network& n) { return n.auth_failed; })) {
+        return false;  // none saved, or only parked ones
+    }
+    switch (status_.state) {
+        case WifiState::Connecting:
+        case WifiState::Connected:
+            return true;
+        case WifiState::Off:
+            // enabled_ is set, so a radio that is off is held off by the
+            // power level alone.
+            return radio_off_ && power_off_;
+        case WifiState::Backoff:
+            break;
+    }
+    return false;
+}
+
 Result<void> WifiService::set_enabled(bool enabled, uint64_t now_ms) {
     std::lock_guard<os::Mutex> radio(radio_mutex_);
     std::lock_guard<os::Mutex> lock(mutex_);

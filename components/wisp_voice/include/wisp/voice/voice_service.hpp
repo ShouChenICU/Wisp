@@ -174,9 +174,10 @@ struct VoiceDeps {
     core::TonePlayer* tones = nullptr;
     core::WakeLockRegistry* locks = nullptr;
     std::function<bool()> network_up;
-    // A connection is being made or will be (Wi-Fi enabled by the user,
-    // a network saved): a capture that starts offline records anyway and
-    // its recognition waits for the network. Empty: false.
+    // A connection is being made or will be
+    // (net::WifiService::connection_expected()): a capture that starts
+    // offline records anyway and its recognition waits for the network.
+    // Empty: false.
     std::function<bool()> network_expected;
     std::function<uint8_t()> volume;  // cached audio/volume
     std::function<uint64_t()> now_ms = os::now_ms;

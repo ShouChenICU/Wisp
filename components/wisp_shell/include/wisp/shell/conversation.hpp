@@ -105,8 +105,9 @@
 namespace wisp::shell {
 
 // What talking needs (mvp spec 6.6). Net: Up online; Connecting offline
-// while a connection is being made or will be (Wi-Fi enabled, a network
-// saved: a hold records and its recognition waits, see
+// while a connection is being made or will be
+// (net::WifiService::connection_expected(): a hold records and its
+// recognition waits, see
 // wisp/voice/voice_service.hpp); Down offline otherwise. llm / asr / tts:
 // a profile of that kind is active (tts also when the speech is muted).
 // A hold needs can_talk(); the home screen lists what complete() lacks.

@@ -165,6 +165,15 @@ public:
 
     WifiStatus status() const;
     bool enabled() const;
+    // A connection is there or on its way (MVP spec 4.1): Wi-Fi is enabled,
+    // no user disconnect() holds retries, a saved network is not parked
+    // for a rejected password, and the state is Connecting or Connected,
+    // or the radio is off only because deep standby holds it off (a wake
+    // brings it back and reconnects). Backoff does not count: the next
+    // attempt may be minutes away and may fail again. Connected counts so
+    // that a reader that saw the link down a moment ago does not take its
+    // arrival for "not expected".
+    bool connection_expected() const;
     // User intent, persisted independently of temporary power-policy suspension.
     // May wait for a scan to finish; call from a network worker.
     Result<void> set_enabled(bool enabled, uint64_t now_ms);

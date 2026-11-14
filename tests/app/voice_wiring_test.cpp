@@ -235,9 +235,10 @@ TEST(AppVoice, MutedDeviceDoesNotAskForTts) {
     EXPECT_TRUE(wait_until([&] { return conv->readiness().complete(); }, 3000));
 }
 
-// Offline with a saved network that is out of reach: connecting (a hold
-// records); with none saved: down.
-TEST(AppVoice, OfflineIsConnectingOnlyWithASavedNetwork) {
+// Offline and no connection being made -- a saved network that is out of
+// reach waits in backoff, or none is saved -- is down: a hold would only
+// wait and fail (WifiService::connection_expected()).
+TEST(AppVoice, OfflineIsDownWhileNoConnectionIsBeingMade) {
     using wisp::shell::Readiness;
     {
         VoiceApp v(/*with_mic=*/true, [](UiNetOptions& o) { o.wifi_reachable = false; });
@@ -245,9 +246,8 @@ TEST(AppVoice, OfflineIsConnectingOnlyWithASavedNetwork) {
         wisp::shell::ConversationController* conv = v.h->app->conversation();
         ASSERT_NE(conv, nullptr);
         EXPECT_TRUE(wait_until(
-            [&] { return conv->readiness() == Readiness{.net = Readiness::Net::Connecting}; },
-            10000));
-        EXPECT_TRUE(conv->readiness().can_talk());
+            [&] { return conv->readiness() == Readiness{.net = Readiness::Net::Down}; }, 10000));
+        EXPECT_FALSE(conv->readiness().can_talk());
     }
     {
         VoiceApp v(/*with_mic=*/true, [](UiNetOptions& o) { o.saved.clear(); });

@@ -1593,3 +1593,90 @@ TEST(WifiService, DetailsFollowStrongestAccessPointAndClearAfterDisconnect) {
     EXPECT_TRUE(svc.status().details.gateway.empty());
     EXPECT_TRUE(svc.status().details.bssid.empty());
 }
+
+// What the voice and Home read while offline (MVP spec 4.1): a connection
+// counts as on its way only while one is really being made, or the radio
+// is off only for deep standby (the round's network wake lock brings it
+// back).
+TEST(WifiService, ConnectionExpectedOnlyWhileOneIsBeingMade) {
+    {
+        // Disabled by the user.
+        Fixture f;
+        f.in_range("Home", -50, "password");
+        f.seed({{"Home", "password"}});
+        auto& svc = f.make();
+        ASSERT_TRUE(svc.init(0));
+        EXPECT_TRUE(svc.connection_expected());
+        ASSERT_TRUE(svc.set_enabled(false, 1));
+        EXPECT_FALSE(svc.connection_expected());
+    }
+    {
+        // No saved network.
+        Fixture f;
+        auto& svc = f.make();
+        ASSERT_TRUE(svc.init(0));
+        tick2(svc, 0);
+        EXPECT_FALSE(svc.connection_expected());
+    }
+    {
+        // Connecting, then connected, then a user disconnect.
+        Fixture f;
+        f.in_range("Home", -50, "password");
+        f.seed({{"Home", "password"}});
+        auto& svc = f.make();
+        ASSERT_TRUE(svc.init(0));
+        ASSERT_EQ(svc.status().state, WifiState::Connecting);
+        EXPECT_TRUE(svc.connection_expected());
+        tick2(svc, 0);
+        ASSERT_EQ(svc.status().state, WifiState::Connected);
+        EXPECT_TRUE(svc.connection_expected());
+        ASSERT_TRUE(svc.disconnect());
+        EXPECT_FALSE(svc.connection_expected());
+    }
+    {
+        // The only saved network parked for a rejected password.
+        Fixture f;
+        f.in_range("B", -40, "passwordB");
+        f.seed({{"B", "wrongpassB"}});
+        auto& svc = f.make();
+        ASSERT_TRUE(svc.init(0));
+        uint64_t now = reject_times(f, svc, 3, 0);
+        ASSERT_TRUE(svc.saved_networks()[0].auth_failed);
+        tick2(svc, now + 600'000);
+        ASSERT_EQ(svc.status().state, WifiState::Backoff);
+        EXPECT_FALSE(svc.connection_expected());
+        // Not even while an attempt on it is in flight.
+        ASSERT_TRUE(svc.connect_saved("B", now + 700'000));
+        svc.tick(now + 700'000);
+        ASSERT_EQ(svc.status().state, WifiState::Connecting);
+        EXPECT_FALSE(svc.connection_expected());
+    }
+    {
+        // Backoff after the saved network was not found.
+        Fixture f;
+        f.in_range("Other", -50);
+        f.seed({{"Away", "passwordX"}});
+        auto& svc = f.make();
+        ASSERT_TRUE(svc.init(0));
+        tick2(svc, 0);
+        ASSERT_EQ(svc.status().state, WifiState::Backoff);
+        EXPECT_FALSE(svc.connection_expected());
+    }
+    {
+        // Radio off for deep standby, with a saved network.
+        Fixture f;
+        f.in_range("Home", -50, "password");
+        f.seed({{"Home", "password"}});
+        auto& svc = f.make();
+        ASSERT_TRUE(svc.init(0));
+        tick2(svc, 0);
+        svc.set_power_level(PowerLevel::DeepStandby, 1000);
+        ASSERT_EQ(svc.status().state, WifiState::Off);
+        EXPECT_TRUE(svc.connection_expected());
+        // But not after a user disconnect: waking does not reconnect.
+        svc.set_power_level(PowerLevel::Active, 2000);
+        ASSERT_TRUE(svc.disconnect());
+        svc.set_power_level(PowerLevel::DeepStandby, 3000);
+        EXPECT_FALSE(svc.connection_expected());
+    }
+}
